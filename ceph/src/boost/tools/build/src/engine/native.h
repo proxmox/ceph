@@ -1,7 +1,7 @@
 /* Copyright 2003. David Abrahams
  * Distributed under the Boost Software License, Version 1.0.
- * (See accompanying file LICENSE_1_0.txt or copy at
- * http://www.boost.org/LICENSE_1_0.txt)
+ * (See accompanying file LICENSE.txt or copy at
+ * https://www.bfgroup.xyz/b2/LICENSE.txt)
  */
 
 #ifndef NATIVE_H_VP_2003_12_09
@@ -25,11 +25,11 @@ typedef struct native_rule_t
      *
      * Versions are numbered from 1.
     */
-    int version;
+    int32_t version;
 } native_rule_t;
 /* MSVC debugger gets confused unless the native_rule_t typedef is provided. */
 
 void declare_native_rule( char const * module, char const * rule,
-    char const * * args, LIST * (*f)( FRAME *, int ), int version );
+    char const * * args, LIST * (*f)( FRAME *, int32_t ), int32_t version );
 
 #endif

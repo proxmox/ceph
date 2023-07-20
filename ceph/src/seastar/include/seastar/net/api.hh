@@ -28,11 +28,11 @@
 #include <seastar/net/byteorder.hh>
 #include <seastar/net/socket_defs.hh>
 #include <seastar/net/packet.hh>
+#include <seastar/core/internal/api-level.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/util/std-compat.hh>
 #include <seastar/util/program-options.hh>
-#include "../core/internal/api-level.hh"
 #include <sys/types.h>
 
 namespace seastar {
@@ -158,6 +158,12 @@ struct connected_socket_input_stream_config final {
     unsigned max_buffer_size = 128 * 1024;
 };
 
+/// Distinguished name
+struct session_dn {
+    sstring subject;
+    sstring issuer;
+};
+
 /// A TCP (or other stream-based protocol) connection.
 ///
 /// A \c connected_socket represents a full-duplex stream between
@@ -227,6 +233,29 @@ public:
     /// This is useful to abort operations on a socket that is not making
     /// progress due to a peer failure.
     void shutdown_input();
+    /// Check whether the \c connected_socket is initialized.
+    ///
+    /// \return true if this \c connected_socket socket_address is bound initialized
+    /// false otherwise.
+    ///
+    /// \see connect(socket_address sa)
+    /// \see connect(socket_address sa, socket_address local, transport proto)
+    explicit operator bool() const noexcept {
+        return static_cast<bool>(_csi);
+    }
+    /// Waits for the peer of this socket to disconnect
+    ///
+    /// \return future that resolves when the peer closes connection or shuts it down
+    /// for writing or when local socket is called \ref shutdown_input().
+    ///
+    /// Note, that when the returned future is resolved for whatever reason socket
+    /// may still be readable from, so the caller may want to wait for both events
+    /// -- this one and EOF from read.
+    ///
+    /// Calling it several times per socket is not allowed (undefined behavior)
+    ///
+    /// \see poll(2) about POLLRDHUP for more details
+    future<> wait_input_shutdown();
 };
 /// @}
 
@@ -297,7 +326,7 @@ public:
         fixed,
         default_ = connection_distribution
     };
-    /// Constructs a \c server_socket not corresponding to a connection
+    /// Constructs a \c server_socket without being bound to any address
     server_socket() noexcept;
     /// \cond internal
     explicit server_socket(std::unique_ptr<net::server_socket_impl> ssi) noexcept;
@@ -324,7 +353,24 @@ public:
     void abort_accept();
 
     /// Local bound address
+    ///
+    /// \return the local bound address if the \c server_socket is listening,
+    /// an empty address constructed with \c socket_address() otherwise.
+    ///
+    /// \see listen(socket_address sa)
+    /// \see listen(socket_address sa, listen_options opts)
     socket_address local_address() const noexcept;
+
+    /// Check whether the \c server_socket is listening on any address.
+    ///
+    /// \return true if this \c socket_address is bound to an address,
+    /// false if it is just created with the default constructor.
+    ///
+    /// \see listen(socket_address sa)
+    /// \see listen(socket_address sa, listen_options opts)
+    explicit operator bool() const noexcept {
+        return static_cast<bool>(_ssi);
+    }
 };
 
 /// @}

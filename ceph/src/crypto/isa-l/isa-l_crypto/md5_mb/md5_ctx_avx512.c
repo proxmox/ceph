@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -27,6 +27,16 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 
+#if defined(__clang__)
+# pragma clang attribute push (__attribute__((target("avx2"))), apply_to=function)
+#elif defined(__ICC)
+# pragma intel optimization_parameter target_arch=AVX2
+#elif defined(__ICL)
+# pragma [intel] optimization_parameter target_arch=AVX2
+#elif (__GNUC__ >= 5)
+# pragma GCC target("avx2")
+#endif
+
 #include "md5_mb.h"
 #include "memcpy_inline.h"
 
@@ -38,7 +48,7 @@
 #ifdef HAVE_AS_KNOWS_AVX512
 
 static inline void hash_init_digest(MD5_WORD_T * digest);
-static inline uint32_t hash_pad(uint8_t padblock[MD5_BLOCK_SIZE * 2], uint32_t total_len);
+static inline uint32_t hash_pad(uint8_t padblock[MD5_BLOCK_SIZE * 2], uint64_t total_len);
 static MD5_HASH_CTX *md5_ctx_mgr_resubmit(MD5_HASH_CTX_MGR * mgr, MD5_HASH_CTX * ctx);
 
 void md5_ctx_mgr_init_avx512(MD5_HASH_CTX_MGR * mgr)
@@ -220,9 +230,9 @@ static inline void hash_init_digest(MD5_WORD_T * digest)
 	memcpy_fixedlen(digest, hash_initial_digest, sizeof(hash_initial_digest));
 }
 
-static inline uint32_t hash_pad(uint8_t padblock[MD5_BLOCK_SIZE * 2], uint32_t total_len)
+static inline uint32_t hash_pad(uint8_t padblock[MD5_BLOCK_SIZE * 2], uint64_t total_len)
 {
-	uint32_t i = total_len & (MD5_BLOCK_SIZE - 1);
+	uint32_t i = (uint32_t) (total_len & (MD5_BLOCK_SIZE - 1));
 
 	// memset(&padblock[i], 0, MD5_BLOCK_SIZE);
 	memclr_fixedlen(&padblock[i], MD5_BLOCK_SIZE);
@@ -249,5 +259,9 @@ struct slver md5_ctx_mgr_submit_avx512_slver = { 0x018d, 0x00, 0x06 };
 
 struct slver md5_ctx_mgr_flush_avx512_slver_0600018e;
 struct slver md5_ctx_mgr_flush_avx512_slver = { 0x018e, 0x00, 0x06 };
+
+#if defined(__clang__)
+# pragma clang attribute pop
+#endif
 
 #endif // HAVE_AS_KNOWS_AVX512

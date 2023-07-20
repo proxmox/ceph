@@ -39,10 +39,16 @@
 
 namespace seastar {
 
+struct http_response;
+
 namespace httpd {
 
 class connection;
 class routes;
+
+}
+
+namespace http {
 
 /**
  * A reply to be sent to a client.
@@ -60,6 +66,7 @@ struct reply {
         nonauthoritative_information = 203, //!< nonauthoritative_information
         no_content = 204, //!< no_content
         reset_content = 205, //!< reset_content
+        partial_content = 206, //! partial_content
         multiple_choices = 300, //!< multiple_choices
         moved_permanently = 301, //!< moved_permanently
         moved_temporarily = 302, //!< moved_temporarily
@@ -104,15 +111,34 @@ struct reply {
      * The content to be sent in the reply.
      */
     sstring _content;
+    size_t content_length = 0; // valid when received via client connection
 
     sstring _response_line;
+    std::unordered_map<sstring, sstring> trailing_headers;
+    std::unordered_map<sstring, sstring> chunk_extensions;
+
     reply()
             : _status(status_type::ok) {
     }
 
+    explicit reply(http_response&&);
+
     reply& add_header(const sstring& h, const sstring& value) {
         _headers[h] = value;
         return *this;
+    }
+
+    /**
+     * Search for the first header of a given name
+     * @param name the header name
+     * @return a pointer to the header value, if it exists or empty string
+     */
+    sstring get_header(const sstring& name) const {
+        auto res = _headers.find(name);
+        if (res == _headers.end()) {
+            return "";
+        }
+        return res->second;
     }
 
     reply& set_version(const sstring& version) {
@@ -120,10 +146,10 @@ struct reply {
         return *this;
     }
 
-    reply& set_status(status_type status, const sstring& content = "") {
+    reply& set_status(status_type status, sstring content = "") {
         _status = status;
         if (content != "") {
-            _content = content;
+            _content = std::move(content);
         }
         return *this;
     }
@@ -143,7 +169,7 @@ struct reply {
      * that would have been used if it was a file: e.g. html, txt, json etc'
      */
     reply& set_content_type(const sstring& content_type = "html") {
-        set_mime_type(httpd::mime_types::extension_to_type(content_type));
+        set_mime_type(http::mime_types::extension_to_type(content_type));
         return *this;
     }
 
@@ -187,17 +213,27 @@ struct reply {
      * This would set the the content and content type of the message along
      * with any additional information that is needed to send the message.
      */
-    void write_body(const sstring& content_type, const sstring& content);
+    void write_body(const sstring& content_type, sstring content);
 
 private:
-    future<> write_reply_to_connection(connection& con);
-    future<> write_reply_headers(connection& connection);
+    future<> write_reply_to_connection(httpd::connection& con);
+    future<> write_reply_headers(httpd::connection& connection);
 
     noncopyable_function<future<>(output_stream<char>&&)> _body_writer;
-    friend class routes;
-    friend class connection;
+    friend class httpd::routes;
+    friend class httpd::connection;
 };
 
-} // namespace httpd
+std::ostream& operator<<(std::ostream& os, reply::status_type st);
+
+} // namespace http
+
+namespace httpd {
+using reply [[deprecated("Use http::reply instead")]] = http::reply;
+}
 
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<seastar::http::reply::status_type> : fmt::ostream_formatter {};
+#endif

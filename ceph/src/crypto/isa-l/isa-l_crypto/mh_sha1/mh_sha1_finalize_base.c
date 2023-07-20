@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -66,7 +66,7 @@ void MH_SHA1_TAIL_FUNCTION(uint8_t * partial_buffer, uint32_t total_len,
 		memset(partial_buffer, 0, MH_SHA1_BLOCK_SIZE);
 	}
 	//Padding the block
-	len_in_bit = bswap64((uint64_t) total_len * 8);
+	len_in_bit = to_be64((uint64_t) total_len * 8);
 	*(uint64_t *) (partial_buffer + MH_SHA1_BLOCK_SIZE - 8) = len_in_bit;
 	MH_SHA1_BLOCK_FUNCTION(partial_buffer, mh_sha1_segs_digests, frame_buffer, 1);
 

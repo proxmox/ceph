@@ -109,7 +109,7 @@ void test_wavelet_transform()
         // Wavelet transform of a constant is zero.
         // The quadrature sum is horribly ill-conditioned (technically infinite),
         // so we'll only test on the more rapidly converging sums.
-        auto g = [](Real x) { return Real(7); };
+        auto g = [](Real ) { return Real(7); };
         auto Wg = daubechies_wavelet_transform(g, psi);
         for (double s = -10; s < 10; s += 0.1)
         {
@@ -132,12 +132,20 @@ void test_wavelet_transform()
 
 int main()
 {
-    test_wavelet_transform<double, 2>();
-    test_wavelet_transform<double, 8>();
-    test_wavelet_transform<double, 16>();
-    // All these tests pass, but the compilation takes too long on CI:
-    //boost::hana::for_each(std::make_index_sequence<17>(), [&](auto i) {
-    //    test_wavelet_transform<double, i+3>();
-    //});
+    try{
+       test_wavelet_transform<double, 2>();
+       test_wavelet_transform<double, 8>();
+       test_wavelet_transform<double, 16>();
+       // All these tests pass, but the compilation takes too long on CI:
+       //boost::hana::for_each(std::make_index_sequence<17>(), [&](auto i) {
+       //    test_wavelet_transform<double, i+3>();
+       //});
+    }
+    catch (std::bad_alloc const & e)
+    {
+        std::cerr << "Ran out of memory in wavelet transform test: " << e.what() << "\n";
+       // not much we can do about this, this test uses lots of memory!
+    }
+
     return boost::math::test::report_errors();
 }

@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -47,7 +47,7 @@ extern "C" {
 * @requires SSE4.1
 */
 void aes_keyexp_128(
-	uint8_t *key,  		//!< input key for AES-128, 16 bytes
+	const uint8_t *key,  		//!< input key for AES-128, 16 bytes
 	uint8_t *exp_key_enc,	//!< expanded encryption keys, 16*11 bytes
 	uint8_t *exp_key_dec	//!< expanded decryption keys, 16*11 bytes
 	);
@@ -56,7 +56,7 @@ void aes_keyexp_128(
 * @requires SSE4.1
 */
 void aes_keyexp_192(
-	uint8_t *key,	//!< input key for AES-192, 16*1.5 bytes
+	const uint8_t *key,	//!< input key for AES-192, 16*1.5 bytes
 	uint8_t *exp_key_enc,	//!< expanded encryption keys, 16*13 bytes
 	uint8_t *exp_key_dec	//!< expanded decryption keys, 16*13 bytes
 	);
@@ -65,7 +65,7 @@ void aes_keyexp_192(
 * @requires SSE4.1
 */
 void aes_keyexp_256(
-	uint8_t *key,	//!< input key for AES-256, 16*2 bytes
+	const uint8_t *key,	//!< input key for AES-256, 16*2 bytes
 	uint8_t *exp_key_enc,	//!< expanded encryption keys, 16*15 bytes
 	uint8_t *exp_key_dec	//!< expanded decryption keys, 16*15 bytes
 	);

@@ -54,7 +54,7 @@ html_theme_options = {
     'display_version': False,
     'prev_next_buttons_location': 'bottom',
     'style_external_links': False,
-    'vcs_pageview_mode': '',
+    'vcs_pageview_mode': 'edit',
     'style_nav_header_background': '#eee',
     # Toc options
     'collapse_navigation': True,
@@ -112,6 +112,8 @@ build_with_rtd = os.environ.get('READTHEDOCS') == 'True'
 
 sys.path.insert(0, os.path.abspath('_ext'))
 
+smartquotes_action = "qe"
+
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.graphviz',
@@ -124,6 +126,7 @@ extensions = [
     'ceph_commands',
     'ceph_releases',
     'ceph_confval',
+    'sphinxcontrib.mermaid',
     'sphinxcontrib.openapi',
     'sphinxcontrib.seqdiag',
     ]

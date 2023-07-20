@@ -15,6 +15,7 @@
  *
  */
 
+#include <algorithm>
 #include <list>
 #include <map>
 #include <ostream>
@@ -756,6 +757,13 @@ char *spg_t::calc_name(char *buf, const char *suffix_backwords) const
   }
 
   return pgid.calc_name(buf, "");
+}
+
+std::string spg_t::calc_name_sring() const
+{
+  char buf[spg_t::calc_name_buf_size];
+  buf[spg_t::calc_name_buf_size - 1] = '\0';
+  return string{calc_name(buf + spg_t::calc_name_buf_size - 1, "")};
 }
 
 ostream& operator<<(ostream& out, const spg_t &pg)
@@ -2855,6 +2863,7 @@ void pg_stat_t::dump(Formatter *f) const
   f->dump_stream("last_clean_scrub_stamp") << last_clean_scrub_stamp;
   f->dump_int("objects_scrubbed", objects_scrubbed);
   f->dump_int("log_size", log_size);
+  f->dump_int("log_dups_size", log_dups_size);
   f->dump_int("ondisk_log_size", ondisk_log_size);
   f->dump_bool("stats_invalid", stats_invalid);
   f->dump_bool("dirty_stats_invalid", dirty_stats_invalid);
@@ -2924,10 +2933,17 @@ void pg_stat_t::dump_brief(Formatter *f) const
 std::string pg_stat_t::dump_scrub_schedule() const
 {
   if (scrub_sched_status.m_is_active) {
-    return fmt::format(
-      "{}scrubbing for {}s",
-      ((scrub_sched_status.m_is_deep == scrub_level_t::deep) ? "deep " : ""),
-      scrub_sched_status.m_duration_seconds);
+    // are we blocked (in fact, stuck) on some locked object?
+    if (scrub_sched_status.m_sched_status == pg_scrub_sched_status_t::blocked) {
+      return fmt::format(
+	"Blocked! locked objects (for {}s)",
+	scrub_sched_status.m_duration_seconds);
+    } else {
+      return fmt::format(
+	"{}scrubbing for {}s",
+	((scrub_sched_status.m_is_deep == scrub_level_t::deep) ? "deep " : ""),
+	scrub_sched_status.m_duration_seconds);
+    }
   }
   switch (scrub_sched_status.m_sched_status) {
     case pg_scrub_sched_status_t::unknown:
@@ -2964,7 +2980,7 @@ bool operator==(const pg_scrubbing_status_t& l, const pg_scrubbing_status_t& r)
 
 void pg_stat_t::encode(ceph::buffer::list &bl) const
 {
-  ENCODE_START(28, 22, bl);
+  ENCODE_START(29, 22, bl);
   encode(version, bl);
   encode(reported_seq, bl);
   encode(reported_epoch, bl);
@@ -3023,6 +3039,7 @@ void pg_stat_t::encode(ceph::buffer::list &bl) const
   encode(scrub_duration, bl);
   encode(objects_trimmed, bl);
   encode(snaptrim_duration, bl);
+  encode(log_dups_size, bl);
 
   ENCODE_FINISH(bl);
 }
@@ -3031,7 +3048,7 @@ void pg_stat_t::decode(ceph::buffer::list::const_iterator &bl)
 {
   bool tmp;
   uint32_t old_state;
-  DECODE_START(28, bl);
+  DECODE_START(29, bl);
   decode(version, bl);
   decode(reported_seq, bl);
   decode(reported_epoch, bl);
@@ -3117,6 +3134,9 @@ void pg_stat_t::decode(ceph::buffer::list::const_iterator &bl)
       decode(scrub_duration, bl);
       decode(objects_trimmed, bl);
       decode(snaptrim_duration, bl);
+    }
+    if (struct_v >= 29) {
+      decode(log_dups_size, bl);
     }
   }
   DECODE_FINISH(bl);
@@ -3210,6 +3230,7 @@ bool operator==(const pg_stat_t& l, const pg_stat_t& r)
     l.stats == r.stats &&
     l.stats_invalid == r.stats_invalid &&
     l.log_size == r.log_size &&
+    l.log_dups_size == r.log_dups_size &&
     l.ondisk_log_size == r.ondisk_log_size &&
     l.up == r.up &&
     l.acting == r.acting &&
@@ -5661,7 +5682,7 @@ void pg_hit_set_history_t::generate_test_instances(list<pg_hit_set_history_t*>& 
 
 void OSDSuperblock::encode(ceph::buffer::list &bl) const
 {
-  ENCODE_START(9, 5, bl);
+  ENCODE_START(10, 5, bl);
   encode(cluster_fsid, bl);
   encode(whoami, bl);
   encode(current_epoch, bl);
@@ -5676,12 +5697,13 @@ void OSDSuperblock::encode(ceph::buffer::list &bl) const
   encode((uint32_t)0, bl);  // map<int64_t,epoch_t> pool_last_epoch_marked_full
   encode(purged_snaps_last, bl);
   encode(last_purged_snaps_scrub, bl);
+  encode(cluster_osdmap_trim_lower_bound, bl);
   ENCODE_FINISH(bl);
 }
 
 void OSDSuperblock::decode(ceph::buffer::list::const_iterator &bl)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(9, 5, 5, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(10, 5, 5, bl);
   if (struct_v < 3) {
     string magic;
     decode(magic, bl);
@@ -5715,6 +5737,11 @@ void OSDSuperblock::decode(ceph::buffer::list::const_iterator &bl)
   } else {
     purged_snaps_last = 0;
   }
+  if (struct_v >= 10) {
+    decode(cluster_osdmap_trim_lower_bound, bl);
+  } else {
+    cluster_osdmap_trim_lower_bound = 0;
+  }
   DECODE_FINISH(bl);
 }
 
@@ -5734,6 +5761,8 @@ void OSDSuperblock::dump(Formatter *f) const
   f->dump_int("last_epoch_mounted", mounted);
   f->dump_unsigned("purged_snaps_last", purged_snaps_last);
   f->dump_stream("last_purged_snaps_scrub") << last_purged_snaps_scrub;
+  f->dump_int("cluster_osdmap_trim_lower_bound",
+              cluster_osdmap_trim_lower_bound);
 }
 
 void OSDSuperblock::generate_test_instances(list<OSDSuperblock*>& o)
@@ -6688,9 +6717,34 @@ ostream& operator<<(ostream& out, const PushReplyOp &op)
 
 uint64_t PushReplyOp::cost(CephContext *cct) const
 {
-
-  return cct->_conf->osd_push_per_object_cost +
-    cct->_conf->osd_recovery_max_chunk;
+  if (cct->_conf->osd_op_queue == "mclock_scheduler") {
+    /* In general, we really never want to throttle PushReplyOp messages.
+     * As long as the object is smaller than osd_recovery_max_chunk (8M at
+     * time of writing this comment, so this is basically always true),
+     * processing the PushReplyOp does not cost any further IO and simply
+     * permits the object once more to be written to.
+     *
+     * In the unlikely event that the object is larger than
+     * osd_recovery_max_chunk (again, 8M at the moment, so never for common
+     * configurations of rbd and virtually never for cephfs and rgw),
+     * we *still* want to push out the next portion immediately so that we can
+     * release the object for IO.
+     *
+     * The throttling for this operation on the primary occurs at the point
+     * where we queue the PGRecoveryContext which calls into recover_missing
+     * and recover_backfill to initiate pushes.
+     * See OSD::queue_recovery_context.
+     */
+    return 1;
+  } else {
+    /* We retain this legacy behavior for WeightedPriorityQueue. It seems to
+     * require very large costs for several messages in order to do any
+     * meaningful amount of throttling.  This branch should be removed after
+     * Reef.
+     */
+    return cct->_conf->osd_push_per_object_cost +
+      cct->_conf->osd_recovery_max_chunk;
+  }
 }
 
 // -- PullOp --
@@ -6754,8 +6808,20 @@ ostream& operator<<(ostream& out, const PullOp &op)
 
 uint64_t PullOp::cost(CephContext *cct) const
 {
-  return cct->_conf->osd_push_per_object_cost +
-    cct->_conf->osd_recovery_max_chunk;
+  if (cct->_conf->osd_op_queue == "mclock_scheduler") {
+    return std::clamp<uint64_t>(
+      recovery_progress.estimate_remaining_data_to_recover(recovery_info),
+      1,
+      cct->_conf->osd_recovery_max_chunk);
+  } else {
+    /* We retain this legacy behavior for WeightedPriorityQueue. It seems to
+     * require very large costs for several messages in order to do any
+     * meaningful amount of throttling.  This branch should be removed after
+     * Reef.
+     */
+    return cct->_conf->osd_push_per_object_cost +
+      cct->_conf->osd_recovery_max_chunk;
+  }
 }
 
 // -- PushOp --

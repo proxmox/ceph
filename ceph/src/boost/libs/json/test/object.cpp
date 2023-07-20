@@ -15,12 +15,15 @@
 #include <boost/json/serialize.hpp>
 
 #include <cmath>
+#include <forward_list>
+#include <map>
 #include <string>
 #include <type_traits>
 #include <vector>
 
 #include "test.hpp"
 #include "test_suite.hpp"
+#include "checking_resource.hpp"
 
 BOOST_JSON_NS_BEGIN
 
@@ -90,7 +93,7 @@ public:
 
     template<class T, class U, class = void>
     struct is_equal_comparable : std::false_type {};
-    
+
     template<class T, class U>
     struct is_equal_comparable<T, U, detail::void_t<decltype(
         std::declval<T const&>() == std::declval<U const&>()
@@ -98,7 +101,7 @@ public:
 
     template<class T, class U, class = void>
     struct is_unequal_comparable : std::false_type {};
-    
+
     template<class T, class U>
     struct is_unequal_comparable<T, U, detail::void_t<decltype(
         std::declval<T const&>() != std::declval<U const&>()
@@ -153,7 +156,7 @@ public:
 
     BOOST_STATIC_ASSERT(is_unequal_comparable<object::const_reverse_iterator, object::reverse_iterator>::value);
     BOOST_STATIC_ASSERT(is_unequal_comparable<object::const_reverse_iterator, object::const_reverse_iterator>::value);
- 
+
     static
     void
     check(
@@ -292,6 +295,29 @@ public:
 
         // object(InputIt, InputIt, size_type, storage_ptr)
         {
+            // empty range
+            {
+                // random-access iterator
+                std::vector<std::pair<string_view, value>> i1;
+                object o1(i1.begin(), i1.end());
+                BOOST_TEST(o1.empty());
+
+                // bidirectional iterator
+                std::map<string_view, value> i2;
+                object o2(i2.begin(), i2.end());
+                BOOST_TEST(o2.empty());
+
+                // forward iterator
+                std::forward_list<std::pair<string_view, value>> i3;
+                object o3(i3.begin(), i3.end());
+                BOOST_TEST(o3.empty());
+
+                // input iterator
+                auto const it = make_input_iterator(i3.begin());
+                object o4(it, it);
+                BOOST_TEST(o4.empty());
+            }
+
             // small
             {
                 object o(i0_.begin(), i0_.end());
@@ -1470,6 +1496,42 @@ public:
     }
 
     void
+    testAllocation()
+    {
+        {
+            checking_resource res;
+            object o(&res);
+            o.reserve(1);
+        }
+
+        {
+            checking_resource res;
+            object o(&res);
+            o.reserve(1000);
+        }
+
+        {
+            checking_resource res;
+            object o({std::make_pair("one", 1)}, &res);
+        }
+    }
+
+    void
+    testHash()
+    {
+        BOOST_TEST(check_hash_equal(
+            object(), object({})));
+        BOOST_TEST(expect_hash_not_equal(
+            object(), object({{"1",1},{"2",2}})));
+        BOOST_TEST(check_hash_equal(
+            object({{"a",1}, {"b",2}, {"c",3}}),
+            object({{"b",2}, {"c",3}, {"a",1}})));
+        BOOST_TEST(expect_hash_not_equal(
+            object({{"a",1}, {"b",2}, {"c",3}}),
+            object({{"b",2}, {"c",3}})));
+    }
+
+    void
     run()
     {
         testDtor();
@@ -1482,6 +1544,8 @@ public:
         testImplementation();
         testCollisions();
         testEquality();
+        testAllocation();
+        testHash();
     }
 };
 

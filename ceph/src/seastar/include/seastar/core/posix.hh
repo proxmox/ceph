@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include <set>
 #include <seastar/core/sstring.hh>
 #include "abort_on_ebadf.hh"
 #include <sys/types.h>
@@ -39,6 +40,7 @@
 #include <system_error>
 #include <pthread.h>
 #include <signal.h>
+#include <spawn.h>
 #include <memory>
 #include <chrono>
 #include <sys/uio.h>
@@ -61,6 +63,9 @@ inline void throw_system_error_on(bool condition, const char* what_arg = "");
 
 template <typename T>
 inline void throw_kernel_error(T r);
+
+template <typename T>
+inline void throw_pthread_error(T r);
 
 struct mmap_deleter {
     size_t _size;
@@ -95,6 +100,8 @@ public:
         _fd = -1;
     }
     int get() const { return _fd; }
+
+    sstring fdinfo() const noexcept;
 
     static file_desc from_fd(int fd) {
         return file_desc(fd);
@@ -335,12 +342,25 @@ public:
         return map(size, PROT_READ, MAP_PRIVATE, offset);
     }
 
+    void spawn_actions_add_close(posix_spawn_file_actions_t* actions) {
+        auto r = ::posix_spawn_file_actions_addclose(actions, _fd);
+        throw_pthread_error(r);
+    }
+
+    void spawn_actions_add_dup2(posix_spawn_file_actions_t* actions, int newfd) {
+        auto r = ::posix_spawn_file_actions_adddup2(actions, _fd, newfd);
+        throw_pthread_error(r);
+    }
 private:
     file_desc(int fd) : _fd(fd) {}
  };
 
 
 namespace posix {
+
+static constexpr unsigned rcv_shutdown = 0x1;
+static constexpr unsigned snd_shutdown = 0x2;
+static inline constexpr unsigned shutdown_mask(int how) { return how + 1; }
 
 /// Converts a duration value to a `timespec`
 ///
@@ -486,6 +506,8 @@ void pin_this_thread(unsigned cpu_id) {
     assert(r == 0);
     (void)r;
 }
+
+std::set<unsigned> get_current_cpuset();
 
 /// @}
 

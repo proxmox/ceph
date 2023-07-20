@@ -24,12 +24,14 @@
 #include "pathsys.h"
 #include "rules.h"
 #include "jam_strings.h"
+#include "startup.h"
 #include "subst.h"
 #include "timestamp.h"
 #include "variable.h"
 #include "output.h"
 
 #include <ctype.h>
+#include <stdlib.h>
 
 #ifdef OS_NT
 #include <windows.h>
@@ -562,7 +564,7 @@ LIST * builtin_depends( FRAME * frame, int flags )
         if ( flags )
             target_include_many( t, sources );
         else
-            t->depends = targetlist( t->depends, sources );
+            targetlist( t->depends, sources );
     }
 
     /* Enter reverse links */
@@ -576,11 +578,11 @@ LIST * builtin_depends( FRAME * frame, int flags )
             LISTITER t_iter = list_begin( targets );
             LISTITER const t_end = list_end( targets );
             for ( ; t_iter != t_end; t_iter = list_next( t_iter ) )
-                s->dependants = targetentry( s->dependants, bindtarget(
+                targetentry( s->dependants, bindtarget(
                     list_item( t_iter ) )->includes );
         }
         else
-            s->dependants = targetlist( s->dependants, targets );
+            targetlist( s->dependants, targets );
     }
 
     return L0;
@@ -603,7 +605,7 @@ LIST * builtin_rebuilds( FRAME * frame, int flags )
     for ( ; iter != end; iter = list_next( iter ) )
     {
         TARGET * const t = bindtarget( list_item( iter ) );
-        t->rebuilds = targetlist( t->rebuilds, rebuilds );
+        targetlist( t->rebuilds, rebuilds );
     }
     return L0;
 }
@@ -649,10 +651,10 @@ LIST * builtin_exit( FRAME * frame, int flags )
             break;
         }
 #endif
-        exit( status );
+        b2::clean_exit( status );
     }
     else
-        exit( EXITBAD );  /* yeech */
+        b2::clean_exit( EXITBAD );  /* yeech */
     return L0;
 }
 
@@ -911,7 +913,7 @@ LIST * glob_recursive( char const * pattern )
                 {
                     OBJECT * p;
                     path->f_dir.ptr = object_str( list_item( iter ) );
-                    path->f_dir.len = strlen( object_str( list_item( iter ) ) );
+                    path->f_dir.len = int32_t(strlen( object_str( list_item( iter ) ) ));
                     path_build( path, file_string );
 
                     p = object_new( file_string->value );
@@ -1175,7 +1177,7 @@ void unknown_rule( FRAME * frame, char const * key, module_t * module,
     else
         out_printf( "root module.\n" );
     backtrace( frame->prev );
-    exit( EXITBAD );
+    b2::clean_exit( EXITBAD );
 }
 
 
@@ -1257,7 +1259,7 @@ LIST * builtin_import( FRAME * frame, int flags )
         list_print( target_rules );
         out_printf( "\n" );
         backtrace( frame->prev );
-        exit( EXITBAD );
+        b2::clean_exit( EXITBAD );
     }
 
     return L0;
@@ -1632,7 +1634,7 @@ LIST * builtin_native_rule( FRAME * frame, int flags )
         out_printf( "error: no native rule \"%s\" defined in module \"%s.\"\n",
             object_str( list_front( rule_name ) ), object_str( module->name ) );
         backtrace( frame->prev );
-        exit( EXITBAD );
+        b2::clean_exit( EXITBAD );
     }
     return L0;
 }
@@ -1749,14 +1751,14 @@ LIST * builtin_pad( FRAME * frame, int flags )
     OBJECT * string = list_front( lol_get( frame->args, 0 ) );
     char const * width_s = object_str( list_front( lol_get( frame->args, 1 ) ) );
 
-    int current = strlen( object_str( string ) );
-    int desired = atoi( width_s );
+    int32_t current = int32_t(strlen( object_str( string ) ));
+    int32_t desired = atoi( width_s );
     if ( current >= desired )
         return list_new( object_copy( string ) );
     else
     {
         char * buffer = (char *)BJAM_MALLOC( desired + 1 );
-        int i;
+        int32_t i;
         LIST * result;
 
         strcpy( buffer, object_str( string ) );
@@ -1886,7 +1888,7 @@ LIST *builtin_readlink( FRAME * frame, int flags )
 #else
     char static_buf[256];
     char * buf = static_buf;
-    size_t bufsize = 256;
+    int32_t bufsize = 256;
     LIST * result = 0;
     while (1) {
         ssize_t len = readlink( path, buf, bufsize );
@@ -1894,7 +1896,7 @@ LIST *builtin_readlink( FRAME * frame, int flags )
         {
             break;
         }
-        else if ( size_t(len) < bufsize )
+        else if ( int32_t(len) < bufsize )
         {
             buf[ len ] = '\0';
             result = list_new( object_new( buf ) );
@@ -2400,7 +2402,7 @@ LIST * builtin_shell( FRAME * frame, int flags )
     LIST   * command = lol_get( frame->args, 0 );
     LIST   * result = L0;
     string   s;
-    int      ret;
+    int32_t ret;
     char     buffer[ 1024 ];
     FILE   * p = NULL;
     int      exit_status = -1;
@@ -2435,7 +2437,7 @@ LIST * builtin_shell( FRAME * frame, int flags )
 
     string_new( &s );
 
-    while ( ( ret = fread( buffer, sizeof( char ), sizeof( buffer ) - 1, p ) ) >
+    while ( ( ret = int32_t(fread( buffer, sizeof( char ), sizeof( buffer ) - 1, p )) ) >
         0 )
     {
         buffer[ ret ] = 0;

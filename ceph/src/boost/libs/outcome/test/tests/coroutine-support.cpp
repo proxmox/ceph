@@ -1,5 +1,5 @@
 /* Unit testing for outcomes
-(C) 2013-2020 Niall Douglas <http://www.nedproductions.biz/> (6 commits)
+(C) 2013-2022 Niall Douglas <http://www.nedproductions.biz/> (6 commits)
 
 
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -28,7 +28,7 @@ DEALINGS IN THE SOFTWARE.
 */
 
 #include <boost/outcome/coroutine_support.hpp>
-#include <boost/outcome/outcome.hpp>
+#include <boost/outcome.hpp>
 #include <boost/outcome/try.hpp>
 
 #if BOOST_OUTCOME_FOUND_COROUTINE_HEADER
@@ -51,12 +51,12 @@ namespace coroutines
 
   template <class U, class... Args> inline eager<result<std::string>> eager_coawait(U &&f, Args... args)
   {
-    BOOST_OUTCOME_CO_TRY(co_await f(args...));
+    BOOST_OUTCOME_CO_TRYV2(auto &&, co_await f(args...));
     co_return "hi";
   }
   template <class U, class... Args> inline lazy<result<std::string>> lazy_coawait(U &&f, Args... args)
   {
-    BOOST_OUTCOME_CO_TRY(co_await f(args...));
+    BOOST_OUTCOME_CO_TRYV2(auto &&, co_await f(args...));
     co_return "hi";
   }
 

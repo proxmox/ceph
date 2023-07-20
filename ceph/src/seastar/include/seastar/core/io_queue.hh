@@ -27,8 +27,9 @@
 #include <seastar/core/metrics_registration.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/internal/io_request.hh>
-#include <mutex>
-#include <array>
+#include <seastar/util/spinlock.hh>
+
+struct io_queue_for_tests;
 
 namespace seastar {
 
@@ -53,12 +54,12 @@ struct iocb;
 using shard_id = unsigned;
 using stream_id = unsigned;
 
-class io_priority_class;
 class io_desc_read_write;
 class queued_io_request;
 class io_group;
 
 using io_group_ptr = std::shared_ptr<io_group>;
+using iovec_keeper = std::vector<::iovec>;
 
 class io_queue {
 public:
@@ -91,39 +92,40 @@ public:
     // It is also technically possible for reads to be the expensive ones, in which case
     // writes will have an integer value lower than read_request_base_count.
     static constexpr unsigned read_request_base_count = 128;
-    static constexpr unsigned request_ticket_size_shift = 9;
-    static constexpr unsigned minimal_request_size = 512;
+    static constexpr unsigned block_size_shift = 9;
 
     struct config {
         dev_t devid;
-        unsigned capacity = std::numeric_limits<unsigned>::max();
-        unsigned max_req_count = std::numeric_limits<int>::max();
-        unsigned max_bytes_count = std::numeric_limits<int>::max();
+        unsigned long req_count_rate = std::numeric_limits<int>::max();
+        unsigned long blocks_count_rate = std::numeric_limits<int>::max();
         unsigned disk_req_write_to_read_multiplier = read_request_base_count;
-        unsigned disk_bytes_write_to_read_multiplier = read_request_base_count;
-        float disk_us_per_request = 0;
-        float disk_us_per_byte = 0;
+        unsigned disk_blocks_write_to_read_multiplier = read_request_base_count;
         size_t disk_read_saturation_length = std::numeric_limits<size_t>::max();
         size_t disk_write_saturation_length = std::numeric_limits<size_t>::max();
         sstring mountpoint = "undefined";
         bool duplex = false;
+        float rate_factor = 1.0;
+        std::chrono::duration<double> rate_limit_duration = std::chrono::milliseconds(1);
+        size_t block_count_limit_min = 1;
     };
 
     io_queue(io_group_ptr group, internal::io_sink& sink);
     ~io_queue();
 
     stream_id request_stream(internal::io_direction_and_length dnl) const noexcept;
-    fair_queue_ticket request_fq_ticket(internal::io_direction_and_length dnl) const noexcept;
 
-    future<size_t>
-    queue_request(const io_priority_class& pc, size_t len, internal::io_request req, io_intent* intent) noexcept;
+    future<size_t> submit_io_read(const io_priority_class& priority_class,
+            size_t len, internal::io_request req, io_intent* intent, iovec_keeper iovs = {}) noexcept;
+    future<size_t> submit_io_write(const io_priority_class& priority_class,
+            size_t len, internal::io_request req, io_intent* intent, iovec_keeper iovs = {}) noexcept;
+
+    future<size_t> queue_request(const io_priority_class& pc, internal::io_direction_and_length dnl, internal::io_request req, io_intent* intent, iovec_keeper iovs) noexcept;
+    future<size_t> queue_one_request(const io_priority_class& pc, internal::io_direction_and_length dnl, internal::io_request req, io_intent* intent, iovec_keeper iovs) noexcept;
     void submit_request(io_desc_read_write* desc, internal::io_request req) noexcept;
     void cancel_request(queued_io_request& req) noexcept;
     void complete_cancelled_request(queued_io_request& req) noexcept;
     void complete_request(io_desc_read_write& desc) noexcept;
 
-
-    [[deprecated("modern I/O queues should use a property file")]] size_t capacity() const;
 
     [[deprecated("I/O queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
     size_t queued_requests() const {
@@ -144,8 +146,11 @@ public:
     sstring mountpoint() const;
     dev_t dev_id() const noexcept;
 
-    future<> update_shares_for_class(io_priority_class pc, size_t new_shares);
+    void update_shares_for_class(io_priority_class pc, size_t new_shares);
+    future<> update_bandwidth_for_class(io_priority_class pc, uint64_t new_bandwidth);
     void rename_priority_class(io_priority_class pc, sstring new_name);
+    void throttle_priority_class(const priority_class_data& pc) noexcept;
+    void unthrottle_priority_class(const priority_class_data& pc) noexcept;
 
     struct request_limits {
         size_t max_read;
@@ -153,31 +158,36 @@ public:
     };
 
     request_limits get_request_limits() const noexcept;
+    const config& get_config() const noexcept;
 
 private:
-    static fair_queue::config make_fair_queue_config(const config& cfg);
-
-    const config& get_config() const noexcept;
+    static fair_queue::config make_fair_queue_config(const config& cfg, sstring label);
+    void register_stats(sstring name, priority_class_data& pc);
 };
 
 class io_group {
 public:
-    explicit io_group(io_queue::config io_cfg) noexcept;
+    explicit io_group(io_queue::config io_cfg);
+    ~io_group();
+    struct priority_class_data;
 
 private:
     friend class io_queue;
+    friend struct ::io_queue_for_tests;
+
     const io_queue::config _config;
+    size_t _max_request_length[2];
     std::vector<std::unique_ptr<fair_group>> _fgs;
+    std::vector<std::unique_ptr<priority_class_data>> _priority_classes;
+    util::spinlock _lock;
+    const shard_id _allocated_on;
 
     static fair_group::config make_fair_group_config(const io_queue::config& qcfg) noexcept;
+    priority_class_data& find_or_create_class(io_priority_class pc);
 };
 
 inline const io_queue::config& io_queue::get_config() const noexcept {
     return _group->_config;
-}
-
-inline size_t io_queue::capacity() const {
-    return get_config().capacity;
 }
 
 inline sstring io_queue::mountpoint() const {

@@ -77,7 +77,7 @@
   </ng-template>
 </ng-template>
 
-<ng-template #scheduleTpl
+<ng-template #ScheduleTpl
              let-value="value"
              let-row="row">
   <span *ngIf="value.length === 3"
@@ -131,4 +131,14 @@
      i18n-title
      title="RBD in status 'Removing'"
      class="{{ icons.warning }} warn"></i>
+</ng-template>
+
+<ng-template #forcePromoteConfirmation>
+  <cd-alert-panel type="warning">{{ errorMessage }}</cd-alert-panel>
+  <div class="m-4"
+       i18n>
+    <strong>
+       Do you want to force the operation?
+    </strong>
+  </div>
 </ng-template>

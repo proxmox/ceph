@@ -9,11 +9,23 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <set>
 
 #include <boost/lexical_cast.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/bind.hpp>
 #include "s3select_parquet_intrf.h" //NOTE: should include first (c++11 std::string_view)
+
+
+#if __has_include (<hs/hs.h>) && REGEX_HS
+  #include <hs/hs.h>
+#elif __has_include (<re2/re2.h>) && REGEX_RE2
+  #include <re2/re2.h>
+#else
+  #include <regex>
+  #undef REGEX_HS
+  #undef REGEX_RE2
+#endif
 
 namespace bsc = BOOST_SPIRIT_CLASSIC_NS;
 
@@ -106,7 +118,7 @@ class base_statement;
 //ChunkAllocator, prevent allocation from heap.
 typedef std::vector<base_statement*, ChunkAllocator<base_statement*, 256> > bs_stmt_vec_t;
 
-class base_s3select_exception
+class base_s3select_exception : public std::exception
 {
 
 public:
@@ -135,7 +147,7 @@ public:
     _msg = n;
   }
 
-  virtual const char* what()
+  virtual const char* what() const _GLIBCXX_NOTHROW
   {
     return _msg.c_str();
   }
@@ -350,7 +362,7 @@ struct binop_div
   double operator()(double a, double b)
   {
     if (b == 0) {
-      if( isnan(a)) {
+      if( std::isnan(a)) {
         return a;
       } else {
         throw base_s3select_exception("division by zero is not allowed");
@@ -410,16 +422,19 @@ public:
     char* str;//TODO consider string_view(save copy)
     double dbl;
     timestamp_t* timestamp;
+    bool b;
   } value_t;
 
   multi_values multiple_values;
 
 private:
   value_t __val;
-  //std::string m_to_string;
-  std::basic_string<char,std::char_traits<char>,ChunkAllocator<char,256>> m_to_string;
-  //std::string m_str_value;
-  std::basic_string<char,std::char_traits<char>,ChunkAllocator<char,256>> m_str_value;
+  //JSON query has a unique structure, the variable-name reside on input. there are cases were it should be extracted.
+  std::vector<std::string> m_json_key;
+  std::string m_to_string;
+  //std::basic_string<char,std::char_traits<char>,ChunkAllocator<char,256>> m_to_string;
+  std::string m_str_value;
+  //std::basic_string<char,std::char_traits<char>,ChunkAllocator<char,256>> m_str_value;
 
 public:
   enum class value_En_t
@@ -444,7 +459,7 @@ public:
   {
     __val.num = n;
   }
-  explicit value(bool b) : type(value_En_t::DECIMAL)
+  explicit value(bool b) : type(value_En_t::BOOL)
   {
     __val.num = (int64_t)b;
   }
@@ -462,6 +477,9 @@ public:
     m_str_value.assign(s);
     __val.str = m_str_value.data();
   }
+
+  explicit value(std::nullptr_t) : type(value_En_t::S3NULL)
+  {}
 
   ~value()
   {//TODO should be a part of the cleanup routine(__function::push_for_cleanup)
@@ -538,6 +556,19 @@ public:
     type = value_En_t::S3NULL;
   }
 
+  void set_string_nocopy(char* str)
+  {//purpose: value does not own the string
+     __val.str = str;
+    type = value_En_t::STRING;
+  }
+
+  value_En_t _type() const { return type; }
+
+  void set_json_key_path(std::vector<std::string>& key_path)
+  {
+    m_json_key = key_path;
+  }
+
   const char* to_string()  //TODO very intensive , must improve this
   {
 
@@ -599,16 +630,60 @@ public:
       m_to_string.assign( __val.str );
     }
 
+    if(m_json_key.size())
+    {
+      std::string key_path;
+      for(auto& p : m_json_key)
+      {//TODO upon star-operation key-path assignment is very intensive
+	key_path.append(p);
+	key_path.append(".");
+      }
+
+      key_path.append(" : ");
+      key_path.append(m_to_string);
+      m_to_string = key_path;
+    }
+
     return  m_to_string.c_str();
   }
 
+  value(const value& o)
+  {
+    if(o.type == value_En_t::STRING)
+    {
+      if(o.m_str_value.size())
+      {
+	m_str_value = o.m_str_value;
+	__val.str = m_str_value.data();
+      }
+      else if(o.__val.str)
+      {
+	__val.str = o.__val.str;
+      }
+    }
+    else
+    {
+      this->__val = o.__val;
+    }
+
+    this->m_json_key = o.m_json_key;
+
+    this->type = o.type;
+  }
 
   value& operator=(value& o)
   {
     if(o.type == value_En_t::STRING)
     {
-      m_str_value.assign(o.str());
-      __val.str = m_str_value.data();
+      if(o.m_str_value.size())
+      {
+	m_str_value = o.m_str_value;
+	__val.str = m_str_value.data();
+      }
+      else if(o.__val.str)
+      {
+	__val.str = o.__val.str;
+      }
     }
     else
     {
@@ -616,6 +691,8 @@ public:
     }
 
     this->type = o.type;
+
+    this->m_json_key = o.m_json_key;
 
     return *this;
   }
@@ -630,6 +707,30 @@ public:
   }
 
   value& operator=(int64_t i)
+  {
+    this->__val.num = i;
+    this->type = value_En_t::DECIMAL;
+
+    return *this;
+  }
+
+  value& operator=(int i)
+  {
+    this->__val.num = i;
+    this->type = value_En_t::DECIMAL;
+
+    return *this;
+  }
+
+  value& operator=(unsigned i)
+  {
+    this->__val.num = i;
+    this->type = value_En_t::DECIMAL;
+
+    return *this;
+  }
+
+  value& operator=(uint64_t i)
   {
     this->__val.num = i;
     this->type = value_En_t::DECIMAL;
@@ -674,6 +775,11 @@ public:
   double dbl()
   {
     return __val.dbl;
+  }
+
+  bool bl()
+  {
+    return __val.b;
   }
 
   timestamp_t* timestamp() const
@@ -779,60 +885,60 @@ public:
     throw base_s3select_exception("operands not of the same type(numeric , string), while comparision");
   }
 
-  bool operator==(const value& v) //basic compare operator , most itensive runtime operation
+  friend bool operator==(const value& lhs, const value& rhs) //basic compare operator , most itensive runtime operation
   {
     //TODO NA possible?
-    if (is_string() && v.is_string())
+    if (lhs.is_string() && rhs.is_string())
     {
-      return strcmp(__val.str, v.__val.str) == 0;
+      return strcmp(lhs.__val.str, rhs.__val.str) == 0;
     }
 
 
-    if (is_number() && v.is_number())
+    if (lhs.is_number() && rhs.is_number())
     {
 
-      if(type != v.type)  //conversion //TODO find better way
+      if(lhs.type != rhs.type)  //conversion //TODO find better way
       {
-        if (type == value_En_t::DECIMAL)
+        if (lhs.type == value_En_t::DECIMAL)
         {
-          return (double)__val.num == v.__val.dbl;
+          return (double)lhs.__val.num == rhs.__val.dbl;
         }
         else
         {
-          return __val.dbl == (double)v.__val.num;
+          return lhs.__val.dbl == (double)rhs.__val.num;
         }
       }
       else   //no conversion
       {
-        if(type == value_En_t::DECIMAL)
+        if(lhs.type == value_En_t::DECIMAL)
         {
-          return __val.num == v.__val.num;
+          return lhs.__val.num == rhs.__val.num;
         }
         else
         {
-          return __val.dbl == v.__val.dbl;
+          return lhs.__val.dbl == rhs.__val.dbl;
         }
 
       }
     }
 
-    if(is_timestamp() && v.is_timestamp())
+    if(lhs.is_timestamp() && rhs.is_timestamp())
     {
-      return *timestamp() == *(v.timestamp());
+      return *(lhs.timestamp()) == *(rhs.timestamp());
     }
 
     if(
-    (is_bool() && v.is_bool())
+    (lhs.is_bool() && rhs.is_bool())
     ||
-    (is_number() && v.is_bool())
+    (lhs.is_number() && rhs.is_bool())
     ||
-    (is_bool() && v.is_number())
+    (lhs.is_bool() && rhs.is_number())
     )
     {
-      return __val.num == v.__val.num;
+      return lhs.__val.num == rhs.__val.num;
     }
 
-    if (is_nan() || v.is_nan())
+    if (lhs.is_nan() || rhs.is_nan())
     {
       return false;
     }  
@@ -991,7 +1097,6 @@ class scratch_area
 {
 
 private:
-  std::vector<std::string_view> m_columns{128};//TODO not correct
   std::vector<value> *m_schema_values; //values got a type
   int m_upper_bound;
 
@@ -999,17 +1104,38 @@ private:
   bool parquet_type;
   char str_buff[4096];
   uint16_t buff_loc;
+  int max_json_idx;
+  timestamp_t tmstmp;
+
 public:
 
-  scratch_area():m_upper_bound(-1),parquet_type(false),buff_loc(0)
-  {
-    m_schema_values = new std::vector<value>(128,value(""));
+  typedef std::pair<std::vector<std::string>,value> json_key_value_t;
+  typedef std::vector< json_key_value_t > json_star_op_cont_t;
+  json_star_op_cont_t m_json_star_operation;
+
+  scratch_area():m_upper_bound(-1),parquet_type(false),buff_loc(0),max_json_idx(-1)
+  {//TODO it should resize dynamicly
+    m_schema_values = new std::vector<value>(128,value(nullptr));
   }
 
   ~scratch_area()
   {
     delete m_schema_values;
   }
+
+  json_star_op_cont_t* get_star_operation_cont()
+  {
+    return &m_json_star_operation;
+  }
+ 
+  void clear_data()
+  {
+    m_json_star_operation.clear();
+    for(int i=0;i<=max_json_idx;i++)
+    {
+      (*m_schema_values)[i].setnull();
+    }
+  } 
 
   void set_column_pos(const char* n, int pos)//TODO use std::string
   {
@@ -1025,8 +1151,8 @@ public:
       {
         break;
       }
-
-      m_columns[i++] = s;//TODO no need for copy, could use reference to tokens
+      //not copy the string content.
+      (*m_schema_values)[i++].set_string_nocopy(s);
     }
     m_upper_bound = i;
 
@@ -1053,54 +1179,40 @@ public:
   }
 
   void get_column_value(uint16_t column_pos, value &v)
-  {
-
-    if (parquet_type == false)
-    {
-      if (column_pos >= m_upper_bound) //|| column_pos < 0)
-      {
-        throw base_s3select_exception("column_position_is_wrong", base_s3select_exception::s3select_exp_en_t::ERROR);
-      }
-      
-      v = m_columns[ column_pos ].data();
-    }
-    else
-    {
-      v = (*m_schema_values)[ column_pos ];
-    }
-    
+  {// TODO handle out of boundaries
+    v = (*m_schema_values)[ column_pos ];
   }
 
-
-  std::string_view get_column_value(int column_pos)//TODO reuse it
+  value* get_column_value(uint16_t column_pos)
   {
-    if ((column_pos >= m_upper_bound) || column_pos < 0)
-    {
-      throw base_s3select_exception("column_position_is_wrong", base_s3select_exception::s3select_exp_en_t::ERROR);
-    }
-
-     if (parquet_type == false)
-     {
-      return m_columns[column_pos];
-     }
-     else
-     {
-       return  (*m_schema_values)[ column_pos ].to_string();
-     }
+    return &(*m_schema_values)[ column_pos ];
   }
-
-
+  
   int get_num_of_columns()
   {
     return m_upper_bound;
   }
 
-  void init_string_buff() //TODO temporary
+  int update_json_varible(value v,int json_idx)
   {
-    buff_loc=0;
+    if(json_idx>max_json_idx)
+    {
+      max_json_idx = json_idx;
+    }
+    (*m_schema_values)[ json_idx ] = v;
+
+    if(json_idx>m_upper_bound)
+    {
+      m_upper_bound = json_idx;
+    }
+    return 0;
   }
 
 #ifdef _ARROW_EXIST
+
+#define S3SELECT_MICROSEC (1000*1000)
+#define S3SELECT_MILLISEX (1000)
+
   int update(std::vector<parquet_file_parser::parquet_value_t> &parquet_row_value, parquet_file_parser::column_pos_t &column_positions)
   {
     //TODO no need for copy , possible to save referece (its save last row for calculation)
@@ -1116,18 +1228,15 @@ public:
       switch( v.type )
       {
         case  parquet_file_parser::parquet_type::INT32:
-              //TODO waste of CPU
-              (*m_schema_values)[ *column_pos_iter ] = value( v.num ).i64();
+              (*m_schema_values)[ *column_pos_iter ] = v.num;
               break;
 
         case  parquet_file_parser::parquet_type::INT64:
-              //TODO waste of CPU
-              (*m_schema_values)[ *column_pos_iter ] = value( v.num ).i64();
+              (*m_schema_values)[ *column_pos_iter ] = v.num;
               break;
 
         case  parquet_file_parser::parquet_type::DOUBLE:
-              //TODO waste of CPU
-              (*m_schema_values)[ *column_pos_iter ] = value( v.dbl ).dbl();
+              (*m_schema_values)[ *column_pos_iter ] =  v.dbl;
               break;
 
         case  parquet_file_parser::parquet_type::STRING:
@@ -1145,10 +1254,22 @@ public:
               (*m_schema_values)[ *column_pos_iter ].setnull();
 	      break;
 
+        case  parquet_file_parser::parquet_type::TIMESTAMP: //TODO milli-sec, micro-sec, nano-sec
+	      {
+		auto tm_sec = v.num/S3SELECT_MICROSEC; //TODO should use the correct unit 
+		boost::posix_time::ptime new_ptime = boost::posix_time::from_time_t( tm_sec ); 
+		boost::posix_time::time_duration td_zero((tm_sec/3600)%24,(tm_sec/60)%24,tm_sec%60);
+		tmstmp = std::make_tuple(new_ptime, td_zero, (char)'Z');
+              	(*m_schema_values)[ *column_pos_iter ] = &tmstmp;
+	      }
+              break;
+
         default:
-        return -1;
+      		throw base_s3select_exception("wrong parquet type for conversion.");
+
+        //return -1;//TODO exception
       }
-      m_upper_bound++;
+      m_upper_bound = *column_pos_iter+1;
       column_pos_iter ++;
     }
     return 0;
@@ -1171,10 +1292,12 @@ protected:
   int m_eval_stack_depth;
   bool m_skip_non_aggregate_op;
   value value_na;
+  //JSON queries has different syntax from other data-sources(Parquet,CSV)
+  bool m_json_statement;
 
 public:
   base_statement():m_scratch(nullptr), is_last_call(false), m_is_cache_result(false),
-  m_projection_alias(nullptr), m_eval_stack_depth(0), m_skip_non_aggregate_op(false) {}
+  m_projection_alias(nullptr), m_eval_stack_depth(0), m_skip_non_aggregate_op(false),m_json_statement(false) {}
 
   virtual value& eval()
   {
@@ -1201,8 +1324,6 @@ public:
 
   virtual value& eval_internal() = 0;
   
-  bool parquet_type; //TODO enum switch (csv,json,parquet,other)
-
 public:
   virtual base_statement* left() const
   {
@@ -1215,17 +1336,19 @@ public:
   virtual std::string print(int ident) =0;//TODO complete it, one option to use level parametr in interface ,
   virtual bool semantic() =0;//done once , post syntax , traverse all nodes and validate semantics.
 
-  virtual void traverse_and_apply(scratch_area* sa, projection_alias* pa)
+  virtual void traverse_and_apply(scratch_area* sa, projection_alias* pa,bool json_statement)
   {
     m_scratch = sa;
     m_aliases = pa;
+    m_json_statement = json_statement;
+
     if (left())
     {
-      left()->traverse_and_apply(m_scratch, m_aliases);
+      left()->traverse_and_apply(m_scratch, m_aliases, json_statement);
     }
     if (right())
     {
-      right()->traverse_and_apply(m_scratch, m_aliases);
+      right()->traverse_and_apply(m_scratch, m_aliases, json_statement);
     }
   }
 
@@ -1253,6 +1376,11 @@ public:
     return false;
   }
 
+  virtual bool is_star_operation() const
+  {
+    return false;
+  }
+
   virtual void resolve_node()
   {//part of semantic analysis(TODO maybe semantic method should handle this)
     if (left())
@@ -1265,11 +1393,18 @@ public:
     }
   }
 
+  bool is_json_statement()
+  {
+    return m_json_statement;
+  }
+
   bool is_function() const;
   const base_statement* get_aggregate() const;
   bool is_nested_aggregate(bool&) const;
   bool is_column_reference() const;
   bool mark_aggreagtion_subtree_to_execute();
+  bool is_statement_contain_star_operation() const;
+  void push_for_cleanup(std::set<base_statement*>&);
 
 #ifdef _ARROW_EXIST
   void extract_columns(parquet_file_parser::column_pos_t &cols,const uint16_t max_columns);
@@ -1352,8 +1487,9 @@ public:
   enum class var_t
   {
     NA,
-    VAR,//schema column (i.e. age , price , ...)
-    COL_VALUE, //concrete value
+    VARIABLE_NAME,//schema column (i.e. age , price , ...)
+    COLUMN_VALUE, //concrete value (string,number,boolean)
+    JSON_VARIABLE,//a key-path reference
     POS, // CSV column number  (i.e. _1 , _2 ... )
     STAR_OPERATION, //'*'
   } ;
@@ -1364,23 +1500,31 @@ private:
   std::string _name;
   int column_pos;
   value var_value;
-  std::string m_star_op_result;
-  char m_star_op_result_charc[4096]; //TODO cause larger allocations for other objects containing variable (dynamic is one solution)
-  value star_operation_values[16];//TODO cause larger allocations for other objects containing variable (dynamic is one solution)
+  int json_variable_idx;
 
   const int undefined_column_pos = -1;
   const int column_alias = -2;
 
 public:
-  variable():m_var_type(var_t::NA), _name(""), column_pos(-1) {}
+  variable():m_var_type(var_t::NA), _name(""), column_pos(-1), json_variable_idx(-1) {}
 
-  explicit variable(int64_t i) : m_var_type(var_t::COL_VALUE), column_pos(-1), var_value(i) {}
+  explicit variable(int64_t i) : m_var_type(var_t::COLUMN_VALUE), column_pos(-1), var_value(i), json_variable_idx(-1) {}
 
-  explicit variable(double d) : m_var_type(var_t::COL_VALUE), _name("#"), column_pos(-1), var_value(d) {}
+  explicit variable(double d) : m_var_type(var_t::COLUMN_VALUE), _name("#"), column_pos(-1), var_value(d), json_variable_idx(-1) {}
 
-  explicit variable(int i) : m_var_type(var_t::COL_VALUE), column_pos(-1), var_value(i) {}
+  explicit variable(int i) : m_var_type(var_t::COLUMN_VALUE), column_pos(-1), var_value(i), json_variable_idx(-1) {}
 
-  explicit variable(const std::string& n) : m_var_type(var_t::VAR), _name(n), column_pos(-1) {}
+  explicit variable(const std::string& n) : m_var_type(var_t::VARIABLE_NAME), _name(n), column_pos(-1), json_variable_idx(-1) {}
+
+  explicit variable(const std::string& n, var_t tp, size_t json_idx) : m_var_type(var_t::NA)
+  {//only upon JSON use case
+    if(tp == variable::var_t::JSON_VARIABLE)
+    {
+      m_var_type = variable::var_t::JSON_VARIABLE;
+      json_variable_idx = static_cast<int>(json_idx);
+      _name = n;//"#"; debug
+    } 
+  }
 
   variable(const std::string& n,  var_t tp) : m_var_type(var_t::NA)
   {
@@ -1391,7 +1535,7 @@ public:
       int pos = atoi( n.c_str() + 1 ); //TODO >0 < (schema definition , semantic analysis)
       column_pos = pos -1;// _1 is the first column ( zero position )
     }
-    else if (tp == variable::var_t::COL_VALUE)
+    else if (tp == variable::var_t::COLUMN_VALUE)
     {
       _name = "#";
       m_var_type = tp;
@@ -1410,25 +1554,25 @@ public:
   {
     if (reserve_word == s3select_reserved_word::reserve_word_en_t::S3S_NULL)
     {
-      m_var_type = variable::var_t::COL_VALUE;
+      m_var_type = variable::var_t::COLUMN_VALUE;
       column_pos = undefined_column_pos;
       var_value.type = value::value_En_t::S3NULL;//TODO use set_null
     }
     else if (reserve_word == s3select_reserved_word::reserve_word_en_t::S3S_NAN)
     {
-      m_var_type = variable::var_t::COL_VALUE;
+      m_var_type = variable::var_t::COLUMN_VALUE;
       column_pos = undefined_column_pos;
       var_value.set_nan();
     }
     else if (reserve_word == s3select_reserved_word::reserve_word_en_t::S3S_TRUE)
     {
-      m_var_type = variable::var_t::COL_VALUE;
+      m_var_type = variable::var_t::COLUMN_VALUE;
       column_pos = -1;
       var_value.set_true();
     }
     else if (reserve_word == s3select_reserved_word::reserve_word_en_t::S3S_FALSE)
     {
-      m_var_type = variable::var_t::COL_VALUE;
+      m_var_type = variable::var_t::COLUMN_VALUE;
       column_pos = -1;
       var_value.set_false();
     }
@@ -1467,7 +1611,7 @@ public:
 
   void set_value(bool b)
   {
-  	var_value = b;
+    var_value = b;
     var_value.type = value::value_En_t::BOOL;
   }
 
@@ -1480,7 +1624,16 @@ public:
 
   virtual bool is_column() const //is reference to column.
   {
-    if(m_var_type == var_t::VAR || m_var_type == var_t::POS || m_var_type == var_t::STAR_OPERATION)
+    if(m_var_type == var_t::VARIABLE_NAME || m_var_type == var_t::POS || m_var_type == var_t::STAR_OPERATION)
+    {
+      return true;
+    }
+    return false;
+  }
+
+  virtual bool is_star_operation() const
+  {
+    if(m_var_type == var_t::STAR_OPERATION)
     {
       return true;
     }
@@ -1507,37 +1660,28 @@ public:
     return var_value.type;
   }
 
+  value& star_operation()
+  {//purpose return content of all columns in a input stream
+    if(is_json_statement()) 
+	return json_star_operation();
 
-  value& star_operation()   //purpose return content of all columns in a input stream
-  {
-
-    
-    size_t pos=0;
-    size_t num_of_columns = m_scratch->get_num_of_columns();
-    var_value.multiple_values.clear(); //TODO var_value.clear()??
-
-    if(sizeof(star_operation_values)/sizeof(value) < num_of_columns)
+    var_value.multiple_values.clear();
+    for(int i=0; i<m_scratch->get_num_of_columns(); i++)
     {
-        throw base_s3select_exception(std::string("not enough memory for star-operation"), base_s3select_exception::s3select_exp_en_t::FATAL);
+      var_value.multiple_values.push_value( m_scratch->get_column_value(i) );
     }
+    var_value.type = value::value_En_t::MULTIPLE_VALUES;
+    return var_value;
+  }
 
-    for(size_t i=0; i<num_of_columns; i++)
+  value& json_star_operation()
+  {//purpose: per JSON star-operation it needs to get column-name(full-path) and its value
+
+    var_value.multiple_values.clear(); 
+    for(auto& key_value : *m_scratch->get_star_operation_cont())
     {
-      size_t len = m_scratch->get_column_value(i).size();
-      if((pos+len)>sizeof(m_star_op_result_charc))
-      {
-        throw base_s3select_exception("result line too long", base_s3select_exception::s3select_exp_en_t::FATAL);
-      }
-
-      memcpy(&m_star_op_result_charc[pos], m_scratch->get_column_value(i).data(), len);//TODO using string_view will avoid copy
-      m_star_op_result_charc[ pos + len ] = 0;
-
-      star_operation_values[i] = &m_star_op_result_charc[pos];//set string value
-      var_value.multiple_values.push_value( &star_operation_values[i] );
-
-      pos += len;
-      pos ++;
-
+      key_value.second.set_json_key_path(key_value.first);
+      var_value.multiple_values.push_value(&key_value.second);
     }
 
     var_value.type = value::value_En_t::MULTIPLE_VALUES;
@@ -1547,13 +1691,17 @@ public:
 
   virtual value& eval_internal()
   {
-    if (m_var_type == var_t::COL_VALUE)
+    if (m_var_type == var_t::COLUMN_VALUE)
     {
       return var_value;  // a literal,could be deciml / float / string
     }
     else if(m_var_type == var_t::STAR_OPERATION)
     {
       return star_operation();
+    }
+    else if(m_var_type == var_t::JSON_VARIABLE && json_variable_idx >= 0)
+    {
+      column_pos = json_variable_idx; //TODO handle column alias
     }
     else if (column_pos == undefined_column_pos)
     {
@@ -1605,7 +1753,7 @@ public:
       m_scratch->get_column_value(column_pos,var_value);
       //in the case of successive column-delimiter {1,some_data,,3}=> third column is NULL 
       if (var_value.is_string() && (var_value.str()== 0 || (var_value.str() && *var_value.str()==0)))
-          var_value.setnull();
+          var_value.setnull();//TODO is it correct for Parquet
     }
 
     return var_value;
@@ -2672,6 +2820,387 @@ class base_timestamp_to_string : public base_function
         temp++;
       }
       return res;
+    }
+
+};
+
+
+class base_like : public base_function
+{
+  protected:
+    value like_expr_val;
+    value escape_expr_val;
+    bool constant_state = false;
+    #if REGEX_HS
+      hs_database_t* compiled_regex;
+      hs_scratch_t *scratch = NULL;
+      bool res;
+    #elif REGEX_RE2
+      std::unique_ptr<RE2> compiled_regex;
+    #else
+      std::regex compiled_regex;
+    #endif
+
+  public:
+    void param_validation(base_statement* escape_expr, base_statement* like_expr)
+    {
+      escape_expr_val = escape_expr->eval();
+      if (escape_expr_val.type != value::value_En_t::STRING)
+      {
+        throw base_s3select_exception("esacpe expression must be string");
+      }
+
+      like_expr_val = like_expr->eval();
+      if (like_expr_val.type != value::value_En_t::STRING)
+      {
+        throw base_s3select_exception("like expression must be string");
+      }
+    }
+
+    std::vector<char> transform(const char* s, char escape)
+    {
+      enum  state_expr_t {START, ESCAPE, START_STAR_CHAR, START_METACHAR, START_ANYCHAR, METACHAR,
+              STAR_CHAR, ANYCHAR, END };
+      state_expr_t st{START};
+
+      const char *p = s;
+      size_t size = strlen(s);
+      size_t i = 0;
+      std::vector<char> v;
+
+      while(*p)
+      {
+        switch (st)
+        {
+          case START:
+            if (*p == escape)
+            {
+              st = ESCAPE;
+              v.push_back('^');
+            }
+            else if (*p == '%')
+            {
+              v.push_back('^');
+              v.push_back('.');
+              v.push_back('*');
+              st = START_STAR_CHAR;
+            }
+            else if (*p == '_')
+            {
+              v.push_back('^');
+              v.push_back('.');
+              st=START_METACHAR;
+            }
+            else
+            {
+              v.push_back('^');
+              v.push_back(*p);
+              st=START_ANYCHAR;
+            }
+            break;
+
+          case START_STAR_CHAR:
+            if (*p == escape)
+            {
+              st = ESCAPE;
+            }
+            else if (*p == '%')
+            {
+              st = START_STAR_CHAR;
+            }
+            else if (*p == '_')
+            {
+              v.push_back('.');
+              st = METACHAR;
+            }
+            else
+            {
+              v.push_back(*p);
+              st = ANYCHAR;
+            }
+            break;
+
+          case START_METACHAR:
+            if (*p == escape)
+            {
+              st = ESCAPE;
+            }
+            else if(*p == '_')
+            {
+              v.push_back('.');
+              st = METACHAR;
+            }
+            else if(*p == '%')
+            {
+              v.push_back('.');
+              v.push_back('*');
+              st = STAR_CHAR;
+            }
+            else
+            {
+              v.push_back(*p);
+              st = ANYCHAR;
+            }
+            break;
+
+          case START_ANYCHAR:
+            if (*p == escape)
+            {
+              st = ESCAPE;
+            }
+            else if (*p == '_' && i == size-1)
+            {
+              v.push_back('.');
+              v.push_back('$');
+              st = END;
+            }
+            else if (*p == '_')
+            {
+              v.push_back('.');
+              st = METACHAR;
+            }
+            else if (*p == '%' && i == size-1)
+            {
+              v.push_back('.');
+              v.push_back('*');
+              v.push_back('$');
+              st = END;
+            }
+            else if (*p == '%')
+            {
+              v.push_back('.');
+              v.push_back('*');
+              st = STAR_CHAR;
+            }
+            else if (i == size-1)
+            {
+              v.push_back(*p);
+              v.push_back('$');
+              st = END;
+            }
+            else
+            {
+              v.push_back(*p);
+              st = ANYCHAR;
+            }
+            break;
+
+          case METACHAR:
+            if (*p == escape)
+            {
+              st = ESCAPE;
+            }
+            else if (*p == '_' && i == size-1)
+            {
+              v.push_back('.');
+              v.push_back('$');
+              st = END;
+            }
+            else if (*p == '_')
+            {
+              v.push_back('.');
+              st = METACHAR;
+            }
+            else if (*p == '%' && i == size-1)
+            {
+              v.push_back('.');
+              v.push_back('*');
+              v.push_back('$');
+              st = END;
+            }
+            else if (*p == '%')
+            {
+              v.push_back('.');
+              v.push_back('*');
+              st = STAR_CHAR;
+            }
+            else if (i == size-1)
+            {
+              v.push_back(*p);
+              v.push_back('$');
+              st = END;
+            }
+            else
+            {
+              v.push_back(*p);
+              st = ANYCHAR;
+            }
+            break;
+
+          case ANYCHAR:
+            if (*p == escape)
+            {
+              st = ESCAPE;
+            }
+            else if (*p == '_' && i == size-1)
+            {
+              v.push_back('.');
+              v.push_back('$');
+              st = END;
+            }
+            else if (*p == '_')
+            {
+              v.push_back('.');
+              st = METACHAR;
+            }
+            else if (*p == '%' && i == size-1)
+            {
+              v.push_back('.');
+              v.push_back('*');
+              v.push_back('$');
+              st = END;
+            }
+            else if (*p == '%')
+            {
+              v.push_back('.');
+              v.push_back('*');
+              st = STAR_CHAR;
+            }
+            else if (i == size-1)
+            {
+              v.push_back(*p);
+              v.push_back('$');
+              st = END;
+            }
+            else
+            {
+              v.push_back(*p);
+              st = ANYCHAR;
+            }
+            break;
+
+          case STAR_CHAR:
+            if (*p == escape)
+            {
+              st = ESCAPE;
+            }
+            else if (*p == '%' && i == size-1)
+            {
+              v.push_back('$');
+              st = END;
+            }
+            else if (*p == '%')
+            {
+              st = STAR_CHAR;
+            }
+            else if (*p == '_' && i == size-1)
+            {
+              v.push_back('.');
+              v.push_back('$');
+              st = END;
+            }
+            else if (*p == '_')
+            {
+              v.push_back('.');
+              st = METACHAR;
+            }
+            else if (i == size-1)
+            {
+              v.push_back(*p);
+              v.push_back('$');
+              st = END;
+            }
+            else
+            {
+              v.push_back(*p);
+              st = ANYCHAR;
+            }
+            break;
+
+          case ESCAPE:
+            if (i == size-1)
+            {
+              v.push_back(*p);
+              v.push_back('$');
+              st = END;
+            }
+            else
+            {
+              v.push_back(*p);
+              st = ANYCHAR;
+            }
+            break;
+
+          case END:
+            return v;
+
+          default:
+            throw base_s3select_exception("missing state!");
+            break;
+        }
+        p++;
+        i++;
+      }
+      return v;
+    }
+
+    void compile(std::vector<char>& like_regex)
+    {
+      std::string like_as_regex_str(like_regex.begin(), like_regex.end());
+
+      #if REGEX_HS
+	std::string temp = "^" + like_as_regex_str + "\\z";  //for anchoring start and end
+        char* c_regex = &temp[0];
+        hs_compile_error_t *compile_err;
+        if (hs_compile(c_regex, HS_FLAG_DOTALL, HS_MODE_BLOCK, NULL, &compiled_regex,
+              &compile_err) != HS_SUCCESS)
+        {
+          throw base_s3select_exception("ERROR: Unable to compile pattern.");
+        }
+
+        if (hs_alloc_scratch(compiled_regex, &scratch) != HS_SUCCESS)
+        {
+            throw base_s3select_exception("ERROR: Unable to allocate scratch space.");
+        }
+      #elif REGEX_RE2
+        compiled_regex = std::make_unique<RE2>(like_as_regex_str);
+      #else
+        compiled_regex = std::regex(like_as_regex_str);
+      #endif
+    }
+
+    void match(value& main_expr_val, variable* result)
+    {
+      std::string content_str = main_expr_val.to_string();
+      #if REGEX_HS
+        const char* content = content_str.c_str();
+        res = false;
+
+        if (hs_scan(compiled_regex, content, strlen(content), 0, scratch, eventHandler, &res) !=
+                        HS_SUCCESS)
+        {
+          throw base_s3select_exception("ERROR: Unable to scan input buffer. Exiting.");
+        }
+
+        result->set_value(res);
+      #elif REGEX_RE2
+        re2::StringPiece res[1];
+
+        if (compiled_regex->Match(content_str, 0, content_str.size(), RE2::ANCHOR_BOTH, res, 1))
+        {
+          result->set_value(true);
+        }
+        else
+        {
+          result->set_value(false);
+        }
+      #else
+        if (std::regex_match(content_str, compiled_regex))
+        {
+          result->set_value(true);
+        }
+        else
+        {
+          result->set_value(false);
+        }
+      #endif
+    }
+
+    static int eventHandler(unsigned int id, unsigned long long from, unsigned long long to,
+                      unsigned int flags, void* ctx)
+    {
+      *((bool*)ctx) = true;
+      return 0;
     }
 
 };

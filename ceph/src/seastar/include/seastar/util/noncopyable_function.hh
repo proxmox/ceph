@@ -22,7 +22,7 @@
 #pragma once
 
 #include <seastar/util/used_size.hh>
-
+#include <seastar/util/concepts.hh>
 #include <utility>
 #include <type_traits>
 #include <functional>
@@ -45,8 +45,8 @@ private:
     using move_type = void (*)(noncopyable_function_base* from, noncopyable_function_base* to);
     using destroy_type = void (*)(noncopyable_function_base* func);
 
-    static void empty_move(noncopyable_function_base* from, noncopyable_function_base* to) {}
-    static void empty_destroy(noncopyable_function_base* func) {}
+    static void empty_move(noncopyable_function_base*, noncopyable_function_base*) {}
+    static void empty_destroy(noncopyable_function_base*) {}
 
     static void indirect_move(noncopyable_function_base* from, noncopyable_function_base* to) {
         using void_ptr = void*;
@@ -69,7 +69,7 @@ private:
 #pragma GCC diagnostic pop
     }
 
-    static void trivial_direct_destroy(noncopyable_function_base* func) {
+    static void trivial_direct_destroy(noncopyable_function_base*) {
     }
 
 private:
@@ -109,7 +109,7 @@ class noncopyable_function<Ret (Args...) noexcept(Noexcept)> : private internal:
 private:
     const vtable* _vtable;
 private:
-    static Ret empty_call(const noncopyable_function* func, Args... args) {
+    static Ret empty_call(const noncopyable_function*, [[maybe_unused]] Args... args) {
         throw std::bad_function_call();
     }
 
@@ -175,6 +175,7 @@ private:
 public:
     noncopyable_function() noexcept : _vtable(&_s_empty_vtable) {}
     template <typename Func>
+    SEASTAR_CONCEPT( requires std::is_invocable_r_v<Ret, Func, Args...> )
     noncopyable_function(Func func) {
         static_assert(!Noexcept || noexcept(std::declval<Func>()(std::declval<Args>()...)));
         vtable_for<Func>::initialize(std::move(func), this);

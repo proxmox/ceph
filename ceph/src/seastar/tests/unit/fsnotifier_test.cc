@@ -27,12 +27,13 @@
 #include <seastar/core/file.hh>
 #include <seastar/core/seastar.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/core/fsnotify.hh>
 
-#include "../../src/core/fsnotify.hh"
 #include "tmpdir.hh"
 
 namespace fs = std::filesystem;
 using namespace seastar;
+using experimental::fsnotifier;
 
 static bool find_event(const std::vector<fsnotifier::event>& events, const fsnotifier::watch& w, fsnotifier::flags mask, std::optional<sstring> path = {}) {
     auto i = std::find_if(events.begin(), events.end(), [&](const fsnotifier::event& e) {

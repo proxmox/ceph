@@ -241,10 +241,6 @@ RGWCoroutinesStack::~RGWCoroutinesStack()
   for (auto stack : spawned.entries) {
     stack->put();
   }
-
-  if (preallocated_stack) {
-    preallocated_stack->put();
-  }
 }
 
 int RGWCoroutinesStack::operate(const DoutPrefixProvider *dpp, RGWCoroutinesEnv *_env)
@@ -316,12 +312,7 @@ RGWCoroutinesStack *RGWCoroutinesStack::spawn(RGWCoroutine *source_op, RGWCorout
 
   rgw_spawned_stacks *s = (source_op ? &source_op->spawned : &spawned);
 
-  RGWCoroutinesStack *stack = preallocated_stack;
-  if (!stack) {
-    stack = env->manager->allocate_stack();
-  }
-  preallocated_stack = nullptr;
-
+  RGWCoroutinesStack *stack = env->manager->allocate_stack();
   s->add_pending(stack);
   stack->parent = this;
 
@@ -340,14 +331,6 @@ RGWCoroutinesStack *RGWCoroutinesStack::spawn(RGWCoroutine *source_op, RGWCorout
 RGWCoroutinesStack *RGWCoroutinesStack::spawn(RGWCoroutine *op, bool wait)
 {
   return spawn(NULL, op, wait);
-}
-
-RGWCoroutinesStack *RGWCoroutinesStack::prealloc_stack()
-{
-  if (!preallocated_stack) {
-    preallocated_stack = env->manager->allocate_stack();
-  }
-  return preallocated_stack;
 }
 
 int RGWCoroutinesStack::wait(const utime_t& interval)
@@ -574,7 +557,7 @@ bool RGWCoroutinesStack::consume_io_finish(const rgw_io_id& io_id)
 
 
 void RGWCoroutinesManager::handle_unblocked_stack(set<RGWCoroutinesStack *>& context_stacks, list<RGWCoroutinesStack *>& scheduled_stacks,
-                                                  RGWCompletionManager::io_completion& io, int *blocked_count)
+                                                  RGWCompletionManager::io_completion& io, int *blocked_count, int *interval_wait_count)
 {
   ceph_assert(ceph_mutex_is_wlocked(lock));
   RGWCoroutinesStack *stack = static_cast<RGWCoroutinesStack *>(io.user_info);
@@ -587,6 +570,9 @@ void RGWCoroutinesManager::handle_unblocked_stack(set<RGWCoroutinesStack *>& con
   if (stack->is_io_blocked()) {
     --(*blocked_count);
     stack->set_io_blocked(false);
+    if (stack->is_interval_waiting()) {
+      --(*interval_wait_count);
+    }
   }
   stack->set_interval_wait(false);
   if (!stack->is_done()) {
@@ -724,7 +710,7 @@ int RGWCoroutinesManager::run(const DoutPrefixProvider *dpp, list<RGWCoroutinesS
     }
 
     while (completion_mgr->try_get_next(&io)) {
-      handle_unblocked_stack(context_stacks, scheduled_stacks, io, &blocked_count);
+      handle_unblocked_stack(context_stacks, scheduled_stacks, io, &blocked_count, &interval_wait_count);
     }
 
     /*
@@ -739,7 +725,7 @@ int RGWCoroutinesManager::run(const DoutPrefixProvider *dpp, list<RGWCoroutinesS
       if (ret < 0) {
        ldout(cct, 5) << "completion_mgr.get_next() returned ret=" << ret << dendl;
       }
-      handle_unblocked_stack(context_stacks, scheduled_stacks, io, &blocked_count);
+      handle_unblocked_stack(context_stacks, scheduled_stacks, io, &blocked_count, &interval_wait_count);
     }
 
 next:
@@ -756,7 +742,7 @@ next:
         canceled = true;
         break;
       }
-      handle_unblocked_stack(context_stacks, scheduled_stacks, io, &blocked_count);
+      handle_unblocked_stack(context_stacks, scheduled_stacks, io, &blocked_count, &interval_wait_count);
       iter = scheduled_stacks.begin();
     }
     if (canceled) {
@@ -927,16 +913,6 @@ void RGWCoroutine::call(RGWCoroutine *op)
 RGWCoroutinesStack *RGWCoroutine::spawn(RGWCoroutine *op, bool wait)
 {
   return stack->spawn(this, op, wait);
-}
-
-RGWCoroutinesStack *RGWCoroutine::prealloc_stack()
-{
-  return stack->prealloc_stack();
-}
-
-uint64_t RGWCoroutine::prealloc_stack_id()
-{
-  return prealloc_stack()->get_id();
 }
 
 bool RGWCoroutine::collect(int *ret, RGWCoroutinesStack *skip_stack, uint64_t *stack_id) /* returns true if needs to be called again */

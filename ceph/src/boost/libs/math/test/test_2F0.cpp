@@ -28,6 +28,7 @@ void expected_results()
    largest_type = "(long\\s+)?double|cpp_bin_float_quad|dec_40";
 #endif
 
+#ifndef BOOST_MATH_NO_LONG_DOUBLE_MATH_FUNCTIONS
    if (boost::math::policies::digits<double, boost::math::policies::policy<> >() != boost::math::policies::digits<long double, boost::math::policies::policy<> >())
    {
       add_expected_result(
@@ -45,7 +46,8 @@ void expected_results()
          "a1 = a2 \\+ 0\\.5",           // test data group
          ".*", 10, 5);                  // test function
    }
-   
+#endif
+
    add_expected_result(
       ".*",                          // compiler
       ".*",                          // stdlib
@@ -78,7 +80,6 @@ void expected_results()
 
 BOOST_AUTO_TEST_CASE( test_main )
 {
-   typedef boost::multiprecision::number<boost::multiprecision::cpp_dec_float<40> > dec_40;
    expected_results();
    BOOST_MATH_CONTROL_FP;
 
@@ -92,6 +93,10 @@ BOOST_AUTO_TEST_CASE( test_main )
    test_spots(boost::math::concepts::real_concept(0.1), "real_concept");
 #endif
 #endif
+
+#ifndef BOOST_MATH_NO_MP_TESTS
+   using dec_40 = boost::multiprecision::number<boost::multiprecision::cpp_dec_float<40>>;
    test_spots(boost::multiprecision::cpp_bin_float_quad(), "cpp_bin_float_quad");
    test_spots(dec_40(), "dec_40");
+#endif
 }

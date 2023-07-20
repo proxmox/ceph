@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -31,7 +31,10 @@
 ;;
 
 %include "reg_sizes.asm"
+
+[bits 64]
 default rel
+section .text
 
 ;; Magic functions defined in FIPS 180-1
 ;;
@@ -323,7 +326,7 @@ default rel
 ; h0 | h0 | h0 | ...| h0 |    | Aa| Ab | Ac |...| Ap |
 ; h1 | h1 | h1 | ...| h1 |    | Ba| Bb | Bc |...| Bp |
 ; ....
-; h5 | h5 | h5 | ...| h5 |    | Ea| Eb | Ec |...| Ep |
+; h4 | h4 | h4 | ...| h4 |    | Ea| Eb | Ec |...| Ep |
 
 align 32
 
@@ -334,8 +337,9 @@ align 32
 ; arg 2 pointer to aligned_frame_buffer which is used to save the big_endian data.
 ; arg 3 number  of 1KB blocks
 ;
-global mh_sha1_block_avx:function internal
+mk_global mh_sha1_block_avx, function, internal
 func(mh_sha1_block_avx)
+	endbranch
 	FUNC_SAVE
 	; save rsp
 	mov	RSP_SAVE, rsp

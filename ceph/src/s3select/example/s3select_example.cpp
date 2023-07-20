@@ -296,8 +296,8 @@ int run_query_on_parquet_file(const char* input_query, const char* input_file)
   std::function<size_t(int64_t,int64_t,void*,optional_yield*)> fp_range_req=[&](int64_t start,int64_t length,void *buff,optional_yield*y)
   {
     fseek(fp,start,SEEK_SET);
-    fread(buff, length, 1, fp);
-    return length;
+    size_t read_sz = fread(buff, 1, length, fp);
+    return read_sz;
   };
 
   rgw_s3select_api rgw;
@@ -306,8 +306,13 @@ int run_query_on_parquet_file(const char* input_query, const char* input_file)
   
   std::function<int(std::string&)> fp_s3select_result_format = [](std::string& result){std::cout << result;result.clear();return 0;};
   std::function<int(std::string&)> fp_s3select_header_format = [](std::string& result){result="";return 0;};
+  std::function<void(const char*)> fp_debug = [](const char* msg)
+  {
+	  std::cout << "DEBUG: {" <<  msg << "}" << std::endl;
+  };
 
   parquet_object parquet_processor(input_file,&s3select_syntax,&rgw);
+  //parquet_processor.set_external_debug_system(fp_debug);
 
   std::string result;
 
@@ -336,6 +341,11 @@ int run_query_on_parquet_file(const char* input_query, const char* input_file)
 
     std::cout << result << std::endl;
 
+    if(status == 2) // limit reached
+    {
+      break;
+    }
+
   } while (0);
 
   return 0;
@@ -348,9 +358,84 @@ int run_query_on_parquet_file(const char* input_query, const char* input_file)
 }
 #endif //_ARROW_EXIST
 
-int run_on_localFile(char*  input_query)
-{
+#define BUFFER_SIZE (4*1024*1024)
+int process_json_query(const char* input_query,const char* fname)
+{//purpose: process json query 
 
+  s3select s3select_syntax;
+  int status = s3select_syntax.parse_query(input_query);
+  if (status != 0)
+  {
+    std::cout << "failed to parse query " << s3select_syntax.get_error_description() << std::endl;
+    return -1;
+  }
+
+  std::ifstream input_file_stream;
+  try {
+  	input_file_stream = std::ifstream(fname, std::ios::in | std::ios::binary);
+  }
+  catch( ... )
+  {
+	std::cout << "failed to open file " << fname << std::endl;	
+	exit(-1);
+  }
+
+  auto object_sz = boost::filesystem::file_size(fname);
+  json_object json_query_processor(&s3select_syntax);
+  std::string buff(BUFFER_SIZE,0);
+  std::string result;
+
+  size_t read_sz = input_file_stream.readsome(buff.data(),BUFFER_SIZE);
+
+  while(read_sz)
+  {
+    std::cout << "read next chunk " << read_sz << std::endl;
+    result.clear();
+
+    try{
+    	status = json_query_processor.run_s3select_on_stream(result, buff.data(), read_sz, object_sz);
+  } catch (base_s3select_exception &e)
+  {
+      std::cout << e.what() << std::endl;
+      if (e.severity() == base_s3select_exception::s3select_exp_en_t::FATAL) //abort query execution
+      {
+        return -1;
+      }
+  }
+
+    std::cout << result << std::endl;
+ 
+    if(status<0)
+    {
+      std::cout << "failure upon processing " << std::endl;
+      return -1;
+    } 
+    if(json_query_processor.is_sql_limit_reached())
+    {
+      std::cout << "json processing reached limit " << std::endl;
+      break;
+    }
+    read_sz = input_file_stream.readsome(buff.data(),BUFFER_SIZE);  
+  }
+  try{
+    	result.clear();
+  	json_query_processor.run_s3select_on_stream(result, 0, 0, object_sz);
+  } catch (base_s3select_exception &e)
+  {
+      std::cout << e.what() << std::endl;
+      if (e.severity() == base_s3select_exception::s3select_exp_en_t::FATAL) //abort query execution
+      {
+        return -1;
+      }
+  }
+
+  std::cout << result << std::endl;
+
+  return 0;
+}
+
+int run_on_localFile(char* input_query)
+{
   //purpose: demostrate the s3select functionalities
   s3select s3select_syntax;
 
@@ -384,7 +469,7 @@ int run_on_localFile(char*  input_query)
     }
   }
 
-  FILE* fp;
+  FILE* fp = nullptr;
 
   if (object_name.compare("stdin")==0)
   {
@@ -395,7 +480,6 @@ int run_on_localFile(char*  input_query)
     fp  = fopen(object_name.c_str(), "r");
   }
 
-
   if(!fp)
   {
     std::cout << " input stream is not valid, abort;" << std::endl;
@@ -403,51 +487,72 @@ int run_on_localFile(char*  input_query)
   }
 
   struct stat statbuf;
-
   lstat(object_name.c_str(), &statbuf);
 
   std::string s3select_result;
   s3selectEngine::csv_object::csv_defintions csv;
   csv.use_header_info = false;
-  bool do_aggregate = false;
-  //csv.column_delimiter='|';
-  //csv.row_delimiter='\t';
-
-
   csv.quote_fields_always=false;
 
-  if(getenv("CSV_ALWAYS_QUOT"))
+#define CSV_QUOT "CSV_ALWAYS_QUOT"
+#define CSV_COL_DELIM "CSV_COLUMN_DELIMETER"
+#define CSV_ROW_DELIM "CSV_ROW_DELIMITER"
+#define CSV_HEADER_INFO "CSV_HEADER_INFO"
+
+  if(getenv(CSV_QUOT))
   {
 	csv.quote_fields_always=true;
+  }
+  if(getenv(CSV_COL_DELIM))
+  {
+	csv.column_delimiter=*getenv(CSV_COL_DELIM);
+  }
+  if(getenv(CSV_ROW_DELIM))
+  {
+	csv.row_delimiter=*getenv(CSV_ROW_DELIM);
+  }
+  if(getenv(CSV_HEADER_INFO))
+  {
+	csv.use_header_info = true;
   }
   	
   s3selectEngine::csv_object  s3_csv_object(&s3select_syntax, csv);
 
-#define BUFF_SIZE 1024*1024*4 //simulate 4mb parts in s3 object
+  std::function<void(const char*)> fp_debug = [](const char* msg)
+  {
+          std::cout << "DEBUG" <<  msg << std::endl;
+  };
+
+  //s3_csv_object.set_external_debug_system(fp_debug);
+
+#define BUFF_SIZE (1024*1024*4) //simulate 4mb parts in s3 object
   char* buff = (char*)malloc( BUFF_SIZE );
   while(1)
   {
-    //char buff[4096];
-
-    //char * in = fgets(buff,sizeof(buff),fp);
+    buff[0]=0;
     size_t input_sz = fread(buff, 1, BUFF_SIZE, fp);
     char* in=buff;
-    //input_sz = strlen(buff);
-    //size_t input_sz = in == 0 ? 0 : strlen(in);
 
-    if (!input_sz || feof(fp)) 
+    if (!input_sz)
     {
-        do_aggregate = true;
+	if(fp == stdin)
+	{
+    		status = s3_csv_object.run_s3select_on_stream(s3select_result, nullptr, 0, 0);
+    		if(s3select_result.size()>0)
+    		{
+      			std::cout << s3select_result;
+    		}
+	}
+	break;
     }
 
-    int status;
-    if(do_aggregate == true)
+    if(fp != stdin)
     {
-      status = s3_csv_object.run_s3select_on_object(s3select_result, in, input_sz, false, false, do_aggregate);
+    	status = s3_csv_object.run_s3select_on_stream(s3select_result, in, input_sz, statbuf.st_size);
     }
     else
     {
-      status = s3_csv_object.run_s3select_on_stream(s3select_result, in, input_sz, statbuf.st_size);
+    	status = s3_csv_object.run_s3select_on_stream(s3select_result, in, input_sz, INT_MAX);
     }
 
     if(status<0)
@@ -456,23 +561,23 @@ int run_on_localFile(char*  input_query)
       break;
     }
 
-    if(s3select_result.size()>1)
+    if(s3select_result.size()>0)
     {
       std::cout << s3select_result;
     }
 
-    s3select_result = "";
-    if(!input_sz || feof(fp))
+    if(!input_sz || feof(fp) || status == 2)
     {
       break;
     }
 
-  }
+    s3select_result.clear();
+  }//end-while
 
-  free(buff);
-  fclose(fp);
+    free(buff);
+    fclose(fp);
 
-  return 0;
+    return 0;
 }
 
 int run_on_single_query(const char* fname, const char* query)
@@ -497,10 +602,22 @@ int run_on_single_query(const char* fname, const char* query)
     return status;
   }
 
-  int status;
+  s3select query_ast;
+  auto status = query_ast.parse_query(query); 
+  if(status<0)	
+  {
+    std::cout << "failed to parse query : " << query_ast.get_error_description() << std::endl;
+    return -1;
+  }
+   
+  if(query_ast.is_json_query())
+  {
+    return process_json_query(query,fname);
+  } 
+
+
   auto file_sz = boost::filesystem::file_size(fname);
 
-#define BUFFER_SIZE (4*1024*1024)
   std::string buff(BUFFER_SIZE,0);
   while (1)
   {
@@ -528,17 +645,14 @@ int run_on_single_query(const char* fname, const char* query)
 
 int main(int argc,char **argv)
 {
-//purpose: run many queries (reside in file) on single file.
-
 	char *query=0;
 	char *fname=0;
 	char *query_file=0;//file contains many queries
 
 	for (int i = 0; i < argc; i++)
 	{
-
 		if (!strcmp(argv[i], "-key"))
-		{
+		{//object recieved as CLI parameter
 			fname = argv[i + 1];
 			continue;
 		}
@@ -550,9 +664,15 @@ int main(int argc,char **argv)
 		}
 
 		if (!strcmp(argv[i], "-cmds"))
-		{
+		{//query file contain many queries
 			query_file = argv[i + 1];
 			continue;
+		}
+
+		if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "-help"))
+		{
+			std::cout << "CSV_ALWAYS_QUOT= CSV_COLUMN_DELIMETER= CSV_ROW_DELIMITER= CSV_HEADER_INFO= s3select_example -q \"... query ...\" -key object-path -cmds queries-file" << std::endl; 
+			exit(0);
 		}
 	}
 
@@ -563,30 +683,24 @@ int main(int argc,char **argv)
 
 	if(query_file)
 	{
+		//purpose: run many queries (reside in file) on single file.
 		std::fstream f(query_file, std::ios::in | std::ios::binary);
-
 		const auto sz = boost::filesystem::file_size(query_file);
-
 		std::string result(sz, '\0');
-
 		f.read(result.data(), sz);
-
 		boost::char_separator<char> sep("\n");
 		boost::tokenizer<boost::char_separator<char>> tokens(result, sep);
+
 		for (const auto& t : tokens) {
 			std::cout << t << std::endl;
-
 			int status = run_on_single_query(fname,t.c_str());
-
 			std::cout << "status: " << status << std::endl;
 		}
 		
 		return(0);
 	}
 
-
 	int status = run_on_single_query(fname,query);
-
 	return status;
 }
 

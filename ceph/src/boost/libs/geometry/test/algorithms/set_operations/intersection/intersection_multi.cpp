@@ -367,21 +367,23 @@ void test_areal()
     // Result is wrong with rescaling
     TEST_INTERSECTION(issue_630_a, 1, -1, 0.1770);
 #endif
-#if ! defined(BOOST_GEOMETRY_USE_KRAMER_RULE) || defined(BOOST_GEOMETRY_TEST_FAILURES)
-    // Two cases produce either too large, or no output if Kramer rule is used
+
     TEST_INTERSECTION(issue_630_b, 1, -1, expectation_limits(0.1713911, 0.1714));
-    TEST_INTERSECTION(issue_630_c, 1, -1, 0.1770);
-#endif
 
 #if ! defined(BOOST_GEOMETRY_USE_RESCALING) || defined(BOOST_GEOMETRY_TEST_FAILURES)
+    // Result is missing with rescaling
+    TEST_INTERSECTION(issue_630_c, 1, -1, 0.1770);
+
     // Result is missing with rescaling
     TEST_INTERSECTION(issue_643, 1, -1, 3.4615);
 #endif
 
-    test_one<Polygon, MultiPolygon, MultiPolygon>("mysql_23023665_7",
-        mysql_23023665_7[0], mysql_23023665_7[1],
-        2, 11, 9.80505786783);
+    TEST_INTERSECTION(issue_869_c, 3, -1, 3600);
 
+    TEST_INTERSECTION(issue_888_34, 7, -1, 0.0256838);
+    TEST_INTERSECTION(issue_888_37, 13, -1, 0.0567043);
+
+    TEST_INTERSECTION(mysql_23023665_7, 2, 11, 9.80505786783);
     TEST_INTERSECTION(mysql_23023665_12, 2, 0, 11.812440191387557);
     TEST_INTERSECTION(mysql_regression_1_65_2017_08_31, 2, -1, 29.9022122);
 }
@@ -499,7 +501,7 @@ int test_main(int, char* [])
 #endif
 
 #if defined(BOOST_GEOMETRY_TEST_FAILURES)
-    BoostGeometryWriteExpectedFailures(9, 3, 2, 1);
+    BoostGeometryWriteExpectedFailures(9, 1, 2, 1);
 #endif
 
     return 0;

@@ -1,4 +1,4 @@
-#  Copyright (C) 2016-2020, Antony Polukhin.
+#  Copyright (C) 2016-2022 Antony Polukhin.
 #
 # Use, modification and distribution is subject to the Boost Software License,
 # Version 1.0. (See accompanying file LICENSE_1_0.txt or copy at
@@ -12,7 +12,6 @@ import ../../config/checks/config : requires ;
 project
     : source-location .
     : requirements
-        <toolset>msvc:<cxxflags>"/std:c++latest"
         <define>BOOST_PFR_DETAIL_STRICT_RVALUE_TESTING=1
         [ requires cxx14_constexpr ]
     ;
@@ -39,7 +38,7 @@ explicit compiler_supports_loophole ;
 ########## END of helpers to detect Loophole trick support
 
 
-local DISABLE_ON_MSVC = <toolset>msvc:<build>no ;
+local DISABLE_ON_MSVC = ; #<toolset>msvc:<build>no ;
 local REQUIRE_LOOPHOLE =
     [ check-target-builds ../test//compiler_supports_loophole : : <build>no ]
   ;
@@ -67,7 +66,9 @@ test-suite pfr_tests
   ;
 
 local BLACKLIST_TESTS_FOR_LOOPHOLE =
+    constexpr_ops                       # Loophole is not constexpr usable because of the reinterpret_cast usage
     get_const_field                     # boost::pfr::get gives compile time error on const fields
+    optional_chrono                     # boost::pfr::* has problems with std::optional, produces compile time error
     template_constructor                # Template constructor in one of the fields of the aggregate
     tie_anonymous_const_field           # boost::pfr::structure_tie gives compile time error on const fields
   ;
@@ -76,6 +77,7 @@ local BLACKLIST_TESTS_FOR_LOOPHOLE =
 # * reflecting a non literal type
 # * or calling boost::pfr::get and the result is a user defined structure
 local BLACKLIST_TESTS_FOR_CLASSIC =
+    constexpr_ops
     get_const_field
     get_non_default_constructible
     get_rvalue
@@ -83,6 +85,7 @@ local BLACKLIST_TESTS_FOR_CLASSIC =
     issue33
     motivating_example0
     motivating_example2
+    optional_chrono
     optional_like
     read_write_non_literal
     template_constructor

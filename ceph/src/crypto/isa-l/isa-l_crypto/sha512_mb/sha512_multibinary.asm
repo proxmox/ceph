@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -26,12 +26,6 @@
 ;  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 ;  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-%ifidn __OUTPUT_FORMAT__, elf64
-%define WRT_OPT		wrt ..plt
-%else
-%define WRT_OPT
-%endif
 
 %include "reg_sizes.asm"
 %include "multibinary.asm"
@@ -162,8 +156,8 @@
 		and	edi, FLAG_XGETBV_EAX_ZMM_OPM
 		cmp	edi, FLAG_XGETBV_EAX_ZMM_OPM
 		jne	_%1_init_done	  ; No AVX512 possible
-		and	ebx, FLAGS_CPUID7_ECX_AVX512_G1
-		cmp	ebx, FLAGS_CPUID7_ECX_AVX512_G1
+		and	ebx, FLAGS_CPUID7_EBX_AVX512_G1
+		cmp	ebx, FLAGS_CPUID7_EBX_AVX512_G1
 		lea	mbin_rbx, [%6 WRT_OPT] ; AVX512/06 opt
 		cmove	mbin_rsi, mbin_rbx
 
@@ -199,6 +193,10 @@ extern sha512_ctx_mgr_init_avx2
 extern sha512_ctx_mgr_submit_avx2
 extern sha512_ctx_mgr_flush_avx2
 
+extern sha512_ctx_mgr_init_base
+extern sha512_ctx_mgr_submit_base
+extern sha512_ctx_mgr_flush_base
+
 %ifdef HAVE_AS_KNOWS_AVX512
  extern sha512_ctx_mgr_init_avx512
  extern sha512_ctx_mgr_submit_avx512
@@ -219,17 +217,17 @@ mbin_interface sha512_ctx_mgr_flush
 
 %ifdef HAVE_AS_KNOWS_AVX512
  ; Reuse mbin_dispatch_init6 through replacing base by sse version
- mbin_dispatch_init6_avoton sha512_ctx_mgr_init, sha512_ctx_mgr_init_sse, \
+ mbin_dispatch_init6_avoton sha512_ctx_mgr_init, sha512_ctx_mgr_init_base, \
 			sha512_ctx_mgr_init_sse, sha512_ctx_mgr_init_avx, \
 			sha512_ctx_mgr_init_avx2, sha512_ctx_mgr_init_avx512, \
 			sha512_ctx_mgr_init_sb_sse4
 
- mbin_dispatch_init6_avoton sha512_ctx_mgr_submit, sha512_ctx_mgr_submit_sse, \
+ mbin_dispatch_init6_avoton sha512_ctx_mgr_submit, sha512_ctx_mgr_submit_base, \
 			sha512_ctx_mgr_submit_sse, sha512_ctx_mgr_submit_avx, \
 			sha512_ctx_mgr_submit_avx2, sha512_ctx_mgr_submit_avx512, \
 			sha512_ctx_mgr_submit_sb_sse4
 
- mbin_dispatch_init6_avoton sha512_ctx_mgr_flush, sha512_ctx_mgr_flush_sse, \
+ mbin_dispatch_init6_avoton sha512_ctx_mgr_flush, sha512_ctx_mgr_flush_base, \
 			sha512_ctx_mgr_flush_sse, sha512_ctx_mgr_flush_avx, \
 			sha512_ctx_mgr_flush_avx2, sha512_ctx_mgr_flush_avx512, \
 			sha512_ctx_mgr_flush_sb_sse4
@@ -249,6 +247,6 @@ mbin_interface sha512_ctx_mgr_flush
 
 
 ;;;       func				core, ver, snum
-slversion sha512_ctx_mgr_init,		00,   03,  0175
-slversion sha512_ctx_mgr_submit,	00,   03,  0176
-slversion sha512_ctx_mgr_flush,		00,   03,  0177
+slversion sha512_ctx_mgr_init,		00,   04,  0175
+slversion sha512_ctx_mgr_submit,	00,   04,  0176
+slversion sha512_ctx_mgr_flush,		00,   04,  0177

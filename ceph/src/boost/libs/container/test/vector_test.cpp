@@ -61,7 +61,7 @@ struct X;
 template<typename T>
 struct XRef
 {
-   explicit XRef(T* ptr)  : ptr(ptr) {}
+   explicit XRef(T* p)  : ptr(p) {}
    operator T*() const { return ptr; }
    T* ptr;
 };
@@ -194,8 +194,31 @@ bool test_merge_empty_free()
    vector< int, check_dealloc_allocator<int> > empty;
    empty.merge(source.begin(), source.end());
 
-   return empty.get_stored_allocator().deallocate_called_without_allocate_;
+   return !empty.get_stored_allocator().deallocate_called_without_allocate_;
 }
+
+#if defined(__cpp_lib_span)
+#     define BOOST_VECTOR_TEST_HAS_SPAN
+#endif
+
+#ifdef BOOST_VECTOR_TEST_HAS_SPAN
+#include <span>
+
+bool test_span_conversion()
+{
+   boost::container::vector myVec{1, 2, 3, 4, 5};
+   std::span mySpan1{myVec};                                        // (1)
+   std::span mySpan2{myVec.data(), myVec.size()};                   // (2)
+   return mySpan1.size() == myVec.size() && mySpan1.size() == mySpan2.size();
+}
+
+#else //BOOST_VECTOR_TEST_HAS_SPAN
+bool test_span_conversion()
+{
+   return true;
+}
+
+#endif   //BOOST_VECTOR_TEST_HAS_SPAN
 
 int main()
 {
@@ -331,8 +354,13 @@ int main()
    }
 #endif
 
-   if (test_merge_empty_free()) {
+   if (!test_merge_empty_free()) {
       std::cerr << "Merge into empty vector test failed" << std::endl;
+      return 1;
+   }
+
+   if (!test_span_conversion()) {
+      std::cerr << "Span conversion failed" << std::endl;
       return 1;
    }
 

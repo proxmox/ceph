@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -40,27 +40,12 @@
 extern "C" {
 #endif
 
-#ifdef __FreeBSD__
-#include <sys/types.h>
-#include <sys/endian.h>
-# define _byteswap_uint64(x) bswap64(x)
-# define _byteswap_ulong(x) bswap32(x)
-#elif defined (__APPLE__)
-#include <libkern/OSByteOrder.h>
-# define _byteswap_uint64(x) OSSwapInt64(x)
-# define _byteswap_ulong(x) OSSwapInt32(x)
-#elif defined (__GNUC__) && !defined (__MINGW32__)
-# include <byteswap.h>
-# define _byteswap_uint64(x) bswap_64(x)
-# define _byteswap_ulong(x) bswap_32(x)
-#endif
+/**
+ *  @enum JOB_STS
+ *  @brief Job return codes
+ */
 
-/** 
- *  @enum JOB_STS 
- *  @brief Job return codes 
- */ 
-
-typedef enum {STS_UNKNOWN = 0,	//!< STS_UNKNOWN 
+typedef enum {STS_UNKNOWN = 0,	//!< STS_UNKNOWN
 	STS_BEING_PROCESSED = 1,//!< STS_BEING_PROCESSED
 	STS_COMPLETED = 2,	//!< STS_COMPLETED
 	STS_INTERNAL_ERROR,	//!< STS_INTERNAL_ERROR
@@ -74,10 +59,10 @@ typedef enum {STS_UNKNOWN = 0,	//!< STS_UNKNOWN
 /* Common flags for the new API only
  *  */
 
-/** 
+/**
  *  @enum HASH_CTX_FLAG
  *  @brief CTX job type
- */ 
+ */
 typedef enum {
 	HASH_UPDATE	= 0x00, //!< HASH_UPDATE
 	HASH_FIRST	= 0x01, //!< HASH_FIRST
@@ -85,21 +70,21 @@ typedef enum {
 	HASH_ENTIRE	= 0x03, //!< HASH_ENTIRE
 } HASH_CTX_FLAG;
 
-/** 
+/**
  *  @enum HASH_CTX_STS
  *  @brief CTX status flags
- */ 
+ */
 typedef enum {
-	HASH_CTX_STS_IDLE	= 0x00, //!< HASH_CTX_STS_IDLE	
+	HASH_CTX_STS_IDLE	= 0x00, //!< HASH_CTX_STS_IDLE
 	HASH_CTX_STS_PROCESSING	= 0x01, //!< HASH_CTX_STS_PROCESSING
 	HASH_CTX_STS_LAST	= 0x02, //!< HASH_CTX_STS_LAST
 	HASH_CTX_STS_COMPLETE	= 0x04, //!< HASH_CTX_STS_COMPLETE
 } HASH_CTX_STS;
 
-/** 
+/**
  *  @enum HASH_CTX_ERROR
  *  @brief CTX error flags
- */ 
+ */
 typedef enum {
 	HASH_CTX_ERROR_NONE			=  0, //!< HASH_CTX_ERROR_NONE
 	HASH_CTX_ERROR_INVALID_FLAGS		= -1, //!< HASH_CTX_ERROR_INVALID_FLAGS

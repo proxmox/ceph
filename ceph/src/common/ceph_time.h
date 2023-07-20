@@ -19,6 +19,9 @@
 #include <iostream>
 #include <string>
 #include <optional>
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
 #include <sys/time.h>
 
 #if defined(__APPLE__)
@@ -31,9 +34,22 @@ int clock_gettime(int clk_id, struct timespec *tp);
 #endif
 
 #ifdef _WIN32
-#define CLOCK_REALTIME_COARSE CLOCK_REALTIME
-#define CLOCK_MONOTONIC_COARSE CLOCK_MONOTONIC
-// MINGW uses the QueryPerformanceCounter API behind the scenes.
+// Clock precision:
+// mingw < 8.0.1:
+//   * CLOCK_REALTIME: ~10-55ms (GetSystemTimeAsFileTime)
+// mingw >= 8.0.1:
+//   * CLOCK_REALTIME: <1us (GetSystemTimePreciseAsFileTime)
+//   * CLOCK_REALTIME_COARSE: ~10-55ms (GetSystemTimeAsFileTime)
+//
+// * CLOCK_MONOTONIC: <1us if TSC is usable, ~10-55ms otherwise
+//                    (QueryPerformanceCounter)
+// https://github.com/mirror/mingw-w64/commit/dcd990ed423381cf35702df9495d44f1979ebe50
+#ifndef CLOCK_REALTIME_COARSE
+  #define CLOCK_REALTIME_COARSE CLOCK_REALTIME
+#endif
+#ifndef CLOCK_MONOTONIC_COARSE
+  #define CLOCK_MONOTONIC_COARSE CLOCK_MONOTONIC
+#endif
 #endif
 
 struct ceph_timespec;
@@ -532,5 +548,10 @@ namespace std {
 template<typename Rep, typename Period>
 ostream& operator<<(ostream& m, const chrono::duration<Rep, Period>& t);
 }
+
+#if FMT_VERSION >= 90000
+template<typename Clock>
+struct fmt::formatter<std::chrono::time_point<Clock>> : fmt::ostream_formatter {};
+#endif
 
 #endif // COMMON_CEPH_TIME_H

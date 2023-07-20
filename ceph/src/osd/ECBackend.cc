@@ -381,7 +381,7 @@ void ECBackend::handle_recovery_push(
     if ((get_parent()->pgb_is_primary())) {
       ceph_assert(recovery_ops.count(op.soid));
       ceph_assert(recovery_ops[op.soid].obc);
-      if (get_parent()->pg_is_repair())
+      if (get_parent()->pg_is_repair() || is_repair)
         get_parent()->inc_osd_stat_repaired();
       get_parent()->on_local_recover(
 	op.soid,
@@ -948,10 +948,8 @@ void ECBackend::handle_sub_write(
   ECSubWrite &op,
   const ZTracer::Trace &trace)
 {
-  jspan span;
   if (msg) {
     msg->mark_event("sub_op_started");
-    span = tracing::osd::tracer.add_span(__func__, msg->osd_parent_span);
   }
   trace.event("handle_sub_write");
 
@@ -1433,9 +1431,25 @@ void ECBackend::filter_read_op(
   }
 
   if (op.in_progress.empty()) {
+    /* This case is odd.  filter_read_op gets called while processing
+     * an OSDMap.  Normal, non-recovery reads only happen from acting
+     * set osds.  For this op to have had a read source go down and
+     * there not be an interval change, it must be part of a pull during
+     * log-based recovery.
+     *
+     * This callback delays calling complete_read_op until later to avoid
+     * dealing with recovery while handling an OSDMap.  We assign a
+     * cost here of 1 because:
+     * 1) This should be very rare, and the operation itself was already
+     *    throttled.
+     * 2) It shouldn't result in IO, rather it should result in restarting
+     *    the pull on the affected objects and pushes from in-memory buffers
+     *    on any now complete unaffected objects.
+     */
     get_parent()->schedule_recovery_work(
       get_parent()->bless_unlocked_gencontext(
-	new FinishReadOp(this, op.tid)));
+        new FinishReadOp(this, op.tid)),
+      1);
   }
 }
 
@@ -1550,10 +1564,8 @@ void ECBackend::submit_transaction(
   op->tid = tid;
   op->reqid = reqid;
   op->client_op = client_op;
-  jspan span;
   if (client_op) {
     op->trace = client_op->pg_trace;
-    span = tracing::osd::tracer.add_span("ECBackend::submit_transaction", client_op->osd_parent_span);
   }
   dout(10) << __func__ << ": op " << *op << " starting" << dendl;
   start_rmw(op, std::move(t));
@@ -2126,10 +2138,6 @@ bool ECBackend::try_reads_to_commit()
       messages.push_back(std::make_pair(i->osd, r));
     }
   }
-  jspan span;
-  if (op->client_op) {
-    span = tracing::osd::tracer.add_span("EC sub write", op->client_op->osd_parent_span);
-  }
 
   if (!messages.empty()) {
     get_parent()->send_message_osd_cluster(messages, get_osdmap_epoch());
@@ -2359,8 +2367,8 @@ struct CallClientContexts :
       pair<uint64_t, uint64_t> adjusted =
 	ec->sinfo.offset_len_to_stripe_bounds(
 	  make_pair(read.get<0>(), read.get<1>()));
-      ceph_assert(res.returned.front().get<0>() == adjusted.first &&
-	     res.returned.front().get<1>() == adjusted.second);
+      ceph_assert(res.returned.front().get<0>() == adjusted.first);
+      ceph_assert(res.returned.front().get<1>() == adjusted.second);
       map<int, bufferlist> to_decode;
       bufferlist bl;
       for (map<pg_shard_t, bufferlist>::iterator j =

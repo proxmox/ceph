@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -30,7 +30,9 @@
 %include "sha1_mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
 
+[bits 64]
 default rel
+section .text
 
 ;; code to compute quad SHA1 using AVX
 ;; derived from ...\sha1_multiple\sha1_quad4.asm
@@ -49,7 +51,7 @@ default rel
 ; r1 = {d1 c1 b1 a1}
 ; r0 = {d2 c2 b2 a2}
 ; r3 = {d3 c3 b3 a3}
-; 
+;
 %macro TRANSPOSE 6
 %define %%r0 %1
 %define %%r1 %2
@@ -69,20 +71,20 @@ default rel
 
 	vshufps %%r0, %%r0, %%r2, 0x88  ; r0 = {d2 c2 b2 a2}
 	vshufps %%t0, %%t0, %%t1, 0x88  ; t0 = {d0 c0 b0 a0}
-%endmacro       
+%endmacro
 ;;
 ;; Magic functions defined in FIPS 180-1
 ;;
-; macro MAGIC_F0 F,B,C,D,T   ;; F = (D ^ (B & (C ^ D)))
+; macro MAGIC_F0 F,B,C,D,T   ;; F = ((B & C) | ((~ B) & D) )
 %macro MAGIC_F0 5
 %define %%regF %1
 %define %%regB %2
 %define %%regC %3
 %define %%regD %4
 %define %%regT %5
-    vpxor  %%regF, %%regC,%%regD
-    vpand  %%regF, %%regF,%%regB
-    vpxor  %%regF, %%regF,%%regD
+    vpand  %%regF, %%regB,%%regC
+    vpandn %%regT, %%regB,%%regD
+    vpor   %%regF, %%regT,%%regF
 %endmacro
 
 ; macro MAGIC_F1 F,B,C,D,T   ;; F = (B ^ C ^ D)
@@ -154,7 +156,7 @@ default rel
 %define %%MAGIC %10
 	vpaddd  %%regE, %%regE,%%immCNT
 	vpaddd  %%regE, %%regE,[rsp + (%%memW * 16)]
-	PROLD_nd        %%regT,5, %%regF,%%regA 
+	PROLD_nd        %%regT,5, %%regF,%%regA
 	vpaddd  %%regE, %%regE,%%regT
 	%%MAGIC %%regF,%%regB,%%regC,%%regD,%%regT      ;; FUN  = MAGIC_Fi(B,C,D)
 	PROLD   %%regB,30, %%regT
@@ -178,15 +180,15 @@ default rel
 	vpxor   W16, W16, W14
 	vpxor   W16, W16, [rsp + ((%%memW -  8) & 15) * 16]
 	vpxor   W16, W16, [rsp + ((%%memW -  3) & 15) * 16]
-	
+
 	vpsrld  %%regF, W16, (32-1)
-	vpslld  W16, W16, 1     
+	vpslld  W16, W16, 1
 	vpor    %%regF, %%regF, W16
 	ROTATE_W
 
 	vmovdqa [rsp + ((%%memW - 0) & 15) * 16],%%regF
 	vpaddd  %%regE, %%regE,%%regF
-	
+
 	PROLD_nd        %%regT,5, %%regF, %%regA
 	vpaddd  %%regE, %%regE,%%regT
 	%%MAGIC %%regF,%%regB,%%regC,%%regD,%%regT      ;; FUN  = MAGIC_Fi(B,C,D)
@@ -202,7 +204,7 @@ default rel
 %define XMM_SAVE ((15-15)*16 + 1*8)
 %define FRAMESZ 16*16 + XMM_SAVE
 %define _XMM     FRAMESZ - XMM_SAVE
-	
+
 %define VMOVPS  vmovups
 
 %define inp0 r8
@@ -229,7 +231,7 @@ default rel
 %define CC      xmm10
 %define DD      xmm11
 %define EE      xmm12
-	
+
 %define T0      xmm6
 %define T1      xmm7
 %define T2      xmm8
@@ -277,18 +279,19 @@ align 32
 ;
 ; Clobbers registers: ARG2, rax, r8-r11, xmm0-xmm15
 ;
-global sha1_mb_x4_avx:function internal
+mk_global sha1_mb_x4_avx, function, internal
 sha1_mb_x4_avx:
+	endbranch
 
 	sub     rsp, FRAMESZ    ;; FRAMESZ + pushes must be odd multiple of 8
-	
+
 	;; Initialize digests
 	vmovdqa A, [ARG1 + 0*16]
 	vmovdqa B, [ARG1 + 1*16]
 	vmovdqa C, [ARG1 + 2*16]
 	vmovdqa D, [ARG1 + 3*16]
 	vmovdqa E, [ARG1 + 4*16]
-	
+
 	;; load input pointers
 	mov     inp0,[ARG1 + _data_ptr + 0*8]
 	mov     inp1,[ARG1 + _data_ptr + 1*8]
@@ -397,7 +400,7 @@ lloop:
 
 	;;;;;;;;;;;;;;;;
 	;; Postamble
-	
+
 	add     rsp, FRAMESZ
 
 	ret

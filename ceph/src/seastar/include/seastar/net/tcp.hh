@@ -316,6 +316,7 @@ private:
         tcp& _tcp;
         connection* _conn = nullptr;
         promise<> _connect_done;
+        std::optional<promise<>> _fin_recvd_promise = promise<>();
         ipaddr _local_ip;
         ipaddr _foreign_ip;
         uint16_t _local_port;
@@ -430,13 +431,14 @@ private:
         void input_handle_other_state(tcp_hdr* th, packet p);
         void output_one(bool data_retransmit = false);
         future<> wait_for_data();
-        void abort_reader();
+        future<> wait_input_shutdown();
+        void abort_reader() noexcept;
         future<> wait_for_all_data_acked();
         future<> wait_send_available();
         future<> send(packet p);
         void connect();
         packet read();
-        void close();
+        void close() noexcept;
         void remove_from_tcbs() {
             auto id = connid{_local_ip, _foreign_ip, _local_port, _foreign_port};
             _tcp._tcbs.erase(id);
@@ -475,7 +477,7 @@ private:
         void insert_out_of_order(tcp_seq seq, packet p);
         void trim_receive_data_after_window();
         bool should_send_ack(uint16_t seg_len);
-        void clear_delayed_ack();
+        void clear_delayed_ack() noexcept;
         packet get_transmit_packet();
         void retransmit_one() {
             bool data_retransmit = true;
@@ -489,7 +491,7 @@ private:
             auto tp = now + _rto;
             _retransmit.rearm(tp);
         };
-        void stop_retransmit_timer() {
+        void stop_retransmit_timer() noexcept {
             _retransmit.cancel();
         };
         void start_persist_timer() {
@@ -625,20 +627,20 @@ private:
             _snd.unacknowledged += 1;
             _snd.next += 1;
         }
-        bool syn_needs_on() {
+        bool syn_needs_on() const noexcept {
             return in_state(SYN_SENT | SYN_RECEIVED);
         }
-        bool fin_needs_on() {
+        bool fin_needs_on() const noexcept {
             return in_state(FIN_WAIT_1 | CLOSING | LAST_ACK) && _snd.closed &&
                    _snd.unsent_len == 0;
         }
-        bool ack_needs_on() {
+        bool ack_needs_on() const noexcept {
             return !in_state(CLOSED | LISTEN | SYN_SENT);
         }
-        bool foreign_will_not_send() {
+        bool foreign_will_not_send() const noexcept {
             return in_state(CLOSING | TIME_WAIT | CLOSE_WAIT | LAST_ACK | CLOSED);
         }
-        bool in_state(tcp_state state) {
+        bool in_state(tcp_state state) const noexcept {
             return uint16_t(_state) & uint16_t(state);
         }
         void exit_fast_recovery() {
@@ -692,6 +694,9 @@ public:
         future<> wait_for_data() {
             return _tcb->wait_for_data();
         }
+        future<> wait_input_shutdown() {
+            return _tcb->wait_input_shutdown();
+        }
         packet read() {
             return _tcb->read();
         }
@@ -708,8 +713,8 @@ public:
             return _tcb->_local_port;
         }
         void shutdown_connect();
-        void close_read();
-        void close_write();
+        void close_read() noexcept;
+        void close_write() noexcept;
     };
     class listener {
         tcp& _tcp;
@@ -780,7 +785,7 @@ tcp<InetTraits>::tcp(inet_type& inet)
     namespace sm = metrics;
 
     _metrics.add_group("tcp", {
-        sm::make_derive("linearizations", [] { return tcp_packet_merger::linearizations(); },
+        sm::make_counter("linearizations", [] { return tcp_packet_merger::linearizations(); },
                         sm::description("Counts a number of times a buffer linearization was invoked during the buffers merge process. "
                                         "Divide it by a total TCP receive packet rate to get an everage number of lineraizations per TCP packet."))
     });
@@ -1163,6 +1168,7 @@ void tcp<InetTraits>::tcb::input_handle_syn_sent_state(tcp_hdr* th, packet p) {
         // reset", drop the segment, enter CLOSED state, delete TCB, and
         // return.  Otherwise (no ACK) drop the segment and return.
         if (acceptable) {
+            _connect_done.set_exception(tcp_refused_error());
             return do_reset();
         } else {
             return;
@@ -1521,6 +1527,10 @@ void tcp<InetTraits>::tcb::input_handle_other_state(tcp_hdr* th, packet p) {
 
     // 4.8 eighth, check the FIN bit
     if (th->f_fin) {
+        if (_fin_recvd_promise) {
+            _fin_recvd_promise->set_value();
+            _fin_recvd_promise.reset();
+        }
         if (in_state(CLOSED | LISTEN | SYN_SENT)) {
             // Do not process the FIN if the state is CLOSED, LISTEN or SYN-SENT
             // since the SEG.SEQ cannot be validated; drop the segment and return.
@@ -1735,12 +1745,24 @@ future<> tcp<InetTraits>::tcb::wait_for_data() {
 }
 
 template <typename InetTraits>
+future<> tcp<InetTraits>::tcb::wait_input_shutdown() {
+    if (!_fin_recvd_promise) {
+        return make_ready_future<>();
+    }
+    return _fin_recvd_promise->get_future();
+}
+
+template <typename InetTraits>
 void
-tcp<InetTraits>::tcb::abort_reader() {
+tcp<InetTraits>::tcb::abort_reader() noexcept {
     if (_rcv._data_received_promise) {
         _rcv._data_received_promise->set_exception(
                 std::make_exception_ptr(std::system_error(ECONNABORTED, std::system_category())));
         _rcv._data_received_promise = std::nullopt;
+    }
+    if (_fin_recvd_promise) {
+        _fin_recvd_promise->set_value();
+        _fin_recvd_promise.reset();
     }
 }
 
@@ -1810,7 +1832,7 @@ future<> tcp<InetTraits>::tcb::send(packet p) {
 }
 
 template <typename InetTraits>
-void tcp<InetTraits>::tcb::close() {
+void tcp<InetTraits>::tcb::close() noexcept {
     if (in_state(CLOSED) || _snd.closed) {
         return;
     }
@@ -1865,7 +1887,7 @@ bool tcp<InetTraits>::tcb::should_send_ack(uint16_t seg_len) {
 }
 
 template <typename InetTraits>
-void tcp<InetTraits>::tcb::clear_delayed_ack() {
+void tcp<InetTraits>::tcb::clear_delayed_ack() noexcept {
     _delayed_ack.cancel();
 }
 
@@ -2101,12 +2123,12 @@ std::optional<typename InetTraits::l4packet> tcp<InetTraits>::tcb::get_packet() 
 }
 
 template <typename InetTraits>
-void tcp<InetTraits>::connection::close_read() {
+void tcp<InetTraits>::connection::close_read() noexcept {
     _tcb->abort_reader();
 }
 
 template <typename InetTraits>
-void tcp<InetTraits>::connection::close_write() {
+void tcp<InetTraits>::connection::close_write() noexcept {
     _tcb->close();
 }
 

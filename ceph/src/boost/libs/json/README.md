@@ -4,7 +4,7 @@ Branch          | [`master`](https://github.com/CPPAlliance/json/tree/master) | 
 --------------- | ----------------------------------------------------------- | ------------------------------------------------------------- |
 [Azure](https://azure.microsoft.com/en-us/services/devops/pipelines/) | [![Build Status](https://img.shields.io/azure-devops/build/vinniefalco/2571d415-8cc8-4120-a762-c03a8eda0659/8/master)](https://vinniefalco.visualstudio.com/json/_build/latest?definitionId=5&branchName=master) | [![Build Status](https://img.shields.io/azure-devops/build/vinniefalco/2571d415-8cc8-4120-a762-c03a8eda0659/8/develop)](https://vinniefalco.visualstudio.com/json/_build/latest?definitionId=8&branchName=develop)
 Docs            | [![Documentation](https://img.shields.io/badge/docs-master-brightgreen.svg)](https://www.boost.org/doc/libs/master/libs/json/) | [![Documentation](https://img.shields.io/badge/docs-develop-brightgreen.svg)](https://www.boost.org/doc/libs/develop/libs/json/)
-[Drone](https://drone.io/) | [![Build Status](https://drone.cpp.al/api/badges/boostorg/json/status.svg)](https://drone.cpp.al/boostorg/json) | [![Build Status](https://drone.cpp.al/api/badges/boostorg/json/status.svg?ref=refs/heads/develop)](https://drone.cpp.al/boostorg/json)
+[Drone](https://drone.io/) | [![Build Status](https://drone.cpp.al/api/badges/boostorg/json/status.svg?ref=refs/heads/master)](https://drone.cpp.al/boostorg/json) | [![Build Status](https://drone.cpp.al/api/badges/boostorg/json/status.svg?ref=refs/heads/develop)](https://drone.cpp.al/boostorg/json)
 Matrix          | [![Matrix](https://img.shields.io/badge/matrix-master-brightgreen.svg)](http://www.boost.org/development/tests/master/developer/json.html) | [![Matrix](https://img.shields.io/badge/matrix-develop-brightgreen.svg)](http://www.boost.org/development/tests/develop/developer/json.html)
 Fuzzing         | --- |  [![fuzz](https://github.com/boostorg/json/workflows/fuzz/badge.svg?branch=develop)](https://github.com/boostorg/json/actions?query=workflow%3Afuzz+branch%3Adevelop)
 [Appveyor](https://ci.appveyor.com/) | [![Build status](https://ci.appveyor.com/api/projects/status/8csswcnmfm798203?branch=master&svg=true)](https://ci.appveyor.com/project/vinniefalco/cppalliance-json/branch/master) | [![Build status](https://ci.appveyor.com/api/projects/status/8csswcnmfm798203?branch=develop&svg=true)](https://ci.appveyor.com/project/vinniefalco/cppalliance-json/branch/develop)
@@ -52,10 +52,13 @@ Boost.JSON offers these features:
 * Constant-time key lookup for objects
 * Options to allow non-standard JSON
 * Easy and safe modern API with allocator support
-* Compile without Boost, define `BOOST_JSON_STANDALONE`
 * Optional header-only, without linking to a library
 
 ## Requirements
+
+* Requires only C++11
+* Link to a built static or dynamic Boost library, or use header-only (see below)
+* Supports -fno-exceptions, detected automatically
 
 The library relies heavily on these well known C++ types in
 its interfaces (henceforth termed _standard types_):
@@ -63,28 +66,6 @@ its interfaces (henceforth termed _standard types_):
 * `string_view`
 * `memory_resource`, `polymorphic_allocator`
 * `error_category`, `error_code`, `error_condition`, `system_error`
-
-The requirements for Boost.JSON depend on whether the library is used
-as part of Boost, or in the standalone flavor (without Boost):
-
-### Using Boost
-
-* Requires only C++11
-* The default configuration
-* Aliases for standard types use their Boost equivalents
-* Link to a built static or dynamic Boost library, or use header-only (see below)
-* Supports -fno-exceptions, detected automatically
-
-### Without Boost
-
-* Requires C++17
-* Aliases for standard types use their `std` equivalents
-* Obtained when defining the macro `BOOST_JSON_STANDALONE`
-* Link to a built static or dynamic standalone library, or use header-only (see below)
-* Supports -fno-exceptions: define `BOOST_NO_EXCEPTIONS` and `boost::throw_exception` manually
-
-When using without Boost, support for `<memory_resource>` is required.
-In particular, if using libstdc++ then version 8.3 or later is needed.
 
 ### Header-Only
 
@@ -94,21 +75,6 @@ place the following line in exactly one new or existing source
 file in your project.
 ```
 #include <boost/json/src.hpp>
-```
-
-### Standalone Shared Library
-
-To build a standalone shared library, it is necessary to define the
-macros `BOOST_JSON_DECL` and `BOOST_JSON_CLASS_DECL` as appropriate
-for your toolchain. Example for MSVC:
-```
-// When building the DLL
-#define BOOST_JSON_DECL       __declspec(dllexport)
-#define BOOST_JSON_CLASS_DECL __declspec(dllexport)
-
-// When building the application which uses the DLL
-#define BOOST_JSON_DECL       __declspec(dllimport)
-#define BOOST_JSON_CLASS_DECL __declspec(dllimport)
 ```
 
 ### Embedded
@@ -124,19 +90,13 @@ building the library or including the function definitions:
 #include <boost/json/src.hpp>
 ```
 
-#### Note
-    This library uses separate inline namespacing for the standalone
-    mode to allow libraries which use different modes to compose
-    without causing link errors. Linking to both modes of Boost.JSON
-    (Boost and standalone) is possible, but not recommended.
-
 ### Supported Compilers
 
 Boost.JSON has been tested with the following compilers:
 
-* clang: 3.8, 4, 5, 6, 7, 8, 9, 10, 11
-* gcc: 4.8, 4.9, 5, 6, 7, 8, 9, 10
-* msvc: 14.0, 14.1, 14.2
+* clang: 3.5, 3.6, 3.7, 3.8, 4, 5, 6, 7, 8, 9, 10, 11, 12
+* gcc: 4.8, 4.9, 5, 6, 7, 8, 9, 10, 11
+* msvc: 14.0, 14.1, 14.2, 14.3
 
 ### Quality Assurance
 

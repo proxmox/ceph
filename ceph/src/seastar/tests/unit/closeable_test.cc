@@ -56,6 +56,22 @@ SEASTAR_TEST_CASE(deferred_close_test) {
   });
 }
 
+SEASTAR_TEST_CASE(move_deferred_close_test) {
+  return do_with(gate(), [] (gate& g) {
+    return async([&] {
+        auto close_gate = make_shared(deferred_close(g));
+        // g.close() should not be called when deferred_close is moved away
+        BOOST_REQUIRE(!g.is_closed());
+    }).then([&] {
+        // Before this test is exercised, gate::close() would run into a
+        // assert failure when leaving previous continuation, if gate::close()
+        // is called twice, so this test only verifies the behavior with the
+        // release build.
+        BOOST_REQUIRE(g.is_closed());
+    });
+  });
+}
+
 SEASTAR_TEST_CASE(close_now_test) {
   return do_with(gate(), 0, 42, [] (gate& g, int& count, int& expected) {
     return async([&] {
@@ -73,6 +89,16 @@ SEASTAR_TEST_CASE(close_now_test) {
         // gate must not be double-closed.
     });
   });
+}
+
+SEASTAR_TEST_CASE(cancel_deferred_close_test) {
+    gate g;
+    {
+        auto close_gate = deferred_close(g);
+        close_gate.cancel();
+    }
+    g.check(); // should not throw
+    return make_ready_future<>();
 }
 
 SEASTAR_TEST_CASE(with_closeable_test) {
@@ -145,12 +171,34 @@ public:
 
 } // anonymous namespace
 
+SEASTAR_TEST_CASE(cancel_deferred_stop_test) {
+    count_stops cs;
+    {
+        auto stop = deferred_stop(cs);
+        stop.cancel();
+    }
+    BOOST_REQUIRE_EQUAL(cs.stopped(), 0);
+    return make_ready_future<>();
+}
+
 SEASTAR_TEST_CASE(deferred_stop_test) {
   return do_with(count_stops(), [] (count_stops& cs) {
     return async([&] {
         auto stop_counting = deferred_stop(cs);
     }).then([&] {
         // cs.stop() should be called when stop_counting is destroyed
+        BOOST_REQUIRE_EQUAL(cs.stopped(), 1);
+    });
+  });
+}
+
+SEASTAR_TEST_CASE(move_deferred_stop_test) {
+  return do_with(count_stops(), [] (count_stops& cs) {
+    return async([&] {
+        auto stop = make_shared(deferred_stop(cs));
+    }).then([&] {
+        // cs.stop() should be called once and only once
+        // when stop is destroyed
         BOOST_REQUIRE_EQUAL(cs.stopped(), 1);
     });
   });
@@ -196,6 +244,45 @@ SEASTAR_TEST_CASE(with_stoppable_exception_test) {
             BOOST_REQUIRE_EQUAL(stopped, 1);
         });
     });
+}
+
+SEASTAR_THREAD_TEST_CASE(move_open_gate_test) {
+    gate g1;
+    g1.enter();
+    // move an open gate
+    gate g2 = std::move(g1);
+    // the state in g1 should be moved into g2
+    BOOST_CHECK_EQUAL(g1.get_count(), 0);
+    BOOST_REQUIRE_EQUAL(g2.get_count(), 1);
+    g2.leave();
+    g2.close().get();
+    BOOST_CHECK(!g1.is_closed());
+    BOOST_CHECK(g2.is_closed());
+}
+
+SEASTAR_THREAD_TEST_CASE(move_closing_gate_test) {
+    gate g1;
+    g1.enter();
+    auto fut = g1.close();
+    // move a closing gate
+    gate g2 = std::move(g1);
+    BOOST_CHECK_EQUAL(g1.get_count(), 0);
+    BOOST_REQUIRE_EQUAL(g2.get_count(), 1);
+    g2.leave();
+    fut.get();
+    BOOST_CHECK(!g1.is_closed());
+    BOOST_CHECK(g2.is_closed());
+}
+
+SEASTAR_THREAD_TEST_CASE(move_closed_gate_test) {
+    gate g1;
+    g1.close().get();
+    // move a closed gate
+    gate g2 = std::move(g1);
+    BOOST_CHECK_EQUAL(g1.get_count(), 0);
+    BOOST_CHECK_EQUAL(g2.get_count(), 0);
+    BOOST_CHECK(!g1.is_closed());
+    BOOST_CHECK(g2.is_closed());
 }
 
 SEASTAR_THREAD_TEST_CASE(gate_holder_basic_test) {

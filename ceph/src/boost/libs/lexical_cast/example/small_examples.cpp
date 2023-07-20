@@ -1,4 +1,4 @@
-// Copyright Antony Polukhin, 2013-2020.
+// Copyright Antony Polukhin, 2013-2022.
 
 // Distributed under the Boost Software License, Version 1.0.
 // (See the accompanying file LICENSE_1_0.txt
@@ -13,7 +13,7 @@
 #endif
 
 //[lexical_cast_log_errno
-//`The following example uses numeric data in a string expression: 
+//`The following example uses numeric data in a string expression:
 
 void log_message(const std::string &);
 

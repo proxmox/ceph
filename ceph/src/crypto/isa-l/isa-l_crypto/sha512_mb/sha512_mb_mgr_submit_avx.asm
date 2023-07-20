@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -42,7 +42,7 @@ extern sha512_mb_x2_avx
 ; idx needs to be other than arg1, arg2, rbx, r12
 %define idx             rdx ; rsi
 %define last_len        rdx ; rsi
-			
+
 %define size_offset     rcx ; rdi
 %define tmp2            rcx ; rdi
 
@@ -54,10 +54,10 @@ extern sha512_mb_x2_avx
 ; idx needs to be other than arg1, arg2, rbx, r12
 %define last_len        rsi
 %define idx             rsi
-			
+
 %define size_offset     rdi
 %define tmp2            rdi
-			
+
 %endif
 
 ; Common definitions
@@ -70,24 +70,24 @@ extern sha512_mb_x2_avx
 %define start_offset    r11
 
 %define unused_lanes    rbx
-			
+
 %define job_rax         rax
 %define len             rax
 
 %define lane            rbp
 %define tmp3            rbp
 %define lens3           rbp
-			
+
 %define extra_blocks    r8
 %define lens0           r8
-			
+
 %define tmp             r9
 %define lens1           r9
-			
+
 %define lane_data       r10
 %define lens2           r10
 
-struc stack_frame 
+struc stack_frame
 	.xmm: resb 16*10
 	.gpr: resb 8*5
 	.rsp: resb 8
@@ -101,11 +101,12 @@ endstruc
 ; SHA512_JOB* sha512_mb_mgr_submit_avx(SHA512_MB_JOB_MGR *state, SHA512_JOB *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-global sha512_mb_mgr_submit_avx:function
+mk_global sha512_mb_mgr_submit_avx, function
 sha512_mb_mgr_submit_avx:
+	endbranch
 
 	mov	rax, rsp
-	
+
 	sub     rsp, STACK_SPACE
 	and	rsp, ~31
 
@@ -159,6 +160,7 @@ sha512_mb_mgr_submit_avx:
 	mov     p, [job + _buffer]
 	mov     [state + _args_data_ptr + 8*lane], p
 
+	add     dword [state + _num_lanes_inuse], 1
 	cmp     unused_lanes, 0xff
 	jne     return_null
 
@@ -170,7 +172,7 @@ start_loop:
 	mov     lens1, [state + _lens + 1*8]
 	cmp     lens1, idx
 	cmovb   idx, lens1
-       
+
 	mov     len2, idx
 	and     idx, 0xF
 	and     len2, ~0xFF
@@ -192,15 +194,17 @@ len_is_0:
 	; process completed job "idx"
 	imul    lane_data, idx, _LANE_DATA_size
 	lea     lane_data, [state + _ldata + lane_data]
-	
+
 	mov     job_rax, [lane_data + _job_in_lane]
-	
+
 	mov     unused_lanes, [state + _unused_lanes]
 	mov     qword [lane_data + _job_in_lane], 0
 	mov     dword [job_rax + _status], STS_COMPLETED
 	shl     unused_lanes, 8
 	or      unused_lanes, idx
 	mov     [state + _unused_lanes], unused_lanes
+
+	sub      dword [state + _num_lanes_inuse], 1
 
 	vmovq    xmm0, [state + _args_digest + 8*idx + 0*32]
 	vpinsrq  xmm0, [state + _args_digest + 8*idx + 1*32], 1

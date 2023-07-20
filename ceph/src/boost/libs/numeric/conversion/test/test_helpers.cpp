@@ -16,7 +16,7 @@
 #include "boost/limits.hpp"
 #include "boost/utility.hpp"
 
-#include "boost/test/included/test_exec_monitor.hpp"
+#include <boost/core/lightweight_test.hpp>
 
 // Convenience macros to help with compilers which don't parse
 // explicit template function instantiations (MSVC6)

@@ -27,10 +27,10 @@ public:
   using osd_id_t = int;
 
   Heartbeat(osd_id_t whoami,
-            const crimson::osd::ShardServices& service,
+	    crimson::osd::ShardServices& service,
 	    crimson::mon::Client& monc,
-	    crimson::net::MessengerRef front_msgr,
-	    crimson::net::MessengerRef back_msgr);
+	    crimson::net::Messenger &front_msgr,
+	    crimson::net::Messenger &back_msgr);
 
   seastar::future<> start(entity_addrvec_t front,
 			  entity_addrvec_t back);
@@ -45,9 +45,8 @@ public:
   const entity_addrvec_t& get_front_addrs() const;
   const entity_addrvec_t& get_back_addrs() const;
 
-  crimson::net::MessengerRef get_front_msgr() const;
-  crimson::net::MessengerRef get_back_msgr() const;
-  void set_require_authorizer(bool);
+  crimson::net::Messenger &get_front_msgr() const;
+  crimson::net::Messenger &get_back_msgr() const;
 
   // Dispatcher methods
   std::optional<seastar::future<>> ms_dispatch(
@@ -74,12 +73,14 @@ private:
 
   seastar::future<> start_messenger(crimson::net::Messenger& msgr,
 				    const entity_addrvec_t& addrs);
+  seastar::future<> maybe_share_osdmap(crimson::net::ConnectionRef,
+                                       Ref<MOSDPing> m);
 private:
   const osd_id_t whoami;
-  const crimson::osd::ShardServices& service;
+  crimson::osd::ShardServices& service;
   crimson::mon::Client& monc;
-  crimson::net::MessengerRef front_msgr;
-  crimson::net::MessengerRef back_msgr;
+  crimson::net::Messenger &front_msgr;
+  crimson::net::Messenger &back_msgr;
 
   seastar::timer<seastar::lowres_clock> timer;
   // use real_clock so it can be converted to utime_t
@@ -247,6 +248,10 @@ class Heartbeat::Connection {
  }
 };
 
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<Heartbeat::Connection> : fmt::ostream_formatter {};
+#endif
+
 /*
  * Track the ping history and ping reply (the pong) from the same session, clean up
  * history once hb_front or hb_back loses connection and restart the session once
@@ -269,8 +274,12 @@ class Heartbeat::Session {
  public:
   Session(osd_id_t peer) : peer{peer} {}
 
-  void set_epoch(epoch_t epoch_) { epoch = epoch_; }
-  epoch_t get_epoch() const { return epoch; }
+  void set_epoch_added(epoch_t epoch_) { epoch = epoch_; }
+  epoch_t get_epoch_added() const { return epoch; }
+
+  void set_last_epoch_sent(epoch_t epoch_) { last_sent_epoch = epoch_; }
+  epoch_t get_last_epoch_sent() const { return last_sent_epoch; }
+
   bool is_started() const { return connected; }
   bool pinged() const {
     if (clock::is_zero(first_tx)) {
@@ -379,7 +388,9 @@ class Heartbeat::Session {
   // last time we got a ping reply on the back side
   clock::time_point last_rx_back;
   // most recent epoch we wanted this peer
-  epoch_t epoch;
+  epoch_t epoch; // rename me to epoch_added
+  // last epoch sent
+  epoch_t last_sent_epoch = 0;
 
   struct reply_t {
     clock::time_point deadline;
@@ -399,8 +410,12 @@ class Heartbeat::Peer final : private Heartbeat::ConnectionListener {
   Peer& operator=(Peer&&) = delete;
   Peer& operator=(const Peer&) = delete;
 
-  void set_epoch(epoch_t epoch) { session.set_epoch(epoch); }
-  epoch_t get_epoch() const { return session.get_epoch(); }
+  // set/get the epoch at which the peer was added
+  void set_epoch_added(epoch_t epoch) { session.set_epoch_added(epoch); }
+  epoch_t get_epoch_added() const { return session.get_epoch_added(); }
+
+  void set_last_epoch_sent(epoch_t epoch) { session.set_last_epoch_sent(epoch); }
+  epoch_t get_last_epoch_sent() const { return session.get_last_epoch_sent(); }
 
   // if failure, return time_point since last active
   // else, return clock::zero()
@@ -455,3 +470,7 @@ class Heartbeat::Peer final : private Heartbeat::ConnectionListener {
   Connection con_front;
   Connection con_back;
 };
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<Heartbeat> : fmt::ostream_formatter {};
+#endif

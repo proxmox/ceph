@@ -8,6 +8,7 @@
 #include "include/rados/librados.hpp"
 #include "test/librados/test_cxx.h"
 #include "test/librados/testcase_cxx.h"
+#include "crimson_utils.h"
 
 using namespace librados;
 
@@ -152,6 +153,7 @@ TEST_F(LibRadosSnapshotsSelfManagedPP, SnapPP) {
 }
 
 TEST_F(LibRadosSnapshotsSelfManagedPP, RollbackPP) {
+  SKIP_IF_CRIMSON();
   std::vector<uint64_t> my_snaps;
   IoCtx readioctx;
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), readioctx));
@@ -236,6 +238,8 @@ TEST_F(LibRadosSnapshotsSelfManagedPP, RollbackPP) {
 }
 
 TEST_F(LibRadosSnapshotsSelfManagedPP, SnapOverlapPP) {
+  // WIP https://tracker.ceph.com/issues/58263
+  SKIP_IF_CRIMSON();
   std::vector<uint64_t> my_snaps;
   IoCtx readioctx;
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), readioctx));
@@ -454,6 +458,53 @@ TEST_F(LibRadosSnapshotsSelfManagedPP, OrderSnap) {
   comp4->release();
 }
 
+TEST_F(LibRadosSnapshotsSelfManagedPP, WriteRollback) {
+  // https://tracker.ceph.com/issues/59114
+  GTEST_SKIP();
+  uint64_t snapid = 5;
+
+  // buf1
+  char buf[bufsize];
+  memset(buf, 0xcc, sizeof(buf));
+  bufferlist bl;
+  bl.append(buf, sizeof(buf));
+
+  // buf2
+  char buf2[sizeof(buf)];
+  memset(buf2, 0xdd, sizeof(buf2));
+  bufferlist bl2;
+  bl2.append(buf2, sizeof(buf2));
+
+  // First write
+  ObjectWriteOperation op_write1;
+  op_write1.write(0, bl);
+  // Operate
+  librados::AioCompletion *comp_write = cluster.aio_create_completion();
+  ASSERT_EQ(0, ioctx.aio_operate("foo", comp_write, &op_write1, 0));
+  ASSERT_EQ(0, comp_write->wait_for_complete());
+  ASSERT_EQ(0, comp_write->get_return_value());
+  comp_write->release();
+
+  // Take Snapshot
+  ASSERT_EQ(0, ioctx.selfmanaged_snap_create(&snapid));
+
+  // Rollback + Second write in the same op
+  ObjectWriteOperation op_write2_snap_rollback;
+  op_write2_snap_rollback.write(0, bl2);
+  op_write2_snap_rollback.selfmanaged_snap_rollback(snapid);
+  // Operate
+  librados::AioCompletion *comp_write2 = cluster.aio_create_completion();
+  ASSERT_EQ(0, ioctx.aio_operate("foo", comp_write2, &op_write2_snap_rollback, 0));
+  ASSERT_EQ(0, comp_write2->wait_for_complete());
+  ASSERT_EQ(0, comp_write2->get_return_value());
+  comp_write2->release();
+
+  // Resolved should be first write
+  bufferlist bl3;
+  EXPECT_EQ((int)sizeof(buf), ioctx.read("foo", bl3, sizeof(buf), 0));
+  EXPECT_EQ(0, memcmp(buf, bl3.c_str(), sizeof(buf)));
+}
+
 TEST_F(LibRadosSnapshotsSelfManagedPP, ReusePurgedSnap) {
   std::vector<uint64_t> my_snaps;
   my_snaps.push_back(-2);
@@ -499,6 +550,7 @@ TEST_F(LibRadosSnapshotsSelfManagedPP, ReusePurgedSnap) {
 
 // EC testing
 TEST_F(LibRadosSnapshotsECPP, SnapListPP) {
+  SKIP_IF_CRIMSON();
   char buf[bufsize];
   memset(buf, 0xcc, sizeof(buf));
   bufferlist bl1;
@@ -515,6 +567,7 @@ TEST_F(LibRadosSnapshotsECPP, SnapListPP) {
 }
 
 TEST_F(LibRadosSnapshotsECPP, SnapRemovePP) {
+  SKIP_IF_CRIMSON();
   char buf[bufsize];
   memset(buf, 0xcc, sizeof(buf));
   bufferlist bl1;
@@ -528,6 +581,7 @@ TEST_F(LibRadosSnapshotsECPP, SnapRemovePP) {
 }
 
 TEST_F(LibRadosSnapshotsECPP, RollbackPP) {
+  SKIP_IF_CRIMSON();
   char buf[bufsize];
   memset(buf, 0xcc, sizeof(buf));
   bufferlist bl1;
@@ -547,6 +601,7 @@ TEST_F(LibRadosSnapshotsECPP, RollbackPP) {
 }
 
 TEST_F(LibRadosSnapshotsECPP, SnapGetNamePP) {
+  SKIP_IF_CRIMSON();
   char buf[bufsize];
   memset(buf, 0xcc, sizeof(buf));
   bufferlist bl;
@@ -565,6 +620,7 @@ TEST_F(LibRadosSnapshotsECPP, SnapGetNamePP) {
 }
 
 TEST_F(LibRadosSnapshotsSelfManagedECPP, SnapPP) {
+  SKIP_IF_CRIMSON();
   std::vector<uint64_t> my_snaps;
   my_snaps.push_back(-2);
   ASSERT_EQ(0, ioctx.selfmanaged_snap_create(&my_snaps.back()));
@@ -612,6 +668,7 @@ TEST_F(LibRadosSnapshotsSelfManagedECPP, SnapPP) {
 }
 
 TEST_F(LibRadosSnapshotsSelfManagedECPP, RollbackPP) {
+  SKIP_IF_CRIMSON();
   std::vector<uint64_t> my_snaps;
   IoCtx readioctx;
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), readioctx));
@@ -698,6 +755,7 @@ TEST_F(LibRadosSnapshotsSelfManagedECPP, RollbackPP) {
 }
 
 TEST_F(LibRadosSnapshotsSelfManagedECPP, Bug11677) {
+  SKIP_IF_CRIMSON();
   std::vector<uint64_t> my_snaps;
   my_snaps.push_back(-2);
   ASSERT_EQ(0, ioctx.selfmanaged_snap_create(&my_snaps.back()));

@@ -26,6 +26,14 @@
 #include "internal_file_decryptor.h"
 #include "encryption_internal.h"
 
+#if ARROW_VERSION_MAJOR < 9                                                           
+#define _ARROW_FD fd_
+#define _ARROW_FD_TYPE int
+#else
+#define _ARROW_FD fd_.fd()
+#define _ARROW_FD_TYPE arrow::internal::FileDescriptor
+#endif
+
 /******************************************/
 /******************************************/
 class optional_yield;
@@ -164,7 +172,7 @@ public:
   std::mutex lock_;
 
   // File descriptor
-  int fd_;
+  _ARROW_FD_TYPE fd_;
 
   FileMode::type mode_;
 
@@ -202,7 +210,7 @@ class OSFile : public ObjectInterface {
     mode_ = write_only ? FileMode::WRITE : FileMode::READWRITE;
 
     if (!truncate) {
-      ARROW_ASSIGN_OR_RAISE(size_, ::arrow::internal::FileGetSize(fd_));
+      ARROW_ASSIGN_OR_RAISE(size_, ::arrow::internal::FileGetSize(_ARROW_FD));
     } else {
       size_ = 0;
     }
@@ -222,7 +230,11 @@ class OSFile : public ObjectInterface {
     RETURN_NOT_OK(SetFileName(fd));
     is_open_ = true;
     mode_ = FileMode::WRITE;
+    #if ARROW_VERSION_MAJOR < 9
     fd_ = fd;
+    #else
+    fd_ = arrow::internal::FileDescriptor{fd};
+    #endif
     return Status::OK();
   }
 
@@ -230,7 +242,7 @@ class OSFile : public ObjectInterface {
     RETURN_NOT_OK(SetFileName(path));
 
     ARROW_ASSIGN_OR_RAISE(fd_, ::arrow::internal::FileOpenReadable(file_name_));
-    ARROW_ASSIGN_OR_RAISE(size_, ::arrow::internal::FileGetSize(fd_));
+    ARROW_ASSIGN_OR_RAISE(size_, ::arrow::internal::FileGetSize(_ARROW_FD));
 
     is_open_ = true;
     mode_ = FileMode::READ;
@@ -242,7 +254,11 @@ class OSFile : public ObjectInterface {
     RETURN_NOT_OK(SetFileName(fd));
     is_open_ = true;
     mode_ = FileMode::READ;
+    #if ARROW_VERSION_MAJOR < 9
     fd_ = fd;
+    #else
+    fd_ = arrow::internal::FileDescriptor{fd};
+    #endif
     return Status::OK();
   }
 
@@ -258,9 +274,13 @@ class OSFile : public ObjectInterface {
       // Even if closing fails, the fd will likely be closed (perhaps it's
       // already closed).
       is_open_ = false;
+      #if ARROW_VERSION_MAJOR < 9
       int fd = fd_;
       fd_ = -1;
       RETURN_NOT_OK(::arrow::internal::FileClose(fd));
+      #else
+      RETURN_NOT_OK(fd_.Close());
+      #endif
     }
     return Status::OK();
   }
@@ -268,7 +288,7 @@ class OSFile : public ObjectInterface {
   Result<int64_t> Read(int64_t nbytes, void* out) override {
     RETURN_NOT_OK(CheckClosed());
     RETURN_NOT_OK(CheckPositioned());
-    return ::arrow::internal::FileRead(fd_, reinterpret_cast<uint8_t*>(out), nbytes);
+    return ::arrow::internal::FileRead(_ARROW_FD, reinterpret_cast<uint8_t*>(out), nbytes);
   }
 
   Result<int64_t> ReadAt(int64_t position, int64_t nbytes, void* out) override {
@@ -277,7 +297,7 @@ class OSFile : public ObjectInterface {
     // ReadAt() leaves the file position undefined, so require that we seek
     // before calling Read() or Write().
     need_seeking_.store(true);
-    return ::arrow::internal::FileReadAt(fd_, reinterpret_cast<uint8_t*>(out), position,
+    return ::arrow::internal::FileReadAt(_ARROW_FD, reinterpret_cast<uint8_t*>(out), position,
                                          nbytes);
   }
 
@@ -286,7 +306,7 @@ class OSFile : public ObjectInterface {
     if (pos < 0) {
       return Status::Invalid("Invalid position");
     }
-    Status st = ::arrow::internal::FileSeek(fd_, pos);
+    Status st = ::arrow::internal::FileSeek(_ARROW_FD, pos);
     if (st.ok()) {
       need_seeking_.store(false);
     }
@@ -295,7 +315,7 @@ class OSFile : public ObjectInterface {
 
   Result<int64_t> Tell() const override {
     RETURN_NOT_OK(CheckClosed());
-    return ::arrow::internal::FileTell(fd_);
+    return ::arrow::internal::FileTell(_ARROW_FD);
   }
 
   Status Write(const void* data, int64_t length) override {
@@ -306,11 +326,11 @@ class OSFile : public ObjectInterface {
     if (length < 0) {
       return Status::IOError("Length must be non-negative");
     }
-    return ::arrow::internal::FileWrite(fd_, reinterpret_cast<const uint8_t*>(data),
+    return ::arrow::internal::FileWrite(_ARROW_FD, reinterpret_cast<const uint8_t*>(data),
                                         length);
   }
 
-  int fd() const override { return fd_; }
+  int fd() const override { return _ARROW_FD; }
 
   bool is_open() const override { return is_open_; }
 
@@ -345,7 +365,7 @@ class OSFile : public ObjectInterface {
   std::mutex lock_;
 
   // File descriptor
-  int fd_;
+  _ARROW_FD_TYPE fd_;
 
   FileMode::type mode_;
 
@@ -411,7 +431,11 @@ public:
       // already closed).
       is_open_ = false;
       //int fd = fd_;
+      #if ARROW_VERSION_MAJOR < 9
       fd_ = -1;
+      #else
+      fd_.Close();
+      #endif
       //RETURN_NOT_OK(::arrow::internal::FileClose(fd));
     }
     return Status::OK();
@@ -421,7 +445,7 @@ public:
     NOT_IMPLEMENT;
     RETURN_NOT_OK(CheckClosed());
     RETURN_NOT_OK(CheckPositioned());
-    return ::arrow::internal::FileRead(fd_, reinterpret_cast<uint8_t*>(out), nbytes);
+    return ::arrow::internal::FileRead(_ARROW_FD, reinterpret_cast<uint8_t*>(out), nbytes);
   }
 
   Result<int64_t> ReadAt(int64_t position, int64_t nbytes, void* out) {
@@ -443,7 +467,7 @@ public:
     return Status::OK();
   }
 
-  int fd() const { return fd_; }
+  int fd() const { return _ARROW_FD; }
 
   bool is_open() const { return is_open_; }
 
@@ -467,7 +491,7 @@ public:
   std::mutex lock_;
 
   // File descriptor
-  int fd_;
+  _ARROW_FD_TYPE fd_;
 
   FileMode::type mode_;
 
@@ -589,7 +613,7 @@ class ReadableFile::ReadableFileImpl : public ObjectInterface {
       RETURN_NOT_OK(buffer->Resize(bytes_read));
       buffer->ZeroPadding();
     }
-    return std::move(buffer);
+    return buffer;
   }
 
   Result<std::shared_ptr<Buffer>> ReadBufferAt(int64_t position, int64_t nbytes) {
@@ -601,7 +625,7 @@ class ReadableFile::ReadableFileImpl : public ObjectInterface {
       RETURN_NOT_OK(buffer->Resize(bytes_read));
       buffer->ZeroPadding();
     }
-    return std::move(buffer);
+    return buffer;
   }
 
   Status WillNeed(const std::vector<ReadRange>& ranges) {
@@ -609,7 +633,7 @@ class ReadableFile::ReadableFileImpl : public ObjectInterface {
     for (const auto& range : ranges) {
       RETURN_NOT_OK(internal::ValidateRange(range.offset, range.length));
 #if defined(POSIX_FADV_WILLNEED)
-      if (posix_fadvise(fd_, range.offset, range.length, POSIX_FADV_WILLNEED)) {
+      if (posix_fadvise(_ARROW_FD, range.offset, range.length, POSIX_FADV_WILLNEED)) {
         return IOErrorFromErrno(errno, "posix_fadvise failed");
       }
 #elif defined(F_RDADVISE)  // macOS, BSD?
@@ -617,7 +641,7 @@ class ReadableFile::ReadableFileImpl : public ObjectInterface {
         off_t ra_offset;
         int ra_count;
       } radvisory{range.offset, static_cast<int>(range.length)};
-      if (radvisory.ra_count > 0 && fcntl(fd_, F_RDADVISE, &radvisory) == -1) {
+      if (radvisory.ra_count > 0 && fcntl(_ARROW_FD, F_RDADVISE, &radvisory) == -1) {
         return IOErrorFromErrno(errno, "fcntl(fd, F_RDADVISE, ...) failed");
       }
 #endif
@@ -970,6 +994,9 @@ class SerializedRowGroup : public RowGroupReader::Contents {
       CryptoContext ctx(col->has_dictionary_page(), row_group_ordinal_,
                         static_cast<int16_t>(i), meta_decryptor, data_decryptor);
       return PageReader::Open(stream, col->num_values(), col->compression(),
+      #if ARROW_VERSION_MAJOR > 8
+                              false,
+      #endif
                               properties_.memory_pool(), &ctx);
     }
 
@@ -985,6 +1012,9 @@ class SerializedRowGroup : public RowGroupReader::Contents {
     CryptoContext ctx(col->has_dictionary_page(), row_group_ordinal_,
                       static_cast<int16_t>(i), meta_decryptor, data_decryptor);
     return PageReader::Open(stream, col->num_values(), col->compression(),
+    #if ARROW_VERSION_MAJOR > 8
+                            false,
+    #endif
                             properties_.memory_pool(), &ctx);
   }
 
@@ -1215,7 +1245,8 @@ void SerializedFile::ParseMetaDataOfEncryptedFileWithEncryptedFooter(
   }
 
   file_metadata_ =
-      FileMetaData::Make(metadata_buffer->data(), &metadata_len, file_decryptor_);
+	FileMetaData::Make(metadata_buffer->data(), &metadata_len, file_decryptor_);
+      	//FileMetaData::Make(metadata_buffer->data(), &metadata_len, default_reader_properties(), file_decryptor_); //version>9
 }
 
 void SerializedFile::ParseMetaDataOfEncryptedFileWithPlaintextFooter(
@@ -1487,22 +1518,30 @@ public:
 
   enum class parquet_type
   {
+    NA_TYPE,
     STRING,
     INT32,
     INT64,
+    FLOAT,
     DOUBLE,
     TIMESTAMP,
     PARQUET_NULL
   };
 
-  typedef struct
+  struct parquet_value
   {
     int64_t num;
     char *str; //str is pointing to offset in string which is NOT null terminated.
     uint16_t str_len;
     double dbl;
     parquet_type type;
-  } parquet_value_t;
+
+    parquet_value():type(parquet_type::NA_TYPE){}
+  };
+
+  typedef struct parquet_value parquet_value_t;
+
+  enum class parquet_column_read_state {PARQUET_OUT_OF_RANGE,PARQUET_READ_OK};
 
   private:
   parquet_value_t m_last_value;
@@ -1519,7 +1558,7 @@ public:
 
   int64_t Skip(int64_t rows_to_skip);
 
-  int Read(uint64_t rownum,parquet_value_t & value);
+  parquet_column_read_state Read(uint64_t rownum,parquet_value_t & value);
 
 };
 
@@ -1596,6 +1635,11 @@ private:
         m_schm.push_back(elm);
         break;
 
+      case parquet::Type::type::FLOAT:
+        elm = std::pair<std::string, column_reader_wrap::parquet_type>(m_file_metadata->schema()->Column(i)->name(), column_reader_wrap::parquet_type::FLOAT);
+        m_schm.push_back(elm);
+        break;
+
       case parquet::Type::type::DOUBLE:
         elm = std::pair<std::string, column_reader_wrap::parquet_type>(m_file_metadata->schema()->Column(i)->name(), column_reader_wrap::parquet_type::DOUBLE);
         m_schm.push_back(elm);
@@ -1623,7 +1667,7 @@ private:
   bool end_of_stream()
   {
 
-    if (m_rownum >= m_num_of_rows)
+    if (m_rownum > (m_num_of_rows-1))
       return true;
     return false;
   }
@@ -1631,6 +1675,11 @@ private:
   uint64_t get_number_of_rows()
   {
     return m_num_of_rows;
+  }
+
+  uint64_t rownum()
+  {
+    return m_rownum;
   }
 
   bool increase_rownum()
@@ -1664,7 +1713,8 @@ private:
         //TODO throw exception
         return -1;
       }
-      m_column_readers[col]->Read(m_rownum,column_value);
+      auto status = m_column_readers[col]->Read(m_rownum,column_value);
+      if(status == column_reader_wrap::parquet_column_read_state::PARQUET_OUT_OF_RANGE) return -1;
       row_values.push_back(column_value);//TODO intensive (should move)
     }
     return 0;
@@ -1701,6 +1751,7 @@ private:
   {
     parquet::Int32Reader* int32_reader;
     parquet::Int64Reader* int64_reader;
+    parquet::FloatReader* float_reader;
     parquet::DoubleReader* double_reader;
     parquet::ByteArrayReader* byte_array_reader;
 
@@ -1716,6 +1767,11 @@ private:
       return int64_reader->HasNext();
       break;
 
+    case parquet::Type::type::FLOAT:
+      float_reader = static_cast<parquet::FloatReader *>(m_ColumnReader.get());
+      return float_reader->HasNext();
+      break;
+
     case parquet::Type::type::DOUBLE:
       double_reader = static_cast<parquet::DoubleReader *>(m_ColumnReader.get());
       return double_reader->HasNext();
@@ -1727,6 +1783,11 @@ private:
       break;
 
     default:
+
+        std::stringstream err;
+        err << "HasNext():" << "wrong type or type not exist" << std::endl;
+        throw std::runtime_error(err.str());
+
       return false;
       //TODO throw exception
     }
@@ -1739,6 +1800,7 @@ private:
   {
     parquet::Int32Reader* int32_reader;
     parquet::Int64Reader* int64_reader;
+    parquet::FloatReader* float_reader;
     parquet::DoubleReader* double_reader;
     parquet::ByteArrayReader* byte_array_reader;
 
@@ -1761,58 +1823,102 @@ private:
     case parquet::Type::type::INT32:
       int32_reader = static_cast<parquet::Int32Reader *>(m_ColumnReader.get());
       try {
-        rows_read = int32_reader->ReadBatch(1, nullptr, nullptr,&i32_val, values_read);
+	rows_read = int32_reader->ReadBatch(1, &defintion_level, &repeat_level, &i32_val , values_read);
+      	if(defintion_level == 0)
+      	{
+		values->type = column_reader_wrap::parquet_type::PARQUET_NULL;
+      	} else
+      	{
+      		values->num = i32_val;
+      		values->type = column_reader_wrap::parquet_type::INT32;
+      	}
       }
       catch(std::exception &e)
       {
          throw std::runtime_error(error_msg(e).str());
       }
 
-      values->num = i32_val;
-      values->type = column_reader_wrap::parquet_type::INT32;
       break;
 
     case parquet::Type::type::INT64:
       int64_reader = static_cast<parquet::Int64Reader *>(m_ColumnReader.get());
       try{
-        rows_read = int64_reader->ReadBatch(1, nullptr, nullptr, (int64_t *)&(values->num), values_read);
+        rows_read = int64_reader->ReadBatch(1, &defintion_level, &repeat_level, (int64_t *)&(values->num), values_read);
+      	if(defintion_level == 0)
+      	{
+		values->type = column_reader_wrap::parquet_type::PARQUET_NULL;
+      	} else
+      	{
+		auto logical_type = m_parquet_reader->metadata()->schema()->Column(m_col_id)->logical_type();
+
+                if (logical_type.get()->type() == parquet::LogicalType::Type::type::TIMESTAMP) //TODO missing sub-type (milli,micro)
+                        values->type = column_reader_wrap::parquet_type::TIMESTAMP;
+                else
+                        values->type = column_reader_wrap::parquet_type::INT64;
+      	}
       }
       catch(std::exception &e)
       {
          throw std::runtime_error(error_msg(e).str());
       }
-      values->type = column_reader_wrap::parquet_type::INT64;
+      break;
+
+    case parquet::Type::type::FLOAT:
+        float_reader = static_cast<parquet::FloatReader *>(m_ColumnReader.get());
+      try{
+	float data_source_float = 0;
+      	rows_read = float_reader->ReadBatch(1, &defintion_level, &repeat_level, &data_source_float , values_read);//TODO proper cast
+      	if(defintion_level == 0)
+      	{
+		values->type = column_reader_wrap::parquet_type::PARQUET_NULL;
+      	} else
+      	{
+      		values->type = column_reader_wrap::parquet_type::DOUBLE;
+		values->dbl = data_source_float;
+
+      	}
+      }
+      catch(std::exception &e)
+      {
+         throw std::runtime_error(error_msg(e).str());
+      }
       break;
 
     case parquet::Type::type::DOUBLE:
-      try{
         double_reader = static_cast<parquet::DoubleReader *>(m_ColumnReader.get());
+      try{
+      	rows_read = double_reader->ReadBatch(1, &defintion_level, &repeat_level, (double *)&(values->dbl), values_read);
+      	if(defintion_level == 0)
+      	{
+		values->type = column_reader_wrap::parquet_type::PARQUET_NULL;
+      	} else
+      	{
+      		values->type = column_reader_wrap::parquet_type::DOUBLE;
+      	}
       }
       catch(std::exception &e)
       {
          throw std::runtime_error(error_msg(e).str());
       }
-      rows_read = double_reader->ReadBatch(1, nullptr, nullptr, (double *)&(values->dbl), values_read);
-      values->type = column_reader_wrap::parquet_type::DOUBLE;
       break;
 
     case parquet::Type::type::BYTE_ARRAY:
       byte_array_reader = static_cast<parquet::ByteArrayReader *>(m_ColumnReader.get());
       try{
         rows_read = byte_array_reader->ReadBatch(1, &defintion_level, &repeat_level, &str_value , values_read);
+      	if(defintion_level == 0)
+      	{	
+		values->type = column_reader_wrap::parquet_type::PARQUET_NULL;
+      	} else
+      	{
+		values->type = column_reader_wrap::parquet_type::STRING;
+      		values->str = (char*)str_value.ptr;
+      		values->str_len = str_value.len;
+      	}
       }
       catch(std::exception &e)
       {
          throw std::runtime_error(error_msg(e).str());
-      }
-      values->str = (char*)str_value.ptr;
-      values->str_len = str_value.len;
-      if(defintion_level == 0)
-      {
-	values->type = column_reader_wrap::parquet_type::PARQUET_NULL;
-      } else
-      {
-	values->type = column_reader_wrap::parquet_type::STRING;
       }
       break;
 
@@ -1833,6 +1939,7 @@ private:
     parquet::Int32Reader* int32_reader;
     parquet::Int64Reader* int64_reader;
     parquet::DoubleReader* double_reader;
+    parquet::FloatReader* float_reader;
     parquet::ByteArrayReader* byte_array_reader;
 
     parquet::ByteArray str_value;
@@ -1863,6 +1970,17 @@ private:
       int64_reader = static_cast<parquet::Int64Reader *>(m_ColumnReader.get());
       try{
         rows_read = int64_reader->Skip(rows_to_skip);
+      }
+      catch(std::exception &e)
+      {
+        throw std::runtime_error(error_msg(e).str());
+      }
+      break;
+
+    case parquet::Type::type::FLOAT:
+      float_reader = static_cast<parquet::FloatReader *>(m_ColumnReader.get());
+      try {
+        rows_read = float_reader->Skip(rows_to_skip);
       }
       catch(std::exception &e)
       {
@@ -1903,7 +2021,8 @@ private:
     return rows_read;
   }
 
-  int column_reader_wrap::Read(const uint64_t rownum,parquet_value_t & value)
+
+  column_reader_wrap::parquet_column_read_state column_reader_wrap::Read(const uint64_t rownum,parquet_value_t & value)
   {
     int64_t values_read = 0;
 
@@ -1911,6 +2030,7 @@ private:
     { //should skip
       m_read_last_value = false;
 
+      //TODO what about Skip(0)
       uint64_t skipped_rows = Skip(rownum - m_rownum -1);
       m_rownum += skipped_rows;
 
@@ -1924,7 +2044,7 @@ private:
           if ((m_row_grouop_id + 1) >= m_parquet_reader->metadata()->num_row_groups())
           {
             m_end_of_stream = true;
-            return -2; //end-of-stream
+            return column_reader_wrap::parquet_column_read_state::PARQUET_OUT_OF_RANGE;//end-of-stream
           }
           else
           {
@@ -1952,7 +2072,7 @@ private:
       value = m_last_value;
     }
 
-    return 0;
+    return column_reader_wrap::parquet_column_read_state::PARQUET_READ_OK;
   }
 
 #endif

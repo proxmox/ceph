@@ -361,17 +361,17 @@ static int csv_file_to_parquet(int argc,char **argv)
   int st = lstat(argv[1], &l_buf);
   if(st<0) exit(-1);
 
-  printf("input csv file size = %lld\n",l_buf.st_size);
+  printf("input csv file size = %ld\n",l_buf.st_size);
 
   char * buffer = new char[ l_buf.st_size ];
   fp = fopen(argv[1],"r");
 
   if(!fp) exit(-1);
 
-  fread(buffer,l_buf.st_size,1,fp);
+  size_t read_sz = fread(buffer, 1, l_buf.st_size,fp);
 
   std::string csv_obj;
-  csv_obj.append(buffer,l_buf.st_size);
+  csv_obj.append(buffer,read_sz);
 
   csv_to_parquet(csv_obj);
 

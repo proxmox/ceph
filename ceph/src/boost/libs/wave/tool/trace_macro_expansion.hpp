@@ -10,7 +10,6 @@
 #if !defined(BOOST_TRACE_MACRO_EXPANSION_HPP_D8469318_8407_4B9D_A19F_13CA60C1661F_INCLUDED)
 #define BOOST_TRACE_MACRO_EXPANSION_HPP_D8469318_8407_4B9D_A19F_13CA60C1661F_INCLUDED
 
-#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 
@@ -229,20 +228,6 @@ public:
     //        without any further processing.
     //
     ///////////////////////////////////////////////////////////////////////////
-#if BOOST_WAVE_USE_DEPRECIATED_PREPROCESSING_HOOKS != 0
-    // old signature
-    template <typename ContainerT>
-    void expanding_function_like_macro(
-        TokenT const &macrodef, std::vector<TokenT> const &formal_args,
-        ContainerT const &definition,
-        TokenT const &macrocall, std::vector<ContainerT> const &arguments)
-    {
-        if (enabled_macro_counting())
-            count_invocation(macrodef.get_value().c_str());
-
-        if (!enabled_macro_tracing())
-            return;
-#else
     // new signature
     template <typename ContextT, typename ContainerT, typename IteratorT>
     bool
@@ -264,7 +249,6 @@ public:
 
         if (!enabled_macro_tracing())
             return false;
-#endif
         if (0 == get_level()) {
             // output header line
             BOOST_WAVE_OSSTREAM stream;
@@ -337,9 +321,7 @@ public:
         }
         open_trace_body();
 
-#if BOOST_WAVE_USE_DEPRECIATED_PREPROCESSING_HOOKS == 0
         return false;
-#endif
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -359,18 +341,6 @@ public:
     //  The parameter 'macrocall' marks the position, where this macro invoked.
     //
     ///////////////////////////////////////////////////////////////////////////
-#if BOOST_WAVE_USE_DEPRECIATED_PREPROCESSING_HOOKS != 0
-    // old signature
-    template <typename ContainerT>
-    void expanding_object_like_macro(TokenT const &macrodef,
-        ContainerT const &definition, TokenT const &macrocall)
-    {
-        if (enabled_macro_counting())
-            count_invocation(macrodef.get_value().c_str());
-
-        if (!enabled_macro_tracing())
-            return;
-#else
     // new signature
     template <typename ContextT, typename ContainerT>
     bool
@@ -390,7 +360,6 @@ public:
 
         if (!enabled_macro_tracing())
             return false;
-#endif
         if (0 == get_level()) {
         // output header line
         BOOST_WAVE_OSSTREAM stream;
@@ -413,9 +382,7 @@ public:
         }
         open_trace_body();
 
-#if BOOST_WAVE_USE_DEPRECIATED_PREPROCESSING_HOOKS == 0
         return false;
-#endif
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -430,15 +397,9 @@ public:
     //  result of the macro expansion.
     //
     ///////////////////////////////////////////////////////////////////////////
-#if BOOST_WAVE_USE_DEPRECIATED_PREPROCESSING_HOOKS != 0
-    // old signature
-    template <typename ContainerT>
-    void expanded_macro(ContainerT const &result)
-#else
     // new signature
     template <typename ContextT, typename ContainerT>
     void expanded_macro(ContextT const& ctx,ContainerT const &result)
-#endif
     {
         if (!enabled_macro_tracing()) return;
 
@@ -461,15 +422,9 @@ public:
     //  result of the rescanning.
     //
     ///////////////////////////////////////////////////////////////////////////
-#if BOOST_WAVE_USE_DEPRECIATED_PREPROCESSING_HOOKS != 0
-    // old signature
-    template <typename ContainerT>
-    void rescanned_macro(ContainerT const &result)
-#else
     // new signature
     template <typename ContextT, typename ContainerT>
     void rescanned_macro(ContextT const& ctx,ContainerT const &result)
-#endif
     {
         if (!enabled_macro_tracing() || get_level() == 0)
             return;
@@ -616,16 +571,11 @@ public:
         pos.set_column(column);      // account for '#line'
         pending.push_back(result_type(T_SPACE, " ", pos));
 
-        // 21 is the max required size for a 64 bit integer represented as a
-        // string
-        char buffer[22];
-
-        using namespace std;    // for some systems sprintf is in namespace std
-        sprintf (buffer, "%zd", pos.get_line());
+        std::string lineno = std::to_string(pos.get_line());
 
         pos.set_column(++column);                 // account for ' '
-        pending.push_back(result_type(T_INTLIT, buffer, pos));
-        pos.set_column(column += (unsigned int)strlen(buffer)); // account for <number>
+        pending.push_back(result_type(T_INTLIT, lineno.c_str(), pos));
+        pos.set_column(column += (unsigned int)lineno.size()); // account for <number>
         pending.push_back(result_type(T_SPACE, " ", pos));
         pos.set_column(++column);                 // account for ' '
 
@@ -662,13 +612,6 @@ public:
     //  found as a result of a #include <...> directive.
     //
     ///////////////////////////////////////////////////////////////////////////
-#if BOOST_WAVE_USE_DEPRECIATED_PREPROCESSING_HOOKS != 0
-    // old signature
-    void
-    opened_include_file(std::string const &relname, std::string const &absname,
-        std::size_t include_depth, bool is_system_include)
-    {
-#else
     // new signature
     template <typename ContextT>
     void
@@ -676,7 +619,6 @@ public:
         std::string const &absname, bool is_system_include)
     {
         std::size_t include_depth = ctx.get_iteration_depth();
-#endif
         if (enabled_include_tracing()) {
             // print indented filename
             for (std::size_t i = 0; i < include_depth; ++i)
@@ -1312,8 +1254,9 @@ protected:
 
         if (0 == values.size()) return false;   // ill_formed_pragma_option
 
-        string_type stdout_file(std::tmpnam(0));
-        string_type stderr_file(std::tmpnam(0));
+        namespace fs = boost::filesystem;
+        string_type stdout_file = (fs::temp_directory_path() / fs::unique_path()).string().c_str();
+        string_type stderr_file = (fs::temp_directory_path() / fs::unique_path()).string().c_str();
         string_type system_str(boost::wave::util::impl::as_string(values));
         string_type native_cmd(system_str);
 

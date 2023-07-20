@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -29,7 +29,10 @@
 
 %include "sha512_mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
+
+[bits 64]
 default rel
+section .text
 
 ;; code to compute SHA512 by-2 using SSE
 ;; outer calling routine takes care of save and restore of XMM registers
@@ -37,10 +40,10 @@ default rel
 
 ;; Function clobbers: rax, rcx, rdx,   rbx, rsi, rdi, r9-r15; ymm0-15
 ;; Stack must be aligned to 16 bytes before call
-;; Windows clobbers:  rax         rdx             r8 r9 r10 r11    
+;; Windows clobbers:  rax         rdx             r8 r9 r10 r11
 ;; Windows preserves:     rbx rcx     rsi rdi rbp               r12 r13 r14 r15
 ;;
-;; Linux clobbers:    rax             rsi         r8 r9 r10 r11    
+;; Linux clobbers:    rax             rsi         r8 r9 r10 r11
 ;; Linux preserves:       rbx rcx rdx     rdi rbp               r12 r13 r14 r15
 ;;
 ;; clobbers xmm0-15
@@ -56,7 +59,7 @@ default rel
 ; Linux definitions
  %define arg1    rdi
  %define arg2    rsi
-%else 
+%else
 ; Windows definitions
  %define arg1    rcx
  %define arg2    rdx
@@ -114,7 +117,7 @@ endstruc
 ; r0 = {a1 a0}
 ; r1 = {b1 b0}
 ;
-; output looks like 
+; output looks like
 ; r0 = {b0, a0}
 ; t0 = {b1, a1}
 
@@ -228,18 +231,19 @@ endstruc
 	ROUND_00_15 %%T1, %%i
 %endm
 
-;; void sha512_x2_sse(SHA512_MB_ARGS_X4 *args, uint64_t num_blocks); 
+;; void sha512_x2_sse(SHA512_MB_ARGS_X4 *args, uint64_t num_blocks);
 ;; arg 1 : STATE    : pointer args (only 2 of the 4 lanes used)
 ;; arg 2 : INP_SIZE : size of data in blocks (assumed >= 1)
 ;;
-global sha512_mb_x2_sse:function internal
+mk_global sha512_mb_x2_sse, function, internal
 align 32
 sha512_mb_x2_sse:
+	endbranch
 	; general registers preserved in outer calling routine
 	; outer calling routine saves all the XMM registers
 	sub	rsp, STACK_size
 
-	;; Load the pre-transposed incoming digest. 
+	;; Load the pre-transposed incoming digest.
 	movdqa	a,[STATE + 0 * SHA512_DIGEST_ROW_SIZE]
 	movdqa	b,[STATE + 1 * SHA512_DIGEST_ROW_SIZE]
 	movdqa	c,[STATE + 2 * SHA512_DIGEST_ROW_SIZE]
@@ -250,7 +254,7 @@ sha512_mb_x2_sse:
 	movdqa	h,[STATE + 7 * SHA512_DIGEST_ROW_SIZE]
 
 	lea	TBL,[K512_2_MB]
-	
+
 	;; load the address of each of the 2 message lanes
 	;; getting ready to transpose input onto stack
 	mov	inp0,[STATE + _data_ptr_sha512  +0*PTR_SZ]
@@ -272,17 +276,17 @@ lloop:
 %assign i 0
 %rep 8
 	;; load up the shuffler for little-endian to big-endian format
-	movdqa	TMP, [PSHUFFLE_BYTE_FLIP_MASK] 
+	movdqa	TMP, [PSHUFFLE_BYTE_FLIP_MASK]
 	MOVPD	TT0,[inp0+IDX+i*16] ;; double precision is 64 bits
 	MOVPD	TT2,[inp1+IDX+i*16]
 	TRANSPOSE	TT0, TT2, TT1
-	pshufb	TT0, TMP 
+	pshufb	TT0, TMP
 	pshufb	TT1, TMP
-	ROUND_00_15	TT0,(i*2+0) 
-	ROUND_00_15	TT1,(i*2+1) 
+	ROUND_00_15	TT0,(i*2+0)
+	ROUND_00_15	TT1,(i*2+1)
 %assign i (i+1)
 %endrep
-	add	IDX, 8 * 16 ;; increment by a message block 
+	add	IDX, 8 * 16 ;; increment by a message block
 
 %assign i (i*4)
 
@@ -296,7 +300,7 @@ Lrounds_16_xx:
 
 	cmp	ROUND,ROUNDS
 	jb	Lrounds_16_xx
-   
+
 	;; add old digest
 	paddq	a, [rsp + _DIGEST + 0*SZ2]
 	paddq	b, [rsp + _DIGEST + 1*SZ2]
@@ -306,7 +310,7 @@ Lrounds_16_xx:
 	paddq	f, [rsp + _DIGEST + 5*SZ2]
 	paddq	g, [rsp + _DIGEST + 6*SZ2]
 	paddq	h, [rsp + _DIGEST + 7*SZ2]
- 
+
 	sub	INP_SIZE, 1  ;; unit is blocks
 	jne	lloop
 
@@ -334,7 +338,7 @@ Lrounds_16_xx:
 
 section .data
 align 64
-global K512_2_MB:data internal
+mk_global K512_2_MB, data, internal
 K512_2_MB:
 	dq	0x428a2f98d728ae22, 0x428a2f98d728ae22
 	dq	0x7137449123ef65cd, 0x7137449123ef65cd

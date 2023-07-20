@@ -7,8 +7,9 @@
     "maintainers": [
         "Emil Dotchevski"
     ],
-    "description": "A lightweight error-handling library for C++11.",
+    "description": "A lightweight error handling library for C++11.",
     "category": [
         "Error-handling"
-    ]
+    ],
+    "cxxstd": "11"
 }

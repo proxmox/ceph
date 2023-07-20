@@ -22,19 +22,19 @@
 
 find_package (PkgConfig REQUIRED)
 
-pkg_search_module (lz4_PC liblz4)
+pkg_search_module (PC_lz4 QUIET liblz4)
 
 find_library (lz4_LIBRARY
   NAMES lz4
   HINTS
-    ${lz4_PC_LIBDIR}
-    ${lz4_PC_LIBRARY_DIRS})
+    ${PC_lz4_LIBDIR}
+    ${PC_lz4_LIBRARY_DIRS})
 
 find_path (lz4_INCLUDE_DIR
   NAMES lz4.h
   HINTS
-    ${lz4_PC_INCLUDEDIR}
-    ${lz4_PC_INCLUDEDIRS})
+    ${PC_lz4_INCLUDEDIR}
+    ${PC_lz4_INCLUDE_DIRS})
 
 mark_as_advanced (
   lz4_LIBRARY
@@ -46,10 +46,7 @@ find_package_handle_standard_args (lz4
   REQUIRED_VARS
     lz4_LIBRARY
     lz4_INCLUDE_DIR
-  VERSION_VAR lz4_PC_VERSION)
-
-set (lz4_LIBRARIES ${lz4_LIBRARY})
-set (lz4_INCLUDE_DIRS ${lz4_INCLUDE_DIR})
+  VERSION_VAR lz4_VERSION)
 
 if (lz4_FOUND)
   set (CMAKE_REQUIRED_LIBRARIES ${lz4_LIBRARY})
@@ -58,13 +55,16 @@ if (lz4_FOUND)
   check_symbol_exists (LZ4_compress_default
     ${lz4_INCLUDE_DIR}/lz4.h
     lz4_HAVE_COMPRESS_DEFAULT)
-endif ()
 
-if (lz4_FOUND AND NOT (TARGET lz4::lz4))
-  add_library (lz4::lz4 UNKNOWN IMPORTED)
+  set (lz4_LIBRARIES ${lz4_LIBRARY})
+  set (lz4_INCLUDE_DIRS ${lz4_INCLUDE_DIR})
 
-  set_target_properties (lz4::lz4
-    PROPERTIES
-      IMPORTED_LOCATION ${lz4_LIBRARY}
-      INTERFACE_INCLUDE_DIRECTORIES ${lz4_INCLUDE_DIRS})
+  if (NOT (TARGET lz4::lz4))
+    add_library (lz4::lz4 UNKNOWN IMPORTED)
+
+    set_target_properties (lz4::lz4
+      PROPERTIES
+        IMPORTED_LOCATION ${lz4_LIBRARY}
+        INTERFACE_INCLUDE_DIRECTORIES ${lz4_INCLUDE_DIRS})
+  endif ()
 endif ()

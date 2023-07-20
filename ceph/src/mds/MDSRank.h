@@ -55,7 +55,8 @@ enum {
   l_mds_reply_latency,
   l_mds_slow_reply,
   l_mds_forward,
-  l_mds_dir_fetch,
+  l_mds_dir_fetch_complete,
+  l_mds_dir_fetch_keys,
   l_mds_dir_commit,
   l_mds_dir_split,
   l_mds_dir_merge,
@@ -372,6 +373,11 @@ class MDSRank {
     int config_client(int64_t session_id, bool remove,
 		      const std::string& option, const std::string& value,
 		      std::ostream& ss);
+    void schedule_inmemory_logger();
+
+    double get_inject_journal_corrupt_dentry_first() const {
+      return inject_journal_corrupt_dentry_first;
+    }
 
     // Reference to global MDS::mds_lock, so that users of MDSRank don't
     // carry around references to the outer MDS, and we can substitute
@@ -557,6 +563,8 @@ class MDSRank {
     // with the provided epoch.
     void apply_blocklist(const std::set<entity_addr_t> &addrs, epoch_t epoch);
 
+    void reset_event_flags();
+
     // Incarnation as seen in MDSMap at the point where a rank is
     // assigned.
     int incarnation = 0;
@@ -613,6 +621,8 @@ class MDSRank {
     Context *suicide_hook;
 
     bool standby_replaying = false;  // true if current replay pass is in standby-replay mode
+    uint64_t extraordinary_events_dump_interval = 0;
+    double inject_journal_corrupt_dentry_first = 0.0;
 private:
     bool send_status = true;
 
@@ -623,10 +633,13 @@ private:
     // "task" string that gets displayed in ceph status
     inline static const std::string SCRUB_STATUS_KEY = "scrub status";
 
+    bool client_eviction_dump = false;
+
     void get_task_status(std::map<std::string, std::string> *status);
     void schedule_update_timer_task();
     void send_task_status();
 
+    void inmemory_logger();
     bool is_rank0() const {
       return whoami == (mds_rank_t)0;
     }
@@ -635,9 +648,6 @@ private:
     boost::asio::io_context& ioc;
 };
 
-/* This expects to be given a reference which it is responsible for.
- * The finish function calls functions which
- * will put the Message exactly once.*/
 class C_MDS_RetryMessage : public MDSInternalContext {
 public:
   C_MDS_RetryMessage(MDSRank *mds, const cref_t<Message> &m)

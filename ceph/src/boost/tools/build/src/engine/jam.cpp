@@ -16,8 +16,8 @@
  * Copyright 2001-2004 David Abrahams.
  * Copyright 2018 Rene Rivera
  * Distributed under the Boost Software License, Version 1.0.
- * (See accompanying file LICENSE_1_0.txt or copy at
- * http://www.boost.org/LICENSE_1_0.txt)
+ * (See accompanying file LICENSE.txt or copy at
+ * https://www.bfgroup.xyz/b2/LICENSE.txt)
  */
 
 /*
@@ -242,10 +242,10 @@ static void usage( const char * progname )
 #endif
 	err_printf("--x     Option is ignored.\n\n");
 
-    exit( EXITBAD );
+    b2::clean_exit( EXITBAD );
 }
 
-int main( int argc, char * * argv )
+int guarded_main( int argc, char * * argv )
 {
     int                     n;
     char                  * s;
@@ -260,15 +260,6 @@ int main( int argc, char * * argv )
 
     saved_argv0 = argv[ 0 ];
     last_update_now_status = 0;
-
-    BJAM_MEM_INIT();
-
-#ifdef OS_MAC
-    InitGraf( &qd.thePort );
-#endif
-
-    cwd_init();
-    constants_init();
 
 #ifdef JAM_DEBUGGER
 
@@ -382,7 +373,7 @@ int main( int argc, char * * argv )
         {
             err_printf( "Invalid pipe descriptor '%d', valid values are -p[0..3]."
                 "\n", globs.pipe_action );
-            exit( EXITBAD );
+            b2::clean_exit( EXITBAD );
         }
     }
 
@@ -398,7 +389,7 @@ int main( int argc, char * * argv )
         if ( globs.jobs < 1 )
         {
             err_printf( "Invalid value for the '-j' option.\n" );
-            exit( EXITBAD );
+            b2::clean_exit( EXITBAD );
         }
     }
 
@@ -449,7 +440,7 @@ int main( int argc, char * * argv )
         {
             err_printf( "[errno %d] failed to write output file '%s': %s",
                 errno, s, strerror(errno) );
-            exit( EXITBAD );
+            b2::clean_exit( EXITBAD );
         }
         /* ++globs.noexec; */
     }
@@ -668,9 +659,32 @@ int main( int argc, char * * argv )
         PROFILE_EXIT( MAIN );
     }
 
+    return status ? EXITBAD : EXITOK;
+}
+
+int main( int argc, char * * argv )
+{
+    BJAM_MEM_INIT();
+
+#ifdef OS_MAC
+    InitGraf( &qd.thePort );
+#endif
+
+    cwd_init();
+    constants_init();
+
+    int result = EXIT_SUCCESS;
+    try
+    {
+        result = guarded_main( argc, argv );
+    }
+    catch ( b2::exit_result exit_code )
+    {
+        result = (int)exit_code;
+    }
+
     if ( DEBUG_PROFILE )
         profile_dump();
-
 
 #ifdef OPT_HEADER_CACHE_EXT
     hcache_done();
@@ -705,78 +719,5 @@ int main( int argc, char * * argv )
 
     BJAM_MEM_CLOSE();
 
-    return status ? EXITBAD : EXITOK;
+    return result;
 }
-
-
-/*
- * executable_path()
- */
-
-#if defined(_WIN32)
-# define WIN32_LEAN_AND_MEAN
-# include <windows.h>
-char * executable_path( char const * argv0 )
-{
-    char buf[ 1024 ];
-    DWORD const ret = GetModuleFileNameA( NULL, buf, sizeof( buf ) );
-    return ( !ret || ret == sizeof( buf ) ) ? NULL : strdup( buf );
-}
-#elif defined(__APPLE__)  /* Not tested */
-# include <mach-o/dyld.h>
-char *executable_path( char const * argv0 )
-{
-    char buf[ 1024 ];
-    uint32_t size = sizeof( buf );
-    return _NSGetExecutablePath( buf, &size ) ? NULL : strdup( buf );
-}
-#elif defined(sun) || defined(__sun)  /* Not tested */
-# include <stdlib.h>
-char * executable_path( char const * argv0 )
-{
-    const char * execname = getexecname();
-    return execname ? strdup( execname ) : NULL;
-}
-#elif defined(__FreeBSD__)
-# include <sys/sysctl.h>
-char * executable_path( char const * argv0 )
-{
-    int mib[ 4 ] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
-    char buf[ 1024 ];
-    size_t size = sizeof( buf );
-    sysctl( mib, 4, buf, &size, NULL, 0 );
-    return ( !size || size == sizeof( buf ) ) ? NULL : strndup( buf, size );
-}
-#elif defined(__linux__)
-# include <unistd.h>
-char * executable_path( char const * argv0 )
-{
-    char buf[ 1024 ];
-    ssize_t const ret = readlink( "/proc/self/exe", buf, sizeof( buf ) );
-    return ( !ret || ret == sizeof( buf ) ) ? NULL : strndup( buf, ret );
-}
-#elif defined(OS_VMS)
-# include <unixlib.h>
-char * executable_path( char const * argv0 )
-{
-    char * vms_path = NULL;
-    char * posix_path = NULL;
-    char * p;
-
-    /* On VMS argv[0] shows absolute path to the image file.
-     * So, just remove VMS file version and translate path to POSIX-style.
-     */
-    vms_path = strdup( argv0 );
-    if ( vms_path && ( p = strchr( vms_path, ';') ) ) *p = '\0';
-    posix_path = decc$translate_vms( vms_path );
-    if ( vms_path ) free( vms_path );
-
-    return posix_path > 0 ? strdup( posix_path ) : NULL;
-}
-#else
-char * executable_path( char const * argv0 )
-{
-    /* If argv0 is an absolute path, assume it is the right absolute path. */
-    return argv0[ 0 ] == '/' ? strdup( argv0 ) : NULL;
-}
-#endif

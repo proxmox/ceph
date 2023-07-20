@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <openssl/md5.h>
 #include "md5_mb.h"
+#include "endian_helper.h"
 
 #define TEST_LEN  (1024*1024)
 #define TEST_BUFS 200
@@ -60,12 +61,18 @@ int main(void)
 	uint32_t i, j, fail = 0;
 	uint32_t lens[TEST_BUFS];
 	unsigned int jobs, t;
+	int ret;
 
 	printf("multibinary_md5 test, %d sets of %dx%d max: ", RANDOMS, TEST_BUFS, TEST_LEN);
 
 	srand(TEST_SEED);
 
-	posix_memalign((void *)&mgr, 16, sizeof(MD5_HASH_CTX_MGR));
+	ret = posix_memalign((void *)&mgr, 16, sizeof(MD5_HASH_CTX_MGR));
+	if ((ret != 0) || (mgr == NULL)) {
+		printf("posix_memalign failed test aborted\n");
+		return 1;
+	}
+
 	md5_ctx_mgr_init(mgr);
 
 	for (i = 0; i < TEST_BUFS; i++) {
@@ -92,11 +99,12 @@ int main(void)
 
 	for (i = 0; i < TEST_BUFS; i++) {
 		for (j = 0; j < MD5_DIGEST_NWORDS; j++) {
-			if (ctxpool[i].job.result_digest[j] != ((uint32_t *) digest_ssl[i])[j]) {
+			if (ctxpool[i].job.result_digest[j] !=
+			    to_le32(((uint32_t *) digest_ssl[i])[j])) {
 				fail++;
 				printf("Test%d, digest%d fail %08X <=> %08X\n",
 				       i, j, ctxpool[i].job.result_digest[j],
-				       ((uint32_t *) digest_ssl[i])[j]);
+				       to_le32(((uint32_t *) digest_ssl[i])[j]));
 			}
 		}
 	}
@@ -109,7 +117,7 @@ int main(void)
 		md5_ctx_mgr_init(mgr);
 
 		for (i = 0; i < jobs; i++) {
-			// Ramdom buffer with ramdom len and contents
+			// Random buffer with random len and contents
 			lens[i] = rand() % (TEST_LEN);
 			rand_buffer(bufs[i], lens[i]);
 
@@ -125,11 +133,11 @@ int main(void)
 		for (i = 0; i < jobs; i++) {
 			for (j = 0; j < MD5_DIGEST_NWORDS; j++) {
 				if (ctxpool[i].job.result_digest[j] !=
-				    ((uint32_t *) digest_ssl[i])[j]) {
+				    to_le32(((uint32_t *) digest_ssl[i])[j])) {
 					fail++;
 					printf("Test%d, digest%d fail %08X <=> %08X\n",
 					       i, j, ctxpool[i].job.result_digest[j],
-					       ((uint32_t *) digest_ssl[i])[j]);
+					       to_le32(((uint32_t *) digest_ssl[i])[j]));
 				}
 			}
 		}

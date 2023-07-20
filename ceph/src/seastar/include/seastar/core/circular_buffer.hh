@@ -124,8 +124,12 @@ private:
     size_t mask(size_t idx) const;
 
     template<typename CB, typename ValueType>
-    struct cbiterator : std::iterator<std::random_access_iterator_tag, ValueType> {
-        typedef std::iterator<std::random_access_iterator_tag, ValueType> super_t;
+    struct cbiterator {
+        using iterator_category = std::random_access_iterator_tag;
+        using value_type = ValueType;
+        using difference_type = std::ptrdiff_t;
+        using pointer = ValueType*;
+        using reference = ValueType&;
 
         ValueType& operator*() const noexcept { return cb->_impl.storage[cb->mask(idx)]; }
         ValueType* operator->() const noexcept { return &cb->_impl.storage[cb->mask(idx)]; }
@@ -135,7 +139,7 @@ private:
             return *this;
         }
         // postfix
-        cbiterator<CB, ValueType> operator++(int unused) noexcept {
+        cbiterator<CB, ValueType> operator++(int) noexcept {
             auto v = *this;
             idx++;
             return v;
@@ -146,22 +150,22 @@ private:
             return *this;
         }
         // postfix
-        cbiterator<CB, ValueType> operator--(int unused) noexcept {
+        cbiterator<CB, ValueType> operator--(int) noexcept {
             auto v = *this;
             idx--;
             return v;
         }
-        cbiterator<CB, ValueType> operator+(typename super_t::difference_type n) const noexcept {
+        cbiterator<CB, ValueType> operator+(difference_type n) const noexcept {
             return cbiterator<CB, ValueType>(cb, idx + n);
         }
-        cbiterator<CB, ValueType> operator-(typename super_t::difference_type n) const noexcept {
+        cbiterator<CB, ValueType> operator-(difference_type n) const noexcept {
             return cbiterator<CB, ValueType>(cb, idx - n);
         }
-        cbiterator<CB, ValueType>& operator+=(typename super_t::difference_type n) noexcept {
+        cbiterator<CB, ValueType>& operator+=(difference_type n) noexcept {
             idx += n;
             return *this;
         }
-        cbiterator<CB, ValueType>& operator-=(typename super_t::difference_type n) noexcept {
+        cbiterator<CB, ValueType>& operator-=(difference_type n) noexcept {
             idx -= n;
             return *this;
         }
@@ -172,18 +176,18 @@ private:
             return idx != rhs.idx;
         }
         bool operator<(const cbiterator<CB, ValueType>& rhs) const noexcept {
-            return idx < rhs.idx;
+            return *this - rhs < 0;
         }
         bool operator>(const cbiterator<CB, ValueType>& rhs) const noexcept {
-            return idx > rhs.idx;
+            return *this - rhs > 0;
         }
         bool operator>=(const cbiterator<CB, ValueType>& rhs) const noexcept {
-            return idx >= rhs.idx;
+            return *this - rhs >= 0;
         }
         bool operator<=(const cbiterator<CB, ValueType>& rhs) const noexcept {
-            return idx <= rhs.idx;
+            return *this - rhs <= 0;
         }
-       typename super_t::difference_type operator-(const cbiterator<CB, ValueType>& rhs) const noexcept {
+       difference_type operator-(const cbiterator<CB, ValueType>& rhs) const noexcept {
             return idx - rhs.idx;
         }
     private:
@@ -490,18 +494,15 @@ circular_buffer<T, Alloc>::erase(iterator first, iterator last) noexcept {
     // This also guarantees that iterators will be stable when removing from either front or back.
     if (std::distance(begin(), first) < std::distance(last, end())) {
         auto new_start = std::move_backward(begin(), first, last);
-        auto i = begin();
-        while (i < new_start) {
-            std::allocator_traits<Alloc>::destroy(_impl, &*i++);
+        for (auto i = begin(); i < new_start; ++i) {
+            std::allocator_traits<Alloc>::destroy(_impl, &*i);
         }
         _impl.begin = new_start.idx;
         return last;
     } else {
         auto new_end = std::move(last, end(), first);
-        auto i = new_end;
-        auto e = end();
-        while (i < e) {
-            std::allocator_traits<Alloc>::destroy(_impl, &*i++);
+        for (auto i = new_end, e = end(); i < e; ++i) {
+            std::allocator_traits<Alloc>::destroy(_impl, &*i);
         }
         _impl.end = new_end.idx;
         return first;

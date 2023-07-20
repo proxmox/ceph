@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -28,6 +28,10 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 %include "reg_sizes.asm"
+
+[bits 64]
+default rel
+section .text
 
 %ifidn __OUTPUT_FORMAT__, elf64
 %define KEY		rdi
@@ -113,8 +117,9 @@
 ; arg 2: rdx: pointer to expanded key array for encrypt
 ; arg 3: r8:  pointer to expanded key array for decrypt
 ;
-global aes_keyexp_192_sse:function
+mk_global aes_keyexp_192_sse, function
 aes_keyexp_192_sse:
+	endbranch
 
 %ifnidn __OUTPUT_FORMAT__, elf64
 	sub	rsp, 16*2 + 8
@@ -191,8 +196,9 @@ aes_keyexp_192_sse:
 
 
 
-global aes_keyexp_192_avx:function
+mk_global aes_keyexp_192_avx, function
 aes_keyexp_192_avx:
+	endbranch
 
 %ifnidn __OUTPUT_FORMAT__, elf64
 	sub	rsp, 16*2 + 8

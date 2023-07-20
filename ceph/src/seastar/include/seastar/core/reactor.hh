@@ -50,7 +50,6 @@
 #include <seastar/util/std-compat.hh>
 #include <boost/next_prior.hpp>
 #include <boost/lockfree/spsc_queue.hpp>
-#include <boost/program_options.hpp>
 #include <boost/thread/barrier.hpp>
 #include <boost/container/static_vector.hpp>
 #include <set>
@@ -104,15 +103,6 @@ class message_queue;
 class instance;
 }
 class reactor;
-inline
-size_t iovec_len(const std::vector<iovec>& iov)
-{
-    size_t ret = 0;
-    for (auto&& e : iov) {
-        ret += e.iov_len;
-    }
-    return ret;
-}
 
 }
 
@@ -170,6 +160,8 @@ public:
 
 size_t scheduling_group_count();
 
+void increase_thrown_exceptions_counter() noexcept;
+
 }
 
 class kernel_completion;
@@ -208,13 +200,13 @@ private:
     friend class internal::reactor_stall_sampler;
     friend class preempt_io_context;
     friend struct hrtimer_aio_completion;
-    friend struct task_quota_aio_completion;
     friend class reactor_backend_epoll;
     friend class reactor_backend_aio;
+    friend class reactor_backend_uring;
     friend class reactor_backend_selector;
+    friend class io_queue; // for aio statistics
     friend struct reactor_options;
     friend class aio_storage_context;
-    friend size_t scheduling_group_count();
 public:
     using poller = internal::poller;
     using idle_cpu_handler_result = seastar::idle_cpu_handler_result;
@@ -226,6 +218,7 @@ public:
         uint64_t aio_read_bytes = 0;
         uint64_t aio_writes = 0;
         uint64_t aio_write_bytes = 0;
+        uint64_t aio_outsizes = 0;
         uint64_t aio_errors = 0;
         uint64_t fstream_reads = 0;
         uint64_t fstream_read_bytes = 0;
@@ -275,6 +268,7 @@ private:
     std::unordered_map<dev_t, std::unique_ptr<io_queue>> _io_queues;
     // ... when dispatched all requests get into this single sink
     internal::io_sink _io_sink;
+    unsigned _num_io_groups = 0;
 
     std::vector<noncopyable_function<future<> ()>> _exit_funcs;
     unsigned _id = 0;
@@ -346,9 +340,7 @@ private:
     /// otherwise. This function should be used by a handler to return early if a task appears.
     idle_cpu_handler _idle_cpu_handler{ [] (work_waiting_on_reactor) {return idle_cpu_handler_result::no_more_work;} };
     std::unique_ptr<network_stack> _network_stack;
-    // _lowres_clock_impl will only be created on cpu 0
-    std::unique_ptr<lowres_clock_impl> _lowres_clock_impl;
-    lowres_clock::time_point _lowres_next_timeout;
+    lowres_clock::time_point _lowres_next_timeout = lowres_clock::time_point::max();
     std::optional<pollable_fd> _aio_eventfd;
     const bool _reuseport;
     circular_buffer<double> _loads;
@@ -357,7 +349,7 @@ private:
     sched_clock::duration _total_sleep;
     sched_clock::time_point _start_time = now();
     std::chrono::nanoseconds _max_poll_time = calculate_poll_time();
-    circular_buffer<output_stream<char>* > _flush_batching;
+    output_stream<char>::batch_flush_list_t _flush_batching;
     std::atomic<bool> _sleeping alignas(seastar::cache_line_size){0};
     pthread_t _thread_id alignas(seastar::cache_line_size) = pthread_self();
     bool _strict_o_direct = true;
@@ -369,11 +361,11 @@ private:
 private:
     static std::chrono::nanoseconds calculate_poll_time();
     static void block_notifier(int);
-    size_t handle_aio_error(internal::linux_abi::iocb* iocb, int ec);
     bool flush_pending_aio();
     steady_clock_type::time_point next_pending_aio() const noexcept;
     bool reap_kernel_completions();
     bool flush_tcp_batches();
+    void update_lowres_clocks() noexcept;
     bool do_expire_lowres_timers() noexcept;
     bool do_check_lowres_timers() const noexcept;
     void expire_manual_timers() noexcept;
@@ -438,7 +430,7 @@ private:
     void allocate_scheduling_group_specific_data(scheduling_group sg, scheduling_group_key key);
     future<> init_scheduling_group(scheduling_group sg, sstring name, float shares);
     future<> init_new_scheduling_group_key(scheduling_group_key key, scheduling_group_key_config cfg);
-    future<> destroy_scheduling_group(scheduling_group sg);
+    future<> destroy_scheduling_group(scheduling_group sg) noexcept;
     uint64_t tasks_processed() const;
     uint64_t min_vruntime() const;
     void request_preemption();
@@ -451,16 +443,20 @@ private:
     future<> do_connect(pollable_fd_state& pfd, socket_address& sa);
 
     future<size_t>
-    do_read_some(pollable_fd_state& fd, void* buffer, size_t size);
+    do_read(pollable_fd_state& fd, void* buffer, size_t size);
     future<size_t>
-    do_read_some(pollable_fd_state& fd, const std::vector<iovec>& iov);
+    do_recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov);
     future<temporary_buffer<char>>
     do_read_some(pollable_fd_state& fd, internal::buffer_allocator* ba);
 
     future<size_t>
-    do_write_some(pollable_fd_state& fd, const void* buffer, size_t size);
+    do_send(pollable_fd_state& fd, const void* buffer, size_t size);
     future<size_t>
-    do_write_some(pollable_fd_state& fd, net::packet& p);
+    do_sendmsg(pollable_fd_state& fd, net::packet& p);
+
+    future<temporary_buffer<char>>
+    do_recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba);
+
     int do_run();
 public:
     explicit reactor(std::shared_ptr<smp> smp, alien::instance& alien, unsigned id, reactor_backend_selector rbs, reactor_config cfg);
@@ -490,12 +486,14 @@ public:
     [[deprecated("Use io_priority_class.update_shares")]]
     future<> update_shares_for_class(io_priority_class pc, uint32_t shares);
     /// @private
-    future<> update_shares_for_queues(io_priority_class pc, uint32_t shares);
+    void update_shares_for_queues(io_priority_class pc, uint32_t shares);
+    /// @private
+    future<> update_bandwidth_for_queues(io_priority_class pc, uint64_t bandwidth);
 
     [[deprecated("Use io_priority_class.rename")]]
     static future<> rename_priority_class(io_priority_class pc, sstring new_name) noexcept;
     /// @private
-    future<> rename_queues(io_priority_class pc, sstring new_name) noexcept;
+    void rename_queues(io_priority_class pc, sstring new_name);
 
     void configure(const reactor_options& opts);
 
@@ -512,7 +510,7 @@ public:
 
     future<> posix_connect(pollable_fd pfd, socket_address sa, socket_address local);
 
-    future<> write_all(pollable_fd_state& fd, const void* buffer, size_t size);
+    future<> send_all(pollable_fd_state& fd, const void* buffer, size_t size);
 
     future<file> open_file_dma(std::string_view name, open_flags flags, file_open_options options = {}) noexcept;
     future<file> open_directory(std::string_view name) noexcept;
@@ -533,20 +531,14 @@ public:
     future<> chmod(std::string_view name, file_permissions permissions) noexcept;
 
     future<int> inotify_add_watch(int fd, std::string_view path, uint32_t flags);
-    
-    // In the following three methods, prepare_io is not guaranteed to execute in the same processor
-    // in which it was generated. Therefore, care must be taken to avoid the use of objects that could
-    // be destroyed within or at exit of prepare_io.
-    future<size_t> submit_io_read(io_queue* ioq,
-            const io_priority_class& priority_class,
-            size_t len,
-            internal::io_request req,
-            io_intent* intent) noexcept;
-    future<size_t> submit_io_write(io_queue* ioq,
-            const io_priority_class& priority_class,
-            size_t len,
-            internal::io_request req,
-            io_intent* intent) noexcept;
+
+    future<std::tuple<file_desc, file_desc>> make_pipe();
+    future<std::tuple<pid_t, file_desc, file_desc, file_desc>>
+    spawn(std::string_view pathname,
+          std::vector<sstring> argv,
+          std::vector<sstring> env = {});
+    future<int> waitpid(pid_t pid);
+    void kill(pid_t pid, int sig);
 
     int run() noexcept;
     void exit(int ret);
@@ -565,36 +557,10 @@ public:
         _at_destroy_tasks->_q.push_back(make_task(default_scheduling_group(), std::forward<Func>(func)));
     }
 
-#ifdef SEASTAR_SHUFFLE_TASK_QUEUE
-    void shuffle(task*&, task_queue&);
-#endif
     task* current_task() const { return _current_task; }
 
-    void add_task(task* t) noexcept {
-        auto sg = t->group();
-        auto* q = _task_queues[sg._id].get();
-        bool was_empty = q->_q.empty();
-        q->_q.push_back(std::move(t));
-#ifdef SEASTAR_SHUFFLE_TASK_QUEUE
-        shuffle(q->_q.back(), *q);
-#endif
-        if (was_empty) {
-            activate(*q);
-        }
-    }
-    void add_urgent_task(task* t) noexcept {
-        memory::scoped_critical_alloc_section _;
-        auto sg = t->group();
-        auto* q = _task_queues[sg._id].get();
-        bool was_empty = q->_q.empty();
-        q->_q.push_front(std::move(t));
-#ifdef SEASTAR_SHUFFLE_TASK_QUEUE
-        shuffle(q->_q.front(), *q);
-#endif
-        if (was_empty) {
-            activate(*q);
-        }
-    }
+    void add_task(task* t) noexcept;
+    void add_urgent_task(task* t) noexcept;
 
     /// Set a handler that will be called when there is no task to execute on cpu.
     /// Handler should do a low priority work.
@@ -647,7 +613,7 @@ private:
     void unregister_poller(pollfn* p);
     void replace_poller(pollfn* old, pollfn* neww);
     void register_metrics();
-    future<> write_all_part(pollable_fd_state& fd, const void* buffer, size_t size, size_t completed);
+    future<> send_all_part(pollable_fd_state& fd, const void* buffer, size_t size, size_t completed);
 
     future<> fdatasync(int fd) noexcept;
 
@@ -669,7 +635,6 @@ private:
     friend struct pollable_fd_state_deleter;
     friend class posix_file_impl;
     friend class blockdev_file_impl;
-    friend class readable_eventfd;
     friend class timer<>;
     friend class timer<lowres_clock>;
     friend class timer<manual_clock>;
@@ -677,8 +642,8 @@ private:
     friend class smp_message_queue;
     friend class internal::poller;
     friend class scheduling_group;
-    friend void add_to_flush_poller(output_stream<char>* os);
-    friend void seastar::log_exception_trace() noexcept;
+    friend void add_to_flush_poller(output_stream<char>& os) noexcept;
+    friend void seastar::internal::increase_thrown_exceptions_counter() noexcept;
     friend void report_failed_future(const std::exception_ptr& eptr) noexcept;
     friend void with_allow_abandoned_failed_futures(unsigned count, noncopyable_function<void ()> func);
     metrics::metric_groups _metric_groups;
@@ -709,8 +674,7 @@ public:
     future<> readable(pollable_fd_state& fd);
     future<> writeable(pollable_fd_state& fd);
     future<> readable_or_writeable(pollable_fd_state& fd);
-    void abort_reader(pollable_fd_state& fd);
-    void abort_writer(pollable_fd_state& fd);
+    future<> poll_rdhup(pollable_fd_state& fd);
     void enable_timer(steady_clock_type::time_point when) noexcept;
     /// Sets the "Strict DMA" flag.
     ///
@@ -725,7 +689,9 @@ public:
     void set_bypass_fsync(bool value);
     void update_blocked_reactor_notify_ms(std::chrono::milliseconds ms);
     std::chrono::milliseconds get_blocked_reactor_notify_ms() const;
-    // For testing:
+    /// For testing, sets the stall reporting function which is called when
+    /// a stall is detected (and not suppressed). Setting the function also
+    /// resets the supression state.
     void set_stall_detector_report_function(std::function<void ()> report);
     std::function<void ()> get_stall_detector_report_function() const;
 };
@@ -753,17 +719,6 @@ inline reactor& engine() {
 
 inline bool engine_is_ready() {
     return local_engine != nullptr;
-}
-
-inline
-size_t iovec_len(const iovec* begin, size_t len)
-{
-    size_t ret = 0;
-    auto end = begin + len;
-    while (begin != end) {
-        ret += begin++->iov_len;
-    }
-    return ret;
 }
 
 inline int hrtimer_signal() {

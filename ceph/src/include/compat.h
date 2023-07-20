@@ -15,6 +15,7 @@
 #include "acconfig.h"
 #include <sys/types.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #if defined(__linux__)
@@ -27,8 +28,17 @@
 #endif 
 
 #include <sys/stat.h>
+
+#ifdef _WIN32
+#include "include/win32/fs_compat.h"
+#endif
+
 #ifndef ACCESSPERMS
 #define ACCESSPERMS (S_IRWXU|S_IRWXG|S_IRWXO)
+#endif
+
+#ifndef ALLPERMS
+#define ALLPERMS (S_ISUID|S_ISGID|S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO)
 #endif
 
 #if defined(__FreeBSD__)
@@ -232,7 +242,6 @@ int ceph_memzero_s(void *dest, size_t destsz, size_t count);
 #include <time.h>
 
 #include "include/win32/win32_errno.h"
-#include "include/win32/fs_compat.h"
 
 // There are a few name collisions between Windows headers and Ceph.
 // Updating Ceph definitions would be the prefferable fix in order to avoid
@@ -349,7 +358,9 @@ extern _CRTIMP errno_t __cdecl _putenv_s(const char *_Name,const char *_Value);
 #define compat_closesocket closesocket
 // Use "aligned_free" when freeing memory allocated using posix_memalign or
 // _aligned_malloc. Using "free" will crash.
-#define aligned_free(ptr) _aligned_free(ptr)
+static inline void aligned_free(void* ptr) {
+  _aligned_free(ptr);
+}
 
 // O_CLOEXEC is not defined on Windows. Since handles aren't inherited
 // with subprocesses unless explicitly requested, we'll define this
@@ -363,7 +374,9 @@ extern _CRTIMP errno_t __cdecl _putenv_s(const char *_Name,const char *_Value);
 
 #define SOCKOPT_VAL_TYPE void*
 
-#define aligned_free(ptr) free(ptr)
+static inline void aligned_free(void* ptr) {
+  free(ptr);
+}
 static inline int compat_closesocket(int fildes) {
   return close(fildes);
 }

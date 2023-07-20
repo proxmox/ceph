@@ -26,11 +26,11 @@
 
 #include <boost/any.hpp>
 #include <boost/intrusive/list.hpp>
-#include <boost/program_options.hpp>
 
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <set>
 
 /// \defgroup program-options Program Options
 ///
@@ -459,14 +459,22 @@ public:
 /// Contains no value, can be set or not.
 template <>
 class value<std::monostate> : public basic_value {
-    bool _set = false;
+    std::optional<bool> _set;
 
 private:
     virtual void do_describe(options_descriptor& descriptor) const override {
         descriptor.visit_value();
     }
     virtual void do_mutate(options_mutator& mutator) override {
-        _set = mutator.visit_value();
+        bool is_set = mutator.visit_value();
+        if (_set.has_value()) {
+            // override the value only if it is not preset
+            if (is_set) {
+                _set = true;
+            }
+        } else {
+            _set = is_set;
+        }
     }
 
 public:
@@ -483,7 +491,7 @@ public:
         : basic_value(group, false, std::move(name), {})
     { }
     /// Is the option set?
-    operator bool () const { return _set; }
+    operator bool () const { return _set ? _set.value() : false; }
     void set_value() { _set = true; }
     void unset_value() { _set = false; }
 };
@@ -576,7 +584,8 @@ public:
         , _selected_candidate(find_candidate(default_candidate))
     { }
     selection_value(option_group& group, std::string name, candidates candidates, std::string description)
-        : selection_value(group, std::move(name), std::move(candidates), {}, std::move(description))
+        : basic_value(group, true, std::move(name), std::move(description))
+        , _candidates(std::move(candidates))
     { }
     /// Construct an unused value.
     selection_value(option_group& group, std::string name, unused)

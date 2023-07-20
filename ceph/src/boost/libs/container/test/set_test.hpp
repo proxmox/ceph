@@ -19,12 +19,22 @@
 #include <boost/move/iterator.hpp>
 #include <boost/move/make_unique.hpp>
 
+#if defined(BOOST_GCC) && (BOOST_GCC >= 40600)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
+#endif
+
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_FUNCNAME rebalance
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_NS_BEG namespace boost { namespace container { namespace test {
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_NS_END   }}}
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_MIN 0
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_MAX 0
 #include <boost/intrusive/detail/has_member_function_callable_with.hpp>
+
+//#pragma GCC diagnostic ignored "-Wunused-result"
+#if defined(BOOST_GCC) && (BOOST_GCC >= 40600)
+#pragma GCC diagnostic pop
+#endif
 
 namespace boost{
 namespace container {
@@ -754,16 +764,16 @@ int set_test ()
       stdmultiset.clear();
 
       {
-         IntType aux_vect[MaxElem];
+         IntType aux_vect[(std::size_t)MaxElem];
          for(int i = 0; i < MaxElem; ++i){
             aux_vect[i] = i;
          }
 
-         IntType aux_vect2[MaxElem];
+         IntType aux_vect2[(std::size_t)MaxElem];
          for(int i = 0; i < MaxElem; ++i){
             aux_vect2[i] = MaxElem/2+i;
          }
-         IntType aux_vect3[MaxElem];
+         IntType aux_vect3[(std::size_t)MaxElem];
          for(int i = 0; i < MaxElem; ++i){
             aux_vect3[i] = MaxElem*2/2+i;
          }
@@ -795,16 +805,16 @@ int set_test ()
       stdset.clear();
       stdmultiset.clear();
       {
-         IntType aux_vect[MaxElem];
+         IntType aux_vect[(std::size_t)MaxElem];
          for(int i = 0; i < MaxElem; ++i){
             aux_vect[i] = i;
          }
 
-         IntType aux_vect2[MaxElem];
+         IntType aux_vect2[(std::size_t)MaxElem];
          for(int i = 0; i < MaxElem; ++i){
             aux_vect2[i] = MaxElem/2+i;
          }
-         IntType aux_vect3[MaxElem];
+         IntType aux_vect3[(std::size_t)MaxElem];
          for(int i = 0; i < MaxElem; ++i){
             aux_vect3[i] = MaxElem*2/2+i;
          }

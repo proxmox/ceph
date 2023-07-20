@@ -69,3 +69,70 @@ lib(boost_system_std_single_instance_lib2 STD_SINGLE_INSTANCE_DYN_LINK std_singl
 
 system_run(std_single_instance_test.cpp std_single_instance_1.cpp std_single_instance_2.cpp)
 boost_test(SOURCES std_single_instance_test.cpp NAME std_single_instance_test_lib LINK_LIBRARIES boost_system_std_single_instance_lib1 boost_system_std_single_instance_lib2)
+
+boost_test(TYPE run SOURCES is_error_code_enum_test.cpp)
+boost_test(TYPE run SOURCES is_error_condition_enum_test.cpp)
+boost_test(TYPE run SOURCES errc_test.cpp)
+boost_test(TYPE run SOURCES errc_test2.cpp)
+boost_test(TYPE run SOURCES error_category_test2.cpp)
+boost_test(TYPE run SOURCES error_condition_test.cpp)
+boost_test(TYPE run SOURCES error_condition_test2.cpp)
+boost_test(TYPE run SOURCES generic_category_test2.cpp)
+boost_test(TYPE run SOURCES generic_category_test3.cpp)
+boost_test(TYPE run SOURCES system_category_test2.cpp)
+boost_test(TYPE run SOURCES system_category_test3.cpp)
+
+boost_test(TYPE run SOURCES windows_error_test.cpp)
+boost_test(TYPE run SOURCES cygwin_error_test.cpp)
+boost_test(TYPE run SOURCES linux_error_test.cpp)
+
+boost_test(TYPE link SOURCES errc_test3.cpp)
+
+boost_test(TYPE run SOURCES snprintf_test.cpp)
+
+boost_test(TYPE run SOURCES std_interop_test2.cpp)
+boost_test(TYPE run SOURCES std_interop_test3.cpp)
+boost_test(TYPE run SOURCES std_interop_test4.cpp)
+boost_test(TYPE run SOURCES std_interop_test5.cpp)
+boost_test(TYPE run SOURCES std_interop_test6.cpp)
+boost_test(TYPE run SOURCES std_interop_test7.cpp)
+boost_test(TYPE run SOURCES std_interop_test8.cpp)
+boost_test(TYPE run SOURCES std_interop_test9.cpp)
+
+boost_test(TYPE run SOURCES ec_location_test.cpp)
+
+boost_test(TYPE run SOURCES error_condition_test3.cpp)
+boost_test(TYPE run SOURCES error_code_test2.cpp)
+boost_test(TYPE run SOURCES system_error_test2.cpp)
+boost_test(TYPE run SOURCES std_interop_test10.cpp)
+
+boost_test(TYPE run SOURCES ec_location_test2.cpp)
+boost_test(TYPE run SOURCES ec_what_test.cpp)
+boost_test(TYPE run SOURCES system_error_test3.cpp)
+
+boost_test(TYPE run SOURCES std_interop_test11.cpp)
+
+boost_test(TYPE run SOURCES ec_wstream_test.cpp)
+
+boost_test(TYPE run SOURCES std_interop_test12.cpp)
+
+boost_test(TYPE run SOURCES errc_test4.cpp)
+
+# result
+
+set(BOOST_TEST_COMPILE_FEATURES cxx_std_11)
+
+boost_test(TYPE run SOURCES result_default_construct.cpp)
+boost_test(TYPE run SOURCES result_value_construct.cpp)
+boost_test(TYPE run SOURCES result_error_construct.cpp)
+boost_test(TYPE run SOURCES result_copy_construct.cpp)
+boost_test(TYPE run SOURCES result_move_construct.cpp)
+boost_test(TYPE run SOURCES result_copy_assign.cpp)
+boost_test(TYPE run SOURCES result_move_assign.cpp)
+boost_test(TYPE run SOURCES result_value_access.cpp)
+boost_test(TYPE run SOURCES result_error_access.cpp)
+boost_test(TYPE run SOURCES result_swap.cpp)
+boost_test(TYPE run SOURCES result_eq.cpp)
+boost_test(TYPE run SOURCES result_range_for.cpp)
+boost_test(TYPE run SOURCES result_value_construct2.cpp)
+boost_test(TYPE run SOURCES result_error_construct2.cpp)

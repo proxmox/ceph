@@ -27,38 +27,34 @@ class ReadResult;
 template <typename ImageCtxT = ImageCtx>
 class ImageRequest {
 public:
-  typedef std::vector<std::pair<uint64_t,uint64_t> > Extents;
-
   virtual ~ImageRequest() {
     m_trace.event("finish");
   }
 
   static void aio_read(ImageCtxT *ictx, AioCompletion *c,
-                       Extents &&image_extents, ReadResult &&read_result,
-                       IOContext io_context, int op_flags, int read_flags,
+                       Extents &&image_extents, ImageArea area,
+                       ReadResult &&read_result, IOContext io_context,
+                       int op_flags, int read_flags,
                        const ZTracer::Trace &parent_trace);
   static void aio_write(ImageCtxT *ictx, AioCompletion *c,
-                        Extents &&image_extents, bufferlist &&bl,
-                        IOContext io_context, int op_flags,
+                        Extents &&image_extents, ImageArea area,
+                        bufferlist &&bl, int op_flags,
 			const ZTracer::Trace &parent_trace);
   static void aio_discard(ImageCtxT *ictx, AioCompletion *c,
-                          Extents &&image_extents,
+                          Extents &&image_extents, ImageArea area,
                           uint32_t discard_granularity_bytes,
-                          IOContext io_context,
                           const ZTracer::Trace &parent_trace);
   static void aio_flush(ImageCtxT *ictx, AioCompletion *c,
                         FlushSource flush_source,
                         const ZTracer::Trace &parent_trace);
   static void aio_writesame(ImageCtxT *ictx, AioCompletion *c,
-                            Extents &&image_extents, bufferlist &&bl,
-                            IOContext io_context, int op_flags,
+                            Extents &&image_extents, ImageArea area,
+                            bufferlist &&bl, int op_flags,
                             const ZTracer::Trace &parent_trace);
-
   static void aio_compare_and_write(ImageCtxT *ictx, AioCompletion *c,
-                                    Extents &&image_extents,
-                                    bufferlist &&cmp_bl,
-                                    bufferlist &&bl, uint64_t *mismatch_offset,
-                                    IOContext io_context, int op_flags,
+                                    Extents &&image_extents, ImageArea area,
+                                    bufferlist &&cmp_bl, bufferlist &&bl,
+                                    uint64_t *mismatch_offset, int op_flags,
                                     const ZTracer::Trace &parent_trace);
 
   void send();
@@ -73,15 +69,14 @@ protected:
   ImageCtxT &m_image_ctx;
   AioCompletion *m_aio_comp;
   Extents m_image_extents;
-  IOContext m_io_context;
+  ImageArea m_image_area;
   ZTracer::Trace m_trace;
 
   ImageRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
-               Extents &&image_extents, IOContext io_context,
-               const char *trace_name,
-	       const ZTracer::Trace &parent_trace)
+               Extents &&image_extents, ImageArea area, const char *trace_name,
+               const ZTracer::Trace &parent_trace)
     : m_image_ctx(image_ctx), m_aio_comp(aio_comp),
-      m_image_extents(std::move(image_extents)), m_io_context(io_context),
+      m_image_extents(std::move(image_extents)), m_image_area(area),
       m_trace(librbd::util::create_trace(image_ctx, trace_name, parent_trace)) {
     m_trace.event("start");
   }
@@ -96,12 +91,10 @@ protected:
 template <typename ImageCtxT = ImageCtx>
 class ImageReadRequest : public ImageRequest<ImageCtxT> {
 public:
-  using typename ImageRequest<ImageCtxT>::Extents;
-
   ImageReadRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
-                   Extents &&image_extents, ReadResult &&read_result,
-                   IOContext io_context, int op_flags, int read_flags,
-                   const ZTracer::Trace &parent_trace);
+                   Extents &&image_extents, ImageArea area,
+                   ReadResult &&read_result, IOContext io_context, int op_flags,
+                   int read_flags, const ZTracer::Trace &parent_trace);
 
 protected:
   void send_request() override;
@@ -112,7 +105,9 @@ protected:
   const char *get_request_type() const override {
     return "aio_read";
   }
+
 private:
+  IOContext m_io_context;
   int m_op_flags;
   int m_read_flags;
 };
@@ -126,14 +121,13 @@ public:
 
 protected:
   using typename ImageRequest<ImageCtxT>::ObjectRequests;
-  using typename ImageRequest<ImageCtxT>::Extents;
 
   AbstractImageWriteRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
-                            Extents &&image_extents, IOContext io_context,
+                            Extents &&image_extents, ImageArea area,
                             const char *trace_name,
 			    const ZTracer::Trace &parent_trace)
     : ImageRequest<ImageCtxT>(image_ctx, aio_comp, std::move(image_extents),
-			      io_context, trace_name, parent_trace),
+                              area, trace_name, parent_trace),
       m_synchronous(false) {
   }
 
@@ -160,15 +154,12 @@ private:
 template <typename ImageCtxT = ImageCtx>
 class ImageWriteRequest : public AbstractImageWriteRequest<ImageCtxT> {
 public:
-  using typename ImageRequest<ImageCtxT>::Extents;
-
   ImageWriteRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
-                    Extents &&image_extents, bufferlist &&bl,
-                    IOContext io_context, int op_flags,
-		    const ZTracer::Trace &parent_trace)
+                    Extents &&image_extents, ImageArea area, bufferlist &&bl,
+                    int op_flags, const ZTracer::Trace &parent_trace)
     : AbstractImageWriteRequest<ImageCtxT>(
-	image_ctx, aio_comp, std::move(image_extents), io_context, "write",
-        parent_trace),
+        image_ctx, aio_comp, std::move(image_extents), area,
+        "write", parent_trace),
       m_bl(std::move(bl)), m_op_flags(op_flags) {
   }
 
@@ -201,12 +192,12 @@ template <typename ImageCtxT = ImageCtx>
 class ImageDiscardRequest : public AbstractImageWriteRequest<ImageCtxT> {
 public:
   ImageDiscardRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
-                      Extents&& image_extents,
-		      uint32_t discard_granularity_bytes, IOContext io_context,
+                      Extents&& image_extents, ImageArea area,
+                      uint32_t discard_granularity_bytes,
                       const ZTracer::Trace &parent_trace)
     : AbstractImageWriteRequest<ImageCtxT>(
-	image_ctx, aio_comp, std::move(image_extents), io_context, "discard",
-        parent_trace),
+        image_ctx, aio_comp, std::move(image_extents), area,
+        "discard", parent_trace),
       m_discard_granularity_bytes(discard_granularity_bytes) {
   }
 
@@ -240,8 +231,9 @@ public:
   ImageFlushRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
                     FlushSource flush_source,
                     const ZTracer::Trace &parent_trace)
-    : ImageRequest<ImageCtxT>(image_ctx, aio_comp, {}, {}, "flush",
-                              parent_trace),
+    : ImageRequest<ImageCtxT>(image_ctx, aio_comp, {},
+                              ImageArea::DATA /* dummy for {} */,
+                              "flush", parent_trace),
       m_flush_source(flush_source) {
   }
 
@@ -268,12 +260,12 @@ template <typename ImageCtxT = ImageCtx>
 class ImageWriteSameRequest : public AbstractImageWriteRequest<ImageCtxT> {
 public:
   ImageWriteSameRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
-                        Extents&& image_extents, bufferlist &&bl,
-                        IOContext io_context, int op_flags,
+                        Extents&& image_extents, ImageArea area,
+                        bufferlist &&bl, int op_flags,
                         const ZTracer::Trace &parent_trace)
     : AbstractImageWriteRequest<ImageCtxT>(
-	image_ctx, aio_comp, std::move(image_extents), io_context, "writesame",
-        parent_trace),
+        image_ctx, aio_comp, std::move(image_extents), area,
+        "writesame", parent_trace),
       m_data_bl(std::move(bl)), m_op_flags(op_flags) {
   }
 
@@ -304,12 +296,12 @@ public:
   using typename ImageRequest<ImageCtxT>::ObjectRequests;
 
   ImageCompareAndWriteRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
-                              Extents &&image_extents, bufferlist &&cmp_bl,
-                              bufferlist &&bl, uint64_t *mismatch_offset,
-                              IOContext io_context, int op_flags,
-                               const ZTracer::Trace &parent_trace)
+                              Extents &&image_extents, ImageArea area,
+                              bufferlist &&cmp_bl, bufferlist &&bl,
+                              uint64_t *mismatch_offset, int op_flags,
+                              const ZTracer::Trace &parent_trace)
       : AbstractImageWriteRequest<ImageCtxT>(
-          image_ctx, aio_comp, std::move(image_extents), io_context,
+          image_ctx, aio_comp, std::move(image_extents), area,
           "compare_and_write", parent_trace),
         m_cmp_bl(std::move(cmp_bl)), m_bl(std::move(bl)),
         m_mismatch_offset(mismatch_offset), m_op_flags(op_flags) {
@@ -346,12 +338,11 @@ private:
 template <typename ImageCtxT = ImageCtx>
 class ImageListSnapsRequest : public ImageRequest<ImageCtxT> {
 public:
-  using typename ImageRequest<ImageCtxT>::Extents;
-
   ImageListSnapsRequest(
       ImageCtxT& image_ctx, AioCompletion* aio_comp,
-      Extents&& image_extents, SnapIds&& snap_ids, int list_snaps_flags,
-      SnapshotDelta* snapshot_delta, const ZTracer::Trace& parent_trace);
+      Extents&& image_extents, ImageArea area, SnapIds&& snap_ids,
+      int list_snaps_flags, SnapshotDelta* snapshot_delta,
+      const ZTracer::Trace& parent_trace);
 
 protected:
   void update_timestamp() override {}

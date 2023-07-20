@@ -3,9 +3,9 @@
 //  (C) Copyright Daryle Walker 2001, 2006.
 //  Distributed under the Boost Software License, Version 1.0. (See
 //  accompanying file LICENSE_1_0.txt or copy at
-//  http://www.boost.org/LICENSE_1_0.txt)
+//  https://www.boost.org/LICENSE_1_0.txt)
 
-//  See http://www.boost.org for most recent version including documentation.
+//  See https://www.boost.org for most recent version including documentation.
 
 //  Revision History
 //  01 Dec 2006  Various fixes for old compilers (Joaquin M Lopez Munoz)
@@ -23,7 +23,8 @@
 #include <boost/mpl/list.hpp>            // for boost::mpl::list
 #include <boost/operators.hpp>
 #include <boost/core/lightweight_test.hpp>
-#include <boost/random.hpp>
+#include <boost/random/mersenne_twister.hpp>
+#include <boost/random/uniform_int.hpp>
 #include <boost/rational.hpp>
 
 #include <istream>  // for std::basic_istream

@@ -79,9 +79,17 @@ As we do in this example, each Seastar program must define and run, an `app_temp
 
 The `return make_ready_future<>();` causes the event loop, and the whole application, to exit immediately after printing the "Hello World" message. In a more typical Seastar application, we will want event loop to remain alive and process incoming packets (for example), until explicitly exited. Such applications will return a _future_ which determines when to exit the application. We will introduce futures and how to use them below. In any case, the regular C `exit()` should not be used, because it prevents Seastar or the application from cleaning up appropriately.
 
-As shown in this example, all Seastar functions and types live in the "`seastar`" namespace. An user can either type this namespace prefix every time, or use shortcuts like "`using seastar::app_template`" or even "`using namespace seastar`" to avoid typing this prefix. We generally recommend to use the namespace prefixes `seastar` and `std` explicitly, and will will follow this style in all the examples below.
+As shown in this example, all Seastar functions and types live in the "`seastar`" namespace. An user can either type this namespace prefix every time, or use shortcuts like "`using seastar::app_template`" or even "`using namespace seastar`" to avoid typing this prefix. We generally recommend to use the namespace prefixes `seastar` and `std` explicitly, and will follow this style in all the examples below.
 
-To compile this program, first make sure you have downloaded, built, and optionally installed Seastar, and put the above program in a source file anywhere you want, let's call the file `getting-started.cc`.
+To compile this program (it's present in the `demos/hello-world.cc` file) you can just use Docker.
+
+```
+$ docker build -t seastar-dev  -f ./docker/dev/Dockerfile .
+$ scripts/build.sh dev
+$ docker run -it --rm -v $(pwd):/seastar seastar-dev /seastar/build/dev/demos/hello-world_demo -c1
+```
+
+Without the docker help, first make sure you have downloaded, built, and optionally installed Seastar, and put the above program in a source file anywhere you want, let's call the file `getting-started.cc`.
 
 Linux's [pkg-config](http://www.freedesktop.org/wiki/Software/pkg-config/) is one way for easily determining the compilation and linking parameters needed for using various libraries - such as Seastar.  For example, if Seastar was built in the directory `$SEASTAR` but not installed, one can compile `getting-started.cc` with it using the command:
 ```
@@ -364,6 +372,86 @@ In #4, we call a function that returns a `seastar::future<>`. In this case, the 
 
 Line #5 demonstrates returning a value. The integer value is used to satisfy the `future<int>` that our caller got when calling the coroutine.
 
+## Lambda coroutines
+
+A lambda function can be a coroutine. Due to an interaction between how C++ lambda coroutines are specified and how
+Seastar coroutines work, using lambda coroutines as continuations can result in use-after-free. To avoid such problems,
+take one of the following approaches:
+
+1. Use lambda coroutines as arguments to functions that explicitly claim support for them
+2. Wrap lambda coroutines with seastar::coroutine::lambda(), and ensure the lambda coroutine is fully awaited within the statement it is defined in.
+
+An example of wrapping a lambda coroutine is:
+
+```cpp
+#include <seastar/core/coroutine.hh>
+#include <seastar/coroutine/maybe_yield.hh>
+
+future<> foo() {
+    int n = 3;
+    int m = co_await seastar::yield().then(seastar::coroutine::lambda([n] () -> future<int> {
+        co_await seastar::coroutine::maybe_yield();
+        // `n` can be safely used here
+        co_return n;
+    }));
+    assert(n == m);
+}
+```
+
+Notes:
+1. seastar::future::then() accepts a continuation
+2. We wrap the argument to seastar::future::then() with seastar::coroutine::lambda()
+3. We ensure evaluation of the lambda completes within the same expression using the outer co_await.
+
+More information can be found in lambda-coroutine-fiasco.md.
+
+## Generators in coroutines
+
+Sometimes, it would be convenient to model a view of `input_range` with a coroutine which emits the elements one after
+another asynchronously. From the consumer of the view's perspective, it can retrieve the elements by `co_await`ing
+the return value of the coroutine. From the coroutine's perspective, it is able to produce the elements multiple times
+using `co_yield` without "leaving" the coroutine. A function producing a sequence of values can be named "generator".
+But unlike the regular coroutine which returns a single `seastar::future<T>`, a generator should return
+`seastar::coroutine::experimental::generator<T>`. Please note, `generator<T>` is still at its early stage of developing,
+the public interface this template is subject to change before it is stablized enough.
+
+Example
+
+```cpp
+#include <seastar/core/coroutine.hh>
+#include <seastar/core/sleep.hh>
+#include <seastar/coroutine/generator.hh>
+
+seastar::future<Preprocessed> prepare_ingredients(Ingredients&&);
+seastar::future<Dish> cook_a_dish(Preprocessed&&);
+seastar::future<> consume_a_dish(Dish&&);
+
+seastar::coroutine::experimental::generator<Dish>
+make_dishes(coroutine::experimental::buffer_size_t max_dishes_on_table,
+            Ingredients&& ingredients) {
+    while (ingredients) {
+        auto some_ingredients = ingredients.alloc();
+        auto preprocessed = co_await prepare_ingredients(std::move(some_ingredients));
+        co_yield co_await cook_a_dish(std::move(preprocessed));
+    }
+}
+
+seastar::future<> have_a_dinner(unsigned max_dishes_on_table) {
+    Ingredients ingredients;
+    auto dishes = make_dishes(std::move(ingredients));
+    while (auto dish = co_await dishes()) {
+        co_await consume_a_dish(std::move(dish));
+    }
+}
+```
+
+In this hypothetical kitchen, a chef and a diner are working in parallel. Instead of preparing
+all dishes beforehand, the chef cooks the dishes while the diner is consuming them one after another.
+Under most circumstances, neither the chef or the diner is blocked by its peer. But if the diner
+is too slow so that there are `max_dishes_on_table` dishes left on the table, the chef would wait
+until the number of dishes is less than this setting. And, apparently, if there is no dishes on the
+table, the diner would wait for new ones to be prepared by the chef.
+
 ## Exceptions in coroutines
 
 Coroutines automatically translate exceptions to futures and back.
@@ -440,6 +528,23 @@ Here, two read() calls are launched concurrently. The coroutine is paused until 
 
 Note that `all` waits for all of its sub-computations, even if some throw an exception. If an exception is thrown, it is propagated to the calling coroutine.
 
+The `seastar::coroutine::parallel_for_each` class template allows a coroutine to fork into several concurrently executing function invocations (or Seastar fibers, see below) over a range of elements and join again when they complete. Consider this example:
+
+```cpp
+#include <seastar/core/coroutines.hh>
+#include <seastar/coroutine/parallel_for_each.hh>
+
+seastar::future<bool> all_exist(std::vector<sstring> filenames) {
+    bool res = true;
+    co_await seastar::coroutine::parallel_for_each(filenames, [&res] (const seastar::sstring& name) -> seastar::future<> {
+        res &= co_await seastar::file_exists(name);
+    });
+    co_return res;
+}
+```
+
+Here, the lambda function passed to parallel_for_each is launched concurrently for each element in the filenames vector. The coroutine is paused until all calls complete.
+
 ## Breaking up long running computations
 
 Seastar is generally used for I/O, and coroutines usually launch I/O operations and consume their results, with little computation in between. But occasionally a long running computation is needed, and this risks preventing the reactor from performing I/O and scheduling other tasks.
@@ -456,6 +561,28 @@ seastar::future<int> long_loop(int n) {
         // Give the Seastar reactor opportunity to perform I/O or schedule
         // other tasks.
         co_await seastar::coroutine::maybe_yield();
+    }
+    co_return acc;
+}
+```
+
+## Bypassing preemption checks in coroutines
+
+By default, `co_await`-ing a future performs a preemption check, and will suspend if the task quota is already depleted. However, in certain cases it might be useful to be able to assume that awaiting a ready future will not yield.
+For such cases, it's possible to explicitly bypass the preemption check:
+
+```cpp
+#include <seastar/core/coroutine.hh>
+
+struct resource;
+seastar::future<int> compute_always_ready(int i, resource& r);
+
+seastar::future<int> accumulate(int n, resource& important_resource) {
+    float acc = 0;
+    for (int i = 0; i < n; ++i) {
+        // This await will not yield the control, so we're sure that nobody will
+        // be able to touch important_resource while we accumulate all the results.
+        acc += co_await seastar::coroutine::without_preemption_check(compute_always_ready(i, important_resource));
     }
     co_return acc;
 }
@@ -1040,7 +1167,7 @@ Both futures are `available()` (resolved), but the second has `failed()` (result
 
 The above example demonstrate that `when_all()` is inconvenient and verbose to use properly. The results are wrapped in a tuple, leading to verbose tuple syntax, and uses ready futures which must all be inspected individually for an exception to avoid error messages. 
 
-So Seastar also provides an easier to use `when_all_succeed()` function. This function too returns a future which resolves when all the given futures have resolved. If all of them succeeded, it passes the resulting values to continuation, without wrapping them in futures or a tuple. If, however, one or more of the futures failed, `when_all_succeed()` resolves to a failed future, containing the exception from one of the failed futures. If more than one of the given future failed, one of those will be passed on (it is unspecified which one is chosen), and the rest will be silently ignored. For example,
+So Seastar also provides an easier to use `when_all_succeed()` function. This function too returns a future which resolves when all the given futures have resolved. If all of them succeeded, it passes a tuple of the resulting values to continuation, without wrapping each of them in a future first. Sometimes, it could be tedious to unpack the tuple for consuming the resulting values. In that case, `then_unpack()` can be used in place of `then()`. `then_unpack()` unpacks the returned tuple and passes its elements to the following continuation as its parameters. If, however, one or more of the futures failed, `when_all_succeed()` resolves to a failed future, containing the exception from one of the failed futures. If more than one of the given future failed, one of those will be passed on (it is unspecified which one is chosen), and the rest will be silently ignored. For example,
 
 ```cpp
 using namespace seastar;
@@ -1048,19 +1175,21 @@ future<> f() {
     using namespace std::chrono_literals;
     return when_all_succeed(sleep(1s), make_ready_future<int>(2),
                     make_ready_future<double>(3.5)
-            ).then([] (int i, double d) {
+            ).then_unpack([] (int i, double d) {
         std::cout << i << " " << d << "\n";
     });
 }
 ```
 
-Note how the integer and double values held by the futures are conveniently passed, individually (without a tuple) to the continuation. Since `sleep()` does not contain a value, it is waited for, but no third value is passed to the continuation. That also means that if we `when_all_succeed()` on several `future<>` (without a value), the result is also a `future<>`:
+Note how the integer and double values held by the futures are conveniently passed, individually to the continuation. Since `sleep()` does not contain a value, it is waited for, but no third value is passed to the continuation. That also means that if we `when_all_succeed()` on several `future<>` (without a value), the result is a `future<tuple<>>`:
 
 ```cpp
 using namespace seastar;
 future<> f() {
     using namespace std::chrono_literals;
-    return when_all_succeed(sleep(1s), sleep(2s), sleep(3s));
+    return when_all_succeed(sleep(1s), sleep(2s), sleep(3s)).then_unpack([] {
+        return make_ready_future<>();
+    });
 }
 ```
 
@@ -1074,7 +1203,7 @@ future<> f() {
     using namespace std::chrono_literals;
     return when_all_succeed(make_ready_future<int>(2),
                     make_exception_future<double>("oops")
-            ).then([] (int i, double d) {
+            ).then_unpack([] (int i, double d) {
         std::cout << i << " " << d << "\n";
     }).handle_exception([] (std::exception_ptr e) {
         std::cout << "exception: " << e << "\n";
@@ -1602,7 +1731,7 @@ public:
     my_service(const std::string& str) : _str(str) { }
     seastar::future<> run() {
         std::cerr << "running on " << seastar::engine().cpu_id() <<
-            ", _str = " << _str << \n";
+            ", _str = " << _str << "\n";
         return seastar::make_ready_future<>();
     }
     seastar::future<> stop() {
@@ -2103,7 +2232,7 @@ seastar::future<> f() {
         seastar::sleep(std::chrono::seconds(10)).then([&stop] {
             stop = true;
         });
-        return seastar::when_all_succeed(loop(1, stop), loop(1, stop)).then(
+        return seastar::when_all_succeed(loop(1, stop), loop(1, stop)).then_unpack(
             [] (long n1, long n2) {
                 std::cout << "Counters: " << n1 << ", " << n2 << "\n";
             });
@@ -2144,13 +2273,13 @@ Now let's create two scheduling groups, and run `loop(1)` in the first schedulin
 seastar::future<> f() {
     return seastar::when_all_succeed(
             seastar::create_scheduling_group("loop1", 100),
-            seastar::create_scheduling_group("loop2", 100)).then(
+            seastar::create_scheduling_group("loop2", 100)).then_unpack(
         [] (seastar::scheduling_group sg1, seastar::scheduling_group sg2) {
         return seastar::do_with(false, [sg1, sg2] (bool& stop) {
             seastar::sleep(std::chrono::seconds(10)).then([&stop] {
                 stop = true;
             });
-            return seastar::when_all_succeed(loop_in_sg(1, stop, sg1), loop_in_sg(10, stop, sg2)).then(
+            return seastar::when_all_succeed(loop_in_sg(1, stop, sg1), loop_in_sg(10, stop, sg2)).then_unpack(
                 [] (long n1, long n2) {
                     std::cout << "Counters: " << n1 << ", " << n2 << "\n";
                 });

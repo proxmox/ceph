@@ -1,5 +1,5 @@
 /* Unit testing for outcomes
-(C) 2013-2020 Niall Douglas <http://www.nedproductions.biz/> (6 commits)
+(C) 2013-2022 Niall Douglas <http://www.nedproductions.biz/> (6 commits)
 
 
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -48,7 +48,7 @@ namespace issue0095
   out::result<int, F> f() { return F{}; }
   out::result<int, E> e()
   {
-    BOOST_OUTCOME_TRY(i, (f()));
+    BOOST_OUTCOME_TRY(auto &&i, (f()));
     return i;
   }
 }  // namespace issue0095

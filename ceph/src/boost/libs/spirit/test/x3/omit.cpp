@@ -4,7 +4,6 @@
     Distributed under the Boost Software License, Version 1.0. (See accompanying
     file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 =============================================================================*/
-#include <boost/detail/lightweight_test.hpp>
 #include <boost/spirit/home/x3.hpp>
 #include <boost/fusion/include/vector.hpp>
 #include <boost/fusion/include/at.hpp>
@@ -12,6 +11,16 @@
 #include <string>
 #include <iostream>
 #include "test.hpp"
+
+using boost::spirit::x3::rule;
+
+rule<class direct_rule, int> direct_rule = "direct_rule";
+rule<class indirect_rule, int> indirect_rule = "indirect_rule";
+
+auto const direct_rule_def = boost::spirit::x3::int_;
+auto const indirect_rule_def = direct_rule;
+
+BOOST_SPIRIT_DEFINE(direct_rule, indirect_rule)
 
 int
 main()
@@ -110,6 +119,16 @@ main()
 
         BOOST_TEST(test("x 123 \"a string\"", (omit[char_] >> int_ >> "\"a string\"")[f], space));
         BOOST_TEST(n == 123);
+    }
+
+    {
+        // test with simple rule
+        BOOST_TEST((test_attr("123", omit[direct_rule], unused)));
+    }
+
+    {
+        // test with complex rule
+        BOOST_TEST((test_attr("123", omit[indirect_rule], unused)));
     }
 
     return boost::report_errors();

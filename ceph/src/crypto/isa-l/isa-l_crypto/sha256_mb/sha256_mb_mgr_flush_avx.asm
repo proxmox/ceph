@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -33,7 +33,11 @@
 %include "reg_sizes.asm"
 
 extern sha256_mb_x4_avx
+extern sha256_opt_x1
+
+[bits 64]
 default rel
+section .text
 
 %ifidn __OUTPUT_FORMAT__, elf64
 ; LINUX register definitions
@@ -59,15 +63,15 @@ default rel
 %define unused_lanes    rbx
 %define lane_data       rbx
 %define tmp2            rbx
-			
+
 %define job_rax         rax
 %define tmp1            rax
 %define size_offset     rax
 %define tmp             rax
 %define start_offset    rax
-			
+
 %define tmp3            arg1
-			
+
 %define extra_blocks    arg2
 %define p               arg2
 
@@ -92,8 +96,9 @@ STACK_SPACE     equ _GPR_SAVE + _GPR_SAVE_SIZE + _ALIGN_SIZE
 
 ; SHA256_JOB* sha256_mb_mgr_flush_avx(SHA256_MB_JOB_MGR *state)
 ; arg 1 : rcx : state
-global sha256_mb_mgr_flush_avx:function
+mk_global sha256_mb_mgr_flush_avx, function
 sha256_mb_mgr_flush_avx:
+	endbranch
 
 	sub     rsp, STACK_SPACE
 	mov     [rsp + _GPR_SAVE + 8*0], rbx
@@ -112,9 +117,9 @@ sha256_mb_mgr_flush_avx:
 	vmovdqa  [rsp + _XMM_SAVE + 16*9], xmm15
 %endif
 
-	mov     unused_lanes, [state + _unused_lanes]
-	bt      unused_lanes, 16+3
-	jc      return_null
+	; use num_lanes_inuse to judge all lanes are empty
+	cmp	dword [state + _num_lanes_inuse], 0
+	jz	return_null
 
 	; find a lane with a non-null job
 	xor     idx, idx
@@ -154,8 +159,24 @@ APPEND(skip_,I):
 	mov     len2, idx
 	and     idx, 0xF
 	and     len2, ~0xF
-	jz      len_is_0        
+	jz      len_is_0
 
+	; compare with sha-sb threshold, if num_lanes_inuse <= threshold, using sb func
+	cmp	dword [state + _num_lanes_inuse], SHA256_SB_THRESHOLD_AVX
+	ja	mb_processing
+
+	; lensN-len2=idx
+	shr     len2, 4
+	mov     [state + _lens + idx*4], DWORD(idx)
+	mov	r10, idx
+	or	r10, 0x1000	; avx has 4 lanes *4, r10b is idx, r10b2 is 16
+	; "state" and "args" are the same address, arg1
+	; len is arg2, idx and nlane in r10
+	call    sha256_opt_x1
+	; state and idx are intact
+	jmp	len_is_0
+
+mb_processing:
 	sub     lens0, len2
 	sub     lens1, len2
 	sub     lens2, len2
@@ -183,6 +204,8 @@ len_is_0:
 	shl     unused_lanes, 4
 	or      unused_lanes, idx
 	mov     [state + _unused_lanes], unused_lanes
+
+	sub     dword [state + _num_lanes_inuse], 1
 
 	vmovd    xmm0, [state + _args_digest + 4*idx + 0*16]
 	vpinsrd  xmm0, [state + _args_digest + 4*idx + 1*16], 1
@@ -220,7 +243,7 @@ return:
 return_null:
 	xor     job_rax, job_rax
 	jmp     return
-	
+
 section .data align=16
 
 align 16

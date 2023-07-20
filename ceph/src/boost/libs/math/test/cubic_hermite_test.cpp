@@ -53,7 +53,7 @@ void test_constant()
         CHECK_ULP_CLOSE(Real(7), hermite_spline(thi), 2);
         CHECK_ULP_CLOSE(Real(0), hermite_spline.prime(tlo), 2);
         CHECK_ULP_CLOSE(Real(0), hermite_spline.prime(thi), 2);
-        tlo = boost::math::nextafter(tlo, std::numeric_limits<Real>::max());
+        tlo = boost::math::nextafter(tlo, (std::numeric_limits<Real>::max)());
         thi = boost::math::nextafter(thi, std::numeric_limits<Real>::lowest());
     }
 
@@ -175,7 +175,7 @@ void test_quadratic()
     for (Real t = x0; t <= xmax; t+= 0.0125)
     {
         CHECK_ULP_CLOSE(t*t/2, s(t), 5);
-        CHECK_ULP_CLOSE(t, s.prime(t), 65);
+        CHECK_ULP_CLOSE(t, s.prime(t), 138);
     }
 }
 
@@ -262,7 +262,7 @@ void test_cardinal_constant()
         CHECK_ULP_CLOSE(Real(0), hermite_spline_aos.prime(tlo), 2);
         CHECK_ULP_CLOSE(Real(0), hermite_spline_aos.prime(thi), 2);
 
-        tlo = boost::math::nextafter(tlo, std::numeric_limits<Real>::max());
+        tlo = boost::math::nextafter(tlo, (std::numeric_limits<Real>::max)());
         thi = boost::math::nextafter(thi, std::numeric_limits<Real>::lowest());
     }
 
@@ -329,7 +329,7 @@ void test_cardinal_linear()
         CHECK_ULP_CLOSE(Real(1), hermite_spline_aos.prime(tlo), 2);
         CHECK_ULP_CLOSE(Real(1), hermite_spline_aos.prime(thi), 2);
 
-        tlo = boost::math::nextafter(tlo, std::numeric_limits<Real>::max());
+        tlo = boost::math::nextafter(tlo, (std::numeric_limits<Real>::max)());
         thi = boost::math::nextafter(thi, std::numeric_limits<Real>::lowest());
     }
 
@@ -387,7 +387,7 @@ void test_cardinal_quadratic()
         CHECK_ULP_CLOSE(Real(tlo), saos.prime(tlo), 3);
         CHECK_ULP_CLOSE(Real(thi), saos.prime(thi), 3);
 
-        tlo = boost::math::nextafter(tlo, std::numeric_limits<Real>::max());
+        tlo = boost::math::nextafter(tlo, (std::numeric_limits<Real>::max)());
         thi = boost::math::nextafter(thi, std::numeric_limits<Real>::lowest());
     }
 }

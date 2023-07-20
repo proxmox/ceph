@@ -19,10 +19,17 @@ options:
   default: 6
   flags:
   - startup
+- name: crimson_seastar_smp
+  type: uint
+  level: advanced
+  desc: Number of seastar reactor threads to use for the osd
+  default: 1
+  flags:
+  - startup
 - name: crimson_alien_thread_cpu_cores
   type: str
   level: advanced
-  desc: CPU cores on which alienstore threads will run
+  desc: CPU cores on which alienstore threads will run in cpuset(7) format
 - name: seastore_segment_size
   type: size
   desc: Segment size to use for SegmentManager
@@ -32,7 +39,7 @@ options:
   type: size
   desc: Total size to use for SegmentManager block file if created
   level: dev
-  default: 100_G
+  default: 50_G
 - name: seastore_block_create
   type: bool
   level: dev
@@ -40,11 +47,6 @@ options:
   default: true
   see_also:
   - seastore_device_size
-- name: seastore_init_rewrite_segments_num_per_device
-  type: uint
-  level: dev
-  desc: Initial number of segments for rewriting extents per device
-  default: 6
 - name: seastore_journal_batch_capacity
   type: uint
   level: dev
@@ -80,3 +82,38 @@ options:
   level: advanced
   desc: Size in bytes of extents to keep in cache.
   default: 64_M
+- name: seastore_obj_data_write_amplification
+  type: float
+  level: advanced
+  desc: split extent if ratio of total extent size to write size exceeds this value
+  default: 1.25
+- name: seastore_max_concurrent_transactions
+  type: uint
+  level: advanced
+  desc: maximum concurrent transactions that seastore allows
+  default: 8
+- name: seastore_main_device_type
+  type: str
+  level: dev
+  desc: The main device type seastore uses (SSD or RANDOM_BLOCK_SSD)
+  default: SSD
+- name: seastore_cbjournal_size
+  type: size
+  level: dev
+  desc: Total size to use for CircularBoundedJournal if created, it is valid only if seastore_main_device_type is RANDOM_BLOCK
+  default: 5_G
+- name: seastore_multiple_tiers_stop_evict_ratio
+  type: float
+  level: advanced
+  desc: When the used ratio of main tier is less than this value, then stop evict cold data to the cold tier.
+  default: 0.5
+- name: seastore_multiple_tiers_default_evict_ratio
+  type: float
+  level: advanced
+  desc: Begin evicting cold data to the cold tier when the used ratio of the main tier reaches this value.
+  default: 0.6
+- name: seastore_multiple_tiers_fast_evict_ratio
+  type: float
+  level: advanced
+  desc: Begin fast eviction when the used ratio of the main tier reaches this value.
+  default: 0.7

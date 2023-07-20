@@ -22,6 +22,7 @@
 #include <boost/atomic/capabilities.hpp>
 #include <boost/atomic/ipc_atomic_flag.hpp>
 #include <boost/type_traits/integral_constant.hpp>
+#include <boost/smart_ptr/scoped_ptr.hpp>
 #include "atomic_wrapper.hpp"
 #include "lightweight_test_stream.hpp"
 #include "test_clock.hpp"
@@ -165,8 +166,9 @@ inline void test_notify_one(T value1, T value2, T value3)
 {
     for (unsigned int i = 0u; i < test_retry_count; ++i)
     {
-        notify_one_test< Wrapper, T > test(value1, value2, value3);
-        if (test.run())
+        // Avoid creating IPC atomics on the stack as this breaks on Darwin
+        boost::scoped_ptr< notify_one_test< Wrapper, T > > test(new notify_one_test< Wrapper, T >(value1, value2, value3));
+        if (test->run())
             return;
     }
 
@@ -276,8 +278,9 @@ inline void test_notify_all(T value1, T value2)
 {
     for (unsigned int i = 0u; i < test_retry_count; ++i)
     {
-        notify_all_test< Wrapper, T > test(value1, value2);
-        if (test.run())
+        // Avoid creating IPC atomics on the stack as this breaks on Darwin
+        boost::scoped_ptr< notify_all_test< Wrapper, T > > test(new notify_all_test< Wrapper, T >(value1, value2));
+        if (test->run())
             return;
     }
 
@@ -286,7 +289,7 @@ inline void test_notify_all(T value1, T value2)
 
 //! Invokes all wait/notify tests
 template< template< typename > class Wrapper, typename T >
-void test_wait_notify_api(T value1, T value2, T value3, boost::true_type)
+void test_wait_notify_api_impl(T value1, T value2, T value3, boost::true_type)
 {
     test_wait_value_mismatch< Wrapper >(value1, value2);
     test_notify_one< Wrapper >(value1, value2, value3);
@@ -294,7 +297,7 @@ void test_wait_notify_api(T value1, T value2, T value3, boost::true_type)
 }
 
 template< template< typename > class Wrapper, typename T >
-inline void test_wait_notify_api(T value1, T value2, T value3, boost::false_type)
+inline void test_wait_notify_api_impl(T, T, T, boost::false_type)
 {
 }
 
@@ -302,7 +305,15 @@ inline void test_wait_notify_api(T value1, T value2, T value3, boost::false_type
 template< template< typename > class Wrapper, typename T >
 inline void test_wait_notify_api(T value1, T value2, T value3)
 {
-    test_wait_notify_api< Wrapper >(value1, value2, value3, boost::integral_constant< bool, Wrapper< T >::atomic_type::is_always_lock_free >());
+    test_wait_notify_api_impl< Wrapper >(value1, value2, value3, boost::integral_constant< bool, Wrapper< T >::atomic_type::is_always_lock_free >());
+}
+
+//! Invokes all wait/notify tests, if the atomic type is lock-free
+template< template< typename > class Wrapper, typename T >
+inline void test_wait_notify_api(T value1, T value2, T value3, int has_native_wait_notify_macro)
+{
+    BOOST_TEST_EQ(Wrapper< T >::atomic_type::always_has_native_wait_notify, (has_native_wait_notify_macro == 2));
+    test_wait_notify_api< Wrapper >(value1, value2, value3);
 }
 
 

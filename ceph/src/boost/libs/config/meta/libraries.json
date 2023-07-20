@@ -4,10 +4,11 @@
     "description": "Helps Boost library developers adapt to compiler idiosyncrasies; not intended for library users.",
     "documentation": "doc/html/index.html",
     "category": [
-        "workarounds"
+        "Workarounds"
     ],
     "authors": "",
     "maintainers": [
         "John Maddock <john -at- johnmaddock.co.uk>"
-    ]
+    ],
+    "cxxstd": "03"
 }

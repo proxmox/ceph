@@ -26,6 +26,8 @@ namespace crimson::common {
 namespace crimson::osd {
 
 class Watch;
+struct SnapSetContext;
+using SnapSetContextRef = boost::intrusive_ptr<SnapSetContext>;
 
 template <typename OBC>
 struct obc_to_hoid {
@@ -35,14 +37,33 @@ struct obc_to_hoid {
   }
 };
 
+struct SnapSetContext :
+  public boost::intrusive_ref_counter<SnapSetContext,
+                                     boost::thread_unsafe_counter>
+{
+  hobject_t oid;
+  SnapSet snapset;
+  bool exists = false;
+  /**
+   * exists
+   *
+   * Because ObjectContext's are cached, we need to be able to express the case
+   * where the object to which a cached ObjectContext refers does not exist.
+   * ObjectContext's for yet-to-be-created objects are initialized with exists=false.
+   * The ObjectContext for a deleted object will have exists set to false until it falls
+   * out of cache (or another write recreates the object).
+   */
+  explicit SnapSetContext(const hobject_t& o) :
+    oid(o), exists(false) {}
+};
+
 class ObjectContext : public ceph::common::intrusive_lru_base<
   ceph::common::intrusive_lru_config<
     hobject_t, ObjectContext, obc_to_hoid<ObjectContext>>>
 {
 public:
-  Ref head; // Ref defined as part of ceph::common::intrusive_lru_base
   ObjectState obs;
-  std::optional<SnapSet> ss;
+  SnapSetContextRef ssc;
   // the watch / notify machinery rather stays away from the hot and
   // frequented paths. std::map is used mostly because of developer's
   // convenience.
@@ -59,34 +80,25 @@ public:
     return get_oid().is_head();
   }
 
-  Ref get_head_obc() const {
-    return head;
-  }
-
   hobject_t get_head_oid() const {
     return get_oid().get_head();
   }
 
-  const SnapSet &get_ro_ss() const {
-    if (is_head()) {
-      ceph_assert(ss);
-      return *ss;
-    } else {
-      ceph_assert(head);
-      return head->get_ro_ss();
-    }
+  const SnapSet &get_head_ss() const {
+    ceph_assert(is_head());
+    ceph_assert(ssc);
+    return ssc->snapset;
   }
 
-  void set_head_state(ObjectState &&_obs, SnapSet &&_ss) {
+  void set_head_state(ObjectState &&_obs, SnapSetContextRef &&_ssc) {
     ceph_assert(is_head());
     obs = std::move(_obs);
-    ss = std::move(_ss);
+    ssc = std::move(_ssc);
   }
 
-  void set_clone_state(ObjectState &&_obs, Ref &&_head) {
+  void set_clone_state(ObjectState &&_obs) {
     ceph_assert(!is_head());
     obs = std::move(_obs);
-    head = _head;
   }
 
   /// pass the provided exception to any waiting consumers of this ObjectContext
@@ -243,9 +255,22 @@ public:
     return obc_lru.get(hoid);
   }
 
+  void clear_range(const hobject_t &from,
+                   const hobject_t &to) {
+    obc_lru.clear_range(from, to);
+  }
+
+  template <class F>
+  void for_each(F&& f) {
+    obc_lru.for_each(std::forward<F>(f));
+  }
+
   const char** get_tracked_conf_keys() const final;
   void handle_conf_change(const crimson::common::ConfigProxy& conf,
                           const std::set <std::string> &changed) final;
 };
+
+std::optional<hobject_t> resolve_oid(const SnapSet &ss,
+                                     const hobject_t &oid);
 
 } // namespace crimson::osd

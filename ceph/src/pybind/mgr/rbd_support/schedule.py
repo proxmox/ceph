@@ -418,6 +418,8 @@ class Schedules:
                 with self.handler.module.rados.open_ioctx2(int(pool_id)) as ioctx:
                     self.load_from_pool(ioctx, namespace_validator,
                                         image_validator)
+            except rados.ConnectionShutdown:
+                raise
             except rados.Error as e:
                 self.handler.log.error(
                     "Failed to load schedules for pool {}: {}".format(
@@ -427,7 +429,6 @@ class Schedules:
                        ioctx: rados.Ioctx,
                        namespace_validator: Optional[Callable],
                        image_validator: Optional[Callable]) -> None:
-        pool_id = ioctx.get_pool_id()
         pool_name = ioctx.get_pool_name()
         stale_keys = []
         start_after = ''
@@ -572,7 +573,7 @@ class Schedules:
             ls = self.level_specs[level_spec_id]
             if ls == parent or ls == level_spec or ls.is_child_of(level_spec):
                 result[level_spec_id] = {
-                    'name' : schedule.name,
-                    'schedule' : schedule.to_list(),
+                    'name': schedule.name,
+                    'schedule': schedule.to_list(),
                 }
         return result

@@ -25,7 +25,7 @@ namespace crimson::osd{
 class PGBackend;
 
 class RecoveryBackend {
-protected:
+public:
   class WaitForObjectRecovery;
 public:
   template <typename T = void>
@@ -46,13 +46,13 @@ public:
       backend{backend} {}
   virtual ~RecoveryBackend() {}
   WaitForObjectRecovery& add_recovering(const hobject_t& soid) {
-    auto [it, added] = recovering.emplace(soid, WaitForObjectRecovery{});
+    auto [it, added] = recovering.emplace(soid, new WaitForObjectRecovery{});
     assert(added);
-    return it->second;
+    return *(it->second);
   }
   WaitForObjectRecovery& get_recovering(const hobject_t& soid) {
     assert(is_recovering(soid));
-    return recovering.at(soid);
+    return *(recovering.at(soid));
   }
   void remove_recovering(const hobject_t& soid) {
     recovering.erase(soid);
@@ -65,7 +65,8 @@ public:
   }
 
   virtual interruptible_future<> handle_recovery_op(
-    Ref<MOSDFastDispatchOp> m);
+    Ref<MOSDFastDispatchOp> m,
+    crimson::net::ConnectionRef conn);
 
   virtual interruptible_future<> recover_object(
     const hobject_t& soid,
@@ -88,18 +89,18 @@ public:
 
   seastar::future<> stop() {
     for (auto& [soid, recovery_waiter] : recovering) {
-      recovery_waiter.stop();
+      recovery_waiter->stop();
     }
     return on_stop();
   }
 protected:
   crimson::osd::PG& pg;
   crimson::osd::ShardServices& shard_services;
-  crimson::os::FuturizedStore* store;
+  crimson::os::FuturizedStore::Shard* store;
   crimson::os::CollectionRef coll;
   PGBackend* backend;
 
-  struct PullInfo {
+  struct pull_info_t {
     pg_shard_t from;
     hobject_t soid;
     ObjectRecoveryProgress recovery_progress;
@@ -112,22 +113,26 @@ protected:
     }
   };
 
-  struct PushInfo {
+  struct push_info_t {
     ObjectRecoveryProgress recovery_progress;
     ObjectRecoveryInfo recovery_info;
     crimson::osd::ObjectContextRef obc;
     object_stat_sum_t stat;
   };
 
-  class WaitForObjectRecovery : public crimson::BlockerT<WaitForObjectRecovery> {
+public:
+  class WaitForObjectRecovery :
+    public boost::intrusive_ref_counter<
+      WaitForObjectRecovery, boost::thread_unsafe_counter>,
+    public crimson::BlockerT<WaitForObjectRecovery> {
     seastar::shared_promise<> readable, recovered, pulled;
     std::map<pg_shard_t, seastar::shared_promise<>> pushes;
   public:
     static constexpr const char* type_name = "WaitForObjectRecovery";
 
     crimson::osd::ObjectContextRef obc;
-    std::optional<PullInfo> pi;
-    std::map<pg_shard_t, PushInfo> pushing;
+    std::optional<pull_info_t> pull_info;
+    std::map<pg_shard_t, push_info_t> pushing;
 
     seastar::future<> wait_for_readable() {
       return readable.get_shared_future();
@@ -138,11 +143,18 @@ protected:
     seastar::future<> wait_for_recovered() {
       return recovered.get_shared_future();
     }
-    template <typename InterruptCond>
-    crimson::blocking_interruptible_future<InterruptCond>
-    wait_for_recovered_blocking() {
-      return make_blocking_interruptible_future<InterruptCond>(
-	  recovered.get_shared_future());
+    template <typename T, typename F>
+    auto wait_track_blocking(T &trigger, F &&fut) {
+      WaitForObjectRecoveryRef ref = this;
+      return track_blocking(
+	trigger,
+	std::forward<F>(fut)
+      ).finally([ref] {});
+    }
+    template <typename T>
+    seastar::future<> wait_for_recovered(T &trigger) {
+      WaitForObjectRecoveryRef ref = this;
+      return wait_track_blocking(trigger, recovered.get_shared_future());
     }
     seastar::future<> wait_for_pull() {
       return pulled.get_shared_future();
@@ -178,7 +190,11 @@ protected:
     void dump_detail(Formatter* f) const {
     }
   };
-  std::map<hobject_t, WaitForObjectRecovery> recovering;
+  using RecoveryBlockingEvent =
+    crimson::AggregateBlockingEvent<WaitForObjectRecovery::BlockingEvent>;
+  using WaitForObjectRecoveryRef = boost::intrusive_ptr<WaitForObjectRecovery>;
+protected:
+  std::map<hobject_t, WaitForObjectRecoveryRef> recovering;
   hobject_t get_temp_recovery_object(
     const hobject_t& target,
     eversion_t version) const;
@@ -195,18 +211,23 @@ protected:
   virtual seastar::future<> on_stop() = 0;
 private:
   void handle_backfill_finish(
-    MOSDPGBackfill& m);
+    MOSDPGBackfill& m,
+    crimson::net::ConnectionRef conn);
   interruptible_future<> handle_backfill_progress(
     MOSDPGBackfill& m);
   interruptible_future<> handle_backfill_finish_ack(
     MOSDPGBackfill& m);
-  interruptible_future<> handle_backfill(MOSDPGBackfill& m);
+  interruptible_future<> handle_backfill(
+    MOSDPGBackfill& m,
+    crimson::net::ConnectionRef conn);
 
   interruptible_future<> handle_scan_get_digest(
-    MOSDPGScan& m);
+    MOSDPGScan& m,
+    crimson::net::ConnectionRef conn);
   interruptible_future<> handle_scan_digest(
     MOSDPGScan& m);
   interruptible_future<> handle_scan(
-    MOSDPGScan& m);
+    MOSDPGScan& m,
+    crimson::net::ConnectionRef conn);
   interruptible_future<> handle_backfill_remove(MOSDPGBackfillRemove& m);
 };

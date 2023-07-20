@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# SHELL_TRACE=true ./run-backend-api-tests.sh to enable debugging
+[ -v SHELL_TRACE ] && set -x
+
 # cross shell: Are we sourced?
 # Source: https://stackoverflow.com/a/28776166/3185053
 ([[ -n $ZSH_EVAL_CONTEXT && $ZSH_EVAL_CONTEXT =~ :file$ ]] ||
@@ -128,6 +131,7 @@ run_teuthology_tests() {
 
     export COVERAGE_ENABLED=true
     export COVERAGE_FILE=.coverage.mgr.dashboard
+    export CEPH_OUT_CLIENT_DIR=${LOCAL_BUILD_DIR}/out/client
     find . -iname "*${COVERAGE_FILE}*" -type f -delete
 
     python ../qa/tasks/vstart_runner.py --ignore-missing-binaries --no-verbose $OPTIONS $(echo $TEST_CASES) ||

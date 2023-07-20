@@ -67,12 +67,13 @@ WRITE_CLASS_ENCODER(SnapPayload)
 
 class MClientRequest final : public MMDSOp {
 private:
-  static constexpr int HEAD_VERSION = 5;
+  static constexpr int HEAD_VERSION = 6;
   static constexpr int COMPAT_VERSION = 1;
 
 public:
   mutable struct ceph_mds_request_head head; /* XXX HACK! */
   utime_t stamp;
+  bool peer_old_version = false;
 
   struct Release {
     mutable ceph_mds_request_release item;
@@ -101,17 +102,23 @@ public:
   std::string alternate_name;
   std::vector<uint64_t> gid_list;
 
+  std::vector<uint8_t> fscrypt_auth;
+  std::vector<uint8_t> fscrypt_file;
+
   /* XXX HACK */
   mutable bool queued_for_replay = false;
 
 protected:
   // cons
   MClientRequest()
-    : MMDSOp(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {}
-  MClientRequest(int op)
+    : MMDSOp(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
+    memset(&head, 0, sizeof(head));
+  }
+  MClientRequest(int op, bool over=true)
     : MMDSOp(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
     memset(&head, 0, sizeof(head));
     head.op = op;
+    peer_old_version = over;
   }
   ~MClientRequest() final {}
 
@@ -157,8 +164,8 @@ public:
   // normal fields
   void set_stamp(utime_t t) { stamp = t; }
   void set_oldest_client_tid(ceph_tid_t t) { head.oldest_client_tid = t; }
-  void inc_num_fwd() { head.num_fwd = head.num_fwd + 1; }
-  void set_retry_attempt(int a) { head.num_retry = a; }
+  void inc_num_fwd() { head.ext_num_fwd = head.ext_num_fwd + 1; }
+  void set_retry_attempt(int a) { head.ext_num_retry = a; }
   void set_filepath(const filepath& fp) { path = fp; }
   void set_filepath2(const filepath& fp) { path2 = fp; }
   void set_string2(const char *s) { path2.set_path(std::string_view(s), 0); }
@@ -189,8 +196,8 @@ public:
 
   utime_t get_stamp() const { return stamp; }
   ceph_tid_t get_oldest_client_tid() const { return head.oldest_client_tid; }
-  int get_num_fwd() const { return head.num_fwd; }
-  int get_retry_attempt() const { return head.num_retry; }
+  int get_num_fwd() const { return head.ext_num_fwd; }
+  int get_retry_attempt() const { return head.ext_num_retry; }
   int get_op() const { return head.op; }
   unsigned get_caller_uid() const { return head.caller_uid; }
   unsigned get_caller_gid() const { return head.caller_gid; }
@@ -240,15 +247,29 @@ public:
       decode(gid_list, p);
     if (header.version >= 5)
       decode(alternate_name, p);
+    if (header.version >= 6) {
+      decode(fscrypt_auth, p);
+      decode(fscrypt_file, p);
+    }
   }
 
   void encode_payload(uint64_t features) override {
     using ceph::encode;
     head.num_releases = releases.size();
-    head.version = CEPH_MDS_REQUEST_HEAD_VERSION;
+    /*
+     * If the peer is old version, we must skip all the
+     * new members, because the old version of MDS or
+     * client will just copy the 'head' memory and isn't
+     * that smart to skip them.
+     */
+    if (peer_old_version) {
+      head.version = 1;
+    } else {
+      head.version = CEPH_MDS_REQUEST_HEAD_VERSION;
+    }
 
     if (features & CEPH_FEATURE_FS_BTIME) {
-      encode(head, payload);
+      encode(head, payload, peer_old_version);
     } else {
       struct ceph_mds_request_head_legacy old_mds_head;
 
@@ -262,6 +283,8 @@ public:
     encode(stamp, payload);
     encode(gid_list, payload);
     encode(alternate_name, payload);
+    encode(fscrypt_auth, payload);
+    encode(fscrypt_file, payload);
   }
 
   std::string_view get_type_name() const override { return "creq"; }
@@ -303,8 +326,10 @@ public:
       out << " " << get_filepath2();
     if (stamp != utime_t())
       out << " " << stamp;
-    if (head.num_retry)
-      out << " RETRY=" << (int)head.num_retry;
+    if (head.ext_num_fwd)
+      out << " FWD=" << (int)head.ext_num_fwd;
+    if (head.ext_num_retry)
+      out << " RETRY=" << (int)head.ext_num_retry;
     if (is_async())
       out << " ASYNC";
     if (is_replay())

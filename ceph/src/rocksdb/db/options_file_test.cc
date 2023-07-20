@@ -59,13 +59,13 @@ void VerifyOptionsFileName(
     }
   }
 }
-}  // namespace
+}  // anonymous namespace
 
 TEST_F(OptionsFileTest, NumberOfOptionsFiles) {
   const int kReopenCount = 20;
   Options opt;
   opt.create_if_missing = true;
-  DestroyDB(dbname_, opt);
+  ASSERT_OK(DestroyDB(dbname_, opt));
   std::unordered_set<std::string> filename_history;
   DB* db;
   for (int i = 0; i < kReopenCount; ++i) {
@@ -102,6 +102,7 @@ TEST_F(OptionsFileTest, OptionsFileName) {
 
 int main(int argc, char** argv) {
 #if !(defined NDEBUG) || !defined(OS_WIN)
+  ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 #else

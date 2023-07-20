@@ -212,6 +212,7 @@ namespace resource {
 size_t calculate_memory(const configuration& c, size_t available_memory, float panic_factor = 1) {
     size_t default_reserve_memory = std::max<size_t>(1536 * 1024 * 1024, 0.07 * available_memory) * panic_factor;
     auto reserve = c.reserve_memory.value_or(default_reserve_memory);
+    reserve += c.reserve_additional_memory;
     size_t min_memory = 500'000'000;
     if (available_memory >= reserve + min_memory) {
         available_memory -= reserve;
@@ -219,7 +220,7 @@ size_t calculate_memory(const configuration& c, size_t available_memory, float p
         // Allow starting up even in low memory configurations (e.g. 2GB boot2docker VM)
         available_memory = min_memory;
     }
-    size_t mem = c.total_memory.value_or(available_memory);
+    size_t mem = c.total_memory ? *c.total_memory - c.reserve_additional_memory : available_memory;
     if (mem > available_memory) {
         throw std::runtime_error(format("insufficient physical memory: needed {} available {}", mem, available_memory));
     }
@@ -476,29 +477,27 @@ hwloc_topology_t topology_holder::get() {
 
 resources allocate(configuration& c) {
     auto topology = c.topology.get();
-    if (c.cpu_set) {
-        auto bm = hwloc_bitmap_alloc();
-        auto free_bm = defer([&] () noexcept { hwloc_bitmap_free(bm); });
-        for (auto idx : *c.cpu_set) {
-            hwloc_bitmap_set(bm, idx);
-        }
-        auto r = hwloc_topology_restrict(topology, bm,
+    auto bm = hwloc_bitmap_alloc();
+    auto free_bm = defer([&] () noexcept { hwloc_bitmap_free(bm); });
+    for (auto idx : c.cpu_set) {
+        hwloc_bitmap_set(bm, idx);
+    }
+    auto r = hwloc_topology_restrict(topology, bm,
 #if HWLOC_API_VERSION >= 0x00020000
-                0
+            0
 #else
-                HWLOC_RESTRICT_FLAG_ADAPT_DISTANCES
+            HWLOC_RESTRICT_FLAG_ADAPT_DISTANCES
 #endif
-                | HWLOC_RESTRICT_FLAG_ADAPT_MISC
-                | HWLOC_RESTRICT_FLAG_ADAPT_IO);
-        if (r == -1) {
-            if (errno == ENOMEM) {
-                throw std::bad_alloc();
-            }
-            if (errno == EINVAL) {
-                throw std::runtime_error("bad cpuset");
-            }
-            abort();
+            | HWLOC_RESTRICT_FLAG_ADAPT_MISC
+            | HWLOC_RESTRICT_FLAG_ADAPT_IO);
+    if (r == -1) {
+        if (errno == ENOMEM) {
+            throw std::bad_alloc();
         }
+        if (errno == EINVAL) {
+            throw std::runtime_error("bad cpuset");
+        }
+        abort();
     }
     auto machine_depth = hwloc_get_type_depth(topology, HWLOC_OBJ_MACHINE);
     assert(hwloc_get_nbobjs_by_depth(topology, machine_depth) == 1);
@@ -510,10 +509,13 @@ resources allocate(configuration& c) {
 #endif
     size_t mem = calculate_memory(c, std::min(available_memory,
                                               cgroup::memory_limit()));
-    unsigned available_procs = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
-    unsigned procs = c.cpus.value_or(available_procs);
-    if (procs > available_procs) {
-        throw std::runtime_error("insufficient processing units");
+    unsigned procs = c.cpus;
+    if (unsigned available_procs = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
+        procs > available_procs) {
+        throw std::runtime_error(format("insufficient processing units: needed {} available {}", procs, available_procs));
+    }
+    if (procs == 0) {
+        throw std::runtime_error("number of processing units must be positive");
     }
     // limit memory address to fit in 36-bit, see core/memory.cc:Memory map
     constexpr size_t max_mem_per_proc = 1UL << 36;
@@ -668,17 +670,13 @@ resources allocate(configuration& c) {
 
     auto available_memory = ::sysconf(_SC_PAGESIZE) * size_t(::sysconf(_SC_PHYS_PAGES));
     auto mem = calculate_memory(c, available_memory);
-    auto cpuset_procs = c.cpu_set ? c.cpu_set->size() : nr_processing_units(c);
-    auto procs = c.cpus.value_or(cpuset_procs);
+    auto procs = c.cpus;
     ret.cpus.reserve(procs);
-    if (c.cpu_set) {
-        for (auto cpuid : *c.cpu_set) {
-            ret.cpus.push_back(cpu{cpuid, {{mem / procs, 0}}});
-        }
-    } else {
-        for (unsigned i = 0; i < procs; ++i) {
-            ret.cpus.push_back(cpu{i, {{mem / procs, 0}}});
-        }
+    // limit memory address to fit in 36-bit, see core/memory.cc:Memory map
+    constexpr size_t max_mem_per_proc = 1UL << 36;
+    auto mem_per_proc = std::min(mem / procs, max_mem_per_proc);
+    for (auto cpuid : c.cpu_set) {
+        ret.cpus.push_back(cpu{cpuid, {{mem_per_proc, 0}}});
     }
 
     ret.ioq_topology.emplace(0, allocate_io_queues(c, ret.cpus));

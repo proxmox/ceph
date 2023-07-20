@@ -241,11 +241,11 @@ SEASTAR_THREAD_TEST_CASE(sg_scheduling_group_inheritance_in_seastar_async_test) 
 }
 
 
-SEASTAR_THREAD_TEST_CASE(later_preserves_sg) {
+SEASTAR_THREAD_TEST_CASE(yield_preserves_sg) {
     scheduling_group sg = create_scheduling_group("sg", 100).get0();
     auto cleanup = defer([&] () noexcept { destroy_scheduling_group(sg).get(); });
     with_scheduling_group(sg, [&] {
-        return later().then([&] {
+        return yield().then([&] {
             BOOST_REQUIRE_EQUAL(
                     internal::scheduling_group_index(current_scheduling_group()),
                     internal::scheduling_group_index(sg));
@@ -273,7 +273,7 @@ SEASTAR_THREAD_TEST_CASE(sg_count) {
             scheduling_groups_deferred_cleanup.emplace_back(create_scheduling_group(format("sg_{}", i), 10).get());
         } catch (std::runtime_error& e) {
             // make sure it is the right exception.
-            BOOST_REQUIRE_EQUAL(e.what(), "Scheduling group limit exceeded");
+            BOOST_REQUIRE_EQUAL(e.what(), fmt::format("Scheduling group limit exceeded while creating sg_{}", i));
             // make sure that the scheduling group count makes sense
             BOOST_REQUIRE_EQUAL(internal::scheduling_group_count(), max_scheduling_groups());
             // make sure that we expect this exception at this point

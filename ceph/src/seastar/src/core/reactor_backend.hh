@@ -27,6 +27,7 @@
 #include <seastar/core/internal/poll.hh>
 #include <seastar/core/linux-aio.hh>
 #include <seastar/core/cacheline.hh>
+#include <fmt/ostream.h>
 #include <sys/time.h>
 #include <signal.h>
 #include <thread>
@@ -191,18 +192,23 @@ public:
     virtual future<> readable(pollable_fd_state& fd) = 0;
     virtual future<> writeable(pollable_fd_state& fd) = 0;
     virtual future<> readable_or_writeable(pollable_fd_state& fd) = 0;
+    virtual future<> poll_rdhup(pollable_fd_state& fd) = 0;
     virtual void forget(pollable_fd_state& fd) noexcept = 0;
 
     virtual future<std::tuple<pollable_fd, socket_address>>
     accept(pollable_fd_state& listenfd) = 0;
     virtual future<> connect(pollable_fd_state& fd, socket_address& sa) = 0;
     virtual void shutdown(pollable_fd_state& fd, int how) = 0;
-    virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) = 0;
-    virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) = 0;
+    virtual future<size_t> read(pollable_fd_state& fd, void* buffer, size_t len) = 0;
+    virtual future<size_t> recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) = 0;
     virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) = 0;
-    virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) = 0;
-    virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) = 0;
+    virtual future<size_t> sendmsg(pollable_fd_state& fd, net::packet& p) = 0;
+    virtual future<size_t> send(pollable_fd_state& fd, const void* buffer, size_t len) = 0;
+    virtual future<temporary_buffer<char>> recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) = 0;
 
+    virtual bool do_blocking_io() const {
+        return false;
+    }
     virtual void signal_received(int signo, siginfo_t* siginfo, void* ignore) = 0;
     virtual void start_tick() = 0;
     virtual void stop_tick() = 0;
@@ -253,17 +259,19 @@ public:
     virtual future<> readable(pollable_fd_state& fd) override;
     virtual future<> writeable(pollable_fd_state& fd) override;
     virtual future<> readable_or_writeable(pollable_fd_state& fd) override;
+    virtual future<> poll_rdhup(pollable_fd_state& fd) override;
     virtual void forget(pollable_fd_state& fd) noexcept override;
 
     virtual future<std::tuple<pollable_fd, socket_address>>
     accept(pollable_fd_state& listenfd) override;
     virtual future<> connect(pollable_fd_state& fd, socket_address& sa) override;
     virtual void shutdown(pollable_fd_state& fd, int how) override;
-    virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) override;
-    virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
+    virtual future<size_t> read(pollable_fd_state& fd, void* buffer, size_t len) override;
+    virtual future<size_t> recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
     virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
-    virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) override;
-    virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<size_t> sendmsg(pollable_fd_state& fd, net::packet& p) override;
+    virtual future<size_t> send(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<temporary_buffer<char>> recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
 
     virtual void signal_received(int signo, siginfo_t* siginfo, void* ignore) override;
     virtual void start_tick() override;
@@ -290,6 +298,7 @@ class reactor_backend_aio : public reactor_backend {
     smp_wakeup_aio_completion _smp_wakeup_aio_completion;
     static file_desc make_timerfd();
     bool await_events(int timeout, const sigset_t* active_sigmask);
+    future<> poll(pollable_fd_state& fd, int events);
 public:
     explicit reactor_backend_aio(reactor& r);
 
@@ -297,21 +306,22 @@ public:
     virtual bool kernel_submit_work() override;
     virtual bool kernel_events_can_sleep() const override;
     virtual void wait_and_process_events(const sigset_t* active_sigmask) override;
-    future<> poll(pollable_fd_state& fd, int events);
     virtual future<> readable(pollable_fd_state& fd) override;
     virtual future<> writeable(pollable_fd_state& fd) override;
     virtual future<> readable_or_writeable(pollable_fd_state& fd) override;
+    virtual future<> poll_rdhup(pollable_fd_state& fd) override;
     virtual void forget(pollable_fd_state& fd) noexcept override;
 
     virtual future<std::tuple<pollable_fd, socket_address>>
     accept(pollable_fd_state& listenfd) override;
     virtual future<> connect(pollable_fd_state& fd, socket_address& sa) override;
     virtual void shutdown(pollable_fd_state& fd, int how) override;
-    virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) override;
-    virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
+    virtual future<size_t> read(pollable_fd_state& fd, void* buffer, size_t len) override;
+    virtual future<size_t> recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
     virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
-    virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) override;
-    virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<size_t> sendmsg(pollable_fd_state& fd, net::packet& p) override;
+    virtual future<size_t> send(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<temporary_buffer<char>> recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
 
     virtual void signal_received(int signo, siginfo_t* siginfo, void* ignore) override;
     virtual void start_tick() override;
@@ -351,17 +361,20 @@ public:
     accept(pollable_fd_state& listenfd) override;
     virtual future<> connect(pollable_fd_state& fd, socket_address& sa) override;
     virtual void shutdown(pollable_fd_state& fd, int how) override;
-    virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) override;
-    virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
+    virtual future<size_t> read(pollable_fd_state& fd, void* buffer, size_t len) override;
+    virtual future<size_t> recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) override;
     virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
-    virtual future<size_t> write_some(net::packet& p) override;
-    virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<size_t> sendmsg(pollable_fd_state& fd, net::packet& p) override;
+    virtual future<size_t> send(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<temporary_buffer<char>> recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
 
     void enable_timer(steady_clock_type::time_point when);
     virtual pollable_fd_state_ptr
     make_pollable_fd_state(file_desc fd, pollable_fd::speculation speculate) override;
 };
 #endif /* HAVE_OSV */
+
+class reactor_backend_uring;
 
 class reactor_backend_selector {
     std::string _name;
@@ -379,3 +392,9 @@ public:
 };
 
 }
+
+#if FMT_VERSION >= 90000
+
+template <> struct fmt::formatter<seastar::reactor_backend_selector> : fmt::ostream_formatter {};
+
+#endif

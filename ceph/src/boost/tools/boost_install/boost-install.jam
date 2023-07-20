@@ -25,6 +25,7 @@ feature.feature boost-install.cmakedir : : free ;
 feature.feature boost-install.includedir : : free ;
 feature.feature boost-install.libdir : : free ;
 feature.feature boost-install.lib-target-type : : free ;
+feature.feature boost-install.dll-target : : free ;
 
 if "--verbose" in [ modules.peek : ARGV ]
 {
@@ -399,7 +400,7 @@ rule generate-cmake-variant- ( target : sources * : properties * )
         ""
         "  set_target_properties($(target) PROPERTIES"
         "    INTERFACE_INCLUDE_DIRECTORIES \"\${_BOOST_INCLUDEDIR}\""
-        "    INTERFACE_COMPILE_DEFINITIONS \"BOOST_ALL_NO_LIB\""
+        "    INTERFACE_COMPILE_DEFINITIONS \"BOOST_$(lname:U)_NO_LIB\""
         "  )"
         "endif()"
         ""
@@ -419,6 +420,17 @@ rule generate-cmake-variant- ( target : sources * : properties * )
 
     .info "  loc-prop=" $(loc-prop) ;
 
+    local dll-target = [ $(ps).get <boost-install.dll-target> ] ;
+
+    local dll-name ;
+
+    if $(dll-target)
+    {
+        dll-name = [ $(dll-target).name ] ;
+    }
+
+    .info "  dll-name=" $(dll-name) ;
+
     print.text
 
         "get_target_property(__boost_imploc $(target) IMPORTED_$(loc-prop)_$(variant:U))"
@@ -435,6 +447,17 @@ rule generate-cmake-variant- ( target : sources * : properties * )
         "  )"
         ""
         : true ;
+
+    if $(lib-target-type) = IMPORT_LIB
+    {
+    print.text
+
+        "set_target_properties($(target) PROPERTIES"
+        "  IMPORTED_LOCATION_$(variant:U) \"${_BOOST_LIBDIR}/$(dll-name)\""
+        "  )"
+        ""
+        : true ;
+    }
 
     if $(variant) = release
     {
@@ -483,7 +506,7 @@ rule generate-cmake-variant- ( target : sources * : properties * )
 
     .info "  deps3=" $(deps3) ;
 
-    if $(deps3)
+    if $(deps3) && $(link) = static
     {
         print.text
 
@@ -560,6 +583,17 @@ local rule choose-lib-target ( sources * )
     return $(result) ;
 }
 
+local rule get-dll-target ( sources * )
+{
+    for local t in $(sources)
+    {
+        if [ type.is-derived [ $(t).type ] SHARED_LIB ]
+        {
+            return $(t) ;
+        }
+    }
+}
+
 # get-dependency-names: Returns the base names of all
 # dependency libraries.
 #
@@ -593,6 +627,8 @@ rule generate-cmake-variant ( project name : property-set : sources * )
 
     local lib-target = [ choose-lib-target $(sources) ] ;
 
+    local dll-target = [ get-dll-target $(sources) ] ;
+
     local other-names = [ get-dependency-names $(sources) ] ;
     property-set = [ $(property-set).add-raw <boost-install.dependency>$(other-names) ] ;
 
@@ -606,9 +642,15 @@ rule generate-cmake-variant ( project name : property-set : sources * )
 
         .debug "  lib-target-type=" $(lib-target-type) ;
 
+        if $(dll-target)
+        {
+            .debug "  dll-target=" [ $(dll-target).name ] ;
+        }
+
         local tag = [ tag $(name) : : $(property-set) ] ;
 
         property-set = [ $(property-set).add-raw <boost-install.lib-target-type>$(lib-target-type) ] ;
+        property-set = [ $(property-set).add-raw <boost-install.dll-target>$(dll-target) ] ;
 
         local a = [ new non-scanning-action $(lib-target) : boost-install.generate-cmake-variant- : $(property-set) ] ;
 
@@ -704,6 +746,8 @@ rule generate-cmake-config- ( target : sources * : properties * )
         "  message(STATUS \"Found $(name) ${$(name)_VERSION} at ${$(name)_DIR}\")"
         "endif()"
         ""
+        "mark_as_advanced($(name)_DIR)"
+        ""
         "# Compute the include and library directories relative to this file."
         ""
         "get_filename_component(_BOOST_CMAKEDIR \"${CMAKE_CURRENT_LIST_DIR}/../\" REALPATH)"
@@ -739,7 +783,6 @@ rule generate-cmake-config- ( target : sources * : properties * )
             ""
             "set_target_properties($(ltarget) PROPERTIES"
             "  INTERFACE_INCLUDE_DIRECTORIES \"\${_BOOST_INCLUDEDIR}\""
-            "  INTERFACE_COMPILE_DEFINITIONS \"BOOST_ALL_NO_LIB\""
             ")"
             ""
             "unset(_BOOST_INCLUDEDIR)"
@@ -882,12 +925,6 @@ rule generate-cmake-config- ( target : sources * : properties * )
             : true ;
         }
     }
-
-    print.text
-
-        "mark_as_advanced($(name)_DIR)"
-        ""
-        : true ;
 }
 
 actions generate-cmake-config-

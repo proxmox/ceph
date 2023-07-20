@@ -11,13 +11,6 @@
 
 #include <boost/nowide/replacement.hpp>
 
-// MinGW32 requires a __MSVCRT_VERSION__ defined to make some functions available, e.g. _stat64
-// Hence define this here to target MSVC 7.0 which has the required functions and do it as early as possible
-// as including a system header might default this to 0x0600 which is to low
-#if defined(__MINGW32__) && !defined(__MSVCRT_VERSION__)
-#define __MSVCRT_VERSION__ 0x0700
-#endif
-
 #if(defined(__WIN32) || defined(_WIN32) || defined(WIN32)) && !defined(__CYGWIN__)
 #define NOWIDE_WINDOWS
 #endif
@@ -81,6 +74,24 @@
 #if !defined(BOOST_UNLIKELY)
 #define BOOST_UNLIKELY(x) x
 #endif
+#endif
+
+// The std::codecvt<char16/32_t, char, std::mbstate_t> are deprecated in C++20
+// These macros can suppress this warning
+#if defined(_MSC_VER)
+#define BOOST_NOWIDE_SUPPRESS_UTF_CODECVT_DEPRECATION_BEGIN __pragma(warning(push)) __pragma(warning(disable : 4996))
+#define BOOST_NOWIDE_SUPPRESS_UTF_CODECVT_DEPRECATION_END __pragma(warning(pop))
+#elif(__cplusplus >= 202002L) && defined(__clang__)
+#define BOOST_NOWIDE_SUPPRESS_UTF_CODECVT_DEPRECATION_BEGIN \
+    _Pragma("clang diagnostic push") _Pragma("clang diagnostic ignored \"-Wdeprecated-declarations\"")
+#define BOOST_NOWIDE_SUPPRESS_UTF_CODECVT_DEPRECATION_END _Pragma("clang diagnostic pop")
+#elif(__cplusplus >= 202002L) && defined(__GNUC__)
+#define BOOST_NOWIDE_SUPPRESS_UTF_CODECVT_DEPRECATION_BEGIN \
+    _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define BOOST_NOWIDE_SUPPRESS_UTF_CODECVT_DEPRECATION_END _Pragma("GCC diagnostic pop")
+#else
+#define BOOST_NOWIDE_SUPPRESS_UTF_CODECVT_DEPRECATION_BEGIN
+#define BOOST_NOWIDE_SUPPRESS_UTF_CODECVT_DEPRECATION_END
 #endif
 
 #endif

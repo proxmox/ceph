@@ -20,7 +20,6 @@
 #include <boost/test/tools/floating_point_comparison.hpp>
 
 #include <boost/array.hpp>
-#include <boost/lexical_cast.hpp>
 #include <boost/type_traits/is_constructible.hpp>
 #include <boost/math/special_functions/fpclassify.hpp> // isnan, isfinite.
 #include <boost/math/special_functions/next.hpp> // float_next, float_prior
@@ -256,7 +255,9 @@ Real x;
   }
     */
 
+#ifndef BOOST_MATH_NO_LONG_DOUBLE_MATH_FUNCTIONS
   test_integrals<long double>();
+#endif
   }
   catch (std::exception& ex)
   {

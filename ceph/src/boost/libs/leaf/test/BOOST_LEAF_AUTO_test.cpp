@@ -1,12 +1,21 @@
-// Copyright (c) 2018-2020 Emil Dotchevski and Reverge Studios, Inc.
+// Copyright 2018-2022 Emil Dotchevski and Reverge Studios, Inc.
 
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <boost/leaf/result.hpp>
-#include <boost/leaf/handle_errors.hpp>
-#include <boost/config/workaround.hpp>
+#ifdef BOOST_LEAF_TEST_SINGLE_HEADER
+#   include "leaf.hpp"
+#else
+#   include <boost/leaf/result.hpp>
+#   include <boost/leaf/handle_errors.hpp>
+#endif
+
 #include "lightweight_test.hpp"
+#ifdef BOOST_LEAF_BOOST_AVAILABLE
+#   include <boost/config/workaround.hpp>
+#else
+#   define BOOST_WORKAROUND(a,b) 0
+#endif
 
 namespace leaf = boost::leaf;
 
@@ -15,8 +24,11 @@ struct value
     int x;
 
     explicit value( int x ): x(x) { };
+
+#ifndef BOOST_LEAF_NO_CXX11_REF_QUALIFIERS
     value( value const & ) = delete;
     value( value && ) = default;
+#endif
 };
 
 leaf::result<value> f1()
@@ -34,10 +46,26 @@ leaf::result<value> f2()
 #endif
 }
 
+template <class Lambda>
+leaf::result<value> f2_lambda( Lambda )
+{
+    BOOST_LEAF_AUTO(a, f1());
+#if BOOST_WORKAROUND( BOOST_GCC, < 50000 ) || BOOST_WORKAROUND( BOOST_CLANG, <= 30800 )
+    return std::move(a); // Older compilers are confused, but...
+#else
+    return a; // ...this doesn't need to be return std::move(a);
+#endif
+}
+
 leaf::result<value> f3()
 {
     BOOST_LEAF_AUTO(a, f2());
-    BOOST_LEAF_AUTO(b, f2()); // Invoking the macro twice in the same scope, testing the temp name generation
+
+    // Invoking the macro twice in the same scope, testing the temp name
+    // generation. Also making sure we can pass a lambda (See
+    // https://github.com/boostorg/leaf/issues/16).
+    BOOST_LEAF_AUTO(b, f2_lambda([]{}));
+
     return value { a.x + b.x };
 }
 

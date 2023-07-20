@@ -73,17 +73,17 @@ template<class Real>
 void test_clenshaw_recurrence()
 {
     using boost::math::chebyshev_clenshaw_recurrence;
-    boost::array<Real, 5> c0 = { {2, 0, 0, 0, 0} };
+    std::array<Real, 5> c0 = { {2, 0, 0, 0, 0} };
     // Check the size = 1 case:
-    boost::array<Real, 1> c01 = { {2} };
+    std::array<Real, 1> c01 = { {2} };
     // Check the size = 2 case:
-    boost::array<Real, 2> c02 = { {2, 0} };
-    boost::array<Real, 4> c1 = { {0, 1, 0, 0} };
-    boost::array<Real, 4> c2 = { {0, 0, 1, 0} };
-    boost::array<Real, 5> c3 = { {0, 0, 0, 1, 0} };
-    boost::array<Real, 5> c4 = { {0, 0, 0, 0, 1} };
-    boost::array<Real, 6> c5 = { {0, 0, 0, 0, 0, 1} };
-    boost::array<Real, 7> c6 = { {0, 0, 0, 0, 0, 0, 1} };
+    std::array<Real, 2> c02 = { {2, 0} };
+    std::array<Real, 4> c1 = { {0, 1, 0, 0} };
+    std::array<Real, 4> c2 = { {0, 0, 1, 0} };
+    std::array<Real, 5> c3 = { {0, 0, 0, 1, 0} };
+    std::array<Real, 5> c4 = { {0, 0, 0, 0, 1} };
+    std::array<Real, 6> c5 = { {0, 0, 0, 0, 0, 1} };
+    std::array<Real, 7> c6 = { {0, 0, 0, 0, 0, 0, 1} };
 
     Real x = -1;
     // It's not clear from this test which one is more accurate; higher precision cast testing is required, and is done elsewhere:
@@ -175,17 +175,23 @@ int main()
 {
     test_polynomials<float>();
     test_polynomials<double>();
+#ifndef BOOST_MATH_NO_LONG_DOUBLE_MATH_FUNCTIONS
     test_polynomials<long double>();
+#endif
     test_polynomials<cpp_bin_float_quad>();
 
     test_derivatives<float>();
     test_derivatives<double>();
+#ifndef BOOST_MATH_NO_LONG_DOUBLE_MATH_FUNCTIONS
     test_derivatives<long double>();
+#endif
     test_derivatives<cpp_bin_float_quad>();
 
     test_clenshaw_recurrence<float>();
     test_clenshaw_recurrence<double>();
+#ifndef BOOST_MATH_NO_LONG_DOUBLE_MATH_FUNCTIONS
     test_clenshaw_recurrence<long double>();
+#endif
 
     test_translated_clenshaw_recurrence<double>();
     return boost::math::test::report_errors();

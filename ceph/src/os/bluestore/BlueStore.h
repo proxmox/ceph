@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <ratio>
 #include <mutex>
@@ -186,6 +187,13 @@ enum {
   l_bluestore_blob_split,
   l_bluestore_extent_compress,
   l_bluestore_gc_merged,
+  //****************************************
+
+  // misc
+  //****************************************
+  l_bluestore_omap_iterator_count,
+  l_bluestore_omap_rmkeys_count,
+  l_bluestore_omap_rmkey_ranges_count,
   //****************************************
 
   // other client ops latencies
@@ -1563,15 +1571,17 @@ private:
   };
 
   class OmapIteratorImpl : public ObjectMap::ObjectMapIteratorImpl {
+
+    PerfCounters* logger = nullptr;
     CollectionRef c;
     OnodeRef o;
     KeyValueDB::Iterator it;
     std::string head, tail;
 
     std::string _stringify() const;
-
   public:
-    OmapIteratorImpl(CollectionRef c, OnodeRef& o, KeyValueDB::Iterator it);
+    OmapIteratorImpl(PerfCounters* l, CollectionRef c, OnodeRef& o, KeyValueDB::Iterator it);
+    virtual ~OmapIteratorImpl();
     int seek_to_first() override;
     int upper_bound(const std::string &after) override;
     int lower_bound(const std::string &to) override;
@@ -2218,8 +2228,8 @@ private:
   bool collections_had_errors = false;
   std::map<coll_t,CollectionRef> new_coll_map;
 
-  std::vector<OnodeCacheShard*> onode_cache_shards;
-  std::vector<BufferCacheShard*> buffer_cache_shards;
+  mempool::bluestore_cache_buffer::vector<BufferCacheShard*> buffer_cache_shards;
+  mempool::bluestore_cache_onode::vector<OnodeCacheShard*> onode_cache_shards;
 
   /// protect zombie_osr_set
   ceph::mutex zombie_osr_lock = ceph::make_mutex("BlueStore::zombie_osr_lock");
@@ -2494,13 +2504,13 @@ private:
         }
       }
       virtual uint64_t _get_used_bytes() const {
-        return mempool::bluestore_Buffer::allocated_bytes() +
-          mempool::bluestore_Blob::allocated_bytes() +
-          mempool::bluestore_Extent::allocated_bytes() +
+        return mempool::bluestore_blob::allocated_bytes() +
+          mempool::bluestore_extent::allocated_bytes() +
+          mempool::bluestore_cache_buffer::allocated_bytes() +
           mempool::bluestore_cache_meta::allocated_bytes() +
           mempool::bluestore_cache_other::allocated_bytes() +
 	   mempool::bluestore_cache_onode::allocated_bytes() +
-          mempool::bluestore_SharedBlob::allocated_bytes() +
+          mempool::bluestore_shared_blob::allocated_bytes() +
           mempool::bluestore_inline_bl::allocated_bytes();
       }
       virtual void shift_bins() {
@@ -2689,7 +2699,7 @@ private:
   CollectionRef _get_collection_by_oid(const ghobject_t& oid);
   void _queue_reap_collection(CollectionRef& c);
   void _reap_collections();
-  void _update_cache_logger();
+  void _update_logger();
 
   void _assign_nid(TransContext *txc, OnodeRef& o);
   uint64_t _assign_blobid(TransContext *txc);
@@ -2813,7 +2823,7 @@ private:
   template <typename T, typename F>
   T select_option(const std::string& opt_name, T val1, F f) {
     //NB: opt_name reserved for future use
-    boost::optional<T> val2 = f();
+    std::optional<T> val2 = f();
     if (val2) {
       return *val2;
     }
@@ -2959,7 +2969,7 @@ public:
   int flush_cache(std::ostream *os = NULL) override;
   void dump_perf_counters(ceph::Formatter *f) override {
     f->open_object_section("perf_counters");
-    logger->dump_formatted(f, false);
+    logger->dump_formatted(f, false, false);
     f->close_section();
   }
 
@@ -3348,15 +3358,6 @@ private:
     std::lock_guard l(qlock);
     failed_compressors.clear();
     failed_cmode.clear();
-  }
-
-  void _set_spillover_alert(const std::string& s) {
-    std::lock_guard l(qlock);
-    spillover_alert = s;
-  }
-  void _clear_spillover_alert() {
-    std::lock_guard l(qlock);
-    spillover_alert.clear();
   }
 
   void _check_legacy_statfs_alert();
@@ -3911,7 +3912,7 @@ public:
 	      uint64_t min_alloc_size,
 	      uint64_t mem_cap = DEF_MEM_CAP) {
       ceph_assert(!granularity); // not initialized yet
-      ceph_assert(min_alloc_size && isp2(min_alloc_size));
+      ceph_assert(std::has_single_bit(min_alloc_size));
       ceph_assert(mem_cap);
       
       total = round_up_to(total, min_alloc_size);

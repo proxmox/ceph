@@ -16,6 +16,9 @@
 test-suite boost-geometry-algorithms-overlay
     : 
     [ run assemble.cpp                     : : : : algorithms_assemble ]
+    [ run copy_segment_point.cpp           : : : : algorithms_copy_segment_point ]
+    [ run get_clusters.cpp                 : : : : algorithms_get_clusters ]
+    [ run get_ring.cpp                     : : : : algorithms_get_ring ]
     [ run get_turn_info.cpp                : : : : algorithms_get_turn_info ]
     [ run get_turns.cpp                    : : : : algorithms_get_turns ]
     [ run get_turns_areal_areal.cpp        : : : : algorithms_get_turns_areal_areal ]
@@ -23,6 +26,7 @@ test-suite boost-geometry-algorithms-overlay
     [ run get_turns_linear_areal.cpp       : : : : algorithms_get_turns_linear_areal ]
     [ run get_turns_linear_areal_sph.cpp   : : : : algorithms_get_turns_linear_areal_sph ]
     [ run get_turns_linear_linear.cpp      : : : : algorithms_get_turns_linear_linear ]
+    [ run get_turns_linear_linear.cpp      : : : <define>BOOST_GEOMETRY_ROBUSTNESS_ALTERNATIVE : algorithms_get_turns_linear_linear_alternative ]
     [ run get_turns_linear_linear_geo.cpp  : : : : algorithms_get_turns_linear_linear_geo ]
     [ run get_turns_linear_linear_sph.cpp  : : : : algorithms_get_turns_linear_linear_sph ]
     [ run overlay.cpp                      : : : : algorithms_overlay ]

@@ -2,7 +2,7 @@
 #  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
-#  modification, are permitted provided that the following conditions 
+#  modification, are permitted provided that the following conditions
 #  are met:
 #    * Redistributions of source code must retain the above copyright
 #      notice, this list of conditions and the following disclaimer.
@@ -27,28 +27,44 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ########################################################################
 
-lsrc_sha1     =	mh_sha1/sha1_for_mh_sha1.c
+lsrc_mh_sha1_base = \
+		mh_sha1/mh_sha1_block_base.c \
+		mh_sha1/mh_sha1_finalize_base.c \
+		mh_sha1/mh_sha1_update_base.c \
+		mh_sha1/sha1_for_mh_sha1.c \
+		mh_sha1/mh_sha1.c
 
-lsrc_mh_sha1  =	mh_sha1/mh_sha1.c \
+lsrc_x86_64  += \
+		$(lsrc_mh_sha1_base) \
+		mh_sha1/mh_sha1_multibinary.asm \
 		mh_sha1/mh_sha1_block_sse.asm \
 		mh_sha1/mh_sha1_block_avx.asm \
 		mh_sha1/mh_sha1_block_avx2.asm \
-		mh_sha1/mh_sha1_multibinary.asm \
-		mh_sha1/mh_sha1_finalize_base.c \
-		mh_sha1/mh_sha1_update_base.c \
-		mh_sha1/mh_sha1_block_base.c
-
-lsrc_mh_sha1 += mh_sha1/mh_sha1_block_avx512.asm \
+		mh_sha1/mh_sha1_block_avx512.asm \
 		mh_sha1/mh_sha1_avx512.c
 
-lsrc        += 	$(lsrc_sha1) \
-		$(lsrc_mh_sha1)
+lsrc_x86_32  += $(lsrc_x86_64)
 
-other_src   += 	mh_sha1/mh_sha1_ref.c \
+lsrc_aarch64 += \
+		$(lsrc_mh_sha1_base) \
+		mh_sha1/aarch64/mh_sha1_multibinary.S \
+		mh_sha1/aarch64/mh_sha1_aarch64_dispatcher.c \
+		mh_sha1/aarch64/mh_sha1_block_asimd.S \
+		mh_sha1/aarch64/mh_sha1_asimd.c \
+		mh_sha1/aarch64/mh_sha1_block_ce.S \
+		mh_sha1/aarch64/mh_sha1_ce.c
+
+lsrc_base_aliases += \
+		$(lsrc_mh_sha1_base) \
+		mh_sha1/mh_sha1_base_aliases.c
+
+other_src    += mh_sha1/mh_sha1_ref.c \
 		include/reg_sizes.asm \
 		include/multibinary.asm \
 		include/test.h \
 		mh_sha1/mh_sha1_internal.h
+
+src_include += -I $(srcdir)/mh_sha1
 
 extern_hdrs +=	include/mh_sha1.h
 

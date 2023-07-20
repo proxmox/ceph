@@ -5,6 +5,7 @@
 #if defined(_MSC_VER)
 # pragma warning(disable: 4702) // unreachable code
 # pragma warning(disable: 4577) // noexcept used without /EHsc
+# pragma warning(disable: 4530) // C++ exception handler used
 #endif
 
 #include <boost/throw_exception.hpp>
@@ -27,7 +28,7 @@ void throw_exception( std::exception const &, boost::source_location const & loc
     int r = 0;
 
     if( std::strcmp( loc.file_name(), __FILE__ ) != 0 ) ++r;
-    if( loc.line() != 18 ) ++r;
+    if( loc.line() != 19 ) ++r;
 
     std::exit( r );
 }

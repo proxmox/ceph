@@ -7,7 +7,7 @@
 /*
 Copyright 2020 René Ferdinand Rivera Morell
 Distributed under the Boost Software License, Version 1.0.
-(See accompanying file LICENSE_1_0.txt or http://www.boost.org/LICENSE_1_0.txt)
+(See accompanying file LICENSE.txt or https://www.bfgroup.xyz/b2/LICENSE.txt)
 */
 
 
@@ -38,7 +38,7 @@ Distributed under the Boost Software License, Version 1.0.
 typedef struct _pathpart
 {
     char const * ptr;
-    int len;
+    int32_t len;
 } PATHPART;
 
 typedef struct _pathname
@@ -107,6 +107,14 @@ namespace b2
             return
                 (p.size() >= 1 && (p[0] == '/' || p[0] == '\\'));
             #endif
+        }
+        inline bool is_relative(const std::string &p)
+        {
+            return
+                (p.size() >= 3 && (
+                    (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\\')) ||
+                    (p[0] == '.' && (p[1] == '/' || p[1] == '\\'))
+                    ));
         }
         std::string normalize(const std::string &p);
     }

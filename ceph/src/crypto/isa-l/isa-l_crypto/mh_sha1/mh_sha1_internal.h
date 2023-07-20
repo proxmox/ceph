@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -39,6 +39,7 @@
  */
 #include <stdint.h>
 #include "mh_sha1.h"
+#include "endian_helper.h"
 
 #ifdef __cplusplus
  extern "C" {
@@ -74,13 +75,6 @@
 
 #define rol32(x, r) (((x)<<(r)) ^ ((x)>>(32-(r))))
 
-#define bswap(x) (((x)<<24) | (((x)&0xff00)<<8) | (((x)&0xff0000)>>8) | ((x)>>24))
-#define bswap64(x) (((x)<<56) | (((x)&0xff00)<<40) | (((x)&0xff0000)<<24) | \
-		     (((x)&0xff000000)<<8) | (((x)&0xff00000000ull)>>8) | \
-		     (((x)&0xff0000000000ull)<<24) | \
-		     (((x)&0xff000000000000ull)<<40) | \
-		     (((x)&0xff00000000000000ull)<<56))
-
  /*******************************************************************
   * SHA1 API internal function prototypes
   ******************************************************************/
@@ -94,15 +88,6 @@
   * @returns None
   */
  void sha1_for_mh_sha1(const uint8_t * input_data, uint32_t * digest, const uint32_t len);
-
- /**
-  * @brief Calculate sha1 digest of blocks which size is SHA1_BLOCK_SIZE
-  *
-  * @param data   Pointer to data buffer containing the input message.
-  * @param digest Pointer to sha1 digest.
-  * @returns None
-  */
- void sha1_single_for_mh_sha1(const uint8_t * data, uint32_t digest[]);
 
  /*******************************************************************
   * mh_sha1 API internal function prototypes

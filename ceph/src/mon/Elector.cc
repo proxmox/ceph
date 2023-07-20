@@ -133,7 +133,7 @@ bool Elector::ever_participated() const
 
 unsigned Elector::paxos_size() const
 {
-  return (unsigned)mon->monmap->size();
+  return mon->monmap->size();
 }
 
 void Elector::shutdown()
@@ -478,12 +478,12 @@ void Elector::begin_peer_ping(int peer)
 bool Elector::send_peer_ping(int peer, const utime_t *n)
 {
   dout(10) << __func__ << " to peer " << peer << dendl;
-  if (peer >= mon->monmap->ranks.size()) {
+  if (peer >= ssize(mon->monmap->ranks)) {
     // Monitor no longer exists in the monmap,
     // therefore, we shouldn't ping this monitor
     // since we cannot lookup the address!
     dout(5) << "peer: " << peer << " >= ranks_size: "
-      << mon->monmap->ranks.size() << " ... dropping to prevent "
+      << ssize(mon->monmap->ranks) << " ... dropping to prevent "
       << "https://tracker.ceph.com/issues/50089" << dendl;
     live_pinging.erase(peer);
     return false;
@@ -739,7 +739,7 @@ void Elector::notify_rank_changed(int new_rank)
   dead_pinging.erase(new_rank);
 }
 
-void Elector::notify_rank_removed(int rank_removed, int new_rank)
+void Elector::notify_rank_removed(unsigned rank_removed, unsigned new_rank)
 {
   dout(10) << __func__ << ": " << rank_removed << dendl; 
   peer_tracker.notify_rank_removed(rank_removed, new_rank);

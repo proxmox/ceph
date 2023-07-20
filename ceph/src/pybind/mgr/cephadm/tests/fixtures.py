@@ -50,7 +50,7 @@ def match_glob(val, pat):
 
 
 class MockEventLoopThread:
-    def get_result(self, coro):
+    def get_result(self, coro, timeout):
         if sys.version_info >= (3, 7):
             return asyncio.run(coro)
 
@@ -98,9 +98,10 @@ def with_cephadm_module(module_options=None, store=None):
             mock.patch("cephadm.agent.CephadmAgentHelpers._request_agent_acks"), \
             mock.patch("cephadm.agent.CephadmAgentHelpers._apply_agent", return_value=False), \
             mock.patch("cephadm.agent.CephadmAgentHelpers._agent_down", return_value=False), \
-            mock.patch('cephadm.agent.CherryPyThread.run'), \
             mock.patch('cephadm.offline_watcher.OfflineHostWatcher.run'), \
-            mock.patch('cephadm.tuned_profiles.TunedProfileUtils._remove_stray_tuned_profiles'):
+            mock.patch('cephadm.tuned_profiles.TunedProfileUtils._remove_stray_tuned_profiles'), \
+            mock.patch('cephadm.offline_watcher.OfflineHostWatcher.run'), \
+            mock.patch('cephadm.http_server.CephadmHttpServer.run'):
 
         m = CephadmOrchestrator.__new__(CephadmOrchestrator)
         if module_options is not None:

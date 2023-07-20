@@ -6,6 +6,7 @@
 #ifndef ROCKSDB_LITE
 
 #include "utilities/transactions/write_unprepared_txn_db.h"
+
 #include "db/arena_wrapped_db_iter.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "util/cast_util.h"
@@ -59,7 +60,9 @@ Status WriteUnpreparedTxnDB::RollbackRecoveredTransaction(
   for (auto it = rtxn->batches_.rbegin(); it != rtxn->batches_.rend(); ++it) {
     auto last_visible_txn = it->first - 1;
     const auto& batch = it->second.batch_;
-    WriteBatch rollback_batch;
+    WriteBatch rollback_batch(0 /* reserved_bytes */, 0 /* max_bytes */,
+                              w_options.protection_bytes_per_key,
+                              0 /* default_cf_ts_sz */);
 
     struct RollbackWriteBatchBuilder : public WriteBatch::Handler {
       DBImpl* db_;
@@ -167,7 +170,10 @@ Status WriteUnpreparedTxnDB::RollbackRecoveredTransaction(
     }
 
     // The Rollback marker will be used as a batch separator
-    WriteBatchInternal::MarkRollback(&rollback_batch, rtxn->name_);
+    s = WriteBatchInternal::MarkRollback(&rollback_batch, rtxn->name_);
+    if (!s.ok()) {
+      return s;
+    }
 
     const uint64_t kNoLogRef = 0;
     const bool kDisableMemtable = true;
@@ -384,8 +390,8 @@ Iterator* WriteUnpreparedTxnDB::NewIterator(const ReadOptions& options,
                                             ColumnFamilyHandle* column_family,
                                             WriteUnpreparedTxn* txn) {
   // TODO(lth): Refactor so that this logic is shared with WritePrepared.
-  constexpr bool ALLOW_BLOB = true;
-  constexpr bool ALLOW_REFRESH = true;
+  constexpr bool expose_blob_index = false;
+  constexpr bool allow_refresh = false;
   std::shared_ptr<ManagedSnapshot> own_snapshot = nullptr;
   SequenceNumber snapshot_seq = kMaxSequenceNumber;
   SequenceNumber min_uncommitted = 0;
@@ -456,9 +462,9 @@ Iterator* WriteUnpreparedTxnDB::NewIterator(const ReadOptions& options,
       static_cast_with_check<ColumnFamilyHandleImpl>(column_family)->cfd();
   auto* state =
       new IteratorState(this, snapshot_seq, own_snapshot, min_uncommitted, txn);
-  auto* db_iter =
-      db_impl_->NewIteratorImpl(options, cfd, state->MaxVisibleSeq(),
-                                &state->callback, !ALLOW_BLOB, !ALLOW_REFRESH);
+  auto* db_iter = db_impl_->NewIteratorImpl(
+      options, cfd, state->MaxVisibleSeq(), &state->callback, expose_blob_index,
+      allow_refresh);
   db_iter->RegisterCleanup(CleanupWriteUnpreparedTxnDBIterator, state, nullptr);
   return db_iter;
 }

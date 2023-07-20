@@ -31,6 +31,12 @@
 
 #include <boost/intrusive/parent_from_member.hpp>
 
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 12)
+// to silence the false alarm from GCC 12, see
+// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105204
+#define SEASTAR_IGNORE_USE_AFTER_FREE
+#endif
+
 namespace seastar {
 
 // This header defines two shared pointer facilities, lw_shared_ptr<> and
@@ -155,14 +161,14 @@ public:
 };
 
 template <typename T>
-struct shared_ptr_no_esft : private lw_shared_ptr_counter_base {
+struct lw_shared_ptr_no_esft : private lw_shared_ptr_counter_base {
     T _value;
 
-    shared_ptr_no_esft() = default;
-    shared_ptr_no_esft(const T& x) : _value(x) {}
-    shared_ptr_no_esft(T&& x) : _value(std::move(x)) {}
+    lw_shared_ptr_no_esft() = default;
+    lw_shared_ptr_no_esft(const T& x) : _value(x) {}
+    lw_shared_ptr_no_esft(T&& x) : _value(std::move(x)) {}
     template <typename... A>
-    shared_ptr_no_esft(A&&... a) : _value(std::forward<A>(a)...) {}
+    lw_shared_ptr_no_esft(A&&... a) : _value(std::forward<A>(a)...) {}
 
     template <typename X>
     friend class lw_shared_ptr;
@@ -198,7 +204,7 @@ struct lw_shared_ptr_accessors_esft {
     static void dispose(T* value_ptr) {
         delete value_ptr;
     }
-    static void instantiate_to_value(lw_shared_ptr_counter_base* p) {
+    static void instantiate_to_value(lw_shared_ptr_counter_base*) {
         // since to_value() is defined above, we don't need to do anything special
         // to force-instantiate it
     }
@@ -206,7 +212,7 @@ struct lw_shared_ptr_accessors_esft {
 
 template <typename T>
 struct lw_shared_ptr_accessors_no_esft {
-    using concrete_type = shared_ptr_no_esft<T>;
+    using concrete_type = lw_shared_ptr_no_esft<T>;
     static T* to_value(lw_shared_ptr_counter_base* counter) {
         return &static_cast<concrete_type*>(counter)->_value;
     }
@@ -216,7 +222,7 @@ struct lw_shared_ptr_accessors_no_esft {
     static void dispose(T* value_ptr) {
         delete boost::intrusive::get_parent_from_member(value_ptr, &concrete_type::_value);
     }
-    static void instantiate_to_value(lw_shared_ptr_counter_base* p) {
+    static void instantiate_to_value(lw_shared_ptr_counter_base*) {
         // since to_value() is defined above, we don't need to do anything special
         // to force-instantiate it
     }
@@ -253,8 +259,9 @@ struct lw_shared_ptr_accessors<T, void_t<decltype(lw_shared_ptr_deleter<T>{})>> 
 
 template <typename T>
 class lw_shared_ptr {
-    using accessors = internal::lw_shared_ptr_accessors<std::remove_const_t<T>>;
-    using concrete_type = typename accessors::concrete_type;
+    template <typename U>
+    using accessors = internal::lw_shared_ptr_accessors<std::remove_const_t<U>>;
+
     mutable lw_shared_ptr_counter_base* _p = nullptr;
 private:
     lw_shared_ptr(lw_shared_ptr_counter_base* p) noexcept : _p(p) {
@@ -264,8 +271,8 @@ private:
     }
     template <typename... A>
     static lw_shared_ptr make(A&&... a) {
-        auto p = new concrete_type(std::forward<A>(a)...);
-        accessors::instantiate_to_value(p);
+        auto p = new typename accessors<T>::concrete_type(std::forward<A>(a)...);
+        accessors<T>::instantiate_to_value(p);
         return lw_shared_ptr(p);
     }
 public:
@@ -274,7 +281,7 @@ public:
     // Destroys the object pointed to by p and disposes of its storage.
     // The pointer to the object must have been obtained through release().
     static void dispose(T* p) noexcept {
-        accessors::dispose(const_cast<std::remove_const_t<T>*>(p));
+        accessors<T>::dispose(const_cast<std::remove_const_t<T>*>(p));
     }
 
     // A functor which calls dispose().
@@ -289,7 +296,12 @@ public:
     lw_shared_ptr(std::nullptr_t) noexcept : lw_shared_ptr() {}
     lw_shared_ptr(const lw_shared_ptr& x) noexcept : _p(x._p) {
         if (_p) {
+#pragma GCC diagnostic push
+#ifdef SEASTAR_IGNORE_USE_AFTER_FREE
+#pragma GCC diagnostic ignored "-Wuse-after-free"
+#endif
             ++_p->_count;
+#pragma GCC diagnostic pop
         }
     }
     lw_shared_ptr(lw_shared_ptr&& x) noexcept  : _p(x._p) {
@@ -297,9 +309,14 @@ public:
     }
     [[gnu::always_inline]]
     ~lw_shared_ptr() {
+#pragma GCC diagnostic push
+#ifdef SEASTAR_IGNORE_USE_AFTER_FREE
+#pragma GCC diagnostic ignored "-Wuse-after-free"
+#endif
         if (_p && !--_p->_count) {
-            accessors::dispose(_p);
+            accessors<T>::dispose(_p);
         }
+#pragma GCC diagnostic pop
     }
     lw_shared_ptr& operator=(const lw_shared_ptr& x) noexcept {
         if (_p != x._p) {
@@ -324,11 +341,11 @@ public:
         return *this;
     }
 
-    T& operator*() const noexcept { return *accessors::to_value(_p); }
-    T* operator->() const noexcept { return accessors::to_value(_p); }
+    T& operator*() const noexcept { return *accessors<T>::to_value(_p); }
+    T* operator->() const noexcept { return accessors<T>::to_value(_p); }
     T* get() const noexcept {
         if (_p) {
-            return accessors::to_value(_p);
+            return accessors<T>::to_value(_p);
         } else {
             return nullptr;
         }
@@ -347,7 +364,7 @@ public:
         if (--p->_count) {
             return nullptr;
         } else {
-            return std::unique_ptr<T, disposer>(accessors::to_value(p));
+            return std::unique_ptr<T, disposer>(accessors<T>::to_value(p));
         }
     }
 
@@ -533,9 +550,14 @@ public:
         x._p = nullptr;
     }
     ~shared_ptr() {
+#pragma GCC diagnostic push
+#ifdef SEASTAR_IGNORE_USE_AFTER_FREE
+#pragma GCC diagnostic ignored "-Wuse-after-free"
+#endif
         if (_b && !--_b->count) {
             delete _b;
         }
+#pragma GCC diagnostic pop
     }
     shared_ptr& operator=(const shared_ptr& x) noexcept {
         if (this != &x) {
@@ -717,6 +739,20 @@ operator==(std::nullptr_t, const shared_ptr<T>& y) {
     return nullptr == y.get();
 }
 
+template <typename T>
+inline
+bool
+operator==(const lw_shared_ptr<T>& x, std::nullptr_t) {
+    return x.get() == nullptr;
+}
+
+template <typename T>
+inline
+bool
+operator==(std::nullptr_t, const lw_shared_ptr<T>& y) {
+    return nullptr == y.get();
+}
+
 template <typename T, typename U>
 inline
 bool
@@ -735,6 +771,20 @@ template <typename T>
 inline
 bool
 operator!=(std::nullptr_t, const shared_ptr<T>& y) {
+    return nullptr != y.get();
+}
+
+template <typename T>
+inline
+bool
+operator!=(const lw_shared_ptr<T>& x, std::nullptr_t) {
+    return x.get() != nullptr;
+}
+
+template <typename T>
+inline
+bool
+operator!=(std::nullptr_t, const lw_shared_ptr<T>& y) {
     return nullptr != y.get();
 }
 
@@ -854,6 +904,20 @@ struct hash<seastar::shared_ptr<T>> : private hash<T*> {
         return hash<T*>::operator()(p.get());
     }
 };
+
+}
+
+namespace fmt {
+
+template<typename T>
+const void* ptr(const seastar::lw_shared_ptr<T>& p) {
+    return p.get();
+}
+
+template<typename T>
+const void* ptr(const seastar::shared_ptr<T>& p) {
+    return p.get();
+}
 
 }
 

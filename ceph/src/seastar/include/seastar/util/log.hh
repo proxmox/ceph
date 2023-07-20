@@ -87,6 +87,8 @@ class logger {
     static std::ostream* _out;
     static std::atomic<bool> _ostream;
     static std::atomic<bool> _syslog;
+    static unsigned _shard_field_width;
+    static inline thread_local bool silent = false;
 
 public:
     class log_writer {
@@ -137,18 +139,13 @@ private:
     void failed_to_log(std::exception_ptr ex, format_info fmt) noexcept;
 
     class silencer {
-        static constexpr log_level silent_level = static_cast<log_level>(-1);
-        logger& _log;
-        const log_level _level;
-
     public:
-        explicit silencer(logger& l) noexcept
-                : _log(l)
-                , _level(_log._level.exchange(silent_level))
-        {}
+        silencer() noexcept {
+            silent = true;
+        }
 
         ~silencer() {
-            _log.set_level(_level);
+            silent = false;
         }
     };
 
@@ -207,7 +204,7 @@ public:
     /// \param level - enum level value (info|error...)
     /// \return true if the log level has been enabled.
     bool is_enabled(log_level level) const noexcept {
-        return __builtin_expect(level <= _level.load(std::memory_order_relaxed), false);
+        return __builtin_expect(level <= _level.load(std::memory_order_relaxed), false) && !silent;
     }
 
     /// logs to desired level if enabled, otherwise we ignore the log line
@@ -418,6 +415,20 @@ public:
     ///       this should be rare (will have to fill the pipe buffer
     ///       before syslogd can clear it) but can happen.
     static void set_syslog_enabled(bool enabled) noexcept;
+
+    /// Set the width of shard id field in log messages
+    ///
+    /// \c this_shard_id() is printed as a part of the prefix in logging
+    /// messages, like "[shard 42]", where \c 42 is the decimal number of the
+    /// current shard id printed with a minimal width.
+    ///
+    /// \param width the minimal width of the shard id field
+    static void set_shard_field_width(unsigned width) noexcept;
+
+    /// enable/disable the colored tag in ostream
+    ///
+    /// \note this is a noop if fmtlib's version is less than 6.0
+    static void set_with_color(bool enabled) noexcept;
 };
 
 /// \brief used to keep a static registry of loggers
@@ -492,6 +503,7 @@ struct logging_settings final {
     log_level default_level;
     bool stdout_enabled;
     bool syslog_enabled;
+    bool with_color;
     logger_timestamp_style stdout_timestamp_style = logger_timestamp_style::real;
     logger_ostream_type logger_ostream = logger_ostream_type::stderr;
 };
@@ -523,5 +535,11 @@ std::ostream& operator<<(std::ostream&, const std::exception_ptr&);
 std::ostream& operator<<(std::ostream&, const std::exception&);
 std::ostream& operator<<(std::ostream&, const std::system_error&);
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<std::exception_ptr> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<std::exception> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<std::system_error> : fmt::ostream_formatter {};
+#endif
 
 /// @}

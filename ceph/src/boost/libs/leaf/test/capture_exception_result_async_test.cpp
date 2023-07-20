@@ -1,10 +1,11 @@
-// Copyright (c) 2018-2020 Emil Dotchevski and Reverge Studios, Inc.
+// Copyright 2018-2022 Emil Dotchevski and Reverge Studios, Inc.
 
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <boost/leaf/detail/config.hpp>
-#if defined(BOOST_LEAF_NO_EXCEPTIONS) || defined(BOOST_LEAF_NO_THREADS)
+#include <boost/leaf/config.hpp>
+
+#if defined(BOOST_LEAF_NO_EXCEPTIONS) || defined(BOOST_LEAF_NO_THREADS) || !BOOST_LEAF_CFG_CAPTURE
 
 #include <iostream>
 
@@ -16,9 +17,13 @@ int main()
 
 #else
 
-#include <boost/leaf/capture.hpp>
-#include <boost/leaf/result.hpp>
-#include <boost/leaf/handle_errors.hpp>
+#ifdef BOOST_LEAF_TEST_SINGLE_HEADER
+#   include "leaf.hpp"
+#else
+#   include <boost/leaf/capture.hpp>
+#   include <boost/leaf/result.hpp>
+#   include <boost/leaf/handle_errors.hpp>
+#endif
 
 #include "lightweight_test.hpp"
 #include <vector>

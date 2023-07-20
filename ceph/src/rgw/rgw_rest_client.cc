@@ -695,22 +695,22 @@ int RGWRESTGenerateHTTPHeaders::sign(const DoutPrefixProvider *dpp, RGWAccessKey
   return 0;
 }
 
-void RGWRESTStreamS3PutObj::send_init(rgw::sal::Object* obj)
+void RGWRESTStreamS3PutObj::send_init(const rgw_obj& obj)
 {
   string resource_str;
   string resource;
   string new_url = url;
   string new_host = host;
 
-   const auto& bucket_name = obj->get_bucket()->get_name();
+   const auto& bucket_name = obj.bucket.name;
 
   if (host_style == VirtualStyle) {
-    resource_str = obj->get_oid();
+    resource_str = obj.get_oid();
 
     new_url = bucket_name + "."  + new_url;
     new_host = bucket_name + "." + new_host;
   } else {
-    resource_str = bucket_name + "/" + obj->get_oid();
+    resource_str = bucket_name + "/" + obj.get_oid();
   }
 
   //do not encode slash in object key name
@@ -752,7 +752,7 @@ void RGWRESTStreamS3PutObj::send_ready(const DoutPrefixProvider *dpp, RGWAccessK
   out_cb = new RGWRESTStreamOutCB(this);
 }
 
-void RGWRESTStreamS3PutObj::put_obj_init(const DoutPrefixProvider *dpp, RGWAccessKey& key, rgw::sal::Object* obj, map<string, bufferlist>& attrs)
+void RGWRESTStreamS3PutObj::put_obj_init(const DoutPrefixProvider *dpp, RGWAccessKey& key, const rgw_obj& obj, map<string, bufferlist>& attrs)
 {
   send_init(obj);
   send_ready(dpp, key, attrs);
@@ -926,15 +926,7 @@ int RGWRESTStreamRWRequest::send(RGWHTTPManager *mgr)
     headers.emplace_back(kv);
   }
 
-  if (!mgr) {
-    return RGWHTTP::send(this);
-  }
-
-  int r = mgr->add_request(this);
-  if (r < 0)
-    return r;
-
-  return 0;
+  return RGWHTTPStreamRWRequest::send(mgr);
 }
 
 int RGWHTTPStreamRWRequest::complete_request(optional_yield y,
@@ -1116,4 +1108,17 @@ int RGWHTTPStreamRWRequest::send_data(void *ptr, size_t len, bool *pause)
     write_drain_cb->notify(out_len);
   }
   return send_size;
+}
+
+int RGWHTTPStreamRWRequest::send(RGWHTTPManager *mgr)
+{
+  if (!mgr) {
+    return RGWHTTP::send(this);
+  }
+
+  int r = mgr->add_request(this);
+  if (r < 0)
+    return r;
+
+  return 0;
 }

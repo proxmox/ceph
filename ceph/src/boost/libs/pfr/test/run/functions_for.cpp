@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2020 Antony Polukhin
+// Copyright (c) 2016-2022 Antony Polukhin
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -73,7 +73,7 @@ void test_empty_struct() {
 
 namespace foo {
     struct testing { bool b1, b2; int i; };
-    BOOST_PFR_FUNCTIONS_FOR(testing);
+    BOOST_PFR_FUNCTIONS_FOR(testing)
 }
 
 template <class Comparator>

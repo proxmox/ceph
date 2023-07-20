@@ -53,8 +53,8 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
   parentTpl: TemplateRef<any>;
   @ViewChild('nameTpl')
   nameTpl: TemplateRef<any>;
-  @ViewChild('scheduleTpl', { static: true })
-  scheduleTpl: TemplateRef<any>;
+  @ViewChild('ScheduleTpl', { static: true })
+  ScheduleTpl: TemplateRef<any>;
   @ViewChild('mirroringTpl', { static: true })
   mirroringTpl: TemplateRef<any>;
   @ViewChild('flattenTpl', { static: true })
@@ -67,6 +67,8 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
   provisionedNotAvailableTooltipTpl: TemplateRef<any>;
   @ViewChild('totalProvisionedNotAvailableTooltipTpl', { static: true })
   totalProvisionedNotAvailableTooltipTpl: TemplateRef<any>;
+  @ViewChild('forcePromoteConfirmation', { static: true })
+  forcePromoteConfirmation: TemplateRef<any>;
 
   permission: Permission;
   tableActions: CdTableAction[];
@@ -79,6 +81,7 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
   count = 0;
   private tableContext: CdTableFetchDataContext = null;
   modalRef: NgbModalRef;
+  errorMessage: string;
 
   builders = {
     'rbd/create': (metadata: object) =>
@@ -313,7 +316,7 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
         prop: 'mirror_mode',
         flexGrow: 3,
         sortable: false,
-        cellTemplate: this.scheduleTpl
+        cellTemplate: this.ScheduleTpl
       }
     ];
 
@@ -571,7 +574,32 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
         }),
         call: this.rbdService.update(imageSpec, request)
       })
-      .subscribe();
+      .subscribe(
+        () => {},
+        (error) => {
+          error.preventDefault();
+          if (primary) {
+            this.errorMessage = error.error['detail'].replace(/\[.*?\]\s*/, '');
+            request.force = true;
+            this.modalRef = this.modalService.show(ConfirmationModalComponent, {
+              titleText: $localize`Warning`,
+              buttonText: $localize`Enforce`,
+              warning: true,
+              bodyTpl: this.forcePromoteConfirmation,
+              onSubmit: () => {
+                this.rbdService.update(imageSpec, request).subscribe(
+                  () => {
+                    this.modalRef.close();
+                  },
+                  () => {
+                    this.modalRef.close();
+                  }
+                );
+              }
+            });
+          }
+        }
+      );
   }
 
   hasSnapshots() {

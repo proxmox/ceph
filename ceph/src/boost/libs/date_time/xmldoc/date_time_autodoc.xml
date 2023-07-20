@@ -1360,14 +1360,14 @@ pg.get_date(2000); // returns 2000-2-29
 <method name="operator--"><type><classname>date_itr_base</classname> &amp;</type></method>
 <method name="get_offset" cv="const = 0" specifiers="virtual"><type>duration_type</type><parameter name="current"><paramtype>const date_type &amp;</paramtype></parameter></method>
 <method name="get_neg_offset" cv="const = 0" specifiers="virtual"><type>duration_type</type><parameter name="current"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator *"><type>date_type</type></method>
-<method name="operator-&gt;"><type>date_type *</type></method>
-<method name="operator&lt;"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator&lt;="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator&gt;"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator&gt;="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator=="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
-<method name="operator!="><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator *" cv="const"><type>const date_type &amp;</type></method>
+<method name="operator-&gt;" cv="const"><type>const date_type *</type></method>
+<method name="operator&lt;" cv="const"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator&lt;=" cv="const"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator&gt;" cv="const"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator&gt;=" cv="const"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator==" cv="const"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
+<method name="operator!=" cv="const"><type>bool</type><parameter name="d"><paramtype>const date_type &amp;</paramtype></parameter></method>
 </method-group>
 <constructor><parameter name="d"><paramtype>date_type</paramtype></parameter></constructor>
 <destructor/>
@@ -3642,14 +3642,14 @@ special_value_formatter svf(&amp;special_value_names[0], &amp;special_value_name
 <method-group name="public member functions">
 <method name="operator++"><type><classname>time_itr</classname> &amp;</type></method>
 <method name="operator--"><type><classname>time_itr</classname> &amp;</type></method>
-<method name="operator *"><type>time_type</type></method>
-<method name="operator-&gt;"><type>time_type *</type></method>
-<method name="operator&lt;"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
-<method name="operator&lt;="><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
-<method name="operator!="><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
-<method name="operator=="><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
-<method name="operator&gt;"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
-<method name="operator&gt;="><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
+<method name="operator *" cv="const"><type>const time_type &amp;</type></method>
+<method name="operator-&gt;" cv="const"><type>const time_type *</type></method>
+<method name="operator&lt;" cv="const"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
+<method name="operator&lt;=" cv="const"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
+<method name="operator!=" cv="const"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
+<method name="operator==" cv="const"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
+<method name="operator&gt;" cv="const"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
+<method name="operator&gt;=" cv="const"><type>bool</type><parameter name="t"><paramtype>const time_type &amp;</paramtype></parameter></method>
 </method-group>
 <constructor><parameter name="t"><paramtype>time_type</paramtype></parameter><parameter name="d"><paramtype>time_duration_type</paramtype></parameter></constructor>
 </class>

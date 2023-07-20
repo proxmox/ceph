@@ -39,14 +39,13 @@ class Watch : public seastar::enable_shared_from_this<Watch> {
 
   watch_info_t winfo;
   entity_name_t entity_name;
+  Ref<PG> pg;
 
   seastar::timer<seastar::lowres_clock> timeout_timer;
 
   seastar::future<> start_notify(NotifyRef);
   seastar::future<> send_notify_msg(NotifyRef);
   seastar::future<> send_disconnect_msg();
-  void discard_state();
-  void do_watch_timeout(Ref<PG> pg);
 
   friend Notify;
   friend class WatchTimeoutRequest;
@@ -60,14 +59,16 @@ public:
     : obc(std::move(obc)),
       winfo(winfo),
       entity_name(entity_name),
-      timeout_timer([this, pg=std::move(pg)] {
-        assert(pg);
-        return do_watch_timeout(pg);
+      pg(std::move(pg)),
+      timeout_timer([this] {
+        return do_watch_timeout();
       }) {
+    assert(this->pg);
   }
   ~Watch();
 
   seastar::future<> connect(crimson::net::ConnectionRef, bool);
+  void disconnect();
   bool is_alive() const {
     return true;
   }
@@ -75,6 +76,8 @@ public:
     return static_cast<bool>(conn);
   }
   void got_ping(utime_t);
+
+  void discard_state();
 
   seastar::future<> remove();
 
@@ -92,10 +95,20 @@ public:
   uint64_t get_watcher_gid() const {
     return entity_name.num();
   }
-  uint64_t get_cookie() const {
+  auto get_pg() const {
+    return pg;
+  }
+  auto& get_entity() const {
+    return entity_name;
+  }
+  auto& get_cookie() const {
     return winfo.cookie;
   }
+  auto& get_peer_addr() const {
+    return winfo.addr;
+  }
   void cancel_notify(const uint64_t notify_id);
+  void do_watch_timeout();
 };
 
 using WatchRef = seastar::shared_ptr<Watch>;
@@ -235,3 +248,7 @@ seastar::future<> Notify::create_n_propagate(
 } // namespace crimson::osd
 
 WRITE_CLASS_DENC(crimson::osd::notify_reply_t)
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<crimson::osd::notify_reply_t> : fmt::ostream_formatter {};
+#endif

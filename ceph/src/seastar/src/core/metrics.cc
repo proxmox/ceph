@@ -21,13 +21,16 @@
 
 #include <seastar/core/metrics.hh>
 #include <seastar/core/metrics_api.hh>
+#include <seastar/core/relabel_config.hh>
 #include <seastar/core/reactor.hh>
 #include <boost/range/algorithm.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/range/algorithm_ext/erase.hpp>
+#include <random>
 
 namespace seastar {
+extern seastar::logger seastar_logger;
 namespace metrics {
 
 double_registration::double_registration(std::string what): std::runtime_error(what) {}
@@ -109,19 +112,90 @@ future<> configure(const options& opts) {
     });
 }
 
+future<metric_relabeling_result> set_relabel_configs(const std::vector<relabel_config>& relabel_configs) {
+    return impl::get_local_impl()->set_relabel_configs(relabel_configs);
+}
+
+const std::vector<relabel_config>& get_relabel_configs() {
+    return impl::get_local_impl()->get_relabel_configs();
+}
+
+
+static bool apply_relabeling(const relabel_config& rc, impl::metric_info& info) {
+    std::stringstream s;
+    bool first = true;
+    for (auto&& l: rc.source_labels) {
+        auto val = info.id.labels().find(l);
+        if (l != "__name__" && val == info.id.labels().end()) {
+            //If not all the labels are found nothing todo
+            return false;
+        }
+        if (first) {
+            first = false;
+        } else {
+            s << rc.separator;
+        }
+        s << ((l == "__name__") ? info.id.full_name() : val->second);
+    }
+    std::smatch match;
+    // regex_search forbid temporary strings
+    std::string tmps = s.str();
+    if (!std::regex_search(tmps, match, rc.expr.regex())) {
+        return false;
+    }
+
+    switch (rc.action) {
+        case relabel_config::relabel_action::drop:
+        case relabel_config::relabel_action::keep: {
+            info.enabled = rc.action == relabel_config::relabel_action::keep;
+            return true;
+        }
+        case relabel_config::relabel_action::report_when_empty:
+        case relabel_config::relabel_action::skip_when_empty: {
+            info.should_skip_when_empty = (rc.action == relabel_config::relabel_action::skip_when_empty) ? skip_when_empty::yes : skip_when_empty::no;
+            return false;
+        }
+        case relabel_config::relabel_action::drop_label: {
+            if (info.id.labels().find(rc.target_label) != info.id.labels().end()) {
+                info.id.labels().erase(rc.target_label);
+            }
+            return true;
+        };
+        case relabel_config::relabel_action::replace: {
+            if (!rc.target_label.empty()) {
+                std::string fmt_s = match.format(rc.replacement);
+                info.id.labels()[rc.target_label] = fmt_s;
+            }
+            return true;
+        }
+        default:
+            break;
+    }
+    return true;
+}
 
 bool label_instance::operator!=(const label_instance& id2) const {
     auto& id1 = *this;
     return !(id1 == id2);
 }
 
+/*!
+ * \brief get_unique_id generate a random id
+ */
+static std::string get_unique_id() {
+    std::random_device rd;
+    return std::to_string(rd()) + "-" + std::to_string(rd()) + "-" + std::to_string(rd()) + "-" + std::to_string(rd());
+}
+
 label shard_label("shard");
 namespace impl {
 
-registered_metric::registered_metric(metric_id id, metric_function f, bool enabled) :
+registered_metric::registered_metric(metric_id id, metric_function f, bool enabled, skip_when_empty skip) :
         _f(f), _impl(get_local_impl()) {
     _info.enabled = enabled;
+    _info.should_skip_when_empty = skip;
     _info.id = id;
+    _info.original_labels = id.labels();
 }
 
 metric_value metric_value::operator+(const metric_value& c) {
@@ -146,7 +220,8 @@ metric_definition_impl::metric_definition_impl(
         metric_type type,
         metric_function f,
         description d,
-        std::vector<label_instance> _labels)
+        std::vector<label_instance> _labels,
+        std::vector<label> _aggregate_labels)
         : name(name), type(type), f(f)
         , d(d), enabled(true) {
     for (auto i: _labels) {
@@ -155,6 +230,7 @@ metric_definition_impl::metric_definition_impl(
     if (labels.find(shard_label.name()) == labels.end()) {
         labels[shard_label.name()] = shard();
     }
+    aggregate(_aggregate_labels);
 }
 
 metric_definition_impl& metric_definition_impl::operator ()(bool _enabled) {
@@ -167,8 +243,25 @@ metric_definition_impl& metric_definition_impl::operator ()(const label_instance
     return *this;
 }
 
+metric_definition_impl& metric_definition_impl::operator ()(skip_when_empty skip) noexcept {
+    _skip_when_empty = skip;
+    return *this;
+}
+
 metric_definition_impl& metric_definition_impl::set_type(const sstring& type_name) {
     type.type_name = type_name;
+    return *this;
+}
+
+metric_definition_impl& metric_definition_impl::aggregate(const std::vector<label>& _labels) noexcept {
+    aggregate_labels.reserve(_labels.size());
+    std::transform(_labels.begin(), _labels.end(),std::back_inserter(aggregate_labels),
+            [](const label& l) { return l.name(); });
+    return *this;
+}
+
+metric_definition_impl& metric_definition_impl::set_skip_when_empty(bool skip) noexcept {
+    _skip_when_empty = skip_when_empty(skip);
     return *this;
 }
 
@@ -186,7 +279,7 @@ metric_groups_impl& metric_groups_impl::add_metric(group_name_type name, const m
 
     metric_id id(name, md._impl->name, md._impl->labels);
 
-    get_local_impl()->add_registration(id, md._impl->type, md._impl->f, md._impl->d, md._impl->enabled);
+    get_local_impl()->add_registration(id, md._impl->type, md._impl->f, md._impl->d, md._impl->enabled, md._impl->_skip_when_empty, md._impl->aggregate_labels);
 
     _registration.push_back(id);
     return *this;
@@ -327,34 +420,106 @@ std::vector<std::vector<metric_function>>& impl::functions() {
     return _current_metrics;
 }
 
-void impl::add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled) {
-    auto rm = ::seastar::make_shared<registered_metric>(id, f, enabled);
+void impl::add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, skip_when_empty skip, const std::vector<std::string>& aggregate_labels) {
+    auto rm = ::seastar::make_shared<registered_metric>(id, f, enabled, skip);
+    for (auto&& rl : _relabel_configs) {
+        apply_relabeling(rl, rm->info());
+    }
+
     sstring name = id.full_name();
     if (_value_map.find(name) != _value_map.end()) {
         auto& metric = _value_map[name];
-        if (metric.find(id.labels()) != metric.end()) {
+        if (metric.find(rm->info().id.labels()) != metric.end()) {
             throw double_registration("registering metrics twice for metrics: " + name);
         }
         if (metric.info().type != type.base_type) {
             throw std::runtime_error("registering metrics " + name + " registered with different type.");
         }
-        metric[id.labels()] = rm;
+        metric[rm->info().id.labels()] = rm;
+        for (auto&& i : rm->info().id.labels()) {
+            _labels.insert(i.first);
+        }
     } else {
         _value_map[name].info().type = type.base_type;
         _value_map[name].info().d = d;
         _value_map[name].info().inherit_type = type.type_name;
         _value_map[name].info().name = id.full_name();
-        _value_map[name][id.labels()] = rm;
+        _value_map[name].info().aggregate_labels = aggregate_labels;
+        _value_map[name][rm->info().id.labels()] = rm;
     }
     dirty();
 }
 
+future<metric_relabeling_result> impl::set_relabel_configs(const std::vector<relabel_config>& relabel_configs) {
+    _relabel_configs = relabel_configs;
+    metric_relabeling_result conflicts{0};
+    for (auto&& family : _value_map) {
+        std::vector<shared_ptr<registered_metric>> rms;
+        for (auto&& metric = family.second.begin(); metric != family.second.end();) {
+            metric->second->info().id.labels().clear();
+            metric->second->info().id.labels() = metric->second->info().original_labels;
+            for (auto rl : _relabel_configs) {
+                if (apply_relabeling(rl, metric->second->info())) {
+                    dirty();
+                }
+            }
+            if (metric->first != metric->second->info().id.labels()) {
+                // If a metric labels were changed, we should remove it from the map, and place it back again
+                rms.push_back(metric->second);
+                family.second.erase(metric++);
+                dirty();
+            } else {
+                ++metric;
+            }
+        }
+        for (auto rm : rms) {
+            labels_type lb = rm->info().id.labels();
+            if (family.second.find(rm->info().id.labels()) != family.second.end()) {
+                /*
+                 You can not have a two metrics with the same name and label, there is a problem with the configuration.
+                 On startup we would have throw an exception and stop.
+                 But during normal run, we don't want to crash the server just because a metric reconfiguration.
+                 We cannot throw away the metric.
+                 Instead we add it with an extra label, allowing the user to reconfigure.
+                */
+                seastar_logger.error("Metrics: After relabeling, registering metrics twice for metrics : {}", family.first);
+                auto id = get_unique_id();
+                lb["err"] = id;
+                conflicts.metrics_relabeled_due_to_collision++;
+                rm->info().id.labels()["err"] = id;
+            }
+
+            family.second[lb] = rm;
+        }
+    }
+    return make_ready_future<metric_relabeling_result>(conflicts);
+}
 }
 
 const bool metric_disabled = false;
 
+relabel_config::relabel_action relabel_config_action(const std::string& action) {
+    if (action == "skip_when_empty") {
+        return relabel_config::relabel_action::skip_when_empty;
+    }
+    if (action == "report_when_empty") {
+        return relabel_config::relabel_action::report_when_empty;
+    }
+    if (action == "keep") {
+        return relabel_config::relabel_action::keep;
+    }
+    if (action == "drop") {
+        return relabel_config::relabel_action::drop;
+    } if (action == "drop_label") {
+        return relabel_config::relabel_action::drop_label;
+    }
+    return relabel_config::relabel_action::replace;
+}
 
 histogram& histogram::operator+=(const histogram& c) {
+    if (c.sample_count == 0) {
+        return *this;
+    }
     for (size_t i = 0; i < c.buckets.size(); i++) {
         if (buckets.size() <= i) {
             buckets.push_back(c.buckets[i]);
@@ -365,6 +530,8 @@ histogram& histogram::operator+=(const histogram& c) {
             buckets[i].count += c.buckets[i].count;
         }
     }
+    sample_count += c.sample_count;
+    sample_sum += c.sample_sum;
     return *this;
 }
 

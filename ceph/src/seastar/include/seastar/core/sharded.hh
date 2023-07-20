@@ -50,6 +50,9 @@ namespace seastar {
 template <typename Func, typename... Param>
 class sharded_parameter;
 
+template <typename Service>
+class sharded;
+
 namespace internal {
 
 template <typename Func, typename... Param>
@@ -59,7 +62,40 @@ using on_each_shard_func = std::function<future<> (unsigned shard)>;
 
 future<> sharded_parallel_for_each(unsigned nr_shards, on_each_shard_func on_each_shard) noexcept(std::is_nothrow_move_constructible_v<on_each_shard_func>);
 
-}
+template <typename Service>
+class either_sharded_or_local {
+    sharded<Service>& _sharded;
+public:
+    either_sharded_or_local(sharded<Service>& s) : _sharded(s) {}
+    operator sharded<Service>& ();
+    operator Service& ();
+};
+
+template <typename T>
+struct sharded_unwrap {
+    using evaluated_type = T;
+    using type = T;
+};
+
+template <typename T>
+struct sharded_unwrap<std::reference_wrapper<sharded<T>>> {
+    using evaluated_type = T&;
+    using type = either_sharded_or_local<T>;
+};
+
+template <typename Func, typename... Param>
+struct sharded_unwrap<sharded_parameter<Func, Param...>> {
+    using type = std::invoke_result_t<Func, Param...>;
+};
+
+template <typename T>
+using sharded_unwrap_evaluated_t = typename sharded_unwrap<T>::evaluated_type;
+
+template <typename T>
+using sharded_unwrap_t = typename sharded_unwrap<T>::type;
+
+} // internal
+
 
 /// \addtogroup smp-module
 /// @{
@@ -67,8 +103,8 @@ future<> sharded_parallel_for_each(unsigned nr_shards, on_each_shard_func on_eac
 template <typename T>
 class sharded;
 
-/// If sharded service inherits from this class sharded::stop() will wait
-/// until all references to a service on each shard will disappear before
+/// If a sharded service inherits from this class, sharded::stop() will wait
+/// until all references to this service on each shard are released before
 /// returning. It is still service's own responsibility to track its references
 /// in asynchronous code by calling shared_from_this() and keeping returned smart
 /// pointer as long as object is in use.
@@ -152,7 +188,7 @@ private:
 
     template <typename T>
     std::enable_if_t<!std::is_base_of<peering_sharded_service<T>, T>::value>
-    set_container(T& service) noexcept {
+    set_container(T&) noexcept {
     }
 
     future<>
@@ -234,7 +270,7 @@ public:
     ///        to be invoked on all shards
     /// \return Future that becomes ready once all calls have completed
     template <typename Func, typename... Args>
-    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, Args...>)
+    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>)
     future<> invoke_on_all(smp_submit_to_options options, Func func, Args... args) noexcept;
 
     /// Invoke a function on all instances of `Service`.
@@ -243,7 +279,7 @@ public:
     /// Passes the default \ref smp_submit_to_options to the
     /// \ref smp::submit_to() called behind the scenes.
     template <typename Func, typename... Args>
-    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, Args...>)
+    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>)
     future<> invoke_on_all(Func func, Args... args) noexcept {
       try {
         return invoke_on_all(smp_submit_to_options{}, std::move(func), std::move(args)...);
@@ -287,61 +323,39 @@ public:
       }
     }
 
-    /// Invoke a method on all instances of `Service` and reduce the results using
+    /// Invoke a callable on all instances of `Service` and reduce the results using
     /// `Reducer`.
     ///
     /// \see map_reduce(Iterator begin, Iterator end, Mapper&& mapper, Reducer&& r)
-    template <typename Reducer, typename Ret, typename... FuncArgs, typename... Args>
+    template <typename Reducer, typename Func, typename... Args>
     inline
-    auto
-    map_reduce(Reducer&& r, Ret (Service::*func)(FuncArgs...), Args&&... args)
-        -> typename reducer_traits<Reducer>::future_type
+    auto map_reduce(Reducer&& r, Func&& func, Args&&... args) -> typename reducer_traits<Reducer>::future_type
     {
         return ::seastar::map_reduce(boost::make_counting_iterator<unsigned>(0),
                             boost::make_counting_iterator<unsigned>(_instances.size()),
-            [this, func, args = std::make_tuple(std::forward<Args>(args)...)] (unsigned c) mutable {
-                return smp::submit_to(c, [this, func, args] () mutable {
-                    return std::apply([this, func] (Args&&... args) mutable {
-                        auto inst = _instances[this_shard_id()].service;
-                        if (inst) {
-                            return ((*inst).*func)(std::forward<Args>(args)...);
-                        } else {
-                            throw no_sharded_instance_exception(pretty_type_name(typeid(Service)));
-                        }
+            [this, func = std::forward<Func>(func), args = std::make_tuple(std::forward<Args>(args)...)] (unsigned c) mutable {
+                return smp::submit_to(c, [this, &func, args] () mutable {
+                    return std::apply([this, &func] (Args&&... args) mutable {
+                        auto inst = get_local_service();
+                        return std::invoke(func, *inst, std::forward<Args>(args)...);
                     }, std::move(args));
                 });
             }, std::forward<Reducer>(r));
     }
 
-    /// Invoke a callable on all instances of `Service` and reduce the results using
-    /// `Reducer`.
-    ///
-    /// \see map_reduce(Iterator begin, Iterator end, Mapper&& mapper, Reducer&& r)
-    template <typename Reducer, typename Func>
-    inline
-    auto map_reduce(Reducer&& r, Func&& func) -> typename reducer_traits<Reducer>::future_type
-    {
-        return ::seastar::map_reduce(boost::make_counting_iterator<unsigned>(0),
-                            boost::make_counting_iterator<unsigned>(_instances.size()),
-            [this, &func] (unsigned c) mutable {
-                return smp::submit_to(c, [this, func] () mutable {
-                    auto inst = get_local_service();
-                    return func(*inst);
-                });
-            }, std::forward<Reducer>(r));
-    }
-
     /// The const version of \ref map_reduce(Reducer&& r, Func&& func)
-    template <typename Reducer, typename Func>
+    template <typename Reducer, typename Func, typename... Args>
     inline
-    auto map_reduce(Reducer&& r, Func&& func) const -> typename reducer_traits<Reducer>::future_type
+    auto map_reduce(Reducer&& r, Func&& func, Args&&... args) const -> typename reducer_traits<Reducer>::future_type
     {
         return ::seastar::map_reduce(boost::make_counting_iterator<unsigned>(0),
                             boost::make_counting_iterator<unsigned>(_instances.size()),
-            [this, &func] (unsigned c) {
-                return smp::submit_to(c, [this, func] () {
-                    auto inst = get_local_service();
-                    return func(*inst);
+            [this, func = std::forward<Func>(func), args = std::make_tuple(std::forward<Args>(args)...)] (unsigned c) {
+                return smp::submit_to(c, [this, &func, args] () {
+                    return std::apply([this, &func] (Args&&... args) {
+                        auto inst = get_local_service();
+                        return std::invoke(func, *inst, std::forward<Args>(args)...);
+                    }, std::move(args));
                 });
             }, std::forward<Reducer>(r));
     }
@@ -369,7 +383,7 @@ public:
         auto wrapped_map = [this, map] (unsigned c) {
             return smp::submit_to(c, [this, map] {
                 auto inst = get_local_service();
-                return map(*inst);
+                return std::invoke(map, *inst);
             });
         };
         return ::seastar::map_reduce(smp::all_cpus().begin(), smp::all_cpus().end(),
@@ -386,7 +400,7 @@ public:
         auto wrapped_map = [this, map] (unsigned c) {
             return smp::submit_to(c, [this, map] {
                 auto inst = get_local_service();
-                return map(*inst);
+                return std::invoke(map, *inst);
             });
         };
         return ::seastar::map_reduce(smp::all_cpus().begin(), smp::all_cpus().end(),
@@ -406,15 +420,15 @@ public:
     /// \return  Result vector of invoking `map` with each instance in parallel
     template <typename Mapper, typename Future = futurize_t<std::invoke_result_t<Mapper,Service&>>, typename return_type = decltype(internal::untuple(std::declval<typename Future::tuple_type>()))>
     inline future<std::vector<return_type>> map(Mapper mapper) {
-        return do_with(std::vector<return_type>(),
-                [&mapper, this] (std::vector<return_type>& vec) mutable {
-            vec.resize(smp::count);
-            return parallel_for_each(boost::irange<unsigned>(0, _instances.size()), [this, &vec, mapper] (unsigned c) {
-                return smp::submit_to(c, [this, mapper] {
+        return do_with(std::vector<return_type>(), std::move(mapper),
+                [this] (std::vector<return_type>& vec, Mapper& mapper) mutable {
+            vec.resize(_instances.size());
+            return parallel_for_each(boost::irange<unsigned>(0, _instances.size()), [this, &vec, &mapper] (unsigned c) {
+                return smp::submit_to(c, [this, &mapper] {
                     auto inst = get_local_service();
                     return mapper(*inst);
-                }).then([&vec, c] (auto res) {
-                    vec[c] = res;
+                }).then([&vec, c] (auto&& res) {
+                    vec[c] = std::move(res);
                 });
             }).then([&vec] {
                 return make_ready_future<std::vector<return_type>>(std::move(vec));
@@ -472,7 +486,7 @@ public:
     bool local_is_initialized() const noexcept;
 
 private:
-    void track_deletion(shared_ptr<Service>& s, std::false_type) noexcept {
+    void track_deletion(shared_ptr<Service>&, std::false_type) noexcept {
         // do not wait for instance to be deleted since it is not going to notify us
         service_deleted();
     }
@@ -506,23 +520,6 @@ private:
     }
 };
 
-namespace internal {
-
-template <typename T>
-struct sharded_unwrap {
-    using type = T;
-};
-
-template <typename T>
-struct sharded_unwrap<std::reference_wrapper<sharded<T>>> {
-    using type = T&;
-};
-
-template <typename T>
-using sharded_unwrap_t = typename sharded_unwrap<T>::type;
-
-} // internal
-
 
 /// \brief Helper to pass a parameter to a `sharded<>` object that depends
 /// on the shard. It is evaluated on the shard, just before being
@@ -542,7 +539,7 @@ public:
     ///                  instance will be passed. Anything else
     ///                  will be passed by value unchanged.
     explicit sharded_parameter(Func func, Params... params)
-            SEASTAR_CONCEPT(requires std::invocable<Func, internal::sharded_unwrap_t<Params>...>)
+            SEASTAR_CONCEPT(requires std::invocable<Func, internal::sharded_unwrap_evaluated_t<Params>...>)
             : _func(std::move(func)), _params(std::make_tuple(std::move(params)...)) {
     }
 private:
@@ -565,15 +562,6 @@ sharded<Service>::~sharded() {
 
 namespace internal {
 
-template <typename Service>
-class either_sharded_or_local {
-    sharded<Service>& _sharded;
-public:
-    either_sharded_or_local(sharded<Service>& s) : _sharded(s) {}
-    operator sharded<Service>& () { return _sharded; }
-    operator Service& () { return _sharded.local(); }
-};
-
 template <typename T>
 inline
 T&&
@@ -592,6 +580,12 @@ auto
 unwrap_sharded_arg(sharded_parameter<Func, Param...> sp) {
     return sp.evaluate();
 }
+
+template <typename Service>
+either_sharded_or_local<Service>::operator sharded<Service>& () { return _sharded; }
+
+template <typename Service>
+either_sharded_or_local<Service>::operator Service& () { return _sharded.local(); }
 
 }
 
@@ -695,7 +689,7 @@ future<> sharded_call_stop<true>::call(Service& instance) {
 template <>
 template <typename Service>
 inline
-future<> sharded_call_stop<false>::call(Service& instance) {
+future<> sharded_call_stop<false>::call(Service&) {
     return make_ready_future<>();
 }
 
@@ -757,15 +751,17 @@ sharded<Service>::invoke_on_all(smp_submit_to_options options, std::function<fut
 
 template <typename Service>
 template <typename Func, typename... Args>
-SEASTAR_CONCEPT(requires std::invocable<Func, Service&, Args...>)
+SEASTAR_CONCEPT(requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>)
 inline
 future<>
 sharded<Service>::invoke_on_all(smp_submit_to_options options, Func func, Args... args) noexcept {
-    static_assert(std::is_same_v<futurize_t<std::invoke_result_t<Func, Service&, Args...>>, future<>>,
+    static_assert(std::is_same_v<futurize_t<std::invoke_result_t<Func, Service&, internal::sharded_unwrap_t<Args>...>>, future<>>,
                   "invoke_on_all()'s func must return void or future<>");
   try {
-    return invoke_on_all(options, invoke_on_all_func_type([func, args = std::tuple(std::move(args)...)] (Service& service) mutable {
-        return futurize_apply(func, std::tuple_cat(std::forward_as_tuple(service), args));
+    return invoke_on_all(options, invoke_on_all_func_type([func = std::move(func), args = std::tuple(std::move(args)...)] (Service& service) mutable {
+        return std::apply([&service, &func] (Args&&... args) mutable {
+            return futurize_apply(func, std::tuple_cat(std::forward_as_tuple(service), std::tuple(internal::unwrap_sharded_arg(std::forward<Args>(args))...)));
+        }, std::move(args));
     }));
   } catch (...) {
     return current_exception_as_future();
@@ -831,11 +827,10 @@ inline bool sharded<Service>::local_is_initialized() const noexcept {
 /// used on multiple cores in parallel.
 ///
 /// \c foreign_ptr<> provides a solution to that problem.
-/// \c foreign_ptr<> wraps any pointer type -- raw pointer,
-/// \ref seastar::shared_ptr<>, or similar, and remembers on what core this
-/// happened.  When the \c foreign_ptr<> object is destroyed, it
-/// sends a message to the original core so that the wrapped object
-/// can be safely destroyed.
+/// \c foreign_ptr<> wraps smart pointers -- \ref seastar::shared_ptr<>,
+/// or similar, and remembers on what core this happened.
+/// When the \c foreign_ptr<> object is destroyed, it sends a message to
+/// the original core so that the wrapped object can be safely destroyed.
 ///
 /// \c foreign_ptr<> is a move-only object; it cannot be copied.
 ///

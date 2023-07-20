@@ -15,7 +15,7 @@
 
 cmake_minimum_required(VERSION 3.9)
 # Version number starts at 10 to avoid conflicts with Boost version
-set(_version 11.0.0)
+set(_version 11.1.4)
 if(BOOST_SUPERPROJECT_SOURCE_DIR)
   set(_version ${BOOST_SUPERPROJECT_VERSION})
 endif()
@@ -32,19 +32,34 @@ if(NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
-include(BoostAddOptions)
 include(BoostAddWarnings)
 include(CheckCXXSourceCompiles)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   include(CTest)
+  set(def_INSTALL ON)
+  set(def_WERROR ON)
+elseif(BOOST_SUPERPROJECT_SOURCE_DIR)
+  set(Boost_NOWIDE_INSTALL OFF) # Done by the superproject
+  set(def_WERROR ON)
+else()
+  set(def_INSTALL OFF)
+  set(def_WERROR OFF)
 endif()
+
+if(NOT BOOST_SUPERPROJECT_SOURCE_DIR)
+  option(Boost_NOWIDE_INSTALL "Install library" "${def_INSTALL}")
+endif()
+option(Boost_NOWIDE_WERROR "Treat warnings as errors" "${def_WERROR}")
+
 
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/config/check_lfs_support.cpp lfsSource)
 check_cxx_source_compiles("${lfsSource}" BOOST_NOWIDE_HAS_LFS)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/config/check_attribute_init_priority.cpp attributeInitPrioritySource)
+check_cxx_source_compiles("${attributeInitPrioritySource}" BOOST_NOWIDE_HAS_INIT_PRIORITY)
 
 # Using glob here is ok as it is only for headers
 file(GLOB_RECURSE headers include/*.hpp)
-add_library(boost_nowide src/cstdio.cpp src/cstdlib.cpp src/filebuf.cpp src/iostream.cpp src/stat.cpp ${headers})
+add_library(boost_nowide src/console_buffer.cpp src/cstdio.cpp src/cstdlib.cpp src/filebuf.cpp src/iostream.cpp src/stat.cpp ${headers})
 add_library(Boost::nowide ALIAS boost_nowide)
 set_target_properties(boost_nowide PROPERTIES
     CXX_VISIBILITY_PRESET hidden
@@ -58,19 +73,26 @@ endif()
 if(NOT BOOST_NOWIDE_HAS_LFS)
   target_compile_definitions(boost_nowide PRIVATE BOOST_NOWIDE_NO_LFS)
 endif()
+if(BOOST_NOWIDE_HAS_INIT_PRIORITY)
+  target_compile_definitions(boost_nowide PRIVATE BOOST_NOWIDE_HAS_INIT_PRIORITY)
+endif()
 target_compile_definitions(boost_nowide PUBLIC BOOST_NOWIDE_NO_LIB)
 target_include_directories(boost_nowide PUBLIC include)
 boost_add_warnings(boost_nowide pedantic ${Boost_NOWIDE_WERROR})
 target_compile_features(boost_nowide PUBLIC cxx_std_11)
 
-if(BOOST_SUPERPROJECT_SOURCE_DIR)
-  target_link_libraries(boost_nowide PUBLIC Boost::config)
+if(BOOST_SUPERPROJECT_SOURCE_DIR OR TARGET Boost::config)
+  target_link_libraries(boost_nowide PUBLIC
+    Boost::config
+  )
 else()
-  # Default boost libs are static on windows and dynamic on linux
-  if(WIN32 AND NOT DEFINED Boost_USE_STATIC_LIBS)
-    set(Boost_USE_STATIC_LIBS ON)
+  if(NOT TARGET Boost::boost)
+    # Default boost libs are static on windows and dynamic on linux
+    if(WIN32 AND NOT DEFINED Boost_USE_STATIC_LIBS)
+      set(Boost_USE_STATIC_LIBS ON)
+    endif()
+    find_package(Boost 1.56 REQUIRED)
   endif()
-  find_package(Boost 1.56 REQUIRED)
   target_link_libraries(boost_nowide PUBLIC Boost::boost)
 endif()
 

@@ -16,6 +16,7 @@
 
 #include "test_suite.hpp"
 
+#include <array>
 #include <string>
 #include <vector>
 #include <tuple>
@@ -65,7 +66,7 @@ tag_invoke(
     T2 const& t)
 {
     jv = { t.v, t.s };
-};
+}
 
 struct T3
 {
@@ -82,6 +83,23 @@ struct T4
 };
 
 BOOST_STATIC_ASSERT(! ::boost::json::has_value_from<T4>::value);
+
+//----------------------------------------------------------
+
+struct T5 : std::vector<int>
+{
+    using std::vector<int>::vector;
+};
+
+void
+tag_invoke(
+    ::boost::json::value_from_tag,
+    ::boost::json::value& jv,
+    T5 const&)
+{
+    jv = "T5";
+}
+
 
 //----------------------------------------------------------
 
@@ -110,19 +128,27 @@ check(
     }
 }
 
+BOOST_JSON_NS_BEGIN
+
+namespace {
+
+template<class T>
+static
+void
+testValueCtor(T const& t)
+{
+    BOOST_TEST( serialize(value_from(t)) == serialize(value(t)) );
+}
+
 template<class T>
 static
 void
 testValueCtor()
 {
-    BOOST_TEST(
-        ::boost::json::serialize(
-            ::boost::json::value_from(T{})) ==
-        ::boost::json::serialize(
-            ::boost::json::value(T{})));
+    testValueCtor(T{});
 }
 
-BOOST_JSON_NS_BEGIN
+} // namespace
 
 // integral
 BOOST_STATIC_ASSERT(has_value_from<int>::value);
@@ -156,7 +182,10 @@ public:
     {
         // value_from supports every value constructor
 
-        testValueCtor<value const&>();
+        testValueCtor<value>();
+
+        char const* s = "5";
+        testValueCtor(s);
     }
 
     static
@@ -176,6 +205,16 @@ public:
             value c = value_from(a);
             BOOST_TEST(c.is_array());
             BOOST_TEST(serialize(c) == serialize(b));
+        }
+        {
+            std::array<int, 1000> a;
+            a.fill(0);
+
+            value b;
+            array& b_arr = b.emplace_array();
+            b_arr.insert(b_arr.end(), a.begin(), a.end());
+
+            BOOST_TEST(value_from(a) == b);
         }
         {
             std::pair<int, string> a{1, string("2")};
@@ -243,6 +282,14 @@ public:
         }
     }
 
+    static
+    void
+    testPreferUserCustomizations()
+    {
+        value_from_test_ns::T5 t5;
+        BOOST_TEST((::boost::json::value_from(t5) == "T5"));
+    }
+
     void
     run()
     {
@@ -252,6 +299,7 @@ public:
         testValueCtors();
         testGeneral();
         testAssociative();
+        testPreferUserCustomizations();
     }
 };
 

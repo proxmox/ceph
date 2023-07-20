@@ -7,7 +7,11 @@
 #pragma warning(disable : 4127) // conditional expression is constant
 #endif
 
-#if !defined(TEST_MPF_50) && !defined(TEST_MPF) && !defined(TEST_BACKEND) && !defined(TEST_CPP_DEC_FLOAT) && !defined(TEST_MPFR) && !defined(TEST_MPFR_50) && !defined(TEST_MPFI_50) && !defined(TEST_FLOAT128) && !defined(TEST_CPP_BIN_FLOAT) && !defined(TEST_CPP_DEC_FLOAT_2) && !defined(TEST_CPP_DEC_FLOAT_3) && !defined(TEST_CPP_DEC_FLOAT_4) && !defined(TEST_CPP_DEC_FLOAT_5) && !defined(TEST_CPP_DEC_FLOAT_6) && !defined(TEST_CPP_BIN_FLOAT_2) && !defined(TEST_CPP_BIN_FLOAT_3)
+#if !defined(TEST_MPF_50) && !defined(TEST_MPF) && !defined(TEST_BACKEND) && !defined(TEST_CPP_DEC_FLOAT) && !defined(TEST_MPFR) \
+         && !defined(TEST_MPFR_50) && !defined(TEST_MPFI_50) && !defined(TEST_FLOAT128) && !defined(TEST_CPP_BIN_FLOAT) \
+         && !defined(TEST_CPP_DEC_FLOAT_2) && !defined(TEST_CPP_DEC_FLOAT_3) && !defined(TEST_CPP_DEC_FLOAT_4) \
+         && !defined(TEST_CPP_DEC_FLOAT_5) && !defined(TEST_CPP_DEC_FLOAT_6) && !defined(TEST_CPP_BIN_FLOAT_2) && !defined(TEST_CPP_BIN_FLOAT_3)\
+         && !defined(TEST_MPFI_DEBUG_ADAPTOR) && !defined(TEST_MPFR_DEBUG_ADAPTOR) && !defined(TEST_MPFI_LOGGED_ADAPTOR) && !defined(TEST_MPFR_LOGGED_ADAPTOR)
 #define TEST_MPF_50
 #define TEST_MPFR_50
 #define TEST_MPFI_50
@@ -21,6 +25,10 @@
 #define TEST_CPP_BIN_FLOAT
 #define TEST_CPP_BIN_FLOAT_2
 #define TEST_CPP_BIN_FLOAT_3
+#define TEST_MPFI_DEBUG_ADAPTOR
+#define TEST_MPFR_DEBUG_ADAPTOR
+#define TEST_MPFI_LOGGED_ADAPTOR
+#define TEST_MPFR_LOGGED_ADAPTOR
 
 #ifdef _MSC_VER
 #pragma message("CAUTION!!: No backend type specified so testing everything.... this will take some time!!")
@@ -49,6 +57,22 @@
 #endif
 #ifdef TEST_FLOAT128
 #include <boost/multiprecision/float128.hpp>
+#endif
+#ifdef TEST_MPFI_DEBUG_ADAPTOR
+#  include <boost/multiprecision/mpfi.hpp>
+#  include <boost/multiprecision/debug_adaptor.hpp>
+#endif
+#ifdef TEST_MPFR_DEBUG_ADAPTOR
+#  include <boost/multiprecision/mpfr.hpp>
+#  include <boost/multiprecision/debug_adaptor.hpp>
+#endif
+#ifdef TEST_MPFI_LOGGED_ADAPTOR
+#  include <boost/multiprecision/mpfi.hpp>
+#  include <boost/multiprecision/logged_adaptor.hpp>
+#endif
+#ifdef TEST_MPFR_LOGGED_ADAPTOR
+#  include <boost/multiprecision/mpfr.hpp>
+#  include <boost/multiprecision/logged_adaptor.hpp>
 #endif
 
 #include <boost/math/constants/constants.hpp>
@@ -605,6 +629,34 @@ bool type_sets_errno(const boost::multiprecision::number<boost::multiprecision::
    return false;
 }
 #endif
+#ifdef TEST_MPFR_DEBUG_ADAPTOR
+template <unsigned Digits10, boost::multiprecision::mpfr_allocation_type AllocateType, boost::multiprecision::expression_template_option ExpressionTemplates>
+bool type_sets_errno(const boost::multiprecision::number<boost::multiprecision::debug_adaptor<boost::multiprecision::mpfr_float_backend<Digits10, AllocateType> >, ExpressionTemplates>&)
+{
+   return false;
+}
+#endif
+#ifdef TEST_MPFI_DEBUG_ADAPTOR
+template <unsigned Digits10, boost::multiprecision::expression_template_option ExpressionTemplates>
+bool type_sets_errno(const boost::multiprecision::number<boost::multiprecision::debug_adaptor<boost::multiprecision::mpfi_float_backend<Digits10> >, ExpressionTemplates>&)
+{
+   return false;
+}
+#endif
+#ifdef TEST_MPFR_LOGGED_ADAPTOR
+template <unsigned Digits10, boost::multiprecision::mpfr_allocation_type AllocateType, boost::multiprecision::expression_template_option ExpressionTemplates>
+bool type_sets_errno(const boost::multiprecision::number<boost::multiprecision::logged_adaptor<boost::multiprecision::mpfr_float_backend<Digits10, AllocateType> >, ExpressionTemplates>&)
+{
+   return false;
+}
+#endif
+#ifdef TEST_MPFI_LOGGED_ADAPTOR
+template <unsigned Digits10, boost::multiprecision::expression_template_option ExpressionTemplates>
+bool type_sets_errno(const boost::multiprecision::number<boost::multiprecision::logged_adaptor<boost::multiprecision::mpfi_float_backend<Digits10> >, ExpressionTemplates>&)
+{
+   return false;
+}
+#endif
 #ifdef TEST_FLOAT128
 bool type_sets_errno(const boost::multiprecision::float128&)
 {
@@ -613,7 +665,7 @@ bool type_sets_errno(const boost::multiprecision::float128&)
 #endif
 
 template <class T>
-typename boost::enable_if_c<std::numeric_limits<T>::is_specialized>::type check_invalid(const T& val)
+typename std::enable_if<std::numeric_limits<T>::is_specialized>::type check_invalid(const T& val)
 {
    if (std::numeric_limits<T>::has_quiet_NaN)
    {
@@ -629,7 +681,7 @@ typename boost::enable_if_c<std::numeric_limits<T>::is_specialized>::type check_
 }
 
 template <class T>
-typename boost::disable_if_c<std::numeric_limits<T>::is_specialized>::type check_invalid(const T& val)
+typename std::enable_if<!std::numeric_limits<T>::is_specialized>::type check_invalid(const T& val)
 {
    check_invalid(static_cast<typename T::result_type>(val));
 }
@@ -2177,17 +2229,25 @@ int main()
 #endif
 #endif
 #ifdef TEST_CPP_DEC_FLOAT_5
+   #if defined(__MINGW32__) || defined(__MINGW64__) // Weak workaround just to, let's say, get green
+   test<boost::multiprecision::number<boost::multiprecision::cpp_dec_float<59, long long > > >();
+   #else
    test<boost::multiprecision::number<boost::multiprecision::cpp_dec_float<59, long long, std::allocator<char> > > >();
+   #endif
 #endif
 #ifdef TEST_CPP_DEC_FLOAT_6
+   #if defined(__MINGW32__) || defined(__MINGW64__) // Weak workaround just to, let's say, get green
+   test<boost::multiprecision::number<boost::multiprecision::cpp_dec_float<58, long long > > >();
+   #else
    test<boost::multiprecision::number<boost::multiprecision::cpp_dec_float<58, long long, std::allocator<char> > > >();
+   #endif
 #endif
 #ifdef TEST_CPP_BIN_FLOAT
    test<boost::multiprecision::cpp_bin_float_50>();
    test<boost::multiprecision::number<boost::multiprecision::cpp_bin_float<100>, boost::multiprecision::et_on> >();
 #endif
 #ifdef TEST_CPP_BIN_FLOAT_2
-   test<boost::multiprecision::number<boost::multiprecision::cpp_bin_float<35, boost::multiprecision::digit_base_10, std::allocator<char>, boost::long_long_type> > >();
+   test<boost::multiprecision::number<boost::multiprecision::cpp_bin_float<35, boost::multiprecision::digit_base_10, std::allocator<char>, long long> > >();
 #endif
 #ifdef TEST_CPP_BIN_FLOAT_3
    test_c99_appendix_F<boost::multiprecision::cpp_bin_float_50>();
@@ -2197,6 +2257,22 @@ int main()
    test<boost::multiprecision::float128>();
    test_c99_appendix_F<boost::multiprecision::float128>();
    test_c99_appendix_F_tgammaq_addon_for_float128<boost::multiprecision::float128>();
+#endif
+#ifdef TEST_MPFI_DEBUG_ADAPTOR
+   test<boost::multiprecision::number<boost::multiprecision::debug_adaptor<boost::multiprecision::mpfi_float_backend<50> > > >();
+   //test_c99_appendix_F<boost::multiprecision::number<boost::multiprecision::debug_adaptor<boost::multiprecision::mpfi_float_backend<50> > > >();
+#endif
+#ifdef TEST_MPFR_DEBUG_ADAPTOR
+   test<boost::multiprecision::number<boost::multiprecision::debug_adaptor<boost::multiprecision::mpfr_float_backend<50> > > >();
+   test_c99_appendix_F<boost::multiprecision::number<boost::multiprecision::debug_adaptor<boost::multiprecision::mpfr_float_backend<50> > > >();
+#endif
+#ifdef TEST_MPFI_LOGGED_ADAPTOR
+   test<boost::multiprecision::number<boost::multiprecision::logged_adaptor<boost::multiprecision::mpfi_float_backend<50> > > >();
+   //test_c99_appendix_F<boost::multiprecision::number<boost::multiprecision::logged_adaptor<boost::multiprecision::mpfi_float_backend<50> > > >();
+#endif
+#ifdef TEST_MPFR_LOGGED_ADAPTOR
+   test<boost::multiprecision::number<boost::multiprecision::logged_adaptor<boost::multiprecision::mpfr_float_backend<50> > > >();
+   test_c99_appendix_F<boost::multiprecision::number<boost::multiprecision::logged_adaptor<boost::multiprecision::mpfr_float_backend<50> > > >();
 #endif
 
    return boost::report_errors();

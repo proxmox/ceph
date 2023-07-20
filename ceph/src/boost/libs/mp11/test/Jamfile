@@ -14,11 +14,10 @@ project
 
     [ requires cxx11_variadic_templates cxx11_template_aliases cxx11_decltype cxx11_hdr_tuple ]
 
-    <toolset>msvc:<warnings>all # /W4
+    <warnings>extra
+
     <toolset>msvc:<warnings-as-errors>on
-
     <toolset>gcc:<warnings-as-errors>on
-
     <toolset>clang:<warnings-as-errors>on
   ;
 
@@ -69,7 +68,7 @@ run mp_product.cpp ;
 run mp_drop.cpp ;
 run mp_iota.cpp ;
 run mp_at.cpp ;
-run mp_at_sf.cpp ;
+run mp_at_sf.cpp : : : <toolset>gcc-4.7:<warnings>all ;
 run mp_take.cpp ;
 run mp_replace.cpp ;
 run mp_replace_if.cpp ;
@@ -124,6 +123,9 @@ run mp_partial_sum.cpp ;
 run mp_iterate.cpp ;
 run mp_pairwise_fold.cpp ;
 run mp_pairwise_fold_q.cpp ;
+run mp_intersperse.cpp ;
+run mp_split.cpp ;
+run mp_join.cpp ;
 
 # integral
 run integral.cpp ;
@@ -147,6 +149,7 @@ run mp_not_fn.cpp ;
 run mp_eval_if_not.cpp ;
 run mp_eval_or.cpp ;
 run mp_compose.cpp ;
+run mp_valid_and_true.cpp ;
 
 # integer_sequence
 run integer_sequence.cpp ;
@@ -176,8 +179,10 @@ run mp_set_intersection_sf.cpp ;
 
 # function
 run mp_all.cpp ;
+run mp_all_2.cpp ;
 run mp_and.cpp ;
 run mp_any.cpp ;
+run mp_any_2.cpp ;
 run mp_or.cpp ;
 run mp_same.cpp ;
 run mp_plus.cpp ;

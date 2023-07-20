@@ -2,7 +2,7 @@
 #  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
-#  modification, are permitted provided that the following conditions 
+#  modification, are permitted provided that the following conditions
 #  are met:
 #    * Redistributions of source code must retain the above copyright
 #      notice, this list of conditions and the following disclaimer.
@@ -27,31 +27,46 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ########################################################################
 
-lsrc += md5_mb/md5_ctx_sse.c \
-	md5_mb/md5_ctx_avx.c \
-	md5_mb/md5_ctx_avx2.c
+lsrc_x86_64 +=	md5_mb/md5_ctx_sse.c \
+		md5_mb/md5_ctx_avx.c \
+		md5_mb/md5_ctx_avx2.c \
+		md5_mb/md5_ctx_base.c
 
-lsrc += md5_mb/md5_mb_mgr_init_sse.c \
-	md5_mb/md5_mb_mgr_init_avx2.c \
-	md5_mb/md5_mb_mgr_init_avx512.c
+lsrc_x86_64 += 	md5_mb/md5_mb_mgr_init_sse.c \
+		md5_mb/md5_mb_mgr_init_avx2.c \
+		md5_mb/md5_mb_mgr_init_avx512.c
 
-lsrc += md5_mb/md5_mb_mgr_submit_sse.asm \
-	md5_mb/md5_mb_mgr_submit_avx.asm \
-	md5_mb/md5_mb_mgr_submit_avx2.asm \
-	md5_mb/md5_mb_mgr_flush_sse.asm \
-	md5_mb/md5_mb_mgr_flush_avx.asm \
-	md5_mb/md5_mb_mgr_flush_avx2.asm \
-	md5_mb/md5_mb_x4x2_sse.asm \
-	md5_mb/md5_mb_x4x2_avx.asm \
-	md5_mb/md5_mb_x8x2_avx2.asm \
-	md5_mb/md5_multibinary.asm
+lsrc_x86_64 += 	md5_mb/md5_mb_mgr_submit_sse.asm \
+		md5_mb/md5_mb_mgr_submit_avx.asm \
+		md5_mb/md5_mb_mgr_submit_avx2.asm \
+		md5_mb/md5_mb_mgr_flush_sse.asm \
+		md5_mb/md5_mb_mgr_flush_avx.asm \
+		md5_mb/md5_mb_mgr_flush_avx2.asm \
+		md5_mb/md5_mb_x4x2_sse.asm \
+		md5_mb/md5_mb_x4x2_avx.asm \
+		md5_mb/md5_mb_x8x2_avx2.asm \
+		md5_mb/md5_multibinary.asm
 
-lsrc += md5_mb/md5_mb_mgr_submit_avx512.asm \
-	md5_mb/md5_mb_mgr_flush_avx512.asm \
-	md5_mb/md5_mb_x16x2_avx512.asm \
-	md5_mb/md5_ctx_avx512.c
+lsrc_x86_64 += 	md5_mb/md5_mb_mgr_submit_avx512.asm \
+		md5_mb/md5_mb_mgr_flush_avx512.asm \
+		md5_mb/md5_mb_x16x2_avx512.asm \
+		md5_mb/md5_ctx_avx512.c
 
-extern_hdrs +=  include/md5_mb.h \
+lsrc_x86_32 += $(lsrc_x86_64)
+
+lsrc_aarch64 += md5_mb/md5_ctx_base.c \
+		md5_mb/aarch64/md5_ctx_aarch64_asimd.c  \
+		md5_mb/aarch64/md5_mb_aarch64_dispatcher.c  \
+		md5_mb/aarch64/md5_mb_mgr_aarch64_asimd.c  \
+		md5_mb/aarch64/md5_mb_asimd_x4.S  \
+		md5_mb/aarch64/md5_mb_asimd_x1.S  \
+		md5_mb/aarch64/md5_mb_multibinary.S
+
+
+lsrc_base_aliases += md5_mb/md5_ctx_base.c \
+		md5_mb/md5_ctx_base_aliases.c
+src_include  += -I $(srcdir)/md5_mb
+extern_hdrs  += include/md5_mb.h \
 		include/multi_buffer.h
 
 other_src += 	include/datastruct.asm \

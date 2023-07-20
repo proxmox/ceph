@@ -59,7 +59,7 @@ class SeastoreNodeExtent final: public NodeExtent {
     return recorder.get();
   }
 
-  CachedExtentRef duplicate_for_write() override {
+  CachedExtentRef duplicate_for_write(Transaction&) override {
     return CachedExtentRef(new SeastoreNodeExtent(*this));
   }
   ceph::bufferlist get_delta() override {
@@ -217,3 +217,7 @@ class SeastoreNodeExtentManager final: public TransactionManagerHandle {
 };
 
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<crimson::os::seastore::onode::SeastoreNodeExtent> : fmt::ostream_formatter {};
+#endif

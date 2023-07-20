@@ -36,13 +36,14 @@ if [ -n "$VSTART_DEST" ]; then
     SRC_PATH=`(cd $SRC_PATH; pwd)`
 
     CEPH_DIR=$SRC_PATH
-    CEPH_BIN=${PWD}/bin
-    CEPH_LIB=${PWD}/lib
+    CEPH_BIN=${CEPH_BIN:-${PWD}/bin}
+    CEPH_LIB=${CEPH_LIB:-${PWD}/lib}
 
     CEPH_CONF_PATH=$VSTART_DEST
     CEPH_DEV_DIR=$VSTART_DEST/dev
     CEPH_OUT_DIR=$VSTART_DEST/out
-    CEPH_ASOK_DIR=$VSTART_DEST/out
+    CEPH_ASOK_DIR=$VSTART_DEST/asok
+    CEPH_OUT_CLIENT_DIR=${CEPH_OUT_CLIENT_DIR:-$CEPH_OUT_DIR}
 fi
 
 get_cmake_variable() {
@@ -67,7 +68,7 @@ if [ -n "$CEPH_BUILD_ROOT" ]; then
     [ -z "$OBJCLASS_PATH" ] && OBJCLASS_PATH=$CEPH_LIB/rados-classes
     # make install should install python extensions into PYTHONPATH
 elif [ -n "$CEPH_ROOT" ]; then
-    [ -z "$CEPHFS_SHELL" ] && CEPHFS_SHELL=$CEPH_ROOT/src/tools/cephfs/cephfs-shell
+    [ -z "$CEPHFS_SHELL" ] && CEPHFS_SHELL=$CEPH_ROOT/src/tools/cephfs/shell/cephfs-shell
     [ -z "$PYBIND" ] && PYBIND=$CEPH_ROOT/src/pybind
     [ -z "$CEPH_BIN" ] && CEPH_BIN=$CEPH_BUILD_DIR/bin
     [ -z "$CEPH_ADM" ] && CEPH_ADM=$CEPH_BIN/ceph
@@ -128,8 +129,10 @@ fi
 [ -z "$CEPH_DIR" ] && CEPH_DIR="$PWD"
 [ -z "$CEPH_DEV_DIR" ] && CEPH_DEV_DIR="$CEPH_DIR/dev"
 [ -z "$CEPH_OUT_DIR" ] && CEPH_OUT_DIR="$CEPH_DIR/out"
+[ -z "$CEPH_ASOK_DIR" ] && CEPH_ASOK_DIR="$CEPH_DIR/asok"
 [ -z "$CEPH_RGW_PORT" ] && CEPH_RGW_PORT=8000
 [ -z "$CEPH_CONF_PATH" ] && CEPH_CONF_PATH=$CEPH_DIR
+CEPH_OUT_CLIENT_DIR=${CEPH_OUT_CLIENT_DIR:-$CEPH_OUT_DIR}
 
 if [ $CEPH_NUM_OSD -gt 3 ]; then
     OSD_POOL_DEFAULT_SIZE=3
@@ -147,16 +150,18 @@ nodaemon=0
 redirect=0
 smallmds=0
 short=0
+crimson=0
 ec=0
 cephadm=0
 parallel=true
+restart=1
 hitset=""
 overwrite_conf=0
 cephx=1 #turn cephx on by default
 gssapi_authx=0
 cache=""
 if [ `uname` = FreeBSD ]; then
-    objectstore="filestore"
+    objectstore="memstore"
 else
     objectstore="bluestore"
 fi
@@ -164,7 +169,8 @@ ceph_osd=ceph-osd
 rgw_frontend="beast"
 rgw_compression=""
 lockdep=${LOCKDEP:-1}
-spdk_enabled=0 #disable SPDK by default
+spdk_enabled=0 # disable SPDK by default
+pmem_enabled=0
 zoned_enabled=0
 io_uring_enabled=0
 with_jaeger=0
@@ -177,10 +183,10 @@ if [[ "$(get_cmake_variable WITH_MGR_DASHBOARD_FRONTEND)" != "ON" ]] ||
 fi
 with_mgr_restful=false
 
-filestore_path=
 kstore_path=
 declare -a block_devs
 declare -a secondary_block_devs
+secondary_block_devs_type="SSD"
 
 VSTART_SEC="client.vstart.sh"
 
@@ -215,14 +221,14 @@ options:
 	-g --gssapi enable Kerberos/GSSApi authentication
 	-G disable Kerberos/GSSApi authentication
 	--hitset <pool> <hit_set_type>: enable hitset tracking
-	-e : create an erasure pool\
-	-o config		 add extra config parameters to all sections
+	-e : create an erasure pool
+	-o config add extra config parameters to all sections
 	--rgw_port specify ceph rgw http listen port
 	--rgw_frontend specify the rgw frontend configuration
+	--rgw_arrow_flight start arrow flight frontend
 	--rgw_compression specify the rgw compression plugin
 	--seastore use seastore as crimson osd backend
 	-b, --bluestore use bluestore as the osd objectstore backend (default)
-	-f, --filestore use filestore as the osd objectstore backend
 	-K, --kstore use kstore as the osd objectstore backend
 	--cyanstore use cyanstore as the osd objectstore backend
 	--memstore use memstore as the osd objectstore backend
@@ -232,6 +238,7 @@ options:
 	--multimds <count> allow multimds with maximum active count
 	--without-dashboard: do not run using mgr dashboard
 	--bluestore-spdk: enable SPDK and with a comma-delimited list of PCI-IDs of NVME device (e.g, 0000:81:00.0)
+	--bluestore-pmem: enable PMEM and with path to a file mapped to PMEM
 	--msgr1: use msgr1 only
 	--msgr2: use msgr2 only
 	--msgr21: use msgr2 and msgr1
@@ -244,9 +251,12 @@ options:
 	--inc-osd: append some more osds into existing vcluster
 	--cephadm: enable cephadm orchestrator with ~/.ssh/id_rsa[.pub]
 	--no-parallel: dont start all OSDs in parallel
+	--no-restart: dont restart process when using ceph-run
 	--jaeger: use jaegertracing for tracing
 	--seastore-devs: comma-separated list of blockdevs to use for seastore
-	--seastore-secondary-des: comma-separated list of secondary blockdevs to use for seastore
+	--seastore-secondary-devs: comma-separated list of secondary blockdevs to use for seastore
+	--seastore-secondary-devs-type: device type of all secondary blockdevs. HDD, SSD(default), ZNS or RANDOM_BLOCK_SSD
+	--crimson-smp: number of cores to use for crimson
 \n
 EOF
 
@@ -285,6 +295,7 @@ parse_secondary_devs() {
     done
 }
 
+crimson_smp=1
 while [ $# -ge 1 ]; do
 case $1 in
     -d | --debug)
@@ -324,11 +335,13 @@ case $1 in
         short=1
         ;;
     --crimson)
+        crimson=1
         ceph_osd=crimson-osd
         nodaemon=1
         msgr=2
         ;;
     --crimson-foreground)
+        crimson=1
         ceph_osd=crimson-osd
         nodaemon=0
         msgr=2
@@ -351,6 +364,9 @@ case $1 in
         ;;
     --no-parallel)
         parallel=false
+        ;;
+    --no-restart)
+        restart=0
         ;;
     --valgrind)
         [ -z "$2" ] && usage_exit
@@ -403,16 +419,15 @@ case $1 in
         rgw_frontend=$2
         shift
         ;;
+    --rgw_arrow_flight)
+        rgw_flight_frontend="yes"
+        ;;
     --rgw_compression)
         rgw_compression=$2
         shift
         ;;
     --kstore_path)
         kstore_path=$2
-        shift
-        ;;
-    --filestore_path)
-        filestore_path=$2
         shift
         ;;
     -m)
@@ -452,9 +467,6 @@ case $1 in
         ;;
     -b | --bluestore)
         objectstore="bluestore"
-        ;;
-    -f | --filestore)
-        objectstore="filestore"
         ;;
     -K | --kstore)
         objectstore="kstore"
@@ -497,10 +509,24 @@ case $1 in
         parse_secondary_devs --seastore-devs "$2"
         shift
         ;;
+    --seastore-secondary-devs-type)
+        secondary_block_devs_type="$2"
+        shift
+        ;;
+    --crimson-smp)
+        crimson_smp=$2
+        shift
+        ;;
     --bluestore-spdk)
         [ -z "$2" ] && usage_exit
         IFS=',' read -r -a bluestore_spdk_dev <<< "$2"
         spdk_enabled=1
+        shift
+        ;;
+    --bluestore-pmem)
+        [ -z "$2" ] && usage_exit
+        bluestore_pmem_file="$2"
+        pmem_enabled=1
         shift
         ;;
     --bluestore-devs)
@@ -575,10 +601,15 @@ run() {
     else
         if [ "$nodaemon" -eq 0 ]; then
             prun "$@"
-        elif [ "$redirect" -eq 0 ]; then
-            prunb ${CEPH_ROOT}/src/ceph-run "$@" -f
         else
-            ( prunb ${CEPH_ROOT}/src/ceph-run "$@" -f ) >$CEPH_OUT_DIR/$type.$num.stdout 2>&1
+            if [ "$restart" -eq 0 ]; then
+                set -- '--no-restart' "$@"
+            fi
+            if [ "$redirect" -eq 0 ]; then
+                prunb ${CEPH_ROOT}/src/ceph-run "$@" -f
+            else
+                ( prunb ${CEPH_ROOT}/src/ceph-run "$@" -f ) >$CEPH_OUT_DIR/$type.$num.stdout 2>&1
+            fi
         fi
     fi
 }
@@ -599,13 +630,17 @@ do_rgw_conf() {
     # setup each rgw on a sequential port, starting at $CEPH_RGW_PORT.
     # individual rgw's ids will be their ports.
     current_port=$CEPH_RGW_PORT
+    # allow only first rgw to start arrow_flight server/port
+    local flight_conf=$rgw_flight_frontend
     for n in $(seq 1 $CEPH_NUM_RGW); do
         wconf << EOF
 [client.rgw.${current_port}]
-        rgw frontends = $rgw_frontend port=${current_port}
+        rgw frontends = $rgw_frontend port=${current_port}${flight_conf:+,arrow_flight}
         admin socket = ${CEPH_OUT_DIR}/radosgw.${current_port}.asok
+        debug rgw_flight = 20
 EOF
         current_port=$((current_port + 1))
+        unset flight_conf
 done
 
 }
@@ -675,7 +710,6 @@ prepare_conf() {
         mon_max_pg_per_osd = ${MON_MAX_PG_PER_OSD:-1000}
         erasure code dir = $EC_PATH
         plugin dir = $CEPH_LIB
-        filestore fd cache size = 32
         run dir = $CEPH_OUT_DIR
         crash dir = $CEPH_OUT_DIR
         enable experimental unrecoverable data corrupting features = *
@@ -683,7 +717,13 @@ prepare_conf() {
         debug asok assert abort = true
         $(format_conf "${msgr_conf}")
         $(format_conf "${extra_conf}")
+        $AUTOSCALER_OPTS
 EOF
+    if [ "$with_jaeger" -eq 1 ] ; then
+        wconf <<EOF
+        jaeger_agent_port = 6831
+EOF
+    fi
     if [ "$lockdep" -eq 1 ] ; then
         wconf <<EOF
         lockdep = true
@@ -715,7 +755,7 @@ EOF
         osd max object namespace len = 64"
     fi
     if [ "$objectstore" == "bluestore" ]; then
-        if [ "$spdk_enabled" -eq 1 ]; then
+        if [ "$spdk_enabled" -eq 1 ] || [ "$pmem_enabled" -eq 1 ]; then
             BLUESTORE_OPTS="        bluestore_block_db_path = \"\"
         bluestore_block_db_size = 0
         bluestore_block_db_create = false
@@ -746,8 +786,9 @@ EOF
     fi
     wconf <<EOF
 [client]
+$CCLIENTDEBUG
         keyring = $keyring_fn
-        log file = $CEPH_OUT_DIR/\$name.\$pid.log
+        log file = $CEPH_OUT_CLIENT_DIR/\$name.\$pid.log
         admin socket = $CEPH_ASOK_DIR/\$name.\$pid.asok
 
         ; needed for s3tests
@@ -762,6 +803,7 @@ EOF
 	do_rgw_conf
 	wconf << EOF
 [mds]
+$CMDSDEBUG
 $DAEMONOPTS
         mds data = $CEPH_DEV_DIR/mds.\$id
         mds root ino uid = `id -u`
@@ -771,7 +813,7 @@ $DAEMONOPTS
         mgr disabled modules = rook
         mgr data = $CEPH_DEV_DIR/mgr.\$id
         mgr module path = $MGR_PYTHON_PATH
-        cephadm path = $CEPH_ROOT/src/cephadm/cephadm
+        cephadm path = $CEPH_BIN/cephadm
 $DAEMONOPTS
         $(format_conf "${extra_conf}")
 [osd]
@@ -786,12 +828,6 @@ $DAEMONOPTS
         osd class default list = *
         osd fast shutdown = false
 
-        filestore wbthrottle xfs ios start flusher = 10
-        filestore wbthrottle xfs ios hard limit = 20
-        filestore wbthrottle xfs inodes hard limit = 30
-        filestore wbthrottle btrfs ios start flusher = 10
-        filestore wbthrottle btrfs ios hard limit = 20
-        filestore wbthrottle btrfs inodes hard limit = 30
         bluestore fsck on mount = true
         bluestore block create = true
 $BLUESTORE_OPTS
@@ -811,6 +847,12 @@ $CMONDEBUG
         osd pool default erasure code profile = plugin=jerasure technique=reed_sol_van k=2 m=1 crush-failure-domain=osd
         auth allow insecure global id reclaim = false
 EOF
+
+    if [ "$crimson" -eq 1 ]; then
+        wconf <<EOF
+        osd pool default crimson = true
+EOF
+    fi
 }
 
 write_logrotate_conf() {
@@ -923,6 +965,10 @@ EOF
     do
         run 'mon' $f $CEPH_BIN/ceph-mon -i $f $ARGS $CMON_ARGS
     done
+
+    if [ "$crimson" -eq 1 ]; then
+        $CEPH_BIN/ceph osd set-allow-crimson --yes-i-really-mean-it
+    fi
 }
 
 start_osd() {
@@ -940,8 +986,10 @@ start_osd() {
     do
 	local extra_seastar_args
 	if [ "$ceph_osd" == "crimson-osd" ]; then
-	    # designate a single CPU node $osd for osd.$osd
-	    extra_seastar_args="--smp 1 --cpuset $osd"
+        bottom_cpu=$(( osd * crimson_smp ))
+        top_cpu=$(( bottom_cpu + crimson_smp - 1 ))
+	    # set a single CPU nodes for each osd
+	    extra_seastar_args="--cpuset $bottom_cpu-$top_cpu"
 	    if [ "$debug" -ne 0 ]; then
 		extra_seastar_args+=" --debug"
 	    fi
@@ -958,15 +1006,16 @@ EOF
                 wconf <<EOF
         bluestore_block_path = spdk:${bluestore_spdk_dev[$osd]}
 EOF
+            elif [ "$pmem_enabled" -eq 1 ]; then
+                wconf <<EOF
+        bluestore_block_path = ${bluestore_pmem_file}
+EOF
             fi
-
             rm -rf $CEPH_DEV_DIR/osd$osd || true
             if command -v btrfs > /dev/null; then
                 for f in $CEPH_DEV_DIR/osd$osd/*; do btrfs sub delete $f &> /dev/null || true; done
             fi
-            if [ -n "$filestore_path" ]; then
-                ln -s $filestore_path $CEPH_DEV_DIR/osd$osd
-            elif [ -n "$kstore_path" ]; then
+            if [ -n "$kstore_path" ]; then
                 ln -s $kstore_path $CEPH_DEV_DIR/osd$osd
             else
                 mkdir -p $CEPH_DEV_DIR/osd$osd
@@ -976,7 +1025,8 @@ EOF
                 fi
                 if [ -n "${secondary_block_devs[$osd]}" ]; then
                     dd if=/dev/zero of=${secondary_block_devs[$osd]} bs=1M count=1
-                    ln -s ${secondary_block_devs[$osd]} $CEPH_DEV_DIR/osd$osd/block.segmented.1
+                    mkdir -p $CEPH_DEV_DIR/osd$osd/block.${secondary_block_devs_type}.1
+                    ln -s ${secondary_block_devs[$osd]} $CEPH_DEV_DIR/osd$osd/block.${secondary_block_devs_type}.1/block
                 fi
             fi
             if [ "$objectstore" == "bluestore" ]; then
@@ -991,7 +1041,8 @@ EOF
             echo "{\"cephx_secret\": \"$OSD_SECRET\"}" > $CEPH_DEV_DIR/osd$osd/new.json
             ceph_adm osd new $uuid -i $CEPH_DEV_DIR/osd$osd/new.json
             rm $CEPH_DEV_DIR/osd$osd/new.json
-            prun $SUDO $CEPH_BIN/$ceph_osd $extra_osd_args -i $osd $ARGS --mkfs --key $OSD_SECRET --osd-uuid $uuid $extra_seastar_args
+            prun $SUDO $CEPH_BIN/$ceph_osd $extra_osd_args -i $osd $ARGS --mkfs --key $OSD_SECRET --osd-uuid $uuid $extra_seastar_args \
+                2>&1 | tee $CEPH_OUT_DIR/osd-mkfs.$osd.log
 
             local key_fn=$CEPH_DEV_DIR/osd$osd/keyring
             cat > $key_fn<<EOF
@@ -1001,6 +1052,9 @@ EOF
         fi
         echo start osd.$osd
         local osd_pid
+        echo 'osd' $osd $SUDO $CEPH_BIN/$ceph_osd \
+            $extra_seastar_args $extra_osd_args \
+            -i $osd $ARGS $COSD_ARGS
         run 'osd' $osd $SUDO $CEPH_BIN/$ceph_osd \
             $extra_seastar_args $extra_osd_args \
             -i $osd $ARGS $COSD_ARGS &
@@ -1093,6 +1147,11 @@ EOF
         run 'mgr' $name $CEPH_BIN/ceph-mgr -i $name $ARGS
     done
 
+    while ! ceph_adm mgr stat | jq -e '.available'; do
+        debug echo 'waiting for mgr to become available'
+        sleep 1
+    done
+    
     if [ "$new" -eq 1 ]; then
         # setting login credentials for dashboard
         if $with_mgr_dashboard; then
@@ -1293,14 +1352,28 @@ if [ "$debug" -eq 0 ]; then
     CMONDEBUG='
         debug mon = 10
         debug ms = 1'
+    CCLIENTDEBUG=''
+    CMDSDEBUG=''
 else
     debug echo "** going verbose **"
     CMONDEBUG='
+        debug osd = 20
         debug mon = 20
+        debug osd = 20
         debug paxos = 20
         debug auth = 20
         debug mgrc = 20
         debug ms = 1'
+    CCLIENTDEBUG='
+        debug client = 20'
+    CMDSDEBUG='
+        debug mds = 20'
+fi
+
+# Crimson doesn't support PG merge/split yet.
+if [ "$ceph_osd" == "crimson-osd" ]; then
+    AUTOSCALER_OPTS='
+        osd_pool_default_pg_autoscale_mode = off'
 fi
 
 if [ -n "$MON_ADDR" ]; then
@@ -1329,6 +1402,7 @@ fi
 [ -d $CEPH_ASOK_DIR ] || mkdir -p $CEPH_ASOK_DIR
 [ -d $CEPH_OUT_DIR  ] || mkdir -p $CEPH_OUT_DIR
 [ -d $CEPH_DEV_DIR  ] || mkdir -p $CEPH_DEV_DIR
+[ -d $CEPH_OUT_CLIENT_DIR ] || mkdir -p $CEPH_OUT_CLIENT_DIR
 if [ $inc_osd_num -eq 0 ]; then
     $SUDO find "$CEPH_OUT_DIR" -type f -delete
 fi
@@ -1425,7 +1499,6 @@ debug_objecter = 20
 debug_monc = 20
 debug_mgrc = 20
 debug_journal = 20
-debug_filestore = 20
 debug_bluestore = 20
 debug_bluefs = 20
 debug_rocksdb = 20
@@ -1447,6 +1520,10 @@ EOF
         public_network=$(ip route list | grep -w "$IP" | awk '{print $1}')
         ceph_adm config set mon public_network $public_network
     fi
+fi
+
+if [ "$ceph_osd" == "crimson-osd" ]; then
+    $CEPH_BIN/ceph -c $conf_fn config set osd crimson_seastar_smp $crimson_smp
 fi
 
 if [ $CEPH_NUM_MGR -gt 0 ]; then
@@ -1566,7 +1643,7 @@ do_rgw_create_users()
         --access-key ABCDEFGHIJKLMNOPQRST \
         --secret abcdefghijklmnopqrstuvwxyzabcdefghijklmn \
         --display-name youruseridhere \
-        --email s3@example.com -c $conf_fn > /dev/null
+        --email s3@example.com --caps="user-policy=*" -c $conf_fn > /dev/null
     $CEPH_BIN/radosgw-admin user create \
         --uid 56789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234 \
         --access-key NOPQRSTUVWXYZABCDEFG \
@@ -1606,6 +1683,11 @@ do_rgw()
             $CEPH_BIN/radosgw-admin zone placement modify -c $conf_fn --rgw-zone=default --placement-id=default-placement --compression=$rgw_compression > /dev/null
         fi
     fi
+
+    if [ -n "$rgw_flight_frontend" ] ;then
+        debug echo "starting arrow_flight frontend on first rgw"
+    fi
+
     # Start server
     if [ "$cephadm" -gt 0 ]; then
         ceph_adm orch apply rgw rgwTest
@@ -1628,6 +1710,8 @@ do_rgw()
     [ $CEPH_RGW_PORT_NUM -lt 1024 ] && RGWSUDO=sudo
 
     current_port=$CEPH_RGW_PORT
+    # allow only first rgw to start arrow_flight server/port
+    local flight_conf=$rgw_flight_frontend
     for n in $(seq 1 $CEPH_NUM_RGW); do
         rgw_name="client.rgw.${current_port}"
 
@@ -1645,12 +1729,13 @@ do_rgw()
             --rgw_luarocks_location=${CEPH_OUT_DIR}/luarocks \
             ${RGWDEBUG} \
             -n ${rgw_name} \
-            "--rgw_frontends=${rgw_frontend} port=${current_port}${CEPH_RGW_HTTPS}"
+            "--rgw_frontends=${rgw_frontend} port=${current_port}${CEPH_RGW_HTTPS}${flight_conf:+,arrow_flight}"
 
         i=$(($i + 1))
         [ $i -eq $CEPH_NUM_RGW ] && break
 
         current_port=$((current_port+1))
+        unset flight_conf
     done
 }
 if [ "$CEPH_NUM_RGW" -gt 0 ]; then

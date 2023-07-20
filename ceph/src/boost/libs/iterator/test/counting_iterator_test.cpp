@@ -30,7 +30,7 @@
 #include <boost/iterator/new_iterator_tests.hpp>
 
 #include <boost/next_prior.hpp>
-#include <boost/mpl/if.hpp>
+#include <boost/type_traits/conditional.hpp>
 #include <boost/detail/workaround.hpp>
 #include <boost/limits.hpp>
 
@@ -68,7 +68,7 @@ struct unsigned_assert_nonnegative
 
 template <class T>
 struct assert_nonnegative
-  : boost::mpl::if_c<
+  : boost::conditional<
         std::numeric_limits<T>::is_signed
       , signed_assert_nonnegative<T>
       , unsigned_assert_nonnegative<T>
@@ -271,8 +271,12 @@ int main()
     test_integer<long>();
     test_integer<unsigned long>();
 #if defined(BOOST_HAS_LONG_LONG)
-    test_integer< ::boost::long_long_type>();
-    test_integer< ::boost::ulong_long_type>();
+    test_integer<boost::long_long_type>();
+    test_integer<boost::ulong_long_type>();
+#endif
+#if defined(BOOST_HAS_INT128)
+    test_integer<boost::int128_type>();
+    test_integer<boost::uint128_type>();
 #endif
 
     // Test user-defined type.

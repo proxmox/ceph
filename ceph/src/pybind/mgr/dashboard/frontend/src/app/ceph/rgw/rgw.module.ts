@@ -7,6 +7,7 @@ import { NgbNavModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import { NgxPipeFunctionModule } from 'ngx-pipe-function';
 
 import { ActionLabels, URLVerbs } from '~/app/shared/constants/app.constants';
+import { CRUDTableComponent } from '~/app/shared/datatable/crud-table/crud-table.component';
 import { SharedModule } from '~/app/shared/shared.module';
 import { PerformanceCounterModule } from '../performance-counter/performance-counter.module';
 import { RgwBucketDetailsComponent } from './rgw-bucket-details/rgw-bucket-details.component';
@@ -22,6 +23,8 @@ import { RgwUserListComponent } from './rgw-user-list/rgw-user-list.component';
 import { RgwUserS3KeyModalComponent } from './rgw-user-s3-key-modal/rgw-user-s3-key-modal.component';
 import { RgwUserSubuserModalComponent } from './rgw-user-subuser-modal/rgw-user-subuser-modal.component';
 import { RgwUserSwiftKeyModalComponent } from './rgw-user-swift-key-modal/rgw-user-swift-key-modal.component';
+import { RgwUserTabsComponent } from './rgw-user-tabs/rgw-user-tabs.component';
+import { CrudFormComponent } from '~/app/shared/forms/crud-form/crud-form.component';
 
 @NgModule({
   imports: [
@@ -58,7 +61,8 @@ import { RgwUserSwiftKeyModalComponent } from './rgw-user-swift-key-modal/rgw-us
     RgwUserS3KeyModalComponent,
     RgwUserCapabilityModalComponent,
     RgwUserSubuserModalComponent,
-    RgwConfigModalComponent
+    RgwConfigModalComponent,
+    RgwUserTabsComponent
   ]
 })
 export class RgwModule {}
@@ -67,7 +71,7 @@ const routes: Routes = [
   {
     path: '' // Required for a clean reload on daemon selection.
   },
-  { path: 'daemon', component: RgwDaemonListComponent, data: { breadcrumbs: 'Daemons' } },
+  { path: 'daemon', component: RgwDaemonListComponent, data: { breadcrumbs: 'Gateways' } },
   {
     path: 'user',
     data: { breadcrumbs: 'Users' },
@@ -82,6 +86,36 @@ const routes: Routes = [
         path: `${URLVerbs.EDIT}/:uid`,
         component: RgwUserFormComponent,
         data: { breadcrumbs: ActionLabels.EDIT }
+      }
+    ]
+  },
+  {
+    path: 'roles',
+    data: {
+      breadcrumbs: 'Roles',
+      resource: 'api.rgw.roles@1.0',
+      tabs: [
+        {
+          name: 'Users',
+          url: '/rgw/user'
+        },
+        {
+          name: 'Roles',
+          url: '/rgw/roles'
+        }
+      ]
+    },
+    children: [
+      {
+        path: '',
+        component: CRUDTableComponent
+      },
+      {
+        path: URLVerbs.CREATE,
+        component: CrudFormComponent,
+        data: {
+          breadcrumbs: ActionLabels.CREATE
+        }
       }
     ]
   },

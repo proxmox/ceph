@@ -37,7 +37,11 @@ namespace std::pmr {
 #endif
 
 #if defined(__cpp_impl_coroutine) || defined(__cpp_coroutines)
+#if __has_include(<coroutine>)
 #define SEASTAR_COROUTINES_ENABLED
+#else
+#error Please use a C++ compiler with C++20 coroutines support
+#endif
 #endif
 
 // Defining SEASTAR_ASAN_ENABLED in here is a bit of a hack, but
@@ -57,11 +61,11 @@ namespace std::pmr {
 #include <source_location>
 #endif
 
-#ifdef __cpp_lib_source_location
+#if defined(__cpp_lib_source_location) && !defined(SEASTAR_BROKEN_SOURCE_LOCATION)
 namespace seastar::compat {
 using source_location = std::source_location;
 }
-#elif __has_include(<experimental/source_location>)
+#elif __has_include(<experimental/source_location>) && !defined(SEASTAR_BROKEN_SOURCE_LOCATION)
 #include <experimental/source_location>
 namespace seastar::compat {
 using source_location = std::experimental::source_location;

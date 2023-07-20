@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -29,6 +29,13 @@
 
 #include <stdlib.h>		// for NULL
 #include "murmur3_x64_128_internal.c"
+
+#if (__GNUC__ >= 11)
+# define OPT_FIX2 __attribute__ ((optimize(1)))
+#else
+# define OPT_FIX2
+#endif
+
 /*******************************************************************
  * Single API which can calculate murmur3
  ******************************************************************/
@@ -45,8 +52,8 @@
  * @returns none
  *
  */
-void murmur3_x64_128(const void *buffer, uint32_t len, uint64_t murmur_seed,
-		     uint32_t * murmur3_x64_128_digest)
+void OPT_FIX2 murmur3_x64_128(const void *buffer, uint32_t len, uint64_t murmur_seed,
+			      uint32_t * murmur3_x64_128_digest)
 {
 	uint64_t *murmur3_x64_128_hash;
 	uint32_t murmur3_x64_128_hash_dword[4];

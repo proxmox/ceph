@@ -12,7 +12,7 @@
 #define BOOST_NOWIDE_FTELL ::ftell
 #define BOOST_NOWIDE_FSEEK ::fseek
 #define BOOST_NOWIDE_OFF_T long
-#elif defined(_WIN32) && !defined(__CYGWIN__)
+#elif defined(_WIN32) && !defined(__CYGWIN__) && !defined(__MINGW32__)
 #define BOOST_NOWIDE_FTELL _ftelli64
 #define BOOST_NOWIDE_FSEEK _fseeki64
 #define BOOST_NOWIDE_OFF_T int64_t
@@ -20,7 +20,9 @@
 // IMPORTANT: Have these defines BEFORE any #includes
 //            and make sure changes by those macros don't leak into the public interface
 // Make LFS functions available
+#ifndef _LARGEFILE_SOURCE
 #define _LARGEFILE_SOURCE
+#endif
 // Make off_t 64 bits if the macro isn't set
 #ifndef _FILE_OFFSET_BITS
 #define _FILE_OFFSET_BITS 64

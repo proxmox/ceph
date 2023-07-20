@@ -1,11 +1,30 @@
-// Copyright (c) 2018-2020 Emil Dotchevski and Reverge Studios, Inc.
+// Copyright 2018-2022 Emil Dotchevski and Reverge Studios, Inc.
 
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <boost/leaf/capture.hpp>
-#include <boost/leaf/result.hpp>
-#include <boost/leaf/handle_errors.hpp>
+#include <boost/leaf/config.hpp>
+
+#if !BOOST_LEAF_CFG_CAPTURE
+
+#include <iostream>
+
+int main()
+{
+    std::cout << "Unit test not applicable." << std::endl;
+    return 0;
+}
+
+#else
+
+#ifdef BOOST_LEAF_TEST_SINGLE_HEADER
+#   include "leaf.hpp"
+#else
+#   include <boost/leaf/capture.hpp>
+#   include <boost/leaf/result.hpp>
+#   include <boost/leaf/handle_errors.hpp>
+#endif
+
 #include "_test_ec.hpp"
 #include "lightweight_test.hpp"
 
@@ -108,7 +127,7 @@ int main()
     test( []
     {
         return leaf::capture(
-            std::make_shared<leaf::leaf_detail::polymorphic_context_impl<leaf::context<std::error_code, info<1>, info<2>, info<3>>>>(),
+            std::make_shared<leaf::leaf_detail::polymorphic_context_impl<leaf::context<info<1>, info<2>, info<3>>>>(),
             []() -> leaf::result<int>
             {
                 return leaf::new_error(errc_a::a0, info<1>{1}, info<3>{3});
@@ -118,7 +137,7 @@ int main()
     test( []
     {
         return leaf::capture(
-            std::make_shared<leaf::leaf_detail::polymorphic_context_impl<leaf::context<std::error_code, info<1>, info<2>, info<3>>>>(),
+            std::make_shared<leaf::leaf_detail::polymorphic_context_impl<leaf::context<info<1>, info<2>, info<3>>>>(),
             []() -> leaf::result<void>
             {
                 return leaf::new_error(errc_a::a0, info<1>{1}, info<3>{3});
@@ -127,3 +146,5 @@ int main()
 
     return boost::report_errors();
 }
+
+#endif

@@ -1,6 +1,7 @@
 #ifndef __S3SELECT__
 #define __S3SELECT__
 #define BOOST_SPIRIT_THREADSAFE
+#define CSV_IO_NO_THREAD
 
 #pragma once
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
@@ -9,13 +10,14 @@
 #include <iostream>
 #include <string>
 #include <list>
+#include <deque>
 #include "s3select_oper.h"
 #include "s3select_functions.h"
 #include "s3select_csv_parser.h"
+#include "s3select_json_parser.h"
 #include <boost/function.hpp>
 #include <boost/bind.hpp>
 #include <functional>
-
 
 #define _DEBUG_TERM {string  token(a,b);std::cout << __FUNCTION__ << token << std::endl;}
 
@@ -59,9 +61,11 @@ struct actionQ
   std::vector<std::string> dataTypeQ;
   std::vector<std::string> trimTypeQ;
   std::vector<std::string> datePartQ;
-  std::vector<base_statement*> caseValueQ;
   projection_alias alias_map;
   std::string from_clause;
+  std::vector<std::string> json_from_clause;
+  bool limit_op;
+  unsigned long limit;
   std::string column_prefix;
   std::string table_alias;
   s3select_projections  projections;
@@ -69,13 +73,21 @@ struct actionQ
   bool projection_or_predicate_state; //true->projection false->predicate(where-clause statement)
   std::vector<base_statement*> predicate_columns;
   std::vector<base_statement*> projections_columns; 
+  base_statement* first_when_then_expr;
 
-  size_t when_then_count;
+  std::string json_array_name; // _1.a[  ]    json_array_name = "a";  upon parser is scanning a correct json-path; json_array_name will contain the array name. 
+  std::string json_object_name; // _1.b json_object_name = "b" ; upon parser is scanning a correct json-path; json_object_name will contain the object name.
+  std::deque<size_t> json_array_index_number; //  _1.a.c[ some integer number >=0 ]; upon parser is scanning a correct json-path; json_array_index_number will contain the array index.
+					       //  or in the case of multidimensional contain seiries of index number
+			     
+  json_variable_access json_var_md;
 
-  actionQ(): inMainArg(0),from_clause("##"),column_prefix("##"),table_alias("##"),projection_or_predicate_state(true),when_then_count(0){}//TODO remove when_then_count
+  std::vector<std::pair<json_variable_access*,size_t>> json_statement_variables_match_expression;//contains all statement variables and their search-expression for locating the correct values in input document
+
+  actionQ(): inMainArg(0),from_clause("##"),limit_op(false),column_prefix("##"),table_alias("##"),projection_or_predicate_state(true),first_when_then_expr(nullptr){}
 
   std::map<const void*,std::vector<const char*> *> x_map;
-
+ 
   ~actionQ()
   {
     for(auto m : x_map)
@@ -89,7 +101,7 @@ struct actionQ
 
     if(t == x_map.end())
     {
-      auto v = new std::vector<const char*>;//TODO delete 
+      auto v = new std::vector<const char*>;
       x_map.insert(std::pair<const void*,std::vector<const char*> *>(th,v));
       v->push_back(a);
     }
@@ -124,6 +136,18 @@ struct push_from_clause : public base_ast_builder
 };
 static push_from_clause g_push_from_clause;
 
+struct push_json_from_clause : public base_ast_builder
+{
+  void builder(s3select* self, const char* a, const char* b) const;
+};
+static push_json_from_clause g_push_json_from_clause;
+
+struct push_limit_clause : public base_ast_builder
+{
+  void builder(s3select* self, const char* a, const char* b) const;
+};
+static push_limit_clause g_push_limit_clause;
+
 struct push_number : public base_ast_builder
 {
   void builder(s3select* self, const char* a, const char* b) const;
@@ -147,6 +171,12 @@ struct push_variable : public base_ast_builder
   void builder(s3select* self, const char* a, const char* b) const;
 };
 static push_variable g_push_variable;
+
+struct push_json_variable : public base_ast_builder
+{
+  void builder(s3select* self, const char* a, const char* b) const;
+};
+static push_json_variable g_push_json_variable;
 
 /////////////////////////arithmetic unit  /////////////////
 struct push_addsub : public base_ast_builder
@@ -262,6 +292,12 @@ struct push_between_filter : public base_ast_builder
 };
 static push_between_filter g_push_between_filter;
 
+struct push_not_between_filter : public base_ast_builder
+{
+  void builder(s3select* self, const char* a, const char* b) const;
+};
+static push_not_between_filter g_push_not_between_filter;
+
 struct push_in_predicate : public base_ast_builder
 {
   void builder(s3select* self, const char* a, const char* b) const;
@@ -316,11 +352,11 @@ struct push_when_value_then : public base_ast_builder
 };
 static push_when_value_then g_push_when_value_then;
 
-struct push_case_value : public base_ast_builder
+struct push_case_value_when_value_else : public base_ast_builder
 {
   void builder(s3select* self, const char* a, const char* b) const;
 };
-static push_case_value g_push_case_value;
+static push_case_value_when_value_else g_push_case_value_when_value_else;
 
 struct push_substr_from : public base_ast_builder
 {
@@ -394,21 +430,36 @@ struct push_time_to_string_dynamic : public base_ast_builder
 };
 static push_time_to_string_dynamic g_push_time_to_string_dynamic;
 
+struct push_array_number :  public base_ast_builder
+{
+  void builder(s3select* self, const char* a, const char* b) const;
+};
+static push_array_number g_push_array_number;
+
+struct push_json_array_name :  public base_ast_builder
+{
+  void builder(s3select* self, const char* a, const char* b) const;
+};
+static push_json_array_name g_push_json_array_name;
+
+struct push_json_object :  public base_ast_builder
+{
+  void builder(s3select* self, const char* a, const char* b) const;
+};
+static push_json_object g_push_json_object;
+
 struct s3select : public bsc::grammar<s3select>
 {
 private:
 
   actionQ m_actionQ;
-
   scratch_area m_sca;
-
   s3select_functions m_s3select_functions;
-
   std::string error_description;
-
   s3select_allocator m_s3select_allocator;
-
   bool aggr_flow;
+  bool m_json_query;
+  std::set<base_statement*> m_ast_nodes_to_delete;
 
 #define BOOST_BIND_ACTION( push_name ) boost::bind( &push_name::operator(), g_ ## push_name, const_cast<s3select*>(&self), _1, _2)
 
@@ -440,7 +491,12 @@ public:
         error_description = "nested aggregation function is illegal i.e. sum(...sum ...)";
         throw base_s3select_exception(error_description, base_s3select_exception::s3select_exp_en_t::FATAL);
       }
+
+      e->push_for_cleanup(m_ast_nodes_to_delete);
     }
+
+    if(get_filter())
+	    get_filter()->push_for_cleanup(m_ast_nodes_to_delete);
 
     if (aggr_flow == true)
     {// atleast one projection column contain aggregation function
@@ -467,6 +523,9 @@ public:
         
       }
     }
+    
+    m_json_query = (m_actionQ.json_from_clause.size() != 0);
+    
     return 0;
   }
 
@@ -514,6 +573,7 @@ public:
   s3select()
   {
     m_s3select_functions.setAllocator(&m_s3select_allocator);
+    m_s3select_functions.set_AST_nodes_for_cleanup(&m_ast_nodes_to_delete);
   }
 
   bool is_semantic()//TBD traverse and validate semantics per all nodes
@@ -526,6 +586,16 @@ public:
   std::string get_from_clause() const
   {
     return m_actionQ.from_clause;
+  }
+
+  bool is_limit()
+  {
+    return m_actionQ.limit_op;
+  }
+
+  unsigned long get_limit()
+  {
+    return m_actionQ.limit;
   }
 
   void load_schema(std::vector< std::string>& scm)
@@ -562,15 +632,41 @@ public:
     return &m_actionQ.alias_map;
   }
 
+  std::vector<std::pair<json_variable_access*,size_t>>& get_json_variables_access()
+  {
+    return m_actionQ.json_statement_variables_match_expression;
+  }
+
   bool is_aggregate_query() const
   {
     return aggr_flow == true;
   }
 
+  bool is_json_query()
+  {
+    return m_json_query;
+  }
+
   ~s3select()
   {
-    m_s3select_functions.clean();
+	for(auto it : m_ast_nodes_to_delete)
+	{
+		if (it->is_function())
+      		{//upon its a function, call to the implementation destructor
+        		if(dynamic_cast<__function*>(it)->impl())
+				dynamic_cast<__function*>(it)->impl()->dtor();
+      		}
+		//calling to destrcutor of class-function itself, or non-function destructor
+		it->dtor();
+	}
+
+	for(auto x: m_actionQ.json_statement_variables_match_expression)
+	{//the json_variable_access object is allocated by S3SELECT_NEW. this object contains stl-vector that should be free 
+		x.first->~json_variable_access();
+	}
   }
+
+#define JSON_ROOT_OBJECT "s3object[*]"
 
 //the input is converted to lower case
 #define S3SELECT_KW( reserve_word ) bsc::as_lower_d[ reserve_word ]
@@ -582,14 +678,17 @@ public:
     {
       ///// s3select syntax rules and actions for building AST
 
-      select_expr =  (select_expr_base >> ';') | select_expr_base;
+      select_expr =  select_expr_base_ >> bsc::lexeme_d[ *(bsc::str_p(" ")|bsc::str_p(";")) ];
+
+      select_expr_base_ = select_expr_base >> S3SELECT_KW("limit") >> (limit_number)[BOOST_BIND_ACTION(push_limit_clause)] | select_expr_base;
+
+      limit_number = (+bsc::digit_p);
 
       select_expr_base =  S3SELECT_KW("select") >> projections >> S3SELECT_KW("from") >> (from_expression)[BOOST_BIND_ACTION(push_from_clause)] >> !where_clause ;
 
       projections = projection_expression >> *( ',' >> projection_expression) ;
 
-      projection_expression = (when_case_else_projection|when_case_value_when) [BOOST_BIND_ACTION(push_projection)] | 
-                              (arithmetic_expression >> S3SELECT_KW("as") >> alias_name)[BOOST_BIND_ACTION(push_alias_projection)] | 
+      projection_expression = (arithmetic_expression >> S3SELECT_KW("as") >> alias_name)[BOOST_BIND_ACTION(push_alias_projection)] | 
                               (arithmetic_expression)[BOOST_BIND_ACTION(push_projection)] | 
 			      (arithmetic_predicate >> S3SELECT_KW("as") >> alias_name)[BOOST_BIND_ACTION(push_alias_projection)] |
                               (arithmetic_predicate)[BOOST_BIND_ACTION(push_projection)] ;
@@ -600,15 +699,19 @@ public:
 
       when_stmt = (S3SELECT_KW("when") >> condition_expression >> S3SELECT_KW("then") >> arithmetic_expression)[BOOST_BIND_ACTION(push_when_condition_then)];
 
-      when_case_value_when = (S3SELECT_KW("case") >> arithmetic_expression[BOOST_BIND_ACTION(push_case_value)]  >> 
-                              (+when_value_then) >> S3SELECT_KW("else") >> arithmetic_expression >> S3SELECT_KW("end")) [BOOST_BIND_ACTION(push_case_when_else)];
+      when_case_value_when = (S3SELECT_KW("case") >> arithmetic_expression >> 
+                              (+when_value_then) >> S3SELECT_KW("else") >> arithmetic_expression >> S3SELECT_KW("end")) [BOOST_BIND_ACTION(push_case_value_when_value_else)];
 
       when_value_then = (S3SELECT_KW("when") >> arithmetic_expression >> S3SELECT_KW("then") >> arithmetic_expression)[BOOST_BIND_ACTION(push_when_value_then)];
 
-      from_expression = (s3_object >> (variable - S3SELECT_KW("where"))) | s3_object;
+      from_expression = (s3_object >> variable_name ) | s3_object;
 
       //the stdin and object_path are for debug purposes(not part of the specs)
-      s3_object = S3SELECT_KW("stdin") | S3SELECT_KW("s3object") | object_path ;
+      s3_object = json_s3_object | S3SELECT_KW("stdin") | S3SELECT_KW("s3object") | object_path;
+
+      json_s3_object = ((S3SELECT_KW(JSON_ROOT_OBJECT)) >> *(bsc::str_p(".") >> json_path_element))[BOOST_BIND_ACTION(push_json_from_clause)];
+
+      json_path_element = bsc::lexeme_d[+( bsc::alnum_p | bsc::str_p("_")) ];
 
       object_path = "/" >> *( fs_type >> "/") >> fs_type;
 
@@ -626,13 +729,15 @@ public:
 
       cmp_operand = special_predicates | (factor) >> *(arith_cmp[BOOST_BIND_ACTION(push_compare_operator)] >> (factor)[BOOST_BIND_ACTION(push_arithmetic_predicate)]);
 
-      special_predicates = (is_null) | (is_not_null) | (between_predicate) | (in_predicate) | (like_predicate);
+      special_predicates = (is_null) | (is_not_null) | (between_predicate) | (not_between) | (in_predicate) | (like_predicate);
 
       is_null = ((factor) >> S3SELECT_KW("is") >> S3SELECT_KW("null"))[BOOST_BIND_ACTION(push_is_null_predicate)];
 
       is_not_null = ((factor) >> S3SELECT_KW("is") >> S3SELECT_KW("not") >> S3SELECT_KW("null"))[BOOST_BIND_ACTION(push_is_null_predicate)];
 
       between_predicate = (arithmetic_expression >> S3SELECT_KW("between") >> arithmetic_expression >> S3SELECT_KW("and") >> arithmetic_expression)[BOOST_BIND_ACTION(push_between_filter)];
+
+      not_between = (arithmetic_expression >> S3SELECT_KW("not") >> S3SELECT_KW("between") >> arithmetic_expression >> S3SELECT_KW("and") >> arithmetic_expression)[BOOST_BIND_ACTION(push_not_between_filter)];
 
       in_predicate = (arithmetic_expression >> S3SELECT_KW("in") >> '(' >> arithmetic_expression[BOOST_BIND_ACTION(push_in_predicate_first_arg)] >> *(',' >> arithmetic_expression[BOOST_BIND_ACTION(push_in_predicate_arguments)]) >> ')')[BOOST_BIND_ACTION(push_in_predicate)];
       
@@ -651,15 +756,19 @@ public:
       mulldiv_operand = arithmetic_argument | ('(' >> (arithmetic_expression) >> ')') ;
 
       list_of_function_arguments = (arithmetic_expression)[BOOST_BIND_ACTION(push_function_arg)] >> *(',' >> (arithmetic_expression)[BOOST_BIND_ACTION(push_function_arg)]);
-      
-      function = ((variable >> '(' )[BOOST_BIND_ACTION(push_function_name)] >> !list_of_function_arguments >> ')')[BOOST_BIND_ACTION(push_function_expr)];
 
-      arithmetic_argument = (float_number)[BOOST_BIND_ACTION(push_float_number)] |  (number)[BOOST_BIND_ACTION(push_number)] | (column_pos)[BOOST_BIND_ACTION(push_column_pos)] |
+      reserved_function_names = (S3SELECT_KW("when")|S3SELECT_KW("case")|S3SELECT_KW("then")|S3SELECT_KW("not")|S3SELECT_KW("limit")|S3SELECT_KW("where")|S3SELECT_KW("in")|S3SELECT_KW("between") |
+				S3SELECT_KW("like")|S3SELECT_KW("is") );
+     
+      function = ( ((variable_name)  >> '(' )[BOOST_BIND_ACTION(push_function_name)] >> !list_of_function_arguments >> ')')[BOOST_BIND_ACTION(push_function_expr)];
+
+      arithmetic_argument = (float_number)[BOOST_BIND_ACTION(push_float_number)] |  (number)[BOOST_BIND_ACTION(push_number)] | (json_variable_name)[BOOST_BIND_ACTION(push_json_variable)] |
+			    (column_pos)[BOOST_BIND_ACTION(push_column_pos)] |
                             (string)[BOOST_BIND_ACTION(push_string)] | (datediff) | (dateadd) | (extract) | (time_to_string_constant) | (time_to_string_dynamic) |
-                            (cast) | (substr) | (trim) |
+                            (cast) | (substr) | (trim) | (when_case_value_when) | (when_case_else_projection) |
                             (function) | (variable)[BOOST_BIND_ACTION(push_variable)]; //function is pushed by right-term
 
-      cast = (S3SELECT_KW("cast") >> '(' >> arithmetic_expression >> S3SELECT_KW("as") >> (data_type)[BOOST_BIND_ACTION(push_data_type)] >> ')') [BOOST_BIND_ACTION(push_cast_expr)];
+      cast = (S3SELECT_KW("cast") >> '(' >> factor >> S3SELECT_KW("as") >> (data_type)[BOOST_BIND_ACTION(push_data_type)] >> ')') [BOOST_BIND_ACTION(push_cast_expr)];
 
       data_type = (S3SELECT_KW("int") | S3SELECT_KW("float") | S3SELECT_KW("string") |  S3SELECT_KW("timestamp") | S3SELECT_KW("bool") );
      
@@ -709,25 +818,31 @@ public:
 
       addsubop_operator = bsc::str_p("+") | bsc::str_p("-");
 
-      arith_cmp = bsc::str_p(">=") | bsc::str_p("<=") | bsc::str_p("=") | bsc::str_p("<") | bsc::str_p(">") | bsc::str_p("!=");
+      arith_cmp = bsc::str_p("<>") | bsc::str_p(">=") | bsc::str_p("<=") | bsc::str_p("=") | bsc::str_p("<") | bsc::str_p(">") | bsc::str_p("!=");
 
       and_op =  S3SELECT_KW("and");
 
       or_op =  S3SELECT_KW("or");
 
-      variable_name =  bsc::lexeme_d[(+bsc::alpha_p >> *( bsc::alpha_p | bsc::digit_p | '_') ) -  S3SELECT_KW("not")];
+      variable_name =  bsc::lexeme_d[(+bsc::alpha_p >> *( bsc::alpha_p | bsc::digit_p | '_') ) - reserved_function_names];
 
       variable = (variable_name >> "." >> variable_name) | variable_name;
+
+      json_variable_name = bsc::str_p("_1") >> +("." >> (json_array | json_object) );
+
+      json_object = (variable_name)[BOOST_BIND_ACTION(push_json_object)]; 
+
+      json_array = (variable_name >> +(bsc::str_p("[") >> number[BOOST_BIND_ACTION(push_array_number)] >> bsc::str_p("]")) )[BOOST_BIND_ACTION(push_json_array_name)];
     }
 
 
-    bsc::rule<ScannerT> cast, data_type, variable,  variable_name, select_expr, select_expr_base, s3_object, where_clause, number, float_number, string, from_expression;
+    bsc::rule<ScannerT> cast, data_type, variable, json_variable_name, variable_name, select_expr, select_expr_base, select_expr_base_, s3_object, where_clause, limit_number, number, float_number, string, from_expression;
     bsc::rule<ScannerT> cmp_operand, arith_cmp, condition_expression, arithmetic_predicate, logical_predicate, factor; 
     bsc::rule<ScannerT> trim, trim_whitespace_both, trim_one_side_whitespace, trim_anychar_anyside, trim_type, trim_remove_type, substr, substr_from, substr_from_for;
     bsc::rule<ScannerT> datediff, dateadd, extract, date_part, date_part_extract, time_to_string_constant, time_to_string_dynamic;
-    bsc::rule<ScannerT> special_predicates, between_predicate, in_predicate, like_predicate, like_predicate_escape, like_predicate_no_escape, is_null, is_not_null;
-    bsc::rule<ScannerT> muldiv_operator, addsubop_operator, function, arithmetic_expression, addsub_operand, list_of_function_arguments, arithmetic_argument, mulldiv_operand;
-    bsc::rule<ScannerT> fs_type, object_path;
+    bsc::rule<ScannerT> special_predicates, between_predicate, not_between, in_predicate, like_predicate, like_predicate_escape, like_predicate_no_escape, is_null, is_not_null;
+    bsc::rule<ScannerT> muldiv_operator, addsubop_operator, function, arithmetic_expression, addsub_operand, list_of_function_arguments, arithmetic_argument, mulldiv_operand, reserved_function_names;
+    bsc::rule<ScannerT> fs_type, object_path,json_s3_object,json_path_element,json_object,json_array;
     bsc::rule<ScannerT> projections, projection_expression, alias_name, column_pos,column_pos_name;
     bsc::rule<ScannerT> when_case_else_projection, when_case_value_when, when_stmt, when_value_then;
     bsc::rule<ScannerT> logical_and,and_op,or_op;
@@ -771,10 +886,59 @@ void push_from_clause::builder(s3select* self, const char* a, const char* b) con
     token = table_name;
   }
 
-  self->getAction()->from_clause = token; //TODO add table alias 
+  self->getAction()->from_clause = token;
 
   self->getAction()->exprQ.clear();
+}
 
+void push_json_from_clause::builder(s3select* self, const char* a, const char* b) const
+{
+  std::string token(a, b),table_name,alias_name;
+
+  //TODO handle the star-operation ('*') in from-clause. build the parameters for json-reader search-api's.
+  std::vector<std::string> variable_key_path;
+  const char* delimiter = ".";
+  auto pos = token.find(delimiter);
+
+  if(pos != std::string::npos)
+  {
+    token = token.substr(strlen(JSON_ROOT_OBJECT)+1,token.size());
+    pos = token.find(delimiter);
+    do
+    {
+      variable_key_path.push_back(token.substr(0,pos));
+      if(pos != std::string::npos)
+	token = token.substr(pos+1,token.size());
+      else 
+	token = "";
+      pos = token.find(delimiter);
+    }while(token.size());
+  }
+  else
+  {
+    variable_key_path.push_back(JSON_ROOT_OBJECT);
+  }
+
+  self->getAction()->json_from_clause = variable_key_path;
+}
+
+void push_limit_clause::builder(s3select* self, const char* a, const char* b) const
+{
+  std::string token(a, b);
+
+  self->getAction()->limit_op = true;
+  try
+  {
+    self->getAction()->limit = std::stoul(token);
+  }
+  catch(std::invalid_argument& e)
+  {
+    throw base_s3select_exception(std::string("Invalid argument "), base_s3select_exception::s3select_exp_en_t::FATAL);
+  }
+  catch(std::out_of_range& e)
+  {
+    throw base_s3select_exception(std::string("Out of range "), base_s3select_exception::s3select_exp_en_t::FATAL);
+  }
 }
 
 void push_number::builder(s3select* self, const char* a, const char* b) const
@@ -815,7 +979,7 @@ void push_string::builder(s3select* self, const char* a, const char* b) const
   b--; // remove double quotes
   std::string token(a, b);
 
-  variable* v = S3SELECT_NEW(self, variable, token, variable::var_t::COL_VALUE);
+  variable* v = S3SELECT_NEW(self, variable, token, variable::var_t::COLUMN_VALUE);
 
   self->getAction()->exprQ.push_back(v);
 }
@@ -871,6 +1035,78 @@ void push_variable::builder(s3select* self, const char* a, const char* b) const
   }
   
   self->getAction()->exprQ.push_back(v);
+}
+
+void push_json_variable::builder(s3select* self, const char* a, const char* b) const
+{//purpose: handle the use case of json-variable structure (_1.a.b.c)
+
+  std::string token(a, b);
+  std::vector<std::string> variable_key_path;
+
+  //the following flow determine the index per json variable reside on statement.
+  //per each discovered json_variable, it search the json-variables-vector whether it already exists.
+  //in case it is exist, it uses its index (position in vector)
+  //in case it's not exist its pushes the variable into vector.
+  //the json-index is used upon updating the scratch area or searching for a specific json-variable value.
+
+  size_t json_index=self->getAction()->json_statement_variables_match_expression.size();
+  variable* v = nullptr;
+  json_variable_access* ja = S3SELECT_NEW(self, json_variable_access);
+  *ja = self->getAction()->json_var_md;
+  self->getAction()->json_statement_variables_match_expression.push_back(std::pair<json_variable_access*,size_t>(ja,json_index));
+  
+  v = S3SELECT_NEW(self, variable, token, variable::var_t::JSON_VARIABLE, json_index);
+  self->getAction()->exprQ.push_back(v);
+
+  self->getAction()->json_var_md.clear();
+}
+
+void push_array_number::builder(s3select* self, const char* a, const char* b) const
+{
+  std::string token(a, b);
+  //DEBUG - TEMP std::cout << "push_array_number " << token << std::endl;
+
+  self->getAction()->json_array_index_number.push_back(std::stoll(token.c_str()));
+}
+
+void push_json_array_name::builder(s3select* self, const char* a, const char* b) const
+{
+  std::string token(a, b);
+  size_t found = token.find("[");
+  std::string array_name = token.substr(0,found);
+
+  //DEBUG - TEMP std::cout << "push_json_array_name " << array_name << std::endl;
+
+  //remove white-space
+  array_name.erase(std::remove_if(array_name.begin(),
+  		array_name.end(),
+  		[](unsigned char x){return std::isspace(x);}),
+  		array_name.end());
+
+  std::vector<std::string> json_path;
+  std::vector<std::string> empty = {};
+  json_path.push_back(array_name);
+
+  self->getAction()->json_var_md.push_variable_state(json_path, -1);//pushing the array-name, {-1} means, search for object-name
+
+  while(self->getAction()->json_array_index_number.size())
+  {
+  	self->getAction()->json_var_md.push_variable_state(empty, self->getAction()->json_array_index_number.front());//pushing empty and number>=0, means array-access
+	self->getAction()->json_array_index_number.pop_front();
+  }	
+}
+
+void push_json_object::builder(s3select* self, const char* a, const char* b) const
+{
+  std::string token(a, b);
+
+  //DEBUG - TEMP std::cout << "push_json_object " << token << std::endl;
+
+  self->getAction()->json_object_name = token;
+  std::vector<std::string> json_path;
+  json_path.push_back(token);
+
+  self->getAction()->json_var_md.push_variable_state(json_path, -1);
 }
 
 void push_addsub::builder(s3select* self, const char* a, const char* b) const
@@ -985,7 +1221,7 @@ void push_compare_operator::builder(s3select* self, const char* a, const char* b
   {
     c = arithmetic_operand::cmp_t::EQ;
   }
-  else if (token == "!=")
+  else if (token == "!=" || token == "<>")
   {
     c = arithmetic_operand::cmp_t::NE;
   }
@@ -1139,9 +1375,6 @@ void push_column_pos::builder(s3select* self, const char* a, const char* b) cons
   {
     v = S3SELECT_NEW(self, variable, token, variable::var_t::STAR_OPERATION);
 
-    //NOTE: variable may leak upon star-operation(multi_value object is not destruct entirly, it contain stl-vactor which is allocated on heap).
-    //TODO: find a generic way for such use-cases, one possible solution is to push all-nodes(upon AST is complete) into cleanup-container.
-    self->getS3F()->push_for_cleanup(v);
   }
   else
   {
@@ -1202,6 +1435,28 @@ void push_between_filter::builder(s3select* self, const char* a, const char* b) 
   std::string between_function("#between#");
 
   __function* func = S3SELECT_NEW(self, __function, between_function.c_str(), self->getS3F());
+
+  base_statement* second_expr = self->getAction()->exprQ.back();
+  self->getAction()->exprQ.pop_back();
+  func->push_argument(second_expr);
+
+  base_statement* first_expr = self->getAction()->exprQ.back();
+  self->getAction()->exprQ.pop_back();
+  func->push_argument(first_expr);
+
+  base_statement* main_expr = self->getAction()->exprQ.back();
+  self->getAction()->exprQ.pop_back();
+  func->push_argument(main_expr);
+
+  self->getAction()->exprQ.push_back(func);
+}
+
+void push_not_between_filter::builder(s3select* self, const char* a, const char* b) const
+{
+
+  static constexpr const std::string_view not_between_function("#not_between#");
+
+  __function* func = S3SELECT_NEW(self, __function, not_between_function.data(), self->getS3F());
 
   base_statement* second_expr = self->getAction()->exprQ.back();
   self->getAction()->exprQ.pop_back();
@@ -1292,7 +1547,7 @@ void push_like_predicate_no_escape::builder(s3select* self, const char* a, const
 
   __function* func = S3SELECT_NEW(self, __function, in_function.c_str(), self->getS3F());
   
-  variable* v = S3SELECT_NEW(self, variable, "\\",variable::var_t::COL_VALUE);
+  variable* v = S3SELECT_NEW(self, variable, "\\",variable::var_t::COLUMN_VALUE);
   func->push_argument(v);
   
   // experimenting valgrind-issue happens only on teuthology
@@ -1367,8 +1622,10 @@ void push_is_null_predicate::builder(s3select* self, const char* a, const char* 
 
 void push_when_condition_then::builder(s3select* self, const char* a, const char* b) const
 {
+//purpose: each new function node, provide execution for (if {condition} then {expresion} )
   std::string token(a, b);
 
+  // _fn_when_then
   __function* func = S3SELECT_NEW(self, __function, "#when-then#", self->getS3F());
 
  base_statement* then_expr = self->getAction()->exprQ.back();
@@ -1380,54 +1637,87 @@ void push_when_condition_then::builder(s3select* self, const char* a, const char
  func->push_argument(then_expr);
  func->push_argument(when_expr);
 
- self->getAction()->whenThenQ.push_back(func);
+ self->getAction()->exprQ.push_back(func);
 
- self->getAction()->when_then_count ++;
+  // the first_when_then_expr mark the first when-then expression, it is been used later upon complete the full statement (case when ... then ... else ... end)
+ if(self->getAction()->first_when_then_expr == nullptr)
+ {	
+  self->getAction()->first_when_then_expr = func;
+ }
 }
 
 void push_case_when_else::builder(s3select* self, const char* a, const char* b) const
 {
+//purpose: provide the execution for complete statement, i.e. (case when {expression} then {expression} else {expression} end)
   std::string token(a, b);
 
   base_statement* else_expr = self->getAction()->exprQ.back();
   self->getAction()->exprQ.pop_back();
 
+  // _fn_case_when_else
   __function* func = S3SELECT_NEW(self, __function, "#case-when-else#", self->getS3F());
 
   func->push_argument(else_expr);
 
-  while(self->getAction()->when_then_count)
+  base_statement* when_then_func = nullptr;
+
+  // the loop ended upon reaching the first when-then
+  while(when_then_func != self->getAction()->first_when_then_expr)
   {
-    base_statement* when_then_func = self->getAction()->whenThenQ.back();
-    self->getAction()->whenThenQ.pop_back();
-
+    // poping from whenThen-queue and pushing to function arguments list
+    when_then_func = self->getAction()->exprQ.back();
+    self->getAction()->exprQ.pop_back();
     func->push_argument(when_then_func);
-
-    self->getAction()->when_then_count--;
   }
-
-// condQ is cleared explicitly, because of "leftover", due to double scanning upon accepting
-// the following rule '(' condition-expression ')' , i.e. (3*3 == 12)
-// Because of the double-scan (bug in spirit?defintion?), a sub-tree for the left side is created, twice.
-// thus, it causes wrong calculation.
-
-  self->getAction()->exprQ.clear();
-
+  
+  self->getAction()->first_when_then_expr = nullptr;
+  //func is the complete statement,  implemented by _fn_case_when_else
   self->getAction()->exprQ.push_back(func);
 }
 
-void push_case_value::builder(s3select* self, const char* a, const char* b) const
+void push_case_value_when_value_else::builder(s3select* self, const char* a, const char* b) const
 {
+//purpose: provide execution for the complete statement. i.e. case-value-when-value-else-value-end
   std::string token(a, b);
 
+  base_statement* else_expr = self->getAction()->exprQ.back();
+  self->getAction()->exprQ.pop_back();
+
+  // _fn_case_when_else
+  __function* func = S3SELECT_NEW(self, __function, "#case-when-else#", self->getS3F());
+
+  // push the else expression 
+  func->push_argument(else_expr);
+
+  // poping the case-value  
   base_statement* case_value = self->getAction()->exprQ.back();
   self->getAction()->exprQ.pop_back();
 
-  self->getAction()->caseValueQ.push_back(case_value);
+  base_statement* when_then_func = nullptr;
+  
+  //poping all when-value-then expression(_fn_when_value_then) and add the case-value per each
+  while(self->getAction()->whenThenQ.empty() == false)
+  {
+    when_then_func = self->getAction()->whenThenQ.back();
+    if (dynamic_cast<__function*>(when_then_func))
+    {
+      // adding the case-value as argument
+      dynamic_cast<__function*>(when_then_func)->push_argument(case_value);
+    }
+    else 
+      throw base_s3select_exception("failed to create AST for case-value-when construct", base_s3select_exception::s3select_exp_en_t::FATAL);
+
+    self->getAction()->whenThenQ.pop_back(); 
+ 
+    func->push_argument(when_then_func);
+  }
+  //pushing the execution function for the complete statement
+  self->getAction()->exprQ.push_back(func);
 }
 
 void push_when_value_then::builder(s3select* self, const char* a, const char* b) const
 {
+  //provide execution of when-value-then-value :: _fn_when_value_then
   std::string token(a, b);
 
   __function* func = S3SELECT_NEW(self, __function, "#when-value-then#", self->getS3F());
@@ -1438,15 +1728,10 @@ void push_when_value_then::builder(s3select* self, const char* a, const char* b)
  base_statement* when_expr = self->getAction()->exprQ.back();
  self->getAction()->exprQ.pop_back();
 
- base_statement* case_expr = self->getAction()->caseValueQ.back();
-
  func->push_argument(then_expr);
  func->push_argument(when_expr);
- func->push_argument(case_expr);
-
+  //each when-value-then-value pushed to dedicated queue
  self->getAction()->whenThenQ.push_back(func);
-
- self->getAction()->when_then_count ++;
 }
 
 void push_cast_expr::builder(s3select* self, const char* a, const char* b) const
@@ -1718,32 +2003,8 @@ void push_time_to_string_dynamic::builder(s3select* self, const char* a, const c
   self->getAction()->exprQ.push_back(func);
 }
 
-/////// handling different object types
-class base_s3object
+struct s3select_csv_definitions //TODO 
 {
-
-protected:
-  scratch_area* m_sa;
-  std::string m_obj_name;
-
-public:
-  explicit base_s3object(scratch_area* m) : m_sa(m){}
-
-  void set(scratch_area* m)
-  {
-    m_sa = m;
-  }
-
-  virtual ~base_s3object() = default;
-};
-
-
-class csv_object : public base_s3object
-{
-
-public:
-  struct csv_defintions
-  {
     char row_delimiter;
     char column_delimiter;
     char output_row_delimiter;
@@ -1757,190 +2018,177 @@ public:
     bool quote_fields_always;
     bool quote_fields_asneeded;
     bool redundant_column;
+    bool comment_empty_lines;
+    std::vector<char> comment_chars;
+    std::vector<char> trim_chars;
 
-    csv_defintions():row_delimiter('\n'), column_delimiter(','), output_row_delimiter('\n'), output_column_delimiter(','), escape_char('\\'), output_escape_char('\\'), output_quot_char('"'), quot_char('"'), use_header_info(false), ignore_header_info(false), quote_fields_always(false), quote_fields_asneeded(false), redundant_column(false) {}
+    s3select_csv_definitions():row_delimiter('\n'), column_delimiter(','), output_row_delimiter('\n'), output_column_delimiter(','), escape_char('\\'), output_escape_char('\\'), output_quot_char('"'), quot_char('"'), use_header_info(false), ignore_header_info(false), quote_fields_always(false), quote_fields_asneeded(false), redundant_column(false), comment_empty_lines(false) {}
 
-  } m_csv_defintion;
+};
+ 
 
-  explicit csv_object(s3select* s3_query) :
-    base_s3object(s3_query->get_scratch_area()),
-    m_skip_last_line(false),
-    m_s3_select(nullptr),
-    m_error_count(0),
-    m_extract_csv_header_info(false),
-    m_previous_line(false),
-    m_skip_first_line(false),
-    m_processed_bytes(0)
-  {
-    set(s3_query);
-    csv_parser.set(m_csv_defintion.row_delimiter, m_csv_defintion.column_delimiter, m_csv_defintion.quot_char, m_csv_defintion.escape_char);
-  }
+/////// handling different object types
+class base_s3object
+{
 
-  csv_object(s3select* s3_query, struct csv_defintions csv) :
-    base_s3object(s3_query->get_scratch_area()),
-    m_skip_last_line(false),
-    m_s3_select(nullptr),
-    m_error_count(0),
-    m_extract_csv_header_info(false),
-    m_previous_line(false),
-    m_skip_first_line(false),
-    m_processed_bytes(0)
-  {
-    set(s3_query);
-    m_csv_defintion = csv;
-    csv_parser.set(m_csv_defintion.row_delimiter, m_csv_defintion.column_delimiter, m_csv_defintion.quot_char, m_csv_defintion.escape_char);
-  }
-
-  csv_object():
-    base_s3object(nullptr),
-    m_skip_last_line(false),
-    m_s3_select(nullptr),
-    m_error_count(0),
-    m_extract_csv_header_info(false),
-    m_previous_line(false),
-    m_skip_first_line(false),
-    m_processed_bytes(0)
-  {
-    csv_parser.set(m_csv_defintion.row_delimiter, m_csv_defintion.column_delimiter, m_csv_defintion.quot_char, m_csv_defintion.escape_char);
-  }
-
-private:
-  base_statement* m_where_clause;
-  std::vector<base_statement*> m_projections;
+protected:
+  scratch_area* m_sa;
+  std::string m_obj_name;
   bool m_aggr_flow = false; //TODO once per query
   bool m_is_to_aggregate;
-  bool m_skip_last_line;
-  std::string m_error_description;
-  char* m_stream;
-  char* m_end_stream;
-  std::vector<char*> m_row_tokens{128};
+  std::vector<base_statement*> m_projections;
+  base_statement* m_where_clause;
   s3select* m_s3_select;
-  csvParser csv_parser;
   size_t m_error_count;
-  bool m_extract_csv_header_info;
-  std::vector<std::string> m_csv_schema{128};
-
-  //handling arbitrary chunks (rows cut in the middle)
-  bool m_previous_line;
-  bool m_skip_first_line;
-  std::string merge_line;
-  std::string m_last_line;
-  size_t m_processed_bytes;
-
-  int getNextRow()
-  {
-    size_t num_of_tokens=0;
-
-    if(m_stream>=m_end_stream)
-    {
-      return -1;
-    }
-
-    if(csv_parser.parse(m_stream, m_end_stream, &m_row_tokens, &num_of_tokens)<0)
-    {
-      throw base_s3select_exception("failed to parse csv stream", base_s3select_exception::s3select_exp_en_t::FATAL);
-    }
-
-    m_stream = (char*)csv_parser.currentLoc();
-
-    if (m_skip_last_line && m_stream >= m_end_stream)
-    {
-      return -1;
-    }
-
-    return num_of_tokens;
-
-  }
+  bool m_is_limit_on;
+  unsigned long m_limit;
+  unsigned long m_processed_rows;
+  size_t m_returned_bytes_size;
+  std::function<void(const char*)> fp_ext_debug_mesg;//dispache debug message into external system
 
 public:
+  s3select_csv_definitions m_csv_defintion;//TODO add method for modify
 
-  void set(s3select* s3_query)
+  enum class Status {
+    END_OF_STREAM,
+    INITIAL_STAT,
+    NORMAL_EXIT,
+    LIMIT_REACHED,
+    SQL_ERROR
+  };
+
+  Status m_sql_processing_status;
+
+  Status get_sql_processing_status()
   {
-    m_s3_select = s3_query;
-    base_s3object::set(m_s3_select->get_scratch_area());
+	  return m_sql_processing_status;
+  }
 
+  bool is_sql_limit_reached()
+  {
+	  return m_sql_processing_status == Status::LIMIT_REACHED;
+  }
+
+  void set_base_defintions(s3select* m)
+  {
+    if(m_s3_select || !m)
+    {//not to define twice
+     //not to define with null
+  	return;
+    }
+
+    m_s3_select=m;
+    m_sa=m_s3_select->get_scratch_area();
+    m_error_count=0;
     m_projections = m_s3_select->get_projections_list();
     m_where_clause = m_s3_select->get_filter();
 
     if (m_where_clause)
     {
-      m_where_clause->traverse_and_apply(m_sa, m_s3_select->get_aliases());
+      m_where_clause->traverse_and_apply(m_sa, m_s3_select->get_aliases(), m_s3_select->is_json_query());
     }
 
     for (auto& p : m_projections)
     {
-      p->traverse_and_apply(m_sa, m_s3_select->get_aliases());
+      p->traverse_and_apply(m_sa, m_s3_select->get_aliases(), m_s3_select->is_json_query());
     }
-
+    m_is_to_aggregate = true;//TODO not correct. should be set upon end-of-stream
     m_aggr_flow = m_s3_select->is_aggregate_query();
-  }
 
-  void set_csv_query(s3select* s3_query,struct csv_defintions csv)
-  {
-    if(m_s3_select != nullptr) 
+    m_is_limit_on = m_s3_select->is_limit();
+    if(m_is_limit_on)
     {
-      return;
+        m_limit = m_s3_select->get_limit();
     }
 
-    set(s3_query);
-    m_csv_defintion = csv;
-    csv_parser.set(m_csv_defintion.row_delimiter, m_csv_defintion.column_delimiter, m_csv_defintion.quot_char, m_csv_defintion.escape_char);
+    m_processed_rows = 0;
   }
 
-  std::string get_error_description()
+  base_s3object():m_sa(nullptr),m_is_to_aggregate(false),m_where_clause(nullptr),m_s3_select(nullptr),m_error_count(0),m_returned_bytes_size(0),m_sql_processing_status(Status::INITIAL_STAT){}
+
+  explicit base_s3object(s3select* m):base_s3object()
   {
-    return m_error_description;
+    if(m)
+    {
+        set_base_defintions(m);
+    }
   }
 
-  virtual ~csv_object() = default;
+  virtual bool is_end_of_stream() {return false;}
+  virtual void row_fetch_data() {}
+  virtual void row_update_data() {}
+  virtual void columnar_fetch_where_clause_columns(){}
+  virtual void columnar_fetch_projection(){}
+  // for the case were the rows are not fetched, but "pushed" by the data-source parser (JSON)
+  virtual bool multiple_row_processing(){return true;}
 
-public:
+  void set_external_debug_system(std::function<void(const char*)> fp_external)
+  {
+	fp_ext_debug_mesg = fp_external; 
+  }
+
+  size_t get_return_result_size()
+  {
+	return m_returned_bytes_size;
+  }
 
   void result_values_to_string(multi_values& projections_resuls, std::string& result)
   {
     size_t i = 0;
     std::string output_delimiter(1,m_csv_defintion.output_column_delimiter);
+    std::string output_row_delimiter(1,m_csv_defintion.output_row_delimiter);
 
-    for(auto res : projections_resuls.values)
+    for(auto& res : projections_resuls.values)
     {
+	    if(fp_ext_debug_mesg)
+		      fp_ext_debug_mesg( res->to_string() );
+
             if (m_csv_defintion.quote_fields_always) {
               std::ostringstream quoted_result;
               quoted_result << std::quoted(res->to_string(),m_csv_defintion.output_quot_char, m_csv_defintion.escape_char);
               result.append(quoted_result.str());
+	      m_returned_bytes_size += quoted_result.str().size();
             }//TODO to add asneeded
 	    else
 	    {
-            	result.append( res->to_string() );
+            	result.append(res->to_string());
+		m_returned_bytes_size += strlen(res->to_string());
 	    }
 
             if(!m_csv_defintion.redundant_column) {
               if(++i < projections_resuls.values.size()) {
                 result.append(output_delimiter);
+		m_returned_bytes_size += output_delimiter.size();
               }
             }
             else {
               result.append(output_delimiter);
+	      m_returned_bytes_size += output_delimiter.size();
             }    
+    }
+    if(!m_aggr_flow){
+	      result.append(output_row_delimiter);
+	      m_returned_bytes_size += output_delimiter.size();
     }
   }
 
-  int getMatchRow( std::string& result) //TODO virtual ? getResult
+  Status getMatchRow( std::string& result)
   {
-    int number_of_tokens = 0;
-    std::string output_delimiter(1,m_csv_defintion.output_row_delimiter);
     multi_values projections_resuls;
+
+    if (m_is_limit_on && m_processed_rows == m_limit)
+    {
+      return m_sql_processing_status = Status::LIMIT_REACHED;
+    }
     
-
-
     if (m_aggr_flow == true)
     {
       do
       {
-
-        number_of_tokens = getNextRow();
-        if (number_of_tokens < 0) //end of stream
+        row_fetch_data();
+        columnar_fetch_where_clause_columns();
+        if (is_end_of_stream())
         {
-          projections_resuls.clear();
           if (m_is_to_aggregate)
             for (auto& i : m_projections)
             {
@@ -1951,73 +2199,222 @@ public:
             }
 
           result_values_to_string(projections_resuls,result);
-          return number_of_tokens;
+          return m_sql_processing_status = Status::END_OF_STREAM;
         }
 
+        m_processed_rows++;
         if ((*m_projections.begin())->is_set_last_call())
         {
           //should validate while query execution , no update upon nodes are marked with set_last_call
           throw base_s3select_exception("on aggregation query , can not stream row data post do-aggregate call", base_s3select_exception::s3select_exp_en_t::FATAL);
         }
 
-        m_sa->update(m_row_tokens, number_of_tokens);
         for (auto& a : *m_s3_select->get_aliases()->get())
         {
           a.second->invalidate_cache_result();
         }
 
+	row_update_data();
         if (!m_where_clause || m_where_clause->eval().is_true())
+	{
+	  columnar_fetch_projection();
           for (auto i : m_projections)
-          {
-            i->eval();
+          {	
+	    i->eval();
           }
+	}
 
+        if(m_is_limit_on && m_processed_rows == m_limit)
+        {
+	  for (auto& i : m_projections)
+	  {
+	    i->set_last_call();
+	    i->set_skip_non_aggregate(false);//projection column is set to be runnable
+	    projections_resuls.push_value( &(i->eval()) );
+	  }
+	  result_values_to_string(projections_resuls,result);
+	  return m_sql_processing_status = Status::LIMIT_REACHED;
+        }
       }
-      while (true);
+      while (multiple_row_processing());
     }
     else
     {
-
       do
       {
-
-        number_of_tokens = getNextRow();
-        if (number_of_tokens < 0)
+	row_fetch_data();
+	columnar_fetch_where_clause_columns();
+        if(is_end_of_stream())
         {
-          return number_of_tokens;
+          return m_sql_processing_status = Status::END_OF_STREAM;
         }
 
-        m_sa->update(m_row_tokens, number_of_tokens);
+        m_processed_rows++;
+        row_update_data();
         for (auto& a : *m_s3_select->get_aliases()->get())
         {
           a.second->invalidate_cache_result();
         }
-
       }
-      while (m_where_clause && !m_where_clause->eval().is_true());
+      while (multiple_row_processing() && m_where_clause && !m_where_clause->eval().is_true() && !(m_is_limit_on && m_processed_rows == m_limit));
 
-      projections_resuls.clear();
-      for (auto& i : m_projections)
+      if(m_where_clause && !m_where_clause->eval().is_true() && m_is_limit_on && m_processed_rows == m_limit)
       {
-        projections_resuls.push_value( &(i->eval()) );
+          return m_sql_processing_status = Status::LIMIT_REACHED;
       }
-      result_values_to_string(projections_resuls,result);
-      result.append(output_delimiter);
+
+      bool found = multiple_row_processing();
+
+      if(!multiple_row_processing())
+      {
+		found = !m_where_clause || m_where_clause->eval().is_true();	
+      }
+  
+      if(found)
+      {
+	columnar_fetch_projection();
+	projections_resuls.clear();
+	for (auto& i : m_projections)
+	{
+	  projections_resuls.push_value( &(i->eval()) );
+	}
+	result_values_to_string(projections_resuls,result);
+      }
+
+    }
+    return is_end_of_stream() ? (m_sql_processing_status = Status::END_OF_STREAM) : (m_sql_processing_status = Status::NORMAL_EXIT);
+    
+  }//getMatchRow
+
+  virtual ~base_s3object() = default;
+
+}; //base_s3object
+
+//TODO config / default-value
+#define CSV_INPUT_TYPE_RESPONSE_SIZE_LIMIT (4 * 1024)
+class csv_object : public base_s3object
+{
+
+public:
+
+  class csv_defintions : public s3select_csv_definitions
+  {};
+
+  explicit csv_object(s3select* s3_query) :
+    base_s3object(s3_query),
+    m_skip_last_line(false),
+    m_extract_csv_header_info(false),
+    m_previous_line(false),
+    m_skip_first_line(false),
+    m_processed_bytes(0) {}
+
+  csv_object(s3select* s3_query, csv_defintions csv) :
+    base_s3object(s3_query),
+    m_skip_last_line(false),
+    m_extract_csv_header_info(false),
+    m_previous_line(false),
+    m_skip_first_line(false),
+    m_processed_bytes(0)
+  {
+    m_csv_defintion = csv;
+  }
+
+  csv_object():
+    base_s3object(nullptr),
+    m_skip_last_line(false),
+    m_extract_csv_header_info(false),
+    m_previous_line(false),
+    m_skip_first_line(false),
+    m_processed_bytes(0) {}
+
+  void set_csv_query(s3select* s3_query,csv_defintions csv)
+  {
+    if(m_s3_select != nullptr) 
+    {
+      //return;
     }
 
-    return number_of_tokens; //TODO wrong
+    set_base_defintions(s3_query);
+    m_csv_defintion = csv;
   }
+
+private:
+  bool m_skip_last_line;
+  std::string m_error_description;
+  char* m_stream;
+  char* m_end_stream;
+  std::vector<char*> m_row_tokens;
+  CSVParser* csv_parser;
+  bool m_extract_csv_header_info;
+  std::vector<std::string> m_csv_schema{128};
+
+  //handling arbitrary chunks (rows cut in the middle)
+  bool m_previous_line;
+  bool m_skip_first_line;
+  std::string merge_line;
+  std::string m_last_line;
+  size_t m_processed_bytes;
+  int64_t m_number_of_tokens;
+
+  std::function<int(std::string&)> fp_s3select_result_format=nullptr;
+  std::function<int(std::string&)> fp_s3select_header_format=nullptr;
+public:
+  void set_result_formatters(	std::function<int(std::string&)>& result_format, 
+				std::function<int(std::string&)>& header_format)
+  {
+	fp_s3select_result_format = result_format;
+	fp_s3select_header_format = header_format;
+  }
+private:
+  int getNextRow()
+  {
+    size_t num_of_tokens=0;
+    m_row_tokens.clear();
+
+    if (csv_parser->read_row(m_row_tokens))
+    {
+      num_of_tokens = m_row_tokens.size();
+    }
+    else
+    {
+      return -1;
+    }
+
+    return num_of_tokens;
+  }
+
+public:
+
+  std::string get_error_description()
+  {
+    return m_error_description;
+  }
+
+  virtual ~csv_object() = default;
+
+public:
+  virtual bool is_end_of_stream()
+  {
+      return m_number_of_tokens < 0;
+  }
+
+  virtual void row_fetch_data()
+  {
+        m_number_of_tokens = getNextRow();
+  }
+  
+  virtual void row_update_data()
+  {
+        m_sa->update(m_row_tokens, m_number_of_tokens);
+  }
+
 
   int extract_csv_header_info()
   {
 
     if (m_csv_defintion.ignore_header_info == true)
     {
-      while(*m_stream && (*m_stream != m_csv_defintion.row_delimiter ))
-      {
-        m_stream++;
-      }
-      m_stream++;
+      csv_parser->next_line();
     }
     else if(m_csv_defintion.use_header_info == true)
     {
@@ -2057,6 +2454,31 @@ public:
       m_error_description = "out of memory";
       return -1;
     }
+    catch(io::error::escaped_char_missing& err)
+    {
+      m_error_description = "escaped_char_missing failure while csv parsing";
+      return -1;
+    }
+	catch(io::error::escaped_string_not_closed& err)
+    {
+      m_error_description = "escaped_string_not_closed failure while csv parsing";
+      return -1;
+    }
+	catch(io::error::line_length_limit_exceeded& err)
+    {
+      m_error_description = "line_length_limit_exceeded failure while csv parsing";
+      return -1;
+    }
+	catch(io::error::with_file_name& err)
+    {
+      m_error_description = "with_file_name failure while csv parsing";
+      return -1;
+    }
+	catch(io::error::with_file_line& err)
+    {
+      m_error_description = "with_file_line failure while csv parsing";
+      return -1;
+    }
 
     return status;
   }
@@ -2064,9 +2486,10 @@ public:
 private:
   int run_s3select_on_stream_internal(std::string& result, const char* csv_stream, size_t stream_length, size_t obj_size)
   {
-    //purpose: the cv data is "streaming", it may "cut" rows in the middle, in that case the "broken-line" is stores
+    //purpose: the CSV data is "streaming", it may "cut" rows in the middle, in that case the "broken-line" is stores
     //for later, upon next chunk of data is streaming, the stored-line is merge with current broken-line, and processed.
     std::string tmp_buff;
+	
     m_processed_bytes += stream_length;
 
     m_skip_first_line = false;
@@ -2085,10 +2508,11 @@ private:
       m_previous_line = false;
       m_skip_first_line = true;
 
+      //processing the merged row (previous broken row)
       run_s3select_on_object(result, merge_line.c_str(), merge_line.length(), false, false, false);
     }
 
-    if (csv_stream[stream_length - 1] != m_csv_defintion.row_delimiter)
+    if (stream_length && csv_stream[stream_length - 1] != m_csv_defintion.row_delimiter)
     {
       //in case of "broken" last line
       char* p_obj_chunk = (char*)&(csv_stream[stream_length - 1]);
@@ -2102,21 +2526,31 @@ private:
 
       m_previous_line = true;//it means to skip last line
 
+      //cut out the broken line
+      stream_length -= (m_last_line.length());
     }
 
     return run_s3select_on_object(result, csv_stream, stream_length, m_skip_first_line, m_previous_line, (m_processed_bytes >= obj_size));
-
   }
 
 public:
   int run_s3select_on_object(std::string& result, const char* csv_stream, size_t stream_length, bool skip_first_line, bool skip_last_line, bool do_aggregate)
   {
-
-
     m_stream = (char*)csv_stream;
     m_end_stream = (char*)csv_stream + stream_length;
     m_is_to_aggregate = do_aggregate;
     m_skip_last_line = skip_last_line;
+
+    CSVParser _csv_parser("csv", m_stream, m_end_stream);
+    csv_parser = &_csv_parser;
+    csv_parser->set_csv_def(	m_csv_defintion.row_delimiter, 
+		    		m_csv_defintion.column_delimiter, 
+				m_csv_defintion.quot_char, 
+				m_csv_defintion.escape_char, 
+				m_csv_defintion.comment_empty_lines, 
+				m_csv_defintion.comment_chars, 
+				m_csv_defintion.trim_chars);
+
 
     if(m_extract_csv_header_info == false)
     {
@@ -2125,20 +2559,15 @@ public:
 
     if(skip_first_line)
     {
-      while(*m_stream && (*m_stream != m_csv_defintion.row_delimiter ))
-      {
-        m_stream++;
-      }
-      m_stream++;//TODO nicer
+      csv_parser->next_line();
     }
 
     do
     {
-
-      int num = 0;
+      m_sql_processing_status = Status::INITIAL_STAT;
       try
       {
-        num = getMatchRow(result);
+        getMatchRow(result);
       }
       catch (base_s3select_exception& e)
       {
@@ -2150,13 +2579,32 @@ public:
         }
       }
 
-      if (num < 0)
+      if(fp_s3select_result_format && fp_s3select_header_format)
+      {
+      	if (result.size() > CSV_INPUT_TYPE_RESPONSE_SIZE_LIMIT)
+      	{//there are systems that might resject the response due to its size.
+	  fp_s3select_result_format(result);
+	  fp_s3select_header_format(result);
+      	}
+      }
+
+      if (m_sql_processing_status == Status::END_OF_STREAM)
       {
         break;
       }
+      else if (m_sql_processing_status == Status::LIMIT_REACHED) // limit reached
+      {
+        break;//user should request for sql_processing_status
+      }
 
+    } while (true);
+
+    if(fp_s3select_result_format && fp_s3select_header_format)
+    {	//note: it may produce empty response(more the once)
+	//upon empty result, it should return *only* upon last call.
+	fp_s3select_result_format(result);
+	fp_s3select_header_format(result);
     }
-    while (true);
 
     return 0;
   }
@@ -2167,38 +2615,17 @@ class parquet_object : public base_s3object
 {
 
 private:
-  base_statement *m_where_clause;
-  std::vector<base_statement *> m_projections;
-  bool m_aggr_flow = false; //TODO once per query
-  bool m_is_to_aggregate;
   std::string m_error_description;
-  s3select *m_s3_select;
-  size_t m_error_count;
   parquet_file_parser* object_reader;
   parquet_file_parser::column_pos_t m_where_clause_columns;
   parquet_file_parser::column_pos_t m_projections_columns;
   std::vector<parquet_file_parser::parquet_value_t> m_predicate_values;
   std::vector<parquet_file_parser::parquet_value_t> m_projections_values;
+  bool not_to_increase_first_time;
 
 public:
 
-  void result_values_to_string(multi_values& projections_resuls, std::string& result)
-  {
-    size_t i = 0;
-
-    for(auto res : projections_resuls.values)
-    {
-      std::ostringstream quoted_result;
-      //quoted_result << std::quoted(res->to_string(),'"','\\');
-      quoted_result << res->to_string();
-      if(++i < projections_resuls.values.size()) {
-      quoted_result << ',';//TODO to use output serialization?
-      }
-      result.append(quoted_result.str());
-    }
-  }
-
-  parquet_object(std::string parquet_file_name, s3select *s3_query,s3selectEngine::rgw_s3select_api* rgw) : base_s3object(s3_query->get_scratch_area()),object_reader(nullptr)
+  parquet_object(std::string parquet_file_name, s3select *s3_query,s3selectEngine::rgw_s3select_api* rgw) : base_s3object(s3_query),object_reader(nullptr)
   {
     try{
     
@@ -2208,23 +2635,29 @@ public:
       throw base_s3select_exception(std::string("failure while processing parquet meta-data ") + std::string(e.what()) ,base_s3select_exception::s3select_exp_en_t::FATAL);
     }
 
-    set(s3_query);
-    
-    s3_query->get_scratch_area()->set_parquet_type();
-
-    load_meta_data_into_scratch_area();
-
-    for(auto x : m_s3_select->get_projections_list())
-    {
-        x->extract_columns(m_projections_columns,object_reader->get_num_of_columns());
-    }
-
-    if(m_s3_select->get_filter())
-        m_s3_select->get_filter()->extract_columns(m_where_clause_columns,object_reader->get_num_of_columns());
+    parquet_query_setting(nullptr);
   }
 
-  parquet_object() : base_s3object(nullptr),m_s3_select(nullptr),object_reader(nullptr)
+  parquet_object() : base_s3object(nullptr),object_reader(nullptr)
   {}
+
+  void parquet_query_setting(s3select *s3_query)
+  {
+    if(s3_query)
+    {
+      set_base_defintions(s3_query);
+    }
+    load_meta_data_into_scratch_area();
+    for(auto x : m_s3_select->get_projections_list())
+    {//traverse the AST and extract all columns reside in projection statement.
+        x->extract_columns(m_projections_columns,object_reader->get_num_of_columns());
+    }
+    //traverse the AST and extract all columns reside in where clause. 
+    if(m_s3_select->get_filter())
+        m_s3_select->get_filter()->extract_columns(m_where_clause_columns,object_reader->get_num_of_columns());
+
+     not_to_increase_first_time = true;
+  }
 
   ~parquet_object()
   {
@@ -2255,21 +2688,7 @@ public:
       throw base_s3select_exception(std::string("failure while processing parquet meta-data ") + std::string(e.what()) ,base_s3select_exception::s3select_exp_en_t::FATAL);
     }
 
-    set(s3_query);
-
-    m_sa = s3_query->get_scratch_area();
-    
-    s3_query->get_scratch_area()->set_parquet_type();
-
-    load_meta_data_into_scratch_area();
-
-    for(auto x : m_s3_select->get_projections_list())
-    {
-        x->extract_columns(m_projections_columns,object_reader->get_num_of_columns());
-    }
-
-    if(m_s3_select->get_filter())
-        m_s3_select->get_filter()->extract_columns(m_where_clause_columns,object_reader->get_num_of_columns());
+    parquet_query_setting(s3_query);
   }
   
 
@@ -2277,13 +2696,12 @@ public:
         std::function<int(std::string&)> fp_s3select_result_format,
         std::function<int(std::string&)> fp_s3select_header_format)
   {
-    int status = 0;
-
+	m_sql_processing_status = Status::INITIAL_STAT;
     do
     {
       try
       {
-        status = getMatchRow(result);
+        getMatchRow(result);
       }
       catch (base_s3select_exception &e)
       {
@@ -2309,27 +2727,28 @@ public:
       {//AWS-cli limits response size the following callbacks send response upon some threshold
         fp_s3select_result_format(result);
 
-        if (!is_end_of_stream())
+        if (!is_end_of_stream() && (get_sql_processing_status() != Status::LIMIT_REACHED))
         {
           fp_s3select_header_format(result);
         }
       }
       else
       {
-        if (is_end_of_stream())
+        if (is_end_of_stream() || (get_sql_processing_status() == Status::LIMIT_REACHED))
         {
           fp_s3select_result_format(result);
         }
       }
 
-      if (status < 0 || is_end_of_stream())
+      //TODO is_end_of_stream() required?
+      if (get_sql_processing_status() == Status::END_OF_STREAM || is_end_of_stream() || get_sql_processing_status() == Status::LIMIT_REACHED)
       {
         break;
       }
 
     } while (1);
 
-    return status;
+    return 0;
   }
 
   void load_meta_data_into_scratch_area()
@@ -2341,149 +2760,231 @@ public:
     }
   }
 
-  void set(s3select* s3_query) //TODO reuse code on base
-  {
-    m_s3_select = s3_query;
-    base_s3object::set(m_s3_select->get_scratch_area());
-
-    m_projections = m_s3_select->get_projections_list();
-    m_where_clause = m_s3_select->get_filter();
-
-    if (m_where_clause)
-    {
-      m_where_clause->traverse_and_apply(m_sa, m_s3_select->get_aliases());
-    }
-
-    for (auto p : m_projections)
-    {
-      p->traverse_and_apply(m_sa, m_s3_select->get_aliases());
-    }
-
-    m_aggr_flow = m_s3_select->is_aggregate_query();
-  }
-
-  bool is_end_of_stream()
+  virtual bool is_end_of_stream()
   {
     return object_reader->end_of_stream();
   }
 
-  int getMatchRow(std::string &result) //TODO virtual ? getResult
+  virtual void columnar_fetch_where_clause_columns()
   {
-
-    // get all column-references from where-clause
-    // call parquet-reader(predicate-column-positions ,&row-values)
-    // update scrach area with row-values
-    // run where (if exist) in-case its true --> parquet-reader(projections-column-positions ,&row-values)
-
-    bool next_rownum_status = true;
-    multi_values projections_resuls;
-
-    if (m_aggr_flow == true)
-    {
-      do
-      {
-        if (is_end_of_stream())
-        {
-          if (true) //(m_is_to_aggregate)
-          {
-            for (auto i : m_projections)
-            {
-              i->set_last_call();
-              i->set_skip_non_aggregate(false);//projection column is set to be runnable
-              projections_resuls.push_value( &(i->eval()) );
-            }
-	    result_values_to_string(projections_resuls,result);
-          }
-
-          return 0;
-        }
-
-        if ((*m_projections.begin())->is_set_last_call())
-        {
-          //should validate while query execution , no update upon nodes are marked with set_last_call
-          throw base_s3select_exception("on aggregation query , can not stream row data post do-aggregate call", base_s3select_exception::s3select_exp_en_t::FATAL);
-        }
-
-        //TODO if (m_where_clause)
-        object_reader->get_column_values_by_positions(m_where_clause_columns, m_predicate_values); //TODO status should indicate error/end-of-stream/success
-
-        m_sa->update(m_predicate_values, m_where_clause_columns);
-
-        for (auto a : *m_s3_select->get_aliases()->get())
-        {
-          a.second->invalidate_cache_result();
-        }
-
-        if (!m_where_clause || m_where_clause->eval().is_true())
-        {
-          object_reader->get_column_values_by_positions(m_projections_columns, m_projections_values);
-          m_sa->update(m_projections_values, m_projections_columns);
-          for (auto i : m_projections)
-          {
-            i->eval();
-          }
-        }
-
-        object_reader->increase_rownum();
-
-      } while (1);
-    }
-    else
-    {
-      if (m_where_clause)
-      {
-        do
-        {
-
-          for (auto a : *m_s3_select->get_aliases()->get())
-          {
-            a.second->invalidate_cache_result();
-          }
-
-          object_reader->get_column_values_by_positions(m_where_clause_columns, m_predicate_values); //TODO status should indicate error/end-of-stream/success
-
-          m_sa->update(m_predicate_values, m_where_clause_columns);
-
-          if (m_where_clause->eval().is_true())
-            break;
-          else
-            next_rownum_status = object_reader->increase_rownum();
-
-        } while (next_rownum_status);
-
-        if (next_rownum_status == false)
-          return 1;
-      }
-      else
-      {
-        for (auto a : *m_s3_select->get_aliases()->get())
-        {
-          a.second->invalidate_cache_result();
-        }
-      }
-
-      object_reader->get_column_values_by_positions(m_projections_columns, m_projections_values);
-      m_sa->update(m_projections_values, m_projections_columns);
-
-      for (auto i : m_projections)
-      {
-	projections_resuls.push_value( &(i->eval()) );
-      }
-      result_values_to_string(projections_resuls,result);
-      result.append("\n");//TODO not generic 
-
+    if(!not_to_increase_first_time)//for rownum=0 
       object_reader->increase_rownum();
+    else
+      not_to_increase_first_time = false;
 
-      if (is_end_of_stream())
-      {
-        return 0;
-      }
-    }
-
-    return 1; //1>0
+    auto status = object_reader->get_column_values_by_positions(m_where_clause_columns, m_predicate_values);
+    if(status<0)//TODO exception?
+      return;
+    m_sa->update(m_predicate_values, m_where_clause_columns);
   }
+
+  virtual void columnar_fetch_projection()
+  {
+    auto status = object_reader->get_column_values_by_positions(m_projections_columns, m_projections_values);
+    if(status<0)//TODO exception?
+      return;
+    m_sa->update(m_projections_values, m_projections_columns);
+  }
+
 };
 #endif //_ARROW_EXIST
+
+class json_object : public base_s3object
+{
+private:
+
+  JsonParserHandler JsonHandler;
+  size_t m_processed_bytes;
+  bool m_end_of_stream;
+  std::string* m_s3select_result = nullptr;
+  size_t m_row_count;
+  bool star_operation_ind;
+  std::string m_error_description;
+  bool m_init_json_processor_ind;
+
+public:
+
+  void init_json_processor(s3select* query)
+  {
+    if(m_init_json_processor_ind)
+	    return;
+
+    std::function<int(void)> f_sql = [this](void){auto res = sql_execution_on_row_cb();return res;};
+    std::function<int(s3selectEngine::value&, int)> 
+      f_push_to_scratch = [this](s3selectEngine::value& value,int json_var_idx){return push_into_scratch_area_cb(value,json_var_idx);};
+    std::function <int(s3selectEngine::scratch_area::json_key_value_t&)>
+      f_push_key_value_into_scratch_area_per_star_operation = [this](s3selectEngine::scratch_area::json_key_value_t& key_value)
+                {return push_key_value_into_scratch_area_per_star_operation(key_value);};
+
+    //setting the container for all json-variables, to be extracted by the json reader    
+    JsonHandler.set_statement_json_variables(query->get_json_variables_access());
+
+
+    //calling to getMatchRow. processing a single row per each call.
+    JsonHandler.set_s3select_processing_callback(f_sql);
+    //upon excat match between input-json-key-path and sql-statement-variable-path the callback pushes to scratch area 
+    JsonHandler.set_exact_match_callback(f_push_to_scratch);
+    //upon star-operation(in statemenet) the callback pushes the key-path and value into scratch-area
+    JsonHandler.set_push_per_star_operation_callback(f_push_key_value_into_scratch_area_per_star_operation);
+
+    //setting the from clause path 
+    if(query->getAction()->json_from_clause[0] == JSON_ROOT_OBJECT)
+    {
+      query->getAction()->json_from_clause.pop_back();
+    }
+    JsonHandler.set_prefix_match(query->getAction()->json_from_clause);
+
+    for (auto& p : m_projections)
+    {
+      if(p->is_statement_contain_star_operation())
+      {
+        star_operation_ind=true;
+        break;
+      }
+    }
+
+    if(star_operation_ind)
+    {
+      JsonHandler.set_star_operation();
+      //upon star-operation the key-path is extracted with the value, each key-value displayed in a seperate row.
+      //the return results end with a line contains the row-number.
+      m_csv_defintion.output_column_delimiter = m_csv_defintion.output_row_delimiter;
+    }
+
+    m_sa->set_parquet_type();//TODO json type
+    m_init_json_processor_ind = true;
+  }
+    
+  json_object(s3select* query):base_s3object(query),m_processed_bytes(0),m_end_of_stream(false),m_row_count(0),star_operation_ind(false),m_init_json_processor_ind(false)
+  {
+    init_json_processor(query);
+  }
+
+  void set_sql_result(std::string& sql_result)
+  {
+	m_s3select_result = &sql_result; 
+  }
+
+  json_object(): base_s3object(nullptr), m_processed_bytes(0),m_end_of_stream(false),m_row_count(0),star_operation_ind(false),m_init_json_processor_ind(false) {}
+
+private:
+
+  virtual bool is_end_of_stream()
+  {
+      return m_end_of_stream == true;
+  }
+
+  virtual bool multiple_row_processing()
+  {
+    return false;
+  }
+
+  int sql_execution_on_row_cb()
+  {
+      //execute statement on row 
+      //create response (TODO callback)
+
+      size_t result_len = m_s3select_result->size();
+      int status=0;
+      try{
+	getMatchRow(*m_s3select_result);
+      }
+      catch(s3selectEngine::base_s3select_exception& e)
+      {
+	sql_error_handling(e,*m_s3select_result);
+	status = -1;
+      }
+
+      if(is_sql_limit_reached()) 
+      {
+	      status = JSON_PROCESSING_LIMIT_REACHED;//returning number since sql_execution_on_row_cb is a callback; the caller can not access the object
+      }
+
+      m_sa->clear_data(); 
+      if(star_operation_ind && (m_s3select_result->size() != result_len))
+      {//as explained above the star-operation is displayed differently
+	std::string end_of_row;
+	end_of_row = "#=== " + std::to_string(m_row_count++) + " ===#\n";
+	m_s3select_result->append(end_of_row);
+      }
+      return status;
+  }
+
+  int push_into_scratch_area_cb(s3selectEngine::value& key_value, int json_var_idx)
+  {
+    //upon exact-filter match push value to scratch area with json-idx ,  it should match variable
+    //push (key path , json-var-idx , value) json-var-idx should be attached per each exact filter
+    m_sa->update_json_varible(key_value,json_var_idx);
+    return 0;
+  }
+
+  int push_key_value_into_scratch_area_per_star_operation(s3selectEngine::scratch_area::json_key_value_t& key_value)
+  {
+    m_sa->get_star_operation_cont()->push_back( key_value );
+    return 0;
+  }
+
+  void sql_error_handling(s3selectEngine::base_s3select_exception& e,std::string& result)
+  {
+    //the JsonHandler makes the call to SQL processing, upon a failure to procees the SQL statement, 
+    //the error-handling takes care of the error flow.
+    m_error_description = e.what();
+    m_error_count++;
+    m_s3select_result->append(std::to_string(m_error_count));
+    *m_s3select_result += " : ";
+    m_s3select_result->append(m_error_description);
+    *m_s3select_result += m_csv_defintion.output_row_delimiter;
+  }
+
+public:
+
+  int run_s3select_on_stream(std::string& result, const char* json_stream, size_t stream_length, size_t obj_size)
+  {
+    int status=0;
+    m_processed_bytes += stream_length;
+    set_sql_result(result);
+
+    if(!stream_length || !json_stream)//TODO m_processed_bytes(?)
+    {//last processing cycle
+      JsonHandler.process_json_buffer(0, 0, true);//TODO end-of-stream = end-of-row
+      m_end_of_stream = true;
+      sql_execution_on_row_cb();
+      return 0;
+    }
+
+    try{
+    //the handler is processing any buffer size and return results per each buffer
+      status = JsonHandler.process_json_buffer((char*)json_stream, stream_length);
+    }
+    catch(std::exception &e)
+    {
+	std::string error_description = std::string("exception while processing :") + e.what();
+	throw base_s3select_exception(error_description,base_s3select_exception::s3select_exp_en_t::FATAL);
+    }
+
+    if(status<0)
+    {
+    	std::string error_description = std::string("failure upon JSON processing");
+    	throw base_s3select_exception(error_description,base_s3select_exception::s3select_exp_en_t::FATAL);
+	return -1;
+    }
+ 
+    return status; 
+  }
+
+  void set_json_query(s3select* s3_query)
+  {
+    set_base_defintions(s3_query);
+    init_json_processor(s3_query);
+  }
+
+  std::string get_error_description()
+  {
+    return m_error_description;
+  }
+
+  ~json_object() = default;
+};
 
 }; // namespace s3selectEngine
 

@@ -41,8 +41,6 @@ struct delta_t {
   denc_coll_t coll;
   uint32_t bits = 0;
 
-  delta_t() = default;
-
   DENC(delta_t, v, p) {
     DENC_START(1, 1, p);
     denc(v.op, p);
@@ -107,7 +105,7 @@ struct CollectionNode
   coll_map_t decoded;
   delta_buffer_t delta_buffer;
 
-  CachedExtentRef duplicate_for_write() final {
+  CachedExtentRef duplicate_for_write(Transaction&) final {
     assert(delta_buffer.empty());
     return CachedExtentRef(new CollectionNode(*this));
   }
@@ -182,3 +180,7 @@ struct CollectionNode
 };
 using CollectionNodeRef = CollectionNode::CollectionNodeRef;
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<crimson::os::seastore::collection_manager::CollectionNode> : fmt::ostream_formatter {};
+#endif

@@ -5,6 +5,7 @@ if (HAVE_QATZIP)
   list(APPEND compressor_srcs QatAccel.cc)
 endif()
 add_library(compressor_objs OBJECT ${compressor_srcs})
+add_dependencies(compressor_objs common-objs)
 if(HAVE_QATZIP AND HAVE_QATDRV)
   target_link_libraries(compressor_objs PRIVATE
                         QatDrv::qat_s
@@ -31,6 +32,7 @@ if(HAVE_BROTLI)
 endif()
 
 add_library(compressor STATIC $<TARGET_OBJECTS:compressor_objs>)
+target_link_libraries(compressor PRIVATE compressor_objs)
 
 set(ceph_compressor_libs
     ceph_snappy

@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -30,31 +30,21 @@
 #include <aes_gcm.h>
 #include <aes_keyexp.h>
 
-void aes_keyexp_128_enc(uint8_t *, uint8_t *);
-void aesni_gcm128_precomp(struct gcm_data *my_ctx_data);
-void aesni_gcm256_precomp(struct gcm_data *my_ctx_data);
+void aes_keyexp_128_enc(const void *, uint8_t *);
+void aes_gcm_precomp_128(struct gcm_key_data *key_data);
+void aes_gcm_precomp_256(struct gcm_key_data *key_data);
 
-void aesni_gcm128_pre(uint8_t * key, struct gcm_data *gdata)
+void aes_gcm_pre_128(const void *key, struct gcm_key_data *key_data)
 {
-	//////
-	// Prefill the key values for each round of encrypting/decrypting
-	// Prefill the Sub Hash key values for encoding the tag
-	//////
-	aes_keyexp_128_enc(key, (uint8_t *) gdata->expanded_keys);
-	aesni_gcm128_precomp(gdata);
-
+	aes_keyexp_128_enc(key, key_data->expanded_keys);
+	aes_gcm_precomp_128(key_data);
 }
 
-void aesni_gcm256_pre(uint8_t * key, struct gcm_data *gdata)
+void aes_gcm_pre_256(const void *key, struct gcm_key_data *key_data)
 {
-	struct gcm_data tmp;
-	//////
-	// Prefill the key values for each round of encrypting/decrypting
-	// Prefill the Sub Hash key values for encoding the tag
-	//////
-	aes_keyexp_256(key, gdata->expanded_keys, tmp.expanded_keys);
-	aesni_gcm256_precomp(gdata);
-
+	uint8_t tmp_exp_key[GCM_ENC_KEY_LEN * GCM_KEY_SETS];
+	aes_keyexp_256((const uint8_t *)key, (uint8_t *) key_data->expanded_keys, tmp_exp_key);
+	aes_gcm_precomp_256(key_data);
 }
 
 struct slver {
@@ -64,8 +54,8 @@ struct slver {
 };
 
 // Version info
-struct slver aesni_gcm128_pre_slver_00000287;
-struct slver aesni_gcm128_pre_slver = { 0x0287, 0x00, 0x00 };
+struct slver aes_gcm_pre_128_slver_000002c7;
+struct slver aes_gcm_pre_128_slver = { 0x02c7, 0x00, 0x00 };
 
-struct slver aesni_gcm256_pre_slver_0000028f;
-struct slver aesni_gcm256_pre_slver = { 0x028f, 0x00, 0x00 };
+struct slver aes_gcm_pre_256_slver_000002d7;
+struct slver aes_gcm_pre_256_slver = { 0x02d7, 0x00, 0x00 };

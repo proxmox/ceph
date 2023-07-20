@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -29,10 +29,13 @@
 
 %include "md5_mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
+
+[bits 64]
 default rel
+section .text
 
 ; clobbers all XMM registers
-; clobbers all GPRs except arg1 and r8	
+; clobbers all GPRs except arg1 and r8
 
 ;; code to compute octal MD5 using SSE
 
@@ -116,8 +119,8 @@ default rel
 %define %%X %2
 %define %%Y %3
 %define %%Z %4
-        movdqa  %%F,%%Z
-        pxor    %%F,[ONES]  ; pnot     %%F
+        pcmpeqd %%F,%%F
+        pxor    %%F,%%Z  ; pnot     %%Z
         por     %%F,%%X
         pxor    %%F,%%Y
 %endmacro
@@ -174,7 +177,7 @@ default rel
 ;;
 ;; A = B +ROL32((A +MAGIC(B,C,D) +data +const), nrot)
 ;;
-; macro MD5_STEP MAGIC_FUN, A,B,C,D, A2,B2,C3,D2, FUN, TMP, FUN2, TMP2, data, 
+; macro MD5_STEP MAGIC_FUN, A,B,C,D, A2,B2,C3,D2, FUN, TMP, FUN2, TMP2, data,
 ;                MD5const, nrot
 %macro MD5_STEP 16
 %define %%MAGIC_FUN     %1
@@ -342,8 +345,9 @@ STACK_SIZE      equ     MEM + 16*8 + 8
 ; arg1 and r8 are maintained by this function
 ;
 align 32
-global md5_mb_x4x2_sse:function internal
+mk_global md5_mb_x4x2_sse, function, internal
 md5_mb_x4x2_sse:
+	endbranch
         sub     rsp, STACK_SIZE
 
         ;; Initialize digests
@@ -773,6 +777,3 @@ MD5_TABLE:
         dd      0xbd3af235, 0xbd3af235, 0xbd3af235, 0xbd3af235
         dd      0x2ad7d2bb, 0x2ad7d2bb, 0x2ad7d2bb, 0x2ad7d2bb
         dd      0xeb86d391, 0xeb86d391, 0xeb86d391, 0xeb86d391
-
-ONES:
-        dd      0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff

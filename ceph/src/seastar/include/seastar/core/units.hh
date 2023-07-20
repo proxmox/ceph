@@ -21,10 +21,17 @@
 
 #pragma once
 
+#include <cstddef>
+
 namespace seastar {
 
 static constexpr size_t KB = 1 << 10;
 static constexpr size_t MB = 1 << 20;
 static constexpr size_t GB = 1 << 30;
+
+constexpr size_t operator"" _KiB(unsigned long long n) { return n << 10; }
+constexpr size_t operator"" _MiB(unsigned long long n) { return n << 20; }
+constexpr size_t operator"" _GiB(unsigned long long n) { return n << 30; }
+constexpr size_t operator"" _TiB(unsigned long long n) { return n << 40; }
 
 }

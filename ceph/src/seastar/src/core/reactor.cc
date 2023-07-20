@@ -22,16 +22,20 @@
 #define __user /* empty */  // for xfs includes, below
 
 #include <cinttypes>
+#include <spawn.h>
 #include <sys/syscall.h>
 #include <sys/vfs.h>
 #include <sys/statfs.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/inotify.h>
+#include <sys/wait.h>
+#include <fmt/ranges.h>
 #include <seastar/core/task.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/memory.hh>
 #include <seastar/core/posix.hh>
+#include <seastar/core/sleep.hh>
 #include <seastar/net/packet.hh>
 #include <seastar/net/stack.hh>
 #include <seastar/net/posix-stack.hh>
@@ -40,7 +44,9 @@
 #include <seastar/core/print.hh>
 #include "core/scollectd-impl.hh"
 #include <seastar/util/conversions.hh>
+#include <seastar/util/process.hh>
 #include <seastar/core/loop.hh>
+#include <seastar/core/when_all.hh>
 #include <seastar/core/with_scheduling_group.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/make_task.hh>
@@ -50,9 +56,11 @@
 #include <seastar/core/thread_cputime_clock.hh>
 #include <seastar/core/abort_on_ebadf.hh>
 #include <seastar/core/io_queue.hh>
-#include <seastar/core/internal/io_desc.hh>
 #include <seastar/core/internal/buffer_allocator.hh>
+#include <seastar/core/internal/io_desc.hh>
+#include <seastar/core/internal/uname.hh>
 #include <seastar/core/scheduling_specific.hh>
+#include <seastar/core/smp_options.hh>
 #include <seastar/util/log.hh>
 #include <seastar/util/read_first_line.hh>
 #include "core/file-impl.hh"
@@ -61,8 +69,8 @@
 #include "core/thread_pool.hh"
 #include "syscall_work_queue.hh"
 #include "cgroup.hh"
-#include "uname.hh"
 #include <cassert>
+#include <cmath>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/eventfd.h>
@@ -111,7 +119,6 @@
 #include <sys/mman.h>
 #include <sys/utsname.h>
 #include <linux/falloc.h>
-#include <linux/magic.h>
 #include <seastar/util/backtrace.hh>
 #include <seastar/util/spinlock.hh>
 #include <seastar/util/print_safe.hh>
@@ -127,11 +134,13 @@
 
 #include <seastar/util/defer.hh>
 #include <seastar/core/alien.hh>
+#include <seastar/core/internal/stall_detector.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/execution_stage.hh>
 #include <seastar/core/exception_hacks.hh>
-#include "stall_detector.hh"
 #include <seastar/util/memory_diagnostics.hh>
+#include <seastar/util/internal/iovec_utils.hh>
+#include <seastar/util/internal/magic.hh>
 
 #include <yaml-cpp/yaml.h>
 
@@ -140,6 +149,10 @@
 #endif
 
 namespace seastar {
+
+static_assert(posix::shutdown_mask(SHUT_RD) == posix::rcv_shutdown);
+static_assert(posix::shutdown_mask(SHUT_WR) == posix::snd_shutdown);
+static_assert(posix::shutdown_mask(SHUT_RDWR) == (posix::snd_shutdown | posix::rcv_shutdown));
 
 struct mountpoint_params {
     std::string mountpoint = "none";
@@ -150,6 +163,7 @@ struct mountpoint_params {
     uint64_t read_saturation_length = std::numeric_limits<uint64_t>::max();
     uint64_t write_saturation_length = std::numeric_limits<uint64_t>::max();
     bool duplex = false;
+    float rate_factor = 1.0;
 };
 
 }
@@ -172,6 +186,9 @@ struct convert<seastar::mountpoint_params> {
         }
         if (node["duplex"]) {
             mp.duplex = node["duplex"].as<bool>();
+        }
+        if (node["rate_factor"]) {
+            mp.rate_factor = node["rate_factor"].as<float>();
         }
         return true;
     }
@@ -203,18 +220,24 @@ reactor::rename_priority_class(io_priority_class pc, sstring new_name) noexcept 
     return pc.rename(std::move(new_name));
 }
 
-future<> reactor::update_shares_for_queues(io_priority_class pc, uint32_t shares) {
-    return parallel_for_each(_io_queues, [pc, shares] (auto& queue) {
-        return queue.second->update_shares_for_class(pc, shares);
+void reactor::update_shares_for_queues(io_priority_class pc, uint32_t shares) {
+    for (auto&& q : _io_queues) {
+        q.second->update_shares_for_class(pc, shares);
+    }
+}
+
+future<> reactor::update_bandwidth_for_queues(io_priority_class pc, uint64_t bandwidth) {
+    return smp::invoke_on_all([pc, bandwidth = bandwidth / _num_io_groups] {
+        return parallel_for_each(engine()._io_queues, [pc, bandwidth] (auto& queue) {
+            return queue.second->update_bandwidth_for_class(pc, bandwidth);
+        });
     });
 }
 
-future<> reactor::rename_queues(io_priority_class pc, sstring new_name) noexcept {
-    return futurize_invoke([this, pc, new_name = std::move(new_name)] {
-        for (auto&& queue : _io_queues) {
-            queue.second->rename_priority_class(pc, new_name);
-        }
-    });
+void reactor::rename_queues(io_priority_class pc, sstring new_name) {
+    for (auto&& queue : _io_queues) {
+        queue.second->rename_priority_class(pc, new_name);
+    }
 }
 
 future<std::tuple<pollable_fd, socket_address>>
@@ -250,11 +273,11 @@ future<> reactor::do_connect(pollable_fd_state& pfd, socket_address& sa) {
 }
 
 future<size_t>
-reactor::do_read_some(pollable_fd_state& fd, void* buffer, size_t len) {
+reactor::do_read(pollable_fd_state& fd, void* buffer, size_t len) {
     return readable(fd).then([this, &fd, buffer, len] () mutable {
         auto r = fd.fd.read(buffer, len);
         if (!r) {
-            return do_read_some(fd, buffer, len);
+            return do_read(fd, buffer, len);
         }
         if (size_t(*r) == len) {
             fd.speculate_epoll(EPOLLIN);
@@ -283,16 +306,16 @@ reactor::do_read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) {
 }
 
 future<size_t>
-reactor::do_read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) {
+reactor::do_recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) {
     return readable(fd).then([this, &fd, iov = iov] () mutable {
         ::msghdr mh = {};
         mh.msg_iov = &iov[0];
         mh.msg_iovlen = iov.size();
         auto r = fd.fd.recvmsg(&mh, 0);
         if (!r) {
-            return do_read_some(fd, iov);
+            return do_recvmsg(fd, iov);
         }
-        if (size_t(*r) == iovec_len(iov)) {
+        if (size_t(*r) == internal::iovec_len(iov)) {
             fd.speculate_epoll(EPOLLIN);
         }
         return make_ready_future<size_t>(*r);
@@ -300,11 +323,11 @@ reactor::do_read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) {
 }
 
 future<size_t>
-reactor::do_write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
+reactor::do_send(pollable_fd_state& fd, const void* buffer, size_t len) {
     return writeable(fd).then([this, &fd, buffer, len] () mutable {
         auto r = fd.fd.send(buffer, len, MSG_NOSIGNAL);
         if (!r) {
-            return do_write_some(fd, buffer, len);
+            return do_send(fd, buffer, len);
         }
         if (size_t(*r) == len) {
             fd.speculate_epoll(EPOLLOUT);
@@ -314,7 +337,7 @@ reactor::do_write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
 }
 
 future<size_t>
-reactor::do_write_some(pollable_fd_state& fd, net::packet& p) {
+reactor::do_sendmsg(pollable_fd_state& fd, net::packet& p) {
     return writeable(fd).then([this, &fd, &p] () mutable {
         static_assert(offsetof(iovec, iov_base) == offsetof(net::fragment, base) &&
             sizeof(iovec::iov_base) == sizeof(net::fragment::base) &&
@@ -330,7 +353,7 @@ reactor::do_write_some(pollable_fd_state& fd, net::packet& p) {
         mh.msg_iovlen = std::min<size_t>(p.nr_frags(), IOV_MAX);
         auto r = fd.fd.sendmsg(&mh, MSG_NOSIGNAL);
         if (!r) {
-            return do_write_some(fd, p);
+            return do_sendmsg(fd, p);
         }
         if (size_t(*r) == p.len()) {
             fd.speculate_epoll(EPOLLOUT);
@@ -340,33 +363,50 @@ reactor::do_write_some(pollable_fd_state& fd, net::packet& p) {
 }
 
 future<>
-reactor::write_all_part(pollable_fd_state& fd, const void* buffer, size_t len, size_t completed) {
+reactor::send_all_part(pollable_fd_state& fd, const void* buffer, size_t len, size_t completed) {
     if (completed == len) {
         return make_ready_future<>();
     } else {
-        return _backend->write_some(fd, static_cast<const char*>(buffer) + completed, len - completed).then(
+        return _backend->send(fd, static_cast<const char*>(buffer) + completed, len - completed).then(
                 [&fd, buffer, len, completed, this] (size_t part) mutable {
-            return write_all_part(fd, buffer, len, completed + part);
+            return send_all_part(fd, buffer, len, completed + part);
         });
     }
 }
 
+
+future<temporary_buffer<char>>
+reactor::do_recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) {
+    return fd.readable().then([this, &fd, ba] {
+        auto buffer = ba->allocate_buffer();
+        auto r = fd.fd.recv(buffer.get_write(), buffer.size(), MSG_DONTWAIT);
+        if (!r) {
+            return do_recv_some(fd, ba);
+        }
+        if (size_t(*r) == buffer.size()) {
+            fd.speculate_epoll(EPOLLIN);
+        }
+        buffer.trim(*r);
+        return make_ready_future<temporary_buffer<char>>(std::move(buffer));
+    });
+}
+
 future<>
-reactor::write_all(pollable_fd_state& fd, const void* buffer, size_t len) {
+reactor::send_all(pollable_fd_state& fd, const void* buffer, size_t len) {
     assert(len);
-    return write_all_part(fd, buffer, len, 0);
+    return send_all_part(fd, buffer, len, 0);
 }
 
 future<size_t> pollable_fd_state::read_some(char* buffer, size_t size) {
-    return engine()._backend->read_some(*this, buffer, size);
+    return engine()._backend->read(*this, buffer, size);
 }
 
 future<size_t> pollable_fd_state::read_some(uint8_t* buffer, size_t size) {
-    return engine()._backend->read_some(*this, buffer, size);
+    return engine()._backend->read(*this, buffer, size);
 }
 
 future<size_t> pollable_fd_state::read_some(const std::vector<iovec>& iov) {
-    return engine()._backend->read_some(*this, iov);
+    return engine()._backend->recvmsg(*this, iov);
 }
 
 future<temporary_buffer<char>> pollable_fd_state::read_some(internal::buffer_allocator* ba) {
@@ -374,15 +414,15 @@ future<temporary_buffer<char>> pollable_fd_state::read_some(internal::buffer_all
 }
 
 future<size_t> pollable_fd_state::write_some(net::packet& p) {
-    return engine()._backend->write_some(*this, p);
+    return engine()._backend->sendmsg(*this, p);
 }
 
 future<> pollable_fd_state::write_all(const char* buffer, size_t size) {
-    return engine().write_all(*this, buffer, size);
+    return engine().send_all(*this, buffer, size);
 }
 
 future<> pollable_fd_state::write_all(const uint8_t* buffer, size_t size) {
-    return engine().write_all(*this, buffer, size);
+    return engine().send_all(*this, buffer, size);
 }
 
 future<> pollable_fd_state::write_all(net::packet& p) {
@@ -403,18 +443,12 @@ future<> pollable_fd_state::writeable() {
     return engine().writeable(*this);
 }
 
+future<> pollable_fd_state::poll_rdhup() {
+    return engine().poll_rdhup(*this);
+}
+
 future<> pollable_fd_state::readable_or_writeable() {
     return engine().readable_or_writeable(*this);
-}
-
-void
-pollable_fd_state::abort_reader() {
-    engine().abort_reader(*this);
-}
-
-void
-pollable_fd_state::abort_writer() {
-    engine().abort_writer(*this);
 }
 
 future<std::tuple<pollable_fd, socket_address>> pollable_fd_state::accept() {
@@ -423,6 +457,11 @@ future<std::tuple<pollable_fd, socket_address>> pollable_fd_state::accept() {
 
 future<> pollable_fd_state::connect(socket_address& sa) {
     return engine()._backend->connect(*this, sa);
+}
+
+future<temporary_buffer<char>> pollable_fd_state::recv_some(internal::buffer_allocator* ba) {
+    maybe_no_more_recv();
+    return engine()._backend->recv_some(*this, ba);
 }
 
 future<size_t> pollable_fd_state::recvmsg(struct msghdr *msg) {
@@ -442,7 +481,7 @@ future<size_t> pollable_fd_state::recvmsg(struct msghdr *msg) {
         speculate_epoll(EPOLLIN);
         return make_ready_future<size_t>(*r);
     });
-};
+}
 
 future<size_t> pollable_fd_state::sendmsg(struct msghdr* msg) {
     maybe_no_more_send();
@@ -454,7 +493,7 @@ future<size_t> pollable_fd_state::sendmsg(struct msghdr* msg) {
         // For UDP this will always speculate. We can't know if there's room
         // or not, but most of the time there should be so the cost of mis-
         // speculation is amortized.
-        if (size_t(*r) == iovec_len(msg->msg_iov, msg->msg_iovlen)) {
+        if (size_t(*r) == internal::iovec_len(msg->msg_iov, msg->msg_iovlen)) {
             speculate_epoll(EPOLLOUT);
         }
         return make_ready_future<size_t>(*r);
@@ -524,20 +563,16 @@ namespace fs = std::filesystem;
 
 using namespace net;
 
-using namespace internal;
 using namespace internal::linux_abi;
 
-std::atomic<lowres_clock_impl::steady_rep> lowres_clock_impl::counters::_steady_now;
-std::atomic<lowres_clock_impl::system_rep> lowres_clock_impl::counters::_system_now;
 std::atomic<manual_clock::rep> manual_clock::_now;
-constexpr std::chrono::milliseconds lowres_clock_impl::_granularity;
 
 constexpr unsigned reactor::max_queues;
 constexpr unsigned reactor::max_aio_per_queue;
 
 // Base version where this works; some filesystems were only fixed later, so
 // this value is mixed in with filesystem-provided values later.
-bool aio_nowait_supported = kernel_uname().whitelisted({"4.13"});
+bool aio_nowait_supported = internal::kernel_uname().whitelisted({"4.13"});
 
 static bool sched_debug() {
     return false;
@@ -567,21 +602,9 @@ timespec to_timespec(steady_clock_type::time_point t) {
     return { n / 1'000'000'000, n % 1'000'000'000 };
 }
 
-lowres_clock_impl::lowres_clock_impl() {
-    update();
-    _timer.set_callback(&lowres_clock_impl::update);
-    _timer.arm_periodic(_granularity);
-}
-
-void lowres_clock_impl::update() noexcept {
-    auto const steady_count =
-            std::chrono::duration_cast<steady_duration>(base_steady_clock::now().time_since_epoch()).count();
-
-    auto const system_count =
-            std::chrono::duration_cast<system_duration>(base_system_clock::now().time_since_epoch()).count();
-
-    counters::_steady_now.store(steady_count, std::memory_order_relaxed);
-    counters::_system_now.store(system_count, std::memory_order_relaxed);
+void lowres_clock::update() noexcept {
+    lowres_clock::_now = lowres_clock::time_point(std::chrono::steady_clock::now().time_since_epoch());
+    lowres_system_clock::_now = lowres_system_clock::time_point(std::chrono::system_clock::now().time_since_epoch());
 }
 
 template <typename Clock>
@@ -696,23 +719,6 @@ void reactor::signals::failed_to_handle(int signo) {
 
 void reactor::handle_signal(int signo, noncopyable_function<void ()>&& handler) {
     _signals.handle_signal(signo, std::move(handler));
-}
-
-// Fills a buffer with a hexadecimal representation of an integer
-// and returns a pointer to the first character.
-// For example, convert_hex_safe(buf, 4, uint16_t(12)) fills the buffer with "   c".
-template<typename Integral>
-SEASTAR_CONCEPT( requires std::is_integral_v<Integral> )
-char* convert_hex_safe(char *buf, size_t bufsz, Integral n) noexcept {
-    const char *digits = "0123456789abcdef";
-    memset(buf, ' ', bufsz);
-    auto* p = buf + bufsz;
-    do {
-        assert(p > buf);
-        *--p = digits[n & 0xf];
-        n >>= 4;
-    } while (n);
-    return p;
 }
 
 // Accumulates an in-memory backtrace and flush to stderr eventually.
@@ -831,7 +837,7 @@ reactor::task_queue::task_queue(unsigned id, sstring name, float shares)
         , _reciprocal_shares_times_2_power_32((uint64_t(1) << 32) / _shares)
         , _id(id)
         , _ts(now())
-        , _name(name) {
+        , _name(std::move(name)) {
     register_stats();
 }
 
@@ -863,7 +869,7 @@ reactor::task_queue::register_stats() {
         sm::make_gauge("shares", [this] { return _shares; },
                 sm::description("Shares allocated to this queue"),
                 {group_label}),
-        sm::make_derive("time_spent_on_task_quota_violations_ms", [this] {
+        sm::make_counter("time_spent_on_task_quota_violations_ms", [this] {
                 return _time_spent_on_task_quota_violations / 1ms;
         }, sm::description("Total amount in milliseconds we were in violation of the task quota"),
            {group_label}),
@@ -931,7 +937,7 @@ reactor::reactor(std::shared_ptr<smp> smp, alien::instance& alien, unsigned id, 
     , _engine_thread(sched::thread::current())
 #endif
     , _cpu_started(0)
-    , _cpu_stall_detector(make_cpu_stall_detector())
+    , _cpu_stall_detector(internal::make_cpu_stall_detector())
     , _reuseport(posix_reuseport_detect())
     , _thread_pool(std::make_unique<thread_pool>(this, seastar::format("syscall-{}", id))) {
     /*
@@ -953,7 +959,7 @@ reactor::reactor(std::shared_ptr<smp> smp, alien::instance& alien, unsigned id, 
 #else
     sigset_t mask;
     sigemptyset(&mask);
-    sigaddset(&mask, cpu_stall_detector::signal_number());
+    sigaddset(&mask, internal::cpu_stall_detector::signal_number());
     auto r = ::pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
     assert(r == 0);
 #endif
@@ -967,7 +973,7 @@ reactor::reactor(std::shared_ptr<smp> smp, alien::instance& alien, unsigned id, 
 reactor::~reactor() {
     sigset_t mask;
     sigemptyset(&mask);
-    sigaddset(&mask, cpu_stall_detector::signal_number());
+    sigaddset(&mask, internal::cpu_stall_detector::signal_number());
     auto r = ::pthread_sigmask(SIG_BLOCK, &mask, NULL);
     assert(r == 0);
 
@@ -1021,20 +1027,8 @@ future<> reactor::readable_or_writeable(pollable_fd_state& fd) {
     return _backend->readable_or_writeable(fd);
 }
 
-void reactor::abort_reader(pollable_fd_state& fd) {
-    // TCP will respond to shutdown(SHUT_RD) by returning ECONNABORT on the next read,
-    // but UDP responds by returning AGAIN. The no_more_recv flag tells us to convert
-    // EAGAIN to ECONNABORT in that case.
-    fd.no_more_recv = true;
-    return fd.fd.shutdown(SHUT_RD);
-}
-
-void reactor::abort_writer(pollable_fd_state& fd) {
-    // TCP will respond to shutdown(SHUT_WR) by returning ECONNABORT on the next write,
-    // but UDP responds by returning AGAIN. The no_more_recv flag tells us to convert
-    // EAGAIN to ECONNABORT in that case.
-    fd.no_more_send = true;
-    return fd.fd.shutdown(SHUT_WR);
+future<> reactor::poll_rdhup(pollable_fd_state& fd) {
+    return _backend->poll_rdhup(fd);
 }
 
 void reactor::set_strict_dma(bool value) {
@@ -1059,6 +1053,8 @@ void reactor::start_handling_signal() {
     return _backend->start_handling_signal();
 }
 
+namespace internal {
+
 cpu_stall_detector::cpu_stall_detector(cpu_stall_detector_config cfg)
         : _shard_id(this_shard_id()) {
     // glib's backtrace() calls dlopen("libgcc_s.so.1") once to resolve unwind related symbols.
@@ -1071,7 +1067,7 @@ cpu_stall_detector::cpu_stall_detector(cpu_stall_detector_config cfg)
     namespace sm = seastar::metrics;
 
     _metrics.add_group("stall_detector", {
-            sm::make_derive("reported", _total_reported, sm::description("Total number of reported stalls, look in the traces for the exact reason"))});
+            sm::make_counter("reported", _total_reported, sm::description("Total number of reported stalls, look in the traces for the exact reason"))});
 
     // note: if something is added here that can, it should take care to destroy _timer.
 }
@@ -1116,14 +1112,17 @@ void cpu_stall_detector::maybe_report() {
 //
 // We can do it a cheaper if we don't report suppressed backtraces.
 void cpu_stall_detector::on_signal() {
-    if (reap_event_and_check_spuriousness()) {
-        return;
-    }
     auto tasks_processed = engine().tasks_processed();
     auto last_seen = _last_tasks_processed_seen.load(std::memory_order_relaxed);
     if (!last_seen) {
         return; // stall detector in not active
-    } else if (last_seen == tasks_processed) { // no task was processed - report
+    } else if (last_seen == tasks_processed) {
+        // we defer to the check of spuriousness to inside this unlikely condition
+        // since the check itself can be costly, involving a syscall (reactor::now())
+        if (is_spurious_signal()) {
+            return;
+        }
+        // no task was processed - report unless supressed
         maybe_report();
         _report_at <<= 1;
     } else {
@@ -1146,9 +1145,14 @@ void cpu_stall_detector::report_suppressions(sched_clock::time_point now) {
             buf.append("\n");
             buf.flush();
         }
-        _reported = 0;
-        _minute_mark = now;
+        reset_suppression_state(now);
     }
+}
+
+void
+cpu_stall_detector::reset_suppression_state(sched_clock::time_point now) {
+    _reported = 0;
+    _minute_mark = now;
 }
 
 void cpu_stall_detector_posix_timer::arm_timer() {
@@ -1204,11 +1208,27 @@ cpu_stall_detector_linux_perf_event::~cpu_stall_detector_linux_perf_event() {
 
 void
 cpu_stall_detector_linux_perf_event::arm_timer() {
-    uint64_t ns = (_threshold * _report_at + _slack) / 1ns;
-    if (_enabled && _current_period == ns) [[likely]] {
+    auto period = _threshold * _report_at + _slack;
+    uint64_t ns =  period / 1ns;
+    _next_signal_time = reactor::now() + period;
+    
+    // clear out any existing records in the ring buffer, so when we get interrupted next time
+    // we have only the stack associated with that interrupt, and so we don't overflow.
+    data_area_reader(*this).skip_all();
+    if (__builtin_expect(_enabled && _current_period == ns, 1)) {
         // Common case - we're re-arming with the same period, the counter
         // is already enabled.
-        _fd.ioctl(PERF_EVENT_IOC_RESET, 0);
+
+        // We want to set the next interrupt to ns from now, and somewhat oddly the
+        // way to do this is PERF_EVENT_IOC_PERIOD, even with the same period as
+        // already configured, see the code at:
+        //
+        // https://elixir.bootlin.com/linux/v5.15.86/source/kernel/events/core.c#L5636
+        //
+        // Ths change is intentional: kernel commit bad7192b842c83e580747ca57104dd51fe08c223
+        // so we can resumably rely on it.
+        _fd.ioctl(PERF_EVENT_IOC_PERIOD, ns);
+
     } else {
         // Uncommon case - we're moving from disabled to enabled, or changing
         // the period. Issue more calls and be careful.
@@ -1228,12 +1248,12 @@ cpu_stall_detector_linux_perf_event::start_sleep() {
 }
 
 bool
-cpu_stall_detector_linux_perf_event::reap_event_and_check_spuriousness() {
-    struct read_format {
-        uint64_t value;
-    } buf;
-    _fd.read(&buf, sizeof(read_format));
-    return buf.value < _current_period;
+cpu_stall_detector_linux_perf_event::is_spurious_signal() {
+    // If the current time is before the expected signal time, it is
+    // probably a spurious signal. One reason this could occur is that
+    // PERF_EVENT_IOC_PERIOD does not reset the current overflow point
+    // on kernels prior to 3.14 (or 3.7 on Arm).
+    return reactor::now() < _next_signal_time;
 }
 
 void
@@ -1276,7 +1296,7 @@ cpu_stall_detector_linux_perf_event::try_make(cpu_stall_detector_config cfg) {
         .wakeup_events = 1,
     };
     unsigned long flags = 0;
-    if (kernel_uname().whitelisted({"3.14"})) {
+    if (internal::kernel_uname().whitelisted({"3.14"})) {
         flags |= PERF_FLAG_FD_CLOEXEC;
     }
     int fd = perf_event_open(&pea, 0, -1, -1, flags);
@@ -1308,8 +1328,7 @@ cpu_stall_detector_linux_perf_event::try_make(cpu_stall_detector_config cfg) {
 }
 
 
-std::unique_ptr<cpu_stall_detector>
-internal::make_cpu_stall_detector(cpu_stall_detector_config cfg) {
+std::unique_ptr<cpu_stall_detector> make_cpu_stall_detector(cpu_stall_detector_config cfg) {
     try {
         return cpu_stall_detector_linux_perf_event::try_make(cfg);
     } catch (...) {
@@ -1317,6 +1336,25 @@ internal::make_cpu_stall_detector(cpu_stall_detector_config cfg) {
         return std::make_unique<cpu_stall_detector_posix_timer>(cfg);
     }
 }
+
+void cpu_stall_detector::generate_trace() {
+    auto delta = reactor::now() - _run_started_at;
+
+    _total_reported++;
+    if (_config.report) {
+        _config.report();
+        return;
+    }
+
+    backtrace_buffer buf;
+    buf.append("Reactor stalled for ");
+    buf.append_decimal(uint64_t(delta / 1ms));
+    buf.append(" ms");
+    print_with_backtrace(buf, _config.oneline);
+    maybe_report_kernel_trace();
+}
+
+} // internal namespace
 
 void
 reactor::update_blocked_reactor_notify_ms(std::chrono::milliseconds ms) {
@@ -1339,6 +1377,7 @@ reactor::set_stall_detector_report_function(std::function<void ()> report) {
     auto cfg = _cpu_stall_detector->get_config();
     cfg.report = std::move(report);
     _cpu_stall_detector->update_config(std::move(cfg));
+    _cpu_stall_detector->reset_suppression_state(reactor::now());
 }
 
 std::function<void ()>
@@ -1349,24 +1388,6 @@ reactor::get_stall_detector_report_function() const {
 void
 reactor::block_notifier(int) {
     engine()._cpu_stall_detector->on_signal();
-}
-
-void
-cpu_stall_detector::generate_trace() {
-    auto delta = reactor::now() - _run_started_at;
-
-    _total_reported++;
-    if (_config.report) {
-        _config.report();
-        return;
-    }
-
-    backtrace_buffer buf;
-    buf.append("Reactor stalled for ");
-    buf.append_decimal(uint64_t(delta / 1ms));
-    buf.append(" ms");
-    print_with_backtrace(buf, _config.oneline);
-    maybe_report_kernel_trace();
 }
 
 template <typename T, typename E, typename EnableFunc>
@@ -1451,7 +1472,7 @@ void reactor::configure(const reactor_options& opts) {
     _task_quota = std::chrono::duration_cast<sched_clock::duration>(task_quota);
 
     auto blocked_time = opts.blocked_reactor_notify_ms.get_value() * 1ms;
-    cpu_stall_detector_config csdc;
+    internal::cpu_stall_detector_config csdc;
     csdc.threshold = blocked_time;
     csdc.stall_detector_reports_per_minute = opts.blocked_reactor_reports_per_minute.get_value();
     csdc.oneline = opts.blocked_reactor_report_format_oneline.get_value();
@@ -1531,13 +1552,13 @@ reactor::posix_reuseport_detect() {
 }
 
 void pollable_fd_state::maybe_no_more_recv() {
-    if (no_more_recv) {
+    if (shutdown_mask & posix::rcv_shutdown) {
         throw std::system_error(std::error_code(ECONNABORTED, std::system_category()));
     }
 }
 
 void pollable_fd_state::maybe_no_more_send() {
-    if (no_more_send) {
+    if (shutdown_mask & posix::snd_shutdown) {
         throw std::system_error(std::error_code(ECONNABORTED, std::system_category()));
     }
 }
@@ -1556,13 +1577,20 @@ pollable_fd::pollable_fd(file_desc fd, pollable_fd::speculation speculate)
     : _s(engine()._backend->make_pollable_fd_state(std::move(fd), speculate))
 {}
 
-void pollable_fd::shutdown(int how) {
+void pollable_fd::shutdown(int how, shutdown_kernel_only kernel_only) {
+    if (!kernel_only) {
+        // TCP will respond to shutdown() by returning ECONNABORT on the next IO,
+        // but UDP responds by returning AGAIN. The shutdown_mask tells us to convert
+        // EAGAIN to ECONNABORT in that case.
+        _s->shutdown_mask |= posix::shutdown_mask(how);
+    }
     engine()._backend->shutdown(*_s, how);
 }
 
 pollable_fd
 reactor::make_pollable_fd(socket_address sa, int proto) {
-    file_desc fd = file_desc::socket(sa.u.sa.sa_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, proto);
+    int maybe_nonblock = _backend->do_blocking_io() ? 0 : SOCK_NONBLOCK;
+    file_desc fd = file_desc::socket(sa.u.sa.sa_family, SOCK_STREAM | maybe_nonblock | SOCK_CLOEXEC, proto);
     return pollable_fd(std::move(fd));
 }
 
@@ -1603,40 +1631,6 @@ reactor::connect(socket_address sa) {
 future<connected_socket>
 reactor::connect(socket_address sa, socket_address local, transport proto) {
     return _network_stack->connect(sa, local, proto);
-}
-
-sstring io_request::opname() const {
-    switch (_op) {
-    case io_request::operation::fdatasync:
-        return "fdatasync";
-    case io_request::operation::write:
-        return "write";
-    case io_request::operation::writev:
-        return "vectored write";
-    case io_request::operation::read:
-        return "read";
-    case io_request::operation::readv:
-        return "vectored read";
-    case io_request::operation::recv:
-        return "recv";
-    case io_request::operation::recvmsg:
-        return "recvmsg";
-    case io_request::operation::send:
-        return "send";
-    case io_request::operation::sendmsg:
-        return "sendmsg";
-    case io_request::operation::accept:
-        return "accept";
-    case io_request::operation::connect:
-        return "connect";
-    case io_request::operation::poll_add:
-        return "poll add";
-    case io_request::operation::poll_remove:
-        return "poll remove";
-    case io_request::operation::cancel:
-        return "cancel";
-    }
-    std::abort();
 }
 
 void io_completion::complete_with(ssize_t res) {
@@ -1686,27 +1680,13 @@ const io_priority_class& default_priority_class() {
     return shard_default_class;
 }
 
-future<size_t>
-reactor::submit_io_read(io_queue* ioq, const io_priority_class& pc, size_t len, io_request req, io_intent* intent) noexcept {
-    ++_io_stats.aio_reads;
-    _io_stats.aio_read_bytes += len;
-    return ioq->queue_request(pc, len, std::move(req), intent);
-}
-
-future<size_t>
-reactor::submit_io_write(io_queue* ioq, const io_priority_class& pc, size_t len, io_request req, io_intent* intent) noexcept {
-    ++_io_stats.aio_writes;
-    _io_stats.aio_write_bytes += len;
-    return ioq->queue_request(pc, len, std::move(req), intent);
-}
-
 namespace internal {
 
 size_t sanitize_iovecs(std::vector<iovec>& iov, size_t disk_alignment) noexcept {
     if (iov.size() > IOV_MAX) {
         iov.resize(IOV_MAX);
     }
-    auto length = boost::accumulate(iov | boost::adaptors::transformed(std::mem_fn(&iovec::iov_len)), size_t(0));
+    auto length = iovec_len(iov);
     while (auto rest = length & (disk_alignment - 1)) {
         if (iov.back().iov_len <= rest) {
             length -= iov.back().iov_len;
@@ -1739,7 +1719,7 @@ reactor::open_file_dma(std::string_view nameref, open_flags flags, file_open_opt
                 if (r == -1) {
                     return false;
                 }
-                return buf.f_type == 0x01021994; // TMPFS_MAGIC
+                return buf.f_type == internal::fs_magic::tmpfs;
             };
             open_flags |= O_CLOEXEC;
             if (bypass_fsync) {
@@ -1757,19 +1737,23 @@ reactor::open_file_dma(std::string_view nameref, open_flags flags, file_open_opt
                 ::close(fd);
                 return maybe_ret;
             }
-            if (fd != -1) {
+            if (fd != -1 && options.extent_allocation_size_hint && !_kernel_page_cache) {
                 fsxattr attr = {};
+                int r = ::ioctl(fd, XFS_IOC_FSGETXATTR, &attr);
                 // xfs delayed allocation is disabled when extent size hints are present.
                 // This causes tons of xfs log fsyncs. Given that extent size hints are
                 // unneeded when delayed allocation is available (which is the case
                 // when not using O_DIRECT), disable them.
-                if (options.extent_allocation_size_hint && !_kernel_page_cache) {
+                //
+                // Ignore error; may be !xfs, and just a hint anyway
+                if (r != -1) {
                     attr.fsx_xflags |= XFS_XFLAG_EXTSIZE;
                     attr.fsx_extsize = std::min(options.extent_allocation_size_hint,
                                         file_open_options::max_extent_allocation_size_hint);
+
+                    // Ignore error; may be !xfs, and just a hint anyway
+                    ::ioctl(fd, XFS_IOC_FSSETXATTR, &attr);
                 }
-                // Ignore error; may be !xfs, and just a hint anyway
-                ::ioctl(fd, XFS_IOC_FSSETXATTR, &attr);
             }
             return wrap_syscall<int>(fd);
         }).then([&options, name = std::move(name), &open_flags] (syscall_result<int> sr) {
@@ -1923,6 +1907,183 @@ reactor::inotify_add_watch(int fd, std::string_view path, uint32_t flags) {
     });
 }
 
+future<std::tuple<file_desc, file_desc>>
+reactor::make_pipe() {
+    return do_with(std::array<int, 2>{}, [this] (auto& pipe) {
+        return _thread_pool->submit<syscall_result<int>>([&pipe] {
+            return wrap_syscall<int>(::pipe2(pipe.data(), O_NONBLOCK));
+        }).then([&pipe] (syscall_result<int> ret) {
+            ret.throw_if_error();
+            return make_ready_future<std::tuple<file_desc, file_desc>>(file_desc::from_fd(pipe[0]),
+                                                                       file_desc::from_fd(pipe[1]));
+        });
+    });
+}
+
+future<std::tuple<pid_t, file_desc, file_desc, file_desc>>
+reactor::spawn(std::string_view pathname,
+               std::vector<sstring> argv,
+               std::vector<sstring> env) {
+    return when_all_succeed(make_pipe(),
+                            make_pipe(),
+                            make_pipe()).then_unpack([pathname = sstring(pathname),
+                                                      argv = std::move(argv),
+                                                      env = std::move(env), this] (std::tuple<file_desc, file_desc> cin_pipe,
+                                                                                   std::tuple<file_desc, file_desc> cout_pipe,
+                                                                                   std::tuple<file_desc, file_desc> cerr_pipe) mutable {
+        return do_with(pid_t{},
+                       std::move(cin_pipe),
+                       std::move(cout_pipe),
+                       std::move(cerr_pipe),
+                       std::move(pathname),
+                       posix_spawn_file_actions_t{},
+                       posix_spawnattr_t{},
+                       std::move(argv),
+                       std::move(env),
+                       [this](auto& child_pid, auto& cin_pipe, auto& cout_pipe, auto& cerr_pipe, auto& pathname, auto& actions, auto& attr, auto& argv, auto& env) {
+            static constexpr int pipefd_read_end = 0;
+            static constexpr int pipefd_write_end = 1;
+            // Allocating memory for spawn {file actions,attributes} objects can throw, hence the futurize_invoke
+            return futurize_invoke([&child_pid, &cin_pipe, &cout_pipe, &cerr_pipe, &pathname, &actions, &attr, &argv, &env, this] {
+                // the args and envs parameters passed to posix_spawn() should be array of pointers, and
+                // the last one should be a null pointer.
+                std::vector<const char*> argvp;
+                std::transform(argv.cbegin(), argv.cend(), std::back_inserter(argvp),
+                               [](auto& s) { return s.c_str(); });
+                argvp.push_back(nullptr);
+
+                std::vector<const char*> envp;
+                std::transform(env.cbegin(), env.cend(), std::back_inserter(envp),
+                               [](auto& s) { return s.c_str(); });
+                envp.push_back(nullptr);
+
+                int r = 0;
+                r = ::posix_spawn_file_actions_init(&actions);
+                throw_pthread_error(r);
+                // the child process does not write to stdin
+                std::get<pipefd_write_end>(cin_pipe).spawn_actions_add_close(&actions);
+                // the child process does not read from stdout
+                std::get<pipefd_read_end>(cout_pipe).spawn_actions_add_close(&actions);
+                // the child process does not read from stderr
+                std::get<pipefd_read_end>(cerr_pipe).spawn_actions_add_close(&actions);
+                // redirect stdin, stdout and stderr to cin_pipe, cout_pipe and cerr_pipe respectively
+                std::get<pipefd_read_end>(cin_pipe).spawn_actions_add_dup2(&actions, STDIN_FILENO);
+                std::get<pipefd_write_end>(cout_pipe).spawn_actions_add_dup2(&actions, STDOUT_FILENO);
+                std::get<pipefd_write_end>(cerr_pipe).spawn_actions_add_dup2(&actions, STDERR_FILENO);
+                // after dup2() the interesting ends of pipes, close them
+                std::get<pipefd_read_end>(cin_pipe).spawn_actions_add_close(&actions);
+                std::get<pipefd_write_end>(cout_pipe).spawn_actions_add_close(&actions);
+                std::get<pipefd_write_end>(cerr_pipe).spawn_actions_add_close(&actions);
+                r = ::posix_spawnattr_init(&attr);
+                throw_pthread_error(r);
+                // make sure the following signals are not ignored by the child process
+                sigset_t default_signals;
+                sigemptyset(&default_signals);
+                sigaddset(&default_signals, SIGINT);
+                sigaddset(&default_signals, SIGTERM);
+                r = ::posix_spawnattr_setsigdefault(&attr, &default_signals);
+                throw_pthread_error(r);
+                // make sure no signals are marked in the child process
+                sigset_t mask_signals;
+                sigemptyset(&mask_signals);
+                r = ::posix_spawnattr_setsigmask(&attr, &mask_signals);
+                throw_pthread_error(r);
+                r = ::posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+                throw_pthread_error(r);
+
+                return _thread_pool->submit<syscall_result<int>>([&child_pid, &pathname, &actions, &attr,
+                                                                  argv = std::move(argvp),
+                                                                  env =  std::move(envp)] {
+                    return wrap_syscall<int>(::posix_spawn(&child_pid, pathname.c_str(), &actions, &attr,
+                                                           const_cast<char* const *>(argv.data()),
+                                                           const_cast<char* const *>(env.data())));
+            });
+        }).finally([&actions, &attr] {
+            posix_spawn_file_actions_destroy(&actions);
+            posix_spawnattr_destroy(&attr);
+        }).then([&child_pid, &cin_pipe, &cout_pipe, &cerr_pipe] (syscall_result<int> ret) {
+            throw_pthread_error(ret.result);
+            return make_ready_future<std::tuple<pid_t, file_desc, file_desc, file_desc>>(
+                    child_pid,
+                    std::get<pipefd_write_end>(std::move(cin_pipe)),
+                    std::get<pipefd_read_end>(std::move(cout_pipe)),
+                    std::get<pipefd_read_end>(std::move(cerr_pipe)));
+            });
+        });
+    });
+}
+
+static auto next_waitpid_timeout(std::chrono::milliseconds this_timeout) {
+    static const std::chrono::milliseconds step_timeout(20);
+    static const std::chrono::milliseconds max_timeout(1000);
+    if (this_timeout >= max_timeout) {
+        return max_timeout;
+    }
+    return this_timeout + step_timeout;
+}
+
+#ifndef __NR_pidfd_open
+
+#  if defined(__alpha__)
+#    define __NR_pidfd_open 544
+#  else
+#    define __NR_pidfd_open 434
+#  endif
+
+#endif
+
+future<int> reactor::waitpid(pid_t pid) {
+    return _thread_pool->submit<syscall_result<int>>([pid] {
+        return wrap_syscall<int>(syscall(__NR_pidfd_open, pid, O_NONBLOCK));
+    }).then([pid, this] (syscall_result<int> pidfd) {
+        if (pidfd.result == -1) {
+            // pidfd_open() was introduced in linux 5.3, so the pidfd.error could be ENOSYS on
+            // older kernels. But it could be other error like EMFILE or ENFILE. anyway, we
+            // should always waitpid().
+            return do_with(int{}, std::chrono::milliseconds(0), [pid, this](int& wstatus,
+                                                                            std::chrono::milliseconds& wait_timeout) {
+                return repeat_until_value([this,
+                                           pid,
+                                           &wstatus,
+                                           &wait_timeout] {
+                    return _thread_pool->submit<syscall_result<pid_t>>([pid, &wstatus] {
+                        return wrap_syscall<pid_t>(::waitpid(pid, &wstatus, WNOHANG));
+                    }).then([&wstatus, &wait_timeout] (syscall_result<pid_t> ret) mutable {
+                        if (ret.result == 0) {
+                            wait_timeout = next_waitpid_timeout(wait_timeout);
+                            return ::seastar::sleep(wait_timeout).then([] {
+                                return make_ready_future<std::optional<int>>();
+                            });
+                        } else if (ret.result > 0) {
+                            return make_ready_future<std::optional<int>>(wstatus);
+                        } else {
+                            ret.throw_if_error();
+                            return make_ready_future<std::optional<int>>(-1);
+                        }
+                    });
+                });
+            });
+        } else {
+            return do_with(pollable_fd(file_desc::from_fd(pidfd.result)), int{}, [pid, this](auto& pidfd, int& wstatus) {
+                return pidfd.readable().then([pid, &wstatus, this] {
+                    return _thread_pool->submit<syscall_result<pid_t>>([pid, &wstatus] {
+                        return wrap_syscall<pid_t>(::waitpid(pid, &wstatus, WNOHANG));
+                    });
+                }).then([&wstatus] (syscall_result<pid_t> ret) {
+                    ret.throw_if_error();
+                    assert(ret.result > 0);
+                    return make_ready_future<int>(wstatus);
+                });
+            });
+        }
+    });
+}
+
+void reactor::kill(pid_t pid, int sig) {
+    auto ret = wrap_syscall<int>(::kill(pid, sig));
+    ret.throw_if_error();
+}
+
 future<stat_data>
 reactor::file_stat(std::string_view pathname, follow_symlink follow) noexcept {
     // Allocating memory for a sstring can throw, hence the futurize_invoke
@@ -1994,13 +2155,13 @@ reactor::file_system_at(std::string_view pathname) noexcept {
             return wrap_syscall(ret, st);
         }).then([pathname = sstring(pathname)] (syscall_result_extra<struct statfs> sr) {
             static std::unordered_map<long int, fs_type> type_mapper = {
-                { 0x58465342, fs_type::xfs },
-                { EXT2_SUPER_MAGIC, fs_type::ext2 },
-                { EXT3_SUPER_MAGIC, fs_type::ext3 },
-                { EXT4_SUPER_MAGIC, fs_type::ext4 },
-                { BTRFS_SUPER_MAGIC, fs_type::btrfs },
-                { 0x4244, fs_type::hfs },
-                { TMPFS_MAGIC, fs_type::tmpfs },
+                { internal::fs_magic::xfs, fs_type::xfs },
+                { internal::fs_magic::ext2, fs_type::ext2 },
+                { internal::fs_magic::ext3, fs_type::ext3 },
+                { internal::fs_magic::ext4, fs_type::ext4 },
+                { internal::fs_magic::btrfs, fs_type::btrfs },
+                { internal::fs_magic::hfs, fs_type::hfs },
+                { internal::fs_magic::tmpfs, fs_type::tmpfs },
             };
             sr.throw_fs_exception_if_error("statfs failed", pathname);
 
@@ -2116,7 +2277,7 @@ reactor::fdatasync(int fd) noexcept {
         return futurize_invoke([this, fd] {
             auto desc = new fsync_io_desc;
             auto fut = desc->get_future();
-            auto req = io_request::make_fdatasync(fd);
+            auto req = internal::io_request::make_fdatasync(fd);
             _io_sink.submit(desc, std::move(req));
             return fut;
         });
@@ -2268,48 +2429,50 @@ void reactor::register_metrics() {
     _metric_groups.add_group("reactor", {
             sm::make_gauge("tasks_pending", std::bind(&reactor::pending_task_count, this), sm::description("Number of pending tasks in the queue")),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("tasks_processed", std::bind(&reactor::tasks_processed, this), sm::description("Total tasks processed")),
-            sm::make_derive("polls", _polls, sm::description("Number of times pollers were executed")),
-            sm::make_derive("timers_pending", std::bind(&decltype(_timers)::size, &_timers), sm::description("Number of tasks in the timer-pending queue")),
+            sm::make_counter("tasks_processed", std::bind(&reactor::tasks_processed, this), sm::description("Total tasks processed")),
+            sm::make_counter("polls", _polls, sm::description("Number of times pollers were executed")),
+            sm::make_gauge("timers_pending", std::bind(&decltype(_timers)::size, &_timers), sm::description("Number of tasks in the timer-pending queue")),
             sm::make_gauge("utilization", [this] { return (1-_load)  * 100; }, sm::description("CPU utilization")),
-            sm::make_derive("cpu_busy_ms", [this] () -> int64_t { return total_busy_time() / 1ms; },
+            sm::make_counter("cpu_busy_ms", [this] () -> int64_t { return total_busy_time() / 1ms; },
                     sm::description("Total cpu busy time in milliseconds")),
-            sm::make_derive("cpu_steal_time_ms", [this] () -> int64_t { return total_steal_time() / 1ms; },
+            sm::make_counter("cpu_steal_time_ms", [this] () -> int64_t { return total_steal_time() / 1ms; },
                     sm::description("Total steal time, the time in which some other process was running while Seastar was not trying to run (not sleeping)."
                                      "Because this is in userspace, some time that could be legitimally thought as steal time is not accounted as such. For example, if we are sleeping and can wake up but the kernel hasn't woken us up yet.")),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("aio_reads", _io_stats.aio_reads, sm::description("Total aio-reads operations")),
+            sm::make_counter("aio_reads", _io_stats.aio_reads, sm::description("Total aio-reads operations")),
 
             sm::make_total_bytes("aio_bytes_read", _io_stats.aio_read_bytes, sm::description("Total aio-reads bytes")),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("aio_writes", _io_stats.aio_writes, sm::description("Total aio-writes operations")),
+            sm::make_counter("aio_writes", _io_stats.aio_writes, sm::description("Total aio-writes operations")),
             sm::make_total_bytes("aio_bytes_write", _io_stats.aio_write_bytes, sm::description("Total aio-writes bytes")),
-            sm::make_derive("aio_errors", _io_stats.aio_errors, sm::description("Total aio errors")),
+            sm::make_counter("aio_outsizes", _io_stats.aio_outsizes, sm::description("Total number of aio operations that exceed IO limit")),
+            sm::make_counter("aio_errors", _io_stats.aio_errors, sm::description("Total aio errors")),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("fsyncs", _fsyncs, sm::description("Total number of fsync operations")),
+            sm::make_counter("fsyncs", _fsyncs, sm::description("Total number of fsync operations")),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("io_threaded_fallbacks", std::bind(&thread_pool::operation_count, _thread_pool.get()),
+            sm::make_counter("io_threaded_fallbacks", std::bind(&thread_pool::operation_count, _thread_pool.get()),
                     sm::description("Total number of io-threaded-fallbacks operations")),
 
     });
 
     _metric_groups.add_group("memory", {
-            sm::make_derive("malloc_operations", [] { return memory::stats().mallocs(); },
+            sm::make_counter("malloc_operations", [] { return memory::stats().mallocs(); },
                     sm::description("Total number of malloc operations")),
-            sm::make_derive("free_operations", [] { return memory::stats().frees(); }, sm::description("Total number of free operations")),
-            sm::make_derive("cross_cpu_free_operations", [] { return memory::stats().cross_cpu_frees(); }, sm::description("Total number of cross cpu free")),
+            sm::make_counter("free_operations", [] { return memory::stats().frees(); }, sm::description("Total number of free operations")),
+            sm::make_counter("cross_cpu_free_operations", [] { return memory::stats().cross_cpu_frees(); }, sm::description("Total number of cross cpu free")),
             sm::make_gauge("malloc_live_objects", [] { return memory::stats().live_objects(); }, sm::description("Number of live objects")),
             sm::make_current_bytes("free_memory", [] { return memory::stats().free_memory(); }, sm::description("Free memory size in bytes")),
             sm::make_current_bytes("total_memory", [] { return memory::stats().total_memory(); }, sm::description("Total memory size in bytes")),
             sm::make_current_bytes("allocated_memory", [] { return memory::stats().allocated_memory(); }, sm::description("Allocated memory size in bytes")),
-            sm::make_derive("reclaims_operations", [] { return memory::stats().reclaims(); }, sm::description("Total reclaims operations"))
+            sm::make_counter("reclaims_operations", [] { return memory::stats().reclaims(); }, sm::description("Total reclaims operations")),
+            sm::make_counter("malloc_failed", [] { return memory::stats().failed_allocations(); }, sm::description("Total count of failed memory allocations"))
     });
 
     _metric_groups.add_group("reactor", {
-            sm::make_derive("logging_failures", [] { return logging_failures; }, sm::description("Total number of logging failures")),
+            sm::make_counter("logging_failures", [] { return logging_failures; }, sm::description("Total number of logging failures")),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("cpp_exceptions", _cxx_exceptions, sm::description("Total number of C++ exceptions")),
-            sm::make_derive("abandoned_failed_futures", _abandoned_failed_futures, sm::description("Total number of abandoned failed futures, futures destroyed while still containing an exception")),
+            sm::make_counter("cpp_exceptions", _cxx_exceptions, sm::description("Total number of C++ exceptions")),
+            sm::make_counter("abandoned_failed_futures", _abandoned_failed_futures, sm::description("Total number of abandoned failed futures, futures destroyed while still containing an exception")),
     });
 
     using namespace seastar::metrics;
@@ -2318,7 +2481,7 @@ void reactor::register_metrics() {
                 description(
                         "Counts reads from disk file streams.  A high rate indicates high disk activity."
                         " Contrast with other fstream_read* counters to locate bottlenecks.")),
-        make_derive("fstream_read_bytes", _io_stats.fstream_read_bytes,
+        make_counter("fstream_read_bytes", _io_stats.fstream_read_bytes,
                 description(
                         "Counts bytes read from disk file streams.  A high rate indicates high disk activity."
                         " Divide by fstream_reads to determine average read size.")),
@@ -2326,7 +2489,7 @@ void reactor::register_metrics() {
                 description(
                         "Counts the number of times a disk read could not be satisfied from read-ahead buffers, and had to block."
                         " Indicates short streams, or incorrect read ahead configuration.")),
-        make_derive("fstream_read_bytes_blocked", _io_stats.fstream_read_bytes_blocked,
+        make_counter("fstream_read_bytes_blocked", _io_stats.fstream_read_bytes_blocked,
                 description(
                         "Counts the number of bytes read from disk that could not be satisfied from read-ahead buffers, and had to block."
                         " Indicates short streams, or incorrect read ahead configuration.")),
@@ -2334,7 +2497,7 @@ void reactor::register_metrics() {
                 description(
                         "Counts the number of times a buffer that was read ahead of time and was discarded because it was not needed, wasting disk bandwidth."
                         " Indicates over-eager read ahead configuration.")),
-        make_derive("fstream_reads_ahead_bytes_discarded", _io_stats.fstream_read_ahead_discarded_bytes,
+        make_counter("fstream_reads_ahead_bytes_discarded", _io_stats.fstream_read_ahead_discarded_bytes,
                 description(
                         "Counts the number of buffered bytes that were read ahead of time and were discarded because they were not needed, wasting disk bandwidth."
                         " Indicates over-eager read ahead configuration.")),
@@ -2349,7 +2512,7 @@ void reactor::run_tasks(task_queue& tq) {
         auto tsk = tasks.front();
         tasks.pop_front();
         STAP_PROBE(seastar, reactor_run_tasks_single_start);
-        task_histogram_add_task(*tsk);
+        internal::task_histogram_add_task(*tsk);
         _current_task = tsk;
         tsk->run_and_dispose();
         _current_task = nullptr;
@@ -2370,14 +2533,21 @@ void reactor::run_tasks(task_queue& tq) {
     }
 }
 
+namespace {
+
 #ifdef SEASTAR_SHUFFLE_TASK_QUEUE
-void reactor::shuffle(task*& t, task_queue& q) {
+void shuffle(task*& t, circular_buffer<task*>& q) {
     static thread_local std::mt19937 gen = std::mt19937(std::default_random_engine()());
-    std::uniform_int_distribution<size_t> tasks_dist{0, q._q.size() - 1};
-    auto& to_swap = q._q[tasks_dist(gen)];
+    std::uniform_int_distribution<size_t> tasks_dist{0, q.size() - 1};
+    auto& to_swap = q[tasks_dist(gen)];
     std::swap(to_swap, t);
 }
+#else
+void shuffle(task*&, circular_buffer<task*>&) {
+}
 #endif
+
+}
 
 void reactor::force_poll() {
     request_preemption();
@@ -2385,27 +2555,24 @@ void reactor::force_poll() {
 
 bool
 reactor::flush_tcp_batches() {
-    bool work = _flush_batching.size();
+    bool work = !_flush_batching.empty();
     while (!_flush_batching.empty()) {
-        auto os = std::move(_flush_batching.front());
+        auto& os = _flush_batching.front();
         _flush_batching.pop_front();
-        os->poll_flush();
+        os.poll_flush();
     }
     return work;
 }
 
 bool
 reactor::do_expire_lowres_timers() noexcept {
-    if (_lowres_next_timeout == lowres_clock::time_point()) {
-        return false;
-    }
     auto now = lowres_clock::now();
     if (now >= _lowres_next_timeout) {
         complete_timers(_lowres_timers, _expired_lowres_timers, [this] () noexcept {
             if (!_lowres_timers.empty()) {
                 _lowres_next_timeout = _lowres_timers.get_next_timeout();
             } else {
-                _lowres_next_timeout = lowres_clock::time_point();
+                _lowres_next_timeout = lowres_clock::time_point::max();
             }
         });
         return true;
@@ -2435,9 +2602,6 @@ manual_clock::advance(manual_clock::duration d) noexcept {
 
 bool
 reactor::do_check_lowres_timers() const noexcept {
-    if (_lowres_next_timeout == lowres_clock::time_point()) {
-        return false;
-    }
     return lowres_clock::now() > _lowres_next_timeout;
 }
 
@@ -2572,7 +2736,7 @@ public:
     virtual bool try_enter_interrupt_mode() override {
         // arm our highres timer so a signal will wake us up
         auto next = _r._lowres_next_timeout;
-        if (next == lowres_clock::time_point()) {
+        if (next == lowres_clock::time_point::max()) {
             // no pending timers
             return true;
         }
@@ -2598,8 +2762,11 @@ class reactor::smp_pollfn final : public reactor::pollfn {
 public:
     smp_pollfn(reactor& r) : _r(r) {}
     virtual bool poll() final override {
-        return (smp::poll_queues() |
-                _r._alien.poll_queues());
+        // Avoid short-circuiting with `||` since there are side effects
+        // we want to take place (instantiating tasks from the alien queue).
+        // Cast to int to silence gcc -Wbitwise-instead-of-logical.
+        return (int(smp::poll_queues()) |
+                int(_r._alien.poll_queues()));
     }
     virtual bool pure_poll() final override {
         return (smp::pure_poll_queues() ||
@@ -2742,6 +2909,29 @@ reactor::insert_activating_task_queues() {
     _activating_task_queues.clear();
 }
 
+void reactor::add_task(task* t) noexcept {
+    auto sg = t->group();
+    auto* q = _task_queues[sg._id].get();
+    bool was_empty = q->_q.empty();
+    q->_q.push_back(std::move(t));
+    shuffle(q->_q.back(), q->_q);
+    if (was_empty) {
+        activate(*q);
+    }
+}
+
+void reactor::add_urgent_task(task* t) noexcept {
+    memory::scoped_critical_alloc_section _;
+    auto sg = t->group();
+    auto* q = _task_queues[sg._id].get();
+    bool was_empty = q->_q.empty();
+    q->_q.push_front(std::move(t));
+    shuffle(q->_q.front(), q->_q);
+    if (was_empty) {
+        activate(*q);
+    }
+}
+
 void
 reactor::run_some_tasks() {
     if (!have_more_tasks()) {
@@ -2749,6 +2939,7 @@ reactor::run_some_tasks() {
     }
     sched_print("run_some_tasks: start");
     reset_preemption_monitor();
+    lowres_clock::update();
 
     sched_clock::time_point t_run_completed = now();
     STAP_PROBE(seastar, reactor_run_tasks_start);
@@ -2917,7 +3108,7 @@ int reactor::do_run() {
     struct sigaction sa_block_notifier = {};
     sa_block_notifier.sa_handler = &reactor::block_notifier;
     sa_block_notifier.sa_flags = SA_RESTART;
-    auto r = sigaction(cpu_stall_detector::signal_number(), &sa_block_notifier, nullptr);
+    auto r = sigaction(internal::cpu_stall_detector::signal_number(), &sa_block_notifier, nullptr);
     assert(r == 0);
 
     bool idle = false;
@@ -2949,6 +3140,7 @@ int reactor::do_run() {
 
         _polls++;
 
+        lowres_clock::update(); // Don't delay expiring lowres timers
         if (check_for_work()) {
             if (idle) {
                 _total_idle += idle_end - idle_start;
@@ -3322,7 +3514,7 @@ size_t smp_message_queue::process_queue(lf_queue& q, Func process) {
 size_t smp_message_queue::process_completions(shard_id t) {
     auto nr = process_queue<prefetch_cnt*2>(_completed, [t] (work_item* wi) {
         wi->complete();
-        auto ssg_id = smp_service_group_id(wi->ssg);
+        auto ssg_id = internal::smp_service_group_id(wi->ssg);
         get_smp_service_groups_semaphore(ssg_id, t).signal();
         delete wi;
     });
@@ -3361,11 +3553,11 @@ void smp_message_queue::start(unsigned cpuid) {
             sm::make_queue_length("complete_batch_queue_length", _last_cmpl_batch, sm::description("Current complete batch queue length"), {sm::shard_label(instance)})(sm::metric_disabled),
             sm::make_queue_length("send_queue_length", _current_queue_length, sm::description("Current send queue length"), {sm::shard_label(instance)})(sm::metric_disabled),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("total_received_messages", _received, sm::description("Total number of received messages"), {sm::shard_label(instance)})(sm::metric_disabled),
+            sm::make_counter("total_received_messages", _received, sm::description("Total number of received messages"), {sm::shard_label(instance)})(sm::metric_disabled),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("total_sent_messages", _sent, sm::description("Total number of sent messages"), {sm::shard_label(instance)})(sm::metric_disabled),
+            sm::make_counter("total_sent_messages", _sent, sm::description("Total number of sent messages"), {sm::shard_label(instance)})(sm::metric_disabled),
             // total_operations value:DERIVE:0:U
-            sm::make_derive("total_completed_messages", _compl, sm::description("Total number of messages completed"), {sm::shard_label(instance)})(sm::metric_disabled)
+            sm::make_counter("total_completed_messages", _compl, sm::description("Total number of messages completed"), {sm::shard_label(instance)})(sm::metric_disabled)
     });
 }
 
@@ -3419,7 +3611,7 @@ bool operator==(const ::sockaddr_in a, const ::sockaddr_in b) {
 namespace seastar {
 
 static bool kernel_supports_aio_fsync() {
-    return kernel_uname().whitelisted({"4.18"});
+    return internal::kernel_uname().whitelisted({"4.18"});
 }
 
 static program_options::selection_value<network_stack_factory> create_network_stacks_option(reactor_options& zis) {
@@ -3464,9 +3656,10 @@ reactor_options::reactor_options(program_options::option_group* parent_group)
                 "idle polling time in microseconds (reduce for overprovisioned environments or laptops)")
     , poll_aio(*this, "poll-aio", true,
                 "busy-poll for disk I/O (reduces latency and increases throughput)")
-    , task_quota_ms(*this, "task-quota-ms", 500, "Max time (ms) between polls")
+    , task_quota_ms(*this, "task-quota-ms", 0.5, "Max time (ms) between polls")
+    , io_latency_goal_ms(*this, "io-latency-goal-ms", {}, "Max time (ms) io operations must take (1.5 * task-quota-ms if not set)")
     , max_task_backlog(*this, "max-task-backlog", 1000, "Maximum number of task backlog to allow; above this we ignore I/O")
-    , blocked_reactor_notify_ms(*this, "blocked-reactor-notify-ms", 200, "threshold in miliseconds over which the reactor is considered blocked if no progress is made")
+    , blocked_reactor_notify_ms(*this, "blocked-reactor-notify-ms", 25, "threshold in miliseconds over which the reactor is considered blocked if no progress is made")
     , blocked_reactor_reports_per_minute(*this, "blocked-reactor-reports-per-minute", 5, "Maximum number of backtraces reported by stall detector per minute")
     , blocked_reactor_report_format_oneline(*this, "blocked-reactor-report-format-oneline", true, "Print a simplified backtrace on a single line")
     , relaxed_dma(*this, "relaxed-dma", "allow using buffered I/O if DMA is not available (reduces performance)")
@@ -3483,7 +3676,7 @@ reactor_options::reactor_options(program_options::option_group* parent_group)
                 " This makes strace output more useful, but slows down the application")
     , dump_memory_diagnostics_on_alloc_failure_kind(*this, "dump-memory-diagnostics-on-alloc-failure-kind", memory::alloc_failure_kind::critical,
                 "Dump diagnostics of the seastar allocator state on allocation failure."
-                 " Accepted values: never, critical (default), always. When set to critical, only allocations marked as critical will trigger diagnostics dump."
+                 " Accepted values: none, critical (default), all. When set to critical, only allocations marked as critical will trigger diagnostics dump."
                  " The diagnostics will be written to the seastar_memory logger, with error level."
                  " Note that if the seastar_memory logger is set to debug or trace level, the diagnostics will be logged irrespective of this setting.")
     , reactor_backend(*this, "reactor-backend", backend_selector_candidates(), reactor_backend_selector::default_backend().name(),
@@ -3514,11 +3707,9 @@ smp_options::smp_options(program_options::option_group* parent_group)
 #ifdef SEASTAR_HAVE_HWLOC
     , num_io_queues(*this, "num-io-queues", {}, "Number of IO queues. Each IO unit will be responsible for a fraction of the IO requests. Defaults to the number of threads")
     , num_io_groups(*this, "num-io-groups", {}, "Number of IO groups. Each IO group will be responsible for a fraction of the IO requests. Defaults to the number of NUMA nodes")
-    , max_io_requests(*this, "max-io-requests", {}, "Maximum amount of concurrent requests to be sent to the disk. Defaults to 128 times the number of IO queues")
 #else
     , num_io_queues(*this, "num-io-queues", program_options::unused{})
     , num_io_groups(*this, "num-io-groups", program_options::unused{})
-    , max_io_requests(*this, "max-io-requests", {}, "Maximum amount of concurrent requests to be sent to the disk. Defaults to 128 times the number of processors")
 #endif
     , io_properties_file(*this, "io-properties-file", {}, "path to a YAML file describing the characteristics of the I/O Subsystem")
     , io_properties(*this, "io-properties", {}, "a YAML string describing the characteristics of the I/O Subsystem")
@@ -3526,7 +3717,7 @@ smp_options::smp_options(program_options::option_group* parent_group)
 #ifndef SEASTAR_NO_EXCEPTION_HACK
     , enable_glibc_exception_scaling_workaround(*this, "enable-glibc-exception-scaling-workaround", true, "enable workaround for glibc/gcc c++ exception scalablity problem")
 #else
-    , enable_glibc_exception_scaling_workaround(*this, program_options::unused{})
+    , enable_glibc_exception_scaling_workaround(*this, "enable-glibc-exception-scaling-workaround", program_options::unused{})
 #endif
 #ifdef SEASTAR_HAVE_HWLOC
     , allow_cpus_in_remote_numa_nodes(*this, "allow-cpus-in-remote-numa-nodes", true, "if some CPUs are found not to have any local NUMA nodes, allow assigning them to remote ones")
@@ -3667,12 +3858,19 @@ void install_oneshot_signal_handler() {
     throw_system_error_on(r == -1);
 }
 
+static void reraise_signal(int signo) {
+    signal(signo, SIG_DFL);
+    pthread_kill(pthread_self(), signo);
+}
+
 static void sigsegv_action() noexcept {
     print_with_backtrace("Segmentation fault");
+    reraise_signal(SIGSEGV);
 }
 
 static void sigabrt_action() noexcept {
     print_with_backtrace("Aborting");
+    reraise_signal(SIGABRT);
 }
 
 void smp::qs_deleter::operator()(smp_message_queue** qs) const {
@@ -3688,7 +3886,6 @@ void smp::qs_deleter::operator()(smp_message_queue** qs) const {
 class disk_config_params {
 private:
     unsigned _num_io_groups = 0;
-    std::optional<unsigned> _capacity;
     std::unordered_map<dev_t, mountpoint_params> _mountpoints;
     std::chrono::duration<double> _latency_goal;
 
@@ -3703,15 +3900,16 @@ public:
         return _latency_goal;
     }
 
+    double latency_goal_opt(const reactor_options& opts) const {
+        return opts.io_latency_goal_ms ?
+                opts.io_latency_goal_ms.get_value() :
+                opts.task_quota_ms.get_value() * 1.5;
+    }
+
     void parse_config(const smp_options& smp_opts, const reactor_options& reactor_opts) {
         seastar_logger.debug("smp::count: {}", smp::count);
-        _latency_goal = std::chrono::duration_cast<std::chrono::duration<double>>(reactor_opts.task_quota_ms.get_value() * 1.5 * 1ms);
+        _latency_goal = std::chrono::duration_cast<std::chrono::duration<double>>(latency_goal_opt(reactor_opts) * 1ms);
         seastar_logger.debug("latency_goal: {}", latency_goal().count());
-
-        if (smp_opts.max_io_requests) {
-            seastar_logger.warn("the --max-io-requests option is deprecated, switch to io properties file instead");
-            _capacity = smp_opts.max_io_requests.get_value();
-        }
 
         if (smp_opts.num_io_groups) {
             _num_io_groups = smp_opts.num_io_groups.get_value();
@@ -3733,6 +3931,9 @@ public:
         }
 
         if (doc) {
+            if (!doc->IsMap()) {
+                throw std::runtime_error("Bogus io-properties (did you mix up --io-properties and --io-properties-file?)");
+            }
             for (auto&& section : *doc) {
                 auto sec_name = section.first.as<std::string>();
                 if (sec_name != "disks") {
@@ -3745,7 +3946,9 @@ public:
                     if (ret < 0) {
                         throw std::runtime_error(fmt::format("Couldn't stat {}", d.mountpoint));
                     }
-                    if (_mountpoints.count(buf.st_dev)) {
+
+                    auto st_dev = S_ISBLK(buf.st_mode) ? buf.st_rdev : buf.st_dev;
+                    if (_mountpoints.count(st_dev)) {
                         throw std::runtime_error(fmt::format("Mountpoint {} already configured", d.mountpoint));
                     }
                     if (_mountpoints.size() >= reactor::max_queues) {
@@ -3757,8 +3960,8 @@ public:
                         throw std::runtime_error(fmt::format("R/W bytes and req rates must not be zero"));
                     }
 
-                    seastar_logger.debug("dev_id: {} mountpoint: {}", buf.st_dev, d.mountpoint);
-                    _mountpoints.emplace(buf.st_dev, d);
+                    seastar_logger.debug("dev_id: {} mountpoint: {}", st_dev, d.mountpoint);
+                    _mountpoints.emplace(st_dev, d);
                 }
             }
         }
@@ -3775,35 +3978,30 @@ public:
 
         cfg.devid = devid;
 
-        if (!_capacity) {
-            if (p.read_bytes_rate != std::numeric_limits<uint64_t>::max()) {
-                cfg.max_bytes_count = io_queue::read_request_base_count * per_io_group(p.read_bytes_rate * latency_goal().count(), nr_groups);
-                cfg.disk_bytes_write_to_read_multiplier = (io_queue::read_request_base_count * p.read_bytes_rate) / p.write_bytes_rate;
-                cfg.disk_us_per_byte = 1000000. / p.read_bytes_rate;
-            }
-            if (p.read_req_rate != std::numeric_limits<uint64_t>::max()) {
-                cfg.max_req_count = io_queue::read_request_base_count * per_io_group(p.read_req_rate * latency_goal().count(), nr_groups);
-                cfg.disk_req_write_to_read_multiplier = (io_queue::read_request_base_count * p.read_req_rate) / p.write_req_rate;
-                cfg.disk_us_per_request = 1000000. / p.read_req_rate;
-            }
-            if (p.read_saturation_length != std::numeric_limits<uint64_t>::max()) {
-                cfg.disk_read_saturation_length = p.read_saturation_length;
-            }
-            if (p.write_saturation_length != std::numeric_limits<uint64_t>::max()) {
-                cfg.disk_write_saturation_length = p.write_saturation_length;
-            }
-            cfg.mountpoint = p.mountpoint;
-            cfg.duplex = p.duplex;
-        } else {
-            // For backwards compatibility
-            cfg.capacity = *_capacity;
-            // Legacy configuration when only concurrency is specified.
-            unsigned max_req_count = std::min(*_capacity, reactor::max_aio_per_queue);
-            cfg.max_req_count = io_queue::read_request_base_count * max_req_count;
-            // specify size in terms of 16kB IOPS.
-            static_assert(reactor::max_aio_per_queue << 14 <= std::numeric_limits<decltype(cfg.max_bytes_count)>::max() / io_queue::read_request_base_count);
-            cfg.max_bytes_count = io_queue::read_request_base_count * (max_req_count << 14);
+        if (p.read_bytes_rate != std::numeric_limits<uint64_t>::max()) {
+            cfg.blocks_count_rate = (io_queue::read_request_base_count * (unsigned long)per_io_group(p.read_bytes_rate, nr_groups)) >> io_queue::block_size_shift;
+            cfg.disk_blocks_write_to_read_multiplier = (io_queue::read_request_base_count * p.read_bytes_rate) / p.write_bytes_rate;
         }
+        if (p.read_req_rate != std::numeric_limits<uint64_t>::max()) {
+            cfg.req_count_rate = io_queue::read_request_base_count * (unsigned long)per_io_group(p.read_req_rate, nr_groups);
+            cfg.disk_req_write_to_read_multiplier = (io_queue::read_request_base_count * p.read_req_rate) / p.write_req_rate;
+        }
+        if (p.read_saturation_length != std::numeric_limits<uint64_t>::max()) {
+            cfg.disk_read_saturation_length = p.read_saturation_length;
+        }
+        if (p.write_saturation_length != std::numeric_limits<uint64_t>::max()) {
+            cfg.disk_write_saturation_length = p.write_saturation_length;
+        }
+        cfg.mountpoint = p.mountpoint;
+        cfg.duplex = p.duplex;
+        cfg.rate_factor = p.rate_factor;
+        cfg.rate_limit_duration = latency_goal();
+        // Block count limit should not be less than the minimal IO size on the device
+        // On the other hand, even this is not good enough -- in the worst case the
+        // scheduler will self-tune to allow for the single 64k request, while it would
+        // be better to sacrifice some IO latency, but allow for larger concurrency
+        cfg.block_count_limit_min = (64 << 10) >> io_queue::block_size_shift;
+
         return cfg;
     }
 
@@ -3890,45 +4088,35 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
 
     resource::configuration rc;
 
-    smp::count = 1;
     smp::_tmain = std::this_thread::get_id();
-    auto nr_cpus = resource::nr_processing_units(rc);
-    resource::cpuset cpu_set;
-    auto cgroup_cpu_set = cgroup::cpu_set();
-
-    std::copy(boost::counting_iterator<unsigned>(0), boost::counting_iterator<unsigned>(nr_cpus),
-            std::inserter(cpu_set, cpu_set.end()));
+    resource::cpuset cpu_set = get_current_cpuset();
 
     if (smp_opts.cpuset) {
-        cpu_set = smp_opts.cpuset.get_value();
-        if (cgroup_cpu_set && *cgroup_cpu_set != cpu_set) {
-            // CPUs that are not available are those pinned by
-            // --cpuset but not by cgroups, if mounted.
-            std::set<unsigned int> not_available_cpus;
-            std::set_difference(cpu_set.begin(), cpu_set.end(),
-                                cgroup_cpu_set->begin(), cgroup_cpu_set->end(),
-                                std::inserter(not_available_cpus, not_available_cpus.end()));
+        auto opts_cpuset = smp_opts.cpuset.get_value();
+        // CPUs that are not available are those pinned by
+        // --cpuset but not present in current task set
+        std::set<unsigned int> not_available_cpus;
+        std::set_difference(opts_cpuset.begin(), opts_cpuset.end(),
+                            cpu_set.begin(), cpu_set.end(),
+                            std::inserter(not_available_cpus, not_available_cpus.end()));
 
-            if (!not_available_cpus.empty()) {
-                std::ostringstream not_available_cpus_list;
-                for (auto cpu_id : not_available_cpus) {
-                    not_available_cpus_list << " " << cpu_id;
-                }
-                seastar_logger.error("Bad value for --cpuset:{} not allowed. Shutting down.", not_available_cpus_list.str());
-                exit(1);
+        if (!not_available_cpus.empty()) {
+            std::ostringstream not_available_cpus_list;
+            for (auto cpu_id : not_available_cpus) {
+                not_available_cpus_list << " " << cpu_id;
             }
+            seastar_logger.error("Bad value for --cpuset:{} not allowed. Shutting down.", not_available_cpus_list.str());
+            exit(1);
         }
-    } else if (cgroup_cpu_set) {
-        cpu_set = *cgroup_cpu_set;
+        cpu_set = opts_cpuset;
     }
 
     if (smp_opts.smp) {
-        nr_cpus = smp_opts.smp.get_value();
+        smp::count = smp_opts.smp.get_value();
     } else {
-        nr_cpus = cpu_set.size();
+        smp::count = cpu_set.size();
     }
-    smp::count = nr_cpus;
-    std::vector<reactor*> reactors(nr_cpus);
+    std::vector<reactor*> reactors(smp::count);
     if (smp_opts.memory) {
         rc.total_memory = parse_memory_size(smp_opts.memory.get_value());
 #ifdef SEASTAR_HAVE_DPDK
@@ -3955,6 +4143,7 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
     if (smp_opts.reserve_memory) {
         rc.reserve_memory = parse_memory_size(smp_opts.reserve_memory.get_value());
     }
+    rc.reserve_additional_memory = smp_opts.reserve_additional_memory;
     std::optional<std::string> hugepages_path;
     if (smp_opts.hugepages) {
         hugepages_path = smp_opts.hugepages.get_value();
@@ -3998,11 +4187,14 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
 #endif
 
     auto resources = resource::allocate(rc);
+    logger::set_shard_field_width(std::ceil(std::log10(smp::count)));
     std::vector<resource::cpu> allocations = std::move(resources.cpus);
     if (thread_affinity) {
         smp::pin(allocations[0].cpu_id);
     }
-    memory::configure(allocations[0].mem, mbind, hugepages_path);
+    if (smp_opts.memory_allocator == memory_allocator::seastar) {
+        memory::configure(allocations[0].mem, mbind, hugepages_path);
+    }
 
     if (reactor_opts.abort_on_seastar_bad_alloc) {
         memory::enable_abort_on_allocation_failure();
@@ -4082,18 +4274,26 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
             auto queue = std::move(topo.second.queues[shard]);
             assert(queue);
             engine()._io_queues.emplace(topo.first, std::move(queue));
+
+            auto num_io_groups = topo.second.groups.size();
+            if (engine()._num_io_groups == 0) {
+                engine()._num_io_groups = num_io_groups;
+            } else if (engine()._num_io_groups != num_io_groups) {
+                throw std::logic_error(format("Number of IO-groups mismatch, {} != {}", engine()._num_io_groups, num_io_groups));
+            }
         }
     };
 
     _all_event_loops_done.emplace(smp::count);
 
     auto backend_selector = reactor_opts.reactor_backend.get_selected_candidate();
+    seastar_logger.info("Reactor backend: {}", backend_selector);
 
     unsigned i;
     auto smp_tmain = smp::_tmain;
     for (i = 1; i < smp::count; i++) {
         auto allocation = allocations[i];
-        create_thread([this, smp_tmain, inited, &reactors_registered, &smp_queues_constructed, &reactor_opts, &reactors, hugepages_path, i, allocation, assign_io_queues, alloc_io_queues, thread_affinity, heapprof_enabled, mbind, backend_selector, reactor_cfg] {
+        create_thread([this, smp_tmain, inited, &reactors_registered, &smp_queues_constructed, &smp_opts, &reactor_opts, &reactors, hugepages_path, i, allocation, assign_io_queues, alloc_io_queues, thread_affinity, heapprof_enabled, mbind, backend_selector, reactor_cfg] {
           try {
             // initialize thread_locals that are equal across all reacto threads of this smp instance
             smp::_tmain = smp_tmain;
@@ -4102,7 +4302,9 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
             if (thread_affinity) {
                 smp::pin(allocation.cpu_id);
             }
-            memory::configure(allocation.mem, mbind, hugepages_path);
+            if (smp_opts.memory_allocator == memory_allocator::seastar) {
+                memory::configure(allocation.mem, mbind, hugepages_path);
+            }
             if (heapprof_enabled) {
                 memory::set_heap_profiling_enabled(heapprof_enabled);
             }
@@ -4114,6 +4316,7 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
             auto r = ::pthread_sigmask(SIG_BLOCK, &mask, NULL);
             throw_pthread_error(r);
             init_default_smp_service_group(i);
+            lowres_clock::update();
             allocate_reactor(i, backend_selector, reactor_cfg);
             reactors[i] = &engine();
             alloc_io_queues(i);
@@ -4134,6 +4337,7 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
     }
 
     init_default_smp_service_group(0);
+    lowres_clock::update();
     try {
         allocate_reactor(0, backend_selector, reactor_cfg);
     } catch (const std::exception& e) {
@@ -4169,8 +4373,6 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
     inited->wait();
 
     engine().configure(reactor_opts);
-    // The raw `new` is necessary because of the private constructor of `lowres_clock_impl`.
-    engine()._lowres_clock_impl = std::unique_ptr<lowres_clock_impl>(new lowres_clock_impl);
 }
 
 bool smp::poll_queues() {
@@ -4292,6 +4494,21 @@ void set_idle_cpu_handler(idle_cpu_handler&& handler) {
     engine().set_idle_cpu_handler(std::move(handler));
 }
 
+namespace experimental {
+future<std::tuple<file_desc, file_desc>> make_pipe() {
+    return engine().make_pipe();
+}
+
+future<process> spawn_process(const std::filesystem::path& pathname,
+                              spawn_parameters params) {
+    return process::spawn(pathname, std::move(params));
+}
+
+future<process> spawn_process(const std::filesystem::path& pathname) {
+    return process::spawn(pathname);
+}
+}
+
 static
 bool
 virtualized() {
@@ -4309,7 +4526,15 @@ reactor::calculate_poll_time() {
     return virtualized() ? 2000us : 200us;
 }
 
-future<> later() noexcept {
+future<>
+yield() noexcept {
+    memory::scoped_critical_alloc_section _;
+    auto tsk = make_task([] {});
+    schedule(tsk);
+    return tsk->get_future();
+}
+
+future<> check_for_io_immediately() noexcept {
     memory::scoped_critical_alloc_section _;
     engine().force_poll();
     auto tsk = make_task(default_scheduling_group(), [] {});
@@ -4317,8 +4542,12 @@ future<> later() noexcept {
     return tsk->get_future();
 }
 
-void add_to_flush_poller(output_stream<char>* os) {
-    engine()._flush_batching.emplace_back(os);
+future<> later() noexcept {
+    return check_for_io_immediately();
+}
+
+void add_to_flush_poller(output_stream<char>& os) noexcept {
+    engine()._flush_batching.push_back(os);
 }
 
 steady_clock_type::duration reactor::total_idle_time() {
@@ -4428,7 +4657,10 @@ reactor::init_new_scheduling_group_key(scheduling_group_key key, scheduling_grou
 }
 
 future<>
-reactor::destroy_scheduling_group(scheduling_group sg) {
+reactor::destroy_scheduling_group(scheduling_group sg) noexcept {
+    if (sg._id >= max_scheduling_groups()) {
+        on_fatal_internal_error(seastar_logger, format("Invalid scheduling_group {}", sg._id));
+    }
     return with_scheduling_group(sg, [this, sg] () {
         auto& sg_data = _scheduling_group_specific_data;
         auto& this_sg = sg_data.per_scheduling_group_data[sg._id];
@@ -4470,7 +4702,7 @@ future<scheduling_group>
 create_scheduling_group(sstring name, float shares) noexcept {
     auto aid = allocate_scheduling_group_id();
     if (aid < 0) {
-        return make_exception_future<scheduling_group>(std::runtime_error("Scheduling group limit exceeded"));
+        return make_exception_future<scheduling_group>(std::runtime_error(fmt::format("Scheduling group limit exceeded while creating {}", name)));
     }
     auto id = static_cast<unsigned>(aid);
     assert(id < max_scheduling_groups());

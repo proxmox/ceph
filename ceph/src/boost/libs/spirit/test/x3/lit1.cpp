@@ -5,7 +5,6 @@
     Distributed under the Boost Software License, Version 1.0. (See accompanying
     file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 =============================================================================*/
-#include <boost/detail/lightweight_test.hpp>
 #include <boost/spirit/home/x3.hpp>
 #include <boost/fusion/include/vector.hpp>
 
@@ -68,6 +67,9 @@ main()
         using namespace boost::spirit::x3::ascii;
         std::string s;
         BOOST_TEST((test_attr("kimpo", string("kimpo"), s)));
+        BOOST_TEST(s == "kimpo");
+        s.clear();
+        BOOST_TEST((test_attr("kimpo", string("kim") >> string("po"), s)));
         BOOST_TEST(s == "kimpo");
         s.clear();
         BOOST_TEST((test_attr(L"kimpo", string(L"kimpo"), s)));

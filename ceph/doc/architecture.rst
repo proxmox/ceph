@@ -65,10 +65,8 @@ comes through a :term:`Ceph Block Device`, :term:`Ceph Object Storage`, the
 :term:`Ceph File System` or a custom implementation you create using
 ``librados``-- which is stored as RADOS objects. Each object is stored on an
 :term:`Object Storage Device`. Ceph OSD Daemons handle read, write, and
-replication operations on storage drives.  With the older Filestore back end,
-each RADOS object was stored as a separate file on a conventional filesystem
-(usually XFS).  With the new and default BlueStore back end, objects are
-stored in a monolithic database-like fashion.
+replication operations on storage drives. With the default BlueStore back end,
+objects are stored in a monolithic database-like fashion.
 
 .. ditaa::
 
@@ -198,6 +196,8 @@ current state of the cluster.
 For details on configuring monitors, see the `Monitor Config Reference`_.
 
 .. index:: architecture; high availability authentication
+
+.. _arch_high_availability_authentication:
 
 High Availability Authentication
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -606,7 +606,7 @@ name the Ceph OSD Daemons specifically (e.g., ``osd.0``, ``osd.1``, etc.), but
 rather refer to them as *Primary*, *Secondary*, and so forth. By convention, 
 the *Primary* is the first OSD in the *Acting Set*, and is responsible for 
 coordinating the peering process for each placement group where it acts as 
-the *Primary*, and is the **ONLY** OSD that that will accept client-initiated 
+the *Primary*, and is the **ONLY** OSD that will accept client-initiated 
 writes to objects for a given placement group where it acts as the *Primary*.
 
 When a series of OSDs are responsible for a placement group, that series of
@@ -1093,6 +1093,8 @@ See `Erasure Code Notes`_ for additional details.
 
 Cache Tiering
 -------------
+
+.. note:: Cache tiering is deprecated in Reef.
 
 A cache tier provides Ceph Clients with better I/O performance for a subset of
 the data stored in a backing storage tier. Cache tiering involves creating a

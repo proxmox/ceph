@@ -7,11 +7,14 @@
 #include <iosfwd>
 #include <map>
 #include <string>
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
 
 #include "common/ceph_mutex.h"
 #include "include/common_fwd.h"
 
-namespace TOPNSPC::crush {
+namespace ceph::crush {
 
 class CrushLocation {
 public:
@@ -34,4 +37,9 @@ private:
 
 std::ostream& operator<<(std::ostream& os, const CrushLocation& loc);
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<ceph::crush::CrushLocation> : fmt::ostream_formatter {};
+#endif
+
 #endif

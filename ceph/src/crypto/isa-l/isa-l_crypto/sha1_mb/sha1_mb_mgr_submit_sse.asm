@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -34,6 +34,10 @@
 
 extern sha1_mb_x4_sse
 
+[bits 64]
+default rel
+section .text
+
 %ifidn __OUTPUT_FORMAT__, win64
 ; WINDOWS register definitions
 %define arg1    rcx
@@ -42,7 +46,7 @@ extern sha1_mb_x4_sse
 ; idx needs to be other than ARG2, rax, r8-r11
 %define last_len        rsi
 %define idx             rsi
-			
+
 %define size_offset     rdi
 %define tmp2            rdi
 
@@ -54,7 +58,7 @@ extern sha1_mb_x4_sse
 ; idx needs to be other than ARG2, rax, r8-r11
 %define last_len        rdx
 %define idx             rdx
-			
+
 %define size_offset     rcx
 %define tmp2            rcx
 
@@ -70,20 +74,20 @@ extern sha1_mb_x4_sse
 %define start_offset    r11
 
 %define unused_lanes    rbx
-			
+
 %define job_rax         rax
 %define len             rax
 
 %define lane            rbp
 %define tmp3            rbp
 %define lens3           rbp
-			
+
 %define extra_blocks    r8
 %define lens0           r8
-			
+
 %define tmp             r9
 %define lens1           r9
-			
+
 %define lane_data       r10
 %define lens2           r10
 
@@ -93,8 +97,9 @@ extern sha1_mb_x4_sse
 ; SHA1_JOB* sha1_mb_mgr_submit_sse(SHA1_MB_JOB_MGR *state, SHA1_JOB *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-global sha1_mb_mgr_submit_sse:function
+mk_global sha1_mb_mgr_submit_sse, function
 sha1_mb_mgr_submit_sse:
+	endbranch
 
 	sub     rsp, STACK_SPACE
 	mov     [rsp + 8*0], rbx
@@ -142,6 +147,7 @@ sha1_mb_mgr_submit_sse:
 	mov     p, [job + _buffer]
 	mov     [state + _args_data_ptr + 8*lane], p
 
+	add	dword [state + _num_lanes_inuse], 1
 	cmp     unused_lanes, 0xF
 	jne     return_null
 
@@ -161,7 +167,7 @@ start_loop:
 	mov     len2, idx
 	and     idx, 0xF
 	and     len2, ~0xF
-	jz      len_is_0        
+	jz      len_is_0
 
 	sub     lens0, len2
 	sub     lens1, len2
@@ -182,7 +188,7 @@ len_is_0:
 	; process completed job "idx"
 	imul    lane_data, idx, _LANE_DATA_size
 	lea     lane_data, [state + _ldata + lane_data]
-	
+
 	mov     job_rax, [lane_data + _job_in_lane]
 	mov     unused_lanes, [state + _unused_lanes]
 	mov     qword [lane_data + _job_in_lane], 0
@@ -190,6 +196,8 @@ len_is_0:
 	shl     unused_lanes, 4
 	or      unused_lanes, idx
 	mov     [state + _unused_lanes], unused_lanes
+
+	sub     dword [state + _num_lanes_inuse], 1
 
 	movd    xmm0, [state + _args_digest + 4*idx + 0*16]
 	pinsrd  xmm0, [state + _args_digest + 4*idx + 1*16], 1

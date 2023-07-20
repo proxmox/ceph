@@ -1,8 +1,6 @@
-import errno
 import json
 import rados
 import rbd
-import re
 import traceback
 
 from datetime import datetime
@@ -10,7 +8,7 @@ from threading import Condition, Lock, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
 from .common import get_rbd_pools
-from .schedule import LevelSpec, Interval, StartTime, Schedule, Schedules
+from .schedule import LevelSpec, Schedules
 
 
 class TrashPurgeScheduleHandler:
@@ -20,22 +18,31 @@ class TrashPurgeScheduleHandler:
 
     lock = Lock()
     condition = Condition(lock)
-    thread = None
 
     def __init__(self, module: Any) -> None:
         self.module = module
         self.log = module.log
         self.last_refresh_pools = datetime(1970, 1, 1)
 
-        self.init_schedule_queue()
-
+        self.stop_thread = False
         self.thread = Thread(target=self.run)
+
+    def setup(self) -> None:
+        self.init_schedule_queue()
         self.thread.start()
+
+    def shutdown(self) -> None:
+        self.log.info("TrashPurgeScheduleHandler: shutting down")
+        self.stop_thread = True
+        if self.thread.is_alive():
+            self.log.debug("TrashPurgeScheduleHandler: joining thread")
+            self.thread.join()
+        self.log.info("TrashPurgeScheduleHandler: shut down")
 
     def run(self) -> None:
         try:
             self.log.info("TrashPurgeScheduleHandler: starting")
-            while True:
+            while not self.stop_thread:
                 refresh_delay = self.refresh_pools()
                 with self.lock:
                     (ns_spec, wait_time) = self.dequeue()
@@ -47,6 +54,9 @@ class TrashPurgeScheduleHandler:
                 with self.lock:
                     self.enqueue(datetime.now(), pool_id, namespace)
 
+        except (rados.ConnectionShutdown, rbd.ConnectionShutdown):
+            self.log.exception("TrashPurgeScheduleHandler: client blocklisted")
+            self.module.client_blocklisted.set()
         except Exception as ex:
             self.log.fatal("Fatal runtime error: {}\n{}".format(
                 ex, traceback.format_exc()))
@@ -56,8 +66,10 @@ class TrashPurgeScheduleHandler:
             with self.module.rados.open_ioctx2(int(pool_id)) as ioctx:
                 ioctx.set_namespace(namespace)
                 rbd.RBD().trash_purge(ioctx, datetime.now())
+        except (rados.ConnectionShutdown, rbd.ConnectionShutdown):
+            raise
         except Exception as e:
-            self.log.error("exception when purgin {}/{}: {}".format(
+            self.log.error("exception when purging {}/{}: {}".format(
                 pool_id, namespace, e))
 
     def init_schedule_queue(self) -> None:
@@ -116,6 +128,8 @@ class TrashPurgeScheduleHandler:
             pool_namespaces += rbd.RBD().namespace_list(ioctx)
         except rbd.OperationNotSupported:
             self.log.debug("namespaces not supported")
+        except rbd.ConnectionShutdown:
+            raise
         except Exception as e:
             self.log.error("exception when scanning pool {}: {}".format(
                 pool_name, e))
@@ -260,10 +274,10 @@ class TrashPurgeScheduleHandler:
                         continue
                     pool_name = self.pools[pool_id][namespace]
                     scheduled.append({
-                        'schedule_time' : schedule_time,
-                        'pool_id' : pool_id,
-                        'pool_name' : pool_name,
-                        'namespace' : namespace
+                        'schedule_time': schedule_time,
+                        'pool_id': pool_id,
+                        'pool_name': pool_name,
+                        'namespace': namespace
                     })
-        return 0, json.dumps({'scheduled' : scheduled}, indent=4,
+        return 0, json.dumps({'scheduled': scheduled}, indent=4,
                              sort_keys=True), ""

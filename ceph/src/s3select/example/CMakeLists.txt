@@ -1,5 +1,5 @@
 add_executable(s3select_example s3select_example.cpp)
-target_include_directories(s3select_example PUBLIC ../include)
+target_include_directories(s3select_example PUBLIC ../include ../rapidjson/include)
 
 find_package(Arrow QUIET)
 

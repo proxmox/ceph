@@ -23,13 +23,13 @@ QUERY_RAW_COUNTERS = "query_raw_counters"
 QUERY_RAW_COUNTERS_GLOBAL = "query_raw_counters_global"
 
 MDS_RANK_ALL = (-1,)
-CLIENT_ID_ALL = "\d*"
+CLIENT_ID_ALL = r"\d*"
 CLIENT_IP_ALL = ".*"
 
 fs_list = [] # type: List[str]
 
 MDS_PERF_QUERY_REGEX_MATCH_ALL_RANKS = '^(.*)$'
-MDS_PERF_QUERY_REGEX_MATCH_CLIENTS = '^(client.{0}\s+{1}):.*'
+MDS_PERF_QUERY_REGEX_MATCH_CLIENTS = r'^(client.{0}\s+{1}):.*'
 MDS_PERF_QUERY_COUNTERS_MAP = OrderedDict({'cap_hit': 0,
                                            'read_latency': 1,
                                            'write_latency': 2,
@@ -296,7 +296,7 @@ class FSPerfStats(object):
             missing_clients.update(list(culled[1].keys()))
 
     def cull_client_entries(self, raw_perf_counters, incoming_metrics, missing_clients):
-        # this is a bit more involed -- for each rank figure out what clients
+        # this is a bit more involved -- for each rank figure out what clients
         # are missing in incoming report and purge them from our tracked map.
         # but, if this is invoked after cull_mds_entries(), the rank set
         # is same, so we can loop based on that assumption.

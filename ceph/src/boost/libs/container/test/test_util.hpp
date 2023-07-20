@@ -73,7 +73,7 @@ void print_range(std::ostream& out, Iterator b, Iterator e)
 template <typename Range>
 void print_range(std::ostream& out, const Range& range)
 {
-   print_range(out, range.cbegin(), range.cend());
+   print_range(out, range.begin(), range.end());
 }
 
 template <typename Array, std::size_t N>
@@ -128,7 +128,7 @@ void test_equal_range(const C& a, std::initializer_list<unsigned> il)
 
   for (auto&& elem : il)
   {
-    b.emplace_back(elem);
+    b.emplace_back((int)elem);
   }
 
   test_equal_range(a, b);

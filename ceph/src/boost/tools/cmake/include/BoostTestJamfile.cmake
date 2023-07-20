@@ -9,6 +9,10 @@ if(NOT CMAKE_VERSION VERSION_LESS 3.10)
   include_guard()
 endif()
 
+if(BUILD_TESTING AND CMAKE_VERSION VERSION_LESS 3.9)
+  message(AUTHOR_WARNING "BoostTestJamfile requires CMake 3.9") # CMAKE_MATCH_x
+endif()
+
 include(BoostMessage)
 
 # boost_test_jamfile( FILE jamfile [PREFIX prefix]
@@ -27,7 +31,7 @@ function(boost_test_jamfile)
   endif()
 
   if(__LIBRARIES)
-    boost_message(VERBOSE "boost_test_jamfile: LIBRARIES is deprecated, use LINK_LIBRARIES")
+    message(AUTHOR_WARNING "boost_test_jamfile: LIBRARIES is deprecated, use LINK_LIBRARIES")
   endif()
 
   if(NOT __FILE)
@@ -39,42 +43,27 @@ function(boost_test_jamfile)
     return()
   endif()
 
-  file(STRINGS ${__FILE} data)
+  file(STRINGS "${__FILE}" data)
 
-  set(types compile compile-fail link link-fail run run-fail)
+  set(types "compile|compile-fail|link|link-fail|run|run-fail")
 
   foreach(line IN LISTS data)
-    if(line)
 
-      string(REGEX MATCHALL "[^ ]+" ll ${line})
+    if(line MATCHES "^[ \t]*(${types})[ \t]+([^ \t]+)[ \t]*(\;[ \t]*)?$")
 
-      if(ll)
-        list(GET ll 0 e0)
+      boost_test(PREFIX "${__PREFIX}" TYPE "${CMAKE_MATCH_1}"
+        SOURCES "${CMAKE_MATCH_2}"
+        LINK_LIBRARIES ${__LIBRARIES} ${__LINK_LIBRARIES}
+        COMPILE_DEFINITIONS ${__COMPILE_DEFINITIONS}
+        COMPILE_OPTIONS ${__COMPILE_OPTIONS}
+        COMPILE_FEATURES ${__COMPILE_FEATURES}
+      )
 
-        if(e0 IN_LIST types)
+    elseif(line MATCHES "^[ \t]*(${types})([ \t]|$)")
 
-          list(LENGTH ll lln)
+      boost_message(VERBOSE "boost_test_jamfile: Jamfile line ignored: ${line}")
 
-          if(NOT lln EQUAL 2)
-
-            boost_message(VERBOSE "boost_test_jamfile: Jamfile line ignored: ${line}")
-
-          else()
-
-            list(GET ll 1 e1)
-
-            boost_test(PREFIX ${__PREFIX} TYPE ${e0}
-              SOURCES ${e1}
-              LINK_LIBRARIES ${__LIBRARIES} ${__LINK_LIBRARIES}
-              COMPILE_DEFINITIONS ${__COMPILE_DEFINITIONS}
-              COMPILE_OPTIONS ${__COMPILE_OPTIONS}
-              COMPILE_FEATURES ${__COMPILE_FEATURES}
-            )
-
-          endif()
-        endif()
-      endif()
     endif()
-  endforeach(line)
 
-endfunction(boost_test_jamfile)
+  endforeach()
+endfunction()

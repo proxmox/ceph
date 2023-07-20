@@ -1,10 +1,29 @@
-// Copyright (c) 2018-2020 Emil Dotchevski and Reverge Studios, Inc.
+// Copyright 2018-2022 Emil Dotchevski and Reverge Studios, Inc.
 
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <boost/leaf/handle_errors.hpp>
-#include <boost/leaf/pred.hpp>
+#include <boost/leaf/config.hpp>
+
+#if !BOOST_LEAF_CFG_STD_SYSTEM_ERROR
+
+#include <iostream>
+
+int main()
+{
+    std::cout << "Unit test not applicable." << std::endl;
+    return 0;
+}
+
+#else
+
+#ifdef BOOST_LEAF_TEST_SINGLE_HEADER
+#   include "leaf.hpp"
+#else
+#   include <boost/leaf/handle_errors.hpp>
+#   include <boost/leaf/pred.hpp>
+#endif
+
 #include "_test_res.hpp"
 #include "lightweight_test.hpp"
 
@@ -74,3 +93,5 @@ int main()
     test<test_res<int const, std::error_code> const>();
     return boost::report_errors();
 }
+
+#endif

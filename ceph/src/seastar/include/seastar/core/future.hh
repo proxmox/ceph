@@ -35,6 +35,7 @@
 #include <seastar/util/concepts.hh>
 #include <seastar/util/noncopyable_function.hh>
 #include <seastar/util/backtrace.hh>
+#include <seastar/util/std-compat.hh>
 
 #if __cplusplus > 201703L
 #include <concepts>
@@ -186,6 +187,12 @@ future<T...> make_exception_future(std::exception_ptr& ex) noexcept {
     return make_exception_future<T...>(static_cast<const std::exception_ptr&>(ex));
 }
 
+template <typename... T>
+future<T...> make_exception_future(const std::exception_ptr&& ex) noexcept {
+    // as ex is const, we cannot move it, but can copy it.
+    return make_exception_future<T...>(std::exception_ptr(ex));
+}
+
 /// \cond internal
 void engine_exit(std::exception_ptr eptr = {});
 
@@ -268,7 +275,7 @@ struct get0_return_type;
 template <>
 struct get0_return_type<std::tuple<>> {
     using type = void;
-    static type get0(std::tuple<> v) { }
+    static type get0(std::tuple<>) { }
 };
 
 template <typename T0, typename... T>
@@ -588,9 +595,16 @@ struct future_state :  public future_state_base, private internal::uninitialized
     future_state() noexcept = default;
     void move_it(future_state&& x) noexcept {
         if constexpr (has_trivial_move_and_destroy) {
+#pragma GCC diagnostic push
+            // This function may copy uninitialized memory, such as when
+            // creating an uninitialized promise and calling get_future()
+            // on it. Gcc 12 started to catch some simple cases of this
+            // at compile time, so we need to tell it that it's fine.
+#pragma GCC diagnostic ignored "-Wuninitialized"
             memmove(reinterpret_cast<char*>(&this->uninitialized_get()),
                    &x.uninitialized_get(),
                    internal::used_size<internal::maybe_wrap_ref<T>>::value);
+#pragma GCC diagnostic pop
         } else if (_u.has_result()) {
             this->uninitialized_set(std::move(x.uninitialized_get()));
             std::destroy_at(&x.uninitialized_get());
@@ -634,8 +648,8 @@ struct future_state :  public future_state_base, private internal::uninitialized
         assert(_u.st == state::future);
         new (this) future_state(ready_future_marker(), std::forward<A>(a)...);
     }
-    future_state(exception_future_marker m, std::exception_ptr&& ex) noexcept : future_state_base(std::move(ex)) { }
-    future_state(exception_future_marker m, future_state_base&& state) noexcept : future_state_base(std::move(state)) { }
+    future_state(exception_future_marker, std::exception_ptr&& ex) noexcept : future_state_base(std::move(ex)) { }
+    future_state(exception_future_marker, future_state_base&& state) noexcept : future_state_base(std::move(state)) { }
     future_state(current_exception_future_marker m) noexcept : future_state_base(m) { }
     future_state(nested_exception_marker m, future_state_base&& old) noexcept : future_state_base(m, std::move(old)) { }
     future_state(nested_exception_marker m, future_state_base&& n, future_state_base&& old) noexcept : future_state_base(m, std::move(n), std::move(old)) { }
@@ -799,7 +813,7 @@ template <typename... T>
 future<T...> make_exception_future(future_state_base&& state) noexcept;
 
 template <typename... T, typename U>
-void set_callback(future<T...>& fut, U* callback) noexcept;
+void set_callback(future<T...>&& fut, U* callback) noexcept;
 
 class future_base;
 
@@ -866,7 +880,7 @@ protected:
 
     template<typename Exception>
     std::enable_if_t<!std::is_same<std::remove_reference_t<Exception>, std::exception_ptr>::value, void> set_exception(Exception&& e) noexcept {
-        set_exception(make_exception_ptr(std::forward<Exception>(e)));
+        set_exception(std::make_exception_ptr(std::forward<Exception>(e)));
     }
 
     friend class future_base;
@@ -1106,9 +1120,7 @@ template <typename Func, typename Return, typename... T>
 concept ApplyReturns = InvokeReturns<Func, Return, T...>;
 
 template <typename Func, typename... T>
-concept InvokeReturnsAnyFuture = requires (Func f, T... args) {
-    requires is_future<decltype(f(std::forward<T>(args)...))>::value;
-};
+concept InvokeReturnsAnyFuture = Future<std::invoke_result_t<Func, T...>>;
 
 // Deprecated alias
 template <typename Func, typename... T>
@@ -1347,7 +1359,7 @@ private:
     // promise::set_value cannot possibly be called without a matching
     // future and so that promise doesn't need to store a
     // future_state.
-    future(future_for_get_promise_marker m) noexcept { }
+    future(future_for_get_promise_marker) noexcept { }
 
     future(promise<T SEASTAR_ELLIPSIS>* pr) noexcept : future_base(pr, &_state), _state(std::move(pr->_local_state)) { }
     template <typename... A>
@@ -1383,7 +1395,7 @@ private:
         // other build modes.
 #ifdef SEASTAR_DEBUG
         if (_state.available()) {
-            tws->set_state(std::move(_state));
+            tws->set_state(get_available_state_ref());
             ::seastar::schedule(tws);
             return;
         }
@@ -1539,7 +1551,7 @@ public:
     /// the return value of then(), itself as a future; this allows then()
     /// calls to be chained.
     ///
-    /// This member function is only available is the payload is std::tuple;
+    /// This member function is only available when the payload is std::tuple;
     /// The tuple elements are passed as individual arguments to `func`, which
     /// must have the same arity as the tuple.
     ///
@@ -1841,7 +1853,7 @@ public:
     /// \brief Handle the exception of a certain type carried by this future.
     ///
     /// When the future resolves, if it resolves with an exception of a type that
-    /// provided callback receives as a parameter, handle_exception(func) replaces
+    /// provided callback receives as a parameter, \c handle_exception_type(func) replaces
     /// the exception with the value returned by func. The exception is passed (by
     /// reference) as a parameter to func; func may return the replacement value
     /// immediately (T or std::tuple<T...>) or in the future (future<T...>)
@@ -1907,7 +1919,7 @@ private:
     template <typename... U>
     friend future<U...> current_exception_as_future() noexcept;
     template <typename... U, typename V>
-    friend void internal::set_callback(future<U...>&, V*) noexcept;
+    friend void internal::set_callback(future<U...>&&, V*) noexcept;
     template <typename Future>
     friend struct internal::call_then_impl;
     /// \endcond
@@ -2182,10 +2194,10 @@ namespace internal {
 
 template <typename... T, typename U>
 inline
-void set_callback(future<T...>& fut, U* callback) noexcept {
+void set_callback(future<T...>&& fut, U* callback) noexcept {
     // It would be better to use continuation_base<T...> for U, but
     // then a derived class of continuation_base<T...> won't be matched
-    return fut.set_callback(callback);
+    return std::move(fut).set_callback(callback);
 }
 
 }

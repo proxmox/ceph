@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -63,6 +63,35 @@ extern "C" {
 #else
 # define DEBUG_PRINT(x) do {} while (0)
 #endif
+
+
+#ifndef __has_feature
+# define __has_feature(x) 0
+#endif
+#ifndef __has_extension
+# define __has_extension __has_feature
+#endif
+#define ISAL_GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
+
+#if (defined(__ICC) || defined( __GNUC__ ) || defined(__clang__)) && !defined(ISAL_UNIT_TEST)
+# if __has_extension(attribute_deprecated_with_message) \
+	|| (ISAL_GCC_VERSION >= 40500) \
+	|| (__INTEL_COMPILER >= 1100)
+#   define ISAL_DEPRECATED(message) __attribute__(( deprecated( message )))
+# else
+#   define ISAL_DEPRECATED(message) __attribute__(( deprecated ))
+# endif
+#elif (defined( __ICL ) || defined(_MSC_VER))
+# if (__INTEL_COMPILER >= 1100) || (_MSC_FULL_VER >= 140050727)
+#   define ISAL_DEPRECATED(message) __declspec( deprecated ( message ))
+# else
+#   define ISAL_DEPRECATED(message) __declspec( deprecated )
+# endif
+#else
+# define ISAL_DEPRECATED(message)
+#endif
+
+#define ISAL_EXPERIMENTAL(message) ISAL_DEPRECATED("Experimental: " message)
 
 #ifdef __cplusplus
 }

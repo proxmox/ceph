@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -33,7 +33,10 @@
 %include "reg_sizes.asm"
 
 extern sha256_mb_x4_avx
+
+[bits 64]
 default rel
+section .text
 
 %ifidn __OUTPUT_FORMAT__, elf64
 ; Linux register definitions
@@ -43,7 +46,7 @@ default rel
 ; idx needs to be other than arg1, arg2, rbx, r12
 %define idx             rdx ; rsi
 %define last_len        rdx ; rsi
-			
+
 %define size_offset     rcx ; rdi
 %define tmp2            rcx ; rdi
 
@@ -55,10 +58,10 @@ default rel
 ; idx needs to be other than arg1, arg2, rbx, r12
 %define last_len        rsi
 %define idx             rsi
-			
+
 %define size_offset     rdi
 %define tmp2            rdi
-			
+
 %endif
 
 ; Common definitions
@@ -71,20 +74,20 @@ default rel
 %define start_offset    r11
 
 %define unused_lanes    rbx
-			
+
 %define job_rax         rax
 %define len             rax
 
 %define lane            rbp
 %define tmp3            rbp
 %define lens3           rbp
-			
+
 %define extra_blocks    r8
 %define lens0           r8
-			
+
 %define tmp             r9
 %define lens1           r9
-			
+
 %define lane_data       r10
 %define lens2           r10
 
@@ -97,8 +100,9 @@ default rel
 ; SHA256_JOB* sha256_mb_mgr_submit_avx(SHA256_MB_JOB_MGR *state, SHA256_JOB *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-global sha256_mb_mgr_submit_avx:function
+mk_global sha256_mb_mgr_submit_avx, function
 sha256_mb_mgr_submit_avx:
+	endbranch
 
 	sub     rsp, STACK_SPACE
 	mov     [rsp + _XMM_SAVE + 8*0], rbx
@@ -128,7 +132,7 @@ sha256_mb_mgr_submit_avx:
 	lea     lane_data, [state + _ldata + lane_data]
 	mov     [state + _unused_lanes], unused_lanes
 	mov     DWORD(len), [job + _len]
-	
+
 	shl	len, 4
 	or	len, lane
 
@@ -151,6 +155,7 @@ sha256_mb_mgr_submit_avx:
 	mov     p, [job + _buffer]
 	mov     [state + _args_data_ptr + 8*lane], p
 
+	add	dword [state + _num_lanes_inuse], 1
 	cmp     unused_lanes, 0xF
 	jne     return_null
 
@@ -170,7 +175,7 @@ start_loop:
 	mov     len2, idx
 	and     idx, 0xF
 	and     len2, ~0xF
-	jz      len_is_0        
+	jz      len_is_0
 
 	sub     lens0, len2
 	sub     lens1, len2
@@ -191,7 +196,7 @@ len_is_0:
 	; process completed job "idx"
 	imul    lane_data, idx, _LANE_DATA_size
 	lea     lane_data, [state + _ldata + lane_data]
-	
+
 	mov     job_rax, [lane_data + _job_in_lane]
 	mov     unused_lanes, [state + _unused_lanes]
 	mov     qword [lane_data + _job_in_lane], 0
@@ -199,6 +204,8 @@ len_is_0:
 	shl     unused_lanes, 4
 	or      unused_lanes, idx
 	mov     [state + _unused_lanes], unused_lanes
+
+	sub	dword [state + _num_lanes_inuse], 1
 
 	vmovd    xmm0, [state + _args_digest + 4*idx + 0*16]
 	vpinsrd  xmm0, [state + _args_digest + 4*idx + 1*16], 1

@@ -25,7 +25,7 @@
 #include <boost/math/special_functions/hypergeometric_1F1.hpp>
 #include <boost/math/quadrature/exp_sinh.hpp>
 
-#ifdef BOOST_MSVC
+#ifdef _MSC_VER
 #pragma warning(disable:4127)
 #endif
 
@@ -64,7 +64,11 @@ void do_test_1F1(const T& data, const char* type_name, const char* test_name)
 template <class T>
 void test_spots1(T, const char* type_name)
 {
+#ifdef TEST_MP
+#include "hypergeometric_1f1_large_regularized_mp.ipp"
+#else
 #include "hypergeometric_1f1_large_regularized.ipp"
+#endif
 
    do_test_1F1<T>(hypergeometric_1f1_large_regularized, type_name, "Large random values - regularized");
 }

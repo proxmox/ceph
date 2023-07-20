@@ -74,12 +74,12 @@ T atan2_def(T y, T x)
 }
 
 template <class T>
-struct is_mpfr_type : public boost::mpl::false_
+struct is_mpfr_type : public std::integral_constant<bool, false>
 {};
 
 #ifdef TEST_MPFR_50
 template <unsigned Digits10>
-struct is_mpfr_type<boost::multiprecision::number<boost::multiprecision::mpfr_float_backend<Digits10> > > : public boost::mpl::true_
+struct is_mpfr_type<boost::multiprecision::number<boost::multiprecision::mpfr_float_backend<Digits10> > > : public std::integral_constant<bool, true>
 {};
 #endif
 
@@ -290,7 +290,7 @@ int main()
 #endif
 #ifdef TEST_CPP_BIN_FLOAT
    test<boost::multiprecision::cpp_bin_float_50>();
-   test<boost::multiprecision::number<boost::multiprecision::cpp_bin_float<35, boost::multiprecision::digit_base_10, std::allocator<char>, boost::long_long_type> > >();
+   test<boost::multiprecision::number<boost::multiprecision::cpp_bin_float<35, boost::multiprecision::digit_base_10, std::allocator<char>, long long> > >();
 #endif
    return boost::report_errors();
 }

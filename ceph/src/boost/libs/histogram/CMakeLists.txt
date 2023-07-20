@@ -18,7 +18,8 @@ target_link_libraries(boost_histogram
     Boost::core
     Boost::mp11
     Boost::throw_exception
-    Boost::variant2)
+    Boost::variant2
+)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   # Standalone build, fetch dependencies
@@ -44,11 +45,13 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
   include(CTest)
   add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -C $<CONFIG>)
+  add_dependencies(check tests) # needed to build the "run" tests
 
   if(BUILD_TESTING)
 
     set(BUILD_TESTING OFF) # do not build tests of dependencies
 
+    boost_fetch(boostorg/static_assert TAG develop EXCLUDE_FROM_ALL)
     boost_fetch(boostorg/assert TAG develop EXCLUDE_FROM_ALL) # needed by core
     boost_fetch(boostorg/config TAG develop EXCLUDE_FROM_ALL)
     boost_fetch(boostorg/core TAG develop EXCLUDE_FROM_ALL)

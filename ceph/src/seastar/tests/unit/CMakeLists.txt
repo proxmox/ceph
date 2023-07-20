@@ -119,7 +119,9 @@ function (seastar_add_test name)
       PRIVATE ${libraries})
 
     target_compile_definitions (${executable_target}
-      PRIVATE SEASTAR_TESTING_MAIN)
+      PRIVATE
+        SEASTAR_TESTING_MAIN
+        SEASTAR_TESTING_WITH_NETWORKING=$<BOOL:${Seastar_ENABLE_TESTS_ACCESSING_INTERNET}>)
 
     if ((Seastar_STACK_GUARDS STREQUAL "ON") OR
         ((Seastar_STACK_GUARDS STREQUAL "DEFAULT") AND
@@ -259,6 +261,9 @@ seastar_add_test (circular_buffer
 seastar_add_test (circular_buffer_fixed_capacity
   SOURCES circular_buffer_fixed_capacity_test.cc)
 
+seastar_add_test (condition_variable
+  SOURCES condition_variable_test.cc)
+
 seastar_add_test (connect
   SOURCES connect_test.cc)
 
@@ -288,6 +293,9 @@ seastar_add_test (execution_stage
 
 seastar_add_test (expiring_fifo
   SOURCES expiring_fifo_test.cc)
+
+seastar_add_test (abortable_fifo
+  SOURCES abortable_fifo_test.cc)
 
 seastar_add_test (io_queue
   SOURCES io_queue_test.cc)
@@ -410,7 +418,8 @@ seastar_add_test (stream_reader
   SOURCES stream_reader_test.cc)
 
 seastar_add_test (thread
-  SOURCES thread_test.cc)
+  SOURCES thread_test.cc
+  LIBRARIES Valgrind::valgrind)
 
 seastar_add_test (scheduling_group
   SOURCES scheduling_group_test.cc)
@@ -428,6 +437,9 @@ seastar_add_test (uname
 seastar_add_test (source_location
   KIND BOOST
   SOURCES source_location_test.cc)
+
+seastar_add_test (shared_token_bucket
+  SOURCES shared_token_bucket_test.cc)
 
 function(seastar_add_certgen name)
   cmake_parse_arguments(CERT
@@ -498,7 +510,7 @@ function(seastar_add_certgen name)
   find_program(OPENSSL openssl)
 
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_PRIVKEY}"
-    COMMAND ${OPENSSL} genpkey -out ${CERT_PRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
+    COMMAND ${OPENSSL} genpkey -quiet -out ${CERT_PRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_REQ}"
@@ -508,7 +520,7 @@ function(seastar_add_certgen name)
   )
 
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAPRIVKEY}"
-    COMMAND ${OPENSSL} genpkey -out ${CERT_CAPRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
+    COMMAND ${OPENSSL} genpkey -quiet -out ${CERT_CAPRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAROOT}"
@@ -528,8 +540,77 @@ function(seastar_add_certgen name)
   )
 endfunction()
 
+function(seastar_gen_mtls_certs)
+  find_program(OPENSSL openssl)
+
+  set(SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=redpanda.com")
+  set(EXTENSION "subjectAltName = IP:127.0.0.1")
+  set(CLIENT1_SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=client1.org")
+  set(CLIENT2_SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=client2.org")
+
+  add_custom_command(OUTPUT mtls_ca.key
+    COMMAND ${OPENSSL} ecparam -name prime256v1 -genkey -noout -out mtls_ca.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT mtls_ca.crt
+    COMMAND ${OPENSSL} req -new -x509 -sha256 -key mtls_ca.key -out mtls_ca.crt -subj ${SUBJECT} -addext ${EXTENSION}
+    DEPENDS mtls_ca.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  # server certificates
+  add_custom_command(OUTPUT mtls_server.key
+    COMMAND ${OPENSSL} ecparam -name prime256v1 -genkey -noout -out mtls_server.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT mtls_server.csr
+    COMMAND ${OPENSSL} req -new -sha256 -key mtls_server.key -out mtls_server.csr -subj ${SUBJECT}
+    DEPENDS mtls_server.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT mtls_server.crt
+    COMMAND ${OPENSSL} x509 -req -in mtls_server.csr -CA mtls_ca.crt -CAkey mtls_ca.key -CAcreateserial -out mtls_server.crt -days 1000 -sha256
+    DEPENDS mtls_server.csr mtls_ca.crt mtls_ca.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  # client1 certificates
+  add_custom_command(OUTPUT mtls_client1.key
+    COMMAND ${OPENSSL} ecparam -name prime256v1 -genkey -noout -out mtls_client1.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT mtls_client1.csr
+    COMMAND ${OPENSSL} req -new -sha256 -key mtls_client1.key -out mtls_client1.csr -subj ${CLIENT1_SUBJECT}
+    DEPENDS mtls_client1.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT mtls_client1.crt
+    COMMAND ${OPENSSL} x509 -req -in mtls_client1.csr -CA mtls_ca.crt -CAkey mtls_ca.key -CAcreateserial -out mtls_client1.crt -days 1000 -sha256
+    DEPENDS mtls_client1.csr mtls_ca.crt mtls_ca.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  # client2 certificates
+  add_custom_command(OUTPUT mtls_client2.key
+    COMMAND ${OPENSSL} ecparam -name prime256v1 -genkey -noout -out mtls_client2.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT mtls_client2.csr
+    COMMAND ${OPENSSL} req -new -sha256 -key mtls_client2.key -out mtls_client2.csr -subj ${CLIENT2_SUBJECT}
+    DEPENDS mtls_client2.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  add_custom_command(OUTPUT mtls_client2.crt
+    COMMAND ${OPENSSL} x509 -req -in mtls_client2.csr -CA mtls_ca.crt -CAkey mtls_ca.key -CAcreateserial -out mtls_client2.crt -days 1000 -sha256
+    DEPENDS mtls_client2.csr mtls_ca.crt mtls_ca.key
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  )
+
+  add_custom_target(mtls_certs
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/mtls_client1.crt" "${CMAKE_CURRENT_BINARY_DIR}/mtls_client2.crt" "${CMAKE_CURRENT_BINARY_DIR}/mtls_server.crt"
+  )
+endfunction()
+
 seastar_add_certgen(testcrt DOMAIN scylladb.org SERVER test)
 seastar_add_certgen(othercrt DOMAIN apa.org SERVER other)
+seastar_gen_mtls_certs()
 
 set (tls_certificate_files
   tls-ca-bundle.pem
@@ -554,8 +635,16 @@ add_custom_target(tls_files
   DEPENDS ${out_tls_certificate_files}
 )
 
+add_custom_command (
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/https-server.py
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/https-server.py
+  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/https-server.py ${CMAKE_CURRENT_BINARY_DIR})
+
+add_custom_target (https_server
+  DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/https-server.py)
+
 seastar_add_test (tls
-  DEPENDS tls_files testcrt othercrt
+  DEPENDS tls_files testcrt othercrt mtls_certs https_server
   SOURCES tls_test.cc
   LIBRARIES Boost::filesystem
   WORKING_DIRECTORY ${Seastar_BINARY_DIR})
@@ -587,3 +676,6 @@ seastar_add_test (closeable
 
 seastar_add_test (pipe
   SOURCES pipe_test.cc)
+
+seastar_add_test (spawn
+  SOURCES spawn_test.cc)

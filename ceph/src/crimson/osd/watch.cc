@@ -47,15 +47,16 @@ const hobject_t& WatchTimeoutRequest::get_target_oid() const
 PG::do_osd_ops_params_t
 WatchTimeoutRequest::get_do_osd_ops_params() const
 {
-  PG::do_osd_ops_params_t params;
-  params.conn = watch->conn;
-  params.reqid.name = watch->entity_name;
-  // as in the classical's simple_opc_create()
-  params.mtime = ceph_clock_now();
-  params.map_epoch = get_pg().get_osdmap_epoch();
-  params.orig_source_inst = { watch->entity_name, watch->winfo.addr };
-  //entity_inst_t orig_source_inst;
-  params.features = 0;
+  osd_reqid_t reqid;
+  reqid.name = watch->entity_name;
+  PG::do_osd_ops_params_t params{
+    watch->conn,
+    reqid,
+    ceph_clock_now(),
+    get_pg().get_osdmap_epoch(),
+    entity_inst_t{ watch->entity_name, watch->winfo.addr },
+    0
+  };
   logger().debug("{}: params.reqid={}", __func__, params.reqid);
   return params;
 }
@@ -89,6 +90,13 @@ seastar::future<> Watch::connect(crimson::net::ConnectionRef conn, bool)
   return seastar::now();
 }
 
+void Watch::disconnect()
+{
+  ceph_assert(!conn);
+  timeout_timer.cancel();
+  timeout_timer.arm(std::chrono::seconds{winfo.timeout_seconds});
+}
+
 seastar::future<> Watch::send_notify_msg(NotifyRef notify)
 {
   logger().info("{} for notify(id={})", __func__, notify->ninfo.notify_id);
@@ -116,7 +124,7 @@ seastar::future<> Watch::notify_ack(
 {
   logger().info("{}", __func__);
   return seastar::do_for_each(in_progress_notifies,
-    [this_shared=shared_from_this(), &reply_bl] (auto notify) {
+    [this_shared=shared_from_this(), reply_bl] (auto notify) {
       return notify->complete_watcher(this_shared, reply_bl);
     }
   ).then([this] {
@@ -180,7 +188,7 @@ void Watch::cancel_notify(const uint64_t notify_id)
   in_progress_notifies.erase(it);
 }
 
-void Watch::do_watch_timeout(Ref<PG> pg)
+void Watch::do_watch_timeout()
 {
   assert(pg);
   auto [op, fut] = pg->get_shard_services().start_operation<WatchTimeoutRequest>(
@@ -308,3 +316,7 @@ void Notify::do_notify_timeout()
 }
 
 } // namespace crimson::osd
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<crimson::osd::WatchTimeoutRequest> : fmt::ostream_formatter {};
+#endif

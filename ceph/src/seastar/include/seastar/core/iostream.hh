@@ -35,10 +35,13 @@
 
 #pragma once
 
+#include <boost/intrusive/slist.hpp>
 #include <seastar/core/future.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/scattered_message.hh>
 #include <seastar/util/std-compat.hh>
+
+namespace bi = boost::intrusive;
 
 namespace seastar {
 
@@ -288,6 +291,11 @@ public:
     template <typename Consumer>
     SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
     future<> consume(Consumer& c) noexcept(std::is_nothrow_move_constructible_v<Consumer>);
+    /// Returns true if the end-of-file flag is set on the stream.
+    /// Note that the eof flag is only set after a previous attempt to read
+    /// from the stream noticed the end of the stream. In other words, it is
+    /// possible that eof() returns false but read() will return an empty
+    /// buffer. Checking eof() again after the read will return true.
     bool eof() const noexcept { return _eof; }
     /// Returns some data from the stream, or an empty buffer on end of
     /// stream.
@@ -358,12 +366,14 @@ class output_stream final {
     bool _flush = false;
     bool _flushing = false;
     std::exception_ptr _ex;
+    bi::slist_member_hook<> _in_poller;
+
 private:
     size_t available() const noexcept { return _end - _begin; }
-    size_t possibly_available() const noexcept { return _size - _begin; }
     future<> split_and_put(temporary_buffer<CharType> buf) noexcept;
     future<> put(temporary_buffer<CharType> buf) noexcept;
     void poll_flush() noexcept;
+    future<> do_flush() noexcept;
     future<> zero_copy_put(net::packet p) noexcept;
     future<> zero_copy_split_and_put(net::packet p) noexcept;
     [[gnu::noinline]]
@@ -416,6 +426,10 @@ public:
     ///
     /// \returns the data_sink
     data_sink detach() &&;
+
+    using batch_flush_list_t = bi::slist<output_stream,
+            bi::constant_time_size<false>, bi::cache_last<true>,
+            bi::member_hook<output_stream, bi::slist_member_hook<>, &output_stream::_in_poller>>;
 private:
     friend class reactor;
 };

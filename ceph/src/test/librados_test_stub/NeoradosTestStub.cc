@@ -22,12 +22,14 @@
 #include <boost/system/system_error.hpp>
 
 namespace bs = boost::system;
+using namespace std::literals;
 using namespace std::placeholders;
 
 namespace neorados {
 namespace detail {
 
-struct Client {
+class Client {
+public:
   ceph::mutex mutex = ceph::make_mutex("NeoradosTestStub::Client");
 
   librados::TestRadosClient* test_rados_client;
@@ -548,7 +550,7 @@ void RADOS::execute(const Object& o, const IOContext& ioc, WriteOp&& op,
   }
 
   auto completion = create_aio_completion(std::move(c));
-  auto r = io_ctx->aio_operate(std::string{o}, *ops, completion, &snapc, 0U);
+  auto r = io_ctx->aio_operate(std::string{o}, *ops, completion, &snapc, nullptr, 0U);
   ceph_assert(r == 0);
 }
 

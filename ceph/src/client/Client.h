@@ -32,6 +32,7 @@
 #include "include/unordered_set.h"
 #include "include/cephfs/metrics/Types.h"
 #include "mds/mdstypes.h"
+#include "include/cephfs/types.h"
 #include "msg/Dispatcher.h"
 #include "msg/MessageRef.h"
 #include "msg/Messenger.h"
@@ -955,7 +956,7 @@ protected:
   void connect_mds_targets(mds_rank_t mds);
   void send_request(MetaRequest *request, MetaSession *session,
 		    bool drop_cap_releases=false);
-  MRef<MClientRequest> build_client_request(MetaRequest *request);
+  MRef<MClientRequest> build_client_request(MetaRequest *request, mds_rank_t mds);
   void kick_requests(MetaSession *session);
   void kick_requests_closed(MetaSession *session);
   void handle_client_request_forward(const MConstRef<MClientRequestForward>& reply);
@@ -981,7 +982,7 @@ protected:
   SnapRealm *get_snap_realm_maybe(inodeno_t r);
   void put_snap_realm(SnapRealm *realm);
   bool adjust_realm_parent(SnapRealm *realm, inodeno_t parent);
-  void update_snap_trace(const bufferlist& bl, SnapRealm **realm_ret, bool must_flush=true);
+  void update_snap_trace(MetaSession *session, const bufferlist& bl, SnapRealm **realm_ret, bool must_flush=true);
   void invalidate_snaprealm_and_children(SnapRealm *realm);
 
   void refresh_snapdir_attrs(Inode *in, Inode *diri);
@@ -1075,7 +1076,7 @@ protected:
 
   int authenticate();
 
-  Inode* get_quota_root(Inode *in, const UserPerm& perms);
+  Inode* get_quota_root(Inode *in, const UserPerm& perms, quota_max_t type=QUOTA_ANY);
   bool check_quota_condition(Inode *in, const UserPerm& perms,
 			     std::function<bool (const Inode &)> test);
   bool is_quota_files_exceeded(Inode *in, const UserPerm& perms);
@@ -1252,6 +1253,8 @@ private:
   struct VXattr {
     const std::string name;
     size_t (Client::*getxattr_cb)(Inode *in, char *val, size_t size);
+    int (Client::*setxattr_cb)(Inode *in, const void *val, size_t size,
+			       const UserPerm& perms);
     bool readonly;
     bool (Client::*exists_cb)(Inode *in);
     unsigned int flags;
@@ -1332,7 +1335,8 @@ private:
   int _mknod(Inode *dir, const char *name, mode_t mode, dev_t rdev,
 	     const UserPerm& perms, InodeRef *inp = 0);
   int _do_setattr(Inode *in, struct ceph_statx *stx, int mask,
-		  const UserPerm& perms, InodeRef *inp);
+		  const UserPerm& perms, InodeRef *inp,
+		  std::vector<uint8_t>* aux=nullptr);
   void stat_to_statx(struct stat *st, struct ceph_statx *stx);
   int __setattrx(Inode *in, struct ceph_statx *stx, int mask,
 		 const UserPerm& perms, InodeRef *inp = 0);
@@ -1385,14 +1389,14 @@ private:
   int _fsync(Fh *fh, bool syncdataonly);
   int _fsync(Inode *in, bool syncdataonly);
   int _sync_fs();
+  int clear_suid_sgid(Inode *in, const UserPerm& perms, bool defer=false);
   int _fallocate(Fh *fh, int mode, int64_t offset, int64_t length);
   int _getlk(Fh *fh, struct flock *fl, uint64_t owner);
   int _setlk(Fh *fh, struct flock *fl, uint64_t owner, int sleep);
   int _flock(Fh *fh, int cmd, uint64_t owner);
   int _lazyio(Fh *fh, int enable);
 
-  int get_or_create(Inode *dir, const char* name,
-		    Dentry **pdn, bool expect_null=false);
+  Dentry *get_or_create(Inode *dir, const char* name);
 
   int xattr_permission(Inode *in, const char *name, unsigned want,
 		       const UserPerm& perms);
@@ -1408,6 +1412,12 @@ private:
 
   vinodeno_t _get_vino(Inode *in);
 
+  bool _vxattrcb_fscrypt_auth_exists(Inode *in);
+  size_t _vxattrcb_fscrypt_auth(Inode *in, char *val, size_t size);
+  int _vxattrcb_fscrypt_auth_set(Inode *in, const void *val, size_t size, const UserPerm& perms);
+  bool _vxattrcb_fscrypt_file_exists(Inode *in);
+  size_t _vxattrcb_fscrypt_file(Inode *in, char *val, size_t size);
+  int _vxattrcb_fscrypt_file_set(Inode *in, const void *val, size_t size, const UserPerm& perms);
   bool _vxattrcb_quota_exists(Inode *in);
   size_t _vxattrcb_quota(Inode *in, char *val, size_t size);
   size_t _vxattrcb_quota_max_bytes(Inode *in, char *val, size_t size);

@@ -19,9 +19,11 @@
  * Copyright (C) 2015 Cloudius Systems, Ltd.
  */
 
+#include <unistd.h>
 #include <fmt/core.h>
 #if FMT_VERSION >= 60000
 #include <fmt/chrono.h>
+#include <fmt/color.h>
 #elif FMT_VERSION >= 50000
 #include <fmt/time.h>
 #endif
@@ -45,12 +47,58 @@
 #include <map>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <chrono>
+#include <algorithm>
 
 #include "core/program_options.hh"
 
 using namespace std::chrono_literals;
+
+struct wrapped_log_level {
+    seastar::log_level level;
+};
+
+namespace fmt {
+template <> struct formatter<wrapped_log_level> {
+    using log_level = seastar::log_level;
+    static constexpr size_t nr_levels = static_cast<size_t>(log_level::trace) + 1;
+    static bool colored;
+
+    // format specifier not supported
+    template <typename ParseContext>
+    constexpr auto parse(ParseContext &ctx) { return ctx.begin(); }
+
+    template <typename FormatContext>
+    auto format(wrapped_log_level wll, FormatContext& ctx) const {
+        static seastar::array_map<seastar::sstring, nr_levels> text = {
+            { int(log_level::debug), "DEBUG" },
+            { int(log_level::info),  "INFO " },
+            { int(log_level::trace), "TRACE" },
+            { int(log_level::warn),  "WARN " },
+            { int(log_level::error), "ERROR" },
+        };
+        int index = static_cast<int>(wll.level);
+        std::string_view name = text[index];
+#if FMT_VERSION >= 60000
+        static seastar::array_map<text_style, nr_levels> style = {
+            { int(log_level::debug), fg(terminal_color::green)  },
+            { int(log_level::info),  fg(terminal_color::white)  },
+            { int(log_level::trace), fg(terminal_color::blue)   },
+            { int(log_level::warn),  fg(terminal_color::yellow) },
+            { int(log_level::error), fg(terminal_color::red)    },
+        };
+        if (colored) {
+            return fmt::format_to(ctx.out(), "{}",
+                fmt::format(style[index], "{}", name));
+        }
+#endif
+        return fmt::format_to(ctx.out(), "{}", name);
+    }
+};
+bool formatter<wrapped_log_level>::colored = true;
+}
 
 namespace seastar {
 
@@ -62,7 +110,13 @@ void log_buf::free_buffer() noexcept {
     }
 }
 
-void log_buf::realloc_buffer() {
+void log_buf::realloc_buffer_and_append(char c) noexcept {
+  if (_alloc_failure) {
+    // Already failed to reallocate once, don't try again
+    return;
+  }
+
+  try {
     const auto old_size = size();
     const auto new_size = old_size * 2;
 
@@ -74,6 +128,13 @@ void log_buf::realloc_buffer() {
     _current = _begin + old_size;
     _end = _begin + new_size;
     _own_buf = true;
+    *_current++ = c;
+  } catch (...) {
+    _alloc_failure = true;
+    std::string_view msg = "(log buffer allocation failure)";
+    auto can_copy = std::min(msg.size(), size_t(_current - _begin));
+    std::memcpy(_current - can_copy, msg.begin(), can_copy);
+  }
 }
 
 log_buf::log_buf()
@@ -170,18 +231,20 @@ static internal::log_buf::inserter_iterator print_boot_timestamp(internal::log_b
 static internal::log_buf::inserter_iterator print_real_timestamp(internal::log_buf::inserter_iterator it) {
     struct a_second {
         time_t t;
-        std::string s;
+        std::array<char, 32> static_buf; // big enough to hold '2023-01-14 15:06:33'
+        internal::log_buf buf{static_buf.data(), static_buf.size()};
     };
     static thread_local a_second this_second;
     using clock = std::chrono::system_clock;
     auto n = clock::now();
     auto t = clock::to_time_t(n);
     if (this_second.t != t) {
-        this_second.s = fmt::format("{:%Y-%m-%d %T}", fmt::localtime(t));
         this_second.t = t;
+        this_second.buf.clear();
+        fmt::format_to(this_second.buf.back_insert_begin(), "{:%Y-%m-%d %T}", fmt::localtime(t));
     }
     auto ms = (n - clock::from_time_t(t)) / 1ms;
-    return fmt::format_to(it, "{},{:03d}", this_second.s, ms);
+    return fmt::format_to(it, "{},{:03d}", this_second.buf.view(), ms);
 }
 
 static internal::log_buf::inserter_iterator (*print_timestamp)(internal::log_buf::inserter_iterator) = print_no_timestamp;
@@ -217,6 +280,7 @@ std::istream& operator>>(std::istream& in, log_level& level) {
 std::ostream* logger::_out = &std::cerr;
 std::atomic<bool> logger::_ostream = { true };
 std::atomic<bool> logger::_syslog = { false };
+unsigned logger::_shard_field_width = 1;
 
 logger::logger(sstring name) : _name(std::move(name)) {
     global_logger_registry().register_logger(this);
@@ -253,16 +317,9 @@ logger::do_log(log_level level, log_writer& writer) {
     if(!is_ostream_enabled && !is_syslog_enabled) {
       return;
     }
-    static array_map<sstring, 20> level_map = {
-            { int(log_level::debug), "DEBUG" },
-            { int(log_level::info),  "INFO "  },
-            { int(log_level::trace), "TRACE" },
-            { int(log_level::warn),  "WARN "  },
-            { int(log_level::error), "ERROR" },
-    };
     auto print_once = [&] (internal::log_buf::inserter_iterator it) {
       if (local_engine) {
-          it = fmt::format_to(it, " [shard {}]", this_shard_id());
+          it = fmt::format_to(it, " [shard {:{}}]", this_shard_id(), _shard_field_width);
       }
       it = fmt::format_to(it, " {} - ", _name);
       return writer(it);
@@ -270,12 +327,12 @@ logger::do_log(log_level level, log_writer& writer) {
 
     // Mainly this protects us from re-entrance via malloc()'s
     // oversized allocation warnings and failed allocation errors
-    silencer be_silent(*this);
+    silencer be_silent;
 
     if (is_ostream_enabled) {
         internal::log_buf buf(static_log_buf.data(), static_log_buf.size());
         auto it = buf.back_insert_begin();
-        it = fmt::format_to(it, "{} ", level_map[int(level)]);
+        it = fmt::format_to(it, "{} ", wrapped_log_level{level});
         it = print_timestamp(it);
         it = print_once(it);
         *it++ = '\n';
@@ -338,6 +395,16 @@ logger::set_stdout_enabled(bool enabled) noexcept {
 void
 logger::set_syslog_enabled(bool enabled) noexcept {
     _syslog.store(enabled, std::memory_order_relaxed);
+}
+
+void
+logger::set_shard_field_width(unsigned width) noexcept {
+    _shard_field_width = width;
+}
+
+void
+logger::set_with_color(bool enabled) noexcept {
+    fmt::formatter<wrapped_log_level>::colored = enabled;
 }
 
 bool logger::is_shard_zero() noexcept {
@@ -420,6 +487,7 @@ void apply_logging_settings(const logging_settings& s) {
         break;
     }
     logger::set_syslog_enabled(s.syslog_enabled);
+    logger::set_with_color(s.with_color);
 
     switch (s.stdout_timestamp_style) {
     case logger_timestamp_style::none:
@@ -508,6 +576,7 @@ options::options(program_options::option_group* parent_group)
     , logger_ostream_type(*this, "logger-ostream-type", logger_ostream_type::stderr,
             "Send log output to: none|stdout|stderr")
     , log_to_syslog(*this, "log-to-syslog", false, "Send log output to syslog.")
+    , log_with_color(*this, "log-with-color", isatty(STDOUT_FILENO), "Print colored tag prefix in log message written to ostream")
 {
 }
 
@@ -536,6 +605,7 @@ logging_settings extract_settings(const options& opts) {
         opts.default_log_level.get_value(),
         opts.log_to_stdout.get_value(),
         opts.log_to_syslog.get_value(),
+        opts.log_with_color.get_value(),
         opts.logger_stdout_timestamps.get_value(),
         opts.logger_ostream_type.get_value(),
     };

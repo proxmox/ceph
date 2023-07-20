@@ -22,6 +22,7 @@
 
 #include <boost/move/unique_ptr.hpp>
 #include <boost/move/detail/nsec_clock.hpp>
+#include <boost/move/detail/force_ptr.hpp>
 
 #include "order_type.hpp"
 #include "random_shuffle.hpp"
@@ -31,7 +32,9 @@ using boost::move_detail::nanosecond_type;
 
 void print_stats(const char *str, boost::ulong_long_type element_count)
 {
-   std::printf("%sCmp:%8.04f Cpy:%9.04f\n", str, double(order_perf_type::num_compare)/element_count, double(order_perf_type::num_copy)/element_count );
+   std::printf( "%sCmp:%8.04f Cpy:%9.04f\n", str
+              , double(order_perf_type::num_compare)/double(element_count)
+              , double(order_perf_type::num_copy)/double(element_count));
 }
 
 #include <boost/move/algo/adaptive_merge.hpp>
@@ -68,14 +71,14 @@ template<class T, class Compare>
 void adaptive_merge_buffered(T *elements, T *mid, T *last, Compare comp, std::size_t BufLen)
 {
    boost::movelib::unique_ptr<char[]> mem(new char[sizeof(T)*BufLen]);
-   boost::movelib::adaptive_merge(elements, mid, last, comp, reinterpret_cast<T*>(mem.get()), BufLen);
+   boost::movelib::adaptive_merge(elements, mid, last, comp, boost::move_detail::force_ptr<T*>(mem.get()), BufLen);
 }
 
 template<class T, class Compare>
 void std_like_adaptive_merge_buffered(T *elements, T *mid, T *last, Compare comp, std::size_t BufLen)
 {
    boost::movelib::unique_ptr<char[]> mem(new char[sizeof(T)*BufLen]);
-   boost::movelib::merge_adaptive_ONlogN(elements, mid, last, comp, reinterpret_cast<T*>(mem.get()), BufLen);
+   boost::movelib::merge_adaptive_ONlogN(elements, mid, last, comp, boost::move_detail::force_ptr<T*>(mem.get()), BufLen);
 }
 
 enum AlgoType
@@ -172,7 +175,7 @@ bool measure_algo(T *elements, std::size_t element_count, std::size_t split_pos,
    nanosecond_type new_clock = timer.elapsed().wall;
 
    //std::cout << "Cmp:" << order_perf_type::num_compare << " Cpy:" << order_perf_type::num_copy;   //for old compilers without ll size argument
-   std::printf("Cmp:%8.04f Cpy:%9.04f", double(order_perf_type::num_compare)/element_count, double(order_perf_type::num_copy)/element_count );
+   std::printf("Cmp:%8.04f Cpy:%9.04f", double(order_perf_type::num_compare)/double(element_count), double(order_perf_type::num_copy)/double(element_count) );
 
    double time = double(new_clock);
 

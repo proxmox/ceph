@@ -31,13 +31,13 @@
 #include <string>
 #include <tuple>
 #include <chrono>
-#include <boost/program_options.hpp>
 
 #include <seastar/core/future.hh>
 #include <seastar/net/byteorder.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/util/log.hh>
+#include <seastar/util/program-options.hh>
 
 #include <seastar/core/metrics_api.hh>
 
@@ -562,12 +562,6 @@ typename std::enable_if<
 std::is_integral<T>::value && std::is_unsigned<T>::value,
 void>::type> : public std::integral_constant<data_type,
 data_type::COUNTER> {
-};
-template<typename T>
-struct data_type_for<T,
-typename std::enable_if<
-std::is_integral<T>::value && std::is_signed<T>::value, void>::type> : public std::integral_constant<
-data_type, data_type::DERIVE> {
 };
 template<typename T>
 struct data_type_for<T,

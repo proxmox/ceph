@@ -1,7 +1,12 @@
 Boost Multiprecision Library
 ============================
 
->ANNOUNCEMENT: Support for C++03 is now deprecated in this library and will be supported in existing features only until March 2021. New features will require at least C++11, as will existing features from next year.
+>ANNOUNCEMENT: Support for C++03 is now removed from this library.  Any attempt to build with a non C++11 conforming compiler is doomed to failure.
+
+|                  |  Master  |   Develop   |
+|------------------|----------|-------------|
+| Drone            |  [![Build Status](https://drone.cpp.al/api/badges/boostorg/multiprecision/status.svg?ref=refs/heads/master)](https://drone.cpp.al/boostorg/multiprecision) | [![Build Status](https://drone.cpp.al/api/badges/boostorg/multiprecision/status.svg)](https://drone.cpp.al/boostorg/multiprecision) |
+| Github Actions | [![Build Status](https://github.com/boostorg/multiprecision/workflows/multiprecision/badge.svg?branch=master)](https://github.com/boostorg/multiprecision/actions) | [![Build Status](https://github.com/boostorg/multiprecision/workflows/multiprecision/badge.svg?branch=develop)](https://github.com/boostorg/multiprecision/actions) |
 
  The Multiprecision Library provides integer, rational, floating-point, complex and interval number types in C++ that have more range and 
  precision than C++'s ordinary built-in types. The big number types in Multiprecision can be used with a wide selection of basic 
@@ -12,14 +17,19 @@ Boost Multiprecision Library
 Multiprecision consists of a generic interface to the mathematics of large numbers as well as a selection of big number back ends, with 
 support for integer, rational and floating-point types. Boost.Multiprecision provides a selection of back ends provided off-the-rack in 
 including interfaces to GMP, MPFR, MPIR, TomMath as well as its own collection of Boost-licensed, header-only back ends for integers, 
-rationals, floats and complex. In addition, user-defined back ends can be created and used with the interface of Multiprecision
-, provided the class implementation adheres to the necessary concepts.
+rationals, floats and complex. In addition, user-defined back ends can be created and used with the interface of Multiprecision, provided the class implementation adheres to the necessary concepts.
 
 Depending upon the number type, precision may be arbitrarily large (limited only by available memory), fixed at compile time 
 (for example 50 or 100 decimal digits), or a variable controlled at run-time by member functions. The types are expression-template-enabled 
 for better performance than naive user-defined types. 
 
 The full documentation is available on [boost.org](http://www.boost.org/doc/libs/release/libs/multiprecision/index.html).
+
+## Standalone (BETA) ##
+
+Defining BOOST_MP_STANDALONE allows Boost.Multiprecision to be used with the only dependency being [Boost.Config](https://github.com/boostorg/config). Our package on this page
+already includes a copy of Boost.Config so no other donwloads are required. Some functionality is reduced in this mode. A static_assert message will alert you if a particular feature has been disabled by standalone mode.
+[Boost.Math](https://github.com/boostorg/math) standalone mode is compatiable, and recommended if special functions is required.
 
 ## Support, bugs and feature requests ##
 
@@ -43,8 +53,11 @@ Clone the whole boost project, which includes the individual Boost projects as s
 The Boost Multiprecision Library is located in `libs/multiprecision/`. 
 
 ### Running tests ###
-First, make sure you are in `libs/multiprecision/test`. 
-You can either run all the tests listed in `Jamfile.v2` or run a single test:
+First, build the B2 engine by running `bootstrap.sh` in the root of the boost directory. This will generate B2 configuration in `project-config.jam`.
+     
+    ./bootstrap.sh
+
+Now make sure you are in `libs/multiprecision/test`. You can either run all the tests listed in `Jamfile.v2` or run a single test:
 
     ../../../b2                        <- run all tests
     ../../../b2 test_complex           <- single test

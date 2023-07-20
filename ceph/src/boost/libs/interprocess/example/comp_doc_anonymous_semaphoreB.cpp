@@ -7,7 +7,7 @@
 // See http://www.boost.org/libs/interprocess for documentation.
 //
 //////////////////////////////////////////////////////////////////////////////
-#include <boost/interprocess/detail/config_begin.hpp>
+
 //[doc_anonymous_semaphoreB
 #include <boost/interprocess/shared_memory_object.hpp>
 #include <boost/interprocess/mapped_region.hpp>
@@ -29,7 +29,7 @@ int main ()
 
    //Create a shared memory object.
    shared_memory_object shm
-      (open_only                    //only create
+      (open_only                    //only open
       ,"MySharedMemory"              //name
       ,read_write  //read-write mode
       );
@@ -64,4 +64,4 @@ int main ()
    return 0;
 }
 //]
-#include <boost/interprocess/detail/config_end.hpp>
+

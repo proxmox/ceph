@@ -59,6 +59,9 @@ if (${Seastar_API_LEVEL} GREATER_EQUAL 3)
     SOURCES coroutines_demo.cc)
 endif ()
 
+seastar_add_demo (hello-world
+  SOURCES hello-world.cc)
+
 seastar_add_demo (websocket
   SOURCES websocket_demo.cc)
 
@@ -116,3 +119,6 @@ seastar_add_demo (file
 
 seastar_add_demo (tutorial_examples
   SOURCES tutorial_examples.cc)
+
+seastar_add_demo (http_client
+  SOURCES http_client_demo.cc)

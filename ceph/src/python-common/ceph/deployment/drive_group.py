@@ -15,6 +15,9 @@ class OSDMethod(str, enum.Enum):
     raw = 'raw'
     lvm = 'lvm'
 
+    def to_json(self) -> str:
+        return self.value
+
 
 class DeviceSelection(object):
     """
@@ -26,10 +29,11 @@ class DeviceSelection(object):
     """
 
     _supported_filters = [
-            "paths", "size", "vendor", "model", "rotational", "limit", "all"
+            "actuators", "paths", "size", "vendor", "model", "rotational", "limit", "all"
     ]
 
     def __init__(self,
+                 actuators=None,  # type: Optional[int]
                  paths=None,  # type: Optional[List[Dict[str, str]]]
                  model=None,  # type: Optional[str]
                  size=None,  # type: Optional[str]
@@ -41,6 +45,8 @@ class DeviceSelection(object):
         """
         ephemeral drive group device specification
         """
+        self.actuators = actuators
+
         #: List of Device objects for devices paths.
 
         self.paths = []
@@ -60,7 +66,7 @@ class DeviceSelection(object):
         self.vendor = vendor
 
         #: Size specification of format LOW:HIGH.
-        #: Can also take the the form :HIGH, LOW:
+        #: Can also take the form :HIGH, LOW:
         #: or an exact value (as ceph-volume inventory reports)
         self.size:  Optional[str] = size
 
@@ -75,7 +81,8 @@ class DeviceSelection(object):
         self.all = all
 
     def validate(self, name: str) -> None:
-        props = [self.model, self.vendor, self.size, self.rotational]  # type: List[Any]
+        props = [self.actuators, self.model, self.vendor, self.size,
+                 self.rotational]  # type: List[Any]
         if self.paths and any(p is not None for p in props):
             raise DriveGroupValidationError(
                 name,

@@ -12,6 +12,7 @@ import sys
 
 from datetime import datetime, timedelta
 from nose import with_setup, SkipTest
+from nose.plugins.attrib import attr
 from nose.tools import eq_ as eq, assert_raises, assert_not_equal
 from rados import (Rados,
                    LIBRADOS_OP_FLAG_FADVISE_DONTNEED,
@@ -43,7 +44,8 @@ from rbd import (RBD, Group, Image, ImageNotFound, InvalidArgument, ImageExists,
                  RBD_SNAP_CREATE_SKIP_QUIESCE,
                  RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR,
                  RBD_WRITE_ZEROES_FLAG_THICK_PROVISION,
-                 RBD_ENCRYPTION_FORMAT_LUKS1, RBD_ENCRYPTION_FORMAT_LUKS2)
+                 RBD_ENCRYPTION_FORMAT_LUKS1, RBD_ENCRYPTION_FORMAT_LUKS2,
+                 RBD_ENCRYPTION_FORMAT_LUKS)
 
 rados = None
 ioctx = None
@@ -73,7 +75,8 @@ def setup_module():
     RBD().pool_init(ioctx, True)
     global features
     features = os.getenv("RBD_FEATURES")
-    features = int(features) if features is not None else 61
+    if features is not None:
+        features = int(features)
 
 def teardown_module():
     global ioctx
@@ -776,6 +779,7 @@ class TestImage(object):
         self._test_copy(features, self.image.stat()['order'],
                         self.image.stripe_unit(), self.image.stripe_count())
 
+    @attr('SKIP_IF_CRIMSON')
     def test_deep_copy(self):
         global ioctx
         global features
@@ -1376,7 +1380,7 @@ class TestImage(object):
             assert_not_equal(data, image.read(offset, len(data)))
             image.write(data, offset)
         with Image(ioctx, image_name) as image:
-            image.encryption_load(RBD_ENCRYPTION_FORMAT_LUKS1, "password")
+            image.encryption_load(RBD_ENCRYPTION_FORMAT_LUKS, "password")
             eq(data, image.read(offset, len(data)))
 
     @require_linux()
@@ -1396,7 +1400,7 @@ class TestImage(object):
             assert_not_equal(data, image.read(offset, len(data)))
             image.write(data, offset)
         with Image(ioctx, image_name) as image:
-            image.encryption_load(RBD_ENCRYPTION_FORMAT_LUKS2, "password")
+            image.encryption_load(RBD_ENCRYPTION_FORMAT_LUKS, "password")
             eq(data, image.read(offset, len(data)))
 
 
@@ -1875,6 +1879,34 @@ class TestClone(object):
         self.rbd.remove(ioctx, clone_name)
         eq([], [s for s in self.image.list_snaps() if s['name'] != 'snap1'])
 
+    @require_linux()
+    @blocklist_features([RBD_FEATURE_JOURNALING])
+    def test_encryption_luks1(self):
+        data = b'hello world'
+        offset = 16<<20
+        image_size = 32<<20
+
+        self.clone.resize(image_size)
+        self.clone.encryption_format(RBD_ENCRYPTION_FORMAT_LUKS1, "password")
+        self.clone.encryption_load2(
+            ((RBD_ENCRYPTION_FORMAT_LUKS1, "password"),))
+        self.clone.write(data, offset)
+        eq(self.clone.read(0, 16), self.image.read(0, 16))
+
+    @require_linux()
+    @blocklist_features([RBD_FEATURE_JOURNALING])
+    def test_encryption_luks2(self):
+        data = b'hello world'
+        offset = 16<<20
+        image_size = 64<<20
+
+        self.clone.resize(image_size)
+        self.clone.encryption_format(RBD_ENCRYPTION_FORMAT_LUKS2, "password")
+        self.clone.encryption_load2(
+            ((RBD_ENCRYPTION_FORMAT_LUKS2, "password"),))
+        self.clone.write(data, offset)
+        eq(self.clone.read(0, 16), self.image.read(0, 16))
+
 class TestExclusiveLock(object):
 
     @require_features([RBD_FEATURE_EXCLUSIVE_LOCK])
@@ -2000,6 +2032,7 @@ class TestExclusiveLock(object):
             image.lock_acquire(RBD_LOCK_MODE_EXCLUSIVE)
             image.lock_release()
 
+    @attr('SKIP_IF_CRIMSON')
     def test_break_lock(self):
         blocklist_rados = Rados(conffile='')
         blocklist_rados.connect()

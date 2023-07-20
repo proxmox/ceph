@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(ceph
-  VERSION 17.2.6
+  VERSION 18.1.2
   LANGUAGES CXX C ASM)
 
 cmake_policy(SET CMP0028 NEW)
@@ -14,9 +14,11 @@ cmake_policy(SET CMP0065 NEW)
 cmake_policy(SET CMP0074 NEW)
 cmake_policy(SET CMP0075 NEW)
 cmake_policy(SET CMP0093 NEW)
-if(POLICY CMP0127)
-  cmake_policy(SET CMP0127 NEW)
-endif()
+foreach(policy CMP0127 CMP0135)
+  if(POLICY ${policy})
+    cmake_policy(SET ${policy} NEW)
+  endif()
+endforeach()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
@@ -68,16 +70,17 @@ endif()
 
 option(WITH_CCACHE "Build with ccache.")
 if(WITH_CCACHE)
-  find_program(CCACHE_EXECUTABLE ccache)
-  if(NOT CCACHE_EXECUTABLE)
-    message(FATAL_ERROR "Can't find ccache. Is it installed?")
+  if(CMAKE_C_COMPILER_LAUNCHER OR CMAKE_CXX_COMPILER_LAUNCHER)
+    message(WARNING "Compiler launcher already set. stop configuring ccache")
+  else()
+    find_program(CCACHE_EXECUTABLE ccache)
+    if(NOT CCACHE_EXECUTABLE)
+      message(FATAL_ERROR "Can't find ccache. Is it installed?")
+    endif()
+    message(STATUS "Building with ccache: ${CCACHE_EXECUTABLE}, CCACHE_DIR=$ENV{CCACHE_DIR}")
+    set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_EXECUTABLE})
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_EXECUTABLE})
   endif()
-  message(STATUS "Building with ccache: ${CCACHE_EXECUTABLE}, CCACHE_DIR=$ENV{CCACHE_DIR}")
-  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_EXECUTABLE}")
-  # ccache does not accelerate link (ld), but let it handle it. by passing it
-  # along with cc to python's distutils, we are able to workaround
-  # https://bugs.python.org/issue8027.
-  set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK "${CCACHE_EXECUTABLE}")
 endif(WITH_CCACHE)
 
 option(WITH_MANPAGE "Build man pages." ON)
@@ -171,6 +174,7 @@ if(LINUX)
 elseif(FREEBSD)
   set(HAVE_UDEV OFF)
   set(HAVE_LIBAIO OFF)
+  set(HAVE_LIBDML OFF)
   set(HAVE_BLKID OFF)
   set(HAVE_KEYUTILS OFF)
 else()
@@ -192,7 +196,7 @@ endif()
 
 option(WITH_FUSE "Fuse is here" ON)
 if(WITH_FUSE)
-  find_package(FUSE)
+  find_package(FUSE REQUIRED)
   set(HAVE_LIBFUSE ${FUSE_FOUND})
 endif()
 
@@ -245,6 +249,13 @@ CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_LIBURING "Require and build with system libur
 
 CMAKE_DEPENDENT_OPTION(WITH_BLUESTORE_PMEM "Enable PMDK libraries" OFF
   "WITH_BLUESTORE" OFF)
+if(WITH_BLUESTORE_PMEM)
+  find_package(dml)
+  set(HAVE_LIBDML ${DML_FOUND})
+endif()
+
+CMAKE_DEPENDENT_OPTION(WITH_RBD_MIRROR "Enable build for rbd-mirror daemon executable" OFF
+    "WITH_RBD" OFF)
 
 CMAKE_DEPENDENT_OPTION(WITH_RBD_MIGRATION_FORMAT_QCOW_V1
   "Enable librbd QCOW v1 migration format support" ON
@@ -388,10 +399,10 @@ else()
   set(EXE_LINKER_USE_PIE ${ENABLE_SHARED})
 endif()
 
-find_package(CURL REQUIRED)
-set(CMAKE_REQUIRED_INCLUDES ${CURL_INCLUDE_DIRS})
-set(CMAKE_REQUIRED_LIBRARIES ${CURL_LIBRARIES})
-CHECK_SYMBOL_EXISTS(curl_multi_wait curl/curl.h HAVE_CURL_MULTI_WAIT)
+if(NOT WIN32)
+  # require libcurl with good curl_multi_wait(), see https://tracker.ceph.com/issues/15915
+  find_package(CURL 7.32 REQUIRED)
+endif()
 
 find_package(OpenSSL REQUIRED)
 set(CRYPTO_LIBS OpenSSL::Crypto)
@@ -413,7 +424,7 @@ if(WITH_BLKIN)
   include_directories(SYSTEM src/blkin/blkin-lib)
 endif(WITH_BLKIN)
 
-option(WITH_JAEGER "Enable jaegertracing and it's dependent libraries" OFF)
+option(WITH_JAEGER "Enable jaegertracing and it's dependent libraries" ON)
 if(WITH_JAEGER)
   set(HAVE_JAEGER TRUE)
 endif()
@@ -425,7 +436,11 @@ option(WITH_RADOSGW_AMQP_ENDPOINT "Rados Gateway's pubsub support for AMQP push 
 option(WITH_RADOSGW_KAFKA_ENDPOINT "Rados Gateway's pubsub support for Kafka push endpoint" ON)
 option(WITH_RADOSGW_LUA_PACKAGES "Rados Gateway's support for dynamically adding lua packagess" ON)
 option(WITH_RADOSGW_DBSTORE "DBStore backend for Rados Gateway" ON)
+option(WITH_RADOSGW_MOTR "CORTX-Motr backend for Rados Gateway" OFF)
+option(WITH_RADOSGW_DAOS "DAOS backend for RADOS Gateway" OFF)
 option(WITH_RADOSGW_SELECT_PARQUET "Support for s3 select on parquet objects" ON)
+option(WITH_RADOSGW_ARROW_FLIGHT "Build arrow flight when not using system-provided arrow" OFF)
+option(WITH_RADOSGW_BACKTRACE_LOGGING "Enable backtraces in rgw logs" OFF)
 
 option(WITH_SYSTEM_ARROW "Use system-provided arrow" OFF)
 option(WITH_SYSTEM_UTF8PROC "Use system-provided utf8proc" OFF)
@@ -623,6 +638,9 @@ if(WITH_RADOSGW AND WITH_RADOSGW_LUA_PACKAGES)
 endif()
 
 set(Boost_USE_MULTITHREADED ON)
+
+CMAKE_DEPENDENT_OPTION(WITH_BOOST_VALGRIND "Boost support for valgrind" OFF
+  "NOT WITH_SYSTEM_BOOST" OFF)
 # require minimally the bundled version
 if(WITH_SYSTEM_BOOST)
   if(ENABLE_SHARED)
@@ -633,17 +651,21 @@ if(WITH_SYSTEM_BOOST)
   if(BOOST_ROOT AND CMAKE_LIBRARY_ARCHITECTURE)
     set(BOOST_LIBRARYDIR "${BOOST_ROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
   endif()
-  find_package(Boost 1.73 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
+  find_package(Boost 1.79 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
   if(NOT ENABLE_SHARED)
     set_property(TARGET Boost::iostreams APPEND PROPERTY
       INTERFACE_LINK_LIBRARIES ZLIB::ZLIB)
   endif()
 else()
-  set(BOOST_J 1 CACHE STRING
-    "max jobs for Boost build") # override w/-DBOOST_J=<n>
+  include(ProcessorCount)
+  ProcessorCount(DEFAULT_BOOST_J)
+  if(DEFAULT_BOOST_J EQUAL 0)
+    set(DEFAULT_BOOST_J 1)
+  endif()
+  set(BOOST_J ${DEFAULT_BOOST_J} CACHE STRING "max jobs for Boost build") # override w/-DBOOST_J=<n>
   set(Boost_USE_STATIC_LIBS ON)
   include(BuildBoost)
-  build_boost(1.75
+  build_boost(1.79
     COMPONENTS ${BOOST_COMPONENTS} ${BOOST_HEADER_COMPONENTS})
 endif()
 include_directories(BEFORE SYSTEM ${Boost_INCLUDE_DIRS})
@@ -707,9 +729,6 @@ endif()
 
 option(WITH_GRAFANA "install grafana dashboards" OFF)
 add_subdirectory(monitoring/ceph-mixin)
-
-CMAKE_DEPENDENT_OPTION(WITH_BOOST_VALGRIND "Boost support for valgrind" OFF
-  "NOT WITH_SYSTEM_BOOST" OFF)
 
 include(CTags)
 option(CTAG_EXCLUDES "Exclude files/directories when running ctag.")

@@ -1,4 +1,4 @@
-// Copyright 2016-2020 Antony Polukhin
+// Copyright 2016-2022 Antony Polukhin
 
 // Distributed under the Boost Software License, Version 1.0.
 // (See the accompanying file LICENSE_1_0.txt
@@ -12,6 +12,7 @@
 #include <boost/pfr.hpp>
 #include <boost/type_index.hpp>
 
+// boost-no-inspect
 void test_examples() {
 
 #if BOOST_PFR_USE_CPP17
@@ -55,7 +56,7 @@ void test_examples() {
 
   {
 //[pfr_quick_examples_for_each_idx
-    // Iterate over fields of a varible and output index and
+    // Iterate over fields of a variable and output index and
     // type of a variable.
 
     struct tag0{};

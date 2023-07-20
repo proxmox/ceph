@@ -14,8 +14,8 @@
 
 #include <boost/config/warning_disable.hpp>
 #include <boost/spirit/include/qi.hpp>
-#include <boost/spirit/include/phoenix_operator.hpp>
-#include <boost/spirit/include/phoenix.hpp>
+#include <boost/phoenix/operator.hpp>
+#include <boost/phoenix.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 
 #include "OSDCap.h"
@@ -339,7 +339,8 @@ void OSDCapGrant::expand_profile()
                                 OSDCapSpec(osd_rwxa_t(OSD_CAP_CLS_R)));
     profile_grants.emplace_back(OSDCapMatch(string(), "rbd_mirroring"),
                                 OSDCapSpec(osd_rwxa_t(OSD_CAP_CLS_R)));
-    profile_grants.emplace_back(OSDCapMatch(profile.pool_namespace.pool_name),
+    profile_grants.emplace_back(OSDCapMatch(profile.pool_namespace.pool_name,
+                                            "", "rbd_info"),
                                 OSDCapSpec("rbd", "metadata_list"));
     profile_grants.emplace_back(OSDCapMatch(profile.pool_namespace),
                                 OSDCapSpec(osd_rwxa_t(OSD_CAP_R |
@@ -348,6 +349,9 @@ void OSDCapGrant::expand_profile()
   }
   if (profile.name == "rbd-read-only") {
     // RBD read-only grant
+    profile_grants.emplace_back(OSDCapMatch(profile.pool_namespace.pool_name,
+                                            "", "rbd_info"),
+                                OSDCapSpec("rbd", "metadata_list"));
     profile_grants.emplace_back(OSDCapMatch(profile.pool_namespace),
                                 OSDCapSpec(osd_rwxa_t(OSD_CAP_R |
                                                       OSD_CAP_CLS_R)));

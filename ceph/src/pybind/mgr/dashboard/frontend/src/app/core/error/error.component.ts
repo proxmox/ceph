@@ -18,9 +18,7 @@ export class ErrorComponent implements OnDestroy, OnInit {
   header: string;
   message: string;
   section: string;
-  section_info: string;
-  button_name: string;
-  button_route: string;
+  sectionInfo: string;
   icon: string;
   docUrl: string;
   source: string;
@@ -75,9 +73,7 @@ export class ErrorComponent implements OnDestroy, OnInit {
       this.message = history.state.message;
       this.header = history.state.header;
       this.section = history.state.section;
-      this.section_info = history.state.section_info;
-      this.button_name = history.state.button_name;
-      this.button_route = history.state.button_route;
+      this.sectionInfo = history.state.section_info;
       this.icon = history.state.icon;
       this.source = history.state.source;
       this.uiConfig = history.state.uiConfig;

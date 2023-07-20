@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -37,8 +37,8 @@
 #include "ossl_helper.h"
 #include "types.h"
 
-//define GCM_VECTORS_VERBOSE
-//define GCM_VECTORS_EXTRA_VERBOSE
+//#define GCM_VECTORS_VERBOSE
+//#define GCM_VECTORS_EXTRA_VERBOSE
 #ifndef TEST_SEED
 # define TEST_SEED 0x1234
 #endif
@@ -66,7 +66,6 @@
 #endif
 #endif
 
-
 void dump_table(char *title, uint8_t * table, uint8_t count)
 {
 	int i;
@@ -84,27 +83,27 @@ void dump_table(char *title, uint8_t * table, uint8_t count)
 	printf("%s}\n", space);
 }
 
-void dump_gcm_data(struct gcm_data *gdata)
+void dump_gcm_data(struct gcm_key_data *gkey)
 {
 #ifdef GCM_VECTORS_EXTRA_VERBOSE
 	printf("gcm_data {\n");
-	dump_table("expanded_keys", gdata->expanded_keys, (16 * 11));
-	dump_table("shifted_hkey_1", gdata->shifted_hkey_1, 16);
-	dump_table("shifted_hkey_2", gdata->shifted_hkey_2, 16);
-	dump_table("shifted_hkey_3", gdata->shifted_hkey_3, 16);
-	dump_table("shifted_hkey_4", gdata->shifted_hkey_4, 16);
-	dump_table("shifted_hkey_5", gdata->shifted_hkey_5, 16);
-	dump_table("shifted_hkey_6", gdata->shifted_hkey_6, 16);
-	dump_table("shifted_hkey_7", gdata->shifted_hkey_7, 16);
-	dump_table("shifted_hkey_8", gdata->shifted_hkey_8, 16);
-	dump_table("shifted_hkey_1_k", gdata->shifted_hkey_1_k, 16);
-	dump_table("shifted_hkey_2_k", gdata->shifted_hkey_2_k, 16);
-	dump_table("shifted_hkey_3_k", gdata->shifted_hkey_3_k, 16);
-	dump_table("shifted_hkey_4_k", gdata->shifted_hkey_4_k, 16);
-	dump_table("shifted_hkey_5_k", gdata->shifted_hkey_5_k, 16);
-	dump_table("shifted_hkey_6_k", gdata->shifted_hkey_6_k, 16);
-	dump_table("shifted_hkey_7_k", gdata->shifted_hkey_7_k, 16);
-	dump_table("shifted_hkey_8_k", gdata->shifted_hkey_8_k, 16);
+	dump_table("expanded_keys", gkey->expanded_keys, (16 * 11));
+	dump_table("shifted_hkey_1", gkey->shifted_hkey_1, 16);
+	dump_table("shifted_hkey_2", gkey->shifted_hkey_2, 16);
+	dump_table("shifted_hkey_3", gkey->shifted_hkey_3, 16);
+	dump_table("shifted_hkey_4", gkey->shifted_hkey_4, 16);
+	dump_table("shifted_hkey_5", gkey->shifted_hkey_5, 16);
+	dump_table("shifted_hkey_6", gkey->shifted_hkey_6, 16);
+	dump_table("shifted_hkey_7", gkey->shifted_hkey_7, 16);
+	dump_table("shifted_hkey_8", gkey->shifted_hkey_8, 16);
+	dump_table("shifted_hkey_1_k", gkey->shifted_hkey_1_k, 16);
+	dump_table("shifted_hkey_2_k", gkey->shifted_hkey_2_k, 16);
+	dump_table("shifted_hkey_3_k", gkey->shifted_hkey_3_k, 16);
+	dump_table("shifted_hkey_4_k", gkey->shifted_hkey_4_k, 16);
+	dump_table("shifted_hkey_5_k", gkey->shifted_hkey_5_k, 16);
+	dump_table("shifted_hkey_6_k", gkey->shifted_hkey_6_k, 16);
+	dump_table("shifted_hkey_7_k", gkey->shifted_hkey_7_k, 16);
+	dump_table("shifted_hkey_8_k", gkey->shifted_hkey_8_k, 16);
 	printf("}\n");
 #endif //GCM_VECTORS_VERBOSE
 }
@@ -140,7 +139,7 @@ int check_data(uint8_t * test, uint8_t * expected, uint64_t len, char *data_name
 	return OK;
 }
 
-int check_vector(struct gcm_data *gdata, gcm_vector * vector)
+int check_vector(struct gcm_key_data *gkey, struct gcm_context_data *gctx, gcm_vector * vector)
 {
 	uint8_t *pt_test = NULL;
 	uint8_t *ct_test = NULL;
@@ -148,7 +147,6 @@ int check_vector(struct gcm_data *gdata, gcm_vector * vector)
 	uint8_t *IV_c = NULL;
 	uint8_t *T_test = NULL;
 	uint8_t *o_T_test = NULL;
-	uint8_t const IVend[] = GCM_IV_END_MARK;
 	uint64_t IV_alloc_len = 0;
 	int result;
 	int OK = 0;
@@ -170,16 +168,14 @@ int check_vector(struct gcm_data *gdata, gcm_vector * vector)
 			return 1;
 		}
 	}
-	IV_alloc_len = vector->IVlen + sizeof(IVend);
+	IV_alloc_len = vector->IVlen;
 	// Allocate space for the calculated ciphertext
 	IV_c = malloc(IV_alloc_len);
 	if (IV_c == NULL) {
 		fprintf(stderr, "Can't allocate ciphertext memory\n");
 		return 1;
 	}
-	//Add end marker to the IV data for ISA-L
 	memcpy(IV_c, vector->IV, vector->IVlen);
-	memcpy(&IV_c[vector->IVlen], IVend, sizeof(IVend));
 
 	T_test = malloc(vector->Tlen);
 	o_T_test = malloc(vector->Tlen);
@@ -188,13 +184,13 @@ int check_vector(struct gcm_data *gdata, gcm_vector * vector)
 		return 1;
 	}
 	// This is only required once for a given key
-	aesni_gcm128_pre(vector->K, gdata);
+	aes_gcm_pre_128(vector->K, gkey);
 
 	////
 	// ISA-l Encrypt
 	////
-	aesni_gcm128_enc(gdata, vector->C, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_enc_128(gkey, gctx, vector->C, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	openssl_aes_gcm_enc(vector->K, vector->IV,
 			    vector->IVlen, vector->A, vector->Alen, o_T_test,
 			    vector->Tlen, vector->P, vector->Plen, o_ct_test);
@@ -212,14 +208,14 @@ int check_vector(struct gcm_data *gdata, gcm_vector * vector)
 	////
 	// ISA-l Decrypt
 	////
-	aesni_gcm128_dec(gdata, vector->P, vector->C, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_dec_128(gkey, gctx, vector->P, vector->C, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	OK |=
 	    check_data(vector->T, o_T_test, vector->Tlen, "OpenSSL vs ISA-L decrypt tag (T)");
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	memset(vector->P, 0, vector->Plen);
-	aesni_gcm128_dec(gdata, vector->P, o_ct_test, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_dec_128(gkey, gctx, vector->P, o_ct_test, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	result =
 	    openssl_aes_gcm_dec(vector->K, vector->IV,
@@ -238,7 +234,8 @@ int check_vector(struct gcm_data *gdata, gcm_vector * vector)
 	return OK;
 }
 
-int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
+int check_strm_vector(struct gcm_key_data *gkey, struct gcm_context_data *gctx,
+		      gcm_vector * vector, int test_len)
 {
 	uint8_t *pt_test = NULL;
 	uint8_t *ct_test = NULL;
@@ -247,7 +244,6 @@ int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
 	uint8_t *T_test = NULL;
 	uint8_t *o_T_test = NULL;
 	uint8_t *stream = NULL;
-	uint8_t const IVend[] = GCM_IV_END_MARK;
 	uint64_t IV_alloc_len = 0;
 	int result;
 	int OK = 0;
@@ -275,16 +271,14 @@ int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
 			return 1;
 		}
 	}
-	IV_alloc_len = vector->IVlen + sizeof(IVend);
+	IV_alloc_len = vector->IVlen;
 	// Allocate space for the calculated ciphertext
 	IV_c = malloc(IV_alloc_len);
 	if (IV_c == NULL) {
 		fprintf(stderr, "Can't allocate ciphertext memory\n");
 		return 1;
 	}
-	//Add end marker to the IV data for ISA-L
 	memcpy(IV_c, vector->IV, vector->IVlen);
-	memcpy(&IV_c[vector->IVlen], IVend, sizeof(IVend));
 
 	T_test = malloc(vector->Tlen);
 	o_T_test = malloc(vector->Tlen);
@@ -293,12 +287,12 @@ int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
 		return 1;
 	}
 	// This is only required once for a given key
-	aesni_gcm128_pre(vector->K, gdata);
+	aes_gcm_pre_128(vector->K, gkey);
 
 	////
 	// ISA-l Encrypt
 	////
-	aesni_gcm128_init(gdata, IV_c, vector->A, vector->Alen);
+	aes_gcm_init_128(gkey, gctx, IV_c, vector->A, vector->Alen);
 
 	last_break = 0;
 	i = (rand() % test_len / 32) & ALIGNMENT_MASK;
@@ -307,8 +301,8 @@ int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
 			stream = malloc(i - last_break);
 			memcpy(stream, vector->P + last_break, i - last_break);
 		}
-		aesni_gcm128_enc_update(gdata, vector->C + last_break, stream,
-					i - last_break);
+		aes_gcm_enc_128_update(gkey, gctx, vector->C + last_break, stream,
+				       i - last_break);
 		if (i - last_break != 0)
 			free(stream);
 
@@ -321,11 +315,11 @@ int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
 		i = (rand() % test_len / 32) & ALIGNMENT_MASK;
 
 	}
-	aesni_gcm128_enc_update(gdata, vector->C + last_break, vector->P + last_break,
-				vector->Plen - last_break);
-	if (gdata->in_length != vector->Plen)
-		printf("%lu, %lu\n", gdata->in_length, vector->Plen);
-	aesni_gcm128_enc_finalize(gdata, vector->T, vector->Tlen);
+	aes_gcm_enc_128_update(gkey, gctx, vector->C + last_break, vector->P + last_break,
+			       vector->Plen - last_break);
+	if (gctx->in_length != vector->Plen)
+		printf("%lu, %lu\n", gctx->in_length, vector->Plen);
+	aes_gcm_enc_128_finalize(gkey, gctx, vector->T, vector->Tlen);
 	openssl_aes_gcm_enc(vector->K, vector->IV,
 			    vector->IVlen, vector->A, vector->Alen, o_T_test,
 			    vector->Tlen, vector->P, vector->Plen, o_ct_test);
@@ -346,15 +340,15 @@ int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
 
 	last_break = 0;
 	i = 0;
-	aesni_gcm128_init(gdata, IV_c, vector->A, vector->Alen);
+	aes_gcm_init_128(gkey, gctx, IV_c, vector->A, vector->Alen);
 	while (i < (vector->Plen)) {
 		if (rand() % (test_len / 64) == 0) {
 			if (i - last_break != 0) {
 				stream = malloc(i - last_break);
 				memcpy(stream, vector->C + last_break, i - last_break);
 			}
-			aesni_gcm128_dec_update(gdata, vector->P + last_break, stream,
-						i - last_break);
+			aes_gcm_dec_128_update(gkey, gctx, vector->P + last_break, stream,
+					       i - last_break);
 			if (i - last_break != 0)
 				free(stream);
 
@@ -372,16 +366,16 @@ int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
 			i++;
 
 	}
-	aesni_gcm128_dec_update(gdata, vector->P + last_break, vector->C + last_break,
-				vector->Plen - last_break);
-	aesni_gcm128_dec_finalize(gdata, vector->T, vector->Tlen);
+	aes_gcm_dec_128_update(gkey, gctx, vector->P + last_break, vector->C + last_break,
+			       vector->Plen - last_break);
+	aes_gcm_dec_128_finalize(gkey, gctx, vector->T, vector->Tlen);
 
 	OK |=
 	    check_data(vector->T, o_T_test, vector->Tlen, "OpenSSL vs ISA-L decrypt tag (T)");
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	memset(vector->P, 0, vector->Plen);
-	aesni_gcm128_dec(gdata, vector->P, o_ct_test, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_dec_128(gkey, gctx, vector->P, o_ct_test, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	result =
 	    openssl_aes_gcm_dec(vector->K, vector->IV,
@@ -401,8 +395,8 @@ int check_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
 	return OK;
 }
 
-int check_strm_vector2(struct gcm_data *gdata, gcm_vector * vector, int length, int start,
-		       int breaks)
+int check_strm_vector2(struct gcm_key_data *gkey, struct gcm_context_data *gctx,
+		       gcm_vector * vector, int length, int start, int breaks)
 {
 	uint8_t *pt_test = NULL;
 	uint8_t *ct_test = NULL;
@@ -411,7 +405,6 @@ int check_strm_vector2(struct gcm_data *gdata, gcm_vector * vector, int length, 
 	uint8_t *T_test = NULL;
 	uint8_t *o_T_test = NULL;
 	uint8_t *stream = NULL;
-	uint8_t const IVend[] = GCM_IV_END_MARK;
 	uint64_t IV_alloc_len = 0;
 	int result;
 	int OK = 0;
@@ -438,16 +431,14 @@ int check_strm_vector2(struct gcm_data *gdata, gcm_vector * vector, int length, 
 			return 1;
 		}
 	}
-	IV_alloc_len = vector->IVlen + sizeof(IVend);
+	IV_alloc_len = vector->IVlen;
 	// Allocate space for the calculated ciphertext
 	IV_c = malloc(IV_alloc_len);
 	if (IV_c == NULL) {
 		fprintf(stderr, "Can't allocate ciphertext memory\n");
 		return 1;
 	}
-	//Add end marker to the IV data for ISA-L
 	memcpy(IV_c, vector->IV, vector->IVlen);
-	memcpy(&IV_c[vector->IVlen], IVend, sizeof(IVend));
 
 	T_test = malloc(vector->Tlen);
 	o_T_test = malloc(vector->Tlen);
@@ -456,29 +447,30 @@ int check_strm_vector2(struct gcm_data *gdata, gcm_vector * vector, int length, 
 		return 1;
 	}
 	// This is only required once for a given key
-	aesni_gcm128_pre(vector->K, gdata);
+	aes_gcm_pre_128(vector->K, gkey);
 
 	////
 	// ISA-l Encrypt
 	////
-	aesni_gcm128_enc(gdata, vector->C, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
-	aesni_gcm128_init(gdata, IV_c, vector->A, vector->Alen);
+	aes_gcm_enc_128(gkey, gctx, vector->C, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_init_128(gkey, gctx, IV_c, vector->A, vector->Alen);
 	while (i < (vector->Plen)) {
 		if (i - last_break != 0) {
 			stream = malloc(i - last_break);
 			memcpy(stream, vector->P + last_break, i - last_break);
 		}
-		aesni_gcm128_enc_update(gdata, vector->C + last_break, stream, i - last_break);
+		aes_gcm_enc_128_update(gkey, gctx, vector->C + last_break, stream,
+				       i - last_break);
 		if (i - last_break != 0)
 			free(stream);
 		last_break = i;
 		i = i + (length - start) / breaks;
 
 	}
-	aesni_gcm128_enc_update(gdata, vector->C + last_break, vector->P + last_break,
-				vector->Plen - last_break);
-	aesni_gcm128_enc_finalize(gdata, vector->T, vector->Tlen);
+	aes_gcm_enc_128_update(gkey, gctx, vector->C + last_break, vector->P + last_break,
+			       vector->Plen - last_break);
+	aes_gcm_enc_128_finalize(gkey, gctx, vector->T, vector->Tlen);
 	openssl_aes_gcm_enc(vector->K, vector->IV,
 			    vector->IVlen, vector->A, vector->Alen, o_T_test,
 			    vector->Tlen, vector->P, vector->Plen, o_ct_test);
@@ -500,13 +492,14 @@ int check_strm_vector2(struct gcm_data *gdata, gcm_vector * vector, int length, 
 
 	last_break = 0;
 	i = length;
-	aesni_gcm128_init(gdata, IV_c, vector->A, vector->Alen);
+	aes_gcm_init_128(gkey, gctx, IV_c, vector->A, vector->Alen);
 	while (i < (vector->Plen)) {
 		if (i - last_break != 0) {
 			stream = malloc(i - last_break);
 			memcpy(stream, vector->C + last_break, i - last_break);
 		}
-		aesni_gcm128_dec_update(gdata, vector->P + last_break, stream, i - last_break);
+		aes_gcm_dec_128_update(gkey, gctx, vector->P + last_break, stream,
+				       i - last_break);
 		if (i - last_break != 0)
 			free(stream);
 		last_break = i;
@@ -514,15 +507,15 @@ int check_strm_vector2(struct gcm_data *gdata, gcm_vector * vector, int length, 
 
 	}
 
-	aesni_gcm128_dec_update(gdata, vector->P + last_break, vector->C + last_break,
-				vector->Plen - last_break);
-	aesni_gcm128_dec_finalize(gdata, vector->T, vector->Tlen);
+	aes_gcm_dec_128_update(gkey, gctx, vector->P + last_break, vector->C + last_break,
+			       vector->Plen - last_break);
+	aes_gcm_dec_128_finalize(gkey, gctx, vector->T, vector->Tlen);
 	OK |=
 	    check_data(vector->T, o_T_test, vector->Tlen, "OpenSSL vs ISA-L decrypt tag (T)");
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	memset(vector->P, 0, vector->Plen);
-	aesni_gcm128_dec(gdata, vector->P, o_ct_test, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_dec_128(gkey, gctx, vector->P, o_ct_test, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	result =
 	    openssl_aes_gcm_dec(vector->K, vector->IV,
@@ -536,7 +529,8 @@ int check_strm_vector2(struct gcm_data *gdata, gcm_vector * vector, int length, 
 	return OK;
 }
 
-int check_strm_vector_efence(struct gcm_data *gdata, gcm_vector * vector)
+int check_strm_vector_efence(struct gcm_key_data *gkey, struct gcm_context_data *gctx,
+			     gcm_vector * vector)
 {
 	uint8_t *pt_test = NULL;
 	uint8_t *ct_test = NULL;
@@ -545,7 +539,6 @@ int check_strm_vector_efence(struct gcm_data *gdata, gcm_vector * vector)
 	uint8_t *T_test = NULL;
 	uint8_t *o_T_test = NULL;
 	uint8_t *stream = NULL;
-	uint8_t const IVend[] = GCM_IV_END_MARK;
 	uint64_t IV_alloc_len = 0;
 	int result;
 	int OK = 0;
@@ -573,16 +566,14 @@ int check_strm_vector_efence(struct gcm_data *gdata, gcm_vector * vector)
 			return 1;
 		}
 	}
-	IV_alloc_len = vector->IVlen + sizeof(IVend);
+	IV_alloc_len = vector->IVlen;
 	// Allocate space for the calculated ciphertext
 	IV_c = malloc(IV_alloc_len);
 	if (IV_c == NULL) {
 		fprintf(stderr, "Can't allocate ciphertext memory\n");
 		return 1;
 	}
-	//Add end marker to the IV data for ISA-L
 	memcpy(IV_c, vector->IV, vector->IVlen);
-	memcpy(&IV_c[vector->IVlen], IVend, sizeof(IVend));
 
 	T_test = malloc(vector->Tlen);
 	o_T_test = malloc(vector->Tlen);
@@ -591,21 +582,21 @@ int check_strm_vector_efence(struct gcm_data *gdata, gcm_vector * vector)
 		return 1;
 	}
 	// This is only required once for a given key
-	aesni_gcm128_pre(vector->K, gdata);
+	aes_gcm_pre_128(vector->K, gkey);
 
 	////
 	// ISA-l Encrypt
 	////
-	aesni_gcm128_init(gdata, IV_c, vector->A, vector->Alen);
+	aes_gcm_init_128(gkey, gctx, IV_c, vector->A, vector->Alen);
 	while (i < vector->Plen) {
 		if (rand() % 2000 == 0 || i - last_break > PAGE_LEN / 2) {
 			stream = malloc(PAGE_LEN);
 			i = i & ALIGNMENT_MASK;
 			memcpy(stream + PAGE_LEN - (i - last_break), vector->P + last_break,
 			       i - last_break);
-			aesni_gcm128_enc_update(gdata, vector->C + last_break,
-						stream + PAGE_LEN - (i - last_break),
-						i - last_break);
+			aes_gcm_enc_128_update(gkey, gctx, vector->C + last_break,
+					       stream + PAGE_LEN - (i - last_break),
+					       i - last_break);
 			free(stream);
 
 			if (rand() % 1024 == 0) {
@@ -619,9 +610,9 @@ int check_strm_vector_efence(struct gcm_data *gdata, gcm_vector * vector)
 			i++;
 
 	}
-	aesni_gcm128_enc_update(gdata, vector->C + last_break, vector->P + last_break,
-				vector->Plen - last_break);
-	aesni_gcm128_enc_finalize(gdata, vector->T, vector->Tlen);
+	aes_gcm_enc_128_update(gkey, gctx, vector->C + last_break, vector->P + last_break,
+			       vector->Plen - last_break);
+	aes_gcm_enc_128_finalize(gkey, gctx, vector->T, vector->Tlen);
 	openssl_aes_gcm_enc(vector->K, vector->IV,
 			    vector->IVlen, vector->A, vector->Alen, o_T_test,
 			    vector->Tlen, vector->P, vector->Plen, o_ct_test);
@@ -642,16 +633,16 @@ int check_strm_vector_efence(struct gcm_data *gdata, gcm_vector * vector)
 
 	last_break = 0;
 	i = 0;
-	aesni_gcm128_init(gdata, IV_c, vector->A, vector->Alen);
+	aes_gcm_init_128(gkey, gctx, IV_c, vector->A, vector->Alen);
 	while (i < vector->Plen) {
 		if (rand() % 2000 == 0 || i - last_break > PAGE_LEN / 2) {
 			stream = malloc(PAGE_LEN);
 			i = i & ALIGNMENT_MASK;
 			memcpy(stream + PAGE_LEN - (i - last_break), vector->C + last_break,
 			       i - last_break);
-			aesni_gcm128_dec_update(gdata, vector->P + last_break,
-						stream + PAGE_LEN - (i - last_break),
-						i - last_break);
+			aes_gcm_dec_128_update(gkey, gctx, vector->P + last_break,
+					       stream + PAGE_LEN - (i - last_break),
+					       i - last_break);
 			free(stream);
 
 			if (rand() % 1024 == 0) {
@@ -668,16 +659,16 @@ int check_strm_vector_efence(struct gcm_data *gdata, gcm_vector * vector)
 			i++;
 
 	}
-	aesni_gcm128_dec_update(gdata, vector->P + last_break, vector->C + last_break,
-				vector->Plen - last_break);
-	aesni_gcm128_dec_finalize(gdata, vector->T, vector->Tlen);
+	aes_gcm_dec_128_update(gkey, gctx, vector->P + last_break, vector->C + last_break,
+			       vector->Plen - last_break);
+	aes_gcm_dec_128_finalize(gkey, gctx, vector->T, vector->Tlen);
 
 	OK |=
 	    check_data(vector->T, o_T_test, vector->Tlen, "OpenSSL vs ISA-L decrypt tag (T)");
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	memset(vector->P, 0, vector->Plen);
-	aesni_gcm128_dec(gdata, vector->P, o_ct_test, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_dec_128(gkey, gctx, vector->P, o_ct_test, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	result =
 	    openssl_aes_gcm_dec(vector->K, vector->IV,
@@ -697,7 +688,8 @@ int check_strm_vector_efence(struct gcm_data *gdata, gcm_vector * vector)
 	return OK;
 }
 
-int check_256_vector(struct gcm_data *gdata, gcm_vector * vector)
+int check_256_vector(struct gcm_key_data *gkey, struct gcm_context_data *gctx,
+		     gcm_vector * vector)
 {
 	uint8_t *pt_test = NULL;
 	uint8_t *ct_test = NULL;
@@ -705,7 +697,6 @@ int check_256_vector(struct gcm_data *gdata, gcm_vector * vector)
 	uint8_t *IV_c = NULL;
 	uint8_t *T_test = NULL;
 	uint8_t *o_T_test = NULL;
-	uint8_t const IVend[] = GCM_IV_END_MARK;
 	uint64_t IV_alloc_len = 0;
 	int result;
 	int OK = 0;
@@ -727,16 +718,14 @@ int check_256_vector(struct gcm_data *gdata, gcm_vector * vector)
 			return 1;
 		}
 	}
-	IV_alloc_len = vector->IVlen + sizeof(IVend);
+	IV_alloc_len = vector->IVlen;
 	// Allocate space for the calculated ciphertext
 	IV_c = malloc(IV_alloc_len);
 	if (IV_c == NULL) {
 		fprintf(stderr, "Can't allocate ciphertext memory\n");
 		return 1;
 	}
-	//Add end marker to the IV data for ISA-L
 	memcpy(IV_c, vector->IV, vector->IVlen);
-	memcpy(&IV_c[vector->IVlen], IVend, sizeof(IVend));
 
 	T_test = malloc(vector->Tlen);
 	o_T_test = malloc(vector->Tlen);
@@ -745,13 +734,13 @@ int check_256_vector(struct gcm_data *gdata, gcm_vector * vector)
 		return 1;
 	}
 	// This is only required once for a given key
-	aesni_gcm256_pre(vector->K, gdata);
+	aes_gcm_pre_256(vector->K, gkey);
 
 	////
 	// ISA-l Encrypt
 	////
-	aesni_gcm256_enc(gdata, vector->C, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_enc_256(gkey, gctx, vector->C, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	openssl_aes_256_gcm_enc(vector->K, vector->IV,
 				vector->IVlen, vector->A, vector->Alen, o_T_test,
 				vector->Tlen, vector->P, vector->Plen, o_ct_test);
@@ -769,8 +758,8 @@ int check_256_vector(struct gcm_data *gdata, gcm_vector * vector)
 	////
 	// ISA-l Decrypt
 	////
-	aesni_gcm256_dec(gdata, vector->P, vector->C, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_dec_256(gkey, gctx, vector->P, vector->C, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	OK |= check_data(vector->T, T_test, vector->Tlen, "ISA-L decrypt vs encrypt tag (T)");
 	OK |=
 	    check_data(vector->T, o_T_test, vector->Tlen, "OpenSSL vs ISA-L decrypt tag (T)");
@@ -778,8 +767,8 @@ int check_256_vector(struct gcm_data *gdata, gcm_vector * vector)
 	    check_data(pt_test, vector->P, vector->Plen,
 		       "ISA-L decrypted ISA-L plain text (P)");
 	memset(vector->P, 0, vector->Plen);
-	aesni_gcm256_dec(gdata, vector->P, o_ct_test, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_dec_256(gkey, gctx, vector->P, o_ct_test, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	OK |=
 	    check_data(pt_test, vector->P, vector->Plen,
 		       "ISA-L decrypted OpenSSL plain text (P)");
@@ -800,7 +789,8 @@ int check_256_vector(struct gcm_data *gdata, gcm_vector * vector)
 	return OK;
 }
 
-int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_len)
+int check_256_strm_vector(struct gcm_key_data *gkey, struct gcm_context_data *gctx,
+			  gcm_vector * vector, int test_len)
 {
 	uint8_t *pt_test = NULL;
 	uint8_t *ct_test = NULL;
@@ -809,7 +799,6 @@ int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_
 	uint8_t *T_test = NULL;
 	uint8_t *o_T_test = NULL;
 	uint8_t *stream = NULL;
-	uint8_t const IVend[] = GCM_IV_END_MARK;
 	uint64_t IV_alloc_len = 0;
 	int result;
 	int OK = 0;
@@ -837,16 +826,14 @@ int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_
 			return 1;
 		}
 	}
-	IV_alloc_len = vector->IVlen + sizeof(IVend);
+	IV_alloc_len = vector->IVlen;
 	// Allocate space for the calculated ciphertext
 	IV_c = malloc(IV_alloc_len);
 	if (IV_c == NULL) {
 		fprintf(stderr, "Can't allocate ciphertext memory\n");
 		return 1;
 	}
-	//Add end marker to the IV data for ISA-L
 	memcpy(IV_c, vector->IV, vector->IVlen);
-	memcpy(&IV_c[vector->IVlen], IVend, sizeof(IVend));
 
 	T_test = malloc(vector->Tlen);
 	o_T_test = malloc(vector->Tlen);
@@ -855,12 +842,12 @@ int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_
 		return 1;
 	}
 	// This is only required once for a given key
-	aesni_gcm256_pre(vector->K, gdata);
+	aes_gcm_pre_256(vector->K, gkey);
 
 	////
 	// ISA-l Encrypt
 	////
-	aesni_gcm256_init(gdata, IV_c, vector->A, vector->Alen);
+	aes_gcm_init_256(gkey, gctx, IV_c, vector->A, vector->Alen);
 
 	last_break = 0;
 	i = (rand() % test_len / 32) & ALIGNMENT_MASK;
@@ -870,8 +857,8 @@ int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_
 			memcpy(stream, vector->P + last_break, i - last_break);
 		}
 
-		aesni_gcm256_enc_update(gdata, vector->C + last_break, stream,
-					i - last_break);
+		aes_gcm_enc_256_update(gkey, gctx, vector->C + last_break, stream,
+				       i - last_break);
 		if (i - last_break != 0)
 			free(stream);
 
@@ -884,11 +871,11 @@ int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_
 		i += (rand() % test_len / 32) & ALIGNMENT_MASK;
 
 	}
-	aesni_gcm256_enc_update(gdata, vector->C + last_break, vector->P + last_break,
-				vector->Plen - last_break);
-	if (gdata->in_length != vector->Plen)
-		printf("%lu, %lu\n", gdata->in_length, vector->Plen);
-	aesni_gcm256_enc_finalize(gdata, vector->T, vector->Tlen);
+	aes_gcm_enc_256_update(gkey, gctx, vector->C + last_break, vector->P + last_break,
+			       vector->Plen - last_break);
+	if (gctx->in_length != vector->Plen)
+		printf("%lu, %lu\n", gctx->in_length, vector->Plen);
+	aes_gcm_enc_256_finalize(gkey, gctx, vector->T, vector->Tlen);
 
 	openssl_aes_256_gcm_enc(vector->K, vector->IV,
 				vector->IVlen, vector->A, vector->Alen, o_T_test,
@@ -910,15 +897,15 @@ int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_
 
 	last_break = 0;
 	i += (rand() % test_len / 32) & ALIGNMENT_MASK;
-	aesni_gcm256_init(gdata, IV_c, vector->A, vector->Alen);
+	aes_gcm_init_256(gkey, gctx, IV_c, vector->A, vector->Alen);
 	while (i < (vector->Plen)) {
 		if (i - last_break != 0) {
 			stream = malloc(i - last_break);
 			memcpy(stream, vector->C + last_break, i - last_break);
 		}
 
-		aesni_gcm256_dec_update(gdata, vector->P + last_break, stream,
-					i - last_break);
+		aes_gcm_dec_256_update(gkey, gctx, vector->P + last_break, stream,
+				       i - last_break);
 		if (i - last_break != 0)
 			free(stream);
 
@@ -932,11 +919,10 @@ int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_
 		last_break = i;
 		i += (rand() % test_len / 32) & ALIGNMENT_MASK;
 
-
 	}
-	aesni_gcm256_dec_update(gdata, vector->P + last_break, vector->C + last_break,
-				vector->Plen - last_break);
-	aesni_gcm256_dec_finalize(gdata, vector->T, vector->Tlen);
+	aes_gcm_dec_256_update(gkey, gctx, vector->P + last_break, vector->C + last_break,
+			       vector->Plen - last_break);
+	aes_gcm_dec_256_finalize(gkey, gctx, vector->T, vector->Tlen);
 
 	OK |= check_data(vector->T, T_test, vector->Tlen, "ISA-L decrypt vs encrypt tag (T)");
 	OK |=
@@ -945,8 +931,8 @@ int check_256_strm_vector(struct gcm_data *gdata, gcm_vector * vector, int test_
 	    check_data(pt_test, vector->P, vector->Plen,
 		       "ISA-L decrypted ISA-L plain text (P)");
 	memset(vector->P, 0, vector->Plen);
-	aesni_gcm256_dec(gdata, vector->P, o_ct_test, vector->Plen,
-			 IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
+	aes_gcm_dec_256(gkey, gctx, vector->P, o_ct_test, vector->Plen,
+			IV_c, vector->A, vector->Alen, vector->T, vector->Tlen);
 	OK |=
 	    check_data(pt_test, vector->P, vector->Plen,
 		       "ISA-L decrypted OpenSSL plain text (P)");
@@ -972,10 +958,12 @@ int test_gcm_strm_efence(void)
 	gcm_vector test;
 	int tag_len = 8;
 	int t = 0;
-	struct gcm_data *gdata = NULL;
+	struct gcm_key_data *gkey = NULL;
+	struct gcm_context_data *gctx = NULL;
 
-	gdata = malloc(sizeof(struct gcm_data));
-	if (NULL == gdata)
+	gkey = malloc(sizeof(struct gcm_key_data));
+	gctx = malloc(sizeof(struct gcm_context_data));
+	if (NULL == gkey || NULL == gctx)
 		return 1;
 
 	printf("AES GCM random efence test vectors with random stream:");
@@ -984,7 +972,7 @@ int test_gcm_strm_efence(void)
 		//lengths must be a multiple of 4 bytes
 		int aad_len = (rand() % TEST_LEN);
 		int offset = (rand() % MAX_UNALIGNED);
-		if(offset == 0 && aad_len == 0)
+		if (offset == 0 && aad_len == 0)
 			offset = OFFSET_BASE_VALUE;
 
 		if (0 == (t % 25))
@@ -999,7 +987,7 @@ int test_gcm_strm_efence(void)
 		if (test.Plen + offset != 0) {
 			test.P = malloc(test.Plen + offset);
 			test.C = malloc(test.Plen + offset);
-		} else {	//This else clause is here becuase openssl 1.0.1k does not handle NULL pointers
+		} else {	//This else clause is here because openssl 1.0.1k does not handle NULL pointers
 			test.P = malloc(16);
 			test.C = malloc(16);
 		}
@@ -1034,7 +1022,7 @@ int test_gcm_strm_efence(void)
 		// Tag lengths of 8, 12 or 16
 		for (tag_len = 8; tag_len <= MAX_TAG_LEN;) {
 			test.Tlen = tag_len;
-			if (0 != check_strm_vector_efence(gdata, &test))
+			if (0 != check_strm_vector_efence(gkey, gctx, &test))
 				return 1;
 			tag_len += 4;	//supported lengths are 8, 12 or 16
 		}
@@ -1052,7 +1040,8 @@ int test_gcm_strm_efence(void)
 		free(test.T);
 	}
 	printf("\n");
-	free(gdata);
+	free(gkey);
+	free(gctx);
 	return 0;
 }
 
@@ -1061,22 +1050,24 @@ int test_gcm_strm_combinations(int test_len)
 	gcm_vector test;
 	int tag_len = 8;
 	int t = 0;
-	uint8_t *gdatatemp = NULL;
-	struct gcm_data *gdata = NULL;
+	uint8_t *gkeytemp = NULL;
+	struct gcm_key_data *gkey = NULL;
+	struct gcm_context_data *gctx = NULL;
 
-	gdatatemp = malloc(sizeof(struct gcm_data) + 16);
-	gdata = (struct gcm_data *)(gdatatemp + rand() % 16);
-	if (NULL == gdata)
+	gkeytemp = malloc(sizeof(struct gcm_key_data) + 16);
+	gctx = malloc(sizeof(struct gcm_context_data));
+	gkey = (struct gcm_key_data *)(gkeytemp + rand() % 16);
+	if (NULL == gkey || NULL == gctx)
 		return 1;
 
 	printf("AES GCM random test vectors with random stream of average size %d:",
 	       test_len / 64);
 	for (t = 0; RANDOMS > t; t++) {
-		int Plen = 0; // (rand() % test_len);
+		int Plen = 0;	// (rand() % test_len);
 		//lengths must be a multiple of 4 bytes
 		int aad_len = (rand() % test_len);
 		int offset = (rand() % MAX_UNALIGNED);
-		if(offset == 0 && aad_len == 0)
+		if (offset == 0 && aad_len == 0)
 			offset = OFFSET_BASE_VALUE;
 
 		if (0 == (t % 25))
@@ -1091,7 +1082,7 @@ int test_gcm_strm_combinations(int test_len)
 		if (test.Plen + offset != 0) {
 			test.P = malloc(test.Plen + offset);
 			test.C = malloc(test.Plen + offset);
-		} else {	//This else clause is here becuase openssl 1.0.1k does not handle NULL pointers
+		} else {	//This else clause is here because openssl 1.0.1k does not handle NULL pointers
 			test.P = malloc(16);
 			test.C = malloc(16);
 		}
@@ -1127,7 +1118,7 @@ int test_gcm_strm_combinations(int test_len)
 		// Tag lengths of 8, 12 or 16
 		for (tag_len = 8; tag_len <= MAX_TAG_LEN;) {
 			test.Tlen = tag_len;
-			if (0 != check_strm_vector(gdata, &test, test_len))
+			if (0 != check_strm_vector(gkey, gctx, &test, test_len))
 				return 1;
 			tag_len += 4;	//supported lengths are 8, 12 or 16
 		}
@@ -1145,7 +1136,8 @@ int test_gcm_strm_combinations(int test_len)
 		free(test.T);
 	}
 	printf("\n");
-	free(gdatatemp);
+	free(gkeytemp);
+	free(gctx);
 	return 0;
 }
 
@@ -1154,10 +1146,12 @@ int test_gcm_combinations(void)
 	gcm_vector test;
 	int tag_len = 8;
 	int t = 0;
-	struct gcm_data *gdata = NULL;
+	struct gcm_key_data *gkey = NULL;
+	struct gcm_context_data *gctx = NULL;
 
-	gdata = malloc(sizeof(struct gcm_data));
-	if (NULL == gdata)
+	gkey = malloc(sizeof(struct gcm_key_data));
+	gctx = malloc(sizeof(struct gcm_context_data));
+	if (NULL == gkey || NULL == gctx)
 		return 1;
 
 	printf("AES GCM random test vectors:");
@@ -1166,7 +1160,7 @@ int test_gcm_combinations(void)
 		//lengths must be a multiple of 4 bytes
 		int aad_len = (rand() % TEST_LEN);
 		int offset = (rand() % MAX_UNALIGNED);
-		if(offset == 0 && aad_len == 0)
+		if (offset == 0 && aad_len == 0)
 			offset = OFFSET_BASE_VALUE;
 
 		if (0 == (t % 25))
@@ -1181,7 +1175,7 @@ int test_gcm_combinations(void)
 		if (test.Plen + offset != 0) {
 			test.P = malloc(test.Plen + offset);
 			test.C = malloc(test.Plen + offset);
-		} else {	//This else clause is here becuase openssl 1.0.1k does not handle NULL pointers
+		} else {	//This else clause is here because openssl 1.0.1k does not handle NULL pointers
 			test.P = malloc(16);
 			test.C = malloc(16);
 		}
@@ -1217,7 +1211,7 @@ int test_gcm_combinations(void)
 		// Tag lengths of 8, 12 or 16
 		for (tag_len = 8; tag_len <= MAX_TAG_LEN;) {
 			test.Tlen = tag_len;
-			if (0 != check_vector(gdata, &test))
+			if (0 != check_vector(gkey, gctx, &test))
 				return 1;
 			tag_len += 4;	//supported lengths are 8, 12 or 16
 		}
@@ -1235,7 +1229,8 @@ int test_gcm_combinations(void)
 		free(test.T);
 	}
 	printf("\n");
-	free(gdata);
+	free(gkey);
+	free(gctx);
 	return 0;
 }
 
@@ -1244,10 +1239,12 @@ int test_gcm256_combinations(void)
 	gcm_vector test;
 	int tag_len = 8;
 	int t = 0;
-	struct gcm_data *gdata = NULL;
+	struct gcm_key_data *gkey = NULL;
+	struct gcm_context_data *gctx = NULL;
 
-	gdata = malloc(sizeof(struct gcm_data));
-	if (NULL == gdata)
+	gkey = malloc(sizeof(struct gcm_key_data));
+	gctx = malloc(sizeof(struct gcm_context_data));
+	if (NULL == gkey || NULL == gctx)
 		return 1;
 
 	printf("AES-GCM-256 random test vectors:");
@@ -1256,7 +1253,7 @@ int test_gcm256_combinations(void)
 		//lengths must be a multiple of 4 bytes
 		int aad_len = (rand() % TEST_LEN);
 		int offset = (rand() % MAX_UNALIGNED);
-		if(offset == 0 && aad_len == 0)
+		if (offset == 0 && aad_len == 0)
 			offset = OFFSET_BASE_VALUE;
 
 		if (0 == (t % 25))
@@ -1271,7 +1268,7 @@ int test_gcm256_combinations(void)
 		if (test.Plen + offset != 0) {
 			test.P = malloc(test.Plen + offset);
 			test.C = malloc(test.Plen + offset);
-		} else {	//This else clause is here becuase openssl 1.0.1k does not handle NULL pointers
+		} else {	//This else clause is here because openssl 1.0.1k does not handle NULL pointers
 			test.P = malloc(16);
 			test.C = malloc(16);
 		}
@@ -1307,7 +1304,7 @@ int test_gcm256_combinations(void)
 		// Tag lengths of 8, 12 or 16
 		for (tag_len = 8; tag_len <= MAX_TAG_LEN;) {
 			test.Tlen = tag_len;
-			if (0 != check_256_vector(gdata, &test))
+			if (0 != check_256_vector(gkey, gctx, &test))
 				return 1;
 			tag_len += 4;	//supported lengths are 8, 12 or 16
 		}
@@ -1325,7 +1322,8 @@ int test_gcm256_combinations(void)
 		free(test.T);
 	}
 	printf("\n");
-	free(gdata);
+	free(gkey);
+	free(gctx);
 	return 0;
 }
 
@@ -1334,12 +1332,14 @@ int test_gcm256_strm_combinations(int test_len)
 	gcm_vector test;
 	int tag_len = 8;
 	int t = 0;
-	uint8_t *gdatatemp = NULL;
-	struct gcm_data *gdata = NULL;
+	uint8_t *gkeytemp = NULL;
+	struct gcm_key_data *gkey = NULL;
+	struct gcm_context_data *gctx = NULL;
 
-	gdatatemp = malloc(sizeof(struct gcm_data) + 16);
-	gdata = (struct gcm_data *)(gdatatemp + rand() % 16);
-	if (NULL == gdata)
+	gkeytemp = malloc(sizeof(struct gcm_key_data) + 16);
+	gctx = malloc(sizeof(struct gcm_context_data));
+	gkey = (struct gcm_key_data *)(gkeytemp + rand() % 16);
+	if (NULL == gkey || NULL == gctx)
 		return 1;
 
 	printf("AES-GCM-256 random test vectors with random stream of average size %d:",
@@ -1349,7 +1349,7 @@ int test_gcm256_strm_combinations(int test_len)
 		//lengths must be a multiple of 4 bytes
 		int aad_len = (rand() % test_len);
 		int offset = (rand() % MAX_UNALIGNED);
-		if(offset == 0 && aad_len == 0)
+		if (offset == 0 && aad_len == 0)
 			offset = OFFSET_BASE_VALUE;
 
 		if (0 == (t % 25))
@@ -1364,7 +1364,7 @@ int test_gcm256_strm_combinations(int test_len)
 		if (test.Plen + offset != 0) {
 			test.P = malloc(test.Plen + offset);
 			test.C = malloc(test.Plen + offset);
-		} else {	//This else clause is here becuase openssl 1.0.1k does not handle NULL pointers
+		} else {	//This else clause is here because openssl 1.0.1k does not handle NULL pointers
 			test.P = malloc(16);
 			test.C = malloc(16);
 		}
@@ -1400,7 +1400,7 @@ int test_gcm256_strm_combinations(int test_len)
 		// Tag lengths of 8, 12 or 16
 		for (tag_len = 8; tag_len <= MAX_TAG_LEN;) {
 			test.Tlen = tag_len;
-			if (0 != check_256_strm_vector(gdata, &test, test_len))
+			if (0 != check_256_strm_vector(gkey, gctx, &test, test_len))
 				return 1;
 			tag_len += 4;	//supported lengths are 8, 12 or 16
 		}
@@ -1418,7 +1418,8 @@ int test_gcm256_strm_combinations(int test_len)
 		free(test.T);
 	}
 	printf("\n");
-	free(gdatatemp);
+	free(gkeytemp);
+	free(gctx);
 	return 0;
 }
 
@@ -1430,10 +1431,12 @@ int test_gcm_efence(void)
 	gcm_vector test;
 	int offset = 0;
 	gcm_key_size key_len;
-	struct gcm_data *gdata = NULL;
+	struct gcm_key_data *gkey = NULL;
+	struct gcm_context_data *gctx = NULL;
 	uint8_t *P, *C, *K, *IV, *A, *T;
 
-	gdata = malloc(sizeof(struct gcm_data));
+	gkey = malloc(sizeof(struct gcm_key_data));
+	gctx = malloc(sizeof(struct gcm_context_data));
 	P = malloc(PAGE_LEN);
 	C = malloc(PAGE_LEN);
 	K = malloc(PAGE_LEN);
@@ -1441,7 +1444,7 @@ int test_gcm_efence(void)
 	A = malloc(PAGE_LEN);
 	T = malloc(PAGE_LEN);
 	if ((NULL == P) || (NULL == C) || (NULL == K) || (NULL == IV) || (NULL == A)
-	    || (NULL == T) || (NULL == gdata)) {
+	    || (NULL == T) || (NULL == gkey) || (NULL == gctx)) {
 		printf("malloc of testsize:0x%x failed\n", PAGE_LEN);
 		return -1;
 	}
@@ -1475,15 +1478,16 @@ int test_gcm_efence(void)
 			mk_rand_data(test.IV, test.IVlen);
 			mk_rand_data(test.A, test.Alen);
 			if (GCM_128_KEY_LEN == key_len) {
-				if (0 != check_vector(gdata, &test))
+				if (0 != check_vector(gkey, gctx, &test))
 					return 1;
 			} else {
-				if (0 != check_256_vector(gdata, &test))
+				if (0 != check_256_vector(gkey, gctx, &test))
 					return 1;
 			}
 		}
 	}
-	free(gdata);
+	free(gkey);
+	free(gctx);
 	free(P);
 	free(C);
 	free(K);
@@ -1497,7 +1501,8 @@ int test_gcm_efence(void)
 
 int test_gcm128_std_vectors(gcm_vector const *vector)
 {
-	struct gcm_data gdata;
+	struct gcm_key_data gkey;
+	struct gcm_context_data gctx;
 	int OK = 0;
 	// Temporary array for the calculated vectors
 	uint8_t *ct_test = NULL;
@@ -1505,7 +1510,6 @@ int test_gcm128_std_vectors(gcm_vector const *vector)
 	uint8_t *IV_c = NULL;
 	uint8_t *T_test = NULL;
 	uint8_t *T2_test = NULL;
-	uint8_t const IVend[] = GCM_IV_END_MARK;
 	uint64_t IV_alloc_len = 0;
 	int result;
 
@@ -1525,16 +1529,14 @@ int test_gcm128_std_vectors(gcm_vector const *vector)
 		fprintf(stderr, "Can't allocate plaintext memory\n");
 		return 1;
 	}
-	IV_alloc_len = vector->IVlen + sizeof(IVend);
+	IV_alloc_len = vector->IVlen;
 	// Allocate space for the calculated ciphertext
 	IV_c = malloc(IV_alloc_len);
 	if (IV_c == NULL) {
 		fprintf(stderr, "Can't allocate ciphertext memory\n");
 		return 1;
 	}
-	//Add end marker to the IV data for ISA-L
 	memcpy(IV_c, vector->IV, vector->IVlen);
-	memcpy(&IV_c[vector->IVlen], IVend, sizeof(IVend));
 
 	T_test = malloc(vector->Tlen);
 	T2_test = malloc(vector->Tlen);
@@ -1543,16 +1545,16 @@ int test_gcm128_std_vectors(gcm_vector const *vector)
 		return 1;
 	}
 	// This is only required once for a given key
-	aesni_gcm128_pre(vector->K, &gdata);
+	aes_gcm_pre_128(vector->K, &gkey);
 #ifdef GCM_VECTORS_VERBOSE
-	dump_gcm_data(&gdata);
+	dump_gcm_data(&gkey);
 #endif
 
 	////
 	// ISA-l Encrypt
 	////
-	aesni_gcm128_enc(&gdata, ct_test, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_enc_128(&gkey, &gctx, ct_test, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
 	OK |= check_data(ct_test, vector->C, vector->Plen, "ISA-L encrypted cypher text (C)");
 	OK |= check_data(T_test, vector->T, vector->Tlen, "ISA-L tag (T)");
 
@@ -1563,8 +1565,8 @@ int test_gcm128_std_vectors(gcm_vector const *vector)
 	OK |= check_data(pt_test, T_test, vector->Tlen, "OpenSSL vs ISA-L tag (T)");
 	// test of in-place encrypt
 	memcpy(pt_test, vector->P, vector->Plen);
-	aesni_gcm128_enc(&gdata, pt_test, pt_test, vector->Plen, IV_c,
-			 vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_enc_128(&gkey, &gctx, pt_test, pt_test, vector->Plen, IV_c,
+			vector->A, vector->Alen, T_test, vector->Tlen);
 	OK |=
 	    check_data(pt_test, vector->C, vector->Plen,
 		       "ISA-L encrypted cypher text(in-place)");
@@ -1574,25 +1576,25 @@ int test_gcm128_std_vectors(gcm_vector const *vector)
 	////
 	// ISA-l Decrypt
 	////
-	aesni_gcm128_dec(&gdata, pt_test, vector->C, vector->Plen,
-			 IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_dec_128(&gkey, &gctx, pt_test, vector->C, vector->Plen,
+			IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	// GCM decryption outputs a 16 byte tag value that must be verified against the expected tag value
 	OK |= check_data(T_test, vector->T, vector->Tlen, "ISA-L decrypted tag (T)");
 
 	// test in in-place decrypt
 	memcpy(ct_test, vector->C, vector->Plen);
-	aesni_gcm128_dec(&gdata, ct_test, ct_test, vector->Plen, IV_c,
-			 vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_dec_128(&gkey, &gctx, ct_test, ct_test, vector->Plen, IV_c,
+			vector->A, vector->Alen, T_test, vector->Tlen);
 	OK |= check_data(ct_test, vector->P, vector->Plen, "ISA-L plain text (P) - in-place");
 	OK |=
 	    check_data(T_test, vector->T, vector->Tlen, "ISA-L decrypted tag (T) - in-place");
 	// ISA-L enc -> ISA-L dec
-	aesni_gcm128_enc(&gdata, ct_test, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_enc_128(&gkey, &gctx, ct_test, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
 	memset(pt_test, 0, vector->Plen);
-	aesni_gcm128_dec(&gdata, pt_test, ct_test, vector->Plen, IV_c,
-			 vector->A, vector->Alen, T2_test, vector->Tlen);
+	aes_gcm_dec_128(&gkey, &gctx, pt_test, ct_test, vector->Plen, IV_c,
+			vector->A, vector->Alen, T2_test, vector->Tlen);
 	OK |=
 	    check_data(pt_test, vector->P, vector->Plen,
 		       "ISA-L self decrypted plain text (P)");
@@ -1605,15 +1607,15 @@ int test_gcm128_std_vectors(gcm_vector const *vector)
 	OK |=
 	    check_data(ct_test, vector->C, vector->Plen, "OpenSSL encrypted cypher text (C)");
 	memset(pt_test, 0, vector->Plen);
-	aesni_gcm128_dec(&gdata, pt_test, ct_test, vector->Plen, IV_c,
-			 vector->A, vector->Alen, T2_test, vector->Tlen);
+	aes_gcm_dec_128(&gkey, &gctx, pt_test, ct_test, vector->Plen, IV_c,
+			vector->A, vector->Alen, T2_test, vector->Tlen);
 	OK |=
 	    check_data(pt_test, vector->P, vector->Plen,
 		       "OpenSSL->ISA-L decrypted plain text (P)");
 	OK |= check_data(T_test, T2_test, vector->Tlen, "OpenSSL->ISA-L decrypted tag (T)");
 	// ISA-L enc -> OpenSSl dec
-	aesni_gcm128_enc(&gdata, ct_test, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_enc_128(&gkey, &gctx, ct_test, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
 	memset(pt_test, 0, vector->Plen);
 	result =
 	    openssl_aes_gcm_dec(vector->K, vector->IV,
@@ -1640,7 +1642,8 @@ int test_gcm128_std_vectors(gcm_vector const *vector)
 
 int test_gcm256_std_vectors(gcm_vector const *vector)
 {
-	struct gcm_data gdata;
+	struct gcm_key_data gkey;
+	struct gcm_context_data gctx;
 	int OK = 0;
 	// Temporary array for the calculated vectors
 	uint8_t *ct_test = NULL;
@@ -1648,7 +1651,6 @@ int test_gcm256_std_vectors(gcm_vector const *vector)
 	uint8_t *IV_c = NULL;
 	uint8_t *T_test = NULL;
 	uint8_t *T2_test = NULL;
-	uint8_t const IVend[] = GCM_IV_END_MARK;
 	uint64_t IV_alloc_len = 0;
 	int result;
 
@@ -1664,16 +1666,14 @@ int test_gcm256_std_vectors(gcm_vector const *vector)
 		fprintf(stderr, "Can't allocate ciphertext or plaintext memory\n");
 		return 1;
 	}
-	IV_alloc_len = vector->IVlen + sizeof(IVend);
+	IV_alloc_len = vector->IVlen;
 	// Allocate space for the calculated ciphertext
 	IV_c = malloc(IV_alloc_len);
 	if (IV_c == NULL) {
 		fprintf(stderr, "Can't allocate ciphertext memory\n");
 		return 1;
 	}
-	//Add end marker to the IV data for ISA-L
 	memcpy(IV_c, vector->IV, vector->IVlen);
-	memcpy(&IV_c[vector->IVlen], IVend, sizeof(IVend));
 
 	T_test = malloc(vector->Tlen);
 	T2_test = malloc(vector->Tlen);
@@ -1682,17 +1682,17 @@ int test_gcm256_std_vectors(gcm_vector const *vector)
 		return 1;
 	}
 	// This is only required once for a given key
-	aesni_gcm256_pre(vector->K, &gdata);
+	aes_gcm_pre_256(vector->K, &gkey);
 #ifdef GCM_VECTORS_VERBOSE
-	dump_gcm_data(&gdata);
+	dump_gcm_data(&gkey);
 #endif
 
 	////
 	// ISA-l Encrypt
 	////
 	memset(ct_test, 0, vector->Plen);
-	aesni_gcm256_enc(&gdata, ct_test, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_enc_256(&gkey, &gctx, ct_test, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
 	OK |= check_data(ct_test, vector->C, vector->Plen, "ISA-L encrypted cypher text (C)");
 	OK |= check_data(T_test, vector->T, vector->Tlen, "ISA-L tag (T)");
 
@@ -1705,8 +1705,8 @@ int test_gcm256_std_vectors(gcm_vector const *vector)
 	OK |= check_data(pt_test, T_test, vector->Tlen, "OpenSSL vs ISA-L - tag (T)");
 	// test of in-place encrypt
 	memcpy(pt_test, vector->P, vector->Plen);
-	aesni_gcm256_enc(&gdata, pt_test, pt_test, vector->Plen, IV_c,
-			 vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_enc_256(&gkey, &gctx, pt_test, pt_test, vector->Plen, IV_c,
+			vector->A, vector->Alen, T_test, vector->Tlen);
 	OK |=
 	    check_data(pt_test, vector->C, vector->Plen,
 		       "ISA-L encrypted cypher text(in-place)");
@@ -1716,25 +1716,25 @@ int test_gcm256_std_vectors(gcm_vector const *vector)
 	////
 	// ISA-l Decrypt
 	////
-	aesni_gcm256_dec(&gdata, pt_test, vector->C, vector->Plen,
-			 IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_dec_256(&gkey, &gctx, pt_test, vector->C, vector->Plen,
+			IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
 	OK |= check_data(pt_test, vector->P, vector->Plen, "ISA-L decrypted plain text (P)");
 	// GCM decryption outputs a 16 byte tag value that must be verified against the expected tag value
 	OK |= check_data(T_test, vector->T, vector->Tlen, "ISA-L decrypted tag (T)");
 
 	// test in in-place decrypt
 	memcpy(ct_test, vector->C, vector->Plen);
-	aesni_gcm256_dec(&gdata, ct_test, ct_test, vector->Plen, IV_c,
-			 vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_dec_256(&gkey, &gctx, ct_test, ct_test, vector->Plen, IV_c,
+			vector->A, vector->Alen, T_test, vector->Tlen);
 	OK |= check_data(ct_test, vector->P, vector->Plen, "ISA-L plain text (P) - in-place");
 	OK |=
 	    check_data(T_test, vector->T, vector->Tlen, "ISA-L decrypted tag (T) - in-place");
 	// ISA-L enc -> ISA-L dec
-	aesni_gcm256_enc(&gdata, ct_test, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_enc_256(&gkey, &gctx, ct_test, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
 	memset(pt_test, 0, vector->Plen);
-	aesni_gcm256_dec(&gdata, pt_test, ct_test, vector->Plen, IV_c,
-			 vector->A, vector->Alen, T2_test, vector->Tlen);
+	aes_gcm_dec_256(&gkey, &gctx, pt_test, ct_test, vector->Plen, IV_c,
+			vector->A, vector->Alen, T2_test, vector->Tlen);
 	OK |=
 	    check_data(pt_test, vector->P, vector->Plen,
 		       "ISA-L self decrypted plain text (P)");
@@ -1747,15 +1747,15 @@ int test_gcm256_std_vectors(gcm_vector const *vector)
 	OK |=
 	    check_data(ct_test, vector->C, vector->Plen, "OpenSSL encrypted cypher text (C)");
 	memset(pt_test, 0, vector->Plen);
-	aesni_gcm256_dec(&gdata, pt_test, ct_test, vector->Plen, IV_c,
-			 vector->A, vector->Alen, T2_test, vector->Tlen);
+	aes_gcm_dec_256(&gkey, &gctx, pt_test, ct_test, vector->Plen, IV_c,
+			vector->A, vector->Alen, T2_test, vector->Tlen);
 	OK |=
 	    check_data(pt_test, vector->P, vector->Plen,
 		       "OpenSSL->ISA-L decrypted plain text (P)");
 	OK |= check_data(T_test, T2_test, vector->Tlen, "OpenSSL->ISA-L decrypted tag (T)");
 	// ISA-L enc -> OpenSSl dec
-	aesni_gcm256_enc(&gdata, ct_test, vector->P, vector->Plen,
-			 IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
+	aes_gcm_enc_256(&gkey, &gctx, ct_test, vector->P, vector->Plen,
+			IV_c, vector->A, vector->Alen, T_test, vector->Tlen);
 	memset(pt_test, 0, vector->Plen);
 	result =
 	    openssl_aes_256_gcm_dec(vector->K, vector->IV,
@@ -1787,7 +1787,7 @@ int test_gcm_std_vectors(void)
 	int OK = 0;
 
 	printf("AES-GCM standard test vectors:\n");
-	for (vect = 0; ((vect < vectors_cnt) /*&& (1 == OK) */ ); vect++) {
+	for (vect = 0; vect < vectors_cnt; vect++) {
 #ifdef GCM_VECTORS_VERBOSE
 		printf
 		    ("Standard vector %d/%d  Keylen:%d IVlen:%d PTLen:%d AADlen:%d Tlen:%d\n",
@@ -1818,10 +1818,12 @@ int test_gcm_strm_combinations2(int length, int start, int breaks)
 	gcm_vector test;
 	int tag_len = 8;
 	int t = 0;
-	struct gcm_data *gdata = NULL;
+	struct gcm_key_data *gkey = NULL;
+	struct gcm_context_data *gctx = NULL;
 
-	gdata = malloc(sizeof(struct gcm_data));
-	if (NULL == gdata)
+	gkey = malloc(sizeof(struct gcm_key_data));
+	gctx = malloc(sizeof(struct gcm_context_data));
+	if (NULL == gkey || NULL == gctx)
 		return 1;
 
 	printf("AES GCM random test vectors of length %d and stream with %d breaks:", length,
@@ -1831,7 +1833,7 @@ int test_gcm_strm_combinations2(int length, int start, int breaks)
 		//lengths must be a multiple of 4 bytes
 		int aad_len = (rand() % TEST_LEN);
 		int offset = (rand() % MAX_UNALIGNED);
-		if(offset == 0 && aad_len == 0)
+		if (offset == 0 && aad_len == 0)
 			offset = OFFSET_BASE_VALUE;
 
 		if (0 == (t % 25))
@@ -1846,7 +1848,7 @@ int test_gcm_strm_combinations2(int length, int start, int breaks)
 		if (test.Plen + offset != 0) {
 			test.P = malloc(test.Plen + offset);
 			test.C = malloc(test.Plen + offset);
-		} else {	//This else clause is here becuase openssl 1.0.1k does not handle NULL pointers
+		} else {	//This else clause is here because openssl 1.0.1k does not handle NULL pointers
 			test.P = malloc(16);
 			test.C = malloc(16);
 		}
@@ -1882,7 +1884,7 @@ int test_gcm_strm_combinations2(int length, int start, int breaks)
 		// Tag lengths of 8, 12 or 16
 		for (tag_len = 8; tag_len <= MAX_TAG_LEN;) {
 			test.Tlen = tag_len;
-			if (0 != check_strm_vector2(gdata, &test, length, start, breaks))
+			if (0 != check_strm_vector2(gkey, gctx, &test, length, start, breaks))
 				return 1;
 			tag_len += 4;	//supported lengths are 8, 12 or 16
 		}
@@ -1900,7 +1902,8 @@ int test_gcm_strm_combinations2(int length, int start, int breaks)
 		free(test.T);
 	}
 	printf("\n");
-	free(gdata);
+	free(gkey);
+	free(gctx);
 	return 0;
 }
 

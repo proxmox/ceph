@@ -107,7 +107,7 @@ void TestWatchNotify::aio_watch(TestRadosClient *rados_client, int64_t pool_id,
                                 librados::WatchCtx *watch_ctx,
                                 librados::WatchCtx2 *watch_ctx2,
                                 Context *on_finish) {
-  auto ctx = new LambdaContext([=](int) {
+  auto ctx = new LambdaContext([=, this](int) {
       execute_watch(rados_client, pool_id, nspace, o, gid, handle, watch_ctx,
                     watch_ctx2, on_finish);
     });
@@ -134,7 +134,7 @@ void TestWatchNotify::aio_notify(TestRadosClient *rados_client, int64_t pool_id,
                                  const std::string& oid, const bufferlist& bl,
                                  uint64_t timeout_ms, bufferlist *pbl,
                                  Context *on_notify) {
-  auto ctx = new LambdaContext([=](int) {
+  auto ctx = new LambdaContext([=, this](int) {
       execute_notify(rados_client, pool_id, nspace, oid, bl, pbl, on_notify);
     });
   rados_client->get_aio_finisher()->queue(ctx);
@@ -402,7 +402,16 @@ void TestWatchNotify::blocklist(uint32_t nonce) {
     auto &watcher = file_it->second;
     for (auto w_it = watcher->watch_handles.begin();
          w_it != watcher->watch_handles.end();) {
-      if (w_it->second.nonce == nonce) {
+      auto& watch_handle = w_it->second;
+      if (watch_handle.nonce == nonce) {
+        auto handle = watch_handle.handle;
+        auto watch_ctx2 = watch_handle.watch_ctx2;
+        if (watch_ctx2 != nullptr) {
+          auto ctx = new LambdaContext([handle, watch_ctx2](int) {
+              watch_ctx2->handle_error(handle, -ENOTCONN);
+            });
+          watch_handle.rados_client->get_aio_finisher()->queue(ctx);
+        }
         w_it = watcher->watch_handles.erase(w_it);
       } else {
         ++w_it;

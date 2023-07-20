@@ -20,7 +20,7 @@
 # Copyright (C) 2018 Scylladb, Ltd.
 #
 
-cmake_minimum_required (VERSION 3.5)
+cmake_minimum_required (VERSION 3.13)
 
 list (APPEND CMAKE_MODULE_PATH
   ${CMAKE_CURRENT_SOURCE_DIR}/cmake
@@ -39,6 +39,11 @@ set (Seastar_DPDK_MACHINE
 project (Seastar
   VERSION 1.0
   LANGUAGES CXX)
+
+cmake_policy (SET CMP0090 NEW)
+if (POLICY CMP0135)
+  cmake_policy (SET CMP0135 NEW)
+endif ()
 
 # generic boolean values passed as string, potentially from configure.py
 set (True_STRING_VALUES "ON" "yes" "Yes" "YES" "true" "True" "TRUE")
@@ -138,6 +143,12 @@ set (CMAKE_CXX_FLAGS_SANITIZE
   "Flags used by the C++ compiler during sanitize builds."
   FORCE)
 
+set (CMAKE_CXX_STANDARD
+  "20"
+  CACHE
+  STRING
+  "C++ standard to build with.")
+
 set (CMAKE_C_FLAGS_SANITIZE
   "-Os -g"
   CACHE
@@ -182,21 +193,28 @@ set (Seastar_ALLOC_PAGE_SIZE
   STRING
   "Override the Seastar allocator page size, in bytes.")
 
+function (set_option_if_package_is_found option_name package_name)
+  # if the package is found, set the option on behalf of user unless it is
+  # explicitly specified,
+  if (DEFINED ${option_name})
+    return ()
+  endif ()
+  if (${package_name}_FOUND)
+    set (${option_name} ON CACHE BOOL "")
+  endif ()
+endfunction ()
+
+# When Seastar is a top-level project, enable the non-library targets by default.
+# If it is embedded with `add_subdirectory`, disable them.
+if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+  set (Seastar_MASTER_PROJECT ON)
+else ()
+  set (Seastar_MASTER_PROJECT OFF)
+endif ()
+
 option (Seastar_APPS
   "Enable application targets."
-  ON)
-
-set (Seastar_CXX_DIALECT
-  "gnu++17"
-  CACHE
-  STRING
-  "Compile Seastar according to the named C++ standard.")
-if (Seastar_CXX_DIALECT)
-  # extract CXX standard (14/17/...) from Seastar_CXX_DIALECT
-  string(SUBSTRING ${Seastar_CXX_DIALECT} 5 2 STANDARD)
-  set(CMAKE_CXX_STANDARD ${STANDARD})
-  set(CMAKE_CXX_STANDARD_REQUIRED ON)
-endif ()
+  ${Seastar_MASTER_PROJECT})
 
 set (Seastar_CXX_FLAGS
   ""
@@ -206,11 +224,11 @@ set (Seastar_CXX_FLAGS
 
 option (Seastar_DEMOS
   "Enable demonstration targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
 
 option (Seastar_DOCS
   "Enable documentation targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
 
 option (Seastar_DPDK
   "Enable DPDK support."
@@ -236,6 +254,12 @@ option (Seastar_HWLOC
   "Enable hwloc support."
   ON)
 
+if (DEFINED Seastar_IO_URING)
+  option (Seastar_IO_URING
+    "Enable io_uring support."
+    ON)
+endif ()
+
 set (Seastar_JENKINS
   ""
   CACHE
@@ -250,7 +274,7 @@ set (Seastar_LD_FLAGS
 
 option (Seastar_INSTALL
   "Install targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
 
 option (Seastar_NUMA
   "Enable NUMA support."
@@ -258,7 +282,12 @@ option (Seastar_NUMA
 
 option (Seastar_TESTING
   "Enable testing targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
+
+include (CMakeDependentOption)
+cmake_dependent_option (Seastar_ENABLE_TESTS_ACCESSING_INTERNET
+  "Enable tests accessing internet." ON
+  "Seastar_TESTING" OFF)
 
 option (Seastar_COMPRESS_DEBUG
   "Compress debug info."
@@ -331,15 +360,6 @@ set (Seastar_DEBUG_SHARED_PTR
   STRING
   "Enable shared_ptr debugging. Can be ON, OFF or DEFAULT (which enables it for Debug and Sanitize)")
 
-# When Seastar is embedded with `add_subdirectory`, disable the non-library targets.
-if (NOT (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR))
-  set (Seastar_APPS OFF)
-  set (Seastar_DEMOS OFF)
-  set (Seastar_DOCS OFF)
-  set (Seastar_INSTALL OFF)
-  set (Seastar_TESTING OFF)
-endif ()
-
 #
 # Useful (non-cache) variables.
 #
@@ -359,6 +379,7 @@ seastar_find_dependencies ()
 find_package (ragel 6.10 REQUIRED)
 find_package (Threads REQUIRED)
 find_package (PthreadSetName REQUIRED)
+find_package (Valgrind REQUIRED)
 
 #
 # Code generation helpers.
@@ -545,6 +566,7 @@ add_library (seastar STATIC
   include/seastar/http/routes.hh
   include/seastar/http/short_streams.hh
   include/seastar/http/transformers.hh
+  include/seastar/http/client.hh
   include/seastar/json/formatter.hh
   include/seastar/json/json_elements.hh
   include/seastar/net/api.hh
@@ -600,6 +622,7 @@ add_library (seastar STATIC
   include/seastar/util/noncopyable_function.hh
   include/seastar/util/optimized_optional.hh
   include/seastar/util/print_safe.hh
+  include/seastar/util/process.hh
   include/seastar/util/program-options.hh
   include/seastar/util/read_first_line.hh
   include/seastar/util/reference_wrapper.hh
@@ -658,6 +681,9 @@ add_library (seastar STATIC
   src/http/reply.cc
   src/http/routes.cc
   src/http/transformers.cc
+  src/http/url.cc
+  src/http/client.cc
+  src/http/request.cc
   src/json/formatter.cc
   src/json/json_elements.cc
   src/net/arp.cc
@@ -691,6 +717,7 @@ add_library (seastar STATIC
   src/util/exceptions.cc
   src/util/file.cc
   src/util/log.cc
+  src/util/process.cc
   src/util/program-options.cc
   src/util/read_first_line.cc
   src/util/tmp_file.cc
@@ -711,8 +738,7 @@ target_include_directories (seastar
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${Seastar_GEN_BINARY_DIR}/include>
   PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${Seastar_GEN_BINARY_DIR}/src)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 set (Seastar_PRIVATE_CXX_FLAGS
   -fvisibility=hidden
@@ -733,10 +759,11 @@ target_link_libraries (seastar
     Boost::boost
     Boost::program_options
     Boost::thread
-    c-ares::c-ares
+    c-ares::cares
     cryptopp::cryptopp
     fmt::fmt
     lz4::lz4
+    SourceLocation::source_location
   PRIVATE
     ${CMAKE_DL_LIBS}
     GnuTLS::gnutls
@@ -744,6 +771,7 @@ target_link_libraries (seastar
     lksctp-tools::lksctp-tools
     rt::rt
     yaml-cpp::yaml-cpp
+    "$<BUILD_INTERFACE:Valgrind::valgrind>"
     Threads::Threads)
 
 set (Seastar_SANITIZE_MODES "Debug" "Sanitize")
@@ -779,12 +807,15 @@ include (CTest)
 
 target_compile_options (seastar
   PUBLIC
-    $<$<COMPILE_LANGUAGE:CXX>:-std=${Seastar_CXX_DIALECT}>
     -U_FORTIFY_SOURCE)
 
 target_compile_definitions(seastar
   PUBLIC
   SEASTAR_API_LEVEL=${Seastar_API_LEVEL})
+
+target_compile_features(seastar
+  PUBLIC
+    cxx_std_${CMAKE_CXX_STANDARD})
 
 function (seastar_supports_flag flag var)
   set (CMAKE_REQUIRED_FLAGS "${flag}")
@@ -864,6 +895,10 @@ if (Seastar_HEAP_PROFILING)
       SOURCE "src/core/memory.cc"
       PROPERTY
       COMPILE_DEFINITIONS SEASTAR_HEAPPROF)
+    set_property (
+      SOURCE "src/core/reactor.cc"
+      PROPERTY
+      COMPILE_DEFINITIONS SEASTAR_HEAPPROF)
 endif ()
 
 if (Seastar_DEFERRED_ACTION_REQUIRE_NOEXCEPT)
@@ -871,10 +906,6 @@ if (Seastar_DEFERRED_ACTION_REQUIRE_NOEXCEPT)
 endif ()
 
 if (Seastar_DPDK)
-  if (NOT dpdk_FOUND)
-    message (FATAL_ERROR "dpdk support is enabled but it is not available!")
-  endif ()
-
   #
   # The DPDK architecture needs to be transitively applied to consumers of Seastar as well.
   #
@@ -911,27 +942,25 @@ if (Seastar_DPDK)
 endif ()
 
 if (Seastar_HWLOC)
-  if (NOT hwloc_FOUND)
-    message (FATAL_ERROR "`hwloc` support is enabled but it is not available!")
-  endif ()
-
   list (APPEND Seastar_PRIVATE_COMPILE_DEFINITIONS SEASTAR_HAVE_HWLOC)
 
   target_link_libraries (seastar
     PRIVATE hwloc::hwloc)
 endif ()
 
-if (Seastar_LD_FLAGS)
-  # In newer versions of CMake, there is `target_link_options`.
+set_option_if_package_is_found (Seastar_IO_URING LibUring)
+if (Seastar_IO_URING)
+  list (APPEND Seastar_PRIVATE_COMPILE_DEFINITIONS SEASTAR_HAVE_URING)
   target_link_libraries (seastar
+    PRIVATE URING::uring)
+endif ()
+
+if (Seastar_LD_FLAGS)
+  target_link_options (seastar
     PRIVATE ${Seastar_LD_FLAGS})
 endif ()
 
 if (Seastar_NUMA)
-  if (NOT numactl_FOUND)
-    message (FATAL_ERROR "NUMA support is enabled but `numactl` is not available!")
-  endif ()
-
   list (APPEND Seastar_PRIVATE_COMPILE_DEFINITIONS SEASTAR_HAVE_NUMA)
 
   target_link_libraries (seastar
@@ -1005,6 +1034,11 @@ target_compile_definitions (seastar
 target_compile_options (seastar
   PRIVATE ${Seastar_PRIVATE_CXX_FLAGS})
 
+set_target_properties (seastar
+  PROPERTIES
+    CXX_STANDARD ${CMAKE_CXX_STANDARD}
+    CXX_EXTENSIONS ON)
+
 add_library (seastar_private INTERFACE)
 
 target_compile_definitions (seastar_private
@@ -1051,7 +1085,8 @@ if (Seastar_INSTALL OR Seastar_TESTING)
   add_library(seastar_perf_testing
     src/testing/random.cc
     include/seastar/testing/perf_tests.hh
-    tests/perf/perf_tests.cc)
+    tests/perf/perf_tests.cc
+    tests/perf/linux_perf_event.cc)
   add_library (Seastar::seastar_perf_testing ALIAS seastar_perf_testing)
   target_compile_definitions (seastar_perf_testing
     PRIVATE ${Seastar_PRIVATE_COMPILE_DEFINITIONS})
@@ -1224,10 +1259,10 @@ if (Seastar_INSTALL)
 
   install (
     FILES
-      ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindConcepts.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindGnuTLS.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindLinuxMembarrier.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindSanitizers.cmake
+      ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindSourceLocation.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindStdAtomic.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Findc-ares.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Findcryptopp.cmake
@@ -1240,6 +1275,7 @@ if (Seastar_INSTALL)
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Findrt.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Findyaml-cpp.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/SeastarDependencies.cmake
+      ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindLibUring.cmake
     DESTINATION ${install_cmakedir})
 
   install (

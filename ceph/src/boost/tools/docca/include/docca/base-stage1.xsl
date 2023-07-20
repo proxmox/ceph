@@ -212,6 +212,9 @@
   <!-- TODO: Should this be a custom rule or built-in? -->
   <xsl:template mode="section" match="simplesect[matches(title,'Concepts:?')]"/>
 
+  <!-- Omit description section if it has no body -->
+  <xsl:template mode="section" match="detaileddescription[not(normalize-space(.))]" priority="1"/>
+
   <xsl:template mode="section" match="*">
     <section>
       <heading>
@@ -238,26 +241,31 @@
   <xsl:template mode="section-heading" match="parameterlist[@kind eq 'templateparam']">Template Parameters</xsl:template>
   <xsl:template mode="section-heading" match="parameterlist                          ">Parameters</xsl:template>
 
-  <xsl:template mode="section-heading" match="innerclass
-                                            | sectiondef[@kind eq 'public-type']">Types</xsl:template>
-  <xsl:template mode="section-heading" match="sectiondef[@kind eq 'friend'     ]">Friends</xsl:template>
-  <xsl:template mode="section-heading" match="sectiondef[@kind eq 'related'    ]">Related Functions</xsl:template>
+  <xsl:template mode="section-heading" match="innerclass">Types</xsl:template>
 
-  <xsl:template mode="section-heading" match="sectiondef[@kind eq 'enum']">Values</xsl:template>
+  <xsl:template mode="section-heading" match="sectiondef[@kind eq 'friend' ]">Friends</xsl:template>
+  <xsl:template mode="section-heading" match="sectiondef[@kind eq 'related']">Related Functions</xsl:template>
+  <xsl:template mode="section-heading" match="sectiondef[@kind eq 'enum'   ]">Values</xsl:template>
 
   <xsl:template mode="section-heading" match="sectiondef">
-    <xsl:apply-templates mode="access-level" select="@kind"/>
-    <xsl:apply-templates mode="member-kind" select="@kind"/>
+    <xsl:apply-templates mode="access-level"  select="@kind"/>
+    <xsl:apply-templates mode="storage-class" select="@kind"/>
+    <xsl:apply-templates mode="member-kind"  select="@kind"/>
   </xsl:template>
 
-          <xsl:template mode="access-level" match="@kind[starts-with(.,'public'   )]"/>
-          <xsl:template mode="access-level" match="@kind[starts-with(.,'protected')]">Protected </xsl:template>
-          <xsl:template mode="access-level" match="@kind[starts-with(.,'private'  )]">Private </xsl:template>
+          <xsl:template mode="access-level" match="@kind[starts-with(.,'public-'   )]"/>
+          <xsl:template mode="access-level" match="@kind[starts-with(.,'protected-')]">Protected </xsl:template>
+          <xsl:template mode="access-level" match="@kind[starts-with(.,'private-'  )]">Private </xsl:template>
 
-          <xsl:template mode="member-kind" match="@kind[contains(.,'-static-')]" priority="1"
-                                                                               >Static Members</xsl:template>
-          <xsl:template mode="member-kind" match="@kind[ends-with(.,'func'  )]">Member Functions</xsl:template>
-          <xsl:template mode="member-kind" match="@kind[ends-with(.,'attrib')]">Data Members</xsl:template>
+          <xsl:template mode="storage-class" match="@*"/>
+          <xsl:template mode="storage-class" match="@kind[contains(.,'-static-')]">Static </xsl:template>
+
+          <xsl:template mode="member-kind" priority="1"
+                                           match="@kind[ends-with(.,'-static-attrib')]">Members</xsl:template>
+          <xsl:template mode="member-kind" match="@kind[ends-with(.,'-attrib'       )]">Data Members</xsl:template>
+          <xsl:template mode="member-kind" match="@kind[ends-with(.,'-func'         )]">Member Functions</xsl:template>
+          <xsl:template mode="member-kind" match="@kind[ends-with(.,'-type'         )]">Types</xsl:template>
+
 
   <xsl:template mode="section-body" match="sectiondef | innerclass | parameterlist">
     <table>
@@ -365,6 +373,7 @@
               <td>
                 <bold>
                   <ref d:refid="{@d:page-refid}">{current-grouping-key()}</ref>
+                  <xsl:apply-templates mode="member-annotation" select="."/>
                 </bold>
               </td>
               <td>
@@ -373,6 +382,22 @@
             </tr>
           </xsl:template>
 
+                  <xsl:template mode="member-annotation" match="*">
+                    <xsl:variable name="member-name" select="current-grouping-key()"/>
+                    <xsl:variable name="is-destructor" select="starts-with($member-name, '~')"/>
+                    <xsl:variable name="is-constructor" select="$member-name = d:strip-ns(/doxygen/compounddef/compoundname)"/>
+                    <xsl:if test="$is-destructor or $is-constructor">
+                      <xsl:text>&#160;</xsl:text>
+                      <role class="silver">
+                        <xsl:choose>
+                          <xsl:when test="$is-destructor">[destructor]</xsl:when>
+                          <xsl:otherwise                 >[constructor]</xsl:otherwise>
+                        </xsl:choose>
+                      </role>
+                    </xsl:if>
+                  </xsl:template>
+
+
                   <xsl:template mode="member-description" match="innerclass">
                     <xsl:apply-templates select="d:referenced-inner-class/compounddef/briefdescription"/>
                   </xsl:template>
@@ -380,7 +405,13 @@
                     <xsl:variable name="descriptions" select="current-group()/briefdescription"/>
                     <!-- Pull in any overload descriptions but only if they vary -->
                     <xsl:for-each select="distinct-values($descriptions)">
-                      <xsl:apply-templates select="$descriptions[. eq current()][1]"/>
+                      <!-- ASSUMPTION: <briefdescription> always contains one <para> -->
+                      <xsl:apply-templates select="$descriptions[. eq current()][1]/para/node()"/>
+                      <xsl:if test="position() ne last()">
+                        <br/>
+                        <role class="silver">—</role>
+                        <br/>
+                      </xsl:if>
                     </xsl:for-each>
                   </xsl:template>
 
@@ -399,7 +430,8 @@
       <xsl:apply-templates mode="normalize-params" select="templateparamlist"/>
       <kind>{@kind}</kind>
       <name>{d:strip-ns(compoundname)}</name>
-      <xsl:for-each select="basecompoundref[not(d:should-ignore-base(.))]">
+      <xsl:for-each select="basecompoundref[not(d:should-ignore-base(.))]
+                                           [not(@prot eq 'private')]">
         <base>
           <prot>{@prot}</prot>
           <name>{d:strip-doc-ns(.)}</name>
@@ -461,16 +493,19 @@
     </function>
   </xsl:template>
 
-          <!-- TODO: make sure this is robust and handles all the possible cases well -->
+          <!-- Extract <declname> when Doxygen hides it in the <type> -->
           <xsl:template mode="normalize-params" match="templateparamlist/param/type[not(../declname)]
-                                                                                   [starts-with(.,'class ')]"
+                                                                                   [starts-with(.,'class ') or
+                                                                                    starts-with(.,'typename ')]"
                                                 priority="1">
-            <type>class</type>
-            <declname>{substring-after(.,'class ')}</declname>
+            <type>{substring-before(.,' ')}</type>
+            <declname>{substring-after(.,' ')}</declname>
           </xsl:template>
 
-          <xsl:template mode="normalize-params" match="templateparamlist/param/type[not(../declname)]">
-            <ERROR message="param neither has a declname nor a 'class ' prefix in the type"/>
+          <!-- Flag as error if no declname value could be found (unless the type is simply "class") -->
+          <xsl:template mode="normalize-params" match="templateparamlist/param/type[not(../declname)]
+                                                                                   [not(. = 'class')]">
+            <ERROR message="param neither has a declname nor a 'class ' or 'typename ' prefix in the type"/>
           </xsl:template>
 
           <xsl:template mode="normalize-params" match="templateparamlist/param/defname"/>

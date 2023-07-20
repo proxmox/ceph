@@ -54,14 +54,15 @@
 
 class OSD;
 class OSDService;
-class OSDShard;
-class OSDShardPGSlot;
+struct OSDShard;
+struct OSDShardPGSlot;
 
 class PG;
 struct OpRequest;
 typedef OpRequest::Ref OpRequestRef;
 class DynamicPerfStats;
 class PgScrubber;
+class ScrubBackend;
 
 namespace Scrub {
   class Store;
@@ -162,20 +163,13 @@ class PGRecoveryStats {
  *
  */
 
-/// Facilitating scrub-realated object access to private PG data
-class ScrubberPasskey {
-private:
-  friend class Scrub::ReplicaReservations;
-  friend class PrimaryLogScrub;
-  ScrubberPasskey() {}
-  ScrubberPasskey(const ScrubberPasskey&) = default;
-  ScrubberPasskey& operator=(const ScrubberPasskey&) = delete;
-};
-
-class PG : public DoutPrefixProvider, public PeeringState::PeeringListener {
+class PG : public DoutPrefixProvider,
+	   public PeeringState::PeeringListener,
+	   public Scrub::PgScrubBeListener {
   friend struct NamedState;
   friend class PeeringState;
   friend class PgScrubber;
+  friend class ScrubBackend;
 
 public:
   const pg_shard_t pg_whoami;
@@ -187,6 +181,10 @@ public:
 
   /// flags detailing scheduling/operation characteristics of the next scrub 
   requested_scrub_t m_planned_scrub;
+
+  const requested_scrub_t& get_planned_scrub() const {
+    return m_planned_scrub;
+  }
 
   /// scrubbing state for both Primary & replicas
   bool is_scrub_active() const { return m_scrubber->is_scrub_active(); }
@@ -238,7 +236,7 @@ public:
     return pg_id;
   }
 
-  const PGPool& get_pool() const {
+  const PGPool& get_pgpool() const final {
     return pool;
   }
   uint64_t get_last_user_version() const {
@@ -254,6 +252,11 @@ public:
     return info.history.same_interval_since;
   }
 
+  bool is_waiting_for_unreadable_object() const final
+  {
+    return !waiting_for_unreadable_object.empty();
+  }
+
   static void set_last_scrub_stamp(
     utime_t t, pg_history_t &history, pg_stat_t &stats) {
     stats.last_scrub_stamp = t;
@@ -262,7 +265,7 @@ public:
 
   void set_last_scrub_stamp(utime_t t) {
     recovery_state.update_stats(
-      [=](auto &history, auto &stats) {
+      [t](auto &history, auto &stats) {
 	set_last_scrub_stamp(t, history, stats);
 	return true;
       });
@@ -276,7 +279,7 @@ public:
 
   void set_last_deep_scrub_stamp(utime_t t) {
     recovery_state.update_stats(
-      [=](auto &history, auto &stats) {
+      [t](auto &history, auto &stats) {
 	set_last_deep_scrub_stamp(t, history, stats);
 	return true;
       });
@@ -289,7 +292,7 @@ public:
 
   void add_objects_scrubbed_count(int64_t count) {
     recovery_state.update_stats(
-      [=](auto &history, auto &stats) {
+      [count](auto &history, auto &stats) {
 	add_objects_scrubbed_count(count, stats);
 	return true;
       });
@@ -299,12 +302,12 @@ public:
     stats.objects_scrubbed = 0;
   }
 
-  void reset_objects_scrubbed() {
-    recovery_state.update_stats(
-      [=](auto &history, auto &stats) {
-  reset_objects_scrubbed(stats);
-  return true;
-      });
+  void reset_objects_scrubbed()
+  {
+    recovery_state.update_stats([](auto& history, auto& stats) {
+      reset_objects_scrubbed(stats);
+      return true;
+    });
   }
 
   bool is_deleting() const {
@@ -339,7 +342,7 @@ public:
   int get_acting_primary() const {
     return recovery_state.get_acting_primary();
   }
-  pg_shard_t get_primary() const {
+  pg_shard_t get_primary() const final {
     return recovery_state.get_primary();
   }
   const std::vector<int> get_up() const {
@@ -498,11 +501,6 @@ public:
 			"ReplicaPushesUpd");
   }
 
-  void scrub_send_maps_compared(epoch_t queued, ThreadPool::TPHandle& handle)
-  {
-    forward_scrub_event(&ScrubPgIF::send_maps_compared, queued, "MapsCompared");
-  }
-
   void scrub_send_get_next_chunk(epoch_t queued, ThreadPool::TPHandle& handle)
   {
     forward_scrub_event(&ScrubPgIF::send_get_next_chunk, queued, "NextChunk");
@@ -554,7 +552,7 @@ public:
 
   void add_objects_trimmed_count(int64_t count) {
     recovery_state.update_stats_wo_resched(
-      [=](auto &history, auto &stats) {
+      [count](auto &history, auto &stats) {
         add_objects_trimmed_count(count, stats);
       });
   }
@@ -565,7 +563,7 @@ public:
 
   void reset_objects_trimmed() {
     recovery_state.update_stats_wo_resched(
-      [=](auto &history, auto &stats) {
+      [](auto &history, auto &stats) {
         reset_objects_trimmed(stats);
       });
   }
@@ -580,7 +578,7 @@ public:
     utime_t cur_stamp = ceph_clock_now();
     utime_t duration = cur_stamp - snaptrim_begin_stamp;
     recovery_state.update_stats_wo_resched(
-      [=](auto &history, auto &stats) {
+      [duration](auto &history, auto &stats) {
         stats.snaptrim_duration = double(duration);
     });
   }
@@ -590,7 +588,7 @@ public:
   void clear_publish_stats() override;
   void clear_primary_state() override;
 
-  epoch_t oldest_stored_osdmap() override;
+  epoch_t cluster_osdmap_trim_lower_bound() override;
   OstreamTemp get_clog_error() override;
   OstreamTemp get_clog_info() override;
   OstreamTemp get_clog_debug() override;
@@ -659,7 +657,7 @@ public:
 
   void send_pg_created(pg_t pgid) override;
 
-  ceph::signedspan get_mnow() override;
+  ceph::signedspan get_mnow() const override;
   HeartbeatStampsRef get_hb_stamps(int peer) override;
   void schedule_renew_lease(epoch_t lpr, ceph::timespan delay) override;
   void queue_check_readable(epoch_t lpr, ceph::timespan delay) override;
@@ -696,7 +694,8 @@ public:
   void dump_pgstate_history(ceph::Formatter *f);
   void dump_missing(ceph::Formatter *f);
 
-  void with_pg_stats(std::function<void(const pg_stat_t&, epoch_t lec)>&& f);
+  void with_pg_stats(ceph::coarse_real_clock::time_point now_is,
+		     std::function<void(const pg_stat_t&, epoch_t lec)>&& f);
   void with_heartbeat_peers(std::function<void(int)>&& f);
 
   void shutdown();
@@ -714,23 +713,32 @@ private:
 
   /// should we perform deep scrub?
   bool is_time_for_deep(bool allow_deep_scrub,
-		        bool allow_scrub,
-		        bool has_deep_errors,
-		        const requested_scrub_t& planned) const;
+                        bool allow_shallow_scrub,
+                        bool has_deep_errors,
+                        const requested_scrub_t& planned) const;
 
   /**
-   * Verify the various 'next scrub' flags in m_planned_scrub against configuration
+   * Validate the various 'next scrub' flags in m_planned_scrub against configuration
    * and scrub-related timestamps.
    *
    * @returns an updated copy of the m_planned_flags (or nothing if no scrubbing)
    */
-  std::optional<requested_scrub_t> verify_scrub_mode() const;
+  std::optional<requested_scrub_t> validate_scrub_mode() const;
 
-  bool verify_periodic_scrub_mode(bool allow_deep_scrub,
-				  bool try_to_auto_repair,
-				  bool allow_regular_scrub,
-				  bool has_deep_errors,
-				  requested_scrub_t& planned) const;
+  std::optional<requested_scrub_t> validate_periodic_mode(
+    bool allow_deep_scrub,
+    bool try_to_auto_repair,
+    bool allow_shallow_scrub,
+    bool time_for_deep,
+    bool has_deep_errors,
+    const requested_scrub_t& planned) const;
+
+  std::optional<requested_scrub_t> validate_initiated_scrub(
+    bool allow_deep_scrub,
+    bool try_to_auto_repair,
+    bool time_for_deep,
+    bool has_deep_errors,
+    const requested_scrub_t& planned) const;
 
   using ScrubAPI = void (ScrubPgIF::*)(epoch_t epoch_queued);
   void forward_scrub_event(ScrubAPI fn, epoch_t epoch_queued, std::string_view desc);
@@ -1225,15 +1233,9 @@ protected:
 
   int active_pushes;
 
-  void repair_object(
-    const hobject_t &soid,
-    const std::list<std::pair<ScrubMap::object, pg_shard_t> > &ok_peers,
-    const std::set<pg_shard_t> &bad_peers);
-
   [[nodiscard]] bool ops_blocked_by_scrub() const;
   [[nodiscard]] Scrub::scrub_prio_t is_scrub_blocking_ops() const;
 
-  void _repair_oinfo_oid(ScrubMap &map);
   void _scan_rollback_obs(const std::vector<ghobject_t> &rollback_obs);
   /**
    * returns true if [begin, end) is good to scrub at this time
@@ -1407,16 +1409,29 @@ protected:
   const pg_info_t &info;
 
 
-// ScrubberPasskey getters:
+// ScrubberPasskey getters/misc:
 public:
-  const pg_info_t& get_pg_info(ScrubberPasskey) const {
-    return info;
-  }
+ const pg_info_t& get_pg_info(ScrubberPasskey) const final { return info; }
 
-  OSDService* get_pg_osd(ScrubberPasskey) const {
-    return osd;
-  }
+ OSDService* get_pg_osd(ScrubberPasskey) const { return osd; }
 
+ requested_scrub_t& get_planned_scrub(ScrubberPasskey)
+ {
+   return m_planned_scrub;
+ }
+
+ void force_object_missing(ScrubberPasskey,
+                           const std::set<pg_shard_t>& peer,
+                           const hobject_t& oid,
+                           eversion_t version) final
+ {
+   recovery_state.force_object_missing(peer, oid, version);
+ }
+
+ uint64_t logical_to_ondisk_size(uint64_t logical_size) const final
+ {
+   return get_pgbackend()->be_get_ondisk_size(logical_size);
+ }
 };
 
 #endif

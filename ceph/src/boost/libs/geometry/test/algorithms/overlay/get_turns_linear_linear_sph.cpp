@@ -1,7 +1,7 @@
 // Boost.Geometry
 // Unit Test
 
-// Copyright (c) 2016, Oracle and/or its affiliates.
+// Copyright (c) 2016-2021, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Use, modification and distribution is subject to the Boost Software License,
@@ -73,7 +73,7 @@ void test_all()
                           "LINESTRING(30 0,3 0,2.5 1,2 0,1 0,0 0,-1 -1)",
                           expected("tuu==")("ecc==")("mii++")("muu==")("mii++")("muu==")("mii++"));
 
-    if (BOOST_GEOMETRY_CONDITION((boost::is_same<T, double>::value)))
+    if (BOOST_GEOMETRY_CONDITION((std::is_same<T, double>::value)))
     {
         test_geometry<ls, ls>("LINESTRING(-1 0,1 0,2 1.0004570537241201524198894179384922,3 2)",
                               "LINESTRING(4 5,3 2,1 0,0 0)",
@@ -223,7 +223,7 @@ void test_all()
                           "LINESTRING(2 0,0 0,-10 0)",
                           expected("tiu+=")("mui=+"));
     
-    if ( BOOST_GEOMETRY_CONDITION((boost::is_same<T, double>::value)) )
+    if ( BOOST_GEOMETRY_CONDITION((std::is_same<T, double>::value)) )
     {
         test_geometry<ls, ls>("LINESTRING(0 -1, 10 -1, 20 1)",
                               "LINESTRING(12 10, 12.5 -0.50051443471392, 15 0, 17.5 0.50051443471392)",
@@ -274,20 +274,6 @@ void test_all()
     //test_geometry<ls, ls>("LINESTRING(0 0,3 3,1 1)", "LINESTRING(2 0,2 2,2 1)", "0F1FF0102");
 
     //test_geometry<ls, ls>("LINESTRING(0 0,2 2,3 3,4 4)", "LINESTRING(0 0,1 1,4 4)", "1FFF0FFF2");
-
-
-    //if ( boost::is_same<T, double>::value )
-    //{
-    //    to_svg<ls, ls>("LINESTRING(0 0,1 0,2 0,2.5 0,3 1)", "LINESTRING(0 0,2 0,2.5 0,3 1)", "test11.svg");
-    //    to_svg<ls, ls>("LINESTRING(0 0,1 0,2 0,2.5 0,3 1)", "LINESTRING(3 1,2.5 0,2 0,0 0)", "test12.svg");
-    //    to_svg<ls, ls>("LINESTRING(-1 1,0 0,1 0,4 0,5 5,10 5,15 0,20 0,30 0,31 1)", "LINESTRING(30 0,3 0,2.5 1,2 0,1 0,0 0,-1 -1)", "test21.svg");
-    //    to_svg<ls, ls>("LINESTRING(-1 1,0 0,1 0,4 0,5 5,10 5,15 0,20 0,30 0,31 1)", "LINESTRING(-1 -1,0 0,1 0,2 0,2.5 1,3 0,30 0)", "test22.svg");
-
-    //    to_svg<ls, ls>("LINESTRING(-1 1,0 0,1 0,4 0,5 5,10 5,15 0,31 0)", "LINESTRING(-1 -1,0 0,1 0,2 0,2.5 1,3 0,30 0)", "test31.svg");
-    //    to_svg<ls, ls>("LINESTRING(-1 1,0 0,1 0,4 0,5 5,10 5,15 0,31 0)", "LINESTRING(30 0,3 0,2.5 1,2 0,1 0,0 0,-1 -1)", "test32.svg");
-    //    to_svg<ls, ls>("LINESTRING(31 0,15 0,10 5,5 5,4 0,1 0,0 0,-1 1)", "LINESTRING(-1 -1,0 0,1 0,2 0,2.5 1,3 0,30 0)", "test33.svg");
-    //    to_svg<ls, ls>("LINESTRING(31 0,15 0,10 5,5 5,4 0,1 0,0 0,-1 1)", "LINESTRING(30 0,3 0,2.5 1,2 0,1 0,0 0,-1 -1)", "test34.svg");
-    //}
 
     // duplicated
     test_geometry<mls, mls>("MULTILINESTRING((0 0,10 0,30 0))",

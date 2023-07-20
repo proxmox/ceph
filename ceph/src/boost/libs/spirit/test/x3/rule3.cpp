@@ -5,7 +5,6 @@
     file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 =============================================================================*/
 
-#include <boost/detail/lightweight_test.hpp>
 #include <boost/spirit/home/x3.hpp>
 #include <boost/fusion/include/adapt_struct.hpp>
 #include <boost/fusion/include/std_pair.hpp>
@@ -16,6 +15,11 @@
 #include <cstring>
 #include <iostream>
 #include "test.hpp"
+
+#ifdef _MSC_VER
+// bogus https://developercommunity.visualstudio.com/t/buggy-warning-c4709/471956
+# pragma warning(disable: 4709) // comma operator within array index expression
+#endif
 
 using boost::spirit::x3::_val;
 namespace x3 = boost::spirit::x3;
@@ -63,6 +67,15 @@ boost::spirit::x3::rule<class grammar_r, node_t> const grammar;
 auto const grammar_def = '[' >> grammar % ',' >> ']' | boost::spirit::x3::int_;
 
 BOOST_SPIRIT_DEFINE(grammar)
+
+}
+
+namespace check_recursive_scoped {
+
+using check_recursive::node_t;
+
+x3::rule<class intvec_r, node_t> const intvec;
+auto const grammar = intvec = '[' >> intvec % ',' >> ']' | x3::int_;
 
 }
 
@@ -129,7 +142,7 @@ int main()
     }
 
     {
-        auto r = rule<class r, int>{} = eps[([] (auto& ctx) {
+        auto r = rule<class r_id, int>{} = eps[([] (auto& ctx) {
             using boost::spirit::x3::_val;
             static_assert(std::is_same<std::decay_t<decltype(_val(ctx))>, unused_type>::value,
                 "Attribute must not be synthesized");
@@ -145,6 +158,12 @@ int main()
 
     {
         using namespace check_recursive;
+        node_t v;
+        BOOST_TEST(test_attr("[4,2]", grammar, v));
+        BOOST_TEST((node_t{std::vector<node_t>{{4}, {2}}} == v));
+    }
+    {
+        using namespace check_recursive_scoped;
         node_t v;
         BOOST_TEST(test_attr("[4,2]", grammar, v));
         BOOST_TEST((node_t{std::vector<node_t>{{4}, {2}}} == v));

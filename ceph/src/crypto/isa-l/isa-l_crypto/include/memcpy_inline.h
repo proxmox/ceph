@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -37,12 +37,19 @@
 #ifndef _MEMCPY_H_
 #define _MEMCPY_H_
 
+#if defined(__i386__) || defined(__x86_64__) || defined( _M_X64) \
+	|| defined(_M_IX86)
 #include "intrinreg.h"
+#endif
+#include <string.h>
 #include <assert.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#if defined(__i386__) || defined(__x86_64__) || defined( _M_X64) \
+	|| defined(_M_IX86)
 
 #define memcpy_varlen   memcpy_sse_varlen
 #define memcpy_fixedlen memcpy_sse_fixedlen
@@ -287,7 +294,6 @@ static inline void memcpy_gte16_sse_varlen(void *dst, const void *src, size_t nb
 	if (i + 16 <= nbytes) {
 		memcpy_gte16_sse_fixedlen((void *)((char *)dst + i),
 					  (const void *)((const char *)src + i), 16);
-		i += 16;
 	}
 
 	i = nbytes - 16;
@@ -316,7 +322,6 @@ static inline void memclr_gte16_sse_varlen(void *dst, size_t nbytes)
 	}
 	if (i + 16 <= nbytes) {
 		memclr_gte16_sse_fixedlen((void *)((char *)dst + i), 16);
-		i += 16;
 	}
 
 	i = nbytes - 16;
@@ -354,7 +359,14 @@ static inline void memclr_sse_varlen(void *dst, size_t nbytes)
 	else
 		memclr_lte32_sse_varlen(dst, nbytes);
 }
+#else
+#define memcpy_varlen   memcpy
+#define memcpy_fixedlen memcpy
 
+#define memclr_varlen(dst,n)   memset(dst,0,n)
+#define memclr_fixedlen(dst,n) memset(dst,0,n)
+
+#endif
 
 #ifdef __cplusplus
 }

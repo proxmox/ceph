@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -39,8 +39,8 @@
 #include "types.h"
 #include "cbc_std_vectors.h"
 
-typedef void (*aes_cbc_generic) (uint8_t * in, uint8_t * IV, uint8_t * keys, uint8_t * out,
-				 uint64_t len_bytes);
+typedef void (*aes_cbc_generic)(uint8_t * in, uint8_t * IV, uint8_t * keys, uint8_t * out,
+				uint64_t len_bytes);
 
 int check_data(uint8_t * test, uint8_t * expected, uint64_t len, char *data_name)
 {
@@ -135,20 +135,20 @@ int check_vector(struct cbc_vector *vector)
 int test_std_combinations(void)
 {
 	int const vectors_cnt = sizeof(cbc_vectors) / sizeof(cbc_vectors[0]);
-	int i;
+	int i, ret;
 	uint8_t *iv = NULL;
 
 	printf("AES CBC standard test vectors: ");
 
-	posix_memalign((void **)&iv, 16, (CBC_IV_DATA_LEN));
-	if (NULL == iv)
+	ret = posix_memalign((void **)&iv, 16, (CBC_IV_DATA_LEN));
+	if ((0 != ret) || (NULL == iv))
 		return 1;
 
 	for (i = 0; (i < vectors_cnt); i++) {
 		struct cbc_vector vect = cbc_vectors[i];
 
-		posix_memalign((void **)&(vect.KEYS), 16, sizeof(*vect.KEYS));
-		if (NULL == vect.KEYS)
+		ret = posix_memalign((void **)&(vect.KEYS), 16, sizeof(*vect.KEYS));
+		if ((0 != ret) || (NULL == vect.KEYS))
 			return 1;
 
 		// IV data must be aligned to 16 byte boundary so move data in

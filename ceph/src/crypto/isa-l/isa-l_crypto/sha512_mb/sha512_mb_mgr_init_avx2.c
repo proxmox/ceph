@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -38,6 +38,7 @@ void sha512_mb_mgr_init_avx2(SHA512_MB_JOB_MGR * state)
 	state->lens[2] = 2;
 	state->lens[3] = 3;
 	state->unused_lanes = 0xFF03020100;
+	state->num_lanes_inuse = 0;
 	for (j = 0; j < SHA512_X4_LANES; j++) {
 		state->ldata[j].job_in_lane = 0;
 	}

@@ -5,6 +5,10 @@
 // Copyright (c) 2008-2012 Bruno Lalande, Paris, France.
 // Copyright (c) 2009-2012 Mateusz Loskot, London, UK.
 
+// This file was modified by Oracle on 2021-2022.
+// Modifications copyright (c) 2021-2022 Oracle and/or its affiliates.
+// Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
+
 // Parts of Boost.Geometry are redesigned from Geodan's Geographic Library
 // (geolib/GGL), copyright (c) 1995-2010 Geodan, Amsterdam, the Netherlands.
 
@@ -196,10 +200,19 @@ void test_all()
         "POLYGON((0 0,0 10,10 10,10 0,0 0),(5 5,6 6,5 6,5 5))",
         "POLYGON((0 0,0 10,10 10,10 0,0 0))", 5.0);
 
-//    // Non-closed version
-//    test_geometry<bg::model::polygon<P, true, false> >(
-//        "POLYGON((1 0,0 0,0 4,4 4,4 0))",
-//        "POLYGON((0 0,0 4,4 4,4 0))", 0.1);
+    // Non-closed version
+    test_geometry<bg::model::polygon<P, true, false> >(
+        "POLYGON((1 0,0 0,0 4,4 4,4 0))",
+        "POLYGON((0 0,0 4,4 4,4 0))", 0.1);
+    test_geometry<bg::model::polygon<P, true, false> >(
+        "POLYGON((0 0,0 1,1 1,1 0))",
+        "POLYGON((0 0,0 1,1 1,1 0))", 0.1);
+
+    // Non-closed, ccw version
+    // https://github.com/boostorg/geometry/issues/956
+    test_geometry<bg::model::polygon<P, false, false> >(
+        "POLYGON((0 0,0.4 0,0.4 0.4))",
+        "POLYGON((0 0,0.4 0,0.4 0.4))", 0);
 
 
     {
@@ -221,6 +234,18 @@ void test_all()
     test_geometry<P>(
         "POINT(0 0)",
         "POINT(0 0)", 1.0);
+
+    test_geometry<bg::model::segment<P> >(
+        "SEGMENT(0 0, 1 1)",
+        "SEGMENT(0 0, 1 1)", 1.0);
+
+    test_geometry<bg::model::box<P> >(
+        "BOX(0 0, 1 1)",
+        "BOX(0 0, 1 1)", 1.0);
+
+    test_geometry<bg::model::multi_point<P> >(
+        "MULTIPOINT(0 0, 1 1, 2 2)",
+        "MULTIPOINT(0 0, 1 1, 2 2)", 1.0);
 
 
     // RING: check compilation and behaviour

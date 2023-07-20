@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -30,6 +30,10 @@
 ; Routine to do AES key expansion
 
 %include "reg_sizes.asm"
+
+[bits 64]
+default rel
+section .text
 
 %macro key_expansion_128_sse 0
 	;; Assumes the xmm3 includes all zeros at this point.
@@ -70,8 +74,9 @@
 ; arg 2: rdx: pointer to expanded key array for encrypt
 ; arg 3: r8:  pointer to expanded key array for decrypt
 ;
-global aes_keyexp_128_sse:function
+mk_global aes_keyexp_128_sse, function
 aes_keyexp_128_sse:
+	endbranch
         movdqu	xmm1, [KEY]	; loading the AES key
 	movdqu	[EXP_ENC_KEYS + 16*0], xmm1
         movdqu	[EXP_DEC_KEYS + 16*10], xmm1  ; Storing key in memory
@@ -143,8 +148,9 @@ aes_keyexp_128_sse:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-global aes_keyexp_128_avx:function
+mk_global aes_keyexp_128_avx, function
 aes_keyexp_128_avx:
+	endbranch
         vmovdqu	xmm1, [KEY]	; loading the AES key
 	vmovdqu	[EXP_ENC_KEYS + 16*0], xmm1
         vmovdqu	[EXP_DEC_KEYS + 16*10], xmm1  ; Storing key in memory
@@ -222,8 +228,9 @@ aes_keyexp_128_avx:
 ; arg 1: rcx: pointer to key
 ; arg 2: rdx: pointer to expanded key array for encrypt
 ;
-global aes_keyexp_128_enc_sse:function
+mk_global aes_keyexp_128_enc_sse, function
 aes_keyexp_128_enc_sse:
+	endbranch
         movdqu	xmm1, [KEY]	; loading the AES key
 	movdqu	[EXP_ENC_KEYS + 16*0], xmm1
 	pxor	xmm3, xmm3
@@ -270,8 +277,9 @@ aes_keyexp_128_enc_sse:
 
 	ret
 
-global aes_keyexp_128_enc_avx:function
+mk_global aes_keyexp_128_enc_avx, function
 aes_keyexp_128_enc_avx:
+	endbranch
         vmovdqu	xmm1, [KEY]	; loading the AES key
 	vmovdqu	[EXP_ENC_KEYS + 16*0], xmm1
 	vpxor	xmm3, xmm3, xmm3

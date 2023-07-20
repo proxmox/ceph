@@ -16,19 +16,19 @@
 #pragma GCC diagnostic ignored "-Wnoexcept-type"
 #endif
 
-#ifdef BOOST_TT_HAS_ASCCURATE_IS_FUNCTION
+#ifdef BOOST_TT_HAS_ACCURATE_IS_FUNCTION
 struct tricky_members
 {
-   void noexcept_proc()noexcept
+   BOOST_TT_PROC void noexcept_proc()noexcept
    {}
-   void const_ref_proc()const &
+   BOOST_TT_PROC void const_ref_proc()const &
    {}
-   void rvalue_proc()&&
+   BOOST_TT_PROC void rvalue_proc()&&
    {}
 };
 
 template <class T>
-void test_tricky(T)
+BOOST_TT_PROC void test_tricky(T)
 {
    BOOST_CHECK_INTEGRAL_CONSTANT(::tt::is_member_function_pointer<T>::value, true);
 }
@@ -70,13 +70,13 @@ BOOST_CHECK_INTEGRAL_CONSTANT(::tt::is_member_function_pointer<void>::value, fal
 
 typedef void (__stdcall test_abc1::*scall_proc)();
 BOOST_CHECK_INTEGRAL_CONSTANT(::tt::is_member_function_pointer<scall_proc>::value, true);
-#ifndef __CLR_VER
+#ifndef _MANAGED
 typedef void (__fastcall test_abc1::*fcall_proc)(int);
 BOOST_CHECK_INTEGRAL_CONSTANT(::tt::is_member_function_pointer<fcall_proc>::value, true);
 #endif
 typedef void (__cdecl test_abc1::*ccall_proc)(int, long, double);
 BOOST_CHECK_INTEGRAL_CONSTANT(::tt::is_member_function_pointer<ccall_proc>::value, true);
-#if (_MSC_VER >= 1800) && !defined(__CLR_VER) && (defined(_M_IX86_FP) && (_M_IX86_FP >= 2) || defined(_M_X64))
+#if (_MSC_VER >= 1800) && !defined(_MANAGED) && (defined(_M_IX86_FP) && (_M_IX86_FP >= 2) || defined(_M_X64))
 typedef void(__vectorcall test_abc1::*vcall_proc)(int, long, double, double, double, double);
 BOOST_CHECK_INTEGRAL_CONSTANT(::tt::is_member_function_pointer<vcall_proc>::value, true);
 #endif
@@ -85,7 +85,7 @@ BOOST_CHECK_INTEGRAL_CONSTANT(::tt::is_member_function_pointer<tcall_proc>::valu
 
 #endif
 
-#ifdef BOOST_TT_HAS_ASCCURATE_IS_FUNCTION
+#ifdef BOOST_TT_HAS_ACCURATE_IS_FUNCTION
 test_tricky(&tricky_members::const_ref_proc);
 #ifndef BOOST_TT_NO_NOEXCEPT_SEPARATE_TYPE
 test_tricky(&tricky_members::noexcept_proc);

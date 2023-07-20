@@ -31,6 +31,8 @@ if (WITH_CEPHFS)
   add_subdirectory(mds)
 endif()
 add_subdirectory(pybind)
+add_subdirectory(dokan)
+add_subdirectory(libcephfs)
 
 # Not available on Windows for the time being.
 if(NOT WIN32)
@@ -57,9 +59,7 @@ if(NOT WIN32)
   add_subdirectory(journal)
 
   add_subdirectory(erasure-code)
-  add_subdirectory(filestore)
   add_subdirectory(fs)
-  add_subdirectory(libcephfs)
   add_subdirectory(libcephsqlite)
   add_subdirectory(client)
   add_subdirectory(mon)
@@ -70,10 +70,10 @@ if(NOT WIN32)
   add_subdirectory(neorados)
   add_subdirectory(objectstore)
   add_subdirectory(ObjectMap)
-  add_subdirectory(os)
   add_subdirectory(osd)
   add_subdirectory(osdc)
   add_subdirectory(immutable_object_cache)
+  add_subdirectory(exporter)
 endif(NOT WIN32)
 
 if(WITH_RADOSGW)
@@ -133,7 +133,7 @@ endif(WITH_RADOSGW)
 if(WITH_LIBCEPHFS)
   # From src/test/Makefile-client.am: I dont get this one... testing the osdc build but link in libcephfs?
   add_executable(test_build_libcephfs buildtest_skeleton.cc)
-  target_link_libraries(test_build_libcephfs cephfs pthread ${CRYPTO_LIBS} ${EXTRALIBS})
+  target_link_libraries(test_build_libcephfs cephfs pthread ceph-common ${CRYPTO_LIBS} ${EXTRALIBS})
 endif(WITH_LIBCEPHFS)
 
 add_executable(test_build_librados buildtest_skeleton.cc)
@@ -282,8 +282,16 @@ target_link_libraries(ceph_test_librgw_file
   ceph-common
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
+  ${ALLOC_LIBS}
   )
 install(TARGETS ceph_test_librgw_file DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+add_dependencies(ceph_test_librgw_file
+  ceph_test_librgw_file_cd
+  ceph_test_librgw_file_gp
+  ceph_test_librgw_file_nfsns
+  ceph_test_librgw_file_aw
+  ceph_test_librgw_file_marker)
 
 # ceph_test_librgw_file_cd (just the rgw_file create-delete bucket ops)
 add_executable(ceph_test_librgw_file_cd
@@ -295,6 +303,7 @@ target_link_libraries(ceph_test_librgw_file_cd
   ceph-common
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
+  ${ALLOC_LIBS}
   )
 install(TARGETS ceph_test_librgw_file_cd DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -308,6 +317,7 @@ target_link_libraries(ceph_test_librgw_file_gp
   ceph-common
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
+  ${ALLOC_LIBS}
   )
 install(TARGETS ceph_test_librgw_file_gp DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -315,13 +325,18 @@ install(TARGETS ceph_test_librgw_file_gp DESTINATION ${CMAKE_INSTALL_BINDIR})
 add_executable(ceph_test_librgw_file_nfsns
   librgw_file_nfsns.cc
   )
-target_include_directories(ceph_test_librgw_file_nfsns SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw")
+target_include_directories(ceph_test_librgw_file_nfsns
+  PUBLIC "${LUA_INCLUDE_DIR}"
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw"
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados")
 target_link_libraries(ceph_test_librgw_file_nfsns
   rgw
   librados
   ceph-common
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
+  ${LUA_LIBRARIES}
+  ${ALLOC_LIBS}
   )
   target_link_libraries(ceph_test_librgw_file_nfsns spawn)
 install(TARGETS ceph_test_librgw_file_nfsns DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -336,6 +351,7 @@ target_link_libraries(ceph_test_librgw_file_aw
   ceph-common
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
+  ${ALLOC_LIBS}
   )
 install(TARGETS ceph_test_librgw_file_aw DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -343,28 +359,37 @@ install(TARGETS ceph_test_librgw_file_aw DESTINATION ${CMAKE_INSTALL_BINDIR})
 add_executable(ceph_test_librgw_file_marker
   librgw_file_marker.cc
   )
-target_include_directories(ceph_test_librgw_file_marker SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw")
+target_include_directories(ceph_test_librgw_file_marker
+  PUBLIC "${LUA_INCLUDE_DIR}"
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw"
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados")
 target_link_libraries(ceph_test_librgw_file_marker
   rgw
   librados
   ceph-common
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
+  ${LUA_LIBRARIES}
+  ${ALLOC_LIBS}
   )
   target_link_libraries(ceph_test_librgw_file_marker spawn)
 install(TARGETS ceph_test_librgw_file_marker DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # ceph_test_librgw_file_xattr (attribute ops)
 add_executable(ceph_test_librgw_file_xattr
-  librgw_file_xattr.cc
-  )
-target_include_directories(ceph_test_librgw_file_xattr SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw")
+  librgw_file_xattr.cc)
+target_include_directories(ceph_test_librgw_file_xattr
+  PUBLIC "${LUA_INCLUDE_DIR}"
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw"
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados")
 target_link_libraries(ceph_test_librgw_file_xattr
   rgw
   librados
   ceph-common
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
+  ${LUA_LIBRARIES}
+  ${ALLOC_LIBS}
   )
 target_link_libraries(ceph_test_librgw_file_xattr spawn)
 
@@ -384,6 +409,9 @@ add_executable(test_rgw_ldap
   ${CMAKE_SOURCE_DIR}/src/rgw/rgw_ldap.cc
   test_rgw_ldap.cc
   )
+target_include_directories(test_rgw_ldap
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw"
+  SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados")
 target_link_libraries(test_rgw_ldap
   librados
   ceph-common
@@ -428,24 +456,6 @@ install(TARGETS
   ceph_perf_local
   DESTINATION bin)
 
-# ceph_test_filejournal
-add_executable(ceph_test_filejournal
-  test_filejournal.cc
-  )
-target_link_libraries(ceph_test_filejournal
-  os
-  ceph-common
-  ${UNITTEST_LIBS}
-  global
-  ${EXTRALIBS}
-  ${BLKID_LIBRARIES}
-  ${CMAKE_DL_LIBS}
-  ${EXTRALIBS}
-  )
-install(TARGETS
-  ceph_test_filejournal
-  DESTINATION ${CMAKE_INSTALL_BINDIR})
-
 # ceph_test_keys
 add_executable(ceph_test_keys
   testkeys.cc
@@ -475,6 +485,8 @@ install(TARGETS
   ceph_test_stress_watch
   DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# limited Windows signal support, skipped for now
+if(NOT WIN32)
 add_executable(ceph_test_c2c
   test_c2c.cc
   )
@@ -488,6 +500,7 @@ target_link_libraries(ceph_test_c2c
 install(TARGETS
   ceph_test_c2c
   DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif(NOT WIN32)
 
 if(WITH_FUSE)
   add_executable(ceph_test_cfuse_cache_invalidate
@@ -574,9 +587,12 @@ if(WITH_RBD)
   if(FREEBSD)
     add_dependencies(tests rbd-ggate)
   endif(FREEBSD)
+  if(WITH_RBD_MIRROR)
+    add_dependencies(tests unittest_librbd rbd-mirror)
+  endif(WITH_RBD_MIRROR)
 endif(WITH_RBD)
 if(WITH_RADOSGW)
-  add_dependencies(tests radosgwd radosgw-admin)
+  add_dependencies(tests radosgw radosgw-admin)
 endif()
 #add dependency from fio just to ensure the plugin build isn't failing
 if(WITH_FIO)

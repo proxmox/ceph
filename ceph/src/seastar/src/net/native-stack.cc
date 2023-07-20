@@ -197,7 +197,7 @@ native_network_stack::native_network_stack(const native_stack_options& opts, std
             && opts.gw_ipv4_addr.defaulted()
             && opts.netmask_ipv4_addr.defaulted() && opts.dhcp.get_value();
     if (!_dhcp) {
-        _inet.set_host_address(ipv4_address(_dhcp ? 0 : opts.host_ipv4_addr.get_value()));
+        _inet.set_host_address(ipv4_address(opts.host_ipv4_addr.get_value()));
         _inet.set_gw_address(ipv4_address(opts.gw_ipv4_addr.get_value()));
         _inet.set_netmask_address(ipv4_address(opts.netmask_ipv4_addr.get_value()));
     }
@@ -350,8 +350,10 @@ public:
     native_network_interface(const native_network_stack& stack)
         : _stack(stack)
         , _addresses(1, _stack._inet.host_address())
-        , _hardware_address(_stack._inet.netif()->hw_address().mac.begin(), _stack._inet.netif()->hw_address().mac.end())
-    {}
+    {
+        const auto mac = _stack._inet.netif()->hw_address().mac;
+        _hardware_address = std::vector<uint8_t>{mac.cbegin(), mac.cend()};
+    }
     native_network_interface(const native_network_interface&) = default;
 
     uint32_t index() const override {

@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -33,6 +33,7 @@ void sha256_mb_mgr_init_avx2(SHA256_MB_JOB_MGR * state)
 {
 	unsigned int j;
 	state->unused_lanes = 0xF76543210;
+	state->num_lanes_inuse = 0;
 	for (j = 0; j < SHA256_X8_LANES; j++) {
 		state->lens[j] = 0;
 		state->ldata[j].job_in_lane = 0;

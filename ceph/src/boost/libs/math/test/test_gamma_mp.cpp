@@ -4,6 +4,9 @@
 //  Boost Software License, Version 1.0. (See accompanying file
 //  LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
+#include <boost/math/tools/config.hpp>
+#ifndef BOOST_MATH_NO_MP_TESTS
+
 #define BOOST_MATH_OVERFLOW_ERROR_POLICY ignore_error
 
 #define BOOST_TEST_MAIN
@@ -14,7 +17,7 @@
 #include <boost/math/constants/constants.hpp>
 #include <boost/math/special_functions/gamma.hpp>
 #include <boost/multiprecision/cpp_bin_float.hpp>
-#include <boost/array.hpp>
+#include <array>
 #include "functor.hpp"
 
 #include "handle_test_result.hpp"
@@ -82,22 +85,22 @@ void test_gamma(T, const char* name)
    // three items, input value, gamma and lgamma:
    //
    // gamma and lgamma at integer and half integer values:
-   // boost::array<boost::array<T, 3>, N> factorials;
+   // std::array<std::array<T, 3>, N> factorials;
    //
    // gamma and lgamma for z near 0:
-   // boost::array<boost::array<T, 3>, N> near_0;
+   // std::array<std::array<T, 3>, N> near_0;
    //
    // gamma and lgamma for z near 1:
-   // boost::array<boost::array<T, 3>, N> near_1;
+   // std::array<std::array<T, 3>, N> near_1;
    //
    // gamma and lgamma for z near 2:
-   // boost::array<boost::array<T, 3>, N> near_2;
+   // std::array<std::array<T, 3>, N> near_2;
    //
    // gamma and lgamma for z near -10:
-   // boost::array<boost::array<T, 3>, N> near_m10;
+   // std::array<std::array<T, 3>, N> near_m10;
    //
    // gamma and lgamma for z near -55:
-   // boost::array<boost::array<T, 3>, N> near_m55;
+   // std::array<std::array<T, 3>, N> near_m55;
    //
    // The last two cases are chosen more or less at random,
    // except that one is even and the other odd, and both are
@@ -125,20 +128,6 @@ void expected_results()
       ".*",                          // compiler
       ".*",                          // stdlib
       ".*",                          // platform
-      "number<cpp_bin_float<65> >",           // test type(s)
-      ".*",                          // test data group
-      "lgamma", 9000, 4000);      // test function
-   add_expected_result(
-      ".*",                          // compiler
-      ".*",                          // stdlib
-      ".*",                          // platform
-      "number<cpp_bin_float<75> >",           // test type(s)
-      ".*",                          // test data group
-      "lgamma", 60000, 20000);      // test function
-   add_expected_result(
-      ".*",                          // compiler
-      ".*",                          // stdlib
-      ".*",                          // platform
       "cpp_bin_float_100|number<cpp_bin_float<85> >",           // test type(s)
       ".*",                          // test data group
       "lgamma", 600000, 300000);      // test function
@@ -146,16 +135,30 @@ void expected_results()
       ".*",                          // compiler
       ".*",                          // stdlib
       ".*",                          // platform
-      ".*",                          // test type(s)
+      "number<cpp_bin_float<[56]5> >",           // test type(s)
       ".*",                          // test data group
-      "lgamma", 4800, 2500);           // test function
+      "lgamma", 7000, 3000);      // test function
+   add_expected_result(
+      ".*",                          // compiler
+      ".*",                          // stdlib
+      ".*",                          // platform
+      "number<cpp_bin_float<75> >",           // test type(s)
+      ".*",                          // test data group
+      "lgamma", 40000, 15000);      // test function
    add_expected_result(
       ".*",                          // compiler
       ".*",                          // stdlib
       ".*",                          // platform
       ".*",                          // test type(s)
       ".*",                          // test data group
-      "[tl]gamma", 100, 50);            // test function
+      "lgamma", 600, 200);            // test function
+   add_expected_result(
+      ".*",                          // compiler
+      ".*",                          // stdlib
+      ".*",                          // platform
+      ".*",                          // test type(s)
+      ".*",                          // test data group
+      "[tl]gamma", 120, 50);            // test function
    //
    // Finish off by printing out the compiler/stdlib/platform names,
    // we do this to make it easier to mark up expected error rates.
@@ -168,12 +171,21 @@ BOOST_AUTO_TEST_CASE(test_main)
 {
    expected_results();
    using namespace boost::multiprecision;
+#if !defined(TEST) || (TEST == 1)
    test_gamma(number<cpp_bin_float<38> >(0), "number<cpp_bin_float<38> >");
    test_gamma(number<cpp_bin_float<45> >(0), "number<cpp_bin_float<45> >");
+#endif
+#if !defined(TEST) || (TEST == 2)
    test_gamma(cpp_bin_float_50(0), "cpp_bin_float_50");
    test_gamma(number<cpp_bin_float<55> >(0), "number<cpp_bin_float<55> >");
    test_gamma(number<cpp_bin_float<65> >(0), "number<cpp_bin_float<65> >");
+#endif
+#if !defined(TEST) || (TEST == 3)
    test_gamma(number<cpp_bin_float<75> >(0), "number<cpp_bin_float<75> >");
    test_gamma(number<cpp_bin_float<85> >(0), "number<cpp_bin_float<85> >");
    test_gamma(cpp_bin_float_100(0), "cpp_bin_float_100");
+#endif
 }
+#else // No mp tests
+int main(void) { return 0; }
+#endif

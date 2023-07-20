@@ -514,6 +514,7 @@ MDSRank::MDSRank(
     messenger(msgr), monc(monc_), mgrc(mgrc),
     respawn_hook(respawn_hook_),
     suicide_hook(suicide_hook_),
+    inject_journal_corrupt_dentry_first(g_conf().get_val<double>("mds_inject_journal_corrupt_dentry_first")),
     starttime(mono_clock::now()),
     ioc(ioc)
 {
@@ -1392,7 +1393,7 @@ Session *MDSRank::get_session(const cref_t<Message> &m)
     dout(20) << "get_session have " << session << " " << session->info.inst
 	     << " state " << session->get_state_name() << dendl;
     // Check if we've imported an open session since (new sessions start closed)
-    if (session->is_closed()) {
+    if (session->is_closed() && m->get_type() == CEPH_MSG_CLIENT_SESSION) {
       Session *imported_session = sessionmap.get_session(session->info.inst.name);
       if (imported_session && imported_session != session) {
         dout(10) << __func__ << " replacing connection bootstrap session "
@@ -2610,6 +2611,10 @@ void MDSRankDispatcher::handle_asok_command(
     if (!op_tracker.dump_ops_in_flight(f, true)) {
       *css << "op_tracker disabled; set mds_enable_op_tracker=true to enable";
     }
+  } else if (command == "dump_blocked_ops_count") {
+    if (!op_tracker.dump_ops_in_flight(f, true, {""}, true)) {
+      *css << "op_tracker disabled; set mds_enable_op_tracker=true to enable";
+    }
   } else if (command == "dump_historic_ops") {
     if (!op_tracker.dump_historic_ops(f)) {
       *css << "op_tracker disabled; set mds_enable_op_tracker=true to enable";
@@ -2838,7 +2843,12 @@ void MDSRankDispatcher::handle_asok_command(
     command_dump_tree(cmdmap, *css, f);
   } else if (command == "dump loads") {
     std::lock_guard l(mds_lock);
-    r = balancer->dump_loads(f);
+    int64_t depth = -1;
+    bool got = cmd_getval(cmdmap, "depth", depth);
+    if (!got || depth < 0) {
+      dout(10) << "no depth limit when dirfrags dump_load" << dendl;
+    }
+    r = balancer->dump_loads(f, depth);
   } else if (command == "dump snaps") {
     std::lock_guard l(mds_lock);
     string server;
@@ -3385,7 +3395,10 @@ void MDSRank::create_logger()
     mds_plb.add_u64(l_mds_root_rfiles, "root_rfiles", "root inode rfiles");
     mds_plb.add_u64(l_mds_root_rbytes, "root_rbytes", "root inode rbytes");
     mds_plb.add_u64(l_mds_root_rsnaps, "root_rsnaps", "root inode rsnaps");
-    mds_plb.add_u64_counter(l_mds_dir_fetch, "dir_fetch", "Directory fetch");
+    mds_plb.add_u64_counter(l_mds_dir_fetch_complete,
+			    "dir_fetch_complete", "Fetch complete dirfrag");
+    mds_plb.add_u64_counter(l_mds_dir_fetch_keys,
+			    "dir_fetch_keys", "Fetch keys from dirfrag");
     mds_plb.add_u64_counter(l_mds_dir_commit, "dir_commit", "Directory commit");
     mds_plb.add_u64_counter(l_mds_dir_split, "dir_split", "Directory split");
     mds_plb.add_u64_counter(l_mds_dir_merge, "dir_merge", "Directory merge");
@@ -3665,6 +3678,7 @@ bool MDSRank::evict_client(int64_t session_id,
     if (!session) {
       dout(1) << "session " << session_id << " was removed while we waited "
                  "for blocklist" << dendl;
+      client_eviction_dump = true;
       return true;
     }
     kill_client_session();
@@ -3676,6 +3690,7 @@ bool MDSRank::evict_client(int64_t session_id,
     }
   }
 
+  client_eviction_dump = true;
   return true;
 }
 
@@ -3765,6 +3780,9 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "mds_alternate_name_max",
     "mds_dir_max_entries",
     "mds_symlink_recovery",
+    "mds_extraordinary_events_dump_interval",
+    "mds_inject_rename_corrupt_dentry_first",
+    "mds_inject_journal_corrupt_dentry_first",
     NULL
   };
   return KEYS;
@@ -3789,6 +3807,35 @@ void MDSRankDispatcher::handle_conf_change(const ConfigProxy& conf, const std::s
   if (changed.count("mds_enable_op_tracker")) {
     op_tracker.set_tracking(conf->mds_enable_op_tracker);
   }
+  if (changed.count("mds_extraordinary_events_dump_interval")) {
+    reset_event_flags();
+    extraordinary_events_dump_interval = conf.get_val<std::chrono::seconds>
+      ("mds_extraordinary_events_dump_interval").count();
+
+    //Enable the logging only during low level debugging
+    if (extraordinary_events_dump_interval) {
+      uint64_t log_level, gather_level;
+      std::string debug_mds = g_conf().get_val<std::string>("debug_mds");
+      auto delim = debug_mds.find("/");
+      std::istringstream(debug_mds.substr(0, delim)) >> log_level;
+      std::istringstream(debug_mds.substr(delim + 1)) >> gather_level;
+
+      if (log_level < 10 && gather_level >= 10) {
+        dout(0) << __func__ << " Enabling in-memory log dump..." << dendl;
+        std::scoped_lock lock(mds_lock);
+        schedule_inmemory_logger();
+      }
+      else {
+        dout(0) << __func__ << " Enabling in-memory log dump failed. debug_mds=" << log_level
+                << "/" << gather_level << dendl;
+        extraordinary_events_dump_interval = 0;
+      }
+    }
+    else {
+      //The user set mds_extraordinary_events_dump_interval = 0
+      dout(0) << __func__ << " In-memory log dump disabled" << dendl;
+    }
+  }
   if (changed.count("clog_to_monitors") ||
       changed.count("clog_to_syslog") ||
       changed.count("clog_to_syslog_level") ||
@@ -3799,6 +3846,9 @@ void MDSRankDispatcher::handle_conf_change(const ConfigProxy& conf, const std::s
       changed.count("host") ||
       changed.count("fsid")) {
     update_log_config();
+  }
+  if (changed.count("mds_inject_journal_corrupt_dentry_first")) {
+    inject_journal_corrupt_dentry_first = g_conf().get_val<double>("mds_inject_journal_corrupt_dentry_first");
   }
 
   finisher->queue(new LambdaContext([this, changed](int) {
@@ -3854,4 +3904,37 @@ void MDSRank::send_task_status() {
   }
 
   schedule_update_timer_task();
+}
+
+void MDSRank::schedule_inmemory_logger() {
+  dout(20) << __func__ << dendl;
+  timer.add_event_after(extraordinary_events_dump_interval,
+                        new LambdaContext([this]() {
+                          inmemory_logger();
+                        }));
+}
+
+void MDSRank::inmemory_logger() {
+  if (client_eviction_dump ||
+      beacon.missed_beacon_ack_dump ||
+      beacon.missed_internal_heartbeat_dump) {
+    //dump the in-memory logs if any of these events occured recently
+    dout(0) << __func__ << " client_eviction_dump "<< client_eviction_dump
+            << ", missed_beacon_ack_dump " << beacon.missed_beacon_ack_dump
+            << ", missed_internal_heartbeat_dump " << beacon.missed_internal_heartbeat_dump
+            << dendl;
+    reset_event_flags();
+    g_ceph_context->_log->dump_recent();
+  }
+
+  //reschedule if it's enabled
+  if (extraordinary_events_dump_interval) {
+    schedule_inmemory_logger();
+  }
+}
+
+void MDSRank::reset_event_flags() {
+  client_eviction_dump = false;
+  beacon.missed_beacon_ack_dump = false;
+  beacon.missed_internal_heartbeat_dump = false;
 }

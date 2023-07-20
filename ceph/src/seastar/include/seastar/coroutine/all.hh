@@ -21,8 +21,8 @@
 
 #pragma once
 
+#include <cstddef>
 #include <concepts>
-#include <type_traits>
 #include <tuple>
 #include <seastar/core/coroutine.hh>
 
@@ -110,7 +110,10 @@ using value_tuple_for_non_void_futures = typename value_tuple_for_non_void_futur
 ///     co_return a + b;
 /// };
 /// ```
+///
+/// Safe for use with lambda coroutines.
 template <typename... Futures>
+requires (sizeof ...(Futures) > 0)
 class [[nodiscard("must co_await an all() object")]] all {
     using tuple = std::tuple<Futures...>;
     using value_tuple = typename internal::value_tuple_for_non_void_futures<Futures...>;
@@ -139,16 +142,17 @@ class [[nodiscard("must co_await an all() object")]] all {
     struct generate_aligned_union;
     template <size_t... idx>
     struct generate_aligned_union<std::integer_sequence<size_t, idx...>> {
-        using type = std::aligned_union_t<1, intermediate_task<idx>...>;
+        static constexpr std::size_t alignment_value = std::max({alignof(intermediate_task<idx>)...});
+        using type = std::byte[std::max({sizeof(intermediate_task<idx>)...})];
     };
-    using continuation_storage_t = typename generate_aligned_union<std::make_index_sequence<std::tuple_size_v<tuple>>>::type;
-    using coroutine_handle_t = SEASTAR_INTERNAL_COROUTINE_NAMESPACE::coroutine_handle<void>;
+    using continuation_storage = generate_aligned_union<std::make_index_sequence<std::tuple_size_v<tuple>>>;
+    using coroutine_handle_t = std::coroutine_handle<void>;
 private:
     tuple _futures;
 private:
     struct awaiter {
         all& state;
-        continuation_storage_t _continuation_storage;
+        alignas(continuation_storage::alignment_value) typename continuation_storage::type _continuation_storage;
         coroutine_handle_t when_ready;
         awaiter(all& state) : state(state) {}
         bool await_ready() const {
@@ -183,7 +187,7 @@ private:
             } else {
                 if (!std::get<idx>(state._futures).available()) {
                     auto task = new (&_continuation_storage) intermediate_task<idx>(*this);
-                    seastar::internal::set_callback(std::get<idx>(state._futures), task);
+                    seastar::internal::set_callback(std::move(std::get<idx>(state._futures)), task);
                 } else {
                     process<idx + 1>();
                 }
@@ -199,7 +203,8 @@ public:
     awaiter operator co_await() { return awaiter{*this}; }
 };
 
-template <typename... Func>
-explicit all(Func&&... funcs) -> all<std::invoke_result_t<Func>...>;
+template <typename FirstFunc, typename... MoreFuncs>
+explicit all(FirstFunc&&, MoreFuncs&&...) -> all<std::invoke_result_t<FirstFunc>,
+                                                 std::invoke_result_t<MoreFuncs>...>;
 
 }

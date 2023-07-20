@@ -1,7 +1,7 @@
 /*
 Copyright 2020 René Ferdinand Rivera Morell
 Distributed under the Boost Software License, Version 1.0.
-(See accompanying file LICENSE_1_0.txt or http://www.boost.org/LICENSE_1_0.txt)
+(See accompanying file LICENSE.txt or https://www.bfgroup.xyz/b2/LICENSE.txt)
 */
 
 #include "startup.h"
@@ -14,6 +14,7 @@ Distributed under the Boost Software License, Version 1.0.
 #include "output.h"
 #include "variable.h"
 
+#include <cstdlib>
 #include <string>
 #include <algorithm>
 
@@ -55,7 +56,7 @@ LIST *b2::startup::builtin_boost_build(FRAME *frame, int flags)
             "   'boost-build '%s' ;\n"
             "\n"
             "Please consult the documentation at "
-            "'https://boostorg.github.io/build/'.\n\n",
+            "'https://www.bfgroup.xyz/b2/'.\n\n",
            dir.c_str());
         return L0;
     }
@@ -118,7 +119,7 @@ LIST *b2::startup::builtin_boost_build(FRAME *frame, int flags)
         }
         err_puts(
             "Please consult the documentation at "
-            "'https://boostorg.github.io/build/'.\n\n");
+            "'https://www.bfgroup.xyz/b2/'.\n\n");
         return L0;
     }
 
@@ -155,7 +156,12 @@ bool b2::startup::bootstrap(FRAME *frame)
         }
     }
 
-    const std::string b2_exe_path{executable_path(saved_argv0)};
+    char *b2_exe_path_pchar = executable_path(saved_argv0);
+    const std::string b2_exe_path{b2_exe_path_pchar};
+    if (b2_exe_path_pchar)
+    {
+        std::free(b2_exe_path_pchar);
+    }
     const std::string boost_build_jam{"boost-build.jam"};
     std::string b2_file_path;
 
@@ -195,15 +201,17 @@ bool b2::startup::bootstrap(FRAME *frame)
     {
         const std::string path{
             b2::paths::normalize(
-                b2_exe_path + "/../../share/boost-build/" + boost_build_jam)};
+                b2_exe_path + "/../../share/boost-build/src/kernel/" + boost_build_jam)};
         if (b2::filesys::is_file(path))
             b2_file_path = path;
     }
 
-    // Check the BOOST_BUILD_PATH paths.
+    // Check the BOOST_BUILD_PATH (and BOOST_ROOT) paths.
     if (b2_file_path.empty())
     {
         b2::jam::list BOOST_BUILD_PATH = b2::jam::variable{"BOOST_BUILD_PATH"};
+        // For back-compat with Boost we also search in the BOOST_ROOT location.
+        BOOST_BUILD_PATH.append(b2::jam::list(b2::jam::variable{"BOOST_ROOT"}));
         for (auto search_path: BOOST_BUILD_PATH)
         {
             std::string path = b2::jam::object{search_path};
@@ -225,7 +233,7 @@ bool b2::startup::bootstrap(FRAME *frame)
             "Attempted search from '%s' up to the root "
             "at '%s'\n"
             "Please consult the documentation at "
-            "'https://boostorg.github.io/build/'.\n\n";
+            "'https://www.bfgroup.xyz/b2/'.\n\n";
         err_printf(not_found_error, b2::cwd_str().c_str(), b2_exe_path.c_str());
         return false;
     }
@@ -253,7 +261,7 @@ bool b2::startup::bootstrap(FRAME *frame)
             "the location of the build system.\n"
             "\n"
             "Please consult the documentation at "
-            "'https://boostorg.github.io/build/'.\n\n",
+            "'https://www.bfgroup.xyz/b2/'.\n\n",
             b2_file_path.c_str(), b2::cwd_str().c_str());
         return false;
     }

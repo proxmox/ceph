@@ -144,7 +144,7 @@ teuthology-describe
 documentation and better understanding of integration tests.
 
 Tests can be documented by embedding ``meta:`` annotations in the yaml files
-used to define the tests. The results can be seen in the `teuthology-desribe
+used to define the tests. The results can be seen in the `teuthology-describe
 usecases`_
 
 Since this is a new feature, many yaml files have yet to be annotated.
@@ -316,8 +316,8 @@ signifies concatenation.
 Convolution operator
 ^^^^^^^^^^^^^^^^^^^^
 
-The convolution operator, implemented as an empty file called ``%``, tells
-teuthology to construct a test matrix from yaml facets found in
+The convolution operator, implemented as a (typically empty) file called ``%``,
+tells teuthology to construct a test matrix from yaml facets found in
 subdirectories below the directory containing the operator.
 
 For example, the `ceph-deploy suite
@@ -383,6 +383,34 @@ An individual test from the `ceph-deploy suite`_ can be run by adding the
    test from a suite that is defined as a directory tree, ``--suite`` must
    be combined with ``--filter``. This is because the ``--suite`` option
    understands POSIX relative paths only.
+
+Nested Subsets
+^^^^^^^^^^^^^^
+
+Suites can get quite large with the combinatorial explosion of yaml
+configurations. At the time of writing, the ``rados``` suite is more than
+100,000 jobs. For this reason, scheduling often uses the ``--subset`` option to
+only run a subset of the jobs (see also: :ref:`subset`). However, this applies
+only at the top-level of the suite being run (e.g. ``fs``). That may
+incidentally inflate the ratio of jobs for some larger sub-suites (like
+``fs:workload``) vs.  smaller but critical suites (like ``fs:volumes``).
+
+It is therefore attractive to automatically subset some sub-suites which are
+never run fully. This is done by providing an integer divisor for the ``%``
+convolution operator file instead of leaving it empty. That divisor
+automatically subsets the resulting matrix. For example, if the convolution
+file ``%`` contains ``2``, the matrix will be divided into two using the same
+logic as the ``--subset`` mechanism.
+
+Note the numerator is not specified as with the ``--subset`` option as there is
+no meaningful way to express this when there could be several layers of
+nesting.  Instead, a random subset is selected (1 of 2 in our example). The
+choice is based off the random seed (``--seed``) used for the scheduling.
+Remember that seed is saved in the results so that a ``--rerun`` of failed
+tests will still preserve the correct numerator (subset of subsets).
+
+You can disable nested subsets using the ``--no-nested-subset`` argument to
+``teuthology-suite``.
 
 Concatenation operator
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -583,6 +611,9 @@ or
 Each string is looked up anywhere in the test description and has to
 be an exact match: they are not regular expressions.
 
+
+.. _subset:
+
 Reducing the number of tests
 ----------------------------
 
@@ -612,6 +643,11 @@ teuthology will still ensure that all files in the suite are in at
 least one test. Understanding the actual logic that drives this
 requires reading the teuthology source code.
 
+Note: some suites are now using a **nested subset** feature that automatically
+applies a subset to a carefully chosen set of YAML configurations. You may
+disable this behavior (for some custom filtering, perhaps) using the
+``--no-nested-subset`` option.
+
 The ``--limit`` option only runs the first ``N`` tests in the suite:
 this is rarely useful, however, because there is no way to control which
 test will be first.
@@ -620,5 +656,5 @@ test will be first.
 .. _Sepia Lab: https://wiki.sepia.ceph.com/doku.php
 .. _teuthology repository: https://github.com/ceph/teuthology
 .. _teuthology framework: https://github.com/ceph/teuthology
-.. _teuthology-desribe usecases: https://gist.github.com/jdurgin/09711d5923b583f60afc
+.. _teuthology-describe usecases: https://gist.github.com/jdurgin/09711d5923b583f60afc
 .. _ceph-deploy man page: ../../../../man/8/ceph-deploy

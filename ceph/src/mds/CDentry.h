@@ -160,6 +160,8 @@ public:
     return dentry_key_t(last, name.c_str(), hash);
   }
 
+  bool check_corruption(bool load);
+
   const CDir *get_dir() const { return dir; }
   CDir *get_dir() { return dir; }
   std::string_view get_name() const { return std::string_view(name); }
@@ -264,7 +266,12 @@ public:
   void mark_new();
   bool is_new() const { return state_test(STATE_NEW); }
   void clear_new() { state_clear(STATE_NEW); }
+
+  void mark_auth();
+  void clear_auth();
   
+  bool scrub(snapid_t next_seq);
+
   // -- exporting
   // note: this assumes the dentry already exists.  
   // i.e., the name is already extracted... so we just need the other state.
@@ -283,7 +290,7 @@ public:
     // twiddle
     clear_replica_map();
     replica_nonce = EXPORT_NONCE;
-    state_clear(CDentry::STATE_AUTH);
+    clear_auth();
     if (is_dirty())
       mark_clean();
     put(PIN_TEMPEXPORTING);
@@ -303,7 +310,7 @@ public:
 
     // twiddle
     state &= MASK_STATE_IMPORT_KEPT;
-    state_set(CDentry::STATE_AUTH);
+    mark_auth();
     if (nstate & STATE_DIRTY)
       _mark_dirty(ls);
     if (is_replicated())
@@ -362,6 +369,7 @@ public:
 
   __u32 hash;
   snapid_t first, last;
+  bool corrupt_first_loaded = false; /* for Postgres corruption detection */
 
   elist<CDentry*>::item item_dirty, item_dir_dirty;
   elist<CDentry*>::item item_stray;

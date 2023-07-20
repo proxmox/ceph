@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -107,9 +107,9 @@ default rel
 %define %%xtmp  %2
 %define %%xround_key    %3
 	vpshufd  %%xraw_key,  %%xraw_key, 11111111b
-	shufps  %%xtmp, %%xround_key, 00010000b
+	vshufps  %%xtmp, %%xround_key, 00010000b
 	vpxor    %%xround_key, %%xtmp
-	shufps  %%xtmp, %%xround_key, 10001100b
+	vshufps  %%xtmp, %%xround_key, 10001100b
 	vpxor    %%xround_key, %%xtmp
 	vpxor    %%xround_key,  %%xraw_key
 %endmacro
@@ -119,9 +119,9 @@ default rel
 %define %%xtmp  %2
 %define %%xround_key    %3
 	vpshufd  %%xraw_key,  %%xraw_key, 10101010b
-	shufps  %%xtmp, %%xround_key, 00010000b
+	vshufps  %%xtmp, %%xround_key, 00010000b
 	vpxor    %%xround_key, %%xtmp
-	shufps  %%xtmp, %%xround_key, 10001100b
+	vshufps  %%xtmp, %%xround_key, 10001100b
 	vpxor    %%xround_key, %%xtmp
 	vpxor    %%xround_key,  %%xraw_key
 %endmacro
@@ -1166,8 +1166,9 @@ default rel
 
 section .text
 
-global XTS_AES_256_dec_avx:function
+mk_global XTS_AES_256_dec_avx, function
 XTS_AES_256_dec_avx:
+	endbranch
 
 	sub     rsp, VARIABLE_OFFSET
 

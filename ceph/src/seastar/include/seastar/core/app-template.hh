@@ -24,6 +24,7 @@
 #include <functional>
 #include <seastar/core/future.hh>
 #include <seastar/core/smp.hh>
+#include <seastar/core/smp_options.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/util/program-options.hh>
 #include <seastar/core/metrics_api.hh>
@@ -68,6 +69,12 @@ public:
         /// Specifies the default value for linux-aio I/O control blocks. This translates
         /// to the maximum number of sockets the shard can handle.
         unsigned max_networking_aio_io_control_blocks = 10000;
+        /// The amount of memory that should not be used by the seastar allocator,
+        /// additional to the amount of memory already reserved for the OS.
+        /// This can be used when the application allocates some of its memory using the
+        /// seastar allocator, and some using the system allocator, in particular when it
+        /// uses the mmap system call with MAP_ANONYMOUS which is not overridden in seastar.
+        size_t reserve_additional_memory = 0;
         config() {}
     };
 

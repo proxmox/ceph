@@ -4,8 +4,10 @@
 #include "testcase_cxx.h"
 
 #include <errno.h>
+#include <fmt/format.h>
 #include "test_cxx.h"
 #include "test_shared.h"
+#include "crimson_utils.h"
 #include "include/scope_guard.h"
 
 using namespace librados;
@@ -29,7 +31,8 @@ Rados RadosTestPPNS::s_cluster;
 
 void RadosTestPPNS::SetUpTestCase()
 {
-  pool_name = get_temp_pool_name();
+  auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
+  pool_name = get_temp_pool_name(pool_prefix);
   ASSERT_EQ("", create_one_pool_pp(pool_name, s_cluster));
 }
 
@@ -41,9 +44,9 @@ void RadosTestPPNS::TearDownTestCase()
 void RadosTestPPNS::SetUp()
 {
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
-  bool requires;
-  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&requires));
-  ASSERT_FALSE(requires);
+  bool req;
+  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&req));
+  ASSERT_FALSE(req);
 }
 
 void RadosTestPPNS::TearDown()
@@ -72,7 +75,8 @@ Rados RadosTestParamPPNS::s_cluster;
 
 void RadosTestParamPPNS::SetUpTestCase()
 {
-  pool_name = get_temp_pool_name();
+  auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
+  pool_name = get_temp_pool_name(pool_prefix);
   ASSERT_EQ("", create_one_pool_pp(pool_name, s_cluster));
 }
 
@@ -100,7 +104,9 @@ void RadosTestParamPPNS::TearDownTestCase()
 
 void RadosTestParamPPNS::SetUp()
 {
-  if (strcmp(GetParam(), "cache") == 0 && cache_pool_name.empty()) {
+  if (!is_crimson_cluster() && strcmp(GetParam(), "cache") == 0 &&
+      cache_pool_name.empty()) {
+    auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
     cache_pool_name = get_temp_pool_name();
     bufferlist inbl;
     ASSERT_EQ(0, cluster.mon_command(
@@ -124,9 +130,9 @@ void RadosTestParamPPNS::SetUp()
   }
 
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
-  bool requires;
-  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&requires));
-  ASSERT_FALSE(requires);
+  bool req;
+  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&req));
+  ASSERT_FALSE(req);
 }
 
 void RadosTestParamPPNS::TearDown()
@@ -154,7 +160,8 @@ Rados RadosTestECPPNS::s_cluster;
 
 void RadosTestECPPNS::SetUpTestCase()
 {
-  pool_name = get_temp_pool_name();
+  auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
+  pool_name = get_temp_pool_name(pool_prefix);
   ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster));
 }
 
@@ -166,9 +173,9 @@ void RadosTestECPPNS::TearDownTestCase()
 void RadosTestECPPNS::SetUp()
 {
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
-  bool requires;
-  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&requires));
-  ASSERT_TRUE(requires);
+  bool req;
+  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&req));
+  ASSERT_TRUE(req);
   ASSERT_EQ(0, ioctx.pool_required_alignment2(&alignment));
   ASSERT_NE(0U, alignment);
 }
@@ -187,7 +194,8 @@ void RadosTestPP::SetUpTestCase()
 {
   init_rand();
 
-  pool_name = get_temp_pool_name();
+  auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
+  pool_name = get_temp_pool_name(pool_prefix);
   ASSERT_EQ("", create_one_pool_pp(pool_name, s_cluster));
 }
 
@@ -201,9 +209,9 @@ void RadosTestPP::SetUp()
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
   nspace = get_temp_pool_name();
   ioctx.set_namespace(nspace);
-  bool requires;
-  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&requires));
-  ASSERT_FALSE(requires);
+  bool req;
+  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&req));
+  ASSERT_FALSE(req);
 }
 
 void RadosTestPP::TearDown()
@@ -268,7 +276,8 @@ Rados RadosTestParamPP::s_cluster;
 
 void RadosTestParamPP::SetUpTestCase()
 {
-  pool_name = get_temp_pool_name();
+  auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
+  pool_name = get_temp_pool_name(pool_prefix);
   ASSERT_EQ("", create_one_pool_pp(pool_name, s_cluster));
 }
 
@@ -296,7 +305,9 @@ void RadosTestParamPP::TearDownTestCase()
 
 void RadosTestParamPP::SetUp()
 {
-  if (strcmp(GetParam(), "cache") == 0 && cache_pool_name.empty()) {
+  if (!is_crimson_cluster() && strcmp(GetParam(), "cache") == 0 &&
+      cache_pool_name.empty()) {
+    auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
     cache_pool_name = get_temp_pool_name();
     bufferlist inbl;
     ASSERT_EQ(0, cluster.mon_command(
@@ -322,9 +333,9 @@ void RadosTestParamPP::SetUp()
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
   nspace = get_temp_pool_name();
   ioctx.set_namespace(nspace);
-  bool requires;
-  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&requires));
-  ASSERT_FALSE(requires);
+  bool req;
+  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&req));
+  ASSERT_FALSE(req);
 }
 
 void RadosTestParamPP::TearDown()
@@ -359,29 +370,34 @@ Rados RadosTestECPP::s_cluster;
 
 void RadosTestECPP::SetUpTestCase()
 {
-  pool_name = get_temp_pool_name();
+  SKIP_IF_CRIMSON();
+  auto pool_prefix = fmt::format("{}_", ::testing::UnitTest::GetInstance()->current_test_case()->name());
+  pool_name = get_temp_pool_name(pool_prefix);
   ASSERT_EQ("", create_one_ec_pool_pp(pool_name, s_cluster));
 }
 
 void RadosTestECPP::TearDownTestCase()
 {
+  SKIP_IF_CRIMSON();
   ASSERT_EQ(0, destroy_one_ec_pool_pp(pool_name, s_cluster));
 }
 
 void RadosTestECPP::SetUp()
 {
+  SKIP_IF_CRIMSON();
   ASSERT_EQ(0, cluster.ioctx_create(pool_name.c_str(), ioctx));
   nspace = get_temp_pool_name();
   ioctx.set_namespace(nspace);
-  bool requires;
-  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&requires));
-  ASSERT_TRUE(requires);
+  bool req;
+  ASSERT_EQ(0, ioctx.pool_requires_alignment2(&req));
+  ASSERT_TRUE(req);
   ASSERT_EQ(0, ioctx.pool_required_alignment2(&alignment));
   ASSERT_NE(0U, alignment);
 }
 
 void RadosTestECPP::TearDown()
 {
+  SKIP_IF_CRIMSON();
   if (cleanup) {
     cleanup_default_namespace(ioctx);
     cleanup_namespace(ioctx, nspace);

@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -33,7 +33,10 @@
 %include "reg_sizes.asm"
 
 extern md5_mb_x4x2_avx
+
+[bits 64]
 default rel
+section .text
 
 %if 1
 %ifidn __OUTPUT_FORMAT__, elf64
@@ -65,7 +68,7 @@ default rel
 %define unused_lanes    r9
 
 %define lane_data       r10
-                        
+
 %define job_rax         rax
 %define tmp             rax
 
@@ -84,8 +87,9 @@ STACK_SPACE     equ _GPR_SAVE + _GPR_SAVE_SIZE + _ALIGN_SIZE
 
 ; JOB* md5_mb_mgr_flush_avx(MB_MGR_HMAC_OOO *state)
 ; arg 1 : rcx : state
-global md5_mb_mgr_flush_avx:function
+mk_global md5_mb_mgr_flush_avx, function
 md5_mb_mgr_flush_avx:
+	endbranch
         sub     rsp, STACK_SPACE
         mov     [rsp + _GPR_SAVE + 8*0], rbx
         mov     [rsp + _GPR_SAVE + 8*3], rbp
@@ -147,19 +151,19 @@ APPEND(skip_,I):
 	; Find min length
 	vmovdqa xmm0, [state + _lens + 0*16]
         vmovdqa xmm1, [state + _lens + 1*16]
-	
+
         vpminud xmm2, xmm0, xmm1        ; xmm2 has {D,C,B,A}
         vpalignr xmm3, xmm3, xmm2, 8    ; xmm3 has {x,x,D,C}
         vpminud xmm2, xmm2, xmm3        ; xmm2 has {x,x,E,F}
         vpalignr xmm3, xmm3, xmm2, 4    ; xmm3 has {x,x,x,E}
         vpminud xmm2, xmm2, xmm3        ; xmm2 has min value in low dword
-        
+
 	vmovd   DWORD(idx), xmm2
  	mov	len2, idx
 	and	idx, 0xF
 	shr	len2, 4
 	jz	len_is_0
-       
+
 	vpand   xmm2, xmm2, [rel clear_low_nibble]
         vpshufd xmm2, xmm2, 0
 
@@ -189,6 +193,7 @@ len_is_0:
 	mov	[state + _unused_lanes], unused_lanes
 
 	mov	dword [state + _lens + 4*idx], 0xFFFFFFFF
+	sub     dword [state + _num_lanes_inuse], 1
 
 	vmovd	xmm0, [state + _args_digest + 4*idx + 0*32]
 	vpinsrd	xmm0, [state + _args_digest + 4*idx + 1*32], 1
@@ -210,15 +215,15 @@ return:
         vmovdqa  xmm13, [rsp + _XMM_SAVE + 16*7]
         vmovdqa  xmm14, [rsp + _XMM_SAVE + 16*8]
         vmovdqa  xmm15, [rsp + _XMM_SAVE + 16*9]
-        mov     rsi, [rsp + _GPR_SAVE + 8*1] 
-        mov     rdi, [rsp + _GPR_SAVE + 8*2] 
+        mov     rsi, [rsp + _GPR_SAVE + 8*1]
+        mov     rdi, [rsp + _GPR_SAVE + 8*2]
 %endif
-        mov     rbx, [rsp + _GPR_SAVE + 8*0] 
-        mov     rbp, [rsp + _GPR_SAVE + 8*3] 
-        mov     r12, [rsp + _GPR_SAVE + 8*4] 
-        mov     r13, [rsp + _GPR_SAVE + 8*5] 
-        mov     r14, [rsp + _GPR_SAVE + 8*6] 
-        mov     r15, [rsp + _GPR_SAVE + 8*7] 
+        mov     rbx, [rsp + _GPR_SAVE + 8*0]
+        mov     rbp, [rsp + _GPR_SAVE + 8*3]
+        mov     r12, [rsp + _GPR_SAVE + 8*4]
+        mov     r13, [rsp + _GPR_SAVE + 8*5]
+        mov     r14, [rsp + _GPR_SAVE + 8*6]
+        mov     r15, [rsp + _GPR_SAVE + 8*7]
         add     rsp, STACK_SPACE
 
         ret
@@ -226,7 +231,7 @@ return:
 return_null:
 	xor	job_rax, job_rax
 	jmp	return
-        
+
 
 section .data align=16
 

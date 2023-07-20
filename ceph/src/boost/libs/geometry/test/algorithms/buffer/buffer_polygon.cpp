@@ -3,8 +3,8 @@
 
 // Copyright (c) 2012-2019 Barend Gehrels, Amsterdam, the Netherlands.
 
-// This file was modified by Oracle on 2016, 2019.
-// Modifications copyright (c) 2016, Oracle and/or its affiliates.
+// This file was modified by Oracle on 2016-2021.
+// Modifications copyright (c) 2016-2021, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Use, modification and distribution is subject to the Boost Software License,
@@ -199,6 +199,13 @@ static std::string const mysql_report_2015_07_05_5_wi
 class buffer_custom_side_strategy
 {
 public :
+
+    static bool equidistant()
+    {
+        // There is an adapted distance
+        return false;
+    }
+
     template
     <
         typename Point,
@@ -528,7 +535,7 @@ void test_all()
     test_one<polygon_type, polygon_type>("italy_part2_5", italy_part2,
         join_round, end_flat, {12496082120, 12496082124}, 5 * 1000.0);
 
-    if (! BOOST_GEOMETRY_CONDITION((boost::is_same<coor_type, float>::value)))
+    if (! BOOST_GEOMETRY_CONDITION((std::is_same<coor_type, float>::value)))
     {
         ut_settings settings;
         settings.set_test_validity(false);
@@ -564,7 +571,7 @@ void test_all()
         test_one<polygon_type, polygon_type>("ticket_10398_1_25", ticket_10398_1, join_miter, end_flat, 246.7329, -2.5);
     }
 
-    if (! BOOST_GEOMETRY_CONDITION((boost::is_same<coor_type, float>::value)))
+    if (! BOOST_GEOMETRY_CONDITION((std::is_same<coor_type, float>::value)))
     {
         // Test issue 369 as reported (1.15e-3) and some variants
         // Use high tolerance because output areas are very small
@@ -583,7 +590,7 @@ void test_all()
         test_one<polygon_type, polygon_type>("issue_369_1000", issue_369, jr, er, 7.881e-10, distance / 1000.0, specific);
     }
 
-    if (! BOOST_GEOMETRY_CONDITION((boost::is_same<coor_type, float>::value)))
+    if (! BOOST_GEOMETRY_CONDITION((std::is_same<coor_type, float>::value)))
     {
         // Test issue 555 as reported (-0.000001) and some variants
         bg::strategy::buffer::join_round jr(180);
@@ -632,7 +639,7 @@ void test_all()
             mysql_report_2015_02_17_3,
             join_round32, end_round32, 64.0, -1.0);
 
-        if (BOOST_GEOMETRY_CONDITION((boost::is_same<coor_type, double>::value)))
+        if (BOOST_GEOMETRY_CONDITION((std::is_same<coor_type, double>::value)))
         {
             // These extreme testcases, containing huge coordinate differences
             // and huge buffer distances, are to verify assertions.
@@ -859,7 +866,7 @@ int test_main(int, char* [])
 #endif
 
 #if defined(BOOST_GEOMETRY_TEST_FAILURES)
-    BoostGeometryWriteExpectedFailures(2, 1, 10, 1);
+    BoostGeometryWriteExpectedFailures(2, 1, 9, 1);
 #endif
 
     return 0;

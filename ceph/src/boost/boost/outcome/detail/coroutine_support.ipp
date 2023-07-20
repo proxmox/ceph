@@ -1,5 +1,5 @@
 /* Tells C++ coroutines about Outcome's result
-(C) 2019-2020 Niall Douglas <http://www.nedproductions.biz/> (12 commits)
+(C) 2019-2022 Niall Douglas <http://www.nedproductions.biz/> (12 commits)
 File Created: Oct 2019
 
 
@@ -41,13 +41,13 @@ DEALINGS IN THE SOFTWARE.
 #if __cpp_impl_coroutine || (defined(_MSC_VER) && __cpp_coroutines) || (defined(__clang__) && __cpp_coroutines)
 #ifndef BOOST_OUTCOME_HAVE_NOOP_COROUTINE
 #if defined(__has_builtin)
-#if __has_builtin(__builtin_coro_noop)
+#if __has_builtin(__builtin_coro_noop) || (!defined(__clang__) && __GNUC__ >= 10)
 #define BOOST_OUTCOME_HAVE_NOOP_COROUTINE 1
 #endif
 #endif
 #endif
 #ifndef BOOST_OUTCOME_HAVE_NOOP_COROUTINE
-#if _MSC_VER >= 1928
+#if _MSC_VER >= 1928 || (!defined(__clang__) && __GNUC__ >= 10)
 #define BOOST_OUTCOME_HAVE_NOOP_COROUTINE 1
 #else
 #define BOOST_OUTCOME_HAVE_NOOP_COROUTINE 0

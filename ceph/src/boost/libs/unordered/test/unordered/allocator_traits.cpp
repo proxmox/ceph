@@ -65,9 +65,9 @@
   {                                                                            \
     return (std::numeric_limits<size_type>::max)();                            \
   }                                                                            \
-  bool operator==(name<T> const&) { return true; }                             \
-  bool operator!=(name<T> const&) { return false; }                            \
-/**/
+  bool operator==(name<T> const&) const { return true; }                       \
+  bool operator!=(name<T> const&) const { return false; }                      \
+  /**/
 
 struct yes_type
 {
@@ -111,7 +111,7 @@ void test_empty_allocator()
 {
   typedef empty_allocator<int> allocator;
   typedef boost::unordered::detail::allocator_traits<allocator> traits;
-#if BOOST_UNORDERED_USE_ALLOCATOR_TRAITS == 1
+#if !defined(BOOST_NO_CXX11_ALLOCATOR)
   BOOST_STATIC_ASSERT((boost::is_same<traits::size_type,
     std::make_unsigned<std::ptrdiff_t>::type>::value));
 #else
@@ -153,7 +153,7 @@ void test_allocator1()
 {
   typedef allocator1<int> allocator;
   typedef boost::unordered::detail::allocator_traits<allocator> traits;
-#if BOOST_UNORDERED_USE_ALLOCATOR_TRAITS == 1
+#if !defined(BOOST_NO_CXX11_ALLOCATOR)
   BOOST_STATIC_ASSERT((boost::is_same<traits::size_type,
     std::make_unsigned<std::ptrdiff_t>::type>::value));
 #else
@@ -213,7 +213,15 @@ void test_allocator2()
   BOOST_TEST(!traits::propagate_on_container_move_assignment::value);
   BOOST_TEST(!traits::propagate_on_container_swap::value);
   BOOST_TEST(!traits::is_always_equal::value);
+
+#if !defined(BOOST_NO_CXX11_ALLOCATOR)
+  // conditionally compile this assertion as all C++03 emulations of expression
+  // SFINAE are broken one way or another and the benefits of using Core's
+  // `allocator_traits` outweigh the costs of breaking this kind of code (i.e.
+  // inheriting SOCCC via a base)
+  //
   BOOST_TEST(call_select<allocator>() == 1);
+#endif
 }
 
 // allocator 3
@@ -255,7 +263,9 @@ template <typename T> struct allocator3
   allocator3<T> select_on_container_copy_construction() const
   {
     ++selected;
-    return allocator3<T>();
+    allocator3<T> a;
+    a.x = 0;
+    return a;
   }
 };
 

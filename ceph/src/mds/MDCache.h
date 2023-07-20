@@ -72,6 +72,14 @@ class ESubtreeMap;
 
 enum {
   l_mdc_first = 3000,
+
+  // dir updates for replication
+  l_mdc_dir_update,
+  l_mdc_dir_update_receipt,
+  l_mdc_dir_try_discover,
+  l_mdc_dir_send_discover,
+  l_mdc_dir_handle_discover,
+
   // How many inodes currently in stray dentries
   l_mdc_num_strays,
   // How many stray dentries are currently delayed for purge due to refs
@@ -121,6 +129,7 @@ static const int MDS_TRAVERSE_RDLOCK_PATH	= (1 << 7);
 static const int MDS_TRAVERSE_XLOCK_DENTRY	= (1 << 8);
 static const int MDS_TRAVERSE_RDLOCK_AUTHLOCK	= (1 << 9);
 static const int MDS_TRAVERSE_CHECK_LOCKCACHE	= (1 << 10);
+static const int MDS_TRAVERSE_WANT_INODE	= (1 << 11);
 
 
 // flags for predirty_journal_parents()
@@ -734,6 +743,8 @@ class MDCache {
   void truncate_inode(CInode *in, LogSegment *ls);
   void _truncate_inode(CInode *in, LogSegment *ls);
   void truncate_inode_finish(CInode *in, LogSegment *ls);
+  void truncate_inode_write_finish(CInode *in, LogSegment *ls,
+                                   uint32_t block_size);
   void truncate_inode_logged(CInode *in, MutationRef& mut);
 
   void add_recovered_truncate(CInode *in, LogSegment *ls);
@@ -800,8 +811,13 @@ class MDCache {
    * dentry is encountered.
    * MDS_TRAVERSE_WANT_DENTRY: Caller wants tail dentry. Add a null dentry if
    * tail dentry does not exist. return 0 even tail dentry is null.
+   * MDS_TRAVERSE_WANT_INODE: Caller only wants target inode if it exists, or
+   * wants tail dentry if target inode does not exist and MDS_TRAVERSE_WANT_DENTRY
+   * is also set.
    * MDS_TRAVERSE_WANT_AUTH: Always forward request to auth MDS of target inode
    * or auth MDS of tail dentry (MDS_TRAVERSE_WANT_DENTRY is set).
+   * MDS_TRAVERSE_XLOCK_DENTRY: Caller wants to xlock tail dentry if MDS_TRAVERSE_WANT_INODE
+   * is not set or (MDS_TRAVERSE_WANT_INODE is set but target inode does not exist)
    *
    * @param pdnvec Data return parameter -- on success, contains a
    * vector of dentries. On failure, is either empty or contains the
@@ -818,6 +834,9 @@ class MDCache {
   int path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
 		    const filepath& path, int flags,
 		    std::vector<CDentry*> *pdnvec, CInode **pin=nullptr);
+
+  int maybe_request_forward_to_auth(MDRequestRef& mdr, MDSContextFactory& cf,
+				    MDSCacheObject *p);
 
   CInode *cache_traverse(const filepath& path);
 
@@ -836,11 +855,13 @@ class MDCache {
 
   void make_trace(std::vector<CDentry*>& trace, CInode *in);
 
-  void kick_open_ino_peers(mds_rank_t who);
   void open_ino(inodeno_t ino, int64_t pool, MDSContext *fin,
 		bool want_replica=true, bool want_xlocked=false,
 		std::vector<inode_backpointer_t> *ancestors_hint=nullptr,
 		mds_rank_t auth_hint=MDS_RANK_NONE);
+  void open_ino_batch_start();
+  void open_ino_batch_submit();
+  void kick_open_ino_peers(mds_rank_t who);
 
   void find_ino_peers(inodeno_t ino, MDSContext *c,
 		      mds_rank_t hint=MDS_RANK_NONE, bool path_locked=false);
@@ -1042,6 +1063,12 @@ class MDCache {
     MDSContext::vec waiters;
   };
 
+  ceph_tid_t open_ino_last_tid = 0;
+  std::map<inodeno_t,open_ino_info_t> opening_inodes;
+
+  bool open_ino_batch = false;
+  std::map<CDir*, std::pair<std::vector<std::string>, MDSContext::vec> > open_ino_batched_fetch;
+
   friend struct C_MDC_OpenInoTraverseDir;
   friend struct C_MDC_OpenInoParentOpened;
   friend struct C_MDC_RetryScanStray;
@@ -1099,7 +1126,8 @@ class MDCache {
   void _open_ino_backtrace_fetched(inodeno_t ino, bufferlist& bl, int err);
   void _open_ino_parent_opened(inodeno_t ino, int ret);
   void _open_ino_traverse_dir(inodeno_t ino, open_ino_info_t& info, int err);
-  void _open_ino_fetch_dir(inodeno_t ino, const cref_t<MMDSOpenIno> &m, CDir *dir, bool parent);
+  void _open_ino_fetch_dir(inodeno_t ino, const cref_t<MMDSOpenIno> &m, bool parent,
+			   CDir *dir, std::string_view dname);
   int open_ino_traverse_dir(inodeno_t ino, const cref_t<MMDSOpenIno> &m,
 			    const std::vector<inode_backpointer_t>& ancestors,
 			    bool discover, bool want_xlocked, mds_rank_t *hint);
@@ -1213,9 +1241,6 @@ class MDCache {
 
   std::unique_ptr<MDSContext> rejoin_done;
   std::unique_ptr<MDSContext> resolve_done;
-
-  ceph_tid_t open_ino_last_tid = 0;
-  std::map<inodeno_t,open_ino_info_t> opening_inodes;
 
   StrayManager stray_manager;
 
@@ -1368,6 +1393,26 @@ private:
   MDCache *mdcache;
   MDRequestRef mdr;
   bool drop_locks;
+};
+
+/**
+ * Only for contexts called back from an I/O completion
+ *
+ * Note: duplication of members wrt MDCacheContext, because
+ * it'ls the lesser of two evils compared with introducing
+ * yet another piece of (multiple) inheritance.
+ */
+class MDCacheIOContext : public virtual MDSIOContextBase {
+protected:
+  MDCache *mdcache;
+  MDSRank *get_mds() override
+  {
+    ceph_assert(mdcache != NULL);
+    return mdcache->mds;
+  }
+public:
+  explicit MDCacheIOContext(MDCache *mdc_, bool track=true) :
+    MDSIOContextBase(track), mdcache(mdc_) {}
 };
 
 #endif

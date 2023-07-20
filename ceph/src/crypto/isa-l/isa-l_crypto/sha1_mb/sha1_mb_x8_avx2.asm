@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -30,17 +30,19 @@
 %include "sha1_mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
 
+[bits 64]
 default rel
+section .text
 
 ;; code to compute oct SHA1 using SSE-256
 ;; outer calling routine takes care of save and restore of XMM registers
 
 ;; Function clobbers: rax, rcx, rdx,   rbx, rsi, rdi, r9-r15; ymm0-15
 ;; Windows clobbers:  rax rbx     rdx rsi rdi        r9 r10 r11 r12 r13 r14 r15
-;; Windows preserves:         rcx             rbp r8                        
+;; Windows preserves:         rcx             rbp r8
 ;;
 ;; Linux clobbers:    rax rbx rcx rdx rsi            r9 r10 r11 r12 r13 r14 r15
-;; Linux preserves:                       rdi rbp r8                          
+;; Linux preserves:                       rdi rbp r8
 ;;
 ;; clobbers ymm0-15
 
@@ -112,16 +114,16 @@ default rel
 ;;
 ;; Magic functions defined in FIPS 180-1
 ;;
-;MAGIC_F0 MACRO regF:REQ,regB:REQ,regC:REQ,regD:REQ,regT:REQ ;; ((D ^ (B & (C ^ D)))
+;MAGIC_F0 MACRO regF:REQ,regB:REQ,regC:REQ,regD:REQ,regT:REQ ;; F0 = ((B & C) | ((~B) & D))
 %macro MAGIC_F0 5
 %define %%regF %1
 %define %%regB %2
 %define %%regC %3
 %define %%regD %4
 %define %%regT %5
-    vpxor  %%regF, %%regC,%%regD
-    vpand  %%regF, %%regF,%%regB
-    vpxor  %%regF, %%regF,%%regD
+    vpand  %%regF, %%regB,%%regC
+    vpandn %%regT, %%regB,%%regD
+    vpor   %%regF, %%regT,%%regF
 %endmacro
 
 ;MAGIC_F1 MACRO regF:REQ,regB:REQ,regC:REQ,regD:REQ,regT:REQ ;; (B ^ C ^ D)
@@ -194,7 +196,7 @@ default rel
 %define %%MAGIC	%10
 	vpaddd	%%regE, %%regE,%%immCNT
 	vpaddd	%%regE, %%regE,[rsp + (%%memW * 32)]
-	PROLD_nd	%%regT,5, %%regF,%%regA 
+	PROLD_nd	%%regT,5, %%regF,%%regA
 	vpaddd	%%regE, %%regE,%%regT
 	%%MAGIC	%%regF,%%regB,%%regC,%%regD,%%regT      ;; FUN  = MAGIC_Fi(B,C,D)
 	PROLD	%%regB,30, %%regT
@@ -218,15 +220,15 @@ default rel
 	vpxor	W16, W16, W14
 	vpxor	W16, W16, [rsp + ((%%memW -  8) & 15) * 32]
 	vpxor	W16, W16, [rsp + ((%%memW -  3) & 15) * 32]
-	
+
 	vpsrld	%%regF, W16, (32-1)
-	vpslld	W16, W16, 1	
+	vpslld	W16, W16, 1
 	vpor	%%regF, %%regF, W16
 	ROTATE_W
 
 	vmovdqu	[rsp + ((%%memW - 0) & 15) * 32],%%regF
 	vpaddd	%%regE, %%regE,%%regF
-	
+
 	PROLD_nd	%%regT,5, %%regF, %%regA
 	vpaddd	%%regE, %%regE,%%regT
 	%%MAGIC	%%regF,%%regB,%%regC,%%regD,%%regT      ;; FUN  = MAGIC_Fi(B,C,D)
@@ -243,7 +245,7 @@ default rel
 %define YMM_SAVE (15-15)*32
 %define FRAMESZ	32*16 + 0*8 + YMM_SAVE
 %define _YMM     FRAMESZ - YMM_SAVE
-	
+
 %define VMOVPS	vmovups
 
 %define IDX  rax
@@ -290,7 +292,7 @@ default rel
 %define C	ymm2
 %define D	ymm3
 %define E	ymm4
-	
+
 %define F	ymm5
 %define T0	ymm6
 %define T1	ymm7
@@ -337,27 +339,28 @@ default rel
 align 32
 
 ; void sha1_x8_avx2(SHA1_MB_ARGS_X8, uint32_t size)
-; arg 1 : pointer to input data 
+; arg 1 : pointer to input data
 ; arg 2 : size (in blocks) ;; assumed to be >= 1
-global sha1_mb_x8_avx2:function internal
+mk_global sha1_mb_x8_avx2, function, internal
 sha1_mb_x8_avx2:
+	endbranch
 
 	push	RSP_SAVE
-	
+
 	; save rsp
 	mov	RSP_SAVE, rsp
 	sub	rsp, FRAMESZ	;; FRAMESZ + pushes must be even multiple of 8
-	
+
 	; align rsp to 32 Bytes
 	and	rsp, ~0x1F
-	
+
 	;; Initialize digests
 	vmovdqu	A, [arg1 + 0*32]
 	vmovdqu	B, [arg1 + 1*32]
 	vmovdqu	C, [arg1 + 2*32]
 	vmovdqu	D, [arg1 + 3*32]
 	vmovdqu	E, [arg1 + 4*32]
-	
+
 	;; transpose input onto stack
 	mov	inp0,[arg1+_data_ptr+0*8]
 	mov	inp1,[arg1+_data_ptr+1*8]
@@ -491,7 +494,7 @@ lloop:
 
 	;;;;;;;;;;;;;;;;
 	;; Postamble
-	
+
 	mov	rsp, RSP_SAVE
 
 	pop	RSP_SAVE
@@ -510,6 +513,6 @@ K40_59:                 dq 0x8F1BBCDC8F1BBCDC, 0x8F1BBCDC8F1BBCDC
 			dq 0x8F1BBCDC8F1BBCDC, 0x8F1BBCDC8F1BBCDC
 K60_79:                 dq 0xCA62C1D6CA62C1D6, 0xCA62C1D6CA62C1D6
 			dq 0xCA62C1D6CA62C1D6, 0xCA62C1D6CA62C1D6
-			
+
 PSHUFFLE_BYTE_FLIP_MASK: dq 0x0405060700010203, 0x0c0d0e0f08090a0b
 			 dq 0x0405060700010203, 0x0c0d0e0f08090a0b

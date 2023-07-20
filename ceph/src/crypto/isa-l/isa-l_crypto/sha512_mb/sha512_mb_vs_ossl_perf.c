@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -54,24 +54,6 @@
 /* Reference digest global to reduce stack usage */
 static uint8_t digest_ssl[TEST_BUFS][8 * SHA512_DIGEST_NWORDS];
 
-inline uint64_t byteswap64(uint64_t x)
-{
-#if defined (__ICC)
-	return _bswap64(x);
-#elif defined (__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3))
-	return __builtin_bswap64(x);
-#else
-	return (((x & (0xffull << 0)) << 56)
-		| ((x & (0xffull << 8)) << 40)
-		| ((x & (0xffull << 16)) << 24)
-		| ((x & (0xffull << 24)) << 8)
-		| ((x & (0xffull << 32)) >> 8)
-		| ((x & (0xffull << 40)) >> 24)
-		| ((x & (0xffull << 48)) >> 40)
-		| ((x & (0xffull << 56)) >> 56));
-#endif
-}
-
 int main(void)
 {
 	SHA512_HASH_CTX_MGR *mgr = NULL;
@@ -81,7 +63,7 @@ int main(void)
 	struct perf start, stop;
 
 	for (i = 0; i < TEST_BUFS; i++) {
-		bufs[i] = (unsigned char *)calloc((size_t) TEST_LEN, 1);
+		bufs[i] = (unsigned char *)calloc((size_t)TEST_LEN, 1);
 		if (bufs[i] == NULL) {
 			printf("calloc failed test aborted\n");
 			return 1;
@@ -91,7 +73,11 @@ int main(void)
 		ctxpool[i].user_data = (void *)((uint64_t) i);
 	}
 
-	posix_memalign((void *)&mgr, 16, sizeof(SHA512_HASH_CTX_MGR));
+	int ret = posix_memalign((void *)&mgr, 16, sizeof(SHA512_HASH_CTX_MGR));
+	if (ret) {
+		printf("alloc error: Fail");
+		return -1;
+	}
 	sha512_ctx_mgr_init(mgr);
 
 	// Start OpenSSL tests
@@ -122,11 +108,11 @@ int main(void)
 	for (i = 0; i < TEST_BUFS; i++) {
 		for (j = 0; j < SHA512_DIGEST_NWORDS; j++) {
 			if (ctxpool[i].job.result_digest[j] !=
-			    byteswap64(((uint64_t *) digest_ssl[i])[j])) {
+			    to_be64(((uint64_t *) digest_ssl[i])[j])) {
 				fail++;
 				printf("Test%d, digest%d fail %016lX <=> %016lX\n",
 				       i, j, ctxpool[i].job.result_digest[j],
-				       byteswap64(((uint64_t *) digest_ssl[i])[j]));
+				       to_be64(((uint64_t *) digest_ssl[i])[j]));
 			}
 		}
 	}

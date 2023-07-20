@@ -57,30 +57,58 @@ void ThreadBody(void* v) {
 }
 
 bool RunStressTest(StressTest* stress) {
-  stress->InitDb();
+  SystemClock* clock = db_stress_env->GetSystemClock().get();
+
   SharedState shared(db_stress_env, stress);
+
+  if (shared.ShouldVerifyAtBeginning() && FLAGS_preserve_unverified_changes) {
+    Status s = InitUnverifiedSubdir(FLAGS_db);
+    if (s.ok() && !FLAGS_expected_values_dir.empty()) {
+      s = InitUnverifiedSubdir(FLAGS_expected_values_dir);
+    }
+    if (!s.ok()) {
+      fprintf(stderr, "Failed to setup unverified state dir: %s\n",
+              s.ToString().c_str());
+      exit(1);
+    }
+  }
+
+  stress->InitDb(&shared);
   stress->FinishInitDb(&shared);
 
-#ifndef NDEBUG
   if (FLAGS_sync_fault_injection) {
     fault_fs_guard->SetFilesystemDirectWritable(false);
   }
-#endif
+  if (FLAGS_write_fault_one_in) {
+    fault_fs_guard->EnableWriteErrorInjection();
+  }
 
-  uint32_t n = shared.GetNumThreads();
-
-  uint64_t now = db_stress_env->NowMicros();
+  uint32_t n = FLAGS_threads;
+  uint64_t now = clock->NowMicros();
   fprintf(stdout, "%s Initializing worker threads\n",
-          db_stress_env->TimeToString(now / 1000000).c_str());
+          clock->TimeToString(now / 1000000).c_str());
+
+  shared.SetThreads(n);
+
+  if (FLAGS_compaction_thread_pool_adjust_interval > 0) {
+    shared.IncBgThreads();
+  }
+
+  if (FLAGS_continuous_verification_interval > 0) {
+    shared.IncBgThreads();
+  }
+
   std::vector<ThreadState*> threads(n);
   for (uint32_t i = 0; i < n; i++) {
     threads[i] = new ThreadState(i, &shared);
     db_stress_env->StartThread(ThreadBody, threads[i]);
   }
+
   ThreadState bg_thread(0, &shared);
   if (FLAGS_compaction_thread_pool_adjust_interval > 0) {
     db_stress_env->StartThread(PoolSizeChangeThread, &bg_thread);
   }
+
   ThreadState continuous_verification_thread(0, &shared);
   if (FLAGS_continuous_verification_interval > 0) {
     db_stress_env->StartThread(DbVerificationThread,
@@ -101,12 +129,27 @@ bool RunStressTest(StressTest* stress) {
         fprintf(stderr, "Crash-recovery verification failed :(\n");
       } else {
         fprintf(stdout, "Crash-recovery verification passed :)\n");
+        Status s = DestroyUnverifiedSubdir(FLAGS_db);
+        if (s.ok() && !FLAGS_expected_values_dir.empty()) {
+          s = DestroyUnverifiedSubdir(FLAGS_expected_values_dir);
+        }
+        if (!s.ok()) {
+          fprintf(stderr, "Failed to cleanup unverified state dir: %s\n",
+                  s.ToString().c_str());
+          exit(1);
+        }
       }
     }
 
-    now = db_stress_env->NowMicros();
+    // This is after the verification step to avoid making all those `Get()`s
+    // and `MultiGet()`s contend on the DB-wide trace mutex.
+    if (!FLAGS_expected_values_dir.empty()) {
+      stress->TrackExpectedState(&shared);
+    }
+
+    now = clock->NowMicros();
     fprintf(stdout, "%s Starting database operations\n",
-            db_stress_env->TimeToString(now / 1000000).c_str());
+            clock->TimeToString(now / 1000000).c_str());
 
     shared.SetStart();
     shared.GetCondVar()->SignalAll();
@@ -114,16 +157,16 @@ bool RunStressTest(StressTest* stress) {
       shared.GetCondVar()->Wait();
     }
 
-    now = db_stress_env->NowMicros();
+    now = clock->NowMicros();
     if (FLAGS_test_batches_snapshots) {
       fprintf(stdout, "%s Limited verification already done during gets\n",
-              db_stress_env->TimeToString((uint64_t)now / 1000000).c_str());
+              clock->TimeToString((uint64_t)now / 1000000).c_str());
     } else if (FLAGS_skip_verifydb) {
       fprintf(stdout, "%s Verification skipped\n",
-              db_stress_env->TimeToString((uint64_t)now / 1000000).c_str());
+              clock->TimeToString((uint64_t)now / 1000000).c_str());
     } else {
       fprintf(stdout, "%s Starting verification\n",
-              db_stress_env->TimeToString((uint64_t)now / 1000000).c_str());
+              clock->TimeToString((uint64_t)now / 1000000).c_str());
     }
 
     shared.SetStartVerify();
@@ -142,11 +185,11 @@ bool RunStressTest(StressTest* stress) {
     delete threads[i];
     threads[i] = nullptr;
   }
-  now = db_stress_env->NowMicros();
+  now = clock->NowMicros();
   if (!FLAGS_skip_verifydb && !FLAGS_test_batches_snapshots &&
       !shared.HasVerificationFailedYet()) {
     fprintf(stdout, "%s Verification successful\n",
-            db_stress_env->TimeToString(now / 1000000).c_str());
+            clock->TimeToString(now / 1000000).c_str());
   }
   stress->PrintStatistics();
 
@@ -157,10 +200,6 @@ bool RunStressTest(StressTest* stress) {
     while (!shared.BgThreadsFinished()) {
       shared.GetCondVar()->Wait();
     }
-  }
-
-  if (!stress->VerifySecondaries()) {
-    return false;
   }
 
   if (shared.HasVerificationFailedYet()) {

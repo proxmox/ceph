@@ -8,7 +8,6 @@
 
 #define BOOST_SPIRIT_X3_UNICODE
 
-#include <boost/detail/lightweight_test.hpp>
 #include <boost/spirit/home/x3.hpp>
 #include <boost/type_traits/is_same.hpp>
 
@@ -167,6 +166,7 @@ main()
         BOOST_TEST(test("0", xdigit));
         BOOST_TEST(test("f", xdigit));
         BOOST_TEST(!test("g", xdigit));
+        BOOST_TEST(!test("\xF1", print));
     }
 
     {

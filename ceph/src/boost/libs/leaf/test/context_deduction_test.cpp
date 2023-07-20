@@ -1,12 +1,17 @@
-// Copyright (c) 2018-2020 Emil Dotchevski and Reverge Studios, Inc.
+// Copyright 2018-2022 Emil Dotchevski and Reverge Studios, Inc.
 
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <boost/leaf/detail/config.hpp>
-#include <boost/leaf/context.hpp>
-#include <boost/leaf/pred.hpp>
-#include <boost/leaf/handle_errors.hpp>
+#ifdef BOOST_LEAF_TEST_SINGLE_HEADER
+#   include "leaf.hpp"
+#else
+#   include <boost/leaf/config.hpp>
+#   include <boost/leaf/context.hpp>
+#   include <boost/leaf/pred.hpp>
+#   include <boost/leaf/handle_errors.hpp>
+#endif
+
 #include "_test_ec.hpp"
 
 namespace leaf = boost::leaf;
@@ -111,14 +116,18 @@ void not_called_on_purpose()
     test< std::tuple<info<1>,info<2>,info<3>> >( expd([]( info<1> ){ }, []( info<2>, info<3> ){ }, []( info<3> ){ }) );
 
     test< std::tuple<my_error_code> >( expd([]( leaf::match<my_error_code, my_error_code::error1> ){ }) );
+#if BOOST_LEAF_CFG_STD_SYSTEM_ERROR
     test< std::tuple<std::error_code> >( expd([]( leaf::match<leaf::condition<cond_x>, cond_x::x00> ){ }) );
+#endif
 
     test< std::tuple<info<1>> >( expd([]( leaf::match_value<info<1>,42> ){ }) );
 
+#if BOOST_LEAF_CFG_STD_SYSTEM_ERROR
     test< std::tuple<std::error_code> >( expd([]( leaf::match<leaf::condition<my_error_condition>, my_error_condition::cond1> ){ }) );
 #if __cplusplus >= 201703L
     test< std::tuple<std::error_code> >( expd([]( leaf::match<std::error_code, my_error_code::error1> ){ }) );
     test< std::tuple<std::error_code> >( expd([]( leaf::match<std::error_code, my_error_condition::cond1> ){ }) );
+#endif
 #endif
 
 #ifndef BOOST_LEAF_NO_EXCEPTIONS
@@ -128,7 +137,7 @@ void not_called_on_purpose()
     test< std::tuple<info<1>,info<2>,info<3>> >( expd([]( info<1> const *, info<2> ){ }, []( info<1>, info<3> const * ){ }) );
     test< std::tuple<info<1>,info<2>,info<3>> >( expd([]( info<1> const, info<2> ){ }, []( info<1> const *, info<3> ){ }) );
 
-#if BOOST_LEAF_DIAGNOSTICS
+#if BOOST_LEAF_CFG_DIAGNOSTICS
     test< std::tuple<info<1>,info<2>,leaf::leaf_detail::e_unexpected_count> >( expd([]( info<1>, info<2>, leaf::diagnostic_info const & ){ }, []( info<1>, info<2> ){ }) );
     test< std::tuple<info<1>,info<2>,leaf::leaf_detail::e_unexpected_info> >( expd([]( info<1>, info<2> ){ }, []( info<1>, leaf::verbose_diagnostic_info const &, info<2> ){ }) );
     test< std::tuple<info<1>,info<2>,leaf::leaf_detail::e_unexpected_count,leaf::leaf_detail::e_unexpected_info> >( expd([]( info<1>, info<2>, leaf::diagnostic_info const & ){ }, []( info<1>, leaf::verbose_diagnostic_info const &, info<2> ){ }) );

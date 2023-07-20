@@ -1137,6 +1137,8 @@ void OpenFileTable::_prefetch_inodes()
       destroyed_inos_set.insert(it.second.begin(), it.second.end());
   }
 
+  mdcache->open_ino_batch_start();
+
   for (auto& [ino, anchor] : loaded_anchor_map) {
     if (destroyed_inos_set.count(ino))
 	continue;
@@ -1175,6 +1177,8 @@ void OpenFileTable::_prefetch_inodes()
     if (!(num_opening_inodes % mds->heartbeat_reset_grace()))
       mds->heartbeat_reset();
   }
+
+  mdcache->open_ino_batch_submit();
 
   _open_ino_finish(inodeno_t(0), 0);
 }

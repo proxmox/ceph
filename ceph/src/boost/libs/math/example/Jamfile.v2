@@ -39,12 +39,13 @@ project
       <include>../../..
       <include>../include_private
       <exception-handling>off:<source>../test//no_eh
+      [ requires cxx11_noexcept cxx11_rvalue_references sfinae_expr cxx11_auto_declarations cxx11_lambdas cxx11_unified_initialization_syntax cxx11_hdr_tuple cxx11_hdr_initializer_list cxx11_hdr_chrono cxx11_thread_local cxx11_constexpr cxx11_nullptr cxx11_numeric_limits cxx11_decltype cxx11_hdr_array cxx11_hdr_atomic cxx11_hdr_type_traits cxx11_allocator cxx11_explicit_conversion_operators ]
     ;
 
 test-suite examples :
-   [ run bessel_zeros_example_1.cpp : : : <exception-handling>off:<build>no  ]
+   [ run bessel_zeros_example_1.cpp : : : [ check-target-builds ../config//is_ci_standalone_run "Standalone CI run" : <build>no ] <exception-handling>off:<build>no ]
    [ run bessel_zeros_interator_example.cpp : : : <exception-handling>off:<build>no  ]
-   [ run neumann_zeros_example_1.cpp : : : <exception-handling>off:<build>no  ]
+   [ run neumann_zeros_example_1.cpp : : : [ check-target-builds ../config//is_ci_standalone_run "Standalone CI run" : <build>no ] <exception-handling>off:<build>no  ]
 
    [ run test_cpp_float_close_fraction.cpp ../../test/build//boost_unit_test_framework/<link>static : : : <exception-handling>off:<build>no  ]
    [ run binomial_coinflip_example.cpp : : : <exception-handling>off:<build>no  ]
@@ -78,7 +79,7 @@ test-suite examples :
    #[ # run inverse_chi_squared_find_df_example.cpp  ]
    #[ run lambert_w_basic_example.cpp ]
    [ run lambert_w_basic_example.cpp  : : : [ requires cxx11_numeric_limits ] ]
-   [ run lambert_w_simple_examples.cpp  : : : [ requires cxx11_numeric_limits ] ]
+   [ run lambert_w_simple_examples.cpp  : : : [ requires cxx11_numeric_limits ] [ check-target-builds ../config//has_float128 "GCC libquadmath and __float128 support" : <linkflags>-lquadmath ] ]
    [ run lambert_w_precision_example.cpp  : : : [ check-target-builds ../config//has_float128 "GCC libquadmath and __float128 support" : <linkflags>-lquadmath ] [ requires cxx11_numeric_limits cxx11_explicit_conversion_operators ] ]
 
    [ run inverse_gamma_example.cpp  ]
@@ -144,12 +145,12 @@ test-suite examples :
    [ run autodiff_black_scholes_brief.cpp : : : [ requires cxx11_inline_namespaces ] ]
    [ run autodiff_black_scholes.cpp : : : [ requires cxx11_inline_namespaces ] ]
    [ run autodiff_fourth_power.cpp : : : [ requires cxx11_inline_namespaces ] ]
-   [ run autodiff_mixed_partials.cpp : : : [ requires cxx11_inline_namespaces ] ]
-   [ run autodiff_multiprecision.cpp : : : [ requires cxx11_inline_namespaces ] ]
+   [ run autodiff_mixed_partials.cpp : : : [ check-target-builds ../config//is_ci_standalone_run "Standalone CI run" : <build>no ] [ requires cxx11_inline_namespaces ] ]
+   [ run autodiff_multiprecision.cpp : : : [ check-target-builds ../config//is_ci_standalone_run "Standalone CI run" : <build>no ] [ requires cxx11_inline_namespaces ] ]
    [ run ooura_fourier_integrals_example.cpp : : : [ requires cxx11_hdr_mutex cxx11_lambdas cxx11_inline_namespaces cxx11_auto_declarations ] ]
    [ run ooura_fourier_integrals_cosine_example.cpp : : : [ requires cxx11_hdr_mutex cxx11_inline_namespaces cxx11_auto_declarations cxx17_std_apply ] ]
    [ run ooura_fourier_integrals_multiprecision_example.cpp : : : [ check-target-builds ../config//has_float128 "GCC libquadmath and __float128 support" : <linkflags>-lquadmath ] [ requires cxx11_hdr_mutex cxx11_inline_namespaces cxx11_auto_declarations cxx17_std_apply ] ]
-
+   [ run reciprocal_fibonacci_constant.cpp : : : [ check-target-builds ../config//has_mpfr "MPFR Support" : <linkflags>"-lmpfr -lgmp" : <build>no ] ]
 ;
 
 run root_elliptic_finding.cpp /boost/timer : : : release <link>static  [ requires cxx11_unified_initialization_syntax cxx11_defaulted_functions ] <target-os>freebsd:<linkflags>"-lrt" <target-os>linux:<linkflags>"-lrt -lpthread" ;

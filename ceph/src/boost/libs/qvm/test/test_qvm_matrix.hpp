@@ -1,7 +1,7 @@
-//Copyright (c) 2008-2016 Emil Dotchevski and Reverge Studios, Inc.
+// Copyright 2008-2022 Emil Dotchevski and Reverge Studios, Inc.
 
-//Distributed under the Boost Software License, Version 1.0. (See accompanying
-//file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
 #ifndef BOOST_QVM_9C471450B3A611DEAF56C1F155D89593
 #define BOOST_QVM_9C471450B3A611DEAF56C1F155D89593
@@ -38,12 +38,8 @@ test_qvm
         }
     }
 
-namespace
-boost
-    {
-    namespace
-    qvm
-        {
+namespace boost { namespace qvm {
+
         template <class Tag,int Rows,int Cols,class T>
         struct
         mat_traits< test_qvm::matrix<Tag,Rows,Cols,T> >:

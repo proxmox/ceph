@@ -2,28 +2,36 @@ version: 2.1
 jobs:
   build_and_test:
     parameters:
-      dialect:
-        description: C++ dialect to build with
-        default: gnu++20
+      compiler:
+        description: C++ compiler to build with
+        type: string
+      standard:
+        description: C++ standard to build with
+        type: string
+      mode:
+        description: mode to build and test with
         type: string
     machine:
-      image:  ubuntu-2004:202101-01
-    resource_class: medium
+      image:  ubuntu-2004:202201-02
+    resource_class: large
     steps:
       - checkout
       - run: git submodule sync
       - run: git submodule update --init
-      - run: echo 'docker run --network host --user "$(id -u):$(id -g)" --rm -v $PWD:$PWD -w $PWD  docker.io/scylladb/seastar-toolchain "$@"' > run; chmod +x run
+      - run: echo 'docker run --pids-limit -1 --security-opt seccomp=unconfined --network host --user "$(id -u):$(id -g)" --rm -v $PWD:$PWD -w $PWD  docker.io/scylladb/seastar-toolchain:2022-11-29 "$@"' > run; chmod +x run
       - run:
           command: |
-            ./run ./configure.py --c++-dialect << parameters.dialect >>
-            ./run ninja -C build/release
-            ./run ./test.py --mode release
+            ./run ./configure.py --compiler << parameters.compiler >> --c++-standard << parameters.standard >>
+            ./run ninja -C build/<< parameters.mode >>
+            ./run ./test.py --mode=<< parameters.mode >>
+
 workflows:
   version: 2
   build_and_test:
     jobs:
       - build_and_test:
-          dialect: c++20
-      - build_and_test:
-          dialect: c++17
+          matrix:
+            parameters:
+              compiler: ["clang++-15", "g++-12"]
+              standard: ["20", "17"]
+              mode: ["dev", "debug", "release"]

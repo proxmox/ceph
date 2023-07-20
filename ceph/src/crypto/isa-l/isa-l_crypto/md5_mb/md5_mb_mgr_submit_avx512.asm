@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -33,7 +33,10 @@
 
 %ifdef HAVE_AS_KNOWS_AVX512
 extern md5_mb_x16x2_avx512
+
+[bits 64]
 default rel
+section .text
 
 %if 1
 %ifidn __OUTPUT_FORMAT__, win64
@@ -95,13 +98,13 @@ default rel
 %endmacro
 
 align 64
-default rel
-section .text
+
 ; JOB* submit_job(MB_MGR *state, JOB_MD5 *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-global md5_mb_mgr_submit_avx512:function
+mk_global md5_mb_mgr_submit_avx512, function
 md5_mb_mgr_submit_avx512:
+	endbranch
 
 	sub	rsp, STACK_SPACE
 	; we need to save/restore all GPRs because lower layer clobbers them

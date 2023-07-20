@@ -14,7 +14,9 @@ project : requirements
   <toolset>clang:<warnings-as-errors>on
   <toolset>gcc:<warnings-as-errors>on
   <toolset>gcc:<cxxflags>-Wshadow
-  <toolset>gcc-4.4.7:<cxxflags>-Wno-sign-compare ;
+  <toolset>gcc-4.4.7:<cxxflags>-Wno-sign-compare
+  <toolset>gcc-4.4:<cxxflags>-Wno-sign-compare
+;
 
 run assert_test.cpp ;
 run current_function_test.cpp
@@ -38,3 +40,5 @@ run current_function_test2.cpp ;
 run source_location_test.cpp ;
 run source_location_test2.cpp ;
 run source_location_test3.cpp ;
+run source_location_test4.cpp ;
+run source_location_test5.cpp ;

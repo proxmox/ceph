@@ -534,6 +534,7 @@ CompatSet Monitor::get_supported_features()
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_OCTOPUS);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_PACIFIC);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_QUINCY);
+  compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_REEF);
   return compat;
 }
 
@@ -2507,6 +2508,13 @@ void Monitor::apply_monmap_to_compatset_features()
     ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_QUINCY));
     new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_QUINCY);
   }
+  if (monmap_features.contains_all(ceph::features::mon::FEATURE_REEF)) {
+    ceph_assert(ceph::features::mon::get_persistent().contains_all(
+           ceph::features::mon::FEATURE_REEF));
+    // this feature should only ever be set if the quorum supports it.
+    ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_REEF));
+    new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_REEF);
+  }
 
   dout(5) << __func__ << dendl;
   _apply_compatset_features(new_features);
@@ -2541,6 +2549,9 @@ void Monitor::calc_quorum_requirements()
   }
   if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_QUINCY)) {
     required_features |= CEPH_FEATUREMASK_SERVER_QUINCY;
+  }
+  if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_REEF)) {
+    required_features |= CEPH_FEATUREMASK_SERVER_REEF;
   }
 
   // monmap
@@ -3726,6 +3737,7 @@ void Monitor::handle_command(MonOpRequestRef op)
     mdsmon()->dump_info(f.get());
     authmon()->dump_info(f.get());
     mgrstatmon()->dump_info(f.get());
+    logmon()->dump_info(f.get());
 
     paxos->dump_info(f.get());
 
@@ -3866,7 +3878,7 @@ void Monitor::handle_command(MonOpRequestRef op)
     rs = "";
     r = 0;
   } else if (prefix == "mon ok-to-stop") {
-    vector<string> ids;
+    vector<string> ids, invalid_ids;
     if (!cmd_getval(cmdmap, "ids", ids)) {
       r = -EINVAL;
       goto out;
@@ -3878,8 +3890,16 @@ void Monitor::handle_command(MonOpRequestRef op)
     for (auto& n : ids) {
       if (monmap->contains(n)) {
 	wouldbe.erase(n);
+      } else {
+        invalid_ids.push_back(n);
       }
     }
+    if (!invalid_ids.empty()) {
+      r = 0;
+      rs = "invalid mon(s) specified: " + stringify(invalid_ids);
+      goto out;
+    }
+
     if (wouldbe.size() < monmap->min_quorum_size()) {
       r = -EBUSY;
       rs = "not enough monitors would be available (" + stringify(wouldbe) +
@@ -3946,28 +3966,34 @@ void Monitor::handle_command(MonOpRequestRef op)
     f->close_section();
 
     mgrmon()->count_metadata("ceph_version", &mgr);
-    f->open_object_section("mgr");
-    for (auto& p : mgr) {
-      f->dump_int(p.first.c_str(), p.second);
-      overall[p.first] += p.second;
+    if (!mgr.empty()) {
+      f->open_object_section("mgr");
+      for (auto& p : mgr) {
+        f->dump_int(p.first.c_str(), p.second);
+        overall[p.first] += p.second;
+      }
+      f->close_section();
     }
-    f->close_section();
 
     osdmon()->count_metadata("ceph_version", &osd);
-    f->open_object_section("osd");
-    for (auto& p : osd) {
-      f->dump_int(p.first.c_str(), p.second);
-      overall[p.first] += p.second;
+    if (!osd.empty()) {
+      f->open_object_section("osd");
+      for (auto& p : osd) {
+        f->dump_int(p.first.c_str(), p.second);
+        overall[p.first] += p.second;
+      }
+      f->close_section();
     }
-    f->close_section();
 
     mdsmon()->count_metadata("ceph_version", &mds);
-    f->open_object_section("mds");
-    for (auto& p : mds) {
-      f->dump_int(p.first.c_str(), p.second);
-      overall[p.first] += p.second;
+    if (!mds.empty()) {
+      f->open_object_section("mds");
+      for (auto& p : mds) {
+        f->dump_int(p.first.c_str(), p.second);
+        overall[p.first] += p.second;
+      }
+      f->close_section();
     }
-    f->close_section();
 
     for (auto& p : mgrstatmon()->get_service_map().services) {
       auto &service = p.first;
@@ -6620,6 +6646,7 @@ void Monitor::notify_new_monmap(bool can_change_external_state, bool remove_rank
 
   if (is_stretch_mode()) {
     if (!monmap->stretch_marked_down_mons.empty()) {
+      dout(20) << __func__ << " stretch_marked_down_mons: " << monmap->stretch_marked_down_mons << dendl;
       set_degraded_stretch_mode();
     }
   }
@@ -6657,7 +6684,9 @@ void Monitor::try_engage_stretch_mode()
   dout(20) << __func__ << dendl;
   if (stretch_mode_engaged) return;
   if (!osdmon()->is_readable()) {
+    dout(20) << "osdmon is not readable" << dendl;
     osdmon()->wait_for_readable_ctx(new CMonEnableStretchMode(this));
+    return;
   }
   if (osdmon()->osdmap.stretch_mode_enabled &&
       monmap->stretch_mode_enabled) {
@@ -6725,10 +6754,14 @@ struct CMonGoRecovery : public Context {
 void Monitor::go_recovery_stretch_mode()
 {
   dout(20) << __func__ << dendl;
+  dout(20) << "is_leader(): " << is_leader() << dendl;
   if (!is_leader()) return;
+  dout(20) << "is_degraded_stretch_mode(): " << is_degraded_stretch_mode() << dendl;
   if (!is_degraded_stretch_mode()) return;
+  dout(20) << "is_recovering_stretch_mode(): " << is_recovering_stretch_mode() << dendl;
   if (is_recovering_stretch_mode()) return;
-
+  dout(20) << "dead_mon_buckets.size(): " << dead_mon_buckets.size() << dendl;
+  dout(20) << "dead_mon_buckets: " << dead_mon_buckets << dendl;
   if (dead_mon_buckets.size()) {
     ceph_assert( 0 == "how did we try and do stretch recovery while we have dead monitor buckets?");
     // we can't recover if we are missing monitors in a zone!
@@ -6736,12 +6769,15 @@ void Monitor::go_recovery_stretch_mode()
   }
   
   if (!osdmon()->is_readable()) {
+    dout(20) << "osdmon is not readable" << dendl;
     osdmon()->wait_for_readable_ctx(new CMonGoRecovery(this));
     return;
   }
 
   if (!osdmon()->is_writeable()) {
+    dout(20) << "osdmon is not writeable" << dendl;
     osdmon()->wait_for_writeable_ctx(new CMonGoRecovery(this));
+    return;
   }
   osdmon()->trigger_recovery_stretch_mode();
 }
@@ -6777,10 +6813,14 @@ void Monitor::maybe_go_degraded_stretch_mode()
 						   &matched_down_mons);
   if (dead) {
     if (!osdmon()->is_writeable()) {
+      dout(20) << "osdmon is not writeable" << dendl;
       osdmon()->wait_for_writeable_ctx(new CMonGoDegraded(this));
+      return;
     }
     if (!monmon()->is_writeable()) {
+      dout(20) << "monmon is not writeable" << dendl;
       monmon()->wait_for_writeable_ctx(new CMonGoDegraded(this));
+      return;
     }
     trigger_degraded_stretch_mode(matched_down_mons, matched_down_buckets);
   }
@@ -6809,6 +6849,7 @@ void Monitor::trigger_degraded_stretch_mode(const set<string>& dead_mons,
 
 void Monitor::set_degraded_stretch_mode()
 {
+  dout(20) << __func__ << dendl;
   degraded_stretch_mode = true;
   recovering_stretch_mode = false;
   osdmon()->set_degraded_stretch_mode();
@@ -6829,10 +6870,14 @@ void Monitor::trigger_healthy_stretch_mode()
   if (!is_degraded_stretch_mode()) return;
   if (!is_leader()) return;
   if (!osdmon()->is_writeable()) {
+    dout(20) << "osdmon is not writeable" << dendl;
     osdmon()->wait_for_writeable_ctx(new CMonGoHealthy(this));
+    return;
   }
   if (!monmon()->is_writeable()) {
+    dout(20) << "monmon is not writeable" << dendl;
     monmon()->wait_for_writeable_ctx(new CMonGoHealthy(this));
+    return;
   }
 
   ceph_assert(osdmon()->osdmap.recovering_stretch_mode);

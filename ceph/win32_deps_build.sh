@@ -19,13 +19,9 @@ sslTag="OpenSSL_1_1_1c"
 sslDir="${depsToolsetDir}/openssl"
 sslSrcDir="${depsSrcDir}/openssl"
 
-curlTag="curl-7_84_0"
-curlSrcDir="${depsSrcDir}/curl"
-curlDir="${depsToolsetDir}/curl"
-
 # For now, we'll keep the version number within the file path when not using git.
-boostUrl="https://boostorg.jfrog.io/artifactory/main/release/1.75.0/source/boost_1_75_0.tar.gz"
-boostSrcDir="${depsSrcDir}/boost_1_75_0"
+boostUrl="https://boostorg.jfrog.io/artifactory/main/release/1.79.0/source/boost_1_79_0.tar.gz"
+boostSrcDir="${depsSrcDir}/boost_1_79_0"
 boostDir="${depsToolsetDir}/boost"
 zlibDir="${depsToolsetDir}/zlib"
 zlibSrcDir="${depsSrcDir}/zlib"
@@ -43,13 +39,13 @@ wnbdSrcDir="${depsSrcDir}/wnbd"
 wnbdLibDir="${depsToolsetDir}/wnbd/lib"
 
 dokanUrl="https://github.com/dokan-dev/dokany"
-dokanTag="v1.3.1.1000"
+dokanTag="v2.0.5.1000"
 dokanSrcDir="${depsSrcDir}/dokany"
 dokanLibDir="${depsToolsetDir}/dokany/lib"
 
 # Allow for OS specific customizations through the OS flag (normally
 # passed through from win32_build).
-# Valid options are currently "ubuntu" and "suse".
+# Valid options are currently "ubuntu", "rhel", and "suse".
 OS=${OS:-"ubuntu"}
 
 function _make() {
@@ -67,17 +63,37 @@ mkdir -p $depsSrcDir
 
 echo "Installing required packages."
 case "$OS" in
+    rhel)
+        # pkgconf needs https://bugzilla.redhat.com/show_bug.cgi?id=1975416
+        sudo yum -y --setopt=skip_missing_names_on_install=False install \
+            mingw64-gcc-c++ \
+            cmake \
+            pkgconf \
+            python3-devel \
+            autoconf \
+            libtool \
+            ninja-build \
+            zip \
+            python3-PyYAML \
+            gcc \
+            diffutils \
+            patch \
+            wget \
+            perl \
+            git-core
+        ;;
     ubuntu)
         sudo apt-get update
-        sudo apt-get -y install mingw-w64 cmake pkg-config \
-            python3-dev python3-pip python3-yaml \
-                autoconf libtool ninja-build zip
-        sudo python3 -m pip install cython
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get -y install \
+            mingw-w64 g++ cmake pkg-config \
+            python3-dev python3-yaml \
+                autoconf libtool ninja-build wget zip \
+                git
         ;;
     suse)
         for PKG in mingw64-cross-gcc-c++ mingw64-libgcc_s_seh1 mingw64-libstdc++6 \
                 cmake pkgconf python3-devel autoconf libtool ninja zip \
-                python3-Cython python3-PyYAML \
+                python3-PyYAML \
                 gcc patch wget git; do
             rpm -q $PKG >/dev/null || zypper -n install $PKG
         done
@@ -90,7 +106,7 @@ source "$SCRIPT_DIR/mingw_conf.sh"
 echo "Building zlib."
 cd $depsSrcDir
 if [[ ! -d $zlibSrcDir ]]; then
-    git clone https://github.com/madler/zlib
+    git clone --depth 1 https://github.com/madler/zlib
 fi
 cd $zlibSrcDir
 # Apparently the configure script is broken...
@@ -126,21 +142,7 @@ CROSS_COMPILE="${MINGW_PREFIX}" ./Configure \
     mingw64 shared --prefix=$sslDir --libdir="$sslDir/lib"
 _make depend
 _make
-_make install
-
-echo "Building libcurl."
-cd $depsSrcDir
-if [[ ! -d $curlSrcDir ]]; then
-    git clone --branch $curlTag --depth 1 https://github.com/curl/curl
-    cd $curlSrcDir
-fi
-cd $curlSrcDir
-./buildconf
-./configure --prefix=$curlDir --with-ssl=$sslDir --with-zlib=$zlibDir \
-            --host=${MINGW_BASE} --libdir="$curlDir/lib"
-_make
-_make install
-
+_make install_sw
 
 echo "Building boost."
 cd $depsSrcDir
@@ -210,7 +212,7 @@ EOL
 echo "Building libbacktrace."
 cd $depsSrcDir
 if [[ ! -d $backtraceSrcDir ]]; then
-    git clone https://github.com/ianlancetaylor/libbacktrace
+    git clone --depth 1 https://github.com/ianlancetaylor/libbacktrace
 fi
 mkdir -p $backtraceSrcDir/build
 cd $backtraceSrcDir/build
@@ -287,8 +289,7 @@ $MINGW_DLLTOOL -d $winLibDir/mswsock.def \
 echo "Fetching libwnbd."
 cd $depsSrcDir
 if [[ ! -d $wnbdSrcDir ]]; then
-    git clone $wnbdUrl
-    cd $wnbdSrcDir && git checkout $wnbdTag
+    git clone --branch $wnbdTag --depth 1 $wnbdUrl
 fi
 cd $wnbdSrcDir
 mkdir -p $wnbdLibDir
@@ -299,10 +300,8 @@ $MINGW_DLLTOOL -d $wnbdSrcDir/libwnbd/libwnbd.def \
 echo "Fetching dokany."
 cd $depsSrcDir
 if [[ ! -d $dokanSrcDir ]]; then
-    git clone $dokanUrl
+    git clone --branch $dokanTag --depth 1 $dokanUrl
 fi
-cd $dokanSrcDir
-git checkout $dokanTag
 
 mkdir -p $dokanLibDir
 $MINGW_DLLTOOL -d $dokanSrcDir/dokan/dokan.def \

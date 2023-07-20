@@ -36,7 +36,6 @@
 #include "messages/MMgrCommand.h"
 #include "messages/MMgrCommandReply.h"
 #include "messages/MPGStats.h"
-#include "messages/MOSDScrub.h"
 #include "messages/MOSDScrub2.h"
 #include "messages/MOSDForceRecovery.h"
 #include "common/errno.h"
@@ -647,9 +646,8 @@ bool DaemonServer::handle_report(const ref_t<MMgrReport>& m)
 
     DaemonStatePtr daemon;
     // Look up the DaemonState
-    if (daemon_state.exists(key)) {
+    if (daemon = daemon_state.get(key); daemon != nullptr) {
       dout(20) << "updating existing DaemonState for " << key << dendl;
-      daemon = daemon_state.get(key);
     } else {
       locker.unlock();
 
@@ -1360,20 +1358,14 @@ bool DaemonServer::_handle_command(
       if (p == osd_cons.end()) {
 	failed_osds.insert(osd);
       } else {
-	sent_osds.insert(osd);
-	for (auto& con : p->second) {
-	  if (HAVE_FEATURE(con->get_features(), SERVER_MIMIC)) {
-	    con->send_message(new MOSDScrub2(monc->get_fsid(),
-					     epoch,
-					     spgs,
-					     pvec.back() == "repair",
-					     pvec.back() == "deep-scrub"));
-	  } else {
-	    con->send_message(new MOSDScrub(monc->get_fsid(),
-					    pvec.back() == "repair",
-					    pvec.back() == "deep-scrub"));
-	  }
-	}
+        sent_osds.insert(osd);
+        for (auto& con : p->second) {
+	  con->send_message(new MOSDScrub2(monc->get_fsid(),
+                                           epoch,
+                                           spgs,
+                                           pvec.back() == "repair",
+                                           pvec.back() == "deep-scrub"));
+        }
       }
     }
     if (failed_osds.size() == osds.size()) {
@@ -1437,21 +1429,11 @@ bool DaemonServer::_handle_command(
         return true;
       }
       for (auto& con : p->second) {
-        if (HAVE_FEATURE(con->get_features(), SERVER_MIMIC)) {
-          con->send_message(new MOSDScrub2(monc->get_fsid(),
-                                           epoch,
-                                           it.second,
-                                           prefix == "osd pool repair",
-                                           prefix == "osd pool deep-scrub"));
-        } else {
-          // legacy
-          auto q = pgs_by_primary.find(primary);
-          ceph_assert(q != pgs_by_primary.end());
-          con->send_message(new MOSDScrub(monc->get_fsid(),
-                                          q->second,
-                                          prefix == "osd pool repair",
-                                          prefix == "osd pool deep-scrub"));
-        }
+        con->send_message(new MOSDScrub2(monc->get_fsid(),
+                                         epoch,
+                                         it.second,
+                                         prefix == "osd pool repair",
+                                         prefix == "osd pool deep-scrub"));
       }
     }
     cmdctx->reply(0, "");
@@ -2452,9 +2434,21 @@ bool DaemonServer::_handle_command(
     return true;
   }
 
+  // Validate that the module is active
+  auto& mod_name = py_command.module_name;
+  if (!py_modules.is_module_active(mod_name)) {
+    ss << "Module '" << mod_name << "' is not enabled/loaded (required by "
+          "command '" << prefix << "'): use `ceph mgr module enable "
+          << mod_name << "` to enable it";
+    dout(4) << ss.str() << dendl;
+    cmdctx->reply(-EOPNOTSUPP, ss);
+    return true;
+  }
+
   dout(10) << "passing through command '" << prefix << "' size " << cmdctx->cmdmap.size() << dendl;
-  finisher.queue(new LambdaContext([this, cmdctx, session, py_command, prefix]
-                                   (int r_) mutable {
+  Finisher& mod_finisher = py_modules.get_active_module_finisher(mod_name);
+  mod_finisher.queue(new LambdaContext([this, cmdctx, session, py_command, prefix]
+                                       (int r_) mutable {
     std::stringstream ss;
 
     dout(10) << "dispatching command '" << prefix << "' size " << cmdctx->cmdmap.size() << dendl;

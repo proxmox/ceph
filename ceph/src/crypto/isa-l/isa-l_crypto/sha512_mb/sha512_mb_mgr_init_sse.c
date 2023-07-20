@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -36,6 +36,7 @@ void sha512_mb_mgr_init_sse(SHA512_MB_JOB_MGR * state)
 	state->lens[0] = 0;
 	state->lens[1] = 1;
 	state->unused_lanes = 0xFF0100;
+	state->num_lanes_inuse = 0;
 	for (j = 0; j < SHA512_MIN_LANES; j++) {
 		state->ldata[j].job_in_lane = 0;
 	}

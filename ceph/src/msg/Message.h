@@ -15,11 +15,15 @@
 #ifndef CEPH_MESSAGE_H
 #define CEPH_MESSAGE_H
 
+#include <concepts>
 #include <cstdlib>
 #include <ostream>
 #include <string_view>
 
 #include <boost/intrusive/list.hpp>
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
 
 #include "include/Context.h"
 #include "common/RefCountedObj.h"
@@ -345,8 +349,18 @@ protected:
       completion_hook->complete(0);
   }
 public:
-  const ConnectionRef& get_connection() const { return connection; }
+  const ConnectionRef& get_connection() const {
+#ifdef WITH_SEASTAR
+    // In crimson, conn is independently maintained outside Message.
+    ceph_abort();
+#endif
+    return connection;
+  }
   void set_connection(ConnectionRef c) {
+#ifdef WITH_SEASTAR
+    // In crimson, conn is independently maintained outside Message.
+    ceph_assert(c == nullptr);
+#endif
     connection = std::move(c);
   }
   CompletionHook* get_completion_hook() { return completion_hook; }
@@ -568,4 +582,9 @@ MURef<T> make_message(Args&&... args) {
   return {new T(std::forward<Args>(args)...), TOPNSPC::common::UniquePtrDeleter{}};
 }
 }
+
+#if FMT_VERSION >= 90000
+template <std::derived_from<Message> M> struct fmt::formatter<M> : fmt::ostream_formatter {};
+#endif
+
 #endif

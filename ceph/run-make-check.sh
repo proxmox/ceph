@@ -90,6 +90,7 @@ function main() {
     cmake_opts+=" -DWITH_CEPHFS_SHELL=ON"
     cmake_opts+=" -DWITH_GRAFANA=ON"
     cmake_opts+=" -DWITH_SPDK=ON"
+    cmake_opts+=" -DWITH_RBD_MIRROR=ON"
     if [ $WITH_SEASTAR ]; then
         cmake_opts+=" -DWITH_SEASTAR=ON"
     fi
@@ -100,7 +101,10 @@ function main() {
         cmake_opts+=" -DWITH_RBD_RWL=ON"
     fi
     cmake_opts+=" -DWITH_RBD_SSD_CACHE=ON"
+    in_jenkins && echo "CI_DEBUG: Our cmake_opts are: $cmake_opts
+                        CI_DEBUG: Running ./configure"
     configure "$cmake_opts" "$@"
+    in_jenkins && echo "CI_DEBUG: Running 'build tests'"
     build tests
     echo "make check: successful build on $(git rev-parse HEAD)"
     FOR_MAKE_CHECK=1 run

@@ -1,5 +1,5 @@
 /* Unit testing for outcomes
-(C) 2013-2020 Niall Douglas <http://www.nedproductions.biz/> (1 commit)
+(C) 2013-2022 Niall Douglas <http://www.nedproductions.biz/> (1 commit)
 
 
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -27,7 +27,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 */
 
-#include <boost/outcome/outcome.hpp>
+#include <boost/outcome.hpp>
 #include <boost/outcome/try.hpp>
 #include <boost/test/unit_test.hpp>
 #include <boost/test/unit_test_monitor.hpp>
@@ -55,7 +55,7 @@ namespace issues210
   // Does the custom result type TRY-convert to an ordinary result type?
   inline outcome::result<int> func1(int x)
   {
-    BOOST_OUTCOME_TRY(y, funcA(x));
+    BOOST_OUTCOME_TRY(auto &&y, funcA(x));
     return funcB(y);
   }
 
@@ -65,7 +65,7 @@ namespace issues210
   // Does the custom result type TRY-convert to an ordinary outcome type?
   inline outcome::outcome<int> func2(int x)
   {
-    BOOST_OUTCOME_TRY(y, funcA(x));
+    BOOST_OUTCOME_TRY(auto &&y, funcA(x));
     return funcC(y);
   }
 }  // namespace issues210

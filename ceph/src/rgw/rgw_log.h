@@ -1,20 +1,14 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_LOG_H
-#define CEPH_RGW_LOG_H
+#pragma once
 
 #include <boost/container/flat_map.hpp>
 #include "rgw_common.h"
 #include "common/OutputDataSocket.h"
 #include <vector>
 #include <fstream>
-
-#define dout_subsys ceph_subsys_rgw
-
-namespace rgw { namespace sal {
-  class Store;
-} }
+#include "rgw_sal_fwd.h"
 
 class RGWOp;
 
@@ -214,7 +208,7 @@ WRITE_CLASS_ENCODER(rgw_log_entry)
 
 class OpsLogSink {
 public:
-  virtual int log(struct req_state* s, struct rgw_log_entry& entry) = 0;
+  virtual int log(req_state* s, struct rgw_log_entry& entry) = 0;
   virtual ~OpsLogSink() = default;
 };
 
@@ -223,7 +217,7 @@ class OpsLogManifold: public OpsLogSink {
 public:
   ~OpsLogManifold() override;
   void add_sink(OpsLogSink* sink);
-  int log(struct req_state* s, struct rgw_log_entry& entry) override;
+  int log(req_state* s, struct rgw_log_entry& entry) override;
 };
 
 class JsonOpsLogSink : public OpsLogSink {
@@ -232,11 +226,11 @@ class JsonOpsLogSink : public OpsLogSink {
 
   void formatter_to_bl(bufferlist& bl);
 protected:
-  virtual int log_json(struct req_state* s, bufferlist& bl) = 0;
+  virtual int log_json(req_state* s, bufferlist& bl) = 0;
 public:
   JsonOpsLogSink();
   ~JsonOpsLogSink() override;
-  int log(struct req_state* s, struct rgw_log_entry& entry) override;
+  int log(req_state* s, struct rgw_log_entry& entry) override;
 };
 
 class OpsLogFile : public JsonOpsLogSink, public Thread, public DoutPrefixProvider {
@@ -254,13 +248,13 @@ class OpsLogFile : public JsonOpsLogSink, public Thread, public DoutPrefixProvid
 
   void flush();
 protected:
-  int log_json(struct req_state* s, bufferlist& bl) override;
+  int log_json(req_state* s, bufferlist& bl) override;
   void *entry() override;
 public:
   OpsLogFile(CephContext* cct, std::string& path, uint64_t max_data_size);
   ~OpsLogFile() override;
   CephContext *get_cct() const override { return cct; }
-  unsigned get_subsys() const override { return dout_subsys; }
+  unsigned get_subsys() const override;
   std::ostream& gen_prefix(std::ostream& out) const override { return out << "rgw OpsLogFile: "; }
   void reopen();
   void start();
@@ -269,7 +263,7 @@ public:
 
 class OpsLogSocket : public OutputDataSocket, public JsonOpsLogSink {
 protected:
-  int log_json(struct req_state* s, bufferlist& bl) override;
+  int log_json(req_state* s, bufferlist& bl) override;
   void init_connection(bufferlist& bl) override;
 
 public:
@@ -277,22 +271,19 @@ public:
 };
 
 class OpsLogRados : public OpsLogSink {
-  // main()'s Store pointer as a reference, possibly modified by RGWRealmReloader
-  rgw::sal::Store* const& store;
+  // main()'s driver pointer as a reference, possibly modified by RGWRealmReloader
+  rgw::sal::Driver* const& driver;
 
 public:
-  OpsLogRados(rgw::sal::Store* const& store);
-  int log(struct req_state* s, struct rgw_log_entry& entry) override;
+  OpsLogRados(rgw::sal::Driver* const& driver);
+  int log(req_state* s, struct rgw_log_entry& entry) override;
 };
 
 class RGWREST;
 
 int rgw_log_op(RGWREST* const rest, struct req_state* s,
-	       const RGWOp* op, OpsLogSink* olog);
-void rgw_log_usage_init(CephContext* cct, rgw::sal::Store* store);
+	             const RGWOp* op, OpsLogSink* olog);
+void rgw_log_usage_init(CephContext* cct, rgw::sal::Driver* driver);
 void rgw_log_usage_finalize();
 void rgw_format_ops_log_entry(struct rgw_log_entry& entry,
 			      ceph::Formatter *formatter);
-
-#endif /* CEPH_RGW_LOG_H */
-

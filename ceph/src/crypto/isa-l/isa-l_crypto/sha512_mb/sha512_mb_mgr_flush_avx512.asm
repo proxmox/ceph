@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -33,7 +33,10 @@
 
 %ifdef HAVE_AS_KNOWS_AVX512
 extern sha512_mb_x8_avx512
+
+[bits 64]
 default rel
+section .text
 
 %ifidn __OUTPUT_FORMAT__, elf64
 ; LINUX register definitions
@@ -95,8 +98,9 @@ endstruc
 
 ; SHA512_JOB* sha512_mb_mgr_flush_avx512(SHA512_MB_JOB_MGR *state)
 ; arg 1 : rcx : state
-global sha512_mb_mgr_flush_avx512:function
+mk_global sha512_mb_mgr_flush_avx512, function
 sha512_mb_mgr_flush_avx512:
+	endbranch
 
 	mov     rax, rsp
 

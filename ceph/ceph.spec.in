@@ -46,11 +46,6 @@
 %endif
 %endif
 %bcond_without selinux
-%if 0%{?rhel} >= 8
-%bcond_with cephfs_java
-%else
-%bcond_without cephfs_java
-%endif
 %bcond_without amqp_endpoint
 %bcond_without kafka_endpoint
 %bcond_without lttng
@@ -98,7 +93,11 @@
 %endif
 %endif
 %bcond_with seastar
+%if 0%{?suse_version}
 %bcond_with jaeger
+%else
+%bcond_without jaeger
+%endif
 %if 0%{?fedora} || 0%{?suse_version} >= 1500
 # distros that ship cmd2 and/or colorama
 %bcond_without cephfs_shell
@@ -106,8 +105,13 @@
 # distros that do _not_ ship cmd2/colorama
 %bcond_with cephfs_shell
 %endif
+%if 0%{?fedora} || 0%{?rhel} >= 9
+%bcond_without system_arrow
+%else
+# for centos 8, utf8proc-devel comes from the subversion-devel module which isn't available in EPEL8
+# this is tracked in https://bugzilla.redhat.com/2152265
 %bcond_with system_arrow
-%bcond_with system_utf8proc
+%endif
 %if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} >= 8
 %global weak_deps 1
 %endif
@@ -197,6 +201,7 @@ Requires:       ceph-mon = %{_epoch_prefix}%{version}-%{release}
 Requires(post):	binutils
 %if 0%{with cephfs_java}
 BuildRequires:	java-devel
+BuildRequires:	jpackage-utils
 BuildRequires:	sharutils
 %endif
 %if 0%{with selinux}
@@ -215,9 +220,7 @@ BuildRequires: gcc11-c++
 %if 0%{?rhel} == 8
 BuildRequires:	%{gts_prefix}-gcc-c++
 BuildRequires:	%{gts_prefix}-build
-%ifarch aarch64
 BuildRequires:	%{gts_prefix}-libatomic-devel
-%endif
 %endif
 %if 0%{?fedora} || 0%{?rhel} == 9
 BuildRequires:  libatomic
@@ -238,6 +241,7 @@ BuildRequires:	libaio-devel
 BuildRequires:	libblkid-devel >= 2.17
 BuildRequires:	cryptsetup-devel
 BuildRequires:	libcurl-devel
+BuildRequires:	libcap-devel
 BuildRequires:	libcap-ng-devel
 BuildRequires:	fmt-devel >= 6.2.1
 BuildRequires:	pkgconfig(libudev)
@@ -313,14 +317,18 @@ BuildRequires:  nlohmann_json-devel
 BuildRequires:  libevent-devel
 %endif
 %if 0%{with system_pmdk}
+%if 0%{?suse_version}
+BuildRequires:  libndctl-devel >= 63
+%else
+BuildRequires:  ndctl-devel >= 63
+BuildRequires:  daxctl-devel >= 63
+%endif
 BuildRequires:  libpmem-devel
-BuildRequires:  libpmemobj-devel
+BuildRequires:  libpmemobj-devel >= 1.8
 %endif
 %if 0%{with system_arrow}
-BuildRequires:  arrow-devel
-BuildRequires:  parquet-devel
-%endif
-%if 0%{with system_utf8proc}
+BuildRequires:  libarrow-devel
+BuildRequires:  parquet-libs-devel
 BuildRequires:  utf8proc-devel
 %endif
 %if 0%{with seastar}
@@ -376,6 +384,7 @@ Requires:	systemd
 BuildRequires:  boost-random
 BuildRequires:	nss-devel
 BuildRequires:	keyutils-libs-devel
+BuildRequires:  libatomic
 BuildRequires:	libibverbs-devel
 BuildRequires:  librdmacm-devel
 BuildRequires:  ninja-build
@@ -1270,6 +1279,15 @@ Group:          System/Monitoring
 %description prometheus-alerts
 This package provides Ceph default alerts for Prometheus.
 
+%package mib
+Summary:        MIB for SNMP alerts
+BuildArch:      noarch
+%if 0%{?suse_version}
+Group:          System/Monitoring
+%endif
+%description mib
+This package provides a Ceph MIB for SNMP traps.
+
 #################################################################################
 # common
 #################################################################################
@@ -1338,6 +1356,8 @@ cmake .. \
     -DWITH_TESTS:BOOL=OFF \
 %endif
 %if 0%{with cephfs_java}
+    -DJAVA_HOME=%{java_home} \
+    -DJAVA_LIB_INSTALL_DIR=%{_jnidir} \
     -DWITH_CEPHFS_JAVA:BOOL=ON \
 %endif
 %if 0%{with selinux}
@@ -1390,8 +1410,8 @@ cmake .. \
 %if 0%{with system_pmdk}
     -DWITH_SYSTEM_PMDK:BOOL=ON \
 %endif
-%if 0%{with jaeger}
-    -DWITH_JAEGER:BOOL=ON \
+%if 0%{without jaeger}
+    -DWITH_JAEGER:BOOL=OFF \
 %endif
 %if 0%{?suse_version}
     -DBOOST_J:STRING=%{jobs} \
@@ -1403,8 +1423,6 @@ cmake .. \
 %endif
 %if 0%{with system_arrow}
     -DWITH_SYSTEM_ARROW:BOOL=ON \
-%endif
-%if 0%{with system_utf8proc}
     -DWITH_SYSTEM_UTF8PROC:BOOL=ON \
 %endif
 %if 0%{with seastar}
@@ -1464,7 +1482,6 @@ install -m 0644 -D COPYING %{buildroot}%{_docdir}/ceph/COPYING
 install -m 0644 -D etc/sysctl/90-ceph-osd.conf %{buildroot}%{_sysctldir}/90-ceph-osd.conf
 install -m 0755 -D src/tools/rbd_nbd/rbd-nbd_quiesce %{buildroot}%{_libexecdir}/rbd-nbd/rbd-nbd_quiesce
 
-install -m 0755 src/cephadm/cephadm %{buildroot}%{_sbindir}/cephadm
 mkdir -p %{buildroot}%{_sharedstatedir}/cephadm
 chmod 0700 %{buildroot}%{_sharedstatedir}/cephadm
 mkdir -p %{buildroot}%{_sharedstatedir}/cephadm/.ssh
@@ -1511,6 +1528,9 @@ mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-rbd-mirror
 # prometheus alerts
 install -m 644 -D monitoring/ceph-mixin/prometheus_alerts.yml %{buildroot}/etc/prometheus/ceph/ceph_default_alerts.yml
 
+# SNMP MIB
+install -m 644 -D -t %{buildroot}%{_datadir}/snmp/mibs monitoring/snmp/CEPH-MIB.txt
+
 %if 0%{?suse_version}
 # create __pycache__ directories and their contents
 %py3_compile %{buildroot}%{python3_sitelib}
@@ -1549,6 +1569,8 @@ rm -rf %{_vpath_builddir}
 %dir %{_libdir}/ceph
 %dir %{_libdir}/ceph/erasure-code
 %{_libdir}/ceph/erasure-code/libec_*.so*
+%dir %{_libdir}/ceph/extblkdev
+%{_libdir}/ceph/extblkdev/libceph_*.so*
 %dir %{_libdir}/ceph/compressor
 %{_libdir}/ceph/compressor/libceph_*.so*
 %{_unitdir}/ceph-crash.service
@@ -1648,6 +1670,10 @@ exit 0
 %{_bindir}/rbd-replay
 %{_bindir}/rbd-replay-many
 %{_bindir}/rbdmap
+%{_bindir}/rgw-gap-list
+%{_bindir}/rgw-gap-list-comparator
+%{_bindir}/rgw-orphan-list
+%{_bindir}/rgw-restore-bucket-index
 %{_sbindir}/mount.ceph
 %if 0%{?suse_version} && 0%{?suse_version} < 1550
 /sbin/mount.ceph
@@ -1863,6 +1889,7 @@ fi
 %{_datadir}/ceph/mgr/prometheus
 %{_datadir}/ceph/mgr/rbd_support
 %{_datadir}/ceph/mgr/restful
+%{_datadir}/ceph/mgr/rgw
 %{_datadir}/ceph/mgr/selftest
 %{_datadir}/ceph/mgr/snap_schedule
 %{_datadir}/ceph/mgr/stats
@@ -2105,17 +2132,14 @@ fi
 %{_bindir}/radosgw-token
 %{_bindir}/radosgw-es
 %{_bindir}/radosgw-object-expirer
-%{_bindir}/rgw-gap-list
-%{_bindir}/rgw-gap-list-comparator
-%{_bindir}/rgw-orphan-list
-%{_libdir}/libradosgw.so*
+%{_bindir}/rgw-policy-check
 %{_mandir}/man8/radosgw.8*
+%{_mandir}/man8/rgw-policy-check.8*
 %dir %{_localstatedir}/lib/ceph/radosgw
 %{_unitdir}/ceph-radosgw@.service
 %{_unitdir}/ceph-radosgw.target
 
 %post radosgw
-/sbin/ldconfig
 %if 0%{?suse_version}
 if [ $1 -eq 1 ] ; then
   /usr/bin/systemctl preset ceph-radosgw@\*.service ceph-radosgw.target >/dev/null 2>&1 || :
@@ -2137,7 +2161,6 @@ fi
 %endif
 
 %postun radosgw
-/sbin/ldconfig
 %systemd_postun ceph-radosgw@\*.service ceph-radosgw.target
 if [ $1 -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
@@ -2391,6 +2414,7 @@ fi
 %dir %{_includedir}/cephfs
 %{_includedir}/cephfs/libcephfs.h
 %{_includedir}/cephfs/ceph_ll_client.h
+%{_includedir}/cephfs/types.h
 %dir %{_includedir}/cephfs/metrics
 %{_includedir}/cephfs/metrics/Types.h
 %{_libdir}/libcephfs.so
@@ -2591,5 +2615,9 @@ exit 0
 %endif
 %attr(0755,root,root) %dir %{_sysconfdir}/prometheus/ceph
 %config %{_sysconfdir}/prometheus/ceph/ceph_default_alerts.yml
+
+%files mib
+%attr(0755,root,root) %dir %{_datadir}/snmp
+%{_datadir}/snmp/mibs
 
 %changelog

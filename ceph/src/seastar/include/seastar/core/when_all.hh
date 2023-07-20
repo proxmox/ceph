@@ -113,7 +113,7 @@ public:
             return true;
         } else {
             auto c = new (continuation) when_all_state_component(wasb, f);
-            set_callback(*f, c);
+            set_callback(std::move(*f), c);
             return false;
         }
     }
@@ -170,7 +170,8 @@ public:
         if ((futures.available() && ...)) {
             return ResolvedTupleTransform::make_ready_future(std::make_tuple(std::move(futures)...));
         }
-        auto state = [&, s = memory::scoped_critical_alloc_section()] () noexcept {
+        auto state = [&] () noexcept {
+            memory::scoped_critical_alloc_section _;
             return new when_all_state(std::move(futures)...);
         }();
         auto ret = state->p.get_future();

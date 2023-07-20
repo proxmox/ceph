@@ -1,6 +1,6 @@
 //
 //  Copyright (c) 2012 Artyom Beilis (Tonkikh)
-//  Copyright (c) 2020 Alexander Grund
+//  Copyright (c) 2020-2022 Alexander Grund
 //
 //  Distributed under the Boost Software License, Version 1.0. (See
 //  accompanying file LICENSE or copy at
@@ -11,9 +11,12 @@
 
 #ifdef _MSC_VER
 #define _CRT_SECURE_NO_WARNINGS
-#elif(defined(__MINGW32__) || defined(__CYGWIN__)) && defined(__STRICT_ANSI__)
-// Need the _w* functions which are extensions on MinGW/Cygwin
+#elif defined(__MINGW32__) && defined(__STRICT_ANSI__)
+// Need the _w* functions which are extensions on MinGW but not on MinGW-w64
+#include <_mingw.h>
+#ifndef __MINGW64_VERSION_MAJOR
 #undef __STRICT_ANSI__
+#endif
 #endif
 
 #include <boost/nowide/cstdio.hpp>
@@ -25,6 +28,7 @@ namespace nowide {
         FILE* wfopen(const wchar_t* filename, const wchar_t* mode)
         {
 #ifdef BOOST_WINDOWS
+            // coverity[var_deref_model]
             return ::_wfopen(filename, mode);
 #else
             const stackstring name(filename);
@@ -42,6 +46,7 @@ namespace nowide {
     {
         const wstackstring wname(file_name);
         const wshort_stackstring wmode(mode);
+        // coverity[var_deref_model]
         return _wfreopen(wname.get(), wmode.get(), stream);
     }
     ///
@@ -51,7 +56,8 @@ namespace nowide {
     {
         const wstackstring wname(file_name);
         const wshort_stackstring wmode(mode);
-        return _wfopen(wname.get(), wmode.get());
+        // coverity[var_deref_model]
+        return detail::wfopen(wname.get(), wmode.get());
     }
     ///
     /// \brief Same as rename but old_name and new_name are UTF-8 strings

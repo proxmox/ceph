@@ -5,8 +5,8 @@
 // Copyright (c) 2008-2016 Bruno Lalande, Paris, France.
 // Copyright (c) 2009-2016 Mateusz Loskot, London, UK.
 
-// This file was modified by Oracle on 2016,2017.
-// Modifications copyright (c) 2016-2017, Oracle and/or its affiliates.
+// This file was modified by Oracle on 2016-2021.
+// Modifications copyright (c) 2016-2021, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Parts of Boost.Geometry are redesigned from Geodan's Geographic Library
@@ -45,7 +45,7 @@ void test_areal()
     typedef typename bg::coordinate_type<Polygon>::type ct;
 
     ut_settings ignore_validity_for_float;
-    if (BOOST_GEOMETRY_CONDITION((boost::is_same<ct, float>::value)) )
+    if (BOOST_GEOMETRY_CONDITION((std::is_same<ct, float>::value)) )
     {
         ignore_validity_for_float.set_test_validity(false);
     }
@@ -367,10 +367,11 @@ void test_areal()
         ggl_list_20110716_enrico[0], ggl_list_20110716_enrico[1],
         1, 1, 15, 129904.197692871);
 
-#if defined(BOOST_GEOMETRY_USE_RESCALING) || defined(BOOST_GEOMETRY_TEST_FAILURES)
-     // Either 1 or 2, depending if the intersection/turn point (eps.region) is missed
-    TEST_UNION(ggl_list_20110820_christophe, count_set(1, 2), 0, -1, 67.3550722317627);
-#endif
+    {
+        ut_settings settings;
+        settings.set_test_validity(BG_IF_RESCALED(true, BG_IF_TEST_FAILURES));
+        TEST_UNION_WITH(ggl_list_20110820_christophe, count_set(1, 2), 0, -1, 67.3550722317627);
+    }
 
     {
         // SQL Server gives: 313.360374193241
@@ -428,6 +429,20 @@ void test_areal()
     TEST_UNION(issue_566_b, 1, 0, -1, 214.3728);
     TEST_UNION_REV(issue_566_a, 1, 0, -1, 214.3728);
     TEST_UNION_REV(issue_566_b, 1, 0, -1, 214.3728);
+
+#if ! defined(BOOST_GEOMETRY_USE_RESCALING) || defined(BOOST_GEOMETRY_TEST_FAILURES)
+    {
+        // With rescaling, the input (was already an output of a previous step)
+        // is somehow considered as invalid. Output is also invalid.
+        // Without rescaling, the same input is considered as valid
+        ut_settings settings;
+        settings.ignore_validity_on_invalid_input = false;
+        TEST_UNION_WITH(issue_690, 2, 0, -1, 25492.0505);
+    }
+#endif
+
+    TEST_UNION(issue_838, 1, 0, -1, expectation_limits(1.3333, 1.33785));
+    TEST_UNION_REV(issue_838, 1, 0, -1, expectation_limits(1.3333, 1.33785));
 
     {
         // Rescaling produces an invalid result
@@ -593,7 +608,7 @@ int test_main(int, char* [])
 #endif
 
 #if defined(BOOST_GEOMETRY_TEST_FAILURES)
-    BoostGeometryWriteExpectedFailures(3, 3, 1, 0);
+    BoostGeometryWriteExpectedFailures(4, 1, 2, 0);
 #endif
 
     return 0;

@@ -87,8 +87,9 @@ struct topology_holder {};
 struct configuration {
     optional<size_t> total_memory;
     optional<size_t> reserve_memory;  // if total_memory not specified
-    optional<size_t> cpus;
-    optional<cpuset> cpu_set;
+    size_t reserve_additional_memory;
+    size_t cpus;
+    cpuset cpu_set;
     bool assign_orphan_cpus = false;
     std::vector<dev_t> devices;
     unsigned num_io_groups;

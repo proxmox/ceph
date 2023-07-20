@@ -13,17 +13,31 @@
 
 #include "include/buffer.h"
 #include "crimson/common/errorator.h"
+#include "crimson/common/interruptible_future.h"
 #include "crimson/os/seastore/seastore_types.h"
+
+struct btree_lba_manager_test;
 
 namespace crimson::os::seastore {
 
-class ool_record_t;
 class Transaction;
 class CachedExtent;
 using CachedExtentRef = boost::intrusive_ptr<CachedExtent>;
 class SegmentedAllocator;
 class TransactionManager;
 class ExtentPlacementManager;
+
+template <
+  typename node_key_t,
+  typename node_val_t,
+  typename internal_node_t,
+  typename leaf_node_t,
+  typename pin_t,
+  size_t node_size,
+  bool leaf_has_children>
+class FixedKVBtree;
+template <typename, typename>
+class BtreeNodeMapping;
 
 // #define DEBUG_CACHED_EXTENT_REF
 #ifdef DEBUG_CACHED_EXTENT_REF
@@ -46,11 +60,14 @@ namespace onode {
 
 template <typename T>
 class read_set_item_t {
-  boost::intrusive::list_member_hook<> list_hook;
-  using list_hook_options = boost::intrusive::member_hook<
+  using set_hook_t = boost::intrusive::set_member_hook<
+    boost::intrusive::link_mode<
+      boost::intrusive::auto_unlink>>;
+  set_hook_t trans_hook;
+  using set_hook_options = boost::intrusive::member_hook<
     read_set_item_t,
-    boost::intrusive::list_member_hook<>,
-    &read_set_item_t::list_hook>;
+    set_hook_t,
+    &read_set_item_t::trans_hook>;
 
 public:
   struct cmp_t {
@@ -60,9 +77,29 @@ public:
     bool operator()(const read_set_item_t<T> &lhs, const paddr_t &rhs) const;
   };
 
-  using list =  boost::intrusive::list<
+  struct trans_cmp_t {
+    bool operator()(
+      const read_set_item_t<Transaction> &lhs,
+      const read_set_item_t<Transaction> &rhs) const {
+      return lhs.t < rhs.t;
+    }
+    bool operator()(
+      const Transaction *lhs,
+      const read_set_item_t<Transaction> &rhs) const {
+      return lhs < rhs.t;
+    }
+    bool operator()(
+      const read_set_item_t<Transaction> &lhs,
+      const Transaction *rhs) const {
+      return lhs.t < rhs;
+    }
+  };
+
+  using trans_set_t =  boost::intrusive::set<
     read_set_item_t,
-    list_hook_options>;
+    set_hook_options,
+    boost::intrusive::constant_time_size<false>,
+    boost::intrusive::compare<trans_cmp_t>>;
 
   T *t = nullptr;
   CachedExtentRef ref;
@@ -70,16 +107,62 @@ public:
   read_set_item_t(T *t, CachedExtentRef ref);
   read_set_item_t(const read_set_item_t &) = delete;
   read_set_item_t(read_set_item_t &&) = default;
-  ~read_set_item_t();
+  ~read_set_item_t() = default;
 };
 template <typename T>
 using read_set_t = std::set<
   read_set_item_t<T>,
   typename read_set_item_t<T>::cmp_t>;
 
+struct trans_spec_view_t {
+  // if the extent is pending, contains the id of the owning transaction;
+  // TRANS_ID_NULL otherwise
+  transaction_id_t pending_for_transaction = TRANS_ID_NULL;
+
+  struct cmp_t {
+    bool operator()(
+      const trans_spec_view_t &lhs,
+      const trans_spec_view_t &rhs) const
+    {
+      return lhs.pending_for_transaction < rhs.pending_for_transaction;
+    }
+    bool operator()(
+      const transaction_id_t &lhs,
+      const trans_spec_view_t &rhs) const
+    {
+      return lhs < rhs.pending_for_transaction;
+    }
+    bool operator()(
+      const trans_spec_view_t &lhs,
+      const transaction_id_t &rhs) const
+    {
+      return lhs.pending_for_transaction < rhs;
+    }
+  };
+
+  using trans_view_hook_t =
+    boost::intrusive::set_member_hook<
+      boost::intrusive::link_mode<
+        boost::intrusive::auto_unlink>>;
+  trans_view_hook_t trans_view_hook;
+
+  using trans_view_member_options =
+    boost::intrusive::member_hook<
+      trans_spec_view_t,
+      trans_view_hook_t,
+      &trans_spec_view_t::trans_view_hook>;
+  using trans_view_set_t = boost::intrusive::set<
+    trans_spec_view_t,
+    trans_view_member_options,
+    boost::intrusive::constant_time_size<false>,
+    boost::intrusive::compare<cmp_t>>;
+};
+
 class ExtentIndex;
-class CachedExtent : public boost::intrusive_ref_counter<
-  CachedExtent, boost::thread_unsafe_counter> {
+class CachedExtent
+  : public boost::intrusive_ref_counter<
+      CachedExtent, boost::thread_unsafe_counter>,
+    public trans_spec_view_t {
   enum class extent_state_t : uint8_t {
     INITIAL_WRITE_PENDING, // In Transaction::write_set and fresh_block_list
     MUTATION_PENDING,      // In Transaction::write_set and mutated_block_list
@@ -88,6 +171,17 @@ class CachedExtent : public boost::intrusive_ref_counter<
                            //  during write, contents match disk, version == 0
     DIRTY,                 // Same as CLEAN, but contents do not match disk,
                            //  version > 0
+    EXIST_CLEAN,           // Similar to CLEAN, but its metadata not yet
+			   //  persisted to disk.
+    			   //  In Transaction::write_set and existing_block_list.
+			   //  After transaction commits, state becomes CLEAN
+			   //  and add extent to Cache. Modifing such extents
+			   //  will cause state turn to EXIST_MUTATION_PENDING.
+    EXIST_MUTATION_PENDING,// Similar to MUTATION_PENDING, but its prior_instance
+			   //  is empty.
+			   //  In Transaction::write_set, existing_block_list and
+			   //  mutated_block_list. State becomes DIRTY and it is
+			   //  added to Cache after transaction commits.
     INVALID                // Part of no ExtentIndex set
   } state = extent_state_t::INVALID;
   friend std::ostream &operator<<(std::ostream &, extent_state_t);
@@ -95,12 +189,45 @@ class CachedExtent : public boost::intrusive_ref_counter<
   friend class onode::DummyNodeExtent;
   friend class onode::TestReplayExtent;
 
+  template <
+    typename node_key_t,
+    typename node_val_t,
+    typename internal_node_t,
+    typename leaf_node_t,
+    typename pin_t,
+    size_t node_size,
+    bool leaf_has_children>
+  friend class FixedKVBtree;
   uint32_t last_committed_crc = 0;
 
   // Points at current version while in state MUTATION_PENDING
   CachedExtentRef prior_instance;
 
+  // time of the last modification
+  sea_time_point modify_time = NULL_TIME;
+
 public:
+  void init(extent_state_t _state,
+            paddr_t paddr,
+            placement_hint_t hint,
+            rewrite_gen_t gen,
+	    transaction_id_t trans_id) {
+    assert(gen == NULL_GENERATION || is_rewrite_generation(gen));
+    state = _state;
+    set_paddr(paddr);
+    user_hint = hint;
+    rewrite_generation = gen;
+    pending_for_transaction = trans_id;
+  }
+
+  void set_modify_time(sea_time_point t) {
+    modify_time = t;
+  }
+
+  sea_time_point get_modify_time() const {
+    return modify_time;
+  }
+
   /**
    *  duplicate_for_write
    *
@@ -112,7 +239,7 @@ public:
    * structure which defers updating the actual buffer until
    * on_delta_write().
    */
-  virtual CachedExtentRef duplicate_for_write() = 0;
+  virtual CachedExtentRef duplicate_for_write(Transaction &t) = 0;
 
   /**
    * prepare_write
@@ -153,6 +280,26 @@ public:
   virtual void on_delta_write(paddr_t record_block_offset) {}
 
   /**
+   * on_replace_prior
+   *
+   * Called after the extent has replaced a previous one. State
+   * of the extent must be MUTATION_PENDING. Implementation
+   * may use this call to synchronize states that must be synchronized
+   * with the states of Cache and can't wait till transaction
+   * completes.
+   */
+  virtual void on_replace_prior(Transaction &t) {}
+
+  /**
+   * on_invalidated
+   *
+   * Called after the extent is invalidated, either by Cache::invalidate_extent
+   * or Transaction::add_to_retired_set. Implementation may use this
+   * call to adjust states that must be changed immediately once
+   * invalidated.
+   */
+  virtual void on_invalidated(Transaction &t) {}
+  /**
    * get_type
    *
    * Returns concrete type.
@@ -163,18 +310,29 @@ public:
     return false;
   }
 
+  virtual bool may_conflict() const {
+    return true;
+  }
+
   friend std::ostream &operator<<(std::ostream &, extent_state_t);
   virtual std::ostream &print_detail(std::ostream &out) const { return out; }
   std::ostream &print(std::ostream &out) const {
+    std::string prior_poffset_str = prior_poffset
+      ? fmt::format("{}", *prior_poffset)
+      : "nullopt";
     out << "CachedExtent(addr=" << this
 	<< ", type=" << get_type()
 	<< ", version=" << version
 	<< ", dirty_from_or_retired_at=" << dirty_from_or_retired_at
+	<< ", modify_time=" << sea_time_point_printer_t{modify_time}
 	<< ", paddr=" << get_paddr()
+	<< ", prior_paddr=" << prior_poffset_str
 	<< ", length=" << get_length()
 	<< ", state=" << state
 	<< ", last_committed_crc=" << last_committed_crc
-	<< ", refcount=" << use_count();
+	<< ", refcount=" << use_count()
+	<< ", user_hint=" << user_hint
+	<< ", rewrite_gen=" << rewrite_gen_printer_t{rewrite_generation};
     if (state != extent_state_t::INVALID &&
         state != extent_state_t::CLEAN_PENDING) {
       print_detail(out);
@@ -237,10 +395,16 @@ public:
     return TCachedExtentRef<const T>(static_cast<const T*>(this));
   }
 
+  /// Returns true if extent can be mutated in an open transaction
+  bool is_mutable() const {
+    return state == extent_state_t::INITIAL_WRITE_PENDING ||
+      state == extent_state_t::MUTATION_PENDING ||
+      state == extent_state_t::EXIST_MUTATION_PENDING;
+  }
+
   /// Returns true if extent is part of an open transaction
   bool is_pending() const {
-    return state == extent_state_t::INITIAL_WRITE_PENDING ||
-      state == extent_state_t::MUTATION_PENDING;
+    return is_mutable() || state == extent_state_t::EXIST_CLEAN;
   }
 
   /// Returns true if extent has a pending delta
@@ -258,7 +422,18 @@ public:
     ceph_assert(is_valid());
     return state == extent_state_t::INITIAL_WRITE_PENDING ||
            state == extent_state_t::CLEAN ||
-           state == extent_state_t::CLEAN_PENDING;
+           state == extent_state_t::CLEAN_PENDING ||
+           state == extent_state_t::EXIST_CLEAN;
+  }
+
+  /// Ruturns true if data is persisted while metadata isn't
+  bool is_exist_clean() const {
+    return state == extent_state_t::EXIST_CLEAN;
+  }
+
+  /// Returns true if the extent with EXTIST_CLEAN is modified
+  bool is_exist_mutation_pending() const {
+    return state == extent_state_t::EXIST_MUTATION_PENDING;
   }
 
   /// Returns true if extent is dirty (has deltas on disk)
@@ -274,12 +449,16 @@ public:
 
   /// Returns true if extent or prior_instance has been invalidated
   bool has_been_invalidated() const {
-    return !is_valid() || (prior_instance && !prior_instance->is_valid());
+    return !is_valid() || (is_mutation_pending() && !prior_instance->is_valid());
   }
 
   /// Returns true if extent is a plcaeholder
   bool is_placeholder() const {
     return get_type() == extent_types_t::RETIRED_PLACEHOLDER;
+  }
+
+  bool is_pending_io() const {
+    return !!io_wait_promise;
   }
 
   /// Return journal location of oldest relevant delta, only valid while DIRTY
@@ -335,15 +514,46 @@ public:
 
   virtual ~CachedExtent();
 
-  /// type of the backend device that will hold this extent
-  device_type_t backend_type = device_type_t::NONE;
+  placement_hint_t get_user_hint() const {
+    return user_hint;
+  }
 
-  /// hint for allocators
-  placement_hint_t hint = placement_hint_t::NUM_HINTS;
+  rewrite_gen_t get_rewrite_generation() const {
+    return rewrite_generation;
+  }
+
+  void invalidate_hints() {
+    user_hint = PLACEMENT_HINT_NULL;
+    rewrite_generation = NULL_GENERATION;
+  }
+
+  /// assign the target rewrite generation for the followup rewrite
+  void set_target_rewrite_generation(rewrite_gen_t gen) {
+    assert(is_target_rewrite_generation(gen));
+
+    user_hint = placement_hint_t::REWRITE;
+    rewrite_generation = gen;
+  }
 
   bool is_inline() const {
     return poffset.is_relative();
   }
+
+  paddr_t get_prior_paddr_and_reset() {
+    assert(prior_poffset);
+    auto ret = *prior_poffset;
+    prior_poffset.reset();
+    return ret;
+  }
+
+  void set_invalid(Transaction &t);
+
+  // a rewrite extent has an invalid prior_instance,
+  // and a mutation_pending extent has a valid prior_instance
+  CachedExtentRef get_prior_instance() {
+    return prior_instance;
+  }
+
 private:
   template <typename T>
   friend class read_set_item_t;
@@ -369,6 +579,11 @@ private:
     return extent_index_hook.is_linked();
   }
 
+  /// Returns true if the extent part of the open transaction
+  bool is_pending_in_trans(transaction_id_t id) const {
+    return is_pending() && pending_for_transaction == id;
+  }
+
   /// hook for intrusive ref list (mainly dirty or lru list)
   boost::intrusive::list_member_hook<> primary_ref_list_hook;
   using primary_ref_list_member_options = boost::intrusive::member_hook<
@@ -391,10 +606,13 @@ private:
   ceph::bufferptr ptr;
 
   /// number of deltas since initial write
-  extent_version_t version = EXTENT_VERSION_NULL;
+  extent_version_t version = 0;
 
-  /// address of original block -- relative iff is_pending() and is_clean()
+  /// address of original block -- record relative iff is_initial_pending()
   paddr_t poffset;
+
+  /// relative address before ool write, used to update mapping
+  std::optional<paddr_t> prior_poffset = std::nullopt;
 
   /// used to wait while in-progress commit completes
   std::optional<seastar::shared_promise<>> io_wait_promise;
@@ -416,9 +634,20 @@ private:
     }
   }
 
-  read_set_item_t<Transaction>::list transactions;
+  CachedExtent* get_transactional_view(Transaction &t);
+  CachedExtent* get_transactional_view(transaction_id_t tid);
+
+  read_set_item_t<Transaction>::trans_set_t transactions;
+
+  placement_hint_t user_hint = PLACEMENT_HINT_NULL;
+
+  // the target rewrite generation for the followup rewrite
+  // or the rewrite generation for the fresh write
+  rewrite_gen_t rewrite_generation = NULL_GENERATION;
 
 protected:
+  trans_view_set_t mutation_pendings;
+
   CachedExtent(CachedExtent &&other) = delete;
   CachedExtent(ceph::bufferptr &&ptr) : ptr(std::move(ptr)) {}
   CachedExtent(const CachedExtent &other)
@@ -446,8 +675,8 @@ protected:
     return new T(std::forward<Args>(args)...);
   }
 
-  CachedExtentRef get_prior_instance() {
-    return prior_instance;
+  void reset_prior_instance() {
+    prior_instance.reset();
   }
 
   /// Sets last_committed_crc
@@ -455,7 +684,13 @@ protected:
     last_committed_crc = crc;
   }
 
-  void set_paddr(paddr_t offset) { poffset = offset; }
+  void set_paddr(paddr_t offset, bool need_update_mapping = false) {
+    if (need_update_mapping) {
+      assert(!prior_poffset);
+      prior_poffset = poffset;
+    }
+    poffset = offset;
+  }
 
   /**
    * maybe_generate_relative
@@ -477,21 +712,25 @@ protected:
    */
   paddr_t maybe_generate_relative(paddr_t addr) {
     if (is_initial_pending() && addr.is_record_relative()) {
-      return addr - get_paddr();
+      return addr.block_relative_to(get_paddr());
     } else {
       ceph_assert(!addr.is_record_relative() || is_mutation_pending());
       return addr;
     }
   }
 
-  friend class crimson::os::seastore::ool_record_t;
   friend class crimson::os::seastore::SegmentedAllocator;
   friend class crimson::os::seastore::TransactionManager;
   friend class crimson::os::seastore::ExtentPlacementManager;
+  template <typename, typename>
+  friend class BtreeNodeMapping;
+  friend class ::btree_lba_manager_test;
 };
 
 std::ostream &operator<<(std::ostream &, CachedExtent::extent_state_t);
 std::ostream &operator<<(std::ostream &, const CachedExtent&);
+
+bool is_backref_mapped_extent_node(const CachedExtentRef &extent);
 
 /// Compare extents by paddr
 struct paddr_cmp {
@@ -546,7 +785,7 @@ class ExtentIndex {
   friend class Cache;
   CachedExtent::index extent_index;
 public:
-  auto get_overlap(paddr_t addr, segment_off_t len) {
+  auto get_overlap(paddr_t addr, extent_len_t len) {
     auto bottom = extent_index.upper_bound(addr, paddr_cmp());
     if (bottom != extent_index.begin())
       --bottom;
@@ -637,26 +876,95 @@ private:
   uint64_t bytes = 0;
 };
 
+class ChildableCachedExtent;
 class LogicalCachedExtent;
-class LBAPin;
-using LBAPinRef = std::unique_ptr<LBAPin>;
-class LBAPin {
+
+class child_pos_t {
 public:
-  virtual void link_extent(LogicalCachedExtent *ref) = 0;
-  virtual void take_pin(LBAPin &pin) = 0;
-  virtual extent_len_t get_length() const = 0;
-  virtual paddr_t get_paddr() const = 0;
-  virtual laddr_t get_laddr() const = 0;
-  virtual LBAPinRef duplicate() const = 0;
-  virtual bool has_been_invalidated() const = 0;
+  child_pos_t(CachedExtentRef stable_parent, uint16_t pos)
+    : stable_parent(stable_parent), pos(pos) {}
 
-  virtual ~LBAPin() {}
+  template <typename parent_t>
+  TCachedExtentRef<parent_t> get_parent() {
+    ceph_assert(stable_parent);
+    return stable_parent->template cast<parent_t>();
+  }
+  uint16_t get_pos() {
+    return pos;
+  }
+  void link_child(ChildableCachedExtent *c);
+private:
+  CachedExtentRef stable_parent;
+  uint16_t pos = std::numeric_limits<uint16_t>::max();
 };
-std::ostream &operator<<(std::ostream &out, const LBAPin &rhs);
 
-using lba_pin_list_t = std::list<LBAPinRef>;
+template <typename T>
+struct get_child_ret_t {
+  std::variant<child_pos_t, seastar::future<TCachedExtentRef<T>>> ret;
+  get_child_ret_t(child_pos_t pos)
+    : ret(std::move(pos)) {}
+  get_child_ret_t(seastar::future<TCachedExtentRef<T>> child)
+    : ret(std::move(child)) {}
+
+  bool has_child() const {
+    return ret.index() == 1;
+  }
+
+  child_pos_t &get_child_pos() {
+    ceph_assert(ret.index() == 0);
+    return std::get<0>(ret);
+  }
+
+  seastar::future<TCachedExtentRef<T>> &get_child_fut() {
+    ceph_assert(ret.index() == 1);
+    return std::get<1>(ret);
+  }
+};
+
+template <typename key_t, typename>
+class PhysicalNodeMapping;
+
+template <typename key_t, typename val_t>
+using PhysicalNodeMappingRef = std::unique_ptr<PhysicalNodeMapping<key_t, val_t>>;
+
+template <typename key_t, typename val_t>
+class PhysicalNodeMapping {
+public:
+  virtual extent_len_t get_length() const = 0;
+  virtual extent_types_t get_type() const = 0;
+  virtual val_t get_val() const = 0;
+  virtual key_t get_key() const = 0;
+  virtual PhysicalNodeMappingRef<key_t, val_t> duplicate() const = 0;
+  virtual bool has_been_invalidated() const = 0;
+  virtual CachedExtentRef get_parent() const = 0;
+  virtual uint16_t get_pos() const = 0;
+
+  virtual get_child_ret_t<LogicalCachedExtent>
+  get_logical_extent(Transaction &t) = 0;
+
+  void link_child(ChildableCachedExtent *c) {
+    ceph_assert(child_pos);
+    child_pos->link_child(c);
+  }
+
+  virtual ~PhysicalNodeMapping() {}
+protected:
+  std::optional<child_pos_t> child_pos = std::nullopt;
+};
+
+using LBAMapping = PhysicalNodeMapping<laddr_t, paddr_t>;
+using LBAMappingRef = PhysicalNodeMappingRef<laddr_t, paddr_t>;
+
+std::ostream &operator<<(std::ostream &out, const LBAMapping &rhs);
+
+using lba_pin_list_t = std::list<LBAMappingRef>;
 
 std::ostream &operator<<(std::ostream &out, const lba_pin_list_t &rhs);
+
+using BackrefMapping = PhysicalNodeMapping<paddr_t, laddr_t>;
+using BackrefMappingRef = PhysicalNodeMappingRef<paddr_t, laddr_t>;
+
+using backref_pin_list_t = std::list<BackrefMappingRef>;
 
 /**
  * RetiredExtentPlaceholder
@@ -679,7 +987,7 @@ public:
 
   extent_len_t get_length() const final { return length; }
 
-  CachedExtentRef duplicate_for_write() final {
+  CachedExtentRef duplicate_for_write(Transaction&) final {
     ceph_assert(0 == "Should never happen for a placeholder");
     return CachedExtentRef();
   }
@@ -712,6 +1020,67 @@ public:
   }
 };
 
+class parent_tracker_t
+  : public boost::intrusive_ref_counter<
+     parent_tracker_t, boost::thread_unsafe_counter> {
+public:
+  parent_tracker_t(CachedExtentRef parent)
+    : parent(parent) {}
+  parent_tracker_t(CachedExtent* parent)
+    : parent(parent) {}
+  ~parent_tracker_t();
+  template <typename T = CachedExtent>
+  TCachedExtentRef<T> get_parent() const {
+    ceph_assert(parent);
+    if constexpr (std::is_same_v<T, CachedExtent>) {
+      return parent;
+    } else {
+      return parent->template cast<T>();
+    }
+  }
+  void reset_parent(CachedExtentRef p) {
+    parent = p;
+  }
+  bool is_valid() const {
+    return parent && parent->is_valid();
+  }
+private:
+  CachedExtentRef parent;
+};
+
+std::ostream &operator<<(std::ostream &, const parent_tracker_t &);
+
+using parent_tracker_ref = boost::intrusive_ptr<parent_tracker_t>;
+
+class ChildableCachedExtent : public CachedExtent {
+public:
+  template <typename... T>
+  ChildableCachedExtent(T&&... t) : CachedExtent(std::forward<T>(t)...) {}
+  bool has_parent_tracker() const {
+    return (bool)parent_tracker;
+  }
+  void reset_parent_tracker(parent_tracker_t *p = nullptr) {
+    parent_tracker.reset(p);
+  }
+  bool is_parent_valid() const {
+    return parent_tracker && parent_tracker->is_valid();
+  }
+  template <typename T = CachedExtent>
+  TCachedExtentRef<T> get_parent_node() const {
+    assert(parent_tracker);
+    return parent_tracker->template get_parent<T>();
+  }
+  void take_prior_parent_tracker() {
+    auto &prior = (ChildableCachedExtent&)(*get_prior_instance());
+    parent_tracker = prior.parent_tracker;
+  }
+  std::ostream &print_detail(std::ostream &out) const final;
+private:
+  parent_tracker_ref parent_tracker;
+  virtual std::ostream &_print_detail(std::ostream &out) const {
+    return out;
+  }
+};
 /**
  * LogicalCachedExtent
  *
@@ -720,25 +1089,15 @@ public:
  * Users of TransactionManager should be using extents derived from
  * LogicalCachedExtent.
  */
-class LogicalCachedExtent : public CachedExtent {
+class LogicalCachedExtent : public ChildableCachedExtent {
 public:
   template <typename... T>
-  LogicalCachedExtent(T&&... t) : CachedExtent(std::forward<T>(t)...) {}
+  LogicalCachedExtent(T&&... t)
+    : ChildableCachedExtent(std::forward<T>(t)...)
+  {}
 
-  void set_pin(LBAPinRef &&npin) {
-    assert(!pin);
-    pin = std::move(npin);
-    laddr = pin->get_laddr();
-    pin->link_extent(this);
-  }
-
-  bool has_pin() const {
-    return !!pin;
-  }
-
-  LBAPin &get_pin() {
-    assert(pin);
-    return *pin;
+  bool has_laddr() const {
+    return laddr != L_ADDR_NULL;
   }
 
   laddr_t get_laddr() const {
@@ -760,8 +1119,13 @@ public:
     return true;
   }
 
-  std::ostream &print_detail(std::ostream &out) const final;
+  std::ostream &_print_detail(std::ostream &out) const final;
+
+  void on_replace_prior(Transaction &t) final;
+
+  virtual ~LogicalCachedExtent();
 protected:
+
   virtual void apply_delta(const ceph::bufferlist &bl) = 0;
   virtual std::ostream &print_detail_l(std::ostream &out) const {
     return out;
@@ -770,14 +1134,13 @@ protected:
   virtual void logical_on_delta_write() {}
 
   void on_delta_write(paddr_t record_block_offset) final {
-    assert(get_prior_instance());
-    pin->take_pin(*(get_prior_instance()->cast<LogicalCachedExtent>()->pin));
+    assert(is_exist_mutation_pending() ||
+	   get_prior_instance());
     logical_on_delta_write();
   }
 
 private:
   laddr_t laddr = L_ADDR_NULL;
-  LBAPinRef pin;
 };
 
 using LogicalCachedExtentRef = TCachedExtentRef<LogicalCachedExtent>;
@@ -800,15 +1163,7 @@ struct ref_laddr_cmp {
 template <typename T>
 read_set_item_t<T>::read_set_item_t(T *t, CachedExtentRef ref)
   : t(t), ref(ref)
-{
-  ref->transactions.push_back(*this);
-}
-
-template <typename T>
-read_set_item_t<T>::~read_set_item_t()
-{
-  ref->transactions.erase(ref->transactions.s_iterator_to(*this));
-}
+{}
 
 template <typename T>
 inline bool read_set_item_t<T>::cmp_t::operator()(
@@ -837,3 +1192,10 @@ using lextent_list_t = addr_extent_list_base_t<
   laddr_t, TCachedExtentRef<T>>;
 
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<crimson::os::seastore::lba_pin_list_t> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<crimson::os::seastore::CachedExtent> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<crimson::os::seastore::LogicalCachedExtent> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<crimson::os::seastore::LBAMapping> : fmt::ostream_formatter {};
+#endif

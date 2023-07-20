@@ -5,35 +5,37 @@ CephFS Snapshot Mirroring
 =========================
 
 CephFS supports asynchronous replication of snapshots to a remote CephFS file system via
-`cephfs-mirror` tool. Snapshots are synchronized by mirroring snapshot data followed by
-creating a snapshot with the same name (for a given directory on the remote file system) as
-the snapshot being synchronized.
+the `cephfs-mirror` tool. Snapshots are synchronized by mirroring snapshot data followed by
+creating a remote snapshot with the same name (for a given directory on the remote file system) as
+the source snapshot.
 
 Requirements
 ------------
 
 The primary (local) and secondary (remote) Ceph clusters version should be Pacific or later.
 
+.. _cephfs_mirroring_creating_users:
+
 Creating Users
 --------------
 
-Start by creating a user (on the primary/local cluster) for the mirror daemon. This user
+Start by creating a Ceph user (on the primary/local cluster) for the `cephfs-mirror` daemon. This user
 requires write capability on the metadata pool to create RADOS objects (index objects)
 for watch/notify operation and read capability on the data pool(s)::
 
   $ ceph auth get-or-create client.mirror mon 'profile cephfs-mirror' mds 'allow r' osd 'allow rw tag cephfs metadata=*, allow r tag cephfs data=*' mgr 'allow r'
 
-Create a user for each file system peer (on the secondary/remote cluster). This user needs
+Create a Ceph user for each file system peer (on the secondary/remote cluster). This user needs
 to have full capabilities on the MDS (to take snapshots) and the OSDs::
 
   $ ceph fs authorize <fs_name> client.mirror_remote / rwps
 
-This user should be used (as part of peer specification) when adding a peer.
+This user will be supplied as part of the peer specification when adding a peer.
 
 Starting Mirror Daemon
 ----------------------
 
-Mirror daemon should be spawned using `systemctl(1)` unit files::
+The mirror daemon should be spawned using `systemctl(1)` unit files::
 
   $ systemctl enable cephfs-mirror@mirror
   $ systemctl start cephfs-mirror@mirror
@@ -42,80 +44,155 @@ Mirror daemon should be spawned using `systemctl(1)` unit files::
 
   $ cephfs-mirror --id mirror --cluster site-a -f
 
-.. note:: User used here is `mirror` created in the `Creating Users` section.
+.. note:: The user specified here is `mirror`, the creation of which is
+   described in the :ref:`Creating Users<cephfs_mirroring_creating_users>`
+   section.
+
+Multiple ``cephfs-mirror`` daemons may be deployed for concurrent
+synchronization and high availability. Mirror daemons share the synchronization
+load using a simple ``M/N`` policy, where ``M`` is the number of directories
+and ``N`` is the number of ``cephfs-mirror`` daemons.
+
+When ``cephadm`` is used to manage a Ceph cluster, ``cephfs-mirror`` daemons can be
+deployed by running the following command:
+
+.. prompt:: bash $
+
+   ceph orch apply cephfs-mirror
+
+To deploy multiple mirror daemons, run a command of the following form:
+
+.. prompt:: bash $
+
+   ceph orch apply cephfs-mirror --placement=<placement-spec>
+
+For example, to deploy 3 `cephfs-mirror` daemons on different hosts, run a command of the following form:
+
+.. prompt:: bash $
+
+  $ ceph orch apply cephfs-mirror --placement="3 host1,host2,host3"
 
 Interface
 ---------
 
-`Mirroring` module (manager plugin) provides interfaces for managing directory snapshot
-mirroring. Manager interfaces are (mostly) wrappers around monitor commands for managing
-file system mirroring and is the recommended control interface.
+The `Mirroring` module (manager plugin) provides interfaces for managing
+directory snapshot mirroring. These are (mostly) wrappers around monitor
+commands for managing file system mirroring and is the recommended control
+interface.
 
 Mirroring Module
 ----------------
 
-The mirroring module is responsible for assigning directories to mirror daemons for
-synchronization. Multiple mirror daemons can be spawned to achieve concurrency in
-directory snapshot synchronization. When mirror daemons are spawned (or terminated)
-, the mirroring module discovers the modified set of mirror daemons and rebalances
-the directory assignment amongst the new set thus providing high-availability.
+The mirroring module is responsible for assigning directories to mirror daemons
+for synchronization. Multiple mirror daemons can be spawned to achieve
+concurrency in directory snapshot synchronization. When mirror daemons are
+spawned (or terminated), the mirroring module discovers the modified set of
+mirror daemons and rebalances directory assignments across the new set, thus
+providing high-availability.
 
-.. note:: Multiple mirror daemons is currently untested. Only a single mirror daemon
-          is recommended.
+.. note:: Deploying a single mirror daemon is recommended. Running multiple
+   daemons is untested.
 
-Mirroring module is disabled by default. To enable mirroring use::
+The mirroring module is disabled by default. To enable the mirroring module,
+run the following command:
 
-  $ ceph mgr module enable mirroring
+.. prompt:: bash $
 
-Mirroring module provides a family of commands to control mirroring of directory
-snapshots. To add or remove directories, mirroring needs to be enabled for a given
-file system. To enable mirroring use::
+   ceph mgr module enable mirroring
 
-  $ ceph fs snapshot mirror enable <fs_name>
+The mirroring module provides a family of commands that can be used to control
+the mirroring of directory snapshots. To add or remove directories, mirroring
+must be enabled for a given file system. To enable mirroring for a given file
+system, run a command of the following form:
 
-.. note:: Mirroring module commands use `fs snapshot mirror` prefix as compared to
-          the monitor commands which `fs mirror` prefix. Make sure to use module
-          commands.
+.. prompt:: bash $
 
-To disable mirroring, use::
+   ceph fs snapshot mirror enable <fs_name>
 
-  $ ceph fs snapshot mirror disable <fs_name>
+.. note:: "Mirroring module" commands are prefixed with ``fs snapshot mirror``.
+   This distinguishes them from "monitor commands", which are prefixed with ``fs
+   mirror``. Be sure (in this context) to use module commands.
 
-Once mirroring is enabled, add a peer to which directory snapshots are to be mirrored.
-Peers follow `<client>@<cluster>` specification and get assigned a unique-id (UUID)
-when added. See `Creating Users` section on how to create Ceph users for mirroring.
+To disable mirroring for a given file system, run a command of the following form:
 
-To add a peer use::
+.. prompt:: bash $
 
-  $ ceph fs snapshot mirror peer_add <fs_name> <remote_cluster_spec> [<remote_fs_name>] [<remote_mon_host>] [<cephx_key>]
+   ceph fs snapshot mirror disable <fs_name>
 
-`<remote_fs_name>` is optional, and defaults to `<fs_name>` (on the remote cluster).
+After mirroring is enabled, add a peer to which directory snapshots are to be
+mirrored. Peers are specified by the ``<client>@<cluster>`` format, which is
+referred to elsewhere in this document as the ``remote_cluster_spec``. Peers
+are assigned a unique-id (UUID) when added. See the :ref:`Creating
+Users<cephfs_mirroring_creating_users>` section for instructions that describe
+how to create Ceph users for mirroring.
 
-This requires the remote cluster ceph configuration and user keyring to be available in
-the primary cluster. See `Bootstrap Peers` section to avoid this. `peer_add` additionally
-supports passing the remote cluster monitor address and the user key. However, bootstrapping
-a peer is the recommended way to add a peer.
+To add a peer, run a command of the following form:
 
-.. note:: Only a single peer is supported right now.
+.. prompt:: bash $
 
-To remove a peer use::
+   ceph fs snapshot mirror peer_add <fs_name> <remote_cluster_spec> [<remote_fs_name>] [<remote_mon_host>] [<cephx_key>]
 
-  $ ceph fs snapshot mirror peer_remove <fs_name> <peer_uuid>
+``<remote_cluster_spec>`` is of the format ``client.<id>@<cluster_name>``.
 
-To list file system mirror peers use::
+``<remote_fs_name>`` is optional, and defaults to `<fs_name>` (on the remote
+cluster).
 
-  $ ceph fs snapshot mirror peer_list <fs_name>
+For this command to succeed, the remote cluster's Ceph configuration and user
+keyring must be available in the primary cluster. For example, if a user named
+``client_mirror`` is created on the remote cluster which has ``rwps``
+permissions for the remote file system named ``remote_fs`` (see `Creating
+Users`) and the remote cluster is named ``remote_ceph`` (that is, the remote
+cluster configuration file is named ``remote_ceph.conf`` on the primary
+cluster), run the following command to add the remote filesystem as a peer to
+the primary filesystem ``primary_fs``:
 
-To configure a directory for mirroring, use::
+.. prompt:: bash $
 
-  $ ceph fs snapshot mirror add <fs_name> <path>
+   ceph fs snapshot mirror peer_add primary_fs client.mirror_remote@remote_ceph remote_fs
 
-To stop a mirroring directory snapshots use::
+To avoid having to maintain the remote cluster configuration file and remote
+ceph user keyring in the primary cluster, users can bootstrap a peer (which
+stores the relevant remote cluster details in the monitor config store on the
+primary cluster). See the :ref:`Bootstrap
+Peers<cephfs_mirroring_bootstrap_peers>` section.
 
-  $ ceph fs snapshot mirror remove <fs_name> <path>
+The ``peer_add`` command supports passing the remote cluster monitor address
+and the user key. However, bootstrapping a peer is the recommended way to add a
+peer.
 
-Only absolute directory paths are allowed. Also, paths are normalized by the mirroring
-module, therefore, `/a/b/../b` is equivalent to `/a/b`.
+.. note:: Only a single peer is currently supported.
+
+To remove a peer, run a command of the following form:
+
+.. prompt:: bash $
+
+   ceph fs snapshot mirror peer_remove <fs_name> <peer_uuid>
+
+To list file system mirror peers, run a command of the following form:
+
+.. prompt:: bash $
+
+   ceph fs snapshot mirror peer_list <fs_name>
+
+To configure a directory for mirroring, run a command of the following form:
+
+.. prompt:: bash $
+
+   ceph fs snapshot mirror add <fs_name> <path>
+
+To stop mirroring directory snapshots, run a command of the following form:
+
+.. prompt:: bash $
+
+   ceph fs snapshot mirror remove <fs_name> <path>
+
+Only absolute directory paths are allowed. 
+
+Paths are normalized by the mirroring module. This means that ``/a/b/../b`` is
+equivalent to ``/a/b``. Paths always start from the CephFS file-system root and
+not from the host system mount point.
+
+For example::
 
   $ mkdir -p /d0/d1/d2
   $ ceph fs snapshot mirror add cephfs /d0/d1/d2
@@ -123,16 +200,19 @@ module, therefore, `/a/b/../b` is equivalent to `/a/b`.
   $ ceph fs snapshot mirror add cephfs /d0/d1/../d1/d2
   Error EEXIST: directory /d0/d1/d2 is already tracked
 
-Once a directory is added for mirroring, its subdirectory or ancestor directories are
-disallowed to be added for mirroring::
+After a directory is added for mirroring, the additional mirroring of
+subdirectories or ancestor directories is disallowed::
 
   $ ceph fs snapshot mirror add cephfs /d0/d1
   Error EINVAL: /d0/d1 is a ancestor of tracked path /d0/d1/d2
   $ ceph fs snapshot mirror add cephfs /d0/d1/d2/d3
   Error EINVAL: /d0/d1/d2/d3 is a subtree of tracked path /d0/d1/d2
 
-Commands to check directory mapping (to mirror daemons) and directory distribution are
-detailed in `Mirroring Status` section.
+The :ref:`Mirroring Status<cephfs_mirroring_mirroring_status>` section contains
+information about the commands for checking the directory mapping (to mirror
+daemons) and for checking the directory distribution. 
+
+.. _cephfs_mirroring_bootstrap_peers:
 
 Bootstrap Peers
 ---------------
@@ -159,6 +239,9 @@ Import the bootstrap token in the primary cluster via::
 e.g.::
 
   $ ceph fs snapshot mirror peer_bootstrap import cephfs eyJmc2lkIjogIjBkZjE3MjE3LWRmY2QtNDAzMC05MDc5LTM2Nzk4NTVkNDJlZiIsICJmaWxlc3lzdGVtIjogImJhY2t1cF9mcyIsICJ1c2VyIjogImNsaWVudC5taXJyb3JfcGVlcl9ib290c3RyYXAiLCAic2l0ZV9uYW1lIjogInNpdGUtcmVtb3RlIiwgImtleSI6ICJBUUFhcDBCZ0xtRmpOeEFBVnNyZXozai9YYUV0T2UrbUJEZlJDZz09IiwgIm1vbl9ob3N0IjogIlt2MjoxOTIuMTY4LjAuNTo0MDkxOCx2MToxOTIuMTY4LjAuNTo0MDkxOV0ifQ==
+
+
+.. _cephfs_mirroring_mirroring_status:
 
 Mirroring Status
 ----------------
@@ -209,13 +292,13 @@ available commands for mirror status use::
       ....
   }
 
-Commands with `fs mirror status` prefix provide mirror status for mirror enabled
+Commands prefixed with`fs mirror status` provide mirror status for mirror enabled
 file systems. Note that `cephfs@360` is of format `filesystem-name@filesystem-id`.
 This format is required since mirror daemons get asynchronously notified regarding
 file system mirror status (A file system can be deleted and recreated with the same
 name).
 
-Right now, the command provides minimal information regarding mirror status::
+This command currently provides minimal information regarding mirror status::
 
   $ ceph --admin-daemon /var/run/ceph/cephfs-mirror.asok fs mirror status cephfs@360
   {
@@ -234,11 +317,11 @@ Right now, the command provides minimal information regarding mirror status::
     }
   }
 
-`Peers` section in the command output above shows the peer information such as unique
-peer-id (UUID) and specification. The peer-id is required to remove an existing peer
+The `Peers` section in the command output above shows the peer information including the unique
+peer-id (UUID) and specification. The peer-id is required when removing an existing peer
 as mentioned in the `Mirror Module and Interface` section.
 
-Command with `fs mirror peer status` prefix provide peer synchronization status. This
+Commands prefixed with `fs mirror peer status` provide peer synchronization status. This
 command is of format `filesystem-name@filesystem-id peer-uuid`::
 
   $ ceph --admin-daemon /var/run/ceph/cephfs-mirror.asok fs mirror peer status cephfs@360 a2dc7784-e7a1-4723-b103-03ee8d8768f8
@@ -257,7 +340,7 @@ command is of format `filesystem-name@filesystem-id peer-uuid`::
     }
   }
 
-Synchronization stats such as `snaps_synced`, `snaps_deleted` and `snaps_renamed` are reset
+Synchronization stats including `snaps_synced`, `snaps_deleted` and `snaps_renamed` are reset
 on daemon restart and/or when a directory is reassigned to another mirror daemon (when
 multiple mirror daemons are deployed).
 
@@ -267,8 +350,8 @@ A directory can be in one of the following states::
   - `syncing`: The directory is currently being synchronized
   - `failed`: The directory has hit upper limit of consecutive failures
 
-When a directory hits a configured number of consecutive synchronization failures, the
-mirror daemon marks it as `failed`. Synchronization for these directories are retried.
+When a directory experiences a configured number of consecutive synchronization failures, the
+mirror daemon marks it as `failed`. Synchronization for these directories is retried.
 By default, the number of consecutive failures before a directory is marked as failed
 is controlled by `cephfs_mirror_max_consecutive_failures_per_directory` configuration
 option (default: 10) and the retry interval for failed directories is controlled via
@@ -300,9 +383,8 @@ E.g., adding a regular file for synchronization would result in failed status::
   }
 
 This allows a user to add a non-existent directory for synchronization. The mirror daemon
-would mark the directory as failed and retry (less frequently). When the directory comes
-to existence, the mirror daemons would unmark the failed state upon successful snapshot
-synchronization.
+will mark such a directory as failed and retry (less frequently). When the directory is
+created, the mirror daemon will clear the failed state upon successful synchronization.
 
 When mirroring is disabled, the respective `fs mirror status` command for the file system
 will not show up in command help.

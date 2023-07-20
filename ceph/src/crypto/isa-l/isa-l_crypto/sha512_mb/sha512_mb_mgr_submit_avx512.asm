@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -102,8 +102,9 @@ endstruc
 ; SHA512_JOB* sha512_mb_mgr_submit_avx512(SHA512_MB_JOB_MGR *state, SHA512_JOB *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-global sha512_mb_mgr_submit_avx512:function
+mk_global sha512_mb_mgr_submit_avx512, function
 sha512_mb_mgr_submit_avx512:
+	endbranch
 
 	mov     rax, rsp
 

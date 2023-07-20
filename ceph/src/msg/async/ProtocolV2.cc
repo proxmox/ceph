@@ -562,8 +562,11 @@ ssize_t ProtocolV2::write_message(Message *m, bool more) {
     ldout(cct, 1) << __func__ << " error sending " << m << ", "
                   << cpp_strerror(rc) << dendl;
   } else {
-    connection->logger->inc(
-        l_msgr_send_bytes, total_send_size - connection->outgoing_bl.length());
+    const auto sent_bytes = total_send_size - connection->outgoing_bl.length();
+    connection->logger->inc(l_msgr_send_bytes, sent_bytes);
+    if (session_stream_handlers.tx) {
+      connection->logger->inc(l_msgr_send_encrypted_bytes, sent_bytes);
+    }
     ldout(cct, 10) << __func__ << " sending " << m
                    << (rc ? " continuely." : " done.") << dendl;
   }
@@ -653,6 +656,13 @@ void ProtocolV2::write_event() {
     auto start = ceph::mono_clock::now();
     bool more;
     do {
+      if (connection->is_queued()) {
+	if (r = connection->_try_send(); r!= 0) {
+	  // either fails to send or not all queued buffer is sent
+	  break;
+	}
+      }
+
       const auto out_entry = _get_next_outgoing();
       if (!out_entry.m) {
         break;
@@ -1083,7 +1093,7 @@ CtPtr ProtocolV2::handle_read_frame_preamble_main(rx_buffer_t &&buffer, int r) {
 
   if (r < 0) {
     ldout(cct, 1) << __func__ << " read frame preamble failed r=" << r
-                  << " (" << cpp_strerror(r) << ")" << dendl;
+                  << dendl;
     return _fault();
   }
 
@@ -1476,6 +1486,10 @@ CtPtr ProtocolV2::handle_message() {
   connection->logger->inc(l_msgr_recv_messages);
   connection->logger->inc(l_msgr_recv_bytes,
                           rx_frame_asm.get_frame_onwire_len());
+  if (session_stream_handlers.rx) {
+    connection->logger->inc(l_msgr_recv_encrypted_bytes,
+                            rx_frame_asm.get_frame_onwire_len());
+  }
 
   messenger->ms_fast_preprocess(message);
   fast_dispatch_time = ceph::mono_clock::now();
@@ -2991,6 +3005,9 @@ CtPtr ProtocolV2::handle_compression_request(ceph::bufferlist &payload) {
         peer_type, auth_meta->is_mode_secure());
       mode != Compressor::COMP_NONE && request.is_compress()) {
     comp_meta.con_method = messenger->comp_registry.pick_method(peer_type, request.preferred_methods());
+    ldout(cct, 10) << __func__ << " Compressor(pick_method=" 
+                   << Compressor::get_comp_alg_name(comp_meta.get_method())
+                   << ")" << dendl;
     if (comp_meta.con_method != Compressor::COMP_ALG_NONE) {
       comp_meta.con_mode = mode;
     }

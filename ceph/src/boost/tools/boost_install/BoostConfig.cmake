@@ -113,7 +113,7 @@ macro(boost_find_component comp required quiet)
     set(_BOOST_REQUIRED REQUIRED)
   endif()
 
-  if("${comp}" MATCHES "^(python|numpy|mpi_python)([1-9])([0-9])$")
+  if("${comp}" MATCHES "^(python|numpy|mpi_python)([1-9])([0-9][0-9]?)$")
 
     # handle pythonXY and numpyXY versioned components for compatibility
 
@@ -235,6 +235,10 @@ set(Boost_VERSION_MACRO ${Boost_VERSION_MAJOR}0${Boost_VERSION_MINOR}0${Boost_VE
 get_target_property(Boost_INCLUDE_DIRS Boost::headers INTERFACE_INCLUDE_DIRECTORIES)
 set(Boost_LIBRARIES "")
 
+# Save project's policies
+cmake_policy(PUSH)
+cmake_policy(SET CMP0057 NEW) # if IN_LIST
+
 # Find components
 
 if("ALL" IN_LIST Boost_FIND_COMPONENTS)
@@ -268,10 +272,17 @@ if(NOT TARGET Boost::boost)
   add_library(Boost::boost INTERFACE IMPORTED)
   set_property(TARGET Boost::boost APPEND PROPERTY INTERFACE_LINK_LIBRARIES Boost::headers)
 
-  # All Boost:: targets already disable autolink
   add_library(Boost::diagnostic_definitions INTERFACE IMPORTED)
   add_library(Boost::disable_autolinking INTERFACE IMPORTED)
   add_library(Boost::dynamic_linking INTERFACE IMPORTED)
+
+  if(WIN32)
+
+    set_property(TARGET Boost::diagnostic_definitions PROPERTY INTERFACE_COMPILE_DEFINITIONS "BOOST_LIB_DIAGNOSTIC")
+    set_property(TARGET Boost::disable_autolinking PROPERTY INTERFACE_COMPILE_DEFINITIONS "BOOST_ALL_NO_LIB")
+    set_property(TARGET Boost::dynamic_linking PROPERTY INTERFACE_COMPILE_DEFINITIONS "BOOST_ALL_DYN_LINK")
+
+  endif()
 
 endif()
 
@@ -280,3 +291,6 @@ endif()
 if("ALL" IN_LIST Boost_FIND_COMPONENTS)
   set(Boost_ALL_FOUND ${boost_headers_FOUND})
 endif()
+
+# Restore project's policies
+cmake_policy(POP)

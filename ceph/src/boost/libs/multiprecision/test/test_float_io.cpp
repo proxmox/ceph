@@ -268,16 +268,12 @@ template <class T>
 void do_round_trip(const T& val, std::ios_base::fmtflags f)
 {
    std::stringstream ss;
-#ifndef BOOST_NO_CXX11_NUMERIC_LIMITS
    ss << std::setprecision(std::numeric_limits<T>::max_digits10);
-#else
-   ss << std::setprecision(max_digits10_proxy<T>::value);
-#endif
    ss.flags(f);
    ss << val;
    T new_val = static_cast<T>(ss.str());
    BOOST_CHECK_EQUAL(new_val, val);
-   new_val = static_cast<T>(val.str(0, f));
+   new_val = static_cast<T>(val.str(f & std::ios_base::fixed ? std::numeric_limits<T>::max_digits10 : 0, f));
    BOOST_CHECK_EQUAL(new_val, val);
 }
 
@@ -301,6 +297,20 @@ void test_round_trip()
       do_round_trip(T(1 / val));
       do_round_trip(T(-1 / val));
    }
+}
+
+template<typename T>
+void test_to_string()
+{
+   using std::to_string;
+   T x0{"23.43"};
+   BOOST_CHECK_EQUAL(to_string(x0), "23.430000");
+
+   T x1{"1e-9"};
+   BOOST_CHECK_EQUAL(to_string(x1), "0.000000");
+
+   T x2{"123456789"};
+   BOOST_CHECK_EQUAL(to_string(x2), "123456789.000000");
 }
 
 #ifdef TEST_FLOAT128
@@ -336,6 +346,10 @@ int main()
 
    test_round_trip<boost::multiprecision::mpfr_float_50>();
    test_round_trip<boost::multiprecision::mpfr_float_100>();
+
+   test_to_string<boost::multiprecision::mpfr_float_50>();
+   test_to_string<boost::multiprecision::mpfr_float_100>();
+
 #endif
 #ifdef TEST_MPFI_50
    test<boost::multiprecision::mpfr_float_50>();
@@ -351,6 +365,10 @@ int main()
    // cpp_dec_float has extra guard digits that messes this up:
    test_round_trip<boost::multiprecision::cpp_dec_float_50>();
    test_round_trip<boost::multiprecision::cpp_dec_float_100>();
+
+   test_to_string<boost::multiprecision::cpp_dec_float_50>();
+   test_to_string<boost::multiprecision::cpp_dec_float_100>();
+
 #endif
 #ifdef TEST_MPF_50
    test<boost::multiprecision::mpf_float_50>();
@@ -365,6 +383,7 @@ int main()
 #ifdef TEST_FLOAT128
    test<boost::multiprecision::float128>();
    test_hexadecimal_floating_point();
+   test_to_string<boost::multiprecision::float128>();
 #ifndef BOOST_INTEL
    test_round_trip<boost::multiprecision::float128>();
 #endif

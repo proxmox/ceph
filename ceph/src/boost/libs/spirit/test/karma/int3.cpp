@@ -3,15 +3,15 @@
 //  Distributed under the Boost Software License, Version 1.0. (See accompanying 
 //  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <boost/config/warning_disable.hpp>
-#include <boost/detail/lightweight_test.hpp>
+#include <boost/spirit/include/karma_int.hpp>
+
 #include <boost/mpl/vector.hpp>
 #include <boost/mpl/for_each.hpp>
 #include <boost/mpl/if.hpp>
 #include <boost/mpl/bool.hpp>
 
-#include <boost/spirit/include/phoenix_core.hpp>
-#include <boost/spirit/include/phoenix_operator.hpp>
+#include <boost/phoenix/core.hpp>
+#include <boost/phoenix/operator.hpp>
 
 #include <boost/spirit/include/karma_char.hpp>
 #include <boost/spirit/include/karma_numeric.hpp>
@@ -97,8 +97,6 @@ struct test_minmax
         BOOST_TEST(test(expected_minval, gen(minval), optmin));
         BOOST_TEST(test(expected_maxval, gen(maxval), optmax));
 
-// we support Phoenix attributes only starting with V2.2
-#if SPIRIT_VERSION >= 0x2020
     // Phoenix expression tests (only supported while including
     // karma_phoenix_attributes.hpp
         namespace phoenix = boost::phoenix;
@@ -108,7 +106,6 @@ struct test_minmax
         T val = 1;
         BOOST_TEST(test("1", gen, phoenix::ref(val)));
         BOOST_TEST(test("2", gen, ++phoenix::ref(val)));
-#endif
     }
 };
 

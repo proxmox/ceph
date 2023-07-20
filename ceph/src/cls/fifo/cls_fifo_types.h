@@ -25,10 +25,10 @@
 
 #include <boost/container/flat_set.hpp>
 
-#undef FMT_HEADER_ONLY
-#define FMT_HEADER_ONLY 1
 #include <fmt/format.h>
-
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
 #include "include/buffer.h"
 #include "include/encoding.h"
 #include "include/types.h"
@@ -106,11 +106,7 @@ struct data_params {
   void dump(ceph::Formatter* f) const;
   void decode_json(JSONObj* obj);
 
-  bool operator ==(const data_params& rhs) const {
-    return (max_part_size == rhs.max_part_size &&
-	    max_entry_size == rhs.max_entry_size &&
-	    full_size_threshold == rhs.full_size_threshold);
-  }
+  auto operator <=>(const data_params&) const = default;
 };
 WRITE_CLASS_ENCODER(data_params)
 inline std::ostream& operator <<(std::ostream& m, const data_params& d) {
@@ -130,10 +126,11 @@ struct journal_entry {
   std::int64_t part_num{-1};
 
   bool valid() const {
+    using enum Op;
     switch (op) {
-    case fifo::journal_entry::Op::create: [[fallthrough]];
-    case fifo::journal_entry::Op::set_head: [[fallthrough]];
-    case fifo::journal_entry::Op::remove:
+    case create: [[fallthrough]];
+    case set_head: [[fallthrough]];
+    case remove:
       return part_num >= 0;
 
     default:
@@ -166,19 +163,7 @@ struct journal_entry {
   }
   void dump(ceph::Formatter* f) const;
 
-  friend bool operator ==(const journal_entry& lhs, const journal_entry& rhs) {
-    return (lhs.op == rhs.op &&
-	    lhs.part_num == rhs.part_num);
-  }
-  friend bool operator <(const journal_entry& lhs, const journal_entry& rhs) {
-    if (lhs.op < rhs.op) {
-      return true;
-    } else if (lhs.op == rhs.op) {
-      return lhs.part_num < rhs.part_num;
-    } else {
-      return false;
-    }
-  }
+  auto operator <=>(const journal_entry&) const = default;
 };
 WRITE_CLASS_ENCODER(journal_entry)
 inline std::ostream& operator <<(std::ostream& m, const journal_entry::Op& o) {
@@ -353,6 +338,7 @@ struct info {
   }
 
   void decode_journal( bufferlist::const_iterator& p) {
+    using enum journal_entry::Op;
     using ceph::decode;
     uint32_t n;
     decode(n, p);
@@ -564,3 +550,10 @@ inline std::ostream& operator <<(std::ostream& m, const part_header& p) {
 	   << "max_time: " << p.max_time;
 }
 } // namespace rados::cls::fifo
+
+#if FMT_VERSION >= 90000
+template<>
+struct fmt::formatter<rados::cls::fifo::info> : fmt::ostream_formatter {};
+template<>
+struct fmt::formatter<rados::cls::fifo::part_header> : fmt::ostream_formatter {};
+#endif

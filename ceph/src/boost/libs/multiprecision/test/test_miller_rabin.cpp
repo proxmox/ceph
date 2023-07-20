@@ -11,6 +11,8 @@
 #include <boost/multiprecision/cpp_int.hpp>
 #include <boost/multiprecision/miller_rabin.hpp>
 #include <boost/math/special_functions/prime.hpp>
+#include <boost/random.hpp>
+#include <random>
 #include <iostream>
 #include <iomanip>
 #include "test.hpp"
@@ -31,9 +33,9 @@ void test()
    typedef I test_type;
 
    static const unsigned test_bits =
-       std::numeric_limits<test_type>::digits && (std::numeric_limits<test_type>::digits <= 256)
-           ? std::numeric_limits<test_type>::digits
-           : 128;
+      std::numeric_limits<test_type>::digits && (std::numeric_limits<test_type>::digits <= 256)
+         ? std::numeric_limits<test_type>::digits
+         : 128;
 
    independent_bits_engine<mt11213b, test_bits, test_type> gen;
    //
@@ -75,8 +77,8 @@ int main()
 
    test<mpz_int>();
    test<number<gmp_int, et_off> >();
-   test<boost::uint64_t>();
-   test<boost::uint32_t>();
+   test<std::uint64_t>();
+   test<std::uint32_t>();
 
    test<cpp_int>();
    test<number<cpp_int_backend<64, 64, unsigned_magnitude, checked, void>, et_off> >();

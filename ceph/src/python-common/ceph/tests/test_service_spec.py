@@ -8,7 +8,7 @@ import pytest
 
 from ceph.deployment.service_spec import HostPlacementSpec, PlacementSpec, \
     ServiceSpec, RGWSpec, NFSServiceSpec, IscsiServiceSpec, AlertManagerSpec, \
-    CustomContainerSpec
+    CustomContainerSpec, GrafanaSpec, PrometheusSpec
 from ceph.deployment.drive_group import DriveGroupSpec
 from ceph.deployment.hostspec import SpecValidationError
 
@@ -44,7 +44,79 @@ def test_parse_host_placement_specs(test_input, expected, require_network):
     assert ret == HostPlacementSpec.from_json(ret.to_json())
 
 
+@pytest.mark.parametrize(
+    "spec, raise_exception, msg",
+    [
+        (GrafanaSpec(protocol=''), True, '^Invalid protocol'),
+        (GrafanaSpec(protocol='invalid'), True, '^Invalid protocol'),
+        (GrafanaSpec(protocol='-http'), True, '^Invalid protocol'),
+        (GrafanaSpec(protocol='-https'), True, '^Invalid protocol'),
+        (GrafanaSpec(protocol='http'), False, ''),
+        (GrafanaSpec(protocol='https'), False, ''),
+        (GrafanaSpec(anonymous_access=False), True, '^Either initial'),  # we require inital_admin_password if anonymous_access is False
+        (GrafanaSpec(anonymous_access=False, initial_admin_password='test'), False, ''),
+    ])
+def test_apply_grafana(spec: GrafanaSpec, raise_exception: bool, msg: str):
+    if  raise_exception:
+        with pytest.raises(SpecValidationError, match=msg):
+            spec.validate()
+    else:
+        spec.validate()
 
+@pytest.mark.parametrize(
+    "spec, raise_exception, msg",
+    [
+        # Valid retention_time values (valid units: 'y', 'w', 'd', 'h', 'm', 's')
+        (PrometheusSpec(retention_time='1y'), False, ''),
+        (PrometheusSpec(retention_time=' 10w '), False, ''),
+        (PrometheusSpec(retention_time=' 1348d'), False, ''),
+        (PrometheusSpec(retention_time='2000h '), False, ''),
+        (PrometheusSpec(retention_time='173847m'), False, ''),
+        (PrometheusSpec(retention_time='200s'), False, ''),
+        (PrometheusSpec(retention_time='  '), False, ''),  # default value will be used
+        # Invalid retention_time values
+        (PrometheusSpec(retention_time='100k'), True, '^Invalid retention time'),     # invalid unit
+        (PrometheusSpec(retention_time='10'), True, '^Invalid retention time'),       # no unit
+        (PrometheusSpec(retention_time='100.00y'), True, '^Invalid retention time'),  # invalid value and valid unit
+        (PrometheusSpec(retention_time='100.00k'), True, '^Invalid retention time'),  # invalid value and invalid unit
+        (PrometheusSpec(retention_time='---'), True, '^Invalid retention time'),      # invalid value
+
+        # Valid retention_size values (valid units: 'B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB')
+        (PrometheusSpec(retention_size='123456789B'), False, ''),
+        (PrometheusSpec(retention_size=' 200KB'), False, ''),
+        (PrometheusSpec(retention_size='99999MB '), False, ''),
+        (PrometheusSpec(retention_size=' 10GB '), False, ''),
+        (PrometheusSpec(retention_size='100TB'), False, ''),
+        (PrometheusSpec(retention_size='500PB'), False, ''),
+        (PrometheusSpec(retention_size='200EB'), False, ''),
+        (PrometheusSpec(retention_size='  '), False, ''),  # default value will be used
+
+        # Invalid retention_size values
+        (PrometheusSpec(retention_size='100b'), True, '^Invalid retention size'),      # invalid unit (case sensitive)
+        (PrometheusSpec(retention_size='333kb'), True, '^Invalid retention size'),     # invalid unit (case sensitive)
+        (PrometheusSpec(retention_size='2000'), True, '^Invalid retention size'),      # no unit
+        (PrometheusSpec(retention_size='200.00PB'), True, '^Invalid retention size'),  # invalid value and valid unit
+        (PrometheusSpec(retention_size='400.B'), True, '^Invalid retention size'),     # invalid value and invalid unit
+        (PrometheusSpec(retention_size='10.000s'), True, '^Invalid retention size'),   # invalid value and invalid unit
+        (PrometheusSpec(retention_size='...'), True, '^Invalid retention size'),       # invalid value
+
+        # valid retention_size and valid retention_time
+        (PrometheusSpec(retention_time='1y', retention_size='100GB'), False, ''),
+        # invalid retention_time and valid retention_size
+        (PrometheusSpec(retention_time='1j', retention_size='100GB'), True, '^Invalid retention time'),
+        # valid retention_time and invalid retention_size
+        (PrometheusSpec(retention_time='1y', retention_size='100gb'), True, '^Invalid retention size'),
+        # valid retention_time and invalid retention_size
+        (PrometheusSpec(retention_time='1y', retention_size='100gb'), True, '^Invalid retention size'),
+        # invalid retention_time and invalid retention_size
+        (PrometheusSpec(retention_time='1i', retention_size='100gb'), True, '^Invalid retention time'),
+    ])
+def test_apply_prometheus(spec: PrometheusSpec, raise_exception: bool, msg: str):
+    if raise_exception:
+        with pytest.raises(SpecValidationError, match=msg):
+                spec.validate()
+    else:
+        spec.validate()
 
 @pytest.mark.parametrize(
     "test_input,expected",
@@ -185,6 +257,28 @@ def test_servicespec_map_test(s_type, o_spec, s_id):
     assert spec.validate() is None
     ServiceSpec.from_json(spec.to_json())
 
+
+@pytest.mark.parametrize(
+    "realm, zone, frontend_type, raise_exception, msg",
+    [
+        ('realm', 'zone1', 'beast', False, ''),
+        ('realm', 'zone2', 'civetweb', False, ''),
+        ('realm', None, 'beast', True, 'Cannot add RGW: Realm specified but no zone specified'),
+        (None, 'zone1', 'beast', True, 'Cannot add RGW: Zone specified but no realm specified'),
+        ('realm', 'zone', 'invalid-beast', True, '^Invalid rgw_frontend_type value'),
+        ('realm', 'zone', 'invalid-civetweb', True, '^Invalid rgw_frontend_type value'),
+    ])
+def test_rgw_servicespec_parse(realm, zone, frontend_type, raise_exception, msg):
+    spec = RGWSpec(service_id='foo',
+                   rgw_realm=realm,
+                   rgw_zone=zone,
+                   rgw_frontend_type=frontend_type)
+    if raise_exception:
+        with pytest.raises(SpecValidationError, match=msg):
+            spec.validate()
+    else:
+        spec.validate()
+
 def test_osd_unmanaged():
     osd_spec = {"placement": {"host_pattern": "*"},
                 "service_id": "all-available-devices",
@@ -249,13 +343,17 @@ spec:
 service_type: grafana
 service_name: grafana
 spec:
+  anonymous_access: true
   port: 1234
+  protocol: https
 ---
 service_type: grafana
 service_name: grafana
 spec:
+  anonymous_access: true
   initial_admin_password: secure
   port: 1234
+  protocol: https
 ---
 service_type: ingress
 service_id: rgw.foo

@@ -1074,8 +1074,8 @@ void PGLog::rebuild_missing_set_with_deletes(
 #ifdef WITH_SEASTAR
 
 namespace {
-  struct FuturizedStoreLogReader {
-    crimson::os::FuturizedStore &store;
+  struct FuturizedShardStoreLogReader {
+    crimson::os::FuturizedStore::Shard &store;
     const pg_info_t &info;
     PGLog::IndexedLog &log;
     std::set<std::string>* log_keys_debug = NULL;
@@ -1092,24 +1092,24 @@ namespace {
 
     std::optional<std::string> next;
 
-    void process_entry(crimson::os::FuturizedStore::OmapIteratorRef &p) {
-      if (p->key()[0] == '_')
+    void process_entry(const auto& key, const auto& value) {
+      if (key[0] == '_')
         return;
       //Copy ceph::buffer::list before creating iterator
-      auto bl = p->value();
+      auto bl = value;
       auto bp = bl.cbegin();
-      if (p->key() == "divergent_priors") {
+      if (key == "divergent_priors") {
         decode(divergent_priors, bp);
         ldpp_dout(dpp, 20) << "read_log_and_missing " << divergent_priors.size()
                            << " divergent_priors" << dendl;
         ceph_assert("crimson shouldn't have had divergent_priors" == 0);
-      } else if (p->key() == "can_rollback_to") {
+      } else if (key == "can_rollback_to") {
         decode(on_disk_can_rollback_to, bp);
-      } else if (p->key() == "rollback_info_trimmed_to") {
+      } else if (key == "rollback_info_trimmed_to") {
         decode(on_disk_rollback_info_trimmed_to, bp);
-      } else if (p->key() == "may_include_deletes_in_missing") {
+      } else if (key == "may_include_deletes_in_missing") {
         missing.may_include_deletes = true;
-      } else if (p->key().substr(0, 7) == std::string("missing")) {
+      } else if (key.substr(0, 7) == std::string("missing")) {
         hobject_t oid;
         pg_missing_item item;
         decode(oid, bp);
@@ -1118,7 +1118,7 @@ namespace {
           ceph_assert(missing.may_include_deletes);
         }
         missing.add(oid, std::move(item));
-      } else if (p->key().substr(0, 4) == std::string("dup_")) {
+      } else if (key.substr(0, 4) == std::string("dup_")) {
         pg_log_dup_t dup;
         decode(dup, bp);
         if (!dups.empty()) {
@@ -1146,32 +1146,47 @@ namespace {
       on_disk_can_rollback_to = info.last_update;
       missing.may_include_deletes = false;
 
-      return store.get_omap_iterator(ch, pgmeta_oid).then([this](auto iter) {
-        return seastar::do_until([iter] { return !iter->valid(); },
-                                 [iter, this]() mutable {
-          process_entry(iter);
-          return iter->next();
+      return seastar::do_with(
+        std::move(ch),
+        std::move(pgmeta_oid),
+        std::make_optional<std::string>(),
+        [this](crimson::os::CollectionRef &ch,
+               ghobject_t &pgmeta_oid,
+               std::optional<std::string> &start) {
+          return seastar::repeat([this, &ch, &pgmeta_oid, &start]() {
+            return store.omap_get_values(
+              ch, pgmeta_oid, start
+            ).safe_then([this, &start](const auto& ret) {
+              const auto& [done, kvs] = ret;
+              for (const auto& [key, value] : kvs) {
+                process_entry(key, value);
+                start = key;
+              }
+              return seastar::make_ready_future<seastar::stop_iteration>(
+                done ? seastar::stop_iteration::yes : seastar::stop_iteration::no
+              );
+            }, crimson::os::FuturizedStore::Shard::read_errorator::assert_all{});
+          }).then([this] {
+            if (info.pgid.is_no_shard()) {
+              // replicated pool pg does not persist this key
+              assert(on_disk_rollback_info_trimmed_to == eversion_t());
+              on_disk_rollback_info_trimmed_to = info.last_update;
+            }
+            log = PGLog::IndexedLog(
+                 info.last_update,
+                 info.log_tail,
+                 on_disk_can_rollback_to,
+                 on_disk_rollback_info_trimmed_to,
+                 std::move(entries),
+                 std::move(dups));
+          });
         });
-      }).then([this] {
-        if (info.pgid.is_no_shard()) {
-          // replicated pool pg does not persist this key
-          assert(on_disk_rollback_info_trimmed_to == eversion_t());
-          on_disk_rollback_info_trimmed_to = info.last_update;
-        }
-        log = PGLog::IndexedLog(
-             info.last_update,
-             info.log_tail,
-             on_disk_can_rollback_to,
-             on_disk_rollback_info_trimmed_to,
-             std::move(entries),
-             std::move(dups));
-      });
     }
   };
 }
 
 seastar::future<> PGLog::read_log_and_missing_crimson(
-  crimson::os::FuturizedStore &store,
+  crimson::os::FuturizedStore::Shard &store,
   crimson::os::CollectionRef ch,
   const pg_info_t &info,
   IndexedLog &log,
@@ -1183,12 +1198,93 @@ seastar::future<> PGLog::read_log_and_missing_crimson(
   ldpp_dout(dpp, 20) << "read_log_and_missing coll "
                      << ch->get_cid()
                      << " " << pgmeta_oid << dendl;
-  return seastar::do_with(FuturizedStoreLogReader{
+  return seastar::do_with(FuturizedShardStoreLogReader{
       store, info, log, log_keys_debug,
       missing, dpp},
-    [ch, pgmeta_oid](FuturizedStoreLogReader& reader) {
+    [ch, pgmeta_oid](FuturizedShardStoreLogReader& reader) {
     return reader.read(ch, pgmeta_oid);
   });
 }
 
+seastar::future<> PGLog::rebuild_missing_set_with_deletes_crimson(
+  crimson::os::FuturizedStore::Shard &store,
+  crimson::os::CollectionRef ch,
+  const pg_info_t &info)
+{
+  // save entries not generated from the current log (e.g. added due
+  // to repair, EIO handling, or divergent_priors).
+  map<hobject_t, pg_missing_item> extra_missing;
+  for (const auto& p : missing.get_items()) {
+    if (!log.logged_object(p.first)) {
+      ldpp_dout(this, 20) << __func__ << " extra missing entry: " << p.first
+	       << " " << p.second << dendl;
+      extra_missing[p.first] = p.second;
+    }
+  }
+  missing.clear();
+
+  // go through the log and add items that are not present or older
+  // versions on disk, just as if we were reading the log + metadata
+  // off disk originally
+  return seastar::do_with(
+    set<hobject_t>(),
+    log.log.rbegin(),
+    [this, &store, ch, &info](auto &did, auto &it) {
+    return seastar::repeat([this, &store, ch, &info, &it, &did] {
+      if (it == log.log.rend()) {
+	return seastar::make_ready_future<seastar::stop_iteration>(
+	  seastar::stop_iteration::yes);
+      }
+      auto &log_entry = *it;
+      it++;
+      if (log_entry.version <= info.last_complete)
+	return seastar::make_ready_future<seastar::stop_iteration>(
+	  seastar::stop_iteration::yes);
+      if (log_entry.soid > info.last_backfill ||
+	  log_entry.is_error() ||
+	  did.find(log_entry.soid) != did.end())
+	return seastar::make_ready_future<seastar::stop_iteration>(
+	  seastar::stop_iteration::no);
+      did.insert(log_entry.soid);
+      return store.get_attr(
+	ch,
+	ghobject_t(log_entry.soid, ghobject_t::NO_GEN, info.pgid.shard),
+	OI_ATTR
+      ).safe_then([this, &log_entry](auto bv) {
+	object_info_t oi(bv);
+	ldpp_dout(this, 20)
+	  << "rebuild_missing_set_with_deletes_crimson found obj "
+	  << log_entry.soid
+	  << " version = " << oi.version << dendl;
+	if (oi.version < log_entry.version) {
+	  ldpp_dout(this, 20)
+	    << "rebuild_missing_set_with_deletes_crimson missing obj "
+	    << log_entry.soid
+	    << " for version = " << log_entry.version << dendl;
+	  missing.add(
+	    log_entry.soid,
+	    log_entry.version,
+	    oi.version,
+	    log_entry.is_delete());
+	}
+      },
+      crimson::ct_error::enoent::handle([this, &log_entry] {
+	ldpp_dout(this, 20)
+	  << "rebuild_missing_set_with_deletes_crimson missing object "
+	  << log_entry.soid << dendl;
+	missing.add(
+	  log_entry.soid,
+	  log_entry.version,
+	  eversion_t(),
+	  log_entry.is_delete());
+      }),
+      crimson::ct_error::enodata::handle([] { ceph_abort("unexpected enodata"); })
+      ).then([] {
+	return seastar::stop_iteration::no;
+      });
+    });
+  }).then([this] {
+    set_missing_may_contain_deletes();
+  });
+}
 #endif

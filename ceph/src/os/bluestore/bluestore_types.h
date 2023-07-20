@@ -15,6 +15,7 @@
 #ifndef CEPH_OSD_BLUESTORE_BLUESTORE_TYPES_H
 #define CEPH_OSD_BLUESTORE_BLUESTORE_TYPES_H
 
+#include <bit>
 #include <ostream>
 #include <type_traits>
 #include <vector>
@@ -26,7 +27,6 @@
 #include "common/hobject.h"
 #include "compressor/Compressor.h"
 #include "common/Checksummer.h"
-#include "include/mempool.h"
 #include "include/ceph_hash.h"
 
 namespace ceph {
@@ -1107,7 +1107,7 @@ WRITE_CLASS_DENC(bluestore_deferred_transaction_t)
 struct bluestore_compression_header_t {
   uint8_t type = Compressor::COMP_ALG_NONE;
   uint32_t length = 0;
-  boost::optional<int32_t> compressor_message;
+  std::optional<int32_t> compressor_message;
 
   bluestore_compression_header_t() {}
   bluestore_compression_header_t(uint8_t _type)
@@ -1220,8 +1220,8 @@ public:
   shared_blob_2hash_tracker_t(uint64_t mem_cap, size_t alloc_unit)
     : ref_counter_2hash_tracker_t(mem_cap) {
     ceph_assert(alloc_unit);
-    ceph_assert(isp2(alloc_unit));
-    au_void_bits = ctz(alloc_unit);
+    ceph_assert(std::has_single_bit(alloc_unit));
+    au_void_bits = std::countr_zero(alloc_unit);
   }
   void inc(uint64_t sbid, uint64_t offset, int n);
   void inc_range(uint64_t sbid, uint64_t offset, uint32_t len, int n);

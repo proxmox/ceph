@@ -7,6 +7,7 @@
 
 #include "math_unit_test.hpp"
 #include <boost/math/tools/engel_expansion.hpp>
+#include <boost/core/demangle.hpp>
 #include <boost/math/constants/constants.hpp>
 #ifdef BOOST_HAS_FLOAT128
 #include <boost/multiprecision/float128.hpp>
@@ -56,7 +57,7 @@ void test_well_known()
                                    21846713216,27803071890,31804388758,32651669133};
     auto a = engel.digits();
     // The last digit might be off somewhat, so don't test it:
-    size_t n = std::min(a.size() - 1, expected.size());
+    size_t n = (std::min)(a.size() - 1, expected.size());
     for(size_t i = 0; i < n; ++i)
     {
         if (!CHECK_EQUAL(expected[i], a[i]))

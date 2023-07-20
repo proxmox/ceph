@@ -137,24 +137,24 @@ class basic_parser_test
 public:
     ::test_suite::log_type log;
 
-    void 
+    void
     grind_one(
-        string_view s, 
-        bool good, 
+        string_view s,
+        bool good,
         parse_options po)
     {
         error_code ec;
         fail_parser p(po);
         p.write(false,
             s.data(), s.size(), ec);
-        BOOST_TEST((good && !ec) || 
+        BOOST_TEST((good && !ec) ||
             (! good && ec));
     }
 
-    void 
+    void
     grind_one(
-        string_view s, 
-        bool good, 
+        string_view s,
+        bool good,
         const std::vector<parse_options>& configs)
     {
         for (const parse_options& po : configs)
@@ -163,7 +163,7 @@ public:
 
     void
     grind(
-        string_view s, 
+        string_view s,
         bool good,
         parse_options po)
     {
@@ -235,7 +235,7 @@ public:
 
     void
     grind(
-        string_view s, 
+        string_view s,
         bool good,
         const std::vector<parse_options>& configs)
     {
@@ -257,7 +257,7 @@ public:
 
     void
     bad(
-        string_view s, 
+        string_view s,
         const parse_options& po)
     {
         grind(s, false, po);
@@ -286,7 +286,7 @@ public:
     {
         grind_one(s, true, po);
     }
-    
+
     void
     bad_one(string_view s)
     {
@@ -394,7 +394,7 @@ public:
 
         // incomplete
         bad ("\"");
-        
+
         // illegal control character
         bad ({ "\"" "\x00" "\"", 3 });
         bad ("\"" "\x1f" "\"");
@@ -842,7 +842,7 @@ public:
     void
     testIssue113()
     {
-        string_view s = 
+        string_view s =
             "\"\\r\\n section id='description'>\\r\\nAll        mbers form the uncountable set "
             "\\u211D.  Among its subsets, relatively simple are the convex sets, each expressed "
             "as a range between two real numbers <i>a</i> and <i>b</i> where <i>a</i> \\u2264 <i>"
@@ -901,25 +901,25 @@ public:
             bool on_bool( bool, error_code& ) { return true; }
             bool on_null( error_code& ) { return true; }
             bool on_comment_part( string_view s, error_code& )
-            { 
+            {
                 captured.append(s.data(), s.size());
-                return true; 
+                return true;
             }
-            bool on_comment( string_view s, error_code& ) 
-            { 
+            bool on_comment( string_view s, error_code& )
+            {
                 captured.append(s.data(), s.size());
-                return true; 
+                return true;
             }
         };
 
         basic_parser<handler> p_;
 
     public:
-        comment_parser() 
+        comment_parser()
             : p_(make_options(true, false, false))
         {
         }
-        
+
         std::size_t
         write(
             char const* data,
@@ -947,7 +947,7 @@ public:
         parse_options enabled;
         enabled.allow_comments = true;
 
-        const auto replace_and_test = 
+        const auto replace_and_test =
             [&](string_view s)
         {
             static std::vector<string_view> comments =
@@ -978,7 +978,7 @@ public:
             {
                 if (c == '@')
                 {
-                    string_view com = 
+                    string_view com =
                         comments[((formatted.size() + n) % s.size()) % comments.size()];
                     formatted.append(com.data(), n = com.size());
                     just_comments.append(com.data(), com.size());
@@ -1319,7 +1319,7 @@ public:
                     BOOST_TEST(written == write_size);
                     BOOST_TEST(! ec);
                 }
-                BOOST_TEST(p.captured() == 
+                BOOST_TEST(p.captured() ==
                     expected.substr(1, expected.size() - 2));
             }
         };
@@ -1340,6 +1340,7 @@ public:
             error_code ec;
             p.write(s.data(), s.size(), ec);
             BOOST_TEST(ec == error::too_deep);
+            BOOST_TEST(ec.has_location());
         }
         {
             string_view s = "[[[[]]], [[[[]]]]]";
@@ -1349,9 +1350,10 @@ public:
             error_code ec;
             p.write(s.data(), s.size(), ec);
             BOOST_TEST(ec == error::too_deep);
+            BOOST_TEST(ec.has_location());
         }
         {
-            string_view s = 
+            string_view s =
                 "{\"a\":{\"b\":{\"c\":{}}},\"b\":{\"c\":{\"d\":{\"e\":{}}}}}";
             parse_options opt;
             opt.max_depth = 4;
@@ -1359,9 +1361,10 @@ public:
             error_code ec;
             p.write(s.data(), s.size(), ec);
             BOOST_TEST(ec == error::too_deep);
+            BOOST_TEST(ec.has_location());
         }
         {
-            string_view s = 
+            string_view s =
                 "{\"a\":{\"b\":{\"c\":{\"d\":{}}}}}";
             parse_options opt;
             opt.max_depth = 4;
@@ -1369,6 +1372,7 @@ public:
             error_code ec;
             p.write(s.data(), s.size(), ec);
             BOOST_TEST(ec == error::too_deep);
+            BOOST_TEST(ec.has_location());
         }
     }
 
@@ -1380,7 +1384,7 @@ public:
             constexpr static std::size_t max_array_size = std::size_t(-1);
             constexpr static std::size_t max_key_size = std::size_t(-1);
             constexpr static std::size_t max_string_size = std::size_t(-1);
-                
+
             std::string captured = "";
             bool on_document_begin( error_code& ) { return true; }
             bool on_document_end( error_code& ) { return true; }
@@ -1392,28 +1396,28 @@ public:
             bool on_key( string_view, std::size_t, error_code& ) { return true; }
             bool on_string_part( string_view, std::size_t, error_code& ) { return true; }
             bool on_string( string_view, std::size_t, error_code& ) { return true; }
-            bool on_number_part( string_view sv, error_code&) 
-            { 
+            bool on_number_part( string_view sv, error_code&)
+            {
                 captured.append(sv.data(), sv.size());
-                return true; 
+                return true;
             }
             bool on_int64( std::int64_t, string_view sv, error_code& )
-            { 
+            {
                 captured.append(sv.data(), sv.size());
                 captured += 's';
-                return true; 
+                return true;
             }
-            bool on_uint64( std::uint64_t, string_view sv, error_code& ) 
-            { 
+            bool on_uint64( std::uint64_t, string_view sv, error_code& )
+            {
                 captured.append(sv.data(), sv.size());
                 captured += 'u';
-                return true; 
+                return true;
             }
             bool on_double( double, string_view sv, error_code& )
-            { 
+            {
                 captured.append(sv.data(), sv.size());
                 captured += 'd';
-                return true; 
+                return true;
             }
             bool on_bool( bool, error_code& ) { return true; }
             bool on_null( error_code& ) { return true; }
@@ -1424,11 +1428,11 @@ public:
         basic_parser<handler> p_;
 
     public:
-        literal_parser() 
+        literal_parser()
             : p_(make_options(true, false, false))
         {
         }
-        
+
         std::size_t
         write(
             bool more,
@@ -1458,19 +1462,19 @@ public:
         {
             string_view sv = expected;
             sv.remove_suffix(1);
-            for(std::size_t i = 0; 
+            for(std::size_t i = 0;
                 i < sv.size(); ++i)
             {
                 literal_parser p;
                 error_code ec;
                 if(i != 0)
                 {
-                    p.write(true, 
+                    p.write(true,
                         sv.data(), i, ec);
                 }
                 if(BOOST_TEST(! ec))
                 {
-                    p.write(false, 
+                    p.write(false,
                         sv.data() + i,
                         sv.size() - i, ec);
                 }
@@ -1531,7 +1535,89 @@ public:
                 error_code ec;
                 p.write(false, "null", 4, ec);
                 BOOST_TEST(ec == error::exception);
+                BOOST_TEST(ec.has_location());
             }
+        }
+    }
+
+#ifndef BOOST_NO_CXX17_HDR_STRING_VIEW
+    using SV = std::string_view;
+#else
+    using SV = string_view;
+#endif
+    // The null parser, but uses std type equivalents
+    class std_null_parser
+    {
+        struct handler
+        {
+            constexpr static std::size_t max_object_size = std::size_t(-1);
+            constexpr static std::size_t max_array_size = std::size_t(-1);
+            constexpr static std::size_t max_key_size = std::size_t(-1);
+            constexpr static std::size_t max_string_size = std::size_t(-1);
+
+            bool on_document_begin( std::error_code& ) { return true; }
+            bool on_document_end( std::error_code& ) { return true; }
+            bool on_object_begin( std::error_code& ) { return true; }
+            bool on_object_end( std::size_t, std::error_code& ) { return true; }
+            bool on_array_begin( std::error_code& ) { return true; }
+            bool on_array_end( std::size_t, std::error_code& ) { return true; }
+            bool on_key_part( SV, std::size_t, std::error_code& ) { return true; }
+            bool on_key( SV, std::size_t, std::error_code& ) { return true; }
+            bool on_string_part( SV, std::size_t, std::error_code& ) { return true; }
+            bool on_string( SV, std::size_t, std::error_code& ) { return true; }
+            bool on_number_part( SV, std::error_code&) { return true; }
+            bool on_int64( std::int64_t, SV, std::error_code& ) { return true; }
+            bool on_uint64( std::uint64_t, SV, std::error_code& ) { return true; }
+            bool on_double( double, SV, std::error_code& ) { return true; }
+            bool on_bool( bool, std::error_code& ) { return true; }
+            bool on_null( std::error_code& ) { return true; }
+            bool on_comment_part( SV, std::error_code& ) { return true; }
+            bool on_comment( SV, std::error_code& ) { return true; }
+        };
+
+        basic_parser<handler> p_;
+
+    public:
+        std_null_parser()
+            : p_(parse_options())
+        {
+        }
+
+        explicit
+        std_null_parser(parse_options po)
+            : p_(po)
+        {
+        }
+
+        void
+        reset()
+        {
+            p_.reset();
+        }
+
+        std::size_t
+        write(
+            SV s,
+            std::error_code& ec)
+        {
+            auto const n = p_.write_some(
+                false, s.data(), s.size(), ec);
+            if(! ec && n < s.size())
+                ec = error::extra_data;
+            return n;
+        }
+    };
+
+    void testStdTypes()
+    {
+        std_null_parser p;
+        std::error_code ec;
+        std::string const doc = "{}";
+        p.write(doc, ec);
+        if(! BOOST_TEST(! ec))
+        {
+            log << "    failed to parse: " << doc << '\n';
+            return;
         }
     }
 
@@ -1556,6 +1642,7 @@ public:
         testMaxDepth();
         testNumberLiteral();
         testStickyErrors();
+        testStdTypes();
     }
 };
 

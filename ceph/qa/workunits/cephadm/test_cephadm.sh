@@ -10,10 +10,9 @@ FSID='00000000-0000-0000-0000-0000deadbeef'
 
 # images that are used
 IMAGE_MAIN=${IMAGE_MAIN:-'quay.ceph.io/ceph-ci/ceph:main'}
-IMAGE_QUINCY=${IMAGE_QUINCY:-'quay.ceph.io/ceph-ci/ceph:quincy'}
 IMAGE_PACIFIC=${IMAGE_PACIFIC:-'quay.ceph.io/ceph-ci/ceph:pacific'}
 #IMAGE_OCTOPUS=${IMAGE_OCTOPUS:-'quay.ceph.io/ceph-ci/ceph:octopus'}
-IMAGE_DEFAULT=${IMAGE_QUINCY}
+IMAGE_DEFAULT=${IMAGE_MAIN}
 
 OSD_IMAGE_NAME="${SCRIPT_NAME%.*}_osd.img"
 OSD_IMAGE_SIZE='6G'
@@ -21,13 +20,18 @@ OSD_TO_CREATE=2
 OSD_VG_NAME=${SCRIPT_NAME%.*}
 OSD_LV_NAME=${SCRIPT_NAME%.*}
 
+# TMPDIR for test data
+[ -d "$TMPDIR" ] || TMPDIR=$(mktemp -d tmp.$SCRIPT_NAME.XXXXXX)
+[ -d "$TMPDIR_TEST_MULTIPLE_MOUNTS" ] || TMPDIR_TEST_MULTIPLE_MOUNTS=$(mktemp -d tmp.$SCRIPT_NAME.XXXXXX)
+
 CEPHADM_SRC_DIR=${SCRIPT_DIR}/../../../src/cephadm
 CEPHADM_SAMPLES_DIR=${CEPHADM_SRC_DIR}/samples
 
 [ -z "$SUDO" ] && SUDO=sudo
 
 if [ -z "$CEPHADM" ]; then
-    CEPHADM=${CEPHADM_SRC_DIR}/cephadm
+    CEPHADM=`mktemp -p $TMPDIR tmp.cephadm.XXXXXX`
+    ${CEPHADM_SRC_DIR}/build.sh "$CEPHADM"
 fi
 
 # at this point, we need $CEPHADM set
@@ -50,10 +54,6 @@ loopdev=$($SUDO losetup -a | grep $(basename $OSD_IMAGE_NAME) | awk -F : '{print
 if ! [ "$loopdev" = "" ]; then
     $SUDO losetup -d $loopdev
 fi
-
-# TMPDIR for test data
-[ -d "$TMPDIR" ] || TMPDIR=$(mktemp -d tmp.$SCRIPT_NAME.XXXXXX)
-[ -d "$TMPDIR_TEST_MULTIPLE_MOUNTS" ] || TMPDIR_TEST_MULTIPLE_MOUNTS=$(mktemp -d tmp.$SCRIPT_NAME.XXXXXX)
 
 function cleanup()
 {
@@ -147,7 +147,7 @@ function nfs_stop()
     # stop the running nfs server
     local units="nfs-server nfs-kernel-server"
     for unit in $units; do
-        if systemctl status $unit < /dev/null; then
+        if systemctl --no-pager status $unit > /dev/null; then
             $SUDO systemctl stop $unit
         fi
     done
@@ -295,7 +295,7 @@ $SUDO vgremove -f $OSD_VG_NAME || true
 $SUDO losetup $loop_dev $TMPDIR/$OSD_IMAGE_NAME
 $SUDO pvcreate $loop_dev && $SUDO vgcreate $OSD_VG_NAME $loop_dev
 
-# osd boostrap keyring
+# osd bootstrap keyring
 $CEPHADM shell --fsid $FSID --config $CONFIG --keyring $KEYRING -- \
       ceph auth get client.bootstrap-osd > $TMPDIR/keyring.bootstrap.osd
 

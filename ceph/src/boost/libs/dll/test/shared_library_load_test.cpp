@@ -1,5 +1,5 @@
 // Copyright 2011-2012 Renato Tegon Forti
-// Copyright 2015-2020 Antony Polukhin
+// Copyright Antony Polukhin, 2015-2022
 //
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE_1_0.txt
@@ -229,10 +229,11 @@ int main(int argc, char* argv[])
         try {
 #if BOOST_OS_WINDOWS
             boost::dll::shared_library("winmm.dll");
+            BOOST_TEST(false);
 #elif BOOST_OS_LINUX
             boost::dll::shared_library("libdl.so");
-#endif
             BOOST_TEST(false);
+#endif
         } catch (...) {}
    }
 

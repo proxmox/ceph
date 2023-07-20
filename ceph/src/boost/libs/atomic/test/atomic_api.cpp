@@ -10,6 +10,7 @@
 #include <boost/config.hpp>
 #include <boost/cstdint.hpp>
 
+#include "atomic_wrapper.hpp"
 #include "api_test_helpers.hpp"
 
 int main(int, char *[])
@@ -40,11 +41,23 @@ int main(int, char *[])
     test_integral_api< atomic_wrapper, boost::uint128_type >();
 #endif
 
+    test_constexpr_ctor< bool >();
     test_constexpr_ctor< char >();
     test_constexpr_ctor< short >();
     test_constexpr_ctor< int >();
     test_constexpr_ctor< long >();
-    // test_constexpr_ctor< int* >(); // for pointers we're not offering a constexpr constructor because of bitwise_cast
+    test_constexpr_ctor< long long >();
+    test_constexpr_ctor< test_enum >();
+#if !defined(BOOST_ATOMIC_DETAIL_NO_CXX11_CONSTEXPR_BITWISE_CAST)
+    // As of gcc 11, clang 12 and MSVC 19.27, compilers don't support __builtin_bit_cast from pointers in constant expressions.
+    // test_constexpr_ctor< int* >();
+    test_constexpr_ctor< test_struct< int > >();
+#if !defined(BOOST_ATOMIC_NO_FLOATING_POINT)
+    test_constexpr_ctor< float >();
+    test_constexpr_ctor< double >();
+    // We don't test long double as it may include padding bits, which will make the constructor non-constexpr
+#endif
+#endif
 
 #if !defined(BOOST_ATOMIC_NO_FLOATING_POINT)
     test_floating_point_api< atomic_wrapper, float >();
@@ -78,6 +91,10 @@ int main(int, char *[])
     // Test that boost::atomic<T> only requires T to be trivially copyable.
     // Other non-trivial constructors are allowed.
     test_struct_with_ctor_api< atomic_wrapper >();
+
+#if !defined(BOOST_ATOMIC_NO_CLEAR_PADDING)
+    test_struct_with_padding_api< atomic_wrapper >();
+#endif
 
     // Test that fences at least compile
     boost::atomic_thread_fence(boost::memory_order_seq_cst);

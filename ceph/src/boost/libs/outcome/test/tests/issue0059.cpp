@@ -1,5 +1,5 @@
 /* Unit testing for outcomes
-(C) 2013-2020 Niall Douglas <http://www.nedproductions.biz/> (8 commits)
+(C) 2013-2022 Niall Douglas <http://www.nedproductions.biz/> (8 commits)
 
 
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -51,7 +51,7 @@ BOOST_OUTCOME_AUTO_TEST_CASE(issues_0059_test, "result<NonMovable> supported?")
   const char *niall = "niall";
   auto f = [niall]() -> result<void> {
     auto g = [niall]() -> result<udt> { return {niall}; };
-    BOOST_OUTCOME_TRY(v, g());  // this must never copy nor move
+    BOOST_OUTCOME_TRY((auto &&, v), g());  // this must never copy nor move
     BOOST_CHECK(*v == niall);
     return success();
   };

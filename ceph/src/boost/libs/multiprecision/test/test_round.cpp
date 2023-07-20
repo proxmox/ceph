@@ -84,7 +84,7 @@ T get_random()
 }
 
 template <class T, class U>
-typename boost::disable_if_c<boost::multiprecision::is_interval_number<T>::value>::type check_within_half(T a, U u)
+typename std::enable_if<!boost::multiprecision::is_interval_number<T>::value>::type check_within_half(T a, U u)
 {
    BOOST_MATH_STD_USING
    if (fabs(a - u) > 0.5f)
@@ -101,7 +101,7 @@ typename boost::disable_if_c<boost::multiprecision::is_interval_number<T>::value
    }
 }
 template <class T, class U>
-typename boost::enable_if_c<boost::multiprecision::is_interval_number<T>::value>::type check_within_half(T a, U u)
+typename std::enable_if<boost::multiprecision::is_interval_number<T>::value>::type check_within_half(T a, U u)
 {
    BOOST_MATH_STD_USING
    if (upper(T(fabs(a - u))) > 0.5f)
@@ -134,7 +134,7 @@ inline unsigned long long safe_abs(long long const& v)
    return v < 0 ? static_cast<unsigned long long>(1u) + static_cast<unsigned long long>(-(v + 1)) : v;
 }
 template <class T>
-inline typename boost::disable_if_c<boost::is_integral<T>::value, T>::type safe_abs(T const& v)
+inline typename std::enable_if<!boost::multiprecision::detail::is_integral<T>::value, T>::type safe_abs(T const& v)
 {
    return v < 0 ? -v : v;
 }
@@ -234,9 +234,9 @@ void test()
       }
 
 #ifdef BOOST_HAS_LONG_LONG
-      if (abs(r) < (std::numeric_limits<boost::long_long_type>::max)())
+      if (abs(r) < (std::numeric_limits<long long>::max)())
       {
-         boost::long_long_type ll = llround(arg);
+         long long ll = llround(arg);
          check_within_half(arg, ll);
          BOOST_TEST(ll == llround(arg + 0));
          ll = lltrunc(arg);
@@ -299,29 +299,29 @@ void test()
       check_trunc_result(static_cast<T>((std::numeric_limits<long>::min)() + 1), k);
    }
 #ifndef BOOST_NO_LONG_LONG
-   if (std::numeric_limits<T>::digits >= std::numeric_limits<boost::long_long_type>::digits)
+   if (std::numeric_limits<T>::digits >= std::numeric_limits<long long>::digits)
    {
-      boost::long_long_type j = llround(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)()));
-      check_within_half(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)()), j);
+      long long j = llround(static_cast<T>((std::numeric_limits<long long>::max)()));
+      check_within_half(static_cast<T>((std::numeric_limits<long long>::max)()), j);
       BOOST_TEST(j == llround(static_cast<T>((std::numeric_limits<long long>::max)()) + 0));
-      j = llround(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)()));
-      check_within_half(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)()), j);
+      j = llround(static_cast<T>((std::numeric_limits<long long>::min)()));
+      check_within_half(static_cast<T>((std::numeric_limits<long long>::min)()), j);
       BOOST_TEST(j == llround(static_cast<T>((std::numeric_limits<long long>::min)()) + 0));
-      j = lltrunc(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)()));
-      check_trunc_result(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)()), j);
+      j = lltrunc(static_cast<T>((std::numeric_limits<long long>::max)()));
+      check_trunc_result(static_cast<T>((std::numeric_limits<long long>::max)()), j);
       BOOST_TEST(j == lltrunc(static_cast<T>((std::numeric_limits<long long>::max)()) + 0));
-      j = lltrunc(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)()));
-      check_trunc_result(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)()), j);
+      j = lltrunc(static_cast<T>((std::numeric_limits<long long>::min)()));
+      check_trunc_result(static_cast<T>((std::numeric_limits<long long>::min)()), j);
       BOOST_TEST(j == lltrunc(static_cast<T>((std::numeric_limits<long long>::min)()) + 0));
 
-      j = llround(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)() - 1));
-      check_within_half(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)() - 1), j);
-      j = llround(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)() + 1));
-      check_within_half(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)() + 1), j);
-      j = lltrunc(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)() - 1));
-      check_trunc_result(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)() - 1), j);
-      j = lltrunc(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)() + 1));
-      check_trunc_result(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)() + 1), j);
+      j = llround(static_cast<T>((std::numeric_limits<long long>::max)() - 1));
+      check_within_half(static_cast<T>((std::numeric_limits<long long>::max)() - 1), j);
+      j = llround(static_cast<T>((std::numeric_limits<long long>::min)() + 1));
+      check_within_half(static_cast<T>((std::numeric_limits<long long>::min)() + 1), j);
+      j = lltrunc(static_cast<T>((std::numeric_limits<long long>::max)() - 1));
+      check_trunc_result(static_cast<T>((std::numeric_limits<long long>::max)() - 1), j);
+      j = lltrunc(static_cast<T>((std::numeric_limits<long long>::min)() + 1));
+      check_trunc_result(static_cast<T>((std::numeric_limits<long long>::min)() + 1), j);
    }
 #endif
    //
@@ -399,10 +399,10 @@ void test()
       BOOST_CHECK_THROW(result = static_cast<T>(ltrunc(static_cast<T>((std::numeric_limits<long>::min)()) - 1)), boost::math::rounding_error);
    }
 #ifndef BOOST_NO_LONG_LONG
-   if (std::numeric_limits<T>::digits >= std::numeric_limits<boost::long_long_type>::digits)
+   if (std::numeric_limits<T>::digits >= std::numeric_limits<long long>::digits)
    {
-      BOOST_CHECK_THROW(result = static_cast<T>(lltrunc(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)()) + 1)), boost::math::rounding_error);
-      BOOST_CHECK_THROW(result = static_cast<T>(lltrunc(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)()) - 1)), boost::math::rounding_error);
+      BOOST_CHECK_THROW(result = static_cast<T>(lltrunc(static_cast<T>((std::numeric_limits<long long>::max)()) + 1)), boost::math::rounding_error);
+      BOOST_CHECK_THROW(result = static_cast<T>(lltrunc(static_cast<T>((std::numeric_limits<long long>::min)()) - 1)), boost::math::rounding_error);
    }
 #endif
    if (std::numeric_limits<T>::digits >= std::numeric_limits<int>::digits)
@@ -416,10 +416,10 @@ void test()
       BOOST_CHECK_THROW(result = static_cast<T>(lround(static_cast<T>((std::numeric_limits<long>::min)()) - 1)), boost::math::rounding_error);
    }
 #ifndef BOOST_NO_LONG_LONG
-   if (std::numeric_limits<T>::digits >= std::numeric_limits<boost::long_long_type>::digits)
+   if (std::numeric_limits<T>::digits >= std::numeric_limits<long long>::digits)
    {
-      BOOST_CHECK_THROW(result = static_cast<T>(llround(static_cast<T>((std::numeric_limits<boost::long_long_type>::max)()) + 1)), boost::math::rounding_error);
-      BOOST_CHECK_THROW(result = static_cast<T>(llround(static_cast<T>((std::numeric_limits<boost::long_long_type>::min)()) - 1)), boost::math::rounding_error);
+      BOOST_CHECK_THROW(result = static_cast<T>(llround(static_cast<T>((std::numeric_limits<long long>::max)()) + 1)), boost::math::rounding_error);
+      BOOST_CHECK_THROW(result = static_cast<T>(llround(static_cast<T>((std::numeric_limits<long long>::min)()) - 1)), boost::math::rounding_error);
    }
 #endif
 #endif
@@ -457,7 +457,7 @@ int main()
 #ifdef TEST_CPP_BIN_FLOAT
    test<boost::multiprecision::cpp_bin_float_50>();
    test<boost::multiprecision::cpp_bin_float_100>();
-   test<boost::multiprecision::number<boost::multiprecision::cpp_bin_float<35, boost::multiprecision::digit_base_10, std::allocator<char>, boost::long_long_type> > >();
+   test<boost::multiprecision::number<boost::multiprecision::cpp_bin_float<35, boost::multiprecision::digit_base_10, std::allocator<char>, long long> > >();
 #endif
 #ifdef TEST_BACKEND
    test<boost::multiprecision::number<boost::multiprecision::concepts::number_backend_float_architype> >();

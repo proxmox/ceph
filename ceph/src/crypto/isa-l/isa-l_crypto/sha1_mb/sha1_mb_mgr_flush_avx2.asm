@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -33,7 +33,11 @@
 %include "reg_sizes.asm"
 
 extern sha1_mb_x8_avx2
+extern sha1_opt_x1
+
+[bits 64]
 default rel
+section .text
 
 %ifidn __OUTPUT_FORMAT__, elf64
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -61,21 +65,21 @@ default rel
 %define job     arg2
 %define len2    arg2
 
-; idx must be a register not clobberred by sha1_mb_x8_avx2
-%define idx             r8
+; idx must be a register not clobberred by sha1_mb_x8_avx2 and sha1_opt_x1
+%define idx             rbp
 
 %define unused_lanes    rbx
 %define lane_data       rbx
 %define tmp2            rbx
-			
+
 %define job_rax         rax
 %define tmp1            rax
 %define size_offset     rax
 %define tmp             rax
 %define start_offset    rax
-			
+
 %define tmp3            arg1
-			
+
 %define extra_blocks    arg2
 %define p               arg2
 
@@ -93,8 +97,9 @@ STACK_SPACE     equ _GPR_SAVE + _GPR_SAVE_SIZE + _ALIGN_SIZE
 
 ; SHA1_JOB* sha1_mb_mgr_flush_avx2(SHA1_MB_JOB_MGR *state)
 ; arg 1 : rcx : state
-global sha1_mb_mgr_flush_avx2:function
+mk_global sha1_mb_mgr_flush_avx2, function
 sha1_mb_mgr_flush_avx2:
+	endbranch
 	sub     rsp, STACK_SPACE
 	mov     [rsp + _GPR_SAVE + 8*0], rbx
 	mov     [rsp + _GPR_SAVE + 8*3], rbp
@@ -117,10 +122,9 @@ sha1_mb_mgr_flush_avx2:
 	vmovdqa  [rsp + _XMM_SAVE + 16*9], xmm15
 %endif
 
-	; if bit (32+3) is set, then all lanes are empty
-	mov	unused_lanes, [state + _unused_lanes]
-	bt	unused_lanes, 32+3
-	jc	return_null
+	; use num_lanes_inuse to judge all lanes are empty
+	cmp	dword [state + _num_lanes_inuse], 0
+	jz	return_null
 
 	; find a lane with a non-null job
 	xor	idx, idx
@@ -156,19 +160,35 @@ APPEND(skip_,I):
 	; Find min length
 	vmovdqa xmm0, [state + _lens + 0*16]
 	vmovdqa xmm1, [state + _lens + 1*16]
-	
+
 	vpminud xmm2, xmm0, xmm1        ; xmm2 has {D,C,B,A}
 	vpalignr xmm3, xmm3, xmm2, 8    ; xmm3 has {x,x,D,C}
 	vpminud xmm2, xmm2, xmm3        ; xmm2 has {x,x,E,F}
 	vpalignr xmm3, xmm3, xmm2, 4    ; xmm3 has {x,x,x,E}
 	vpminud xmm2, xmm2, xmm3        ; xmm2 has min value in low dword
-	
+
 	vmovd   DWORD(idx), xmm2
 	mov	len2, idx
 	and	idx, 0xF
 	shr	len2, 4
 	jz	len_is_0
-       
+
+	; compare with sha-sb threshold, if num_lanes_inuse <= threshold, using sb func
+	cmp	dword [state + _num_lanes_inuse], SHA1_SB_THRESHOLD_AVX2
+	ja	mb_processing
+
+	; lensN-len2=idx
+	mov     [state + _lens + idx*4], DWORD(idx)
+	mov	r10, idx
+	or	r10, 0x2000	; avx2 has 8 lanes *4, r10b is idx, r10b2 is 32
+	; "state" and "args" are the same address, arg1
+	; len is arg2, idx and nlane in r10
+	call    sha1_opt_x1
+	; state and idx are intact
+	jmp	len_is_0
+
+mb_processing:
+
 	vpand   xmm2, xmm2, [rel clear_low_nibble]
 	vpshufd xmm2, xmm2, 0
 
@@ -197,6 +217,8 @@ len_is_0:
 	or	unused_lanes, idx
 	mov	[state + _unused_lanes], unused_lanes
 
+	sub     dword [state + _num_lanes_inuse], 1
+
 	vmovd	xmm0, [state + _args_digest + 4*idx + 0*32]
 	vpinsrd	xmm0, [state + _args_digest + 4*idx + 1*32], 1
 	vpinsrd	xmm0, [state + _args_digest + 4*idx + 2*32], 2
@@ -219,15 +241,15 @@ return:
 	vmovdqa  xmm13, [rsp + _XMM_SAVE + 16*7]
 	vmovdqa  xmm14, [rsp + _XMM_SAVE + 16*8]
 	vmovdqa  xmm15, [rsp + _XMM_SAVE + 16*9]
-	mov     rsi, [rsp + _GPR_SAVE + 8*1] 
-	mov     rdi, [rsp + _GPR_SAVE + 8*2] 
+	mov     rsi, [rsp + _GPR_SAVE + 8*1]
+	mov     rdi, [rsp + _GPR_SAVE + 8*2]
 %endif
-	mov     rbx, [rsp + _GPR_SAVE + 8*0] 
-	mov     rbp, [rsp + _GPR_SAVE + 8*3] 
-	mov     r12, [rsp + _GPR_SAVE + 8*4] 
-	mov     r13, [rsp + _GPR_SAVE + 8*5] 
-	mov     r14, [rsp + _GPR_SAVE + 8*6] 
-	mov     r15, [rsp + _GPR_SAVE + 8*7] 
+	mov     rbx, [rsp + _GPR_SAVE + 8*0]
+	mov     rbp, [rsp + _GPR_SAVE + 8*3]
+	mov     r12, [rsp + _GPR_SAVE + 8*4]
+	mov     r13, [rsp + _GPR_SAVE + 8*5]
+	mov     r14, [rsp + _GPR_SAVE + 8*6]
+	mov     r15, [rsp + _GPR_SAVE + 8*7]
 	add     rsp, STACK_SPACE
 
 	ret

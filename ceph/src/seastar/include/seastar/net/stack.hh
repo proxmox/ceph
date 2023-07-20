@@ -22,8 +22,8 @@
 
 #include <chrono>
 #include <seastar/net/api.hh>
+#include <seastar/core/internal/api-level.hh>
 #include <seastar/core/memory.hh>
-#include "../core/internal/api-level.hh"
 
 namespace seastar {
 
@@ -47,6 +47,7 @@ public:
     virtual void set_sockopt(int level, int optname, const void* data, size_t len) = 0;
     virtual int get_sockopt(int level, int optname, void* data, size_t len) const = 0;
     virtual socket_address local_address() const noexcept = 0;
+    virtual future<> wait_input_shutdown() = 0;
 };
 
 class socket_impl {

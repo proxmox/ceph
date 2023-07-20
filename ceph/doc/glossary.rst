@@ -12,12 +12,13 @@
 	:ref:`BlueStore<rados_config_storage_devices_bluestore>`
                 OSD BlueStore is a storage back end used by OSD daemons, and
                 was designed specifically for use with Ceph. BlueStore was
-                introduced in the Ceph Kraken release. In the Ceph Luminous
-                release, BlueStore became Ceph's default storage back end,
-                supplanting FileStore. Unlike :term:`filestore`, BlueStore
-                stores objects directly on Ceph block devices without any file
-                system interface. Since Luminous (12.2), BlueStore has been
-                Ceph's default and recommended storage back end.
+                introduced in the Ceph Kraken release. The Luminous release of
+                Ceph promoted BlueStore to the default OSD back end,
+                supplanting FileStore. As of the Reef release, FileStore is no
+                longer available as a storage backend.
+                
+                BlueStore stores objects directly on Ceph block devices without
+                a mounted file system.  
 
         Bucket
                 In the context of :term:`RGW`, a bucket is a group of objects.
@@ -40,12 +41,12 @@
                 distributed metadata management and POSIX semantics.
 
 	Ceph Block Device
-                A software instrument that orchestrates the storage of
-                block-based data in Ceph. Ceph Block Device (also called "RBD",
-                or "RADOS block device") splits block-based application data
+                Also called "RADOS Block Device" and :term:`RBD`. A software
+                instrument that orchestrates the storage of block-based data in
+                Ceph. Ceph Block Device splits block-based application data
                 into "chunks". RADOS stores these chunks as objects. Ceph Block
                 Device orchestrates the storage of those objects across the
-                storage cluster. See also :term:`RBD`.
+                storage cluster. 
 
 	Ceph Block Storage
                 One of the three kinds of storage supported by Ceph (the other
@@ -187,9 +188,13 @@
                 applications, Ceph Users, and :term:`Ceph Client`\s. Ceph
                 Storage Clusters receive data from :term:`Ceph Client`\s.
 
-	cephx
-                The Ceph authentication protocol. Cephx operates like Kerberos,
-                but it has no single point of failure.
+	CephX
+                The Ceph authentication protocol. CephX authenticates users and
+                daemons. CephX operates like Kerberos, but it has no single
+                point of failure. See the :ref:`High-availability
+                Authentication section<arch_high_availability_authentication>`
+                of the Architecture document and the :ref:`CephX Configuration
+                Reference<rados-cephx-config-ref>`. 
 
 	Client
                 A client is any program external to Ceph that uses a Ceph
@@ -207,12 +212,13 @@
                 Architecture document<architecture_cluster_map>` for details.
 
 	CRUSH
-                Controlled Replication Under Scalable Hashing. It is the
-                algorithm Ceph uses to compute object storage locations.
+                **C**\ontrolled **R**\eplication **U**\nder **S**\calable
+                **H**\ashing. The algorithm that Ceph uses to compute object
+                storage locations.
 
 	CRUSH rule
                 The CRUSH data placement rule that applies to a particular
-                pool(s).
+                pool or pools.
 
         DAS
                 **D**\irect-\ **A**\ttached **S**\torage. Storage that is
@@ -229,10 +235,6 @@
                 Another name for :term:`Dashboard`.
 
 	Dashboard Plugin
-	filestore
-                A back end for OSD daemons, where a Journal is needed and files
-                are written to the filesystem.
-
         FQDN
                 **F**\ully **Q**\ualified **D**\omain **N**\ame. A domain name
                 that is applied to a node in a network and that specifies the
@@ -248,10 +250,14 @@
                 Any single machine or server in a Ceph Cluster. See :term:`Ceph
                 Node`.
 
+        Hybrid OSD  
+                Refers to an OSD that has both HDD and SSD drives.
+
 	LVM tags
-                Extensible metadata for LVM volumes and groups. It is used to
-                store Ceph-specific information about devices and its
-                relationship with OSDs.
+                **L**\ogical **V**\olume **M**\anager tags. Extensible metadata
+                for LVM volumes and groups. They are used to store
+                Ceph-specific information about devices and its relationship
+                with OSDs.
 
 	:ref:`MDS<cephfs_add_remote_mds>`
                 The Ceph **M**\eta\ **D**\ata **S**\erver daemon. Also referred
@@ -302,6 +308,20 @@
                 state of a multi-site configuration. When the period is updated,
                 the "epoch" is said thereby to have been changed.
 
+        Placement Groups (PGs)
+                Placement groups (PGs) are subsets of each logical Ceph pool.
+                Placement groups perform the function of placing objects (as a
+                group) into OSDs. Ceph manages data internally at
+                placement-group granularity: this scales better than would
+                managing individual (and therefore more numerous) RADOS
+                objects. A cluster that has a larger number of placement groups
+                (for example, 100 per OSD) is better balanced than an otherwise
+                identical cluster with a smaller number of placement groups. 
+                
+                Ceph's internal RADOS objects are each mapped to a specific
+                placement group, and each placement group belongs to exactly
+                one Ceph pool. 
+
 	:ref:`Pool<rados_pools>`
 		A pool is a logical partition used to store objects.
 
@@ -329,8 +349,8 @@
                 See :term:`RGW`.
 
 	RBD
-                The block storage component of Ceph. Also called "RADOS Block
-                Device" or :term:`Ceph Block Device`.
+                **R**\ADOS **B**\lock **D**\evice. See :term:`Ceph Block
+                Device`.
 
         :ref:`Realm<rgw-realms>`
                 In the context of RADOS Gateway (RGW), a realm is a globally
@@ -364,11 +384,33 @@
                 (MON+OSD). See also :term:`RADOS`.
 
 	:ref:`RGW<object-gateway>`
-                **R**\ADOS **G**\ate **W**\ay.
+                **R**\ADOS **G**\ate\ **w**\ay.
 
-                The component of Ceph that provides a gateway to both the
-                Amazon S3 RESTful API and the OpenStack Swift API. Also called
-                "RADOS Gateway" and "Ceph Object Gateway".
+                Also called "Ceph Object Gateway". The component of Ceph that
+                provides a gateway to both the Amazon S3 RESTful API and the
+                OpenStack Swift API. 
+
+        scrubs
+
+                The processes by which Ceph ensures data integrity. During the
+                process of scrubbing, Ceph generates a catalog of all objects
+                in a placement group, then ensures that none of the objects are
+                missing or mismatched by comparing each primary object against
+                its replicas, which are stored across other OSDs. Any PG
+                is determined to have a copy of an object that is different
+                than the other copies or is missing entirely is marked
+                "inconsistent" (that is, the PG is marked "inconsistent"). 
+
+                There are two kinds of scrubbing: light scrubbing and deep
+                scrubbing (also called "normal scrubbing" and "deep scrubbing",
+                respectively). Light scrubbing is performed daily and does
+                nothing more than confirm that a given object exists and that
+                its metadata is correct. Deep scrubbing is performed weekly and
+                reads the data and uses checksums to ensure data integrity.
+
+                See :ref:`Scrubbing <rados_config_scrubbing>` in the RADOS OSD
+                Configuration Reference Guide and page 141 of *Mastering Ceph,
+                second edition* (Fisk, Nick. 2019).
 
         secrets
                 Secrets are credentials used to perform digital authentication
@@ -377,7 +419,7 @@
                 keys, private certificates, or encryption keys.
 
         SDS
-                Software-defined storage.
+                **S**\oftware-**d**\efined **S**\torage.
 
 	systemd oneshot
                 A systemd ``type`` where a command is defined in ``ExecStart``
@@ -386,6 +428,12 @@
 
 	Teuthology
 		The collection of software that performs scripted tests on Ceph.
+
+        User
+                An individual or a system actor (for example, an application)
+                that uses Ceph clients to interact with the :term:`Ceph Storage
+                Cluster`. See :ref:`User<rados-ops-user>` and :ref:`User
+                Management<user-management>`.
 
         Zone
                 In the context of :term:`RGW`, a zone is a logical group that

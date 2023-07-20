@@ -65,16 +65,16 @@ steps below:
      ceph orch apply alertmanager
 
 #. Deploy Prometheus. A single Prometheus instance is sufficient, but
-   for high availablility (HA) you might want to deploy two:
+   for high availability (HA) you might want to deploy two:
 
    .. prompt:: bash #
 
      ceph orch apply prometheus
 
-   or 
+   or
 
    .. prompt:: bash #
-     
+
      ceph orch apply prometheus --placement 'count:2'
 
 #. Deploy grafana:
@@ -110,7 +110,8 @@ These two services are not deployed by default in a Ceph cluster. To enable the 
 Networks and Ports
 ~~~~~~~~~~~~~~~~~~
 
-All monitoring services can have the network and port they bind to configured with a yaml service specification
+All monitoring services can have the network and port they bind to configured with a yaml service specification. By default
+cephadm will use ``https`` protocol when configuring Grafana daemons unless the user explicitly sets the protocol to ``http``.
 
 example spec file:
 
@@ -124,6 +125,7 @@ example spec file:
     - 192.169.142.0/24
     spec:
       port: 4200
+      protocol: http
 
 .. _cephadm_monitoring-images:
 
@@ -197,12 +199,26 @@ configuration files for monitoring services.
 
 Internally, cephadm already uses `Jinja2
 <https://jinja.palletsprojects.com/en/2.11.x/>`_ templates to generate the
-configuration files for all monitoring components. To be able to customize the
-configuration of Prometheus, Grafana or the Alertmanager it is possible to store
-a Jinja2 template for each service that will be used for configuration
-generation instead. This template will be evaluated every time a service of that
-kind is deployed or reconfigured. That way, the custom configuration is
-preserved and automatically applied on future deployments of these services.
+configuration files for all monitoring components. Starting from version 17.2.3,
+cephadm supports Prometheus http service discovery, and uses this endpoint for the
+definition and management of the embedded Prometheus service. The endpoint listens on
+``https://<mgr-ip>:8765/sd/`` (the port is
+configurable through the variable ``service_discovery_port``) and returns scrape target
+information in `http_sd_config format
+<https://prometheus.io/docs/prometheus/latest/configuration/configuration/#http_sd_config/>`_
+
+Customers with external monitoring stack can use `ceph-mgr` service discovery endpoint
+to get scraping configuration. Root certificate of the server can be obtained by the
+following command:
+
+   .. prompt:: bash #
+
+     ceph orch sd dump cert
+
+The configuration of Prometheus, Grafana, or Alertmanager may be customized by storing
+a Jinja2 template for each service. This template will be evaluated every time a service
+of that kind is deployed or reconfigured. That way, the custom configuration is preserved
+and automatically applied on future deployments of these services.
 
 .. note::
 
@@ -222,6 +238,8 @@ set``:
 - ``services/grafana/grafana.ini``
 - ``services/prometheus/prometheus.yml``
 - ``services/prometheus/alerting/custom_alerts.yml``
+- ``services/loki.yml``
+- ``services/promtail.yml``
 
 You can look up the file templates that are currently used by cephadm in
 ``src/pybind/mgr/cephadm/templates``:
@@ -230,6 +248,8 @@ You can look up the file templates that are currently used by cephadm in
 - ``services/grafana/ceph-dashboard.yml.j2``
 - ``services/grafana/grafana.ini.j2``
 - ``services/prometheus/prometheus.yml.j2``
+- ``services/loki.yml.j2``
+- ``services/promtail.yml.j2``
 
 Usage
 """""
@@ -291,6 +311,21 @@ cluster.
 
   By default, ceph-mgr presents prometheus metrics on port 9283 on each host
   running a ceph-mgr daemon.  Configure prometheus to scrape these.
+
+To make this integration easier, cephadm provides a service discovery endpoint at
+``https://<mgr-ip>:8765/sd/``. This endpoint can be used by an external
+Prometheus server to retrieve target information for a specific service. Information returned
+by this endpoint uses the format specified by the Prometheus `http_sd_config option
+<https://prometheus.io/docs/prometheus/latest/configuration/configuration/#http_sd_config/>`_
+
+Here's an example prometheus job definition that uses the cephadm service discovery endpoint
+
+  .. code-block:: bash
+
+     - job_name: 'ceph-exporter'  
+       http_sd_configs:  
+       - url: http://<mgr-ip>:8765/sd/prometheus/sd-config?service=ceph-exporter
+
 
 * To enable the dashboard's prometheus-based alerting, see :ref:`dashboard-alerting`.
 
@@ -388,14 +423,17 @@ Configuring SSL/TLS for Grafana
 
 ``cephadm`` deploys Grafana using the certificate defined in the ceph
 key/value store. If no certificate is specified, ``cephadm`` generates a
-self-signed certificate during the deployment of the Grafana service.
+self-signed certificate during the deployment of the Grafana service. Each
+certificate is specific for the host it was generated on.
 
 A custom certificate can be configured using the following commands:
 
 .. prompt:: bash #
 
-  ceph config-key set mgr/cephadm/grafana_key -i $PWD/key.pem
-  ceph config-key set mgr/cephadm/grafana_crt -i $PWD/certificate.pem
+  ceph config-key set mgr/cephadm/{hostname}/grafana_key -i $PWD/key.pem
+  ceph config-key set mgr/cephadm/{hostname}/grafana_crt -i $PWD/certificate.pem
+
+Where `hostname` is the hostname for the host where grafana service is deployed.
 
 If you have already deployed Grafana, run ``reconfig`` on the service to
 update its configuration:
@@ -428,6 +466,28 @@ Then apply this specification:
 
 Grafana will now create an admin user called ``admin`` with the
 given password.
+
+Turning off anonymous access
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default, cephadm allows anonymous users (users who have not provided any
+login information) limited, viewer only access to the grafana dashboard. In
+order to set up grafana to only allow viewing from logged in users, you can
+set ``anonymous_access: False`` in your grafana spec.
+
+.. code-block:: yaml
+
+  service_type: grafana
+  placement:
+    hosts:
+    - host1
+  spec:
+    anonymous_access: False
+    initial_admin_password: "mypassword"
+
+Since deploying grafana with anonymous access set to false without an initial
+admin password set would make the dashboard inaccessible, cephadm requires
+setting the ``initial_admin_password`` when ``anonymous_access`` is set to false.
 
 
 Setting up Alertmanager

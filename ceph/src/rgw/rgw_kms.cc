@@ -1,4 +1,4 @@
-// -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
 /**
@@ -80,7 +80,7 @@ public:
 	return r;
     }
     void* Realloc(void* p, size_t old, size_t nw) {
-	void *r;
+	void *r = nullptr;
 	if (nw) r = malloc(nw);
 	if (nw > old) nw = old;
 	if (r && old) memcpy(r, p, nw);
@@ -873,7 +873,7 @@ static int get_actual_key_from_conf(const DoutPrefixProvider* dpp,
 
   map<string, string>::iterator it = str_map.find(std::string(key_id));
   if (it == str_map.end())
-    return -ERR_INVALID_ACCESS_KEY;
+    return -EINVAL;
 
   std::string master_key;
   try {

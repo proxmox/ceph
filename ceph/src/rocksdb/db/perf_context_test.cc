@@ -3,6 +3,8 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 //
+#include "rocksdb/perf_context.h"
+
 #include <algorithm>
 #include <iostream>
 #include <thread>
@@ -15,8 +17,8 @@
 #include "port/port.h"
 #include "rocksdb/db.h"
 #include "rocksdb/memtablerep.h"
-#include "rocksdb/perf_context.h"
 #include "rocksdb/slice_transform.h"
+#include "rocksdb/system_clock.h"
 #include "test_util/testharness.h"
 #include "util/stop_watch.h"
 #include "util/string_util.h"
@@ -37,61 +39,61 @@ const std::string kDbName =
 namespace ROCKSDB_NAMESPACE {
 
 std::shared_ptr<DB> OpenDb(bool read_only = false) {
-    DB* db;
-    Options options;
-    options.create_if_missing = true;
-    options.max_open_files = -1;
-    options.write_buffer_size = FLAGS_write_buffer_size;
-    options.max_write_buffer_number = FLAGS_max_write_buffer_number;
-    options.min_write_buffer_number_to_merge =
+  DB* db;
+  Options options;
+  options.create_if_missing = true;
+  options.max_open_files = -1;
+  options.write_buffer_size = FLAGS_write_buffer_size;
+  options.max_write_buffer_number = FLAGS_max_write_buffer_number;
+  options.min_write_buffer_number_to_merge =
       FLAGS_min_write_buffer_number_to_merge;
 
-    if (FLAGS_use_set_based_memetable) {
+  if (FLAGS_use_set_based_memetable) {
 #ifndef ROCKSDB_LITE
-      options.prefix_extractor.reset(
-          ROCKSDB_NAMESPACE::NewFixedPrefixTransform(0));
-      options.memtable_factory.reset(NewHashSkipListRepFactory());
+    options.prefix_extractor.reset(
+        ROCKSDB_NAMESPACE::NewFixedPrefixTransform(0));
+    options.memtable_factory.reset(NewHashSkipListRepFactory());
 #endif  // ROCKSDB_LITE
-    }
+  }
 
-    Status s;
-    if (!read_only) {
-      s = DB::Open(options, kDbName, &db);
-    } else {
-      s = DB::OpenForReadOnly(options, kDbName, &db);
-    }
-    EXPECT_OK(s);
-    return std::shared_ptr<DB>(db);
+  Status s;
+  if (!read_only) {
+    s = DB::Open(options, kDbName, &db);
+  } else {
+    s = DB::OpenForReadOnly(options, kDbName, &db);
+  }
+  EXPECT_OK(s);
+  return std::shared_ptr<DB>(db);
 }
 
 class PerfContextTest : public testing::Test {};
 
 TEST_F(PerfContextTest, SeekIntoDeletion) {
-  DestroyDB(kDbName, Options());
+  ASSERT_OK(DestroyDB(kDbName, Options()));
   auto db = OpenDb();
   WriteOptions write_options;
   ReadOptions read_options;
 
   for (int i = 0; i < FLAGS_total_keys; ++i) {
-    std::string key = "k" + ToString(i);
-    std::string value = "v" + ToString(i);
+    std::string key = "k" + std::to_string(i);
+    std::string value = "v" + std::to_string(i);
 
-    db->Put(write_options, key, value);
+    ASSERT_OK(db->Put(write_options, key, value));
   }
 
-  for (int i = 0; i < FLAGS_total_keys -1 ; ++i) {
-    std::string key = "k" + ToString(i);
-    db->Delete(write_options, key);
+  for (int i = 0; i < FLAGS_total_keys - 1; ++i) {
+    std::string key = "k" + std::to_string(i);
+    ASSERT_OK(db->Delete(write_options, key));
   }
 
   HistogramImpl hist_get;
   HistogramImpl hist_get_time;
   for (int i = 0; i < FLAGS_total_keys - 1; ++i) {
-    std::string key = "k" + ToString(i);
+    std::string key = "k" + std::to_string(i);
     std::string value;
 
     get_perf_context()->Reset();
-    StopWatchNano timer(Env::Default());
+    StopWatchNano timer(SystemClock::Default().get());
     timer.Start();
     auto status = db->Get(read_options, key, &value);
     auto elapsed_nanos = timer.ElapsedNanos();
@@ -101,8 +103,9 @@ TEST_F(PerfContextTest, SeekIntoDeletion) {
   }
 
   if (FLAGS_verbose) {
-    std::cout << "Get user key comparison: \n" << hist_get.ToString()
-              << "Get time: \n" << hist_get_time.ToString();
+    std::cout << "Get user key comparison: \n"
+              << hist_get.ToString() << "Get time: \n"
+              << hist_get_time.ToString();
   }
 
   {
@@ -110,16 +113,15 @@ TEST_F(PerfContextTest, SeekIntoDeletion) {
     std::unique_ptr<Iterator> iter(db->NewIterator(read_options));
 
     get_perf_context()->Reset();
-    StopWatchNano timer(Env::Default(), true);
+    StopWatchNano timer(SystemClock::Default().get(), true);
     iter->SeekToFirst();
     hist_seek_to_first.Add(get_perf_context()->user_key_comparison_count);
     auto elapsed_nanos = timer.ElapsedNanos();
 
     if (FLAGS_verbose) {
-      std::cout << "SeekToFirst uesr key comparison: \n"
-                << hist_seek_to_first.ToString()
-                << "ikey skipped: " << get_perf_context()->internal_key_skipped_count
-                << "\n"
+      std::cout << "SeekToFirst user key comparison: \n"
+                << hist_seek_to_first.ToString() << "ikey skipped: "
+                << get_perf_context()->internal_key_skipped_count << "\n"
                 << "idelete skipped: "
                 << get_perf_context()->internal_delete_skipped_count << "\n"
                 << "elapsed: " << elapsed_nanos << "\n";
@@ -129,16 +131,17 @@ TEST_F(PerfContextTest, SeekIntoDeletion) {
   HistogramImpl hist_seek;
   for (int i = 0; i < FLAGS_total_keys; ++i) {
     std::unique_ptr<Iterator> iter(db->NewIterator(read_options));
-    std::string key = "k" + ToString(i);
+    std::string key = "k" + std::to_string(i);
 
     get_perf_context()->Reset();
-    StopWatchNano timer(Env::Default(), true);
+    StopWatchNano timer(SystemClock::Default().get(), true);
     iter->Seek(key);
     auto elapsed_nanos = timer.ElapsedNanos();
     hist_seek.Add(get_perf_context()->user_key_comparison_count);
     if (FLAGS_verbose) {
       std::cout << "seek cmp: " << get_perf_context()->user_key_comparison_count
-                << " ikey skipped " << get_perf_context()->internal_key_skipped_count
+                << " ikey skipped "
+                << get_perf_context()->internal_key_skipped_count
                 << " idelete skipped "
                 << get_perf_context()->internal_delete_skipped_count
                 << " elapsed: " << elapsed_nanos << "ns\n";
@@ -146,7 +149,7 @@ TEST_F(PerfContextTest, SeekIntoDeletion) {
 
     get_perf_context()->Reset();
     ASSERT_TRUE(iter->Valid());
-    StopWatchNano timer2(Env::Default(), true);
+    StopWatchNano timer2(SystemClock::Default().get(), true);
     iter->Next();
     auto elapsed_nanos2 = timer2.ElapsedNanos();
     if (FLAGS_verbose) {
@@ -156,7 +159,7 @@ TEST_F(PerfContextTest, SeekIntoDeletion) {
   }
 
   if (FLAGS_verbose) {
-    std::cout << "Seek uesr key comparison: \n" << hist_seek.ToString();
+    std::cout << "Seek user key comparison: \n" << hist_seek.ToString();
   }
 }
 
@@ -165,7 +168,7 @@ TEST_F(PerfContextTest, StopWatchNanoOverhead) {
   const int kTotalIterations = 1000000;
   std::vector<uint64_t> timings(kTotalIterations);
 
-  StopWatchNano timer(Env::Default(), true);
+  StopWatchNano timer(SystemClock::Default().get(), true);
   for (auto& timing : timings) {
     timing = timer.ElapsedNanos(true /* reset */);
   }
@@ -186,7 +189,7 @@ TEST_F(PerfContextTest, StopWatchOverhead) {
   uint64_t elapsed = 0;
   std::vector<uint64_t> timings(kTotalIterations);
 
-  StopWatch timer(Env::Default(), nullptr, 0, &elapsed);
+  StopWatch timer(SystemClock::Default().get(), nullptr, 0, &elapsed);
   for (auto& timing : timings) {
     timing = elapsed;
   }
@@ -204,7 +207,7 @@ TEST_F(PerfContextTest, StopWatchOverhead) {
 }
 
 void ProfileQueries(bool enabled_time = false) {
-  DestroyDB(kDbName, Options());    // Start this test with a fresh DB
+  ASSERT_OK(DestroyDB(kDbName, Options()));  // Start this test with a fresh DB
 
   auto db = OpenDb();
 
@@ -264,13 +267,13 @@ void ProfileQueries(bool enabled_time = false) {
       continue;
     }
 
-    std::string key = "k" + ToString(i);
-    std::string value = "v" + ToString(i);
+    std::string key = "k" + std::to_string(i);
+    std::string value = "v" + std::to_string(i);
 
     std::vector<std::string> values;
 
     get_perf_context()->Reset();
-    db->Put(write_options, key, value);
+    ASSERT_OK(db->Put(write_options, key, value));
     if (++num_mutex_waited > 3) {
 #ifndef NDEBUG
       ThreadStatusUtil::TEST_SetStateDelay(ThreadStatus::STATE_MUTEX_WAIT, 0U);
@@ -296,8 +299,8 @@ void ProfileQueries(bool enabled_time = false) {
     if (i == kFlushFlag) {
       continue;
     }
-    std::string key = "k" + ToString(i);
-    std::string expected_value = "v" + ToString(i);
+    std::string key = "k" + std::to_string(i);
+    std::string expected_value = "v" + std::to_string(i);
     std::string value;
 
     std::vector<Slice> multiget_keys = {Slice(key)};
@@ -314,30 +317,37 @@ void ProfileQueries(bool enabled_time = false) {
     hist_get.Add(get_perf_context()->user_key_comparison_count);
 
     get_perf_context()->Reset();
-    db->MultiGet(read_options, multiget_keys, &values);
+    auto statuses = db->MultiGet(read_options, multiget_keys, &values);
+    for (const auto& s : statuses) {
+      ASSERT_OK(s);
+    }
     hist_mget_snapshot.Add(get_perf_context()->get_snapshot_time);
     hist_mget_memtable.Add(get_perf_context()->get_from_memtable_time);
     hist_mget_files.Add(get_perf_context()->get_from_output_files_time);
-    hist_mget_num_memtable_checked.Add(get_perf_context()->get_from_memtable_count);
+    hist_mget_num_memtable_checked.Add(
+        get_perf_context()->get_from_memtable_count);
     hist_mget_post_process.Add(get_perf_context()->get_post_process_time);
     hist_mget.Add(get_perf_context()->user_key_comparison_count);
   }
 
   if (FLAGS_verbose) {
-    std::cout << "Put uesr key comparison: \n" << hist_put.ToString()
-              << "Get uesr key comparison: \n" << hist_get.ToString()
-              << "MultiGet uesr key comparison: \n" << hist_get.ToString();
+    std::cout << "Put user key comparison: \n"
+              << hist_put.ToString() << "Get user key comparison: \n"
+              << hist_get.ToString() << "MultiGet user key comparison: \n"
+              << hist_get.ToString();
     std::cout << "Put(): Pre and Post Process Time: \n"
               << hist_write_pre_post.ToString() << " Writing WAL time: \n"
               << hist_write_wal_time.ToString() << "\n"
               << " Writing Mem Table time: \n"
               << hist_write_memtable_time.ToString() << "\n"
-              << " Write Delay: \n" << hist_write_delay_time.ToString() << "\n"
+              << " Write Delay: \n"
+              << hist_write_delay_time.ToString() << "\n"
               << " Waiting for Batch time: \n"
               << hist_write_thread_wait_nanos.ToString() << "\n"
               << " Scheduling Flushes and Compactions Time: \n"
               << hist_write_scheduling_time.ToString() << "\n"
-              << " Total DB mutex nanos: \n" << total_db_mutex_nanos << "\n";
+              << " Total DB mutex nanos: \n"
+              << total_db_mutex_nanos << "\n";
 
     std::cout << "Get(): Time to get snapshot: \n"
               << hist_get_snapshot.ToString()
@@ -347,8 +357,8 @@ void ProfileQueries(bool enabled_time = false) {
               << hist_get_files.ToString() << "\n"
               << " Number of memtables checked: \n"
               << hist_num_memtable_checked.ToString() << "\n"
-              << " Time to post process: \n" << hist_get_post_process.ToString()
-              << "\n";
+              << " Time to post process: \n"
+              << hist_get_post_process.ToString() << "\n";
 
     std::cout << "MultiGet(): Time to get snapshot: \n"
               << hist_mget_snapshot.ToString()
@@ -385,7 +395,7 @@ void ProfileQueries(bool enabled_time = false) {
     EXPECT_GT(hist_write_scheduling_time.Average(), 0);
 
 #ifndef NDEBUG
-    ASSERT_GT(total_db_mutex_nanos, 2000U);
+    ASSERT_LT(total_db_mutex_nanos, 100U);
 #endif
   }
 
@@ -410,8 +420,8 @@ void ProfileQueries(bool enabled_time = false) {
     if (i == kFlushFlag) {
       continue;
     }
-    std::string key = "k" + ToString(i);
-    std::string expected_value = "v" + ToString(i);
+    std::string key = "k" + std::to_string(i);
+    std::string expected_value = "v" + std::to_string(i);
     std::string value;
 
     std::vector<Slice> multiget_keys = {Slice(key)};
@@ -428,18 +438,23 @@ void ProfileQueries(bool enabled_time = false) {
     hist_get.Add(get_perf_context()->user_key_comparison_count);
 
     get_perf_context()->Reset();
-    db->MultiGet(read_options, multiget_keys, &values);
+    auto statuses = db->MultiGet(read_options, multiget_keys, &values);
+    for (const auto& s : statuses) {
+      ASSERT_OK(s);
+    }
     hist_mget_snapshot.Add(get_perf_context()->get_snapshot_time);
     hist_mget_memtable.Add(get_perf_context()->get_from_memtable_time);
     hist_mget_files.Add(get_perf_context()->get_from_output_files_time);
-    hist_mget_num_memtable_checked.Add(get_perf_context()->get_from_memtable_count);
+    hist_mget_num_memtable_checked.Add(
+        get_perf_context()->get_from_memtable_count);
     hist_mget_post_process.Add(get_perf_context()->get_post_process_time);
     hist_mget.Add(get_perf_context()->user_key_comparison_count);
   }
 
   if (FLAGS_verbose) {
-    std::cout << "ReadOnly Get uesr key comparison: \n" << hist_get.ToString()
-              << "ReadOnly MultiGet uesr key comparison: \n"
+    std::cout << "ReadOnly Get user key comparison: \n"
+              << hist_get.ToString()
+              << "ReadOnly MultiGet user key comparison: \n"
               << hist_mget.ToString();
 
     std::cout << "ReadOnly Get(): Time to get snapshot: \n"
@@ -450,8 +465,8 @@ void ProfileQueries(bool enabled_time = false) {
               << hist_get_files.ToString() << "\n"
               << " Number of memtables checked: \n"
               << hist_num_memtable_checked.ToString() << "\n"
-              << " Time to post process: \n" << hist_get_post_process.ToString()
-              << "\n";
+              << " Time to post process: \n"
+              << hist_get_post_process.ToString() << "\n";
 
     std::cout << "ReadOnly MultiGet(): Time to get snapshot: \n"
               << hist_mget_snapshot.ToString()
@@ -509,7 +524,7 @@ TEST_F(PerfContextTest, KeyComparisonCount) {
 // starts to become linear to the input size.
 
 TEST_F(PerfContextTest, SeekKeyComparison) {
-  DestroyDB(kDbName, Options());
+  ASSERT_OK(DestroyDB(kDbName, Options()));
   auto db = OpenDb();
   WriteOptions write_options;
   ReadOptions read_options;
@@ -532,14 +547,14 @@ TEST_F(PerfContextTest, SeekKeyComparison) {
   HistogramImpl hist_time_diff;
 
   SetPerfLevel(kEnableTime);
-  StopWatchNano timer(Env::Default());
+  StopWatchNano timer(SystemClock::Default().get());
   for (const int i : keys) {
-    std::string key = "k" + ToString(i);
-    std::string value = "v" + ToString(i);
+    std::string key = "k" + std::to_string(i);
+    std::string value = "v" + std::to_string(i);
 
     get_perf_context()->Reset();
     timer.Start();
-    db->Put(write_options, key, value);
+    ASSERT_OK(db->Put(write_options, key, value));
     auto put_time = timer.ElapsedNanos();
     hist_put_time.Add(put_time);
     hist_wal_time.Add(get_perf_context()->write_wal_time);
@@ -547,7 +562,8 @@ TEST_F(PerfContextTest, SeekKeyComparison) {
   }
 
   if (FLAGS_verbose) {
-    std::cout << "Put time:\n" << hist_put_time.ToString() << "WAL time:\n"
+    std::cout << "Put time:\n"
+              << hist_put_time.ToString() << "WAL time:\n"
               << hist_wal_time.ToString() << "time diff:\n"
               << hist_time_diff.ToString();
   }
@@ -556,8 +572,8 @@ TEST_F(PerfContextTest, SeekKeyComparison) {
   HistogramImpl hist_next;
 
   for (int i = 0; i < FLAGS_total_keys; ++i) {
-    std::string key = "k" + ToString(i);
-    std::string value = "v" + ToString(i);
+    std::string key = "k" + std::to_string(i);
+    std::string value = "v" + std::to_string(i);
 
     std::unique_ptr<Iterator> iter(db->NewIterator(read_options));
     get_perf_context()->Reset();
@@ -573,9 +589,10 @@ TEST_F(PerfContextTest, SeekKeyComparison) {
     iter->Next();
     hist_next.Add(get_perf_context()->user_key_comparison_count);
   }
-
+  ASSERT_OK(iter->status());
   if (FLAGS_verbose) {
-    std::cout << "Seek:\n" << hist_seek.ToString() << "Next:\n"
+    std::cout << "Seek:\n"
+              << hist_seek.ToString() << "Next:\n"
               << hist_next.ToString();
   }
 }
@@ -585,26 +602,27 @@ TEST_F(PerfContextTest, DBMutexLockCounter) {
   for (PerfLevel perf_level_test :
        {PerfLevel::kEnableTimeExceptForMutex, PerfLevel::kEnableTime}) {
     for (int c = 0; c < 2; ++c) {
-    InstrumentedMutex mutex(nullptr, Env::Default(), stats_code[c]);
-    mutex.Lock();
-    ROCKSDB_NAMESPACE::port::Thread child_thread([&] {
-      SetPerfLevel(perf_level_test);
-      get_perf_context()->Reset();
-      ASSERT_EQ(get_perf_context()->db_mutex_lock_nanos, 0);
+      InstrumentedMutex mutex(nullptr, SystemClock::Default().get(),
+                              stats_code[c]);
       mutex.Lock();
-      mutex.Unlock();
-      if (perf_level_test == PerfLevel::kEnableTimeExceptForMutex ||
-          stats_code[c] != DB_MUTEX_WAIT_MICROS) {
+      ROCKSDB_NAMESPACE::port::Thread child_thread([&] {
+        SetPerfLevel(perf_level_test);
+        get_perf_context()->Reset();
         ASSERT_EQ(get_perf_context()->db_mutex_lock_nanos, 0);
-      } else {
-        // increment the counter only when it's a DB Mutex
-        ASSERT_GT(get_perf_context()->db_mutex_lock_nanos, 0);
-      }
-    });
-    Env::Default()->SleepForMicroseconds(100);
-    mutex.Unlock();
-    child_thread.join();
-  }
+        mutex.Lock();
+        mutex.Unlock();
+        if (perf_level_test == PerfLevel::kEnableTimeExceptForMutex ||
+            stats_code[c] != DB_MUTEX_WAIT_MICROS) {
+          ASSERT_EQ(get_perf_context()->db_mutex_lock_nanos, 0);
+        } else {
+          // increment the counter only when it's a DB Mutex
+          ASSERT_GT(get_perf_context()->db_mutex_lock_nanos, 0);
+        }
+      });
+      SystemClock::Default()->SleepForMicroseconds(100);
+      mutex.Unlock();
+      child_thread.join();
+    }
   }
 }
 
@@ -612,7 +630,8 @@ TEST_F(PerfContextTest, FalseDBMutexWait) {
   SetPerfLevel(kEnableTime);
   int stats_code[] = {0, static_cast<int>(DB_MUTEX_WAIT_MICROS)};
   for (int c = 0; c < 2; ++c) {
-    InstrumentedMutex mutex(nullptr, Env::Default(), stats_code[c]);
+    InstrumentedMutex mutex(nullptr, SystemClock::Default().get(),
+                            stats_code[c]);
     InstrumentedCondVar lock(&mutex);
     get_perf_context()->Reset();
     mutex.Lock();
@@ -641,7 +660,7 @@ TEST_F(PerfContextTest, ToString) {
 }
 
 TEST_F(PerfContextTest, MergeOperatorTime) {
-  DestroyDB(kDbName, Options());
+  ASSERT_OK(DestroyDB(kDbName, Options()));
   DB* db;
   Options options;
   options.create_if_missing = true;
@@ -795,14 +814,18 @@ TEST_F(PerfContextTest, PerfContextByLevelGetSet) {
                    .bloom_filter_full_positive);
   ASSERT_EQ(1, (*(get_perf_context()->level_to_perf_context))[2]
                    .bloom_filter_full_true_positive);
-  ASSERT_EQ(1, (*(get_perf_context()->level_to_perf_context))[0]
-                  .block_cache_hit_count);
-  ASSERT_EQ(5, (*(get_perf_context()->level_to_perf_context))[2]
-                  .block_cache_hit_count);
-  ASSERT_EQ(2, (*(get_perf_context()->level_to_perf_context))[3]
-                  .block_cache_miss_count);
-  ASSERT_EQ(4, (*(get_perf_context()->level_to_perf_context))[1]
-                  .block_cache_miss_count);
+  ASSERT_EQ(
+      1,
+      (*(get_perf_context()->level_to_perf_context))[0].block_cache_hit_count);
+  ASSERT_EQ(
+      5,
+      (*(get_perf_context()->level_to_perf_context))[2].block_cache_hit_count);
+  ASSERT_EQ(
+      2,
+      (*(get_perf_context()->level_to_perf_context))[3].block_cache_miss_count);
+  ASSERT_EQ(
+      4,
+      (*(get_perf_context()->level_to_perf_context))[1].block_cache_miss_count);
   std::string zero_excluded = get_perf_context()->ToString(true);
   ASSERT_NE(std::string::npos,
             zero_excluded.find("bloom_filter_useful = 1@level5, 2@level7"));
@@ -817,12 +840,12 @@ TEST_F(PerfContextTest, PerfContextByLevelGetSet) {
 }
 
 TEST_F(PerfContextTest, CPUTimer) {
-  if (Env::Default()->NowCPUNanos() == 0) {
-    ROCKSDB_GTEST_SKIP("Target without NowCPUNanos support");
+  if (SystemClock::Default()->CPUNanos() == 0) {
+    ROCKSDB_GTEST_SKIP("Target without CPUNanos support");
     return;
   }
 
-  DestroyDB(kDbName, Options());
+  ASSERT_OK(DestroyDB(kDbName, Options()));
   auto db = OpenDb();
   WriteOptions write_options;
   ReadOptions read_options;
@@ -830,12 +853,12 @@ TEST_F(PerfContextTest, CPUTimer) {
 
   std::string max_str = "0";
   for (int i = 0; i < FLAGS_total_keys; ++i) {
-    std::string i_str = ToString(i);
+    std::string i_str = std::to_string(i);
     std::string key = "k" + i_str;
     std::string value = "v" + i_str;
     max_str = max_str > i_str ? max_str : i_str;
 
-    db->Put(write_options, key, value);
+    ASSERT_OK(db->Put(write_options, key, value));
   }
   std::string last_key = "k" + max_str;
   std::string last_value = "v" + max_str;
@@ -924,9 +947,9 @@ TEST_F(PerfContextTest, CPUTimer) {
     get_perf_context()->Reset();
     auto count = get_perf_context()->iter_seek_cpu_nanos;
     for (int i = 0; i < FLAGS_total_keys; ++i) {
-      iter->Seek("k" + ToString(i));
+      iter->Seek("k" + std::to_string(i));
       ASSERT_TRUE(iter->Valid());
-      ASSERT_EQ("v" + ToString(i), iter->value().ToString());
+      ASSERT_EQ("v" + std::to_string(i), iter->value().ToString());
       auto next_count = get_perf_context()->iter_seek_cpu_nanos;
       ASSERT_GT(next_count, count);
       count = next_count;
@@ -948,6 +971,7 @@ TEST_F(PerfContextTest, CPUTimer) {
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
+  ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
 
   for (int i = 1; i < argc; i++) {

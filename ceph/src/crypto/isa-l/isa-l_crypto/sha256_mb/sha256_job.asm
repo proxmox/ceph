@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -36,6 +36,17 @@
 %define STS_UNKNOWN		0
 %define STS_BEING_PROCESSED	1
 %define STS_COMPLETED		2
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; Threshold constants
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; if number of lanes in use <= threshold, using sb func
+%define SHA256_SB_THRESHOLD_SSE		1
+%define SHA256_SB_THRESHOLD_AVX		1
+%define SHA256_SB_THRESHOLD_AVX2	1
+%define SHA256_SB_THRESHOLD_AVX512	1
+%define SHA256_NI_SB_THRESHOLD_SSE	4 ; shani is faster than sse sha256_mb
+%define SHA256_NI_SB_THRESHOLD_AVX512	6
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Define SHA256_JOB structure

@@ -1813,9 +1813,7 @@ CEPH_RADOS_API unsigned int rados_omap_iter_size(rados_omap_iter_t iter);
 CEPH_RADOS_API void rados_omap_get_end(rados_omap_iter_t iter);
 
 /**
- * Get object stats (size/mtime)
- *
- * TODO: when are these set, and by whom? can they be out of date?
+ * Get object size and most recent update time from the OSD.
  *
  * @param io ioctx
  * @param o object name
@@ -1825,6 +1823,10 @@ CEPH_RADOS_API void rados_omap_get_end(rados_omap_iter_t iter);
  */
 CEPH_RADOS_API int rados_stat(rados_ioctx_t io, const char *o, uint64_t *psize,
                               time_t *pmtime);
+
+CEPH_RADOS_API int rados_stat2(rados_ioctx_t io, const char *o, uint64_t *psize,
+                              struct timespec *pmtime);
+
 /**
  * Execute an OSD class method on an object
  *
@@ -2209,6 +2211,10 @@ CEPH_RADOS_API int rados_aio_flush_async(rados_ioctx_t io,
 CEPH_RADOS_API int rados_aio_stat(rados_ioctx_t io, const char *o,
 		                  rados_completion_t completion,
 		                  uint64_t *psize, time_t *pmtime);
+
+CEPH_RADOS_API int rados_aio_stat2(rados_ioctx_t io, const char *o,
+		                  rados_completion_t completion,
+		                  uint64_t *psize, struct timespec *pmtime);
 
 /**
  * Asynchronously compare an on-disk object range with a buffer
@@ -3221,6 +3227,22 @@ CEPH_RADOS_API int rados_aio_write_op_operate(rados_write_op_t write_op,
 			                      int flags);
 
 /**
+ * Perform a write operation asynchronously
+ * @param write_op operation to perform
+ * @param io the ioctx that the object is in
+ * @param completion what to do when operation has been attempted
+ * @param oid the object id
+ * @param mtime the time to set the mtime to, NULL for the current time
+ * @param flags flags to apply to the entire operation (LIBRADOS_OPERATION_*)
+ */
+CEPH_RADOS_API int rados_aio_write_op_operate2(rados_write_op_t write_op,
+                                               rados_ioctx_t io,
+                                               rados_completion_t completion,
+                                               const char *oid,
+                                               struct timespec *mtime,
+                                               int flags);
+
+/**
  * Create a new rados_read_op_t read operation. This will store all
  * actions to be performed atomically. You must call
  * rados_release_read_op when you are finished with it (after it
@@ -3367,6 +3389,10 @@ CEPH_RADOS_API void rados_read_op_stat(rados_read_op_t read_op,
 			               time_t *pmtime,
 			               int *prval);
 
+CEPH_RADOS_API void rados_read_op_stat2(rados_read_op_t read_op,
+			               uint64_t *psize,
+			               struct timespec *pmtime,
+			               int *prval);
 /**
  * Read bytes from offset into buffer.
  *
@@ -3995,12 +4021,6 @@ CEPH_RADOS_API int rados_pg_command(rados_t cluster, const char *pgstr,
 		                    const char *inbuf, size_t inbuflen,
 		                    char **outbuf, size_t *outbuflen,
 		                    char **outs, size_t *outslen);
-
-CEPH_RADOS_API int rados_mgr_command(rados_t cluster,
-                                     const char **cmd, size_t cmdlen,
-		                     const char *inbuf, size_t inbuflen,
-		                     char **outbuf, size_t *outbuflen,
-		                     char **outs, size_t *outslen);
 
 /*
  * This is not a doxygen comment leadin, because doxygen breaks on

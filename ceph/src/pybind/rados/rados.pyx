@@ -224,6 +224,13 @@ class IsConnected(Error):
                 "RADOS is connected error (%s)" % message, errno)
 
 
+class ConnectionShutdown(OSError):
+    """ `ConnectionShutdown` class, derived from `OSError` """
+    def __init__(self, message, errno=None):
+        super(ConnectionShutdown, self).__init__(
+                "RADOS connection was shutdown (%s)" % message, errno)
+
+
 IF UNAME_SYSNAME == "FreeBSD":
     cdef errno_to_exception = {
         errno.EPERM     : PermissionError,
@@ -240,6 +247,7 @@ IF UNAME_SYSNAME == "FreeBSD":
         errno.EISCONN   : IsConnected,
         errno.EINVAL    : InvalidArgumentError,
         errno.ENOTCONN  : NotConnected,
+        errno.ESHUTDOWN : ConnectionShutdown,
     }
 ELSE:
     cdef errno_to_exception = {
@@ -257,6 +265,7 @@ ELSE:
         errno.EISCONN   : IsConnected,
         errno.EINVAL    : InvalidArgumentError,
         errno.ENOTCONN  : NotConnected,
+        errno.ESHUTDOWN : ConnectionShutdown,
     }
 
 
@@ -2994,7 +3003,7 @@ returned %d, but should return zero on success." % (self.name, ret))
 
             - ``num_object_copies`` (int) - number of object copies
 
-            - ``num_objects_missing_on_primary`` (int) - number of objets
+            - ``num_objects_missing_on_primary`` (int) - number of objects
                 missing on primary
 
             - ``num_objects_unfound`` (int) - number of unfound objects

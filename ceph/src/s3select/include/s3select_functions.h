@@ -5,7 +5,6 @@
 #include "s3select_oper.h"
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/trim.hpp>
-#include <regex>
 #include <boost/regex.hpp>
 #include <algorithm>
 
@@ -221,6 +220,7 @@ enum class s3select_func_En_t {ADD,
                                UPPER,
                                NULLIF,
                                BETWEEN,
+                               NOT_BETWEEN,
                                IS_NULL,
                                IS_NOT_NULL,
                                IN,
@@ -243,8 +243,8 @@ class s3select_functions
 private:
 
   using FunctionLibrary = std::map<std::string, s3select_func_En_t>;
-  std::list<base_statement*> __all_query_functions;
   s3select_allocator* m_s3select_allocator;
+  std::set<base_statement*>* m_ast_nodes_for_cleanup;
 
   const FunctionLibrary m_functions_library =
   {
@@ -289,6 +289,7 @@ private:
     {"upper", s3select_func_En_t::UPPER},
     {"nullif", s3select_func_En_t::NULLIF},
     {"#between#", s3select_func_En_t::BETWEEN},
+    {"#not_between#", s3select_func_En_t::NOT_BETWEEN},
     {"#is_null#", s3select_func_En_t::IS_NULL},
     {"#is_not_null#", s3select_func_En_t::IS_NOT_NULL},
     {"#in_predicate#", s3select_func_En_t::IN},
@@ -308,18 +309,19 @@ public:
 
   base_function* create(std::string_view fn_name,const bs_stmt_vec_t&);
 
-  s3select_functions():m_s3select_allocator(nullptr)
+  s3select_functions():m_s3select_allocator(nullptr),m_ast_nodes_for_cleanup(nullptr)
   {
   }
 
-  void push_for_cleanup(base_statement* f)
-  {
-    __all_query_functions.push_back(f);
-  }
 
   void setAllocator(s3select_allocator* alloc)
   {
     m_s3select_allocator = alloc;
+  }
+
+  void set_AST_nodes_for_cleanup(std::set<base_statement*>* ast_for_cleanup)
+  {
+	m_ast_nodes_for_cleanup = ast_for_cleanup;
   }
 
   s3select_allocator* getAllocator()
@@ -363,10 +365,7 @@ private:
     }
     m_func_impl = f;
     m_is_aggregate_function= m_func_impl->is_aggregate();
-    m_s3select_functions->push_for_cleanup(this);
-    //placement new is releasing the main-buffer in which all AST nodes
-    //allocating from it. meaning no calls to destructors.
-    //the cleanup method will trigger all destructors.
+
   }
 
 public:
@@ -376,13 +375,14 @@ public:
     return m_func_impl;
   }
 
-  void traverse_and_apply(scratch_area* sa, projection_alias* pa) override
+  void traverse_and_apply(scratch_area* sa, projection_alias* pa,bool json_statement) override
   {
     m_scratch = sa;
     m_aliases = pa;
+    m_json_statement = json_statement;
     for (base_statement* ba : arguments)
     {
-      ba->traverse_and_apply(sa, pa);
+      ba->traverse_and_apply(sa, pa, json_statement);
     }
   }
 
@@ -483,20 +483,6 @@ public:
   virtual ~__function() = default;
 };
 
-
-  void s3select_functions::clean()
-  {
-    for(auto d : __all_query_functions)
-    {
-      if (d->is_function())
-      {
-        dynamic_cast<__function*>(d)->impl()->dtor();
-      }
-      d->dtor();
-    }
-
-  }
-
 /*
     s3-select function defintions
 */
@@ -568,7 +554,20 @@ struct _fn_count : public base_function
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
-    count += 1;
+    if (args->size())
+    {// in case argument exist, should count only non-null.
+      auto iter = args->begin();
+      base_statement* x = *iter;
+
+      if(!x->eval().is_null())
+      {
+	count += 1;
+      }
+    }
+    else
+    {//in case of non-arguments // count()
+	count += 1;
+    }
 
     return true;
   }
@@ -1436,6 +1435,25 @@ struct _fn_between : public base_function
   }
 };
 
+struct _fn_not_between : public base_function
+{
+
+  value res;
+  _fn_between between_op;
+  
+  bool operator()(bs_stmt_vec_t* args, variable* result) override
+  {
+    between_op(args,result);
+   
+    if (result->get_value().is_true() == 0) {
+      result->set_value(true);
+    } else {
+      result->set_value(false);
+    }
+    return true;
+  }
+};
+
 static char s3select_ver[10]="41.a";
 
 struct _fn_version : public base_function
@@ -1517,21 +1535,12 @@ struct _fn_in : public base_function
   }
 };
 
-struct _fn_like : public base_function
+struct _fn_like : public base_like
 {
-  value res;
-  std::regex compiled_regex;
-  bool constant_state;
-  value like_expr_val;
-  value escape_expr_val;
-
-
   explicit _fn_like(base_statement* esc, base_statement* like_expr)
   {
-    constant_state = false;
-
     auto is_constant = [&](base_statement* bs) {
-      if (dynamic_cast<variable*>(bs) && dynamic_cast<variable*>(bs)->m_var_type == variable::var_t::COL_VALUE) {
+      if (dynamic_cast<variable*>(bs) && dynamic_cast<variable*>(bs)->m_var_type == variable::var_t::COLUMN_VALUE) {
         return true;
       } else {
         return false;
@@ -1544,217 +1553,13 @@ struct _fn_like : public base_function
 
     if(constant_state == true)
     {
-      escape_expr_val = esc->eval();
-      like_expr_val = like_expr->eval();
-
-      if (like_expr_val.type != value::value_En_t::STRING)  {
-        throw base_s3select_exception("like expression must be string");
-      }
-
-      if (escape_expr_val.type != value::value_En_t::STRING)  {
-        throw base_s3select_exception("escape expression must be string");
-      }
-
+      param_validation(esc, like_expr);
       std::vector<char> like_as_regex = transform(like_expr_val.str(), *escape_expr_val.str());
-      std::string like_as_regex_str(like_as_regex.begin(), like_as_regex.end());
-      compiled_regex = std::regex(like_as_regex_str);
+      compile(like_as_regex);
     }
-
   }
 
-  std::vector<char> transform(const char* s, char escape)
-  {   
-  enum  state_expr_t {START , ESCAPE, START_STAR_CHAR , START_METACHAR, START_ANYCHAR , METACHAR, STAR_CHAR, ANYCHAR, END };
-  state_expr_t st{START};
-
-  const char *p = s;
-  size_t size = strlen(s);
-  size_t i = 0;
-  std::vector<char> v;
-  
-  while(*p)
-  {
-    switch (st)
-    {
-      case START:
-          if(*p == escape) {
-          st = ESCAPE;
-          v.push_back('^');
-          } else if(*p == '%') {
-        v.push_back('^');
-            v.push_back('.');
-            v.push_back('*');
-            st = START_STAR_CHAR;
-            } else if(*p == '_') {
-        v.push_back('^');
-        v.push_back('.');
-        st=START_METACHAR;
-          } else {
-        v.push_back('^');
-        v.push_back(*p);
-        st=START_ANYCHAR;
-          } break;
-
-      case START_STAR_CHAR:
-          if(*p == escape) {
-          st = ESCAPE;
-          } else if(*p == '%') {
-        st = START_STAR_CHAR;
-        } else if(*p == '_') {
-        v.push_back('.');
-        st = METACHAR;
-        } else {
-        v.push_back(*p);
-        st = ANYCHAR;
-        } break;
-
-      case START_METACHAR:
-          if(*p == escape) {
-          st = ESCAPE;
-          } else if(*p == '_') {
-        v.push_back('.');
-        st = METACHAR;
-        } else if(*p == '%') {
-        v.push_back('.');
-        v.push_back('*');
-        st = STAR_CHAR;
-        } else {
-        v.push_back(*p);
-        st = ANYCHAR;
-        } break;
-
-      case START_ANYCHAR:
-          if(*p == escape) {
-          st = ESCAPE;
-          } else if(*p == '_' && i == size-1) {
-        v.push_back('.');
-        v.push_back('$');
-        st = END;
-        } else if(*p == '_') {
-        v.push_back('.');
-        st = METACHAR;
-        } else if(*p == '%' && i == size-1) {
-        v.push_back('.');
-        v.push_back('*');
-        v.push_back('$');
-        st = END;
-        } else if(*p == '%') {
-        v.push_back('.');
-        v.push_back('*');
-        st = STAR_CHAR;
-        } else  if(i == size-1) {
-        v.push_back(*p);
-        v.push_back('$');
-        st = END;
-        } else {
-        v.push_back(*p);
-        st = ANYCHAR;
-        } break;
-
-      case METACHAR:
-          if(*p == escape) {
-          st = ESCAPE;
-          } else if(*p == '_' && i == size-1) {
-        v.push_back('.');
-        v.push_back('$');
-        st = END;
-        } else if(*p == '_') {
-        v.push_back('.');
-        st = METACHAR;
-        } else if(*p == '%' && i == size-1) {
-        v.push_back('.');
-        v.push_back('*');
-        v.push_back('$');
-        st = END;
-        } else if(*p == '%') {
-        v.push_back('.');
-        v.push_back('*');
-        st = STAR_CHAR;
-        } else if(i == size-1) {
-        v.push_back(*p);
-        v.push_back('$');
-        st = END;
-        } else {
-        v.push_back(*p);
-        st = ANYCHAR;
-        } break;
-
-      case ANYCHAR:
-          if(*p == escape) {
-          st = ESCAPE;
-          } else if(*p == '_' && i == size-1) {
-        v.push_back('.');
-        v.push_back('$');
-        st = END;
-        } else if(*p == '_') {
-        v.push_back('.');
-        st = METACHAR;
-        } else if(*p == '%' && i == size-1) {
-        v.push_back('.');
-        v.push_back('*');
-        v.push_back('$');
-        st = END;
-        } else if(*p == '%') {
-        v.push_back('.');
-        v.push_back('*');
-        st = STAR_CHAR;
-        } else  if(i == size-1) {
-        v.push_back(*p);
-        v.push_back('$');
-        st = END;
-        } else {
-        v.push_back(*p);
-        st = ANYCHAR;
-        } break;
-
-      case STAR_CHAR:
-          if(*p == escape) {
-          st = ESCAPE;
-          } else if(*p == '%' && i == size-1) {
-        v.push_back('$');
-        st = END;
-        } else if(*p == '%') {
-        st = STAR_CHAR;
-        } else if(*p == '_' && i == size-1) {
-        v.push_back('.');
-        v.push_back('$');
-        st = END;
-        } else if(*p == '_') {
-        v.push_back('.');
-        st = METACHAR;
-        } else  if(i == size-1) {
-        v.push_back(*p);
-        v.push_back('$');
-        st = END;
-        } else {
-        v.push_back(*p);
-        st = ANYCHAR;
-        } break;
-
-      case ESCAPE:
-        if(i == size-1) {
-        v.push_back(*p);
-        v.push_back('$');
-        st = END;
-        } else {
-        v.push_back(*p);
-        st = ANYCHAR;
-        } break;
-
-      case END:
-        return v;
-
-      default:
-        throw base_s3select_exception("missing state!");
-        break;
-    }
-    p++;
-    i++;
-  }
-  return v;
-}
-
-bool operator()(bs_stmt_vec_t* args, variable* result) override
+  bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
     auto iter = args->begin();
 
@@ -1764,35 +1569,22 @@ bool operator()(bs_stmt_vec_t* args, variable* result) override
     iter++;
     base_statement* main_expr = *iter;
 
-    if (constant_state == false){
-      like_expr_val = like_expr->eval();
-      escape_expr_val = escape_expr->eval();
-
-      if (like_expr_val.type != value::value_En_t::STRING)  {
-        throw base_s3select_exception("like expression must be string");
-      }
-
-      if (escape_expr_val.type != value::value_En_t::STRING)  {
-        throw base_s3select_exception("esacpe expression must be string");
-      }
-
+    if (constant_state == false)
+    {
+      param_validation(escape_expr, like_expr);
       std::vector<char> like_as_regex = transform(like_expr_val.str(), *escape_expr_val.str());
-      std::string like_as_regex_str(like_as_regex.begin(), like_as_regex.end());
-      compiled_regex = std::regex(like_as_regex_str);
+      compile(like_as_regex);
     }
 
     value main_expr_val = main_expr->eval();
-    if (main_expr_val.type != value::value_En_t::STRING)  {
-        throw base_s3select_exception("main expression must be string");
+    if (main_expr_val.type != value::value_En_t::STRING)
+    {
+      throw base_s3select_exception("main expression must be string");
     }
-         
-    if ( std::regex_match(main_expr_val.to_string(), compiled_regex)) {
-      result->set_value(true);
-    } else {
-      result->set_value(false);
-    } 
+
+    match(main_expr_val, result);
     return true;
-    }
+  }
 };
 
 struct _fn_substr : public base_function
@@ -2454,6 +2246,10 @@ base_function* s3select_functions::create(std::string_view fn_name,const bs_stmt
     return S3SELECT_NEW(this,_fn_between);
     break;
 
+  case s3select_func_En_t::NOT_BETWEEN:
+    return S3SELECT_NEW(this,_fn_not_between);
+    break;
+
   case s3select_func_En_t::IS_NULL:
     return S3SELECT_NEW(this,_fn_isnull);
     break;
@@ -2619,6 +2415,29 @@ bool base_statement::is_nested_aggregate(bool &aggr_flow) const
   return false;
 }
 
+bool base_statement::is_statement_contain_star_operation() const
+{
+  if(is_star_operation())
+    return true;
+  
+  if(left())
+    return left()->is_statement_contain_star_operation();
+
+  if(right())
+    return right()->is_statement_contain_star_operation();
+
+  if(is_function())
+  {
+    for(auto a : dynamic_cast<__function*>(const_cast<base_statement*>(this))->get_arguments())
+    {
+      if(a->is_star_operation())
+        return true;
+    }
+  }
+
+  return false;
+}
+
 bool base_statement::mark_aggreagtion_subtree_to_execute()
 {//purpase:: set aggregation subtree as runnable.
  //the function search for aggregation function, and mark its subtree {skip = false}
@@ -2642,12 +2461,36 @@ bool base_statement::mark_aggreagtion_subtree_to_execute()
   return true;
 }
 
+void base_statement::push_for_cleanup(std::set<base_statement*>& ast_nodes_to_delete)//semantic loop on each projection
+{
+//placement new is releasing the main-buffer in which all AST nodes
+//allocating from it. meaning no calls to destructors.
+//the purpose of this routine is to traverse the AST in map all nodes for cleanup.
+//the cleanup method will trigger all destructors.
+
+  ast_nodes_to_delete.insert(this);
+
+  if (left())
+    left()->push_for_cleanup(ast_nodes_to_delete);
+  
+  if(right())
+    right()->push_for_cleanup(ast_nodes_to_delete);
+
+  if (is_function())
+  {
+      for (auto& i : dynamic_cast<__function*>(this)->get_arguments())
+      {
+          i->push_for_cleanup(ast_nodes_to_delete);
+      }
+  }
+}
+
 #ifdef _ARROW_EXIST
 void base_statement::extract_columns(parquet_file_parser::column_pos_t &cols,const uint16_t max_columns)
 {// purpose: to extract all column-ids from query
   if(is_column()) //column reference or column position
   {variable* v = dynamic_cast<variable*>(this);
-    if(dynamic_cast<variable*>(this)->m_var_type == variable::var_t::VAR)
+    if(dynamic_cast<variable*>(this)->m_var_type == variable::var_t::VARIABLE_NAME)
     {//column reference 
 
       if (v->getScratchArea()->get_column_pos(v->get_name().c_str())>=0)

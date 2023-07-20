@@ -1,5 +1,5 @@
 ================================================================================
-v2.16 Intel Intelligent Storage Acceleration Library Crypto Release Notes
+v2.24 Intel Intelligent Storage Acceleration Library Crypto Release Notes
 ================================================================================
 
 ================================================================================
@@ -20,6 +20,23 @@ RELEASE NOTE CONTENTS
 ================================================================================
 2. FIXED ISSUES
 ================================================================================
+v2.21
+
+* Put correct vec instruction versions in aes_cbc_enc_{128,192,256}().  May help
+  performance on some systems.
+
+v2.20
+
+* Fix issue with new aes_gcm API, aes_gcm_pre_256 was incorrect.
+
+* Multi-buffer hash max length extended.  Previous max length for
+  {sha1,sha256,sha512,md5}_mb was 4095MB.  While there is still a 4GB limit for
+  each submit, the total hashed length can now be larger then 4GB.
+
+v2.18
+
+* Fix for multi-buffer hash when total length is above 512MB.
+
 v2.14
 
 * Building in unit directories is no longer supported removing the issue of
@@ -28,7 +45,7 @@ v2.14
 v2.9
 
 * Multi-buffer MD5 AVX2 tests fixed to work on FreeBSD 9.1 by explicitly aligning
-  structures. 
+  structures.
 
 v2.7
 
@@ -36,12 +53,71 @@ v2.7
 
 
 ================================================================================
-3. CHANGE LOG & FEATURES ADDED 
+3. CHANGE LOG & FEATURES ADDED
 ================================================================================
+v2.24
+
+* New optimized version of AES-CBC decode
+
+* New AVX2, 8 lane version of multi-buffer SM3
+
+* Added support for big-endian architectures
+
+v2.23
+
+* New optimized versions of block ciphers AES-GCM and AES-XTS.
+
+* New optimized versions of multi-buffer SM3 hashing.  Removed experimental
+  status.
+
+v2.22
+
+* New multi-buffer SM3 functions. Experimental base functions only.
+
+* New multi-arch support.
+
+v2.21
+
+* Multi-buffer hash performance improvement for Intel(R) Atom(tm) processors.
+  New by-2 shani versions for multi-buffer sha1 & sha256.
+
+* New base functions for multi-buffer hashes.
+  md5_mb, sha1_mb, sha256_mb, sha512_mb.
+
+v2.20
+
+* New functions
+  - Non-temporal versions of aes_gcm added.
+
+* Multi-buffer hash improvement
+  - Increase max length of hash in {sha1,sha256,sha512,md5}_mb to > 4GB.
+
+v2.19
+
+* Multi-buffer hash (sha1_mb, sha256_mb)
+
+  - Choose fast single buffer routine to do flush operation if lanes aren't full.
+
+  - Add SHA-NI support for Goldmont and Cannonlake.
+
+* AES-GCM interface updates.
+
+  - New interface separates the expanded keys and other context into two
+  structures.  The old interface is maintained for backward compatibility.
+
+  - User no longer has to append the GCM_IV_END_MARK manually to then end of iv
+  as this is now done automatically.  This update should also improve performance
+  of small packets.
+
+* Rolling hash is released.
+
+v2.18
+
+* New multi-hash SHA256-based version.
+
 v2.16
 
 * Split lib from non-crypto functions.
-
 
 v2.15
 
@@ -134,6 +210,6 @@ v2.0
 
 * Added AES XTS units aes_xts_128, aes_xts_256
 
-v1.3 
+v1.3
 
 * Added new multi-buffer units for SHA-256 and MD5: mb_sha256, mb_md5.

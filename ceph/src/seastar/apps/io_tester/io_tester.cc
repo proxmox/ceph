@@ -33,6 +33,7 @@
 #include <seastar/core/with_scheduling_group.hh>
 #include <seastar/core/metrics_api.hh>
 #include <seastar/core/io_intent.hh>
+#include <seastar/util/later.hh>
 #include <chrono>
 #include <vector>
 #include <boost/range/irange.hpp>
@@ -72,6 +73,75 @@ struct hash<request_type> {
 
 }
 
+future<> busyloop_sleep(std::chrono::steady_clock::time_point until, std::chrono::steady_clock::time_point now) {
+    return do_until([until] {
+        return std::chrono::steady_clock::now() >= until;
+    }, [] {
+        return yield();
+    });
+}
+
+template <typename Clock>
+future<> timer_sleep(std::chrono::steady_clock::time_point until, std::chrono::steady_clock::time_point now) {
+    return seastar::sleep<Clock>(std::chrono::duration_cast<std::chrono::microseconds>(until - now));
+}
+
+using sleep_fn = std::function<future<>(std::chrono::steady_clock::time_point until, std::chrono::steady_clock::time_point now)>;
+
+class pause_distribution {
+public:
+
+    virtual std::chrono::duration<double> get() = 0;
+
+    template <typename Dur>
+    Dur get_as() {
+        return std::chrono::duration_cast<Dur>(get());
+    }
+
+    virtual ~pause_distribution() {}
+};
+
+using pause_fn = std::function<std::unique_ptr<pause_distribution>(std::chrono::duration<double>)>;
+
+class uniform_process : public pause_distribution {
+    std::chrono::duration<double> _pause;
+
+public:
+    uniform_process(std::chrono::duration<double> period)
+            : _pause(period)
+    {
+    }
+
+    std::chrono::duration<double> get() override {
+        return _pause;
+    }
+};
+
+std::unique_ptr<pause_distribution> make_uniform_pause(std::chrono::duration<double> d) {
+    return std::make_unique<uniform_process>(d);
+}
+
+class poisson_process : public pause_distribution {
+    std::random_device _rd;
+    std::mt19937 _rng;
+    std::exponential_distribution<double> _exp;
+
+public:
+    poisson_process(std::chrono::duration<double> period)
+            : _rng(_rd())
+            , _exp(1.0 / period.count())
+    {
+    }
+
+    std::chrono::duration<double> get() override {
+        return std::chrono::duration<double>(_exp(_rng));
+    }
+};
+
+std::unique_ptr<pause_distribution> make_poisson_pause(std::chrono::duration<double> d) {
+    return std::make_unique<poisson_process>(d);
+}
+
 struct byte_size {
     uint64_t size;
 };
@@ -97,6 +167,7 @@ struct shard_info {
     unsigned rps = 0;
     unsigned shares = 10;
     uint64_t request_size = 4 << 10;
+    uint64_t bandwidth = 0;
     std::chrono::duration<float> think_time = 0ms;
     std::chrono::duration<float> think_after = 0ms;
     std::chrono::duration<float> execution_time = 1ms;
@@ -105,6 +176,8 @@ struct shard_info {
 
 struct options {
     bool dsync = false;
+    ::sleep_fn sleep_fn = timer_sleep<lowres_clock>;
+    ::pause_fn pause_fn = make_uniform_pause;
 };
 
 class class_data;
@@ -147,6 +220,7 @@ protected:
     std::uniform_int_distribution<uint32_t> _pos_distribution;
     file _file;
     bool _think = false;
+    ::sleep_fn _sleep_fn = timer_sleep<lowres_clock>;
     timer<> _thinker;
 
     virtual future<> do_start(sstring dir, directory_entry_type type) = 0;
@@ -159,6 +233,7 @@ public:
         , _sg(cfg.shard_info.scheduling_group)
         , _latencies(extended_p_square_probabilities = quantiles)
         , _pos_distribution(0,  _config.file_size / _config.shard_info.request_size)
+        , _sleep_fn(_config.options.sleep_fn)
         , _thinker([this] { think_tick(); })
     {
         if (_config.shard_info.think_after > 0us) {
@@ -199,27 +274,48 @@ private:
         });
     }
 
-    future<> issue_requests_at_rate(std::chrono::steady_clock::time_point stop, unsigned rps) {
-        return do_with(io_intent{}, 0u, [this, stop, rps] (io_intent& intent, unsigned& in_flight) {
-            auto bufptr = allocate_aligned_buffer<char>(this->req_size(), _alignment);
-            auto buf = bufptr.get();
-            auto pause = std::chrono::duration_cast<std::chrono::microseconds>(1s) / rps;
-            return do_until([stop] { return std::chrono::steady_clock::now() > stop; }, [this, buf, stop, pause, &intent, &in_flight] () mutable {
-                auto start = std::chrono::steady_clock::now();
-                in_flight++;
-                (void)issue_request(buf, &intent).then([this, start, stop, &in_flight] (auto size) {
-                    auto now = std::chrono::steady_clock::now();
-                    if (now < stop) {
-                        this->add_result(size, std::chrono::duration_cast<std::chrono::microseconds>(now - start));
-                    }
-                    in_flight--;
-                    return make_ready_future<>();
-                });
-                return seastar::sleep(std::max(std::chrono::duration_cast<std::chrono::microseconds>((start + pause) - std::chrono::steady_clock::now()), 0us));
-            }).then([&intent, &in_flight] {
-                intent.cancel();
-                return do_until([&in_flight] { return in_flight == 0; }, [] { return seastar::sleep(100ms /* ¯\_(ツ)_/¯ */); });
-            }).finally([bufptr = std::move(bufptr)] {});
+    future<> issue_requests_at_rate(std::chrono::steady_clock::time_point stop, unsigned rps, unsigned parallelism) {
+        return do_with(io_intent{}, 0u, [this, stop, rps, parallelism] (io_intent& intent, unsigned& in_flight) {
+            return parallel_for_each(boost::irange(0u, parallelism), [this, stop, rps, &intent, &in_flight, parallelism] (auto dummy) mutable {
+                auto bufptr = allocate_aligned_buffer<char>(this->req_size(), _alignment);
+                auto buf = bufptr.get();
+                auto pause = std::chrono::duration_cast<std::chrono::microseconds>(1s) / rps;
+                auto pause_dist = _config.options.pause_fn(pause);
+                return seastar::sleep((pause / parallelism) * dummy).then([this, buf, stop, pause = pause_dist.get(), &intent, &in_flight] () mutable {
+                    return do_until([stop] { return std::chrono::steady_clock::now() > stop; }, [this, buf, stop, pause, &intent, &in_flight] () mutable {
+                        auto start = std::chrono::steady_clock::now();
+                        in_flight++;
+                        return issue_request(buf, &intent).then_wrapped([this, start, pause, stop, &in_flight] (auto size_f) {
+                            size_t size;
+                            try {
+                                size = size_f.get0();
+                            } catch (...) {
+                                // cancelled
+                                in_flight--;
+                                return make_ready_future<>();
+                            }
+
+                            auto now = std::chrono::steady_clock::now();
+                            if (now < stop) {
+                                this->add_result(size, std::chrono::duration_cast<std::chrono::microseconds>(now - start));
+                            }
+                            in_flight--;
+                            auto p = pause->template get_as<std::chrono::microseconds>();
+                            auto next = start + p;
+
+                            if (next > now) {
+                                return this->_sleep_fn(next, now);
+                            } else {
+                                // probably the system cannot keep-up with this rate
+                                return make_ready_future<>();
+                            }
+                        });
+                    });
+                }).then([&intent, &in_flight] {
+                    intent.cancel();
+                    return do_until([&in_flight] { return in_flight == 0; }, [] { return seastar::sleep(100ms /* ¯\_(ツ)_/¯ */); });
+                }).finally([bufptr = std::move(bufptr), pause = std::move(pause_dist)] {});
+            });
         });
     }
 
@@ -227,11 +323,10 @@ public:
     future<> issue_requests(std::chrono::steady_clock::time_point stop) {
         _start = std::chrono::steady_clock::now();
         return with_scheduling_group(_sg, [this, stop] {
-            if (parallelism() != 0) {
+            if (rps() == 0) {
                 return issue_requests_in_parallel(stop, parallelism());
-            } else /* rps() != 0 */ {
-                assert(rps() != 0);
-                return issue_requests_at_rate(stop, rps());
+            } else {
+                return issue_requests_at_rate(stop, rps(), parallelism());
             }
         }).then([this] {
             _total_duration = std::chrono::steady_clock::now() - _start;
@@ -256,7 +351,13 @@ public:
     // append            : will write to the file from pos = EOF onwards, always appending to the end.
     // cpu               : CPU-only load, file is not created.
     future<> start(sstring dir, directory_entry_type type) {
-        return do_start(dir, type);
+        return do_start(dir, type).then([this] {
+            if (this_shard_id() == 0 && _config.shard_info.bandwidth != 0) {
+                return _iop.update_bandwidth(_config.shard_info.bandwidth);
+            } else {
+                return make_ready_future<>();
+            }
+        });
     }
 
     future<> stop() {
@@ -370,6 +471,19 @@ public:
 };
 
 class io_class_data : public class_data {
+protected:
+    bool _is_dev_null = false;
+
+    future<size_t> on_io_completed(future<size_t> f) {
+        if (!_is_dev_null) {
+            return f;
+        }
+
+        return f.then([this] (auto size_f) {
+            return make_ready_future<size_t>(this->req_size());
+        });
+    }
+
 public:
     io_class_data(job_config cfg) : class_data(std::move(cfg)) {}
 
@@ -380,6 +494,10 @@ public:
 
         if (type == directory_entry_type::block_device) {
             return do_start_on_bdev(path);
+        }
+
+        if (type == directory_entry_type::char_device && path == "/dev/null") {
+            return do_start_on_dev_null();
         }
 
         throw std::runtime_error(format("Unsupported storage. {} should be directory or block device", path));
@@ -412,7 +530,7 @@ private:
                             return max_concurrent_for_each(pos.begin(), pos.end(), 64, [this, bufsize] (auto pos) mutable {
                                 auto bufptr = allocate_aligned_buffer<char>(bufsize, 4096);
                                 auto buf = bufptr.get();
-                                std::uniform_int_distribution<char> fill('@', '~');
+                                std::uniform_int_distribution<int> fill('@', '~');
                                 memset(buf, fill(random_generator), bufsize);
                                 pos = pos * bufsize;
                                 return _file.dma_write(pos, buf, bufsize).finally([this, bufptr = std::move(bufptr), pos] {
@@ -449,6 +567,16 @@ private:
         });
     }
 
+    future<> do_start_on_dev_null() {
+        file_open_options options;
+        options.append_is_unlikely = true;
+        return open_file_dma("/dev/null", open_flags::rw, std::move(options)).then([this] (auto f) {
+            _file = std::move(f);
+            _is_dev_null = true;
+            return make_ready_future<>();
+        });
+    }
+
     void emit_one_metrics(YAML::Emitter& out, sstring m_name) {
         const auto& values = seastar::metrics::impl::get_value_map();
         const auto& mf = values.find(m_name);
@@ -466,6 +594,8 @@ private:
         emit_one_metrics(out, "io_queue_total_delay_sec");
         emit_one_metrics(out, "io_queue_total_operations");
         emit_one_metrics(out, "io_queue_starvation_time_sec");
+        emit_one_metrics(out, "io_queue_consumption");
+        emit_one_metrics(out, "io_queue_adjusted_consumption");
     }
 
 public:
@@ -494,7 +624,8 @@ public:
     read_io_class_data(job_config cfg) : io_class_data(std::move(cfg)) {}
 
     future<size_t> issue_request(char *buf, io_intent* intent) override {
-        return _file.dma_read(this->get_pos(), buf, this->req_size(), _iop, intent);
+        auto f = _file.dma_read(this->get_pos(), buf, this->req_size(), _iop, intent);
+        return on_io_completed(std::move(f));
     }
 };
 
@@ -503,7 +634,8 @@ public:
     write_io_class_data(job_config cfg) : io_class_data(std::move(cfg)) {}
 
     future<size_t> issue_request(char *buf, io_intent* intent) override {
-        return _file.dma_write(this->get_pos(), buf, this->req_size(), _iop, intent);
+        auto f = _file.dma_write(this->get_pos(), buf, this->req_size(), _iop, intent);
+        return on_io_completed(std::move(f));
     }
 };
 
@@ -634,13 +766,12 @@ struct convert<shard_info> {
         if (node["rps"]) {
             sl.rps = node["rps"].as<unsigned>();
         }
-        if ((sl.parallelism == 0) == (sl.rps == 0)) {
-            fmt::print("Must specify exactly one of 'parallelism' or 'rps' parameters\n");
-            return false;
-        }
 
         if (node["shares"]) {
             sl.shares = node["shares"].as<unsigned>();
+        }
+        if (node["bandwidth"]) {
+            sl.bandwidth = node["bandwidth"].as<byte_size>().size;
         }
         if (node["reqsize"]) {
             sl.request_size = node["reqsize"].as<byte_size>().size;
@@ -663,6 +794,28 @@ struct convert<options> {
     static bool decode(const Node& node, options& op) {
         if (node["dsync"]) {
             op.dsync = node["dsync"].as<bool>();
+        }
+        if (node["sleep_type"]) {
+            auto st = node["sleep_type"].as<std::string>();
+            if (st == "busyloop") {
+                op.sleep_fn = busyloop_sleep;
+            } else if (st == "lowres") {
+                op.sleep_fn = timer_sleep<lowres_clock>;
+            } else if (st == "steady") {
+                op.sleep_fn = timer_sleep<std::chrono::steady_clock>;
+            } else {
+                throw std::runtime_error(format("Unknown sleep_type {}", st));
+            }
+        }
+        if (node["pause_distribution"]) {
+            auto pd = node["pause_distribution"].as<std::string>();
+            if (pd == "uniform") {
+                op.pause_fn = make_uniform_pause;
+            } else if (pd == "poisson") {
+                op.pause_fn = make_poisson_pause;
+            } else {
+                throw std::runtime_error(format("Unknown pause_distribution {}", pd));
+            }
         }
         return true;
     }

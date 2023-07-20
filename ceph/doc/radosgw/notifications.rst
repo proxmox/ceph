@@ -10,9 +10,6 @@ Bucket notifications provide a mechanism for sending information out of radosgw
 when certain events happen on the bucket. Notifications can be sent to HTTP
 endpoints, AMQP0.9.1 endpoints, and Kafka endpoints.
 
-The `PubSub Module`_ (and *not* the bucket-notification mechanism) should be
-used for events stored in Ceph. 
-
 A user can create topics. A topic entity is defined by its name and is "per
 tenant". A user can associate its topics (via notification configuration) only
 with buckets it owns.
@@ -27,8 +24,7 @@ to create filters. There can be multiple notifications for any specific topic,
 and the same topic can used for multiple notifications.
 
 REST API has been defined so as to provide configuration and control interfaces
-for the bucket notification mechanism. This API is similar to the one defined
-as the S3-compatible API of the `PubSub Module`_.
+for the bucket notification mechanism.
 
 .. toctree::
    :maxdepth: 1
@@ -75,41 +71,42 @@ added when the notification is committed to persistent storage.
 Topic Management via CLI
 ------------------------
 
-Configuration of all topics, associated with a tenant, could be fetched using the following command:
+Fetch the configuration of all topics associated with tenants by running the
+following command:
 
 .. prompt:: bash #
 
    radosgw-admin topic list [--tenant={tenant}]
 
 
-Configuration of a specific topic could be fetched using:
+Fetch the configuration of a specific topic by running the following command:
 
 .. prompt:: bash #
 
    radosgw-admin topic get --topic={topic-name} [--tenant={tenant}]
 
 
-And removed using:
+Remove a topic by running the following command: 
 
 .. prompt:: bash #
 
    radosgw-admin topic rm --topic={topic-name} [--tenant={tenant}]
 
 
-Notification Performance Stats
-------------------------------
-The same counters are shared between the pubsub sync module and the bucket notification mechanism.
+Notification Performance Statistics
+-----------------------------------
 
-- ``pubsub_event_triggered``: running counter of events with at least one topic associated with them
-- ``pubsub_event_lost``: running counter of events that had topics associated with them but that were not pushed to any of the endpoints
-- ``pubsub_push_ok``: running counter, for all notifications, of events successfully pushed to their endpoint
-- ``pubsub_push_fail``: running counter, for all notifications, of events failed to be pushed to their endpoint
-- ``pubsub_push_pending``: gauge value of events pushed to an endpoint but not acked or nacked yet
+- ``pubsub_event_triggered``: a running counter of events that have at least one topic associated with them
+- ``pubsub_event_lost``: a running counter of events that had topics associated with them, but that were not pushed to any of the endpoints
+- ``pubsub_push_ok``: a running counter, for all notifications, of events successfully pushed to their endpoints
+- ``pubsub_push_fail``: a running counter, for all notifications, of events that failed to be pushed to their endpoints
+- ``pubsub_push_pending``: the gauge value of events pushed to an endpoint but not acked or nacked yet
 
 .. note::
 
-    ``pubsub_event_triggered`` and ``pubsub_event_lost`` are incremented per event, while:
-    ``pubsub_push_ok``, ``pubsub_push_fail``, are incremented per push action on each notification
+    ``pubsub_event_triggered`` and ``pubsub_event_lost`` are incremented per
+    event on each notification, but ``pubsub_push_ok`` and ``pubsub_push_fail``
+    are incremented per push action on each notification.
 
 Bucket Notification REST API
 ----------------------------
@@ -124,12 +121,14 @@ Topics
     ``application/x-www-form-urlencoded``.
    
 
+.. _Create a Topic:
+
 Create a Topic
 ``````````````
 
 This creates a new topic. Provide the topic with push endpoint parameters,
 which will be used later when a notification is created. A response is
-generated. A successful response includes the the topic's `ARN
+generated. A successful response includes the topic's `ARN
 <https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html>`_
 (the "Amazon Resource Name", a unique identifier used to reference the topic).
 To update a topic, use the same command that you used to create it (but when
@@ -137,9 +136,6 @@ updating, use the name of an existing topic and different endpoint values).
 
 .. tip:: Any notification already associated with the topic must be re-created
    in order for the topic to update.
-
-.. note:: For rabbitmq, ``push-endpoint`` (with a hyphen in the middle) must be
-   changed to ``push_endpoint`` (with an underscore in the middle).
 
 ::
 
@@ -157,6 +153,7 @@ updating, use the name of an existing topic and different endpoint values).
    [&Attributes.entry.8.key=push-endpoint&Attributes.entry.8.value=<endpoint>]
    [&Attributes.entry.9.key=persistent&Attributes.entry.9.value=true|false]
    [&Attributes.entry.10.key=cloudevents&Attributes.entry.10.value=true|false]
+   [&Attributes.entry.11.key=mechanism&Attributes.entry.11.value=<mechanism>]
 
 Request parameters:
 
@@ -201,7 +198,7 @@ Request parameters:
   - "broker": The message is considered "delivered" if it is acked by the broker (default).
   - "routable": The message is considered "delivered" if the broker can route to a consumer.
 
-.. tip:: The topic-name (see :ref:`radosgw-create-a-topic`) is used for the
+.. tip:: The topic-name (see :ref:`Create a Topic`) is used for the
    AMQP topic ("routing key" for a topic exchange).
 
 - Kafka endpoint
@@ -210,12 +207,21 @@ Request parameters:
  - ``use-ssl``: If this is set to "true", a secure connection is used to
    connect to the broker. (This is "false" by default.)
  - ``ca-location``: If this is provided and a secure connection is used, the
-   specified CA will be used insted of the default CA to authenticate the
+   specified CA will be used instead of the default CA to authenticate the
    broker. 
- - user/password: This must be provided only over HTTPS. Topic creation
-   requests will otherwise be rejected.
- - user/password: This must be provided along with ``use-ssl``. Connections to
-   the broker will otherwise fail.
+ - user/password may be provided over HTTPS. If not, the config parameter
+   `rgw_allow_notification_secrets_in_cleartext` must be `true` in order to create topic
+ - user/password may be provided along with ``use-ssl``.
+   The broker credentials will otherwise be sent over insecure transport
+ - ``mechanism`` may be provided together with user/password (default: ``PLAIN``).
+   The supported SASL mechanisms are:
+
+  - PLAIN
+  - SCRAM-SHA-256
+  - SCRAM-SHA-512
+  - GSSAPI
+  - OAUTHBEARER
+
  - port: This defaults to 9092.
  - kafka-ack-level: No end2end acking is required. Messages may persist in the
    broker before being delivered to their final destinations. Two ack methods
@@ -454,9 +460,8 @@ Detailed under: `Bucket Operations`_.
 Events
 ~~~~~~
 
-Events are in JSON format (regardless of the actual endpoint), and share the
-same structure as S3-compatible events that are pushed or pulled using the
-pubsub sync module. For example:
+Events are in JSON format (regardless of the actual endpoint), and are S3-compatible.
+For example:
 
 ::
 
@@ -464,7 +469,7 @@ pubsub sync module. For example:
        {
            "eventVersion":"2.1",
            "eventSource":"ceph:s3",
-           "awsRegion":"us-east-1",
+           "awsRegion":"zonegroup1",
            "eventTime":"2019-11-22T13:47:35.124724Z",
            "eventName":"ObjectCreated:Put",
            "userIdentity":{
@@ -485,7 +490,7 @@ pubsub sync module. For example:
                    "ownerIdentity":{
                        "principalId":"tester"
                    },
-                   "arn":"arn:aws:s3:us-east-1::mybucket1",
+                   "arn":"arn:aws:s3:zonegroup1::mybucket1",
                    "id":"503a4c37-85eb-47cd-8681-2817e80b4281.5332.38"
                },
                "object":{
@@ -537,7 +542,6 @@ pubsub sync module. For example:
   and is added to all notifications triggered by the topic. (This is an
   extension to the S3 notification API.)
 
-.. _PubSub Module : ../pubsub-module
 .. _S3 Notification Compatibility: ../s3-notification-compatibility
 .. _AWS Create Topic: https://docs.aws.amazon.com/sns/latest/api/API_CreateTopic.html
 .. _Bucket Operations: ../s3/bucketops

@@ -5,7 +5,6 @@
     file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 =============================================================================*/
 
-#include <boost/detail/lightweight_test.hpp>
 #include <boost/spirit/home/x3.hpp>
 
 #include <string>
@@ -92,17 +91,17 @@ main()
 
     { // basic tests w/ skipper but no final post-skip
 
-        auto a = rule<class a>()
+        auto a = rule<class a_id>()
             = lit('a');
 
-        auto b = rule<class b>()
+        auto b = rule<class b_id>()
             = lit('b');
 
-        auto c = rule<class c>()
+        auto c = rule<class c_id>()
             = lit('c');
 
         {
-            auto start = rule<class start>() = *(a | b) >> c;
+            auto start = rule<class start_id>() = *(a | b) >> c;
 
             char const *s1 = " a b a a b b a c ... "
               , *const e1 = s1 + std::strlen(s1);

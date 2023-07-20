@@ -25,7 +25,6 @@
 #include <seastar/core/do_with.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/reactor.hh>
-#include <seastar/core/do_with.hh>
 #include <seastar/core/loop.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/core/thread.hh>
@@ -34,6 +33,7 @@
 #include <seastar/core/iostream.hh>
 #include <seastar/core/with_timeout.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/process.hh>
 #include <seastar/net/tls.hh>
 #include <seastar/net/dns.hh>
 #include <seastar/net/inet_address.hh>
@@ -65,49 +65,67 @@ static std::string certfile(const std::string& file) {
 
 using namespace seastar;
 
-static future<> connect_to_ssl_addr(::shared_ptr<tls::certificate_credentials> certs, socket_address addr) {
-    return tls::connect(certs, addr, "www.google.com").then([](connected_socket s) {
-        return do_with(std::move(s), [](connected_socket& s) {
-            return do_with(s.output(), [&s](auto& os) {
-                static const sstring msg("GET / HTTP/1.0\r\n\r\n");
-                auto f = os.write(msg);
-                return f.then([&s, &os]() mutable {
-                    auto f = os.flush();
-                    return f.then([&s]() mutable {
-                        return do_with(s.input(), [](auto& in) {
-                            auto f = in.read();
-                            return f.then([](temporary_buffer<char> buf) {
-                                // std::cout << buf.get() << std::endl;
-
-                                // Avoid passing a nullptr as an argument of strncmp().
-                                // If the temporary_buffer is empty (e.g. due to the underlying TCP connection
-                                // being reset) passing the buf.get() (which would be a nullptr) to strncmp()
-                                // causes a runtime error which masks the actual issue.
-                                if (buf) {
-                                    BOOST_CHECK(strncmp(buf.get(), "HTTP/", 5) == 0);
-                                }
-                                BOOST_CHECK(buf.size() > 8);
+static future<> connect_to_ssl_addr(::shared_ptr<tls::certificate_credentials> certs, socket_address addr, const sstring& name = {}) {
+    return repeat_until_value([=]() mutable {
+        return tls::connect(certs, addr, name).then([](connected_socket s) {
+            return do_with(std::move(s), [](connected_socket& s) {
+                return do_with(s.output(), [&s](auto& os) {
+                    static const sstring msg("GET / HTTP/1.0\r\n\r\n");
+                    auto f = os.write(msg);
+                    return f.then([&s, &os]() mutable {
+                        auto f = os.flush();
+                        return f.then([&s]() mutable {
+                            return do_with(s.input(), sstring{}, [](auto& in, sstring& buffer) {
+                                return do_until(std::bind(&input_stream<char>::eof, std::cref(in)), [&buffer, &in] {
+                                    auto f = in.read();
+                                    return f.then([&](temporary_buffer<char> buf) {
+                                        buffer.append(buf.get(), buf.size());
+                                    });
+                                }).then([&buffer]() -> future<std::optional<bool>> {
+                                    if (buffer.empty()) {
+                                        // # 1127 google servers have a (pretty short) timeout between connect and expected first
+                                        // write. If we are delayed inbetween connect and write above (cert verification, scheduling
+                                        // solar spots or just time sharing on AWS) we could get a short read here. Just retry.
+                                        // If we get an actual error, it is either on protocol level (exception) or HTTP error.
+                                        return make_ready_future<std::optional<bool>>(std::nullopt);
+                                    }
+                                    BOOST_CHECK(buffer.size() > 8);
+                                    BOOST_CHECK_EQUAL(buffer.substr(0, 5), sstring("HTTP/"));
+                                    return make_ready_future<std::optional<bool>>(true);
+                                });
                             });
                         });
+                    }).finally([&os] {
+                        return os.close();
                     });
-                }).finally([&os] {
-                    return os.close();
                 });
             });
         });
-    });
+
+    }).discard_result();
 }
 
-static future<> connect_to_ssl_google(::shared_ptr<tls::certificate_credentials> certs) {
+#if SEASTAR_TESTING_WITH_NETWORKING
+
+static const auto google_name = "www.google.com";
+
+// broken out from below. to allow pre-lookup
+static future<socket_address> google_address() {
     static socket_address google;
 
     if (google.is_unspecified()) {
-        return net::dns::resolve_name("www.google.com", net::inet_address::family::INET).then([certs](net::inet_address addr) {
+        return net::dns::resolve_name(google_name, net::inet_address::family::INET).then([](net::inet_address addr) {
             google = socket_address(addr, 443);
-            return connect_to_ssl_google(certs);
+            return google_address();
         });
     }
-    return connect_to_ssl_addr(std::move(certs), google);
+    return make_ready_future<socket_address>(google);
+}
+
+static future<> connect_to_ssl_google(::shared_ptr<tls::certificate_credentials> certs) {
+    return google_address().then([certs](socket_address addr) {
+        return connect_to_ssl_addr(std::move(certs), addr, google_name);
+    });
 }
 
 SEASTAR_TEST_CASE(test_simple_x509_client) {
@@ -131,18 +149,21 @@ SEASTAR_TEST_CASE(test_x509_client_with_builder_system_trust) {
 }
 
 SEASTAR_TEST_CASE(test_x509_client_with_builder_system_trust_multiple) {
-    tls::credentials_builder b;
-    (void)b.set_system_trust();
-    auto creds = b.build_certificate_credentials();
+    // avoid getting parallel connects stuck on dns lookup (if running single case).
+    // pre-lookup www.google.com
+    return google_address().then([](socket_address) {
+        tls::credentials_builder b;
+        (void)b.set_system_trust();
+        auto creds = b.build_certificate_credentials();
 
-    return parallel_for_each(boost::irange(0, 20), [creds](auto i) { return connect_to_ssl_google(creds); });
+        return parallel_for_each(boost::irange(0, 20), [creds](auto i) { return connect_to_ssl_google(creds); });
+    });
 }
 
-SEASTAR_TEST_CASE(test_x509_client_with_priority_strings) {
-    static std::vector<sstring> prios( { "NONE:+VERS-TLS-ALL:+MAC-ALL:+RSA:+AES-128-CBC:+SIGN-ALL:+COMP-NULL",
+SEASTAR_TEST_CASE(test_x509_client_with_system_trust_and_priority_strings) {
+    static std::vector<sstring> prios( {
         "NORMAL:+ARCFOUR-128", // means normal ciphers plus ARCFOUR-128.
         "SECURE128:-VERS-SSL3.0:+COMP-DEFLATE", // means that only secure ciphers are enabled, SSL3.0 is disabled, and libz compression enabled.
-        "NONE:+VERS-TLS-ALL:+AES-128-CBC:+RSA:+SHA1:+COMP-NULL:+SIGN-RSA-SHA1",
         "SECURE256:+SECURE128",
         "NORMAL:%COMPAT",
         "NORMAL:-MD5",
@@ -159,7 +180,7 @@ SEASTAR_TEST_CASE(test_x509_client_with_priority_strings) {
     });
 }
 
-SEASTAR_TEST_CASE(test_x509_client_with_priority_strings_fail) {
+SEASTAR_TEST_CASE(test_x509_client_with_system_trust_and_priority_strings_fail) {
     static std::vector<sstring> prios( { "NONE",
         "NONE:+CURVE-SECP256R1"
     });
@@ -178,6 +199,147 @@ SEASTAR_TEST_CASE(test_x509_client_with_priority_strings_fail) {
         }
         return make_ready_future<>();
     });
+}
+#endif // SEASTAR_TESTING_WITH_NETWORKING
+
+class https_server {
+    const sstring _cert;
+    const std::string _addr = "127.0.0.1";
+    experimental::process _process;
+    uint16_t _port;
+
+    static experimental::process spawn(const std::string& addr, const sstring& key, const sstring& cert) {
+        auto httpd = boost::dll::program_location().parent_path() / "https-server.py";
+        const std::vector<sstring> argv{
+          "httpd",
+          "--server", fmt::format("{}:{}", addr, 0),
+          "--key", key,
+          "--cert", cert,
+        };
+        return experimental::spawn_process(httpd.string(), {.argv = argv}).get0();
+    }
+
+    // https-server.py picks an available port and listens on it. when it is
+    // ready to serve, it prints out the listening port. without hardwiring to
+    // a fixed port, we are able to run multiple tests in parallel.
+    static uint16_t read_port(experimental::process& process) {
+        using consumption_result_type = typename input_stream<char>::consumption_result_type;
+        using stop_consuming_type = typename consumption_result_type::stop_consuming_type;
+        using tmp_buf = stop_consuming_type::tmp_buf;
+        struct consumer {
+            future<consumption_result_type> operator()(tmp_buf buf) {
+                if (auto newline = std::find(buf.begin(), buf.end(), '\n'); newline != buf.end()) {
+                    size_t consumed = newline - buf.begin();
+                    line += std::string_view(buf.get(), consumed);
+                    buf.trim_front(consumed);
+                    return make_ready_future<consumption_result_type>(stop_consuming_type(std::move(buf)));
+                } else {
+                    line += std::string_view(buf.get(), buf.size());
+                    return make_ready_future<consumption_result_type>(stop_consuming_type({}));
+                }
+            }
+            std::string line;
+        };
+        auto reader = ::make_shared<consumer>();
+        process.stdout().consume(*reader).get();
+        return std::stoul(reader->line);
+    }
+
+public:
+    https_server(const std::string& ca = "mtls_ca")
+        : _cert(certfile(fmt::format("{}.crt", ca)))
+        , _process(spawn(_addr, certfile(fmt::format("{}.key", ca)), _cert))
+        , _port(read_port(_process))
+    {}
+    ~https_server() {
+        _process.terminate();
+        _process.wait().discard_result().get();
+    }
+    const sstring& cert() const {
+        return _cert;
+    }
+    socket_address addr() const {
+        return ipv4_addr(_addr, _port);
+    }
+    sstring name() const {
+        // should be identical to the one passed as the "-addext" option when
+        // generating the cert.
+        return "127.0.0.1";
+    }
+};
+
+#if !SEASTAR_TESTING_WITH_NETWORKING
+
+SEASTAR_THREAD_TEST_CASE(test_simple_x509_client) {
+    auto certs = ::make_shared<tls::certificate_credentials>();
+    https_server server;
+    certs->set_x509_trust_file(server.cert(), tls::x509_crt_format::PEM).get();
+    connect_to_ssl_addr(certs, server.addr(), server.name()).get();
+}
+
+#endif // !SEASTAR_TESTING_WITH_NETWORKING
+
+SEASTAR_THREAD_TEST_CASE(test_x509_client_with_builder) {
+    tls::credentials_builder b;
+    https_server server;
+    b.set_x509_trust_file(server.cert(), tls::x509_crt_format::PEM).get();
+    connect_to_ssl_addr(b.build_certificate_credentials(), server.addr()).get();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_x509_client_with_builder_multiple) {
+    tls::credentials_builder b;
+    https_server server;
+    b.set_x509_trust_file(server.cert(), tls::x509_crt_format::PEM).get();
+    auto creds = b.build_certificate_credentials();
+    auto addr = server.addr();
+    parallel_for_each(boost::irange(0, 20), [creds, addr](auto i) {
+        return connect_to_ssl_addr(creds, addr);
+    }).get();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_x509_client_with_priority_strings) {
+    static std::vector<sstring> prios( {
+        "NORMAL:+ARCFOUR-128", // means normal ciphers plus ARCFOUR-128.
+        "SECURE128:-VERS-SSL3.0:+COMP-DEFLATE", // means that only secure ciphers are enabled, SSL3.0 is disabled, and libz compression enabled.
+        "SECURE256:+SECURE128",
+        "NORMAL:%COMPAT",
+        "NORMAL:-MD5",
+        "NONE:+VERS-TLS-ALL:+MAC-ALL:+RSA:+AES-256-GCM:+SIGN-ALL:+COMP-NULL:+GROUP-EC-ALL",
+        "NORMAL:+ARCFOUR-128",
+        "SECURE128:-VERS-TLS1.0:+COMP-DEFLATE",
+        "SECURE128:+SECURE192:-VERS-TLS-ALL:+VERS-TLS1.2"
+    });
+    tls::credentials_builder b;
+    https_server server;
+    b.set_x509_trust_file(server.cert(), tls::x509_crt_format::PEM).get();
+    auto addr = server.addr();
+    do_for_each(prios, [&b, addr](const sstring& prio) {
+        b.set_priority_string(prio);
+        return connect_to_ssl_addr(b.build_certificate_credentials(), addr);
+    }).get();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_x509_client_with_priority_strings_fail) {
+    static std::vector<sstring> prios( { "NONE",
+        "NONE:+CURVE-SECP256R1"
+    });
+    tls::credentials_builder b;
+    https_server server;
+    b.set_x509_trust_file(server.cert(), tls::x509_crt_format::PEM).get();
+    auto addr = server.addr();
+    do_for_each(prios, [&b, addr](const sstring& prio) {
+        b.set_priority_string(prio);
+        try {
+            return connect_to_ssl_addr(b.build_certificate_credentials(), addr).then([] {
+                BOOST_FAIL("Expected exception");
+            }).handle_exception([](auto ep) {
+                // ok.
+            });
+        } catch (...) {
+            // also ok
+        }
+        return make_ready_future<>();
+    }).get();
 }
 
 SEASTAR_TEST_CASE(test_failed_connect) {
@@ -1102,4 +1264,101 @@ SEASTAR_THREAD_TEST_CASE(test_closed_write) {
         check_same_message_two_writes(out);
     }
 
+}
+
+/*
+ * Certificates:
+ *
+ * make -f tests/unit/mkmtls.gmk domain=scylladb.org server=test
+ *
+ * ->   mtls_ca.crt
+ *      mtls_ca.key
+ *      mtls_server.crt
+ *      mtls_server.csr
+ *      mtls_server.key
+ *      mtls_client1.crt
+ *      mtls_client1.csr
+ *      mtls_client1.key
+ *      mtls_client2.crt
+ *      mtls_client2.csr
+ *      mtls_client2.key
+ *
+ */
+SEASTAR_THREAD_TEST_CASE(test_dn_name_handling) {
+    // Connect to server using two different client certificates.
+    // Make sure that for every client the server can fetch DN string
+    // and the string is correct.
+    // The setup consist of several certificates:
+    // - CA
+    // - mtls_server.crt - server certificate
+    // - mtls_client1.crt - first client certificate
+    // - mtls_client2.crt - second client certificate
+    //
+    // The test runs server that uses mtls_server.crt.
+    // The server accepts two incomming connections, first one uses mtls_client1.crt
+    // and the second one uses mtls_client2.crt. Every client sends a short string
+    // that server receives and tries to find it in the DN string.
+
+    auto addr = ::make_ipv4_address( {0x7f000001, 4712});
+
+    auto client1_creds = [] {
+        tls::credentials_builder builder;
+        builder.set_x509_trust_file(certfile("mtls_ca.crt"), tls::x509_crt_format::PEM).get();
+        builder.set_x509_key_file(certfile("mtls_client1.crt"), certfile("mtls_client1.key"), tls::x509_crt_format::PEM).get();
+        return builder.build_certificate_credentials();
+    }();
+
+    auto client2_creds = [] {
+        tls::credentials_builder builder;
+        builder.set_x509_trust_file(certfile("mtls_ca.crt"), tls::x509_crt_format::PEM).get();
+        builder.set_x509_key_file(certfile("mtls_client2.crt"), certfile("mtls_client2.key"), tls::x509_crt_format::PEM).get();
+        return builder.build_certificate_credentials();
+    }();
+
+    auto server_creds = [] {
+        tls::credentials_builder builder;
+        builder.set_x509_trust_file(certfile("mtls_ca.crt"), tls::x509_crt_format::PEM).get();
+        builder.set_x509_key_file(certfile("mtls_server.crt"), certfile("mtls_server.key"), tls::x509_crt_format::PEM).get();
+        builder.set_client_auth(tls::client_auth::REQUIRE);
+        return builder.build_server_credentials();
+    }();
+
+    auto fetch_dn = [server_creds, addr] (sstring id, shared_ptr<tls::certificate_credentials> client_cred) {
+        listen_options lo{};
+        lo.reuse_address = true;
+        auto server_sock = tls::listen(server_creds, addr, lo);
+
+        auto sa = server_sock.accept();
+        auto c = tls::connect(client_cred, addr).get();
+        auto s = sa.get();
+
+        auto in = s.connection.input();
+        output_stream<char> out(c.output().detach(), 1024);
+        out.write(id).get();
+
+        auto fdn = tls::get_dn_information(s.connection);
+
+        auto fout = out.flush();
+        auto fin = in.read();
+
+        fout.get();
+
+        auto dn = fdn.get();
+        auto client_id = fin.get();
+
+        in.close().get();
+        out.close().get();
+
+        s.connection.shutdown_input();
+        s.connection.shutdown_output();
+
+        c.shutdown_input();
+        c.shutdown_output();
+
+        auto it = dn->subject.find(sstring(client_id.get(), client_id.size()));
+        BOOST_REQUIRE(it != sstring::npos);
+    };
+
+    fetch_dn("client1.org", client1_creds);
+    fetch_dn("client2.org", client2_creds);
 }

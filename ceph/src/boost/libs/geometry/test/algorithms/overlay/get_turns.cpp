@@ -5,8 +5,8 @@
 // Copyright (c) 2008-2012 Bruno Lalande, Paris, France.
 // Copyright (c) 2009-2012 Mateusz Loskot, London, UK.
 
-// This file was modified by Oracle on 2017.
-// Modifications copyright (c) 2017, Oracle and/or its affiliates.
+// This file was modified by Oracle on 2017-2021.
+// Modifications copyright (c) 2017-2021, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Parts of Boost.Geometry are redesigned from Geodan's Geographic Library
@@ -64,9 +64,9 @@ struct test_get_turns
     {
         typedef typename bg::point_type<G2>::type point_type;
         
-        typedef typename bg::strategy::intersection::services::default_strategy
+        typedef typename bg::strategies::relate::services::default_strategy
             <
-                typename bg::cs_tag<G1>::type
+                G1, G2
             >::type strategy_type;
         
         typedef typename bg::rescale_policy_type<point_type>::type
@@ -122,7 +122,7 @@ struct test_get_turns
                     "stroke:rgb(51,51,153);stroke-width:3");
 
             int index = 0;
-            BOOST_FOREACH(turn_info const& turn, turns)
+            for (turn_info const& turn : turns)
             {
                 mapper.map(turn.point, "fill:rgb(255,128,0);stroke:rgb(0,0,100);stroke-width:1");
 

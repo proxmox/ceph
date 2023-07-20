@@ -85,6 +85,11 @@ void* internal::allocate_aligned_buffer_impl(size_t size, size_t align) {
 
 namespace memory {
 
+// We always create the logger object for memory disagnostics, even in
+// in SEASTAR_DEFAULT_ALLOCATOR builds, though it only logs when the
+// seastar allocator is enabled.
+seastar::logger seastar_memory_logger("seastar_memory");
+
 static thread_local int abort_on_alloc_failure_suppressed = 0;
 
 disable_abort_on_alloc_failure_temporarily::disable_abort_on_alloc_failure_temporarily() {
@@ -102,11 +107,19 @@ namespace internal {
 
 #ifdef __cpp_constinit
 #define SEASTAR_CONSTINIT constinit
-thread_local constinit int critical_alloc_section = 0;
 #else
 #define SEASTAR_CONSTINIT
-__thread int critical_alloc_section = 0;
 #endif
+
+#ifdef SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
+
+#ifdef __cpp_constinit
+thread_local constinit volatile int critical_alloc_section = 0;
+#else
+__thread volatile int critical_alloc_section = 0;
+#endif
+
+#endif  // SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
 
 } // namespace internal
 
@@ -168,13 +181,18 @@ struct hash<seastar::allocation_site> {
 
 }
 
+#if FMT_VERSION >= 90000
+namespace seastar::memory {
+struct human_readable_value;
+}
+template <> struct fmt::formatter<struct seastar::memory::human_readable_value> : fmt::ostream_formatter {};
+#endif
+
 namespace seastar {
 
 using allocation_site_ptr = const allocation_site*;
 
 namespace memory {
-
-seastar::logger seastar_memory_logger("seastar_memory");
 
 [[gnu::unused]]
 static allocation_site_ptr get_allocation_site();
@@ -202,7 +220,8 @@ static thread_local bool is_reactor_thread = false;
 
 namespace alloc_stats {
 
-enum class types { allocs, frees, cross_cpu_frees, reclaims, large_allocs, foreign_mallocs, foreign_frees, foreign_cross_frees, enum_size };
+enum class types { allocs, frees, cross_cpu_frees, reclaims, large_allocs, failed_allocs,
+    foreign_mallocs, foreign_frees, foreign_cross_frees, enum_size };
 
 using stats_array = std::array<uint64_t, static_cast<std::size_t>(types::enum_size)>;
 using stats_atomic_array = std::array<std::atomic_uint64_t, static_cast<std::size_t>(types::enum_size)>;
@@ -761,7 +780,7 @@ cpu_pages::warn_large_allocation(size_t size) {
 void
 inline
 cpu_pages::check_large_allocation(size_t size) {
-    if (size > large_allocation_warning_threshold) {
+    if (size >= large_allocation_warning_threshold) {
         warn_large_allocation(size);
     }
 }
@@ -1543,7 +1562,12 @@ void configure(std::vector<resource::memory> m, bool mbind,
 statistics stats() {
     return statistics{alloc_stats::get(alloc_stats::types::allocs), alloc_stats::get(alloc_stats::types::frees), alloc_stats::get(alloc_stats::types::cross_cpu_frees),
         cpu_mem.nr_pages * page_size, cpu_mem.nr_free_pages * page_size, alloc_stats::get(alloc_stats::types::reclaims), alloc_stats::get(alloc_stats::types::large_allocs),
-        alloc_stats::get(alloc_stats::types::foreign_mallocs), alloc_stats::get(alloc_stats::types::foreign_frees), alloc_stats::get(alloc_stats::types::foreign_cross_frees)};
+        alloc_stats::get(alloc_stats::types::failed_allocs), alloc_stats::get(alloc_stats::types::foreign_mallocs), alloc_stats::get(alloc_stats::types::foreign_frees),
+        alloc_stats::get(alloc_stats::types::foreign_cross_frees)};
+}
+
+size_t free_memory() {
+    return get_cpu_mem().nr_free_pages * page_size;
 }
 
 bool drain_cross_cpu_freelist() {
@@ -1652,9 +1676,10 @@ seastar::internal::log_buf::inserter_iterator do_dump_memory_diagnostics(seastar
     auto total_mem = get_cpu_mem().nr_pages * page_size;
     it = fmt::format_to(it, "Dumping seastar memory diagnostics\n");
 
-    it = fmt::format_to(it, "Used memory:  {}\n", to_hr_size(total_mem - free_mem));
-    it = fmt::format_to(it, "Free memory:  {}\n", to_hr_size(free_mem));
-    it = fmt::format_to(it, "Total memory: {}\n\n", to_hr_size(total_mem));
+    it = fmt::format_to(it, "Used memory:   {}\n", to_hr_size(total_mem - free_mem));
+    it = fmt::format_to(it, "Free memory:   {}\n", to_hr_size(free_mem));
+    it = fmt::format_to(it, "Total memory:  {}\n", to_hr_size(total_mem));
+    it = fmt::format_to(it, "Hard failures: {}\n\n", alloc_stats::get(alloc_stats::types::failed_allocs));
 
     if (additional_diagnostics_producer) {
         additional_diagnostics_producer([&it] (std::string_view v) mutable {
@@ -1667,7 +1692,7 @@ seastar::internal::log_buf::inserter_iterator do_dump_memory_diagnostics(seastar
     }
 
     it = fmt::format_to(it, "Small pools:\n");
-    it = fmt::format_to(it, "objsz\tspansz\tusedobj\tmemory\tunused\twst%\n");
+    it = fmt::format_to(it, "objsz spansz usedobj memory unused wst%\n");
     for (unsigned i = 0; i < get_cpu_mem().small_pools.nr_small_pools; i++) {
         auto& sp = get_cpu_mem().small_pools[i];
         // We don't use pools too small to fit a free_object, so skip these, they
@@ -1695,7 +1720,7 @@ seastar::internal::log_buf::inserter_iterator do_dump_memory_diagnostics(seastar
         const auto unused = free_objs * sp.object_size();
         const auto wasted_percent = memory ? unused * 100 / memory : 0;
         it = fmt::format_to(it,
-                "{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{:>5}  {:>5}   {:>5}  {:>5}  {:>5} {:>4}\n",
                 sp.object_size(),
                 to_hr_size(sp._span_sizes.preferred * page_size),
                 to_hr_number(use_count),
@@ -1703,8 +1728,8 @@ seastar::internal::log_buf::inserter_iterator do_dump_memory_diagnostics(seastar
                 to_hr_size(unused),
                 unsigned(wasted_percent));
     }
-    it = fmt::format_to(it, "Page spans:\n");
-    it = fmt::format_to(it, "index\tsize\tfree\tused\tspans\n");
+    it = fmt::format_to(it, "\nPage spans:\n");
+    it = fmt::format_to(it, "index  size  free  used spans\n");
 
     std::array<uint32_t, cpu_pages::nr_span_lists> span_size_histogram;
     span_size_histogram.fill(0);
@@ -1731,7 +1756,7 @@ seastar::internal::log_buf::inserter_iterator do_dump_memory_diagnostics(seastar
         const auto total_spans = span_size_histogram[i];
         const auto total_pages = total_spans * (1 << i);
         it = fmt::format_to(it,
-                "{}\t{}\t{}\t{}\t{}\n",
+                "{:>5} {:>5} {:>5} {:>5} {:>5}\n",
                 i,
                 to_hr_size((uint64_t(1) << i) * page_size),
                 to_hr_size(free_pages * page_size),
@@ -1742,15 +1767,27 @@ seastar::internal::log_buf::inserter_iterator do_dump_memory_diagnostics(seastar
     return it;
 }
 
-void maybe_dump_memory_diagnostics(size_t size) {
+void dump_memory_diagnostics(log_level lvl, logger::rate_limit& rate_limit) {
+    logger::lambda_log_writer writer([] (seastar::internal::log_buf::inserter_iterator it) {
+        return do_dump_memory_diagnostics(it);
+    });
+    seastar_memory_logger.log(lvl, rate_limit, writer);
+}
+
+void internal::log_memory_diagnostics_report(log_level lvl) {
+    logger::rate_limit rl{std::chrono::seconds(0)}; // never limit for explicit dump requests
+    dump_memory_diagnostics(lvl, rl);
+}
+
+void maybe_dump_memory_diagnostics(size_t size, bool is_aborting) {
     if (report_on_alloc_failure_suppressed) {
         return;
     }
 
     disable_report_on_alloc_failure_temporarily guard;
-    seastar_memory_logger.debug("Failed to allocate {} bytes at {}", size, current_backtrace());
-
-    static thread_local logger::rate_limit rate_limit(std::chrono::seconds(10));
+    if (seastar_memory_logger.is_enabled(log_level::debug)) {
+        seastar_memory_logger.debug("Failed to allocate {} bytes at {}", size, current_backtrace());
+    }
 
     auto lvl = log_level::debug;
     switch (dump_diagnostics_on_alloc_failure_kind.load(std::memory_order_relaxed)) {
@@ -1765,17 +1802,26 @@ void maybe_dump_memory_diagnostics(size_t size) {
             break;
     }
 
-    logger::lambda_log_writer writer([] (seastar::internal::log_buf::inserter_iterator it) {
-        return do_dump_memory_diagnostics(it);
-    });
-    seastar_memory_logger.log(lvl, rate_limit, writer);
+    if (is_aborting) {
+        // if we are about to abort, always report the memory diagnositics at error level
+        lvl = log_level::error;
+    }
+
+    static thread_local logger::rate_limit rate_limit(std::chrono::seconds(10));
+    dump_memory_diagnostics(lvl, rate_limit);
+
+
 }
 
 void on_allocation_failure(size_t size) {
-    maybe_dump_memory_diagnostics(size);
+    alloc_stats::increment(alloc_stats::types::failed_allocs);
 
-    if (!abort_on_alloc_failure_suppressed
-            && abort_on_allocation_failure.load(std::memory_order_relaxed)) {
+    bool will_abort = !abort_on_alloc_failure_suppressed
+            && abort_on_allocation_failure.load(std::memory_order_relaxed);
+
+    maybe_dump_memory_diagnostics(size, will_abort);
+
+    if (will_abort) {
         seastar_logger.error("Failed to allocate {} bytes", size);
         abort();
     }
@@ -1876,7 +1922,11 @@ void* realloc(void* ptr, size_t size) {
     if (try_trigger_error_injector()) {
         return nullptr;
     }
-    if (ptr != nullptr && !is_seastar_memory(ptr)) {
+    if (ptr == nullptr) {
+        // https://en.cppreference.com/w/cpp/memory/c/realloc
+        // If ptr is a null pointer, the behavior is the same as calling std::malloc(new_size).
+        return malloc(size);
+    } else if (!is_seastar_memory(ptr)) {
         // we can't realloc foreign memory on a shard
         if (is_reactor_thread) {
             abort();
@@ -1886,8 +1936,8 @@ void* realloc(void* ptr, size_t size) {
             return original_realloc_func(ptr, size);
         }
     }
-    // if we're here, it's either ptr is a seastar memory ptr
-    // or a nullptr, or, original functions aren't available
+    // if we're here, it's a non-null seastar memory ptr
+    // or original functions aren't available.
     // at any rate, using the seastar allocator is OK now.
     auto old_size = ptr ? object_size(ptr) : 0;
     if (size == old_size) {
@@ -1954,6 +2004,9 @@ extern "C"
 #if defined(__GLIBC__) && __GLIBC_PREREQ(2, 30)
 [[gnu::alloc_size(2)]]
 #endif
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 35)
+[[gnu::alloc_align(1)]]
+#endif
 void* memalign(size_t align, size_t size) throw () {
     if (try_trigger_error_injector()) {
         return nullptr;
@@ -1977,6 +2030,9 @@ extern "C"
 [[gnu::malloc]]
 #if defined(__GLIBC__) && __GLIBC_PREREQ(2, 30)
 [[gnu::alloc_size(2)]]
+#endif
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 35)
+[[gnu::alloc_align(1)]]
 #endif
 void* __libc_memalign(size_t align, size_t size) throw ();
 
@@ -2233,7 +2289,11 @@ void configure(std::vector<resource::memory> m, bool mbind, std::optional<std::s
 }
 
 statistics stats() {
-    return statistics{0, 0, 0, 1 << 30, 1 << 30, 0, 0, 0, 0, 0};
+    return statistics{0, 0, 0, 1 << 30, 1 << 30, 0, 0, 0, 0, 0, 0};
+}
+
+size_t free_memory() {
+    return stats().free_memory();
 }
 
 bool drain_cross_cpu_freelist() {

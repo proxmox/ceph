@@ -60,30 +60,20 @@ action store_value {
     _value = str();
 }
 
-action no_mark_store_value {
-    _value = get_str();
+action trim_trailing_whitespace_and_store_value {
+    _value = str();
+    trim_trailing_spaces_and_tabs(_value);
     g.mark_start(nullptr);
 }
 
-action checkpoint {
-    // Needs a start to be marked beforehand.
-    // Used to mark the candidate end of value string. Can be moved furhter by repetitive use
-    // of this action.
-    // To store the string that ends on the last checkpoint (instead of the last processed character)
-    // use %no_mark_store_value instead of %store_value
-    g.mark_end(p);
-    g.mark_start(p);
-}
-
 action assign_field {
-    if (_req->_headers.count(_field_name)) {
+    auto [iter, inserted] = _req->_headers.try_emplace(_field_name, std::move(_value));
+    if (!inserted) {
         // RFC 7230, section 3.2.2.  Field Parsing:
         // A recipient MAY combine multiple header fields with the same field name into one
         // "field-name: field-value" pair, without changing the semantics of the message,
         // by appending each subsequent field value to the combined field value in order, separated by a comma.
-        _req->_headers[_field_name] += sstring(",") + std::move(_value);
-    } else {
-        _req->_headers[_field_name] = std::move(_value);
+        iter->second += sstring(",") + std::move(_value);
     }
 }
 
@@ -116,14 +106,18 @@ uri = (any - sp)+ >mark %store_uri;
 http_version = 'HTTP/' (digit '.' digit) >mark %store_version;
 
 obs_text = 0x80..0xFF; # defined in RFC 7230, Section 3.2.6.
-field_vchars = (graph | obs_text)+ %checkpoint;
-field_content = (field_vchars sp_ht*)*;
+field_vchar = (graph | obs_text);
+# RFC 9110, Section 5.5 allows single ' '/'\t' separators between
+# field_vchar words. We are less strict and allow any number of spaces
+# between words.
+# Trailing spaces are trimmed in postprocessing.
+field_content = (field_vchar | sp_ht)*;
 
 field = tchar+ >mark %store_field_name;
-value = field_content >mark %no_mark_store_value;
+value = field_content >mark %trim_trailing_whitespace_and_store_value;
 start_line = ((operation sp uri sp http_version) -- crlf) crlf;
-header_1st = (field ':' sp_ht* value crlf) %assign_field;
-header_cont = (sp_ht+ value crlf) %extend_field;
+header_1st = (field ':' sp_ht* <: value crlf) %assign_field;
+header_cont = (sp_ht+ <: value crlf) %extend_field;
 header = header_1st header_cont*;
 main := start_line header* (crlf @done);
 
@@ -137,20 +131,20 @@ public:
         eof,
         done,
     };
-    std::unique_ptr<httpd::request> _req;
+    std::unique_ptr<http::request> _req;
     sstring _field_name;
     sstring _value;
     state _state;
 public:
     void init() {
         init_base();
-        _req.reset(new httpd::request());
+        _req.reset(new http::request());
         _state = state::eof;
         %% write init;
     }
     char* parse(char* p, char* pe, char* eof) {
         sstring_builder::guard g(_builder, p, pe);
-        auto str = [this, &g, &p] { g.mark_end(p); return get_str(); };
+        [[maybe_unused]] auto str = [this, &g, &p] { g.mark_end(p); return get_str(); };
         bool done = false;
         if (p != pe) {
             _state = state::error;

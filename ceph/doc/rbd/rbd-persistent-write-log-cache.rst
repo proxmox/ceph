@@ -45,11 +45,16 @@ Enable Cache
 
 To enable the PWL cache, set the following configuration settings::
 
-        rbd persistent cache mode = {cache-mode}
-        rbd plugins = pwl_cache
+        rbd_persistent_cache_mode = {cache-mode}
+        rbd_plugins = pwl_cache
 
 Value of {cache-mode} can be ``rwl``, ``ssd`` or ``disabled``. By default the
 cache is disabled.
+
+The ``rwl`` cache mode depends on libpmem library (part of PMDK). It should
+be universally available on x86_64 architecture and may also be available on
+ppc64le and aarch64 architectures on some distributions. It is not available
+on s390x architecture.
 
 Here are some cache configuration settings:
 

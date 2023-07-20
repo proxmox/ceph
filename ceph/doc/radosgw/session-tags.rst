@@ -148,7 +148,7 @@ An example of a role's trust policy that uses aws:TagKeys is as follows:
 	        "Effect":"Allow",
 	        "Action":["sts:AssumeRoleWithWebIdentity","sts:TagSession"],
 	        "Principal":{"Federated":["arn:aws:iam:::oidc-provider/localhost:8080/auth/realms/quickstart"]},
-	        "Condition":{"ForAllValues:StringEquals":{"aws:TagKeys":["Marketing,Engineering"]}}
+	        "Condition":{"ForAllValues:StringEquals":{"aws:TagKeys":["Department"]}}
 	    }]
 	}
 

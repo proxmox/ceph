@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -35,7 +35,10 @@
 %ifdef HAVE_AS_KNOWS_AVX512
 
 extern sha256_mb_x16_avx512
+
+[bits 64]
 default rel
+section .text
 
 %ifidn __OUTPUT_FORMAT__, elf64
 ; Linux register definitions
@@ -86,8 +89,9 @@ default rel
 ; SHA256_JOB* sha256_mb_mgr_submit_avx512(SHA256_MB_JOB_MGR *state, SHA256_JOB *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-global sha256_mb_mgr_submit_avx512:function
+mk_global sha256_mb_mgr_submit_avx512, function
 sha256_mb_mgr_submit_avx512:
+	endbranch
 
 	sub     rsp, STACK_SPACE
 	mov     [rsp + 8*0], rbx

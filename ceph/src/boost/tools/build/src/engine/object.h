@@ -1,4 +1,5 @@
 /*
+ * Copyright 2022 René Ferdinand Rivera Morell
  * Copyright 2011 Steven Watanabe
  *
  * This file is part of Jam - see jam.c for Copyright information.
@@ -17,8 +18,10 @@
 
 typedef struct _object OBJECT;
 
+typedef OBJECT * object_ptr;
+
 OBJECT * object_new( char const * const );
-OBJECT * object_new_range( char const * const, int const size );
+OBJECT * object_new_range( char const * const, int32_t size );
 void object_done( void );
 
 #if defined(NDEBUG) && !defined(BJAM_NO_MEM_CACHE)

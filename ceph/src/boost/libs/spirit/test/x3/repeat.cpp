@@ -7,7 +7,6 @@
 #include <string>
 #include <vector>
 
-#include <boost/detail/lightweight_test.hpp>
 #include <boost/utility/enable_if.hpp>
 
 #if defined(__GNUC__) && (__GNUC__ >= 8)
@@ -145,7 +144,7 @@ main()
     }
 
     {
-        std::vector<char> v;
+        std::vector<int> v;
         BOOST_TEST(test_attr("1 2 3", int_ >> repeat(2)[int_], v, space));
         BOOST_TEST(v.size() == 3 && v[0] == 1 && v[1] == 2 && v[2] == 3);
 

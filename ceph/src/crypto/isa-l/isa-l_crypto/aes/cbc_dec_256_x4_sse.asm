@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -115,8 +115,9 @@
 
 %include "cbc_common.asm"
 
-global aes_cbc_dec_256_sse:function
+mk_global aes_cbc_dec_256_sse, function
 func(aes_cbc_dec_256_sse)
+	endbranch
 	FUNC_SAVE
 
         FILL_KEY_CACHE CKEY_CNT, FIRST_CKEY, KEYS, MOVDQ

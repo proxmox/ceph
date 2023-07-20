@@ -7,7 +7,7 @@
 /*  This file is ALSO:
  *  Copyright 2001-2004 David Abrahams.
  *  Distributed under the Boost Software License, Version 1.0.
- *  (See accompanying file LICENSE_1_0.txt or http://www.boost.org/LICENSE_1_0.txt)
+ *  (See accompanying file LICENSE.txt or https://www.bfgroup.xyz/b2/LICENSE.txt)
  */
 
 /*
@@ -60,7 +60,7 @@ void cmdlist_free( CMDLIST * l )
 
 CMD * cmd_new( RULE * rule, LIST * targets, LIST * sources, LIST * shell )
 {
-    CMD * cmd = (CMD *)BJAM_MALLOC( sizeof( CMD ) );
+    CMD * cmd = b2::jam::make_ptr<CMD>();
     FRAME frame[ 1 ];
 
     assert( cmd );
@@ -101,8 +101,7 @@ void cmd_free( CMD * cmd )
     lol_free( &cmd->args );
     list_free( cmd->shell );
     string_free( cmd->buf );
-    freetargets( cmd->unlock );
-    BJAM_FREE( (void *)cmd );
+    b2::jam::free_ptr( cmd );
 }
 
 

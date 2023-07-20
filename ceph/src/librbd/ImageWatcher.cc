@@ -149,7 +149,7 @@ template <typename I>
 void ImageWatcher<I>::notify_async_complete(const AsyncRequestId &request,
                                             int r) {
   ldout(m_image_ctx.cct, 20) << this << " remote async request finished: "
-			     << request << " = " << r << dendl;
+			     << request << "=" << r << dendl;
 
   send_notify(new AsyncCompletePayload(request, r),
     new LambdaContext(boost::bind(&ImageWatcher<I>::handle_async_complete,
@@ -1149,7 +1149,7 @@ bool ImageWatcher<I>::handle_payload(const SnapCreatePayload &payload,
   auto request_type = exclusive_lock::OPERATION_REQUEST_TYPE_GENERAL;
 
   // rbd-mirror needs to accept forced promotion orphan snap create requests
-  auto mirror_ns = boost::get<cls::rbd::MirrorSnapshotNamespace>(
+  auto mirror_ns = std::get_if<cls::rbd::MirrorSnapshotNamespace>(
     &payload.snap_namespace);
   if (mirror_ns != nullptr && mirror_ns->is_orphan()) {
     request_type = exclusive_lock::OPERATION_REQUEST_TYPE_FORCE_PROMOTION;

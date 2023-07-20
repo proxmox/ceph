@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "sha1_mb.h"
+#include "endian_helper.h"
 
 typedef uint32_t DigestSHA1[SHA1_DIGEST_NWORDS];
 
@@ -91,8 +92,14 @@ int main(void)
 	SHA1_HASH_CTX ctxpool[NUM_JOBS], *ctx = NULL;
 	uint32_t i, j, k, t, checked = 0;
 	uint32_t *good;
+	int ret;
 
-	posix_memalign((void *)&mgr, 16, sizeof(SHA1_HASH_CTX_MGR));
+	ret = posix_memalign((void *)&mgr, 16, sizeof(SHA1_HASH_CTX_MGR));
+	if ((ret != 0) || (mgr == NULL)) {
+		printf("posix_memalign failed test aborted\n");
+		return 1;
+	}
+
 	sha1_ctx_mgr_init(mgr);
 
 	// Init contexts before first use

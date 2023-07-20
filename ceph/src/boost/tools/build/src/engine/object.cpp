@@ -55,15 +55,17 @@ struct hash_item
 
 typedef struct string_set
 {
-    unsigned int num;
-    unsigned int size;
+    int32_t num;
+    int32_t size;
     struct hash_item * * data;
 } string_set;
 
+#if !defined(BJAM_NO_MEM_CACHE) || (BJAM_NO_MEM_CACHE == 0)
 static string_set strhash;
-static int strtotal = 0;
-static int strcount_in = 0;
-static int strcount_out = 0;
+#endif
+static int32_t strtotal = 0;
+static int32_t strcount_in = 0;
+static int32_t strcount_out = 0;
 
 
 /*
@@ -80,6 +82,7 @@ typedef struct strblock
 
 static strblock * strblock_chain = 0;
 
+#if !defined(BJAM_NO_MEM_CACHE) || (BJAM_NO_MEM_CACHE == 0)
 /* Storage remaining in the current strblock */
 static char * storage_start = 0;
 static char * storage_finish = 0;
@@ -89,13 +92,13 @@ static char * storage_finish = 0;
  * allocate() - Allocate n bytes of immortal string storage.
  */
 
-static char * allocate( size_t n )
+static char * allocate( int32_t n )
 {
 #ifdef BJAM_NEWSTR_NO_ALLOCATE
     return (char *)BJAM_MALLOC( n );
 #else
     /* See if we can grab storage from an existing block. */
-    size_t remaining = storage_finish - storage_start;
+    int32_t remaining = int32_t(storage_finish - storage_start);
     n = ( ( n + ALLOC_ALIGNMENT - 1 ) / ALLOC_ALIGNMENT ) * ALLOC_ALIGNMENT;
     if ( remaining >= n )
     {
@@ -106,13 +109,13 @@ static char * allocate( size_t n )
     else  /* Must allocate a new block. */
     {
         strblock * new_block;
-        size_t nalloc = n;
+        int32_t nalloc = n;
         if ( nalloc < STRING_BLOCK )
             nalloc = STRING_BLOCK;
 
         /* Allocate a new block and link into the chain. */
         new_block = (strblock *)BJAM_MALLOC( offsetof( strblock, data[ 0 ] ) +
-            nalloc * sizeof( new_block->data[ 0 ] ) );
+            size_t(nalloc) * sizeof( new_block->data[ 0 ] ) );
         if ( new_block == 0 )
             return 0;
         new_block->next = strblock_chain;
@@ -128,9 +131,10 @@ static char * allocate( size_t n )
     }
 #endif
 }
+#endif
 
 
-static unsigned int hash_keyval( char const * key, int const size )
+static unsigned int hash_keyval( char const * key, int32_t size )
 {
     unsigned int const magic = 2147059363;
     unsigned int hash = 0;
@@ -154,6 +158,7 @@ static unsigned int hash_keyval( char const * key, int const size )
 }
 
 
+#if !defined(BJAM_NO_MEM_CACHE) || (BJAM_NO_MEM_CACHE == 0)
 static void string_set_init( string_set * set )
 {
     set->size = 0;
@@ -171,14 +176,13 @@ static void string_set_done( string_set * set )
 
 static void string_set_resize( string_set * set )
 {
-    unsigned i;
     string_set new_set;
     new_set.num = set->num * 2;
     new_set.size = set->size;
     new_set.data = (struct hash_item * *)BJAM_MALLOC( sizeof( struct hash_item *
         ) * new_set.num );
     memset( new_set.data, 0, sizeof( struct hash_item * ) * new_set.num );
-    for ( i = 0; i < set->num; ++i )
+    for ( int32_t i = 0; i < set->num; ++i )
     {
         while ( set->data[ i ] )
         {
@@ -195,7 +199,7 @@ static void string_set_resize( string_set * set )
 
 
 static char const * string_set_insert( string_set * set, char const * string,
-    int const size )
+    int32_t const size )
 {
     unsigned hash = hash_keyval( string, size );
     unsigned pos = hash % set->num;
@@ -228,27 +232,14 @@ static char const * string_set_insert( string_set * set, char const * string,
 
     return result->data;
 }
-
-
-static struct hash_item * object_get_item( OBJECT * obj )
-{
-    return (struct hash_item *)( (char *)obj - offsetof( struct hash_item, data
-        ) );
-}
-
-
-static void object_validate( OBJECT * obj )
-{
-    assert( obj );
-    assert( object_get_item( obj )->header.magic == OBJECT_MAGIC );
-}
+#endif
 
 
 /*
  * object_new_range() - create an object from a string of given length
  */
 
-OBJECT * object_new_range( char const * const string, int const size )
+OBJECT * object_new_range( char const * const string, int32_t size )
 {
     ++strcount_in;
 
@@ -278,11 +269,25 @@ OBJECT * object_new_range( char const * const string, int const size )
 
 OBJECT * object_new( char const * const string )
 {
-    return object_new_range( string, strlen( string ) );
+    return object_new_range( string, int32_t(strlen( string )) );
 }
 
 
 #ifndef object_copy
+
+static struct hash_item * object_get_item( OBJECT * obj )
+{
+    return (struct hash_item *)( (char *)obj - offsetof( struct hash_item, data
+        ) );
+}
+
+
+static void object_validate( OBJECT * obj )
+{
+    assert( obj );
+    assert( object_get_item( obj )->header.magic == OBJECT_MAGIC );
+}
+
 
 /*
  * object_copy() - return a copy of an object
@@ -385,7 +390,9 @@ void object_done()
     }
 #endif
 
+#if !defined(BJAM_NO_MEM_CACHE) || (BJAM_NO_MEM_CACHE == 0)
     string_set_done( &strhash );
+#endif
 
     if ( DEBUG_MEM )
     {

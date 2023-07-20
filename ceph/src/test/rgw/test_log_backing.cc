@@ -18,8 +18,6 @@
 #include <iostream>
 #include <string_view>
 
-#undef FMT_HEADER_ONLY
-#define FMT_HEADER_ONLY 1
 #include <fmt/format.h>
 
 #include "include/types.h"
@@ -30,8 +28,8 @@
 
 #include "cls/log/cls_log_client.h"
 
-#include "rgw/rgw_tools.h"
-#include "rgw/cls_fifo_legacy.h"
+#include "rgw_tools.h"
+#include "cls_fifo_legacy.h"
 
 #include "gtest/gtest.h"
 

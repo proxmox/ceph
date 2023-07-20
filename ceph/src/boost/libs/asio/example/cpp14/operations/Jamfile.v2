@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2003-2020 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+# Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 #
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -29,6 +29,8 @@ project
     <target-os>haiku:<library>network
   ;
 
+exe callback_wrapper : callback_wrapper.cpp ;
+exe c_callback_wrapper : c_callback_wrapper.cpp ;
 exe composed_1 : composed_1.cpp ;
 exe composed_2 : composed_2.cpp ;
 exe composed_3 : composed_3.cpp ;

@@ -23,8 +23,18 @@
 
 #include <unordered_map>
 #include <seastar/core/sstring.hh>
+#include <seastar/core/iostream.hh>
 
 namespace seastar {
+
+namespace http {
+namespace internal {
+output_stream<char> make_http_chunked_output_stream(output_stream<char>& out);
+// The len parameter defines the maximum number of bytes to be written. After the
+// stream is closed, the len is updated with the actual number of bytes written.
+output_stream<char> make_http_content_length_output_stream(output_stream<char>& out, size_t& len);
+} // internal namespace
+} // http namespace
 
 namespace httpd {
 
@@ -68,6 +78,13 @@ enum operation_type {
  * @return the operation_type
  */
 operation_type str2type(const sstring& type);
+
+/**
+ * Translate the operation type to command string
+ * @param type the string GET or POST
+ * @return the command string "GET" or "POST"
+ */
+sstring type2str(operation_type type);
 
 }
 

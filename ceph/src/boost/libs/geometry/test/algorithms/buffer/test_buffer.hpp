@@ -3,8 +3,8 @@
 
 // Copyright (c) 2010-2019 Barend Gehrels, Amsterdam, the Netherlands.
 
-// This file was modified by Oracle on 2016-2017.
-// Modifications copyright (c) 2016-2017, Oracle and/or its affiliates.
+// This file was modified by Oracle on 2016-2021.
+// Modifications copyright (c) 2016-2021, Oracle and/or its affiliates.
 // Contributed and/or modified by Adam Wulkiewicz, on behalf of Oracle
 
 // Use, modification and distribution is subject to the Boost Software License,
@@ -24,7 +24,6 @@
 #include <fstream>
 #include <iomanip>
 
-#include <boost/foreach.hpp>
 #include <geometry_test_common.hpp>
 #include <expectation_limits.hpp>
 
@@ -137,7 +136,7 @@ template
     typename DistanceStrategy,
     typename SideStrategy,
     typename PointStrategy,
-    typename AreaStrategy,
+    typename Strategy,
     typename Geometry
 >
 void test_buffer(std::string const& caseid,
@@ -148,7 +147,7 @@ void test_buffer(std::string const& caseid,
             DistanceStrategy const& distance_strategy,
             SideStrategy const& side_strategy,
             PointStrategy const& point_strategy,
-            AreaStrategy const& area_strategy,
+            Strategy const& strategy,
             int expected_count,
             int expected_holes_count,
             expectation_limits const& expected_area,
@@ -161,12 +160,12 @@ void test_buffer(std::string const& caseid,
 
     typedef typename bg::tag<Geometry>::type tag;
     // TODO use something different here:
-    std::string type = boost::is_same<tag, bg::polygon_tag>::value ? "poly"
-        : boost::is_same<tag, bg::linestring_tag>::value ? "line"
-        : boost::is_same<tag, bg::point_tag>::value ? "point"
-        : boost::is_same<tag, bg::multi_polygon_tag>::value ? "multipoly"
-        : boost::is_same<tag, bg::multi_linestring_tag>::value ? "multiline"
-        : boost::is_same<tag, bg::multi_point_tag>::value ? "multipoint"
+    std::string type = std::is_same<tag, bg::polygon_tag>::value ? "poly"
+        : std::is_same<tag, bg::linestring_tag>::value ? "line"
+        : std::is_same<tag, bg::point_tag>::value ? "point"
+        : std::is_same<tag, bg::multi_polygon_tag>::value ? "multipoly"
+        : std::is_same<tag, bg::multi_linestring_tag>::value ? "multiline"
+        : std::is_same<tag, bg::multi_point_tag>::value ? "multipoint"
         : ""
         ;
 
@@ -177,15 +176,15 @@ void test_buffer(std::string const& caseid,
     }
     else
     {
-        bg::envelope(geometry, envelope);
+        bg::envelope(geometry, envelope, strategy);
     }
 
     std::string join_name = JoinTestProperties<JoinStrategy>::name();
     std::string end_name = EndTestProperties<EndStrategy>::name();
 
     if ( BOOST_GEOMETRY_CONDITION((
-            boost::is_same<tag, bg::point_tag>::value 
-         || boost::is_same<tag, bg::multi_point_tag>::value )) )
+            std::is_same<tag, bg::point_tag>::value 
+         || std::is_same<tag, bg::multi_point_tag>::value )) )
     {
         join_name.clear();
     }
@@ -233,20 +232,12 @@ void test_buffer(std::string const& caseid,
     typedef typename bg::point_type<Geometry>::type point_type;
     typedef typename bg::rescale_policy_type<point_type>::type
         rescale_policy_type;
-    typedef typename bg::strategy::intersection::services::default_strategy
-        <
-            typename bg::cs_tag<Geometry>::type
-        >::type strategy_type;
-    typedef typename strategy_type::envelope_strategy_type envelope_strategy_type;
-
+    
     // Enlarge the box to get a proper rescale policy
     bg::buffer(envelope, envelope, distance_strategy.max_distance(join_strategy, end_strategy));
 
-    strategy_type strategy;
     rescale_policy_type rescale_policy
-            = bg::get_rescale_policy<rescale_policy_type>(envelope);
-
-    envelope_strategy_type envelope_strategy;
+            = bg::get_rescale_policy<rescale_policy_type>(envelope, strategy);
 
     buffered.clear();
     bg::detail::buffer::buffer_inserter<GeometryOut>(geometry,
@@ -285,7 +276,7 @@ void test_buffer(std::string const& caseid,
 
     bg::model::box<point_type> envelope_output;
     bg::assign_values(envelope_output, 0, 0, 1,  1);
-    bg::envelope(buffered, envelope_output, envelope_strategy);
+    bg::envelope(buffered, envelope_output, strategy);
 
     //    std::cout << caseid << std::endl;
     //    std::cout << "INPUT: " << bg::wkt(geometry) << std::endl;
@@ -318,8 +309,7 @@ void test_buffer(std::string const& caseid,
 
     if (settings.test_area)
     {
-        typename bg::default_area_result<GeometryOut>::type area
-          = bg::area(buffered, area_strategy);
+        auto const area = bg::area(buffered, strategy);
         BOOST_CHECK_MESSAGE(expected_area.contains(area, settings.tolerance, settings.use_ln_area),
               "difference: " << caseid << std::setprecision(20)
               << " #area expected: " << expected_area
@@ -376,14 +366,14 @@ void test_buffer(std::string const& caseid, bg::model::multi_polygon<GeometryOut
             expectation_limits const& expected_area,
             ut_settings const& settings = ut_settings())
 {
-    typename bg::strategy::area::services::default_strategy
+    typename bg::strategies::buffer::services::default_strategy
         <
-            typename bg::cs_tag<Geometry>::type
-        >::type area_strategy;
+            Geometry
+        >::type strategies;
 
     test_buffer<GeometryOut>(caseid, buffered, geometry,
         join_strategy, end_strategy, distance_strategy, side_strategy, point_strategy,
-        area_strategy,
+        strategies,
         -1, -1, expected_area, settings);
 }
 
@@ -432,17 +422,17 @@ void test_one(std::string const& caseid, std::string const& wkt,
                         bg::math::equals(distance_right, same_distance)
                         ? distance_left : distance_right);
 
-    typename bg::strategy::area::services::default_strategy
+    typename bg::strategies::buffer::services::default_strategy
         <
-            typename bg::cs_tag<Geometry>::type
-        >::type area_strategy;
+            Geometry
+        >::type strategies;
 
     bg::model::multi_polygon<GeometryOut> buffered;
     test_buffer<GeometryOut>
             (caseid, buffered, g,
             join_strategy, end_strategy,
             distance_strategy, side_strategy, circle_strategy,
-            area_strategy,
+            strategies,
             expected_count, expected_holes_count, expected_area,
             settings);
 
@@ -463,7 +453,7 @@ void test_one(std::string const& caseid, std::string const& wkt,
                 (caseid + "_sym", buffered, g,
                 join_strategy, end_strategy,
                 sym_distance_strategy, side_strategy, circle_strategy,
-                area_strategy,
+                strategies,
                 expected_count, expected_holes_count, expected_area,
                 settings);
 

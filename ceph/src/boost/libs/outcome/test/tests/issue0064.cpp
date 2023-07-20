@@ -1,5 +1,5 @@
 /* Unit testing for outcomes
-(C) 2013-2020 Niall Douglas <http://www.nedproductions.biz/> (4 commits)
+(C) 2013-2022 Niall Douglas <http://www.nedproductions.biz/> (4 commits)
 
 
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -28,7 +28,7 @@ DEALINGS IN THE SOFTWARE.
 */
 
 #include <boost/outcome/iostream_support.hpp>
-#include <boost/outcome/outcome.hpp>
+#include <boost/outcome.hpp>
 #include <boost/outcome/try.hpp>
 #include <boost/test/unit_test.hpp>
 #include <boost/test/unit_test_monitor.hpp>

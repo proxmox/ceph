@@ -1,3 +1,9 @@
+//  Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
+
 #ifndef ROCKSDB_LITE
 
 #include <functional>
@@ -14,7 +20,7 @@ namespace ROCKSDB_NAMESPACE {
 class ImportColumnFamilyTest : public DBTestBase {
  public:
   ImportColumnFamilyTest()
-      : DBTestBase("/import_column_family_test", /*env_do_fsync=*/true) {
+      : DBTestBase("import_column_family_test", /*env_do_fsync=*/true) {
     sst_files_dir_ = dbname_ + "/sst_files/";
     export_files_dir_ = test::PerThreadDBPath(env_, "export");
     DestroyAndRecreateExternalSSTFilesDir();
@@ -104,9 +110,9 @@ TEST_F(ImportColumnFamilyTest, ImportSSTFileWriterFiles) {
     ASSERT_NE(import_cfh_, nullptr);
 
     std::string value;
-    db_->Get(ReadOptions(), import_cfh_, "K1", &value);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, "K1", &value));
     ASSERT_EQ(value, "V1");
-    db_->Get(ReadOptions(), import_cfh_, "K2", &value);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, "K2", &value));
     ASSERT_EQ(value, "V2");
     ASSERT_OK(db_->DropColumnFamily(import_cfh_));
     ASSERT_OK(db_->DestroyColumnFamilyHandle(import_cfh_));
@@ -125,11 +131,17 @@ TEST_F(ImportColumnFamilyTest, ImportSSTFileWriterFiles) {
     ASSERT_NE(import_cfh_, nullptr);
 
     std::string value;
-    db_->Get(ReadOptions(), import_cfh_, "K3", &value);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, "K3", &value));
     ASSERT_EQ(value, "V1");
-    db_->Get(ReadOptions(), import_cfh_, "K4", &value);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, "K4", &value));
     ASSERT_EQ(value, "V2");
   }
+  EXPECT_OK(db_->DestroyColumnFamilyHandle(import_cfh_));
+  import_cfh_ = nullptr;
+
+  // verify sst unique id during reopen
+  options.verify_sst_unique_id_in_manifest = true;
+  ReopenWithColumnFamilies({"default", "koko", "yoyo"}, options);
 }
 
 TEST_F(ImportColumnFamilyTest, ImportSSTFileWriterFilesWithOverlap) {
@@ -214,7 +226,7 @@ TEST_F(ImportColumnFamilyTest, ImportSSTFileWriterFilesWithOverlap) {
 
   for (int i = 0; i < 100; i++) {
     std::string value;
-    db_->Get(ReadOptions(), import_cfh_, Key(i), &value);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, Key(i), &value));
     if (i % 16 == 0) {
       ASSERT_EQ(value, Key(i) + "_overwrite4");
     } else if (i % 4 == 0) {
@@ -235,7 +247,7 @@ TEST_F(ImportColumnFamilyTest, ImportSSTFileWriterFilesWithOverlap) {
   ASSERT_OK(db_->Flush(FlushOptions(), import_cfh_));
   for (int i = 0; i < 100; i++) {
     std::string value;
-    db_->Get(ReadOptions(), import_cfh_, Key(i), &value);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, Key(i), &value));
     if (i % 5 == 0) {
       ASSERT_EQ(value, Key(i) + "_overwrite5");
     } else if (i % 16 == 0) {
@@ -254,7 +266,7 @@ TEST_F(ImportColumnFamilyTest, ImportSSTFileWriterFilesWithOverlap) {
       db_->CompactRange(CompactRangeOptions(), import_cfh_, nullptr, nullptr));
   for (int i = 0; i < 100; i++) {
     std::string value;
-    db_->Get(ReadOptions(), import_cfh_, Key(i), &value);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, Key(i), &value));
     if (i % 5 == 0) {
       ASSERT_EQ(value, Key(i) + "_overwrite5");
     } else if (i % 16 == 0) {
@@ -318,12 +330,12 @@ TEST_F(ImportColumnFamilyTest, ImportExportedSSTFromAnotherCF) {
   std::string value1, value2;
 
   for (int i = 0; i < 100; ++i) {
-    db_->Get(ReadOptions(), import_cfh_, Key(i), &value1);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, Key(i), &value1));
     ASSERT_EQ(Get(1, Key(i)), value1);
   }
 
   for (int i = 0; i < 100; ++i) {
-    db_->Get(ReadOptions(), import_cfh2_, Key(i), &value2);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh2_, Key(i), &value2));
     ASSERT_EQ(Get(1, Key(i)), value2);
   }
 
@@ -340,16 +352,16 @@ TEST_F(ImportColumnFamilyTest, ImportExportedSSTFromAnotherCF) {
         db_->Get(ReadOptions(), import_cfh_, Key(i), &value1).IsNotFound());
   }
   for (int i = 25; i < 50; ++i) {
-    db_->Get(ReadOptions(), import_cfh_, Key(i), &value1);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, Key(i), &value1));
     ASSERT_EQ(Key(i) + "_overwrite3", value1);
   }
   for (int i = 50; i < 100; ++i) {
-    db_->Get(ReadOptions(), import_cfh_, Key(i), &value1);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, Key(i), &value1));
     ASSERT_EQ(Key(i) + "_overwrite2", value1);
   }
 
   for (int i = 0; i < 100; ++i) {
-    db_->Get(ReadOptions(), import_cfh2_, Key(i), &value2);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh2_, Key(i), &value2));
     ASSERT_EQ(Get(1, Key(i)), value2);
   }
 
@@ -363,16 +375,16 @@ TEST_F(ImportColumnFamilyTest, ImportExportedSSTFromAnotherCF) {
         db_->Get(ReadOptions(), import_cfh_, Key(i), &value1).IsNotFound());
   }
   for (int i = 25; i < 50; ++i) {
-    db_->Get(ReadOptions(), import_cfh_, Key(i), &value1);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, Key(i), &value1));
     ASSERT_EQ(Key(i) + "_overwrite3", value1);
   }
   for (int i = 50; i < 100; ++i) {
-    db_->Get(ReadOptions(), import_cfh_, Key(i), &value1);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh_, Key(i), &value1));
     ASSERT_EQ(Key(i) + "_overwrite2", value1);
   }
 
   for (int i = 0; i < 100; ++i) {
-    db_->Get(ReadOptions(), import_cfh2_, Key(i), &value2);
+    ASSERT_OK(db_->Get(ReadOptions(), import_cfh2_, Key(i), &value2));
     ASSERT_EQ(Get(1, Key(i)), value2);
   }
 }
@@ -424,7 +436,7 @@ TEST_F(ImportColumnFamilyTest, ImportExportedSSTFromAnotherDB) {
 
   for (int i = 0; i < 100; ++i) {
     std::string value;
-    db_copy->Get(ReadOptions(), cfh, Key(i), &value);
+    ASSERT_OK(db_copy->Get(ReadOptions(), cfh, Key(i), &value));
     ASSERT_EQ(Get(1, Key(i)), value);
   }
   ASSERT_OK(db_copy->DropColumnFamily(cfh));

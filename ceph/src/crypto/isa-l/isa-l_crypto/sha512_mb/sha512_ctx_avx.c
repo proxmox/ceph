@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -27,8 +27,19 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 
+#if defined(__clang__)
+# pragma clang attribute push (__attribute__((target("avx"))), apply_to=function)
+#elif defined(__ICC)
+# pragma intel optimization_parameter target_arch=AVX
+#elif defined(__ICL)
+# pragma [intel] optimization_parameter target_arch=AVX
+#elif (__GNUC__ >= 5)
+# pragma GCC target("avx")
+#endif
+
 #include "sha512_mb.h"
 #include "memcpy_inline.h"
+#include "endian_helper.h"
 
 #ifdef _MSC_VER
 # include <intrin.h>
@@ -36,7 +47,7 @@
 #endif
 
 static inline void hash_init_digest(SHA512_WORD_T * digest);
-static inline uint32_t hash_pad(uint8_t padblock[SHA512_BLOCK_SIZE * 2], uint32_t total_len);
+static inline uint32_t hash_pad(uint8_t padblock[SHA512_BLOCK_SIZE * 2], uint64_t total_len);
 static SHA512_HASH_CTX *sha512_ctx_mgr_resubmit(SHA512_HASH_CTX_MGR * mgr,
 						SHA512_HASH_CTX * ctx);
 
@@ -219,9 +230,9 @@ static inline void hash_init_digest(SHA512_WORD_T * digest)
 	memcpy_fixedlen(digest, hash_initial_digest, sizeof(hash_initial_digest));
 }
 
-static inline uint32_t hash_pad(uint8_t padblock[SHA512_BLOCK_SIZE * 2], uint32_t total_len)
+static inline uint32_t hash_pad(uint8_t padblock[SHA512_BLOCK_SIZE * 2], uint64_t total_len)
 {
-	uint32_t i = total_len & (SHA512_BLOCK_SIZE - 1);
+	uint32_t i = (uint32_t) (total_len & (SHA512_BLOCK_SIZE - 1));
 
 	memclr_fixedlen(&padblock[i], SHA512_BLOCK_SIZE);
 	padblock[i] = 0x80;
@@ -234,7 +245,7 @@ static inline uint32_t hash_pad(uint8_t padblock[SHA512_BLOCK_SIZE * 2], uint32_
 	*((uint64_t *) & padblock[i - 16]) = 0;
 #endif
 
-	*((uint64_t *) & padblock[i - 8]) = _byteswap_uint64((uint64_t) total_len << 3);
+	*((uint64_t *) & padblock[i - 8]) = to_be64((uint64_t) total_len << 3);
 
 	return i >> SHA512_LOG2_BLOCK_SIZE;	// Number of extra blocks to hash
 }
@@ -252,3 +263,7 @@ struct slver sha512_ctx_mgr_submit_avx_slver = { 0x0167, 0x02, 0x02 };
 
 struct slver sha512_ctx_mgr_flush_avx_slver_02020168;
 struct slver sha512_ctx_mgr_flush_avx_slver = { 0x0168, 0x02, 0x02 };
+
+#if defined(__clang__)
+# pragma clang attribute pop
+#endif

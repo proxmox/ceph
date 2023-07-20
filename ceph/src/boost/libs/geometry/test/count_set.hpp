@@ -10,8 +10,6 @@
 #ifndef GEOMETRY_TEST_COUNT_SET_HPP
 #define GEOMETRY_TEST_COUNT_SET_HPP
 
-#include <boost/foreach.hpp>
-
 #include <set>
 #include <ostream>
 
@@ -28,10 +26,6 @@ struct count_set
         if (value >= 0)
         {
             m_values.insert(static_cast<std::size_t>(value));
-        }
-        else
-        {
-            std::cout << "EMPTY" << std::endl;
         }
     }
 
@@ -58,7 +52,7 @@ struct count_set
     friend std::ostream &operator<<(std::ostream &os, const count_set& s)
     {
        os << "{";
-       BOOST_FOREACH(std::size_t const& value, s.m_values)
+       for (std::size_t const& value : s.m_values)
        {
            os << " " << value;
        }
@@ -88,7 +82,7 @@ private :
         else if (a.size() > 1 && b.size() == 1)
         {
             // One of them is optional, add the second
-            BOOST_FOREACH(std::size_t const& value, a)
+            for (std::size_t const& value : a)
             {
                 result.insert(value + *b.begin());
             }

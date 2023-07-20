@@ -1,6 +1,6 @@
 // Copyright 2011-2012 Renato Tegon Forti
 // Copyright 2014 Renato Tegon Forti, Antony Polukhin.
-// Copyright 2015-2020 Antony Polukhin.
+// Copyright Antony Polukhin, 2015-2022.
 //
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE_1_0.txt
@@ -25,6 +25,10 @@
 extern "C" void LIBRARY_API say_hello(void);
 extern "C" float LIBRARY_API lib_version(void);
 extern "C" int LIBRARY_API increment(int);
+
+#if defined(__GNUC__) && __GNUC__ >= 4 && defined(__ELF__)
+extern "C" int __attribute__((visibility ("protected"))) protected_function(int);
+#endif
 
 extern "C" int LIBRARY_API integer_g;
 extern "C" const int LIBRARY_API const_integer_g = 777;
@@ -93,6 +97,13 @@ int increment(int n)
 {
    return ++n;
 }
+
+#if defined(__GNUC__) && __GNUC__ >= 4 && defined(__ELF__)
+int protected_function(int) {
+    return 42;
+}
+#endif
+
 
 #include <boost/dll/runtime_symbol_info.hpp>
 

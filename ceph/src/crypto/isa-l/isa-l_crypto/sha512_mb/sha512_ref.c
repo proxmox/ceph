@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -29,6 +29,7 @@
 
 #include <string.h>
 #include "sha512_mb.h"
+#include "endian_helper.h"
 
 ////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////
@@ -45,7 +46,7 @@
 #define H6 0x1f83d9abfb41bd6b
 #define H7 0x5be0cd19137e2179
 
-void sha512_single(const uint8_t * data, uint64_t digest[5]);
+void sha512_single(const uint8_t * data, uint64_t digest[]);
 
 void sha512_ref(uint8_t * input_data, uint64_t * digest, uint32_t len)
 {
@@ -54,11 +55,6 @@ void sha512_ref(uint8_t * input_data, uint64_t * digest, uint32_t len)
 
 	/* 128 bit lengths not needed as len is uint32_t, so use 64 bit length
 	 * and pad the first 64 bits with zeros. */
-	union {
-		uint64_t uint;
-		uint8_t uchar[8];
-	} convert;
-	uint8_t *p;
 
 	digest[0] = H0;
 	digest[1] = H1;
@@ -90,16 +86,7 @@ void sha512_ref(uint8_t * input_data, uint64_t * digest, uint32_t len)
 	else
 		i = SHA512_BLOCK_SIZE;
 
-	convert.uint = 8 * len;
-	p = buf + i - 8;
-	p[0] = convert.uchar[7];
-	p[1] = convert.uchar[6];
-	p[2] = convert.uchar[5];
-	p[3] = convert.uchar[4];
-	p[4] = convert.uchar[3];
-	p[5] = convert.uchar[2];
-	p[6] = convert.uchar[1];
-	p[7] = convert.uchar[0];
+	*(uint64_t *) (buf + i - 8) = to_be64((uint64_t) len * 8);
 
 	/* Hash the padded last block */
 	sha512_single(buf, digest);
@@ -108,18 +95,18 @@ void sha512_ref(uint8_t * input_data, uint64_t * digest, uint32_t len)
 }
 
 /* From the FIPS, these are the same as for SHA256, but operating on 64 bit words
- * instead of 32 bit. 
+ * instead of 32 bit.
  */
 #define ch(e,f,g) ((e & f) ^ (g & ~e))
 #define maj(a,b,c) ((a & b) ^ (a & c) ^ (b & c))
 
-/* Sigma functions have same form as SHA256 but 
+/* Sigma functions have same form as SHA256 but
  * 	- change the word size to 64bit
- * 	- change the amount to rotate 
+ * 	- change the amount to rotate
  */
 #define ror64(x, r) (((x)>>(r)) ^ ((x)<<(64-(r))))
 
-/* Technically, s0 should be S0 as these are "capital sigma" functions, and likewise the case 
+/* Technically, s0 should be S0 as these are "capital sigma" functions, and likewise the case
  * of the  S0 should be s0, but keep as-is to avoid confusion with the other reference functions.
  */
 #define s0(a) (ror64(a,28) ^ ror64(a,34) ^ ror64(a,39))
@@ -128,19 +115,10 @@ void sha512_ref(uint8_t * input_data, uint64_t * digest, uint32_t len)
 #define S0(w) (ror64(w,1) ^ ror64(w,8) ^ (w >> 7))
 #define S1(w) (ror64(w,19) ^ ror64(w,61) ^ (w >> 6))
 
-#define bswap(x)  (((x) & (0xffull << 0)) << 56) \
-		| (((x) & (0xffull << 8)) << 40) \
-		| (((x) & (0xffull <<16)) << 24) \
-		| (((x) & (0xffull <<24)) << 8)  \
-		| (((x) & (0xffull <<32)) >> 8)  \
-		| (((x) & (0xffull <<40)) >> 24) \
-		| (((x) & (0xffull <<48)) >> 40) \
-		| (((x) & (0xffull <<56)) >> 56)
-
 #define W(x) w[(x) & 15]
 
 #define step(i,a,b,c,d,e,f,g,h,k) \
-	if (i<16) W(i) = bswap(ww[i]); \
+	if (i<16) W(i) = to_be64(ww[i]); \
 	else \
 	W(i) = W(i-16) + S0(W(i-15)) + W(i-7) + S1(W(i-2)); \
 	t2 = s0(a) + maj(a,b,c); \
@@ -148,7 +126,7 @@ void sha512_ref(uint8_t * input_data, uint64_t * digest, uint32_t len)
 	d += t1; \
 	h = t1 + t2;
 
-void sha512_single(const uint8_t * data, uint64_t digest[5])
+void sha512_single(const uint8_t * data, uint64_t digest[])
 {
 	/* Check these are all uint64_t */
 	uint64_t a, b, c, d, e, f, g, h, t1, t2;

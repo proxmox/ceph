@@ -8,8 +8,8 @@
  * Copyright 2001-2004 David Abrahams.
  * Copyright 2005 Rene Rivera.
  * Distributed under the Boost Software License, Version 1.0.
- * (See accompanying file LICENSE_1_0.txt or copy at
- * http://www.boost.org/LICENSE_1_0.txt)
+ * (See accompanying file LICENSE.txt or copy at
+ * https://www.bfgroup.xyz/b2/LICENSE.txt)
  */
 
 /*
@@ -28,9 +28,10 @@
  */
 
 #include "jam.h"
-#include "pathsys.h"
 
+#include "cwd.h"
 #include "filesys.h"
+#include "pathsys.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -64,7 +65,7 @@ void path_parse( char const * file, PATHNAME * f )
     if ( ( file[ 0 ] == '<' ) && ( p = strchr( file, '>' ) ) )
     {
         f->f_grist.ptr = file;
-        f->f_grist.len = p - file;
+        f->f_grist.len = int32_t(p - file);
         file = p + 1;
     }
 
@@ -83,7 +84,7 @@ void path_parse( char const * file, PATHNAME * f )
     if ( p )
     {
         f->f_dir.ptr = file;
-        f->f_dir.len = p - file;
+        f->f_dir.len = int32_t(p - file);
 
         /* Special case for / - dirname is /, not "" */
         if ( !f->f_dir.len )
@@ -104,7 +105,7 @@ void path_parse( char const * file, PATHNAME * f )
     if ( ( p = strchr( file, '(' ) ) && ( end[ -1 ] == ')' ) )
     {
         f->f_member.ptr = p + 1;
-        f->f_member.len = end - p - 2;
+        f->f_member.len = int32_t(end - p - 2);
         end = p;
     }
 
@@ -115,13 +116,13 @@ void path_parse( char const * file, PATHNAME * f )
     if ( p )
     {
         f->f_suffix.ptr = p;
-        f->f_suffix.len = end - p;
+        f->f_suffix.len = int32_t(end - p);
         end = p;
     }
 
     /* Leaves base. */
     f->f_base.ptr = file;
-    f->f_base.len = end - file;
+    f->f_base.len = int32_t(end - file);
 }
 
 
@@ -316,7 +317,7 @@ std::string b2::paths::normalize(const std::string &p)
     // want this function to obtain a canonic representation.
     std::replace(result.begin(), result.end(), '\\', '/');
 
-    size_t ellipsis = 0;
+    int32_t ellipsis = 0;
     for (auto end_pos = result.length(); end_pos > 0; )
     {
         auto path_pos = result.rfind('/', end_pos-1);
@@ -364,3 +365,105 @@ std::string b2::paths::normalize(const std::string &p)
 
     return result;
 }
+
+
+/*
+ * executable_path()
+ */
+
+#if defined(_WIN32)
+# define WIN32_LEAN_AND_MEAN
+# include <windows.h>
+char * executable_path( char const * argv0 )
+{
+    char buf[ 1024 ];
+    DWORD const ret = GetModuleFileNameA( NULL, buf, sizeof( buf ) );
+    return ( !ret || ret == sizeof( buf ) ) ? NULL : strdup( buf );
+}
+#elif defined(__APPLE__)  /* Not tested */
+# include <mach-o/dyld.h>
+char *executable_path( char const * argv0 )
+{
+    char buf[ 1024 ];
+    uint32_t size = sizeof( buf );
+    return _NSGetExecutablePath( buf, &size ) ? NULL : strdup( buf );
+}
+#elif defined(sun) || defined(__sun)  /* Not tested */
+# include <stdlib.h>
+char * executable_path( char const * argv0 )
+{
+    const char * execname = getexecname();
+    return execname ? strdup( execname ) : NULL;
+}
+#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
+# include <sys/sysctl.h>
+char * executable_path( char const * argv0 )
+{
+    int mib[ 4 ] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
+    char buf[ 1024 ];
+    size_t size = sizeof( buf );
+    sysctl( mib, 4, buf, &size, NULL, 0 );
+    return ( !size || size == sizeof( buf ) ) ? NULL : strndup( buf, size );
+}
+#elif defined(__linux__) || defined(__CYGWIN__) || defined(__GNU__)
+# include <unistd.h>
+char * executable_path( char const * argv0 )
+{
+    char buf[ 1024 ];
+    ssize_t const ret = readlink( "/proc/self/exe", buf, sizeof( buf ) );
+    return ( !ret || ret == sizeof( buf ) ) ? NULL : strndup( buf, ret );
+}
+#elif defined(OS_VMS)
+# include <unixlib.h>
+char * executable_path( char const * argv0 )
+{
+    char * vms_path = NULL;
+    char * posix_path = NULL;
+    char * p;
+
+    /* On VMS argv[0] shows absolute path to the image file.
+     * So, just remove VMS file version and translate path to POSIX-style.
+     */
+    vms_path = strdup( argv0 );
+    if ( vms_path && ( p = strchr( vms_path, ';') ) ) *p = '\0';
+    posix_path = decc$translate_vms( vms_path );
+    if ( vms_path ) free( vms_path );
+
+    return posix_path > 0 ? strdup( posix_path ) : NULL;
+}
+#else
+char * executable_path( char const * argv0 )
+{
+    char * result = nullptr;
+    /* If argv0 is an absolute path, assume it is the right absolute path. */
+    if (!result && b2::paths::is_rooted(argv0))
+        result = strdup( argv0 );
+    // If argv0 is a relative path, we can compute the absolute one from the
+    // current working dir.
+    if (!result && b2::paths::is_relative(argv0))
+    {
+        auto p = b2::paths::normalize(b2::cwd_str()+"/"+argv0);
+        result = strdup( p.c_str() );
+    }
+    // If it's a bare basename, search the PATH for a match.
+    if (!result)
+    {
+        std::string path_env = getenv( "PATH" );
+        std::string::size_type i = 0;
+        while (i != std::string::npos)
+        {
+            std::string::size_type e = path_env.find_first_of(':', i);
+            std::string p = e == std::string::npos
+                ? path_env.substr(i)
+                : path_env.substr(i, e-i);
+            if (b2::filesys::is_file(p+"/"+argv0))
+            {
+                result = strdup( (p+"/"+argv0).c_str() );
+                break;
+            }
+            i = e == std::string::npos ? e : e+1;
+        }
+    }
+    return result;
+}
+#endif

@@ -31,7 +31,7 @@ introduced in this chapter are based on a so called ``vstart`` environment.
 
 .. note::
 
-  Every ``vstart`` environment needs Ceph `to be compiled`_ from its Github
+  Every ``vstart`` environment needs Ceph `to be compiled`_ from its GitHub
   repository, though Docker environments simplify that step by providing a
   shell script that contains those instructions.
 
@@ -50,11 +50,10 @@ optional Ceph internal services are started automatically when it is used to
 start a Ceph cluster. vstart is the basis for the three most commonly used
 development environments in Ceph Dashboard.
 
-You can read more about vstart in `Deploying a development cluster`_.
-Additional information for developers can also be found in the `Developer
-Guide`_.
+You can read more about vstart in :ref:`Deploying a development cluster
+<dev_deploying_a_development_cluster>`. Additional information for developers
+can also be found in the `Developer Guide`_.
 
-.. _Deploying a development cluster: https://docs.ceph.com/docs/master/dev/dev_cluster_deployement/
 .. _Developer Guide: https://docs.ceph.com/docs/master/dev/quick_guide/
 
 Host-based vs Docker-based Development Environments
@@ -96,7 +95,7 @@ based on vstart. Those are:
 
   `ceph-dev`_ is an exception to this rule as one of the options it provides
   is `build-free`_. This is accomplished through a Ceph installation using
-  RPM system packages. You will still be able to work with a local Github
+  RPM system packages. You will still be able to work with a local GitHub
   repository like you are used to.
 
 
@@ -685,7 +684,7 @@ applitools eyes test runner, where you can see all your screenshots. And if ther
 Writing More Visual Regression Tests
 ....................................
 
-Please refer to `Applitools's official cypress sdk documentation <https://github.com/applitools/eyes.sdk.javascript1/tree/master/packages/eyes-cypress>`_ to write more tests.
+Please refer to `Applitools's official cypress sdk documentation <https://www.npmjs.com/package/@applitools/eyes-cypress#usage>`_ to write more tests.
 
 Visual Regression Tests In Jenkins
 ..................................
@@ -1269,7 +1268,6 @@ Tests can be found under the `a11y folder <./src/pybind/mgr/dashboard/frontend/c
   
     beforeEach(() => {
       cy.login();
-      Cypress.Cookies.preserveOnce('token');
       shared.navigateTo();
     });
   
@@ -1867,7 +1865,7 @@ To specify the grafana dashboard properties such as title, uid etc we can create
 
     local dashboardSchema(title, uid, time_from, refresh, schemaVersion, tags,timezone, timepicker)
 
-To add a graph panel we can spcify the graph schema in a local function such as -
+To add a graph panel we can specify the graph schema in a local function such as -
 
 ::
 
@@ -2426,7 +2424,7 @@ If that checker failed, it means that the current Pull Request is modifying the
 Ceph API and therefore:
 
 #. The versioned OpenAPI specification should be updated explicitly: ``tox -e openapi-fix``.
-#. The team @ceph/api will be requested for reviews (this is automated via Github CODEOWNERS), in order to asses the impact of changes.
+#. The team @ceph/api will be requested for reviews (this is automated via GitHub CODEOWNERS), in order to asses the impact of changes.
 
 Additionally, Sphinx documentation can be generated from the OpenAPI
 specification with ``tox -e openapi-doc``.

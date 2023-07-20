@@ -20,6 +20,7 @@
 #include "PGStateUtils.h"
 #include "PGPeeringEvent.h"
 #include "osd_types.h"
+#include "osd_types_fmt.h"
 #include "os/ObjectStore.h"
 #include "OSDMap.h"
 #include "MissingLoc.h"
@@ -54,6 +55,22 @@ struct PGPool {
       auto fac = conf->osd_pool_default_read_lease_ratio;
       return ceph::make_timespan(hbi * fac);
     }
+  }
+};
+
+template <>
+struct fmt::formatter<PGPool> {
+  template <typename ParseContext>
+  constexpr auto parse(ParseContext& ctx) { return ctx.begin(); }
+
+  template <typename FormatContext>
+  auto format(const PGPool& pool, FormatContext& ctx)
+  {
+    return fmt::format_to(ctx.out(),
+                          "{}/{}({})",
+                          pool.id,
+                          pool.name,
+                          pool.info);
   }
 };
 
@@ -288,7 +305,7 @@ public:
     /// Send pg_created to mon
     virtual void send_pg_created(pg_t pgid) = 0;
 
-    virtual ceph::signedspan get_mnow() = 0;
+    virtual ceph::signedspan get_mnow() const = 0;
     virtual HeartbeatStampsRef get_hb_stamps(int peer) = 0;
     virtual void schedule_renew_lease(epoch_t plr, ceph::timespan delay) = 0;
     virtual void queue_check_readable(epoch_t lpr, ceph::timespan delay) = 0;
@@ -404,7 +421,7 @@ public:
     // ==================== Std::map notifications ===================
     virtual void on_active_actmap() = 0;
     virtual void on_active_advmap(const OSDMapRef &osdmap) = 0;
-    virtual epoch_t oldest_stored_osdmap() = 0;
+    virtual epoch_t cluster_osdmap_trim_lower_bound() = 0;
 
     // ============ recovery reservation notifications ==========
     virtual void on_backfill_reserved() = 0;
@@ -1560,6 +1577,47 @@ public:
   /// get priority for pg deletion
   unsigned get_delete_priority();
 
+public:
+  /**
+   * recovery_msg_priority_t
+   *
+   * Defines priority values for use with recovery messages.  The values are
+   * chosen to be reasonable for wpq during an upgrade scenarios, but are
+   * actually translated into a class in PGRecoveryMsg::get_scheduler_class()
+   */
+  enum recovery_msg_priority_t : int {
+    FORCED = 20,
+    UNDERSIZED = 15,
+    DEGRADED = 10,
+    BEST_EFFORT = 5
+  };
+
+  /// get message priority for recovery messages
+  int get_recovery_op_priority() const {
+    if (cct->_conf->osd_op_queue == "mclock_scheduler") {
+      /* For mclock, we use special priority values which will be
+       * translated into op classes within PGRecoveryMsg::get_scheduler_class
+       */
+      if (is_forced_recovery_or_backfill()) {
+	return recovery_msg_priority_t::FORCED;
+      } else if (is_undersized()) {
+	return recovery_msg_priority_t::UNDERSIZED;
+      } else if (is_degraded()) {
+	return recovery_msg_priority_t::DEGRADED;
+      } else {
+	return recovery_msg_priority_t::BEST_EFFORT;
+      }
+    } else {
+      /* For WeightedPriorityQueue, we use pool or osd config settings to
+       * statically set the priority for recovery messages.  This special
+       * handling should probably be removed after Reef */
+      int64_t pri = 0;
+      pool.info.opts.get(pool_opts_t::RECOVERY_OP_PRIORITY, &pri);
+      return  pri > 0 ? pri : cct->_conf->osd_recovery_op_priority;
+    }
+  }
+
+private:
   bool check_prior_readable_down_osds(const OSDMapRef& map);
 
   bool adjust_need_up_thru(const OSDMapRef osdmap);
@@ -2136,7 +2194,7 @@ public:
     return last_rollback_info_trimmed_to_applied;
   }
   /// Returns stable reference to internal pool structure
-  const PGPool &get_pool() const {
+  const PGPool &get_pgpool() const {
     return pool;
   }
   /// Returns reference to current osdmap

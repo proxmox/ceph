@@ -6,13 +6,11 @@
 #include "rgw_sal.h"
 #include "rgw_rados.h"
 
-#include "services/svc_zone.h"
-
 #define dout_subsys ceph_subsys_rgw
 
 using namespace std;
 
-RGWRESTConn::RGWRESTConn(CephContext *_cct, RGWSI_Zone *zone_svc,
+RGWRESTConn::RGWRESTConn(CephContext *_cct, rgw::sal::Driver* driver,
                          const string& _remote_id,
                          const list<string>& remote_endpoints,
                          std::optional<string> _api_name,
@@ -23,63 +21,27 @@ RGWRESTConn::RGWRESTConn(CephContext *_cct, RGWSI_Zone *zone_svc,
     api_name(_api_name),
     host_style(_host_style)
 {
-  if (zone_svc) {
-    key = zone_svc->get_zone_params().system_key;
-    self_zone_group = zone_svc->get_zonegroup().get_id();
+  if (driver) {
+    key = driver->get_zone()->get_system_key();
+    self_zone_group = driver->get_zone()->get_zonegroup().get_id();
   }
 }
 
-RGWRESTConn::RGWRESTConn(CephContext *_cct, rgw::sal::Store* store,
-                         const string& _remote_id,
-                         const list<string>& remote_endpoints,
-                         std::optional<string> _api_name,
-                         HostStyle _host_style)
-  : cct(_cct),
-    endpoints(remote_endpoints.begin(), remote_endpoints.end()),
-    remote_id(_remote_id),
-    api_name(_api_name),
-    host_style(_host_style)
-{
-  if (store) {
-    key = store->get_zone()->get_params().system_key;
-    self_zone_group = store->get_zone()->get_zonegroup().get_id();
-  }
-}
-
-RGWRESTConn::RGWRESTConn(CephContext *_cct, RGWSI_Zone *zone_svc,
+RGWRESTConn::RGWRESTConn(CephContext *_cct,
                          const string& _remote_id,
                          const list<string>& remote_endpoints,
                          RGWAccessKey _cred,
+                         std::string _zone_group,
                          std::optional<string> _api_name,
                          HostStyle _host_style)
   : cct(_cct),
     endpoints(remote_endpoints.begin(), remote_endpoints.end()),
-    key(std::move(_cred)),
+    key(_cred),
+    self_zone_group(_zone_group),
     remote_id(_remote_id),
     api_name(_api_name),
     host_style(_host_style)
 {
-  if (zone_svc) {
-    self_zone_group = zone_svc->get_zonegroup().get_id();
-  }
-}
-
-RGWRESTConn::RGWRESTConn(CephContext *_cct, rgw::sal::Store* store,
-                         const string& _remote_id,
-                         const list<string>& remote_endpoints,
-                         RGWAccessKey _cred,
-                         std::optional<string> _api_name,
-                         HostStyle _host_style)
-  : cct(_cct),
-    endpoints(remote_endpoints.begin(), remote_endpoints.end()),
-    key(std::move(_cred)),
-    remote_id(_remote_id),
-    api_name(_api_name),
-    host_style(_host_style)
-{
-  if (store) {
-    self_zone_group = store->get_zone()->get_zonegroup().get_id();
-  }
 }
 
 RGWRESTConn::RGWRESTConn(RGWRESTConn&& other)
@@ -165,7 +127,7 @@ int RGWRESTConn::forward_iam_request(const DoutPrefixProvider *dpp, const RGWAcc
   return req.forward_request(dpp, key, info, max_response, inbl, outbl, y, service);
 }
 
-int RGWRESTConn::put_obj_send_init(rgw::sal::Object* obj, const rgw_http_param_pair *extra_params, RGWRESTStreamS3PutObj **req)
+int RGWRESTConn::put_obj_send_init(const rgw_obj& obj, const rgw_http_param_pair *extra_params, RGWRESTStreamS3PutObj **req)
 {
   string url;
   int ret = get_url(url);
@@ -186,7 +148,7 @@ int RGWRESTConn::put_obj_send_init(rgw::sal::Object* obj, const rgw_http_param_p
   return 0;
 }
 
-int RGWRESTConn::put_obj_async_init(const DoutPrefixProvider *dpp, const rgw_user& uid, rgw::sal::Object* obj,
+int RGWRESTConn::put_obj_async_init(const DoutPrefixProvider *dpp, const rgw_user& uid, const rgw_obj& obj,
                                     map<string, bufferlist>& attrs,
                                     RGWRESTStreamS3PutObj **req)
 {
@@ -236,11 +198,12 @@ static void set_header(T val, map<string, string>& headers, const string& header
 }
 
 
-int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw_user& uid, req_info *info /* optional */, const rgw::sal::Object* obj,
+int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw_user& uid, req_info *info /* optional */, const rgw_obj& obj,
                          const real_time *mod_ptr, const real_time *unmod_ptr,
                          uint32_t mod_zone_id, uint64_t mod_pg_ver,
                          bool prepend_metadata, bool get_op, bool rgwx_stat,
                          bool sync_manifest, bool skip_decrypt,
+                         rgw_zone_set_entry *dst_zone_trace, bool sync_cloudtiered,
                          bool send, RGWHTTPStreamRWRequest::ReceiveCB *cb, RGWRESTStreamRWRequest **req)
 {
   get_obj_params params;
@@ -253,11 +216,13 @@ int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw_user& uid, req
   params.rgwx_stat = rgwx_stat;
   params.sync_manifest = sync_manifest;
   params.skip_decrypt = skip_decrypt;
+  params.sync_cloudtiered = sync_cloudtiered;
+  params.dst_zone_trace = dst_zone_trace;
   params.cb = cb;
   return get_obj(dpp, obj, params, send, req);
 }
 
-int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw::sal::Object* obj, const get_obj_params& in_params, bool send, RGWRESTStreamRWRequest **req)
+int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw_obj& obj, const get_obj_params& in_params, bool send, RGWRESTStreamRWRequest **req)
 {
   string url;
   int ret = get_url(url);
@@ -275,12 +240,17 @@ int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw::sal::Object* 
   if (in_params.sync_manifest) {
     params.push_back(param_pair_t(RGW_SYS_PARAM_PREFIX "sync-manifest", ""));
   }
+  if (in_params.sync_cloudtiered) {
+    params.push_back(param_pair_t(RGW_SYS_PARAM_PREFIX "sync-cloudtiered", ""));
+  }
   if (in_params.skip_decrypt) {
     params.push_back(param_pair_t(RGW_SYS_PARAM_PREFIX "skip-decrypt", ""));
   }
-  if (!obj->get_instance().empty()) {
-    const string& instance = obj->get_instance();
-    params.push_back(param_pair_t("versionId", instance));
+  if (in_params.dst_zone_trace) {
+    params.push_back(param_pair_t(RGW_SYS_PARAM_PREFIX "if-not-replicated-to", in_params.dst_zone_trace->to_str()));
+  }
+  if (!obj.key.instance.empty()) {
+    params.push_back(param_pair_t("versionId", obj.key.instance));
   }
   if (in_params.get_op) {
     *req = new RGWRESTStreamReadRequest(cct, url, in_params.cb, NULL, &params, api_name, host_style);
@@ -320,7 +290,7 @@ int RGWRESTConn::get_obj(const DoutPrefixProvider *dpp, const rgw::sal::Object* 
     set_header(buf, extra_headers, "RANGE");
   }
 
-  int r = (*req)->send_prepare(dpp, key, extra_headers, obj->get_obj());
+  int r = (*req)->send_prepare(dpp, key, extra_headers, obj);
   if (r < 0) {
     goto done_err;
   }

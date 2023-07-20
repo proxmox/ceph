@@ -1,13 +1,14 @@
 tasks:
 - install:
       # extra packages added for the rgw-datacache task
-      extra_packages:
+      extra_system_packages:
         deb: ['s3cmd']
         rpm: ['s3cmd']
 - ceph:
 - openssl_keys:
 - rgw:
     client.0:
+- tox: [client.0]
 
 overrides:
   ceph:

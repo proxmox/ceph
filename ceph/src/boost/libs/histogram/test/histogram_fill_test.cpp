@@ -7,12 +7,15 @@
 #include <array>
 #include <boost/config.hpp>
 #include <boost/core/lightweight_test.hpp>
-#include <boost/histogram/accumulators.hpp>
+#include <boost/histogram/accumulators/mean.hpp>
 #include <boost/histogram/accumulators/ostream.hpp>
+#include <boost/histogram/accumulators/weighted_mean.hpp>
 #include <boost/histogram/algorithm/sum.hpp>
 #include <boost/histogram/axis/category.hpp>
 #include <boost/histogram/axis/integer.hpp>
 #include <boost/histogram/axis/ostream.hpp>
+#include <boost/histogram/axis/regular.hpp>
+#include <boost/histogram/axis/variant.hpp>
 #include <boost/histogram/histogram.hpp>
 #include <boost/histogram/literals.hpp>
 #include <boost/histogram/make_histogram.hpp>

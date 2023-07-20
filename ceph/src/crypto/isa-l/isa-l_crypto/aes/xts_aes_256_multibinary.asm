@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -30,12 +30,6 @@
 default rel
 [bits 64]
 
-%ifidn __OUTPUT_FORMAT__, elf64
-%define WRT_OPT         wrt ..plt
-%else
-%define WRT_OPT
-%endif
-
 %include "reg_sizes.asm"
 
 extern XTS_AES_256_enc_sse
@@ -50,6 +44,12 @@ extern XTS_AES_256_dec_avx
 extern XTS_AES_256_dec_expanded_key_sse
 extern XTS_AES_256_dec_expanded_key_avx
 
+%if (AS_FEATURE_LEVEL) >= 10
+extern XTS_AES_256_enc_vaes
+extern XTS_AES_256_enc_expanded_key_vaes
+extern XTS_AES_256_dec_vaes
+extern XTS_AES_256_dec_expanded_key_vaes
+%endif
 
 section .text
 
@@ -59,16 +59,16 @@ section .text
 ; instantiate XTS_AES_256_enc, XTS_AES_256_enc_expanded_key, XTS_AES_256_dec, and XTS_AES_256_dec_expanded_key
 ;;;;
 mbin_interface     XTS_AES_256_enc
-mbin_dispatch_init XTS_AES_256_enc, XTS_AES_256_enc_sse, XTS_AES_256_enc_avx, XTS_AES_256_enc_avx
+mbin_dispatch_init7 XTS_AES_256_enc, XTS_AES_256_enc_sse, XTS_AES_256_enc_sse, XTS_AES_256_enc_avx, XTS_AES_256_enc_avx, XTS_AES_256_enc_avx, XTS_AES_256_enc_vaes
 
 mbin_interface     XTS_AES_256_enc_expanded_key
-mbin_dispatch_init XTS_AES_256_enc_expanded_key, XTS_AES_256_enc_expanded_key_sse, XTS_AES_256_enc_expanded_key_avx, XTS_AES_256_enc_expanded_key_avx
+mbin_dispatch_init7 XTS_AES_256_enc_expanded_key, XTS_AES_256_enc_expanded_key_sse, XTS_AES_256_enc_expanded_key_sse, XTS_AES_256_enc_expanded_key_avx, XTS_AES_256_enc_expanded_key_avx, XTS_AES_256_enc_expanded_key_avx, XTS_AES_256_enc_expanded_key_vaes
 
 mbin_interface     XTS_AES_256_dec
-mbin_dispatch_init XTS_AES_256_dec, XTS_AES_256_dec_sse, XTS_AES_256_dec_avx, XTS_AES_256_dec_avx
+mbin_dispatch_init7 XTS_AES_256_dec, XTS_AES_256_dec_sse, XTS_AES_256_dec_sse, XTS_AES_256_dec_avx, XTS_AES_256_dec_avx, XTS_AES_256_dec_avx, XTS_AES_256_dec_vaes
 
 mbin_interface     XTS_AES_256_dec_expanded_key
-mbin_dispatch_init XTS_AES_256_dec_expanded_key, XTS_AES_256_dec_expanded_key_sse, XTS_AES_256_dec_expanded_key_avx, XTS_AES_256_dec_expanded_key_avx
+mbin_dispatch_init7 XTS_AES_256_dec_expanded_key, XTS_AES_256_dec_expanded_key_sse, XTS_AES_256_dec_expanded_key_sse, XTS_AES_256_dec_expanded_key_avx, XTS_AES_256_dec_expanded_key_avx, XTS_AES_256_dec_expanded_key_avx, XTS_AES_256_dec_expanded_key_vaes
 
 
 ;;;       func            		core, ver, snum

@@ -2,7 +2,7 @@
 #  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
-#  modification, are permitted provided that the following conditions 
+#  modification, are permitted provided that the following conditions
 #  are met:
 #    * Redistributions of source code must retain the above copyright
 #      notice, this list of conditions and the following disclaimer.
@@ -27,9 +27,6 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ########################################################################
 
-#Requires unit mh_sha1
-AM_CFLAGS += -I mh_sha1
-
 lsrc_murmur   =	mh_sha1_murmur3_x64_128/murmur3_x64_128_internal.c
 
 lsrc_stitch   = mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128.c \
@@ -43,8 +40,27 @@ lsrc_stitch   = mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128.c \
 lsrc_stitch  += mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_avx512.c \
 		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_block_avx512.asm
 
-lsrc        += 	$(lsrc_murmur) \
+lsrc_x86_64  += $(lsrc_murmur) \
 		$(lsrc_stitch)
+
+lsrc_x86_32  += $(lsrc_x86_64)
+
+lsrc_aarch64 += $(lsrc_murmur)	\
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128.c \
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_finalize_base.c \
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_update_base.c \
+		mh_sha1_murmur3_x64_128/aarch64/mh_sha1_murmur3_aarch64_dispatcher.c \
+		mh_sha1_murmur3_x64_128/aarch64/mh_sha1_murmur3_ce.c \
+		mh_sha1_murmur3_x64_128/aarch64/mh_sha1_murmur3_block_ce.S \
+		mh_sha1_murmur3_x64_128/aarch64/mh_sha1_murmur3_asimd.c \
+		mh_sha1_murmur3_x64_128/aarch64/mh_sha1_murmur3_block_asimd.S \
+		mh_sha1_murmur3_x64_128/aarch64/mh_sha1_murmur3_multibinary.S
+
+lsrc_base_aliases += $(lsrc_murmur)	\
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128.c \
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_finalize_base.c \
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_update_base.c \
+		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_base_aliases.c
 
 other_src += 	include/reg_sizes.asm \
 		include/multibinary.asm \
@@ -52,6 +68,8 @@ other_src += 	include/reg_sizes.asm \
 		mh_sha1/mh_sha1_internal.h \
 		mh_sha1_murmur3_x64_128/murmur3_x64_128.c \
 		mh_sha1_murmur3_x64_128/mh_sha1_murmur3_x64_128_internal.h
+
+src_include += -I $(srcdir)/mh_sha1_murmur3_x64_128
 
 extern_hdrs +=	include/mh_sha1_murmur3_x64_128.h
 

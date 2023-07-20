@@ -22,6 +22,11 @@
 #include <boost/move/detail/nsec_clock.hpp>
 #include <typeinfo>
 
+#if defined(BOOST_GCC) && (BOOST_GCC >= 40600)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
+#endif
+
 //capacity
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_FUNCNAME capacity
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_NS_BEG namespace boost { namespace container { namespace test {
@@ -29,6 +34,11 @@
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_MIN 0
 #define BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_MAX 0
 #include <boost/intrusive/detail/has_member_function_callable_with.hpp>
+
+//#pragma GCC diagnostic ignored "-Wunused-result"
+#if defined(BOOST_GCC) && (BOOST_GCC >= 40600)
+#pragma GCC diagnostic pop
+#endif
 
 using boost::move_detail::cpu_timer;
 using boost::move_detail::cpu_times;
@@ -167,7 +177,7 @@ struct insert_near_end
    {
       typedef typename C::iterator it_t;
       it_t it (c.end());
-      it -= static_cast<typename C::size_type>(c.size() >= 2)*2;
+      it -= static_cast<typename C::difference_type>(c.size() >= 2)*2;
       c.insert(it, MyInt(i));
    }
 
@@ -231,7 +241,7 @@ void vector_test_template(std::size_t num_iterations, std::size_t num_elements, 
    nanosecond_type nseconds = timer.elapsed().wall;
 
    std::cout   << cont_name << "->" << op.name() <<" ns: "
-               << float(nseconds)/(num_iterations*num_elements)
+               << float(nseconds)/float(num_iterations*num_elements)
                << '\t'
                << "Capacity: " << capacity
                << "\n";

@@ -262,8 +262,8 @@ export class RbdFormComponent extends CdForm implements OnInit {
   }
 
   checkPeersConfigured(poolname?: string) {
-    const poolName = poolname ? poolname : this.rbdForm.get('pool').value;
-    this.rbdMirroringService.getPeerForPool(poolName).subscribe((resp: any) => {
+    var Poolname = poolname ? poolname : this.rbdForm.get('pool').value;
+    this.rbdMirroringService.getPeerForPool(Poolname).subscribe((resp: any) => {
       if (resp.length > 0) {
         this.peerConfigured = true;
       }

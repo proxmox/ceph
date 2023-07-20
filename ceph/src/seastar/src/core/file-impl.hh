@@ -33,11 +33,6 @@ class io_queue;
 namespace internal {
 
 struct fs_info;
-// Given a properly aligned vector of iovecs, ensures that it respects the
-// IOV_MAX limit, by trimming if necessary. The modified vector still satisfied
-// the alignment requirements.
-// Returns the final total length of all iovecs.
-size_t sanitize_iovecs(std::vector<iovec>& iov, size_t disk_alignment) noexcept;
 
 }
 
@@ -203,6 +198,7 @@ class append_challenged_posix_file_impl final : public posix_file_impl, public e
         write,
         truncate,
         flush,
+        allocate,
     };
     struct op {
         opcode type;
@@ -275,6 +271,7 @@ public:
     future<struct stat> stat() noexcept override;
     future<> truncate(uint64_t length) noexcept override;
     future<uint64_t> size() noexcept override;
+    virtual future<> allocate(uint64_t position, uint64_t length) noexcept override;
     future<> close() noexcept override;
 };
 

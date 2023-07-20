@@ -82,7 +82,7 @@ value jv = parse( "[1,2,3,] // comment ", storage_ptr(), opt );
 #if __cpp_designated_initializers >= 201707L
 //[doc_parsing_6
 value jv = parse( "[1,2,3,] // comment ", storage_ptr(),
-    { 
+    {
         .allow_comments = true,             // permit C and C++ style comments to appear in whitespace
         .allow_trailing_commas = true,      // allow a trailing comma in object and array lists
         .allow_invalid_utf8 = true          // skip utf-8 validation of keys and strings
@@ -136,7 +136,7 @@ parse_options opt;                                  // All extensions default to
 opt.allow_comments = true;                          // Permit C and C++ style comments to appear in whitespace
 opt.allow_trailing_commas = true;                   // Allow an additional trailing comma in object and array element lists
 opt.allow_invalid_utf8 = true;                      // Skip utf-8 validation of keys and strings
-stream_parser p( storage_ptr(), opt );                     // The stream_parser will use the options
+stream_parser p( storage_ptr(), opt );              // The stream_parser will use the options
 //]
 }
 //----------------------------------------------------------
@@ -216,7 +216,7 @@ stream_parser p(
 template< class Handler >
 void do_rpc( string_view s, Handler&& handler )
 {
-    unsigned char temp[ 4096 ];                 // The stream_parser will use this storage for its temporary needs
+    unsigned char temp[ 4096 ];                 // The parser will use this storage for its temporary needs
     parser p(                                   // Construct a strict parser using the temp buffer and no dynamic memory
         get_null_resource(),                    // The null resource never dynamically allocates memory
         parse_options(),                        // Default constructed parse options allow only standard JSON

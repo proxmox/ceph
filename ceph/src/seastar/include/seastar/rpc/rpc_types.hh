@@ -73,6 +73,22 @@ struct client_info {
     typename std::add_const<T>::type& retrieve_auxiliary(const sstring& key) const {
         return const_cast<client_info*>(this)->retrieve_auxiliary<typename std::add_const<T>::type>(key);
     }
+    template <typename T>
+    T* retrieve_auxiliary_opt(const sstring& key) noexcept {
+        auto it = user_data.find(key);
+        if (it == user_data.end()) {
+            return nullptr;
+        }
+        return &boost::any_cast<T&>(it->second);
+    }
+    template <typename T>
+    const T* retrieve_auxiliary_opt(const sstring& key) const noexcept {
+        auto it = user_data.find(key);
+        if (it == user_data.end()) {
+            return nullptr;
+        }
+        return &boost::any_cast<const T&>(it->second);
+    }
 };
 
 class error : public std::runtime_error {
@@ -114,6 +130,10 @@ public:
 class stream_closed : public error {
 public:
     stream_closed() : error("rpc stream was closed by peer") {}
+};
+
+class remote_verb_error : public error {
+    using error::error;
 };
 
 struct no_wait_type {};
@@ -243,7 +263,7 @@ struct connection_id {
     bool operator==(const connection_id& o) const {
         return id == o.id;
     }
-    operator bool() const {
+    explicit operator bool() const {
         return shard() != 0xffff;
     }
     size_t shard() const {
@@ -384,3 +404,7 @@ struct tuple_element<I, seastar::rpc::tuple<T...>> : tuple_element<I, tuple<T...
 };
 
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<seastar::rpc::connection_id> : fmt::ostream_formatter {};
+#endif

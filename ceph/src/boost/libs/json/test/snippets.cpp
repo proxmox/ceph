@@ -9,8 +9,6 @@
 
 #include <boost/json.hpp>
 
-#ifndef BOOST_JSON_STANDALONE
-
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -196,9 +194,9 @@ usingValues()
         jv = value( array_kind );
 
         assert( jv.is_array() );
-        
+
         jv.emplace_string();
-        
+
         assert( jv.is_string() );
 
         //]
@@ -228,7 +226,7 @@ usingValues()
 
             //]
         }
-        catch(...) 
+        catch(...)
         {
         }
     }
@@ -304,7 +302,7 @@ usingInitLists()
         //[snippet_init_list_4
 
         // Should this be an array or an object?
-        value jv = { { "hello", 42 }, { "world", 43 } }; 
+        value jv = { { "hello", 42 }, { "world", 43 } };
 
         //]
     }
@@ -329,7 +327,7 @@ usingInitLists()
         value jv4 = { { "color", "blue" }, { 1, "red" } };
 
         assert( jv2.is_array() && jv3.is_array() && jv4.is_array() );
-        
+
         //]
     }
 
@@ -368,10 +366,10 @@ usingInitLists()
 
         (void)ja;
     }
-    
+
     {
         //[snippet_init_list_8
-        
+
         object jo = { { "mercury", { { "distance", 36 } } }, { "venus", { 67, "million miles" } }, { "earth", 93 } };
 
         assert( jo["mercury"].is_object() );
@@ -383,13 +381,13 @@ usingInitLists()
 
     {
         //[snippet_init_list_9
-        
+
         object jo1 = { { "john", 100 }, { "dave", 500 }, { "joe", 300 } };
-        
+
         value jv = { { "clients", std::move(jo1) } };
 
         object& jo2 = jv.as_object()["clients"].as_object();
-        
+
         assert( ! jo2.empty() && jo1.empty() );
 
         assert( serialize(jv) == R"({"clients":{"john":100,"dave":500,"joe":300}})" );
@@ -442,7 +440,7 @@ usingArrays()
 
         //]
     }
-    catch (...) 
+    catch (...)
     {
     }
 }
@@ -531,10 +529,10 @@ struct vec3
 template< class T >
 void tag_invoke( const value_from_tag&, value& jv, const vec3<T>& vec )
 {
-    jv = { 
-        { "x", vec.x }, 
-        { "y", vec.y }, 
-        { "z", vec.z } 
+    jv = {
+        { "x", vec.x },
+        { "y", vec.y },
+        { "z", vec.z }
     };
 }
 
@@ -668,7 +666,7 @@ usingExchange()
         value jv = value_from( positions );
 
         assert( jv.is_object() );
-        
+
         object& jo = jv.as_object();
 
         assert( jo.size() == 3 );
@@ -678,7 +676,7 @@ usingExchange()
             []( std::int64_t total, const key_value_pair& jp )
             {
                 assert ( jp.value().is_object() );
-                
+
                 const object& pos = jp.value().as_object();
 
                 return total + pos.at( "x" ).as_int64() +
@@ -686,7 +684,7 @@ usingExchange()
                     pos.at( "z" ).as_int64();
 
             } ) == 0 );
-   
+
         //]
 
         (void)jo;
@@ -726,7 +724,7 @@ usingExchange()
         value jv = value_from( available_tools );
 
         assert( jv.is_object() );
-        
+
         //]
     }
     {
@@ -781,6 +779,60 @@ usingExchange()
 
         //]
     }
+}
+
+void
+usingPointer()
+{
+    //[snippet_pointer_1
+    value jv = { {"one", 1}, {"two", 2} };
+    assert( jv.at("one") == jv.at_pointer("/one") );
+
+    jv.at_pointer("/one") = {{"foo", "bar"}};
+    assert( jv.at("one").at("foo") == jv.at_pointer("/one/foo") );
+
+    jv.at_pointer("/one/foo") = {true, 4, "qwerty"};
+    assert( jv.at("one").at("foo").at(1) == jv.at_pointer("/one/foo/1") );
+    //]
+
+    value* elem1 = [&]() -> value*
+    {
+        //[snippet_pointer_2
+        object* obj = jv.if_object();
+        if( !obj )
+            return nullptr;
+
+        value* val = obj->if_contains("one");
+        if( !val )
+            return nullptr;
+
+        obj = val->if_object();
+        if( !obj )
+            return nullptr;
+
+        val = obj->if_contains("foo");
+        if( !val )
+            return nullptr;
+
+        array* arr = val->if_array();
+        if( !arr )
+            return nullptr;
+
+        return arr->if_contains(1);
+        //]
+    }();
+
+    value* elem2 = [&]() -> value*
+    {
+        //[snippet_pointer_3
+        error_code ec;
+        return jv.find_pointer("/one/foo/1", ec);
+        //]
+    }();
+
+    (void)elem1;
+    (void)elem2;
+    assert( elem1 == elem2 );
 }
 
 BOOST_STATIC_ASSERT(
@@ -840,6 +892,7 @@ public:
         usingArrays();
         usingObjects();
         usingStrings();
+        usingPointer();
 
         BOOST_TEST_PASS();
     }
@@ -848,5 +901,3 @@ public:
 TEST_SUITE(snippets_test, "boost.json.snippets");
 
 BOOST_JSON_NS_END
-
-#endif

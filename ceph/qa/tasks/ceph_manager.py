@@ -14,7 +14,6 @@ import logging
 import threading
 import traceback
 import os
-import re
 import shlex
 
 from io import BytesIO, StringIO
@@ -23,6 +22,7 @@ from teuthology import misc as teuthology
 from tasks.scrub import Scrubber
 from tasks.util.rados import cmd_erasure_code_profile
 from tasks.util import get_remote
+
 from teuthology.contextutil import safe_while
 from teuthology.orchestra.remote import Remote
 from teuthology.orchestra import run
@@ -70,14 +70,6 @@ def toolbox(ctx, cluster_name, args, **kwargs):
 def write_conf(ctx, conf_path=DEFAULT_CONF_PATH, cluster='ceph'):
     conf_fp = BytesIO()
     ctx.ceph[cluster].conf.write(conf_fp)
-    conf_fp.seek(0)
-    lines = conf_fp.readlines()
-    m = None
-    for l in lines:
-     m = re.search("rgw.crypt.sse.s3.backend *= *(.*)", l.decode())
-     if m:
-      break
-    ctx.ceph[cluster].rgw_crypt_sse_s3_backend = m.expand("\\1") if m else None
     conf_fp.seek(0)
     writes = ctx.cluster.run(
         args=[
@@ -541,27 +533,6 @@ class OSDThrasher(Thrasher):
             exp_remote.run(args=cmd)
             if imp_remote != exp_remote:
                 imp_remote.run(args=cmd)
-
-            # apply low split settings to each pool
-            if not self.ceph_manager.cephadm:
-                for pool in self.ceph_manager.list_pools():
-                    cmd = ("CEPH_ARGS='--filestore-merge-threshold 1 "
-                           "--filestore-split-multiple 1' sudo -E "
-                           + 'ceph-objectstore-tool '
-                           + ' '.join(prefix + [
-                               '--data-path', FSPATH.format(id=imp_osd),
-                               '--journal-path', JPATH.format(id=imp_osd),
-                           ])
-                           + " --op apply-layout-settings --pool " + pool).format(id=osd)
-                    proc = imp_remote.run(args=cmd,
-                                          wait=True, check_status=False,
-                                          stderr=StringIO())
-                    if 'Couldn\'t find pool' in proc.stderr.getvalue():
-                        continue
-                    if proc.exitstatus:
-                        raise Exception("ceph-objectstore-tool apply-layout-settings"
-                                        " failed with {status}".format(status=proc.exitstatus))
-
 
     def blackhole_kill_osd(self, osd=None):
         """
@@ -1552,10 +1523,12 @@ class CephManager:
         self.rook = rook
         self.cephadm = cephadm
         self.testdir = teuthology.get_testdir(self.ctx)
-        self.run_cluster_cmd_prefix = [
-            'sudo', 'adjust-ulimits', 'ceph-coverage',
-            f'{self.testdir}/archive/coverage', 'timeout', '120', 'ceph',
-            '--cluster', self.cluster]
+        # prefix args for ceph cmds to be executed
+        pre = ['adjust-ulimits', 'ceph-coverage',
+               f'{self.testdir}/archive/coverage']
+        self.CEPH_CMD = ['sudo'] + pre + ['timeout', '120', 'ceph',
+                                          '--cluster', self.cluster]
+        self.RADOS_CMD = pre + ['rados', '--cluster', self.cluster]
         self.run_ceph_w_prefix = ['sudo', 'daemon-helper', 'kill', 'ceph',
                                   '--cluster', self.cluster]
 
@@ -1591,19 +1564,28 @@ class CephManager:
         elif isinstance(kwargs['args'], tuple):
             kwargs['args'] = list(kwargs['args'])
 
+        prefixcmd = []
+        timeoutcmd = kwargs.pop('timeoutcmd', None)
+        if timeoutcmd is not None:
+            prefixcmd += ['timeout', str(timeoutcmd)]
+
         if self.cephadm:
+            prefixcmd += ['ceph']
+            cmd = prefixcmd + list(kwargs['args'])
             return shell(self.ctx, self.cluster, self.controller,
-                         args=['ceph'] + list(kwargs['args']),
+                         args=cmd,
                          stdout=StringIO(),
                          check_status=kwargs.get('check_status', True))
-        if self.rook:
+        elif self.rook:
+            prefixcmd += ['ceph']
+            cmd = prefixcmd + list(kwargs['args'])
             return toolbox(self.ctx, self.cluster,
-                           args=['ceph'] + list(kwargs['args']),
+                           args=cmd,
                            stdout=StringIO(),
                            check_status=kwargs.get('check_status', True))
-
-        kwargs['args'] = self.run_cluster_cmd_prefix + kwargs['args']
-        return self.controller.run(**kwargs)
+        else:
+            kwargs['args'] = prefixcmd + self.CEPH_CMD + kwargs['args']
+            return self.controller.run(**kwargs)
 
     def raw_cluster_cmd(self, *args, **kwargs) -> str:
         """
@@ -1622,6 +1604,23 @@ class CephManager:
            kwargs['args'] = args
         kwargs['check_status'] = False
         return self.run_cluster_cmd(**kwargs).exitstatus
+
+    def get_keyring(self, client_id):
+        """
+        Return keyring for the given client.
+
+        :param client_id: str
+        :return keyring: str
+        """
+        if client_id.find('client.') != -1:
+            client_id = client_id.replace('client.', '')
+
+        keyring = self.run_cluster_cmd(args=f'auth get client.{client_id}',
+                                       stdout=StringIO()).\
+            stdout.getvalue().strip()
+
+        assert isinstance(keyring, str) and keyring != ''
+        return keyring
 
     def run_ceph_w(self, watch_channel=None):
         """
@@ -1737,14 +1736,7 @@ class CephManager:
         if remote is None:
             remote = self.controller
 
-        pre = [
-            'adjust-ulimits',
-            'ceph-coverage',
-           f'{self.testdir}/archive/coverage',
-            'rados',
-            '--cluster',
-            self.cluster,
-            ]
+        pre = self.RADOS_CMD + [] # deep-copying!
         if pool is not None:
             pre += ['--pool', pool]
         if namespace is not None:

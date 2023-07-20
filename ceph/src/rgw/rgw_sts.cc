@@ -159,7 +159,7 @@ void AssumedRoleUser::dump(Formatter *f) const
 }
 
 int AssumedRoleUser::generateAssumedRoleUser(CephContext* cct,
-                                              rgw::sal::Store* store,
+                                              rgw::sal::Driver* driver,
                                               const string& roleId,
                                               const rgw::ARN& roleArn,
                                               const string& roleSessionName)
@@ -290,7 +290,7 @@ std::tuple<int, rgw::sal::RGWRole*> STSService::getRoleInfo(const DoutPrefixProv
   if (auto r_arn = rgw::ARN::parse(arn); r_arn) {
     auto pos = r_arn->resource.find_last_of('/');
     string roleName = r_arn->resource.substr(pos + 1);
-    std::unique_ptr<rgw::sal::RGWRole> role = store->get_role(roleName, r_arn->account);
+    std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(roleName, r_arn->account);
     if (int ret = role->get(dpp, y); ret < 0) {
       if (ret == -ENOENT) {
         ldpp_dout(dpp, 0) << "Role doesn't exist: " << roleName << dendl;
@@ -317,23 +317,6 @@ std::tuple<int, rgw::sal::RGWRole*> STSService::getRoleInfo(const DoutPrefixProv
     ldpp_dout(dpp, 0) << "Invalid role arn: " << arn << dendl;
     return make_tuple(-EINVAL, nullptr);
   }
-}
-
-int STSService::storeARN(const DoutPrefixProvider *dpp, string& arn, optional_yield y)
-{
-  int ret = 0;
-  std::unique_ptr<rgw::sal::User> user = store->get_user(user_id);
-  if ((ret = user->load_user(dpp, y)) < 0) {
-    return -ERR_NO_SUCH_ENTITY;
-  }
-
-  user->get_info().assumed_role_arn = arn;
-
-  ret = user->store_user(dpp, y, false, &user->get_info());
-  if (ret < 0) {
-    return -ERR_INTERNAL_ERROR;
-  }
-  return ret;
 }
 
 AssumeRoleWithWebIdentityResponse STSService::assumeRoleWithWebIdentity(const DoutPrefixProvider *dpp, AssumeRoleWithWebIdentityRequest& req)
@@ -376,7 +359,7 @@ AssumeRoleWithWebIdentityResponse STSService::assumeRoleWithWebIdentity(const Do
 
   //Generate Assumed Role User
   response.assumeRoleResp.retCode = response.assumeRoleResp.user.generateAssumedRoleUser(cct,
-                                                                                          store,
+                                                                                          driver,
                                                                                           roleId,
                                                                                           r_arn.get(),
                                                                                           req.getRoleSessionName());
@@ -430,7 +413,7 @@ AssumeRoleResponse STSService::assumeRole(const DoutPrefixProvider *dpp,
   response.packedPolicySize = (policy.size() / req.getMaxPolicySize()) * 100;
 
   //Generate Assumed Role User
-  response.retCode = response.user.generateAssumedRoleUser(cct, store, roleId, r_arn.get(), req.getRoleSessionName());
+  response.retCode = response.user.generateAssumedRoleUser(cct, driver, roleId, r_arn.get(), req.getRoleSessionName());
   if (response.retCode < 0) {
     return response;
   }
@@ -443,13 +426,6 @@ AssumeRoleResponse STSService::assumeRole(const DoutPrefixProvider *dpp,
                                               boost::none,
                                               boost::none,
                                               user_id, nullptr);
-  if (response.retCode < 0) {
-    return response;
-  }
-
-  //Save ARN with the user
-  string arn = response.user.getARN();
-  response.retCode = storeARN(dpp, arn, y);
   if (response.retCode < 0) {
     return response;
   }

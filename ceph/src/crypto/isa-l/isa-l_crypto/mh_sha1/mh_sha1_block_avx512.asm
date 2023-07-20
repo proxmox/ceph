@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -33,7 +33,10 @@
 %include "reg_sizes.asm"
 
 %ifdef HAVE_AS_KNOWS_AVX512
+
+[bits 64]
 default rel
+section .text
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 %define VMOVPS	vmovdqu64
@@ -171,7 +174,7 @@ default rel
 
  %define stack_size  10*16 + 7*8		; must be an odd multiple of 8
  ; remove unwind info macros
- %define func(x) x:
+ %define func(x) x: endbranch
  %macro FUNC_SAVE 0
 	sub	rsp, stack_size
 	movdqa	[rsp + 0*16], xmm6
@@ -234,7 +237,7 @@ default rel
 ; h0 | h0 | h0 | ...| h0 |    | Aa| Ab | Ac |...| Ap |
 ; h1 | h1 | h1 | ...| h1 |    | Ba| Bb | Bc |...| Bp |
 ; ....
-; h5 | h5 | h5 | ...| h5 |    | Ea| Eb | Ec |...| Ep |
+; h4 | h4 | h4 | ...| h4 |    | Ea| Eb | Ec |...| Ep |
 
 [bits 64]
 section .text
@@ -249,6 +252,7 @@ align 32
 ;
 global mh_sha1_block_avx512
 func(mh_sha1_block_avx512)
+	endbranch
 	FUNC_SAVE
 
 	; save rsp
@@ -311,9 +315,8 @@ func(mh_sha1_block_avx512)
 		vmovdqa32	KT, [K60_79]
 		%assign I 0x96
 	%endif
-	%if N % 20 = 19
-		PREFETCH_X [mh_in_p + 1024+128*(N / 20)]
-		PREFETCH_X [mh_in_p + 1024+128*(N / 20 +1)]
+	%if N % 10 = 9
+		PREFETCH_X [mh_in_p + 1024+128*(N / 10)]
 	%endif
 %assign J ((J+1)% 16)
 %assign K ((K+1)% 16)

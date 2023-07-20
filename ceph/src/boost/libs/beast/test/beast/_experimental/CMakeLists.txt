@@ -13,6 +13,7 @@ GroupSources (test/beast/_experimental "/")
 add_executable (tests-beast-_experimental
     ${BOOST_BEAST_FILES}
     Jamfile
+    _test_detail_stream_state.cpp
     error.cpp
     icy_stream.cpp
     stream.cpp
@@ -25,3 +26,10 @@ target_link_libraries(tests-beast-_experimental
     )
 
 set_property(TARGET tests-beast-_experimental PROPERTY FOLDER "tests")
+
+#
+# Individual tests
+#
+build_individual_tests(tests-beast-_experimental
+        EXCLUDE
+        LIBS lib-asio lib-asio-ssl lib-beast lib-test)

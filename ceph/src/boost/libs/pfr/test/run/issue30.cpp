@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020 Antony Polukhin
+// Copyright (c) 2018-2022 Antony Polukhin
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -17,6 +17,12 @@ struct Message2 {
   std::unique_ptr<int> data41 = std::make_unique<int>(41);
   std::unique_ptr<int> data42 = std::make_unique<int>(42);
 };
+
+// Example from duplicate issue #45
+struct UniquePtr {
+    std::unique_ptr<int> a;
+};
+static_assert (boost::pfr::tuple_size_v<UniquePtr> == 1, "");
 
 int main() {
   Message message;

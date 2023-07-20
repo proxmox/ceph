@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2020 Antony Polukhin
+// Copyright (c) 2016-2022 Antony Polukhin
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -38,7 +38,6 @@ void test_type(const T& value, const char* ethalon) {
 
 
 int main() {
-#if !defined(_MSC_VER) /* TODO: remove after fixing strange errors https://ci.appveyor.com/project/apolukhin/magic-get/build/1.65.108-develop */
     struct test4 {
         int f0;
         std::string f1;
@@ -67,7 +66,6 @@ int main() {
         "{1, \"my o my\", 3, 4, \"hello there!\"}"
     );
     #endif
-#endif
 
     return boost::report_errors();
 }

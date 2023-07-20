@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2020 Antony Polukhin
+// Copyright (c) 2016-2022 Antony Polukhin
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -12,6 +12,7 @@ int main() {
         << "BOOST_PFR_USE_CPP17 == " << BOOST_PFR_USE_CPP17 << '\n'
         << "BOOST_PFR_USE_LOOPHOLE == " << BOOST_PFR_USE_LOOPHOLE << '\n'
         << "BOOST_PFR_USE_STD_MAKE_INTEGRAL_SEQUENCE == " << BOOST_PFR_USE_STD_MAKE_INTEGRAL_SEQUENCE << '\n'
+        << "BOOST_PFR_HAS_GUARANTEED_COPY_ELISION == " << BOOST_PFR_HAS_GUARANTEED_COPY_ELISION << '\n'
         << "__cplusplus == " << __cplusplus << '\n'
 #ifdef __cpp_structured_bindings
         << "__cpp_structured_bindings == " << __cpp_structured_bindings << '\n'

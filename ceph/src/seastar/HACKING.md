@@ -10,6 +10,8 @@ See the instructions in [README.md](./README.md).
 
 ### Download and install all external dependencies in a project-specific location
 
+- First pull the git submodules using `git submodule update --init --recursive`
+
 - Use `cmake-cooking` to prepare a development environment with all dependencies.  This allows for reproducible development environments, but means that approximately 3 GiB of dependencies get installed to `build/_cooking_`:
 
 ```
@@ -184,11 +186,11 @@ g++ foo.cc -o foo $(pkg-config --libs --cflags --static /path/to/seastar.pc)
 
 Compiling multiple files:
 ```
-// Compiling sources into object files
-g++ -c $(pkg-config --cflags /path/to/seastar.pc)` foo.cc -o foo.o
-g++ -c $(pkg-config --cflags /path/to/seastar.pc)` bar.cc -o bar.o
+# Compiling sources into object files
+g++ -c $(pkg-config --cflags /path/to/seastar.pc) foo.cc -o foo.o
+g++ -c $(pkg-config --cflags /path/to/seastar.pc) bar.cc -o bar.o
 
-// Linking object files into an executable
+# Linking object files into an executable
 g++ -o foo_bar foo.o bar.o $(pkg-config --libs --static /path/to/seastar.pc)
 ```
 

@@ -2,7 +2,7 @@
   Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions 
+  modification, are permitted provided that the following conditions
   are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
@@ -43,23 +43,6 @@ extern "C" {
 
 #ifdef _MSC_VER
 # define inline __inline
-#endif
-
-#ifndef __SSE__
-# define __ERR_COMPILER_FLAGS
-#endif
-
-#ifdef __ERR_COMPILER_FLAGS
-
-#ifdef __GNUC__
-# error "The compiler must be configured to optimize for speed and support at least SSE instructions."
-# error "Please specify the following gcc flags: -O3 [-mavx]"
-#endif
-
-#ifdef _MSC_VER
-# error "Please compile with ''/O2 /D__SSE__ /arch:SSE''  -OR-  ''/O2 /D__AVX__ /arch:AVX''"
-#endif
-
 #endif
 
 #include <stdint.h>

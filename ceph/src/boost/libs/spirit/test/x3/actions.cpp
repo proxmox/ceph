@@ -4,13 +4,16 @@
     Distributed under the Boost Software License, Version 1.0. (See accompanying
     file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 =============================================================================*/
-#include <boost/detail/lightweight_test.hpp>
 #include <boost/spirit/home/x3.hpp>
 #include <cstring>
 #include <functional>
 
 #include "test.hpp"
 
+#ifdef _MSC_VER
+// bogus https://developercommunity.visualstudio.com/t/buggy-warning-c4709/471956
+# pragma warning(disable: 4709) // comma operator within array index expression
+#endif
 
 namespace x3 = boost::spirit::x3;
 

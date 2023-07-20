@@ -51,6 +51,7 @@ seastar_options_from_config(app_template::config cfg) {
     opts.auto_handle_sigint_sigterm = std::move(cfg.auto_handle_sigint_sigterm);
     opts.reactor_opts.task_quota_ms.set_default_value(cfg.default_task_quota / 1ms);
     opts.reactor_opts.max_networking_io_control_blocks.set_default_value(cfg.max_networking_aio_io_control_blocks);
+    opts.smp_opts.reserve_additional_memory = cfg.reserve_additional_memory;
     return opts;
 }
 
@@ -178,7 +179,7 @@ app_template::run(int ac, char ** av, std::function<future<> ()>&& func) noexcep
 int
 app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& func) noexcept {
 #ifdef SEASTAR_DEBUG
-    fmt::print("WARNING: debug mode. Not for benchmarking or production\n");
+    fmt::print(std::cerr, "WARNING: debug mode. Not for benchmarking or production\n");
 #endif
     boost::program_options::options_description all_opts;
     all_opts.add(_app_opts);
@@ -214,7 +215,7 @@ app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& func) 
 
     try {
         bpo::notify(configuration);
-    } catch (const bpo::required_option& ex) {
+    } catch (const bpo::error& ex) {
         std::cout << ex.what() << std::endl;
         return 1;
     }

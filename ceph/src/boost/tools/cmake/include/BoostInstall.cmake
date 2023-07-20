@@ -1,4 +1,4 @@
-# Copyright 2019, 2020 Peter Dimov
+# Copyright 2019, 2020, 2021 Peter Dimov
 # Distributed under the Boost Software License, Version 1.0.
 # See accompanying file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt
 
@@ -18,15 +18,46 @@ else()
   set(__boost_default_layout "system")
 endif()
 
-set(BOOST_INSTALL_LAYOUT ${__boost_default_layout} CACHE STRING "Installation layout (versioned, tagged, or system)")
-set_property(CACHE BOOST_INSTALL_LAYOUT PROPERTY STRINGS versioned tagged system)
+set(__boost_default_cmakedir "${CMAKE_INSTALL_LIBDIR}/cmake")
+set(__boost_default_include_subdir "/boost-${PROJECT_VERSION_MAJOR}_${PROJECT_VERSION_MINOR}")
 
-set(BOOST_INSTALL_LIBDIR "${CMAKE_INSTALL_LIBDIR}" CACHE STRING "Installation directory for library files")
-set(BOOST_INSTALL_CMAKEDIR "${BOOST_INSTALL_LIBDIR}/cmake" CACHE STRING "Installation directory for CMake configuration files")
-set(BOOST_INSTALL_INCLUDEDIR "${CMAKE_INSTALL_INCLUDEDIR}" CACHE STRING "Installation directory for header files")
+# Define cache variables when Boost is the root project
+
+if(CMAKE_SOURCE_DIR STREQUAL "${BOOST_SUPERPROJECT_SOURCE_DIR}")
+
+  set(BOOST_INSTALL_LAYOUT "${__boost_default_layout}" CACHE STRING "Installation layout (versioned, tagged, or system)")
+  set_property(CACHE BOOST_INSTALL_LAYOUT PROPERTY STRINGS versioned tagged system)
+
+  set(BOOST_INSTALL_CMAKEDIR "${__boost_default_cmakedir}" CACHE STRING "Installation directory for CMake configuration files")
+  set(BOOST_INSTALL_INCLUDE_SUBDIR "${__boost_default_include_subdir}" CACHE STRING "Header subdirectory when layout is versioned")
+
+else()
+
+  # add_subdirectory use
+
+  if(NOT DEFINED BOOST_INSTALL_LAYOUT)
+    set(BOOST_INSTALL_LAYOUT "${__boost_default_layout}")
+  endif()
+
+  if(NOT DEFINED BOOST_INSTALL_CMAKEDIR)
+    set(BOOST_INSTALL_CMAKEDIR "${__boost_default_cmakedir}")
+  endif()
+
+  if(NOT DEFINED BOOST_INSTALL_INCLUDE_SUBDIR)
+    set(BOOST_INSTALL_INCLUDE_SUBDIR "${__boost_default_include_subdir}")
+  endif()
+
+endif()
 
 if(BOOST_INSTALL_LAYOUT STREQUAL "versioned")
-  set(BOOST_INSTALL_INCLUDEDIR "$CACHE{BOOST_INSTALL_INCLUDEDIR}/boost-${PROJECT_VERSION_MAJOR}_${PROJECT_VERSION_MINOR}")
+  string(APPEND CMAKE_INSTALL_INCLUDEDIR "${BOOST_INSTALL_INCLUDE_SUBDIR}")
+endif()
+
+#
+
+if(CMAKE_SOURCE_DIR STREQUAL "${BOOST_SUPERPROJECT_SOURCE_DIR}" AND NOT __boost_install_status_message_guard)
+  message(STATUS "Boost: using ${BOOST_INSTALL_LAYOUT} layout: ${CMAKE_INSTALL_INCLUDEDIR}, ${CMAKE_INSTALL_BINDIR}, ${CMAKE_INSTALL_LIBDIR}, ${BOOST_INSTALL_CMAKEDIR}")
+  set(__boost_install_status_message_guard TRUE)
 endif()
 
 #
@@ -153,7 +184,7 @@ function(__boost_install_update_include_directory lib incdir prop)
 
   if(value STREQUAL incdir)
 
-    set_target_properties(${lib} PROPERTIES ${prop} "$<BUILD_INTERFACE:${incdir}>;$<INSTALL_INTERFACE:${BOOST_INSTALL_INCLUDEDIR}>")
+    set_target_properties(${lib} PROPERTIES ${prop} "$<BUILD_INTERFACE:${incdir}>;$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 
   endif()
 
@@ -218,20 +249,32 @@ function(boost_install_target)
     set_target_properties(${LIB} PROPERTIES EXPORT_NAME ${CMAKE_MATCH_1})
   endif()
 
-  set(CONFIG_INSTALL_DIR "${BOOST_INSTALL_CMAKEDIR}/${LIB}-${__VERSION}")
+  if(CMAKE_SKIP_INSTALL_RULES)
 
-  install(TARGETS ${LIB} EXPORT ${LIB}-targets DESTINATION ${BOOST_INSTALL_LIBDIR})
-
-  if(WIN32 AND TYPE STREQUAL "SHARED_LIBRARY")
-
-    install(FILES $<TARGET_PDB_FILE:${LIB}> DESTINATION ${BOOST_INSTALL_LIBDIR} OPTIONAL)
+    boost_message(DEBUG "boost_install_target: not installing target '${__TARGET}' due to CMAKE_SKIP_INSTALL_RULES=${CMAKE_SKIP_INSTALL_RULES}")
+    return()
 
   endif()
 
-  if(WIN32 AND TYPE STREQUAL "STATIC_LIBRARY" AND NOT CMAKE_VERSION VERSION_LESS 3.15)
+  set(CONFIG_INSTALL_DIR "${BOOST_INSTALL_CMAKEDIR}/${LIB}-${__VERSION}")
 
-    install(FILES "$<TARGET_FILE_DIR:${LIB}>/$<TARGET_FILE_PREFIX:${LIB}>$<TARGET_FILE_BASE_NAME:${LIB}>.pdb" DESTINATION ${BOOST_INSTALL_LIBDIR} OPTIONAL)
+  install(TARGETS ${LIB} EXPORT ${LIB}-targets
+    # explicit destination specification required for 3.13, 3.14 no longer needs it
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    PRIVATE_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  )
 
+  if(MSVC)
+    if(TYPE STREQUAL "SHARED_LIBRARY")
+      install(FILES $<TARGET_PDB_FILE:${LIB}> DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+    endif()
+
+    if(TYPE STREQUAL "STATIC_LIBRARY" AND NOT CMAKE_VERSION VERSION_LESS 3.15)
+      install(FILES "$<TARGET_FILE_DIR:${LIB}>/$<TARGET_FILE_PREFIX:${LIB}>$<TARGET_FILE_BASE_NAME:${LIB}>.pdb" DESTINATION ${CMAKE_INSTALL_LIBDIR} OPTIONAL)
+    endif()
   endif()
 
   install(EXPORT ${LIB}-targets DESTINATION "${CONFIG_INSTALL_DIR}" NAMESPACE Boost:: FILE ${LIB}-targets.cmake)
@@ -251,15 +294,83 @@ function(boost_install_target)
 
     string(APPEND CONFIG_FILE_CONTENTS "include(CMakeFindDependencyMacro)\n\n")
 
-    foreach(dep IN LISTS INTERFACE_LINK_LIBRARIES LINK_LIBRARIES)
+    set(link_libraries ${INTERFACE_LINK_LIBRARIES} ${LINK_LIBRARIES})
+    list(REMOVE_DUPLICATES link_libraries)
 
-      if(${dep} MATCHES "^Boost::(.*)$")
+    set(python_components "")
+    set(icu_components "")
+
+    foreach(dep IN LISTS link_libraries)
+
+      if(dep MATCHES "^Boost::(.*)$")
 
         string(APPEND CONFIG_FILE_CONTENTS "find_dependency(boost_${CMAKE_MATCH_1} ${__VERSION} EXACT)\n")
+
+      elseif(dep STREQUAL "Threads::Threads")
+
+        string(APPEND CONFIG_FILE_CONTENTS "set(THREADS_PREFER_PTHREAD_FLAG ON)\n")
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(Threads)\n")
+
+      elseif(dep STREQUAL "ZLIB::ZLIB")
+
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(ZLIB)\n")
+
+      elseif(dep STREQUAL "BZip2::BZip2")
+
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(BZip2)\n")
+
+      elseif(dep STREQUAL "LibLZMA::LibLZMA")
+
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(LibLZMA)\n")
+
+      elseif(dep STREQUAL "zstd::libzstd_shared" OR dep STREQUAL "zstd::libzstd_static")
+
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(zstd)\n")
+
+      elseif(dep STREQUAL "MPI::MPI_CXX")
+
+        # COMPONENTS requires 3.9, but the imported target also requires 3.9
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(MPI COMPONENTS CXX)\n")
+
+      elseif(dep STREQUAL "Iconv::Iconv")
+
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(Iconv)\n")
+
+      elseif(dep STREQUAL "Python::Module")
+
+        string(APPEND python_components " Development")
+
+      elseif(dep STREQUAL "Python::NumPy")
+
+        string(APPEND python_components " NumPy")
+
+      elseif(dep STREQUAL "ICU::data")
+
+        string(APPEND icu_components " data")
+
+      elseif(dep STREQUAL "ICU::i18n")
+
+        string(APPEND icu_components " i18n")
+
+      elseif(dep STREQUAL "ICU::uc")
+
+        string(APPEND icu_components " uc")
 
       endif()
 
     endforeach()
+
+    if(python_components)
+
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(Python COMPONENTS ${python_components})\n")
+
+    endif()
+
+    if(icu_components)
+
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(ICU COMPONENTS ${icu_components})\n")
+
+    endif()
 
     string(APPEND CONFIG_FILE_CONTENTS "\n")
 
@@ -278,14 +389,14 @@ function(boost_install_target)
 
     if(NOT CMAKE_VERSION VERSION_LESS 3.14)
 
-      write_basic_package_version_file("${CONFIG_VERSION_FILE_NAME}" COMPATIBILITY AnyNewerVersion ARCH_INDEPENDENT)
+      write_basic_package_version_file("${CONFIG_VERSION_FILE_NAME}" COMPATIBILITY SameMajorVersion ARCH_INDEPENDENT)
 
     else()
 
       set(OLD_CMAKE_SIZEOF_VOID_P ${CMAKE_SIZEOF_VOID_P})
       set(CMAKE_SIZEOF_VOID_P "")
 
-      write_basic_package_version_file("${CONFIG_VERSION_FILE_NAME}" COMPATIBILITY AnyNewerVersion)
+      write_basic_package_version_file("${CONFIG_VERSION_FILE_NAME}" COMPATIBILITY SameMajorVersion)
 
       set(CMAKE_SIZEOF_VOID_P ${OLD_CMAKE_SIZEOF_VOID_P})
 
@@ -293,7 +404,7 @@ function(boost_install_target)
 
   else()
 
-    write_basic_package_version_file("${CONFIG_VERSION_FILE_NAME}" COMPATIBILITY AnyNewerVersion)
+    write_basic_package_version_file("${CONFIG_VERSION_FILE_NAME}" COMPATIBILITY SameMajorVersion)
 
   endif()
 
@@ -329,10 +440,10 @@ function(boost_install)
 
   endif()
 
-  if(__HEADER_DIRECTORY)
+  if(__HEADER_DIRECTORY AND NOT CMAKE_SKIP_INSTALL_RULES)
 
     get_filename_component(__HEADER_DIRECTORY "${__HEADER_DIRECTORY}" ABSOLUTE)
-    install(DIRECTORY "${__HEADER_DIRECTORY}/" DESTINATION "${BOOST_INSTALL_INCLUDEDIR}")
+    install(DIRECTORY "${__HEADER_DIRECTORY}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
   endif()
 

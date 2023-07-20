@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2016 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -27,12 +27,6 @@
 ;  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-%ifidn __OUTPUT_FORMAT__, elf64
-%define	WRT_OPT		wrt ..plt
-%else
-%define	WRT_OPT
-%endif
-
 %include "reg_sizes.asm"
 
 default rel
@@ -45,7 +39,6 @@ extern aes_cbc_dec_192_avx
 extern aes_cbc_dec_256_sse
 extern aes_cbc_dec_256_avx
 
-
 extern aes_cbc_enc_128_x4
 extern aes_cbc_enc_128_x8
 extern aes_cbc_enc_192_x4
@@ -53,17 +46,43 @@ extern aes_cbc_enc_192_x8
 extern aes_cbc_enc_256_x4
 extern aes_cbc_enc_256_x8
 
+%if (AS_FEATURE_LEVEL) >= 10
+extern aes_cbc_dec_128_vaes_avx512
+extern aes_cbc_dec_192_vaes_avx512
+extern aes_cbc_dec_256_vaes_avx512
+%endif
+
 %include "multibinary.asm"
 
 ;;;;
 ; instantiate aesni_cbc interfaces enc and dec
 ;;;;
-mbin_interface     aes_cbc_dec_128
-mbin_dispatch_init aes_cbc_dec_128, aes_cbc_dec_128_sse, aes_cbc_dec_128_avx, aes_cbc_dec_128_avx
-mbin_interface     aes_cbc_dec_192
-mbin_dispatch_init aes_cbc_dec_192, aes_cbc_dec_192_sse, aes_cbc_dec_192_avx, aes_cbc_dec_192_avx
-mbin_interface     aes_cbc_dec_256
-mbin_dispatch_init aes_cbc_dec_256, aes_cbc_dec_256_sse, aes_cbc_dec_256_avx, aes_cbc_dec_256_avx
+mbin_interface      aes_cbc_dec_128
+mbin_dispatch_init7 aes_cbc_dec_128, \
+	aes_cbc_dec_128_sse, \
+	aes_cbc_dec_128_sse, \
+	aes_cbc_dec_128_avx, \
+	aes_cbc_dec_128_avx, \
+	aes_cbc_dec_128_avx, \
+	aes_cbc_dec_128_vaes_avx512
+
+mbin_interface      aes_cbc_dec_192
+mbin_dispatch_init7 aes_cbc_dec_192, \
+	aes_cbc_dec_192_sse, \
+	aes_cbc_dec_192_sse, \
+	aes_cbc_dec_192_avx, \
+	aes_cbc_dec_192_avx, \
+	aes_cbc_dec_192_avx, \
+	aes_cbc_dec_192_vaes_avx512
+
+mbin_interface      aes_cbc_dec_256
+mbin_dispatch_init7 aes_cbc_dec_256, \
+	aes_cbc_dec_256_sse, \
+	aes_cbc_dec_256_sse, \
+	aes_cbc_dec_256_avx, \
+	aes_cbc_dec_256_avx, \
+	aes_cbc_dec_256_avx, \
+	aes_cbc_dec_256_vaes_avx512
 
 mbin_interface     aes_cbc_enc_128
 mbin_dispatch_init aes_cbc_enc_128, aes_cbc_enc_128_x4, aes_cbc_enc_128_x8, aes_cbc_enc_128_x8

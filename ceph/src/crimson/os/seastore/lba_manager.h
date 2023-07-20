@@ -19,7 +19,6 @@
 
 #include "crimson/os/seastore/cache.h"
 #include "crimson/os/seastore/seastore_types.h"
-#include "crimson/os/seastore/segment_manager.h"
 
 namespace crimson::os::seastore {
 
@@ -63,7 +62,7 @@ public:
    */
   using get_mapping_iertr = base_iertr::extend<
     crimson::ct_error::enoent>;
-  using get_mapping_ret = get_mapping_iertr::future<LBAPinRef>;
+  using get_mapping_ret = get_mapping_iertr::future<LBAMappingRef>;
   virtual get_mapping_ret get_mapping(
     Transaction &t,
     laddr_t offset) = 0;
@@ -73,15 +72,16 @@ public:
    *
    * Offset will be relative to the block offset of the record
    * This mapping will block from transaction submission until set_paddr
-   * is called on the LBAPin.
+   * is called on the LBAMapping.
    */
   using alloc_extent_iertr = base_iertr;
-  using alloc_extent_ret = alloc_extent_iertr::future<LBAPinRef>;
+  using alloc_extent_ret = alloc_extent_iertr::future<LBAMappingRef>;
   virtual alloc_extent_ret alloc_extent(
     Transaction &t,
     laddr_t hint,
     extent_len_t len,
-    paddr_t addr) = 0;
+    paddr_t addr,
+    LogicalCachedExtent *nextent) = 0;
 
   struct ref_update_result_t {
     unsigned refcount = 0;
@@ -110,20 +110,22 @@ public:
     Transaction &t,
     laddr_t addr) = 0;
 
-  virtual void complete_transaction(
-    Transaction &t) = 0;
-
   /**
    * Should be called after replay on each cached extent.
-   * Implementation must initialize the LBAPin on any
+   * Implementation must initialize the LBAMapping on any
    * LogicalCachedExtent's and may also read in any dependent
    * structures, etc.
+   *
+   * @return returns whether the extent is alive
    */
   using init_cached_extent_iertr = base_iertr;
-  using init_cached_extent_ret = init_cached_extent_iertr::future<>;
+  using init_cached_extent_ret = init_cached_extent_iertr::future<bool>;
   virtual init_cached_extent_ret init_cached_extent(
     Transaction &t,
     CachedExtentRef e) = 0;
+
+  using check_child_trackers_ret = base_iertr::future<>;
+  virtual check_child_trackers_ret check_child_trackers(Transaction &t) = 0;
 
   /**
    * Calls f for each mapping in [begin, end)
@@ -139,18 +141,6 @@ public:
     scan_mappings_func_t &&f) = 0;
 
   /**
-   * Calls f for each mapped space usage
-   */
-  using scan_mapped_space_iertr = base_iertr::extend_ertr<
-    SegmentManager::read_ertr>;
-  using scan_mapped_space_ret = scan_mapped_space_iertr::future<>;
-  using scan_mapped_space_func_t = std::function<
-    void(paddr_t, extent_len_t)>;
-  virtual scan_mapped_space_ret scan_mapped_space(
-    Transaction &t,
-    scan_mapped_space_func_t &&f) = 0;
-
-  /**
    * rewrite_extent
    *
    * rewrite extent into passed transaction
@@ -162,17 +152,30 @@ public:
     CachedExtentRef extent) = 0;
 
   /**
-   * delayed_update_mapping
+   * update_mapping
    *
-   * update lba mapping for delayed allocated extents
+   * update lba mapping for a delayed allocated extent
    */
-  using update_le_mapping_iertr = base_iertr;
-  using update_le_mapping_ret = base_iertr::future<>;
-  virtual update_le_mapping_ret update_mapping(
+  using update_mapping_iertr = base_iertr;
+  using update_mapping_ret = base_iertr::future<>;
+  virtual update_mapping_ret update_mapping(
     Transaction& t,
     laddr_t laddr,
     paddr_t prev_addr,
-    paddr_t paddr) = 0;
+    paddr_t paddr,
+    LogicalCachedExtent *nextent) = 0;
+
+  /**
+   * update_mappings
+   *
+   * update lba mappings for delayed allocated extents
+   */
+  using update_mappings_iertr = update_mapping_iertr;
+  using update_mappings_ret = update_mapping_ret;
+  update_mappings_ret update_mappings(
+    Transaction& t,
+    const std::list<LogicalCachedExtentRef>& extents);
+
   /**
    * get_physical_extent_if_live
    *
@@ -190,9 +193,7 @@ public:
     extent_types_t type,
     paddr_t addr,
     laddr_t laddr,
-    segment_off_t len) = 0;
-
-  virtual void add_pin(LBAPin &pin) = 0;
+    extent_len_t len) = 0;
 
   virtual ~LBAManager() {}
 };
@@ -200,9 +201,7 @@ using LBAManagerRef = std::unique_ptr<LBAManager>;
 
 class Cache;
 namespace lba_manager {
-LBAManagerRef create_lba_manager(
-  SegmentManager &segment_manager,
-  Cache &cache);
+LBAManagerRef create_lba_manager(Cache &cache);
 }
 
 }

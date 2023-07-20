@@ -43,6 +43,7 @@ struct LockInfo {
     txn_ids = lock_info.txn_ids;
     expiration_time = lock_info.expiration_time;
   }
+  DECLARE_DEFAULT_MOVES(LockInfo);
 };
 
 struct LockMapStripe {
@@ -61,7 +62,7 @@ struct LockMapStripe {
 
   // Locked keys mapped to the info about the transactions that locked them.
   // TODO(agiardullo): Explore performance of other data structures.
-  std::unordered_map<std::string, LockInfo> keys;
+  UnorderedMap<std::string, LockInfo> keys;
 };
 
 // Map of #num_stripes LockMapStripes
@@ -94,69 +95,11 @@ struct LockMap {
   size_t GetStripe(const std::string& key) const;
 };
 
-void DeadlockInfoBuffer::AddNewPath(DeadlockPath path) {
-  std::lock_guard<std::mutex> lock(paths_buffer_mutex_);
-
-  if (paths_buffer_.empty()) {
-    return;
-  }
-
-  paths_buffer_[buffer_idx_] = std::move(path);
-  buffer_idx_ = (buffer_idx_ + 1) % paths_buffer_.size();
-}
-
-void DeadlockInfoBuffer::Resize(uint32_t target_size) {
-  std::lock_guard<std::mutex> lock(paths_buffer_mutex_);
-
-  paths_buffer_ = Normalize();
-
-  // Drop the deadlocks that will no longer be needed ater the normalize
-  if (target_size < paths_buffer_.size()) {
-    paths_buffer_.erase(
-        paths_buffer_.begin(),
-        paths_buffer_.begin() + (paths_buffer_.size() - target_size));
-    buffer_idx_ = 0;
-  }
-  // Resize the buffer to the target size and restore the buffer's idx
-  else {
-    auto prev_size = paths_buffer_.size();
-    paths_buffer_.resize(target_size);
-    buffer_idx_ = (uint32_t)prev_size;
-  }
-}
-
-std::vector<DeadlockPath> DeadlockInfoBuffer::Normalize() {
-  auto working = paths_buffer_;
-
-  if (working.empty()) {
-    return working;
-  }
-
-  // Next write occurs at a nonexistent path's slot
-  if (paths_buffer_[buffer_idx_].empty()) {
-    working.resize(buffer_idx_);
-  } else {
-    std::rotate(working.begin(), working.begin() + buffer_idx_, working.end());
-  }
-
-  return working;
-}
-
-std::vector<DeadlockPath> DeadlockInfoBuffer::PrepareBuffer() {
-  std::lock_guard<std::mutex> lock(paths_buffer_mutex_);
-
-  // Reversing the normalized vector returns the latest deadlocks first
-  auto working = Normalize();
-  std::reverse(working.begin(), working.end());
-
-  return working;
-}
-
 namespace {
 void UnrefLockMapsCache(void* ptr) {
   // Called when a thread exits or a ThreadLocalPtr gets destroyed.
   auto lock_maps_cache =
-      static_cast<std::unordered_map<uint32_t, std::shared_ptr<LockMap>>*>(ptr);
+      static_cast<UnorderedMap<uint32_t, std::shared_ptr<LockMap>>*>(ptr);
   delete lock_maps_cache;
 }
 }  // anonymous namespace
@@ -171,8 +114,6 @@ PointLockManager::PointLockManager(PessimisticTransactionDB* txn_db,
       mutex_factory_(opt.custom_mutex_factory
                          ? opt.custom_mutex_factory
                          : std::make_shared<TransactionDBMutexFactoryImpl>()) {}
-
-PointLockManager::~PointLockManager() {}
 
 size_t LockMap::GetStripe(const std::string& key) const {
   assert(num_stripes_ > 0);
@@ -306,14 +247,14 @@ Status PointLockManager::TryLock(PessimisticTransaction* txn,
   int64_t timeout = txn->GetLockTimeout();
 
   return AcquireWithTimeout(txn, lock_map, stripe, column_family_id, key, env,
-                            timeout, std::move(lock_info));
+                            timeout, lock_info);
 }
 
 // Helper function for TryLock().
 Status PointLockManager::AcquireWithTimeout(
     PessimisticTransaction* txn, LockMap* lock_map, LockMapStripe* stripe,
     ColumnFamilyId column_family_id, const std::string& key, Env* env,
-    int64_t timeout, LockInfo&& lock_info) {
+    int64_t timeout, const LockInfo& lock_info) {
   Status result;
   uint64_t end_time = 0;
 
@@ -337,7 +278,7 @@ Status PointLockManager::AcquireWithTimeout(
   // Acquire lock if we are able to
   uint64_t expire_time_hint = 0;
   autovector<TransactionID> wait_ids;
-  result = AcquireLocked(lock_map, stripe, key, env, std::move(lock_info),
+  result = AcquireLocked(lock_map, stripe, key, env, lock_info,
                          &expire_time_hint, &wait_ids);
 
   if (!result.ok() && timeout != 0) {
@@ -393,14 +334,14 @@ Status PointLockManager::AcquireWithTimeout(
       }
 
       if (result.IsTimedOut()) {
-          timed_out = true;
-          // Even though we timed out, we will still make one more attempt to
-          // acquire lock below (it is possible the lock expired and we
-          // were never signaled).
+        timed_out = true;
+        // Even though we timed out, we will still make one more attempt to
+        // acquire lock below (it is possible the lock expired and we
+        // were never signaled).
       }
 
       if (result.ok() || result.IsTimedOut()) {
-        result = AcquireLocked(lock_map, stripe, key, env, std::move(lock_info),
+        result = AcquireLocked(lock_map, stripe, key, env, lock_info,
                                &expire_time_hint, &wait_ids);
       }
     } while (!result.ok() && !timed_out);
@@ -438,8 +379,10 @@ bool PointLockManager::IncrementWaiters(
     const autovector<TransactionID>& wait_ids, const std::string& key,
     const uint32_t& cf_id, const bool& exclusive, Env* const env) {
   auto id = txn->GetID();
-  std::vector<int> queue_parents(static_cast<size_t>(txn->GetDeadlockDetectDepth()));
-  std::vector<TransactionID> queue_values(static_cast<size_t>(txn->GetDeadlockDetectDepth()));
+  std::vector<int> queue_parents(
+      static_cast<size_t>(txn->GetDeadlockDetectDepth()));
+  std::vector<TransactionID> queue_values(
+      static_cast<size_t>(txn->GetDeadlockDetectDepth()));
   std::lock_guard<std::mutex> lock(wait_txn_map_mutex_);
   assert(!wait_txn_map_.Contains(id));
 
@@ -490,7 +433,14 @@ bool PointLockManager::IncrementWaiters(
                         extracted_info.m_waiting_key});
         head = queue_parents[head];
       }
-      env->GetCurrentTime(&deadlock_time);
+      if (!env->GetCurrentTime(&deadlock_time).ok()) {
+        /*
+          TODO(AR) this preserves the current behaviour whilst checking the
+          status of env->GetCurrentTime to ensure that ASSERT_STATUS_CHECKED
+          passes. Should we instead raise an error if !ok() ?
+        */
+        deadlock_time = 0;
+      }
       std::reverse(path.begin(), path.end());
       dlock_buffer_.AddNewPath(DeadlockPath(path, deadlock_time));
       deadlock_time = 0;
@@ -506,7 +456,14 @@ bool PointLockManager::IncrementWaiters(
   }
 
   // Wait cycle too big, just assume deadlock.
-  env->GetCurrentTime(&deadlock_time);
+  if (!env->GetCurrentTime(&deadlock_time).ok()) {
+    /*
+      TODO(AR) this preserves the current behaviour whilst checking the status
+      of env->GetCurrentTime to ensure that ASSERT_STATUS_CHECKED passes.
+      Should we instead raise an error if !ok() ?
+    */
+    deadlock_time = 0;
+  }
   dlock_buffer_.AddNewPath(DeadlockPath(deadlock_time, true));
   DecrementWaitersImpl(txn, wait_ids);
   return true;
@@ -518,7 +475,7 @@ bool PointLockManager::IncrementWaiters(
 // REQUIRED:  Stripe mutex must be held.
 Status PointLockManager::AcquireLocked(LockMap* lock_map, LockMapStripe* stripe,
                                        const std::string& key, Env* env,
-                                       LockInfo&& txn_lock_info,
+                                       const LockInfo& txn_lock_info,
                                        uint64_t* expire_time,
                                        autovector<TransactionID>* txn_ids) {
   assert(txn_lock_info.txn_ids.size() == 1);
@@ -570,7 +527,7 @@ Status PointLockManager::AcquireLocked(LockMap* lock_map, LockMapStripe* stripe,
       result = Status::Busy(Status::SubCode::kLockLimit);
     } else {
       // acquire lock
-      stripe->keys.emplace(key, std::move(txn_lock_info));
+      stripe->keys.emplace(key, txn_lock_info);
 
       // Maintain lock count if there is a limit on the number of locks
       if (max_num_locks_) {
@@ -658,7 +615,7 @@ void PointLockManager::UnLock(PessimisticTransaction* txn,
     }
 
     // Bucket keys by lock_map_ stripe
-    std::unordered_map<size_t, std::vector<const std::string*>> keys_by_stripe(
+    UnorderedMap<size_t, std::vector<const std::string*>> keys_by_stripe(
         lock_map->num_stripes_);
     std::unique_ptr<LockTracker::KeyIterator> key_it(
         tracker.GetKeyIterator(cf));

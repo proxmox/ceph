@@ -25,6 +25,7 @@
 
 #if defined(TEST_MPQ)
 #include <boost/multiprecision/gmp.hpp>
+#include <boost/multiprecision/rational_adaptor.hpp>
 #endif
 #if defined(TEST_TOMMATH)
 #include <boost/multiprecision/tommath.hpp>
@@ -36,7 +37,7 @@
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_int.hpp>
-#include <boost/multiprecision/rational_adaptor.hpp>
+#include <boost/rational.hpp>
 #include "test.hpp"
 #include <iostream>
 #include <iomanip>
@@ -65,14 +66,10 @@ T generate_random()
 }
 
 template <class T>
-void do_round_trip(const T& val, std::ios_base::fmtflags f, const boost::mpl::true_&)
+void do_round_trip(const T& val, std::ios_base::fmtflags f, const std::integral_constant<bool, true>&)
 {
    std::stringstream ss;
-#ifndef BOOST_NO_CXX11_NUMERIC_LIMITS
    ss << std::setprecision(std::numeric_limits<T>::max_digits10);
-#else
-   ss << std::setprecision(std::numeric_limits<T>::digits10 + 5);
-#endif
    ss.flags(f);
    ss << val;
    T new_val = static_cast<T>(ss.str());
@@ -82,7 +79,7 @@ void do_round_trip(const T& val, std::ios_base::fmtflags f, const boost::mpl::tr
 }
 
 template <class T>
-void do_round_trip(const T& val, std::ios_base::fmtflags f, const boost::mpl::false_&)
+void do_round_trip(const T& val, std::ios_base::fmtflags f, const std::integral_constant<bool, false>&)
 {
    std::stringstream ss;
    ss << std::setprecision(std::numeric_limits<T>::digits10 + 4);
@@ -94,10 +91,10 @@ void do_round_trip(const T& val, std::ios_base::fmtflags f, const boost::mpl::fa
 }
 
 template <class T>
-struct is_number : public boost::mpl::false_
+struct is_number : public std::integral_constant<bool, false>
 {};
 template <class T>
-struct is_number<boost::multiprecision::number<T> > : public boost::mpl::true_
+struct is_number<boost::multiprecision::number<T> > : public std::integral_constant<bool, true>
 {};
 
 template <class T>

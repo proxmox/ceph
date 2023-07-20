@@ -25,7 +25,5 @@ safe_exec python.exe $testRbdWnbd --test-name RbdFsTest --iterations 4
 safe_exec python.exe $testRbdWnbd --test-name RbdFsFioTest --iterations 4
 safe_exec python.exe $testRbdWnbd --test-name RbdFsStampTest --iterations 4
 
-# The live resize feature is not available in Quincy. Uncomment the following if
-# it gets backported.
-# safe_exec python.exe $testRbdWnbd `
-#     --test-name RbdResizeFioTest --image-size-mb 64
+safe_exec python.exe $testRbdWnbd `
+    --test-name RbdResizeFioTest --image-size-mb 64
