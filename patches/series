@@ -6,11 +6,7 @@
 0010-remove-legacy-init.d-ceph-script.patch
 0011-only-suggest-mgr-plugins.patch
 0012-Remove-failing-actions-from-prerm.patch
-0013-d-control-move-python-dependencies-over-to-python3.patch
 0014-fix-service-ordering-avoid-Before-remote-fs-pre.targ.patch
 0015-d-control-drop-outdated-build-dependencies-and-bump-.patch
 0016-d-rules-fix-no-restart-on-upgrade.patch
-0017-python3.10-pep-620.patch
-0018-fix-lib-fmt-v9-compat.patch
-0019-define-iterators-without-std-iterator.patch
 0020-fix-4759-run-ceph-crash-daemon-with-www-data-group-f.patch
