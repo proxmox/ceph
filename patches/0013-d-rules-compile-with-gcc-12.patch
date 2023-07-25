@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Tue, 25 Jul 2023 21:05:18 +0200
+Subject: [PATCH] d/rules: compile with gcc 12
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/rules | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/debian/rules b/debian/rules
+index c163daad2..a1653cb74 100755
+--- a/debian/rules
++++ b/debian/rules
+@@ -5,7 +5,7 @@ export DESTDIR=$(CURDIR)/debian/tmp
+ 
+ include /usr/share/dpkg/default.mk
+ 
+-extraopts += -DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11
++extraopts += -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12
+ ifneq (,$(findstring WITH_STATIC_LIBSTDCXX,$(CEPH_EXTRA_CMAKE_ARGS)))
+   # dh_auto_build sets LDFLAGS with `dpkg-buildflags --get LDFLAGS` on ubuntu,
+   # which makes the application aborts when the shared library throws
