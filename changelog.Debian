@@ -1,3 +1,9 @@
+ceph (18.1.2-pve1) bookworm; urgency=medium
+
+  * Package second release candidate from the Ceph 18 Reef branch
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 20 Jul 2023 09:15:15 +0200
+
 ceph (17.2.6-pve1+3) bookworm; urgency=medium
 
   * rebuild for Proxmox VE 8.x based on Debian 12 Bookworm
