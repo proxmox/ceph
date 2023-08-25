@@ -46,6 +46,24 @@ configurations for the Ceph Object Gateway:
   a global object namespace. This global object namespace ensures unique
   object IDs across zonegroups and zones.
 
+  Each bucket is owned by the zonegroup where it was created (except where
+  overridden by the :ref:`LocationConstraint<s3_bucket_placement>` on
+  bucket creation), and its object data will only replicate to other zones in
+  that zonegroup. Any request for data in that bucket that are sent to other
+  zonegroups will redirect to the zonegroup where the bucket resides.
+
+  It can be useful to create multiple zonegroups when you want to share a
+  namespace of users and buckets across many zones, but isolate the object data
+  to a subset of those zones. It might be that you have several connected sites
+  that share storage, but only require a single backup for purposes of disaster
+  recovery. In such a case, it could make sense to create several zonegroups
+  with only two zones each to avoid replicating all objects to all zones.
+
+  In other cases, it might make more sense to isolate things in separate
+  realms, with each realm having a single zonegroup. Zonegroups provide
+  flexibility by making it possible to control the isolation of data and
+  metadata separately.
+
 - **Multiple Realms:** Beginning with the Kraken release, the Ceph Object
   Gateway supports "realms", which are containers for zonegroups. Realms make
   it possible to set policies that apply to multiple zonegroups. Realms have a
@@ -54,6 +72,7 @@ configurations for the Ceph Object Gateway:
   define multiple namespaces and multiple configurations (this means that each
   realm can have a configuration that is distinct from the configuration of
   other realms).
+
 
 Diagram - Replication of Object Data Between Zones
 --------------------------------------------------
@@ -1344,7 +1363,7 @@ Zones
 -----
 
 A zone defines a logical group that consists of one or more Ceph Object Gateway
-instances. Ceph Object Gateway supports zones.
+instances. All RGWs in a given zone serve S3 objects that are backed by RADOS objects that are stored in the same set of pools in the same cluster. Ceph Object Gateway supports zones.
 
 The procedure for configuring zones differs from typical configuration
 procedures, because not all of the settings end up in a Ceph configuration
@@ -1574,15 +1593,17 @@ On creation of new zones and zonegroups, all known features are supported/enable
 Supported Features
 ------------------
 
-+---------------------------+---------+
-| Feature                   | Release |
-+===========================+=========+
-| :ref:`feature_resharding` | Reef    |
-+---------------------------+---------+
++-----------------------------------+---------+----------+
+| Feature                           | Release | Default  |
++===================================+=========+==========+
+| :ref:`feature_resharding`         | Reef    | Enabled  |
++-----------------------------------+---------+----------+
+| :ref:`feature_compress_encrypted` | Reef    | Disabled |
++-----------------------------------+---------+----------+
 
 .. _feature_resharding:
 
-Resharding
+resharding
 ~~~~~~~~~~
 
 This feature allows buckets to be resharded in a multisite configuration
@@ -1596,6 +1617,21 @@ of its RGWs and OSDs have upgraded.
 .. note:: Dynamic resharding is not supported in multisite deployments prior to
    the Reef release.
 
+
+.. _feature_compress_encrypted:
+
+compress-encrypted
+~~~~~~~~~~~~~~~~~~
+
+This feature enables support for combining `Server-Side Encryption`_ and
+`Compression`_ on the same object. Object data gets compressed before encryption.
+Prior to Reef, multisite would not replicate such objects correctly, so all zones
+must upgrade to Reef or later before enabling.
+
+.. warning:: The compression ratio may leak information about the encrypted data,
+   and allow attackers to distinguish whether two same-sized objects might contain
+   the same data. Due to these security considerations, this feature is disabled
+   by default.
 
 Commands
 --------
@@ -1644,3 +1680,5 @@ On any cluster in the realm:
 
 .. _`Pools`: ../pools
 .. _`Sync Policy Config`: ../multisite-sync-policy
+.. _`Server-Side Encryption`: ../encryption
+.. _`Compression`: ../compression

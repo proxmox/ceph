@@ -44,8 +44,8 @@ from pathlib import Path
 FuncT = TypeVar('FuncT', bound=Callable)
 
 # Default container images -----------------------------------------------------
-DEFAULT_IMAGE = 'quay.ceph.io/ceph-ci/ceph:main'
-DEFAULT_IMAGE_IS_MAIN = True
+DEFAULT_IMAGE = 'quay.io/ceph/ceph:v18'
+DEFAULT_IMAGE_IS_MAIN = False
 DEFAULT_IMAGE_RELEASE = 'reef'
 DEFAULT_PROMETHEUS_IMAGE = 'quay.io/prometheus/prometheus:v2.43.0'
 DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:2.4.0'
@@ -63,7 +63,7 @@ DEFAULT_JAEGER_QUERY_IMAGE = 'quay.io/jaegertracing/jaeger-query:1.29'
 DEFAULT_REGISTRY = 'docker.io'   # normalize unqualified digests to this
 # ------------------------------------------------------------------------------
 
-LATEST_STABLE_RELEASE = 'quincy'
+LATEST_STABLE_RELEASE = 'reef'
 DATA_DIR = '/var/lib/ceph'
 LOG_DIR = '/var/log/ceph'
 LOCK_DIR = '/run/cephadm'
@@ -961,7 +961,9 @@ class CephExporter(object):
         self.image = image
 
         self.sock_dir = config_json.get('sock-dir', '/var/run/ceph/')
-        self.addrs = config_json.get('addrs', socket.gethostbyname(socket.gethostname()))
+        ipv4_addrs, _ = get_ip_addresses(get_hostname())
+        addrs = '0.0.0.0' if ipv4_addrs else '::'
+        self.addrs = config_json.get('addrs', addrs)
         self.port = config_json.get('port', self.DEFAULT_PORT)
         self.prio_limit = config_json.get('prio-limit', 5)
         self.stats_period = config_json.get('stats-period', 5)

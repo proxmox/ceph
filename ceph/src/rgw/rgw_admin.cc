@@ -3538,6 +3538,8 @@ int main(int argc, const char **argv)
   std::optional<std::string> inject_error_at;
   std::optional<int> inject_error_code;
   std::optional<std::string> inject_abort_at;
+  std::optional<std::string> inject_delay_at;
+  ceph::timespan inject_delay = std::chrono::milliseconds(2000);
 
   rgw::zone_features::set enable_features;
   rgw::zone_features::set disable_features;
@@ -4030,6 +4032,10 @@ int main(int argc, const char **argv)
       inject_error_code = atoi(val.c_str());
     } else if (ceph_argparse_witharg(args, i, &val, "--inject-abort-at", (char*)NULL)) {
       inject_abort_at = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--inject-delay-at", (char*)NULL)) {
+      inject_delay_at = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--inject-delay-ms", (char*)NULL)) {
+      inject_delay = std::chrono::milliseconds(atoi(val.c_str()));
     } else if (ceph_argparse_binary_flag(args, i, &detail, NULL, "--detail", (char*)NULL)) {
       // do nothing
     } else if (ceph_argparse_witharg(args, i, &val, "--context", (char*)NULL)) {
@@ -5150,9 +5156,9 @@ int main(int argc, const char **argv)
         zonegroup.api_name = (api_name.empty() ? zonegroup_name : api_name);
 
         zonegroup.enabled_features = enable_features;
-        if (zonegroup.enabled_features.empty()) { // enable all features by default
-          zonegroup.enabled_features.insert(rgw::zone_features::supported.begin(),
-                                            rgw::zone_features::supported.end());
+        if (zonegroup.enabled_features.empty()) { // enable features by default
+          zonegroup.enabled_features.insert(rgw::zone_features::enabled.begin(),
+                                            rgw::zone_features::enabled.end());
         }
         for (const auto& feature : disable_features) {
           auto i = zonegroup.enabled_features.find(feature);
@@ -8042,6 +8048,8 @@ next:
       fault.inject(*inject_error_at, InjectError{code, dpp()});
     } else if (inject_abort_at) {
       fault.inject(*inject_abort_at, InjectAbort{});
+    } else if (inject_delay_at) {
+      fault.inject(*inject_delay_at, InjectDelay{inject_delay, dpp()});
     }
     ret = br.execute(num_shards, fault, max_entries, dpp(),
                      verbose, &cout, formatter.get());

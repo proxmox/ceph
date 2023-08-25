@@ -77,7 +77,11 @@
   map and unmap images in namespaces using the `image-spec` syntax since then
   but the corresponding option available in most other commands was missing.
 * RGW: Compression is now supported for objects uploaded with Server-Side Encryption.
-  When both are enabled, compression is applied before encryption.
+  When both are enabled, compression is applied before encryption. Earlier releases
+  of multisite do not replicate such objects correctly, so all zones must upgrade to
+  Reef before enabling the `compress-encrypted` zonegroup feature: see
+  https://docs.ceph.com/en/reef/radosgw/multisite/#zone-features and note the
+  security considerations.
 * RGW: the "pubsub" functionality for storing bucket notifications inside Ceph
   is removed. Together with it, the "pubsub" zone should not be used anymore.
   The REST operations, as well as radosgw-admin commands for manipulating
@@ -124,6 +128,9 @@
 * RBD: list-watchers C++ API (`Image::list_watchers`) now clears the passed
   `std::list` before potentially appending to it, aligning with the semantics
   of the corresponding C API (`rbd_watchers_list`).
+* The rados python binding is now able to process (opt-in) omap keys as bytes
+  objects. This enables interacting with RADOS omap keys that are not decodeable as
+  UTF-8 strings.
 * Telemetry: Users who are opted-in to telemetry can also opt-in to
   participating in a leaderboard in the telemetry public
   dashboards (https://telemetry-public.ceph.com/). Users can now also add a
@@ -162,6 +169,8 @@
     fixes and enhancements.
   * For more detailed information see:
     https://docs.ceph.com/en/reef/rados/configuration/mclock-config-ref/
+* CEPHFS: After recovering a Ceph File System post following the disaster recovery
+  procedure, the recovered files under `lost+found` directory can now be deleted.
 
 >=17.2.1
 
