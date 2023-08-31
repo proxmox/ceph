@@ -369,6 +369,9 @@ class MDSCluster(CephCluster):
         """
         self.mds_daemons[mds_id].signal(sig, silent);
 
+    def mds_is_running(self, mds_id):
+        return self.mds_daemons[mds_id].running()
+
     def newfs(self, name='cephfs', create=True):
         return Filesystem(self._ctx, name=name, create=create)
 
@@ -748,6 +751,7 @@ class Filesystem(MDSCluster):
                 raise
 
         if self.fs_config is not None:
+            log.debug(f"fs_config: {self.fs_config}")
             max_mds = self.fs_config.get('max_mds', 1)
             if max_mds > 1:
                 self.set_max_mds(max_mds)
@@ -759,6 +763,34 @@ class Filesystem(MDSCluster):
             session_timeout = self.fs_config.get('session_timeout', 60)
             if session_timeout != 60:
                 self.set_session_timeout(session_timeout)
+
+            if self.fs_config.get('subvols', None) is not None:
+                log.debug(f"Creating {self.fs_config.get('subvols')} subvols "
+                          f"for filesystem '{self.name}'")
+                if not hasattr(self._ctx, "created_subvols"):
+                    self._ctx.created_subvols = dict()
+
+                subvols = self.fs_config.get('subvols')
+                assert(isinstance(subvols, dict))
+                assert(isinstance(subvols['create'], int))
+                assert(subvols['create'] > 0)
+
+                for sv in range(0, subvols['create']):
+                    sv_name = f'sv_{sv}'
+                    self.mon_manager.raw_cluster_cmd(
+                        'fs', 'subvolume', 'create', self.name, sv_name,
+                        self.fs_config.get('subvol_options', ''))
+
+                    if self.name not in self._ctx.created_subvols:
+                        self._ctx.created_subvols[self.name] = []
+
+                    subvol_path = self.mon_manager.raw_cluster_cmd(
+                        'fs', 'subvolume', 'getpath', self.name, sv_name)
+                    subvol_path = subvol_path.strip()
+                    self._ctx.created_subvols[self.name].append(subvol_path)
+            else:
+                log.debug(f"Not Creating any subvols for filesystem '{self.name}'")
+
 
         self.getinfo(refresh = True)
 
@@ -1089,6 +1121,10 @@ class Filesystem(MDSCluster):
 
     def rank_fail(self, rank=0):
         self.mon_manager.raw_cluster_cmd("mds", "fail", "{}:{}".format(self.id, rank))
+
+    def rank_is_running(self, rank=0, status=None):
+        name = self.get_rank(rank=rank, status=status)['name']
+        return self.mds_is_running(name)
 
     def get_ranks(self, status=None):
         if status is None:
@@ -1537,7 +1573,7 @@ class Filesystem(MDSCluster):
         if quiet:
             base_args = [os.path.join(self._prefix, tool), '--debug-mds=1', '--debug-objecter=1']
         else:
-            base_args = [os.path.join(self._prefix, tool), '--debug-mds=4', '--debug-objecter=1']
+            base_args = [os.path.join(self._prefix, tool), '--debug-mds=20', '--debug-ms=1', '--debug-objecter=1']
 
         if rank is not None:
             base_args.extend(["--rank", "%s" % str(rank)])

@@ -158,6 +158,7 @@ public:
 
   // -- requests --
   void handle_client_request(const cref_t<MClientRequest> &m);
+  void handle_client_reply(const cref_t<MClientReply> &m);
 
   void journal_and_reply(MDRequestRef& mdr, CInode *tracei, CDentry *tracedn,
 			 LogEvent *le, MDSLogContextBase *fin);
@@ -191,7 +192,8 @@ public:
   CInode* rdlock_path_pin_ref(MDRequestRef& mdr, bool want_auth,
 			      bool no_want_auth=false);
   CDentry* rdlock_path_xlock_dentry(MDRequestRef& mdr, bool create,
-				    bool okexist=false, bool want_layout=false);
+				    bool okexist=false, bool authexist=false,
+				    bool want_layout=false);
   std::pair<CDentry*, CDentry*>
 	    rdlock_two_paths_xlock_destdn(MDRequestRef& mdr, bool xlock_srcdn);
 
@@ -236,6 +238,9 @@ public:
 
   bool is_unlink_pending(CDentry *dn);
   void wait_for_pending_unlink(CDentry *dn, MDRequestRef& mdr);
+
+  bool is_reintegrate_pending(CDentry *dn);
+  void wait_for_pending_reintegrate(CDentry *dn, MDRequestRef& mdr);
 
   // open
   void handle_client_open(MDRequestRef& mdr);
@@ -326,7 +331,14 @@ public:
 
   bool terminating_sessions = false;
 
-  set<client_t> client_reclaim_gather;
+  std::set<client_t> client_reclaim_gather;
+
+  std::set<client_t> get_laggy_clients() const {
+    return laggy_clients;
+  }
+  void clear_laggy_clients() {
+    laggy_clients.clear();
+  }
 
 private:
   friend class MDSContinuation;
@@ -515,6 +527,9 @@ private:
   double caps_throttle_retry_request_timeout;
 
   size_t alternate_name_max = g_conf().get_val<Option::size_t>("mds_alternate_name_max");
+
+  // record laggy clients due to laggy OSDs
+  std::set<client_t> laggy_clients;
 };
 
 static inline constexpr auto operator|(Server::RecallFlags a, Server::RecallFlags b) {

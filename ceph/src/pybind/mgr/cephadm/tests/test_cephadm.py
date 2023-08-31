@@ -16,7 +16,8 @@ except ImportError:
 from execnet.gateway_bootstrap import HostNotFound
 
 from ceph.deployment.service_spec import ServiceSpec, PlacementSpec, RGWSpec, \
-    NFSServiceSpec, IscsiServiceSpec, HostPlacementSpec, CustomContainerSpec, MDSSpec
+    NFSServiceSpec, IscsiServiceSpec, HostPlacementSpec, CustomContainerSpec, MDSSpec, \
+    CustomConfig, PrometheusSpec
 from ceph.deployment.drive_selection.selector import DriveSelection
 from ceph.deployment.inventory import Devices, Device
 from ceph.utils import datetime_to_str, datetime_now
@@ -454,7 +455,7 @@ class TestCephadm(object):
                         '--config-json', '-',
                         '--reconfig',
                     ],
-                    stdin='{"config": "\\n\\n[mon]\\nk=v\\n[mon.test]\\npublic network = 127.0.0.0/8\\n", '
+                    stdin='{"config": "[mon]\\nk=v\\n[mon.test]\\npublic network = 127.0.0.0/8\\n", '
                     + '"keyring": "", "files": {"config": "[mon.test]\\npublic network = 127.0.0.0/8\\n"}}',
                     image='')
 
@@ -551,6 +552,37 @@ class TestCephadm(object):
                         '--extra-entrypoint-args=3'
                     ],
                     stdin='{}',
+                    image='',
+                )
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
+    def test_custom_config(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.return_value = ('{}', '', 0)
+        test_cert = ['-----BEGIN PRIVATE KEY-----',
+                     'YSBhbGlxdXlhbSBlcmF0LCBzZWQgZGlhbSB2b2x1cHR1YS4gQXQgdmVybyBlb3Mg',
+                     'ZXQgYWNjdXNhbSBldCBqdXN0byBkdW8=',
+                     '-----END PRIVATE KEY-----',
+                     '-----BEGIN CERTIFICATE-----',
+                     'YSBhbGlxdXlhbSBlcmF0LCBzZWQgZGlhbSB2b2x1cHR1YS4gQXQgdmVybyBlb3Mg',
+                     'ZXQgYWNjdXNhbSBldCBqdXN0byBkdW8=',
+                     '-----END CERTIFICATE-----']
+        configs = [
+            CustomConfig(content='something something something',
+                         mount_path='/etc/test.conf'),
+            CustomConfig(content='\n'.join(test_cert), mount_path='/usr/share/grafana/thing.crt')
+        ]
+        conf_outs = [json.dumps(c.to_json()) for c in configs]
+        stdin_str = '{' + \
+            f'"config": "", "keyring": "", "custom_config_files": [{conf_outs[0]}, {conf_outs[1]}]' + '}'
+        with with_host(cephadm_module, 'test'):
+            with with_service(cephadm_module, ServiceSpec(service_type='crash', custom_configs=configs), CephadmOrchestrator.apply_crash):
+                _run_cephadm.assert_called_with(
+                    'test', 'crash.test', 'deploy', [
+                        '--name', 'crash.test',
+                        '--meta-json', '{"service_name": "crash", "ports": [], "ip": null, "deployed_by": [], "rank": null, "rank_generation": null, "extra_container_args": null, "extra_entrypoint_args": null}',
+                        '--config-json', '-',
+                    ],
+                    stdin=stdin_str,
                     image='',
                 )
 
@@ -1414,7 +1446,64 @@ class TestCephadm(object):
             with with_service(cephadm_module, spec, meth, 'test'):
                 pass
 
-    @mock.patch("cephadm.serve.CephadmServe._deploy_cephadm_binary", _deploy_cephadm_binary('test'))
+    @pytest.mark.parametrize(
+        "spec, raise_exception, msg",
+        [
+            # Valid retention_time values (valid units: 'y', 'w', 'd', 'h', 'm', 's')
+            (PrometheusSpec(retention_time='1y'), False, ''),
+            (PrometheusSpec(retention_time=' 10w '), False, ''),
+            (PrometheusSpec(retention_time=' 1348d'), False, ''),
+            (PrometheusSpec(retention_time='2000h '), False, ''),
+            (PrometheusSpec(retention_time='173847m'), False, ''),
+            (PrometheusSpec(retention_time='200s'), False, ''),
+            (PrometheusSpec(retention_time='  '), False, ''),  # default value will be used
+
+            # Invalid retention_time values
+            (PrometheusSpec(retention_time='100k'), True, '^Invalid retention time'),     # invalid unit
+            (PrometheusSpec(retention_time='10'), True, '^Invalid retention time'),       # no unit
+            (PrometheusSpec(retention_time='100.00y'), True, '^Invalid retention time'),  # invalid value and valid unit
+            (PrometheusSpec(retention_time='100.00k'), True, '^Invalid retention time'),  # invalid value and invalid unit
+            (PrometheusSpec(retention_time='---'), True, '^Invalid retention time'),      # invalid value
+
+            # Valid retention_size values (valid units: 'B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB')
+            (PrometheusSpec(retention_size='123456789B'), False, ''),
+            (PrometheusSpec(retention_size=' 200KB'), False, ''),
+            (PrometheusSpec(retention_size='99999MB '), False, ''),
+            (PrometheusSpec(retention_size=' 10GB '), False, ''),
+            (PrometheusSpec(retention_size='100TB'), False, ''),
+            (PrometheusSpec(retention_size='500PB'), False, ''),
+            (PrometheusSpec(retention_size='200EB'), False, ''),
+            (PrometheusSpec(retention_size='  '), False, ''),  # default value will be used
+
+            # Invalid retention_size values
+            (PrometheusSpec(retention_size='100b'), True, '^Invalid retention size'),      # invalid unit (case sensitive)
+            (PrometheusSpec(retention_size='333kb'), True, '^Invalid retention size'),     # invalid unit (case sensitive)
+            (PrometheusSpec(retention_size='2000'), True, '^Invalid retention size'),      # no unit
+            (PrometheusSpec(retention_size='200.00PB'), True, '^Invalid retention size'),  # invalid value and valid unit
+            (PrometheusSpec(retention_size='400.B'), True, '^Invalid retention size'),     # invalid value and invalid unit
+            (PrometheusSpec(retention_size='10.000s'), True, '^Invalid retention size'),   # invalid value and invalid unit
+            (PrometheusSpec(retention_size='...'), True, '^Invalid retention size'),       # invalid value
+
+            # valid retention_size and valid retention_time
+            (PrometheusSpec(retention_time='1y', retention_size='100GB'), False, ''),
+            # invalid retention_time and valid retention_size
+            (PrometheusSpec(retention_time='1j', retention_size='100GB'), True, '^Invalid retention time'),
+            # valid retention_time and invalid retention_size
+            (PrometheusSpec(retention_time='1y', retention_size='100gb'), True, '^Invalid retention size'),
+            # valid retention_time and invalid retention_size
+            (PrometheusSpec(retention_time='1y', retention_size='100gb'), True, '^Invalid retention size'),
+            # invalid retention_time and invalid retention_size
+            (PrometheusSpec(retention_time='1i', retention_size='100gb'), True, '^Invalid retention time'),
+        ])
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
+    def test_apply_prometheus(self, spec: PrometheusSpec, raise_exception: bool, msg: str, cephadm_module: CephadmOrchestrator):
+        with with_host(cephadm_module, 'test'):
+            if not raise_exception:
+                cephadm_module._apply(spec)
+            else:
+                with pytest.raises(OrchestratorError, match=msg):
+                    cephadm_module._apply(spec)
+
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
     def test_mds_config_purge(self, cephadm_module: CephadmOrchestrator):
         spec = MDSSpec('mds', service_id='fsname', config={'test': 'foo'})
@@ -1655,7 +1744,7 @@ class TestCephadm(object):
             cephadm_module._set_extra_ceph_conf('[mon]\nk=v')
             CephadmServe(cephadm_module)._refresh_hosts_and_daemons()
             _write_file.assert_called_with('test', '/etc/ceph/ceph.conf',
-                                           b'\n\n[mon]\nk=v\n', 0o644, 0, 0)
+                                           b'[mon]\nk=v\n', 0o644, 0, 0)
 
             # reload
             cephadm_module.cache.last_client_files = {}
@@ -1675,6 +1764,48 @@ class TestCephadm(object):
     def test_etc_ceph_init(self):
         with with_cephadm_module({'manage_etc_ceph_ceph_conf': True}) as m:
             assert m.manage_etc_ceph_ceph_conf is True
+
+    @mock.patch("cephadm.CephadmOrchestrator.check_mon_command")
+    @mock.patch("cephadm.CephadmOrchestrator.extra_ceph_conf")
+    def test_extra_ceph_conf(self, _extra_ceph_conf, _check_mon_cmd, cephadm_module: CephadmOrchestrator):
+        # settings put into the [global] section in the extra conf
+        # need to be appended to existing [global] section in given
+        # minimal ceph conf, but anything in another section (e.g. [mon])
+        # needs to continue to be its own section
+
+        # this is the conf "ceph generate-minimal-conf" will return in this test
+        _check_mon_cmd.return_value = (0, """[global]
+global_k1 = global_v1
+global_k2 = global_v2
+[mon]
+mon_k1 = mon_v1
+[osd]
+osd_k1 = osd_v1
+osd_k2 = osd_v2
+""", '')
+
+        # test with extra ceph conf that has some of the sections from minimal conf
+        _extra_ceph_conf.return_value = CephadmOrchestrator.ExtraCephConf(conf="""[mon]
+mon_k2 = mon_v2
+[global]
+global_k3 = global_v3
+""", last_modified=datetime_now())
+
+        expected_combined_conf = """[global]
+global_k1 = global_v1
+global_k2 = global_v2
+global_k3 = global_v3
+
+[mon]
+mon_k1 = mon_v1
+mon_k2 = mon_v2
+
+[osd]
+osd_k1 = osd_v1
+osd_k2 = osd_v2
+"""
+
+        assert cephadm_module.get_minimal_ceph_conf() == expected_combined_conf
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
     def test_registry_login(self, _run_cephadm, cephadm_module: CephadmOrchestrator):

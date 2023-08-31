@@ -756,6 +756,46 @@ class CephFSMount(object):
         self._verify(proc, retval, errmsg)
         return proc
 
+    def open_for_reading(self, basename):
+        """
+        Open a file for reading only.
+        """
+        assert(self.is_mounted())
+
+        path = os.path.join(self.hostfs_mntpt, basename)
+
+        return self._run_python(dedent(
+            """
+            import os
+            mode = os.O_RDONLY
+            fd = os.open("{path}", mode)
+            os.close(fd)
+            """.format(path=path)
+        ))
+
+    def open_for_writing(self, basename, creat=True, trunc=True, excl=False):
+        """
+        Open a file for writing only.
+        """
+        assert(self.is_mounted())
+
+        path = os.path.join(self.hostfs_mntpt, basename)
+
+        return self._run_python(dedent(
+            """
+            import os
+            mode = os.O_WRONLY
+            if {creat}:
+                mode |= os.O_CREAT
+            if {trunc}:
+                mode |= os.O_TRUNC
+            if {excl}:
+                mode |= os.O_EXCL
+            fd = os.open("{path}", mode)
+            os.close(fd)
+            """.format(path=path, creat=creat, trunc=trunc, excl=excl)
+        ))
+
     def open_no_data(self, basename):
         """
         A pure metadata operation
@@ -1065,7 +1105,8 @@ class CephFSMount(object):
         self.background_procs.append(rproc)
         return rproc
 
-    def create_n_files(self, fs_path, count, sync=False, dirsync=False, unlink=False, finaldirsync=False):
+    def create_n_files(self, fs_path, count, sync=False, dirsync=False,
+                       unlink=False, finaldirsync=False, hard_links=0):
         """
         Create n files.
 
@@ -1073,6 +1114,7 @@ class CephFSMount(object):
         :param dirsync: sync the containing directory after closing the file
         :param unlink: unlink the file after closing
         :param finaldirsync: sync the containing directory after closing the last file
+        :param hard_links: create given number of hard link(s) for each file
         """
 
         assert(self.is_mounted())
@@ -1081,8 +1123,12 @@ class CephFSMount(object):
 
         pyscript = dedent(f"""
             import os
+            import uuid
 
             n = {count}
+            create_hard_links = False
+            if {hard_links} > 0:
+                create_hard_links = True
             path = "{abs_path}"
 
             dpath = os.path.dirname(path)
@@ -1103,6 +1149,9 @@ class CephFSMount(object):
                         os.unlink(fpath)
                     if {dirsync}:
                         os.fsync(dirfd)
+                    if create_hard_links:
+                        for j in range({hard_links}):
+                            os.system(f"ln {{fpath}} {{dpath}}/{{fnameprefix}}_{{i}}_{{uuid.uuid4()}}")     
                 if {finaldirsync}:
                     os.fsync(dirfd)
             finally:
@@ -1338,3 +1387,19 @@ class CephFSMount(object):
         checksum_text = self.run_shell(cmd).stdout.getvalue().strip()
         checksum_sorted = sorted(checksum_text.split('\n'), key=lambda v: v.split()[1])
         return hashlib.md5(('\n'.join(checksum_sorted)).encode('utf-8')).hexdigest()
+
+    def validate_subvol_options(self):
+        mount_subvol_num = self.client_config.get('mount_subvol_num', None)
+        if self.cephfs_mntpt and mount_subvol_num is not None:
+            log.warning("You cannot specify both: cephfs_mntpt and mount_subvol_num")
+            log.info(f"Mounting subvol {mount_subvol_num} for now")
+
+        if mount_subvol_num is not None:
+            # mount_subvol must be an index into the subvol path array for the fs
+            if not self.cephfs_name:
+                self.cephfs_name = 'cephfs'
+            assert(hasattr(self.ctx, "created_subvols"))
+            # mount_subvol must be specified under client.[0-9] yaml section
+            subvol_paths = self.ctx.created_subvols[self.cephfs_name]
+            path_to_mount = subvol_paths[mount_subvol_num]
+            self.cephfs_mntpt = path_to_mount

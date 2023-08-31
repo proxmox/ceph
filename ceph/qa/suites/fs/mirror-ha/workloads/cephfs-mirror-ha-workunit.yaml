@@ -8,10 +8,6 @@ overrides:
         debug client: 10
 
 tasks:
-  - exec:
-      client.1:
-        - "ceph fs volume create dc"
-        - "ceph fs volume create dc-backup"
   - ceph-fuse:
       client.1:
         cephfs_name: dc

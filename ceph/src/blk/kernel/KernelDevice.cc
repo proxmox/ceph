@@ -253,7 +253,7 @@ int KernelDevice::open(const string& p)
 	  << byte_u_t(size) << ")"
 	  << " block_size " << block_size
 	  << " (" << byte_u_t(block_size) << ")"
-	  << " " << (rotational ? "rotational" : "non-rotational")
+	  << " " << (rotational ? "rotational device," : "non-rotational device,")
       << " discard " << (support_discard ? "supported" : "not supported")
 	  << dendl;
   return 0;
@@ -1056,7 +1056,7 @@ int KernelDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
   }
 
   if (r < 0) {
-    if (ioc->allow_eio && is_expected_ioerr(r)) {
+    if (ioc->allow_eio && is_expected_ioerr(-errno)) {
       r = -EIO;
     } else {
       r = -errno;

@@ -975,8 +975,14 @@ void MDLog::_recovery_thread(MDSContext *completion)
     inodeno_t const default_log_ino = MDS_INO_LOG_OFFSET + mds->get_nodeid();
     jp.front = default_log_ino;
     int write_result = jp.save(mds->objecter);
-    // Nothing graceful we can do for this
-    ceph_assert(write_result >= 0);
+    if (write_result < 0) {
+      std::lock_guard l(mds->mds_lock);
+      if (mds->is_daemon_stopping()) {
+        return;
+      }
+      mds->damaged();
+      ceph_abort();  // damaged should never return
+    }
   } else if (read_result == -CEPHFS_EBLOCKLISTED) {
     derr << "Blocklisted during JournalPointer read!  Respawning..." << dendl;
     mds->respawn();
@@ -1419,6 +1425,7 @@ void MDLog::_replay_thread()
       le->_segment->num_events++;
       le->_segment->end = journaler->get_read_pos();
       num_events++;
+      logger->set(l_mdl_ev, num_events);
 
       {
         std::lock_guard l(mds->mds_lock);
@@ -1431,6 +1438,8 @@ void MDLog::_replay_thread()
     }
 
     logger->set(l_mdl_rdpos, pos);
+    logger->set(l_mdl_expos, journaler->get_expire_pos());
+    logger->set(l_mdl_wrpos, journaler->get_write_pos());
   }
 
   // done!

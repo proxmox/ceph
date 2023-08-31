@@ -240,7 +240,10 @@ TEST_F(LibRadosWatchNotify, AioWatchDelete) {
   }
   ASSERT_TRUE(left > 0);
   ASSERT_EQ(-ENOTCONN, notify_err);
-  ASSERT_EQ(-ENOTCONN, rados_watch_check(ioctx, handle));
+  int rados_watch_check_err = rados_watch_check(ioctx, handle);
+  // We may hit ENOENT due to socket failure injection and a forced reconnect
+  EXPECT_TRUE(rados_watch_check_err == -ENOTCONN || rados_watch_check_err == -ENOENT)
+    << "Where rados_watch_check_err = " << rados_watch_check_err;
   ASSERT_EQ(0, rados_aio_create_completion2(nullptr, nullptr, &comp));
   rados_aio_unwatch(ioctx, handle, comp);
   ASSERT_EQ(0, rados_aio_wait_for_complete(comp));
@@ -541,7 +544,7 @@ TEST_F(LibRadosWatchNotify, Watch3Timeout) {
   rados_conf_set(cluster, "objecter_inject_no_watch_ping", "true");
   // allow a long time here since an osd peering event will renew our
   // watch.
-  int left = 16 * timeout;
+  int left = 256 * timeout;
   std::cout << "waiting up to " << left << " for osd to time us out ..."
 	    << std::endl;
   while (notify_err == 0 && --left) {
