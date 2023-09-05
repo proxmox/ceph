@@ -11,3 +11,4 @@
 0011-d-rules-fix-no-restart-on-upgrade.patch
 0012-fix-4759-run-ceph-crash-daemon-with-www-data-group-f.patch
 0013-d-rules-compile-with-gcc-12.patch
+0014-debian-add-missing-bcrypt-to-manager-.requires.patch
