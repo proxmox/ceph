@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stefan Hanreich <s.hanreich@proxmox.com>
+Date: Fri, 15 Sep 2023 16:55:02 +0200
+Subject: [PATCH] fix compatibility with CPUs not supporting SSE 4.1
+ instructions
+
+Building without -O1 causes gcc-12 to emit SSE 4.1 instructions which
+are not supported on older CPU architectures. This leads to Ceph
+crashing on older CPU architectures. -O1 causes those optimizations to
+be implemented manually via runtime dispatch.
+
+Signed-off-by: Stefan Hanreich <s.hanreich@proxmox.com>
+---
+ src/erasure-code/jerasure/CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/erasure-code/jerasure/CMakeLists.txt b/src/erasure-code/jerasure/CMakeLists.txt
+index f9cd22e11..b0a355235 100644
+--- a/src/erasure-code/jerasure/CMakeLists.txt
++++ b/src/erasure-code/jerasure/CMakeLists.txt
+@@ -67,7 +67,7 @@ endif()
+ 
+ add_library(gf-complete_objs OBJECT ${gf-complete_srcs})
+ set_target_properties(gf-complete_objs PROPERTIES 
+-  COMPILE_FLAGS "${SIMD_COMPILE_FLAGS}")
++  COMPILE_FLAGS "${SIMD_COMPILE_FLAGS} -O1")
+ set_target_properties(gf-complete_objs PROPERTIES 
+   COMPILE_DEFINITIONS "${GF_COMPILE_FLAGS}")
+ 
+-- 
+2.39.2
+
