@@ -335,10 +335,10 @@ options:
   type: float
   level: advanced
   desc: decay rate for session readdir caps leading to readdir throttle
-  long_desc: The half-life for the session cap acquisition counter of caps acquired
-    by readdir. This is used for throttling readdir requests from clients slow to
-    release caps.
-  default: 10
+  long_desc: The half-life for the session cap acquisition counter of caps
+    acquired by readdir. This is used for throttling readdir requests from
+    clients.
+  default: 30
   services:
   - mds
   flags:
@@ -346,8 +346,8 @@ options:
 - name: mds_session_cap_acquisition_throttle
   type: uint
   level: advanced
-  desc: throttle point for cap acquisition decay counter
-  default: 500000
+  desc: threshold at which the cap acquisition decay counter throttles
+  default: 100000
   services:
   - mds
 - name: mds_session_max_caps_throttle_ratio
@@ -942,6 +942,40 @@ options:
   - mds
   fmt_desc: The debug subtree invariants (for developers only).
   with_legacy: true
+- name: mds_abort_on_newly_corrupt_dentry
+  type: bool
+  level: advanced
+  default: true
+  services:
+  - mds
+  fmt_desc: MDS will abort if dentry is detected newly corrupted.
+- name: mds_go_bad_corrupt_dentry
+  type: bool
+  level: advanced
+  default: true
+  services:
+  - mds
+  fmt_desc: MDS will mark a corrupt dentry as bad and isolate
+  flags:
+  - runtime
+- name: mds_inject_rename_corrupt_dentry_first
+  type: float
+  level: dev
+  default: 0.0
+  services:
+  - mds
+  fmt_desc: probabilistically inject corrupt CDentry::first at rename
+  flags:
+  - runtime
+- name: mds_inject_journal_corrupt_dentry_first
+  type: float
+  level: dev
+  default: 0.0
+  services:
+  - mds
+  fmt_desc: probabilistically inject corrupt CDentry::first at journal load
+  flags:
+  - runtime
 - name: mds_kill_mdstable_at
   type: int
   level: dev
@@ -1041,6 +1075,26 @@ options:
   default: false
   services:
   - mds
+- name: mds_kill_skip_replaying_inotable
+  type: bool
+  level: dev
+  default: false
+  services:
+  - mds
+  fmt_desc: Ceph will skip replaying the inotable when replaying the journal, and
+    the premary MDS will crash, while the replacing MDS won't.
+    (for testing only).
+  with_legacy: true
+- name: mds_inject_skip_replaying_inotable
+  type: bool
+  level: dev
+  default: false
+  services:
+  - mds
+  fmt_desc: Ceph will skip replaying the inotable when replaying the journal, and
+    the premary MDS will crash, while the replacing MDS won't.
+    (for testing only).
+  with_legacy: true
 #  percentage of MDS modify replies to skip sending the client a trace on [0-1]
 - name: mds_inject_traceless_reply_probability
   type: float
@@ -1433,6 +1487,16 @@ options:
   desc: Stores symlink target on the first data object of symlink file.
     Allows recover of symlink using recovery tools.
   default: true
+  services:
+  - mds
+  flags:
+  - runtime
+- name: mds_session_metadata_threshold
+  type: size
+  level: advanced
+  desc: Evict non-advancing client-tid sessions exceeding the config size.
+  long_desc: Evict clients which are not advancing their request tids which causes a large buildup of session metadata (`completed_requests`) in the MDS causing the MDS to go read-only since the RADOS operation exceeds the size threashold. This config is the maximum size (in bytes) that a session metadata (encoded) can grow.
+  default: 16_M
   services:
   - mds
   flags:

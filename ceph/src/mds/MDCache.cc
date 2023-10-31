@@ -329,6 +329,8 @@ void MDCache::remove_inode(CInode *o)
     snap_inode_map.erase(o->vino());
   }
 
+  clear_taken_inos(o->ino());
+
   if (o->ino() < MDS_INO_SYSTEM_BASE) {
     if (o == root) root = 0;
     if (o == myin) myin = 0;
@@ -6032,8 +6034,6 @@ void MDCache::finish_snaprealm_reconnect(client_t client, SnapRealm *realm, snap
 	     << realm->get_newest_seq() << " on " << *realm << dendl;
     auto snap = make_message<MClientSnap>(CEPH_SNAP_OP_UPDATE);
     snap->bl = realm->get_snap_trace();
-    for (const auto& child : realm->open_children)
-      snap->split_realms.push_back(child->inode->ino());
     updates.emplace(std::piecewise_construct, std::forward_as_tuple(client), std::forward_as_tuple(snap));
   } else {
     dout(10) << "finish_snaprealm_reconnect client." << client << " up to date"
@@ -8160,6 +8160,7 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
   bool forward = !discover;
   bool path_locked = (flags & MDS_TRAVERSE_PATH_LOCKED);
   bool want_dentry = (flags & MDS_TRAVERSE_WANT_DENTRY);
+  bool want_inode = (flags & MDS_TRAVERSE_WANT_INODE);
   bool want_auth = (flags & MDS_TRAVERSE_WANT_AUTH);
   bool rdlock_snap = (flags & (MDS_TRAVERSE_RDLOCK_SNAP | MDS_TRAVERSE_RDLOCK_SNAP2));
   bool rdlock_path = (flags & MDS_TRAVERSE_RDLOCK_PATH);
@@ -8219,7 +8220,9 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
   if (pin)
     *pin = cur;
 
+  CInode *target_inode = nullptr;
   MutationImpl::LockOpVec lov;
+  int r;
 
   for (unsigned depth = 0; depth < path.depth(); ) {
     dout(12) << "traverse: path seg depth " << depth << " '" << path[depth]
@@ -8252,6 +8255,8 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
 	  pdnvec->clear();   // do not confuse likes of rdlock_path_pin_ref();
 	return -CEPHFS_ENOENT;
       }
+      if (depth == path.depth() - 1)
+	target_inode = cur;
       mdr->snapid = snapid;
       depth++;
       continue;
@@ -8297,18 +8302,11 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
     }
     */
 
-    if (want_auth && want_dentry && depth == path.depth() - 1) {
-      if (curdir->is_ambiguous_auth()) {
-	dout(10) << "waiting for single auth on " << *curdir << dendl;
-	curdir->add_waiter(CInode::WAIT_SINGLEAUTH, cf.build());
-	return 1;
-      }
-      if (!curdir->is_auth()) {
-	dout(10) << "fw to auth for " << *curdir << dendl;
-	request_forward(mdr, curdir->authority().first);
-	return 2;
-      }
-    }
+    // Defer the auth check until the target inode is determined not to exist
+    // if want_inode is true.
+    if (want_auth && want_dentry && !want_inode && depth == path.depth() - 1 &&
+        (r = maybe_request_forward_to_auth(mdr, cf, curdir)) != 0)
+      return r;
 
     // Before doing dirfrag->dn lookup, compare with DamageTable's
     // record of which dentries were unreadable
@@ -8324,9 +8322,19 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
       if (dn->state_test(CDentry::STATE_PURGING))
 	return -CEPHFS_ENOENT;
 
+      CDentry::linkage_t *dnl = dn->get_projected_linkage();
+      // If an auth check was deferred before and the target inode is found
+      // not to exist now, do the auth check here if necessary.
+      if (want_auth && want_dentry && want_inode && depth == path.depth() - 1 &&
+	  dnl->is_null() && (r = maybe_request_forward_to_auth(mdr, cf, dn)) != 0)
+	return r;
+
       if (rdlock_path) {
 	lov.clear();
-	if (xlock_dentry && depth == path.depth() - 1) {
+	// do not xlock the tail dentry if target inode exists and caller wants it
+	if (xlock_dentry && (dnl->is_null() || !want_inode) &&
+	    depth == path.depth() - 1) {
+	  ceph_assert(dn->is_auth());
 	  if (depth > 0 || !mdr->lock_cache) {
 	    lov.add_wrlock(&cur->filelock);
 	    lov.add_wrlock(&cur->nestlock);
@@ -8359,7 +8367,6 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
       if (pdnvec)
 	pdnvec->push_back(dn);
 
-      CDentry::linkage_t *dnl = dn->get_projected_linkage();
       // can we conclude CEPHFS_ENOENT?
       if (dnl->is_null()) {
 	dout(10) << "traverse: null+readable dentry at " << *dn << dendl;
@@ -8399,7 +8406,7 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
 
       cur = in;
 
-      if (rdlock_snap && !(want_dentry && depth == path.depth() - 1)) {
+      if (rdlock_snap && !(want_dentry && !want_inode && depth == path.depth() - 1)) {
 	lov.clear();
 	lov.add_rdlock(&cur->snaplock);
 	if (!mds->locker->acquire_locks(mdr, lov)) {
@@ -8407,6 +8414,9 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
 	  return 1;
 	}
       }
+
+      if (depth == path.depth() - 1)
+	target_inode = cur;
 
       // add to trace, continue.
       touch_inode(cur);
@@ -8493,7 +8503,6 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
       }
     } else {
       // dirfrag/dentry is not mine.
-      mds_authority_t dauth = curdir->authority();
 
       if (forward &&
 	  mdr && mdr->client_request &&
@@ -8514,39 +8523,35 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
       if (forward) {
         // forward
         dout(7) << "traverse: not auth for " << path << " in " << *curdir << dendl;
-	
-	if (curdir->is_ambiguous_auth()) {
-	  // wait
-	  dout(7) << "traverse: waiting for single auth in " << *curdir << dendl;
-	  curdir->add_waiter(CDir::WAIT_SINGLEAUTH, cf.build());
-	  return 1;
-	} 
 
-	dout(7) << "traverse: forwarding, not auth for " << *curdir << dendl;
+	r = maybe_request_forward_to_auth(mdr, cf, curdir);
+	ceph_assert(r != 0);
 
-        request_forward(mdr, dauth.first);
+	if (r == 2 && mds->logger)
+	  mds->logger->inc(l_mds_traverse_forward);
 
-	if (mds->logger) mds->logger->inc(l_mds_traverse_forward);
-	return 2;
+	return r;
       }
     }
 
     ceph_abort();  // i shouldn't get here
   }
 
-  if (want_auth && !want_dentry) {
-    if (cur->is_ambiguous_auth()) {
-      dout(10) << "waiting for single auth on " << *cur << dendl;
-      cur->add_waiter(CInode::WAIT_SINGLEAUTH, cf.build());
-      return 1;
+  if (path.depth() == 0) {
+    dout(7) << "no tail dentry, base " << *cur << dendl;
+    if (want_dentry && !want_inode) {
+      return -CEPHFS_ENOENT;
     }
-    if (!cur->is_auth()) {
-      dout(10) << "fw to auth for " << *cur << dendl;
-      request_forward(mdr, cur->authority().first);
-      return 2;
-    }
+    target_inode = cur;
   }
-  
+
+  if (target_inode) {
+    dout(7) << "found target " << *target_inode << dendl;
+    if (want_auth && !(want_dentry && !want_inode) &&
+	(r = maybe_request_forward_to_auth(mdr, cf, target_inode)) != 0)
+      return r;
+  }
+
   // success.
   if (mds->logger) mds->logger->inc(l_mds_traverse_hit);
   dout(10) << "path_traverse finish on snapid " << snapid << dendl;
@@ -8561,6 +8566,22 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
   if (rdlock_path)
     mdr->locking_state |= MutationImpl::PATH_LOCKED;
 
+  return 0;
+}
+
+int MDCache::maybe_request_forward_to_auth(MDRequestRef& mdr, MDSContextFactory& cf,
+					   MDSCacheObject *p)
+{
+  if (p->is_ambiguous_auth()) {
+    dout(7) << "waiting for single auth on " << *p << dendl;
+    p->add_waiter(CInode::WAIT_SINGLEAUTH, cf.build());
+    return 1;
+  }
+  if (!p->is_auth()) {
+    dout(7) << "fw to auth for " << *p << dendl;
+    request_forward(mdr, p->authority().first);
+    return 2;
+  }
   return 0;
 }
 
@@ -9569,7 +9590,7 @@ void MDCache::request_forward(MDRequestRef& mdr, mds_rank_t who, int port)
     if (mdr->is_batch_head()) {
       mdr->release_batch_op()->forward(who);
     } else {
-      mds->forward_message_mds(mdr->release_client_request(), who);
+      mds->forward_message_mds(mdr, who);
     }
     if (mds->logger) mds->logger->inc(l_mds_forward);
   } else if (mdr->internal_op >= 0) {
@@ -11161,6 +11182,11 @@ void MDCache::handle_dentry_unlink(const cref_t<MDentryUnlink> &m)
       }
       ceph_assert(dnl->is_null());
       dn->state_clear(CDentry::STATE_UNLINKING);
+
+      MDSContext::vec finished;
+      dn->take_waiting(CDentry::WAIT_UNLINK_FINISH, finished);
+      mds->queue_waiters(finished);
+
     }
   }
 
@@ -12817,7 +12843,7 @@ void MDCache::enqueue_scrub(
     std::string_view path,
     std::string_view tag,
     bool force, bool recursive, bool repair,
-    Formatter *f, Context *fin)
+    bool scrub_mdsdir, Formatter *f, Context *fin)
 {
   dout(10) << __func__ << " " << path << dendl;
 
@@ -12851,7 +12877,8 @@ void MDCache::enqueue_scrub(
   }
 
   C_MDS_EnqueueScrub *cs = new C_MDS_EnqueueScrub(tag_str, f, fin);
-  cs->header = std::make_shared<ScrubHeader>(tag_str, is_internal, force, recursive, repair);
+  cs->header = std::make_shared<ScrubHeader>(tag_str, is_internal, force,
+                                             recursive, repair, scrub_mdsdir);
 
   mdr->internal_op_finish = cs;
   enqueue_scrub_work(mdr);

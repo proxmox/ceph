@@ -2252,6 +2252,7 @@ struct pg_stat_t {
   object_stat_collection_t stats;
 
   int64_t log_size;
+  int64_t log_dups_size;
   int64_t ondisk_log_size;    // >= active_log_size
   int64_t objects_scrubbed;
   double scrub_duration;
@@ -2296,7 +2297,8 @@ struct pg_stat_t {
       state(0),
       created(0), last_epoch_clean(0),
       parent_split_bits(0),
-      log_size(0), ondisk_log_size(0),
+      log_size(0), log_dups_size(0),
+      ondisk_log_size(0),
       objects_scrubbed(0),
       scrub_duration(0),
       mapping_epoch(0),
@@ -2351,6 +2353,7 @@ struct pg_stat_t {
   void add(const pg_stat_t& o) {
     stats.add(o.stats);
     log_size += o.log_size;
+    log_dups_size += o.log_dups_size;
     ondisk_log_size += o.ondisk_log_size;
     snaptrimq_len = std::min((uint64_t)snaptrimq_len + o.snaptrimq_len,
                              (uint64_t)(1ull << 31));
@@ -2359,6 +2362,7 @@ struct pg_stat_t {
   void sub(const pg_stat_t& o) {
     stats.sub(o.stats);
     log_size -= o.log_size;
+    log_dups_size -= o.log_dups_size;
     ondisk_log_size -= o.ondisk_log_size;
     if (o.snaptrimq_len < snaptrimq_len) {
       snaptrimq_len -= o.snaptrimq_len;
@@ -5480,6 +5484,8 @@ public:
   epoch_t purged_snaps_last = 0;
   utime_t last_purged_snaps_scrub;
 
+  epoch_t cluster_osdmap_trim_lower_bound = 0;
+
   void encode(ceph::buffer::list &bl) const;
   void decode(ceph::buffer::list::const_iterator &bl);
   void dump(ceph::Formatter *f) const;
@@ -5495,6 +5501,7 @@ inline std::ostream& operator<<(std::ostream& out, const OSDSuperblock& sb)
              << " e" << sb.current_epoch
              << " [" << sb.oldest_map << "," << sb.newest_map << "]"
 	     << " lci=[" << sb.mounted << "," << sb.clean_thru << "]"
+             << " tlb=" << sb.cluster_osdmap_trim_lower_bound
              << ")";
 }
 
@@ -6059,6 +6066,11 @@ struct ObjectRecoveryProgress {
       info.copy_subset.empty() ?
       0 : info.copy_subset.range_end())) &&
       omap_complete;
+  }
+
+  uint64_t estimate_remaining_data_to_recover(const ObjectRecoveryInfo& info) const {
+    // Overestimates in case of clones, but avoids traversing copy_subset
+    return info.size - data_recovered_to;
   }
 
   static void generate_test_instances(std::list<ObjectRecoveryProgress*>& o);

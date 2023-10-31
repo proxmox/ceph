@@ -601,7 +601,7 @@ class Module(MgrModule):
                     else:
                         self.log.error("Incorrect mode specified in get_mempool: {}".format(mode))
                 except (json.decoder.JSONDecodeError, KeyError) as e:
-                    self.log.error("Error caught on {}.{}: {}".format(daemon_type, daemon_id, e))
+                    self.log.exception("Error caught on {}.{}: {}".format(daemon_type, daemon_id, e))
                     continue
 
         if anonymized_daemons:
@@ -718,7 +718,7 @@ class Module(MgrModule):
                 # schema when it doesn't. In either case, we'll handle that
                 # by continuing and collecting what we can from other osds.
                 except (json.decoder.JSONDecodeError, KeyError) as e:
-                    self.log.error("Error caught on osd.{}: {}".format(osd_id, e))
+                    self.log.exception("Error caught on osd.{}: {}".format(osd_id, e))
                     continue
 
         return list(result.values())
@@ -933,7 +933,7 @@ class Module(MgrModule):
             try:
                 host = d['location'][0]['host']
             except (KeyError, IndexError) as e:
-                self.log.error('Unable to get host from device with id "{}": {}'.format(devid, e))
+                self.log.exception('Unable to get host from device with id "{}": {}'.format(devid, e))
                 continue
             anon_host = self.get_store('host-id/%s' % host)
             if not anon_host:
@@ -1540,6 +1540,8 @@ class Module(MgrModule):
         # Formatting the perf histograms so they are human-readable. This will change the
         # ranges and values, which are currently in list form, into strings so that
         # they are displayed horizontally instead of vertically.
+        if 'report' in report:
+            report = report['report']
         try:
             # Formatting ranges and values in osd_perf_histograms
             mode = 'osd_perf_histograms'
@@ -1937,10 +1939,13 @@ Please consider enabling the telemetry module with 'ceph telemetry on'.'''
 
         if not self.channel_device:
             # device channel is off, no need to display its report
-            return 0, json.dumps(self.get_report_locked('default'), indent=4, sort_keys=True), ''
+            report = self.get_report_locked('default')
+        else:
+            # telemetry is on and device channel is enabled, show both
+            report = self.get_report_locked('all')
 
-        # telemetry is on and device channel is enabled, show both
-        return 0, json.dumps(self.get_report_locked('all'), indent=4, sort_keys=True), ''
+        self.format_perf_histogram(report)
+        return 0, json.dumps(report, indent=4, sort_keys=True), ''
 
     @CLIReadCommand('telemetry preview-all')
     def preview_all(self) -> Tuple[int, str, str]:
@@ -1994,7 +1999,8 @@ Please consider enabling the telemetry module with 'ceph telemetry on'.'''
         return {}
 
     def self_test(self) -> None:
-        report = self.compile_report()
+        self.opt_in_all_collections()
+        report = self.compile_report(channels=ALL_CHANNELS)
         if len(report) == 0:
             raise RuntimeError('Report is empty')
 

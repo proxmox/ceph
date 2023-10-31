@@ -43,9 +43,6 @@ def test_parse_host_placement_specs(test_input, expected, require_network):
 
     assert ret == HostPlacementSpec.from_json(ret.to_json())
 
-
-
-
 @pytest.mark.parametrize(
     "test_input,expected",
     [
@@ -249,11 +246,13 @@ spec:
 service_type: grafana
 service_name: grafana
 spec:
+  anonymous_access: true
   port: 1234
 ---
 service_type: grafana
 service_name: grafana
 spec:
+  anonymous_access: true
   initial_admin_password: secure
   port: 1234
 ---
@@ -267,6 +266,7 @@ placement:
   - host3
 spec:
   backend_service: rgw.foo
+  first_virtual_router_id: 50
   frontend_port: 8080
   monitor_port: 8081
   virtual_ip: 192.168.20.1/24

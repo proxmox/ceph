@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 
+#include <boost/asio.hpp>
 #include <boost/optional.hpp>
 
 extern "C" {
@@ -133,7 +134,9 @@ void usage()
   cout << "  bucket unlink              unlink bucket from specified user\n";
   cout << "  bucket stats               returns bucket statistics\n";
   cout << "  bucket rm                  remove bucket\n";
-  cout << "  bucket check               check bucket index\n";
+  cout << "  bucket check               check bucket index by verifying size and object count stats\n";
+  cout << "  bucket check olh           check for olh index entries and objects that are pending removal\n";
+  cout << "  bucket check unlinked      check for object versions that are not visible in a bucket listing \n";
   cout << "  bucket chown               link bucket to specified user and update its object ACLs\n";
   cout << "  bucket reshard             reshard bucket\n";
   cout << "  bucket rewrite             rewrite all objects in the specified bucket\n";
@@ -462,6 +465,10 @@ void usage()
   cout << "   --context                 context in which the script runs. one of: preRequest, postRequest\n";
   cout << "   --package                 name of the lua package that should be added/removed to/from the allowlist\n";
   cout << "   --allow-compilation       package is allowed to compile C code as part of its installation\n";
+  cout << "\nBucket check olh/unlinked options:\n";
+  cout << "   --min-age-hours           minimum age of unlinked objects to consider for bucket check unlinked (default: 1)\n";
+  cout << "   --dump-keys               when specified, all keys identified as problematic are printed to stdout\n";
+  cout << "   --hide-progress           when specified, per-shard progress details are not printed to stderr\n";
   cout << "\nradoslist options:\n";
   cout << "   --rgw-obj-fs              the field separator that will separate the rados\n";
   cout << "                             object name from the rgw object name;\n";
@@ -629,6 +636,8 @@ enum class OPT {
   BUCKET_UNLINK,
   BUCKET_STATS,
   BUCKET_CHECK,
+  BUCKET_CHECK_OLH,
+  BUCKET_CHECK_UNLINKED,
   BUCKET_SYNC_CHECKPOINT,
   BUCKET_SYNC_INFO,
   BUCKET_SYNC_STATUS,
@@ -642,6 +651,7 @@ enum class OPT {
   BUCKET_RESHARD,
   BUCKET_CHOWN,
   BUCKET_RADOS_LIST,
+  BUCKET_RESYNC_ENCRYPTED_MULTIPART,
   POLICY,
   POOL_ADD,
   POOL_RM,
@@ -843,6 +853,8 @@ static SimpleCmd::Commands all_cmds = {
   { "bucket unlink", OPT::BUCKET_UNLINK },
   { "bucket stats", OPT::BUCKET_STATS },
   { "bucket check", OPT::BUCKET_CHECK },
+  { "bucket check olh", OPT::BUCKET_CHECK_OLH },
+  { "bucket check unlinked", OPT::BUCKET_CHECK_UNLINKED },
   { "bucket sync checkpoint", OPT::BUCKET_SYNC_CHECKPOINT },
   { "bucket sync info", OPT::BUCKET_SYNC_INFO },
   { "bucket sync status", OPT::BUCKET_SYNC_STATUS },
@@ -857,6 +869,7 @@ static SimpleCmd::Commands all_cmds = {
   { "bucket chown", OPT::BUCKET_CHOWN },
   { "bucket radoslist", OPT::BUCKET_RADOS_LIST },
   { "bucket rados list", OPT::BUCKET_RADOS_LIST },
+  { "bucket resync encrypted multipart", OPT::BUCKET_RESYNC_ENCRYPTED_MULTIPART },
   { "policy", OPT::POLICY },
   { "pool add", OPT::POOL_ADD },
   { "pool rm", OPT::POOL_RM },
@@ -2260,7 +2273,7 @@ static void get_data_sync_status(const rgw_zone_id& source_zone, list<string>& s
     return;
   }
 
-  if (!static_cast<rgw::sal::RadosStore*>(store)->svc()->zone->zone_syncs_from(static_cast<rgw::sal::RadosStore*>(store)->svc()->zone->get_zone(), *sz)) {
+  if (!static_cast<rgw::sal::RadosStore*>(store)->svc()->zone->zone_syncs_from(*sz)) {
     push_ss(ss, status, tab) << string("not syncing from zone");
     flush_ss(ss, status);
     return;
@@ -2934,13 +2947,6 @@ int check_reshard_bucket_params(rgw::sal::RadosStore* store,
     return ret;
   }
 
-  if ((*bucket)->get_info().reshard_status != cls_rgw_reshard_status::NOT_RESHARDING) {
-    // if in_progress or done then we have an old BucketInfo
-    cerr << "ERROR: the bucket is currently undergoing resharding and "
-      "cannot be added to the reshard list at this time" << std::endl;
-    return -EBUSY;
-  }
-
   int num_source_shards = ((*bucket)->get_info().layout.current_index.layout.normal.num_shards > 0 ? (*bucket)->get_info().layout.current_index.layout.normal.num_shards : 1);
 
   if (num_shards <= num_source_shards && !yes_i_really_mean_it) {
@@ -3522,6 +3528,9 @@ int main(int argc, const char **argv)
   std::optional<int> bucket_index_max_shards;
 
   int max_concurrent_ios = 32;
+  ceph::timespan min_age = std::chrono::hours(1);
+  bool hide_progress = false;
+  bool dump_keys = false;
   uint64_t orphan_stale_secs = (24 * 3600);
   int detail = false;
 
@@ -3773,6 +3782,8 @@ int main(int argc, const char **argv)
         cerr << "ERROR: failed to parse max concurrent ios: " << err << std::endl;
         return EINVAL;
       }
+    } else if (ceph_argparse_witharg(args, i, &val, "--min-age-hours", (char*)NULL)) {
+      min_age = std::chrono::hours(atoi(val.c_str()));
     } else if (ceph_argparse_witharg(args, i, &val, "--orphan-stale-secs", (char*)NULL)) {
       orphan_stale_secs = (uint64_t)strict_strtoll(val.c_str(), 10, &err);
       if (!err.empty()) {
@@ -3849,6 +3860,10 @@ int main(int argc, const char **argv)
      // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &inconsistent_index, NULL, "--inconsistent-index", (char*)NULL)) {
      // do nothing
+    } else if (ceph_argparse_flag(args, i, "--hide-progress", (char*)NULL)) {
+      hide_progress = true;
+    } else if (ceph_argparse_flag(args, i, "--dump-keys", (char*)NULL)) {
+      dump_keys = true;
     } else if (ceph_argparse_binary_flag(args, i, &placement_inline_data, NULL, "--placement-inline-data", (char*)NULL)) {
       placement_inline_data_specified = true;
      // do nothing
@@ -6200,6 +6215,9 @@ int main(int argc, const char **argv)
   bucket_op.set_delete_children(delete_child_objects);
   bucket_op.set_fix_index(fix);
   bucket_op.set_max_aio(max_concurrent_ios);
+  bucket_op.set_min_age(min_age);
+  bucket_op.set_dump_keys(dump_keys);
+  bucket_op.set_hide_progress(hide_progress);
 
   // required to gather errors from operations
   std::string err_msg;
@@ -6802,6 +6820,47 @@ int main(int argc, const char **argv)
       cerr << "failure: " << cpp_strerror(-r) << std::endl;
       return -r;
     }
+  }
+
+  if (opt_cmd == OPT::BUCKET_RESYNC_ENCRYPTED_MULTIPART) {
+    // repair logic for replication of encrypted multipart uploads:
+    // https://tracker.ceph.com/issues/46062
+    if (bucket_name.empty()) {
+      cerr << "ERROR: bucket not specified" << std::endl;
+      return EINVAL;
+    }
+    int ret = init_bucket(user.get(), tenant, bucket_name, bucket_id, &bucket);
+    if (ret < 0) {
+      return -ret;
+    }
+
+    auto rados_driver = dynamic_cast<rgw::sal::RadosStore*>(store);
+    if (!rados_driver) {
+      cerr << "ERROR: this command can only work when the cluster "
+          "has a RADOS backing store." << std::endl;
+      return EPERM;
+    }
+
+    // fail if recovery wouldn't generate replication log entries
+    if (!rados_driver->svc()->zone->need_to_log_data() && !yes_i_really_mean_it) {
+      cerr << "This command is only necessary for replicated buckets." << std::endl;
+      cerr << "do you really mean it? (requires --yes-i-really-mean-it)" << std::endl;
+      return EPERM;
+    }
+
+    formatter->open_object_section("modified");
+    encode_json("bucket", bucket->get_name(), formatter.get());
+    encode_json("bucket_id", bucket->get_bucket_id(), formatter.get());
+
+    ret = rados_driver->getRados()->bucket_resync_encrypted_multipart(
+        dpp(), null_yield, rados_driver, bucket->get_info(),
+        marker, stream_flusher);
+    if (ret < 0) {
+      return -ret;
+    }
+    formatter->close_section();
+    formatter->flush(cout);
+    return 0;
   }
 
   if (opt_cmd == OPT::BUCKET_CHOWN) {
@@ -7805,6 +7864,14 @@ next:
     } else {
       RGWBucketAdminOp::check_index(store, bucket_op, stream_flusher, null_yield, dpp());
     }
+  }
+
+  if (opt_cmd == OPT::BUCKET_CHECK_OLH) {
+    RGWBucketAdminOp::check_index_olh(static_cast<rgw::sal::RadosStore*>(store), bucket_op, stream_flusher, dpp());
+  }
+
+  if (opt_cmd == OPT::BUCKET_CHECK_UNLINKED) {
+    RGWBucketAdminOp::check_index_unlinked(static_cast<rgw::sal::RadosStore*>(store), bucket_op, stream_flusher, dpp());
   }
 
   if (opt_cmd == OPT::BUCKET_RM) {
@@ -8936,7 +9003,7 @@ next:
 
   if (opt_cmd == OPT::SYNC_GROUP_CREATE ||
       opt_cmd == OPT::SYNC_GROUP_MODIFY) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
     CHECK_TRUE(require_opt(opt_status), "ERROR: --status is not specified (options: forbidden, allowed, enabled)", EINVAL);
 
     SyncPolicyContext sync_policy_ctx(zonegroup_id, zonegroup_name, opt_bucket);
@@ -8996,7 +9063,7 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_REMOVE) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
 
     SyncPolicyContext sync_policy_ctx(zonegroup_id, zonegroup_name, opt_bucket);
     ret = sync_policy_ctx.init();
@@ -9021,8 +9088,8 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_FLOW_CREATE) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
-    CHECK_TRUE(require_opt(opt_flow_id), "ERROR: --flow-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_flow_id), "ERROR: --flow-id not specified", EINVAL);
     CHECK_TRUE(require_opt(opt_flow_type),
                            "ERROR: --flow-type not specified (options: symmetrical, directional)", EINVAL);
     CHECK_TRUE((symmetrical_flow_opt(*opt_flow_type) ||
@@ -9072,8 +9139,8 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_FLOW_REMOVE) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
-    CHECK_TRUE(require_opt(opt_flow_id), "ERROR: --flow-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_flow_id), "ERROR: --flow-id not specified", EINVAL);
     CHECK_TRUE(require_opt(opt_flow_type),
                            "ERROR: --flow-type not specified (options: symmetrical, directional)", EINVAL);
     CHECK_TRUE((symmetrical_flow_opt(*opt_flow_type) ||
@@ -9114,8 +9181,8 @@ next:
 
   if (opt_cmd == OPT::SYNC_GROUP_PIPE_CREATE ||
       opt_cmd == OPT::SYNC_GROUP_PIPE_MODIFY) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
-    CHECK_TRUE(require_opt(opt_pipe_id), "ERROR: --pipe-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_pipe_id), "ERROR: --pipe-id not specified", EINVAL);
     if (opt_cmd == OPT::SYNC_GROUP_PIPE_CREATE) {
       CHECK_TRUE(require_non_empty_opt(opt_source_zone_ids), "ERROR: --source-zones not provided or is empty; should be list of zones or '*'", EINVAL);
       CHECK_TRUE(require_non_empty_opt(opt_dest_zone_ids), "ERROR: --dest-zones not provided or is empty; should be list of zones or '*'", EINVAL);
@@ -9196,8 +9263,8 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_PIPE_REMOVE) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
-    CHECK_TRUE(require_opt(opt_pipe_id), "ERROR: --pipe-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_pipe_id), "ERROR: --pipe-id not specified", EINVAL);
 
     SyncPolicyContext sync_policy_ctx(zonegroup_id, zonegroup_name, opt_bucket);
     ret = sync_policy_ctx.init();

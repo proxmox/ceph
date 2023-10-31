@@ -945,8 +945,9 @@ int RGWPutObj_ObjStore_SWIFT::get_params(optional_yield y)
 
   if (!s->cct->_conf->rgw_swift_custom_header.empty()) {
     string custom_header = s->cct->_conf->rgw_swift_custom_header;
-    if (s->info.env->exists(custom_header.c_str())) {
-      user_data = s->info.env->get(custom_header.c_str());
+    auto data = s->info.env->get_optional(custom_header);
+    if (data) {
+      user_data = *data;
     }
   }
 
@@ -1973,8 +1974,10 @@ void RGWFormPost::init(rgw::sal::Store* const store,
                        req_state* const s,
                        RGWHandler* const dialect_handler)
 {
-  prefix = std::move(s->object->get_name());
-  s->object->set_key(rgw_obj_key());
+  if (s->object != nullptr && !rgw::sal::Object::empty(s->object.get())) {
+    prefix = std::move(s->object->get_name());
+    s->object->set_key(rgw_obj_key());
+  }
 
   return RGWPostObj_ObjStore::init(store, s, dialect_handler);
 }

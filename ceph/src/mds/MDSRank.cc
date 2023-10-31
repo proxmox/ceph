@@ -514,6 +514,7 @@ MDSRank::MDSRank(
     messenger(msgr), monc(monc_), mgrc(mgrc),
     respawn_hook(respawn_hook_),
     suicide_hook(suicide_hook_),
+    inject_journal_corrupt_dentry_first(g_conf().get_val<double>("mds_inject_journal_corrupt_dentry_first")),
     starttime(mono_clock::now()),
     ioc(ioc)
 {
@@ -930,6 +931,12 @@ void MDSRank::respawn()
   }
 }
 
+void MDSRank::abort(std::string_view msg)
+{
+  monc->flush_log();
+  ceph_abort(msg);
+}
+
 void MDSRank::damaged()
 {
   ceph_assert(whoami != MDS_RANK_NONE);
@@ -1177,6 +1184,7 @@ bool MDSRank::is_valid_message(const cref_t<Message> &m) {
       type == CEPH_MSG_CLIENT_RECONNECT ||
       type == CEPH_MSG_CLIENT_RECLAIM ||
       type == CEPH_MSG_CLIENT_REQUEST ||
+      type == CEPH_MSG_CLIENT_REPLY ||
       type == MSG_MDS_PEER_REQUEST ||
       type == MSG_MDS_HEARTBEAT ||
       type == MSG_MDS_TABLE_REQUEST ||
@@ -1230,6 +1238,7 @@ void MDSRank::handle_message(const cref_t<Message> &m)
       ALLOW_MESSAGES_FROM(CEPH_ENTITY_TYPE_CLIENT);
       // fall-thru
     case CEPH_MSG_CLIENT_REQUEST:
+    case CEPH_MSG_CLIENT_REPLY:
       server->dispatch(m);
       break;
     case MSG_MDS_PEER_REQUEST:
@@ -1467,9 +1476,11 @@ void MDSRank::send_message_mds(const ref_t<Message>& m, const entity_addrvec_t &
   messenger->send_to_mds(ref_t<Message>(m).detach(), addr);
 }
 
-void MDSRank::forward_message_mds(const cref_t<MClientRequest>& m, mds_rank_t mds)
+void MDSRank::forward_message_mds(MDRequestRef& mdr, mds_rank_t mds)
 {
   ceph_assert(mds != whoami);
+
+  auto m = mdr->release_client_request();
 
   /*
    * don't actually forward if non-idempotent!
@@ -1482,6 +1493,10 @@ void MDSRank::forward_message_mds(const cref_t<MClientRequest>& m, mds_rank_t md
 
   // tell the client where it should go
   auto session = get_session(m);
+  if (!session) {
+    dout(1) << "no session found, failed to forward client request " << mdr << dendl;
+    return;
+  }
   auto f = make_message<MClientRequestForward>(m->get_tid(), mds, m->get_num_fwd()+1, client_must_resend);
   send_message_client(f, session);
 }
@@ -2961,6 +2976,7 @@ void MDSRank::command_scrub_start(Formatter *f,
   bool force = false;
   bool recursive = false;
   bool repair = false;
+  bool scrub_mdsdir = false;
   for (auto &op : scrubop_vec) {
     if (op == "force")
       force = true;
@@ -2968,10 +2984,13 @@ void MDSRank::command_scrub_start(Formatter *f,
       recursive = true;
     else if (op == "repair")
       repair = true;
+    else if (op == "scrub_mdsdir" && path == "/")
+      scrub_mdsdir = true;
   }
 
   std::lock_guard l(mds_lock);
-  mdcache->enqueue_scrub(path, tag, force, recursive, repair, f, on_finish);
+  mdcache->enqueue_scrub(path, tag, force, recursive, repair, scrub_mdsdir,
+                         f, on_finish);
   // scrub_dentry() finishers will dump the data for us; we're done!
 }
 
@@ -2981,7 +3000,7 @@ void MDSRank::command_tag_path(Formatter *f,
   C_SaferCond scond;
   {
     std::lock_guard l(mds_lock);
-    mdcache->enqueue_scrub(path, tag, true, true, false, f, &scond);
+    mdcache->enqueue_scrub(path, tag, true, true, false, false, f, &scond);
   }
   scond.wait();
 }
@@ -3765,6 +3784,9 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "mds_alternate_name_max",
     "mds_dir_max_entries",
     "mds_symlink_recovery",
+    "mds_inject_rename_corrupt_dentry_first",
+    "mds_inject_journal_corrupt_dentry_first",
+    "mds_session_metadata_threshold",
     NULL
   };
   return KEYS;
@@ -3799,6 +3821,9 @@ void MDSRankDispatcher::handle_conf_change(const ConfigProxy& conf, const std::s
       changed.count("host") ||
       changed.count("fsid")) {
     update_log_config();
+  }
+  if (changed.count("mds_inject_journal_corrupt_dentry_first")) {
+    inject_journal_corrupt_dentry_first = g_conf().get_val<double>("mds_inject_journal_corrupt_dentry_first");
   }
 
   finisher->queue(new LambdaContext([this, changed](int) {

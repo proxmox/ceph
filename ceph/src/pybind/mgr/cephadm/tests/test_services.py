@@ -17,13 +17,15 @@ from cephadm.services.monitoring import GrafanaService, AlertmanagerService, Pro
 from cephadm.module import CephadmOrchestrator
 from ceph.deployment.service_spec import IscsiServiceSpec, MonitoringSpec, AlertManagerSpec, \
     ServiceSpec, RGWSpec, GrafanaSpec, SNMPGatewaySpec, IngressSpec, PlacementSpec, \
-    PrometheusSpec, CephExporterSpec, NFSServiceSpec
+    PrometheusSpec, NFSServiceSpec
 from cephadm.tests.fixtures import with_host, with_service, _run_cephadm, async_side_effect
 
 from ceph.utils import datetime_now
 
 from orchestrator import OrchestratorError
 from orchestrator._interface import DaemonDescription
+
+from typing import Dict, List
 
 
 class FakeInventory:
@@ -34,6 +36,7 @@ class FakeInventory:
 class FakeMgr:
     def __init__(self):
         self.config = ''
+        self.set_mon_crush_locations: Dict[str, List[str]] = {}
         self.check_mon_command = MagicMock(side_effect=self._check_mon_command)
         self.mon_command = MagicMock(side_effect=self._check_mon_command)
         self.template = MagicMock()
@@ -49,6 +52,13 @@ class FakeMgr:
             return 0, 'value set', ''
         if prefix in ['auth get']:
             return 0, '[foo]\nkeyring = asdf\n', ''
+        if prefix == 'quorum_status':
+            # actual quorum status output from testing
+            # note in this output all of the mons have blank crush locations
+            return 0, """{"election_epoch": 14, "quorum": [0, 1, 2], "quorum_names": ["vm-00", "vm-01", "vm-02"], "quorum_leader_name": "vm-00", "quorum_age": 101, "features": {"quorum_con": "4540138322906710015", "quorum_mon": ["kraken", "luminous", "mimic", "osdmap-prune", "nautilus", "octopus", "pacific", "elector-pinging", "quincy", "reef"]}, "monmap": {"epoch": 3, "fsid": "9863e1b8-6f24-11ed-8ad8-525400c13ad2", "modified": "2022-11-28T14:00:29.972488Z", "created": "2022-11-28T13:57:55.847497Z", "min_mon_release": 18, "min_mon_release_name": "reef", "election_strategy": 1, "disallowed_leaders: ": "", "stretch_mode": false, "tiebreaker_mon": "", "features": {"persistent": ["kraken", "luminous", "mimic", "osdmap-prune", "nautilus", "octopus", "pacific", "elector-pinging", "quincy", "reef"], "optional": []}, "mons": [{"rank": 0, "name": "vm-00", "public_addrs": {"addrvec": [{"type": "v2", "addr": "192.168.122.61:3300", "nonce": 0}, {"type": "v1", "addr": "192.168.122.61:6789", "nonce": 0}]}, "addr": "192.168.122.61:6789/0", "public_addr": "192.168.122.61:6789/0", "priority": 0, "weight": 0, "crush_location": "{}"}, {"rank": 1, "name": "vm-01", "public_addrs": {"addrvec": [{"type": "v2", "addr": "192.168.122.63:3300", "nonce": 0}, {"type": "v1", "addr": "192.168.122.63:6789", "nonce": 0}]}, "addr": "192.168.122.63:6789/0", "public_addr": "192.168.122.63:6789/0", "priority": 0, "weight": 0, "crush_location": "{}"}, {"rank": 2, "name": "vm-02", "public_addrs": {"addrvec": [{"type": "v2", "addr": "192.168.122.82:3300", "nonce": 0}, {"type": "v1", "addr": "192.168.122.82:6789", "nonce": 0}]}, "addr": "192.168.122.82:6789/0", "public_addr": "192.168.122.82:6789/0", "priority": 0, "weight": 0, "crush_location": "{}"}]}}""", ''
+        if prefix == 'mon set_location':
+            self.set_mon_crush_locations[cmd_dict.get('name')] = cmd_dict.get('args')
+            return 0, '', ''
         return -1, '', 'error'
 
     def get_minimal_ceph_conf(self) -> str:
@@ -447,7 +457,6 @@ class TestMonitoring:
 
         with with_host(cephadm_module, 'test'):
             with with_service(cephadm_module, MonitoringSpec('node-exporter')) as _, \
-                    with_service(cephadm_module, CephExporterSpec('ceph-exporter')) as _, \
                     with_service(cephadm_module, PrometheusSpec('prometheus')) as _:
 
                 y = dedent("""
@@ -470,13 +479,6 @@ class TestMonitoring:
                       labels:
                         instance: 'test'
 
-
-                  - job_name: 'ceph-exporter'
-                    honor_labels: true
-                    static_configs:
-                    - targets: ['[1::4]:9926']
-                      labels:
-                        instance: 'test'
                 """).lstrip()
 
                 _run_cephadm.assert_called_with(
@@ -727,6 +729,56 @@ class TestMonitoring:
                                 'certs/cert_file': ANY,
                                 'certs/cert_key': ANY}}, [])
 
+    @patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
+    def test_grafana_no_anon_access(self, cephadm_module: CephadmOrchestrator):
+        # with anonymous_access set to False, expecting the [auth.anonymous] section
+        # to not be present in the grafana config. Note that we require an initial_admin_password
+        # to be provided when anonymous_access is False
+        with with_host(cephadm_module, 'test'):
+            with with_service(cephadm_module, ServiceSpec('mgr')) as _, \
+                    with_service(cephadm_module, GrafanaSpec(anonymous_access=False, initial_admin_password='secure')):
+                out = cephadm_module.cephadm_services['grafana'].generate_config(
+                    CephadmDaemonDeploySpec('test', 'daemon', 'grafana'))
+                assert out == (
+                    {
+                        'files':
+                            {
+                                'grafana.ini':
+                                    '# This file is generated by cephadm.\n'
+                                    '[users]\n'
+                                    '  default_theme = light\n'
+                                    '[server]\n'
+                                    "  domain = 'bootstrap.storage.lab'\n"
+                                    '  protocol = https\n'
+                                    '  cert_file = /etc/grafana/certs/cert_file\n'
+                                    '  cert_key = /etc/grafana/certs/cert_key\n'
+                                    '  http_port = 3000\n'
+                                    '  http_addr = \n'
+                                    '[snapshots]\n'
+                                    '  external_enabled = false\n'
+                                    '[security]\n'
+                                    '  admin_user = admin\n'
+                                    '  admin_password = secure\n'
+                                    '  cookie_secure = true\n'
+                                    '  cookie_samesite = none\n'
+                                    '  allow_embedding = true',
+                                'provisioning/datasources/ceph-dashboard.yml':
+                                    "# This file is generated by cephadm.\n"
+                                    'deleteDatasources:\n\n'
+                                    "  - name: 'Loki'\n"
+                                    '    orgId: 2\n\n'
+                                    'datasources:\n\n'
+                                    "  - name: 'Loki'\n"
+                                    "    type: 'loki'\n"
+                                    "    access: 'proxy'\n"
+                                    '    orgId: 2\n'
+                                    "    url: ''\n"
+                                    '    basicAuth: false\n'
+                                    '    isDefault: true\n'
+                                    '    editable: false',
+                                'certs/cert_file': ANY,
+                                'certs/cert_key': ANY}}, [])
+
     @patch("cephadm.serve.CephadmServe._run_cephadm")
     def test_monitoring_ports(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
         _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
@@ -793,6 +845,27 @@ class TestRGWService:
                     'key': 'rgw_frontends',
                 })
                 assert f == expected
+
+
+class TestMonService:
+
+    def test_set_crush_locations(self, cephadm_module: CephadmOrchestrator):
+        mgr = FakeMgr()
+        mon_service = MonService(mgr)
+        mon_spec = ServiceSpec(service_type='mon', crush_locations={'vm-00': ['datacenter=a', 'rack=1'], 'vm-01': ['datacenter=a'], 'vm-02': ['datacenter=b', 'rack=3']})
+
+        mon_daemons = [
+            DaemonDescription(daemon_type='mon', daemon_id='vm-00', hostname='vm-00'),
+            DaemonDescription(daemon_type='mon', daemon_id='vm-01', hostname='vm-01'),
+            DaemonDescription(daemon_type='mon', daemon_id='vm-02', hostname='vm-02')
+        ]
+        mon_service.set_crush_locations(mon_daemons, mon_spec)
+        assert 'vm-00' in mgr.set_mon_crush_locations
+        assert mgr.set_mon_crush_locations['vm-00'] == ['datacenter=a', 'rack=1']
+        assert 'vm-01' in mgr.set_mon_crush_locations
+        assert mgr.set_mon_crush_locations['vm-01'] == ['datacenter=a']
+        assert 'vm-02' in mgr.set_mon_crush_locations
+        assert mgr.set_mon_crush_locations['vm-02'] == ['datacenter=b', 'rack=3']
 
 
 class TestSNMPGateway:
@@ -1443,6 +1516,79 @@ class TestIngressService:
                 }
 
                 assert haproxy_generated_conf[0] == haproxy_expected_conf
+
+    @patch("cephadm.serve.CephadmServe._run_cephadm")
+    @patch("cephadm.services.nfs.NFSService.fence_old_ranks", MagicMock())
+    @patch("cephadm.services.nfs.NFSService.run_grace_tool", MagicMock())
+    @patch("cephadm.services.nfs.NFSService.purge", MagicMock())
+    @patch("cephadm.services.nfs.NFSService.create_rados_config_obj", MagicMock())
+    def test_keepalive_only_nfs_config(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+
+        with with_host(cephadm_module, 'test', addr='1.2.3.7'):
+            cephadm_module.cache.update_host_networks('test', {
+                '1.2.3.0/24': {
+                    'if0': ['1.2.3.4/32']
+                }
+            })
+
+            # Check the ingress with multiple VIPs
+            s = NFSServiceSpec(service_id="foo", placement=PlacementSpec(count=1),
+                               virtual_ip='1.2.3.0/24')
+
+            ispec = IngressSpec(service_type='ingress',
+                                service_id='test',
+                                backend_service='nfs.foo',
+                                monitor_port=8999,
+                                monitor_user='admin',
+                                monitor_password='12345',
+                                keepalived_password='12345',
+                                virtual_ip='1.2.3.0/24',
+                                keepalive_only=True)
+            with with_service(cephadm_module, s) as _, with_service(cephadm_module, ispec) as _:
+                nfs_generated_conf, _ = cephadm_module.cephadm_services['nfs'].generate_config(
+                    CephadmDaemonDeploySpec(host='test', daemon_id='foo.test.0.0', service_name=s.service_name()))
+                ganesha_conf = nfs_generated_conf['files']['ganesha.conf']
+                assert "Bind_addr = 1.2.3.0/24" in ganesha_conf
+
+                keepalived_generated_conf = cephadm_module.cephadm_services['ingress'].keepalived_generate_config(
+                    CephadmDaemonDeploySpec(host='test', daemon_id='ingress', service_name=ispec.service_name()))
+
+                keepalived_expected_conf = {
+                    'files':
+                        {
+                            'keepalived.conf':
+                                '# This file is generated by cephadm.\n'
+                                'vrrp_script check_backend {\n    '
+                                'script "/usr/bin/false"\n    '
+                                'weight -20\n    '
+                                'interval 2\n    '
+                                'rise 2\n    '
+                                'fall 2\n}\n\n'
+                                'vrrp_instance VI_0 {\n  '
+                                'state MASTER\n  '
+                                'priority 100\n  '
+                                'interface if0\n  '
+                                'virtual_router_id 50\n  '
+                                'advert_int 1\n  '
+                                'authentication {\n      '
+                                'auth_type PASS\n      '
+                                'auth_pass 12345\n  '
+                                '}\n  '
+                                'unicast_src_ip 1.2.3.7\n  '
+                                'unicast_peer {\n  '
+                                '}\n  '
+                                'virtual_ipaddress {\n    '
+                                '1.2.3.0/24 dev if0\n  '
+                                '}\n  '
+                                'track_script {\n      '
+                                'check_backend\n  }\n'
+                                '}\n'
+                        }
+                }
+
+                # check keepalived config
+                assert keepalived_generated_conf[0] == keepalived_expected_conf
 
 
 class TestCephFsMirror:

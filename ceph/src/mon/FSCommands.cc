@@ -146,10 +146,6 @@ class FsNewHandler : public FileSystemCommandHandler
   {
   }
 
-  bool batched_propose() override {
-    return true;
-  }
-
   int handle(
       Monitor *mon,
       FSMap& fsmap,
@@ -871,10 +867,6 @@ class AddDataPoolHandler : public FileSystemCommandHandler
     : FileSystemCommandHandler("fs add_data_pool"), m_paxos(paxos)
   {}
 
-  bool batched_propose() override {
-    return true;
-  }
-
   int handle(
       Monitor *mon,
       FSMap& fsmap,
@@ -1094,10 +1086,6 @@ class RenameFilesystemHandler : public FileSystemCommandHandler
   explicit RenameFilesystemHandler(Paxos *paxos)
     : FileSystemCommandHandler("fs rename"), m_paxos(paxos)
   {
-  }
-
-  bool batched_propose() override {
-    return true;
   }
 
   int handle(
@@ -1582,6 +1570,14 @@ int FileSystemCommandHandler::_check_pool(
     *ss << " pool '" << pool_name << "' (id '" << pool_id
         << "') has a non-CephFS application enabled.";
     return -EINVAL;
+  }
+
+  if (type != POOL_METADATA && pool->pg_autoscale_mode == pg_pool_t::pg_autoscale_mode_t::ON && !pool->has_flag(pg_pool_t::FLAG_BULK)) {
+    // TODO: consider issuing an info event in this case
+    *ss << "  Pool '" << pool_name << "' (id '" << pool_id
+	<< "') has pg autoscale mode 'on' but is not marked as bulk." << std::endl
+	<< "  Consider setting the flag by running" << std::endl
+	<< "    # ceph osd pool set " << pool_name << " bulk true" << std::endl;
   }
 
   // Nothing special about this pool, so it is permissible

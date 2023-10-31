@@ -757,6 +757,7 @@ function test_mon_misc()
 
   ceph mgr stat
   ceph mgr dump
+  ceph mgr dump | jq -e '.active_clients[0].name'
   ceph mgr module ls
   ceph mgr module enable restful
   expect_false ceph mgr module enable foodne
@@ -1498,7 +1499,7 @@ function test_mon_osd()
   done
 
   for f in noup nodown noin noout noscrub nodeep-scrub nobackfill \
-	  norebalance norecover notieragent
+	  norebalance norecover notieragent noautoscale
   do
     ceph osd set $f
     ceph osd unset $f

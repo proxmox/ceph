@@ -573,21 +573,42 @@ int RGWGetObj_ObjStore_S3::get_decrypt_filter(std::unique_ptr<RGWGetObj_Filter> 
     return 0;
   }
 
-  int res = 0;
   std::unique_ptr<BlockCrypt> block_crypt;
-  res = rgw_s3_prepare_decrypt(s, attrs, &block_crypt, crypt_http_responses);
-  if (res == 0) {
-    if (block_crypt != nullptr) {
-      auto f = std::make_unique<RGWGetObj_BlockDecrypt>(s, s->cct, cb, std::move(block_crypt));
-      if (manifest_bl != nullptr) {
-        res = f->read_manifest(this, *manifest_bl);
-        if (res == 0) {
-          *filter = std::move(f);
-        }
-      }
+  int res = rgw_s3_prepare_decrypt(s, attrs, &block_crypt, crypt_http_responses);
+  if (res < 0) {
+    return res;
+  }
+  if (block_crypt == nullptr) {
+    return 0;
+  }
+
+  // in case of a multipart upload, we need to know the part lengths to
+  // correctly decrypt across part boundaries
+  std::vector<size_t> parts_len;
+
+  // for replicated objects, the original part lengths are preserved in an xattr
+  if (auto i = attrs.find(RGW_ATTR_CRYPT_PARTS); i != attrs.end()) {
+    try {
+      auto p = i->second.cbegin();
+      using ceph::decode;
+      decode(parts_len, p);
+    } catch (const buffer::error&) {
+      ldpp_dout(this, 1) << "failed to decode RGW_ATTR_CRYPT_PARTS" << dendl;
+      return -EIO;
+    }
+  } else {
+    // otherwise, we read the part lengths from the manifest
+    res = RGWGetObj_BlockDecrypt::read_manifest_parts(this, *manifest_bl,
+                                                      parts_len);
+    if (res < 0) {
+      return res;
     }
   }
-  return res;
+
+  *filter = std::make_unique<RGWGetObj_BlockDecrypt>(
+      s, s->cct, cb, std::move(block_crypt),
+      std::move(parts_len));
+  return 0;
 }
 int RGWGetObj_ObjStore_S3::verify_requester(const rgw::auth::StrategyRegistry& auth_registry, optional_yield y) 
 {
@@ -2686,24 +2707,42 @@ int RGWPutObj_ObjStore_S3::get_decrypt_filter(
 {
   std::map<std::string, std::string> crypt_http_responses_unused;
 
-  int res = 0;
   std::unique_ptr<BlockCrypt> block_crypt;
-  res = rgw_s3_prepare_decrypt(s, attrs, &block_crypt, crypt_http_responses_unused);
-  if (res == 0) {
-    if (block_crypt != nullptr) {
-      auto f = std::unique_ptr<RGWGetObj_BlockDecrypt>(new RGWGetObj_BlockDecrypt(s, s->cct, cb, std::move(block_crypt)));
-      //RGWGetObj_BlockDecrypt* f = new RGWGetObj_BlockDecrypt(s->cct, cb, std::move(block_crypt));
-      if (f != nullptr) {
-        if (manifest_bl != nullptr) {
-          res = f->read_manifest(this, *manifest_bl);
-          if (res == 0) {
-            *filter = std::move(f);
-          }
-        }
-      }
+  int res = rgw_s3_prepare_decrypt(s, attrs, &block_crypt, crypt_http_responses_unused);
+  if (res < 0) {
+    return res;
+  }
+  if (block_crypt == nullptr) {
+    return 0;
+  }
+
+  // in case of a multipart upload, we need to know the part lengths to
+  // correctly decrypt across part boundaries
+  std::vector<size_t> parts_len;
+
+  // for replicated objects, the original part lengths are preserved in an xattr
+  if (auto i = attrs.find(RGW_ATTR_CRYPT_PARTS); i != attrs.end()) {
+    try {
+      auto p = i->second.cbegin();
+      using ceph::decode;
+      decode(parts_len, p);
+    } catch (const buffer::error&) {
+      ldpp_dout(this, 1) << "failed to decode RGW_ATTR_CRYPT_PARTS" << dendl;
+      return -EIO;
+    }
+  } else {
+    // otherwise, we read the part lengths from the manifest
+    res = RGWGetObj_BlockDecrypt::read_manifest_parts(this, *manifest_bl,
+                                                      parts_len);
+    if (res < 0) {
+      return res;
     }
   }
-  return res;
+
+  *filter = std::make_unique<RGWGetObj_BlockDecrypt>(
+      s, s->cct, cb, std::move(block_crypt),
+      std::move(parts_len));
+  return 0;
 }
 
 int RGWPutObj_ObjStore_S3::get_encrypt_filter(
@@ -2773,10 +2812,6 @@ int RGWPostObj_ObjStore_S3::get_params(optional_yield y)
 
   map_qs_metadata(s, false);
 
-  ldpp_dout(this, 20) << "adding bucket to policy env: " << s->bucket->get_name()
-		    << dendl;
-  env.add_var("bucket", s->bucket->get_name());
-
   bool done;
   do {
     struct post_form_part part;
@@ -2840,6 +2875,10 @@ int RGWPostObj_ObjStore_S3::get_params(optional_yield y)
     ldpp_dout(this, 5) << __func__ << "(): get_encryption_defaults() returned ret=" << r << dendl;
     return r;
   }
+
+  ldpp_dout(this, 20) << "adding bucket to policy env: " << s->bucket->get_name()
+		    << dendl;
+  env.add_var("bucket", s->bucket->get_name());
 
   string object_str;
   if (!part_str(parts, "key", &object_str)) {
@@ -3394,7 +3433,10 @@ int RGWCopyObj_ObjStore_S3::get_params(optional_yield y)
     s->info.args.get_bool(RGW_SYS_PARAM_PREFIX "copy-if-newer", &copy_if_newer, false);
   }
 
-  copy_source = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE");
+  const char *copy_source_temp = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE");
+  if (copy_source_temp) {
+    copy_source = copy_source_temp;
+  }
   auto tmp_md_d = s->info.env->get("HTTP_X_AMZ_METADATA_DIRECTIVE");
   if (tmp_md_d) {
     if (strcasecmp(tmp_md_d, "COPY") == 0) {
@@ -4113,9 +4155,11 @@ void RGWDeleteMultiObj_ObjStore_S3::begin_response()
   rgw_flush_formatter(s, s->formatter);
 }
 
-void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(rgw_obj_key& key,
+void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(const rgw_obj_key& key,
 							  bool delete_marker,
-							  const string& marker_version_id, int ret)
+							  const string& marker_version_id,
+                                                          int ret,
+                                                          boost::asio::deadline_timer *formatter_flush_cond)
 {
   if (!key.empty()) {
     delete_multi_obj_entry ops_log_entry;
@@ -4161,7 +4205,11 @@ void RGWDeleteMultiObj_ObjStore_S3::send_partial_response(rgw_obj_key& key,
     }
 
     ops_log_entries.push_back(std::move(ops_log_entry));
-    rgw_flush_formatter(s, s->formatter);
+    if (formatter_flush_cond) {
+      formatter_flush_cond->cancel();
+    } else {
+      rgw_flush_formatter(s, s->formatter);
+    }
   }
 }
 
@@ -5115,7 +5163,6 @@ bool RGWHandler_REST_S3Website::web_dir() const {
 
   RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);
   obj->set_atomic(&obj_ctx);
-  obj->set_prefetch_data(&obj_ctx);
 
   RGWObjState* state = nullptr;
   if (obj->get_obj_state(s, &obj_ctx, &state, s->yield) < 0) {
@@ -5603,10 +5650,13 @@ AWSGeneralAbstractor::get_auth_data_v4(const req_state* const s,
   /* Craft canonical query string. std::moving later so non-const here. */
   auto canonical_qs = rgw::auth::s3::get_v4_canonical_qs(s->info, using_qs);
 
+  /* Craft canonical method. */
+  auto canonical_method = rgw::auth::s3::get_v4_canonical_method(s);
+
   /* Craft canonical request. */
   auto canonical_req_hash = \
     rgw::auth::s3::get_v4_canon_req_hash(s->cct,
-                                         s->info.method,
+                                         std::move(canonical_method),
                                          std::move(canonical_uri),
                                          std::move(canonical_qs),
                                          std::move(*canonical_headers),
@@ -5819,8 +5869,9 @@ AWSGeneralAbstractor::get_auth_data_v2(const req_state* const s) const
       signature = auth_str.substr(pos + 1);
     }
 
-    if (s->info.env->exists("HTTP_X_AMZ_SECURITY_TOKEN")) {
-      session_token = s->info.env->get("HTTP_X_AMZ_SECURITY_TOKEN");
+    auto token = s->info.env->get_optional("HTTP_X_AMZ_SECURITY_TOKEN");
+    if (token) {
+      session_token = *token;
       if (session_token.size() == 0) {
         throw -EPERM;
       }
@@ -6291,14 +6342,15 @@ rgw::auth::s3::STSEngine::authenticate(
 bool rgw::auth::s3::S3AnonymousEngine::is_applicable(
   const req_state* s
 ) const noexcept {
-  if (s->op == OP_OPTIONS) {
-    return true;
-  }
-
   AwsVersion version;
   AwsRoute route;
   std::tie(version, route) = discover_aws_flavour(s->info);
 
+  /* If HTTP OPTIONS and no authentication provided using the
+   * anonymous engine is applicable */
+  if (s->op == OP_OPTIONS && version == AwsVersion::UNKNOWN) {
+    return true;
+  }
+
   return route == AwsRoute::QUERY_STRING && version == AwsVersion::UNKNOWN;
 }
-

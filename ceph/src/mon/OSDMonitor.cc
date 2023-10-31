@@ -959,12 +959,18 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
       dout(20) << "Degraded stretch mode set in this map" << dendl;
       if (!osdmap.recovering_stretch_mode) {
 	mon.set_degraded_stretch_mode();
+  dout(20) << "prev_num_up_osd: " << prev_num_up_osd << dendl;
+  dout(20) << "osdmap.num_up_osd: " << osdmap.num_up_osd << dendl;
+  dout(20) << "osdmap.num_osd: " << osdmap.num_osd << dendl;
+  dout(20) << "mon_stretch_cluster_recovery_ratio: " << cct->_conf.get_val<double>("mon_stretch_cluster_recovery_ratio") << dendl;
 	if (prev_num_up_osd < osdmap.num_up_osd &&
 	    (osdmap.num_up_osd / (double)osdmap.num_osd) >
-	    cct->_conf.get_val<double>("mon_stretch_cluster_recovery_ratio")) {
+	    cct->_conf.get_val<double>("mon_stretch_cluster_recovery_ratio") &&
+      mon.dead_mon_buckets.size() == 0) {
 	  // TODO: This works for 2-site clusters when the OSD maps are appropriately
 	  // trimmed and everything is "normal" but not if you have a lot of out OSDs
 	  // you're ignoring or in some really degenerate failure cases
+
 	  dout(10) << "Enabling recovery stretch mode in this map" << dendl;
 	  mon.go_recovery_stretch_mode();
 	}
@@ -2878,7 +2884,7 @@ bool OSDMonitor::preprocess_get_osdmap(MonOpRequestRef op)
     ceph_assert(r >= 0);
     max_bytes -= bl.length();
   }
-  reply->oldest_map = first;
+  reply->cluster_osdmap_trim_lower_bound = first;
   reply->newest_map = last;
   mon.send_reply(op, reply);
   return true;
@@ -4455,7 +4461,7 @@ MOSDMap *OSDMonitor::build_latest_full(uint64_t features)
 {
   MOSDMap *r = new MOSDMap(mon.monmap->fsid, features);
   get_version_full(osdmap.get_epoch(), features, r->maps[osdmap.get_epoch()]);
-  r->oldest_map = get_first_committed();
+  r->cluster_osdmap_trim_lower_bound = get_first_committed();
   r->newest_map = osdmap.get_epoch();
   return r;
 }
@@ -4465,7 +4471,7 @@ MOSDMap *OSDMonitor::build_incremental(epoch_t from, epoch_t to, uint64_t featur
   dout(10) << "build_incremental [" << from << ".." << to << "] with features "
 	   << std::hex << features << std::dec << dendl;
   MOSDMap *m = new MOSDMap(mon.monmap->fsid, features);
-  m->oldest_map = get_first_committed();
+  m->cluster_osdmap_trim_lower_bound = get_first_committed();
   m->newest_map = osdmap.get_epoch();
 
   for (epoch_t e = to; e >= from && e > 0; e--) {
@@ -4543,7 +4549,7 @@ void OSDMonitor::send_incremental(epoch_t first,
 
   if (first < get_first_committed()) {
     MOSDMap *m = new MOSDMap(osdmap.get_fsid(), features);
-    m->oldest_map = get_first_committed();
+    m->cluster_osdmap_trim_lower_bound = get_first_committed();
     m->newest_map = osdmap.get_epoch();
 
     first = get_first_committed();
@@ -11575,6 +11581,8 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 	err = -EPERM;
 	goto reply;
       }
+    } else if (key == "noautoscale") {
+      return prepare_set_flag(op, CEPH_OSDMAP_NOAUTOSCALE);
     } else {
       ss << "unrecognized flag '" << key << "'";
       err = -EINVAL;
@@ -11607,6 +11615,8 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       return prepare_unset_flag(op, CEPH_OSDMAP_NOTIERAGENT);
     else if (key == "nosnaptrim")
       return prepare_unset_flag(op, CEPH_OSDMAP_NOSNAPTRIM);
+    else if (key == "noautoscale")
+      return prepare_unset_flag(op, CEPH_OSDMAP_NOAUTOSCALE);
     else {
       ss << "unrecognized flag '" << key << "'";
       err = -EINVAL;
@@ -11628,7 +11638,13 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       err = 0;
       goto reply;
     }
-    ceph_assert(osdmap.require_osd_release >= ceph_release_t::octopus);
+    if (osdmap.require_osd_release < ceph_release_t::octopus && !sure) {
+      ss << "Not advisable to continue since current 'require_osd_release' "
+         << "refers to a very old Ceph release. Pass "
+	 << "--yes-i-really-mean-it if you really wish to continue.";
+      err = -EPERM;
+      goto reply;
+    }
     if (!osdmap.get_num_up_osds() && !sure) {
       ss << "Not advisable to continue since no OSDs are up. Pass "
 	 << "--yes-i-really-mean-it if you really wish to continue.";
@@ -12895,6 +12911,12 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     if (pp->snap_exists(snapname.c_str())) {
       ss << "pool " << poolstr << " snap " << snapname << " already exists";
     } else {
+      if (const auto& fsmap = mon.mdsmon()->get_fsmap(); fsmap.pool_in_use(pool)) {
+	dout(20) << "pool-level snapshots have been disabled for pools "
+		    "attached to an fs - poolid:" << pool << dendl;
+	err = -EOPNOTSUPP;
+	goto reply;
+      }
       pp->add_snap(snapname.c_str(), ceph_clock_now());
       pp->set_snap_epoch(pending_inc.epoch);
       ss << "created pool " << poolstr << " snap " << snapname;

@@ -31,6 +31,7 @@
 #include "Mutation.h"
 #include "MetricsHandler.h"
 #include "cephfs_features.h"
+#include "MDSContext.h"
 
 #include "msg/Messenger.h"
 
@@ -116,7 +117,7 @@ public:
   }
   void _forward(mds_rank_t t) override {
     MDCache* mdcache = server->mdcache;
-    mdcache->mds->forward_message_mds(mdr->release_client_request(), t);
+    mdcache->mds->forward_message_mds(mdr, t);
     mdr->set_mds_stamp(ceph_clock_now());
     for (auto& m : batch_reqs) {
       if (!m->killed)
@@ -254,6 +255,7 @@ void Server::create_logger()
 Server::Server(MDSRank *m, MetricsHandler *metrics_handler) :
   mds(m), 
   mdcache(mds->mdcache), mdlog(mds->mdlog),
+  inject_rename_corrupt_dentry_first(g_conf().get_val<double>("mds_inject_rename_corrupt_dentry_first")),
   recall_throttle(g_conf().get_val<double>("mds_recall_max_decay_rate")),
   metrics_handler(metrics_handler)
 {
@@ -355,6 +357,9 @@ void Server::dispatch(const cref_t<Message> &m)
     return;
   case CEPH_MSG_CLIENT_REQUEST:
     handle_client_request(ref_cast<MClientRequest>(m));
+    return;
+  case CEPH_MSG_CLIENT_REPLY:
+    handle_client_reply(ref_cast<MClientReply>(m));
     return;
   case CEPH_MSG_CLIENT_RECLAIM:
     handle_client_reclaim(ref_cast<MClientReclaim>(m));
@@ -1303,6 +1308,9 @@ void Server::handle_conf_change(const std::set<std::string>& changed) {
     bal_fragment_size_max = g_conf().get_val<int64_t>("mds_bal_fragment_size_max");
     dout(20) << __func__ << " max fragment size changed to "
             << bal_fragment_size_max << dendl;
+  }
+  if (changed.count("mds_inject_rename_corrupt_dentry_first")) {
+    inject_rename_corrupt_dentry_first = g_conf().get_val<double>("mds_inject_rename_corrupt_dentry_first");
   }
 }
 
@@ -2261,6 +2269,10 @@ void Server::reply_client_request(MDRequestRef& mdr, const ref_t<MClientReply> &
     mds->send_message_client(reply, session);
   }
 
+  if (client_inst.name.is_mds() && reply->get_op() == CEPH_MDS_OP_RENAME) {
+    mds->send_message(reply, mdr->client_request->get_connection());
+  }
+
   if (req->is_queued_for_replay() &&
       (mdr->has_completed || reply->get_result() < 0)) {
     if (reply->get_result() < 0) {
@@ -2490,6 +2502,38 @@ void Server::handle_client_request(const cref_t<MClientRequest> &req)
 
   dispatch_client_request(mdr);
   return;
+}
+
+void Server::handle_client_reply(const cref_t<MClientReply> &reply)
+{
+  dout(4) << "handle_client_reply " << *reply << dendl;
+
+  ceph_assert(reply->is_safe());
+  ceph_tid_t tid = reply->get_tid();
+
+  if (mds->internal_client_requests.count(tid) == 0) {
+    dout(1) << " no pending request on tid " << tid << dendl;
+    return;
+  }
+
+  auto &req = mds->internal_client_requests.at(tid);
+  CDentry *dn = req.get_dentry();
+
+  switch (reply->get_op()) {
+  case CEPH_MDS_OP_RENAME:
+    if (dn) {
+      dn->state_clear(CDentry::STATE_REINTEGRATING);
+
+      MDSContext::vec finished;
+      dn->take_waiting(CDentry::WAIT_REINTEGRATE_FINISH, finished);
+      mds->queue_waiters(finished);
+    }
+    break;
+  default:
+    dout(5) << " unknown client op " << reply->get_op() << dendl;
+  }
+
+  mds->internal_client_requests.erase(tid);
 }
 
 void Server::handle_osd_map()
@@ -3320,17 +3364,36 @@ CInode* Server::prepare_new_inode(MDRequestRef& mdr, CDir *dir, inodeno_t useino
   // while session is opening.
   bool allow_prealloc_inos = mdr->session->is_open();
 
+  inodeno_t _useino = useino;
+
   // assign ino
-  if (allow_prealloc_inos && (mdr->used_prealloc_ino = _inode->ino = mdr->session->take_ino(useino))) {
-    mds->sessionmap.mark_projected(mdr->session);
-    dout(10) << "prepare_new_inode used_prealloc " << mdr->used_prealloc_ino
-	     << " (" << mdr->session->info.prealloc_inos.size() << " left)"
-	     << dendl;
-  } else {
-    mdr->alloc_ino = 
-      _inode->ino = mds->inotable->project_alloc_id(useino);
-    dout(10) << "prepare_new_inode alloc " << mdr->alloc_ino << dendl;
-  }
+  do {
+    if (allow_prealloc_inos && (mdr->used_prealloc_ino = _inode->ino = mdr->session->take_ino(_useino))) {
+      if (mdcache->test_and_clear_taken_inos(_inode->ino)) {
+        _inode->ino = 0;
+        dout(10) << "prepare_new_inode used_prealloc " << mdr->used_prealloc_ino
+                 << " (" << mdr->session->info.prealloc_inos.size() << " left)"
+	         << " but has been taken, will try again!" << dendl;
+      } else {
+        mds->sessionmap.mark_projected(mdr->session);
+        dout(10) << "prepare_new_inode used_prealloc " << mdr->used_prealloc_ino
+                 << " (" << mdr->session->info.prealloc_inos.size() << " left)"
+                 << dendl;
+      }
+    } else {
+      mdr->alloc_ino =
+       _inode->ino = mds->inotable->project_alloc_id(_useino);
+      if (mdcache->test_and_clear_taken_inos(_inode->ino)) {
+        mds->inotable->apply_alloc_id(_inode->ino);
+        _inode->ino = 0;
+        dout(10) << "prepare_new_inode alloc " << mdr->alloc_ino
+	         << " but has been taken, will try again!" << dendl;
+      } else {
+        dout(10) << "prepare_new_inode alloc " << mdr->alloc_ino << dendl;
+      }
+    }
+    _useino = 0;
+  } while (!_inode->ino);
 
   if (useino && useino != _inode->ino) {
     dout(0) << "WARNING: client specified " << useino << " and i allocated " << _inode->ino << dendl;
@@ -3339,7 +3402,7 @@ CInode* Server::prepare_new_inode(MDRequestRef& mdr, CDir *dir, inodeno_t useino
        << " but mds." << mds->get_nodeid() << " allocated " << _inode->ino;
     //ceph_abort(); // just for now.
   }
-    
+
   if (allow_prealloc_inos &&
       mdr->session->get_num_projected_prealloc_inos() < g_conf()->mds_client_prealloc_inos / 2) {
     int need = g_conf()->mds_client_prealloc_inos - mdr->session->get_num_projected_prealloc_inos();
@@ -3588,12 +3651,18 @@ CInode* Server::rdlock_path_pin_ref(MDRequestRef& mdr,
 
 /** rdlock_path_xlock_dentry
  * traverse path to the directory that could/would contain dentry.
- * make sure i am auth for that dentry, forward as necessary.
- * create null dentry in place (or use existing if okexist).
+ * make sure i am auth for that dentry (or target inode if it exists and authexist),
+ * forward as necessary. create null dentry in place (or use existing if okexist).
  * get rdlocks on traversed dentries, xlock on new dentry.
+ *
+ * set authexist true if caller requires the target inode to be auth when it exists.
+ * the tail dentry is not always auth any more if authexist because it is impossible
+ * to ensure tail dentry and target inode are both auth in one mds. the tail dentry
+ * will not be xlocked too if authexist and the target inode exists.
  */
 CDentry* Server::rdlock_path_xlock_dentry(MDRequestRef& mdr,
-					  bool create, bool okexist, bool want_layout)
+					  bool create, bool okexist, bool authexist,
+					  bool want_layout)
 {
   const filepath& refpath = mdr->get_filepath();
   dout(10) << "rdlock_path_xlock_dentry " << *mdr << " " << refpath << dendl;
@@ -3631,6 +3700,8 @@ CDentry* Server::rdlock_path_xlock_dentry(MDRequestRef& mdr,
     flags |= MDS_TRAVERSE_CHECK_LOCKCACHE;
   if (create)
     flags |= MDS_TRAVERSE_RDLOCK_AUTHLOCK;
+  if (authexist)
+    flags |= MDS_TRAVERSE_WANT_INODE;
   if (want_layout)
     flags |= MDS_TRAVERSE_WANT_DIRLAYOUT;
   int r = mdcache->path_traverse(mdr, cf, refpath, flags, &mdr->dn[0]);
@@ -3652,7 +3723,9 @@ CDentry* Server::rdlock_path_xlock_dentry(MDRequestRef& mdr,
   CInode *diri = dir->get_inode();
 
   if (!mdr->reqid.name.is_mds()) {
-    if (diri->is_system() && !diri->is_root()) {
+    if (diri->is_system() && !diri->is_root() &&
+	(!diri->is_lost_and_found() ||
+	 mdr->client_request->get_op() != CEPH_MDS_OP_UNLINK)) {
       respond_to_request(mdr, -CEPHFS_EROFS);
       return nullptr;
     }
@@ -3927,6 +4000,7 @@ void Server::handle_client_getattr(MDRequestRef& mdr, bool is_lookup)
       } else {
 	dout(20) << __func__ << ": LOOKUP op, wait for previous same getattr ops to respond. " << *mdr << dendl;
 	em.first->second->add_request(mdr);
+        mdr->mark_event("joining batch lookup");
 	return;
       }
     } else {
@@ -3938,6 +4012,7 @@ void Server::handle_client_getattr(MDRequestRef& mdr, bool is_lookup)
       } else {
 	dout(20) << __func__ << ": GETATTR op, wait for previous same getattr ops to respond. " << *mdr << dendl;
 	em.first->second->add_request(mdr);
+        mdr->mark_event("joining batch getattr");
 	return;
       }
     }
@@ -3983,6 +4058,24 @@ void Server::handle_client_getattr(MDRequestRef& mdr, bool is_lookup)
     } else if (ref->filelock.is_stable() ||
 	       ref->filelock.get_num_wrlocks() > 0 ||
 	       !ref->filelock.can_read(mdr->get_client())) {
+      /* Since we're taking advantage of an optimization here:
+       *
+       * We cannot suddenly, due to a changing condition, add this filelock as
+       * it can cause lock-order deadlocks. In this case, that condition is the
+       * lock state changes between request retries. If that happens, we need
+       * to check if we've acquired the other locks in this vector. If we have,
+       * then we need to drop those locks and retry.
+       */
+      if (mdr->is_rdlocked(&ref->linklock) ||
+          mdr->is_rdlocked(&ref->authlock) ||
+          mdr->is_rdlocked(&ref->xattrlock)) {
+        /* start over */
+        dout(20) << " dropping locks and restarting request because filelock state change" << dendl;
+	mds->locker->drop_locks(mdr.get());
+	mdr->drop_local_auth_pins();
+	mds->queue_waiter(new C_MDS_RetryRequest(mdcache, mdr));
+        return;
+      }
       lov.add_rdlock(&ref->filelock);
       mdr->locking_state &= ~MutationImpl::ALL_LOCKED;
     }
@@ -4304,6 +4397,7 @@ void Server::handle_client_open(MDRequestRef& mdr)
   }
 
   MutationImpl::LockOpVec lov;
+  lov.add_rdlock(&cur->snaplock);
 
   unsigned mask = req->head.args.open.mask;
   if (mask) {
@@ -4423,6 +4517,9 @@ public:
   void finish(int r) override {
     ceph_assert(r == 0);
 
+    // crash current MDS and the replacing MDS will test the journal
+    ceph_assert(!g_conf()->mds_kill_skip_replaying_inotable);
+
     dn->pop_projected_linkage();
 
     // dirty inode, dn, dir
@@ -4459,7 +4556,7 @@ void Server::handle_client_openc(MDRequestRef& mdr)
   }
 
   bool excl = req->head.args.open.flags & CEPH_O_EXCL;
-  CDentry *dn = rdlock_path_xlock_dentry(mdr, true, !excl, true);
+  CDentry *dn = rdlock_path_xlock_dentry(mdr, true, !excl, true, true);
   if (!dn)
     return;
 
@@ -4471,12 +4568,7 @@ void Server::handle_client_openc(MDRequestRef& mdr)
   CDentry::linkage_t *dnl = dn->get_projected_linkage();
   if (!excl && !dnl->is_null()) {
     // it existed.
-    mds->locker->xlock_downgrade(&dn->lock, mdr.get());
-
-    MutationImpl::LockOpVec lov;
-    lov.add_rdlock(&dnl->get_inode()->snaplock);
-    if (!mds->locker->acquire_locks(mdr, lov))
-      return;
+    ceph_assert(mdr.get()->is_rdlocked(&dn->lock));
 
     handle_client_open(mdr);
     return;
@@ -4658,6 +4750,7 @@ void Server::handle_client_readdir(MDRequestRef& mdr)
       if (logger)
           logger->inc(l_mdss_cap_acquisition_throttle);
 
+      mdr->mark_event("cap_acquisition_throttle");
       mds->timer.add_event_after(caps_throttle_retry_request_timeout, new C_MDS_RetryRequest(mdcache, mdr));
       return;
   }
@@ -5116,7 +5209,7 @@ void Server::handle_client_setattr(MDRequestRef& mdr)
   __u32 access_mask = MAY_WRITE;
 
   // xlock inode
-  if (mask & (CEPH_SETATTR_MODE|CEPH_SETATTR_UID|CEPH_SETATTR_GID|CEPH_SETATTR_BTIME|CEPH_SETATTR_KILL_SGUID))
+  if (mask & (CEPH_SETATTR_MODE|CEPH_SETATTR_UID|CEPH_SETATTR_GID|CEPH_SETATTR_BTIME|CEPH_SETATTR_KILL_SGUID|CEPH_SETATTR_KILL_SUID|CEPH_SETATTR_KILL_SGID))
     lov.add_xlock(&cur->authlock);
   if (mask & (CEPH_SETATTR_MTIME|CEPH_SETATTR_ATIME|CEPH_SETATTR_SIZE))
     lov.add_xlock(&cur->filelock);
@@ -5176,10 +5269,20 @@ void Server::handle_client_setattr(MDRequestRef& mdr)
 
   if (mask & CEPH_SETATTR_MODE)
     pi.inode->mode = (pi.inode->mode & ~07777) | (req->head.args.setattr.mode & 07777);
-  else if ((mask & (CEPH_SETATTR_UID|CEPH_SETATTR_GID|CEPH_SETATTR_KILL_SGUID)) &&
-	    S_ISREG(pi.inode->mode) &&
-            (pi.inode->mode & (S_IXUSR|S_IXGRP|S_IXOTH))) {
-    pi.inode->mode &= ~(S_ISUID|S_ISGID);
+  else if ((mask & (CEPH_SETATTR_UID|CEPH_SETATTR_GID|CEPH_SETATTR_KILL_SGUID|
+		    CEPH_SETATTR_KILL_SUID|CEPH_SETATTR_KILL_SGID)) &&
+	    S_ISREG(pi.inode->mode)) {
+    if (mask & (CEPH_SETATTR_UID|CEPH_SETATTR_GID|CEPH_SETATTR_KILL_SGUID) &&
+	(pi.inode->mode & (S_IXUSR|S_IXGRP|S_IXOTH))) {
+      pi.inode->mode &= ~(S_ISUID|S_ISGID);
+    } else {
+      if (mask & CEPH_SETATTR_KILL_SUID) {
+        pi.inode->mode &= ~S_ISUID;
+      }
+      if (mask & CEPH_SETATTR_KILL_SGID) {
+        pi.inode->mode &= ~S_ISGID;
+      }
+    }
   }
 
   if (mask & CEPH_SETATTR_MTIME)
@@ -6677,6 +6780,45 @@ void Server::wait_for_pending_unlink(CDentry *dn, MDRequestRef& mdr)
   dn->add_waiter(CDentry::WAIT_UNLINK_FINISH, new C_WaitUnlinkToFinish(mdcache, dn, fin));
 }
 
+struct C_WaitReintegrateToFinish : public MDSContext {
+protected:
+  MDCache *mdcache;
+  CDentry *dn;
+  MDSContext *fin;
+
+  MDSRank *get_mds() override
+  {
+    ceph_assert(mdcache != NULL);
+    return mdcache->mds;
+  }
+
+public:
+  C_WaitReintegrateToFinish(MDCache *m, CDentry *d, MDSContext *f) :
+    mdcache(m), dn(d), fin(f) {}
+  void finish(int r) override {
+    fin->complete(r);
+    dn->put(CDentry::PIN_PURGING);
+  }
+};
+
+bool Server::is_reintegrate_pending(CDentry *dn)
+{
+  CDentry::linkage_t *dnl = dn->get_projected_linkage();
+  if (!dnl->is_null() && dn->state_test(CDentry::STATE_REINTEGRATING)) {
+      return true;
+  }
+  return false;
+}
+
+void Server::wait_for_pending_reintegrate(CDentry *dn, MDRequestRef& mdr)
+{
+  dout(20) << __func__ << " dn " << *dn << dendl;
+  mds->locker->drop_locks(mdr.get());
+  auto fin = new C_MDS_RetryRequest(mdcache, mdr);
+  dn->get(CDentry::PIN_PURGING);
+  dn->add_waiter(CDentry::WAIT_REINTEGRATE_FINISH, new C_WaitReintegrateToFinish(mdcache, dn, fin));
+}
+
 // MKNOD
 
 class C_MDS_mknod_finish : public ServerLogContext {
@@ -6687,6 +6829,9 @@ public:
     ServerLogContext(s, r), dn(d), newi(ni) {}
   void finish(int r) override {
     ceph_assert(r == 0);
+
+    // crash current MDS and the replacing MDS will test the journal
+    ceph_assert(!g_conf()->mds_kill_skip_replaying_inotable);
 
     // link the inode
     dn->pop_projected_linkage();
@@ -6736,7 +6881,7 @@ void Server::handle_client_mknod(MDRequestRef& mdr)
     mode |= S_IFREG;
 
   mdr->disable_lock_cache();
-  CDentry *dn = rdlock_path_xlock_dentry(mdr, true, false, S_ISREG(mode));
+  CDentry *dn = rdlock_path_xlock_dentry(mdr, true, false, false, S_ISREG(mode));
   if (!dn)
     return;
 
@@ -6994,6 +7139,11 @@ void Server::handle_client_symlink(MDRequestRef& mdr)
 
   journal_and_reply(mdr, newi, dn, le, new C_MDS_mknod_finish(this, mdr, dn, newi));
   mds->balancer->maybe_fragment(dir, false);
+
+  // flush the journal as soon as possible
+  if (g_conf()->mds_kill_skip_replaying_inotable) {
+    mdlog->flush();
+  }
 }
 
 
@@ -7113,6 +7263,13 @@ void Server::handle_client_link(MDRequestRef& mdr)
   if (target_pin != dir->inode &&
       target_realm->get_subvolume_ino() !=
       dir->inode->find_snaprealm()->get_subvolume_ino()) {
+    if (target_pin->is_stray()) {
+      mds->locker->drop_locks(mdr.get());
+      targeti->add_waiter(CInode::WAIT_UNLINK,
+                          new C_MDS_RetryRequest(mdcache, mdr));
+      mdlog->flush();
+      return;
+    }
     dout(7) << "target is in different subvolume, failing..." << dendl;
     respond_to_request(mdr, -CEPHFS_EXDEV);
     return;
@@ -7731,6 +7888,11 @@ void Server::handle_client_unlink(MDRequestRef& mdr)
   CDentry *dn = rdlock_path_xlock_dentry(mdr, false, true);
   if (!dn)
     return;
+
+  if (is_reintegrate_pending(dn)) {
+    wait_for_pending_reintegrate(dn, mdr);
+    return;
+  }
 
   // notify replica MDSes the dentry is under unlink
   if (!dn->state_test(CDentry::STATE_UNLINKING)) {
@@ -8928,6 +9090,12 @@ void Server::handle_client_rename(MDRequestRef& mdr)
   C_MDS_rename_finish *fin = new C_MDS_rename_finish(this, mdr, srcdn, destdn, straydn);
 
   journal_and_reply(mdr, srci, destdn, le, fin);
+
+  // trigger to flush mdlog in case reintegrating or migrating the stray dn,
+  // because the link requests maybe waiting.
+  if (srcdn->get_dir()->inode->is_stray()) {
+    mdlog->flush();
+  }
   mds->balancer->maybe_fragment(destdn->get_dir(), false);
 }
 
@@ -9386,6 +9554,16 @@ void Server::_rename_prepare(MDRequestRef& mdr,
       mdcache->journal_cow_dentry(mdr.get(), metablob, destdn, CEPH_NOSNAP, 0, destdnl);
 
     destdn->first = mdcache->get_global_snaprealm()->get_newest_seq() + 1;
+    {
+      auto do_corruption = inject_rename_corrupt_dentry_first;
+      if (unlikely(do_corruption > 0.0)) {
+        auto r = ceph::util::generate_random_number(0.0, 1.0);
+        if (r < do_corruption) {
+          dout(0) << "corrupting dn: " << *destdn << dendl;
+          destdn->first = -10;
+        }
+      }
+    }
 
     if (destdn->is_auth())
       metablob->add_primary_dentry(destdn, srci, true, true);
@@ -9451,7 +9629,7 @@ void Server::_rename_apply(MDRequestRef& mdr, CDentry *srcdn, CDentry *destdn, C
   // primary+remote link merge?
   bool linkmerge = (srcdnl->get_inode() == oldin);
   if (linkmerge)
-    ceph_assert(srcdnl->is_primary() || destdnl->is_remote());
+    ceph_assert(srcdnl->is_primary() && destdnl->is_remote());
 
   bool new_in_snaprealm = false;
   bool new_oldin_snaprealm = false;
@@ -9527,6 +9705,14 @@ void Server::_rename_apply(MDRequestRef& mdr, CDentry *srcdn, CDentry *destdn, C
   }
 
   srcdn->get_dir()->unlink_inode(srcdn);
+
+  // After the stray dn being unlinked from the corresponding inode in case of
+  // reintegrate_stray/migrate_stray, just wake up the waitiers.
+  MDSContext::vec finished;
+  in->take_waiting(CInode::WAIT_UNLINK, finished);
+  if (!finished.empty()) {
+    mds->queue_waiters(finished);
+  }
 
   // dest
   if (srcdn_was_remote) {

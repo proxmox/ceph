@@ -18,19 +18,18 @@ Linux Kernel
   maintenance" kernel series provided by either http://kernel.org or
   your Linux distribution on any client hosts.
 
-  For RBD, if you choose to *track* long-term kernels, we currently recommend
-  4.x-based "longterm maintenance" kernel series or later:
-
-  - 4.19.z
-  - 4.14.z
-  - 5.x
+  For RBD, if you choose to *track* long-term kernels, we recommend
+  *at least* 4.19-based "longterm maintenance" kernel series.  If you can
+  use a newer "stable" or "longterm maintenance" kernel series, do it.
 
   For CephFS, see the section about `Mounting CephFS using Kernel Driver`_
   for kernel version guidance.
 
   Older kernel client versions may not support your `CRUSH tunables`_ profile
-  or other newer features of the Ceph cluster, requiring the storage cluster
-  to be configured with those features disabled.
+  or other newer features of the Ceph cluster, requiring the storage cluster to
+  be configured with those features disabled. For RBD, a kernel of version 5.3
+  or CentOS 8.2 is the minimum necessary for reasonable support for RBD image
+  features.
 
 
 Platforms
@@ -54,6 +53,11 @@ package (i.e., sysvinit, systemd).
 - **A**: Ceph provides packages and has done comprehensive tests on the software in them.
 - **B**: Ceph provides packages and has done basic tests on the software in them.
 - **C**: Ceph provides packages only. No tests have been done on these releases.
+
+Ceph does not require a specific Linux distribution. Ceph can run on any
+distribution that includes a supported kernel and supported system startup
+framework, for example ``sysvinit`` or ``systemd``. Ceph is sometimes ported to
+non-Linux systems but these are not supported by the core Ceph effort.
 
 .. note::
    **For Centos 7 Users** 

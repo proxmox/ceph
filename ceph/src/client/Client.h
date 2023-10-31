@@ -955,7 +955,7 @@ protected:
   void connect_mds_targets(mds_rank_t mds);
   void send_request(MetaRequest *request, MetaSession *session,
 		    bool drop_cap_releases=false);
-  MRef<MClientRequest> build_client_request(MetaRequest *request);
+  MRef<MClientRequest> build_client_request(MetaRequest *request, mds_rank_t mds);
   void kick_requests(MetaSession *session);
   void kick_requests_closed(MetaSession *session);
   void handle_client_request_forward(const MConstRef<MClientRequestForward>& reply);
@@ -1317,7 +1317,8 @@ private:
 		 const UserPerm& perms);
 
   int _lookup(Inode *dir, const std::string& dname, int mask, InodeRef *target,
-	      const UserPerm& perm, std::string* alternate_name=nullptr);
+	      const UserPerm& perm, std::string* alternate_name=nullptr,
+              bool is_rename=false);
 
   int _link(Inode *in, Inode *dir, const char *name, const UserPerm& perm, std::string alternate_name,
 	    InodeRef *inp = 0);
@@ -1385,6 +1386,7 @@ private:
   int _fsync(Fh *fh, bool syncdataonly);
   int _fsync(Inode *in, bool syncdataonly);
   int _sync_fs();
+  int clear_suid_sgid(Inode *in, const UserPerm& perms, bool defer=false);
   int _fallocate(Fh *fh, int mode, int64_t offset, int64_t length);
   int _getlk(Fh *fh, struct flock *fl, uint64_t owner);
   int _setlk(Fh *fh, struct flock *fl, uint64_t owner, int sleep);
@@ -1562,6 +1564,8 @@ private:
 
   std::map<std::pair<int64_t,std::string>, int> pool_perms;
   std::list<ceph::condition_variable*> waiting_for_pool_perm;
+
+  std::list<ceph::condition_variable*> waiting_for_rename;
 
   uint64_t retries_on_invalidate = 0;
 

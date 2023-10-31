@@ -1212,10 +1212,12 @@ void PGMap::apply_incremental(CephContext *cct, const Incremental& inc)
       stat_osd_sub(t->first, t->second);
       osd_stat.erase(t);
     }
-    for (auto i = pool_statfs.begin();  i != pool_statfs.end(); ++i) {
+    for (auto i = pool_statfs.begin();  i != pool_statfs.end();) {
       if (i->first.second == *p) {
 	pg_pool_sum[i->first.first].sub(i->second);
-	pool_statfs.erase(i);
+	i = pool_statfs.erase(i);
+      } else {
+        ++i;
       }
     }
   }
@@ -1659,6 +1661,7 @@ void PGMap::dump_pg_stats_plain(
     tab.define_column("OMAP_BYTES*", TextTable::LEFT, TextTable::RIGHT);
     tab.define_column("OMAP_KEYS*", TextTable::LEFT, TextTable::RIGHT);
     tab.define_column("LOG", TextTable::LEFT, TextTable::RIGHT);
+    tab.define_column("LOG_DUPS", TextTable::LEFT, TextTable::RIGHT);
     tab.define_column("DISK_LOG", TextTable::LEFT, TextTable::RIGHT);
     tab.define_column("STATE", TextTable::LEFT, TextTable::RIGHT);
     tab.define_column("STATE_STAMP", TextTable::LEFT, TextTable::RIGHT);
@@ -1702,6 +1705,7 @@ void PGMap::dump_pg_stats_plain(
           << st.stats.sum.num_omap_bytes
           << st.stats.sum.num_omap_keys
           << st.log_size
+          << st.log_dups_size
           << st.ondisk_log_size
           << pg_state_string(st.state)
           << st.last_change
@@ -2242,6 +2246,7 @@ void PGMap::dump_filtered_pg_stats(ostream& ss, set<pg_t>& pgs) const
   tab.define_column("OMAP_BYTES*", TextTable::LEFT, TextTable::RIGHT);
   tab.define_column("OMAP_KEYS*", TextTable::LEFT, TextTable::RIGHT);
   tab.define_column("LOG", TextTable::LEFT, TextTable::RIGHT);
+  tab.define_column("LOG_DUPS", TextTable::LEFT, TextTable::RIGHT);
   tab.define_column("STATE", TextTable::LEFT, TextTable::RIGHT);
   tab.define_column("SINCE", TextTable::LEFT, TextTable::RIGHT);
   tab.define_column("VERSION", TextTable::LEFT, TextTable::RIGHT);
@@ -2271,6 +2276,7 @@ void PGMap::dump_filtered_pg_stats(ostream& ss, set<pg_t>& pgs) const
         << st.stats.sum.num_omap_bytes
         << st.stats.sum.num_omap_keys
         << st.log_size
+        << st.log_dups_size
         << pg_state_string(st.state)
         << utimespan_str(now - st.last_change)
         << st.version
@@ -3333,19 +3339,9 @@ void PGMap::get_health_checks(
     for (auto &it : pools) {
       const pg_pool_t &pool = it.second;
       const string& pool_name = osdmap.get_pool_name(it.first);
-      auto it2 = pg_pool_sum.find(it.first);
-      if (it2 == pg_pool_sum.end()) {
-        continue;
-      }
-      const pool_stat_t *pstat = &it2->second;
-      if (pstat == nullptr) {
-        continue;
-      }
-      const object_stat_sum_t& sum = pstat->stats.sum;
       // application metadata is not encoded until luminous is minimum
       // required release
-      if (sum.num_objects > 0 && pool.application_metadata.empty() &&
-          !pool.is_tier()) {
+      if (pool.application_metadata.empty() && !pool.is_tier()) {
         stringstream ss;
         ss << "application not enabled on pool '" << pool_name << "'";
         detail.push_back(ss.str());

@@ -1,115 +1,132 @@
 .. _rados-troubleshooting-mon:
 
-=================================
+==========================
  Troubleshooting Monitors
-=================================
+==========================
 
 .. index:: monitor, high availability
 
-When a cluster encounters monitor-related troubles there's a tendency to
-panic, and sometimes with good reason. Losing one or more monitors doesn't
-necessarily mean that your cluster is down, so long as a majority are up,
-running, and form a quorum.
-Regardless of how bad the situation is, the first thing you should do is to
-calm down, take a breath, and step through the below troubleshooting steps.
+If a cluster encounters monitor-related problems, this does not necessarily
+mean that the cluster is in danger of going down. Even if multiple monitors are
+lost, the cluster can still be up and running, as long as there are enough
+surviving monitors to form a quorum.
+
+However serious your cluster's monitor-related problems might be, we recommend
+that you take the following troubleshooting steps.
 
 
 Initial Troubleshooting
-========================
-
+=======================
 
 **Are the monitors running?**
 
-  First of all, we need to make sure the monitor (*mon*) daemon processes
-  (``ceph-mon``) are running.  You would be amazed by how often Ceph admins
-  forget to start the mons, or to restart them after an upgrade. There's no
-  shame, but try to not lose a couple of hours looking for a deeper problem.
-  When running Kraken or later releases also ensure that the manager
-  daemons (``ceph-mgr``) are running, usually alongside each ``ceph-mon``.
- 
+  First, make sure that the monitor (*mon*) daemon processes (``ceph-mon``) are
+  running. Sometimes Ceph admins either forget to start the mons or forget to
+  restart the mons after an upgrade. Checking for this simple oversight can
+  save hours of painstaking troubleshooting. It is also important to make sure
+  that the manager daemons (``ceph-mgr``) are running. Remember that typical
+  cluster configurations provide one ``ceph-mgr`` for each ``ceph-mon``.
 
-**Are you able to reach to the mon nodes?**
+  .. note:: Rook will not run more than two managers.
 
-  Doesn't happen often, but sometimes there are ``iptables`` rules that
-  block access to mon nodes or TCP ports. These may be leftovers from
-  prior stress-testing or rule development. Try SSHing into
-  the server and, if that succeeds, try connecting to the monitor's ports
-  (``tcp/3300`` and ``tcp/6789``) using a ``telnet``, ``nc``, or similar tools.
+**Can you reach the monitor nodes?**
 
-**Does ceph -s run and obtain a reply from the cluster?**
+  In certain rare cases, there may be ``iptables`` rules that block access to
+  monitor nodes or TCP ports. These rules might be left over from earlier
+  stress testing or rule development. To check for the presence of such rules,
+  SSH into the server and then try to connect to the monitor's ports
+  (``tcp/3300`` and ``tcp/6789``) using ``telnet``, ``nc``, or a similar tool.
 
-  If the answer is yes then your cluster is up and running.  One thing you
-  can take for granted is that the monitors will only answer to a ``status``
-  request if there is a formed quorum.  Also check that at least one ``mgr``
-  daemon is reported as running, ideally all of them.
+**Does the ``ceph status`` command run and receive a reply from the cluster?**
 
-  If ``ceph -s`` hangs without obtaining a reply from the cluster
-  or showing ``fault`` messages, then it is likely that your monitors
-  are either down completely or just a fraction are up -- a fraction
-  insufficient to form a majority quorum.  This check will connect to an
-  arbitrary mon; in rare cases it may be illuminating to bind to specific
-  mons in sequence by adding e.g. ``-m mymon1`` to the command.
+  If the ``ceph status`` command does receive a reply from the cluster, then the
+  cluster is up and running. The monitors will answer to a ``status`` request
+  only if there is a formed quorum. Confirm that one or more ``mgr`` daemons
+  are reported as running. Under ideal conditions, all ``mgr`` daemons will be
+  reported as running.
 
-**What if ceph -s doesn't come back?**
 
-  If you haven't gone through all the steps so far, please go back and do.
+  If the ``ceph status`` command does not receive a reply from the cluster, then
+  there are probably not enough monitors ``up`` to form a quorum.  The ``ceph
+  -s`` command with no further options specified connects to an arbitrarily
+  selected monitor. In certain cases, however, it might be helpful to connect
+  to a specific monitor (or to several specific monitors in sequence) by adding
+  the ``-m`` flag to the command: for example, ``ceph status -m mymon1``.
 
-  You can contact each monitor individually asking them for their status,
-  regardless of a quorum being formed. This can be achieved using
-  ``ceph tell mon.ID mon_status``, ID being the monitor's identifier. You should
-  perform this for each monitor in the cluster. In section `Understanding
-  mon_status`_ we will explain how to interpret the output of this command.
 
-  You may instead SSH into each mon node and query the daemon's admin socket.
+**None of this worked. What now?**
 
+  If the above solutions have not resolved your problems, you might find it
+  helpful to examine each individual monitor in turn. Whether or not a quorum
+  has been formed, it is possible to contact each monitor individually and
+  request its status by using the ``ceph tell mon.ID mon_status`` command (here
+  ``ID`` is the monitor's identifier).
+
+  Run the ``ceph tell mon.ID mon_status`` command for each monitor in the
+  cluster. For more on this command's output, see :ref:`Understanding
+  mon_status
+  <rados_troubleshoting_troubleshooting_mon_understanding_mon_status>`.
+
+  There is also an alternative method: SSH into each monitor node and query the
+  daemon's admin socket. See :ref:`Using the Monitor's Admin
+  Socket<rados_troubleshoting_troubleshooting_mon_using_admin_socket>`.
+
+.. _rados_troubleshoting_troubleshooting_mon_using_admin_socket:
 
 Using the monitor's admin socket
-=================================
+================================
 
-The admin socket allows you to interact with a given daemon directly using a
-Unix socket file. This file can be found in your monitor's ``run`` directory.
-By default, the admin socket will be kept in ``/var/run/ceph/ceph-mon.ID.asok``
-but this may be elsewhere if you have overridden the default directory. If you
-don't find it there, check your ``ceph.conf`` for an alternative path or
-run::
+A monitor's admin socket allows you to interact directly with a specific daemon
+by using a Unix socket file. This file is found in the monitor's ``run``
+directory. The admin socket's default directory is
+``/var/run/ceph/ceph-mon.ID.asok``, but this can be overridden and the admin
+socket might be elsewhere, especially if your cluster's daemons are deployed in
+containers. If you cannot find it, either check your ``ceph.conf`` for an
+alternative path or run the following command:
+    
+.. prompt:: bash $
 
-  ceph-conf --name mon.ID --show-config-value admin_socket
+   ceph-conf --name mon.ID --show-config-value admin_socket
 
-Bear in mind that the admin socket will be available only while the monitor
-daemon is running. When the monitor is properly shut down, the admin socket
-will be removed. If however the monitor is not running and the admin socket
-persists, it is likely that the monitor was improperly shut down.
-Regardless, if the monitor is not running, you will not be able to use the
-admin socket, with ``ceph`` likely returning ``Error 111: Connection Refused``.
+The admin socket is available for use only when the monitor daemon is running.
+Whenever the monitor has been properly shut down, the admin socket is removed.
+However, if the monitor is not running and the admin socket persists, it is
+likely that the monitor has been improperly shut down.  In any case, if the
+monitor is not running, it will be impossible to use the admin socket, and the
+``ceph`` command is likely to return ``Error 111: Connection Refused``.
 
-Accessing the admin socket is as simple as running ``ceph tell`` on the daemon
-you are interested in. For example::
+To access the admin socket, run a ``ceph tell`` command of the following form
+(specifying the daemon that you are interested in):
 
-  ceph tell mon.<id> mon_status
+.. prompt:: bash $
 
-Under the hood, this passes the command ``help`` to the running MON daemon
-``<id>`` via its "admin socket", which is a file ending in ``.asok``
-somewhere under ``/var/run/ceph``. Once you know the full path to the file,
-you can even do this yourself::
+   ceph tell mon.<id> mon_status
 
-  ceph --admin-daemon <full_path_to_asok_file> <command>
+This command passes a ``help`` command to the specific running monitor daemon
+``<id>`` via its admin socket. If you know the full path to the admin socket
+file, this can be done more directly by running the following command:
 
-Using ``help`` as the command to the ``ceph`` tool will show you the
-supported commands available through the admin socket. Please take a look
-at ``config get``, ``config show``, ``mon stat`` and ``quorum_status``,
-as those can be enlightening when troubleshooting a monitor.
+.. prompt:: bash $
 
+   ceph --admin-daemon <full_path_to_asok_file> <command>
+
+Running ``ceph help`` shows all supported commands that are available through
+the admin socket. See especially ``config get``, ``config show``, ``mon stat``,
+and ``quorum_status``.
+
+.. _rados_troubleshoting_troubleshooting_mon_understanding_mon_status:
 
 Understanding mon_status
-=========================
+========================
 
-``mon_status`` can always be obtained via the admin socket. This command will
-output a multitude of information about the monitor, including the same output
-you would get with ``quorum_status``.
+The status of the monitor (as reported by the ``ceph tell mon.X mon_status``
+command) can always be obtained via the admin socket. This command outputs a
+great deal of information about the monitor (including the information found in
+the output of the ``quorum_status`` command).
 
-Take the following example output of ``ceph tell mon.c mon_status``::
+To understand this command's output, let us consider the following example, in
+which we see the output of ``ceph tell mon.c mon_status``::
 
-  
   { "name": "c",
     "rank": 2,
     "state": "peon",
@@ -135,27 +152,30 @@ Take the following example output of ``ceph tell mon.c mon_status``::
                 "name": "c",
                 "addr": "127.0.0.1:6795\/0"}]}}
 
-A couple of things are obvious: we have three monitors in the monmap (*a*, *b*
-and *c*), the quorum is formed by only two monitors, and *c* is in the quorum
-as a *peon*.
+It is clear that there are three monitors in the monmap (*a*, *b*, and *c*),
+the quorum is formed by only two monitors, and *c* is in the quorum as a
+*peon*.
 
-Which monitor is out of the quorum?
+**Which monitor is out of the quorum?**
 
-  The answer would be **a**.
+  The answer is **a** (that is, ``mon.a``).
 
-Why?
+**Why?**
 
-  Take a look at the ``quorum`` set. We have two monitors in this set: *1*
-  and *2*. These are not monitor names. These are monitor ranks, as established
-  in the current monmap. We are missing the monitor with rank 0, and according
-  to the monmap that would be ``mon.a``.
+  When the ``quorum`` set is examined, there are clearly two monitors in the
+  set: *1* and *2*. But these are not monitor names. They are monitor ranks, as
+  established in the current ``monmap``. The ``quorum`` set does not include
+  the monitor that has rank 0, and according to the ``monmap`` that monitor is
+  ``mon.a``.
 
-By the way, how are ranks established?
+**How are monitor ranks determined?**
 
-  Ranks are (re)calculated whenever you add or remove monitors and follow a
-  simple rule: the **greater** the ``IP:PORT`` combination, the **lower** the
-  rank is. In this case, considering that ``127.0.0.1:6789`` is lower than all
-  the remaining ``IP:PORT`` combinations, ``mon.a`` has rank 0.
+  Monitor ranks are calculated (or recalculated) whenever monitors are added or
+  removed. The calculation of ranks follows a simple rule: the **greater** the
+  ``IP:PORT`` combination, the **lower** the rank. In this case, because
+  ``127.0.0.1:6789`` is lower than the other two ``IP:PORT`` combinations,
+  ``mon.a`` has the highest rank: namely, rank 0.
+  
 
 Most Common Monitor Issues
 ===========================
@@ -186,25 +206,25 @@ How to troubleshoot this?
   socket as explained in `Using the monitor's admin socket`_ and
   `Understanding mon_status`_.
 
-  If the monitor is out of the quorum, its state should be one of
-  ``probing``, ``electing`` or ``synchronizing``. If it happens to be either
-  ``leader`` or ``peon``, then the monitor believes to be in quorum, while
-  the remaining cluster is sure it is not; or maybe it got into the quorum
-  while we were troubleshooting the monitor, so check you ``ceph -s`` again
-  just to make sure. Proceed if the monitor is not yet in the quorum.
+  If the monitor is out of the quorum, its state should be one of ``probing``,
+  ``electing`` or ``synchronizing``. If it happens to be either ``leader`` or
+  ``peon``, then the monitor believes to be in quorum, while the remaining
+  cluster is sure it is not; or maybe it got into the quorum while we were
+  troubleshooting the monitor, so check you ``ceph status`` again just to make
+  sure. Proceed if the monitor is not yet in the quorum.
 
 What if the state is ``probing``?
 
   This means the monitor is still looking for the other monitors. Every time
-  you start a monitor, the monitor will stay in this state for some time
-  while trying to connect the rest of the monitors specified in the ``monmap``.
-  The time a monitor will spend in this state can vary. For instance, when on
-  a single-monitor cluster (never do this in production),
-  the monitor will pass through the probing state almost instantaneously.
-  In a multi-monitor cluster, the monitors will stay in this state until they
-  find enough monitors to form a quorum -- this means that if you have 2 out
-  of 3 monitors down, the one remaining monitor will stay in this state
-  indefinitely until you bring one of the other monitors up.
+  you start a monitor, the monitor will stay in this state for some time while
+  trying to connect the rest of the monitors specified in the ``monmap``.  The
+  time a monitor will spend in this state can vary. For instance, when on a
+  single-monitor cluster (never do this in production), the monitor will pass
+  through the probing state almost instantaneously.  In a multi-monitor
+  cluster, the monitors will stay in this state until they find enough monitors
+  to form a quorum |---| this means that if you have 2 out of 3 monitors down, the
+  one remaining monitor will stay in this state indefinitely until you bring
+  one of the other monitors up.
 
   If you have a quorum the starting daemon should be able to find the
   other monitors quickly, as long as they can be reached. If your
@@ -297,18 +317,21 @@ Scrap the monitor and redeploy
 
 Inject a monmap into the monitor
 
-  Usually the safest path. You should grab the monmap from the remaining
-  monitors and inject it into the monitor with the corrupted/lost monmap.
-
   These are the basic steps:
 
-  1. Is there a formed quorum? If so, grab the monmap from the quorum::
+  Retrieve the ``monmap`` from the surviving monitors and inject it into the
+  monitor whose ``monmap`` is corrupted or lost.
+
+  Implement this solution by carrying out the following procedure:
+
+  1. Is there a quorum of monitors? If so, retrieve the ``monmap`` from the
+     quorum::
 
       $ ceph mon getmap -o /tmp/monmap
 
-  2. No quorum? Grab the monmap directly from another monitor (this
-     assumes the monitor you are grabbing the monmap from has id ID-FOO
-     and has been stopped)::
+  2. If there is no quorum, then retrieve the ``monmap`` directly from another
+     monitor that has been stopped (in this example, the other monitor has
+     the ID ``ID-FOO``)::
 
       $ ceph-mon -i ID-FOO --extract-monmap /tmp/monmap
 
@@ -320,97 +343,101 @@ Inject a monmap into the monitor
 
   5. Start the monitor
 
-  Please keep in mind that the ability to inject monmaps is a powerful
-  feature that can cause havoc with your monitors if misused as it will
-  overwrite the latest, existing monmap kept by the monitor.
-
+  .. warning:: Injecting ``monmaps`` can cause serious problems because doing
+     so will overwrite the latest existing ``monmap`` stored on the monitor. Be
+     careful!
 
 Clock Skews
-------------
+-----------
 
-Monitor operation can be severely affected by clock skew among the quorum's
-mons, as the PAXOS consensus algorithm requires tight time alignment.
-Skew can result in weird behavior with no obvious
-cause. To avoid such issues, you must run a clock synchronization tool
-on your monitor nodes:  ``Chrony`` or the legacy ``ntpd``.  Be sure to
-configure the mon nodes with the `iburst` option and multiple peers:
+The Paxos consensus algorithm requires tight time alignment. For this reason,
+clock skew among the monitors in the quorum can have a serious effect on
+monitor operation. The resulting behavior can be very puzzling. To avoid
+this kind of issue, run a clock synchronization tool on your monitor nodes:
+for example, ``Chrony`` or the legacy ``ntpd`` utility. Be sure to configure
+the monitor nodes with the `iburst` option and multiple peers:
 
 * Each other
 * Internal ``NTP`` servers
 * Multiple external, public pool servers
 
-For good measure, *all* nodes in your cluster should also sync against
-internal and external servers, and perhaps even your mons.  ``NTP`` servers
-should run on bare metal; VM virtualized clocks are not suitable for steady
-timekeeping.  Visit `https://www.ntp.org <https://www.ntp.org>`_ for more info.  Your
-organization may already have quality internal ``NTP`` servers you can use.  
-Sources for ``NTP`` server appliances include:
+.. note:: The ``iburst`` option sends a burst of eight packets instead of the
+   usual single packet, and is used during the process of getting two peers
+   into initial synchronization.
+
+Furthermore, it is advisable to synchronize *all* nodes in your cluster against
+internal and external servers, and perhaps even against your monitors. ``NTP``
+servers should run on bare metal; VM virtualized clocks are not suitable for
+steady timekeeping. For more information, visit `https://www.ntp.org
+<https://www.ntp.org>`_.  Your organization might already have quality internal
+``NTP`` servers available.  Sources for ``NTP`` server appliances include the
+following:
 
 * Microsemi (formerly Symmetricom) `https://microsemi.com <https://www.microsemi.com/product-directory/3425-timing-synchronization>`_
 * EndRun `https://endruntechnologies.com <https://endruntechnologies.com/products/ntp-time-servers>`_
 * Netburner `https://www.netburner.com <https://www.netburner.com/products/network-time-server/pk70-ex-ntp-network-time-server>`_
 
-
 What's the maximum tolerated clock skew?
 
-  By default the monitors will allow clocks to drift up to 0.05 seconds (50 ms).
-
+  By default, monitors allow clocks to drift up to a maximum of 0.05 seconds
+  (50 milliseconds).
 
 Can I increase the maximum tolerated clock skew?
 
-  The maximum tolerated clock skew is configurable via the
-  ``mon-clock-drift-allowed`` option, and
-  although you *CAN* you almost certainly *SHOULDN'T*. The clock skew mechanism
-  is in place because clock-skewed monitors are likely to misbehave. We, as
-  developers and QA aficionados, are comfortable with the current default
-  value, as it will alert the user before the monitors get out hand. Changing
-  this value may cause unforeseen effects on the
-  stability of the monitors and overall cluster health.
+  Yes, but we strongly recommend against doing so. The maximum tolerated clock
+  skew is configurable via the ``mon-clock-drift-allowed`` option, but it is
+  almost certainly a bad idea to make changes to this option. The clock skew
+  maximum is in place because clock-skewed monitors cannot be relied upon. The
+  current default value has proven its worth at alerting the user before the
+  monitors encounter serious problems. Changing this value might cause
+  unforeseen effects on the stability of the monitors and overall cluster
+  health.
 
-How do I know there's a clock skew?
+How do I know whether there is a clock skew?
 
-  The monitors will warn you via the cluster status ``HEALTH_WARN``. ``ceph health
-  detail`` or ``ceph status`` should show something like::
+  The monitors will warn you via the cluster status ``HEALTH_WARN``. When clock
+  skew is present, the ``ceph health detail`` and ``ceph status`` commands
+  return an output resembling the following::
 
       mon.c addr 10.10.0.1:6789/0 clock skew 0.08235s > max 0.05s (latency 0.0045s)
 
-  That means that ``mon.c`` has been flagged as suffering from a clock skew.
+  In this example, the monitor ``mon.c`` has been flagged as suffering from 
+  clock skew.
 
-  On releases beginning with Luminous you can issue the
-  ``ceph time-sync-status`` command to check status.  Note that the lead mon
-  is typically the one with the numerically lowest IP address.  It will always
-  show ``0``: the reported offsets of other mons are relative to
-  the lead mon, not to any external reference source.
+  In Luminous and later releases, it is possible to check for a clock skew by
+  running the ``ceph time-sync-status`` command. Note that the lead monitor
+  typically has the numerically lowest IP address. It will always show ``0``:
+  the reported offsets of other monitors are relative to the lead monitor, not
+  to any external reference source.
 
+What should I do if there is a clock skew?
 
-What should I do if there's a clock skew?
-
-  Synchronize your clocks. Running an NTP client may help. If you are already
-  using one and you hit this sort of issues, check if you are using some NTP
-  server remote to your network and consider hosting your own NTP server on
-  your network.  This last option tends to reduce the amount of issues with
-  monitor clock skews.
+  Synchronize your clocks. Using an NTP client might help. However, if you
+  are already using an NTP client and you still encounter clock skew problems,
+  determine whether the NTP server that you are using is remote to your network
+  or instead hosted on your network. Hosting your own NTP servers tends to
+  mitigate clock skew problems.
 
 
 Client Can't Connect or Mount
-------------------------------
+-----------------------------
 
-Check your IP tables. Some OS install utilities add a ``REJECT`` rule to
-``iptables``. The rule rejects all clients trying to connect to the host except
-for ``ssh``. If your monitor host's IP tables have such a ``REJECT`` rule in
-place, clients connecting from a separate node will fail to mount with a timeout
-error. You need to address ``iptables`` rules that reject clients trying to
-connect to Ceph daemons.  For example, you would need to address rules that look
-like this appropriately::
+Check your IP tables. Some operating-system install utilities add a ``REJECT``
+rule to ``iptables``. ``iptables`` rules will reject all clients other than
+``ssh`` that try to connect to the host. If your monitor host's IP tables have
+a ``REJECT`` rule in place, clients that are connecting from a separate node
+will fail and will raise a timeout error. Any ``iptables`` rules that reject
+clients trying to connect to Ceph daemons must be addressed. For example::
 
-	REJECT all -- anywhere anywhere reject-with icmp-host-prohibited
+    REJECT all -- anywhere anywhere reject-with icmp-host-prohibited
 
-You may also need to add rules to IP tables on your Ceph hosts to ensure
-that clients can access the ports associated with your Ceph monitors (i.e., port
-6789 by default) and Ceph OSDs (i.e., 6800 through 7300 by default). For
+It might also be necessary to add rules to iptables on your Ceph hosts to
+ensure that clients are able to access the TCP ports associated with your Ceph
+monitors (default: port 6789) and Ceph OSDs (default: 6800 through 7300). For
 example::
 
-	iptables -A INPUT -m multiport -p tcp -s {ip-address}/{netmask} --dports 6789,6800:7300 -j ACCEPT
+    iptables -A INPUT -m multiport -p tcp -s {ip-address}/{netmask} --dports 6789,6800:7300 -j ACCEPT
+
 
 Monitor Store Failures
 ======================
@@ -418,9 +445,9 @@ Monitor Store Failures
 Symptoms of store corruption
 ----------------------------
 
-Ceph monitor stores the :term:`Cluster Map` in a key/value store such as LevelDB. If
-a monitor fails due to the key/value store corruption, following error messages
-might be found in the monitor log::
+Ceph monitors store the :term:`Cluster Map` in a key-value store.  If key-value
+store corruption causes a monitor to fail, then the monitor log might contain
+one of the following error messages::
 
   Corruption: error in middle of record
 
@@ -431,21 +458,26 @@ or::
 Recovery using healthy monitor(s)
 ---------------------------------
 
-If there are any survivors, we can always :ref:`replace <adding-and-removing-monitors>` the corrupted one with a
-new one. After booting up, the new joiner will sync up with a healthy
-peer, and once it is fully sync'ed, it will be able to serve the clients.
+If there are surviving monitors, we can always :ref:`replace
+<adding-and-removing-monitors>` the corrupted monitor with a new one. After the
+new monitor boots, it will synchronize with a healthy peer. After the new
+monitor is fully synchronized, it will be able to serve clients.
 
 .. _mon-store-recovery-using-osds:
 
 Recovery using OSDs
 -------------------
 
-But what if all monitors fail at the same time? Since users are encouraged to
-deploy at least three (and preferably five) monitors in a Ceph cluster, the chance of simultaneous
-failure is rare. But unplanned power-downs in a data center with improperly
-configured disk/fs settings could fail the underlying file system, and hence
-kill all the monitors. In this case, we can recover the monitor store with the
-information stored in OSDs.
+Even if all monitors fail at the same time, it is possible to recover the
+monitor store by using information stored in OSDs. You are encouraged to deploy
+at least three (and preferably five) monitors in a Ceph cluster. In such a
+deployment, complete monitor failure is unlikely. However, unplanned power loss
+in a data center whose disk settings or filesystem settings are improperly
+configured could cause the underlying filesystem to fail and this could kill
+all of the monitors. In such a case, data in the OSDs can be used to recover
+the monitors.  The following is such a script and can be used to recover the
+monitors:
+
 
 .. code-block:: bash
 
@@ -496,123 +528,144 @@ information stored in OSDs.
   mv $ms/store.db /var/lib/ceph/mon/mon.foo/store.db
   chown -R ceph:ceph /var/lib/ceph/mon/mon.foo/store.db
 
-The steps above
+This script performs the following steps:
 
-#. collect the map from all OSD hosts,
-#. then rebuild the store,
-#. fill the entities in keyring file with appropriate caps
-#. replace the corrupted store on ``mon.foo`` with the recovered copy.
+#. Collects the map from each OSD host.
+#. Rebuilds the store.
+#. Fills the entities in the keyring file with appropriate capabilities.
+#. Replaces the corrupted store on ``mon.foo`` with the recovered copy.
+
 
 Known limitations
 ~~~~~~~~~~~~~~~~~
 
-Following information are not recoverable using the steps above:
+The above recovery tool is unable to recover the following information:
 
-- **some added keyrings**: all the OSD keyrings added using ``ceph auth add`` command
-  are recovered from the OSD's copy. And the ``client.admin`` keyring is imported
-  using ``ceph-monstore-tool``. But the MDS keyrings and other keyrings are missing
-  in the recovered monitor store. You might need to re-add them manually.
+- **Certain added keyrings**: All of the OSD keyrings added using the ``ceph
+  auth add`` command are recovered from the OSD's copy, and the
+  ``client.admin`` keyring is imported using ``ceph-monstore-tool``. However,
+  the MDS keyrings and all other keyrings will be missing in the recovered
+  monitor store. You might need to manually re-add them.
 
-- **creating pools**: If any RADOS pools were in the process of being creating, that state is lost.  The recovery tool assumes that all pools have been created.  If there are PGs that are stuck in the 'unknown' after the recovery for a partially created pool, you can force creation of the *empty* PG with the ``ceph osd force-create-pg`` command.  Note that this will create an *empty* PG, so only do this if you know the pool is empty.
+- **Creating pools**: If any RADOS pools were in the process of being created,
+  that state is lost. The recovery tool operates on the assumption that all
+  pools have already been created. If there are PGs that are stuck in the
+  'unknown' state after the recovery for a partially created pool, you can
+  force creation of the *empty* PG by running the ``ceph osd force-create-pg``
+  command. Note that this will create an *empty* PG, so take this action only
+  if you know the pool is empty.
 
-- **MDS Maps**: the MDS maps are lost.
-
+- **MDS Maps**: The MDS maps are lost.
 
 
 Everything Failed! Now What?
-=============================
+============================
 
 Reaching out for help
-----------------------
+---------------------
 
-You can find us on IRC at #ceph and #ceph-devel at OFTC (server irc.oftc.net)
-and on ``dev@ceph.io`` and ``ceph-users@lists.ceph.com``. Make
-sure you have grabbed your logs and have them ready if someone asks: the faster
-the interaction and lower the latency in response, the better chances everyone's
-time is optimized.
+You can find help on IRC in #ceph and #ceph-devel on OFTC (server
+irc.oftc.net), or at ``dev@ceph.io`` and ``ceph-users@lists.ceph.com``. Make
+sure that you have prepared your logs and that you have them ready upon
+request.
+
+See https://ceph.io/en/community/connect/ for current (as of October 2023)
+information on getting in contact with the upstream Ceph community.
 
 
 Preparing your logs
----------------------
+-------------------
 
-Monitor logs are, by default, kept in ``/var/log/ceph/ceph-mon.FOO.log*``. We
-may want them. However, your logs may not have the necessary information. If
-you don't find your monitor logs at their default location, you can check
-where they should be by running::
+The default location for monitor logs is ``/var/log/ceph/ceph-mon.FOO.log*``.
+However, if they are not there, you can find their current location by running
+the following command:
 
-  ceph-conf --name mon.FOO --show-config-value log_file
+.. prompt:: bash
 
-The amount of information in the logs are subject to the debug levels being
-enforced by your configuration files. If you have not enforced a specific
-debug level then Ceph is using the default levels and your logs may not
-contain important information to track down you issue.
-A first step in getting relevant information into your logs will be to raise
-debug levels. In this case we will be interested in the information from the
-monitor.
-Similarly to what happens on other components, different parts of the monitor
-will output their debug information on different subsystems.
+   ceph-conf --name mon.FOO --show-config-value log_file
 
-You will have to raise the debug levels of those subsystems more closely
-related to your issue. This may not be an easy task for someone unfamiliar
-with troubleshooting Ceph. For most situations, setting the following options
-on your monitors will be enough to pinpoint a potential source of the issue::
+The amount of information in the logs is determined by the debug levels in the
+cluster's configuration files. If Ceph is using the default debug levels, then
+your logs might be missing important information that would help the upstream
+Ceph community address your issue.
+
+To make sure your monitor logs contain relevant information, you can raise
+debug levels. Here we are interested in information from the monitors.  As with
+other components, the monitors have different parts that output their debug
+information on different subsystems.
+
+If you are an experienced Ceph troubleshooter, we recommend raising the debug
+levels of the most relevant subsystems. Of course, this approach might not be
+easy for beginners. In most cases, however, enough information to address the
+issue will be secured if the following debug levels are entered::
 
       debug mon = 10
       debug ms = 1
 
-If we find that these debug levels are not enough, there's a chance we may
-ask you to raise them or even define other debug subsystems to obtain infos
-from -- but at least we started off with some useful information, instead
-of a massively empty log without much to go on with.
+Sometimes these debug levels do not yield enough information. In such cases,
+members of the upstream Ceph community might ask you to make additional changes
+to these or to other debug levels. In any case, it is better for us to receive
+at least some useful information than to receive an empty log.
+
 
 Do I need to restart a monitor to adjust debug levels?
 ------------------------------------------------------
 
-No. You may do it in one of two ways:
+No, restarting a monitor is not necessary. Debug levels may be adjusted by
+using two different methods, depending on whether or not there is a quorum:
 
-You have quorum
+There is a quorum
 
-  Either inject the debug option into the monitor you want to debug::
+  Either inject the debug option into the specific monitor that needs to 
+  be debugged::
 
         ceph tell mon.FOO config set debug_mon 10/10
 
-  or into all monitors at once::
+  Or inject it into all monitors at once::
 
         ceph tell mon.* config set debug_mon 10/10
 
-No quorum
 
-  Use the monitor's admin socket and directly adjust the configuration
-  options::
+There is no quorum
+
+  Use the admin socket of the specific monitor that needs to be debugged
+  and directly adjust the monitor's configuration options::
 
       ceph daemon mon.FOO config set debug_mon 10/10
 
 
-Going back to default values is as easy as rerunning the above commands
-using the debug level ``1/10`` instead.  You can check your current
-values using the admin socket and the following commands::
+To return the debug levels to their default values, run the above commands
+using the debug level ``1/10`` rather than ``10/10``. To check a monitor's
+current values, use the admin socket and run either of the following commands:
 
-      ceph daemon mon.FOO config show
+  .. prompt:: bash
 
-or::
+     ceph daemon mon.FOO config show
 
-      ceph daemon mon.FOO config get 'OPTION_NAME'
+or:
+
+  .. prompt:: bash
+
+     ceph daemon mon.FOO config get 'OPTION_NAME'
 
 
-Reproduced the problem with appropriate debug levels. Now what?
-----------------------------------------------------------------
 
-Ideally you would send us only the relevant portions of your logs.
-We realise that figuring out the corresponding portion may not be the
-easiest of tasks. Therefore, we won't hold it to you if you provide the
-full log, but common sense should be employed. If your log has hundreds
-of thousands of lines, it may get tricky to go through the whole thing,
-specially if we are not aware at which point, whatever your issue is,
-happened. For instance, when reproducing, keep in mind to write down
-current time and date and to extract the relevant portions of your logs
-based on that.
+I Reproduced the problem with appropriate debug levels. Now what?
+-----------------------------------------------------------------
 
-Finally, you should reach out to us on the mailing lists, on IRC or file
-a new issue on the `tracker`_.
+We prefer that you send us only the portions of your logs that are relevant to
+your monitor problems. Of course, it might not be easy for you to determine
+which portions are relevant so we are willing to accept complete and
+unabridged logs. However, we request that you avoid sending logs containing
+hundreds of thousands of lines with no additional clarifying information. One
+common-sense way of making our task easier is to write down the current time
+and date when you are reproducing the problem and then extract portions of your
+logs based on that information.
+
+Finally, reach out to us on the mailing lists or IRC or Slack, or by filing a
+new issue on the `tracker`_.
 
 .. _tracker: http://tracker.ceph.com/projects/ceph/issues/new
+
+.. |---|   unicode:: U+2014 .. EM DASH
+   :trim:
