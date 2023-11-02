@@ -1,3 +1,11 @@
+ceph (17.2.7-pve1) bookworm; urgency=medium
+
+  * new upstream quincy 17.2.7 stable release
+
+  * add stop-gap to fix compat with CPUs not supporting SSE 4.1
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 31 Oct 2023 10:25:31 +0100
+
 ceph (17.2.6-pve1+3) bookworm; urgency=medium
 
   * rebuild for Proxmox VE 8.x based on Debian 12 Bookworm
