@@ -1,12 +1,10 @@
 #!/usr/bin/python3
 
-import logging as log
 import time
-import subprocess
+import logging as log
 import json
-import boto3
-import botocore.exceptions
 import os
+from common import exec_cmd, boto_connect, create_user, put_objects, create_unlinked_objects
 
 """
 Rgw manual and dynamic resharding  testing against a running instance
@@ -18,11 +16,6 @@ Rgw manual and dynamic resharding  testing against a running instance
 #
 #
 
-log.basicConfig(level=log.DEBUG)
-log.getLogger('botocore').setLevel(log.CRITICAL)
-log.getLogger('boto3').setLevel(log.CRITICAL)
-log.getLogger('urllib3').setLevel(log.CRITICAL)
-
 """ Constants """
 USER = 'tester'
 DISPLAY_NAME = 'Testing'
@@ -32,23 +25,6 @@ BUCKET_NAME1 = 'myfoo'
 BUCKET_NAME2 = 'mybar'
 VER_BUCKET_NAME = 'myver'
 INDEX_POOL = 'default.rgw.buckets.index'
-
-
-def exec_cmd(cmd):
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        out, err = proc.communicate()
-        if proc.returncode == 0:
-            log.info('command succeeded')
-            if out is not None: log.info(out)
-            return out
-        else:
-            raise Exception("error: %s \nreturncode: %s" % (err, proc.returncode))
-    except Exception as e:
-        log.error('command failed')
-        log.error(e)
-        return False
-
 
 class BucketStats:
     def __init__(self, bucket_name, bucket_id, num_objs=0, size_kb=0, num_shards=0):
@@ -98,42 +74,15 @@ def main():
     """
     execute manual and dynamic resharding commands
     """
-    # create user
-    exec_cmd('radosgw-admin user create --uid %s --display-name %s --access-key %s --secret %s'
-                   % (USER, DISPLAY_NAME, ACCESS_KEY, SECRET_KEY))
+    create_user(USER, DISPLAY_NAME, ACCESS_KEY, SECRET_KEY)
 
-    def boto_connect(portnum, ssl, proto):
-        endpoint = proto + '://localhost:' + portnum
-        conn = boto3.resource('s3',
-                              aws_access_key_id=ACCESS_KEY,
-                              aws_secret_access_key=SECRET_KEY,
-                              use_ssl=ssl,
-                              endpoint_url=endpoint,
-                              verify=False,
-                              config=None,
-                              )
-        try:
-            list(conn.buckets.limit(1)) # just verify we can list buckets
-        except botocore.exceptions.ConnectionError as e:
-            print(e)
-            raise
-        print('connected to', endpoint)
-        return conn
-
-    try:
-        connection = boto_connect('80', False, 'http')
-    except botocore.exceptions.ConnectionError:
-        try: # retry on non-privileged http port
-            connection = boto_connect('8000', False, 'http')
-        except botocore.exceptions.ConnectionError:
-            # retry with ssl
-            connection = boto_connect('443', True, 'https')
+    connection = boto_connect(ACCESS_KEY, SECRET_KEY)
 
     # create a bucket
     bucket1 = connection.create_bucket(Bucket=BUCKET_NAME1)
     bucket2 = connection.create_bucket(Bucket=BUCKET_NAME2)
     ver_bucket = connection.create_bucket(Bucket=VER_BUCKET_NAME)
-    connection.BucketVersioning('ver_bucket')
+    connection.BucketVersioning(VER_BUCKET_NAME).enable()
 
     bucket_stats1 = get_bucket_stats(BUCKET_NAME1)
     bucket_stats2 = get_bucket_stats(BUCKET_NAME2)
@@ -249,6 +198,38 @@ def main():
     cmd = exec_cmd('radosgw-admin bi list --bucket %s' % BUCKET_NAME1)
     json_op = json.loads(cmd)
     assert len(json_op) == 0
+
+    # TESTCASE 'check that PUT succeeds during reshard'
+    log.debug(' test: PUT succeeds during reshard')
+    num_shards = get_bucket_stats(VER_BUCKET_NAME).num_shards
+    exec_cmd('''radosgw-admin --inject-delay-at=do_reshard --inject-delay-ms=5000 \
+                bucket reshard --bucket {} --num-shards {}'''
+                .format(VER_BUCKET_NAME, num_shards + 1), wait = False)
+    time.sleep(1)
+    ver_bucket.put_object(Key='put_during_reshard', Body=b"some_data")
+    log.debug('put object successful')
+
+    # TESTCASE 'check that bucket stats are correct after reshard with unlinked entries'
+    log.debug('TEST: check that bucket stats are correct after reshard with unlinked entries\n')
+    ver_bucket.object_versions.all().delete()
+    ok_keys = ['a', 'b', 'c']
+    unlinked_keys = ['x', 'y', 'z']
+    put_objects(ver_bucket, ok_keys)
+    create_unlinked_objects(connection, ver_bucket, unlinked_keys)
+    cmd = exec_cmd(f'radosgw-admin bucket reshard --bucket {VER_BUCKET_NAME} --num-shards 17 --yes-i-really-mean-it')
+    out = exec_cmd(f'radosgw-admin bucket check unlinked --bucket {VER_BUCKET_NAME} --fix --min-age-hours 0 --rgw-olh-pending-timeout-sec 0 --dump-keys')
+    json_out = json.loads(out)
+    assert len(json_out) == len(unlinked_keys)
+    ver_bucket.object_versions.all().delete()
+    out = exec_cmd(f'radosgw-admin bucket stats --bucket {VER_BUCKET_NAME}')
+    json_out = json.loads(out)
+    log.debug(json_out['usage'])
+    assert json_out['usage']['rgw.main']['size'] == 0
+    assert json_out['usage']['rgw.main']['num_objects'] == 0
+    assert json_out['usage']['rgw.main']['size_actual'] == 0
+    assert json_out['usage']['rgw.main']['size_kb'] == 0
+    assert json_out['usage']['rgw.main']['size_kb_actual'] == 0
+    assert json_out['usage']['rgw.main']['size_kb_utilized'] == 0
 
     # Clean up
     log.debug("Deleting bucket %s", BUCKET_NAME1)

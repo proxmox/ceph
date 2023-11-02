@@ -418,7 +418,6 @@ void AvlAllocator::_dump() const
       << std::dec
       << dendl;
   }
-
   ldout(cct, 0) << __func__ << " range_size_tree: " << dendl;
   for (auto& rs : range_size_tree) {
     ldout(cct, 0) << std::hex
@@ -428,7 +427,15 @@ void AvlAllocator::_dump() const
   }
 }
 
-void AvlAllocator::dump(std::function<void(uint64_t offset, uint64_t length)> notify)
+void AvlAllocator::foreach(
+  std::function<void(uint64_t offset, uint64_t length)> notify)
+{
+  std::lock_guard l(lock);
+  _foreach(notify);
+}
+
+void AvlAllocator::_foreach(
+  std::function<void(uint64_t offset, uint64_t length)> notify) const
 {
   for (auto& rs : range_tree) {
     notify(rs.start, rs.end - rs.start);
@@ -437,27 +444,27 @@ void AvlAllocator::dump(std::function<void(uint64_t offset, uint64_t length)> no
 
 void AvlAllocator::init_add_free(uint64_t offset, uint64_t length)
 {
-  if (!length)
-    return;
-  std::lock_guard l(lock);
-  ceph_assert(offset + length <= uint64_t(device_size));
   ldout(cct, 10) << __func__ << std::hex
                  << " offset 0x" << offset
                  << " length 0x" << length
                  << std::dec << dendl;
+  if (!length)
+    return;
+  std::lock_guard l(lock);
+  ceph_assert(offset + length <= uint64_t(device_size));
   _add_to_tree(offset, length);
 }
 
 void AvlAllocator::init_rm_free(uint64_t offset, uint64_t length)
 {
-  if (!length)
-    return;
-  std::lock_guard l(lock);
-  ceph_assert(offset + length <= uint64_t(device_size));
   ldout(cct, 10) << __func__ << std::hex
                  << " offset 0x" << offset
                  << " length 0x" << length
                  << std::dec << dendl;
+  if (!length)
+    return;
+  std::lock_guard l(lock);
+  ceph_assert(offset + length <= uint64_t(device_size));
   _remove_from_tree(offset, length);
 }
 

@@ -360,6 +360,29 @@ class TestMisc(CephFSTestCase):
         self.mount_a.run_shell(["rm", "-rf", dir_path])
 
 
+    def _session_client_ls(self, cmd):
+        mount_a_client_id = self.mount_a.get_global_id()
+        info = self.fs.rank_asok(cmd)
+        mount_a_mountpoint = self.mount_a.mountpoint
+        mount_b_mountpoint = self.mount_b.mountpoint
+        self.assertIsNotNone(info)
+        for i in range(0, len(info)):
+            self.assertIn(info[i]["client_metadata"]["mount_point"], 
+                             [mount_a_mountpoint, mount_b_mountpoint])        
+        info = self.fs.rank_asok(cmd + [f"id={mount_a_client_id}"])
+        self.assertEqual(len(info), 1)
+        self.assertEqual(info[0]["id"], mount_a_client_id)
+        self.assertEqual(info[0]["client_metadata"]["mount_point"], mount_a_mountpoint)
+        info = self.fs.rank_asok(cmd + ['--cap_dump'])
+        for i in range(0, len(info)):
+            self.assertIn("caps", info[i])
+
+    def test_session_ls(self):
+        self._session_client_ls(['session', 'ls'])
+
+    def test_client_ls(self):
+        self._session_client_ls(['client', 'ls'])
+        
 class TestCacheDrop(CephFSTestCase):
     CLIENTS_REQUIRED = 1
 
@@ -449,3 +472,46 @@ class TestCacheDrop(CephFSTestCase):
         # particular operation causing this is journal flush which causes the
         # MDS to wait wait for cap revoke.
         self.mount_a.resume_netns()
+
+class TestSkipReplayInoTable(CephFSTestCase):
+    MDSS_REQUIRED = 1
+    CLIENTS_REQUIRED = 1
+
+    def test_alloc_cinode_assert(self):
+        """
+        Test alloc CInode assert.
+
+        See: https://tracker.ceph.com/issues/52280
+        """
+
+        # Create a directory and the mds will journal this and then crash
+        self.mount_a.run_shell(["rm", "-rf", "test_alloc_ino"])
+        self.mount_a.run_shell(["mkdir", "test_alloc_ino"])
+
+        status = self.fs.status()
+        rank0 = self.fs.get_rank(rank=0, status=status)
+
+        self.fs.mds_asok(['config', 'set', 'mds_kill_skip_replaying_inotable', "true"])
+        # This will make the MDS crash, since we only have one MDS in the
+        # cluster and without the "wait=False" it will stuck here forever.
+        self.mount_a.run_shell(["mkdir", "test_alloc_ino/dir1"], wait=False)
+
+        # sleep 10 seconds to make sure the journal logs are flushed and
+        # the mds crashes
+        time.sleep(10)
+
+        # Now set the mds config to skip replaying the inotable
+        self.fs.set_ceph_conf('mds', 'mds_inject_skip_replaying_inotable', True)
+        self.fs.set_ceph_conf('mds', 'mds_wipe_sessions', True)
+
+        self.fs.mds_restart()
+        # sleep 5 seconds to make sure the mds tell command won't stuck
+        time.sleep(5)
+        self.fs.wait_for_daemons()
+
+        self.delete_mds_coredump(rank0['name']);
+
+        self.mount_a.run_shell(["mkdir", "test_alloc_ino/dir2"])
+
+        ls_out = set(self.mount_a.ls("test_alloc_ino/"))
+        self.assertEqual(ls_out, set({"dir1", "dir2"}))

@@ -441,9 +441,6 @@ public:
     release_object_locks(manager);
   }
 
-  bool pg_is_repair() override {
-    return is_repair();
-  }
   void inc_osd_stat_repaired() override {
     osd->inc_osd_stat_repaired();
   }
@@ -545,7 +542,8 @@ public:
   }
 
   void schedule_recovery_work(
-    GenContext<ThreadPool::TPHandle&> *c) override;
+    GenContext<ThreadPool::TPHandle&> *c,
+    uint64_t cost) override;
 
   pg_shard_t whoami_shard() const override {
     return pg_whoami;
@@ -1532,12 +1530,6 @@ private:
   /// generate a new temp object name (for recovery)
   hobject_t get_temp_recovery_object(const hobject_t& target,
 				     eversion_t version) override;
-  int get_recovery_op_priority() const {
-    int64_t pri = 0;
-    pool.info.opts.get(pool_opts_t::RECOVERY_OP_PRIORITY, &pri);
-    return  pri > 0 ? pri : cct->_conf->osd_recovery_op_priority;
-  }
-
 public:
   coll_t get_coll() {
     return coll;
@@ -1914,6 +1906,13 @@ public:
     ObjectContextRef obc,
     PGTransaction *t,
     const std::string &key);
+  /** 
+   * getattr_maybe_cache 
+   *
+   * Populates val (if non-null) with the value of the attr with the specified key. 
+   * Returns -ENOENT if object does not exist, -ENODATA if the object exists, 
+   * but the specified key does not. 
+   */
   int getattr_maybe_cache(
     ObjectContextRef obc,
     const std::string &key,

@@ -127,7 +127,7 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_SERVICE_UNAVAILABLE, {503, "ServiceUnavailable"}},
     { ERR_RATE_LIMITED, {503, "SlowDown"}},
     { ERR_ZERO_IN_URL, {400, "InvalidRequest" }},
-    { ERR_NO_SUCH_TAG_SET, {404, "NoSuchTagSetError"}},
+    { ERR_NO_SUCH_TAG_SET, {404, "NoSuchTagSet"}},
     { ERR_NO_SUCH_BUCKET_ENCRYPTION_CONFIGURATION, {404, "ServerSideEncryptionConfigurationNotFoundError"}},
 });
 
@@ -381,13 +381,13 @@ struct str_len {
 
 #define STR_LEN_ENTRY(s) { s, sizeof(s) - 1 }
 
-struct str_len meta_prefixes[] = { STR_LEN_ENTRY("HTTP_X_AMZ"),
-                                   STR_LEN_ENTRY("HTTP_X_GOOG"),
-                                   STR_LEN_ENTRY("HTTP_X_DHO"),
-                                   STR_LEN_ENTRY("HTTP_X_RGW"),
-                                   STR_LEN_ENTRY("HTTP_X_OBJECT"),
-                                   STR_LEN_ENTRY("HTTP_X_CONTAINER"),
-                                   STR_LEN_ENTRY("HTTP_X_ACCOUNT"),
+struct str_len meta_prefixes[] = { STR_LEN_ENTRY("HTTP_X_AMZ_"),
+                                   STR_LEN_ENTRY("HTTP_X_GOOG_"),
+                                   STR_LEN_ENTRY("HTTP_X_DHO_"),
+                                   STR_LEN_ENTRY("HTTP_X_RGW_"),
+                                   STR_LEN_ENTRY("HTTP_X_OBJECT_"),
+                                   STR_LEN_ENTRY("HTTP_X_CONTAINER_"),
+                                   STR_LEN_ENTRY("HTTP_X_ACCOUNT_"),
                                    {NULL, 0} };
 
 void req_info::init_meta_info(const DoutPrefixProvider *dpp, bool *found_bad_meta)
@@ -407,7 +407,7 @@ void req_info::init_meta_info(const DoutPrefixProvider *dpp, bool *found_bad_met
         const char *name = p+len; /* skip the prefix */
         int name_len = header_name.size() - len;
 
-        if (found_bad_meta && strncmp(name, "_META_", name_len) == 0)
+        if (found_bad_meta && strncmp(name, "META_", name_len) == 0)
           *found_bad_meta = true;
 
         char name_low[meta_prefixes[0].len + name_len + 1];
@@ -2689,8 +2689,8 @@ void RGWRateLimitInfo::decode_json(JSONObj *obj)
 {
   JSONDecoder::decode_json("max_read_ops", max_read_ops, obj);
   JSONDecoder::decode_json("max_write_ops", max_write_ops, obj);
-  JSONDecoder::decode_json("max_read_bytes", max_read_ops, obj);
-  JSONDecoder::decode_json("max_write_bytes", max_write_ops, obj);
+  JSONDecoder::decode_json("max_read_bytes", max_read_bytes, obj);
+  JSONDecoder::decode_json("max_write_bytes", max_write_bytes, obj);
   JSONDecoder::decode_json("enabled", enabled, obj);
 }
 

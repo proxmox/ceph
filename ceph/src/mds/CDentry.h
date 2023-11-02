@@ -88,6 +88,7 @@ public:
   static const int STATE_PURGINGPINNED =  (1<<5);
   static const int STATE_BOTTOMLRU =    (1<<6);
   static const int STATE_UNLINKING =    (1<<7);
+  static const int STATE_REINTEGRATING = (1<<8);
   // stray dentry needs notification of releasing reference
   static const int STATE_STRAY =	STATE_NOTIFYREF;
   static const int MASK_STATE_IMPORT_KEPT = STATE_BOTTOMLRU;
@@ -101,8 +102,9 @@ public:
 
   static const unsigned EXPORT_NONCE = 1;
 
-  const static uint64_t WAIT_UNLINK_STATE  = (1<<0);
-  const static uint64_t WAIT_UNLINK_FINISH = (1<<1);
+  const static uint64_t WAIT_UNLINK_STATE       = (1<<0);
+  const static uint64_t WAIT_UNLINK_FINISH      = (1<<1);
+  const static uint64_t WAIT_REINTEGRATE_FINISH = (1<<2);
   uint32_t replica_unlinking_ref = 0;
 
   CDentry(std::string_view n, __u32 h,
@@ -159,6 +161,8 @@ public:
   dentry_key_t key() {
     return dentry_key_t(last, name.c_str(), hash);
   }
+
+  bool check_corruption(bool load);
 
   const CDir *get_dir() const { return dir; }
   CDir *get_dir() { return dir; }
@@ -265,6 +269,8 @@ public:
   bool is_new() const { return state_test(STATE_NEW); }
   void clear_new() { state_clear(STATE_NEW); }
   
+  bool scrub(snapid_t next_seq);
+
   // -- exporting
   // note: this assumes the dentry already exists.  
   // i.e., the name is already extracted... so we just need the other state.
@@ -362,6 +368,7 @@ public:
 
   __u32 hash;
   snapid_t first, last;
+  bool corrupt_first_loaded = false; /* for Postgres corruption detection */
 
   elist<CDentry*>::item item_dirty, item_dir_dirty;
   elist<CDentry*>::item item_stray;

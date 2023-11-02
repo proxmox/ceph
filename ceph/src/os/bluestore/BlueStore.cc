@@ -5394,13 +5394,14 @@ int BlueStore::_write_bdev_label(CephContext *cct,
   z.zero();
   bl.append(std::move(z));
 
-  int fd = TEMP_FAILURE_RETRY(::open(path.c_str(), O_WRONLY|O_CLOEXEC));
+  int fd = TEMP_FAILURE_RETRY(::open(path.c_str(), O_WRONLY|O_CLOEXEC|O_DIRECT));
   if (fd < 0) {
     fd = -errno;
     derr << __func__ << " failed to open " << path << ": " << cpp_strerror(fd)
 	 << dendl;
     return fd;
   }
+  bl.rebuild_aligned_size_and_memory(BDEV_LABEL_BLOCK_SIZE, BDEV_LABEL_BLOCK_SIZE, IOV_MAX);
   int r = bl.write_fd(fd);
   if (r < 0) {
     derr << __func__ << " failed to write to " << path
@@ -6260,7 +6261,8 @@ int BlueStore::_open_bluefs(bool create, bool read_only)
     return r;
   }
   BlueFSVolumeSelector* vselector = nullptr;
-  if (bluefs_layout.shared_bdev == BlueFS::BDEV_SLOW) {
+  if (bluefs_layout.shared_bdev == BlueFS::BDEV_SLOW ||
+      cct->_conf->bluestore_volume_selection_policy == "fit_to_fast") {
 
     string options = cct->_conf->bluestore_rocksdb_options;
     string options_annex = cct->_conf->bluestore_rocksdb_options_annex;
@@ -10353,6 +10355,7 @@ void BlueStore::collect_metadata(map<string,string> *pm)
       (*pm)["objectstore_numa_node"] = stringify(node);
     }
   }
+  (*pm)["bluestore_min_alloc_size"] = stringify(min_alloc_size);
 }
 
 int BlueStore::get_numa_node(
@@ -11782,7 +11785,7 @@ int BlueStore::_collection_list(
     [&, start_time = mono_clock::now(), func_name = __func__] {
     log_latency_fn(
       func_name,
-      l_bluestore_remove_lat,
+      l_bluestore_clist_lat,
       mono_clock::now() - start_time,
       cct->_conf->bluestore_log_collection_list_age,
       [&](const ceph::timespan& lat) {
@@ -17669,6 +17672,19 @@ void BlueStore::_record_onode(OnodeRef& o, KeyValueDB::Transaction &txn)
 void BlueStore::_log_alerts(osd_alert_list_t& alerts)
 {
   std::lock_guard l(qlock);
+  size_t used = bluefs && bluefs_layout.shared_bdev == BlueFS::BDEV_SLOW ?
+    bluefs->get_used(BlueFS::BDEV_SLOW) : 0;
+  if (used > 0) {
+      auto db_used = bluefs->get_used(BlueFS::BDEV_DB);
+      auto db_total = bluefs->get_total(BlueFS::BDEV_DB);
+      ostringstream ss;
+      ss << "spilled over " << byte_u_t(used)
+         << " metadata from 'db' device (" << byte_u_t(db_used)
+         << " used of " << byte_u_t(db_total) << ") to slow device";
+      spillover_alert = ss.str();
+  } else if (!spillover_alert.empty()){
+    spillover_alert.clear();
+  }
 
   if (!spurious_read_errors_alert.empty() &&
       cct->_conf->bluestore_warn_on_spurious_read_errors) {
@@ -18064,11 +18080,8 @@ void* RocksDBBlueFSVolumeSelector::get_hint_by_dir(std::string_view dirname) con
 void RocksDBBlueFSVolumeSelector::dump(ostream& sout) {
   auto max_x = per_level_per_dev_usage.get_max_x();
   auto max_y = per_level_per_dev_usage.get_max_y();
-  sout << "RocksDBBlueFSVolumeSelector: wal_total:" << l_totals[LEVEL_WAL - LEVEL_FIRST]
-    << ", db_total:" << l_totals[LEVEL_DB - LEVEL_FIRST]
-    << ", slow_total:" << l_totals[LEVEL_SLOW - LEVEL_FIRST]
-    << ", db_avail:" << db_avail4slow << std::endl
-    << "Usage matrix:" << std::endl;
+
+  sout << "RocksDBBlueFSVolumeSelector Usage Matrix:" << std::endl;
   constexpr std::array<const char*, 8> names{ {
     "DEV/LEV",
     "WAL",
@@ -18099,7 +18112,7 @@ void RocksDBBlueFSVolumeSelector::dump(ostream& sout) {
     case LEVEL_SLOW:
       sout << "SLOW"; break;
     case LEVEL_MAX:
-      sout << "TOTALS"; break;
+      sout << "TOTAL"; break;
     }
     for (size_t d = 0; d < max_x; d++) {
       sout.setf(std::ios::left, std::ios::adjustfield);
@@ -18126,7 +18139,7 @@ void RocksDBBlueFSVolumeSelector::dump(ostream& sout) {
     case LEVEL_SLOW:
       sout << "SLOW"; break;
     case LEVEL_MAX:
-      sout << "TOTALS"; break;
+      sout << "TOTAL"; break;
     }
     for (size_t d = 0; d < max_x - 1; d++) {
       sout.setf(std::ios::left, std::ios::adjustfield);
@@ -18136,10 +18149,20 @@ void RocksDBBlueFSVolumeSelector::dump(ostream& sout) {
     sout.setf(std::ios::left, std::ios::adjustfield);
     sout.width(width);
     sout << stringify(byte_u_t(per_level_per_dev_max.at(max_x - 1, l)));
-    if (l < max_y - 1) {
-      sout << std::endl;
-    }
+    sout << std::endl;
   }
+  string sizes[] = {
+    ">> SIZE <<",
+    stringify(byte_u_t(l_totals[LEVEL_WAL - LEVEL_FIRST])),
+    stringify(byte_u_t(l_totals[LEVEL_DB - LEVEL_FIRST])),
+    stringify(byte_u_t(l_totals[LEVEL_SLOW - LEVEL_FIRST])),
+  };
+  for (size_t i = 0; i < (sizeof(sizes) / sizeof(sizes[0])); i++) {
+    sout.setf(std::ios::left, std::ios::adjustfield);
+    sout.width(width);
+    sout << sizes[i];
+  }
+  sout << std::endl;
 }
 
 BlueFSVolumeSelector* RocksDBBlueFSVolumeSelector::clone_empty() const {
@@ -18464,7 +18487,7 @@ int BlueStore::copy_allocator(Allocator* src_alloc, Allocator* dest_alloc, uint6
   auto count_entries = [&](uint64_t extent_offset, uint64_t extent_length) {
     (*p_num_entries)++;
   };
-  src_alloc->dump(count_entries);
+  src_alloc->foreach(count_entries);
 
   dout(5) << "count num_entries=" << *p_num_entries << dendl;
 
@@ -18490,7 +18513,7 @@ int BlueStore::copy_allocator(Allocator* src_alloc, Allocator* dest_alloc, uint6
       derr << "zero length extent!!! offset=" << extent_offset << ", index=" << idx << dendl;
     }
   };
-  src_alloc->dump(copy_entries);
+  src_alloc->foreach(copy_entries);
 
   dout(5) << "copy num_entries=" << idx << dendl;
   if (idx > *p_num_entries) {
@@ -18597,7 +18620,7 @@ int BlueStore::store_allocator(Allocator* src_allocator)
       p_curr = buffer; // recycle the buffer
     }
   };
-  allocator->dump(iterated_allocation);
+  allocator->foreach(iterated_allocation);
   // if got null extent -> fail the operation
   if (ret != 0) {
     derr << "Illegal extent, fail store operation" << dendl;
@@ -19226,8 +19249,8 @@ int BlueStore::compare_allocators(Allocator* alloc1, Allocator* alloc2, uint64_t
     }
   };
 
-  alloc1->dump(iterated_mapper1);
-  alloc2->dump(iterated_mapper2);
+  alloc1->foreach(iterated_mapper1);
+  alloc2->foreach(iterated_mapper2);
 
   qsort(arr1.get(), std::min(idx1, extent_count), sizeof(extent_t), cmpfunc);
   qsort(arr2.get(), std::min(idx2, extent_count), sizeof(extent_t), cmpfunc);
@@ -19325,7 +19348,7 @@ int BlueStore::read_allocation_from_drive_for_bluestore_tool()
     auto count_entries = [&](uint64_t extent_offset, uint64_t extent_length) {
       stats.insert_count++;
     };
-    allocator->dump(count_entries);
+    allocator->foreach(count_entries);
     ret = compare_allocators(allocator.get(), alloc, stats.insert_count, memory_target);
     if (ret == 0) {
       dout(5) << "Allocator drive - file integrity check OK" << dendl;
@@ -19392,7 +19415,7 @@ void BlueStore::copy_allocator_content_to_fm(Allocator *allocator, FreelistManag
       txn = db->get_transaction();
     }
   };
-  allocator->dump(iterated_insert);
+  allocator->foreach(iterated_insert);
   if (idx % max_txn != 0) {
     db->submit_transaction_sync(txn);
   }
@@ -19466,7 +19489,7 @@ int BlueStore::verify_rocksdb_allocations(Allocator *allocator)
   auto count_entries = [&](uint64_t extent_offset, uint64_t extent_length) {
     insert_count++;
   };
-  temp_allocator->dump(count_entries);
+  temp_allocator->foreach(count_entries);
   uint64_t memory_target = cct->_conf.get_val<Option::size_t>("osd_memory_target");
   int ret = compare_allocators(allocator, temp_allocator, insert_count, memory_target);
 

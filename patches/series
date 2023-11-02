@@ -9,5 +9,6 @@
 0013-d-control-move-python-dependencies-over-to-python3.patch
 0014-fix-service-ordering-avoid-Before-remote-fs-pre.targ.patch
 0015-d-control-drop-outdated-build-dependencies-and-bump-.patch
+0015-fix-compatibility-with-CPUs-not-supporting-SSE-4.1-i.patch
 0016-d-rules-fix-no-restart-on-upgrade.patch
 0020-fix-4759-run-ceph-crash-daemon-with-www-data-group-f.patch

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional, List, cast, Dict, Any, Union, Tuple,
 
 from ceph.deployment import inventory
 from ceph.deployment.drive_group import DriveGroupSpec
-from ceph.deployment.service_spec import ServiceSpec, CustomContainerSpec, PlacementSpec
+from ceph.deployment.service_spec import ServiceSpec, CustomContainerSpec, PlacementSpec, RGWSpec
 from ceph.utils import datetime_now
 
 import orchestrator
@@ -246,8 +246,9 @@ class CephadmServe:
 
             if self.mgr.cache.host_needs_registry_login(host) and self.mgr.get_store('registry_credentials'):
                 self.log.debug(f"Logging `{host}` into custom registry")
-                r = self.mgr.wait_async(self._registry_login(
-                    host, json.loads(str(self.mgr.get_store('registry_credentials')))))
+                with self.mgr.async_timeout_handler(host, 'cephadm registry-login'):
+                    r = self.mgr.wait_async(self._registry_login(
+                        host, json.loads(str(self.mgr.get_store('registry_credentials')))))
                 if r:
                     bad_hosts.append(r)
 
@@ -291,9 +292,10 @@ class CephadmServe:
         self.log.debug(' checking %s' % host)
         try:
             addr = self.mgr.inventory.get_addr(host) if host in self.mgr.inventory else host
-            out, err, code = self.mgr.wait_async(self._run_cephadm(
-                host, cephadmNoImage, 'check-host', [],
-                error_ok=True, no_fsid=True, log_output=self.mgr.log_refresh_metadata))
+            with self.mgr.async_timeout_handler(host, 'cephadm check-host'):
+                out, err, code = self.mgr.wait_async(self._run_cephadm(
+                    host, cephadmNoImage, 'check-host', [],
+                    error_ok=True, no_fsid=True, log_output=self.mgr.log_refresh_metadata))
             self.mgr.cache.update_last_host_check(host)
             self.mgr.cache.save_host(host)
             if code:
@@ -309,8 +311,9 @@ class CephadmServe:
 
     def _refresh_host_daemons(self, host: str) -> Optional[str]:
         try:
-            ls = self.mgr.wait_async(self._run_cephadm_json(host, 'mon', 'ls', [],
-                                                            no_fsid=True, log_output=self.mgr.log_refresh_metadata))
+            with self.mgr.async_timeout_handler(host, 'cephadm ls'):
+                ls = self.mgr.wait_async(self._run_cephadm_json(
+                    host, 'mon', 'ls', [], no_fsid=True, log_output=self.mgr.log_refresh_metadata))
         except OrchestratorError as e:
             return str(e)
         self.mgr._process_ls_output(host, ls)
@@ -318,8 +321,10 @@ class CephadmServe:
 
     def _refresh_facts(self, host: str) -> Optional[str]:
         try:
-            val = self.mgr.wait_async(self._run_cephadm_json(
-                host, cephadmNoImage, 'gather-facts', [], no_fsid=True, log_output=self.mgr.log_refresh_metadata))
+            with self.mgr.async_timeout_handler(host, 'cephadm gather-facts'):
+                val = self.mgr.wait_async(self._run_cephadm_json(
+                    host, cephadmNoImage, 'gather-facts', [],
+                    no_fsid=True, log_output=self.mgr.log_refresh_metadata))
         except OrchestratorError as e:
             return str(e)
 
@@ -329,22 +334,27 @@ class CephadmServe:
 
     def _refresh_host_devices(self, host: str) -> Optional[str]:
         with_lsm = self.mgr.device_enhanced_scan
+        list_all = self.mgr.inventory_list_all
         inventory_args = ['--', 'inventory',
                           '--format=json-pretty',
                           '--filter-for-batch']
         if with_lsm:
             inventory_args.insert(-1, "--with-lsm")
+        if list_all:
+            inventory_args.insert(-1, "--list-all")
 
         try:
             try:
-                devices = self.mgr.wait_async(self._run_cephadm_json(host, 'osd', 'ceph-volume',
-                                                                     inventory_args, log_output=self.mgr.log_refresh_metadata))
+                with self.mgr.async_timeout_handler(host, 'cephadm ceph-volume -- inventory'):
+                    devices = self.mgr.wait_async(self._run_cephadm_json(
+                        host, 'osd', 'ceph-volume', inventory_args, log_output=self.mgr.log_refresh_metadata))
             except OrchestratorError as e:
                 if 'unrecognized arguments: --filter-for-batch' in str(e):
                     rerun_args = inventory_args.copy()
                     rerun_args.remove('--filter-for-batch')
-                    devices = self.mgr.wait_async(self._run_cephadm_json(host, 'osd', 'ceph-volume',
-                                                                         rerun_args, log_output=self.mgr.log_refresh_metadata))
+                    with self.mgr.async_timeout_handler(host, 'cephadm ceph-volume -- inventory'):
+                        devices = self.mgr.wait_async(self._run_cephadm_json(
+                            host, 'osd', 'ceph-volume', rerun_args, log_output=self.mgr.log_refresh_metadata))
                 else:
                     raise
 
@@ -361,8 +371,9 @@ class CephadmServe:
 
     def _refresh_host_networks(self, host: str) -> Optional[str]:
         try:
-            networks = self.mgr.wait_async(self._run_cephadm_json(
-                host, 'mon', 'list-networks', [], no_fsid=True, log_output=self.mgr.log_refresh_metadata))
+            with self.mgr.async_timeout_handler(host, 'cephadm list-networks'):
+                networks = self.mgr.wait_async(self._run_cephadm_json(
+                    host, 'mon', 'list-networks', [], no_fsid=True, log_output=self.mgr.log_refresh_metadata))
         except OrchestratorError as e:
             return str(e)
 
@@ -499,8 +510,13 @@ class CephadmServe:
                 self.mgr.agent_helpers._apply_agent()
                 return r
         else:
+            _specs: List[ServiceSpec] = []
             for sn, spec in self.mgr.spec_store.active_specs.items():
-                specs.append(spec)
+                _specs.append(spec)
+            # apply specs that don't use count first sice their placement is deterministic
+            # and not dependant on other daemon's placements in any way
+            specs = [s for s in _specs if not s.placement.count] + [s for s in _specs if s.placement.count]
+
         for name in ['CEPHADM_APPLY_SPEC_FAIL', 'CEPHADM_DAEMON_PLACE_FAIL']:
             self.mgr.remove_health_warning(name)
         self.mgr.apply_spec_fails = []
@@ -563,6 +579,35 @@ class CephadmServe:
                 self.mgr.set_health_warning('CEPHADM_FAILED_SET_OPTION', f'Failed to set {len(options_failed_to_set)} option(s)', len(
                     options_failed_to_set), options_failed_to_set)
 
+    def _update_rgw_endpoints(self, rgw_spec: RGWSpec) -> None:
+
+        if not rgw_spec.update_endpoints or rgw_spec.rgw_realm_token is None:
+            return
+
+        ep = []
+        protocol = 'https' if rgw_spec.ssl else 'http'
+        for s in self.mgr.cache.get_daemons_by_service(rgw_spec.service_name()):
+            if s.ports:
+                for p in s.ports:
+                    ep.append(f'{protocol}://{s.hostname}:{p}')
+        zone_update_cmd = {
+            'prefix': 'rgw zone modify',
+            'realm_name': rgw_spec.rgw_realm,
+            'zonegroup_name': rgw_spec.rgw_zonegroup,
+            'zone_name': rgw_spec.rgw_zone,
+            'realm_token': rgw_spec.rgw_realm_token,
+            'zone_endpoints': ep,
+        }
+        self.log.debug(f'rgw cmd: {zone_update_cmd}')
+        rc, out, err = self.mgr.mon_command(zone_update_cmd)
+        rgw_spec.update_endpoints = (rc != 0)  # keep trying on failure
+        if rc != 0:
+            self.log.error(f'Error when trying to update rgw zone: {err}')
+            self.mgr.set_health_warning('CEPHADM_RGW', 'Cannot update rgw endpoints, error: {err}', 1,
+                                        [f'Cannot update rgw endpoints for daemon {rgw_spec.service_name()}, error: {err}'])
+        else:
+            self.mgr.remove_health_warning('CEPHADM_RGW')
+
     def _apply_service(self, spec: ServiceSpec) -> bool:
         """
         Schedule a service.  Deploy new daemons or remove old ones, depending
@@ -600,6 +645,7 @@ class CephadmServe:
 
         svc = self.mgr.cephadm_services[service_type]
         daemons = self.mgr.cache.get_daemons_by_service(service_name)
+        related_service_daemons = self.mgr.cache.get_related_service_daemons(spec)
 
         public_networks: List[str] = []
         if service_type == 'mon':
@@ -636,14 +682,15 @@ class CephadmServe:
             unreachable_hosts=self.mgr.cache.get_unreachable_hosts(),
             draining_hosts=self.mgr.cache.get_draining_hosts(),
             daemons=daemons,
+            related_service_daemons=related_service_daemons,
             networks=self.mgr.cache.networks,
             filter_new_host=(
                 matches_network if service_type == 'mon'
                 else None
             ),
             allow_colo=svc.allow_colo(),
-            primary_daemon_type=svc.primary_daemon_type(),
-            per_host_daemon_type=svc.per_host_daemon_type(),
+            primary_daemon_type=svc.primary_daemon_type(spec),
+            per_host_daemon_type=svc.per_host_daemon_type(spec),
             rank_map=rank_map,
         )
 
@@ -695,9 +742,6 @@ class CephadmServe:
 
         if progress_total:
             update_progress()
-
-        # add any?
-        did_config = False
 
         self.log.debug('Hosts that will receive new daemons: %s' % slots_to_add)
         self.log.debug('Daemons that will be removed: %s' % daemons_to_remove)
@@ -765,9 +809,6 @@ class CephadmServe:
 
                 # deploy new daemon
                 daemon_id = slot.name
-                if not did_config:
-                    svc.config(spec)
-                    did_config = True
 
                 daemon_spec = svc.make_daemon_spec(
                     slot.hostname, daemon_id, slot.network, spec,
@@ -782,11 +823,13 @@ class CephadmServe:
 
                 try:
                     daemon_spec = svc.prepare_create(daemon_spec)
-                    self.mgr.wait_async(self._create_daemon(daemon_spec))
+                    with self.mgr.async_timeout_handler(slot.hostname, f'cephadm deploy ({daemon_spec.daemon_type} type dameon)'):
+                        self.mgr.wait_async(self._create_daemon(daemon_spec))
                     r = True
                     progress_done += 1
                     update_progress()
                     hosts_altered.add(daemon_spec.host)
+                    self.mgr.spec_store.mark_needs_configuration(spec.service_name())
                 except (RuntimeError, OrchestratorError) as e:
                     msg = (f"Failed while placing {slot.daemon_type}.{daemon_id} "
                            f"on {slot.hostname}: {e}")
@@ -806,8 +849,10 @@ class CephadmServe:
                     hostname=slot.hostname,
                     daemon_type=slot.daemon_type,
                     daemon_id=daemon_id,
+                    service_name=spec.service_name()
                 )
                 daemons.append(sd)
+                self.mgr.cache.append_tmp_daemon(slot.hostname, sd)
 
             if daemon_place_fails:
                 self.mgr.set_health_warning('CEPHADM_DAEMON_PLACE_FAIL', f'Failed to place {len(daemon_place_fails)} daemon(s)', len(
@@ -820,6 +865,9 @@ class CephadmServe:
                     # Need to fail over later so it can be removed on next pass.
                     # This can be accomplished by scheduling a restart of the active mgr.
                     self.mgr._schedule_daemon_action(active_mgr.name(), 'restart')
+
+            if service_type == 'rgw':
+                self._update_rgw_endpoints(cast(RGWSpec, spec))
 
             # remove any?
             def _ok_to_stop(remove_daemons: List[orchestrator.DaemonDescription]) -> bool:
@@ -840,12 +888,16 @@ class CephadmServe:
                 progress_done += 1
                 update_progress()
                 hosts_altered.add(d.hostname)
+                self.mgr.spec_store.mark_needs_configuration(spec.service_name())
 
             self.mgr.remote('progress', 'complete', progress_id)
         except Exception as e:
             self.mgr.remote('progress', 'fail', progress_id, str(e))
             raise
         finally:
+            if self.mgr.spec_store.needs_configuration(spec.service_name()):
+                svc.config(spec)
+                self.mgr.spec_store.mark_configured(spec.service_name())
             if self.mgr.use_agent:
                 # can only send ack to agents if we know for sure port they bound to
                 hosts_altered = set([h for h in hosts_altered if (h in self.mgr.agent_cache.agent_ports and h in [
@@ -997,8 +1049,9 @@ class CephadmServe:
         digests: Dict[str, ContainerInspectInfo] = {}
         for container_image_ref in set(settings.values()):
             if not is_repo_digest(container_image_ref):
-                image_info = self.mgr.wait_async(
-                    self._get_container_image_info(container_image_ref))
+                with self.mgr.async_timeout_handler(cmd=f'cephadm inspect-image (image {container_image_ref})'):
+                    image_info = self.mgr.wait_async(
+                        self._get_container_image_info(container_image_ref))
                 if image_info.repo_digests:
                     # FIXME: we assume the first digest here is the best
                     assert is_repo_digest(image_info.repo_digests[0]), image_info
@@ -1093,7 +1146,7 @@ class CephadmServe:
                             client_files: Dict[str, Dict[str, Tuple[int, int, int, bytes, str]]],
                             host: str) -> None:
         updated_files = False
-        if host in self.mgr.offline_hosts:
+        if host in [h.hostname for h in self.mgr.cache.get_unreachable_hosts()]:
             return
         old_files = self.mgr.cache.get_host_client_files(host).copy()
         for path, m in client_files.get(host, {}).items():
@@ -1294,8 +1347,9 @@ class CephadmServe:
                 args = ['--name', name, '--force']
 
             self.log.info('Removing daemon %s from %s -- ports %s' % (name, host, dd.ports))
-            out, err, code = self.mgr.wait_async(self._run_cephadm(
-                host, name, 'rm-daemon', args))
+            with self.mgr.async_timeout_handler(host, f'cephadm rm-daemon (daemon {name})'):
+                out, err, code = self.mgr.wait_async(self._run_cephadm(
+                    host, name, 'rm-daemon', args))
             if not code:
                 # remove item from cache
                 self.mgr.cache.rm_daemon(host, name)
@@ -1349,6 +1403,7 @@ class CephadmServe:
                            image: Optional[str] = "",
                            env_vars: Optional[List[str]] = None,
                            log_output: Optional[bool] = True,
+                           timeout: Optional[int] = None,  # timeout in seconds
                            ) -> Tuple[List[str], List[str], int]:
         """
         Run cephadm on the remote host with the given command + args
@@ -1386,6 +1441,22 @@ class CephadmServe:
 
         if not self.mgr.cgroups_split:
             final_args += ['--no-cgroups-split']
+
+        if not timeout:
+            # default global timeout if no timeout was passed
+            timeout = self.mgr.default_cephadm_command_timeout
+            # put a lower bound of 60 seconds in case users
+            # accidentally set it to something unreasonable.
+            # For example if they though it was in minutes
+            # rather than seconds
+            if timeout < 60:
+                self.log.info(f'Found default timeout set to {timeout}. Instead trying minimum of 60.')
+                timeout = 60
+            # subtract a small amount to give this timeout
+            # in the binary a chance to actually happen over
+            # the asyncio based timeout in the mgr module
+            timeout -= 5
+        final_args += ['--timeout', str(timeout)]
 
         # subcommand
         final_args.append(command)

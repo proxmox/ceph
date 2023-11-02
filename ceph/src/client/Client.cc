@@ -1208,6 +1208,11 @@ Dentry *Client::insert_dentry_inode(Dir *dir, const string& dname, LeaseStat *dl
     Inode *diri = dir->parent_inode;
     clear_dir_complete_and_ordered(diri, false);
     dn = link(dir, dname, in, dn);
+
+    if (old_dentry) {
+      dn->is_renaming = false;
+      signal_cond_list(waiting_for_rename);
+    }
   }
 
   update_dentry_lease(dn, dlease, from, session);
@@ -2479,7 +2484,10 @@ void Client::send_request(MetaRequest *request, MetaSession *session,
   mds_rank_t mds = session->mds_num;
   ldout(cct, 10) << __func__ << " rebuilding request " << request->get_tid()
 		 << " for mds." << mds << dendl;
-  auto r = build_client_request(request);
+  auto r = build_client_request(request, mds);
+  if (!r)
+    return;
+
   if (request->dentry()) {
     r->set_dentry_wanted();
   }
@@ -2521,9 +2529,31 @@ void Client::send_request(MetaRequest *request, MetaSession *session,
   session->con->send_message2(std::move(r));
 }
 
-ref_t<MClientRequest> Client::build_client_request(MetaRequest *request)
+ref_t<MClientRequest> Client::build_client_request(MetaRequest *request, mds_rank_t mds)
 {
-  auto req = make_message<MClientRequest>(request->get_op());
+  auto session = mds_sessions.at(mds);
+  bool old_version = !session->mds_features.test(CEPHFS_FEATURE_32BITS_RETRY_FWD);
+
+  /*
+   * Avoid inifinite retrying after overflow.
+   *
+   * The client will increase the retry count and if the MDS is
+   * old version, so we limit to retry at most 256 times.
+   */
+  if (request->retry_attempt) {
+    int old_max_retry = sizeof(((struct ceph_mds_request_head*)0)->num_retry);
+    old_max_retry = 1 << (old_max_retry * CHAR_BIT);
+    if ((old_version && request->retry_attempt >= old_max_retry) ||
+        (uint32_t)request->retry_attempt >= UINT32_MAX) {
+      request->abort(-EMULTIHOP);
+      request->caller_cond->notify_all();
+      ldout(cct, 1) << __func__ << " request tid " << request->tid
+                    << " retry seq overflow" << ", abort it" << dendl;
+      return nullptr;
+    }
+  }
+
+  auto req = make_message<MClientRequest>(request->get_op(), old_version);
   req->set_tid(request->tid);
   req->set_stamp(request->op_stamp);
   memcpy(&req->head, &request->head, sizeof(ceph_mds_request_head));
@@ -2553,7 +2583,7 @@ ref_t<MClientRequest> Client::build_client_request(MetaRequest *request)
   req->set_alternate_name(request->alternate_name);
   req->set_data(request->data);
   req->set_retry_attempt(request->retry_attempt++);
-  req->head.num_fwd = request->num_fwd;
+  req->head.ext_num_fwd = request->num_fwd;
   const gid_t *_gids;
   int gid_count = request->perms.get_gids(&_gids);
   req->set_gid_list(gid_count, _gids);
@@ -2582,32 +2612,20 @@ void Client::handle_client_request_forward(const MConstRef<MClientRequestForward
   ceph_assert(request);
 
   /*
-   * The type of 'num_fwd' in ceph 'MClientRequestForward'
-   * is 'int32_t', while in 'ceph_mds_request_head' the
-   * type is '__u8'. So in case the request bounces between
-   * MDSes exceeding 256 times, the client will get stuck.
+   * Avoid inifinite retrying after overflow.
    *
-   * In this case it's ususally a bug in MDS and continue
-   * bouncing the request makes no sense.
-   *
-   * In future this could be fixed in ceph code, so avoid
-   * using the hardcode here.
+   * The MDS will increase the fwd count and in client side
+   * if the num_fwd is less than the one saved in request
+   * that means the MDS is an old version and overflowed of
+   * 8 bits.
    */
-  int max_fwd = sizeof(((struct ceph_mds_request_head*)0)->num_fwd);
-  max_fwd = 1 << (max_fwd * CHAR_BIT) - 1;
   auto num_fwd = fwd->get_num_fwd();
-  if (num_fwd <= request->num_fwd || num_fwd >= max_fwd) {
-    if (request->num_fwd >= max_fwd || num_fwd >= max_fwd) {
-      request->abort(-EMULTIHOP);
-      request->caller_cond->notify_all();
-      ldout(cct, 1) << __func__ << " tid " << tid << " seq overflow"
-                    << ", abort it" << dendl;
-    } else {
-      ldout(cct, 10) << __func__ << " tid " << tid
-                     << " old fwd seq " << fwd->get_num_fwd()
-                     << " <= req fwd " << request->num_fwd
-                     << ", ignore it" << dendl;
-    }
+  if (num_fwd <= request->num_fwd || (uint32_t)num_fwd >= UINT32_MAX) {
+    request->abort(-EMULTIHOP);
+    request->caller_cond->notify_all();
+    ldout(cct, 0) << __func__ << " request tid " << tid << " new num_fwd "
+      << num_fwd << " old num_fwd " << request->num_fwd << ", fwd seq overflow"
+      << ", abort it" << dendl;
     return;
   }
 
@@ -3509,7 +3527,7 @@ void Client::put_cap_ref(Inode *in, int cap)
     int put_nref = 0;
     int drop = last & ~in->caps_issued();
     if (in->snapid == CEPH_NOSNAP) {
-      if ((last & (CEPH_CAP_FILE_WR | CEPH_CAP_FILE_BUFFER)) &&
+      if ((last & CEPH_CAP_FILE_WR) &&
 	  !in->cap_snaps.empty() &&
 	  in->cap_snaps.rbegin()->second.writing) {
 	ldout(cct, 10) << __func__ << " finishing pending cap_snap on " << *in << dendl;
@@ -3523,6 +3541,10 @@ void Client::put_cap_ref(Inode *in, int cap)
 	signal_cond_list(in->waitfor_commit);
 	ldout(cct, 5) << __func__ << " dropped last FILE_BUFFER ref on " << *in << dendl;
 	++put_nref;
+
+	if (!in->cap_snaps.empty()) {
+	  flush_snaps(in);
+	}
       }
     }
     if (last & CEPH_CAP_FILE_CACHE) {
@@ -3979,15 +4001,13 @@ void Client::queue_cap_snap(Inode *in, SnapContext& old_snapc)
       in->cap_snaps.rbegin()->second.writing) {
     ldout(cct, 10) << __func__ << " already have pending cap_snap on " << *in << dendl;
     return;
-  } else if (in->caps_dirty() ||
-            (used & CEPH_CAP_FILE_WR) ||
-	     (dirty & CEPH_CAP_ANY_WR)) {
+  } else if (dirty || (used & CEPH_CAP_FILE_WR)) {
     const auto &capsnapem = in->cap_snaps.emplace(std::piecewise_construct, std::make_tuple(old_snapc.seq), std::make_tuple(in));
     ceph_assert(capsnapem.second); /* element inserted */
     CapSnap &capsnap = capsnapem.first->second;
     capsnap.context = old_snapc;
     capsnap.issued = in->caps_issued();
-    capsnap.dirty = in->caps_dirty();
+    capsnap.dirty = dirty;
 
     capsnap.dirty_data = (used & CEPH_CAP_FILE_BUFFER);
 
@@ -4034,9 +4054,11 @@ void Client::finish_cap_snap(Inode *in, CapSnap &capsnap, int used)
   }
 
   if (used & CEPH_CAP_FILE_BUFFER) {
-    capsnap.writing = 1;
     ldout(cct, 10) << __func__ << " " << *in << " cap_snap " << &capsnap << " used " << used
-	     << " WRBUFFER, delaying" << dendl;
+	     << " WRBUFFER, trigger to flush dirty buffer" << dendl;
+
+    /* trigger to flush the buffer */
+    _flush(in, new C_Client_FlushComplete(this, in));
   } else {
     capsnap.dirty_data = 0;
     flush_snaps(in);
@@ -4388,11 +4410,19 @@ void Client::add_update_cap(Inode *in, MetaSession *mds_session, uint64_t cap_id
   if (flags & CEPH_CAP_FLAG_AUTH) {
     if (in->auth_cap != &cap &&
         (!in->auth_cap || ceph_seq_cmp(in->auth_cap->mseq, mseq) < 0)) {
-      if (in->auth_cap && in->flushing_cap_item.is_on_list()) {
-	ldout(cct, 10) << __func__ << " changing auth cap: "
-		       << "add myself to new auth MDS' flushing caps list" << dendl;
-	adjust_session_flushing_caps(in, in->auth_cap->session, mds_session);
+      if (in->auth_cap) {
+        if (in->flushing_cap_item.is_on_list()) {
+          ldout(cct, 10) << __func__ << " changing auth cap: "
+                         << "add myself to new auth MDS' flushing caps list" << dendl;
+          adjust_session_flushing_caps(in, in->auth_cap->session, mds_session);
+        }
+        if (in->dirty_cap_item.is_on_list()) {
+          ldout(cct, 10) << __func__ << " changing auth cap: "
+                         << "add myself to new auth MDS' dirty caps list" << dendl;
+          mds_session->get_dirty_list().push_back(&in->dirty_cap_item);
+        }
       }
+
       in->auth_cap = &cap;
     }
   }
@@ -5213,24 +5243,48 @@ void Client::handle_caps(const MConstRef<MClientCaps>& m)
 
   got_mds_push(session.get());
 
+  bool do_cap_release = false;
   Inode *in;
   vinodeno_t vino(m->get_ino(), CEPH_NOSNAP);
   if (auto it = inode_map.find(vino); it != inode_map.end()) {
     in = it->second;
-  } else {
-    if (m->get_op() == CEPH_CAP_OP_IMPORT) {
-      ldout(cct, 5) << __func__ << " don't have vino " << vino << " on IMPORT, immediately releasing" << dendl;
-      session->enqueue_cap_release(
-        m->get_ino(),
-        m->get_cap_id(),
-        m->get_seq(),
-        m->get_mseq(),
-        cap_epoch_barrier);
-    } else {
-      ldout(cct, 5) << __func__ << " don't have vino " << vino << ", dropping" << dendl;
-    }
 
-    // in case the mds is waiting on e.g. a revocation
+    /* MDS maybe waiting for cap release with increased seq */
+    switch (m->get_op()) {
+      case CEPH_CAP_OP_REVOKE:
+      case CEPH_CAP_OP_GRANT:
+        if (!in->caps.count(mds)) {
+	  do_cap_release = true;
+          ldout(cct, 5) << __func__ << " vino " << vino << " don't have cap "
+                        << m->get_cap_id() << " op " << m->get_op()
+                        << ", immediately releasing" << dendl;
+	}
+    }
+  } else {
+    /* MDS maybe waiting for cap release with increased seq */
+    switch (m->get_op()) {
+      case CEPH_CAP_OP_IMPORT:
+      case CEPH_CAP_OP_REVOKE:
+      case CEPH_CAP_OP_GRANT:
+	do_cap_release = true;
+        ldout(cct, 5) << __func__ << " don't have vino " << vino << " op "
+                      << m->get_op() << ", immediately releasing" << dendl;
+	break;
+      default:
+        ldout(cct, 5) << __func__ << " don't have vino " << vino << ", dropping" << dendl;
+	return;
+    }
+  }
+
+  // In case the mds is waiting on e.g. a revocation
+  if (do_cap_release) {
+    session->enqueue_cap_release(
+      m->get_ino(),
+      m->get_cap_id(),
+      m->get_seq(),
+      m->get_mseq(),
+      cap_epoch_barrier);
+
     flush_cap_releases();
     return;
   }
@@ -5702,6 +5756,13 @@ void Client::handle_cap_grant(MetaSession *session, Inode *in, Cap *cap, const M
     }
   }
 
+  // just in case the caps was released just before we get the revoke msg
+  if (!check && m->get_op() == CEPH_CAP_OP_REVOKE) {
+    cap->wanted = 0; // don't let check_caps skip sending a response to MDS
+    check = true;
+    flags = CHECK_CAPS_NODELAY;
+  }
+
   if (check)
     check_caps(in, flags);
 
@@ -5764,7 +5825,8 @@ std::ostream& operator<<(std::ostream &out, const UserPerm& perm) {
 int Client::may_setattr(Inode *in, struct ceph_statx *stx, int mask,
 			const UserPerm& perms)
 {
-  ldout(cct, 20) << __func__ << " " << *in << "; " << perms << dendl;
+  ldout(cct, 20) << __func__ << " " << *in << "; " << perms << " stx_mode: "
+      << hex << stx->stx_mode << " mask:" << mask << dec << dendl;
   int r = _getattr_for_perm(in, perms);
   if (r < 0)
     goto out;
@@ -5787,7 +5849,18 @@ int Client::may_setattr(Inode *in, struct ceph_statx *stx, int mask,
   }
 
   if (mask & CEPH_SETATTR_MODE) {
-    if (perms.uid() != 0 && perms.uid() != in->uid)
+    uint32_t m = ~stx->stx_mode & in->mode; // mode bits removed
+    ldout(cct, 20) << __func__ << " " << *in << " = " << hex << m << dec <<  dendl;
+    if (perms.uid() != 0 && perms.uid() != in->uid &&
+	/*
+	 * Currently the kernel fuse and libfuse code is buggy and
+	 * won't pass the ATTR_KILL_SUID/ATTR_KILL_SGID to ceph-fuse.
+	 * But will just set the ATTR_MODE and at the same time by
+	 * clearing the suid/sgid bits.
+	 *
+	 * Only allow unprivileged users to clear S_ISUID and S_ISUID.
+	 */
+	(m & ~(S_ISUID | S_ISGID)))
       goto out;
 
     gid_t i_gid = (mask & CEPH_SETATTR_GID) ? stx->stx_gid : in->gid;
@@ -6530,11 +6603,18 @@ void Client::_unmount(bool abort)
   }
 
   mount_cond.wait(lock, [this] {
-    if (!mds_requests.empty()) {
-      ldout(cct, 10) << "waiting on " << mds_requests.size() << " requests"
-		     << dendl;
+    // Only wait for write OPs
+    for (auto& [tid, req] : mds_requests) {
+      if (req->is_write()) {
+        ldout(cct, 10) << "waiting for write request '" << tid
+                       << "' to complete, currently there are "
+                       << mds_requests.size()
+                       << " outstanding read/write requests"
+                       << dendl;
+        return false;
+      }
     }
-    return mds_requests.empty();
+    return true;
   });
 
   cwd.reset();
@@ -6547,7 +6627,7 @@ void Client::_unmount(bool abort)
     ldout(cct, 0) << " destroyed lost open file " << fh << " on " << *fh->inode << dendl;
     _release_fh(fh);
   }
-  
+
   while (!ll_unclosed_fh_set.empty()) {
     set<Fh*>::iterator it = ll_unclosed_fh_set.begin();
     Fh *fh = *it;
@@ -6808,6 +6888,13 @@ void Client::collect_and_send_global_metrics() {
   ldout(cct, 20) << __func__ << dendl;
   ceph_assert(ceph_mutex_is_locked_by_me(client_lock));
 
+  /* Do not send the metrics until the MDS rank is ready */
+  if (!mdsmap->is_active((mds_rank_t)0)) {
+    ldout(cct, 5) << __func__ << " MDS rank 0 is not ready yet -- not sending metric"
+                  << dendl;
+    return;
+  }
+
   if (!have_open_session((mds_rank_t)0)) {
     ldout(cct, 5) << __func__ << ": no session with rank=0 -- not sending metric"
                   << dendl;
@@ -6979,7 +7066,8 @@ bool Client::_dentry_valid(const Dentry *dn)
 }
 
 int Client::_lookup(Inode *dir, const string& dname, int mask, InodeRef *target,
-		    const UserPerm& perms, std::string* alternate_name)
+                    const UserPerm& perms, std::string* alternate_name,
+                    bool is_rename)
 {
   int r = 0;
   Dentry *dn = NULL;
@@ -7057,6 +7145,19 @@ relookup:
       }
     } else {
       ldout(cct, 20) << " no cap on " << dn->inode->vino() << dendl;
+    }
+
+    // In rare case during the rename if another thread tries to
+    // lookup the dst dentry, it may get an inconsistent result
+    // that both src dentry and dst dentry will link to the same
+    // inode at the same time.
+    // Will wait the rename to finish and try it again.
+    if (!is_rename && dn->is_renaming) {
+      ldout(cct, 1) << __func__ << " dir " << *dir
+                    << " rename is on the way, will wait for dn '"
+                    << dname << "'" << dendl;
+      wait_on_list(waiting_for_rename);
+      goto relookup;
     }
   } else {
     // can we conclude ENOENT locally?
@@ -7747,13 +7848,7 @@ int Client::_do_setattr(Inode *in, struct ceph_statx *stx, int mask,
   }
 
   if (in->caps_issued_mask(CEPH_CAP_AUTH_EXCL)) {
-    kill_sguid = mask & (CEPH_SETATTR_SIZE|CEPH_SETATTR_KILL_SGUID);
-
-    mask &= ~CEPH_SETATTR_KILL_SGUID;
-  } else if (mask & CEPH_SETATTR_SIZE) {
-    /* If we don't have Ax, then we must ask the server to clear them on truncate */
-    mask |= CEPH_SETATTR_KILL_SGUID;
-    inode_drop |= CEPH_CAP_AUTH_SHARED;
+    kill_sguid = !!(mask & CEPH_SETATTR_KILL_SGUID);
   }
 
   if (mask & CEPH_SETATTR_UID) {
@@ -7813,11 +7908,18 @@ int Client::_do_setattr(Inode *in, struct ceph_statx *stx, int mask,
     } else {
       mask &= ~CEPH_SETATTR_MODE;
     }
-  } else if (in->caps_issued_mask(CEPH_CAP_AUTH_EXCL) &&
-             kill_sguid && S_ISREG(in->mode) &&
-	     (in->mode & (S_IXUSR|S_IXGRP|S_IXOTH))) {
-    /* Must squash the any setuid/setgid bits with an ownership change */
-    in->mode &= ~(S_ISUID|S_ISGID);
+  } else if (in->caps_issued_mask(CEPH_CAP_AUTH_EXCL) && S_ISREG(in->mode)) {
+    if (kill_sguid && (in->mode & (S_IXUSR|S_IXGRP|S_IXOTH))) {
+      in->mode &= ~(S_ISUID|S_ISGID);
+    } else {
+      if (mask & CEPH_SETATTR_KILL_SUID) {
+        in->mode &= ~S_ISUID;
+      }
+      if (mask & CEPH_SETATTR_KILL_SGID) {
+        in->mode &= ~S_ISGID;
+      }
+    }
+    mask &= ~(CEPH_SETATTR_KILL_SGUID|CEPH_SETATTR_KILL_SUID|CEPH_SETATTR_KILL_SGID);
     in->mark_caps_dirty(CEPH_CAP_AUTH_EXCL);
   }
 
@@ -7974,6 +8076,10 @@ void Client::stat_to_statx(struct stat *st, struct ceph_statx *stx)
 int Client::__setattrx(Inode *in, struct ceph_statx *stx, int mask,
 		       const UserPerm& perms, InodeRef *inp)
 {
+  if (mask & CEPH_SETATTR_SIZE) {
+    mask |= clear_suid_sgid(in, perms, true);
+  }
+
   int ret = _do_setattr(in, stx, mask, perms, inp);
   if (ret < 0)
    return ret;
@@ -10628,16 +10734,13 @@ int64_t Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
   if (r < 0)
     return r;
 
-  /* clear the setuid/setgid bits, if any */
-  if (unlikely(in->mode & (S_ISUID|S_ISGID)) && size > 0) {
-    struct ceph_statx stx = { 0 };
-
-    put_cap_ref(in, CEPH_CAP_AUTH_SHARED);
-    r = __setattrx(in, &stx, CEPH_SETATTR_KILL_SGUID, f->actor_perms);
-    if (r < 0)
+  put_cap_ref(in, CEPH_CAP_AUTH_SHARED);
+  if (size > 0) {
+    r = clear_suid_sgid(in, f->actor_perms);
+    if (r < 0) {
+      put_cap_ref(in, CEPH_CAP_FILE_WR);
       return r;
-  } else {
-    put_cap_ref(in, CEPH_CAP_AUTH_SHARED);
+    }
   }
 
   if (f->flags & O_DIRECT)
@@ -11658,6 +11761,9 @@ int Client::_sync_fs()
   // flush caps
   flush_caps_sync();
   ceph_tid_t flush_tid = last_flush_tid;
+
+  // flush the mdlog before waiting for unsafe requests.
+  flush_mdlog_sync();
 
   // wait for unsafe mds requests
   wait_unsafe_requests();
@@ -14046,12 +14152,13 @@ int Client::_rename(Inode *fromdir, const char *fromname, Inode *todir, const ch
     req->old_dentry_drop = CEPH_CAP_FILE_SHARED;
     req->old_dentry_unless = CEPH_CAP_FILE_EXCL;
 
+    de->is_renaming = true;
     req->set_dentry(de);
     req->dentry_drop = CEPH_CAP_FILE_SHARED;
     req->dentry_unless = CEPH_CAP_FILE_EXCL;
 
     InodeRef oldin, otherin;
-    res = _lookup(fromdir, fromname, 0, &oldin, perm);
+    res = _lookup(fromdir, fromname, 0, &oldin, perm, nullptr, true);
     if (res < 0)
       goto fail;
 
@@ -14060,7 +14167,7 @@ int Client::_rename(Inode *fromdir, const char *fromname, Inode *todir, const ch
     req->set_old_inode(oldinode);
     req->old_inode_drop = CEPH_CAP_LINK_SHARED;
 
-    res = _lookup(todir, toname, 0, &otherin, perm);
+    res = _lookup(todir, toname, 0, &otherin, perm, nullptr, true);
     switch (res) {
     case 0:
       {
@@ -14088,6 +14195,12 @@ int Client::_rename(Inode *fromdir, const char *fromname, Inode *todir, const ch
 
   res = make_request(req, perm, &target);
   ldout(cct, 10) << "rename result is " << res << dendl;
+
+  // if rename fails it will miss waking up the waiters
+  if (op == CEPH_MDS_OP_RENAME && de->is_renaming) {
+    de->is_renaming = false;
+    signal_cond_list(waiting_for_rename);
+  }
 
   // renamed item from our cache
 
@@ -14795,6 +14908,46 @@ int Client::ll_sync_inode(Inode *in, bool syncdataonly)
   return _fsync(in, syncdataonly);
 }
 
+int Client::clear_suid_sgid(Inode *in, const UserPerm& perms, bool defer)
+{
+  ldout(cct, 20) << __func__ << " " << *in << "; " << perms << " defer "
+                 << defer << dendl;
+
+  if (!in->is_file()) {
+    return 0;
+  }
+
+  if (likely(!(in->mode & (S_ISUID|S_ISGID)))) {
+    return 0;
+  }
+
+  if (perms.uid() == 0 || perms.uid() == in->uid) {
+    return 0;
+  }
+
+  int mask = 0;
+
+  // always drop the suid
+  if (unlikely(in->mode & S_ISUID)) {
+    mask = CEPH_SETATTR_KILL_SUID;
+  }
+
+  // remove the sgid if S_IXUGO is set or the inode is
+  // is not in the caller's group list.
+  if ((in->mode & S_ISGID) &&
+      ((in->mode & S_IXUGO) || !perms.gid_in_groups(in->gid))) {
+    mask |= CEPH_SETATTR_KILL_SGID;
+  }
+
+  ldout(cct, 20) << __func__ << " mask " << mask << dendl;
+  if (defer) {
+    return mask;
+  }
+
+  struct ceph_statx stx = { 0 };
+  return __setattrx(in, &stx, mask, perms);
+}
+
 int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
 {
   ceph_assert(ceph_mutex_is_locked_by_me(client_lock));
@@ -14832,6 +14985,12 @@ int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
   int r = get_caps(fh, CEPH_CAP_FILE_WR, CEPH_CAP_FILE_BUFFER, &have, -1);
   if (r < 0)
     return r;
+
+  r = clear_suid_sgid(in, fh->actor_perms);
+  if (r < 0) {
+    put_cap_ref(in, CEPH_CAP_FILE_WR);
+    return r;
+  }
 
   std::unique_ptr<C_SaferCond> onuninline = nullptr;
   if (mode & FALLOC_FL_PUNCH_HOLE) {
@@ -14937,7 +15096,7 @@ int Client::fallocate(int fd, int mode, loff_t offset, loff_t length)
   if (!mref_reader.is_state_satisfied())
     return -CEPHFS_ENOTCONN;
 
-  tout(cct) << __func__ << " " << " " << fd << mode << " " << offset << " " << length << std::endl;
+  tout(cct) << __func__ << " " << fd << mode << " " << offset << " " << length << std::endl;
 
   std::scoped_lock lock(client_lock);
   Fh *fh = get_filehandle(fd);

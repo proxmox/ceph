@@ -133,8 +133,25 @@ int KernelDevice::open(const string& p)
   int r = 0, i = 0;
   dout(1) << __func__ << " path " << path << dendl;
 
+  struct stat statbuf;
+  bool is_block;
+  r = stat(path.c_str(), &statbuf);
+  if (r != 0) {
+    derr << __func__ << " stat got: " << cpp_strerror(r) << dendl;
+    goto out_fail;
+  }
+  is_block = (statbuf.st_mode & S_IFMT) == S_IFBLK;
   for (i = 0; i < WRITE_LIFE_MAX; i++) {
-    int fd = ::open(path.c_str(), O_RDWR | O_DIRECT);
+    int flags = 0;
+    if (lock_exclusive && is_block && (i == 0)) {
+      // If opening block device use O_EXCL flag. It gives us best protection,
+      // as no other process can overwrite the data for as long as we are running.
+      // For block devices ::flock is not enough,
+      // since 2 different inodes with same major/minor can be locked.
+      // Exclusion by O_EXCL works in containers too.
+      flags |= O_EXCL;
+    }
+    int fd = ::open(path.c_str(), O_RDWR | O_DIRECT | flags);
     if (fd  < 0) {
       r = -errno;
       break;
@@ -187,6 +204,10 @@ int KernelDevice::open(const string& p)
   }
 
   if (lock_exclusive) {
+    // We need to keep soft locking (via flock()) because O_EXCL does not work for regular files.
+    // This is as good as we can get. Other processes can still overwrite the data,
+    // but at least we are protected from mounting same device twice in ceph processes.
+    // We also apply soft locking for block devices, as it populates /proc/locks. (see lslocks)
     r = _lock();
     if (r < 0) {
       derr << __func__ << " failed to lock " << path << ": " << cpp_strerror(r)
@@ -266,7 +287,7 @@ int KernelDevice::open(const string& p)
 	  << byte_u_t(size) << ")"
 	  << " block_size " << block_size
 	  << " (" << byte_u_t(block_size) << ")"
-	  << " " << (rotational ? "rotational" : "non-rotational")
+	  << " " << (rotational ? "rotational device," : "non-rotational device,")
       << " discard " << (support_discard ? "supported" : "not supported")
 	  << dendl;
   return 0;
@@ -1243,7 +1264,7 @@ int KernelDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
 	 << "s" << dendl;
   }
   if (r < 0) {
-    if (ioc->allow_eio && is_expected_ioerr(r)) {
+    if (ioc->allow_eio && is_expected_ioerr(-errno)) {
       r = -EIO;
     } else {
       r = -errno;

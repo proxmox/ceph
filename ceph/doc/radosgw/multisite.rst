@@ -46,6 +46,24 @@ configurations for the Ceph Object Gateway:
   a global object namespace. This global object namespace ensures unique
   object IDs across zonegroups and zones.
 
+  Each bucket is owned by the zonegroup where it was created (except where
+  overridden by the :ref:`LocationConstraint<s3_bucket_placement>` on
+  bucket creation), and its object data will only replicate to other zones in
+  that zonegroup. Any request for data in that bucket that are sent to other
+  zonegroups will redirect to the zonegroup where the bucket resides.
+
+  It can be useful to create multiple zonegroups when you want to share a
+  namespace of users and buckets across many zones, but isolate the object data
+  to a subset of those zones. It might be that you have several connected sites
+  that share storage, but only require a single backup for purposes of disaster
+  recovery. In such a case, it could make sense to create several zonegroups
+  with only two zones each to avoid replicating all objects to all zones.
+
+  In other cases, it might make more sense to isolate things in separate
+  realms, with each realm having a single zonegroup. Zonegroups provide
+  flexibility by making it possible to control the isolation of data and
+  metadata separately.
+
 - **Multiple Realms:** Beginning with the Kraken release, the Ceph Object
   Gateway supports "realms", which are containers for zonegroups. Realms make
   it possible to set policies that apply to multiple zonegroups. Realms have a
@@ -54,6 +72,7 @@ configurations for the Ceph Object Gateway:
   define multiple namespaces and multiple configurations (this means that each
   realm can have a configuration that is distinct from the configuration of
   other realms).
+
 
 Diagram - Replication of Object Data Between Zones
 --------------------------------------------------
@@ -751,7 +770,13 @@ to a multi-site system, follow these steps:
       radosgw-admin zonegroup rename --rgw-zonegroup default --zonegroup-new-name=<name>
       radosgw-admin zone rename --rgw-zone default --zone-new-name us-east-1 --rgw-zonegroup=<name>
 
-3. Configure the master zonegroup. Replace ``<name>`` with the realm name or
+3. Rename the default zonegroup's ``api_name``. Replace ``<name>`` with the zonegroup name:
+
+   .. prompt:: bash #
+
+      radosgw-admin zonegroup modify --api-name=<name> --rgw-zonegroup=<name>
+
+4. Configure the master zonegroup. Replace ``<name>`` with the realm name or
    zonegroup name. Replace ``<fqdn>`` with the fully qualified domain name(s)
    in the zonegroup:
 
@@ -759,7 +784,7 @@ to a multi-site system, follow these steps:
 
       radosgw-admin zonegroup modify --rgw-realm=<name> --rgw-zonegroup=<name> --endpoints http://<fqdn>:80 --master --default
 
-4. Configure the master zone. Replace ``<name>`` with the realm name, zone
+5. Configure the master zone. Replace ``<name>`` with the realm name, zone
    name, or zonegroup name. Replace ``<fqdn>`` with the fully qualified domain
    name(s) in the zonegroup:
 
@@ -770,7 +795,7 @@ to a multi-site system, follow these steps:
                                 --access-key=<access-key> --secret=<secret-key> \
                                 --master --default
 
-5. Create a system user. Replace ``<user-id>`` with the username.  Replace
+6. Create a system user. Replace ``<user-id>`` with the username.  Replace
    ``<display-name>`` with a display name. The display name is allowed to
    contain spaces:
 
@@ -781,13 +806,13 @@ to a multi-site system, follow these steps:
       --access-key=<access-key> \ 
       --secret=<secret-key> --system
 
-6. Commit the updated configuration:
+7. Commit the updated configuration:
 
    .. prompt:: bash #
 
       radosgw-admin period update --commit
 
-7. Restart the Ceph Object Gateway:
+8. Restart the Ceph Object Gateway:
 
    .. prompt:: bash #
 
@@ -1011,7 +1036,7 @@ Making a Zonegroup the Default
 One zonegroup in the list of zonegroups must be the default zonegroup.  There
 can be only one default zonegroup. In the case that there is only one zonegroup
 which was not designated the default zonegroup when it was created, use the
-folloiwng command to make it the default zonegroup. Commands of this form can
+following command to make it the default zonegroup. Commands of this form can
 be used to change which zonegroup is the default. 
 
 #. Designate a zonegroup as the default zonegroup:
@@ -1130,7 +1155,7 @@ To view the configuration of a zonegroup, run this command:
 
 .. prompt:: bash #
    
-   dosgw-admin zonegroup get [--rgw-zonegroup=<zonegroup>]
+   radosgw-admin zonegroup get [--rgw-zonegroup=<zonegroup>]
 
 The zonegroup configuration looks like this:
 
@@ -1184,8 +1209,8 @@ The zonegroup configuration looks like this:
 Setting a Zonegroup
 ~~~~~~~~~~~~~~~~~~~~
 
-The process of defining a zonegroup consists of creating a JSON object and, at
-a minimum, specifying the required settings:
+The process of defining a zonegroup consists of creating a JSON object and
+specifying the required settings. Here is a list of the required settings:
 
 1. ``name``: The name of the zonegroup. Required.
 
@@ -1223,26 +1248,26 @@ a minimum, specifying the required settings:
    object data. Set to ``default-placement`` by default. It is  also possible
    to set a per-user default placement in the user info for each user.
 
-To set a zonegroup, create a JSON object that contains the required fields,
-save the object to a file (e.g., ``zonegroup.json``), and run the following
-command:
+Setting a Zonegroup - Procedure
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. prompt:: bash #
+#. To set a zonegroup, create a JSON object that contains the required fields,
+   save the object to a file (for example, ``zonegroup.json``), and run the
+   following command:
+
+   .. prompt:: bash #
    
-   radosgw-admin zonegroup set --infile zonegroup.json
+      radosgw-admin zonegroup set --infile zonegroup.json
 
-Where ``zonegroup.json`` is the JSON file you created.
+   Where ``zonegroup.json`` is the JSON file you created.
 
-.. important:: The ``default`` zonegroup ``is_master`` setting is ``true`` by
-   default. If you create a new zonegroup and want to make it the master
-   zonegroup, you must either set the ``default`` zonegroup ``is_master``
-   setting to ``false``, or delete the ``default`` zonegroup.
+   .. important:: The ``default`` zonegroup ``is_master`` setting is ``true`` by default. If you create an additional zonegroup and want to make it the master zonegroup, you must either set the ``default`` zonegroup ``is_master`` setting to ``false`` or delete the ``default`` zonegroup.
 
-Finally, update the period:
+#. Update the period:
 
-.. prompt:: bash #
+   .. prompt:: bash #
    
-   radosgw-admin period update --commit
+      radosgw-admin period update --commit
 
 Setting a Zonegroup Map
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1344,7 +1369,7 @@ Zones
 -----
 
 A zone defines a logical group that consists of one or more Ceph Object Gateway
-instances. Ceph Object Gateway supports zones.
+instances. All RGWs in a given zone serve S3 objects that are backed by RADOS objects that are stored in the same set of pools in the same cluster. Ceph Object Gateway supports zones.
 
 The procedure for configuring zones differs from typical configuration
 procedures, because not all of the settings end up in a Ceph configuration
@@ -1582,14 +1607,23 @@ Supported Features
 
 .. _feature_resharding:
 
-resharding
+Resharding
 ~~~~~~~~~~
 
-Allows buckets to be resharded in a multisite configuration without interrupting the replication of their objects. When ``rgw_dynamic_resharding`` is enabled, it runs on each zone independently, and zones may choose different shard counts for the same bucket. When buckets are resharded manually with ``radosgw-admin bucket reshard``, only that zone's bucket is modified. A zone feature should only be marked as supported after all of its radosgws and osds have upgraded.
+This feature allows buckets to be resharded in a multisite configuration
+without interrupting the replication of their objects. When
+``rgw_dynamic_resharding`` is enabled, it runs on each zone independently, and
+zones may choose different shard counts for the same bucket. When buckets are
+resharded manually with ``radosgw-admin bucket reshard``, only that zone's
+bucket is modified. A zone feature should only be marked as supported after all
+of its RGWs and OSDs have upgraded.
+
+.. note:: Dynamic resharding is not supported in multisite deployments prior to
+   the Reef release.
 
 
 Commands
------------------
+--------
 
 Add support for a zone feature
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

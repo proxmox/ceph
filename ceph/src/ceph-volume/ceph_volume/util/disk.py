@@ -359,6 +359,10 @@ def is_device(dev):
         if not allow_loop_devices():
             return False
 
+    TYPE = lsblk(dev).get('TYPE')
+    if TYPE:
+        return TYPE in ['disk', 'mpath']
+
     # fallback to stat
     return _stat_is_device(os.lstat(dev).st_mode)
 
@@ -734,28 +738,6 @@ def is_mapper_device(device_name):
     return device_name.startswith(('/dev/mapper', '/dev/dm-'))
 
 
-def is_locked_raw_device(disk_path):
-    """
-    A device can be locked by a third party software like a database.
-    To detect that case, the device is opened in Read/Write and exclusive mode
-    """
-    open_flags = (os.O_RDWR | os.O_EXCL)
-    open_mode = 0
-    fd = None
-
-    try:
-        fd = os.open(disk_path, open_flags, open_mode)
-    except OSError:
-        return 1
-
-    try:
-        os.close(fd)
-    except OSError:
-        return 1
-
-    return 0
-
-
 class AllowLoopDevices(object):
     allow = False
     warned = False
@@ -781,7 +763,7 @@ class AllowLoopDevices(object):
 allow_loop_devices = AllowLoopDevices()
 
 
-def get_block_devs_sysfs(_sys_block_path='/sys/block', _sys_dev_block_path='/sys/dev/block'):
+def get_block_devs_sysfs(_sys_block_path='/sys/block', _sys_dev_block_path='/sys/dev/block', device=''):
     def holder_inner_loop():
         for holder in holders:
             # /sys/block/sdy/holders/dm-8/dm/uuid
@@ -791,7 +773,10 @@ def get_block_devs_sysfs(_sys_block_path='/sys/block', _sys_dev_block_path='/sys
 
     # First, get devices that are _not_ partitions
     result = list()
-    dev_names = os.listdir(_sys_block_path)
+    if not device:
+        dev_names = os.listdir(_sys_block_path)
+    else:
+        dev_names = [device]
     for dev in dev_names:
         name = kname = os.path.join("/dev", dev)
         if not os.path.exists(name):
@@ -826,6 +811,19 @@ def get_block_devs_sysfs(_sys_block_path='/sys/block', _sys_dev_block_path='/sys
         result.append([name, kname, "part"])
     return sorted(result, key=lambda x: x[0])
 
+def get_partitions(_sys_dev_block_path ='/sys/dev/block'):
+    devices = os.listdir(_sys_dev_block_path)
+    result = dict()
+    for device in devices:
+        device_path = os.path.join(_sys_dev_block_path, device)
+        is_partition = get_file_contents(os.path.join(device_path, 'partition')) == "1"
+        if not is_partition:
+            continue
+
+        partition_sys_name = os.path.basename(os.readlink(device_path))
+        parent_device_sys_name = os.readlink(device_path).split('/')[-2:-1][0]
+        result[partition_sys_name] = parent_device_sys_name
+    return result
 
 def get_devices(_sys_block_path='/sys/block', device=''):
     """
@@ -841,17 +839,22 @@ def get_devices(_sys_block_path='/sys/block', device=''):
     device_facts = {}
 
     block_devs = get_block_devs_sysfs(_sys_block_path)
+    partitions = get_partitions()
 
-    block_types = ['disk', 'mpath']
+    block_types = ['disk', 'mpath', 'lvm', 'part']
     if allow_loop_devices():
         block_types.append('loop')
 
     for block in block_devs:
+        if block[2] == 'lvm':
+            block[1] = lvm.get_lv_path_from_mapper(block[1])
         devname = os.path.basename(block[0])
         diskname = block[1]
         if block[2] not in block_types:
             continue
         sysdir = os.path.join(_sys_block_path, devname)
+        if block[2] == 'part':
+            sysdir = os.path.join(_sys_block_path, partitions[devname], devname)
         metadata = {}
 
         # If the device is ceph rbd it gets excluded
@@ -879,11 +882,17 @@ def get_devices(_sys_block_path='/sys/block', device=''):
         for key, file_ in facts:
             metadata[key] = get_file_contents(os.path.join(sysdir, file_))
 
-        device_slaves = os.listdir(os.path.join(sysdir, 'slaves'))
+        if block[2] != 'part':
+            device_slaves = os.listdir(os.path.join(sysdir, 'slaves'))
+            metadata['partitions'] = get_partitions_facts(sysdir)
+
         if device_slaves:
             metadata['device_nodes'] = ','.join(device_slaves)
         else:
-            metadata['device_nodes'] = devname
+            if block[2] == 'part':
+                metadata['device_nodes'] = partitions[devname]
+            else:
+                metadata['device_nodes'] = devname
 
         metadata['scheduler_mode'] = ""
         scheduler = get_file_contents(sysdir + "/queue/scheduler")
@@ -904,7 +913,6 @@ def get_devices(_sys_block_path='/sys/block', device=''):
         metadata['size'] = float(size) * 512
         metadata['human_readable_size'] = human_readable_size(metadata['size'])
         metadata['path'] = diskname
-        metadata['locked'] = is_locked_raw_device(metadata['path'])
         metadata['type'] = block[2]
 
         device_facts[diskname] = metadata

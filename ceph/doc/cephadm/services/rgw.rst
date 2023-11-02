@@ -83,23 +83,23 @@ To deploy RGWs serving the multisite *myorg* realm and the *us-east-1* zone on
 
 .. prompt:: bash #
 
-   ceph orch apply rgw east --realm=myorg --zone=us-east-1 --placement="2 myhost1 myhost2"
+   ceph orch apply rgw east --realm=myorg --zonegroup=us-east-zg-1 --zone=us-east-1 --placement="2 myhost1 myhost2"
 
 Note that in a multisite situation, cephadm only deploys the daemons.  It does not create
-or update the realm or zone configurations.  To create a new realm and zone, you need to do
-something like:
+or update the realm or zone configurations.  To create a new realms, zones and zonegroups
+you can use :ref:`mgr-rgw-module` or manually using something like:
 
 .. prompt:: bash #
 
-  radosgw-admin realm create --rgw-realm=<realm-name> --default
-  
-.. prompt:: bash #
-
-  radosgw-admin zonegroup create --rgw-zonegroup=<zonegroup-name>  --master --default
+  radosgw-admin realm create --rgw-realm=<realm-name>
 
 .. prompt:: bash #
 
-  radosgw-admin zone create --rgw-zonegroup=<zonegroup-name> --rgw-zone=<zone-name> --master --default
+  radosgw-admin zonegroup create --rgw-zonegroup=<zonegroup-name>  --master
+
+.. prompt:: bash #
+
+  radosgw-admin zone create --rgw-zonegroup=<zonegroup-name> --rgw-zone=<zone-name> --master
 
 .. prompt:: bash #
 
@@ -212,12 +212,14 @@ It is a yaml format file with the following properties:
         - host2
         - host3
     spec:
-      backend_service: rgw.something      # adjust to match your existing RGW service
-      virtual_ip: <string>/<string>       # ex: 192.168.20.1/24
-      frontend_port: <integer>            # ex: 8080
-      monitor_port: <integer>             # ex: 1967, used by haproxy for load balancer status
-      virtual_interface_networks: [ ... ] # optional: list of CIDR networks
-      ssl_cert: |                         # optional: SSL certificate and key
+      backend_service: rgw.something            # adjust to match your existing RGW service
+      virtual_ip: <string>/<string>             # ex: 192.168.20.1/24
+      frontend_port: <integer>                  # ex: 8080
+      monitor_port: <integer>                   # ex: 1967, used by haproxy for load balancer status
+      virtual_interface_networks: [ ... ]       # optional: list of CIDR networks
+      use_keepalived_multicast: <bool>          # optional: Default is False.
+      vrrp_interface_network: <string>/<string> # optional: ex: 192.168.20.0/24
+      ssl_cert: |                               # optional: SSL certificate and key
         -----BEGIN CERTIFICATE-----
         ...
         -----END CERTIFICATE-----
@@ -243,6 +245,7 @@ It is a yaml format file with the following properties:
       frontend_port: <integer>            # ex: 8080
       monitor_port: <integer>             # ex: 1967, used by haproxy for load balancer status
       virtual_interface_networks: [ ... ] # optional: list of CIDR networks
+      first_virtual_router_id: <integer>  # optional: default 50
       ssl_cert: |                         # optional: SSL certificate and key
         -----BEGIN CERTIFICATE-----
         ...
@@ -276,6 +279,21 @@ where the properties of this service specification are:
 * ``ssl_cert``:
     SSL certificate, if SSL is to be enabled. This must contain the both the certificate and
     private key blocks in .pem format.
+* ``use_keepalived_multicast``
+    Default is False. By default, cephadm will deploy keepalived config to use unicast IPs,
+    using the IPs of the hosts. The IPs chosen will be the same IPs cephadm uses to connect
+    to the machines. But if multicast is prefered, we can set ``use_keepalived_multicast``
+    to ``True`` and Keepalived will use multicast IP (224.0.0.18) to communicate between instances,
+    using the same interfaces as where the VIPs are.
+* ``vrrp_interface_network``
+    By default, cephadm will configure keepalived to use the same interface where the VIPs are
+    for VRRP communication. If another interface is needed, it can be set via ``vrrp_interface_network``
+    with a network to identify which ethernet interface to use.
+* ``first_virtual_router_id``
+    Default is 50. When deploying more than 1 ingress, this parameter can be used to ensure each
+    keepalived will have different virtual_router_id. In the case of using ``virtual_ips_list``,
+    each IP will create its own virtual router. So the first one will have ``first_virtual_router_id``,
+    second one will have ``first_virtual_router_id`` + 1, etc. Valid values go from 1 to 255.
 
 .. _ingress-virtual-ip:
 

@@ -248,6 +248,8 @@ void BlueFS::_init_logger()
 	    "jlen", PerfCountersBuilder::PRIO_INTERESTING, unit_t(UNIT_BYTES));
   b.add_u64_counter(l_bluefs_log_compactions, "log_compactions",
 		    "Compactions of the metadata log");
+  b.add_u64_counter(l_bluefs_log_write_count, "log_write_count",
+		    "Write op count to the metadata log");
   b.add_u64_counter(l_bluefs_logged_bytes, "logged_bytes",
 		    "Bytes written to the metadata log",
 		    "j",
@@ -256,6 +258,10 @@ void BlueFS::_init_logger()
 		    "Files written to WAL");
   b.add_u64_counter(l_bluefs_files_written_sst, "files_written_sst",
 		    "Files written to SSTs");
+  b.add_u64_counter(l_bluefs_write_count_wal, "write_count_wal",
+		    "Write op count to WAL");
+  b.add_u64_counter(l_bluefs_write_count_sst, "write_count_sst",
+		    "Write op count to SSTs");
   b.add_u64_counter(l_bluefs_bytes_written_wal, "bytes_written_wal",
 		    "Bytes written to WAL",
 		    "walb",
@@ -371,6 +377,13 @@ void BlueFS::_init_logger()
   b.add_u64_counter(l_bluefs_read_prefetch_bytes, "read_prefetch_bytes",
 		    "Bytes requested in prefetch read mode",
 		     NULL,
+		    PerfCountersBuilder::PRIO_USEFUL, unit_t(UNIT_BYTES));
+  b.add_u64_counter(l_bluefs_write_count, "write_count",
+		    "Write requests processed");
+  b.add_u64_counter(l_bluefs_write_disk_count, "write_disk_count",
+		    "Write requests sent to disk");
+  b.add_u64_counter(l_bluefs_write_bytes, "write_bytes",
+		    "Bytes written", NULL,
 		    PerfCountersBuilder::PRIO_USEFUL, unit_t(UNIT_BYTES));
  b.add_time_avg     (l_bluefs_compaction_lat, "compact_lat",
                     "Average bluefs log compaction latency",
@@ -3095,6 +3108,7 @@ void BlueFS::_flush_and_sync_log_core(int64_t runway)
   if (realign && realign != super.block_size)
     bl.append_zero(realign);
 
+  logger->inc(l_bluefs_log_write_count, 1);
   logger->inc(l_bluefs_logged_bytes, bl.length());
 
   if (true) {
@@ -3301,6 +3315,11 @@ int BlueFS::_signal_dirty_to_log_D(FileWriter *h)
 {
   ceph_assert(ceph_mutex_is_locked(h->lock));
   std::lock_guard dl(dirty.lock);
+  if (h->file->deleted) {
+    dout(10) << __func__ << "  deleted, no-op" << dendl;
+    return 0;
+  }
+
   h->file->fnode.mtime = ceph_clock_now();
   ceph_assert(h->file->fnode.ino >= 1);
   if (h->file->dirty_seq <= dirty.seq_stable) {
@@ -3425,11 +3444,16 @@ int BlueFS::_flush_data(FileWriter *h, uint64_t offset, uint64_t length, bool bu
   h->pos = offset + length;
   length = bl.length();
 
+  logger->inc(l_bluefs_write_count, 1);
+  logger->inc(l_bluefs_write_bytes, length);
+
   switch (h->writer_type) {
   case WRITER_WAL:
+    logger->inc(l_bluefs_write_count_wal, 1);
     logger->inc(l_bluefs_bytes_written_wal, length);
     break;
   case WRITER_SST:
+    logger->inc(l_bluefs_write_count_sst, 1);
     logger->inc(l_bluefs_bytes_written_sst, length);
     break;
   }
@@ -3441,6 +3465,8 @@ int BlueFS::_flush_data(FileWriter *h, uint64_t offset, uint64_t length, bool bu
   uint64_t bloff = 0;
   uint64_t bytes_written_slow = 0;
   while (length > 0) {
+    logger->inc(l_bluefs_write_disk_count, 1);
+
     uint64_t x_len = std::min(p->length - x_off, length);
     bufferlist t;
     t.substr_of(bl, bloff, x_len);
@@ -3639,6 +3665,7 @@ int BlueFS::truncate(FileWriter *h, uint64_t offset)/*_WF_L*/
   std::lock_guard ll(log.lock);
   vselector->sub_usage(h->file->vselector_hint, h->file->fnode.size);
   h->file->fnode.size = offset;
+  h->file->is_dirty = true;
   vselector->add_usage(h->file->vselector_hint, h->file->fnode.size);
   log.t.op_file_update_inc(h->file->fnode);
   return 0;
@@ -3650,7 +3677,8 @@ int BlueFS::fsync(FileWriter *h)/*_WF_WD_WLD_WLNF_WNF*/
   std::unique_lock hl(h->lock);
   uint64_t old_dirty_seq = 0;
   {
-    dout(10) << __func__ << " " << h << " " << h->file->fnode << dendl;
+    dout(10) << __func__ << " " << h << " " << h->file->fnode
+             << " dirty " << h->file->is_dirty << dendl;
     int r = _flush_F(h, true);
     if (r < 0)
       return r;
@@ -3925,7 +3953,7 @@ int BlueFS::open_for_write(
   std::string_view dirname,
   std::string_view filename,
   FileWriter **h,
-  bool overwrite)/*_N_LD*/
+  bool overwrite)/*_LND*/
 {
   _maybe_check_vselector_LNF();
   FileRef file;
@@ -3933,7 +3961,8 @@ int BlueFS::open_for_write(
   bool truncate = false;
   mempool::bluefs::vector<bluefs_extent_t> pending_release_extents;
   {
-  std::unique_lock nl(nodes.lock);
+  std::lock_guard ll(log.lock);
+  std::lock_guard nl(nodes.lock);
   dout(10) << __func__ << " " << dirname << "/" << filename << dendl;
   map<string,DirRef>::iterator p = nodes.dir_map.find(dirname);
   DirRef dir;
@@ -3991,17 +4020,15 @@ int BlueFS::open_for_write(
   dout(20) << __func__ << " mapping " << dirname << "/" << filename
 	   << " vsel_hint " << file->vselector_hint
 	   << dendl;
-  }
-  {
-    std::lock_guard ll(log.lock);
-    log.t.op_file_update(file->fnode);
-    if (create)
-      log.t.op_dir_link(dirname, filename, file->fnode.ino);
 
-    std::lock_guard dl(dirty.lock);
-    for (auto& p : pending_release_extents) {
-      dirty.pending_release[p.bdev].insert(p.offset, p.length);
-    }
+  log.t.op_file_update(file->fnode);
+  if (create)
+    log.t.op_dir_link(dirname, filename, file->fnode.ino);
+
+  std::lock_guard dl(dirty.lock);
+  for (auto& p : pending_release_extents) {
+    dirty.pending_release[p.bdev].insert(p.offset, p.length);
+  }
   }
   *h = _create_writer(file);
 
@@ -4593,7 +4620,7 @@ size_t BlueFS::probe_alloc_avail(int dev, uint64_t alloc_size)
     total += p2align(len, alloc_size);
   };
   if (alloc[dev]) {
-    alloc[dev]->dump(iterated_allocation);
+    alloc[dev]->foreach(iterated_allocation);
   }
   return total;
 }

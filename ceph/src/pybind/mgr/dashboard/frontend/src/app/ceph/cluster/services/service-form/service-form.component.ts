@@ -18,6 +18,7 @@ import { CdForm } from '~/app/shared/forms/cd-form';
 import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
 import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
 import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
 import { FinishedTask } from '~/app/shared/models/finished-task';
 import { CephServiceSpec } from '~/app/shared/models/service.interface';
 import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
@@ -334,7 +335,9 @@ export class ServiceFormComponent extends CdForm implements OnInit {
             privacy_protocol: { op: '!empty' }
           })
         ]
-      ]
+      ],
+      grafana_port: [null, [CdValidators.number(false)]],
+      grafana_admin_password: [null]
     });
   }
 
@@ -368,7 +371,8 @@ export class ServiceFormComponent extends CdForm implements OnInit {
 
       this.serviceTypes = _.difference(resp, this.hiddenServices).sort();
     });
-    this.hostService.list('false').subscribe((resp: object[]) => {
+    const hostContext = new CdTableFetchDataContext(() => undefined);
+    this.hostService.list(hostContext.toParams(), 'false').subscribe((resp: object[]) => {
       const options: SelectOption[] = [];
       _.forEach(resp, (host: object) => {
         if (_.get(host, 'sources.orchestrator', false)) {
@@ -479,6 +483,12 @@ export class ServiceFormComponent extends CdForm implements OnInit {
                   .get('snmp_community')
                   .setValue(response[0].spec['credentials']['snmp_community']);
               }
+              break;
+            case 'grafana':
+              this.serviceForm.get('grafana_port').setValue(response[0].spec.port);
+              this.serviceForm
+                .get('grafana_admin_password')
+                .setValue(response[0].spec.initial_admin_password);
               break;
           }
         });
@@ -654,6 +664,9 @@ export class ServiceFormComponent extends CdForm implements OnInit {
           }
           serviceSpec['virtual_interface_networks'] = values['virtual_interface_networks'];
           break;
+        case 'grafana':
+          serviceSpec['port'] = values['grafana_port'];
+          serviceSpec['initial_admin_password'] = values['grafana_admin_password'];
       }
     }
 

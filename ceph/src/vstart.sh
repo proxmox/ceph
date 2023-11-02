@@ -215,8 +215,8 @@ options:
 	-g --gssapi enable Kerberos/GSSApi authentication
 	-G disable Kerberos/GSSApi authentication
 	--hitset <pool> <hit_set_type>: enable hitset tracking
-	-e : create an erasure pool\
-	-o config		 add extra config parameters to all sections
+	-e : create an erasure pool
+	-o config add extra config parameters to all sections
 	--rgw_port specify ceph rgw http listen port
 	--rgw_frontend specify the rgw frontend configuration
 	--rgw_compression specify the rgw compression plugin
@@ -1093,6 +1093,11 @@ EOF
         run 'mgr' $name $CEPH_BIN/ceph-mgr -i $name $ARGS
     done
 
+    while ! ceph_adm mgr stat | jq -e '.available'; do
+        debug echo 'waiting for mgr to become available'
+        sleep 1
+    done
+    
     if [ "$new" -eq 1 ]; then
         # setting login credentials for dashboard
         if $with_mgr_dashboard; then

@@ -71,11 +71,15 @@ def mock_device():
     dev.lvs = []
     return dev
 
-@pytest.fixture(params=range(1,3))
+@pytest.fixture(params=range(1,4))
 def mock_devices_available(request):
     ret = []
-    for _ in range(request.param):
-        ret.append(mock_device())
+    for n in range(request.param):
+        dev = mock_device()
+        # after v15.2.8, a single VG is created for each PV
+        dev.vg_name = f'vg_foo_{n}'
+        dev.vgs = [lvm.VolumeGroup(vg_name=dev.vg_name, lv_name=dev.lv_name)]
+        ret.append(dev)
     return ret
 
 @pytest.fixture
@@ -215,7 +219,7 @@ def disable_kernel_queries(monkeypatch):
     '''
     This speeds up calls to Device and Disk
     '''
-    monkeypatch.setattr("ceph_volume.util.device.disk.get_devices", lambda: {})
+    monkeypatch.setattr("ceph_volume.util.device.disk.get_devices", lambda device='': {})
     monkeypatch.setattr("ceph_volume.util.disk.udevadm_property", lambda *a, **kw: {})
 
 
@@ -297,7 +301,7 @@ def device_info(monkeypatch, patch_bluestore_label):
         udevadm = udevadm if udevadm else {}
         lv = Factory(**lv) if lv else None
         monkeypatch.setattr("ceph_volume.sys_info.devices", {})
-        monkeypatch.setattr("ceph_volume.util.device.disk.get_devices", lambda: devices)
+        monkeypatch.setattr("ceph_volume.util.device.disk.get_devices", lambda device='': devices)
         if not devices:
             monkeypatch.setattr("ceph_volume.util.device.lvm.get_single_lv", lambda filters: lv)
         else:

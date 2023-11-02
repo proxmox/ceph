@@ -29,6 +29,7 @@ import { Permissions } from '~/app/shared/models/permissions';
 import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
 import { EmptyPipe } from '~/app/shared/pipes/empty.pipe';
 import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { CdTableServerSideService } from '~/app/shared/services/cd-table-server-side.service';
 import { ModalService } from '~/app/shared/services/modal.service';
 import { NotificationService } from '~/app/shared/services/notification.service';
 import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
@@ -56,6 +57,8 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
   orchTmpl: TemplateRef<any>;
   @ViewChild('flashTmpl', { static: true })
   flashTmpl: TemplateRef<any>;
+  @ViewChild('hostNameTpl', { static: true })
+  hostNameTpl: TemplateRef<any>;
 
   @Input()
   hiddenColumns: string[] = [];
@@ -87,6 +90,8 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
   bsModalRef: NgbModalRef;
 
   icons = Icons;
+  private tableContext: CdTableFetchDataContext = null;
+  count = 5;
 
   messages = {
     nonOrchHost: $localize`The feature is disabled because the selected host is not managed by Orchestrator.`
@@ -193,7 +198,8 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
       {
         name: $localize`Hostname`,
         prop: 'hostname',
-        flexGrow: 1
+        flexGrow: 1,
+        cellTemplate: this.hostNameTpl
       },
       {
         name: $localize`Service Instances`,
@@ -217,7 +223,8 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
         cellTransformation: CellTemplate.badge,
         customTemplateConfig: {
           map: {
-            maintenance: { class: 'badge-warning' }
+            maintenance: { class: 'badge-warning' },
+            available: { class: 'badge-success' }
           }
         }
       },
@@ -479,6 +486,12 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
   }
 
   getHosts(context: CdTableFetchDataContext) {
+    if (context !== null) {
+      this.tableContext = context;
+    }
+    if (this.tableContext == null) {
+      this.tableContext = new CdTableFetchDataContext(() => undefined);
+    }
     if (this.isLoadingHosts) {
       return;
     }
@@ -489,14 +502,24 @@ export class HostsComponent extends ListWithDetails implements OnDestroy, OnInit
         mergeMap((orchStatus) => {
           this.orchStatus = orchStatus;
           const factsAvailable = this.checkHostsFactsAvailable();
-          return this.hostService.list(`${factsAvailable}`);
+          return this.hostService.list(this.tableContext?.toParams(), factsAvailable.toString());
         })
       )
       .subscribe(
-        (hostList) => {
+        (hostList: any[]) => {
           this.hosts = hostList;
+          this.hosts.forEach((host: object) => {
+            if (host['status'] === '') {
+              host['status'] = 'available';
+            }
+          });
           this.transformHostsData();
           this.isLoadingHosts = false;
+          if (this.hosts.length > 0) {
+            this.count = CdTableServerSideService.getCount(hostList[0]);
+          } else {
+            this.count = 0;
+          }
         },
         () => {
           this.isLoadingHosts = false;
