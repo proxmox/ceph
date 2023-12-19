@@ -14,7 +14,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  6 files changed, 11 insertions(+), 12 deletions(-)
 
 diff --git a/systemd/ceph-mds@.service.in b/systemd/ceph-mds@.service.in
-index e47738a27..eeab101b5 100644
+index afa36702f..03ffbc1fa 100644
 --- a/systemd/ceph-mds@.service.in
 +++ b/systemd/ceph-mds@.service.in
 @@ -2,8 +2,8 @@
@@ -29,7 +29,7 @@ index e47738a27..eeab101b5 100644
  [Service]
  Environment=CLUSTER=ceph
 diff --git a/systemd/ceph-mgr@.service.in b/systemd/ceph-mgr@.service.in
-index 0ff9db237..aea3af40a 100644
+index 8fadc4746..79ea740a7 100644
 --- a/systemd/ceph-mgr@.service.in
 +++ b/systemd/ceph-mgr@.service.in
 @@ -2,8 +2,8 @@
@@ -44,7 +44,7 @@ index 0ff9db237..aea3af40a 100644
  [Service]
  Environment=CLUSTER=ceph
 diff --git a/systemd/ceph-mon@.service.in b/systemd/ceph-mon@.service.in
-index d3121d59d..7992d502a 100644
+index 2eba83c3c..a2a619d7f 100644
 --- a/systemd/ceph-mon@.service.in
 +++ b/systemd/ceph-mon@.service.in
 @@ -6,8 +6,8 @@ PartOf=ceph-mon.target
@@ -59,7 +59,7 @@ index d3121d59d..7992d502a 100644
  [Service]
  Environment=CLUSTER=ceph
 diff --git a/systemd/ceph-osd@.service.in b/systemd/ceph-osd@.service.in
-index 2e5ea6ae4..987656da7 100644
+index 046500efb..c988cf345 100644
 --- a/systemd/ceph-osd@.service.in
 +++ b/systemd/ceph-osd@.service.in
 @@ -2,8 +2,8 @@
@@ -74,7 +74,7 @@ index 2e5ea6ae4..987656da7 100644
  [Service]
  Environment=CLUSTER=ceph
 diff --git a/systemd/ceph-radosgw@.service.in b/systemd/ceph-radosgw@.service.in
-index dee501b47..d1bcf5bb7 100644
+index b74747055..5cccc21ee 100644
 --- a/systemd/ceph-radosgw@.service.in
 +++ b/systemd/ceph-radosgw@.service.in
 @@ -2,8 +2,8 @@

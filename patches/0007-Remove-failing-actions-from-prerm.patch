@@ -11,6 +11,7 @@ fails) and doesn't let us continue to #DEBHELPER#. #DEBHELPER#, however, gets
 replaced by a systemd call that successfully stops the ceph services.
 
 Signed-off-by: Dominic Jäger <d.jaeger@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  debian/ceph-base.prerm | 17 -----------------
  debian/ceph-mds.prerm  | 17 -----------------
@@ -159,6 +160,3 @@ index 40f07b621..37460790a 100644
  #DEBHELPER#
  
  exit 0
--- 
-2.20.1
-

@@ -10,6 +10,7 @@ crashing on older CPU architectures. -O1 causes those optimizations to
 be implemented manually via runtime dispatch.
 
 Signed-off-by: Stefan Hanreich <s.hanreich@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  src/erasure-code/jerasure/CMakeLists.txt | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
@@ -27,6 +28,3 @@ index f9cd22e11..b0a355235 100644
  set_target_properties(gf-complete_objs PROPERTIES 
    COMPILE_DEFINITIONS "${GF_COMPILE_FLAGS}")
  
--- 
-2.39.2
-

@@ -9,22 +9,21 @@ The `override_dh_installdocs` target was left over as empty override
 by MISTAKE in uptream commit c3a53010af432e77f74bcb46e7205c5500b6af77,
 fix that by just dropping it completely.
 
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  debian/rules | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/debian/rules b/debian/rules
-index 3ac923f71a..d9927b3e0d 100755
+index ed7f4a255..45a624b5a 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -81,9 +81,7 @@ override_dh_auto_install:
+@@ -80,7 +80,7 @@ override_dh_auto_install:
  
  # doc/changelog is a directory, which confuses dh_installchangelogs
  override_dh_installchangelogs:
 -	dh_installchangelogs --exclude doc/changelog
--
--override_dh_installdocs:
 +	dh_installchangelogs --exclude doc/changelog changelog.upstream
  
  override_dh_installlogrotate:
-	cp src/logrotate.conf debian/ceph-common.logrotate
+ 	cp src/logrotate.conf debian/ceph-common.logrotate

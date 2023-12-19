@@ -1,16 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Dominik Csapak <d.csapak@proxmox.com>
 Date: Fri, 28 Jun 2019 16:31:34 +0200
-Subject: [PATCH 10/10] remove legacy init.d ceph script
+Subject: [PATCH] remove legacy init.d ceph script
 
 Signed-off-by: Dominik Csapak <d.csapak@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  debian/ceph-base.install     | 1 -
  debian/ceph-base.maintscript | 1 +
  2 files changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/debian/ceph-base.install b/debian/ceph-base.install
-index 24731dc89d..7f7c56c4bc 100644
+index a3d7757a5..51fafb6e9 100644
 --- a/debian/ceph-base.install
 +++ b/debian/ceph-base.install
 @@ -1,4 +1,3 @@
@@ -19,7 +20,7 @@ index 24731dc89d..7f7c56c4bc 100644
  usr/bin/ceph-crash
  usr/bin/ceph-debugpack
 diff --git a/debian/ceph-base.maintscript b/debian/ceph-base.maintscript
-index 196dc08413..180b7dfde4 100644
+index 196dc0841..180b7dfde 100644
 --- a/debian/ceph-base.maintscript
 +++ b/debian/ceph-base.maintscript
 @@ -1,2 +1,3 @@

@@ -7,11 +7,11 @@ to avoid that the parent (packaging) git info is used..
 
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
- ceph/src/CMakeLists.txt | 7 -------
+ src/CMakeLists.txt | 7 -------
  1 file changed, 7 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index bb4a7812d..ea4789522 100644
+index e1f90f72b..185218554 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -35,17 +35,10 @@ configure_file(ceph-crash.in
