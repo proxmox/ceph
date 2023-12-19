@@ -8,20 +8,29 @@ import pytest
 
 from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection
 from cephadm.serve import CephadmServe
-from cephadm.inventory import HostCacheStatus
+from cephadm.inventory import HostCacheStatus, ClientKeyringSpec
 from cephadm.services.osd import OSD, OSDRemovalQueue, OsdIdClaims
+from cephadm.utils import SpecialHostLabels
 
 try:
     from typing import List
 except ImportError:
     pass
 
-from ceph.deployment.service_spec import ServiceSpec, PlacementSpec, RGWSpec, \
-    NFSServiceSpec, IscsiServiceSpec, HostPlacementSpec, CustomContainerSpec, MDSSpec, \
-    CustomConfig
+from ceph.deployment.service_spec import (
+    CustomConfig,
+    CustomContainerSpec,
+    HostPlacementSpec,
+    IscsiServiceSpec,
+    MDSSpec,
+    NFSServiceSpec,
+    PlacementSpec,
+    RGWSpec,
+    ServiceSpec,
+)
 from ceph.deployment.drive_selection.selector import DriveSelection
 from ceph.deployment.inventory import Devices, Device
-from ceph.utils import datetime_to_str, datetime_now
+from ceph.utils import datetime_to_str, datetime_now, str_to_datetime
 from orchestrator import DaemonDescription, InventoryHost, \
     HostSpec, OrchestratorError, DaemonDescriptionStatus, OrchestratorEvent
 from tests import mock
@@ -119,10 +128,7 @@ def with_osd_daemon(cephadm_module: CephadmOrchestrator, _run_cephadm, host: str
     assert _run_cephadm.mock_calls == [
         mock.call(host, 'osd', 'ceph-volume',
                   ['--', 'lvm', 'list', '--format', 'json'], no_fsid=False, error_ok=False, image='', log_output=True),
-        mock.call(host, f'osd.{osd_id}', 'deploy',
-                  ['--name', f'osd.{osd_id}', '--meta-json', mock.ANY,
-                   '--config-json', '-', '--osd-fsid', 'uuid'],
-                  stdin=mock.ANY, image=''),
+        mock.call(host, f'osd.{osd_id}', ['_orch', 'deploy'], [], stdin=mock.ANY),
         mock.call(host, 'osd', 'ceph-volume',
                   ['--', 'raw', 'list', '--format', 'json'], no_fsid=False, error_ok=False, image='', log_output=True),
     ]
@@ -452,16 +458,37 @@ class TestCephadm(object):
                 CephadmServe(cephadm_module)._check_daemons()
 
                 _run_cephadm.assert_called_with(
-                    'test', 'mon.test', 'deploy', [
-                        '--name', 'mon.test',
-                        '--meta-json', ('{"service_name": "mon", "ports": [], "ip": null, "deployed_by": [], "rank": null, '
-                                        '"rank_generation": null, "extra_container_args": null, "extra_entrypoint_args": null}'),
-                        '--config-json', '-',
-                        '--reconfig',
-                    ],
-                    stdin='{"config": "[mon]\\nk=v\\n[mon.test]\\npublic network = 127.0.0.0/8\\n", '
-                    + '"keyring": "", "files": {"config": "[mon.test]\\npublic network = 127.0.0.0/8\\n"}}',
-                    image='')
+                    'test',
+                    'mon.test',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": "mon.test",
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'reconfig': True,
+                        },
+                        "meta": {
+                            'service_name': 'mon',
+                            'ports': [],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': None,
+                            'extra_entrypoint_args': None,
+                        },
+                        "config_blobs": {
+                            "config": "[mon]\nk=v\n[mon.test]\npublic network = 127.0.0.0/8\n",
+                            "keyring": "",
+                            "files": {
+                                "config": "[mon.test]\npublic network = 127.0.0.0/8\n"
+                            },
+                        },
+                    }),
+                )
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
     def test_mon_crush_location_deployment(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
@@ -486,14 +513,35 @@ class TestCephadm(object):
 
             with with_service(cephadm_module, ServiceSpec(service_type='mon', crush_locations={'test': ['datacenter=a', 'rack=2']}), CephadmOrchestrator.apply_mon, 'test'):
                 _run_cephadm.assert_called_with(
-                    'test', 'mon.test', 'deploy', [
-                        '--name', 'mon.test',
-                        '--meta-json', '{"service_name": "mon", "ports": [], "ip": null, "deployed_by": [], "rank": null, "rank_generation": null, "extra_container_args": null, "extra_entrypoint_args": null}',
-                        '--config-json', '-',
-                    ],
-                    stdin=('{"config": "[mon.test]\\npublic network = 127.0.0.0/8\\n", "keyring": "", '
-                           '"files": {"config": "[mon.test]\\npublic network = 127.0.0.0/8\\n"}, "crush_location": "datacenter=a"}'),
-                    image='',
+                    'test',
+                    'mon.test',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": "mon.test",
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {},
+                        "meta": {
+                            'service_name': 'mon',
+                            'ports': [],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': None,
+                            'extra_entrypoint_args': None,
+                        },
+                        "config_blobs": {
+                            "config": "[mon.test]\npublic network = 127.0.0.0/8\n",
+                            "keyring": "",
+                            "files": {
+                                "config": "[mon.test]\npublic network = 127.0.0.0/8\n",
+                            },
+                            "crush_location": "datacenter=a",
+                        },
+                    }),
                 )
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
@@ -502,16 +550,39 @@ class TestCephadm(object):
         with with_host(cephadm_module, 'test'):
             with with_service(cephadm_module, ServiceSpec(service_type='crash', extra_container_args=['--cpus=2', '--quiet']), CephadmOrchestrator.apply_crash):
                 _run_cephadm.assert_called_with(
-                    'test', 'crash.test', 'deploy', [
-                        '--name', 'crash.test',
-                        '--meta-json', ('{"service_name": "crash", "ports": [], "ip": null, "deployed_by": [], "rank": null, '
-                                        '"rank_generation": null, "extra_container_args": ["--cpus=2", "--quiet"], "extra_entrypoint_args": null}'),
-                        '--config-json', '-',
-                        '--extra-container-args=--cpus=2',
-                        '--extra-container-args=--quiet'
-                    ],
-                    stdin='{"config": "", "keyring": "[client.crash.test]\\nkey = None\\n"}',
-                    image='',
+                    'test',
+                    'crash.test',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": "crash.test",
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'extra_container_args': [
+                                "--cpus=2",
+                                "--quiet",
+                            ],
+                        },
+                        "meta": {
+                            'service_name': 'crash',
+                            'ports': [],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': [
+                                "--cpus=2",
+                                "--quiet",
+                            ],
+                            'extra_entrypoint_args': None,
+                        },
+                        "config_blobs": {
+                            "config": "",
+                            "keyring": "[client.crash.test]\nkey = None\n",
+                        },
+                    }),
                 )
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
@@ -522,19 +593,37 @@ class TestCephadm(object):
                               extra_entrypoint_args=['--collector.textfile.directory=/var/lib/node_exporter/textfile_collector', '--some-other-arg']),
                               CephadmOrchestrator.apply_node_exporter):
                 _run_cephadm.assert_called_with(
-                    'test', 'node-exporter.test', 'deploy', [
-                        '--name', 'node-exporter.test',
-                        '--meta-json', ('{"service_name": "node-exporter", "ports": [9100], "ip": null, "deployed_by": [], "rank": null, '
-                                        '"rank_generation": null, "extra_container_args": null, "extra_entrypoint_args": '
-                                        '["--collector.textfile.directory=/var/lib/node_exporter/textfile_collector", '
-                                        '"--some-other-arg"]}'),
-                        '--config-json', '-',
-                        '--tcp-ports', '9100',
-                        '--extra-entrypoint-args=--collector.textfile.directory=/var/lib/node_exporter/textfile_collector',
-                        '--extra-entrypoint-args=--some-other-arg'
-                    ],
-                    stdin='{}',
-                    image='',
+                    'test',
+                    'node-exporter.test',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": "node-exporter.test",
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'tcp_ports': [9100],
+                            'extra_entrypoint_args': [
+                                "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector",
+                                "--some-other-arg",
+                            ],
+                        },
+                        "meta": {
+                            'service_name': 'node-exporter',
+                            'ports': [9100],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': None,
+                            'extra_entrypoint_args': [
+                                "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector",
+                                "--some-other-arg",
+                            ],
+                        },
+                        "config_blobs": {},
+                    }),
                 )
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
@@ -546,21 +635,44 @@ class TestCephadm(object):
                               extra_container_args=['--cpus=2', '--quiet']),
                               CephadmOrchestrator.apply_node_exporter):
                 _run_cephadm.assert_called_with(
-                    'test', 'node-exporter.test', 'deploy', [
-                        '--name', 'node-exporter.test',
-                        '--meta-json', ('{"service_name": "node-exporter", "ports": [9100], "ip": null, "deployed_by": [], "rank": null, '
-                                        '"rank_generation": null, "extra_container_args": ["--cpus=2", "--quiet"], "extra_entrypoint_args": '
-                                        '["--collector.textfile.directory=/var/lib/node_exporter/textfile_collector", '
-                                        '"--some-other-arg"]}'),
-                        '--config-json', '-',
-                        '--tcp-ports', '9100',
-                        '--extra-container-args=--cpus=2',
-                        '--extra-container-args=--quiet',
-                        '--extra-entrypoint-args=--collector.textfile.directory=/var/lib/node_exporter/textfile_collector',
-                        '--extra-entrypoint-args=--some-other-arg'
-                    ],
-                    stdin='{}',
-                    image='',
+                    'test',
+                    'node-exporter.test',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": "node-exporter.test",
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'tcp_ports': [9100],
+                            'extra_container_args': [
+                                "--cpus=2",
+                                "--quiet",
+                            ],
+                            'extra_entrypoint_args': [
+                                "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector",
+                                "--some-other-arg",
+                            ],
+                        },
+                        "meta": {
+                            'service_name': 'node-exporter',
+                            'ports': [9100],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': [
+                                "--cpus=2",
+                                "--quiet",
+                            ],
+                            'extra_entrypoint_args': [
+                                "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector",
+                                "--some-other-arg",
+                            ],
+                        },
+                        "config_blobs": {},
+                    }),
                 )
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
@@ -572,24 +684,48 @@ class TestCephadm(object):
                               extra_container_args=['--cpus    2', '--container-arg-with-value value']),
                               CephadmOrchestrator.apply_node_exporter):
                 _run_cephadm.assert_called_with(
-                    'test', 'node-exporter.test', 'deploy', [
-                        '--name', 'node-exporter.test',
-                        '--meta-json', ('{"service_name": "node-exporter", "ports": [9100], "ip": null, "deployed_by": [], "rank": null, '
-                                        '"rank_generation": null, "extra_container_args": ["--cpus    2", "--container-arg-with-value value"], '
-                                        '"extra_entrypoint_args": ["--entrypoint-arg-with-value value", "--some-other-arg   3"]}'),
-                        '--config-json', '-',
-                        '--tcp-ports', '9100',
-                        '--extra-container-args=--cpus',
-                        '--extra-container-args=2',
-                        '--extra-container-args=--container-arg-with-value',
-                        '--extra-container-args=value',
-                        '--extra-entrypoint-args=--entrypoint-arg-with-value',
-                        '--extra-entrypoint-args=value',
-                        '--extra-entrypoint-args=--some-other-arg',
-                        '--extra-entrypoint-args=3'
-                    ],
-                    stdin='{}',
-                    image='',
+                    'test',
+                    'node-exporter.test',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": "node-exporter.test",
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'tcp_ports': [9100],
+                            'extra_container_args': [
+                                "--cpus",
+                                "2",
+                                "--container-arg-with-value",
+                                "value",
+                            ],
+                            'extra_entrypoint_args': [
+                                "--entrypoint-arg-with-value",
+                                "value",
+                                "--some-other-arg",
+                                "3",
+                            ],
+                        },
+                        "meta": {
+                            'service_name': 'node-exporter',
+                            'ports': [9100],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': [
+                                "--cpus    2",
+                                "--container-arg-with-value value",
+                            ],
+                            'extra_entrypoint_args': [
+                                "--entrypoint-arg-with-value value",
+                                "--some-other-arg   3",
+                            ],
+                        },
+                        "config_blobs": {},
+                    }),
                 )
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
@@ -608,20 +744,45 @@ class TestCephadm(object):
                          mount_path='/etc/test.conf'),
             CustomConfig(content='\n'.join(test_cert), mount_path='/usr/share/grafana/thing.crt')
         ]
-        conf_outs = [json.dumps(c.to_json()) for c in configs]
-        stdin_str = '{' + \
-            f'"config": "", "keyring": "[client.crash.test]\\nkey = None\\n", "custom_config_files": [{conf_outs[0]}, {conf_outs[1]}]' + '}'
+        tc_joined = '\n'.join(test_cert)
         with with_host(cephadm_module, 'test'):
             with with_service(cephadm_module, ServiceSpec(service_type='crash', custom_configs=configs), CephadmOrchestrator.apply_crash):
-                _run_cephadm.assert_called_with(
-                    'test', 'crash.test', 'deploy', [
-                        '--name', 'crash.test',
-                        '--meta-json', ('{"service_name": "crash", "ports": [], "ip": null, "deployed_by": [], "rank": null, '
-                                        '"rank_generation": null, "extra_container_args": null, "extra_entrypoint_args": null}'),
-                        '--config-json', '-',
-                    ],
-                    stdin=stdin_str,
-                    image='',
+                _run_cephadm(
+                    'test',
+                    'crash.test',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": "crash.test",
+                        "image": "",
+                        "deploy_arguments": [],
+                        "params": {},
+                        "meta": {
+                            "service_name": "crash",
+                            "ports": [],
+                            "ip": None,
+                            "deployed_by": [],
+                            "rank": None,
+                            "rank_generation": None,
+                            "extra_container_args": None,
+                            "extra_entrypoint_args": None,
+                        },
+                        "config_blobs": {
+                            "config": "",
+                            "keyring": "[client.crash.test]\nkey = None\n",
+                            "custom_config_files": [
+                                {
+                                    "content": "something something something",
+                                    "mount_path": "/etc/test.conf",
+                                },
+                                {
+                                    "content": tc_joined,
+                                    "mount_path": "/usr/share/grafana/thing.crt",
+                                },
+                            ]
+                        }
+                    }),
                 )
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
@@ -1695,15 +1856,11 @@ class TestCephadm(object):
 
                         # being in offline/maint mode should disqualify hosts from being
                         # candidates for scheduling
-                        candidates = [
-                            h.hostname for h in cephadm_module.cache.get_schedulable_hosts()]
-                        assert 'test2' in candidates
-                        assert 'test3' in candidates
+                        assert cephadm_module.cache.is_host_schedulable('test2')
+                        assert cephadm_module.cache.is_host_schedulable('test3')
 
-                        unreachable = [
-                            h.hostname for h in cephadm_module.cache.get_unreachable_hosts()]
-                        assert 'test2' in unreachable
-                        assert 'test3' in unreachable
+                        assert cephadm_module.cache.is_host_unreachable('test2')
+                        assert cephadm_module.cache.is_host_unreachable('test3')
 
                         with with_service(cephadm_module, ServiceSpec('crash', placement=PlacementSpec(host_pattern='*'))):
                             # re-apply services. No mgr should be removed from maint/offline hosts
@@ -1873,6 +2030,34 @@ class TestCephadm(object):
             assert f1_before_digest != f1_after_digest
             assert f2_before_digest != f2_after_digest
 
+    @mock.patch("cephadm.inventory.HostCache.get_host_client_files")
+    def test_dont_write_client_files_to_unreachable_hosts(self, _get_client_files, cephadm_module):
+        cephadm_module.inventory.add_host(HostSpec('host1', '1.2.3.1'))  # online
+        cephadm_module.inventory.add_host(HostSpec('host2', '1.2.3.2'))  # maintenance
+        cephadm_module.inventory.add_host(HostSpec('host3', '1.2.3.3'))  # offline
+
+        # mark host2 as maintenance and host3 as offline
+        cephadm_module.inventory._inventory['host2']['status'] = 'maintenance'
+        cephadm_module.offline_hosts.add('host3')
+
+        # verify host2 and host3 are correctly marked as unreachable but host1 is not
+        assert not cephadm_module.cache.is_host_unreachable('host1')
+        assert cephadm_module.cache.is_host_unreachable('host2')
+        assert cephadm_module.cache.is_host_unreachable('host3')
+
+        _get_client_files.side_effect = Exception('Called _get_client_files')
+
+        # with the online host, should call _get_client_files which
+        # we have setup to raise an Exception
+        with pytest.raises(Exception, match='Called _get_client_files'):
+            CephadmServe(cephadm_module)._write_client_files({}, 'host1')
+
+        # for the maintenance and offline host, _get_client_files should
+        # not be called and it should just return immediately with nothing
+        # having been raised
+        CephadmServe(cephadm_module)._write_client_files({}, 'host2')
+        CephadmServe(cephadm_module)._write_client_files({}, 'host3')
+
     def test_etc_ceph_init(self):
         with with_cephadm_module({'manage_etc_ceph_ceph_conf': True}) as m:
             assert m.manage_etc_ceph_ceph_conf is True
@@ -1918,6 +2103,35 @@ osd_k2 = osd_v2
 """
 
         assert cephadm_module.get_minimal_ceph_conf() == expected_combined_conf
+
+    def test_client_keyrings_special_host_labels(self, cephadm_module):
+        cephadm_module.inventory.add_host(HostSpec('host1', labels=['keyring1']))
+        cephadm_module.inventory.add_host(HostSpec('host2', labels=['keyring1', SpecialHostLabels.DRAIN_DAEMONS]))
+        cephadm_module.inventory.add_host(HostSpec('host3', labels=['keyring1', SpecialHostLabels.DRAIN_DAEMONS, SpecialHostLabels.DRAIN_CONF_KEYRING]))
+        # hosts need to be marked as having had refresh to be available for placement
+        # so "refresh" with empty daemon list
+        cephadm_module.cache.update_host_daemons('host1', {})
+        cephadm_module.cache.update_host_daemons('host2', {})
+        cephadm_module.cache.update_host_daemons('host3', {})
+
+        assert 'host1' in [h.hostname for h in cephadm_module.cache.get_conf_keyring_available_hosts()]
+        assert 'host2' in [h.hostname for h in cephadm_module.cache.get_conf_keyring_available_hosts()]
+        assert 'host3' not in [h.hostname for h in cephadm_module.cache.get_conf_keyring_available_hosts()]
+
+        assert 'host1' not in [h.hostname for h in cephadm_module.cache.get_conf_keyring_draining_hosts()]
+        assert 'host2' not in [h.hostname for h in cephadm_module.cache.get_conf_keyring_draining_hosts()]
+        assert 'host3' in [h.hostname for h in cephadm_module.cache.get_conf_keyring_draining_hosts()]
+
+        cephadm_module.keys.update(ClientKeyringSpec('keyring1', PlacementSpec(label='keyring1')))
+
+        with mock.patch("cephadm.module.CephadmOrchestrator.mon_command") as _mon_cmd:
+            _mon_cmd.return_value = (0, 'real-keyring', '')
+            client_files = CephadmServe(cephadm_module)._calc_client_files()
+            assert 'host1' in client_files.keys()
+            assert '/etc/ceph/ceph.keyring1.keyring' in client_files['host1'].keys()
+            assert 'host2' in client_files.keys()
+            assert '/etc/ceph/ceph.keyring1.keyring' in client_files['host2'].keys()
+            assert 'host3' not in client_files.keys()
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
     def test_registry_login(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
@@ -2058,7 +2272,7 @@ Traceback (most recent call last):
                 if 'ceph-volume' in args:
                     return (json.dumps(ceph_volume_lvm_list), '', 0)
                 else:
-                    assert 'deploy' in args
+                    assert ['_orch', 'deploy'] in args
                     raise OrchestratorError("let's fail somehow")
             _run_cephadm.side_effect = _r_c
             assert cephadm_module._osd_activate(
@@ -2120,12 +2334,12 @@ Traceback (most recent call last):
     def test_host_rm_last_admin(self, cephadm_module: CephadmOrchestrator):
         with pytest.raises(OrchestratorError):
             with with_host(cephadm_module, 'test', refresh_hosts=False, rm_with_force=False):
-                cephadm_module.inventory.add_label('test', '_admin')
+                cephadm_module.inventory.add_label('test', SpecialHostLabels.ADMIN)
                 pass
             assert False
         with with_host(cephadm_module, 'test1', refresh_hosts=False, rm_with_force=True):
             with with_host(cephadm_module, 'test2', refresh_hosts=False, rm_with_force=False):
-                cephadm_module.inventory.add_label('test2', '_admin')
+                cephadm_module.inventory.add_label('test2', SpecialHostLabels.ADMIN)
 
     @pytest.mark.parametrize("facts, settings, expected_value",
                              [
@@ -2325,3 +2539,171 @@ Traceback (most recent call last):
         with pytest.raises(OrchestratorError, match=r'Command "very slow" timed out on host hostC \(non-default 999 second timeout\)'):
             with cephadm_module.async_timeout_handler('hostC', 'very slow', 999):
                 cephadm_module.wait_async(_timeout())
+
+    @mock.patch("cephadm.CephadmOrchestrator.remove_osds")
+    @mock.patch("cephadm.CephadmOrchestrator.add_host_label", lambda *a, **kw: None)
+    @mock.patch("cephadm.inventory.HostCache.get_daemons_by_host", lambda *a, **kw: [])
+    def test_host_drain_zap(self, _rm_osds, cephadm_module):
+        # pass force=true in these tests to bypass _admin label check
+        cephadm_module.drain_host('host1', force=True, zap_osd_devices=False)
+        assert _rm_osds.called_with([], zap=False)
+
+        cephadm_module.drain_host('host1', force=True, zap_osd_devices=True)
+        assert _rm_osds.called_with([], zap=True)
+
+    def test_process_ls_output(self, cephadm_module):
+        sample_ls_output = """[
+    {
+        "style": "cephadm:v1",
+        "name": "mon.vm-00",
+        "fsid": "588f83ba-5995-11ee-9e94-52540057a206",
+        "systemd_unit": "ceph-588f83ba-5995-11ee-9e94-52540057a206@mon.vm-00",
+        "enabled": true,
+        "state": "running",
+        "service_name": "mon",
+        "ports": [],
+        "ip": null,
+        "deployed_by": [
+            "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3"
+        ],
+        "rank": null,
+        "rank_generation": null,
+        "extra_container_args": null,
+        "extra_entrypoint_args": null,
+        "memory_request": null,
+        "memory_limit": null,
+        "container_id": "b170b964a6e2918955362eb36195627c6086d3f859d4ebce2ee13f3ee4738733",
+        "container_image_name": "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3",
+        "container_image_id": "674eb38037f1555bb7884ede5db47f1749486e7f12ecb416e34ada87c9934e55",
+        "container_image_digests": [
+            "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3"
+        ],
+        "memory_usage": 56214159,
+        "cpu_percentage": "2.32%",
+        "version": "18.0.0-5185-g7b3a4f2b",
+        "started": "2023-09-22T22:31:11.752300Z",
+        "created": "2023-09-22T22:15:24.121387Z",
+        "deployed": "2023-09-22T22:31:10.383431Z",
+        "configured": "2023-09-22T22:31:11.859440Z"
+    },
+    {
+        "style": "cephadm:v1",
+        "name": "mgr.vm-00.mpexeg",
+        "fsid": "588f83ba-5995-11ee-9e94-52540057a206",
+        "systemd_unit": "ceph-588f83ba-5995-11ee-9e94-52540057a206@mgr.vm-00.mpexeg",
+        "enabled": true,
+        "state": "running",
+        "service_name": "mgr",
+        "ports": [
+            8443,
+            9283,
+            8765
+        ],
+        "ip": null,
+        "deployed_by": [
+            "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3"
+        ],
+        "rank": null,
+        "rank_generation": null,
+        "extra_container_args": null,
+        "extra_entrypoint_args": null,
+        "memory_request": null,
+        "memory_limit": null,
+        "container_id": "6e7756cef553a25a2a84227e8755d3d25046b9cd8758b23c698d34b3af895242",
+        "container_image_name": "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3",
+        "container_image_id": "674eb38037f1555bb7884ede5db47f1749486e7f12ecb416e34ada87c9934e55",
+        "container_image_digests": [
+            "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3"
+        ],
+        "memory_usage": 529740595,
+        "cpu_percentage": "8.35%",
+        "version": "18.0.0-5185-g7b3a4f2b",
+        "started": "2023-09-22T22:30:18.587021Z",
+        "created": "2023-09-22T22:15:29.101409Z",
+        "deployed": "2023-09-22T22:30:17.339114Z",
+        "configured": "2023-09-22T22:30:18.758122Z"
+    },
+    {
+        "style": "cephadm:v1",
+        "name": "agent.vm-00",
+        "fsid": "588f83ba-5995-11ee-9e94-52540057a206",
+        "systemd_unit": "ceph-588f83ba-5995-11ee-9e94-52540057a206@agent.vm-00",
+        "enabled": true,
+        "state": "running",
+        "service_name": "agent",
+        "ports": [],
+        "ip": null,
+        "deployed_by": [
+            "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3"
+        ],
+        "rank": null,
+        "rank_generation": null,
+        "extra_container_args": null,
+        "extra_entrypoint_args": null,
+        "container_id": null,
+        "container_image_name": null,
+        "container_image_id": null,
+        "container_image_digests": null,
+        "version": null,
+        "started": null,
+        "created": "2023-09-22T22:33:34.708289Z",
+        "deployed": null,
+        "configured": "2023-09-22T22:33:34.722289Z"
+    },
+    {
+        "style": "cephadm:v1",
+        "name": "osd.0",
+        "fsid": "588f83ba-5995-11ee-9e94-52540057a206",
+        "systemd_unit": "ceph-588f83ba-5995-11ee-9e94-52540057a206@osd.0",
+        "enabled": true,
+        "state": "running",
+        "service_name": "osd.foo",
+        "ports": [],
+        "ip": null,
+        "deployed_by": [
+            "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3"
+        ],
+        "rank": null,
+        "rank_generation": null,
+        "extra_container_args": null,
+        "extra_entrypoint_args": null,
+        "memory_request": null,
+        "memory_limit": null,
+        "container_id": "93f71c60820b86901a45b3b1fe3dba3e3e677b37fd22310b7e7da3f67bb8ccd6",
+        "container_image_name": "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3",
+        "container_image_id": "674eb38037f1555bb7884ede5db47f1749486e7f12ecb416e34ada87c9934e55",
+        "container_image_digests": [
+            "quay.io/adk3798/ceph@sha256:ff374767a4568f6d11a941ab763e7732cd7e071362328f7b6a7891bc4852a3a3"
+        ],
+        "memory_usage": 73410805,
+        "cpu_percentage": "6.54%",
+        "version": "18.0.0-5185-g7b3a4f2b",
+        "started": "2023-09-22T22:41:29.019587Z",
+        "created": "2023-09-22T22:41:03.615080Z",
+        "deployed": "2023-09-22T22:41:24.965222Z",
+        "configured": "2023-09-22T22:41:29.119250Z"
+    }
+]"""
+
+        now = str_to_datetime('2023-09-22T22:45:29.119250Z')
+        cephadm_module._cluster_fsid = '588f83ba-5995-11ee-9e94-52540057a206'
+        with mock.patch("cephadm.module.datetime_now", lambda: now):
+            cephadm_module._process_ls_output('vm-00', json.loads(sample_ls_output))
+            assert 'vm-00' in cephadm_module.cache.daemons
+            assert 'mon.vm-00' in cephadm_module.cache.daemons['vm-00']
+            assert 'mgr.vm-00.mpexeg' in cephadm_module.cache.daemons['vm-00']
+            assert 'agent.vm-00' in cephadm_module.cache.daemons['vm-00']
+            assert 'osd.0' in cephadm_module.cache.daemons['vm-00']
+
+            daemons = cephadm_module.cache.get_daemons_by_host('vm-00')
+            c_img_ids = [dd.container_image_id for dd in daemons if dd.daemon_type != 'agent']
+            assert all(c_img_id == '674eb38037f1555bb7884ede5db47f1749486e7f12ecb416e34ada87c9934e55' for c_img_id in c_img_ids)
+            last_refreshes = [dd.last_refresh for dd in daemons]
+            assert all(lrf == now for lrf in last_refreshes)
+            versions = [dd.version for dd in daemons if dd.daemon_type != 'agent']
+            assert all(version == '18.0.0-5185-g7b3a4f2b' for version in versions)
+
+            osd = cephadm_module.cache.get_daemons_by_type('osd', 'vm-00')[0]
+            assert osd.cpu_percentage == '6.54%'
+            assert osd.memory_usage == 73410805
+            assert osd.created == str_to_datetime('2023-09-22T22:41:03.615080Z')

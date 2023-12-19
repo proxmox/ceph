@@ -1430,18 +1430,12 @@ int RGWOp::init_quota()
 }
 
 static bool validate_cors_rule_method(const DoutPrefixProvider *dpp, RGWCORSRule *rule, const char *req_meth) {
-  uint8_t flags = 0;
-
   if (!req_meth) {
     ldpp_dout(dpp, 5) << "req_meth is null" << dendl;
     return false;
   }
 
-  if (strcmp(req_meth, "GET") == 0) flags = RGW_CORS_GET;
-  else if (strcmp(req_meth, "POST") == 0) flags = RGW_CORS_POST;
-  else if (strcmp(req_meth, "PUT") == 0) flags = RGW_CORS_PUT;
-  else if (strcmp(req_meth, "DELETE") == 0) flags = RGW_CORS_DELETE;
-  else if (strcmp(req_meth, "HEAD") == 0) flags = RGW_CORS_HEAD;
+  uint8_t flags = get_cors_method_flags(req_meth);
 
   if (rule->get_allowed_methods() & flags) {
     ldpp_dout(dpp, 10) << "Method " << req_meth << " is supported" << dendl;
@@ -2535,10 +2529,9 @@ void RGWListBuckets::execute(optional_yield y)
      * isn't actually used in a given account. In such situation its usage
      * stats would be simply full of zeros. */
     std::set<std::string> targets;
-    if (driver->get_zone()->get_zonegroup().get_placement_target_names(targets)) {
-      for (const auto& policy : targets) {
-	policies_stats.emplace(policy, decltype(policies_stats)::mapped_type());
-      }
+    driver->get_zone()->get_zonegroup().get_placement_target_names(targets);
+    for (const auto& policy : targets) {
+      policies_stats.emplace(policy, decltype(policies_stats)::mapped_type());
     }
 
     std::map<std::string, std::unique_ptr<rgw::sal::Bucket>>& m = buckets.get_buckets();
@@ -6632,6 +6625,9 @@ void RGWCompleteMultipart::complete()
       ldpp_dout(this, 0) << "WARNING: failed to unlock " << *serializer.get() << dendl;
     }
   }
+
+  etag = s->object->get_attrs()[RGW_ATTR_ETAG].to_str();
+
   send_response();
 }
 
@@ -7113,7 +7109,7 @@ void RGWDeleteMultiObj::execute(optional_yield y)
   vector<rgw_obj_key>::iterator iter;
   RGWMultiDelXMLParser parser;
   uint32_t aio_count = 0;
-  const uint32_t max_aio = s->cct->_conf->rgw_multi_obj_del_max_aio;
+  const uint32_t max_aio = std::max<uint32_t>(1, s->cct->_conf->rgw_multi_obj_del_max_aio);
   char* buf;
   std::optional<boost::asio::deadline_timer> formatter_flush_cond;
   if (y) {
@@ -7180,7 +7176,7 @@ void RGWDeleteMultiObj::execute(optional_yield y)
         iter != multi_delete->objects.end();
         ++iter) {
     rgw_obj_key obj_key = *iter;
-    if (y && max_aio > 1) {
+    if (y) {
       wait_flush(y, &*formatter_flush_cond, [&aio_count, max_aio] {
         return aio_count < max_aio;
       });
@@ -7190,7 +7186,7 @@ void RGWDeleteMultiObj::execute(optional_yield y)
         aio_count--;
       }); 
     } else {
-      handle_individual_object(obj_key, y, &*formatter_flush_cond);
+      handle_individual_object(obj_key, y, nullptr);
     }
   }
   if (formatter_flush_cond) {

@@ -535,7 +535,7 @@ void PG::on_active_advmap(const OSDMapRef &osdmap)
     }
     logger().info("{}: {} new removed snaps {}, snap_trimq now{}",
                   *this, __func__, it->second, snap_trimq);
-    assert(!bad || local_conf().get_val<bool>("osd_debug_verify_cached_snaps"));
+    assert(!bad || !local_conf().get_val<bool>("osd_debug_verify_cached_snaps"));
   }
 }
 
@@ -1510,6 +1510,7 @@ bool PG::is_degraded_or_backfilling_object(const hobject_t& soid) const {
     // we are backfilling it
     if (is_backfill_target(peer) &&
         peering_state.get_peer_info(peer).last_backfill <= soid &&
+        recovery_handler->backfill_state &&
 	recovery_handler->backfill_state->get_last_backfill_started() >= soid &&
 	recovery_backend->is_recovering(soid)) {
       return true;

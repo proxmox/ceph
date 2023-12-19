@@ -25,7 +25,6 @@ namespace crimson::osd {
 
 class OSD;
 class ShardServices;
-class PG;
 
 // trim up to `max` objects for snapshot `snapid
 class SnapTrimEvent final : public PhasedOperationT<SnapTrimEvent> {
@@ -58,7 +57,7 @@ public:
     ShardServices &shard_services, Ref<PG> pg);
 
 private:
-  CommonPGPipeline& pp();
+  CommonPGPipeline& client_pp();
 
   // bases on 998cb8c141bb89aafae298a9d5e130fbd78fe5f2
   struct SubOpBlocker : crimson::BlockerT<SubOpBlocker> {
@@ -107,9 +106,12 @@ public:
     CommonPGPipeline::GetOBC::BlockingEvent,
     CommonPGPipeline::Process::BlockingEvent,
     WaitSubop::BlockingEvent,
+    PG::SnapTrimMutex::WaitPG::BlockingEvent,
     WaitTrimTimer::BlockingEvent,
     CompletionEvent
   > tracking_events;
+
+  friend class PG::SnapTrimMutex;
 };
 
 // remove single object. a SnapTrimEvent can create multiple subrequests.
@@ -141,7 +143,7 @@ public:
   remove_or_update_iertr::future<> with_pg(
     ShardServices &shard_services, Ref<PG> pg);
 
-  CommonPGPipeline& pp();
+  CommonPGPipeline& client_pp();
 
 private:
   object_stat_sum_t delta_stats;

@@ -157,6 +157,7 @@ void MDSDaemon::asok_command(
 		    // our response before seeing us disappear from mdsmap
 		    sleep(1);
 		    std::lock_guard l(mds_lock);
+                    derr << "Exiting due to admin socket command" << dendl;
 		    suicide();
 		  });
     t.detach();
@@ -258,7 +259,9 @@ void MDSDaemon::set_up_admin_socket()
   r = admin_socket->register_command("dump_ops_in_flight", asok_hook,
 				     "show the ops currently in flight");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("ops", asok_hook,
+  r = admin_socket->register_command("ops "
+				     "name=flags,type=CephChoices,strings=locks,n=N,req=false ",
+                                     asok_hook,
 				     "show the ops currently in flight");
   ceph_assert(r == 0);
   r = admin_socket->register_command("dump_blocked_ops",
@@ -286,7 +289,7 @@ void MDSDaemon::set_up_admin_socket()
   ceph_assert(r == 0);
   r = admin_socket->register_command("scrub start "
 				     "name=path,type=CephString "
-				     "name=scrubops,type=CephChoices,strings=force|recursive|repair,n=N,req=false "
+				     "name=scrubops,type=CephChoices,strings=force|recursive|repair|scrub_mdsdir,n=N,req=false "
 				     "name=tag,type=CephString,req=false",
 				     asok_hook,
 				     "scrub and inode and output results");
@@ -375,10 +378,6 @@ void MDSDaemon::set_up_admin_socket()
   r = admin_socket->register_command("session kill name=client_id,type=CephString",
 				     asok_hook,
 				     "Evict a client session by id");
-  ceph_assert(r == 0);
-  r = admin_socket->register_command("session ls name=cap_dump,type=CephBool,req=false",
-				     asok_hook,
-				     "Enumerate connected CephFS clients");
   ceph_assert(r == 0);
   r = admin_socket->register_command("session config "
 				     "name=client_id,type=CephInt,req=true "
@@ -1074,7 +1073,7 @@ bool MDSDaemon::parse_caps(const AuthCapsInfo& info, MDSAuthCaps& caps)
 
     dout(10) << __func__ << ": parsing auth_cap_str='" << auth_cap_str << "'" << dendl;
     CachedStackStringStream cs;
-    if (caps.parse(g_ceph_context, auth_cap_str, cs.get())) {
+    if (caps.parse(auth_cap_str, cs.get())) {
       return true;
     } else {
       dout(1) << __func__ << ": auth cap parse error: " << cs->strv() << " parsing '" << auth_cap_str << "'" << dendl;
@@ -1083,7 +1082,7 @@ bool MDSDaemon::parse_caps(const AuthCapsInfo& info, MDSAuthCaps& caps)
   }
 }
 
-int MDSDaemon::ms_handle_authentication(Connection *con)
+int MDSDaemon::ms_handle_fast_authentication(Connection *con)
 {
   /* N.B. without mds_lock! */
   MDSAuthCaps caps;

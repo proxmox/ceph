@@ -46,11 +46,48 @@ operations. Do not create or manipulate pools with these names.
 List Pools
 ==========
 
-To list your cluster's pools, run the following command:
+There are multiple ways to get the list of pools in your cluster.
+
+To list just your cluster's pool names (good for scripting), execute:
+
+.. prompt:: bash $
+
+   ceph osd pool ls
+
+::
+
+   .rgw.root
+   default.rgw.log
+   default.rgw.control
+   default.rgw.meta
+
+To list your cluster's pools with the pool number, run the following command:
 
 .. prompt:: bash $
 
    ceph osd lspools
+
+::
+
+   1 .rgw.root
+   2 default.rgw.log
+   3 default.rgw.control
+   4 default.rgw.meta
+
+To list your cluster's pools with additional information, execute:
+
+.. prompt:: bash $
+
+   ceph osd pool ls detail
+
+::
+
+   pool 1 '.rgw.root' replicated size 3 min_size 1 crush_rule 0 object_hash rjenkins pg_num 1 pgp_num 1 autoscale_mode on last_change 19 flags hashpspool stripe_width 0 application rgw read_balance_score 4.00
+   pool 2 'default.rgw.log' replicated size 3 min_size 1 crush_rule 0 object_hash rjenkins pg_num 1 pgp_num 1 autoscale_mode on last_change 21 flags hashpspool stripe_width 0 application rgw read_balance_score 4.00
+   pool 3 'default.rgw.control' replicated size 3 min_size 1 crush_rule 0 object_hash rjenkins pg_num 1 pgp_num 1 autoscale_mode on last_change 23 flags hashpspool stripe_width 0 application rgw read_balance_score 4.00
+   pool 4 'default.rgw.meta' replicated size 3 min_size 1 crush_rule 0 object_hash rjenkins pg_num 1 pgp_num 1 autoscale_mode on last_change 25 flags hashpspool stripe_width 0 pg_autoscale_bias 4 application rgw read_balance_score 4.00
+
+To get even more information, you can execute this command with the ``--format`` (or ``-f``) option and the ``json``, ``json-pretty``, ``xml`` or ``xml-pretty`` value.
 
 .. _createpool:
 
@@ -462,82 +499,6 @@ You may set values for the following keys:
    :Type: Integer
    :Valid Range: ``1`` sets flag, ``0`` unsets flag
 
-.. _hit_set_type:
-
-.. describe:: hit_set_type
-
-   :Description: Enables HitSet tracking for cache pools.
-                 For additional information, see `Bloom Filter`_.
-   :Type: String
-   :Valid Settings: ``bloom``, ``explicit_hash``, ``explicit_object``
-   :Default: ``bloom``. Other values are for testing.
-
-.. _hit_set_count:
-
-.. describe:: hit_set_count
-
-   :Description: Determines the number of HitSets to store for cache pools. The
-                 higher the value, the more RAM is consumed by the ``ceph-osd``
-                 daemon.
-   :Type: Integer
-   :Valid Range: ``1``. Agent doesn't handle > ``1`` yet.
-
-.. _hit_set_period:
-
-.. describe:: hit_set_period
-
-   :Description: Determines the duration of a HitSet period (in seconds) for
-                 cache pools. The higher the value, the more RAM is consumed
-                 by the ``ceph-osd`` daemon.
-   :Type: Integer
-   :Example: ``3600`` (3600 seconds: one hour)
-
-.. _hit_set_fpp:
-
-.. describe:: hit_set_fpp
-
-   :Description: Determines the probability of false positives for the
-                 ``bloom`` HitSet type. For additional information, see `Bloom
-                 Filter`_.
-   :Type: Double
-   :Valid Range: ``0.0`` - ``1.0``
-   :Default: ``0.05``
-
-.. _cache_target_dirty_ratio:
-
-.. describe:: cache_target_dirty_ratio
-
-   :Description: Sets a flush threshold for the percentage of the cache pool
-                 containing modified (dirty) objects. When this threshold is
-                 reached, the cache-tiering agent will flush these objects to
-                 the backing storage pool.
-   :Type: Double
-   :Default: ``.4``
-
-.. _cache_target_dirty_high_ratio:
-
-.. describe:: cache_target_dirty_high_ratio
-   
-   :Description: Sets a flush threshold for the percentage of the cache pool
-                 containing modified (dirty) objects. When this threshold is
-                 reached, the cache-tiering agent will flush these objects to
-                 the backing storage pool with a higher speed (as compared with
-                 ``cache_target_dirty_ratio``).
-   :Type: Double
-   :Default: ``.6``
-
-.. _cache_target_full_ratio:
-
-.. describe:: cache_target_full_ratio
-   
-   :Description: Sets an eviction threshold for the percentage of the cache
-                 pool containing unmodified (clean) objects. When this
-                 threshold is reached, the cache-tiering agent will evict 
-                 these objects from the cache pool.
-
-   :Type: Double
-   :Default: ``.8``
-
 .. _target_max_bytes:
 
 .. describe:: target_max_bytes
@@ -555,41 +516,6 @@ You may set values for the following keys:
                  ``max_objects`` threshold is triggered.
    :Type: Integer
    :Example: ``1000000`` #1M objects
-
-
-.. describe:: hit_set_grade_decay_rate
-   
-   :Description: Sets the temperature decay rate between two successive 
-                 HitSets.
-   :Type: Integer
-   :Valid Range: 0 - 100
-   :Default: ``20``
-
-.. describe:: hit_set_search_last_n
-   
-   :Description: Count at most N appearances in HitSets. Used for temperature 
-                 calculation.
-   :Type: Integer
-   :Valid Range: 0 - hit_set_count
-   :Default: ``1``
-
-.. _cache_min_flush_age:
-
-.. describe:: cache_min_flush_age
-   
-   :Description: Sets the time (in seconds) before the cache-tiering agent
-                 flushes an object from the cache pool to the storage pool.
-   :Type: Integer
-   :Example: ``600`` (600 seconds: ten minutes)
-
-.. _cache_min_evict_age:
-
-.. describe:: cache_min_evict_age
-   
-   :Description: Sets the time (in seconds) before the cache-tiering agent
-                 evicts an object from the cache pool.
-   :Type: Integer
-   :Example: ``1800`` (1800 seconds: thirty minutes)
 
 .. _fast_read:
 
@@ -702,56 +628,6 @@ You may get values from the following keys:
 :Description: See crush_rule_.
 
 
-``hit_set_type``
-
-:Description: See hit_set_type_.
-
-:Type: String
-:Valid Settings: ``bloom``, ``explicit_hash``, ``explicit_object``
-
-
-``hit_set_count``
-
-:Description: See hit_set_count_.
-
-:Type: Integer
-
-
-``hit_set_period``
-
-:Description: See hit_set_period_.
-
-:Type: Integer
-
-
-``hit_set_fpp``
-
-:Description: See hit_set_fpp_.
-
-:Type: Double
-
-
-``cache_target_dirty_ratio``
-
-:Description: See cache_target_dirty_ratio_.
-
-:Type: Double
-
-
-``cache_target_dirty_high_ratio``
-
-:Description: See cache_target_dirty_high_ratio_.
-
-:Type: Double
-
-
-``cache_target_full_ratio``
-
-:Description: See cache_target_full_ratio_.
-
-:Type: Double
-
-
 ``target_max_bytes``
 
 :Description: See target_max_bytes_.
@@ -762,20 +638,6 @@ You may get values from the following keys:
 ``target_max_objects``
 
 :Description: See target_max_objects_.
-
-:Type: Integer
-
-
-``cache_min_flush_age``
-
-:Description: See cache_min_flush_age_.
-
-:Type: Integer
-
-
-``cache_min_evict_age``
-
-:Description: See cache_min_evict_age_.
 
 :Type: Integer
 
@@ -875,6 +737,10 @@ To get the number of object replicas, run the following command:
 Ceph will list pools and highlight the ``replicated size`` attribute.  By
 default, Ceph creates two replicas of an object (a total of three copies, for a
 size of ``3``).
+
+Managing pools that are flagged with ``--bulk``
+===============================================
+See :ref:`managing_bulk_flagged_pools`.
 
 
 .. _pgcalc: https://old.ceph.com/pgcalc/

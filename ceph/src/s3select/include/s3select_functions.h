@@ -233,7 +233,10 @@ enum class s3select_func_En_t {ADD,
                                STRING,
                                TRIM,
                                LEADING,
-                               TRAILING
+                               TRAILING,
+                               DECIMAL_OPERATOR,
+                               CAST_TO_DECIMAL,
+			       ENGINE_VERSION
                               };
 
 
@@ -302,7 +305,11 @@ private:
     {"string", s3select_func_En_t::STRING},
     {"#trim#", s3select_func_En_t::TRIM},
     {"#leading#", s3select_func_En_t::LEADING},
-    {"#trailing#", s3select_func_En_t::TRAILING}
+    {"#trailing#", s3select_func_En_t::TRAILING},
+    {"#decimal_operator#", s3select_func_En_t::DECIMAL_OPERATOR},
+    {"#cast_as_decimal#", s3select_func_En_t::CAST_TO_DECIMAL},
+    {"engine_version", s3select_func_En_t::ENGINE_VERSION}
+
   };
 
 public:
@@ -365,7 +372,7 @@ private:
     }
     m_func_impl = f;
     m_is_aggregate_function= m_func_impl->is_aggregate();
-
+    f->set_function_name(name.c_str());
   }
 
 public:
@@ -414,8 +421,7 @@ public:
     return true;
   }
 
-  __function(const char* fname, s3select_functions* s3f) : name(fname), m_func_impl(nullptr), m_s3select_functions(s3f),m_is_aggregate_function(false) 
-  {}
+  __function(const char* fname, s3select_functions* s3f) : name(fname), m_func_impl(nullptr), m_s3select_functions(s3f),m_is_aggregate_function(false){set_operator_name(fname);}
 
   value& eval() override
   {
@@ -493,6 +499,8 @@ struct _fn_add : public base_function
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,2);
+
     auto iter = args->begin();
     base_statement* x =  *iter;
     iter++;
@@ -511,18 +519,25 @@ struct _fn_sum : public base_function
 
   value sum;
 
-  _fn_sum() : sum(0)
+  _fn_sum()
   {
     aggregate = true;
+    sum.setnull();
   }
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     auto iter = args->begin();
     base_statement* x = *iter;
 
     try
     {
+      if(sum.is_null())
+      {
+	sum = 0;
+      }
       sum = sum + x->eval();
     }
     catch (base_s3select_exception& e)
@@ -589,6 +604,8 @@ struct _fn_avg : public base_function
 
     bool operator()(bs_stmt_vec_t* args, variable *result) override
     {
+	check_args_size(args,1);
+
         auto iter = args->begin();
         base_statement *x = *iter;
 
@@ -608,7 +625,9 @@ struct _fn_avg : public base_function
     void get_aggregate_result(variable *result) override
     {
         if(count == static_cast<value>(0)) {
-            throw base_s3select_exception("count cannot be zero!");
+            value v_null;
+	    v_null.setnull();
+            *result=v_null;
         } else {
             *result = sum/count ;
         }
@@ -620,17 +639,20 @@ struct _fn_min : public base_function
 
   value min;
 
-  _fn_min():min(__INT64_MAX__)
+  _fn_min()
   {
     aggregate=true;
+    min.setnull();
   }
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     auto iter = args->begin();
     base_statement* x =  *iter;
 
-    if(min > x->eval())
+    if(min.is_null() || min > x->eval())
     {
       min=x->eval();
     }
@@ -650,17 +672,20 @@ struct _fn_max : public base_function
 
   value max;
 
-  _fn_max():max(-__INT64_MAX__)
+  _fn_max()
   {
     aggregate=true;
+    max.setnull();
   }
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     auto iter = args->begin();
     base_statement* x =  *iter;
 
-    if(max < x->eval())
+    if(max.is_null() || max < x->eval())
     {
       max=x->eval();
     }
@@ -680,7 +705,9 @@ struct _fn_to_int : public base_function
   value var_result;
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
-  {
+  { 
+    check_args_size(args,1);
+
     value v = (*args->begin())->eval();
 
     switch (v.type) {
@@ -726,6 +753,8 @@ struct _fn_to_float : public base_function
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     value v = (*args->begin())->eval();
 
     switch (v.type) {
@@ -782,7 +811,7 @@ struct _fn_to_timestamp : public base_function
                                 >> (dig2[BOOST_BIND_ACTION_PARAM(push_2dig, &mo)]) >> *(date_separator)
                                 >> (dig2[BOOST_BIND_ACTION_PARAM(push_2dig, &dy)]) >> *(delimiter));
 
-  uint32_t hr = 0, mn = 0, sc = 0,  frac_sec = 0, tz_hr = 0, tz_mn = 0, sign, tm_zone = '0';
+  uint32_t hr = 0, mn = 0, sc = 0,  frac_sec = 0, tz_hr = 0, tz_mn = 0, sign = 0, tm_zone = '0';
 
   #if BOOST_DATE_TIME_POSIX_TIME_STD_CONFIG
     bsc::rule<> fdig9 = bsc::lexeme_d[bsc::digit_p >> bsc::digit_p >> bsc::digit_p >> bsc::digit_p >> bsc::digit_p >> bsc::digit_p >> bsc::digit_p >> bsc::digit_p >> bsc::digit_p];
@@ -1474,6 +1503,8 @@ struct _fn_isnull : public base_function
   
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     auto iter = args->begin();
     base_statement* expr = *iter;
     value expr_val = expr->eval();
@@ -1512,6 +1543,8 @@ struct _fn_in : public base_function
 
   bool operator()(bs_stmt_vec_t *args, variable *result) override
   {
+    check_args_size(args,1);
+
     int args_size = static_cast<int>(args->size()-1);
     base_statement *main_expr = (*args)[args_size];
     value main_expr_val = main_expr->eval();
@@ -1561,6 +1594,8 @@ struct _fn_like : public base_like
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,3);
+
     auto iter = args->begin();
 
     base_statement* escape_expr = *iter;
@@ -1719,6 +1754,8 @@ struct _fn_charlength : public base_function {
  
     bool operator()(bs_stmt_vec_t* args, variable* result) override
     {
+	check_args_size(args,1);
+
         auto iter = args->begin();
         base_statement* str =  *iter;
         v_str = str->eval();
@@ -1730,7 +1767,7 @@ struct _fn_charlength : public base_function {
             return true; 
             }
         }
-    };
+};
 
 struct _fn_lower : public base_function {
 
@@ -1739,6 +1776,8 @@ struct _fn_lower : public base_function {
 
     bool operator()(bs_stmt_vec_t* args, variable* result) override
     {
+	check_args_size(args,1);
+
         auto iter = args->begin();
         base_statement* str = *iter;
         v_str = str->eval();
@@ -1760,6 +1799,8 @@ struct _fn_upper : public base_function {
 
     bool operator()(bs_stmt_vec_t* args, variable* result) override
     {
+	check_args_size(args,1);
+
         auto iter = args->begin();
         base_statement* str = *iter;
         v_str = str->eval();
@@ -1824,6 +1865,8 @@ struct _fn_when_then : public base_function {
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,2);
+
     auto iter = args->begin();
 
     base_statement* then_expr = *iter;
@@ -1853,6 +1896,8 @@ struct _fn_when_value_then : public base_function {
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,3);
+
     auto iter = args->begin();
 
     base_statement* then_expr = *iter;
@@ -1866,7 +1911,7 @@ struct _fn_when_value_then : public base_function {
     when_value = when_expr->eval();
     case_value = case_expr->eval();
     then_value = then_expr->eval();
-    
+
     if (case_value == when_value)
     {
         *result = then_value;
@@ -1884,6 +1929,8 @@ struct _fn_case_when_else : public base_function {
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     base_statement* else_expr = *(args->begin());
 
     size_t args_size = args->size() -1;
@@ -1912,6 +1959,8 @@ struct _fn_coalesce : public base_function
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     auto iter_begin = args->begin();
     int args_size = args->size();
     while (args_size >= 1)
@@ -1937,6 +1986,8 @@ struct _fn_string : public base_function
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     auto iter = args->begin();
 
     base_statement* expr = *iter;
@@ -1953,6 +2004,8 @@ struct _fn_to_bool : public base_function
 
   bool operator()(bs_stmt_vec_t* args, variable* result) override
   {
+    check_args_size(args,1);
+
     int64_t i=0;
     func_arg = (*args->begin())->eval();
 
@@ -1993,6 +2046,8 @@ struct _fn_trim : public base_function {
 
     bool operator()(bs_stmt_vec_t* args, variable* result) override
     {
+	check_args_size(args,1);
+
     	auto iter = args->begin();
     	int args_size = args->size();
     	base_statement* str = *iter;
@@ -2026,6 +2081,8 @@ struct _fn_leading : public base_function {
 
     bool operator()(bs_stmt_vec_t* args, variable* result) override
     {
+	check_args_size(args,1);
+
     	auto iter = args->begin();
     	int args_size = args->size();
     	base_statement* str = *iter;
@@ -2058,6 +2115,8 @@ struct _fn_trailing : public base_function {
 
     bool operator()(bs_stmt_vec_t* args, variable* result) override
     {
+	check_args_size(args,1);
+
     	auto iter = args->begin();
     	int args_size = args->size();
     	base_statement* str = *iter;
@@ -2076,6 +2135,89 @@ struct _fn_trailing : public base_function {
       return true;
     }
 }; 
+
+struct _fn_cast_to_decimal : public base_function {
+
+  int32_t precision=-1;
+  int32_t scale=-1;
+
+  bool operator()(bs_stmt_vec_t* args, variable* result) override
+  {
+    //cast(expr as decimal(x,y))
+    check_args_size(args,2);
+
+    base_statement* expr = (*args)[1];
+    //expr_val should be float or integer
+    //dynamic value for the decimal operator to get the precision and scale
+    
+    _fn_to_float to_float;
+    bs_stmt_vec_t args_vec;
+    args_vec.push_back(expr);
+    to_float(&args_vec,result);   
+    
+    if (precision == -1 || scale == -1){
+      base_statement* decimal_expr = (*args)[0];
+      decimal_expr->eval().get_precision_scale(&precision,&scale);
+    }
+
+    result->set_precision_scale(&precision,&scale);
+
+    return true;
+  }
+};
+
+struct _fn_decimal_operator : public base_function {
+
+  int32_t precision=-1;
+  int32_t scale=-1;
+
+  bool operator()(bs_stmt_vec_t* args, variable* result) override
+  {
+    //decimal(x,y) operator
+    check_args_size(args,2);
+
+    auto iter = args->begin();
+    base_statement* expr_precision = *iter;
+    value expr_precision_val = expr_precision->eval();
+
+    iter++;
+    base_statement* expr_scale = *iter;
+    value expr_scale_val = expr_scale->eval();
+    
+    precision = expr_precision_val.i64();
+    scale = expr_scale_val.i64();
+
+    result->set_precision_scale(&precision,&scale);
+
+    return true;
+  }
+};
+
+struct _fn_engine_version : public base_function {
+
+  const char* version_description =R"(PR #137 : 
+the change handle the use cases where the JSON input starts with an anonymous array/object this may cause wrong search result per the user request(SQL statement) 
+
+handle the use-case where the user requests a json-key-path that may point to a non-discrete value. i.e. array or an object. 
+editorial changes.
+
+fix for CSV flow, in the case of a "broken row" (upon processing stream of data) 
+
+null results upon aggregation functions on an empty group (no match for where clause).
+)";
+
+
+  _fn_engine_version()
+  {
+    aggregate = true;
+  }
+
+  bool operator()(bs_stmt_vec_t* args, variable* result) override
+  {
+    result->set_value(version_description);
+    return true;
+  }
+};
 
 base_function* s3select_functions::create(std::string_view fn_name,const bs_stmt_vec_t &arguments)
 {
@@ -2304,6 +2446,18 @@ base_function* s3select_functions::create(std::string_view fn_name,const bs_stmt
 
   case s3select_func_En_t::TRAILING:  
     return S3SELECT_NEW(this,_fn_trailing);
+    break;
+
+  case  s3select_func_En_t::DECIMAL_OPERATOR:
+    return S3SELECT_NEW(this,_fn_decimal_operator);
+    break;
+
+  case  s3select_func_En_t::CAST_TO_DECIMAL:
+    return S3SELECT_NEW(this,_fn_cast_to_decimal);
+    break;
+
+  case  s3select_func_En_t::ENGINE_VERSION:
+    return S3SELECT_NEW(this,_fn_engine_version);
     break;
 
   default:

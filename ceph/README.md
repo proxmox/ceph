@@ -1,23 +1,25 @@
 # Ceph - a scalable distributed storage system
 
-Please see https://ceph.com/ for current info.
+See https://ceph.com/ for current information about Ceph.
 
 
 ## Contributing Code
 
-Most of Ceph is dual licensed under the LGPL version 2.1 or 3.0.  Some
-miscellaneous code is under a BSD-style license or is public domain.
-The documentation is licensed under Creative Commons
-Attribution Share Alike 3.0 (CC-BY-SA-3.0).  There are a handful of headers
-included here that are licensed under the GPL.  Please see the file
-COPYING for a full inventory of licenses by file.
+Most of Ceph is dual-licensed under the LGPL version 2.1 or 3.0. Some
+miscellaneous code is either public domain or licensed under a BSD-style
+license.
 
-Code contributions must include a valid "Signed-off-by" acknowledging
-the license for the modified or contributed file.  Please see the file
-SubmittingPatches.rst for details on what that means and on how to
-generate and submit patches.
+The Ceph documentation is licensed under Creative Commons Attribution Share
+Alike 3.0 (CC-BY-SA-3.0). 
 
-We do not require assignment of copyright to contribute code; code is
+Some headers included in the `ceph/ceph` repository are licensed under the GPL.
+See the file `COPYING` for a full inventory of licenses by file.
+
+All code contributions must include a valid "Signed-off-by" line. See the file
+`SubmittingPatches.rst` for details on this and instructions on how to generate
+and submit patches.
+
+Assignment of copyright is not required to contribute code. Code is
 contributed under the terms of the applicable license.
 
 
@@ -33,10 +35,11 @@ command on a system that has git installed:
 
 	git clone https://github.com/ceph/ceph.git
 
-When the ceph/ceph repository has been cloned to your system, run the following
-command to check out the git submodules associated with the ceph/ceph
-repository: 
+When the `ceph/ceph` repository has been cloned to your system, run the
+following commands to move into the cloned `ceph/ceph` repository and to check
+out the git submodules associated with it:
 
+    cd ceph
 	git submodule update --init --recursive
 
 
@@ -63,34 +66,42 @@ Install the ``python3-routes`` package:
 
 These instructions are meant for developers who are compiling the code for
 development and testing. To build binaries that are suitable for installation
-we recommend that you build .deb or .rpm packages, or refer to ``ceph.spec.in``
-or ``debian/rules`` to see which configuration options are specified for
-production builds.
+we recommend that you build `.deb` or `.rpm` packages, or refer to
+``ceph.spec.in`` or ``debian/rules`` to see which configuration options are
+specified for production builds.
 
-Build instructions:
+To build Ceph, make sure that you are in the top-level `ceph` directory that
+contains `do_cmake.sh` and `CONTRIBUTING.rst` and run the following commands:
 
 	./do_cmake.sh
 	cd build
 	ninja
 
-``do_cmake.sh`` defaults to creating a debug build of Ceph that can be up to 5x
-slower with some workloads. Pass ``-DCMAKE_BUILD_TYPE=RelWithDebInfo`` to
-``do_cmake.sh`` to create a non-debug release.
+``do_cmake.sh`` by default creates a "debug build" of Ceph, which can be up to
+five times slower than a non-debug build.  Pass
+``-DCMAKE_BUILD_TYPE=RelWithDebInfo`` to ``do_cmake.sh`` to create a non-debug
+build.
 
-The number of jobs used by `ninja` is derived from the number of CPU cores of
-the building host if unspecified. Use the `-j` option to limit the job number
-if the build jobs are running out of memory. On average, each job takes around
-2.5GiB memory.
+[Ninja](https://ninja-build.org/) is the buildsystem used by the Ceph project
+to build test builds.  The number of jobs used by `ninja` is derived from the
+number of CPU cores of the building host if unspecified. Use the `-j` option to
+limit the job number if the build jobs are running out of memory. If you
+attempt to run `ninja` and receive a message that reads `g++: fatal error:
+Killed signal terminated program cc1plus`, then you have run out of memory.
+Using the `-j` option with an argument appropriate to the hardware on which the
+`ninja` command is run is expected to result in a successful build. For example,
+to limit the job number to 3, run the command `ninja -j 3`. On average, each
+`ninja` job run in parallel needs approximately 2.5 GiB of RAM.
 
-This assumes that you make your build directory a subdirectory of the ceph.git
-checkout. If you put it elsewhere, just point `CEPH_GIT_DIR` to the correct
-path to the checkout. Additional CMake args can be specified by setting ARGS
-before invoking ``do_cmake.sh``. See [cmake options](#cmake-options)
-for more details. For example:
+This documentation assumes that your build directory is a subdirectory of the
+`ceph.git` checkout. If the build directory is located elsewhere, point
+`CEPH_GIT_DIR` to the correct path of the checkout. Additional CMake args can
+be specified by setting ARGS before invoking ``do_cmake.sh``.  See [cmake
+options](#cmake-options) for more details. For example:
 
     ARGS="-DCMAKE_C_COMPILER=gcc-7" ./do_cmake.sh
 
-To build only certain targets use:
+To build only certain targets, run a command of the following form:
 
 	ninja [target name]
 
@@ -153,24 +164,25 @@ are committed to git.)
 
 ## Running a test cluster
 
-To run a functional test cluster,
+From the `ceph/` directory, run the following commands to launch a test Ceph
+cluster:
 
 	cd build
 	ninja vstart        # builds just enough to run vstart
 	../src/vstart.sh --debug --new -x --localhost --bluestore
 	./bin/ceph -s
 
-Almost all of the usual commands are available in the bin/ directory.
-For example,
+Most Ceph commands are available in the `bin/` directory. For example:
 
-	./bin/rados -p rbd bench 30 write
 	./bin/rbd create foo --size 1000
+	./bin/rados -p foo bench 30 write
 
-To shut down the test cluster,
+To shut down the test cluster, run the following command from the `build/`
+directory:
 
 	../src/stop.sh
 
-To start or stop individual daemons, the sysvinit script can be used:
+Use the sysvinit script to start or stop individual daemons: 
 
 	./bin/init-ceph restart osd.0
 	./bin/init-ceph stop

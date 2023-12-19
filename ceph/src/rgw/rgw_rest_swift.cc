@@ -945,8 +945,9 @@ int RGWPutObj_ObjStore_SWIFT::get_params(optional_yield y)
 
   if (!s->cct->_conf->rgw_swift_custom_header.empty()) {
     string custom_header = s->cct->_conf->rgw_swift_custom_header;
-    if (s->info.env->exists(custom_header.c_str())) {
-      user_data = s->info.env->get(custom_header.c_str());
+    auto data = s->info.env->get_optional(custom_header);
+    if (data) {
+      user_data = *data;
     }
   }
 
@@ -1897,14 +1898,13 @@ void RGWInfo_ObjStore_SWIFT::list_swift_data(Formatter& formatter,
   const rgw::sal::ZoneGroup& zonegroup = driver->get_zone()->get_zonegroup();
 
   std::set<std::string> targets;
-  if (zonegroup.get_placement_target_names(targets)) {
-    for (const auto& placement_targets : targets) {
-      formatter.open_object_section("policy");
-      if (placement_targets.compare(zonegroup.get_default_placement_name()) == 0)
-	formatter.dump_bool("default", true);
-      formatter.dump_string("name", placement_targets.c_str());
-      formatter.close_section();
-    }
+  zonegroup.get_placement_target_names(targets);
+  for (const auto& placement_targets : targets) {
+    formatter.open_object_section("policy");
+    if (placement_targets.compare(zonegroup.get_default_placement_name()) == 0)
+      formatter.dump_bool("default", true);
+    formatter.dump_string("name", placement_targets.c_str());
+    formatter.close_section();
   }
   formatter.close_section();
 

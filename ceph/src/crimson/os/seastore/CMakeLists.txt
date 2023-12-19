@@ -51,6 +51,7 @@ set(crimson_seastore_srcs
   journal.cc
   device.cc
   segment_manager_group.cc
+  record_scanner.cc
   journal/circular_bounded_journal.cc
   ../../../test/crimson/seastore/test_block.cc
   ${PROJECT_SOURCE_DIR}/src/os/Transaction.cc
@@ -61,7 +62,7 @@ CMAKE_DEPENDENT_OPTION(WITH_ZNS "enable Linux ZNS support" OFF
 if(WITH_ZNS)
   find_package(LinuxZNS REQUIRED)
   list(APPEND crimson_seastore_srcs
-    segment_manager/zns.cc)
+    segment_manager/zbd.cc)
 endif()
 
 add_library(crimson-seastore STATIC

@@ -184,9 +184,11 @@ class XFSTestsDev(CephFSTestCase):
             gawk gcc indent libtool lvm2 make psmisc quota sed \
             xfsdump xfsprogs \
             libacl-devel libattr-devel libaio-devel libuuid-devel \
-            xfsprogs-devel btrfs-progs-devel python2 sqlite""".split()
+            xfsprogs-devel btrfs-progs-devel python3 sqlite""".split()
 
             if self.install_xfsprogs:
+                if distro == 'centosstream' and major_ver_num == 8:
+                    deps += ['--enablerepo=powertools']
                 deps += ['inih-devel', 'userspace-rcu-devel', 'libblkid-devel',
                          'gettext', 'libedit-devel', 'libattr-devel',
                          'device-mapper-devel', 'libicu-devel']

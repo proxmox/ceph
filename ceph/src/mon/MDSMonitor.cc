@@ -804,6 +804,7 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
         last_beacon.erase(followergid);
       }
       request_proposal(mon.osdmon());
+      force_immediate_propose();
       pending.damaged(rankgid, blocklist_epoch);
       last_beacon.erase(rankgid);
 
@@ -1277,6 +1278,8 @@ bool MDSMonitor::fail_mds_gid(FSMap &fsmap, mds_gid_t gid)
     utime_t until = ceph_clock_now();
     until += g_conf().get_val<double>("mon_mds_blocklist_interval");
     blocklist_epoch = mon.osdmon()->blocklist(info.addrs, until);
+    /* do not delay when we are evicting an MDS */
+    force_immediate_propose();
   }
 
   fsmap.erase(gid, blocklist_epoch);
@@ -1438,8 +1441,7 @@ bool MDSMonitor::prepare_command(MonOpRequestRef op)
 out:
   dout(4) << __func__ << " done, r=" << r << dendl;
   /* Compose response */
-  string rs;
-  getline(ss, rs);
+  string rs = ss.str();
 
   if (r >= 0) {
     // success.. delay reply

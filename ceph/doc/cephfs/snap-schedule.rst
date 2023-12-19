@@ -162,6 +162,13 @@ Examples::
    snapshot creation is accounted for in the "created_count" field, which is a
    cumulative count of the total number of snapshots created so far.
 
+.. note: The maximum number of snapshots to retain per directory is limited by the
+   config tunable `mds_max_snaps_per_dir`. This tunable defaults to 100.
+   To ensure a new snapshot can be created, one snapshot less than this will be
+   retained. So by default, a maximum of 99 snapshots will be retained.
+
+.. note: The --fs argument is now required if there is more than one file system.
+
 Active and inactive schedules
 -----------------------------
 Snapshot schedules can be added for a path that doesn't exist yet in the

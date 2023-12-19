@@ -913,7 +913,7 @@ class MDCache {
   void encode_remote_dentry_link(CDentry::linkage_t *dnl, bufferlist& bl);
   void decode_remote_dentry_link(CDir *dir, CDentry *dn, bufferlist::const_iterator& p);
   void send_dentry_link(CDentry *dn, MDRequestRef& mdr);
-  void send_dentry_unlink(CDentry *dn, CDentry *straydn, MDRequestRef& mdr, bool unlinking=false);
+  void send_dentry_unlink(CDentry *dn, CDentry *straydn, MDRequestRef& mdr);
 
   void wait_for_uncommitted_fragment(dirfrag_t dirfrag, MDSContext *c) {
     uncommitted_fragments.at(dirfrag).waiters.push_back(c);
@@ -975,7 +975,7 @@ class MDCache {
    */
   void enqueue_scrub(std::string_view path, std::string_view tag,
                      bool force, bool recursive, bool repair,
-		     Formatter *f, Context *fin);
+                     bool scrub_mdsdir, Formatter *f, Context *fin);
   void repair_inode_stats(CInode *diri);
   void repair_dirfrag_stats(CDir *dir);
   void rdlock_dirfrags_stats(CInode *diri, MDSInternalContext *fin);
@@ -1156,7 +1156,6 @@ class MDCache {
   void handle_discover_reply(const cref_t<MDiscoverReply> &m);
   void handle_dentry_link(const cref_t<MDentryLink> &m);
   void handle_dentry_unlink(const cref_t<MDentryUnlink> &m);
-  void handle_dentry_unlink_ack(const cref_t<MDentryUnlinkAck> &m);
 
   int dump_cache(std::string_view fn, Formatter *f, double timeout);
 

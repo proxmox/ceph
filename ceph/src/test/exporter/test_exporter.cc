@@ -1,9 +1,12 @@
 #include "gtest/gtest.h"
 #include "exporter/util.h"
+#include "exporter/DaemonMetricCollector.h"
 
 #include <string>
 #include <vector>
 #include <utility>
+
+typedef std::map<std::string, std::string> labels_t;
 
 // 17.2.6's memento mori:
 // This data was gathered from the python implementation of the promethize method
@@ -662,3 +665,30 @@ TEST(Exporter, promethize) {
   }
 }
 
+TEST(Exporter, check_labels_and_metric_name) {
+  static std::vector<std::pair<std::string, std::string>> counters_data;
+  counters_data.emplace_back("ceph-osd.0", "ceph_osd_numpg");
+  counters_data.emplace_back("ceph-client.rgw.foo.ceph-node-00.hrgsea.2.94739968030880", "ceph_rgw_get");
+
+  static std::vector<labels_t> labels_vec;
+  labels_vec.emplace_back(labels_t{{"ceph_daemon", "\"osd.0\""}});
+  labels_vec.emplace_back(labels_t{{"instance_id", "\"hrgsea\""}});
+  auto counter_data_itr = counters_data.begin();
+  auto labels_vec_itr = labels_vec.begin();
+  for (; counter_data_itr != counters_data.end() && labels_vec_itr != labels_vec.end();
+         ++counter_data_itr, ++labels_vec_itr) {
+        std::string daemon_name = counter_data_itr->first;
+        std::string counter_name = counter_data_itr->second;
+        DaemonMetricCollector &collector = collector_instance();
+        labels_t result = collector.get_extra_labels(daemon_name);
+        ASSERT_EQ(result, *labels_vec_itr);
+  }
+  // test for fail case with daemon_name.size() < 4
+  std::string short_daemon_name = "ceph-client.rgw.foo";
+  std::string counter_name = "ceph_rgw_get";
+  DaemonMetricCollector &collector = collector_instance();
+  labels_t fail_result = collector.get_extra_labels(short_daemon_name);
+  // This is a special case, the daemon name is not of the required size for fetching instance_id.
+  // So no labels should be added.
+  ASSERT_TRUE(fail_result.empty());
+}

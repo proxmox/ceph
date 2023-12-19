@@ -17,7 +17,7 @@ from ceph.utils import str_to_datetime, datetime_to_str, datetime_now
 from orchestrator import OrchestratorError, HostSpec, OrchestratorEvent, service_to_daemon_types
 from cephadm.services.cephadmservice import CephadmDaemonDeploySpec
 
-from .utils import resolve_ip
+from .utils import resolve_ip, SpecialHostLabels
 from .migrations import queue_migrate_nfs_spec, queue_migrate_rgw_spec
 
 if TYPE_CHECKING:
@@ -1003,29 +1003,60 @@ class HostCache():
             h for h in self.mgr.inventory.all_specs()
             if (
                 self.host_had_daemon_refresh(h.hostname)
-                and '_no_schedule' not in h.labels
+                and SpecialHostLabels.DRAIN_DAEMONS not in h.labels
+            )
+        ]
+
+    def get_conf_keyring_available_hosts(self) -> List[HostSpec]:
+        """
+        Returns all hosts without the drain conf and keyrings
+        label (SpecialHostLabels.DRAIN_CONF_KEYRING) that have
+        had a refresh. That is equivalent to all hosts we
+        consider eligible for deployment of conf and keyring files
+
+        Any host without that label is considered fair game for
+        a client keyring spec to match. However, we want to still
+        wait for refresh here so that we know what keyrings we've
+        already deployed here
+        """
+        return [
+            h for h in self.mgr.inventory.all_specs()
+            if (
+                self.host_had_daemon_refresh(h.hostname)
+                and SpecialHostLabels.DRAIN_CONF_KEYRING not in h.labels
             )
         ]
 
     def get_non_draining_hosts(self) -> List[HostSpec]:
         """
-        Returns all hosts that do not have _no_schedule label.
+        Returns all hosts that do not have drain daemon label
+        (SpecialHostLabels.DRAIN_DAEMONS).
 
         Useful for the agent who needs this specific list rather than the
         schedulable_hosts since the agent needs to be deployed on hosts with
         no daemon refresh
         """
         return [
-            h for h in self.mgr.inventory.all_specs() if '_no_schedule' not in h.labels
+            h for h in self.mgr.inventory.all_specs() if SpecialHostLabels.DRAIN_DAEMONS not in h.labels
         ]
 
     def get_draining_hosts(self) -> List[HostSpec]:
         """
-        Returns all hosts that have _no_schedule label and therefore should have
-        no daemons placed on them, but are potentially still reachable
+        Returns all hosts that have the drain daemons label (SpecialHostLabels.DRAIN_DAEMONS)
+        and therefore should have no daemons placed on them, but are potentially still reachable
         """
         return [
-            h for h in self.mgr.inventory.all_specs() if '_no_schedule' in h.labels
+            h for h in self.mgr.inventory.all_specs() if SpecialHostLabels.DRAIN_DAEMONS in h.labels
+        ]
+
+    def get_conf_keyring_draining_hosts(self) -> List[HostSpec]:
+        """
+        Returns all hosts that have drain conf and keyrings label (SpecialHostLabels.DRAIN_CONF_KEYRING)
+        and therefore should have no config files or client keyring placed on them, but are
+        potentially still reachable
+        """
+        return [
+            h for h in self.mgr.inventory.all_specs() if SpecialHostLabels.DRAIN_CONF_KEYRING in h.labels
         ]
 
     def get_unreachable_hosts(self) -> List[HostSpec]:
@@ -1044,6 +1075,18 @@ class HostCache():
                 or h.hostname in self.mgr.offline_hosts
             )
         ]
+
+    def is_host_unreachable(self, hostname: str) -> bool:
+        # take hostname and return if it matches the hostname of an unreachable host
+        return hostname in [h.hostname for h in self.get_unreachable_hosts()]
+
+    def is_host_schedulable(self, hostname: str) -> bool:
+        # take hostname and return if it matches the hostname of a schedulable host
+        return hostname in [h.hostname for h in self.get_schedulable_hosts()]
+
+    def is_host_draining(self, hostname: str) -> bool:
+        # take hostname and return if it matches the hostname of a draining host
+        return hostname in [h.hostname for h in self.get_draining_hosts()]
 
     def get_facts(self, host: str) -> Dict[str, Any]:
         return self.facts.get(host, {})
@@ -1294,8 +1337,7 @@ class HostCache():
         return True
 
     def all_host_metadata_up_to_date(self) -> bool:
-        unreachables = [h.hostname for h in self.get_unreachable_hosts()]
-        if [h for h in self.get_hosts() if (not self.host_metadata_up_to_date(h) and h not in unreachables)]:
+        if [h for h in self.get_hosts() if (not self.host_metadata_up_to_date(h) and not self.is_host_unreachable(h))]:
             # this function is primarily for telling if it's safe to try and apply a service
             # spec. Since offline/maintenance hosts aren't considered in that process anyway
             # we don't want to return False if the host without up-to-date metadata is in one

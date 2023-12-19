@@ -1,9 +1,8 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
 
 import _ from 'lodash';
-import { Observable, Subscription, timer } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 import { take } from 'rxjs/operators';
-import moment from 'moment';
 
 import { HealthService } from '~/app/shared/api/health.service';
 import { OsdService } from '~/app/shared/api/osd.service';
@@ -23,6 +22,8 @@ import { SummaryService } from '~/app/shared/services/summary.service';
 import { PrometheusListHelper } from '~/app/shared/helpers/prometheus-list-helper';
 import { PrometheusAlertService } from '~/app/shared/services/prometheus-alert.service';
 import { OrchestratorService } from '~/app/shared/api/orchestrator.service';
+import { MgrModuleService } from '~/app/shared/api/mgr-module.service';
+import { AlertClass } from '~/app/shared/enum/health-icon.enum';
 
 @Component({
   selector: 'cd-dashboard-v3',
@@ -43,15 +44,13 @@ export class DashboardV3Component extends PrometheusListHelper implements OnInit
   prometheusAlerts$: Observable<AlertmanagerAlert[]>;
 
   icons = Icons;
-  showAlerts = false;
   flexHeight = true;
   simplebar = {
-    autoHide: false
+    autoHide: true
   };
-  textClass: string;
   borderClass: string;
   alertType: string;
-  alerts: AlertmanagerAlert[];
+  alertClass = AlertClass;
   healthData: any;
   categoryPgAmount: Record<string, number> = {};
   totalPgs = 0;
@@ -65,13 +64,9 @@ export class DashboardV3Component extends PrometheusListHelper implements OnInit
     WRITECLIENTTHROUGHPUT: '',
     RECOVERYBYTES: ''
   };
-  timerGetPrometheusDataSub: Subscription;
-  timerTime = 30000;
-  readonly lastHourDateObject = {
-    start: moment().unix() - 3600,
-    end: moment().unix(),
-    step: 12
-  };
+  telemetryEnabled: boolean;
+  telemetryURL = 'https://telemetry-public.ceph.com/';
+  origin = window.location.origin;
 
   constructor(
     private summaryService: SummaryService,
@@ -81,6 +76,7 @@ export class DashboardV3Component extends PrometheusListHelper implements OnInit
     private featureToggles: FeatureTogglesService,
     private healthService: HealthService,
     public prometheusService: PrometheusService,
+    private mgrModuleService: MgrModuleService,
     private refreshIntervalService: RefreshIntervalService,
     public prometheusAlertService: PrometheusAlertService
   ) {
@@ -95,15 +91,21 @@ export class DashboardV3Component extends PrometheusListHelper implements OnInit
       this.getHealth();
       this.getCapacityCardData();
     });
-    this.getPrometheusData(this.lastHourDateObject);
+    this.getPrometheusData(this.prometheusService.lastHourDateObject);
     this.getDetailsCardData();
+    this.getTelemetryReport();
   }
 
+  getTelemetryText(): string {
+    return this.telemetryEnabled
+      ? 'Cluster telemetry is active'
+      : 'Cluster telemetry is inactive. To Activate the Telemetry, \
+       click settings icon on top navigation bar and select \
+       Telemetry configration.';
+  }
   ngOnDestroy() {
     this.interval.unsubscribe();
-    if (this.timerGetPrometheusDataSub) {
-      this.timerGetPrometheusDataSub.unsubscribe();
-    }
+    this.prometheusService.unsubscribe();
   }
 
   getHealth() {
@@ -112,23 +114,8 @@ export class DashboardV3Component extends PrometheusListHelper implements OnInit
     });
   }
 
-  toggleAlertsWindow(type: string, isToggleButton: boolean = false) {
-    this.triggerPrometheusAlerts();
-    if (isToggleButton) {
-      this.showAlerts = !this.showAlerts;
-      this.flexHeight = !this.flexHeight;
-    } else if (
-      !this.showAlerts ||
-      (this.alertType === type && type !== 'danger') ||
-      (this.alertType !== 'warning' && type === 'danger')
-    ) {
-      this.showAlerts = !this.showAlerts;
-      this.flexHeight = !this.flexHeight;
-    }
-
-    type === 'danger' ? (this.alertType = 'critical') : (this.alertType = type);
-    this.textClass = `text-${type}`;
-    this.borderClass = `border-${type}`;
+  toggleAlertsWindow(type: AlertClass) {
+    this.alertType === type ? (this.alertType = null) : (this.alertType = type);
   }
 
   getDetailsCardData() {
@@ -157,62 +144,21 @@ export class DashboardV3Component extends PrometheusListHelper implements OnInit
     });
   }
 
-  triggerPrometheusAlerts() {
-    this.prometheusService.ifAlertmanagerConfigured(() => {
-      this.prometheusService.getAlerts().subscribe((alerts) => {
-        this.alerts = alerts;
-      });
+  public getPrometheusData(selectedTime: any) {
+    this.queriesResults = this.prometheusService.getPrometheusQueriesData(
+      selectedTime,
+      queries,
+      this.queriesResults
+    );
+  }
+
+  private getTelemetryReport() {
+    this.mgrModuleService.getConfig('telemetry').subscribe((resp: any) => {
+      this.telemetryEnabled = resp?.enabled;
     });
   }
 
-  getPrometheusData(selectedTime: any) {
-    this.prometheusService.ifPrometheusConfigured(() => {
-      if (this.timerGetPrometheusDataSub) {
-        this.timerGetPrometheusDataSub.unsubscribe();
-      }
-      this.timerGetPrometheusDataSub = timer(0, this.timerTime).subscribe(() => {
-        selectedTime = this.updateTimeStamp(selectedTime);
-
-        for (const queryName in queries) {
-          if (queries.hasOwnProperty(queryName)) {
-            const query = queries[queryName];
-            let interval = selectedTime.step;
-
-            if (query.includes('rate') && selectedTime.step < 20) {
-              interval = 20;
-            } else if (query.includes('rate')) {
-              interval = selectedTime.step * 2;
-            }
-
-            const intervalAdjustedQuery = query.replace(/\[(.*?)\]/g, `[${interval}s]`);
-
-            this.prometheusService
-              .getPrometheusData({
-                params: intervalAdjustedQuery,
-                start: selectedTime['start'],
-                end: selectedTime['end'],
-                step: selectedTime['step']
-              })
-              .subscribe((data: any) => {
-                if (data.result.length) {
-                  this.queriesResults[queryName] = data.result[0].values;
-                }
-              });
-          }
-        }
-      });
-    });
-  }
-
-  private updateTimeStamp(selectedTime: any): any {
-    let formattedDate = {};
-    const date: number = selectedTime['start'] + this.timerTime / 1000;
-    const dateNow: number = selectedTime['end'] + this.timerTime / 1000;
-    formattedDate = {
-      start: date,
-      end: dateNow,
-      step: selectedTime['step']
-    };
-    return formattedDate;
+  trackByFn(index: any) {
+    return index;
   }
 }

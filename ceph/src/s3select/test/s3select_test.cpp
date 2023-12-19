@@ -734,6 +734,69 @@ TEST(TestS3selectFunctions, count)
   ASSERT_EQ(s3select_result_1,"128"); 
 }
 
+TEST(TestS3selectFunctions, no_args)
+{//note: engine throw an exception(and description), currently it is not catch in this test-app
+#if 0
+  std::string input;
+  size_t size = 128;
+  generate_columns_csv(input, size);
+  std::string input_query_1 = "select min() from stdin;";
+
+  std::string s3select_result_1 = run_s3select(input_query_1,input);
+
+  ASSERT_EQ(s3select_result_1,""); 
+
+  input_query_1 = "select max() from stdin;";
+
+  s3select_result_1 = run_s3select(input_query_1,input);
+
+  ASSERT_EQ(s3select_result_1,""); 
+
+  input_query_1 = "select avg() from stdin;";
+
+  s3select_result_1 = run_s3select(input_query_1,input);
+
+  ASSERT_EQ(s3select_result_1,""); 
+
+  input_query_1 = "select sum() from stdin;";
+
+  s3select_result_1 = run_s3select(input_query_1,input);
+
+  ASSERT_EQ(s3select_result_1,""); 
+#endif
+}
+
+TEST(TestS3selectFunctions, empty_group_upon_aggtegation)
+{
+
+  std::string input;
+  size_t size = 128;
+  generate_columns_csv(input, size);
+  std::string input_query_1 = "select min(cast(_1 as int)) from stdin where 1 = 0;";
+
+  std::string s3select_result_1 = run_s3select(input_query_1,input);
+
+  ASSERT_EQ(s3select_result_1,"null"); 
+
+  input_query_1 = "select max(cast(_1 as int)) from stdin where 1 = 0;";
+
+  s3select_result_1 = run_s3select(input_query_1,input);
+
+  ASSERT_EQ(s3select_result_1,"null"); 
+
+  input_query_1 = "select sum(cast(_1 as int)) from stdin where 1 = 0;";
+
+  s3select_result_1 = run_s3select(input_query_1,input);
+
+  ASSERT_EQ(s3select_result_1,"null"); 
+
+  input_query_1 = "select avg(cast(_1 as int)) from stdin where 1 = 0;";
+
+  s3select_result_1 = run_s3select(input_query_1,input);
+
+  ASSERT_EQ(s3select_result_1,"null"); 
+}
+
 TEST(TestS3selectFunctions, min)
 {
   std::string input;
@@ -988,8 +1051,8 @@ TEST(TestS3selectFunctions, avgzero)
         false, // dont skip last line
         true   // aggregate call
         ); 
-    ASSERT_EQ(status, -1);
-    ASSERT_EQ(s3select_result, std::string(""));
+    ASSERT_EQ(status, 0);
+    ASSERT_EQ(s3select_result, std::string("null"));
 }
 
 TEST(TestS3selectFunctions, floatavg)
@@ -1318,6 +1381,13 @@ TEST(TestS3selectFunctions, test_cast_expressions)
   std::string s3select_result_4 = run_s3select(input_query_4,input);
 
   ASSERT_EQ(s3select_result_3, s3select_result_4);
+
+  //testing the decimal operator for precision setting
+  const std::string input_query_5 = "select cast(1.123456789 as decimal(9,1)) from s3object limit 1;";
+
+  std::string s3select_result_5 = run_s3select(input_query_5,input);
+
+  ASSERT_EQ(s3select_result_5, "1.123456789\n");
 }
 
 TEST(TestS3selectFunctions, test_version)
@@ -1357,6 +1427,14 @@ TEST(TestS3selectFunctions, multirow_datetime_to_string_dynamic)
   const std::string input_query = "select to_string(to_timestamp(_1), _2) from s3object;";
   std::string s3select_result = run_s3select(input_query, input);
   EXPECT_EQ(s3select_result, expected_res);
+}
+
+TEST(TestS3selectFunctions, backtick_on_timestamp)
+{
+  const std::string input = "1994-11-21T11:49:23Z\n";
+  const std::string input_query = "select count(0) from s3object where cast(_1 as timestamp) = `1994-11-21T11:49:23Z`;";
+  std::string s3select_result = run_s3select(input_query, input);
+  EXPECT_EQ(s3select_result, "1");
 }
 
 TEST(TestS3selectFunctions, test_date_time_expressions)
@@ -2343,7 +2421,7 @@ test_single_column_single_row( "select cast(5.123 as int) from stdin ;" ,"5\n");
 
 TEST(TestS3selectFunctions, castfloat)
 {
-test_single_column_single_row( "select cast(1.234 as float) from stdin ;" ,"1.234\n");
+test_single_column_single_row( "select cast(1.234 as FLOAT) from stdin ;" ,"1.234\n");
 }
 
 TEST(TestS3selectFunctions, castfloatoperation)
@@ -3303,14 +3381,12 @@ std::string input_json_data = R"(
 }
 )";
 
-#if 0
-  //TODO error phoneNumbers[12][2][2] = null, to check what happen upon reaching the final state
-  expected_result=R"(post 3D
+  expected_result=R"(null
 )";
+  //phoneNumbers[12][2][2] is not a discrete value, should return null
   input_query = "select _1.phoneNumbers[12][2][2] from s3object[*];";
   run_json_query(input_query.c_str(), input_json_data, result);
   ASSERT_EQ(result,expected_result);
-#endif 
 
   //the following tests ia about accessing multi-dimension array
   expected_result=R"(55
@@ -3337,4 +3413,34 @@ std::string input_json_data = R"(
   input_query = "select _1.phoneNumbers[11] from s3object[*];";
   run_json_query(input_query.c_str(), input_json_data, result);
   ASSERT_EQ(result,expected_result);
+
+input_json_data = R"(
+[
+  {
+    "authors": [
+      {
+        "id": 2312688602
+      },
+      {
+        "id": 123
+      }
+    ],
+    "wrong" : {"id" : "it-is-wrong"}
+  }
+]
+)";
+
+  expected_result=R"(2312688602
+)";
+  input_query = "select _1.authors[0].id from s3object[*];";
+  run_json_query(input_query.c_str(), input_json_data, result);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"(123
+)";
+  input_query = "select _1.authors[1].id from s3object[*];";
+  run_json_query(input_query.c_str(), input_json_data, result);
+  ASSERT_EQ(result,expected_result);
+
+
  }

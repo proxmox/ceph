@@ -85,12 +85,6 @@ Cache::retire_extent_ret Cache::retire_extent_addr(
   ext = query_cache(addr, nullptr);
   if (ext) {
     DEBUGT("retire {}~{} in cache -- {}", t, addr, length, *ext);
-    if (ext->get_type() != extent_types_t::RETIRED_PLACEHOLDER) {
-      t.add_to_read_set(ext);
-      t.add_to_retired_set(ext);
-      return retire_extent_iertr::now();
-    }
-    // the retired-placeholder exists
   } else {
     // add a new placeholder to Cache
     ext = CachedExtent::make_cached_extent_ref<
@@ -105,8 +99,6 @@ Cache::retire_extent_ret Cache::retire_extent_addr(
     const auto t_src = t.get_src();
     add_extent(ext, &t_src);
   }
-
-  // add the retired-placeholder to transaction
   t.add_to_read_set(ext);
   t.add_to_retired_set(ext);
   return retire_extent_iertr::now();
@@ -225,9 +217,9 @@ void Cache::register_metrics()
           "cache",
           {
             sm::make_counter(
-              "trans_invalidated",
+              "trans_invalidated_by_extent",
               counter,
-              sm::description("total number of transaction invalidated"),
+              sm::description("total number of transactions invalidated by extents"),
               {src_label, ext_label}
             ),
           }
@@ -295,6 +287,12 @@ void Cache::register_metrics()
       metrics.add_group(
         "cache",
         {
+          sm::make_counter(
+            "trans_invalidated",
+            efforts.total_trans_invalidated,
+            sm::description("total number of transactions invalidated"),
+            {src_label}
+          ),
           sm::make_counter(
             "invalidated_delta_bytes",
             efforts.mutate_delta_bytes,
@@ -782,7 +780,7 @@ void Cache::commit_replace_extent(
   extents.replace(*next, *prev);
 
   if (prev->get_type() == extent_types_t::ROOT) {
-    assert(prev->is_clean()
+    assert(prev->is_stable_clean()
       || prev->primary_ref_list_hook.is_linked());
     if (prev->is_dirty()) {
       stats.dirty_bytes -= prev->get_length();
@@ -843,6 +841,7 @@ void Cache::mark_transaction_conflicted(
 
   auto& efforts = get_by_src(stats.invalidated_efforts_by_src,
                              t.get_src());
+  ++efforts.total_trans_invalidated;
 
   auto& counter = get_by_ext(efforts.num_trans_invalidated,
                              conflicting_extent.get_type());
@@ -1003,6 +1002,8 @@ CachedExtentRef Cache::duplicate_for_write(
   Transaction &t,
   CachedExtentRef i) {
   LOG_PREFIX(Cache::duplicate_for_write);
+  assert(i->is_fully_loaded());
+
   if (i->is_mutable())
     return i;
 
@@ -1010,6 +1011,12 @@ CachedExtentRef Cache::duplicate_for_write(
     i->version++;
     i->state = CachedExtent::extent_state_t::EXIST_MUTATION_PENDING;
     i->last_committed_crc = i->get_crc32c();
+    // deepcopy the buffer of exist clean extent beacuse it shares
+    // buffer with original clean extent.
+    auto bp = i->get_bptr();
+    auto nbp = ceph::bufferptr(bp.c_str(), bp.length());
+    i->set_bptr(std::move(nbp));
+
     t.add_mutated_extent(i);
     DEBUGT("duplicate existing extent {}", t, *i);
     return i;
@@ -1098,6 +1105,7 @@ record_t Cache::prepare_record(
 
     i->prepare_write();
     i->set_io_wait();
+    i->prepare_commit();
 
     assert(i->get_version() > 0);
     auto final_crc = i->get_crc32c();
@@ -1200,6 +1208,7 @@ record_t Cache::prepare_record(
 
     bufferlist bl;
     i->prepare_write();
+    i->prepare_commit();
     bl.append(i->get_bptr());
     if (i->get_type() == extent_types_t::ROOT) {
       ceph_assert(0 == "ROOT never gets written as a fresh block");
@@ -1240,6 +1249,7 @@ record_t Cache::prepare_record(
     assert(!i->is_inline());
     get_by_ext(efforts.fresh_ool_by_ext,
                i->get_type()).increment(i->get_length());
+    i->prepare_commit();
     if (is_backref_mapped_extent_node(i)) {
       alloc_delta.alloc_blk_ranges.emplace_back(
 	i->get_paddr(),
@@ -1835,6 +1845,8 @@ Cache::get_next_dirty_extents_ret Cache::get_next_dirty_extents(
        i != dirty.end() && bytes_so_far < max_bytes;
        ++i) {
     auto dirty_from = i->get_dirty_from();
+    //dirty extents must be fully loaded
+    assert(i->is_fully_loaded());
     if (unlikely(dirty_from == JOURNAL_SEQ_NULL)) {
       ERRORT("got dirty extent with JOURNAL_SEQ_NULL -- {}", t, *i);
       ceph_abort();

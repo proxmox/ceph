@@ -40,14 +40,14 @@ const get_phy_tree_root_node_ret get_phy_tree_root_node<
     } else {
       return {false,
 	      trans_intr::make_interruptible(
-		seastar::make_ready_future<
-		  CachedExtentRef>(CachedExtentRef()))};
+		Cache::get_extent_ertr::make_ready_future<
+		  CachedExtentRef>())};
     }
   } else {
     return {false,
 	    trans_intr::make_interruptible(
-	      seastar::make_ready_future<
-		CachedExtentRef>(CachedExtentRef()))};
+	      Cache::get_extent_ertr::make_ready_future<
+		CachedExtentRef>())};
   }
 }
 
@@ -114,10 +114,9 @@ BtreeBackrefManager::get_mapping(
       } else {
 	TRACET("{} got {}, {}",
 	       c.trans, offset, iter.get_key(), iter.get_val());
-	auto e = iter.get_pin(c);
 	return get_mapping_ret(
 	  interruptible::ready_future_marker{},
-	  std::move(e));
+	  iter.get_pin(c));
       }
     });
   });
@@ -151,7 +150,7 @@ BtreeBackrefManager::get_mappings(
 	  TRACET("{}~{} got {}, {}, repeat ...",
 	         c.trans, offset, end, pos.get_key(), pos.get_val());
 	  ceph_assert((pos.get_key().add_offset(pos.get_val().len)) > offset);
-	  ret.push_back(pos.get_pin(c));
+	  ret.emplace_back(pos.get_pin(c));
 	  return BackrefBtree::iterate_repeat_ret_inner(
 	    interruptible::ready_future_marker{},
 	    seastar::stop_iteration::no);
@@ -248,7 +247,8 @@ BtreeBackrefManager::new_mapping(
 	  });
 	});
     }).si_then([c](auto &&state) {
-      return state.ret->get_pin(c);
+      return new_mapping_iertr::make_ready_future<BackrefMappingRef>(
+	state.ret->get_pin(c));
     });
 }
 
@@ -332,17 +332,6 @@ BtreeBackrefManager::merge_cached_backrefs(
   });
 }
 
-BtreeBackrefManager::check_child_trackers_ret
-BtreeBackrefManager::check_child_trackers(
-  Transaction &t) {
-  auto c = get_context(t);
-  return with_btree<BackrefBtree>(
-    cache, c,
-    [c](auto &btree) {
-    return btree.check_child_trackers(c);
-  });
-}
-
 BtreeBackrefManager::scan_mapped_space_ret
 BtreeBackrefManager::scan_mapped_space(
   Transaction &t,
@@ -397,34 +386,37 @@ BtreeBackrefManager::scan_mapped_space(
       );
     }).si_then([this, &scan_visitor, c, FNAME, block_size] {
       // traverse alloc-deltas in order
-      auto &backref_entry_mset = cache.get_backref_entry_mset();
-      DEBUGT("scan {} backref entries", c.trans, backref_entry_mset.size());
-      for (auto &backref_entry : backref_entry_mset) {
-	if (backref_entry.laddr == L_ADDR_NULL) {
-	  TRACET("backref entry {}~{} {} free",
-		 c.trans,
-		 backref_entry.paddr,
-		 backref_entry.len,
-		 backref_entry.type);
-	} else {
-	  TRACET("backref entry {}~{} {}~{} {} used",
-		 c.trans,
-		 backref_entry.paddr,
-		 backref_entry.len,
-		 backref_entry.laddr,
-		 backref_entry.len,
-		 backref_entry.type);
-	}
-	ceph_assert(backref_entry.paddr.is_absolute());
-	ceph_assert(backref_entry.len > 0 &&
-		    backref_entry.len % block_size == 0);
-	ceph_assert(!is_backref_node(backref_entry.type));
-	scan_visitor(
-	    backref_entry.paddr,
+      auto &backref_entryrefs = cache.get_backref_entryrefs_by_seq();
+      for (auto &[seq, refs] : backref_entryrefs) {
+	boost::ignore_unused(seq);
+	DEBUGT("scan {} backref entries", c.trans, refs.size());
+	for (auto &backref_entry : refs) {
+	  if (backref_entry->laddr == L_ADDR_NULL) {
+	    TRACET("backref entry {}~{} {} free",
+		   c.trans,
+		   backref_entry->paddr,
+		   backref_entry->len,
+		   backref_entry->type);
+	  } else {
+	    TRACET("backref entry {}~{} {}~{} {} used",
+		   c.trans,
+		   backref_entry->paddr,
+		   backref_entry->len,
+		   backref_entry->laddr,
+		   backref_entry->len,
+		   backref_entry->type);
+	  }
+	  ceph_assert(backref_entry->paddr.is_absolute());
+	  ceph_assert(backref_entry->len > 0 &&
+		      backref_entry->len % block_size == 0);
+	  ceph_assert(!is_backref_node(backref_entry->type));
+	  scan_visitor(
+	    backref_entry->paddr,
 	    P_ADDR_NULL,
-	    backref_entry.len,
-	    backref_entry.type,
-	    backref_entry.laddr);
+	    backref_entry->len,
+	    backref_entry->type,
+	    backref_entry->laddr);
+	}
       }
     }).si_then([this, &scan_visitor, block_size, c, FNAME] {
       BackrefBtree::mapped_space_visitor_t f =

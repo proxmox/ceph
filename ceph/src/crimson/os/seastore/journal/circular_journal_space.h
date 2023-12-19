@@ -39,7 +39,7 @@ class CircularJournalSpace : public JournalAllocator {
   }
 
   segment_nonce_t get_nonce() const final {
-    return 0;
+    return header.magic;
   }
 
   bool needs_roll(std::size_t length) const final;
@@ -117,11 +117,13 @@ class CircularJournalSpace : public JournalAllocator {
     // start offset of CircularBoundedJournal in the device
     journal_seq_t dirty_tail;
     journal_seq_t alloc_tail;
+    segment_nonce_t magic;
 
     DENC(cbj_header_t, v, p) {
       DENC_START(1, 1, p);
       denc(v.dirty_tail, p);
       denc(v.alloc_tail, p);
+      denc(v.magic, p);
       DENC_FINISH(p);
     }
   };
@@ -188,7 +190,7 @@ class CircularJournalSpace : public JournalAllocator {
   }
   rbm_abs_addr get_records_start() const {
     assert(device);
-    return device->get_journal_start() + get_block_size();
+    return device->get_shard_journal_start() + get_block_size();
   }
   size_t get_records_available_size() const {
     return get_records_total_size() - get_records_used_size();
@@ -206,7 +208,7 @@ class CircularJournalSpace : public JournalAllocator {
   }
   rbm_abs_addr get_journal_end() const {
     assert(device);
-    return device->get_journal_start() + device->get_journal_size();
+    return device->get_shard_journal_start() + device->get_journal_size();
   }
 
   read_ertr::future<> read(

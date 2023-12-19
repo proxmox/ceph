@@ -25,7 +25,9 @@
     bucket unlink              unlink bucket from specified user
     bucket stats               returns bucket statistics
     bucket rm                  remove bucket
-    bucket check               check bucket index
+    bucket check               check bucket index by verifying size and object count stats
+    bucket check olh           check for olh index entries and objects that are pending removal
+    bucket check unlinked      check for object versions that are not visible in a bucket listing 
     bucket chown               link bucket to specified user and update its object ACLs
     bucket reshard             reshard bucket
     bucket rewrite             rewrite all objects in the specified bucket
@@ -188,6 +190,9 @@
     script-package add         add a lua package to the scripts allowlist
     script-package rm          remove a lua package from the scripts allowlist
     script-package list        get the lua packages allowlist
+    notification list          list bucket notifications configuration
+    notification get           get a bucket notifications configuration
+    notification rm            remove a bucket notifications configuration
   options:
      --tenant=<tenant>         tenant name
      --user_ns=<namespace>     namespace of user (oidc in case of users authenticated with oidc provider)
@@ -360,11 +365,17 @@
   
   Bucket notifications options:
      --topic                   bucket notifications topic name
+     --notification-id         bucket notifications id
   
   Script options:
      --context                 context in which the script runs. one of: prerequest, postrequest, background, getdata, putdata
      --package                 name of the lua package that should be added/removed to/from the allowlist
      --allow-compilation       package is allowed to compile C code as part of its installation
+  
+  Bucket check olh/unlinked options:
+     --min-age-hours           minimum age of unlinked objects to consider for bucket check unlinked (default: 1)
+     --dump-keys               when specified, all keys identified as problematic are printed to stdout
+     --hide-progress           when specified, per-shard progress details are not printed to stderr
   
   radoslist options:
      --rgw-obj-fs              the field separator that will separate the rados
@@ -380,5 +391,3 @@
     --setgroup GROUP  set gid to group or gid
     --version         show version and quit
   
-
-

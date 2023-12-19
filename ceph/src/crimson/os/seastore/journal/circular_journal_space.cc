@@ -18,8 +18,9 @@ std::ostream &operator<<(std::ostream &out,
     const CircularJournalSpace::cbj_header_t &header)
 {
   return out << "cbj_header_t(" 
-	     << ", dirty_tail=" << header.dirty_tail
+	     << "dirty_tail=" << header.dirty_tail
 	     << ", alloc_tail=" << header.alloc_tail
+	     << ", magic=" << header.magic
              << ")";
 }
 
@@ -41,8 +42,10 @@ CircularJournalSpace::roll_ertr::future<> CircularJournalSpace::roll() {
     get_records_start(),
     get_device_id());
   auto seq = get_written_to();
+  seq.segment_seq++;
+  assert(seq.segment_seq < MAX_SEG_SEQ);
   set_written_to(
-    journal_seq_t{++seq.segment_seq, paddr});
+    journal_seq_t{seq.segment_seq, paddr});
   return roll_ertr::now();
 }
 
@@ -86,6 +89,15 @@ CircularJournalSpace::write(ceph::bufferlist&& to_write) {
   );
 }
 
+segment_nonce_t calc_new_nonce(
+  uint32_t crc,
+  unsigned char const *data,
+  unsigned length)
+{
+  crc &= std::numeric_limits<uint32_t>::max() >> 1;
+  return ceph_crc32c(crc, data, length);
+}
+
 CircularJournalSpace::open_ret CircularJournalSpace::open(bool is_mkfs) {
   std::ostringstream oss;
   oss << device_id_printer_t{get_device_id()};
@@ -103,13 +115,18 @@ CircularJournalSpace::open_ret CircularJournalSpace::open(bool is_mkfs) {
 	  get_records_start(),
 	  device->get_device_id())};
     head.alloc_tail = head.dirty_tail;
+    auto meta = device->get_meta();
+    head.magic = calc_new_nonce(
+      std::rand() % std::numeric_limits<uint32_t>::max(),
+      reinterpret_cast<const unsigned char *>(meta.seastore_id.bytes()),
+      sizeof(meta.seastore_id.uuid));
     encode(head, bl);
     header = head;
     set_written_to(head.dirty_tail);
     initialized = true;
     DEBUG(
-      "initialize header block in CircularJournalSpace length {}",
-      bl.length());
+      "initialize header block in CircularJournalSpace length {}, head: {}",
+      bl.length(), header);
     return write_header(
     ).safe_then([this]() {
       return open_ret(
@@ -174,8 +191,8 @@ CircularJournalSpace::read_header()
   assert(device);
   auto bptr = bufferptr(ceph::buffer::create_page_aligned(
 			device->get_block_size()));
-  DEBUG("reading {}", device->get_journal_start());
-  return device->read(device->get_journal_start(), bptr
+  DEBUG("reading {}", device->get_shard_journal_start());
+  return device->read(device->get_shard_journal_start(), bptr
   ).safe_then([bptr, FNAME]() mutable
     -> read_header_ret {
     bufferlist bl;
@@ -222,7 +239,7 @@ CircularJournalSpace::write_header()
   assert(bl.length() < get_block_size());
   bufferptr bp = bufferptr(ceph::buffer::create_page_aligned(get_block_size()));
   iter.copy(bl.length(), bp.c_str());
-  return device->write(device->get_journal_start(), std::move(bp)
+  return device->write(device->get_shard_journal_start(), std::move(bp)
   ).handle_error(
     write_ertr::pass_further{},
     crimson::ct_error::assert_all{ "Invalid error device->write" }

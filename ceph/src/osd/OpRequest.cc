@@ -88,7 +88,7 @@ void OpRequest::_dump(Formatter *f) const
   }
 }
 
-void OpRequest::_dump_op_descriptor_unlocked(ostream& stream) const
+void OpRequest::_dump_op_descriptor(ostream& stream) const
 {
   get_req()->print(stream);
 }
@@ -121,6 +121,7 @@ void OpRequest::mark_flag_point(uint8_t flag, const char *s) {
   uint8_t old_flags = hit_flag_points;
 #endif
   mark_event(s);
+  last_event_detail = s;
   hit_flag_points |= flag;
   latest_flag_point = flag;
   tracepoint(oprequest, mark_flag_point, reqid.name._type,

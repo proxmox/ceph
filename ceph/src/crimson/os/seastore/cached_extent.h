@@ -251,6 +251,14 @@ public:
   virtual void prepare_write() {}
 
   /**
+   * prepare_commit
+   *
+   * Called prior to committing the transaction in which this extent
+   * is living.
+   */
+  virtual void prepare_commit() {}
+
+  /**
    * on_initial_write
    *
    * Called after commit of extent.  State will be CLEAN.
@@ -332,6 +340,7 @@ public:
 	<< ", last_committed_crc=" << last_committed_crc
 	<< ", refcount=" << use_count()
 	<< ", user_hint=" << user_hint
+	<< ", fully_loaded=" << is_fully_loaded()
 	<< ", rewrite_gen=" << rewrite_gen_printer_t{rewrite_generation};
     if (state != extent_state_t::INVALID &&
         state != extent_state_t::CLEAN_PENDING) {
@@ -407,6 +416,13 @@ public:
     return is_mutable() || state == extent_state_t::EXIST_CLEAN;
   }
 
+  /// Returns true if extent is stable and shared among transactions
+  bool is_stable() const {
+    return state == extent_state_t::CLEAN_PENDING ||
+      state == extent_state_t::CLEAN ||
+      state == extent_state_t::DIRTY;
+  }
+
   /// Returns true if extent has a pending delta
   bool is_mutation_pending() const {
     return state == extent_state_t::MUTATION_PENDING;
@@ -424,6 +440,13 @@ public:
            state == extent_state_t::CLEAN ||
            state == extent_state_t::CLEAN_PENDING ||
            state == extent_state_t::EXIST_CLEAN;
+  }
+
+  // Returs true if extent is stable and clean
+  bool is_stable_clean() const {
+    ceph_assert(is_valid());
+    return state == extent_state_t::CLEAN ||
+           state == extent_state_t::CLEAN_PENDING;
   }
 
   /// Ruturns true if data is persisted while metadata isn't
@@ -473,6 +496,12 @@ public:
     return dirty_from_or_retired_at;
   }
 
+  /// Return true if extent is fully loaded or is about to be fully loaded (call 
+  /// wait_io() in this case)
+  bool is_fully_loaded() const {
+    return ptr.has_value();
+  }
+
   /**
    * get_paddr
    *
@@ -481,8 +510,18 @@ public:
    */
   paddr_t get_paddr() const { return poffset; }
 
-  /// Returns length of extent
-  virtual extent_len_t get_length() const { return ptr.length(); }
+  /// Returns length of extent data in disk
+  extent_len_t get_length() const {
+    return length;
+  }
+
+  extent_len_t get_loaded_length() const {
+    if (ptr.has_value()) {
+      return ptr->length();
+    } else {
+      return 0;
+    }
+  }
 
   /// Returns version, get_version() == 0 iff is_clean()
   extent_version_t get_version() const {
@@ -498,8 +537,14 @@ public:
   }
 
   /// Get ref to raw buffer
-  bufferptr &get_bptr() { return ptr; }
-  const bufferptr &get_bptr() const { return ptr; }
+  bufferptr &get_bptr() {
+    assert(ptr.has_value());
+    return *ptr;
+  }
+  const bufferptr &get_bptr() const {
+    assert(ptr.has_value());
+    return *ptr;
+  }
 
   /// Compare by paddr
   friend bool operator< (const CachedExtent &a, const CachedExtent &b) {
@@ -579,6 +624,11 @@ private:
     return extent_index_hook.is_linked();
   }
 
+  /// set bufferptr
+  void set_bptr(ceph::bufferptr &&nptr) {
+    ptr = nptr;
+  }
+
   /// Returns true if the extent part of the open transaction
   bool is_pending_in_trans(transaction_id_t id) const {
     return is_pending() && pending_for_transaction == id;
@@ -602,8 +652,11 @@ private:
    */
   journal_seq_t dirty_from_or_retired_at;
 
-  /// Actual data contents
-  ceph::bufferptr ptr;
+  /// cache data contents, std::nullopt if no data in cache
+  std::optional<ceph::bufferptr> ptr;
+
+  /// disk data length
+  extent_len_t length;
 
   /// number of deltas since initial write
   extent_version_t version = 0;
@@ -649,30 +702,65 @@ protected:
   trans_view_set_t mutation_pendings;
 
   CachedExtent(CachedExtent &&other) = delete;
-  CachedExtent(ceph::bufferptr &&ptr) : ptr(std::move(ptr)) {}
+  CachedExtent(ceph::bufferptr &&_ptr) : ptr(std::move(_ptr)) {
+    length = ptr->length();
+    assert(length > 0);
+  }
+
+  /// construct new CachedExtent, will deep copy the buffer
   CachedExtent(const CachedExtent &other)
     : state(other.state),
       dirty_from_or_retired_at(other.dirty_from_or_retired_at),
-      ptr(other.ptr.c_str(), other.ptr.length()),
+      length(other.get_length()),
+      version(other.version),
+      poffset(other.poffset) {
+      assert((length % CEPH_PAGE_SIZE) == 0);
+      if (other.is_fully_loaded()) {
+        ptr.emplace(buffer::create_page_aligned(length));
+        other.ptr->copy_out(0, length, ptr->c_str());
+      } else {
+        // the extent must be fully loaded before CoW
+        assert(length == 0); // in case of root
+      }
+  }
+
+  struct share_buffer_t {};
+  /// construct new CachedExtent, will shallow copy the buffer
+  CachedExtent(const CachedExtent &other, share_buffer_t)
+    : state(other.state),
+      dirty_from_or_retired_at(other.dirty_from_or_retired_at),
+      ptr(other.ptr),
+      length(other.get_length()),
       version(other.version),
       poffset(other.poffset) {}
 
-  struct share_buffer_t {};
-  CachedExtent(const CachedExtent &other, share_buffer_t) :
-    state(other.state),
-    dirty_from_or_retired_at(other.dirty_from_or_retired_at),
-    ptr(other.ptr),
-    version(other.version),
-    poffset(other.poffset) {}
+  // 0 length is only possible for the RootBlock
+  struct zero_length_t {};
+  CachedExtent(zero_length_t) : ptr(ceph::bufferptr(0)), length(0) {};
 
   struct retired_placeholder_t{};
-  CachedExtent(retired_placeholder_t) : state(extent_state_t::INVALID) {}
+  CachedExtent(retired_placeholder_t, extent_len_t _length)
+    : state(extent_state_t::INVALID),
+      length(_length) {
+    assert(length > 0);
+  }
+
+  /// no buffer extent, for lazy read
+  CachedExtent(extent_len_t _length) : length(_length) {
+    assert(length > 0);
+  }
 
   friend class Cache;
   template <typename T, typename... Args>
   static TCachedExtentRef<T> make_cached_extent_ref(
     Args&&... args) {
     return new T(std::forward<Args>(args)...);
+  }
+
+  template <typename T>
+  static TCachedExtentRef<T> make_placeholder_cached_extent_ref(
+    extent_len_t length) {
+    return new T(length);
   }
 
   void reset_prior_instance() {
@@ -898,12 +986,14 @@ private:
   uint16_t pos = std::numeric_limits<uint16_t>::max();
 };
 
+using get_child_ertr = crimson::errorator<
+  crimson::ct_error::input_output_error>;
 template <typename T>
 struct get_child_ret_t {
-  std::variant<child_pos_t, seastar::future<TCachedExtentRef<T>>> ret;
+  std::variant<child_pos_t, get_child_ertr::future<TCachedExtentRef<T>>> ret;
   get_child_ret_t(child_pos_t pos)
     : ret(std::move(pos)) {}
-  get_child_ret_t(seastar::future<TCachedExtentRef<T>> child)
+  get_child_ret_t(get_child_ertr::future<TCachedExtentRef<T>> child)
     : ret(std::move(child)) {}
 
   bool has_child() const {
@@ -915,7 +1005,7 @@ struct get_child_ret_t {
     return std::get<0>(ret);
   }
 
-  seastar::future<TCachedExtentRef<T>> &get_child_fut() {
+  get_child_ertr::future<TCachedExtentRef<T>> &get_child_fut() {
     ceph_assert(ret.index() == 1);
     return std::get<1>(ret);
   }
@@ -938,6 +1028,15 @@ public:
   virtual bool has_been_invalidated() const = 0;
   virtual CachedExtentRef get_parent() const = 0;
   virtual uint16_t get_pos() const = 0;
+  // An lba pin may be indirect, see comments in lba_manager/btree/btree_lba_manager.h
+  virtual bool is_indirect() const { return false; }
+  virtual key_t get_intermediate_key() const { return min_max_t<key_t>::null; }
+  virtual key_t get_intermediate_base() const { return min_max_t<key_t>::null; }
+  virtual extent_len_t get_intermediate_length() const { return 0; }
+  // The start offset of the pin, must be 0 if the pin is not indirect
+  virtual extent_len_t get_intermediate_offset() const {
+    return std::numeric_limits<extent_len_t>::max();
+  }
 
   virtual get_child_ret_t<LogicalCachedExtent>
   get_logical_extent(Transaction &t) = 0;
@@ -978,14 +1077,10 @@ using backref_pin_list_t = std::list<BackrefMappingRef>;
  * the Cache interface boundary.
  */
 class RetiredExtentPlaceholder : public CachedExtent {
-  extent_len_t length;
 
 public:
   RetiredExtentPlaceholder(extent_len_t length)
-    : CachedExtent(CachedExtent::retired_placeholder_t{}),
-      length(length) {}
-
-  extent_len_t get_length() const final { return length; }
+    : CachedExtent(CachedExtent::retired_placeholder_t{}, length) {}
 
   CachedExtentRef duplicate_for_write(Transaction&) final {
     ceph_assert(0 == "Should never happen for a placeholder");
@@ -1109,6 +1204,12 @@ public:
     laddr = nladdr;
   }
 
+  void maybe_set_intermediate_laddr(LBAMapping &mapping) {
+    laddr = mapping.is_indirect()
+      ? mapping.get_intermediate_base()
+      : mapping.get_key();
+  }
+
   void apply_delta_and_adjust_crc(
     paddr_t base, const ceph::bufferlist &bl) final {
     apply_delta(bl);
@@ -1140,6 +1241,8 @@ protected:
   }
 
 private:
+  // the logical address of the extent, and if shared,
+  // it is the intermediate_base, see BtreeLBAMapping comments.
   laddr_t laddr = L_ADDR_NULL;
 };
 

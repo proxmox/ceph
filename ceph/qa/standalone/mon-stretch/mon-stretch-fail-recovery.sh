@@ -144,6 +144,5 @@ EOF
     sleep 3
 
     teardown $dir || return 1
-
 }
 main mon-stretch-fail-recovery "$@"

@@ -3,11 +3,12 @@ import { NgModule } from '@angular/core';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { RouterModule, Routes } from '@angular/router';
 
-import { NgbNavModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
+import { NgbNavModule, NgbPopoverModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import { NgxPipeFunctionModule } from 'ngx-pipe-function';
 
 import { ActionLabels, URLVerbs } from '~/app/shared/constants/app.constants';
 import { CRUDTableComponent } from '~/app/shared/datatable/crud-table/crud-table.component';
+
 import { SharedModule } from '~/app/shared/shared.module';
 import { PerformanceCounterModule } from '../performance-counter/performance-counter.module';
 import { RgwBucketDetailsComponent } from './rgw-bucket-details/rgw-bucket-details.component';
@@ -25,6 +26,24 @@ import { RgwUserSubuserModalComponent } from './rgw-user-subuser-modal/rgw-user-
 import { RgwUserSwiftKeyModalComponent } from './rgw-user-swift-key-modal/rgw-user-swift-key-modal.component';
 import { RgwUserTabsComponent } from './rgw-user-tabs/rgw-user-tabs.component';
 import { CrudFormComponent } from '~/app/shared/forms/crud-form/crud-form.component';
+import { RgwMultisiteDetailsComponent } from './rgw-multisite-details/rgw-multisite-details.component';
+import { TreeModule } from '@circlon/angular-tree-component';
+import { DataTableModule } from '~/app/shared/datatable/datatable.module';
+import { RgwMultisiteRealmFormComponent } from './rgw-multisite-realm-form/rgw-multisite-realm-form.component';
+import { RgwMultisiteZonegroupFormComponent } from './rgw-multisite-zonegroup-form/rgw-multisite-zonegroup-form.component';
+import { RgwMultisiteZoneFormComponent } from './rgw-multisite-zone-form/rgw-multisite-zone-form.component';
+import { RgwMultisiteZoneDeletionFormComponent } from './models/rgw-multisite-zone-deletion-form/rgw-multisite-zone-deletion-form.component';
+import { RgwMultisiteZonegroupDeletionFormComponent } from './models/rgw-multisite-zonegroup-deletion-form/rgw-multisite-zonegroup-deletion-form.component';
+import { RgwSystemUserComponent } from './rgw-system-user/rgw-system-user.component';
+import { RgwMultisiteMigrateComponent } from './rgw-multisite-migrate/rgw-multisite-migrate.component';
+import { RgwMultisiteImportComponent } from './rgw-multisite-import/rgw-multisite-import.component';
+import { RgwMultisiteExportComponent } from './rgw-multisite-export/rgw-multisite-export.component';
+import { CreateRgwServiceEntitiesComponent } from './create-rgw-service-entities/create-rgw-service-entities.component';
+import { RgwOverviewDashboardComponent } from './rgw-overview-dashboard/rgw-overview-dashboard.component';
+import { DashboardV3Module } from '../dashboard-v3/dashboard-v3.module';
+import { RgwSyncPrimaryZoneComponent } from './rgw-sync-primary-zone/rgw-sync-primary-zone.component';
+import { RgwSyncMetadataInfoComponent } from './rgw-sync-metadata-info/rgw-sync-metadata-info.component';
+import { RgwSyncDataInfoComponent } from './rgw-sync-data-info/rgw-sync-data-info.component';
 
 @NgModule({
   imports: [
@@ -36,7 +55,11 @@ import { CrudFormComponent } from '~/app/shared/forms/crud-form/crud-form.compon
     NgbNavModule,
     RouterModule,
     NgbTooltipModule,
-    NgxPipeFunctionModule
+    NgbPopoverModule,
+    NgxPipeFunctionModule,
+    TreeModule,
+    DataTableModule,
+    DashboardV3Module
   ],
   exports: [
     RgwDaemonListComponent,
@@ -62,14 +85,31 @@ import { CrudFormComponent } from '~/app/shared/forms/crud-form/crud-form.compon
     RgwUserCapabilityModalComponent,
     RgwUserSubuserModalComponent,
     RgwConfigModalComponent,
-    RgwUserTabsComponent
+    RgwUserTabsComponent,
+    RgwMultisiteDetailsComponent,
+    RgwMultisiteRealmFormComponent,
+    RgwMultisiteZonegroupFormComponent,
+    RgwMultisiteZoneFormComponent,
+    RgwMultisiteZoneDeletionFormComponent,
+    RgwMultisiteZonegroupDeletionFormComponent,
+    RgwSystemUserComponent,
+    RgwMultisiteMigrateComponent,
+    RgwMultisiteImportComponent,
+    RgwMultisiteExportComponent,
+    CreateRgwServiceEntitiesComponent,
+    RgwOverviewDashboardComponent,
+    RgwSyncPrimaryZoneComponent,
+    RgwSyncMetadataInfoComponent,
+    RgwSyncDataInfoComponent
   ]
 })
 export class RgwModule {}
 
 const routes: Routes = [
   {
-    path: '' // Required for a clean reload on daemon selection.
+    path: '',
+    redirectTo: 'rbd',
+    pathMatch: 'full' // Required for a clean reload on daemon selection.
   },
   { path: 'daemon', component: RgwDaemonListComponent, data: { breadcrumbs: 'Gateways' } },
   {
@@ -135,6 +175,15 @@ const routes: Routes = [
         data: { breadcrumbs: ActionLabels.EDIT }
       }
     ]
+  },
+  {
+    path: 'overview',
+    data: { breadcrumbs: 'Overview' },
+    children: [{ path: '', component: RgwOverviewDashboardComponent }]
+  },
+  {
+    path: 'multisite',
+    children: [{ path: '', component: RgwMultisiteDetailsComponent }]
   }
 ];
 

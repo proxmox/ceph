@@ -398,8 +398,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
   static const uint64_t WAIT_FROZEN      = (1<<1);
   static const uint64_t WAIT_TRUNC       = (1<<2);
   static const uint64_t WAIT_FLOCK       = (1<<3);
-  static const uint64_t WAIT_UNLINK      = (1<<4);
-
+  
   static const uint64_t WAIT_ANY_MASK	= (uint64_t)(-1);
 
   // misc
@@ -423,7 +422,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
 
   std::string_view pin_name(int p) const override;
 
-  std::ostream& print_db_line_prefix(std::ostream& out) override;
+  std::ostream& print_db_line_prefix(std::ostream& out) const override;
 
   const scrub_info_t *scrub_info() const {
     if (!scrub_infop)
@@ -1032,7 +1031,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
            state_test(STATE_RANDEPHEMERALPIN);
   }
 
-  void print(std::ostream& out) override;
+  void print(std::ostream& out) const override;
   void dump(ceph::Formatter *f, int flags = DUMP_DEFAULT) const;
 
   /**
