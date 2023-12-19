@@ -1,3 +1,11 @@
+ceph (18.2.1-pve1) bookworm; urgency=medium
+
+  * add stop-gap to fix compat with CPUs not supporting SSE 4.1
+
+  * update Ceph to Reef 18.2.1 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 19 Dec 2023 09:14:36 +0100
+
 ceph (18.2.0-pve2) bookworm; urgency=medium
 
   * debian: add missing bcrypt to manager .requires to ensure correct
