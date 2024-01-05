@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Max Carrara <m.carrara@proxmox.com>
+Date: Thu, 4 Jan 2024 17:37:50 +0100
+Subject: [PATCH] mgr/dashboard: remove ability to create and check TLS
+ key/cert pairs
+
+In order to avoid running into PyO3-related issues [0] with PyOpenSSL,
+the ability to create self-signed certs is disabled - the command
+`ceph dashboard create-self-signed-cert` is made to always return an
+error.
+
+The command's error message contains the manual steps the user may
+follow in order to set the certificate themselves, as well as a link
+to the Ceph Dashboard documentation regarding TLS support. [1]
+
+Furthermore, the check on start-up, that verifies that the configured
+key/cert pair actually match, is also removed. This means that users
+need to ensure themselves that the correct pair is supplied -
+otherwise their browser will complain.
+
+These changes allow the dashboard to launch with TLS enabled again.
+
+[0]: https://tracker.ceph.com/issues/63529
+[1]: https://docs.ceph.com/en/reef/mgr/dashboard/#ssl-tls-support
+
+Signed-off-by: Max Carrara <m.carrara@proxmox.com>
+---
+ src/pybind/mgr/dashboard/module.py | 41 ++++++++++++++++++++----------
+ 1 file changed, 27 insertions(+), 14 deletions(-)
+
+diff --git a/src/pybind/mgr/dashboard/module.py b/src/pybind/mgr/dashboard/module.py
+index 68725be6e35..9db55a3ee93 100644
+--- a/src/pybind/mgr/dashboard/module.py
++++ b/src/pybind/mgr/dashboard/module.py
+@@ -23,8 +23,7 @@ if TYPE_CHECKING:
+ 
+ from mgr_module import CLIReadCommand, CLIWriteCommand, HandleCommandResult, \
+     MgrModule, MgrStandbyModule, NotifyType, Option, _get_localized_key
+-from mgr_util import ServerConfigException, build_url, \
+-    create_self_signed_cert, get_default_addr, verify_tls_files
++from mgr_util import ServerConfigException, build_url, get_default_addr
+ 
+ from . import mgr
+ from .controllers import Router, json_error_page
+@@ -172,11 +171,14 @@ class CherryPyConfig(object):
+             else:
+                 pkey_fname = self.get_localized_module_option('key_file')  # type: ignore
+ 
+-            verify_tls_files(cert_fname, pkey_fname)
+-
+             # Create custom SSL context to disable TLS 1.0 and 1.1.
+             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+-            context.load_cert_chain(cert_fname, pkey_fname)
++
++            try:
++                context.load_cert_chain(cert_fname, pkey_fname)
++            except ssl.SSLError:
++                raise ServerConfigException("No certificate configured")
++
+             if sys.version_info >= (3, 7):
+                 if Settings.UNSAFE_TLS_v1_2:
+                     context.minimum_version = ssl.TLSVersion.TLSv1_2
+@@ -473,15 +475,26 @@ class Module(MgrModule, CherryPyConfig):
+ 
+     @CLIWriteCommand("dashboard create-self-signed-cert")
+     def set_mgr_created_self_signed_cert(self):
+-        cert, pkey = create_self_signed_cert('IT', 'ceph-dashboard')
+-        result = HandleCommandResult(*self.set_ssl_certificate(inbuf=cert))
+-        if result.retval != 0:
+-            return result
+-
+-        result = HandleCommandResult(*self.set_ssl_certificate_key(inbuf=pkey))
+-        if result.retval != 0:
+-            return result
+-        return 0, 'Self-signed certificate created', ''
++        from textwrap import dedent
++
++        err = """
++        Creating self-signed certificates is currently not available.
++        However, you can still set a key and certificate pair manually:
++
++        1. Generate a private key and self-signed certificate:
++          # openssl req -newkey rsa:2048 -nodes -x509 \\
++          -keyout /root/dashboard-key.pem -out /root/dashboard-cert.pem -sha512 \\
++          -days 3650 -subj "/CN=IT/O=ceph-mgr-dashboard" -utf8
++
++        2. Set the corresponding config keys for the key/cert pair:
++          # ceph config-key set mgr/dashboard/key -i /root/dashboard-key.pem
++          # ceph config-key set mgr/dashboard/crt -i /root/dashboard-crt.pem
++
++        For more information on how to configure TLS for the dashboard, visit:
++        https://docs.ceph.com/en/reef/mgr/dashboard/#ssl-tls-support
++        """
++
++        return -errno.ENOTSUP, '', dedent(err).strip()
+ 
+     @CLIWriteCommand("dashboard set-rgw-credentials")
+     def set_rgw_credentials(self):
+-- 
+2.39.2
+
