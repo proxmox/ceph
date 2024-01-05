@@ -9,5 +9,6 @@
 0009-fix-4759-run-ceph-crash-daemon-with-www-data-group-f.patch
 0010-debian-add-missing-bcrypt-to-manager-.requires.patch
 0011-fix-compatibility-with-CPUs-not-supporting-SSE-4.1-i.patch
+0012-backport-mgr-dashboard-simplify-authentication-proto.patch
 0012-debian-rules-fix-buildtype.patch
 0013-rocksb-inherit-parent-cmake-cxx-flags.patch
