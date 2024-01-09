@@ -1,3 +1,10 @@
+ceph (18.2.1-pve2) bookworm; urgency=medium
+
+  * ensure RocksDB sub-component is build in release mode to avoid performance
+    regressions
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 09 Jan 2024 17:11:04 +0100
+
 ceph (18.2.1-pve1) bookworm; urgency=medium
 
   * add stop-gap to fix compat with CPUs not supporting SSE 4.1
