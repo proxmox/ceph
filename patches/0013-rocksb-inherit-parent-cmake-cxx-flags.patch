@@ -1,0 +1,49 @@
+From 620b68a348f07145c49c12668576a89dee8198cb Mon Sep 17 00:00:00 2001
+From: Kefu Chai <tchaikov@gmail.com>
+Date: Fri, 15 Dec 2023 19:01:46 +0800
+Subject: [PATCH] cmake/modules/BuildRocksDB.cmake: inherit parent's CMAKE_CXX_FLAGS
+
+CMake allows us to customize `CMAKE_CXX_FLAGS` by setting CXXFLAGS
+environmental variable. and Debian's debhelper also sets CXXFLAGS
+when it builds cmake projects for customizing the building flags.
+
+but we fail to populate this setting down when building external
+projects. this is important when it comes to the projects which
+is critical to the performance. RocksDB is one of them.
+
+in this change, we pass the `CMAKE_CXX_FLAGS` down in
+`BuildRocksDB.cmake` so that its `CMAKE_CXX_FLAGS` contains
+the same set of `CMAKE_CXX_FLAGS` used by its parent project.
+
+this should help with the performance in the bluestore, where
+RocksDB is used.
+
+Signed-off-by: Kefu Chai <tchaikov@gmail.com>
+ [TL: squashed in "cmake/modules/BuildRocksDB.cmake: use string(APPEND
+  ..) when appropriate" ]
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ cmake/modules/BuildRocksDB.cmake | 4 ++--
+ cmake/modules/BuildRocksDB.cmake | 1 +
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/cmake/modules/BuildRocksDB.cmake b/cmake/modules/BuildRocksDB.cmake
+index f9a28274c40..e0208f6545b 100644
+--- a/cmake/modules/BuildRocksDB.cmake
++++ b/cmake/modules/BuildRocksDB.cmake
+@@ -52,12 +52,13 @@ function(build_rocksdb)
+   endif()
+   include(CheckCXXCompilerFlag)
+   check_cxx_compiler_flag("-Wno-deprecated-copy" HAS_WARNING_DEPRECATED_COPY)
++  set(rocksdb_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+   if(HAS_WARNING_DEPRECATED_COPY)
+-    set(rocksdb_CXX_FLAGS -Wno-deprecated-copy)
++    string(APPEND rocksdb_CXX_FLAGS " -Wno-deprecated-copy")
+   endif()
+   check_cxx_compiler_flag("-Wno-pessimizing-move" HAS_WARNING_PESSIMIZING_MOVE)
+   if(HAS_WARNING_PESSIMIZING_MOVE)
+-    set(rocksdb_CXX_FLAGS "${rocksdb_CXX_FLAGS} -Wno-pessimizing-move")
++    string(APPEND rocksdb_CXX_FLAGS " -Wno-pessimizing-move")
+   endif()
+   if(rocksdb_CXX_FLAGS)
+     list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_CXX_FLAGS='${rocksdb_CXX_FLAGS}')
