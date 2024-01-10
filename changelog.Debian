@@ -1,3 +1,9 @@
+ceph (17.2.7-pve2~bpo11+1) bullseye-backports; urgency=medium
+
+  * Rebuild for Proxmox VE 7, based on Debian Bullseye
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 10 Jan 2024 09:03:52 +0100
+
 ceph (17.2.7-pve2) bookworm; urgency=medium
 
   * ensure RocksDB sub-component is build in release mode to avoid performance
