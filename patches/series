@@ -12,3 +12,5 @@
 0015-fix-compatibility-with-CPUs-not-supporting-SSE-4.1-i.patch
 0016-d-rules-fix-no-restart-on-upgrade.patch
 0020-fix-4759-run-ceph-crash-daemon-with-www-data-group-f.patch
+0021-debian-rules-fix-buildtype.patch
+0022-rocksb-inherit-parent-cmake-cxx-flags.patch
