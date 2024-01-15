@@ -11,5 +11,4 @@
 0011-fix-compatibility-with-CPUs-not-supporting-SSE-4.1-i.patch
 0012-backport-mgr-dashboard-simplify-authentication-proto.patch
 0013-mgr-dashboard-remove-ability-to-create-and-check-TLS.patch
-0012-debian-rules-fix-buildtype.patch
-0013-rocksb-inherit-parent-cmake-cxx-flags.patch
+0014-rocksb-inherit-parent-cmake-cxx-flags.patch
