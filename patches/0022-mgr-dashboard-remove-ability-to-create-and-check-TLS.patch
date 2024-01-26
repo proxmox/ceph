@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Max Carrara <m.carrara@proxmox.com>
-Date: Thu, 4 Jan 2024 17:37:50 +0100
+Date: Fri, 26 Jan 2024 14:04:47 +0100
 Subject: [PATCH] mgr/dashboard: remove ability to create and check TLS
  key/cert pairs
 
@@ -18,6 +18,17 @@ key/cert pair actually match, is also removed. This means that users
 need to ensure themselves that the correct pair is supplied -
 otherwise their browser will complain.
 
+Other checks unrelated to the verification of keypairs are preserved,
+such as checking for the cert's and key's existence on the filesystem.
+
+`ssl.SSLError`s that occur during startup are re-raised with the
+additional information they contain as `ServerConfigException`s, as
+the dashboard handles these in its startup loop. Other exceptions are
+re-raised as well. Otherwise, the dashboard will irrecoverably crash,
+which also causes the `ceph dashboard` subcommand to stop working
+altogether, even if one of its sub-subcommands are unrelated to the
+dashboard itself.
+
 These changes allow the dashboard to launch with TLS enabled again.
 
 [0]: https://tracker.ceph.com/issues/63529
@@ -25,11 +36,11 @@ These changes allow the dashboard to launch with TLS enabled again.
 
 Signed-off-by: Max Carrara <m.carrara@proxmox.com>
 ---
- src/pybind/mgr/dashboard/module.py | 41 ++++++++++++++++++++----------
- 1 file changed, 27 insertions(+), 14 deletions(-)
+ src/pybind/mgr/dashboard/module.py | 58 ++++++++++++++++++++++--------
+ 1 file changed, 43 insertions(+), 15 deletions(-)
 
 diff --git a/src/pybind/mgr/dashboard/module.py b/src/pybind/mgr/dashboard/module.py
-index 68725be6e35..9db55a3ee93 100644
+index 68725be6e35..c8b263d9786 100644
 --- a/src/pybind/mgr/dashboard/module.py
 +++ b/src/pybind/mgr/dashboard/module.py
 @@ -23,8 +23,7 @@ if TYPE_CHECKING:
@@ -42,25 +53,41 @@ index 68725be6e35..9db55a3ee93 100644
  
  from . import mgr
  from .controllers import Router, json_error_page
-@@ -172,11 +171,14 @@ class CherryPyConfig(object):
+@@ -172,11 +171,29 @@ class CherryPyConfig(object):
              else:
                  pkey_fname = self.get_localized_module_option('key_file')  # type: ignore
  
 -            verify_tls_files(cert_fname, pkey_fname)
--
-             # Create custom SSL context to disable TLS 1.0 and 1.1.
-             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
--            context.load_cert_chain(cert_fname, pkey_fname)
++            if not cert_fname or not pkey_fname:
++                raise ServerConfigException('no certificate configured')
++
++            if not os.path.isfile(cert_fname):
++                raise ServerConfigException(f"Certificate {cert_fname} does not exist")
++
++            if not os.path.isfile(pkey_fname):
++                raise ServerConfigException(f"private key {pkey_fname} does not exist")
 +
 +            try:
++                # Create custom SSL context to disable TLS 1.0 and 1.1.
++                context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
 +                context.load_cert_chain(cert_fname, pkey_fname)
-+            except ssl.SSLError:
-+                raise ServerConfigException("No certificate configured")
-+
++            except ssl.SSLError as e:
++                raise ServerConfigException(
++                    "Encountered unexpected error while creating SSL context"
++                    f" - library: {e.library}, reason: {e.reason}"
++                )
++            except Exception as e:
++                raise ServerConfigException(
++                    f"Encountered unexpected error while creating SSL context: {e}"
++                )
+ 
+-            # Create custom SSL context to disable TLS 1.0 and 1.1.
+-            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+-            context.load_cert_chain(cert_fname, pkey_fname)
              if sys.version_info >= (3, 7):
                  if Settings.UNSAFE_TLS_v1_2:
                      context.minimum_version = ssl.TLSVersion.TLSv1_2
-@@ -473,15 +475,26 @@ class Module(MgrModule, CherryPyConfig):
+@@ -473,15 +490,26 @@ class Module(MgrModule, CherryPyConfig):
  
      @CLIWriteCommand("dashboard create-self-signed-cert")
      def set_mgr_created_self_signed_cert(self):
@@ -81,7 +108,7 @@ index 68725be6e35..9db55a3ee93 100644
 +
 +        1. Generate a private key and self-signed certificate:
 +          # openssl req -newkey rsa:2048 -nodes -x509 \\
-+          -keyout /root/dashboard-key.pem -out /root/dashboard-cert.pem -sha512 \\
++          -keyout /root/dashboard-key.pem -out /root/dashboard-crt.pem -sha512 \\
 +          -days 3650 -subj "/CN=IT/O=ceph-mgr-dashboard" -utf8
 +
 +        2. Set the corresponding config keys for the key/cert pair:
