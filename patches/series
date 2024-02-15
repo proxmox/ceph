@@ -12,3 +12,4 @@
 0012-backport-mgr-dashboard-simplify-authentication-proto.patch
 0013-mgr-dashboard-remove-ability-to-create-and-check-TLS.patch
 0014-rocksb-inherit-parent-cmake-cxx-flags.patch
+0015-ceph-osd-postinst-avoid-reloading-all-sysctl-setting.patch
