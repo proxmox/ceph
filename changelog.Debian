@@ -1,3 +1,10 @@
+ceph (16.2.15-pve1) bullseye; urgency=medium
+
+  * update to 16.2.15, which will be the preliminary last upstream release of
+    the pacific release series.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 04 Mar 2024 16:46:36 +0100
+
 ceph (16.2.14-pve1) bullseye; urgency=medium
 
   * new upstream pacific 16.2.14 stable release
