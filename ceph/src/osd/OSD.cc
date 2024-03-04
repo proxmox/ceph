@@ -1441,14 +1441,14 @@ MOSDMap *OSDService::build_incremental_map_msg(epoch_t since, epoch_t to,
   for (epoch_t e = since + 1; e <= to; ++e) {
     bufferlist bl;
     if (get_inc_map_bl(e, bl)) {
-      m->incremental_maps[e] = std::move(bl);
+      m->incremental_maps[e] = bl;
     } else {
       dout(10) << __func__ << " missing incremental map " << e << dendl;
       if (!get_map_bl(e, bl)) {
 	derr << __func__ << " also missing full map " << e << dendl;
 	goto panic;
       }
-      m->maps[e] = std::move(bl);
+      m->maps[e] = bl;
     }
     max--;
     max_bytes -= bl.length();
@@ -3031,6 +3031,19 @@ will start to track new ops received afterwards.";
     scrub_purged_snaps();
   }
 
+  else if (prefix == "reset_purged_snaps_last") {
+    lock_guard l(osd_lock);
+    superblock.purged_snaps_last = 0;
+    ObjectStore::Transaction t;
+    dout(10) << __func__ << " updating superblock" << dendl;
+    write_superblock(t);
+    ret = store->queue_transaction(service.meta_ch, std::move(t), nullptr);
+    if (ret < 0) {
+      ss << "Error writing superblock: " << cpp_strerror(ret);
+      goto out;
+    }
+  }
+
   else if (prefix == "dump_osd_network") {
     lock_guard l(osd_lock);
     int64_t value = 0;
@@ -3497,6 +3510,10 @@ int OSD::init()
 
   store->set_cache_shards(get_num_cache_shards());
 
+ int rotating_auth_attempts = 0;
+ auto rotating_auth_timeout =
+   g_conf().get_val<int64_t>("rotating_keys_bootstrap_timeout");
+
   int r = store->mount();
   if (r < 0) {
     derr << "OSD:init: unable to mount object store" << dendl;
@@ -3511,7 +3528,12 @@ int OSD::init()
   dout(2) << "boot" << dendl;
 
   service.meta_ch = store->open_collection(coll_t::meta());
-
+  if (!service.meta_ch) {
+    derr << "OSD:init: unable to open meta collection"
+         << dendl;
+    r = -ENOENT;
+    goto out;
+  }
   // initialize the daily loadavg with current 15min loadavg
   double loadavgs[3];
   if (getloadavg(loadavgs, 3) == 3) {
@@ -3520,10 +3542,6 @@ int OSD::init()
     derr << "OSD::init() : couldn't read loadavgs\n" << dendl;
     daily_loadavg = 1.0;
   }
-
-  int rotating_auth_attempts = 0;
-  auto rotating_auth_timeout =
-    g_conf().get_val<int64_t>("rotating_keys_bootstrap_timeout");
 
   // sanity check long object name handling
   {
@@ -4161,6 +4179,11 @@ void OSD::final_init()
     "scrub_purged_snaps",
     asok_hook,
     "Scrub purged_snaps vs snapmapper index");
+  ceph_assert(r == 0);
+  r = admin_socket->register_command(
+    "reset_purged_snaps_last",
+    asok_hook,
+    "Reset the superblock's purged_snaps_last");
   ceph_assert(r == 0);
 
   // -- pg commands --
@@ -7338,7 +7361,7 @@ void OSD::ms_fast_dispatch(Message *m)
   OID_EVENT_TRACE_WITH_MSG(m, "MS_FAST_DISPATCH_END", false);
 }
 
-int OSD::ms_handle_authentication(Connection *con)
+int OSD::ms_handle_fast_authentication(Connection *con)
 {
   int ret = 0;
   auto s = ceph::ref_cast<Session>(con->get_priv());
@@ -10624,7 +10647,7 @@ void OSDShard::consume_map(
   dout(10) << new_osdmap->get_epoch()
            << " (was " << (old_osdmap ? old_osdmap->get_epoch() : 0) << ")"
 	   << dendl;
-  bool queued = false;
+  int queued = 0;
 
   // check slots
   auto p = pg_slots.begin();
@@ -10651,8 +10674,7 @@ void OSDShard::consume_map(
 	dout(20) << __func__ << "  " << pgid
 		 << " pending_peering first epoch " << first
 		 << " <= " << new_osdmap->get_epoch() << ", requeueing" << dendl;
-	_wake_pg_slot(pgid, slot);
-	queued = true;
+	queued += _wake_pg_slot(pgid, slot);
       }
       ++p;
       continue;
@@ -10692,14 +10714,18 @@ void OSDShard::consume_map(
   }
   if (queued) {
     std::lock_guard l{sdata_wait_lock};
-    sdata_cond.notify_one();
+    if (queued == 1)
+      sdata_cond.notify_one();
+    else
+      sdata_cond.notify_all();
   }
 }
 
-void OSDShard::_wake_pg_slot(
+int OSDShard::_wake_pg_slot(
   spg_t pgid,
   OSDShardPGSlot *slot)
 {
+  int count = 0;
   dout(20) << __func__ << " " << pgid
 	   << " to_process " << slot->to_process
 	   << " waiting " << slot->waiting
@@ -10708,12 +10734,14 @@ void OSDShard::_wake_pg_slot(
        i != slot->to_process.rend();
        ++i) {
     scheduler->enqueue_front(std::move(*i));
+    count++;
   }
   slot->to_process.clear();
   for (auto i = slot->waiting.rbegin();
        i != slot->waiting.rend();
        ++i) {
     scheduler->enqueue_front(std::move(*i));
+    count++;
   }
   slot->waiting.clear();
   for (auto i = slot->waiting_peering.rbegin();
@@ -10724,10 +10752,12 @@ void OSDShard::_wake_pg_slot(
     // someday, if we decide this inefficiency matters
     for (auto j = i->second.rbegin(); j != i->second.rend(); ++j) {
       scheduler->enqueue_front(std::move(*j));
+      count++;
     }
   }
   slot->waiting_peering.clear();
   ++slot->requeue_seq;
+  return count;
 }
 
 void OSDShard::identify_splits_and_merges(

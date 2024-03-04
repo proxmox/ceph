@@ -450,10 +450,10 @@ static int read_obj_policy(const DoutPrefixProvider *dpp,
                            map<string, bufferlist>& bucket_attrs,
                            RGWAccessControlPolicy* acl,
                            string *storage_class,
-			   boost::optional<Policy>& policy,
+                           boost::optional<Policy>& policy,
                            rgw::sal::RGWBucket* bucket,
                            rgw::sal::RGWObject* object,
-			   optional_yield y,
+                           optional_yield y,
                            bool copy_src=false)
 {
   string upload_id;
@@ -494,14 +494,14 @@ static int read_obj_policy(const DoutPrefixProvider *dpp,
     if (bucket_owner.compare(s->user->get_id()) != 0 &&
         ! s->auth.identity->is_admin_of(bucket_owner)) {
       auto r = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                  *s->auth.identity, rgw::IAM::s3ListBucket,
-                                  ARN(bucket->get_key()));
+                                  rgw::IAM::s3ListBucket, ARN(bucket->get_key()));
       if (r == Effect::Allow)
         return -ENOENT;
       if (r == Effect::Deny)
         return -EACCES;
       if (policy) {
-        r = policy->eval(s->env, *s->auth.identity, rgw::IAM::s3ListBucket, ARN(bucket->get_key()));
+        ARN b_arn(bucket->get_key());
+        r = policy->eval(s->env, *s->auth.identity, rgw::IAM::s3ListBucket, b_arn);
         if (r == Effect::Allow)
           return -ENOENT;
         if (r == Effect::Deny)
@@ -509,8 +509,7 @@ static int read_obj_policy(const DoutPrefixProvider *dpp,
       }
       if (! s->session_policies.empty()) {
         r = eval_identity_or_session_policies(s->session_policies, s->env,
-                                  *s->auth.identity, rgw::IAM::s3ListBucket,
-                                  ARN(bucket->get_key()));
+                                  rgw::IAM::s3ListBucket, ARN(bucket->get_key()));
         if (r == Effect::Allow)
           return -ENOENT;
         if (r == Effect::Deny)
@@ -1466,18 +1465,12 @@ int RGWOp::init_quota()
 }
 
 static bool validate_cors_rule_method(RGWCORSRule *rule, const char *req_meth) {
-  uint8_t flags = 0;
-
   if (!req_meth) {
     dout(5) << "req_meth is null" << dendl;
     return false;
   }
 
-  if (strcmp(req_meth, "GET") == 0) flags = RGW_CORS_GET;
-  else if (strcmp(req_meth, "POST") == 0) flags = RGW_CORS_POST;
-  else if (strcmp(req_meth, "PUT") == 0) flags = RGW_CORS_PUT;
-  else if (strcmp(req_meth, "DELETE") == 0) flags = RGW_CORS_DELETE;
-  else if (strcmp(req_meth, "HEAD") == 0) flags = RGW_CORS_HEAD;
+  uint8_t flags = get_cors_method_flags(req_meth);
 
   if (rule->get_allowed_methods() & flags) {
     dout(10) << "Method " << req_meth << " is supported" << dendl;
@@ -2464,6 +2457,8 @@ void RGWListBuckets::execute(optional_yield y)
 			<< s->user->get_id() << dendl;
       break;
     }
+
+    is_truncated = buckets.is_truncated();
 
     /* We need to have stats for all our policies - even if a given policy
      * isn't actually used in a given account. In such situation its usage
@@ -3578,6 +3573,9 @@ int RGWPutObj::init_processing(optional_yield y) {
 			      &bucket, y);
     if (ret < 0) {
       ldpp_dout(this, 5) << __func__ << "(): get_bucket() returned ret=" << ret << dendl;
+      if (ret == -ENOENT) {
+        ret = -ERR_NO_SUCH_BUCKET;
+      }
       return ret;
     }
 
@@ -3645,9 +3643,9 @@ int RGWPutObj::verify_permission(optional_yield y)
     cs_object->set_prefetch_data(s->obj_ctx);
 
     /* check source object permissions */
-    if (read_obj_policy(this, store, s, copy_source_bucket_info, cs_attrs, &cs_acl, nullptr,
-			policy, cs_bucket.get(), cs_object.get(), y, true) < 0) {
-      return -EACCES;
+    if (ret = read_obj_policy(this, store, s, copy_source_bucket_info, cs_attrs, &cs_acl, nullptr,
+			policy, cs_bucket.get(), cs_object.get(), y, true); ret < 0) {
+      return ret;
     }
 
     /* admin request overrides permission checks */
@@ -3658,23 +3656,25 @@ int RGWPutObj::verify_permission(optional_yield y)
         if (has_s3_existing_tag || has_s3_resource_tag)
           rgw_iam_add_objtags(this, s, cs_object.get(), has_s3_existing_tag, has_s3_resource_tag);
         auto usr_policy_res = Effect::Pass;
+        rgw::ARN obj_arn(cs_object->get_obj());
         for (auto& user_policy : s->iam_user_policies) {
           if (usr_policy_res = user_policy.eval(s->env, *s->auth.identity,
 			      cs_object->get_instance().empty() ?
 			      rgw::IAM::s3GetObject :
 			      rgw::IAM::s3GetObjectVersion,
-			      rgw::ARN(cs_object->get_obj())); usr_policy_res == Effect::Deny)
+			      obj_arn); usr_policy_res == Effect::Deny)
             return -EACCES;
           else if (usr_policy_res == Effect::Allow)
             break;
         }
   rgw::IAM::Effect e = Effect::Pass;
   if (policy) {
+    rgw::ARN obj_arn(cs_object->get_obj());
 	  e = policy->eval(s->env, *s->auth.identity,
 			      cs_object->get_instance().empty() ?
 			      rgw::IAM::s3GetObject :
 			      rgw::IAM::s3GetObjectVersion,
-			      rgw::ARN(cs_object->get_obj()));
+			      obj_arn);
   }
 	if (e == Effect::Deny) {
 	  return -EACCES; 
@@ -3739,7 +3739,6 @@ int RGWPutObj::verify_permission(optional_yield y)
       rgw_iam_add_buckettags(this, s);
 
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                            boost::none,
                                             rgw::IAM::s3PutObject,
                                             s->object->get_obj());
     if (identity_policy_res == Effect::Deny)
@@ -3748,9 +3747,10 @@ int RGWPutObj::verify_permission(optional_yield y)
     rgw::IAM::Effect e = Effect::Pass;
     rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
     if (s->iam_policy) {
+      ARN obj_arn(s->object->get_obj());
       e = s->iam_policy->eval(s->env, *s->auth.identity,
           rgw::IAM::s3PutObject,
-          s->object->get_obj(),
+          obj_arn,
           princ_type);
     }
     if (e == Effect::Deny) {
@@ -3759,7 +3759,6 @@ int RGWPutObj::verify_permission(optional_yield y)
 
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject,
                                               s->object->get_obj());
       if (session_policy_res == Effect::Deny) {
@@ -4331,7 +4330,6 @@ void RGWPostObj::execute(optional_yield y)
 
   if (s->iam_policy || ! s->iam_user_policies.empty() || !s->session_policies.empty()) {
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                            boost::none,
                                             rgw::IAM::s3PutObject,
                                             s->object->get_obj());
     if (identity_policy_res == Effect::Deny) {
@@ -4342,9 +4340,10 @@ void RGWPostObj::execute(optional_yield y)
     rgw::IAM::Effect e = Effect::Pass;
     rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
     if (s->iam_policy) {
+      ARN obj_arn(s->object->get_obj());
       e = s->iam_policy->eval(s->env, *s->auth.identity,
 				 rgw::IAM::s3PutObject,
-				 s->object->get_obj(),
+				 obj_arn,
          princ_type);
     }
     if (e == Effect::Deny) {
@@ -4354,7 +4353,6 @@ void RGWPostObj::execute(optional_yield y)
 
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject,
                                               s->object->get_obj());
       if (session_policy_res == Effect::Deny) {
@@ -4409,7 +4407,6 @@ void RGWPostObj::execute(optional_yield y)
     // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
     hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     ceph::buffer::list bl, aclbl;
-    int len = 0;
 
     op_ret = s->bucket->check_quota(user_quota, bucket_quota, s->content_length, y);
     if (op_ret < 0) {
@@ -4479,7 +4476,7 @@ void RGWPostObj::execute(optional_yield y)
     bool again;
     do {
       ceph::bufferlist data;
-      len = get_data(data, again);
+      int len = get_data(data, again);
 
       if (len < 0) {
         op_ret = len;
@@ -4510,7 +4507,7 @@ void RGWPostObj::execute(optional_yield y)
       return;
     }
 
-    if (len < min_len) {
+    if (ofs < min_len) {
       op_ret = -ERR_TOO_SMALL;
       return;
     }
@@ -4883,14 +4880,19 @@ int RGWDeleteObj::handle_slo_manifest(bufferlist& bl, optional_yield y)
   for (const auto& iter : slo_info.entries) {
     const string& path_str = iter.path;
 
-    const size_t sep_pos = path_str.find('/', 1 /* skip first slash */);
+    const size_t pos_init = path_str.find_first_not_of('/');
+    if (std::string_view::npos == pos_init) {
+      return -EINVAL;
+    }
+
+    const size_t sep_pos = path_str.find('/', pos_init);
     if (std::string_view::npos == sep_pos) {
       return -EINVAL;
     }
 
     RGWBulkDelete::acct_path_t path;
 
-    path.bucket_name = url_decode(path_str.substr(1, sep_pos - 1));
+    path.bucket_name = url_decode(path_str.substr(pos_init, sep_pos - pos_init));
     path.obj_key = url_decode(path_str.substr(sep_pos + 1));
 
     items.push_back(path);
@@ -4923,18 +4925,18 @@ int RGWDeleteObj::verify_permission(optional_yield y)
 
   if (s->iam_policy || ! s->iam_user_policies.empty() || ! s->session_policies.empty()) {
     if (s->bucket->get_info().obj_lock_enabled() && bypass_governance_mode) {
-      auto r = eval_identity_or_session_policies(s->iam_user_policies, s->env, boost::none,
+      auto r = eval_identity_or_session_policies(s->iam_user_policies, s->env,
                                                rgw::IAM::s3BypassGovernanceRetention, ARN(s->bucket->get_key(), s->object->get_name()));
       if (r == Effect::Deny) {
         bypass_perm = false;
       } else if (r == Effect::Pass && s->iam_policy) {
-        r = s->iam_policy->eval(s->env, *s->auth.identity, rgw::IAM::s3BypassGovernanceRetention,
-                                     ARN(s->bucket->get_key(), s->object->get_name()));
+        ARN obj_arn(ARN(s->bucket->get_key(), s->object->get_name()));
+        r = s->iam_policy->eval(s->env, *s->auth.identity, rgw::IAM::s3BypassGovernanceRetention, obj_arn);
         if (r == Effect::Deny) {
           bypass_perm = false;
         }
       } else if (r == Effect::Pass && !s->session_policies.empty()) {
-        r = eval_identity_or_session_policies(s->session_policies, s->env, boost::none,
+        r = eval_identity_or_session_policies(s->session_policies, s->env,
                                                rgw::IAM::s3BypassGovernanceRetention, ARN(s->bucket->get_key(), s->object->get_name()));
         if (r == Effect::Deny) {
           bypass_perm = false;
@@ -4942,7 +4944,6 @@ int RGWDeleteObj::verify_permission(optional_yield y)
       }
     }
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                              boost::none,
                                               s->object->get_instance().empty() ?
                                               rgw::IAM::s3DeleteObject :
                                               rgw::IAM::s3DeleteObjectVersion,
@@ -4953,12 +4954,13 @@ int RGWDeleteObj::verify_permission(optional_yield y)
 
     rgw::IAM::Effect r = Effect::Pass;
     rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
+    ARN obj_arn(ARN(s->bucket->get_key(), s->object->get_name()));
     if (s->iam_policy) {
       r = s->iam_policy->eval(s->env, *s->auth.identity,
 				 s->object->get_instance().empty() ?
 				 rgw::IAM::s3DeleteObject :
 				 rgw::IAM::s3DeleteObjectVersion,
-				 ARN(s->bucket->get_key(), s->object->get_name()),
+				 obj_arn,
          princ_type);
     }
     if (r == Effect::Deny)
@@ -4966,11 +4968,10 @@ int RGWDeleteObj::verify_permission(optional_yield y)
 
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                              boost::none,
                                               s->object->get_instance().empty() ?
                                               rgw::IAM::s3DeleteObject :
                                               rgw::IAM::s3DeleteObjectVersion,
-                                              ARN(s->bucket->get_key(), s->object->get_name()));
+                                              obj_arn);
       if (session_policy_res == Effect::Deny) {
           return -EACCES;
       }
@@ -5255,12 +5256,12 @@ int RGWCopyObj::verify_permission(optional_yield y)
         if (has_s3_existing_tag || has_s3_resource_tag)
           rgw_iam_add_objtags(this, s, src_object.get(), has_s3_existing_tag, has_s3_resource_tag);
 
+        ARN obj_arn(src_object->get_obj());
         auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                                  boost::none,
                                                   src_object->get_instance().empty() ?
                                                   rgw::IAM::s3GetObject :
                                                   rgw::IAM::s3GetObjectVersion,
-                                                  ARN(src_object->get_obj()));
+                                                  obj_arn);
         if (identity_policy_res == Effect::Deny) {
           return -EACCES;
         }
@@ -5271,7 +5272,7 @@ int RGWCopyObj::verify_permission(optional_yield y)
             src_object->get_instance().empty() ?
             rgw::IAM::s3GetObject :
             rgw::IAM::s3GetObjectVersion,
-            ARN(src_object->get_obj()),
+            obj_arn,
             princ_type);
         }
 	if (e == Effect::Deny) {
@@ -5279,11 +5280,10 @@ int RGWCopyObj::verify_permission(optional_yield y)
 	}
         if (!s->session_policies.empty()) {
         auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                                  boost::none,
                                                   src_object->get_instance().empty() ?
                                                   rgw::IAM::s3GetObject :
                                                   rgw::IAM::s3GetObjectVersion,
-                                                  ARN(src_object->get_obj()));
+                                                  obj_arn);
         if (session_policy_res == Effect::Deny) {
             return -EACCES;
         }
@@ -5370,10 +5370,11 @@ int RGWCopyObj::verify_permission(optional_yield y)
 	rgw_add_to_iam_environment(s->env, "s3:x-amz-metadata-directive",
 				   *md_directive);
 
+      ARN obj_arn(dest_object->get_obj());
       auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies,
-                                                                  s->env, boost::none,
+                                                                  s->env,
                                                                   rgw::IAM::s3PutObject,
-                                                                  ARN(dest_object->get_obj()));
+                                                                  obj_arn);
       if (identity_policy_res == Effect::Deny) {
         return -EACCES;
       }
@@ -5382,14 +5383,14 @@ int RGWCopyObj::verify_permission(optional_yield y)
       if (dest_iam_policy) {
         e = dest_iam_policy->eval(s->env, *s->auth.identity,
                                       rgw::IAM::s3PutObject,
-                                      ARN(dest_object->get_obj()),
+                                      obj_arn,
                                       princ_type);
       }
       if (e == Effect::Deny) {
         return -EACCES;
       }
       if (!s->session_policies.empty()) {
-        auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env, boost::none, rgw::IAM::s3PutObject, ARN(dest_object->get_obj()));
+        auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env, rgw::IAM::s3PutObject, ARN(dest_object->get_obj()));
         if (session_policy_res == Effect::Deny) {
             return false;
         }
@@ -6170,7 +6171,6 @@ int RGWInitMultipart::verify_permission(optional_yield y)
 
   if (s->iam_policy || ! s->iam_user_policies.empty() || !s->session_policies.empty()) {
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject,
                                               s->object->get_obj());
     if (identity_policy_res == Effect::Deny) {
@@ -6179,10 +6179,11 @@ int RGWInitMultipart::verify_permission(optional_yield y)
 
     rgw::IAM::Effect e = Effect::Pass;
     rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
+    ARN obj_arn(s->object->get_obj());
     if (s->iam_policy) {
       e = s->iam_policy->eval(s->env, *s->auth.identity,
 				 rgw::IAM::s3PutObject,
-				 s->object->get_obj(),
+				 obj_arn,
          princ_type);
     }
     if (e == Effect::Deny) {
@@ -6191,7 +6192,6 @@ int RGWInitMultipart::verify_permission(optional_yield y)
 
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject,
                                               s->object->get_obj());
       if (session_policy_res == Effect::Deny) {
@@ -6304,7 +6304,6 @@ int RGWCompleteMultipart::verify_permission(optional_yield y)
 
   if (s->iam_policy || ! s->iam_user_policies.empty() || ! s->session_policies.empty()) {
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject,
                                               s->object->get_obj());
     if (identity_policy_res == Effect::Deny) {
@@ -6313,10 +6312,11 @@ int RGWCompleteMultipart::verify_permission(optional_yield y)
 
     rgw::IAM::Effect e = Effect::Pass;
     rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
+    rgw::ARN obj_arn(s->object->get_obj());
     if (s->iam_policy) {
       e = s->iam_policy->eval(s->env, *s->auth.identity,
 				 rgw::IAM::s3PutObject,
-				 s->object->get_obj(),
+				 obj_arn,
          princ_type);
     }
     if (e == Effect::Deny) {
@@ -6325,7 +6325,6 @@ int RGWCompleteMultipart::verify_permission(optional_yield y)
 
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject,
                                               s->object->get_obj());
       if (session_policy_res == Effect::Deny) {
@@ -6712,6 +6711,9 @@ void RGWCompleteMultipart::complete()
       ldpp_dout(this, 0) << "WARNING: failed to unlock " << serializer->oid << dendl;
     }
   }
+
+  etag = s->object->get_attrs()[RGW_ATTR_ETAG].to_str();
+
   send_response();
 }
 
@@ -6723,7 +6725,6 @@ int RGWAbortMultipart::verify_permission(optional_yield y)
 
   if (s->iam_policy || ! s->iam_user_policies.empty() || !s->session_policies.empty()) {
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3AbortMultipartUpload,
                                               s->object->get_obj());
     if (identity_policy_res == Effect::Deny) {
@@ -6732,10 +6733,11 @@ int RGWAbortMultipart::verify_permission(optional_yield y)
 
     rgw::IAM::Effect e = Effect::Pass;
     rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
+    ARN obj_arn(s->object->get_obj());
     if (s->iam_policy) {
       e = s->iam_policy->eval(s->env, *s->auth.identity,
 				 rgw::IAM::s3AbortMultipartUpload,
-				 s->object->get_obj(), princ_type);
+				 obj_arn, princ_type);
     }
 
     if (e == Effect::Deny) {
@@ -6744,7 +6746,6 @@ int RGWAbortMultipart::verify_permission(optional_yield y)
 
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject,
                                               s->object->get_obj());
       if (session_policy_res == Effect::Deny) {
@@ -6931,18 +6932,19 @@ int RGWDeleteMultiObj::verify_permission(optional_yield y)
 
   if (s->iam_policy || ! s->iam_user_policies.empty() || ! s->session_policies.empty()) {
     if (s->bucket->get_info().obj_lock_enabled() && bypass_governance_mode) {
-      auto r = eval_identity_or_session_policies(s->iam_user_policies, s->env, boost::none,
-                                               rgw::IAM::s3BypassGovernanceRetention, ARN(s->bucket->get_key()));
+      ARN bucket_arn(s->bucket->get_key());
+      auto r = eval_identity_or_session_policies(s->iam_user_policies, s->env,
+                                               rgw::IAM::s3BypassGovernanceRetention, bucket_arn);
       if (r == Effect::Deny) {
         bypass_perm = false;
       } else if (r == Effect::Pass && s->iam_policy) {
         r = s->iam_policy->eval(s->env, *s->auth.identity, rgw::IAM::s3BypassGovernanceRetention,
-                                     ARN(s->bucket->get_key()));
+                                     bucket_arn);
         if (r == Effect::Deny) {
           bypass_perm = false;
         }
       } else if (r == Effect::Pass && !s->session_policies.empty()) {
-        r = eval_identity_or_session_policies(s->session_policies, s->env, boost::none,
+        r = eval_identity_or_session_policies(s->session_policies, s->env,
                                                rgw::IAM::s3BypassGovernanceRetention, ARN(s->bucket->get_key()));
         if (r == Effect::Deny) {
           bypass_perm = false;
@@ -6953,7 +6955,6 @@ int RGWDeleteMultiObj::verify_permission(optional_yield y)
     bool not_versioned = rgw::sal::RGWObject::empty(s->object.get()) || s->object->get_instance().empty();
 
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                              boost::none,
                                               not_versioned ?
                                               rgw::IAM::s3DeleteObject :
                                               rgw::IAM::s3DeleteObjectVersion,
@@ -6964,12 +6965,13 @@ int RGWDeleteMultiObj::verify_permission(optional_yield y)
 
     rgw::IAM::Effect r = Effect::Pass;
     rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
+    rgw::ARN bucket_arn(s->bucket->get_key());
     if (s->iam_policy) {
       r = s->iam_policy->eval(s->env, *s->auth.identity,
 				 not_versioned ?
 				 rgw::IAM::s3DeleteObject :
 				 rgw::IAM::s3DeleteObjectVersion,
-				 ARN(s->bucket->get_key()),
+				 bucket_arn,
          princ_type);
     }
     if (r == Effect::Deny)
@@ -6977,7 +6979,6 @@ int RGWDeleteMultiObj::verify_permission(optional_yield y)
 
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                              boost::none,
                                               not_versioned ?
                                               rgw::IAM::s3DeleteObject :
                                               rgw::IAM::s3DeleteObjectVersion,
@@ -7057,12 +7058,12 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
   RGWObjectCtx *obj_ctx = static_cast<RGWObjectCtx *>(s->obj_ctx);
   std::unique_ptr<rgw::sal::RGWObject> obj = bucket->get_object(o);
   if (s->iam_policy || ! s->iam_user_policies.empty() || !s->session_policies.empty()) {
+    rgw::ARN obj_arn(obj->get_obj());
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                            boost::none,
                                             o.instance.empty() ?
                                             rgw::IAM::s3DeleteObject :
                                             rgw::IAM::s3DeleteObjectVersion,
-                                            ARN(obj->get_obj()));
+                                            obj_arn);
     if (identity_policy_res == Effect::Deny) {
       send_partial_response(o, false, "", -EACCES, formatter_flush_cond);
       return;
@@ -7076,7 +7077,7 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
       			      o.instance.empty() ?
       			      rgw::IAM::s3DeleteObject :
       			      rgw::IAM::s3DeleteObjectVersion,
-      			      ARN(obj->get_obj()),
+                              obj_arn,
                               princ_type);
     }
     if (e == Effect::Deny) {
@@ -7086,11 +7087,10 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
 
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                                                  boost::none,
                                                                   o.instance.empty() ?
                                                                   rgw::IAM::s3DeleteObject :
                                                                   rgw::IAM::s3DeleteObjectVersion,
-                                                                  ARN(obj->get_obj()));
+                                                                  obj_arn);
       if (session_policy_res == Effect::Deny) {
         send_partial_response(o, false, "", -EACCES, formatter_flush_cond);
         return;
@@ -7671,22 +7671,21 @@ bool RGWBulkUploadOp::handle_file_verify_permission(RGWBucketInfo& binfo,
   bucket_owner = bacl.get_owner();
   if (policy || ! s->iam_user_policies.empty() || !s->session_policies.empty()) {
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject, obj);
     if (identity_policy_res == Effect::Deny) {
       return false;
     }
 
     rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
+    ARN obj_arn(obj);
     auto e = policy->eval(s->env, *s->auth.identity,
-			  rgw::IAM::s3PutObject, obj, princ_type);
+			  rgw::IAM::s3PutObject, obj_arn, princ_type);
     if (e == Effect::Deny) {
       return false;
     }
   
     if (!s->session_policies.empty()) {
       auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env,
-                                              boost::none,
                                               rgw::IAM::s3PutObject, obj);
       if (session_policy_res == Effect::Deny) {
           return false;

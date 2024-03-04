@@ -597,6 +597,7 @@ std::vector<Option> get_global_options() {
     Option("log_max_recent", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(500)
     .set_daemon_default(10000)
+    .set_min(1)
     .set_description("recent log entries to keep in memory to dump in the event of a crash")
     .set_long_description("The purpose of this option is to log at a higher debug level only to the in-memory buffer, and write out the detailed log messages only if there is a crash.  Only log entries below the lower log level will be written unconditionally to the log.  For example, debug_osd=1/5 will write everything <= 1 to the log unconditionally but keep entries at levels 2-5 in memory.  If there is a seg fault or assertion failure, all entries will be dumped to the log."),
 
@@ -1147,11 +1148,6 @@ std::vector<Option> get_global_options() {
     .set_default(3)
     .set_min_max(1, 24)
     .set_description("Threadpool size for AsyncMessenger (ms_type=async)"),
-
-    Option("ms_async_max_op_threads", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(5)
-    .set_description("Maximum threadpool size of AsyncMessenger")
-    .add_see_also("ms_async_op_threads"),
 
     Option("ms_async_reap_threshold", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(5)
@@ -4084,7 +4080,7 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("osd_max_write_op_reply_len", Option::TYPE_SIZE, Option::LEVEL_ADVANCED)
-    .set_default(32)
+    .set_default(64)
     .set_description("Max size of the per-op payload for requests with the RETURNVEC flag set")
     .set_long_description("This value caps the amount of data (per op; a request may have many ops) that will be sent back to the client and recorded in the PG log."),
 
@@ -4354,6 +4350,21 @@ std::vector<Option> get_global_options() {
     .set_long_description("Looks into data read to check if there is a 4K block entirely filled with zeros. "
 			  "If this happens, we re-read data. If there is difference, we print error to log.")
     .add_see_also("bluestore_retry_disk_reads"),
+
+    Option("bluefs_check_volume_selector_on_umount", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_description("Check validity of volume selector on umount")
+    .set_long_description("Checks if volume selector did not diverge from the state it should be in. "
+                          "Reference is constructed from bluefs inode table. Asserts on inconsistency."),
+    Option("bluefs_check_volume_selector_often", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_flag(Option::FLAG_STARTUP)
+    .set_description("Periodically check validity of volume selector")
+    .set_long_description("Periodically checks if current volume selector does not diverge from the valid state. "
+                          "Reference is constructed from bluefs inode table. Asserts on inconsistency. "
+                          " This is debug feature.")
+    .add_see_also("bluefs_check_volume_selector_on_umount"),
 
     Option("bluestore_bluefs", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(true)
@@ -7450,7 +7461,7 @@ std::vector<Option> get_rgw_options() {
 			  "point value between 0 and 1."),
     Option("rgw_max_notify_retries", Option::TYPE_UINT,
 	   Option::LEVEL_ADVANCED)
-    .set_default(3)
+    .set_default(10)
     .add_tag("error recovery")
     .add_service("rgw")
     .set_description("Number of attempts to notify peers before giving up.")
@@ -9015,8 +9026,13 @@ std::vector<Option> get_mds_options() {
      .set_default(true)
      .set_flag(Option::FLAG_RUNTIME)
      .set_description("Do not evict client if any osd is laggy")
-     .set_long_description("Laggy OSD(s) can make clients laggy or unresponsive, this can lead to their eviction, this option once enabled can help defer client eviction.")
+     .set_long_description("Laggy OSD(s) can make clients laggy or unresponsive, this can lead to their eviction, this option once enabled can help defer client eviction."),
 
+    Option("mds_session_metadata_threshold", Option::TYPE_SIZE, Option::LEVEL_ADVANCED)
+     .set_default(16_M)
+     .set_flag(Option::FLAG_RUNTIME)
+     .set_description("Evict non-advancing client-tid sessions exceeding the config size.")
+     .set_long_description("Evict clients which are not advancing their request tids which causes a large buildup of session metadata (`completed_requests`) in the MDS causing the MDS to go read-only since the RADOS operation exceeds the size threashold. This config is the maximum size (in bytes) that a session metadata (encoded) can grow.")
   });
 }
 

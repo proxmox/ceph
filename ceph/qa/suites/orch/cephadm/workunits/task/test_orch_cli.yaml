@@ -1,3 +1,10 @@
+overrides:
+  ceph:
+    log-ignorelist:
+      - \(MON_DOWN\)
+      - \(OSD_DOWN\)
+      - \(CEPHADM_PAUSED\)
+      - mons down
 roles:
 - - host.a
   - osd.0

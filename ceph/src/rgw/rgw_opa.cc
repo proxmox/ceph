@@ -39,15 +39,26 @@ int rgw_opa_authorize(RGWOp *& op,
   JSONFormatter jf;
   jf.open_object_section("");
   jf.open_object_section("input");
-  jf.dump_string("method", s->info.env->get("REQUEST_METHOD"));
+  const char *request_method = s->info.env->get("REQUEST_METHOD");
+  if (request_method) {
+    jf.dump_string("method", request_method);
+  }
   jf.dump_string("relative_uri", s->relative_uri.c_str());
   jf.dump_string("decoded_uri", s->decoded_uri.c_str());
   jf.dump_string("params", s->info.request_params.c_str());
   jf.dump_string("request_uri_aws4", s->info.request_uri_aws4.c_str());
-  jf.dump_string("object_name", s->object->get_name().c_str());
-  jf.dump_string("subuser", s->auth.identity->get_subuser().c_str());
-  jf.dump_object("user_info", s->user->get_info());
-  jf.dump_object("bucket_info", s->bucket->get_info());
+  if (s->object) {
+    jf.dump_string("object_name", s->object->get_name().c_str());
+  }
+  if (s->auth.identity) {
+    jf.dump_string("subuser", s->auth.identity->get_subuser().c_str());
+  }
+  if (s->user) {
+    jf.dump_object("user_info", s->user->get_info());
+  }
+  if (s->bucket) {
+    jf.dump_object("bucket_info", s->bucket->get_info());
+  }
   jf.close_section();
   jf.close_section();
 

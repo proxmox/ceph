@@ -773,7 +773,7 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
     }
     if (ret > 0) {
       if (!s->authenticated &&
-	  mon.ms_handle_authentication(s->con.get()) > 0) {
+	  mon.ms_handle_fast_authentication(s->con.get()) > 0) {
 	finished = true;
       }
       ret = 0;
@@ -1307,7 +1307,7 @@ bool AuthMonitor::valid_caps(
     }
   } else if (type == "mds") {
     MDSAuthCaps mdscap;
-    if (!mdscap.parse(g_ceph_context, caps, out)) {
+    if (!mdscap.parse(caps, out)) {
       return false;
     }
   } else {

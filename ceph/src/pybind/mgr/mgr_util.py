@@ -12,7 +12,7 @@ import time
 import logging
 import sys
 from threading import Lock, Condition, Event
-from typing import no_type_check
+from typing import no_type_check, NewType
 import urllib
 from functools import wraps
 if sys.version_info >= (3, 3):
@@ -28,6 +28,8 @@ T = TypeVar('T')
 
 if TYPE_CHECKING:
     from mgr_module import MgrModule
+
+ConfEntity = NewType('ConfEntity', str)
 
 Module_T = TypeVar('Module_T', bound="MgrModule")
 
@@ -768,18 +770,18 @@ def _pairwise(iterable: Iterable[T]) -> Generator[Tuple[Optional[T], T], None, N
 
 def to_pretty_timedelta(n: datetime.timedelta) -> str:
     if n < datetime.timedelta(seconds=120):
-        return str(n.seconds) + 's'
+        return str(int(n.total_seconds())) + 's'
     if n < datetime.timedelta(minutes=120):
-        return str(n.seconds // 60) + 'm'
+        return str(int(n.total_seconds()) // 60) + 'm'
     if n < datetime.timedelta(hours=48):
-        return str(n.seconds // 3600) + 'h'
+        return str(int(n.total_seconds()) // 3600) + 'h'
     if n < datetime.timedelta(days=14):
-        return str(n.days) + 'd'
+        return str(int(n.total_seconds()) // (3600*24)) + 'd'
     if n < datetime.timedelta(days=7*12):
-        return str(n.days // 7) + 'w'
+        return str(int(n.total_seconds()) // (3600*24*7)) + 'w'
     if n < datetime.timedelta(days=365*2):
-        return str(n.days // 30) + 'M'
-    return str(n.days // 365) + 'y'
+        return str(int(n.total_seconds()) // (3600*24*30)) + 'M'
+    return str(int(n.total_seconds()) // (3600*24*365)) + 'y'
 
 
 def profile_method(skip_attribute: bool = False) -> Callable[[Callable[..., T]], Callable[..., T]]:
@@ -801,3 +803,15 @@ def profile_method(skip_attribute: bool = False) -> Callable[[Callable[..., T]],
             return result
         return wrapper
     return outer
+
+def name_to_config_section(name: str) -> ConfEntity:
+    """
+    Map from daemon names to ceph entity names (as seen in config)
+    """
+    daemon_type = name.split('.', 1)[0]
+    if daemon_type in ['rgw', 'rbd-mirror', 'nfs', 'crash', 'iscsi']:
+        return ConfEntity('client.' + name)
+    elif daemon_type in ['mon', 'osd', 'mds', 'mgr', 'client']:
+        return ConfEntity(name)
+    else:
+        return ConfEntity('mon')

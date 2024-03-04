@@ -2,7 +2,10 @@ overrides:
   ceph:
     log-ignorelist:
       - overall HEALTH_
+      - \(CEPHADM_STRAY_DAEMON\)
       - \(FS_DEGRADED\)
+      - FS_
+      - \(CEPHADM_
       - \(MDS_FAILED\)
       - \(MDS_DEGRADED\)
       - \(FS_WITH_FAILED_MDS\)
@@ -10,3 +13,10 @@ overrides:
       - \(MDS_ALL_DOWN\)
       - \(MDS_UP_LESS_THAN_MAX\)
       - \(FS_INLINE_DATA_DEPRECATED\)
+      - \(PG_DEGRADED\)
+      - Degraded data redundancy
+      - \(PG_
+      - acting
+      - MDS_INSUFFICIENT_STANDBY
+      - deprecated feature inline_data
+      - compat changed unexpectedly

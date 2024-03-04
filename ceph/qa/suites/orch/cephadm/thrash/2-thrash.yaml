@@ -3,6 +3,23 @@ overrides:
     log-ignorelist:
     - but it is still running
     - objects unfound and apparently lost
+    - \(MON_DOWN\)
+    - \(OSDMAP_FLAGS\)
+    - flag\(s\) set
+    - \(CACHE_POOL_NO_HIT_SET\)
+    - \(CACHE_
+    - \(PG_
+    - \(OSD_
+    - \(POOL_
+    - \(CEPHADM_STRAY_DAEMON\)
+    - PG_
+    - CACHE_
+    - degraded
+    - backfill
+    - mons down
+    - OSD_
+    - is down
+    - acting
     conf:
       osd:
         osd debug reject backfill probability: .3

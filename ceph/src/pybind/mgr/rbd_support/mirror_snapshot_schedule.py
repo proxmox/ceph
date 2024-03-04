@@ -25,19 +25,15 @@ def image_validator(image):
 
 class CreateSnapshotRequests:
 
-    lock = Lock()
-    condition = Condition(lock)
-
     def __init__(self, handler):
+        self.lock = Lock()
+        self.condition = Condition(self.lock)
         self.handler = handler
         self.rados = handler.module.rados
         self.log = handler.log
         self.pending = set()
         self.queue = []
         self.ioctxs = {}
-
-    def __del__(self):
-        self.wait_for_pending()
 
     def wait_for_pending(self):
         with self.lock:
@@ -132,7 +128,7 @@ class CreateSnapshotRequests:
             "CreateSnapshotRequests.handle_get_mirror_mode {}/{}/{}: r={} mode={}".format(
                 pool_id, namespace, image_id, comp.get_return_value(), mode))
 
-        if comp.get_return_value() < 0:
+        if mode is None:
             if comp.get_return_value() != -errno.ENOENT:
                 self.log.error(
                     "error when getting mirror mode for {}/{}/{}: {}".format(
@@ -174,7 +170,7 @@ class CreateSnapshotRequests:
             "CreateSnapshotRequests.handle_get_mirror_info {}/{}/{}: r={} info={}".format(
                 pool_id, namespace, image_id, comp.get_return_value(), info))
 
-        if comp.get_return_value() < 0:
+        if info is None:
             if comp.get_return_value() != -errno.ENOENT:
                 self.log.error(
                     "error when getting mirror info for {}/{}/{}: {}".format(
@@ -218,8 +214,7 @@ class CreateSnapshotRequests:
             "CreateSnapshotRequests.handle_create_snapshot for {}/{}/{}: r={}, snap_id={}".format(
                 pool_id, namespace, image_id, comp.get_return_value(), snap_id))
 
-        if comp.get_return_value() < 0 and \
-           comp.get_return_value() != -errno.ENOENT:
+        if snap_id is None and comp.get_return_value() != -errno.ENOENT:
             self.log.error(
                 "error when creating snapshot for {}/{}/{}: {}".format(
                     pool_id, namespace, image_id, comp.get_return_value()))
@@ -307,10 +302,9 @@ class MirrorSnapshotScheduleHandler:
     SCHEDULE_OID = "rbd_mirror_snapshot_schedule"
     REFRESH_DELAY_SECONDS = 60.0
 
-    lock = Lock()
-    condition = Condition(lock)
-
     def __init__(self, module):
+        self.lock = Lock()
+        self.condition = Condition(self.lock)
         self.module = module
         self.log = module.log
         self.last_refresh_images = datetime(1970, 1, 1)

@@ -12,6 +12,7 @@ from ceph.deployment.inventory import Device  # noqa: F401; pylint: disable=unus
 from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection, OSDMethod
 from ceph.deployment.service_spec import PlacementSpec, ServiceSpec, service_spec_allow_invalid_from_json
 from ceph.deployment.hostspec import SpecValidationError
+from ceph.deployment.utils import unwrap_ipv6
 from ceph.utils import datetime_now
 
 from mgr_util import to_pretty_timedelta, format_bytes
@@ -348,6 +349,9 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         # split multiple labels passed in with --labels=label1,label2
         if labels and len(labels) == 1:
             labels = labels[0].split(',')
+
+        if addr is not None:
+            addr = unwrap_ipv6(addr)
 
         s = HostSpec(hostname=hostname, addr=addr, labels=labels, status=_status)
 
@@ -1130,6 +1134,7 @@ Usage:
                    placement: Optional[str] = None,
                    realm: Optional[str] = None,
                    zone: Optional[str] = None,
+                   networks: Optional[List[str]] = None,
                    port: Optional[int] = None,
                    ssl: bool = False,
                    dry_run: bool = False,
@@ -1152,6 +1157,7 @@ Usage:
             service_id=svc_id,
             rgw_realm=realm,
             rgw_zone=zone,
+            networks=networks,
             rgw_frontend_port=port,
             ssl=ssl,
             placement=PlacementSpec.from_string(placement),

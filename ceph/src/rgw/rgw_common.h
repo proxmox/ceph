@@ -378,6 +378,7 @@ class RGWHTTPArgs {
 }; // RGWHTTPArgs
 
 const char *rgw_conf_get(const map<string, string, ltstr_nocase>& conf_map, const char *name, const char *def_val);
+boost::optional<const std::string&> rgw_conf_get_optional(const std::map<std::string, std::string, ltstr_nocase>& conf_map, const std::string& name);
 int rgw_conf_get_int(const map<string, string, ltstr_nocase>& conf_map, const char *name, int def_val);
 bool rgw_conf_get_bool(const map<string, string, ltstr_nocase>& conf_map, const char *name, bool def_val);
 
@@ -405,6 +406,8 @@ public:
   void init(CephContext *cct, char **envp);
   void set(std::string name, std::string val);
   const char *get(const char *name, const char *def_val = nullptr) const;
+  boost::optional<const std::string&>
+  get_optional(const std::string& name) const;
   int get_int(const char *name, int def_val = 0) const;
   bool get_bool(const char *name, bool def_val = 0);
   size_t get_size(const char *name, size_t def_val = 0) const;
@@ -685,7 +688,6 @@ struct RGWUserInfo
   RGWQuotaInfo user_quota;
   uint32_t type;
   set<string> mfa_ids;
-  string assumed_role_arn;
 
   RGWUserInfo()
     : suspended(0),
@@ -750,7 +752,10 @@ struct RGWUserInfo
      encode(admin, bl);
      encode(type, bl);
      encode(mfa_ids, bl);
-     encode(assumed_role_arn, bl);
+     {
+       std::string assumed_role_arn; // removed
+       encode(assumed_role_arn, bl);
+     }
      encode(user_id.ns, bl);
      ENCODE_FINISH(bl);
   }
@@ -834,6 +839,7 @@ struct RGWUserInfo
       decode(mfa_ids, bl);
     }
     if (struct_v >= 21) {
+      std::string assumed_role_arn; // removed
       decode(assumed_role_arn, bl);
     }
     if (struct_v >= 22) {
@@ -2094,13 +2100,13 @@ bool verify_object_permission_no_policy(const DoutPrefixProvider* dpp,
  * to do the requested action */
 rgw::IAM::Effect eval_identity_or_session_policies(const vector<rgw::IAM::Policy>& user_policies,
                           const rgw::IAM::Environment& env,
-                          boost::optional<const rgw::auth::Identity&> id,
                           const uint64_t op,
                           const rgw::ARN& arn);
 bool verify_user_permission(const DoutPrefixProvider* dpp,
                             struct req_state * const s,
                             RGWAccessControlPolicy * const user_acl,
                             const vector<rgw::IAM::Policy>& user_policies,
+                            const vector<rgw::IAM::Policy>& session_policies,
                             const rgw::ARN& res,
                             const uint64_t op);
 bool verify_user_permission_no_policy(const DoutPrefixProvider* dpp,

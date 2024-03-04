@@ -74,9 +74,6 @@ TokenEngine::get_from_keystone(const DoutPrefixProvider* dpp, const std::string&
   validate.set_url(url);
 
   int ret = validate.process(null_yield);
-  if (ret < 0) {
-    throw ret;
-  }
 
   /* NULL terminate for debug output. */
   token_body_bl.append(static_cast<char>(0));
@@ -94,6 +91,10 @@ TokenEngine::get_from_keystone(const DoutPrefixProvider* dpp, const std::string&
     ldpp_dout(dpp, 5) << "Failed keystone auth from " << url << " with "
                   << validate.get_http_status() << dendl;
     return boost::none;
+  }
+  // throw any other http or connection errors
+  if (ret < 0) {
+    throw ret;
   }
 
   ldpp_dout(dpp, 20) << "received response status=" << validate.get_http_status()
@@ -327,11 +328,6 @@ EC2Engine::get_from_keystone(const DoutPrefixProvider* dpp, const std::string_vi
 
   /* send request */
   ret = validate.process(null_yield);
-  if (ret < 0) {
-    ldpp_dout(dpp, 2) << "s3 keystone: token validation ERROR: "
-                  << token_body_bl.c_str() << dendl;
-    throw ret;
-  }
 
   /* if the supplied signature is wrong, we will get 401 from Keystone */
   if (validate.get_http_status() ==
@@ -340,6 +336,12 @@ EC2Engine::get_from_keystone(const DoutPrefixProvider* dpp, const std::string_vi
   } else if (validate.get_http_status() ==
           decltype(validate)::HTTP_STATUS_NOTFOUND) {
     return std::make_pair(boost::none, -ERR_INVALID_ACCESS_KEY);
+  }
+  // throw any other http or connection errors
+  if (ret < 0) {
+    ldpp_dout(dpp, 2) << "s3 keystone: token validation ERROR: "
+                  << token_body_bl.c_str() << dendl;
+    throw ret;
   }
 
   /* now parse response */
@@ -403,16 +405,17 @@ std::pair<boost::optional<std::string>, int> EC2Engine::get_secret_from_keystone
 
   /* send request */
   ret = secret.process(null_yield);
+
+  /* if the supplied access key isn't found, we will get 404 from Keystone */
+  if (secret.get_http_status() ==
+          decltype(secret)::HTTP_STATUS_NOTFOUND) {
+    return make_pair(boost::none, -ERR_INVALID_ACCESS_KEY);
+  }
+  // return any other http or connection errors
   if (ret < 0) {
     ldpp_dout(dpp, 2) << "s3 keystone: secret fetching error: "
                   << token_body_bl.c_str() << dendl;
     return make_pair(boost::none, ret);
-  }
-
-  /* if the supplied signature is wrong, we will get 401 from Keystone */
-  if (secret.get_http_status() ==
-          decltype(secret)::HTTP_STATUS_NOTFOUND) {
-    return make_pair(boost::none, -EINVAL);
   }
 
   /* now parse response */
@@ -449,7 +452,8 @@ EC2Engine::get_access_token(const DoutPrefixProvider* dpp,
 			    const std::string_view& access_key_id,
                             const std::string& string_to_sign,
                             const std::string_view& signature,
-			    const signature_factory_t& signature_factory) const
+			    const signature_factory_t& signature_factory,
+                            bool ignore_signature) const
 {
   using server_signature_t = VersionAbstractor::server_signature_t;
   boost::optional<rgw::keystone::TokenEnvelope> token;
@@ -461,12 +465,19 @@ EC2Engine::get_access_token(const DoutPrefixProvider* dpp,
 
   /* Check that credentials can correctly be used to sign data */
   if (t) {
-    std::string sig(signature);
-    server_signature_t server_signature = signature_factory(cct, t->get<1>(), string_to_sign);
-    if (sig.compare(server_signature) == 0) {
+    /* We should ignore checking signature in cache if caller tells us to which
+     * means we're handling a HTTP OPTIONS call. */
+    if (ignore_signature) {
+      ldpp_dout(dpp, 20) << "ignore_signature set and found in cache" << dendl;
       return std::make_pair(t->get<0>(), 0);
     } else {
-      ldpp_dout(dpp, 0) << "Secret string does not correctly sign payload, cache miss" << dendl;
+      std::string sig(signature);
+      server_signature_t server_signature = signature_factory(cct, t->get<1>(), string_to_sign);
+      if (sig.compare(server_signature) == 0) {
+        return std::make_pair(t->get<0>(), 0);
+      } else {
+        ldpp_dout(dpp, 0) << "Secret string does not correctly sign payload, cache miss" << dendl;
+      }
     }
   } else {
     ldpp_dout(dpp, 0) << "No stored secret string, cache miss" << dendl;
@@ -538,7 +549,6 @@ rgw::auth::Engine::result_t EC2Engine::authenticate(
   const string_to_sign_t& string_to_sign,
   const signature_factory_t& signature_factory,
   const completer_factory_t& completer_factory,
-  /* Passthorugh only! */
   const req_state* s,
   optional_yield y) const
 {
@@ -557,11 +567,21 @@ rgw::auth::Engine::result_t EC2Engine::authenticate(
     std::vector<std::string> admin;
   } accepted_roles(cct);
 
+  /* When we handle a HTTP OPTIONS call we must ignore the signature */
+  bool ignore_signature = (s->op_type == RGW_OP_OPTIONS_CORS);
+
   boost::optional<token_envelope_t> t;
   int failure_reason;
   std::tie(t, failure_reason) = \
-    get_access_token(dpp, access_key_id, string_to_sign, signature, signature_factory);
+    get_access_token(dpp, access_key_id, string_to_sign,
+                     signature, signature_factory, ignore_signature);
   if (! t) {
+    if (failure_reason == -ERR_SIGNATURE_NO_MATCH) {
+      // we looked up a secret but it didn't generate the same signature as
+      // the client. since we found this access key in keystone, we should
+      // reject the request instead of trying other engines
+      return result_t::reject(failure_reason);
+    }
     return result_t::deny(failure_reason);
   }
 

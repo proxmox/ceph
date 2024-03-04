@@ -1773,7 +1773,7 @@ void RGWListBucket_ObjStore_S3v2::send_versioned_response()
         s->formatter->dump_string("StorageClass", storage_class.c_str());
       }
       if (fetchOwner == true) {
-        dump_owner(s, s->user->get_id(), s->user->get_display_name());
+        dump_owner(s, rgw_user(iter->meta.owner), iter->meta.owner_display_name);
       }
       s->formatter->close_section();
     }
@@ -1852,7 +1852,7 @@ void RGWListBucket_ObjStore_S3v2::send_response()
       auto& storage_class = rgw_placement_rule::get_canonical_storage_class(iter->meta.storage_class);
       s->formatter->dump_string("StorageClass", storage_class.c_str());
       if (fetchOwner == true) {
-        dump_owner(s, s->user->get_id(), s->user->get_display_name());
+        dump_owner(s, rgw_user(iter->meta.owner), iter->meta.owner_display_name);
       }
       if (s->system_request) {
         s->formatter->dump_string("RgwxTag", iter->tag);
@@ -2156,11 +2156,12 @@ static void dump_bucket_metadata(struct req_state *s, rgw::sal::RGWBucket* bucke
   // only bucket's owner is allowed to get the quota settings of the account
   if (bucket->is_owner(s->user.get())) {
     auto user_info = s->user->get_info();
+    auto bucket_quota = s->bucket->get_info().quota; // bucket quota
     dump_header(s, "X-RGW-Quota-User-Size", static_cast<long long>(user_info.user_quota.max_size));
     dump_header(s, "X-RGW-Quota-User-Objects", static_cast<long long>(user_info.user_quota.max_objects));
     dump_header(s, "X-RGW-Quota-Max-Buckets", static_cast<long long>(user_info.max_buckets));
-    dump_header(s, "X-RGW-Quota-Bucket-Size", static_cast<long long>(user_info.bucket_quota.max_size));
-    dump_header(s, "X-RGW-Quota-Bucket-Objects", static_cast<long long>(user_info.bucket_quota.max_objects));
+    dump_header(s, "X-RGW-Quota-Bucket-Size", static_cast<long long>(bucket_quota.max_size));
+    dump_header(s, "X-RGW-Quota-Bucket-Objects", static_cast<long long>(bucket_quota.max_objects));
   }
 }
 
@@ -2661,10 +2662,6 @@ int RGWPostObj_ObjStore_S3::get_params(optional_yield y)
 
   map_qs_metadata(s);
 
-  ldpp_dout(this, 20) << "adding bucket to policy env: " << s->bucket->get_name()
-		    << dendl;
-  env.add_var("bucket", s->bucket->get_name());
-
   bool done;
   do {
     struct post_form_part part;
@@ -2714,6 +2711,10 @@ int RGWPostObj_ObjStore_S3::get_params(optional_yield y)
     string part_str(part.data.c_str(), part.data.length());
     env.add_var(part.name, part_str);
   } while (!done);
+
+  ldpp_dout(this, 20) << "adding bucket to policy env: " << s->bucket->get_name()
+		    << dendl;
+  env.add_var("bucket", s->bucket->get_name());
 
   string object_str;
   if (!part_str(parts, "key", &object_str)) {
@@ -3238,7 +3239,10 @@ int RGWCopyObj_ObjStore_S3::get_params(optional_yield y)
     s->info.args.get_bool(RGW_SYS_PARAM_PREFIX "copy-if-newer", &copy_if_newer, false);
   }
 
-  copy_source = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE");
+  const char *copy_source_temp = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE");
+  if (copy_source_temp) {
+    copy_source = copy_source_temp;
+  }
   auto tmp_md_d = s->info.env->get("HTTP_X_AMZ_METADATA_DIRECTIVE");
   if (tmp_md_d) {
     if (strcasecmp(tmp_md_d, "COPY") == 0) {
@@ -4942,7 +4946,6 @@ bool RGWHandler_REST_S3Website::web_dir() const {
 
   RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);
   obj_ctx.set_atomic(obj);
-  obj_ctx.set_prefetch_data(obj);
 
   RGWObjState* state = nullptr;
   if (store->getRados()->get_obj_state(s, &obj_ctx, s->bucket->get_info(), obj, &state, false, s->yield) < 0) {
@@ -5291,10 +5294,13 @@ AWSGeneralAbstractor::get_auth_data_v4(const req_state* const s,
   /* Craft canonical query string. std::moving later so non-const here. */
   auto canonical_qs = rgw::auth::s3::get_v4_canonical_qs(s->info, using_qs);
 
+  /* Craft canonical method. */
+  auto canonical_method = rgw::auth::s3::get_v4_canonical_method(s);
+
   /* Craft canonical request. */
   auto canonical_req_hash = \
     rgw::auth::s3::get_v4_canon_req_hash(s->cct,
-                                         s->info.method,
+                                         std::move(canonical_method),
                                          std::move(canonical_uri),
                                          std::move(canonical_qs),
                                          std::move(*canonical_headers),
@@ -5501,8 +5507,9 @@ AWSGeneralAbstractor::get_auth_data_v2(const req_state* const s) const
       signature = auth_str.substr(pos + 1);
     }
 
-    if (s->info.env->exists("HTTP_X_AMZ_SECURITY_TOKEN")) {
-      session_token = s->info.env->get("HTTP_X_AMZ_SECURITY_TOKEN");
+    auto token = s->info.env->get_optional("HTTP_X_AMZ_SECURITY_TOKEN");
+    if (token) {
+      session_token = *token;
       if (session_token.size() == 0) {
         throw -EPERM;
       }
@@ -5767,6 +5774,13 @@ rgw::auth::s3::LocalEngine::authenticate(
   }
   const RGWAccessKey& k = iter->second;
 
+  /* Ignore signature for HTTP OPTIONS */
+  if (s->op_type == RGW_OP_OPTIONS_CORS) {
+    auto apl = apl_factory->create_apl_local(cct, s, user_info,
+                                             k.subuser, boost::none, access_key_id);
+    return result_t::grant(std::move(apl), completer_factory(k.key));
+  }
+
   const VersionAbstractor::server_signature_t server_signature = \
     signature_factory(cct, k.key, string_to_sign);
   auto compare = signature.compare(server_signature);
@@ -5951,7 +5965,7 @@ rgw::auth::s3::STSEngine::authenticate(
   if (token.acct_type == TYPE_KEYSTONE || token.acct_type == TYPE_LDAP) {
     auto apl = remote_apl_factory->create_apl_remote(cct, s, get_acl_strategy(),
                                             get_creds_info(token));
-    return result_t::grant(std::move(apl), completer_factory(boost::none));
+    return result_t::grant(std::move(apl), completer_factory(token.secret_access_key));
   } else if (token.acct_type == TYPE_ROLE) {
     t_attrs.user_id = std::move(token.user); // This is mostly needed to assign the owner of a bucket during its creation
     t_attrs.token_policy = std::move(token.policy);
@@ -5971,13 +5985,15 @@ rgw::auth::s3::STSEngine::authenticate(
 bool rgw::auth::s3::S3AnonymousEngine::is_applicable(
   const req_state* s
 ) const noexcept {
-  if (s->op == OP_OPTIONS) {
-    return true;
-  }
-
   AwsVersion version;
   AwsRoute route;
   std::tie(version, route) = discover_aws_flavour(s->info);
+
+  /* If HTTP OPTIONS and no authentication provided using the
+   * anonymous engine is applicable */
+  if (s->op == OP_OPTIONS && version == AwsVersion::UNKNOWN) {
+    return true;
+  }
 
   return route == AwsRoute::QUERY_STRING && version == AwsVersion::UNKNOWN;
 }

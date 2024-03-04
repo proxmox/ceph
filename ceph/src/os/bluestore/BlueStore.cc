@@ -6157,6 +6157,7 @@ int BlueStore::_open_collections()
   collections_had_errors = false;
   ceph_assert(coll_map.empty());
   KeyValueDB::Iterator it = db->get_iterator(PREFIX_COLL);
+  size_t load_cnt = 0;
   for (it->upper_bound(string());
        it->valid();
        it->next()) {
@@ -6180,12 +6181,14 @@ int BlueStore::_open_collections()
 	       << " " << c->cnode << dendl;
       _osr_attach(c.get());
       coll_map[cid] = c;
-
+      load_cnt++;
     } else {
       derr << __func__ << " unrecognized collection " << it->key() << dendl;
       collections_had_errors = true;
     }
   }
+  dout(10) << __func__ << " collections loaded: " << load_cnt
+           <<  dendl;
   return 0;
 }
 
@@ -10806,7 +10809,7 @@ int BlueStore::_collection_list(
     [&, start_time = mono_clock::now(), func_name = __func__] {
     log_latency_fn(
       func_name,
-      l_bluestore_remove_lat,
+      l_bluestore_clist_lat,
       mono_clock::now() - start_time,
       cct->_conf->bluestore_log_collection_list_age,
       [&](const ceph::timespan& lat) {
@@ -16940,6 +16943,29 @@ void RocksDBBlueFSVolumeSelector::dump(ostream& sout) {
     sout << sizes[i];
   }
   sout << std::endl;
+}
+
+BlueFSVolumeSelector* RocksDBBlueFSVolumeSelector::clone_empty() const {
+  RocksDBBlueFSVolumeSelector* ns =
+    new RocksDBBlueFSVolumeSelector(0, 0, 0,
+				    0, 0, 0,
+				    0, 0, false);
+  return ns;
+}
+
+bool RocksDBBlueFSVolumeSelector::compare(BlueFSVolumeSelector* other) {
+  RocksDBBlueFSVolumeSelector* o = dynamic_cast<RocksDBBlueFSVolumeSelector*>(other);
+  ceph_assert(o);
+  bool equal = true;
+  for (size_t x = 0; x < BlueFS::MAX_BDEV + 1; x++) {
+    for (size_t y = 0; y <LEVEL_MAX - LEVEL_FIRST + 1; y++) {
+      equal &= (per_level_per_dev_usage.at(x, y) == o->per_level_per_dev_usage.at(x, y));
+    }
+  }
+  for (size_t t = 0; t < LEVEL_MAX - LEVEL_FIRST + 1; t++) {
+    equal &= (per_level_files[t] == o->per_level_files[t]);
+  }
+  return equal;
 }
 
 // =======================================================

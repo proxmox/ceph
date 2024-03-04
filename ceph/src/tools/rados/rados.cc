@@ -91,7 +91,7 @@ void usage(ostream& out)
 "   append <obj-name> <infile>       append object\n"
 "   truncate <obj-name> length       truncate object\n"
 "   create <obj-name>                create object\n"
-"   rm <obj-name> ...[--force-full]  [force no matter full or not]remove object(s)\n"
+"   rm <obj-name> ... [--force-full] remove object(s), --force-full forces remove when cluster is full\n"
 "   cp <obj-name> [target-obj]       copy object\n"
 "   listxattr <obj-name>\n"
 "   getxattr <obj-name> attr\n"
@@ -2955,7 +2955,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     for (const auto& oid : oids) {
       ret = io_ctx.omap_clear(oid);
       if (ret < 0) {
-        cerr << "error clearing omap keys " << pool_name << "/" << prettify(*obj_name) << "/"
+        cerr << "error clearing omap keys " << pool_name << "/" << prettify(oid) << "/"
              << cpp_strerror(ret) << std::endl;
         return 1;
       }
@@ -3104,7 +3104,12 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     cerr << "WARNING: pool copy does not preserve user_version, which some "
 	 << "    apps may rely on." << std::endl;
 
-    if (rados.get_pool_is_selfmanaged_snaps_mode(src_pool)) {
+    ret = rados.pool_is_in_selfmanaged_snaps_mode(src_pool);
+    if (ret < 0) {
+      cerr << "failed to query pool " << src_pool << " for selfmanaged snaps: "
+           << cpp_strerror(ret) << std::endl;
+      return 1;
+    } else if (ret > 0) {
       cerr << "WARNING: pool " << src_pool << " has selfmanaged snaps, which are not preserved\n"
 	   << "    by the cppool operation.  This will break any snapshot user."
 	   << std::endl;
@@ -3112,7 +3117,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	cerr << "    If you insist on making a broken copy, you can pass\n"
 	     << "    --yes-i-really-mean-it to proceed anyway."
 	     << std::endl;
-	exit(1);
+	return 1;
       }
     }
 
@@ -3197,7 +3202,12 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       return 1;
     }
 
-    if (rados.get_pool_is_selfmanaged_snaps_mode(pool_name)) {
+    ret = rados.pool_is_in_selfmanaged_snaps_mode(pool_name);
+    if (ret < 0) {
+      cerr << "failed to query pool " << pool_name << " for selfmanaged snaps: "
+           << cpp_strerror(ret) << std::endl;
+      return 1;
+    } else if (ret > 0) {
       cerr << "can't create snapshot: pool " << pool_name
            << " is in selfmanaged snaps mode" << std::endl;
       return 1;

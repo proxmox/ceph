@@ -926,6 +926,12 @@ void MDSRank::respawn()
   }
 }
 
+void MDSRank::abort(std::string_view msg)
+{
+  monc->flush_log();
+  ceph_abort(msg);
+}
+
 void MDSRank::damaged()
 {
   ceph_assert(whoami != MDS_RANK_NONE);
@@ -1390,7 +1396,7 @@ Session *MDSRank::get_session(const cref_t<Message> &m)
     dout(20) << "get_session have " << session << " " << session->info.inst
 	     << " state " << session->get_state_name() << dendl;
     // Check if we've imported an open session since (new sessions start closed)
-    if (session->is_closed()) {
+    if (session->is_closed() && m->get_type() == CEPH_MSG_CLIENT_SESSION) {
       Session *imported_session = sessionmap.get_session(session->info.inst.name);
       if (imported_session && imported_session != session) {
         dout(10) << __func__ << " replacing connection bootstrap session "
@@ -2051,6 +2057,7 @@ bool MDSRank::queue_one_replay()
   if (!replay_queue.empty()) {
     queue_waiter(replay_queue.front());
     replay_queue.pop_front();
+    dout(10) << " queued next replay op" << dendl;
     return true;
   }
   if (!replaying_requests_done) {
@@ -2058,6 +2065,7 @@ bool MDSRank::queue_one_replay()
     mdlog->flush();
   }
   maybe_clientreplay_done();
+  dout(10) << " journaled last replay op" << dendl;
   return false;
 }
 
@@ -3785,6 +3793,7 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "mds_dir_max_entries",
     "mds_inject_rename_corrupt_dentry_first",
     "mds_inject_journal_corrupt_dentry_first",
+    "mds_session_metadata_threshold",
     NULL
   };
   return KEYS;

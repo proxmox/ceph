@@ -334,6 +334,7 @@ class AWSv4ComplMulti : public rgw::auth::Completer,
 
   bool is_signature_mismatched();
   std::string calc_chunk_signature(const std::string& payload_hash) const;
+  size_t recv_chunk(char* buf, size_t max, bool& eof);
 
 public:
   /* We need the constructor to be public because of the std::make_shared that
@@ -582,6 +583,8 @@ static inline bool is_v4_payload_streamed(const char* const exp_payload_hash)
 }
 
 std::string get_v4_canonical_qs(const req_info& info, bool using_qs);
+
+std::string get_v4_canonical_method(const req_state* s);
 
 boost::optional<std::string>
 get_v4_canonical_headers(const req_info& info,

@@ -2322,6 +2322,12 @@ void Client::_closed_mds_session(MetaSession *s, int err, bool rejected)
     mds_sessions.erase(s->mds_num);
 }
 
+static void reinit_mds_features(MetaSession *session,
+				const MConstRef<MClientSession>& m) {
+  session->mds_features = std::move(m->supported_features);
+  session->mds_metric_flags = std::move(m->metric_spec.metric_flags);
+}
+
 void Client::handle_client_session(const MConstRef<MClientSession>& m)
 {
   mds_rank_t from = mds_rank_t(m->get_source().num());
@@ -2340,6 +2346,13 @@ void Client::handle_client_session(const MConstRef<MClientSession>& m)
       if (session->state == MetaSession::STATE_OPEN) {
         ldout(cct, 10) << "mds." << from << " already opened, ignore it"
                        << dendl;
+	// The MDS could send a client_session(open) message even when
+	// the session state is STATE_OPEN. Normally, its fine to
+	// ignore this message, but, if the MDS sent this message just
+	// after it got upgraded, the MDS feature bits could differ
+	// than the one before the upgrade - so, refresh the feature
+	// bits the client holds.
+	reinit_mds_features(session, m);
         return;
       }
       /*
@@ -2358,8 +2371,7 @@ void Client::handle_client_session(const MConstRef<MClientSession>& m)
 	_closed_mds_session(session, -CEPHFS_EPERM, true);
 	break;
       }
-      session->mds_features = std::move(m->supported_features);
-      session->mds_metric_flags = std::move(m->metric_spec.metric_flags);
+      reinit_mds_features(session, m);
 
       renew_caps(session);
       session->state = MetaSession::STATE_OPEN;
@@ -3980,6 +3992,7 @@ void Client::check_caps(Inode *in, unsigned flags)
       flush_tid = 0;
     }
 
+    in->delay_cap_item.remove_myself();
     send_cap(in, session, &cap, msg_flags, cap_used, wanted, retain,
 	     flushing, flush_tid);
   }
@@ -4405,11 +4418,19 @@ void Client::add_update_cap(Inode *in, MetaSession *mds_session, uint64_t cap_id
   if (flags & CEPH_CAP_FLAG_AUTH) {
     if (in->auth_cap != &cap &&
         (!in->auth_cap || ceph_seq_cmp(in->auth_cap->mseq, mseq) < 0)) {
-      if (in->auth_cap && in->flushing_cap_item.is_on_list()) {
-	ldout(cct, 10) << __func__ << " changing auth cap: "
-		       << "add myself to new auth MDS' flushing caps list" << dendl;
-	adjust_session_flushing_caps(in, in->auth_cap->session, mds_session);
+      if (in->auth_cap) {
+        if (in->flushing_cap_item.is_on_list()) {
+          ldout(cct, 10) << __func__ << " changing auth cap: "
+                         << "add myself to new auth MDS' flushing caps list" << dendl;
+          adjust_session_flushing_caps(in, in->auth_cap->session, mds_session);
+        }
+        if (in->dirty_cap_item.is_on_list()) {
+          ldout(cct, 10) << __func__ << " changing auth cap: "
+                         << "add myself to new auth MDS' dirty caps list" << dendl;
+          mds_session->get_dirty_list().push_back(&in->dirty_cap_item);
+        }
       }
+
       in->auth_cap = &cap;
     }
   }
@@ -4691,6 +4712,9 @@ void Client::trim_caps(MetaSession *s, uint64_t max)
     // is deleted inside remove_cap
     ++p;
 
+    if (in->dirty_caps || in->cap_snaps.size())
+      cap_delay_requeue(in.get());
+
     if (in->caps.size() > 1 && cap != in->auth_cap) {
       int mine = cap->issued | cap->implemented;
       int oissued = in->auth_cap ? in->auth_cap->issued : 0;
@@ -4728,7 +4752,8 @@ void Client::trim_caps(MetaSession *s, uint64_t max)
       }
       if (all && in->ino != CEPH_INO_ROOT) {
         ldout(cct, 20) << __func__ << " counting as trimmed: " << *in << dendl;
-	trimmed++;
+	if (!in->dirty_caps && !in->cap_snaps.size())
+	  trimmed++;
       }
     }
   }
@@ -4800,35 +4825,25 @@ void Client::adjust_session_flushing_caps(Inode *in, MetaSession *old_s,  MetaSe
 }
 
 /*
- * Flush all caps back to the MDS. Because the callers generally wait on the
- * result of this function (syncfs and umount cases), we set
- * CHECK_CAPS_SYNCHRONOUS on the last check_caps call.
+ * Flush all the dirty caps back to the MDS. Because the callers
+ * generally wait on the result of this function (syncfs and umount
+ * cases), we set CHECK_CAPS_SYNCHRONOUS on the last check_caps call.
  */
 void Client::flush_caps_sync()
 {
   ldout(cct, 10) << __func__ << dendl;
-  xlist<Inode*>::iterator p = delayed_list.begin();
-  while (!p.end()) {
-    unsigned flags = CHECK_CAPS_NODELAY;
-    Inode *in = *p;
+  for (auto &q : mds_sessions) {
+    auto &s = q.second;
+    xlist<Inode*>::iterator p = s.dirty_list.begin();
+    while (!p.end()) {
+      unsigned flags = CHECK_CAPS_NODELAY;
+      Inode *in = *p;
 
-    ++p;
-    delayed_list.pop_front();
-    if (p.end() && dirty_list.empty())
-      flags |= CHECK_CAPS_SYNCHRONOUS;
-    check_caps(in, flags);
-  }
-
-  // other caps, too
-  p = dirty_list.begin();
-  while (!p.end()) {
-    unsigned flags = CHECK_CAPS_NODELAY;
-    Inode *in = *p;
-
-    ++p;
-    if (p.end())
-      flags |= CHECK_CAPS_SYNCHRONOUS;
-    check_caps(in, flags);
+      ++p;
+      if (p.end())
+        flags |= CHECK_CAPS_SYNCHRONOUS;
+      check_caps(in, flags);
+    }
   }
 }
 
@@ -5261,24 +5276,48 @@ void Client::handle_caps(const MConstRef<MClientCaps>& m)
 
   got_mds_push(session);
 
+  bool do_cap_release = false;
   Inode *in;
   vinodeno_t vino(m->get_ino(), CEPH_NOSNAP);
   if (auto it = inode_map.find(vino); it != inode_map.end()) {
     in = it->second;
-  } else {
-    if (m->get_op() == CEPH_CAP_OP_IMPORT) {
-      ldout(cct, 5) << __func__ << " don't have vino " << vino << " on IMPORT, immediately releasing" << dendl;
-      session->enqueue_cap_release(
-        m->get_ino(),
-        m->get_cap_id(),
-        m->get_seq(),
-        m->get_mseq(),
-        cap_epoch_barrier);
-    } else {
-      ldout(cct, 5) << __func__ << " don't have vino " << vino << ", dropping" << dendl;
-    }
 
-    // in case the mds is waiting on e.g. a revocation
+    /* MDS maybe waiting for cap release with increased seq */
+    switch (m->get_op()) {
+      case CEPH_CAP_OP_REVOKE:
+      case CEPH_CAP_OP_GRANT:
+        if (!in->caps.count(mds)) {
+	  do_cap_release = true;
+          ldout(cct, 5) << __func__ << " vino " << vino << " don't have cap "
+                        << m->get_cap_id() << " op " << m->get_op()
+                        << ", immediately releasing" << dendl;
+	}
+    }
+  } else {
+    /* MDS maybe waiting for cap release with increased seq */
+    switch (m->get_op()) {
+      case CEPH_CAP_OP_IMPORT:
+      case CEPH_CAP_OP_REVOKE:
+      case CEPH_CAP_OP_GRANT:
+	do_cap_release = true;
+        ldout(cct, 5) << __func__ << " don't have vino " << vino << " op "
+                      << m->get_op() << ", immediately releasing" << dendl;
+	break;
+      default:
+        ldout(cct, 5) << __func__ << " don't have vino " << vino << ", dropping" << dendl;
+	return;
+    }
+  }
+
+  // In case the mds is waiting on e.g. a revocation
+  if (do_cap_release) {
+    session->enqueue_cap_release(
+      m->get_ino(),
+      m->get_cap_id(),
+      m->get_seq(),
+      m->get_mseq(),
+      cap_epoch_barrier);
+
     flush_cap_releases();
     return;
   }
@@ -6662,13 +6701,16 @@ void Client::_unmount(bool abort)
   }
 
   if (abort || blocklisted) {
-    for (auto p = dirty_list.begin(); !p.end(); ) {
-      Inode *in = *p;
-      ++p;
-      if (in->dirty_caps) {
-	ldout(cct, 0) << " drop dirty caps on " << *in << dendl;
-	in->mark_caps_clean();
-	put_inode(in);
+    for (auto &q : mds_sessions) {
+      auto &s = q.second;
+      for (auto p = s.dirty_list.begin(); !p.end(); ) {
+        Inode *in = *p;
+        ++p;
+        if (in->dirty_caps) {
+          ldout(cct, 0) << " drop dirty caps on " << *in << dendl;
+          in->mark_caps_clean();
+          put_inode(in);
+        }
       }
     }
   } else {

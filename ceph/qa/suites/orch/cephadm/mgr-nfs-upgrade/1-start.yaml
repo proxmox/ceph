@@ -24,6 +24,21 @@ openstack:
     size: 10 # GB
 overrides:
   ceph:
+    log-ignorelist:
+      - slow requests
+      - \(PG_
+      - PG_
+      - \(CEPHADM_STRAY_DAEMON\)
+      - slow request
+      - \(MDS_
+      - MDS_
+      - osds down
+      - OSD_
+      - \(OSD_
+      - client
+      - FS_
+      - \(FS_
+      - degraded
     conf:
       osd:
         osd shutdown pgref assert: true

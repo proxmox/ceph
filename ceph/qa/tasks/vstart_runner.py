@@ -63,7 +63,7 @@ try:
 except:
     pass
 
-def init_log():
+def init_log(log_level=logging.INFO):
     global log
     if log is not None:
         del log
@@ -78,7 +78,7 @@ def init_log():
         datefmt='%Y-%m-%dT%H:%M:%S')
     handler.setFormatter(formatter)
     log.addHandler(handler)
-    log.setLevel(logging.INFO)
+    log.setLevel(log_level)
 
 log = None
 init_log()
@@ -1332,19 +1332,15 @@ def teardown_cluster():
 
 
 def clear_old_log():
-    from os import stat
-
     try:
-        stat(logpath)
-    # would need an update when making this py3 compatible. Use FileNotFound
-    # instead.
-    except OSError:
+        os.stat(logpath)
+    except FileNotFoundError:
         return
     else:
         os.remove(logpath)
         with open(logpath, 'w') as logfile:
             logfile.write('')
-        init_log()
+        init_log(log.level)
         log.debug('logging in a fresh file now...')
 
 

@@ -431,9 +431,13 @@ static inline int parse_v4_auth_header(const req_info& info,               /* in
   /* grab date */
 
   const char *d = info.env->get("HTTP_X_AMZ_DATE");
+
   struct tm t;
-  if (!parse_iso8601(d, &t, NULL, false)) {
-    ldpp_dout(dpp, 10) << "error reading date via http_x_amz_date" << dendl;
+  if (unlikely(d == NULL)) {
+    d = info.env->get("HTTP_DATE");
+  }
+  if (!d || !parse_iso8601(d, &t, NULL, false)) {
+    ldpp_dout(dpp, 10) << "error reading date via http_x_amz_date and http_date" << dendl;
     return -EACCES;
   }
   date = d;
@@ -442,8 +446,9 @@ static inline int parse_v4_auth_header(const req_info& info,               /* in
     return -ERR_REQUEST_TIME_SKEWED;
   }
 
-  if (info.env->exists("HTTP_X_AMZ_SECURITY_TOKEN")) {
-    sessiontoken = info.env->get("HTTP_X_AMZ_SECURITY_TOKEN");
+  auto token = info.env->get_optional("HTTP_X_AMZ_SECURITY_TOKEN");
+  if (token) {
+    sessiontoken = *token;
   }
 
   return 0;
@@ -587,6 +592,35 @@ std::string get_v4_canonical_qs(const req_info& info, const bool using_qs)
   }
 
   return canonical_qs;
+}
+
+std::string get_v4_canonical_method(const req_state* s)
+{
+  /* If this is a OPTIONS request we need to compute the v4 signature for the
+   * intended HTTP method and not the OPTIONS request itself. */
+  if (s->op_type == RGW_OP_OPTIONS_CORS) {
+    const char *cors_method = s->info.env->get("HTTP_ACCESS_CONTROL_REQUEST_METHOD");
+
+    if (cors_method) {
+      /* Validate request method passed in access-control-request-method is valid. */
+      auto cors_flags = get_cors_method_flags(cors_method);
+      if (!cors_flags) {
+          ldpp_dout(s, 1) << "invalid access-control-request-method header = "
+                          << cors_method << dendl;
+          throw -EINVAL;
+      }
+
+      ldpp_dout(s, 10) << "canonical req method = " << cors_method
+                       << ", due to access-control-request-method header" << dendl;
+      return cors_method;
+    } else {
+      ldpp_dout(s, 1) << "invalid http options req missing "
+                      << "access-control-request-method header" << dendl;
+      throw -EINVAL;
+    }
+  }
+
+  return s->info.method;
 }
 
 boost::optional<std::string>
@@ -982,7 +1016,7 @@ bool AWSv4ComplMulti::is_signature_mismatched()
   }
 }
 
-size_t AWSv4ComplMulti::recv_body(char* const buf, const size_t buf_max)
+size_t AWSv4ComplMulti::recv_chunk(char* const buf, const size_t buf_max, bool& eof)
 {
   /* Buffer stores only parsed stream. Raw values reflect the stream
    * we're getting from a client. */
@@ -1007,6 +1041,7 @@ size_t AWSv4ComplMulti::recv_body(char* const buf, const size_t buf_max)
                                                    to_extract);
       parsing_buf.resize(parsing_buf.size() - (to_extract - received));
       if (received == 0) {
+        eof = true;
         break;
       }
 
@@ -1056,6 +1091,7 @@ size_t AWSv4ComplMulti::recv_body(char* const buf, const size_t buf_max)
     dout(30) << "AWSv4ComplMulti: to_extract=" << to_extract << ", received=" << received << dendl;
 
     if (received == 0) {
+      eof = true;
       break;
     }
 
@@ -1068,6 +1104,19 @@ size_t AWSv4ComplMulti::recv_body(char* const buf, const size_t buf_max)
 
   dout(20) << "AWSv4ComplMulti: filled=" << buf_pos << dendl;
   return buf_pos;
+}
+
+size_t AWSv4ComplMulti::recv_body(char* const buf, const size_t buf_max)
+{
+  bool eof = false;
+  size_t total = 0;
+
+  while (total < buf_max && !eof) {
+    const size_t received = recv_chunk(buf + total, buf_max - total, eof);
+    total += received;
+  }
+  dout(20) << "AWSv4ComplMulti: received=" << total << dendl;
+  return total;
 }
 
 void AWSv4ComplMulti::modify_request_state(const DoutPrefixProvider* dpp, req_state* const s_rw)

@@ -32,6 +32,29 @@
   in certain recovery scenarios, e.g., monitor database lost and rebuilt, and
   the restored file system is expected to have the same ID as before.
 
+>=16.2.15
+----------
+* `ceph config dump --format <json|xml>` output will display the localized
+  option names instead of its normalized version. For e.g.,
+  "mgr/prometheus/x/server_port" will be displayed instead of
+  "mgr/prometheus/server_port". This matches the output of the non pretty-print
+  formatted version of the command.
+
+* CEPHFS: MDS evicts clients which are not advancing their request tids which causes
+  a large buildup of session metadata resulting in the MDS going read-only due to
+  the RADOS operation exceeding the size threshold. `mds_session_metadata_threshold`
+  config controls the maximum size that a (encoded) session metadata can grow.
+
+* RADOS: `get_pool_is_selfmanaged_snaps_mode` C++ API has been deprecated
+  due to being prone to false negative results.  It's safer replacement is
+  `pool_is_in_selfmanaged_snaps_mode`.
+
+* RBD: When diffing against the beginning of time (`fromsnapname == NULL`) in
+  fast-diff mode (`whole_object == true` with `fast-diff` image feature enabled
+  and valid), diff-iterate is now guaranteed to execute locally if exclusive
+  lock is available.  This brings a dramatic performance improvement for QEMU
+  live disk synchronization and backup use cases.
+
 >= 16.2.14
 ----------
 
@@ -132,6 +155,10 @@
 * CEPHFS: After recovering a Ceph File System post following the disaster recovery
   procedure, the recovered files under `lost+found` directory can now be deleted.
 * core: cache-tiering is now deprecated.
+* mgr/snap_schedule: The snap-schedule mgr module now retains one less snapshot
+  than the number mentioned against the config tunable `mds_max_snaps_per_dir`
+  so that a new snapshot can be created and retained during the next schedule
+  run.
 
 >=16.2.8
 --------

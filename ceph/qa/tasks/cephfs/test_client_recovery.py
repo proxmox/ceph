@@ -10,8 +10,10 @@ from textwrap import dedent
 import time
 import distutils.version as version
 import re
+import string
 import os
 
+from teuthology import contextutil
 from teuthology.orchestra import run
 from teuthology.orchestra.run import CommandFailedError
 from tasks.cephfs.fuse_mount import FuseMount
@@ -221,8 +223,10 @@ class TestClientRecovery(CephFSTestCase):
         # Capability release from stale session
         # =====================================
         if write:
-            cap_holder = self.mount_a.open_background()
+            content = ''.join(random.choices(string.ascii_uppercase + string.digits, k=16))
+            cap_holder = self.mount_a.open_background(content=content)
         else:
+            content = ''
             self.mount_a.run_shell(["touch", "background_file"])
             self.mount_a.umount_wait()
             self.mount_a.mount_wait()
@@ -233,7 +237,7 @@ class TestClientRecovery(CephFSTestCase):
 
         # Wait for the file to be visible from another client, indicating
         # that mount_a has completed its network ops
-        self.mount_b.wait_for_visible()
+        self.mount_b.wait_for_visible(size=len(content))
 
         # Simulate client death
         self.mount_a.suspend_netns()
@@ -264,11 +268,9 @@ class TestClientRecovery(CephFSTestCase):
                             "Capability handover took {0}, expected approx {1}".format(
                                 cap_waited, session_timeout
                             ))
-
-            self.mount_a._kill_background(cap_holder)
         finally:
-            # teardown() doesn't quite handle this case cleanly, so help it out
-            self.mount_a.resume_netns()
+            self.mount_a.resume_netns() # allow the mount to recover otherwise background proc is unkillable
+        self.mount_a._kill_background(cap_holder)
 
     def test_stale_read_caps(self):
         self._test_stale_caps(False)
@@ -319,9 +321,9 @@ class TestClientRecovery(CephFSTestCase):
                                 cap_waited, session_timeout / 2.0
                             ))
 
-            self.mount_a._kill_background(cap_holder)
         finally:
-            self.mount_a.resume_netns()
+            self.mount_a.resume_netns() # allow the mount to recover otherwise background proc is unkillable
+        self.mount_a._kill_background(cap_holder)
 
     def test_trim_caps(self):
         # Trim capability when reconnecting MDS
@@ -387,7 +389,6 @@ class TestClientRecovery(CephFSTestCase):
 
         self.mount_b.check_filelock(do_flock=flockable)
 
-        # Tear down the background process
         self.mount_a._kill_background(lock_holder)
 
     def test_filelock_eviction(self):
@@ -416,7 +417,6 @@ class TestClientRecovery(CephFSTestCase):
             # succeed
             self.wait_until_true(lambda: lock_taker.finished, timeout=10)
         finally:
-            # Tear down the background process
             self.mount_a._kill_background(lock_holder)
 
             # teardown() doesn't quite handle this case cleanly, so help it out
@@ -751,24 +751,27 @@ class TestClientOnLaggyOSD(CephFSTestCase):
             # it takes time to have laggy clients entries in cluster log,
             # wait for 6 minutes to see if it is visible, finally restart
             # the client
-            tries = 6
-            while True:
-                try:
-                    with self.assert_cluster_log("1 client(s) laggy due to laggy OSDs",
-                                                 timeout=55):
-                        # make sure clients weren't evicted
-                        self.assert_session_count(2)
-                        break
-                except AssertionError:
-                    tries -= 1
-                    if tries:
-                        continue
-                    raise
+            with contextutil.safe_while(sleep=5, tries=6) as proceed:
+                while proceed():
+                    try:
+                        with self.assert_cluster_log("1 client(s) laggy due to"
+                                                     " laggy OSDs",
+                                                     timeout=55):
+                            # make sure clients weren't evicted
+                            self.assert_session_count(2)
+                            break
+                    except (AssertionError, CommandFailedError) as e:
+                        log.debug(f'{e}, retrying')
+
+            # clear lagginess, expect to get the warning cleared and make sure
+            # client gets evicted
+            self.clear_laggy_params(osd)
+            self.wait_for_health_clear(60)
+            self.assert_session_count(1)
         finally:
             self.mount_a.kill_cleanup()
             self.mount_a.mount_wait()
             self.mount_a.create_destroy()
-            self.clear_laggy_params(osd)
 
     def test_client_eviction_if_config_is_unset(self):
         """
@@ -800,6 +803,11 @@ class TestClientOnLaggyOSD(CephFSTestCase):
 
             time.sleep(session_timeout)
             self.assert_session_count(1)
+
+            # make sure warning wasn't seen in cluster log
+            with self.assert_cluster_log("laggy due to laggy OSDs",
+                                         timeout=120, present=False):
+                pass
         finally:
             self.mount_a.kill_cleanup()
             self.mount_a.mount_wait()

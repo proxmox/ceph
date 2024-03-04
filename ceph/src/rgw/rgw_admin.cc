@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 
+#include <boost/asio.hpp>
 #include <boost/optional.hpp>
 
 extern "C" {
@@ -131,7 +132,9 @@ void usage()
   cout << "  bucket unlink              unlink bucket from specified user\n";
   cout << "  bucket stats               returns bucket statistics\n";
   cout << "  bucket rm                  remove bucket\n";
-  cout << "  bucket check               check bucket index\n";
+  cout << "  bucket check               check bucket index by verifying size and object count stats\n";
+  cout << "  bucket check olh           check for olh index entries and objects that are pending removal\n";
+  cout << "  bucket check unlinked      check for object versions that are not visible in a bucket listing \n";
   cout << "  bucket chown               link bucket to specified user and update its object ACLs\n";
   cout << "  bucket reshard             reshard bucket\n";
   cout << "  bucket rewrite             rewrite all objects in the specified bucket\n";
@@ -439,6 +442,10 @@ void usage()
   cout << "   --context                 context in which the script runs. one of: preRequest, postRequest\n";
   cout << "   --package                 name of the lua package that should be added/removed to/from the allowlist\n";
   cout << "   --allow-compilation       package is allowed to compile C code as part of its installation\n";
+  cout << "\nBucket check olh/unlinked options:\n";
+  cout << "   --min-age-hours           minimum age of unlinked objects to consider for bucket check unlinked (default: 1)\n";
+  cout << "   --dump-keys               when specified, all keys identified as problematic are printed to stdout\n";
+  cout << "   --hide-progress           when specified, per-shard progress details are not printed to stderr\n";
   cout << "\nradoslist options:\n";
   cout << "   --rgw-obj-fs              the field separator that will separate the rados\n";
   cout << "                             object name from the rgw object name;\n";
@@ -606,6 +613,8 @@ enum class OPT {
   BUCKET_UNLINK,
   BUCKET_STATS,
   BUCKET_CHECK,
+  BUCKET_CHECK_OLH,
+  BUCKET_CHECK_UNLINKED,
   BUCKET_SYNC_CHECKPOINT,
   BUCKET_SYNC_INFO,
   BUCKET_SYNC_STATUS,
@@ -812,6 +821,8 @@ static SimpleCmd::Commands all_cmds = {
   { "bucket unlink", OPT::BUCKET_UNLINK },
   { "bucket stats", OPT::BUCKET_STATS },
   { "bucket check", OPT::BUCKET_CHECK },
+  { "bucket check olh", OPT::BUCKET_CHECK_OLH },
+  { "bucket check unlinked", OPT::BUCKET_CHECK_UNLINKED },
   { "bucket sync checkpoint", OPT::BUCKET_SYNC_CHECKPOINT },
   { "bucket sync info", OPT::BUCKET_SYNC_INFO },
   { "bucket sync status", OPT::BUCKET_SYNC_STATUS },
@@ -2057,7 +2068,7 @@ static void get_data_sync_status(const rgw_zone_id& source_zone, list<string>& s
     return;
   }
 
-  if (!store->svc()->zone->zone_syncs_from(store->svc()->zone->get_zone(), *sz)) {
+  if (!store->svc()->zone->zone_syncs_from(*sz)) {
     push_ss(ss, status, tab) << string("not syncing from zone");
     flush_ss(ss, status);
     return;
@@ -3161,6 +3172,9 @@ int main(int argc, const char **argv)
   bool num_shards_specified = false;
   std::optional<int> bucket_index_max_shards;
   int max_concurrent_ios = 32;
+  ceph::timespan min_age = std::chrono::hours(1);
+  bool hide_progress = false;
+  bool dump_keys = false;
   uint64_t orphan_stale_secs = (24 * 3600);
   int detail = false;
 
@@ -3380,6 +3394,8 @@ int main(int argc, const char **argv)
         cerr << "ERROR: failed to parse max concurrent ios: " << err << std::endl;
         return EINVAL;
       }
+    } else if (ceph_argparse_witharg(args, i, &val, "--min-age-hours", (char*)NULL)) {
+      min_age = std::chrono::hours(atoi(val.c_str()));
     } else if (ceph_argparse_witharg(args, i, &val, "--orphan-stale-secs", (char*)NULL)) {
       orphan_stale_secs = (uint64_t)strict_strtoll(val.c_str(), 10, &err);
       if (!err.empty()) {
@@ -3456,6 +3472,10 @@ int main(int argc, const char **argv)
      // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &inconsistent_index, NULL, "--inconsistent-index", (char*)NULL)) {
      // do nothing
+    } else if (ceph_argparse_flag(args, i, "--hide-progress", (char*)NULL)) {
+      hide_progress = true;
+    } else if (ceph_argparse_flag(args, i, "--dump-keys", (char*)NULL)) {
+      dump_keys = true;
     } else if (ceph_argparse_witharg(args, i, &val, "--caps", (char*)NULL)) {
       caps = val;
     } else if (ceph_argparse_witharg(args, i, &val, "-i", "--infile", (char*)NULL)) {
@@ -5564,11 +5584,10 @@ int main(int argc, const char **argv)
   else if (opt_cmd == OPT::USER_SUSPEND)
     user_op.set_suspension(true);
 
-  if (!placement_id.empty() ||
-      (opt_storage_class && !opt_storage_class->empty())) {
+  if (!placement_id.empty()) {
     rgw_placement_rule target_rule;
     target_rule.name = placement_id;
-    target_rule.storage_class = *opt_storage_class;
+    target_rule.storage_class = opt_storage_class.value_or("");
     if (!store->svc()->zone->get_zone_params().valid_placement(target_rule)) {
       cerr << "NOTICE: invalid dest placement: " << target_rule.to_str() << std::endl;
       return EINVAL;
@@ -5598,6 +5617,9 @@ int main(int argc, const char **argv)
   bucket_op.set_delete_children(delete_child_objects);
   bucket_op.set_fix_index(fix);
   bucket_op.set_max_aio(max_concurrent_ios);
+  bucket_op.set_min_age(min_age);
+  bucket_op.set_dump_keys(dump_keys);
+  bucket_op.set_hide_progress(hide_progress);
 
   // required to gather errors from operations
   std::string err_msg;
@@ -6675,12 +6697,13 @@ next:
     RGWBucketInfo cur_bucket_info;
     rgw_bucket cur_bucket;
     ret = init_bucket(tenant, bucket_name, string(), cur_bucket_info, cur_bucket);
-    if (ret < 0) {
+    if (ret == -ENOENT) {
+      // no bucket entrypoint
+    } else if (ret < 0) {
       cerr << "ERROR: could not init current bucket info for bucket_name=" << bucket_name << ": " << cpp_strerror(-ret) << std::endl;
       return -ret;
-    }
-
-    if (cur_bucket_info.bucket.bucket_id == bucket_info.bucket.bucket_id && !yes_i_really_mean_it) {
+    } else if (cur_bucket_info.bucket.bucket_id == bucket_info.bucket.bucket_id &&
+               !yes_i_really_mean_it) {
       cerr << "specified bucket instance points to a current bucket instance" << std::endl;
       cerr << "do you really mean it? (requires --yes-i-really-mean-it)" << std::endl;
       return EINVAL;
@@ -7244,6 +7267,14 @@ next:
     } else {
       RGWBucketAdminOp::check_index(store, bucket_op, f, null_yield, dpp());
     }
+  }
+
+  if (opt_cmd == OPT::BUCKET_CHECK_OLH) {
+    RGWBucketAdminOp::check_index_olh(store, bucket_op, f, dpp());
+  }
+
+  if (opt_cmd == OPT::BUCKET_CHECK_UNLINKED) {
+    RGWBucketAdminOp::check_index_unlinked(store, bucket_op, f, dpp());
   }
 
   if (opt_cmd == OPT::BUCKET_RM) {
@@ -8374,7 +8405,7 @@ next:
 
   if (opt_cmd == OPT::SYNC_GROUP_CREATE ||
       opt_cmd == OPT::SYNC_GROUP_MODIFY) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
     CHECK_TRUE(require_opt(opt_status), "ERROR: --status is not specified (options: forbidden, allowed, enabled)", EINVAL);
 
     SyncPolicyContext sync_policy_ctx(zonegroup_id, zonegroup_name, opt_bucket);
@@ -8434,7 +8465,7 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_REMOVE) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
 
     SyncPolicyContext sync_policy_ctx(zonegroup_id, zonegroup_name, opt_bucket);
     ret = sync_policy_ctx.init();
@@ -8459,8 +8490,8 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_FLOW_CREATE) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
-    CHECK_TRUE(require_opt(opt_flow_id), "ERROR: --flow-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_flow_id), "ERROR: --flow-id not specified", EINVAL);
     CHECK_TRUE(require_opt(opt_flow_type),
                            "ERROR: --flow-type not specified (options: symmetrical, directional)", EINVAL);
     CHECK_TRUE((symmetrical_flow_opt(*opt_flow_type) ||
@@ -8510,8 +8541,8 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_FLOW_REMOVE) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
-    CHECK_TRUE(require_opt(opt_flow_id), "ERROR: --flow-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_flow_id), "ERROR: --flow-id not specified", EINVAL);
     CHECK_TRUE(require_opt(opt_flow_type),
                            "ERROR: --flow-type not specified (options: symmetrical, directional)", EINVAL);
     CHECK_TRUE((symmetrical_flow_opt(*opt_flow_type) ||
@@ -8552,8 +8583,8 @@ next:
 
   if (opt_cmd == OPT::SYNC_GROUP_PIPE_CREATE ||
       opt_cmd == OPT::SYNC_GROUP_PIPE_MODIFY) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
-    CHECK_TRUE(require_opt(opt_pipe_id), "ERROR: --pipe-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_pipe_id), "ERROR: --pipe-id not specified", EINVAL);
     if (opt_cmd == OPT::SYNC_GROUP_PIPE_CREATE) {
       CHECK_TRUE(require_non_empty_opt(opt_source_zone_ids), "ERROR: --source-zones not provided or is empty; should be list of zones or '*'", EINVAL);
       CHECK_TRUE(require_non_empty_opt(opt_dest_zone_ids), "ERROR: --dest-zones not provided or is empty; should be list of zones or '*'", EINVAL);
@@ -8585,11 +8616,15 @@ next:
       }
     }
 
-    pipe->source.add_zones(*opt_source_zone_ids);
+    if (opt_source_zone_ids) {
+      pipe->source.add_zones(*opt_source_zone_ids);
+    }
     pipe->source.set_bucket(opt_source_tenant,
                             opt_source_bucket_name,
                             opt_source_bucket_id);
-    pipe->dest.add_zones(*opt_dest_zone_ids);
+    if (opt_dest_zone_ids) {
+      pipe->dest.add_zones(*opt_dest_zone_ids);
+    }
     pipe->dest.set_bucket(opt_dest_tenant,
                             opt_dest_bucket_name,
                             opt_dest_bucket_id);
@@ -8634,8 +8669,8 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_PIPE_REMOVE) {
-    CHECK_TRUE(require_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
-    CHECK_TRUE(require_opt(opt_pipe_id), "ERROR: --pipe-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_group_id), "ERROR: --group-id not specified", EINVAL);
+    CHECK_TRUE(require_non_empty_opt(opt_pipe_id), "ERROR: --pipe-id not specified", EINVAL);
 
     SyncPolicyContext sync_policy_ctx(zonegroup_id, zonegroup_name, opt_bucket);
     ret = sync_policy_ctx.init();
