@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Max Carrara <m.carrara@proxmox.com>
+Date: Mon, 5 Feb 2024 11:44:14 +0100
+Subject: [PATCH] ceph-crash: change order of client names
+
+This simply puts 'client.crash' before 'client.crash.${HOSTNAME}'.
+
+Signed-off-by: Max Carrara <m.carrara@proxmox.com>
+---
+ src/ceph-crash.in | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/ceph-crash.in b/src/ceph-crash.in
+index 0e02837fadd..713080a4dc1 100755
+--- a/src/ceph-crash.in
++++ b/src/ceph-crash.in
+@@ -16,8 +16,8 @@ import time
+ logging.basicConfig(level=logging.INFO)
+ log = logging.getLogger('ceph-crash')
+ 
+-auth_names = ['client.crash.%s' % socket.gethostname(),
+-              'client.crash',
++auth_names = ['client.crash',
++              'client.crash.%s' % socket.gethostname(),
+               'client.admin']
+ 
+ 
+-- 
+2.39.2
+
