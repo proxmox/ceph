@@ -13,3 +13,4 @@
 0013-mgr-dashboard-remove-ability-to-create-and-check-TLS.patch
 0014-rocksb-inherit-parent-cmake-cxx-flags.patch
 0015-ceph-osd-postinst-avoid-reloading-all-sysctl-setting.patch
+0016-debian-recursively-adjust-permissions-of-var-lib-cep.patch
