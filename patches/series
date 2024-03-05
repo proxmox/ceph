@@ -18,3 +18,4 @@
 0023-rocksb-inherit-parent-cmake-cxx-flags.patch
 0024-ceph-osd-postinst-avoid-reloading-all-sysctl-setting.patch
 0025-debian-recursively-adjust-permissions-of-var-lib-cep.patch
+0026-ceph-crash-change-order-of-client-names.patch
