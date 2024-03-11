@@ -1,3 +1,22 @@
+ceph (18.2.2-pve1) bookworm; urgency=medium
+
+  * update Ceph to Reef 18.2.2 stable release
+
+  * mgr/dashboard: add backport that allows the dashboard to work again
+
+  * mgr/dashboard: patch out PyOpenSSL-related and PyJWT-related usages to fix
+    compat with python3.11 sub-interpreter enforcements and dashboard modules
+
+  * fix #5213: ceph-osd postinst: add patch to avoid connection freezes
+
+  * debian: ensure all ceph related files in /var/lib/ceph are owned and
+    accessible by the ceph user, like the crash directory.
+
+  * reorder keyring used by ceph-crash favoring non-host-specific keyring,
+    avoiding some warnings spamming the system log.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 11 Mar 2024 17:30:56 +0100
+
 ceph (18.2.1-pve2) bookworm; urgency=medium
 
   * ensure RocksDB sub-component is build in release mode to avoid performance
