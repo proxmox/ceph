@@ -1,7 +1,13 @@
-ceph (18.2.1-1jammy) jammy; urgency=medium
+ceph (18.2.2-1jammy) jammy; urgency=medium
 
 
- -- Jenkins Build Slave User <jenkins-build@braggi13.front.sepia.ceph.com>  Mon, 11 Dec 2023 22:07:48 +0000
+ -- Jenkins Build Slave User <jenkins-build@braggi10.front.sepia.ceph.com>  Mon, 04 Mar 2024 20:27:31 +0000
+
+ceph (18.2.2-1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Ceph Release Team <ceph-maintainers@ceph.io>  Mon, 04 Mar 2024 20:04:03 +0000
 
 ceph (18.2.1-1) stable; urgency=medium
 
