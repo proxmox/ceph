@@ -1,3 +1,17 @@
+ceph (17.2.7-pve3) bookworm; urgency=medium
+
+  * fix #5213: ceph-osd postinst: add patch to avoid connection freezes
+
+  * mgr/dashboard: add backport that allows the dashboard to work again
+
+  * fix `ceph dashboard` subcommand becoming unavailable on crash
+
+  * d/postinst: ensure all ceph state files/dirs have correct owner
+
+  * reorder keyring used by ceph-crash favoring non-host-specific keyring
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 08 Apr 2024 18:16:22 +0200
+
 ceph (17.2.7-pve2) bookworm; urgency=medium
 
   * ensure RocksDB sub-component is build in release mode to avoid performance
