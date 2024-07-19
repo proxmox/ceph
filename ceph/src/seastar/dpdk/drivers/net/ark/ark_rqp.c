@@ -22,16 +22,18 @@ ark_rqp_stats_reset(struct ark_rqpace_t *rqp)
 void
 ark_rqp_dump(struct ark_rqpace_t *rqp)
 {
-	if (rqp->err_count_other != 0)
-		PMD_DRV_LOG(ERR,
+	if (rqp->err_count_other || rqp->cmpl_errors)
+		ARK_PMD_LOG(ERR,
 			    "RQP Errors noted: ctrl: %d cplh_hmax %d cpld_max %d"
+			    ARK_SU32
 			    ARK_SU32
 			    ARK_SU32 "\n",
 			    rqp->ctrl, rqp->cplh_max, rqp->cpld_max,
 			    "Error Count", rqp->err_cnt,
-			    "Error General", rqp->err_count_other);
+			    "Error General", rqp->err_count_other,
+			    "Cmpl Errors", rqp->cmpl_errors);
 
-	PMD_STATS_LOG(INFO, "RQP Dump: ctrl: %d cplh_hmax %d cpld_max %d"
+	ARK_PMD_LOG(INFO, "RQP Dump: ctrl: %d cplh_hmax %d cpld_max %d"
 		      ARK_SU32
 		      ARK_SU32 ARK_SU32 ARK_SU32 ARK_SU32 ARK_SU32 ARK_SU32
 		      ARK_SU32 ARK_SU32 ARK_SU32 ARK_SU32 ARK_SU32 ARK_SU32

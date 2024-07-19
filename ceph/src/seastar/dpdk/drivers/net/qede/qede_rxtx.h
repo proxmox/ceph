@@ -70,21 +70,20 @@
 #define QEDE_ETH_OVERHEAD	(((2 * QEDE_VLAN_TAG_SIZE)) \
 				 + (QEDE_LLC_SNAP_HDR_LEN) + 2)
 
-#define QEDE_MAX_ETHER_HDR_LEN	(ETHER_HDR_LEN + QEDE_ETH_OVERHEAD)
+#define QEDE_MAX_ETHER_HDR_LEN	(RTE_ETHER_HDR_LEN + QEDE_ETH_OVERHEAD)
+#define QEDE_ETH_MAX_LEN	(RTE_ETHER_MTU + QEDE_MAX_ETHER_HDR_LEN)
 
-#define QEDE_RSS_OFFLOAD_ALL    (ETH_RSS_IPV4			|\
-				 ETH_RSS_NONFRAG_IPV4_TCP	|\
-				 ETH_RSS_NONFRAG_IPV4_UDP	|\
-				 ETH_RSS_IPV6			|\
-				 ETH_RSS_NONFRAG_IPV6_TCP	|\
-				 ETH_RSS_NONFRAG_IPV6_UDP	|\
-				 ETH_RSS_VXLAN			|\
-				 ETH_RSS_GENEVE)
+#define QEDE_RSS_OFFLOAD_ALL    (RTE_ETH_RSS_IPV4			|\
+				 RTE_ETH_RSS_NONFRAG_IPV4_TCP	|\
+				 RTE_ETH_RSS_NONFRAG_IPV4_UDP	|\
+				 RTE_ETH_RSS_IPV6			|\
+				 RTE_ETH_RSS_NONFRAG_IPV6_TCP	|\
+				 RTE_ETH_RSS_NONFRAG_IPV6_UDP	|\
+				 RTE_ETH_RSS_VXLAN			|\
+				 RTE_ETH_RSS_GENEVE)
 
-#define for_each_rss(i)		for (i = 0; i < qdev->num_rx_queues; i++)
-#define for_each_tss(i)		for (i = 0; i < qdev->num_tx_queues; i++)
 #define QEDE_RXTX_MAX(qdev) \
-	(RTE_MAX(QEDE_RSS_COUNT(qdev), QEDE_TSS_COUNT(qdev)))
+	(RTE_MAX(qdev->num_rx_queues, qdev->num_tx_queues))
 
 /* Macros for non-tunnel packet types lkup table */
 #define QEDE_PKT_TYPE_UNKNOWN				0x0
@@ -145,29 +144,20 @@
 
 #define QEDE_PKT_TYPE_TUNN_MAX_TYPE			0x20 /* 2^5 */
 
-#define QEDE_TX_CSUM_OFFLOAD_MASK (PKT_TX_IP_CKSUM              | \
-				   PKT_TX_TCP_CKSUM             | \
-				   PKT_TX_UDP_CKSUM             | \
-				   PKT_TX_OUTER_IP_CKSUM        | \
-				   PKT_TX_TCP_SEG		| \
-				   PKT_TX_IPV4			| \
-				   PKT_TX_IPV6)
+#define QEDE_TX_CSUM_OFFLOAD_MASK (RTE_MBUF_F_TX_IP_CKSUM              | \
+				   RTE_MBUF_F_TX_TCP_CKSUM             | \
+				   RTE_MBUF_F_TX_UDP_CKSUM             | \
+				   RTE_MBUF_F_TX_OUTER_IP_CKSUM        | \
+				   RTE_MBUF_F_TX_TCP_SEG		| \
+				   RTE_MBUF_F_TX_IPV4			| \
+				   RTE_MBUF_F_TX_IPV6)
 
 #define QEDE_TX_OFFLOAD_MASK (QEDE_TX_CSUM_OFFLOAD_MASK | \
-			      PKT_TX_VLAN_PKT		| \
-			      PKT_TX_TUNNEL_MASK)
+			      RTE_MBUF_F_TX_VLAN		| \
+			      RTE_MBUF_F_TX_TUNNEL_MASK)
 
 #define QEDE_TX_OFFLOAD_NOTSUP_MASK \
-	(PKT_TX_OFFLOAD_MASK ^ QEDE_TX_OFFLOAD_MASK)
-
-/*
- * RX BD descriptor ring
- */
-struct qede_rx_entry {
-	struct rte_mbuf *mbuf;
-	uint32_t page_offset;
-	/* allows expansion .. */
-};
+	(RTE_MBUF_F_TX_OFFLOAD_MASK ^ QEDE_TX_OFFLOAD_MASK)
 
 /* TPA related structures */
 struct qede_agg_info {
@@ -179,12 +169,14 @@ struct qede_agg_info {
  * Structure associated with each RX queue.
  */
 struct qede_rx_queue {
+	/* Always keep qdev as first member */
+	struct qede_dev *qdev;
 	struct rte_mempool *mb_pool;
 	struct ecore_chain rx_bd_ring;
 	struct ecore_chain rx_comp_ring;
 	uint16_t *hw_cons_ptr;
 	void OSAL_IOMEM *hw_rxq_prod_addr;
-	struct qede_rx_entry *sw_rx_ring;
+	struct rte_mbuf **sw_rx_ring;
 	struct ecore_sb_info *sb_info;
 	uint16_t sw_rx_cons;
 	uint16_t sw_rx_prod;
@@ -199,16 +191,7 @@ struct qede_rx_queue {
 	uint64_t rx_hw_errors;
 	uint64_t rx_alloc_errors;
 	struct qede_agg_info tpa_info[ETH_TPA_MAX_AGGS_NUM];
-	struct qede_dev *qdev;
 	void *handle;
-};
-
-/*
- * TX BD descriptor ring
- */
-struct qede_tx_entry {
-	struct rte_mbuf *mbuf;
-	uint8_t flags;
 };
 
 union db_prod {
@@ -217,8 +200,10 @@ union db_prod {
 };
 
 struct qede_tx_queue {
+	/* Always keep qdev as first member */
+	struct qede_dev *qdev;
 	struct ecore_chain tx_pbl;
-	struct qede_tx_entry *sw_tx_ring;
+	struct rte_mbuf **sw_tx_ring;
 	uint16_t nb_tx_desc;
 	uint16_t nb_tx_avail;
 	uint16_t tx_free_thresh;
@@ -231,7 +216,6 @@ struct qede_tx_queue {
 	uint16_t port_id;
 	uint64_t xmit_pkts;
 	bool is_legacy;
-	struct qede_dev *qdev;
 	void *handle;
 };
 
@@ -239,6 +223,18 @@ struct qede_fastpath {
 	struct ecore_sb_info *sb_info;
 	struct qede_rx_queue *rxq;
 	struct qede_tx_queue *txq;
+};
+
+/* This structure holds the information of fast path queues
+ * belonging to individual engines in CMT mode.
+ */
+struct qede_fastpath_cmt {
+	/* Always keep this a first element */
+	struct qede_dev *qdev;
+	/* fastpath info of engine 0 */
+	struct qede_fastpath *fp0;
+	/* fastpath info of engine 1 */
+	struct qede_fastpath *fp1;
 };
 
 /*
@@ -261,16 +257,21 @@ void qede_tx_queue_release(void *tx_queue);
 
 uint16_t qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts,
 			uint16_t nb_pkts);
+uint16_t qede_xmit_pkts_cmt(void *p_txq, struct rte_mbuf **tx_pkts,
+			    uint16_t nb_pkts);
+uint16_t qede_xmit_pkts_regular(void *p_txq, struct rte_mbuf **tx_pkts,
+				uint16_t nb_pkts);
 
 uint16_t qede_xmit_prep_pkts(void *p_txq, struct rte_mbuf **tx_pkts,
 			     uint16_t nb_pkts);
 
 uint16_t qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts,
 			uint16_t nb_pkts);
-
-uint16_t qede_rxtx_pkts_dummy(void *p_rxq,
-			      struct rte_mbuf **pkts,
-			      uint16_t nb_pkts);
+uint16_t qede_recv_pkts_cmt(void *p_rxq, struct rte_mbuf **rx_pkts,
+			    uint16_t nb_pkts);
+uint16_t
+qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts,
+		       uint16_t nb_pkts);
 
 int qede_start_queues(struct rte_eth_dev *eth_dev);
 

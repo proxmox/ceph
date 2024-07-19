@@ -1156,7 +1156,7 @@
       <xsl:when test="string-length($trailing)">
         <xsl:value-of select="concat(
             'noexcept(',
-            substring($condition, 1, string-length($condition) - string-length($trailing)),
+            substring($condition, 1, string-length($condition) - string-length($trailing) - 1),
             ') ')" />
       </xsl:when>
       <xsl:otherwise>

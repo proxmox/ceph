@@ -18,6 +18,36 @@
 /*
  * Copyright 2019 ScyllaDB
  */
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <compare>
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <filesystem>
+#include <thread>
+#include <utility>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/epoll.h>
+#include <poll.h>
+#include <sys/syscall.h>
+#include <sys/resource.h>
+#include <boost/container/small_vector.hpp>
+
+#ifdef SEASTAR_HAVE_URING
+#include <liburing.h>
+#endif
+
+#ifdef HAVE_OSV
+#include <osv/newpoll.hh>
+#endif
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include "core/reactor_backend.hh"
 #include "core/thread_pool.hh"
 #include "core/syscall_result.hh"
@@ -28,19 +58,6 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/util/defer.hh>
 #include <seastar/util/read_first_line.hh>
-
-#include <chrono>
-#include <filesystem>
-#include <sys/poll.h>
-#include <sys/syscall.h>
-#include <sys/resource.h>
-
-#ifdef SEASTAR_HAVE_URING
-#include <liburing.h>
-#endif
-
-#ifdef HAVE_OSV
-#include <osv/newpoll.hh>
 #endif
 
 namespace seastar {
@@ -167,8 +184,7 @@ aio_storage_context::handle_aio_error(linux_abi::iocb* iocb, int ec) {
         }
         default:
             ++_r._io_stats.aio_errors;
-            throw_system_error_on(true, "io_submit");
-            abort();
+            throw std::system_error(ec, std::system_category(), "io_submit");
     }
 }
 
@@ -252,7 +268,7 @@ void aio_storage_context::schedule_retry() {
                 seastar_logger.warn("aio_storage_context::schedule_retry failed: {}", std::move(ex));
                 return;
             }
-            auto result = f.get0();
+            auto result = f.get();
             auto iocbs = _aio_retries.data();
             size_t nr_consumed = 0;
             if (result.result == -1) {
@@ -840,13 +856,14 @@ reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigm
             _steady_clock_timer_deadline = {};
             continue;
         }
-        if (evt.events & (EPOLLHUP | EPOLLERR)) {
+        bool has_error = evt.events & (EPOLLHUP | EPOLLERR);
+        if (has_error) {
             // treat the events as required events when error occurs, let
             // send/recv/accept/connect handle the specific error.
             evt.events = pfd->events_requested;
         }
         auto events = evt.events & (EPOLLIN | EPOLLOUT | EPOLLRDHUP);
-        auto events_to_remove = events & ~pfd->events_requested;
+        auto events_to_remove = has_error ? pfd->events_requested : events & ~pfd->events_requested;
         complete_epoll_event(*pfd, events, EPOLLRDHUP);
         if (pfd->events_rw) {
             // accept() signals normal completions via EPOLLIN, but errors (due to shutdown())
@@ -1201,9 +1218,7 @@ try_create_uring(unsigned queue_len, bool throw_on_error) {
         }
     };
 
-    auto params = ::io_uring_params{
-        .flags = 0,
-    };
+    auto params = ::io_uring_params{};
     ::io_uring ring;
     auto err = ::io_uring_queue_init_params(queue_len, &ring, &params);
     if (err != 0) {
@@ -1222,11 +1237,11 @@ try_create_uring(unsigned queue_len, bool throw_on_error) {
         maybe_throw(std::runtime_error("unable to create io_uring probe"));
         return std::nullopt;
     }
-    auto free_probe = defer([&] () noexcept { ::free(probe); });
+    auto free_probe = defer([&] () noexcept { ::io_uring_free_probe(probe); });
 
     for (auto op : required_ops) {
         if (!io_uring_opcode_supported(probe, op)) {
-            maybe_throw(std::runtime_error(fmt::format("required io_uring opcode {} not supported", op)));
+            maybe_throw(std::runtime_error(fmt::format("required io_uring opcode {} not supported", static_cast<int>(op))));
             return std::nullopt;
         }
     }

@@ -6,9 +6,6 @@
 #ifndef NFP_TARGET_H
 #define NFP_TARGET_H
 
-#include "nfp-common/nfp_resid.h"
-#include "nfp-common/nfp_cppat.h"
-#include "nfp-common/nfp_platform.h"
 #include "nfp_cpp.h"
 
 #define P32 1
@@ -37,7 +34,7 @@ pushpull_width(int pp)
 static inline int
 target_rw(uint32_t cpp_id, int pp, int start, int len)
 {
-	int island = NFP_CPP_ID_ISLAND_of(cpp_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_id);
 
 	if (island && (island < start || island > (start + len)))
 		return NFP_ERRNO(EINVAL);
@@ -117,7 +114,7 @@ nfp6000_nbi_ppc(uint32_t cpp_id)
 static inline int
 nfp6000_nbi(uint32_t cpp_id, uint64_t address)
 {
-	int island = NFP_CPP_ID_ISLAND_of(cpp_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_id);
 	uint64_t rel_addr = address & 0x3fFFFF;
 
 	if (island && (island < 8 || island > 9))
@@ -281,7 +278,7 @@ static inline int
 nfp6000_mu(uint32_t cpp_id, uint64_t address)
 {
 	int pp;
-	int island = NFP_CPP_ID_ISLAND_of(cpp_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_id);
 
 	if (island == 0) {
 		if (address < 0x2000000000ULL)
@@ -316,7 +313,7 @@ nfp6000_mu(uint32_t cpp_id, uint64_t address)
 static inline int
 nfp6000_ila(uint32_t cpp_id)
 {
-	int island = NFP_CPP_ID_ISLAND_of(cpp_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_id);
 
 	if (island && (island < 48 || island > 51))
 		return NFP_ERRNO(EINVAL);
@@ -336,7 +333,7 @@ nfp6000_ila(uint32_t cpp_id)
 static inline int
 nfp6000_pci(uint32_t cpp_id)
 {
-	int island = NFP_CPP_ID_ISLAND_of(cpp_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_id);
 
 	if (island && (island < 4 || island > 7))
 		return NFP_ERRNO(EINVAL);
@@ -354,7 +351,7 @@ nfp6000_pci(uint32_t cpp_id)
 static inline int
 nfp6000_crypto(uint32_t cpp_id)
 {
-	int island = NFP_CPP_ID_ISLAND_of(cpp_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_id);
 
 	if (island && (island < 12 || island > 15))
 		return NFP_ERRNO(EINVAL);
@@ -370,9 +367,9 @@ nfp6000_crypto(uint32_t cpp_id)
 static inline int
 nfp6000_cap_xpb(uint32_t cpp_id)
 {
-	int island = NFP_CPP_ID_ISLAND_of(cpp_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_id);
 
-	if (island && (island < 1 || island > 63))
+	if (island > 63)
 		return NFP_ERRNO(EINVAL);
 
 	switch (cpp_id & NFP_CPP_ID(0, ~0, ~0)) {
@@ -410,9 +407,9 @@ nfp6000_cap_xpb(uint32_t cpp_id)
 static inline int
 nfp6000_cls(uint32_t cpp_id)
 {
-	int island = NFP_CPP_ID_ISLAND_of(cpp_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_id);
 
-	if (island && (island < 1 || island > 63))
+	if (island > 63)
 		return NFP_ERRNO(EINVAL);
 
 	switch (cpp_id & NFP_CPP_ID(0, ~0, ~0)) {
@@ -540,11 +537,11 @@ nfp_target_cpp(uint32_t cpp_island_id, uint64_t cpp_island_address,
 	       const uint32_t *imb_table)
 {
 	int err;
-	int island = NFP_CPP_ID_ISLAND_of(cpp_island_id);
-	int target = NFP_CPP_ID_TARGET_of(cpp_island_id);
+	uint8_t island = NFP_CPP_ID_ISLAND_of(cpp_island_id);
+	uint8_t target = NFP_CPP_ID_TARGET_of(cpp_island_id);
 	uint32_t imb;
 
-	if (target < 0 || target >= 16)
+	if (target >= 16)
 		return NFP_ERRNO(EINVAL);
 
 	if (island == 0) {
@@ -554,7 +551,7 @@ nfp_target_cpp(uint32_t cpp_island_id, uint64_t cpp_island_address,
 		return 0;
 	}
 
-	if (!imb_table) {
+	if (imb_table == NULL) {
 		/* CPP + Island only allowed on systems with IMB tables */
 		return NFP_ERRNO(EINVAL);
 	}

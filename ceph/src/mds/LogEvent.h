@@ -42,6 +42,9 @@
 #define EVENT_SUBTREEMAP_TEST   50
 #define EVENT_NOOP        51
 
+#define EVENT_SEGMENT      100
+#define EVENT_LID          101
+
 
 #include "include/buffer_fwd.h"
 #include "include/Context.h"
@@ -124,10 +127,5 @@ private:
   uint64_t _start_off = 0;
   LogSegment *_segment = nullptr;
 };
-
-inline std::ostream& operator<<(std::ostream& out, const LogEvent &le) {
-  le.print(out);
-  return out;
-}
 
 #endif

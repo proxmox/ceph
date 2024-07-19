@@ -20,7 +20,10 @@
  */
 
 #pragma once
+#ifndef SEASTAR_MODULE
 #include <atomic>
+#include <seastar/util/modules.hh>
+#endif
 
 namespace seastar {
 
@@ -34,16 +37,21 @@ struct preemption_monitor {
     std::atomic<uint32_t> tail;
 };
 
+#ifdef SEASTAR_BUILD_SHARED_LIBS
+const preemption_monitor*& get_need_preempt_var();
+#else
 inline const preemption_monitor*& get_need_preempt_var() {
     static preemption_monitor bootstrap_preemption_monitor;
     static thread_local const preemption_monitor* g_need_preempt = &bootstrap_preemption_monitor;
     return g_need_preempt;
 }
+#endif
 
 void set_need_preempt_var(const preemption_monitor* pm);
 
 }
 
+SEASTAR_MODULE_EXPORT
 inline bool need_preempt() noexcept {
 #ifndef SEASTAR_DEBUG
     // prevent compiler from eliminating loads in a loop
@@ -59,6 +67,31 @@ inline bool need_preempt() noexcept {
 #else
     return true;
 #endif
+}
+
+namespace internal {
+
+
+
+// Same as need_preempt(), but for the scheduler's use. Outside debug
+// mode they have the same meaning - the task quota expired and we need
+// to check for I/O.
+inline
+bool
+scheduler_need_preempt() {
+#ifndef SEASTAR_DEBUG
+    return need_preempt();
+#else
+    // Within the scheduler, preempting all the time (as need_preempt()
+    // does in debug mode) reduces performance drastically since we check
+    // for I/O after every task. Since we don't care about latency in debug
+    // mode, run some random-but-bounded number of tasks instead. Latency
+    // will be high if those tasks are slow, but this is debug mode anyway.
+    static thread_local unsigned counter = 0;
+    return ++counter % 64 == 0;
+#endif
+}
+
 }
 
 }

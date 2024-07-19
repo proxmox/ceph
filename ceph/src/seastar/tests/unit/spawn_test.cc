@@ -64,8 +64,8 @@ SEASTAR_TEST_CASE(test_spawn_program_does_not_exist) {
 SEASTAR_TEST_CASE(test_spawn_echo) {
     const char* echo_cmd = "/bin/echo";
     return spawn_process(echo_cmd, {.argv = {echo_cmd, "-n", "hello", "world"}}).then([] (auto process) {
-        auto stdout = process.stdout();
-        return do_with(std::move(process), std::move(stdout), bool(true), [](auto& p, auto& stdout, auto& matched) {
+        auto cout = process.cout();
+        return do_with(std::move(process), std::move(cout), bool(false), [](auto& p, auto& cout, auto& matched) {
             using consumption_result_type = typename input_stream<char>::consumption_result_type;
             using stop_consuming_type = typename consumption_result_type::stop_consuming_type;
             using tmp_buf = stop_consuming_type::tmp_buf;
@@ -73,17 +73,21 @@ SEASTAR_TEST_CASE(test_spawn_echo) {
                 consumer(std::string_view expected, bool& matched)
                     : _expected(expected), _matched(matched) {}
                 future<consumption_result_type> operator()(tmp_buf buf) {
-                    _matched = std::equal(buf.begin(), buf.end(), _expected.begin());
-                    if (!_matched) {
+                    if (!std::equal(buf.begin(), buf.end(), _expected.begin())) {
+                        _matched = false;
                         return make_ready_future<consumption_result_type>(stop_consuming_type({}));
                     }
                     _expected.remove_prefix(buf.size());
+                    if (_expected.empty()) {
+                        _matched = true;
+                        return make_ready_future<consumption_result_type>(stop_consuming_type({}));
+                    }
                     return make_ready_future<consumption_result_type>(continue_consuming{});
                 }
                 std::string_view _expected;
                 bool& _matched;
             };
-            return stdout.consume(consumer("hello world", matched)).then([&matched] {
+            return cout.consume(consumer("hello world", matched)).then([&matched] {
                 BOOST_CHECK(matched);
             }).finally([&p] {
                 return p.wait().discard_result();
@@ -95,23 +99,26 @@ SEASTAR_TEST_CASE(test_spawn_echo) {
 SEASTAR_TEST_CASE(test_spawn_input) {
     static const sstring text = "hello world\n";
     return spawn_process("/bin/cat").then([] (auto process) {
-        auto stdin = process.stdin();
-        auto stdout = process.stdout();
-        return do_with(std::move(process), std::move(stdin), std::move(stdout), [](auto& p, auto& stdin, auto& stdout) {
-            return stdin.write(text).then([&stdin] {
-                return stdin.flush();
+        auto cin = process.cin();
+        auto cout = process.cout();
+        return do_with(std::move(process), std::move(cin), std::move(cout), [](auto& p, auto& cin, auto& cout) {
+            return cin.write(text).then([&cin] {
+                return cin.close();
             }).handle_exception_type([] (std::system_error& e) {
-                testlog.error("failed to write to stdin: {}", e);
-                return make_exception_future<>(std::move(e));
-            }).then([&stdout] {
-                return stdout.read_exactly(text.size());
+                BOOST_TEST_ERROR(fmt::format("failed to write to stdin: {}", e));
+            }).then([&cout] {
+                return cout.read_exactly(text.size());
             }).handle_exception_type([] (std::system_error& e) {
-                testlog.error("failed to read from stdout: {}", e);
-                return make_exception_future<temporary_buffer<char>>(std::move(e));
+                BOOST_TEST_ERROR(fmt::format("failed to read from cout: {}", e));
+                return make_ready_future<temporary_buffer<char>>();
             }).then([] (temporary_buffer<char> echo) {
                 BOOST_CHECK_EQUAL(sstring(echo.get(), echo.size()), text);
             }).finally([&p] {
-                return p.wait().discard_result();
+                return p.wait().then([](process::wait_status wstatus) {
+                    auto* exit_status = std::get_if<process::wait_exited>(&wstatus);
+                    BOOST_REQUIRE(exit_status != nullptr);
+                    BOOST_CHECK_EQUAL(exit_status->exit_code, EXIT_SUCCESS);
+                 });
             });
         });
     });
@@ -129,10 +136,14 @@ SEASTAR_TEST_CASE(test_spawn_kill) {
             auto* wait_signaled = std::get_if<experimental::process::wait_signaled>(&wait_status);
             BOOST_REQUIRE(wait_signaled != nullptr);
             BOOST_CHECK_EQUAL(wait_signaled->terminating_signal, SIGTERM);
-            // sleep should be terminated in 10ms
             auto end = std::chrono::high_resolution_clock::now();
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-            BOOST_CHECK_LE(ms, 10);
+            // sleep should be terminated in 10ms.
+            // pidfd_open(2) may fail and thus p.wait() falls back to
+            // waitpid(2) with backoff (at least 20ms).
+            // the minimal backoff is added to 10ms, so the test can pass on
+            // older kernels as well.
+            BOOST_CHECK_LE(ms, 10 + 20);
         });
     });
 }

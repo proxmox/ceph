@@ -18,22 +18,16 @@
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
-#include <rte_ethdev_driver.h>
+#include <dev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_mbuf_pool_ops.h>
 
 #include <fslmc_logs.h>
-#include <rte_fslmc.h>
+#include <bus_fslmc_driver.h>
 #include <mc/fsl_dpbp.h>
 #include "portal/dpaa2_hw_pvt.h"
 #include "portal/dpaa2_hw_dpio.h"
 
-/* List of all the memseg information locally maintained in dpaa2 driver. This
- * is to optimize the PA_to_VA searches until a better mechanism (algo) is
- * available.
- */
-struct dpaa2_memseg_list rte_dpaa2_memsegs
-	= TAILQ_HEAD_INITIALIZER(rte_dpaa2_memsegs);
 
 TAILQ_HEAD(dpbp_dev_list, dpaa2_dpbp_dev);
 static struct dpbp_dev_list dpbp_dev_list
@@ -56,7 +50,7 @@ dpaa2_create_dpbp_device(int vdev_fd __rte_unused,
 	}
 
 	/* Open the dpbp object */
-	dpbp_node->dpbp.regs = rte_mcp_ptr_list[MC_PORTAL_INDEX];
+	dpbp_node->dpbp.regs = dpaa2_get_mcp_ptr(MC_PORTAL_INDEX);
 	ret = dpbp_open(&dpbp_node->dpbp,
 			CMD_PRI_LOW, dpbp_id, &dpbp_node->token);
 	if (ret) {

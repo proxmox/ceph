@@ -22,9 +22,8 @@
 #define MAX_OPT_VALUES 8
 #define SYS_CPU_DIR "/sys/devices/system/cpu/cpu%u/topology/"
 
-static uint32_t app_master_core = 1;
+static uint32_t app_main_core = 1;
 static uint32_t app_numa_mask;
-static uint64_t app_used_core_mask = 0;
 static uint64_t app_used_port_mask = 0;
 static uint64_t app_used_rx_port_mask = 0;
 static uint64_t app_used_tx_port_mask = 0;
@@ -39,8 +38,8 @@ static const char usage[] =
 	"           multiple pfc can be configured in command line                      \n"
 	"                                                                               \n"
 	"Application optional parameters:                                               \n"
-        "    --i     : run in interactive mode (default value is %u)                    \n"
-	"    --mst I : master core index (default value is %u)                          \n"
+	"    -i      : run in interactive mode (default value is %u)                    \n"
+	"    --mnc I : main core index (default value is %u)                            \n"
 	"    --rsz \"A, B, C\" :   Ring sizes                                           \n"
 	"           A = Size (in number of buffer descriptors) of each of the NIC RX    \n"
 	"               rings read by the I/O RX lcores (default value is %u)           \n"
@@ -72,7 +71,7 @@ static const char usage[] =
 static void
 app_usage(const char *prgname)
 {
-	printf(usage, prgname, APP_INTERACTIVE_DEFAULT, app_master_core,
+	printf(usage, prgname, APP_INTERACTIVE_DEFAULT, app_main_core,
 		APP_RX_DESC_DEFAULT, APP_RING_SIZE, APP_TX_DESC_DEFAULT,
 		MAX_PKT_RX_BURST, PKT_ENQUEUE, PKT_DEQUEUE,
 		MAX_PKT_TX_BURST, NB_MBUF,
@@ -81,49 +80,7 @@ app_usage(const char *prgname)
 		);
 }
 
-static inline int str_is(const char *str, const char *is)
-{
-	return strcmp(str, is) == 0;
-}
 
-/* returns core mask used by DPDK */
-static uint64_t
-app_eal_core_mask(void)
-{
-	uint32_t i;
-	uint64_t cm = 0;
-	struct rte_config *cfg = rte_eal_get_configuration();
-
-	for (i = 0; i < APP_MAX_LCORE; i++) {
-		if (cfg->lcore_role[i] == ROLE_RTE)
-			cm |= (1ULL << i);
-	}
-
-	cm |= (1ULL << cfg->master_lcore);
-
-	return cm;
-}
-
-
-/* returns total number of cores presented in a system */
-static uint32_t
-app_cpu_core_count(void)
-{
-	int i, len;
-	char path[PATH_MAX];
-	uint32_t ncores = 0;
-
-	for (i = 0; i < APP_MAX_LCORE; i++) {
-		len = snprintf(path, sizeof(path), SYS_CPU_DIR, i);
-		if (len <= 0 || (unsigned)len >= sizeof(path))
-			continue;
-
-		if (access(path, F_OK) == 0)
-			ncores++;
-	}
-
-	return ncores;
-}
 
 /* returns:
 	 number of values parsed
@@ -266,15 +223,6 @@ app_parse_flow_conf(const char *conf_str)
 	app_used_tx_port_mask |= mask;
 	app_used_port_mask |= mask;
 
-	mask = 1lu << pconf->rx_core;
-	app_used_core_mask |= mask;
-
-	mask = 1lu << pconf->wt_core;
-	app_used_core_mask |= mask;
-
-	mask = 1lu << pconf->tx_core;
-	app_used_core_mask |= mask;
-
 	nb_pfc++;
 
 	return 0;
@@ -298,6 +246,25 @@ app_parse_burst_conf(const char *conf_str)
 	return 0;
 }
 
+enum {
+#define OPT_PFC "pfc"
+	OPT_PFC_NUM = 256,
+#define OPT_MNC "mnc"
+	OPT_MNC_NUM,
+#define OPT_RSZ "rsz"
+	OPT_RSZ_NUM,
+#define OPT_BSZ "bsz"
+	OPT_BSZ_NUM,
+#define OPT_MSZ "msz"
+	OPT_MSZ_NUM,
+#define OPT_RTH "rth"
+	OPT_RTH_NUM,
+#define OPT_TTH "tth"
+	OPT_TTH_NUM,
+#define OPT_CFG "cfg"
+	OPT_CFG_NUM,
+};
+
 /*
  * Parses the argument given in the command line of the application,
  * calculates mask for used cores and initializes EAL with calculated core mask
@@ -307,20 +274,19 @@ app_parse_args(int argc, char **argv)
 {
 	int opt, ret;
 	int option_index;
-	const char *optname;
 	char *prgname = argv[0];
-	uint32_t i, nb_lcores;
+	uint32_t i;
 
 	static struct option lgopts[] = {
-		{ "pfc", 1, 0, 0 },
-		{ "mst", 1, 0, 0 },
-		{ "rsz", 1, 0, 0 },
-		{ "bsz", 1, 0, 0 },
-		{ "msz", 1, 0, 0 },
-		{ "rth", 1, 0, 0 },
-		{ "tth", 1, 0, 0 },
-		{ "cfg", 1, 0, 0 },
-		{ NULL,  0, 0, 0 }
+		{OPT_PFC, 1, NULL, OPT_PFC_NUM},
+		{OPT_MNC, 1, NULL, OPT_MNC_NUM},
+		{OPT_RSZ, 1, NULL, OPT_RSZ_NUM},
+		{OPT_BSZ, 1, NULL, OPT_BSZ_NUM},
+		{OPT_MSZ, 1, NULL, OPT_MSZ_NUM},
+		{OPT_RTH, 1, NULL, OPT_RTH_NUM},
+		{OPT_TTH, 1, NULL, OPT_TTH_NUM},
+		{OPT_CFG, 1, NULL, OPT_CFG_NUM},
+		{NULL,    0, 0,    0          }
 	};
 
 	/* initialize EAL first */
@@ -343,87 +309,73 @@ app_parse_args(int argc, char **argv)
 				interactive = 1;
 				break;
 			/* long options */
-			case 0:
-				optname = lgopts[option_index].name;
-				if (str_is(optname, "pfc")) {
-					ret = app_parse_flow_conf(optarg);
-					if (ret) {
-						RTE_LOG(ERR, APP, "Invalid pipe configuration %s\n", optarg);
-						return -1;
-					}
-					break;
+
+			case OPT_PFC_NUM:
+				ret = app_parse_flow_conf(optarg);
+				if (ret) {
+					RTE_LOG(ERR, APP, "Invalid pipe configuration %s\n",
+							optarg);
+					return -1;
 				}
-				if (str_is(optname, "mst")) {
-					app_master_core = (uint32_t)atoi(optarg);
-					break;
+				break;
+
+			case OPT_MNC_NUM:
+				app_main_core = (uint32_t)atoi(optarg);
+				break;
+
+			case OPT_RSZ_NUM:
+				ret = app_parse_ring_conf(optarg);
+				if (ret) {
+					RTE_LOG(ERR, APP, "Invalid ring configuration %s\n",
+							optarg);
+					return -1;
 				}
-				if (str_is(optname, "rsz")) {
-					ret = app_parse_ring_conf(optarg);
-					if (ret) {
-						RTE_LOG(ERR, APP, "Invalid ring configuration %s\n", optarg);
-						return -1;
-					}
-					break;
+				break;
+
+			case OPT_BSZ_NUM:
+				ret = app_parse_burst_conf(optarg);
+				if (ret) {
+					RTE_LOG(ERR, APP, "Invalid burst configuration %s\n",
+							optarg);
+					return -1;
 				}
-				if (str_is(optname, "bsz")) {
-					ret = app_parse_burst_conf(optarg);
-					if (ret) {
-						RTE_LOG(ERR, APP, "Invalid burst configuration %s\n", optarg);
-						return -1;
-					}
-					break;
+				break;
+
+			case OPT_MSZ_NUM:
+				mp_size = atoi(optarg);
+				if (mp_size <= 0) {
+					RTE_LOG(ERR, APP, "Invalid mempool size %s\n",
+							optarg);
+					return -1;
 				}
-				if (str_is(optname, "msz")) {
-					mp_size = atoi(optarg);
-					if (mp_size <= 0) {
-						RTE_LOG(ERR, APP, "Invalid mempool size %s\n", optarg);
-						return -1;
-					}
-					break;
+				break;
+
+			case OPT_RTH_NUM:
+				ret = app_parse_rth_conf(optarg);
+				if (ret) {
+					RTE_LOG(ERR, APP, "Invalid RX threshold configuration %s\n",
+							optarg);
+					return -1;
 				}
-				if (str_is(optname, "rth")) {
-					ret = app_parse_rth_conf(optarg);
-					if (ret) {
-						RTE_LOG(ERR, APP, "Invalid RX threshold configuration %s\n", optarg);
-						return -1;
-					}
-					break;
+				break;
+
+			case OPT_TTH_NUM:
+				ret = app_parse_tth_conf(optarg);
+				if (ret) {
+					RTE_LOG(ERR, APP, "Invalid TX threshold configuration %s\n",
+							optarg);
+					return -1;
 				}
-				if (str_is(optname, "tth")) {
-					ret = app_parse_tth_conf(optarg);
-					if (ret) {
-						RTE_LOG(ERR, APP, "Invalid TX threshold configuration %s\n", optarg);
-						return -1;
-					}
-					break;
-				}
-				if (str_is(optname, "cfg")) {
-					cfg_profile = optarg;
-					break;
-				}
+				break;
+
+			case OPT_CFG_NUM:
+				cfg_profile = optarg;
 				break;
 
 			default:
 				app_usage(prgname);
 				return -1;
 			}
-	}
-
-	/* check master core index validity */
-	for(i = 0; i <= app_master_core; i++) {
-		if (app_used_core_mask & (1u << app_master_core)) {
-			RTE_LOG(ERR, APP, "Master core index is not configured properly\n");
-			app_usage(prgname);
-			return -1;
-		}
-	}
-	app_used_core_mask |= 1u << app_master_core;
-
-	if ((app_used_core_mask != app_eal_core_mask()) ||
-			(app_master_core != rte_get_master_lcore())) {
-		RTE_LOG(ERR, APP, "EAL core mask not configured properly, must be %" PRIx64
-				" instead of %" PRIx64 "\n" , app_used_core_mask, app_eal_core_mask());
-		return -1;
 	}
 
 	if (nb_pfc == 0) {
@@ -433,15 +385,13 @@ app_parse_args(int argc, char **argv)
 	}
 
 	/* sanity check for cores assignment */
-	nb_lcores = app_cpu_core_count();
-
 	for(i = 0; i < nb_pfc; i++) {
-		if (qos_conf[i].rx_core >= nb_lcores) {
+		if (qos_conf[i].rx_core >= RTE_MAX_LCORE) {
 			RTE_LOG(ERR, APP, "pfc %u: invalid RX lcore index %u\n", i + 1,
 					qos_conf[i].rx_core);
 			return -1;
 		}
-		if (qos_conf[i].wt_core >= nb_lcores) {
+		if (qos_conf[i].wt_core >= RTE_MAX_LCORE) {
 			RTE_LOG(ERR, APP, "pfc %u: invalid WT lcore index %u\n", i + 1,
 					qos_conf[i].wt_core);
 			return -1;

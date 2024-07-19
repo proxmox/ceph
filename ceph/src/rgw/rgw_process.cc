@@ -366,7 +366,13 @@ int process_request(const RGWProcessEnv& penv,
     /* FIXME: remove this after switching all handlers to the new authentication
      * infrastructure. */
     if (nullptr == s->auth.identity) {
-      s->auth.identity = rgw::auth::transform_old_authinfo(s);
+      auto result = rgw::auth::transform_old_authinfo(
+          op, yield, driver, s->user.get());
+      if (!result) {
+        abort_early(s, op, result.error(), handler, yield);
+        goto done;
+      }
+      s->auth.identity = std::move(result).value();
     }
 
     ldpp_dout(op, 2) << "normalizing buckets and tenants" << dendl;
@@ -383,11 +389,8 @@ int process_request(const RGWProcessEnv& penv,
       goto done;
     }
 
-
-    const auto trace_name = std::string(op->name()) + " " + s->trans_id;
-    s->trace = tracing::rgw::tracer.start_trace(trace_name, s->trace_enabled);
-    s->trace->SetAttribute(tracing::rgw::OP, op->name());
-    s->trace->SetAttribute(tracing::rgw::TYPE, tracing::rgw::REQUEST);
+    s->trace = tracing::rgw::tracer.start_trace(op->name(), s->trace_enabled);
+    s->trace->SetAttribute(tracing::rgw::TRANS_ID, s->trans_id);
 
     ret = rgw_process_authenticated(handler, op, req, s, yield, driver);
     if (ret < 0) {
@@ -402,7 +405,9 @@ int process_request(const RGWProcessEnv& penv,
 done:
   if (op) {
     if (s->trace) {
-      s->trace->SetAttribute(tracing::rgw::RETURN, op->get_ret());
+      s->trace->SetAttribute(tracing::rgw::OP_RESULT, op->get_ret());
+      s->trace->SetAttribute(tracing::rgw::HOST_ID, driver->get_host_id());
+
       if (!rgw::sal::User::empty(s->user)) {
         s->trace->SetAttribute(tracing::rgw::USER_ID, s->user->get_id().id);
       }

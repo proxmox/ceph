@@ -2,9 +2,10 @@
 # Copyright 2018 NXP
 
 if not is_linux
-	build = false
+    build = false
+    reason = 'only supported on Linux'
 endif
-deps += ['pmd_dpaa']
+deps += ['net_dpaa', 'crypto_dpaa_sec']
 sources = files('dpaa_eventdev.c')
 
-allow_experimental_apis = true
+includes += include_directories('../../crypto/dpaa_sec/')

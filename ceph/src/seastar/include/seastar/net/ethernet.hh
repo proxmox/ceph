@@ -21,6 +21,10 @@
 
 #pragma once
 
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
+
 #include <array>
 #include <assert.h>
 #include <algorithm>
@@ -46,7 +50,7 @@ struct ethernet_address {
     std::array<uint8_t, 6> mac;
 
     template <typename Adjuster>
-    void adjust_endianness(Adjuster a) noexcept {}
+    void adjust_endianness(Adjuster) noexcept {}
 
     static ethernet_address read(const char* p) noexcept {
         ethernet_address ea;

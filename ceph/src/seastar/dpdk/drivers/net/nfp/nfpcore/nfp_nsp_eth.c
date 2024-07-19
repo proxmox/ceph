@@ -7,6 +7,7 @@
 #include <rte_common.h>
 #include <rte_byteorder.h>
 #include "nfp_cpp.h"
+#include "nfp_logs.h"
 #include "nfp_nsp.h"
 #include "nfp6000/nfp6000.h"
 
@@ -43,30 +44,30 @@
 #define NSP_ETH_PORT_INDEX		GENMASK_ULL(15, 8)
 #define NSP_ETH_PORT_LABEL		GENMASK_ULL(53, 48)
 #define NSP_ETH_PORT_PHYLABEL		GENMASK_ULL(59, 54)
-#define NSP_ETH_PORT_FEC_SUPP_BASER	BIT_ULL(60)
-#define NSP_ETH_PORT_FEC_SUPP_RS	BIT_ULL(61)
+#define NSP_ETH_PORT_FEC_SUPP_BASER	RTE_BIT64(60)
+#define NSP_ETH_PORT_FEC_SUPP_RS	RTE_BIT64(61)
 
 #define NSP_ETH_PORT_LANES_MASK		rte_cpu_to_le_64(NSP_ETH_PORT_LANES)
 
-#define NSP_ETH_STATE_CONFIGURED	BIT_ULL(0)
-#define NSP_ETH_STATE_ENABLED		BIT_ULL(1)
-#define NSP_ETH_STATE_TX_ENABLED	BIT_ULL(2)
-#define NSP_ETH_STATE_RX_ENABLED	BIT_ULL(3)
+#define NSP_ETH_STATE_CONFIGURED	RTE_BIT64(0)
+#define NSP_ETH_STATE_ENABLED		RTE_BIT64(1)
+#define NSP_ETH_STATE_TX_ENABLED	RTE_BIT64(2)
+#define NSP_ETH_STATE_RX_ENABLED	RTE_BIT64(3)
 #define NSP_ETH_STATE_RATE		GENMASK_ULL(11, 8)
 #define NSP_ETH_STATE_INTERFACE		GENMASK_ULL(19, 12)
 #define NSP_ETH_STATE_MEDIA		GENMASK_ULL(21, 20)
-#define NSP_ETH_STATE_OVRD_CHNG		BIT_ULL(22)
+#define NSP_ETH_STATE_OVRD_CHNG		RTE_BIT64(22)
 #define NSP_ETH_STATE_ANEG		GENMASK_ULL(25, 23)
 #define NSP_ETH_STATE_FEC		GENMASK_ULL(27, 26)
 
-#define NSP_ETH_CTRL_CONFIGURED		BIT_ULL(0)
-#define NSP_ETH_CTRL_ENABLED		BIT_ULL(1)
-#define NSP_ETH_CTRL_TX_ENABLED		BIT_ULL(2)
-#define NSP_ETH_CTRL_RX_ENABLED		BIT_ULL(3)
-#define NSP_ETH_CTRL_SET_RATE		BIT_ULL(4)
-#define NSP_ETH_CTRL_SET_LANES		BIT_ULL(5)
-#define NSP_ETH_CTRL_SET_ANEG		BIT_ULL(6)
-#define NSP_ETH_CTRL_SET_FEC		BIT_ULL(7)
+#define NSP_ETH_CTRL_CONFIGURED		RTE_BIT64(0)
+#define NSP_ETH_CTRL_ENABLED		RTE_BIT64(1)
+#define NSP_ETH_CTRL_TX_ENABLED		RTE_BIT64(2)
+#define NSP_ETH_CTRL_RX_ENABLED		RTE_BIT64(3)
+#define NSP_ETH_CTRL_SET_RATE		RTE_BIT64(4)
+#define NSP_ETH_CTRL_SET_LANES		RTE_BIT64(5)
+#define NSP_ETH_CTRL_SET_ANEG		RTE_BIT64(6)
+#define NSP_ETH_CTRL_SET_FEC		RTE_BIT64(7)
 
 /* Which connector port. */
 #define PORT_TP			0x00
@@ -114,7 +115,7 @@ union eth_table_entry {
 	struct {
 		uint64_t port;
 		uint64_t state;
-		uint8_t mac_addr[6];
+		uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 		uint8_t resv[2];
 		uint64_t control;
 	};
@@ -138,7 +139,7 @@ nfp_eth_rate2speed(enum nfp_eth_rate rate)
 {
 	int i;
 
-	for (i = 0; i < (int)ARRAY_SIZE(nsp_eth_rate_tbl); i++)
+	for (i = 0; i < (int)RTE_DIM(nsp_eth_rate_tbl); i++)
 		if (nsp_eth_rate_tbl[i].rate == rate)
 			return nsp_eth_rate_tbl[i].speed;
 
@@ -150,7 +151,7 @@ nfp_eth_speed2rate(unsigned int speed)
 {
 	int i;
 
-	for (i = 0; i < (int)ARRAY_SIZE(nsp_eth_rate_tbl); i++)
+	for (i = 0; i < (int)RTE_DIM(nsp_eth_rate_tbl); i++)
 		if (nsp_eth_rate_tbl[i].speed == speed)
 			return nsp_eth_rate_tbl[i].rate;
 
@@ -162,8 +163,8 @@ nfp_eth_copy_mac_reverse(uint8_t *dst, const uint8_t *src)
 {
 	int i;
 
-	for (i = 0; i < (int)ETH_ALEN; i++)
-		dst[ETH_ALEN - i - 1] = src[i];
+	for (i = 0; i < RTE_ETHER_ADDR_LEN; i++)
+		dst[RTE_ETHER_ADDR_LEN - i - 1] = src[i];
 }
 
 static void
@@ -193,7 +194,7 @@ nfp_eth_port_translate(struct nfp_nsp *nsp, const union eth_table_entry *src,
 	dst->interface = FIELD_GET(NSP_ETH_STATE_INTERFACE, state);
 	dst->media = FIELD_GET(NSP_ETH_STATE_MEDIA, state);
 
-	nfp_eth_copy_mac_reverse(dst->mac_addr, src->mac_addr);
+	nfp_eth_copy_mac_reverse(&dst->mac_addr.addr_bytes[0], src->mac_addr);
 
 	dst->label_port = FIELD_GET(NSP_ETH_PORT_PHYLABEL, port);
 	dst->label_subport = FIELD_GET(NSP_ETH_PORT_LABEL, port);
@@ -236,7 +237,7 @@ nfp_eth_calc_port_geometry(struct nfp_eth_table *table)
 				continue;
 			if (table->ports[i].label_subport ==
 			    table->ports[j].label_subport)
-				printf("Port %d subport %d is a duplicate\n",
+				PMD_DRV_LOG(DEBUG, "Port %d subport %d is a duplicate",
 					 table->ports[i].label_port,
 					 table->ports[i].label_subport);
 
@@ -266,43 +267,53 @@ __nfp_eth_read_ports(struct nfp_nsp *nsp)
 	struct nfp_eth_table *table;
 	uint32_t table_sz;
 	int i, j, ret, cnt = 0;
+	const struct rte_ether_addr *mac;
 
 	entries = malloc(NSP_ETH_TABLE_SIZE);
-	if (!entries)
+	if (entries == NULL)
 		return NULL;
 
 	memset(entries, 0, NSP_ETH_TABLE_SIZE);
 	ret = nfp_nsp_read_eth_table(nsp, entries, NSP_ETH_TABLE_SIZE);
 	if (ret < 0) {
-		printf("reading port table failed %d\n", ret);
+		PMD_DRV_LOG(ERR, "reading port table failed %d", ret);
 		goto err;
 	}
 
-	for (i = 0; i < NSP_ETH_MAX_COUNT; i++)
-		if (entries[i].port & NSP_ETH_PORT_LANES_MASK)
+	/* The NFP3800 NIC support 8 ports, but only 2 ports are valid,
+	 * the rest 6 ports mac are all 0, ensure we don't use these port
+	 */
+	for (i = 0; i < NSP_ETH_MAX_COUNT; i++) {
+		mac = (const struct rte_ether_addr *)entries[i].mac_addr;
+		if ((entries[i].port & NSP_ETH_PORT_LANES_MASK) &&
+				!rte_is_zero_ether_addr(mac))
 			cnt++;
+	}
 
 	/* Some versions of flash will give us 0 instead of port count. For
 	 * those that give a port count, verify it against the value calculated
 	 * above.
 	 */
 	if (ret && ret != cnt) {
-		printf("table entry count (%d) unmatch entries present (%d)\n",
+		PMD_DRV_LOG(ERR, "table entry count (%d) unmatch entries present (%d)",
 		       ret, cnt);
 		goto err;
 	}
 
 	table_sz = sizeof(*table) + sizeof(struct nfp_eth_table_port) * cnt;
 	table = malloc(table_sz);
-	if (!table)
+	if (table == NULL)
 		goto err;
 
 	memset(table, 0, table_sz);
 	table->count = cnt;
-	for (i = 0, j = 0; i < NSP_ETH_MAX_COUNT; i++)
-		if (entries[i].port & NSP_ETH_PORT_LANES_MASK)
+	for (i = 0, j = 0; i < NSP_ETH_MAX_COUNT; i++) {
+		mac = (const struct rte_ether_addr *)entries[i].mac_addr;
+		if ((entries[i].port & NSP_ETH_PORT_LANES_MASK) &&
+				!rte_is_zero_ether_addr(mac))
 			nfp_eth_port_translate(nsp, &entries[i], i,
-					       &table->ports[j++]);
+					&table->ports[j++]);
+	}
 
 	nfp_eth_calc_port_geometry(table);
 	for (i = 0; i < (int)table->count; i++)
@@ -333,7 +344,7 @@ nfp_eth_read_ports(struct nfp_cpp *cpp)
 	struct nfp_nsp *nsp;
 
 	nsp = nfp_nsp_open(cpp);
-	if (!nsp)
+	if (nsp == NULL)
 		return NULL;
 
 	ret = __nfp_eth_read_ports(nsp);
@@ -350,24 +361,24 @@ nfp_eth_config_start(struct nfp_cpp *cpp, unsigned int idx)
 	int ret;
 
 	entries = malloc(NSP_ETH_TABLE_SIZE);
-	if (!entries)
+	if (entries == NULL)
 		return NULL;
 
 	memset(entries, 0, NSP_ETH_TABLE_SIZE);
 	nsp = nfp_nsp_open(cpp);
-	if (!nsp) {
+	if (nsp == NULL) {
 		free(entries);
 		return nsp;
 	}
 
 	ret = nfp_nsp_read_eth_table(nsp, entries, NSP_ETH_TABLE_SIZE);
 	if (ret < 0) {
-		printf("reading port table failed %d\n", ret);
+		PMD_DRV_LOG(ERR, "reading port table failed %d", ret);
 		goto err;
 	}
 
-	if (!(entries[idx].port & NSP_ETH_PORT_LANES_MASK)) {
-		printf("trying to set port state on disabled port %d\n", idx);
+	if ((entries[idx].port & NSP_ETH_PORT_LANES_MASK) == 0) {
+		PMD_DRV_LOG(ERR, "trying to set port state on disabled port %d", idx);
 		goto err;
 	}
 
@@ -443,7 +454,7 @@ nfp_eth_set_mod_enable(struct nfp_cpp *cpp, unsigned int idx, int enable)
 	uint64_t reg;
 
 	nsp = nfp_eth_config_start(cpp, idx);
-	if (!nsp)
+	if (nsp == NULL)
 		return -1;
 
 	entries = nfp_nsp_config_entries(nsp);
@@ -483,7 +494,7 @@ nfp_eth_set_configured(struct nfp_cpp *cpp, unsigned int idx, int configed)
 	uint64_t reg;
 
 	nsp = nfp_eth_config_start(cpp, idx);
-	if (!nsp)
+	if (nsp == NULL)
 		return -EIO;
 
 	/*
@@ -525,7 +536,7 @@ nfp_eth_set_bit_config(struct nfp_nsp *nsp, unsigned int raw_idx,
 	 *	 codes were initially not populated correctly.
 	 */
 	if (nfp_nsp_get_abi_ver_minor(nsp) < 17) {
-		printf("set operations not supported, please update flash\n");
+		PMD_DRV_LOG(ERR, "set operations not supported, please update flash");
 		return -EOPNOTSUPP;
 	}
 
@@ -606,7 +617,7 @@ nfp_eth_set_fec(struct nfp_cpp *cpp, unsigned int idx, enum nfp_eth_fec mode)
 	int err;
 
 	nsp = nfp_eth_config_start(cpp, idx);
-	if (!nsp)
+	if (nsp == NULL)
 		return -EIO;
 
 	err = __nfp_eth_set_fec(nsp, mode);
@@ -637,8 +648,7 @@ __nfp_eth_set_speed(struct nfp_nsp *nsp, unsigned int speed)
 
 	rate = nfp_eth_speed2rate(speed);
 	if (rate == RATE_INVALID) {
-		printf("could not find matching lane rate for speed %u\n",
-			 speed);
+		PMD_DRV_LOG(ERR, "could not find matching lane rate for speed %u", speed);
 		return -EINVAL;
 	}
 

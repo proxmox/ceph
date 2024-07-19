@@ -13,6 +13,7 @@
 #include <rgw/rgw_b64.h>
 #include <rgw/rgw_rest_s3.h>
 #include "include/ceph_assert.h"
+#include "include/function2.hpp"
 #include "crypto/crypto_accel.h"
 #include "crypto/crypto_plugin.h"
 #include "rgw/rgw_kms.h"
@@ -288,7 +289,7 @@ mec_option::empty };
 }
 
 
-CryptoAccelRef get_crypto_accel(const DoutPrefixProvider* dpp, CephContext *cct)
+CryptoAccelRef get_crypto_accel(const DoutPrefixProvider* dpp, CephContext *cct, const size_t chunk_size, const size_t max_requests)
 {
   CryptoAccelRef ca_impl = nullptr;
   stringstream ss;
@@ -300,7 +301,7 @@ CryptoAccelRef get_crypto_accel(const DoutPrefixProvider* dpp, CephContext *cct)
     ldpp_dout(dpp, -1) << __func__ << " cannot load crypto accelerator of type " << crypto_accel_type << dendl;
     return nullptr;
   }
-  int err = factory->factory(&ca_impl, &ss);
+  int err = factory->factory(&ca_impl, &ss, chunk_size, max_requests);
   if (err) {
     ldpp_dout(dpp, -1) << __func__ << " factory return error " << err <<
         " with description: " << ss.str() << dendl;
@@ -404,6 +405,7 @@ public:
   static const size_t AES_256_KEYSIZE = 256 / 8;
   static const size_t AES_256_IVSIZE = 128 / 8;
   static const size_t CHUNK_SIZE = 4096;
+  static const size_t QAT_MIN_SIZE = 65536;
   const DoutPrefixProvider* dpp;
 private:
   static const uint8_t IV[AES_256_IVSIZE];
@@ -442,33 +444,55 @@ public:
                      size_t size,
                      off_t stream_offset,
                      const unsigned char (&key)[AES_256_KEYSIZE],
-                     bool encrypt)
+                     bool encrypt,
+                     optional_yield y)
   {
     static std::atomic<bool> failed_to_get_crypto(false);
     CryptoAccelRef crypto_accel;
     if (! failed_to_get_crypto.load())
     {
-      crypto_accel = get_crypto_accel(this->dpp, cct);
+      static size_t max_requests = g_ceph_context->_conf->rgw_thread_pool_size;
+      crypto_accel = get_crypto_accel(this->dpp, cct, CHUNK_SIZE, max_requests);
       if (!crypto_accel)
         failed_to_get_crypto = true;
     }
-    bool result = true;
-    unsigned char iv[AES_256_IVSIZE];
-    for (size_t offset = 0; result && (offset < size); offset += CHUNK_SIZE) {
-      size_t process_size = offset + CHUNK_SIZE <= size ? CHUNK_SIZE : size - offset;
-      prepare_iv(iv, stream_offset + offset);
-      if (crypto_accel != nullptr) {
-        if (encrypt) {
-          result = crypto_accel->cbc_encrypt(out + offset, in + offset,
-                                             process_size, iv, key);
-        } else {
-          result = crypto_accel->cbc_decrypt(out + offset, in + offset,
-                                             process_size, iv, key);
-        }
+    bool result = false;
+    static std::string accelerator = cct->_conf->plugin_crypto_accelerator;
+    if (accelerator == "crypto_qat" && crypto_accel != nullptr && size >= QAT_MIN_SIZE) {
+      // now, batch mode is only for QAT plugin
+      size_t iv_num = size / CHUNK_SIZE;
+      if (size % CHUNK_SIZE) ++iv_num;
+      auto iv = new unsigned char[iv_num][AES_256_IVSIZE];
+      for (size_t offset = 0, i = 0; offset < size; offset += CHUNK_SIZE, i++) {
+        prepare_iv(iv[i], stream_offset + offset);
+      }
+      if (encrypt) {
+        result = crypto_accel->cbc_encrypt_batch(out, in, size, iv, key, y);
       } else {
-        result = cbc_transform(
-            out + offset, in + offset, process_size,
-            iv, key, encrypt);
+        result = crypto_accel->cbc_decrypt_batch(out, in, size, iv, key, y);
+      }
+      delete[] iv;
+    }
+    if (result == false) {
+      // If QAT don't have free instance, we can fall back to this
+      result = true;
+      unsigned char iv[AES_256_IVSIZE];
+      for (size_t offset = 0; result && (offset < size); offset += CHUNK_SIZE) {
+        size_t process_size = offset + CHUNK_SIZE <= size ? CHUNK_SIZE : size - offset;
+        prepare_iv(iv, stream_offset + offset);
+        if (crypto_accel != nullptr && accelerator != "crypto_qat") {
+          if (encrypt) {
+            result = crypto_accel->cbc_encrypt(out + offset, in + offset,
+                                              process_size, iv, key, y);
+          } else {
+            result = crypto_accel->cbc_decrypt(out + offset, in + offset,
+                                              process_size, iv, key, y);
+          }
+        } else {
+          result = cbc_transform(
+              out + offset, in + offset, process_size,
+              iv, key, encrypt);
+        }
       }
     }
     return result;
@@ -479,7 +503,8 @@ public:
                off_t in_ofs,
                size_t size,
                bufferlist& output,
-               off_t stream_offset)
+               off_t stream_offset,
+               optional_yield y)
   {
     bool result = false;
     size_t aligned_size = size / AES_256_IVSIZE * AES_256_IVSIZE;
@@ -493,7 +518,7 @@ public:
     result = cbc_transform(buf_raw,
                            input_raw + in_ofs,
                            aligned_size,
-                           stream_offset, key, true);
+                           stream_offset, key, true, y);
     if (result && (unaligned_rest_size > 0)) {
       /* remainder to encrypt */
       if (aligned_size % CHUNK_SIZE > 0) {
@@ -534,7 +559,8 @@ public:
                off_t in_ofs,
                size_t size,
                bufferlist& output,
-               off_t stream_offset)
+               off_t stream_offset,
+               optional_yield y)
   {
     bool result = false;
     size_t aligned_size = size / AES_256_IVSIZE * AES_256_IVSIZE;
@@ -548,7 +574,7 @@ public:
     result = cbc_transform(buf_raw,
                            input_raw + in_ofs,
                            aligned_size,
-                           stream_offset, key, false);
+                           stream_offset, key, false, y);
     if (result && unaligned_rest_size > 0) {
       /* remainder to decrypt */
       if (aligned_size % CHUNK_SIZE > 0) {
@@ -636,7 +662,8 @@ RGWGetObj_BlockDecrypt::RGWGetObj_BlockDecrypt(const DoutPrefixProvider *dpp,
                                                CephContext* cct,
                                                RGWGetObj_Filter* next,
                                                std::unique_ptr<BlockCrypt> crypt,
-                                               std::vector<size_t> parts_len)
+                                               std::vector<size_t> parts_len,
+                                               optional_yield y)
     :
     RGWGetObj_Filter(next),
     dpp(dpp),
@@ -646,6 +673,7 @@ RGWGetObj_BlockDecrypt::RGWGetObj_BlockDecrypt(const DoutPrefixProvider *dpp,
     ofs(0),
     end(0),
     cache(),
+    y(y),
     parts_len(std::move(parts_len))
 {
   block_size = this->crypt->get_block_size();
@@ -728,7 +756,7 @@ int RGWGetObj_BlockDecrypt::fixup_range(off_t& bl_ofs, off_t& bl_end) {
 int RGWGetObj_BlockDecrypt::process(bufferlist& in, size_t part_ofs, size_t size)
 {
   bufferlist data;
-  if (!crypt->decrypt(in, 0, size, data, part_ofs)) {
+  if (!crypt->decrypt(in, 0, size, data, part_ofs, y)) {
     return -ERR_INTERNAL_ERROR;
   }
   off_t send_size = size - enc_begin_skip;
@@ -801,12 +829,14 @@ int RGWGetObj_BlockDecrypt::flush() {
 RGWPutObj_BlockEncrypt::RGWPutObj_BlockEncrypt(const DoutPrefixProvider *dpp,
                                                CephContext* cct,
                                                rgw::sal::DataProcessor *next,
-                                               std::unique_ptr<BlockCrypt> crypt)
+                                               std::unique_ptr<BlockCrypt> crypt,
+                                               optional_yield y)
   : Pipe(next),
     dpp(dpp),
     cct(cct),
     crypt(std::move(crypt)),
-    block_size(this->crypt->get_block_size())
+    block_size(this->crypt->get_block_size()),
+    y(y)
 {
 }
 
@@ -828,7 +858,7 @@ int RGWPutObj_BlockEncrypt::process(bufferlist&& data, uint64_t logical_offset)
   if (proc_size > 0) {
     bufferlist in, out;
     cache.splice(0, proc_size, &in);
-    if (!crypt->encrypt(in, 0, proc_size, out, logical_offset)) {
+    if (!crypt->encrypt(in, 0, proc_size, out, logical_offset, y)) {
       return -ERR_INTERNAL_ERROR;
     }
     int r = Pipe::process(std::move(out), logical_offset);
@@ -935,7 +965,13 @@ std::string expand_key_name(req_state *s, const std::string_view&t)
       continue;
     }
     if (t.compare(i+1, 8, "owner_id") == 0) {
-      r.append(s->bucket->get_info().owner.id);
+      r.append(std::visit(fu2::overload(
+          [] (const rgw_user& user_id) -> const std::string& {
+            return user_id.id;
+          },
+          [] (const rgw_account_id& account_id) -> const std::string& {
+            return account_id;
+          }), s->bucket->get_info().owner));
       i += 9;
       continue;
     }
@@ -944,8 +980,8 @@ std::string expand_key_name(req_state *s, const std::string_view&t)
   return r;
 }
 
-static int get_sse_s3_bucket_key(req_state *s,
-                          std::string &key_id)
+static int get_sse_s3_bucket_key(req_state *s, optional_yield y,
+                                 std::string &key_id)
 {
   int res;
   std::string saved_key;
@@ -964,7 +1000,7 @@ static int get_sse_s3_bucket_key(req_state *s,
     ldpp_dout(s, 5) << "Found KEK ID: " << key_id << dendl;
   }
   if (saved_key != key_id) {
-    res = create_sse_s3_bucket_key(s, s->cct, key_id);
+    res = create_sse_s3_bucket_key(s, key_id, y);
     if (res != 0) {
       return res;
     }
@@ -977,7 +1013,7 @@ static int get_sse_s3_bucket_key(req_state *s,
       if (res != -ECANCELED) {
         break;
       }
-      res = s->bucket->try_refresh_info(s, nullptr);
+      res = s->bucket->try_refresh_info(s, nullptr, s->yield);
       if (res != 0) {
         break;
       }
@@ -991,7 +1027,7 @@ static int get_sse_s3_bucket_key(req_state *s,
   return 0;
 }
 
-int rgw_s3_prepare_encrypt(req_state* s,
+int rgw_s3_prepare_encrypt(req_state* s, optional_yield y,
                            std::map<std::string, ceph::bufferlist>& attrs,
                            std::unique_ptr<BlockCrypt>* block_crypt,
                            std::map<std::string, std::string>& crypt_http_responses)
@@ -1140,7 +1176,7 @@ int rgw_s3_prepare_encrypt(req_state* s,
         set_attr(attrs, RGW_ATTR_CRYPT_KEYSEL, key_selector);
         set_attr(attrs, RGW_ATTR_CRYPT_CONTEXT, cooked_context);
         std::string actual_key;
-        res = make_actual_key_from_kms(s, s->cct, attrs, actual_key);
+        res = make_actual_key_from_kms(s, attrs, y, actual_key);
         if (res != 0) {
           ldpp_dout(s, 5) << "ERROR: failed to retrieve actual key from key_id: " << key_id << dendl;
           s->err.message = "Failed to retrieve the actual key, kms-keyid: " + std::string(key_id);
@@ -1186,7 +1222,7 @@ int rgw_s3_prepare_encrypt(req_state* s,
         return res;
 
       std::string key_id;
-      res = get_sse_s3_bucket_key(s, key_id);
+      res = get_sse_s3_bucket_key(s, y, key_id);
       if (res != 0) {
         return res;
       }
@@ -1197,7 +1233,7 @@ int rgw_s3_prepare_encrypt(req_state* s,
       set_attr(attrs, RGW_ATTR_CRYPT_MODE, "AES256");
       set_attr(attrs, RGW_ATTR_CRYPT_KEYID, key_id);
       std::string actual_key;
-      res = make_actual_key_from_sse_s3(s, s->cct, attrs, actual_key);
+      res = make_actual_key_from_sse_s3(s, attrs, y, actual_key);
       if (res != 0) {
         ldpp_dout(s, 5) << "ERROR: failed to retrieve actual key from key_id: " << key_id << dendl;
         s->err.message = "Failed to retrieve the actual key";
@@ -1264,10 +1300,10 @@ int rgw_s3_prepare_encrypt(req_state* s,
 }
 
 
-int rgw_s3_prepare_decrypt(req_state* s,
-                       map<string, bufferlist>& attrs,
-                       std::unique_ptr<BlockCrypt>* block_crypt,
-                       std::map<std::string, std::string>& crypt_http_responses)
+int rgw_s3_prepare_decrypt(req_state* s, optional_yield y,
+                           map<string, bufferlist>& attrs,
+                           std::unique_ptr<BlockCrypt>* block_crypt,
+                           std::map<std::string, std::string>& crypt_http_responses)
 {
   int res = 0;
   std::string stored_mode = get_str_attribute(attrs, RGW_ATTR_CRYPT_MODE);
@@ -1371,7 +1407,7 @@ int rgw_s3_prepare_decrypt(req_state* s,
     /* try to retrieve actual key */
     std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
     std::string actual_key;
-    res = reconstitute_actual_key_from_kms(s, s->cct, attrs, actual_key);
+    res = reconstitute_actual_key_from_kms(s, attrs, y, actual_key);
     if (res != 0) {
       ldpp_dout(s, 10) << "ERROR: failed to retrieve actual key from key_id: " << key_id << dendl;
       s->err.message = "Failed to retrieve the actual key, kms-keyid: " + key_id;
@@ -1441,7 +1477,7 @@ int rgw_s3_prepare_decrypt(req_state* s,
     /* try to retrieve actual key */
     std::string key_id = get_str_attribute(attrs, RGW_ATTR_CRYPT_KEYID);
     std::string actual_key;
-    res = reconstitute_actual_key_from_sse_s3(s, s->cct, attrs, actual_key);
+    res = reconstitute_actual_key_from_sse_s3(s, attrs, y, actual_key);
     if (res != 0) {
       ldpp_dout(s, 10) << "ERROR: failed to retrieve actual key" << dendl;
       s->err.message = "Failed to retrieve the actual key";
@@ -1468,7 +1504,7 @@ int rgw_s3_prepare_decrypt(req_state* s,
   return 0;
 }
 
-int rgw_remove_sse_s3_bucket_key(req_state *s)
+int rgw_remove_sse_s3_bucket_key(req_state *s, optional_yield y)
 {
   int res;
   auto key_id { expand_key_name(s, s->cct->_conf->rgw_crypt_sse_s3_key_template) };
@@ -1494,7 +1530,7 @@ int rgw_remove_sse_s3_bucket_key(req_state *s)
     return 0;
   }
   ldpp_dout(s, 5) << "Removing valid KEK ID: " << saved_key << dendl;
-  res = remove_sse_s3_bucket_key(s, s->cct, saved_key);
+  res = remove_sse_s3_bucket_key(s, saved_key, y);
   if (res != 0) {
     ldpp_dout(s, 0) << "ERROR: Unable to remove KEK ID: " << saved_key << " got " << res << dendl;
   }
@@ -1506,7 +1542,7 @@ int rgw_remove_sse_s3_bucket_key(req_state *s)
 *	I've left some commented out lines above.  They are there for
 *	a reason, which I will explain.  The "canonical" json constructed
 *	by the code above as a crypto context must take a json object and
-*	turn it into a unique determinstic fixed form.  For most json
+*	turn it into a unique deterministic fixed form.  For most json
 *	types this is easy.  The hardest problem that is handled above is
 *	detailing with unicode strings; they must be turned into
 *	NFC form and sorted in a fixed order.  Numbers, however,

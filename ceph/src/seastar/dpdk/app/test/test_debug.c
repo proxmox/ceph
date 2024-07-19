@@ -2,8 +2,23 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include "test.h"
+
 #include <stdio.h>
 #include <stdint.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_debug(void)
+{
+	printf("debug not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
+#include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -11,8 +26,6 @@
 #include <rte_common.h>
 #include <rte_eal.h>
 #include <rte_service_component.h>
-
-#include "test.h"
 
 /*
  * Debug test
@@ -28,9 +41,14 @@ test_panic(void)
 
 	pid = fork();
 
-	if (pid == 0)
+	if (pid == 0) {
+		struct rlimit rl;
+
+		/* No need to generate a coredump when panicking. */
+		rl.rlim_cur = rl.rlim_max = 0;
+		setrlimit(RLIMIT_CORE, &rl);
 		rte_panic("Test Debug\n");
-	else if (pid < 0){
+	} else if (pid < 0) {
 		printf("Fork Failed\n");
 		return -1;
 	}
@@ -66,13 +84,11 @@ test_exit_val(int exit_val)
 	}
 	wait(&status);
 	printf("Child process status: %d\n", status);
-#ifndef RTE_EAL_ALWAYS_PANIC_ON_ERROR
 	if(!WIFEXITED(status) || WEXITSTATUS(status) != (uint8_t)exit_val){
 		printf("Child process terminated with incorrect status (expected = %d)!\n",
 				exit_val);
 		return -1;
 	}
-#endif
 	return 0;
 }
 
@@ -81,7 +97,7 @@ test_exit(void)
 {
 	int test_vals[] = { 0, 1, 2, 255, -1 };
 	unsigned i;
-	for (i = 0; i < sizeof(test_vals) / sizeof(test_vals[0]); i++){
+	for (i = 0; i < RTE_DIM(test_vals); i++) {
 		if (test_exit_val(test_vals[i]) < 0)
 			return -1;
 	}
@@ -113,7 +129,6 @@ static int
 test_debug(void)
 {
 	rte_dump_stack();
-	rte_dump_registers();
 	if (test_panic() < 0)
 		return -1;
 	if (test_exit() < 0)
@@ -122,5 +137,7 @@ test_debug(void)
 		return -1;
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(debug_autotest, test_debug);

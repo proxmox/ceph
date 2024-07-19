@@ -13,10 +13,13 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/module.h>
 #include <sys/proc.h>
+#include <sys/lock.h>
 #include <sys/rwlock.h>
+#include <sys/mutex.h>
 #include <sys/systm.h>
 #include <sys/sysctl.h>
 #include <sys/vmmeter.h>
+#include <sys/eventhandler.h>
 
 #include <machine/bus.h>
 
@@ -108,7 +111,7 @@ static struct cdevsw contigmem_ops = {
 };
 
 static int
-contigmem_load()
+contigmem_load(void)
 {
 	char index_string[8], description[32];
 	int  i, error = 0;
@@ -162,9 +165,11 @@ contigmem_load()
 
 error:
 	for (i = 0; i < contigmem_num_buffers; i++) {
-		if (contigmem_buffers[i].addr != NULL)
+		if (contigmem_buffers[i].addr != NULL) {
 			contigfree(contigmem_buffers[i].addr,
 				contigmem_buffer_size, M_CONTIGMEM);
+			contigmem_buffers[i].addr = NULL;
+		}
 		if (mtx_initialized(&contigmem_buffers[i].mtx))
 			mtx_destroy(&contigmem_buffers[i].mtx);
 	}
@@ -173,7 +178,7 @@ error:
 }
 
 static int
-contigmem_unload()
+contigmem_unload(void)
 {
 	int i;
 
@@ -294,19 +299,22 @@ contigmem_cdev_pager_fault(vm_object_t object, vm_ooffset_t offset, int prot,
 		VM_OBJECT_WLOCK(object);
 		vm_page_updatefake(page, paddr, memattr);
 	} else {
-		vm_page_t mret;
 		/*
 		 * Replace the passed in reqpage page with our own fake page and
 		 * free up the original page.
 		 */
 		page = vm_page_getfake(paddr, memattr);
 		VM_OBJECT_WLOCK(object);
-		mret = vm_page_replace(page, object, (*mres)->pindex);
+#if __FreeBSD__ >= 13
+		vm_page_replace(page, object, (*mres)->pindex, *mres);
+#else
+		vm_page_t mret = vm_page_replace(page, object, (*mres)->pindex);
 		KASSERT(mret == *mres,
 		    ("invalid page replacement, old=%p, ret=%p", *mres, mret));
 		vm_page_lock(mret);
 		vm_page_free(mret);
 		vm_page_unlock(mret);
+#endif
 		*mres = page;
 	}
 

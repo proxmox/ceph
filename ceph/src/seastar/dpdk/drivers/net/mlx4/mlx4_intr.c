@@ -8,7 +8,6 @@
  * Interrupts handling for mlx4 driver.
  */
 
-#include <assert.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -24,7 +23,7 @@
 
 #include <rte_alarm.h>
 #include <rte_errno.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_io.h>
 #include <rte_interrupts.h>
 
@@ -44,12 +43,12 @@ static int mlx4_link_status_check(struct mlx4_priv *priv);
 static void
 mlx4_rx_intr_vec_disable(struct mlx4_priv *priv)
 {
-	struct rte_intr_handle *intr_handle = &priv->intr_handle;
+	struct rte_intr_handle *intr_handle = priv->intr_handle;
 
 	rte_intr_free_epoll_fd(intr_handle);
-	free(intr_handle->intr_vec);
-	intr_handle->nb_efd = 0;
-	intr_handle->intr_vec = NULL;
+	rte_intr_vec_list_free(intr_handle);
+
+	rte_intr_nb_efd_set(intr_handle, 0);
 }
 
 /**
@@ -68,11 +67,10 @@ mlx4_rx_intr_vec_enable(struct mlx4_priv *priv)
 	unsigned int rxqs_n = ETH_DEV(priv)->data->nb_rx_queues;
 	unsigned int n = RTE_MIN(rxqs_n, (uint32_t)RTE_MAX_RXTX_INTR_VEC_ID);
 	unsigned int count = 0;
-	struct rte_intr_handle *intr_handle = &priv->intr_handle;
+	struct rte_intr_handle *intr_handle = priv->intr_handle;
 
 	mlx4_rx_intr_vec_disable(priv);
-	intr_handle->intr_vec = malloc(n * sizeof(intr_handle->intr_vec[0]));
-	if (intr_handle->intr_vec == NULL) {
+	if (rte_intr_vec_list_alloc(intr_handle, NULL, n)) {
 		rte_errno = ENOMEM;
 		ERROR("failed to allocate memory for interrupt vector,"
 		      " Rx interrupts will not be supported");
@@ -84,9 +82,9 @@ mlx4_rx_intr_vec_enable(struct mlx4_priv *priv)
 		/* Skip queues that cannot request interrupts. */
 		if (!rxq || !rxq->channel) {
 			/* Use invalid intr_vec[] index to disable entry. */
-			intr_handle->intr_vec[i] =
-				RTE_INTR_VEC_RXTX_OFFSET +
-				RTE_MAX_RXTX_INTR_VEC_ID;
+			if (rte_intr_vec_list_index_set(intr_handle, i,
+			RTE_INTR_VEC_RXTX_OFFSET + RTE_MAX_RXTX_INTR_VEC_ID))
+				return -rte_errno;
 			continue;
 		}
 		if (count >= RTE_MAX_RXTX_INTR_VEC_ID) {
@@ -97,14 +95,21 @@ mlx4_rx_intr_vec_enable(struct mlx4_priv *priv)
 			mlx4_rx_intr_vec_disable(priv);
 			return -rte_errno;
 		}
-		intr_handle->intr_vec[i] = RTE_INTR_VEC_RXTX_OFFSET + count;
-		intr_handle->efds[count] = rxq->channel->fd;
+
+		if (rte_intr_vec_list_index_set(intr_handle, i,
+					RTE_INTR_VEC_RXTX_OFFSET + count))
+			return -rte_errno;
+
+		if (rte_intr_efds_index_set(intr_handle, i,
+						   rxq->channel->fd))
+			return -rte_errno;
+
 		count++;
 	}
 	if (!count)
 		mlx4_rx_intr_vec_disable(priv);
-	else
-		intr_handle->nb_efd = count;
+	else if (rte_intr_nb_efd_set(intr_handle, count))
+		return -rte_errno;
 	return 0;
 }
 
@@ -119,15 +124,15 @@ mlx4_rx_intr_vec_enable(struct mlx4_priv *priv)
 static void
 mlx4_link_status_alarm(struct mlx4_priv *priv)
 {
-	const struct rte_intr_conf *const intr_conf =
+	const struct rte_eth_intr_conf *const intr_conf =
 		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 
-	assert(priv->intr_alarm == 1);
+	MLX4_ASSERT(priv->intr_alarm == 1);
 	priv->intr_alarm = 0;
 	if (intr_conf->lsc && !mlx4_link_status_check(priv))
-		_rte_eth_dev_callback_process(ETH_DEV(priv),
-					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL);
+		rte_eth_dev_callback_process(ETH_DEV(priv),
+					     RTE_ETH_EVENT_INTR_LSC,
+					     NULL);
 }
 
 /**
@@ -184,7 +189,7 @@ mlx4_interrupt_handler(struct mlx4_priv *priv)
 	};
 	uint32_t caught[RTE_DIM(type)] = { 0 };
 	struct ibv_async_event event;
-	const struct rte_intr_conf *const intr_conf =
+	const struct rte_eth_intr_conf *const intr_conf =
 		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 	unsigned int i;
 
@@ -208,8 +213,8 @@ mlx4_interrupt_handler(struct mlx4_priv *priv)
 	}
 	for (i = 0; i != RTE_DIM(caught); ++i)
 		if (caught[i])
-			_rte_eth_dev_callback_process(ETH_DEV(priv), type[i],
-						      NULL);
+			rte_eth_dev_callback_process(ETH_DEV(priv), type[i],
+						     NULL);
 }
 
 /**
@@ -255,12 +260,13 @@ mlx4_intr_uninstall(struct mlx4_priv *priv)
 {
 	int err = rte_errno; /* Make sure rte_errno remains unchanged. */
 
-	if (priv->intr_handle.fd != -1) {
-		rte_intr_callback_unregister(&priv->intr_handle,
+	if (rte_intr_fd_get(priv->intr_handle) != -1) {
+		rte_intr_callback_unregister(priv->intr_handle,
 					     (void (*)(void *))
 					     mlx4_interrupt_handler,
 					     priv);
-		priv->intr_handle.fd = -1;
+		if (rte_intr_fd_set(priv->intr_handle, -1))
+			return -rte_errno;
 	}
 	rte_eal_alarm_cancel((void (*)(void *))mlx4_link_status_alarm, priv);
 	priv->intr_alarm = 0;
@@ -281,14 +287,16 @@ mlx4_intr_uninstall(struct mlx4_priv *priv)
 int
 mlx4_intr_install(struct mlx4_priv *priv)
 {
-	const struct rte_intr_conf *const intr_conf =
+	const struct rte_eth_intr_conf *const intr_conf =
 		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 	int rc;
 
 	mlx4_intr_uninstall(priv);
 	if (intr_conf->lsc | intr_conf->rmv) {
-		priv->intr_handle.fd = priv->ctx->async_fd;
-		rc = rte_intr_callback_register(&priv->intr_handle,
+		if (rte_intr_fd_set(priv->intr_handle, priv->ctx->async_fd))
+			return -rte_errno;
+
+		rc = rte_intr_callback_register(priv->intr_handle,
 						(void (*)(void *))
 						mlx4_interrupt_handler,
 						priv);
@@ -327,13 +335,20 @@ mlx4_rx_intr_disable(struct rte_eth_dev *dev, uint16_t idx)
 	} else {
 		ret = mlx4_glue->get_cq_event(rxq->cq->channel, &ev_cq,
 					      &ev_ctx);
-		if (ret || ev_cq != rxq->cq)
+		/** For non-zero ret save the errno (may be EAGAIN
+		 * which means the get_cq_event function was called before
+		 * receiving one).
+		 */
+		if (ret)
+			ret = errno;
+		else if (ev_cq != rxq->cq)
 			ret = EINVAL;
 	}
 	if (ret) {
 		rte_errno = ret;
-		WARN("unable to disable interrupt on rx queue %d",
-		     idx);
+		if (ret != EAGAIN)
+			WARN("unable to disable interrupt on rx queue %d",
+			     idx);
 	} else {
 		rxq->mcq.arm_sn++;
 		mlx4_glue->ack_cq_events(rxq->cq, 1);
@@ -380,7 +395,7 @@ mlx4_rx_intr_enable(struct rte_eth_dev *dev, uint16_t idx)
 int
 mlx4_rxq_intr_enable(struct mlx4_priv *priv)
 {
-	const struct rte_intr_conf *const intr_conf =
+	const struct rte_eth_intr_conf *const intr_conf =
 		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 
 	if (intr_conf->rxq && mlx4_rx_intr_vec_enable(priv) < 0)

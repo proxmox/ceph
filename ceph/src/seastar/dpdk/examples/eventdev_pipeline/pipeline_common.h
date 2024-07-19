@@ -51,10 +51,10 @@ struct fastpath_data {
 	bool rx_single;
 	bool tx_single;
 	bool sched_single;
-	unsigned int rx_core[MAX_NUM_CORE];
-	unsigned int tx_core[MAX_NUM_CORE];
-	unsigned int sched_core[MAX_NUM_CORE];
-	unsigned int worker_core[MAX_NUM_CORE];
+	uint64_t rx_core[MAX_NUM_CORE];
+	uint64_t tx_core[MAX_NUM_CORE];
+	uint64_t sched_core[MAX_NUM_CORE];
+	uint64_t worker_core[MAX_NUM_CORE];
 	struct setup_data cap;
 } __rte_cache_aligned;
 
@@ -93,19 +93,19 @@ struct port_link {
 	uint8_t priority;
 };
 
-struct fastpath_data *fdata;
-struct config_data cdata;
+extern struct fastpath_data *fdata;
+extern struct config_data cdata;
 
 static __rte_always_inline void
 exchange_mac(struct rte_mbuf *m)
 {
-	struct ether_hdr *eth;
-	struct ether_addr addr;
+	struct rte_ether_hdr *eth;
+	struct rte_ether_addr addr;
 
 	/* change mac addresses on packet (to use mbuf data) */
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
-	ether_addr_copy(&eth->d_addr, &addr);
-	ether_addr_copy(&addr, &eth->d_addr);
+	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	rte_ether_addr_copy(&eth->dst_addr, &addr);
+	rte_ether_addr_copy(&addr, &eth->dst_addr);
 }
 
 static __rte_always_inline void
@@ -138,6 +138,37 @@ schedule_devices(unsigned int lcore_id)
 		rte_service_run_iter_on_app_lcore(fdata->txadptr_service_id,
 				!fdata->tx_single);
 	}
+}
+
+static void
+event_port_flush(uint8_t dev_id __rte_unused, struct rte_event ev,
+		 void *args __rte_unused)
+{
+	rte_mempool_put(args, ev.event_ptr);
+}
+
+static inline void
+worker_cleanup(uint8_t dev_id, uint8_t port_id, struct rte_event events[],
+	       uint16_t nb_enq, uint16_t nb_deq)
+{
+	int i;
+
+	if (!(nb_deq - nb_enq))
+		return;
+
+	if (nb_deq) {
+		for (i = nb_enq; i < nb_deq; i++) {
+			if (events[i].op == RTE_EVENT_OP_RELEASE)
+				continue;
+			rte_pktmbuf_free(events[i].mbuf);
+		}
+
+		for (i = 0; i < nb_deq; i++)
+			events[i].op = RTE_EVENT_OP_RELEASE;
+		rte_event_enqueue_burst(dev_id, port_id, events, nb_deq);
+	}
+
+	rte_event_port_quiesce(dev_id, port_id, event_port_flush, NULL);
 }
 
 void set_worker_generic_setup_data(struct setup_data *caps, bool burst);

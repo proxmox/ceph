@@ -71,8 +71,6 @@ RX Port and associated core :numref:`dtg_rx_rate`.
    * Identify if port Speed and Duplex is matching to desired values with
      ``rte_eth_link_get``.
 
-   * Check ``DEV_RX_OFFLOAD_JUMBO_FRAME`` is set with ``rte_eth_dev_info_get``.
-
    * Check promiscuous mode if the drops do not occur for unique MAC address
      with ``rte_eth_promiscuous_get``.
 
@@ -307,13 +305,14 @@ Custom worker function :numref:`dtg_distributor_worker`.
 
 #. Configuration issue isolation
 
-   * Identify core role using ``rte_eal_lcore_role`` to identify RTE, OFF and
-     SERVICE. Check performance functions are mapped to run on the cores.
+   * Identify core role using ``rte_eal_lcore_role`` to identify RTE, OFF,
+     SERVICE and NON_EAL. Check performance functions are mapped to run on the
+     cores.
 
    * For high-performance execution logic ensure running it on correct NUMA
-     and non-master core.
+     and worker core.
 
-   * Analyze run logic with ``rte_dump_stack``, ``rte_dump_registers`` and
+   * Analyze run logic with ``rte_dump_stack`` and
      ``rte_memdump`` for more insights.
 
    * Make use of objdump to ensure opcode is matching to the desired state.

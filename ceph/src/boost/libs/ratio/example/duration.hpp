@@ -30,8 +30,8 @@ time2_demo contained this comment:
 #ifndef BOOST_EX_CHRONO_DURATION_HPP
 #define BOOST_EX_CHRONO_DURATION_HPP
 
-#include "config.hpp"
 #include "static_assert.hpp"
+#include <boost/config.hpp>
 
 //~ #include <iostream>
 

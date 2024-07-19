@@ -235,6 +235,7 @@ class OSDThrasher(Thrasher):
         self.random_eio = self.config.get('random_eio')
         self.chance_force_recovery = self.config.get('chance_force_recovery', 0.3)
         self.chance_reset_purged_snaps_last = self.config.get('chance_reset_purged_snaps_last', 0.3)
+        self.chance_trim_stale_osdmaps = self.config.get('chance_trim_stale_osdmaps', 0.3)
 
         num_osds = self.in_osds + self.out_osds
         self.max_pgs = self.config.get("max_pgs_per_pool_osd", 1200) * len(num_osds)
@@ -793,6 +794,19 @@ class OSDThrasher(Thrasher):
             except CommandFailedError:
                 self.log('Failed to reset_purged_snaps_last, ignoring')
 
+    def trim_stale_osdmaps(self):
+       """
+       Trim stale osdmaps
+       """
+       self.log('trim_stale_osdmaps')
+       for osd in self.in_osds:
+           try:
+               self.ceph_manager.raw_cluster_cmd(
+               'tell', "osd.%s" % (str(osd)),
+               'trim stale osdmaps')
+           except CommandFailedError:
+               self.log('Failed to trim stale osdmaps, ignoring')
+
     def all_up(self):
         """
         Make sure all osds are up and not out.
@@ -1245,6 +1259,8 @@ class OSDThrasher(Thrasher):
             actions.append((self.force_cancel_recovery, self.chance_force_recovery))
         if self.chance_reset_purged_snaps_last > 0:
             actions.append((self.reset_purged_snaps_last, self.chance_reset_purged_snaps_last))
+        if self.chance_trim_stale_osdmaps > 0:
+            actions.append((self.trim_stale_osdmaps, self.chance_trim_stale_osdmaps))
 
         for key in ['heartbeat_inject_failure', 'filestore_inject_stall']:
             for scenario in [
@@ -1543,8 +1559,6 @@ class CephManager:
         self.pre = ['adjust-ulimits', 'ceph-coverage',
                     f'{self.testdir}/archive/coverage']
         self.RADOS_CMD = self.pre + ['rados', '--cluster', self.cluster]
-        self.run_ceph_w_prefix = ['sudo', 'daemon-helper', 'kill', 'ceph',
-                                  '--cluster', self.cluster]
 
         pools = self.list_pools()
         self.pools = {}
@@ -1635,8 +1649,7 @@ class CephManager:
             client_id = client_id.replace('client.', '')
 
         keyring = self.run_cluster_cmd(args=f'auth get client.{client_id}',
-                                       stdout=StringIO()).\
-            stdout.getvalue().strip()
+                                       stdout=StringIO()).stdout.getvalue()
 
         assert isinstance(keyring, str) and keyring != ''
         return keyring
@@ -1650,7 +1663,7 @@ class CephManager:
                               'cluster', 'audit', ...
         :type watch_channel: str
         """
-        args = self.run_ceph_w_prefix + ['-w']
+        args = ['sudo', 'daemon-helper', 'kill', 'ceph', '--cluster', self.cluster, '-w']
         if watch_channel is not None:
             args.append("--watch-channel")
             args.append(watch_channel)

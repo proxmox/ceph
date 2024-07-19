@@ -14,7 +14,7 @@ checksum and segmentation offloads.
 Features and Limitations of Hyper-V PMD
 ---------------------------------------
 
-In this release, the hyper PMD driver provides the basic functionality of packet reception and transmission.
+In this release, the hyper PMD provides the basic functionality of packet reception and transmission.
 
 *   It supports merge-able buffers per packet when receiving packets and scattered buffer per packet
     when transmitting packets. The packet size supported is from 64 to 65536.
@@ -62,7 +62,7 @@ store it in a shell variable:
 
 .. _`UUID`: https://en.wikipedia.org/wiki/Universally_unique_identifier
 
-There are several possible ways to assign the uio device driver for a device.
+There are several possible ways to assign the UIO device driver for a device.
 The easiest way (but only on 4.18 or later)
 is to use the `driverctl Device Driver control utility`_ to override
 the normal kernel device.
@@ -102,8 +102,8 @@ The following prerequisites apply:
     to use the netvsc PMD with 4.16 kernel but it is limited to a single queue.
 
 
-Netvsc PMD arguments
---------------------
+Runtime Configuration
+---------------------
 
 The user can specify below argument in devargs.
 
@@ -116,3 +116,28 @@ The user can specify below argument in devargs.
     values save CPU cycles. This parameter is in microseconds.
     If the value is too large or too small it will be
     ignored by the host. (Default: 50)
+
+#.  ``rx_copybreak``:
+
+    The rx_copybreak sets the threshold where the driver uses an external
+    mbuf to avoid having to copy data. Setting 0 for copybreak will cause
+    driver to always create an external mbuf. Setting a value greater than
+    the MTU would prevent it from ever making an external mbuf and always
+    copy. The default value is 256 (bytes).
+
+#.  ``tx_copybreak``:
+
+    The tx_copybreak sets the threshold where the driver aggregates
+    multiple small packets into one request. If tx_copybreak is 0 then
+    each packet goes as a VMBus request (no copying). If tx_copybreak is
+    set larger than the MTU, then all packets smaller than the chunk size
+    of the VMBus send buffer will be copied; larger packets always have to
+    go as a single direct request. The default value is 512 (bytes).
+
+#.  ``rx_extmbuf_enable``:
+    The rx_extmbuf_enable is used to control if netvsc should use external
+    mbuf for receiving packets. The default value is 0. (netvsc doesn't use
+    external mbuf, it always allocates mbuf and copy received data to mbuf)
+    A non-zero value tells netvsc to attach external buffers to mbuf on
+    receiving packets, thus avoid copying memory. Use of external buffers
+    requires the application is able to read data from external mbuf.

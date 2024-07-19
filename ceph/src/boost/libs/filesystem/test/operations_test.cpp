@@ -100,6 +100,27 @@ inline void set_read_only(fs::path const& p)
     }
 }
 
+//! Converts path to a Windows long path
+inline fs::path make_long_path(fs::path const& p)
+{
+    fs::path lp;
+    // Long paths must be absolute, use preferred separators and not contain dot and dot-dot elements.
+    // Also, UNC paths must use the "\\?\UNC\" prefix.
+    fs::path np = p.lexically_normal();
+    np.make_preferred();
+    std::wstring rp = np.root_path().wstring();
+    if (rp.size() > 4u && rp[0] == L'\\' && rp[1] == '\\' && (rp[2] == L'?' || rp[2] == L'.') && rp[3] == '\\')
+        lp = rp;
+    else if (rp.size() > 2u && rp[0] == L'\\' && rp[1] == '\\')
+        lp = L"\\\\?\\UNC\\" + rp.substr(2);
+    else
+        lp = L"\\\\?\\" + rp;
+
+    lp /= np.relative_path();
+
+    return lp;
+}
+
 #else
 
 #include <unistd.h> // sleep
@@ -1069,6 +1090,18 @@ void predicate_and_status_tests()
     BOOST_TEST(!fs::is_regular_file(stat));
     BOOST_TEST(!fs::is_other(stat));
     BOOST_TEST(!fs::is_symlink(stat));
+
+#ifdef BOOST_WINDOWS_API
+    stat = fs::status(L"\\System Volume Information");
+    BOOST_TEST(fs::type_present(stat));
+    BOOST_TEST(fs::permissions_present(stat));
+    BOOST_TEST(fs::status_known(stat));
+    BOOST_TEST(fs::exists(stat));
+    BOOST_TEST(fs::is_directory(stat));
+    BOOST_TEST(!fs::is_regular_file(stat));
+    BOOST_TEST(!fs::is_other(stat));
+    BOOST_TEST(!fs::is_symlink(stat));
+#endif // BOOST_WINDOWS_API
 }
 
 //  create_directory_tests  ----------------------------------------------------------//
@@ -1199,7 +1232,7 @@ void create_directories_tests()
     BOOST_TEST(!ec);
 
 #ifdef BOOST_POSIX_API
-    if (geteuid() > 0)
+    if (access("/", W_OK) != 0)
     {
         ec.clear();
         BOOST_TEST(!fs::create_directories("/foo", ec)); // may be OK on Windows
@@ -1649,6 +1682,7 @@ void absolute_tests()
         BOOST_TEST_EQ(fs::absolute(fs::path("a:foo/bar"), "b:/"), fs::path("a:/foo/bar"));
         BOOST_TEST_EQ(fs::absolute(fs::path("a:foo/bar"), "b:/abc"), fs::path("a:/abc/foo/bar"));
         BOOST_TEST_EQ(fs::absolute(fs::path("a:foo/bar"), "b:/abc/def"), fs::path("a:/abc/def/foo/bar"));
+        BOOST_TEST_EQ(fs::absolute(fs::path("\\\\net\\share\\folder"), "c:\\"), fs::path("\\\\net\\share\\folder"));
     }
     // !p.has_root_name()
     //   p.has_root_directory()
@@ -1751,6 +1785,12 @@ void canonical_basic_tests()
 
     //  ticket 9683 test
     BOOST_TEST_EQ(fs::canonical(root / first / "../../../../.."), root);
+
+#ifdef BOOST_WINDOWS_API
+    // Test Windows long paths
+    fs::path long_path = make_long_path(dir / L"f0");
+    BOOST_TEST_EQ(fs::canonical(long_path), long_path);
+#endif
 }
 
 //  canonical_symlink_tests  -----------------------------------------------------------//
@@ -2078,6 +2118,16 @@ void symlink_status_tests()
     BOOST_TEST(fs::exists(users / "Default User"));
     BOOST_TEST(fs::is_symlink(users / "All Users"));    // dir /A reports <SYMLINKD>
     BOOST_TEST(fs::is_symlink(users / "Default User")); // dir /A reports <JUNCTION>
+
+    fs::file_status stat(fs::symlink_status(L"\\System Volume Information"));
+    BOOST_TEST(fs::type_present(stat));
+    BOOST_TEST(fs::permissions_present(stat));
+    BOOST_TEST(fs::status_known(stat));
+    BOOST_TEST(fs::exists(stat));
+    BOOST_TEST(fs::is_directory(stat));
+    BOOST_TEST(!fs::is_regular_file(stat));
+    BOOST_TEST(!fs::is_other(stat));
+    BOOST_TEST(!fs::is_symlink(stat));
 
 #endif
 }
@@ -2615,6 +2665,15 @@ void weakly_canonical_basic_tests()
     BOOST_TEST_EQ(fs::weakly_canonical(dir / "../no-such/foo/../bar"), dir.parent_path() / "no-such/bar");
     BOOST_TEST_EQ(fs::weakly_canonical(dir / "no-such/../f0"), dir / "f0"); // dir / "f0" exists, dir / "no-such" does not
     BOOST_TEST_EQ(fs::weakly_canonical("c:/no-such/foo/bar"), fs::path("c:/no-such/foo/bar"));
+
+#ifdef BOOST_WINDOWS_API
+    // Test Windows long paths
+    fs::path long_path = make_long_path(dir / L"f0");
+    BOOST_TEST_EQ(fs::weakly_canonical(long_path), long_path);
+
+    long_path = make_long_path(dir / L"no-such/foo/bar");
+    BOOST_TEST_EQ(fs::weakly_canonical(long_path), long_path);
+#endif
 }
 
 //  weakly_canonical_symlink_tests  --------------------------------------------------//

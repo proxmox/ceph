@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018 NXP
+ * Copyright 2018-2019 NXP
  */
 
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
 
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_atomic.h>
 #include <rte_interrupts.h>
 #include <rte_branch_prediction.h>
@@ -20,14 +20,8 @@
 #include "dpaa2_cmdif_logs.h"
 #include "rte_pmd_dpaa2_cmdif.h"
 
-/* Dynamic log type identifier */
-int dpaa2_cmdif_logtype;
-
 /* CMDIF driver name */
 #define DPAA2_CMDIF_PMD_NAME dpaa2_dpci
-
-/* CMDIF driver object */
-static struct rte_vdev_driver dpaa2_cmdif_drv;
 
 /*
  * This API provides the DPCI device ID in 'attr_value'.
@@ -65,6 +59,7 @@ dpaa2_cmdif_enqueue_bufs(struct rte_rawdev *dev,
 	struct qbman_fd fd;
 	struct qbman_eq_desc eqdesc;
 	struct qbman_swp *swp;
+	uint32_t retry_count = 0;
 	int ret;
 
 	RTE_SET_USED(count);
@@ -72,7 +67,9 @@ dpaa2_cmdif_enqueue_bufs(struct rte_rawdev *dev,
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret) {
-			DPAA2_CMDIF_ERR("Failure in affining portal\n");
+			DPAA2_CMDIF_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return 0;
 		}
 	}
@@ -103,11 +100,15 @@ dpaa2_cmdif_enqueue_bufs(struct rte_rawdev *dev,
 		ret = qbman_swp_enqueue_multiple(swp, &eqdesc, &fd, NULL, 1);
 		if (ret < 0 && ret != -EBUSY)
 			DPAA2_CMDIF_ERR("Transmit failure with err: %d\n", ret);
-	} while (ret == -EBUSY);
+		retry_count++;
+	} while ((ret == -EBUSY) && (retry_count < DPAA2_MAX_TX_RETRY_COUNT));
+
+	if (ret < 0)
+		return ret;
 
 	DPAA2_CMDIF_DP_DEBUG("Successfully transmitted a packet\n");
 
-	return 0;
+	return 1;
 }
 
 static int
@@ -131,7 +132,9 @@ dpaa2_cmdif_dequeue_bufs(struct rte_rawdev *dev,
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret) {
-			DPAA2_CMDIF_ERR("Failure in affining portal\n");
+			DPAA2_CMDIF_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return 0;
 		}
 	}
@@ -285,10 +288,4 @@ static struct rte_vdev_driver dpaa2_cmdif_drv = {
 };
 
 RTE_PMD_REGISTER_VDEV(DPAA2_CMDIF_PMD_NAME, dpaa2_cmdif_drv);
-
-RTE_INIT(dpaa2_cmdif_init_log)
-{
-	dpaa2_cmdif_logtype = rte_log_register("pmd.raw.dpaa2.cmdif");
-	if (dpaa2_cmdif_logtype >= 0)
-		rte_log_set_level(dpaa2_cmdif_logtype, RTE_LOG_INFO);
-}
+RTE_LOG_REGISTER(dpaa2_cmdif_logtype, pmd.raw.dpaa2.cmdif, INFO);

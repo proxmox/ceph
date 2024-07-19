@@ -8,7 +8,6 @@
  * Rx queues configuration for mlx4 driver.
  */
 
-#include <assert.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -27,7 +26,7 @@
 #include <rte_byteorder.h>
 #include <rte_common.h>
 #include <rte_errno.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_flow.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
@@ -140,12 +139,12 @@ error:
 void
 mlx4_rss_put(struct mlx4_rss *rss)
 {
-	assert(rss->refcnt);
+	MLX4_ASSERT(rss->refcnt);
 	if (--rss->refcnt)
 		return;
-	assert(!rss->usecnt);
-	assert(!rss->qp);
-	assert(!rss->ind);
+	MLX4_ASSERT(!rss->usecnt);
+	MLX4_ASSERT(!rss->qp);
+	MLX4_ASSERT(!rss->ind);
 	LIST_REMOVE(rss, next);
 	rte_free(rss);
 }
@@ -167,10 +166,10 @@ mlx4_rss_put(struct mlx4_rss *rss)
 int
 mlx4_rss_attach(struct mlx4_rss *rss)
 {
-	assert(rss->refcnt);
+	MLX4_ASSERT(rss->refcnt);
 	if (rss->usecnt++) {
-		assert(rss->qp);
-		assert(rss->ind);
+		MLX4_ASSERT(rss->qp);
+		MLX4_ASSERT(rss->ind);
 		return 0;
 	}
 
@@ -295,9 +294,9 @@ mlx4_rss_detach(struct mlx4_rss *rss)
 	struct rte_eth_dev *dev = ETH_DEV(priv);
 	unsigned int i;
 
-	assert(rss->refcnt);
-	assert(rss->qp);
-	assert(rss->ind);
+	MLX4_ASSERT(rss->refcnt);
+	MLX4_ASSERT(rss->qp);
+	MLX4_ASSERT(rss->ind);
 	if (--rss->usecnt)
 		return;
 	claim_zero(mlx4_glue->destroy_qp(rss->qp));
@@ -366,7 +365,7 @@ mlx4_rss_init(struct mlx4_priv *priv)
 
 		/* Attach the configured Rx queues. */
 		if (rxq) {
-			assert(!rxq->usecnt);
+			MLX4_ASSERT(!rxq->usecnt);
 			ret = mlx4_rxq_attach(rxq);
 			if (!ret) {
 				wq_num = rxq->wq->wq_num;
@@ -463,7 +462,7 @@ mlx4_rss_deinit(struct mlx4_priv *priv)
 		struct rxq *rxq = ETH_DEV(priv)->data->rx_queues[i];
 
 		if (rxq) {
-			assert(rxq->usecnt == 1);
+			MLX4_ASSERT(rxq->usecnt == 1);
 			mlx4_rxq_detach(rxq);
 		}
 	}
@@ -488,10 +487,10 @@ int
 mlx4_rxq_attach(struct rxq *rxq)
 {
 	if (rxq->usecnt++) {
-		assert(rxq->cq);
-		assert(rxq->wq);
-		assert(rxq->wqes);
-		assert(rxq->rq_db);
+		MLX4_ASSERT(rxq->cq);
+		MLX4_ASSERT(rxq->wq);
+		MLX4_ASSERT(rxq->wqes);
+		MLX4_ASSERT(rxq->rq_db);
 		return 0;
 	}
 
@@ -512,7 +511,7 @@ mlx4_rxq_attach(struct rxq *rxq)
 	unsigned int i;
 	int ret;
 
-	assert(rte_is_power_of_2(elts_n));
+	MLX4_ASSERT(rte_is_power_of_2(elts_n));
 	priv->verbs_alloc_ctx.type = MLX4_VERBS_ALLOC_TYPE_RX_QUEUE;
 	priv->verbs_alloc_ctx.obj = rxq;
 	cq = mlx4_glue->create_cq(priv->ctx, elts_n / sges_n, NULL,
@@ -584,10 +583,10 @@ mlx4_rxq_attach(struct rxq *rxq)
 			goto error;
 		}
 		/* Headroom is reserved by rte_pktmbuf_alloc(). */
-		assert(buf->data_off == RTE_PKTMBUF_HEADROOM);
+		MLX4_ASSERT(buf->data_off == RTE_PKTMBUF_HEADROOM);
 		/* Buffer is supposed to be empty. */
-		assert(rte_pktmbuf_data_len(buf) == 0);
-		assert(rte_pktmbuf_pkt_len(buf) == 0);
+		MLX4_ASSERT(rte_pktmbuf_data_len(buf) == 0);
+		MLX4_ASSERT(rte_pktmbuf_pkt_len(buf) == 0);
 		/* Only the first segment keeps headroom. */
 		if (i % sges_n)
 			buf->data_off = 0;
@@ -683,12 +682,12 @@ mlx4_rxq_detach(struct rxq *rxq)
 uint64_t
 mlx4_get_rx_queue_offloads(struct mlx4_priv *priv)
 {
-	uint64_t offloads = DEV_RX_OFFLOAD_SCATTER |
-			    DEV_RX_OFFLOAD_KEEP_CRC |
-			    DEV_RX_OFFLOAD_JUMBO_FRAME;
+	uint64_t offloads = RTE_ETH_RX_OFFLOAD_SCATTER |
+			    RTE_ETH_RX_OFFLOAD_KEEP_CRC |
+			    RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	if (priv->hw_csum)
-		offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+		offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
 	return offloads;
 }
 
@@ -704,7 +703,7 @@ mlx4_get_rx_queue_offloads(struct mlx4_priv *priv)
 uint64_t
 mlx4_get_rx_port_offloads(struct mlx4_priv *priv)
 {
-	uint64_t offloads = DEV_RX_OFFLOAD_VLAN_FILTER;
+	uint64_t offloads = RTE_ETH_RX_OFFLOAD_VLAN_FILTER;
 
 	(void)priv;
 	return offloads;
@@ -753,6 +752,7 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	int ret;
 	uint32_t crc_present;
 	uint64_t offloads;
+	uint32_t max_rx_pktlen;
 
 	offloads = conf->offloads | dev->data->dev_conf.rxmode.offloads;
 
@@ -785,7 +785,7 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	}
 	/* By default, FCS (CRC) is stripped by hardware. */
 	crc_present = 0;
-	if (offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
+	if (offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC) {
 		if (priv->hw_fcs_strip) {
 			crc_present = 1;
 		} else {
@@ -816,9 +816,9 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		.elts = elts,
 		/* Toggle Rx checksum offload if hardware supports it. */
 		.csum = priv->hw_csum &&
-			(offloads & DEV_RX_OFFLOAD_CHECKSUM),
+			(offloads & RTE_ETH_RX_OFFLOAD_CHECKSUM),
 		.csum_l2tun = priv->hw_csum_l2tun &&
-			      (offloads & DEV_RX_OFFLOAD_CHECKSUM),
+			      (offloads & RTE_ETH_RX_OFFLOAD_CHECKSUM),
 		.crc_present = crc_present,
 		.l2tun_offload = priv->hw_csum_l2tun,
 		.stats = {
@@ -826,15 +826,14 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		},
 		.socket = socket,
 	};
+	dev->data->rx_queues[idx] = rxq;
 	/* Enable scattered packets support for this queue if necessary. */
-	assert(mb_len >= RTE_PKTMBUF_HEADROOM);
-	if (dev->data->dev_conf.rxmode.max_rx_pkt_len <=
-	    (mb_len - RTE_PKTMBUF_HEADROOM)) {
+	MLX4_ASSERT(mb_len >= RTE_PKTMBUF_HEADROOM);
+	max_rx_pktlen = dev->data->mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+	if (max_rx_pktlen <= (mb_len - RTE_PKTMBUF_HEADROOM)) {
 		;
-	} else if (offloads & DEV_RX_OFFLOAD_SCATTER) {
-		uint32_t size =
-			RTE_PKTMBUF_HEADROOM +
-			dev->data->dev_conf.rxmode.max_rx_pkt_len;
+	} else if (offloads & RTE_ETH_RX_OFFLOAD_SCATTER) {
+		uint32_t size = RTE_PKTMBUF_HEADROOM + max_rx_pktlen;
 		uint32_t sges_n;
 
 		/*
@@ -846,21 +845,19 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		/* Make sure sges_n did not overflow. */
 		size = mb_len * (1 << rxq->sges_n);
 		size -= RTE_PKTMBUF_HEADROOM;
-		if (size < dev->data->dev_conf.rxmode.max_rx_pkt_len) {
+		if (size < max_rx_pktlen) {
 			rte_errno = EOVERFLOW;
 			ERROR("%p: too many SGEs (%u) needed to handle"
 			      " requested maximum packet size %u",
 			      (void *)dev,
-			      1 << sges_n,
-			      dev->data->dev_conf.rxmode.max_rx_pkt_len);
+			      1 << sges_n, max_rx_pktlen);
 			goto error;
 		}
 	} else {
 		WARN("%p: the requested maximum Rx packet size (%u) is"
 		     " larger than a single mbuf (%u) and scattered"
 		     " mode has not been requested",
-		     (void *)dev,
-		     dev->data->dev_conf.rxmode.max_rx_pkt_len,
+		     (void *)dev, max_rx_pktlen,
 		     mb_len - RTE_PKTMBUF_HEADROOM);
 	}
 	DEBUG("%p: maximum number of segments per packet: %u",
@@ -896,44 +893,36 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		}
 	}
 	DEBUG("%p: adding Rx queue %p to list", (void *)dev, (void *)rxq);
-	dev->data->rx_queues[idx] = rxq;
 	return 0;
 error:
-	dev->data->rx_queues[idx] = NULL;
 	ret = rte_errno;
-	mlx4_rx_queue_release(rxq);
+	mlx4_rx_queue_release(dev, idx);
 	rte_errno = ret;
-	assert(rte_errno > 0);
+	MLX4_ASSERT(rte_errno > 0);
 	return -rte_errno;
 }
 
 /**
  * DPDK callback to release a Rx queue.
  *
- * @param dpdk_rxq
- *   Generic Rx queue pointer.
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param idx
+ *   Receive queue index.
  */
 void
-mlx4_rx_queue_release(void *dpdk_rxq)
+mlx4_rx_queue_release(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct rxq *rxq = (struct rxq *)dpdk_rxq;
-	struct mlx4_priv *priv;
-	unsigned int i;
+	struct rxq *rxq = dev->data->rx_queues[idx];
 
 	if (rxq == NULL)
 		return;
-	priv = rxq->priv;
-	for (i = 0; i != ETH_DEV(priv)->data->nb_rx_queues; ++i)
-		if (ETH_DEV(priv)->data->rx_queues[i] == rxq) {
-			DEBUG("%p: removing Rx queue %p from list",
-			      (void *)ETH_DEV(priv), (void *)rxq);
-			ETH_DEV(priv)->data->rx_queues[i] = NULL;
-			break;
-		}
-	assert(!rxq->cq);
-	assert(!rxq->wq);
-	assert(!rxq->wqes);
-	assert(!rxq->rq_db);
+	dev->data->rx_queues[idx] = NULL;
+	DEBUG("%p: removing Rx queue %hu from list", (void *)dev, idx);
+	MLX4_ASSERT(!rxq->cq);
+	MLX4_ASSERT(!rxq->wq);
+	MLX4_ASSERT(!rxq->wqes);
+	MLX4_ASSERT(!rxq->rq_db);
 	if (rxq->channel)
 		claim_zero(mlx4_glue->destroy_comp_channel(rxq->channel));
 	mlx4_mr_btree_free(&rxq->mr_ctrl.cache_bh);

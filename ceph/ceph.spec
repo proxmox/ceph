@@ -21,7 +21,6 @@
 # https://rpm-software-management.github.io/rpm/manual/conditionalbuilds.html
 #################################################################################
 %bcond_with make_check
-%bcond_with zbd
 %bcond_with cmake_verbose_logging
 %bcond_without ceph_test_package
 %ifarch s390
@@ -98,7 +97,7 @@
 %else
 %bcond_without jaeger
 %endif
-%if 0%{?fedora} || 0%{?suse_version} >= 1500
+%if 0%{?fedora} || 0%{?suse_version} >= 1500 || 0%{?rhel} >= 9
 # distros that ship cmd2 and/or colorama
 %bcond_without cephfs_shell
 %else
@@ -112,6 +111,16 @@
 # this is tracked in https://bugzilla.redhat.com/2152265
 %bcond_with system_arrow
 %endif
+# qat only supported for intel devices
+%ifarch x86_64
+%if 0%{?fedora} || 0%{?rhel} >= 9
+%bcond_without system_qat
+%else # not fedora/rhel
+%bcond_with system_qat
+%endif
+%else # not x86_64
+%bcond_with system_qat
+%endif
 %if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} >= 8 || 0%{?openEuler}
 %global weak_deps 1
 %endif
@@ -124,6 +133,8 @@
 %{!?_selinux_policy_version: %global _selinux_policy_version 0.0.0}
 %endif
 %endif
+%bcond_without cephadm_bundling
+%bcond_without cephadm_pip_deps
 
 %{!?_udevrulesdir: %global _udevrulesdir /lib/udev/rules.d}
 %{!?tmpfiles_create: %global tmpfiles_create systemd-tmpfiles --create}
@@ -170,7 +181,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	18.2.4
+Version:	19.1.0
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -186,10 +197,10 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-18.2.4.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-19.1.0.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
-ExclusiveArch:  x86_64 aarch64 ppc64le s390x
+ExclusiveArch:  x86_64 aarch64 ppc64le s390x riscv64
 %endif
 #################################################################################
 # dependencies that apply across all distro families
@@ -211,6 +222,7 @@ BuildRequires:	selinux-policy-devel
 BuildRequires:	gperf
 BuildRequires:  cmake > 3.5
 BuildRequires:	fuse-devel
+BuildRequires:	git
 %if 0%{?fedora} || 0%{?suse_version} > 1500 || 0%{?rhel} == 9 || 0%{?openEuler}
 BuildRequires:	gcc-c++ >= 11
 %endif
@@ -270,6 +282,7 @@ BuildRequires:	xfsprogs-devel
 BuildRequires:	xmlstarlet
 BuildRequires:	nasm
 BuildRequires:	lua-devel
+BuildRequires:  lmdb-devel
 %if 0%{with seastar} || 0%{with jaeger}
 BuildRequires:  yaml-cpp-devel >= 0.6
 %endif
@@ -280,7 +293,8 @@ BuildRequires:  librabbitmq-devel
 BuildRequires:  librdkafka-devel
 %endif
 %if 0%{with lua_packages}
-BuildRequires:  %{luarocks_package_name}
+Requires:  lua-devel
+Requires:  %{luarocks_package_name}
 %endif
 %if 0%{with make_check}
 BuildRequires:  hostname
@@ -295,9 +309,6 @@ BuildRequires:	python%{python3_pkgversion}-pyOpenSSL
 BuildRequires:	socat
 BuildRequires:	python%{python3_pkgversion}-asyncssh
 BuildRequires:	python%{python3_pkgversion}-natsort
-%endif
-%if 0%{with zbd}
-BuildRequires:  libzbd-devel
 %endif
 %if 0%{?suse_version}
 BuildRequires:  libthrift-devel >= 0.13.0
@@ -331,6 +342,10 @@ BuildRequires:  libarrow-devel
 BuildRequires:  parquet-libs-devel
 BuildRequires:  utf8proc-devel
 %endif
+%if 0%{with system_qat}
+BuildRequires:  qatlib-devel
+BuildRequires:  qatzip-devel
+%endif
 %if 0%{with seastar}
 BuildRequires:  c-ares-devel
 BuildRequires:  gnutls-devel
@@ -339,10 +354,10 @@ BuildRequires:  libpciaccess-devel
 BuildRequires:  lksctp-tools-devel
 BuildRequires:  ragel
 BuildRequires:  systemtap-sdt-devel
-%if 0%{?fedora}
 BuildRequires:  libubsan
 BuildRequires:  libasan
-%endif
+BuildRequires:  protobuf-devel
+BuildRequires:  protobuf-compiler
 %if 0%{?rhel} == 8
 BuildRequires:  %{gts_prefix}-annobin
 BuildRequires:  %{gts_prefix}-annobin-plugin-gcc
@@ -526,6 +541,13 @@ Requires:       which
 %if 0%{?weak_deps}
 Recommends:     podman >= 2.0.2
 %endif
+%if 0%{with cephadm_bundling}
+%if 0%{without cephadm_pip_deps}
+BuildRequires: python3-jinja2 >= 2.10
+%endif
+%else
+Requires: python3-jinja2 >= 2.10
+%endif
 %description -n cephadm
 Utility to bootstrap a Ceph cluster and manage Ceph daemons deployed
 with systemd and podman.
@@ -616,12 +638,20 @@ Requires:       ceph-mgr = %{_epoch_prefix}%{version}-%{release}
 Requires:       ceph-grafana-dashboards = %{_epoch_prefix}%{version}-%{release}
 Requires:       ceph-prometheus-alerts = %{_epoch_prefix}%{version}-%{release}
 Requires:       python%{python3_pkgversion}-setuptools
+%if 0%{?fedora} || 0%{?rhel} >= 9
+Requires:       python%{python3_pkgversion}-grpcio
+Requires:       python%{python3_pkgversion}-grpcio-tools
+%endif
 %if 0%{?fedora} || 0%{?rhel} || 0%{?openEuler}
 Requires:       python%{python3_pkgversion}-cherrypy
 Requires:       python%{python3_pkgversion}-routes
 Requires:       python%{python3_pkgversion}-werkzeug
 %if 0%{?weak_deps}
 Recommends:     python%{python3_pkgversion}-saml
+%if 0%{?fedora} || 0%{?rhel} <= 8
+Recommends:     python%{python3_pkgversion}-grpcio
+Recommends:     python%{python3_pkgversion}-grpcio-tools
+%endif
 %endif
 %endif
 %if 0%{?suse_version}
@@ -857,6 +887,9 @@ Provides:	ceph-test:/usr/bin/ceph-osdomap-tool
 Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
 Requires:	sudo
 Requires:	libstoragemgmt
+%if 0%{with seastar}
+Requires:	protobuf
+%endif
 %if 0%{?weak_deps}
 Recommends:	ceph-volume = %{_epoch_prefix}%{version}-%{release}
 %endif
@@ -1301,7 +1334,7 @@ This package provides a Ceph hardware monitoring agent.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-18.2.4
+%autosetup -p1 -n ceph-19.1.0
 
 %build
 # Disable lto on systems that do not support symver attribute
@@ -1404,9 +1437,6 @@ cmake .. \
 %if 0%{without lua_packages}
     -DWITH_RADOSGW_LUA_PACKAGES:BOOL=OFF \
 %endif
-%if 0%{with zbd}
-    -DWITH_ZBD:BOOL=ON \
-%endif
 %if 0%{with cmake_verbose_logging}
     -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON \
 %endif
@@ -1434,11 +1464,24 @@ cmake .. \
     -DWITH_SYSTEM_ARROW:BOOL=ON \
     -DWITH_SYSTEM_UTF8PROC:BOOL=ON \
 %endif
+%if 0%{with system_qat}
+    -DWITH_SYSTEM_QATLIB:BOOL=ON \
+    -DWITH_SYSTEM_QATZIP:BOOL=ON \
+%endif
 %if 0%{with seastar}
     -DWITH_SEASTAR:BOOL=ON \
     -DWITH_JAEGER:BOOL=OFF \
 %endif
-    -DWITH_GRAFANA:BOOL=ON
+    -DWITH_GRAFANA:BOOL=ON \
+%if 0%{with cephadm_bundling}
+%if 0%{with cephadm_pip_deps}
+    -DCEPHADM_BUNDLED_DEPENDENCIES=pip
+%else
+    -DCEPHADM_BUNDLED_DEPENDENCIES=rpm
+%endif
+%else
+    -DCEPHADM_BUNDLED_DEPENDENCIES=none
+%endif
 
 %if %{with cmake_verbose_logging}
 cat ./CMakeFiles/CMakeOutput.log
@@ -1536,6 +1579,9 @@ mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-rbd-mirror
 
 # prometheus alerts
 install -m 644 -D monitoring/ceph-mixin/prometheus_alerts.yml %{buildroot}/etc/prometheus/ceph/ceph_default_alerts.yml
+
+# grafana charts
+install -m 644 -D monitoring/ceph-mixin/dashboards_out/* %{buildroot}/etc/grafana/dashboards/ceph-dashboard/
 
 # SNMP MIB
 install -m 644 -D -t %{buildroot}%{_datadir}/snmp/mibs monitoring/snmp/CEPH-MIB.txt
@@ -1712,6 +1758,7 @@ exit 0
 %{_mandir}/man8/rbd-replay-many.8*
 %{_mandir}/man8/rbd-replay-prep.8*
 %{_mandir}/man8/rgw-orphan-list.8*
+%{_mandir}/man8/rgw-restore-bucket-index.8*
 %dir %{_datadir}/ceph/
 %{_datadir}/ceph/known_hosts_drop.ceph.com
 %{_datadir}/ceph/id_rsa_drop.ceph.com
@@ -2042,7 +2089,6 @@ fi
 
 %files -n ceph-exporter
 %{_bindir}/ceph-exporter
-%{_unitdir}/ceph-exporter.service
 
 %files -n rbd-fuse
 %{_bindir}/rbd-fuse
@@ -2635,5 +2681,6 @@ exit 0
 %dir %{python3_sitelib}/ceph_node_proxy
 %{python3_sitelib}/ceph_node_proxy/*
 %{python3_sitelib}/ceph_node_proxy-*
+#%{_mandir}/man8/ceph-node-proxy.8*
 
 %changelog

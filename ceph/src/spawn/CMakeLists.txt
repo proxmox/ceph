@@ -5,9 +5,9 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# requires boost 1.66, but may be provided by a parent project
-if(NOT Boost_FOUND OR NOT Boost_system_FOUND OR NOT Boost_context_FOUND OR Boost_VERSION VERSION_LESS 1.66.0)
-	find_package(Boost 1.66 REQUIRED COMPONENTS system context)
+# requires boost 1.74, but may be provided by a parent project
+if(NOT Boost_FOUND OR NOT Boost_system_FOUND OR NOT Boost_context_FOUND OR Boost_VERSION VERSION_LESS 1.74.0)
+	find_package(Boost 1.74 REQUIRED COMPONENTS system context)
 endif()
 
 add_library(spawn INTERFACE)

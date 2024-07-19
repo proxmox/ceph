@@ -3,14 +3,13 @@
  */
 
 #include <stdint.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
+#include <rte_vect.h>
 
 #include "ixgbe_ethdev.h"
 #include "ixgbe_rxtx.h"
 #include "ixgbe_rxtx_vec_common.h"
-
-#include <arm_neon.h>
 
 #pragma GCC diagnostic ignored "-Wcast-qual"
 
@@ -82,26 +81,22 @@ ixgbe_rxq_rearm(struct ixgbe_rx_queue *rxq)
 	IXGBE_PCI_REG_WRITE(rxq->rdt_reg_addr, rx_id);
 }
 
-#define VTAG_SHIFT     (3)
-
 static inline void
 desc_to_olflags_v(uint8x16x2_t sterr_tmp1, uint8x16x2_t sterr_tmp2,
-		  uint8x16_t staterr, struct rte_mbuf **rx_pkts)
+		  uint8x16_t staterr, uint8_t vlan_flags, uint16_t udp_p_flag,
+		  struct rte_mbuf **rx_pkts)
 {
-	uint8x16_t ptype;
-	uint8x16_t vtag;
+	uint16_t udp_p_flag_hi;
+	uint8x16_t ptype, udp_csum_skip;
+	uint32x4_t temp_udp_csum_skip = {0, 0, 0, 0};
+	uint8x16_t vtag_lo, vtag_hi, vtag;
+	uint8x16_t temp_csum;
+	uint32x4_t csum = {0, 0, 0, 0};
 
 	union {
-		uint8_t e[4];
-		uint32_t word;
+		uint16_t e[4];
+		uint64_t word;
 	} vol;
-
-	const uint8x16_t pkttype_msk = {
-			PKT_RX_VLAN, PKT_RX_VLAN,
-			PKT_RX_VLAN, PKT_RX_VLAN,
-			0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00};
 
 	const uint8x16_t rsstype_msk = {
 			0x0F, 0x0F, 0x0F, 0x0F,
@@ -110,20 +105,105 @@ desc_to_olflags_v(uint8x16x2_t sterr_tmp1, uint8x16x2_t sterr_tmp2,
 			0x00, 0x00, 0x00, 0x00};
 
 	const uint8x16_t rss_flags = {
-			0, PKT_RX_RSS_HASH, PKT_RX_RSS_HASH, PKT_RX_RSS_HASH,
-			0, PKT_RX_RSS_HASH, 0, PKT_RX_RSS_HASH,
-			PKT_RX_RSS_HASH, 0, 0, 0,
-			0, 0, 0, PKT_RX_FDIR};
+			0, RTE_MBUF_F_RX_RSS_HASH, RTE_MBUF_F_RX_RSS_HASH, RTE_MBUF_F_RX_RSS_HASH,
+			0, RTE_MBUF_F_RX_RSS_HASH, 0, RTE_MBUF_F_RX_RSS_HASH,
+			RTE_MBUF_F_RX_RSS_HASH, 0, 0, 0,
+			0, 0, 0, RTE_MBUF_F_RX_FDIR};
+
+	/* mask everything except vlan present and l4/ip csum error */
+	const uint8x16_t vlan_csum_msk = {
+			IXGBE_RXD_STAT_VP, IXGBE_RXD_STAT_VP,
+			IXGBE_RXD_STAT_VP, IXGBE_RXD_STAT_VP,
+			0, 0, 0, 0,
+			0, 0, 0, 0,
+			(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 24,
+			(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 24,
+			(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 24,
+			(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 24};
+
+	/* map vlan present (0x8), IPE (0x2), L4E (0x1) to ol_flags */
+	const uint8x16_t vlan_csum_map_lo = {
+			RTE_MBUF_F_RX_IP_CKSUM_GOOD,
+			RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_BAD,
+			RTE_MBUF_F_RX_IP_CKSUM_BAD,
+			RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD,
+			0, 0, 0, 0,
+			vlan_flags | RTE_MBUF_F_RX_IP_CKSUM_GOOD,
+			vlan_flags | RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_BAD,
+			vlan_flags | RTE_MBUF_F_RX_IP_CKSUM_BAD,
+			vlan_flags | RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD,
+			0, 0, 0, 0};
+
+	const uint8x16_t vlan_csum_map_hi = {
+			RTE_MBUF_F_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
+			RTE_MBUF_F_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
+			0, 0, 0, 0,
+			RTE_MBUF_F_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
+			RTE_MBUF_F_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
+			0, 0, 0, 0};
+
+	/* change mask from 0x200(IXGBE_RXDADV_PKTTYPE_UDP) to 0x2 */
+	udp_p_flag_hi = udp_p_flag >> 8;
+
+	/* mask everything except UDP header present if specified */
+	const uint8x16_t udp_hdr_p_msk = {
+			0, 0, 0, 0,
+			udp_p_flag_hi, udp_p_flag_hi, udp_p_flag_hi, udp_p_flag_hi,
+			0, 0, 0, 0,
+			0, 0, 0, 0};
+
+	const uint8x16_t udp_csum_bad_shuf = {
+			0xFF, ~(uint8_t)RTE_MBUF_F_RX_L4_CKSUM_BAD, 0, 0,
+			0, 0, 0, 0,
+			0, 0, 0, 0,
+			0, 0, 0, 0};
 
 	ptype = vzipq_u8(sterr_tmp1.val[0], sterr_tmp2.val[0]).val[0];
+
+	/* save the UDP header present information */
+	udp_csum_skip = vandq_u8(ptype, udp_hdr_p_msk);
+
+	/* move UDP header present information to low 32bits */
+	temp_udp_csum_skip = vcopyq_laneq_u32(temp_udp_csum_skip, 0,
+				vreinterpretq_u32_u8(udp_csum_skip), 1);
+
 	ptype = vandq_u8(ptype, rsstype_msk);
 	ptype = vqtbl1q_u8(rss_flags, ptype);
 
-	vtag = vshrq_n_u8(staterr, VTAG_SHIFT);
-	vtag = vandq_u8(vtag, pkttype_msk);
-	vtag = vorrq_u8(ptype, vtag);
+	/* extract vlan_flags and csum_error from staterr */
+	vtag = vandq_u8(staterr, vlan_csum_msk);
 
-	vol.word = vgetq_lane_u32(vreinterpretq_u32_u8(vtag), 0);
+	/* csum bits are in the most significant, to use shuffle we need to
+	 * shift them. Change mask from 0xc0 to 0x03.
+	 */
+	temp_csum = vshrq_n_u8(vtag, 6);
+
+	/* 'OR' the most significant 32 bits containing the checksum
+	 * flags with the vlan present flags
+	 * Then bits layout of each lane(8bits) will be 'xxxx,VP,x,IPE,L4E'
+	 */
+	csum = vsetq_lane_u32(vgetq_lane_u32(vreinterpretq_u32_u8(temp_csum), 3), csum, 0);
+	vtag = vorrq_u8(vreinterpretq_u8_u32(csum), vtag);
+
+	/* convert L4 checksum correct type to vtag_hi */
+	vtag_hi = vqtbl1q_u8(vlan_csum_map_hi, vtag);
+	vtag_hi = vshrq_n_u8(vtag_hi, 7);
+
+	/* convert VP, IPE, L4E to vtag_lo */
+	vtag_lo = vqtbl1q_u8(vlan_csum_map_lo, vtag);
+	vtag_lo = vorrq_u8(ptype, vtag_lo);
+
+	/* convert the UDP header present 0x2 to 0x1 for aligning with each
+	 * RTE_MBUF_F_RX_L4_CKSUM_BAD value in low byte of 8 bits word ol_flag in
+	 * vtag_lo (4x8). Then mask out the bad checksum value by shuffle and
+	 * bit-mask.
+	 */
+	udp_csum_skip = vshrq_n_u8(vreinterpretq_u8_u32(temp_udp_csum_skip), 1);
+	udp_csum_skip = vqtbl1q_u8(udp_csum_bad_shuf, udp_csum_skip);
+	vtag_lo = vandq_u8(vtag_lo, udp_csum_skip);
+
+	vtag = vzipq_u8(vtag_lo, vtag_hi).val[0];
+	vol.word = vgetq_lane_u64(vreinterpretq_u64_u8(vtag), 0);
 
 	rx_pkts[0]->ol_flags = vol.e[0];
 	rx_pkts[1]->ol_flags = vol.e[1];
@@ -131,20 +211,78 @@ desc_to_olflags_v(uint8x16x2_t sterr_tmp1, uint8x16x2_t sterr_tmp2,
 	rx_pkts[3]->ol_flags = vol.e[3];
 }
 
-/*
+#define IXGBE_VPMD_DESC_EOP_MASK	0x02020202
+#define IXGBE_UINT8_BIT			(CHAR_BIT * sizeof(uint8_t))
+
+static inline uint32_t
+get_packet_type(uint32_t pkt_info,
+		uint32_t etqf_check,
+		uint32_t tunnel_check)
+{
+	if (etqf_check)
+		return RTE_PTYPE_UNKNOWN;
+
+	if (tunnel_check) {
+		pkt_info &= IXGBE_PACKET_TYPE_MASK_TUNNEL;
+		return ptype_table_tn[pkt_info];
+	}
+
+	pkt_info &= IXGBE_PACKET_TYPE_MASK_82599;
+	return ptype_table[pkt_info];
+}
+
+static inline void
+desc_to_ptype_v(uint64x2_t descs[4], uint16_t pkt_type_mask,
+		struct rte_mbuf **rx_pkts)
+{
+	uint32x4_t etqf_check, tunnel_check;
+	uint32x4_t etqf_mask = vdupq_n_u32(0x8000);
+	uint32x4_t tunnel_mask = vdupq_n_u32(0x10000);
+	uint32x4_t ptype_mask = vdupq_n_u32((uint32_t)pkt_type_mask);
+	uint32x4_t ptype0 = vzipq_u32(vreinterpretq_u32_u64(descs[0]),
+				vreinterpretq_u32_u64(descs[2])).val[0];
+	uint32x4_t ptype1 = vzipq_u32(vreinterpretq_u32_u64(descs[1]),
+				vreinterpretq_u32_u64(descs[3])).val[0];
+
+	/* interleave low 32 bits,
+	 * now we have 4 ptypes in a NEON register
+	 */
+	ptype0 = vzipq_u32(ptype0, ptype1).val[0];
+
+	/* mask etqf bits */
+	etqf_check = vandq_u32(ptype0, etqf_mask);
+	/* mask tunnel bits */
+	tunnel_check = vandq_u32(ptype0, tunnel_mask);
+
+	/* shift right by IXGBE_PACKET_TYPE_SHIFT, and apply ptype mask */
+	ptype0 = vandq_u32(vshrq_n_u32(ptype0, IXGBE_PACKET_TYPE_SHIFT),
+			ptype_mask);
+
+	rx_pkts[0]->packet_type =
+		get_packet_type(vgetq_lane_u32(ptype0, 0),
+				vgetq_lane_u32(etqf_check, 0),
+				vgetq_lane_u32(tunnel_check, 0));
+	rx_pkts[1]->packet_type =
+		get_packet_type(vgetq_lane_u32(ptype0, 1),
+				vgetq_lane_u32(etqf_check, 1),
+				vgetq_lane_u32(tunnel_check, 1));
+	rx_pkts[2]->packet_type =
+		get_packet_type(vgetq_lane_u32(ptype0, 2),
+				vgetq_lane_u32(etqf_check, 2),
+				vgetq_lane_u32(tunnel_check, 2));
+	rx_pkts[3]->packet_type =
+		get_packet_type(vgetq_lane_u32(ptype0, 3),
+				vgetq_lane_u32(etqf_check, 3),
+				vgetq_lane_u32(tunnel_check, 3));
+}
+
+/**
  * vPMD raw receive routine, only accept(nb_pkts >= RTE_IXGBE_DESCS_PER_LOOP)
  *
  * Notice:
  * - nb_pkts < RTE_IXGBE_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
- *   numbers of DD bit
  * - floor align nb_pkts to a RTE_IXGBE_DESC_PER_LOOP power-of-two
- * - don't support ol_flags for rss and csum err
  */
-
-#define IXGBE_VPMD_DESC_DD_MASK		0x01010101
-#define IXGBE_VPMD_DESC_EOP_MASK	0x02020202
-
 static inline uint16_t
 _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		   uint16_t nb_pkts, uint8_t *split_packet)
@@ -164,9 +302,8 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		};
 	uint16x8_t crc_adjust = {0, 0, rxq->crc_len, 0,
 				 rxq->crc_len, 0, 0, 0};
-
-	/* nb_pkts shall be less equal than RTE_IXGBE_MAX_RX_BURST */
-	nb_pkts = RTE_MIN(nb_pkts, RTE_IXGBE_MAX_RX_BURST);
+	uint8_t vlan_flags;
+	uint16_t udp_p_flag = 0; /* Rx Descriptor UDP header present */
 
 	/* nb_pkts has to be floor-aligned to RTE_IXGBE_DESCS_PER_LOOP */
 	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, RTE_IXGBE_DESCS_PER_LOOP);
@@ -191,10 +328,17 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 				rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD)))
 		return 0;
 
+	if (rxq->rx_udp_csum_zero_err)
+		udp_p_flag = IXGBE_RXDADV_PKTTYPE_UDP;
+
 	/* Cache is empty -> need to scan the buffer rings, but first move
 	 * the next 'n' mbufs into the cache
 	 */
 	sw_ring = &rxq->sw_ring[rxq->rx_tail];
+
+	/* ensure these 2 flags are in the lower 8 bits */
+	RTE_BUILD_BUG_ON((RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED) > UINT8_MAX);
+	vlan_flags = rxq->vlan_flags & UINT8_MAX;
 
 	/* A. load 4 packet in one loop
 	 * B. copy 4 mbuf point from swring to rx_pkts
@@ -211,16 +355,15 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		uint64x2_t mbp1, mbp2;
 		uint8x16_t staterr;
 		uint16x8_t tmp;
-		uint32_t var = 0;
 		uint32_t stat;
 
-		/* B.1 load 1 mbuf point */
+		/* B.1 load 2 mbuf point */
 		mbp1 = vld1q_u64((uint64_t *)&sw_ring[pos]);
 
 		/* B.2 copy 2 mbuf point into rx_pkts  */
 		vst1q_u64((uint64_t *)&rx_pkts[pos], mbp1);
 
-		/* B.1 load 1 mbuf point */
+		/* B.1 load 2 mbuf point */
 		mbp2 = vld1q_u64((uint64_t *)&sw_ring[pos + 2]);
 
 		/* A. load 4 pkts descs */
@@ -228,7 +371,6 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		descs[1] =  vld1q_u64((uint64_t *)(rxdp + 1));
 		descs[2] =  vld1q_u64((uint64_t *)(rxdp + 2));
 		descs[3] =  vld1q_u64((uint64_t *)(rxdp + 3));
-		rte_smp_rmb();
 
 		/* B.2 copy 2 mbuf point into rx_pkts  */
 		vst1q_u64((uint64_t *)&rx_pkts[pos + 2], mbp2);
@@ -257,11 +399,10 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 
 		/* C.2 get 4 pkts staterr value  */
 		staterr = vzipq_u8(sterr_tmp1.val[1], sterr_tmp2.val[1]).val[0];
-		stat = vgetq_lane_u32(vreinterpretq_u32_u8(staterr), 0);
 
 		/* set ol_flags with vlan packet type */
-		desc_to_olflags_v(sterr_tmp1, sterr_tmp2, staterr,
-				  &rx_pkts[pos]);
+		desc_to_olflags_v(sterr_tmp1, sterr_tmp2, staterr, vlan_flags,
+				  udp_p_flag, &rx_pkts[pos]);
 
 		/* D.2 pkt 3,4 set in_port/nb_seg and remove crc */
 		tmp = vsubq_u16(vreinterpretq_u16_u8(pkt_mb4), crc_adjust);
@@ -283,11 +424,19 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 
 		/* C* extract and record EOP bit */
 		if (split_packet) {
+			stat = vgetq_lane_u32(vreinterpretq_u32_u8(staterr), 0);
 			/* and with mask to extract bits, flipping 1-0 */
 			*(int *)split_packet = ~stat & IXGBE_VPMD_DESC_EOP_MASK;
 
 			split_packet += RTE_IXGBE_DESCS_PER_LOOP;
 		}
+
+		/* C.4 expand DD bit to saturate UINT8 */
+		staterr = vshlq_n_u8(staterr, IXGBE_UINT8_BIT - 1);
+		staterr = vreinterpretq_u8_s8
+				(vshrq_n_s8(vreinterpretq_s8_u8(staterr),
+					IXGBE_UINT8_BIT - 1));
+		stat = ~vgetq_lane_u32(vreinterpretq_u32_u8(staterr), 0);
 
 		rte_prefetch_non_temporal(rxdp + RTE_IXGBE_DESCS_PER_LOOP);
 
@@ -297,18 +446,14 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		vst1q_u8((uint8_t *)&rx_pkts[pos]->rx_descriptor_fields1,
 			 pkt_mb1);
 
-		stat &= IXGBE_VPMD_DESC_DD_MASK;
+		desc_to_ptype_v(descs, rxq->pkt_type_mask, &rx_pkts[pos]);
 
-		/* C.4 calc avaialbe number of desc */
-		if (likely(stat != IXGBE_VPMD_DESC_DD_MASK)) {
-			while (stat & 0x01) {
-				++var;
-				stat = stat >> 8;
-			}
-			nb_pkts_recd += var;
-			break;
-		} else {
+		/* C.5 calc available number of desc */
+		if (unlikely(stat == 0)) {
 			nb_pkts_recd += RTE_IXGBE_DESCS_PER_LOOP;
+		} else {
+			nb_pkts_recd += __builtin_ctz(stat) / IXGBE_UINT8_BIT;
+			break;
 		}
 	}
 
@@ -320,15 +465,12 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	return nb_pkts_recd;
 }
 
-/*
+/**
  * vPMD receive routine, only accept(nb_pkts >= RTE_IXGBE_DESCS_PER_LOOP)
  *
  * Notice:
  * - nb_pkts < RTE_IXGBE_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
- *   numbers of DD bit
  * - floor align nb_pkts to a RTE_IXGBE_DESC_PER_LOOP power-of-two
- * - don't support ol_flags for rss and csum err
  */
 uint16_t
 ixgbe_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
@@ -337,19 +479,16 @@ ixgbe_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return _recv_raw_pkts_vec(rx_queue, rx_pkts, nb_pkts, NULL);
 }
 
-/*
+/**
  * vPMD receive routine that reassembles scattered packets
  *
  * Notice:
- * - don't support ol_flags for rss and csum err
  * - nb_pkts < RTE_IXGBE_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
- *   numbers of DD bit
  * - floor align nb_pkts to a RTE_IXGBE_DESC_PER_LOOP power-of-two
  */
-uint16_t
-ixgbe_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
-		uint16_t nb_pkts)
+static uint16_t
+ixgbe_recv_scattered_burst_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+			       uint16_t nb_pkts)
 {
 	struct ixgbe_rx_queue *rxq = rx_queue;
 	uint8_t split_flags[RTE_IXGBE_MAX_RX_BURST] = {0};
@@ -375,9 +514,36 @@ ixgbe_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			i++;
 		if (i == nb_bufs)
 			return nb_bufs;
+		rxq->pkt_first_seg = rx_pkts[i];
 	}
 	return i + reassemble_packets(rxq, &rx_pkts[i], nb_bufs - i,
 		&split_flags[i]);
+}
+
+/**
+ * vPMD receive routine that reassembles scattered packets.
+ */
+uint16_t
+ixgbe_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+			      uint16_t nb_pkts)
+{
+	uint16_t retval = 0;
+
+	while (nb_pkts > RTE_IXGBE_MAX_RX_BURST) {
+		uint16_t burst;
+
+		burst = ixgbe_recv_scattered_burst_vec(rx_queue,
+						       rx_pkts + retval,
+						       RTE_IXGBE_MAX_RX_BURST);
+		retval += burst;
+		nb_pkts -= burst;
+		if (burst < RTE_IXGBE_MAX_RX_BURST)
+			return retval;
+	}
+
+	return retval + ixgbe_recv_scattered_burst_vec(rx_queue,
+						       rx_pkts + retval,
+						       nb_pkts);
 }
 
 static inline void
@@ -467,25 +633,25 @@ ixgbe_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 	return nb_pkts;
 }
 
-static void __attribute__((cold))
+static void __rte_cold
 ixgbe_tx_queue_release_mbufs_vec(struct ixgbe_tx_queue *txq)
 {
 	_ixgbe_tx_queue_release_mbufs_vec(txq);
 }
 
-void __attribute__((cold))
+void __rte_cold
 ixgbe_rx_queue_release_mbufs_vec(struct ixgbe_rx_queue *rxq)
 {
 	_ixgbe_rx_queue_release_mbufs_vec(rxq);
 }
 
-static void __attribute__((cold))
+static void __rte_cold
 ixgbe_tx_free_swring(struct ixgbe_tx_queue *txq)
 {
 	_ixgbe_tx_free_swring_vec(txq);
 }
 
-static void __attribute__((cold))
+static void __rte_cold
 ixgbe_reset_tx_queue(struct ixgbe_tx_queue *txq)
 {
 	_ixgbe_reset_tx_queue_vec(txq);
@@ -497,26 +663,20 @@ static const struct ixgbe_txq_ops vec_txq_ops = {
 	.reset = ixgbe_reset_tx_queue,
 };
 
-int __attribute__((cold))
+int __rte_cold
 ixgbe_rxq_vec_setup(struct ixgbe_rx_queue *rxq)
 {
 	return ixgbe_rxq_vec_setup_default(rxq);
 }
 
-int __attribute__((cold))
+int __rte_cold
 ixgbe_txq_vec_setup(struct ixgbe_tx_queue *txq)
 {
 	return ixgbe_txq_vec_setup_default(txq, &vec_txq_ops);
 }
 
-int __attribute__((cold))
+int __rte_cold
 ixgbe_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev)
 {
-	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
-
-	/* no csum error report support */
-	if (rxmode->offloads & DEV_RX_OFFLOAD_CHECKSUM)
-		return -1;
-
 	return ixgbe_rx_vec_dev_conf_condition_check_default(dev);
 }

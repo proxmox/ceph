@@ -33,7 +33,7 @@ Usage
 
 EAL ``--vdev`` argument can be used to create KNI device instance, like::
 
-        testpmd --vdev=net_kni0 --vdev=net_kn1 -- -i
+        dpdk-testpmd --vdev=net_kni0 --vdev=net_kni1 -- -i
 
 Above command will create ``kni0`` and ``kni1`` Linux network interfaces,
 those interfaces can be controlled by standard Linux tools.
@@ -56,14 +56,14 @@ configuration:
         Interface name: kni#
         force bind kernel thread to a core : NO
         mbuf size: (rte_pktmbuf_data_room_size(pktmbuf_pool) - RTE_PKTMBUF_HEADROOM)
-        mtu: (conf.mbuf_size - ETHER_HDR_LEN)
+        mtu: (conf.mbuf_size - RTE_ETHER_HDR_LEN)
 
 KNI control path is not supported with the PMD, since there is no physical
 backend device by default.
 
 
-PMD arguments
--------------
+Runtime Configuration
+---------------------
 
 ``no_request_thread``, by default PMD creates a pthread for each KNI interface
 to handle Linux network interface control commands, like ``ifconfig kni0 up``
@@ -77,7 +77,7 @@ requests itself.
 
 Argument usage::
 
-        testpmd --vdev "net_kni0,no_request_thread=1" -- -i
+        dpdk-testpmd --vdev "net_kni0,no_request_thread=1" -- -i
 
 
 PMD log messages
@@ -97,13 +97,13 @@ It is possible to test PMD quickly using KNI kernel module loopback feature:
 
     .. code-block:: console
 
-        insmod build/kmod/rte_kni.ko lo_mode=lo_mode_fifo_skb
+        insmod <build_dir>/kernel/linux/kni/rte_kni.ko lo_mode=lo_mode_fifo_skb
 
 * Start testpmd with no physical device but two KNI virtual devices:
 
     .. code-block:: console
 
-        ./testpmd --vdev net_kni0 --vdev net_kni1 -- -i
+        ./dpdk-testpmd --vdev net_kni0 --vdev net_kni1 -- -i
 
     .. code-block:: console
 
@@ -168,4 +168,3 @@ It is possible to test PMD quickly using KNI kernel module loopback feature:
         RX-packets: 71275820       RX-dropped: 0             RX-total: 71275820
         TX-packets: 71275884       TX-dropped: 0             TX-total: 71275884
         ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-

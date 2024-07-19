@@ -16,9 +16,10 @@
 static int
 test_bitmap_scan_operations(struct rte_bitmap *bmp)
 {
-	uint32_t pos = 0;
 	uint64_t slab1_magic = 0xBADC0FFEEBADF00D;
 	uint64_t slab2_magic = 0xFEEDDEADDEADF00D;
+	uint32_t pos = 0, start_pos;
+	int i, nb_clear, nb_set;
 	uint64_t out_slab = 0;
 
 	rte_bitmap_reset(bmp);
@@ -67,6 +68,37 @@ test_bitmap_scan_operations(struct rte_bitmap *bmp)
 
 	if (slab1_magic != out_slab) {
 		printf("Scan reset operation failed.\n");
+		return TEST_FAILED;
+	}
+
+	/* Test scan when a cline is half full */
+	rte_bitmap_reset(bmp);
+	for (i = 0; i < MAX_BITS; i++)
+		rte_bitmap_set(bmp, i);
+
+	nb_clear = RTE_MIN(RTE_BITMAP_CL_BIT_SIZE / 2, MAX_BITS);
+	for (i = 0; i < nb_clear; i++)
+		rte_bitmap_clear(bmp, i);
+
+	/* Find remaining bits set in bmp */
+	__rte_bitmap_scan_init(bmp);
+
+	if (rte_bitmap_scan(bmp, &pos, &out_slab) != 1) {
+		printf("Initial scan failed with half CL empty.\n");
+		return TEST_FAILED;
+	}
+
+	start_pos = pos;
+	nb_set = 0;
+	do {
+		nb_set += __builtin_popcountll(out_slab);
+		if (!rte_bitmap_scan(bmp, &pos, &out_slab))
+			break;
+	} while (pos != start_pos);
+
+	if ((nb_clear + nb_set) != MAX_BITS) {
+		printf("Scan failed to find all set bits. "
+		       "Expected %u, found %u.\n", MAX_BITS - nb_clear, nb_set);
 		return TEST_FAILED;
 	}
 
@@ -146,7 +178,7 @@ test_bitmap_set_get_clear(struct rte_bitmap *bmp)
 }
 
 static int
-test_bitmap(void)
+test_bitmap_all_clear(void)
 {
 	void *mem;
 	uint32_t bmp_size;
@@ -182,4 +214,59 @@ test_bitmap(void)
 	return TEST_SUCCESS;
 }
 
-REGISTER_TEST_COMMAND(bitmap_test, test_bitmap);
+static int
+test_bitmap_all_set(void)
+{
+	void *mem;
+	uint32_t i;
+	uint64_t slab;
+	uint32_t pos;
+	uint32_t bmp_size;
+	struct rte_bitmap *bmp;
+
+	bmp_size =
+		rte_bitmap_get_memory_footprint(MAX_BITS);
+
+	mem = rte_zmalloc("test_bmap", bmp_size, RTE_CACHE_LINE_SIZE);
+	if (mem == NULL) {
+		printf("Failed to allocate memory for bitmap\n");
+		return TEST_FAILED;
+	}
+
+	bmp = rte_bitmap_init_with_all_set(MAX_BITS, mem, bmp_size);
+	if (bmp == NULL) {
+		printf("Failed to init bitmap\n");
+		return TEST_FAILED;
+	}
+
+	for (i = 0; i < MAX_BITS; i++) {
+		pos = slab = 0;
+		if (!rte_bitmap_scan(bmp, &pos, &slab)) {
+			printf("Failed with init bitmap.\n");
+			return TEST_FAILED;
+		}
+		pos += (slab ? __builtin_ctzll(slab) : 0);
+		rte_bitmap_clear(bmp, pos);
+	}
+
+	if (rte_bitmap_scan(bmp, &pos, &slab)) {
+		printf("Too much bits set.\n");
+		return TEST_FAILED;
+	}
+
+	rte_bitmap_free(bmp);
+	rte_free(mem);
+
+	return TEST_SUCCESS;
+
+}
+
+static int
+test_bitmap(void)
+{
+	if (test_bitmap_all_clear() != TEST_SUCCESS)
+		return TEST_FAILED;
+	return test_bitmap_all_set();
+}
+
+REGISTER_TEST_COMMAND(bitmap_autotest, test_bitmap);

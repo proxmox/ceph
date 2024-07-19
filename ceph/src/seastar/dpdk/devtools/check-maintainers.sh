@@ -15,10 +15,10 @@ files () # <path> [<path> ...]
 	if [ -z "$1" ] ; then
 		return
 	fi
-	if [ -d .git ] ; then
+	if [ -r .git ] ; then
 		git ls-files "$1"
 	else
-		find "$1" -type f |
+		find $1 -type f |
 		sed 's,^\./,,'
 	fi |
 	# if not ended by /
@@ -42,10 +42,10 @@ parse_fx () # <index file>
 	for line in $( (sed '/^-\+$/d' $1 ; echo) | sed 's,^$,§,') ; do
 		if echo "$line" | grep -q '^§$' ; then
 			# empty line delimit end of section
-			whitelist=$(files $flines)
-			blacklist=$(files $xlines)
-			match=$(aminusb "$whitelist" "$blacklist")
-			if [ -n "$whitelist" ] ; then
+			include_files=$(files $flines)
+			exclude_files=$(files $xlines)
+			match=$(aminusb "$include_files" "$exclude_files")
+			if [ -n "$include_files" ] ; then
 				printf "# $title "
 				maintainers=$(echo "$maintainers" | sed -r 's,.*<(.*)>.*,\1,')
 				maintainers=$(printf "$maintainers" | sed -e 's,^,<,' -e 's,$,>,')

@@ -3,7 +3,7 @@
  */
 
 #include <stdint.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 
 #include "ixgbe_ethdev.h"
@@ -90,10 +90,10 @@ ixgbe_rxq_rearm(struct ixgbe_rx_queue *rxq)
 			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
 
 	/* Update the tail pointer on the NIC */
-	IXGBE_PCI_REG_WRITE(rxq->rdt_reg_addr, rx_id);
+	IXGBE_PCI_REG_WC_WRITE(rxq->rdt_reg_addr, rx_id);
 }
 
-#ifdef RTE_LIBRTE_SECURITY
+#ifdef RTE_LIB_SECURITY
 static inline void
 desc_to_olflags_v_ipsec(__m128i descs[4], struct rte_mbuf **rx_pkts)
 {
@@ -108,9 +108,9 @@ desc_to_olflags_v_ipsec(__m128i descs[4], struct rte_mbuf **rx_pkts)
 	const __m128i ipsec_proc_msk  =
 			_mm_set1_epi32(IXGBE_RXDADV_IPSEC_STATUS_SECP);
 	const __m128i ipsec_err_flag  =
-			_mm_set1_epi32(PKT_RX_SEC_OFFLOAD_FAILED |
-				       PKT_RX_SEC_OFFLOAD);
-	const __m128i ipsec_proc_flag = _mm_set1_epi32(PKT_RX_SEC_OFFLOAD);
+			_mm_set1_epi32(RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED |
+				       RTE_MBUF_F_RX_SEC_OFFLOAD);
+	const __m128i ipsec_proc_flag = _mm_set1_epi32(RTE_MBUF_F_RX_SEC_OFFLOAD);
 
 	rearm = _mm_set_epi32(*rearm3, *rearm2, *rearm1, *rearm0);
 	sterr = _mm_set_epi32(_mm_extract_epi32(descs[3], 2),
@@ -132,9 +132,9 @@ desc_to_olflags_v_ipsec(__m128i descs[4], struct rte_mbuf **rx_pkts)
 
 static inline void
 desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
-	struct rte_mbuf **rx_pkts)
+		  uint16_t udp_p_flag, struct rte_mbuf **rx_pkts)
 {
-	__m128i ptype0, ptype1, vtag0, vtag1, csum;
+	__m128i ptype0, ptype1, vtag0, vtag1, csum, udp_csum_skip;
 	__m128i rearm0, rearm1, rearm2, rearm3;
 
 	/* mask everything except rss type */
@@ -148,10 +148,10 @@ desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 			0x00FF, 0x00FF, 0x00FF, 0x00FF);
 
 	/* map rss type to rss hash flag */
-	const __m128i rss_flags = _mm_set_epi8(PKT_RX_FDIR, 0, 0, 0,
-			0, 0, 0, PKT_RX_RSS_HASH,
-			PKT_RX_RSS_HASH, 0, PKT_RX_RSS_HASH, 0,
-			PKT_RX_RSS_HASH, PKT_RX_RSS_HASH, PKT_RX_RSS_HASH, 0);
+	const __m128i rss_flags = _mm_set_epi8(RTE_MBUF_F_RX_FDIR, 0, 0, 0,
+			0, 0, 0, RTE_MBUF_F_RX_RSS_HASH,
+			RTE_MBUF_F_RX_RSS_HASH, 0, RTE_MBUF_F_RX_RSS_HASH, 0,
+			RTE_MBUF_F_RX_RSS_HASH, RTE_MBUF_F_RX_RSS_HASH, RTE_MBUF_F_RX_RSS_HASH, 0);
 
 	/* mask everything except vlan present and l4/ip csum error */
 	const __m128i vlan_csum_msk = _mm_set_epi16(
@@ -161,26 +161,36 @@ desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 		(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 16,
 		IXGBE_RXD_STAT_VP, IXGBE_RXD_STAT_VP,
 		IXGBE_RXD_STAT_VP, IXGBE_RXD_STAT_VP);
+
 	/* map vlan present (0x8), IPE (0x2), L4E (0x1) to ol_flags */
 	const __m128i vlan_csum_map_lo = _mm_set_epi8(
 		0, 0, 0, 0,
-		vlan_flags | PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD,
-		vlan_flags | PKT_RX_IP_CKSUM_BAD,
-		vlan_flags | PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD,
-		vlan_flags | PKT_RX_IP_CKSUM_GOOD,
+		vlan_flags | RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD,
+		vlan_flags | RTE_MBUF_F_RX_IP_CKSUM_BAD,
+		vlan_flags | RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_BAD,
+		vlan_flags | RTE_MBUF_F_RX_IP_CKSUM_GOOD,
 		0, 0, 0, 0,
-		PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD,
-		PKT_RX_IP_CKSUM_BAD,
-		PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD,
-		PKT_RX_IP_CKSUM_GOOD);
+		RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD,
+		RTE_MBUF_F_RX_IP_CKSUM_BAD,
+		RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_BAD,
+		RTE_MBUF_F_RX_IP_CKSUM_GOOD);
 
 	const __m128i vlan_csum_map_hi = _mm_set_epi8(
 		0, 0, 0, 0,
-		0, PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
-		PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t),
+		0, RTE_MBUF_F_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
+		RTE_MBUF_F_RX_L4_CKSUM_GOOD >> sizeof(uint8_t),
 		0, 0, 0, 0,
-		0, PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
-		PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t));
+		0, RTE_MBUF_F_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
+		RTE_MBUF_F_RX_L4_CKSUM_GOOD >> sizeof(uint8_t));
+
+	/* mask everything except UDP header present if specified */
+	const __m128i udp_hdr_p_msk = _mm_set_epi16
+		(0, 0, 0, 0,
+		 udp_p_flag, udp_p_flag, udp_p_flag, udp_p_flag);
+
+	const __m128i udp_csum_bad_shuf = _mm_set_epi8
+		(0, 0, 0, 0, 0, 0, 0, 0,
+		 0, 0, 0, 0, 0, 0, ~(uint8_t)RTE_MBUF_F_RX_L4_CKSUM_BAD, 0xFF);
 
 	ptype0 = _mm_unpacklo_epi16(descs[0], descs[1]);
 	ptype1 = _mm_unpacklo_epi16(descs[2], descs[3]);
@@ -188,6 +198,8 @@ desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 	vtag1 = _mm_unpackhi_epi16(descs[2], descs[3]);
 
 	ptype0 = _mm_unpacklo_epi32(ptype0, ptype1);
+	/* save the UDP header present information */
+	udp_csum_skip = _mm_and_si128(ptype0, udp_hdr_p_msk);
 	ptype0 = _mm_and_si128(ptype0, rsstype_msk);
 	ptype0 = _mm_shuffle_epi8(rss_flags, ptype0);
 
@@ -214,6 +226,15 @@ desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 	vtag1 = _mm_or_si128(vtag0, vtag1);
 
 	vtag1 = _mm_or_si128(ptype0, vtag1);
+
+	/* convert the UDP header present 0x200 to 0x1 for aligning with each
+	 * RTE_MBUF_F_RX_L4_CKSUM_BAD value in low byte of 16 bits word ol_flag in
+	 * vtag1 (4x16). Then mask out the bad checksum value by shuffle and
+	 * bit-mask.
+	 */
+	udp_csum_skip = _mm_srli_epi16(udp_csum_skip, 9);
+	udp_csum_skip = _mm_shuffle_epi8(udp_csum_bad_shuf, udp_csum_skip);
+	vtag1 = _mm_and_si128(vtag1, udp_csum_skip);
 
 	/*
 	 * At this point, we have the 4 sets of flags in the low 64-bits
@@ -302,13 +323,11 @@ desc_to_ptype_v(__m128i descs[4], uint16_t pkt_type_mask,
 		get_packet_type(3, pkt_info, etqf_check, tunnel_check);
 }
 
-/*
+/**
  * vPMD raw receive routine, only accept(nb_pkts >= RTE_IXGBE_DESCS_PER_LOOP)
  *
  * Notice:
  * - nb_pkts < RTE_IXGBE_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
- *   numbers of DD bit
  * - floor align nb_pkts to a RTE_IXGBE_DESC_PER_LOOP power-of-two
  */
 static inline uint16_t
@@ -318,7 +337,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	volatile union ixgbe_adv_rx_desc *rxdp;
 	struct ixgbe_rx_entry *sw_ring;
 	uint16_t nb_pkts_recd;
-#ifdef RTE_LIBRTE_SECURITY
+#ifdef RTE_LIB_SECURITY
 	uint8_t use_ipsec = rxq->using_ipsec;
 #endif
 	int pos;
@@ -343,9 +362,18 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	__m128i dd_check, eop_check;
 	__m128i mbuf_init;
 	uint8_t vlan_flags;
+	uint16_t udp_p_flag = 0; /* Rx Descriptor UDP header present */
 
-	/* nb_pkts shall be less equal than RTE_IXGBE_MAX_RX_BURST */
-	nb_pkts = RTE_MIN(nb_pkts, RTE_IXGBE_MAX_RX_BURST);
+	/*
+	 * Under the circumstance that `rx_tail` wrap back to zero
+	 * and the advance speed of `rx_tail` is greater than `rxrearm_start`,
+	 * `rx_tail` will catch up with `rxrearm_start` and surpass it.
+	 * This may cause some mbufs be reused by application.
+	 *
+	 * So we need to make some restrictions to ensure that
+	 * `rx_tail` will not exceed `rxrearm_start`.
+	 */
+	nb_pkts = RTE_MIN(nb_pkts, RTE_IXGBE_RXQ_REARM_THRESH);
 
 	/* nb_pkts has to be floor-aligned to RTE_IXGBE_DESCS_PER_LOOP */
 	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, RTE_IXGBE_DESCS_PER_LOOP);
@@ -369,6 +397,9 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	if (!(rxdp->wb.upper.status_error &
 				rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD)))
 		return 0;
+
+	if (rxq->rx_udp_csum_zero_err)
+		udp_p_flag = IXGBE_RXDADV_PKTTYPE_UDP;
 
 	/* 4 packets DD mask */
 	dd_check = _mm_set_epi64x(0x0000000100000001LL, 0x0000000100000001LL);
@@ -408,7 +439,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	sw_ring = &rxq->sw_ring[rxq->rx_tail];
 
 	/* ensure these 2 flags are in the lower 8 bits */
-	RTE_BUILD_BUG_ON((PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED) > UINT8_MAX);
+	RTE_BUILD_BUG_ON((RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED) > UINT8_MAX);
 	vlan_flags = rxq->vlan_flags & UINT8_MAX;
 
 	/* A. load 4 packet in one loop
@@ -434,7 +465,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		mbp1 = _mm_loadu_si128((__m128i *)&sw_ring[pos]);
 
 		/* Read desc statuses backwards to avoid race condition */
-		/* A.1 load 4 pkts desc */
+		/* A.1 load desc[3] */
 		descs[3] = _mm_loadu_si128((__m128i *)(rxdp + 3));
 		rte_compiler_barrier();
 
@@ -446,9 +477,9 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		mbp2 = _mm_loadu_si128((__m128i *)&sw_ring[pos+2]);
 #endif
 
+		/* A.1 load desc[2-0] */
 		descs[2] = _mm_loadu_si128((__m128i *)(rxdp + 2));
 		rte_compiler_barrier();
-		/* B.1 load 2 mbuf point */
 		descs[1] = _mm_loadu_si128((__m128i *)(rxdp + 1));
 		rte_compiler_barrier();
 		descs[0] = _mm_loadu_si128((__m128i *)(rxdp));
@@ -482,9 +513,10 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		sterr_tmp1 = _mm_unpackhi_epi32(descs[1], descs[0]);
 
 		/* set ol_flags with vlan packet type */
-		desc_to_olflags_v(descs, mbuf_init, vlan_flags, &rx_pkts[pos]);
+		desc_to_olflags_v(descs, mbuf_init, vlan_flags, udp_p_flag,
+				  &rx_pkts[pos]);
 
-#ifdef RTE_LIBRTE_SECURITY
+#ifdef RTE_LIB_SECURITY
 		if (unlikely(use_ipsec))
 			desc_to_olflags_v_ipsec(descs, &rx_pkts[pos]);
 #endif
@@ -519,7 +551,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			/* and with mask to extract bits, flipping 1-0 */
 			__m128i eop_bits = _mm_andnot_si128(staterr, eop_check);
 			/* the staterr values are not in order, as the count
-			 * count of dd bits doesn't care. However, for end of
+			 * of dd bits doesn't care. However, for end of
 			 * packet tracking, we do care, so shuffle. This also
 			 * compresses the 32-bit values to 8-bit
 			 */
@@ -541,7 +573,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 
 		desc_to_ptype_v(descs, rxq->pkt_type_mask, &rx_pkts[pos]);
 
-		/* C.4 calc avaialbe number of desc */
+		/* C.4 calc available number of desc */
 		var = __builtin_popcountll(_mm_cvtsi128_si64(staterr));
 		nb_pkts_recd += var;
 		if (likely(var != RTE_IXGBE_DESCS_PER_LOOP))
@@ -556,13 +588,11 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	return nb_pkts_recd;
 }
 
-/*
+/**
  * vPMD receive routine, only accept(nb_pkts >= RTE_IXGBE_DESCS_PER_LOOP)
  *
  * Notice:
  * - nb_pkts < RTE_IXGBE_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
- *   numbers of DD bit
  * - floor align nb_pkts to a RTE_IXGBE_DESC_PER_LOOP power-of-two
  */
 uint16_t
@@ -572,18 +602,16 @@ ixgbe_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return _recv_raw_pkts_vec(rx_queue, rx_pkts, nb_pkts, NULL);
 }
 
-/*
+/**
  * vPMD receive routine that reassembles scattered packets
  *
  * Notice:
  * - nb_pkts < RTE_IXGBE_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
- *   numbers of DD bit
  * - floor align nb_pkts to a RTE_IXGBE_DESC_PER_LOOP power-of-two
  */
-uint16_t
-ixgbe_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
-		uint16_t nb_pkts)
+static uint16_t
+ixgbe_recv_scattered_burst_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+			       uint16_t nb_pkts)
 {
 	struct ixgbe_rx_queue *rxq = rx_queue;
 	uint8_t split_flags[RTE_IXGBE_MAX_RX_BURST] = {0};
@@ -609,9 +637,36 @@ ixgbe_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			i++;
 		if (i == nb_bufs)
 			return nb_bufs;
+		rxq->pkt_first_seg = rx_pkts[i];
 	}
 	return i + reassemble_packets(rxq, &rx_pkts[i], nb_bufs - i,
 		&split_flags[i]);
+}
+
+/**
+ * vPMD receive routine that reassembles scattered packets.
+ */
+uint16_t
+ixgbe_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+			      uint16_t nb_pkts)
+{
+	uint16_t retval = 0;
+
+	while (nb_pkts > RTE_IXGBE_MAX_RX_BURST) {
+		uint16_t burst;
+
+		burst = ixgbe_recv_scattered_burst_vec(rx_queue,
+						       rx_pkts + retval,
+						       RTE_IXGBE_MAX_RX_BURST);
+		retval += burst;
+		nb_pkts -= burst;
+		if (burst < RTE_IXGBE_MAX_RX_BURST)
+			return retval;
+	}
+
+	return retval + ixgbe_recv_scattered_burst_vec(rx_queue,
+						       rx_pkts + retval,
+						       nb_pkts);
 }
 
 static inline void
@@ -696,30 +751,30 @@ ixgbe_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	txq->tx_tail = tx_id;
 
-	IXGBE_PCI_REG_WRITE(txq->tdt_reg_addr, txq->tx_tail);
+	IXGBE_PCI_REG_WC_WRITE(txq->tdt_reg_addr, txq->tx_tail);
 
 	return nb_pkts;
 }
 
-static void __attribute__((cold))
+static void __rte_cold
 ixgbe_tx_queue_release_mbufs_vec(struct ixgbe_tx_queue *txq)
 {
 	_ixgbe_tx_queue_release_mbufs_vec(txq);
 }
 
-void __attribute__((cold))
+void __rte_cold
 ixgbe_rx_queue_release_mbufs_vec(struct ixgbe_rx_queue *rxq)
 {
 	_ixgbe_rx_queue_release_mbufs_vec(rxq);
 }
 
-static void __attribute__((cold))
+static void __rte_cold
 ixgbe_tx_free_swring(struct ixgbe_tx_queue *txq)
 {
 	_ixgbe_tx_free_swring_vec(txq);
 }
 
-static void __attribute__((cold))
+static void __rte_cold
 ixgbe_reset_tx_queue(struct ixgbe_tx_queue *txq)
 {
 	_ixgbe_reset_tx_queue_vec(txq);
@@ -731,19 +786,19 @@ static const struct ixgbe_txq_ops vec_txq_ops = {
 	.reset = ixgbe_reset_tx_queue,
 };
 
-int __attribute__((cold))
+int __rte_cold
 ixgbe_rxq_vec_setup(struct ixgbe_rx_queue *rxq)
 {
 	return ixgbe_rxq_vec_setup_default(rxq);
 }
 
-int __attribute__((cold))
+int __rte_cold
 ixgbe_txq_vec_setup(struct ixgbe_tx_queue *txq)
 {
 	return ixgbe_txq_vec_setup_default(txq, &vec_txq_ops);
 }
 
-int __attribute__((cold))
+int __rte_cold
 ixgbe_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev)
 {
 	return ixgbe_rx_vec_dev_conf_condition_check_default(dev);

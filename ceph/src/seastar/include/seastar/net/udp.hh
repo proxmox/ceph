@@ -22,12 +22,16 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <unordered_map>
 #include <assert.h>
+#endif
+
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/net/api.hh>
 #include <seastar/net/const.hh>
 #include <seastar/net/net.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
@@ -46,7 +50,7 @@ struct udp_hdr {
 } __attribute__((packed));
 
 struct udp_channel_state {
-    queue<udp_datagram> _queue;
+    queue<datagram> _queue;
     // Limit number of data queued into send queue
     semaphore _user_queue_space = {212992};
     udp_channel_state(size_t queue_size) : _queue(queue_size) {}

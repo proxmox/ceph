@@ -4,11 +4,12 @@
 
 #include <stdlib.h>
 
+#include <rte_common.h>
 #include <rte_string_fns.h>
 
 #include "tmgr.h"
 
-static struct rte_sched_subport_params
+static struct rte_sched_subport_profile_params
 	subport_profile[TMGR_SUBPORT_PROFILE_MAX];
 
 static uint32_t n_subport_profiles;
@@ -17,6 +18,15 @@ static struct rte_sched_pipe_params
 	pipe_profile[TMGR_PIPE_PROFILE_MAX];
 
 static uint32_t n_pipe_profiles;
+
+static const struct rte_sched_subport_params subport_params_default = {
+	.n_pipes_per_subport_enabled = 0, /* filled at runtime */
+	.qsize = {64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64},
+	.pipe_profiles = pipe_profile,
+	.n_pipe_profiles = 0, /* filled at run time */
+	.n_max_pipe_profiles = RTE_DIM(pipe_profile),
+	.cman_params = NULL,
+};
 
 static struct tmgr_port_list tmgr_port_list;
 
@@ -44,16 +54,16 @@ tmgr_port_find(const char *name)
 }
 
 int
-tmgr_subport_profile_add(struct rte_sched_subport_params *p)
+tmgr_subport_profile_add(struct rte_sched_subport_profile_params *params)
 {
 	/* Check input params */
-	if (p == NULL)
+	if (params == NULL)
 		return -1;
 
 	/* Save profile */
 	memcpy(&subport_profile[n_subport_profiles],
-		p,
-		sizeof(*p));
+		params,
+		sizeof(*params));
 
 	n_subport_profiles++;
 
@@ -80,6 +90,7 @@ tmgr_pipe_profile_add(struct rte_sched_pipe_params *p)
 struct tmgr_port *
 tmgr_port_create(const char *name, struct tmgr_port_params *params)
 {
+	struct rte_sched_subport_params subport_params;
 	struct rte_sched_port_params p;
 	struct tmgr_port *tmgr_port;
 	struct rte_sched_port *s;
@@ -103,17 +114,22 @@ tmgr_port_create(const char *name, struct tmgr_port_params *params)
 	p.mtu = params->mtu;
 	p.frame_overhead = params->frame_overhead;
 	p.n_subports_per_port = params->n_subports_per_port;
+	p.n_subport_profiles = n_subport_profiles;
+	p.subport_profiles = subport_profile;
+	p.n_max_subport_profiles = TMGR_SUBPORT_PROFILE_MAX;
 	p.n_pipes_per_subport = params->n_pipes_per_subport;
 
-	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
-		p.qsize[i] = params->qsize[i];
-
-	p.pipe_profiles = pipe_profile;
-	p.n_pipe_profiles = n_pipe_profiles;
 
 	s = rte_sched_port_config(&p);
 	if (s == NULL)
 		return NULL;
+
+	memcpy(&subport_params, &subport_params_default,
+		sizeof(subport_params_default));
+
+	subport_params.n_pipe_profiles = n_pipe_profiles;
+	subport_params.n_pipes_per_subport_enabled =
+						params->n_pipes_per_subport;
 
 	for (i = 0; i < params->n_subports_per_port; i++) {
 		int status;
@@ -121,7 +137,8 @@ tmgr_port_create(const char *name, struct tmgr_port_params *params)
 		status = rte_sched_subport_config(
 			s,
 			i,
-			&subport_profile[0]);
+			&subport_params,
+			0);
 
 		if (status) {
 			rte_sched_port_free(s);
@@ -129,6 +146,7 @@ tmgr_port_create(const char *name, struct tmgr_port_params *params)
 		}
 
 		for (j = 0; j < params->n_pipes_per_subport; j++) {
+
 			status = rte_sched_pipe_config(
 				s,
 				i,
@@ -183,7 +201,8 @@ tmgr_subport_config(const char *port_name,
 	status = rte_sched_subport_config(
 		port->s,
 		subport_id,
-		&subport_profile[subport_profile_id]);
+		NULL,
+		subport_profile_id);
 
 	return status;
 }

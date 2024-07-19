@@ -46,7 +46,7 @@ protected:
     amqp::shutdown();
   }
 
-  // wait for at least one new (since last drain) message to be dequeueud
+  // wait for at least one new (since last drain) message to be dequeued
   // and then wait for all pending answers to be received
   void wait_until_drained() {  
     while (amqp::get_dequeued() == current_dequeued) {
@@ -513,7 +513,7 @@ TEST_F(TestAMQP, RetryFailWrite)
 TEST_F(TestAMQP, IdleConnection)
 {
   // this test is skipped since it takes 30seconds
-  //GTEST_SKIP();
+  GTEST_SKIP();
   const auto connection_number = amqp::get_connection_count();
   amqp::connection_id_t conn_id;
   auto rc = amqp::connect(conn_id, "amqp://localhost", "ex1", false, false, boost::none);

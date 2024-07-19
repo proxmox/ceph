@@ -28,16 +28,17 @@
 #include <seastar/core/metrics.hh>
 #include <seastar/core/scheduling.hh>
 #include <seastar/util/reference_wrapper.hh>
-#include <seastar/util/concepts.hh>
 #include <seastar/util/noncopyable_function.hh>
 #include <seastar/util/tuple_utils.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
 #include <fmt/format.h>
-#include <fmt/ostream.h>
 #include <vector>
 #include <boost/range/irange.hpp>
 #include <boost/range/adaptor/transformed.hpp>
 #include <boost/container/static_vector.hpp>
+#endif
 
 namespace seastar {
 
@@ -118,6 +119,7 @@ std::reference_wrapper<T> unwrap_for_es(reference_wrapper_for_es<T> ref) {
 /// \endcond
 
 /// Base execution stage class
+SEASTAR_MODULE_EXPORT
 class execution_stage {
 public:
     struct stats {
@@ -205,10 +207,10 @@ public:
 /// \tparam Args  argument pack containing arguments to the function object, needs
 ///                   to have move constructor that doesn't throw
 template<typename ReturnType, typename... Args>
-SEASTAR_CONCEPT(requires std::is_nothrow_move_constructible<std::tuple<Args...>>::value)
+requires std::is_nothrow_move_constructible_v<std::tuple<Args...>>
 class concrete_execution_stage final : public execution_stage {
     using args_tuple = std::tuple<Args...>;
-    static_assert(std::is_nothrow_move_constructible<args_tuple>::value,
+    static_assert(std::is_nothrow_move_constructible_v<args_tuple>,
                   "Function arguments need to be nothrow move constructible");
 
     static constexpr size_t flush_threshold = 128;
@@ -247,7 +249,7 @@ private:
             futurize<ReturnType>::apply(_function, unwrap(std::move(wi_in))).forward_to(std::move(wi_ready));
             _stats.function_calls_executed++;
 
-            if (need_preempt()) {
+            if (internal::scheduler_need_preempt()) {
                 _stats.tasks_preempted++;
                 break;
             }
@@ -318,13 +320,13 @@ public:
 /// \tparam Args  argument pack containing arguments to the function object, needs
 ///                   to have move constructor that doesn't throw
 template<typename ReturnType, typename... Args>
-SEASTAR_CONCEPT(requires std::is_nothrow_move_constructible<std::tuple<Args...>>::value)
+requires std::is_nothrow_move_constructible_v<std::tuple<Args...>>
 class inheriting_concrete_execution_stage final : public inheriting_execution_stage {
     using return_type = futurize_t<ReturnType>;
     using args_tuple = std::tuple<Args...>;
     using per_group_stage_type = concrete_execution_stage<ReturnType, Args...>;
 
-    static_assert(std::is_nothrow_move_constructible<args_tuple>::value,
+    static_assert(std::is_nothrow_move_constructible_v<args_tuple>,
                   "Function arguments need to be nothrow move constructible");
 
     sstring _name;
@@ -446,6 +448,7 @@ struct concrete_execution_stage_helper<Ret, std::tuple<Args...>> {
 /// \param fn function to be executed by the stage
 /// \return concrete_execution_stage
 ///
+SEASTAR_MODULE_EXPORT
 template<typename Function>
 auto make_execution_stage(const sstring& name, scheduling_group sg, Function&& fn) {
     using traits = function_traits<Function>;
@@ -485,6 +488,7 @@ auto make_execution_stage(const sstring& name, scheduling_group sg, Function&& f
 /// \param fn function to be executed by the stage
 /// \return concrete_execution_stage
 ///
+SEASTAR_MODULE_EXPORT
 template<typename Function>
 auto make_execution_stage(const sstring& name, Function&& fn) {
     return make_execution_stage(name, scheduling_group(), std::forward<Function>(fn));
@@ -513,6 +517,7 @@ auto make_execution_stage(const sstring& name, Function&& fn) {
 /// \param name unique name of the execution stage
 /// \param fn member function to be executed by the stage
 /// \return concrete_execution_stage
+SEASTAR_MODULE_EXPORT
 template<typename Ret, typename Object, typename... Args>
 concrete_execution_stage<Ret, Object*, Args...>
 make_execution_stage(const sstring& name, scheduling_group sg, Ret (Object::*fn)(Args...)) {

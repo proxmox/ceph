@@ -19,6 +19,26 @@
  * Copyright 2015 Cloudius Systems
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <memory>
+#include <algorithm>
+#include <bitset>
+#include <cctype>
+#include <chrono>
+#include <cstdint>
+#include <functional>
+#include <iostream>
+#include <limits>
+#include <queue>
+#include <unordered_map>
+#include <vector>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/sstring.hh>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/circular_buffer.hh>
@@ -27,19 +47,14 @@
 #include <seastar/core/when_all.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/print.hh>
-#include <iostream>
-#include <algorithm>
-#include <unordered_map>
-#include <queue>
-#include <bitset>
-#include <limits>
-#include <cctype>
-#include <vector>
 #include <seastar/http/httpd.hh>
 #include <seastar/http/internal/content_source.hh>
 #include <seastar/http/reply.hh>
 #include <seastar/util/short_streams.hh>
 #include <seastar/util/log.hh>
+#include <seastar/util/string_utils.hh>
+#endif
+
 
 using namespace std::chrono_literals;
 
@@ -164,7 +179,7 @@ future<> connection::read() {
 
 static input_stream<char> make_content_stream(http::request* req, input_stream<char>& buf) {
     // Create an input stream based on the requests body encoding or lack thereof
-    if (http::request::case_insensitive_cmp()(req->get_header("Transfer-Encoding"), "chunked")) {
+    if (seastar::internal::case_insensitive_cmp()(req->get_header("Transfer-Encoding"), "chunked")) {
         return input_stream<char>(data_source(std::make_unique<internal::chunked_source_impl>(buf, req->chunk_extensions, req->trailing_headers)));
     } else {
         return input_stream<char>(data_source(std::make_unique<internal::content_length_source_impl>(buf, req->content_length)));
@@ -205,7 +220,11 @@ future<> connection::read_one() {
         }
         ++_server._requests_served;
         std::unique_ptr<http::request> req = _parser.get_parsed_request();
-        if (_server._credentials) {
+
+        req->_server_address = this->_server_addr;
+        req->_client_address = this->_client_addr;
+
+        if (_tls) {
             req->protocol_name = "https";
         }
         if (_parser.failed()) {
@@ -228,14 +247,14 @@ future<> connection::read_one() {
         }
 
         sstring encoding = req->get_header("Transfer-Encoding");
-        if (encoding.size() && !http::request::case_insensitive_cmp()(encoding, "chunked")){
+        if (encoding.size() && !seastar::internal::case_insensitive_cmp()(encoding, "chunked")){
             //TODO: add "identity", "gzip"("x-gzip"), "compress"("x-compress"), and "deflate" encodings and their combinations
             generate_error_reply_and_close(std::move(req), http::reply::status_type::not_implemented, format("Encodings other than \"chunked\" are not implemented (received encoding: \"{}\")", encoding));
             return make_ready_future<>();
         }
 
         auto maybe_reply_continue = [this, req = std::move(req)] () mutable {
-            if (req->_version == "1.1" && http::request::case_insensitive_cmp()(req->get_header("Expect"), "100-continue")){
+            if (req->_version == "1.1" && seastar::internal::case_insensitive_cmp()(req->get_header("Expect"), "100-continue")){
                 return _replies.not_full().then([req = std::move(req), this] () mutable {
                     auto continue_reply = std::make_unique<http::reply>();
                     set_headers(*continue_reply);
@@ -350,7 +369,7 @@ future<bool> connection::generate_reply(std::unique_ptr<http::request> req) {
     });
 }
 
-void http_server::set_tls_credentials(shared_ptr<seastar::tls::server_credentials> credentials) {
+void http_server::set_tls_credentials(server_credentials_ptr credentials) {
     _credentials = credentials;
 }
 
@@ -370,14 +389,27 @@ void http_server::set_content_streaming(bool b) {
     _content_streaming = b;
 }
 
-future<> http_server::listen(socket_address addr, listen_options lo) {
-    if (_credentials) {
-        _listeners.push_back(seastar::tls::listen(_credentials, addr, lo));
+future<> http_server::listen(socket_address addr, listen_options lo, 
+            server_credentials_ptr listener_credentials) {
+    if (listener_credentials) {
+        _listeners.push_back(seastar::tls::listen(listener_credentials, addr, lo));
     } else {
         _listeners.push_back(seastar::listen(addr, lo));
     }
-    return do_accepts(_listeners.size() - 1);
+    return do_accepts(_listeners.size() - 1, listener_credentials != nullptr);
 }
+
+future<> http_server::listen(socket_address addr, listen_options lo) {
+    return listen(addr, lo, _credentials);
+}
+
+future<> http_server::listen(socket_address addr,
+            server_credentials_ptr listener_credentials) {
+    listen_options lo;
+    lo.reuse_address = true;
+    return listen(addr, lo, listener_credentials);
+}
+
 future<> http_server::listen(socket_address addr) {
     listen_options lo;
     lo.reuse_address = true;
@@ -395,20 +427,26 @@ future<> http_server::stop() {
 }
 
 // FIXME: This could return void
-future<> http_server::do_accepts(int which) {
-    (void)try_with_gate(_task_gate, [this, which] {
-        return keep_doing([this, which] {
-            return try_with_gate(_task_gate, [this, which] {
-                return do_accept_one(which);
+future<> http_server::do_accepts(int which, bool tls) {
+    (void)try_with_gate(_task_gate, [this, which, tls] {
+        return keep_doing([this, which, tls] {
+            return try_with_gate(_task_gate, [this, which, tls] {
+                return do_accept_one(which, tls);
             });
         }).handle_exception_type([](const gate_closed_exception& e) {});
     }).handle_exception_type([](const gate_closed_exception& e) {});
     return make_ready_future<>();
 }
 
-future<> http_server::do_accept_one(int which) {
-    return _listeners[which].accept().then([this] (accept_result ar) mutable {
-        auto conn = std::make_unique<connection>(*this, std::move(ar.connection), std::move(ar.remote_address));
+future<> http_server::do_accepts(int which){
+    return do_accepts(which, _credentials != nullptr);
+}
+
+future<> http_server::do_accept_one(int which, bool tls) {
+    return _listeners[which].accept().then([this, tls] (accept_result ar) mutable {
+        auto local_address = ar.connection.local_address();
+        auto conn = std::make_unique<connection>(*this, std::move(ar.connection),
+                std::move(ar.remote_address), std::move(local_address), tls);
         (void)try_with_gate(_task_gate, [conn = std::move(conn)]() mutable {
             return conn->process().handle_exception([conn = std::move(conn)] (std::exception_ptr ex) {
                 hlogger.error("request error: {}", ex);
@@ -481,8 +519,16 @@ future<> http_server_control::listen(socket_address addr) {
     return _server_dist->invoke_on_all<future<> (http_server::*)(socket_address)>(&http_server::listen, addr);
 }
 
+future<> http_server_control::listen(socket_address addr, http_server::server_credentials_ptr credentials) {
+    return _server_dist->invoke_on_all<future<> (http_server::*)(socket_address, http_server::server_credentials_ptr)>(&http_server::listen, addr, credentials);
+}
+
 future<> http_server_control::listen(socket_address addr, listen_options lo) {
     return _server_dist->invoke_on_all<future<> (http_server::*)(socket_address, listen_options)>(&http_server::listen, addr, lo);
+}
+
+future<> http_server_control::listen(socket_address addr, listen_options lo, http_server::server_credentials_ptr credentials) {
+    return _server_dist->invoke_on_all<future<> (http_server::*)(socket_address, listen_options, http_server::server_credentials_ptr)>(&http_server::listen, addr, lo, credentials);
 }
 
 distributed<http_server>& http_server_control::server() {

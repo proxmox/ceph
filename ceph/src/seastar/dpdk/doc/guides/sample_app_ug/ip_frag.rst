@@ -53,7 +53,7 @@ Application usage:
 
 .. code-block:: console
 
-    ./build/ip_fragmentation [EAL options] -- -p PORTMASK [-q NQ]
+    ./<build_dir>/examples/dpdk-ip_fragmentation [EAL options] -- -p PORTMASK [-q NQ]
 
 where:
 
@@ -65,7 +65,7 @@ To run the example in linux environment with 2 lcores (2,4) over 2 ports(0,2) wi
 
 .. code-block:: console
 
-    ./build/ip_fragmentation -l 2,4 -n 3 -- -p 5
+    ./<build_dir>/examples/dpdk-ip_fragmentation -l 2,4 -n 3 -- -p 5
     EAL: coremask set to 14
     EAL: Detected lcore 0 on socket 0
     EAL: Detected lcore 1 on socket 1
@@ -94,40 +94,24 @@ To run the example in linux environment with 1 lcore (4) over 2 ports(0,2) with 
 
 .. code-block:: console
 
-    ./build/ip_fragmentation -l 4 -n 3 -- -p 5 -q 2
+    ./<build_dir>/examples/dpdk-ip_fragmentation -l 4 -n 3 -- -p 5 -q 2
 
 To test the application, flows should be set up in the flow generator that match the values in the
 l3fwd_ipv4_route_array and/or l3fwd_ipv6_route_array table.
 
 The default l3fwd_ipv4_route_array table is:
 
-.. code-block:: c
-
-    struct l3fwd_ipv4_route l3fwd_ipv4_route_array[] = {
-        {IPv4(100, 10, 0, 0), 16, 0},
-        {IPv4(100, 20, 0, 0), 16, 1},
-        {IPv4(100, 30, 0, 0), 16, 2},
-        {IPv4(100, 40, 0, 0), 16, 3},
-        {IPv4(100, 50, 0, 0), 16, 4},
-        {IPv4(100, 60, 0, 0), 16, 5},
-        {IPv4(100, 70, 0, 0), 16, 6},
-        {IPv4(100, 80, 0, 0), 16, 7},
-    };
+.. literalinclude:: ../../../examples/ip_fragmentation/main.c
+    :language: c
+    :start-after: Default l3fwd_ipv4_route_array table. 8<
+    :end-before: >8 End of default l3fwd_ipv4_route_array table
 
 The default l3fwd_ipv6_route_array table is:
 
-.. code-block:: c
-
-    struct l3fwd_ipv6_route l3fwd_ipv6_route_array[] = {
-        {{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 0},
-        {{2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 1},
-        {{3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 2},
-        {{4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 3},
-        {{5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 4},
-        {{6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 5},
-        {{7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 6},
-        {{8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 7},
-    };
+.. literalinclude:: ../../../examples/ip_fragmentation/main.c
+    :language: c
+    :start-after: Default l3fwd_ipv6_route_array table. 8<
+    :end-before: >8 End of default l3fwd_ipv6_route_array table.
 
 For example, for the input IPv4 packet with destination address: 100.10.1.1 and packet length 9198 bytes,
 seven IPv4 packets will be sent out from port #0 to the destination address 100.10.1.1:

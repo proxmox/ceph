@@ -59,6 +59,8 @@ Possible -op commands::
 * meta-list
 * get-osdmap
 * set-osdmap
+* get-superblock
+* set-superblock
 * get-inc-osdmap
 * set-inc-osdmap
 * mark-complete
@@ -244,56 +246,45 @@ Procedure
 Manipulating the Object Map Key
 -------------------------------
 
-Use the **ceph-objectstore-tool** utility to change the object map (OMAP) key.
-Provide the data path, the placement group identifier (PG ID), the object, and
-the key in the OMAP.
+Use the **ceph-objectstore-tool** utility to change the object map (OMAP) key. You need to provide the data path, the placement group identifier (PG ID), the object, and the key in the OMAP.
+Note
 
 Prerequisites
-^^^^^^^^^^^^^
 
     * Having root access to the Ceph OSD node.
     * Stopping the ceph-osd daemon. 
 
-Commands
-^^^^^^^^
+Procedure
 
-Run the commands in this section as ``root`` on an OSD node.
+    Get the object map key:
 
-* **Getting the object map key**
-
-   Syntax:
-
-   .. code-block:: ini 
+    Syntax::
      
-      ceph-objectstore-tool --data-path $PATH_TO_OSD --pgid $PG_ID $OBJECT get-omap $KEY > $OBJECT_MAP_FILE_NAME
+       ceph-objectstore-tool --data-path $PATH_TO_OSD --pgid $PG_ID $OBJECT get-omap $KEY > $OBJECT_MAP_FILE_NAME
 
    Example::
 
-    ceph-objectstore-tool --data-path /var/lib/ceph/osd/ceph-0 --pgid 0.1c '{"oid":"zone_info.default","key":"","snapid":-2,"hash":235010478,"max":0,"pool":11,"namespace":""}'  get-omap "" > zone_info.default.omap.txt
+    [root@osd ~]# ceph-objectstore-tool --data-path /var/lib/ceph/osd/ceph-0 --pgid 0.1c '{"oid":"zone_info.default","key":"","snapid":-2,"hash":235010478,"max":0,"pool":11,"namespace":""}'  get-omap "" > zone_info.default.omap.txt
 
-* **Setting the object map key**
+   Set the object map key:
 
-   Syntax:
+   Syntax::
 
-   .. code-block:: ini 
-
-      ceph-objectstore-tool --data-path $PATH_TO_OSD --pgid $PG_ID $OBJECT set-omap $KEY < $OBJECT_MAP_FILE_NAME
+    ceph-objectstore-tool --data-path $PATH_TO_OSD --pgid $PG_ID $OBJECT set-omap $KEY < $OBJECT_MAP_FILE_NAME
 
    Example::
 
-    ceph-objectstore-tool --data-path /var/lib/ceph/osd/ceph-0 --pgid 0.1c '{"oid":"zone_info.default","key":"","snapid":-2,"hash":235010478,"max":0,"pool":11,"namespace":""}' set-omap "" < zone_info.default.omap.txt
+    [root@osd ~]# ceph-objectstore-tool --data-path /var/lib/ceph/osd/ceph-0 --pgid 0.1c '{"oid":"zone_info.default","key":"","snapid":-2,"hash":235010478,"max":0,"pool":11,"namespace":""}' set-omap "" < zone_info.default.omap.txt
 
-* **Removing the object map key**
+   Remove the object map key:
 
-   Syntax:
+   Syntax::
 
-   .. code-block:: ini 
-
-      ceph-objectstore-tool --data-path $PATH_TO_OSD --pgid $PG_ID $OBJECT rm-omap $KEY
+    ceph-objectstore-tool --data-path $PATH_TO_OSD --pgid $PG_ID $OBJECT rm-omap $KEY
 
    Example::
 
-    ceph-objectstore-tool --data-path /var/lib/ceph/osd/ceph-0 --pgid 0.1c '{"oid":"zone_info.default","key":"","snapid":-2,"hash":235010478,"max":0,"pool":11,"namespace":""}' rm-omap ""
+    [root@osd ~]# ceph-objectstore-tool --data-path /var/lib/ceph/osd/ceph-0 --pgid 0.1c '{"oid":"zone_info.default","key":"","snapid":-2,"hash":235010478,"max":0,"pool":11,"namespace":""}' rm-omap ""
 
 
 Listing an Object's Attributes
@@ -415,7 +406,7 @@ Options
 
 .. option:: --op arg
 
-   Arg is one of [info, log, remove, mkfs, fsck, repair, fuse, dup, export, export-remove, import, list, fix-lost, list-pgs, dump-super, meta-list, get-osdmap, set-osdmap, get-inc-osdmap, set-inc-osdmap, mark-complete, reset-last-complete, update-mon-db, dump-export, trim-pg-log]
+   Arg is one of [info, log, remove, mkfs, fsck, repair, fuse, dup, export, export-remove, import, list, fix-lost, list-pgs, dump-super, meta-list, get-osdmap, set-osdmap, get-superblock, set-superblock, get-inc-osdmap, set-inc-osdmap, mark-complete, reset-last-complete, update-mon-db, dump-export, trim-pg-log]
 
 .. option:: --epoch arg
 
@@ -423,7 +414,7 @@ Options
 
 .. option:: --file arg             
    
-   path of file to export, export-remove, import, get-osdmap, set-osdmap, get-inc-osdmap or set-inc-osdmap
+   path of file to export, export-remove, import, get-osdmap, set-osdmap, get-superblock, set-superblock, get-inc-osdmap or set-inc-osdmap
 
 .. option:: --mon-store-path arg
 

@@ -21,30 +21,30 @@
 
 #pragma once
 
-#include <seastar/util/concepts.hh>
 #include <seastar/util/std-compat.hh>
-
-#include <type_traits>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
+#include <concepts>
 #include <iostream>
+#include <memory>
+#include <type_traits>
+#endif
 
 namespace seastar {
 
-SEASTAR_CONCEPT(
-
 template<typename T>
 concept OptimizableOptional =
-    std::is_default_constructible<T>::value
-        && std::is_nothrow_move_assignable<T>::value
+    std::is_default_constructible_v<T>
+        && std::is_nothrow_move_assignable_v<T>
         && requires(const T& obj) {
             { bool(obj) } noexcept;
         };
-
-)
 
 /// \c optimized_optional<> is intended mainly for use with classes that store
 /// their data externally and expect pointer to this data to be always non-null.
 /// In such case there is no real need for another flag signifying whether
 /// the optional is engaged.
+SEASTAR_MODULE_EXPORT
 template<typename T>
 class optimized_optional {
     T _object;
@@ -66,7 +66,7 @@ public:
         return *this;
     }
     template<typename U>
-    std::enable_if_t<std::is_same<std::decay_t<U>, T>::value, optimized_optional&>
+    std::enable_if_t<std::is_same_v<std::decay_t<U>, T>, optimized_optional&>
     operator=(U&& obj) noexcept {
         _object = std::forward<U>(obj);
         return *this;

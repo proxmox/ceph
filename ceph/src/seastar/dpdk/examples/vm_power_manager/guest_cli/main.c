@@ -13,6 +13,7 @@
 #include <rte_debug.h>
 #include <rte_eal.h>
 #include <rte_log.h>
+#include <rte_string_fns.h>
 
 #include "vm_power_cli_guest.h"
 #include "parse.h"
@@ -48,14 +49,18 @@ parse_args(int argc, char **argv)
 		{ "policy", required_argument, 0, 'o'},
 		{NULL, 0, 0, 0}
 	};
-	struct channel_packet *policy;
+	struct rte_power_channel_packet *policy;
 	unsigned short int hours[MAX_HOURS];
-	unsigned short int cores[MAX_VCPU_PER_VM];
-	unsigned short int ports[MAX_VCPU_PER_VM];
+	unsigned short int cores[RTE_POWER_MAX_VCPU_PER_VM];
+	unsigned short int ports[RTE_POWER_MAX_VCPU_PER_VM];
 	int i, cnt, idx;
 
 	policy = get_policy();
-	set_policy_defaults(policy);
+	ret = set_policy_defaults(policy);
+	if (ret != 0) {
+		printf("Failed to set policy defaults\n");
+		return -1;
+	}
 
 	argvopt = argv;
 
@@ -65,7 +70,8 @@ parse_args(int argc, char **argv)
 		switch (opt) {
 		/* portmask */
 		case 'n':
-			strcpy(policy->vm_name, optarg);
+			strlcpy(policy->vm_name, optarg,
+					RTE_POWER_VM_MAX_NAME_SZ);
 			printf("Setting VM Name to [%s]\n", policy->vm_name);
 			break;
 		case 'b':
@@ -93,14 +99,15 @@ parse_args(int argc, char **argv)
 			}
 			break;
 		case 'l':
-			cnt = parse_set(optarg, cores, MAX_VCPU_PER_VM);
+			cnt = parse_set(optarg, cores,
+					RTE_POWER_MAX_VCPU_PER_VM);
 			if (cnt < 0) {
 				printf("Invalid value passed to vcpu-list - [%s]\n",
 						optarg);
 				break;
 			}
 			idx = 0;
-			for (i = 0; i < MAX_VCPU_PER_VM; i++) {
+			for (i = 0; i < RTE_POWER_MAX_VCPU_PER_VM; i++) {
 				if (cores[i]) {
 					printf("***Using core %d\n", i);
 					policy->vcpu_to_control[idx++] = i;
@@ -110,17 +117,21 @@ parse_args(int argc, char **argv)
 			printf("Total cores: %d\n", idx);
 			break;
 		case 'p':
-			cnt = parse_set(optarg, ports, MAX_VCPU_PER_VM);
+			cnt = parse_set(optarg, ports,
+					RTE_POWER_MAX_VCPU_PER_VM);
 			if (cnt < 0) {
 				printf("Invalid value passed to port-list - [%s]\n",
 						optarg);
 				break;
 			}
 			idx = 0;
-			for (i = 0; i < MAX_VCPU_PER_VM; i++) {
+			for (i = 0; i < RTE_POWER_MAX_VCPU_PER_VM; i++) {
 				if (ports[i]) {
 					printf("***Using port %d\n", i);
-					set_policy_mac(i, idx++);
+					if (set_policy_mac(i, idx++) != 0) {
+						printf("Cannot set policy MAC");
+						return -1;
+					}
 				}
 			}
 			policy->nb_mac_to_monitor = idx;
@@ -128,13 +139,17 @@ parse_args(int argc, char **argv)
 			break;
 		case 'o':
 			if (!strcmp(optarg, "TRAFFIC"))
-				policy->policy_to_use = TRAFFIC;
+				policy->policy_to_use =
+						RTE_POWER_POLICY_TRAFFIC;
 			else if (!strcmp(optarg, "TIME"))
-				policy->policy_to_use = TIME;
+				policy->policy_to_use =
+						RTE_POWER_POLICY_TIME;
 			else if (!strcmp(optarg, "WORKLOAD"))
-				policy->policy_to_use = WORKLOAD;
+				policy->policy_to_use =
+						RTE_POWER_POLICY_WORKLOAD;
 			else if (!strcmp(optarg, "BRANCH_RATIO"))
-				policy->policy_to_use = BRANCH_RATIO;
+				policy->policy_to_use =
+						RTE_POWER_POLICY_BRANCH_RATIO;
 			else {
 				printf("Invalid policy specified: %s\n",
 						optarg);
@@ -185,6 +200,9 @@ main(int argc, char **argv)
 		rte_power_init(lcore_id);
 	}
 	run_cli(NULL);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

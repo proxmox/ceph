@@ -6,7 +6,6 @@
 #include <stdio.h>
 
 #include <rte_cryptodev.h>
-#include <rte_cryptodev_pmd.h>
 #include <rte_string_fns.h>
 
 #include "cryptodev.h"
@@ -74,7 +73,7 @@ cryptodev_create(const char *name, struct cryptodev_params *params)
 
 		dev_id = (uint32_t)status;
 	} else {
-		if (rte_cryptodev_pmd_is_valid_dev(params->dev_id) == 0)
+		if (rte_cryptodev_is_valid_dev(params->dev_id) == 0)
 			return NULL;
 
 		dev_id = params->dev_id;
@@ -90,11 +89,10 @@ cryptodev_create(const char *name, struct cryptodev_params *params)
 
 	if (dev_info.max_nb_queue_pairs < params->n_queues)
 		return NULL;
-	if (dev_info.feature_flags & RTE_CRYPTODEV_FF_HW_ACCELERATED)
-		return NULL;
 
 	dev_conf.socket_id = socket_id;
 	dev_conf.nb_queue_pairs = params->n_queues;
+	dev_conf.ff_disable = 0;
 
 	status = rte_cryptodev_configure(dev_id, &dev_conf);
 	if (status < 0)
@@ -153,10 +151,8 @@ cryptodev_create(const char *name, struct cryptodev_params *params)
 	return cryptodev;
 
 error_exit:
-	if (cryptodev->mp_create)
-		rte_mempool_free(cryptodev->mp_create);
-	if (cryptodev->mp_init)
-		rte_mempool_free(cryptodev->mp_init);
+	rte_mempool_free(cryptodev->mp_create);
+	rte_mempool_free(cryptodev->mp_init);
 
 	free(cryptodev);
 

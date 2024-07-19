@@ -3,9 +3,10 @@
  */
 
 #include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_lcore.h>
 #include <rte_memzone.h>
 #include <rte_kvargs.h>
@@ -102,7 +103,7 @@ opdl_port_link(struct rte_eventdev *dev,
 			     dev->data->dev_id,
 				queues[0],
 				p->id);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
@@ -113,7 +114,7 @@ opdl_port_link(struct rte_eventdev *dev,
 			     dev->data->dev_id,
 				num,
 				p->id);
-		rte_errno = -EDQUOT;
+		rte_errno = EDQUOT;
 		return 0;
 	}
 
@@ -123,7 +124,7 @@ opdl_port_link(struct rte_eventdev *dev,
 			     dev->data->dev_id,
 				p->id,
 				queues[0]);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
@@ -134,7 +135,7 @@ opdl_port_link(struct rte_eventdev *dev,
 				p->id,
 				p->external_qid,
 				queues[0]);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
@@ -160,7 +161,7 @@ opdl_port_unlink(struct rte_eventdev *dev,
 			     dev->data->dev_id,
 			     queues[0],
 			     p->id);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 	RTE_SET_USED(nb_unlinks);
@@ -374,7 +375,9 @@ opdl_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *info)
 		.max_event_port_dequeue_depth = MAX_OPDL_CONS_Q_DEPTH,
 		.max_event_port_enqueue_depth = MAX_OPDL_CONS_Q_DEPTH,
 		.max_num_events = OPDL_INFLIGHT_EVENTS_TOTAL,
-		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE,
+		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE |
+				 RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
+				 RTE_EVENT_DEV_CAP_MAINTENANCE_FREE,
 	};
 
 	*info = evdev_opdl_info;
@@ -608,7 +611,7 @@ set_do_test(const char *key __rte_unused, const char *value, void *opaque)
 static int
 opdl_probe(struct rte_vdev_device *vdev)
 {
-	static struct rte_eventdev_ops evdev_opdl_ops = {
+	static struct eventdev_ops evdev_opdl_ops = {
 		.dev_configure = opdl_dev_configure,
 		.dev_infos_get = opdl_info_get,
 		.dev_close = opdl_close,
@@ -701,7 +704,7 @@ opdl_probe(struct rte_vdev_device *vdev)
 	}
 
 	PMD_DRV_LOG(INFO, "DEV_ID:[%02d] : "
-		      "Success - creating eventdev device %s, numa_node:[%d], do_valdation:[%s]"
+		      "Success - creating eventdev device %s, numa_node:[%d], do_validation:[%s]"
 			  " , self_test:[%s]\n",
 		      dev->data->dev_id,
 		      name,
@@ -719,7 +722,7 @@ opdl_probe(struct rte_vdev_device *vdev)
 	dev->dequeue_burst = opdl_event_dequeue_burst;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return 0;
+		goto done;
 
 	opdl = dev->data->dev_private;
 	opdl->data = dev->data;
@@ -732,6 +735,8 @@ opdl_probe(struct rte_vdev_device *vdev)
 	if (do_test == 1)
 		test_result =  opdl_selftest();
 
+done:
+	event_dev_probing_finish(dev);
 	return test_result;
 }
 
@@ -754,13 +759,7 @@ static struct rte_vdev_driver evdev_opdl_pmd_drv = {
 	.remove = opdl_remove
 };
 
-RTE_INIT(opdl_init_log)
-{
-	opdl_logtype_driver = rte_log_register("pmd.event.opdl.driver");
-	if (opdl_logtype_driver >= 0)
-		rte_log_set_level(opdl_logtype_driver, RTE_LOG_INFO);
-}
-
+RTE_LOG_REGISTER_SUFFIX(opdl_logtype_driver, driver, INFO);
 
 RTE_PMD_REGISTER_VDEV(EVENTDEV_NAME_OPDL_PMD, evdev_opdl_pmd_drv);
 RTE_PMD_REGISTER_PARAM_STRING(event_opdl, NUMA_NODE_ARG "=<int>"

@@ -26,7 +26,6 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>
-#include <memory>
 #include <vector>
 #include <algorithm>
 #include <seastar/core/metrics.hh>
@@ -208,7 +207,7 @@ public:
                                std::function<void (slab_page_desc& desc)> insert_slab_page_desc,
                                Args&&... args) {
         // allocate slab page.
-        constexpr size_t alignment = std::alignment_of<Item>::value;
+        constexpr size_t alignment = std::alignment_of_v<Item>;
         void *slab_page = aligned_alloc(alignment, max_object_size);
         if (!slab_page) {
             throw std::bad_alloc{};
@@ -358,7 +357,7 @@ private:
     }
 
     void initialize_slab_allocator(double growth_factor, uint64_t limit) {
-        constexpr size_t alignment = std::alignment_of<Item>::value;
+        constexpr size_t alignment = std::alignment_of_v<Item>;
         constexpr size_t initial_size = 96;
         size_t size = initial_size; // initial object size
         uint8_t slab_class_id = 0U;

@@ -1,24 +1,35 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
 
-version = 2
-
 deps += ['pci']
-install_headers('rte_bus_pci.h')
+headers = files('rte_bus_pci.h')
+driver_sdk_headers = files('bus_pci_driver.h')
 sources = files('pci_common.c',
-	'pci_common_uio.c',
-	'pci_params.c')
+    'pci_params.c')
 if is_linux
-	sources += files('linux/pci.c',
-			'linux/pci_uio.c',
-			'linux/pci_vfio.c')
-	includes += include_directories('linux')
-else
-	sources += files('bsd/pci.c')
-	includes += include_directories('bsd')
+    sources += files(
+            'pci_common_uio.c',
+            'linux/pci.c',
+            'linux/pci_uio.c',
+            'linux/pci_vfio.c',
+    )
+    includes += include_directories('linux')
+endif
+if is_freebsd
+    sources += files(
+            'pci_common_uio.c',
+            'bsd/pci.c',
+    )
+    includes += include_directories('bsd')
+endif
+if is_windows
+    sources += files(
+            'windows/pci.c',
+            'windows/pci_netuio.c',
+    )
+    includes += include_directories('windows')
 endif
 
-# memseg walk is not part of stable API yet
-allow_experimental_apis = true
+require_iova_in_mbuf = false
 
 deps += ['kvargs']

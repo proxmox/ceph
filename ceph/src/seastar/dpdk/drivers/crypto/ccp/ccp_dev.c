@@ -20,10 +20,9 @@
 #include <rte_string_fns.h>
 
 #include "ccp_dev.h"
-#include "ccp_pci.h"
 #include "ccp_pmd_private.h"
 
-struct ccp_list ccp_list = TAILQ_HEAD_INITIALIZER(ccp_list);
+static TAILQ_HEAD(, ccp_device) ccp_list = TAILQ_HEAD_INITIALIZER(ccp_list);
 static int ccp_dev_id;
 
 int
@@ -68,7 +67,7 @@ ccp_read_hwrng(uint32_t *value)
 	struct ccp_device *dev;
 
 	TAILQ_FOREACH(dev, &ccp_list, next) {
-		void *vaddr = (void *)(dev->pci.mem_resource[2].addr);
+		void *vaddr = (void *)(dev->pci->mem_resource[2].addr);
 
 		while (dev->hwrng_retries++ < CCP_MAX_TRNG_RETRIES) {
 			*value = CCP_READ_REG(vaddr, TRNG_OUT_REG);
@@ -117,13 +116,15 @@ ccp_queue_dma_zone_reserve(const char *queue_name,
 static inline void
 ccp_set_bit(unsigned long *bitmap, int n)
 {
-	__sync_fetch_and_or(&bitmap[WORD_OFFSET(n)], (1UL << BIT_OFFSET(n)));
+	__atomic_fetch_or(&bitmap[WORD_OFFSET(n)], (1UL << BIT_OFFSET(n)),
+		__ATOMIC_SEQ_CST);
 }
 
 static inline void
 ccp_clear_bit(unsigned long *bitmap, int n)
 {
-	__sync_fetch_and_and(&bitmap[WORD_OFFSET(n)], ~(1UL << BIT_OFFSET(n)));
+	__atomic_fetch_and(&bitmap[WORD_OFFSET(n)], ~(1UL << BIT_OFFSET(n)),
+		__ATOMIC_SEQ_CST);
 }
 
 static inline uint32_t
@@ -361,7 +362,7 @@ ccp_find_lsb_regions(struct ccp_queue *cmd_q, uint64_t status)
 		if (ccp_get_bit(&cmd_q->lsbmask, j))
 			weight++;
 
-	printf("Queue %d can access %d LSB regions  of mask  %lu\n",
+	CCP_LOG_DBG("Queue %d can access %d LSB regions  of mask  %lu\n",
 	       (int)cmd_q->id, weight, cmd_q->lsbmask);
 
 	return weight ? 0 : -EINVAL;
@@ -480,7 +481,7 @@ ccp_assign_lsbs(struct ccp_device *ccp)
 }
 
 static int
-ccp_add_device(struct ccp_device *dev, int type)
+ccp_add_device(struct ccp_device *dev)
 {
 	int i;
 	uint32_t qmr, status_lo, status_hi, dma_addr_lo, dma_addr_hi;
@@ -494,9 +495,9 @@ ccp_add_device(struct ccp_device *dev, int type)
 
 	dev->id = ccp_dev_id++;
 	dev->qidx = 0;
-	vaddr = (void *)(dev->pci.mem_resource[2].addr);
+	vaddr = (void *)(dev->pci->mem_resource[2].addr);
 
-	if (type == CCP_VERSION_5B) {
+	if (dev->pci->id.device_id == AMD_PCI_CCP_5B) {
 		CCP_WRITE_REG(vaddr, CMD_TRNG_CTL_OFFSET, 0x00012D57);
 		CCP_WRITE_REG(vaddr, CMD_CONFIG_0_OFFSET, 0x00000003);
 		for (i = 0; i < 12; i++) {
@@ -512,7 +513,7 @@ ccp_add_device(struct ccp_device *dev, int type)
 
 		CCP_WRITE_REG(vaddr, CMD_CLK_GATE_CTL_OFFSET, 0x00108823);
 	}
-	CCP_WRITE_REG(vaddr, CMD_REQID_CONFIG_OFFSET, 0x00001249);
+	CCP_WRITE_REG(vaddr, CMD_REQID_CONFIG_OFFSET, 0x0);
 
 	/* Copy the private LSB mask to the public registers */
 	status_lo = CCP_READ_REG(vaddr, LSB_PRIVATE_MASK_LO_OFFSET);
@@ -546,7 +547,7 @@ ccp_add_device(struct ccp_device *dev, int type)
 						  cmd_q->qsize, SOCKET_ID_ANY);
 		cmd_q->qbase_addr = (void *)q_mz->addr;
 		cmd_q->qbase_desc = (void *)q_mz->addr;
-		cmd_q->qbase_phys_addr =  q_mz->phys_addr;
+		cmd_q->qbase_phys_addr =  q_mz->iova;
 
 		cmd_q->qcontrol = 0;
 		/* init control reg to zero */
@@ -615,144 +616,20 @@ ccp_remove_device(struct ccp_device *dev)
 	TAILQ_REMOVE(&ccp_list, dev, next);
 }
 
-static int
-is_ccp_device(const char *dirname,
-	      const struct rte_pci_id *ccp_id,
-	      int *type)
+int
+ccp_probe_device(struct rte_pci_device *pci_dev)
 {
-	char filename[PATH_MAX];
-	const struct rte_pci_id *id;
-	uint16_t vendor, device_id;
-	int i;
-	unsigned long tmp;
-
-	/* get vendor id */
-	snprintf(filename, sizeof(filename), "%s/vendor", dirname);
-	if (ccp_pci_parse_sysfs_value(filename, &tmp) < 0)
-		return 0;
-	vendor = (uint16_t)tmp;
-
-	/* get device id */
-	snprintf(filename, sizeof(filename), "%s/device", dirname);
-	if (ccp_pci_parse_sysfs_value(filename, &tmp) < 0)
-		return 0;
-	device_id = (uint16_t)tmp;
-
-	for (id = ccp_id, i = 0; id->vendor_id != 0; id++, i++) {
-		if (vendor == id->vendor_id &&
-		    device_id == id->device_id) {
-			*type = i;
-			return 1; /* Matched device */
-		}
-	}
-	return 0;
-}
-
-static int
-ccp_probe_device(const char *dirname, uint16_t domain,
-		 uint8_t bus, uint8_t devid,
-		 uint8_t function, int ccp_type)
-{
-	struct ccp_device *ccp_dev = NULL;
-	struct rte_pci_device *pci;
-	char filename[PATH_MAX];
-	unsigned long tmp;
-	int uio_fd = -1, i, uio_num;
-	char uio_devname[PATH_MAX];
-	void *map_addr;
+	struct ccp_device *ccp_dev;
 
 	ccp_dev = rte_zmalloc("ccp_device", sizeof(*ccp_dev),
 			      RTE_CACHE_LINE_SIZE);
 	if (ccp_dev == NULL)
 		goto fail;
-	pci = &(ccp_dev->pci);
 
-	pci->addr.domain = domain;
-	pci->addr.bus = bus;
-	pci->addr.devid = devid;
-	pci->addr.function = function;
-
-	/* get vendor id */
-	snprintf(filename, sizeof(filename), "%s/vendor", dirname);
-	if (ccp_pci_parse_sysfs_value(filename, &tmp) < 0)
-		goto fail;
-	pci->id.vendor_id = (uint16_t)tmp;
-
-	/* get device id */
-	snprintf(filename, sizeof(filename), "%s/device", dirname);
-	if (ccp_pci_parse_sysfs_value(filename, &tmp) < 0)
-		goto fail;
-	pci->id.device_id = (uint16_t)tmp;
-
-	/* get subsystem_vendor id */
-	snprintf(filename, sizeof(filename), "%s/subsystem_vendor",
-			dirname);
-	if (ccp_pci_parse_sysfs_value(filename, &tmp) < 0)
-		goto fail;
-	pci->id.subsystem_vendor_id = (uint16_t)tmp;
-
-	/* get subsystem_device id */
-	snprintf(filename, sizeof(filename), "%s/subsystem_device",
-			dirname);
-	if (ccp_pci_parse_sysfs_value(filename, &tmp) < 0)
-		goto fail;
-	pci->id.subsystem_device_id = (uint16_t)tmp;
-
-	/* get class_id */
-	snprintf(filename, sizeof(filename), "%s/class",
-			dirname);
-	if (ccp_pci_parse_sysfs_value(filename, &tmp) < 0)
-		goto fail;
-	/* the least 24 bits are valid: class, subclass, program interface */
-	pci->id.class_id = (uint32_t)tmp & RTE_CLASS_ANY_ID;
-
-	/* parse resources */
-	snprintf(filename, sizeof(filename), "%s/resource", dirname);
-	if (ccp_pci_parse_sysfs_resource(filename, pci) < 0)
-		goto fail;
-
-	uio_num = ccp_find_uio_devname(dirname);
-	if (uio_num < 0) {
-		/*
-		 * It may take time for uio device to appear,
-		 * wait  here and try again
-		 */
-		usleep(100000);
-		uio_num = ccp_find_uio_devname(dirname);
-		if (uio_num < 0)
-			goto fail;
-	}
-	snprintf(uio_devname, sizeof(uio_devname), "/dev/uio%u", uio_num);
-
-	uio_fd = open(uio_devname, O_RDWR | O_NONBLOCK);
-	if (uio_fd < 0)
-		goto fail;
-	if (flock(uio_fd, LOCK_EX | LOCK_NB))
-		goto fail;
-
-	/* Map the PCI memory resource of device */
-	for (i = 0; i < PCI_MAX_RESOURCE; i++) {
-
-		char devname[PATH_MAX];
-		int res_fd;
-
-		if (pci->mem_resource[i].phys_addr == 0)
-			continue;
-		snprintf(devname, sizeof(devname), "%s/resource%d", dirname, i);
-		res_fd = open(devname, O_RDWR);
-		if (res_fd < 0)
-			goto fail;
-		map_addr = mmap(NULL, pci->mem_resource[i].len,
-				PROT_READ | PROT_WRITE,
-				MAP_SHARED, res_fd, 0);
-		if (map_addr == MAP_FAILED)
-			goto fail;
-
-		pci->mem_resource[i].addr = map_addr;
-	}
+	ccp_dev->pci = pci_dev;
 
 	/* device is valid, add in list */
-	if (ccp_add_device(ccp_dev, ccp_type)) {
+	if (ccp_add_device(ccp_dev)) {
 		ccp_remove_device(ccp_dev);
 		goto fail;
 	}
@@ -760,51 +637,6 @@ ccp_probe_device(const char *dirname, uint16_t domain,
 	return 0;
 fail:
 	CCP_LOG_ERR("CCP Device probe failed");
-	if (uio_fd > 0)
-		close(uio_fd);
-	if (ccp_dev)
-		rte_free(ccp_dev);
+	rte_free(ccp_dev);
 	return -1;
-}
-
-int
-ccp_probe_devices(const struct rte_pci_id *ccp_id)
-{
-	int dev_cnt = 0;
-	int ccp_type = 0;
-	struct dirent *d;
-	DIR *dir;
-	int ret = 0;
-	int module_idx = 0;
-	uint16_t domain;
-	uint8_t bus, devid, function;
-	char dirname[PATH_MAX];
-
-	module_idx = ccp_check_pci_uio_module();
-	if (module_idx < 0)
-		return -1;
-
-	TAILQ_INIT(&ccp_list);
-	dir = opendir(SYSFS_PCI_DEVICES);
-	if (dir == NULL)
-		return -1;
-	while ((d = readdir(dir)) != NULL) {
-		if (d->d_name[0] == '.')
-			continue;
-		if (ccp_parse_pci_addr_format(d->d_name, sizeof(d->d_name),
-					&domain, &bus, &devid, &function) != 0)
-			continue;
-		snprintf(dirname, sizeof(dirname), "%s/%s",
-			     SYSFS_PCI_DEVICES, d->d_name);
-		if (is_ccp_device(dirname, ccp_id, &ccp_type)) {
-			printf("CCP : Detected CCP device with ID = 0x%x\n",
-			       ccp_id[ccp_type].device_id);
-			ret = ccp_probe_device(dirname, domain, bus, devid,
-					       function, ccp_type);
-			if (ret == 0)
-				dev_cnt++;
-		}
-	}
-	closedir(dir);
-	return dev_cnt;
 }

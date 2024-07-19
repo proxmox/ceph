@@ -30,10 +30,23 @@
 typedef union {
 	uint64_t u64;
 	struct {
-		uint16_t opcode;
+#if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
+		struct {
+			uint8_t minor;
+			uint8_t major;
+		} opcode;
 		uint16_t param1;
 		uint16_t param2;
 		uint16_t dlen;
+#else
+		uint16_t dlen;
+		uint16_t param2;
+		uint16_t param1;
+		struct {
+			uint8_t major;
+			uint8_t minor;
+		} opcode;
+#endif
 	} s;
 } vq_cmd_word0_t;
 
@@ -190,6 +203,44 @@ typedef union cpt_inst_s {
 		};
 #endif /* Word 7 - End */
 	} s8x;
+	struct cpt_inst_s_9s {
+#if (RTE_BYTE_ORDER == RTE_BIG_ENDIAN) /* Word 0 - Big Endian */
+		uint64_t nixtx_addr            : 60;
+		uint64_t doneint               : 1;
+		uint64_t nixtxl                : 3;
+#else /* Word 0 - Little Endian */
+		uint64_t nixtxl                : 3;
+		uint64_t doneint               : 1;
+		uint64_t nixtx_addr            : 60;
+#endif /* Word 0 - End */
+		uint64_t res_addr;
+#if (RTE_BYTE_ORDER == RTE_BIG_ENDIAN) /* Word 2 - Big Endian */
+		uint64_t rvu_pf_func           : 16;
+		uint64_t reserved_172_175      : 4;
+		uint64_t grp                   : 10;
+		uint64_t tt                    : 2;
+		uint64_t tag                   : 32;
+#else /* Word 2 - Little Endian */
+		uint64_t tag                   : 32;
+		uint64_t tt                    : 2;
+		uint64_t grp                   : 10;
+		uint64_t reserved_172_175      : 4;
+		uint64_t rvu_pf_func           : 16;
+#endif /* Word 2 - End */
+#if (RTE_BYTE_ORDER == RTE_BIG_ENDIAN) /* Word 3 - Big Endian */
+		uint64_t wq_ptr                : 61;
+		uint64_t reserved_194_193      : 2;
+		uint64_t qord                  : 1;
+#else /* Word 3 - Little Endian */
+		uint64_t qord                  : 1;
+		uint64_t reserved_194_193      : 2;
+		uint64_t wq_ptr                : 61;
+#endif /* Word 3 - End */
+		uint64_t ei0;
+		uint64_t ei1;
+		uint64_t ei2;
+		uint64_t ei3;
+	} s9x;
 } cpt_inst_s_t;
 
 /**
@@ -236,6 +287,20 @@ typedef union cpt_res_s {
 		uint64_t reserved_64_127       : 64;
 #endif /* Word 1 - End */
 	} s8x;
+	struct cpt_res_s_9s {
+#if (RTE_BYTE_ORDER == RTE_BIG_ENDIAN) /* Word 0 - Big Endian */
+		uint64_t reserved_17_63:47;
+		uint64_t doneint:1;
+		uint64_t uc_compcode:8;
+		uint64_t compcode:8;
+#else /* Word 0 - Little Endian */
+		uint64_t compcode:8;
+		uint64_t uc_compcode:8;
+		uint64_t doneint:1;
+		uint64_t reserved_17_63:47;
+#endif /* Word 0 - End */
+		uint64_t reserved_64_127;
+	} s9x;
 } cpt_res_s_t;
 
 /**
@@ -401,7 +466,7 @@ typedef union {
 		uint64_t dbell_cnt             : 20;
 		/** [ 19:  0](R/W/H) Number of instruction queue 64-bit words
 		 * to add to the CPT instruction doorbell count. Readback value
-		 * is the the current number of pending doorbell requests.
+		 * is the current number of pending doorbell requests.
 		 *
 		 * If counter overflows CPT()_VQ()_MISC_INT[DBELL_DOVF] is set.
 		 *

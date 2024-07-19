@@ -1,15 +1,19 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
  */
 
+#include <rte_bitmap.h>
+#include <rte_ether.h>
+
 #include "efx.h"
 
 #include "sfc.h"
+#include "sfc_debug.h"
 #include "sfc_log.h"
 #include "sfc_kvargs.h"
 
@@ -25,7 +29,8 @@
 /**
  * Update MAC statistics in the buffer.
  *
- * @param	sa	Adapter
+ * @param	sa		Adapter
+ * @param	force_upload	Flag to upload MAC stats in any case
  *
  * @return Status code
  * @retval	0	Success
@@ -33,7 +38,7 @@
  * @retval	ENOMEM	Memory allocation failure
  */
 int
-sfc_port_update_mac_stats(struct sfc_adapter *sa)
+sfc_port_update_mac_stats(struct sfc_adapter *sa, boolean_t force_upload)
 {
 	struct sfc_port *port = &sa->port;
 	efsys_mem_t *esmp = &port->mac_stats_dma_mem;
@@ -42,17 +47,17 @@ sfc_port_update_mac_stats(struct sfc_adapter *sa)
 	unsigned int nb_attempts = 0;
 	int rc;
 
-	SFC_ASSERT(rte_spinlock_is_locked(&port->mac_stats_lock));
+	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
-	if (sa->state != SFC_ADAPTER_STARTED)
-		return EINVAL;
+	if (sa->state != SFC_ETHDEV_STARTED)
+		return 0;
 
 	/*
 	 * If periodic statistics DMA'ing is off or if not supported,
 	 * make a manual request and keep an eye on timer if need be
 	 */
 	if (!port->mac_stats_periodic_dma_supported ||
-	    (port->mac_stats_update_period_ms == 0)) {
+	    (port->mac_stats_update_period_ms == 0) || force_upload) {
 		if (port->mac_stats_update_period_ms != 0) {
 			uint64_t timestamp = sfc_get_system_msecs();
 
@@ -102,14 +107,13 @@ sfc_port_reset_sw_stats(struct sfc_adapter *sa)
 int
 sfc_port_reset_mac_stats(struct sfc_adapter *sa)
 {
-	struct sfc_port *port = &sa->port;
 	int rc;
 
-	rte_spinlock_lock(&port->mac_stats_lock);
+	SFC_ASSERT(sfc_adapter_is_locked(sa));
+
 	rc = efx_mac_stats_clear(sa->nic);
 	if (rc == 0)
 		sfc_port_reset_sw_stats(sa);
-	rte_spinlock_unlock(&port->mac_stats_lock);
 
 	return rc;
 }
@@ -157,6 +161,27 @@ sfc_port_phy_caps_to_max_link_speed(uint32_t phy_caps)
 
 #endif
 
+static void
+sfc_port_fill_mac_stats_info(struct sfc_adapter *sa)
+{
+	unsigned int mac_stats_nb_supported = 0;
+	struct sfc_port *port = &sa->port;
+	unsigned int stat_idx;
+
+	efx_mac_stats_get_mask(sa->nic, port->mac_stats_mask,
+			       sizeof(port->mac_stats_mask));
+
+	for (stat_idx = 0; stat_idx < EFX_MAC_NSTATS; ++stat_idx) {
+		if (!EFX_MAC_STAT_SUPPORTED(port->mac_stats_mask, stat_idx))
+			continue;
+
+		port->mac_stats_by_id[mac_stats_nb_supported] = stat_idx;
+		mac_stats_nb_supported++;
+	}
+
+	port->mac_stats_nb_supported = mac_stats_nb_supported;
+}
+
 int
 sfc_port_start(struct sfc_adapter *sa)
 {
@@ -165,7 +190,6 @@ sfc_port_start(struct sfc_adapter *sa)
 	uint32_t phy_adv_cap;
 	const uint32_t phy_pause_caps =
 		((1u << EFX_PHY_CAP_PAUSE) | (1u << EFX_PHY_CAP_ASYM));
-	unsigned int i;
 
 	sfc_log_init(sa, "entry");
 
@@ -201,20 +225,16 @@ sfc_port_start(struct sfc_adapter *sa)
 	if (rc != 0)
 		goto fail_mac_fcntl_set;
 
+	sfc_log_init(sa, "set vlan strip to %u", port->vlan_strip);
+	rc = efx_port_vlan_strip_set(sa->nic, port->vlan_strip);
+	if (rc != 0)
+		goto fail_mac_vlan_strip_set;
+
 	/* Preserve pause capabilities set by above efx_mac_fcntl_set()  */
 	efx_phy_adv_cap_get(sa->nic, EFX_PHY_CAP_CURRENT, &phy_adv_cap);
 	SFC_ASSERT((port->phy_adv_cap & phy_pause_caps) == 0);
-	phy_adv_cap = port->phy_adv_cap | (phy_adv_cap & phy_pause_caps);
-
-	/*
-	 * No controls for FEC yet. Use default FEC mode.
-	 * I.e. advertise everything supported (*_FEC=1), but do not request
-	 * anything explicitly (*_FEC_REQUESTED=0).
-	 */
-	phy_adv_cap |= port->phy_adv_cap_mask &
-		(1u << EFX_PHY_CAP_BASER_FEC |
-		 1u << EFX_PHY_CAP_RS_FEC |
-		 1u << EFX_PHY_CAP_25G_BASER_FEC);
+	phy_adv_cap = port->phy_adv_cap | (phy_adv_cap & phy_pause_caps) |
+			port->fec_cfg;
 
 	sfc_log_init(sa, "set phy adv caps to %#x", phy_adv_cap);
 	rc = efx_phy_adv_cap_set(sa->nic, phy_adv_cap);
@@ -226,8 +246,13 @@ sfc_port_start(struct sfc_adapter *sa)
 	if (rc != 0)
 		goto fail_mac_pdu_set;
 
+	sfc_log_init(sa, "set include FCS=%u", port->include_fcs);
+	rc = efx_mac_include_fcs_set(sa->nic, port->include_fcs);
+	if (rc != 0)
+		goto fail_include_fcs_set;
+
 	if (!sfc_sa2shared(sa)->isolated) {
-		struct ether_addr *addr = &port->default_mac_addr;
+		struct rte_ether_addr *addr = &port->default_mac_addr;
 
 		sfc_log_init(sa, "set MAC address");
 		rc = efx_mac_addr_set(sa->nic, addr->addr_bytes);
@@ -239,7 +264,7 @@ sfc_port_start(struct sfc_adapter *sa)
 				B_TRUE : B_FALSE;
 		port->allmulti = (sa->eth_dev->data->all_multicast != 0) ?
 				 B_TRUE : B_FALSE;
-		rc = sfc_set_rx_mode(sa);
+		rc = sfc_set_rx_mode_unchecked(sa);
 		if (rc != 0)
 			goto fail_mac_filter_set;
 
@@ -259,12 +284,7 @@ sfc_port_start(struct sfc_adapter *sa)
 		port->mac_stats_reset_pending = B_FALSE;
 	}
 
-	efx_mac_stats_get_mask(sa->nic, port->mac_stats_mask,
-			       sizeof(port->mac_stats_mask));
-
-	for (i = 0, port->mac_stats_nb_supported = 0; i < EFX_MAC_NSTATS; ++i)
-		if (EFX_MAC_STAT_SUPPORTED(port->mac_stats_mask, i))
-			port->mac_stats_nb_supported++;
+	sfc_port_fill_mac_stats_info(sa);
 
 	port->mac_stats_update_generation = 0;
 
@@ -318,6 +338,7 @@ fail_port_init_dev_link:
 	(void)efx_mac_drain(sa->nic, B_TRUE);
 
 fail_mac_drain:
+fail_include_fcs_set:
 fail_mac_stats_upload:
 	(void)efx_mac_stats_periodic(sa->nic, &port->mac_stats_dma_mem,
 				     0, B_FALSE);
@@ -329,6 +350,7 @@ fail_mac_addr_set:
 fail_mac_pdu_set:
 fail_phy_adv_cap_set:
 fail_mac_fcntl_set:
+fail_mac_vlan_strip_set:
 #if EFSYS_OPT_LOOPBACK
 fail_loopback_set:
 #endif
@@ -352,6 +374,8 @@ sfc_port_stop(struct sfc_adapter *sa)
 	(void)efx_mac_stats_periodic(sa->nic, &sa->port.mac_stats_dma_mem,
 				     0, B_FALSE);
 
+	sfc_port_update_mac_stats(sa, B_TRUE);
+
 	efx_port_fini(sa->nic);
 	efx_filter_fini(sa->nic);
 
@@ -367,10 +391,17 @@ sfc_port_configure(struct sfc_adapter *sa)
 
 	sfc_log_init(sa, "entry");
 
-	if (rxmode->offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
-		port->pdu = rxmode->max_rx_pkt_len;
+	port->pdu = EFX_MAC_PDU(dev_data->mtu);
+
+	if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC)
+		port->include_fcs = true;
 	else
-		port->pdu = EFX_MAC_PDU(dev_data->mtu);
+		port->include_fcs = false;
+
+	if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
+		port->vlan_strip = true;
+	else
+		port->vlan_strip = false;
 
 	return 0;
 }
@@ -386,7 +417,7 @@ sfc_port_attach(struct sfc_adapter *sa)
 {
 	struct sfc_port *port = &sa->port;
 	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
-	const struct ether_addr *from;
+	const struct rte_ether_addr *from;
 	uint32_t mac_nstats;
 	size_t mac_stats_size;
 	long kvarg_stats_update_period_ms;
@@ -401,8 +432,8 @@ sfc_port_attach(struct sfc_adapter *sa)
 	port->flow_ctrl_autoneg = B_TRUE;
 
 	RTE_BUILD_BUG_ON(sizeof(encp->enc_mac_addr) != sizeof(*from));
-	from = (const struct ether_addr *)(encp->enc_mac_addr);
-	ether_addr_copy(from, &port->default_mac_addr);
+	from = (const struct rte_ether_addr *)(encp->enc_mac_addr);
+	rte_ether_addr_copy(from, &port->default_mac_addr);
 
 	port->max_mcast_addrs = EFX_MAC_MULTICAST_LIST_MAX;
 	port->nb_mcast_addrs = 0;
@@ -415,8 +446,6 @@ sfc_port_attach(struct sfc_adapter *sa)
 		goto fail_mcast_addr_list_buf_alloc;
 	}
 
-	rte_spinlock_init(&port->mac_stats_lock);
-
 	rc = ENOMEM;
 	port->mac_stats_buf = rte_calloc_socket("mac_stats_buf", EFX_MAC_NSTATS,
 						sizeof(uint64_t), 0,
@@ -426,7 +455,8 @@ sfc_port_attach(struct sfc_adapter *sa)
 
 	mac_nstats = efx_nic_cfg_get(sa->nic)->enc_mac_stats_nstats;
 	mac_stats_size = RTE_ALIGN(mac_nstats * sizeof(uint64_t), EFX_BUF_SIZE);
-	rc = sfc_dma_alloc(sa, "mac_stats", 0, mac_stats_size,
+	rc = sfc_dma_alloc(sa, "mac_stats", 0, EFX_NIC_DMA_ADDR_MAC_STATS_BUF,
+			   mac_stats_size,
 			   sa->socket_id, &port->mac_stats_dma_mem);
 	if (rc != 0)
 		goto fail_mac_stats_dma_alloc;
@@ -452,6 +482,17 @@ sfc_port_attach(struct sfc_adapter *sa)
 	}
 
 	port->mac_stats_update_period_ms = kvarg_stats_update_period_ms;
+
+	/*
+	 * Set default FEC mode.
+	 * I.e. advertise everything supported (*_FEC=1), but do not request
+	 * anything explicitly (*_FEC_REQUESTED=0).
+	 */
+	port->fec_cfg = port->phy_adv_cap_mask &
+		(EFX_PHY_CAP_FEC_BIT(BASER_FEC) |
+		 EFX_PHY_CAP_FEC_BIT(RS_FEC) |
+		 EFX_PHY_CAP_FEC_BIT(25G_BASER_FEC));
+	port->fec_auto = true;
 
 	sfc_log_init(sa, "done");
 	return 0;
@@ -485,16 +526,70 @@ sfc_port_detach(struct sfc_adapter *sa)
 	sfc_log_init(sa, "done");
 }
 
+static boolean_t
+sfc_get_requested_all_ucast(struct sfc_port *port)
+{
+	return port->promisc;
+}
+
+static boolean_t
+sfc_get_requested_all_mcast(struct sfc_port *port)
+{
+	return port->promisc || port->allmulti;
+}
+
+int
+sfc_set_rx_mode_unchecked(struct sfc_adapter *sa)
+{
+	struct sfc_port *port = &sa->port;
+	boolean_t requested_all_ucast = sfc_get_requested_all_ucast(port);
+	boolean_t requested_all_mcast = sfc_get_requested_all_mcast(port);
+	int rc;
+
+	rc = efx_mac_filter_set(sa->nic, requested_all_ucast, B_TRUE,
+				requested_all_mcast, B_TRUE);
+	if (rc != 0)
+		return rc;
+
+	return 0;
+}
+
 int
 sfc_set_rx_mode(struct sfc_adapter *sa)
 {
 	struct sfc_port *port = &sa->port;
+	boolean_t old_all_ucast;
+	boolean_t old_all_mcast;
+	boolean_t requested_all_ucast = sfc_get_requested_all_ucast(port);
+	boolean_t requested_all_mcast = sfc_get_requested_all_mcast(port);
+	boolean_t actual_all_ucast;
+	boolean_t actual_all_mcast;
 	int rc;
 
-	rc = efx_mac_filter_set(sa->nic, port->promisc, B_TRUE,
-				port->promisc || port->allmulti, B_TRUE);
+	efx_mac_filter_get_all_ucast_mcast(sa->nic, &old_all_ucast,
+					   &old_all_mcast);
 
-	return rc;
+	rc = sfc_set_rx_mode_unchecked(sa);
+	if (rc != 0)
+		return rc;
+
+	efx_mac_filter_get_all_ucast_mcast(sa->nic, &actual_all_ucast,
+					   &actual_all_mcast);
+
+	if (actual_all_ucast != requested_all_ucast ||
+	    actual_all_mcast != requested_all_mcast) {
+		/*
+		 * MAC filter set succeeded but not all requested modes
+		 * were applied. The rollback is necessary to bring back the
+		 * consistent old state.
+		 */
+		(void)efx_mac_filter_set(sa->nic, old_all_ucast, B_TRUE,
+					 old_all_mcast, B_TRUE);
+
+		return EPERM;
+	}
+
+	return 0;
 }
 
 void
@@ -505,64 +600,140 @@ sfc_port_link_mode_to_info(efx_link_mode_t link_mode,
 
 	memset(link_info, 0, sizeof(*link_info));
 	if ((link_mode == EFX_LINK_DOWN) || (link_mode == EFX_LINK_UNKNOWN))
-		link_info->link_status = ETH_LINK_DOWN;
+		link_info->link_status = RTE_ETH_LINK_DOWN;
 	else
-		link_info->link_status = ETH_LINK_UP;
+		link_info->link_status = RTE_ETH_LINK_UP;
 
 	switch (link_mode) {
 	case EFX_LINK_10HDX:
-		link_info->link_speed  = ETH_SPEED_NUM_10M;
-		link_info->link_duplex = ETH_LINK_HALF_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_10M;
+		link_info->link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 		break;
 	case EFX_LINK_10FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_10M;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_10M;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_100HDX:
-		link_info->link_speed  = ETH_SPEED_NUM_100M;
-		link_info->link_duplex = ETH_LINK_HALF_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_100M;
+		link_info->link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 		break;
 	case EFX_LINK_100FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_100M;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_100M;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_1000HDX:
-		link_info->link_speed  = ETH_SPEED_NUM_1G;
-		link_info->link_duplex = ETH_LINK_HALF_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_1G;
+		link_info->link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 		break;
 	case EFX_LINK_1000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_1G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_1G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_10000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_10G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_10G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_25000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_25G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_25G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_40000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_40G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_40G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_50000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_50G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_50G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	case EFX_LINK_100000FDX:
-		link_info->link_speed  = ETH_SPEED_NUM_100G;
-		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_100G;
+		link_info->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		break;
 	default:
 		SFC_ASSERT(B_FALSE);
 		/* FALLTHROUGH */
 	case EFX_LINK_UNKNOWN:
 	case EFX_LINK_DOWN:
-		link_info->link_speed  = ETH_SPEED_NUM_NONE;
+		link_info->link_speed  = RTE_ETH_SPEED_NUM_NONE;
 		link_info->link_duplex = 0;
 		break;
 	}
 
-	link_info->link_autoneg = ETH_LINK_AUTONEG;
+	link_info->link_autoneg = RTE_ETH_LINK_AUTONEG;
+}
+
+int
+sfc_port_get_mac_stats(struct sfc_adapter *sa, struct rte_eth_xstat *xstats,
+		       unsigned int xstats_count, unsigned int *nb_written)
+{
+	struct sfc_port *port = &sa->port;
+	uint64_t *mac_stats;
+	unsigned int i;
+	int nstats = 0;
+	int ret;
+
+	sfc_adapter_lock(sa);
+
+	ret = sfc_port_update_mac_stats(sa, B_FALSE);
+	if (ret != 0) {
+		SFC_ASSERT(ret > 0);
+		ret = -ret;
+		goto unlock;
+	}
+
+	mac_stats = port->mac_stats_buf;
+
+	for (i = 0; i < EFX_MAC_NSTATS; ++i) {
+		if (EFX_MAC_STAT_SUPPORTED(port->mac_stats_mask, i)) {
+			if (nstats < (int)xstats_count) {
+				xstats[nstats].id = nstats;
+				xstats[nstats].value = mac_stats[i];
+				(*nb_written)++;
+			}
+			nstats++;
+		}
+	}
+	ret = nstats;
+
+unlock:
+	sfc_adapter_unlock(sa);
+
+	return ret;
+}
+
+int
+sfc_port_get_mac_stats_by_id(struct sfc_adapter *sa, const uint64_t *ids,
+			     uint64_t *values, unsigned int n)
+{
+	struct sfc_port *port = &sa->port;
+	uint64_t *mac_stats;
+	unsigned int i;
+	int ret;
+	int rc;
+
+	sfc_adapter_lock(sa);
+
+	rc = sfc_port_update_mac_stats(sa, B_FALSE);
+	if (rc != 0) {
+		SFC_ASSERT(rc > 0);
+		ret = -rc;
+		goto unlock;
+	}
+
+	mac_stats = port->mac_stats_buf;
+
+	SFC_ASSERT(port->mac_stats_nb_supported <=
+		   RTE_DIM(port->mac_stats_by_id));
+
+	for (i = 0; i < n; i++) {
+		if (ids[i] < port->mac_stats_nb_supported)
+			values[i] = mac_stats[port->mac_stats_by_id[ids[i]]];
+	}
+
+	ret = 0;
+
+unlock:
+	sfc_adapter_unlock(sa);
+
+	return ret;
 }

@@ -19,6 +19,32 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <cassert>
+#include <chrono>
+#include <fstream>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <queue>
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+#ifdef HAVE_OSV
+#include <osv/firmware.hh>
+#include <gnu/libc-version.h>
+#endif
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/net/native-stack.hh>
 #include "net/native-stack-impl.hh"
 #include <seastar/net/net.hh>
@@ -32,16 +58,7 @@
 #include <seastar/net/dhcp.hh>
 #include <seastar/net/config.hh>
 #include <seastar/core/reactor.hh>
-#include <memory>
-#include <queue>
-#include <fstream>
-#ifdef HAVE_OSV
-#include <osv/firmware.hh>
-#include <gnu/libc-version.h>
 #endif
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace seastar {
 
@@ -161,6 +178,8 @@ public:
     virtual server_socket listen(socket_address sa, listen_options opt) override;
     virtual ::seastar::socket socket() override;
     virtual udp_channel make_udp_channel(const socket_address& addr) override;
+    virtual net::datagram_channel make_unbound_datagram_channel(sa_family_t) override;
+    virtual net::datagram_channel make_bound_datagram_channel(const socket_address& local) override;
     virtual future<> initialize() override;
     static future<std::unique_ptr<network_stack>> create(const program_options::option_group& opts) {
         auto ns_opts = dynamic_cast<const native_stack_options*>(&opts);
@@ -187,6 +206,18 @@ thread_local promise<std::unique_ptr<network_stack>> native_network_stack::ready
 udp_channel
 native_network_stack::make_udp_channel(const socket_address& addr) {
     return _inet.get_udp().make_channel(addr);
+}
+
+net::datagram_channel native_network_stack::make_unbound_datagram_channel(sa_family_t family) {
+    if (family != AF_INET) {
+        throw std::runtime_error("Unsupported address family");
+    }
+
+    return _inet.get_udp().make_channel({});
+}
+
+net::datagram_channel native_network_stack::make_bound_datagram_channel(const socket_address& local) {
+    return _inet.get_udp().make_channel(local);
 }
 
 native_network_stack::native_network_stack(const native_stack_options& opts, std::shared_ptr<device> dev)

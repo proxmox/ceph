@@ -9,7 +9,8 @@
 #include <netcope/rxmac.h>
 #include <netcope/txmac.h>
 
-#include <rte_ethdev_pci.h>
+#include <ethdev_pci.h>
+#include <rte_kvargs.h>
 
 #include "nfb_stats.h"
 #include "nfb_rx.h"
@@ -20,7 +21,7 @@
 /**
  * Default MAC addr
  */
-static const struct ether_addr eth_addr = {
+static const struct rte_ether_addr eth_addr = {
 	.addr_bytes = { 0x00, 0x11, 0x17, 0x00, 0x00, 0x00 }
 };
 
@@ -76,9 +77,10 @@ static void
 nfb_nc_rxmac_deinit(struct nc_rxmac *rxmac[RTE_MAX_NC_RXMAC],
 	uint16_t max_rxmac)
 {
-	for (; max_rxmac > 0; --max_rxmac) {
-		nc_rxmac_close(rxmac[max_rxmac]);
-		rxmac[max_rxmac] = NULL;
+	uint16_t i;
+	for (i = 0; i < max_rxmac; i++) {
+		nc_rxmac_close(rxmac[i]);
+		rxmac[i] = NULL;
 	}
 }
 
@@ -94,9 +96,10 @@ static void
 nfb_nc_txmac_deinit(struct nc_txmac *txmac[RTE_MAX_NC_TXMAC],
 	uint16_t max_txmac)
 {
-	for (; max_txmac > 0; --max_txmac) {
-		nc_txmac_close(txmac[max_txmac]);
-		txmac[max_txmac] = NULL;
+	uint16_t i;
+	for (i = 0; i < max_txmac; i++) {
+		nc_txmac_close(txmac[i]);
+		txmac[i] = NULL;
 	}
 }
 
@@ -150,18 +153,22 @@ err_rx:
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 nfb_eth_dev_stop(struct rte_eth_dev *dev)
 {
 	uint16_t i;
 	uint16_t nb_rx = dev->data->nb_rx_queues;
 	uint16_t nb_tx = dev->data->nb_tx_queues;
 
+	dev->data->dev_started = 0;
+
 	for (i = 0; i < nb_tx; i++)
 		nfb_eth_tx_queue_stop(dev, i);
 
 	for (i = 0; i < nb_rx; i++)
 		nfb_eth_rx_queue_stop(dev, i);
+
+	return 0;
 }
 
 /**
@@ -176,7 +183,47 @@ nfb_eth_dev_stop(struct rte_eth_dev *dev)
 static int
 nfb_eth_dev_configure(struct rte_eth_dev *dev __rte_unused)
 {
+	int ret;
+	struct pmd_internals *internals = dev->data->dev_private;
+	struct rte_eth_conf *dev_conf = &dev->data->dev_conf;
+
+	if (dev_conf->rxmode.offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+		ret = rte_mbuf_dyn_rx_timestamp_register
+				(&nfb_timestamp_dynfield_offset,
+				&nfb_timestamp_rx_dynflag);
+		if (ret != 0) {
+			RTE_LOG(ERR, PMD, "Cannot register Rx timestamp"
+					" field/flag %d\n", ret);
+			nfb_close(internals->nfb);
+			return -rte_errno;
+		}
+	}
+
 	return 0;
+}
+
+static uint32_t
+nfb_eth_get_max_mac_address_count(struct rte_eth_dev *dev)
+{
+	uint16_t i;
+	uint32_t c;
+	uint32_t ret = (uint32_t)-1;
+	struct pmd_internals *internals = dev->data->dev_private;
+
+	/*
+	 * Go through all RX MAC components in firmware and find
+	 * the minimal indicated space size for MAC addresses.
+	 */
+	for (i = 0; i < internals->max_rxmac; i++) {
+		c = nc_rxmac_mac_address_count(internals->rxmac[i]);
+		ret = RTE_MIN(c, ret);
+	}
+
+	/* The driver must support at least 1 MAC address, pretend that */
+	if (internals->max_rxmac == 0 || ret == 0)
+		ret = 1;
+
+	return ret;
 }
 
 /**
@@ -187,15 +234,20 @@ nfb_eth_dev_configure(struct rte_eth_dev *dev __rte_unused)
  * @param[out] info
  *   Info structure output buffer.
  */
-static void
+static int
 nfb_eth_dev_info(struct rte_eth_dev *dev,
 	struct rte_eth_dev_info *dev_info)
 {
-	dev_info->max_mac_addrs = 1;
+	dev_info->max_mac_addrs = nfb_eth_get_max_mac_address_count(dev);
+
 	dev_info->max_rx_pktlen = (uint32_t)-1;
 	dev_info->max_rx_queues = dev->data->nb_rx_queues;
 	dev_info->max_tx_queues = dev->data->nb_tx_queues;
-	dev_info->speed_capa = ETH_LINK_SPEED_100G;
+	dev_info->speed_capa = RTE_ETH_LINK_SPEED_100G;
+	dev_info->rx_offload_capa =
+		RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+
+	return 0;
 }
 
 /**
@@ -206,25 +258,35 @@ nfb_eth_dev_info(struct rte_eth_dev *dev,
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 nfb_eth_dev_close(struct rte_eth_dev *dev)
 {
+	struct pmd_internals *internals = dev->data->dev_private;
 	uint16_t i;
 	uint16_t nb_rx = dev->data->nb_rx_queues;
 	uint16_t nb_tx = dev->data->nb_tx_queues;
+	int ret;
 
-	nfb_eth_dev_stop(dev);
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	ret = nfb_eth_dev_stop(dev);
+
+	nfb_nc_rxmac_deinit(internals->rxmac, internals->max_rxmac);
+	nfb_nc_txmac_deinit(internals->txmac, internals->max_txmac);
 
 	for (i = 0; i < nb_rx; i++) {
-		nfb_eth_rx_queue_release(dev->data->rx_queues[i]);
+		nfb_eth_rx_queue_release(dev, i);
 		dev->data->rx_queues[i] = NULL;
 	}
 	dev->data->nb_rx_queues = 0;
 	for (i = 0; i < nb_tx; i++) {
-		nfb_eth_tx_queue_release(dev->data->tx_queues[i]);
+		nfb_eth_tx_queue_release(dev, i);
 		dev->data->tx_queues[i] = NULL;
 	}
 	dev->data->nb_tx_queues = 0;
+
+	return ret;
 }
 
 /**
@@ -251,26 +313,26 @@ nfb_eth_link_update(struct rte_eth_dev *dev,
 
 	status.speed = MAC_SPEED_UNKNOWN;
 
-	link.link_speed = ETH_SPEED_NUM_NONE;
-	link.link_status = ETH_LINK_DOWN;
-	link.link_duplex = ETH_LINK_FULL_DUPLEX;
-	link.link_autoneg = ETH_LINK_SPEED_FIXED;
+	link.link_speed = RTE_ETH_SPEED_NUM_NONE;
+	link.link_status = RTE_ETH_LINK_DOWN;
+	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
+	link.link_autoneg = RTE_ETH_LINK_SPEED_FIXED;
 
 	if (internals->rxmac[0] != NULL) {
 		nc_rxmac_read_status(internals->rxmac[0], &status);
 
 		switch (status.speed) {
 		case MAC_SPEED_10G:
-			link.link_speed = ETH_SPEED_NUM_10G;
+			link.link_speed = RTE_ETH_SPEED_NUM_10G;
 			break;
 		case MAC_SPEED_40G:
-			link.link_speed = ETH_SPEED_NUM_40G;
+			link.link_speed = RTE_ETH_SPEED_NUM_40G;
 			break;
 		case MAC_SPEED_100G:
-			link.link_speed = ETH_SPEED_NUM_100G;
+			link.link_speed = RTE_ETH_SPEED_NUM_100G;
 			break;
 		default:
-			link.link_speed = ETH_SPEED_NUM_NONE;
+			link.link_speed = RTE_ETH_SPEED_NUM_NONE;
 			break;
 		}
 	}
@@ -279,7 +341,7 @@ nfb_eth_link_update(struct rte_eth_dev *dev,
 		nc_rxmac_read_status(internals->rxmac[i], &status);
 
 		if (status.enabled && status.link_up) {
-			link.link_status = ETH_LINK_UP;
+			link.link_status = RTE_ETH_LINK_UP;
 			break;
 		}
 	}
@@ -339,6 +401,18 @@ nfb_eth_dev_set_link_down(struct rte_eth_dev *dev)
 	return 0;
 }
 
+static uint64_t
+nfb_eth_mac_addr_conv(struct rte_ether_addr *mac_addr)
+{
+	int i;
+	uint64_t res = 0;
+	for (i = 0; i < RTE_ETHER_ADDR_LEN; i++) {
+		res <<= 8;
+		res |= mac_addr->addr_bytes[i] & 0xFF;
+	}
+	return res;
+}
+
 /**
  * DPDK callback to set primary MAC address.
  *
@@ -352,27 +426,49 @@ nfb_eth_dev_set_link_down(struct rte_eth_dev *dev)
  */
 static int
 nfb_eth_mac_addr_set(struct rte_eth_dev *dev,
-	struct ether_addr *mac_addr)
+	struct rte_ether_addr *mac_addr)
 {
 	unsigned int i;
-	uint64_t mac = 0;
+	uint64_t mac;
 	struct rte_eth_dev_data *data = dev->data;
 	struct pmd_internals *internals = (struct pmd_internals *)
 		data->dev_private;
 
-	if (!is_valid_assigned_ether_addr(mac_addr))
-		return -EINVAL;
-
-	for (i = 0; i < ETHER_ADDR_LEN; i++) {
-		mac <<= 8;
-		mac |= mac_addr->addr_bytes[i] & 0xFF;
-	}
-
+	mac = nfb_eth_mac_addr_conv(mac_addr);
+	/* Until no real multi-port support, configure all RX MACs the same */
 	for (i = 0; i < internals->max_rxmac; ++i)
 		nc_rxmac_set_mac(internals->rxmac[i], 0, mac, 1);
 
-	ether_addr_copy(mac_addr, data->mac_addrs);
 	return 0;
+}
+
+static int
+nfb_eth_mac_addr_add(struct rte_eth_dev *dev,
+	struct rte_ether_addr *mac_addr, uint32_t index, uint32_t pool __rte_unused)
+{
+	unsigned int i;
+	uint64_t mac;
+	struct rte_eth_dev_data *data = dev->data;
+	struct pmd_internals *internals = (struct pmd_internals *)
+		data->dev_private;
+
+	mac = nfb_eth_mac_addr_conv(mac_addr);
+	for (i = 0; i < internals->max_rxmac; ++i)
+		nc_rxmac_set_mac(internals->rxmac[i], index, mac, 1);
+
+	return 0;
+}
+
+static void
+nfb_eth_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index)
+{
+	unsigned int i;
+	struct rte_eth_dev_data *data = dev->data;
+	struct pmd_internals *internals = (struct pmd_internals *)
+		data->dev_private;
+
+	for (i = 0; i < internals->max_rxmac; ++i)
+		nc_rxmac_set_mac(internals->rxmac[i], index, 0, 0);
 }
 
 static const struct eth_dev_ops ops = {
@@ -399,6 +495,8 @@ static const struct eth_dev_ops ops = {
 	.stats_get = nfb_eth_stats_get,
 	.stats_reset = nfb_eth_stats_reset,
 	.mac_addr_set = nfb_eth_mac_addr_set,
+	.mac_addr_add = nfb_eth_mac_addr_add,
+	.mac_addr_remove = nfb_eth_mac_addr_remove,
 };
 
 /**
@@ -413,12 +511,14 @@ static const struct eth_dev_ops ops = {
 static int
 nfb_eth_dev_init(struct rte_eth_dev *dev)
 {
+	uint32_t mac_count;
 	struct rte_eth_dev_data *data = dev->data;
 	struct pmd_internals *internals = (struct pmd_internals *)
 		data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_pci_addr *pci_addr = &pci_dev->addr;
-	struct ether_addr eth_addr_init;
+	struct rte_ether_addr eth_addr_init;
+	struct rte_kvargs *kvlist;
 
 	RTE_LOG(INFO, PMD, "Initializing NFB device (" PCI_PRI_FMT ")\n",
 		pci_addr->domain, pci_addr->bus, pci_addr->devid,
@@ -428,6 +528,21 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 		"/dev/nfb/by-pci-slot/" PCI_PRI_FMT,
 		pci_addr->domain, pci_addr->bus, pci_addr->devid,
 		pci_addr->function);
+
+	/* Check validity of device args */
+	if (dev->device->devargs != NULL &&
+			dev->device->devargs->args != NULL &&
+			strlen(dev->device->devargs->args) > 0) {
+		kvlist = rte_kvargs_parse(dev->device->devargs->args,
+						VALID_KEYS);
+		if (kvlist == NULL) {
+			RTE_LOG(ERR, PMD, "Failed to parse device arguments %s",
+				dev->device->devargs->args);
+			rte_kvargs_free(kvlist);
+			return -EINVAL;
+		}
+		rte_kvargs_free(kvlist);
+	}
 
 	/*
 	 * Get number of available DMA RX and TX queues, which is maximum
@@ -463,25 +578,28 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 	/* Get link state */
 	nfb_eth_link_update(dev, 0);
 
-	/* Allocate space for one mac address */
-	data->mac_addrs = rte_zmalloc(data->name, sizeof(struct ether_addr),
-		RTE_CACHE_LINE_SIZE);
+	/* Allocate space for MAC addresses */
+	mac_count = nfb_eth_get_max_mac_address_count(dev);
+	data->mac_addrs = rte_zmalloc(data->name,
+		sizeof(struct rte_ether_addr) * mac_count, RTE_CACHE_LINE_SIZE);
 	if (data->mac_addrs == NULL) {
 		RTE_LOG(ERR, PMD, "Could not alloc space for MAC address!\n");
 		nfb_close(internals->nfb);
 		return -EINVAL;
 	}
 
-	eth_random_addr(eth_addr_init.addr_bytes);
+	rte_eth_random_addr(eth_addr_init.addr_bytes);
 	eth_addr_init.addr_bytes[0] = eth_addr.addr_bytes[0];
 	eth_addr_init.addr_bytes[1] = eth_addr.addr_bytes[1];
 	eth_addr_init.addr_bytes[2] = eth_addr.addr_bytes[2];
 
 	nfb_eth_mac_addr_set(dev, &eth_addr_init);
+	rte_ether_addr_copy(&eth_addr_init, &dev->data->mac_addrs[0]);
 
 	data->promiscuous = nfb_eth_promiscuous_get(dev);
 	data->all_multicast = nfb_eth_allmulticast_get(dev);
-	internals->rx_filter_original = data->promiscuous;
+
+	dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	RTE_LOG(INFO, PMD, "NFB device ("
 		PCI_PRI_FMT ") successfully initialized\n",
@@ -503,17 +621,10 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 static int
 nfb_eth_dev_uninit(struct rte_eth_dev *dev)
 {
-	struct rte_eth_dev_data *data = dev->data;
-	struct pmd_internals *internals = (struct pmd_internals *)
-		data->dev_private;
-
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_pci_addr *pci_addr = &pci_dev->addr;
 
-	dev->data->mac_addrs = NULL;
-
-	nfb_nc_rxmac_deinit(internals->rxmac, internals->max_rxmac);
-	nfb_nc_txmac_deinit(internals->txmac, internals->max_txmac);
+	nfb_eth_dev_close(dev);
 
 	RTE_LOG(INFO, PMD, "NFB device ("
 		PCI_PRI_FMT ") successfully uninitialized\n",
@@ -527,6 +638,8 @@ static const struct rte_pci_id nfb_pci_id_table[] = {
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_NETCOPE, PCI_DEVICE_ID_NFB_40G2) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_NETCOPE, PCI_DEVICE_ID_NFB_100G2) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_NETCOPE, PCI_DEVICE_ID_NFB_200G2QL) },
+	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_SILICOM, PCI_DEVICE_ID_FB2CGG3) },
+	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_SILICOM, PCI_DEVICE_ID_FB2CGG3D) },
 	{ .vendor_id = 0, }
 };
 

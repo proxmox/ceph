@@ -31,15 +31,19 @@
 //
 #pragma once
 
-#include <seastar/core/sstring.hh>
+#ifndef SEASTAR_MODULE
 #include <unordered_map>
+#endif
+#include <seastar/core/sstring.hh>
 #include <seastar/http/mime_types.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/util/noncopyable_function.hh>
+#include <seastar/util/modules.hh>
+#include <seastar/util/string_utils.hh>
 
 namespace seastar {
 
-struct http_response;
+SEASTAR_MODULE_EXPORT_BEGIN
 
 namespace httpd {
 
@@ -104,7 +108,7 @@ struct reply {
     /**
      * The headers to be included in the reply.
      */
-    std::unordered_map<sstring, sstring> _headers;
+    std::unordered_map<sstring, sstring, seastar::internal::case_insensitive_hash, seastar::internal::case_insensitive_cmp> _headers;
 
     sstring _version;
     /**
@@ -120,8 +124,6 @@ struct reply {
     reply()
             : _status(status_type::ok) {
     }
-
-    explicit reply(http_response&&);
 
     reply& add_header(const sstring& h, const sstring& value) {
         _headers[h] = value;
@@ -232,6 +234,7 @@ namespace httpd {
 using reply [[deprecated("Use http::reply instead")]] = http::reply;
 }
 
+SEASTAR_MODULE_EXPORT_END
 }
 
 #if FMT_VERSION >= 90000

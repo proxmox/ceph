@@ -2,7 +2,7 @@
 // experimental/coro/cancel.cpp
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
-// Copyright (c) 2021-2022 Klemens D. Morgenstern
+// Copyright (c) 2021-2023 Klemens D. Morgenstern
 //                         (klemens dot morgenstern at gmx dot net)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
@@ -17,6 +17,7 @@
 // Test that header file is self-contained.
 #include <boost/asio/experimental/coro.hpp>
 #include <iostream>
+#include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>

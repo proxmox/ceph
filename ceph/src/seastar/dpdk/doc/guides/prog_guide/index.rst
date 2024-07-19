@@ -10,8 +10,10 @@ Programmer's Guide
 
     intro
     overview
+    source_org
     env_abstraction_layer
     service_cores
+    trace_lib
     rcu_lib
     ring_lib
     stack_lib
@@ -25,21 +27,31 @@ Programmer's Guide
     bbdev
     cryptodev_lib
     compressdev
+    regexdev
+    mldev
+    dmadev
+    gpudev
     rte_security
     rawdev
     link_bonding_poll_mode_drv_lib
     timer_lib
     hash_lib
+    toeplitz_hash_lib
     efd_lib
     member_lib
     lpm_lib
     lpm6_lib
+    fib_lib
+    rib_lib
     flow_classify_lib
     packet_distrib_lib
     reorder_lib
     ip_fragment_reassembly_lib
     generic_receive_offload_lib
     generic_segmentation_offload_lib
+    ipsec_lib
+    pdcp_lib
+    pcapng_lib
     pdump_lib
     multi_proc_support
     kernel_nic_interface
@@ -55,15 +67,15 @@ Programmer's Guide
     packet_framework
     vhost_lib
     metrics_lib
+    telemetry_lib
     bpf_lib
-    ipsec_lib
-    source_org
-    dev_kit_build_system
-    dev_kit_root_make_help
-    extend_dpdk
+    graph_lib
+    build-sdk-meson
+    meson_ut
     build_app
-    ext_app_lib_make_help
     perf_opt_guidelines
     writing_efficient_code
+    lto
     profile_app
+    asan
     glossary

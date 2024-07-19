@@ -1,6 +1,17 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2016-2017 Intel Corporation
  */
+#include "test.h"
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_efd(void)
+{
+	printf("EFD not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
 
 #include <rte_memcpy.h>
 #include <rte_malloc.h>
@@ -9,8 +20,6 @@
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ip.h>
-
-#include "test.h"
 
 #define EFD_TEST_KEY_LEN 8
 #define TABLE_SIZE (1 << 21)
@@ -30,14 +39,9 @@ struct flow_key {
 	uint16_t port_src;
 	uint16_t port_dst;
 	uint8_t proto;
-} __attribute__((packed));
+} __rte_packed;
 
-int efd_logtype_test;
-
-RTE_INIT(test_efd_init_log)
-{
-	efd_logtype_test = rte_log_register("test.efd");
-}
+RTE_LOG_REGISTER(efd_logtype_test, test.efd, INFO);
 
 /*
  * Print out result of unit test efd operation.
@@ -58,52 +62,52 @@ static void print_key_info(const char *msg, const struct flow_key *key,
 /* Keys used by unit test functions */
 static struct flow_key keys[5] = {
 	{
-		.ip_src = IPv4(0x03, 0x02, 0x01, 0x00),
-		.ip_dst = IPv4(0x07, 0x06, 0x05, 0x04),
+		.ip_src = RTE_IPV4(0x03, 0x02, 0x01, 0x00),
+		.ip_dst = RTE_IPV4(0x07, 0x06, 0x05, 0x04),
 		.port_src = 0x0908,
 		.port_dst = 0x0b0a,
 		.proto = 0x0c,
 	},
 	{
-		.ip_src = IPv4(0x13, 0x12, 0x11, 0x10),
-		.ip_dst = IPv4(0x17, 0x16, 0x15, 0x14),
+		.ip_src = RTE_IPV4(0x13, 0x12, 0x11, 0x10),
+		.ip_dst = RTE_IPV4(0x17, 0x16, 0x15, 0x14),
 		.port_src = 0x1918,
 		.port_dst = 0x1b1a,
 		.proto = 0x1c,
 	},
 	{
-		.ip_src = IPv4(0x23, 0x22, 0x21, 0x20),
-		.ip_dst = IPv4(0x27, 0x26, 0x25, 0x24),
+		.ip_src = RTE_IPV4(0x23, 0x22, 0x21, 0x20),
+		.ip_dst = RTE_IPV4(0x27, 0x26, 0x25, 0x24),
 		.port_src = 0x2928,
 		.port_dst = 0x2b2a,
 		.proto = 0x2c,
 	},
 	{
-		.ip_src = IPv4(0x33, 0x32, 0x31, 0x30),
-		.ip_dst = IPv4(0x37, 0x36, 0x35, 0x34),
+		.ip_src = RTE_IPV4(0x33, 0x32, 0x31, 0x30),
+		.ip_dst = RTE_IPV4(0x37, 0x36, 0x35, 0x34),
 		.port_src = 0x3938,
 		.port_dst = 0x3b3a,
 		.proto = 0x3c,
 	},
 	{
-		.ip_src = IPv4(0x43, 0x42, 0x41, 0x40),
-		.ip_dst = IPv4(0x47, 0x46, 0x45, 0x44),
+		.ip_src = RTE_IPV4(0x43, 0x42, 0x41, 0x40),
+		.ip_dst = RTE_IPV4(0x47, 0x46, 0x45, 0x44),
 		.port_src = 0x4948,
 		.port_dst = 0x4b4a,
 		.proto = 0x4c,
 	}
 };
 /* Array to store the data */
-efd_value_t data[5];
+static efd_value_t data[5];
 
-static inline uint8_t efd_get_all_sockets_bitmask(void)
+static inline uint64_t efd_get_all_sockets_bitmask(void)
 {
-	uint8_t all_cpu_sockets_bitmask = 0;
+	uint64_t all_cpu_sockets_bitmask = 0;
 	unsigned int i;
-	unsigned int next_lcore = rte_get_master_lcore();
+	unsigned int next_lcore = rte_get_main_lcore();
 	const int val_true = 1, val_false = 0;
 	for (i = 0; i < rte_lcore_count(); i++) {
-		all_cpu_sockets_bitmask |= 1 << rte_lcore_to_socket_id(next_lcore);
+		all_cpu_sockets_bitmask |= 1ULL << rte_lcore_to_socket_id(next_lcore);
 		next_lcore = rte_get_next_lcore(next_lcore, val_false, val_true);
 	}
 
@@ -448,6 +452,7 @@ static int test_efd_creation_with_bad_parameters(void)
 static int
 test_efd(void)
 {
+	test_socket_id = rte_socket_id();
 
 	/* Unit tests */
 	if (test_add_delete() < 0)
@@ -465,5 +470,7 @@ test_efd(void)
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(efd_autotest, test_efd);

@@ -37,6 +37,7 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/gate.hh>
 #include <seastar/core/print.hh>
+#include <system_error>
 
 namespace seastar::net {
 
@@ -149,7 +150,7 @@ public:
         // do this ourselves, and instead set ares options
         // here, but it seems more error prone (me parsing
         // resolv.conf -> hah!)
-        ares_options a_opts = { 0, };
+        ares_options a_opts = {};
 
         // For now, use the default "fb" query order
         // (set explicitly lest we forget).
@@ -537,7 +538,7 @@ private:
             dns_log.trace("Created tcp socket {}", fd);
             break;
         case SOCK_DGRAM:
-            _sockets.emplace(fd, _stack.make_udp_channel());
+            _sockets.emplace(fd, _stack.make_unbound_datagram_channel(AF_INET));
             dns_log.trace("Created udp socket {}", fd);
             break;
         default: return -1;
@@ -619,7 +620,7 @@ private:
                     // FIXME: future is discarded
                     (void)f.then_wrapped([me = shared_from_this(), &e, fd](future<connected_socket> f) {
                         try {
-                            e.tcp.socket = f.get0();
+                            e.tcp.socket = f.get();
                             dns_log.trace("Connection complete: {}", fd);
                         } catch (...) {
                             dns_log.debug("Connect {} failed: {}", fd, std::current_exception());
@@ -631,7 +632,7 @@ private:
                     errno = EWOULDBLOCK;
                     return -1;
                 }
-                e.tcp.socket = f.get0();
+                e.tcp.socket = f.get();
                 break;
             }
             case type::udp:
@@ -686,7 +687,7 @@ private:
                         // FIXME: future is discarded
                         (void)f.then_wrapped([me = shared_from_this(), &e, fd](future<temporary_buffer<char>> f) {
                             try {
-                                auto buf = f.get0();
+                                auto buf = f.get();
                                 dns_log.trace("Read {} -> {} bytes", fd, buf.size());
                                 e.tcp.indata = std::move(buf);
                             } catch (...) {
@@ -701,7 +702,7 @@ private:
                     }
 
                     try {
-                        tcp.indata = f.get0();
+                        tcp.indata = f.get();
                         continue; // loop will take care of data
                     } catch (std::system_error& e) {
                         errno = e.code().value();
@@ -747,9 +748,9 @@ private:
                         use(fd);
                         dns_log.trace("Read {}: data unavailable", fd);
                         // FIXME: future is discarded
-                        (void)f.then_wrapped([me = shared_from_this(), &e, fd](future<net::udp_datagram> f) {
+                        (void)f.then_wrapped([me = shared_from_this(), &e, fd](future<net::datagram> f) {
                             try {
-                                auto d = f.get0();
+                                auto d = f.get();
                                 dns_log.trace("Read {} -> {} bytes", fd, d.get_data().len());
                                 e.udp.in = std::move(d);
                                 e.avail |= POLLIN;
@@ -764,7 +765,7 @@ private:
                     }
 
                     try {
-                        udp.in = f.get0();
+                        udp.in = f.get();
                         continue; // loop will take care of data
                     } catch (std::system_error& e) {
                         errno = e.code().value();
@@ -845,16 +846,24 @@ private:
                     }).finally([fd, me = shared_from_this()] {
                         me->release(fd);
                     });
-                    // if we have a fast-fail, give error.
-                    if (e.udp.f.failed()) {
-                        try {
-                            e.udp.f.get();
-                        } catch (std::system_error& e) {
-                            errno = e.code().value();
-                        } catch (...) {
+
+                    if (e.udp.f.available()) {
+                        // if we have a fast-fail, give error.
+                        if (e.udp.f.failed()) {
+                            try {
+                                e.udp.f.get();
+                            } catch (std::system_error& e) {
+                                errno = e.code().value();
+                            } catch (...) {
+                            }
+                            e.udp.f = make_ready_future<>();
+                            return -1;
                         }
-                        e.udp.f = make_ready_future<>();
-                        return -1;
+                    } else {
+                        // ensure that no exception from channel.send is left uncaught
+                        e.udp.f = e.udp.f.handle_exception_type([](std::system_error const& e){
+                            dns_log.warn("UDP send exception: {}", e.what());
+                        });
                     }
                     // c-ares does _not_ use non-blocking retry for udp sockets. We just pretend
                     // all is fine even though we have no idea. Barring stack/adapter failure it
@@ -927,11 +936,11 @@ private:
         temporary_buffer<char> indata;
     };
     struct udp_entry {
-        udp_entry(net::udp_channel c)
+        udp_entry(net::datagram_channel c)
                         : channel(std::move(c)) {
         }
-        net::udp_channel channel;
-        std::optional<net::udp_datagram> in;;
+        net::datagram_channel channel;
+        std::optional<net::datagram> in;;
         socket_address dst;
         future<> f = make_ready_future<>();
     };
@@ -965,7 +974,7 @@ private:
             : tcp(tcp_entry{std::move(s)})
             , typ(type::tcp)
         {}
-        sock_entry(net::udp_channel c)
+        sock_entry(net::datagram_channel c)
             : udp(udp_entry{std::move(c)})
             , typ(type::udp)
         {}

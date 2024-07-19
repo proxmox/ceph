@@ -6,11 +6,13 @@ import logging
 import math
 from datetime import datetime
 from functools import partial
+from typing import Any, Dict
 
 import cherrypy
 import rbd
 
 from .. import mgr
+from ..controllers.pool import RBDPool
 from ..exceptions import DashboardException
 from ..security import Scope
 from ..services.ceph_service import CephService
@@ -96,8 +98,18 @@ class Rbd(RESTController):
 
     @handle_rbd_error()
     @handle_rados_error('pool')
-    def get(self, image_spec):
-        return RbdService.get_image(image_spec)
+    @EndpointDoc("Get Rbd Image Info",
+                 parameters={
+                     'image_spec': (str, 'URL-encoded "pool/rbd_name". e.g. "rbd%2Ffoo"'),
+                     'omit_usage': (bool, 'When true, usage information is not returned'),
+                 },
+                 responses={200: RBD_SCHEMA})
+    def get(self, image_spec, omit_usage=False):
+        try:
+            omit_usage_bool = str_to_bool(omit_usage)
+        except ValueError:
+            omit_usage_bool = False
+        return RbdService.get_image(image_spec, omit_usage_bool)
 
     @RbdTask('create',
              {'pool_name': '{pool_name}', 'namespace': '{namespace}', 'image_name': '{name}'}, 2.0)
@@ -192,12 +204,22 @@ class RbdStatus(BaseController):
     @Endpoint()
     @ReadPermission
     def status(self):
-        status = {'available': True, 'message': None}
+        status: Dict[str, Any] = {'available': True, 'message': None}
         if not CephService.get_pool_list('rbd'):
             status['available'] = False
-            status['message'] = 'No RBD pools in the cluster. Please create a pool '\
-                                'with the "rbd" application label.'  # type: ignore
+            status['message'] = 'No Block Pool is available in the cluster. Please click ' \
+                                'on \"Configure Default Pool\" button to ' \
+                                'get started.'  # type: ignore
         return status
+
+    @Endpoint('POST')
+    @EndpointDoc('Configure Default Block Pool')
+    @CreatePermission
+    def configure(self):
+        rbd_pool = RBDPool()
+
+        if not CephService.get_pool_list('rbd'):
+            rbd_pool.create('rbd')
 
 
 @APIRouter('/block/image/{image_spec}/snap', Scope.RBD_IMAGE)

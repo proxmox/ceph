@@ -4,55 +4,8 @@
 DPDK Release 19.05
 ==================
 
-.. **Read this first.**
-
-   The text in the sections below explains how to update the release notes.
-
-   Use proper spelling, capitalization and punctuation in all sections.
-
-   Variable and config names should be quoted as fixed width text:
-   ``LIKE_THIS``.
-
-   Build the docs and view the output file to ensure the changes are correct::
-
-      make doc-guides-html
-
-      xdg-open build/doc/html/guides/rel_notes/release_19_05.html
-
-
 New Features
 ------------
-
-.. This section should contain new features added in this release.
-   Sample format:
-
-   * **Add a title in the past tense with a full stop.**
-
-     Add a short 1-2 sentence description in the past tense.
-     The description should be enough to allow someone scanning
-     the release notes to understand the new feature.
-
-     If the feature adds a lot of sub-features you can use a bullet list
-     like this:
-
-     * Added feature foo to do something.
-     * Enhanced feature bar to do something else.
-
-     Refer to the previous release notes for examples.
-
-     Suggested order in release notes items:
-     * Core libs (EAL, mempool, ring, mbuf, buses)
-     * Device abstraction libs and PMDs
-       - ethdev (lib, PMDs)
-       - cryptodev (lib, PMDs)
-       - eventdev (lib, PMDs)
-       - etc
-     * Other libs
-     * Apps, Examples, Tools (if significant)
-
-     This section is a comment. Do not overwrite or remove it.
-     Also, make sure to start the actual text at the margin.
-     =========================================================
 
 * **Added new armv8 machine targets.**
 
@@ -93,13 +46,13 @@ New Features
   Updated the KNI kernel module to set the ``max_mtu`` according to the given
   initial MTU size. Without it, the maximum MTU was 1500.
 
-  Updated the KNI PMD driver to set the ``mbuf_size`` and MTU based on
+  Updated the KNI PMD to set the ``mbuf_size`` and MTU based on
   the given mb-pool. This provide the ability to pass jumbo frames
   if the mb-pool contains a suitable buffer size.
 
 * **Added the AF_XDP PMD.**
 
-  Added a Linux-specific PMD driver for AF_XDP. This PMD can create an AF_XDP socket
+  Added a Linux-specific PMD for AF_XDP. This PMD can create an AF_XDP socket
   and bind it to a specific netdev queue. It allows a DPDK application to send
   and receive raw packets through the socket which would bypass the kernel
   network stack to achieve high performance packet processing.
@@ -258,18 +211,6 @@ New Features
 API Changes
 -----------
 
-.. This section should contain API changes. Sample format:
-
-   * sample: Add a short 1-2 sentence description of the API change
-     which was announced in the previous releases and made in this release.
-     Start with a scope label like "ethdev:".
-     Use fixed width quotes for ``function_names`` or ``struct_names``.
-     Use the past tense.
-
-   This section is a comment. Do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
-
 * eal: the type of the ``attr_value`` parameter of the function
   ``rte_service_attr_get()`` has been changed
   from ``uint32_t *`` to ``uint64_t *``.
@@ -295,23 +236,11 @@ API Changes
 ABI Changes
 -----------
 
-.. This section should contain ABI changes. Sample format:
-
-   * sample: Add a short 1-2 sentence description of the ABI change
-     which was announced in the previous releases and made in this release.
-     Start with a scope label like "ethdev:".
-     Use fixed width quotes for ``function_names`` or ``struct_names``.
-     Use the past tense.
-
-   This section is a comment. Do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
-
 * ethdev: Additional fields in rte_eth_dev_info.
 
   The ``rte_eth_dev_info`` structure has had two extra fields
   added: ``min_mtu`` and ``max_mtu``. Each of these are of type ``uint16_t``.
-  The values of these fields can be set specifically by the PMD drivers as
+  The values of these fields can be set specifically by the PMDs as
   supported values can vary from device to device.
 
 * cryptodev: in 18.08 a new structure ``rte_crypto_asym_op`` was introduced and
@@ -327,16 +256,6 @@ ABI Changes
 
 Shared Library Versions
 -----------------------
-
-.. Update any library version updated in this release
-   and prepend with a ``+`` sign, like this:
-
-     libfoo.so.1
-   + libupdated.so.2
-     libbar.so.1
-
-   This section is a comment. Do not overwrite or remove it.
-   =========================================================
 
 The libraries prepended with a plus sign were incremented in this version.
 
@@ -406,17 +325,6 @@ The libraries prepended with a plus sign were incremented in this version.
 Known Issues
 ------------
 
-.. This section should contain new known issues in this release. Sample format:
-
-   * **Add title in present tense with full stop.**
-
-     Add a short 1-2 sentence description of the known issue
-     in the present tense. Add information on any known workarounds.
-
-   This section is a comment. Do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
-
 * **On x86 platforms, AVX512 support is disabled with binutils 2.31.**
 
   Due to a defect in binutils 2.31 AVX512 support is disabled.
@@ -432,22 +340,6 @@ Known Issues
 
 Tested Platforms
 ----------------
-
-.. This section should contain a list of platforms that were tested
-   with this release.
-
-   The format is:
-
-   * <vendor> platform with <vendor> <type of devices> combinations
-
-     * List of CPU
-     * List of OS
-     * List of devices
-     * Other relevant details...
-
-   This section is a comment. Do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
 
 * Intel(R) platforms with Intel(R) NICs combinations
 

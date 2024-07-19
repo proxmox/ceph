@@ -17,10 +17,10 @@
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
-#include <rte_ethdev_driver.h>
+#include <dev_driver.h>
+#include <ethdev_driver.h>
 
-#include <rte_fslmc.h>
+#include <bus_fslmc_driver.h>
 #include <mc/fsl_dpcon.h>
 #include <portal/dpaa2_hw_pvt.h>
 #include "dpaa2_eventdev.h"
@@ -48,7 +48,7 @@ rte_dpaa2_create_dpcon_device(int dev_fd __rte_unused,
 	}
 
 	/* Open the dpcon object */
-	dpcon_node->dpcon.regs = rte_mcp_ptr_list[MC_PORTAL_INDEX];
+	dpcon_node->dpcon.regs = dpaa2_get_mcp_ptr(MC_PORTAL_INDEX);
 	ret = dpcon_open(&dpcon_node->dpcon,
 			 CMD_PRI_LOW, dpcon_id, &dpcon_node->token);
 	if (ret) {

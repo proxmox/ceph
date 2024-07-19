@@ -22,11 +22,9 @@ add_subdirectory(librados_test_stub)
 if(WITH_LIBRADOSSTRIPER)
   add_subdirectory(libradosstriper)
 endif()
-if(WITH_RBD AND NOT WIN32)
-  # librbd tests require libcls*, which in turn require libos and libosd, which
-  # haven't been ported to Windows yet.
+if(WITH_RBD)
   add_subdirectory(librbd)
-endif(WITH_RBD AND NOT WIN32)
+endif()
 if (WITH_CEPHFS)
   add_subdirectory(mds)
 endif()
@@ -48,11 +46,14 @@ if(NOT WIN32)
     add_subdirectory(cls_journal)
     add_subdirectory(cls_rbd)
   endif(WITH_RBD)
+  if(WITH_RADOSGW)
+    add_subdirectory(cls_rgw)
+    add_subdirectory(cls_rgw_gc)
+    add_subdirectory(cls_user)
+  endif(WITH_RADOSGW)
   add_subdirectory(cls_refcount)
-  add_subdirectory(cls_rgw)
   add_subdirectory(cls_version)
   add_subdirectory(cls_lua)
-  add_subdirectory(cls_rgw_gc)
   add_subdirectory(cls_queue)
   add_subdirectory(cls_2pc_queue)
   add_subdirectory(cls_cmpomap)
@@ -289,6 +290,7 @@ install(TARGETS ceph_test_librgw_file DESTINATION ${CMAKE_INSTALL_BINDIR})
 add_dependencies(ceph_test_librgw_file
   ceph_test_librgw_file_cd
   ceph_test_librgw_file_gp
+  ceph_test_librgw_file_rename
   ceph_test_librgw_file_nfsns
   ceph_test_librgw_file_aw
   ceph_test_librgw_file_marker)
@@ -393,6 +395,20 @@ target_link_libraries(ceph_test_librgw_file_xattr
   )
 target_link_libraries(ceph_test_librgw_file_xattr spawn)
 
+# ceph_test_librgw_file_rename (mv/rename tests)
+add_executable(ceph_test_librgw_file_rename
+  librgw_file_rename.cc
+  )
+target_link_libraries(ceph_test_librgw_file_rename
+  rgw
+  librados
+  ceph-common
+  ${UNITTEST_LIBS}
+  ${EXTRALIBS}
+  ${ALLOC_LIBS}
+  )
+install(TARGETS ceph_test_librgw_file_rename DESTINATION ${CMAKE_INSTALL_BINDIR})
+
 # ceph_test_rgw_token
 add_executable(ceph_test_rgw_token
   test_rgw_token.cc
@@ -468,6 +484,10 @@ add_executable(ceph_test_snap_mapper
   $<TARGET_OBJECTS:unit-main>
   )
 target_link_libraries(ceph_test_snap_mapper osd global ${BLKID_LIBRARIES} ${UNITTEST_LIBS})
+
+install(TARGETS
+  ceph_test_snap_mapper
+  DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif(NOT WIN32)
 
 add_executable(ceph_test_stress_watch
@@ -835,6 +855,13 @@ add_executable(unittest_perf_counters
   )
 add_ceph_unittest(unittest_perf_counters)
 target_link_libraries(unittest_perf_counters global)
+
+# unittest_perf_counters_cache
+add_executable(unittest_perf_counters_cache
+  test_perf_counters_cache.cc
+  )
+add_ceph_unittest(unittest_perf_counters_cache)
+target_link_libraries(unittest_perf_counters_cache global)
 
 # unittest_ceph_crypto
 add_executable(unittest_ceph_crypto

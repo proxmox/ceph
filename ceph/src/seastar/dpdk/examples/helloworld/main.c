@@ -15,15 +15,18 @@
 #include <rte_lcore.h>
 #include <rte_debug.h>
 
+/* Launch a function on lcore. 8< */
 static int
-lcore_hello(__attribute__((unused)) void *arg)
+lcore_hello(__rte_unused void *arg)
 {
 	unsigned lcore_id;
 	lcore_id = rte_lcore_id();
 	printf("hello from core %u\n", lcore_id);
 	return 0;
 }
+/* >8 End of launching function on lcore. */
 
+/* Initialization of Environment Abstraction Layer (EAL). 8< */
 int
 main(int argc, char **argv)
 {
@@ -33,15 +36,23 @@ main(int argc, char **argv)
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_panic("Cannot init EAL\n");
+	/* >8 End of initialization of Environment Abstraction Layer */
 
-	/* call lcore_hello() on every slave lcore */
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	/* Launches the function on each lcore. 8< */
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
+		/* Simpler equivalent. 8< */
 		rte_eal_remote_launch(lcore_hello, NULL, lcore_id);
+		/* >8 End of simpler equivalent. */
 	}
 
-	/* call it on master lcore too */
+	/* call it on main lcore too */
 	lcore_hello(NULL);
+	/* >8 End of launching the function on each lcore. */
 
 	rte_eal_mp_wait_lcore();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

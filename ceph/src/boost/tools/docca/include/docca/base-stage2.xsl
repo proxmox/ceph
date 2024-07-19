@@ -93,9 +93,16 @@
   <xsl:template mode="after"  match="typedef/name"> = </xsl:template>
   <xsl:template mode="after"  match="typedef/type">;</xsl:template>
 
-  <xsl:template match="type[. eq '__implementation_defined__'    ]">``['implementation-defined]``</xsl:template>
-  <xsl:template match="type[. eq '__see_below__'                 ]">``['see-below]``</xsl:template>
-  <xsl:template match="type[. = ('__deduced__','void_or_deduced')]">``__deduced__``</xsl:template>
+  <xsl:template match="type[string(.)]">
+    <xsl:sequence select="d:perform-replacements(., $qb-type-replacements)"/>
+  </xsl:template>
+
+  <xsl:variable name="qb-type-replacements" as="element(replace)*">
+    <replace pattern="__implementation_defined__" with="``['implementation-defined]``"/>
+    <replace pattern="__see_below__"              with="``['see-below]``"/>
+    <replace pattern="__deduced__"                with="``__deduced__``"/>
+    <replace pattern="void_or_deduced"            with="``__deduced__``"/>
+  </xsl:variable>
 
   <xsl:template mode="before" match="variable/name | variable/initializer">{' '}</xsl:template>
   <xsl:template mode="append" match="variable">;</xsl:template>
@@ -216,7 +223,8 @@
 
   <xsl:template match="linebreak">{$nl}{$nl}</xsl:template>
 
-  <xsl:template match="br">[br]</xsl:template>
+  <!-- Using escaped markup instead of [br] to circumvent Quickbook warnings -->
+  <xsl:template match="br">'''&lt;sbr/>'''</xsl:template>
 
   <xsl:template mode="before" match="programlisting">{$nl}```{$nl}</xsl:template>
   <xsl:template mode="after"  match="programlisting"     >```{$nl}</xsl:template>
@@ -233,8 +241,7 @@
 
   <!-- But don't escape them in these contexts -->
   <xsl:template match="&SYNTAX_BLOCK;//text()
-                     | &CODE_BLOCK;//text()
-                     | programlisting//text()">
+                     | &CODE_BLOCK;//text()">
     <!--
       This implementation (using <xsl:sequence> returning a string, instead of <xsl:value-of>) can
       result in a contiguous sequence of strings, which gets converted to a text node having space
@@ -244,6 +251,13 @@
       strip them out (probably by using <xsl:value-of> for the rules matching text nodes).
     -->
     <xsl:sequence select="string(.)"/>
+  </xsl:template>
+
+  <!-- See comment above about returning a sequence of strings; the same consideration may apply here,
+       as this pattern used to share the same rule above, i.e. with <xsl:sequence select="string(.)"/> -->
+  <xsl:template match="programlisting//text()">
+    <!-- Perform the same Quickbook macro replacements as we do for <type> values -->
+    <xsl:sequence select="d:perform-replacements(string(.), $qb-type-replacements)"/>
   </xsl:template>
 
   <!-- Boilerplate default rules for elements -->

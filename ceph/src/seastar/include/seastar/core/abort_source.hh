@@ -21,17 +21,24 @@
 
 #pragma once
 
+#include <seastar/util/modules.hh>
 #include <seastar/util/noncopyable_function.hh>
 #include <seastar/util/optimized_optional.hh>
 #include <seastar/util/std-compat.hh>
 
+#ifndef SEASTAR_MODULE
 #include <boost/intrusive/list.hpp>
-
 #include <exception>
+#include <optional>
+#include <type_traits>
+#include <utility>
+#endif
 
 namespace bi = boost::intrusive;
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /// \addtogroup fiber-module
 /// @{
@@ -63,13 +70,13 @@ public:
 
         explicit subscription(abort_source& as, subscription_callback_type target)
                 : _target(std::move(target)) {
-            as._subscriptions->push_back(*this);
+            as._subscriptions.push_back(*this);
         }
 
         struct naive_cb_tag {}; // to disambiguate constructors
         explicit subscription(naive_cb_tag, abort_source& as, naive_subscription_callback_type naive_cb)
                 : _target([cb = std::move(naive_cb)] (const std::optional<std::exception_ptr>&) noexcept { cb(); }) {
-            as._subscriptions->push_back(*this);
+            as._subscriptions.push_back(*this);
         }
 
         void on_abort(const std::optional<std::exception_ptr>& ex) noexcept {
@@ -79,12 +86,12 @@ public:
     public:
         subscription() = default;
 
-        subscription(subscription&& other) noexcept(std::is_nothrow_move_constructible<subscription_callback_type>::value)
+        subscription(subscription&& other) noexcept(std::is_nothrow_move_constructible_v<subscription_callback_type>)
                 : _target(std::move(other._target)) {
             subscription_list_type::node_algorithms::swap_nodes(other.this_ptr(), this_ptr());
         }
 
-        subscription& operator=(subscription&& other) noexcept(std::is_nothrow_move_assignable<subscription_callback_type>::value) {
+        subscription& operator=(subscription&& other) noexcept(std::is_nothrow_move_assignable_v<subscription_callback_type>) {
             if (this != &other) {
                 _target = std::move(other._target);
                 unlink();
@@ -100,15 +107,18 @@ public:
 
 private:
     using subscription_list_type = bi::list<subscription, bi::constant_time_size<false>>;
-    std::optional<subscription_list_type> _subscriptions = subscription_list_type();
+    subscription_list_type _subscriptions;
     std::exception_ptr _ex;
 
     void do_request_abort(std::optional<std::exception_ptr> ex) noexcept {
-        assert(_subscriptions);
+        if (_ex) {
+            return;
+        }
         _ex = ex.value_or(get_default_exception());
-        auto subs = std::exchange(_subscriptions, std::nullopt);
-        while (!subs->empty()) {
-            subscription& s = subs->front();
+        assert(_ex);
+        auto subs = std::move(_subscriptions);
+        while (!subs.empty()) {
+            subscription& s = subs.front();
             s.unlink();
             s.on_abort(ex);
         }
@@ -126,10 +136,8 @@ public:
     ///          the lifetime of the callback \c f, if \ref abort_requested() is \c false. Otherwise,
     ///          returns a disengaged \ref optimized_optional.
     template <typename Func>
-    SEASTAR_CONCEPT(requires
-            requires (Func f, const std::optional<std::exception_ptr>& opt_ex) { { f(opt_ex) } noexcept -> std::same_as<void>; }
-        ||  requires (Func f) { { f() } noexcept -> std::same_as<void>; }
-    )
+        requires (std::is_nothrow_invocable_r_v<void, Func, const std::optional<std::exception_ptr>&> ||
+                  std::is_nothrow_invocable_r_v<void, Func>)
     [[nodiscard]]
     optimized_optional<subscription> subscribe(Func&& f) {
         if (abort_requested()) {
@@ -145,7 +153,6 @@ public:
     /// Requests that the target operation be aborted. Current subscriptions
     /// are invoked inline with this call with a disengaged optional<std::exception_ptr>,
     /// and no new ones can be registered.
-    /// Must be called exactly once, otherwise the program will be aborted.
     void request_abort() noexcept {
         do_request_abort(std::nullopt);
     }
@@ -153,7 +160,6 @@ public:
     /// Requests that the target operation be aborted with a given \c exception_ptr.
     /// Current subscriptions are invoked inline with this exception,
     /// and no new ones can be registered.
-    /// Must be called exactly once, otherwise the program will be aborted.
     void request_abort_ex(std::exception_ptr ex) noexcept {
         do_request_abort(std::make_optional(std::move(ex)));
     }
@@ -161,7 +167,6 @@ public:
     /// Requests that the target operation be aborted with a given \c Exception object.
     /// Current subscriptions are invoked inline with this exception, converted to std::exception_ptr,
     /// and no new ones can be registered.
-    /// Must be called exactly once, otherwise the program will be aborted.
     template <typename Exception>
     void request_abort_ex(Exception&& e) noexcept {
         do_request_abort(std::make_optional(std::make_exception_ptr(std::forward<Exception>(e))));
@@ -169,7 +174,7 @@ public:
 
     /// Returns whether an abort has been requested.
     bool abort_requested() const noexcept {
-        return !_subscriptions;
+        return bool(_ex);
     }
 
 
@@ -188,5 +193,7 @@ public:
 };
 
 /// @}
+
+SEASTAR_MODULE_EXPORT_END
 
 }

@@ -39,7 +39,7 @@ struct is_checked_cpp_int : public std::integral_constant<bool, false>
 
 //
 // This works around some platforms which have missing typeinfo
-// for __int128 and/or __float128:
+// for boost::int128_type and/or __float128:
 //
 template <class T>
 inline const char* name_of()
@@ -48,14 +48,14 @@ inline const char* name_of()
 }
 #ifdef BOOST_HAS_INT128
 template <>
-inline const char* name_of<__int128>()
+inline const char* name_of<boost::int128_type>()
 {
-   return "__int128";
+   return "boost::int128_type";
 }
 template <>
-inline const char* name_of<unsigned __int128>()
+inline const char* name_of<boost::uint128_type>()
 {
-   return "unsigned __int128";
+   return "boost::uint128_type";
 }
 #endif
 #ifdef BOOST_HAS_FLOAT128
@@ -157,7 +157,7 @@ typename std::enable_if<boost::multiprecision::is_number<Real>::value>::type tes
 }
 
 template <class Real>
-typename std::enable_if<!boost::multiprecision::is_number<Real>::value>::type test_enum_conversions() 
+typename std::enable_if<!boost::multiprecision::is_number<Real>::value>::type test_enum_conversions()
 {}
 
 template <class Real, class Val>
@@ -370,6 +370,7 @@ void test_rational_signed(const std::integral_constant<bool, false>&)
 template <class Real>
 void test_rational(const std::integral_constant<bool, false>&)
 {
+   typedef typename Real::value_type value_type;
    Real a(2);
    a /= 3;
    BOOST_CHECK_EQUAL(numerator(a), 2);
@@ -381,6 +382,15 @@ void test_rational(const std::integral_constant<bool, false>&)
 #ifndef BOOST_NO_EXCEPTIONS
    BOOST_CHECK_THROW(Real(a / 0), std::overflow_error);
    BOOST_CHECK_THROW(Real("3.14"), std::runtime_error);
+   //
+   // Check construction/assignment from zero denominator:
+   //
+   BOOST_CHECK_THROW(Real(5, 0), std::overflow_error);
+   BOOST_CHECK_THROW(Real(value_type(5), value_type(0)), std::overflow_error);
+   BOOST_CHECK_THROW(Real("5", "0"), std::overflow_error);
+   BOOST_CHECK_THROW(Real(1).assign(5, 0), std::overflow_error);
+   BOOST_CHECK_THROW(Real(1).assign(value_type(5), value_type(0)), std::overflow_error);
+   BOOST_CHECK_THROW(Real(1).assign("5", "0"), std::overflow_error);
 #endif
    b = Real("2/3");
    BOOST_CHECK_EQUAL(a, b);
@@ -399,6 +409,69 @@ void test_rational(const std::integral_constant<bool, false>&)
    BOOST_CHECK_EQUAL(static_cast<std::uint32_t>(three), 3);
    BOOST_CHECK_EQUAL(static_cast<std::uint64_t>(three), 3);
    test_rational_signed<Real>(std::integral_constant<bool, std::numeric_limits<Real>::is_signed>());
+   //
+   // Verify normalization:
+   //
+   {
+      Real c(20, 6);
+      BOOST_CHECK_EQUAL(numerator(c), 10);
+      BOOST_CHECK_EQUAL(denominator(c), 3);
+      c.assign(15, 6);
+      BOOST_CHECK_EQUAL(numerator(c), 5);
+      BOOST_CHECK_EQUAL(denominator(c), 2);
+   }
+   {
+      typename Real::value_type v1(20), v2(6);
+      Real                      c(v1, v2);
+      BOOST_CHECK_EQUAL(numerator(c), 10);
+      BOOST_CHECK_EQUAL(denominator(c), 3);
+      v1 = 15;
+      v2 = 6;
+      c.assign(v1, v2);
+      BOOST_CHECK_EQUAL(numerator(c), 5);
+      BOOST_CHECK_EQUAL(denominator(c), 2);
+   }
+   {
+      Real c("20", "6");
+      BOOST_CHECK_EQUAL(numerator(c), 10);
+      BOOST_CHECK_EQUAL(denominator(c), 3);
+      c.assign("15", "6");
+      BOOST_CHECK_EQUAL(numerator(c), 5);
+      BOOST_CHECK_EQUAL(denominator(c), 2);
+   }
+   //
+   // Verify normalization of negative denominator:
+   //
+   BOOST_IF_CONSTEXPR(std::numeric_limits<value_type>::is_signed)
+   {
+      {
+         Real c(20, -6);
+         BOOST_CHECK_EQUAL(numerator(c), -10);
+         BOOST_CHECK_EQUAL(denominator(c), 3);
+         c.assign(15, -6);
+         BOOST_CHECK_EQUAL(numerator(c), -5);
+         BOOST_CHECK_EQUAL(denominator(c), 2);
+      }
+      {
+         typename Real::value_type v1(20), v2(-6);
+         Real                      c(v1, v2);
+         BOOST_CHECK_EQUAL(numerator(c), -10);
+         BOOST_CHECK_EQUAL(denominator(c), 3);
+         v1 = 15;
+         v2 = -6;
+         c.assign(v1, v2);
+         BOOST_CHECK_EQUAL(numerator(c), -5);
+         BOOST_CHECK_EQUAL(denominator(c), 2);
+      }
+      {
+         Real c("20", "-6");
+         BOOST_CHECK_EQUAL(numerator(c), -10);
+         BOOST_CHECK_EQUAL(denominator(c), 3);
+         c.assign("15", "-6");
+         BOOST_CHECK_EQUAL(numerator(c), -5);
+         BOOST_CHECK_EQUAL(denominator(c), 2);
+      }
+   }
 }
 
 template <class Real>
@@ -1290,6 +1363,15 @@ void test_float_funcs(const std::integral_constant<bool, true>&)
    BOOST_CHECK_EQUAL(Real(arg(a)), 0);
    BOOST_CHECK_EQUAL(Real(arg(a - 20)), 0);
    #endif
+
+   //
+   // String construction errors:
+   //
+   BOOST_CHECK_THROW(Real("12x34.345"), std::runtime_error);
+   BOOST_CHECK_THROW(Real("1234x345"), std::runtime_error);
+   BOOST_CHECK_THROW(Real("1234.3x45"), std::runtime_error);
+   BOOST_CHECK_THROW(Real("1234.345e34b"), std::runtime_error);
+   BOOST_CHECK_THROW(Real("1234.345e3c4"), std::runtime_error);
 }
 
 template <class T, class U>
@@ -1410,14 +1492,60 @@ void test_float_ops(const std::integral_constant<int, boost::multiprecision::num
    BOOST_CHECK_EQUAL(r, boost::math::pow<2>(3.25));
    r = pow(v, 3);
    BOOST_CHECK_EQUAL(r, boost::math::pow<3>(3.25));
-   r = pow(v, 4);
-   BOOST_CHECK_EQUAL(r, boost::math::pow<4>(3.25));
-   r = pow(v, 5);
-   BOOST_CHECK_EQUAL(r, boost::math::pow<5>(3.25));
-   r = pow(v, 6);
-   BOOST_CHECK_EQUAL(r, boost::math::pow<6>(3.25));
-   r = pow(v, 25);
-   BOOST_CHECK_EQUAL(r, boost::math::pow<25>(Real(3.25)));
+
+   BOOST_IF_CONSTEXPR(std::numeric_limits<Real>::digits10 > 11)
+   {
+      // (13/4)^4
+      // 28561 / 256
+      // 111.56640625
+      r = pow(v, 4);
+      BOOST_CHECK_EQUAL(r, boost::math::pow<4>(Real(3.25)));
+   }
+
+   BOOST_IF_CONSTEXPR(std::numeric_limits<Real>::digits10 > 13)
+   {
+      // (13/4)^5
+      // 371293 / 1024
+      // 362.5908203125
+      r = pow(v, 5);
+      BOOST_CHECK_EQUAL(r, boost::math::pow<5>(Real(3.25)));
+   }
+
+   BOOST_IF_CONSTEXPR(std::numeric_limits<Real>::digits10 > 16)
+   {
+      // (13/4)^6
+      // 4826809 / 4096
+      // 1178.420166015625
+      r = pow(v, 6);
+      BOOST_CHECK_EQUAL(r, boost::math::pow<6>(Real(3.25)));
+   }
+
+   BOOST_IF_CONSTEXPR(std::numeric_limits<Real>::digits10 > 26)
+   {
+      // (13/4)^10
+      // 137858491849 / 1048576
+      // 131472.10297489166259765625
+      r = pow(v, 10);
+      BOOST_CHECK_EQUAL(r, boost::math::pow<10>(Real(3.25)));
+   }
+
+   BOOST_IF_CONSTEXPR(std::numeric_limits<Real>::digits10 > 38)
+   {
+      // (13/4)^15
+      // 51185893014090757 / 1073741824
+      // 47670577.665875439532101154327392578125
+      r = pow(v, 15);
+      BOOST_CHECK_EQUAL(r, boost::math::pow<15>(Real(3.25)));
+   }
+
+   BOOST_IF_CONSTEXPR(std::numeric_limits<Real>::digits10 > 63)
+   {
+      // (13/4)^25
+      // 7056410014866816666030739693 / 1125899906842624
+      // 6267351095760.54642313524184960016327750054188072681427001953125
+      r = pow(v, 25);
+      BOOST_CHECK_EQUAL(r, boost::math::pow<25>(Real(3.25)));
+   }
    #endif
 
 #ifndef BOOST_NO_EXCEPTIONS
@@ -1508,7 +1636,7 @@ void test_float_ops(const std::integral_constant<int, boost::multiprecision::num
    {
       v = 20.25;
       r = std::numeric_limits<Real>::infinity();
-      
+
       #ifndef BOOST_MP_STANDALONE
       BOOST_CHECK((boost::math::isinf)(v + r));
       BOOST_CHECK((boost::math::isinf)(r + v));
@@ -2043,7 +2171,7 @@ struct is_definitely_unsigned_int
 {};
 #ifdef BOOST_HAS_INT128
 template <>
-struct is_definitely_unsigned_int<unsigned __int128>
+struct is_definitely_unsigned_int<boost::uint128_type>
     : public std::true_type
 {};
 #endif
@@ -2190,9 +2318,9 @@ void test_mixed(const std::integral_constant<bool, true>&)
    r = static_cast<cast_type>(Num(4) * n4) / Real(4);
    BOOST_CHECK_EQUAL(r, static_cast<cast_type>(n4));
 
-   typedef std::integral_constant<bool, 
-       (!std::numeric_limits<Num>::is_specialized || std::numeric_limits<Num>::is_signed) 
-      && (!std::numeric_limits<Real>::is_specialized || std::numeric_limits<Real>::is_signed) 
+   typedef std::integral_constant<bool,
+       (!std::numeric_limits<Num>::is_specialized || std::numeric_limits<Num>::is_signed)
+      && (!std::numeric_limits<Real>::is_specialized || std::numeric_limits<Real>::is_signed)
       && !is_definitely_unsigned_int<Num>::value>
        signed_tag;
 
@@ -3070,10 +3198,10 @@ void test()
    test_mixed<Real, unsigned long long>(tag);
 #endif
 #if defined(BOOST_HAS_INT128) && !defined(BOOST_NO_CXX17_IF_CONSTEXPR)
-   if constexpr (std::is_constructible<Real, __int128>::value)
+   if constexpr (std::is_constructible<Real, boost::int128_type>::value)
    {
-      test_mixed<Real, __int128>(tag);
-      test_mixed<Real, unsigned __int128>(tag);
+      test_mixed<Real, boost::int128_type>(tag);
+      test_mixed<Real, boost::uint128_type>(tag);
    }
 #endif
    test_mixed<Real, float>(tag);

@@ -22,14 +22,25 @@
 
 #define BOOST_TEST_MODULE core
 
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include <stdlib.h>
 #include <chrono>
 #include <deque>
 #include <random>
+#if __has_include(<ranges>)
+#include <ranges>
+#endif
+#if __has_include(<version>)
+#include <version>
+#endif
+
 #include <seastar/core/circular_buffer.hh>
 
 using namespace seastar;
+
+#ifdef __cpp_lib_ranges
+static_assert(std::ranges::range<circular_buffer<int>>);
+#endif
 
 BOOST_AUTO_TEST_CASE(test_erasing) {
     circular_buffer<int> buf;

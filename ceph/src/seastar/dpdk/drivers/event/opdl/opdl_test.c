@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/queue.h>
@@ -19,7 +20,7 @@
 #include <rte_ethdev.h>
 #include <rte_cycles.h>
 #include <rte_eventdev.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_pause.h>
 
 #include "opdl_evdev.h"
@@ -256,7 +257,7 @@ ordered_basic(struct test *t)
 		ev.queue_id = t->qid[0];
 		ev.op = RTE_EVENT_OP_NEW;
 		ev.mbuf = mbufs[i];
-		mbufs[i]->seqn = MAGIC_SEQN + i;
+		*rte_event_pmd_selftest_seqn(mbufs[i]) = MAGIC_SEQN + i;
 
 		/* generate pkt and enqueue */
 		err = rte_event_enqueue_burst(evdev, t->port[rx_port], &ev, 1);
@@ -281,7 +282,7 @@ ordered_basic(struct test *t)
 			rte_event_dev_dump(evdev, stdout);
 			return -1;
 		}
-		seq = deq_ev[i].mbuf->seqn  - MAGIC_SEQN;
+		seq = *rte_event_pmd_selftest_seqn(deq_ev[i].mbuf)  - MAGIC_SEQN;
 
 		if (seq != (i-1)) {
 			PMD_DRV_LOG(ERR, " seq test failed ! eq is %d , "
@@ -396,7 +397,7 @@ atomic_basic(struct test *t)
 		ev.op = RTE_EVENT_OP_NEW;
 		ev.flow_id = 1;
 		ev.mbuf = mbufs[i];
-		mbufs[i]->seqn = MAGIC_SEQN + i;
+		*rte_event_pmd_selftest_seqn(mbufs[i]) = MAGIC_SEQN + i;
 
 		/* generate pkt and enqueue */
 		err = rte_event_enqueue_burst(evdev, t->port[rx_port], &ev, 1);
@@ -470,7 +471,7 @@ atomic_basic(struct test *t)
 	return 0;
 }
 static __rte_always_inline int
-check_qid_stats(uint32_t id[], int index)
+check_qid_stats(uint64_t id[], int index)
 {
 
 	if (index == 0) {
@@ -508,7 +509,7 @@ check_statistics(void)
 				0);
 		if (num_stats > 0) {
 
-			uint32_t id[num_stats];
+			uint64_t id[num_stats];
 			struct rte_event_dev_xstats_name names[num_stats];
 			uint64_t values[num_stats];
 
@@ -625,7 +626,7 @@ single_link_w_stats(struct test *t)
 		ev.queue_id = t->qid[0];
 		ev.op = RTE_EVENT_OP_NEW;
 		ev.mbuf = mbufs[i];
-		mbufs[i]->seqn = 1234 + i;
+		*rte_event_pmd_selftest_seqn(mbufs[i]) = 1234 + i;
 
 		/* generate pkt and enqueue */
 		err = rte_event_enqueue_burst(evdev, t->port[rx_port], &ev, 1);
@@ -695,9 +696,6 @@ single_link_w_stats(struct test *t)
 static int
 single_link(struct test *t)
 {
-	/* const uint8_t rx_port = 0; */
-	/* const uint8_t w1_port = 1; */
-	/* const uint8_t w3_port = 3; */
 	const uint8_t tx_port = 2;
 	int err;
 	struct rte_mbuf *mbufs[3];
@@ -867,7 +865,7 @@ qid_basic(struct test *t)
 	}
 
 
-	/* Start the devicea */
+	/* Start the device */
 	if (!err) {
 		if (rte_event_dev_start(evdev) < 0) {
 			PMD_DRV_LOG(ERR, "%s:%d: Error with start call\n",

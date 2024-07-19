@@ -19,45 +19,54 @@
  * Copyright (C) 2020 ScyllaDB
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#include <cassert>
+#include <exception>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+module seastar;
+#else
 #include <seastar/core/future.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/report_exception.hh>
 #include <seastar/util/backtrace.hh>
+#endif
 
 namespace seastar {
 
 // We can't test future_state_base directly because its private
 // destructor is protected.
-static_assert(std::is_nothrow_move_constructible<future_state<std::tuple<int>>>::value,
+static_assert(std::is_nothrow_move_constructible_v<future_state<std::tuple<int>>>,
               "future_state's move constructor must not throw");
 
 static_assert(sizeof(future_state<std::tuple<>>) <= 8, "future_state<std::tuple<>> is too large");
 static_assert(sizeof(future_state<std::tuple<long>>) <= 16, "future_state<std::tuple<long>> is too large");
 static_assert(future_state<std::tuple<>>::has_trivial_move_and_destroy, "future_state<std::tuple<>> not trivial");
-#if SEASTAR_API_LEVEL < 5
-static_assert(future_state<std::tuple<long>>::has_trivial_move_and_destroy, "future_state<std::tuple<long>> not trivial");
-#else
 static_assert(future_state<long>::has_trivial_move_and_destroy, "future_state<long> not trivial");
-#endif
 
 // We need to be able to move and copy std::exception_ptr in and out
 // of future/promise/continuations without that producing a new
 // exception.
-static_assert(std::is_nothrow_copy_constructible<std::exception_ptr>::value,
+static_assert(std::is_nothrow_copy_constructible_v<std::exception_ptr>,
     "std::exception_ptr's copy constructor must not throw");
-static_assert(std::is_nothrow_move_constructible<std::exception_ptr>::value,
+static_assert(std::is_nothrow_move_constructible_v<std::exception_ptr>,
     "std::exception_ptr's move constructor must not throw");
 
 namespace internal {
 
-static_assert(std::is_empty<uninitialized_wrapper<std::tuple<>>>::value, "This should still be empty");
+static_assert(std::is_empty_v<uninitialized_wrapper<std::tuple<>>>, "This should still be empty");
 
 void promise_base::move_it(promise_base&& x) noexcept {
     // Don't use std::exchange to make sure x's values are nulled even
     // if &x == this.
     _task = x._task;
     x._task = nullptr;
+#ifdef SEASTAR_DEBUG_PROMISE
+    _task_shard = x._task_shard;
+#endif
     _state = x._state;
     x._state = nullptr;
     _future = x._future;
@@ -105,9 +114,20 @@ void promise_base::set_to_current_exception() noexcept {
     set_exception(std::current_exception());
 }
 
+#ifdef SEASTAR_DEBUG_PROMISE
+
+void promise_base::assert_task_shard() const noexcept {
+    if (_task_shard >= 0 && static_cast<shard_id>(_task_shard) != this_shard_id()) {
+        on_fatal_internal_error(seastar_logger, format("Promise task was set on shard {} but made ready on shard {}", _task_shard, this_shard_id()));
+    }
+}
+
+#endif
+
 template <promise_base::urgent Urgent>
 void promise_base::make_ready() noexcept {
     if (_task) {
+        assert_task_shard();
         if (Urgent == urgent::yes) {
             ::seastar::schedule_urgent(std::exchange(_task, nullptr));
         } else {
@@ -121,7 +141,7 @@ template void promise_base::make_ready<promise_base::urgent::yes>() noexcept;
 }
 
 template
-future<> current_exception_as_future() noexcept;
+future<void> current_exception_as_future() noexcept;
 
 /**
  * engine_exit() exits the reactor. It should be given a pointer to the
@@ -218,7 +238,7 @@ void report_failed_future(future_state_base::any&& state) noexcept {
     report_failed_future(std::move(state).take_exception());
 }
 
-void with_allow_abandoned_failed_futures(unsigned count, noncopyable_function<void ()> func) {
+void reactor::test::with_allow_abandoned_failed_futures(unsigned count, noncopyable_function<void ()> func) {
     auto before = engine()._abandoned_failed_futures;
     auto old_level = seastar_logger.level();
     seastar_logger.set_level(log_level::error);
@@ -251,14 +271,14 @@ void internal::future_base::do_wait() noexcept {
     assert(thread);
     thread_wake_task wake_task{thread};
     wake_task.make_backtrace();
-    _promise->_task = &wake_task;
+    _promise->set_task(&wake_task);
     thread_impl::switch_out(thread);
 }
 
 #ifdef SEASTAR_COROUTINES_ENABLED
 void internal::future_base::set_coroutine(task& coroutine) noexcept {
     assert(_promise);
-    _promise->_task = &coroutine;
+    _promise->set_task(&coroutine);
 }
 #endif
 

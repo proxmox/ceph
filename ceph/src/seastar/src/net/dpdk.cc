@@ -20,31 +20,14 @@
  */
 #ifdef SEASTAR_HAVE_DPDK
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
 #include <cinttypes>
-#include <seastar/core/posix.hh>
-#include "core/vla.hh"
-#include <seastar/core/reactor.hh>
-#include <seastar/net/virtio-interface.hh>
-#include <seastar/core/stream.hh>
-#include <seastar/core/circular_buffer.hh>
-#include <seastar/core/align.hh>
-#include <seastar/core/sstring.hh>
-#include <seastar/core/memory.hh>
-#include <seastar/core/metrics.hh>
-#include <seastar/util/function_input_iterator.hh>
-#include <seastar/util/transform_iterator.hh>
 #include <atomic>
 #include <vector>
 #include <queue>
-#include <seastar/util/std-compat.hh>
-#include <boost/preprocessor.hpp>
-#include <seastar/net/ip.hh>
-#include <seastar/net/const.hh>
-#include <seastar/core/dpdk_rte.hh>
-#include <seastar/net/dpdk.hh>
-#include <seastar/net/toeplitz.hh>
-#include <seastar/net/native-stack.hh>
-
 #include <getopt.h>
 #include <malloc.h>
 
@@ -57,6 +40,34 @@
 #include <rte_cycles.h>
 #include <rte_memzone.h>
 #include <rte_vfio.h>
+
+#include <boost/preprocessor.hpp>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/core/posix.hh>
+#include <seastar/core/reactor.hh>
+#include <seastar/net/virtio-interface.hh>
+#include <seastar/core/stream.hh>
+#include <seastar/core/circular_buffer.hh>
+#include <seastar/core/align.hh>
+#include <seastar/core/sstring.hh>
+#include <seastar/core/memory.hh>
+#include <seastar/core/metrics.hh>
+#include <seastar/core/internal/poll.hh>
+#include <seastar/core/units.hh>
+#include <seastar/util/function_input_iterator.hh>
+#include <seastar/util/transform_iterator.hh>
+#include <seastar/util/std-compat.hh>
+#include <seastar/net/ip.hh>
+#include <seastar/net/const.hh>
+#include <seastar/core/dpdk_rte.hh>
+#include <seastar/net/dpdk.hh>
+#include <seastar/net/toeplitz.hh>
+#include <seastar/net/native-stack.hh>
+#include "core/vla.hh"
+#endif
 
 #if RTE_VERSION <= RTE_VERSION_NUM(2,0,0,16)
 
@@ -469,7 +480,7 @@ public:
     }
 
     ethernet_address hw_address() override {
-        struct ether_addr mac;
+        struct rte_ether_addr mac;
         rte_eth_macaddr_get(_port_idx, &mac);
 
         return mac.addr_bytes;
@@ -532,7 +543,7 @@ class dpdk_qp : public net::qp {
          * @return TRUE if a packet should be linearized.
          */
         static bool i40e_should_linearize(rte_mbuf *head) {
-            bool is_tso = head->ol_flags & PKT_TX_TCP_SEG;
+            bool is_tso = head->ol_flags & RTE_MBUF_F_TX_TCP_SEG;
 
             // For a non-TSO case: number of fragments should not exceed 8
             if (!is_tso){
@@ -618,30 +629,30 @@ class dpdk_qp : public net::qp {
          */
         static void set_cluster_offload_info(const packet& p, const dpdk_qp& qp, rte_mbuf* head) {
             // Handle TCP checksum offload
-            auto oi = p.offload_info();
+            auto oi = p.get_offload_info();
             if (oi.needs_ip_csum) {
-                head->ol_flags |= PKT_TX_IP_CKSUM;
+                head->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
                 // TODO: Take a VLAN header into an account here
-                head->l2_len = sizeof(struct ether_hdr);
+                head->l2_len = sizeof(struct rte_ether_hdr);
                 head->l3_len = oi.ip_hdr_len;
             }
             if (qp.port().hw_features().tx_csum_l4_offload) {
                 if (oi.protocol == ip_protocol_num::tcp) {
-                    head->ol_flags |= PKT_TX_TCP_CKSUM;
+                    head->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
                     // TODO: Take a VLAN header into an account here
-                    head->l2_len = sizeof(struct ether_hdr);
+                    head->l2_len = sizeof(struct rte_ether_hdr);
                     head->l3_len = oi.ip_hdr_len;
 
                     if (oi.tso_seg_size) {
                         assert(oi.needs_ip_csum);
-                        head->ol_flags |= PKT_TX_TCP_SEG;
+                        head->ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
                         head->l4_len = oi.tcp_hdr_len;
                         head->tso_segsz = oi.tso_seg_size;
                     }
                 } else if (oi.protocol == ip_protocol_num::udp) {
-                    head->ol_flags |= PKT_TX_UDP_CKSUM;
+                    head->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
                     // TODO: Take a VLAN header into an account here
-                    head->l2_len = sizeof(struct ether_hdr);
+                    head->l2_len = sizeof(struct rte_ether_hdr);
                     head->l3_len = oi.ip_hdr_len;
                 }
             }
@@ -941,7 +952,7 @@ build_mbuf_cluster:
          */
         static size_t set_one_data_buf(
             dpdk_qp& qp, rte_mbuf*& m, char* va, size_t buf_len) {
-            static constexpr size_t max_frag_len = 15 * 1024; // 15K
+            static constexpr size_t max_frag_len = 15_KiB;
 
             //
             // Currently we break a buffer on a 15K boundary because 82599
@@ -1413,11 +1424,11 @@ private:
     std::vector<fragment> _frags;
     std::vector<char*> _bufs;
     size_t _num_rx_free_segs = 0;
-    reactor::poller _rx_gc_poller;
+    internal::poller _rx_gc_poller;
     std::unique_ptr<void, free_deleter> _rx_xmem;
     tx_buf_factory _tx_buf_factory;
     std::optional<reactor::poller> _rx_poller;
-    reactor::poller _tx_gc_poller;
+    internal::poller _tx_gc_poller;
     std::vector<rte_mbuf*> _tx_burst;
     uint16_t _tx_burst_idx = 0;
     static constexpr phys_addr_t page_mask = ~(memory::page_size - 1);
@@ -1468,20 +1479,20 @@ int dpdk_device::init_port_start()
     // We want to support all available offload features
     // TODO: below features are implemented in 17.05, should support new ones
     const uint64_t tx_offloads_wanted =
-        DEV_TX_OFFLOAD_VLAN_INSERT      |
-        DEV_TX_OFFLOAD_IPV4_CKSUM       |
-        DEV_TX_OFFLOAD_UDP_CKSUM        |
-        DEV_TX_OFFLOAD_TCP_CKSUM        |
-        DEV_TX_OFFLOAD_SCTP_CKSUM       |
-        DEV_TX_OFFLOAD_TCP_TSO          |
-        DEV_TX_OFFLOAD_UDP_TSO          |
-        DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM |
-        DEV_TX_OFFLOAD_QINQ_INSERT      |
-        DEV_TX_OFFLOAD_VXLAN_TNL_TSO    |
-        DEV_TX_OFFLOAD_GRE_TNL_TSO      |
-        DEV_TX_OFFLOAD_IPIP_TNL_TSO     |
-        DEV_TX_OFFLOAD_GENEVE_TNL_TSO   |
-        DEV_TX_OFFLOAD_MACSEC_INSERT;
+        RTE_ETH_TX_OFFLOAD_VLAN_INSERT      |
+        RTE_ETH_TX_OFFLOAD_IPV4_CKSUM       |
+        RTE_ETH_TX_OFFLOAD_UDP_CKSUM        |
+        RTE_ETH_TX_OFFLOAD_TCP_CKSUM        |
+        RTE_ETH_TX_OFFLOAD_SCTP_CKSUM       |
+        RTE_ETH_TX_OFFLOAD_TCP_TSO          |
+        RTE_ETH_TX_OFFLOAD_UDP_TSO          |
+        RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+        RTE_ETH_TX_OFFLOAD_QINQ_INSERT      |
+        RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO    |
+        RTE_ETH_TX_OFFLOAD_GRE_TNL_TSO      |
+        RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO     |
+        RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO   |
+        RTE_ETH_TX_OFFLOAD_MACSEC_INSERT;
 
     _dev_info.default_txconf.offloads =
         _dev_info.tx_offload_capa & tx_offloads_wanted;
@@ -1518,7 +1529,7 @@ int dpdk_device::init_port_start()
             _dev_info.hash_key_size = 40;
         }
 
-        port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
         /* enable all supported rss offloads */
         port_conf.rx_adv_conf.rss_conf.rss_hf = _dev_info.flow_type_rss_offloads;
         if (_dev_info.hash_key_size) {
@@ -1526,7 +1537,7 @@ int dpdk_device::init_port_start()
             port_conf.rx_adv_conf.rss_conf.rss_key_len = _dev_info.hash_key_size;
         }
     } else {
-        port_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
     }
 
     if (_num_queues > 1) {
@@ -1547,15 +1558,15 @@ int dpdk_device::init_port_start()
     }
 
     // Set Rx VLAN stripping
-    if (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
-        port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
+    if (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_VLAN_STRIP) {
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
     }
 
 #ifdef RTE_ETHDEV_HAS_LRO_SUPPORT
     // Enable LRO
-    if (_use_lro && (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO)) {
+    if (_use_lro && (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_LRO)) {
         printf("LRO is on\n");
-        port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TCP_LRO;
         _hw_features.rx_lro = true;
     } else
 #endif
@@ -1565,36 +1576,36 @@ int dpdk_device::init_port_start()
     // all together. If this assumption breaks we need to rework the below logic
     // by splitting the csum offload feature bit into separate bits for IPv4,
     // TCP and UDP.
-    assert(((_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
-            (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
-            (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) ||
-           (!(_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
-            !(_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
-            !(_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)));
+    assert(((_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+            (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+            (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) ||
+           (!(_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+            !(_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+            !(_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)));
 
     // Set Rx checksum checking
-    if (  (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
-          (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
-          (_dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
+    if (  (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+          (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+          (_dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM)) {
         printf("RX checksum offload supported\n");
-        port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
         _hw_features.rx_csum_offload = 1;
     }
 
-    if ((_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
+    if ((_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
         printf("TX ip checksum offload supported\n");
         _hw_features.tx_csum_ip_offload = 1;
     }
 
     // TSO is supported starting from DPDK v1.8
-    if (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
+    if (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
         printf("TSO is supported\n");
         _hw_features.tx_tso = 1;
     }
 
     // There is no UFO support in the PMDs yet.
 #if 0
-    if (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_TSO) {
+    if (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_TSO) {
         printf("UFO is supported\n");
         _hw_features.tx_ufo = 1;
     }
@@ -1604,13 +1615,13 @@ int dpdk_device::init_port_start()
     // or not set all together. If this assumption breaks we need to rework the
     // below logic by splitting the csum offload feature bit into separate bits
     // for TCP and UDP.
-    assert(((_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
-            (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) ||
-           (!(_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
-            !(_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)));
+    assert(((_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+            (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) ||
+           (!(_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+            !(_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)));
 
-    if (  (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
-          (_dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
+    if (  (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
+          (_dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) {
         printf("TX TCP&UDP checksum offload supported\n");
         _hw_features.tx_csum_l4_offload = 1;
     }
@@ -1650,9 +1661,9 @@ void dpdk_device::set_hw_flow_control()
     }
 
     if (_enable_fc) {
-        fc_conf.mode = RTE_FC_FULL;
+        fc_conf.mode = RTE_ETH_FC_FULL;
     } else {
-        fc_conf.mode = RTE_FC_NONE;
+        fc_conf.mode = RTE_ETH_FC_NONE;
     }
 
     ret = rte_eth_dev_flow_ctrl_set(_port_idx, &fc_conf);
@@ -1717,27 +1728,9 @@ void dpdk_device::init_port_fini()
     });
 
     // TODO: replace deprecated filter api with generic flow api
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     if (_num_queues > 1) {
-        if (!rte_eth_dev_filter_supported(_port_idx, RTE_ETH_FILTER_HASH)) {
-            printf("Port %d: HASH FILTER configuration is supported\n", _port_idx);
-
-            // Setup HW touse the TOEPLITZ hash function as an RSS hash function
-            struct rte_eth_hash_filter_info info = {};
-
-            info.info_type = RTE_ETH_HASH_FILTER_GLOBAL_CONFIG;
-            info.info.global_conf.hash_func = RTE_ETH_HASH_FUNCTION_TOEPLITZ;
-
-            if (rte_eth_dev_filter_ctrl(_port_idx, RTE_ETH_FILTER_HASH,
-                                        RTE_ETH_FILTER_SET, &info) < 0) {
-                rte_exit(EXIT_FAILURE, "Cannot set hash function on a port %d\n", _port_idx);
-            }
-        }
-
         set_rss_table();
     }
-    #pragma GCC diagnostic pop
 
     // Wait for a link
     check_port_link_status();
@@ -1877,7 +1870,8 @@ bool dpdk_qp<HugetlbfsMemBackend>::map_dma()
     auto m = memory::get_memory_layout();
     rte_iova_t iova = rte_mem_virt2iova((const void*)m.start);
 
-    return rte_vfio_dma_map(m.start, iova, m.end - m.start) == 0;
+    return rte_vfio_container_dma_map(RTE_VFIO_DEFAULT_CONTAINER_FD,
+                                      m.start, iova, m.end - m.start) == 0;
 }
 
 void dpdk_device::check_port_link_status()
@@ -1898,7 +1892,7 @@ void dpdk_device::check_port_link_status()
             std::cout <<
                 "done\nPort " << static_cast<unsigned>(_port_idx) <<
                 " Link Up - speed " << link.link_speed <<
-                " Mbps - " << ((link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
+                " Mbps - " << ((link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX) ?
                           ("full-duplex") : ("half-duplex\n")) <<
                 std::endl;
             _link_ready_promise.set_value();
@@ -2163,14 +2157,14 @@ void dpdk_qp<HugetlbfsMemBackend>::process_packets(
         bytes    += m->pkt_len;
 
         // Set stripped VLAN value if available
-        if ((m->ol_flags & PKT_RX_VLAN_STRIPPED) &&
-            (m->ol_flags & PKT_RX_VLAN)) {
+        if ((m->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED) &&
+            (m->ol_flags & RTE_MBUF_F_RX_VLAN)) {
 
             oi.vlan_tci = m->vlan_tci;
         }
 
         if (_dev->hw_features().rx_csum_offload) {
-            if (m->ol_flags & (PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD)) {
+            if (m->ol_flags & (RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD)) {
                 // Packet with bad checksum, just drop it.
                 _stats.rx.bad.inc_csum_err();
                 continue;
@@ -2181,7 +2175,7 @@ void dpdk_qp<HugetlbfsMemBackend>::process_packets(
         }
 
         (*p).set_offload_info(oi);
-        if (m->ol_flags & PKT_RX_RSS_HASH) {
+        if (m->ol_flags & RTE_MBUF_F_RX_RSS_HASH) {
             (*p).set_rss_hash(m->hash.rss);
         }
 
@@ -2220,7 +2214,7 @@ void dpdk_device::set_rss_table()
         return;
 
     int reta_conf_size =
-        std::max(1, _dev_info.reta_size / RTE_RETA_GROUP_SIZE);
+        std::max(1, _dev_info.reta_size / RTE_ETH_RETA_GROUP_SIZE);
     std::vector<rte_eth_rss_reta_entry64> reta_conf(reta_conf_size);
 
     // Configure the HW indirection table
@@ -2301,7 +2295,17 @@ std::unique_ptr<net::device> create_dpdk_net_device(
 }
 
 #else
+
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/net/dpdk.hh>
+#endif
+
 #endif // SEASTAR_HAVE_DPDK
 
 namespace seastar::net {

@@ -7,6 +7,7 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/tokenizer.hpp>
+#include "ceph_ver.h"
 #include "common/Formatter.h"
 #include "common/HTMLFormatter.h"
 #include "common/utf8.h"
@@ -221,13 +222,13 @@ void rgw_rest_init(CephContext *cct, const rgw::sal::ZoneGroup& zone_group)
   hostnames_set.erase(""); // filter out empty hostnames
   ldout(cct, 20) << "RGW hostnames: " << hostnames_set << dendl;
   /* TODO: We should have a sanity check that no hostname matches the end of
-   * any other hostname, otherwise we will get ambigious results from
+   * any other hostname, otherwise we will get ambiguous results from
    * rgw_find_host_in_domains.
    * Eg: 
    * Hostnames: [A, B.A]
    * Inputs: [Z.A, X.B.A]
    * Z.A clearly splits to subdomain=Z, domain=Z
-   * X.B.A ambigously splits to both {X, B.A} and {X.B, A}
+   * X.B.A ambiguously splits to both {X, B.A} and {X.B, A}
    */
 
   zone_group.get_s3website_hostnames(names);
@@ -287,7 +288,9 @@ static bool rgw_find_host_in_domains(const string& host, string *domain, string 
 static void dump_status(req_state *s, int status,
 			const char *status_name)
 {
-  s->formatter->set_status(status, status_name);
+  if (s->formatter) {
+    s->formatter->set_status(status, status_name);
+  }
   try {
     RESTFUL_IO(s)->send_status(status, status_name);
   } catch (rgw::io::Exception& e) {
@@ -495,15 +498,24 @@ void dump_time(req_state *s, const char *name, real_time t)
   s->formatter->dump_string(name, buf);
 }
 
-void dump_owner(req_state *s, const rgw_user& id, const string& name,
+void dump_owner(req_state *s, const std::string& id, const string& name,
 		const char *section)
 {
   if (!section)
     section = "Owner";
   s->formatter->open_object_section(section);
-  s->formatter->dump_string("ID", id.to_str());
-  s->formatter->dump_string("DisplayName", name);
+  s->formatter->dump_string("ID", id);
+  if (!name.empty()) {
+    s->formatter->dump_string("DisplayName", name);
+  }
   s->formatter->close_section();
+}
+
+void dump_owner(req_state *s, const rgw_owner& owner, const string& name,
+		const char *section)
+{
+  std::string id = to_string(owner);
+  dump_owner(s, id, name, section);
 }
 
 void dump_access_control(req_state *s, const char *origin,
@@ -578,7 +590,7 @@ void end_header(req_state* s, RGWOp* op, const char *content_type,
   dump_trans_id(s);
 
   if ((!s->is_err()) && s->bucket &&
-      (s->bucket->get_info().owner != s->user->get_id()) &&
+      (!s->auth.identity->is_owner_of(s->bucket->get_info().owner)) &&
       (s->bucket->get_info().requester_pays)) {
     dump_header(s, "x-amz-request-charged", "requester");
   }
@@ -593,8 +605,8 @@ void end_header(req_state* s, RGWOp* op, const char *content_type,
 
   /* do not send content type if content length is zero
      and the content type was not set by the user */
-  if (force_content_type ||
-      (!content_type &&  s->formatter->get_len()  != 0) || s->is_err()){
+  if (force_content_type || s->is_err() ||
+      (!content_type && s->formatter && s->formatter->get_len() != 0)) {
     ctype = to_mime_type(s->format);
     if (s->prot_flags & RGW_REST_SWIFT)
       ctype.append("; charset=utf-8");
@@ -603,7 +615,8 @@ void end_header(req_state* s, RGWOp* op, const char *content_type,
   if (!force_no_error && s->is_err()) {
     dump_start(s);
     dump(s);
-    dump_content_length(s, s->formatter->get_len());
+    s->formatter->output_footer();
+    dump_content_length(s, s->formatter ? s->formatter->get_len() : 0);
   } else {
     if (proposed_content_length == CHUNKED_TRANSFER_ENCODING) {
       dump_chunked_encoding(s);
@@ -615,7 +628,13 @@ void end_header(req_state* s, RGWOp* op, const char *content_type,
   if (content_type) {
     dump_header(s, "Content-Type", content_type);
   }
-  dump_header_if_nonempty(s, "Server", g_conf()->rgw_service_provider_name);
+
+  std::string srv = g_conf().get_val<std::string>("rgw_service_provider_name");
+  if (!srv.empty()) {
+    dump_header(s, "Server", srv);
+  } else {
+    dump_header(s, "Server", "Ceph Object Gateway (" CEPH_RELEASE_NAME ")");
+  }
 
   try {
     RESTFUL_IO(s)->complete_header();
@@ -625,7 +644,9 @@ void end_header(req_state* s, RGWOp* op, const char *content_type,
   }
 
   ACCOUNTING_IO(s)->set_account(true);
-  rgw_flush_formatter_and_reset(s, s->formatter);
+  if (s->formatter) {
+    rgw_flush_formatter_and_reset(s, s->formatter);
+  }
 }
 
 static void build_redirect_url(req_state *s, const string& redirect_base, string *redirect_url)
@@ -634,7 +655,7 @@ static void build_redirect_url(req_state *s, const string& redirect_base, string
   
   dest_uri = redirect_base;
   /*
-   * reqest_uri is always start with slash, so we need to remove
+   * request_uri is always start with slash, so we need to remove
    * the unnecessary slash at the end of dest_uri.
    */
   if (dest_uri[dest_uri.size() - 1] == '/') {
@@ -658,13 +679,13 @@ void abort_early(req_state *s, RGWOp* op, int err_no,
   if (op != NULL) {
     int new_err_no;
     new_err_no = op->error_handler(err_no, &error_content, y);
-    ldpp_dout(s, 1) << "op->ERRORHANDLER: err_no=" << err_no
+    ldpp_dout(s, 20) << "op->ERRORHANDLER: err_no=" << err_no
 		      << " new_err_no=" << new_err_no << dendl;
     err_no = new_err_no;
   } else if (handler != NULL) {
     int new_err_no;
     new_err_no = handler->error_handler(err_no, &error_content, y);
-    ldpp_dout(s, 1) << "handler->ERRORHANDLER: err_no=" << err_no
+    ldpp_dout(s, 20) << "handler->ERRORHANDLER: err_no=" << err_no
 		      << " new_err_no=" << new_err_no << dendl;
     err_no = new_err_no;
   }
@@ -754,11 +775,11 @@ int dump_body(req_state* const s,
               const char* const buf,
               const size_t len)
 {
-  bool healthchk = false;
+  bool healthcheck = false;
   // we dont want to limit health checks
   if(s->op_type == RGW_OP_GET_HEALTH_CHECK)
-    healthchk = true;
-  if(len > 0 && !healthchk) {
+    healthcheck = true;
+  if(len > 0 && !healthcheck) {
     const char *method = s->info.method;
     s->ratelimit_data->decrease_bytes(method, s->ratelimit_user_name, len, &s->user_ratelimit);
     if(!rgw::sal::Bucket::empty(s->bucket.get()))
@@ -791,11 +812,11 @@ int recv_body(req_state* const s,
   } catch (rgw::io::Exception& e) {
     return -e.code().value();
   }
-  bool healthchk = false;
+  bool healthcheck = false;
   // we dont want to limit health checks
   if(s->op_type ==  RGW_OP_GET_HEALTH_CHECK)
-    healthchk = true;
-  if(len > 0 && !healthchk) {
+    healthcheck = true;
+  if(len > 0 && !healthcheck) {
     const char *method = s->info.method;
     s->ratelimit_data->decrease_bytes(method, s->ratelimit_user_name, len, &s->user_ratelimit);
     if(!rgw::sal::Bucket::empty(s->bucket.get()))
@@ -820,9 +841,6 @@ int RGWGetObj_ObjStore::get_params(optional_yield y)
     get_data &= (!rgwx_stat);
   }
 
-  if (s->info.args.exists(GET_TORRENT)) {
-    return torrent.get_params();
-  }
   return 0;
 }
 
@@ -1033,19 +1051,6 @@ int RGWPutObj_ObjStore::verify_params()
 
 int RGWPutObj_ObjStore::get_params(optional_yield y)
 {
-  /* start gettorrent */
-  if (s->cct->_conf->rgw_torrent_flag)
-  {
-    int ret = 0;
-    ret = torrent.get_params();
-    ldpp_dout(s, 5) << "NOTICE:  open produce torrent file " << dendl;
-    if (ret < 0)
-    {
-      return ret;
-    }
-    torrent.set_info_name(s->object->get_name());
-  }
-  /* end gettorrent */
   supplied_md5_b64 = s->info.env->get("HTTP_CONTENT_MD5");
 
   return 0;
@@ -1084,7 +1089,7 @@ int RGWPutObj_ObjStore::get_data(bufferlist& bl)
   }
 
   return len;
-}
+} /* RGWPutObj_ObjStore::get_data(bufferlist& bl) */
 
 
 /*
@@ -1869,20 +1874,6 @@ static http_op op_from_method(const char *method)
 int RGWHandler_REST::init_permissions(RGWOp* op, optional_yield y)
 {
   if (op->get_type() == RGW_OP_CREATE_BUCKET) {
-    // We don't need user policies in case of STS token returned by AssumeRole, hence the check for user type
-    if (! s->user->get_id().empty() && s->auth.identity->get_identity_type() != TYPE_ROLE) {
-      try {
-        if (auto ret = s->user->read_attrs(s, y); ! ret) {
-          auto user_policies = get_iam_user_policy_from_attr(s->cct, s->user->get_attrs(), s->user->get_tenant());
-          s->iam_user_policies.insert(s->iam_user_policies.end(),
-                                      std::make_move_iterator(user_policies.begin()),
-                                      std::make_move_iterator(user_policies.end()));
-
-        }
-      } catch (const std::exception& e) {
-        ldpp_dout(op, -1) << "Error reading IAM User Policy: " << e.what() << dendl;
-      }
-    }
     rgw_build_iam_environment(driver, s);
     return 0;
   }
@@ -2012,23 +2003,6 @@ RGWRESTMgr::~RGWRESTMgr()
     delete iter->second;
   }
   delete default_mgr;
-}
-
-int64_t parse_content_length(const char *content_length)
-{
-  int64_t len = -1;
-
-  if (*content_length == '\0') {
-    len = 0;
-  } else {
-    string err;
-    len = strict_strtoll(content_length, 10, &err);
-    if (!err.empty()) {
-      len = -1;
-    }
-  }
-
-  return len;
 }
 
 int RGWREST::preprocess(req_state *s, rgw::io::BasicClient* cio)
@@ -2287,8 +2261,6 @@ int RGWREST::preprocess(req_state *s, rgw::io::BasicClient* cio)
   }
   s->op = op_from_method(info.method);
 
-  info.init_meta_info(s, &s->has_bad_meta);
-
   return 0;
 }
 
@@ -2330,6 +2302,8 @@ RGWHandler_REST* RGWREST::get_handler(
     m->put_handler(handler);
     return nullptr;
   }
+
+  s->info.init_meta_info(s, &s->has_bad_meta, s->prot_flags);
 
   return handler;
 } /* get stream handler */

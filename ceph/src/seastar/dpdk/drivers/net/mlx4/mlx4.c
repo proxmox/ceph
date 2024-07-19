@@ -8,8 +8,6 @@
  * mlx4 driver initialization.
  */
 
-#include <assert.h>
-#include <dlfcn.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stddef.h>
@@ -19,6 +17,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifdef RTE_IBVERBS_LINK_DLOPEN
+#include <dlfcn.h>
+#endif
 
 /* Verbs headers do not support -pedantic. */
 #ifdef PEDANTIC
@@ -30,11 +31,10 @@
 #endif
 
 #include <rte_common.h>
-#include <rte_config.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_errno.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_ether.h>
 #include <rte_flow.h>
 #include <rte_interrupts.h>
@@ -48,6 +48,10 @@
 #include "mlx4_mr.h"
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
+
+#ifdef MLX4_GLUE
+const struct mlx4_glue *mlx4_glue;
+#endif
 
 static const char *MZ_MLX4_PMD_SHARED_DATA = "mlx4_pmd_shared_data";
 
@@ -77,7 +81,7 @@ const char *pmd_mlx4_init_params[] = {
 	NULL,
 };
 
-static void mlx4_dev_stop(struct rte_eth_dev *dev);
+static int mlx4_dev_stop(struct rte_eth_dev *dev);
 
 /**
  * Initialize shared data between primary and secondary process.
@@ -159,7 +163,7 @@ mlx4_alloc_verbs_buf(size_t size, void *data)
 
 		socket = rxq->socket;
 	}
-	assert(data != NULL);
+	MLX4_ASSERT(data != NULL);
 	ret = rte_malloc_socket(__func__, size, alignment, socket);
 	if (!ret && size)
 		rte_errno = ENOMEM;
@@ -177,7 +181,7 @@ mlx4_alloc_verbs_buf(size_t size, void *data)
 static void
 mlx4_free_verbs_buf(void *ptr, void *data __rte_unused)
 {
-	assert(data != NULL);
+	MLX4_ASSERT(data != NULL);
 	rte_free(ptr);
 }
 #endif
@@ -191,25 +195,26 @@ mlx4_free_verbs_buf(void *ptr, void *data __rte_unused)
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-static int
+int
 mlx4_proc_priv_init(struct rte_eth_dev *dev)
 {
 	struct mlx4_proc_priv *ppriv;
 	size_t ppriv_size;
 
+	mlx4_proc_priv_uninit(dev);
 	/*
 	 * UAR register table follows the process private structure. BlueFlame
 	 * registers for Tx queues are stored in the table.
 	 */
 	ppriv_size = sizeof(struct mlx4_proc_priv) +
 		     dev->data->nb_tx_queues * sizeof(void *);
-	ppriv = rte_malloc_socket("mlx4_proc_priv", ppriv_size,
-				  RTE_CACHE_LINE_SIZE, dev->device->numa_node);
+	ppriv = rte_zmalloc_socket("mlx4_proc_priv", ppriv_size,
+				   RTE_CACHE_LINE_SIZE, dev->device->numa_node);
 	if (!ppriv) {
 		rte_errno = ENOMEM;
 		return -rte_errno;
 	}
-	ppriv->uar_table_sz = ppriv_size;
+	ppriv->uar_table_sz = dev->data->nb_tx_queues;
 	dev->process_private = ppriv;
 	return 0;
 }
@@ -220,7 +225,7 @@ mlx4_proc_priv_init(struct rte_eth_dev *dev)
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+void
 mlx4_proc_priv_uninit(struct rte_eth_dev *dev)
 {
 	if (!dev->process_private)
@@ -299,7 +304,7 @@ mlx4_dev_start(struct rte_eth_dev *dev)
 		      (void *)dev, strerror(-ret));
 		goto err;
 	}
-#ifndef NDEBUG
+#ifdef RTE_LIBRTE_MLX4_DEBUG
 	mlx4_mr_dump_dev(dev);
 #endif
 	ret = mlx4_rxq_intr_enable(priv);
@@ -336,23 +341,25 @@ err:
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 mlx4_dev_stop(struct rte_eth_dev *dev)
 {
 	struct mlx4_priv *priv = dev->data->dev_private;
 
 	if (!priv->started)
-		return;
+		return 0;
 	DEBUG("%p: detaching flows from all RX queues", (void *)dev);
 	priv->started = 0;
-	dev->tx_pkt_burst = mlx4_tx_burst_removed;
-	dev->rx_pkt_burst = mlx4_rx_burst_removed;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
 	rte_wmb();
 	/* Disable datapath on secondary process. */
 	mlx4_mp_req_stop_rxtx(dev);
 	mlx4_flow_sync(priv, NULL);
 	mlx4_rxq_intr_disable(priv);
 	mlx4_rss_deinit(priv);
+
+	return 0;
 }
 
 /**
@@ -363,36 +370,43 @@ mlx4_dev_stop(struct rte_eth_dev *dev)
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 mlx4_dev_close(struct rte_eth_dev *dev)
 {
 	struct mlx4_priv *priv = dev->data->dev_private;
 	unsigned int i;
 
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		rte_eth_dev_release_port(dev);
+		return 0;
+	}
 	DEBUG("%p: closing device \"%s\"",
 	      (void *)dev,
 	      ((priv->ctx != NULL) ? priv->ctx->device->name : ""));
-	dev->rx_pkt_burst = mlx4_rx_burst_removed;
-	dev->tx_pkt_burst = mlx4_tx_burst_removed;
+	dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
+	dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
 	rte_wmb();
 	/* Disable datapath on secondary process. */
 	mlx4_mp_req_stop_rxtx(dev);
 	mlx4_flow_clean(priv);
 	mlx4_rss_deinit(priv);
 	for (i = 0; i != dev->data->nb_rx_queues; ++i)
-		mlx4_rx_queue_release(dev->data->rx_queues[i]);
+		mlx4_rx_queue_release(dev, i);
 	for (i = 0; i != dev->data->nb_tx_queues; ++i)
-		mlx4_tx_queue_release(dev->data->tx_queues[i]);
+		mlx4_tx_queue_release(dev, i);
 	mlx4_proc_priv_uninit(dev);
 	mlx4_mr_release(dev);
 	if (priv->pd != NULL) {
-		assert(priv->ctx != NULL);
+		MLX4_ASSERT(priv->ctx != NULL);
 		claim_zero(mlx4_glue->dealloc_pd(priv->pd));
 		claim_zero(mlx4_glue->close_device(priv->ctx));
 	} else
-		assert(priv->ctx == NULL);
+		MLX4_ASSERT(priv->ctx == NULL);
 	mlx4_intr_uninstall(priv);
 	memset(priv, 0, sizeof(*priv));
+	/* mac_addrs must not be freed because part of dev_private */
+	dev->data->mac_addrs = NULL;
+	return 0;
 }
 
 static const struct eth_dev_ops mlx4_dev_ops = {
@@ -424,7 +438,7 @@ static const struct eth_dev_ops mlx4_dev_ops = {
 	.flow_ctrl_get = mlx4_flow_ctrl_get,
 	.flow_ctrl_set = mlx4_flow_ctrl_set,
 	.mtu_set = mlx4_mtu_set,
-	.filter_ctrl = mlx4_filter_ctrl,
+	.flow_ops_get = mlx4_flow_ops_get,
 	.rx_queue_intr_enable = mlx4_rx_intr_enable,
 	.rx_queue_intr_disable = mlx4_rx_intr_disable,
 	.is_removed = mlx4_is_removed,
@@ -482,7 +496,6 @@ mlx4_ibv_device_to_pci_addr(const struct ibv_device *device,
 			   &pci_addr->bus,
 			   &pci_addr->devid,
 			   &pci_addr->function) == 4) {
-			ret = 0;
 			break;
 		}
 	}
@@ -694,11 +707,12 @@ mlx4_init_once(void)
 {
 	struct mlx4_shared_data *sd;
 	struct mlx4_local_data *ld = &mlx4_local_data;
+	int ret = 0;
 
 	if (mlx4_init_shared_data())
 		return -rte_errno;
 	sd = mlx4_shared_data;
-	assert(sd);
+	MLX4_ASSERT(sd);
 	rte_spinlock_lock(&sd->lock);
 	switch (rte_eal_process_type()) {
 	case RTE_PROC_PRIMARY:
@@ -708,21 +722,26 @@ mlx4_init_once(void)
 		rte_rwlock_init(&sd->mem_event_rwlock);
 		rte_mem_event_callback_register("MLX4_MEM_EVENT_CB",
 						mlx4_mr_mem_event_cb, NULL);
-		mlx4_mp_init_primary();
-		sd->init_done = true;
+		ret = mlx4_mp_init_primary();
+		if (ret)
+			goto out;
+		sd->init_done = 1;
 		break;
 	case RTE_PROC_SECONDARY:
 		if (ld->init_done)
 			break;
-		mlx4_mp_init_secondary();
+		ret = mlx4_mp_init_secondary();
+		if (ret)
+			goto out;
 		++sd->secondary_cnt;
-		ld->init_done = true;
+		ld->init_done = 1;
 		break;
 	default:
 		break;
 	}
+out:
 	rte_spinlock_unlock(&sd->lock);
-	return 0;
+	return ret;
 }
 
 /**
@@ -748,12 +767,14 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	struct ibv_context *attr_ctx = NULL;
 	struct ibv_device_attr device_attr;
 	struct ibv_device_attr_ex device_attr_ex;
+	struct rte_eth_dev *prev_dev = NULL;
 	struct mlx4_conf conf = {
 		.ports.present = 0,
 		.mr_ext_memseg_en = 1,
 	};
 	unsigned int vf;
 	int i;
+	char ifname[IF_NAMESIZE];
 
 	(void)pci_drv;
 	err = mlx4_init_once();
@@ -762,16 +783,16 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		      strerror(rte_errno));
 		return -rte_errno;
 	}
-	assert(pci_drv == &mlx4_driver);
+	MLX4_ASSERT(pci_drv == &mlx4_driver);
 	list = mlx4_glue->get_device_list(&i);
 	if (list == NULL) {
 		rte_errno = errno;
-		assert(rte_errno);
+		MLX4_ASSERT(rte_errno);
 		if (rte_errno == ENOSYS)
 			ERROR("cannot list devices, is ib_uverbs loaded?");
 		return -rte_errno;
 	}
-	assert(i >= 0);
+	MLX4_ASSERT(i >= 0);
 	/*
 	 * For each listed device, check related sysfs entry against
 	 * the provided PCI ID.
@@ -808,7 +829,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			ERROR("cannot use device, are drivers up to date?");
 			return -rte_errno;
 		}
-		assert(err > 0);
+		MLX4_ASSERT(err > 0);
 		rte_errno = err;
 		return -rte_errno;
 	}
@@ -833,7 +854,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		err = ENODEV;
 		goto error;
 	}
-	assert(device_attr.max_sge >= MLX4_MAX_SGE);
+	MLX4_ASSERT(device_attr.max_sge >= MLX4_MAX_SGE);
 	for (i = 0; i < device_attr.phys_port_cnt; i++) {
 		uint32_t port = i + 1; /* ports are indexed from one */
 		struct ibv_context *ctx = NULL;
@@ -841,7 +862,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		struct ibv_pd *pd = NULL;
 		struct mlx4_priv *priv = NULL;
 		struct rte_eth_dev *eth_dev = NULL;
-		struct ether_addr mac;
+		struct rte_ether_addr mac;
 		char name[RTE_ETH_NAME_MAX_LEN];
 
 		/* If port is not enabled, skip. */
@@ -856,12 +877,14 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		snprintf(name, sizeof(name), "%s port %u",
 			 mlx4_glue->get_device_name(ibv_dev), port);
 		if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+			int fd;
+
 			eth_dev = rte_eth_dev_attach_secondary(name);
 			if (eth_dev == NULL) {
 				ERROR("can not attach rte ethdev");
 				rte_errno = ENOMEM;
 				err = rte_errno;
-				goto error;
+				goto err_secondary;
 			}
 			priv = eth_dev->data->dev_private;
 			if (!priv->verbs_alloc_ctx.enabled) {
@@ -870,24 +893,25 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 				      " from Verbs");
 				rte_errno = ENOTSUP;
 				err = rte_errno;
-				goto error;
+				goto err_secondary;
 			}
 			eth_dev->device = &pci_dev->device;
 			eth_dev->dev_ops = &mlx4_dev_sec_ops;
 			err = mlx4_proc_priv_init(eth_dev);
 			if (err)
-				goto error;
+				goto err_secondary;
 			/* Receive command fd from primary process. */
-			err = mlx4_mp_req_verbs_cmd_fd(eth_dev);
-			if (err < 0) {
+			fd = mlx4_mp_req_verbs_cmd_fd(eth_dev);
+			if (fd < 0) {
 				err = rte_errno;
-				goto error;
+				goto err_secondary;
 			}
 			/* Remap UAR for Tx queues. */
-			err = mlx4_tx_uar_init_secondary(eth_dev, err);
+			err = mlx4_tx_uar_init_secondary(eth_dev, fd);
+			close(fd);
 			if (err) {
 				err = rte_errno;
-				goto error;
+				goto err_secondary;
 			}
 			/*
 			 * Ethdev pointer is still required as input since
@@ -899,7 +923,14 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			claim_zero(mlx4_glue->close_device(ctx));
 			rte_eth_copy_pci_info(eth_dev, pci_dev);
 			rte_eth_dev_probing_finish(eth_dev);
+			prev_dev = eth_dev;
 			continue;
+err_secondary:
+			claim_zero(mlx4_glue->close_device(ctx));
+			rte_eth_dev_release_port(eth_dev);
+			if (prev_dev)
+				rte_eth_dev_release_port(prev_dev);
+			break;
 		}
 		/* Check port status. */
 		err = mlx4_glue->query_port(ctx, port, &port_attr);
@@ -945,7 +976,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		priv->device_attr = device_attr;
 		priv->port = port;
 		priv->pd = pd;
-		priv->mtu = ETHER_MTU;
+		priv->mtu = RTE_ETHER_MTU;
 		priv->vf = vf;
 		priv->hw_csum =	!!(device_attr.device_cap_flags &
 				   IBV_DEVICE_RAW_IP_CSUM);
@@ -986,24 +1017,19 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			      " (error: %s)", strerror(err));
 			goto port_error;
 		}
-		INFO("port %u MAC address is %02x:%02x:%02x:%02x:%02x:%02x",
-		     priv->port,
-		     mac.addr_bytes[0], mac.addr_bytes[1],
-		     mac.addr_bytes[2], mac.addr_bytes[3],
-		     mac.addr_bytes[4], mac.addr_bytes[5]);
+		INFO("port %u MAC address is " RTE_ETHER_ADDR_PRT_FMT,
+		     priv->port, RTE_ETHER_ADDR_BYTES(&mac));
 		/* Register MAC address. */
 		priv->mac[0] = mac;
-#ifndef NDEBUG
-		{
-			char ifname[IF_NAMESIZE];
 
-			if (mlx4_get_ifname(priv, &ifname) == 0)
-				DEBUG("port %u ifname is \"%s\"",
-				      priv->port, ifname);
-			else
-				DEBUG("port %u ifname is unknown", priv->port);
+		if (mlx4_get_ifname(priv, &ifname) == 0) {
+			DEBUG("port %u ifname is \"%s\"",
+			      priv->port, ifname);
+			priv->if_index = if_nametoindex(ifname);
+		} else {
+			DEBUG("port %u ifname is unknown", priv->port);
 		}
-#endif
+
 		/* Get actual MTU if possible. */
 		mlx4_mtu_get(priv, &priv->mtu);
 		DEBUG("port %u MTU is %u", priv->port, priv->mtu);
@@ -1017,11 +1043,21 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		eth_dev->data->mac_addrs = priv->mac;
 		eth_dev->device = &pci_dev->device;
 		rte_eth_copy_pci_info(eth_dev, pci_dev);
+		eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 		/* Initialize local interrupt handle for current port. */
-		priv->intr_handle = (struct rte_intr_handle){
-			.fd = -1,
-			.type = RTE_INTR_HANDLE_EXT,
-		};
+		priv->intr_handle =
+			rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
+		if (priv->intr_handle == NULL) {
+			RTE_LOG(ERR, EAL, "Fail to allocate intr_handle\n");
+			goto port_error;
+		}
+
+		if (rte_intr_fd_set(priv->intr_handle, -1))
+			goto port_error;
+
+		if (rte_intr_type_set(priv->intr_handle, RTE_INTR_HANDLE_EXT))
+			goto port_error;
+
 		/*
 		 * Override ethdev interrupt handle pointer with private
 		 * handle instead of that of the parent PCI device used by
@@ -1034,19 +1070,18 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		 * besides setting up eth_dev->intr_handle, the rest is
 		 * handled by rte_intr_rx_ctl().
 		 */
-		eth_dev->intr_handle = &priv->intr_handle;
+		eth_dev->intr_handle = priv->intr_handle;
 		priv->dev_data = eth_dev->data;
 		eth_dev->dev_ops = &mlx4_dev_ops;
 #ifdef HAVE_IBV_MLX4_BUF_ALLOCATORS
 		/* Hint libmlx4 to use PMD allocator for data plane resources */
-		struct mlx4dv_ctx_allocators alctr = {
-			.alloc = &mlx4_alloc_verbs_buf,
-			.free = &mlx4_free_verbs_buf,
-			.data = priv,
-		};
 		err = mlx4_glue->dv_set_context_attr
 			(ctx, MLX4DV_SET_CTX_ATTR_BUF_ALLOCATORS,
-			 (void *)((uintptr_t)&alctr));
+			 (void *)((uintptr_t)&(struct mlx4dv_ctx_allocators){
+				 .alloc = &mlx4_alloc_verbs_buf,
+				 .free = &mlx4_free_verbs_buf,
+				 .data = priv,
+			}));
 		if (err)
 			WARN("Verbs external allocator is not supported");
 		else
@@ -1077,8 +1112,11 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 				 priv, mem_event_cb);
 		rte_rwlock_write_unlock(&mlx4_shared_data->mem_event_rwlock);
 		rte_eth_dev_probing_finish(eth_dev);
+		prev_dev = eth_dev;
 		continue;
 port_error:
+		if (priv != NULL)
+			rte_intr_instance_free(priv->intr_handle);
 		rte_free(priv);
 		if (eth_dev != NULL)
 			eth_dev->data->dev_private = NULL;
@@ -1091,14 +1129,10 @@ port_error:
 			eth_dev->data->mac_addrs = NULL;
 			rte_eth_dev_release_port(eth_dev);
 		}
+		if (prev_dev)
+			mlx4_dev_close(prev_dev);
 		break;
 	}
-	/*
-	 * XXX if something went wrong in the loop above, there is a resource
-	 * leak (ctx, pd, priv, dpdk ethdev) but we can do nothing about it as
-	 * long as the dpdk does not provide a way to deallocate a ethdev and a
-	 * way to enumerate the registered ethdevs to free the previous ones.
-	 */
 error:
 	if (attr_ctx)
 		claim_zero(mlx4_glue->close_device(attr_ctx));
@@ -1107,6 +1141,36 @@ error:
 	if (err)
 		rte_errno = err;
 	return -err;
+}
+
+/**
+ * DPDK callback to remove a PCI device.
+ *
+ * This function removes all Ethernet devices belong to a given PCI device.
+ *
+ * @param[in] pci_dev
+ *   Pointer to the PCI device.
+ *
+ * @return
+ *   0 on success, the function cannot fail.
+ */
+static int
+mlx4_pci_remove(struct rte_pci_device *pci_dev)
+{
+	uint16_t port_id;
+	int ret = 0;
+
+	RTE_ETH_FOREACH_DEV_OF(port_id, &pci_dev->device) {
+		/*
+		 * mlx4_dev_close() is not registered to secondary process,
+		 * call the close function explicitly for secondary process.
+		 */
+		if (rte_eal_process_type() == RTE_PROC_SECONDARY)
+			ret |= mlx4_dev_close(&rte_eth_devices[port_id]);
+		else
+			ret |= rte_eth_dev_close(port_id);
+	}
+	return ret == 0 ? 0 : -EIO;
 }
 
 static const struct rte_pci_id mlx4_pci_id_map[] = {
@@ -1133,8 +1197,8 @@ static struct rte_pci_driver mlx4_driver = {
 	},
 	.id_table = mlx4_pci_id_map,
 	.probe = mlx4_pci_probe,
-	.drv_flags = RTE_PCI_DRV_INTR_LSC |
-		     RTE_PCI_DRV_INTR_RMV,
+	.remove = mlx4_pci_remove,
+	.drv_flags = RTE_PCI_DRV_INTR_LSC | RTE_PCI_DRV_INTR_RMV,
 };
 
 #ifdef RTE_IBVERBS_LINK_DLOPEN
@@ -1267,6 +1331,9 @@ glue_error:
 
 #endif
 
+/* Initialize driver log type. */
+RTE_LOG_REGISTER_DEFAULT(mlx4_logtype, NOTICE)
+
 /**
  * Driver initialization routine.
  */
@@ -1288,15 +1355,15 @@ RTE_INIT(rte_mlx4_pmd_init)
 #ifdef RTE_IBVERBS_LINK_DLOPEN
 	if (mlx4_glue_init())
 		return;
-	assert(mlx4_glue);
+	MLX4_ASSERT(mlx4_glue);
 #endif
-#ifndef NDEBUG
+#ifdef RTE_LIBRTE_MLX4_DEBUG
 	/* Glue structure must not contain any NULL pointers. */
 	{
 		unsigned int i;
 
 		for (i = 0; i != sizeof(*mlx4_glue) / sizeof(void *); ++i)
-			assert(((const void *const *)mlx4_glue)[i]);
+			MLX4_ASSERT(((const void *const *)mlx4_glue)[i]);
 	}
 #endif
 	if (strcmp(mlx4_glue->version, MLX4_GLUE_VERSION)) {

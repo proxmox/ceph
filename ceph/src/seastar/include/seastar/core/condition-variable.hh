@@ -21,15 +21,23 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <boost/intrusive/list.hpp>
+#include <chrono>
+#include <exception>
+#include <functional>
+#endif
 
 #include <seastar/core/timer.hh>
 #ifdef SEASTAR_COROUTINES_ENABLED
 #   include <seastar/core/coroutine.hh>
 #endif
 #include <seastar/core/loop.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /// \addtogroup fiber-module
 /// @{
@@ -68,6 +76,10 @@ private:
     // the base for queue waiters. looks complicated, but this is
     // to make it transparent once we add non-promise based nodes
     struct waiter : public boost::intrusive::list_base_hook<boost::intrusive::link_mode<boost::intrusive::auto_unlink>> {
+        waiter() = default;
+        waiter(waiter&&) = default;
+        waiter(const waiter&) = delete;
+        waiter& operator=(const waiter&) = delete;
         virtual ~waiter() = default;
         void timeout() noexcept;
 
@@ -91,44 +103,26 @@ private:
     };
 
 #ifdef SEASTAR_COROUTINES_ENABLED
-    struct [[nodiscard("must co_await a when() call")]] awaiter : public waiter, private seastar::task {
-        using handle_type = std::coroutine_handle<void>;
-
+    struct [[nodiscard("must co_await a when() call")]] awaiter : public waiter {
         condition_variable* _cv;
-        handle_type _when_ready;
-        std::exception_ptr _ex;
-        task* _waiting_task = nullptr;
+        promise<> _p;
 
         awaiter(condition_variable* cv)
             : _cv(cv)
         {}
 
-        bool await_ready() const {
-            return _cv->check_and_consume_signal();
-        }
-        template<typename T>
-        void await_suspend(std::coroutine_handle<T> h) {
-            _when_ready = h;
-            _waiting_task = &h.promise();
-            _cv->add_waiter(*this);
-        }
-        void run_and_dispose() noexcept override {
-            _when_ready.resume();
-        }
-        task* waiting_task() noexcept override { 
-            return _waiting_task;
-        }
-        void await_resume() {
-            if (_ex) {
-                std::rethrow_exception(std::move(_ex));
-            }
-        }
         void signal() noexcept override {
-            schedule(this);
+            _p.set_value();
         }
         void set_exception(std::exception_ptr ep) noexcept override {
-            _ex = std::move(ep);
-            schedule(this);
+            _p.set_exception(std::move(ep));
+        }
+        auto operator co_await() {
+            if (_cv->check_and_consume_signal()) {
+                return ::seastar::internal::awaiter<false, void>(make_ready_future<>());
+            }
+            _cv->add_waiter(*this);
+            return ::seastar::internal::awaiter<false, void>(_p.get_future());
         }
     };
 
@@ -143,12 +137,6 @@ private:
             : awaiter(cv)
             , _timeout(timeout)
         {}
-        template<typename T>
-        void await_suspend(std::coroutine_handle<T> h) {
-            awaiter::await_suspend(std::move(h));
-            this->set_callback(std::bind(&waiter::timeout, this));
-            this->arm(_timeout);
-        }
         void signal() noexcept override {
             this->cancel();
             awaiter::signal();
@@ -156,6 +144,14 @@ private:
         void set_exception(std::exception_ptr ep) noexcept override {
             this->cancel();
             awaiter::set_exception(std::move(ep));
+        }
+        auto operator co_await() {
+            if (_cv->check_and_consume_signal()) {
+                return ::seastar::internal::awaiter<false, void>(make_ready_future<>());
+            }
+            this->set_callback(std::bind(&waiter::timeout, this));
+            this->arm(_timeout);
+            return awaiter::operator co_await();
         }
     };
 
@@ -167,15 +163,8 @@ private:
             : Base(std::forward<Args>(args)...)
             , _func(std::move(func))
         {}
-        bool await_ready() const {
-            if (!_func()) {
-                Base::await_ready(); // clear out any signal state
-                return false;
-            }
-            return true;
-        }        
         void signal() noexcept override {
-            if (Base::_ex || _func()) {
+            if (_func()) {
                 Base::signal();
             } else {
                 // must re-enter waiter queue
@@ -183,6 +172,14 @@ private:
                 // semantics of moving to back of queue
                 // if predicate fails
                 Base::_cv->add_waiter(*this);
+            }
+        }
+        auto operator co_await() {
+            if (_func()) {
+                return ::seastar::internal::awaiter<false, void>(make_ready_future<>());
+            } else {
+                Base::_cv->check_and_consume_signal(); // clear out any signal state
+                return Base::operator co_await();
             }
         }
     };
@@ -262,7 +259,7 @@ public:
     /// \return a future that becomes ready when \ref signal() is called
     ///         If the condition variable was \ref broken(), may contain an exception.
     template<typename Pred>
-    SEASTAR_CONCEPT( requires seastar::InvokeReturns<Pred, bool> )
+    requires std::is_invocable_r_v<bool, Pred>
     future<> wait(Pred&& pred) noexcept {
         return do_until(std::forward<Pred>(pred), [this] {
             return wait();
@@ -279,7 +276,7 @@ public:
     ///         If the condition variable was \ref broken() will return \ref broken_condition_variable
     ///         exception. If timepoint is reached will return \ref condition_variable_timed_out exception.
     template<typename Clock = typename timer<>::clock, typename Duration = typename Clock::duration, typename Pred>
-    SEASTAR_CONCEPT( requires seastar::InvokeReturns<Pred, bool> )
+    requires std::is_invocable_r_v<bool, Pred>
     future<> wait(std::chrono::time_point<Clock, Duration> timeout, Pred&& pred) noexcept {
         return do_until(std::forward<Pred>(pred), [this, timeout] {
             return wait(timeout);
@@ -296,7 +293,7 @@ public:
     ///         If the condition variable was \ref broken() will return \ref broken_condition_variable
     ///         exception. If timepoint is passed will return \ref condition_variable_timed_out exception.
     template<typename Rep, typename Period, typename Pred>
-    SEASTAR_CONCEPT( requires seastar::InvokeReturns<Pred, bool> )
+    requires std::is_invocable_r_v<bool, Pred>
     future<> wait(std::chrono::duration<Rep, Period> timeout, Pred&& pred) noexcept {
         return wait(timer<>::clock::now() + timeout, std::forward<Pred>(pred));
     }
@@ -347,7 +344,7 @@ public:
     /// \return a future that becomes ready when \ref signal() is called
     ///         If the condition variable was \ref broken(), may contain an exception.
     template<typename Pred>
-    SEASTAR_CONCEPT( requires seastar::InvokeReturns<Pred, bool> )
+    requires std::is_invocable_r_v<bool, Pred>
     auto when(Pred&& pred) noexcept {
         return predicate_awaiter<Pred, awaiter>{std::forward<Pred>(pred), when()};
     }
@@ -363,7 +360,7 @@ public:
     ///         If the condition variable was \ref broken() will return \ref broken_condition_variable
     ///         exception. If timepoint is reached will return \ref condition_variable_timed_out exception.
     template<typename Clock = typename timer<>::clock, typename Duration = typename Clock::duration, typename Pred>
-    SEASTAR_CONCEPT( requires seastar::InvokeReturns<Pred, bool> )
+    requires std::is_invocable_r_v<bool, Pred>
     auto when(std::chrono::time_point<Clock, Duration> timeout, Pred&& pred) noexcept {
         return predicate_awaiter<Pred, timeout_awaiter<Clock, Duration>>{std::forward<Pred>(pred), when(timeout)};
     }
@@ -379,7 +376,7 @@ public:
     ///         If the condition variable was \ref broken() will return \ref broken_condition_variable
     ///         exception. If timepoint is passed will return \ref condition_variable_timed_out exception.
     template<typename Rep, typename Period, typename Pred>
-    SEASTAR_CONCEPT( requires seastar::InvokeReturns<Pred, bool> )
+    requires std::is_invocable_r_v<bool, Pred>
     auto when(std::chrono::duration<Rep, Period> timeout, Pred&& pred) noexcept {
         return when(timer<>::clock::now() + timeout, std::forward<Pred>(pred));
     }
@@ -407,5 +404,7 @@ public:
 };
 
 /// @}
+
+SEASTAR_MODULE_EXPORT_END
 
 }

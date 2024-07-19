@@ -41,7 +41,7 @@ passing at least two cores in the coremask/corelist, as follows:
 
 .. code-block:: console
 
-    ./build/simple_mp -l 0-1 -n 4 --proc-type=primary
+    ./<build_dir>/examples/dpdk-simple_mp -l 0-1 -n 4 --proc-type=primary
 
 For the first DPDK process run, the proc-type flag can be omitted or set to auto,
 since all DPDK processes will default to being a primary instance,
@@ -50,7 +50,7 @@ The process should start successfully and display a command prompt as follows:
 
 .. code-block:: console
 
-    $ ./build/simple_mp -l 0-1 -n 4 --proc-type=primary
+    $ ./<build_dir>/examples/dpdk-simple_mp -l 0-1 -n 4 --proc-type=primary
     EAL: coremask set to 3
     EAL: Detected lcore 0 on socket 0
     EAL: Detected lcore 1 on socket 0
@@ -64,9 +64,8 @@ The process should start successfully and display a command prompt as follows:
     EAL: Virtual area found at 0x7ff200000000 (size = 0x40000000)
     ...
 
-    EAL: check igb_uio module
     EAL: check module finished
-    EAL: Master core 0 is ready (tid=54e41820)
+    EAL: Main core 0 is ready (tid=54e41820)
     EAL: Core 1 is ready (tid=53b32700)
 
     Starting core 1
@@ -78,7 +77,7 @@ again run the same binary setting at least two cores in the coremask/corelist:
 
 .. code-block:: console
 
-    ./build/simple_mp -l 2-3 -n 4 --proc-type=secondary
+    ./<build_dir>/examples/dpdk-simple_mp -l 2-3 -n 4 --proc-type=secondary
 
 When running a secondary process such as that shown above, the proc-type parameter can again be specified as auto.
 However, omitting the parameter altogether will cause the process to try and start as a primary rather than secondary process.
@@ -92,7 +91,7 @@ At any stage, either process can be terminated using the quit command.
 
 .. code-block:: console
 
-   EAL: Master core 10 is ready (tid=b5f89820)           EAL: Master core 8 is ready (tid=864a3820)
+   EAL: Main core 10 is ready (tid=b5f89820)             EAL: Main core 8 is ready (tid=864a3820)
    EAL: Core 11 is ready (tid=84ffe700)                  EAL: Core 9 is ready (tid=85995700)
    Starting core 11                                      Starting core 9
    simple_mp > send hello_secondary                      simple_mp > core 9: Received 'hello_secondary'
@@ -114,17 +113,11 @@ These three objects are created at startup by the primary process,
 since the secondary process cannot create objects in memory as it cannot reserve memory zones,
 and the secondary process then uses lookup functions to attach to these objects as it starts up.
 
-.. code-block:: c
-
-    if (rte_eal_process_type() == RTE_PROC_PRIMARY){
-        send_ring = rte_ring_create(_PRI_2_SEC, ring_size, SOCKET0, flags);
-        recv_ring = rte_ring_create(_SEC_2_PRI, ring_size, SOCKET0, flags);
-        message_pool = rte_mempool_create(_MSG_POOL, pool_size, string_size, pool_cache, priv_data_sz, NULL, NULL, NULL, NULL, SOCKET0, flags);
-    } else {
-        recv_ring = rte_ring_lookup(_PRI_2_SEC);
-        send_ring = rte_ring_lookup(_SEC_2_PRI);
-        message_pool = rte_mempool_lookup(_MSG_POOL);
-    }
+.. literalinclude:: ../../../examples/multi_process/simple_mp/main.c
+        :language: c
+        :start-after: Start of ring structure. 8<
+        :end-before: >8 End of ring structure.
+        :dedent: 1
 
 Note, however, that the named ring structure used as send_ring in the primary process is the recv_ring in the secondary process.
 
@@ -184,10 +177,10 @@ the following commands can be used (assuming run as root):
 
 .. code-block:: console
 
-    # ./build/symmetric_mp -l 1 -n 4 --proc-type=auto -- -p 3 --num-procs=4 --proc-id=0
-    # ./build/symmetric_mp -l 2 -n 4 --proc-type=auto -- -p 3 --num-procs=4 --proc-id=1
-    # ./build/symmetric_mp -l 3 -n 4 --proc-type=auto -- -p 3 --num-procs=4 --proc-id=2
-    # ./build/symmetric_mp -l 4 -n 4 --proc-type=auto -- -p 3 --num-procs=4 --proc-id=3
+    # ./<build_dir>/examples/dpdk-symmetric_mp -l 1 -n 4 --proc-type=auto -- -p 3 --num-procs=4 --proc-id=0
+    # ./<build_dir>/examples/dpdk-symmetric_mp -l 2 -n 4 --proc-type=auto -- -p 3 --num-procs=4 --proc-id=1
+    # ./<build_dir>/examples/dpdk-symmetric_mp -l 3 -n 4 --proc-type=auto -- -p 3 --num-procs=4 --proc-id=2
+    # ./<build_dir>/examples/dpdk-symmetric_mp -l 4 -n 4 --proc-type=auto -- -p 3 --num-procs=4 --proc-id=3
 
 .. note::
 
@@ -209,7 +202,7 @@ How the Application Works
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The initialization calls in both the primary and secondary instances are the same for the most part,
-calling the rte_eal_init(), 1 G and 10 G driver initialization and then rte_pci_probe() functions.
+calling the rte_eal_init(), 1 G and 10 G driver initialization and then probing devices.
 Thereafter, the initialization done depends on whether the process is configured as a primary or secondary instance.
 
 In the primary instance, a memory pool is created for the packet mbufs and the network ports to be used are initialized -
@@ -217,16 +210,11 @@ the number of RX and TX queues per port being determined by the num-procs parame
 The structures for the initialized network ports are stored in shared memory and
 therefore will be accessible by the secondary process as it initializes.
 
-.. code-block:: c
-
-    if (num_ports & 1)
-       rte_exit(EXIT_FAILURE, "Application must use an even number of ports\n");
-
-    for(i = 0; i < num_ports; i++){
-        if(proc_type == RTE_PROC_PRIMARY)
-            if (smp_port_init(ports[i], mp, (uint16_t)num_procs) < 0)
-                rte_exit(EXIT_FAILURE, "Error initializing ports\n");
-    }
+.. literalinclude:: ../../../examples/multi_process/symmetric_mp/main.c
+        :language: c
+        :start-after: Primary instance initialized. 8<
+        :end-before: >8 End of primary instance initialization.
+        :dedent: 1
 
 In the secondary instance, rather than initializing the network ports, the port information exported by the primary process is used,
 giving the secondary process access to the hardware and software rings for each network port.
@@ -273,7 +261,7 @@ In addition to the EAL parameters, the application- specific parameters are:
 
 .. note::
 
-    In the server process, a single thread, the master thread, that is, the lowest numbered lcore in the coremask/corelist, performs all packet I/O.
+    In the server process, a single thread, the main thread, that is, the lowest numbered lcore in the coremask/corelist, performs all packet I/O.
     If a coremask/corelist is specified with more than a single lcore bit set in it,
     an additional lcore will be used for a thread to periodically print packet count statistics.
 
@@ -284,9 +272,9 @@ the following commands could be used:
 
 .. code-block:: console
 
-    # ./mp_server/build/mp_server -l 1-2 -n 4 -- -p 3 -n 2
-    # ./mp_client/build/mp_client -l 3 -n 4 --proc-type=auto -- -n 0
-    # ./mp_client/build/mp_client -l 4 -n 4 --proc-type=auto -- -n 1
+    # ./<build_dir>/examples/dpdk-mp_server -l 1-2 -n 4 -- -p 3 -n 2
+    # ./<build_dir>/examples/dpdk-mp_client -l 3 -n 4 --proc-type=auto -- -n 0
+    # ./<build_dir>/examples/dpdk-mp_client -l 4 -n 4 --proc-type=auto -- -n 1
 
 .. note::
 

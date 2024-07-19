@@ -17,7 +17,8 @@
 #include <ostream>
 
 #include "include/types.h"
-#include "include/utime.h"
+#include "include/utime_fmt.h"
+#include "osd/osd_types_fmt.h"
 #include "osd/OpRequest.h"
 #include "osd/PG.h"
 #include "osd/PGPeeringEvent.h"
@@ -71,6 +72,8 @@ public:
     }
 
     virtual std::ostream &print(std::ostream &rhs) const = 0;
+    /// and a version geared towards fmt::format use:
+    virtual std::string print() const = 0;
 
     virtual void run(OSD *osd, OSDShard *sdata, PGRef& pg, ThreadPool::TPHandle &handle) = 0;
     virtual op_scheduler_class get_scheduler_class() const = 0;
@@ -122,6 +125,8 @@ public:
   OpSchedulerItem(const OpSchedulerItem &) = delete;
   OpSchedulerItem &operator=(OpSchedulerItem &&) = default;
   OpSchedulerItem &operator=(const OpSchedulerItem &) = delete;
+
+  friend struct fmt::formatter<OpSchedulerItem>;
 
   uint32_t get_queue_token() const {
     return qitem->get_queue_token();
@@ -187,6 +192,7 @@ public:
   }
 }; // class OpSchedulerItem
 
+
 /// Implements boilerplate for operations queued for the pg lock
 class PGOpQueueable : public OpSchedulerItem::OpQueueable {
   spg_t pgid;
@@ -226,6 +232,10 @@ public:
     return rhs << "PGOpItem(op=" << *(op->get_req()) << ")";
   }
 
+  std::string print() const override {
+    return fmt::format("PGOpItem(op={})", *(op->get_req()));
+  }
+
   std::optional<OpRequestRef> maybe_get_op() const final {
     return op;
   }
@@ -249,6 +259,9 @@ public:
   PGPeeringItem(spg_t pg, PGPeeringEventRef e) : PGOpQueueable(pg), evt(e) {}
   std::ostream &print(std::ostream &rhs) const final {
     return rhs << "PGPeeringEvent(" << evt->get_desc() << ")";
+  }
+  std::string print() const final {
+    return fmt::format("PGPeeringEvent({})", evt->get_desc());
   }
   void run(OSD *osd, OSDShard *sdata, PGRef& pg, ThreadPool::TPHandle &handle) final;
   bool is_peering() const override {
@@ -277,6 +290,10 @@ public:
 	       << " epoch_queued=" << epoch_queued
 	       << ")";
   }
+  std::string print() const final {
+    return fmt::format(
+	"PGSnapTrim(pgid={} epoch_queued={})", get_pgid(), epoch_queued);
+  }
   void run(
     OSD *osd, OSDShard *sdata, PGRef& pg, ThreadPool::TPHandle &handle) final;
   op_scheduler_class get_scheduler_class() const final {
@@ -295,6 +312,10 @@ public:
     return rhs << "PGScrub(pgid=" << get_pgid()
 	       << "epoch_queued=" << epoch_queued
 	       << ")";
+  }
+  std::string print() const final {
+    return fmt::format(
+	"PGScrub(pgid={} epoch_queued={})", get_pgid(), epoch_queued);
   }
   void run(
     OSD *osd, OSDShard *sdata, PGRef& pg, ThreadPool::TPHandle &handle) final;
@@ -329,6 +350,11 @@ class PGScrubItem : public PGOpQueueable {
 	       << "epoch_queued=" << epoch_queued
 	       << " scrub-token=" << activation_index << ")";
   }
+  std::string print() const override {
+    return fmt::format(
+	"{}(pgid={} epoch_queued={} scrub-token={})", message_name, get_pgid(),
+	epoch_queued, activation_index);
+  }
   void run(OSD* osd,
 	   OSDShard* sdata,
 	   PGRef& pg,
@@ -343,28 +369,6 @@ class PGScrubResched : public PGScrubItem {
  public:
   PGScrubResched(spg_t pg, epoch_t epoch_queued)
       : PGScrubItem{pg, epoch_queued, "PGScrubResched"}
-  {}
-  void run(OSD* osd, OSDShard* sdata, PGRef& pg, ThreadPool::TPHandle& handle) final;
-};
-
-/**
- *  all replicas have granted our scrub resources request
- */
-class PGScrubResourcesOK : public PGScrubItem {
- public:
-  PGScrubResourcesOK(spg_t pg, epoch_t epoch_queued)
-      : PGScrubItem{pg, epoch_queued, "PGScrubResourcesOK"}
-  {}
-  void run(OSD* osd, OSDShard* sdata, PGRef& pg, ThreadPool::TPHandle& handle) final;
-};
-
-/**
- *  scrub resources requests denied by replica(s)
- */
-class PGScrubDenied : public PGScrubItem {
- public:
-  PGScrubDenied(spg_t pg, epoch_t epoch_queued)
-      : PGScrubItem{pg, epoch_queued, "PGScrubDenied"}
   {}
   void run(OSD* osd, OSDShard* sdata, PGRef& pg, ThreadPool::TPHandle& handle) final;
 };
@@ -415,14 +419,6 @@ class PGScrubDigestUpdate : public PGScrubItem {
  public:
   PGScrubDigestUpdate(spg_t pg, epoch_t epoch_queued)
       : PGScrubItem{pg, epoch_queued, "PGScrubDigestUpdate"}
-  {}
-  void run(OSD* osd, OSDShard* sdata, PGRef& pg, ThreadPool::TPHandle& handle) final;
-};
-
-class PGScrubGotLocalMap : public PGScrubItem {
- public:
-  PGScrubGotLocalMap(spg_t pg, epoch_t epoch_queued)
-    : PGScrubItem{pg, epoch_queued, "PGScrubGotLocalMap"}
   {}
   void run(OSD* osd, OSDShard* sdata, PGRef& pg, ThreadPool::TPHandle& handle) final;
 };
@@ -513,6 +509,11 @@ public:
 	       << " reserved_pushes=" << reserved_pushes
 	       << ")";
   }
+  std::string print() const final {
+    return fmt::format(
+	"PGRecovery(pgid={} epoch_queued={} reserved_pushes={})", get_pgid(),
+	epoch_queued, reserved_pushes);
+  }
   uint64_t get_reserved_pushes() const final {
     return reserved_pushes;
   }
@@ -540,6 +541,10 @@ public:
 	       << " c=" << c.get() << " epoch=" << epoch
 	       << ")";
   }
+  std::string print() const final {
+    return fmt::format(
+	"PGRecoveryContext(pgid={} c={} epoch={})", get_pgid(), (void*)c.get(), epoch);
+  }
   void run(
     OSD *osd, OSDShard *sdata, PGRef& pg, ThreadPool::TPHandle &handle) final;
   op_scheduler_class get_scheduler_class() const final {
@@ -559,6 +564,10 @@ public:
     return rhs << "PGDelete(" << get_pgid()
 	       << " e" << epoch_queued
 	       << ")";
+  }
+  std::string print() const final {
+    return fmt::format(
+	"PGDelete(pgid={} epoch_queued={})", get_pgid(), epoch_queued);
   }
   void run(
     OSD *osd, OSDShard *sdata, PGRef& pg, ThreadPool::TPHandle &handle) final;
@@ -593,6 +602,10 @@ public:
     return rhs << "PGRecoveryMsg(op=" << *(op->get_req()) << ")";
   }
 
+  std::string print() const final {
+    return fmt::format("PGRecoveryMsg(op={})", *(op->get_req()));
+  }
+
   std::optional<OpRequestRef> maybe_get_op() const final {
     return op;
   }
@@ -601,7 +614,35 @@ public:
     return priority_to_scheduler_class(op->get_req()->get_priority());
   }
 
-  void run(OSD *osd, OSDShard *sdata, PGRef& pg, ThreadPool::TPHandle &handle) final;
+  void run(OSD* osd, OSDShard* sdata, PGRef& pg, ThreadPool::TPHandle& handle)
+      final;
 };
 
-}
+}  // namespace ceph::osd::scheduler
+
+template <>
+struct fmt::formatter<ceph::osd::scheduler::OpSchedulerItem> {
+  constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+  template <typename FormatContext>
+  auto format(
+      const ceph::osd::scheduler::OpSchedulerItem& opsi,
+      FormatContext& ctx) const
+  {
+    // matching existing op_scheduler_item_t::operator<<() format
+    using class_t =
+	std::underlying_type_t<ceph::osd::scheduler::op_scheduler_class>;
+    const auto qos_cost = opsi.was_queued_via_mclock()
+			      ? fmt::format(" qos_cost {}", opsi.qos_cost)
+			      : "";
+    const auto pushes =
+	opsi.get_reserved_pushes()
+	    ? fmt::format(" reserved_pushes {}", opsi.get_reserved_pushes())
+	    : "";
+
+    return fmt::format_to(
+	ctx.out(), "OpSchedulerItem({} {} class_id {} prio {}{} cost {} e{}{})",
+	opsi.get_ordering_token(), opsi.qitem->print(),
+	static_cast<class_t>(opsi.get_scheduler_class()), opsi.get_priority(),
+	qos_cost, opsi.get_cost(), opsi.get_map_epoch(), pushes);
+  }
+};

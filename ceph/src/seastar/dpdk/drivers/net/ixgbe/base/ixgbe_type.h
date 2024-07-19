@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _IXGBE_TYPE_H_
@@ -68,6 +68,7 @@
 #define IXGBE_DEV_ID_82599_KR			0x1517
 #define IXGBE_DEV_ID_82599_COMBO_BACKPLANE	0x10F8
 #define IXGBE_SUBDEV_ID_82599_KX4_KR_MEZZ	0x000C
+#define IXGBE_DEV_ID_82599_LS			0x154F
 #define IXGBE_DEV_ID_82599_CX4			0x10F9
 #define IXGBE_DEV_ID_82599_SFP			0x10FB
 #define IXGBE_SUBDEV_ID_82599_SFP		0x11A9
@@ -1082,8 +1083,10 @@ struct ixgbe_dmac_config {
 #define IXGBE_HSMC0R		0x15F04
 #define IXGBE_HSMC1R		0x15F08
 #define IXGBE_SWSR		0x15F10
+#define IXGBE_FWRESETCNT	0x15F40
 #define IXGBE_HFDR		0x15FE8
 #define IXGBE_FLEX_MNG		0x15800 /* 0x15800 - 0x15EFC */
+#define IXGBE_FLEX_MNG_PTR(_i)	(IXGBE_FLEX_MNG + ((_i) * 4))
 
 #define IXGBE_HICR_EN		0x01  /* Enable bit - RO */
 /* Driver sets this bit when done to put command in RAM */
@@ -2411,9 +2414,7 @@ enum {
 #define IXGBE_EEPROM_CTRL_2		1 /* EEPROM CTRL word 2 */
 #define IXGBE_EEPROM_CCD_BIT		2
 
-#ifndef IXGBE_EEPROM_GRANT_ATTEMPTS
 #define IXGBE_EEPROM_GRANT_ATTEMPTS	1000 /* EEPROM attempts to gain grant */
-#endif
 
 /* Number of 5 microseconds we wait for EERD read and
  * EERW write to complete */
@@ -3143,11 +3144,7 @@ enum ixgbe_fdir_pballoc_type {
 
 /* Host Interface Command Structures */
 
-#ifdef C99
 #pragma pack(push, 1)
-#else
-#pragma pack (1)
-#endif /* C99 */
 
 struct ixgbe_hic_hdr {
 	u8 cmd;
@@ -3260,11 +3257,7 @@ struct ixgbe_hic_phy_activity_resp {
 	__be32 data[FW_PHY_ACT_DATA_COUNT];
 };
 
-#ifdef C99
 #pragma pack(pop)
-#else
-#pragma pack()
-#endif /* C99 */
 
 /* Transmit Descriptor - Legacy */
 struct ixgbe_legacy_tx_desc {
@@ -3734,6 +3727,7 @@ enum ixgbe_media_type {
 	ixgbe_media_type_unknown = 0,
 	ixgbe_media_type_fiber,
 	ixgbe_media_type_fiber_qsfp,
+	ixgbe_media_type_fiber_lco,
 	ixgbe_media_type_copper,
 	ixgbe_media_type_backplane,
 	ixgbe_media_type_cx4,
@@ -4363,5 +4357,17 @@ struct ixgbe_hw {
 #define IXGBE_NW_MNG_IF_SEL_MDIO_PHY_ADD_SHIFT 3
 #define IXGBE_NW_MNG_IF_SEL_MDIO_PHY_ADD	\
 				(0x1F << IXGBE_NW_MNG_IF_SEL_MDIO_PHY_ADD_SHIFT)
+
+/* Code Command (Flash I/F Interface) */
+#define IXGBE_HOST_INTERFACE_FLASH_READ_CMD			0x30
+#define IXGBE_HOST_INTERFACE_SHADOW_RAM_READ_CMD		0x31
+#define IXGBE_HOST_INTERFACE_FLASH_WRITE_CMD			0x32
+#define IXGBE_HOST_INTERFACE_SHADOW_RAM_WRITE_CMD		0x33
+#define IXGBE_HOST_INTERFACE_FLASH_MODULE_UPDATE_CMD		0x34
+#define IXGBE_HOST_INTERFACE_FLASH_BLOCK_EREASE_CMD		0x35
+#define IXGBE_HOST_INTERFACE_SHADOW_RAM_DUMP_CMD		0x36
+#define IXGBE_HOST_INTERFACE_FLASH_INFO_CMD			0x37
+#define IXGBE_HOST_INTERFACE_APPLY_UPDATE_CMD			0x38
+#define IXGBE_HOST_INTERFACE_MASK_CMD				0x000000FF
 
 #endif /* _IXGBE_TYPE_H_ */

@@ -29,7 +29,7 @@ uint32_t qavg_ntimes = APP_QAVG_NTIMES;
 
 /* main processing loop */
 static int
-app_main_loop(__attribute__((unused))void *dummy)
+app_main_loop(__rte_unused void *dummy)
 {
 	uint32_t lcore_id;
 	uint32_t i, mode;
@@ -105,12 +105,6 @@ app_main_loop(__attribute__((unused))void *dummy)
 	}
 	else if (mode == (APP_TX_MODE | APP_WT_MODE)) {
 		for (i = 0; i < wt_idx; i++) {
-			wt_confs[i]->m_table = rte_malloc("table_wt", sizeof(struct rte_mbuf *)
-					* burst_conf.tx_burst, RTE_CACHE_LINE_SIZE);
-
-			if (wt_confs[i]->m_table == NULL)
-				rte_panic("flow %u unable to allocate memory buffer\n", i);
-
 			RTE_LOG(INFO, APP,
 				"flow %u lcoreid %u sched+write port %u\n",
 					i, lcore_id, wt_confs[i]->tx_port);
@@ -120,12 +114,6 @@ app_main_loop(__attribute__((unused))void *dummy)
 	}
 	else if (mode == APP_TX_MODE) {
 		for (i = 0; i < tx_idx; i++) {
-			tx_confs[i]->m_table = rte_malloc("table_tx", sizeof(struct rte_mbuf *)
-					* burst_conf.tx_burst, RTE_CACHE_LINE_SIZE);
-
-			if (tx_confs[i]->m_table == NULL)
-				rte_panic("flow %u unable to allocate memory buffer\n", i);
-
 			RTE_LOG(INFO, APP, "flow%u lcoreid%u write port%u\n",
 					i, lcore_id, tx_confs[i]->tx_port);
 		}
@@ -204,7 +192,7 @@ main(int argc, char **argv)
 		return -1;
 
 	/* launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(app_main_loop, NULL, SKIP_MASTER);
+	rte_eal_mp_remote_launch(app_main_loop, NULL, SKIP_MAIN);
 
 	if (interactive) {
 		sleep(1);
@@ -217,6 +205,9 @@ main(int argc, char **argv)
 			app_stat();
 		}
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

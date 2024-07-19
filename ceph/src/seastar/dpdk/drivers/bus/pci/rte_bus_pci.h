@@ -8,8 +8,7 @@
 
 /**
  * @file
- *
- * RTE PCI Bus Interface
+ * PCI device & driver interface
  */
 
 #ifdef __cplusplus
@@ -20,175 +19,20 @@ extern "C" {
 #include <stdlib.h>
 #include <limits.h>
 #include <errno.h>
-#include <sys/queue.h>
 #include <stdint.h>
 #include <inttypes.h>
 
+#include <rte_compat.h>
 #include <rte_debug.h>
 #include <rte_interrupts.h>
-#include <rte_dev.h>
-#include <rte_bus.h>
 #include <rte_pci.h>
-
-/** Pathname of PCI devices directory. */
-const char *rte_pci_get_sysfs_path(void);
 
 /* Forward declarations */
 struct rte_pci_device;
 struct rte_pci_driver;
-
-/** List of PCI devices */
-TAILQ_HEAD(rte_pci_device_list, rte_pci_device);
-/** List of PCI drivers */
-TAILQ_HEAD(rte_pci_driver_list, rte_pci_driver);
-
-/* PCI Bus iterators */
-#define FOREACH_DEVICE_ON_PCIBUS(p)	\
-		TAILQ_FOREACH(p, &(rte_pci_bus.device_list), next)
-
-#define FOREACH_DRIVER_ON_PCIBUS(p)	\
-		TAILQ_FOREACH(p, &(rte_pci_bus.driver_list), next)
+struct rte_pci_ioport;
 
 struct rte_devargs;
-
-/**
- * A structure describing a PCI device.
- */
-struct rte_pci_device {
-	TAILQ_ENTRY(rte_pci_device) next;   /**< Next probed PCI device. */
-	struct rte_device device;           /**< Inherit core device */
-	struct rte_pci_addr addr;           /**< PCI location. */
-	struct rte_pci_id id;               /**< PCI ID. */
-	struct rte_mem_resource mem_resource[PCI_MAX_RESOURCE];
-					    /**< PCI Memory Resource */
-	struct rte_intr_handle intr_handle; /**< Interrupt handle */
-	struct rte_pci_driver *driver;      /**< PCI driver used in probing */
-	uint16_t max_vfs;                   /**< sriov enable if not zero */
-	enum rte_kernel_driver kdrv;        /**< Kernel driver passthrough */
-	char name[PCI_PRI_STR_SIZE+1];      /**< PCI location (ASCII) */
-	struct rte_intr_handle vfio_req_intr_handle;
-				/**< Handler of VFIO request interrupt */
-};
-
-/**
- * @internal
- * Helper macro for drivers that need to convert to struct rte_pci_device.
- */
-#define RTE_DEV_TO_PCI(ptr) container_of(ptr, struct rte_pci_device, device)
-
-#define RTE_DEV_TO_PCI_CONST(ptr) \
-	container_of(ptr, const struct rte_pci_device, device)
-
-#define RTE_ETH_DEV_TO_PCI(eth_dev)	RTE_DEV_TO_PCI((eth_dev)->device)
-
-/** Any PCI device identifier (vendor, device, ...) */
-#define PCI_ANY_ID (0xffff)
-#define RTE_CLASS_ANY_ID (0xffffff)
-
-#ifdef __cplusplus
-/** C++ macro used to help building up tables of device IDs */
-#define RTE_PCI_DEVICE(vend, dev) \
-	RTE_CLASS_ANY_ID,         \
-	(vend),                   \
-	(dev),                    \
-	PCI_ANY_ID,               \
-	PCI_ANY_ID
-#else
-/** Macro used to help building up tables of device IDs */
-#define RTE_PCI_DEVICE(vend, dev)          \
-	.class_id = RTE_CLASS_ANY_ID,      \
-	.vendor_id = (vend),               \
-	.device_id = (dev),                \
-	.subsystem_vendor_id = PCI_ANY_ID, \
-	.subsystem_device_id = PCI_ANY_ID
-#endif
-
-/**
- * Initialisation function for the driver called during PCI probing.
- */
-typedef int (pci_probe_t)(struct rte_pci_driver *, struct rte_pci_device *);
-
-/**
- * Uninitialisation function for the driver called during hotplugging.
- */
-typedef int (pci_remove_t)(struct rte_pci_device *);
-
-/**
- * Driver-specific DMA mapping. After a successful call the device
- * will be able to read/write from/to this segment.
- *
- * @param dev
- *   Pointer to the PCI device.
- * @param addr
- *   Starting virtual address of memory to be mapped.
- * @param iova
- *   Starting IOVA address of memory to be mapped.
- * @param len
- *   Length of memory segment being mapped.
- * @return
- *   - 0 On success.
- *   - Negative value and rte_errno is set otherwise.
- */
-typedef int (pci_dma_map_t)(struct rte_pci_device *dev, void *addr,
-			    uint64_t iova, size_t len);
-
-/**
- * Driver-specific DMA un-mapping. After a successful call the device
- * will not be able to read/write from/to this segment.
- *
- * @param dev
- *   Pointer to the PCI device.
- * @param addr
- *   Starting virtual address of memory to be unmapped.
- * @param iova
- *   Starting IOVA address of memory to be unmapped.
- * @param len
- *   Length of memory segment being unmapped.
- * @return
- *   - 0 On success.
- *   - Negative value and rte_errno is set otherwise.
- */
-typedef int (pci_dma_unmap_t)(struct rte_pci_device *dev, void *addr,
-			      uint64_t iova, size_t len);
-
-/**
- * A structure describing a PCI driver.
- */
-struct rte_pci_driver {
-	TAILQ_ENTRY(rte_pci_driver) next;  /**< Next in list. */
-	struct rte_driver driver;          /**< Inherit core driver. */
-	struct rte_pci_bus *bus;           /**< PCI bus reference. */
-	pci_probe_t *probe;                /**< Device Probe function. */
-	pci_remove_t *remove;              /**< Device Remove function. */
-	pci_dma_map_t *dma_map;		   /**< device dma map function. */
-	pci_dma_unmap_t *dma_unmap;	   /**< device dma unmap function. */
-	const struct rte_pci_id *id_table; /**< ID table, NULL terminated. */
-	uint32_t drv_flags;                /**< Flags RTE_PCI_DRV_*. */
-};
-
-/**
- * Structure describing the PCI bus
- */
-struct rte_pci_bus {
-	struct rte_bus bus;               /**< Inherit the generic class */
-	struct rte_pci_device_list device_list;  /**< List of PCI devices */
-	struct rte_pci_driver_list driver_list;  /**< List of PCI drivers */
-};
-
-/** Device needs PCI BAR mapping (done with either IGB_UIO or VFIO) */
-#define RTE_PCI_DRV_NEED_MAPPING 0x0001
-/** Device needs PCI BAR mapping with enabled write combining (wc) */
-#define RTE_PCI_DRV_WC_ACTIVATE 0x0002
-/** Device already probed can be probed again to check for new ports. */
-#define RTE_PCI_DRV_PROBE_AGAIN 0x0004
-/** Device driver supports link state interrupt */
-#define RTE_PCI_DRV_INTR_LSC	0x0008
-/** Device driver supports device removal interrupt */
-#define RTE_PCI_DRV_INTR_RMV 0x0010
-/** Device driver needs to keep mapped resources if unsupported dev detected */
-#define RTE_PCI_DRV_KEEP_MAPPED_RES 0x0020
-/** Device driver supports IOVA as VA */
-#define RTE_PCI_DRV_IOVA_AS_VA 0X0040
 
 /**
  * Map the PCI device resources in user space virtual memory address
@@ -225,31 +69,37 @@ void rte_pci_unmap_device(struct rte_pci_device *dev);
 void rte_pci_dump(FILE *f);
 
 /**
- * Register a PCI driver.
+ * Find device's extended PCI capability.
  *
- * @param driver
- *   A pointer to a rte_pci_driver structure describing the driver
- *   to be registered.
+ *  @param dev
+ *    A pointer to rte_pci_device structure.
+ *
+ *  @param cap
+ *    Extended capability to be found, which can be any from
+ *    RTE_PCI_EXT_CAP_ID_*, defined in librte_pci.
+ *
+ *  @return
+ *  > 0: The offset of the next matching extended capability structure
+ *       within the device's PCI configuration space.
+ *  < 0: An error in PCI config space read.
+ *  = 0: Device does not support it.
  */
-void rte_pci_register(struct rte_pci_driver *driver);
-
-/** Helper for PCI device registration from driver (eth, crypto) instance */
-#define RTE_PMD_REGISTER_PCI(nm, pci_drv) \
-RTE_INIT(pciinitfn_ ##nm) \
-{\
-	(pci_drv).driver.name = RTE_STR(nm);\
-	rte_pci_register(&pci_drv); \
-} \
-RTE_PMD_EXPORT_NAME(nm, __COUNTER__)
+__rte_experimental
+off_t rte_pci_find_ext_capability(struct rte_pci_device *dev, uint32_t cap);
 
 /**
- * Unregister a PCI driver.
+ * Enables/Disables Bus Master for device's PCI command register.
  *
- * @param driver
- *   A pointer to a rte_pci_driver structure describing the driver
- *   to be unregistered.
+ *  @param dev
+ *    A pointer to rte_pci_device structure.
+ *  @param enable
+ *    Enable or disable Bus Master.
+ *
+ *  @return
+ *  0 on success, -1 on error in PCI config space read/write.
  */
-void rte_pci_unregister(struct rte_pci_driver *driver);
+__rte_experimental
+int rte_pci_set_bus_master(struct rte_pci_device *dev, bool enable);
 
 /**
  * Read PCI config space.
@@ -286,15 +136,52 @@ int rte_pci_write_config(const struct rte_pci_device *device,
 		const void *buf, size_t len, off_t offset);
 
 /**
- * A structure used to access io resources for a pci device.
- * rte_pci_ioport is arch, os, driver specific, and should not be used outside
- * of pci ioport api.
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Read from a MMIO PCI resource.
+ *
+ * @param device
+ *   A pointer to a rte_pci_device structure describing the device
+ *   to use.
+ * @param bar
+ *   Index of the IO PCI resource we want to access.
+ * @param buf
+ *   A data buffer where the bytes should be read into.
+ * @param len
+ *   The length of the data buffer.
+ * @param offset
+ *   The offset into MMIO space described by @bar.
+ * @return
+ *   Number of bytes read on success, negative on error.
  */
-struct rte_pci_ioport {
-	struct rte_pci_device *dev;
-	uint64_t base;
-	uint64_t len; /* only filled for memory mapped ports */
-};
+__rte_experimental
+int rte_pci_mmio_read(const struct rte_pci_device *device, int bar,
+		void *buf, size_t len, off_t offset);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Write to a MMIO PCI resource.
+ *
+ * @param device
+ *   A pointer to a rte_pci_device structure describing the device
+ *   to use.
+ * @param bar
+ *   Index of the IO PCI resource we want to access.
+ * @param buf
+ *   A data buffer containing the bytes should be written.
+ * @param len
+ *   The length of the data buffer.
+ * @param offset
+ *   The offset into MMIO space described by @bar.
+ * @return
+ *   Number of bytes written on success, negative on error.
+ */
+__rte_experimental
+int rte_pci_mmio_write(const struct rte_pci_device *device, int bar,
+		const void *buf, size_t len, off_t offset);
 
 /**
  * Initialize a rte_pci_ioport object for a pci device io resource.

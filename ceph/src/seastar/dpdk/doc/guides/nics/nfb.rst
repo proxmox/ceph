@@ -6,22 +6,15 @@ NFB poll mode driver library
 =================================
 
 The NFB poll mode driver library implements support for the Netcope
-FPGA Boards (**NFB-***), FPGA-based programmable NICs.
-The NFB PMD uses interface provided by the libnfb library to communicate
-with the NFB cards over the nfb layer.
+FPGA Boards (**NFB-40G2, NFB-100G2, NFB-200G2QL**) and Silicom **FB2CGG3** card,
+FPGA-based programmable NICs. The NFB PMD uses interface provided by the libnfb
+library to communicate with these cards over the nfb layer.
 
 More information about the
-`NFB cards <http://www.netcope.com/en/products/fpga-boards>`_
+`NFB cards <https://www.liberouter.org/technologies/cards/>`_
 and used technology
-(`Netcope Development Kit <http://www.netcope.com/en/products/fpga-development-kit>`_)
-can be found on the `Netcope Technologies website <http://www.netcope.com/>`_.
-
-.. note::
-
-   This driver has external dependencies.
-   Therefore it is disabled in default configuration files.
-   It can be enabled by setting ``CONFIG_RTE_LIBRTE_NFB_PMD=y``
-   and recompiling.
+(`Network Development Kit <https://www.liberouter.org/ndk/>`_)
+can be found on the `Liberouter website <http://www.liberouter.org/>`_.
 
 .. note::
 
@@ -50,7 +43,7 @@ separately:
    sharing of resources for user space applications.
 
 Dependencies can be found here:
-`Netcope common <https://www.netcope.com/en/company/community-support/dpdk-libsze2#NFB>`_.
+`Netcope common <https://github.com/CESNET/ndk-sw>`_.
 
 Versions of the packages
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -62,12 +55,20 @@ The minimum version of the provided packages:
 Configuration
 -------------
 
-These configuration options can be modified before compilation in the
-``.config`` file:
+Timestamps
 
-*  ``CONFIG_RTE_LIBRTE_NFB_PMD`` default value: **n**
+The PMD supports hardware timestamps of frame receipt on physical network interface. In order to use
+the timestamps, the hardware timestamping unit must be enabled (follow the documentation of the NFB
+products). The standard `RTE_ETH_RX_OFFLOAD_TIMESTAMP` flag can be used for this feature.
 
-   Value **y** enables compilation of nfb PMD.
+When the timestamps are enabled, a timestamp validity flag is set in the MBUFs
+containing received frames and timestamp is inserted into the `rte_mbuf` struct.
+
+The timestamp is an `uint64_t` field. Its lower 32 bits represent *seconds* portion of the timestamp
+(number of seconds elapsed since 1.1.1970 00:00:00 UTC) and its higher 32 bits represent
+*nanosecond* portion of the timestamp (number of nanoseconds elapsed since the beginning of the
+second in the *seconds* portion.
+
 
 Using the NFB PMD
 ----------------------
@@ -92,11 +93,6 @@ NUMA node, the card is represented as a single port in DPDK. To work with data
 from the individual queues on the right NUMA node, connection of NUMA nodes on
 first and last queue (each NUMA node has half of the queues) need to be checked.
 
-.. figure:: img/szedata2_nfb200g_architecture.*
-    :align: center
-
-    NFB-200G2QL high-level diagram
-
 Limitations
 -----------
 
@@ -113,7 +109,7 @@ transmit queue:
 
 .. code-block:: console
 
-   $RTE_TARGET/app/testpmd -l 0-3 -n 2 \
+   ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 2 \
    -- --port-topology=chained --rxq=2 --txq=2 --nb-cores=2 -i -a
 
 Example output:

@@ -11,4 +11,7 @@ application through the mempool API.
     :maxdepth: 2
     :numbered:
 
+    cnxk
     octeontx
+    ring
+    stack

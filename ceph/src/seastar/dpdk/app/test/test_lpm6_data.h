@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <rte_random.h>
+
 struct rules_tbl_entry {
 	uint8_t ip[16];
 	uint8_t depth;
@@ -22,7 +24,7 @@ struct ips_tbl_entry {
  * in previous test_lpm6_routes.h . Because this table has only 1000
  * lines, keeping it doesn't make LPM6 test case so large and also
  * make the algorithm to generate rule table unnecessary and the
- * algorithm to genertate test input IPv6 and associated expected
+ * algorithm to generate test input IPv6 and associated expected
  * next_hop much simple.
  */
 
@@ -1029,8 +1031,7 @@ static struct rules_tbl_entry large_route_table[] = {
 	{{234, 149, 220, 106, 0, 144, 214, 128, 35, 102, 0, 0, 0, 0, 0, 0}, 79, 106},
 };
 
-#define  NUM_ROUTE_ENTRIES \
-	(sizeof(large_route_table) / sizeof(large_route_table[0]))
+#define  NUM_ROUTE_ENTRIES RTE_DIM(large_route_table)
 
 #define  NUM_IPS_ENTRIES (NUM_ROUTE_ENTRIES * 100)
 
@@ -1130,7 +1131,7 @@ static void generate_large_ips_table(int gen_expected_next_hop)
 
 	for (i = 0; i < NUM_IPS_ENTRIES; i++) {
 		for (j = 0; j < 16; j++)
-			large_ips_table[i].ip[j] = lrand48();
+			large_ips_table[i].ip[j] = rte_rand();
 	}
 
 	for (k = j = 0, i = 0; i < NUM_IPS_ENTRIES; i++) {

@@ -67,7 +67,6 @@ class ScrubBackend;
 namespace Scrub {
   class Store;
   class ReplicaReservations;
-  class LocalReservation;
   class ReservedByRemotePrimary;
   enum class schedule_result_t;
 }
@@ -269,6 +268,7 @@ public:
 	set_last_scrub_stamp(t, history, stats);
 	return true;
       });
+    on_scrub_schedule_input_change();
   }
 
   static void set_last_deep_scrub_stamp(
@@ -281,8 +281,10 @@ public:
     recovery_state.update_stats(
       [t](auto &history, auto &stats) {
 	set_last_deep_scrub_stamp(t, history, stats);
+	set_last_scrub_stamp(t, history, stats);
 	return true;
       });
+    on_scrub_schedule_input_change();
   }
 
   static void add_objects_scrubbed_count(
@@ -447,17 +449,6 @@ public:
 			"SchedReplica");
   }
 
-  void scrub_send_resources_granted(epoch_t queued, ThreadPool::TPHandle& handle)
-  {
-    forward_scrub_event(&ScrubPgIF::send_remotes_reserved, queued, "RemotesReserved");
-  }
-
-  void scrub_send_resources_denied(epoch_t queued, ThreadPool::TPHandle& handle)
-  {
-    forward_scrub_event(&ScrubPgIF::send_reservation_failure, queued,
-			"ReservationFailure");
-  }
-
   void scrub_send_scrub_resched(epoch_t queued, ThreadPool::TPHandle& handle)
   {
     forward_scrub_event(&ScrubPgIF::send_scrub_resched, queued, "InternalSchedScrub");
@@ -483,11 +474,6 @@ public:
   void scrub_send_digest_update(epoch_t queued, ThreadPool::TPHandle& handle)
   {
     forward_scrub_event(&ScrubPgIF::digest_update_notification, queued, "DigestUpdate");
-  }
-
-  void scrub_send_local_map_ready(epoch_t queued, ThreadPool::TPHandle& handle)
-  {
-    forward_scrub_event(&ScrubPgIF::send_local_map_done, queued, "IntLocalMapDone");
   }
 
   void scrub_send_replmaps_ready(epoch_t queued, ThreadPool::TPHandle& handle)
@@ -533,11 +519,18 @@ public:
   void on_pool_change() override;
   virtual void plpg_on_pool_change() = 0;
 
-  void on_info_history_change() override;
-
-  void on_primary_status_change(bool was_primary, bool now_primary) override;
-
-  void reschedule_scrub() override;
+  /**
+   * on_scrub_schedule_input_change
+   *
+   * To be called when inputs to scrub scheduling may have changed.
+   * - OSD config params related to scrub such as  osd_scrub_min_interval,
+   *   osd_scrub_max_interval
+   * - Pool params related to scrub such as osd_scrub_min_interval,
+   *   osd_scrub_max_interval
+   * - pg stat scrub timestamps
+   * - etc
+   */
+  void on_scrub_schedule_input_change();
 
   void scrub_requested(scrub_level_t scrub_level, scrub_type_t scrub_type) override;
 
@@ -616,15 +609,11 @@ public:
 
   void on_active_exit() override;
 
-  Context *on_clean() override {
-    if (is_active()) {
-      kick_snap_trim();
-    }
-    requeue_ops(waiting_for_clean_to_primary_repair);
-    return finish_recovery();
-  }
+  Context *on_clean() override;
 
   void on_activate(interval_set<snapid_t> snaps) override;
+
+  void on_replica_activate() override;
 
   void on_activate_committed() override;
 
@@ -673,7 +662,14 @@ public:
     std::vector<int>& newup, int up_primary,
     std::vector<int>& newacting, int acting_primary,
     PeeringCtx &rctx);
-  void handle_activate_map(PeeringCtx &rctx);
+
+  /**
+   *  \note: handle_activate_map() is not guaranteed to be called for
+   *  each epoch in sequence. Thus we supply it with the full range of
+   *  epochs that were skipped.
+   */
+  void handle_activate_map(PeeringCtx &rctx, epoch_t range_starts_at);
+
   void handle_initialize(PeeringCtx &rxcx);
   void handle_query_state(ceph::Formatter *f);
 
@@ -702,11 +698,16 @@ public:
   virtual void on_shutdown() = 0;
 
   bool get_must_scrub() const;
-  Scrub::schedule_result_t sched_scrub();
 
-  unsigned int scrub_requeue_priority(Scrub::scrub_prio_t with_priority, unsigned int suggested_priority) const;
+  Scrub::schedule_result_t start_scrubbing(
+      Scrub::OSDRestrictions osd_restrictions);
+
+  unsigned int scrub_requeue_priority(
+      Scrub::scrub_prio_t with_priority,
+      unsigned int suggested_priority) const;
   /// the version that refers to flags_.priority
   unsigned int scrub_requeue_priority(Scrub::scrub_prio_t with_priority) const;
+
 private:
   // auxiliaries used by sched_scrub():
   double next_deepscrub_interval() const;
@@ -760,7 +761,7 @@ public:
 
   virtual void snap_trimmer(epoch_t epoch_queued) = 0;
   virtual void do_command(
-    const std::string_view& prefix,
+    std::string_view prefix,
     const cmdmap_t& cmdmap,
     const ceph::buffer::list& idata,
     std::function<void(int,const std::string&,ceph::buffer::list&)> on_finish) = 0;
@@ -775,7 +776,9 @@ public:
   struct C_DeleteMore : public Context {
     PGRef pg;
     epoch_t epoch;
-    C_DeleteMore(PG *p, epoch_t e) : pg(p), epoch(e) {}
+    int64_t num_objects;
+    C_DeleteMore(PG *p, epoch_t e, int64_t num) : pg(p), epoch(e),
+	                                          num_objects(num){}
     void finish(int r) override {
       ceph_abort();
     }
@@ -1445,6 +1448,27 @@ public:
  {
    return get_pgbackend()->be_get_ondisk_size(logical_size);
  }
+};
+
+/**
+ * Initialized with a locked PG. That PG is unlocked in the
+ * destructor.
+ * Used by OsdScrub when initiating a scrub.
+ */
+class PGLockWrapper {
+ public:
+  template <typename A_PG_REF>
+  explicit PGLockWrapper(A_PG_REF&& locked_pg)
+      : m_pg{std::forward<A_PG_REF>(locked_pg)}
+  {}
+  PGRef pg() { return m_pg; }
+  ~PGLockWrapper();
+  PGLockWrapper(PGLockWrapper&& rhs) noexcept : m_pg(std::move(rhs.m_pg)) {
+    rhs.m_pg = nullptr;
+  }
+  PGLockWrapper(const PGLockWrapper& rhs) = delete;
+ private:
+  PGRef m_pg;
 };
 
 #endif

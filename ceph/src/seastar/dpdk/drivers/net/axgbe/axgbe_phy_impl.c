@@ -7,10 +7,10 @@
 #include "axgbe_common.h"
 #include "axgbe_phy.h"
 
-#define AXGBE_PHY_PORT_SPEED_100	BIT(0)
-#define AXGBE_PHY_PORT_SPEED_1000	BIT(1)
-#define AXGBE_PHY_PORT_SPEED_2500	BIT(2)
-#define AXGBE_PHY_PORT_SPEED_10000	BIT(3)
+#define AXGBE_PHY_PORT_SPEED_100	BIT(1)
+#define AXGBE_PHY_PORT_SPEED_1000	BIT(2)
+#define AXGBE_PHY_PORT_SPEED_2500	BIT(3)
+#define AXGBE_PHY_PORT_SPEED_10000	BIT(4)
 
 #define AXGBE_MUTEX_RELEASE		0x80000000
 
@@ -46,6 +46,7 @@ enum axgbe_port_mode {
 	AXGBE_PORT_MODE_10GBASE_T,
 	AXGBE_PORT_MODE_10GBASE_R,
 	AXGBE_PORT_MODE_SFP,
+	AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG,
 	AXGBE_PORT_MODE_MAX,
 };
 
@@ -347,7 +348,7 @@ again1:
 
 	retry = 1;
 again2:
-	/* Read the specfied register */
+	/* Read the specified register */
 	i2c_op.cmd = AXGBE_I2C_CMD_READ;
 	i2c_op.target = target;
 	i2c_op.len = val_len;
@@ -412,14 +413,14 @@ static int axgbe_phy_get_comm_ownership(struct axgbe_port *pdata)
 	uint64_t timeout;
 	unsigned int mutex_id;
 
-	if (phy_data->comm_owned)
-		return 0;
-
 	/* The I2C and MDIO/GPIO bus is multiplexed between multiple devices,
 	 * the driver needs to take the software mutex and then the hardware
 	 * mutexes before being able to use the busses.
 	 */
 	pthread_mutex_lock(&pdata->phy_mutex);
+
+	if (phy_data->comm_owned)
+		return 0;
 
 	/* Clear the mutexes */
 	XP_IOWRITE(pdata, XP_I2C_MUTEX, AXGBE_MUTEX_RELEASE);
@@ -610,8 +611,7 @@ static void axgbe_phy_sfp_parse_eeprom(struct axgbe_port *pdata)
 	if (sfp_base[AXGBE_SFP_BASE_EXT_ID] != AXGBE_SFP_EXT_ID_SFP)
 		return;
 
-	if (axgbe_phy_sfp_parse_quirks(pdata))
-		return;
+	axgbe_phy_sfp_parse_quirks(pdata);
 
 	/* Assume ACTIVE cable unless told it is PASSIVE */
 	if (sfp_base[AXGBE_SFP_BASE_CABLE] & AXGBE_SFP_BASE_CABLE_PASSIVE) {
@@ -791,6 +791,32 @@ static void axgbe_phy_sfp_reset(struct axgbe_phy_data *phy_data)
 	phy_data->sfp_speed = AXGBE_SFP_SPEED_UNKNOWN;
 }
 
+static const char *axgbe_base_as_string(enum axgbe_sfp_base sfp_base)
+{
+	switch (sfp_base) {
+	case AXGBE_SFP_BASE_1000_T:
+		return "1G_T";
+	case AXGBE_SFP_BASE_1000_SX:
+		return "1G_SX";
+	case AXGBE_SFP_BASE_1000_LX:
+		return "1G_LX";
+	case AXGBE_SFP_BASE_1000_CX:
+		return "1G_CX";
+	case AXGBE_SFP_BASE_10000_SR:
+		return "10G_SR";
+	case AXGBE_SFP_BASE_10000_LR:
+		return "10G_LR";
+	case AXGBE_SFP_BASE_10000_LRM:
+		return "10G_LRM";
+	case AXGBE_SFP_BASE_10000_ER:
+		return "10G_ER";
+	case AXGBE_SFP_BASE_10000_CR:
+		return "10G_CR";
+	default:
+		return "Unknown";
+	}
+}
+
 static void axgbe_phy_sfp_detect(struct axgbe_port *pdata)
 {
 	struct axgbe_phy_data *phy_data = pdata->phy_data;
@@ -820,6 +846,9 @@ static void axgbe_phy_sfp_detect(struct axgbe_port *pdata)
 
 	axgbe_phy_sfp_parse_eeprom(pdata);
 	axgbe_phy_sfp_external_phy(pdata);
+
+	PMD_DRV_LOG(DEBUG, "SFP Base: %s\n",
+		    axgbe_base_as_string(phy_data->sfp_base));
 
 put:
 	axgbe_phy_sfp_phy_settings(pdata);
@@ -857,6 +886,7 @@ static enum axgbe_mode axgbe_phy_an73_redrv_outcome(struct axgbe_port *pdata)
 	if (ad_reg & 0x80) {
 		switch (phy_data->port_mode) {
 		case AXGBE_PORT_MODE_BACKPLANE:
+		case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 			mode = AXGBE_MODE_KR;
 			break;
 		default:
@@ -866,6 +896,7 @@ static enum axgbe_mode axgbe_phy_an73_redrv_outcome(struct axgbe_port *pdata)
 	} else if (ad_reg & 0x20) {
 		switch (phy_data->port_mode) {
 		case AXGBE_PORT_MODE_BACKPLANE:
+		case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 			mode = AXGBE_MODE_KX_1000;
 			break;
 		case AXGBE_PORT_MODE_1000BASE_X:
@@ -958,6 +989,41 @@ static enum axgbe_mode axgbe_phy_an73_outcome(struct axgbe_port *pdata)
 	return mode;
 }
 
+static enum axgbe_mode axgbe_phy_an37_sgmii_outcome(struct axgbe_port *pdata)
+{
+	enum axgbe_mode mode;
+
+	pdata->phy.lp_advertising |= ADVERTISED_Autoneg;
+	pdata->phy.lp_advertising |= ADVERTISED_1000baseT_Full;
+
+	if (pdata->phy.pause_autoneg)
+		axgbe_phy_phydev_flowctrl(pdata);
+
+	switch (pdata->an_status & AXGBE_SGMII_AN_LINK_SPEED) {
+	case AXGBE_SGMII_AN_LINK_SPEED_100:
+		if (pdata->an_status & AXGBE_SGMII_AN_LINK_DUPLEX) {
+			pdata->phy.lp_advertising |= ADVERTISED_100baseT_Full;
+			mode = AXGBE_MODE_SGMII_100;
+		} else {
+			mode = AXGBE_MODE_UNKNOWN;
+		}
+		break;
+	case AXGBE_SGMII_AN_LINK_SPEED_1000:
+		if (pdata->an_status & AXGBE_SGMII_AN_LINK_DUPLEX) {
+			pdata->phy.lp_advertising |= ADVERTISED_1000baseT_Full;
+			mode = AXGBE_MODE_SGMII_1000;
+		} else {
+			/* Half-duplex not supported */
+			mode = AXGBE_MODE_UNKNOWN;
+		}
+		break;
+	default:
+		mode = AXGBE_MODE_UNKNOWN;
+		break;
+	}
+	return mode;
+}
+
 static enum axgbe_mode axgbe_phy_an_outcome(struct axgbe_port *pdata)
 {
 	switch (pdata->an_mode) {
@@ -967,6 +1033,7 @@ static enum axgbe_mode axgbe_phy_an_outcome(struct axgbe_port *pdata)
 		return axgbe_phy_an73_redrv_outcome(pdata);
 	case AXGBE_AN_MODE_CL37:
 	case AXGBE_AN_MODE_CL37_SGMII:
+		return axgbe_phy_an37_sgmii_outcome(pdata);
 	default:
 		return AXGBE_MODE_UNKNOWN;
 	}
@@ -988,6 +1055,7 @@ static unsigned int axgbe_phy_an_advertising(struct axgbe_port *pdata)
 
 	switch (phy_data->port_mode) {
 	case AXGBE_PORT_MODE_BACKPLANE:
+	case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 		advertising |= ADVERTISED_10000baseKR_Full;
 		break;
 	case AXGBE_PORT_MODE_BACKPLANE_2500:
@@ -1029,7 +1097,7 @@ static int axgbe_phy_an_config(struct axgbe_port *pdata __rte_unused)
 {
 	return 0;
 	/* Dummy API since there is no case to support
-	 * external phy devices registred through kerenl apis
+	 * external phy devices registered through kernel APIs
 	 */
 }
 
@@ -1058,6 +1126,7 @@ static enum axgbe_an_mode axgbe_phy_an_mode(struct axgbe_port *pdata)
 	switch (phy_data->port_mode) {
 	case AXGBE_PORT_MODE_BACKPLANE:
 		return AXGBE_AN_MODE_CL73;
+	case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 	case AXGBE_PORT_MODE_BACKPLANE_2500:
 		return AXGBE_AN_MODE_NONE;
 	case AXGBE_PORT_MODE_1000BASE_T:
@@ -1132,110 +1201,159 @@ static void axgbe_phy_set_redrv_mode(struct axgbe_port *pdata)
 	axgbe_phy_put_comm_ownership(pdata);
 }
 
-static void axgbe_phy_start_ratechange(struct axgbe_port *pdata)
+static void axgbe_phy_rx_reset(struct axgbe_port *pdata)
 {
-	if (!XP_IOREAD_BITS(pdata, XP_DRIVER_INT_RO, STATUS))
-		return;
+	int reg;
+
+	reg = XMDIO_READ_BITS(pdata, MDIO_MMD_PCS, MDIO_PCS_DIGITAL_STAT,
+			      XGBE_PCS_PSEQ_STATE_MASK);
+	if (reg == XGBE_PCS_PSEQ_STATE_POWER_GOOD) {
+		/* Mailbox command timed out, reset of RX block is required.
+		 * This can be done by asseting the reset bit and wait for
+		 * its compeletion.
+		 */
+		XMDIO_WRITE_BITS(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_RX_CTRL1,
+				 XGBE_PMA_RX_RST_0_MASK, XGBE_PMA_RX_RST_0_RESET_ON);
+		rte_delay_us(20);
+		XMDIO_WRITE_BITS(pdata, MDIO_MMD_PMAPMD, MDIO_PMA_RX_CTRL1,
+				 XGBE_PMA_RX_RST_0_MASK, XGBE_PMA_RX_RST_0_RESET_OFF);
+		rte_delay_us(45);
+		PMD_DRV_LOG(ERR, "firmware mailbox reset performed\n");
+	}
 }
 
-static void axgbe_phy_complete_ratechange(struct axgbe_port *pdata)
+
+static void axgbe_phy_pll_ctrl(struct axgbe_port *pdata, bool enable)
 {
+	XMDIO_WRITE_BITS(pdata, MDIO_MMD_PMAPMD, MDIO_VEND2_PMA_MISC_CTRL0,
+			XGBE_PMA_PLL_CTRL_MASK,
+			enable ? XGBE_PMA_PLL_CTRL_SET
+			: XGBE_PMA_PLL_CTRL_CLEAR);
+
+	/* Wait for command to complete */
+	rte_delay_us(150);
+}
+
+static void axgbe_phy_perform_ratechange(struct axgbe_port *pdata,
+					unsigned int cmd, unsigned int sub_cmd)
+{
+	unsigned int s0 = 0;
 	unsigned int wait;
+	/* Clear the PLL so that it helps in power down sequence */
+	axgbe_phy_pll_ctrl(pdata, false);
+
+	/* Log if a previous command did not complete */
+	if (XP_IOREAD_BITS(pdata, XP_DRIVER_INT_RO, STATUS)) {
+		PMD_DRV_LOG(NOTICE, "firmware mailbox not ready for command\n");
+		axgbe_phy_rx_reset(pdata);
+	}
+
+	/* Construct the command */
+	XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, COMMAND, cmd);
+	XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, SUB_COMMAND, sub_cmd);
+
+	/* Issue the command */
+	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_0, s0);
+	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_1, 0);
+	XP_IOWRITE_BITS(pdata, XP_DRIVER_INT_REQ, REQUEST, 1);
 
 	/* Wait for command to complete */
 	wait = AXGBE_RATECHANGE_COUNT;
 	while (wait--) {
 		if (!XP_IOREAD_BITS(pdata, XP_DRIVER_INT_RO, STATUS))
-			return;
-
+			goto reenable_pll;
 		rte_delay_us(1500);
 	}
+	PMD_DRV_LOG(NOTICE, "firmware mailbox command did not complete\n");
+	/* Reset on error */
+	axgbe_phy_rx_reset(pdata);
+
+reenable_pll:
+	 /* Re-enable the PLL control */
+	axgbe_phy_pll_ctrl(pdata, true);
+
+	PMD_DRV_LOG(NOTICE, "firmware mailbox command did not complete\n");
 }
 
 static void axgbe_phy_rrc(struct axgbe_port *pdata)
 {
-	unsigned int s0;
 
-	axgbe_phy_start_ratechange(pdata);
 
 	/* Receiver Reset Cycle */
-	s0 = 0;
-	XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, COMMAND, 5);
-	XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, SUB_COMMAND, 0);
+	axgbe_phy_perform_ratechange(pdata, 5, 0);
 
-	/* Call FW to make the change */
-	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_0, s0);
-	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_1, 0);
-	XP_IOWRITE_BITS(pdata, XP_DRIVER_INT_REQ, REQUEST, 1);
-
-	axgbe_phy_complete_ratechange(pdata);
+	PMD_DRV_LOG(DEBUG, "receiver reset complete\n");
 }
 
 static void axgbe_phy_power_off(struct axgbe_port *pdata)
 {
 	struct axgbe_phy_data *phy_data = pdata->phy_data;
 
-	axgbe_phy_start_ratechange(pdata);
+	/* Power off */
+	axgbe_phy_perform_ratechange(pdata, 0, 0);
 
-	/* Call FW to make the change */
-	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_0, 0);
-	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_1, 0);
-	XP_IOWRITE_BITS(pdata, XP_DRIVER_INT_REQ, REQUEST, 1);
-	axgbe_phy_complete_ratechange(pdata);
 	phy_data->cur_mode = AXGBE_MODE_UNKNOWN;
+
+	PMD_DRV_LOG(DEBUG, "phy powered off\n");
 }
 
 static void axgbe_phy_sfi_mode(struct axgbe_port *pdata)
 {
 	struct axgbe_phy_data *phy_data = pdata->phy_data;
-	unsigned int s0;
 
 	axgbe_phy_set_redrv_mode(pdata);
 
-	axgbe_phy_start_ratechange(pdata);
-
 	/* 10G/SFI */
-	s0 = 0;
-	XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, COMMAND, 3);
 	if (phy_data->sfp_cable != AXGBE_SFP_CABLE_PASSIVE) {
-		XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, SUB_COMMAND, 0);
+		axgbe_phy_perform_ratechange(pdata, 3, 0);
 	} else {
 		if (phy_data->sfp_cable_len <= 1)
-			XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, SUB_COMMAND, 1);
+			axgbe_phy_perform_ratechange(pdata, 3, 1);
 		else if (phy_data->sfp_cable_len <= 3)
-			XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, SUB_COMMAND, 2);
+			axgbe_phy_perform_ratechange(pdata, 3, 2);
 		else
-			XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, SUB_COMMAND, 3);
+			axgbe_phy_perform_ratechange(pdata, 3, 3);
 	}
 
-	/* Call FW to make the change */
-	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_0, s0);
-	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_1, 0);
-	XP_IOWRITE_BITS(pdata, XP_DRIVER_INT_REQ, REQUEST, 1);
-	axgbe_phy_complete_ratechange(pdata);
 	phy_data->cur_mode = AXGBE_MODE_SFI;
+
+	PMD_DRV_LOG(DEBUG, "10GbE SFI mode set\n");
 }
 
 static void axgbe_phy_kr_mode(struct axgbe_port *pdata)
 {
 	struct axgbe_phy_data *phy_data = pdata->phy_data;
-	unsigned int s0;
 
 	axgbe_phy_set_redrv_mode(pdata);
 
-	axgbe_phy_start_ratechange(pdata);
-
 	/* 10G/KR */
-	s0 = 0;
-	XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, COMMAND, 4);
-	XP_SET_BITS(s0, XP_DRIVER_SCRATCH_0, SUB_COMMAND, 0);
-
-	/* Call FW to make the change */
-	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_0, s0);
-	XP_IOWRITE(pdata, XP_DRIVER_SCRATCH_1, 0);
-	XP_IOWRITE_BITS(pdata, XP_DRIVER_INT_REQ, REQUEST, 1);
-	axgbe_phy_complete_ratechange(pdata);
+	axgbe_phy_perform_ratechange(pdata, 4, 0);
 	phy_data->cur_mode = AXGBE_MODE_KR;
+
+	PMD_DRV_LOG(DEBUG, "10GbE KR mode set\n");
+}
+
+static void axgbe_phy_kx_2500_mode(struct axgbe_port *pdata)
+{
+	struct axgbe_phy_data *phy_data = pdata->phy_data;
+
+	axgbe_phy_set_redrv_mode(pdata);
+
+	/* 2.5G/KX */
+	axgbe_phy_perform_ratechange(pdata, 2, 0);
+	phy_data->cur_mode = AXGBE_MODE_KX_2500;
+}
+
+static void axgbe_phy_sgmii_1000_mode(struct axgbe_port *pdata)
+{
+	struct axgbe_phy_data *phy_data = pdata->phy_data;
+
+	axgbe_phy_set_redrv_mode(pdata);
+
+	/* 1G/SGMII */
+	axgbe_phy_perform_ratechange(pdata, 1, 2);
+
+	phy_data->cur_mode = AXGBE_MODE_SGMII_1000;
 }
 
 static enum axgbe_mode axgbe_phy_cur_mode(struct axgbe_port *pdata)
@@ -1287,6 +1405,7 @@ static enum axgbe_mode axgbe_phy_switch_mode(struct axgbe_port *pdata)
 
 	switch (phy_data->port_mode) {
 	case AXGBE_PORT_MODE_BACKPLANE:
+	case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 		return axgbe_phy_switch_bp_mode(pdata);
 	case AXGBE_PORT_MODE_BACKPLANE_2500:
 		return axgbe_phy_switch_bp_2500_mode(pdata);
@@ -1382,6 +1501,7 @@ static enum axgbe_mode axgbe_phy_get_mode(struct axgbe_port *pdata,
 
 	switch (phy_data->port_mode) {
 	case AXGBE_PORT_MODE_BACKPLANE:
+	case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 		return axgbe_phy_get_bp_mode(speed);
 	case AXGBE_PORT_MODE_BACKPLANE_2500:
 		return axgbe_phy_get_bp_2500_mode(speed);
@@ -1407,6 +1527,12 @@ static void axgbe_phy_set_mode(struct axgbe_port *pdata, enum axgbe_mode mode)
 		break;
 	case AXGBE_MODE_SFI:
 		axgbe_phy_sfi_mode(pdata);
+		break;
+	case AXGBE_MODE_KX_2500:
+		axgbe_phy_kx_2500_mode(pdata);
+		break;
+	case AXGBE_MODE_SGMII_1000:
+		axgbe_phy_sgmii_1000_mode(pdata);
 		break;
 	default:
 		break;
@@ -1525,6 +1651,7 @@ static bool axgbe_phy_use_mode(struct axgbe_port *pdata, enum axgbe_mode mode)
 
 	switch (phy_data->port_mode) {
 	case AXGBE_PORT_MODE_BACKPLANE:
+	case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 		return axgbe_phy_use_bp_mode(pdata, mode);
 	case AXGBE_PORT_MODE_BACKPLANE_2500:
 		return axgbe_phy_use_bp_2500_mode(pdata, mode);
@@ -1687,6 +1814,7 @@ static bool axgbe_phy_port_mode_mismatch(struct axgbe_port *pdata)
 
 	switch (phy_data->port_mode) {
 	case AXGBE_PORT_MODE_BACKPLANE:
+	case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 		if ((phy_data->port_speeds & AXGBE_PHY_PORT_SPEED_1000) ||
 		    (phy_data->port_speeds & AXGBE_PHY_PORT_SPEED_10000))
 			return false;
@@ -1739,6 +1867,7 @@ static bool axgbe_phy_conn_type_mismatch(struct axgbe_port *pdata)
 
 	switch (phy_data->port_mode) {
 	case AXGBE_PORT_MODE_BACKPLANE:
+	case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 	case AXGBE_PORT_MODE_BACKPLANE_2500:
 		if (phy_data->conn_type == AXGBE_CONN_TYPE_BACKPLANE)
 			return false;
@@ -1911,6 +2040,7 @@ static int axgbe_phy_start(struct axgbe_port *pdata)
 	default:
 		break;
 	}
+	pdata->phy.advertising &= axgbe_phy_an_advertising(pdata);
 
 	return ret;
 }
@@ -2002,6 +2132,8 @@ static int axgbe_phy_init(struct axgbe_port *pdata)
 		/* Backplane support */
 	case AXGBE_PORT_MODE_BACKPLANE:
 		pdata->phy.supported |= SUPPORTED_Autoneg;
+		/* Fallthrough */
+	case AXGBE_PORT_MODE_BACKPLANE_NO_AUTONEG:
 		pdata->phy.supported |= SUPPORTED_Pause | SUPPORTED_Asym_Pause;
 		pdata->phy.supported |= SUPPORTED_Backplane;
 		if (phy_data->port_speeds & AXGBE_PHY_PORT_SPEED_1000) {

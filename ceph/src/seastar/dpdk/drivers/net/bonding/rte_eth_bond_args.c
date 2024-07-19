@@ -4,14 +4,12 @@
 
 #include <rte_devargs.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_driver.h>
+#include <bus_pci_driver.h>
 #include <rte_kvargs.h>
 
-#include <cmdline_parse.h>
-#include <cmdline_parse_etheraddr.h>
-
 #include "rte_eth_bond.h"
-#include "rte_eth_bond_private.h"
+#include "eth_bond_private.h"
 
 const char *pmd_bond_init_valid_arguments[] = {
 	PMD_BOND_SLAVE_PORT_KVARG,
@@ -21,27 +19,41 @@ const char *pmd_bond_init_valid_arguments[] = {
 	PMD_BOND_SOCKET_ID_KVARG,
 	PMD_BOND_MAC_ADDR_KVARG,
 	PMD_BOND_AGG_MODE_KVARG,
-	"driver",
+	RTE_DEVARGS_KEY_DRIVER,
 	NULL
 };
 
 static inline int
+bond_pci_addr_cmp(const struct rte_device *dev, const void *_pci_addr)
+{
+	const struct rte_pci_device *pdev = RTE_DEV_TO_PCI_CONST(dev);
+	const struct rte_pci_addr *paddr = _pci_addr;
+
+	return rte_pci_addr_cmp(&pdev->addr, paddr);
+}
+
+static inline int
 find_port_id_by_pci_addr(const struct rte_pci_addr *pci_addr)
 {
-	struct rte_pci_device *pci_dev;
-	struct rte_pci_addr *eth_pci_addr;
+	struct rte_bus *pci_bus;
+	struct rte_device *dev;
 	unsigned i;
 
-	RTE_ETH_FOREACH_DEV(i) {
-		pci_dev = RTE_ETH_DEV_TO_PCI(&rte_eth_devices[i]);
-		eth_pci_addr = &pci_dev->addr;
-
-		if (pci_addr->bus == eth_pci_addr->bus &&
-			pci_addr->devid == eth_pci_addr->devid &&
-			pci_addr->domain == eth_pci_addr->domain &&
-			pci_addr->function == eth_pci_addr->function)
-			return i;
+	pci_bus = rte_bus_find_by_name("pci");
+	if (pci_bus == NULL) {
+		RTE_BOND_LOG(ERR, "No PCI bus found");
+		return -1;
 	}
+
+	dev = pci_bus->find_device(NULL, bond_pci_addr_cmp, pci_addr);
+	if (dev == NULL) {
+		RTE_BOND_LOG(ERR, "unable to find PCI device");
+		return -1;
+	}
+
+	RTE_ETH_FOREACH_DEV(i)
+		if (rte_eth_devices[i].device == dev)
+			return i;
 	return -1;
 }
 
@@ -60,16 +72,6 @@ find_port_id_by_dev_name(const char *name)
 	return -1;
 }
 
-static inline int
-bond_pci_addr_cmp(const struct rte_device *dev, const void *_pci_addr)
-{
-	struct rte_pci_device *pdev;
-	const struct rte_pci_addr *paddr = _pci_addr;
-
-	pdev = RTE_DEV_TO_PCI(*(struct rte_device **)(void *)&dev);
-	return rte_eal_compare_pci_addr(&pdev->addr, paddr);
-}
-
 /**
  * Parses a port identifier string to a port id by pci address, then by name,
  * and finally port id.
@@ -78,23 +80,10 @@ static inline int
 parse_port_id(const char *port_str)
 {
 	struct rte_pci_addr dev_addr;
-	struct rte_bus *pci_bus;
-	struct rte_device *dev;
 	int port_id;
 
-	pci_bus = rte_bus_find_by_name("pci");
-	if (pci_bus == NULL) {
-		RTE_LOG(ERR, PMD, "unable to find PCI bus\n");
-		return -1;
-	}
-
 	/* try parsing as pci address, physical devices */
-	if (pci_bus->parse(port_str, &dev_addr) == 0) {
-		dev = pci_bus->find_device(NULL, bond_pci_addr_cmp, &dev_addr);
-		if (dev == NULL) {
-			RTE_BOND_LOG(ERR, "unable to find PCI device");
-			return -1;
-		}
+	if (rte_pci_addr_parse(port_str, &dev_addr) == 0) {
 		port_id = find_port_id_by_pci_addr(&dev_addr);
 		if (port_id < 0)
 			return -1;
@@ -112,9 +101,8 @@ parse_port_id(const char *port_str)
 		}
 	}
 
-	if (port_id < 0 || port_id > RTE_MAX_ETHPORTS) {
-		RTE_BOND_LOG(ERR, "Slave port specified (%s) outside expected range",
-				port_str);
+	if (!rte_eth_dev_is_valid_port(port_id)) {
+		RTE_BOND_LOG(ERR, "Specified port (%s) is invalid", port_str);
 		return -1;
 	}
 	return port_id;
@@ -213,20 +201,26 @@ int
 bond_ethdev_parse_socket_id_kvarg(const char *key __rte_unused,
 		const char *value, void *extra_args)
 {
-	int socket_id;
+	long socket_id;
 	char *endptr;
 
 	if (value == NULL || extra_args == NULL)
 		return -1;
 
 	errno = 0;
-	socket_id = (uint8_t)strtol(value, &endptr, 10);
+	socket_id = strtol(value, &endptr, 10);
 	if (*endptr != 0 || errno != 0)
 		return -1;
 
+	/* SOCKET_ID_ANY also consider a valid socket id */
+	if ((int8_t)socket_id == SOCKET_ID_ANY) {
+		*(int *)extra_args = SOCKET_ID_ANY;
+		return 0;
+	}
+
 	/* validate socket id value */
-	if (socket_id >= 0) {
-		*(uint8_t *)extra_args = (uint8_t)socket_id;
+	if (socket_id >= 0 && socket_id < RTE_MAX_NUMA_NODES) {
+		*(int *)extra_args = (int)socket_id;
 		return 0;
 	}
 	return -1;
@@ -281,8 +275,7 @@ bond_ethdev_parse_bond_mac_addr_kvarg(const char *key __rte_unused,
 		return -1;
 
 	/* Parse MAC */
-	return cmdline_parse_etheraddr(NULL, value, extra_args,
-		sizeof(struct ether_addr));
+	return rte_ether_unformat_addr(value, extra_args);
 }
 
 int

@@ -11,8 +11,8 @@ import { RgwZonegroupService } from '~/app/shared/api/rgw-zonegroup.service';
 import { RgwZoneService } from '~/app/shared/api/rgw-zone.service';
 import { RgwBucketService } from '~/app/shared/api/rgw-bucket.service';
 import { HealthService } from '~/app/shared/api/health.service';
-import { CardComponent } from '~/app/shared/components/card/card.component';
 import { CardRowComponent } from '~/app/shared/components/card-row/card-row.component';
+import { CardComponent } from '~/app/shared/components/card/card.component';
 import { NO_ERRORS_SCHEMA } from '@angular/core';
 import { configureTestBed } from '~/testing/unit-test-helper';
 

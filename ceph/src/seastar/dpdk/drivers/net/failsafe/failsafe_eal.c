@@ -3,6 +3,7 @@
  * Copyright 2017 Mellanox Technologies, Ltd
  */
 
+#include <bus_driver.h>
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
 
@@ -48,7 +49,7 @@ fs_bus_init(struct rte_eth_dev *dev)
 			ret = rte_eal_hotplug_add(da->bus->name,
 						  da->name,
 						  da->args);
-			if (ret) {
+			if (ret < 0) {
 				ERROR("sub_device %d probe failed %s%s%s", i,
 				      rte_errno ? "(" : "",
 				      rte_errno ? strerror(rte_errno) : "",
@@ -79,7 +80,7 @@ fs_bus_init(struct rte_eth_dev *dev)
 					rte_eth_devices[pid].device->devargs;
 
 			/* Take control of probed device. */
-			free(da->args);
+			rte_devargs_reset(da);
 			memset(da, 0, sizeof(*da));
 			if (probed_da != NULL)
 				snprintf(devstr, sizeof(devstr), "%s,%s",
@@ -147,7 +148,7 @@ fs_bus_uninit(struct rte_eth_dev *dev)
 
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_PROBED) {
 		sdev_ret = rte_dev_remove(sdev->dev);
-		if (sdev_ret) {
+		if (sdev_ret < 0) {
 			ERROR("Failed to remove requested device %s (err: %d)",
 			      sdev->dev->name, sdev_ret);
 			continue;

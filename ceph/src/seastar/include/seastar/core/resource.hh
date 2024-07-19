@@ -21,11 +21,13 @@
 
 #pragma once
 
+#include <seastar/util/std-compat.hh>
+#include <seastar/util/spinlock.hh>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
 #include <cassert>
 #include <cstdlib>
 #include <string>
-#include <seastar/util/std-compat.hh>
-#include <seastar/util/spinlock.hh>
 #include <vector>
 #include <set>
 #include <sched.h>
@@ -33,6 +35,7 @@
 #include <unordered_map>
 #ifdef SEASTAR_HAVE_HWLOC
 #include <hwloc.h>
+#endif
 #endif
 
 namespace seastar {
@@ -84,10 +87,12 @@ struct topology_holder {};
 
 } // namespace hwloc::internal
 
+SEASTAR_MODULE_EXPORT_BEGIN
+
 struct configuration {
     optional<size_t> total_memory;
     optional<size_t> reserve_memory;  // if total_memory not specified
-    size_t reserve_additional_memory;
+    size_t reserve_additional_memory_per_shard;
     size_t cpus;
     cpuset cpu_set;
     bool assign_orphan_cpus = false;
@@ -105,6 +110,7 @@ struct memory {
 struct io_queue_topology {
     std::vector<std::unique_ptr<io_queue>> queues;
     std::vector<unsigned> shard_to_group;
+    std::vector<unsigned> shards_in_group;
     std::vector<std::shared_ptr<io_group>> groups;
 
     util::spinlock lock;
@@ -123,12 +129,16 @@ struct cpu {
 struct resources {
     std::vector<cpu> cpus;
     std::unordered_map<dev_t, io_queue_topology> ioq_topology;
+    std::unordered_map<unsigned /* numa node id */, cpuset> numa_node_id_to_cpuset;
 };
 
 resources allocate(configuration& c);
 unsigned nr_processing_units(configuration& c);
 
+SEASTAR_MODULE_EXPORT_END
+
 std::optional<resource::cpuset> parse_cpuset(std::string value);
+
 
 }
 }

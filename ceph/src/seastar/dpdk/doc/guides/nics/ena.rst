@@ -1,39 +1,37 @@
-.. BSD LICENSE
-
-    Copyright (c) 2015-2018 Amazon.com, Inc. or its affiliates.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright (c) 2015-2020 Amazon.com, Inc. or its affiliates.
     All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Amazon.com, Inc. nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ENA Poll Mode Driver
 ====================
 
 The ENA PMD is a DPDK poll-mode driver for the Amazon Elastic
 Network Adapter (ENA) family.
+
+Supported ENA adapters
+----------------------
+
+Current ENA PMD supports the following ENA adapters including:
+
+* ``1d0f:ec20`` - ENA VF
+* ``1d0f:ec21`` - ENA VF RSERV0
+
+Supported features
+------------------
+
+* MTU configuration
+* Jumbo frames up to 9K
+* IPv4/TCP/UDP checksum offload
+* TSO offload
+* Multiple receive and transmit queues
+* RSS hash
+* RSS indirection table configuration
+* Low Latency Queue for Tx
+* Basic and extended statistics
+* LSC event notification
+* Watchdog (requires handling of timers in the application)
+* Device reset upon failure
+* Rx interrupts
 
 Overview
 --------
@@ -103,26 +101,38 @@ Refer to ``ena_eth_io_defs.h`` for the detailed structure of the descriptor
 
 The driver supports multi-queue for both Tx and Rx.
 
-Configuration information
--------------------------
+Configuration
+-------------
 
-**DPDK Configuration Parameters**
+Runtime Configuration
+^^^^^^^^^^^^^^^^^^^^^
 
-  The following configuration options are available for the ENA PMD:
+   * **large_llq_hdr** (default 0)
 
-   * **CONFIG_RTE_LIBRTE_ENA_PMD** (default y): Enables or disables inclusion
-     of the ENA PMD driver in the DPDK compilation.
+     Enables or disables usage of large LLQ headers. This option will have
+     effect only if the device also supports large LLQ headers. Otherwise, the
+     default value will be used.
 
-   * **CONFIG_RTE_LIBRTE_ENA_DEBUG_RX** (default n): Enables or disables debug
-     logging of RX logic within the ENA PMD driver.
+   * **miss_txc_to** (default 5)
 
-   * **CONFIG_RTE_LIBRTE_ENA_DEBUG_TX** (default n): Enables or disables debug
-     logging of TX logic within the ENA PMD driver.
+     Number of seconds after which the Tx packet will be considered missing.
+     If the missing packets number will exceed dynamically calculated threshold,
+     the driver will trigger the device reset which should be handled by the
+     application. Checking for missing Tx completions happens in the driver's
+     timer service. Setting this parameter to 0 disables this feature. Maximum
+     allowed value is 60 seconds.
 
-   * **CONFIG_RTE_LIBRTE_ENA_COM_DEBUG** (default n): Enables or disables debug
-     logging of low level tx/rx logic in ena_com(base) within the ENA PMD driver.
+   * **enable_llq** (default 1)
 
-**ENA Configuration Parameters**
+     Determines whenever the driver should use the LLQ (if it's available) or
+     not.
+
+     **NOTE: On the 6th generation AWS instances disabling LLQ may lead to a
+     huge performance degradation. In general disabling LLQ is highly not
+     recommended!**
+
+ENA Configuration Parameters
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
    * **Number of Queues**
 
@@ -147,35 +157,11 @@ By default the ENA PMD library will be built into the DPDK library.
 For configuring and using UIO and VFIO frameworks, please also refer :ref:`the
 documentation that comes with DPDK suite <linux_gsg>`.
 
-Supported ENA adapters
-----------------------
-
-Current ENA PMD supports the following ENA adapters including:
-
-* ``1d0f:ec20`` - ENA VF
-* ``1d0f:ec21`` - ENA VF with LLQ support
-
 Supported Operating Systems
 ---------------------------
 
 Any Linux distribution fulfilling the conditions described in ``System Requirements``
 section of :ref:`the DPDK documentation <linux_gsg>` or refer to *DPDK Release Notes*.
-
-Supported features
-------------------
-
-* MTU configuration
-* Jumbo frames up to 9K
-* IPv4/TCP/UDP checksum offload
-* TSO offload
-* Multiple receive and transmit queues
-* RSS hash
-* RSS indirection table configuration
-* Low Latency Queue for Tx
-* Basic and extended statistics
-* LSC event notification
-* Watchdog (requires handling of timers in the application)
-* Device reset upon failure
 
 Prerequisites
 -------------
@@ -188,13 +174,12 @@ Prerequisites
    (*) ENAv2 hardware supports Low Latency Queue v2 (LLQv2). This feature
    reduces the latency of the packets by pushing the header directly through
    the PCI to the device, before the DMA is even triggered. For proper work
-   kernel PCI driver must support write combining (WC). In mainline version of
-   ``igb_uio`` (in DPDK repo) it must be enabled by loading module with
+   kernel PCI driver must support write combining (WC).
+   In DPDK ``igb_uio`` it must be enabled by loading module with
    ``wc_activate=1`` flag (example below). However, mainline's vfio-pci
    driver in kernel doesn't have WC support yet (planed to be added).
-   If vfio-pci used user should be either turn off ENAv2 (to avoid performance
-   impact) or recompile vfio-pci driver with patch provided in
-   `amzn-github <https://github.com/amzn/amzn-drivers/tree/master/userspace/dpdk/enav2-vfio-patch>`_.
+   If vfio-pci is used user should follow `AWS ENA PMD documentation
+   <https://github.com/amzn/amzn-drivers/tree/master/userspace/dpdk/README.md>`_.
 
 #. Insert ``vfio-pci`` or ``igb_uio`` kernel module using the command
    ``modprobe vfio-pci`` or ``modprobe uio; insmod igb_uio.ko wc_activate=1``
@@ -206,18 +191,73 @@ Prerequisites
 
      echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode
 
+   To use ``noiommu`` mode, the ``vfio-pci`` must be built with flag
+   ``CONFIG_VFIO_NOIOMMU``.
+
 #. Bind the intended ENA device to ``vfio-pci`` or ``igb_uio`` module.
 
-
 At this point the system should be ready to run DPDK applications. Once the
-application runs to completion, the ENA can be detached from igb_uio if necessary.
+application runs to completion, the ENA can be detached from attached module if
+necessary.
+
+**Rx interrupts support**
+
+ENA PMD supports Rx interrupts, which can be used to wake up lcores waiting for
+input. Please note that it won't work with ``igb_uio``, so to use this feature,
+the ``vfio-pci`` should be used.
+
+ENA handles admin interrupts and AENQ notifications on separate interrupt.
+There is possibility that there won't be enough event file descriptors to
+handle both admin and Rx interrupts. In that situation the Rx interrupt request
+will fail.
+
+**Note about usage on \*.metal instances**
+
+On AWS, the metal instances are supporting IOMMU for both arm64 and x86_64
+hosts.
+
+* x86_64 (e.g. c5.metal, i3.metal):
+   IOMMU should be disabled by default. In that situation, the ``igb_uio`` can
+   be used as it is but ``vfio-pci`` should be working in no-IOMMU mode (please
+   see above).
+
+   When IOMMU is enabled, ``igb_uio`` cannot be used as it's not supporting this
+   feature, while ``vfio-pci`` should work without any changes.
+   To enable IOMMU on those hosts, please update ``GRUB_CMDLINE_LINUX`` in file
+   ``/etc/default/grub`` with the below extra boot arguments::
+
+    iommu=1 intel_iommu=on
+
+   Then, make the changes live by executing as a root::
+
+    # grub2-mkconfig > /boot/grub2/grub.cfg
+
+   Finally, reboot should result in IOMMU being enabled.
+
+* arm64 (a1.metal):
+   IOMMU should be enabled by default. Unfortunately, ``vfio-pci`` isn't
+   supporting SMMU, which is implementation of IOMMU for arm64 architecture and
+   ``igb_uio`` isn't supporting IOMMU at all, so to use DPDK with ENA on those
+   hosts, one must disable IOMMU. This can be done by updating
+   ``GRUB_CMDLINE_LINUX`` in file ``/etc/default/grub`` with the extra boot
+   argument::
+
+    iommu.passthrough=1
+
+   Then, make the changes live by executing as a root::
+
+    # grub2-mkconfig > /boot/grub2/grub.cfg
+
+   Finally, reboot should result in IOMMU being disabled.
+   Without IOMMU, ``igb_uio`` can be used as it is but ``vfio-pci`` should be
+   working in no-IOMMU mode (please see above).
 
 Usage example
 -------------
 
 Follow instructions available in the document
 :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>` to launch
-**testpmd** with Amazon ENA devices managed by librte_pmd_ena.
+**testpmd** with Amazon ENA devices managed by librte_net_ena.
 
 Example output:
 
@@ -225,7 +265,7 @@ Example output:
 
    [...]
    EAL: PCI device 0000:00:06.0 on NUMA socket -1
-   EAL:   Invalid NUMA socket, default to 0
+   EAL: Device 0000:00:06.0 is not NUMA-aware, defaulting socket to 0
    EAL:   probe driver: 1d0f:ec20 net_ena
 
    Interactive-mode selected

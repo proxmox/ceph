@@ -32,6 +32,16 @@ hobject_t RecoveryBackend::get_temp_recovery_object(
   return hoid;
 }
 
+void RecoveryBackend::add_temp_obj(const hobject_t &oid)
+{
+  backend->add_temp_obj(oid);
+}
+
+void RecoveryBackend::clear_temp_obj(const hobject_t &oid)
+{
+  backend->clear_temp_obj(oid);
+}
+
 void RecoveryBackend::clean_up(ceph::os::Transaction& t,
 			       std::string_view why)
 {
@@ -70,7 +80,7 @@ void RecoveryBackend::WaitForObjectRecovery::stop() {
 
 void RecoveryBackend::handle_backfill_finish(
   MOSDPGBackfill& m,
-  crimson::net::ConnectionRef conn)
+  crimson::net::ConnectionXcoreRef conn)
 {
   logger().debug("{}", __func__);
   ceph_assert(!pg.is_primary());
@@ -125,7 +135,7 @@ RecoveryBackend::handle_backfill_finish_ack(
 RecoveryBackend::interruptible_future<>
 RecoveryBackend::handle_backfill(
   MOSDPGBackfill& m,
-  crimson::net::ConnectionRef conn)
+  crimson::net::ConnectionXcoreRef conn)
 {
   logger().debug("{}", __func__);
   if (pg.old_peering_msg(m.map_epoch, m.query_epoch)) {
@@ -227,7 +237,7 @@ RecoveryBackend::scan_for_backfill(
 RecoveryBackend::interruptible_future<>
 RecoveryBackend::handle_scan_get_digest(
   MOSDPGScan& m,
-  crimson::net::ConnectionRef conn)
+  crimson::net::ConnectionXcoreRef conn)
 {
   logger().debug("{}", __func__);
   if (false /* FIXME: check for backfill too full */) {
@@ -289,7 +299,7 @@ RecoveryBackend::handle_scan_digest(
 RecoveryBackend::interruptible_future<>
 RecoveryBackend::handle_scan(
   MOSDPGScan& m,
-  crimson::net::ConnectionRef conn)
+  crimson::net::ConnectionXcoreRef conn)
 {
   logger().debug("{}", __func__);
   if (pg.old_peering_msg(m.map_epoch, m.query_epoch)) {
@@ -311,7 +321,7 @@ RecoveryBackend::handle_scan(
 RecoveryBackend::interruptible_future<>
 RecoveryBackend::handle_recovery_op(
   Ref<MOSDFastDispatchOp> m,
-  crimson::net::ConnectionRef conn)
+  crimson::net::ConnectionXcoreRef conn)
 {
   switch (m->get_header().type) {
   case MSG_OSD_PG_BACKFILL:

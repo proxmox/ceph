@@ -145,7 +145,7 @@ bool MDSCapMatch::match(string_view target_path,
       bool gid_matched = false;
       if (std::find(gids.begin(), gids.end(), caller_gid) != gids.end())
 	gid_matched = true;
-      if (caller_gid_list) {
+      else if (caller_gid_list) {
 	for (auto i = caller_gid_list->begin(); i != caller_gid_list->end(); ++i) {
 	  if (std::find(gids.begin(), gids.end(), *i) != gids.end()) {
 	    gid_matched = true;
@@ -167,14 +167,29 @@ bool MDSCapMatch::match(string_view target_path,
 
 bool MDSCapMatch::match_path(string_view target_path) const
 {
-  if (path.length()) {
-    if (target_path.find(path) != 0)
+  string _path = path;
+  // drop any tailing /
+  while (_path.length() && _path[_path.length() - 1] == '/') {
+    _path = path.substr(0, _path.length() - 1);
+  }
+
+  if (_path.length()) {
+    if (target_path.find(_path) != 0)
       return false;
-    // if path doesn't already have a trailing /, make sure the target
-    // does so that path=/foo doesn't match target_path=/food
-    if (target_path.length() > path.length() &&
-	path[path.length()-1] != '/' &&
-	target_path[path.length()] != '/')
+    /* In case target_path.find(_path) == 0 && target_path.length() == _path.length():
+     *  path=/foo  _path=/foo target_path=/foo     --> match
+     *  path=/foo/ _path=/foo target_path=/foo     --> match
+     *
+     * In case target_path.find(_path) == 0 && target_path.length() > _path.length():
+     *  path=/foo/ _path=/foo target_path=/foo/    --> match
+     *  path=/foo  _path=/foo target_path=/foo/    --> match
+     *  path=/foo/ _path=/foo target_path=/foo/d   --> match
+     *  path=/foo  _path=/foo target_path=/food    --> mismatch
+     *
+     * All the other cases                         --> mismatch
+     */
+    if (target_path.length() > _path.length() &&
+	target_path[_path.length()] != '/')
       return false;
   }
 
@@ -356,8 +371,8 @@ bool MDSAuthCaps::parse(string_view str, ostream *err)
 
     if (err) {
       if (string(iter, end).find("allow") != string::npos) {
-       *err << "Permission flags in MDS caps must start with 'r' or " <<
-	       "'rw' or be '*' or 'all'";
+       *err << "Permission flags in MDS capability string must be '*' or "
+	    << "'all' or must start with 'r'";
       } else {
        *err << "mds capability parse failed, stopped at '"
             << string(iter, end) << "' of '" << str << "'";
@@ -367,6 +382,88 @@ bool MDSAuthCaps::parse(string_view str, ostream *err)
   }
 }
 
+bool MDSAuthCaps::merge(MDSAuthCaps newcap)
+{
+  ceph_assert(newcap.grants.size() == 1);
+  auto ng = newcap.grants[0];
+
+  for (auto& g : grants) {
+    if (g.match.fs_name == ng.match.fs_name && g.match.path == ng.match.path) {
+      if (g.spec.get_caps() == ng.spec.get_caps()) {
+	// no update required. maintaining idempotency.
+	return false;
+       } else {
+	// cap for given fs name is present, let's update it.
+	g.spec.set_caps(ng.spec.get_caps());
+	return true;
+      }
+    }
+  }
+
+  // cap for given fs name and/or path is absent, let's add a new cap for it.
+  grants.push_back(MDSCapGrant(
+    MDSCapSpec(ng.spec.get_caps()),
+    MDSCapMatch(ng.match.fs_name, ng.match.path, ng.match.root_squash),
+    {}));
+
+  return true;
+}
+
+string MDSCapMatch::to_string()
+{
+  string str = "";
+
+  if (!fs_name.empty())   { str += " fsname=" + fs_name; }
+  if (!path.empty())   { str += " path=" + path; }
+  if (root_squash)   { str += " root_squash"; }
+  if (uid != MDS_AUTH_UID_ANY) { str += " uid=" + std::to_string(uid); }
+  if (!gids.empty()) {
+    str += " gids=";
+    for (size_t i = 0; i < gids.size(); ++i) {
+      str += std::to_string(gids[i]);
+      if (i < gids.size() - 1) {
+	str += ",";
+      }
+    }
+  }
+
+  return str;
+}
+
+string MDSCapSpec::to_string()
+{
+  string str = "";
+
+  if (allow_all()) {
+    str += "*";
+  } else {
+    if (allow_read()) { str +="r"; }
+    if (allow_write()) { str +="w"; }
+    if (allow_full()) { str +="f"; }
+    if (allow_set_vxattr()) { str +="p"; }
+    if (allow_snapshot()) { str +="s"; }
+  }
+
+  return str;
+}
+
+string MDSCapGrant::to_string()
+{
+  return "allow " + spec.to_string() + match.to_string();
+}
+
+string MDSAuthCaps::to_string()
+{
+  string str = "";
+
+  for (size_t i = 0; i < grants.size(); ++i) {
+    str += grants[i].to_string();
+    if (i < grants.size() - 1)
+      str += ", ";
+  }
+
+  return str;
+}
 
 bool MDSAuthCaps::allow_all() const
 {

@@ -7,9 +7,14 @@
 
 #include <rte_crypto.h>
 #include <rte_cryptodev.h>
+#ifdef RTE_LIB_SECURITY
+#include <rte_security.h>
+#endif
 
 #define CPERF_PTEST_TYPE	("ptest")
+#define CPERF_MODEX_LEN		("modex-len")
 #define CPERF_SILENT		("silent")
+#define CPERF_ENABLE_SDAP	("enable-sdap")
 
 #define CPERF_POOL_SIZE		("pool-sz")
 #define CPERF_TOTAL_OPS		("total-ops")
@@ -44,6 +49,14 @@
 
 #define CPERF_DIGEST_SZ		("digest-sz")
 
+#ifdef RTE_LIB_SECURITY
+#define CPERF_PDCP_SN_SZ	("pdcp-sn-sz")
+#define CPERF_PDCP_DOMAIN	("pdcp-domain")
+#define CPERF_PDCP_SES_HFN_EN	("pdcp-ses-hfn-en")
+#define PDCP_DEFAULT_HFN	0x1
+#define CPERF_DOCSIS_HDR_SZ	("docsis-hdr-sz")
+#endif
+
 #define CPERF_CSV		("csv-friendly")
 
 /* benchmark-specific options */
@@ -66,7 +79,11 @@ enum cperf_op_type {
 	CPERF_AUTH_ONLY,
 	CPERF_CIPHER_THEN_AUTH,
 	CPERF_AUTH_THEN_CIPHER,
-	CPERF_AEAD
+	CPERF_AEAD,
+	CPERF_PDCP,
+	CPERF_DOCSIS,
+	CPERF_IPSEC,
+	CPERF_ASYM_MODEX
 };
 
 extern const char *cperf_op_type_strs[];
@@ -88,6 +105,7 @@ struct cperf_options {
 	uint32_t out_of_place:1;
 	uint32_t silent:1;
 	uint32_t csv:1;
+	uint32_t is_outbound:1;
 
 	enum rte_crypto_cipher_algorithm cipher_algo;
 	enum rte_crypto_cipher_operation cipher_op;
@@ -110,6 +128,13 @@ struct cperf_options {
 
 	uint16_t digest_sz;
 
+#ifdef RTE_LIB_SECURITY
+	uint16_t pdcp_sn_sz;
+	uint16_t pdcp_ses_hfn_en;
+	uint16_t pdcp_sdap;
+	enum rte_security_pdcp_domain pdcp_domain;
+	uint16_t docsis_hdr_sz;
+#endif
 	char device_type[RTE_CRYPTODEV_NAME_MAX_LEN];
 	enum cperf_op_type op_type;
 
@@ -132,6 +157,8 @@ struct cperf_options {
 	uint32_t pmdcc_delay;
 	uint32_t imix_distribution_list[MAX_LIST];
 	uint8_t imix_distribution_count;
+	struct cperf_modex_test_data *modex_data;
+	uint16_t modex_len;
 };
 
 void

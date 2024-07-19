@@ -379,7 +379,7 @@ Seastar coroutines work, using lambda coroutines as continuations can result in 
 take one of the following approaches:
 
 1. Use lambda coroutines as arguments to functions that explicitly claim support for them
-2. Wrap lambda coroutines with seastar::coroutine::lambda(), and ensure the lambda coroutine is fully awaited within the statement it is defined in.
+2. Wrap lambda coroutines with `seastar::coroutine::lambda()`, and ensure the lambda coroutine is fully awaited within the statement it is defined in.
 
 An example of wrapping a lambda coroutine is:
 
@@ -399,11 +399,11 @@ future<> foo() {
 ```
 
 Notes:
-1. seastar::future::then() accepts a continuation
-2. We wrap the argument to seastar::future::then() with seastar::coroutine::lambda()
-3. We ensure evaluation of the lambda completes within the same expression using the outer co_await.
+1. `seastar::future::then()` accepts a continuation
+2. We wrap the argument to `seastar::future::then()` with `seastar::coroutine::lambda()`
+3. We ensure evaluation of the lambda completes within the same expression using the outer `co_await`.
 
-More information can be found in lambda-coroutine-fiasco.md.
+More information can be found in `lambda-coroutine-fiasco.md`.
 
 ## Generators in coroutines
 
@@ -412,12 +412,25 @@ another asynchronously. From the consumer of the view's perspective, it can retr
 the return value of the coroutine. From the coroutine's perspective, it is able to produce the elements multiple times
 using `co_yield` without "leaving" the coroutine. A function producing a sequence of values can be named "generator".
 But unlike the regular coroutine which returns a single `seastar::future<T>`, a generator should return
-`seastar::coroutine::experimental::generator<T>`. Please note, `generator<T>` is still at its early stage of developing,
-the public interface this template is subject to change before it is stablized enough.
+`seastar::coroutine::experimental::generator<T, Container>`. Where `T` is the type of the elements, while `Container` 
+is a template, which is used to store the elements. Because, underneath of Seastar's generator implementation, a 
+bounded buffer is used for holding the elements not yet retrieved by the consumer, there is a design decision to make -- 
+what kind of container should be used, and what its maximum size should be. To define the bounded buffer, developers
+need to:
 
-Example
+1. specify the type of the container's type by via the second template parameter of the `generator`
+2. specify the size of the bounded buffer by passing the size as the first parameter of the generator coroutine.
+   The type of the size have to be `seastar::coroutine::experimental::buffer_size_t`.
+
+But there is an exception, if the buffer's size is one, we assume that the programmer is likely to use `std::optional`
+for the bounded buffer, so it's not required to pass the maximum size of the buffer as the first parameter in this case.
+But if a coroutine uses `std::optional` as its buffer, and its function sigature still lists the size as its first 
+parameter, it will not break anything. As this parameter will just be ignored by the underlying implementation. 
+
+Following is an example
 
 ```cpp
+#include <seastar/core/circular_buffer.hh>
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/coroutine/generator.hh>
@@ -426,7 +439,7 @@ seastar::future<Preprocessed> prepare_ingredients(Ingredients&&);
 seastar::future<Dish> cook_a_dish(Preprocessed&&);
 seastar::future<> consume_a_dish(Dish&&);
 
-seastar::coroutine::experimental::generator<Dish>
+seastar::coroutine::experimental::generator<Dish, seastar::circular_buffer>
 make_dishes(coroutine::experimental::buffer_size_t max_dishes_on_table,
             Ingredients&& ingredients) {
     while (ingredients) {
@@ -438,7 +451,8 @@ make_dishes(coroutine::experimental::buffer_size_t max_dishes_on_table,
 
 seastar::future<> have_a_dinner(unsigned max_dishes_on_table) {
     Ingredients ingredients;
-    auto dishes = make_dishes(std::move(ingredients));
+    auto dishes = make_dishes(coroutine::experimental::buffer_size_t{max_dishes_on_table},
+                              std::move(ingredients));
     while (auto dish = co_await dishes()) {
         co_await consume_a_dish(std::move(dish));
     }
@@ -447,10 +461,16 @@ seastar::future<> have_a_dinner(unsigned max_dishes_on_table) {
 
 In this hypothetical kitchen, a chef and a diner are working in parallel. Instead of preparing
 all dishes beforehand, the chef cooks the dishes while the diner is consuming them one after another.
-Under most circumstances, neither the chef or the diner is blocked by its peer. But if the diner
+Under most circumstances, neither the chef or the diner is blocked by its peer. The dishes are buffered
+using the specified `seastar::circular_buffer<Dish>`. But if the diner
 is too slow so that there are `max_dishes_on_table` dishes left on the table, the chef would wait
-until the number of dishes is less than this setting. And, apparently, if there is no dishes on the
-table, the diner would wait for new ones to be prepared by the chef.
+until the number of dishes is less than this setting. Please note, as explained above, despite that this
+parameter is not referenced by the coroutine's body, it is actually passed to the generator's promise
+constructor, which in turn creates the buffer, as we are not using `std::optional` here. On the other hand,
+apparently, if there is no dishes on the table, the diner would wait for new ones to be prepared by the chef. 
+
+Please note, `generator<T, Container>` is still at its early stage of developing,
+the public interface this template is subject to change before it is stablized enough.
 
 ## Exceptions in coroutines
 
@@ -715,7 +735,55 @@ Usually, aborting the current chain of operations and returning an exception is 
 1. `.then_wrapped()`: instead of passing the values carried by the future into the continuation, `.then_wrapped()` passes the input future to the continuation. The future is guaranteed to be in ready state, so the continuation can examine whether it contains a value or an exception, and take appropriate action.
 2. `.finally()`: similar to a Java finally block, a `.finally()` continuation is executed whether or not its input future carries an exception or not. The result of the finally continuation is its input future, so `.finally()` can be used to insert code in a flow that is executed unconditionally, but otherwise does not alter the flow.
 
-TODO: give example code for the above. Also mention handle_exception - although perhaps delay that to a later chapter?
+The following example illustates usage of `then_wrapped` and `finally`:
+
+```cpp
+#include <seastar/core/future.hh>
+#include <iostream>
+#include <exception>
+
+seastar::future<> pass() {
+    std::cout << "I passed!!!" << std::endl;
+    return seastar::make_ready_future<>();
+}
+
+seastar::future<> fail() {
+    std::cout << "I failed." << std::endl;
+    return seastar::make_exception_future<>(std::exception());
+}
+
+seastar::future<> f() {
+    return pass().then([] {
+        std::cout << "Oh no! I'm gonna fail!" << std::endl;
+        return fail(); // throws
+    }).then([] () { // skipped
+        std::cout << "If I got to this place I will pass!" << std::endl;
+        return pass();
+    }).then_wrapped([] (seastar::future<> f) {
+        if (f.failed()) {
+            std::cout << "The input future failed!" << std::endl;
+            return f;
+        }
+
+        std::cout << "If I got to this place I will pass!" << std::endl;
+        return pass();
+    }).finally([] () {
+        std::cout << "This code will run, regardless of any exceptions" << std::endl;
+    });
+}
+```
+
+This time the output will be
+```
+I passed!!!
+Oh no! I'm gonna fail!
+I failed.
+The input future failed!
+This code will run, regardless of any exceptions
+ERROR [...] Exiting on unhandled exception: std::exception (std::exception)
+```
+
+TODO: Also mention handle_exception - although perhaps delay that to a later chapter?
 
 ## Exceptions vs. exceptional futures
 An asynchronous function can fail in one of two ways: It can fail immediately, by throwing an exception, or it can return a future which will eventually fail (resolve to an exception). These two modes of failure appear similar to the uninitiated, but behave differently when attempting to handle exceptions using `finally()`, `handle_exception()`, or `then_wrapped()`. For example, consider the code:
@@ -1139,8 +1207,8 @@ future<> f() {
                     make_ready_future<double>(3.5)
            ).then([] (auto tup) {
             std::cout << std::get<0>(tup).available() << "\n";
-            std::cout << std::get<1>(tup).get0() << "\n";
-            std::cout << std::get<2>(tup).get0() << "\n";
+            std::cout << std::get<1>(tup).get() << "\n";
+            std::cout << std::get<2>(tup).get() << "\n";
     });
 }
 ```
@@ -2063,7 +2131,33 @@ seastar::future<int> slow() {
 
 The most basic building block for writing promises is the **promise object**, an object of type `promise<T>`. A `promise<T>` has a method `future<T> get_future()` to returns a future, and a method `set_value(T)`, to resolve this future. An asynchronous function can create a promise object, return its future, and the `set_value` method to be eventually called - which will finally resolve the future it returned.
 
-CONTINUE HERE. write an example, e.g., something which writes a message every second, and after 10 messages, completes the future.
+In the following example we create a promise that manages the process of printing 10 messages, once every second.
+We start by creating an empty promise to work with. We then spin up a `seastart::thread` to perform the work we want. When the work, printing those messages, is completed we call `promise::set_value` to mark the completion of the task. Other than that we wait for the future which is generated by our promise, just like any other future.
+```cpp
+#include <seastar/core/future.hh>
+#include <seastar/core/do_with.hh>
+#include <seastar/core/sleep.hh>
+#include <seastar/core/thread.hh>
+#include <iostream>
+
+
+seastar::future<> f() {
+    return seastar::do_with(seastar::promise<>(), [](auto& promise) {
+        (void)seastar::async([&promise]() {
+                using namespace std::chrono_literals;
+                for (int i = 0; i < 10; i++) {
+                    std::cout << i << "..." << std::flush;
+                    seastar::sleep(1s).wait();
+                }
+                std::cout << std::endl;
+
+                promise.set_value();
+        });
+
+        return promise.get_future();
+    });
+}
+```
 
 # Memory allocation in Seastar
 ## Per-thread memory allocation
@@ -2088,7 +2182,7 @@ Although `foreign_ptr` ensures that the object's *destructor* automatically runs
 ```
 So `seastar::foreign_ptr<>` not only has functional benefits (namely, to run the destructor on the home shard), it also has *documentational* benefits - it warns the programmer to watch out every time the object is used, that this is a *foreign* pointer, and if we want to do anything non-trivial with the pointed object, we may need to do it on the home shard.
 
-Above, we discussed the case of transferring ownership of an object to a another shard, via `seastar::foreign_ptr<std::unique_ptr<T>>`. However, sometimes the sender does not want to relinquish ownership of the object. Sometimes, it wants the remote thread to operate on its object and return with the object intact. Sometimes, it wants to send the same object to multiple shards. In such cases, `seastar::foreign_ptr<seastar::lw_shared_ptr<T>> is useful. The user needs to watch out, of course, not to operate on the same object from multiple threads concurrently. If this cannot be ensured by program logic alone, some methods of serialization must be used - such as running the operations on the home shard with `submit_to()` as described above.
+Above, we discussed the case of transferring ownership of an object to a another shard, via `seastar::foreign_ptr<std::unique_ptr<T>>`. However, sometimes the sender does not want to relinquish ownership of the object. Sometimes, it wants the remote thread to operate on its object and return with the object intact. Sometimes, it wants to send the same object to multiple shards. In such cases, `seastar::foreign_ptr<seastar::lw_shared_ptr<T>>` is useful. The user needs to watch out, of course, not to operate on the same object from multiple threads concurrently. If this cannot be ensured by program logic alone, some methods of serialization must be used - such as running the operations on the home shard with `submit_to()` as described above.
 
 Normally, a `seastar::foreign_ptr` cannot not be copied - only moved. However, when it holds a smart pointer that can be copied (namely, a `shared_ptr`), one may want to make an additional copy of that pointer and create a second `foreign_ptr`. Doing this is inefficient and asynchronous (it requires communicating with the original owner of the object to create the copies), so a method `future<foreign_ptr> copy()` needs to be explicitly used instead of the normal copy constructor.
 
@@ -2187,8 +2281,8 @@ seastar::future<> f() {
 ```cpp
 seastar::future<seastar::sstring> read_file(sstring file_name) {
     return seastar::async([file_name] () {  // lambda executed in a thread
-        file f = seastar::open_file_dma(file_name).get0();  // get0() call "blocks"
-        auto buf = f.dma_read(0, 512).get0();  // "block" again
+        file f = seastar::open_file_dma(file_name).get();  // get() call "blocks"
+        auto buf = f.dma_read(0, 512).get();  // "block" again
         return seastar::sstring(buf.get(), buf.size());
     });
 };

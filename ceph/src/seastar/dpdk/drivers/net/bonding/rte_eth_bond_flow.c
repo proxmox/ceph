@@ -11,7 +11,7 @@
 #include <rte_tailq.h>
 #include <rte_flow.h>
 
-#include "rte_eth_bond_private.h"
+#include "eth_bond_private.h"
 
 static struct rte_flow *
 bond_flow_alloc(int numa_node, const struct rte_flow_attr *attr,
@@ -157,7 +157,7 @@ bond_flow_flush(struct rte_eth_dev *dev, struct rte_flow_error *err)
 	/* Destroy all bond flows from its slaves instead of flushing them to
 	 * keep the LACP flow or any other external flows.
 	 */
-	TAILQ_FOREACH_SAFE(flow, &internals->flow_list, next, tmp) {
+	RTE_TAILQ_FOREACH_SAFE(flow, &internals->flow_list, next, tmp) {
 		lret = bond_flow_destroy(dev, flow, err);
 		if (unlikely(lret != 0))
 			ret = lret;

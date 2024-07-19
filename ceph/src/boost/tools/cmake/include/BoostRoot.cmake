@@ -1,4 +1,4 @@
-# Copyright 2019-2021 Peter Dimov
+# Copyright 2019-2023 Peter Dimov
 # Distributed under the Boost Software License, Version 1.0.
 # See accompanying file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt
 
@@ -13,9 +13,11 @@ include(BoostInstall)
 
 #
 
-set(__boost_incompatible_libraries
-  gil
-)
+boost_message(VERBOSE "Boost: using CMake ${CMAKE_VERSION}")
+
+#
+
+set(__boost_incompatible_libraries "")
 
 # Define cache variables if root project
 
@@ -49,7 +51,13 @@ if(CMAKE_SOURCE_DIR STREQUAL Boost_SOURCE_DIR)
 
   option(BUILD_TESTING "Build the tests." OFF)
   include(CTest)
-  add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -C $<CONFIG>)
+
+  if(NOT TARGET tests)
+    add_custom_target(tests)
+  endif()
+
+  add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure --no-tests=error -C $<CONFIG>)
+  add_dependencies(check tests)
 
   # link=static|shared
   option(BUILD_SHARED_LIBS "Build shared libraries")
@@ -69,6 +77,20 @@ if(CMAKE_SOURCE_DIR STREQUAL Boost_SOURCE_DIR)
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${BOOST_STAGEDIR}/lib")
   endif()
 
+  # Set default visibility to hidden to match b2
+
+  set(CMAKE_C_VISIBILITY_PRESET hidden CACHE STRING "Symbol visibility for C")
+  set_property(CACHE CMAKE_C_VISIBILITY_PRESET PROPERTY STRINGS default hidden protected internal)
+
+  set(CMAKE_CXX_VISIBILITY_PRESET hidden CACHE STRING "Symbol visibility for C++")
+  set_property(CACHE CMAKE_CXX_VISIBILITY_PRESET PROPERTY STRINGS default hidden protected internal)
+
+  option(CMAKE_VISIBILITY_INLINES_HIDDEN "Inline function have hidden visibility" ON)
+
+  # Enable IDE folders for Visual Studio
+
+  set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
 else()
 
   # add_subdirectory use
@@ -86,7 +108,7 @@ else()
   endif()
 
   set(BUILD_TESTING OFF)
-  set(CMAKE_SKIP_INSTALL_RULES ON)
+  set(BOOST_SKIP_INSTALL_RULES ON)
 
 endif()
 
@@ -276,12 +298,18 @@ foreach(__boost_lib_cml IN LISTS __boost_libraries)
 
     __boost_auto_install(${__boost_lib})
 
-  elseif(__boost_lib IN_LIST __boost_include_libraries)
+  elseif(__boost_lib IN_LIST __boost_include_libraries OR __boost_lib STREQUAL "headers")
 
     # Disable tests for dependencies
 
     set(__boost_build_testing ${BUILD_TESTING})
     set(BUILD_TESTING OFF) # hide cache variable
+
+    set(__boost_cmake_folder ${CMAKE_FOLDER})
+
+    if("${CMAKE_FOLDER}" STREQUAL "")
+      set(CMAKE_FOLDER "Dependencies")
+    endif()
 
     boost_message(VERBOSE "Adding Boost dependency ${__boost_lib}")
     add_subdirectory(libs/${__boost_lib})
@@ -289,6 +317,7 @@ foreach(__boost_lib_cml IN LISTS __boost_libraries)
     __boost_auto_install(${__boost_lib})
 
     set(BUILD_TESTING ${__boost_build_testing})
+    set(CMAKE_FOLDER ${__boost_cmake_folder})
 
   elseif(BUILD_TESTING)
 
@@ -297,15 +326,62 @@ foreach(__boost_lib_cml IN LISTS __boost_libraries)
     set(__boost_build_testing ${BUILD_TESTING})
     set(BUILD_TESTING OFF) # hide cache variable
 
-    set(__boost_skip_install ${CMAKE_SKIP_INSTALL_RULES})
-    set(CMAKE_SKIP_INSTALL_RULES ON)
+    set(__boost_skip_install ${BOOST_SKIP_INSTALL_RULES})
+    set(BOOST_SKIP_INSTALL_RULES ON)
+
+    set(__boost_cmake_folder ${CMAKE_FOLDER})
+
+    if("${CMAKE_FOLDER}" STREQUAL "")
+      set(CMAKE_FOLDER "Dependencies")
+    endif()
 
     boost_message(DEBUG "Adding Boost library ${__boost_lib} with EXCLUDE_FROM_ALL")
     add_subdirectory(libs/${__boost_lib} EXCLUDE_FROM_ALL)
 
     set(BUILD_TESTING ${__boost_build_testing})
-    set(CMAKE_SKIP_INSTALL_RULES ${__boost_skip_install})
+    set(BOOST_SKIP_INSTALL_RULES ${__boost_skip_install})
+    set(CMAKE_FOLDER ${__boost_cmake_folder})
 
   endif()
 
 endforeach()
+
+# Install BoostConfig.cmake
+
+if(BOOST_SKIP_INSTALL_RULES)
+
+  boost_message(DEBUG "Boost: not installing BoostConfig.cmake due to BOOST_SKIP_INSTALL_RULES=${BOOST_SKIP_INSTALL_RULES}")
+  return()
+
+endif()
+
+if(CMAKE_SKIP_INSTALL_RULES)
+
+  boost_message(DEBUG "Boost: not installing BoostConfig.cmake due to CMAKE_SKIP_INSTALL_RULES=${CMAKE_SKIP_INSTALL_RULES}")
+  return()
+
+endif()
+
+set(CONFIG_INSTALL_DIR "${BOOST_INSTALL_CMAKEDIR}/Boost-${BOOST_SUPERPROJECT_VERSION}")
+set(CONFIG_FILE_NAME "${CMAKE_CURRENT_LIST_DIR}/../config/BoostConfig.cmake")
+
+install(FILES "${CONFIG_FILE_NAME}" DESTINATION "${CONFIG_INSTALL_DIR}")
+
+set(CONFIG_VERSION_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/tmpinst/BoostConfigVersion.cmake")
+
+if(NOT CMAKE_VERSION VERSION_LESS 3.14)
+
+  write_basic_package_version_file("${CONFIG_VERSION_FILE_NAME}" COMPATIBILITY SameMajorVersion ARCH_INDEPENDENT)
+
+else()
+
+  set(OLD_CMAKE_SIZEOF_VOID_P ${CMAKE_SIZEOF_VOID_P})
+  set(CMAKE_SIZEOF_VOID_P "")
+
+  write_basic_package_version_file("${CONFIG_VERSION_FILE_NAME}" COMPATIBILITY SameMajorVersion)
+
+  set(CMAKE_SIZEOF_VOID_P ${OLD_CMAKE_SIZEOF_VOID_P})
+
+endif()
+
+install(FILES "${CONFIG_VERSION_FILE_NAME}" DESTINATION "${CONFIG_INSTALL_DIR}")

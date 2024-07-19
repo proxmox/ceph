@@ -46,7 +46,7 @@ struct vring_desc {
 struct vring_avail {
 	uint16_t flags;
 	uint16_t idx;
-	uint16_t ring[0];
+	uint16_t ring[];
 };
 
 /* id is a 16bit index. uint32_t is used here for ids for padding reasons. */
@@ -59,8 +59,8 @@ struct vring_used_elem {
 
 struct vring_used {
 	uint16_t flags;
-	volatile uint16_t idx;
-	struct vring_used_elem ring[0];
+	uint16_t idx;
+	struct vring_used_elem ring[];
 };
 
 /* For support of packed virtqueues in Virtio 1.1 the format of descriptors
@@ -133,7 +133,7 @@ vring_size(struct virtio_hw *hw, unsigned int num, unsigned long align)
 {
 	size_t size;
 
-	if (vtpci_packed_queue(hw)) {
+	if (virtio_with_packed_queue(hw)) {
 		size = num * sizeof(struct vring_packed_desc);
 		size += sizeof(struct vring_packed_desc_event);
 		size = RTE_ALIGN_CEIL(size, align);

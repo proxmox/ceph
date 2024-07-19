@@ -2,6 +2,8 @@
  *   Copyright(c) 2018 Advanced Micro Devices, Inc. All rights reserved.
  */
 
+#define OPENSSL_API_COMPAT 0x10100000L
+
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -20,11 +22,10 @@
 #include <rte_memory.h>
 #include <rte_spinlock.h>
 #include <rte_string_fns.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 
 #include "ccp_dev.h"
 #include "ccp_crypto.h"
-#include "ccp_pci.h"
 #include "ccp_pmd_private.h"
 
 #include <openssl/conf.h>
@@ -32,7 +33,7 @@
 #include <openssl/hmac.h>
 
 /* SHA initial context values */
-static uint32_t ccp_sha1_init[SHA_COMMON_DIGEST_SIZE / sizeof(uint32_t)] = {
+uint32_t ccp_sha1_init[SHA_COMMON_DIGEST_SIZE / sizeof(uint32_t)] = {
 	SHA1_H4, SHA1_H3,
 	SHA1_H2, SHA1_H1,
 	SHA1_H0, 0x0U,
@@ -744,8 +745,8 @@ ccp_configure_session_cipher(struct ccp_session *sess,
 		CCP_LOG_ERR("Invalid CCP Engine");
 		return -ENOTSUP;
 	}
-	sess->cipher.nonce_phys = rte_mem_virt2phy(sess->cipher.nonce);
-	sess->cipher.key_phys = rte_mem_virt2phy(sess->cipher.key_ccp);
+	sess->cipher.nonce_phys = rte_mem_virt2iova(sess->cipher.nonce);
+	sess->cipher.key_phys = rte_mem_virt2iova(sess->cipher.key_ccp);
 	return 0;
 }
 
@@ -1159,8 +1160,8 @@ ccp_configure_session_aead(struct ccp_session *sess,
 		CCP_LOG_ERR("Unsupported aead algo");
 		return -ENOTSUP;
 	}
-	sess->cipher.nonce_phys = rte_mem_virt2phy(sess->cipher.nonce);
-	sess->cipher.key_phys = rte_mem_virt2phy(sess->cipher.key_ccp);
+	sess->cipher.nonce_phys = rte_mem_virt2iova(sess->cipher.nonce);
+	sess->cipher.key_phys = rte_mem_virt2iova(sess->cipher.key_ccp);
 	return 0;
 }
 
@@ -1282,7 +1283,7 @@ ccp_auth_slot(struct ccp_session *session)
 	case CCP_AUTH_ALGO_SHA512_HMAC:
 		/**
 		 * 1. Load PHash1 = H(k ^ ipad); to LSB
-		 * 2. generate IHash = H(hash on meassage with PHash1
+		 * 2. generate IHash = H(hash on message with PHash1
 		 * as init values);
 		 * 3. Retrieve IHash 2 slots for 384/512
 		 * 4. Load Phash2 = H(k ^ opad); to LSB
@@ -1566,20 +1567,17 @@ ccp_perform_hmac(struct rte_crypto_op *op,
 	void *append_ptr;
 	uint8_t *addr;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					 ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 	addr = session->auth.pre_compute;
 
-	src_addr = rte_pktmbuf_mtophys_offset(op->sym->m_src,
+	src_addr = rte_pktmbuf_iova_offset(op->sym->m_src,
 					      op->sym->auth.data.offset);
 	append_ptr = (void *)rte_pktmbuf_append(op->sym->m_src,
 						session->auth.ctx_len);
-	dest_addr = (phys_addr_t)rte_mem_virt2phy(append_ptr);
-	dest_addr_t = dest_addr;
+	dest_addr_t = dest_addr = (phys_addr_t)rte_mem_virt2iova(append_ptr);
+	pst.src_addr = (phys_addr_t)rte_mem_virt2iova((void *)addr);
 
 	/** Load PHash1 to LSB*/
-	pst.src_addr = (phys_addr_t)rte_mem_virt2phy((void *)addr);
 	pst.dest_addr = (phys_addr_t)(cmd_q->sb_sha * CCP_SB_BYTES);
 	pst.len = session->auth.ctx_len;
 	pst.dir = 1;
@@ -1659,7 +1657,7 @@ ccp_perform_hmac(struct rte_crypto_op *op,
 
 	/** Load PHash2 to LSB*/
 	addr += session->auth.ctx_len;
-	pst.src_addr = (phys_addr_t)rte_mem_virt2phy((void *)addr);
+	pst.src_addr = (phys_addr_t)rte_mem_virt2iova((void *)addr);
 	pst.dest_addr = (phys_addr_t)(cmd_q->sb_sha * CCP_SB_BYTES);
 	pst.len = session->auth.ctx_len;
 	pst.dir = 1;
@@ -1739,21 +1737,17 @@ ccp_perform_sha(struct rte_crypto_op *op,
 	void *append_ptr;
 	uint64_t auth_msg_bits;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
-	src_addr = rte_pktmbuf_mtophys_offset(op->sym->m_src,
+	src_addr = rte_pktmbuf_iova_offset(op->sym->m_src,
 					      op->sym->auth.data.offset);
-
 	append_ptr = (void *)rte_pktmbuf_append(op->sym->m_src,
 						session->auth.ctx_len);
-	dest_addr = (phys_addr_t)rte_mem_virt2phy(append_ptr);
+	pst.src_addr = (phys_addr_t)rte_mem_virt2iova((void *)session->auth.ctx);
+	dest_addr = (phys_addr_t)rte_mem_virt2iova(append_ptr);
 
 	/** Passthru sha context*/
 
-	pst.src_addr = (phys_addr_t)rte_mem_virt2phy((void *)
-						     session->auth.ctx);
 	pst.dest_addr = (phys_addr_t)(cmd_q->sb_sha * CCP_SB_BYTES);
 	pst.len = session->auth.ctx_len;
 	pst.dir = 1;
@@ -1828,11 +1822,9 @@ ccp_perform_sha3_hmac(struct rte_crypto_op *op,
 	uint32_t tail;
 	phys_addr_t src_addr, dest_addr, ctx_paddr, dest_addr_t;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
-	src_addr = rte_pktmbuf_mtophys_offset(op->sym->m_src,
+	src_addr = rte_pktmbuf_iova_offset(op->sym->m_src,
 					      op->sym->auth.data.offset);
 	append_ptr = (uint8_t *)rte_pktmbuf_append(op->sym->m_src,
 						session->auth.ctx_len);
@@ -1840,10 +1832,9 @@ ccp_perform_sha3_hmac(struct rte_crypto_op *op,
 		CCP_LOG_ERR("CCP MBUF append failed\n");
 		return -1;
 	}
-	dest_addr = (phys_addr_t)rte_mem_virt2phy((void *)append_ptr);
+	dest_addr = (phys_addr_t)rte_mem_virt2iova((void *)append_ptr);
+	ctx_paddr = (phys_addr_t)rte_mem_virt2iova(session->auth.pre_compute);
 	dest_addr_t = dest_addr + (session->auth.ctx_len / 2);
-	ctx_paddr = (phys_addr_t)rte_mem_virt2phy((void
-						   *)session->auth.pre_compute);
 	desc = &cmd_q->qbase_desc[cmd_q->qidx];
 	memset(desc, 0, Q_DESC_SIZE);
 
@@ -1964,15 +1955,13 @@ ccp_perform_sha3(struct rte_crypto_op *op,
 	struct ccp_session *session;
 	union ccp_function function;
 	struct ccp_desc *desc;
-	uint8_t *ctx_addr, *append_ptr;
+	uint8_t *ctx_addr = NULL, *append_ptr = NULL;
 	uint32_t tail;
 	phys_addr_t src_addr, dest_addr, ctx_paddr;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
-	src_addr = rte_pktmbuf_mtophys_offset(op->sym->m_src,
+	src_addr = rte_pktmbuf_iova_offset(op->sym->m_src,
 					      op->sym->auth.data.offset);
 	append_ptr = (uint8_t *)rte_pktmbuf_append(op->sym->m_src,
 						session->auth.ctx_len);
@@ -1980,9 +1969,10 @@ ccp_perform_sha3(struct rte_crypto_op *op,
 		CCP_LOG_ERR("CCP MBUF append failed\n");
 		return -1;
 	}
-	dest_addr = (phys_addr_t)rte_mem_virt2phy((void *)append_ptr);
+	dest_addr = (phys_addr_t)rte_mem_virt2iova((void *)append_ptr);
+	ctx_paddr = (phys_addr_t)rte_mem_virt2iova((void *)ctx_addr);
+
 	ctx_addr = session->auth.sha3_ctx;
-	ctx_paddr = (phys_addr_t)rte_mem_virt2phy((void *)ctx_addr);
 
 	desc = &cmd_q->qbase_desc[cmd_q->qidx];
 	memset(desc, 0, Q_DESC_SIZE);
@@ -2036,12 +2026,10 @@ ccp_perform_aes_cmac(struct rte_crypto_op *op,
 	phys_addr_t src_addr, dest_addr, key_addr;
 	int length, non_align_len;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 	key_addr = rte_mem_virt2phy(session->auth.key_ccp);
 
-	src_addr = rte_pktmbuf_mtophys_offset(op->sym->m_src,
+	src_addr = rte_pktmbuf_iova_offset(op->sym->m_src,
 					      op->sym->auth.data.offset);
 	append_ptr = (uint8_t *)rte_pktmbuf_append(op->sym->m_src,
 						session->auth.ctx_len);
@@ -2056,7 +2044,7 @@ ccp_perform_aes_cmac(struct rte_crypto_op *op,
 
 		ctx_addr = session->auth.pre_compute;
 		memset(ctx_addr, 0, AES_BLOCK_SIZE);
-		pst.src_addr = (phys_addr_t)rte_mem_virt2phy((void *)ctx_addr);
+		pst.src_addr = (phys_addr_t)rte_mem_virt2iova((void *)ctx_addr);
 		pst.dest_addr = (phys_addr_t)(cmd_q->sb_iv * CCP_SB_BYTES);
 		pst.len = CCP_SB_BYTES;
 		pst.dir = 1;
@@ -2094,7 +2082,7 @@ ccp_perform_aes_cmac(struct rte_crypto_op *op,
 	} else {
 		ctx_addr = session->auth.pre_compute + CCP_SB_BYTES;
 		memset(ctx_addr, 0, AES_BLOCK_SIZE);
-		pst.src_addr = (phys_addr_t)rte_mem_virt2phy((void *)ctx_addr);
+		pst.src_addr = (phys_addr_t)rte_mem_virt2iova((void *)ctx_addr);
 		pst.dest_addr = (phys_addr_t)(cmd_q->sb_iv * CCP_SB_BYTES);
 		pst.len = CCP_SB_BYTES;
 		pst.dir = 1;
@@ -2188,9 +2176,7 @@ ccp_perform_aes(struct rte_crypto_op *op,
 	phys_addr_t src_addr, dest_addr, key_addr;
 	uint8_t *iv;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 	function.raw = 0;
 
 	iv = rte_crypto_op_ctod_offset(op, uint8_t *, session->iv.offset);
@@ -2221,10 +2207,10 @@ ccp_perform_aes(struct rte_crypto_op *op,
 
 	desc = &cmd_q->qbase_desc[cmd_q->qidx];
 
-	src_addr = rte_pktmbuf_mtophys_offset(op->sym->m_src,
+	src_addr = rte_pktmbuf_iova_offset(op->sym->m_src,
 					      op->sym->cipher.data.offset);
 	if (likely(op->sym->m_dst != NULL))
-		dest_addr = rte_pktmbuf_mtophys_offset(op->sym->m_dst,
+		dest_addr = rte_pktmbuf_iova_offset(op->sym->m_dst,
 						op->sym->cipher.data.offset);
 	else
 		dest_addr = src_addr;
@@ -2276,9 +2262,7 @@ ccp_perform_3des(struct rte_crypto_op *op,
 	uint8_t *iv;
 	phys_addr_t src_addr, dest_addr, key_addr;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
 	iv = rte_crypto_op_ctod_offset(op, uint8_t *, session->iv.offset);
 	switch (session->cipher.um.des_mode) {
@@ -2288,8 +2272,7 @@ ccp_perform_3des(struct rte_crypto_op *op,
 
 		rte_memcpy(lsb_buf + (CCP_SB_BYTES - session->iv.length),
 			   iv, session->iv.length);
-
-		pst.src_addr = (phys_addr_t)rte_mem_virt2phy((void *) lsb_buf);
+		pst.src_addr = (phys_addr_t)rte_mem_virt2iova((void *) lsb_buf);
 		pst.dest_addr = (phys_addr_t)(cmd_q->sb_iv * CCP_SB_BYTES);
 		pst.len = CCP_SB_BYTES;
 		pst.dir = 1;
@@ -2303,17 +2286,16 @@ ccp_perform_3des(struct rte_crypto_op *op,
 		return -ENOTSUP;
 	}
 
-	src_addr = rte_pktmbuf_mtophys_offset(op->sym->m_src,
+	src_addr = rte_pktmbuf_iova_offset(op->sym->m_src,
 					      op->sym->cipher.data.offset);
 	if (unlikely(op->sym->m_dst != NULL))
 		dest_addr =
-			rte_pktmbuf_mtophys_offset(op->sym->m_dst,
+			rte_pktmbuf_iova_offset(op->sym->m_dst,
 						   op->sym->cipher.data.offset);
 	else
 		dest_addr = src_addr;
 
-	key_addr = rte_mem_virt2phy(session->cipher.key_ccp);
-
+	key_addr = rte_mem_virt2iova(session->cipher.key_ccp);
 	desc = &cmd_q->qbase_desc[cmd_q->qidx];
 
 	memset(desc, 0, Q_DESC_SIZE);
@@ -2379,16 +2361,14 @@ ccp_perform_aes_gcm(struct rte_crypto_op *op, struct ccp_queue *cmd_q)
 	phys_addr_t digest_dest_addr;
 	int length, non_align_len;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					 ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 	iv = rte_crypto_op_ctod_offset(op, uint8_t *, session->iv.offset);
 	key_addr = session->cipher.key_phys;
 
-	src_addr = rte_pktmbuf_mtophys_offset(op->sym->m_src,
+	src_addr = rte_pktmbuf_iova_offset(op->sym->m_src,
 					      op->sym->aead.data.offset);
 	if (unlikely(op->sym->m_dst != NULL))
-		dest_addr = rte_pktmbuf_mtophys_offset(op->sym->m_dst,
+		dest_addr = rte_pktmbuf_iova_offset(op->sym->m_dst,
 						op->sym->aead.data.offset);
 	else
 		dest_addr = src_addr;
@@ -2546,9 +2526,7 @@ ccp_crypto_cipher(struct rte_crypto_op *op,
 	int result = 0;
 	struct ccp_session *session;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					 ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
 	switch (session->cipher.algo) {
 	case CCP_CIPHER_ALGO_AES_CBC:
@@ -2584,9 +2562,7 @@ ccp_crypto_auth(struct rte_crypto_op *op,
 	int result = 0;
 	struct ccp_session *session;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
 	switch (session->auth.algo) {
 	case CCP_AUTH_ALGO_SHA1:
@@ -2654,9 +2630,7 @@ ccp_crypto_aead(struct rte_crypto_op *op,
 	int result = 0;
 	struct ccp_session *session;
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
 	switch (session->auth.algo) {
 	case CCP_AUTH_ALGO_AES_GCM:
@@ -2680,7 +2654,9 @@ process_ops_to_enqueue(struct ccp_qp *qp,
 		       struct rte_crypto_op **op,
 		       struct ccp_queue *cmd_q,
 		       uint16_t nb_ops,
-		       int slots_req)
+		       uint16_t total_nb_ops,
+		       int slots_req,
+		       uint16_t b_idx)
 {
 	int i, result = 0;
 	struct ccp_batch_info *b_info;
@@ -2701,19 +2677,18 @@ process_ops_to_enqueue(struct ccp_qp *qp,
 
 	/* populate batch info necessary for dequeue */
 	b_info->op_idx = 0;
+	b_info->b_idx = 0;
 	b_info->lsb_buf_idx = 0;
 	b_info->desccnt = 0;
 	b_info->cmd_q = cmd_q;
-	b_info->lsb_buf_phys =
-		(phys_addr_t)rte_mem_virt2phy((void *)b_info->lsb_buf);
+	b_info->lsb_buf_phys = (phys_addr_t)rte_mem_virt2iova((void *)b_info->lsb_buf);
+
 	rte_atomic64_sub(&b_info->cmd_q->free_slots, slots_req);
 
 	b_info->head_offset = (uint32_t)(cmd_q->qbase_phys_addr + cmd_q->qidx *
 					 Q_DESC_SIZE);
-	for (i = 0; i < nb_ops; i++) {
-		session = (struct ccp_session *)get_sym_session_private_data(
-						 op[i]->sym->session,
-						 ccp_cryptodev_driver_id);
+	for (i = b_idx; i < (nb_ops+b_idx); i++) {
+		session = CRYPTODEV_GET_SYM_SESS_PRIV(op[i]->sym->session);
 		switch (session->cmd_id) {
 		case CCP_CMD_CIPHER:
 			result = ccp_crypto_cipher(op[i], cmd_q, b_info);
@@ -2738,7 +2713,7 @@ process_ops_to_enqueue(struct ccp_qp *qp,
 							 session, auth_ctx);
 				if (op[i]->status !=
 				    RTE_CRYPTO_OP_STATUS_SUCCESS)
-					continue;
+					CCP_LOG_ERR("RTE_CRYPTO_OP_STATUS_AUTH_FAILED");
 			} else
 				result = ccp_crypto_auth(op[i], cmd_q, b_info);
 
@@ -2762,6 +2737,8 @@ process_ops_to_enqueue(struct ccp_qp *qp,
 	}
 
 	b_info->opcnt = i;
+	b_info->b_idx = b_idx;
+	b_info->total_nb_ops = total_nb_ops;
 	b_info->tail_offset = (uint32_t)(cmd_q->qbase_phys_addr + cmd_q->qidx *
 					 Q_DESC_SIZE);
 
@@ -2776,7 +2753,7 @@ process_ops_to_enqueue(struct ccp_qp *qp,
 	rte_ring_enqueue(qp->processed_pkts, (void *)b_info);
 
 	EVP_MD_CTX_destroy(auth_ctx);
-	return i;
+	return i-b_idx;
 }
 
 static inline void ccp_auth_dq_prepare(struct rte_crypto_op *op)
@@ -2787,9 +2764,7 @@ static inline void ccp_auth_dq_prepare(struct rte_crypto_op *op)
 	int offset, digest_offset;
 	uint8_t digest_le[64];
 
-	session = (struct ccp_session *)get_sym_session_private_data(
-					 op->sym->session,
-					ccp_cryptodev_driver_id);
+	session = CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
 
 	if (session->cmd_id == CCP_CMD_COMBINED) {
 		digest_data = op->sym->aead.digest.data;
@@ -2861,11 +2836,9 @@ ccp_prepare_ops(struct ccp_qp *qp,
 	}
 	min_ops = RTE_MIN(nb_ops, b_info->opcnt);
 
-	for (i = 0; i < min_ops; i++) {
-		op_d[i] = b_info->op[b_info->op_idx++];
-		session = (struct ccp_session *)get_sym_session_private_data(
-						 op_d[i]->sym->session,
-						ccp_cryptodev_driver_id);
+	for (i =  b_info->b_idx; i < min_ops; i++) {
+		op_d[i] = b_info->op[b_info->b_idx + b_info->op_idx++];
+		session = CRYPTODEV_GET_SYM_SESS_PRIV(op_d[i]->sym->session);
 		switch (session->cmd_id) {
 		case CCP_CMD_CIPHER:
 			op_d[i]->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
@@ -2903,7 +2876,8 @@ ccp_prepare_ops(struct ccp_qp *qp,
 int
 process_ops_to_dequeue(struct ccp_qp *qp,
 		       struct rte_crypto_op **op,
-		       uint16_t nb_ops)
+		       uint16_t nb_ops,
+		       uint16_t *total_nb_ops)
 {
 	struct ccp_batch_info *b_info;
 	uint32_t cur_head_offset;
@@ -2918,6 +2892,7 @@ process_ops_to_dequeue(struct ccp_qp *qp,
 
 	if (b_info->auth_ctr == b_info->opcnt)
 		goto success;
+	*total_nb_ops = b_info->total_nb_ops;
 	cur_head_offset = CCP_READ_REG(b_info->cmd_q->reg_base,
 				       CMD_Q_HEAD_LO_BASE);
 
@@ -2927,7 +2902,7 @@ process_ops_to_dequeue(struct ccp_qp *qp,
 			qp->b_info = b_info;
 			return 0;
 		}
-	} else {
+	} else if (b_info->tail_offset != b_info->head_offset) {
 		if ((cur_head_offset >= b_info->head_offset) ||
 		    (cur_head_offset < b_info->tail_offset)) {
 			qp->b_info = b_info;
@@ -2937,6 +2912,7 @@ process_ops_to_dequeue(struct ccp_qp *qp,
 
 
 success:
+	*total_nb_ops = b_info->total_nb_ops;
 	nb_ops = ccp_prepare_ops(qp, op, b_info, nb_ops);
 	rte_atomic64_add(&b_info->cmd_q->free_slots, b_info->desccnt);
 	b_info->desccnt = 0;

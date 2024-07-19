@@ -21,6 +21,17 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
+#include <unordered_map>
+#include <map>
+#include <functional>
+#include <deque>
+#include <chrono>
+#include <random>
+#include <stdexcept>
+#include <system_error>
+#include <gnutls/crypto.h>
+#endif
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/queue.hh>
 #include <seastar/core/semaphore.hh>
@@ -32,17 +43,6 @@
 #include <seastar/net/const.hh>
 #include <seastar/net/packet-util.hh>
 #include <seastar/util/std-compat.hh>
-#include <unordered_map>
-#include <map>
-#include <functional>
-#include <deque>
-#include <chrono>
-#include <random>
-#include <stdexcept>
-#include <system_error>
-
-#define CRYPTOPP_ENABLE_NAMESPACE_WEAK 1
-#include <cryptopp/md5.h>
 
 namespace seastar {
 
@@ -829,18 +829,19 @@ auto tcp<InetTraits>::listen(uint16_t port, size_t queue_length) -> listener {
 
 template <typename InetTraits>
 auto tcp<InetTraits>::connect(socket_address sa) -> connection {
-    uint16_t src_port;
     connid id;
     auto src_ip = _inet._inet.host_address();
     auto dst_ip = ipv4_address(sa);
     auto dst_port = net::ntoh(sa.u.in.sin_port);
 
-    do {
-        src_port = _port_dist(_e);
-        id = connid{src_ip, dst_ip, src_port, dst_port};
-    } while (_inet._inet.netif()->hw_queues_count() > 1 &&
-             (_inet._inet.netif()->hash2cpu(id.hash(_inet._inet.netif()->rss_key())) != this_shard_id()
-              || _tcbs.find(id) != _tcbs.end()));
+    if (smp::count > 1) {
+        do {
+            id = connid{src_ip, dst_ip, _port_dist(_e), dst_port};
+        } while (_inet._inet.netif()->hash2cpu(id.hash(_inet._inet.netif()->rss_key())) != this_shard_id()
+                 || _tcbs.find(id) != _tcbs.end());
+    } else {
+        id = connid{src_ip, dst_ip, _port_dist(_e), dst_port};
+    }
 
     auto tcbp = make_lw_shared<tcb>(*this, id);
     _tcbs.insert({id, tcbp});
@@ -2089,8 +2090,14 @@ tcp_seq tcp<InetTraits>::tcb::get_isn() {
     hash[0] = _local_ip.ip;
     hash[1] = _foreign_ip.ip;
     hash[2] = (_local_port << 16) + _foreign_port;
-    hash[3] = _isn_secret.key[15];
-    CryptoPP::Weak::MD5::Transform(hash, _isn_secret.key);
+    gnutls_hash_hd_t md5_hash_handle;
+    // GnuTLS digests do not init at all, so this should never fail.
+    gnutls_hash_init(&md5_hash_handle, GNUTLS_DIG_MD5);
+    gnutls_hash(md5_hash_handle, hash, 3 * sizeof(hash[0]));
+    gnutls_hash(md5_hash_handle, _isn_secret.key, sizeof(_isn_secret.key));
+    // reuse "hash" for the output of digest
+    assert(sizeof(hash) == gnutls_hash_get_len(GNUTLS_DIG_MD5));
+    gnutls_hash_deinit(md5_hash_handle, hash);
     auto seq = hash[0];
     auto m = duration_cast<microseconds>(clock_type::now().time_since_epoch());
     seq += m.count() / 4;
@@ -2142,18 +2149,6 @@ void tcp<InetTraits>::connection::shutdown_connect() {
         close_write();
     }
 }
-
-template <typename InetTraits>
-constexpr uint16_t tcp<InetTraits>::tcb::_max_nr_retransmit;
-
-template <typename InetTraits>
-constexpr std::chrono::milliseconds tcp<InetTraits>::tcb::_rto_min;
-
-template <typename InetTraits>
-constexpr std::chrono::milliseconds tcp<InetTraits>::tcb::_rto_max;
-
-template <typename InetTraits>
-constexpr std::chrono::milliseconds tcp<InetTraits>::tcb::_rto_clk_granularity;
 
 template <typename InetTraits>
 typename tcp<InetTraits>::tcb::isn_secret tcp<InetTraits>::tcb::_isn_secret;

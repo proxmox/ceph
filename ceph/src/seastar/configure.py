@@ -24,20 +24,24 @@ import tempfile
 
 tempfile.tempdir = "./build/tmp"
 
-def add_tristate(arg_parser, name, dest, help, default=None):
-    arg_parser.add_argument('--enable-' + name, dest = dest, action = 'store_true', default = default,
-                            help = 'Enable ' + help + ' [default]' if default else '')
-    arg_parser.add_argument('--disable-' + name, dest = dest, action = 'store_false', default = None,
-                            help = 'Disable ' + help)
 
-def try_compile(compiler, source = '', flags = []):
-    return try_compile_and_link(compiler, source, flags = flags + ['-c'])
+def add_tristate(arg_parser, name, dest, help, default=None):
+    arg_parser.add_argument('--enable-' + name, dest=dest, action='store_true', default=default,
+                            help='Enable ' + help + ' [default]' if default else '')
+    arg_parser.add_argument('--disable-' + name, dest=dest, action='store_false', default=None,
+                            help='Disable ' + help)
+
+
+def try_compile(compiler, source='', flags=[]):
+    return try_compile_and_link(compiler, source, flags=flags + ['-c'])
+
 
 def ensure_tmp_dir_exists():
     if not os.path.exists(tempfile.tempdir):
         os.makedirs(tempfile.tempdir)
 
-def try_compile_and_link(compiler, source = '', flags = []):
+
+def try_compile_and_link(compiler, source='', flags=[]):
     ensure_tmp_dir_exists()
     with tempfile.NamedTemporaryFile() as sfile:
         ofd, ofile = tempfile.mkstemp()
@@ -48,28 +52,36 @@ def try_compile_and_link(compiler, source = '', flags = []):
             # We can't write to /dev/null, since in some cases (-ftest-coverage) gcc will create an auxiliary
             # output file based on the name of the output file, and "/dev/null.gcsa" is not a good name
             return subprocess.call([compiler, '-x', 'c++', '-o', ofile, sfile.name] + flags,
-                                   stdout = subprocess.DEVNULL,
-                                   stderr = subprocess.DEVNULL) == 0
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL) == 0
         finally:
             if os.path.exists(ofile):
                 os.unlink(ofile)
+
+
 def standard_supported(standard, compiler='g++'):
     return try_compile(compiler=compiler, source='', flags=['-std=' + standard])
 
+
 arg_parser = argparse.ArgumentParser('Configure seastar')
 arg_parser.add_argument('--mode', action='store', choices=seastar_cmake.SUPPORTED_MODES + ['all'], default='all')
-arg_parser.add_argument('--cflags', action = 'store', dest = 'user_cflags', default = '',
-                        help = 'Extra flags for the C++ compiler')
-arg_parser.add_argument('--ldflags', action = 'store', dest = 'user_ldflags', default = '',
-                        help = 'Extra flags for the linker')
-arg_parser.add_argument('--optflags', action = 'store', dest = 'user_optflags', default = '',
-                        help = 'Extra optimization flags for the release mode')
-arg_parser.add_argument('--api-level', action='store', dest='api_level', default='6',
-                        help='Compatibility API level (6=latest)')
-arg_parser.add_argument('--compiler', action = 'store', dest = 'cxx', default = 'g++',
-                        help = 'C++ compiler path')
+arg_parser.add_argument('--build-root', action='store', default=seastar_cmake.DEFAULT_BUILD_ROOT, type=str,
+                        help='The name of the build root build directoy: using a different name allows multiple '
+                        'configurations to co-exist in the same repository')
+arg_parser.add_argument('--cflags', action = 'store', dest='user_cflags', default='',
+                        help='Extra flags for the C++ compiler')
+arg_parser.add_argument('--ldflags', action='store', dest='user_ldflags', default='',
+                        help='Extra flags for the linker')
+arg_parser.add_argument('--optflags', action='store', dest='user_optflags', default='',
+                        help='Extra optimization flags for the release mode')
+arg_parser.add_argument('--api-level', action='store', dest='api_level', default='7',
+                        help='Compatibility API level (7=latest)')
+arg_parser.add_argument('--compiler', action='store', dest='cxx', default='g++',
+                        help='C++ compiler path')
 arg_parser.add_argument('--c-compiler', action='store', dest='cc', default='gcc',
-                        help = 'C compiler path (for bundled libraries such as dpdk)')
+                        help='C compiler path (for bundled libraries such as dpdk)')
+arg_parser.add_argument('--ccache', nargs='?', const='ccache', default='', metavar='CCACHE_BINARY_PATH',
+                        help='Use ccache to cache compilation (and optionally provide a path to ccache binary)')
 arg_parser.add_argument('--c++-standard', action='store', dest='cpp_standard', default='',
                         help='C++ standard to build with [default: %(default)s]')
 arg_parser.add_argument('--cook', action='append', dest='cook', default=[],
@@ -80,34 +92,39 @@ arg_parser.add_argument('--scheduling-groups-count', action='store', dest='sched
 
 add_tristate(
     arg_parser,
-    name = 'dpdk',
-    dest = 'dpdk',
-    help = 'DPDK support')
+    name='dpdk',
+    dest='dpdk',
+    help='DPDK support')
 add_tristate(
     arg_parser,
-    name = 'hwloc',
-    dest = 'hwloc',
-    help = 'hwloc support')
+    name='cxx-modules',
+    dest='cxx_modules',
+    help='build as C++20 module')
 add_tristate(
     arg_parser,
-    name = 'alloc-failure-injector',
-    dest = 'alloc_failure_injection',
-    help = 'allocation failure injection')
+    name='hwloc',
+    dest='hwloc',
+    help='hwloc support')
 add_tristate(
     arg_parser,
-    name = 'task-backtrace',
-    dest = 'task_backtrace',
-    help = 'Collect backtrace at deferring points')
+    name='alloc-failure-injector',
+    dest='alloc_failure_injection',
+    help='allocation failure injection')
 add_tristate(
     arg_parser,
-    name = 'unused-result-error',
-    dest = "unused_result_error",
-    help = 'Make [[nodiscard]] violations an error')
+    name='task-backtrace',
+    dest='task_backtrace',
+    help='Collect backtrace at deferring points')
 add_tristate(
     arg_parser,
-    name = 'debug-shared-ptr',
-    dest = "debug_shared_ptr",
-    help = 'Debug shared_ptr')
+    name='unused-result-error',
+    dest="unused_result_error",
+    help='Make [[nodiscard]] violations an error')
+add_tristate(
+    arg_parser,
+    name='debug-shared-ptr',
+    dest="debug_shared_ptr",
+    help='Debug shared_ptr')
 add_tristate(
     arg_parser,
     name='io_uring',
@@ -126,6 +143,7 @@ add_tristate(arg_parser, name='deferred-action-require-noexcept', dest='deferred
 arg_parser.add_argument('--prefix', dest='install_prefix', default='/usr/local', help='Root installation path of Seastar files')
 args = arg_parser.parse_args()
 
+
 def identify_best_standard(cpp_standards, compiler):
     """Returns the first C++ standard accepted by the compiler in the sequence,
     assuming the "best" standards appear first.
@@ -139,9 +157,11 @@ def identify_best_standard(cpp_standards, compiler):
             return std
     raise Exception(f"{compiler} does not seem to support any of Seastar's preferred C++ standards - {cpp_standards}. Please upgrade your compiler.")
 
+
 if args.cpp_standard == '':
-    cpp_standards = ['23', '20', '17']
+    cpp_standards = ['23', '20']
     args.cpp_standard = identify_best_standard(cpp_standards, compiler=args.cxx)
+
 
 def infer_dpdk_machine(user_cflags):
     """Infer the DPDK machine identifier (e.g., 'ivb') from the space-separated
@@ -168,15 +188,17 @@ def infer_dpdk_machine(user_cflags):
 
     return MAPPING.get(arch, 'native')
 
+
 MODES = seastar_cmake.SUPPORTED_MODES if args.mode == 'all' else [args.mode]
 
 # For convenience.
 tr = seastar_cmake.translate_arg
 
-MODE_TO_CMAKE_BUILD_TYPE = {'release' : 'RelWithDebInfo', 'debug' : 'Debug', 'dev' : 'Dev', 'sanitize' : 'Sanitize' }
+MODE_TO_CMAKE_BUILD_TYPE = {'release': 'RelWithDebInfo', 'debug': 'Debug', 'dev': 'Dev', 'sanitize': 'Sanitize' }
+
 
 def configure_mode(mode):
-    BUILD_PATH = seastar_cmake.BUILD_PATHS[mode]
+    BUILD_PATH = seastar_cmake.build_path(mode, build_root=args.build_root)
 
     CFLAGS = seastar_cmake.convert_strings_to_cmake_list(
         args.user_cflags,
@@ -186,11 +208,12 @@ def configure_mode(mode):
 
     TRANSLATED_ARGS = [
         '-DCMAKE_BUILD_TYPE={}'.format(MODE_TO_CMAKE_BUILD_TYPE[mode]),
-        '-DCMAKE_C_COMPILER={}'.format(args.cc),
         '-DCMAKE_CXX_COMPILER={}'.format(args.cxx),
         '-DCMAKE_CXX_STANDARD={}'.format(args.cpp_standard),
+        '-DCMAKE_CXX_COMPILER_LAUNCHER={}'.format(args.ccache),
         '-DCMAKE_INSTALL_PREFIX={}'.format(args.install_prefix),
         '-DCMAKE_EXPORT_COMPILE_COMMANDS={}'.format('yes' if args.cc_json else 'no'),
+        '-DBUILD_SHARED_LIBS={}'.format('yes' if mode in ('debug', 'dev') else 'no'),
         '-DSeastar_API_LEVEL={}'.format(args.api_level),
         '-DSeastar_SCHEDULING_GROUPS_COUNT={}'.format(args.scheduling_groups_count),
         tr(args.exclude_tests, 'EXCLUDE_TESTS_FROM_ALL'),
@@ -198,6 +221,7 @@ def configure_mode(mode):
         tr(args.exclude_demos, 'EXCLUDE_DEMOS_FROM_ALL'),
         tr(CFLAGS, 'CXX_FLAGS'),
         tr(LDFLAGS, 'LD_FLAGS'),
+        tr(args.cxx_modules, 'MODULE'),
         tr(args.dpdk, 'DPDK'),
         tr(infer_dpdk_machine(args.user_cflags), 'DPDK_MACHINE'),
         tr(args.hwloc, 'HWLOC', value_when_none='yes'),
@@ -219,6 +243,9 @@ def configure_mode(mode):
 
     # Generate a new build by pointing to the source directory.
     if ingredients_to_cook:
+        # the C compiler is only used when building ingredients.
+        TRANSLATED_ARGS.append(f'-DCMAKE_C_COMPILER={args.cc}')
+
         # We need to use cmake-cooking for some dependencies.
         inclusion_arguments = []
 
@@ -236,7 +263,8 @@ def configure_mode(mode):
         # When building without cooked dependencies, we can invoke cmake directly. We can't call
         # cooking.sh, because without any -i parameters, it will try to build
         # everything.
-        ARGS = ['cmake', '-G', 'Ninja', '../..']
+        root_relative_to_build = os.path.relpath(seastar_cmake.ROOT_PATH, BUILD_PATH)
+        ARGS = ['cmake', '-G', 'Ninja', root_relative_to_build]
         dir = BUILD_PATH
     # filter out empty args, their values are actually "guess",
     # CMake should be able to figure it out.
@@ -246,6 +274,7 @@ def configure_mode(mode):
         print(" \\\n  ".join(ARGS))
     os.makedirs(BUILD_PATH, exist_ok=True)
     subprocess.check_call(ARGS, shell=False, cwd=dir)
+
 
 for mode in MODES:
     configure_mode(mode)

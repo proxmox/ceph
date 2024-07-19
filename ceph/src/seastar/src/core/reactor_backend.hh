@@ -27,6 +27,9 @@
 #include <seastar/core/internal/poll.hh>
 #include <seastar/core/linux-aio.hh>
 #include <seastar/core/cacheline.hh>
+#include <seastar/util/modules.hh>
+
+#ifndef SEASTAR_MODULE
 #include <fmt/ostream.h>
 #include <sys/time.h>
 #include <signal.h>
@@ -38,6 +41,7 @@
 
 #ifdef HAVE_OSV
 #include <osv/newpoll.hh>
+#endif
 #endif
 
 namespace seastar {
@@ -226,7 +230,7 @@ public:
 // using mechanisms like timerfd, signalfd and eventfd respectively.
 class reactor_backend_epoll : public reactor_backend {
     reactor& _r;
-    std::atomic<bool> _highres_timer_pending;
+    std::atomic<bool> _highres_timer_pending = {};
     std::thread _task_quota_timer_thread;
     ::itimerspec _steady_clock_timer_deadline = {};
     // These two timers are used for high resolution timer<>s, one for

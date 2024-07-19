@@ -867,6 +867,7 @@ typedef elink_status_t (*read_sfp_module_eeprom_func_p)(struct elink_phy *phy,
 
 #define ELINK_SFP_EEPROM_CON_TYPE_ADDR		0x2
 	#define ELINK_SFP_EEPROM_CON_TYPE_VAL_UNKNOWN	0x0
+	#define ELINK_SFP_EEPROM_CON_TYPE_VAL_SC        0x1
 	#define ELINK_SFP_EEPROM_CON_TYPE_VAL_LC	0x7
 	#define ELINK_SFP_EEPROM_CON_TYPE_VAL_COPPER	0x21
 	#define ELINK_SFP_EEPROM_CON_TYPE_VAL_RJ45	0x22
@@ -1460,7 +1461,7 @@ static void elink_ets_e3b0_pbf_disabled(const struct elink_params *params)
 }
 /******************************************************************************
  * Description:
- *	E3B0 disable will return basicly the values to init values.
+ *	E3B0 disable will return basically the values to init values.
  *.
  ******************************************************************************/
 static elink_status_t elink_ets_e3b0_disabled(const struct elink_params *params,
@@ -1483,7 +1484,7 @@ static elink_status_t elink_ets_e3b0_disabled(const struct elink_params *params,
 
 /******************************************************************************
  * Description:
- *	Disable will return basicly the values to init values.
+ *	Disable will return basically the values to init values.
  *
  ******************************************************************************/
 elink_status_t elink_ets_disabled(struct elink_params *params,
@@ -1506,7 +1507,7 @@ elink_status_t elink_ets_disabled(struct elink_params *params,
 
 /******************************************************************************
  * Description
- *	Set the COS mappimg to SP and BW until this point all the COS are not
+ *	Set the COS mapping to SP and BW until this point all the COS are not
  *	set as SP or BW.
  ******************************************************************************/
 static elink_status_t elink_ets_e3b0_cli_map(const struct elink_params *params,
@@ -1652,7 +1653,7 @@ static elink_status_t elink_ets_e3b0_get_total_bw(
 		}
 		ELINK_DEBUG_P0(sc,
 		   "elink_ets_E3B0_config total BW should be 100");
-		/* We can handle a case whre the BW isn't 100 this can happen
+		/* We can handle a case where the BW isn't 100 this can happen
 		 * if the TC are joined.
 		 */
 	}
@@ -2608,7 +2609,7 @@ static elink_status_t elink_emac_enable(struct elink_params *params,
 	REG_WR(sc, NIG_REG_EGRESS_EMAC0_PORT + port * 4, 1);
 
 #ifdef ELINK_INCLUDE_EMUL
-	/* for paladium */
+	/* for palladium */
 	if (CHIP_REV_IS_EMUL(sc)) {
 		/* Use lane 1 (of lanes 0-3) */
 		REG_WR(sc, NIG_REG_XGXS_LANE_SEL_P0 + port * 4, 1);
@@ -2850,7 +2851,7 @@ static void elink_update_pfc_bmac2(struct elink_params *params,
 
 	/* Set Time (based unit is 512 bit time) between automatic
 	 * re-sending of PP packets amd enable automatic re-send of
-	 * Per-Priroity Packet as long as pp_gen is asserted and
+	 * Per-Priority Packet as long as pp_gen is asserted and
 	 * pp_disable is low.
 	 */
 	val = 0x8000;
@@ -3369,7 +3370,7 @@ static elink_status_t elink_pbf_update(struct elink_params *params,
 }
 
 /**
- * elink_get_emac_base - retrive emac base address
+ * elink_get_emac_base - retrieve emac base address
  *
  * @bp:			driver handle
  * @mdc_mdio_access:	access type
@@ -4518,7 +4519,7 @@ static void elink_warpcore_enable_AN_KR2(struct elink_phy *phy,
 		elink_cl45_write(sc, phy, reg_set[i].devad, reg_set[i].reg,
 				 reg_set[i].val);
 
-	/* Start KR2 work-around timer which handles BNX2X8073 link-parner */
+	/* Start KR2 work-around timer which handles BNX2X8073 link-partner */
 	params->link_attr_sync |= LINK_ATTR_SYNC_KR2_ENABLE;
 	elink_update_link_attr(params, params->link_attr_sync);
 }
@@ -5069,6 +5070,15 @@ static void elink_warpcore_set_sgmii_speed(struct elink_phy *phy,
 					 0x1000);
 		ELINK_DEBUG_P0(sc, "set SGMII AUTONEG");
 	} else {
+	/* Note that 2.5G works only when used with 1G advertisement */
+		if (fiber_mode && phy->req_line_speed == SPEED_2500 &&
+		   (phy->speed_cap_mask &
+		   (PORT_HW_CFG_SPEED_CAPABILITY_D0_1G |
+		    PORT_HW_CFG_SPEED_CAPABILITY_D0_2_5G))) {
+			elink_cl45_write(sc, phy, MDIO_WC_DEVAD,
+			MDIO_WC_REG_SERDESDIGITAL_MISC1, 0x6010);
+		}
+
 		elink_cl45_read(sc, phy, MDIO_WC_DEVAD,
 				MDIO_WC_REG_COMBO_IEEE0_MIICTRL, &val16);
 		val16 &= 0xcebf;
@@ -5079,6 +5089,7 @@ static void elink_warpcore_set_sgmii_speed(struct elink_phy *phy,
 			val16 |= 0x2000;
 			break;
 		case ELINK_SPEED_1000:
+		case ELINK_SPEED_2500:
 			val16 |= 0x0040;
 			break;
 		default:
@@ -7824,7 +7835,7 @@ elink_status_t elink_link_update(struct elink_params *params,
 			 * hence its link is expected to be down
 			 * - SECOND_PHY means that first phy should not be able
 			 * to link up by itself (using configuration)
-			 * - DEFAULT should be overridden during initialiazation
+			 * - DEFAULT should be overridden during initialization
 			 */
 				ELINK_DEBUG_P1(sc, "Invalid link indication"
 					       " mpc=0x%x. DISABLING LINK !!!",
@@ -8097,7 +8108,7 @@ static elink_status_t elink_8073_8727_external_rom_boot(struct bnx2x_softc *sc,
 					     uint8_t port)
 {
 	uint32_t count = 0;
-	uint16_t fw_ver1, fw_msgout;
+	uint16_t fw_ver1 = 0, fw_msgout;
 	elink_status_t rc = ELINK_STATUS_OK;
 
 	/* Boot port from external ROM  */
@@ -9138,6 +9149,7 @@ static elink_status_t elink_get_edc_mode(struct elink_phy *phy,
 		break;
 	}
 	case ELINK_SFP_EEPROM_CON_TYPE_VAL_UNKNOWN:
+	case ELINK_SFP_EEPROM_CON_TYPE_VAL_SC:
 	case ELINK_SFP_EEPROM_CON_TYPE_VAL_LC:
 	case ELINK_SFP_EEPROM_CON_TYPE_VAL_RJ45:
 		check_limiting_mode = 1;
@@ -9151,7 +9163,8 @@ static elink_status_t elink_get_edc_mode(struct elink_phy *phy,
 		    (val[ELINK_SFP_EEPROM_1G_COMP_CODE_ADDR] != 0)) {
 			ELINK_DEBUG_P0(sc, "1G SFP module detected");
 			phy->media_type = ELINK_ETH_PHY_SFP_1G_FIBER;
-			if (phy->req_line_speed != ELINK_SPEED_1000) {
+			if (phy->req_line_speed != ELINK_SPEED_1000 &&
+			    phy->req_line_speed != ELINK_SPEED_2500) {
 				uint8_t gport = params->port;
 				phy->req_line_speed = ELINK_SPEED_1000;
 				if (!CHIP_IS_E1x(sc)) {
@@ -9324,7 +9337,7 @@ static elink_status_t elink_wait_for_sfp_module_initialized(
 	 * some phys type ( e.g. JDSU )
 	 */
 
-	for (timeout = 0; timeout < 60; timeout++) {
+	for (timeout = 0; timeout < 1800; timeout++) {
 		if (phy->type == PORT_HW_CFG_XGXS_EXT_PHY_TYPE_DIRECT)
 			rc = elink_warpcore_read_sfp_module_eeprom(
 				phy, params, ELINK_I2C_DEV_ADDR_A0, 1, 1, &val,
@@ -10991,7 +11004,7 @@ static elink_status_t elink_84858_cmd_hdlr(struct elink_phy *phy,
 		ELINK_DEBUG_P0(sc, "FW cmd failed.");
 		return ELINK_STATUS_ERROR;
 	}
-	/* Step5: Once the command has completed, read the specficied DATA
+	/* Step5: Once the command has completed, read the specified DATA
 	 * registers for any saved results for the command, if applicable
 	 */
 
@@ -12614,6 +12627,7 @@ static const struct elink_phy phy_warpcore = {
 			   ELINK_SUPPORTED_100baseT_Half |
 			   ELINK_SUPPORTED_100baseT_Full |
 			   ELINK_SUPPORTED_1000baseT_Full |
+			   ELINK_SUPPORTED_2500baseX_Full |
 			   ELINK_SUPPORTED_1000baseKX_Full |
 			   ELINK_SUPPORTED_10000baseT_Full |
 			   ELINK_SUPPORTED_10000baseKR_Full |
@@ -13156,6 +13170,7 @@ static elink_status_t elink_populate_int_phy(struct bnx2x_softc *sc,
 			break;
 		case PORT_HW_CFG_NET_SERDES_IF_SFI:
 			phy->supported &= (ELINK_SUPPORTED_1000baseT_Full |
+					   ELINK_SUPPORTED_2500baseX_Full |
 					   ELINK_SUPPORTED_10000baseT_Full |
 					   ELINK_SUPPORTED_FIBRE |
 					   ELINK_SUPPORTED_Pause |
@@ -15013,7 +15028,7 @@ static void elink_check_kr2_wa(struct elink_params *params,
 
 	/* Once KR2 was disabled, wait 5 seconds before checking KR2 recovery
 	 * Since some switches tend to reinit the AN process and clear the
-	 * the advertised BP/NP after ~2 seconds causing the KR2 to be disabled
+	 * advertised BP/NP after ~2 seconds causing the KR2 to be disabled
 	 * and recovered many times
 	 */
 	if (vars->check_kr2_recovery_cnt > 0) {

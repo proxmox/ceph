@@ -3,16 +3,16 @@
  * Copyright 2017 Mellanox Technologies, Ltd
  */
 
-#ifndef _RTE_ETH_FAILSAFE_PRIVATE_H_
-#define _RTE_ETH_FAILSAFE_PRIVATE_H_
+#ifndef _ETH_FAILSAFE_PRIVATE_H_
+#define _ETH_FAILSAFE_PRIVATE_H_
 
 #include <stdint.h>
 #include <sys/queue.h>
 #include <pthread.h>
 
 #include <rte_atomic.h>
-#include <rte_dev.h>
-#include <rte_ethdev_driver.h>
+#include <dev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_devargs.h>
 #include <rte_flow.h>
 #include <rte_interrupts.h>
@@ -57,6 +57,14 @@ struct rx_proxy {
 	uint32_t scid;
 	enum rxp_service_state sstate;
 };
+
+#define FS_RX_PROXY_INIT (struct rx_proxy){ \
+	.efd = -1, \
+	.evec = NULL, \
+	.sid = 0, \
+	.scid = 0, \
+	.sstate = SS_NO_SERVICE, \
+}
 
 struct rxq {
 	struct fs_priv *priv;
@@ -141,7 +149,7 @@ struct fs_priv {
 	/*
 	 * Set of sub_devices.
 	 * subs[0] is the preferred device
-	 * any other is just another slave
+	 * any other is just another sub device
 	 */
 	struct sub_device *subs;  /* shared between processes */
 	uint8_t subs_head; /* if head == tail, no subs */
@@ -152,14 +160,13 @@ struct fs_priv {
 	TAILQ_HEAD(sub_flows, rte_flow) flow_list;
 	/* current number of mac_addr slots allocated. */
 	uint32_t nb_mac_addr;
-	struct ether_addr mac_addrs[FAILSAFE_MAX_ETHADDR];
+	struct rte_ether_addr mac_addrs[FAILSAFE_MAX_ETHADDR];
 	uint32_t mac_addr_pool[FAILSAFE_MAX_ETHADDR];
 	uint32_t nb_mcast_addr;
-	struct ether_addr *mcast_addrs;
+	struct rte_ether_addr *mcast_addrs;
 	/* current capabilities */
-	struct rte_eth_dev_info infos;
 	struct rte_eth_dev_owner my_owner; /* Unique owner. */
-	struct rte_intr_handle intr_handle; /* Port interrupt handle. */
+	struct rte_intr_handle *intr_handle; /* Port interrupt handle. */
 	/*
 	 * Fail-safe state machine.
 	 * This level will be tracking state of the EAL and eth
@@ -229,6 +236,7 @@ int failsafe_eal_uninit(struct rte_eth_dev *dev);
 
 int failsafe_eth_dev_state_sync(struct rte_eth_dev *dev);
 void failsafe_eth_dev_unregister_callbacks(struct sub_device *sdev);
+int failsafe_eth_dev_close(struct rte_eth_dev *dev);
 void failsafe_dev_remove(struct rte_eth_dev *dev);
 void failsafe_stats_increment(struct rte_eth_stats *to,
 				struct rte_eth_stats *from);
@@ -494,4 +502,4 @@ fs_err(struct sub_device *sdev, int err)
 		return rte_errno = 0;
 	return err;
 }
-#endif /* _RTE_ETH_FAILSAFE_PRIVATE_H_ */
+#endif /* _ETH_FAILSAFE_PRIVATE_H_ */

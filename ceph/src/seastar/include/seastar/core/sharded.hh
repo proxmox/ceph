@@ -24,15 +24,17 @@
 #include <seastar/core/smp.hh>
 #include <seastar/core/loop.hh>
 #include <seastar/core/map_reduce.hh>
+#include <seastar/core/internal/run_in_background.hh>
 #include <seastar/util/is_smart_ptr.hh>
 #include <seastar/util/tuple_utils.hh>
 #include <seastar/core/do_with.hh>
-#include <seastar/util/concepts.hh>
 #include <seastar/util/log.hh>
+#include <seastar/util/modules.hh>
+
+#ifndef SEASTAR_MODULE
 #include <boost/iterator/counting_iterator.hpp>
-#include <functional>
-#if __has_include(<concepts>)
 #include <concepts>
+#include <functional>
 #endif
 
 /// \defgroup smp-module Multicore
@@ -47,11 +49,15 @@
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT_BEGIN
+
 template <typename Func, typename... Param>
 class sharded_parameter;
 
 template <typename Service>
 class sharded;
+
+SEASTAR_MODULE_EXPORT_END
 
 namespace internal {
 
@@ -100,6 +106,8 @@ using sharded_unwrap_t = typename sharded_unwrap<T>::type;
 /// \addtogroup smp-module
 /// @{
 
+SEASTAR_MODULE_EXPORT_BEGIN
+
 template <typename T>
 class sharded;
 
@@ -110,13 +118,14 @@ class sharded;
 /// pointer as long as object is in use.
 template<typename T>
 class async_sharded_service : public enable_shared_from_this<T> {
+    promise<> _freed;
 protected:
-    std::function<void()> _delete_cb;
     async_sharded_service() noexcept = default;
     virtual ~async_sharded_service() {
-        if (_delete_cb) {
-            _delete_cb();
-        }
+        _freed.set_value();
+    }
+    future<> freed() noexcept {
+        return _freed.get_future();
     }
     template <typename Service> friend class sharded;
 };
@@ -168,26 +177,32 @@ template <typename Service>
 class sharded {
     struct entry {
         shared_ptr<Service> service;
-        promise<> freed;
+
+        future<> track_deletion() noexcept {
+            // do not wait for instance to be deleted if it is not going to notify us
+            if constexpr (std::is_base_of_v<async_sharded_service<Service>, Service>) {
+                if (service) {
+                    return service->freed();
+                }
+            }
+            return make_ready_future<>();
+        }
     };
     std::vector<entry> _instances;
 private:
     using invoke_on_all_func_type = std::function<future<> (Service&)>;
 private:
-    void service_deleted() noexcept {
-        _instances[this_shard_id()].freed.set_value();
-    }
     template <typename U, bool async>
     friend struct shared_ptr_make_helper;
 
     template <typename T>
-    std::enable_if_t<std::is_base_of<peering_sharded_service<T>, T>::value>
+    std::enable_if_t<std::is_base_of_v<peering_sharded_service<T>, T>>
     set_container(T& service) noexcept {
         service.set_container(this);
     }
 
     template <typename T>
-    std::enable_if_t<!std::is_base_of<peering_sharded_service<T>, T>::value>
+    std::enable_if_t<!std::is_base_of_v<peering_sharded_service<T>, T>>
     set_container(T&) noexcept {
     }
 
@@ -270,7 +285,7 @@ public:
     ///        to be invoked on all shards
     /// \return Future that becomes ready once all calls have completed
     template <typename Func, typename... Args>
-    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>)
+    requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>
     future<> invoke_on_all(smp_submit_to_options options, Func func, Args... args) noexcept;
 
     /// Invoke a function on all instances of `Service`.
@@ -279,7 +294,7 @@ public:
     /// Passes the default \ref smp_submit_to_options to the
     /// \ref smp::submit_to() called behind the scenes.
     template <typename Func, typename... Args>
-    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>)
+    requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>
     future<> invoke_on_all(Func func, Args... args) noexcept {
       try {
         return invoke_on_all(smp_submit_to_options{}, std::move(func), std::move(args)...);
@@ -299,7 +314,7 @@ public:
     /// \return a `future<>` that becomes ready when all cores but the current one have
     ///         processed the message.
     template <typename Func, typename... Args>
-    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, Args...>)
+    requires std::invocable<Func, Service&, Args...>
     future<> invoke_on_others(smp_submit_to_options options, Func func, Args... args) noexcept;
 
     /// Invoke a callable on all instances of  \c Service except the instance
@@ -314,7 +329,7 @@ public:
     /// Passes the default \ref smp_submit_to_options to the
     /// \ref smp::submit_to() called behind the scenes.
     template <typename Func, typename... Args>
-    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, Args...>)
+    requires std::invocable<Func, Service&, Args...>
     future<> invoke_on_others(Func func, Args... args) noexcept {
       try {
         return invoke_on_others(smp_submit_to_options{}, std::move(func), std::move(args)...);
@@ -449,7 +464,7 @@ public:
     ///
     /// \return result of calling `func(instance)` on the designated instance
     template <typename Func, typename... Args, typename Ret = futurize_t<std::invoke_result_t<Func, Service&, Args...>>>
-    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, Args&&...>)
+    requires std::invocable<Func, Service&, Args&&...>
     Ret
     invoke_on(unsigned id, smp_submit_to_options options, Func&& func, Args&&... args) {
         return smp::submit_to(id, options, [this, func = std::forward<Func>(func), args = std::tuple(std::move(args)...)] () mutable {
@@ -467,7 +482,7 @@ public:
     /// \param args parameters to the callable
     /// \return result of calling `func(instance)` on the designated instance
     template <typename Func, typename... Args, typename Ret = futurize_t<std::invoke_result_t<Func, Service&, Args&&...>>>
-    SEASTAR_CONCEPT(requires std::invocable<Func, Service&, Args&&...>)
+    requires std::invocable<Func, Service&, Args&&...>
     Ret
     invoke_on(unsigned id, Func&& func, Args&&... args) {
         return invoke_on(id, smp_submit_to_options(), std::forward<Func>(func), std::forward<Args>(args)...);
@@ -486,20 +501,10 @@ public:
     bool local_is_initialized() const noexcept;
 
 private:
-    void track_deletion(shared_ptr<Service>&, std::false_type) noexcept {
-        // do not wait for instance to be deleted since it is not going to notify us
-        service_deleted();
-    }
-
-    void track_deletion(shared_ptr<Service>& s, std::true_type) {
-        s->_delete_cb = std::bind(std::mem_fn(&sharded<Service>::service_deleted), this);
-    }
-
     template <typename... Args>
     shared_ptr<Service> create_local_service(Args&&... args) {
         auto s = ::seastar::make_shared<Service>(std::forward<Args>(args)...);
         set_container(*s);
-        track_deletion(s, std::is_base_of<async_sharded_service<Service>, Service>());
         return s;
     }
 
@@ -539,7 +544,7 @@ public:
     ///                  instance will be passed. Anything else
     ///                  will be passed by value unchanged.
     explicit sharded_parameter(Func func, Params... params)
-            SEASTAR_CONCEPT(requires std::invocable<Func, internal::sharded_unwrap_evaluated_t<Params>...>)
+            requires std::invocable<Func, internal::sharded_unwrap_evaluated_t<Params>...>
             : _func(std::move(func)), _params(std::make_tuple(std::move(params)...)) {
     }
 private:
@@ -552,7 +557,7 @@ private:
 /// \example sharded_parameter_demo.cc
 ///
 /// Example use of \ref sharded_parameter.
-
+SEASTAR_MODULE_EXPORT_END
 /// @}
 
 template <typename Service>
@@ -718,11 +723,9 @@ sharded<Service>::stop() noexcept {
     }).then_wrapped([this] (future<> fut) {
         return sharded_parallel_for_each([this] (unsigned c) {
             return smp::submit_to(c, [this] {
-                if (_instances[this_shard_id()].service == nullptr) {
-                    return make_ready_future<>();
-                }
+                auto fut = _instances[this_shard_id()].track_deletion();
                 _instances[this_shard_id()].service = nullptr;
-                return _instances[this_shard_id()].freed.get_future();
+                return fut;
             });
         }).finally([this, fut = std::move(fut)] () mutable {
             _instances.clear();
@@ -751,7 +754,7 @@ sharded<Service>::invoke_on_all(smp_submit_to_options options, std::function<fut
 
 template <typename Service>
 template <typename Func, typename... Args>
-SEASTAR_CONCEPT(requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>)
+requires std::invocable<Func, Service&, internal::sharded_unwrap_t<Args>...>
 inline
 future<>
 sharded<Service>::invoke_on_all(smp_submit_to_options options, Func func, Args... args) noexcept {
@@ -770,7 +773,7 @@ sharded<Service>::invoke_on_all(smp_submit_to_options options, Func func, Args..
 
 template <typename Service>
 template <typename Func, typename... Args>
-SEASTAR_CONCEPT(requires std::invocable<Func, Service&, Args...>)
+requires std::invocable<Func, Service&, Args...>
 inline
 future<>
 sharded<Service>::invoke_on_others(smp_submit_to_options options, Func func, Args... args) noexcept {
@@ -809,9 +812,9 @@ inline bool sharded<Service>::local_is_initialized() const noexcept {
            _instances[this_shard_id()].service;
 }
 
+SEASTAR_MODULE_EXPORT_BEGIN
 /// \addtogroup smp-module
 /// @{
-
 /// Smart pointer wrapper which makes it safe to move across CPUs.
 ///
 /// \c foreign_ptr<> is a smart pointer wrapper which, unlike
@@ -835,7 +838,7 @@ inline bool sharded<Service>::local_is_initialized() const noexcept {
 /// \c foreign_ptr<> is a move-only object; it cannot be copied.
 ///
 template <typename PtrType>
-SEASTAR_CONCEPT( requires (!std::is_pointer<PtrType>::value) )
+requires (!std::is_pointer_v<PtrType>)
 class foreign_ptr {
 private:
     PtrType _value;
@@ -845,7 +848,10 @@ private:
         // `destroy()` is called from the destructor and other
         // synchronous methods (like `reset()`), that have no way to
         // wait for this future.
-        (void)destroy_on(std::move(p), cpu);
+        auto f = destroy_on(std::move(p), cpu);
+        if (!f.available() || f.failed()) {
+            internal::run_in_background(std::move(f));
+        }
     }
 
     static future<> destroy_on(PtrType p, unsigned cpu) noexcept {
@@ -909,7 +915,7 @@ public:
     /// Checks whether the wrapped pointer is non-null.
     operator bool() const noexcept(noexcept(static_cast<bool>(_value))) { return static_cast<bool>(_value); }
     /// Move-assigns a \c foreign_ptr<>.
-    foreign_ptr& operator=(foreign_ptr&& other) noexcept(std::is_nothrow_move_constructible<PtrType>::value) {
+    foreign_ptr& operator=(foreign_ptr&& other) noexcept(std::is_nothrow_move_constructible_v<PtrType>) {
          destroy(std::move(_value), _cpu);
         _value = std::move(other._value);
         _cpu = other._cpu;
@@ -962,5 +968,7 @@ foreign_ptr<T> make_foreign(T ptr) {
 
 template<typename T>
 struct is_smart_ptr<foreign_ptr<T>> : std::true_type {};
+
+SEASTAR_MODULE_EXPORT_END
 
 }

@@ -107,90 +107,147 @@ User Cases
 The power management mechanism is used to save power when performing L3 forwarding.
 
 
-Empty Poll API
---------------
+Ethernet PMD Power Management API
+---------------------------------
 
 Abstract
 ~~~~~~~~
 
-For packet processing workloads such as DPDK polling is continuous.
-This means CPU cores always show 100% busy independent of how much work
-those cores are doing. It is critical to accurately determine how busy
-a core is hugely important for the following reasons:
+Existing power management mechanisms require developers to change application
+design or change code to make use of it. The PMD power management API provides a
+convenient alternative by utilizing Ethernet PMD RX callbacks, and triggering
+power saving whenever empty poll count reaches a certain number.
 
-        * No indication of overload conditions
-        * User does not know how much real load is on a system, resulting
-          in wasted energy as no power management is utilized
+* Monitor
+   This power saving scheme will put the CPU into optimized power state and
+   monitor the Ethernet PMD RX descriptor address, waking the CPU up whenever
+   there's new traffic. Support for this scheme may not be available on all
+   platforms, and further limitations may apply (see below).
 
-Compared to the original l3fwd-power design, instead of going to sleep
-after detecting an empty poll, the new mechanism just lowers the core frequency.
-As a result, the application does not stop polling the device, which leads
-to improved handling of bursts of traffic.
+* Pause
+   This power saving scheme will avoid busy polling by either entering
+   power-optimized sleep state with ``rte_power_pause()`` function, or, if it's
+   not supported by the underlying platform, use ``rte_pause()``.
 
-When the system become busy, the empty poll mechanism can also increase the core
-frequency (including turbo) to do best effort for intensive traffic. This gives
-us more flexible and balanced traffic awareness over the standard l3fwd-power
-application.
+* Frequency scaling
+   This power saving scheme will use ``librte_power`` library functionality to
+   scale the core frequency up/down depending on traffic volume.
+   The reaction time of the frequency scaling mode is longer
+   than the pause and monitor mode.
+
+The "monitor" mode is only supported in the following configurations and scenarios:
+
+* On Linux* x86_64, `rte_power_monitor()` requires WAITPKG instruction set being
+  supported by the CPU, while `rte_power_monitor_multi()` requires WAITPKG and
+  RTM instruction sets being supported by the CPU. RTM instruction set may also
+  require booting the Linux with `tsx=on` command line parameter. Please refer
+  to your platform documentation for further information.
+
+* If ``rte_cpu_get_intrinsics_support()`` function indicates that
+  ``rte_power_monitor_multi()`` function is supported by the platform, then
+  monitoring multiple Ethernet Rx queues for traffic will be supported.
+
+* If ``rte_cpu_get_intrinsics_support()`` function indicates that only
+  ``rte_power_monitor()`` is supported by the platform, then monitoring will be
+  limited to a mapping of 1 core 1 queue (thus, each Rx queue will have to be
+  monitored from a different lcore).
+
+* If ``rte_cpu_get_intrinsics_support()`` function indicates that neither of the
+  two monitoring functions are supported, then monitor mode will not be supported.
+
+* Not all Ethernet drivers support monitoring, even if the underlying
+  platform may support the necessary CPU instructions. Please refer to
+  :doc:`../nics/overview` for more information.
 
 
-Proposed Solution
-~~~~~~~~~~~~~~~~~
-The proposed solution focuses on how many times empty polls are executed.
-The less the number of empty polls, means current core is busy with processing
-workload, therefore, the higher frequency is needed. The high empty poll number
-indicates the current core not doing any real work therefore, we can lower the
-frequency to safe power.
+API Overview for Ethernet PMD Power Management
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In the current implementation, each core has 1 empty-poll counter which assume
-1 core is dedicated to 1 queue. This will need to be expanded in the future to
-support multiple queues per core.
+* **Queue Enable**: Enable specific power scheme for certain queue/port/core.
 
-Power state definition:
-^^^^^^^^^^^^^^^^^^^^^^^
+* **Queue Disable**: Disable power scheme for certain queue/port/core.
 
-* LOW:  Not currently used, reserved for future use.
+* **Get Emptypoll Max**: Get the configured number of empty polls to wait before
+  entering sleep state.
 
-* MED:  the frequency is used to process modest traffic workload.
+* **Set Emptypoll Max**: Set the number of empty polls to wait before entering
+  sleep state.
 
-* HIGH: the frequency is used to process busy traffic workload.
+* **Get Pause Duration**: Get the configured duration (microseconds) to be used
+  in the Pause callback.
 
-There are two phases to establish the power management system:
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-* Training phase. This phase is used to measure the optimal frequency
-  change thresholds for a given system. The thresholds will differ from
-  system to system due to differences in processor micro-architecture,
-  cache and device configurations.
-  In this phase, the user must ensure that no traffic can enter the
-  system so that counts can be measured for empty polls at low, medium
-  and high frequencies. Each frequency is measured for two seconds.
-  Once the training phase is complete, the threshold numbers are
-  displayed, and normal mode resumes, and traffic can be allowed into
-  the system. These threshold number can be used on the command line
-  when starting the application in normal mode to avoid re-training
-  every time.
+* **Set Pause Duration**: Set the duration of the pause (microseconds) used in
+  the Pause mode callback.
 
-* Normal phase. Every 10ms the run-time counters are compared
-  to the supplied threshold values, and the decision will be made
-  whether to move to a different power state (by adjusting the
-  frequency).
+* **Get Scaling Min Freq**: Get the configured minimum frequency (kHz) to be used
+  in Frequency Scaling mode.
 
-API Overview for Empty Poll Power Management
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-* **State Init**: initialize the power management system.
+* **Set Scaling Min Freq**: Set the minimum frequency (kHz) to be used in Frequency
+  Scaling mode.
 
-* **State Free**: free the resource hold by power management system.
+* **Get Scaling Max Freq**: Get the configured maximum frequency (kHz) to be used
+  in Frequency Scaling mode.
 
-* **Update Empty Poll Counter**: update the empty poll counter.
+* **Set Scaling Max Freq**: Set the maximum frequency (kHz) to be used in Frequency
+  Scaling mode.
 
-* **Update Valid Poll Counter**: update the valid poll counter.
+Intel Uncore API
+----------------
 
-* **Set the Frequency Index**: update the power state/frequency mapping.
+Abstract
+~~~~~~~~
 
-* **Detect empty poll state change**: empty poll state change detection algorithm then take action.
+Uncore is a term used by Intel to describe the functions of a microprocessor
+that are not in the core, but which must be closely connected to the core
+to achieve high performance: L3 cache, on-die memory controller, etc.
+Significant power savings can be achieved by reducing the uncore frequency
+to its lowest value.
 
-User Cases
-----------
-The mechanism can applied to any device which is based on polling. e.g. NIC, FPGA.
+The Linux kernel provides the driver "intel-uncore-frequency"
+to control the uncore frequency limits for x86 platform.
+The driver is available from kernel version 5.6 and above.
+Also CONFIG_INTEL_UNCORE_FREQ_CONTROL will need to be enabled in the kernel,
+which was added in 5.6.
+This manipulates the context of MSR 0x620,
+which sets min/max of the uncore for the SKU.
+
+API Overview for Intel Uncore
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Overview of each function in the Intel Uncore API,
+with explanation of what they do.
+Each function should not be called in the fast path.
+
+Uncore Power Init
+  Initialize uncore power, populate frequency array
+  and record original min & max for die on pkg.
+
+Uncore Power Exit
+  Exit uncore power, restoring original min & max for die on pkg.
+
+Get Uncore Power Freq
+  Get current uncore freq index for die on pkg.
+
+Set Uncore Power Freq
+  Set min & max uncore freq index for die on pkg
+  to specified index value (min and max will be the same).
+
+Uncore Power Max
+  Set min & max uncore freq to maximum frequency index for die on pkg
+  (min and max will be the same).
+
+Uncore Power Min
+  Set min & max uncore freq to minimum frequency index for die on pkg
+  (min and max will be the same).
+
+Get Num Freqs
+  Get the number of frequencies in the index array.
+
+Get Num Pkgs
+  Get the number of packages (CPU's) on the system.
+
+Get Num Dies
+  Get the number of die's on a given package.
 
 References
 ----------
@@ -200,3 +257,5 @@ References
 
 *   The :doc:`../sample_app_ug/vm_power_management`
     chapter in the :doc:`../sample_app_ug/index` section.
+
+*   The :doc:`../nics/overview` chapter in the :doc:`../nics/index` section

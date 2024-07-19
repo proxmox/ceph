@@ -160,7 +160,7 @@ for i in {1..10}; do
     IMG=${IMG_PREFIX}${j}
     # Allow for removal of non-primary image by checking that mirroring
     # image status is "up+replaying"
-    wait_for_status_in_pool_dir ${CLUSTER1} ${POOL} ${IMG} 'up+replaying'
+    wait_for_replaying_status_in_pool_dir ${CLUSTER1} ${POOL} ${IMG}
     remove_image ${CLUSTER2} ${POOL} ${IMG}
     wait_for_image_removal ${CLUSTER1} ${POOL} ${IMG}
     rm -rf ${MNTPT_PREFIX}${j}

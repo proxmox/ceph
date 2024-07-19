@@ -1,5 +1,5 @@
 /* Unit testing for outcomes
-(C) 2013-2022 Niall Douglas <http://www.nedproductions.biz/> (1 commit)
+(C) 2013-2023 Niall Douglas <http://www.nedproductions.biz/> (1 commit)
 
 
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -46,6 +46,13 @@ namespace issues255
 BOOST_OUTCOME_AUTO_TEST_CASE(issues_0255_test, "status_result<int> not usable from constexpr in C++ 20")
 {
   BOOST_CHECK(issues255::test().value() == 42);
+}
+
+#else
+
+BOOST_OUTCOME_AUTO_TEST_CASE(issues_0255_test, "status_result<int> not usable from constexpr in C++ 20")
+{
+  BOOST_CHECK(true);
 }
 
 #endif

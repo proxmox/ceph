@@ -22,9 +22,13 @@
 #pragma once
 
 #include <seastar/core/metrics.hh>
-#include <unordered_map>
+#include <seastar/util/modules.hh>
 #include <seastar/core/sharded.hh>
+#ifndef SEASTAR_MODULE
 #include <boost/functional/hash.hpp>
+#endif
+
+#include <deque>
 
 /*!
  * \file metrics_api.hh
@@ -61,6 +65,8 @@ struct hash<seastar::metrics::impl::labels_type> {
 
 namespace seastar {
 namespace metrics {
+
+SEASTAR_MODULE_EXPORT
 struct relabel_config;
 
 /*!
@@ -74,6 +80,7 @@ struct relabel_config;
  * Non zero value indicates there were name collisions.
  *
  */
+SEASTAR_MODULE_EXPORT
 struct metric_relabeling_result {
     size_t metrics_relabeled_due_to_collision;
 };
@@ -204,14 +211,13 @@ public:
 
 class impl;
 
-class registered_metric {
+class registered_metric final {
     metric_info _info;
     metric_function _f;
     shared_ptr<impl> _impl;
 public:
     registered_metric(metric_id id, metric_function f, bool enabled=true, skip_when_empty skip=skip_when_empty::no);
-    virtual ~registered_metric() {}
-    virtual metric_value operator()() const {
+    metric_value operator()() const {
         return _f();
     }
 
@@ -235,7 +241,7 @@ public:
     metric_info& info() {
         return _info;
    }
-    metric_function& get_function() {
+    const metric_function& get_function() const {
         return _f;
     }
 };
@@ -317,7 +323,7 @@ public:
 
 using value_map = std::map<sstring, metric_family>;
 
-using metric_metadata_vector = std::vector<metric_info>;
+using metric_metadata_fifo = std::deque<metric_info>;
 
 /*!
  * \brief holds a metric family metadata
@@ -328,12 +334,12 @@ using metric_metadata_vector = std::vector<metric_info>;
  */
 struct metric_family_metadata {
     metric_family_info mf;
-    metric_metadata_vector metrics;
+    metric_metadata_fifo metrics;
 };
 
-using value_vector = std::vector<metric_value>;
+using value_vector = std::deque<metric_value>;
 using metric_metadata = std::vector<metric_family_metadata>;
-using metric_values = std::vector<value_vector>;
+using metric_values = std::deque<value_vector>;
 
 struct values_copy {
     shared_ptr<metric_metadata> metadata;
@@ -350,7 +356,7 @@ class impl {
     bool _dirty = true;
     shared_ptr<metric_metadata> _metadata;
     std::set<sstring> _labels;
-    std::vector<std::vector<metric_function>> _current_metrics;
+    std::vector<std::deque<metric_function>> _current_metrics;
     std::vector<relabel_config> _relabel_configs;
 public:
     value_map& get_value_map() {
@@ -375,7 +381,7 @@ public:
 
     shared_ptr<metric_metadata> metadata();
 
-    std::vector<std::vector<metric_function>>& functions();
+    std::vector<std::deque<metric_function>>& functions();
 
     void update_metrics_if_needed();
 

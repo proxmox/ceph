@@ -11,6 +11,8 @@ The following are platform specific guides and setup information.
     :numbered:
 
     bluefield
+    cnxk
     dpaa
     dpaa2
+    mlx5
     octeontx

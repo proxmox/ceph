@@ -21,7 +21,7 @@
 
 #define BOOST_TEST_MODULE core
 
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include <pthread.h>
 #include <seastar/core/posix.hh>
 #include <seastar/util/backtrace.hh>
@@ -50,12 +50,14 @@ BOOST_AUTO_TEST_CASE(test_signal_mask_is_preserved_on_unwinding) {
         // ignore
     }
 
-    // Check backtrace()
+    // Check backtrace() if execinfo.h is present
+#ifndef SEASTAR_BACKTRACE_UNIMPLEMENTED
     {
         size_t count = 0;
         backtrace([&count] (auto) { ++count; });
         BOOST_REQUIRE(count > 0);
     }
+#endif
 
     {
         sigset_t mask2;

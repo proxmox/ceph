@@ -94,6 +94,17 @@ struct MDSCapSpec {
   bool allow_full() const {
     return (caps & FULL);
   }
+
+  unsigned get_caps() {
+    return caps;
+  }
+
+  void set_caps(unsigned int _caps) {
+    caps = _caps;
+  }
+
+  std::string to_string();
+
 private:
   unsigned caps = 0;
 };
@@ -145,10 +156,7 @@ struct MDSCapMatch {
    * @param target_path filesystem path without leading '/'
    */
   bool match_path(std::string_view target_path) const;
-
-  bool match_fs(std::string_view target_fs) const {
-    return fs_name == target_fs || fs_name.empty() || fs_name == "*";
-  }
+  std::string to_string();
 
   void encode(ceph::buffer::list& bl) const {
     ENCODE_START(1, 1, bl);
@@ -225,6 +233,7 @@ struct MDSCapGrant {
   MDSCapGrant() {}
 
   void parse_network();
+  std::string to_string();
 
   MDSCapSpec spec;
   MDSCapMatch match;
@@ -250,6 +259,7 @@ public:
 
   void set_allow_all();
   bool parse(std::string_view str, std::ostream *err);
+  bool merge(MDSAuthCaps newcap);
 
   bool allow_all() const;
   bool is_capable(std::string_view inode_path,
@@ -265,7 +275,8 @@ public:
     }
 
     for (const MDSCapGrant &g : grants) {
-      if (g.match.match_fs(fs_name)) {
+      if (g.match.fs_name == fs_name || g.match.fs_name.empty() ||
+	  g.match.fs_name == "*") {
 	if (mask & MAY_READ && g.spec.allow_read()) {
 	  return true;
 	}
@@ -288,18 +299,17 @@ public:
     }
   }
 
-  bool root_squash_in_caps(std::string_view fs_name) const {
-    for (const MDSCapGrant& g : grants) {
-      if (g.match.match_fs(fs_name)) {
-        if (g.match.root_squash) {
-          return true;
-        }
+  bool root_squash_in_caps() const {
+    for (const MDSCapGrant &g : grants) {
+      if (g.match.root_squash) {
+        return true;
       }
     }
     return false;
   }
 
   friend std::ostream &operator<<(std::ostream &out, const MDSAuthCaps &cap);
+  std::string to_string();
 private:
   std::vector<MDSCapGrant> grants;
 };

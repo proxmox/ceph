@@ -24,7 +24,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -44,7 +43,7 @@
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
-#define NB_MBUF   8192
+#define NB_MBUF_PER_PORT 3000
 
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
@@ -52,13 +51,13 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 1024
-#define RTE_TEST_TX_DESC_DEFAULT 1024
-static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
+#define RX_DESC_DEFAULT 1024
+#define TX_DESC_DEFAULT 1024
+static uint16_t nb_rxd = RX_DESC_DEFAULT;
+static uint16_t nb_txd = TX_DESC_DEFAULT;
 
 /* ethernet addresses of ports */
-static struct ether_addr l2fwd_ports_eth_addr[RTE_MAX_ETHPORTS];
+static struct rte_ether_addr l2fwd_ports_eth_addr[RTE_MAX_ETHPORTS];
 
 /* mask of enabled ports */
 static uint32_t l2fwd_enabled_port_mask;
@@ -79,11 +78,8 @@ struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
 struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 
 static struct rte_eth_conf port_conf = {
-	.rxmode = {
-		.split_hdr_size = 0,
-	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -117,8 +113,8 @@ static void handle_sigterm(__rte_unused int value)
 
 /* Print out statistics on packets dropped */
 static void
-print_stats(__attribute__((unused)) struct rte_timer *ptr_timer,
-	__attribute__((unused)) void *ptr_data)
+print_stats(__rte_unused struct rte_timer *ptr_timer,
+	__rte_unused void *ptr_data)
 {
 	uint64_t total_packets_dropped, total_packets_tx, total_packets_rx;
 	uint16_t portid;
@@ -160,26 +156,28 @@ print_stats(__attribute__((unused)) struct rte_timer *ptr_timer,
 		   total_packets_rx,
 		   total_packets_dropped);
 	printf("\n====================================================\n");
+
+	fflush(stdout);
 }
 
 static void
 l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 {
-	struct ether_hdr *eth;
+	struct rte_ether_hdr *eth;
 	void *tmp;
 	int sent;
 	unsigned dst_port;
 	struct rte_eth_dev_tx_buffer *buffer;
 
 	dst_port = l2fwd_dst_ports[portid];
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
 	/* 02:00:00:00:00:xx */
-	tmp = &eth->d_addr.addr_bytes[0];
+	tmp = &eth->dst_addr.addr_bytes[0];
 	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
 
 	/* src addr */
-	ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->s_addr);
+	rte_ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->src_addr);
 
 	buffer = tx_buffer[dst_port];
 	sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
@@ -225,7 +223,7 @@ l2fwd_main_loop(void)
 	uint64_t tsc_lifetime = (rand()&0x07) * rte_get_tsc_hz();
 
 	while (!terminate_signal_received) {
-		/* Keepalive heartbeat */
+		/* Keepalive heartbeat. 8< */
 		rte_keepalive_mark_alive(rte_global_keepalive_info);
 
 		cur_tsc = rte_rdtsc();
@@ -236,6 +234,7 @@ l2fwd_main_loop(void)
 		 */
 		if (check_period > 0 && cur_tsc - tsc_initial > tsc_lifetime)
 			break;
+		/* >8 End of keepalive heartbeat. */
 
 		/*
 		 * TX burst queue drain
@@ -278,7 +277,7 @@ l2fwd_main_loop(void)
 }
 
 static int
-l2fwd_launch_one_lcore(__attribute__((unused)) void *dummy)
+l2fwd_launch_one_lcore(__rte_unused void *dummy)
 {
 	l2fwd_main_loop();
 	return 0;
@@ -305,10 +304,7 @@ l2fwd_parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -450,6 +446,8 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -459,21 +457,24 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf(
-					"Port%d Link Up. Speed %u Mbps - %s\n",
-						portid, link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
-				else
-					printf("Port %d Link Down\n", portid);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text), &link);
+				printf("Port %d %s\n", portid,
+				       link_status_text);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -502,8 +503,7 @@ dead_core(__rte_unused void *ptr_data, const int id_core)
 	if (terminate_signal_received)
 		return;
 	printf("Dead core %i - restarting..\n", id_core);
-	if (rte_eal_get_lcore_state(id_core) == FINISHED) {
-		rte_eal_wait_lcore(id_core);
+	if (rte_eal_get_lcore_state(id_core) == WAIT) {
 		rte_eal_remote_launch(l2fwd_launch_one_lcore, NULL, id_core);
 	} else {
 		printf("..false positive!\n");
@@ -528,6 +528,7 @@ main(int argc, char **argv)
 	uint16_t portid, last_port;
 	unsigned lcore_id, rx_lcore_id;
 	unsigned nb_ports_in_mask = 0;
+	unsigned int total_nb_mbufs;
 	struct sigaction signal_handler;
 	struct rte_keepalive_shm *ka_shm;
 
@@ -553,15 +554,18 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid L2FWD arguments\n");
 
-	/* create the mbuf pool */
-	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF, 32,
-		0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-	if (l2fwd_pktmbuf_pool == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
-
 	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
+
+	/* create the mbuf pool */
+	total_nb_mbufs = NB_MBUF_PER_PORT * nb_ports;
+
+	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool",
+		total_nb_mbufs,	32, 0, RTE_MBUF_DEFAULT_BUF_SIZE,
+		rte_socket_id());
+	if (l2fwd_pktmbuf_pool == NULL)
+		rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
 
 	/* reset l2fwd_dst_ports */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
@@ -634,10 +638,16 @@ main(int argc, char **argv)
 		/* init port */
 		printf("Initializing port %u... ", portid);
 		fflush(stdout);
-		rte_eth_dev_info_get(portid, &dev_info);
-		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
+		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
-				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+				RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 		ret = rte_eth_dev_configure(portid, 1, 1, &local_port_conf);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE,
@@ -651,7 +661,12 @@ main(int argc, char **argv)
 				"Cannot adjust number of descriptors: err=%d, port=%u\n",
 				ret, portid);
 
-		rte_eth_macaddr_get(portid, &l2fwd_ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid,
+					  &l2fwd_ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				"Cannot mac address: err=%d, port=%u\n",
+				ret, portid);
 
 		/* init one RX queue */
 		fflush(stdout);
@@ -703,17 +718,16 @@ main(int argc, char **argv)
 				"rte_eth_dev_start:err=%d, port=%u\n",
 				  ret, portid);
 
-		rte_eth_promiscuous_enable(portid);
+		ret = rte_eth_promiscuous_enable(portid);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				 "rte_eth_promiscuous_enable:err=%s, port=%u\n",
+				 rte_strerror(-ret), portid);
 
 		printf("Port %u, MAC address: "
-			"%02X:%02X:%02X:%02X:%02X:%02X\n\n",
+			RTE_ETHER_ADDR_PRT_FMT "\n\n",
 			portid,
-			l2fwd_ports_eth_addr[portid].addr_bytes[0],
-			l2fwd_ports_eth_addr[portid].addr_bytes[1],
-			l2fwd_ports_eth_addr[portid].addr_bytes[2],
-			l2fwd_ports_eth_addr[portid].addr_bytes[3],
-			l2fwd_ports_eth_addr[portid].addr_bytes[4],
-			l2fwd_ports_eth_addr[portid].addr_bytes[5]);
+			RTE_ETHER_ADDR_BYTES(&l2fwd_ports_eth_addr[portid]));
 
 		/* initialize port stats */
 		memset(&port_statistics, 0, sizeof(port_statistics));
@@ -737,10 +751,12 @@ main(int argc, char **argv)
 		if (ka_shm == NULL)
 			rte_exit(EXIT_FAILURE,
 				"rte_keepalive_shm_create() failed");
+		/* Initialize keepalive functionality. 8< */
 		rte_global_keepalive_info =
 			rte_keepalive_create(&dead_core, ka_shm);
 		if (rte_global_keepalive_info == NULL)
 			rte_exit(EXIT_FAILURE, "init_keep_alive() failed");
+		/* >8 End of initializing keepalive functionality. */
 		rte_keepalive_register_relay_callback(rte_global_keepalive_info,
 			relay_core_state, ka_shm);
 		rte_timer_init(&hb_timer);
@@ -755,6 +771,7 @@ main(int argc, char **argv)
 			rte_exit(EXIT_FAILURE, "Keepalive setup failure.\n");
 	}
 	if (timer_period > 0) {
+		/* Issues the pings keepalive_dispatch_pings(). 8< */
 		if (rte_timer_reset(&stats_timer,
 				(timer_period * rte_get_timer_hz()) / 1000,
 				PERIODICAL,
@@ -762,9 +779,10 @@ main(int argc, char **argv)
 				&print_stats, NULL
 				) != 0 )
 			rte_exit(EXIT_FAILURE, "Stats setup failure.\n");
+		/* >8 End of issuing the pings keepalive_dispatch_pings(). */
 	}
-	/* launch per-lcore init on every slave lcore */
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	/* launch per-lcore init on every worker lcore */
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
 
 		if (qconf->n_rx_port == 0)
@@ -787,12 +805,16 @@ main(int argc, char **argv)
 		rte_delay_ms(5);
 		}
 
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}
 
 	if (ka_shm != NULL)
 		rte_keepalive_shm_cleanup(ka_shm);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

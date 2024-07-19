@@ -19,9 +19,21 @@
  * Copyright (C) 2022 Scylladb, Ltd.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <cassert>
+#include <string_view>
+#include <utility>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/http/request.hh>
 #include <seastar/http/url.hh>
 #include <seastar/http/common.hh>
+#endif
 
 namespace seastar {
 namespace http {
@@ -45,7 +57,7 @@ sstring request::request_line() const {
 }
 
 // FIXME -- generalize with reply::write_request_headers
-future<> request::write_request_headers(output_stream<char>& out) {
+future<> request::write_request_headers(output_stream<char>& out) const {
     return do_for_each(_headers, [&out] (auto& h) {
         return out.write(h.first + ": " + h.second + "\r\n");
     });

@@ -19,15 +19,40 @@
  * Copyright (C) 2015 Cloudius Systems, Ltd.
  */
 
-#include <unistd.h>
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <iostream>
+#include <map>
+#include <memory>
+#include <regex>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <chrono>
+#include <algorithm>
+
 #include <fmt/core.h>
 #if FMT_VERSION >= 60000
 #include <fmt/chrono.h>
 #include <fmt/color.h>
+#include <fmt/ostream.h>
 #elif FMT_VERSION >= 50000
 #include <fmt/time.h>
 #endif
+#include <boost/any.hpp>
+#include <boost/lexical_cast.hpp>
+#include <boost/program_options.hpp>
+#include <boost/range/adaptor/map.hpp>
+#include <cxxabi.h>
+#include <syslog.h>
+#include <unistd.h>
 
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/util/log.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/util/log-cli.hh>
@@ -37,27 +62,22 @@
 #include <seastar/core/future.hh>
 #include <seastar/core/print.hh>
 
-#include <boost/any.hpp>
-#include <boost/lexical_cast.hpp>
-#include <boost/range/adaptor/map.hpp>
-#include <cxxabi.h>
-#include <syslog.h>
-
-#include <iostream>
-#include <map>
-#include <regex>
-#include <string>
-#include <string_view>
-#include <system_error>
-#include <chrono>
-#include <algorithm>
 
 #include "core/program_options.hh"
+#endif
 
 using namespace std::chrono_literals;
 
 struct wrapped_log_level {
     seastar::log_level level;
+};
+
+static const std::map<seastar::log_level, std::string_view> log_level_names = {
+        { seastar::log_level::trace, "trace" },
+        { seastar::log_level::debug, "debug" },
+        { seastar::log_level::info, "info" },
+        { seastar::log_level::warn, "warn" },
+        { seastar::log_level::error, "error" },
 };
 
 namespace fmt {
@@ -98,6 +118,12 @@ template <> struct formatter<wrapped_log_level> {
     }
 };
 bool formatter<wrapped_log_level>::colored = true;
+
+auto formatter<seastar::log_level>::format(seastar::log_level level, format_context& ctx) const
+    -> decltype(ctx.out()) {
+    return fmt::format_to(ctx.out(), "{}", log_level_names.at(level));
+}
+
 }
 
 namespace seastar {
@@ -200,10 +226,10 @@ void validate(boost::any& v,
         v = logger_ostream_type::none;
         return;
     } else if (s == "stdout") {
-        v = logger_ostream_type::stdout;
+        v = logger_ostream_type::cout;
         return;
     } else if (s == "stderr") {
-        v = logger_ostream_type::stderr;
+        v = logger_ostream_type::cerr;
         return;
     }
     throw validation_error(validation_error::invalid_option_value);
@@ -212,8 +238,8 @@ void validate(boost::any& v,
 std::ostream& operator<<(std::ostream& os, logger_ostream_type lot) {
     switch (lot) {
     case logger_ostream_type::none: return os << "none";
-    case logger_ostream_type::stdout: return os << "stdout";
-    case logger_ostream_type::stderr: return os << "stderr";
+    case logger_ostream_type::cout: return os << "stdout";
+    case logger_ostream_type::cerr: return os << "stderr";
     default: abort();
     }
     return os;
@@ -249,13 +275,6 @@ static internal::log_buf::inserter_iterator print_real_timestamp(internal::log_b
 
 static internal::log_buf::inserter_iterator (*print_timestamp)(internal::log_buf::inserter_iterator) = print_no_timestamp;
 
-const std::map<log_level, sstring> log_level_names = {
-        { log_level::trace, "trace" },
-        { log_level::debug, "debug" },
-        { log_level::info, "info" },
-        { log_level::warn, "warn" },
-        { log_level::error, "error" },
-};
 
 std::ostream& operator<<(std::ostream& out, log_level level) {
     return out << log_level_names.at(level);
@@ -281,6 +300,9 @@ std::ostream* logger::_out = &std::cerr;
 std::atomic<bool> logger::_ostream = { true };
 std::atomic<bool> logger::_syslog = { false };
 unsigned logger::_shard_field_width = 1;
+#ifdef SEASTAR_BUILD_SHARED_LIBS
+thread_local bool logger::silent = false;
+#endif
 
 logger::logger(sstring name) : _name(std::move(name)) {
     global_logger_registry().register_logger(this);
@@ -319,7 +341,7 @@ logger::do_log(log_level level, log_writer& writer) {
     }
     auto print_once = [&] (internal::log_buf::inserter_iterator it) {
       if (local_engine) {
-          it = fmt::format_to(it, " [shard {:{}}]", this_shard_id(), _shard_field_width);
+          it = fmt::format_to(it, " [shard {:{}}:{}]", this_shard_id(), _shard_field_width, current_scheduling_group().short_name());
       }
       it = fmt::format_to(it, " {} - ", _name);
       return writer(it);
@@ -361,13 +383,15 @@ logger::do_log(log_level level, log_writer& writer) {
     }
 }
 
-void logger::failed_to_log(std::exception_ptr ex, format_info fmt) noexcept
+void logger::failed_to_log(std::exception_ptr ex,
+                           fmt::string_view fmt,
+                           compat::source_location loc) noexcept
 {
     try {
-        lambda_log_writer writer([ex = std::move(ex), fmt = std::move(fmt)] (internal::log_buf::inserter_iterator it) {
-            it = fmt::format_to(it, "{}:{} @{}: failed to log message", fmt.loc.file_name(), fmt.loc.line(), fmt.loc.function_name());
-            if (!fmt.format.empty()) {
-                it = fmt::format_to(it, ": fmt='{}'", fmt.format);
+        lambda_log_writer writer([ex = std::move(ex), fmt, loc] (internal::log_buf::inserter_iterator it) {
+            it = fmt::format_to(it, "{}:{} @{}: failed to log message", loc.file_name(), loc.line(), loc.function_name());
+            if (fmt.size() > 0) {
+                it = fmt::format_to(it, ": fmt='{}'", fmt);
             }
             return fmt::format_to(it, ": {}", ex);
         });
@@ -477,11 +501,11 @@ void apply_logging_settings(const logging_settings& s) {
     case logger_ostream_type::none:
         logger::set_ostream_enabled(false);
         break;
-    case logger_ostream_type::stdout:
+    case logger_ostream_type::cout:
         logger::set_ostream(std::cout);
         logger::set_ostream_enabled(true);
         break;
-    case logger_ostream_type::stderr:
+    case logger_ostream_type::cerr:
         logger::set_ostream(std::cerr);
         logger::set_ostream_enabled(true);
         break;
@@ -517,7 +541,7 @@ logger_registry& global_logger_registry() {
 }
 
 sstring level_name(log_level level) {
-    return  log_level_names.at(level);
+    return sstring(log_level_names.at(level));
 }
 
 namespace log_cli {
@@ -564,7 +588,7 @@ options::options(program_options::option_group* parent_group)
              "Default log level for log messages. Valid values are trace, debug, info, warn, error."
              )
     , logger_log_level(*this, "logger-log-level",
-             {{}},
+             log_level_map{},
              "Map of logger name to log level. The format is \"NAME0=LEVEL0[:NAME1=LEVEL1:...]\". "
              "Valid logger names can be queried with --help-loggers. "
              "Valid values for levels are trace, debug, info, warn, error. "
@@ -573,7 +597,7 @@ options::options(program_options::option_group* parent_group)
     , logger_stdout_timestamps(*this, "logger-stdout-timestamps", logger_timestamp_style::real,
                     "Select timestamp style for stdout logs: none|boot|real")
     , log_to_stdout(*this, "log-to-stdout", true, "Send log output to output stream, as selected by --logger-ostream-type")
-    , logger_ostream_type(*this, "logger-ostream-type", logger_ostream_type::stderr,
+    , logger_ostream_type(*this, "logger-ostream-type", logger_ostream_type::cerr,
             "Send log output to: none|stdout|stderr")
     , log_to_syslog(*this, "log-to-syslog", false, "Send log output to syslog.")
     , log_with_color(*this, "log-with-color", isatty(STDOUT_FILENO), "Print colored tag prefix in log message written to ostream")

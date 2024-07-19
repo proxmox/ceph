@@ -27,11 +27,12 @@
 #include <seastar/core/circular_buffer.hh>
 #include <seastar/core/metrics_registration.hh>
 #include <seastar/util/shared_token_bucket.hh>
-#include <functional>
-#include <queue>
+
 #include <chrono>
-#include <unordered_set>
+#include <cstdint>
+#include <functional>
 #include <optional>
+#include <queue>
 
 namespace bi = boost::intrusive;
 
@@ -101,20 +102,26 @@ public:
 /// @{
 
 class fair_queue_entry {
+public:
+    // The capacity_t represents tokens each entry needs to get dispatched, in
+    // a 'normalized' form -- converted from floating-point to fixed-point number
+    // and scaled accrding to fair-group's token-bucket duration
+    using capacity_t = uint64_t;
     friend class fair_queue;
 
-    fair_queue_ticket _ticket;
+private:
+    capacity_t _capacity;
     bi::slist_member_hook<> _hook;
 
 public:
-    fair_queue_entry(fair_queue_ticket t) noexcept
-        : _ticket(std::move(t)) {}
+    fair_queue_entry(capacity_t c) noexcept
+        : _capacity(c) {}
     using container_list_t = bi::slist<fair_queue_entry,
             bi::constant_time_size<false>,
             bi::cache_last<true>,
             bi::member_hook<fair_queue_entry, bi::slist_member_hook<>, &fair_queue_entry::_hook>>;
 
-    fair_queue_ticket ticket() const noexcept { return _ticket; }
+    capacity_t capacity() const noexcept { return _capacity; }
 };
 
 /// \brief Group of queues class
@@ -129,7 +136,7 @@ public:
 /// the given time frame exceeds the disk throughput.
 class fair_group {
 public:
-    using capacity_t = uint64_t;
+    using capacity_t = fair_queue_entry::capacity_t;
     using clock_type = std::chrono::steady_clock;
 
     /*
@@ -183,7 +190,7 @@ public:
 
     static constexpr float fixed_point_factor = float(1 << 24);
     using rate_resolution = std::milli;
-    using token_bucket_t = internal::shared_token_bucket<capacity_t, rate_resolution, internal::capped_release::yes>;
+    using token_bucket_t = internal::shared_token_bucket<capacity_t, rate_resolution, internal::capped_release::no>;
 
 private:
 
@@ -206,14 +213,19 @@ private:
      * into more tokens in the bucket.
      */
 
-    const fair_queue_ticket _cost_capacity;
     token_bucket_t _token_bucket;
+    const capacity_t _per_tick_threshold;
 
 public:
 
     // Convert internal capacity value back into the real token
     static double capacity_tokens(capacity_t cap) noexcept {
         return (double)cap / fixed_point_factor / token_bucket_t::rate_cast(std::chrono::seconds(1)).count();
+    }
+
+    // Convert floating-point tokens into the token bucket capacity
+    static capacity_t tokens_capacity(double tokens) noexcept {
+        return tokens * token_bucket_t::rate_cast(std::chrono::seconds(1)).count() * fixed_point_factor;
     }
 
     auto capacity_duration(capacity_t cap) const noexcept {
@@ -229,34 +241,29 @@ public:
          * must accept those as large as the latter pair (but it can accept
          * even larger values, of course)
          */
-        unsigned min_weight = 0;
-        unsigned min_size = 0;
-        unsigned limit_min_weight = 0;
-        unsigned limit_min_size = 0;
-        unsigned long weight_rate;
-        unsigned long size_rate;
-        float rate_factor = 1.0;
+        double min_tokens = 0.0;
+        double limit_min_tokens = 0.0;
         std::chrono::duration<double> rate_limit_duration = std::chrono::milliseconds(1);
     };
 
-    explicit fair_group(config cfg);
+    explicit fair_group(config cfg, unsigned nr_queues);
     fair_group(fair_group&&) = delete;
 
-    fair_queue_ticket cost_capacity() const noexcept { return _cost_capacity; }
     capacity_t maximum_capacity() const noexcept { return _token_bucket.limit(); }
+    capacity_t per_tick_grab_threshold() const noexcept { return _per_tick_threshold; }
     capacity_t grab_capacity(capacity_t cap) noexcept;
     clock_type::time_point replenished_ts() const noexcept { return _token_bucket.replenished_ts(); }
-    void release_capacity(capacity_t cap) noexcept;
     void replenish_capacity(clock_type::time_point now) noexcept;
     void maybe_replenish_capacity(clock_type::time_point& local_ts) noexcept;
 
     capacity_t capacity_deficiency(capacity_t from) const noexcept;
-    capacity_t ticket_capacity(fair_queue_ticket ticket) const noexcept;
 
     std::chrono::duration<double> rate_limit_duration() const noexcept {
         std::chrono::duration<double, rate_resolution> dur((double)_token_bucket.limit() / _token_bucket.rate());
         return std::chrono::duration_cast<std::chrono::duration<double>>(dur);
     }
+
+    const token_bucket_t& token_bucket() const noexcept { return _token_bucket; }
 };
 
 /// \brief Fair queuing class
@@ -292,7 +299,7 @@ public:
     using class_id = unsigned int;
     class priority_class_data;
     using capacity_t = fair_group::capacity_t;
-    using signed_capacity_t = std::make_signed<capacity_t>::type;
+    using signed_capacity_t = std::make_signed_t<capacity_t>;
 
 private:
     using clock_type = std::chrono::steady_clock;
@@ -318,8 +325,6 @@ private:
     clock_type::time_point _group_replenish;
     fair_queue_ticket _resources_executing;
     fair_queue_ticket _resources_queued;
-    unsigned _requests_executing = 0;
-    unsigned _requests_queued = 0;
     priority_queue _handles;
     std::vector<std::unique_ptr<priority_class_data>> _priority_classes;
     size_t _nr_classes = 0;
@@ -376,19 +381,19 @@ public:
 
     void update_shares_for_class(class_id c, uint32_t new_shares);
 
-    /// \return how many waiters are currently queued for all classes.
-    [[deprecated("fair_queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
-    size_t waiters() const;
-
-    /// \return the number of requests currently executing
-    [[deprecated("fair_queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
-    size_t requests_currently_executing() const;
-
     /// \return how much resources (weight, size) are currently queued for all classes.
     fair_queue_ticket resources_currently_waiting() const;
 
     /// \return the amount of resources (weight, size) currently executing
     fair_queue_ticket resources_currently_executing() const;
+
+    capacity_t tokens_capacity(double tokens) const noexcept {
+        return _group.tokens_capacity(tokens);
+    }
+
+    capacity_t maximum_capacity() const noexcept {
+        return _group.maximum_capacity();
+    }
 
     /// Queue the entry \c ent through this class' \ref fair_queue
     ///
@@ -401,7 +406,7 @@ public:
 
     /// Notifies that ont request finished
     /// \param desc an instance of \c fair_queue_ticket structure describing the request that just finished.
-    void notify_request_finished(fair_queue_ticket desc) noexcept;
+    void notify_request_finished(fair_queue_entry::capacity_t cap) noexcept;
     void notify_request_cancelled(fair_queue_entry& ent) noexcept;
 
     /// Try to execute new requests if there is capacity left in the queue.

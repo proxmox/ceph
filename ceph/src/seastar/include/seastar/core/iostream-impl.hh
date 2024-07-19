@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <seastar/core/coroutine.hh>
 #include <seastar/core/do_with.hh>
 #include <seastar/core/loop.hh>
 #include <seastar/net/packet.hh>
@@ -111,7 +112,7 @@ output_stream<CharType>::zero_copy_split_and_put(net::packet p) noexcept {
 
 template<typename CharType>
 future<> output_stream<CharType>::write(net::packet p) noexcept {
-    static_assert(std::is_same<CharType, char>::value, "packet works on char");
+    static_assert(std::is_same_v<CharType, char>, "packet works on char");
   try {
     if (p.len() != 0) {
         assert(!_end && "Mixing buffered writes and zero-copy writes not supported yet");
@@ -151,27 +152,31 @@ future<> output_stream<CharType>::write(temporary_buffer<CharType> p) noexcept {
 
 template <typename CharType>
 future<temporary_buffer<CharType>>
-input_stream<CharType>::read_exactly_part(size_t n, tmp_buf out, size_t completed) noexcept {
-    if (available()) {
-        auto now = std::min(n - completed, available());
-        std::copy(_buf.get(), _buf.get() + now, out.get_write() + completed);
-        _buf.trim_front(now);
-        completed += now;
-    }
-    if (completed == n) {
-        return make_ready_future<tmp_buf>(std::move(out));
-    }
+input_stream<CharType>::read_exactly_part(size_t n) noexcept {
+    temporary_buffer<CharType> out(n);
+    size_t completed{0U};
+    while (completed < n) {
+        size_t avail = available();
+        if (avail) {
+            auto now = std::min(n - completed, avail);
+            std::copy_n(_buf.get(), now, out.get_write() + completed);
+            _buf.trim_front(now);
+            completed += now;
+            if (completed == n) {
+                break;
+            }
+        }
 
-    // _buf is now empty
-    return _fd.get().then([this, n, out = std::move(out), completed] (auto buf) mutable {
+        // _buf is now empty
+        temporary_buffer<CharType> buf = co_await _fd.get();
         if (buf.size() == 0) {
             _eof = true;
             out.trim(completed);
-            return make_ready_future<tmp_buf>(std::move(out));
+            break;
         }
         _buf = std::move(buf);
-        return this->read_exactly_part(n, std::move(out), completed);
-    });
+    }
+    co_return out;
 }
 
 template <typename CharType>
@@ -196,19 +201,14 @@ input_stream<CharType>::read_exactly(size_t n) noexcept {
             return this->read_exactly(n);
         });
     } else {
-      try {
         // buffer too small: start copy/read loop
-        tmp_buf b(n);
-        return read_exactly_part(n, std::move(b), 0);
-      } catch (...) {
-        return current_exception_as_future<tmp_buf>();
-      }
+        return read_exactly_part(n);
     }
 }
 
 template <typename CharType>
 template <typename Consumer>
-SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
+requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>
 future<>
 input_stream<CharType>::consume(Consumer&& consumer) noexcept(std::is_nothrow_move_constructible_v<Consumer>) {
     return repeat([consumer = std::move(consumer), this] () mutable {
@@ -244,7 +244,7 @@ input_stream<CharType>::consume(Consumer&& consumer) noexcept(std::is_nothrow_mo
 
 template <typename CharType>
 template <typename Consumer>
-SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
+requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>
 future<>
 input_stream<CharType>::consume(Consumer& consumer) noexcept(std::is_nothrow_move_constructible_v<Consumer>) {
     return consume(std::ref(consumer));
@@ -408,7 +408,9 @@ output_stream<CharType>::slow_write(const char_type* buf, size_t n) noexcept {
   }
 }
 
+namespace internal {
 void add_to_flush_poller(output_stream<char>& x) noexcept;
+}
 
 template <typename CharType>
 future<> output_stream<CharType>::do_flush() noexcept {
@@ -423,7 +425,7 @@ future<> output_stream<CharType>::do_flush() noexcept {
             return _fd.flush();
         });
     } else {
-        return make_ready_future<>();
+        return _fd.flush();
     }
 }
 
@@ -439,7 +441,7 @@ output_stream<CharType>::flush() noexcept {
         } else {
             _flush = true;
             if (!_in_batch) {
-                add_to_flush_poller(*this);
+                internal::add_to_flush_poller(*this);
                 _in_batch = promise<>();
             }
         }
@@ -482,6 +484,7 @@ output_stream<CharType>::poll_flush() noexcept {
             f.get();
         } catch (...) {
             _ex = std::current_exception();
+            _fd.on_batch_flush_error();
         }
         // if flush() was called while flushing flush once more
         poll_flush();

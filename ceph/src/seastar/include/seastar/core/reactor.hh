@@ -21,69 +21,65 @@
 
 #pragma once
 
-#include <seastar/core/seastar.hh>
-#include <seastar/core/iostream.hh>
 #include <seastar/core/aligned_buffer.hh>
 #include <seastar/core/cacheline.hh>
+#include <seastar/core/circular_buffer.hh>
 #include <seastar/core/circular_buffer_fixed_capacity.hh>
+#include <seastar/core/condition-variable.hh>
+#include <seastar/core/enum.hh>
+#include <seastar/core/fair_queue.hh>
+#include <seastar/core/file.hh>
+#include <seastar/core/future.hh>
 #include <seastar/core/idle_cpu_handler.hh>
+#include <seastar/core/internal/io_request.hh>
+#include <seastar/core/internal/io_sink.hh>
+#include <seastar/core/iostream.hh>
+#include <seastar/core/linux-aio.hh>
+#include <seastar/core/lowres_clock.hh>
+#include <seastar/core/make_task.hh>
+#include <seastar/core/manual_clock.hh>
+#include <seastar/core/memory.hh>
+#include <seastar/core/metrics_registration.hh>
+#include <seastar/core/internal/estimated_histogram.hh>
+#include <seastar/core/posix.hh>
+#include <seastar/core/reactor_config.hh>
+#include <seastar/core/scattered_message.hh>
+#include <seastar/core/scheduling.hh>
+#include <seastar/core/scheduling_specific.hh>
+#include <seastar/core/seastar.hh>
+#include <seastar/core/semaphore.hh>
+#include <seastar/core/smp.hh>
+#include <seastar/core/sstring.hh>
+#include <seastar/core/temporary_buffer.hh>
+#include <seastar/core/thread_cputime_clock.hh>
+#include <seastar/core/timer.hh>
+#include <seastar/core/gate.hh>
+#include <seastar/net/api.hh>
+#include <seastar/util/eclipse.hh>
+#include <seastar/util/log.hh>
+#include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
+#include "internal/pollable_fd.hh"
+
+#ifndef SEASTAR_MODULE
+#include <boost/container/static_vector.hpp>
+#include <boost/lockfree/spsc_queue.hpp>
+#include <boost/next_prior.hpp>
+#include <boost/range/irange.hpp>
+#include <boost/thread/barrier.hpp>
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <cstring>
 #include <memory>
-#include <type_traits>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+#include <unistd.h>
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <unordered_map>
 #include <netinet/ip.h>
-#include <cstring>
-#include <cassert>
-#include <stdexcept>
-#include <unistd.h>
-#include <vector>
-#include <queue>
-#include <algorithm>
-#include <thread>
-#include <system_error>
-#include <chrono>
-#include <ratio>
-#include <atomic>
-#include <stack>
-#include <seastar/util/std-compat.hh>
-#include <boost/next_prior.hpp>
-#include <boost/lockfree/spsc_queue.hpp>
-#include <boost/thread/barrier.hpp>
-#include <boost/container/static_vector.hpp>
-#include <set>
-#include <seastar/core/reactor_config.hh>
-#include <seastar/core/linux-aio.hh>
-#include <seastar/util/eclipse.hh>
-#include <seastar/core/future.hh>
-#include <seastar/core/posix.hh>
-#include <seastar/core/sstring.hh>
-#include <seastar/net/api.hh>
-#include <seastar/core/temporary_buffer.hh>
-#include <seastar/core/circular_buffer.hh>
-#include <seastar/core/file.hh>
-#include <seastar/core/semaphore.hh>
-#include <seastar/core/fair_queue.hh>
-#include <seastar/core/scattered_message.hh>
-#include <seastar/core/enum.hh>
-#include <seastar/core/memory.hh>
-#include <seastar/core/thread_cputime_clock.hh>
-#include <boost/range/irange.hpp>
-#include <seastar/core/timer.hh>
-#include <seastar/core/condition-variable.hh>
-#include <seastar/util/log.hh>
-#include <seastar/core/lowres_clock.hh>
-#include <seastar/core/manual_clock.hh>
-#include <seastar/core/metrics_registration.hh>
-#include <seastar/core/scheduling.hh>
-#include <seastar/core/scheduling_specific.hh>
-#include <seastar/core/smp.hh>
-#include <seastar/core/internal/io_request.hh>
-#include <seastar/core/internal/io_sink.hh>
-#include <seastar/core/make_task.hh>
-#include "internal/pollable_fd.hh"
-#include "internal/poll.hh"
 
 #ifdef HAVE_OSV
 #include <osv/sched.hh>
@@ -91,7 +87,9 @@
 #include <osv/condvar.h>
 #include <osv/newpoll.hh>
 #endif
+#endif
 
+struct statfs;
 struct _Unwind_Exception;
 
 namespace seastar {
@@ -102,6 +100,7 @@ namespace alien {
 class message_queue;
 class instance;
 }
+SEASTAR_MODULE_EXPORT
 class reactor;
 
 }
@@ -127,36 +126,15 @@ class smp;
 class reactor_backend_selector;
 
 class reactor_backend;
+struct pollfn;
 
 namespace internal {
 
 class reactor_stall_sampler;
 class cpu_stall_detector;
 class buffer_allocator;
-
-template <typename Func> // signature: bool ()
-std::unique_ptr<pollfn> make_pollfn(Func&& func);
-
-class poller {
-    std::unique_ptr<pollfn> _pollfn;
-    class registration_task;
-    class deregistration_task;
-    registration_task* _registration_task = nullptr;
-public:
-    template <typename Func> // signature: bool ()
-    static poller simple(Func&& poll) {
-        return poller(make_pollfn(std::forward<Func>(poll)));
-    }
-    poller(std::unique_ptr<pollfn> fn)
-            : _pollfn(std::move(fn)) {
-        do_register();
-    }
-    ~poller();
-    poller(poller&& x) noexcept;
-    poller& operator=(poller&& x) noexcept;
-    void do_register() noexcept;
-    friend class reactor;
-};
+class priority_class;
+class poller;
 
 size_t scheduling_group_count();
 
@@ -166,8 +144,8 @@ void increase_thrown_exceptions_counter() noexcept;
 
 class kernel_completion;
 class io_queue;
+SEASTAR_MODULE_EXPORT
 class io_intent;
-class disk_config_params;
 
 class io_completion : public kernel_completion {
 public:
@@ -177,6 +155,7 @@ public:
     virtual void set_exception(std::exception_ptr eptr) noexcept = 0;
 };
 
+SEASTAR_MODULE_EXPORT
 class reactor {
 private:
     struct task_queue;
@@ -262,7 +241,6 @@ private:
     static constexpr unsigned max_aio_per_queue = 128;
     static constexpr unsigned max_queues = 8;
     static constexpr unsigned max_aio = max_aio_per_queue * max_queues;
-    friend disk_config_params;
 
     // Each mountpouint is controlled by its own io_queue, but ...
     std::unordered_map<dev_t, std::unique_ptr<io_queue>> _io_queues;
@@ -284,6 +262,7 @@ private:
     internal::preemption_monitor _preemption_monitor{};
     uint64_t _global_tasks_processed = 0;
     uint64_t _polls = 0;
+    metrics::internal::time_estimated_histogram _stalls_histogram;
     std::unique_ptr<internal::cpu_stall_detector> _cpu_stall_detector;
 
     unsigned _max_task_backlog = 1000;
@@ -298,7 +277,7 @@ private:
     uint64_t _cxx_exceptions = 0;
     uint64_t _abandoned_failed_futures = 0;
     struct task_queue {
-        explicit task_queue(unsigned id, sstring name, float shares);
+        explicit task_queue(unsigned id, sstring name, sstring shortname, float shares);
         int64_t _vruntime = 0;
         float _shares;
         int64_t _reciprocal_shares_times_2_power_32;
@@ -312,12 +291,16 @@ private:
         uint64_t _tasks_processed = 0;
         circular_buffer<task*> _q;
         sstring _name;
+        // the shortened version of scheduling_gruop's name, only the first 4
+        // chars are used.
+        static constexpr size_t shortname_size = 4;
+        sstring _shortname;
         int64_t to_vruntime(sched_clock::duration runtime) const;
         void set_shares(float shares) noexcept;
         struct indirect_compare;
         sched_clock::duration _time_spent_on_task_quota_violations = {};
         seastar::metrics::metric_groups _metrics;
-        void rename(sstring new_name);
+        void rename(sstring new_name, sstring new_shortname);
     private:
         void register_stats();
     };
@@ -358,6 +341,8 @@ private:
     bool _have_aio_fsync = false;
     bool _kernel_page_cache = false;
     std::atomic<bool> _dying{false};
+    gate _background_gate;
+
 private:
     static std::chrono::nanoseconds calculate_poll_time();
     static void block_notifier(int);
@@ -406,8 +391,6 @@ private:
         };
         std::atomic<uint64_t> _pending_signals;
         std::unordered_map<int, signal_handler> _signal_handlers;
-
-        friend void reactor::handle_signal(int, noncopyable_function<void ()>&&);
     };
 
     signals _signals;
@@ -428,7 +411,8 @@ private:
     void account_runtime(task_queue& tq, sched_clock::duration runtime);
     void account_idle(sched_clock::duration idletime);
     void allocate_scheduling_group_specific_data(scheduling_group sg, scheduling_group_key key);
-    future<> init_scheduling_group(scheduling_group sg, sstring name, float shares);
+    future<> rename_scheduling_group_specific_data(scheduling_group sg);
+    future<> init_scheduling_group(scheduling_group sg, sstring name, sstring shortname, float shares);
     future<> init_new_scheduling_group_key(scheduling_group_key key, scheduling_group_key_config cfg);
     future<> destroy_scheduling_group(scheduling_group sg) noexcept;
     uint64_t tasks_processed() const;
@@ -480,20 +464,23 @@ public:
         }
     }
 
+#if SEASTAR_API_LEVEL < 7
     [[deprecated("Use io_priority_class::register_one")]]
     io_priority_class register_one_priority_class(sstring name, uint32_t shares);
 
     [[deprecated("Use io_priority_class.update_shares")]]
     future<> update_shares_for_class(io_priority_class pc, uint32_t shares);
-    /// @private
-    void update_shares_for_queues(io_priority_class pc, uint32_t shares);
-    /// @private
-    future<> update_bandwidth_for_queues(io_priority_class pc, uint64_t bandwidth);
 
     [[deprecated("Use io_priority_class.rename")]]
     static future<> rename_priority_class(io_priority_class pc, sstring new_name) noexcept;
+#endif
+
     /// @private
-    void rename_queues(io_priority_class pc, sstring new_name);
+    future<> update_bandwidth_for_queues(internal::priority_class pc, uint64_t bandwidth);
+    /// @private
+    void rename_queues(internal::priority_class pc, sstring new_name);
+    /// @private
+    void update_shares_for_queues(internal::priority_class pc, uint32_t shares);
 
     void configure(const reactor_options& opts);
 
@@ -530,6 +517,8 @@ public:
     future<> link_file(std::string_view oldpath, std::string_view newpath) noexcept;
     future<> chmod(std::string_view name, file_permissions permissions) noexcept;
 
+    future<size_t> read_directory(int fd, char* buffer, size_t buffer_size);
+
     future<int> inotify_add_watch(int fd, std::string_view path, uint32_t flags);
 
     future<std::tuple<file_desc, file_desc>> make_pipe();
@@ -558,9 +547,24 @@ public:
     }
 
     task* current_task() const { return _current_task; }
+    // If a task wants to resume a different task instead of returning control to the reactor,
+    // it should set _current_task to the resumed task.
+    // In particular, this is mandatory if the task is going to die before control is returned
+    // to the reactor -- otherwise _current_task will be left dangling.
+    void set_current_task(task* t) { _current_task = t; }
 
     void add_task(task* t) noexcept;
     void add_urgent_task(task* t) noexcept;
+
+    void run_in_background(future<> f);
+
+    template <typename Func>
+    void run_in_background(Func&& func) {
+        run_in_background(futurize_invoke(std::forward<Func>(func)));
+    }
+
+    // Waits for all background tasks on all shards
+    static future<> drain();
 
     /// Set a handler that will be called when there is no task to execute on cpu.
     /// Handler should do a low priority work.
@@ -632,7 +636,6 @@ private:
     friend class alien::message_queue;
     friend class pollable_fd;
     friend class pollable_fd_state;
-    friend struct pollable_fd_state_deleter;
     friend class posix_file_impl;
     friend class blockdev_file_impl;
     friend class timer<>;
@@ -642,34 +645,17 @@ private:
     friend class smp_message_queue;
     friend class internal::poller;
     friend class scheduling_group;
-    friend void add_to_flush_poller(output_stream<char>& os) noexcept;
+    friend void internal::add_to_flush_poller(output_stream<char>& os) noexcept;
     friend void seastar::internal::increase_thrown_exceptions_counter() noexcept;
     friend void report_failed_future(const std::exception_ptr& eptr) noexcept;
-    friend void with_allow_abandoned_failed_futures(unsigned count, noncopyable_function<void ()> func);
     metrics::metric_groups _metric_groups;
-    friend future<scheduling_group> create_scheduling_group(sstring name, float shares) noexcept;
+    friend future<scheduling_group> create_scheduling_group(sstring name, sstring shortname, float shares) noexcept;
     friend future<> seastar::destroy_scheduling_group(scheduling_group) noexcept;
-    friend future<> seastar::rename_scheduling_group(scheduling_group sg, sstring new_name) noexcept;
+    friend future<> seastar::rename_scheduling_group(scheduling_group sg, sstring new_name, sstring new_shortname) noexcept;
     friend future<scheduling_group_key> scheduling_group_key_create(scheduling_group_key_config cfg) noexcept;
 
-    template<typename T>
-    friend T* internal::scheduling_group_get_specific_ptr(scheduling_group sg, scheduling_group_key key) noexcept;
-    template<typename SpecificValType, typename Mapper, typename Reducer, typename Initial>
-        SEASTAR_CONCEPT( requires requires(SpecificValType specific_val, Mapper mapper, Reducer reducer, Initial initial) {
-            {reducer(initial, mapper(specific_val))} -> std::convertible_to<Initial>;
-        })
-    friend future<typename function_traits<Reducer>::return_type>
-    map_reduce_scheduling_group_specific(Mapper mapper, Reducer reducer, Initial initial_val, scheduling_group_key key);
-    template<typename SpecificValType, typename Reducer, typename Initial>
-    SEASTAR_CONCEPT( requires requires(SpecificValType specific_val, Reducer reducer, Initial initial) {
-        {reducer(initial, specific_val)} -> std::convertible_to<Initial>;
-    })
-    friend future<typename function_traits<Reducer>::return_type>
-        reduce_scheduling_group_specific(Reducer reducer, Initial initial_val, scheduling_group_key key);
-
-    future<struct stat> fstat(int fd) noexcept;
     future<struct statfs> fstatfs(int fd) noexcept;
-    friend future<shared_ptr<file_impl>> make_file_impl(int fd, file_open_options options, int flags) noexcept;
+    friend future<shared_ptr<file_impl>> make_file_impl(int fd, file_open_options options, int flags, struct stat st) noexcept;
 public:
     future<> readable(pollable_fd_state& fd);
     future<> writeable(pollable_fd_state& fd);
@@ -689,34 +675,28 @@ public:
     void set_bypass_fsync(bool value);
     void update_blocked_reactor_notify_ms(std::chrono::milliseconds ms);
     std::chrono::milliseconds get_blocked_reactor_notify_ms() const;
-    /// For testing, sets the stall reporting function which is called when
-    /// a stall is detected (and not suppressed). Setting the function also
-    /// resets the supression state.
-    void set_stall_detector_report_function(std::function<void ()> report);
-    std::function<void ()> get_stall_detector_report_function() const;
-};
 
-template <typename Func> // signature: bool ()
-inline
-std::unique_ptr<seastar::pollfn>
-internal::make_pollfn(Func&& func) {
-    struct the_pollfn : simple_pollfn<false> {
-        the_pollfn(Func&& func) : func(std::forward<Func>(func)) {}
-        Func func;
-        virtual bool poll() override final {
-            return func();
-        }
+    class test {
+    public:
+        static void with_allow_abandoned_failed_futures(unsigned count, noncopyable_function<void ()> func);
+
+        /// Sets the stall reporting function which is called when a stall
+        /// is detected (and not suppressed). Setting the function also
+        /// resets the supression state.
+        static void set_stall_detector_report_function(std::function<void ()> report);
+        static std::function<void ()> get_stall_detector_report_function();
     };
-    return std::make_unique<the_pollfn>(std::forward<Func>(func));
-}
+};
 
 extern __thread reactor* local_engine;
 extern __thread size_t task_quota;
 
+SEASTAR_MODULE_EXPORT
 inline reactor& engine() {
     return *local_engine;
 }
 
+SEASTAR_MODULE_EXPORT
 inline bool engine_is_ready() {
     return local_engine != nullptr;
 }

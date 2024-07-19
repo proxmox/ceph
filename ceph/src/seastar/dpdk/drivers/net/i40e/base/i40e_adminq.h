@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _I40E_ADMINQ_H_
 #define _I40E_ADMINQ_H_
+
+#include <errno.h>
 
 #include "i40e_osdep.h"
 #include "i40e_status.h"

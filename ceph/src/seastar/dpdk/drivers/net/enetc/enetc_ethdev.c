@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018-2019 NXP
+ * Copyright 2018-2020 NXP
  */
 
 #include <stdbool.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_pci.h>
+#include <rte_random.h>
+#include <dpaax_iova_table.h>
 
 #include "enetc_logs.h"
 #include "enetc.h"
-
-int enetc_logtype_pmd;
 
 static int
 enetc_dev_start(struct rte_eth_dev *dev)
@@ -19,6 +19,9 @@ enetc_dev_start(struct rte_eth_dev *dev)
 	uint32_t val;
 
 	PMD_INIT_FUNC_TRACE();
+	if (hw->device_id == ENETC_DEV_ID_VF)
+		return 0;
+
 	val = enetc_port_rd(enetc_hw, ENETC_PM0_CMD_CFG);
 	enetc_port_wr(enetc_hw, ENETC_PM0_CMD_CFG,
 		      val | ENETC_PM0_TX_EN | ENETC_PM0_RX_EN);
@@ -45,7 +48,7 @@ enetc_dev_start(struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void
+static int
 enetc_dev_stop(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -54,6 +57,10 @@ enetc_dev_stop(struct rte_eth_dev *dev)
 	uint32_t val;
 
 	PMD_INIT_FUNC_TRACE();
+	dev->data->dev_started = 0;
+	if (hw->device_id == ENETC_DEV_ID_VF)
+		return 0;
+
 	/* Disable port */
 	val = enetc_port_rd(enetc_hw, ENETC_PMR);
 	enetc_port_wr(enetc_hw, ENETC_PMR, val & (~ENETC_PMR_EN));
@@ -61,6 +68,8 @@ enetc_dev_stop(struct rte_eth_dev *dev)
 	val = enetc_port_rd(enetc_hw, ENETC_PM0_CMD_CFG);
 	enetc_port_wr(enetc_hw, ENETC_PM0_CMD_CFG,
 		      val & (~(ENETC_PM0_TX_EN | ENETC_PM0_RX_EN)));
+
+	return 0;
 }
 
 static const uint32_t *
@@ -97,30 +106,39 @@ enetc_link_update(struct rte_eth_dev *dev, int wait_to_complete __rte_unused)
 	status = enetc_port_rd(enetc_hw, ENETC_PM0_STATUS);
 
 	if (status & ENETC_LINK_MODE)
-		link.link_duplex = ETH_LINK_FULL_DUPLEX;
+		link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 	else
-		link.link_duplex = ETH_LINK_HALF_DUPLEX;
+		link.link_duplex = RTE_ETH_LINK_HALF_DUPLEX;
 
 	if (status & ENETC_LINK_STATUS)
-		link.link_status = ETH_LINK_UP;
+		link.link_status = RTE_ETH_LINK_UP;
 	else
-		link.link_status = ETH_LINK_DOWN;
+		link.link_status = RTE_ETH_LINK_DOWN;
 
 	switch (status & ENETC_LINK_SPEED_MASK) {
 	case ENETC_LINK_SPEED_1G:
-		link.link_speed = ETH_SPEED_NUM_1G;
+		link.link_speed = RTE_ETH_SPEED_NUM_1G;
 		break;
 
 	case ENETC_LINK_SPEED_100M:
-		link.link_speed = ETH_SPEED_NUM_100M;
+		link.link_speed = RTE_ETH_SPEED_NUM_100M;
 		break;
 
 	default:
 	case ENETC_LINK_SPEED_10M:
-		link.link_speed = ETH_SPEED_NUM_10M;
+		link.link_speed = RTE_ETH_SPEED_NUM_10M;
 	}
 
 	return rte_eth_linkstatus_set(dev, &link);
+}
+
+static void
+print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
+{
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
+	ENETC_PMD_NOTICE("%s%s\n", name, buf);
 }
 
 static int
@@ -128,23 +146,64 @@ enetc_hardware_init(struct enetc_eth_hw *hw)
 {
 	struct enetc_hw *enetc_hw = &hw->hw;
 	uint32_t *mac = (uint32_t *)hw->mac.addr;
+	uint32_t high_mac = 0;
+	uint16_t low_mac = 0;
 
 	PMD_INIT_FUNC_TRACE();
 	/* Calculating and storing the base HW addresses */
 	hw->hw.port = (void *)((size_t)hw->hw.reg + ENETC_PORT_BASE);
 	hw->hw.global = (void *)((size_t)hw->hw.reg + ENETC_GLOBAL_BASE);
 
+	/* WA for Rx lock-up HW erratum */
+	enetc_port_wr(enetc_hw, ENETC_PM0_RX_FIFO, 1);
+
+	/* set ENETC transaction flags to coherent, don't allocate.
+	 * BD writes merge with surrounding cache line data, frame data writes
+	 * overwrite cache line.
+	 */
+	enetc_wr(enetc_hw, ENETC_SICAR0, ENETC_SICAR0_COHERENT);
+
 	/* Enabling Station Interface */
 	enetc_wr(enetc_hw, ENETC_SIMR, ENETC_SIMR_EN);
 
-	*mac = (uint32_t)enetc_port_rd(enetc_hw, ENETC_PSIPMAR0(0));
-	mac++;
-	*mac = (uint16_t)enetc_port_rd(enetc_hw, ENETC_PSIPMAR1(0));
+
+	if (hw->device_id == ENETC_DEV_ID_VF) {
+		*mac = (uint32_t)enetc_rd(enetc_hw, ENETC_SIPMAR0);
+		high_mac = (uint32_t)*mac;
+		mac++;
+		*mac = (uint32_t)enetc_rd(enetc_hw, ENETC_SIPMAR1);
+		low_mac = (uint16_t)*mac;
+	} else {
+		*mac = (uint32_t)enetc_port_rd(enetc_hw, ENETC_PSIPMAR0(0));
+		high_mac = (uint32_t)*mac;
+		mac++;
+		*mac = (uint16_t)enetc_port_rd(enetc_hw, ENETC_PSIPMAR1(0));
+		low_mac = (uint16_t)*mac;
+	}
+
+	if ((high_mac | low_mac) == 0) {
+		char *first_byte;
+
+		ENETC_PMD_NOTICE("MAC is not available for this SI, "
+				"set random MAC\n");
+		mac = (uint32_t *)hw->mac.addr;
+		*mac = (uint32_t)rte_rand();
+		first_byte = (char *)mac;
+		*first_byte &= 0xfe;	/* clear multicast bit */
+		*first_byte |= 0x02;	/* set local assignment bit (IEEE802) */
+
+		enetc_port_wr(enetc_hw, ENETC_PSIPMAR0(0), *mac);
+		mac++;
+		*mac = (uint16_t)rte_rand();
+		enetc_port_wr(enetc_hw, ENETC_PSIPMAR1(0), *mac);
+		print_ethaddr("New address: ",
+			      (const struct rte_ether_addr *)hw->mac.addr);
+	}
 
 	return 0;
 }
 
-static void
+static int
 enetc_dev_infos_get(struct rte_eth_dev *dev __rte_unused,
 		    struct rte_eth_dev_info *dev_info)
 {
@@ -163,11 +222,12 @@ enetc_dev_infos_get(struct rte_eth_dev *dev __rte_unused,
 	dev_info->max_tx_queues = MAX_TX_RINGS;
 	dev_info->max_rx_pktlen = ENETC_MAC_MAXFRM_SIZE;
 	dev_info->rx_offload_capa =
-		(DEV_RX_OFFLOAD_IPV4_CKSUM |
-		 DEV_RX_OFFLOAD_UDP_CKSUM |
-		 DEV_RX_OFFLOAD_TCP_CKSUM |
-		 DEV_RX_OFFLOAD_KEEP_CRC |
-		 DEV_RX_OFFLOAD_JUMBO_FRAME);
+		(RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |
+		 RTE_ETH_RX_OFFLOAD_UDP_CKSUM |
+		 RTE_ETH_RX_OFFLOAD_TCP_CKSUM |
+		 RTE_ETH_RX_OFFLOAD_KEEP_CRC);
+
+	return 0;
 }
 
 static int
@@ -176,12 +236,12 @@ enetc_alloc_txbdr(struct enetc_bdr *txr, uint16_t nb_desc)
 	int size;
 
 	size = nb_desc * sizeof(struct enetc_swbd);
-	txr->q_swbd = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	txr->q_swbd = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (txr->q_swbd == NULL)
 		return -ENOMEM;
 
 	size = nb_desc * sizeof(struct enetc_tx_bd);
-	txr->bd_base = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	txr->bd_base = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (txr->bd_base == NULL) {
 		rte_free(txr->q_swbd);
 		txr->q_swbd = NULL;
@@ -279,8 +339,10 @@ fail:
 }
 
 static void
-enetc_tx_queue_release(void *txq)
+enetc_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
+	void *txq = dev->data->tx_queues[qid];
+
 	if (txq == NULL)
 		return;
 
@@ -323,12 +385,12 @@ enetc_alloc_rxbdr(struct enetc_bdr *rxr,
 	int size;
 
 	size = nb_rx_desc * sizeof(struct enetc_swbd);
-	rxr->q_swbd = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	rxr->q_swbd = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (rxr->q_swbd == NULL)
 		return -ENOMEM;
 
 	size = nb_rx_desc * sizeof(union enetc_rx_bd);
-	rxr->bd_base = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	rxr->bd_base = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (rxr->bd_base == NULL) {
 		rte_free(rxr->q_swbd);
 		rxr->q_swbd = NULL;
@@ -416,8 +478,8 @@ enetc_rx_queue_setup(struct rte_eth_dev *dev,
 			       RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 
-	rx_ring->crc_len = (uint8_t)((rx_offloads & DEV_RX_OFFLOAD_KEEP_CRC) ?
-				     ETHER_CRC_LEN : 0);
+	rx_ring->crc_len = (uint8_t)((rx_offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC) ?
+				     RTE_ETHER_CRC_LEN : 0);
 
 	return 0;
 fail:
@@ -427,8 +489,10 @@ fail:
 }
 
 static void
-enetc_rx_queue_release(void *rxq)
+enetc_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
+	void *rxq = dev->data->rx_queues[qid];
+
 	if (rxq == NULL)
 		return;
 
@@ -490,7 +554,7 @@ int enetc_stats_get(struct rte_eth_dev *dev,
 	return 0;
 }
 
-static void
+static int
 enetc_stats_reset(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -498,30 +562,41 @@ enetc_stats_reset(struct rte_eth_dev *dev)
 	struct enetc_hw *enetc_hw = &hw->hw;
 
 	enetc_port_wr(enetc_hw, ENETC_PM0_STAT_CONFIG, ENETC_CLEAR_STATS);
+
+	return 0;
 }
 
-static void
+static int
 enetc_dev_close(struct rte_eth_dev *dev)
 {
 	uint16_t i;
+	int ret;
 
 	PMD_INIT_FUNC_TRACE();
-	enetc_dev_stop(dev);
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	ret = enetc_dev_stop(dev);
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		enetc_rx_queue_release(dev->data->rx_queues[i]);
+		enetc_rx_queue_release(dev, i);
 		dev->data->rx_queues[i] = NULL;
 	}
 	dev->data->nb_rx_queues = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		enetc_tx_queue_release(dev->data->tx_queues[i]);
+		enetc_tx_queue_release(dev, i);
 		dev->data->tx_queues[i] = NULL;
 	}
 	dev->data->nb_tx_queues = 0;
+
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_depopulate();
+
+	return ret;
 }
 
-static void
+static int
 enetc_promiscuous_enable(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -535,9 +610,11 @@ enetc_promiscuous_enable(struct rte_eth_dev *dev)
 	psipmr |= ENETC_PSIPMR_SET_UP(0) | ENETC_PSIPMR_SET_MP(0);
 
 	enetc_port_wr(enetc_hw, ENETC_PSIPMR, psipmr);
+
+	return 0;
 }
 
-static void
+static int
 enetc_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -553,9 +630,11 @@ enetc_promiscuous_disable(struct rte_eth_dev *dev)
 		psipmr &= (~ENETC_PSIPMR_SET_MP(0));
 
 	enetc_port_wr(enetc_hw, ENETC_PSIPMR, psipmr);
+
+	return 0;
 }
 
-static void
+static int
 enetc_allmulticast_enable(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -569,9 +648,11 @@ enetc_allmulticast_enable(struct rte_eth_dev *dev)
 	psipmr |= ENETC_PSIPMR_SET_MP(0);
 
 	enetc_port_wr(enetc_hw, ENETC_PSIPMR, psipmr);
+
+	return 0;
 }
 
-static void
+static int
 enetc_allmulticast_disable(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -580,13 +661,15 @@ enetc_allmulticast_disable(struct rte_eth_dev *dev)
 	uint32_t psipmr = 0;
 
 	if (dev->data->promiscuous == 1)
-		return; /* must remain in all_multicast mode */
+		return 0; /* must remain in all_multicast mode */
 
 	/* Setting to disable all multicast mode for SI0*/
 	psipmr = enetc_port_rd(enetc_hw, ENETC_PSIPMR) &
 			       ~(ENETC_PSIPMR_SET_MP(0));
 
 	enetc_port_wr(enetc_hw, ENETC_PSIPMR, psipmr);
+
+	return 0;
 }
 
 static int
@@ -595,11 +678,7 @@ enetc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	struct enetc_eth_hw *hw =
 		ENETC_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct enetc_hw *enetc_hw = &hw->hw;
-	uint32_t frame_size = mtu + ETHER_HDR_LEN + ETHER_CRC_LEN;
-
-	/* check that mtu is within the allowed range */
-	if (mtu < ENETC_MAC_MINFRM_SIZE || frame_size > ENETC_MAC_MAXFRM_SIZE)
-		return -EINVAL;
+	uint32_t frame_size = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 
 	/*
 	 * Refuse mtu that requires the support of scattered packets
@@ -612,17 +691,8 @@ enetc_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EINVAL;
 	}
 
-	if (frame_size > ETHER_MAX_LEN)
-		dev->data->dev_conf.rxmode.offloads &=
-						DEV_RX_OFFLOAD_JUMBO_FRAME;
-	else
-		dev->data->dev_conf.rxmode.offloads &=
-						~DEV_RX_OFFLOAD_JUMBO_FRAME;
-
 	enetc_port_wr(enetc_hw, ENETC_PTCMSDUR(0), ENETC_MAC_MAXFRM_SIZE);
 	enetc_port_wr(enetc_hw, ENETC_PTXMBAR, 2 * ENETC_MAC_MAXFRM_SIZE);
-
-	dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
 
 	/*setting the MTU*/
 	enetc_port_wr(enetc_hw, ENETC_PM0_MAXFRM, ENETC_SET_MAXFRM(frame_size) |
@@ -640,24 +710,17 @@ enetc_dev_configure(struct rte_eth_dev *dev)
 	struct rte_eth_conf *eth_conf = &dev->data->dev_conf;
 	uint64_t rx_offloads = eth_conf->rxmode.offloads;
 	uint32_t checksum = L3_CKSUM | L4_CKSUM;
+	uint32_t max_len;
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (rx_offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
-		uint32_t max_len;
+	max_len = dev->data->dev_conf.rxmode.mtu + RTE_ETHER_HDR_LEN +
+		RTE_ETHER_CRC_LEN;
+	enetc_port_wr(enetc_hw, ENETC_PM0_MAXFRM, ENETC_SET_MAXFRM(max_len));
+	enetc_port_wr(enetc_hw, ENETC_PTCMSDUR(0), ENETC_MAC_MAXFRM_SIZE);
+	enetc_port_wr(enetc_hw, ENETC_PTXMBAR, 2 * ENETC_MAC_MAXFRM_SIZE);
 
-		max_len = dev->data->dev_conf.rxmode.max_rx_pkt_len;
-
-		enetc_port_wr(enetc_hw, ENETC_PM0_MAXFRM,
-			      ENETC_SET_MAXFRM(max_len));
-		enetc_port_wr(enetc_hw, ENETC_PTCMSDUR(0),
-			      ENETC_MAC_MAXFRM_SIZE);
-		enetc_port_wr(enetc_hw, ENETC_PTXMBAR,
-			      2 * ENETC_MAC_MAXFRM_SIZE);
-		dev->data->mtu = ETHER_MAX_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN;
-	}
-
-	if (rx_offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC) {
 		int config;
 
 		config = enetc_port_rd(enetc_hw, ENETC_PM0_CMD_CFG);
@@ -665,10 +728,10 @@ enetc_dev_configure(struct rte_eth_dev *dev)
 		enetc_port_wr(enetc_hw, ENETC_PM0_CMD_CFG, config);
 	}
 
-	if (rx_offloads & DEV_RX_OFFLOAD_IPV4_CKSUM)
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM)
 		checksum &= ~L3_CKSUM;
 
-	if (rx_offloads & (DEV_RX_OFFLOAD_UDP_CKSUM | DEV_RX_OFFLOAD_TCP_CKSUM))
+	if (rx_offloads & (RTE_ETH_RX_OFFLOAD_UDP_CKSUM | RTE_ETH_RX_OFFLOAD_TCP_CKSUM))
 		checksum &= ~L4_CKSUM;
 
 	enetc_port_wr(enetc_hw, ENETC_PAR_PORT_CFG, checksum);
@@ -830,23 +893,28 @@ enetc_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	/* Allocate memory for storing MAC addresses */
-	eth_dev->data->mac_addrs = rte_zmalloc("enetc_eth", ETHER_ADDR_LEN, 0);
+	eth_dev->data->mac_addrs = rte_zmalloc("enetc_eth",
+					RTE_ETHER_ADDR_LEN, 0);
 	if (!eth_dev->data->mac_addrs) {
 		ENETC_PMD_ERR("Failed to allocate %d bytes needed to "
 			      "store MAC addresses",
-			      ETHER_ADDR_LEN * 1);
+			      RTE_ETHER_ADDR_LEN * 1);
 		error = -ENOMEM;
 		return -1;
 	}
 
 	/* Copy the permanent MAC address */
-	ether_addr_copy((struct ether_addr *)hw->mac.addr,
+	rte_ether_addr_copy((struct rte_ether_addr *)hw->mac.addr,
 			&eth_dev->data->mac_addrs[0]);
 
 	/* Set MTU */
 	enetc_port_wr(&hw->hw, ENETC_PM0_MAXFRM,
-		      ENETC_SET_MAXFRM(ETHER_MAX_LEN));
-	eth_dev->data->mtu = ETHER_MAX_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN;
+		      ENETC_SET_MAXFRM(RTE_ETHER_MAX_LEN));
+	eth_dev->data->mtu = RTE_ETHER_MAX_LEN - RTE_ETHER_HDR_LEN -
+		RTE_ETHER_CRC_LEN;
+
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_populate();
 
 	ENETC_PMD_DEBUG("port_id %d vendorID=0x%x deviceID=0x%x",
 			eth_dev->data->port_id, pci_dev->id.vendor_id,
@@ -855,10 +923,11 @@ enetc_dev_init(struct rte_eth_dev *eth_dev)
 }
 
 static int
-enetc_dev_uninit(struct rte_eth_dev *eth_dev __rte_unused)
+enetc_dev_uninit(struct rte_eth_dev *eth_dev)
 {
 	PMD_INIT_FUNC_TRACE();
-	return 0;
+
+	return enetc_dev_close(eth_dev);
 }
 
 static int
@@ -886,10 +955,4 @@ static struct rte_pci_driver rte_enetc_pmd = {
 RTE_PMD_REGISTER_PCI(net_enetc, rte_enetc_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_enetc, pci_id_enetc_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_enetc, "* vfio-pci");
-
-RTE_INIT(enetc_pmd_init_log)
-{
-	enetc_logtype_pmd = rte_log_register("pmd.net.enetc");
-	if (enetc_logtype_pmd >= 0)
-		rte_log_set_level(enetc_logtype_pmd, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER_DEFAULT(enetc_logtype_pmd, NOTICE);

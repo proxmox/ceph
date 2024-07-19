@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2018 Intel Corporation
+ * Copyright(c) 2015-2023 Intel Corporation
  */
 
 #include <openssl/evp.h>
@@ -7,578 +7,388 @@
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_crypto_sym.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_byteorder.h>
+#include <rte_security_driver.h>
 
 #include "qat_sym.h"
+#include "qat_crypto.h"
+#include "qat_qp.h"
 
-/** Decrypt a single partial block
- *  Depends on openssl libcrypto
- *  Uses ECB+XOR to do CFB encryption, same result, more performant
+uint8_t qat_sym_driver_id;
+int qat_legacy_capa;
+
+struct qat_crypto_gen_dev_ops qat_sym_gen_dev_ops[QAT_N_GENS];
+
+/* An rte_driver is needed in the registration of both the device and the driver
+ * with cryptodev.
+ * The actual qat pci's rte_driver can't be used as its name represents
+ * the whole pci device with all services. Think of this as a holder for a name
+ * for the crypto part of the pci device.
  */
-static inline int
-bpi_cipher_decrypt(uint8_t *src, uint8_t *dst,
-		uint8_t *iv, int ivlen, int srclen,
-		void *bpi_ctx)
+static const char qat_sym_drv_name[] = RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD);
+static const struct rte_driver cryptodev_qat_sym_driver = {
+	.name = qat_sym_drv_name,
+	.alias = qat_sym_drv_name
+};
+
+void
+qat_sym_init_op_cookie(void *op_cookie)
 {
-	EVP_CIPHER_CTX *ctx = (EVP_CIPHER_CTX *)bpi_ctx;
-	int encrypted_ivlen;
-	uint8_t encrypted_iv[BPI_MAX_ENCR_IV_LEN];
-	uint8_t *encr = encrypted_iv;
+	struct qat_sym_op_cookie *cookie = op_cookie;
 
-	/* ECB method: encrypt (not decrypt!) the IV, then XOR with plaintext */
-	if (EVP_EncryptUpdate(ctx, encrypted_iv, &encrypted_ivlen, iv, ivlen)
-								<= 0)
-		goto cipher_decrypt_err;
+	cookie->qat_sgl_src_phys_addr =
+			rte_mempool_virt2iova(cookie) +
+			offsetof(struct qat_sym_op_cookie,
+			qat_sgl_src);
 
-	for (; srclen != 0; --srclen, ++dst, ++src, ++encr)
-		*dst = *src ^ *encr;
+	cookie->qat_sgl_dst_phys_addr =
+			rte_mempool_virt2iova(cookie) +
+			offsetof(struct qat_sym_op_cookie,
+			qat_sgl_dst);
 
-	return 0;
+	cookie->opt.spc_gmac.cd_phys_addr =
+			rte_mempool_virt2iova(cookie) +
+			offsetof(struct qat_sym_op_cookie,
+			opt.spc_gmac.cd_cipher);
 
-cipher_decrypt_err:
-	QAT_DP_LOG(ERR, "libcrypto ECB cipher decrypt for BPI IV failed");
-	return -EINVAL;
+	cookie->digest_null_phys_addr =
+			rte_mempool_virt2iova(cookie) +
+			offsetof(struct qat_sym_op_cookie,
+			digest_null);
 }
 
-
-static inline uint32_t
-qat_bpicipher_preprocess(struct qat_sym_session *ctx,
-				struct rte_crypto_op *op)
+static __rte_always_inline int
+qat_sym_build_request(void *in_op, uint8_t *out_msg,
+		void *op_cookie, uint64_t *opaque, enum qat_device_gen dev_gen)
 {
-	int block_len = qat_cipher_get_block_size(ctx->qat_cipher_alg);
-	struct rte_crypto_sym_op *sym_op = op->sym;
-	uint8_t last_block_len = block_len > 0 ?
-			sym_op->cipher.data.length % block_len : 0;
+	struct rte_crypto_op *op = (struct rte_crypto_op *)in_op;
+	uintptr_t sess = (uintptr_t)opaque[0];
+	uintptr_t build_request_p = (uintptr_t)opaque[1];
+	qat_sym_build_request_t build_request = (void *)build_request_p;
+	struct qat_sym_session *ctx = NULL;
+	enum rte_proc_type_t proc_type = rte_eal_process_type();
 
-	if (last_block_len &&
-			ctx->qat_dir == ICP_QAT_HW_CIPHER_DECRYPT) {
+	if (proc_type == RTE_PROC_AUTO || proc_type == RTE_PROC_INVALID)
+		return -EINVAL;
 
-		/* Decrypt last block */
-		uint8_t *last_block, *dst, *iv;
-		uint32_t last_block_offset = sym_op->cipher.data.offset +
-				sym_op->cipher.data.length - last_block_len;
-		last_block = (uint8_t *) rte_pktmbuf_mtod_offset(sym_op->m_src,
-				uint8_t *, last_block_offset);
+	if (likely(op->sess_type == RTE_CRYPTO_OP_WITH_SESSION)) {
+		ctx = (void *)CRYPTODEV_GET_SYM_SESS_PRIV(op->sym->session);
+		if (sess != (uintptr_t)ctx) {
+			struct rte_cryptodev *cdev;
+			struct qat_cryptodev_private *internals;
 
-		if (unlikely(sym_op->m_dst != NULL))
-			/* out-of-place operation (OOP) */
-			dst = (uint8_t *) rte_pktmbuf_mtod_offset(sym_op->m_dst,
-						uint8_t *, last_block_offset);
-		else
-			dst = last_block;
+			cdev = rte_cryptodev_pmd_get_dev(ctx->dev_id);
+			internals = cdev->data->dev_private;
 
-		if (last_block_len < sym_op->cipher.data.length)
-			/* use previous block ciphertext as IV */
-			iv = last_block - block_len;
-		else
-			/* runt block, i.e. less than one full block */
-			iv = rte_crypto_op_ctod_offset(op, uint8_t *,
-					ctx->cipher_iv.offset);
+			if (internals->qat_dev->qat_dev_gen != dev_gen) {
+				op->status =
+					RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+				return -EINVAL;
+			}
 
-#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
-		QAT_DP_HEXDUMP_LOG(DEBUG, "BPI: src before pre-process:",
-			last_block, last_block_len);
-		if (sym_op->m_dst != NULL)
-			QAT_DP_HEXDUMP_LOG(DEBUG, "BPI:dst before pre-process:",
-			dst, last_block_len);
+			if (unlikely(ctx->build_request[proc_type] == NULL)) {
+				int ret =
+				qat_sym_gen_dev_ops[dev_gen].set_session(
+					(void *)cdev, (void *)ctx);
+				if (ret < 0) {
+					op->status =
+						RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+					return -EINVAL;
+				}
+			}
+
+			build_request = ctx->build_request[proc_type];
+			opaque[0] = (uintptr_t)ctx;
+			opaque[1] = (uintptr_t)build_request;
+		}
+	} else if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
+		ctx = SECURITY_GET_SESS_PRIV(op->sym->session);
+		if (unlikely(!ctx)) {
+			QAT_DP_LOG(ERR, "No session for this device");
+			return -EINVAL;
+		}
+		if (sess != (uintptr_t)ctx) {
+			struct rte_cryptodev *cdev;
+			struct qat_cryptodev_private *internals;
+
+#ifdef RTE_QAT_OPENSSL
+			if (unlikely(ctx->bpi_ctx == NULL)) {
+#else
+			if (unlikely(ctx->mb_mgr == NULL)) {
 #endif
-		bpi_cipher_decrypt(last_block, dst, iv, block_len,
-				last_block_len, ctx->bpi_ctx);
-#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
-		QAT_DP_HEXDUMP_LOG(DEBUG, "BPI: src after pre-process:",
-			last_block, last_block_len);
-		if (sym_op->m_dst != NULL)
-			QAT_DP_HEXDUMP_LOG(DEBUG, "BPI: dst after pre-process:",
-			dst, last_block_len);
-#endif
+				QAT_DP_LOG(ERR, "QAT PMD only supports security"
+						" operation requests for"
+						" DOCSIS, op (%p) is not for"
+						" DOCSIS.", op);
+				return -EINVAL;
+			} else if (unlikely(((op->sym->m_dst != NULL) &&
+					(op->sym->m_dst != op->sym->m_src)) ||
+					op->sym->m_src->nb_segs > 1)) {
+				QAT_DP_LOG(ERR, "OOP and/or multi-segment"
+						" buffers not supported for"
+						" DOCSIS security.");
+				op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+				return -EINVAL;
+			}
+			cdev = rte_cryptodev_pmd_get_dev(ctx->dev_id);
+			internals = cdev->data->dev_private;
+
+			if (internals->qat_dev->qat_dev_gen != dev_gen) {
+				op->status =
+					RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+				return -EINVAL;
+			}
+
+			if (unlikely(ctx->build_request[proc_type] == NULL)) {
+				int ret =
+				qat_sym_gen_dev_ops[dev_gen].set_session(
+					(void *)cdev, (void *)sess);
+				if (ret < 0) {
+					op->status =
+						RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+					return -EINVAL;
+				}
+			}
+
+			sess = (uintptr_t)op->sym->session;
+			build_request = ctx->build_request[proc_type];
+			opaque[0] = sess;
+			opaque[1] = (uintptr_t)build_request;
+		}
+	} else { /* RTE_CRYPTO_OP_SESSIONLESS */
+		op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		QAT_LOG(DEBUG, "QAT does not support sessionless operation");
+		return -1;
 	}
 
-	return sym_op->cipher.data.length - last_block_len;
+	return build_request(op, (void *)ctx, out_msg, op_cookie);
 }
 
-static inline void
-set_cipher_iv(uint16_t iv_length, uint16_t iv_offset,
-		struct icp_qat_fw_la_cipher_req_params *cipher_param,
-		struct rte_crypto_op *op,
-		struct icp_qat_fw_la_bulk_req *qat_req)
+uint16_t
+qat_sym_enqueue_burst(void *qp, struct rte_crypto_op **ops,
+		uint16_t nb_ops)
 {
-	/* copy IV into request if it fits */
-	if (iv_length <= sizeof(cipher_param->u.cipher_IV_array)) {
-		rte_memcpy(cipher_param->u.cipher_IV_array,
-				rte_crypto_op_ctod_offset(op, uint8_t *,
-					iv_offset),
-				iv_length);
-	} else {
-		ICP_QAT_FW_LA_CIPH_IV_FLD_FLAG_SET(
-				qat_req->comn_hdr.serv_specif_flags,
-				ICP_QAT_FW_CIPH_IV_64BIT_PTR);
-		cipher_param->u.s.cipher_IV_ptr =
-				rte_crypto_op_ctophys_offset(op,
-					iv_offset);
-	}
+	return qat_enqueue_op_burst(qp, qat_sym_build_request,
+			(void **)ops, nb_ops);
 }
 
-/** Set IV for CCM is special case, 0th byte is set to q-1
- *  where q is padding of nonce in 16 byte block
- */
-static inline void
-set_cipher_iv_ccm(uint16_t iv_length, uint16_t iv_offset,
-		struct icp_qat_fw_la_cipher_req_params *cipher_param,
-		struct rte_crypto_op *op, uint8_t q, uint8_t aad_len_field_sz)
+uint16_t
+qat_sym_dequeue_burst(void *qp, struct rte_crypto_op **ops,
+		uint16_t nb_ops)
 {
-	rte_memcpy(((uint8_t *)cipher_param->u.cipher_IV_array) +
-			ICP_QAT_HW_CCM_NONCE_OFFSET,
-			rte_crypto_op_ctod_offset(op, uint8_t *,
-				iv_offset) + ICP_QAT_HW_CCM_NONCE_OFFSET,
-			iv_length);
-	*(uint8_t *)&cipher_param->u.cipher_IV_array[0] =
-			q - ICP_QAT_HW_CCM_NONCE_OFFSET;
-
-	if (aad_len_field_sz)
-		rte_memcpy(&op->sym->aead.aad.data[ICP_QAT_HW_CCM_NONCE_OFFSET],
-			rte_crypto_op_ctod_offset(op, uint8_t *,
-				iv_offset) + ICP_QAT_HW_CCM_NONCE_OFFSET,
-			iv_length);
+	return qat_dequeue_op_burst(qp, (void **)ops,
+				qat_sym_process_response, nb_ops);
 }
 
 int
-qat_sym_build_request(void *in_op, uint8_t *out_msg,
-		void *op_cookie, enum qat_device_gen qat_dev_gen)
+qat_sym_dev_create(struct qat_pci_device *qat_pci_dev,
+		struct qat_dev_cmd_param *qat_dev_cmd_param)
 {
-	int ret = 0;
-	struct qat_sym_session *ctx;
-	struct icp_qat_fw_la_cipher_req_params *cipher_param;
-	struct icp_qat_fw_la_auth_req_params *auth_param;
-	register struct icp_qat_fw_la_bulk_req *qat_req;
-	uint8_t do_auth = 0, do_cipher = 0, do_aead = 0;
-	uint32_t cipher_len = 0, cipher_ofs = 0;
-	uint32_t auth_len = 0, auth_ofs = 0;
-	uint32_t min_ofs = 0;
-	uint64_t src_buf_start = 0, dst_buf_start = 0;
-	uint8_t do_sgl = 0;
-	uint8_t wireless_auth = 0, in_place = 1;
-	struct rte_crypto_op *op = (struct rte_crypto_op *)in_op;
-	struct qat_sym_op_cookie *cookie =
-				(struct qat_sym_op_cookie *)op_cookie;
+	int i = 0, ret = 0;
+	uint16_t slice_map = 0;
+	struct qat_device_info *qat_dev_instance =
+			&qat_pci_devs[qat_pci_dev->qat_dev_id];
+	struct rte_cryptodev_pmd_init_params init_params = {
+		.name = "",
+		.socket_id = qat_dev_instance->pci_dev->device.numa_node,
+		.private_data_size = sizeof(struct qat_cryptodev_private)
+	};
+	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
+	char capa_memz_name[RTE_CRYPTODEV_NAME_MAX_LEN];
+	struct rte_cryptodev *cryptodev;
+	struct qat_cryptodev_private *internals;
+	const struct qat_crypto_gen_dev_ops *gen_dev_ops =
+		&qat_sym_gen_dev_ops[qat_pci_dev->qat_dev_gen];
 
-	if (unlikely(op->type != RTE_CRYPTO_OP_TYPE_SYMMETRIC)) {
-		QAT_DP_LOG(ERR, "QAT PMD only supports symmetric crypto "
-				"operation requests, op (%p) is not a "
-				"symmetric operation.", op);
-		return -EINVAL;
+	snprintf(name, RTE_CRYPTODEV_NAME_MAX_LEN, "%s_%s",
+			qat_pci_dev->name, "sym");
+	QAT_LOG(DEBUG, "Creating QAT SYM device %s", name);
+
+	if (gen_dev_ops->cryptodev_ops == NULL) {
+		QAT_LOG(ERR, "Device %s does not support symmetric crypto",
+				name);
+		return -(EFAULT);
 	}
 
-	if (unlikely(op->sess_type == RTE_CRYPTO_OP_SESSIONLESS)) {
-		QAT_DP_LOG(ERR, "QAT PMD only supports session oriented"
-				" requests, op (%p) is sessionless.", op);
-		return -EINVAL;
-	}
-
-	ctx = (struct qat_sym_session *)get_sym_session_private_data(
-			op->sym->session, cryptodev_qat_driver_id);
-
-	if (unlikely(ctx == NULL)) {
-		QAT_DP_LOG(ERR, "Session was not created for this device");
-		return -EINVAL;
-	}
-
-	if (unlikely(ctx->min_qat_dev_gen > qat_dev_gen)) {
-		QAT_DP_LOG(ERR, "Session alg not supported on this device gen");
-		op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
-		return -EINVAL;
-	}
-
-	qat_req = (struct icp_qat_fw_la_bulk_req *)out_msg;
-	rte_mov128((uint8_t *)qat_req, (const uint8_t *)&(ctx->fw_req));
-	qat_req->comn_mid.opaque_data = (uint64_t)(uintptr_t)op;
-	cipher_param = (void *)&qat_req->serv_specif_rqpars;
-	auth_param = (void *)((uint8_t *)cipher_param + sizeof(*cipher_param));
-
-	if (ctx->qat_cmd == ICP_QAT_FW_LA_CMD_HASH_CIPHER ||
-			ctx->qat_cmd == ICP_QAT_FW_LA_CMD_CIPHER_HASH) {
-		/* AES-GCM or AES-CCM */
-		if (ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_GALOIS_128 ||
-			ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_GALOIS_64 ||
-			(ctx->qat_cipher_alg == ICP_QAT_HW_CIPHER_ALGO_AES128
-			&& ctx->qat_mode == ICP_QAT_HW_CIPHER_CTR_MODE
-			&& ctx->qat_hash_alg ==
-					ICP_QAT_HW_AUTH_ALGO_AES_CBC_MAC)) {
-			do_aead = 1;
-		} else {
-			do_auth = 1;
-			do_cipher = 1;
+	/*
+	 * All processes must use same driver id so they can share sessions.
+	 * Store driver_id so we can validate that all processes have the same
+	 * value, typically they have, but could differ if binaries built
+	 * separately.
+	 */
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		qat_pci_dev->qat_sym_driver_id =
+				qat_sym_driver_id;
+	} else if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		if (qat_pci_dev->qat_sym_driver_id !=
+				qat_sym_driver_id) {
+			QAT_LOG(ERR,
+				"Device %s have different driver id than corresponding device in primary process",
+				name);
+			return -(EFAULT);
 		}
-	} else if (ctx->qat_cmd == ICP_QAT_FW_LA_CMD_AUTH) {
-		do_auth = 1;
-		do_cipher = 0;
-	} else if (ctx->qat_cmd == ICP_QAT_FW_LA_CMD_CIPHER) {
-		do_auth = 0;
-		do_cipher = 1;
 	}
 
-	if (do_cipher) {
+	/* Populate subset device to use in cryptodev device creation */
+	qat_dev_instance->sym_rte_dev.driver = &cryptodev_qat_sym_driver;
+	qat_dev_instance->sym_rte_dev.numa_node =
+			qat_dev_instance->pci_dev->device.numa_node;
+	qat_dev_instance->sym_rte_dev.devargs = NULL;
 
-		if (ctx->qat_cipher_alg ==
-					 ICP_QAT_HW_CIPHER_ALGO_SNOW_3G_UEA2 ||
-			ctx->qat_cipher_alg == ICP_QAT_HW_CIPHER_ALGO_KASUMI ||
-			ctx->qat_cipher_alg ==
-				ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3) {
+	cryptodev = rte_cryptodev_pmd_create(name,
+			&(qat_dev_instance->sym_rte_dev), &init_params);
 
-			if (unlikely(
-			    (op->sym->cipher.data.length % BYTE_LENGTH != 0) ||
-			    (op->sym->cipher.data.offset % BYTE_LENGTH != 0))) {
-				QAT_DP_LOG(ERR,
-		  "SNOW3G/KASUMI/ZUC in QAT PMD only supports byte aligned values");
-				op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
-				return -EINVAL;
-			}
-			cipher_len = op->sym->cipher.data.length >> 3;
-			cipher_ofs = op->sym->cipher.data.offset >> 3;
+	if (cryptodev == NULL)
+		return -ENODEV;
 
-		} else if (ctx->bpi_ctx) {
-			/* DOCSIS - only send complete blocks to device
-			 * Process any partial block using CFB mode.
-			 * Even if 0 complete blocks, still send this to device
-			 * to get into rx queue for post-process and dequeuing
-			 */
-			cipher_len = qat_bpicipher_preprocess(ctx, op);
-			cipher_ofs = op->sym->cipher.data.offset;
-		} else {
-			cipher_len = op->sym->cipher.data.length;
-			cipher_ofs = op->sym->cipher.data.offset;
+	qat_dev_instance->sym_rte_dev.name = cryptodev->data->name;
+	cryptodev->driver_id = qat_sym_driver_id;
+	cryptodev->dev_ops = gen_dev_ops->cryptodev_ops;
+
+	cryptodev->enqueue_burst = qat_sym_enqueue_burst;
+	cryptodev->dequeue_burst = qat_sym_dequeue_burst;
+
+	cryptodev->feature_flags = gen_dev_ops->get_feature_flags(qat_pci_dev);
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	if (gen_dev_ops->create_security_ctx) {
+		cryptodev->security_ctx =
+			gen_dev_ops->create_security_ctx((void *)cryptodev);
+		if (cryptodev->security_ctx == NULL) {
+			QAT_LOG(ERR, "rte_security_ctx memory alloc failed");
+			ret = -ENOMEM;
+			goto error;
 		}
 
-		set_cipher_iv(ctx->cipher_iv.length, ctx->cipher_iv.offset,
-				cipher_param, op, qat_req);
-		min_ofs = cipher_ofs;
-	}
-
-	if (do_auth) {
-
-		if (ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_SNOW_3G_UIA2 ||
-			ctx->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_KASUMI_F9 ||
-			ctx->qat_hash_alg ==
-				ICP_QAT_HW_AUTH_ALGO_ZUC_3G_128_EIA3) {
-			if (unlikely(
-			    (op->sym->auth.data.offset % BYTE_LENGTH != 0) ||
-			    (op->sym->auth.data.length % BYTE_LENGTH != 0))) {
-				QAT_DP_LOG(ERR,
-		"For SNOW3G/KASUMI/ZUC, QAT PMD only supports byte aligned values");
-				op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
-				return -EINVAL;
-			}
-			auth_ofs = op->sym->auth.data.offset >> 3;
-			auth_len = op->sym->auth.data.length >> 3;
-			wireless_auth = 1;
-
-			auth_param->u1.aad_adr =
-					rte_crypto_op_ctophys_offset(op,
-							ctx->auth_iv.offset);
-
-		} else if (ctx->qat_hash_alg ==
-					ICP_QAT_HW_AUTH_ALGO_GALOIS_128 ||
-				ctx->qat_hash_alg ==
-					ICP_QAT_HW_AUTH_ALGO_GALOIS_64) {
-			/* AES-GMAC */
-			set_cipher_iv(ctx->auth_iv.length,
-				ctx->auth_iv.offset,
-				cipher_param, op, qat_req);
-			auth_ofs = op->sym->auth.data.offset;
-			auth_len = op->sym->auth.data.length;
-
-			auth_param->u1.aad_adr = 0;
-			auth_param->u2.aad_sz = 0;
-
-			/*
-			 * If len(iv)==12B fw computes J0
-			 */
-			if (ctx->auth_iv.length == 12) {
-				ICP_QAT_FW_LA_GCM_IV_LEN_FLAG_SET(
-					qat_req->comn_hdr.serv_specif_flags,
-					ICP_QAT_FW_LA_GCM_IV_LEN_12_OCTETS);
-
-			}
-		} else {
-			auth_ofs = op->sym->auth.data.offset;
-			auth_len = op->sym->auth.data.length;
-
-		}
-		min_ofs = auth_ofs;
-
-		if (likely(ctx->qat_hash_alg != ICP_QAT_HW_AUTH_ALGO_NULL))
-			auth_param->auth_res_addr =
-					op->sym->auth.digest.phys_addr;
-
-	}
-
-	if (do_aead) {
-		/*
-		 * This address may used for setting AAD physical pointer
-		 * into IV offset from op
-		 */
-		rte_iova_t aad_phys_addr_aead = op->sym->aead.aad.phys_addr;
-		if (ctx->qat_hash_alg ==
-				ICP_QAT_HW_AUTH_ALGO_GALOIS_128 ||
-				ctx->qat_hash_alg ==
-					ICP_QAT_HW_AUTH_ALGO_GALOIS_64) {
-			/*
-			 * If len(iv)==12B fw computes J0
-			 */
-			if (ctx->cipher_iv.length == 12) {
-				ICP_QAT_FW_LA_GCM_IV_LEN_FLAG_SET(
-					qat_req->comn_hdr.serv_specif_flags,
-					ICP_QAT_FW_LA_GCM_IV_LEN_12_OCTETS);
-			}
-			set_cipher_iv(ctx->cipher_iv.length,
-					ctx->cipher_iv.offset,
-					cipher_param, op, qat_req);
-
-		} else if (ctx->qat_hash_alg ==
-				ICP_QAT_HW_AUTH_ALGO_AES_CBC_MAC) {
-
-			/* In case of AES-CCM this may point to user selected
-			 * memory or iv offset in cypto_op
-			 */
-			uint8_t *aad_data = op->sym->aead.aad.data;
-			/* This is true AAD length, it not includes 18 bytes of
-			 * preceding data
-			 */
-			uint8_t aad_ccm_real_len = 0;
-			uint8_t aad_len_field_sz = 0;
-			uint32_t msg_len_be =
-					rte_bswap32(op->sym->aead.data.length);
-
-			if (ctx->aad_len > ICP_QAT_HW_CCM_AAD_DATA_OFFSET) {
-				aad_len_field_sz = ICP_QAT_HW_CCM_AAD_LEN_INFO;
-				aad_ccm_real_len = ctx->aad_len -
-					ICP_QAT_HW_CCM_AAD_B0_LEN -
-					ICP_QAT_HW_CCM_AAD_LEN_INFO;
-			} else {
-				/*
-				 * aad_len not greater than 18, so no actual aad
-				 *  data, then use IV after op for B0 block
-				 */
-				aad_data = rte_crypto_op_ctod_offset(op,
-						uint8_t *,
-						ctx->cipher_iv.offset);
-				aad_phys_addr_aead =
-						rte_crypto_op_ctophys_offset(op,
-							ctx->cipher_iv.offset);
-			}
-
-			uint8_t q = ICP_QAT_HW_CCM_NQ_CONST -
-							ctx->cipher_iv.length;
-
-			aad_data[0] = ICP_QAT_HW_CCM_BUILD_B0_FLAGS(
-							aad_len_field_sz,
-							ctx->digest_length, q);
-
-			if (q > ICP_QAT_HW_CCM_MSG_LEN_MAX_FIELD_SIZE) {
-				memcpy(aad_data	+ ctx->cipher_iv.length +
-				    ICP_QAT_HW_CCM_NONCE_OFFSET +
-				    (q - ICP_QAT_HW_CCM_MSG_LEN_MAX_FIELD_SIZE),
-				    (uint8_t *)&msg_len_be,
-				    ICP_QAT_HW_CCM_MSG_LEN_MAX_FIELD_SIZE);
-			} else {
-				memcpy(aad_data	+ ctx->cipher_iv.length +
-				    ICP_QAT_HW_CCM_NONCE_OFFSET,
-				    (uint8_t *)&msg_len_be
-				    + (ICP_QAT_HW_CCM_MSG_LEN_MAX_FIELD_SIZE
-				    - q), q);
-			}
-
-			if (aad_len_field_sz > 0) {
-				*(uint16_t *)&aad_data[ICP_QAT_HW_CCM_AAD_B0_LEN]
-						= rte_bswap16(aad_ccm_real_len);
-
-				if ((aad_ccm_real_len + aad_len_field_sz)
-						% ICP_QAT_HW_CCM_AAD_B0_LEN) {
-					uint8_t pad_len = 0;
-					uint8_t pad_idx = 0;
-
-					pad_len = ICP_QAT_HW_CCM_AAD_B0_LEN -
-					((aad_ccm_real_len + aad_len_field_sz) %
-						ICP_QAT_HW_CCM_AAD_B0_LEN);
-					pad_idx = ICP_QAT_HW_CCM_AAD_B0_LEN +
-					    aad_ccm_real_len + aad_len_field_sz;
-					memset(&aad_data[pad_idx],
-							0, pad_len);
-				}
-
-			}
-
-			set_cipher_iv_ccm(ctx->cipher_iv.length,
-					ctx->cipher_iv.offset,
-					cipher_param, op, q,
-					aad_len_field_sz);
-
-		}
-
-		cipher_len = op->sym->aead.data.length;
-		cipher_ofs = op->sym->aead.data.offset;
-		auth_len = op->sym->aead.data.length;
-		auth_ofs = op->sym->aead.data.offset;
-
-		auth_param->u1.aad_adr = aad_phys_addr_aead;
-		auth_param->auth_res_addr = op->sym->aead.digest.phys_addr;
-		min_ofs = op->sym->aead.data.offset;
-	}
-
-	if (op->sym->m_src->next || (op->sym->m_dst && op->sym->m_dst->next))
-		do_sgl = 1;
-
-	/* adjust for chain case */
-	if (do_cipher && do_auth)
-		min_ofs = cipher_ofs < auth_ofs ? cipher_ofs : auth_ofs;
-
-	if (unlikely(min_ofs >= rte_pktmbuf_data_len(op->sym->m_src) && do_sgl))
-		min_ofs = 0;
-
-	if (unlikely(op->sym->m_dst != NULL)) {
-		/* Out-of-place operation (OOP)
-		 * Don't align DMA start. DMA the minimum data-set
-		 * so as not to overwrite data in dest buffer
-		 */
-		in_place = 0;
-		src_buf_start =
-			rte_pktmbuf_iova_offset(op->sym->m_src, min_ofs);
-		dst_buf_start =
-			rte_pktmbuf_iova_offset(op->sym->m_dst, min_ofs);
-
+		cryptodev->feature_flags |= RTE_CRYPTODEV_FF_SECURITY;
+		QAT_LOG(INFO, "Device %s rte_security support ensabled", name);
 	} else {
-		/* In-place operation
-		 * Start DMA at nearest aligned address below min_ofs
-		 */
-		src_buf_start =
-			rte_pktmbuf_iova_offset(op->sym->m_src, min_ofs)
-						& QAT_64_BTYE_ALIGN_MASK;
+		QAT_LOG(INFO, "Device %s rte_security support disabled", name);
+	}
+	snprintf(capa_memz_name, RTE_CRYPTODEV_NAME_MAX_LEN,
+			"QAT_SYM_CAPA_GEN_%d",
+			qat_pci_dev->qat_dev_gen);
 
-		if (unlikely((rte_pktmbuf_iova(op->sym->m_src) -
-					rte_pktmbuf_headroom(op->sym->m_src))
-							> src_buf_start)) {
-			/* alignment has pushed addr ahead of start of mbuf
-			 * so revert and take the performance hit
-			 */
-			src_buf_start =
-				rte_pktmbuf_iova_offset(op->sym->m_src,
-								min_ofs);
-		}
-		dst_buf_start = src_buf_start;
+	internals = cryptodev->data->dev_private;
+	internals->qat_dev = qat_pci_dev;
+
+	internals->dev_id = cryptodev->data->dev_id;
+
+	while (qat_dev_cmd_param[i].name != NULL) {
+		if (!strcmp(qat_dev_cmd_param[i].name, SYM_ENQ_THRESHOLD_NAME))
+			internals->min_enq_burst_threshold =
+					qat_dev_cmd_param[i].val;
+		if (!strcmp(qat_dev_cmd_param[i].name,
+				SYM_CIPHER_CRC_ENABLE_NAME))
+			internals->cipher_crc_offload_enable =
+					qat_dev_cmd_param[i].val;
+		if (!strcmp(qat_dev_cmd_param[i].name, QAT_LEGACY_CAPA))
+			qat_legacy_capa = qat_dev_cmd_param[i].val;
+		if (!strcmp(qat_dev_cmd_param[i].name, QAT_CMD_SLICE_MAP))
+			slice_map = qat_dev_cmd_param[i].val;
+		i++;
 	}
 
-	if (do_cipher || do_aead) {
-		cipher_param->cipher_offset =
-				(uint32_t)rte_pktmbuf_iova_offset(
-				op->sym->m_src, cipher_ofs) - src_buf_start;
-		cipher_param->cipher_length = cipher_len;
-	} else {
-		cipher_param->cipher_offset = 0;
-		cipher_param->cipher_length = 0;
+	if (gen_dev_ops->get_capabilities(internals,
+			capa_memz_name, slice_map) < 0) {
+		QAT_LOG(ERR,
+			"Device cannot obtain capabilities, destroying PMD for %s",
+			name);
+		ret = -1;
+		goto error;
 	}
+	internals->service_type = QAT_SERVICE_SYMMETRIC;
+	qat_pci_dev->sym_dev = internals;
+	QAT_LOG(DEBUG, "Created QAT SYM device %s as cryptodev instance %d",
+			cryptodev->data->name, internals->dev_id);
 
-	if (do_auth || do_aead) {
-		auth_param->auth_off = (uint32_t)rte_pktmbuf_iova_offset(
-				op->sym->m_src, auth_ofs) - src_buf_start;
-		auth_param->auth_len = auth_len;
-	} else {
-		auth_param->auth_off = 0;
-		auth_param->auth_len = 0;
-	}
+	return 0;
 
-	qat_req->comn_mid.dst_length =
-		qat_req->comn_mid.src_length =
-		(cipher_param->cipher_offset + cipher_param->cipher_length)
-		> (auth_param->auth_off + auth_param->auth_len) ?
-		(cipher_param->cipher_offset + cipher_param->cipher_length)
-		: (auth_param->auth_off + auth_param->auth_len);
+error:
+	rte_free(cryptodev->security_ctx);
+	cryptodev->security_ctx = NULL;
+	rte_cryptodev_pmd_destroy(cryptodev);
+	memset(&qat_dev_instance->sym_rte_dev, 0,
+		sizeof(qat_dev_instance->sym_rte_dev));
 
-	if (do_sgl) {
+	return ret;
+}
 
-		ICP_QAT_FW_COMN_PTR_TYPE_SET(qat_req->comn_hdr.comn_req_flags,
-				QAT_COMN_PTR_TYPE_SGL);
-		ret = qat_sgl_fill_array(op->sym->m_src,
-		   (int64_t)(src_buf_start - rte_pktmbuf_iova(op->sym->m_src)),
-		   &cookie->qat_sgl_src,
-		   qat_req->comn_mid.src_length,
-		   QAT_SYM_SGL_MAX_NUMBER);
+int
+qat_sym_dev_destroy(struct qat_pci_device *qat_pci_dev)
+{
+	struct rte_cryptodev *cryptodev;
 
-		if (unlikely(ret)) {
-			QAT_DP_LOG(ERR, "QAT PMD Cannot fill sgl array");
-			return ret;
-		}
+	if (qat_pci_dev == NULL)
+		return -ENODEV;
+	if (qat_pci_dev->sym_dev == NULL)
+		return 0;
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		rte_memzone_free(qat_pci_dev->sym_dev->capa_mz);
 
-		if (likely(op->sym->m_dst == NULL))
-			qat_req->comn_mid.dest_data_addr =
-				qat_req->comn_mid.src_data_addr =
-				cookie->qat_sgl_src_phys_addr;
-		else {
-			ret = qat_sgl_fill_array(op->sym->m_dst,
-				(int64_t)(dst_buf_start -
-					  rte_pktmbuf_iova(op->sym->m_dst)),
-				 &cookie->qat_sgl_dst,
-				 qat_req->comn_mid.dst_length,
-				 QAT_SYM_SGL_MAX_NUMBER);
+	/* free crypto device */
+	cryptodev = rte_cryptodev_pmd_get_dev(qat_pci_dev->sym_dev->dev_id);
+	rte_free(cryptodev->security_ctx);
+	cryptodev->security_ctx = NULL;
+	rte_cryptodev_pmd_destroy(cryptodev);
+	qat_pci_devs[qat_pci_dev->qat_dev_id].sym_rte_dev.name = NULL;
+	qat_pci_dev->sym_dev = NULL;
 
-			if (unlikely(ret)) {
-				QAT_DP_LOG(ERR, "QAT PMD can't fill sgl array");
-				return ret;
-			}
-
-			qat_req->comn_mid.src_data_addr =
-				cookie->qat_sgl_src_phys_addr;
-			qat_req->comn_mid.dest_data_addr =
-					cookie->qat_sgl_dst_phys_addr;
-		}
-	} else {
-		qat_req->comn_mid.src_data_addr = src_buf_start;
-		qat_req->comn_mid.dest_data_addr = dst_buf_start;
-		/* handle case of auth-gen-then-cipher with digest encrypted */
-		if (wireless_auth && in_place &&
-		    (op->sym->auth.digest.phys_addr ==
-				src_buf_start + auth_ofs + auth_len) &&
-		    (auth_ofs + auth_len + ctx->digest_length <=
-				cipher_ofs + cipher_len)) {
-			struct icp_qat_fw_comn_req_hdr *header =
-						&qat_req->comn_hdr;
-			ICP_QAT_FW_LA_DIGEST_IN_BUFFER_SET(
-				header->serv_specif_flags,
-				ICP_QAT_FW_LA_DIGEST_IN_BUFFER);
-		}
-	}
-
-#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
-	QAT_DP_HEXDUMP_LOG(DEBUG, "qat_req:", qat_req,
-			sizeof(struct icp_qat_fw_la_bulk_req));
-	QAT_DP_HEXDUMP_LOG(DEBUG, "src_data:",
-			rte_pktmbuf_mtod(op->sym->m_src, uint8_t*),
-			rte_pktmbuf_data_len(op->sym->m_src));
-	if (do_cipher) {
-		uint8_t *cipher_iv_ptr = rte_crypto_op_ctod_offset(op,
-						uint8_t *,
-						ctx->cipher_iv.offset);
-		QAT_DP_HEXDUMP_LOG(DEBUG, "cipher iv:", cipher_iv_ptr,
-				ctx->cipher_iv.length);
-	}
-
-	if (do_auth) {
-		if (ctx->auth_iv.length) {
-			uint8_t *auth_iv_ptr = rte_crypto_op_ctod_offset(op,
-							uint8_t *,
-							ctx->auth_iv.offset);
-			QAT_DP_HEXDUMP_LOG(DEBUG, "auth iv:", auth_iv_ptr,
-						ctx->auth_iv.length);
-		}
-		QAT_DP_HEXDUMP_LOG(DEBUG, "digest:", op->sym->auth.digest.data,
-				ctx->digest_length);
-	}
-
-	if (do_aead) {
-		QAT_DP_HEXDUMP_LOG(DEBUG, "digest:", op->sym->aead.digest.data,
-				ctx->digest_length);
-		QAT_DP_HEXDUMP_LOG(DEBUG, "aad:", op->sym->aead.aad.data,
-				ctx->aad_len);
-	}
-#endif
 	return 0;
 }
+
+int
+qat_sym_configure_dp_ctx(struct rte_cryptodev *dev, uint16_t qp_id,
+	struct rte_crypto_raw_dp_ctx *raw_dp_ctx,
+	enum rte_crypto_op_sess_type sess_type,
+	union rte_cryptodev_session_ctx session_ctx, uint8_t is_update)
+{
+	struct qat_cryptodev_private *internals = dev->data->dev_private;
+	enum qat_device_gen qat_dev_gen = internals->qat_dev->qat_dev_gen;
+	struct qat_crypto_gen_dev_ops *gen_dev_ops =
+			&qat_sym_gen_dev_ops[qat_dev_gen];
+	struct qat_qp *qp;
+	struct qat_sym_session *ctx;
+	struct qat_sym_dp_ctx *dp_ctx;
+
+	if (!gen_dev_ops->set_raw_dp_ctx) {
+		QAT_LOG(ERR, "Device GEN %u does not support raw data path",
+				qat_dev_gen);
+		return -ENOTSUP;
+	}
+
+	qp = dev->data->queue_pairs[qp_id];
+	dp_ctx = (struct qat_sym_dp_ctx *)raw_dp_ctx->drv_ctx_data;
+
+	if (!is_update) {
+		memset(raw_dp_ctx, 0, sizeof(*raw_dp_ctx) +
+				sizeof(struct qat_sym_dp_ctx));
+		raw_dp_ctx->qp_data = dev->data->queue_pairs[qp_id];
+		dp_ctx->tail = qp->tx_q.tail;
+		dp_ctx->head = qp->rx_q.head;
+		dp_ctx->cached_enqueue = dp_ctx->cached_dequeue = 0;
+	}
+
+	if (sess_type != RTE_CRYPTO_OP_WITH_SESSION)
+		return -EINVAL;
+
+	ctx = CRYPTODEV_GET_SYM_SESS_PRIV(session_ctx.crypto_sess);
+
+	dp_ctx->session = ctx;
+
+	return gen_dev_ops->set_raw_dp_ctx(raw_dp_ctx, ctx);
+}
+
+int
+qat_sym_get_dp_ctx_size(struct rte_cryptodev *dev __rte_unused)
+{
+	return sizeof(struct qat_sym_dp_ctx);
+}
+
+static struct cryptodev_driver qat_crypto_drv;
+RTE_PMD_REGISTER_CRYPTO_DRIVER(qat_crypto_drv,
+		cryptodev_qat_sym_driver,
+		qat_sym_driver_id);

@@ -22,12 +22,14 @@
 
 #pragma once
 
+#include "modules.hh"
+#include <seastar/core/seastar.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/fstream.hh>
 #include <seastar/core/sstring.hh>
-#include <seastar/core/reactor.hh>
 #include <seastar/util/std-compat.hh>
 #include <seastar/util/short_streams.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
@@ -44,6 +46,7 @@ namespace seastar {
 /// The function bails out on first error. In that case, some files and/or sub-directories
 /// (and their contents) may be left behind at the level in which the error was detected.
 ///
+SEASTAR_MODULE_EXPORT
 future<> recursive_remove_directory(std::filesystem::path path) noexcept;
 
 /// @}
@@ -59,10 +62,11 @@ namespace util {
 /// \addtogroup fileio-util
 /// @{
 
+SEASTAR_MODULE_EXPORT_BEGIN
 template <typename Func>
-SEASTAR_CONCEPT(requires requires(Func func, input_stream<char>& in) {
+requires requires(Func func, input_stream<char>& in) {
      { func(in) };
-})
+}
 auto with_file_input_stream(const std::filesystem::path& path, Func func, file_open_options file_opts = {}, file_input_stream_options input_stream_opts = {}) {
     static_assert(std::is_nothrow_move_constructible_v<Func>);
     return open_file_dma(path.native(), open_flags::ro, std::move(file_opts)).then(
@@ -90,6 +94,7 @@ future<std::vector<temporary_buffer<char>>> read_entire_file(std::filesystem::pa
 /// \param path path of the file to be read.
 future<sstring> read_entire_file_contiguous(std::filesystem::path path);
 
+SEASTAR_MODULE_EXPORT_END
 /// @}
 
 } // namespace util

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <inttypes.h>
 
 #include "kmip.h"
 #include "kmip_memset.h"
@@ -1347,7 +1348,7 @@ kmip_clear_errors(KMIP *ctx)
     
     for(size_t i = 0; i < ARRAY_LENGTH(ctx->errors); i++)
     {
-        ctx->errors[i] = (ErrorFrame){0};
+        ctx->errors[i] = (ErrorFrame){{0},0};
     }
     ctx->frame_index = ctx->errors;
     
@@ -3760,7 +3761,7 @@ kmip_print_date_time(int64 value)
 	char decoded_time[64];
 	gmtime_r(&t, tm);
 	strftime(decoded_time, sizeof decoded_time, "%F %T", tm);
-	printf ("%s (%ld)", decoded_time, value);
+	printf ("%s (%" PRId64 ")", decoded_time, value);
 }
 
 void
@@ -5306,7 +5307,7 @@ kmip_print_request_header(int indent, RequestHeader *value)
         printf("%*sBatch Order Option: ", indent + 2, "");
         kmip_print_bool(value->batch_order_option);
         printf("\n");
-        printf("%*sTime Stamp: %lu\n", indent + 2, "", value->time_stamp);
+        printf("%*sTime Stamp: %" PRIu64 "\n", indent + 2, "", value->time_stamp);
         printf("%*sBatch Count: %d\n", indent + 2, "", value->batch_count);
     }
 }
@@ -5319,7 +5320,7 @@ kmip_print_response_header(int indent, ResponseHeader *value)
     if(value != NULL)
     {
         kmip_print_protocol_version(indent + 2, value->protocol_version);
-        printf("%*sTime Stamp: %lu\n", indent + 2, "", value->time_stamp);
+        printf("%*sTime Stamp: %" PRIu64 "\n", indent + 2, "", value->time_stamp);
         kmip_print_nonce(indent + 2, value->nonce);
 
         kmip_print_byte_string(indent + 2, "Server Hashed Password", value->server_hashed_password);

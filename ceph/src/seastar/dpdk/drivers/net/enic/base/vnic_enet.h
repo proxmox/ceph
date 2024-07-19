@@ -12,25 +12,47 @@
 
 /* Device-specific region: enet configuration */
 struct vnic_enet_config {
-	u32 flags;
-	u32 wq_desc_count;
-	u32 rq_desc_count;
-	u16 mtu;
-	u16 intr_timer_deprecated;
-	u8 intr_timer_type;
-	u8 intr_mode;
+	uint32_t flags;
+	uint32_t wq_desc_count;
+	uint32_t rq_desc_count;
+	uint16_t mtu;
+	uint16_t intr_timer_deprecated;
+	uint8_t intr_timer_type;
+	uint8_t intr_mode;
 	char devname[16];
-	u32 intr_timer_usec;
-	u16 loop_tag;
-	u16 vf_rq_count;
-	u16 num_arfs;
-	u64 mem_paddr;
-	u16 rdma_qp_id;
-	u16 rdma_qp_count;
-	u16 rdma_resgrp;
-	u32 rdma_mr_id;
-	u32 rdma_mr_count;
-	u32 max_pkt_size;
+	uint32_t intr_timer_usec;
+	uint16_t loop_tag;
+	uint16_t vf_rq_count;
+	uint16_t num_arfs;
+	uint64_t mem_paddr;
+	uint16_t rdma_qp_id;
+	uint16_t rdma_qp_count;
+	uint16_t rdma_resgrp;
+	uint32_t rdma_mr_id;
+	uint32_t rdma_mr_count;
+	uint32_t max_pkt_size;
+	uint16_t vf_subvnic_count;
+	uint16_t mq_subvnic_count;
+	uint32_t mq_flags;
+
+	/* the following 3 fields are per-MQ-vnic counts */
+	uint32_t mq_rdma_mr_count;
+	uint16_t mq_rdma_qp_count;
+	uint16_t mq_rdma_resgrp;
+
+	uint16_t rdma_max_sq_ring_sz;
+	uint16_t rdma_max_rq_ring_sz;
+	uint32_t rdma_max_cq_ring_sz;
+	uint16_t rdma_max_wr_sge;
+	uint16_t rdma_max_mr_sge;
+	uint8_t rdma_max_rd_per_qp;
+	uint8_t unused;			/* available */
+	uint16_t mq_rdma_engine_count;
+	uint32_t intr_coal_tick_ns;	/* coalescing timer tick in nsec */
+	uint32_t max_rq_ring;		/* MAX RQ ring size */
+	uint32_t max_wq_ring;		/* MAX WQ ring size */
+	uint32_t max_cq_ring;		/* MAX CQ ring size */
+	uint32_t rdma_rsvd_lkey;	/* Reserved (privileged) LKey */
 };
 
 #define VENETF_TSO		0x1	/* TSO enabled */
@@ -55,6 +77,7 @@ struct vnic_enet_config {
 #define VENETF_NICSWITCH        0x80000 /* NICSWITCH enabled */
 #define VENETF_RSSHASH_UDPIPV4  0x100000 /* Hash on UDP + IPv4 fields */
 #define VENETF_RSSHASH_UDPIPV6  0x200000 /* Hash on UDP + IPv6 fields */
+#define VENETF_GENEVE		0x400000 /* GENEVE offload */
 
 #define VENET_INTR_TYPE_MIN	0	/* Timer specs min interrupt spacing */
 #define VENET_INTR_TYPE_IDLE	1	/* Timer specs idle time before irq */

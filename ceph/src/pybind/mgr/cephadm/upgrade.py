@@ -13,6 +13,8 @@ from cephadm.utils import ceph_release_to_major, name_to_config_section, CEPH_UP
 from cephadm.ssh import HostConnectionError
 from orchestrator import OrchestratorError, DaemonDescription, DaemonDescriptionStatus, daemon_type_to_service
 
+from mgr_module import MonCommandFailed
+
 if TYPE_CHECKING:
     from .module import CephadmOrchestrator
 
@@ -980,10 +982,32 @@ class CephadmUpgrade:
         if osd_min < int(target_major):
             logger.info(
                 f'Upgrade: Setting require_osd_release to {target_major} {target_major_name}')
-            ret, _, err = self.mgr.check_mon_command({
-                'prefix': 'osd require-osd-release',
-                'release': target_major_name,
-            })
+            try:
+                ret, out, err = self.mgr.check_mon_command({
+                    'prefix': 'osd require-osd-release',
+                    'release': target_major_name,
+                })
+            except MonCommandFailed as e:
+                # recently it was changed so that `ceph osd require-osd-release`
+                # will fail if run on a cluster with no OSDs unless --yes-i-really-mean-it
+                # is passed. If we get that specific failure and we actually have no OSD
+                # daemons, we should just try to pass the flag
+                if "no OSDs are up" in str(e):
+                    if not self.mgr.cache.get_daemons_by_type('osd'):
+                        # this is the case where we actually have no OSDs in the cluster
+                        ret, _, err = self.mgr.check_mon_command({
+                            'prefix': 'osd require-osd-release',
+                            'release': target_major_name,
+                            'yes_i_really_mean_it': True
+                        })
+                    else:
+                        # this is the case where we do have OSDs listed, but none of them are up
+                        raise OrchestratorError(
+                            'All OSDs down, causing a failure setting the minimum required OSD release. '
+                            'If you are sure you\'d like to move forward, please run '
+                            '"ceph osd require-osd-release --yes-i-really-mean-it" then resume the upgrade')
+                else:
+                    raise
 
     def _complete_mds_upgrade(self) -> None:
         assert self.upgrade_state is not None
@@ -1136,18 +1160,6 @@ class CephadmUpgrade:
 
         image_settings = self.get_distinct_container_image_settings()
 
-        # Older monitors (pre-v16.2.5) asserted that FSMap::compat ==
-        # MDSMap::compat for all fs. This is no longer the case beginning in
-        # v16.2.5. We must disable the sanity checks during upgrade.
-        # N.B.: we don't bother confirming the operator has not already
-        # disabled this or saving the config value.
-        self.mgr.check_mon_command({
-            'prefix': 'config set',
-            'name': 'mon_mds_skip_sanity',
-            'value': '1',
-            'who': 'mon',
-        })
-
         if self.upgrade_state.daemon_types is not None:
             logger.debug(
                 f'Filtering daemons to upgrade by daemon types: {self.upgrade_state.daemon_types}')
@@ -1283,12 +1295,6 @@ class CephadmUpgrade:
                 'name': 'container_image',
                 'who': name_to_config_section(daemon_type),
             })
-
-        self.mgr.check_mon_command({
-            'prefix': 'config rm',
-            'name': 'mon_mds_skip_sanity',
-            'who': 'mon',
-        })
 
         self._mark_upgrade_complete()
         return

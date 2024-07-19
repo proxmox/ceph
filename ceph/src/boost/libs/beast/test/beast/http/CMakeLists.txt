@@ -15,6 +15,7 @@ add_executable (tests-beast-http
     ${BOOST_BEAST_FILES}
     ${EXTRAS_FILES}
     Jamfile
+    any_completion_handler.cpp
     message_fuzz.hpp
     test_parser.hpp
     basic_dynamic_body.cpp
@@ -29,6 +30,7 @@ add_executable (tests-beast-http
     field_compiles.cpp
     fields.cpp
     file_body.cpp
+    message_generator.cpp
     message.cpp
     parser.cpp
     read.cpp
@@ -55,4 +57,4 @@ set_property(TARGET tests-beast-http PROPERTY FOLDER "tests")
 #
 # Individual tests
 #
-build_individual_tests(tests-beast-http LIBS lib-asio lib-asio-ssl lib-beast lib-test)
+#build_individual_tests(tests-beast-http LIBS lib-asio lib-asio-ssl lib-beast lib-test)

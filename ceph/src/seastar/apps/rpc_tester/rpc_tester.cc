@@ -25,6 +25,9 @@
 #include <yaml-cpp/yaml.h>
 #include <fmt/core.h>
 #include <boost/range/irange.hpp>
+#pragma GCC diagnostic push
+// see https://github.com/boostorg/accumulators/pull/54
+#pragma GCC diagnostic ignored "-Wuninitialized"
 #include <boost/accumulators/accumulators.hpp>
 #include <boost/accumulators/statistics/stats.hpp>
 #include <boost/accumulators/statistics/max.hpp>
@@ -32,6 +35,7 @@
 #include <boost/accumulators/statistics/p_square_quantile.hpp>
 #include <boost/accumulators/statistics/extended_p_square.hpp>
 #include <boost/accumulators/statistics/extended_p_square_quantile.hpp>
+#pragma GCC diagnostic pop
 #include <seastar/core/app-template.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/sharded.hh>
@@ -48,14 +52,14 @@ struct serializer {};
 template <typename T, typename Output>
 inline
 void write_arithmetic_type(Output& out, T v) {
-    static_assert(std::is_arithmetic<T>::value, "must be arithmetic type");
+    static_assert(std::is_arithmetic_v<T>, "must be arithmetic type");
     return out.write(reinterpret_cast<const char*>(&v), sizeof(T));
 }
 
 template <typename T, typename Input>
 inline
 T read_arithmetic_type(Input& in) {
-    static_assert(std::is_arithmetic<T>::value, "must be arithmetic type");
+    static_assert(std::is_arithmetic_v<T>, "must be arithmetic type");
     T v;
     in.read(reinterpret_cast<char*>(&v), sizeof(T));
     return v;
@@ -710,7 +714,7 @@ int main(int ac, char** av) {
                 jc.duration = duration;
                 if (groups.count(jc.sg_name) == 0) {
                     fmt::print("Make sched group {}, {} shares\n", jc.sg_name, jc.shares);
-                    groups[jc.sg_name] = create_scheduling_group(jc.sg_name, jc.shares).get0();
+                    groups[jc.sg_name] = create_scheduling_group(jc.sg_name, jc.shares).get();
                 }
                 jc.sg = groups[jc.sg_name];
             }

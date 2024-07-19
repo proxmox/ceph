@@ -315,10 +315,9 @@ create a new CRUSH host located in the specified hierarchy.
 
 .. note:: 
 
-  The ``location`` attribute will be only affect the initial CRUSH location.
-  Subsequent changes of the ``location`` property will be ignored. Also,
-  removing a host will not remove an associated CRUSH bucket unless the
-  ``--rm-crush-entry`` flag is provided to the ``orch host rm`` command
+  The ``location`` attribute will be only affect the initial CRUSH location. Subsequent
+  changes of the ``location`` property will be ignored. Also, removing a host will not remove
+  an associated CRUSH bucket unless the ``--rm-crush-entry`` flag is provided to the ``orch host rm`` command
 
 See also :ref:`crush_map_default_types`.
 

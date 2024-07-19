@@ -39,15 +39,13 @@ struct local_fq_and_class {
 
     static fair_group::config fg_config() {
         fair_group::config cfg;
-        cfg.weight_rate = std::numeric_limits<int>::max();
-        cfg.size_rate = std::numeric_limits<int>::max();
         return cfg;
     }
 
     seastar::fair_queue& queue(bool local) noexcept { return local ? fq : sfq; }
 
     local_fq_and_class(seastar::fair_group& sfg)
-        : fg(fg_config())
+        : fg(fg_config(), 1)
         , fq(fg, seastar::fair_queue::config())
         , sfq(sfg, seastar::fair_queue::config())
     {
@@ -66,8 +64,8 @@ struct local_fq_entry {
     std::function<void()> submit;
 
     template <typename Func>
-    local_fq_entry(unsigned weight, unsigned index, Func&& f)
-        : ent(seastar::fair_queue_ticket(weight, index))
+    local_fq_entry(fair_queue_entry::capacity_t cap, Func&& f)
+        : ent(cap)
         , submit(std::move(f)) {}
 };
 
@@ -81,13 +79,11 @@ struct perf_fair_queue {
 
     static fair_group::config fg_config() {
         fair_group::config cfg;
-        cfg.weight_rate = std::numeric_limits<int>::max();
-        cfg.size_rate = std::numeric_limits<int>::max();
         return cfg;
     }
 
     perf_fair_queue()
-        : shared_fg(fg_config())
+        : shared_fg(fg_config(), smp::count)
     {
         local_fq.start(std::ref(shared_fg)).get();
     }
@@ -103,9 +99,10 @@ future<> perf_fair_queue::test(bool loc) {
 
     auto invokers = local_fq.invoke_on_all([loc] (local_fq_and_class& local) {
         return parallel_for_each(boost::irange(0u, requests_to_dispatch), [&local, loc] (unsigned dummy) {
-            auto req = std::make_unique<local_fq_entry>(1, 1, [&local, loc] {
+            auto cap = local.queue(loc).tokens_capacity(double(1) / std::numeric_limits<int>::max() + double(1) / std::numeric_limits<int>::max());
+            auto req = std::make_unique<local_fq_entry>(cap, [&local, loc, cap] {
                 local.executed++;
-                local.queue(loc).notify_request_finished(seastar::fair_queue_ticket{1, 1});
+                local.queue(loc).notify_request_finished(cap);
             });
             local.queue(loc).queue(cid, req->ent);
             req.release();

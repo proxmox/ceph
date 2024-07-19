@@ -23,11 +23,13 @@
 
 #include <seastar/http/handlers.hh>
 #include <seastar/core/iostream.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
 namespace httpd {
 
+SEASTAR_MODULE_EXPORT_BEGIN
 /**
  * This is a base class for file transformer.
  *
@@ -49,7 +51,8 @@ public:
      */
     virtual output_stream<char> transform(std::unique_ptr<http::request> req,
             const sstring& extension, output_stream<char>&& s) = 0;
-
+    file_transformer() = default;
+    file_transformer(file_transformer&&) = default;
     virtual ~file_transformer() = default;
 };
 
@@ -167,6 +170,7 @@ private:
     bool force_path;
 };
 
+SEASTAR_MODULE_EXPORT_END
 }
 
 }

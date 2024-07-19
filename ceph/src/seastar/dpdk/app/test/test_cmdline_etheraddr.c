@@ -72,20 +72,11 @@ const char * ether_addr_invalid_strs[] = {
 		" ",
 };
 
-#define ETHERADDR_VALID_STRS_SIZE \
-	(sizeof(ether_addr_valid_strs) / sizeof(ether_addr_valid_strs[0]))
-#define ETHERADDR_GARBAGE_STRS_SIZE \
-	(sizeof(ether_addr_garbage_strs) / sizeof(ether_addr_garbage_strs[0]))
-#define ETHERADDR_INVALID_STRS_SIZE \
-	(sizeof(ether_addr_invalid_strs) / sizeof(ether_addr_invalid_strs[0]))
-
-
-
 static int
-is_addr_different(const struct ether_addr addr, uint64_t num)
+is_addr_different(const struct rte_ether_addr addr, uint64_t num)
 {
 	int i;
-	for (i = 0; i < ETHER_ADDR_LEN; i++, num >>= 8)
+	for (i = 0; i < RTE_ETHER_ADDR_LEN; i++, num >>= 8)
 		if (addr.addr_bytes[i] != (num & 0xFF)) {
 			return 1;
 		}
@@ -97,7 +88,7 @@ int
 test_parse_etheraddr_invalid_param(void)
 {
 	char buf[CMDLINE_TEST_BUFSIZE];
-	struct ether_addr result;
+	struct rte_ether_addr result;
 	int ret = 0;
 
 	/* try all null */
@@ -148,12 +139,12 @@ test_parse_etheraddr_invalid_data(void)
 {
 	int ret = 0;
 	unsigned i;
-	struct ether_addr result;
+	struct rte_ether_addr result;
 
 	/* test full strings */
-	for (i = 0; i < ETHERADDR_INVALID_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ether_addr_invalid_strs); i++) {
 
-		memset(&result, 0, sizeof(struct ether_addr));
+		memset(&result, 0, sizeof(struct rte_ether_addr));
 
 		ret = cmdline_parse_etheraddr(NULL, ether_addr_invalid_strs[i],
 			(void*)&result, sizeof(result));
@@ -173,12 +164,12 @@ test_parse_etheraddr_valid(void)
 {
 	int ret = 0;
 	unsigned i;
-	struct ether_addr result;
+	struct rte_ether_addr result;
 
 	/* test full strings */
-	for (i = 0; i < ETHERADDR_VALID_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ether_addr_valid_strs); i++) {
 
-		memset(&result, 0, sizeof(struct ether_addr));
+		memset(&result, 0, sizeof(struct rte_ether_addr));
 
 		ret = cmdline_parse_etheraddr(NULL, ether_addr_valid_strs[i].str,
 			(void*)&result, sizeof(result));
@@ -195,9 +186,9 @@ test_parse_etheraddr_valid(void)
 	}
 
 	/* test garbage strings */
-	for (i = 0; i < ETHERADDR_GARBAGE_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ether_addr_garbage_strs); i++) {
 
-		memset(&result, 0, sizeof(struct ether_addr));
+		memset(&result, 0, sizeof(struct rte_ether_addr));
 
 		ret = cmdline_parse_etheraddr(NULL, ether_addr_garbage_strs[i],
 			(void*)&result, sizeof(result));

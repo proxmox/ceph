@@ -12,16 +12,18 @@
 
 #include <rte_cycles.h>
 #include <rte_ethdev.h>
-#include <rte_eventdev.h>
+#include <rte_ether.h>
 #include <rte_event_eth_rx_adapter.h>
 #include <rte_event_eth_tx_adapter.h>
+#include <rte_eventdev.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_mempool.h>
 #include <rte_prefetch.h>
-#include <rte_spinlock.h>
 #include <rte_service.h>
 #include <rte_service_component.h>
+#include <rte_spinlock.h>
+#include <rte_udp.h>
 
 #include "evt_common.h"
 #include "evt_options.h"
@@ -47,7 +49,7 @@ struct test_pipeline {
 	enum evt_test_result result;
 	uint32_t nb_flows;
 	uint64_t outstand_pkts;
-	struct rte_mempool *pool;
+	struct rte_mempool *pool[RTE_MAX_ETHPORTS];
 	struct worker_data worker[EVT_MAX_PORTS];
 	struct evt_options *opt;
 	uint8_t sched_type_list[EVT_MAX_STAGES] __rte_cache_aligned;
@@ -102,47 +104,86 @@ pipeline_fwd_event(struct rte_event *ev, uint8_t sched)
 }
 
 static __rte_always_inline void
-pipeline_event_tx(const uint8_t dev, const uint8_t port,
-		struct rte_event * const ev)
+pipeline_fwd_event_vector(struct rte_event *ev, uint8_t sched)
 {
-	rte_event_eth_tx_adapter_txq_set(ev->mbuf, 0);
-	while (!rte_event_eth_tx_adapter_enqueue(dev, port, ev, 1))
-		rte_pause();
+	ev->event_type = RTE_EVENT_TYPE_CPU_VECTOR;
+	ev->op = RTE_EVENT_OP_FORWARD;
+	ev->sched_type = sched;
 }
 
-static __rte_always_inline void
+static __rte_always_inline uint8_t
+pipeline_event_tx(const uint8_t dev, const uint8_t port,
+		  struct rte_event *const ev, struct test_pipeline *t)
+{
+	uint8_t enq;
+
+	rte_event_eth_tx_adapter_txq_set(ev->mbuf, 0);
+	do {
+		enq = rte_event_eth_tx_adapter_enqueue(dev, port, ev, 1, 0);
+	} while (!enq && !t->done);
+
+	return enq;
+}
+
+static __rte_always_inline uint8_t
+pipeline_event_tx_vector(const uint8_t dev, const uint8_t port,
+			 struct rte_event *const ev, struct test_pipeline *t)
+{
+	uint8_t enq;
+
+	ev->vec->queue = 0;
+	do {
+		enq = rte_event_eth_tx_adapter_enqueue(dev, port, ev, 1, 0);
+	} while (!enq && !t->done);
+
+	return enq;
+}
+
+static __rte_always_inline uint16_t
 pipeline_event_tx_burst(const uint8_t dev, const uint8_t port,
-		struct rte_event *ev, const uint16_t nb_rx)
+			struct rte_event *ev, const uint16_t nb_rx,
+			struct test_pipeline *t)
 {
 	uint16_t enq;
 
-	enq = rte_event_eth_tx_adapter_enqueue(dev, port, ev, nb_rx);
-	while (enq < nb_rx) {
+	enq = rte_event_eth_tx_adapter_enqueue(dev, port, ev, nb_rx, 0);
+	while (enq < nb_rx && !t->done) {
 		enq += rte_event_eth_tx_adapter_enqueue(dev, port,
-				ev + enq, nb_rx - enq);
+				ev + enq, nb_rx - enq, 0);
 	}
+
+	return enq;
 }
 
-static __rte_always_inline void
+static __rte_always_inline uint8_t
 pipeline_event_enqueue(const uint8_t dev, const uint8_t port,
-		struct rte_event *ev)
+		       struct rte_event *ev, struct test_pipeline *t)
 {
-	while (rte_event_enqueue_burst(dev, port, ev, 1) != 1)
-		rte_pause();
+	uint8_t enq;
+
+	do {
+		enq = rte_event_enqueue_burst(dev, port, ev, 1);
+	} while (!enq && !t->done);
+
+	return enq;
 }
 
-static __rte_always_inline void
+static __rte_always_inline uint16_t
 pipeline_event_enqueue_burst(const uint8_t dev, const uint8_t port,
-		struct rte_event *ev, const uint16_t nb_rx)
+			     struct rte_event *ev, const uint16_t nb_rx,
+			     struct test_pipeline *t)
 {
 	uint16_t enq;
 
 	enq = rte_event_enqueue_burst(dev, port, ev, nb_rx);
-	while (enq < nb_rx) {
+	while (enq < nb_rx && !t->done) {
 		enq += rte_event_enqueue_burst(dev, port,
 						ev + enq, nb_rx - enq);
 	}
+
+	return enq;
 }
+
 
 static inline int
 pipeline_nb_event_ports(struct evt_options *opt)
@@ -168,6 +209,9 @@ void pipeline_opt_dump(struct evt_options *opt, uint8_t nb_queues);
 void pipeline_test_destroy(struct evt_test *test, struct evt_options *opt);
 void pipeline_eventdev_destroy(struct evt_test *test, struct evt_options *opt);
 void pipeline_ethdev_destroy(struct evt_test *test, struct evt_options *opt);
+void pipeline_ethdev_rx_stop(struct evt_test *test, struct evt_options *opt);
 void pipeline_mempool_destroy(struct evt_test *test, struct evt_options *opt);
+void pipeline_worker_cleanup(uint8_t dev, uint8_t port, struct rte_event ev[],
+			     uint16_t enq, uint16_t deq);
 
 #endif /* _TEST_PIPELINE_COMMON_ */

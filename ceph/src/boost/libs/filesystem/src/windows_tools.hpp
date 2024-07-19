@@ -1,7 +1,8 @@
 //  windows_tools.hpp  -----------------------------------------------------------------//
 
-//  Copyright 2002-2009, 2014 Beman Dawes
 //  Copyright 2001 Dietmar Kuehl
+//  Copyright 2002-2009, 2014 Beman Dawes
+//  Copyright 2021-2022 Andrey Semashev
 
 //  Distributed under the Boost Software License, Version 1.0.
 //  See http://www.boost.org/LICENSE_1_0.txt
@@ -20,6 +21,12 @@
 #include <boost/winapi/basic_types.hpp> // NTSTATUS_
 
 #include <windows.h>
+
+#include <boost/filesystem/detail/header.hpp> // must be the last #include
+
+#ifndef IO_REPARSE_TAG_DEDUP
+#define IO_REPARSE_TAG_DEDUP (0x80000013L)
+#endif
 
 #ifndef IO_REPARSE_TAG_MOUNT_POINT
 #define IO_REPARSE_TAG_MOUNT_POINT (0xA0000003L)
@@ -55,14 +62,14 @@ inline boost::filesystem::perms make_permissions(boost::filesystem::path const& 
     boost::filesystem::perms prms = boost::filesystem::owner_read | boost::filesystem::group_read | boost::filesystem::others_read;
     if ((attr & FILE_ATTRIBUTE_READONLY) == 0u)
         prms |= boost::filesystem::owner_write | boost::filesystem::group_write | boost::filesystem::others_write;
-    boost::filesystem::path ext = p.extension();
+    boost::filesystem::path ext = detail::path_algorithms::extension_v4(p);
     wchar_t const* q = ext.c_str();
     if (equal_extension(q, L".exe", L".EXE") || equal_extension(q, L".com", L".COM") || equal_extension(q, L".bat", L".BAT") || equal_extension(q, L".cmd", L".CMD"))
         prms |= boost::filesystem::owner_exe | boost::filesystem::group_exe | boost::filesystem::others_exe;
     return prms;
 }
 
-bool is_reparse_point_a_symlink_ioctl(HANDLE h);
+ULONG get_reparse_point_tag_ioctl(HANDLE h);
 
 inline bool is_reparse_point_tag_a_symlink(ULONG reparse_point_tag)
 {
@@ -81,7 +88,24 @@ inline bool is_reparse_point_tag_a_symlink(ULONG reparse_point_tag)
         || reparse_point_tag == IO_REPARSE_TAG_MOUNT_POINT; // aka "directory junction" or "junction"
 }
 
+inline bool is_reparse_point_a_symlink_ioctl(HANDLE h)
+{
+    return detail::is_reparse_point_tag_a_symlink(detail::get_reparse_point_tag_ioctl(h));
+}
+
 #if !defined(UNDER_CE)
+
+//! Platform-specific parameters for directory iterator construction
+struct directory_iterator_params
+{
+    //! Handle of the directory to iterate over. If not \c INVALID_HANDLE_VALUE, the directory path is ignored.
+    HANDLE use_handle;
+    /*!
+     * If \c use_handle is not \c INVALID_HANDLE_VALUE, specifies whether the directory iterator should close the handle upon destruction.
+     * If \c false, the handle must remain valid for the lifetime of the iterator.
+     */
+    bool close_handle;
+};
 
 //! IO_STATUS_BLOCK definition from Windows SDK.
 struct io_status_block
@@ -102,6 +126,72 @@ struct unicode_string
     PWSTR Buffer;
 };
 
+//! OBJECT_ATTRIBUTES definition from Windows SDK
+struct object_attributes
+{
+    ULONG Length;
+    HANDLE RootDirectory;
+    unicode_string* ObjectName;
+    ULONG Attributes;
+    PVOID SecurityDescriptor;
+    PVOID SecurityQualityOfService;
+};
+
+#ifndef OBJ_CASE_INSENSITIVE
+#define OBJ_CASE_INSENSITIVE 0x00000040
+#endif
+#ifndef OBJ_DONT_REPARSE
+#define OBJ_DONT_REPARSE 0x00001000
+#endif
+
+#ifndef FILE_SUPERSEDE
+#define FILE_SUPERSEDE 0x00000000
+#endif
+#ifndef FILE_OPEN
+#define FILE_OPEN 0x00000001
+#endif
+#ifndef FILE_CREATE
+#define FILE_CREATE 0x00000002
+#endif
+#ifndef FILE_OPEN_IF
+#define FILE_OPEN_IF 0x00000003
+#endif
+#ifndef FILE_OVERWRITE
+#define FILE_OVERWRITE 0x00000004
+#endif
+#ifndef FILE_OVERWRITE_IF
+#define FILE_OVERWRITE_IF 0x00000005
+#endif
+
+#ifndef FILE_DIRECTORY_FILE
+#define FILE_DIRECTORY_FILE 0x00000001
+#endif
+#ifndef FILE_SYNCHRONOUS_IO_NONALERT
+#define FILE_SYNCHRONOUS_IO_NONALERT 0x00000020
+#endif
+#ifndef FILE_OPEN_FOR_BACKUP_INTENT
+#define FILE_OPEN_FOR_BACKUP_INTENT 0x00004000
+#endif
+#ifndef FILE_OPEN_REPARSE_POINT
+#define FILE_OPEN_REPARSE_POINT 0x00200000
+#endif
+
+//! NtCreateFile signature. Available since Windows 2000 (probably).
+typedef boost::winapi::NTSTATUS_ (NTAPI NtCreateFile_t)(
+    /*out*/ PHANDLE FileHandle,
+    /*in*/ ACCESS_MASK DesiredAccess,
+    /*in*/ object_attributes* ObjectAttributes,
+    /*out*/ io_status_block* IoStatusBlock,
+    /*in, optional*/ PLARGE_INTEGER AllocationSize,
+    /*in*/ ULONG FileAttributes,
+    /*in*/ ULONG ShareAccess,
+    /*in*/ ULONG CreateDisposition,
+    /*in*/ ULONG CreateOptions,
+    /*in, optional*/ PVOID EaBuffer,
+    /*in*/ ULONG EaLength);
+
+extern NtCreateFile_t* nt_create_file_api;
+
 //! PIO_APC_ROUTINE definition from Windows SDK
 typedef VOID (NTAPI* pio_apc_routine) (PVOID ApcContext, io_status_block* IoStatusBlock, ULONG Reserved);
 
@@ -113,17 +203,17 @@ enum file_information_class
 
 //! NtQueryDirectoryFile signature. Available since Windows NT 4.0 (probably).
 typedef boost::winapi::NTSTATUS_ (NTAPI NtQueryDirectoryFile_t)(
-  /*in*/ HANDLE FileHandle,
-  /*in, optional*/ HANDLE Event,
-  /*in, optional*/ pio_apc_routine ApcRoutine,
-  /*in, optional*/ PVOID ApcContext,
-  /*out*/ io_status_block* IoStatusBlock,
-  /*out*/ PVOID FileInformation,
-  /*in*/ ULONG Length,
-  /*in*/ file_information_class FileInformationClass,
-  /*in*/ BOOLEAN ReturnSingleEntry,
-  /*in, optional*/ unicode_string* FileName,
-  /*in*/ BOOLEAN RestartScan);
+    /*in*/ HANDLE FileHandle,
+    /*in, optional*/ HANDLE Event,
+    /*in, optional*/ pio_apc_routine ApcRoutine,
+    /*in, optional*/ PVOID ApcContext,
+    /*out*/ io_status_block* IoStatusBlock,
+    /*out*/ PVOID FileInformation,
+    /*in*/ ULONG Length,
+    /*in*/ file_information_class FileInformationClass,
+    /*in*/ BOOLEAN ReturnSingleEntry,
+    /*in, optional*/ unicode_string* FileName,
+    /*in*/ BOOLEAN RestartScan);
 
 extern NtQueryDirectoryFile_t* nt_query_directory_file_api;
 
@@ -182,8 +272,15 @@ inline HANDLE create_file_handle(boost::filesystem::path const& p, DWORD dwDesir
     return ::CreateFileW(p.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
 }
 
+#if !defined(UNDER_CE)
+//! Creates a file handle for a file relative to a previously opened base directory. The file path must be relative and in preferred format.
+boost::winapi::NTSTATUS_ nt_create_file_handle_at(HANDLE& out, HANDLE basedir_handle, boost::filesystem::path const& p, ULONG FileAttributes, ACCESS_MASK DesiredAccess, ULONG ShareMode, ULONG CreateDisposition, ULONG CreateOptions);
+#endif // !defined(UNDER_CE)
+
 } // namespace detail
 } // namespace filesystem
 } // namespace boost
+
+#include <boost/filesystem/detail/footer.hpp>
 
 #endif // BOOST_FILESYSTEM_SRC_WINDOWS_TOOLS_HPP_

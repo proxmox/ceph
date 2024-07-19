@@ -5,7 +5,7 @@
 #    https://github.com/OAI/OpenAPI-Specification/blob/master/versions/1.2.md
 # And the 2.0 format
 #    https://github.com/OAI/OpenAPI-Specification/blob/master/versions/2.0.md
-# 
+#
 # Swagger 2.0 is not only different in its structure (apis have moved, and
 # models are now under definitions) It also moved from multiple file structure
 # to a single file.
@@ -20,6 +20,7 @@ import re
 import glob
 import argparse
 import os
+import textwrap
 from string import Template
 
 parser = argparse.ArgumentParser(description="""Generate C++ class for json
@@ -52,10 +53,10 @@ current_file = ''
 
 spacing = "    "
 def getitem(d, key, name):
-    if key in d:
-        return d[key]
-    else:
-        raise Exception("'" + key + "' not found in " + name)
+    item = d.get(key)
+    if item is None:
+        raise Exception(f"'{key}' not found in {name}")
+    return item
 
 def fprint(f, *args):
     for arg in args:
@@ -115,14 +116,13 @@ def type_change(param, member):
 
 
 
-def print_ind_comment(f, ind, *params):
+def print_ind_comment(f, ind, comment):
     fprintln(f, ind, "/**")
-    for s in params:
-        fprintln(f, ind, " * ", s)
+    fprintln(f, ind, " * ", comment)
     fprintln(f, ind, " */")
 
-def print_comment(f, *params):
-    print_ind_comment(f, spacing, *params)
+def print_comment(f, comment):
+    print_ind_comment(f, spacing, comment)
 
 def print_copyrights(f):
     fprintln(f, "/*")
@@ -188,7 +188,7 @@ def add_path(f, path, details):
             else:
                 param_type = get_parameter_by_name(details, param)
                 if ("allowMultiple" in param_type and
-                    param_type["allowMultiple"] == True):
+                    param_type["allowMultiple"]):
                     fprintln(f, spacing, '  ->pushparam("', param, '",true)')
                 else:
                     fprintln(f, spacing, '  ->pushparam("', param, '")')
@@ -202,6 +202,136 @@ def add_path(f, path, details):
     fprintln(f, spacing, ";")
 
 
+def not_first():
+    '''
+    Returns True when gets called for the first time, False otherwise
+
+    used as the predicate parameter of textwrap.indent(), so the first
+    line is not indented. this helps to preserve the Python code's logical
+    indention in the template, and allows us to put something like::
+
+      blah = textwrap.indent("""\
+           foo bar
+               blah blah
+           foo bar
+    """
+    '''
+    _is_first = True
+
+    def should_indent(_):
+        nonlocal _is_first
+        first = _is_first
+        _is_first = False
+        return not first
+    return should_indent
+
+
+def generate_code_from_enum(nickname, type_name, enums):
+    def indent_body(s, level):
+        return textwrap.indent(s, level * '    ', not_first())
+
+    enum_list = ',\n'.join(enums + ['NUM_ITEMS'])
+    decl = Template('''\
+    namespace ns_$nickname {
+        enum class $type_name {
+            $enum_list
+        };
+        $type_name str2$type_name(const sstring& str);
+   }
+   ''').substitute(nickname=nickname,
+                   type_name=type_name,
+                   enum_list=indent_body(enum_list, 3))
+
+    name_list = ',\n'.join(f'"{enum}"' for enum in enums)
+    parse_func = Template('''\
+    $type_name str2$type_name(const sstring& str) {
+        static const sstring arr[] = {
+            $name_list
+        };
+        int i;
+        for (i = 0; i < $num_enums; i++) {
+            if (arr[i] == str) {
+                return ($type_name)i;
+            }
+        }
+        return ($type_name)i;
+    }
+    ''').substitute(type_name=type_name,
+                    name_list=indent_body(name_list, 3),
+                    num_enums=len(enums))
+
+    return decl, parse_func
+
+
+def add_operation(hfile, ccfile, path, oper):
+    if "summary" in oper:
+        print_ind_comment(hfile, '', oper["summary"])
+
+    param_starts = path.find("{")
+    base_url = path
+    vals = []
+    if param_starts >= 0:
+        vals = path[param_starts:].split("/")
+        vals.reverse()
+        base_url = path[:param_starts]
+
+    varname = getitem(oper, "nickname", oper)
+    if config.create_cc:
+        fprintln(hfile, 'extern const path_description ', varname, ';')
+        maybe_static = ''
+    else:
+        maybe_static = 'static '
+    fprintln(ccfile, maybe_static, 'const path_description ', varname, '("', clear_path_ending(base_url),
+           '",', oper["method"], ',"', oper["nickname"], '",')
+    fprint(ccfile, '{')
+    first = True
+    while vals:
+        path_param, is_url = clean_param(vals.pop())
+        if path_param == "":
+            continue
+        if first:
+            first = False
+        else:
+            fprint(ccfile, "\n,")
+        if is_url:
+            fprint(ccfile, '{', '"/', path_param , '", path_description::url_component_type::FIXED_STRING', '}')
+        else:
+            path_param_type = get_parameter_by_name(oper, path_param)
+            if ("allowMultiple" in path_param_type and
+                path_param_type["allowMultiple"]):
+                fprint(ccfile, '{', '"', path_param , '", path_description::url_component_type::PARAM_UNTIL_END_OF_PATH', '}')
+            else:
+                fprint(ccfile, '{', '"', path_param , '", path_description::url_component_type::PARAM', '}')
+    fprint(ccfile, '}')
+    fprint(ccfile, ',{')
+    enum_definitions = ""
+    if "enum" in oper:
+        nickname = oper["nickname"]
+        enum_wrapper = create_enum_wrapper(nickname, "return_type", oper["enum"])
+        enum_definitions = Template('''
+namespace ns_$nickname {
+$enum_wrapper
+}
+''').substitute(nickname=nickname, enum_wrapper=enum_wrapper.rstrip())
+    funcs = ""
+    required_query_params = []
+    for param in oper.get("parameters", []):
+        if is_required_query_param(param):
+            required_query_params.append(param["name"])
+        if "enum" in param:
+            enum_decl, parse_func = generate_code_from_enum(oper["nickname"],
+                                                            param["name"],
+                                                            param["enum"])
+            enum_definitions += enum_decl
+            funcs += parse_func
+    fprint(ccfile, '\n,'.join(f'"{name}"' for name in required_query_params))
+    fprintln(ccfile, '});')
+    fprintln(hfile, enum_definitions)
+    open_namespace(ccfile, 'ns_' + oper["nickname"])
+    fprintln(ccfile, funcs)
+    close_namespace(ccfile)
+
+
 def get_base_name(param):
     return os.path.basename(param)
 
@@ -213,14 +343,14 @@ def is_model_valid(name, model):
     for var in properties:
         type = getitem(properties[var], "type", name + ":" + var)
         if type == "array":
-            items = getitem(properties[var], "items", name + ":" + var);
-            try :
+            items = getitem(properties[var], "items", name + ":" + var)
+            try:
                 type = getitem(items, "type", name + ":" + var + ":items")
             except Exception as e:
                 try:
                     type = getitem(items, "$ref", name + ":" + var + ":items")
                 except:
-                    raise e;
+                    raise e
         if type not in valid_vars:
             if type not in model:
                 raise Exception("Unknown type '" + type + "' in Model '" + name + "'")
@@ -256,70 +386,96 @@ def resolve_model_order(data):
             models.add(model_name)
     return res
 
+
 def create_enum_wrapper(model_name, name, values):
-    enum_name = model_name + "_" + name
-    res =  "  enum class " + enum_name + " {"
-    for enum_entry in values:
-        res = res +  "  " + enum_entry + ", "
-    res = res +   "NUM_ITEMS};\n"
+    enum_name = f"{model_name}_{name}"
     wrapper = name + "_wrapper"
-    res = res + Template("""  struct $wrapper : public json::jsonable  {
-        $wrapper() = default;
-        virtual std::string to_json() const {
-            switch(v) {
-        """).substitute({'wrapper' : wrapper})
-    for enum_entry in values:
-        res = res + "      case " + enum_name + "::" + enum_entry + ": return \"\\\"" + enum_entry + "\\\"\";\n"
-    res = res + Template("""      default: return \"\\\"Unknown\\\"\";
+
+    def indent_body(s, level):
+        return textwrap.indent(s, level * '    ', not_first())
+
+    case_clauses = "\n".join(
+        Template('''case $enum_name::$enum_entry: return "\\"$enum_entry\\"";''').substitute(
+            enum_name=enum_name, enum_entry=enum_entry) for enum_entry in values)
+    res = Template("""\
+    virtual std::string to_json() const {
+        switch(v) {
+        $case_clauses
+        default: return "\\"Unknown\\"";
         }
-     }
+    }""").substitute(wrapper=wrapper,
+                     case_clauses=indent_body(case_clauses, 2))
+
+    case_clauses = "\n".join(
+        Template("""case T::$enum_entry: v = $enum_name::$enum_entry; break;""").substitute(
+            enum_name=enum_name, enum_entry=enum_entry) for enum_entry in values)
+    res += Template("""
     template<class T>
-    $wrapper (const T& _v) {
-    switch(_v) {
-    """).substitute({'wrapper' : wrapper})
-    for enum_entry in values:
-        res = res +  "      case T::" + enum_entry + ": v = " + enum_name + "::" + enum_entry + "; break;\n"
-    res = res + Template("""      default: v = $enum_name::NUM_ITEMS;
+    $wrapper(const T& _v) {
+        switch(_v) {
+        $case_clauses
+        default: v = $enum_name::NUM_ITEMS;
         }
-    }
+    }""").substitute(wrapper=wrapper,
+                     case_clauses=indent_body(case_clauses, 2),
+                     enum_name=enum_name)
+
+    case_clauses = "\n".join(
+        Template('''case $enum_name::$enum_entry: return T::$enum_entry;''').substitute(
+            enum_name=enum_name, enum_entry=enum_entry) for enum_entry in values)
+    res += Template("""
     template<class T>
     operator T() const {
         switch(v) {
-    """).substitute({'enum_name': enum_name})
-    for enum_entry in values:
-        res = res + "      case " + enum_name + "::" + enum_entry + ": return T::" + enum_entry + ";\n"
-    return res + Template("""      default: return T::$value;
-          }
+        $case_clauses
+        default: return T::$value;
         }
-        typedef typename std::underlying_type<$enum_name>::type pos_type;
-        $wrapper& operator++() {
+    }""").substitute(case_clauses=indent_body(case_clauses, 2),
+                     enum_name=enum_name,
+                     value=values[0])
+
+    res += Template("""
+    typedef typename std::underlying_type<$enum_name>::type pos_type;
+    $wrapper& operator++() {
         v = static_cast<$enum_name>(static_cast<pos_type>(v) + 1);
-            return *this;
-        }
-        $wrapper & operator++(int) {
-            return ++(*this);
-        }
-        bool operator==(const  $wrapper& c) const {
-            return v == c.v;
-        }
-        bool operator!=(const $wrapper& c) const {
-            return v != c.v;
-        }
-        bool operator<=(const $wrapper& c) const {
-            return static_cast<pos_type>(v) <= static_cast<pos_type>(c.v);
-        }
-        static $wrapper begin() {
-            return $wrapper ($enum_name::$value);
-        }
-        static $wrapper end() {
-            return $wrapper ($enum_name::NUM_ITEMS);
-        }
-        static boost::integer_range<$wrapper> all_items() {
-            return boost::irange(begin(), end());
-        }
-        $enum_name v;
+        return *this;
+    }
+    $wrapper & operator++(int) {
+        return ++(*this);
+    }
+    bool operator==(const  $wrapper& c) const {
+        return v == c.v;
+    }
+    bool operator!=(const $wrapper& c) const {
+        return v != c.v;
+    }
+    bool operator<=(const $wrapper& c) const {
+        return static_cast<pos_type>(v) <= static_cast<pos_type>(c.v);
+    }
+    static $wrapper begin() {
+        return $wrapper($enum_name::$value);
+    }
+    static $wrapper end() {
+        return $wrapper($enum_name::NUM_ITEMS);
+    }
+    static boost::integer_range<$wrapper> all_items() {
+        return boost::irange(begin(), end());
+    }
+    $enum_name v;""").substitute(enum_name=enum_name,
+                                 wrapper=wrapper,
+                                 value=values[0])
+    enum_wrapper = Template("""
+    enum class $enum_name { $enumerators, NUM_ITEMS };
+    struct $wrapper : public json::jsonable {
+        $wrapper() = default;
+        $body
     };
-    """).substitute({'enum_name': enum_name, 'wrapper' : wrapper, 'value':values[0]})
+    """).substitute(enum_name=enum_name,
+                    enumerators=", ".join(values),
+                    wrapper=wrapper,
+                    body=indent_body(res, 1).lstrip())
+    return enum_wrapper.lstrip('\n')
+
 
 def to_operation(opr, data):
     data["method"] = opr.upper()
@@ -357,6 +513,9 @@ def create_h_file(data, hfile_name, api_name, init_method, base_api):
     open_namespace(hfile, "httpd")
     open_namespace(hfile, api_name)
 
+    def indent(s):
+        return textwrap.indent(s.rstrip(), '        ', not_first())
+
     if "models" in data:
         models_order = resolve_model_order(data["models"])
         for model_name in models_order:
@@ -372,44 +531,44 @@ def create_h_file(data, hfile_name, api_name, init_method, base_api):
                 if "description" in member:
                     print_comment(hfile, member["description"])
                 if "enum" in member:
-                    enum_name = model_name + "_" + member_name
                     fprintln(hfile, create_enum_wrapper(model_name, member_name, member["enum"]))
-                    fprintln(hfile, "  ", config.jsonns, "::json_element<",
-                           member_name, "_wrapper> ",
-                           member_name, ";\n")
+                    fprintln(hfile, f"    {config.jsonns}::json_element<{member_name}_wrapper> {member_name};\n")
                 else:
-                    fprintln(hfile, "  ", config.jsonns, "::",
-                           type_change(member["type"], member), " ",
-                           member_name, ";\n")
-                member_init += "  add(&" + member_name + ',"'
-                member_init += member_name + '");\n'
-                member_assignment += "  " + member_name + " = " + "e." + member_name + ";\n"
-                member_copy += "  e." + member_name + " = " + member_name + ";\n"
-            fprintln(hfile, "void register_params() {")
-            fprintln(hfile, member_init)
-            fprintln(hfile, '}')
+                    type_name = type_change(member["type"], member)
+                    fprintln(hfile, f"    {config.jsonns}::{type_name} {member_name};\n")
+                member_init += f'add(&{member_name}, "{member_name}");\n'
+                member_assignment += f'{member_name} = e.{member_name};\n'
+                member_copy += f'e.{member_name} = {member_name} ;\n'
 
-            fprintln(hfile, model_name, '() {')
-            fprintln(hfile, '  register_params();')
-            fprintln(hfile, '}')
-            fprintln(hfile, model_name, '(const ' + model_name + ' & e) {')
-            fprintln(hfile, '  register_params();')
-            fprintln(hfile, member_assignment)
-            fprintln(hfile, '}')
-            fprintln(hfile, "template<class T>")
-            fprintln(hfile, model_name, "& operator=(const ", "T& e) {")
-            fprintln(hfile, member_assignment)
-            fprintln(hfile, "  return *this;")
-            fprintln(hfile, "}")
-            fprintln(hfile, model_name, "& operator=(const ", model_name, "& e) {")
-            fprintln(hfile, member_assignment)
-            fprintln(hfile, "  return *this;")
-            fprintln(hfile, "}")
-            fprintln(hfile, "template<class T>")
-            fprintln(hfile, model_name, "& update(T& e) {")
-            fprintln(hfile, member_copy)
-            fprintln(hfile, "  return *this;")
-            fprintln(hfile, "}")
+            functions = Template('''
+    void register_params() {
+        $member_init
+    }
+    $model_name() {
+        register_params();
+    }
+    $model_name(const $model_name& e) {
+        register_params();
+        $member_assignment
+    }
+    template<class T>
+    $model_name& operator=(const T& e) {
+        $member_assignment
+        return *this;
+    }
+    $model_name& operator=(const $model_name& e) {
+        $member_assignment
+        return *this;
+    }
+    template<class T>
+    $model_name& update(T& e) {
+        $member_copy
+        return *this;
+    }''').substitute(model_name=model_name,
+                     member_init=indent(member_init),
+                     member_assignment=indent(member_assignment),
+                     member_copy=indent(member_copy))
+            fprintln(hfile, functions.lstrip('\n'))
             fprintln(hfile, "};\n\n")
 
  #   print_ind_comment(hfile, "", "Initialize the path")
@@ -417,87 +576,8 @@ def create_h_file(data, hfile_name, api_name, init_method, base_api):
     fprintln(hfile, 'static const sstring name = "', base_api, '";')
     for item in data["apis"]:
         path = item["path"]
-        if "operations" in item:
-            for oper in item["operations"]:
-                if "summary" in oper:
-                    print_comment(hfile, oper["summary"])
-
-                param_starts = path.find("{")
-                base_url = path
-                vals = []
-                if param_starts >= 0:
-                    vals = path[param_starts:].split("/")
-                    vals.reverse()
-                    base_url = path[:param_starts]
-
-                varname = getitem(oper, "nickname", oper)
-                if config.create_cc:
-                    fprintln(hfile, 'extern const path_description ', varname, ';')
-                    maybe_static = ''
-                else:
-                    maybe_static = 'static '
-                fprintln(ccfile, maybe_static, 'const path_description ', varname, '("', clear_path_ending(base_url),
-                       '",', oper["method"], ',"', oper["nickname"], '",')
-                fprint(ccfile, '{')
-                first = True
-                while vals:
-                    path_param, is_url = clean_param(vals.pop())
-                    if path_param == "":
-                        continue
-                    if first == True:
-                        first = False
-                    else:
-                        fprint(ccfile, "\n,")
-                    if is_url:
-                        fprint(ccfile, '{', '"/', path_param , '", path_description::url_component_type::FIXED_STRING', '}')
-                    else:
-                        path_param_type = get_parameter_by_name(oper, path_param)
-                        if ("allowMultiple" in path_param_type and
-                            path_param_type["allowMultiple"] == True):
-                            fprint(ccfile, '{', '"', path_param , '", path_description::url_component_type::PARAM_UNTIL_END_OF_PATH', '}')
-                        else:
-                            fprint(ccfile, '{', '"', path_param , '", path_description::url_component_type::PARAM', '}')
-                fprint(ccfile, '}')
-                fprint(ccfile, ',{')
-                first = True
-                enum_definitions = ""
-                if "enum" in oper:
-                    enum_definitions = ("namespace ns_" + oper["nickname"] + " {\n" +
-                                       create_enum_wrapper(oper["nickname"], "return_type", oper["enum"]) +
-                                       "}\n")
-                funcs = ""
-                if "parameters" in oper:
-                    for param in oper["parameters"]:
-                        if is_required_query_param(param):
-                            if first == True:
-                                first = False
-                            else:
-                                fprint(ccfile, "\n,")
-                            fprint(ccfile, '"', param["name"], '"')
-                        if "enum" in param:
-                            enum_definitions = enum_definitions + 'namespace ns_' + oper["nickname"] + '{\n'
-                            enm = param["name"]
-                            enum_definitions = enum_definitions + 'enum class ' + enm + ' {'
-                            for val in param["enum"]:
-                                enum_definitions = enum_definitions + val + ", "
-                            enum_definitions = enum_definitions + 'NUM_ITEMS};\n'
-                            enum_definitions = enum_definitions + enm + ' str2' + enm + '(const sstring& str);'
-
-                            funcs = funcs + enm + ' str2' + enm + '(const sstring& str) {\n'
-                            funcs = funcs + '  static const sstring arr[] = {"' + '","'.join(param["enum"]) + '"};\n'
-                            funcs = funcs + '  int i;\n'
-                            funcs = funcs + '  for (i=0; i < ' + str(len(param["enum"])) + '; i++) {\n'
-                            funcs = funcs + '    if (arr[i] == str) {return (' + enm + ')i;}\n}\n'
-                            funcs = funcs + '  return (' + enm + ')i;\n'
-                            funcs = funcs + '}\n'
-
-                            enum_definitions = enum_definitions + '}\n'
-
-                fprintln(ccfile, '});')
-                fprintln(hfile, enum_definitions)
-                open_namespace(ccfile, 'ns_' + oper["nickname"])
-                fprintln(ccfile, funcs)
-                close_namespace(ccfile)
+        for oper in item.get("operations", []):
+            add_operation(hfile, ccfile, path, oper)
 
     close_namespace(hfile)
     close_namespace(hfile)
@@ -511,7 +591,7 @@ def create_h_file(data, hfile_name, api_name, init_method, base_api):
     hfile.close()
 
 def remove_leading_comma(data):
-    return re.sub(r'^\s*,','', data)
+    return re.sub(r'^\s*,', '', data)
 
 def format_as_json_object(data):
     return "{" + remove_leading_comma(data) + "}"
@@ -519,7 +599,7 @@ def format_as_json_object(data):
 def check_for_models(data, param):
     model_name = param.replace(".json", ".def.json")
     if not os.path.isfile(model_name):
-        return 
+        return
     try:
         with open(model_name) as myfile:
             json_data = myfile.read()

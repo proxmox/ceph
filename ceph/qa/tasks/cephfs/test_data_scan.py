@@ -101,6 +101,16 @@ class Workload(object):
         self.assert_equal(out_json["return_code"], 0)
         self.assert_equal(self._filesystem.wait_until_scrub_complete(tag=out_json["scrub_tag"]), True)
 
+    def mangle(self):
+        """
+        Gives an opportunity to fiddle with metadata objects before bringing back
+        the MDSs online. This is used in testing the lost+found case (when recovering
+        a file without a backtrace) to verify if lost+found directory object can be
+        removed via RADOS operation and the file system can be continued to be used
+        as expected.
+        """
+        pass
+
 class SimpleWorkload(Workload):
     """
     Single file, single directory, check that it gets recovered and so does its size
@@ -190,6 +200,23 @@ class BacktracelessFile(Workload):
 
         return self._errors
 
+class BacktracelessFileRemoveLostAndFoundDirectory(Workload):
+    def write(self):
+        self._mount.run_shell(["mkdir", "subdir"])
+        self._mount.write_n_mb("subdir/sixmegs", 6)
+        self._initial_state = self._mount.stat("subdir/sixmegs")
+
+    def flush(self):
+        # Never flush metadata, so backtrace won't be written
+        pass
+
+    def mangle(self):
+        self._filesystem.rados(["-p", self._filesystem.get_metadata_pool_name(), "rm", "4.00000000"])
+        self._filesystem.rados(["-p", self._filesystem.get_metadata_pool_name(), "rmomapkey", "1.00000000", "lost+found_head"])
+
+    def validate(self):
+        # The dir should be gone since we manually removed it
+        self.assert_not_equal(self._mount.ls(sudo=True), ["lost+found"])
 
 class StripedStashedLayout(Workload):
     def __init__(self, fs, m, pool=None):
@@ -427,6 +454,8 @@ class TestDataScan(CephFSTestCase):
         self.fs.data_scan(["scan_inodes"], worker_count=workers)
         self.fs.data_scan(["scan_links"])
 
+        workload.mangle()
+
         # Mark the MDS repaired
         self.run_ceph_cmd('mds', 'repaired', '0')
 
@@ -435,12 +464,12 @@ class TestDataScan(CephFSTestCase):
         self.fs.wait_for_daemons()
         log.info(str(self.mds_cluster.status()))
 
-        # Mount a client
-        self.mount_a.mount_wait()
-
         # run scrub as it is recommended post recovery for most
         # (if not all) recovery mechanisms.
         workload.scrub()
+
+        # Mount a client
+        self.mount_a.mount_wait()
 
         # See that the files are present and correct
         errors = workload.validate()
@@ -464,6 +493,9 @@ class TestDataScan(CephFSTestCase):
 
     def test_rebuild_backtraceless(self):
         self._rebuild_metadata(BacktracelessFile(self.fs, self.mount_a))
+
+    def test_rebuild_backtraceless_with_lf_dir_removed(self):
+        self._rebuild_metadata(BacktracelessFileRemoveLostAndFoundDirectory(self.fs, self.mount_a))
 
     def test_rebuild_moved_dir(self):
         self._rebuild_metadata(MovedDir(self.fs, self.mount_a))
@@ -517,11 +549,11 @@ class TestDataScan(CephFSTestCase):
 
         # Ensure that one directory is fragmented
         mds_id = self.fs.get_active_names()[0]
-        self.fs.mds_asok(["dirfrag", "split", "/subdir", "0/0", "1"], mds_id)
+        self.fs.mds_asok(["dirfrag", "split", "/subdir", "0/0", "1"], mds_id=mds_id)
 
         # Flush journal and stop MDS
         self.mount_a.umount_wait()
-        self.fs.mds_asok(["flush", "journal"], mds_id)
+        self.fs.mds_asok(["flush", "journal"], mds_id=mds_id)
         self.fs.fail()
 
         # Pick a dentry and wipe out its key
@@ -564,8 +596,8 @@ class TestDataScan(CephFSTestCase):
         # Finally, close the loop by checking our injected dentry survives a merge
         mds_id = self.fs.get_active_names()[0]
         self.mount_a.ls("subdir")  # Do an ls to ensure both frags are in cache so the merge will work
-        self.fs.mds_asok(["dirfrag", "merge", "/subdir", "0/0"], mds_id)
-        self.fs.mds_asok(["flush", "journal"], mds_id)
+        self.fs.mds_asok(["dirfrag", "merge", "/subdir", "0/0"], mds_id=mds_id)
+        self.fs.mds_asok(["flush", "journal"], mds_id=mds_id)
         frag_obj_id = "{0:x}.00000000".format(dir_ino)
         keys = self._dirfrag_keys(frag_obj_id)
         self.assertListEqual(sorted(keys), sorted(["%s_head" % f for f in file_names]))
@@ -635,7 +667,7 @@ class TestDataScan(CephFSTestCase):
         self.mount_a.run_shell(["ln", "testdir1/file1", "testdir2/link2"])
 
         mds_id = self.fs.get_active_names()[0]
-        self.fs.mds_asok(["flush", "journal"], mds_id)
+        self.fs.mds_asok(["flush", "journal"], mds_id=mds_id)
 
         dirfrag1_keys = self._dirfrag_keys(dirfrag1_oid)
 
@@ -655,7 +687,7 @@ class TestDataScan(CephFSTestCase):
         self.mount_a.run_shell(["touch", "testdir1/file1"])
         self.mount_a.umount_wait()
 
-        self.fs.mds_asok(["flush", "journal"], mds_id)
+        self.fs.mds_asok(["flush", "journal"], mds_id=mds_id)
         self.fs.fail()
 
         # repair linkage errors
@@ -706,8 +738,8 @@ class TestDataScan(CephFSTestCase):
 
         self.mount_a.umount_wait()
 
-        self.fs.mds_asok(["flush", "journal"], mds0_id)
-        self.fs.mds_asok(["flush", "journal"], mds1_id)
+        self.fs.mds_asok(["flush", "journal"], mds_id=mds0_id)
+        self.fs.mds_asok(["flush", "journal"], mds_id=mds1_id)
         self.fs.fail()
 
         self.fs.radosm(["rm", "mds0_inotable"])
@@ -745,7 +777,7 @@ class TestDataScan(CephFSTestCase):
         self.mount_a.umount_wait()
 
         mds0_id = self.fs.get_active_names()[0]
-        self.fs.mds_asok(["flush", "journal"], mds0_id)
+        self.fs.mds_asok(["flush", "journal"], mds_id=mds0_id)
 
         # wait for mds to update removed snaps
         time.sleep(10)

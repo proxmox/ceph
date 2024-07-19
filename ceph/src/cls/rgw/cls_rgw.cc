@@ -518,7 +518,7 @@ int rgw_bucket_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   std::string start_after_omap_key;
   encode_list_index_key(hctx, op.start_obj, &start_after_omap_key);
 
-  // this is set whenenver start_after_omap_key is set to keep them in
+  // this is set whenever start_after_omap_key is set to keep them in
   // sync since this will be the returned marker when a marker is
   // returned
   cls_rgw_obj_key start_after_entry_key;
@@ -963,7 +963,7 @@ static int read_key_entry(cls_method_context_t hctx, const cls_rgw_obj_key& key,
 // called by rgw_bucket_complete_op() for each item in op.remove_objs
 static int complete_remove_obj(cls_method_context_t hctx,
                                rgw_bucket_dir_header& header,
-                               const cls_rgw_obj_key& key, bool log_op)
+                               const cls_rgw_obj_key& key)
 {
   rgw_bucket_dir_entry entry;
   string idx;
@@ -977,17 +977,6 @@ static int complete_remove_obj(cls_method_context_t hctx,
           entry.key.name.c_str(), entry.key.instance.c_str(),
           int(entry.meta.category));
   unaccount_entry(header, entry);
-
-  if (log_op) {
-    ++header.ver; // increment index version, or we'll overwrite keys previously written
-    const std::string tag;
-    ret = log_index_operation(hctx, key, CLS_RGW_OP_DEL, tag, entry.meta.mtime,
-                              entry.ver, CLS_RGW_STATE_COMPLETE, header.ver,
-                              header.max_marker, 0, nullptr, nullptr, nullptr);
-    if (ret < 0) {
-      return ret;
-    }
-  }
 
   ret = cls_cxx_map_remove_key(hctx, idx);
   if (ret < 0) {
@@ -1210,7 +1199,7 @@ int rgw_bucket_complete_op(cls_method_context_t hctx, bufferlist *in, bufferlist
     CLS_LOG_BITX(bitx_inst, 20,
 		 "INFO: %s: completing object remove key=%s",
 		 __func__, escape_str(remove_key.to_string()).c_str());
-    rc = complete_remove_obj(hctx, header, remove_key, default_log_op);
+    rc = complete_remove_obj(hctx, header, remove_key);
     if (rc < 0) {
       CLS_LOG_BITX(bitx_inst, 1,
 		   "WARNING: %s: complete_remove_obj, failed to remove entry, "
@@ -1906,11 +1895,10 @@ static int rgw_bucket_unlink_instance(cls_method_context_t hctx, bufferlist *in,
   BIOLHEntry olh(hctx, dest_key);
 
   int ret = obj.init();
-  if (ret == -ENOENT) {
-    return 0; /* already removed */
-  }
   if (ret < 0) {
-    CLS_LOG(0, "ERROR: obj.init() returned ret=%d", ret);
+    if (ret != -ENOENT) {
+      CLS_LOG(0, "ERROR: obj.init() returned ret=%d", ret);
+    }
     return ret;
   }
 
@@ -3181,7 +3169,7 @@ int rgw_bucket_check_index(cls_method_context_t hctx, bufferlist *in, bufferlist
  * Additionally, each of the three segment functions, if successful,
  * is expected to return the number of entries added to the output
  * list as a non-negative value. As per usual, negative return values
- * indicate error condtions.
+ * indicate error conditions.
  */
 static int rgw_bi_list_op(cls_method_context_t hctx,
 			  bufferlist *in,
@@ -4457,7 +4445,7 @@ static int rgw_reshard_list(cls_method_context_t hctx, bufferlist *in, bufferlis
   try {
     decode(op, in_iter);
   } catch (ceph::buffer::error& err) {
-    CLS_LOG(1, "ERROR: rgw_cls_rehard_list(): failed to decode entry\n");
+    CLS_LOG(1, "ERROR: rgw_cls_reshard_list(): failed to decode entry\n");
     return -EINVAL;
   }
   cls_rgw_reshard_list_ret op_ret;
@@ -4476,7 +4464,7 @@ static int rgw_reshard_list(cls_method_context_t hctx, bufferlist *in, bufferlis
     try {
       decode(entry, iter);
     } catch (ceph::buffer::error& err) {
-      CLS_LOG(1, "ERROR: rgw_cls_rehard_list(): failed to decode entry\n");
+      CLS_LOG(1, "ERROR: rgw_cls_reshard_list(): failed to decode entry\n");
       return -EIO;
    }
     op_ret.entries.push_back(entry);
@@ -4521,7 +4509,7 @@ static int rgw_reshard_remove(cls_method_context_t hctx, bufferlist *in, bufferl
   try {
     decode(op, in_iter);
   } catch (ceph::buffer::error& err) {
-    CLS_LOG(1, "ERROR: rgw_cls_rehard_remove: failed to decode entry\n");
+    CLS_LOG(1, "ERROR: rgw_cls_reshard_remove: failed to decode entry\n");
     return -EINVAL;
   }
 
@@ -4677,6 +4665,7 @@ CLS_INIT(rgw)
   cls_method_handle_t h_rgw_bi_put_op;
   cls_method_handle_t h_rgw_bi_list_op;
   cls_method_handle_t h_rgw_bi_log_list_op;
+  cls_method_handle_t h_rgw_bi_log_trim_op;
   cls_method_handle_t h_rgw_bi_log_resync_op;
   cls_method_handle_t h_rgw_bi_log_stop_op;
   cls_method_handle_t h_rgw_dir_suggest_changes;
@@ -4685,6 +4674,7 @@ CLS_INIT(rgw)
   cls_method_handle_t h_rgw_user_usage_log_trim;
   cls_method_handle_t h_rgw_usage_log_clear;
   cls_method_handle_t h_rgw_gc_set_entry;
+  cls_method_handle_t h_rgw_gc_defer_entry;
   cls_method_handle_t h_rgw_gc_list;
   cls_method_handle_t h_rgw_gc_remove;
   cls_method_handle_t h_rgw_lc_get_entry;
@@ -4731,7 +4721,7 @@ CLS_INIT(rgw)
   cls_register_cxx_method(h_class, RGW_BI_LIST, CLS_METHOD_RD, rgw_bi_list_op, &h_rgw_bi_list_op);
 
   cls_register_cxx_method(h_class, RGW_BI_LOG_LIST, CLS_METHOD_RD, rgw_bi_log_list, &h_rgw_bi_log_list_op);
-  cls_register_cxx_method(h_class, RGW_BI_LOG_TRIM, CLS_METHOD_RD | CLS_METHOD_WR, rgw_bi_log_trim, &h_rgw_bi_log_list_op);
+  cls_register_cxx_method(h_class, RGW_BI_LOG_TRIM, CLS_METHOD_RD | CLS_METHOD_WR, rgw_bi_log_trim, &h_rgw_bi_log_trim_op);
   cls_register_cxx_method(h_class, RGW_DIR_SUGGEST_CHANGES, CLS_METHOD_RD | CLS_METHOD_WR, rgw_dir_suggest_changes, &h_rgw_dir_suggest_changes);
 
   cls_register_cxx_method(h_class, RGW_BI_LOG_RESYNC, CLS_METHOD_RD | CLS_METHOD_WR, rgw_bi_log_resync, &h_rgw_bi_log_resync_op);
@@ -4745,7 +4735,7 @@ CLS_INIT(rgw)
 
   /* garbage collection */
   cls_register_cxx_method(h_class, RGW_GC_SET_ENTRY, CLS_METHOD_RD | CLS_METHOD_WR, rgw_cls_gc_set_entry, &h_rgw_gc_set_entry);
-  cls_register_cxx_method(h_class, RGW_GC_DEFER_ENTRY, CLS_METHOD_RD | CLS_METHOD_WR, rgw_cls_gc_defer_entry, &h_rgw_gc_set_entry);
+  cls_register_cxx_method(h_class, RGW_GC_DEFER_ENTRY, CLS_METHOD_RD | CLS_METHOD_WR, rgw_cls_gc_defer_entry, &h_rgw_gc_defer_entry);
   cls_register_cxx_method(h_class, RGW_GC_LIST, CLS_METHOD_RD, rgw_cls_gc_list, &h_rgw_gc_list);
   cls_register_cxx_method(h_class, RGW_GC_REMOVE, CLS_METHOD_RD | CLS_METHOD_WR, rgw_cls_gc_remove, &h_rgw_gc_remove);
 

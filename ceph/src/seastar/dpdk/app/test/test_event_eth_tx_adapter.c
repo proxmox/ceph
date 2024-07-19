@@ -16,9 +16,20 @@
 
 #include "test.h"
 
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_event_eth_tx_adapter_common(void)
+{
+	printf("event_eth_tx_adapter not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #define MAX_NUM_QUEUE		RTE_PMD_RING_MAX_RX_RINGS
 #define TEST_INST_ID		0
 #define TEST_DEV_ID		0
+#define TEST_ETH_QUEUE_ID	0
 #define SOCKET0			0
 #define RING_SIZE		256
 #define ETH_NAME_LEN		32
@@ -29,6 +40,8 @@
 #define PORT(p)			default_params.port[(p)]
 #define TEST_ETHDEV_ID		PORT(0)
 #define TEST_ETHDEV_PAIR_ID	PORT(PAIR_PORT_INDEX(0))
+#define DEFAULT_FLUSH_THRESHOLD 1024
+#define TXA_NB_TX_WORK_DEFAULT  128
 
 #define EDEV_RETRY		0xffff
 
@@ -45,7 +58,7 @@ static uint64_t eid = ~0ULL;
 static uint32_t tid;
 
 static inline int
-port_init_common(uint8_t port, const struct rte_eth_conf *port_conf,
+port_init_common(uint16_t port, const struct rte_eth_conf *port_conf,
 		struct rte_mempool *mp)
 {
 	const uint16_t rx_ring_size = RING_SIZE, tx_ring_size = RING_SIZE;
@@ -84,23 +97,24 @@ port_init_common(uint8_t port, const struct rte_eth_conf *port_conf,
 		return retval;
 
 	/* Display the port MAC address. */
-	struct ether_addr addr;
-	rte_eth_macaddr_get(port, &addr);
+	struct rte_ether_addr addr;
+	retval = rte_eth_macaddr_get(port, &addr);
+	if (retval < 0)
+		return retval;
 	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			(unsigned int)port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			(unsigned int)port, RTE_ETHER_ADDR_BYTES(&addr));
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
-	rte_eth_promiscuous_enable(port);
+	retval = rte_eth_promiscuous_enable(port);
+	if (retval != 0)
+		return retval;
 
 	return 0;
 }
 
 static inline int
-port_init(uint8_t port, struct rte_mempool *mp)
+port_init(uint16_t port, struct rte_mempool *mp)
 {
 	struct rte_eth_conf conf = { 0 };
 	return port_init_common(port, &conf, mp);
@@ -628,6 +642,295 @@ tx_adapter_service(void)
 }
 
 static int
+tx_adapter_instance_get(void)
+{
+	int err;
+	uint8_t inst_id;
+	uint16_t eth_dev_id;
+	struct rte_eth_dev_info dev_info;
+
+	/* Case 1: Test without configuring eth */
+	err = rte_event_eth_tx_adapter_instance_get(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID,
+						    &inst_id);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Case 2: Test with wrong eth port */
+	eth_dev_id = rte_eth_dev_count_total() + 1;
+	err = rte_event_eth_tx_adapter_instance_get(eth_dev_id,
+						    TEST_ETH_QUEUE_ID,
+						    &inst_id);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Case 3: Test with wrong tx queue */
+	err = rte_eth_dev_info_get(TEST_ETHDEV_ID, &dev_info);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_instance_get(TEST_ETHDEV_ID,
+						    dev_info.max_tx_queues + 1,
+						    &inst_id);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Case 4: Test with right instance, port & rxq */
+	/* Add queue to tx adapter */
+	err = rte_event_eth_tx_adapter_queue_add(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 TEST_ETH_QUEUE_ID);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_instance_get(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID,
+						    &inst_id);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(inst_id == TEST_INST_ID, "Expected %d got %d",
+		    TEST_INST_ID, err);
+
+	/* Add another queue to tx adapter */
+	err = rte_event_eth_tx_adapter_queue_add(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 TEST_ETH_QUEUE_ID + 1);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_instance_get(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID + 1,
+						    &inst_id);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(inst_id == TEST_INST_ID, "Expected %d got %d",
+		    TEST_INST_ID, err);
+
+	/* Case 5: Test with right instance, port & wrong rxq */
+	err = rte_event_eth_tx_adapter_instance_get(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID + 2,
+						    &inst_id);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Delete all queues from the Tx adapter */
+	err = rte_event_eth_tx_adapter_queue_del(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 -1);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	return TEST_SUCCESS;
+}
+
+static int
+tx_adapter_queue_start_stop(void)
+{
+	int err;
+	uint16_t eth_dev_id;
+	struct rte_eth_dev_info dev_info;
+
+	/* Case 1: Test without adding eth Tx queue */
+	err = rte_event_eth_tx_adapter_queue_start(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	err = rte_event_eth_tx_adapter_queue_stop(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Case 2: Test with wrong eth port */
+	eth_dev_id = rte_eth_dev_count_total() + 1;
+	err = rte_event_eth_tx_adapter_queue_start(eth_dev_id,
+						    TEST_ETH_QUEUE_ID);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	err = rte_event_eth_tx_adapter_queue_stop(eth_dev_id,
+						    TEST_ETH_QUEUE_ID);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Case 3: Test with wrong tx queue */
+	err = rte_eth_dev_info_get(TEST_ETHDEV_ID, &dev_info);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_queue_start(TEST_ETHDEV_ID,
+						    dev_info.max_tx_queues + 1);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	err = rte_event_eth_tx_adapter_queue_stop(TEST_ETHDEV_ID,
+						    dev_info.max_tx_queues + 1);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Case 4: Test with right instance, port & rxq */
+	/* Add queue to tx adapter */
+	err = rte_event_eth_tx_adapter_queue_add(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 TEST_ETH_QUEUE_ID);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_queue_stop(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_queue_start(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	/* Add another queue to tx adapter */
+	err = rte_event_eth_tx_adapter_queue_add(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 TEST_ETH_QUEUE_ID + 1);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_queue_stop(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID + 1);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	err = rte_event_eth_tx_adapter_queue_start(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID + 1);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	/* Case 5: Test with right instance, port & wrong rxq */
+	err = rte_event_eth_tx_adapter_queue_stop(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID + 2);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	err = rte_event_eth_tx_adapter_queue_start(TEST_ETHDEV_ID,
+						    TEST_ETH_QUEUE_ID + 2);
+	TEST_ASSERT(err == -EINVAL, "Expected -EINVAL got %d", err);
+
+	/* Delete all queues from the Tx adapter */
+	err = rte_event_eth_tx_adapter_queue_del(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 -1);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	return TEST_SUCCESS;
+}
+
+static int
+tx_adapter_set_get_params(void)
+{
+	int err, rc;
+	struct rte_event_eth_tx_adapter_runtime_params in_params;
+	struct rte_event_eth_tx_adapter_runtime_params out_params;
+
+	err = rte_event_eth_tx_adapter_queue_add(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 0);
+	if (err == -ENOTSUP) {
+		rc = TEST_SKIPPED;
+		goto skip;
+	}
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_runtime_params_init(&in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	err = rte_event_eth_tx_adapter_runtime_params_init(&out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	/* Case 1: Get the default values of adapter */
+	err = rte_event_eth_tx_adapter_runtime_params_get(TEST_INST_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(out_params.flush_threshold == DEFAULT_FLUSH_THRESHOLD,
+		    "Expected %u got %u",
+		    DEFAULT_FLUSH_THRESHOLD, out_params.flush_threshold);
+	TEST_ASSERT(out_params.max_nb_tx == TXA_NB_TX_WORK_DEFAULT,
+		    "Expected %u got %u",
+		    TXA_NB_TX_WORK_DEFAULT, out_params.max_nb_tx);
+
+	/* Case 2: Set max_nb_tx = 32 (=TXA_BATCH_SEIZE) */
+	in_params.max_nb_tx = 32;
+	in_params.flush_threshold = DEFAULT_FLUSH_THRESHOLD;
+
+	err = rte_event_eth_tx_adapter_runtime_params_set(TEST_INST_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_runtime_params_get(TEST_INST_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb_tx == out_params.max_nb_tx,
+		    "Expected %u got %u",
+		    in_params.max_nb_tx, out_params.max_nb_tx);
+	TEST_ASSERT(in_params.flush_threshold == out_params.flush_threshold,
+		    "Expected %u got %u",
+		    in_params.flush_threshold, out_params.flush_threshold);
+
+	/* Case 3: Set max_nb_tx = 192 */
+	in_params.max_nb_tx = 192;
+
+	err = rte_event_eth_tx_adapter_runtime_params_set(TEST_INST_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_runtime_params_get(TEST_INST_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb_tx == out_params.max_nb_tx,
+		    "Expected %u got %u",
+		    in_params.max_nb_tx, out_params.max_nb_tx);
+
+	/* Case 4: Set max_nb_tx = 256 */
+	in_params.max_nb_tx = 256;
+
+	err = rte_event_eth_tx_adapter_runtime_params_set(TEST_INST_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_runtime_params_get(TEST_INST_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb_tx == out_params.max_nb_tx,
+		    "Expected %u got %u",
+		    in_params.max_nb_tx, out_params.max_nb_tx);
+
+	/* Case 5: Set max_nb_tx = 30(<TXA_BATCH_SIZE) */
+	in_params.max_nb_tx = 30;
+
+	err = rte_event_eth_tx_adapter_runtime_params_set(TEST_INST_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_runtime_params_get(TEST_INST_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb_tx == out_params.max_nb_tx,
+		    "Expected %u got %u",
+		    in_params.max_nb_tx, out_params.max_nb_tx);
+
+	/* Case 6: Set max_nb_tx = 512 */
+	in_params.max_nb_tx = 512;
+
+	err = rte_event_eth_tx_adapter_runtime_params_set(TEST_INST_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_runtime_params_get(TEST_INST_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb_tx == out_params.max_nb_tx,
+		    "Expected %u got %u",
+		    in_params.max_nb_tx, out_params.max_nb_tx);
+
+	/* Case 7: Set flush_threshold = 10 */
+	in_params.max_nb_tx = 128;
+	in_params.flush_threshold = 10;
+
+	err = rte_event_eth_tx_adapter_runtime_params_set(TEST_INST_ID,
+							  &in_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	err = rte_event_eth_tx_adapter_runtime_params_get(TEST_INST_ID,
+							  &out_params);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	TEST_ASSERT(in_params.max_nb_tx == out_params.max_nb_tx,
+		    "Expected %u got %u",
+		    in_params.max_nb_tx, out_params.max_nb_tx);
+	TEST_ASSERT(in_params.flush_threshold == out_params.flush_threshold,
+		    "Expected %u got %u",
+		    in_params.flush_threshold, out_params.flush_threshold);
+	rc = TEST_SUCCESS;
+skip:
+	err = rte_event_eth_tx_adapter_queue_del(TEST_INST_ID,
+						 TEST_ETHDEV_ID,
+						 0);
+	TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+
+	return rc;
+}
+
+static int
 tx_adapter_dynamic_device(void)
 {
 	uint16_t port_id = rte_eth_dev_count_avail();
@@ -684,6 +987,12 @@ static struct unit_test_suite event_eth_tx_tests = {
 					tx_adapter_start_stop),
 		TEST_CASE_ST(tx_adapter_create, tx_adapter_free,
 					tx_adapter_service),
+		TEST_CASE_ST(tx_adapter_create, tx_adapter_free,
+					tx_adapter_instance_get),
+		TEST_CASE_ST(tx_adapter_create, tx_adapter_free,
+					tx_adapter_queue_start_stop),
+		TEST_CASE_ST(tx_adapter_create, tx_adapter_free,
+					tx_adapter_set_get_params),
 		TEST_CASE_ST(NULL, NULL, tx_adapter_dynamic_device),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
@@ -694,6 +1003,8 @@ test_event_eth_tx_adapter_common(void)
 {
 	return unit_test_suite_runner(&event_eth_tx_tests);
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(event_eth_tx_adapter_autotest,
 		test_event_eth_tx_adapter_common);

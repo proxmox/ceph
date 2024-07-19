@@ -11,7 +11,9 @@
 #ifndef _PMD_IXGBE_H_
 #define _PMD_IXGBE_H_
 
-#include <rte_ethdev_driver.h>
+#include <rte_compat.h>
+#include <rte_ethdev.h>
+#include <rte_ether.h>
 
 /**
  * Notify VF when PF link status changes.
@@ -42,7 +44,7 @@ int rte_pmd_ixgbe_ping_vf(uint16_t port, uint16_t vf);
  *   - (-EINVAL) if *vf* or *mac_addr* is invalid.
  */
 int rte_pmd_ixgbe_set_vf_mac_addr(uint16_t port, uint16_t vf,
-		struct ether_addr *mac_addr);
+		struct rte_ether_addr *mac_addr);
 
 /**
  * Enable/Disable VF VLAN anti spoofing.
@@ -283,8 +285,8 @@ int rte_pmd_ixgbe_macsec_select_rxsa(uint16_t port, uint8_t idx, uint8_t an,
 * @param rx_mask
 *    The RX mode mask, which is one or more of accepting Untagged Packets,
 *    packets that match the PFUTA table, Broadcast and Multicast Promiscuous.
-*    ETH_VMDQ_ACCEPT_UNTAG,ETH_VMDQ_ACCEPT_HASH_UC,
-*    ETH_VMDQ_ACCEPT_BROADCAST and ETH_VMDQ_ACCEPT_MULTICAST will be used
+*    RTE_ETH_VMDQ_ACCEPT_UNTAG, RTE_ETH_VMDQ_ACCEPT_HASH_UC,
+*    RTE_ETH_VMDQ_ACCEPT_BROADCAST and RTE_ETH_VMDQ_ACCEPT_MULTICAST will be used
 *    in rx_mode.
 * @param on
 *    1 - Enable a VF RX mode.
@@ -378,7 +380,7 @@ rte_pmd_ixgbe_set_vf_vlan_filter(uint16_t port, uint16_t vlan,
  *   - (-EINVAL) if bad parameter.
  */
 int rte_pmd_ixgbe_set_vf_rate_limit(uint16_t port, uint16_t vf,
-				     uint16_t tx_rate, uint64_t q_msk);
+				     uint32_t tx_rate, uint64_t q_msk);
 
 /**
  * Set all the TCs' bandwidth weight.
@@ -584,7 +586,7 @@ int rte_pmd_ixgbe_bypass_wd_reset(uint16_t port);
  *   - (-ENODEV) if *port* invalid.
  *   - (IXGBE_ERR_SWFW_SYNC) If sw/fw semaphore acquisition failed
  */
-int __rte_experimental
+int
 rte_pmd_ixgbe_mdio_lock(uint16_t port);
 
 /**
@@ -597,7 +599,7 @@ rte_pmd_ixgbe_mdio_lock(uint16_t port);
  *   - (-ENOTSUP) if hardware doesn't support.
  *   - (-ENODEV) if *port* invalid.
  */
-int __rte_experimental
+int
 rte_pmd_ixgbe_mdio_unlock(uint16_t port);
 
 /**
@@ -618,7 +620,7 @@ rte_pmd_ixgbe_mdio_unlock(uint16_t port);
  *   - (-ENODEV) if *port* invalid.
  *   - (IXGBE_ERR_PHY) If PHY read command failed
  */
-int __rte_experimental
+int
 rte_pmd_ixgbe_mdio_unlocked_read(uint16_t port, uint32_t reg_addr,
 				 uint32_t dev_type, uint16_t *phy_data);
 
@@ -641,7 +643,7 @@ rte_pmd_ixgbe_mdio_unlocked_read(uint16_t port, uint32_t reg_addr,
  *   - (-ENODEV) if *port* invalid.
  *   - (IXGBE_ERR_PHY) If PHY read command failed
  */
-int __rte_experimental
+int
 rte_pmd_ixgbe_mdio_unlocked_write(uint16_t port, uint32_t reg_addr,
 				  uint32_t dev_type, uint16_t phy_data);
 
@@ -719,6 +721,39 @@ enum {
  *   - (-ENODEV) if *port* invalid.
  *   - (-ENOTSUP) if hardware doesn't support this feature.
  */
-int __rte_experimental
+int
 rte_pmd_ixgbe_upd_fctrl_sbp(uint16_t port, int enable);
+
+/**
+ * Get port fdir info
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param fdir_info
+ *   The fdir info of the port
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_ixgbe_get_fdir_info(uint16_t port, struct rte_eth_fdir_info *fdir_info);
+
+/**
+ * Get port fdir status
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param fdir_stats
+ *   The fdir status of the port
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_ixgbe_get_fdir_stats(uint16_t port,
+			     struct rte_eth_fdir_stats *fdir_stats);
 #endif /* _PMD_IXGBE_H_ */

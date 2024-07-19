@@ -12,10 +12,6 @@
 #include "t4_chip_type.h"
 #include "t4fw_interface.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #define CXGBE_PAGE_SIZE RTE_PGSIZE_4K
 
 #define T4_MEMORY_WRITE 0
@@ -37,18 +33,6 @@ enum {
 enum dev_master { MASTER_CANT, MASTER_MAY, MASTER_MUST };
 
 enum dev_state { DEV_STATE_UNINIT, DEV_STATE_INIT, DEV_STATE_ERR };
-
-enum cc_pause {
-	PAUSE_RX      = 1 << 0,
-	PAUSE_TX      = 1 << 1,
-	PAUSE_AUTONEG = 1 << 2
-};
-
-enum cc_fec {
-	FEC_AUTO     = 1 << 0,    /* IEEE 802.3 "automatic" */
-	FEC_RS       = 1 << 1,    /* Reed-Solomon */
-	FEC_BASER_RS = 1 << 2,    /* BaseR/Reed-Solomon */
-};
 
 enum { MEM_EDC0, MEM_EDC1, MEM_MC, MEM_MC0 = MEM_MC, MEM_MC1 };
 
@@ -117,6 +101,8 @@ struct port_stats {
 	u64 rx_trunc1;            /* buffer-group 1 truncated packets */
 	u64 rx_trunc2;            /* buffer-group 2 truncated packets */
 	u64 rx_trunc3;            /* buffer-group 3 truncated packets */
+
+	u64 rx_tp_tnl_cong_drops[NCHAN]; /* TP frame drops due to congestion */
 };
 
 struct sge_params {
@@ -133,6 +119,7 @@ struct tp_params {
 	unsigned short tx_modq[NCHAN];  /* channel to modulation queue map */
 
 	u32 vlan_pri_map;               /* cached TP_VLAN_PRI_MAP */
+	u32 filter_mask;
 	u32 ingress_config;             /* cached TP_INGRESS_CONFIG */
 
 	/* cached TP_OUT_CONFIG compressed error vector
@@ -158,6 +145,7 @@ struct tp_params {
 	int protocol_shift;
 	int ethertype_shift;
 	int macmatch_shift;
+	int tos_shift;
 
 	u64 hash_filter_mask;
 };
@@ -185,6 +173,7 @@ struct devlog_params {
 
 struct arch_specific_params {
 	u8 nchan;
+	u8 cng_ch_bits_log;             /* congestion channel map bits width */
 	u16 mps_rplc_size;
 	u16 vfcount;
 	u32 sge_fl_db;
@@ -198,15 +187,15 @@ struct rss_params {
 	unsigned int mode;			/* RSS mode */
 	union {
 		struct {
-			uint synmapen:1;	/* SYN Map Enable */
-			uint syn4tupenipv6:1;	/* en 4-tuple IPv6 SYNs hash */
-			uint syn2tupenipv6:1;	/* en 2-tuple IPv6 SYNs hash */
-			uint syn4tupenipv4:1;	/* en 4-tuple IPv4 SYNs hash */
-			uint syn2tupenipv4:1;	/* en 2-tuple IPv4 SYNs hash */
-			uint ofdmapen:1;	/* Offload Map Enable */
-			uint tnlmapen:1;	/* Tunnel Map Enable */
-			uint tnlalllookup:1;	/* Tunnel All Lookup */
-			uint hashtoeplitz:1;	/* use Toeplitz hash */
+			unsigned int synmapen:1;      /* SYN Map Enable */
+			unsigned int syn4tupenipv6:1; /* en 4-tuple IPv6 SYNs hash */
+			unsigned int syn2tupenipv6:1; /* en 2-tuple IPv6 SYNs hash */
+			unsigned int syn4tupenipv4:1; /* en 4-tuple IPv4 SYNs hash */
+			unsigned int syn2tupenipv4:1; /* en 2-tuple IPv4 SYNs hash */
+			unsigned int ofdmapen:1;      /* Offload Map Enable */
+			unsigned int tnlmapen:1;      /* Tunnel Map Enable */
+			unsigned int tnlalllookup:1;  /* Tunnel All Lookup */
+			unsigned int hashtoeplitz:1;  /* use Toeplitz hash */
 		} basicvirtual;
 	} u;
 };
@@ -216,6 +205,7 @@ struct rss_params {
  */
 struct pf_resources {
 	unsigned int neq;      /* N egress Qs */
+	unsigned int nethctrl; /* N egress ETH or CTRL Qs */
 	unsigned int niqflint; /* N ingress Qs/w free list(s) & intr */
 };
 
@@ -270,41 +260,30 @@ struct adapter_params {
 	struct arch_specific_params arch; /* chip specific params */
 
 	bool ulptx_memwrite_dsgl;          /* use of T5 DSGL allowed */
-	u8 fw_caps_support;		  /* 32-bit Port Capabilities */
 	u8 filter2_wr_support;            /* FW support for FILTER2_WR */
+	u32 viid_smt_extn_support:1;	  /* FW returns vin and smt index */
+	u32 max_tx_coalesce_num; /* Max # of Tx packets that can be coalesced */
+	u8 vi_enable_rx; /* FW support for enable/disable VI Rx at runtime */
+
+	u16 rawf_start; /* FW supports RAW MAC match-all filters */
+	u16 rawf_size;
 };
 
 /* Firmware Port Capabilities types.
  */
-typedef u16 fw_port_cap16_t;    /* 16-bit Port Capabilities integral value */
-typedef u32 fw_port_cap32_t;    /* 32-bit Port Capabilities integral value */
-
-enum fw_caps {
-	FW_CAPS_UNKNOWN = 0,    /* 0'ed out initial state */
-	FW_CAPS16       = 1,    /* old Firmware: 16-bit Port Capabilities */
-	FW_CAPS32       = 2,    /* new Firmware: 32-bit Port Capabilities */
-};
-
 struct link_config {
-	fw_port_cap32_t pcaps;          /* link capabilities */
-	fw_port_cap32_t acaps;          /* advertised capabilities */
+	u32 pcaps;         /* Physically supported link caps */
+	u32 acaps;         /* Advertised link caps */
 
-	u32 requested_speed;            /* speed (Mb/s) user has requested */
-	u32 speed;                      /* actual link speed (Mb/s) */
+	u32 link_caps;     /* Current link caps */
+	u32 admin_caps;    /* Admin configured link caps  */
 
-	enum cc_pause requested_fc;     /* flow control user has requested */
-	enum cc_pause fc;               /* actual link flow control */
+	u8 mdio_addr;      /* Address of the PHY */
+	u8 port_type;      /* Firmware port type */
+	u8 mod_type;       /* Firmware module type */
 
-	enum cc_fec auto_fec;           /* Forward Error Correction
-					 * "automatic" (IEEE 802.3)
-					 */
-	enum cc_fec requested_fec;      /* Forward Error Correction requested */
-	enum cc_fec fec;                /* Forward Error Correction actual */
-
-	unsigned char autoneg;          /* autonegotiating? */
-
-	unsigned char link_ok;          /* link up? */
-	unsigned char link_down_rc;     /* link down reason */
+	u8 link_ok;        /* Link up? */
+	u8 link_down_rc;   /* Link down reason */
 };
 
 #include "adapter.h"
@@ -340,8 +319,23 @@ void t4_tp_wr_bits_indirect(struct adapter *adap, unsigned int addr,
 			    unsigned int mask, unsigned int val);
 void t4_intr_enable(struct adapter *adapter);
 void t4_intr_disable(struct adapter *adapter);
-int t4_link_l1cfg(struct adapter *adap, unsigned int mbox, unsigned int port,
-		  struct link_config *lc);
+int t4_link_l1cfg_core(struct port_info *pi, u32 caps, u8 sleep_ok);
+static inline int t4_link_l1cfg(struct port_info *pi, u32 caps)
+{
+	return t4_link_l1cfg_core(pi, caps, true);
+}
+
+static inline int t4_link_l1cfg_ns(struct port_info *pi, u32 caps)
+{
+	return t4_link_l1cfg_core(pi, caps, false);
+}
+
+int t4_set_link_speed(struct port_info *pi, u32 speed, u32 *new_caps);
+int t4_set_link_pause(struct port_info *pi, u8 autoneg, u8 pause_tx,
+		      u8 pause_rx, u32 *new_caps);
+int t4_set_link_fec(struct port_info *pi, u8 fec_rs, u8 fec_baser,
+		    u8 fec_none, u32 *new_caps);
+unsigned int t4_fwcap_to_speed(u32 caps);
 void t4_load_mtus(struct adapter *adap, const unsigned short *mtus,
 		  const unsigned short *alpha, const unsigned short *beta);
 int t4_fw_hello(struct adapter *adap, unsigned int mbox, unsigned int evt_mbox,
@@ -351,8 +345,6 @@ int t4_fw_reset(struct adapter *adap, unsigned int mbox, int reset);
 int t4vf_fw_reset(struct adapter *adap);
 int t4_fw_halt(struct adapter *adap, unsigned int mbox, int reset);
 int t4_fw_restart(struct adapter *adap, unsigned int mbox, int reset);
-int t4_fl_pkt_align(struct adapter *adap);
-int t4vf_fl_pkt_align(struct adapter *adap, u32 sge_control, u32 sge_control2);
 int t4vf_get_vfres(struct adapter *adap);
 int t4_fixup_host_params_compat(struct adapter *adap, unsigned int page_size,
 				unsigned int cache_line_size,
@@ -380,10 +372,11 @@ int t4_set_params(struct adapter *adap, unsigned int mbox, unsigned int pf,
 int t4_alloc_vi_func(struct adapter *adap, unsigned int mbox,
 		     unsigned int port, unsigned int pf, unsigned int vf,
 		     unsigned int nmac, u8 *mac, unsigned int *rss_size,
-		     unsigned int portfunc, unsigned int idstype);
+		     unsigned int portfunc, unsigned int idstype,
+		     u8 *vivld, u8 *vin);
 int t4_alloc_vi(struct adapter *adap, unsigned int mbox, unsigned int port,
 		unsigned int pf, unsigned int vf, unsigned int nmac, u8 *mac,
-		unsigned int *rss_size);
+		unsigned int *rss_size, u8 *vivild, u8 *vin);
 int t4_free_vi(struct adapter *adap, unsigned int mbox,
 	       unsigned int pf, unsigned int vf,
 	       unsigned int viid);
@@ -497,8 +490,8 @@ void t4_get_port_stats_offset(struct adapter *adap, int idx,
 			      struct port_stats *stats,
 			      struct port_stats *offset);
 void t4_clr_port_stats(struct adapter *adap, int idx);
-void init_link_config(struct link_config *lc, fw_port_cap32_t pcaps,
-		      fw_port_cap32_t acaps);
+void t4_init_link_config(struct port_info *pi, u32 pcaps, u32 acaps,
+			 u8 mdio_addr, u8 port_type, u8 mod_type);
 void t4_reset_link_config(struct adapter *adap, int idx);
 int t4_get_version_info(struct adapter *adapter);
 void t4_dump_version_info(struct adapter *adapter);
@@ -545,5 +538,4 @@ static inline int t4_memory_rw(struct adapter *adap, int win,
 {
 	return t4_memory_rw_mtype(adap, win, mtype, maddr, len, hbuf, dir);
 }
-fw_port_cap32_t fwcaps16_to_caps32(fw_port_cap16_t caps16);
 #endif /* __CHELSIO_COMMON_H */

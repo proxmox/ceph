@@ -7,22 +7,21 @@
 
 #include <rte_alarm.h>
 #include <rte_malloc.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_vdev.h>
+#include <ethdev_driver.h>
+#include <ethdev_vdev.h>
 #include <rte_devargs.h>
 #include <rte_kvargs.h>
-#include <rte_bus_vdev.h>
+#include <bus_driver.h>
+#include <bus_vdev_driver.h>
 
 #include "failsafe_private.h"
 
-int failsafe_logtype;
-
 const char pmd_failsafe_driver_name[] = FAILSAFE_DRIVER_NAME;
 static const struct rte_eth_link eth_link = {
-	.link_speed = ETH_SPEED_NUM_10G,
-	.link_duplex = ETH_LINK_FULL_DUPLEX,
-	.link_status = ETH_LINK_UP,
-	.link_autoneg = ETH_LINK_AUTONEG,
+	.link_speed = RTE_ETH_SPEED_NUM_10G,
+	.link_duplex = RTE_ETH_LINK_FULL_DUPLEX,
+	.link_status = RTE_ETH_LINK_UP,
+	.link_autoneg = RTE_ETH_LINK_AUTONEG,
 };
 
 static int
@@ -60,12 +59,6 @@ fs_sub_device_alloc(struct rte_eth_dev *dev,
 		sdev->sdev_port_id = RTE_MAX_ETHPORTS;
 	}
 	return 0;
-}
-
-static void
-fs_sub_device_free(struct rte_eth_dev *dev)
-{
-	rte_free(PRIV(dev)->subs);
 }
 
 static void fs_hotplug_alarm(void *arg);
@@ -166,7 +159,7 @@ static int
 fs_eth_dev_create(struct rte_vdev_device *vdev)
 {
 	struct rte_eth_dev *dev;
-	struct ether_addr *mac;
+	struct rte_ether_addr *mac;
 	struct fs_priv *priv;
 	struct sub_device *sdev;
 	const char *params;
@@ -190,6 +183,7 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 	}
 	priv = PRIV(dev);
 	priv->data = dev->data;
+	priv->rxp = FS_RX_PROXY_INIT;
 	dev->dev_ops = &failsafe_ops;
 	dev->data->mac_addrs = &PRIV(dev)->mac_addrs[0];
 	dev->data->dev_link = eth_link;
@@ -236,7 +230,7 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 	if (failsafe_mac_from_arg) {
 		/*
 		 * If MAC address was provided as a parameter,
-		 * apply to all probed slaves.
+		 * apply to all probed subdevices.
 		 */
 		FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_PROBED) {
 			ret = rte_eth_dev_default_mac_addr_set(PORT_ID(sdev),
@@ -253,30 +247,41 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 		 */
 		FOREACH_SUBDEV(sdev, i, dev)
 			if (sdev->state >= DEV_PROBED) {
-				ether_addr_copy(&ETH(sdev)->data->mac_addrs[0],
-						mac);
+				rte_ether_addr_copy(
+					&ETH(sdev)->data->mac_addrs[0], mac);
 				break;
 			}
 		/*
 		 * If no device has been probed and no ether_addr
 		 * has been provided on the command line, use a random
 		 * valid one.
-		 * It will be applied during future slave state syncs to
-		 * probed slaves.
+		 * It will be applied during future state syncs to
+		 * probed subdevices.
 		 */
 		if (i == priv->subs_tail)
-			eth_random_addr(&mac->addr_bytes[0]);
+			rte_eth_random_addr(&mac->addr_bytes[0]);
 	}
-	INFO("MAC address is %02x:%02x:%02x:%02x:%02x:%02x",
-		mac->addr_bytes[0], mac->addr_bytes[1],
-		mac->addr_bytes[2], mac->addr_bytes[3],
-		mac->addr_bytes[4], mac->addr_bytes[5]);
-	dev->data->dev_flags |= RTE_ETH_DEV_INTR_LSC;
-	PRIV(dev)->intr_handle = (struct rte_intr_handle){
-		.fd = -1,
-		.type = RTE_INTR_HANDLE_EXT,
-	};
+	INFO("MAC address is " RTE_ETHER_ADDR_PRT_FMT,
+		RTE_ETHER_ADDR_BYTES(mac));
+	dev->data->dev_flags |= RTE_ETH_DEV_INTR_LSC |
+				RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
+
+	/* Allocate interrupt instance */
+	PRIV(dev)->intr_handle =
+		rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
+	if (PRIV(dev)->intr_handle == NULL) {
+		ERROR("Failed to allocate intr handle");
+		goto cancel_alarm;
+	}
+
+	if (rte_intr_fd_set(PRIV(dev)->intr_handle, -1))
+		goto cancel_alarm;
+
+	if (rte_intr_type_set(PRIV(dev)->intr_handle, RTE_INTR_HANDLE_EXT))
+		goto cancel_alarm;
+
 	rte_eth_dev_probing_finish(dev);
+
 	return 0;
 cancel_alarm:
 	failsafe_hotplug_alarm_cancel(dev);
@@ -286,7 +291,7 @@ unregister_new_callback:
 free_args:
 	failsafe_args_free(dev);
 free_subs:
-	fs_sub_device_free(dev);
+	rte_free(PRIV(dev)->subs);
 free_dev:
 	/* mac_addrs must not be freed alone because part of dev_private */
 	dev->data->mac_addrs = NULL;
@@ -302,20 +307,9 @@ fs_rte_eth_free(const char *name)
 
 	dev = rte_eth_dev_allocated(name);
 	if (dev == NULL)
-		return -ENODEV;
-	rte_eth_dev_callback_unregister(RTE_ETH_ALL, RTE_ETH_EVENT_NEW,
-					failsafe_eth_new_event_callback, dev);
-	ret = failsafe_eal_uninit(dev);
-	if (ret)
-		ERROR("Error while uninitializing sub-EAL");
-	failsafe_args_free(dev);
-	fs_sub_device_free(dev);
-	ret = pthread_mutex_destroy(&PRIV(dev)->hotplug_mutex);
-	if (ret)
-		ERROR("Error while destroying hotplug mutex");
-	rte_free(PRIV(dev)->mcast_addrs);
-	/* mac_addrs must not be freed alone because part of dev_private */
-	dev->data->mac_addrs = NULL;
+		return 0; /* port already released */
+	ret = failsafe_eth_dev_close(dev);
+	rte_intr_instance_free(PRIV(dev)->intr_handle);
 	rte_eth_dev_release_port(dev);
 	return ret;
 }
@@ -347,8 +341,7 @@ rte_pmd_failsafe_probe(struct rte_vdev_device *vdev)
 	INFO("Initializing " FAILSAFE_DRIVER_NAME " for %s",
 			name);
 
-	if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
-	    strlen(rte_vdev_device_args(vdev)) == 0) {
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
 		eth_dev = rte_eth_dev_attach_secondary(name);
 		if (!eth_dev) {
 			ERROR("Failed to probe %s", name);
@@ -364,6 +357,10 @@ rte_pmd_failsafe_probe(struct rte_vdev_device *vdev)
 		 * A sub-device can be plugged later.
 		 */
 		FOREACH_SUBDEV(sdev, i, eth_dev) {
+			/* skip empty devargs */
+			if (sdev->devargs.name[0] == '\0')
+				continue;
+
 			/* rebuild devargs to be able to get the bus name. */
 			ret = rte_devargs_parse(&devargs,
 						sdev->devargs.name);
@@ -374,7 +371,7 @@ rte_pmd_failsafe_probe(struct rte_vdev_device *vdev)
 			}
 			if (!devargs_already_listed(&devargs)) {
 				ret = rte_dev_probe(devargs.name);
-				if (ret != 0) {
+				if (ret < 0) {
 					ERROR("Failed to probe devargs %s",
 					      devargs.name);
 					continue;
@@ -405,10 +402,4 @@ static struct rte_vdev_driver failsafe_drv = {
 
 RTE_PMD_REGISTER_VDEV(net_failsafe, failsafe_drv);
 RTE_PMD_REGISTER_PARAM_STRING(net_failsafe, PMD_FAILSAFE_PARAM_STRING);
-
-RTE_INIT(failsafe_init_log)
-{
-	failsafe_logtype = rte_log_register("pmd.net.failsafe");
-	if (failsafe_logtype >= 0)
-		rte_log_set_level(failsafe_logtype, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER_DEFAULT(failsafe_logtype, NOTICE)

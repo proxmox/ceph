@@ -162,7 +162,7 @@ LIST * property_set_create( FRAME * frame, int flags )
         OBJECT * rulename = object_new( "new" );
         OBJECT * varname = object_new( "self.raw" );
         LIST * val = call_rule( rulename, frame,
-            list_new( object_new( "property-set" ) ), 0 );
+            list_new( object_new( "property-set" ) ), (OBJECT *) 0 );
         LISTITER iter, end;
         object_free( rulename );
         pos->value = object_copy( list_front( val ) );
@@ -183,10 +183,9 @@ LIST * property_set_create( FRAME * frame, int flags )
                 import_module( imports, frame->module );
                 rulename = object_new( "errors.error" );
                 call_rule( rulename, frame,
-                    list_new( object_new( message->value ) ), 0 );
+                    list_new( object_new( message->value ) ), (OBJECT *) 0 );
                 /* unreachable */
                 string_free( message );
-                object_free( list_front( imports ) );
                 list_free( imports );
                 object_free( rulename );
             }

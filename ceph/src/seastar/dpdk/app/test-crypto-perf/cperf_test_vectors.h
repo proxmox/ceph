@@ -68,6 +68,33 @@ struct cperf_test_vector {
 		uint32_t aead_offset;
 		uint32_t aead_length;
 	} data;
+
+	struct {
+		uint8_t *mod;
+		uint8_t *exp;
+		uint32_t mlen;
+		uint32_t elen;
+	} modex;
+};
+
+struct cperf_modex_test_data {
+#define DATA_SIZE  512
+	struct {
+		uint8_t data[DATA_SIZE];
+		uint16_t len;
+	} base;
+	struct {
+		uint8_t data[DATA_SIZE];
+		uint16_t len;
+	} exponent;
+	struct {
+		uint8_t data[DATA_SIZE];
+		uint16_t len;
+	} modulus;
+	struct {
+		uint8_t data[DATA_SIZE];
+		uint16_t len;
+	} result;
 };
 
 struct cperf_test_vector*
@@ -82,5 +109,7 @@ extern uint8_t iv[];
 extern uint8_t aad[];
 
 extern uint8_t digest[2048];
+
+extern struct cperf_modex_test_data modex_perf_data[4];
 
 #endif

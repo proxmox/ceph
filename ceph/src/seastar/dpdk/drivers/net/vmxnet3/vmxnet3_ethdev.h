@@ -6,6 +6,7 @@
 #define _VMXNET3_ETHDEV_H_
 
 #include <rte_io.h>
+#include <rte_mbuf_dyn.h>
 
 #define VMXNET3_MAX_MAC_ADDRS 1
 
@@ -27,16 +28,22 @@
 
 #define VMXNET3_RSS_MAX_KEY_SIZE        40
 #define VMXNET3_RSS_MAX_IND_TABLE_SIZE  128
+#define VMXNET3_MAX_MSIX_VECT (VMXNET3_MAX_TX_QUEUES + \
+				VMXNET3_MAX_RX_QUEUES + 1)
 
 #define VMXNET3_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP)
 
 #define VMXNET3_V4_RSS_MASK ( \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_NONFRAG_IPV6_UDP)
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP)
+
+#define VMXNET3_MANDATORY_V4_RSS ( \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP)
 
 /* RSS configuration structure - shared with device through GPA */
 typedef struct VMXNET3_RSSConf {
@@ -58,6 +65,15 @@ typedef struct vmxnet3_mf_table {
 	uint16_t      num_addrs;    /* number of multicast addrs */
 } vmxnet3_mf_table_t;
 
+struct vmxnet3_intr {
+	enum vmxnet3_intr_mask_mode mask_mode;
+	enum vmxnet3_intr_type      type; /* MSI-X, MSI, or INTx? */
+	uint8_t num_intrs;                /* # of intr vectors */
+	uint8_t event_intr_idx;           /* idx of the intr vector for event */
+	uint8_t mod_levels[VMXNET3_EXT_MAX_INTRS]; /* moderation level */
+	bool lsc_only;                    /* no Rx queue interrupt */
+};
+
 struct vmxnet3_hw {
 	uint8_t *hw_addr0;	/* BAR0: PT-Passthrough Regs    */
 	uint8_t *hw_addr1;	/* BAR1: VD-Virtual Device Regs */
@@ -71,7 +87,7 @@ struct vmxnet3_hw {
 	uint16_t subsystem_vendor_id;
 	bool adapter_stopped;
 
-	uint8_t perm_addr[ETHER_ADDR_LEN];
+	uint8_t perm_addr[RTE_ETHER_ADDR_LEN];
 	uint8_t num_tx_queues;
 	uint8_t num_rx_queues;
 	uint8_t bufs_per_pkt;
@@ -80,6 +96,7 @@ struct vmxnet3_hw {
 
 	uint16_t txdata_desc_size; /* tx data ring buffer size */
 	uint16_t rxdata_desc_size; /* rx data ring buffer size */
+	uint16_t rxdata_buf_size; /* rx data buffer size */
 
 	uint8_t num_intrs;
 
@@ -92,26 +109,46 @@ struct vmxnet3_hw {
 	uint64_t              queueDescPA;
 	uint16_t              queue_desc_len;
 	uint16_t              mtu;
+	bool                  queuesExtEnabled;
 
 	VMXNET3_RSSConf       *rss_conf;
 	uint64_t              rss_confPA;
 	vmxnet3_mf_table_t    *mf_table;
 	uint32_t              shadow_vfta[VMXNET3_VFT_SIZE];
+	struct vmxnet3_intr   intr;
 	Vmxnet3_MemRegs	      *memRegs;
 	uint64_t	      memRegsPA;
 #define VMXNET3_VFT_TABLE_SIZE     (VMXNET3_VFT_SIZE * sizeof(uint32_t))
-	UPT1_TxStats	      saved_tx_stats[VMXNET3_MAX_TX_QUEUES];
-	UPT1_RxStats	      saved_rx_stats[VMXNET3_MAX_RX_QUEUES];
-
+	UPT1_TxStats	      saved_tx_stats[VMXNET3_EXT_MAX_TX_QUEUES];
+	UPT1_RxStats	      saved_rx_stats[VMXNET3_EXT_MAX_RX_QUEUES];
 	UPT1_TxStats          snapshot_tx_stats[VMXNET3_MAX_TX_QUEUES];
 	UPT1_RxStats          snapshot_rx_stats[VMXNET3_MAX_RX_QUEUES];
+	uint16_t              tx_prod_offset;
+	uint16_t              rx_prod_offset[2];
+	/* device capability bit map */
+	uint32_t	      DCR_capabilities[8];
+	/* pass-through capability bit map */
+	uint32_t	      PTCR_capabilities[8];
+	/* max number of capabilities */
+	uint32_t	      max_capabilities[8];
+	/* used device capability bit map */
+	uint32_t	      used_DCR_capabilities[8];
+	/* used pass-through capability bit map */
+	uint32_t	      used_PTCR_capabilities[8];
+	bool                  uptv2_enabled;
 };
 
+#define VMXNET3_REV_7		6		/* Vmxnet3 Rev. 7 */
+#define VMXNET3_REV_6		5		/* Vmxnet3 Rev. 6 */
+#define VMXNET3_REV_5		4		/* Vmxnet3 Rev. 5 */
 #define VMXNET3_REV_4		3		/* Vmxnet3 Rev. 4 */
 #define VMXNET3_REV_3		2		/* Vmxnet3 Rev. 3 */
 #define VMXNET3_REV_2		1		/* Vmxnet3 Rev. 2 */
 #define VMXNET3_REV_1		0		/* Vmxnet3 Rev. 1 */
 
+#define VMXNET3_VERSION_GE_7(hw) ((hw)->version >= VMXNET3_REV_7 + 1)
+#define VMXNET3_VERSION_GE_6(hw) ((hw)->version >= VMXNET3_REV_6 + 1)
+#define VMXNET3_VERSION_GE_5(hw) ((hw)->version >= VMXNET3_REV_5 + 1)
 #define VMXNET3_VERSION_GE_4(hw) ((hw)->version >= VMXNET3_REV_4 + 1)
 #define VMXNET3_VERSION_GE_3(hw) ((hw)->version >= VMXNET3_REV_3 + 1)
 #define VMXNET3_VERSION_GE_2(hw) ((hw)->version >= VMXNET3_REV_2 + 1)
@@ -165,8 +202,8 @@ vmxnet3_rx_data_ring(struct vmxnet3_hw *hw, uint32 rqID)
 
 void vmxnet3_dev_clear_queues(struct rte_eth_dev *dev);
 
-void vmxnet3_dev_rx_queue_release(void *rxq);
-void vmxnet3_dev_tx_queue_release(void *txq);
+void vmxnet3_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+void vmxnet3_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 int vmxnet3_v4_rss_configure(struct rte_eth_dev *dev);
 
@@ -174,6 +211,9 @@ int  vmxnet3_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 				uint16_t nb_rx_desc, unsigned int socket_id,
 				const struct rte_eth_rxconf *rx_conf,
 				struct rte_mempool *mb_pool);
+
+uint32_t vmxnet3_dev_rx_queue_count(void *rx_queue);
+
 int  vmxnet3_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 				uint16_t nb_tx_desc, unsigned int socket_id,
 				const struct rte_eth_txconf *tx_conf);
@@ -188,5 +228,16 @@ uint16_t vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			   uint16_t nb_pkts);
 uint16_t vmxnet3_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			uint16_t nb_pkts);
+
+#define VMXNET3_SEGS_DYNFIELD_NAME "rte_net_vmxnet3_dynfield_segs"
+typedef uint8_t vmxnet3_segs_dynfield_t;
+extern int vmxnet3_segs_dynfield_offset;
+
+static inline vmxnet3_segs_dynfield_t *
+vmxnet3_segs_dynfield(struct rte_mbuf *mbuf)
+{
+	return RTE_MBUF_DYNFIELD(mbuf, \
+		vmxnet3_segs_dynfield_offset, vmxnet3_segs_dynfield_t *);
+}
 
 #endif /* _VMXNET3_ETHDEV_H_ */

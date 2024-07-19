@@ -25,12 +25,12 @@
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/net/packet.hh>
 #include <seastar/core/sstring.hh>
-#include <memory>
-#include <vector>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT
 template <typename CharType>
 class scattered_message {
 private:

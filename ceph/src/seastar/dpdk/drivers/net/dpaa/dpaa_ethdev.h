@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2014-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2017 NXP
+ *   Copyright 2017-2019 NXP
  *
  */
 #ifndef __DPAA_ETHDEV_H__
@@ -9,28 +9,19 @@
 
 /* System headers */
 #include <stdbool.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
+#include <rte_compat.h>
 #include <rte_event_eth_rx_adapter.h>
 
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
-#include <of.h>
+#include <dpaa_of.h>
 #include <netcfg.h>
 
+#define MAX_DPAA_CORES			4
 #define DPAA_MBUF_HW_ANNOTATION		64
 #define DPAA_FD_PTA_SIZE		64
-
-#if (DPAA_MBUF_HW_ANNOTATION + DPAA_FD_PTA_SIZE) > RTE_PKTMBUF_HEADROOM
-#error "Annotation requirement is more than RTE_PKTMBUF_HEADROOM"
-#endif
-
-/* mbuf->seqn will be used to store event entry index for
- * driver specific usage. For parallel mode queues, invalid
- * index will be set and for atomic mode queues, valid value
- * ranging from 1 to 16.
- */
-#define DPAA_INVALID_MBUF_SEQN  0
 
 /* we will re-use the HEADROOM for annotation in RX */
 #define DPAA_HW_BUF_RESERVE	0
@@ -43,8 +34,16 @@
 
 #define DPAA_SGT_MAX_ENTRIES 16 /* maximum number of entries in SG Table */
 
+/* Maximum SG segments supported on all cores*/
+#define DPAA_MAX_SGS 128
+/* SG pool size */
+#define DPAA_POOL_SIZE 2048
+/* SG pool cache size */
+#define DPAA_POOL_CACHE_SIZE 256
+
 /* RX queue tail drop threshold (CGR Based) in frame count */
 #define CGR_RX_PERFQ_THRESH 256
+#define CGR_TX_CGR_THRESH 512
 
 /*max mac filter for memac(8) including primary mac addr*/
 #define DPAA_MAX_MAC_FILTER (MEMAC_NUM_OF_PADDRS + 1)
@@ -60,11 +59,15 @@
 #define VLAN_TAG_SIZE   4 /** < Vlan Header Length */
 #endif
 
+#define DPAA_ETH_MAX_LEN (RTE_ETHER_MTU + \
+			  RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + \
+			  VLAN_TAG_SIZE)
+
 /* PCD frame queues */
-#define DPAA_PCD_FQID_START		0x400
-#define DPAA_PCD_FQID_MULTIPLIER	0x100
 #define DPAA_DEFAULT_NUM_PCD_QUEUES	1
-#define DPAA_MAX_NUM_PCD_QUEUES		4
+#define DPAA_VSP_PROFILE_MAX_NUM	8
+#define DPAA_MAX_NUM_PCD_QUEUES	DPAA_VSP_PROFILE_MAX_NUM
+/*Same as VSP profile number*/
 
 #define DPAA_IF_TX_PRIORITY		3
 #define DPAA_IF_RX_PRIORITY		0
@@ -79,19 +82,15 @@
 #define DPAA_DEBUG_FQ_TX_ERROR   1
 
 #define DPAA_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_FRAG_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_NONFRAG_IPV4_SCTP | \
-	ETH_RSS_FRAG_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_NONFRAG_IPV6_SCTP)
+	RTE_ETH_RSS_L2_PAYLOAD | \
+	RTE_ETH_RSS_IP | \
+	RTE_ETH_RSS_UDP | \
+	RTE_ETH_RSS_TCP | \
+	RTE_ETH_RSS_SCTP)
 
-#define DPAA_TX_CKSUM_OFFLOAD_MASK (             \
-		PKT_TX_IP_CKSUM |                \
-		PKT_TX_TCP_CKSUM |               \
-		PKT_TX_UDP_CKSUM)
+#define DPAA_TX_CKSUM_OFFLOAD_MASK (RTE_MBUF_F_TX_IP_CKSUM |                \
+		RTE_MBUF_F_TX_TCP_CKSUM |               \
+		RTE_MBUF_F_TX_UDP_CKSUM)
 
 /* DPAA Frame descriptor macros */
 
@@ -108,6 +107,22 @@
 #define DPAA_FD_CMD_CFQ			0x00ffffff
 /**< Confirmation Frame Queue */
 
+#define DPAA_DEFAULT_RXQ_VSP_ID		1
+
+#define FMC_FILE "/tmp/fmc.bin"
+
+extern struct rte_mempool *dpaa_tx_sg_pool;
+
+/* structure to free external and indirect
+ * buffers.
+ */
+struct dpaa_sw_buf_free {
+	/* To which packet this segment belongs */
+	uint16_t pkt_id;
+	/* The actual segment */
+	struct rte_mbuf *seg;
+};
+
 /* Each network interface is represented by one of these */
 struct dpaa_if {
 	int valid;
@@ -116,13 +131,20 @@ struct dpaa_if {
 	struct qman_fq *rx_queues;
 	struct qman_cgr *cgr_rx;
 	struct qman_fq *tx_queues;
+	struct qman_cgr *cgr_tx;
 	struct qman_fq debug_queues[2];
 	uint16_t nb_rx_queues;
 	uint16_t nb_tx_queues;
 	uint32_t ifid;
-	struct fman_if *fif;
 	struct dpaa_bp_info *bp_info;
 	struct rte_eth_fc_conf *fc_conf;
+	void *port_handle;
+	void *netenv_handle;
+	void *scheme_handle[2];
+	uint32_t scheme_count;
+
+	void *vsp_handle[DPAA_VSP_PROFILE_MAX_NUM];
+	uint32_t vsp_bpid[DPAA_VSP_PROFILE_MAX_NUM];
 };
 
 struct dpaa_if_stats {
@@ -165,12 +187,14 @@ struct dpaa_if_stats {
 	uint64_t tund;		/**<Tx Undersized */
 };
 
+__rte_internal
 int
 dpaa_eth_eventq_attach(const struct rte_eth_dev *dev,
 		int eth_rx_queue_id,
 		u16 ch_id,
 		const struct rte_event_eth_rx_adapter_queue_conf *queue_conf);
 
+__rte_internal
 int
 dpaa_eth_eventq_detach(const struct rte_eth_dev *dev,
 			   int eth_rx_queue_id);
@@ -187,5 +211,27 @@ dpaa_rx_cb_atomic(void *event,
 		  struct qman_fq *fq,
 		  const struct qm_dqrr_entry *dqrr,
 		  void **bufs);
+
+/* PMD related logs */
+extern int dpaa_logtype_pmd;
+
+#define DPAA_PMD_LOG(level, fmt, args...) \
+	rte_log(RTE_LOG_ ## level, dpaa_logtype_pmd, "%s(): " fmt "\n", \
+		__func__, ##args)
+
+#define PMD_INIT_FUNC_TRACE() DPAA_PMD_LOG(DEBUG, " >>")
+
+#define DPAA_PMD_DEBUG(fmt, args...) \
+	DPAA_PMD_LOG(DEBUG, fmt, ## args)
+#define DPAA_PMD_ERR(fmt, args...) \
+	DPAA_PMD_LOG(ERR, fmt, ## args)
+#define DPAA_PMD_INFO(fmt, args...) \
+	DPAA_PMD_LOG(INFO, fmt, ## args)
+#define DPAA_PMD_WARN(fmt, args...) \
+	DPAA_PMD_LOG(WARNING, fmt, ## args)
+
+/* DP Logs, toggled out at compile time if level lower than current level */
+#define DPAA_DP_LOG(level, fmt, args...) \
+	RTE_LOG_DP(level, PMD, fmt, ## args)
 
 #endif

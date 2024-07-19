@@ -280,7 +280,6 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
 Monitor::~Monitor()
 {
   op_tracker.on_shutdown();
-
   delete logger;
   ceph_assert(session_map.sessions.empty());
 }
@@ -535,6 +534,7 @@ CompatSet Monitor::get_supported_features()
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_PACIFIC);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_QUINCY);
   compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_REEF);
+  compat.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_SQUID);
   return compat;
 }
 
@@ -938,9 +938,6 @@ int Monitor::init()
   mgr_messenger->add_dispatcher_tail(&mgr_client);
   mgr_messenger->add_dispatcher_tail(this);  // for auth ms_* calls
   mgrmon()->prime_mgr_client();
-
-  // generate list of filestore OSDs
-  osdmon()->get_filestore_osd_list();
 
   state = STATE_PROBING;
 
@@ -2516,6 +2513,13 @@ void Monitor::apply_monmap_to_compatset_features()
     ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_REEF));
     new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_REEF);
   }
+  if (monmap_features.contains_all(ceph::features::mon::FEATURE_SQUID)) {
+    ceph_assert(ceph::features::mon::get_persistent().contains_all(
+           ceph::features::mon::FEATURE_SQUID));
+    // this feature should only ever be set if the quorum supports it.
+    ceph_assert(HAVE_FEATURE(quorum_con_features, SERVER_SQUID));
+    new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_SQUID);
+  }
 
   dout(5) << __func__ << dendl;
   _apply_compatset_features(new_features);
@@ -2553,6 +2557,9 @@ void Monitor::calc_quorum_requirements()
   }
   if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_REEF)) {
     required_features |= CEPH_FEATUREMASK_SERVER_REEF;
+  }
+  if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_SQUID)) {
+    required_features |= CEPH_FEATUREMASK_SERVER_SQUID;
   }
 
   // monmap
@@ -2652,6 +2659,7 @@ void Monitor::get_mon_status(Formatter *f)
   f->dump_int("rank", rank);
   f->dump_string("state", get_state_name());
   f->dump_int("election_epoch", get_epoch());
+  f->dump_int("uptime", get_uptime().count());
 
   f->open_array_section("quorum");
   for (set<int>::iterator p = quorum.begin(); p != quorum.end(); ++p) {
@@ -6552,6 +6560,11 @@ int Monitor::ms_handle_fast_authentication(Connection *con)
   MonSession *s = static_cast<MonSession*>(priv.get());
   if (!s) {
     // must be msgr2, otherwise dispatch would have set up the session.
+    if (state == STATE_SHUTDOWN) {
+      dout(10) << __func__ << " ignoring new con " << con << " (shutdown)" << dendl;
+      con->mark_down();
+      return -EACCES;
+    }
     s = session_map.new_session(
       entity_name_t(con->get_peer_type(), -1),  // we don't know yet
       con->get_peer_addrs(),

@@ -37,7 +37,9 @@
 #include <strings.h>
 #include <seastar/http/common.hh>
 #include <seastar/http/mime_types.hh>
+#include <seastar/net/socket_defs.hh>
 #include <seastar/core/iostream.hh>
+#include <seastar/util/string_utils.hh>
 
 namespace seastar {
 
@@ -54,26 +56,15 @@ struct request {
             other, multipart, app_x_www_urlencoded,
     };
 
-    struct case_insensitive_cmp {
-        bool operator()(const sstring& s1, const sstring& s2) const {
-            return std::equal(s1.begin(), s1.end(), s2.begin(), s2.end(),
-                    [](char a, char b) { return ::tolower(a) == ::tolower(b); });
-        }
-    };
-
-    struct case_insensitive_hash {
-        size_t operator()(sstring s) const {
-            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-            return std::hash<sstring>()(s);
-        }
-    };
-
+    socket_address _client_address;
+    socket_address _server_address;
     sstring _method;
     sstring _url;
     sstring _version;
     ctclass content_type_class;
     size_t content_length = 0;
-    std::unordered_map<sstring, sstring, case_insensitive_hash, case_insensitive_cmp> _headers;
+    mutable size_t _bytes_written = 0;
+    std::unordered_map<sstring, sstring, seastar::internal::case_insensitive_hash, seastar::internal::case_insensitive_cmp> _headers;
     std::unordered_map<sstring, sstring> query_parameters;
     httpd::parameters param;
     sstring content; // server-side deprecated: use content_stream instead
@@ -87,6 +78,22 @@ struct request {
     std::unordered_map<sstring, sstring> chunk_extensions;
     sstring protocol_name = "http";
     noncopyable_function<future<>(output_stream<char>&&)> body_writer; // for client
+
+    /**
+     * Get the address of the client that generated the request
+     * @return The address of the client that generated the request
+     */
+    const socket_address & get_client_address() const {
+        return _client_address;
+    }
+
+    /**
+     * Get the address of the server that handled the request
+     * @return The address of the server that handled the request
+     */
+    const socket_address & get_server_address() const {
+        return _server_address;
+    }
 
     /**
      * Search for the first header of a given name
@@ -147,9 +154,9 @@ struct request {
         auto it = _headers.find("Connection");
         if (_version == "1.0") {
             return it != _headers.end()
-                 && case_insensitive_cmp()(it->second, "keep-alive");
+                 && seastar::internal::case_insensitive_cmp()(it->second, "keep-alive");
         } else { // HTTP/1.1
-            return it == _headers.end() || !case_insensitive_cmp()(it->second, "close");
+            return it == _headers.end() || !seastar::internal::case_insensitive_cmp()(it->second, "close");
         }
     }
 
@@ -272,7 +279,7 @@ struct request {
 private:
     void add_param(const std::string_view& param);
     sstring request_line() const;
-    future<> write_request_headers(output_stream<char>& out);
+    future<> write_request_headers(output_stream<char>& out) const;
     friend class experimental::connection;
 };
 

@@ -1,13 +1,8 @@
-// Copyright 2021 Christian Mazakas.
+// Copyright 2021-2023 Christian Mazakas.
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-// clang-format off
-#include "../helpers/prefix.hpp"
-#include <boost/unordered_set.hpp>
-#include <boost/unordered_map.hpp>
-#include "../helpers/postfix.hpp"
-// clang-format on
+#include "../helpers/unordered.hpp"
 
 #include "../helpers/test.hpp"
 
@@ -129,6 +124,38 @@ template <class UnorderedMap> void test_map_non_transparent_contains()
 
 void test_map()
 {
+#ifdef BOOST_UNORDERED_FOA_TESTS
+  typedef boost::unordered_flat_map<key, int, transparent_hasher,
+    transparent_key_equal>
+    transparent_map;
+
+  typedef boost::unordered_flat_map<key, int, transparent_hasher, key_equal>
+    non_transparent_map1;
+
+  typedef boost::unordered_flat_map<key, int, hasher, transparent_key_equal>
+    non_transparent_map2;
+
+  typedef boost::unordered_flat_map<key, int, hasher, key_equal>
+    non_transparent_map3;
+
+  typedef boost::unordered_node_map<key, int, transparent_hasher,
+    transparent_key_equal>
+    transparent_node_map;
+
+  typedef boost::unordered_node_map<key, int, transparent_hasher, key_equal>
+    non_transparent_node_map1;
+
+  typedef boost::unordered_node_map<key, int, hasher, transparent_key_equal>
+    non_transparent_node_map2;
+
+  typedef boost::unordered_node_map<key, int, hasher, key_equal>
+    non_transparent_node_map3;
+
+  test_map_transparent_contains<transparent_node_map>();
+  test_map_non_transparent_contains<non_transparent_node_map1>();
+  test_map_non_transparent_contains<non_transparent_node_map2>();
+  test_map_non_transparent_contains<non_transparent_node_map3>();
+#else
   typedef boost::unordered_map<key, int, transparent_hasher,
     transparent_key_equal>
     transparent_map;
@@ -141,6 +168,7 @@ void test_map()
 
   typedef boost::unordered_map<key, int, hasher, key_equal>
     non_transparent_map3;
+#endif
 
   test_map_transparent_contains<transparent_map>();
   test_map_non_transparent_contains<non_transparent_map1>();
@@ -148,6 +176,7 @@ void test_map()
   test_map_non_transparent_contains<non_transparent_map3>();
 }
 
+#ifndef BOOST_UNORDERED_FOA_TESTS
 void test_multimap()
 {
   typedef boost::unordered_multimap<key, int, transparent_hasher,
@@ -168,6 +197,7 @@ void test_multimap()
   test_map_non_transparent_contains<non_transparent_multimap2>();
   test_map_non_transparent_contains<non_transparent_multimap3>();
 }
+#endif
 
 template <class UnorderedSet> void test_set_transparent_contains()
 {
@@ -231,6 +261,34 @@ template <class UnorderedSet> void test_set_non_transparent_contains()
 
 void test_set()
 {
+#ifdef BOOST_UNORDERED_FOA_TESTS
+  typedef boost::unordered_flat_set<key, transparent_hasher,
+    transparent_key_equal>
+    transparent_set;
+
+  typedef boost::unordered_flat_set<key, transparent_hasher, key_equal>
+    non_transparent_set1;
+  typedef boost::unordered_flat_set<key, hasher, transparent_key_equal>
+    non_transparent_set2;
+  typedef boost::unordered_flat_set<key, hasher, key_equal>
+    non_transparent_set3;
+
+  typedef boost::unordered_node_set<key, transparent_hasher,
+    transparent_key_equal>
+    transparent_node_set;
+
+  typedef boost::unordered_node_set<key, transparent_hasher, key_equal>
+    non_transparent_node_set1;
+  typedef boost::unordered_node_set<key, hasher, transparent_key_equal>
+    non_transparent_node_set2;
+  typedef boost::unordered_node_set<key, hasher, key_equal>
+    non_transparent_node_set3;
+
+  test_set_transparent_contains<transparent_node_set>();
+  test_set_non_transparent_contains<non_transparent_node_set1>();
+  test_set_non_transparent_contains<non_transparent_node_set2>();
+  test_set_non_transparent_contains<non_transparent_node_set3>();
+#else
   typedef boost::unordered_set<key, transparent_hasher, transparent_key_equal>
     transparent_set;
 
@@ -239,6 +297,7 @@ void test_set()
   typedef boost::unordered_set<key, hasher, transparent_key_equal>
     non_transparent_set2;
   typedef boost::unordered_set<key, hasher, key_equal> non_transparent_set3;
+#endif
 
   test_set_transparent_contains<transparent_set>();
   test_set_non_transparent_contains<non_transparent_set1>();
@@ -246,6 +305,7 @@ void test_set()
   test_set_non_transparent_contains<non_transparent_set3>();
 }
 
+#ifndef BOOST_UNORDERED_FOA_TESTS
 void test_multiset()
 {
   typedef boost::unordered_multiset<key, transparent_hasher,
@@ -264,11 +324,15 @@ void test_multiset()
   test_set_non_transparent_contains<non_transparent_multiset2>();
   test_set_non_transparent_contains<non_transparent_multiset3>();
 }
+#endif
 
 UNORDERED_AUTO_TEST (contains_) { // avoid -Wshadow warning with `bool contains`
   test_map();
-  test_multimap();
   test_set();
+#ifndef BOOST_UNORDERED_FOA_TESTS
+  test_multimap();
+  test_multiset();
+#endif
 }
 
 RUN_TESTS()

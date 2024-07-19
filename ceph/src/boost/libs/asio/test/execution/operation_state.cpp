@@ -2,7 +2,7 @@
 // operation_state.cpp
 // ~~~~~~~~~~~~~~~~~~~
 //
-// Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2023 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -19,6 +19,8 @@
 #include <string>
 #include <boost/system/error_code.hpp>
 #include "../unit_test.hpp"
+
+#if !defined(BOOST_ASIO_NO_DEPRECATED)
 
 struct not_an_operation_state_1
 {
@@ -106,3 +108,13 @@ BOOST_ASIO_TEST_SUITE
   "operation_state",
   BOOST_ASIO_TEST_CASE(is_operation_state_test)
 )
+
+#else // !defined(BOOST_ASIO_NO_DEPRECATED)
+
+BOOST_ASIO_TEST_SUITE
+(
+  "operation_state",
+  BOOST_ASIO_TEST_CASE(null_test)
+)
+
+#endif // !defined(BOOST_ASIO_NO_DEPRECATED)

@@ -23,18 +23,25 @@
 
 #include <seastar/core/future.hh>
 #include <seastar/core/posix.hh>
-#include <vector>
-#include <tuple>
 #include <seastar/core/internal/io_desc.hh>
 #include <seastar/util/bool_class.hh>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
 #include <boost/intrusive_ptr.hpp>
+#include <cstdint>
+#include <vector>
+#include <tuple>
+#include <sys/uio.h>
+#endif
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT_BEGIN
 class reactor;
 class pollable_fd;
 class pollable_fd_state;
 class socket_address;
+SEASTAR_MODULE_EXPORT_END
 
 namespace internal {
 
@@ -44,6 +51,7 @@ class buffer_allocator;
 
 namespace net {
 
+SEASTAR_MODULE_EXPORT
 class packet;
 
 }

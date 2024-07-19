@@ -22,30 +22,29 @@
 
 #pragma once
 
-#include <seastar/util/concepts.hh>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <concepts>
+#include <cstdint>
 
 namespace seastar {
 namespace internal {
 
-static inline uint64_t wrapping_difference(const uint64_t& a, const uint64_t& b) noexcept {
+inline uint64_t wrapping_difference(const uint64_t& a, const uint64_t& b) noexcept {
     return std::max<int64_t>(a - b, 0);
 }
 
-static inline uint64_t fetch_add(std::atomic<uint64_t>& a, uint64_t b) noexcept {
+inline uint64_t fetch_add(std::atomic<uint64_t>& a, uint64_t b) noexcept {
     return a.fetch_add(b);
 }
 
-SEASTAR_CONCEPT(
 template <typename T>
 concept supports_wrapping_arithmetics = requires (T a, std::atomic<T> atomic_a, T b) {
     { fetch_add(atomic_a, b) } noexcept -> std::same_as<T>;
     { wrapping_difference(a, b) } noexcept -> std::same_as<T>;
     { a + b } noexcept -> std::same_as<T>;
 };
-)
 
 enum class capped_release { yes, no };
 
@@ -90,7 +89,7 @@ struct rovers<T, capped_release::no> {
 };
 
 template <typename T, typename Period, capped_release Capped, typename Clock = std::chrono::steady_clock>
-SEASTAR_CONCEPT( requires std::is_nothrow_copy_constructible_v<T> && supports_wrapping_arithmetics<T> )
+requires std::is_nothrow_copy_constructible_v<T> && supports_wrapping_arithmetics<T>
 class shared_token_bucket {
     using rate_resolution = std::chrono::duration<double, Period>;
 
@@ -133,6 +132,7 @@ class shared_token_bucket {
     static constexpr rate_resolution max_delta = std::chrono::duration_cast<rate_resolution>(std::chrono::hours(1));
 public:
     static constexpr T max_rate = std::numeric_limits<T>::max() / 2 / max_delta.count();
+    static constexpr capped_release is_capped = Capped;
 
 private:
     static constexpr T accumulated(T rate, rate_resolution delta) noexcept {
@@ -199,7 +199,7 @@ public:
     // Estimated time to process the given amount of tokens
     // (peer of accumulated_in helper)
     rate_resolution duration_for(T tokens) const noexcept {
-        return rate_resolution(tokens / _replenish_rate);
+        return rate_resolution(double(tokens) / _replenish_rate);
     }
 
     T rate() const noexcept { return _replenish_rate; }

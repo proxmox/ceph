@@ -6,4 +6,10 @@
 # This software was jointly developed between OKTET Labs (under contract
 # for Solarflare) and Solarflare Communications, Inc.
 
+if is_windows
+    build = false
+    reason = 'not supported on Windows'
+endif
+
 sources = files('rte_mempool_bucket.c')
+require_iova_in_mbuf = false

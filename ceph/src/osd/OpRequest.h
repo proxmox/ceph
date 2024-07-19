@@ -55,7 +55,11 @@ public:
   void _dump(ceph::Formatter *f) const override;
 
   bool has_feature(uint64_t f) const {
+#ifdef WITH_SEASTAR
+    ceph_abort("In crimson, conn is independently maintained outside Message");
+#else
     return request->get_connection()->has_feature(f);
+#endif
   }
 
 private:
@@ -90,7 +94,7 @@ public:
   epoch_t min_epoch = 0;      ///< min epoch needed to handle this msg
 
   bool hitset_inserted;
-  jspan osd_parent_span;
+  jspan_ptr osd_parent_span;
 
   template<class T>
   const T* get_req() const { return static_cast<const T*>(request); }

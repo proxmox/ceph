@@ -10,8 +10,8 @@ cryptographic operations to cryptographic accelerator units on
 poll mode driver enqueues the crypto request to this accelerator and dequeues
 the response once the operation is completed.
 
-Supported Algorithms
---------------------
+Supported Symmetric Crypto Algorithms
+-------------------------------------
 
 Cipher Algorithms
 ~~~~~~~~~~~~~~~~~
@@ -53,14 +53,12 @@ AEAD Algorithms
 
 * ``RTE_CRYPTO_AEAD_AES_GCM``
 
-Config flags
-------------
+Supported Asymmetric Crypto Algorithms
+--------------------------------------
 
-For compiling the OCTEON TX crypto poll mode driver, please check if the
-CONFIG_RTE_LIBRTE_PMD_OCTEONTX_CRYPTO setting is set to `y` in
-config/common_base file.
+* ``RTE_CRYPTO_ASYM_XFORM_RSA``
+* ``RTE_CRYPTO_ASYM_XFORM_MODEX``
 
-* ``CONFIG_RTE_LIBRTE_PMD_OCTEONTX_CRYPTO=y``
 
 Compilation
 -----------
@@ -109,9 +107,7 @@ applications.
 
 .. code-block:: console
 
-        echo 8 > /sys/kernel/mm/hugepages/hugepages-524288kB/nr_hugepages
-        mkdir /mnt/huge
-        mount -t hugetlbfs nodev /mnt/huge
+   dpdk-hugepages.py --setup 4G --pagesize 512M
 
 Example applications can now be executed with crypto operations offloaded to
 OCTEON TX crypto PMD.
@@ -120,3 +116,22 @@ OCTEON TX crypto PMD.
 
         ./build/ipsec-secgw --log-level=8 -c 0xff -- -P -p 0x3 -u 0x2 --config
         "(1,0,0),(0,0,0)" -f ep1.cfg
+
+Testing
+-------
+
+The symmetric crypto operations on OCTEON TX crypto PMD may be verified by running the test
+application:
+
+.. code-block:: console
+
+        ./dpdk-test
+        RTE>>cryptodev_octeontx_autotest
+
+The asymmetric crypto operations on OCTEON TX crypto PMD may be verified by running the test
+application:
+
+.. code-block:: console
+
+        ./dpdk-test
+        RTE>>cryptodev_octeontx_asym_autotest

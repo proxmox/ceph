@@ -6,8 +6,14 @@
 # To build this example as a standalone application with an already-installed
 # DPDK instance, use 'make'
 
+allow_experimental_apis = true
 deps += ['sched', 'cfgfile']
 sources = files(
-	'app_thread.c', 'args.c', 'cfg_file.c', 'cmdline.c',
-	'init.c', 'main.c', 'stats.c'
+        'app_thread.c',
+        'args.c',
+        'cfg_file.c',
+        'cmdline.c',
+        'init.c',
+        'main.c',
+        'stats.c',
 )

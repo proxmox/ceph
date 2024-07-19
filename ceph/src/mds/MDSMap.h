@@ -19,6 +19,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <ranges>
 #include <string_view>
 
 #include <errno.h>
@@ -47,6 +48,8 @@ static inline const auto MDS_FEATURE_INCOMPAT_INLINE = CompatSet::Feature(7, "md
 static inline const auto MDS_FEATURE_INCOMPAT_NOANCHOR = CompatSet::Feature(8, "no anchor table");
 static inline const auto MDS_FEATURE_INCOMPAT_FILE_LAYOUT_V2 = CompatSet::Feature(9, "file layout v2");
 static inline const auto MDS_FEATURE_INCOMPAT_SNAPREALM_V2 = CompatSet::Feature(10, "snaprealm v2");
+static inline const auto MDS_FEATURE_INCOMPAT_MINORLOGSEGMENTS = CompatSet::Feature(11, "minor log segments");
+static inline const auto MDS_FEATURE_INCOMPAT_QUIESCE_SUBVOLUMES = CompatSet::Feature(12, "quiesce subvolumes");
 
 #define MDS_FS_NAME_DEFAULT "cephfs"
 
@@ -311,6 +314,34 @@ public:
   mds_rank_t get_tableserver() const { return tableserver; }
   mds_rank_t get_root() const { return root; }
 
+  void get_quiesce_db_cluster(mds_gid_t &leader, std::unordered_set<mds_gid_t> &members) const {
+    leader = qdb_cluster_leader;
+    members = qdb_cluster_members; 
+  }
+
+  mds_gid_t get_quiesce_db_cluster_leader() const {
+    return qdb_cluster_leader;
+  }
+
+  std::unordered_set<mds_gid_t> const& get_quiesce_db_cluster_members() const
+  {
+    return qdb_cluster_members;
+  }
+
+  bool update_quiesce_db_cluster(mds_gid_t const& leader, std::same_as<std::unordered_set<mds_gid_t>> auto && members) {
+    if (leader == qdb_cluster_leader && members == qdb_cluster_members) {
+      return false;
+    }
+
+    ceph_assert(leader == MDS_GID_NONE || mds_info.contains(leader));
+    ceph_assert(std::ranges::all_of(members, [this](auto &m) {return mds_info.contains(m);}));
+
+    qdb_cluster_leader = leader;
+    qdb_cluster_members = members;
+
+    return true;
+  }
+
   const std::vector<int64_t> &get_data_pools() const { return data_pools; }
   int64_t get_first_data_pool() const { return *data_pools.begin(); }
   int64_t get_metadata_pool() const { return metadata_pool; }
@@ -390,7 +421,7 @@ public:
   }
 
   // features
-  uint64_t get_up_features();
+  uint64_t get_up_features() const;
 
   /**
    * Get MDS ranks which are in but not up.
@@ -633,6 +664,8 @@ protected:
 
   mds_rank_t tableserver = 0;   // which MDS has snaptable
   mds_rank_t root = 0;          // which MDS has root directory
+  std::unordered_set<mds_gid_t> qdb_cluster_members;
+  mds_gid_t qdb_cluster_leader = MDS_GID_NONE;
 
   __u32 session_timeout = 60;
   __u32 session_autoclose = 300;
@@ -677,7 +710,6 @@ protected:
 
   bool inline_data_enabled = false;
 
-  uint64_t cached_up_features = 0;
 private:
   inline static const std::map<int, std::string> flag_display = {
     {CEPH_MDSMAP_NOT_JOINABLE, "joinable"}, //inverse for user display

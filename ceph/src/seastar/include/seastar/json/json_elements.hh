@@ -21,19 +21,25 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <string>
 #include <vector>
 #include <time.h>
 #include <sstream>
+#endif
+
 #include <seastar/core/do_with.hh>
 #include <seastar/core/loop.hh>
 #include <seastar/json/formatter.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/iostream.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
 namespace json {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /**
  * The base class for all json element.
@@ -44,7 +50,7 @@ namespace json {
  * this is not a valid object
  */
 class json_base_element {
-public:
+protected:
     /**
      * The constructors
      */
@@ -52,8 +58,17 @@ public:
             : _mandatory(false), _set(false) {
     }
 
-    virtual ~json_base_element() = default;
+    json_base_element(const json_base_element& o) noexcept = default;
+    json_base_element& operator=(const json_base_element& o) noexcept {
+        // Names and mandatory are never changed after creation
+        _set = o._set;
+        return *this;
+    }
 
+    json_base_element(json_base_element&&) = delete;
+    json_base_element& operator=(json_base_element&&) = delete;
+public:
+    virtual ~json_base_element() = default;
     /**
      * Check if it's a mandatory parameter
      * and if it's set.
@@ -62,12 +77,6 @@ public:
      */
     virtual bool is_verify() noexcept {
         return !(_mandatory && !_set);
-    }
-
-    json_base_element& operator=(const json_base_element& o) noexcept {
-        // Names and mandatory are never changed after creation
-        _set = o._set;
-        return *this;
     }
 
     /**
@@ -127,7 +136,7 @@ public:
     /**
      * The to_string return the value
      * formated as a json value
-     * @return the value foramted for json
+     * @return the value formatted for json
      */
     virtual std::string to_string() override
     {
@@ -185,9 +194,12 @@ public:
 
 class jsonable {
 public:
+    jsonable() = default;
+    jsonable(const jsonable&) = default;
+    jsonable& operator=(const jsonable&) = default;
     virtual ~jsonable() = default;
     /**
-     * create a foramted string of the object.
+     * create a formatted string of the object.
      * @return the object formated.
      */
     virtual std::string to_json() const = 0;
@@ -224,8 +236,8 @@ struct json_base : public jsonable {
     json_base operator=(const json_base&) = delete;
 
     /**
-     * create a foramted string of the object.
-     * @return the object formated.
+     * create a formatted string of the object.
+     * @return the object formatted.
      */
     virtual std::string to_json() const;
 
@@ -317,7 +329,7 @@ struct json_return_type {
  * return make_ready_future<json::json_return_type>(stream_range_as_array(res, [](const auto&i) {return i.first}));
  */
 template<typename Container, typename Func>
-SEASTAR_CONCEPT( requires requires (Container c, Func aa, output_stream<char> s) { { formatter::write(s, aa(*c.begin())) } -> std::same_as<future<>>; } )
+requires requires (Container c, Func aa, output_stream<char> s) { { formatter::write(s, aa(*c.begin())) } -> std::same_as<future<>>; }
 std::function<future<>(output_stream<char>&&)> stream_range_as_array(Container val, Func fun) {
     return [val = std::move(val), fun = std::move(fun)](output_stream<char>&& s) mutable {
         return do_with(output_stream<char>(std::move(s)), Container(std::move(val)), Func(std::move(fun)), true, [](output_stream<char>& s, const Container& val, const Func& f, bool& first){
@@ -355,6 +367,7 @@ std::function<future<>(output_stream<char>&&)> stream_object(T val) {
     };
 }
 
+SEASTAR_MODULE_EXPORT_END
 }
 
 }

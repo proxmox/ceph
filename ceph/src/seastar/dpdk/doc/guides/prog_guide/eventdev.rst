@@ -63,12 +63,44 @@ the actual event being scheduled is. The payload is a union of the following:
 * ``uint64_t u64``
 * ``void *event_ptr``
 * ``struct rte_mbuf *mbuf``
+* ``struct rte_event_vector *vec``
 
-These three items in a union occupy the same 64 bits at the end of the rte_event
+These four items in a union occupy the same 64 bits at the end of the rte_event
 structure. The application can utilize the 64 bits directly by accessing the
-u64 variable, while the event_ptr and mbuf are provided as convenience
+u64 variable, while the event_ptr, mbuf, vec are provided as a convenience
 variables.  For example the mbuf pointer in the union can used to schedule a
 DPDK packet.
+
+Event Vector
+~~~~~~~~~~~~
+
+The rte_event_vector struct contains a vector of elements defined by the event
+type specified in the ``rte_event``. The event_vector structure contains the
+following data:
+
+* ``nb_elem`` - The number of elements held within the vector.
+
+Similar to ``rte_event`` the payload of event vector is also a union, allowing
+flexibility in what the actual vector is.
+
+* ``struct rte_mbuf *mbufs[0]`` - An array of mbufs.
+* ``void *ptrs[0]`` - An array of pointers.
+* ``uint64_t u64s[0]`` - An array of uint64_t elements.
+
+The size of the event vector is related to the total number of elements it is
+configured to hold, this is achieved by making `rte_event_vector` a variable
+length structure.
+A helper function is provided to create a mempool that holds event vector, which
+takes name of the pool, total number of required ``rte_event_vector``,
+cache size, number of elements in each ``rte_event_vector`` and socket id.
+
+.. code-block:: c
+
+        rte_event_vector_pool_create("vector_pool", nb_event_vectors, cache_sz,
+                                     nb_elements_per_vector, socket_id);
+
+The function ``rte_event_vector_pool_create`` creates mempool with the best
+platform mempool ops.
 
 Queues
 ~~~~~~
@@ -120,7 +152,7 @@ Ports
 ~~~~~
 
 Ports are the points of contact between worker cores and the eventdev. The
-general use-case will see one CPU core using one port to enqueue and dequeue
+general use case will see one CPU core using one port to enqueue and dequeue
 events from an eventdev. Ports are linked to queues in order to retrieve events
 from those queues (more details in `Linking Queues and Ports`_ below).
 
@@ -242,9 +274,10 @@ Once queues are set up successfully, create the ports as required.
         };
         int dev_id = 0;
         int rx_port_id = 0;
+        int worker_port_id;
         int err = rte_event_port_setup(dev_id, rx_port_id, &rx_conf);
 
-        for(int worker_port_id = 1; worker_port_id <= 4; worker_port_id++) {
+        for (worker_port_id = 1; worker_port_id <= 4; worker_port_id++) {
 	        int err = rte_event_port_setup(dev_id, worker_port_id, &worker_conf);
         }
 
@@ -277,8 +310,9 @@ can be achieved like this:
         uint8_t atomic_qs[] = {0, 1};
         uint8_t single_link_q = 2;
         uint8_t priority = RTE_EVENT_DEV_PRIORITY_NORMAL;
+        int worker_port_id;
 
-        for(int worker_port_id = 1; worker_port_id <= 4; worker_port_id++) {
+        for (worker_port_id = 1; worker_port_id <= 4; worker_port_id++) {
                 int links_made = rte_event_port_link(dev_id, worker_port_id, atomic_qs, NULL, 2);
         }
         int links_made = rte_event_port_link(dev_id, tx_port_id, &single_link_q, &priority, 1);
@@ -378,6 +412,41 @@ An event driven worker thread has following typical workflow on fastpath:
                rte_event_enqueue_burst(...);
        }
 
+Quiescing Event Ports
+~~~~~~~~~~~~~~~~~~~~~
+
+To migrate the event port to another lcore
+or while tearing down a worker core using an event port,
+``rte_event_port_quiesce()`` can be invoked to make sure that all the data
+associated with the event port are released from the worker core,
+this might also include any prefetched events.
+
+A flush callback can be passed to the function to handle any outstanding events.
+
+.. code-block:: c
+
+        rte_event_port_quiesce(dev_id, port_id, release_cb, NULL);
+
+.. Note::
+
+        Invocation of this API does not affect the existing port configuration.
+
+Stopping the EventDev
+~~~~~~~~~~~~~~~~~~~~~
+
+A single function call tells the eventdev instance to stop processing events.
+A flush callback can be registered to free any inflight events
+using ``rte_event_dev_stop_flush_callback_register()`` function.
+
+.. code-block:: c
+
+        int err = rte_event_dev_stop(dev_id);
+
+.. Note::
+
+        The event producers such as ``event_eth_rx_adapter``,
+        ``event_timer_adapter`` and ``event_crypto_adapter``
+        need to be stopped before stopping the event device.
 
 Summary
 -------

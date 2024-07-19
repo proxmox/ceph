@@ -16,7 +16,7 @@
 #include <rte_memcpy.h>
 #include <rte_memory.h>
 #include <rte_memzone.h>
-#include <rte_eal_memconfig.h>
+#include <rte_atomic.h>
 
 #include "opdl_ring.h"
 #include "opdl_log.h"
@@ -30,8 +30,6 @@
 #define OPDL_FLOWID_MASK (0xFFFFF)
 #define OPDL_OPA_MASK    (0xFF)
 #define OPDL_OPA_OFFSET  (0x38)
-
-int opdl_logtype_driver;
 
 /* Types of dependency between stages */
 enum dep_type {
@@ -475,9 +473,7 @@ opdl_ring_input_multithread(struct opdl_ring *t, const void *entries,
 	/* If another thread started inputting before this one, but hasn't
 	 * finished, we need to wait for it to complete to update the tail.
 	 */
-	while (unlikely(__atomic_load_n(&s->shared.tail, __ATOMIC_ACQUIRE) !=
-			old_head))
-		rte_pause();
+	rte_wait_until_equal_32(&s->shared.tail, old_head, __ATOMIC_ACQUIRE);
 
 	__atomic_store_n(&s->shared.tail, old_head + num_entries,
 			__ATOMIC_RELEASE);
@@ -756,7 +752,7 @@ int
 opdl_stage_disclaim(struct opdl_stage *s, uint32_t num_entries, bool block)
 {
 	if (num_entries != s->num_event) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 	if (s->threadsafe == false) {

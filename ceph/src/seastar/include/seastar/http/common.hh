@@ -21,7 +21,10 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <unordered_map>
+#endif
+
 #include <seastar/core/sstring.hh>
 #include <seastar/core/iostream.hh>
 
@@ -30,14 +33,16 @@ namespace seastar {
 namespace http {
 namespace internal {
 output_stream<char> make_http_chunked_output_stream(output_stream<char>& out);
-// The len parameter defines the maximum number of bytes to be written. After the
-// stream is closed, the len is updated with the actual number of bytes written.
-output_stream<char> make_http_content_length_output_stream(output_stream<char>& out, size_t& len);
+// @param total_len defines the maximum number of bytes to be written.
+// @param bytes_written after the stream is closed, it is updated with the
+//        actual number of bytes written.
+output_stream<char> make_http_content_length_output_stream(output_stream<char>& out, size_t total_len, size_t& bytes_written);
 } // internal namespace
 } // http namespace
 
 namespace httpd {
 
+SEASTAR_MODULE_EXPORT_BEGIN
 
 class parameters {
     std::unordered_map<sstring, sstring> params;
@@ -69,7 +74,7 @@ public:
 };
 
 enum operation_type {
-    GET, POST, PUT, DELETE, HEAD, OPTIONS, TRACE, CONNECT, NUM_OPERATION
+    GET, POST, PUT, DELETE, HEAD, OPTIONS, TRACE, CONNECT, PATCH, NUM_OPERATION
 };
 
 /**
@@ -88,4 +93,5 @@ sstring type2str(operation_type type);
 
 }
 
+SEASTAR_MODULE_EXPORT_END
 }

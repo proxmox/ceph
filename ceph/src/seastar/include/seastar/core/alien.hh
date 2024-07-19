@@ -22,22 +22,26 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <atomic>
-#include <deque>
+#include <concepts>
 #include <future>
 #include <memory>
-
+#include <type_traits>
 #include <boost/lockfree/queue.hpp>
+#endif
 
 #include <seastar/core/future.hh>
 #include <seastar/core/cacheline.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/metrics_registration.hh>
+#include <seastar/util/modules.hh>
 
 /// \file
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT
 class reactor;
 
 /// \brief Integration with non-seastar applications.
@@ -102,7 +106,6 @@ namespace internal {
 struct qs_deleter {
     unsigned count;
     qs_deleter(unsigned n = 0) : count(n) {}
-    qs_deleter(const qs_deleter& d) : count(d.count) {}
     void operator()(message_queue* qs) const;
 };
 
@@ -112,6 +115,7 @@ struct qs_deleter {
 /// system, there is just one instance, but for in-process clustering testing
 /// there may be more than one. Function such as run_on() direct messages to
 /// and (instance, shard) tuple.
+SEASTAR_MODULE_EXPORT
 class instance {
     using qs = std::unique_ptr<message_queue[], internal::qs_deleter>;
 public:
@@ -139,7 +143,9 @@ extern instance* default_instance;
 ///          message queue managed by the shard executing the alien thread which is
 ///          interested to the return value. Please use \c submit_to() instead, if
 ///          \c func throws.
+SEASTAR_MODULE_EXPORT
 template <typename Func>
+requires std::is_nothrow_invocable_r_v<void, Func>
 void run_on(instance& instance, unsigned shard, Func func) {
     instance._qs[shard].submit(std::move(func));
 }
@@ -178,11 +184,7 @@ struct return_type_of<Func, false> {
     using return_tuple_t = typename futurize<std::invoke_result_t<Func>>::tuple_type;
     using type = std::tuple_element_t<0, return_tuple_t>;
     static void set(std::promise<type>& p, return_value_t<Func>&& t) {
-#if SEASTAR_API_LEVEL < 5
-        p.set_value(std::get<0>(std::move(t)));
-#else
         p.set_value(std::move(t));
-#endif
     }
 };
 template <typename Func> using return_type_t = typename return_type_of<Func>::type;
@@ -197,11 +199,12 @@ template <typename Func> using return_type_t = typename return_type_of<Func>::ty
 ///          the caller must guarantee that it will survive the call.
 /// \return whatever \c func returns, as a \c std::future<>
 /// \note the caller must keep the returned future alive until \c func returns
-template<typename Func, typename T = internal::return_type_t<Func>>
+SEASTAR_MODULE_EXPORT
+template<std::invocable Func, typename T = internal::return_type_t<Func>>
 std::future<T> submit_to(instance& instance, unsigned shard, Func func) {
     std::promise<T> pr;
     auto fut = pr.get_future();
-    run_on(instance, shard, [pr = std::move(pr), func = std::move(func)] () mutable {
+    run_on(instance, shard, [pr = std::move(pr), func = std::move(func)] () mutable noexcept {
         // std::future returned via std::promise above.
         (void)func().then_wrapped([pr = std::move(pr)] (auto&& result) mutable {
             try {

@@ -21,8 +21,14 @@
 /* In none-PXE mode QLEN must be whole number of 32 descriptors. */
 #define	I40E_ALIGN_RING_DESC	32
 
+/* Max data buffer size must be 16K - 128 bytes */
+#define I40E_RX_MAX_DATA_BUF_SIZE	(16 * 1024 - 128)
+
 #define	I40E_MIN_RING_DESC	64
 #define	I40E_MAX_RING_DESC	4096
+
+#define I40E_FDIR_NUM_TX_DESC   (I40E_FDIR_PRG_PKT_CNT << 1)
+#define I40E_FDIR_NUM_RX_DESC   (I40E_FDIR_PRG_PKT_CNT << 1)
 
 #define I40E_MIN_TSO_MSS          256
 #define I40E_MAX_TSO_MSS          9674
@@ -31,6 +37,13 @@
 #define I40E_TX_MAX_MTU_SEG 8
 
 #define I40E_TX_MIN_PKT_LEN 17
+
+/* Shared FDIR masks between scalar / vector drivers */
+#define I40E_RX_DESC_EXT_STATUS_FLEXBH_MASK   0x03
+#define I40E_RX_DESC_EXT_STATUS_FLEXBH_FD_ID  0x01
+#define I40E_RX_DESC_EXT_STATUS_FLEXBH_FLEX   0x02
+#define I40E_RX_DESC_EXT_STATUS_FLEXBL_MASK   0x03
+#define I40E_RX_DESC_EXT_STATUS_FLEXBL_FLEX   0x01
 
 #undef container_of
 #define container_of(ptr, type, member) ({ \
@@ -96,6 +109,7 @@ struct i40e_rx_queue {
 
 	uint16_t port_id; /**< device port ID */
 	uint8_t crc_len; /**< 0 if CRC stripped, 4 otherwise */
+	uint8_t fdir_enabled; /**< 0 if FDIR disabled, 1 when enabled */
 	uint16_t queue_id; /**< RX queue index */
 	uint16_t reg_idx; /**< RX queue register index */
 	uint8_t drop_en; /**< if not 0, set register bit */
@@ -109,13 +123,18 @@ struct i40e_rx_queue {
 	bool rx_deferred_start; /**< don't start this queue in dev start */
 	uint16_t rx_using_sse; /**<flag indicate the usage of vPMD for rx */
 	uint8_t dcb_tc;         /**< Traffic class of rx queue */
-	uint64_t offloads; /**< Rx offload flags of DEV_RX_OFFLOAD_* */
+	uint64_t offloads; /**< Rx offload flags of RTE_ETH_RX_OFFLOAD_* */
+	const struct rte_memzone *mz;
 };
 
 struct i40e_tx_entry {
 	struct rte_mbuf *mbuf;
 	uint16_t next_id;
 	uint16_t last_id;
+};
+
+struct i40e_vec_tx_entry {
+	struct rte_mbuf *mbuf;
 };
 
 /*
@@ -150,7 +169,8 @@ struct i40e_tx_queue {
 	bool q_set; /**< indicate if tx queue has been configured */
 	bool tx_deferred_start; /**< don't start this queue in dev start */
 	uint8_t dcb_tc;         /**< Traffic class of tx queue */
-	uint64_t offloads; /**< Tx offload flags of DEV_RX_OFFLOAD_* */
+	uint64_t offloads; /**< Tx offload flags of RTE_ETH_TX_OFFLOAD_* */
+	const struct rte_memzone *mz;
 };
 
 /** Offload features */
@@ -182,8 +202,10 @@ int i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			    uint16_t nb_desc,
 			    unsigned int socket_id,
 			    const struct rte_eth_txconf *tx_conf);
-void i40e_dev_rx_queue_release(void *rxq);
-void i40e_dev_tx_queue_release(void *txq);
+void i40e_rx_queue_release(void *rxq);
+void i40e_tx_queue_release(void *txq);
+void i40e_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+void i40e_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 uint16_t i40e_recv_pkts(void *rx_queue,
 			struct rte_mbuf **rx_pkts,
 			uint16_t nb_pkts);
@@ -193,6 +215,8 @@ uint16_t i40e_recv_scattered_pkts(void *rx_queue,
 uint16_t i40e_xmit_pkts(void *tx_queue,
 			struct rte_mbuf **tx_pkts,
 			uint16_t nb_pkts);
+uint16_t i40e_simple_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+			       uint16_t nb_pkts);
 uint16_t i40e_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);
 int i40e_tx_queue_init(struct i40e_tx_queue *txq);
@@ -204,12 +228,11 @@ void i40e_dev_free_queues(struct rte_eth_dev *dev);
 void i40e_reset_rx_queue(struct i40e_rx_queue *rxq);
 void i40e_reset_tx_queue(struct i40e_tx_queue *txq);
 void i40e_tx_queue_release_mbufs(struct i40e_tx_queue *txq);
+int i40e_tx_done_cleanup(void *txq, uint32_t free_cnt);
 int i40e_alloc_rx_queue_mbufs(struct i40e_rx_queue *rxq);
 void i40e_rx_queue_release_mbufs(struct i40e_rx_queue *rxq);
 
-uint32_t i40e_dev_rx_queue_count(struct rte_eth_dev *dev,
-				 uint16_t rx_queue_id);
-int i40e_dev_rx_descriptor_done(void *rx_queue, uint16_t offset);
+uint32_t i40e_dev_rx_queue_count(void *rx_queue);
 int i40e_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int i40e_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
 
@@ -236,6 +259,16 @@ uint16_t i40e_recv_scattered_pkts_vec_avx2(void *rx_queue,
 	struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
 uint16_t i40e_xmit_pkts_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint16_t nb_pkts);
+int i40e_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc);
+uint16_t i40e_recv_pkts_vec_avx512(void *rx_queue,
+				   struct rte_mbuf **rx_pkts,
+				   uint16_t nb_pkts);
+uint16_t i40e_recv_scattered_pkts_vec_avx512(void *rx_queue,
+					     struct rte_mbuf **rx_pkts,
+					     uint16_t nb_pkts);
+uint16_t i40e_xmit_pkts_vec_avx512(void *tx_queue,
+				   struct rte_mbuf **tx_pkts,
+				   uint16_t nb_pkts);
 
 /* For each value it means, datasheet of hardware can tell more details
  *

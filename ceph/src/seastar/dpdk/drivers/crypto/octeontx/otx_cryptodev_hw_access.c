@@ -7,7 +7,7 @@
 
 #include <rte_branch_prediction.h>
 #include <rte_common.h>
-#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
 #include <rte_errno.h>
 #include <rte_mempool.h>
 #include <rte_memzone.h>
@@ -296,7 +296,7 @@ cpt_vq_init(struct cpt_vf *cptvf, uint8_t group)
 	/* CPT VF device initialization */
 	otx_cpt_vfvq_init(cptvf);
 
-	/* Send msg to PF to assign currnet Q to required group */
+	/* Send msg to PF to assign current Q to required group */
 	cptvf->vfgrp = group;
 	err = otx_cpt_send_vf_grp_msg(cptvf, group);
 	if (err) {
@@ -386,6 +386,12 @@ otx_cpt_hw_init(struct cpt_vf *cptvf, void *pdev, void *reg_base, char *name)
 		return -1;
 	}
 
+	/* Gets device type */
+	if (otx_cpt_get_dev_type(cptvf)) {
+		CPT_LOG_ERR("Failed to get device type");
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -403,34 +409,54 @@ otx_cpt_deinit_device(void *dev)
 static int
 otx_cpt_metabuf_mempool_create(const struct rte_cryptodev *dev,
 			       struct cpt_instance *instance, uint8_t qp_id,
-			       int nb_elements)
+			       unsigned int nb_elements)
 {
 	char mempool_name[RTE_MEMPOOL_NAMESIZE];
-	int sg_mlen, lb_mlen, max_mlen, ret;
 	struct cpt_qp_meta_info *meta_info;
 	struct rte_mempool *pool;
+	int max_mlen = 0;
+	int sg_mlen = 0;
+	int lb_mlen = 0;
+	int mb_pool_sz;
+	int ret;
 
-	/* Get meta len for scatter gather mode */
-	sg_mlen = cpt_pmd_ops_helper_get_mlen_sg_mode();
+	/*
+	 * Calculate metabuf length required. The 'crypto_octeontx' device
+	 * would be either SYMMETRIC or ASYMMETRIC.
+	 */
 
-	/* Extra 32B saved for future considerations */
-	sg_mlen += 4 * sizeof(uint64_t);
+	if (dev->feature_flags & RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO) {
 
-	/* Get meta len for linear buffer (direct) mode */
-	lb_mlen = cpt_pmd_ops_helper_get_mlen_direct_mode();
+		/* Get meta len for scatter gather mode */
+		sg_mlen = cpt_pmd_ops_helper_get_mlen_sg_mode();
 
-	/* Extra 32B saved for future considerations */
-	lb_mlen += 4 * sizeof(uint64_t);
+		/* Extra 32B saved for future considerations */
+		sg_mlen += 4 * sizeof(uint64_t);
 
-	/* Check max requirement for meta buffer */
-	max_mlen = RTE_MAX(lb_mlen, sg_mlen);
+		/* Get meta len for linear buffer (direct) mode */
+		lb_mlen = cpt_pmd_ops_helper_get_mlen_direct_mode();
+
+		/* Extra 32B saved for future considerations */
+		lb_mlen += 4 * sizeof(uint64_t);
+
+		/* Check max requirement for meta buffer */
+		max_mlen = RTE_MAX(lb_mlen, sg_mlen);
+	} else {
+
+		/* Asymmetric device */
+
+		/* Get meta len for asymmetric operations */
+		max_mlen = cpt_pmd_ops_helper_asym_get_mlen();
+	}
 
 	/* Allocate mempool */
 
 	snprintf(mempool_name, RTE_MEMPOOL_NAMESIZE, "otx_cpt_mb_%u:%u",
 		 dev->data->dev_id, qp_id);
 
-	pool = rte_mempool_create_empty(mempool_name, nb_elements, max_mlen,
+	mb_pool_sz = RTE_MAX(nb_elements, (METABUF_POOL_CACHE_SIZE * rte_lcore_count()));
+
+	pool = rte_mempool_create_empty(mempool_name, mb_pool_sz, max_mlen,
 					METABUF_POOL_CACHE_SIZE, 0,
 					rte_socket_id(), 0);
 
@@ -501,10 +527,10 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	memset(&cptvf->pqueue, 0, sizeof(cptvf->pqueue));
 
 	/* Chunks are of fixed size buffers */
+
+	qlen = DEFAULT_CMD_QLEN;
 	chunks = DEFAULT_CMD_QCHUNKS;
 	chunk_len = DEFAULT_CMD_QCHUNK_SIZE;
-
-	qlen = chunks * chunk_len;
 	/* Chunk size includes 8 bytes of next chunk ptr */
 	chunk_size = chunk_len * CPT_INST_SIZE + CPT_NEXT_CHUNK_PTR_SIZE;
 
@@ -512,7 +538,7 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	len = chunks * RTE_ALIGN(sizeof(struct command_chunk), 8);
 
 	/* For pending queue */
-	len += qlen * RTE_ALIGN(sizeof(struct rid), 8);
+	len += qlen * RTE_ALIGN(sizeof(cptvf->pqueue.rid_queue[0]), 8);
 
 	/* So that instruction queues start as pg size aligned */
 	len = RTE_ALIGN(len, pg_sz);
@@ -533,7 +559,7 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	}
 
 	mem = rz->addr;
-	dma_addr = rz->phys_addr;
+	dma_addr = rz->iova;
 	alloc_len = len;
 
 	memset(mem, 0, len);
@@ -547,14 +573,11 @@ otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
 	}
 
 	/* Pending queue setup */
-	cptvf->pqueue.rid_queue = (struct rid *)mem;
-	cptvf->pqueue.enq_tail = 0;
-	cptvf->pqueue.deq_head = 0;
-	cptvf->pqueue.pending_count = 0;
+	cptvf->pqueue.rid_queue = (void **)mem;
 
-	mem +=  qlen * RTE_ALIGN(sizeof(struct rid), 8);
-	len -=  qlen * RTE_ALIGN(sizeof(struct rid), 8);
-	dma_addr += qlen * RTE_ALIGN(sizeof(struct rid), 8);
+	mem +=  qlen * RTE_ALIGN(sizeof(cptvf->pqueue.rid_queue[0]), 8);
+	len -=  qlen * RTE_ALIGN(sizeof(cptvf->pqueue.rid_queue[0]), 8);
+	dma_addr += qlen * RTE_ALIGN(sizeof(cptvf->pqueue.rid_queue[0]), 8);
 
 	/* Alignment wastage */
 	used_len = alloc_len - len;
@@ -651,12 +674,6 @@ otx_cpt_start_device(void *dev)
 		CPT_LOG_ERR("Failed to mark CPT VF device %s UP, rc = %d",
 			    cptvf->dev_name, rc);
 		return -EFAULT;
-	}
-
-	if ((cptvf->vftype != SE_TYPE) && (cptvf->vftype != AE_TYPE)) {
-		CPT_LOG_ERR("Fatal error, unexpected vf type %u, for CPT VF "
-			    "device %s", cptvf->vftype, cptvf->dev_name);
-		return -ENOENT;
 	}
 
 	return 0;

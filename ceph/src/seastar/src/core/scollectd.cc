@@ -19,6 +19,15 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <sys/socket.h>
+#include <cassert>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <functional>
 #include <unordered_map>
 #include <forward_list>
@@ -28,6 +37,9 @@
 #include <iostream>
 #include <unordered_map>
 
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/seastar.hh>
 #include <seastar/core/scollectd_api.hh>
 #include <seastar/core/metrics_api.hh>
@@ -35,6 +47,7 @@
 #include <seastar/core/print.hh>
 
 #include "core/scollectd-impl.hh"
+#endif
 
 namespace seastar {
 
@@ -189,7 +202,7 @@ struct cpwriter {
         return *this;
     }
     template<typename T>
-    typename std::enable_if<std::is_integral<T>::value, cpwriter &>::type write(
+    std::enable_if_t<std::is_integral_v<T>, cpwriter &> write(
             const T & t) {
         T tmp = net::hton(t);
         auto * p = reinterpret_cast<const uint8_t *>(&tmp);
@@ -198,7 +211,7 @@ struct cpwriter {
         return *this;
     }
     template<typename T>
-    typename std::enable_if<std::is_integral<T>::value, cpwriter &>::type write_le(const T & t) {
+    std::enable_if_t<std::is_integral_v<T>, cpwriter &> write_le(const T & t) {
         T tmp = cpu_to_le(t);
         auto * p = reinterpret_cast<const uint8_t *>(&tmp);
         auto * e = p + sizeof(T);
@@ -241,7 +254,7 @@ struct cpwriter {
         return *this;
     }
     template<typename T>
-    typename std::enable_if<std::is_integral<T>::value, cpwriter &>::type put(
+    std::enable_if_t<std::is_integral_v<T>, cpwriter &> put(
             part_type type, T t) {
         write(uint16_t(type));
         write(uint16_t(4 + sizeof(t)));
@@ -357,7 +370,7 @@ void impl::start(const sstring & host, const ipv4_addr & addr, const duration pe
     _period = period;
     _addr = addr;
     _host = host;
-    _chan = make_udp_channel();
+    _chan = make_unbound_datagram_channel(AF_INET);
     _timer.set_callback(std::bind(&impl::run, this));
 
     // dogfood ourselves
@@ -400,7 +413,7 @@ void impl::arm() {
 void impl::run() {
     typedef size_t metric_family_id;
     typedef seastar::metrics::impl::value_vector::iterator value_iterator;
-    typedef seastar::metrics::impl::metric_metadata_vector::iterator metadata_iterator;
+    typedef seastar::metrics::impl::metric_metadata_fifo::iterator metadata_iterator;
     typedef std::tuple<metric_family_id, metadata_iterator, value_iterator, type_id, cpwriter> context;
 
     auto ctxt = make_lw_shared<context>();

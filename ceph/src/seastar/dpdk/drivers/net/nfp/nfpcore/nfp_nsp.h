@@ -40,12 +40,12 @@
 #define   NSP_STATUS_MINOR	GENMASK_ULL(43, 32)
 #define   NSP_STATUS_CODE	GENMASK_ULL(31, 16)
 #define   NSP_STATUS_RESULT	GENMASK_ULL(15, 8)
-#define   NSP_STATUS_BUSY	BIT_ULL(0)
+#define   NSP_STATUS_BUSY	RTE_BIT64(0)
 
 #define NSP_COMMAND		0x08
 #define   NSP_COMMAND_OPTION	GENMASK_ULL(63, 32)
 #define   NSP_COMMAND_CODE	GENMASK_ULL(31, 16)
-#define   NSP_COMMAND_START	BIT_ULL(0)
+#define   NSP_COMMAND_START	RTE_BIT64(0)
 
 /* CPP address to retrieve the data from */
 #define NSP_BUFFER		0x10
@@ -152,12 +152,10 @@ enum nfp_eth_fec {
 	NFP_FEC_DISABLED_BIT,
 };
 
-#define NFP_FEC_AUTO		BIT(NFP_FEC_AUTO_BIT)
-#define NFP_FEC_BASER		BIT(NFP_FEC_BASER_BIT)
-#define NFP_FEC_REED_SOLOMON	BIT(NFP_FEC_REED_SOLOMON_BIT)
-#define NFP_FEC_DISABLED	BIT(NFP_FEC_DISABLED_BIT)
-
-#define ETH_ALEN	6
+#define NFP_FEC_AUTO		RTE_BIT32(NFP_FEC_AUTO_BIT)
+#define NFP_FEC_BASER		RTE_BIT32(NFP_FEC_BASER_BIT)
+#define NFP_FEC_REED_SOLOMON	RTE_BIT32(NFP_FEC_REED_SOLOMON_BIT)
+#define NFP_FEC_DISABLED	RTE_BIT32(NFP_FEC_DISABLED_BIT)
 
 /**
  * struct nfp_eth_table - ETH table information
@@ -205,7 +203,7 @@ struct nfp_eth_table {
 		enum nfp_eth_fec fec;
 		enum nfp_eth_aneg aneg;
 
-		uint8_t mac_addr[ETH_ALEN];
+		struct rte_ether_addr mac_addr;
 
 		uint8_t label_port;
 		uint8_t label_subport;
@@ -224,7 +222,7 @@ struct nfp_eth_table {
 		int is_split;
 
 		unsigned int fec_modes_supported;
-	} ports[0];
+	} ports[];
 };
 
 struct nfp_eth_table *nfp_eth_read_ports(struct nfp_cpp *cpp);
@@ -272,7 +270,7 @@ int __nfp_eth_set_split(struct nfp_nsp *nsp, unsigned int lanes);
  * @br_primary:   branch id of primary bootloader
  * @br_secondary: branch id of secondary bootloader
  * @br_nsp:       branch id of NSP
- * @primary:      version of primarary bootloader
+ * @primary:      version of primary bootloader
  * @secondary:    version id of secondary bootloader
  * @nsp:          version id of NSP
  * @sensor_mask:  mask of present sensors available on NIC

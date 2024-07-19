@@ -8,7 +8,12 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 
+#ifdef SEASTAR_MODULE
+module;
+module seastar;
+#else
 #include <seastar/http/mime_types.hh>
+#endif
 
 namespace seastar {
 
@@ -31,6 +36,7 @@ struct mapping {
         { "txt", "text/plain" },
         { "ico", "image/x-icon" },
         { "bin", "application/octet-stream" },
+        { "proto", "application/vnd.google.protobuf; proto=io.prometheus.client.MetricFamily; encoding=delimited"},
 };
 
 const char* extension_to_type(const sstring& extension)

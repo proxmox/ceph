@@ -20,13 +20,17 @@
  */
 
 #pragma once
+
 #include <seastar/util/log.hh>
+#include <seastar/util/modules.hh>
 #include <seastar/http/reply.hh>
 #include <seastar/json/json_elements.hh>
 
 namespace seastar {
 
 namespace httpd {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /**
  * The base_exception is a base for all http exception.
@@ -39,7 +43,7 @@ public:
             : _msg(msg), _status(status) {
     }
 
-    virtual const char* what() const throw () {
+    virtual const char* what() const noexcept {
         return _msg.c_str();
     }
 
@@ -61,9 +65,8 @@ private:
  */
 class redirect_exception : public base_exception {
 public:
-    redirect_exception(const std::string& url)
-            : base_exception("", http::reply::status_type::moved_permanently), url(
-                    url) {
+    redirect_exception(const std::string& url, http::reply::status_type status = http::reply::status_type::moved_permanently)
+            : base_exception("", status), url(url) {
     }
     std::string url;
 };
@@ -133,9 +136,9 @@ public:
     }
 
     json_exception(std::exception_ptr e) {
-	std::ostringstream exception_description;
-	exception_description << e;
-	set(exception_description.str(), http::reply::status_type::internal_server_error);
+        std::ostringstream exception_description;
+        exception_description << e;
+        set(exception_description.str(), http::reply::status_type::internal_server_error);
     }
 private:
     void set(const std::string& msg, http::reply::status_type code) {
@@ -145,6 +148,26 @@ private:
     }
 };
 
+/**
+ * Client-side exception to report unexpected server reply status
+ */
+class unexpected_status_error : public base_exception {
+public:
+    unexpected_status_error(http::reply::status_type st)
+        : base_exception(fmt::to_string(st), st)
+    {}
+};
+
+SEASTAR_MODULE_EXPORT_END
 }
 
 }
+
+SEASTAR_MODULE_EXPORT
+template <>
+struct fmt::formatter<seastar::httpd::base_exception> {
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+    auto format(const seastar::httpd::base_exception& e, fmt::format_context& ctx) const {
+        return fmt::format_to(ctx.out(), "{} ({})", e.what(), e.status());
+    }
+};

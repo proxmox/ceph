@@ -10,13 +10,13 @@
 #include <stdarg.h>
 #include <inttypes.h>
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_interrupts.h>
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_eal.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_memcpy.h>
 #include <rte_malloc.h>
 #include <rte_random.h>
@@ -37,16 +37,16 @@ dev_num_vf(struct rte_eth_dev *eth_dev)
 static inline
 int igb_vf_perm_addr_gen(struct rte_eth_dev *dev, uint16_t vf_num)
 {
-	unsigned char vf_mac_addr[ETHER_ADDR_LEN];
+	unsigned char vf_mac_addr[RTE_ETHER_ADDR_LEN];
 	struct e1000_vf_info *vfinfo =
 		*E1000_DEV_PRIVATE_TO_P_VFDATA(dev->data->dev_private);
 	uint16_t vfn;
 
 	for (vfn = 0; vfn < vf_num; vfn++) {
-		eth_random_addr(vf_mac_addr);
+		rte_eth_random_addr(vf_mac_addr);
 		/* keep the random address as default */
 		memcpy(vfinfo[vfn].vf_mac_addresses, vf_mac_addr,
-				ETHER_ADDR_LEN);
+				RTE_ETHER_ADDR_LEN);
 	}
 
 	return 0;
@@ -88,7 +88,7 @@ void igb_pf_host_init(struct rte_eth_dev *eth_dev)
 	if (*vfinfo == NULL)
 		rte_panic("Cannot allocate memory for private VF data\n");
 
-	RTE_ETH_DEV_SRIOV(eth_dev).active = ETH_8_POOLS;
+	RTE_ETH_DEV_SRIOV(eth_dev).active = RTE_ETH_8_POOLS;
 	RTE_ETH_DEV_SRIOV(eth_dev).nb_q_per_pool = nb_queue;
 	RTE_ETH_DEV_SRIOV(eth_dev).def_vmdq_idx = vf_num;
 	RTE_ETH_DEV_SRIOV(eth_dev).def_pool_q_idx = (uint16_t)(vf_num * nb_queue);
@@ -155,7 +155,7 @@ int igb_pf_host_configure(struct rte_eth_dev *eth_dev)
 	else
 		E1000_WRITE_REG(hw, E1000_DTXSWC, E1000_DTXSWC_VMDQ_LOOPBACK_EN);
 
-	/* clear VMDq map to perment rar 0 */
+	/* clear VMDq map to permanent rar 0 */
 	rah = E1000_READ_REG(hw, E1000_RAH(0));
 	rah &= ~ (0xFF << E1000_RAH_POOLSEL_SHIFT);
 	E1000_WRITE_REG(hw, E1000_RAH(0), rah);
@@ -290,7 +290,7 @@ igb_vf_reset(struct rte_eth_dev *dev, uint16_t vf, uint32_t *msgbuf)
 
 	/* reply to reset with ack and vf mac address */
 	msgbuf[0] = E1000_VF_RESET | E1000_VT_MSGTYPE_ACK;
-	rte_memcpy(new_mac, vf_mac, ETHER_ADDR_LEN);
+	rte_memcpy(new_mac, vf_mac, RTE_ETHER_ADDR_LEN);
 	e1000_write_mbx(hw, msgbuf, 3, vf);
 
 	return 0;
@@ -306,8 +306,8 @@ igb_vf_set_mac_addr(struct rte_eth_dev *dev, uint32_t vf, uint32_t *msgbuf)
 	uint8_t *new_mac = (uint8_t *)(&msgbuf[1]);
 	int rah;
 
-	if (is_unicast_ether_addr((struct ether_addr *)new_mac)) {
-		if (!is_zero_ether_addr((struct ether_addr *)new_mac))
+	if (rte_is_unicast_ether_addr((struct rte_ether_addr *)new_mac)) {
+		if (!rte_is_zero_ether_addr((struct rte_ether_addr *)new_mac))
 			rte_memcpy(vfinfo[vf].vf_mac_addresses, new_mac,
 				sizeof(vfinfo[vf].vf_mac_addresses));
 		hw->mac.ops.rar_set(hw, new_mac, rar_entry);
@@ -400,10 +400,11 @@ igb_vf_set_rlpml(struct rte_eth_dev *dev, uint32_t vf, uint32_t *msgbuf)
 {
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint16_t rlpml = msgbuf[1] & E1000_VMOLR_RLPML_MASK;
-	uint32_t max_frame = rlpml + ETHER_HDR_LEN + ETHER_CRC_LEN;
+	uint32_t max_frame = rlpml + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 	uint32_t vmolr;
 
-	if ((max_frame < ETHER_MIN_LEN) || (max_frame > ETHER_MAX_JUMBO_FRAME_LEN))
+	if (max_frame < RTE_ETHER_MIN_LEN ||
+			max_frame > RTE_ETHER_MAX_JUMBO_FRAME_LEN)
 		return -1;
 
 	vmolr = E1000_READ_REG(hw, E1000_VMOLR(vf));

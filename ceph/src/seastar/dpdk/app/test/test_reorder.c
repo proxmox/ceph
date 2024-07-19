@@ -2,6 +2,8 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include "test.h"
+
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -12,8 +14,6 @@
 #include <rte_reorder.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
-
-#include "test.h"
 
 #define BURST 32
 #define REORDER_BUFFER_SIZE 16384
@@ -58,12 +58,12 @@ test_reorder_init(void)
 	struct rte_reorder_buffer *b = NULL;
 	unsigned int size;
 	/*
-	 * The minimum memory area size that should be passed to library is,
-	 * sizeof(struct rte_reorder_buffer) + (2 * size * sizeof(struct rte_mbuf *));
+	 * The minimum memory area size that should be passed to library determined
+	 * by rte_reorder_memory_footprint_get().
 	 * Otherwise error will be thrown
 	 */
 
-	size = 100;
+	size = rte_reorder_memory_footprint_get(REORDER_BUFFER_SIZE) - 1;
 	b = rte_reorder_init(b, size, "PKT1", REORDER_BUFFER_SIZE);
 	TEST_ASSERT((b == NULL) && (rte_errno == EINVAL),
 			"No error on init with NULL buffer.");
@@ -74,7 +74,7 @@ test_reorder_init(void)
 			"No error on init with invalid mem zone size.");
 	rte_free(b);
 
-	size = 262336;
+	size = rte_reorder_memory_footprint_get(REORDER_BUFFER_SIZE);
 	b = rte_malloc(NULL, size, 0);
 	b = rte_reorder_init(b, size, "PKT1", REORDER_BUFFER_SIZE_INVALID);
 	TEST_ASSERT((b == NULL) && (rte_errno == EINVAL),
@@ -149,7 +149,7 @@ test_reorder_insert(void)
 	for (i = 0; i < num_bufs; i++) {
 		bufs[i] = rte_pktmbuf_alloc(p);
 		TEST_ASSERT_NOT_NULL(bufs[i], "Packet allocation failed\n");
-		bufs[i]->seqn = i;
+		*rte_reorder_seqn(bufs[i]) = i;
 	}
 
 	/* This should fill up order buffer:
@@ -183,7 +183,7 @@ test_reorder_insert(void)
 	bufs[4] = NULL;
 
 	/* early packet from current sequence window - full ready buffer */
-	bufs[5]->seqn = 2 * size;
+	*rte_reorder_seqn(bufs[5]) = 2 * size;
 	ret = rte_reorder_insert(b, bufs[5]);
 	if (!((ret == -1) && (rte_errno == ENOSPC))) {
 		printf("%s:%d: No error inserting early packet with full ready buffer\n",
@@ -194,7 +194,7 @@ test_reorder_insert(void)
 	bufs[5] = NULL;
 
 	/* late packet */
-	bufs[6]->seqn = 3 * size;
+	*rte_reorder_seqn(bufs[6]) = 3 * size;
 	ret = rte_reorder_insert(b, bufs[6]);
 	if (!((ret == -1) && (rte_errno == ERANGE))) {
 		printf("%s:%d: No error inserting late packet with seqn:"
@@ -208,8 +208,7 @@ test_reorder_insert(void)
 exit:
 	rte_reorder_free(b);
 	for (i = 0; i < num_bufs; i++) {
-		if (bufs[i] != NULL)
-			rte_pktmbuf_free(bufs[i]);
+		rte_pktmbuf_free(bufs[i]);
 	}
 	return ret;
 }
@@ -250,7 +249,7 @@ test_reorder_drain(void)
 	for (i = 0; i < num_bufs; i++) {
 		bufs[i] = rte_pktmbuf_alloc(p);
 		TEST_ASSERT_NOT_NULL(bufs[i], "Packet allocation failed\n");
-		bufs[i]->seqn = i;
+		*rte_reorder_seqn(bufs[i]) = i;
 	}
 
 	/* Insert packet with seqn 1:
@@ -268,8 +267,8 @@ test_reorder_drain(void)
 		ret = -1;
 		goto exit;
 	}
-	if (robufs[0] != NULL)
-		rte_pktmbuf_free(robufs[0]);
+	rte_pktmbuf_free(robufs[0]);
+	memset(robufs, 0, sizeof(robufs));
 
 	/* Insert more packets
 	 * RB[] = {NULL, NULL, NULL, NULL}
@@ -303,9 +302,9 @@ test_reorder_drain(void)
 		goto exit;
 	}
 	for (i = 0; i < 3; i++) {
-		if (robufs[i] != NULL)
-			rte_pktmbuf_free(robufs[i]);
+		rte_pktmbuf_free(robufs[i]);
 	}
+	memset(robufs, 0, sizeof(robufs));
 
 	/*
 	 * RB[] = {NULL, NULL, NULL, NULL}
@@ -322,11 +321,167 @@ test_reorder_drain(void)
 exit:
 	rte_reorder_free(b);
 	for (i = 0; i < num_bufs; i++) {
-		if (bufs[i] != NULL)
-			rte_pktmbuf_free(bufs[i]);
-		if (robufs[i] != NULL)
-			rte_pktmbuf_free(robufs[i]);
+		rte_pktmbuf_free(bufs[i]);
+		rte_pktmbuf_free(robufs[i]);
 	}
+	return ret;
+}
+
+static void
+buffer_to_reorder_move(struct rte_mbuf **mbuf, struct rte_reorder_buffer *b)
+{
+	rte_reorder_insert(b, *mbuf);
+	*mbuf = NULL;
+}
+
+static int
+test_reorder_drain_up_to_seqn(void)
+{
+	struct rte_mempool *p = test_params->p;
+	struct rte_reorder_buffer *b = NULL;
+	const unsigned int num_bufs = 10;
+	const unsigned int size = 4;
+	unsigned int i, cnt;
+	int ret = 0;
+
+	struct rte_mbuf *bufs[num_bufs];
+	struct rte_mbuf *robufs[num_bufs];
+
+	/* initialize all robufs to NULL */
+	memset(robufs, 0, sizeof(robufs));
+
+	/* This would create a reorder buffer instance consisting of:
+	 * reorder_seq = 0
+	 * ready_buf: RB[size] = {NULL, NULL, NULL, NULL}
+	 * order_buf: OB[size] = {NULL, NULL, NULL, NULL}
+	 */
+	b = rte_reorder_create("test_drain_up_to_seqn", rte_socket_id(), size);
+	TEST_ASSERT_NOT_NULL(b, "Failed to create reorder buffer");
+
+	for (i = 0; i < num_bufs; i++) {
+		bufs[i] = rte_pktmbuf_alloc(p);
+		TEST_ASSERT_NOT_NULL(bufs[i], "Packet allocation failed\n");
+		*rte_reorder_seqn(bufs[i]) = i;
+	}
+
+	/* Insert packet with seqn 1 and 3:
+	 * RB[] = {NULL, NULL, NULL, NULL}
+	 * OB[] = {1, 2, 3, NULL}
+	 */
+	buffer_to_reorder_move(&bufs[1], b);
+	buffer_to_reorder_move(&bufs[2], b);
+	buffer_to_reorder_move(&bufs[3], b);
+	/* Draining 1, 2 */
+	cnt = rte_reorder_drain_up_to_seqn(b, robufs, num_bufs, 3);
+	if (cnt != 2) {
+		printf("%s:%d:%d: number of expected packets not drained\n",
+				__func__, __LINE__, cnt);
+		ret = -1;
+		goto exit;
+	}
+	for (i = 0; i < 2; i++)
+		rte_pktmbuf_free(robufs[i]);
+	memset(robufs, 0, sizeof(robufs));
+
+	/* Insert more packets
+	 * RB[] = {NULL, NULL, NULL, NULL}
+	 * OB[] = {3, 4, NULL, 6}
+	 */
+	buffer_to_reorder_move(&bufs[4], b);
+	buffer_to_reorder_move(&bufs[6], b);
+	/* Insert more packets to utilize Ready buffer
+	 * RB[] = {3, NULL, 5, 6}
+	 * OB[] = {NULL, NULL, 8, NULL}
+	 */
+	buffer_to_reorder_move(&bufs[8], b);
+
+	/* Drain 3 and 5 */
+	cnt = rte_reorder_drain_up_to_seqn(b, robufs, num_bufs, 6);
+	if (cnt != 2) {
+		printf("%s:%d:%d: number of expected packets not drained\n",
+				__func__, __LINE__, cnt);
+		ret = -1;
+		goto exit;
+	}
+	for (i = 0; i < 2; i++)
+		rte_pktmbuf_free(robufs[i]);
+	memset(robufs, 0, sizeof(robufs));
+
+	ret = 0;
+exit:
+	rte_reorder_free(b);
+	for (i = 0; i < num_bufs; i++) {
+		rte_pktmbuf_free(bufs[i]);
+		rte_pktmbuf_free(robufs[i]);
+	}
+	return ret;
+}
+
+static int
+test_reorder_set_seqn(void)
+{
+	struct rte_mempool *p = test_params->p;
+	struct rte_reorder_buffer *b = NULL;
+	const unsigned int num_bufs = 7;
+	const unsigned int size = 4;
+	unsigned int i;
+	int ret = 0;
+
+	struct rte_mbuf *bufs[num_bufs];
+
+	/* This would create a reorder buffer instance consisting of:
+	 * reorder_seq = 0
+	 * ready_buf: RB[size] = {NULL, NULL, NULL, NULL}
+	 * order_buf: OB[size] = {NULL, NULL, NULL, NULL}
+	 */
+	b = rte_reorder_create("test_min_seqn_set", rte_socket_id(), size);
+	TEST_ASSERT_NOT_NULL(b, "Failed to create reorder buffer");
+
+	for (i = 0; i < num_bufs; i++) {
+		bufs[i] = rte_pktmbuf_alloc(p);
+		if (bufs[i] == NULL) {
+			printf("Packet allocation failed\n");
+			goto exit;
+		}
+		*rte_reorder_seqn(bufs[i]) = i;
+	}
+
+	ret = rte_reorder_min_seqn_set(b, 5);
+	if (ret != 0) {
+		printf("%s:%d: Error in setting min sequence number\n", __func__, __LINE__);
+		ret = -1;
+		goto exit;
+	}
+
+	ret = rte_reorder_insert(b, bufs[0]);
+	if (ret >= 0) {
+		printf("%s:%d: Insertion with value less the min seq number\n", __func__, __LINE__);
+		ret = -1;
+		goto exit;
+	}
+
+	ret = rte_reorder_insert(b, bufs[5]);
+	if (ret != 0) {
+		printf("%s:%d: Error inserting packet with valid seqn\n", __func__, __LINE__);
+		ret = -1;
+		goto exit;
+	}
+	bufs[5] = NULL;
+
+	ret = rte_reorder_min_seqn_set(b, 0);
+	if (ret >= 0) {
+		printf("%s:%d: Error in setting min sequence number with non-empty buffer\n",
+				__func__, __LINE__);
+		ret = -1;
+		goto exit;
+	}
+
+	ret = 0;
+exit:
+	rte_reorder_free(b);
+	for (i = 0; i < num_bufs; i++)
+		rte_pktmbuf_free(bufs[i]);
+
 	return ret;
 }
 
@@ -380,6 +535,8 @@ static struct unit_test_suite reorder_test_suite  = {
 		TEST_CASE(test_reorder_free),
 		TEST_CASE(test_reorder_insert),
 		TEST_CASE(test_reorder_drain),
+		TEST_CASE(test_reorder_drain_up_to_seqn),
+		TEST_CASE(test_reorder_set_seqn),
 		TEST_CASES_END()
 	}
 };
@@ -389,5 +546,6 @@ test_reorder(void)
 {
 	return unit_test_suite_runner(&reorder_test_suite);
 }
+
 
 REGISTER_TEST_COMMAND(reorder_autotest, test_reorder);

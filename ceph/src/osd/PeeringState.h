@@ -279,15 +279,6 @@ public:
       bool need_write_epoch,
       ObjectStore::Transaction &t) = 0;
 
-    /// Notify that info/history changed (generally to update scrub registration)
-    virtual void on_info_history_change() = 0;
-
-    /// Notify PG that Primary/Replica status has changed (to update scrub registration)
-    virtual void on_primary_status_change(bool was_primary, bool now_primary) = 0;
-
-    /// Need to reschedule next scrub. Assuming no change in role
-    virtual void reschedule_scrub() = 0;
-
     /// Notify that a scrub has been requested
     virtual void scrub_requested(scrub_level_t scrub_level, scrub_type_t scrub_type) = 0;
 
@@ -398,6 +389,7 @@ public:
     virtual void on_role_change() = 0;
     virtual void on_change(ObjectStore::Transaction &t) = 0;
     virtual void on_activate(interval_set<snapid_t> to_trim) = 0;
+    virtual void on_replica_activate() {}
     virtual void on_activate_complete() = 0;
     virtual void on_new_interval() = 0;
     virtual Context *on_clean() = 0;
@@ -652,37 +644,37 @@ public:
   /* States */
   // Initial
   // Reset
-  // Start
-  //   Started
-  //     Primary
-  //       WaitActingChange
-  //       Peering
-  //         GetInfo
-  //         GetLog
-  //         GetMissing
-  //         WaitUpThru
-  //         Incomplete
-  //       Active
-  //         Activating
-  //         Clean
-  //         Recovered
-  //         Backfilling
-  //         WaitRemoteBackfillReserved
-  //         WaitLocalBackfillReserved
-  //         NotBackfilling
-  //         NotRecovering
-  //         Recovering
-  //         WaitRemoteRecoveryReserved
-  //         WaitLocalRecoveryReserved
-  //     ReplicaActive
-  //       RepNotRecovering
-  //       RepRecovering
-  //       RepWaitBackfillReserved
-  //       RepWaitRecoveryReserved
-  //     Stray
-  //     ToDelete
-  //       WaitDeleteReserved
-  //       Deleting
+  // Started
+  //   Start
+  //   Primary
+  //     WaitActingChange
+  //     Peering
+  //       GetInfo
+  //       GetLog
+  //       GetMissing
+  //       WaitUpThru
+  //       Incomplete
+  //     Active
+  //       Activating
+  //       Clean
+  //       Recovered
+  //       Backfilling
+  //       WaitRemoteBackfillReserved
+  //       WaitLocalBackfillReserved
+  //       NotBackfilling
+  //       NotRecovering
+  //       Recovering
+  //       WaitRemoteRecoveryReserved
+  //       WaitLocalRecoveryReserved
+  //   ReplicaActive
+  //     RepNotRecovering
+  //     RepRecovering
+  //     RepWaitBackfillReserved
+  //     RepWaitRecoveryReserved
+  //   Stray
+  //   ToDelete
+  //     WaitDeleteReserved
+  //     Deleting
   // Crashed
 
   struct Crashed : boost::statechart::state< Crashed, PeeringMachine >, NamedState {
@@ -1726,24 +1718,7 @@ private:
   void proc_replica_log(pg_info_t &oinfo, const pg_log_t &olog,
 			pg_missing_t&& omissing, pg_shard_t from);
 
-  void calc_min_last_complete_ondisk() {
-    eversion_t min = last_complete_ondisk;
-    ceph_assert(!acting_recovery_backfill.empty());
-    for (std::set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
-	 i != acting_recovery_backfill.end();
-	 ++i) {
-      if (*i == get_primary()) continue;
-      if (peer_last_complete_ondisk.count(*i) == 0)
-	return;   // we don't have complete info
-      eversion_t a = peer_last_complete_ondisk[*i];
-      if (a < min)
-	min = a;
-    }
-    if (min == min_last_complete_ondisk)
-      return;
-    min_last_complete_ondisk = min;
-    return;
-  }
+  void calc_min_last_complete_ondisk();
 
   void fulfill_info(
     pg_shard_t from, const pg_query_t &query,
@@ -2061,15 +2036,11 @@ public:
   /// Update lcod for fromosd
   void update_peer_last_complete_ondisk(
     pg_shard_t fromosd,
-    eversion_t lcod) {
-    peer_last_complete_ondisk[fromosd] = lcod;
-  }
+    eversion_t lcod);
 
   /// Update lcod
   void update_last_complete_ondisk(
-    eversion_t lcod) {
-    last_complete_ondisk = lcod;
-  }
+    eversion_t lcod);
 
   /// Update state to reflect recovery up to version
   void recovery_committed_to(eversion_t version);
@@ -2363,13 +2334,15 @@ public:
     if (peer == pg_whoami) {
       return pg_log.get_missing();
     } else {
-      assert(peer_missing.count(peer));
-      return peer_missing.find(peer)->second;
+      auto it = peer_missing.find(peer);
+      assert(it != peer_missing.end());
+      return it->second;
     }
   }
   const pg_info_t&get_peer_info(pg_shard_t peer) const {
-    assert(peer_info.count(peer));
-    return peer_info.find(peer)->second;
+    auto it = peer_info.find(peer);
+    assert(it != peer_info.end());
+    return it->second;
   }
   bool has_peer_info(pg_shard_t peer) const {
     return peer_info.count(peer);
@@ -2378,14 +2351,7 @@ public:
   bool needs_recovery() const;
   bool needs_backfill() const;
 
-  /**
-   * Returns whether a particular object can be safely read on this replica
-   */
-  bool can_serve_replica_read(const hobject_t &hoid) {
-    ceph_assert(!is_primary());
-    return !pg_log.get_log().has_write_since(
-      hoid, get_min_last_complete_ondisk());
-  }
+  bool can_serve_replica_read(const hobject_t &hoid);
 
   /**
    * Returns whether the current acting set is able to go active

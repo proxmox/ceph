@@ -3,6 +3,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -250,7 +251,7 @@ main(int argc, char **argv)
 	rte_eal_mp_remote_launch(
 		thread_main,
 		NULL,
-		SKIP_MASTER);
+		SKIP_MAIN);
 
 	/* Script */
 	if (app.script_name)

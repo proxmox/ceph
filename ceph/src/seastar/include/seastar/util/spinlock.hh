@@ -21,11 +21,15 @@
 
 #pragma once
 
+#include <seastar/util/modules.hh>
+
+#ifndef SEASTAR_MODULE
 #include <atomic>
 #include <cassert>
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>
+#endif
 #endif
 
 namespace seastar {
@@ -67,7 +71,7 @@ inline void cpu_relax() {
 
 [[gnu::always_inline]]
 inline void cpu_relax() {}
-#warn "Using an empty cpu_relax() for this architecture"
+#warning "Using an empty cpu_relax() for this architecture"
 
 #endif
 
@@ -80,6 +84,7 @@ namespace util {
 // BasicLockable.
 // Async-signal safe.
 // unlock() "synchronizes with" lock().
+SEASTAR_MODULE_EXPORT
 class spinlock {
     std::atomic<bool> _busy = { false };
 public:
@@ -91,7 +96,9 @@ public:
     }
     void lock() noexcept {
         while (_busy.exchange(true, std::memory_order_acquire)) {
-            internal::cpu_relax();
+            while (_busy.load(std::memory_order_relaxed)) {
+                internal::cpu_relax();
+            }
         }
     }
     void unlock() noexcept {

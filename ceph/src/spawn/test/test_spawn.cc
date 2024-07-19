@@ -254,9 +254,8 @@ template <typename Handler, typename ...Args>
 void post(Handler& h, Args&& ...args)
 {
   auto ex = boost::asio::get_associated_executor(h);
-  auto a = boost::asio::get_associated_allocator(h);
   auto b = std::bind(std::move(h), std::forward<Args>(args)...);
-  ex.post(std::move(b), a);
+  boost::asio::post(bind_executor(ex, std::move(b)));
 }
 
 struct single_tuple_handler {

@@ -3,173 +3,35 @@
  * Copyright 2017 Mellanox Technologies, Ltd
  */
 
-#include <assert.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
-/* Verbs header. */
-/* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
-#include <infiniband/verbs.h>
-#include <infiniband/mlx5dv.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
-
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 #include <rte_prefetch.h>
+#include <rte_vect.h>
 
+#include <mlx5_glue.h>
+#include <mlx5_prm.h>
+
+#include "mlx5_defs.h"
 #include "mlx5.h"
 #include "mlx5_utils.h"
 #include "mlx5_rxtx.h"
+#include "mlx5_rx.h"
 #include "mlx5_rxtx_vec.h"
 #include "mlx5_autoconf.h"
-#include "mlx5_defs.h"
-#include "mlx5_prm.h"
 
 #if defined RTE_ARCH_X86_64
 #include "mlx5_rxtx_vec_sse.h"
 #elif defined RTE_ARCH_ARM64
 #include "mlx5_rxtx_vec_neon.h"
+#elif defined RTE_ARCH_PPC_64
+#include "mlx5_rxtx_vec_altivec.h"
 #else
 #error "This should not be compiled if SIMD instructions are not supported."
 #endif
-
-/**
- * Count the number of packets having same ol_flags and same metadata (if
- * PKT_TX_METADATA is set in ol_flags), and calculate cs_flags.
- *
- * @param pkts
- *   Pointer to array of packets.
- * @param pkts_n
- *   Number of packets.
- * @param cs_flags
- *   Pointer of flags to be returned.
- * @param metadata
- *   Pointer of metadata to be returned.
- * @param txq_offloads
- *   Offloads enabled on Tx queue
- *
- * @return
- *   Number of packets having same ol_flags and metadata, if relevant.
- */
-static inline unsigned int
-txq_calc_offload(struct rte_mbuf **pkts, uint16_t pkts_n, uint8_t *cs_flags,
-		 rte_be32_t *metadata, const uint64_t txq_offloads)
-{
-	unsigned int pos;
-	const uint64_t cksum_ol_mask =
-		PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM |
-		PKT_TX_UDP_CKSUM | PKT_TX_TUNNEL_GRE |
-		PKT_TX_TUNNEL_VXLAN | PKT_TX_OUTER_IP_CKSUM;
-	rte_be32_t p0_metadata, pn_metadata;
-
-	if (!pkts_n)
-		return 0;
-	p0_metadata = pkts[0]->ol_flags & PKT_TX_METADATA ?
-			pkts[0]->tx_metadata : 0;
-	/* Count the number of packets having same offload parameters. */
-	for (pos = 1; pos < pkts_n; ++pos) {
-		/* Check if packet has same checksum flags. */
-		if ((txq_offloads & MLX5_VEC_TX_CKSUM_OFFLOAD_CAP) &&
-		    ((pkts[pos]->ol_flags ^ pkts[0]->ol_flags) & cksum_ol_mask))
-			break;
-		/* Check if packet has same metadata. */
-		if (txq_offloads & DEV_TX_OFFLOAD_MATCH_METADATA) {
-			pn_metadata = pkts[pos]->ol_flags & PKT_TX_METADATA ?
-					pkts[pos]->tx_metadata : 0;
-			if (pn_metadata != p0_metadata)
-				break;
-		}
-	}
-	*cs_flags = txq_ol_cksum_to_cs(pkts[0]);
-	*metadata = p0_metadata;
-	return pos;
-}
-
-/**
- * DPDK callback for vectorized TX.
- *
- * @param dpdk_txq
- *   Generic pointer to TX queue structure.
- * @param[in] pkts
- *   Packets to transmit.
- * @param pkts_n
- *   Number of packets in array.
- *
- * @return
- *   Number of packets successfully transmitted (<= pkts_n).
- */
-uint16_t
-mlx5_tx_burst_raw_vec(void *dpdk_txq, struct rte_mbuf **pkts,
-		      uint16_t pkts_n)
-{
-	struct mlx5_txq_data *txq = (struct mlx5_txq_data *)dpdk_txq;
-	uint16_t nb_tx = 0;
-
-	while (pkts_n > nb_tx) {
-		uint16_t n;
-		uint16_t ret;
-
-		n = RTE_MIN((uint16_t)(pkts_n - nb_tx), MLX5_VPMD_TX_MAX_BURST);
-		ret = txq_burst_v(txq, &pkts[nb_tx], n, 0, 0);
-		nb_tx += ret;
-		if (!ret)
-			break;
-	}
-	return nb_tx;
-}
-
-/**
- * DPDK callback for vectorized TX with multi-seg packets and offload.
- *
- * @param dpdk_txq
- *   Generic pointer to TX queue structure.
- * @param[in] pkts
- *   Packets to transmit.
- * @param pkts_n
- *   Number of packets in array.
- *
- * @return
- *   Number of packets successfully transmitted (<= pkts_n).
- */
-uint16_t
-mlx5_tx_burst_vec(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
-{
-	struct mlx5_txq_data *txq = (struct mlx5_txq_data *)dpdk_txq;
-	uint16_t nb_tx = 0;
-
-	while (pkts_n > nb_tx) {
-		uint8_t cs_flags = 0;
-		uint16_t n;
-		uint16_t ret;
-		rte_be32_t metadata = 0;
-
-		/* Transmit multi-seg packets in the head of pkts list. */
-		if ((txq->offloads & DEV_TX_OFFLOAD_MULTI_SEGS) &&
-		    NB_SEGS(pkts[nb_tx]) > 1)
-			nb_tx += txq_scatter_v(txq,
-					       &pkts[nb_tx],
-					       pkts_n - nb_tx);
-		n = RTE_MIN((uint16_t)(pkts_n - nb_tx), MLX5_VPMD_TX_MAX_BURST);
-		if (txq->offloads & DEV_TX_OFFLOAD_MULTI_SEGS)
-			n = txq_count_contig_single_seg(&pkts[nb_tx], n);
-		if (txq->offloads & (MLX5_VEC_TX_CKSUM_OFFLOAD_CAP |
-				     DEV_TX_OFFLOAD_MATCH_METADATA))
-			n = txq_calc_offload(&pkts[nb_tx], n,
-					     &cs_flags, &metadata,
-					     txq->offloads);
-		ret = txq_burst_v(txq, &pkts[nb_tx], n, cs_flags, metadata);
-		nb_tx += ret;
-		if (!ret)
-			break;
-	}
-	return nb_tx;
-}
 
 /**
  * Skip error packets.
@@ -189,6 +51,7 @@ rxq_handle_pending_error(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 			 uint16_t pkts_n)
 {
 	uint16_t n = 0;
+	uint16_t skip_cnt;
 	unsigned int i;
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	uint32_t err_bytes = 0;
@@ -197,7 +60,7 @@ rxq_handle_pending_error(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 	for (i = 0; i < pkts_n; ++i) {
 		struct rte_mbuf *pkt = pkts[i];
 
-		if (pkt->packet_type == RTE_PTYPE_ALL_MASK) {
+		if (pkt->packet_type == RTE_PTYPE_ALL_MASK || rxq->err_state) {
 #ifdef MLX5_PMD_SOFT_COUNTERS
 			err_bytes += PKT_LEN(pkt);
 #endif
@@ -212,7 +75,303 @@ rxq_handle_pending_error(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
 	rxq->stats.ipackets -= (pkts_n - n);
 	rxq->stats.ibytes -= err_bytes;
 #endif
+	mlx5_rx_err_handle(rxq, 1, pkts_n, &skip_cnt);
 	return n;
+}
+
+/**
+ * Replenish buffers for RX in bulk.
+ *
+ * @param rxq
+ *   Pointer to RX queue structure.
+ */
+static inline void
+mlx5_rx_replenish_bulk_mbuf(struct mlx5_rxq_data *rxq)
+{
+	const uint16_t q_n = 1 << rxq->elts_n;
+	const uint16_t q_mask = q_n - 1;
+	uint16_t n = q_n - (rxq->rq_ci - rxq->rq_pi);
+	uint16_t elts_idx = rxq->rq_ci & q_mask;
+	struct rte_mbuf **elts = &(*rxq->elts)[elts_idx];
+	volatile struct mlx5_wqe_data_seg *wq =
+		&((volatile struct mlx5_wqe_data_seg *)rxq->wqes)[elts_idx];
+	unsigned int i;
+
+	if (n >= rxq->rq_repl_thresh) {
+		MLX5_ASSERT(n >= MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n));
+		MLX5_ASSERT(MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n) >
+			    MLX5_VPMD_DESCS_PER_LOOP);
+		/* Not to cross queue end. */
+		n = RTE_MIN(n - MLX5_VPMD_DESCS_PER_LOOP, q_n - elts_idx);
+		if (rte_mempool_get_bulk(rxq->mp, (void *)elts, n) < 0) {
+			rxq->stats.rx_nombuf += n;
+			return;
+		}
+		if (unlikely(mlx5_mr_btree_len(&rxq->mr_ctrl.cache_bh) > 1)) {
+			for (i = 0; i < n; ++i) {
+				/*
+				 * In order to support the mbufs with external attached
+				 * data buffer we should use the buf_addr pointer
+				 * instead of rte_mbuf_buf_addr(). It touches the mbuf
+				 * itself and may impact the performance.
+				 */
+				void *buf_addr = elts[i]->buf_addr;
+
+				wq[i].addr = rte_cpu_to_be_64((uintptr_t)buf_addr +
+							      RTE_PKTMBUF_HEADROOM);
+				wq[i].lkey = mlx5_rx_mb2mr(rxq, elts[i]);
+			}
+		} else {
+			for (i = 0; i < n; ++i) {
+				void *buf_addr = elts[i]->buf_addr;
+
+				wq[i].addr = rte_cpu_to_be_64((uintptr_t)buf_addr +
+							      RTE_PKTMBUF_HEADROOM);
+			}
+		}
+		rxq->rq_ci += n;
+		/* Prevent overflowing into consumed mbufs. */
+		elts_idx = rxq->rq_ci & q_mask;
+		for (i = 0; i < MLX5_VPMD_DESCS_PER_LOOP; ++i)
+			(*rxq->elts)[elts_idx + i] = &rxq->fake_mbuf;
+		rte_io_wmb();
+		*rxq->rq_db = rte_cpu_to_be_32(rxq->rq_ci);
+	}
+}
+
+/**
+ * Replenish buffers for MPRQ RX in bulk.
+ *
+ * @param rxq
+ *   Pointer to RX queue structure.
+ */
+static inline void
+mlx5_rx_mprq_replenish_bulk_mbuf(struct mlx5_rxq_data *rxq)
+{
+	const uint16_t wqe_n = 1 << rxq->elts_n;
+	const uint32_t strd_n = RTE_BIT32(rxq->log_strd_num);
+	const uint32_t elts_n = wqe_n * strd_n;
+	const uint32_t wqe_mask = elts_n - 1;
+	uint32_t n = elts_n - (rxq->elts_ci - rxq->rq_pi);
+	uint32_t elts_idx = rxq->elts_ci & wqe_mask;
+	struct rte_mbuf **elts = &(*rxq->elts)[elts_idx];
+	unsigned int i;
+
+	if (n >= rxq->rq_repl_thresh &&
+	    rxq->elts_ci - rxq->rq_pi <=
+	    rxq->rq_repl_thresh + MLX5_VPMD_RX_MAX_BURST) {
+		MLX5_ASSERT(n >= MLX5_VPMD_RXQ_RPLNSH_THRESH(elts_n));
+		MLX5_ASSERT(MLX5_VPMD_RXQ_RPLNSH_THRESH(elts_n) >
+			     MLX5_VPMD_DESCS_PER_LOOP);
+		/* Not to cross queue end. */
+		n = RTE_MIN(n - MLX5_VPMD_DESCS_PER_LOOP, elts_n - elts_idx);
+		/* Limit replenish number to threshold value. */
+		n = RTE_MIN(n, rxq->rq_repl_thresh);
+		if (rte_mempool_get_bulk(rxq->mp, (void *)elts, n) < 0) {
+			rxq->stats.rx_nombuf += n;
+			return;
+		}
+		rxq->elts_ci += n;
+		/* Prevent overflowing into consumed mbufs. */
+		elts_idx = rxq->elts_ci & wqe_mask;
+		for (i = 0; i < MLX5_VPMD_DESCS_PER_LOOP; ++i)
+			(*rxq->elts)[elts_idx + i] = &rxq->fake_mbuf;
+	}
+}
+
+/**
+ * Copy or attach MPRQ buffers to RX SW ring.
+ *
+ * @param rxq
+ *   Pointer to RX queue structure.
+ * @param pkts
+ *   Pointer to array of packets to be stored.
+ * @param pkts_n
+ *   Number of packets to be stored.
+ *
+ * @return
+ *   Number of packets successfully copied/attached (<= pkts_n).
+ */
+static inline uint16_t
+rxq_copy_mprq_mbuf_v(struct mlx5_rxq_data *rxq,
+		     struct rte_mbuf **pkts, uint16_t pkts_n)
+{
+	const uint16_t wqe_n = 1 << rxq->elts_n;
+	const uint16_t wqe_mask = wqe_n - 1;
+	const uint16_t strd_sz = RTE_BIT32(rxq->log_strd_sz);
+	const uint32_t strd_n = RTE_BIT32(rxq->log_strd_num);
+	const uint32_t elts_n = wqe_n * strd_n;
+	const uint32_t elts_mask = elts_n - 1;
+	uint32_t elts_idx = rxq->rq_pi & elts_mask;
+	struct rte_mbuf **elts = &(*rxq->elts)[elts_idx];
+	uint32_t rq_ci = rxq->rq_ci;
+	struct mlx5_mprq_buf *buf = (*rxq->mprq_bufs)[rq_ci & wqe_mask];
+	uint16_t copied = 0;
+	uint16_t i = 0;
+
+	for (i = 0; i < pkts_n; ++i) {
+		uint16_t strd_cnt;
+		enum mlx5_rqx_code rxq_code;
+
+		if (rxq->consumed_strd == strd_n) {
+			/* Replace WQE if the buffer is still in use. */
+			mprq_buf_replace(rxq, rq_ci & wqe_mask);
+			/* Advance to the next WQE. */
+			rxq->consumed_strd = 0;
+			rq_ci++;
+			buf = (*rxq->mprq_bufs)[rq_ci & wqe_mask];
+		}
+
+		if (!elts[i]->pkt_len) {
+			rxq->consumed_strd = strd_n;
+			rte_pktmbuf_free_seg(elts[i]);
+#ifdef MLX5_PMD_SOFT_COUNTERS
+			rxq->stats.ipackets -= 1;
+#endif
+			continue;
+		}
+		strd_cnt = (elts[i]->pkt_len / strd_sz) +
+			   ((elts[i]->pkt_len % strd_sz) ? 1 : 0);
+		rxq_code = mprq_buf_to_pkt(rxq, elts[i], elts[i]->pkt_len,
+					   buf, rxq->consumed_strd, strd_cnt);
+		rxq->consumed_strd += strd_cnt;
+		if (unlikely(rxq_code != MLX5_RXQ_CODE_EXIT)) {
+			rte_pktmbuf_free_seg(elts[i]);
+#ifdef MLX5_PMD_SOFT_COUNTERS
+			rxq->stats.ipackets -= 1;
+			rxq->stats.ibytes -= elts[i]->pkt_len;
+#endif
+			if (rxq_code == MLX5_RXQ_CODE_NOMBUF) {
+				++rxq->stats.rx_nombuf;
+				break;
+			}
+			if (rxq_code == MLX5_RXQ_CODE_DROPPED) {
+				++rxq->stats.idropped;
+				continue;
+			}
+		}
+		pkts[copied++] = elts[i];
+	}
+	rxq->rq_pi += i;
+	rxq->cq_ci += i;
+	if (rq_ci != rxq->rq_ci) {
+		rxq->rq_ci = rq_ci;
+		rte_io_wmb();
+		*rxq->rq_db = rte_cpu_to_be_32(rxq->rq_ci);
+	}
+	return copied;
+}
+
+/**
+ * Receive burst of packets. An errored completion also consumes a mbuf, but the
+ * packet_type is set to be RTE_PTYPE_ALL_MASK. Marked mbufs should be freed
+ * before returning to application.
+ *
+ * @param rxq
+ *   Pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
+ * @param[out] err
+ *   Pointer to a flag. Set non-zero value if pkts array has at least one error
+ *   packet to handle.
+ * @param[out] no_cq
+ *   Pointer to a boolean. Set true if no new CQE seen.
+ *
+ * @return
+ *   Number of packets received including errors (<= pkts_n).
+ */
+static inline uint16_t
+rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
+	    uint16_t pkts_n, uint64_t *err, bool *no_cq)
+{
+	const uint16_t q_n = 1 << rxq->cqe_n;
+	const uint16_t q_mask = q_n - 1;
+	const uint16_t e_n = 1 << rxq->elts_n;
+	const uint16_t e_mask = e_n - 1;
+	volatile struct mlx5_cqe *cq, *next;
+	struct rte_mbuf **elts;
+	uint64_t comp_idx = MLX5_VPMD_DESCS_PER_LOOP;
+	uint16_t nocmp_n = 0;
+	uint16_t rcvd_pkt = 0;
+	unsigned int cq_idx = rxq->cq_ci & q_mask;
+	unsigned int elts_idx;
+	int ret;
+
+	MLX5_ASSERT(rxq->sges_n == 0);
+	MLX5_ASSERT(rxq->cqe_n == rxq->elts_n);
+	cq = &(*rxq->cqes)[cq_idx];
+	rte_prefetch0(cq);
+	rte_prefetch0(cq + 1);
+	rte_prefetch0(cq + 2);
+	rte_prefetch0(cq + 3);
+	pkts_n = RTE_MIN(pkts_n, MLX5_VPMD_RX_MAX_BURST);
+	mlx5_rx_replenish_bulk_mbuf(rxq);
+	/* See if there're unreturned mbufs from compressed CQE. */
+	rcvd_pkt = rxq->decompressed;
+	if (rcvd_pkt > 0) {
+		rcvd_pkt = RTE_MIN(rcvd_pkt, pkts_n);
+		rxq_copy_mbuf_v(&(*rxq->elts)[rxq->rq_pi & e_mask],
+				pkts, rcvd_pkt);
+		rxq->rq_pi += rcvd_pkt;
+		rxq->decompressed -= rcvd_pkt;
+		pkts += rcvd_pkt;
+	}
+	elts_idx = rxq->rq_pi & e_mask;
+	elts = &(*rxq->elts)[elts_idx];
+	/* Not to overflow pkts array. */
+	pkts_n = RTE_ALIGN_FLOOR(pkts_n - rcvd_pkt, MLX5_VPMD_DESCS_PER_LOOP);
+	/* Not to cross queue end. */
+	pkts_n = RTE_MIN(pkts_n, q_n - elts_idx);
+	pkts_n = RTE_MIN(pkts_n, q_n - cq_idx);
+	if (!pkts_n) {
+		*no_cq = !rcvd_pkt;
+		return rcvd_pkt;
+	}
+	/* At this point, there shouldn't be any remaining packets. */
+	MLX5_ASSERT(rxq->decompressed == 0);
+	/* Process all the CQEs */
+	nocmp_n = rxq_cq_process_v(rxq, cq, elts, pkts, pkts_n, err, &comp_idx);
+	/* If no new CQE seen, return without updating cq_db. */
+	if (unlikely(!nocmp_n && comp_idx == MLX5_VPMD_DESCS_PER_LOOP)) {
+		*no_cq = true;
+		return rcvd_pkt;
+	}
+	/* Update the consumer indexes for non-compressed CQEs. */
+	MLX5_ASSERT(nocmp_n <= pkts_n);
+	rxq->cq_ci += nocmp_n;
+	rxq->rq_pi += nocmp_n;
+	rcvd_pkt += nocmp_n;
+	/* Copy title packet for future compressed sessions. */
+	if (rxq->cqe_comp_layout) {
+		next = &(*rxq->cqes)[rxq->cq_ci & q_mask];
+		ret = check_cqe_iteration(next,	rxq->cqe_n, rxq->cq_ci);
+		if (ret != MLX5_CQE_STATUS_SW_OWN ||
+		    MLX5_CQE_FORMAT(next->op_own) == MLX5_COMPRESSED)
+			rte_memcpy(&rxq->title_pkt, elts[nocmp_n - 1],
+				   sizeof(struct rte_mbuf));
+	}
+	/* Decompress the last CQE if compressed. */
+	if (comp_idx < MLX5_VPMD_DESCS_PER_LOOP) {
+		MLX5_ASSERT(comp_idx == (nocmp_n % MLX5_VPMD_DESCS_PER_LOOP));
+		rxq->decompressed = rxq_cq_decompress_v(rxq, &cq[nocmp_n],
+							&elts[nocmp_n]);
+		rxq->cq_ci += rxq->decompressed;
+		/* Return more packets if needed. */
+		if (nocmp_n < pkts_n) {
+			uint16_t n = rxq->decompressed;
+
+			n = RTE_MIN(n, pkts_n - nocmp_n);
+			rxq_copy_mbuf_v(&(*rxq->elts)[rxq->rq_pi & e_mask],
+					&pkts[nocmp_n], n);
+			rxq->rq_pi += n;
+			rcvd_pkt += n;
+			rxq->decompressed -= n;
+		}
+	}
+	*no_cq = !rcvd_pkt;
+	return rcvd_pkt;
 }
 
 /**
@@ -232,56 +391,171 @@ uint16_t
 mlx5_rx_burst_vec(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
 	struct mlx5_rxq_data *rxq = dpdk_rxq;
-	uint16_t nb_rx;
+	uint16_t nb_rx = 0;
+	uint16_t tn = 0;
 	uint64_t err = 0;
+	bool no_cq = false;
 
-	nb_rx = rxq_burst_v(rxq, pkts, pkts_n, &err);
-	if (unlikely(err))
-		nb_rx = rxq_handle_pending_error(rxq, pkts, nb_rx);
-	return nb_rx;
+	do {
+		err = 0;
+		nb_rx = rxq_burst_v(rxq, pkts + tn, pkts_n - tn,
+				    &err, &no_cq);
+		if (unlikely(err | rxq->err_state))
+			nb_rx = rxq_handle_pending_error(rxq, pkts + tn, nb_rx);
+		tn += nb_rx;
+		if (unlikely(no_cq))
+			break;
+		rte_io_wmb();
+		*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
+	} while (tn != pkts_n);
+	return tn;
 }
 
 /**
- * Check Tx queue flags are set for raw vectorized Tx.
+ * Receive burst of packets. An errored completion also consumes a mbuf, but the
+ * packet_type is set to be RTE_PTYPE_ALL_MASK. Marked mbufs should be freed
+ * before returning to application.
  *
- * @param dev
- *   Pointer to Ethernet device.
+ * @param rxq
+ *   Pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
+ * @param[out] err
+ *   Pointer to a flag. Set non-zero value if pkts array has at least one error
+ *   packet to handle.
+ * @param[out] no_cq
+ *   Pointer to a boolean. Set true if no new CQE seen.
  *
  * @return
- *   1 if supported, negative errno value if not.
+ *   Number of packets received including errors (<= pkts_n).
  */
-int __attribute__((cold))
-mlx5_check_raw_vec_tx_support(struct rte_eth_dev *dev)
+static inline uint16_t
+rxq_burst_mprq_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts,
+		 uint16_t pkts_n, uint64_t *err, bool *no_cq)
 {
-	uint64_t offloads = dev->data->dev_conf.txmode.offloads;
+	const uint16_t q_n = 1 << rxq->cqe_n;
+	const uint16_t q_mask = q_n - 1;
+	const uint16_t wqe_n = 1 << rxq->elts_n;
+	const uint32_t strd_n = RTE_BIT32(rxq->log_strd_num);
+	const uint32_t elts_n = wqe_n * strd_n;
+	const uint32_t elts_mask = elts_n - 1;
+	volatile struct mlx5_cqe *cq, *next;
+	struct rte_mbuf **elts;
+	uint64_t comp_idx = MLX5_VPMD_DESCS_PER_LOOP;
+	uint16_t nocmp_n = 0;
+	uint16_t rcvd_pkt = 0;
+	uint16_t cp_pkt = 0;
+	unsigned int cq_idx = rxq->cq_ci & q_mask;
+	unsigned int elts_idx;
+	int ret;
 
-	/* Doesn't support any offload. */
-	if (offloads)
-		return -ENOTSUP;
-	return 1;
+	MLX5_ASSERT(rxq->sges_n == 0);
+	cq = &(*rxq->cqes)[cq_idx];
+	rte_prefetch0(cq);
+	rte_prefetch0(cq + 1);
+	rte_prefetch0(cq + 2);
+	rte_prefetch0(cq + 3);
+	pkts_n = RTE_MIN(pkts_n, MLX5_VPMD_RX_MAX_BURST);
+	mlx5_rx_mprq_replenish_bulk_mbuf(rxq);
+	/* Not to move past the allocated mbufs. */
+	pkts_n = RTE_MIN(pkts_n, rxq->elts_ci - rxq->rq_pi);
+	/* See if there're unreturned mbufs from compressed CQE. */
+	rcvd_pkt = rxq->decompressed;
+	if (rcvd_pkt > 0) {
+		rcvd_pkt = RTE_MIN(rcvd_pkt, pkts_n);
+		cp_pkt = rxq_copy_mprq_mbuf_v(rxq, pkts, rcvd_pkt);
+		rxq->decompressed -= rcvd_pkt;
+		pkts += cp_pkt;
+	}
+	elts_idx = rxq->rq_pi & elts_mask;
+	elts = &(*rxq->elts)[elts_idx];
+	/* Not to overflow pkts array. */
+	pkts_n = RTE_ALIGN_FLOOR(pkts_n - cp_pkt, MLX5_VPMD_DESCS_PER_LOOP);
+	/* Not to cross queue end. */
+	pkts_n = RTE_MIN(pkts_n, elts_n - elts_idx);
+	pkts_n = RTE_MIN(pkts_n, q_n - cq_idx);
+	if (!pkts_n) {
+		*no_cq = !cp_pkt;
+		return cp_pkt;
+	}
+	/* At this point, there shouldn't be any remaining packets. */
+	MLX5_ASSERT(rxq->decompressed == 0);
+	/* Process all the CQEs */
+	nocmp_n = rxq_cq_process_v(rxq, cq, elts, pkts, pkts_n, err, &comp_idx);
+	/* If no new CQE seen, return without updating cq_db. */
+	if (unlikely(!nocmp_n && comp_idx == MLX5_VPMD_DESCS_PER_LOOP)) {
+		*no_cq = true;
+		return cp_pkt;
+	}
+	/* Update the consumer indexes for non-compressed CQEs. */
+	MLX5_ASSERT(nocmp_n <= pkts_n);
+	cp_pkt = rxq_copy_mprq_mbuf_v(rxq, pkts, nocmp_n);
+	rcvd_pkt += cp_pkt;
+	/* Copy title packet for future compressed sessions. */
+	if (rxq->cqe_comp_layout) {
+		next = &(*rxq->cqes)[rxq->cq_ci & q_mask];
+		ret = check_cqe_iteration(next,	rxq->cqe_n, rxq->cq_ci);
+		if (ret != MLX5_CQE_STATUS_SW_OWN ||
+		    MLX5_CQE_FORMAT(next->op_own) == MLX5_COMPRESSED)
+			rte_memcpy(&rxq->title_pkt, elts[nocmp_n - 1],
+				   sizeof(struct rte_mbuf));
+	}
+	/* Decompress the last CQE if compressed. */
+	if (comp_idx < MLX5_VPMD_DESCS_PER_LOOP) {
+		MLX5_ASSERT(comp_idx == (nocmp_n % MLX5_VPMD_DESCS_PER_LOOP));
+		rxq->decompressed = rxq_cq_decompress_v(rxq, &cq[nocmp_n],
+							&elts[nocmp_n]);
+		/* Return more packets if needed. */
+		if (nocmp_n < pkts_n) {
+			uint16_t n = rxq->decompressed;
+
+			n = RTE_MIN(n, pkts_n - nocmp_n);
+			cp_pkt = rxq_copy_mprq_mbuf_v(rxq, &pkts[cp_pkt], n);
+			rcvd_pkt += cp_pkt;
+			rxq->decompressed -= n;
+		}
+	}
+	*no_cq = !rcvd_pkt;
+	return rcvd_pkt;
 }
 
 /**
- * Check a device can support vectorized TX.
+ * DPDK callback for vectorized MPRQ RX.
  *
- * @param dev
- *   Pointer to Ethernet device.
+ * @param dpdk_rxq
+ *   Generic pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
  *
  * @return
- *   1 if supported, negative errno value if not.
+ *   Number of packets successfully received (<= pkts_n).
  */
-int __attribute__((cold))
-mlx5_check_vec_tx_support(struct rte_eth_dev *dev)
+uint16_t
+mlx5_rx_burst_mprq_vec(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
-	uint64_t offloads = dev->data->dev_conf.txmode.offloads;
+	struct mlx5_rxq_data *rxq = dpdk_rxq;
+	uint16_t nb_rx = 0;
+	uint16_t tn = 0;
+	uint64_t err = 0;
+	bool no_cq = false;
 
-	if (!priv->config.tx_vec_en ||
-	    priv->txqs_n > (unsigned int)priv->config.txqs_vec ||
-	    priv->config.mps != MLX5_MPW_ENHANCED ||
-	    offloads & ~MLX5_VEC_TX_OFFLOAD_CAP)
-		return -ENOTSUP;
-	return 1;
+	do {
+		err = 0;
+		nb_rx = rxq_burst_mprq_v(rxq, pkts + tn, pkts_n - tn,
+					 &err, &no_cq);
+		if (unlikely(err | rxq->err_state))
+			nb_rx = rxq_handle_pending_error(rxq, pkts + tn, nb_rx);
+		tn += nb_rx;
+		if (unlikely(no_cq))
+			break;
+		rte_io_wmb();
+		*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
+	} while (tn != pkts_n);
+	return tn;
 }
 
 /**
@@ -293,15 +567,15 @@ mlx5_check_vec_tx_support(struct rte_eth_dev *dev)
  * @return
  *   1 if supported, negative errno value if not.
  */
-int __attribute__((cold))
+int __rte_cold
 mlx5_rxq_check_vec_support(struct mlx5_rxq_data *rxq)
 {
 	struct mlx5_rxq_ctrl *ctrl =
 		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
 
-	if (mlx5_mprq_enabled(ETH_DEV(ctrl->priv)))
+	if (!RXQ_PORT(ctrl)->config.rx_vec_en || rxq->sges_n != 0)
 		return -ENOTSUP;
-	if (!ctrl->priv->config.rx_vec_en || rxq->sges_n != 0)
+	if (rxq->lro)
 		return -ENOTSUP;
 	return 1;
 }
@@ -315,23 +589,23 @@ mlx5_rxq_check_vec_support(struct mlx5_rxq_data *rxq)
  * @return
  *   1 if supported, negative errno value if not.
  */
-int __attribute__((cold))
+int __rte_cold
 mlx5_check_vec_rx_support(struct rte_eth_dev *dev)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	uint16_t i;
+	uint32_t i;
 
-	if (!priv->config.rx_vec_en)
+	if (rte_vect_get_max_simd_bitwidth() < RTE_VECT_SIMD_128)
 		return -ENOTSUP;
-	if (mlx5_mprq_enabled(dev))
+	if (!priv->config.rx_vec_en)
 		return -ENOTSUP;
 	/* All the configured queues should support. */
 	for (i = 0; i < priv->rxqs_n; ++i) {
-		struct mlx5_rxq_data *rxq = (*priv->rxqs)[i];
+		struct mlx5_rxq_data *rxq_data = mlx5_rxq_data_get(dev, i);
 
-		if (!rxq)
+		if (!rxq_data)
 			continue;
-		if (mlx5_rxq_check_vec_support(rxq) < 0)
+		if (mlx5_rxq_check_vec_support(rxq_data) < 0)
 			break;
 	}
 	if (i != priv->rxqs_n)

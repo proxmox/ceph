@@ -32,6 +32,8 @@
 #include <chrono>
 #include <sys/mman.h>
 
+#ifndef SEASTAR_DEBUG
+
 using namespace seastar;
 using namespace std::chrono_literals;
 
@@ -48,14 +50,14 @@ public:
      */
     temporary_stall_detector_settings(std::chrono::duration<double> threshold, std::function<void ()> report = {})
             : _old_threshold(engine().get_blocked_reactor_notify_ms())
-            , _old_report(engine().get_stall_detector_report_function()) {
+            , _old_report(reactor::test::get_stall_detector_report_function()) {
         engine().update_blocked_reactor_notify_ms(std::chrono::duration_cast<std::chrono::milliseconds>(threshold));
-        engine().set_stall_detector_report_function(std::move(report));
+        reactor::test::set_stall_detector_report_function(std::move(report));
     }
 
     ~temporary_stall_detector_settings() {
         engine().update_blocked_reactor_notify_ms(_old_threshold);
-        engine().set_stall_detector_report_function(std::move(_old_report));
+        reactor::test::set_stall_detector_report_function(std::move(_old_report));
     }
 };
 
@@ -172,3 +174,11 @@ SEASTAR_THREAD_TEST_CASE(spin_in_kernel) {
     // doing 128K mmaps
     test_spin_with_body("kernel", [] { mmap_populate(128 * 1024); });
 }
+
+
+#else
+
+SEASTAR_THREAD_TEST_CASE(stall_detector_test_not_valid_in_debug_mode) {
+}
+
+#endif

@@ -53,9 +53,18 @@
 #include <seastar/core/posix.hh>
 #include <seastar/util/bool_class.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
 #include "./internal/api-level.hh"
+#ifndef SEASTAR_MODULE
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string_view>
+#endif
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 // iostream.hh
 template <class CharType> class input_stream;
@@ -75,7 +84,7 @@ struct stat_data;
 
 namespace net {
 
-class udp_channel;
+using udp_channel = class datagram_channel;
 
 }
 
@@ -157,6 +166,7 @@ socket make_socket();
 /// for sending.
 ///
 /// \return a \ref net::udp_channel object that can be used for UDP transfers.
+[[deprecated("Use `make_unbound_datagram_channel` instead")]]
 net::udp_channel make_udp_channel();
 
 
@@ -165,7 +175,35 @@ net::udp_channel make_udp_channel();
 /// \param local local address to bind to
 ///
 /// \return a \ref net::udp_channel object that can be used for UDP transfers.
+[[deprecated("Use `make_bound_datagram_channel` instead")]]
 net::udp_channel make_udp_channel(const socket_address& local);
+
+/// Creates a datagram_channel object suitable for sending datagrams to
+/// destinations that belong to the provided address family.
+/// Supported address families: AF_INET, AF_INET6 and AF_UNIX.
+///
+/// Setting family to AF_INET or AF_INET6 creates a datagram_channel that uses
+/// UDP protocol. AF_UNIX creates a datagram_channel that uses UNIX domain
+/// sockets.
+///
+/// The channel is not bound to a local address, and thus can only be used
+/// for sending.
+///
+/// \param family address family in which the \ref datagram_channel will operate
+///
+/// \return a \ref net::datagram_channel object for sending datagrams in a
+/// specified address family.
+net::datagram_channel make_unbound_datagram_channel(sa_family_t family);
+
+/// Creates a datagram_channel object suitable for sending and receiving
+/// datagrams to/from destinations that belong to the provided address family.
+/// Supported address families: AF_INET, AF_INET6 and AF_UNIX.
+///
+/// \param local local address to bind to
+///
+/// \return a \ref net::datagram_channel object for sending/receiving datagrams
+/// in a specified address family.
+net::datagram_channel make_bound_datagram_channel(const socket_address& local);
 
 /// @}
 
@@ -428,4 +466,7 @@ future<process> spawn_process(const std::filesystem::path& pathname,
 future<process> spawn_process(const std::filesystem::path& pathname);
 /// @}
 }
+
+SEASTAR_MODULE_EXPORT_END
+
 }

@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2001-2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2020 Intel Corporation
+ */
 
 #ifndef _E1000_HW_H_
 #define _E1000_HW_H_
@@ -149,6 +120,18 @@ struct e1000_hw;
 #define E1000_DEV_ID_PCH_CNP_I219_V6		0x15BE
 #define E1000_DEV_ID_PCH_CNP_I219_LM7		0x15BB
 #define E1000_DEV_ID_PCH_CNP_I219_V7		0x15BC
+#define E1000_DEV_ID_PCH_ICP_I219_LM8		0x15DF
+#define E1000_DEV_ID_PCH_ICP_I219_V8		0x15E0
+#define E1000_DEV_ID_PCH_ICP_I219_LM9		0x15E1
+#define E1000_DEV_ID_PCH_ICP_I219_V9		0x15E2
+#define E1000_DEV_ID_PCH_ADL_I219_LM16		0x1A1E
+#define E1000_DEV_ID_PCH_ADL_I219_V16		0x1A1F
+#define E1000_DEV_ID_PCH_ADL_I219_LM17		0x1A1C
+#define E1000_DEV_ID_PCH_ADL_I219_V17		0x1A1D
+#define E1000_DEV_ID_PCH_RPL_I219_LM23          0x0DC5
+#define E1000_DEV_ID_PCH_RPL_I219_V23           0x0DC6
+#define E1000_DEV_ID_PCH_RPL_I219_LM22          0x0DC7
+#define E1000_DEV_ID_PCH_RPL_I219_V22           0x0DC8
 #define E1000_DEV_ID_82576			0x10C9
 #define E1000_DEV_ID_82576_FIBER		0x10E6
 #define E1000_DEV_ID_82576_SERDES		0x10E7
@@ -183,6 +166,7 @@ struct e1000_hw;
 #define E1000_DEV_ID_I210_SGMII			0x1538
 #define E1000_DEV_ID_I210_COPPER_FLASHLESS	0x157B
 #define E1000_DEV_ID_I210_SERDES_FLASHLESS	0x157C
+#define E1000_DEV_ID_I210_SGMII_FLASHLESS	0x15F6
 #define E1000_DEV_ID_I211_COPPER		0x1539
 #define E1000_DEV_ID_I354_BACKPLANE_1GBPS	0x1F40
 #define E1000_DEV_ID_I354_SGMII			0x1F41
@@ -236,6 +220,8 @@ enum e1000_mac_type {
 	e1000_pch_lpt,
 	e1000_pch_spt,
 	e1000_pch_cnp,
+	e1000_pch_adp,
+	e1000_pch_tgp,
 	e1000_82575,
 	e1000_82576,
 	e1000_82580,
@@ -950,7 +936,6 @@ struct e1000_shadow_ram {
 
 #define E1000_SHADOW_RAM_WORDS		2048
 
-#ifdef ULP_SUPPORT
 /* I218 PHY Ultra Low Power (ULP) states */
 enum e1000_ulp_state {
 	e1000_ulp_state_unknown,
@@ -958,7 +943,6 @@ enum e1000_ulp_state {
 	e1000_ulp_state_on,
 };
 
-#endif /* ULP_SUPPORT */
 struct e1000_dev_spec_ich8lan {
 	bool kmrn_lock_loss_workaround_enabled;
 	struct e1000_shadow_ram shadow_ram[E1000_SHADOW_RAM_WORDS];
@@ -968,12 +952,10 @@ struct e1000_dev_spec_ich8lan {
 	bool disable_k1_off;
 	bool eee_disable;
 	u16 eee_lp_ability;
-#ifdef ULP_SUPPORT
 	enum e1000_ulp_state ulp_state;
 	bool ulp_capability_disabled;
 	bool during_suspend_flow;
 	bool during_dpg_exit;
-#endif /* ULP_SUPPORT */
 	u16 lat_enc;
 	u16 max_ltr_enc;
 	bool smbus_disable;
@@ -1037,6 +1019,7 @@ struct e1000_hw {
 #include "e1000_ich8lan.h"
 #include "e1000_82575.h"
 #include "e1000_i210.h"
+#include "e1000_base.h"
 
 /* These functions must be implemented by drivers */
 void e1000_pci_clear_mwi(struct e1000_hw *hw);

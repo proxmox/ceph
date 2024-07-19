@@ -21,17 +21,21 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <functional>
 #include <limits>
 #include <map>
 #include <type_traits>
+#include <variant>
+#include <fmt/format.h>
+#endif
 #include <seastar/core/sstring.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/metrics_registration.hh>
-#include <boost/lexical_cast.hpp>
 #include <seastar/core/metrics_types.hh>
 #include <seastar/util/std-compat.hh>
 #include <seastar/util/bool_class.hh>
+#include <seastar/util/modules.hh>
 
 /*! \file metrics.hh
  *  \brief header for metrics creation.
@@ -92,6 +96,8 @@ namespace seastar {
  */
 
 namespace metrics {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 class double_registration : public std::runtime_error {
 public:
@@ -160,8 +166,8 @@ public:
      * \brief create a label_instance
      * label instance consists of key and value.
      * The key is an sstring.
-     * T - the value type can be any type that can be lexical_cast to string
-     * (ie. if it support the redirection operator for stringstream).
+     * T - the value type can be any type that can be fmt::format'ed to string
+     * (ie. if it provides fmt::format<T> specialization).
      *
      * All primitive types are supported so all the following examples are valid:
      * label_instance a("smp_queue", 1)
@@ -169,7 +175,7 @@ public:
      * label_instance a("internal_id", -1)
      */
     template<typename T>
-    label_instance(const sstring& key, T v) : _key(key), _value(boost::lexical_cast<std::string>(v)){}
+    label_instance(const sstring& key, T v) : _key(key), _value(fmt::to_string(v)){}
 
     /*!
      * \brief returns the label key
@@ -243,6 +249,7 @@ public:
         return key;
     }
 };
+SEASTAR_MODULE_EXPORT_END
 
 /*!
  * \namespace impl
@@ -269,13 +276,13 @@ struct real_counter_type_traits {
 
 template <typename T>
 struct real_counter_type_traits<true, T> {
-    using type = typename std::invoke_result<T>::type;
+    using type = std::invoke_result_t<T>;
 };
 
 template <typename T>
 struct counter_type_traits {
-    using real_traits = real_counter_type_traits<std::is_invocable<T>::value, T>;
-    static constexpr bool is_integral = std::is_integral<typename real_traits::type>::value;
+    using real_traits = real_counter_type_traits<std::is_invocable_v<T>, T>;
+    static constexpr bool is_integral = std::is_integral_v<typename real_traits::type>;
     static constexpr data_type type = is_integral ? data_type::COUNTER : data_type::REAL_COUNTER;
 };
 
@@ -332,8 +339,6 @@ public:
     metric_value(double d, data_type t)
             : u(d), _type(t) {
     }
-
-    metric_value& operator=(const metric_value& c) = default;
 
     metric_value& operator+=(const metric_value& c) {
         *this = *this + c;

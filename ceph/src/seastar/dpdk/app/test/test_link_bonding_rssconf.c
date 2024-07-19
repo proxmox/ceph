@@ -52,7 +52,7 @@ struct slave_conf {
 
 	struct rte_eth_rss_conf rss_conf;
 	uint8_t rss_key[40];
-	struct rte_eth_rss_reta_entry64 reta_conf[512 / RTE_RETA_GROUP_SIZE];
+	struct rte_eth_rss_reta_entry64 reta_conf[512 / RTE_ETH_RETA_GROUP_SIZE];
 
 	uint8_t is_slave;
 	struct rte_ring *rxtx_queue[RXTX_QUEUE_COUNT];
@@ -61,7 +61,7 @@ struct slave_conf {
 struct link_bonding_rssconf_unittest_params {
 	uint8_t bond_port_id;
 	struct rte_eth_dev_info bond_dev_info;
-	struct rte_eth_rss_reta_entry64 bond_reta_conf[512 / RTE_RETA_GROUP_SIZE];
+	struct rte_eth_rss_reta_entry64 bond_reta_conf[512 / RTE_ETH_RETA_GROUP_SIZE];
 	struct slave_conf slave_ports[SLAVE_COUNT];
 
 	struct rte_mempool *mbuf_pool;
@@ -80,29 +80,25 @@ static struct link_bonding_rssconf_unittest_params test_params  = {
  */
 static struct rte_eth_conf default_pmd_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
-		.split_hdr_size = 0,
+		.mq_mode = RTE_ETH_MQ_RX_NONE,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 	.lpbk_mode = 0,
 };
 
 static struct rte_eth_conf rss_pmd_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
-		.split_hdr_size = 0,
+		.mq_mode = RTE_ETH_MQ_RX_RSS,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_IPV6,
+			.rss_hf = RTE_ETH_RSS_IPV6,
 		},
 	},
 	.lpbk_mode = 0,
@@ -129,6 +125,10 @@ configure_ethdev(uint16_t port_id, struct rte_eth_conf *eth_conf,
 	TEST_ASSERT(rte_eth_dev_configure(port_id, RXTX_QUEUE_COUNT,
 			RXTX_QUEUE_COUNT, eth_conf) == 0, "Failed to configure device %u",
 			port_id);
+
+	int ret = rte_eth_dev_set_mtu(port_id, 1550);
+	RTE_TEST_ASSERT(ret == 0 || ret == -ENOTSUP,
+			"rte_eth_dev_set_mtu for port %d failed", port_id);
 
 	for (rxq = 0; rxq < RXTX_QUEUE_COUNT; rxq++) {
 		TEST_ASSERT(rte_eth_rx_queue_setup(port_id, rxq, RXTX_RING_SIZE,
@@ -176,7 +176,8 @@ static int
 remove_slaves_and_stop_bonded_device(void)
 {
 	TEST_ASSERT_SUCCESS(remove_slaves(), "Removing slaves");
-	rte_eth_dev_stop(test_params.bond_port_id);
+	TEST_ASSERT_SUCCESS(rte_eth_dev_stop(test_params.bond_port_id),
+			"Failed to stop port %u", test_params.bond_port_id);
 	return TEST_SUCCESS;
 }
 
@@ -208,13 +209,13 @@ bond_slaves(void)
 static int
 reta_set(uint16_t port_id, uint8_t value, int reta_size)
 {
-	struct rte_eth_rss_reta_entry64 reta_conf[512/RTE_RETA_GROUP_SIZE];
+	struct rte_eth_rss_reta_entry64 reta_conf[512/RTE_ETH_RETA_GROUP_SIZE];
 	int i, j;
 
-	for (i = 0; i < reta_size / RTE_RETA_GROUP_SIZE; i++) {
+	for (i = 0; i < reta_size / RTE_ETH_RETA_GROUP_SIZE; i++) {
 		/* select all fields to set */
 		reta_conf[i].mask = ~0LL;
-		for (j = 0; j < RTE_RETA_GROUP_SIZE; j++)
+		for (j = 0; j < RTE_ETH_RETA_GROUP_SIZE; j++)
 			reta_conf[i].reta[j] = value;
 	}
 
@@ -233,8 +234,8 @@ reta_check_synced(struct slave_conf *port)
 	for (i = 0; i < test_params.bond_dev_info.reta_size;
 			i++) {
 
-		int index = i / RTE_RETA_GROUP_SIZE;
-		int shift = i % RTE_RETA_GROUP_SIZE;
+		int index = i / RTE_ETH_RETA_GROUP_SIZE;
+		int shift = i % RTE_ETH_RETA_GROUP_SIZE;
 
 		if (port->reta_conf[index].reta[shift] !=
 				test_params.bond_reta_conf[index].reta[shift])
@@ -252,7 +253,7 @@ static int
 bond_reta_fetch(void) {
 	unsigned j;
 
-	for (j = 0; j < test_params.bond_dev_info.reta_size / RTE_RETA_GROUP_SIZE;
+	for (j = 0; j < test_params.bond_dev_info.reta_size / RTE_ETH_RETA_GROUP_SIZE;
 			j++)
 		test_params.bond_reta_conf[j].mask = ~0LL;
 
@@ -269,7 +270,7 @@ static int
 slave_reta_fetch(struct slave_conf *port) {
 	unsigned j;
 
-	for (j = 0; j < port->dev_info.reta_size / RTE_RETA_GROUP_SIZE; j++)
+	for (j = 0; j < port->dev_info.reta_size / RTE_ETH_RETA_GROUP_SIZE; j++)
 		port->reta_conf[j].mask = ~0LL;
 
 	TEST_ASSERT_SUCCESS(rte_eth_dev_rss_reta_query(port->port_id,
@@ -329,7 +330,11 @@ test_propagate(void)
 	uint64_t rss_hf = 0;
 	uint64_t default_rss_hf = 0;
 
-	rte_eth_dev_info_get(test_params.bond_port_id, &test_params.bond_dev_info);
+	retval = rte_eth_dev_info_get(test_params.bond_port_id,
+						&test_params.bond_dev_info);
+	TEST_ASSERT((retval == 0),
+			"Error during getting device (port %u) info: %s\n",
+			test_params.bond_port_id, strerror(-retval));
 
 	/*
 	 *  Test hash function propagation
@@ -443,10 +448,16 @@ test_rss(void)
 	/**
 	 * Configure bonding port in RSS mq mode
 	 */
+	int ret;
+
 	TEST_ASSERT_SUCCESS(configure_ethdev(test_params.bond_port_id,
 			&rss_pmd_conf, 0), "Failed to configure bonding device\n");
 
-	rte_eth_dev_info_get(test_params.bond_port_id, &test_params.bond_dev_info);
+	ret = rte_eth_dev_info_get(test_params.bond_port_id,
+					&test_params.bond_dev_info);
+	TEST_ASSERT((ret == 0),
+			"Error during getting device (port %u) info: %s\n",
+			test_params.bond_port_id, strerror(-ret));
 
 	TEST_ASSERT_SUCCESS(bond_slaves(), "Bonding slaves failed");
 
@@ -455,32 +466,106 @@ test_rss(void)
 
 	TEST_ASSERT_SUCCESS(test_propagate(), "Propagation test failed");
 
-	TEST_ASSERT(slave_remove_and_add() == 1, "New slave should be synced");
+	TEST_ASSERT(slave_remove_and_add() == 1, "remove and add slaves success.");
 
 	remove_slaves_and_stop_bonded_device();
 
 	return TEST_SUCCESS;
 }
 
+
 /**
- * Test propagation logic, when RX_RSS mq_mode is turned off for bonding port
+ * Test RSS configuration over bonded and slaves.
+ */
+static int
+test_rss_config_lazy(void)
+{
+	struct rte_eth_rss_conf bond_rss_conf = {0};
+	struct slave_conf *port;
+	uint8_t rss_key[40];
+	uint64_t rss_hf;
+	int retval;
+	uint16_t i;
+	uint8_t n;
+
+	retval = rte_eth_dev_info_get(test_params.bond_port_id,
+				      &test_params.bond_dev_info);
+	TEST_ASSERT((retval == 0), "Error during getting device (port %u) info: %s\n",
+		    test_params.bond_port_id, strerror(-retval));
+
+	rss_hf = test_params.bond_dev_info.flow_type_rss_offloads;
+	if (rss_hf != 0) {
+		bond_rss_conf.rss_key = NULL;
+		bond_rss_conf.rss_hf = rss_hf;
+		retval = rte_eth_dev_rss_hash_update(test_params.bond_port_id,
+						     &bond_rss_conf);
+		TEST_ASSERT(retval != 0, "Succeeded in setting bonded port hash function");
+	}
+
+	/* Set all keys to zero for all slaves */
+	FOR_EACH_PORT(n, port) {
+		port = &test_params.slave_ports[n];
+		retval = rte_eth_dev_rss_hash_conf_get(port->port_id,
+						       &port->rss_conf);
+		TEST_ASSERT_SUCCESS(retval, "Cannot get slaves RSS configuration");
+		memset(port->rss_key, 0, sizeof(port->rss_key));
+		port->rss_conf.rss_key = port->rss_key;
+		port->rss_conf.rss_key_len = sizeof(port->rss_key);
+		retval = rte_eth_dev_rss_hash_update(port->port_id,
+						     &port->rss_conf);
+		TEST_ASSERT(retval != 0, "Succeeded in setting slaves RSS keys");
+	}
+
+	/* Set RSS keys for bonded port */
+	memset(rss_key, 1, sizeof(rss_key));
+	bond_rss_conf.rss_hf = rss_hf;
+	bond_rss_conf.rss_key = rss_key;
+	bond_rss_conf.rss_key_len = sizeof(rss_key);
+
+	retval = rte_eth_dev_rss_hash_update(test_params.bond_port_id,
+					     &bond_rss_conf);
+	TEST_ASSERT(retval != 0, "Succeeded in setting bonded port RSS keys");
+
+	/*  Test RETA propagation */
+	for (i = 0; i < RXTX_QUEUE_COUNT; i++) {
+		FOR_EACH_PORT(n, port) {
+			port = &test_params.slave_ports[n];
+			retval = reta_set(port->port_id, (i + 1) % RXTX_QUEUE_COUNT,
+					  port->dev_info.reta_size);
+			TEST_ASSERT(retval != 0, "Succeeded in setting slaves RETA");
+		}
+
+		retval = reta_set(test_params.bond_port_id, i % RXTX_QUEUE_COUNT,
+				  test_params.bond_dev_info.reta_size);
+		TEST_ASSERT(retval != 0, "Succeeded in setting bonded port RETA");
+	}
+
+	return TEST_SUCCESS;
+}
+
+/**
+ * Test RSS function logic, when RX_RSS mq_mode is turned off for bonding port
  */
 static int
 test_rss_lazy(void)
 {
+	int ret;
+
 	TEST_ASSERT_SUCCESS(configure_ethdev(test_params.bond_port_id,
 			&default_pmd_conf, 0), "Failed to configure bonding device\n");
 
-	rte_eth_dev_info_get(test_params.bond_port_id, &test_params.bond_dev_info);
+	ret = rte_eth_dev_info_get(test_params.bond_port_id,
+						&test_params.bond_dev_info);
+	TEST_ASSERT((ret == 0),
+			"Error during getting device (port %u) info: %s\n",
+			test_params.bond_port_id, strerror(-ret));
 
 	TEST_ASSERT_SUCCESS(bond_slaves(), "Bonding slaves failed");
 
 	TEST_ASSERT_SUCCESS(rte_eth_dev_start(test_params.bond_port_id),
 			"Failed to start bonding port (%d).", test_params.bond_port_id);
 
-	TEST_ASSERT_SUCCESS(test_propagate(), "Propagation test failed");
-
-	TEST_ASSERT(slave_remove_and_add() == 0, "New slave shouldn't be synced");
+	TEST_ASSERT_SUCCESS(test_rss_config_lazy(), "Succeeded in setting RSS hash when RX_RSS mq_mode is turned off");
 
 	remove_slaves_and_stop_bonded_device();
 
@@ -495,7 +580,7 @@ test_setup(void)
 	int port_id;
 	char name[256];
 	struct slave_conf *port;
-	struct ether_addr mac_addr = { .addr_bytes = {0} };
+	struct rte_ether_addr mac_addr = { .addr_bytes = {0} };
 
 	if (test_params.mbuf_pool == NULL) {
 
@@ -532,6 +617,10 @@ test_setup(void)
 		rte_eth_dev_default_mac_addr_set(port->port_id, &mac_addr);
 
 		rte_eth_dev_info_get(port->port_id, &port->dev_info);
+		retval = rte_eth_dev_info_get(port->port_id, &port->dev_info);
+		TEST_ASSERT((retval == 0),
+				"Error during getting device (port %u) info: %s\n",
+				test_params.bond_port_id, strerror(-retval));
 	}
 
 	if (test_params.bond_port_id == INVALID_PORT_ID) {
@@ -545,8 +634,11 @@ test_setup(void)
 		TEST_ASSERT_SUCCESS(configure_ethdev(test_params.bond_port_id,
 				&default_pmd_conf, 0), "Failed to configure bonding device\n");
 
-		rte_eth_dev_info_get(test_params.bond_port_id,
-				&test_params.bond_dev_info);
+		retval = rte_eth_dev_info_get(test_params.bond_port_id,
+						&test_params.bond_dev_info);
+		TEST_ASSERT((retval == 0),
+				"Error during getting device (port %u) info: %s\n",
+				test_params.bond_port_id, strerror(-retval));
 	}
 
 	return TEST_SUCCESS;

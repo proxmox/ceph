@@ -34,13 +34,17 @@ from mgr_util import format_bytes, verify_tls, get_cert_issuer_info, ServerConfi
 
 from . import utils
 from . import exchange
+from . import ssh
 
 if TYPE_CHECKING:
     from cephadm.module import CephadmOrchestrator
 
 logger = logging.getLogger(__name__)
 
-REQUIRES_POST_ACTIONS = ['grafana', 'iscsi', 'prometheus', 'alertmanager', 'rgw']
+REQUIRES_POST_ACTIONS = ['grafana', 'iscsi', 'prometheus', 'alertmanager', 'rgw', 'nvmeof']
+
+WHICH = ssh.RemoteExecutable('which')
+CEPHADM_EXE = ssh.RemoteExecutable('/usr/bin/cephadm')
 
 
 class CephadmServe:
@@ -1228,11 +1232,12 @@ class CephadmServe:
                     if host not in client_files:
                         client_files[host] = {}
                     ceph_conf = (0o644, 0, 0, bytes(config), str(config_digest))
-                    client_files[host]['/etc/ceph/ceph.conf'] = ceph_conf
-                    client_files[host][f'{cluster_cfg_dir}/ceph.conf'] = ceph_conf
-                    ceph_admin_key = (ks.mode, ks.uid, ks.gid, keyring.encode('utf-8'), digest)
-                    client_files[host][ks.path] = ceph_admin_key
-                    client_files[host][f'{cluster_cfg_dir}/{os.path.basename(ks.path)}'] = ceph_admin_key
+                    if ks.include_ceph_conf:
+                        client_files[host]['/etc/ceph/ceph.conf'] = ceph_conf
+                        client_files[host][f'{cluster_cfg_dir}/ceph.conf'] = ceph_conf
+                    client_key = (ks.mode, ks.uid, ks.gid, keyring.encode('utf-8'), digest)
+                    client_files[host][ks.path] = client_key
+                    client_files[host][f'{cluster_cfg_dir}/{os.path.basename(ks.path)}'] = client_key
             except Exception as e:
                 self.log.warning(
                     f'unable to calc client keyring {ks.entity} placement {ks.placement}: {e}')
@@ -1272,7 +1277,7 @@ class CephadmServe:
             if path == '/etc/ceph/ceph.conf':
                 continue
             self.log.info(f'Removing {host}:{path}')
-            cmd = ['rm', '-f', path]
+            cmd = ssh.RemoteCommand(ssh.Executables.RM, ['-f', path])
             self.mgr.ssh.check_execute_command(host, cmd)
             updated_files = True
             self.mgr.cache.removed_client_file(host, path)
@@ -1327,6 +1332,7 @@ class CephadmServe:
                     daemon_params['allow_ptrace'] = True
 
                 daemon_spec, extra_container_args, extra_entrypoint_args = self._setup_extra_deployment_args(daemon_spec, daemon_params)
+                init_containers = self._setup_init_containers(daemon_spec, daemon_params)
 
                 if daemon_spec.service_name in self.mgr.spec_store:
                     configs = self.mgr.spec_store[daemon_spec.service_name].spec.custom_configs
@@ -1364,9 +1370,11 @@ class CephadmServe:
                             extra_entrypoint_args=ArgumentSpec.map_json(
                                 extra_entrypoint_args,
                             ),
+                            init_containers=init_containers,
                         ),
                         config_blobs=daemon_spec.final_config,
                     ).dump_json_str(),
+                    use_current_daemon_image=reconfig,
                 )
 
                 if daemon_spec.daemon_type == 'agent':
@@ -1442,6 +1450,25 @@ class CephadmServe:
             eea = None
         return daemon_spec, eca, eea
 
+    def _setup_init_containers(
+        self,
+        daemon_spec: CephadmDaemonDeploySpec,
+        params: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Handle any init containers - containers that run before a daemon (detached)
+        container that are expected to run for a short time and then exit.
+        """
+        # does the daemon_spec provide init_containers?
+        ics = getattr(daemon_spec, 'init_containers', None)
+        if not ics:
+            return []
+        ic_meta = []
+        ic_params = params['init_containers'] = []
+        for ic in ics:
+            ic_meta.append(ic.to_json())
+            ic_params.append(ic.to_json(flatten_args=True))
+        return ic_meta
+
     def _remove_daemon(self, name: str, host: str, no_post_remove: bool = False) -> str:
         """
         Remove a daemon
@@ -1492,11 +1519,12 @@ class CephadmServe:
                                 error_ok: Optional[bool] = False,
                                 image: Optional[str] = "",
                                 log_output: Optional[bool] = True,
+                                use_current_daemon_image: bool = False,
                                 ) -> Any:
         try:
             out, err, code = await self._run_cephadm(
                 host, entity, command, args, no_fsid=no_fsid, error_ok=error_ok,
-                image=image, log_output=log_output)
+                image=image, log_output=log_output, use_current_daemon_image=use_current_daemon_image)
             if code:
                 raise OrchestratorError(f'host {host} `cephadm {command}` returned {code}: {err}')
         except Exception as e:
@@ -1521,6 +1549,7 @@ class CephadmServe:
                            env_vars: Optional[List[str]] = None,
                            log_output: Optional[bool] = True,
                            timeout: Optional[int] = None,  # timeout in seconds
+                           use_current_daemon_image: bool = False,
                            ) -> Tuple[List[str], List[str], int]:
         """
         Run cephadm on the remote host with the given command + args
@@ -1541,7 +1570,10 @@ class CephadmServe:
         # Skip the image check for daemons deployed that are not ceph containers
         if not str(entity).startswith(bypass_image):
             if not image and entity is not cephadmNoImage:
-                image = self.mgr._get_container_image(entity)
+                image = self.mgr._get_container_image(
+                    entity,
+                    use_current_daemon_image=use_current_daemon_image
+                )
 
         final_args = []
 
@@ -1575,6 +1607,11 @@ class CephadmServe:
             timeout -= 5
         final_args += ['--timeout', str(timeout)]
 
+        if self.mgr.cephadm_log_destination:
+            values = self.mgr.cephadm_log_destination.split(',')
+            for value in values:
+                final_args.append(f'--log-dest={value}')
+
         # subcommand
         if isinstance(command, list):
             final_args.extend([str(v) for v in command])
@@ -1595,15 +1632,24 @@ class CephadmServe:
             if stdin and 'agent' not in str(entity):
                 self.log.debug('stdin: %s' % stdin)
 
-            cmd = ['which', 'python3']
+            cmd = ssh.RemoteCommand(WHICH, ['python3'])
             python = await self.mgr.ssh._check_execute_command(host, cmd, addr=addr)
-            cmd = [python, self.mgr.cephadm_binary_path] + final_args
+            # N.B. because the python3 executable is based on the results of the
+            # which command we can not know it ahead of time and must be converted
+            # into a RemoteExecutable.
+            cmd = ssh.RemoteCommand(
+                ssh.RemoteExecutable(python),
+                [self.mgr.cephadm_binary_path] + final_args
+            )
 
             try:
                 out, err, code = await self.mgr.ssh._execute_command(
                     host, cmd, stdin=stdin, addr=addr)
                 if code == 2:
-                    ls_cmd = ['ls', self.mgr.cephadm_binary_path]
+                    ls_cmd = ssh.RemoteCommand(
+                        ssh.Executables.LS,
+                        [self.mgr.cephadm_binary_path]
+                    )
                     out_ls, err_ls, code_ls = await self.mgr.ssh._execute_command(host, ls_cmd, addr=addr,
                                                                                   log_command=log_output)
                     if code_ls == 2:
@@ -1624,7 +1670,7 @@ class CephadmServe:
 
         elif self.mgr.mode == 'cephadm-package':
             try:
-                cmd = ['/usr/bin/cephadm'] + final_args
+                cmd = ssh.RemoteCommand(CEPHADM_EXE, final_args)
                 out, err, code = await self.mgr.ssh._execute_command(
                     host, cmd, stdin=stdin, addr=addr)
             except Exception as e:
@@ -1658,12 +1704,13 @@ class CephadmServe:
             await self._registry_login(host, json.loads(str(self.mgr.get_store('registry_credentials'))))
 
         j = None
-        try:
-            j = await self._run_cephadm_json(host, '', 'inspect-image', [],
-                                             image=image_name, no_fsid=True,
-                                             error_ok=True)
-        except OrchestratorError:
-            pass
+        if not self.mgr.use_repo_digest:
+            try:
+                j = await self._run_cephadm_json(host, '', 'inspect-image', [],
+                                                 image=image_name, no_fsid=True,
+                                                 error_ok=True)
+            except OrchestratorError:
+                pass
 
         if not j:
             pullargs: List[str] = []

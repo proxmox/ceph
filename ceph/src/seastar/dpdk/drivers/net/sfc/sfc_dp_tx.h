@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -10,11 +10,12 @@
 #ifndef _SFC_DP_TX_H
 #define _SFC_DP_TX_H
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include "sfc_dp.h"
 #include "sfc_debug.h"
 #include "sfc_tso.h"
+#include "sfc_nic_dma_dp.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -70,6 +71,19 @@ struct sfc_dp_tx_qcreate_info {
 	 * the hardware to apply TSO packet edits.
 	 */
 	uint16_t		tso_tcp_header_offset_limit;
+	/** Maximum number of header DMA descriptors per TSOv3 transaction */
+	uint16_t		tso_max_nb_header_descs;
+	/** Maximum header length acceptable by TSOv3 transaction */
+	uint16_t		tso_max_header_len;
+	/** Maximum number of payload DMA descriptors per TSOv3 transaction */
+	uint16_t		tso_max_nb_payload_descs;
+	/** Maximum payload length per TSOv3 transaction */
+	uint32_t		tso_max_payload_len;
+	/** Maximum number of frames to be generated per TSOv3 transaction */
+	uint32_t		tso_max_nb_outgoing_frames;
+
+	/** NIC's DMA mapping information */
+	const struct sfc_nic_dma_info	*nic_dma_info;
 };
 
 /**
@@ -157,13 +171,18 @@ struct sfc_dp_tx {
 	struct sfc_dp			dp;
 
 	unsigned int			features;
-#define SFC_DP_TX_FEAT_VLAN_INSERT	0x1
-#define SFC_DP_TX_FEAT_TSO		0x2
-#define SFC_DP_TX_FEAT_MULTI_SEG	0x4
-#define SFC_DP_TX_FEAT_MULTI_PROCESS	0x8
-#define SFC_DP_TX_FEAT_MULTI_POOL	0x10
-#define SFC_DP_TX_FEAT_REFCNT		0x20
-#define SFC_DP_TX_FEAT_TSO_ENCAP	0x40
+#define SFC_DP_TX_FEAT_MULTI_PROCESS	0x1
+#define SFC_DP_TX_FEAT_STATS		0x2
+	/**
+	 * Tx offload capabilities supported by the datapath on device
+	 * level only if HW/FW supports it.
+	 */
+	uint64_t			dev_offload_capa;
+	/**
+	 * Tx offload capabilities supported by the datapath per-queue
+	 * if HW/FW supports it.
+	 */
+	uint64_t			queue_offload_capa;
 	sfc_dp_tx_get_dev_info_t	*get_dev_info;
 	sfc_dp_tx_qsize_up_rings_t	*qsize_up_rings;
 	sfc_dp_tx_qcreate_t		*qcreate;
@@ -196,14 +215,44 @@ sfc_dp_find_tx_by_caps(struct sfc_dp_list *head, unsigned int avail_caps)
 /** Get Tx datapath ops by the datapath TxQ handle */
 const struct sfc_dp_tx *sfc_dp_tx_by_dp_txq(const struct sfc_dp_txq *dp_txq);
 
+static inline uint64_t
+sfc_dp_tx_offload_capa(const struct sfc_dp_tx *dp_tx)
+{
+	return dp_tx->dev_offload_capa | dp_tx->queue_offload_capa;
+}
+
+static inline unsigned int
+sfc_dp_tx_pkt_extra_hdr_segs(struct rte_mbuf **m_seg,
+			     unsigned int *header_len_remaining)
+{
+	unsigned int nb_extra_header_segs = 0;
+
+	while (rte_pktmbuf_data_len(*m_seg) < *header_len_remaining) {
+		*header_len_remaining -= rte_pktmbuf_data_len(*m_seg);
+		*m_seg = (*m_seg)->next;
+		++nb_extra_header_segs;
+	}
+
+	return nb_extra_header_segs;
+}
+
 static inline int
 sfc_dp_tx_prepare_pkt(struct rte_mbuf *m,
+			   unsigned int max_nb_header_segs,
+			   unsigned int tso_bounce_buffer_len,
 			   uint32_t tso_tcp_header_offset_limit,
 			   unsigned int max_fill_level,
 			   unsigned int nb_tso_descs,
 			   unsigned int nb_vlan_descs)
 {
 	unsigned int descs_required = m->nb_segs;
+	unsigned int tcph_off = ((m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ?
+				 m->outer_l2_len + m->outer_l3_len : 0) +
+				m->l2_len + m->l3_len;
+	unsigned int header_len = tcph_off + m->l4_len;
+	unsigned int header_len_remaining = header_len;
+	unsigned int nb_header_segs = 1;
+	struct rte_mbuf *m_seg = m;
 
 #ifdef RTE_LIBRTE_SFC_EFX_DEBUG
 	int ret;
@@ -219,24 +268,39 @@ sfc_dp_tx_prepare_pkt(struct rte_mbuf *m,
 	}
 #endif
 
-	if (m->ol_flags & PKT_TX_TCP_SEG) {
-		unsigned int tcph_off = m->l2_len + m->l3_len;
-		unsigned int header_len;
+	if (max_nb_header_segs != 0) {
+		/* There is a limit on the number of header segments. */
 
-		switch (m->ol_flags & PKT_TX_TUNNEL_MASK) {
+		nb_header_segs +=
+		    sfc_dp_tx_pkt_extra_hdr_segs(&m_seg,
+						 &header_len_remaining);
+
+		if (unlikely(nb_header_segs > max_nb_header_segs)) {
+			/*
+			 * The number of header segments is too large.
+			 *
+			 * If TSO is requested and if the datapath supports
+			 * linearisation of TSO headers, allow the packet
+			 * to proceed with additional checks below.
+			 * Otherwise, throw an error.
+			 */
+			if ((m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) == 0 ||
+			    tso_bounce_buffer_len == 0)
+				return EINVAL;
+		}
+	}
+
+	if (m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+		switch (m->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
 		case 0:
 			break;
-		case PKT_TX_TUNNEL_VXLAN:
+		case RTE_MBUF_F_TX_TUNNEL_VXLAN:
 			/* FALLTHROUGH */
-		case PKT_TX_TUNNEL_GENEVE:
+		case RTE_MBUF_F_TX_TUNNEL_GENEVE:
 			if (!(m->ol_flags &
-			      (PKT_TX_OUTER_IPV4 | PKT_TX_OUTER_IPV6)))
+			      (RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IPV6)))
 				return EINVAL;
-
-			tcph_off += m->outer_l2_len + m->outer_l3_len;
 		}
-
-		header_len = tcph_off + m->l4_len;
 
 		if (unlikely(tcph_off > tso_tcp_header_offset_limit))
 			return EINVAL;
@@ -244,18 +308,30 @@ sfc_dp_tx_prepare_pkt(struct rte_mbuf *m,
 		descs_required += nb_tso_descs;
 
 		/*
-		 * Extra descriptor that is required when a packet header
-		 * is separated from remaining content of the first segment.
+		 * If headers segments are already counted above, here
+		 * nothing is done since remaining length is smaller
+		 * then current segment size.
 		 */
-		if (rte_pktmbuf_data_len(m) > header_len) {
+		nb_header_segs +=
+		    sfc_dp_tx_pkt_extra_hdr_segs(&m_seg,
+						 &header_len_remaining);
+
+		/*
+		 * Extra descriptor which is required when (a part of) payload
+		 * shares the same segment with (a part of) the header.
+		 */
+		if (rte_pktmbuf_data_len(m_seg) > header_len_remaining)
 			descs_required++;
-		} else if (rte_pktmbuf_data_len(m) < header_len &&
-			 unlikely(header_len > SFC_TSOH_STD_LEN)) {
-			/*
-			 * Header linearization is required and
-			 * the header is too big to be linearized
-			 */
-			return EINVAL;
+
+		if (tso_bounce_buffer_len != 0) {
+			if (nb_header_segs > 1 &&
+			    unlikely(header_len > tso_bounce_buffer_len)) {
+				/*
+				 * Header linearization is required and
+				 * the header is too big to be linearized
+				 */
+				return EINVAL;
+			}
 		}
 	}
 
@@ -279,6 +355,7 @@ sfc_dp_tx_prepare_pkt(struct rte_mbuf *m,
 extern struct sfc_dp_tx sfc_efx_tx;
 extern struct sfc_dp_tx sfc_ef10_tx;
 extern struct sfc_dp_tx sfc_ef10_simple_tx;
+extern struct sfc_dp_tx sfc_ef100_tx;
 
 #ifdef __cplusplus
 }

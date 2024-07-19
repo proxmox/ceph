@@ -21,9 +21,9 @@
 
 #pragma once
 
-#include <chrono>
 #include <seastar/util/program-options.hh>
 #include <seastar/util/memory_diagnostics.hh>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
@@ -38,6 +38,7 @@ class reactor_backend_selector;
 class network_stack_factory;
 
 /// Configuration for the reactor.
+SEASTAR_MODULE_EXPORT
 struct reactor_options : public program_options::option_group {
     /// \brief Select network stack to use.
     ///
@@ -65,6 +66,14 @@ struct reactor_options : public program_options::option_group {
     ///
     /// Default: 1.5 * task_quota_ms value
     program_options::value<double> io_latency_goal_ms;
+    /// \bried Dispatch rate to completion rate ratio threshold
+    ///
+    /// Describes the worst ratio at which seastar reactor is allowed to delay
+    /// IO requests completion. If exceeded, the scheduler will consider it's
+    /// disk that's the reason for completion slow-down and will scale down
+    ///
+    /// Default: 1.1
+    program_options::value<double> io_flow_ratio_threshold;
     /// \brief Maximum number of task backlog to allow.
     ///
     /// When the number of tasks grow above this, we stop polling (e.g. I/O)
@@ -147,8 +156,12 @@ struct reactor_options : public program_options::option_group {
     program_options::value<unsigned> max_networking_io_control_blocks;
     /// \brief Enable seastar heap profiling.
     ///
+    /// Allocations will be sampled every N bytes on average. Zero means off.
+    ///
+    /// Default: 0
+    ///
     /// \note Unused when seastar was compiled without heap profiling support.
-    program_options::value<> heapprof;
+    program_options::value<unsigned> heapprof;
     /// Ignore SIGINT (for gdb).
     program_options::value<> no_handle_interrupt;
 

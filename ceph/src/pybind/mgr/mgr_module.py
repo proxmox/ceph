@@ -83,6 +83,27 @@ PG_STATES = [
 NFS_GANESHA_SUPPORTED_FSALS = ['CEPH', 'RGW']
 NFS_POOL_NAME = '.nfs'
 
+class CephReleases(IntEnum):
+    argonaut = 1
+    bobtail = 2
+    cuttlefish = 3
+    dumpling = 4
+    emperor = 5
+    firefly = 6
+    giant = 7
+    hammer = 8
+    infernalis = 9
+    jewel = 10
+    kraken = 11
+    luminous = 12
+    mimic = 13
+    nautilus = 14
+    octopus = 15
+    pacific = 16
+    quincy = 17
+    reef = 18
+    squid = 19
+    maximum = 20
 
 class NotifyType(str, Enum):
     mon_map = 'mon_map'
@@ -188,6 +209,10 @@ class OSDMap(ceph_module.BasePyOSDMap):
         return self._calc_pg_upmaps(
             inc,
             max_deviation, max_iterations, pools)
+
+    def balance_primaries(self, pool_id: int,
+                          inc: 'OSDMapIncremental') -> int:
+        return self._balance_primaries(pool_id, inc)
 
     def map_pool_pgs_up(self, poolid: int) -> List[int]:
         return self._map_pool_pgs_up(poolid)
@@ -836,13 +861,6 @@ class MgrStandbyModule(ceph_module.BaseMgrStandbyModule, MgrModuleLoggingMixin):
         # for backwards compatibility
         self._logger = self.getLogger()
 
-    def __del__(self) -> None:
-        self._cleanup()
-        self._unconfigure_logging()
-
-    def _cleanup(self) -> None:
-        pass
-
     @classmethod
     def _register_options(cls, module_name: str) -> None:
         cls.MODULE_OPTIONS.append(
@@ -1044,9 +1062,6 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         self._mgr_ips: Optional[str] = None
 
         self._db_lock = threading.Lock()
-
-    def __del__(self) -> None:
-        self._unconfigure_logging()
 
     @classmethod
     def _register_options(cls, module_name: str) -> None:
@@ -1692,7 +1707,7 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
 
         return r
 
-    def tell_command(self, daemon_type: str, daemon_id: str, cmd_dict: dict, inbuf: Optional[str] = None) -> Tuple[int, str, str]:
+    def tell_command(self, daemon_type: str, daemon_id: str, cmd_dict: dict, inbuf: Optional[str] = None, one_shot: bool = False) -> Tuple[int, str, str]:
         """
         Helper for `ceph tell` command execution.
 
@@ -1707,7 +1722,7 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         """
         t1 = time.time()
         result = CommandResult()
-        self.send_command(result, daemon_type, daemon_id, json.dumps(cmd_dict), "", inbuf)
+        self.send_command(result, daemon_type, daemon_id, json.dumps(cmd_dict), "", inbuf, one_shot=one_shot)
         r = result.wait()
         t2 = time.time()
 
@@ -1717,6 +1732,40 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
 
         return r
 
+    def get_quiesce_leader_gid(self, fscid: str) -> Optional[int]:
+        leader_gid : Optional[int] = None
+        for fs in self.get("fs_map")['filesystems']:
+            if fscid != fs["id"]:
+                continue
+            
+            # quiesce leader is the lowest rank
+            # with the highest state
+            mdsmap = fs["mdsmap"]
+            leader_gid = mdsmap.get("qdb_leader", None)
+            break
+
+        return leader_gid
+
+    def tell_quiesce_leader(self, leader: int, cmd_dict: dict) -> Tuple[int, str, str]:
+        max_retries = 5
+        for _ in range(max_retries):
+            # We use "one_shot" here to cover for cases when the mds crashes
+            # without this parameter the client may get stuck awaiting response from a dead MDS
+            # (which is particularly bad for the volumes plugin finisher thread)
+            rc, stdout, stderr = self.tell_command('mds', str(leader), cmd_dict, one_shot=True)
+            if rc == -errno.ENOTTY:
+                try:
+                    resp = json.loads(stdout)
+                    leader = int(resp['leader'])
+                    self.log.info("Retrying a quiesce db command with leader %d" % leader)
+                except Exception as e:
+                    self.log.error("Couldn't parse ENOTTY response from an mds with error: %s\n%s" % (str(e), stdout))
+                    break
+            else:
+                break
+
+        return (rc, stdout, stderr)
+
     def send_command(
             self,
             result: CommandResult,
@@ -1724,7 +1773,9 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
             svc_id: str,
             command: str,
             tag: str,
-            inbuf: Optional[str] = None) -> None:
+            inbuf: Optional[str] = None,
+            *, # kw-only args go below
+            one_shot: bool = False) -> None:
         """
         Called by the plugin to send a command to the mon
         cluster.
@@ -1745,8 +1796,10 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
             triggered, with notify_type set to "command", and notify_id set to
             the tag of the command.
         :param str inbuf: input buffer for sending additional data.
+        :param bool one_shot: a keyword-only param to make the command abort
+            with EPIPE when the target resets or refuses to reconnect
         """
-        self._ceph_send_command(result, svc_type, svc_id, command, tag, inbuf)
+        self._ceph_send_command(result, svc_type, svc_id, command, tag, inbuf, one_shot=one_shot)
 
     def tool_exec(
         self,

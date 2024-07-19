@@ -21,6 +21,7 @@
 
 #include <seastar/rpc/lz4_compressor.hh>
 #include <seastar/core/byteorder.hh>
+#include <lz4.h>
 
 namespace seastar {
 
@@ -77,9 +78,9 @@ public:
     // containing data that was written to the temporary buffer.
     // Output should be either snd_buf or rcv_buf.
     template<typename Output, typename Function>
-    SEASTAR_CONCEPT(requires requires (Function fn, char* ptr) {
+    requires requires (Function fn, char* ptr) {
         { fn(ptr) } -> std::convertible_to<size_t>;
-    } && (std::is_same<Output, snd_buf>::value || std::is_same<Output, rcv_buf>::value))
+    } && (std::is_same_v<Output, snd_buf> || std::is_same_v<Output, rcv_buf>)
     Output with_reserved(size_t max_size, Function&& fn) {
         if (max_size <= chunk_size) {
             auto dst = temporary_buffer<char>(max_size);
@@ -113,11 +114,6 @@ public:
     }
 };
 
-// in cpp 14 declaration of static variables is mandatory even
-// though the assignment took place inside the class declaration
-// - no inline static variables (like in Cpp17).
-constexpr size_t reusable_buffer::chunk_size;
-
 static thread_local reusable_buffer reusable_buffer_compressed_data;
 static thread_local reusable_buffer reusable_buffer_decompressed_data;
 static thread_local size_t buffer_use_count = 0;
@@ -138,12 +134,7 @@ snd_buf lz4_compressor::compress(size_t head_space, snd_buf data) {
         auto src_size = data.size;
         auto src = reusable_buffer_decompressed_data.prepare(data.bufs, data.size);
 
-#ifdef SEASTAR_HAVE_LZ4_COMPRESS_DEFAULT
         auto size = LZ4_compress_default(src, dst + head_space, src_size, LZ4_compressBound(src_size));
-#else
-        // Safe since output buffer is sized properly.
-        auto size = LZ4_compress(src, dst + head_space, src_size);
-#endif
         if (size == 0) {
             throw std::runtime_error("RPC frame LZ4 compression failure");
         }

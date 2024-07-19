@@ -30,22 +30,9 @@ On hardware devices the throughput measurement is not necessarily the maximum
 possible for the device, e.g. it may be necessary to use multiple cores to keep
 the hardware accelerator fully loaded and so measure maximum throughput.
 
-Compiling the Application
--------------------------
 
-**Step 1: PMD setting**
-
-The ``dpdk-test-crypto-perf`` tool depends on crypto device drivers PMD which
-are disabled by default in the build configuration file ``common_base``.
-The crypto device drivers PMD which should be tested can be enabled by setting::
-
-   CONFIG_RTE_LIBRTE_PMD_<name>=y
-
-Setting example for open ssl PMD::
-
-   CONFIG_RTE_LIBRTE_PMD_OPENSSL=y
-
-**Step 2: Linearization setting**
+Linearization setting
+---------------------
 
 It is possible linearized input segmented packets just before crypto operation
 for devices which doesn't support scatter-gather, and allows to measure
@@ -56,16 +43,6 @@ To set on the linearization options add below definition to the
 
    #define CPERF_LINEARIZATION_ENABLE
 
-**Step 3: Build the application**
-
-Execute the ``dpdk-setup.sh`` script to build the DPDK library together with the
-``dpdk-test-crypto-perf`` application.
-
-Initially, the user must select a DPDK target to choose the correct target type
-and compiler options to use when building the libraries.
-The user must have all libraries, modules, updates and compilers installed
-in the system prior to this,
-as described in the earlier chapters in this Getting Started Guide.
 
 Running the Application
 -----------------------
@@ -88,9 +65,9 @@ See the DPDK Getting Started Guides for more information on these options.
         Set the hexadecimal bitmask of the cores to run on. The corelist is a
         list cores to use.
 
-*   ``-w <PCI>``
+*   ``-a <PCI>``
 
-        Add a PCI device in white list.
+        Add a PCI device in allow list.
 
 *   ``--vdev <driver><id>``
 
@@ -169,19 +146,22 @@ The following are the application command-line options:
 
         Set device type, where ``name`` is one of the following::
 
-           crypto_null
-           crypto_aesni_mb
            crypto_aesni_gcm
-           crypto_openssl
-           crypto_qat
-           crypto_snow3g
-           crypto_kasumi
-           crypto_zuc
+           crypto_aesni_mb
+           crypto_armv8
+           crypto_cn9k
+           crypto_cn10k
            crypto_dpaa_sec
            crypto_dpaa2_sec
-           crypto_armv8
-           crypto_scheduler
+           crypto_kasumi
            crypto_mvsam
+           crypto_null
+           crypto_octeontx
+           crypto_openssl
+           crypto_qat
+           crypto_scheduler
+           crypto_snow3g
+           crypto_zuc
 
 * ``--optype <name>``
 
@@ -192,6 +172,9 @@ The following are the application command-line options:
            cipher-then-auth
            auth-then-cipher
            aead
+           pdcp
+           docsis
+           modex
 
         For GCM/CCM algorithms you should use aead flag.
 
@@ -249,7 +232,6 @@ The following are the application command-line options:
         Set authentication algorithm name, where ``name`` is one
         of the following::
 
-           3des-cbc
            aes-cbc-mac
            aes-cmac
            aes-gmac
@@ -332,6 +314,32 @@ The following are the application command-line options:
 
         Enable test result output CSV friendly rather than human friendly.
 
+* ``--pdcp-sn-sz <n>``
+
+        Set PDCP sequence number size(n) in bits. Valid values of n will
+        be 5/7/12/15/18.
+
+* ``--pdcp-domain <control/user>``
+
+        Set PDCP domain to specify short_mac/control/user plane.
+
+* ``--docsis-hdr-sz <n>``
+
+        Set DOCSIS header size(n) in bytes.
+
+* ``--pdcp-ses-hfn-en``
+
+        Enable fixed session based HFN instead of per packet HFN.
+
+* ``--enable-sdap``
+
+        Enable Service Data Adaptation Protocol.
+
+* ``--modex-len <n>``
+
+        Set modex length for asymmetric crypto perf test.
+        Supported lengths are 60, 128, 255, 448. Default length is 128.
+
 Test Vector File
 ~~~~~~~~~~~~~~~~
 
@@ -398,7 +406,7 @@ Call application for performance throughput test of single Aesni MB PMD
 for cipher encryption aes-cbc and auth generation sha1-hmac,
 one million operations, burst size 32, packet size 64::
 
-   dpdk-test-crypto-perf -l 6-7 --vdev crypto_aesni_mb -w 0000:00:00.0 --
+   dpdk-test-crypto-perf -l 6-7 --vdev crypto_aesni_mb -a 0000:00:00.0 --
    --ptest throughput --devtype crypto_aesni_mb --optype cipher-then-auth
    --cipher-algo aes-cbc --cipher-op encrypt --cipher-key-sz 16 --auth-algo
    sha1-hmac --auth-op generate --auth-key-sz 64 --digest-sz 12
@@ -408,7 +416,7 @@ Call application for performance latency test of two Aesni MB PMD executed
 on two cores for cipher encryption aes-cbc, ten operations in silent mode::
 
    dpdk-test-crypto-perf -l 4-7 --vdev crypto_aesni_mb1
-   --vdev crypto_aesni_mb2 -w 0000:00:00.0 -- --devtype crypto_aesni_mb
+   --vdev crypto_aesni_mb2 -a 0000:00:00.0 -- --devtype crypto_aesni_mb
    --cipher-algo aes-cbc --cipher-key-sz 16 --cipher-iv-sz 16
    --cipher-op encrypt --optype cipher-only --silent
    --ptest latency --total-ops 10
@@ -418,7 +426,7 @@ for cipher encryption aes-gcm and auth generation aes-gcm,ten operations
 in silent mode, test vector provide in file "test_aes_gcm.data"
 with packet verification::
 
-   dpdk-test-crypto-perf -l 4-7 --vdev crypto_openssl -w 0000:00:00.0 --
+   dpdk-test-crypto-perf -l 4-7 --vdev crypto_openssl -a 0000:00:00.0 --
    --devtype crypto_openssl --aead-algo aes-gcm --aead-key-sz 16
    --aead-iv-sz 16 --aead-op encrypt --aead-aad-sz 16 --digest-sz 16
    --optype aead --silent --ptest verify --total-ops 10
@@ -457,3 +465,139 @@ Test vector file for cipher algorithm aes cbc 256 with authorization sha::
    digest =
    0x1C, 0xB2, 0x3D, 0xD1, 0xF9, 0xC7, 0x6C, 0x49, 0x2E, 0xDA, 0x94, 0x8B, 0xF1, 0xCF, 0x96, 0x43,
    0x67, 0x50, 0x39, 0x76, 0xB5, 0xA1, 0xCE, 0xA1, 0xD7, 0x77, 0x10, 0x07, 0x43, 0x37, 0x05, 0xB4
+
+
+Graph Crypto Perf Results
+-------------------------
+
+The ``dpdk-graph-crypto-perf.py`` tool is a simple script to automate
+running crypto performance tests, and graphing the results.
+It can be found in the ``app/test-crypto-perf/`` directory.
+The output graphs include various grouped barcharts for throughput
+tests, and histogram and boxplot graphs for latency tests.
+These are output to PDF files, with one PDF per test suite graph type.
+
+
+Dependencies
+~~~~~~~~~~~~
+
+The following python modules must be installed to run the script:
+
+.. code-block:: console
+
+   pip3 install img2pdf plotly pandas psutil kaleido
+
+
+Test Configuration
+~~~~~~~~~~~~~~~~~~
+
+The test cases run by the script are defined by a JSON config file.
+Some config files can be found in ``app/test-crypto-perf/configs/``,
+or the user may create a new one following the same format as the config files provided.
+
+An example of this format is shown below for one test suite in the ``crypto-perf-aesni-mb.json`` file.
+This shows the required default config for the test suite, and one test case.
+The test case has additional app config that will be combined with
+the default config when running the test case.
+
+.. code-block:: c
+
+   "throughput": {
+       "default": {
+           "eal": {
+               "l": "1,2",
+               "vdev": "crypto_aesni_mb"
+           },
+           "app": {
+               "csv-friendly": true,
+               "buffer-sz": "64,128,256,512,768,1024,1408,2048",
+               "burst-sz": "1,4,8,16,32",
+               "ptest": "throughput",
+               "devtype": "crypto_aesni_mb"
+           }
+        },
+       "AES-CBC-128 SHA1-HMAC auth-then-cipher decrypt": {
+               "cipher-algo": "aes-cbc",
+               "cipher-key-sz": "16",
+               "auth-algo": "sha1-hmac",
+               "optype": "auth-then-cipher",
+               "cipher-op": "decrypt"
+        }
+   }
+
+.. note::
+   The specific test cases only allow modification of app parameters,
+   and not EAL parameters.
+   The default case is required for each test suite in the config file,
+   to specify EAL parameters.
+
+Currently, crypto_qat, crypto_aesni_mb, and crypto_aesni_gcm devices for
+both throughput and latency ptests are supported.
+
+
+Usage
+~~~~~
+
+.. code-block:: console
+
+   ./dpdk-graph-crypto-perf <config_file>
+
+The ``config_file`` positional argument is required to run the script.
+This points to a valid JSON config file containing test suites.
+
+.. code-block:: console
+
+   ./dpdk-graph-crypto-perf configs/crypto-perf-aesni-mb.json
+
+The following are the application optional command-line options:
+
+* ``-h, --help``
+
+  Display usage information and quit.
+
+* ``-f <file_path>, --file-path <file_path>``
+
+  Provide path to ``dpdk-test-crypto-perf`` application.
+  The script uses the installed app by default.
+
+  .. code-block:: console
+
+     ./dpdk-graph-crypto-perf <config_file> \
+         -f <build_dir>/app/dpdk-test-crypto-perf
+
+* ``-t <test_suite_list>, --test-suites <test_suite_list>``
+
+  Specify test suites to run. All test suites are run by default.
+
+  To run crypto-perf-qat latency test suite only:
+
+  .. code-block:: console
+
+     ./dpdk-graph-crypto-perf configs/crypto-perf-qat -t latency
+
+  To run both crypto-perf-aesni-mb throughput and latency test suites
+
+  .. code-block:: console
+
+     ./dpdk-graph-crypto-perf configs/crypto-perf-aesni-mb -t throughput latency
+
+* ``-o <output_path>, --output-path <output_path>``
+
+  Specify directory to use for output files.
+  The default is to use the script's directory.
+
+  .. code-block:: console
+
+     ./dpdk-graph-crypto-perf <config_file> -o <output_dir>
+
+* ``-v, --verbose``
+
+  Enable verbose output. This displays ``dpdk-test-crypto-perf`` app output in real-time.
+
+  .. code-block:: console
+
+     ./dpdk-graph-crypto-perf <config_file> -v
+
+  .. warning::
+     Latency performance tests have a large amount of output.
+     It is not recommended to use the verbose option for latency tests.

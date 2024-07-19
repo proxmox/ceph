@@ -11,13 +11,25 @@
 #include <nfb/ndp.h>
 
 #include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 #include <rte_ethdev.h>
+
+extern uint64_t nfb_timestamp_rx_dynflag;
+extern int nfb_timestamp_dynfield_offset;
+
+static inline rte_mbuf_timestamp_t *
+nfb_timestamp_dynfield(struct rte_mbuf *mbuf)
+{
+	return RTE_MBUF_DYNFIELD(mbuf,
+		nfb_timestamp_dynfield_offset, rte_mbuf_timestamp_t *);
+}
 
 struct ndp_rx_queue {
 	struct nfb_device *nfb;	     /* nfb dev structure */
 	struct ndp_queue *queue;     /* rx queue */
 	uint16_t rx_queue_id;	     /* index */
 	uint8_t in_port;	     /* port */
+	uint8_t flags;               /* setup flags */
 
 	struct rte_mempool *mb_pool; /* memory pool to allocate packets */
 	uint16_t buf_size;           /* mbuf size */
@@ -80,11 +92,13 @@ nfb_eth_rx_queue_setup(struct rte_eth_dev *dev,
 /**
  * DPDK callback to release a RX queue.
  *
- * @param dpdk_rxq
- *   Generic RX queue pointer.
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param qid
+ *   Receive queue index.
  */
 void
-nfb_eth_rx_queue_release(void *q);
+nfb_eth_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 /**
  * Start traffic on Rx queue.
@@ -181,6 +195,24 @@ nfb_eth_ndp_rx(void *queue,
 
 			mbuf->pkt_len = packet_size;
 			mbuf->port = ndp->in_port;
+			mbuf->ol_flags = 0;
+
+			if (nfb_timestamp_dynfield_offset >= 0) {
+				rte_mbuf_timestamp_t timestamp;
+
+				/* nanoseconds */
+				timestamp =
+					rte_le_to_cpu_32(*((uint32_t *)
+					(packets[i].header + 4)));
+				timestamp <<= 32;
+				/* seconds */
+				timestamp |=
+					rte_le_to_cpu_32(*((uint32_t *)
+					(packets[i].header + 8)));
+				*nfb_timestamp_dynfield(mbuf) = timestamp;
+				mbuf->ol_flags |= nfb_timestamp_rx_dynflag;
+			}
+
 			bufs[num_rx++] = mbuf;
 			num_bytes += packet_size;
 		} else {

@@ -6,7 +6,6 @@
 #include <string.h>
 
 #include <rte_ethdev.h>
-#include <rte_bus_pci.h>
 #include <rte_string_fns.h>
 
 #include "kni.h"
@@ -24,7 +23,7 @@ kni_init(void)
 {
 	TAILQ_INIT(&kni_list);
 
-#ifdef RTE_LIBRTE_KNI
+#ifdef RTE_LIB_KNI
 	rte_kni_init(KNI_MAX);
 #endif
 
@@ -46,7 +45,7 @@ kni_find(const char *name)
 	return NULL;
 }
 
-#ifndef RTE_LIBRTE_KNI
+#ifndef RTE_LIB_KNI
 
 struct kni *
 kni_create(const char *name __rte_unused,
@@ -86,7 +85,7 @@ kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 	if (!rte_eth_dev_is_valid_port(port_id))
 		return -EINVAL;
 
-	if (new_mtu > ETHER_MAX_LEN)
+	if (new_mtu > RTE_ETHER_MAX_LEN)
 		return -EINVAL;
 
 	/* Set new MTU */
@@ -107,8 +106,7 @@ kni_create(const char *name, struct kni_params *params)
 	struct mempool *mempool;
 	struct link *link;
 	struct rte_kni *k;
-	const struct rte_pci_device *pci_dev;
-	const struct rte_bus *bus = NULL;
+	int ret;
 
 	/* Check input params */
 	if ((name == NULL) ||
@@ -123,7 +121,9 @@ kni_create(const char *name, struct kni_params *params)
 		return NULL;
 
 	/* Resource create */
-	rte_eth_dev_info_get(link->port_id, &dev_info);
+	ret = rte_eth_dev_info_get(link->port_id, &dev_info);
+	if (ret != 0)
+		return NULL;
 
 	memset(&kni_conf, 0, sizeof(kni_conf));
 	strlcpy(kni_conf.name, name, RTE_KNI_NAMESIZE);
@@ -131,13 +131,6 @@ kni_create(const char *name, struct kni_params *params)
 	kni_conf.core_id = params->thread_id;
 	kni_conf.group_id = link->port_id;
 	kni_conf.mbuf_size = mempool->buffer_size;
-	if (dev_info.device)
-		bus = rte_bus_find_by_device(dev_info.device);
-	if (bus && !strcmp(bus->name, "pci")) {
-		pci_dev = RTE_DEV_TO_PCI(dev_info.device);
-		kni_conf.addr = pci_dev->addr;
-		kni_conf.id = pci_dev->id;
-	}
 
 	memset(&kni_ops, 0, sizeof(kni_ops));
 	kni_ops.port_id = link->port_id;

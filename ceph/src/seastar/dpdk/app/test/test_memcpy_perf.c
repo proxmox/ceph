@@ -6,10 +6,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <sys/time.h>
+#include <time.h>
 
 #include <rte_common.h>
 #include <rte_cycles.h>
+#include <rte_os_shim.h>
 #include <rte_random.h>
 #include <rte_malloc.h>
 
@@ -51,13 +52,13 @@ static size_t buf_sizes[TEST_VALUE_RANGE];
 #define TEST_BATCH_SIZE         100
 
 /* Data is aligned on this many bytes (power of 2) */
-#ifdef RTE_MACHINE_CPUFLAG_AVX512F
+#ifdef __AVX512F__
 #define ALIGNMENT_UNIT          64
-#elif defined RTE_MACHINE_CPUFLAG_AVX2
+#elif defined __AVX2__
 #define ALIGNMENT_UNIT          32
-#else /* RTE_MACHINE_CPUFLAG */
+#else
 #define ALIGNMENT_UNIT          16
-#endif /* RTE_MACHINE_CPUFLAG */
+#endif
 
 /*
  * Pointers used in performance tests. The two large buffers are for uncached
@@ -250,9 +251,8 @@ perf_test_constant_unaligned(void)
 static inline void
 perf_test_variable_aligned(void)
 {
-	unsigned n = sizeof(buf_sizes) / sizeof(buf_sizes[0]);
 	unsigned i;
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < RTE_DIM(buf_sizes); i++) {
 		ALL_PERF_TESTS_FOR_SIZE((size_t)buf_sizes[i]);
 	}
 }
@@ -261,9 +261,8 @@ perf_test_variable_aligned(void)
 static inline void
 perf_test_variable_unaligned(void)
 {
-	unsigned n = sizeof(buf_sizes) / sizeof(buf_sizes[0]);
 	unsigned i;
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < RTE_DIM(buf_sizes); i++) {
 		ALL_PERF_TESTS_FOR_SIZE_UNALIGNED((size_t)buf_sizes[i]);
 	}
 }
@@ -273,7 +272,7 @@ static int
 perf_test(void)
 {
 	int ret;
-	struct timeval tv_begin, tv_end;
+	struct timespec tv_begin, tv_end;
 	double time_aligned, time_unaligned;
 	double time_aligned_const, time_unaligned_const;
 
@@ -300,32 +299,32 @@ perf_test(void)
 	printf("\n================================= %2dB aligned =================================",
 		ALIGNMENT_UNIT);
 	/* Do aligned tests where size is a variable */
-	gettimeofday(&tv_begin, NULL);
+	timespec_get(&tv_begin, TIME_UTC);
 	perf_test_variable_aligned();
-	gettimeofday(&tv_end, NULL);
+	timespec_get(&tv_end, TIME_UTC);
 	time_aligned = (double)(tv_end.tv_sec - tv_begin.tv_sec)
-		+ ((double)tv_end.tv_usec - tv_begin.tv_usec)/1000000;
+		+ ((double)tv_end.tv_nsec - tv_begin.tv_nsec) / NS_PER_S;
 	printf("\n------- ----------------- ----------------- ----------------- -----------------");
 	/* Do aligned tests where size is a compile-time constant */
-	gettimeofday(&tv_begin, NULL);
+	timespec_get(&tv_begin, TIME_UTC);
 	perf_test_constant_aligned();
-	gettimeofday(&tv_end, NULL);
+	timespec_get(&tv_end, TIME_UTC);
 	time_aligned_const = (double)(tv_end.tv_sec - tv_begin.tv_sec)
-		+ ((double)tv_end.tv_usec - tv_begin.tv_usec)/1000000;
+		+ ((double)tv_end.tv_nsec - tv_begin.tv_nsec) / NS_PER_S;
 	printf("\n================================== Unaligned ==================================");
 	/* Do unaligned tests where size is a variable */
-	gettimeofday(&tv_begin, NULL);
+	timespec_get(&tv_begin, TIME_UTC);
 	perf_test_variable_unaligned();
-	gettimeofday(&tv_end, NULL);
+	timespec_get(&tv_end, TIME_UTC);
 	time_unaligned = (double)(tv_end.tv_sec - tv_begin.tv_sec)
-		+ ((double)tv_end.tv_usec - tv_begin.tv_usec)/1000000;
+		+ ((double)tv_end.tv_nsec - tv_begin.tv_nsec) / NS_PER_S;
 	printf("\n------- ----------------- ----------------- ----------------- -----------------");
 	/* Do unaligned tests where size is a compile-time constant */
-	gettimeofday(&tv_begin, NULL);
+	timespec_get(&tv_begin, TIME_UTC);
 	perf_test_constant_unaligned();
-	gettimeofday(&tv_end, NULL);
+	timespec_get(&tv_end, TIME_UTC);
 	time_unaligned_const = (double)(tv_end.tv_sec - tv_begin.tv_sec)
-		+ ((double)tv_end.tv_usec - tv_begin.tv_usec)/1000000;
+		+ ((double)tv_end.tv_nsec - tv_begin.tv_nsec) / NS_PER_S;
 	printf("\n======= ================= ================= ================= =================\n\n");
 
 	printf("Test Execution Time (seconds):\n");

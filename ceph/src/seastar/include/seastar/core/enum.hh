@@ -27,18 +27,22 @@
  * it possible to inherit from this type to
  */
 
+#ifndef SEASTAR_MODULE
 #include <type_traits>
 #include <functional>
 #include <cstddef>
+#include <seastar/util/modules.hh>
+#endif
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT
 template <typename T>
 class enum_hash {
-    static_assert(std::is_enum<T>::value, "must be an enum");
+    static_assert(std::is_enum_v<T>, "must be an enum");
 public:
     std::size_t operator()(const T& e) const {
-        using utype = typename std::underlying_type<T>::type;
+        using utype = std::underlying_type_t<T>;
         return std::hash<utype>()(static_cast<utype>(e));
     }
 };

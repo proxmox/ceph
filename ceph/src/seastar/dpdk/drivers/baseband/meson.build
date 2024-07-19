@@ -1,7 +1,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2018 Luca Boccassi <bluca@debian.org>
 
-drivers = ['null']
+if is_windows
+    subdir_done()
+endif
 
-config_flag_fmt = 'RTE_LIBRTE_@0@_PMD'
-driver_name_fmt = 'rte_pmd_@0@'
+drivers = [
+        'acc',
+        'fpga_5gnr_fec',
+        'fpga_lte_fec',
+        'la12xx',
+        'null',
+        'turbo_sw',
+]
+
+log_prefix = 'pmd.bb'

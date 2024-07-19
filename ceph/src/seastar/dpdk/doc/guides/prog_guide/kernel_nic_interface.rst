@@ -6,16 +6,55 @@
 Kernel NIC Interface
 ====================
 
+.. note::
+
+   KNI is deprecated and will be removed in future.
+   See :doc:`../rel_notes/deprecation`.
+
+   :ref:`virtio_user_as_exception_path` alternative is the preferred way
+   for interfacing with the Linux network stack
+   as it is an in-kernel solution and has similar performance expectations.
+
+.. note::
+
+   KNI is disabled by default in the DPDK build.
+   To re-enable the library, remove 'kni' from the "disable_libs" meson option when configuring a build.
+
 The DPDK Kernel NIC Interface (KNI) allows userspace applications access to the Linux* control plane.
 
-The benefits of using the DPDK KNI are:
+KNI provides an interface with the kernel network stack
+and allows management of DPDK ports using standard Linux net tools
+such as ``ethtool``, ``iproute2`` and ``tcpdump``.
+
+The main use case of KNI is to get/receive exception packets from/to Linux network stack
+while main datapath IO is done bypassing the networking stack.
+
+There are other alternatives to KNI, all are available in the upstream Linux:
+
+#. :ref:`virtio_user_as_exception_path`
+
+#. :doc:`../nics/tap` as wrapper to `Linux tun/tap
+   <https://www.kernel.org/doc/Documentation/networking/tuntap.txt>`_
+
+The benefits of using the KNI against alternatives are:
 
 *   Faster than existing Linux TUN/TAP interfaces
     (by eliminating system calls and copy_to_user()/copy_from_user() operations.
 
-*   Allows management of DPDK ports using standard Linux net tools such as ethtool, ifconfig and tcpdump.
+The disadvantages of the KNI are:
 
-*   Allows an interface with the kernel network stack.
+* It is out-of-tree Linux kernel module
+  which makes updating and distributing the driver more difficult.
+  Most users end up building the KNI driver from source
+  which requires the packages and tools to build kernel modules.
+
+* As it shares memory between userspace and kernelspace,
+  and kernel part directly uses input provided by userspace, it is not safe.
+  This makes hard to upstream the module.
+
+* Requires dedicated kernel cores.
+
+* Only a subset of net devices control commands are supported by KNI.
 
 The components of an application using the DPDK Kernel NIC Interface are shown in :numref:`figure_kernel_nic_intf`.
 
@@ -56,6 +95,16 @@ can be specified when the module is loaded to control its behavior:
                     off   Interfaces will be created with carrier state set to off.
                     on    Interfaces will be created with carrier state set to on.
                      (charp)
+    parm:           enable_bifurcated: Enable request processing support for
+                    bifurcated drivers, which means releasing rtnl_lock before calling
+                    userspace callback and supporting async requests (default=off):
+                    on    Enable request processing support for bifurcated drivers.
+                     (charp)
+    parm:           min_scheduling_interval: KNI thread min scheduling interval (default=100 microseconds)
+                     (long)
+    parm:           max_scheduling_interval: KNI thread max scheduling interval (default=200 microseconds)
+                     (long)
+
 
 Loading the ``rte_kni`` kernel module without any optional parameters is
 the typical way a DPDK application gets packets into and out of the kernel
@@ -65,7 +114,7 @@ disabled, and the default carrier state of KNI interfaces is set to *off*.
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko
 
 .. _kni_loopback_mode:
 
@@ -77,14 +126,14 @@ by specifying the ``lo_mode`` parameter:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko lo_mode=lo_mode_fifo
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko lo_mode=lo_mode_fifo
 
 The ``lo_mode_fifo`` loopback option will loop back ring enqueue/dequeue
 operations in kernel space.
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko lo_mode=lo_mode_fifo_skb
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko lo_mode=lo_mode_fifo_skb
 
 The ``lo_mode_fifo_skb`` loopback option will loop back ring enqueue/dequeue
 operations and sk buffer copies in kernel space.
@@ -105,7 +154,7 @@ Single kernel thread mode is enabled as follows:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko kthread_mode=single
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko kthread_mode=single
 
 This mode will create only one kernel thread for all KNI interfaces to
 receive data on the kernel side.  By default, this kernel thread is not
@@ -122,7 +171,7 @@ kernel thread mode is enabled as follows:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko kthread_mode=multiple
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko kthread_mode=multiple
 
 This mode will create a separate kernel thread for each KNI interface to
 receive data on the kernel side.  The core affinity of each ``kni_thread``
@@ -163,22 +212,73 @@ To set the default carrier state to *on*:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko carrier=on
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko carrier=on
 
 To set the default carrier state to *off*:
 
 .. code-block:: console
 
-    # insmod kmod/rte_kni.ko carrier=off
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko carrier=off
 
 If the ``carrier`` parameter is not specified, the default carrier state
 of KNI interfaces will be set to *off*.
+
+.. _kni_bifurcated_device_support:
+
+Bifurcated Device Support
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+User callbacks are executed while kernel module holds the ``rtnl`` lock, this
+causes a deadlock when callbacks run control commands on another Linux kernel
+network interface.
+
+Bifurcated devices has kernel network driver part and to prevent deadlock for
+them ``enable_bifurcated`` is used.
+
+To enable bifurcated device support:
+
+.. code-block:: console
+
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko enable_bifurcated=on
+
+Enabling bifurcated device support releases ``rtnl`` lock before calling
+callback and locks it back after callback. Also enables asynchronous request to
+support callbacks that requires rtnl lock to work (interface down).
+
+KNI Kthread Scheduling
+~~~~~~~~~~~~~~~~~~~~~~
+
+The ``min_scheduling_interval`` and ``max_scheduling_interval`` parameters
+control the rescheduling interval of the KNI kthreads.
+
+This might be useful if we have use cases in which we require improved
+latency or performance for control plane traffic.
+
+The implementation is backed by Linux High Precision Timers, and uses ``usleep_range``.
+Hence, it will have the same granularity constraints as this Linux subsystem.
+
+For Linux High Precision Timers, you can check the following resource: `Kernel Timers <http://www.kernel.org/doc/Documentation/timers/timers-howto.txt>`_
+
+To set the ``min_scheduling_interval`` to a value of 100 microseconds:
+
+.. code-block:: console
+
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko min_scheduling_interval=100
+
+To set the ``max_scheduling_interval`` to a value of 200 microseconds:
+
+.. code-block:: console
+
+    # insmod <build_dir>/kernel/linux/kni/rte_kni.ko max_scheduling_interval=200
+
+If the ``min_scheduling_interval`` and ``max_scheduling_interval`` parameters are
+not specified, the default interval limits will be set to *100* and *200* respectively.
 
 KNI Creation and Deletion
 -------------------------
 
 Before any KNI interfaces can be created, the ``rte_kni`` kernel module must
-be loaded into the kernel and configured withe ``rte_kni_init()`` function.
+be loaded into the kernel and configured with the ``rte_kni_init()`` function.
 
 The KNI interfaces are created by a DPDK application dynamically via the
 ``rte_kni_alloc()`` function.
@@ -235,6 +335,15 @@ application functions:
     will be called which calls ``rte_eth_promiscuous_<enable|disable>()``
     on the specified ``port_id``.
 
+``config_allmulticast``:
+
+    Called when the user changes the allmulticast state of the KNI interface.
+    For example, when the user runs ``ifconfig <ifaceX> [-]allmulti``. If the
+    user sets this callback function to NULL, but sets the ``port_id`` field to
+    a value other than -1, a default callback handler in the rte_kni library
+    ``kni_config_allmulticast()`` will be called which calls
+    ``rte_eth_allmulticast_<enable|disable>()`` on the specified ``port_id``.
+
 In order to run these callbacks, the application must periodically call
 the ``rte_kni_handle_request()`` function.  Any user callback function
 registered will be called directly from ``rte_kni_handle_request()`` so
@@ -245,7 +354,7 @@ to create a separate thread or secondary process to periodically call
 
 The KNI interfaces can be deleted by a DPDK application with
 ``rte_kni_release()``.  All KNI interfaces not explicitly deleted will be
-deleted when the the ``/dev/kni`` device is closed, either explicitly with
+deleted when the ``/dev/kni`` device is closed, either explicitly with
 ``rte_kni_close()`` or when the DPDK application is closed.
 
 DPDK mbuf Flow
@@ -268,12 +377,16 @@ Use Case: Ingress
 -----------------
 
 On the DPDK RX side, the mbuf is allocated by the PMD in the RX thread context.
-This thread will enqueue the mbuf in the rx_q FIFO.
+This thread will enqueue the mbuf in the rx_q FIFO,
+and the next pointers in mbuf-chain will convert to physical address.
 The KNI thread will poll all KNI active devices for the rx_q.
 If an mbuf is dequeued, it will be converted to a sk_buff and sent to the net stack via netif_rx().
-The dequeued mbuf must be freed, so the same pointer is sent back in the free_q FIFO.
+The dequeued mbuf must be freed, so the same pointer is sent back in the free_q FIFO,
+and next pointers must convert back to virtual address if exists before put in the free_q FIFO.
 
 The RX thread, in the same main loop, polls this FIFO and frees the mbuf after dequeuing it.
+The address conversion of the next pointer is to prevent the chained mbuf
+in different hugepage segments from causing kernel crash.
 
 Use Case: Egress
 ----------------
@@ -287,10 +400,24 @@ The sk_buff is then freed and the mbuf sent in the tx_q FIFO.
 The DPDK TX thread dequeues the mbuf and sends it to the PMD via ``rte_eth_tx_burst()``.
 It then puts the mbuf back in the cache.
 
+IOVA = VA: Support
+------------------
+
+KNI operates in IOVA_VA scheme when
+
+- LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0) and
+- EAL option `iova-mode=va` is passed or bus IOVA scheme in the DPDK is selected
+  as RTE_IOVA_VA.
+
+Due to IOVA to KVA address translations, based on the KNI use case there
+can be a performance impact. For mitigation, forcing IOVA to PA via EAL
+"--iova-mode=pa" option can be used, IOVA_DC bus iommu scheme can also
+result in IOVA as PA.
+
 Ethtool
 -------
 
-Ethtool is a Linux-specific tool with corresponding support in the kernel
-where each net device must register its own callbacks for the supported operations.
-The current implementation uses the igb/ixgbe modified Linux drivers for ethtool support.
-Ethtool is not supported in i40e and VMs (VF or EM devices).
+Ethtool is a Linux-specific tool with corresponding support in the kernel.
+The current version of kni provides minimal ethtool functionality
+including querying version and link state. It does not support link
+control, statistics, or dumping device registers.

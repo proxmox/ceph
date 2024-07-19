@@ -30,10 +30,52 @@ class StoreDriver : public Driver {
 
     int read_topics(const std::string& tenant, rgw_pubsub_topics& topics, RGWObjVersionTracker* objv_tracker,
         optional_yield y, const DoutPrefixProvider *dpp) override {return -EOPNOTSUPP;}
+    int stat_topics_v1(const std::string& tenant, optional_yield y, const DoutPrefixProvider *dpp) override {return -EOPNOTSUPP;}
     int write_topics(const std::string& tenant, const rgw_pubsub_topics& topics, RGWObjVersionTracker* objv_tracker,
 	optional_yield y, const DoutPrefixProvider *dpp) override {return -ENOENT;}
     int remove_topics(const std::string& tenant, RGWObjVersionTracker* objv_tracker,
         optional_yield y, const DoutPrefixProvider *dpp) override {return -ENOENT;}
+    int read_topic_v2(const std::string& topic_name,
+                      const std::string& tenant,
+                      rgw_pubsub_topic& topic,
+                      RGWObjVersionTracker* objv_tracker,
+                      optional_yield y,
+                      const DoutPrefixProvider* dpp) override {
+      return -EOPNOTSUPP;
+    }
+    int write_topic_v2(const rgw_pubsub_topic& topic, bool exclusive,
+                       RGWObjVersionTracker& objv_tracker,
+                       optional_yield y,
+                       const DoutPrefixProvider* dpp) override {
+      return -EOPNOTSUPP;
+    }
+    int remove_topic_v2(const std::string& topic_name,
+                        const std::string& tenant,
+                        RGWObjVersionTracker& objv_tracker,
+                        optional_yield y,
+                        const DoutPrefixProvider* dpp) override {
+      return -EOPNOTSUPP;
+    }
+    int update_bucket_topic_mapping(const rgw_pubsub_topic& topic,
+                                    const std::string& bucket_key,
+                                    bool add_mapping,
+                                    optional_yield y,
+                                    const DoutPrefixProvider* dpp) override {
+      return -EOPNOTSUPP;
+    }
+    int remove_bucket_mapping_from_topics(
+        const rgw_pubsub_bucket_topics& bucket_topics,
+        const std::string& bucket_key,
+        optional_yield y,
+        const DoutPrefixProvider* dpp) override {
+      return -EOPNOTSUPP;
+    }
+    int get_bucket_topic_mapping(const rgw_pubsub_topic& topic,
+                                 std::set<std::string>& bucket_keys,
+                                 optional_yield y,
+                                 const DoutPrefixProvider* dpp) override {
+      return -EOPNOTSUPP;
+    }
 };
 
 class StoreUser : public User {
@@ -58,12 +100,20 @@ class StoreUser : public User {
     virtual const rgw_user& get_id() const override { return info.user_id; }
     virtual uint32_t get_type() const override { return info.type; }
     virtual int32_t get_max_buckets() const override { return info.max_buckets; }
+    virtual void set_max_buckets(int32_t _max_buckets) override {
+      info.max_buckets = _max_buckets;
+    }
     virtual const RGWUserCaps& get_caps() const override { return info.caps; }
     virtual RGWObjVersionTracker& get_version_tracker() override { return objv_tracker; }
     virtual Attrs& get_attrs() override { return attrs; }
     virtual void set_attrs(Attrs& _attrs) override { attrs = _attrs; }
     virtual bool empty() const override { return info.user_id.id.empty(); }
     virtual RGWUserInfo& get_info() override { return info; }
+    virtual void set_info(RGWQuotaInfo& _quota) override {
+      info.quota.user_quota.max_size = _quota.max_size;
+      info.quota.user_quota.max_objects = _quota.max_objects;
+    }
+
     virtual void print(std::ostream& out) const override { out << info.user_id; }
 
     friend class StoreBucket;
@@ -71,9 +121,7 @@ class StoreUser : public User {
 
 class StoreBucket : public Bucket {
   protected:
-    RGWBucketEnt ent;
     RGWBucketInfo info;
-    User* owner = nullptr;
     Attrs attrs;
     obj_version bucket_version;
     ceph::real_time mtime;
@@ -81,48 +129,18 @@ class StoreBucket : public Bucket {
   public:
 
     StoreBucket() = default;
-    StoreBucket(User* _u) :
-      owner(_u) { }
-    StoreBucket(const rgw_bucket& _b) { ent.bucket = _b; info.bucket = _b; }
-    StoreBucket(const RGWBucketEnt& _e) : ent(_e) {
-      info.bucket = ent.bucket;
-      info.placement_rule = ent.placement_rule;
-      info.creation_time = ent.creation_time;
-    }
-    StoreBucket(const RGWBucketInfo& _i) : info(_i) {
-      ent.bucket = info.bucket;
-      ent.placement_rule = info.placement_rule;
-      ent.creation_time = info.creation_time;
-    }
-    StoreBucket(const rgw_bucket& _b, User* _u) :
-      owner(_u) { ent.bucket = _b; info.bucket = _b; }
-    StoreBucket(const RGWBucketEnt& _e, User* _u) : ent(_e), owner(_u) {
-      info.bucket = ent.bucket;
-      info.placement_rule = ent.placement_rule;
-      info.creation_time = ent.creation_time;
-    }
-    StoreBucket(const RGWBucketInfo& _i, User* _u) : info(_i), owner(_u) {
-      ent.bucket = info.bucket;
-      ent.placement_rule = info.placement_rule;
-      ent.creation_time = info.creation_time;
-    }
+    StoreBucket(const rgw_bucket& b) { info.bucket = b; }
+    StoreBucket(const RGWBucketInfo& i) : info(i) {}
     virtual ~StoreBucket() = default;
 
     virtual Attrs& get_attrs(void) override { return attrs; }
     virtual int set_attrs(Attrs a) override { attrs = a; return 0; }
-    virtual void set_owner(rgw::sal::User* _owner) override {
-      owner = _owner;
-    }
-    virtual User* get_owner(void) override { return owner; };
-    virtual ACLOwner get_acl_owner(void) override { return ACLOwner(info.owner); };
+    virtual const rgw_owner& get_owner() const override { return info.owner; }
     virtual bool empty() const override { return info.bucket.name.empty(); }
     virtual const std::string& get_name() const override { return info.bucket.name; }
     virtual const std::string& get_tenant() const override { return info.bucket.tenant; }
     virtual const std::string& get_marker() const override { return info.bucket.marker; }
     virtual const std::string& get_bucket_id() const override { return info.bucket.bucket_id; }
-    virtual size_t get_size() const override { return ent.size; }
-    virtual size_t get_size_rounded() const override { return ent.size_rounded; }
-    virtual uint64_t get_count() const override { return ent.count; }
     virtual rgw_placement_rule& get_placement_rule() override { return info.placement_rule; }
     virtual ceph::real_time& get_creation_time() override { return info.creation_time; }
     virtual ceph::real_time& get_modification_time() override { return mtime; }
@@ -162,8 +180,6 @@ class StoreBucket : public Bucket {
         optional_yield y, const DoutPrefixProvider *dpp) override {return 0;}
 
     friend class BucketList;
-  protected:
-    virtual void set_ent(RGWBucketEnt& _ent) { ent = _ent; info.bucket = ent.bucket; info.placement_rule = ent.placement_rule; }
 };
 
 class StoreObject : public Object {
@@ -171,6 +187,7 @@ class StoreObject : public Object {
     RGWObjState state;
     Bucket* bucket = nullptr;
     bool delete_marker{false};
+    jspan_context trace_ctx{false, false};
 
   public:
     StoreObject() = default;
@@ -204,6 +221,9 @@ class StoreObject : public Object {
 
     virtual bool empty() const override { return state.obj.empty(); }
     virtual const std::string &get_name() const override { return state.obj.key.name; }
+    virtual void set_obj_state(RGWObjState& _state) override {
+      state = _state;
+    }
     virtual Attrs& get_attrs(void) override { return state.attrset; }
     virtual const Attrs& get_attrs(void) const override { return state.attrset; }
     virtual int set_attrs(Attrs a) override { state.attrset = a; state.has_attrs = true; return 0; }
@@ -240,6 +260,18 @@ class StoreObject : public Object {
        * work with lifecycle */
       return -1;
     }
+    jspan_context& get_trace() override { return trace_ctx; }
+    void set_trace (jspan_context&& _trace_ctx) override { trace_ctx = std::move(_trace_ctx); }
+
+    virtual int get_torrent_info(const DoutPrefixProvider* dpp,
+                                 optional_yield y, bufferlist& bl) override {
+      const auto& attrs = get_attrs();
+      if (auto i = attrs.find(RGW_ATTR_TORRENT); i != attrs.end()) {
+        bl = i->second;
+        return 0;
+      }
+      return -ENOENT;
+    }
 
     virtual void print(std::ostream& out) const override {
       if (bucket)
@@ -267,7 +299,7 @@ public:
 
   virtual std::map<uint32_t, std::unique_ptr<MultipartPart>>& get_parts() override { return parts; }
 
-  virtual const jspan_context& get_trace() override { return trace_ctx; }
+  virtual jspan_context& get_trace() override { return trace_ctx; }
 
   virtual void print(std::ostream& out) const override {
     out << get_meta();
@@ -376,14 +408,15 @@ class StoreNotification : public Notification {
 protected:
   Object* obj;
   Object* src_obj;
-  rgw::notify::EventType event_type;
+  rgw::notify::EventTypeList event_types;
 
-  public:
-    StoreNotification(Object* _obj, Object* _src_obj, rgw::notify::EventType _type)
-      : obj(_obj), src_obj(_src_obj), event_type(_type)
-    {}
+ public:
+  StoreNotification(Object* _obj,
+                    Object* _src_obj,
+                    rgw::notify::EventTypeList _types)
+      : obj(_obj), src_obj(_src_obj), event_types(std::move(_types)) {}
 
-    virtual ~StoreNotification() = default;
+  virtual ~StoreNotification() = default;
 };
 
 class StoreWriter : public Writer {
@@ -412,7 +445,18 @@ class StoreZone : public Zone {
 };
 
 class StoreLuaManager : public LuaManager {
+protected:
+  std::string _luarocks_path;
 public:
+  const std::string& luarocks_path() const override {
+    return _luarocks_path;
+  }
+  void set_luarocks_path(const std::string& path) override {
+    _luarocks_path = path;
+  }
+  StoreLuaManager() = default;
+  StoreLuaManager(const std::string& __luarocks_path) :
+    _luarocks_path(__luarocks_path) {}
   virtual ~StoreLuaManager() = default;
 };
 

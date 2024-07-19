@@ -19,45 +19,28 @@ information on how to build and run testpmd.
 Driver Compilation
 ------------------
 
-To compile a PMD for a platform, run make with appropriate target as shown below.
-Use "make" command in Linux and "gmake" in FreeBSD. This will also build testpmd.
+To compile a PMD for a platform, build DPDK
+as described in the "Getting Started Guide" for your platform.
+This will also build testpmd.
 
-To check available targets:
+Detailed instructions are available
+in the :doc:`meson build guide <../prog_guide/build-sdk-meson>`.
 
-.. code-block:: console
+The ethdev layer supports below build options for debug purpose:
 
-   cd <DPDK-source-directory>
-   make showconfigs
+- ``RTE_ETHDEV_DEBUG_RX`` (default **disabled**)
 
-Example output:
+  Build with debug code on Rx path.
 
-.. code-block:: console
+- ``RTE_ETHDEV_DEBUG_TX`` (default **disabled**)
 
-   arm-armv7a-linux-gcc
-   arm64-armv8a-linux-gcc
-   arm64-dpaa2-linux-gcc
-   arm64-thunderx-linux-gcc
-   arm64-xgene1-linux-gcc
-   i686-native-linux-gcc
-   i686-native-linux-icc
-   ppc_64-power8-linux-gcc
-   x86_64-native-freebsd-clang
-   x86_64-native-freebsd-gcc
-   x86_64-native-linux-clang
-   x86_64-native-linux-gcc
-   x86_64-native-linux-icc
-   x86_x32-native-linux-gcc
+  Build with debug code on Tx path.
 
-To compile a PMD for Linux x86_64 gcc target, run the following "make" command:
+.. Note::
 
-.. code-block:: console
-
-   make install T=x86_64-native-linux-gcc
-
-Use ARM (ThunderX, DPAA, X-Gene) or PowerPC target for respective platform.
-
-For more information, refer to the :ref:`Getting Started Guide for Linux <linux_gsg>`
-or :ref:`Getting Started Guide for FreeBSD <freebsd_gsg>` depending on your platform.
+   The ethdev library use above options to wrap debug code to trace invalid parameters
+   on data path APIs, so performance downgrade is expected when enabling those options.
+   Each PMD can decide to reuse them to wrap their own debug code in the Rx/Tx path.
 
 Running testpmd in Linux
 ------------------------
@@ -97,12 +80,18 @@ This section demonstrates how to setup and run ``testpmd`` in Linux.
 
          Hugepagesize:       2048 kB
 
+   Mount and request above can be achieved simply with this tool:
+
+   .. code-block:: console
+
+      dpdk-hugepages.py --setup 2G
+
 #. Load ``igb_uio`` or ``vfio-pci`` driver:
 
    .. code-block:: console
 
       modprobe uio
-      insmod ./x86_64-native-linux-gcc/kmod/igb_uio.ko
+      insmod igb_uio.ko
 
    or
 
@@ -139,7 +128,7 @@ This section demonstrates how to setup and run ``testpmd`` in Linux.
 
    .. code-block:: console
 
-      ./x86_64-native-linux-gcc/app/testpmd -l 0-3 -n 4 -- -i
+      ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 -- -i
 
    Successful execution will show initialization messages from EAL, PMD and
    testpmd application. A prompt will be displayed at the end for user commands

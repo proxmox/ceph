@@ -22,7 +22,7 @@ There are two flavors of the runtime execution for this application,
 with two or three threads per each packet flow configuration being used.
 The RX thread reads packets from the RX port,
 classifies the packets based on the double VLAN (outer and inner) and
-the lower two bytes of the IP destination address and puts them into the ring queue.
+the lower byte of the IP destination address and puts them into the ring queue.
 The worker thread dequeues the packets from the ring and calls the QoS scheduler enqueue/dequeue functions.
 If a separate TX core is used, these are sent to the TX ring.
 Otherwise, they are sent directly to the TX port.
@@ -41,9 +41,9 @@ The application is located in the ``qos_sched`` sub-directory.
 
 .. note::
 
-    To get statistics on the sample app using the command line interface as described in the next section,
-    DPDK must be compiled defining *CONFIG_RTE_SCHED_COLLECT_STATS*,
-    which can be done by changing the configuration file for the specific target to be compiled.
+    Number of grinders is currently set to 8.
+    This can be modified by specifying RTE_SCHED_PORT_N_GRINDERS=N
+    in CFLAGS, where N is number of grinders.
 
 Running the Application
 -----------------------
@@ -57,7 +57,7 @@ The application has a number of command line options:
 
 .. code-block:: console
 
-    ./qos_sched [EAL options] -- <APP PARAMS>
+    ./<build_dir>/examples/dpdk-qos_sched [EAL options] -- <APP PARAMS>
 
 Mandatory application parameters include:
 
@@ -71,7 +71,7 @@ Optional application parameters include:
     In this mode, the application shows a command line that can be used for obtaining statistics while
     scheduling is taking place (see interactive mode below for more information).
 
-*   --mst n: Master core index (the default value is 1).
+*   --mnc n: Main core index (the default value is 1).
 
 *   --rsz "A, B, C": Ring sizes:
 
@@ -91,7 +91,7 @@ Optional application parameters include:
 *   B = I/O RX lcore write burst size to the output software rings,
     worker lcore read burst size from input software rings,QoS enqueue size (the default value is 64)
 
-*   C = QoS dequeue size (the default value is 32)
+*   C = QoS dequeue size (the default value is 63)
 
 *   D = Worker lcore write burst size to the NIC TX (the default value is 64)
 
@@ -123,73 +123,8 @@ needed for the QoS scheduler configuration.
 
 The profile file has the following format:
 
-::
-
-    ; port configuration [port]
-
-    frame overhead = 24
-    number of subports per port = 1
-    number of pipes per subport = 4096
-    queue sizes = 64 64 64 64
-
-    ; Subport configuration
-
-    [subport 0]
-    tb rate = 1250000000; Bytes per second
-    tb size = 1000000; Bytes
-    tc 0 rate = 1250000000;     Bytes per second
-    tc 1 rate = 1250000000;     Bytes per second
-    tc 2 rate = 1250000000;     Bytes per second
-    tc 3 rate = 1250000000;     Bytes per second
-    tc period = 10;             Milliseconds
-    tc oversubscription period = 10;     Milliseconds
-
-    pipe 0-4095 = 0;        These pipes are configured with pipe profile 0
-
-    ; Pipe configuration
-
-    [pipe profile 0]
-    tb rate = 305175; Bytes per second
-    tb size = 1000000; Bytes
-
-    tc 0 rate = 305175; Bytes per second
-    tc 1 rate = 305175; Bytes per second
-    tc 2 rate = 305175; Bytes per second
-    tc 3 rate = 305175; Bytes per second
-    tc period = 40; Milliseconds
-
-    tc 0 oversubscription weight = 1
-    tc 1 oversubscription weight = 1
-    tc 2 oversubscription weight = 1
-    tc 3 oversubscription weight = 1
-
-    tc 0 wrr weights = 1 1 1 1
-    tc 1 wrr weights = 1 1 1 1
-    tc 2 wrr weights = 1 1 1 1
-    tc 3 wrr weights = 1 1 1 1
-
-    ; RED params per traffic class and color (Green / Yellow / Red)
-
-    [red]
-    tc 0 wred min = 48 40 32
-    tc 0 wred max = 64 64 64
-    tc 0 wred inv prob = 10 10 10
-    tc 0 wred weight = 9 9 9
-
-    tc 1 wred min = 48 40 32
-    tc 1 wred max = 64 64 64
-    tc 1 wred inv prob = 10 10 10
-    tc 1 wred weight = 9 9 9
-
-    tc 2 wred min = 48 40 32
-    tc 2 wred max = 64 64 64
-    tc 2 wred inv prob = 10 10 10
-    tc 2 wred weight = 9 9 9
-
-    tc 3 wred min = 48 40 32
-    tc 3 wred max = 64 64 64
-    tc 3 wred inv prob = 10 10 10
-    tc 3 wred weight = 9 9 9
+.. literalinclude:: ../../../examples/qos_sched/profile.cfg
+    :start-after: Data Plane Development Kit (DPDK) Programmer's Guide
 
 Interactive mode
 ~~~~~~~~~~~~~~~~
@@ -245,7 +180,7 @@ The following is an example command with a single packet flow configuration:
 
 .. code-block:: console
 
-    ./qos_sched -l 1,5,7 -n 4 -- --pfc "3,2,5,7" --cfg ./profile.cfg
+    ./<build_dir>/examples/dpdk-qos_sched -l 1,5,7 -n 4 -- --pfc "3,2,5,7" --cfg ./profile.cfg
 
 This example uses a single packet flow configuration which creates one RX thread on lcore 5 reading
 from port 3 and a worker thread on lcore 7 writing to port 2.
@@ -254,12 +189,12 @@ Another example with 2 packet flow configurations using different ports but shar
 
 .. code-block:: console
 
-   ./qos_sched -l 1,2,6,7 -n 4 -- --pfc "3,2,2,6,7" --pfc "1,0,2,6,7" --cfg ./profile.cfg
+   ./<build_dir>/examples/dpdk-qos_sched -l 1,2,6,7 -n 4 -- --pfc "3,2,2,6,7" --pfc "1,0,2,6,7" --cfg ./profile.cfg
 
 Note that independent cores for the packet flow configurations for each of the RX, WT and TX thread are also supported,
 providing flexibility to balance the work.
 
-The EAL coremask/corelist is constrained to contain the default mastercore 1 and the RX, WT and TX cores only.
+The EAL coremask/corelist is constrained to contain the default main core 1 and the RX, WT and TX cores only.
 
 Explanation
 -----------
@@ -295,11 +230,11 @@ This application classifies based on the QinQ double VLAN tags and the IP destin
    | Pipe           | Config (4k)             | Traffic shaped (token bucket)                    | Inner VLAN tag                   |
    |                |                         |                                                  |                                  |
    +----------------+-------------------------+--------------------------------------------------+----------------------------------+
-   | Traffic Class  | 4                       | TCs of the same pipe services in strict priority | Destination IP address (0.0.X.0) |
+   | Traffic Class  | 13                      | TCs of the same pipe services in strict priority | Destination IP address (0.0.0.X) |
    |                |                         |                                                  |                                  |
    +----------------+-------------------------+--------------------------------------------------+----------------------------------+
-   | Queue          | 4                       | Queue of the same TC serviced in WRR             | Destination IP address (0.0.0.X) |
-   |                |                         |                                                  |                                  |
+   | Queue          | High Priority TC: 1,    | Queue of lowest priority traffic                 | Destination IP address (0.0.0.X) |
+   |                | Lowest Priority TC: 4   | class (Best effort) serviced in WRR              |                                  |
    +----------------+-------------------------+--------------------------------------------------+----------------------------------+
 
 Please refer to the "QoS Scheduler" chapter in the *DPDK Programmer's Guide* for more information about these parameters.

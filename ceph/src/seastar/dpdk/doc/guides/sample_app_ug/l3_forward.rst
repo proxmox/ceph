@@ -4,18 +4,27 @@
 L3 Forwarding Sample Application
 ================================
 
-The L3 Forwarding application is a simple example of packet processing using the DPDK.
+The L3 Forwarding application is a simple example of packet processing using
+DPDK to demonstrate usage of poll and event mode packet I/O mechanism.
 The application performs L3 forwarding.
 
 Overview
 --------
 
-The application demonstrates the use of the hash and LPM libraries in the DPDK to implement packet forwarding.
-The initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual`.
-The main difference from the L2 Forwarding sample application is that the forwarding decision
-is made based on information read from the input packet.
+The application demonstrates the use of the hash, LPM, FIB and ACL libraries in DPDK
+to implement packet forwarding using poll or event mode PMDs for packet I/O.
+The initialization and run-time paths are very similar to those of the
+:doc:`l2_forward_real_virtual` and :doc:`l2_forward_event`.
+The main difference from the L2 Forwarding sample application is that optionally
+packet can be Rx/Tx from/to eventdev instead of port directly and forwarding
+decision is made based on information read from the input packet.
 
-The lookup method is either hash-based or LPM-based and is selected at run time. When the selected lookup method is hash-based,
+Eventdev can optionally use S/W or H/W (if supported by platform) scheduler
+implementation for packet I/O based on run time parameters.
+
+The lookup method is hash-based, LPM-based, FIB-based or ACL-based
+and is selected at run time.
+When the selected lookup method is hash-based,
 a hash object is used to emulate the flow classification stage.
 The hash object is used in correlation with a flow table to map each input packet to its flow at runtime.
 
@@ -23,14 +32,33 @@ The hash lookup key is represented by a DiffServ 5-tuple composed of the followi
 Source IP Address, Destination IP Address, Protocol, Source Port and Destination Port.
 The ID of the output interface for the input packet is read from the identified flow table entry.
 The set of flows used by the application is statically configured and loaded into the hash at initialization time.
-When the selected lookup method is LPM based, an LPM object is used to emulate the forwarding stage for IPv4 packets.
-The LPM object is used as the routing table to identify the next hop for each input packet at runtime.
+When the selected lookup method is LPM or FIB based,
+an LPM or FIB object is used to emulate the forwarding stage for IPv4 packets.
+The LPM or FIB object is used as the routing table
+to identify the next hop for each input packet at runtime.
 
-The LPM lookup key is represented by the Destination IP Address field read from the input packet.
-The ID of the output interface for the input packet is the next hop returned by the LPM lookup.
-The set of LPM rules used by the application is statically configured and loaded into the LPM object at initialization time.
+The LPM and FIB lookup keys are represented by the destination IP address field
+read from the input packet.
+The ID of the output interface for the input packet is the next hop
+returned by the LPM or FIB lookup.
+The set of LPM and FIB rules used by the application is statically configured
+and loaded into the LPM or FIB object at initialization time.
 
-In the sample application, hash-based forwarding supports IPv4 and IPv6. LPM-based forwarding supports IPv4 only.
+For ACL, the ACL library is used to perform both ACL and route entry lookup.
+When packets are received from a port,
+the application extracts the necessary information
+from the TCP/IP header of the received packet
+and performs a lookup in the rule database to figure out
+whether the packets should be dropped (in the ACL range)
+or forwarded to desired ports.
+For ACL, the application implements packet classification
+for the IPv4/IPv6 5-tuple syntax specifically.
+The 5-tuple syntax consists of a source IP address, a destination IP address,
+a source port, a destination port and a protocol identifier.
+
+In the sample application, hash-based, LPM-based, FIB-based and ACL-based forwarding supports
+both IPv4 and IPv6.
+During the initialization phase route rules for IPv4 and IPv6 are read from rule files.
 
 Compiling the Application
 -------------------------
@@ -44,37 +72,51 @@ Running the Application
 
 The application has a number of command line options::
 
-    ./l3fwd [EAL options] -- -p PORTMASK
+    ./dpdk-l3fwd [EAL options] -- -p PORTMASK
+                             --rule_ipv4=FILE
+                             --rule_ipv6=FILE
                              [-P]
-                             [-E]
-                             [-L]
+                             [--lookup LOOKUP_METHOD]
                              --config(port,queue,lcore)[,(port,queue,lcore)]
                              [--eth-dest=X,MM:MM:MM:MM:MM:MM]
-                             [--enable-jumbo [--max-pkt-len PKTLEN]]
+                             [--max-pkt-len PKTLEN]
                              [--no-numa]
                              [--hash-entry-num]
                              [--ipv6]
                              [--parse-ptype]
                              [--per-port-pool]
+                             [--mode]
+                             [--eventq-sched]
+                             [--event-eth-rxqs]
+                             [--event-vector [--event-vector-size SIZE] [--event-vector-tmo NS]]
+                             [-E]
+                             [-L]
 
 Where,
 
 * ``-p PORTMASK:`` Hexadecimal bitmask of ports to configure
 
+* ``--rule_ipv4=FILE:`` specify the ipv4 rules entries file.
+  Each rule occupies one line.
+
+* ``--rule_ipv6=FILE:`` specify the ipv6 rules entries file.
+
 * ``-P:`` Optional, sets all ports to promiscuous mode so that packets are accepted regardless of the packet's Ethernet MAC destination address.
   Without this option, only packets with the Ethernet MAC destination address set to the Ethernet address of the port are accepted.
 
-* ``-E:`` Optional, enable exact match.
-
-* ``-L:`` Optional, enable longest prefix match.
+* ``--lookup:`` Optional, select the lookup method.
+  Accepted options:
+  ``em`` (Exact Match),
+  ``lpm`` (Longest Prefix Match),
+  ``fib`` (Forwarding Information Base),
+  ``acl`` (Access Control List).
+  Default is ``lpm``.
 
 * ``--config (port,queue,lcore)[,(port,queue,lcore)]:`` Determines which queues from which ports are mapped to which cores.
 
 * ``--eth-dest=X,MM:MM:MM:MM:MM:MM:`` Optional, ethernet destination for port X.
 
-* ``--enable-jumbo:`` Optional, enables jumbo frames.
-
-* ``--max-pkt-len:`` Optional, under the premise of enabling jumbo, maximum packet length in decimal (64-9600).
+* ``--max-pkt-len:`` Optional, maximum packet length in decimal (64-9600).
 
 * ``--no-numa:`` Optional, disables numa awareness.
 
@@ -86,6 +128,28 @@ Where,
 
 * ``--per-port-pool:`` Optional, set to use independent buffer pools per port. Without this option, single buffer pool is used for all ports.
 
+* ``--mode:`` Optional, Packet transfer mode for I/O, poll or eventdev.
+
+* ``--eventq-sched:`` Optional, Event queue synchronization method, Ordered, Atomic or Parallel. Only valid if --mode=eventdev.
+
+* ``--event-eth-rxqs:`` Optional, Number of ethernet RX queues per device. Only valid if --mode=eventdev.
+
+* ``--event-vector:`` Optional, Enable event vectorization. Only valid if --mode=eventdev.
+
+* ``--event-vector-size:`` Optional, Max vector size if event vectorization is enabled.
+
+* ``--event-vector-tmo:`` Optional, Max timeout to form vector in nanoseconds if event vectorization is enabled.
+
+* ``--alg=<val>:`` optional, ACL classify method to use, one of:
+  ``scalar|sse|avx2|neon|altivec|avx512x16|avx512x32``
+
+* ``-E:`` Optional, enable exact match,
+  legacy flag, please use ``--lookup=em`` instead.
+
+* ``-L:`` Optional, enable longest prefix match,
+  legacy flag, please use ``--lookup=lpm`` instead.
+
+
 For example, consider a dual processor socket platform with 8 physical cores, where cores 0-7 and 16-23 appear on socket 0,
 while cores 8-15 and 24-31 appear on socket 1.
 
@@ -94,7 +158,7 @@ To enable L3 forwarding between two ports, assuming that both ports are in the s
 
 .. code-block:: console
 
-    ./build/l3fwd -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)"
+    ./<build_dir>/examples/dpdk-l3fwd -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)" --rule_ipv4="rule_ipv4.cfg" --rule_ipv6="rule_ipv6.cfg"
 
 In this command:
 
@@ -116,6 +180,57 @@ In this command:
 |          |           |           |                                     |
 +----------+-----------+-----------+-------------------------------------+
 
+*   The -rule_ipv4 option specifies the reading of IPv4 rules sets from the rule_ipv4.cfg file
+
+*   The -rule_ipv6 option specifies the reading of IPv6 rules sets from the rule_ipv6.cfg file.
+
+To use eventdev mode with sync method **ordered** on above mentioned environment,
+Following is the sample command:
+
+.. code-block:: console
+
+    ./<build_dir>/examples/dpdk-l3fwd -l 0-3 -n 4 -a <event device> -- -p 0x3 --eventq-sched=ordered --rule_ipv4="rule_ipv4.cfg" --rule_ipv6="rule_ipv6.cfg"
+
+or
+
+.. code-block:: console
+
+    ./<build_dir>/examples/dpdk-l3fwd -l 0-3 -n 4 -a <event device> \
+		-- -p 0x03 --mode=eventdev --eventq-sched=ordered --rule_ipv4="rule_ipv4.cfg" --rule_ipv6="rule_ipv6.cfg"
+
+In this command:
+
+*   -a option allows the event device supported by platform.
+    The syntax used to indicate this device may vary based on platform.
+
+*   The --mode option defines PMD to be used for packet I/O.
+
+*   The --eventq-sched option enables synchronization menthod of event queue so that packets will be scheduled accordingly.
+
+If application uses S/W scheduler, it uses following DPDK services:
+
+*   Software scheduler
+*   Rx adapter service function
+*   Tx adapter service function
+
+Application needs service cores to run above mentioned services. Service cores
+must be provided as EAL parameters along with the --vdev=event_sw0 to enable S/W
+scheduler. Following is the sample command:
+
+.. code-block:: console
+
+    ./<build_dir>/examples/dpdk-l3fwd -l 0-7 -s 0xf0000 -n 4 --vdev event_sw0 -- -p 0x3 --mode=eventdev --eventq-sched=ordered --rule_ipv4="rule_ipv4.cfg" --rule_ipv6="rule_ipv6.cfg"
+
+In case of eventdev mode, *--config* option is not used for ethernet port
+configuration. Instead each ethernet port will be configured with mentioned
+setup:
+
+*   Single Rx/Tx queue
+
+*   Each Rx queue will be connected to event queue via Rx adapter.
+
+*   Each Tx queue will be connected via Tx adapter.
+
 Refer to the *DPDK Getting Started Guide* for general information on running applications and
 the Environment Abstraction Layer (EAL) options.
 
@@ -125,8 +240,70 @@ Explanation
 -----------
 
 The following sections provide some explanation of the sample application code. As mentioned in the overview section,
-the initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual`.
+the initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual` and :doc:`l2_forward_event`.
 The following sections describe aspects that are specific to the L3 Forwarding sample application.
+
+Parse Rules from File
+~~~~~~~~~~~~~~~~~~~~~
+
+The application parses the rules from the file and adds them to the appropriate route table by calling the appropriate function.
+It ignores empty and comment lines, and parses and validates the rules it reads.
+If errors are detected, the application exits with messages to identify the errors encountered.
+
+The format of the route rules differs based on which lookup method is being used.
+Therefore, the code only decreases the priority number with each rule it parses.
+Route rules are mandatory.
+To read data from the specified file successfully, the application assumes the following:
+
+*   Each rule occupies a single line.
+
+*   Only the following four rule line types are valid in this application:
+
+*   Route rule line, which starts with a leading character 'R'
+
+*   Comment line, which starts with a leading character '#'
+
+*   ACL rule line, which starts with a leading character ‘@’
+
+*   Empty line, which consists of a space, form-feed ('\f'), newline ('\n'),
+    carriage return ('\r'), horizontal tab ('\t'), or vertical tab ('\v').
+
+Other lines types are considered invalid.
+
+*   Rules are organized in descending order of priority,
+    which means rules at the head of the file always have a higher priority than those further down in the file.
+
+*   A typical IPv4 LPM/FIB rule line should have a format as shown below:
+
+R<destination_ip>/<ip_mask_length><output_port_number>
+
+*   A typical IPv4 EM rule line should have a format as shown below:
+
+R<destination_ip><source_ip><destination_port><source_port><protocol><output_port_number>
+
+*   A typical IPv4 ACL rule line should have a format as shown below:
+
+.. _figure_ipv4_acl_rule:
+
+.. figure:: img/ipv4_acl_rule.*
+
+   A typical IPv4 ACL rule
+
+IPv4 addresses are specified in CIDR format as specified in RFC 4632.
+For LPM/FIB/ACL they consist of the dot notation for the address
+and a prefix length separated by '/'.
+For example, 192.168.0.34/32, where the address is 192.168.0.34 and the prefix length is 32.
+For EM they consist of just the dot notation for the address and no prefix length.
+For example, 192.168.0.34, where the Address is 192.168.0.34.
+EM also includes ports which are specified as a single number which represents a single port.
+
+The application parses the rules from the file,
+it ignores empty and comment lines,
+and parses and validates the rules it reads.
+If errors are detected, the application exits
+with messages to identify the errors encountered.
+The ACL rules save the index to the specific rules in the userdata field,
+while route rules save the forwarding port number.
 
 Hash Initialization
 ~~~~~~~~~~~~~~~~~~~
@@ -139,8 +316,6 @@ for the convenience to execute hash performance test on 4M/8M/16M flows.
 
     The Hash initialization will setup both ipv4 and ipv6 hash table,
     and populate the either table depending on the value of variable ipv6.
-    To support the hash performance test with up to 8M single direction flows/16M bi-direction flows,
-    populate_ipv4_many_flow_into_table() function will populate the hash table with specified hash table entry number(default 4M).
 
 .. note::
 
@@ -158,22 +333,14 @@ for the convenience to execute hash performance test on 4M/8M/16M flows.
         {
             // ...
 
-            if (hash_entry_number != HASH_ENTRY_NUMBER_DEFAULT) {
-                if (ipv6 == 0) {
-                    /* populate the ipv4 hash */
-                    populate_ipv4_many_flow_into_table(ipv4_l3fwd_lookup_struct[socketid], hash_entry_number);
-                } else {
-                    /* populate the ipv6 hash */
-                    populate_ipv6_many_flow_into_table( ipv6_l3fwd_lookup_struct[socketid], hash_entry_number);
-                }
-            } else
-                if (ipv6 == 0) {
-                    /* populate the ipv4 hash */
-                    populate_ipv4_few_flow_into_table(ipv4_l3fwd_lookup_struct[socketid]);
-                } else {
-                    /* populate the ipv6 hash */
-                    populate_ipv6_few_flow_into_table(ipv6_l3fwd_lookup_struct[socketid]);
-                }
+            if (ipv6 == 0) {
+                /* populate the ipv4 hash */
+                populate_ipv4_flow_into_table(
+                    ipv4_l3fwd_em_lookup_struct[socketid]);
+            } else {
+                /* populate the ipv6 hash */
+                populate_ipv6_flow_into_table(
+                    ipv6_l3fwd_em_lookup_struct[socketid]);
             }
         }
     #endif
@@ -183,48 +350,52 @@ LPM Initialization
 
 The LPM object is created and loaded with the pre-configured entries read from a global array.
 
-.. code-block:: c
+.. literalinclude:: ../../../examples/l3fwd/l3fwd_em.c
+    :language: c
+    :start-after: Initialize exact match (hash) parameters. 8<
+    :end-before: >8 End of initialization of hash parameters.
 
-    #if (APP_LOOKUP_METHOD == APP_LOOKUP_LPM)
+FIB Initialization
+~~~~~~~~~~~~~~~~~~
 
-    static void
-    setup_lpm(int socketid)
-    {
-        unsigned i;
-        int ret;
-        char s[64];
+The FIB object is created and loaded with the pre-configured entries
+read from a global array.
+The abridged code snippet below shows the FIB initialization for IPv4,
+the full setup function including the IPv6 setup can be seen in the app code.
 
-        /* create the LPM table */
+.. literalinclude:: ../../../examples/l3fwd/l3fwd_fib.c
+   :language: c
+   :start-after: Function to setup fib. 8<
+   :end-before: >8 End of setup fib.
 
-        snprintf(s, sizeof(s), "IPV4_L3FWD_LPM_%d", socketid);
+ACL Initialization
+~~~~~~~~~~~~~~~~~~
 
-        ipv4_l3fwd_lookup_struct[socketid] = rte_lpm_create(s, socketid, IPV4_L3FWD_LPM_MAX_RULES, 0);
+For each supported ACL rule format (IPv4 5-tuple, IPv6 6-tuple),
+the application creates a separate context handler
+from the ACL library for each CPU socket on the board
+and adds parsed rules into that context.
 
-        if (ipv4_l3fwd_lookup_struct[socketid] == NULL)
-            rte_exit(EXIT_FAILURE, "Unable to create the l3fwd LPM table"
-                " on socket %d\n", socketid);
+Note, that for each supported rule type,
+the application needs to calculate the expected offset of the fields
+from the start of the packet.
+That's why only packets with fixed IPv4/ IPv6 header are supported.
+That allows to perform ACL classify straight over incoming packet buffer -
+no extra protocol field retrieval need to be performed.
 
-        /* populate the LPM table */
+Subsequently, the application checks whether NUMA is enabled.
+If it is, the application records the socket IDs of the CPU cores involved in the task.
 
-        for (i = 0; i < IPV4_L3FWD_NUM_ROUTES; i++) {
-            /* skip unused ports */
+Finally, the application creates contexts handler from the ACL library,
+adds rules parsed from the file into the database and build an ACL trie.
+It is important to note that the application creates an independent copy
+of each database for each socket CPU involved in the task
+to reduce the time for remote memory access.
 
-            if ((1 << ipv4_l3fwd_route_array[i].if_out & enabled_port_mask) == 0)
-                continue;
-
-            ret = rte_lpm_add(ipv4_l3fwd_lookup_struct[socketid], ipv4_l3fwd_route_array[i].ip,
-           	                    ipv4_l3fwd_route_array[i].depth, ipv4_l3fwd_route_array[i].if_out);
-
-            if (ret < 0) {
-                rte_exit(EXIT_FAILURE, "Unable to add entry %u to the "
-                        "l3fwd LPM table on socket %d\n", i, socketid);
-            }
-
-            printf("LPM: Adding route 0x%08x / %d (%d)\n",
-                (unsigned)ipv4_l3fwd_route_array[i].ip, ipv4_l3fwd_route_array[i].depth, ipv4_l3fwd_route_array[i].if_out);
-        }
-    }
-    #endif
+.. literalinclude:: ../../../examples/l3fwd/l3fwd_acl.c
+   :language: c
+   :start-after: Setup ACL context. 8<
+   :end-before: >8 End of ACL context setup.
 
 Packet Forwarding for Hash-based Lookups
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -237,28 +408,10 @@ and the packet forwarding decision (that is, the identification of the output in
 for hash-based lookups is done by the  get_ipv4_dst_port() or get_ipv6_dst_port() function.
 The get_ipv4_dst_port() function is shown below:
 
-.. code-block:: c
-
-    static inline uint8_t
-    get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, lookup_struct_t *ipv4_l3fwd_lookup_struct)
-    {
-        int ret = 0;
-        union ipv4_5tuple_host key;
-
-        ipv4_hdr = (uint8_t *)ipv4_hdr + offsetof(struct ipv4_hdr, time_to_live);
-
-        m128i data = _mm_loadu_si128(( m128i*)(ipv4_hdr));
-
-        /* Get 5 tuple: dst port, src port, dst IP address, src IP address and protocol */
-
-        key.xmm = _mm_and_si128(data, mask0);
-
-        /* Find destination port */
-
-        ret = rte_hash_lookup(ipv4_l3fwd_lookup_struct, (const void *)&key);
-
-        return (uint8_t)((ret < 0)? portid : ipv4_l3fwd_out_if[ret]);
-    }
+.. literalinclude:: ../../../examples/l3fwd/l3fwd_em.c
+   :language: c
+   :start-after: Performing hash-based lookups. 8<
+   :end-before: >8 End of performing hash-based lookups.
 
 The get_ipv6_dst_port() function is similar to the get_ipv4_dst_port() function.
 
@@ -273,10 +426,10 @@ The key code snippet of simple_ipv4_fwd_4pkts() is shown below:
     {
         // ...
 
-        data[0] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[0], unsigned char *) + sizeof(struct ether_hdr) + offsetof(struct ipv4_hdr, time_to_live)));
-        data[1] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[1], unsigned char *) + sizeof(struct ether_hdr) + offsetof(struct ipv4_hdr, time_to_live)));
-        data[2] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[2], unsigned char *) + sizeof(struct ether_hdr) + offsetof(struct ipv4_hdr, time_to_live)));
-        data[3] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[3], unsigned char *) + sizeof(struct ether_hdr) + offsetof(struct ipv4_hdr, time_to_live)));
+        data[0] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[0], unsigned char *) + sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, time_to_live)));
+        data[1] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[1], unsigned char *) + sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, time_to_live)));
+        data[2] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[2], unsigned char *) + sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, time_to_live)));
+        data[3] = _mm_loadu_si128(( m128i*)(rte_pktmbuf_mtod(m[3], unsigned char *) + sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, time_to_live)));
 
         key[0].xmm = _mm_and_si128(data[0], mask0);
         key[1].xmm = _mm_and_si128(data[1], mask0);
@@ -306,12 +459,22 @@ For each input packet, the packet forwarding operation is done by the l3fwd_simp
 but the packet forwarding decision (that is, the identification of the output interface for the packet)
 for LPM-based lookups is done by the get_ipv4_dst_port() function below:
 
-.. code-block:: c
+.. literalinclude:: ../../../examples/l3fwd/l3fwd_lpm.c
+   :language: c
+   :start-after: Performing LPM-based lookups. 8<
+   :end-before: >8 End of performing LPM-based lookups.
 
-    static inline uint16_t
-    get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint16_t portid, lookup_struct_t *ipv4_l3fwd_lookup_struct)
-    {
-        uint8_t next_hop;
+Packet Forwarding for FIB-based Lookups
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-        return ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct, rte_be_to_cpu_32(ipv4_hdr->dst_addr), &next_hop) == 0)? next_hop : portid);
-    }
+The FIB library was designed to process multiple packets at once,
+it does not have separate functions for single and bulk lookups.
+``rte_fib_lookup_bulk`` is used for IPv4 lookups
+and ``rte_fib6_lookup_bulk`` for IPv6.
+Various examples of these functions being used
+can be found in the sample app code.
+
+Eventdev Driver Initialization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Eventdev driver initialization is same as L2 forwarding eventdev application.
+Refer :doc:`l2_forward_event` for more details.

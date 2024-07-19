@@ -7,25 +7,53 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+
+#include <bus_driver.h>
+#include <bus_pci_driver.h>
+#include <rte_os_shim.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+
+#define RTE_MAX_PCI_REGIONS    9
+
+/*
+ * Convert struct rte_pci_device to struct rte_pci_device_internal
+ */
+#define RTE_PCI_DEVICE_INTERNAL(ptr) \
+	container_of(ptr, struct rte_pci_device_internal, device)
+#define RTE_PCI_DEVICE_INTERNAL_CONST(ptr) \
+	container_of(ptr, const struct rte_pci_device_internal, device)
+
+/**
+ * Structure describing the PCI bus
+ */
+struct rte_pci_bus {
+	struct rte_bus bus;               /**< Inherit the generic class */
+	RTE_TAILQ_HEAD(, rte_pci_device) device_list; /**< List of PCI devices */
+	RTE_TAILQ_HEAD(, rte_pci_driver) driver_list; /**< List of PCI drivers */
+};
 
 extern struct rte_pci_bus rte_pci_bus;
+
+/* PCI Bus iterators */
+#define FOREACH_DEVICE_ON_PCIBUS(p)	\
+	RTE_TAILQ_FOREACH(p, &(rte_pci_bus.device_list), next)
+
+#define FOREACH_DRIVER_ON_PCIBUS(p)	\
+	RTE_TAILQ_FOREACH(p, &(rte_pci_bus.driver_list), next)
 
 struct rte_pci_driver;
 struct rte_pci_device;
 
-extern struct rte_pci_bus rte_pci_bus;
+struct rte_pci_region {
+	uint64_t size;
+	uint64_t offset;
+};
 
-/**
- * Probe the PCI bus
- *
- * @return
- *   - 0 on success.
- *   - !0 on error.
- */
-int
-rte_pci_probe(void);
+struct rte_pci_device_internal {
+	struct rte_pci_device device;
+	/* PCI regions provided by e.g. VFIO. */
+	struct rte_pci_region region[RTE_MAX_PCI_REGIONS];
+};
 
 /**
  * Scan the content of the PCI bus, and the devices in the devices
@@ -37,10 +65,27 @@ rte_pci_probe(void);
 int rte_pci_scan(void);
 
 /**
- * Find the name of a PCI device.
+ * Set common internal information for a PCI device.
  */
 void
-pci_name_set(struct rte_pci_device *dev);
+pci_common_set(struct rte_pci_device *dev);
+
+/**
+ * Free a PCI device.
+ */
+void
+pci_free(struct rte_pci_device_internal *pdev);
+
+/**
+ * Validate whether a device with given PCI address should be ignored or not.
+ *
+ * @param pci_addr
+ *	PCI address of device to be validated
+ * @return
+ *	true: if device is to be ignored,
+ *	false: if device is to be scanned,
+ */
+bool rte_pci_ignore_device(const struct rte_pci_addr *pci_addr);
 
 /**
  * Add a PCI device to the PCI Bus (append to PCI Device list). This function
@@ -68,17 +113,71 @@ void rte_pci_insert_device(struct rte_pci_device *exist_pci_dev,
 		struct rte_pci_device *new_pci_dev);
 
 /**
- * Update a pci device object by asking the kernel for the latest information.
- *
- * This function is private to EAL.
- *
- * @param addr
- *	The PCI Bus-Device-Function address to look for
- * @return
- *   - 0 on success.
- *   - negative on error.
+ * A structure describing a PCI mapping.
  */
-int pci_update_device(const struct rte_pci_addr *addr);
+struct pci_map {
+	void *addr;
+	char *path;
+	uint64_t offset;
+	uint64_t size;
+	uint64_t phaddr;
+	uint32_t nr_areas;
+	struct vfio_region_sparse_mmap_area *areas;
+};
+
+struct pci_msix_table {
+	int bar_index;
+	uint32_t offset;
+	uint32_t size;
+};
+
+/**
+ * A structure describing a mapped PCI resource.
+ * For multi-process we need to reproduce all PCI mappings in secondary
+ * processes, so save them in a tailq.
+ */
+struct mapped_pci_resource {
+	TAILQ_ENTRY(mapped_pci_resource) next;
+
+	struct rte_pci_addr pci_addr;
+	char path[PATH_MAX];
+	int nb_maps;
+	struct pci_map maps[PCI_MAX_RESOURCE];
+	struct pci_msix_table msix_table;
+};
+
+/** mapped pci device list */
+TAILQ_HEAD(mapped_pci_res_list, mapped_pci_resource);
+
+/**
+ * Map a particular resource from a file.
+ *
+ * @param requested_addr
+ *      The starting address for the new mapping range.
+ * @param fd
+ *      The file descriptor.
+ * @param offset
+ *      The offset for the mapping range.
+ * @param size
+ *      The size for the mapping range.
+ * @param additional_flags
+ *      The additional rte_mem_map() flags for the mapping range.
+ * @return
+ *   - On success, the function returns a pointer to the mapped area.
+ *   - On error, NULL is returned.
+ */
+void *pci_map_resource(void *requested_addr, int fd, off_t offset,
+		size_t size, int additional_flags);
+
+/**
+ * Unmap a particular resource.
+ *
+ * @param requested_addr
+ *      The address for the unmapping range.
+ * @param size
+ *      The size for the unmapping range.
+ */
+void pci_unmap_resource(void *requested_addr, size_t size);
 
 /**
  * Map the PCI resource of a PCI device in virtual memory
@@ -173,6 +272,17 @@ rte_pci_match(const struct rte_pci_driver *pci_drv,
 	      const struct rte_pci_device *pci_dev);
 
 /**
+ * OS specific callbacks for rte_pci_get_iommu_class
+ *
+ */
+bool
+pci_device_iommu_support_va(const struct rte_pci_device *dev);
+
+enum rte_iova_mode
+pci_device_iova_mode(const struct rte_pci_driver *pci_drv,
+		     const struct rte_pci_device *pci_dev);
+
+/**
  * Get iommu class of PCI devices on the bus.
  * And return their preferred iova mapping mode.
  *
@@ -204,5 +314,19 @@ void *
 rte_pci_dev_iterate(const void *start,
 		    const char *str,
 		    const struct rte_dev_iterator *it);
+
+/*
+ * Parse device arguments and update name.
+ *
+ * @param da
+ *   device arguments to parse.
+ *
+ * @return
+ *   0 on success.
+ *   -EINVAL: kvargs string is invalid and cannot be parsed.
+ *   -ENODEV: no key matching a device ID is found in the kv list.
+ */
+int
+rte_pci_devargs_parse(struct rte_devargs *da);
 
 #endif /* _PCI_PRIVATE_H_ */

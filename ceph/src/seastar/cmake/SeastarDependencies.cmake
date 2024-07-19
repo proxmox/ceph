@@ -45,6 +45,10 @@ endif ()
 
 # This is the minimum version of Boost we need the CMake-bundled `FindBoost.cmake` to know about.
 find_package (Boost ${_seastar_boost_version} MODULE)
+if (Boost_VERSION_STRING VERSION_LESS 1.81.0)
+  set_target_properties (Boost::boost PROPERTIES
+    INTERFACE_COMPILE_DEFINITIONS "BOOST_NO_CXX98_FUNCTION_BASE")
+endif ()
 
 # - set _seastar_dep_args_<package> for additional args for find_package().
 #   add REQUIRED if the corresponding option is explicitly enabled, so
@@ -84,7 +88,6 @@ macro (seastar_find_dependencies)
     # Public dependencies.
     Boost
     c-ares
-    cryptopp
     dpdk # No version information published.
     fmt
     lz4
@@ -92,13 +95,16 @@ macro (seastar_find_dependencies)
     GnuTLS
     LibUring
     LinuxMembarrier
+    Protobuf
     Sanitizers
     SourceLocation
     StdAtomic
+    SystemTap-SDT
     hwloc
     lksctp-tools # No version information published.
     numactl # No version information published.
     rt
+    ucontext
     yaml-cpp)
 
   # Arguments to `find_package` for each 3rd-party dependency.
@@ -116,8 +122,6 @@ macro (seastar_find_dependencies)
       unit_test_framework)
   seastar_set_dep_args (c-ares REQUIRED
     VERSION 1.13)
-  seastar_set_dep_args (cryptopp REQUIRED
-    VERSION 5.6.5)
   seastar_set_dep_args (dpdk
     OPTION ${Seastar_DPDK})
   seastar_set_dep_args (fmt REQUIRED
@@ -126,6 +130,8 @@ macro (seastar_find_dependencies)
     VERSION 1.7.3)
   seastar_set_dep_args (GnuTLS REQUIRED
     VERSION 3.3.26)
+  seastar_set_dep_args (Protobuf REQUIRED
+    VERSION 2.5.0)
   seastar_set_dep_args (LibUring
     VERSION 2.0
     OPTION ${Seastar_IO_URING})
@@ -137,6 +143,7 @@ macro (seastar_find_dependencies)
   seastar_set_dep_args (rt REQUIRED)
   seastar_set_dep_args (numactl
     OPTION ${Seastar_NUMA})
+  seastar_set_dep_args (ucontext REQUIRED)
   seastar_set_dep_args (yaml-cpp REQUIRED
     VERSION 0.5.1)
 

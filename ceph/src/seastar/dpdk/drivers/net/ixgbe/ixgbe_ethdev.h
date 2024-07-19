@@ -6,20 +6,22 @@
 #define _IXGBE_ETHDEV_H_
 
 #include <stdint.h>
+#include <stdbool.h>
+#include <sys/queue.h>
 
 #include "base/ixgbe_type.h"
 #include "base/ixgbe_dcb.h"
 #include "base/ixgbe_dcb_82599.h"
 #include "base/ixgbe_dcb_82598.h"
 #include "ixgbe_bypass.h"
-#ifdef RTE_LIBRTE_SECURITY
+#ifdef RTE_LIB_SECURITY
 #include "ixgbe_ipsec.h"
 #endif
 #include <rte_flow.h>
 #include <rte_time.h>
 #include <rte_hash.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_tm_driver.h>
 
 /* need update link, bit flag */
@@ -42,7 +44,6 @@
 #define IXGBE_NB_STAT_MAPPING_REGS  32
 #define IXGBE_EXTENDED_VLAN	  (uint32_t)(1 << 26) /* EXTENDED VLAN ENABLE */
 #define IXGBE_VFTA_SIZE 128
-#define IXGBE_VLAN_TAG_SIZE 4
 #define IXGBE_HKEY_MAX_INDEX 10
 #define IXGBE_MAX_RX_QUEUE_NUM	128
 #define IXGBE_MAX_INTR_QUEUE_NUM	15
@@ -68,7 +69,7 @@
 #define IXGBE_LPBK_NONE   0x0 /* Default value. Loopback is disabled. */
 #define IXGBE_LPBK_TX_RX  0x1 /* Tx->Rx loopback operation is enabled. */
 /* X540-X550 specific loopback operations */
-#define IXGBE_MII_AUTONEG_ENABLE        0x1000 /* Auto-negociation enable (default = 1) */
+#define IXGBE_MII_AUTONEG_ENABLE        0x1000 /* Auto-negotiation enable (default = 1) */
 
 #define IXGBE_MAX_JUMBO_FRAME_SIZE      0x2600 /* Maximum Jumbo frame size. */
 
@@ -102,7 +103,10 @@
 #define IXGBE_5TUPLE_MIN_PRI            1
 
 /* The overhead from MTU to max frame size. */
-#define IXGBE_ETH_OVERHEAD (ETHER_HDR_LEN + ETHER_CRC_LEN)
+#define IXGBE_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
+
+/* The max frame size with default MTU */
+#define IXGBE_ETH_MAX_LEN  (RTE_ETHER_MTU + IXGBE_ETH_OVERHEAD)
 
 /* bit of VXLAN tunnel type | 7 bits of zeros  | 8 bits of zeros*/
 #define IXGBE_FDIR_VXLAN_TUNNEL_TYPE    0x8000
@@ -110,15 +114,15 @@
 #define IXGBE_FDIR_NVGRE_TUNNEL_TYPE    0x0
 
 #define IXGBE_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_IPV6_EX | \
-	ETH_RSS_IPV6_TCP_EX | \
-	ETH_RSS_IPV6_UDP_EX)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_IPV6_EX | \
+	RTE_ETH_RSS_IPV6_TCP_EX | \
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 #define IXGBE_VF_IRQ_ENABLE_MASK        3          /* vf irq enable mask */
 #define IXGBE_VF_MAXMSIVECTOR           1
@@ -241,7 +245,6 @@ struct ixgbe_hwstrip {
  * VF data which used by PF host only
  */
 #define IXGBE_MAX_VF_MC_ENTRIES		30
-#define IXGBE_MAX_MR_RULE_ENTRIES	4 /* number of mirroring rules supported */
 #define IXGBE_MAX_UTA                   128
 
 struct ixgbe_uta_info {
@@ -250,15 +253,8 @@ struct ixgbe_uta_info {
 	uint32_t uta_shadow[IXGBE_MAX_UTA];
 };
 
-#define IXGBE_MAX_MIRROR_RULES 4  /* Maximum nb. of mirror rules. */
-
-struct ixgbe_mirror_info {
-	struct rte_eth_mirror_conf mr_conf[IXGBE_MAX_MIRROR_RULES];
-	/**< store PF mirror rules configuration*/
-};
-
 struct ixgbe_vf_info {
-	uint8_t vf_mac_addresses[ETHER_ADDR_LEN];
+	uint8_t vf_mac_addresses[RTE_ETHER_ADDR_LEN];
 	uint16_t vf_mc_hashes[IXGBE_MAX_VF_MC_ENTRIES];
 	uint16_t num_vf_mc_hashes;
 	uint16_t default_vf_vlan_id;
@@ -270,6 +266,7 @@ struct ixgbe_vf_info {
 	uint8_t api_version;
 	uint16_t switch_domain_id;
 	uint16_t xcast_mode;
+	uint16_t mac_count;
 };
 
 /*
@@ -357,12 +354,18 @@ struct ixgbe_l2_tn_info {
 	struct rte_hash                    *hash_handle;
 	bool e_tag_en; /* e-tag enabled */
 	bool e_tag_fwd_en; /* e-tag based forwarding enabled */
-	bool e_tag_ether_type; /* ether type for e-tag */
+	uint16_t e_tag_ether_type; /* ether type for e-tag */
 };
 
 struct rte_flow {
 	enum rte_filter_type filter_type;
 	void *rule;
+};
+
+struct ixgbe_macsec_setting {
+	uint8_t offload_en;
+	uint8_t encrypt_en;
+	uint8_t replayprotect_en;
 };
 
 /*
@@ -471,13 +474,14 @@ struct ixgbe_adapter {
 	struct ixgbe_hw             hw;
 	struct ixgbe_hw_stats       stats;
 	struct ixgbe_macsec_stats   macsec_stats;
+	struct ixgbe_macsec_setting	macsec_setting;
+	struct rte_eth_fdir_conf    fdir_conf;
 	struct ixgbe_hw_fdir_info   fdir;
 	struct ixgbe_interrupt      intr;
 	struct ixgbe_stat_mapping_registers stat_mappings;
 	struct ixgbe_vfta           shadow_vfta;
 	struct ixgbe_hwstrip		hwstrip;
 	struct ixgbe_dcb_config     dcb_config;
-	struct ixgbe_mirror_info    mr_data;
 	struct ixgbe_vf_info        *vfdata;
 	struct ixgbe_uta_info       uta_info;
 #ifdef RTE_LIBRTE_IXGBE_BYPASS
@@ -486,7 +490,7 @@ struct ixgbe_adapter {
 	struct ixgbe_filter_info    filter;
 	struct ixgbe_l2_tn_info     l2_tn;
 	struct ixgbe_bw_conf        bw_conf;
-#ifdef RTE_LIBRTE_SECURITY
+#ifdef RTE_LIB_SECURITY
 	struct ixgbe_ipsec          ipsec;
 #endif
 	bool rx_bulk_alloc_allowed;
@@ -498,6 +502,17 @@ struct ixgbe_adapter {
 
 	/* For RSS reta table update */
 	uint8_t rss_reta_updated;
+
+	/* Used for limiting SDP3 TX_DISABLE checks */
+	uint8_t sdp3_no_tx_disable;
+
+	/* Used for VF link sync with PF's physical and logical (by checking
+	 * mailbox status) link status.
+	 */
+	uint8_t pflink_fullchk;
+	uint8_t mac_ctrl_frame_fwd;
+	bool link_thread_running;
+	rte_thread_t link_thread_tid;
 };
 
 struct ixgbe_vf_representor {
@@ -509,6 +524,9 @@ struct ixgbe_vf_representor {
 int ixgbe_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params);
 int ixgbe_vf_representor_uninit(struct rte_eth_dev *ethdev);
 
+#define IXGBE_DEV_FDIR_CONF(dev) \
+	(&((struct ixgbe_adapter *)(dev)->data->dev_private)->fdir_conf)
+
 #define IXGBE_DEV_PRIVATE_TO_HW(adapter)\
 	(&((struct ixgbe_adapter *)adapter)->hw)
 
@@ -517,6 +535,9 @@ int ixgbe_vf_representor_uninit(struct rte_eth_dev *ethdev);
 
 #define IXGBE_DEV_PRIVATE_TO_MACSEC_STATS(adapter) \
 	(&((struct ixgbe_adapter *)adapter)->macsec_stats)
+
+#define IXGBE_DEV_PRIVATE_TO_MACSEC_SETTING(adapter) \
+	(&((struct ixgbe_adapter *)adapter)->macsec_setting)
 
 #define IXGBE_DEV_PRIVATE_TO_INTR(adapter) \
 	(&((struct ixgbe_adapter *)adapter)->intr)
@@ -567,9 +588,9 @@ void ixgbe_dev_clear_queues(struct rte_eth_dev *dev);
 
 void ixgbe_dev_free_queues(struct rte_eth_dev *dev);
 
-void ixgbe_dev_rx_queue_release(void *rxq);
+void ixgbe_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
-void ixgbe_dev_tx_queue_release(void *txq);
+void ixgbe_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 int  ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -580,10 +601,7 @@ int  ixgbe_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf);
 
-uint32_t ixgbe_dev_rx_queue_count(struct rte_eth_dev *dev,
-		uint16_t rx_queue_id);
-
-int ixgbe_dev_rx_descriptor_done(void *rx_queue, uint16_t offset);
+uint32_t ixgbe_dev_rx_queue_count(void *rx_queue);
 
 int ixgbe_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int ixgbe_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
@@ -659,13 +677,25 @@ int ixgbe_add_del_ethertype_filter(struct rte_eth_dev *dev,
 int ixgbe_syn_filter_set(struct rte_eth_dev *dev,
 			struct rte_eth_syn_filter *filter,
 			bool add);
+
+/**
+ * l2 tunnel configuration.
+ */
+struct ixgbe_l2_tunnel_conf {
+	enum rte_eth_tunnel_type l2_tunnel_type;
+	uint16_t ether_type; /* ether type in l2 header */
+	uint32_t tunnel_id; /* port tag id for e-tag */
+	uint16_t vf_id; /* VF id for tag insertion */
+	uint32_t pool; /* destination pool for tag based forwarding */
+};
+
 int
 ixgbe_dev_l2_tunnel_filter_add(struct rte_eth_dev *dev,
-			       struct rte_eth_l2_tunnel_conf *l2_tunnel,
+			       struct ixgbe_l2_tunnel_conf *l2_tunnel,
 			       bool restore);
 int
 ixgbe_dev_l2_tunnel_filter_del(struct rte_eth_dev *dev,
-			       struct rte_eth_l2_tunnel_conf *l2_tunnel);
+			       struct ixgbe_l2_tunnel_conf *l2_tunnel);
 void ixgbe_filterlist_init(void);
 void ixgbe_filterlist_flush(void);
 /*
@@ -678,6 +708,10 @@ int ixgbe_fdir_set_flexbytes_offset(struct rte_eth_dev *dev,
 int ixgbe_fdir_filter_program(struct rte_eth_dev *dev,
 			      struct ixgbe_fdir_rule *rule,
 			      bool del, bool update);
+void ixgbe_fdir_info_get(struct rte_eth_dev *dev,
+			 struct rte_eth_fdir_info *fdir_info);
+void ixgbe_fdir_stats_get(struct rte_eth_dev *dev,
+			  struct rte_eth_fdir_stats *fdir_stats);
 
 void ixgbe_configure_dcb(struct rte_eth_dev *dev);
 
@@ -694,7 +728,7 @@ void ixgbe_vlan_hw_filter_disable(struct rte_eth_dev *dev);
 
 void ixgbe_vlan_hw_strip_config(struct rte_eth_dev *dev);
 
-void ixgbe_pf_host_init(struct rte_eth_dev *eth_dev);
+int ixgbe_pf_host_init(struct rte_eth_dev *eth_dev);
 
 void ixgbe_pf_host_uninit(struct rte_eth_dev *eth_dev);
 
@@ -704,8 +738,6 @@ int ixgbe_pf_host_configure(struct rte_eth_dev *eth_dev);
 
 uint32_t ixgbe_convert_vm_rx_mask_to_val(uint16_t rx_mask, uint32_t orig_val);
 
-int ixgbe_fdir_ctrl_func(struct rte_eth_dev *dev,
-			enum rte_filter_op filter_op, void *arg);
 void ixgbe_fdir_filter_restore(struct rte_eth_dev *dev);
 int ixgbe_clear_all_fdir_filter(struct rte_eth_dev *dev);
 
@@ -722,19 +754,29 @@ int ixgbe_enable_sec_tx_path_generic(struct ixgbe_hw *hw);
 
 int ixgbe_vt_check(struct ixgbe_hw *hw);
 int ixgbe_set_vf_rate_limit(struct rte_eth_dev *dev, uint16_t vf,
-			    uint16_t tx_rate, uint64_t q_msk);
+			    uint32_t tx_rate, uint64_t q_msk);
 bool is_ixgbe_supported(struct rte_eth_dev *dev);
 int ixgbe_tm_ops_get(struct rte_eth_dev *dev, void *ops);
 void ixgbe_tm_conf_init(struct rte_eth_dev *dev);
 void ixgbe_tm_conf_uninit(struct rte_eth_dev *dev);
 int ixgbe_set_queue_rate_limit(struct rte_eth_dev *dev, uint16_t queue_idx,
-			       uint16_t tx_rate);
+			       uint32_t tx_rate);
 int ixgbe_rss_conf_init(struct ixgbe_rte_flow_rss_conf *out,
 			const struct rte_flow_action_rss *in);
 int ixgbe_action_rss_same(const struct rte_flow_action_rss *comp,
 			  const struct rte_flow_action_rss *with);
 int ixgbe_config_rss_filter(struct rte_eth_dev *dev,
 		struct ixgbe_rte_flow_rss_conf *conf, bool add);
+
+void ixgbe_dev_macsec_register_enable(struct rte_eth_dev *dev,
+		struct ixgbe_macsec_setting *macsec_setting);
+
+void ixgbe_dev_macsec_register_disable(struct rte_eth_dev *dev);
+
+void ixgbe_dev_macsec_setting_save(struct rte_eth_dev *dev,
+		struct ixgbe_macsec_setting *macsec_setting);
+
+void ixgbe_dev_macsec_setting_reset(struct rte_eth_dev *dev);
 
 static inline int
 ixgbe_ethertype_filter_lookup(struct ixgbe_filter_info *filter_info,

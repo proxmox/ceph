@@ -51,14 +51,15 @@ pci_uio_map_secondary(struct rte_pci_device *dev)
 			void *mapaddr = pci_map_resource(uio_res->maps[i].addr,
 					fd, (off_t)uio_res->maps[i].offset,
 					(size_t)uio_res->maps[i].size, 0);
-			/* fd is not needed in slave process, close it */
+
+			/* fd is not needed in secondary process, close it */
 			close(fd);
 			if (mapaddr != uio_res->maps[i].addr) {
 				RTE_LOG(ERR, EAL,
 					"Cannot mmap device resource file %s to address: %p\n",
 					uio_res->maps[i].path,
 					uio_res->maps[i].addr);
-				if (mapaddr != MAP_FAILED) {
+				if (mapaddr != NULL) {
 					/* unmap addrs correctly mapped */
 					for (j = 0; j < i; j++)
 						pci_unmap_resource(
@@ -70,6 +71,7 @@ pci_uio_map_secondary(struct rte_pci_device *dev)
 				}
 				return -1;
 			}
+			dev->mem_resource[i].addr = mapaddr;
 		}
 		return 0;
 	}
@@ -88,8 +90,11 @@ pci_uio_map_resource(struct rte_pci_device *dev)
 	struct mapped_pci_res_list *uio_res_list =
 		RTE_TAILQ_CAST(rte_uio_tailq.head, mapped_pci_res_list);
 
-	dev->intr_handle.fd = -1;
-	dev->intr_handle.uio_cfg_fd = -1;
+	if (rte_intr_fd_set(dev->intr_handle, -1))
+		return -1;
+
+	if (rte_intr_dev_fd_set(dev->intr_handle, -1))
+		return -1;
 
 	/* secondary processes - use already recorded details */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
@@ -205,6 +210,7 @@ pci_uio_unmap_resource(struct rte_pci_device *dev)
 	struct mapped_pci_resource *uio_res;
 	struct mapped_pci_res_list *uio_res_list =
 			RTE_TAILQ_CAST(rte_uio_tailq.head, mapped_pci_res_list);
+	int uio_cfg_fd;
 
 	if (dev == NULL)
 		return;
@@ -227,12 +233,14 @@ pci_uio_unmap_resource(struct rte_pci_device *dev)
 	rte_free(uio_res);
 
 	/* close fd if in primary process */
-	close(dev->intr_handle.fd);
-	if (dev->intr_handle.uio_cfg_fd >= 0) {
-		close(dev->intr_handle.uio_cfg_fd);
-		dev->intr_handle.uio_cfg_fd = -1;
+	if (rte_intr_fd_get(dev->intr_handle) >= 0)
+		close(rte_intr_fd_get(dev->intr_handle));
+	uio_cfg_fd = rte_intr_dev_fd_get(dev->intr_handle);
+	if (uio_cfg_fd >= 0) {
+		close(uio_cfg_fd);
+		rte_intr_dev_fd_set(dev->intr_handle, -1);
 	}
 
-	dev->intr_handle.fd = -1;
-	dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+	rte_intr_fd_set(dev->intr_handle, -1);
+	rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UNKNOWN);
 }

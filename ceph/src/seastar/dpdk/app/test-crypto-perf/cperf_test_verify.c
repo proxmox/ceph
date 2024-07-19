@@ -2,6 +2,8 @@
  * Copyright(c) 2016-2017 Intel Corporation
  */
 
+#include <stdlib.h>
+
 #include <rte_malloc.h>
 #include <rte_cycles.h>
 #include <rte_crypto.h>
@@ -18,7 +20,7 @@ struct cperf_verify_ctx {
 
 	struct rte_mempool *pool;
 
-	struct rte_cryptodev_sym_session *sess;
+	void *sess;
 
 	cperf_populate_ops_t populate_ops;
 
@@ -36,22 +38,31 @@ struct cperf_op_result {
 static void
 cperf_verify_test_free(struct cperf_verify_ctx *ctx)
 {
-	if (ctx) {
-		if (ctx->sess) {
-			rte_cryptodev_sym_session_clear(ctx->dev_id, ctx->sess);
-			rte_cryptodev_sym_session_free(ctx->sess);
+	if (ctx == NULL)
+		return;
+
+	if (ctx->sess != NULL) {
+		if (ctx->options->op_type == CPERF_ASYM_MODEX)
+			rte_cryptodev_asym_session_free(ctx->dev_id, ctx->sess);
+#ifdef RTE_LIB_SECURITY
+		else if (ctx->options->op_type == CPERF_PDCP ||
+			 ctx->options->op_type == CPERF_DOCSIS ||
+			 ctx->options->op_type == CPERF_IPSEC) {
+			struct rte_security_ctx *sec_ctx =
+				rte_cryptodev_get_sec_ctx(ctx->dev_id);
+			rte_security_session_destroy(sec_ctx, ctx->sess);
 		}
-
-		if (ctx->pool)
-			rte_mempool_free(ctx->pool);
-
-		rte_free(ctx);
+#endif
+		else
+			rte_cryptodev_sym_session_free(ctx->dev_id, ctx->sess);
 	}
+
+	rte_mempool_free(ctx->pool);
+	rte_free(ctx);
 }
 
 void *
 cperf_verify_test_constructor(struct rte_mempool *sess_mp,
-		struct rte_mempool *sess_priv_mp,
 		uint8_t dev_id, uint16_t qp_id,
 		const struct cperf_options *options,
 		const struct cperf_test_vector *test_vector,
@@ -74,7 +85,7 @@ cperf_verify_test_constructor(struct rte_mempool *sess_mp,
 	uint16_t iv_offset = sizeof(struct rte_crypto_op) +
 		sizeof(struct rte_crypto_sym_op);
 
-	ctx->sess = op_fns->sess_create(sess_mp, sess_priv_mp, dev_id, options,
+	ctx->sess = op_fns->sess_create(sess_mp, dev_id, options,
 			test_vector, iv_offset);
 	if (ctx->sess == NULL)
 		goto err;
@@ -196,34 +207,6 @@ out:
 	return !!res;
 }
 
-static void
-cperf_mbuf_set(struct rte_mbuf *mbuf,
-		const struct cperf_options *options,
-		const struct cperf_test_vector *test_vector)
-{
-	uint32_t segment_sz = options->segment_sz;
-	uint8_t *mbuf_data;
-	uint8_t *test_data =
-			(options->cipher_op == RTE_CRYPTO_CIPHER_OP_ENCRYPT) ?
-					test_vector->plaintext.data :
-					test_vector->ciphertext.data;
-	uint32_t remaining_bytes = options->max_buffer_size;
-
-	while (remaining_bytes) {
-		mbuf_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
-
-		if (remaining_bytes <= segment_sz) {
-			memcpy(mbuf_data, test_data, remaining_bytes);
-			return;
-		}
-
-		memcpy(mbuf_data, test_data, segment_sz);
-		remaining_bytes -= segment_sz;
-		test_data += segment_sz;
-		mbuf = mbuf->next;
-	}
-}
-
 int
 cperf_verify_test_runner(void *test_ctx)
 {
@@ -233,7 +216,7 @@ cperf_verify_test_runner(void *test_ctx)
 	uint64_t ops_deqd = 0, ops_deqd_total = 0, ops_deqd_failed = 0;
 	uint64_t ops_failed = 0;
 
-	static int only_once;
+	static uint16_t display_once;
 
 	uint64_t i;
 	uint16_t ops_unused = 0;
@@ -291,7 +274,7 @@ cperf_verify_test_runner(void *test_ctx)
 		(ctx->populate_ops)(ops, ctx->src_buf_offset,
 				ctx->dst_buf_offset,
 				ops_needed, ctx->sess, ctx->options,
-				ctx->test_vector, iv_offset, &imix_idx);
+				ctx->test_vector, iv_offset, &imix_idx, NULL);
 
 
 		/* Populate the mbuf with the test vector, for verification */
@@ -375,13 +358,14 @@ cperf_verify_test_runner(void *test_ctx)
 		ops_deqd_total += ops_deqd;
 	}
 
+	uint16_t exp = 0;
 	if (!ctx->options->csv) {
-		if (!only_once)
+		if (__atomic_compare_exchange_n(&display_once, &exp, 1, 0,
+				__ATOMIC_RELAXED, __ATOMIC_RELAXED))
 			printf("%12s%12s%12s%12s%12s%12s%12s%12s\n\n",
 				"lcore id", "Buf Size", "Burst size",
 				"Enqueued", "Dequeued", "Failed Enq",
 				"Failed Deq", "Failed Ops");
-		only_once = 1;
 
 		printf("%12u%12u%12u%12"PRIu64"%12"PRIu64"%12"PRIu64
 				"%12"PRIu64"%12"PRIu64"\n",
@@ -394,13 +378,13 @@ cperf_verify_test_runner(void *test_ctx)
 				ops_deqd_failed,
 				ops_failed);
 	} else {
-		if (!only_once)
+		if (__atomic_compare_exchange_n(&display_once, &exp, 1, 0,
+				__ATOMIC_RELAXED, __ATOMIC_RELAXED))
 			printf("\n# lcore id, Buffer Size(B), "
 				"Burst Size,Enqueued,Dequeued,Failed Enq,"
 				"Failed Deq,Failed Ops\n");
-		only_once = 1;
 
-		printf("%10u;%10u;%u;%"PRIu64";%"PRIu64";%"PRIu64";%"PRIu64";"
+		printf("%10u,%10u,%u,%"PRIu64",%"PRIu64",%"PRIu64",%"PRIu64","
 				"%"PRIu64"\n",
 				ctx->lcore_id,
 				ctx->options->max_buffer_size,

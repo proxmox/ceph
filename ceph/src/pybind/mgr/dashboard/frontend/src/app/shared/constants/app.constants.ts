@@ -154,7 +154,7 @@ export class ActionLabelsI18n {
 
     this.IMPORT = $localize`Import`;
 
-    this.MIGRATE = $localize`Migrate to Multi-site`;
+    this.MIGRATE = $localize`Migrate`;
 
     /* Destroy an existing item */
     this.DELETE = $localize`Delete`;

@@ -1290,10 +1290,10 @@ public:
     }
 
     void start() {
-        _chan = make_udp_channel({_port});
+        _chan = make_bound_datagram_channel({_port});
         // Run in the background.
         _task = keep_doing([this] {
-            return _chan.receive().then([this](udp_datagram dgram) {
+            return _chan.receive().then([this](datagram dgram) {
                 packet& p = dgram.get_data();
                 if (p.len() < sizeof(header)) {
                     // dropping invalid packet
@@ -1373,7 +1373,7 @@ public:
     void start() {
         listen_options lo;
         lo.reuse_address = true;
-        _listener = seastar::server_socket(seastar::listen(make_ipv4_address({_port}), lo));
+        _listener = make_lw_shared<seastar::server_socket>(seastar::listen(make_ipv4_address({_port}), lo));
         // Run in the background until eof has reached on the input connection.
         _task = keep_doing([this] {
             return _listener->accept().then([this] (accept_result ar) mutable {

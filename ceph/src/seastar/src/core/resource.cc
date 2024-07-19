@@ -20,21 +20,40 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
 #include <boost/program_options.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/range/adaptor/map.hpp>
+#include <boost/range/algorithm/copy.hpp>
+#include <boost/range/irange.hpp>
 #include <regex>
+#include <stdlib.h>
+#include <unistd.h>
+#include <limits>
+#include <filesystem>
+#include <unordered_map>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/resource.hh>
 #include <seastar/core/align.hh>
 #include <seastar/core/print.hh>
+#include <seastar/util/defer.hh>
 #include <seastar/util/read_first_line.hh>
-#include <stdlib.h>
-#include <limits>
-#include "cgroup.hh"
 #include <seastar/util/log.hh>
 #include <seastar/core/io_queue.hh>
+#include <seastar/core/print.hh>
+#include "cgroup.hh"
 
-#include <boost/range/adaptor/map.hpp>
-#include <boost/range/algorithm/copy.hpp>
+#if SEASTAR_HAVE_HWLOC
+#include <hwloc/glibc-sched.h>
+#endif
+
+#endif
 
 namespace seastar {
 
@@ -209,10 +228,28 @@ optional<T> read_setting_V1V2_as(std::string cg1_path, std::string cg2_fname) {
 
 namespace resource {
 
+static
+size_t
+kernel_memory_reservation() {
+    try {
+        return read_first_line_as<size_t>("/proc/sys/vm/min_free_kbytes") * 1024;
+    } catch (...) {
+        return 0;
+    }
+}
+
 size_t calculate_memory(const configuration& c, size_t available_memory, float panic_factor = 1) {
+    auto kernel_reservation = kernel_memory_reservation();
+    if (kernel_reservation >= 200'000'000) {
+        // The standard setting is sqrt(mem)*128. This is 128MB at 1TB RAM. With 64kB pages and transparent hugepages,
+        // the kernel increases this significantly, wasting memory.
+        seastar_logger.warn("Kernel memory reservation (/proc/sys/vm/min_free_kbytes) unexpectedly high ({}), check your configuration", kernel_reservation);
+    }
+    available_memory -= kernel_reservation;
     size_t default_reserve_memory = std::max<size_t>(1536 * 1024 * 1024, 0.07 * available_memory) * panic_factor;
     auto reserve = c.reserve_memory.value_or(default_reserve_memory);
-    reserve += c.reserve_additional_memory;
+    auto reserve_additional = c.reserve_additional_memory_per_shard * c.cpus;
+    reserve += reserve_additional;
     size_t min_memory = 500'000'000;
     if (available_memory >= reserve + min_memory) {
         available_memory -= reserve;
@@ -220,11 +257,17 @@ size_t calculate_memory(const configuration& c, size_t available_memory, float p
         // Allow starting up even in low memory configurations (e.g. 2GB boot2docker VM)
         available_memory = min_memory;
     }
-    size_t mem = c.total_memory ? *c.total_memory - c.reserve_additional_memory : available_memory;
-    if (mem > available_memory) {
-        throw std::runtime_error(format("insufficient physical memory: needed {} available {}", mem, available_memory));
+    if (!c.total_memory.has_value()) {
+        return available_memory;
     }
-    return mem;
+    if (*c.total_memory < reserve_additional) {
+        throw std::runtime_error(format("insufficient total memory: reserve {} total {}", reserve_additional, *c.total_memory));
+    }
+    size_t needed_memory = *c.total_memory - reserve_additional;
+    if (needed_memory > available_memory) {
+        throw std::runtime_error(format("insufficient physical memory: needed {} available {}", needed_memory, available_memory));
+    }
+    return needed_memory;
 }
 
 io_queue_topology::io_queue_topology() {
@@ -236,6 +279,7 @@ io_queue_topology::~io_queue_topology() {
 io_queue_topology::io_queue_topology(io_queue_topology&& o)
     : queues(std::move(o.queues))
     , shard_to_group(std::move(o.shard_to_group))
+    , shards_in_group(std::move(o.shards_in_group))
     , groups(std::move(o.groups))
     , lock() // unused until now, so just initialize
 { }
@@ -245,11 +289,6 @@ io_queue_topology::io_queue_topology(io_queue_topology&& o)
 }
 
 #ifdef SEASTAR_HAVE_HWLOC
-
-#include <seastar/util/defer.hh>
-#include <seastar/core/print.hh>
-#include <unordered_map>
-#include <boost/range/irange.hpp>
 
 namespace seastar {
 
@@ -373,6 +412,7 @@ allocate_io_queues(hwloc_topology_t topology, std::vector<cpu> cpus, std::unorde
 
     io_queue_topology ret;
     ret.shard_to_group.resize(cpus.size());
+    ret.shards_in_group.resize(cpus.size(), 0); // worst case
 
     if (num_io_groups == 0) {
         num_io_groups = numa_nodes.size();
@@ -405,7 +445,9 @@ allocate_io_queues(hwloc_topology_t topology, std::vector<cpu> cpus, std::unorde
     std::unordered_map<unsigned, std::vector<unsigned>> node_coordinators;
     for (auto&& cs : cpu_sets()) {
         auto io_coordinator = find_shard(hwloc_bitmap_first(cs));
-        ret.shard_to_group[io_coordinator] = nr_groups++;
+        unsigned group_idx = nr_groups++;
+        ret.shard_to_group[io_coordinator] = group_idx;
+        ret.shards_in_group[group_idx]++;
 
         auto node_id = node_of_shard(io_coordinator);
         if (node_coordinators.count(node_id) == 0) {
@@ -432,7 +474,9 @@ allocate_io_queues(hwloc_topology_t topology, std::vector<cpu> cpus, std::unorde
             }
             auto idx = cid_idx++ % node_coordinators.at(my_node).size();
             auto io_coordinator = node_coordinators.at(my_node)[idx];
-            ret.shard_to_group[remaining_shard] = ret.shard_to_group[io_coordinator];
+            unsigned group_idx = ret.shard_to_group[io_coordinator];
+            ret.shard_to_group[remaining_shard] = group_idx;
+            ret.shards_in_group[group_idx]++;
         }
     }
 
@@ -475,6 +519,26 @@ hwloc_topology_t topology_holder::get() {
 
 } // namespace hwloc::internal
 
+static
+std::unordered_map<unsigned, cpuset>
+numa_node_id_to_cpuset(hwloc_topology_t topo) {
+    auto ret = std::unordered_map<unsigned, cpuset>();
+    for (auto numa_node = hwloc_get_next_obj_by_type(topo, HWLOC_OBJ_NUMANODE, NULL);
+            numa_node;
+            numa_node = hwloc_get_next_obj_by_type(topo, HWLOC_OBJ_NUMANODE, numa_node)) {
+        auto parent = numa_node->parent;
+        auto cpuset = parent->cpuset;
+        cpu_set_t os_cpuset;
+        hwloc_cpuset_to_glibc_sched_affinity(topo, cpuset, &os_cpuset, sizeof(os_cpuset));
+        for (unsigned idx = 0; idx < CPU_SETSIZE; ++idx) {
+            if (CPU_ISSET(idx, &os_cpuset)) {
+                ret[numa_node->os_index].insert(idx);
+            }
+        }
+    }
+    return ret;
+}
+
 resources allocate(configuration& c) {
     auto topology = c.topology.get();
     auto bm = hwloc_bitmap_alloc();
@@ -499,6 +563,14 @@ resources allocate(configuration& c) {
         }
         abort();
     }
+    unsigned procs = c.cpus;
+    if (unsigned available_procs = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
+        procs > available_procs) {
+        throw std::runtime_error(format("insufficient processing units: needed {} available {}", procs, available_procs));
+    }
+    if (procs == 0) {
+        throw std::runtime_error("number of processing units must be positive");
+    }
     auto machine_depth = hwloc_get_type_depth(topology, HWLOC_OBJ_MACHINE);
     assert(hwloc_get_nbobjs_by_depth(topology, machine_depth) == 1);
     auto machine = hwloc_get_obj_by_depth(topology, machine_depth, 0);
@@ -509,14 +581,6 @@ resources allocate(configuration& c) {
 #endif
     size_t mem = calculate_memory(c, std::min(available_memory,
                                               cgroup::memory_limit()));
-    unsigned procs = c.cpus;
-    if (unsigned available_procs = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
-        procs > available_procs) {
-        throw std::runtime_error(format("insufficient processing units: needed {} available {}", procs, available_procs));
-    }
-    if (procs == 0) {
-        throw std::runtime_error("number of processing units must be positive");
-    }
     // limit memory address to fit in 36-bit, see core/memory.cc:Memory map
     constexpr size_t max_mem_per_proc = 1UL << 36;
     auto mem_per_proc = std::min(align_down<size_t>(mem / procs, 2 << 20), max_mem_per_proc);
@@ -526,7 +590,6 @@ resources allocate(configuration& c) {
     std::vector<unsigned> orphan_pus;
     std::unordered_map<hwloc_obj_t, size_t> topo_used_mem;
     std::vector<std::pair<cpu, size_t>> remains;
-    size_t remain;
 
     auto cpu_sets = distribute_objects(topology, procs);
 
@@ -598,17 +661,14 @@ resources allocate(configuration& c) {
         auto node = cpu_to_node.at(cpu_id);
         cpu this_cpu;
         this_cpu.cpu_id = cpu_id;
-        remain = mem_per_proc - alloc_from_node(this_cpu, node, topo_used_mem, mem_per_proc);
+        size_t remain = mem_per_proc - alloc_from_node(this_cpu, node, topo_used_mem, mem_per_proc);
 
         remains.emplace_back(std::move(this_cpu), remain);
     }
 
     // Divide the rest of the memory
     auto depth = hwloc_get_type_or_above_depth(topology, HWLOC_OBJ_NUMANODE);
-    for (auto&& r : remains) {
-        cpu this_cpu;
-        size_t remain;
-        std::tie(this_cpu, remain) = r;
+    for (auto&& [this_cpu, remain] : remains) {
         auto node = cpu_to_node.at(this_cpu.cpu_id);
         auto obj = node;
 
@@ -628,6 +688,9 @@ resources allocate(configuration& c) {
     for (auto devid : c.devices) {
         ret.ioq_topology.emplace(devid, allocate_io_queues(topology, ret.cpus, cpu_to_node, c.num_io_groups, last_node_idx));
     }
+
+    ret.numa_node_id_to_cpuset = numa_node_id_to_cpuset(topology);
+
     return ret;
 }
 
@@ -641,9 +704,6 @@ unsigned nr_processing_units(configuration& c) {
 
 #else
 
-#include <seastar/core/resource.hh>
-#include <unistd.h>
-
 namespace seastar {
 
 namespace resource {
@@ -656,10 +716,12 @@ allocate_io_queues(configuration c, std::vector<cpu> cpus) {
     unsigned nr_cpus = unsigned(cpus.size());
     ret.queues.resize(nr_cpus);
     ret.shard_to_group.resize(nr_cpus);
+    ret.shards_in_group.resize(1, 0);
     ret.groups.resize(1);
 
     for (unsigned shard = 0; shard < nr_cpus; ++shard) {
         ret.shard_to_group[shard] = 0;
+        ret.shards_in_group[0]++;
     }
     return ret;
 }

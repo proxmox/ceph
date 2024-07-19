@@ -9,7 +9,8 @@
 #define __NETCFG_H
 
 #include <fman.h>
-#include <argp.h>
+
+#include <rte_compat.h>
 
 /* Configuration information related to a specific ethernet port */
 struct fm_eth_port_cfg {
@@ -24,14 +25,14 @@ struct fm_eth_port_cfg {
 struct netcfg_info {
 	uint8_t num_ethports;
 	/**< Number of ports */
-	struct fm_eth_port_cfg port_cfg[0];
+	struct fm_eth_port_cfg port_cfg[];
 	/**< Variable structure array of size num_ethports */
 };
 
 struct interface_info {
 	char *name;
-	struct ether_addr mac_addr;
-	struct ether_addr peer_mac;
+	struct rte_ether_addr mac_addr;
+	struct rte_ether_addr peer_mac;
 	int mac_present;
 	int fman_enabled_mac_interface;
 };
@@ -39,18 +40,20 @@ struct interface_info {
 struct netcfg_interface {
 	uint8_t numof_netcfg_interface;
 	uint8_t numof_fman_enabled_macless;
-	struct interface_info interface_info[0];
+	struct interface_info interface_info[];
 };
 
 /* pcd_file: FMC netpcd XML ("policy") file, that contains PCD information.
  * cfg_file: FMC config XML file
  * Returns the configuration information in newly allocated memory.
  */
+__rte_internal
 struct netcfg_info *netcfg_acquire(void);
 
 /* cfg_ptr: configuration information pointer.
  * Frees the resources allocated by the configuration layer.
  */
+__rte_internal
 void netcfg_release(struct netcfg_info *cfg_ptr);
 
 #ifdef RTE_LIBRTE_DPAA_DEBUG_DRIVER

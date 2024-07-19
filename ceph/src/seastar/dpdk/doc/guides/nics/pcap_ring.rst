@@ -7,18 +7,16 @@ Libpcap and Ring Based Poll Mode Drivers
 In addition to Poll Mode Drivers (PMDs) for physical and virtual hardware,
 the DPDK also includes pure-software PMDs, two of these drivers are:
 
-*   A libpcap -based PMD (librte_pmd_pcap) that reads and writes packets using libpcap,
+*   A libpcap -based PMD (**librte_net_pcap**) that reads and writes packets using libpcap,
     - both from files on disk, as well as from physical NIC devices using standard Linux kernel drivers.
 
-*   A ring-based PMD (librte_pmd_ring) that allows a set of software FIFOs (that is, rte_ring)
+*   A ring-based PMD (**librte_net_ring**) that allows a set of software FIFOs (that is, rte_ring)
     to be accessed using the PMD APIs, as though they were physical NICs.
 
 .. note::
 
-    The libpcap -based PMD is disabled by default in the build configuration files,
-    owing to an external dependency on the libpcap development files which must be installed on the board.
-    Once the libpcap development files are installed,
-    the library can be enabled by setting CONFIG_RTE_LIBRTE_PMD_PCAP=y and recompiling the DPDK.
+    The libpcap -based PMD has an external dependency on the libpcap development files which must
+    be installed on the board.
 
 Using the Drivers from the EAL Command Line
 -------------------------------------------
@@ -42,7 +40,7 @@ Device name and stream options must be separated by commas as shown below:
 
 .. code-block:: console
 
-   $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+   ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 \
        --vdev 'net_pcap0,stream_opt0=..,stream_opt1=..' \
        --vdev='net_pcap1,stream_opt0=..'
 
@@ -106,6 +104,34 @@ Runtime Config Options
 
    --vdev 'net_pcap0,iface=eth0,phy_mac=1'
 
+- Use the RX PCAP file to infinitely receive packets
+
+ In case ``rx_pcap=`` configuration is set, user may want to use the selected PCAP file for rudimental
+ performance testing. This can be done with a ``devarg`` ``infinite_rx``, for example::
+
+   --vdev 'net_pcap0,rx_pcap=file_rx.pcap,infinite_rx=1'
+
+ When this mode is used, it is recommended to drop all packets on transmit by not providing a tx_pcap or tx_iface.
+
+ This option is device wide, so all queues on a device will either have this enabled or disabled.
+ This option should only be provided once per device.
+
+- Drop all packets on transmit
+
+ The user may want to drop all packets on tx for a device. This can be done by not providing a tx_pcap or tx_iface, for example::
+
+   --vdev 'net_pcap0,rx_pcap=file_rx.pcap'
+
+ In this case, one tx drop queue is created for each rxq on that device.
+
+ - Receive no packets on Rx
+
+ The user may want to run without receiving any packets on Rx. This can be done by not providing a rx_pcap or rx_iface, for example::
+
+   --vdev 'net_pcap0,tx_pcap=file_tx.pcap'
+
+In this case, one dummy rx queue is created for each tx queue argument passed
+
 Examples of Usage
 ^^^^^^^^^^^^^^^^^
 
@@ -113,7 +139,7 @@ Read packets from one pcap file and write them to another:
 
 .. code-block:: console
 
-    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+    ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 \
         --vdev 'net_pcap0,rx_pcap=file_rx.pcap,tx_pcap=file_tx.pcap' \
         -- --port-topology=chained
 
@@ -121,7 +147,7 @@ Read packets from a network interface and write them to a pcap file:
 
 .. code-block:: console
 
-    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+    ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 \
         --vdev 'net_pcap0,rx_iface=eth0,tx_pcap=file_tx.pcap' \
         -- --port-topology=chained
 
@@ -129,7 +155,7 @@ Read packets from a pcap file and write them to a network interface:
 
 .. code-block:: console
 
-    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+    ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 \
         --vdev 'net_pcap0,rx_pcap=file_rx.pcap,tx_iface=eth1' \
         -- --port-topology=chained
 
@@ -137,14 +163,14 @@ Forward packets through two network interfaces:
 
 .. code-block:: console
 
-    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
-        --vdev 'net_pcap0,iface=eth0' --vdev='net_pcap1;iface=eth1'
+    ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 \
+        --vdev 'net_pcap0,iface=eth0' --vdev='net_pcap1,iface=eth1'
 
 Enable 2 tx queues on a network interface:
 
 .. code-block:: console
 
-    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+    ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 \
         --vdev 'net_pcap0,rx_iface=eth1,tx_iface=eth1,tx_iface=eth1' \
         -- --txq 2
 
@@ -152,7 +178,7 @@ Read only incoming packets from a network interface and write them back to the s
 
 .. code-block:: console
 
-    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+    ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 \
         --vdev 'net_pcap0,rx_iface_in=eth1,tx_iface=eth1'
 
 Using libpcap-based PMD with the testpmd Application
@@ -177,7 +203,7 @@ Otherwise, the first 512 packets from the input pcap file will be discarded by t
 
 .. code-block:: console
 
-    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+    ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 \
         --vdev 'net_pcap0,rx_pcap=file_rx.pcap,tx_pcap=file_tx.pcap' \
         -- --port-topology=chained --no-flush-rx
 
@@ -197,7 +223,7 @@ Multiple devices may be specified, separated by commas.
 
 .. code-block:: console
 
-    ./testpmd -l 1-3 -n 4 --vdev=net_ring0 --vdev=net_ring1 -- -i
+    ./dpdk-testpmd -l 1-3 -n 4 --vdev=net_ring0 --vdev=net_ring1 -- -i
     EAL: Detected lcore 1 as core 1 on socket 0
     ...
 

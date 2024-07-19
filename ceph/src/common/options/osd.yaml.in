@@ -194,6 +194,11 @@ options:
     load on busy clusters.
   default: false
   with_legacy: true
+- name: osd_debug_trim_objects
+  type: bool
+  level: advanced
+  desc: Asserts that no clone-objects were added to a snap after we start trimming it
+  default: false
 - name: osd_repair_during_recovery
   type: bool
   level: advanced
@@ -286,8 +291,8 @@ options:
 - name: osd_scrub_min_interval
   type: float
   level: advanced
-  desc: Scrub each PG no more often than this interval
-  fmt_desc: The minimal interval in seconds for scrubbing the Ceph OSD Daemon
+  desc: The desired interval between scrubs of a specific PG.
+  fmt_desc: The desired interval in seconds between scrubs of a specific PG
     when the Ceph Storage Cluster load is low.
   default: 1_day
   see_also:
@@ -326,8 +331,8 @@ options:
   type: float
   level: dev
   desc: Backoff ratio for scheduling scrubs
-  long_desc: This is the precentage of ticks that do NOT schedule scrubs, 66% means
-    that 1 out of 3 ticks will schedule scrubs
+  long_desc: Probability that a particular OSD tick instance will skip scrub scheduling.
+    66% means that approximately one of three ticks will cause scrub scheduling.
   default: 0.66
   with_legacy: true
 - name: osd_scrub_chunk_min
@@ -376,9 +381,11 @@ options:
 - name: osd_scrub_sleep
   type: float
   level: advanced
-  desc: Duration to inject a delay during scrubbing
-  fmt_desc: Time to sleep before scrubbing the next group of chunks. Increasing this value will slow
-    down the overall rate of scrubbing so that client operations will be less impacted.
+  desc: Duration (in seconds) of delay injected between chunks when scrubbing
+  fmt_desc: Sleep time in seconds before scrubbing the next group of objects (the next chunk).
+    Increasing this value will slow down the overall rate of scrubbing, reducing scrub
+    impact on client operations.
+    This setting is ignored when the mClock scheduler is used.
   default: 0
   flags:
   - runtime
@@ -387,7 +394,13 @@ options:
 - name: osd_scrub_extended_sleep
   type: float
   level: advanced
-  desc: Duration to inject a delay during scrubbing out of scrubbing hours
+  desc: Duration (in seconds) of delay injected between chunks when scrubbing out
+    of scrubbing hours
+  fmt_desc: Sleep time in seconds before scrubbing the next group of objects (the next chunk).
+    This configuration value is used for scrubbing out of scrubbing hours.
+    Increasing this value will slow down the overall rate of scrubbing, reducing scrub
+    impact on client operations.
+    This setting is ignored when the mClock scheduler is used.
   default: 0
   see_also:
   - osd_scrub_begin_hour
@@ -507,31 +520,15 @@ options:
     stats (inc. scrub/block duration) every this many seconds.
   default: 120
   with_legacy: false
-# when replicas are slow to respond to scrub resource reservations
-# Note: disable by using a very large value
-- name: osd_scrub_slow_reservation_response
-  type: millisecs
+- name: osd_scrub_disable_reservation_queuing
+  type: bool
   level: advanced
-  desc: Duration before issuing a cluster-log warning
-  long_desc: Waiting too long for a replica to respond (after at least half of the
-    replicas have responded).
-  default: 2200
-  min: 500
-  see_also:
-  - osd_scrub_reservation_timeout
-  with_legacy: false
-# when a replica does not respond to scrub resource request
-# Note: disable by using a very large value
-- name: osd_scrub_reservation_timeout
-  type: millisecs
-  level: advanced
-  desc: Duration before aborting the scrub session
-  long_desc: Waiting too long for some replicas to respond to
-    scrub reservation requests.
-  default: 5000
-  min: 2000
-  see_also:
-  - osd_scrub_slow_reservation_response
+  desc: Disable queuing of scrub reservations
+  long_desc: When set - scrub replica reservations are responded to immediately, with
+    either success or failure (the pre-Squid version behaviour). This configuration
+    option is introduced to support mixed-version clusters and debugging, and will
+    be removed in the next release.
+  default: false
   with_legacy: false
 # where rados plugins are stored
 - name: osd_class_dir

@@ -13,7 +13,7 @@ In terms of device flavor (type) support, DPDK currently has ethernet
 
 For a new type of device, for example an accelerator, there are not many
 options except:
-1. create another lib/librte_MySpecialDev, driver/MySpecialDrv and use it
+1. create another lib/MySpecialDev, driver/MySpecialDrv and use it
 through Bus/PMD model.
 2. Or, create a vdev and implement necessary custom APIs which are directly
 exposed from driver layer. However this may still require changes in bus code
@@ -32,7 +32,7 @@ Key factors guiding design of the Rawdevice library:
 
 1. Following are some generic operations which can be treated as applicable
    to a large subset of device types. None of the operations are mandatory to
-   be implemented by a driver. Application should also be design for proper
+   be implemented by a driver. Application should also be designed for proper
    handling for unsupported APIs.
 
   * Device Start/Stop - In some cases, 'reset' might also be required which
@@ -100,7 +100,7 @@ From the command line using the --vdev EAL option
 
    --vdev 'rawdev_dev1'
 
-Our using the rte_vdev_init API within the application code.
+Or using the rte_vdev_init API within the application code.
 
 .. code-block:: c
 

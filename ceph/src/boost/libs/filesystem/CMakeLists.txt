@@ -19,6 +19,7 @@ set(BOOST_FILESYSTEM_DISABLE_STATX OFF CACHE BOOL "Disable usage of statx API in
 set(BOOST_FILESYSTEM_DISABLE_GETRANDOM OFF CACHE BOOL "Disable usage of getrandom API in Boost.Filesystem")
 set(BOOST_FILESYSTEM_DISABLE_ARC4RANDOM OFF CACHE BOOL "Disable usage of arc4random API in Boost.Filesystem")
 set(BOOST_FILESYSTEM_DISABLE_BCRYPT OFF CACHE BOOL "Disable usage of BCrypt API in Boost.Filesystem")
+set(BOOST_FILESYSTEM_EMSCRIPTEN_USE_WASI OFF CACHE BOOL "Use WASI under emscripten in Boost.Filesystem")
 
 # Note: We can't use the Boost::library targets in the configure checks as they may not yet be included
 # by the superproject when this CMakeLists.txt is included. We also don't want to hardcode include paths
@@ -45,6 +46,7 @@ if(NOT BOOST_FILESYSTEM_DISABLE_STATX)
     endif()
 endif()
 check_cxx_source_compiles("#include <${CMAKE_CURRENT_SOURCE_DIR}/config/has_fdopendir_nofollow.cpp>" BOOST_FILESYSTEM_HAS_FDOPENDIR_NOFOLLOW)
+check_cxx_source_compiles("#include <${CMAKE_CURRENT_SOURCE_DIR}/config/has_posix_at_apis.cpp>" BOOST_FILESYSTEM_HAS_POSIX_AT_APIS)
 if(WIN32 AND NOT BOOST_FILESYSTEM_DISABLE_BCRYPT)
     set(CMAKE_REQUIRED_LIBRARIES bcrypt)
     check_cxx_source_compiles("#include <${CMAKE_CURRENT_SOURCE_DIR}/config/has_bcrypt.cpp>" BOOST_FILESYSTEM_HAS_BCRYPT)
@@ -70,6 +72,31 @@ endif()
 
 add_library(boost_filesystem ${BOOST_FILESYSTEM_SOURCES})
 add_library(Boost::filesystem ALIAS boost_filesystem)
+
+get_target_property(BOOST_FILESYSTEM_TARGET_TYPE boost_filesystem TYPE)
+if(BOOST_FILESYSTEM_TARGET_TYPE STREQUAL "SHARED_LIBRARY")
+    set(CMAKE_REQUIRED_LIBRARIES "-Wl,--no-undefined")
+    check_cxx_source_compiles("#include <${CMAKE_CURRENT_SOURCE_DIR}/config/has_linkflag_no_undefined.cpp>" BOOST_FILESYSTEM_HAS_LINKFLAG_NO_UNDEFINED)
+    unset(CMAKE_REQUIRED_LIBRARIES)
+    if(NOT BOOST_FILESYSTEM_HAS_LINKFLAG_NO_UNDEFINED)
+        set(CMAKE_REQUIRED_LIBRARIES "-Wl,-undefined,error")
+        check_cxx_source_compiles("#include <${CMAKE_CURRENT_SOURCE_DIR}/config/has_linkflag_no_undefined.cpp>" BOOST_FILESYSTEM_HAS_LINKFLAG_UNDEFINED_ERROR)
+        unset(CMAKE_REQUIRED_LIBRARIES)
+    endif()
+    if(BOOST_FILESYSTEM_HAS_LINKFLAG_NO_UNDEFINED)
+        if(NOT CMAKE_VERSION VERSION_LESS 3.13)
+            target_link_options(boost_filesystem PRIVATE "-Wl,--no-undefined")
+        else()
+            target_link_libraries(boost_filesystem PRIVATE "-Wl,--no-undefined")
+        endif()
+    elseif(BOOST_FILESYSTEM_HAS_LINKFLAG_UNDEFINED_ERROR)
+        if(NOT CMAKE_VERSION VERSION_LESS 3.13)
+            target_link_options(boost_filesystem PRIVATE "-Wl,-undefined,error")
+        else()
+            target_link_libraries(boost_filesystem PRIVATE "-Wl,-undefined,error")
+        endif()
+    endif()
+endif()
 
 target_include_directories(boost_filesystem PUBLIC include)
 target_include_directories(boost_filesystem PRIVATE src)
@@ -105,6 +132,16 @@ if(WIN32 OR CYGWIN)
     )
 endif()
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+    (CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 12 OR CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 12) AND
+    CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
+    # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105329
+    # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105651
+    target_compile_options(boost_filesystem PRIVATE
+        -Wno-restrict
+    )
+endif()
+
 if(BOOST_FILESYSTEM_NO_DEPRECATED)
     target_compile_definitions(boost_filesystem PUBLIC BOOST_FILESYSTEM_NO_DEPRECATED)
 endif()
@@ -130,6 +167,9 @@ if(BOOST_FILESYSTEM_DISABLE_ARC4RANDOM)
 endif()
 if(BOOST_FILESYSTEM_DISABLE_BCRYPT)
     target_compile_definitions(boost_filesystem PRIVATE BOOST_FILESYSTEM_DISABLE_BCRYPT)
+endif()
+if(BOOST_FILESYSTEM_DISABLE_EMSCRIPTEN_WASI)
+    target_compile_definitions(boost_filesystem PRIVATE BOOST_FILESYSTEM_DISABLE_EMSCRIPTEN_WASI)
 endif()
 
 if(BOOST_FILESYSTEM_HAS_STAT_ST_BLKSIZE)
@@ -158,6 +198,9 @@ if(BOOST_FILESYSTEM_HAS_STATX_SYSCALL)
 endif()
 if(BOOST_FILESYSTEM_HAS_FDOPENDIR_NOFOLLOW)
     target_compile_definitions(boost_filesystem PRIVATE BOOST_FILESYSTEM_HAS_FDOPENDIR_NOFOLLOW)
+endif()
+if(BOOST_FILESYSTEM_HAS_POSIX_AT_APIS)
+    target_compile_definitions(boost_filesystem PRIVATE BOOST_FILESYSTEM_HAS_POSIX_AT_APIS)
 endif()
 
 target_link_libraries(boost_filesystem

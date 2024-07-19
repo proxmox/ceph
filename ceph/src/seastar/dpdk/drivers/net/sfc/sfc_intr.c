@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
  */
 
 /*
- * At the momemt of writing DPDK v16.07 has notion of two types of
+ * At the moment of writing DPDK v16.07 has notion of two types of
  * interrupts: LSC (link status change) and RXQ (receive indication).
  * It allows to register interrupt callback for entire device which is
  * not intended to be used for receive indication (i.e. link status
@@ -60,9 +60,9 @@ sfc_intr_line_handler(void *cb_arg)
 
 	sfc_log_init(sa, "entry");
 
-	if (sa->state != SFC_ADAPTER_STARTED &&
-	    sa->state != SFC_ADAPTER_STARTING &&
-	    sa->state != SFC_ADAPTER_STOPPING) {
+	if (sa->state != SFC_ETHDEV_STARTED &&
+	    sa->state != SFC_ETHDEV_STARTING &&
+	    sa->state != SFC_ETHDEV_STOPPING) {
 		sfc_log_init(sa,
 			     "interrupt on stopped adapter, don't reenable");
 		goto exit;
@@ -79,7 +79,7 @@ sfc_intr_line_handler(void *cb_arg)
 	if (qmask & (1 << sa->mgmt_evq_index))
 		sfc_intr_handle_mgmt_evq(sa);
 
-	if (rte_intr_enable(&pci_dev->intr_handle) != 0)
+	if (rte_intr_ack(pci_dev->intr_handle) != 0)
 		sfc_err(sa, "cannot reenable interrupts");
 
 	sfc_log_init(sa, "done");
@@ -89,9 +89,9 @@ exit:
 		sfc_notice(sa, "link status change event: link %s",
 			 sa->eth_dev->data->dev_link.link_status ?
 			 "UP" : "DOWN");
-		_rte_eth_dev_callback_process(sa->eth_dev,
-					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL);
+		rte_eth_dev_callback_process(sa->eth_dev,
+					     RTE_ETH_EVENT_INTR_LSC,
+					     NULL);
 	}
 }
 
@@ -106,9 +106,9 @@ sfc_intr_message_handler(void *cb_arg)
 
 	sfc_log_init(sa, "entry");
 
-	if (sa->state != SFC_ADAPTER_STARTED &&
-	    sa->state != SFC_ADAPTER_STARTING &&
-	    sa->state != SFC_ADAPTER_STOPPING) {
+	if (sa->state != SFC_ETHDEV_STARTED &&
+	    sa->state != SFC_ETHDEV_STARTING &&
+	    sa->state != SFC_ETHDEV_STOPPING) {
 		sfc_log_init(sa, "adapter not-started, don't reenable");
 		goto exit;
 	}
@@ -123,7 +123,7 @@ sfc_intr_message_handler(void *cb_arg)
 
 	sfc_intr_handle_mgmt_evq(sa);
 
-	if (rte_intr_enable(&pci_dev->intr_handle) != 0)
+	if (rte_intr_ack(pci_dev->intr_handle) != 0)
 		sfc_err(sa, "cannot reenable interrupts");
 
 	sfc_log_init(sa, "done");
@@ -131,9 +131,9 @@ sfc_intr_message_handler(void *cb_arg)
 exit:
 	if (lsc_seq != sa->port.lsc_seq) {
 		sfc_notice(sa, "link status change event");
-		_rte_eth_dev_callback_process(sa->eth_dev,
-					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL);
+		rte_eth_dev_callback_process(sa->eth_dev,
+					     RTE_ETH_EVENT_INTR_LSC,
+					     NULL);
 	}
 }
 
@@ -159,9 +159,29 @@ sfc_intr_start(struct sfc_adapter *sa)
 		goto fail_intr_init;
 
 	pci_dev = RTE_ETH_DEV_TO_PCI(sa->eth_dev);
-	intr_handle = &pci_dev->intr_handle;
+	intr_handle = pci_dev->intr_handle;
 
 	if (intr->handler != NULL) {
+		if (intr->rxq_intr && rte_intr_cap_multiple(intr_handle)) {
+			uint32_t intr_vector;
+
+			intr_vector = sa->eth_dev->data->nb_rx_queues;
+			rc = rte_intr_efd_enable(intr_handle, intr_vector);
+			if (rc != 0)
+				goto fail_rte_intr_efd_enable;
+		}
+		if (rte_intr_dp_is_en(intr_handle)) {
+			if (rte_intr_vec_list_alloc(intr_handle,
+					"intr_vec",
+					sa->eth_dev->data->nb_rx_queues)) {
+				sfc_err(sa,
+					"Failed to allocate %d rx_queues intr_vec",
+					sa->eth_dev->data->nb_rx_queues);
+				goto fail_intr_vector_alloc;
+			}
+
+		}
+
 		sfc_log_init(sa, "rte_intr_callback_register");
 		rc = rte_intr_callback_register(intr_handle, intr->handler,
 						(void *)sa);
@@ -193,15 +213,22 @@ sfc_intr_start(struct sfc_adapter *sa)
 		efx_intr_enable(sa->nic);
 	}
 
-	sfc_log_init(sa, "done type=%u max_intr=%d nb_efd=%u vec=%p",
-		     intr_handle->type, intr_handle->max_intr,
-		     intr_handle->nb_efd, intr_handle->intr_vec);
+	sfc_log_init(sa, "done type=%u max_intr=%d nb_efd=%u",
+		     rte_intr_type_get(intr_handle),
+		     rte_intr_max_intr_get(intr_handle),
+		     rte_intr_nb_efd_get(intr_handle));
 	return 0;
 
 fail_rte_intr_enable:
 	rte_intr_callback_unregister(intr_handle, intr->handler, (void *)sa);
 
 fail_rte_intr_cb_reg:
+	rte_intr_vec_list_free(intr_handle);
+
+fail_intr_vector_alloc:
+	rte_intr_efd_disable(intr_handle);
+
+fail_rte_intr_efd_enable:
 	efx_intr_fini(sa->nic);
 
 fail_intr_init:
@@ -223,7 +250,11 @@ sfc_intr_stop(struct sfc_adapter *sa)
 
 		efx_intr_disable(sa->nic);
 
-		intr_handle = &pci_dev->intr_handle;
+		intr_handle = pci_dev->intr_handle;
+
+		rte_intr_vec_list_free(intr_handle);
+		rte_intr_efd_disable(intr_handle);
+
 		if (rte_intr_disable(intr_handle) != 0)
 			sfc_err(sa, "cannot disable interrupts");
 
@@ -250,10 +281,10 @@ sfc_intr_configure(struct sfc_adapter *sa)
 
 	intr->handler = NULL;
 	intr->lsc_intr = (sa->eth_dev->data->dev_conf.intr_conf.lsc != 0);
-	if (!intr->lsc_intr) {
-		sfc_notice(sa, "LSC tracking using interrupts is disabled");
+	intr->rxq_intr = (sa->eth_dev->data->dev_conf.intr_conf.rxq != 0);
+
+	if (!intr->lsc_intr && !intr->rxq_intr)
 		goto done;
-	}
 
 	switch (intr->type) {
 	case EFX_INTR_MESSAGE:
@@ -291,7 +322,7 @@ sfc_intr_attach(struct sfc_adapter *sa)
 
 	sfc_log_init(sa, "entry");
 
-	switch (pci_dev->intr_handle.type) {
+	switch (rte_intr_type_get(pci_dev->intr_handle)) {
 #ifdef RTE_EXEC_ENV_LINUX
 	case RTE_INTR_HANDLE_UIO_INTX:
 	case RTE_INTR_HANDLE_VFIO_LEGACY:

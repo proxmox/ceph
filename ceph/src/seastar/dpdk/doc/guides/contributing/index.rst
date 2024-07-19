@@ -10,8 +10,11 @@ Contributor's Guidelines
 
     coding_style
     design
-    versioning
+    abi_policy
+    abi_versioning
     documentation
+    unit_test
+    new_library
     patches
     vulnerability
     stable

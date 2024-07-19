@@ -8,6 +8,7 @@
 #include <sys/queue.h>
 
 #include <rte_ether.h>
+#include <rte_pci.h>
 
 /* Macros for printing using RTE_LOG */
 #define RTE_LOGTYPE_VHOST_CONFIG RTE_LOGTYPE_USER1
@@ -21,8 +22,8 @@ enum {VIRTIO_RXQ, VIRTIO_TXQ, VIRTIO_QNUM};
 struct device_statistics {
 	uint64_t	tx;
 	uint64_t	tx_total;
-	rte_atomic64_t	rx_atomic;
-	rte_atomic64_t	rx_total_atomic;
+	uint64_t	rx_atomic;
+	uint64_t	rx_total_atomic;
 };
 
 struct vhost_queue {
@@ -35,7 +36,7 @@ struct vhost_dev {
 	/**< Number of memory regions for gpa to hpa translation. */
 	uint32_t nregions_hpa;
 	/**< Device MAC address (Obtained on first TX packet). */
-	struct ether_addr mac_address;
+	struct rte_ether_addr mac_address;
 	/**< RX VMDQ queue number. */
 	uint16_t vmdq_rx_q;
 	/**< Vlan tag assigned to the pool */
@@ -60,6 +61,19 @@ struct vhost_dev {
 	struct vhost_queue queues[MAX_QUEUE_PAIRS * 2];
 } __rte_cache_aligned;
 
+typedef uint16_t (*vhost_enqueue_burst_t)(struct vhost_dev *dev,
+			uint16_t queue_id, struct rte_mbuf **pkts,
+			uint32_t count);
+
+typedef uint16_t (*vhost_dequeue_burst_t)(struct vhost_dev *dev,
+			uint16_t queue_id, struct rte_mempool *mbuf_pool,
+			struct rte_mbuf **pkts, uint16_t count);
+
+struct vhost_queue_ops {
+	vhost_enqueue_burst_t enqueue_pkt_burst;
+	vhost_dequeue_burst_t dequeue_pkt_burst;
+};
+
 TAILQ_HEAD(vhost_dev_tailq_list, vhost_dev);
 
 
@@ -78,6 +92,17 @@ struct lcore_info {
 	struct vhost_dev_tailq_list vdev_list;
 };
 
+struct dma_info {
+	struct rte_pci_addr addr;
+	int16_t dev_id;
+	bool async_enabled;
+};
+
+struct dma_for_vhost {
+	struct dma_info dmas[RTE_MAX_QUEUES_PER_PORT * 2];
+	uint32_t async_flag;
+};
+
 /* we implement non-extra virtio net features */
 #define VIRTIO_NET_FEATURES	0
 
@@ -86,7 +111,19 @@ void vs_vhost_net_remove(struct vhost_dev *dev);
 uint16_t vs_enqueue_pkts(struct vhost_dev *dev, uint16_t queue_id,
 			 struct rte_mbuf **pkts, uint32_t count);
 
-uint16_t vs_dequeue_pkts(struct vhost_dev *dev, uint16_t queue_id,
-			 struct rte_mempool *mbuf_pool,
-			 struct rte_mbuf **pkts, uint16_t count);
+uint16_t builtin_enqueue_pkts(struct vhost_dev *dev, uint16_t queue_id,
+			struct rte_mbuf **pkts, uint32_t count);
+uint16_t builtin_dequeue_pkts(struct vhost_dev *dev, uint16_t queue_id,
+			struct rte_mempool *mbuf_pool,
+			struct rte_mbuf **pkts, uint16_t count);
+uint16_t sync_enqueue_pkts(struct vhost_dev *dev, uint16_t queue_id,
+			 struct rte_mbuf **pkts, uint32_t count);
+uint16_t sync_dequeue_pkts(struct vhost_dev *dev, uint16_t queue_id,
+			struct rte_mempool *mbuf_pool,
+			struct rte_mbuf **pkts, uint16_t count);
+uint16_t async_enqueue_pkts(struct vhost_dev *dev, uint16_t queue_id,
+			 struct rte_mbuf **pkts, uint32_t count);
+uint16_t async_dequeue_pkts(struct vhost_dev *dev, uint16_t queue_id,
+			struct rte_mempool *mbuf_pool,
+			struct rte_mbuf **pkts, uint16_t count);
 #endif /* _MAIN_H_ */

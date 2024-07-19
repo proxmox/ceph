@@ -20,7 +20,9 @@ add_executable (tests-beast-websocket
     _detail_impl_base.cpp
     test.hpp
     _detail_prng.cpp
+    any_completion_handler.cpp
     accept.cpp
+    cancel.cpp
     close.cpp
     error.cpp
     frame.cpp
@@ -51,6 +53,6 @@ target_link_libraries(tests-beast-websocket
 
 set_property(TARGET tests-beast-websocket PROPERTY FOLDER "tests")
 
-build_individual_tests(tests-beast-websocket
-        EXCLUDE doc_snippets
-        LIBS lib-asio lib-asio-ssl lib-beast lib-test)
+#build_individual_tests(tests-beast-websocket
+#        EXCLUDE doc_snippets
+#        LIBS lib-asio lib-asio-ssl lib-beast lib-test)

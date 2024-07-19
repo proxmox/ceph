@@ -67,8 +67,9 @@ void test_all()
         1, 5, 8.0);
 
     {
+        // Sym difference works, but expectations are different for rescaling
         ut_settings settings;
-        settings.validity_false_negative_sym = true;
+        settings.sym_difference = false;
         test_one<polygon, polygon, polygon>("star_comb_15",
             star_comb_15[0], star_comb_15[1],
             30, -1, 227.658275102812,
@@ -92,7 +93,6 @@ void test_all()
         1, 5, 1.0,
         1, 5, 1.0);
 
-#if defined(BOOST_GEOMETRY_USE_RESCALING) || defined(BOOST_GEOMETRY_TEST_FAILURES)
     // Two outputs, but the small one might be discarded
     // (depending on point-type / compiler)
     test_one<polygon, polygon, polygon>("distance_zero",
@@ -100,7 +100,6 @@ void test_all()
         count_set(1, 2), -1, 8.7048386,
         count_set(1, 2), -1, 0.0098387,
         tolerance(0.001));
-#endif
 
     test_one<polygon, polygon, polygon>("equal_holes_disjoint",
         equal_holes_disjoint[0], equal_holes_disjoint[1],
@@ -599,7 +598,7 @@ void test_all()
     {
         ut_settings settings;
         settings.validity_false_negative_sym = true;
-        TEST_DIFFERENCE_WITH(mysql_23023665_13, 3, 99.74526, 3, 37.74526, 6, settings);
+        TEST_DIFFERENCE_WITH(mysql_23023665_13, 3, 99.74526, 3, 37.74526, count_set(5, 6), settings);
     }
 }
 

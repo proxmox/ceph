@@ -1,8 +1,41 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2016 Intel Corporation.
 
+.. include:: <isonum.txt>
+
 IXGBE Driver
 ============
+
+Supported Chipsets and NICs
+---------------------------
+
+- Intel 82599EB 10 Gigabit Ethernet Controller
+- Intel 82598EB 10 Gigabit Ethernet Controller
+- Intel 82599ES 10 Gigabit Ethernet Controller
+- Intel 82599EN 10 Gigabit Ethernet Controller
+- Intel Ethernet Controller X540-AT2
+- Intel Ethernet Controller X550-BT2
+- Intel Ethernet Controller X550-AT2
+- Intel Ethernet Controller X550-AT
+- Intel Ethernet Converged Network Adapter X520-SR1
+- Intel Ethernet Converged Network Adapter X520-SR2
+- Intel Ethernet Converged Network Adapter X520-LR1
+- Intel Ethernet Converged Network Adapter X520-DA1
+- Intel Ethernet Converged Network Adapter X520-DA2
+- Intel Ethernet Converged Network Adapter X520-DA4
+- Intel Ethernet Converged Network Adapter X520-QDA1
+- Intel Ethernet Converged Network Adapter X520-T2
+- Intel 10 Gigabit AF DA Dual Port Server Adapter
+- Intel 10 Gigabit AT Server Adapter
+- Intel 10 Gigabit AT2 Server Adapter
+- Intel 10 Gigabit CX4 Dual Port Server Adapter
+- Intel 10 Gigabit XF LR Server Adapter
+- Intel 10 Gigabit XF SR Dual Port Server Adapter
+- Intel 10 Gigabit XF SR Server Adapter
+- Intel Ethernet Converged Network Adapter X540-T1
+- Intel Ethernet Converged Network Adapter X540-T2
+- Intel Ethernet Converged Network Adapter X550-T1
+- Intel Ethernet Converged Network Adapter X550-T2
 
 Vector PMD for IXGBE
 --------------------
@@ -15,7 +48,6 @@ There is no change to PMD API. The RX/TX handler are the only two entries for vP
 They are transparently registered at runtime RX/TX execution if all condition checks pass.
 
 1.  To date, only an SSE version of IX GBE vPMD is available.
-    To ensure that vPMD is in the binary code, ensure that the option CONFIG_RTE_IXGBE_INC_VECTOR=y is in the configure file.
 
 Some constraints apply as pre-conditions for specific optimizations on bulk packet transfers.
 The following sections explain RX and TX constraints in the vPMD.
@@ -23,8 +55,8 @@ The following sections explain RX and TX constraints in the vPMD.
 RX Constraints
 ~~~~~~~~~~~~~~
 
-Prerequisites and Pre-conditions
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Linux Prerequisites and Pre-conditions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The following prerequisites apply:
 
@@ -48,6 +80,24 @@ vPMD for RX would be disabled.
 
 By default, IXGBE_MAX_RING_DESC is set to 4096 and RTE_PMD_IXGBE_RX_MAX_BURST is set to 32.
 
+Windows Prerequisites and Pre-conditions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Follow the :doc:`guide for Windows <../windows_gsg/run_apps>`
+  to setup the basic DPDK environment.
+
+- Identify the Intel\ |reg| Ethernet adapter and get the latest NVM/FW version.
+
+- To access any Intel\ |reg| Ethernet hardware,
+  load the NetUIO driver in place of existing built-in (inbox) driver.
+
+- To load NetUIO driver, follow the steps mentioned in `dpdk-kmods repository
+  <https://git.dpdk.org/dpdk-kmods/tree/windows/netuio/README.rst>`_.
+
+- Loading of private Dynamic Device Personalization (DDP) package
+  is not supported on Windows.
+
+
 Feature not Supported by RX Vector PMD
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -57,8 +107,6 @@ They are:
 *   IEEE1588
 
 *   FDIR
-
-*   Header split
 
 *   RX checksum off load
 
@@ -70,17 +118,56 @@ Other features are supported using optional MACRO configuration. They include:
 
 To guarantee the constraint, capabilities in dev_conf.rxmode.offloads will be checked:
 
-*   DEV_RX_OFFLOAD_VLAN_STRIP
+*   RTE_ETH_RX_OFFLOAD_VLAN_STRIP
 
-*   DEV_RX_OFFLOAD_VLAN_EXTEND
+*   RTE_ETH_RX_OFFLOAD_VLAN_EXTEND
 
-*   DEV_RX_OFFLOAD_CHECKSUM
-
-*   DEV_RX_OFFLOAD_HEADER_SPLIT
+*   RTE_ETH_RX_OFFLOAD_CHECKSUM
 
 *   dev_conf
 
-fdir_conf->mode will also be checked.
+
+Disable SDP3 TX_DISABLE for Fiber Links
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The following ``devargs`` option can be enabled at runtime.  It must
+be passed as part of EAL arguments. For example,
+
+.. code-block:: console
+
+   dpdk-testpmd -a fiber_sdp3_no_tx_disable=1 -- -i
+
+- ``fiber_sdp3_no_tx_disable`` (default **0**)
+
+  Not all IXGBE implementations with SFP cages use the SDP3 signal as
+  TX_DISABLE as a means to disable the laser on fiber SFP modules.
+  This option informs the driver that in this case, SDP3 is not to be
+  used as a check for link up by testing for laser on/off.
+
+VF Runtime Options
+^^^^^^^^^^^^^^^^^^
+
+The following ``devargs`` options can be enabled at runtime. They must
+be passed as part of EAL arguments. For example,
+
+.. code-block:: console
+
+   dpdk-testpmd -a af:10.0,pflink_fullchk=1 -- -i
+
+- ``pflink_fullchk`` (default **0**)
+
+  When calling ``rte_eth_link_get_nowait()`` to get VF link status,
+  this option is used to control how VF synchronizes its status with
+  PF's. If set, VF will not only check the PF's physical link status
+  by reading related register, but also check the mailbox status. We
+  call this behavior as fully checking. And checking mailbox will
+  trigger PF's mailbox interrupt generation. If unset, the application
+  can get the VF's link status quickly by just reading the PF's link
+  status register, this will avoid the whole system's mailbox interrupt
+  generation.
+
+  ``rte_eth_link_get()`` will still use the mailbox method regardless
+  of the pflink_fullchk setting.
 
 RX Burst Size
 ^^^^^^^^^^^^^
@@ -119,13 +206,13 @@ l3fwd
 ~~~~~
 
 When running l3fwd with vPMD, there is one thing to note.
-In the configuration, ensure that DEV_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads is NOT set.
+In the configuration, ensure that RTE_ETH_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads is NOT set.
 Otherwise, by default, RX vPMD is disabled.
 
 load_balancer
 ~~~~~~~~~~~~~
 
-As in the case of l3fwd, to enable vPMD, do NOT set DEV_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads.
+As in the case of l3fwd, to enable vPMD, do NOT set RTE_ETH_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads.
 In addition, for improved performance, use -bsz "(32,32),(64,64),(32,32)" in load_balancer to avoid using the default burst size of 144.
 
 
@@ -228,6 +315,21 @@ Before binding ``vfio`` with legacy mode in X550 NICs, use ``modprobe vfio ``
 ``nointxmask=1`` to load ``vfio`` module if the intx is not shared with other
 devices.
 
+RSS isn't supported when QinQ is enabled
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Due to FW limitation, IXGBE doesn't support RSS when QinQ is enabled currently.
+
+UDP with zero checksum is reported as error
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Intel 82599 10 Gigabit Ethernet Controller Specification Update (Revision 2.87)
+Errata: 44 Integrity Error Reported for IPv4/UDP Packets With Zero Checksum
+
+To support UDP zero checksum, the zero and bad UDP checksum packet is marked as
+RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN, so the application needs to recompute the checksum to
+validate it.
+
 Inline crypto processing support
 --------------------------------
 
@@ -253,38 +355,109 @@ option ``representor`` the user can specify which virtual functions to create
 port representors for on initialization of the PF PMD by passing the VF IDs of
 the VFs which are required.::
 
-  -w DBDF,representor=[0,1,4]
+  -a DBDF,representor=[0,1,4]
 
 Currently hot-plugging of representor ports is not supported so all required
 representors must be specified on the creation of the PF.
 
-Supported Chipsets and NICs
----------------------------
+.. _net_ixgbe_testpmd_commands:
 
-- Intel 82599EB 10 Gigabit Ethernet Controller
-- Intel 82598EB 10 Gigabit Ethernet Controller
-- Intel 82599ES 10 Gigabit Ethernet Controller
-- Intel 82599EN 10 Gigabit Ethernet Controller
-- Intel Ethernet Controller X540-AT2
-- Intel Ethernet Controller X550-BT2
-- Intel Ethernet Controller X550-AT2
-- Intel Ethernet Controller X550-AT
-- Intel Ethernet Converged Network Adapter X520-SR1
-- Intel Ethernet Converged Network Adapter X520-SR2
-- Intel Ethernet Converged Network Adapter X520-LR1
-- Intel Ethernet Converged Network Adapter X520-DA1
-- Intel Ethernet Converged Network Adapter X520-DA2
-- Intel Ethernet Converged Network Adapter X520-DA4
-- Intel Ethernet Converged Network Adapter X520-QDA1
-- Intel Ethernet Converged Network Adapter X520-T2
-- Intel 10 Gigabit AF DA Dual Port Server Adapter
-- Intel 10 Gigabit AT Server Adapter
-- Intel 10 Gigabit AT2 Server Adapter
-- Intel 10 Gigabit CX4 Dual Port Server Adapter
-- Intel 10 Gigabit XF LR Server Adapter
-- Intel 10 Gigabit XF SR Dual Port Server Adapter
-- Intel 10 Gigabit XF SR Server Adapter
-- Intel Ethernet Converged Network Adapter X540-T1
-- Intel Ethernet Converged Network Adapter X540-T2
-- Intel Ethernet Converged Network Adapter X550-T1
-- Intel Ethernet Converged Network Adapter X550-T2
+Testpmd driver specific commands
+--------------------------------
+
+Some ixgbe driver specific features are integrated in testpmd.
+
+set split drop enable (for VF)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set split drop enable bit for VF from PF::
+
+   testpmd> set vf split drop (port_id) (vf_id) (on|off)
+
+set macsec offload
+~~~~~~~~~~~~~~~~~~
+
+Enable/disable MACsec offload::
+
+   testpmd> set macsec offload (port_id) on encrypt (on|off) replay-protect (on|off)
+   testpmd> set macsec offload (port_id) off
+
+set macsec sc
+~~~~~~~~~~~~~
+
+Configure MACsec secure connection (SC)::
+
+   testpmd> set macsec sc (tx|rx) (port_id) (mac) (pi)
+
+.. note::
+
+   The pi argument is ignored for tx.
+   Check the NIC Datasheet for hardware limitations.
+
+set macsec sa
+~~~~~~~~~~~~~
+
+Configure MACsec secure association (SA)::
+
+   testpmd> set macsec sa (tx|rx) (port_id) (idx) (an) (pn) (key)
+
+.. note::
+
+   The IDX value must be 0 or 1.
+   Check the NIC Datasheet for hardware limitations.
+
+set tc tx min bandwidth
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Set all TCs' TX min relative bandwidth (%) globally for all PF and VFs::
+
+   testpmd> set tc tx min-bandwidth (port_id) (bw1, bw2, ...)
+
+port config bypass
+~~~~~~~~~~~~~~~~~~
+
+Enable/disable bypass feature::
+
+   port config bypass (port_id) (on|off)
+
+set bypass mode
+~~~~~~~~~~~~~~~
+
+Set the bypass mode for the lowest port on bypass enabled NIC::
+
+   testpmd> set bypass mode (normal|bypass|isolate) (port_id)
+
+set bypass event
+~~~~~~~~~~~~~~~~
+
+Set the event required to initiate specified bypass mode for the lowest port on a bypass enabled::
+
+   testpmd> set bypass event (timeout|os_on|os_off|power_on|power_off) \
+            mode (normal|bypass|isolate) (port_id)
+
+Where:
+
+* ``timeout``: Enable bypass after watchdog timeout.
+
+* ``os_on``: Enable bypass when OS/board is powered on.
+
+* ``os_off``: Enable bypass when OS/board is powered off.
+
+* ``power_on``: Enable bypass when power supply is turned on.
+
+* ``power_off``: Enable bypass when power supply is turned off.
+
+
+set bypass timeout
+~~~~~~~~~~~~~~~~~~
+
+Set the bypass watchdog timeout to ``n`` seconds where 0 = instant::
+
+   testpmd> set bypass timeout (0|1.5|2|3|4|8|16|32)
+
+show bypass config
+~~~~~~~~~~~~~~~~~~
+
+Show the bypass configuration for a bypass enabled NIC using the lowest port on the NIC::
+
+   testpmd> show bypass config (port_id)

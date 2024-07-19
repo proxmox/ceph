@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <rte_ethdev.h>
 #include <rte_latencystats.h>
 #include "rte_lcore.h"
 #include "rte_metrics.h"
@@ -17,10 +18,10 @@
 #define LATENCY_NUM_PACKETS 10
 #define QUEUE_ID 0
 
-uint16_t portid;
-struct rte_ring *ring;
+static uint16_t portid;
+static struct rte_ring *ring;
 
-struct rte_metric_name lat_stats_strings[] = {
+static struct rte_metric_name lat_stats_strings[] = {
 	{"min_latency_ns"},
 	{"avg_latency_ns"},
 	{"max_latency_ns"},
@@ -60,6 +61,9 @@ static int test_latency_uninit(void)
 	ret = rte_latencystats_uninit();
 	TEST_ASSERT(ret >= 0, "Test Failed: rte_latencystats_uninit failed");
 
+	ret = rte_metrics_deinit();
+	TEST_ASSERT(ret >= 0, "Test Failed: rte_metrics_deinit failed");
+
 	return TEST_SUCCESS;
 }
 
@@ -69,18 +73,15 @@ static int test_latencystats_get_names(void)
 	int ret = 0, i = 0;
 	int size = 0;
 	struct rte_metric_name names[NUM_STATS];
-	struct rte_metric_name wrongnames[NUM_STATS - 2];
 
 	size_t m_size = sizeof(struct rte_metric_name);
 	for (i = 0; i < NUM_STATS; i++)
 		memset(&names[i], 0, m_size);
-	for (i = 0; i < NUM_STATS - 2; i++)
-		memset(&wrongnames[i], 0, m_size);
 
 	/* Success Test: Valid names and size */
 	size = NUM_STATS;
 	ret = rte_latencystats_get_names(names, size);
-	for (i = 0; i <= NUM_STATS; i++) {
+	for (i = 0; i < NUM_STATS; i++) {
 		if (strcmp(lat_stats_strings[i].name, names[i].name) == 0)
 			printf(" %s\n", names[i].name);
 		else
@@ -99,10 +100,6 @@ static int test_latencystats_get_names(void)
 	TEST_ASSERT((ret == NUM_STATS), "Test Failed to get the metrics count,"
 		    "Actual: %d Expected: %d", ret, NUM_STATS);
 
-	/* Failure Test: Invalid names (array size lesser than size) */
-	size = NUM_STATS + 1;
-	ret = rte_latencystats_get_names(wrongnames, size);
-	TEST_ASSERT((ret == NUM_STATS), "Test Failed to get metrics names");
 	return TEST_SUCCESS;
 }
 
@@ -112,13 +109,10 @@ static int test_latencystats_get(void)
 	int ret = 0, i = 0;
 	int size = 0;
 	struct rte_metric_value values[NUM_STATS];
-	struct rte_metric_value wrongvalues[NUM_STATS - 2];
 
 	size_t v_size = sizeof(struct rte_metric_value);
 	for (i = 0; i < NUM_STATS; i++)
 		memset(&values[i], 0, v_size);
-	for (i = 0; i < NUM_STATS - 2; i++)
-		memset(&wrongvalues[i], 0, v_size);
 
 	/* Success Test: Valid values and valid size */
 	size = NUM_STATS;
@@ -136,14 +130,6 @@ static int test_latencystats_get(void)
 	ret = rte_latencystats_get(values, size);
 	TEST_ASSERT((ret == NUM_STATS), "Test Failed to get the stats count,"
 		    "Actual: %d Expected: %d", ret, NUM_STATS);
-
-	/* Failure Test: Invalid values(array size lesser than size)
-	 * and invalid size
-	 */
-	size = NUM_STATS + 2;
-	ret = rte_latencystats_get(wrongvalues, size);
-	TEST_ASSERT(ret == NUM_STATS, "Test Failed to get latency metrics"
-			" values");
 
 	return TEST_SUCCESS;
 }
@@ -173,12 +159,21 @@ static int test_latency_packet_forward(void)
 		printf("allocate mbuf pool Failed\n");
 		return TEST_FAILED;
 	}
+	ret = test_dev_start(portid, mp);
+	if (ret < 0) {
+		printf("test_dev_start(%hu, %p) failed, error code: %d\n",
+			portid, mp, ret);
+		return TEST_FAILED;
+	}
+
 	ret = test_packet_forward(pbuf, portid, QUEUE_ID);
 	if (ret < 0)
 		printf("send pkts Failed\n");
+
+	rte_eth_dev_stop(portid);
 	test_put_mbuf_to_pool(mp, pbuf);
 
-	return TEST_SUCCESS;
+	return (ret >= 0) ? TEST_SUCCESS : TEST_FAILED;
 }
 
 static struct

@@ -21,15 +21,14 @@
 #include "channel_manager.h"
 #include "channel_monitor.h"
 #include "power_manager.h"
-#include "channel_commands.h"
 
 struct cmd_quit_result {
 	cmdline_fixed_string_t quit;
 };
 
-static void cmd_quit_parsed(__attribute__((unused)) void *parsed_result,
+static void cmd_quit_parsed(__rte_unused void *parsed_result,
 		struct cmdline *cl,
-		__attribute__((unused)) void *data)
+		__rte_unused void *data)
 {
 	channel_monitor_exit();
 	channel_manager_exit();
@@ -58,7 +57,7 @@ struct cmd_show_vm_result {
 
 static void
 cmd_show_vm_parsed(void *parsed_result, struct cmdline *cl,
-		__attribute__((unused)) void *data)
+		__rte_unused void *data)
 {
 	struct cmd_show_vm_result *res = parsed_result;
 	struct vm_info info;
@@ -135,7 +134,7 @@ struct cmd_set_pcpu_result {
 
 static void
 cmd_set_pcpu_parsed(void *parsed_result, struct cmdline *cl,
-		__attribute__((unused)) void *data)
+		__rte_unused void *data)
 {
 	struct cmd_set_pcpu_result *res = parsed_result;
 
@@ -155,10 +154,10 @@ cmdline_parse_token_string_t cmd_set_pcpu_vm_name =
 				vm_name, NULL);
 cmdline_parse_token_num_t set_pcpu_vcpu =
 		TOKEN_NUM_INITIALIZER(struct cmd_set_pcpu_result,
-				vcpu, UINT8);
+				vcpu, RTE_UINT8);
 cmdline_parse_token_num_t set_pcpu_core =
 		TOKEN_NUM_INITIALIZER(struct cmd_set_pcpu_result,
-				core, UINT64);
+				core, RTE_UINT64);
 
 
 cmdline_parse_inst_t cmd_set_pcpu_set = {
@@ -182,7 +181,7 @@ struct cmd_vm_op_result {
 
 static void
 cmd_vm_op_parsed(void *parsed_result, struct cmdline *cl,
-		__attribute__((unused)) void *data)
+		__rte_unused void *data)
 {
 	struct cmd_vm_op_result *res = parsed_result;
 
@@ -221,7 +220,7 @@ struct cmd_channels_op_result {
 };
 static void
 cmd_channels_op_parsed(void *parsed_result, struct cmdline *cl,
-			__attribute__((unused)) void *data)
+			__rte_unused void *data)
 {
 	unsigned num_channels = 0, channel_num, i;
 	int channels_added;
@@ -293,6 +292,53 @@ cmdline_parse_inst_t cmd_channels_op_set = {
 	},
 };
 
+struct cmd_set_query_result {
+	cmdline_fixed_string_t set_query;
+	cmdline_fixed_string_t vm_name;
+	cmdline_fixed_string_t query_status;
+};
+
+static void
+cmd_set_query_parsed(void *parsed_result,
+		__rte_unused struct cmdline *cl,
+		__rte_unused void *data)
+{
+	struct cmd_set_query_result *res = parsed_result;
+
+	if (!strcmp(res->query_status, "enable")) {
+		if (set_query_status(res->vm_name, true) < 0)
+			cmdline_printf(cl, "Unable to allow query for VM '%s'\n",
+					res->vm_name);
+	} else if (!strcmp(res->query_status, "disable")) {
+		if (set_query_status(res->vm_name, false) < 0)
+			cmdline_printf(cl, "Unable to disallow query for VM '%s'\n",
+					res->vm_name);
+	}
+}
+
+cmdline_parse_token_string_t cmd_set_query =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_query_result,
+			set_query, "set_query");
+cmdline_parse_token_string_t cmd_set_query_vm_name =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_query_result,
+			vm_name, NULL);
+cmdline_parse_token_string_t cmd_set_query_status =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_query_result,
+			query_status, "enable#disable");
+
+cmdline_parse_inst_t cmd_set_query_set = {
+	.f = cmd_set_query_parsed,
+	.data = NULL,
+	.help_str = "set_query <vm_name> <enable|disable>, allow or disallow queries"
+			" for the specified VM",
+	.tokens = {
+		(void *)&cmd_set_query,
+		(void *)&cmd_set_query_vm_name,
+		(void *)&cmd_set_query_status,
+		NULL,
+	},
+};
+
 struct cmd_channels_status_op_result {
 	cmdline_fixed_string_t op;
 	cmdline_fixed_string_t vm_name;
@@ -302,7 +348,7 @@ struct cmd_channels_status_op_result {
 
 static void
 cmd_channels_status_op_parsed(void *parsed_result, struct cmdline *cl,
-		       __attribute__((unused)) void *data)
+		       __rte_unused void *data)
 {
 	unsigned num_channels = 0, channel_num;
 	int changed;
@@ -388,7 +434,7 @@ struct cmd_show_cpu_freq_result {
 
 static void
 cmd_show_cpu_freq_parsed(void *parsed_result, struct cmdline *cl,
-		       __attribute__((unused)) void *data)
+		       __rte_unused void *data)
 {
 	struct cmd_show_cpu_freq_result *res = parsed_result;
 	uint32_t curr_freq = power_manager_get_current_frequency(res->core_num);
@@ -408,7 +454,7 @@ cmdline_parse_token_string_t cmd_show_cpu_freq =
 
 cmdline_parse_token_num_t cmd_show_cpu_freq_core_num =
 	TOKEN_NUM_INITIALIZER(struct cmd_show_cpu_freq_result,
-			core_num, UINT8);
+			core_num, RTE_UINT8);
 
 cmdline_parse_inst_t cmd_show_cpu_freq_set = {
 	.f = cmd_show_cpu_freq_parsed,
@@ -429,7 +475,7 @@ struct cmd_set_cpu_freq_result {
 
 static void
 cmd_set_cpu_freq_parsed(void *parsed_result, struct cmdline *cl,
-		       __attribute__((unused)) void *data)
+		       __rte_unused void *data)
 {
 	int ret = -1;
 	struct cmd_set_cpu_freq_result *res = parsed_result;
@@ -457,7 +503,7 @@ cmdline_parse_token_string_t cmd_set_cpu_freq =
 			set_cpu_freq, "set_cpu_freq");
 cmdline_parse_token_num_t cmd_set_cpu_freq_core_num =
 	TOKEN_NUM_INITIALIZER(struct cmd_set_cpu_freq_result,
-			core_num, UINT8);
+			core_num, RTE_UINT8);
 cmdline_parse_token_string_t cmd_set_cpu_freq_cmd_cmd =
 	TOKEN_STRING_INITIALIZER(struct cmd_set_cpu_freq_result,
 			cmd, "up#down#min#max#enable_turbo#disable_turbo");
@@ -484,11 +530,12 @@ cmdline_parse_ctx_t main_ctx[] = {
 		(cmdline_parse_inst_t *)&cmd_show_cpu_freq_set,
 		(cmdline_parse_inst_t *)&cmd_set_cpu_freq_set,
 		(cmdline_parse_inst_t *)&cmd_set_pcpu_set,
+		(cmdline_parse_inst_t *)&cmd_set_query_set,
 		NULL,
 };
 
 void
-run_cli(__attribute__((unused)) void *arg)
+run_cli(__rte_unused void *arg)
 {
 	struct cmdline *cl;
 

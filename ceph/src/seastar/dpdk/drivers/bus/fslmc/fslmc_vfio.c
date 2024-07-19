@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2015-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2018 NXP
+ *   Copyright 2016-2021 NXP
  *
  */
 
@@ -22,17 +22,16 @@
 
 #include <eal_filesystem.h>
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
-#include <rte_bus.h>
+#include <dev_driver.h>
 #include <rte_eal_memconfig.h>
 
-#include "rte_fslmc.h"
+#include "private.h"
 #include "fslmc_vfio.h"
 #include "fslmc_logs.h"
 #include <mc/fsl_dpmng.h>
@@ -40,18 +39,25 @@
 #include "portal/dpaa2_hw_pvt.h"
 #include "portal/dpaa2_hw_dpio.h"
 
-/** Pathname of FSL-MC devices directory. */
-#define SYSFS_FSL_MC_DEVICES "/sys/bus/fsl-mc/devices"
-
 #define FSLMC_CONTAINER_MAX_LEN 8 /**< Of the format dprc.XX */
 
 /* Number of VFIO containers & groups with in */
 static struct fslmc_vfio_group vfio_group;
 static struct fslmc_vfio_container vfio_container;
 static int container_device_fd;
-static char *g_container;
+char *fslmc_container;
+static int fslmc_iommu_type;
 static uint32_t *msi_intr_vaddr;
 void *(*rte_mcp_ptr_list);
+
+void *
+dpaa2_get_mcp_ptr(int portal_idx)
+{
+	if (rte_mcp_ptr_list)
+		return rte_mcp_ptr_list[portal_idx];
+	else
+		return NULL;
+}
 
 static struct rte_dpaa2_object_list dpaa2_obj_list =
 	TAILQ_HEAD_INITIALIZER(dpaa2_obj_list);
@@ -71,7 +77,7 @@ fslmc_get_container_group(int *groupid)
 	int ret;
 	char *container;
 
-	if (!g_container) {
+	if (!fslmc_container) {
 		container = getenv("DPRC");
 		if (container == NULL) {
 			DPAA2_BUS_DEBUG("DPAA2: DPRC not available");
@@ -83,23 +89,26 @@ fslmc_get_container_group(int *groupid)
 			return -1;
 		}
 
-		g_container = strdup(container);
-		if (!g_container) {
+		fslmc_container = strdup(container);
+		if (!fslmc_container) {
 			DPAA2_BUS_ERR("Mem alloc failure; Container name");
 			return -ENOMEM;
 		}
 	}
 
+	fslmc_iommu_type = (rte_vfio_noiommu_is_enabled() == 1) ?
+		RTE_VFIO_NOIOMMU : VFIO_TYPE1_IOMMU;
+
 	/* get group number */
 	ret = rte_vfio_get_group_num(SYSFS_FSL_MC_DEVICES,
-				     g_container, groupid);
+				     fslmc_container, groupid);
 	if (ret <= 0) {
-		DPAA2_BUS_ERR("Unable to find %s IOMMU group", g_container);
+		DPAA2_BUS_ERR("Unable to find %s IOMMU group", fslmc_container);
 		return -1;
 	}
 
 	DPAA2_BUS_DEBUG("Container: %s has VFIO iommu group id = %d",
-			g_container, *groupid);
+			fslmc_container, *groupid);
 
 	return 0;
 }
@@ -132,7 +141,7 @@ vfio_connect_container(void)
 	}
 
 	/* Check whether support for SMMU type IOMMU present or not */
-	if (ioctl(fd, VFIO_CHECK_EXTENSION, VFIO_TYPE1_IOMMU)) {
+	if (ioctl(fd, VFIO_CHECK_EXTENSION, fslmc_iommu_type)) {
 		/* Connect group to container */
 		ret = ioctl(vfio_group.fd, VFIO_GROUP_SET_CONTAINER, &fd);
 		if (ret) {
@@ -141,7 +150,7 @@ vfio_connect_container(void)
 			return -errno;
 		}
 
-		ret = ioctl(fd, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU);
+		ret = ioctl(fd, VFIO_SET_IOMMU, fslmc_iommu_type);
 		if (ret) {
 			DPAA2_BUS_ERR("Failed to setup VFIO iommu");
 			close(fd);
@@ -261,6 +270,11 @@ fslmc_map_dma(uint64_t vaddr, rte_iova_t iovaddr __rte_unused, size_t len)
 	};
 	int ret;
 
+	if (fslmc_iommu_type == RTE_VFIO_NOIOMMU) {
+		DPAA2_BUS_DEBUG("Running in NOIOMMU mode");
+		return 0;
+	}
+
 	dma_map.size = len;
 	dma_map.vaddr = vaddr;
 
@@ -299,6 +313,11 @@ fslmc_unmap_dma(uint64_t vaddr, uint64_t iovaddr __rte_unused, size_t len)
 		.flags = 0,
 	};
 	int ret;
+
+	if (fslmc_iommu_type == RTE_VFIO_NOIOMMU) {
+		DPAA2_BUS_DEBUG("Running in NOIOMMU mode");
+		return 0;
+	}
 
 	dma_unmap.size = len;
 	dma_unmap.iova = vaddr;
@@ -344,17 +363,55 @@ fslmc_dmamap_seg(const struct rte_memseg_list *msl __rte_unused,
 	return ret;
 }
 
+int
+rte_fslmc_vfio_mem_dmamap(uint64_t vaddr, uint64_t iova, uint64_t size)
+{
+	int ret;
+	struct fslmc_vfio_group *group;
+	struct vfio_iommu_type1_dma_map dma_map = {
+		.argsz = sizeof(struct vfio_iommu_type1_dma_map),
+		.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
+	};
+
+	if (fslmc_iommu_type == RTE_VFIO_NOIOMMU) {
+		DPAA2_BUS_DEBUG("Running in NOIOMMU mode");
+		return 0;
+	}
+
+	/* SET DMA MAP for IOMMU */
+	group = &vfio_group;
+	if (!group->container) {
+		DPAA2_BUS_ERR("Container is not connected");
+		return -1;
+	}
+
+	dma_map.size = size;
+	dma_map.vaddr = vaddr;
+	dma_map.iova = iova;
+
+	DPAA2_BUS_DEBUG("VFIOdmamap 0x%"PRIx64":0x%"PRIx64",size 0x%"PRIx64"\n",
+			(uint64_t)dma_map.vaddr, (uint64_t)dma_map.iova,
+			(uint64_t)dma_map.size);
+	ret = ioctl(group->container->fd, VFIO_IOMMU_MAP_DMA,
+		    &dma_map);
+	if (ret) {
+		printf("Unable to map DMA address (errno = %d)\n",
+			errno);
+		return ret;
+	}
+
+	return 0;
+}
+
 int rte_fslmc_vfio_dmamap(void)
 {
 	int i = 0, ret;
-	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
-	rte_rwlock_t *mem_lock = &mcfg->memory_hotplug_lock;
 
 	/* Lock before parsing and registering callback to memory subsystem */
-	rte_rwlock_read_lock(mem_lock);
+	rte_mcfg_mem_read_lock();
 
 	if (rte_memseg_walk(fslmc_dmamap_seg, &i) < 0) {
-		rte_rwlock_read_unlock(mem_lock);
+		rte_mcfg_mem_read_unlock();
 		return -1;
 	}
 
@@ -378,33 +435,144 @@ int rte_fslmc_vfio_dmamap(void)
 	/* Existing segments have been mapped and memory callback for hotplug
 	 * has been installed.
 	 */
-	rte_rwlock_read_unlock(mem_lock);
+	rte_mcfg_mem_read_unlock();
 
 	return 0;
 }
 
-static int64_t vfio_map_mcp_obj(struct fslmc_vfio_group *group, char *mcp_obj)
+static int
+fslmc_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
+		int *vfio_dev_fd, struct vfio_device_info *device_info)
+{
+	struct vfio_group_status group_status = {
+			.argsz = sizeof(group_status)
+	};
+	int vfio_group_fd, vfio_container_fd, iommu_group_no, ret;
+
+	/* get group number */
+	ret = rte_vfio_get_group_num(sysfs_base, dev_addr, &iommu_group_no);
+	if (ret < 0)
+		return -1;
+
+	/* get the actual group fd */
+	vfio_group_fd = rte_vfio_get_group_fd(iommu_group_no);
+	if (vfio_group_fd < 0 && vfio_group_fd != -ENOENT)
+		return -1;
+
+	/*
+	 * if vfio_group_fd == -ENOENT, that means the device
+	 * isn't managed by VFIO
+	 */
+	if (vfio_group_fd == -ENOENT) {
+		RTE_LOG(WARNING, EAL, " %s not managed by VFIO driver, skipping\n",
+				dev_addr);
+		return 1;
+	}
+
+	/* Opens main vfio file descriptor which represents the "container" */
+	vfio_container_fd = rte_vfio_get_container_fd();
+	if (vfio_container_fd < 0) {
+		DPAA2_BUS_ERR("Failed to open VFIO container");
+		return -errno;
+	}
+
+	/* check if the group is viable */
+	ret = ioctl(vfio_group_fd, VFIO_GROUP_GET_STATUS, &group_status);
+	if (ret) {
+		DPAA2_BUS_ERR("  %s cannot get group status, "
+				"error %i (%s)\n", dev_addr,
+				errno, strerror(errno));
+		close(vfio_group_fd);
+		rte_vfio_clear_group(vfio_group_fd);
+		return -1;
+	} else if (!(group_status.flags & VFIO_GROUP_FLAGS_VIABLE)) {
+		DPAA2_BUS_ERR("  %s VFIO group is not viable!\n", dev_addr);
+		close(vfio_group_fd);
+		rte_vfio_clear_group(vfio_group_fd);
+		return -1;
+	}
+	/* At this point, we know that this group is viable (meaning,
+	 * all devices are either bound to VFIO or not bound to anything)
+	 */
+
+	/* check if group does not have a container yet */
+	if (!(group_status.flags & VFIO_GROUP_FLAGS_CONTAINER_SET)) {
+
+		/* add group to a container */
+		ret = ioctl(vfio_group_fd, VFIO_GROUP_SET_CONTAINER,
+				&vfio_container_fd);
+		if (ret) {
+			DPAA2_BUS_ERR("  %s cannot add VFIO group to container, "
+					"error %i (%s)\n", dev_addr,
+					errno, strerror(errno));
+			close(vfio_group_fd);
+			close(vfio_container_fd);
+			rte_vfio_clear_group(vfio_group_fd);
+			return -1;
+		}
+
+		/*
+		 * set an IOMMU type for container
+		 *
+		 */
+		if (ioctl(vfio_container_fd, VFIO_CHECK_EXTENSION,
+			  fslmc_iommu_type)) {
+			ret = ioctl(vfio_container_fd, VFIO_SET_IOMMU,
+				    fslmc_iommu_type);
+			if (ret) {
+				DPAA2_BUS_ERR("Failed to setup VFIO iommu");
+				close(vfio_group_fd);
+				close(vfio_container_fd);
+				return -errno;
+			}
+		} else {
+			DPAA2_BUS_ERR("No supported IOMMU available");
+			close(vfio_group_fd);
+			close(vfio_container_fd);
+			return -EINVAL;
+		}
+	}
+
+	/* get a file descriptor for the device */
+	*vfio_dev_fd = ioctl(vfio_group_fd, VFIO_GROUP_GET_DEVICE_FD, dev_addr);
+	if (*vfio_dev_fd < 0) {
+		/* if we cannot get a device fd, this implies a problem with
+		 * the VFIO group or the container not having IOMMU configured.
+		 */
+
+		DPAA2_BUS_WARN("Getting a vfio_dev_fd for %s failed", dev_addr);
+		close(vfio_group_fd);
+		close(vfio_container_fd);
+		rte_vfio_clear_group(vfio_group_fd);
+		return -1;
+	}
+
+	/* test and setup the device */
+	ret = ioctl(*vfio_dev_fd, VFIO_DEVICE_GET_INFO, device_info);
+	if (ret) {
+		DPAA2_BUS_ERR("  %s cannot get device info, error %i (%s)",
+				dev_addr, errno, strerror(errno));
+		close(*vfio_dev_fd);
+		close(vfio_group_fd);
+		close(vfio_container_fd);
+		rte_vfio_clear_group(vfio_group_fd);
+		return -1;
+	}
+
+	return 0;
+}
+
+static intptr_t vfio_map_mcp_obj(const char *mcp_obj)
 {
 	intptr_t v_addr = (intptr_t)MAP_FAILED;
 	int32_t ret, mc_fd;
+	struct vfio_group_status status = { .argsz = sizeof(status) };
 
 	struct vfio_device_info d_info = { .argsz = sizeof(d_info) };
 	struct vfio_region_info reg_info = { .argsz = sizeof(reg_info) };
 
-	/* getting the mcp object's fd*/
-	mc_fd = ioctl(group->fd, VFIO_GROUP_GET_DEVICE_FD, mcp_obj);
-	if (mc_fd < 0) {
-		DPAA2_BUS_ERR("Error in VFIO get dev %s fd from group %d",
-			      mcp_obj, group->fd);
-		return v_addr;
-	}
-
-	/* getting device info*/
-	ret = ioctl(mc_fd, VFIO_DEVICE_GET_INFO, &d_info);
-	if (ret < 0) {
-		DPAA2_BUS_ERR("Error in VFIO getting DEVICE_INFO");
-		goto MC_FAILURE;
-	}
+	fslmc_vfio_setup_device(SYSFS_FSL_MC_DEVICES, mcp_obj,
+			&mc_fd, &d_info);
 
 	/* getting device region info*/
 	ret = ioctl(mc_fd, VFIO_DEVICE_GET_REGION_INFO, &reg_info);
@@ -430,7 +598,7 @@ int rte_dpaa2_intr_enable(struct rte_intr_handle *intr_handle, int index)
 	int len, ret;
 	char irq_set_buf[IRQ_SET_BUF_LEN];
 	struct vfio_irq_set *irq_set;
-	int *fd_ptr;
+	int *fd_ptr, vfio_dev_fd;
 
 	len = sizeof(irq_set_buf);
 
@@ -442,12 +610,14 @@ int rte_dpaa2_intr_enable(struct rte_intr_handle *intr_handle, int index)
 	irq_set->index = index;
 	irq_set->start = 0;
 	fd_ptr = (int *)&irq_set->data;
-	*fd_ptr = intr_handle->fd;
+	*fd_ptr = rte_intr_fd_get(intr_handle);
 
-	ret = ioctl(intr_handle->vfio_dev_fd, VFIO_DEVICE_SET_IRQS, irq_set);
+	vfio_dev_fd = rte_intr_dev_fd_get(intr_handle);
+	ret = ioctl(vfio_dev_fd, VFIO_DEVICE_SET_IRQS, irq_set);
 	if (ret) {
 		DPAA2_BUS_ERR("Error:dpaa2 SET IRQs fd=%d, err = %d(%s)",
-			      intr_handle->fd, errno, strerror(errno));
+			      rte_intr_fd_get(intr_handle), errno,
+			      strerror(errno));
 		return ret;
 	}
 
@@ -458,7 +628,7 @@ int rte_dpaa2_intr_disable(struct rte_intr_handle *intr_handle, int index)
 {
 	struct vfio_irq_set *irq_set;
 	char irq_set_buf[IRQ_SET_BUF_LEN];
-	int len, ret;
+	int len, ret, vfio_dev_fd;
 
 	len = sizeof(struct vfio_irq_set);
 
@@ -469,11 +639,12 @@ int rte_dpaa2_intr_disable(struct rte_intr_handle *intr_handle, int index)
 	irq_set->start = 0;
 	irq_set->count = 0;
 
-	ret = ioctl(intr_handle->vfio_dev_fd, VFIO_DEVICE_SET_IRQS, irq_set);
+	vfio_dev_fd = rte_intr_dev_fd_get(intr_handle);
+	ret = ioctl(vfio_dev_fd, VFIO_DEVICE_SET_IRQS, irq_set);
 	if (ret)
 		DPAA2_BUS_ERR(
 			"Error disabling dpaa2 interrupts for fd %d",
-			intr_handle->fd);
+			rte_intr_fd_get(intr_handle));
 
 	return ret;
 }
@@ -515,9 +686,14 @@ rte_dpaa2_vfio_setup_intr(struct rte_intr_handle *intr_handle,
 			return -1;
 		}
 
-		intr_handle->fd = fd;
-		intr_handle->type = RTE_INTR_HANDLE_VFIO_MSI;
-		intr_handle->vfio_dev_fd = vfio_dev_fd;
+		if (rte_intr_fd_set(intr_handle, fd))
+			return -rte_errno;
+
+		if (rte_intr_type_set(intr_handle, RTE_INTR_HANDLE_VFIO_MSI))
+			return -rte_errno;
+
+		if (rte_intr_dev_fd_set(intr_handle, vfio_dev_fd))
+			return -rte_errno;
 
 		return 0;
 	}
@@ -537,30 +713,21 @@ fslmc_process_iodevices(struct rte_dpaa2_device *dev)
 	struct vfio_device_info device_info = { .argsz = sizeof(device_info) };
 	struct rte_dpaa2_object *object = NULL;
 
-	dev_fd = ioctl(vfio_group.fd, VFIO_GROUP_GET_DEVICE_FD,
-		       dev->device.name);
-	if (dev_fd <= 0) {
-		DPAA2_BUS_ERR("Unable to obtain device FD for device:%s",
-			      dev->device.name);
-		return -1;
-	}
-
-	if (ioctl(dev_fd, VFIO_DEVICE_GET_INFO, &device_info)) {
-		DPAA2_BUS_ERR("Unable to obtain information for device:%s",
-			      dev->device.name);
-		return -1;
-	}
+	fslmc_vfio_setup_device(SYSFS_FSL_MC_DEVICES, dev->device.name,
+			&dev_fd, &device_info);
 
 	switch (dev->dev_type) {
 	case DPAA2_ETH:
-		rte_dpaa2_vfio_setup_intr(&dev->intr_handle, dev_fd,
+		rte_dpaa2_vfio_setup_intr(dev->intr_handle, dev_fd,
 					  device_info.num_irqs);
 		break;
 	case DPAA2_CON:
 	case DPAA2_IO:
 	case DPAA2_CI:
 	case DPAA2_BPOOL:
+	case DPAA2_DPRTC:
 	case DPAA2_MUX:
+	case DPAA2_DPRC:
 		TAILQ_FOREACH(object, &dpaa2_obj_list, next) {
 			if (dev->dev_type == object->dev_type)
 				object->create(dev_fd, &device_info,
@@ -583,25 +750,17 @@ fslmc_process_mcp(struct rte_dpaa2_device *dev)
 {
 	int ret;
 	intptr_t v_addr;
-	char *dev_name = NULL;
 	struct fsl_mc_io dpmng  = {0};
 	struct mc_version mc_ver_info = {0};
 
-	rte_mcp_ptr_list = malloc(sizeof(void *) * 1);
+	rte_mcp_ptr_list = malloc(sizeof(void *) * (MC_PORTAL_INDEX + 1));
 	if (!rte_mcp_ptr_list) {
 		DPAA2_BUS_ERR("Unable to allocate MC portal memory");
 		ret = -ENOMEM;
 		goto cleanup;
 	}
 
-	dev_name = strdup(dev->device.name);
-	if (!dev_name) {
-		DPAA2_BUS_ERR("Unable to allocate MC device name memory");
-		ret = -ENOMEM;
-		goto cleanup;
-	}
-
-	v_addr = vfio_map_mcp_obj(&vfio_group, dev_name);
+	v_addr = vfio_map_mcp_obj(dev->device.name);
 	if (v_addr == (intptr_t)MAP_FAILED) {
 		DPAA2_BUS_ERR("Error mapping region (errno = %d)", errno);
 		ret = -1;
@@ -615,7 +774,7 @@ fslmc_process_mcp(struct rte_dpaa2_device *dev)
 	 * required.
 	 */
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
-		rte_mcp_ptr_list[0] = (void *)v_addr;
+		rte_mcp_ptr_list[MC_PORTAL_INDEX] = (void *)v_addr;
 		return 0;
 	}
 
@@ -635,15 +794,11 @@ fslmc_process_mcp(struct rte_dpaa2_device *dev)
 		ret = -1;
 		goto cleanup;
 	}
-	rte_mcp_ptr_list[0] = (void *)v_addr;
+	rte_mcp_ptr_list[MC_PORTAL_INDEX] = (void *)v_addr;
 
-	free(dev_name);
 	return 0;
 
 cleanup:
-	if (dev_name)
-		free(dev_name);
-
 	if (rte_mcp_ptr_list) {
 		free(rte_mcp_ptr_list);
 		rte_mcp_ptr_list = NULL;
@@ -658,26 +813,58 @@ fslmc_vfio_process_group(void)
 	int ret;
 	int found_mportal = 0;
 	struct rte_dpaa2_device *dev, *dev_temp;
+	bool is_dpmcp_in_blocklist = false, is_dpio_in_blocklist = false;
+	int dpmcp_count = 0, dpio_count = 0, current_device;
+
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next,
+		dev_temp) {
+		if (dev->dev_type == DPAA2_MPORTAL) {
+			dpmcp_count++;
+			if (dev->device.devargs &&
+			    dev->device.devargs->policy == RTE_DEV_BLOCKED)
+				is_dpmcp_in_blocklist = true;
+		}
+		if (dev->dev_type == DPAA2_IO) {
+			dpio_count++;
+			if (dev->device.devargs &&
+			    dev->device.devargs->policy == RTE_DEV_BLOCKED)
+				is_dpio_in_blocklist = true;
+		}
+	}
 
 	/* Search the MCP as that should be initialized first. */
-	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, dev_temp) {
+	current_device = 0;
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next,
+		dev_temp) {
 		if (dev->dev_type == DPAA2_MPORTAL) {
+			current_device++;
 			if (dev->device.devargs &&
-			    dev->device.devargs->policy == RTE_DEV_BLACKLISTED) {
-				DPAA2_BUS_LOG(DEBUG, "%s Blacklisted, skipping",
+			    dev->device.devargs->policy == RTE_DEV_BLOCKED) {
+				DPAA2_BUS_LOG(DEBUG, "%s Blocked, skipping",
 					      dev->device.name);
 				TAILQ_REMOVE(&rte_fslmc_bus.device_list,
 						dev, next);
 				continue;
 			}
 
-			ret = fslmc_process_mcp(dev);
-			if (ret) {
-				DPAA2_BUS_ERR("Unable to map MC Portal");
-				return -1;
+			if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
+			    !is_dpmcp_in_blocklist) {
+				if (dpmcp_count == 1 ||
+				    current_device != dpmcp_count) {
+					TAILQ_REMOVE(&rte_fslmc_bus.device_list,
+						     dev, next);
+					continue;
+				}
 			}
-			if (!found_mportal)
+
+			if (!found_mportal) {
+				ret = fslmc_process_mcp(dev);
+				if (ret) {
+					DPAA2_BUS_ERR("Unable to map MC Portal");
+					return -1;
+				}
 				found_mportal = 1;
+			}
 
 			TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
 			free(dev);
@@ -694,11 +881,38 @@ fslmc_vfio_process_group(void)
 		return -1;
 	}
 
-	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, dev_temp) {
+	/* Search for DPRC device next as it updates endpoint of
+	 * other devices.
+	 */
+	current_device = 0;
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, dev_temp) {
+		if (dev->dev_type == DPAA2_DPRC) {
+			ret = fslmc_process_iodevices(dev);
+			if (ret) {
+				DPAA2_BUS_ERR("Unable to process dprc");
+				return -1;
+			}
+			TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
+		}
+	}
+
+	current_device = 0;
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next,
+		dev_temp) {
+		if (dev->dev_type == DPAA2_IO)
+			current_device++;
 		if (dev->device.devargs &&
-		    dev->device.devargs->policy == RTE_DEV_BLACKLISTED) {
-			DPAA2_BUS_LOG(DEBUG, "%s Blacklisted, skipping",
+		    dev->device.devargs->policy == RTE_DEV_BLOCKED) {
+			DPAA2_BUS_LOG(DEBUG, "%s Blocked, skipping",
 				      dev->device.name);
+			TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
+			continue;
+		}
+		if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
+		    dev->dev_type != DPAA2_ETH &&
+		    dev->dev_type != DPAA2_CRYPTO &&
+		    dev->dev_type != DPAA2_QDMA &&
+		    dev->dev_type != DPAA2_IO) {
 			TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
 			continue;
 		}
@@ -716,6 +930,7 @@ fslmc_vfio_process_group(void)
 		case DPAA2_CON:
 		case DPAA2_CI:
 		case DPAA2_BPOOL:
+		case DPAA2_DPRTC:
 		case DPAA2_MUX:
 			/* IN case of secondary processes, all control objects
 			 * like dpbp, dpcon, dpci are not initialized/required
@@ -737,6 +952,21 @@ fslmc_vfio_process_group(void)
 
 			break;
 		case DPAA2_IO:
+			if (!is_dpio_in_blocklist && dpio_count > 1) {
+				if (rte_eal_process_type() == RTE_PROC_SECONDARY
+				    && current_device != dpio_count) {
+					TAILQ_REMOVE(&rte_fslmc_bus.device_list,
+						     dev, next);
+					break;
+				}
+				if (rte_eal_process_type() == RTE_PROC_PRIMARY
+				    && current_device == dpio_count) {
+					TAILQ_REMOVE(&rte_fslmc_bus.device_list,
+						     dev, next);
+					break;
+				}
+			}
+
 			ret = fslmc_process_iodevices(dev);
 			if (ret) {
 				DPAA2_BUS_DEBUG("Dev (%s) init failed",
@@ -764,6 +994,7 @@ fslmc_vfio_setup_group(void)
 {
 	int groupid;
 	int ret;
+	int vfio_container_fd;
 	struct vfio_group_status status = { .argsz = sizeof(status) };
 
 	/* if already done once */
@@ -782,8 +1013,15 @@ fslmc_vfio_setup_group(void)
 		return 0;
 	}
 
+	ret = rte_vfio_container_create();
+	if (ret < 0) {
+		DPAA2_BUS_ERR("Failed to open VFIO container");
+		return ret;
+	}
+	vfio_container_fd = ret;
+
 	/* Get the actual group fd */
-	ret = rte_vfio_get_group_fd(groupid);
+	ret = rte_vfio_container_group_bind(vfio_container_fd, groupid);
 	if (ret < 0)
 		return ret;
 	vfio_group.fd = ret;
@@ -821,10 +1059,10 @@ fslmc_vfio_setup_group(void)
 	}
 
 	/* Get Device information */
-	ret = ioctl(vfio_group.fd, VFIO_GROUP_GET_DEVICE_FD, g_container);
+	ret = ioctl(vfio_group.fd, VFIO_GROUP_GET_DEVICE_FD, fslmc_container);
 	if (ret < 0) {
 		DPAA2_BUS_ERR("Error getting device %s fd from group %d",
-			      g_container, vfio_group.groupid);
+			      fslmc_container, vfio_group.groupid);
 		close(vfio_group.fd);
 		rte_vfio_clear_group(vfio_group.fd);
 		return ret;

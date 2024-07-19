@@ -9,7 +9,9 @@
 #include <linux/types.h>
 #include <linux/ioctl.h>
 
-#include "../virtio_pci.h"
+#include <rte_errno.h>
+
+#include "../virtio.h"
 #include "../virtio_logs.h"
 #include "../virtqueue.h"
 
@@ -44,30 +46,13 @@ struct vhost_vring_addr {
 	uint64_t log_guest_addr;
 };
 
-enum vhost_user_request {
-	VHOST_USER_NONE = 0,
-	VHOST_USER_GET_FEATURES = 1,
-	VHOST_USER_SET_FEATURES = 2,
-	VHOST_USER_SET_OWNER = 3,
-	VHOST_USER_RESET_OWNER = 4,
-	VHOST_USER_SET_MEM_TABLE = 5,
-	VHOST_USER_SET_LOG_BASE = 6,
-	VHOST_USER_SET_LOG_FD = 7,
-	VHOST_USER_SET_VRING_NUM = 8,
-	VHOST_USER_SET_VRING_ADDR = 9,
-	VHOST_USER_SET_VRING_BASE = 10,
-	VHOST_USER_GET_VRING_BASE = 11,
-	VHOST_USER_SET_VRING_KICK = 12,
-	VHOST_USER_SET_VRING_CALL = 13,
-	VHOST_USER_SET_VRING_ERR = 14,
-	VHOST_USER_GET_PROTOCOL_FEATURES = 15,
-	VHOST_USER_SET_PROTOCOL_FEATURES = 16,
-	VHOST_USER_GET_QUEUE_NUM = 17,
-	VHOST_USER_SET_VRING_ENABLE = 18,
-	VHOST_USER_MAX
-};
+#ifndef VHOST_BACKEND_F_IOTLB_MSG_V2
+#define VHOST_BACKEND_F_IOTLB_MSG_V2 1
+#endif
 
-const char * const vhost_msg_strings[VHOST_USER_MAX];
+#ifndef VHOST_BACKEND_F_IOTLB_BATCH
+#define VHOST_BACKEND_F_IOTLB_BATCH 2
+#endif
 
 struct vhost_memory_region {
 	uint64_t guest_phys_addr;
@@ -80,15 +65,35 @@ struct virtio_user_dev;
 
 struct virtio_user_backend_ops {
 	int (*setup)(struct virtio_user_dev *dev);
-	int (*send_request)(struct virtio_user_dev *dev,
-			    enum vhost_user_request req,
-			    void *arg);
-	int (*enable_qp)(struct virtio_user_dev *dev,
-			 uint16_t pair_idx,
-			 int enable);
+	int (*destroy)(struct virtio_user_dev *dev);
+	int (*get_backend_features)(uint64_t *features);
+	int (*set_owner)(struct virtio_user_dev *dev);
+	int (*get_features)(struct virtio_user_dev *dev, uint64_t *features);
+	int (*set_features)(struct virtio_user_dev *dev, uint64_t features);
+	int (*set_memory_table)(struct virtio_user_dev *dev);
+	int (*set_vring_num)(struct virtio_user_dev *dev, struct vhost_vring_state *state);
+	int (*set_vring_base)(struct virtio_user_dev *dev, struct vhost_vring_state *state);
+	int (*get_vring_base)(struct virtio_user_dev *dev, struct vhost_vring_state *state);
+	int (*set_vring_call)(struct virtio_user_dev *dev, struct vhost_vring_file *file);
+	int (*set_vring_kick)(struct virtio_user_dev *dev, struct vhost_vring_file *file);
+	int (*set_vring_addr)(struct virtio_user_dev *dev, struct vhost_vring_addr *addr);
+	int (*get_status)(struct virtio_user_dev *dev, uint8_t *status);
+	int (*set_status)(struct virtio_user_dev *dev, uint8_t status);
+	int (*get_config)(struct virtio_user_dev *dev, uint8_t *data, uint32_t off, uint32_t len);
+	int (*set_config)(struct virtio_user_dev *dev, const uint8_t *data, uint32_t off,
+			uint32_t len);
+	int (*cvq_enable)(struct virtio_user_dev *dev, int enable);
+	int (*enable_qp)(struct virtio_user_dev *dev, uint16_t pair_idx, int enable);
+	int (*dma_map)(struct virtio_user_dev *dev, void *addr, uint64_t iova, size_t len);
+	int (*dma_unmap)(struct virtio_user_dev *dev, void *addr, uint64_t iova, size_t len);
+	int (*update_link_state)(struct virtio_user_dev *dev);
+	int (*server_disconnect)(struct virtio_user_dev *dev);
+	int (*server_reconnect)(struct virtio_user_dev *dev);
+	int (*get_intr_fd)(struct virtio_user_dev *dev);
 };
 
 extern struct virtio_user_backend_ops virtio_ops_user;
 extern struct virtio_user_backend_ops virtio_ops_kernel;
+extern struct virtio_user_backend_ops virtio_ops_vdpa;
 
 #endif

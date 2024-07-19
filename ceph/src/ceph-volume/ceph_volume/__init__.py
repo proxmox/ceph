@@ -20,4 +20,4 @@ conf.dmcrypt_no_workqueue = None
 
 __version__ = "1.0.0"
 
-__release__ = "reef"
+__release__ = "squid"

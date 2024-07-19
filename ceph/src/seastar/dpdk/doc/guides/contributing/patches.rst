@@ -28,13 +28,12 @@ The DPDK development process has the following features:
 * All sub-repositories are merged into main repository for ``-rc1`` and ``-rc2`` versions of the release.
 * After the ``-rc2`` release all patches should target the main repository.
 
-The mailing list for DPDK development is `dev@dpdk.org <http://mails.dpdk.org/archives/dev/>`_.
-Contributors will need to `register for the mailing list <http://mails.dpdk.org/listinfo/dev>`_ in order to submit patches.
-It is also worth registering for the DPDK `Patchwork <http://patches.dpdk.org/project/dpdk/list/>`_
+The mailing list for DPDK development is `dev@dpdk.org <https://mails.dpdk.org/archives/dev/>`_.
+Contributors will need to `register for the mailing list <https://mails.dpdk.org/listinfo/dev>`_ in order to submit patches.
+It is also worth registering for the DPDK `Patchwork <https://patches.dpdk.org/project/dpdk/list/>`_
 
-If you are using the GitHub service, you can link your repository to
-the ``travis-ci.org`` build service.  When you push patches to your GitHub
-repository, the travis service will automatically build your changes.
+If you are using the GitHub service, pushing to a branch will trigger GitHub
+Actions to automatically build your changes and run unit tests and ABI checks.
 
 The development process requires some familiarity with the ``git`` version control system.
 Refer to the `Pro Git Book <http://www.git-scm.com/book/>`_ for further information.
@@ -75,7 +74,6 @@ Trees and maintainers are listed in the ``MAINTAINERS`` file. For example::
     Crypto Drivers
     --------------
     M: Some Name <some.name@email.com>
-    B: Another Name <another.name@email.com>
     T: git://dpdk.org/next/dpdk-next-crypto
 
     Intel AES-NI GCM PMD
@@ -86,7 +84,6 @@ Trees and maintainers are listed in the ``MAINTAINERS`` file. For example::
 Where:
 
 * ``M`` is a tree or component maintainer.
-* ``B`` is a tree backup maintainer.
 * ``T`` is a repository tree.
 * ``F`` is a maintained file or directory.
 
@@ -120,7 +117,8 @@ The proposer should justify the need for a new sub-tree and should have demonstr
 The maintainer should be confirmed by an ``ack`` from an existing tree maintainer.
 Disagreements on trees or maintainers can be brought to the Technical Board.
 
-The backup maintainer for the master tree should be selected from the existing sub-tree maintainers from the project.
+The backup maintainer for the main tree should be selected
+from the existing sub-tree maintainers of the project.
 The backup maintainer for a sub-tree should be selected from among the component maintainers within that sub-tree.
 
 
@@ -132,12 +130,12 @@ The source code can be cloned using either of the following:
 main repository::
 
     git clone git://dpdk.org/dpdk
-    git clone http://dpdk.org/git/dpdk
+    git clone https://dpdk.org/git/dpdk
 
-sub-repositories (`list <http://git.dpdk.org/next>`_)::
+sub-repositories (`list <https://git.dpdk.org/next>`_)::
 
     git clone git://dpdk.org/next/dpdk-next-*
-    git clone http://dpdk.org/git/next/dpdk-next-*
+    git clone https://dpdk.org/git/next/dpdk-next-*
 
 Make your Changes
 -----------------
@@ -146,11 +144,31 @@ Make your planned changes in the cloned ``dpdk`` repo. Here are some guidelines 
 
 * Follow the :ref:`coding_style` guidelines.
 
+* If you are a new contributor, or if your mail address changed,
+  you may update the ``.mailmap`` file.
+  Otherwise the new name or address will be added by a maintainer.
+  Keeping this file up-to-date will help when someone wants to contact you
+  about the changes you contributed to.
+
 * If you add new files or directories you should add your name to the ``MAINTAINERS`` file.
 
-* New external functions should be added to the local ``version.map`` file.
-  See the :doc:`Guidelines for ABI policy and versioning </contributing/versioning>`.
-  New external functions should also be added in alphabetical order.
+* Initial submission of new PMDs should be prepared against a corresponding repo.
+
+  * Thus, for example, initial submission of a new network PMD should be
+    prepared against dpdk-next-net repo.
+
+  * Likewise, initial submission of a new crypto or compression PMD should be
+    prepared against dpdk-next-crypto repo.
+
+  * For other PMDs and more info, refer to the ``MAINTAINERS`` file.
+
+* New external functions should be added to the local ``version.map`` file. See
+  the :doc:`ABI policy <abi_policy>` and :ref:`ABI versioning <abi_versioning>`
+  guides. New external functions should also be added in alphabetical order.
+
+* Any new API function should be used in ``/app`` test directory.
+
+* When introducing a new device API, at least one driver should implement it.
 
 * Important changes will require an addition to the release notes in ``doc/guides/rel_notes/``.
   See the :ref:`Release Notes section of the Documentation Guidelines <doc_guidelines>` for details.
@@ -165,6 +183,8 @@ Make your planned changes in the cloned ``dpdk`` repo. Here are some guidelines 
 * Add documentation, if relevant, in the form of Doxygen comments or a User Guide in RST format.
   See the :ref:`Documentation Guidelines <doc_guidelines>`.
 
+* Code and related documentation must be updated atomically in the same patch.
+
 Once the changes have been made you should commit them to your local repo.
 
 For small changes, that do not require specific explanations, it is better to keep things together in the
@@ -172,11 +192,6 @@ same patch.
 Larger changes that require different explanations should be separated into logical patches in a patchset.
 A good way of thinking about whether a patch should be split is to consider whether the change could be
 applied without dependencies as a backport.
-
-It is better to keep the related documentation changes in the same patch
-file as the code, rather than one big documentation patch at then end of a
-patchset. This makes it easier for future maintenance and development of the
-code.
 
 As a guide to how patches should be structured run ``git log`` on similar files.
 
@@ -311,8 +326,8 @@ For example::
 Patch for Stable Releases
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-All fix patches to the master branch that are candidates for backporting
-should also be CCed to the `stable@dpdk.org <http://mails.dpdk.org/listinfo/stable>`_
+All fix patches to the main branch that are candidates for backporting
+should also be CCed to the `stable@dpdk.org <https://mails.dpdk.org/listinfo/stable>`_
 mailing list.
 In the commit message body the Cc: stable@dpdk.org should be inserted as follows::
 
@@ -327,6 +342,54 @@ In the commit message body the Cc: stable@dpdk.org should be inserted as follows
 
 For further information on stable contribution you can go to
 :doc:`Stable Contribution Guide <stable>`.
+
+Patch Dependencies
+~~~~~~~~~~~~~~~~~~
+
+Sometimes a patch or patchset can depend on another one.
+To help the maintainers and automation tasks, please document this dependency in commit log or cover letter
+with the following syntax:
+
+``Depends-on: series-NNNNN ("Title of the series")`` or ``Depends-on: patch-NNNNN ("Title of the patch")``
+
+Where ``NNNNN`` is patchwork ID for patch or series::
+
+     doc: fix some parameter description
+
+     Update the docs, fixing description of some parameter.
+
+     Signed-off-by: Alex Smith <alex.smith@example.com>
+     ---
+     Depends-on: series-10000 ("Title of the series")
+
+Tag order
+~~~~~~~~~
+
+There is a pattern indicating how certain tags should relate to each other.
+
+Example of proper tag sequence::
+
+     Coverity issue:
+     Bugzilla ID:
+     Fixes:
+     Cc:
+
+     Reported-by:
+     Suggested-by:
+     Signed-off-by:
+     Acked-by:
+     Reviewed-by:
+     Tested-by:
+
+Between first and second tag section there is and empty line.
+
+While ``Signed-off-by:`` is an obligatory tag and must exist in each commit,
+all other tags are optional.
+Any tag, as long as it is in proper location to other adjacent tags (if present),
+may occur multiple times.
+
+Tags after the first occurrence of ``Signed-off-by:`` shall be laid out
+in a chronological order.
 
 
 Creating Patches
@@ -399,94 +462,79 @@ This uses the Linux kernel development tool ``checkpatch.pl`` which  can be obta
 updating the Linux kernel sources.
 
 The path to the original Linux script must be set in the environment variable ``DPDK_CHECKPATCH_PATH``.
-This, and any other configuration variables required by the development tools, are loaded from the following
-files, in order of preference::
+
+Spell checking of commonly misspelled words is enabled
+by default if installed in ``/usr/share/codespell/dictionary.txt``.
+A different dictionary path can be specified
+in the environment variable ``DPDK_CHECKPATCH_CODESPELL``.
+
+There is a DPDK script to build an adjusted dictionary
+from the multiple codespell dictionaries::
+
+   git clone https://github.com/codespell-project/codespell.git
+   devtools/build-dict.sh codespell/ > codespell-dpdk.txt
+
+Environment variables required by the development tools,
+are loaded from the following files, in order of preference::
 
    .develconfig
    ~/.config/dpdk/devel.config
    /etc/dpdk/devel.config.
 
-Once the environment variable the script can be run as follows::
+Once the environment variable is set, the script can be run as follows::
 
    devtools/checkpatches.sh ~/patch/
 
 The script usage is::
 
-   checkpatches.sh [-h] [-q] [-v] [patch1 [patch2] ...]]"
-
-Where:
-
-* ``-h``: help, usage.
-* ``-q``: quiet. Don't output anything for files without issues.
-* ``-v``: verbose.
-* ``patchX``: path to one or more patches.
+   checkpatches.sh [-h] [-q] [-v] [-nX|-r range|patch1 [patch2] ...]
 
 Then the git logs should be checked using the ``check-git-log.sh`` script.
 
 The script usage is::
 
-   check-git-log.sh [range]
+   check-git-log.sh [-h] [-nX|-r range]
 
-Where the range is a ``git log`` option.
-
+For both of the above scripts, the -n option is used to specify a number of commits from HEAD,
+and the -r option allows the user specify a ``git log`` range.
 
 .. _contrib_check_compilation:
 
 Checking Compilation
 --------------------
 
-Makefile System
-~~~~~~~~~~~~~~~
-
-Compilation of patches and changes should be tested using the ``test-build.sh`` script in the ``devtools``
-directory of the DPDK repo::
-
-  devtools/test-build.sh x86_64-native-linux-gcc+next+shared
-
-The script usage is::
-
-   test-build.sh [-h] [-jX] [-s] [config1 [config2] ...]]
-
-Where:
-
-* ``-h``: help, usage.
-* ``-jX``: use X parallel jobs in "make".
-* ``-s``: short test with only first config and without examples/doc.
-* ``config``: default config name plus config switches delimited with a ``+`` sign.
-
-Examples of configs are::
-
-   x86_64-native-linux-gcc
-   x86_64-native-linux-gcc+next+shared
-   x86_64-native-linux-clang+shared
-
-The builds can be modified via the following environmental variables:
-
-* ``DPDK_BUILD_TEST_CONFIGS`` (target1+option1+option2 target2)
-* ``DPDK_DEP_CFLAGS``
-* ``DPDK_DEP_LDFLAGS``
-* ``DPDK_DEP_PCAP`` (y/[n])
-* ``DPDK_NOTIFY`` (notify-send)
-
-These can be set from the command line or in the config files shown above in the :ref:`contrib_checkpatch`.
-
-The recommended configurations and options to test compilation prior to submitting patches are::
-
-   x86_64-native-linux-gcc+shared+next
-   x86_64-native-linux-clang+shared
-   i686-native-linux-gcc
-
-   export DPDK_DEP_ZLIB=y
-   export DPDK_DEP_PCAP=y
-   export DPDK_DEP_SSL=y
-
-Meson System
-~~~~~~~~~~~~
-
 Compilation of patches is to be tested with ``devtools/test-meson-builds.sh`` script.
 
 The script internally checks for dependencies, then builds for several
 combinations of compilation configuration.
+By default, each build will be put in a subfolder of the current working directory.
+However, if it is preferred to place the builds in a different location,
+the environment variable ``DPDK_BUILD_TEST_DIR`` can be set to that desired location.
+For example, setting ``DPDK_BUILD_TEST_DIR=__builds`` will put all builds
+in a single subfolder called "__builds" created in the current directory.
+Setting ``DPDK_BUILD_TEST_DIR`` to an absolute directory path e.g. ``/tmp`` is also supported.
+
+
+.. _integrated_abi_check:
+
+Checking ABI compatibility
+--------------------------
+
+By default, ABI compatibility checks are disabled.
+
+To enable them, a reference version must be selected via the environment
+variable ``DPDK_ABI_REF_VERSION``. Contributors should ordinarily reference the
+git tag of the most recent release of DPDK in ``DPDK_ABI_REF_VERSION``.
+
+The ``devtools/test-meson-builds.sh`` script then build this reference version
+in a temporary directory and store the results in a subfolder of the current
+working directory.
+The environment variable ``DPDK_ABI_REF_DIR`` can be set so that the results go
+to a different location.
+
+Sample::
+
+   DPDK_ABI_REF_VERSION=v19.11 DPDK_ABI_REF_DIR=/tmp ./devtools/test-meson-builds.sh
 
 
 Sending Patches
@@ -524,7 +572,7 @@ If the patch is in relation to a previous email thread you can add it to the sam
    git send-email --to dev@dpdk.org --in-reply-to <1234-foo@bar.com> 000*.patch
 
 The Message ID can be found in the raw text of emails or at the top of each Patchwork patch,
-`for example <http://patches.dpdk.org/patch/7646/>`_.
+`for example <https://patches.dpdk.org/patch/7646/>`_.
 Shallow threading (``--thread --no-chain-reply-to``) is preferred for a patch series.
 
 Once submitted your patches will appear on the mailing list and in Patchwork.
@@ -649,11 +697,77 @@ patch accepted. The general cycle for patch review and acceptance is:
    * Trivial patches may be merged sooner than described above at the tree committer's
      discretion.
 
-DPDK Maintainers
-----------------
 
-The following are the DPDK maintainers as listed in the ``MAINTAINERS`` file
-in the DPDK root directory.
+Milestones definition
+---------------------
 
-.. literalinclude:: ../../../MAINTAINERS
-   :lines: 3-
+Each DPDK release has milestones that help everyone to converge to the release date.
+The following is a list of these milestones together with
+concrete definitions and expectations for a typical release cycle.
+An average cycle lasts 3 months and have 4 release candidates in the last month.
+Test reports are expected to be received after each release candidate.
+The number and expectations of release candidates might vary slightly.
+The schedule is updated in the `roadmap <https://core.dpdk.org/roadmap/#dates>`_.
+
+.. note::
+   Sooner is always better. Deadlines are not ideal dates.
+
+   Integration is never guaranteed but everyone can help.
+
+Roadmap
+~~~~~~~
+
+* Announce new features in libraries, drivers, applications, and examples.
+* To be published before the previous release.
+
+Proposal Deadline
+~~~~~~~~~~~~~~~~~
+
+* Must send an RFC (Request For Comments) or a complete patch of new features.
+* Early RFC gives time for design review before complete implementation.
+* Should include at least the API changes in libraries and applications.
+* Library code should be quite complete at the deadline.
+* Nice to have: driver implementation, example code, and documentation.
+
+rc1
+~~~
+
+* Priority: libraries. No library feature should be accepted after -rc1.
+* API changes or additions must be implemented in libraries.
+* The API must include Doxygen documentation
+  and be part of the relevant .rst files (library-specific and release notes).
+* API should be used in a test application (``/app``).
+* At least one PMD should implement the API.
+  It may be a draft sent in a separate series.
+* The above should be sent to the mailing list at least 2 weeks before -rc1
+  to give time for review and maintainers approval.
+* If no review after 10 days, a reminder should be sent.
+* Nice to have: example code (``/examples``)
+
+rc2
+~~~
+
+* Priority: drivers. No driver feature should be accepted after -rc2.
+* A driver change must include documentation
+  in the relevant .rst files (driver-specific and release notes).
+* Driver changes should be sent to the mailing list before -rc1 is released.
+
+rc3
+~~~
+
+* Priority: applications. No application feature should be accepted after -rc3.
+* New functionality that does not depend on libraries update
+  can be integrated as part of -rc3.
+* The application change must include documentation in the relevant .rst files
+  (application-specific and release notes if significant).
+* Libraries and drivers cleanup are allowed.
+* Small driver reworks.
+
+rc4
+~~~
+
+* Documentation updates.
+* Critical bug fixes only.
+
+.. note::
+   Bug fixes are integrated as early as possible at any stage.

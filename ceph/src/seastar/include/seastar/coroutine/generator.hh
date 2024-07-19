@@ -22,14 +22,14 @@
 #pragma once
 
 #include <cassert>
+#include <coroutine>
 #include <optional>
 #include <utility>
 #include <seastar/core/future.hh>
-#include <seastar/util/attribute-compat.hh>
 
 namespace seastar::coroutine::experimental {
 
-template<typename T, template <typename> class Container>
+template<typename T, template <typename> class Container = std::optional>
 class generator;
 
 /// `seastar::coroutine::experimental` is used as the type of the first
@@ -334,7 +334,8 @@ public:
     }
     generator(const generator&) = delete;
     generator(generator&& other) noexcept
-        : _coro{std::exchange(other._coro, {})} {}
+        : _coro{std::exchange(other._coro, {})}
+        , _buffer_capacity{other._buffer_capacity} {}
     generator& operator=(generator&& other) noexcept {
         if (std::addressof(other) != this) {
             auto old_coro = std::exchange(_coro, std::exchange(other._coro, {}));

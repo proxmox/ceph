@@ -21,18 +21,22 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
+#include <boost/program_options/variables_map.hpp>
+#include <unordered_map>
+#endif
+
 #include <seastar/http/matchrules.hh>
 #include <seastar/http/handlers.hh>
 #include <seastar/http/common.hh>
 #include <seastar/http/reply.hh>
-
-#include <boost/program_options/variables_map.hpp>
-#include <unordered_map>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
 namespace httpd {
 
+SEASTAR_MODULE_EXPORT_BEGIN
 /**
  * The url helps defining a route.
  */
@@ -238,14 +242,6 @@ public:
 };
 
 /**
- * A helper function that check if a parameter is found in the params object
- * if it does not the function would throw a parameter not found exception
- * @param params the parameters object
- * @param param the parameter to look for
- */
-void verify_param(const http::request& req, const sstring& param);
-
-/**
  * The handler_registration object facilitates registration and auto
  * unregistration of an exact-match handler_base into \ref routes "routes"
  */
@@ -294,6 +290,7 @@ public:
     ~rule_registration();
 };
 
+SEASTAR_MODULE_EXPORT_END
 }
 
 }

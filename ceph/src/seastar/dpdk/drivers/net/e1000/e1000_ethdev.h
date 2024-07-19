@@ -6,6 +6,7 @@
 #define _E1000_ETHDEV_H_
 
 #include <stdint.h>
+#include <sys/queue.h>
 
 #include <rte_flow.h>
 #include <rte_time.h>
@@ -34,6 +35,9 @@
 #define IGB_HKEY_MAX_INDEX             10
 #define IGB_MAX_RX_QUEUE_NUM           8
 #define IGB_MAX_RX_QUEUE_NUM_82576     16
+
+#define E1000_I219_MAX_RX_QUEUE_NUM		2
+#define E1000_I219_MAX_TX_QUEUE_NUM		2
 
 #define E1000_SYN_FILTER_ENABLE        0x00000001 /* syn filter enable field */
 #define E1000_SYN_FILTER_QUEUE         0x0000000E /* syn filter queue field */
@@ -78,27 +82,28 @@
 #define E1000_FTQF_QUEUE_ENABLE          0x00000100
 
 #define IGB_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_IPV6_EX | \
-	ETH_RSS_IPV6_TCP_EX | \
-	ETH_RSS_IPV6_UDP_EX)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_IPV6_EX | \
+	RTE_ETH_RSS_IPV6_TCP_EX | \
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 /*
  * The overhead from MTU to max frame size.
  * Considering VLAN so a tag needs to be counted.
  */
-#define E1000_ETH_OVERHEAD (ETHER_HDR_LEN + ETHER_CRC_LEN + VLAN_TAG_SIZE)
-
+#define E1000_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + \
+				VLAN_TAG_SIZE)
+#define E1000_ETH_MAX_LEN (RTE_ETHER_MTU + E1000_ETH_OVERHEAD)
 /*
  * Maximum number of Ring Descriptors.
  *
  * Since RDLEN/TDLEN should be multiple of 128 bytes, the number of ring
- * desscriptors should meet the following condition:
+ * descriptors should meet the following condition:
  * (num_ring_desc * sizeof(struct e1000_rx/tx_desc)) % 128 == 0
  */
 #define	E1000_MIN_RING_DESC	32
@@ -155,7 +160,7 @@ struct e1000_vfta {
  */
 #define E1000_MAX_VF_MC_ENTRIES         30
 struct e1000_vf_info {
-	uint8_t vf_mac_addresses[ETHER_ADDR_LEN];
+	uint8_t vf_mac_addresses[RTE_ETHER_ADDR_LEN];
 	uint16_t vf_mc_hashes[E1000_MAX_VF_MC_ENTRIES];
 	uint16_t num_vf_mc_hashes;
 	uint16_t default_vf_vlan_id;
@@ -247,7 +252,7 @@ struct igb_rte_flow_rss_conf {
 };
 
 /*
- * Structure to store filters'info.
+ * Structure to store filters' info.
  */
 struct e1000_filter_info {
 	uint8_t ethertype_mask; /* Bit mask for every used ethertype filter */
@@ -327,10 +332,28 @@ struct igb_eth_syn_filter_ele {
 	struct rte_eth_syn_filter filter_info;
 };
 
+#define IGB_FLEX_FILTER_MAXLEN	128	/**< bytes to use in flex filter. */
+#define IGB_FLEX_FILTER_MASK_SIZE	\
+	(RTE_ALIGN(IGB_FLEX_FILTER_MAXLEN, CHAR_BIT) / CHAR_BIT)
+					/**< mask bytes in flex filter. */
+
+/**
+ * A structure used to define the flex filter entry
+ * to support RTE_ETH_FILTER_FLEXIBLE data representation.
+ */
+struct igb_flex_filter {
+	uint16_t len;
+	uint8_t bytes[IGB_FLEX_FILTER_MAXLEN]; /**< flex bytes in big endian. */
+	uint8_t mask[IGB_FLEX_FILTER_MASK_SIZE];
+		/**< if mask bit is 1b, do not compare corresponding byte. */
+	uint8_t priority;
+	uint16_t queue;       /**< Queue assigned to when match. */
+};
+
 /* flex filter list structure */
 struct igb_flex_filter_ele {
 	TAILQ_ENTRY(igb_flex_filter_ele) entries;
-	struct rte_eth_flex_filter filter_info;
+	struct igb_flex_filter filter_info;
 };
 
 /* rss filter  list structure */
@@ -347,25 +370,25 @@ struct igb_flow_mem {
 };
 
 TAILQ_HEAD(igb_ntuple_filter_list, igb_ntuple_filter_ele);
-struct igb_ntuple_filter_list igb_filter_ntuple_list;
+extern struct igb_ntuple_filter_list igb_filter_ntuple_list;
 TAILQ_HEAD(igb_ethertype_filter_list, igb_ethertype_filter_ele);
-struct igb_ethertype_filter_list igb_filter_ethertype_list;
+extern struct igb_ethertype_filter_list igb_filter_ethertype_list;
 TAILQ_HEAD(igb_syn_filter_list, igb_eth_syn_filter_ele);
-struct igb_syn_filter_list igb_filter_syn_list;
+extern struct igb_syn_filter_list igb_filter_syn_list;
 TAILQ_HEAD(igb_flex_filter_list, igb_flex_filter_ele);
-struct igb_flex_filter_list igb_filter_flex_list;
+extern struct igb_flex_filter_list igb_filter_flex_list;
 TAILQ_HEAD(igb_rss_filter_list, igb_rss_conf_ele);
-struct igb_rss_filter_list igb_filter_rss_list;
+extern struct igb_rss_filter_list igb_filter_rss_list;
 TAILQ_HEAD(igb_flow_mem_list, igb_flow_mem);
-struct igb_flow_mem_list igb_flow_list;
+extern struct igb_flow_mem_list igb_flow_list;
 
 extern const struct rte_flow_ops igb_flow_ops;
 
 /*
  * RX/TX IGB function prototypes
  */
-void eth_igb_tx_queue_release(void *txq);
-void eth_igb_rx_queue_release(void *rxq);
+void eth_igb_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+void eth_igb_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 void igb_dev_clear_queues(struct rte_eth_dev *dev);
 void igb_dev_free_queues(struct rte_eth_dev *dev);
 
@@ -377,10 +400,7 @@ int eth_igb_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		const struct rte_eth_rxconf *rx_conf,
 		struct rte_mempool *mb_pool);
 
-uint32_t eth_igb_rx_queue_count(struct rte_eth_dev *dev,
-		uint16_t rx_queue_id);
-
-int eth_igb_rx_descriptor_done(void *rx_queue, uint16_t offset);
+uint32_t eth_igb_rx_queue_count(void *rx_queue);
 
 int eth_igb_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int eth_igb_tx_descriptor_status(void *tx_queue, uint16_t offset);
@@ -440,24 +460,21 @@ uint32_t em_get_max_pktlen(struct rte_eth_dev *dev);
 /*
  * RX/TX EM function prototypes
  */
-void eth_em_tx_queue_release(void *txq);
-void eth_em_rx_queue_release(void *rxq);
+void eth_em_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+void eth_em_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 void em_dev_clear_queues(struct rte_eth_dev *dev);
 void em_dev_free_queues(struct rte_eth_dev *dev);
 
-uint64_t em_get_rx_port_offloads_capa(struct rte_eth_dev *dev);
-uint64_t em_get_rx_queue_offloads_capa(struct rte_eth_dev *dev);
+uint64_t em_get_rx_port_offloads_capa(void);
+uint64_t em_get_rx_queue_offloads_capa(void);
 
 int eth_em_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
 		const struct rte_eth_rxconf *rx_conf,
 		struct rte_mempool *mb_pool);
 
-uint32_t eth_em_rx_queue_count(struct rte_eth_dev *dev,
-		uint16_t rx_queue_id);
-
-int eth_em_rx_descriptor_done(void *rx_queue, uint16_t offset);
+uint32_t eth_em_rx_queue_count(void *rx_queue);
 
 int eth_em_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int eth_em_tx_descriptor_status(void *tx_queue, uint16_t offset);
@@ -511,7 +528,7 @@ int eth_igb_syn_filter_set(struct rte_eth_dev *dev,
 			struct rte_eth_syn_filter *filter,
 			bool add);
 int eth_igb_add_del_flex_filter(struct rte_eth_dev *dev,
-			struct rte_eth_flex_filter *filter,
+			struct igb_flex_filter *filter,
 			bool add);
 int igb_rss_conf_init(struct rte_eth_dev *dev,
 		      struct igb_rte_flow_rss_conf *out,
@@ -521,5 +538,6 @@ int igb_action_rss_same(const struct rte_flow_action_rss *comp,
 int igb_config_rss_filter(struct rte_eth_dev *dev,
 			struct igb_rte_flow_rss_conf *conf,
 			bool add);
+void em_flush_desc_rings(struct rte_eth_dev *dev);
 
 #endif /* _E1000_ETHDEV_H_ */

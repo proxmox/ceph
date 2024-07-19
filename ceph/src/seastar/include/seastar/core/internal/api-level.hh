@@ -23,7 +23,13 @@
 
 // For IDEs that don't see SEASTAR_API_LEVEL, generate a nice default
 #ifndef SEASTAR_API_LEVEL
-#define SEASTAR_API_LEVEL 3
+#define SEASTAR_API_LEVEL 7
+#endif
+
+#if SEASTAR_API_LEVEL == 7
+#define SEASTAR_INCLUDE_API_V7 inline
+#else
+#define SEASTAR_INCLUDE_API_V7
 #endif
 
 #if SEASTAR_API_LEVEL == 6
@@ -32,51 +38,16 @@
 #define SEASTAR_INCLUDE_API_V6
 #endif
 
-#if SEASTAR_API_LEVEL == 5
-#define SEASTAR_INCLUDE_API_V5 inline
-#else
-#define SEASTAR_INCLUDE_API_V5
-#endif
-
-#if SEASTAR_API_LEVEL == 4
-#define SEASTAR_INCLUDE_API_V4 inline
-#else
-#define SEASTAR_INCLUDE_API_V4
-#endif
-
-#if SEASTAR_API_LEVEL == 3
-#define SEASTAR_INCLUDE_API_V3 inline
-#else
-#define SEASTAR_INCLUDE_API_V3
-#endif
-
-#if SEASTAR_API_LEVEL == 2
-#define SEASTAR_INCLUDE_API_V2 inline
-#else
-#define SEASTAR_INCLUDE_API_V2
-#endif
 
 // Declare them here so we don't have to use the macros everywhere
 namespace seastar {
-    SEASTAR_INCLUDE_API_V2 namespace api_v2 {
-    }
-    SEASTAR_INCLUDE_API_V3 namespace api_v3 {
-        inline namespace and_newer {
-        }
-    }
-    SEASTAR_INCLUDE_API_V4 namespace api_v4 {
-        inline namespace and_newer {
-            using namespace api_v3::and_newer;
-        }
-    }
-    SEASTAR_INCLUDE_API_V5 namespace api_v5 {
-        inline namespace and_newer {
-            using namespace api_v4::and_newer;
-        }
-    }
     SEASTAR_INCLUDE_API_V6 namespace api_v6 {
         inline namespace and_newer {
-            using namespace api_v5::and_newer;
+        }
+    }
+    SEASTAR_INCLUDE_API_V7 namespace api_v7 {
+        inline namespace and_newer {
+            using namespace api_v6::and_newer;
         }
     }
 }

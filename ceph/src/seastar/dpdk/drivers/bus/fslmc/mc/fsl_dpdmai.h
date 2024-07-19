@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018 NXP
+ * Copyright 2018-2021 NXP
  */
 
 #ifndef __FSL_DPDMAI_H
 #define __FSL_DPDMAI_H
+
+#include <rte_compat.h>
 
 struct fsl_mc_io;
 
@@ -23,24 +25,43 @@ struct fsl_mc_io;
  */
 #define DPDMAI_ALL_QUEUES	(uint8_t)(-1)
 
+__rte_internal
 int dpdmai_open(struct fsl_mc_io *mc_io,
 		uint32_t cmd_flags,
 		int dpdmai_id,
 		uint16_t *token);
 
+__rte_internal
 int dpdmai_close(struct fsl_mc_io *mc_io,
 		 uint32_t cmd_flags,
 		 uint16_t token);
+
+/* DPDMAI options */
+
+/**
+ * Enable individual Congestion Groups usage per each priority queue
+ * If this option is not enabled then only one CG is used for all priority
+ * queues
+ * If this option is enabled then a separate specific CG is used for each
+ * individual priority queue.
+ * In this case the priority queue must be specified via congestion notification
+ * API
+ */
+#define DPDMAI_OPT_CG_PER_PRIORITY		0x00000001
 
 /**
  * struct dpdmai_cfg - Structure representing DPDMAI configuration
  * @priorities: Priorities for the DMA hardware processing; valid priorities are
  *	configured with values 1-8; the entry following last valid entry
  *	should be configured with 0
+ *	@options: dpdmai options
  */
 struct dpdmai_cfg {
 	uint8_t num_queues;
 	uint8_t priorities[DPDMAI_PRIO_NUM];
+	struct {
+		uint32_t options;
+	} adv;
 };
 
 int dpdmai_create(struct fsl_mc_io *mc_io,
@@ -54,10 +75,12 @@ int dpdmai_destroy(struct fsl_mc_io *mc_io,
 		   uint32_t cmd_flags,
 		   uint32_t object_id);
 
+__rte_internal
 int dpdmai_enable(struct fsl_mc_io *mc_io,
 		  uint32_t cmd_flags,
 		  uint16_t token);
 
+__rte_internal
 int dpdmai_disable(struct fsl_mc_io *mc_io,
 		   uint32_t cmd_flags,
 		   uint16_t token);
@@ -75,13 +98,16 @@ int dpdmai_reset(struct fsl_mc_io *mc_io,
  * struct dpdmai_attr - Structure representing DPDMAI attributes
  * @id: DPDMAI object ID
  * @num_of_priorities: number of priorities
+ * @options: dpdmai options
  */
 struct dpdmai_attr {
 	int id;
 	uint8_t num_of_priorities;
 	uint8_t num_of_queues;
+	uint32_t options;
 };
 
+__rte_internal
 int dpdmai_get_attributes(struct fsl_mc_io *mc_io,
 			  uint32_t cmd_flags,
 			  uint16_t token,
@@ -148,6 +174,7 @@ struct dpdmai_rx_queue_cfg {
 
 };
 
+__rte_internal
 int dpdmai_set_rx_queue(struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
 			uint16_t token,
@@ -168,6 +195,7 @@ struct dpdmai_rx_queue_attr {
 	uint32_t fqid;
 };
 
+__rte_internal
 int dpdmai_get_rx_queue(struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
 			uint16_t token,
@@ -184,6 +212,7 @@ struct dpdmai_tx_queue_attr {
 	uint32_t fqid;
 };
 
+__rte_internal
 int dpdmai_get_tx_queue(struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
 			uint16_t token,

@@ -135,6 +135,8 @@ SEASTAR_TEST_CASE(test_map_reduce) {
 SEASTAR_TEST_CASE(test_map_reduce_lifetime) {
     struct map {
         bool destroyed = false;
+        map() = default;
+        map(const map&) = default;
         ~map() {
             destroyed = true;
         }
@@ -148,6 +150,9 @@ SEASTAR_TEST_CASE(test_map_reduce_lifetime) {
     struct reduce {
         long& res;
         bool destroyed = false;
+        reduce(long& result)
+            : res{result} {}
+        reduce(const reduce&) = default;
         ~reduce() {
             destroyed = true;
         }
@@ -174,6 +179,8 @@ SEASTAR_TEST_CASE(test_map_reduce_lifetime) {
 SEASTAR_TEST_CASE(test_map_reduce0_lifetime) {
     struct map {
         bool destroyed = false;
+        map() = default;
+        map(const map&) = default;
         ~map() {
             destroyed = true;
         }
@@ -186,6 +193,8 @@ SEASTAR_TEST_CASE(test_map_reduce0_lifetime) {
     };
     struct reduce {
         bool destroyed = false;
+        reduce() = default;
+        reduce(const reduce&) = default;
         ~reduce() {
             destroyed = true;
         }
@@ -208,6 +217,8 @@ SEASTAR_TEST_CASE(test_map_reduce0_lifetime) {
 SEASTAR_TEST_CASE(test_map_lifetime) {
     struct map {
         bool destroyed = false;
+        map() = default;
+        map(const map&) = default;
         ~map() {
             destroyed = true;
         }
@@ -327,10 +338,10 @@ SEASTAR_TEST_CASE(test_smp_service_groups) {
     return async([] {
         smp_service_group_config ssgc1;
         ssgc1.max_nonlocal_requests = 1;
-        auto ssg1 = create_smp_service_group(ssgc1).get0();
+        auto ssg1 = create_smp_service_group(ssgc1).get();
         smp_service_group_config ssgc2;
         ssgc2.max_nonlocal_requests = 1000;
-        auto ssg2 = create_smp_service_group(ssgc2).get0();
+        auto ssg2 = create_smp_service_group(ssgc2).get();
         shard_id other_shard = smp::count - 1;
         remote_worker rm1(1);
         remote_worker rm2(1000);
@@ -352,10 +363,10 @@ SEASTAR_TEST_CASE(test_smp_service_groups_re_construction) {
     // holding the groups did not expand correctly. This test triggers the
     // bug.
     return async([] {
-        auto ssg1 = create_smp_service_group({}).get0();
-        auto ssg2 = create_smp_service_group({}).get0();
+        auto ssg1 = create_smp_service_group({}).get();
+        auto ssg2 = create_smp_service_group({}).get();
         destroy_smp_service_group(ssg1).get();
-        auto ssg3 = create_smp_service_group({}).get0();
+        auto ssg3 = create_smp_service_group({}).get();
         destroy_smp_service_group(ssg2).get();
         destroy_smp_service_group(ssg3).get();
     });
@@ -365,7 +376,7 @@ SEASTAR_TEST_CASE(test_smp_timeout) {
     return async([] {
         smp_service_group_config ssgc1;
         ssgc1.max_nonlocal_requests = 1;
-        auto ssg1 = create_smp_service_group(ssgc1).get0();
+        auto ssg1 = create_smp_service_group(ssgc1).get();
 
         auto _ = defer([ssg1] () noexcept {
             destroy_smp_service_group(ssg1).get();
@@ -437,6 +448,6 @@ SEASTAR_THREAD_TEST_CASE(test_sharded_parameter) {
             ).get();
     auto undo2 = deferred_stop(s_service);
 
-    auto all_ok = s_service.map_reduce0(std::mem_fn(&some_service::ok), true, std::multiplies<>()).get0();
+    auto all_ok = s_service.map_reduce0(std::mem_fn(&some_service::ok), true, std::multiplies<>()).get();
     BOOST_REQUIRE(all_ok);
 }

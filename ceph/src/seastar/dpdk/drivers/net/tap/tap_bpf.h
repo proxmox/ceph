@@ -84,7 +84,7 @@ union bpf_attr {
 		__u32		kern_version;
 		__u32		prog_flags;
 	};
-} __attribute__((aligned(8)));
+} __rte_aligned(8);
 
 #ifndef __NR_bpf
 # if defined(__i386__)
@@ -101,6 +101,10 @@ union bpf_attr {
 #  define __NR_bpf 351
 # elif defined(__powerpc__)
 #  define __NR_bpf 361
+# elif defined(__riscv)
+#  define __NR_bpf 280
+# elif defined(__loongarch__)
+#  define __NR_bpf 280
 # else
 #  error __NR_bpf not defined
 # endif

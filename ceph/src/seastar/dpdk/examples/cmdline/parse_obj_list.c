@@ -6,11 +6,9 @@
 
 #include <stdio.h>
 #include <inttypes.h>
-#include <stdarg.h>
 #include <errno.h>
 #include <ctype.h>
 #include <string.h>
-#include <netinet/in.h>
 
 #include <cmdline_parse.h>
 #include <cmdline_parse_ipaddr.h>
@@ -104,7 +102,7 @@ int complete_get_elt_obj_list(cmdline_parse_token_hdr_t *tk,
 }
 
 
-int get_help_obj_list(__attribute__((unused)) cmdline_parse_token_hdr_t *tk,
+int get_help_obj_list(__rte_unused cmdline_parse_token_hdr_t *tk,
 		      char *dstbuf, unsigned int size)
 {
 	snprintf(dstbuf, size, "Obj-List");

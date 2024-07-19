@@ -21,23 +21,23 @@
 
 #pragma once
 
+#include <seastar/core/abort_source.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/chunked_fifo.hh>
-#include <stdexcept>
-#include <exception>
+#include <seastar/util/modules.hh>
+
+#ifndef SEASTAR_MODULE
 #include <memory>
-#include <seastar/core/abort_source.hh>
+#include <optional>
+#include <type_traits>
+#endif
 
 namespace seastar {
 
 namespace internal {
 
-SEASTAR_CONCEPT(
-    template <typename Aborter, typename T>
-    concept aborter = requires (Aborter abort, T& t) {
-        { abort(t) } noexcept -> std::same_as<void>;
-    };
-)
+template <typename Aborter, typename T>
+concept aborter = std::is_nothrow_invocable_r_v<void, Aborter, T&>;
 
 // This class satisfies 'aborter' concept and is used by default
 template<typename... T>
@@ -55,7 +55,7 @@ struct noop_aborter {
 /// The container can only be moved before any elements are pushed.
 ///
 template <typename T, typename OnAbort = noop_aborter<T>>
-SEASTAR_CONCEPT( requires aborter<OnAbort, T> )
+requires aborter<OnAbort, T>
 class abortable_fifo {
 private:
     struct entry {

@@ -53,6 +53,8 @@ instances or all radosgw-admin options can be put into the ``[global]`` or the
 .. confval:: rgw_bucket_default_quota_max_size
 .. confval:: rgw_user_default_quota_max_objects
 .. confval:: rgw_user_default_quota_max_size
+.. confval:: rgw_account_default_quota_max_objects
+.. confval:: rgw_account_default_quota_max_size
 .. confval:: rgw_verify_ssl
 .. confval:: rgw_max_chunk_size
 
@@ -299,3 +301,38 @@ implementation of *dmclock_client* op queue divides RGW ops on admin, auth
 .. _Barbican: ../barbican
 .. _Encryption: ../encryption
 .. _HTTP Frontends: ../frontends
+
+D4N Settings
+============
+
+D4N is a caching architecture that utilizes Redis to speed up S3 object storage 
+operations by establishing shared databases between different RGW access points.
+
+Currently, the architecture can only function on one Redis instance at a time. 
+The address is configurable and can be changed by accessing the parameters 
+below.
+
+.. confval:: rgw_d4n_host
+.. confval:: rgw_d4n_port
+
+Topic persistency settings
+==========================
+
+Topic persistency will persistently push the notification until it succeeds.
+For more information, see `Bucket Notifications`_.
+
+The default behavior is to push indefinitely and as frequently as possible.
+With these settings you can control how long and how often to retry an
+unsuccessful notification. How long to persistently push can be controlled
+by providing maximum time of retention or maximum amount of retries.
+Frequency of persistent push retries can be controlled with the sleep duration
+parameter.
+
+All of these values have default value 0 (persistent retention is indefinite,
+and retried as frequently as possible).
+
+.. confval:: rgw_topic_persistency_time_to_live
+.. confval:: rgw_topic_persistency_max_retries
+.. confval:: rgw_topic_persistency_sleep_duration
+
+.. _Bucket Notifications: ../notifications

@@ -9,13 +9,13 @@
 #include <assert.h>
 
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_version.h>
 
 #include "ark_pktdir.h"
@@ -57,6 +57,23 @@
 		void     *v;	   \
 	} name
 
+
+/* Extension hooks for extraction and placement of user meta data
+ * during RX an TX operations. These functions are the bridge
+ * between the mbuf struct and the tuser fields on the AXIS
+ * interfaces in the FPGA
+ */
+/* RX hook populates mbuf fields from user defined *meta up to 20 bytes */
+typedef void (*rx_user_meta_hook_fn)(struct rte_mbuf *mbuf,
+				     const uint32_t *meta,
+				     void *ext_user_data);
+/* TX hook populate *meta, with up to 20 bytes.  meta_cnt
+ * returns the number of uint32_t words populated, 0 to 5
+ */
+typedef void (*tx_user_meta_hook_fn)(const struct rte_mbuf *mbuf,
+				     uint32_t *meta, uint8_t *meta_cnt,
+				     void *ext_user_data);
+
 struct ark_user_ext {
 	void *(*dev_init)(struct rte_eth_dev *, void *abar, int port_id);
 	void (*dev_uninit)(struct rte_eth_dev *, void *);
@@ -71,13 +88,17 @@ struct ark_user_ext {
 	int (*stats_get)(struct rte_eth_dev *, struct rte_eth_stats *, void *);
 	void (*stats_reset)(struct rte_eth_dev *, void *);
 	void (*mac_addr_add)(struct rte_eth_dev *,
-						  struct ether_addr *,
+						  struct rte_ether_addr *,
 						 uint32_t,
 						 uint32_t,
 						 void *);
 	void (*mac_addr_remove)(struct rte_eth_dev *, uint32_t, void *);
-	void (*mac_addr_set)(struct rte_eth_dev *, struct ether_addr *, void *);
+	void (*mac_addr_set)(struct rte_eth_dev *, struct rte_ether_addr *,
+			void *);
 	int (*set_mtu)(struct rte_eth_dev *, uint16_t, void *);
+	/* user meta, hook functions  */
+	rx_user_meta_hook_fn rx_user_meta_hook;
+	tx_user_meta_hook_fn tx_user_meta_hook;
 };
 
 struct ark_adapter {
@@ -86,11 +107,13 @@ struct ark_adapter {
 
 	/* Pointers to packet generator and checker */
 	int start_pg;
+	uint16_t pg_running;
 	ark_pkt_gen_t pg;
 	ark_pkt_chkr_t pc;
 	ark_pkt_dir_t pd;
 
 	int num_ports;
+	bool isvf;
 
 	/* Packet generator/checker args */
 	char pkt_gen_args[ARK_MAX_ARG_LEN];

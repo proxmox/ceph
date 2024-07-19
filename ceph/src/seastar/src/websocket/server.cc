@@ -20,18 +20,15 @@
  */
 
 #include <seastar/websocket/server.hh>
+#include <seastar/core/gate.hh>
+#include <seastar/core/loop.hh>
+#include <seastar/util/defer.hh>
 #include <seastar/util/log.hh>
-#include <cryptopp/sha.h>
-#include <cryptopp/filters.h>
-#include <cryptopp/base64.h>
 #include <seastar/core/scattered_message.hh>
 #include <seastar/core/byteorder.hh>
-
-#ifndef CRYPTOPP_NO_GLOBAL_BYTE
-namespace CryptoPP {
-using byte = unsigned char;
-}
-#endif
+#include <seastar/http/request.hh>
+#include <gnutls/crypto.h>
+#include <gnutls/gnutls.h>
 
 namespace seastar::experimental::websocket {
 
@@ -54,17 +51,12 @@ opcodes websocket_parser::opcode() const {
 }
 
 websocket_parser::buff_t websocket_parser::result() {
-    _payload_length = 0;
-    _masking_key = 0;
-    _state = parsing_state::flags_and_payload_data;
-    _cstate = connection_state::valid;
-    _header.reset(nullptr);
     return std::move(_result);
 }
 
 void server::listen(socket_address addr, listen_options lo) {
     _listeners.push_back(seastar::listen(addr, lo));
-    do_accepts(_listeners.size() - 1);
+    accept(_listeners.back());
 }
 void server::listen(socket_address addr) {
     listen_options lo;
@@ -72,38 +64,48 @@ void server::listen(socket_address addr) {
     return listen(addr, lo);
 }
 
-void server::do_accepts(int which) {
-    _accept_fut = do_until(
-            [this] { return _stopped; },
-            [this, which] { return do_accept_one(which); });
+void server::accept(server_socket &listener) {
+    (void)try_with_gate(_task_gate, [this, &listener]() {
+        return repeat([this, &listener]() {
+            return accept_one(listener);
+        });
+    }).handle_exception_type([](const gate_closed_exception &e) {});
 }
 
-future<> server::do_accept_one(int which) {
-    return _listeners[which].accept().then([this] (accept_result ar) mutable {
+future<stop_iteration> server::accept_one(server_socket &listener) {
+    return listener.accept().then([this](accept_result ar) {
         auto conn = std::make_unique<connection>(*this, std::move(ar.connection));
-        // Tracked by _connections
-        (void)conn->process().finally([conn = std::move(conn)] {
-            wlogger.debug("Connection is finished");
-        });
-    }).handle_exception_type([] (const std::system_error &e) {
+        (void)try_with_gate(_task_gate, [conn = std::move(conn)]() mutable {
+            return conn->process().finally([conn = std::move(conn)] {
+                wlogger.debug("Connection is finished");
+            });
+        }).handle_exception_type([](const gate_closed_exception &e) {});
+        return make_ready_future<stop_iteration>(stop_iteration::no);
+    }).handle_exception_type([](const std::system_error &e) {
         // We expect a ECONNABORTED when server::stop is called,
         // no point in warning about that.
         if (e.code().value() != ECONNABORTED) {
             wlogger.error("accept failed: {}", e);
         }
-    }).handle_exception([] (std::exception_ptr ex) {
-        wlogger.error("accept failed: {}", ex);
+        return make_ready_future<stop_iteration>(stop_iteration::yes);
+    }).handle_exception([](std::exception_ptr ex) {
+        wlogger.info("accept failed: {}", ex);
+        return make_ready_future<stop_iteration>(stop_iteration::yes);
     });
 }
 
 future<> server::stop() {
-    _stopped = true;
     for (auto&& l : _listeners) {
         l.abort_accept();
     }
-    return _accept_fut.finally([this] {
+
+    for (auto&& c : _connections) {
+        c.shutdown_input();
+    }
+
+    return _task_gate.close().finally([this] {
         return parallel_for_each(_connections, [] (connection& conn) {
-            return conn.close().handle_exception([] (auto ignored) {});
+            return conn.close(true).handle_exception([] (auto ignored) {});
         });
     });
 }
@@ -123,14 +125,24 @@ future<> connection::process() {
 }
 
 static std::string sha1_base64(std::string_view source) {
-    // CryptoPP insists on freeing the pointers by itself...
-    // It's leaky, but `read_http_upgrade_request` is a one-shot operation
-    // per handshake, so the real risk is not particularly great.
-    CryptoPP::SHA1 sha1;
-    std::string hash;
-    CryptoPP::StringSource(reinterpret_cast<const CryptoPP::byte*>(source.data()), source.size(),
-            true, new CryptoPP::HashFilter(sha1, new CryptoPP::Base64Encoder(new CryptoPP::StringSink(hash), false)));
-    return hash;
+    unsigned char hash[20];
+    assert(sizeof(hash) == gnutls_hash_get_len(GNUTLS_DIG_SHA1));
+    if (int ret = gnutls_hash_fast(GNUTLS_DIG_SHA1, source.data(), source.size(), hash);
+        ret != GNUTLS_E_SUCCESS) {
+        throw websocket::exception(fmt::format("gnutls_hash_fast: {}", gnutls_strerror(ret)));
+    }
+    gnutls_datum_t hash_data{
+        .data = hash,
+        .size = sizeof(hash),
+    };
+    gnutls_datum_t base64_encoded;
+    if (int ret = gnutls_base64_encode2(&hash_data, &base64_encoded);
+        ret != GNUTLS_E_SUCCESS) {
+        throw websocket::exception(fmt::format("gnutls_base64_encode2: {}", gnutls_strerror(ret)));
+    }
+    auto free_base64_encoded = defer([&] () noexcept { gnutls_free(base64_encoded.data); });
+    // base64_encoded.data is "unsigned char *"
+    return std::string(reinterpret_cast<const char*>(base64_encoded.data), base64_encoded.size);
 }
 
 future<> connection::read_http_upgrade_request() {
@@ -204,8 +216,8 @@ future<websocket_parser::consumption_result_t> websocket_parser::operator()(
 
                 // https://datatracker.ietf.org/doc/html/rfc6455#section-5.1
                 // We must close the connection if data isn't masked.
-                if ((!_header->masked) || 
-                        // RSVX must be 0 
+                if ((!_header->masked) ||
+                        // RSVX must be 0
                         (_header->rsv1 | _header->rsv2 | _header->rsv3) ||
                         // Opcode must be known.
                         (!_header->is_opcode_known())) {
@@ -228,18 +240,16 @@ future<websocket_parser::consumption_result_t> websocket_parser::operator()(
                 data.trim_front(required_bytes - hlen);
 
                 _payload_length = _header->length;
-                size_t offset = 0;
                 char const *input = _buffer.data();
                 if (_header->length == 126) {
-                    _payload_length = be16toh(*(uint16_t const *)(input + offset));
-                    offset += sizeof(uint16_t);
+		    _payload_length = consume_be<uint16_t>(input);
                 } else if (_header->length == 127) {
-                    _payload_length = be64toh(*(uint64_t const *)(input + offset));
-                    offset += sizeof(uint64_t);
+		    _payload_length = consume_be<uint64_t>(input);
                 }
-                _masking_key = be32toh(*(uint32_t const *)(input + offset));
+
+		_masking_key = consume_be<uint32_t>(input);
                 _buffer = {};
-            }                
+            }
             _state = parsing_state::payload;
         } else {
             _buffer.append(data.get(), data.size());
@@ -252,7 +262,7 @@ future<websocket_parser::consumption_result_t> websocket_parser::operator()(
             remove_mask(data, data.size());
             _result = std::move(data);
             return websocket_parser::stop(buff_t(0));
-        } else { 
+        } else {
             _result = data.clone();
             remove_mask(_result, _payload_length);
             data.trim_front(_payload_length);
@@ -293,8 +303,8 @@ future<> connection::read_one() {
                      */
                     return close(true);
                 case opcodes::PING:
-                    return handle_ping();
                     wlogger.debug("Received ping frame.");
+                    return handle_ping();
                 case opcodes::PONG:
                     wlogger.debug("Received pong frame.");
                     return handle_pong();
@@ -325,6 +335,10 @@ future<> connection::read_loop() {
     });
 }
 
+void connection::shutdown_input() {
+    _fd.shutdown_input();
+}
+
 future<> connection::close(bool send_close) {
     return [this, send_close]() {
         if (send_close) {
@@ -335,7 +349,7 @@ future<> connection::close(bool send_close) {
     }().finally([this] {
         _done = true;
         return when_all_succeed(_input.close(), _output.close()).discard_result().finally([this] {
-            shutdown();
+            _fd.shutdown_output();
         });
     });
 }
@@ -347,13 +361,13 @@ future<> connection::send_data(opcodes opcode, temporary_buffer<char>&& buff) {
     header[0] += opcode;
 
     if ((126 <= buff.size()) && (buff.size() <= std::numeric_limits<uint16_t>::max())) {
-        header[1] = '\x7e';
+        header[1] = 0x7E;
         write_be<uint16_t>(header + 2, buff.size());
-        header_size = 3;
+        header_size += sizeof(uint16_t);
     } else if (std::numeric_limits<uint16_t>::max() < buff.size()) {
-        header[1] = '\x7e';
+        header[1] = 0x7F;
         write_be<uint64_t>(header + 2, buff.size());
-        header_size = 10;
+        header_size += sizeof(uint64_t);
     } else {
         header[1] = uint8_t(buff.size());
     }
@@ -363,7 +377,7 @@ future<> connection::send_data(opcodes opcode, temporary_buffer<char>&& buff) {
     msg.append(std::move(buff));
     return _write_buf.write(std::move(msg)).then([this] {
         return _write_buf.flush();
-    }); 
+    });
 }
 
 future<> connection::response_loop() {
@@ -376,16 +390,6 @@ future<> connection::response_loop() {
     }).finally([this]() {
         return _write_buf.close();
     });
-}
-
-void connection::shutdown() {
-    wlogger.debug("Shutting down");
-    _fd.shutdown_input();
-    _fd.shutdown_output();
-}
-
-future<> connection::close() {
-    return this->close(true);
 }
 
 bool server::is_handler_registered(std::string const& name) {

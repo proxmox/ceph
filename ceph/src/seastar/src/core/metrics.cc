@@ -19,15 +19,26 @@
  * Copyright (C) 2016 ScyllaDB.
  */
 
-#include <seastar/core/metrics.hh>
-#include <seastar/core/metrics_api.hh>
-#include <seastar/core/relabel_config.hh>
-#include <seastar/core/reactor.hh>
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <memory>
+#include <regex>
+#include <random>
 #include <boost/range/algorithm.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/range/algorithm_ext/erase.hpp>
-#include <random>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/core/metrics.hh>
+#include <seastar/core/metrics_api.hh>
+#include <seastar/core/relabel_config.hh>
+#include <seastar/core/reactor.hh>
+#endif
 
 namespace seastar {
 extern seastar::logger seastar_logger;
@@ -355,10 +366,8 @@ foreign_ptr<values_reference> get_values() {
     auto& mv = res.values;
     res.metadata = get_local_impl()->metadata();
     auto & functions = get_local_impl()->functions();
-    mv.reserve(functions.size());
     for (auto&& i : functions) {
         value_vector values;
-        values.reserve(i.size());
         for (auto&& v : i) {
             values.emplace_back(v());
         }
@@ -388,7 +397,7 @@ void impl::update_metrics_if_needed() {
         _current_metrics.resize(_value_map.size());
         size_t i = 0;
         for (auto&& mf : _value_map) {
-            metric_metadata_vector metrics;
+            metric_metadata_fifo metrics;
             _current_metrics[i].clear();
             for (auto&& m : mf.second) {
                 if (m.second && m.second->is_enabled()) {
@@ -415,7 +424,7 @@ shared_ptr<metric_metadata> impl::metadata() {
     return _metadata;
 }
 
-std::vector<std::vector<metric_function>>& impl::functions() {
+std::vector<std::deque<metric_function>>& impl::functions() {
     update_metrics_if_needed();
     return _current_metrics;
 }

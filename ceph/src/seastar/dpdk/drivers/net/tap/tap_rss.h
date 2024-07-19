@@ -13,7 +13,7 @@
 #define TAP_RSS_HASH_KEY_SIZE 40
 
 /* Supported RSS */
-#define TAP_RSS_HF_MASK (~(ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_TCP))
+#define TAP_RSS_HF_MASK (~(RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP))
 
 /* hashed fields for RSS */
 enum hash_field {
@@ -35,6 +35,6 @@ struct rss_key {
 	__u32 key_size;
 	__u32 queues[TAP_MAX_QUEUES];
 	__u32 nb_queues;
-} __attribute__((packed));
+} __rte_packed;
 
 #endif /* _TAP_RSS_H_ */

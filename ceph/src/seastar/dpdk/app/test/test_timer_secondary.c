@@ -9,13 +9,22 @@
 #include <rte_lcore.h>
 #include <rte_debug.h>
 #include <rte_memzone.h>
-#include <rte_atomic.h>
 #include <rte_timer.h>
 #include <rte_cycles.h>
 #include <rte_mempool.h>
 #include <rte_random.h>
 
 #include "test.h"
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+int
+test_timer_secondary(void)
+{
+	printf("timer_secondary not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+#else
+
 #include "process.h"
 
 #define NUM_TIMERS		(1 << 20) /* ~1M timers */
@@ -23,11 +32,10 @@
 #define TEST_INFO_MZ_NAME	"test_timer_info_mz"
 #define MSECPERSEC		1E3
 
-#define launch_proc(ARGV) \
-	process_dup(ARGV, sizeof(ARGV)/(sizeof(ARGV[0])), __func__)
+#define launch_proc(ARGV) process_dup(ARGV, RTE_DIM(ARGV), __func__)
 
 struct test_info {
-	unsigned int mstr_lcore;
+	unsigned int main_lcore;
 	unsigned int mgr_lcore;
 	unsigned int sec_lcore;
 	uint32_t timer_data_id;
@@ -118,15 +126,17 @@ test_timer_secondary(void)
 	int ret;
 
 	if (proc_type == RTE_PROC_PRIMARY) {
+		if (rte_lcore_count() < NUM_LCORES_NEEDED) {
+			printf("Not enough cores for test_timer_secondary, expecting at least %u\n",
+			       NUM_LCORES_NEEDED);
+			return TEST_SKIPPED;
+		}
+
 		mz = rte_memzone_reserve(TEST_INFO_MZ_NAME, sizeof(*test_info),
 					 SOCKET_ID_ANY, 0);
-		test_info = mz->addr;
-		TEST_ASSERT_NOT_NULL(test_info, "Couldn't allocate memory for "
+		TEST_ASSERT_NOT_NULL(mz, "Couldn't allocate memory for "
 				     "test data");
-
-		TEST_ASSERT(rte_lcore_count() >= NUM_LCORES_NEEDED,
-			    "at least %d lcores needed to run tests",
-			    NUM_LCORES_NEEDED);
+		test_info = mz->addr;
 
 		test_info->tim_mempool = rte_mempool_create("test_timer_mp",
 				NUM_TIMERS, sizeof(struct rte_timer), 0, 0,
@@ -136,12 +146,12 @@ test_timer_secondary(void)
 		TEST_ASSERT_SUCCESS(ret, "Failed to allocate timer data "
 				    "instance");
 
-		unsigned int *mstr_lcorep = &test_info->mstr_lcore;
+		unsigned int *main_lcorep = &test_info->main_lcore;
 		unsigned int *mgr_lcorep = &test_info->mgr_lcore;
 		unsigned int *sec_lcorep = &test_info->sec_lcore;
 
-		*mstr_lcorep = rte_get_master_lcore();
-		*mgr_lcorep = rte_get_next_lcore(*mstr_lcorep, 1, 1);
+		*main_lcorep = rte_get_main_lcore();
+		*mgr_lcorep = rte_get_next_lcore(*main_lcorep, 1, 1);
 		*sec_lcorep = rte_get_next_lcore(*mgr_lcorep, 1, 1);
 
 		ret = rte_eal_remote_launch(timer_manage_loop,
@@ -170,9 +180,9 @@ test_timer_secondary(void)
 		int i;
 
 		mz = rte_memzone_lookup(TEST_INFO_MZ_NAME);
-		test_info = mz->addr;
-		TEST_ASSERT_NOT_NULL(test_info, "Couldn't lookup memzone for "
+		TEST_ASSERT_NOT_NULL(mz, "Couldn't lookup memzone for "
 				     "test info");
+		test_info = mz->addr;
 
 		for (i = 0; i < NUM_TIMERS; i++) {
 			rte_mempool_get(test_info->tim_mempool, (void **)&tim);
@@ -211,5 +221,7 @@ test_timer_secondary(void)
 
 	return TEST_FAILED;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(timer_secondary_autotest, test_timer_secondary);

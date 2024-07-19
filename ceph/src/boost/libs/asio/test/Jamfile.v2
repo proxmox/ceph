@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+# Copyright (c) 2003-2023 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 #
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -48,12 +48,18 @@ project
   ;
 
 test-suite "asio" :
+  [ run append.cpp ]
+  [ run append.cpp : : : $(USE_SELECT) : append_select ]
+  [ run as_tuple.cpp ]
+  [ run as_tuple.cpp : : : $(USE_SELECT) : as_tuple_select ]
   [ link associated_allocator.cpp ]
   [ link associated_allocator.cpp : $(USE_SELECT) : associated_allocator_select ]
   [ link associated_cancellation_slot.cpp ]
   [ link associated_cancellation_slot.cpp : $(USE_SELECT) : associated_cancellation_slot_select ]
   [ link associated_executor.cpp ]
   [ link associated_executor.cpp : $(USE_SELECT) : associated_executor_select ]
+  [ link associated_immediate_executor.cpp ]
+  [ link associated_immediate_executor.cpp : $(USE_SELECT) : associated_immediate_executor_select ]
   [ link associator.cpp ]
   [ link associator.cpp : $(USE_SELECT) : associator_select ]
   [ link awaitable.cpp ]
@@ -92,6 +98,8 @@ test-suite "asio" :
   [ run bind_cancellation_slot.cpp : : : $(USE_SELECT) : bind_cancellation_slot_select ]
   [ run bind_executor.cpp ]
   [ run bind_executor.cpp : : : $(USE_SELECT) : bind_executor_select ]
+  [ run bind_immediate_executor.cpp ]
+  [ run bind_immediate_executor.cpp : : : $(USE_SELECT) : bind_immediate_executor_select ]
   [ run buffer.cpp ]
   [ run buffer.cpp : : : $(USE_SELECT) : buffer_select ]
   [ link buffer_registration.cpp ]
@@ -120,10 +128,14 @@ test-suite "asio" :
   [ link connect.cpp : $(USE_SELECT) : connect_select ]
   [ run connect_pipe.cpp ]
   [ run connect_pipe.cpp : : : $(USE_SELECT) : connect_pipe_select ]
+  [ run consign.cpp ]
+  [ run consign.cpp : : : $(USE_SELECT) : consign_select ]
   [ link coroutine.cpp ]
   [ link coroutine.cpp : $(USE_SELECT) : coroutine_select ]
   [ run deadline_timer.cpp ]
   [ run deadline_timer.cpp : : : $(USE_SELECT) : deadline_timer_select ]
+  [ run deferred.cpp ]
+  [ run deferred.cpp : : : $(USE_SELECT) : deferred_select ]
   [ link detached.cpp ]
   [ link detached.cpp : $(USE_SELECT) : detached_select ]
   [ run error.cpp ]
@@ -188,6 +200,8 @@ test-suite "asio" :
   [ link local/connect_pair.cpp : $(USE_SELECT) : local_connect_pair_select ]
   [ link local/datagram_protocol.cpp : : local_datagram_protocol ]
   [ link local/datagram_protocol.cpp : $(USE_SELECT) : local_datagram_protocol_select ]
+  [ link local/seq_packet_protocol.cpp : : local_seq_packet_protocol ]
+  [ link local/seq_packet_protocol.cpp : $(USE_SELECT) : local_seq_packet_protocol_select ]
   [ link local/stream_protocol.cpp : : local_stream_protocol ]
   [ link local/stream_protocol.cpp : $(USE_SELECT) : local_stream_protocol_select ]
   [ link placeholders.cpp ]
@@ -200,6 +214,8 @@ test-suite "asio" :
   [ link posix/descriptor_base.cpp : $(USE_SELECT) : posix_descriptor_base_select ]
   [ link posix/stream_descriptor.cpp : : posix_stream_descriptor ]
   [ link posix/stream_descriptor.cpp : $(USE_SELECT) : posix_stream_descriptor_select ]
+  [ run prepend.cpp ]
+  [ run prepend.cpp : : : $(USE_SELECT) : prepend_select ]
   [ link random_access_file.cpp ]
   [ link random_access_file.cpp : $(USE_SELECT) : random_access_file_select ]
   [ run read.cpp ]
@@ -218,6 +234,8 @@ test-suite "asio" :
   [ link registered_buffer.cpp : $(USE_SELECT) : registered_buffer_select ]
   [ run signal_set.cpp ]
   [ run signal_set.cpp : : : $(USE_SELECT) : signal_set_select ]
+  [ link signal_set_base.cpp ]
+  [ link signal_set_base.cpp : $(USE_SELECT) : signal_set_base_select ]
   [ run socket_base.cpp ]
   [ run socket_base.cpp : : : $(USE_SELECT) : socket_base_select ]
   [ run static_thread_pool.cpp ]

@@ -411,6 +411,18 @@ namespace detail {
         std::rethrow_exception(std::move(callee_->eptr_));
     }
 
+    using executor_type = detail::net::associated_executor_t<Handler>;
+    executor_type get_executor() const
+    {
+      return detail::net::get_associated_executor(data_->handler_);
+    }
+
+    using allocator_type = detail::net::associated_allocator_t<Handler>;
+    allocator_type get_allocator() const
+    {
+      return detail::net::get_associated_allocator(data_->handler_);
+    }
+
     std::shared_ptr<continuation_context> callee_;
     std::shared_ptr<spawn_data<Handler, Function, StackAllocator> > data_;
   };
@@ -440,9 +452,6 @@ auto spawn(Handler&& handler, Function&& function, StackAllocator&& salloc)
   using handler_type = typename std::decay<Handler>::type;
   using function_type = typename std::decay<Function>::type;
 
-  auto ex = detail::net::get_associated_executor(handler);
-  auto a = detail::net::get_associated_allocator(handler);
-
   detail::spawn_helper<handler_type, function_type, StackAllocator> helper;
   helper.data_ = std::make_shared<
       detail::spawn_data<handler_type, function_type, StackAllocator> >(
@@ -450,7 +459,7 @@ auto spawn(Handler&& handler, Function&& function, StackAllocator&& salloc)
         std::forward<Function>(function),
         std::forward<StackAllocator>(salloc));
 
-  ex.dispatch(helper, a);
+  boost::asio::dispatch(helper);
 }
 
 template <typename Handler, typename Function, typename StackAllocator>
@@ -463,9 +472,6 @@ auto spawn(basic_yield_context<Handler> ctx, Function&& function,
 
   Handler handler(ctx.handler_); // Explicit copy that might be moved from.
 
-  auto ex = detail::net::get_associated_executor(handler);
-  auto a = detail::net::get_associated_allocator(handler);
-
   detail::spawn_helper<Handler, function_type, StackAllocator> helper;
   helper.data_ = std::make_shared<
       detail::spawn_data<Handler, function_type, StackAllocator> >(
@@ -473,7 +479,7 @@ auto spawn(basic_yield_context<Handler> ctx, Function&& function,
         std::forward<Function>(function),
         std::forward<StackAllocator>(salloc));
 
-  ex.dispatch(helper, a);
+  boost::asio::dispatch(helper);
 }
 
 template <typename Function, typename Executor, typename StackAllocator>
@@ -481,7 +487,7 @@ auto spawn(const Executor& ex, Function&& function, StackAllocator&& salloc)
   -> typename std::enable_if<detail::net::is_executor<Executor>::value &&
        detail::is_stack_allocator<typename std::decay<StackAllocator>::type>::value>::type
 {
-  spawn(detail::net::strand<Executor>(ex),
+  spawn(detail::net::make_strand(ex),
       std::forward<Function>(function),
       std::forward<StackAllocator>(salloc));
 }

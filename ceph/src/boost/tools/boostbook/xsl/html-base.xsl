@@ -7,7 +7,6 @@
    http://www.boost.org/LICENSE_1_0.txt)
   -->
 <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
-                xmlns:rev="http://www.cs.rpi.edu/~gregod/boost/tools/doc/revision"
                 version="1.0">
   
   <xsl:param name="html.stylesheet">
@@ -221,53 +220,13 @@ set       toc,title
   </xsl:template>
 
   <xsl:template name="user.footer.content">
-    <table width="100%">
-      <tr>
-        <td align="left">
-          <xsl:variable name="revision-nodes"
-            select="ancestor-or-self::*
-                    [not (attribute::rev:last-revision='')]"/>
-          <xsl:if test="count($revision-nodes) &gt; 0">
-            <xsl:variable name="revision-node"
-              select="$revision-nodes[last()]"/>
-            <xsl:variable name="revision-text">
-              <xsl:value-of
-                select="normalize-space($revision-node/attribute::rev:last-revision)"/>
-            </xsl:variable>
-            <xsl:if test="string-length($revision-text) &gt; 0 and not($revision-text = '$Date$')">
-              <p>
-                <small>
-                  <xsl:text>Last revised: </xsl:text>
-                  <xsl:choose>
-                    <xsl:when test="not(contains($revision-text, '$Date: ')) and not(contains($revision-text, '$Date:: '))">
-                      <xsl:value-of select="$revision-text"/>
-                    </xsl:when>
-                    <xsl:when test="contains($revision-text, '/')">
-                      <xsl:call-template name="format.cvs.revision">
-                        <xsl:with-param name="text" select="$revision-text"/>
-                      </xsl:call-template>
-                    </xsl:when>
-                    <xsl:otherwise>
-                      <xsl:call-template name="format.svn.revision">
-                        <xsl:with-param name="text" select="$revision-text"/>
-                      </xsl:call-template>
-                    </xsl:otherwise>
-                  </xsl:choose>
-                </small>
-              </p>
-            </xsl:if>
-          </xsl:if>
-        </td>
-        <td align="right">
-          <div class = "copyright-footer">
-            <xsl:apply-templates select="ancestor::*/*/copyright"
-              mode="boost.footer"/>
-            <xsl:apply-templates select="ancestor::*/*/legalnotice"
-              mode="boost.footer"/>
-          </div>
-        </td>
-      </tr>
-    </table>
+    <div class = "copyright-footer">
+      <xsl:apply-templates select="ancestor::*/*/copyright"
+                           mode="boost.footer"/>
+      <xsl:apply-templates select="ancestor::*/*/legalnotice"
+                           mode="boost.footer"/>
+      <xsl:apply-templates select="ancestor::*/*/para[@role='copyright']"/>
+    </div>
   </xsl:template>
 
   <!-- We don't want refentry's to show up in the TOC because they
@@ -306,6 +265,9 @@ set       toc,title
   </xsl:template>
   
   <xsl:template name="user.head.content">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+
     <xsl:if test="$boost.mathjax = 1">
       <xsl:variable name="has-math">
         <xsl:apply-templates mode="detect-math" select="*"/>

@@ -14,6 +14,9 @@
 #define ECORE_ETH_VF_NUM_VLAN_FILTERS 2
 #define ECORE_VF_ARRAY_LENGTH (3)
 
+#define ECORE_VF_ARRAY_GET_VFID(arr, vfid)	\
+	(((arr)[(vfid) / 64]) & (1ULL << ((vfid) % 64)))
+
 #define IS_VF(p_dev)		((p_dev)->b_is_vf)
 #define IS_PF(p_dev)		(!((p_dev)->b_is_vf))
 #ifdef CONFIG_ECORE_SRIOV
@@ -51,6 +54,7 @@ enum ecore_iov_pf_to_vf_status {
 	PFVF_STATUS_NO_RESOURCE,
 	PFVF_STATUS_FORCED,
 	PFVF_STATUS_MALICIOUS,
+	PFVF_STATUS_ACQUIRED,
 };
 
 struct ecore_mcp_link_params;
@@ -740,7 +744,7 @@ ecore_iov_pf_configure_vf_queue_coalesce(struct ecore_hwfn *p_hwfn,
  * @param p_hwfn
  * @param rel_vf_id
  *
- * @return MAX_NUM_VFS_E4 in case no further active VFs, otherwise index.
+ * @return MAX_NUM_VFS_K2 in case no further active VFs, otherwise index.
  */
 u16 ecore_iov_get_next_active_vf(struct ecore_hwfn *p_hwfn, u16 rel_vf_id);
 
@@ -764,7 +768,7 @@ void ecore_iov_set_vf_hw_channel(struct ecore_hwfn *p_hwfn, int vfid,
 
 #define ecore_for_each_vf(_p_hwfn, _i)					\
 	for (_i = ecore_iov_get_next_active_vf(_p_hwfn, 0);		\
-	     _i < MAX_NUM_VFS_E4;					\
+	     _i < MAX_NUM_VFS_K2;					\
 	     _i = ecore_iov_get_next_active_vf(_p_hwfn, _i + 1))
 
 #endif

@@ -27,6 +27,7 @@
 
 #include <seastar/core/loop.hh>
 #include <seastar/core/coroutine.hh>
+#include <seastar/core/reactor.hh>
 
 namespace seastar::coroutine {
 
@@ -101,6 +102,7 @@ class [[nodiscard("must co_await an parallel_for_each() object")]] parallel_for_
 
     void resume_or_set_callback() noexcept {
         if (consume_next()) {
+            local_engine->set_current_task(_waiting_task);
             _when_ready.resume();
         } else {
             set_callback();
@@ -180,8 +182,8 @@ requires (std::same_as<Sentinel, Iterator> || std::sentinel_for<Sentinel, Iterat
     && std::same_as<future<>, futurize_t<std::invoke_result_t<Func, typename std::iterator_traits<Iterator>::reference>>>
 parallel_for_each(Iterator begin, Sentinel end, Func&& func) -> parallel_for_each<Func>;
 
-template <std::ranges::range Range, typename Func>
-requires std::invocable<Func, std::ranges::range_reference_t<Range>>
+template <std::ranges::range Range,
+          std::invocable<std::ranges::range_reference_t<Range>> Func>
 parallel_for_each(Range&& range, Func&& func) -> parallel_for_each<Func>;
 
 

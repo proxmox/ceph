@@ -13,7 +13,7 @@ Introduction
 
 Network adapters with multiple physical ports and/or SR-IOV capabilities
 usually support the offload of traffic steering rules between their virtual
-functions (VFs), physical functions (PFs) and ports.
+functions (VFs), sub functions (SFs), physical functions (PFs) and ports.
 
 Like for standard Ethernet switches, this involves a combination of
 automatic MAC learning and manual configuration. For most purposes it is
@@ -24,7 +24,7 @@ layer 2 (L2) traffic (such as OVS) need to steer traffic themselves
 according on their own criteria.
 
 Without a standard software interface to manage traffic steering rules
-between VFs, PFs and the various physical ports of a given device,
+between VFs, SFs, PFs and the various physical ports of a given device,
 applications cannot take advantage of these offloads; software processing is
 mandatory even for traffic which ends up re-injected into the device it
 originates from.
@@ -34,6 +34,17 @@ the DPDK flow API (**rte_flow**), with emphasis on the SR-IOV use case
 (PF/VF steering) using a single physical port for clarity, however the same
 logic applies to any number of ports without necessarily involving SR-IOV.
 
+Sub Function
+------------
+Besides SR-IOV, Sub function is a portion of the PCI device, a SF netdev
+has its own dedicated queues(txq, rxq). A SF netdev supports E-Switch
+representation offload similar to existing PF and VF representors.
+A SF shares PCI level resources with other SFs and/or with its parent PCI
+function.
+
+Sub function is created on-demand, coexists with VFs. Number of SFs is
+limited by hardware resources.
+
 Port Representors
 -----------------
 
@@ -42,15 +53,16 @@ applications usually have to process a bit of traffic in software before
 thinking about offloading specific flows to hardware.
 
 Applications therefore need the ability to receive and inject traffic to
-various device endpoints (other VFs, PFs or physical ports) before
+various device endpoints (other VFs, SFs, PFs or physical ports) before
 connecting them together. Device drivers must provide means to hook the
 "other end" of these endpoints and to refer them when configuring flow
 rules.
 
 This role is left to so-called "port representors" (also known as "VF
-representors" in the specific context of VFs), which are to DPDK what the
-Ethernet switch device driver model (**switchdev**) [1]_ is to Linux, and
-which can be thought as a software "patch panel" front-end for applications.
+representors" in the specific context of VFs, "SF representors" in the
+specific context of SFs), which are to DPDK what the Ethernet switch
+device driver model (**switchdev**) [1]_ is to Linux, and which can be
+thought as a software "patch panel" front-end for applications.
 
 - DPDK port representors are implemented as additional virtual Ethernet
   device (**ethdev**) instances, spawned on an as needed basis through
@@ -59,9 +71,12 @@ which can be thought as a software "patch panel" front-end for applications.
 
 ::
 
-   -w pci:dbdf,representor=0
-   -w pci:dbdf,representor=[0-3]
-   -w pci:dbdf,representor=[0,5-11]
+   -a pci:dbdf,representor=vf0
+   -a pci:dbdf,representor=vf[0-3]
+   -a pci:dbdf,representor=vf[0,5-11]
+   -a pci:dbdf,representor=sf1
+   -a pci:dbdf,representor=sf[0-1023]
+   -a pci:dbdf,representor=sf[0,2-1023]
 
 - As virtual devices, they may be more limited than their physical
   counterparts, for instance by exposing only a subset of device
@@ -107,6 +122,17 @@ which can be thought as a software "patch panel" front-end for applications.
 
 .. [1] `Ethernet switch device driver model (switchdev)
        <https://www.kernel.org/doc/Documentation/networking/switchdev.txt>`_
+
+- For some PMDs, memory usage of representors is huge when number of
+  representor grows, mbufs are allocated for each descriptor of Rx queue.
+  Polling large number of ports brings more CPU load, cache miss and
+  latency. Shared Rx queue can be used to share Rx queue between PF and
+  representors among same Rx domain. ``RTE_ETH_DEV_CAPA_RXQ_SHARE`` in
+  device info is used to indicate the capability. Setting non-zero share
+  group in Rx queue configuration to enable share, share_qid is used to
+  identify the shared Rx queue in group. Polling any member port can
+  receive packets of all member ports in the group, port ID is saved in
+  ``mbuf.port``.
 
 Basic SR-IOV
 ------------
@@ -348,8 +374,7 @@ these endpoints provides a standard interface to manage their
 interconnection without introducing new concepts and whole new API to
 implement them. This is described in `flow API (rte_flow)`_.
 
-.. [6] `Generic flow API (rte_flow)
-       <http://doc.dpdk.org/guides/prog_guide/rte_flow.html>`_
+.. [6] :doc:`Generic flow API (rte_flow) <rte_flow>`
 
 Flow API (rte_flow)
 -------------------
@@ -361,7 +386,7 @@ Compared to creating a brand new dedicated interface, **rte_flow** was
 deemed flexible enough to manage representor traffic only with minor
 extensions:
 
-- Using physical ports, PF, VF or port representors as targets.
+- Using physical ports, PF, SF, VF or port representors as targets.
 
 - Affecting traffic that is not necessarily addressed to the DPDK port ID a
   flow rule is associated with (e.g. forcing VF traffic redirection to PF).
@@ -443,64 +468,39 @@ Without Port Representors
 `Traffic direction`_ describes how an application could match traffic coming
 from or going to a specific place reachable from a DPDK port ID. This makes
 sense when the traffic in question is normally seen (i.e. sent or received)
-by the application creating the flow rule (e.g. as in "redirect all traffic
-coming from VF 1 to local queue 6").
+by the application creating the flow rule.
 
-However this does not force such traffic to take a specific route. Creating
-a flow rule on **A** matching traffic coming from **D** is only meaningful
-if it can be received by **A** in the first place, otherwise doing so simply
-has no effect.
-
-A new flow rule attribute named "transfer" is necessary for that. Combining
-it with "ingress" or "egress" and a specific origin requests a flow rule to
-be applied at the lowest level
+However, if there is an entity (VF **D**, for instance) not associated with
+a DPDK port (representor), the application (**A**) won't be able to match
+traffic generated by such entity. The traffic goes directly to its
+default destination (to physical port **F**, for instance).
 
 ::
 
-             ingress only           :       ingress + transfer
-                                    :
-    .-------------. .-------------. : .-------------. .-------------.
-    | hypervisor  | |    VM 1     | : | hypervisor  | |    VM 1     |
-    | application | | application | : | application | | application |
-    `------+------' `--+----------' : `------+------' `--+----------'
-           |           | | traffic  :        |           | | traffic
-     .----(A)----.     | v          :  .----(A)----.     | v
-     | port_id 3 |     |            :  | port_id 3 |     |
-     `-----+-----'     |            :  `-----+-----'     |
-           |           |            :        | ^         |
-           |           |            :        | | traffic |
-         .-+--.    .---+--.         :      .-+--.    .---+--.
-         | PF |    | VF 1 |         :      | PF |    | VF 1 |
-         `-+--'    `--(D)-'         :      `-+--'    `--(D)-'
-           |           | | traffic  :        | ^         | | traffic
-           |           | v          :        | | traffic | v
-        .--+-----------+--.         :     .--+-----------+--.
-        | interconnection |         :     | interconnection |
-        `--------+--------'         :     `--------+--------'
-                 | | traffic        :              |
-                 | v                :              |
-            .---(F)----.            :         .---(F)----.
-            | physical |            :         | physical |
-            |  port 0  |            :         |  port 0  |
-            `----------'            :         `----------'
-
-With "ingress" only, traffic is matched on **A** thus still goes to physical
-port **F** by default
-
-
-::
-
-   testpmd> flow create 3 ingress pattern vf id is 1 / end
-              actions queue index 6 / end
-
-With "ingress + transfer", traffic is matched on **D** and is therefore
-successfully assigned to queue 6 on **A**
-
-
-::
-
-    testpmd> flow create 3 ingress transfer pattern vf id is 1 / end
-              actions queue index 6 / end
+    .-------------. .-------------.
+    | hypervisor  | |    VM 1     |
+    | application | | application |
+    `------+------' `--+----------'
+           |           | | traffic
+     .----(A)----.     | v
+     | port_id 3 |     |
+     `-----+-----'     |
+           |           |
+           |           |
+         .-+--.    .---+--.
+         | PF |    | VF 1 |
+         `-+--'    `--(D)-'
+           |           | | traffic
+           |           | v
+        .--+-----------+--.
+        | interconnection |
+        `--------+--------'
+                 | | traffic
+                 | v
+            .---(F)----.
+            | physical |
+            |  port 0  |
+            `----------'
 
 
 With Port Representors
@@ -513,8 +513,8 @@ exist between them and their represented resources. These may be immutable.
 In this case, traffic is received by default through the representor and
 neither the "transfer" attribute nor traffic origin in flow rule patterns
 are necessary. They simply have to be created on the representor port
-directly and may target a different representor as described in `PORT_ID
-action`_.
+directly and may target a different representor as described
+in `PORT_REPRESENTOR Action`_.
 
 Implicit traffic flow with port representor
 
@@ -549,6 +549,36 @@ Implicit traffic flow with port representor
 
 Pattern Items And Actions
 ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PORT_REPRESENTOR Pattern Item
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Matches traffic entering the embedded switch from the given ethdev.
+
+- Matches **A**, **B** or **C** in `traffic steering`_.
+
+PORT_REPRESENTOR Action
+^^^^^^^^^^^^^^^^^^^^^^^
+
+At embedded switch level, sends matching traffic to the given ethdev.
+
+- Targets **A**, **B** or **C** in `traffic steering`_.
+
+REPRESENTED_PORT Pattern Item
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Matches traffic entering the embedded switch from
+the entity represented by the given ethdev.
+
+- Matches **D**, **E** or **F** in `traffic steering`_.
+
+REPRESENTED_PORT Action
+^^^^^^^^^^^^^^^^^^^^^^^
+
+At embedded switch level, send matching traffic to
+the entity represented by the given ethdev.
+
+- Targets **D**, **E** or **F** in `traffic steering`_.
 
 PORT Pattern Item
 ^^^^^^^^^^^^^^^^^
@@ -594,24 +624,10 @@ Same restrictions as `PORT_ID pattern item`_.
 
 - Targets **A**, **B** or **C** in `traffic steering`_.
 
-PF Pattern Item
-^^^^^^^^^^^^^^^
-
-Matches traffic originating from (ingress) or going to (egress) the physical
-function of the current device.
-
-If supported, should work even if the physical function is not managed by
-the application and thus not associated with a DPDK port ID. Its behavior is
-otherwise similar to `PORT_ID pattern item`_ using PF port ID.
-
-- Matches **A** in `traffic steering`_.
-
 PF Action
 ^^^^^^^^^
 
 Directs matching traffic to the physical function of the current device.
-
-Same restrictions as `PF pattern item`_.
 
 - Targets **A** in `traffic steering`_.
 
@@ -647,7 +663,7 @@ with (e.g. ``VXLAN_ENCAP``) and using specific parameters (e.g. VNI for
 VXLAN).
 
 While they modify traffic and can be used multiple times (order matters),
-unlike `PORT_ID action`_ and friends, they have no impact on steering.
+unlike `PORT_REPRESENTOR Action`_ and friends, they don't impact on steering.
 
 As described in `actions order and repetition`_ this means they are useless
 if used alone in an action list, the resulting traffic gets dropped unless
@@ -736,8 +752,7 @@ respective representors (**B** and **C**) if supported.
 Examples in subsequent sections apply to hypervisor applications only and
 are based on port representors **A**, **B** and **C**.
 
-.. [2] `Flow syntax
-    <http://doc.dpdk.org/guides/testpmd_app_ug/testpmd_funcs.html#flow-syntax>`_
+.. [2] :ref:`Flow syntax <testpmd_rte_flow>`
 
 Associating VF 1 with Physical Port 0
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -747,22 +762,15 @@ their representors
 
 ::
 
-   flow create 3 ingress pattern / end actions port_id id 4 / end
-   flow create 4 ingress pattern / end actions port_id id 3 / end
-
-More practical example with MAC address restrictions
-
-::
-
-   flow create 3 ingress
-       pattern eth dst is {VF 1 MAC} / end
-       actions port_id id 4 / end
+   flow create 3 transfer
+      pattern represented_port ethdev_port_id is 3 / end
+      actions represented_port ethdev_port_id 4 / end
 
 ::
 
-   flow create 4 ingress
-       pattern eth src is {VF 1 MAC} / end
-       actions port_id id 3 / end
+   flow create 3 transfer
+      pattern represented_port ethdev_port_id is 4 / end
+      actions represented_port ethdev_port_id 3 / end
 
 
 Sharing Broadcasts
@@ -772,32 +780,58 @@ From outside to PF and VFs
 
 ::
 
-   flow create 3 ingress
-      pattern eth dst is ff:ff:ff:ff:ff:ff / end
-      actions port_id id 3 / port_id id 4 / port_id id 5 / end
+   flow create 3 transfer
+      pattern
+         represented_port ethdev_port_id is 3 /
+         eth dst is ff:ff:ff:ff:ff:ff /
+         end
+      actions
+         port_representor ethdev_port_id 3 /
+         represented_port ethdev_port_id 4 /
+         represented_port ethdev_port_id 5 /
+         end
 
-Note ``port_id id 3`` is necessary otherwise only VFs would receive matching
+Note ``port_representor ethdev_port_id 3`` is necessary otherwise only VFs would receive matching
 traffic.
 
 From PF to outside and VFs
 
 ::
 
-   flow create 3 egress
-      pattern eth dst is ff:ff:ff:ff:ff:ff / end
-      actions port / port_id id 4 / port_id id 5 / end
+   flow create 3 transfer
+      pattern
+         port_representor ethdev_port_id is 3 /
+         eth dst is ff:ff:ff:ff:ff:ff /
+         end
+      actions
+         represented_port ethdev_port_id 3 /
+         represented_port ethdev_port_id 4 /
+         represented_port ethdev_port_id 5 /
+         end
 
 From VFs to outside and PF
 
 ::
 
-   flow create 4 ingress
-      pattern eth dst is ff:ff:ff:ff:ff:ff src is {VF 1 MAC} / end
-      actions port_id id 3 / port_id id 5 / end
+   flow create 3 transfer
+      pattern
+         represented_port ethdev_port_id is 4 /
+         eth dst is ff:ff:ff:ff:ff:ff /
+         end
+      actions
+         represented_port ethdev_port_id 3 /
+         port_representor ethdev_port_id 3 /
+         end
 
-   flow create 5 ingress
-      pattern eth dst is ff:ff:ff:ff:ff:ff src is {VF 2 MAC} / end
-      actions port_id id 4 / port_id id 4 / end
+   flow create 3 transfer
+      pattern
+         represented_port ethdev_port_id is 5 /
+         eth dst is ff:ff:ff:ff:ff:ff /
+         end
+      actions
+         represented_port ethdev_port_id 3 /
+         port_representor ethdev_port_id 3 /
+         end
 
 Similar ``33:33:*`` rules based on known MAC addresses should be added for
 IPv6 traffic.
@@ -828,10 +862,13 @@ endpoint might not be supported and action list must provide one
 
 ::
 
-   flow create 5 ingress
-      pattern eth src is {VF 2 MAC} / end
-      actions vxlan_encap vni 42 / port_id id 3 / end
+   flow create 3 transfer
+      pattern represented_port ethdev_port_id is 5 / end
+      actions vxlan_encap vni 42 / represented_port ethdev_port_id 3 / end
 
-   flow create 3 ingress
-      pattern vxlan vni is 42 / end
-      actions vxlan_decap / port_id id 5 / end
+   flow create 3 transfer
+      pattern
+         represented_port ethdev_port_id is 3 /
+         vxlan vni is 42 /
+         end
+      actions vxlan_decap / represented_port ethdev_port_id 5 / end

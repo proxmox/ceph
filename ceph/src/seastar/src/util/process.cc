@@ -20,12 +20,24 @@
  * Copyright (C) 2022 Kefu Chai ( tchaikov@gmail.com )
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#include <cassert>
+#include <csignal>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <vector>
+#include <utility>
+module seastar;
+#else
 #include <seastar/core/fstream.hh>
 #include <seastar/core/internal/buffer_allocator.hh>
 #include <seastar/core/io_queue.hh>
 #include <seastar/core/polymorphic_temporary_buffer.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/util/process.hh>
+#endif
 
 namespace seastar::experimental {
 
@@ -70,7 +82,7 @@ public:
     future<> put(temporary_buffer<char> buf) override {
         size_t buf_size = buf.size();
         auto req = internal::io_request::make_write(_fd.get(), 0, buf.get(), buf_size, false);
-        return _io_queue.submit_io_write(default_priority_class(), buf_size, std::move(req), nullptr).then(
+        return _io_queue.submit_io_write(internal::priority_class(internal::maybe_priority_class_ref()), buf_size, std::move(req), nullptr).then(
             [this, buf = std::move(buf), buf_size] (size_t written) mutable {
                 if (written < buf_size) {
                     buf.trim_front(written);
@@ -96,11 +108,11 @@ public:
 };
 }
 
-process::process(create_tag, pid_t pid, file_desc&& stdin, file_desc&& stdout, file_desc&& stderr)
+process::process(create_tag, pid_t pid, file_desc&& cin, file_desc&& cout, file_desc&& cerr)
     : _pid(pid)
-    , _stdin(std::move(stdin))
-    , _stdout(std::move(stdout))
-    , _stderr(std::move(stderr)) {}
+    , _stdin(std::move(cin))
+    , _stdout(std::move(cout))
+    , _stderr(std::move(cerr)) {}
 
 future<process::wait_status> process::wait() {
     return engine().waitpid(_pid).then([] (int wstatus) -> wait_status {
@@ -134,15 +146,15 @@ future<process> process::spawn(const std::filesystem::path& pathname) {
     return spawn(pathname, {{pathname.native()}, {}});
 }
 
-output_stream<char> process::stdin() {
+output_stream<char> process::cin() {
     return output_stream<char>(data_sink(pipe_data_sink_impl::from_fd(std::move(_stdin))));
 }
 
-input_stream<char> process::stdout() {
+input_stream<char> process::cout() {
     return input_stream<char>(data_source(pipe_data_source_impl::from_fd(std::move(_stdout))));
 }
 
-input_stream<char> process::stderr() {
+input_stream<char> process::cerr() {
     return input_stream<char>(data_source(pipe_data_source_impl::from_fd(std::move(_stderr))));
 }
 

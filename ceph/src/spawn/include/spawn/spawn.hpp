@@ -120,7 +120,7 @@ private:
 using yield_context = basic_yield_context<unspecified>;
 #else // defined(GENERATING_DOCUMENTATION)
 using yield_context = basic_yield_context<
-  detail::net::executor_binder<void(*)(), detail::net::executor>>;
+  detail::net::executor_binder<void(*)(), detail::net::any_io_executor>>;
 #endif // defined(GENERATING_DOCUMENTATION)
 
 /**

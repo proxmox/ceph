@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include <rte_common.h>
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 #include <rte_malloc.h>
 
 #include "ccp_pmd_private.h"
@@ -47,9 +47,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 20,                     \
+					 .min = 1,                      \
 					 .max = 20,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -89,9 +89,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 28,                     \
+					 .min = 1,                     \
 					 .max = 28,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -173,9 +173,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 32,                     \
+					 .min = 1,                     \
 					 .max = 32,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -257,9 +257,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 48,                     \
+					 .min = 1,                     \
 					 .max = 48,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -341,9 +341,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 64,                     \
+					 .min = 1,                     \
 					 .max = 64,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -383,9 +383,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 64,                     \
+					 .min = 1,                     \
 					 .max = 64,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			}, }                                            \
@@ -536,9 +536,9 @@
 					 .increment = 1			\
 				 },					\
 				 .digest_size = {			\
-					 .min = 16,			\
+					 .min = 1,			\
 					 .max = 16,			\
-					 .increment = 0			\
+					 .increment = 1			\
 				 },					\
 				 .aad_size = { 0 }			\
 			}, }						\
@@ -727,7 +727,6 @@ ccp_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	}
 
 	qp->sess_mp = qp_conf->mp_session;
-	qp->sess_mp_priv = qp_conf->mp_session_private;
 
 	/* mempool for batch info */
 	qp->batch_mp = rte_mempool_create(
@@ -744,15 +743,8 @@ ccp_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 
 qp_setup_cleanup:
 	dev->data->queue_pairs[qp_id] = NULL;
-	if (qp)
-		rte_free(qp);
+	rte_free(qp);
 	return -1;
-}
-
-static uint32_t
-ccp_pmd_qp_count(struct rte_cryptodev *dev)
-{
-	return dev->data->nb_queue_pairs;
 }
 
 static unsigned
@@ -764,8 +756,7 @@ ccp_pmd_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
 static int
 ccp_pmd_sym_session_configure(struct rte_cryptodev *dev,
 			  struct rte_crypto_sym_xform *xform,
-			  struct rte_cryptodev_sym_session *sess,
-			  struct rte_mempool *mempool)
+			  struct rte_cryptodev_sym_session *sess)
 {
 	int ret;
 	void *sess_private_data;
@@ -776,40 +767,22 @@ ccp_pmd_sym_session_configure(struct rte_cryptodev *dev,
 		return -ENOMEM;
 	}
 
-	if (rte_mempool_get(mempool, &sess_private_data)) {
-		CCP_LOG_ERR("Couldn't get object from session mempool");
-		return -ENOMEM;
-	}
+	sess_private_data = CRYPTODEV_GET_SYM_SESS_PRIV(sess);
+
 	internals = (struct ccp_private *)dev->data->dev_private;
 	ret = ccp_set_session_parameters(sess_private_data, xform, internals);
 	if (ret != 0) {
 		CCP_LOG_ERR("failed configure session parameters");
-
-		/* Return session to mempool */
-		rte_mempool_put(mempool, sess_private_data);
 		return ret;
 	}
-	set_sym_session_private_data(sess, dev->driver_id,
-				 sess_private_data);
 
 	return 0;
 }
 
 static void
-ccp_pmd_sym_session_clear(struct rte_cryptodev *dev,
-		      struct rte_cryptodev_sym_session *sess)
-{
-	uint8_t index = dev->driver_id;
-	void *sess_priv = get_sym_session_private_data(sess, index);
-
-	if (sess_priv) {
-		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
-
-		rte_mempool_put(sess_mp, sess_priv);
-		memset(sess_priv, 0, sizeof(struct ccp_session));
-		set_sym_session_private_data(sess, index, NULL);
-	}
-}
+ccp_pmd_sym_session_clear(struct rte_cryptodev *dev __rte_unused,
+		      struct rte_cryptodev_sym_session *sess __rte_unused)
+{}
 
 struct rte_cryptodev_ops ccp_ops = {
 		.dev_configure		= ccp_pmd_config,
@@ -824,7 +797,6 @@ struct rte_cryptodev_ops ccp_ops = {
 
 		.queue_pair_setup	= ccp_pmd_qp_setup,
 		.queue_pair_release	= ccp_pmd_qp_release,
-		.queue_pair_count	= ccp_pmd_qp_count,
 
 		.sym_session_get_size	= ccp_pmd_sym_session_get_size,
 		.sym_session_configure	= ccp_pmd_sym_session_configure,

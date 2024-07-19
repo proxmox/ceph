@@ -6,6 +6,7 @@
 #define _CPT_MCODE_DEFINES_H_
 
 #include <rte_byteorder.h>
+#include <rte_crypto_asym.h>
 #include <rte_memory.h>
 
 /*
@@ -19,10 +20,27 @@
 #define CPT_MAJOR_OP_ZUC_SNOW3G	0x37
 #define CPT_MAJOR_OP_KASUMI	0x38
 #define CPT_MAJOR_OP_MISC	0x01
+#define CPT_HMAC_FIRST_BIT_POS	0x4
+#define CPT_FC_MINOR_OP_ENCRYPT	0x0
+#define CPT_FC_MINOR_OP_DECRYPT	0x1
 
-#define CPT_BYTE_16		16
-#define CPT_BYTE_24		24
-#define CPT_BYTE_32		32
+/* AE opcodes */
+#define CPT_MAJOR_OP_MODEX	0x03
+#define CPT_MAJOR_OP_ECDSA	0x04
+#define CPT_MAJOR_OP_ECC	0x05
+#define CPT_MINOR_OP_MODEX	0x01
+#define CPT_MINOR_OP_PKCS_ENC	0x02
+#define CPT_MINOR_OP_PKCS_ENC_CRT	0x03
+#define CPT_MINOR_OP_PKCS_DEC	0x04
+#define CPT_MINOR_OP_PKCS_DEC_CRT	0x05
+#define CPT_MINOR_OP_MODEX_CRT	0x06
+#define CPT_MINOR_OP_ECDSA_SIGN	0x01
+#define CPT_MINOR_OP_ECDSA_VERIFY	0x02
+#define CPT_MINOR_OP_ECC_UMP	0x03
+
+#define CPT_BLOCK_TYPE1 0
+#define CPT_BLOCK_TYPE2 1
+
 #define CPT_MAX_SG_IN_OUT_CNT	32
 #define CPT_MAX_SG_CNT		(CPT_MAX_SG_IN_OUT_CNT/2)
 
@@ -88,7 +106,7 @@ typedef enum {
 	SHA2_SHA384     = 5,
 	SHA2_SHA512     = 6,
 	GMAC_TYPE       = 7,
-	XCBC_TYPE       = 8,
+	POLY1305        = 8,
 	SHA3_SHA224     = 10,
 	SHA3_SHA256     = 11,
 	SHA3_SHA384     = 12,
@@ -118,6 +136,7 @@ typedef enum {
 	AES_CTR     = 0x6,
 	AES_GCM     = 0x7,
 	AES_XTS     = 0x8,
+	CHACHA20    = 0x9,
 
 	/* These are only for software use */
 	ZUC_EEA3        = 0x90,
@@ -190,6 +209,23 @@ typedef enum {
 	CPT_8X_COMP_E_LAST_ENTRY = (0xFF)
 } cpt_comp_e_t;
 
+/**
+ * Enumeration cpt_ec_id
+ *
+ * Enumerates supported elliptic curves
+ */
+typedef enum {
+	CPT_EC_ID_P192 = 0,
+	CPT_EC_ID_P224 = 1,
+	CPT_EC_ID_P256 = 2,
+	CPT_EC_ID_P384 = 3,
+	CPT_EC_ID_P521 = 4,
+	CPT_EC_ID_P160 = 5,
+	CPT_EC_ID_P320 = 6,
+	CPT_EC_ID_P512 = 7,
+	CPT_EC_ID_PMAX = 8
+} cpt_ec_id_t;
+
 typedef struct sglist_comp {
 	union {
 		uint64_t len;
@@ -209,10 +245,14 @@ struct cpt_sess_misc {
 	uint16_t aes_gcm:1;
 	/** Flag for AES CTR */
 	uint16_t aes_ctr:1;
+	/** Flag for CHACHA POLY */
+	uint16_t chacha_poly:1;
 	/** Flag for NULL cipher/auth */
 	uint16_t is_null:1;
 	/** Flag for GMAC */
 	uint16_t is_gmac:1;
+	/** Unused field */
+	uint16_t rsvd1:3;
 	/** AAD length */
 	uint16_t aad_length;
 	/** MAC len in bytes */
@@ -221,53 +261,30 @@ struct cpt_sess_misc {
 	uint8_t iv_length;
 	/** Auth IV length in bytes */
 	uint8_t auth_iv_length;
-	/** Reserved field */
-	uint8_t rsvd1;
+	/** Unused field */
+	uint8_t rsvd2;
 	/** IV offset in bytes */
 	uint16_t iv_offset;
 	/** Auth IV offset in bytes */
 	uint16_t auth_iv_offset;
 	/** Salt */
 	uint32_t salt;
+	/** CPT inst word 7 */
+	uint64_t cpt_inst_w7;
 	/** Context DMA address */
 	phys_addr_t ctx_dma_addr;
 };
 
-typedef union {
-	uint64_t flags;
-	struct {
-#if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
-		uint64_t enc_cipher   : 4;
-		uint64_t reserved1    : 1;
-		uint64_t aes_key      : 2;
-		uint64_t iv_source    : 1;
-		uint64_t hash_type    : 4;
-		uint64_t reserved2    : 3;
-		uint64_t auth_input_type : 1;
-		uint64_t mac_len      : 8;
-		uint64_t reserved3    : 8;
-		uint64_t encr_offset  : 16;
-		uint64_t iv_offset    : 8;
-		uint64_t auth_offset  : 8;
-#else
-		uint64_t auth_offset  : 8;
-		uint64_t iv_offset    : 8;
-		uint64_t encr_offset  : 16;
-		uint64_t reserved3    : 8;
-		uint64_t mac_len      : 8;
-		uint64_t auth_input_type : 1;
-		uint64_t reserved2    : 3;
-		uint64_t hash_type    : 4;
-		uint64_t iv_source    : 1;
-		uint64_t aes_key      : 2;
-		uint64_t reserved1    : 1;
-		uint64_t enc_cipher   : 4;
-#endif
-	} e;
-} encr_ctrl_t;
-
 typedef struct {
-	encr_ctrl_t enc_ctrl;
+	uint64_t iv_source      : 1;
+	uint64_t aes_key        : 2;
+	uint64_t rsvd_60        : 1;
+	uint64_t enc_cipher     : 4;
+	uint64_t auth_input_type : 1;
+	uint64_t rsvd_52_54     : 3;
+	uint64_t hash_type      : 4;
+	uint64_t mac_len        : 8;
+	uint64_t rsvd_39_0      : 40;
 	uint8_t  encr_key[32];
 	uint8_t  encr_iv[16];
 } mc_enc_context_t;
@@ -303,15 +320,60 @@ struct cpt_ctx {
 	uint64_t hmac		:1;
 	uint64_t zsk_flags	:3;
 	uint64_t k_ecb		:1;
-	uint64_t snow3g		:1;
-	uint64_t rsvd		:22;
+	uint64_t auth_enc	:1;
+	uint64_t dec_auth	:1;
+	uint64_t snow3g		:2;
+	uint64_t rsvd		:19;
 	/* Below fields are accessed by hardware */
 	union {
 		mc_fc_context_t fctx;
 		mc_zuc_snow3g_ctx_t zs_ctx;
 		mc_kasumi_ctx_t k_ctx;
+	} mc_ctx;
+	uint8_t *auth_key;
+	uint64_t auth_key_iova;
+};
+
+/* Prime and order fields of built-in elliptic curves */
+struct cpt_ec_group {
+	struct {
+		/* P521 maximum length */
+		uint8_t data[66];
+		unsigned int length;
+	} prime;
+
+	struct {
+		/* P521 maximum length */
+		uint8_t data[66];
+		unsigned int length;
+	} order;
+
+	struct {
+		/* P521 maximum length */
+		uint8_t data[66];
+		unsigned int length;
+	} consta;
+
+	struct {
+		/* P521 maximum length */
+		uint8_t data[66];
+		unsigned int length;
+	} constb;
+};
+
+struct cpt_asym_ec_ctx {
+	/* Prime length defined by microcode for EC operations */
+	uint8_t curveid;
+};
+
+struct cpt_asym_sess_misc {
+	enum rte_crypto_asym_xform_type xfrm_type;
+	union {
+		struct rte_crypto_rsa_xform rsa_ctx;
+		struct rte_crypto_modex_xform mod_ctx;
+		struct cpt_asym_ec_ctx ec_ctx;
 	};
-	uint8_t  auth_key[64];
+	uint64_t cpt_inst_w7;
 };
 
 /* Buffer pointer */
@@ -325,16 +387,8 @@ typedef struct buf_ptr {
 /* IOV Pointer */
 typedef struct{
 	int buf_cnt;
-	buf_ptr_t bufs[0];
+	buf_ptr_t bufs[];
 } iov_ptr_t;
-
-typedef union opcode_info {
-	uint16_t flags;
-	struct {
-		uint8_t major;
-		uint8_t minor;
-	} s;
-} opcode_info_t;
 
 typedef struct fc_params {
 	/* 0th cache line */
@@ -358,6 +412,14 @@ typedef struct fc_params {
 } fc_params_t;
 
 /*
+ * Parameters for asymmetric operations
+ */
+struct asym_op_params {
+	struct cpt_request_info *req;
+	phys_addr_t meta_buf;
+};
+
+/*
  * Parameters for digest
  * generate requests
  * Only src_iov, op, ctx_buf, mac_buf, prep_req
@@ -373,8 +435,6 @@ typedef mc_hash_type_t auth_type_t;
 
 /* Helper macros */
 
-#define CPT_P_ENC_CTRL(fctx)  fctx->enc.enc_ctrl.e
-
 #define SRC_IOV_SIZE \
 	(sizeof(iov_ptr_t) + (sizeof(buf_ptr_t) * CPT_MAX_SG_CNT))
 #define DST_IOV_SIZE \
@@ -382,6 +442,9 @@ typedef mc_hash_type_t auth_type_t;
 
 #define SESS_PRIV(__sess) \
 	(void *)((uint8_t *)__sess + sizeof(struct cpt_sess_misc))
+
+#define GET_SESS_FC_TYPE(__sess) \
+	(((struct cpt_ctx *)(SESS_PRIV(__sess)))->fc_type)
 
 /*
  * Get the session size

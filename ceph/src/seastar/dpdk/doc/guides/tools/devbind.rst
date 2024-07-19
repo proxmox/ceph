@@ -1,32 +1,5 @@
-..  BSD LICENSE
+..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2016 Canonical Limited. All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
 
 dpdk-devbind Application
 ========================
@@ -57,11 +30,11 @@ OPTIONS
         Print the current status of all known network interfaces.
         For each device, it displays the PCI domain, bus, slot and function,
         along with a text description of the device. Depending upon whether the
-        device is being used by a kernel driver, the ``igb_uio`` driver, or no
+        device is being used by a kernel driver, the ``vfio-pci`` driver, or no
         driver, other relevant information will be displayed:
         - the Linux interface name e.g. ``if=eth0``
-        - the driver being used e.g. ``drv=igb_uio``
-        - any suitable drivers not currently using that device e.g. ``unused=igb_uio``
+        - the driver being used e.g. ``drv=vfio-pci``
+        - any suitable drivers not currently using that device e.g. ``unused=vfio-pci``
         NOTE: if this flag is passed along with a bind/unbind option, the
         status display will always occur after the other operations have taken
         place.
@@ -107,9 +80,9 @@ To display current device status::
 
    dpdk-devbind --status
 
-To bind eth1 from the current driver and move to use igb_uio::
+To bind eth1 from the current driver and move to use vfio-pci::
 
-   dpdk-devbind --bind=igb_uio eth1
+   dpdk-devbind --bind=vfio-pci eth1
 
 To unbind 0000:01:00.0 from using any driver::
 
@@ -119,7 +92,7 @@ To bind 0000:02:00.0 and 0000:02:00.1 to the ixgbe kernel driver::
 
    dpdk-devbind -b ixgbe 02:00.0 02:00.1
 
-To check status of all network ports, assign one to the igb_uio driver and check status again::
+To check status of all network ports, assign one to the vfio-pci driver and check status again::
 
    # Check the status of the available devices.
    dpdk-devbind --status
@@ -132,12 +105,12 @@ To check status of all network ports, assign one to the igb_uio driver and check
    0000:0a:00.0 '82599ES 10-Gigabit' if=eth2 drv=ixgbe unused=
 
 
-   # Bind the device to igb_uio.
-   sudo dpdk-devbind -b igb_uio 0000:0a:00.0
+   # Bind the device to vfio-pci.
+   sudo dpdk-devbind -b vfio-pci 0000:0a:00.0
 
 
    # Recheck the status of the devices.
    dpdk-devbind --status
    Network devices using DPDK-compatible driver
    ============================================
-   0000:0a:00.0 '82599ES 10-Gigabit' drv=igb_uio unused=
+   0000:0a:00.0 '82599ES 10-Gigabit' drv=vfio-pci unused=

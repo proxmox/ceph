@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2010-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP
+ * Copyright 2017-2019 NXP
  *
  */
 #include <inttypes.h>
-#include <of.h>
+#include <dpaa_of.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
-#include <error.h>
+#include <err.h>
 #include <net/if_arp.h>
 #include <assert.h>
 #include <unistd.h>
@@ -44,15 +44,11 @@ dump_netcfg(struct netcfg_info *cfg_ptr)
 
 		printf("\n+ Fman %d, MAC %d (%s);\n",
 		       __if->fman_idx, __if->mac_idx,
-		       (__if->mac_type == fman_mac_1g) ? "1G" : "10G");
+		       (__if->mac_type == fman_mac_1g) ? "1G" :
+		       (__if->mac_type == fman_mac_2_5g) ? "2.5G" : "10G");
 
-		printf("\tmac_addr: %02x:%02x:%02x:%02x:%02x:%02x\n",
-		       (&__if->mac_addr)->addr_bytes[0],
-		       (&__if->mac_addr)->addr_bytes[1],
-		       (&__if->mac_addr)->addr_bytes[2],
-		       (&__if->mac_addr)->addr_bytes[3],
-		       (&__if->mac_addr)->addr_bytes[4],
-		       (&__if->mac_addr)->addr_bytes[5]);
+		printf("\tmac_addr: " RTE_ETHER_ADDR_PRT_FMT "\n",
+		       RTE_ETHER_ADDR_BYTES(&__if->mac_addr));
 
 		printf("\ttx_channel_id: 0x%02x\n",
 		       __if->tx_channel_id);
@@ -89,7 +85,7 @@ netcfg_acquire(void)
 	 */
 	skfd = socket(AF_PACKET, SOCK_RAW, 0);
 	if (unlikely(skfd < 0)) {
-		error(0, errno, "%s(): open(SOCK_RAW)", __func__);
+		err(0, "%s(): open(SOCK_RAW)", __func__);
 		return NULL;
 	}
 

@@ -19,6 +19,22 @@
  * Copyright 2019 ScyllaDB
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <algorithm>
+#include <atomic>
+#ifdef SEASTAR_COROUTINES_ENABLED
+#include <coroutine>
+#endif
+#include <deque>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <vector>
+
 #define __user /* empty */  // for xfs includes, below
 
 #include <sys/syscall.h>
@@ -30,9 +46,20 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <xfs/linux.h>
+/*
+ * With package xfsprogs-devel >= 5.14.1, `fallthrough` has defined to
+ * fix compilation warning in header <xfs/linux.h>,
+ * (see: https://git.kernel.org/pub/scm/fs/xfs/xfsprogs-dev.git/commit/?id=df9c7d8d8f3ed0785ed83e7fd0c7ddc92cbfbe15)
+ * There is a confliction with c++ keyword `fallthrough`, so undefine fallthrough here.
+ */
+#undef fallthrough   
 #define min min    /* prevent xfs.h from defining min() as a macro */
 #include <xfs/xfs.h>
 #undef min
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/internal/read_state.hh>
 #include <seastar/core/internal/uname.hh>
 #include <seastar/core/reactor.hh>
@@ -43,14 +70,18 @@
 #include <seastar/util/internal/magic.hh>
 #include <seastar/util/internal/iovec_utils.hh>
 #include <seastar/core/io_queue.hh>
+#include <seastar/core/queue.hh>
 #include "core/file-impl.hh"
 #include "core/syscall_result.hh"
 #include "core/thread_pool.hh"
+#endif
 
 namespace seastar {
 
+#if SEASTAR_API_LEVEL < 7
 static_assert(std::is_nothrow_copy_constructible_v<io_priority_class>);
 static_assert(std::is_nothrow_move_constructible_v<io_priority_class>);
+#endif
 
 namespace internal {
 
@@ -170,7 +201,7 @@ posix_file_impl::posix_file_impl(int fd, open_flags f, std::atomic<unsigned>* re
 }
 
 future<>
-posix_file_impl::flush(void) noexcept {
+posix_file_impl::flush() noexcept {
     if ((_open_flags & open_flags::dsync) != open_flags{}) {
         return make_ready_future<>();
     }
@@ -179,7 +210,14 @@ posix_file_impl::flush(void) noexcept {
 
 future<struct stat>
 posix_file_impl::stat() noexcept {
-    return engine().fstat(_fd);
+    return engine()._thread_pool->submit<syscall_result_extra<struct stat>>([fd = _fd] {
+        struct stat st;
+        auto ret = ::fstat(fd, &st);
+        return wrap_syscall(ret, st);
+    }).then([] (syscall_result_extra<struct stat> ret) {
+        ret.throw_if_error();
+        return make_ready_future<struct stat>(ret.extra);
+    });
 }
 
 future<>
@@ -292,16 +330,23 @@ posix_file_impl::close() noexcept {
     }
     delete _refcount;
     _refcount = nullptr;
-    auto closed = [fd] () noexcept {
-        try {
-            return engine()._thread_pool->submit<syscall_result<int>>([fd] {
-                return wrap_syscall<int>(::close(fd));
-            });
-        } catch (...) {
-            report_exception("Running ::close() in reactor thread, submission failed with exception", std::current_exception());
-            return make_ready_future<syscall_result<int>>(wrap_syscall<int>(::close(fd)));
-        }
-    }();
+    auto closed = make_ready_future<syscall_result<int>>(0, 0);
+    if ((_open_flags & open_flags::ro) != open_flags{}) {
+        closed = futurize_invoke([fd] () noexcept {
+            return wrap_syscall<int>(::close(fd));
+        });
+    } else {
+        closed = std::invoke([fd] () noexcept {
+            try {
+                return engine()._thread_pool->submit<syscall_result<int>>([fd] {
+                    return wrap_syscall<int>(::close(fd));
+                });
+            } catch (...) {
+                report_exception("Running ::close() in reactor thread, submission failed with exception", std::current_exception());
+                return make_ready_future<syscall_result<int>>(wrap_syscall<int>(::close(fd)));
+            }
+        });
+    }
     return closed.then([] (syscall_result<int> sr) {
       try {
         sr.throw_if_error();
@@ -312,7 +357,7 @@ posix_file_impl::close() noexcept {
 }
 
 future<uint64_t>
-blockdev_file_impl::size(void) noexcept {
+blockdev_file_impl::size() noexcept {
     return engine()._thread_pool->submit<syscall_result_extra<size_t>>([this] {
         uint64_t size;
         int ret = ::ioctl(_fd, BLKGETSIZE64, &size);
@@ -322,6 +367,72 @@ blockdev_file_impl::size(void) noexcept {
         return make_ready_future<uint64_t>(ret.extra);
     });
 }
+
+static std::optional<directory_entry_type> dirent_type(const linux_dirent64& de) {
+    std::optional<directory_entry_type> type;
+    switch (de.d_type) {
+    case DT_BLK:
+        type = directory_entry_type::block_device;
+        break;
+    case DT_CHR:
+        type = directory_entry_type::char_device;
+        break;
+    case DT_DIR:
+        type = directory_entry_type::directory;
+        break;
+    case DT_FIFO:
+        type = directory_entry_type::fifo;
+        break;
+    case DT_REG:
+        type = directory_entry_type::regular;
+        break;
+    case DT_LNK:
+        type = directory_entry_type::link;
+        break;
+    case DT_SOCK:
+        type = directory_entry_type::socket;
+        break;
+    default:
+        // unknown, ignore
+        ;
+    }
+    return type;
+}
+
+#ifdef SEASTAR_COROUTINES_ENABLED
+static coroutine::experimental::generator<directory_entry> make_list_directory_generator(int fd) {
+    temporary_buffer<char> buf(8192);
+
+    while (true) {
+        auto size = co_await engine().read_directory(fd, buf.get_write(), buf.size());
+        if (size == 0) {
+            co_return;
+        }
+
+        for (const char* b = buf.get(); b < buf.get() + size; ) {
+            const auto de = reinterpret_cast<const linux_dirent64*>(b);
+            b += de->d_reclen;
+            sstring name(de->d_name);
+            if (name == "." || name == "..") {
+                continue;
+            }
+            std::optional<directory_entry_type> type = dirent_type(*de);
+            // See: https://github.com/scylladb/seastar/issues/1677
+            directory_entry ret{std::move(name), type};
+            co_yield ret;
+        }
+    }
+}
+
+coroutine::experimental::generator<directory_entry> posix_file_impl::experimental_list_directory() {
+    // due to https://github.com/scylladb/seastar/issues/1913, we cannot use
+    // buffered generator yet.
+    // TODO:
+    // Keep 8 entries. The sizeof(directory_entry) is 24 bytes, the name itself 
+    // is allocated out of this buffer, so the buffer would grow up to ~200 bytes
+    return make_list_directory_generator(_fd);
+}
+#endif
 
 subscription<directory_entry>
 posix_file_impl::list_directory(std::function<future<> (directory_entry de)> next) {
@@ -340,15 +451,6 @@ posix_file_impl::list_directory(std::function<future<> (directory_entry de)> nex
     // required for this to work.  So resort to using getdents()
     // instead.
 
-    // From getdents(2):
-    struct linux_dirent64 {
-        ino64_t        d_ino;    /* 64-bit inode number */
-        off64_t        d_off;    /* 64-bit offset to next structure */
-        unsigned short d_reclen; /* Size of this dirent */
-        unsigned char  d_type;   /* File type */
-        char           d_name[]; /* Filename (null-terminated) */
-    };
-
     auto w = make_lw_shared<work>();
     auto ret = w->s.listen(std::move(next));
     // List the directory asynchronously in the background.
@@ -357,53 +459,23 @@ posix_file_impl::list_directory(std::function<future<> (directory_entry de)> nex
         auto eofcond = [w] { return w->eof; };
         return do_until(eofcond, [w, this] {
             if (w->current == w->total) {
-                return engine()._thread_pool->submit<syscall_result<long>>([w , this] () {
-                    auto ret = ::syscall(__NR_getdents64, _fd, reinterpret_cast<linux_dirent64*>(w->buffer), buffer_size);
-                    return wrap_syscall(ret);
-                }).then([w] (syscall_result<long> ret) {
-                    ret.throw_if_error();
-                    if (ret.result == 0) {
+                return engine().read_directory(_fd, w->buffer, buffer_size).then([w] (auto size) {
+                    if (size == 0) {
                         w->eof = true;
                     } else {
                         w->current = 0;
-                        w->total = ret.result;
+                        w->total = size;
                     }
                 });
             }
             auto start = w->buffer + w->current;
             auto de = reinterpret_cast<linux_dirent64*>(start);
-            std::optional<directory_entry_type> type;
-            switch (de->d_type) {
-            case DT_BLK:
-                type = directory_entry_type::block_device;
-                break;
-            case DT_CHR:
-                type = directory_entry_type::char_device;
-                break;
-            case DT_DIR:
-                type = directory_entry_type::directory;
-                break;
-            case DT_FIFO:
-                type = directory_entry_type::fifo;
-                break;
-            case DT_REG:
-                type = directory_entry_type::regular;
-                break;
-            case DT_LNK:
-                type = directory_entry_type::link;
-                break;
-            case DT_SOCK:
-                type = directory_entry_type::socket;
-                break;
-            default:
-                // unknown, ignore
-                ;
-            }
             w->current += de->d_reclen;
             sstring name = de->d_name;
             if (name == "." || name == "..") {
                 return make_ready_future<>();
             }
+            std::optional<directory_entry_type> type = dirent_type(*de);
             return w->s.produce({std::move(name), type});
         });
     }).then([w] {
@@ -413,58 +485,58 @@ posix_file_impl::list_directory(std::function<future<> (directory_entry de)> nex
 }
 
 future<size_t>
-posix_file_impl::do_write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& io_priority_class, io_intent* intent) noexcept {
+posix_file_impl::do_write_dma(uint64_t pos, const void* buffer, size_t len, internal::maybe_priority_class_ref io_priority_class, io_intent* intent) noexcept {
     auto req = internal::io_request::make_write(_fd, pos, buffer, len, _nowait_works);
-    return _io_queue.submit_io_write(io_priority_class, len, std::move(req), intent);
+    return _io_queue.submit_io_write(internal::priority_class(io_priority_class), len, std::move(req), intent);
 }
 
 future<size_t>
-posix_file_impl::do_write_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& io_priority_class, io_intent* intent) noexcept {
+posix_file_impl::do_write_dma(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref io_priority_class, io_intent* intent) noexcept {
     auto len = internal::sanitize_iovecs(iov, _disk_write_dma_alignment);
     auto req = internal::io_request::make_writev(_fd, pos, iov, _nowait_works);
-    return _io_queue.submit_io_write(io_priority_class, len, std::move(req), intent, std::move(iov));
+    return _io_queue.submit_io_write(internal::priority_class(io_priority_class), len, std::move(req), intent, std::move(iov));
 }
 
 future<size_t>
-posix_file_impl::do_read_dma(uint64_t pos, void* buffer, size_t len, const io_priority_class& io_priority_class, io_intent* intent) noexcept {
+posix_file_impl::do_read_dma(uint64_t pos, void* buffer, size_t len, internal::maybe_priority_class_ref io_priority_class, io_intent* intent) noexcept {
     auto req = internal::io_request::make_read(_fd, pos, buffer, len, _nowait_works);
-    return _io_queue.submit_io_read(io_priority_class, len, std::move(req), intent);
+    return _io_queue.submit_io_read(internal::priority_class(io_priority_class), len, std::move(req), intent);
 }
 
 future<size_t>
-posix_file_impl::do_read_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& io_priority_class, io_intent* intent) noexcept {
+posix_file_impl::do_read_dma(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref io_priority_class, io_intent* intent) noexcept {
     auto len = internal::sanitize_iovecs(iov, _disk_read_dma_alignment);
     auto req = internal::io_request::make_readv(_fd, pos, iov, _nowait_works);
-    return _io_queue.submit_io_read(io_priority_class, len, std::move(req), intent, std::move(iov));
+    return _io_queue.submit_io_read(internal::priority_class(io_priority_class), len, std::move(req), intent, std::move(iov));
 }
 
 future<size_t>
-posix_file_real_impl::write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+posix_file_real_impl::write_dma(uint64_t pos, const void* buffer, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_write_dma(pos, buffer, len, pc, intent);
 }
 
 future<size_t>
-posix_file_real_impl::write_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc, io_intent* intent) noexcept {
+posix_file_real_impl::write_dma(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_write_dma(pos, std::move(iov), pc, intent);
 }
 
 future<size_t>
-posix_file_real_impl::read_dma(uint64_t pos, void* buffer, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+posix_file_real_impl::read_dma(uint64_t pos, void* buffer, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_read_dma(pos, buffer, len, pc, intent);
 }
 
 future<size_t>
-posix_file_real_impl::read_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc, io_intent* intent) noexcept {
+posix_file_real_impl::read_dma(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_read_dma(pos, std::move(iov), pc, intent);
 }
 
 future<temporary_buffer<uint8_t>>
-posix_file_real_impl::dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc, io_intent* intent) noexcept {
+posix_file_real_impl::dma_read_bulk(uint64_t offset, size_t range_size, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_dma_read_bulk(offset, range_size, pc, intent);
 }
 
 future<temporary_buffer<uint8_t>>
-posix_file_impl::do_dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc, io_intent* intent) noexcept {
+posix_file_impl::do_dma_read_bulk(uint64_t offset, size_t range_size, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     using tmp_buf_type = typename internal::file_read_state<uint8_t>::tmp_buf_type;
 
   try {
@@ -482,10 +554,8 @@ posix_file_impl::do_dma_read_bulk(uint64_t offset, size_t range_size, const io_p
     // First, try to read directly into the buffer. Most of the reads will
     // end here.
     //
-    auto read = read_dma(offset, rstate->buf.get_write(),
-                         rstate->buf.size(), pc, intent);
-
-    return read.then([rstate, this, &pc] (size_t size) mutable {
+    auto read = read_dma_one(offset, rstate->buf.get_write(), rstate->buf.size(), pc, intent);
+    return read.then([rstate, this, pc] (size_t size) mutable {
         rstate->pos = size;
 
         //
@@ -501,9 +571,8 @@ posix_file_impl::do_dma_read_bulk(uint64_t offset, size_t range_size, const io_p
         //
         return do_until(
             [rstate] { return rstate->done(); },
-            [rstate, this, &pc] () mutable {
-            return read_maybe_eof(
-                rstate->cur_offset(), rstate->left_to_read(), pc, rstate->get_intent()).then(
+            [rstate, this, pc] () mutable {
+            return read_maybe_eof(rstate->cur_offset(), rstate->left_to_read(), pc, rstate->get_intent()).then(
                     [rstate] (auto buf1) mutable {
                 if (buf1.size()) {
                     rstate->append_new_data(buf1);
@@ -528,7 +597,7 @@ posix_file_impl::do_dma_read_bulk(uint64_t offset, size_t range_size, const io_p
 }
 
 future<temporary_buffer<uint8_t>>
-posix_file_impl::read_maybe_eof(uint64_t pos, size_t len, const io_priority_class& pc, io_intent* intent) {
+posix_file_impl::read_maybe_eof(uint64_t pos, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) {
     //
     // We have to allocate a new aligned buffer to make sure we don't get
     // an EINVAL error due to unaligned destination buffer.
@@ -539,10 +608,10 @@ posix_file_impl::read_maybe_eof(uint64_t pos, size_t len, const io_priority_clas
     // try to read a single bulk from the given position
     auto dst = buf.get_write();
     auto buf_size = buf.size();
-    return read_dma(pos, dst, buf_size, pc, intent).then_wrapped(
+    return read_dma_one(pos, dst, buf_size, pc, intent).then_wrapped(
             [buf = std::move(buf)](future<size_t> f) mutable {
         try {
-            size_t size = f.get0();
+            size_t size = f.get();
 
             buf.trim(size);
 
@@ -606,27 +675,27 @@ blockdev_file_impl::allocate(uint64_t position, uint64_t length) noexcept {
 }
 
 future<size_t>
-blockdev_file_impl::write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+blockdev_file_impl::write_dma(uint64_t pos, const void* buffer, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_write_dma(pos, buffer, len, pc, intent);
 }
 
 future<size_t>
-blockdev_file_impl::write_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc, io_intent* intent) noexcept {
+blockdev_file_impl::write_dma(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_write_dma(pos, std::move(iov), pc, intent);
 }
 
 future<size_t>
-blockdev_file_impl::read_dma(uint64_t pos, void* buffer, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+blockdev_file_impl::read_dma(uint64_t pos, void* buffer, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_read_dma(pos, buffer, len, pc, intent);
 }
 
 future<size_t>
-blockdev_file_impl::read_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc, io_intent* intent) noexcept {
+blockdev_file_impl::read_dma(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_read_dma(pos, std::move(iov), pc, intent);
 }
 
 future<temporary_buffer<uint8_t>>
-blockdev_file_impl::dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc, io_intent* intent) noexcept {
+blockdev_file_impl::dma_read_bulk(uint64_t offset, size_t range_size, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_dma_read_bulk(offset, range_size, pc, intent);
 }
 
@@ -783,7 +852,7 @@ append_challenged_posix_file_impl::commit_size(uint64_t size) noexcept {
 }
 
 future<size_t>
-append_challenged_posix_file_impl::read_dma(uint64_t pos, void* buffer, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+append_challenged_posix_file_impl::read_dma(uint64_t pos, void* buffer, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     if (pos >= _logical_size) {
         // yield() avoids tail recursion
         return yield().then([] {
@@ -796,14 +865,14 @@ append_challenged_posix_file_impl::read_dma(uint64_t pos, void* buffer, size_t l
         opcode::read,
         pos,
         len,
-        [this, pos, buffer, len, &pc, iref = std::move(iref)] () mutable {
+        [this, pos, buffer, len, pc, iref = std::move(iref)] () mutable {
             return posix_file_impl::do_read_dma(pos, buffer, len, pc, iref.retrieve());
         }
     );
 }
 
 future<size_t>
-append_challenged_posix_file_impl::read_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc, io_intent* intent) noexcept {
+append_challenged_posix_file_impl::read_dma(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     if (pos >= _logical_size) {
         // yield() avoids tail recursion
         return yield().then([] {
@@ -828,20 +897,20 @@ append_challenged_posix_file_impl::read_dma(uint64_t pos, std::vector<iovec> iov
         opcode::read,
         pos,
         len,
-        [this, pos, iov = std::move(iov), &pc, iref = std::move(iref)] () mutable {
+        [this, pos, iov = std::move(iov), pc, iref = std::move(iref)] () mutable {
             return posix_file_impl::do_read_dma(pos, std::move(iov), pc, iref.retrieve());
         }
     );
 }
 
 future<size_t>
-append_challenged_posix_file_impl::write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+append_challenged_posix_file_impl::write_dma(uint64_t pos, const void* buffer, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     internal::intent_reference iref(intent);
     return enqueue<size_t>(
         opcode::write,
         pos,
         len,
-        [this, pos, buffer, len, &pc, iref = std::move(iref)] {
+        [this, pos, buffer, len, pc, iref = std::move(iref)] {
             return posix_file_impl::do_write_dma(pos, buffer, len, pc, iref.retrieve()).then([this, pos] (size_t ret) {
                 commit_size(pos + ret);
                 return make_ready_future<size_t>(ret);
@@ -851,14 +920,14 @@ append_challenged_posix_file_impl::write_dma(uint64_t pos, const void* buffer, s
 }
 
 future<size_t>
-append_challenged_posix_file_impl::write_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc, io_intent* intent) noexcept {
+append_challenged_posix_file_impl::write_dma(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     auto len = internal::iovec_len(iov);
     internal::intent_reference iref(intent);
     return enqueue<size_t>(
         opcode::write,
         pos,
         len,
-        [this, pos, iov = std::move(iov), &pc, iref = std::move(iref)] () mutable {
+        [this, pos, iov = std::move(iov), pc, iref = std::move(iref)] () mutable {
             return posix_file_impl::do_write_dma(pos, std::move(iov), pc, iref.retrieve()).then([this, pos] (size_t ret) {
                 commit_size(pos + ret);
                 return make_ready_future<size_t>(ret);
@@ -868,7 +937,7 @@ append_challenged_posix_file_impl::write_dma(uint64_t pos, std::vector<iovec> io
 }
 
 future<temporary_buffer<uint8_t>>
-append_challenged_posix_file_impl::dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc, io_intent* intent) noexcept {
+append_challenged_posix_file_impl::dma_read_bulk(uint64_t offset, size_t range_size, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return posix_file_impl::do_dma_read_bulk(offset, range_size, pc, intent);
 }
 
@@ -992,86 +1061,85 @@ xfs_concurrency_from_kernel_version() {
 }
 
 future<shared_ptr<file_impl>>
-make_file_impl(int fd, file_open_options options, int flags) noexcept {
-    return engine().fstat(fd).then([fd, options = std::move(options), flags] (struct stat st) mutable {
-        auto st_dev = st.st_dev;
-
-        if (S_ISBLK(st.st_mode)) {
-            size_t block_size;
-            auto ret = ::ioctl(fd, BLKBSZGET, &block_size);
-            if (ret == -1) {
-                return make_exception_future<shared_ptr<file_impl>>(
-                        std::system_error(errno, std::system_category(), "ioctl(BLKBSZGET) failed"));
-            }
-            return make_ready_future<shared_ptr<file_impl>>(make_shared<blockdev_file_impl>(fd, open_flags(flags), options, st.st_rdev, block_size));
-        } else {
-            if (S_ISDIR(st.st_mode)) {
-                // Directories don't care about block size, so we need not
-                // query it here. Just provide something reasonable.
-                internal::fs_info fsi;
-                fsi.block_size = 4096;
-                fsi.nowait_works = false;
-                return make_ready_future<shared_ptr<file_impl>>(make_shared<posix_file_real_impl>(fd, open_flags(flags), options, fsi, st_dev));
-            }
-            static thread_local std::unordered_map<decltype(st_dev), internal::fs_info> s_fstype;
-            future<> get_fs_info = s_fstype.count(st_dev) ? make_ready_future<>() :
-                engine().fstatfs(fd).then([fd, st_dev] (struct statfs sfs) {
-                    internal::fs_info fsi;
-                    fsi.block_size = sfs.f_bsize;
-                    switch (sfs.f_type) {
-                    case internal::fs_magic::xfs:
-                        dioattr da;
-                        if (::ioctl(fd, XFS_IOC_DIOINFO, &da) == 0) {
-                            fsi.dioinfo = std::move(da);
-                        }
-
-                        fsi.append_challenged = true;
-                        static auto xc = xfs_concurrency_from_kernel_version();
-                        fsi.append_concurrency = xc;
-                        fsi.fsync_is_exclusive = true;
-                        fsi.nowait_works = internal::kernel_uname().whitelisted({"4.13"});
-                        break;
-                    case internal::fs_magic::nfs:
-                        fsi.append_challenged = false;
-                        fsi.append_concurrency = 0;
-                        fsi.fsync_is_exclusive = false;
-                        fsi.nowait_works = internal::kernel_uname().whitelisted({"4.13"});
-                        break;
-                    case internal::fs_magic::ext4:
-                        fsi.append_challenged = true;
-                        fsi.append_concurrency = 0;
-                        fsi.fsync_is_exclusive = false;
-                        fsi.nowait_works = internal::kernel_uname().whitelisted({"5.5"});
-                        break;
-                    case internal::fs_magic::btrfs:
-                        fsi.append_challenged = true;
-                        fsi.append_concurrency = 0;
-                        fsi.fsync_is_exclusive = true;
-                        fsi.nowait_works = internal::kernel_uname().whitelisted({"5.9"});
-                        break;
-                    case internal::fs_magic::tmpfs:
-                    case internal::fs_magic::fuse:
-                        fsi.append_challenged = false;
-                        fsi.append_concurrency = 999;
-                        fsi.fsync_is_exclusive = false;
-                        fsi.nowait_works = false;
-                        break;
-                    default:
-                        fsi.append_challenged = true;
-                        fsi.append_concurrency = 0;
-                        fsi.fsync_is_exclusive = true;
-                        fsi.nowait_works = false;
-                    }
-                    s_fstype[st_dev] = std::move(fsi);
-                });
-            return get_fs_info.then([st_dev, fd, flags, options = std::move(options)] () mutable {
-                const internal::fs_info& fsi = s_fstype[st_dev];
-                if (!fsi.append_challenged || options.append_is_unlikely || ((flags & O_ACCMODE) == O_RDONLY)) {
-                    return make_ready_future<shared_ptr<file_impl>>(make_shared<posix_file_real_impl>(fd, open_flags(flags), std::move(options), fsi, st_dev));
-                }
-                return make_ready_future<shared_ptr<file_impl>>(make_shared<append_challenged_posix_file_impl>(fd, open_flags(flags), std::move(options), fsi, st_dev));
-            });
+make_file_impl(int fd, file_open_options options, int flags, struct stat st) noexcept {
+    if (S_ISBLK(st.st_mode)) {
+        size_t block_size;
+        auto ret = ::ioctl(fd, BLKBSZGET, &block_size);
+        if (ret == -1) {
+            return make_exception_future<shared_ptr<file_impl>>(
+                    std::system_error(errno, std::system_category(), "ioctl(BLKBSZGET) failed"));
         }
+        return make_ready_future<shared_ptr<file_impl>>(make_shared<blockdev_file_impl>(fd, open_flags(flags), options, st.st_rdev, block_size));
+    }
+
+    if (S_ISDIR(st.st_mode)) {
+        // Directories don't care about block size, so we need not
+        // query it here. Just provide something reasonable.
+        internal::fs_info fsi;
+        fsi.block_size = 4096;
+        fsi.nowait_works = false;
+        return make_ready_future<shared_ptr<file_impl>>(make_shared<posix_file_real_impl>(fd, open_flags(flags), options, fsi, st.st_dev));
+    }
+
+    auto st_dev = st.st_dev;
+    static thread_local std::unordered_map<decltype(st_dev), internal::fs_info> s_fstype;
+
+    future<> get_fs_info = s_fstype.count(st_dev) ? make_ready_future<>() :
+        engine().fstatfs(fd).then([fd, st_dev] (struct statfs sfs) {
+            internal::fs_info fsi;
+            fsi.block_size = sfs.f_bsize;
+            switch (sfs.f_type) {
+            case internal::fs_magic::xfs:
+                dioattr da;
+                if (::ioctl(fd, XFS_IOC_DIOINFO, &da) == 0) {
+                    fsi.dioinfo = std::move(da);
+                }
+
+                fsi.append_challenged = true;
+                static auto xc = xfs_concurrency_from_kernel_version();
+                fsi.append_concurrency = xc;
+                fsi.fsync_is_exclusive = true;
+                fsi.nowait_works = internal::kernel_uname().whitelisted({"4.13"});
+                break;
+            case internal::fs_magic::nfs:
+                fsi.append_challenged = false;
+                fsi.append_concurrency = 0;
+                fsi.fsync_is_exclusive = false;
+                fsi.nowait_works = internal::kernel_uname().whitelisted({"4.13"});
+                break;
+            case internal::fs_magic::ext4:
+                fsi.append_challenged = true;
+                fsi.append_concurrency = 0;
+                fsi.fsync_is_exclusive = false;
+                fsi.nowait_works = internal::kernel_uname().whitelisted({"5.5"});
+                break;
+            case internal::fs_magic::btrfs:
+                fsi.append_challenged = true;
+                fsi.append_concurrency = 0;
+                fsi.fsync_is_exclusive = true;
+                fsi.nowait_works = internal::kernel_uname().whitelisted({"5.9"});
+                break;
+            case internal::fs_magic::tmpfs:
+            case internal::fs_magic::fuse:
+                fsi.append_challenged = false;
+                fsi.append_concurrency = 999;
+                fsi.fsync_is_exclusive = false;
+                fsi.nowait_works = false;
+                break;
+            default:
+                fsi.append_challenged = true;
+                fsi.append_concurrency = 0;
+                fsi.fsync_is_exclusive = true;
+                fsi.nowait_works = false;
+            }
+            s_fstype[st_dev] = std::move(fsi);
+        });
+    return get_fs_info.then([st_dev, fd, flags, options = std::move(options)] () mutable {
+        const internal::fs_info& fsi = s_fstype[st_dev];
+        if (!fsi.append_challenged || options.append_is_unlikely || ((flags & O_ACCMODE) == O_RDONLY)) {
+            return make_ready_future<shared_ptr<file_impl>>(make_shared<posix_file_real_impl>(fd, open_flags(flags), std::move(options), fsi, st_dev));
+        }
+        return make_ready_future<shared_ptr<file_impl>>(make_shared<append_challenged_posix_file_impl>(fd, open_flags(flags), std::move(options), fsi, st_dev));
     });
 }
 
@@ -1098,6 +1166,12 @@ subscription<directory_entry>
 file::list_directory(std::function<future<>(directory_entry de)> next) {
     return _file_impl->list_directory(std::move(next));
 }
+
+#ifdef SEASTAR_COROUTINES_ENABLED
+coroutine::experimental::generator<directory_entry> file::experimental_list_directory() {
+    return _file_impl->experimental_list_directory();
+}
+#endif
 
 future<int> file::ioctl(uint64_t cmd, void* argp) noexcept {
     return _file_impl->ioctl(cmd, argp);
@@ -1164,9 +1238,13 @@ future<uint64_t> file::get_inode_lifetime_hint() noexcept {
 }
 
 future<temporary_buffer<uint8_t>>
-file::dma_read_bulk_impl(uint64_t offset, size_t range_size, const io_priority_class& pc, io_intent* intent) noexcept {
+file::dma_read_bulk_impl(uint64_t offset, size_t range_size, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
   try {
-    return _file_impl->dma_read_bulk(offset, range_size, pc, intent);
+#if SEASTAR_API_LEVEL >= 7
+    return _file_impl->dma_read_bulk(offset, range_size, intent);
+#else
+    return _file_impl->dma_read_bulk(offset, range_size, pc.pc, intent);
+#endif
   } catch (...) {
     return current_exception_as_future<temporary_buffer<uint8_t>>();
   }
@@ -1212,33 +1290,45 @@ future<> file::flush() noexcept {
   }
 }
 
-future<size_t> file::dma_write(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc, io_intent* intent) noexcept {
+future<size_t> file::dma_write_impl(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
   try {
-    return _file_impl->write_dma(pos, std::move(iov), pc, intent);
+#if SEASTAR_API_LEVEL >= 7
+    return _file_impl->write_dma(pos, std::move(iov), intent);
+#else
+    return _file_impl->write_dma(pos, std::move(iov), pc.pc, intent);
+#endif
   } catch (...) {
     return current_exception_as_future<size_t>();
   }
 }
 
 future<size_t>
-file::dma_write_impl(uint64_t pos, const uint8_t* buffer, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+file::dma_write_impl(uint64_t pos, const uint8_t* buffer, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
   try {
-    return _file_impl->write_dma(pos, buffer, len, pc, intent);
+#if SEASTAR_API_LEVEL >= 7
+    return _file_impl->write_dma(pos, buffer, len, intent);
+#else
+    return _file_impl->write_dma(pos, buffer, len, pc.pc, intent);
+#endif
   } catch (...) {
     return current_exception_as_future<size_t>();
   }
 }
 
-future<size_t> file::dma_read(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc, io_intent* intent) noexcept {
+future<size_t> file::dma_read_impl(uint64_t pos, std::vector<iovec> iov, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
   try {
-    return _file_impl->read_dma(pos, std::move(iov), pc, intent);
+#if SEASTAR_API_LEVEL >= 7
+    return _file_impl->read_dma(pos, std::move(iov), intent);
+#else
+    return _file_impl->read_dma(pos, std::move(iov), pc.pc, intent);
+#endif
   } catch (...) {
     return current_exception_as_future<size_t>();
   }
 }
 
 future<temporary_buffer<uint8_t>>
-file::dma_read_exactly_impl(uint64_t pos, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+file::dma_read_exactly_impl(uint64_t pos, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return dma_read_impl(pos, len, pc, intent).then([len](auto buf) {
         if (buf.size() < len) {
             throw eof_error();
@@ -1249,7 +1339,7 @@ file::dma_read_exactly_impl(uint64_t pos, size_t len, const io_priority_class& p
 }
 
 future<temporary_buffer<uint8_t>>
-file::dma_read_impl(uint64_t pos, size_t len, const io_priority_class& pc, io_intent* intent) noexcept {
+file::dma_read_impl(uint64_t pos, size_t len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
     return dma_read_bulk_impl(pos, len, pc, intent).then([len](temporary_buffer<uint8_t> buf) {
         if (len < buf.size()) {
             buf.trim(len);
@@ -1260,9 +1350,13 @@ file::dma_read_impl(uint64_t pos, size_t len, const io_priority_class& pc, io_in
 }
 
 future<size_t>
-file::dma_read_impl(uint64_t aligned_pos, uint8_t* aligned_buffer, size_t aligned_len, const io_priority_class& pc, io_intent* intent) noexcept {
+file::dma_read_impl(uint64_t aligned_pos, uint8_t* aligned_buffer, size_t aligned_len, internal::maybe_priority_class_ref pc, io_intent* intent) noexcept {
   try {
-    return _file_impl->read_dma(aligned_pos, aligned_buffer, aligned_len, pc, intent);
+#if SEASTAR_API_LEVEL >= 7
+    return _file_impl->read_dma(aligned_pos, aligned_buffer, aligned_len, intent);
+#else
+    return _file_impl->read_dma(aligned_pos, aligned_buffer, aligned_len, pc.pc, intent);
+#endif
   } catch (...) {
     return current_exception_as_future<size_t>();
   }
@@ -1281,6 +1375,32 @@ std::unique_ptr<seastar::file_handle_impl>
 file_impl::dup() {
     throw std::runtime_error("this file type cannot be duplicated");
 }
+
+#ifdef SEASTAR_COROUTINES_ENABLED
+static coroutine::experimental::generator<directory_entry> make_list_directory_fallback_generator(file_impl& me) {
+    queue<std::optional<directory_entry>> ents(16);
+    auto lister = me.list_directory([&ents] (directory_entry de) {
+        return ents.push_eventually(std::move(de));
+    });
+    auto done = lister.done().finally([&ents] {
+        return ents.push_eventually(std::nullopt);
+    });
+
+    while (true) {
+        auto de = co_await ents.pop_eventually();
+        if (!de) {
+            break;
+        }
+        co_yield *de;
+    }
+
+    co_await std::move(done);
+}
+
+coroutine::experimental::generator<directory_entry> file_impl::experimental_list_directory() {
+    return make_list_directory_fallback_generator(*this);
+}
+#endif
 
 future<int> file_impl::ioctl(uint64_t cmd, void* argp) noexcept {
     return make_exception_future<int>(std::runtime_error("this file type does not support ioctl"));

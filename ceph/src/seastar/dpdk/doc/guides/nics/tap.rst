@@ -34,14 +34,14 @@ Using the option ``mac=fixed`` you can create a fixed known MAC address::
 
 The MAC address will have a fixed value with the last octet incrementing by one
 for each interface string containing ``mac=fixed``. The MAC address is formatted
-as 00:'d':'t':'a':'p':[00-FF]. Convert the characters to hex and you get the
-actual MAC address: ``00:64:74:61:70:[00-FF]``.
+as 02:'d':'t':'a':'p':[00-FF]. Convert the characters to hex and you get the
+actual MAC address: ``02:64:74:61:70:[00-FF]``.
 
-   --vdev=net_tap0,mac="00:64:74:61:70:11"
+   --vdev=net_tap0,mac="02:64:74:61:70:11"
 
 The MAC address will have a user value passed as string. The MAC address is in
 format with delimiter ``:``. The string is byte converted to hex and you get
-the actual MAC address: ``00:64:74:61:70:11``.
+the actual MAC address: ``02:64:74:61:70:11``.
 
 It is possible to specify a remote netdevice to capture packets from by adding
 ``remote=foo1``, for example::
@@ -76,12 +76,18 @@ Please change the IP addresses as you see fit.
 
 If routing is enabled on the host you can also communicate with the DPDK App
 over the internet via a standard socket layer application as long as you
-account for the protocol handing in the application.
+account for the protocol handling in the application.
 
 If you have a Network Stack in your DPDK application or something like it you
 can utilize that stack to handle the network protocols. Plus you would be able
 to address the interface using an IP address assigned to the internal
 interface.
+
+Normally, when the DPDK application exits,
+the TAP device is marked down and is removed.
+But this behaviour can be overridden by the use of the persist flag, example::
+
+  --vdev=net_tap0,iface=tap0,persist ...
 
 The TUN PMD allows user to create a TUN device on host. The PMD allows user
 to transmit and receive packets via DPDK API calls with L3 header and payload.
@@ -132,9 +138,9 @@ As rules are translated to TC, it is possible to show them with something like::
 Examples of testpmd flow rules
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Drop packets for destination IP 192.168.0.1::
+Drop packets for destination IP 192.0.2.1::
 
-   testpmd> flow create 0 priority 1 ingress pattern eth / ipv4 dst is 1.1.1.1 \
+   testpmd> flow create 0 priority 1 ingress pattern eth / ipv4 dst is 192.0.2.1 \
             / end actions drop / end
 
 Ensure packets from a given MAC address are received on a queue 2::
@@ -191,7 +197,7 @@ following::
 
 .. Note:
 
-   Change the ``-b`` options to blacklist all of your physical ports. The
+   Change the ``-b`` options to exclude all of your physical ports. The
    following command line is all one line.
 
    Also, ``-f themes/black-yellow.theme`` is optional if the default colors
@@ -275,7 +281,7 @@ An example utility for eBPF instruction generation in the format of C arrays wil
 be added in next releases
 
 TAP reports on supported RSS functions as part of dev_infos_get callback:
-``ETH_RSS_IP``, ``ETH_RSS_UDP`` and ``ETH_RSS_TCP``.
+``RTE_ETH_RSS_IP``, ``RTE_ETH_RSS_UDP`` and ``RTE_ETH_RSS_TCP``.
 **Known limitation:** TAP supports all of the above hash functions together
 and not in partial combinations.
 
@@ -299,3 +305,7 @@ Systems supporting flow API
 | kernel 4.13        |                       |
 +--------------------+-----------------------+
 
+Limitations
+-----------
+
+* Rx/Tx must have the same number of queues.

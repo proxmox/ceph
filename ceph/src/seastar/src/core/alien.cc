@@ -20,10 +20,24 @@
  * Copyright (C) 2018 Red Hat
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <compare>
+#include <atomic>
+#include <iterator>
+#include <memory>
+#include <vector>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/alien.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/prefetch.hh>
+#endif
 
 namespace seastar {
 namespace alien {

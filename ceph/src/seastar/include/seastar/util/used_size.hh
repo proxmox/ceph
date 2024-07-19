@@ -21,8 +21,10 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <stddef.h>
 #include <type_traits>
+#endif
 
 namespace seastar {
 namespace internal {
@@ -30,7 +32,7 @@ namespace internal {
 // used. This helper is used to avoid accessing that byte.
 template<typename T>
 struct used_size {
-    static constexpr size_t value = std::is_empty<T>::value ? 0 : sizeof(T);
+    static constexpr size_t value = std::is_empty_v<T> ? 0 : sizeof(T);
 };
 }
 }

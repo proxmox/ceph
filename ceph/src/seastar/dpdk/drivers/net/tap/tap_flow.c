@@ -258,9 +258,9 @@ static const struct tap_flow_items tap_flow_items[] = {
 			RTE_FLOW_ITEM_TYPE_IPV4,
 			RTE_FLOW_ITEM_TYPE_IPV6),
 		.mask = &(const struct rte_flow_item_eth){
-			.dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
-			.src.addr_bytes = "\xff\xff\xff\xff\xff\xff",
-			.type = -1,
+			.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+			.hdr.src_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+			.hdr.ether_type = -1,
 		},
 		.mask_sz = sizeof(struct rte_flow_item_eth),
 		.default_mask = &rte_flow_item_eth_mask,
@@ -272,11 +272,11 @@ static const struct tap_flow_items tap_flow_items[] = {
 		.mask = &(const struct rte_flow_item_vlan){
 			/* DEI matching is not supported */
 #if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
-			.tci = 0xffef,
+			.hdr.vlan_tci = 0xffef,
 #else
-			.tci = 0xefff,
+			.hdr.vlan_tci = 0xefff,
 #endif
-			.inner_type = -1,
+			.hdr.eth_proto = -1,
 		},
 		.mask_sz = sizeof(struct rte_flow_item_vlan),
 		.default_mask = &rte_flow_item_vlan_mask,
@@ -391,7 +391,7 @@ static struct remote_rule implicit_rte_flows[TAP_REMOTE_MAX_IDX] = {
 		.items[0] = {
 			.type = RTE_FLOW_ITEM_TYPE_ETH,
 			.mask =  &(const struct rte_flow_item_eth){
-				.dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+				.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
 			},
 		},
 		.items[1] = {
@@ -408,10 +408,10 @@ static struct remote_rule implicit_rte_flows[TAP_REMOTE_MAX_IDX] = {
 		.items[0] = {
 			.type = RTE_FLOW_ITEM_TYPE_ETH,
 			.mask =  &(const struct rte_flow_item_eth){
-				.dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+				.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
 			},
 			.spec = &(const struct rte_flow_item_eth){
-				.dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+				.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
 			},
 		},
 		.items[1] = {
@@ -428,10 +428,10 @@ static struct remote_rule implicit_rte_flows[TAP_REMOTE_MAX_IDX] = {
 		.items[0] = {
 			.type = RTE_FLOW_ITEM_TYPE_ETH,
 			.mask =  &(const struct rte_flow_item_eth){
-				.dst.addr_bytes = "\x33\x33\x00\x00\x00\x00",
+				.hdr.dst_addr.addr_bytes = "\x33\x33\x00\x00\x00\x00",
 			},
 			.spec = &(const struct rte_flow_item_eth){
-				.dst.addr_bytes = "\x33\x33\x00\x00\x00\x00",
+				.hdr.dst_addr.addr_bytes = "\x33\x33\x00\x00\x00\x00",
 			},
 		},
 		.items[1] = {
@@ -462,10 +462,10 @@ static struct remote_rule implicit_rte_flows[TAP_REMOTE_MAX_IDX] = {
 		.items[0] = {
 			.type = RTE_FLOW_ITEM_TYPE_ETH,
 			.mask =  &(const struct rte_flow_item_eth){
-				.dst.addr_bytes = "\x01\x00\x00\x00\x00\x00",
+				.hdr.dst_addr.addr_bytes = "\x01\x00\x00\x00\x00\x00",
 			},
 			.spec = &(const struct rte_flow_item_eth){
-				.dst.addr_bytes = "\x01\x00\x00\x00\x00\x00",
+				.hdr.dst_addr.addr_bytes = "\x01\x00\x00\x00\x00\x00",
 			},
 		},
 		.items[1] = {
@@ -527,29 +527,31 @@ tap_flow_create_eth(const struct rte_flow_item *item, void *data)
 	if (!mask)
 		mask = tap_flow_items[RTE_FLOW_ITEM_TYPE_ETH].default_mask;
 	/* TC does not support eth_type masking. Only accept if exact match. */
-	if (mask->type && mask->type != 0xffff)
+	if (mask->hdr.ether_type && mask->hdr.ether_type != 0xffff)
 		return -1;
 	if (!spec)
 		return 0;
 	/* store eth_type for consistency if ipv4/6 pattern item comes next */
-	if (spec->type & mask->type)
-		info->eth_type = spec->type;
+	if (spec->hdr.ether_type & mask->hdr.ether_type)
+		info->eth_type = spec->hdr.ether_type;
 	if (!flow)
 		return 0;
 	msg = &flow->msg;
-	if (!is_zero_ether_addr(&mask->dst)) {
-		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_DST, ETHER_ADDR_LEN,
-			   &spec->dst.addr_bytes);
+	if (!rte_is_zero_ether_addr(&mask->hdr.dst_addr)) {
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_DST,
+			RTE_ETHER_ADDR_LEN,
+			   &spec->hdr.dst_addr.addr_bytes);
 		tap_nlattr_add(&msg->nh,
-			   TCA_FLOWER_KEY_ETH_DST_MASK, ETHER_ADDR_LEN,
-			   &mask->dst.addr_bytes);
+			   TCA_FLOWER_KEY_ETH_DST_MASK, RTE_ETHER_ADDR_LEN,
+			   &mask->hdr.dst_addr.addr_bytes);
 	}
-	if (!is_zero_ether_addr(&mask->src)) {
-		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_SRC, ETHER_ADDR_LEN,
-			   &spec->src.addr_bytes);
+	if (!rte_is_zero_ether_addr(&mask->hdr.src_addr)) {
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_SRC,
+			RTE_ETHER_ADDR_LEN,
+			&spec->hdr.src_addr.addr_bytes);
 		tap_nlattr_add(&msg->nh,
-			   TCA_FLOWER_KEY_ETH_SRC_MASK, ETHER_ADDR_LEN,
-			   &mask->src.addr_bytes);
+			   TCA_FLOWER_KEY_ETH_SRC_MASK, RTE_ETHER_ADDR_LEN,
+			   &mask->hdr.src_addr.addr_bytes);
 	}
 	return 0;
 }
@@ -585,11 +587,11 @@ tap_flow_create_vlan(const struct rte_flow_item *item, void *data)
 	if (info->vlan)
 		return -1;
 	info->vlan = 1;
-	if (mask->inner_type) {
+	if (mask->hdr.eth_proto) {
 		/* TC does not support partial eth_type masking */
-		if (mask->inner_type != RTE_BE16(0xffff))
+		if (mask->hdr.eth_proto != RTE_BE16(0xffff))
 			return -1;
-		info->eth_type = spec->inner_type;
+		info->eth_type = spec->hdr.eth_proto;
 	}
 	if (!flow)
 		return 0;
@@ -599,8 +601,8 @@ tap_flow_create_vlan(const struct rte_flow_item *item, void *data)
 #define VLAN_ID(tci) ((tci) & 0xfff)
 	if (!spec)
 		return 0;
-	if (spec->tci) {
-		uint16_t tci = ntohs(spec->tci) & mask->tci;
+	if (spec->hdr.vlan_tci) {
+		uint16_t tci = ntohs(spec->hdr.vlan_tci) & mask->hdr.vlan_tci;
 		uint16_t prio = VLAN_PRIO(tci);
 		uint8_t vid = VLAN_ID(tci);
 
@@ -959,7 +961,7 @@ add_action(struct rte_flow *flow, size_t *act_index, struct action_data *adata)
 }
 
 /**
- * Helper function to send a serie of TC actions to the kernel
+ * Helper function to send a series of TC actions to the kernel
  *
  * @param[in] flow
  *   Pointer to rte flow containing the netlink message
@@ -1298,10 +1300,16 @@ tap_flow_validate(struct rte_eth_dev *dev,
 static void
 tap_flow_set_handle(struct rte_flow *flow)
 {
+	union {
+		struct rte_flow *flow;
+		const void *key;
+	} tmp;
 	uint32_t handle = 0;
 
+	tmp.flow = flow;
+
 	if (sizeof(flow) > 4)
-		handle = rte_jhash(&flow, sizeof(flow), 1);
+		handle = rte_jhash(tmp.key, sizeof(flow), 1);
 	else
 		handle = (uintptr_t)flow;
 	/* must be at least 1 to avoid letting the kernel choose one for us */
@@ -1378,7 +1386,7 @@ tap_flow_create(struct rte_eth_dev *dev,
 			NULL, "priority value too big");
 		goto fail;
 	}
-	flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+	flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 	if (!flow) {
 		rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "cannot allocate memory for rte_flow");
@@ -1414,7 +1422,7 @@ tap_flow_create(struct rte_eth_dev *dev,
 	 * to the local pmd->if_index.
 	 */
 	if (pmd->remote_if_index) {
-		remote_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+		remote_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 		if (!remote_flow) {
 			rte_flow_error_set(
 				error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
@@ -1457,8 +1465,7 @@ tap_flow_create(struct rte_eth_dev *dev,
 	}
 	return flow;
 fail:
-	if (remote_flow)
-		rte_free(remote_flow);
+	rte_free(remote_flow);
 	if (flow)
 		tap_flow_free(pmd, flow);
 	return NULL;
@@ -1533,8 +1540,7 @@ tap_flow_destroy_pmd(struct pmd_internals *pmd,
 		}
 	}
 end:
-	if (remote_flow)
-		rte_free(remote_flow);
+	rte_free(remote_flow);
 	tap_flow_free(pmd, flow);
 	return ret;
 }
@@ -1675,8 +1681,8 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 	};
 	struct rte_flow_item *items = implicit_rte_flows[idx].items;
 	struct rte_flow_attr *attr = &implicit_rte_flows[idx].attr;
-	struct rte_flow_item_eth eth_local = { .type = 0 };
-	uint16_t if_index = pmd->remote_if_index;
+	struct rte_flow_item_eth eth_local = { .hdr.ether_type = 0 };
+	unsigned int if_index = pmd->remote_if_index;
 	struct rte_flow *remote_flow = NULL;
 	struct nlmsg *msg = NULL;
 	int err = 0;
@@ -1691,7 +1697,7 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 		}
 	};
 
-	remote_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+	remote_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 	if (!remote_flow) {
 		TAP_LOG(ERR, "Cannot allocate memory for rte_flow");
 		goto fail;
@@ -1712,7 +1718,7 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 		 * eth addr couldn't be set in implicit_rte_flows[] as it is not
 		 * known at compile time.
 		 */
-		memcpy(&eth_local.dst, &pmd->eth_addr, sizeof(pmd->eth_addr));
+		memcpy(&eth_local.hdr.dst_addr, &pmd->eth_addr, sizeof(pmd->eth_addr));
 		items = items_local;
 	}
 	tc_init_msg(msg, if_index, RTM_NEWTFILTER, flags);
@@ -1756,8 +1762,7 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 success:
 	return 0;
 fail:
-	if (remote_flow)
-		rte_free(remote_flow);
+	rte_free(remote_flow);
 	return -1;
 }
 
@@ -1894,7 +1899,7 @@ static int rss_enable(struct pmd_internals *pmd,
 			return -ENOTSUP;
 		}
 
-		rss_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+		rss_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 		if (!rss_flow) {
 			TAP_LOG(ERR,
 				"Cannot allocate memory for rte_flow");
@@ -2009,7 +2014,7 @@ static int bpf_rss_key(enum bpf_rss_key_e cmd, __u32 *key_idx)
 			break;
 
 		/*
-		 * Subtract offest to restore real key index
+		 * Subtract offset to restore real key index
 		 * If a non RSS flow is falsely trying to release map
 		 * entry 0 - the offset subtraction will calculate the real
 		 * map index as an out-of-range value and the release operation
@@ -2158,35 +2163,20 @@ static int rss_add_actions(struct rte_flow *flow, struct pmd_internals *pmd,
 }
 
 /**
- * Manage filter operations.
+ * Get rte_flow operations.
  *
  * @param dev
  *   Pointer to Ethernet device structure.
- * @param filter_type
- *   Filter type.
- * @param filter_op
- *   Operation to perform.
- * @param arg
+ * @param ops
  *   Pointer to operation-specific structure.
  *
  * @return
  *   0 on success, negative errno value on failure.
  */
 int
-tap_dev_filter_ctrl(struct rte_eth_dev *dev,
-		    enum rte_filter_type filter_type,
-		    enum rte_filter_op filter_op,
-		    void *arg)
+tap_dev_flow_ops_get(struct rte_eth_dev *dev __rte_unused,
+		     const struct rte_flow_ops **ops)
 {
-	switch (filter_type) {
-	case RTE_ETH_FILTER_GENERIC:
-		if (filter_op != RTE_ETH_FILTER_GET)
-			return -EINVAL;
-		*(const void **)arg = &tap_flow_ops;
-		return 0;
-	default:
-		TAP_LOG(ERR, "%p: filter type (%d) not supported",
-			dev, filter_type);
-	}
-	return -EINVAL;
+	*ops = &tap_flow_ops;
+	return 0;
 }

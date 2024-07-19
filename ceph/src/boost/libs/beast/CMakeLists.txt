@@ -29,6 +29,7 @@ target_link_libraries(boost_beast
     Boost::optional
     Boost::smart_ptr
     Boost::static_assert
+    Boost::static_string
     Boost::system
     Boost::throw_exception
     Boost::type_traits
@@ -82,7 +83,7 @@ endfunction()
 #
 #-------------------------------------------------------------------------------
 
-project (Beast VERSION 330)
+project (Beast VERSION 347)
 
 set_property (GLOBAL PROPERTY USE_FOLDERS ON)
 option (Beast_BUILD_EXAMPLES "Build examples" ON)
@@ -188,8 +189,8 @@ if (MSVC)
 else()
     set(BOOST_INCLUDEDIR ${BOOST_ROOT})
     set(BOOST_LIBRARYDIR ${BOOST_ROOT}/stage/lib)
-    find_package(Boost COMPONENTS coroutine filesystem system thread REQUIRED)
-    link_libraries(Boost::coroutine Boost::filesystem Boost::system Boost::thread)
+    find_package(Boost COMPONENTS context filesystem system thread REQUIRED)
+    link_libraries(Boost::context Boost::filesystem Boost::system Boost::thread)
 endif()
 
 link_directories(${BOOST_ROOT}/stage/lib)

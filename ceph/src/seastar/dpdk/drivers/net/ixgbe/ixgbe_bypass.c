@@ -3,15 +3,14 @@
  */
 
 #include <time.h>
-#include <rte_atomic.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include "ixgbe_ethdev.h"
 #include "ixgbe_bypass_api.h"
 #include "rte_pmd_ixgbe.h"
 
 #define	BYPASS_STATUS_OFF_MASK	3
 
-/* Macros to check for invlaid function pointers. */
+/* Macros to check for invalid function pointers. */
 #define	FUNC_PTR_OR_ERR_RET(func, retval) do {              \
 	if ((func) == NULL) {                               \
 		PMD_DRV_LOG(ERR, "%s:%d function not supported", \

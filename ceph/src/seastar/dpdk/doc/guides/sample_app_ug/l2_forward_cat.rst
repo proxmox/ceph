@@ -50,13 +50,12 @@ Compiling the Application
     * https://github.com/01org/intel-cmt-cat
 
 
-#. To compile the application export the path to PQoS lib
-   and the DPDK source tree and go to the example directory:
+To compile the application, export the path to PQoS lib:
 
-   .. code-block:: console
+.. code-block:: console
 
-       export PQOS_INSTALL_PATH=/path/to/libpqos
-
+   export CFLAGS=-I/path/to/intel-cmt-cat/include
+   export LDFLAGS=-L/path/to/intel-cmt-cat/lib
 
 To compile the sample application see :doc:`compiling`.
 
@@ -70,13 +69,13 @@ To run the example in a ``linux`` environment and enable CAT on cpus 0-2:
 
 .. code-block:: console
 
-    ./build/l2fwd-cat -l 1 -n 4 -- --l3ca="0x3@(0-2)"
+    ./<build_dir>/examples/dpdk-l2fwd-cat -l 1 -n 4 -- --l3ca="0x3@(0-2)"
 
 or to enable CAT and CDP on cpus 1,3:
 
 .. code-block:: console
 
-    ./build/l2fwd-cat -l 1 -n 4 -- --l3ca="(0x00C00,0x00300)@(1,3)"
+    ./<build_dir>/examples/dpdk-l2fwd-cat -l 1 -n 4 -- --l3ca="(0x00C00,0x00300)@(1,3)"
 
 If CDP is not supported it will fail with following error message:
 
@@ -173,21 +172,21 @@ The first task is to initialize the Environment Abstraction Layer (EAL).  The
 ``argc`` and ``argv`` arguments are provided to the ``rte_eal_init()``
 function. The value returned is the number of parsed arguments:
 
-.. code-block:: c
-
-    int ret = rte_eal_init(argc, argv);
-    if (ret < 0)
-        rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+.. literalinclude:: ../../../examples/l2fwd-cat/l2fwd-cat.c
+    :language: c
+    :start-after: Initialize the Environment Abstraction Layer (EAL). 8<
+    :end-before: >8 End of initialization the Environment Abstraction Layer (EAL).
+    :dedent: 1
 
 The next task is to initialize the PQoS library and configure CAT. The
 ``argc`` and ``argv`` arguments are provided to the ``cat_init()``
 function. The value returned is the number of parsed arguments:
 
-.. code-block:: c
-
-    int ret = cat_init(argc, argv);
-    if (ret < 0)
-        rte_exit(EXIT_FAILURE, "PQOS: L3CA init failed!\n");
+.. literalinclude:: ../../../examples/l2fwd-cat/l2fwd-cat.c
+    :language: c
+    :start-after: Initialize the PQoS. 8<
+    :end-before: >8 End of initialization of PQoS.
+    :dedent: 1
 
 ``cat_init()`` is a wrapper function which parses the command, validates
 the requested parameters and configures CAT accordingly.

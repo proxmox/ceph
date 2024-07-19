@@ -22,6 +22,7 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <boost/asio/ip/address_v4.hpp>
 #include <arpa/inet.h>
 #include <unordered_map>
@@ -30,6 +31,8 @@
 #include <map>
 #include <list>
 #include <chrono>
+#endif
+
 #include <seastar/core/array_map.hh>
 #include <seastar/net/byteorder.hh>
 #include <seastar/core/byteorder.hh>
@@ -41,6 +44,7 @@
 #include <seastar/net/toeplitz.hh>
 #include <seastar/net/udp.hh>
 #include <seastar/core/metrics_registration.hh>
+#include <seastar/util/modules.hh>
 
 #include "ipv4_address.hh"
 #include "ipv6_address.hh"
@@ -92,7 +96,12 @@ class ip_protocol {
 public:
     virtual ~ip_protocol() {}
     virtual void received(packet p, ipv4_address from, ipv4_address to) = 0;
-    virtual bool forward(forward_hash& out_hash_data, packet& p, size_t off) { return true; }
+    virtual bool forward(forward_hash& out_hash_data, packet& p, size_t off) {
+      std::ignore = out_hash_data;
+      std::ignore = p;
+      std::ignore = off;
+      return true;
+    }
 };
 
 template <typename InetTraits>

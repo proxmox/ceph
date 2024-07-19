@@ -7,11 +7,13 @@
 #include <stdbool.h>
 
 #include <rte_branch_prediction.h>
-#include <rte_cryptodev.h>
+#include <cryptodev_pmd.h>
 #include <rte_cycles.h>
 #include <rte_io.h>
 #include <rte_memory.h>
 #include <rte_prefetch.h>
+
+#include "otx_cryptodev.h"
 
 #include "cpt_common.h"
 #include "cpt_hw_types.h"
@@ -21,10 +23,16 @@
 #define CPT_INTR_POLL_INTERVAL_MS	(50)
 
 /* Default command queue length */
-#define DEFAULT_CMD_QCHUNKS		2
-#define DEFAULT_CMD_QCHUNK_SIZE		1023
-#define DEFAULT_CMD_QLEN \
-		(DEFAULT_CMD_QCHUNK_SIZE * DEFAULT_CMD_QCHUNKS)
+#define DEFAULT_CMD_QLEN	2048
+#define DEFAULT_CMD_QCHUNKS	2
+
+/* Instruction memory benefits from being 1023, so introduce
+ * reserved entries so we can't overrun the instruction queue
+ */
+#define DEFAULT_CMD_QRSVD_SLOTS DEFAULT_CMD_QCHUNKS
+#define DEFAULT_CMD_QCHUNK_SIZE \
+		((DEFAULT_CMD_QLEN - DEFAULT_CMD_QRSVD_SLOTS) / \
+		DEFAULT_CMD_QCHUNKS)
 
 #define CPT_CSR_REG_BASE(cpt)		((cpt)->reg_base)
 
@@ -41,8 +49,8 @@ struct cpt_instance {
 	uint32_t queue_id;
 	uintptr_t rsvd;
 	struct rte_mempool *sess_mp;
-	struct rte_mempool *sess_mp_priv;
 	struct cpt_qp_meta_info meta_info;
+	uint8_t ca_enabled;
 };
 
 struct command_chunk {
@@ -208,7 +216,7 @@ get_cpt_inst(struct command_queue *cqueue)
 }
 
 static __rte_always_inline void
-fill_cpt_inst(struct cpt_instance *instance, void *req)
+fill_cpt_inst(struct cpt_instance *instance, void *req, uint64_t ucmd_w3)
 {
 	struct command_queue *cqueue;
 	cpt_inst_s_t *cpt_ist_p;
@@ -235,7 +243,7 @@ fill_cpt_inst(struct cpt_instance *instance, void *req)
 	/* MC EI2 */
 	cpt_ist_p->s8x.ei2 = user_req->ist.ei2;
 	/* MC EI3 */
-	cpt_ist_p->s8x.ei3 = user_req->ist.ei3;
+	cpt_ist_p->s8x.ei3 = ucmd_w3;
 }
 
 static __rte_always_inline void

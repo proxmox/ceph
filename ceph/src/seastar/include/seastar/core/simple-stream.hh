@@ -20,10 +20,20 @@
  */
 
 #pragma once
+
 #include <seastar/core/sstring.hh>
 #include <seastar/util/variant_utils.hh>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
+#include <algorithm>
+#include <cstddef>
+#include <stdexcept>
+#include <type_traits>
+#endif
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 class measuring_output_stream {
     size_t _size = 0;
@@ -229,9 +239,9 @@ public:
         // fragmented and simple input stream are PODs and the branch below
         // is optimized away, so throwable copy constructors aren't something
         // we want.
-        static_assert(std::is_nothrow_copy_constructible<fragmented>::value,
+        static_assert(std::is_nothrow_copy_constructible_v<fragmented>,
                       "seastar::memory_output_stream::fragmented should be copy constructible");
-        static_assert(std::is_nothrow_copy_constructible<simple>::value,
+        static_assert(std::is_nothrow_copy_constructible_v<simple>,
                       "seastar::memory_output_stream::simple should be copy constructible");
         if (_is_simple) {
             new (&_simple) simple(other._simple);
@@ -252,7 +262,7 @@ public:
     [[gnu::always_inline]]
     memory_output_stream& operator=(const memory_output_stream& other) noexcept {
         // Copy constructor being noexcept makes copy assignment simpler.
-        static_assert(std::is_nothrow_copy_constructible<memory_output_stream>::value,
+        static_assert(std::is_nothrow_copy_constructible_v<memory_output_stream>,
                       "memory_output_stream copy constructor shouldn't throw");
         if (this != &other) {
             this->~memory_output_stream();
@@ -495,9 +505,9 @@ public:
         // fragmented and simple input stream are PODs and the branch below
         // is optimized away, so throwable copy constructors aren't something
         // we want.
-        static_assert(std::is_nothrow_copy_constructible<fragmented>::value,
+        static_assert(std::is_nothrow_copy_constructible_v<fragmented>,
                       "seastar::memory_input_stream::fragmented should be copy constructible");
-        static_assert(std::is_nothrow_copy_constructible<simple>::value,
+        static_assert(std::is_nothrow_copy_constructible_v<simple>,
                       "seastar::memory_input_stream::simple should be copy constructible");
         if (_is_simple) {
             new (&_simple) simple(other._simple);
@@ -518,7 +528,7 @@ public:
     [[gnu::always_inline]]
     memory_input_stream& operator=(const memory_input_stream& other) noexcept {
         // Copy constructor being noexcept makes copy assignment simpler.
-        static_assert(std::is_nothrow_copy_constructible<memory_input_stream>::value,
+        static_assert(std::is_nothrow_copy_constructible_v<memory_input_stream>,
                       "memory_input_stream copy constructor shouldn't throw");
         if (this != &other) {
             this->~memory_input_stream();
@@ -585,6 +595,8 @@ public:
     friend decltype(auto) with_serialized_stream(Stream& stream, StreamVisitor&& visitor);
 };
 
+SEASTAR_MODULE_EXPORT_END
+
 inline simple_memory_input_stream simple_memory_output_stream::to_input_stream() const {
     return simple_memory_input_stream(_p, _size);
 }
@@ -619,21 +631,24 @@ inline memory_input_stream<Iterator> memory_output_stream<Iterator>::to_input_st
 // Using with_stream() there is at most one dynamic dispatch per such
 // function, instead of one per each skip() and deserialize() call.
 
+SEASTAR_MODULE_EXPORT_BEGIN
 template<typename Stream, typename StreamVisitor, typename = std::enable_if_t<Stream::has_with_stream::value>>
 [[gnu::always_inline]]
- static inline decltype(auto)
+ inline decltype(auto)
  with_serialized_stream(Stream& stream, StreamVisitor&& visitor) {
     return stream.with_stream(std::forward<StreamVisitor>(visitor));
 }
 
 template<typename Stream, typename StreamVisitor, typename = std::enable_if_t<!Stream::has_with_stream::value>, typename = void>
 [[gnu::always_inline]]
- static inline decltype(auto)
+ inline decltype(auto)
  with_serialized_stream(Stream& stream, StreamVisitor&& visitor) {
     return visitor(stream);
 }
 
 using simple_input_stream = simple_memory_input_stream;
 using simple_output_stream = simple_memory_output_stream;
+
+SEASTAR_MODULE_EXPORT_END
 
 }

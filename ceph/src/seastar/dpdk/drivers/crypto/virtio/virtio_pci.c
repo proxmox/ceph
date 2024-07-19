@@ -10,7 +10,6 @@
 #endif
 
 #include <rte_io.h>
-#include <rte_bus.h>
 
 #include "virtio_pci.h"
 #include "virtqueue.h"
@@ -31,7 +30,7 @@
 #define VIRTIO_PCI_CONFIG(hw) \
 		(((hw)->use_msix == VIRTIO_MSIX_ENABLED) ? 24 : 20)
 
-struct virtio_hw_internal virtio_hw_internal[RTE_MAX_VIRTIO_CRYPTO];
+struct virtio_hw_internal crypto_virtio_hw_internal[RTE_MAX_VIRTIO_CRYPTO];
 
 static inline int
 check_vq_phys_addr_ok(struct virtqueue *vq)
@@ -397,9 +396,13 @@ virtio_read_caps(struct rte_pci_device *dev, struct virtio_crypto_hw *hw)
 			hw->common_cfg = get_cfg_addr(dev, &cap);
 			break;
 		case VIRTIO_PCI_CAP_NOTIFY_CFG:
-			rte_pci_read_config(dev, &hw->notify_off_multiplier,
+			ret = rte_pci_read_config(dev, &hw->notify_off_multiplier,
 					4, pos + sizeof(cap));
-			hw->notify_base = get_cfg_addr(dev, &cap);
+			if (ret != 4)
+				VIRTIO_CRYPTO_INIT_LOG_ERR(
+					"failed to read notify_off_multiplier: ret %d", ret);
+			else
+				hw->notify_base = get_cfg_addr(dev, &cap);
 			break;
 		case VIRTIO_PCI_CAP_DEVICE_CFG:
 			hw->dev_cfg = get_cfg_addr(dev, &cap);
@@ -434,7 +437,7 @@ next:
  * Return -1:
  *   if there is error mapping with VFIO/UIO.
  *   if port map error when driver type is KDRV_NONE.
- *   if whitelisted but driver type is KDRV_UNKNOWN.
+ *   if marked as allowed but driver type is KDRV_UNKNOWN.
  * Return 1 if kernel driver is managing the device.
  * Return 0 on success.
  */
@@ -448,7 +451,7 @@ vtpci_cryptodev_init(struct rte_pci_device *dev, struct virtio_crypto_hw *hw)
 	 */
 	if (virtio_read_caps(dev, hw) == 0) {
 		VIRTIO_CRYPTO_INIT_LOG_INFO("modern virtio pci detected.");
-		virtio_hw_internal[hw->dev_id].vtpci_ops =
+		crypto_virtio_hw_internal[hw->dev_id].vtpci_ops =
 					&virtio_crypto_modern_ops;
 		hw->modern = 1;
 		return 0;

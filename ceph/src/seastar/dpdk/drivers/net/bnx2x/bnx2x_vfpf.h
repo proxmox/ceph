@@ -10,8 +10,6 @@
 
 #include "ecore_sp.h"
 
-#define VLAN_HLEN 4
-
 struct vf_resource_query {
 	uint8_t num_rxqs;
 	uint8_t num_txqs;
@@ -115,7 +113,7 @@ struct vf_resc {
 	uint8_t num_vlan_filters;
 	uint8_t num_mc_filters;
 	uint8_t permanent_mac_addr[ETH_ALEN];
-	struct ether_addr current_mac_addr;
+	struct rte_ether_addr current_mac_addr;
 	uint16_t pf_link_speed;
 	uint32_t pf_link_supported;
 };
@@ -243,7 +241,7 @@ struct vf_close_tlv {
 	uint8_t pad[2];
 };
 
-/* rlease the VF's acquired resources */
+/* release the VF's acquired resources */
 struct vf_release_tlv {
 	struct vf_first_tlv   first_tlv;
 	uint16_t		vf_id;  /* for debug */
@@ -328,7 +326,11 @@ struct bnx2x_vf_mbx_msg {
 	union resp_tlvs resp;
 };
 
+int bnx2x_vf_teardown_queue(struct bnx2x_softc *sc, int qid);
 int bnx2x_vf_set_mac(struct bnx2x_softc *sc, int set);
 int bnx2x_vf_config_rss(struct bnx2x_softc *sc, struct ecore_config_rss_params *params);
+int bnx2x_vfpf_set_mcast(struct bnx2x_softc *sc,
+			struct rte_ether_addr *mc_addrs,
+			uint32_t mc_addrs_num);
 
 #endif /* BNX2X_VFPF_H */

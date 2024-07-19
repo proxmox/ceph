@@ -2,7 +2,9 @@
  * Copyright(c) 2018 Intel Corporation
  */
 
+#include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <rte_string_fns.h>
@@ -92,6 +94,15 @@ error_exit:
 	return -ENOMEM;
 }
 
+static void
+fips_test_parse_version(void)
+{
+	int len = strlen(info.vec[0]);
+	char *ptr = info.vec[0];
+
+	info.version = strtof(ptr + len - 4, NULL);
+}
+
 static int
 fips_test_parse_header(void)
 {
@@ -106,9 +117,12 @@ fips_test_parse_header(void)
 	if (ret < 0)
 		return ret;
 
+	if (info.nb_vec_lines)
+		fips_test_parse_version();
+
 	for (i = 0; i < info.nb_vec_lines; i++) {
 		if (!algo_parsed) {
-			if (strstr(info.vec[i], "AESVS")) {
+			if (strstr(info.vec[i], "AES")) {
 				algo_parsed = 1;
 				info.algo = FIPS_TEST_ALGO_AES;
 				ret = parse_test_aes_init();
@@ -144,10 +158,34 @@ fips_test_parse_header(void)
 				ret = parse_test_tdes_init();
 				if (ret < 0)
 					return 0;
+			} else if (strstr(info.vec[i], "PERMUTATION")) {
+				algo_parsed = 1;
+				info.algo = FIPS_TEST_ALGO_TDES;
+				ret = parse_test_tdes_init();
+				if (ret < 0)
+					return 0;
+			} else if (strstr(info.vec[i], "VARIABLE")) {
+				algo_parsed = 1;
+				info.algo = FIPS_TEST_ALGO_TDES;
+				ret = parse_test_tdes_init();
+				if (ret < 0)
+					return 0;
+			} else if (strstr(info.vec[i], "SUBSTITUTION")) {
+				algo_parsed = 1;
+				info.algo = FIPS_TEST_ALGO_TDES;
+				ret = parse_test_tdes_init();
+				if (ret < 0)
+					return 0;
 			} else if (strstr(info.vec[i], "SHA-")) {
 				algo_parsed = 1;
 				info.algo = FIPS_TEST_ALGO_SHA;
 				ret = parse_test_sha_init();
+				if (ret < 0)
+					return ret;
+			} else if (strstr(info.vec[i], "XTS")) {
+				algo_parsed = 1;
+				info.algo = FIPS_TEST_ALGO_AES_XTS;
+				ret = parse_test_xts_init();
 				if (ret < 0)
 					return ret;
 			}
@@ -234,12 +272,14 @@ parse_file_type(const char *path)
 {
 	const char *tmp = path + strlen(path) - 3;
 
-	if (strstr(tmp, REQ_FILE_PERFIX))
+	if (strstr(tmp, REQ_FILE_PREFIX))
 		info.file_type = FIPS_TYPE_REQ;
-	else if (strstr(tmp, RSP_FILE_PERFIX))
+	else if (strstr(tmp, RSP_FILE_PREFIX))
 		info.file_type = FIPS_TYPE_RSP;
-	else if (strstr(path, FAX_FILE_PERFIX))
+	else if (strstr(path, FAX_FILE_PREFIX))
 		info.file_type = FIPS_TYPE_FAX;
+	else if (strstr(path, JSON_FILE_PREFIX))
+		info.file_type = FIPS_TYPE_JSON;
 	else
 		return -EINVAL;
 
@@ -257,6 +297,11 @@ fips_test_init(const char *req_file_path, const char *rsp_file_path,
 
 	fips_test_clear();
 
+	if (rte_strscpy(info.file_name, req_file_path,
+				sizeof(info.file_name)) < 0) {
+		RTE_LOG(ERR, USER1, "Path %s too long\n", req_file_path);
+		return -EINVAL;
+	}
 	info.algo = FIPS_TEST_ALGO_MAX;
 	if (parse_file_type(req_file_path) < 0) {
 		RTE_LOG(ERR, USER1, "File %s type not supported\n",
@@ -268,6 +313,21 @@ fips_test_init(const char *req_file_path, const char *rsp_file_path,
 	if (!info.fp_rd) {
 		RTE_LOG(ERR, USER1, "Cannot open file %s\n", req_file_path);
 		return -EINVAL;
+	}
+
+	if (info.file_type == FIPS_TYPE_JSON) {
+#ifdef USE_JANSSON
+		json_error_t error;
+		json_info.json_root = json_loadf(info.fp_rd, 0, &error);
+		if (!json_info.json_root) {
+			RTE_LOG(ERR, USER1, "Cannot parse json file %s (line %d, column %d)\n",
+				req_file_path, error.line, error.column);
+			return -EINVAL;
+		}
+#else /* USE_JANSSON */
+		RTE_LOG(ERR, USER1, "No json library configured.\n");
+		return -EINVAL;
+#endif /* USE_JANSSON */
 	}
 
 	info.fp_wr = fopen(rsp_file_path, "w");
@@ -282,7 +342,14 @@ fips_test_init(const char *req_file_path, const char *rsp_file_path,
 		return -ENOMEM;
 	}
 
-	strlcpy(info.device_name, device_name, sizeof(info.device_name));
+	if (rte_strscpy(info.device_name, device_name,
+				sizeof(info.device_name)) < 0) {
+		RTE_LOG(ERR, USER1, "Device name %s too long\n", device_name);
+		return -EINVAL;
+	}
+
+	if (info.file_type == FIPS_TYPE_JSON)
+		return 0;
 
 	if (fips_test_parse_header() < 0) {
 		RTE_LOG(ERR, USER1, "Failed parsing header\n");
@@ -299,8 +366,7 @@ fips_test_clear(void)
 		fclose(info.fp_rd);
 	if (info.fp_wr)
 		fclose(info.fp_wr);
-	if (info.one_line_text)
-		free(info.one_line_text);
+	free(info.one_line_text);
 	if (info.nb_vec_lines) {
 		uint32_t i;
 
@@ -315,11 +381,15 @@ int
 fips_test_parse_one_case(void)
 {
 	uint32_t i, j = 0;
-	uint32_t is_interim = 0;
+	uint32_t is_interim;
+	uint32_t interim_cnt = 0;
 	int ret;
+
+	info.vec_start_off = 0;
 
 	if (info.interim_callbacks) {
 		for (i = 0; i < info.nb_vec_lines; i++) {
+			is_interim = 0;
 			for (j = 0; info.interim_callbacks[j].key != NULL; j++)
 				if (strstr(info.vec[i],
 					info.interim_callbacks[j].key)) {
@@ -332,17 +402,31 @@ fips_test_parse_one_case(void)
 					if (ret < 0)
 						return ret;
 				}
+
+			if (is_interim)
+				interim_cnt += 1;
 		}
 	}
 
-	if (is_interim) {
-		for (i = 0; i < info.nb_vec_lines; i++)
-			fprintf(info.fp_wr, "%s\n", info.vec[i]);
-		fprintf(info.fp_wr, "\n");
-		return 1;
+	if (interim_cnt) {
+		if (info.version == 21.4f) {
+			for (i = 0; i < interim_cnt; i++)
+				fprintf(info.fp_wr, "%s\n", info.vec[i]);
+			fprintf(info.fp_wr, "\n");
+
+			if (info.nb_vec_lines == interim_cnt)
+				return 1;
+		} else {
+			for (i = 0; i < info.nb_vec_lines; i++)
+				fprintf(info.fp_wr, "%s\n", info.vec[i]);
+			fprintf(info.fp_wr, "\n");
+			return 1;
+		}
 	}
 
-	for (i = 0; i < info.nb_vec_lines; i++) {
+	info.vec_start_off = interim_cnt;
+
+	for (i = info.vec_start_off; i < info.nb_vec_lines; i++) {
 		for (j = 0; info.callbacks[j].key != NULL; j++)
 			if (strstr(info.vec[i], info.callbacks[j].key)) {
 				ret = info.callbacks[j].cb(
@@ -362,9 +446,132 @@ fips_test_write_one_case(void)
 {
 	uint32_t i;
 
-	for (i = 0; i < info.nb_vec_lines; i++)
+	for (i = info.vec_start_off; i < info.nb_vec_lines; i++)
 		fprintf(info.fp_wr, "%s\n", info.vec[i]);
 }
+
+#ifdef USE_JANSSON
+int
+fips_test_parse_one_json_vector_set(void)
+{
+	json_t *algo_obj = json_object_get(json_info.json_vector_set, "algorithm");
+	const char *algo_str = json_string_value(algo_obj);
+
+	/* Vector sets contain the algorithm type, and nothing else we need. */
+	if (strstr(algo_str, "AES-GCM"))
+		info.algo = FIPS_TEST_ALGO_AES_GCM;
+	else if (strstr(algo_str, "AES-CCM"))
+		info.algo = FIPS_TEST_ALGO_AES_CCM;
+	else if (strstr(algo_str, "AES-GMAC"))
+		info.algo = FIPS_TEST_ALGO_AES_GMAC;
+	else if (strstr(algo_str, "HMAC"))
+		info.algo = FIPS_TEST_ALGO_HMAC;
+	else if (strstr(algo_str, "CMAC"))
+		info.algo = FIPS_TEST_ALGO_AES_CMAC;
+	else if (strstr(algo_str, "AES-CBC"))
+		info.algo = FIPS_TEST_ALGO_AES_CBC;
+	else if (strstr(algo_str, "AES-XTS"))
+		info.algo = FIPS_TEST_ALGO_AES_XTS;
+	else if (strstr(algo_str, "AES-CTR"))
+		info.algo = FIPS_TEST_ALGO_AES_CTR;
+	else if (strstr(algo_str, "SHA"))
+		info.algo = FIPS_TEST_ALGO_SHA;
+	else if (strstr(algo_str, "TDES-CBC") ||
+		strstr(algo_str, "TDES-ECB"))
+		info.algo = FIPS_TEST_ALGO_TDES;
+	else if (strstr(algo_str, "RSA"))
+		info.algo = FIPS_TEST_ALGO_RSA;
+	else if (strstr(algo_str, "ECDSA"))
+		info.algo = FIPS_TEST_ALGO_ECDSA;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+int
+fips_test_parse_one_json_group(void)
+{
+	int ret, i;
+	json_t *param;
+
+	if (info.interim_callbacks) {
+		char json_value[FIPS_TEST_JSON_BUF_LEN];
+		for (i = 0; info.interim_callbacks[i].key != NULL; i++) {
+			param = json_object_get(json_info.json_test_group,
+					info.interim_callbacks[i].key);
+			if (!param)
+				continue;
+
+			switch (json_typeof(param)) {
+			case JSON_STRING:
+				snprintf(json_value, sizeof(json_value), "%s",
+						 json_string_value(param));
+				break;
+
+			case JSON_INTEGER:
+				snprintf(json_value, sizeof(json_value), "%"JSON_INTEGER_FORMAT,
+						json_integer_value(param));
+				break;
+
+			default:
+				return -EINVAL;
+			}
+
+			ret = info.interim_callbacks[i].cb(
+				info.interim_callbacks[i].key, json_value,
+				info.interim_callbacks[i].val
+			);
+			if (ret < 0)
+				return ret;
+		}
+
+		if (info.parse_interim_writeback) {
+			ret = info.parse_interim_writeback(NULL);
+			if (ret < 0)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+
+int
+fips_test_parse_one_json_case(void)
+{
+	uint32_t i;
+	int ret = 0;
+	json_t *param;
+
+	for (i = 0; info.callbacks[i].key != NULL; i++) {
+		param = json_object_get(json_info.json_test_case, info.callbacks[i].key);
+		if (!param)
+			continue;
+
+		switch (json_typeof(param)) {
+		case JSON_STRING:
+			snprintf(info.one_line_text, MAX_LINE_CHAR, "%s",
+					 json_string_value(param));
+			break;
+
+		case JSON_INTEGER:
+			snprintf(info.one_line_text, MAX_LINE_CHAR, "%"JSON_INTEGER_FORMAT,
+					 json_integer_value(param));
+			break;
+
+		default:
+			return -EINVAL;
+		}
+
+		ret = info.callbacks[i].cb(info.callbacks[i].key, info.one_line_text,
+				info.callbacks[i].val);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+#endif /* USE_JANSSON */
 
 static int
 parser_read_uint64_hex(uint64_t *value, const char *p)
@@ -450,7 +657,15 @@ parse_uint8_hex_str(const char *key, char *src, struct fips_val *val)
 {
 	uint32_t len, j;
 
-	src += strlen(key);
+#ifdef USE_JANSSON
+	/*
+	 * Offset not applicable in case of JSON test vectors.
+	 */
+	if (info.file_type == FIPS_TYPE_JSON) {
+		RTE_SET_USED(key);
+	} else
+#endif
+		src += strlen(key);
 
 	len = strlen(src) / 2;
 
@@ -459,7 +674,7 @@ parse_uint8_hex_str(const char *key, char *src, struct fips_val *val)
 		val->val = NULL;
 	}
 
-	val->val = rte_zmalloc(NULL, len, 0);
+	val->val = rte_zmalloc(NULL, len + 1, 0);
 	if (!val->val)
 		return -ENOMEM;
 
@@ -481,6 +696,13 @@ parse_uint8_hex_str(const char *key, char *src, struct fips_val *val)
 int
 parser_read_uint32_val(const char *key, char *src, struct fips_val *val)
 {
+#ifdef USE_JANSSON
+	if (info.file_type == FIPS_TYPE_JSON) {
+		RTE_SET_USED(key);
+
+		return parser_read_uint32(&val->len, src);
+	}
+# endif
 	char *data = src + strlen(key);
 	size_t data_len = strlen(data);
 	int ret;
@@ -587,6 +809,22 @@ parser_read_uint32(uint32_t *value, char *p)
 	return 0;
 }
 
+int
+parser_read_uint16(uint16_t *value, const char *p)
+{
+	uint64_t val = 0;
+	int ret = parser_read_uint64(&val, p);
+
+	if (ret < 0)
+		return ret;
+
+	if (val > UINT16_MAX)
+		return -ERANGE;
+
+	*value = val;
+	return 0;
+}
+
 void
 parse_write_hex_str(struct fips_val *src)
 {
@@ -606,9 +844,16 @@ update_info_vec(uint32_t count)
 
 	cb = &info.writeback_callbacks[0];
 
-	snprintf(info.vec[0], strlen(info.vec[0]) + 4, "%s%u", cb->key, count);
+	if ((info.version == 21.4f) && (!(strstr(info.vec[0], cb->key)))) {
+		fprintf(info.fp_wr, "%s%u\n", cb->key, count);
+		i = 0;
+	} else {
+		snprintf(info.vec[0], strlen(info.vec[0]) + 4, "%s%u", cb->key,
+				count);
+		i = 1;
+	}
 
-	for (i = 1; i < info.nb_vec_lines; i++) {
+	for (; i < info.nb_vec_lines; i++) {
 		for (j = 1; info.writeback_callbacks[j].key != NULL; j++) {
 			cb = &info.writeback_callbacks[j];
 			if (strstr(info.vec[i], cb->key)) {

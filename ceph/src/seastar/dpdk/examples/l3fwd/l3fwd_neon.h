@@ -7,6 +7,7 @@
 #define _L3FWD_NEON_H_
 
 #include "l3fwd.h"
+#include "neon/port_group.h"
 #include "l3fwd_common.h"
 
 /*
@@ -48,52 +49,18 @@ processx4_step3(struct rte_mbuf *pkt[FWDSTEP], uint16_t dst_port[FWDSTEP])
 	vst1q_u32(p[2], ve[2]);
 	vst1q_u32(p[3], ve[3]);
 
-	rfc1812_process((struct ipv4_hdr *)((struct ether_hdr *)p[0] + 1),
-		&dst_port[0], pkt[0]->packet_type);
-	rfc1812_process((struct ipv4_hdr *)((struct ether_hdr *)p[1] + 1),
-		&dst_port[1], pkt[1]->packet_type);
-	rfc1812_process((struct ipv4_hdr *)((struct ether_hdr *)p[2] + 1),
-		&dst_port[2], pkt[2]->packet_type);
-	rfc1812_process((struct ipv4_hdr *)((struct ether_hdr *)p[3] + 1),
-		&dst_port[3], pkt[3]->packet_type);
-}
-
-/*
- * Group consecutive packets with the same destination port in bursts of 4.
- * Suppose we have array of destionation ports:
- * dst_port[] = {a, b, c, d,, e, ... }
- * dp1 should contain: <a, b, c, d>, dp2: <b, c, d, e>.
- * We doing 4 comparisons at once and the result is 4 bit mask.
- * This mask is used as an index into prebuild array of pnum values.
- */
-static inline uint16_t *
-port_groupx4(uint16_t pn[FWDSTEP + 1], uint16_t *lp, uint16x8_t dp1,
-	     uint16x8_t dp2)
-{
-	union {
-		uint16_t u16[FWDSTEP + 1];
-		uint64_t u64;
-	} *pnum = (void *)pn;
-
-	int32_t v;
-	uint16x8_t mask = {1, 2, 4, 8, 0, 0, 0, 0};
-
-	dp1 = vceqq_u16(dp1, dp2);
-	dp1 = vandq_u16(dp1, mask);
-	v = vaddvq_u16(dp1);
-
-	/* update last port counter. */
-	lp[0] += gptbl[v].lpv;
-	rte_compiler_barrier();
-
-	/* if dest port value has changed. */
-	if (v != GRPMSK) {
-		pnum->u64 = gptbl[v].pnum;
-		pnum->u16[FWDSTEP] = 1;
-		lp = pnum->u16 + gptbl[v].idx;
-	}
-
-	return lp;
+	rfc1812_process((struct rte_ipv4_hdr *)
+			((struct rte_ether_hdr *)p[0] + 1),
+			&dst_port[0], pkt[0]->packet_type);
+	rfc1812_process((struct rte_ipv4_hdr *)
+			((struct rte_ether_hdr *)p[1] + 1),
+			&dst_port[1], pkt[1]->packet_type);
+	rfc1812_process((struct rte_ipv4_hdr *)
+			((struct rte_ether_hdr *)p[2] + 1),
+			&dst_port[2], pkt[2]->packet_type);
+	rfc1812_process((struct rte_ipv4_hdr *)
+			((struct rte_ether_hdr *)p[3] + 1),
+			&dst_port[3], pkt[3]->packet_type);
 }
 
 /**
@@ -104,16 +71,16 @@ port_groupx4(uint16_t pn[FWDSTEP + 1], uint16_t *lp, uint16x8_t dp1,
 static inline void
 process_packet(struct rte_mbuf *pkt, uint16_t *dst_port)
 {
-	struct ether_hdr *eth_hdr;
+	struct rte_ether_hdr *eth_hdr;
 	uint32x4_t te, ve;
 
-	eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+	eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
 
 	te = vld1q_u32((uint32_t *)eth_hdr);
 	ve = vreinterpretq_u32_s32(val_eth[dst_port[0]]);
 
 
-	rfc1812_process((struct ipv4_hdr *)(eth_hdr + 1), dst_port,
+	rfc1812_process((struct rte_ipv4_hdr *)(eth_hdr + 1), dst_port,
 			pkt->packet_type);
 
 	ve = vcopyq_laneq_u32(ve, 3, te, 3);
@@ -225,6 +192,54 @@ send_packets_multi(struct lcore_conf *qconf, struct rte_mbuf **pkts_burst,
 				rte_pktmbuf_free(pkts_burst[m]);
 
 	}
+}
+
+static __rte_always_inline uint16_t
+process_dst_port(uint16_t *dst_ports, uint16_t nb_elem)
+{
+	uint16_t i = 0;
+
+#if defined(RTE_ARCH_ARM64)
+	uint64_t res;
+
+	while (nb_elem > 7) {
+		uint16x8_t dp = vdupq_n_u16(dst_ports[0]);
+		uint16x8_t dp1;
+
+		dp1 = vld1q_u16(&dst_ports[i]);
+		dp1 = vceqq_u16(dp1, dp);
+		res = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(dp1, 4)),
+				    0);
+		if (res != ~0ULL)
+			return BAD_PORT;
+
+		nb_elem -= 8;
+		i += 8;
+	}
+
+	while (nb_elem > 3) {
+		uint16x4_t dp = vdup_n_u16(dst_ports[0]);
+		uint16x4_t dp1;
+
+		dp1 = vld1_u16(&dst_ports[i]);
+		dp1 = vceq_u16(dp1, dp);
+		res = vget_lane_u64(vreinterpret_u64_u16(dp1), 0);
+		if (res != ~0ULL)
+			return BAD_PORT;
+
+		nb_elem -= 4;
+		i += 4;
+	}
+#endif
+
+	while (nb_elem) {
+		if (dst_ports[i] != dst_ports[0])
+			return BAD_PORT;
+		nb_elem--;
+		i++;
+	}
+
+	return dst_ports[0];
 }
 
 #endif /* _L3FWD_NEON_H_ */

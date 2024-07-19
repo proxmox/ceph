@@ -2,7 +2,7 @@
 // experimental/coro/use_coro.cpp
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
-// Copyright (c) 2021-2022 Klemens D. Morgenstern
+// Copyright (c) 2021-2023 Klemens D. Morgenstern
 //                         (klemens dot morgenstern at gmx dot net)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
@@ -37,7 +37,7 @@ boost::asio::experimental::coro<void() noexcept, int>
 awaiter_noexcept(boost::asio::any_io_executor exec)
 {
   boost::asio::steady_timer timer{exec};
-  auto ec = co_await timer.async_wait(use_coro);
+  auto ec = co_await timer.async_wait(boost::asio::deferred);
   BOOST_ASIO_CHECK(ec == boost::system::error_code{});
   co_return 42;
 }

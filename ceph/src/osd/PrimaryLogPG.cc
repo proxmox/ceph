@@ -550,7 +550,6 @@ bool PrimaryLogPG::should_send_op(
   const hobject_t &hoid) {
   if (peer == get_primary())
     return true;
-  ceph_assert(recovery_state.has_peer_info(peer));
   bool should_send =
       hoid.pool != (int64_t)info.pgid.pool() ||
       hoid <= last_backfill_started ||
@@ -999,7 +998,7 @@ PrimaryLogPG::get_pgls_filter(bufferlist::const_iterator& iter)
 // ==========================================================
 
 void PrimaryLogPG::do_command(
-  const string_view& orig_prefix,
+  string_view orig_prefix,
   const cmdmap_t& cmdmap,
   const bufferlist& idata,
   std::function<void(int,const std::string&,bufferlist&)> on_finish)
@@ -1158,39 +1157,26 @@ void PrimaryLogPG::do_command(
     f->close_section();
   }
 
-  else if (prefix == "scrub" ||
-	   prefix == "deep_scrub") {
-    bool deep = (prefix == "deep_scrub");
-    int64_t time = cmd_getval_or<int64_t>(cmdmap, "time", 0);
-
+  else if (prefix == "scrub" || prefix == "deep-scrub") {
     if (is_primary()) {
-      const pg_pool_t *p = &pool.info;
-      double pool_scrub_max_interval = 0;
-      double scrub_max_interval;
-      if (deep) {
-        p->opts.get(pool_opts_t::DEEP_SCRUB_INTERVAL, &pool_scrub_max_interval);
-        scrub_max_interval = pool_scrub_max_interval > 0 ?
-          pool_scrub_max_interval : g_conf()->osd_deep_scrub_interval;
-      } else {
-        p->opts.get(pool_opts_t::SCRUB_MAX_INTERVAL, &pool_scrub_max_interval);
-        scrub_max_interval = pool_scrub_max_interval > 0 ?
-          pool_scrub_max_interval : g_conf()->osd_scrub_max_interval;
-      }
-      // Instead of marking must_scrub force a schedule scrub
-      utime_t stamp = ceph_clock_now();
-      if (time == 0)
-        stamp -= scrub_max_interval;
-      else
-        stamp -=  (float)time;
-      stamp -= 100.0;  // push back last scrub more for good measure
-      if (deep) {
-        set_last_deep_scrub_stamp(stamp);
-      }
-      set_last_scrub_stamp(stamp); // for 'deep' as well, as we use this value to order scrubs
-      f->open_object_section("result");
-      f->dump_bool("deep", deep);
-      f->dump_stream("stamp") << stamp;
-      f->close_section();
+      scrub_level_t deep = (prefix == "deep-scrub") ? scrub_level_t::deep
+						    : scrub_level_t::shallow;
+      m_scrubber->on_operator_forced_scrub(f.get(), deep, m_planned_scrub);
+    } else {
+      ss << "Not primary";
+      ret = -EPERM;
+    }
+    outbl.append(ss.str());
+  }
+
+  // the test/debug commands that schedule a scrub by modifying timestamps
+  else if (prefix == "schedule-scrub" || prefix == "schedule-deep-scrub") {
+    if (is_primary()) {
+      scrub_level_t deep = (prefix == "schedule-deep-scrub")
+			       ? scrub_level_t::deep
+			       : scrub_level_t::shallow;
+      const int64_t offst = cmd_getval_or<int64_t>(cmdmap, "time", 0);
+      m_scrubber->on_operator_periodic_cmd(f.get(), deep, offst);
     } else {
       ss << "Not primary";
       ret = -EPERM;
@@ -1214,6 +1200,7 @@ void PrimaryLogPG::do_command(
     }
     outbl.append(ss.str());
   }
+
   else {
     ret = -ENOSYS;
     ss << "prefix '" << prefix << "' not implemented";
@@ -1936,27 +1923,11 @@ void PrimaryLogPG::do_request(
     break;
 
   case MSG_OSD_SCRUB_RESERVE:
-    {
-      if (!m_scrubber) {
-        osd->reply_op_error(op, -EAGAIN);
-        return;
-      }
-      auto m = op->get_req<MOSDScrubReserve>();
-      switch (m->type) {
-      case MOSDScrubReserve::REQUEST:
-	m_scrubber->handle_scrub_reserve_request(op);
-	break;
-      case MOSDScrubReserve::GRANT:
-	m_scrubber->handle_scrub_reserve_grant(op, m->from);
-	break;
-      case MOSDScrubReserve::REJECT:
-	m_scrubber->handle_scrub_reserve_reject(op, m->from);
-	break;
-      case MOSDScrubReserve::RELEASE:
-	m_scrubber->handle_scrub_reserve_release(op);
-	break;
-      }
+    if (!m_scrubber) {
+      osd->reply_op_error(op, -EAGAIN);
+      return;
     }
+    m_scrubber->handle_scrub_reserve_msgs(op);
     break;
 
   case MSG_OSD_REP_SCRUB:
@@ -2573,6 +2544,11 @@ PrimaryLogPG::cache_result_t PrimaryLogPG::maybe_handle_manifest_detail(
     return cache_result_t::HANDLED_PROXY;
   case object_manifest_t::TYPE_CHUNKED:
     {
+      // in case of metadata handling ops don't need to promote chunk objects
+      if (op->may_read() && !op->may_read_data() && !op->may_write()) {
+        return cache_result_t::NOOP;
+      }
+
       if (can_proxy_chunked_read(op, obc)) {
 	map<hobject_t,FlushOpRef>::iterator p = flush_ops.find(obc->obs.oi.soid);
         if (p != flush_ops.end()) {
@@ -4312,8 +4288,11 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     }
     reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
     // append to pg log for dup detection - don't save buffers for now
-    record_write_error(op, soid, reply, result,
-		       ctx->op->allows_returnvec() ? ctx : nullptr);
+    // store op's returnvec unconditionally-on-errors to ensure coherency
+    // with the original request handling (see `ignore_out_data` above).
+    record_write_error(
+      op, soid, reply, result,
+      (ctx->op->allows_returnvec() || result < 0) ? ctx : nullptr);
     close_op_ctx(ctx);
     return;
   }
@@ -5926,7 +5905,7 @@ int PrimaryLogPG::do_sparse_read(OpContext *ctx, OSDOp& osd_op) {
     }
 
     bufferlist data_bl;
-    r = pgbackend->objects_readv_sync(soid, std::move(m), op.flags, &data_bl);
+    r = pgbackend->objects_readv_sync(soid, m, op.flags, &data_bl);
     if (r == -EIO) {
       r = rep_repair_primary_object(soid, ctx);
     }
@@ -8210,8 +8189,7 @@ inline int PrimaryLogPG::_delete_oid(
   // in luminous or later, we can't delete the head if there are
   // clones. we trust the caller passing no_whiteout has already
   // verified they don't exist.
-  if (!snapset.clones.empty() ||
-      (!ctx->snapc.snaps.empty() && ctx->snapc.snaps[0] > snapset.seq)) {
+  if (should_whiteout(snapset, ctx->snapc)) {
     if (no_whiteout) {
       dout(20) << __func__ << " has or will have clones but no_whiteout=1"
 	       << dendl;
@@ -8770,15 +8748,14 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
   ceph_assert(conn);
 
   auto session = conn->get_priv();
-  if (!session)
-    return;
 
   for (list<pair<watch_info_t,bool> >::iterator i = ctx->watch_connects.begin();
        i != ctx->watch_connects.end();
        ++i) {
     pair<uint64_t, entity_name_t> watcher(i->first.cookie, entity);
     dout(15) << "do_osd_op_effects applying watch connect on session "
-	     << session.get() << " watcher " << watcher << dendl;
+	     << (session ? session.get() : nullptr) << " watcher " << watcher
+	     << dendl;
     WatchRef watch;
     if (ctx->obc->watchers.count(watcher)) {
       dout(15) << "do_osd_op_effects found existing watch watcher " << watcher
@@ -8802,7 +8779,6 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
        p != ctx->notifies.end();
        ++p) {
     dout(10) << "do_osd_op_effects, notify " << *p << dendl;
-    ConnectionRef conn(ctx->op->get_req()->get_connection());
     NotifyRef notif(
       Notify::makeNotifyRef(
 	conn,
@@ -10530,7 +10506,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc)
     obc_g ? &(obc_g->obs.oi.manifest) : nullptr,
     refs);
 
-  for (auto p : chunks) {
+  for (const auto& p : chunks) {
     hobject_t target = mop->new_manifest.chunk_map[p.first].oid;
     if (refs.find(target) == refs.end()) {
       continue;
@@ -11558,7 +11534,7 @@ void PrimaryLogPG::submit_log_entries(
   }
 
   pgbackend->call_write_ordered(
-    [this, entries, repop, on_complete]() {
+    [this, entries, repop, on_complete]() mutable {
       ObjectStore::Transaction t;
       eversion_t old_last_update = info.last_update;
       recovery_state.merge_new_log_entries(
@@ -12136,7 +12112,6 @@ int PrimaryLogPG::find_object_context(const hobject_t& oid,
   dout(20) << __func__ << " " << soid
 	   << " snapset " << obc->ssc->snapset
 	   << dendl;
-  snapid_t first, last;
   auto p = obc->ssc->snapset.clone_snaps.find(soid.snap);
   ceph_assert(p != obc->ssc->snapset.clone_snaps.end());
   if (p->second.empty()) {
@@ -12876,7 +12851,9 @@ void PrimaryLogPG::on_removal(ObjectStore::Transaction &t)
 
   on_shutdown();
 
-  t.register_on_commit(new C_DeleteMore(this, get_osdmap_epoch()));
+  // starting PG deletion, num_objects can be 1
+  // do_delete_work will update num_objects
+  t.register_on_commit(new C_DeleteMore(this, get_osdmap_epoch(), 1));
 }
 
 void PrimaryLogPG::clear_async_reads()
@@ -12905,8 +12882,7 @@ void PrimaryLogPG::on_shutdown()
     osd->clear_queued_recovery(this);
   }
 
-  m_scrubber->scrub_clear_state();
-  m_scrubber->rm_from_osd_scrubbing();
+  m_scrubber->on_new_interval();
 
   vector<ceph_tid_t> tids;
   cancel_copy_ops(false, &tids);
@@ -13054,8 +13030,7 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
     finish_degraded_object(p->first);
   }
 
-  // requeues waiting_for_scrub
-  m_scrubber->scrub_clear_state();
+  ceph_assert(waiting_for_scrub.empty());
 
   for (auto p = waiting_for_blocked_object.begin();
        p != waiting_for_blocked_object.end();
@@ -15726,9 +15701,8 @@ boost::statechart::result PrimaryLogPG::AwaitAsyncWork::react(const DoSnapWork&)
 	ldout(pg->cct, 10) << "waiting for it to clear"
 			   << dendl;
 	return transit< WaitRWLock >();
-      } else {
-        return transit< NotTrimming >();
       }
+      return transit< NotTrimming >();
     }
 
     in_flight.insert(object);
@@ -15826,6 +15800,11 @@ bool PrimaryLogPG::check_failsafe_full() {
 bool PrimaryLogPG::maybe_preempt_replica_scrub(const hobject_t& oid)
 {
   return m_scrubber->write_blocked_by_scrub(oid);
+}
+
+struct ECListener *PrimaryLogPG::get_eclistener()
+{
+  return this;
 }
 
 void intrusive_ptr_add_ref(PrimaryLogPG *pg) { pg->get("intptr"); }

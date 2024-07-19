@@ -40,6 +40,10 @@ Device-related options
 
     Use specified interrupt mode for devices bound to VFIO kernel driver.
 
+*   ``--vfio-vf-token <uuid>``
+
+    Use specified VF token for devices bound to VFIO kernel driver.
+
 Multiprocessing-related options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -48,12 +52,6 @@ Multiprocessing-related options
     Use a different shared data file prefix for a DPDK process. This option
     allows running multiple independent DPDK primary/secondary processes under
     different prefixes.
-
-*   ``--base-virtaddr <address>``
-
-    Attempt to use a different starting address for all memory maps of the
-    primary DPDK process. This can be helpful if secondary processes cannot
-    start due to conflicts in address map.
 
 Memory-related options
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -83,12 +81,29 @@ Memory-related options
 
 *   ``--huge-dir <path to hugetlbfs directory>``
 
-    Use specified hugetlbfs directory instead of autodetected ones.
+    Use specified hugetlbfs directory instead of autodetected ones. This can be
+    a sub-directory within a hugetlbfs mountpoint.
 
-*   ``--huge-unlink``
+*   ``--huge-unlink[=existing|always|never]``
 
-    Unlink hugepage files after creating them (implies no secondary process
-    support).
+    No ``--huge-unlink`` option or ``--huge-unlink=existing`` is the default:
+    existing hugepage files are removed and re-created
+    to ensure the kernel clears the memory and prevents any data leaks.
+
+    With ``--huge-unlink`` (no value) or ``--huge-unlink=always``,
+    hugepage files are also removed before mapping them,
+    so that the application leaves no files in hugetlbfs.
+    This mode implies no multi-process support.
+
+    When ``--huge-unlink=never`` is specified, existing hugepage files
+    are never removed, but are remapped instead, allowing hugepage reuse.
+    This makes restart faster by saving time to clear memory at initialization,
+    but it may slow down zeroed allocations later.
+    Reused hugepages can contain data from previous processes that used them,
+    which may be a security concern.
+    Hugepage files created in this mode are also not removed
+    when all the hugepages mapped from them are freed,
+    which allows to reuse these files after a restart.
 
 *   ``--match-allocations``
 

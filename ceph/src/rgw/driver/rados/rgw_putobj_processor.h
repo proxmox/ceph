@@ -18,7 +18,6 @@
 #include <optional>
 
 #include "rgw_putobj.h"
-#include "services/svc_rados.h"
 #include "services/svc_tier_rados.h"
 #include "rgw_sal.h"
 #include "rgw_obj_manifest.h"
@@ -70,18 +69,19 @@ class RadosWriter : public rgw::sal::DataProcessor {
   const RGWBucketInfo& bucket_info;
   RGWObjectCtx& obj_ctx;
   rgw_obj head_obj;
-  RGWSI_RADOS::Obj stripe_obj; // current stripe object
+  rgw_rados_ref stripe_obj; // current stripe object
   RawObjSet written; // set of written objects for deletion
   const DoutPrefixProvider *dpp;
   optional_yield y;
+  jspan_context& trace;
 
  public:
   RadosWriter(Aio *aio, RGWRados *store,
               const RGWBucketInfo& bucket_info,
               RGWObjectCtx& obj_ctx, const rgw_obj& _head_obj,
-              const DoutPrefixProvider *dpp, optional_yield y)
+              const DoutPrefixProvider *dpp, optional_yield y, jspan_context& _trace)
     : aio(aio), store(store), bucket_info(bucket_info),
-      obj_ctx(obj_ctx), head_obj(_head_obj), dpp(dpp), y(y)
+      obj_ctx(obj_ctx), head_obj(_head_obj), dpp(dpp), y(y), trace(_trace)
   {}
   ~RadosWriter();
 
@@ -106,6 +106,7 @@ class RadosWriter : public rgw::sal::DataProcessor {
   // so they aren't deleted on destruction
   void clear_written() { written.clear(); }
 
+  jspan_context& get_trace() { return trace; }
 };
 
 
@@ -116,7 +117,7 @@ class ManifestObjectProcessor : public HeadObjectProcessor,
   RGWRados* const store;
   RGWBucketInfo& bucket_info;
   rgw_placement_rule tail_placement_rule;
-  rgw_user owner;
+  ACLOwner owner;
   RGWObjectCtx& obj_ctx;
   rgw_obj head_obj;
 
@@ -134,21 +135,23 @@ class ManifestObjectProcessor : public HeadObjectProcessor,
   ManifestObjectProcessor(Aio *aio, RGWRados* store,
                           RGWBucketInfo& bucket_info,
                           const rgw_placement_rule *ptail_placement_rule,
-                          const rgw_user& owner, RGWObjectCtx& _obj_ctx,
+                          const ACLOwner& owner, RGWObjectCtx& _obj_ctx,
                           const rgw_obj& _head_obj,
-                          const DoutPrefixProvider* dpp, optional_yield y)
+                          const DoutPrefixProvider* dpp,
+                          optional_yield y,
+                          jspan_context& trace)
     : HeadObjectProcessor(0),
       store(store), bucket_info(bucket_info),
       owner(owner),
       obj_ctx(_obj_ctx), head_obj(_head_obj),
-      writer(aio, store, bucket_info, obj_ctx, head_obj, dpp, y),
+      writer(aio, store, bucket_info, obj_ctx, head_obj, dpp, y, trace),
       chunk(&writer, 0), stripe(&chunk, this, 0), dpp(dpp) {
         if (ptail_placement_rule) {
           tail_placement_rule = *ptail_placement_rule;
         }
       }
 
-  void set_owner(const rgw_user& _owner) {
+  void set_owner(const ACLOwner& _owner) {
     owner = _owner;
   }
 
@@ -174,13 +177,13 @@ class AtomicObjectProcessor : public ManifestObjectProcessor {
   AtomicObjectProcessor(Aio *aio, RGWRados* store,
                         RGWBucketInfo& bucket_info,
                         const rgw_placement_rule *ptail_placement_rule,
-                        const rgw_user& owner,
+                        const ACLOwner& owner,
                         RGWObjectCtx& obj_ctx, const rgw_obj& _head_obj,
                         std::optional<uint64_t> olh_epoch,
                         const std::string& unique_tag,
-                        const DoutPrefixProvider *dpp, optional_yield y)
+                        const DoutPrefixProvider *dpp, optional_yield y, jspan_context& trace)
     : ManifestObjectProcessor(aio, store, bucket_info, ptail_placement_rule,
-                              owner, obj_ctx, _head_obj, dpp, y),
+                              owner, obj_ctx, _head_obj, dpp, y, trace),
       olh_epoch(olh_epoch), unique_tag(unique_tag)
   {}
 
@@ -194,7 +197,7 @@ class AtomicObjectProcessor : public ManifestObjectProcessor {
                const char *if_match, const char *if_nomatch,
                const std::string *user_data,
                rgw_zone_set *zones_trace, bool *canceled,
-               optional_yield y,
+               const req_context& rctx,
                uint32_t flags) override;
 
 };
@@ -219,13 +222,13 @@ class MultipartObjectProcessor : public ManifestObjectProcessor {
   MultipartObjectProcessor(Aio *aio, RGWRados* store,
                            RGWBucketInfo& bucket_info,
                            const rgw_placement_rule *ptail_placement_rule,
-                           const rgw_user& owner, RGWObjectCtx& obj_ctx,
+                           const ACLOwner& owner, RGWObjectCtx& obj_ctx,
                            const rgw_obj& _head_obj,
                            const std::string& upload_id, uint64_t part_num,
                            const std::string& part_num_str,
-                           const DoutPrefixProvider *dpp, optional_yield y)
+                           const DoutPrefixProvider *dpp, optional_yield y, jspan_context& trace)
     : ManifestObjectProcessor(aio, store, bucket_info, ptail_placement_rule,
-                              owner, obj_ctx, _head_obj, dpp, y),
+                              owner, obj_ctx, _head_obj, dpp, y, trace),
       target_obj(head_obj), upload_id(upload_id),
       part_num(part_num), part_num_str(part_num_str),
       mp(head_obj.key.name, upload_id)
@@ -242,7 +245,7 @@ class MultipartObjectProcessor : public ManifestObjectProcessor {
                const char *if_match, const char *if_nomatch,
                const std::string *user_data,
                rgw_zone_set *zones_trace, bool *canceled,
-               optional_yield y,
+               const req_context& rctx,
                uint32_t flags) override;
 
 };
@@ -263,13 +266,13 @@ class MultipartObjectProcessor : public ManifestObjectProcessor {
     AppendObjectProcessor(Aio *aio, RGWRados* store,
                           RGWBucketInfo& bucket_info,
                           const rgw_placement_rule *ptail_placement_rule,
-                          const rgw_user& owner, RGWObjectCtx& obj_ctx,
+                          const ACLOwner& owner, RGWObjectCtx& obj_ctx,
                           const rgw_obj& _head_obj,
                           const std::string& unique_tag, uint64_t position,
                           uint64_t *cur_accounted_size,
-                          const DoutPrefixProvider *dpp, optional_yield y)
+                          const DoutPrefixProvider *dpp, optional_yield y, jspan_context& trace)
             : ManifestObjectProcessor(aio, store, bucket_info, ptail_placement_rule,
-                                      owner, obj_ctx, _head_obj, dpp, y),
+                                      owner, obj_ctx, _head_obj, dpp, y, trace),
               position(position), cur_size(0), cur_accounted_size(cur_accounted_size),
               unique_tag(unique_tag), cur_manifest(nullptr)
     {}
@@ -279,7 +282,7 @@ class MultipartObjectProcessor : public ManifestObjectProcessor {
                  std::map<std::string, bufferlist>& attrs, ceph::real_time delete_at,
                  const char *if_match, const char *if_nomatch, const std::string *user_data,
                  rgw_zone_set *zones_trace, bool *canceled,
-                 optional_yield y,
+                 const req_context& rctx,
                  uint32_t flags) override;
   };
 

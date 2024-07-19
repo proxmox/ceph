@@ -13,12 +13,13 @@
 
 #pragma once
 
-#include <chrono>
-#include <limits>
-#include <bitset>
-#include <array>
-#include <boost/intrusive/list.hpp>
 #include <seastar/core/bitset-iter.hh>
+#ifndef SEASTAR_MODULE
+#include <boost/intrusive/list.hpp>
+#include <array>
+#include <bitset>
+#include <limits>
+#endif
 
 namespace seastar {
 
@@ -250,4 +251,4 @@ public:
         return Timer::clock::now();
     }
 };
-};
+}

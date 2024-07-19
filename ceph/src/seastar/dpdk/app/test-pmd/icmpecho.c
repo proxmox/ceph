@@ -20,7 +20,6 @@
 #include <rte_cycles.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
@@ -38,23 +37,23 @@
 static const char *
 arp_op_name(uint16_t arp_op)
 {
-	switch (arp_op ) {
-	case ARP_OP_REQUEST:
+	switch (arp_op) {
+	case RTE_ARP_OP_REQUEST:
 		return "ARP Request";
-	case ARP_OP_REPLY:
+	case RTE_ARP_OP_REPLY:
 		return "ARP Reply";
-	case ARP_OP_REVREQUEST:
+	case RTE_ARP_OP_REVREQUEST:
 		return "Reverse ARP Request";
-	case ARP_OP_REVREPLY:
+	case RTE_ARP_OP_REVREPLY:
 		return "Reverse ARP Reply";
-	case ARP_OP_INVREQUEST:
+	case RTE_ARP_OP_INVREQUEST:
 		return "Peer Identify Request";
-	case ARP_OP_INVREPLY:
+	case RTE_ARP_OP_INVREPLY:
 		return "Peer Identify Reply";
 	default:
 		break;
 	}
-	return "Unkwown ARP op";
+	return "Unknown ARP op";
 }
 
 static const char *
@@ -188,7 +187,7 @@ ip_proto_name(uint16_t ip_proto)
 		"PIM",        /**< Protocol Independent Mcast */
 	};
 
-	if (ip_proto < sizeof(ip_proto_names) / sizeof(ip_proto_names[0]))
+	if (ip_proto < RTE_DIM(ip_proto_names))
 		return ip_proto_names[ip_proto];
 	switch (ip_proto) {
 #ifdef IPPROTO_PGM
@@ -221,11 +220,11 @@ ipv4_addr_to_dot(uint32_t be_ipv4_addr, char *buf)
 }
 
 static void
-ether_addr_dump(const char *what, const struct ether_addr *ea)
+ether_addr_dump(const char *what, const struct rte_ether_addr *ea)
 {
-	char buf[ETHER_ADDR_FMT_SIZE];
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
 
-	ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, ea);
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, ea);
 	if (what)
 		printf("%s", what);
 	printf("%s", buf);
@@ -243,7 +242,7 @@ ipv4_addr_dump(const char *what, uint32_t be_ipv4_addr)
 }
 
 static uint16_t
-ipv4_hdr_cksum(struct ipv4_hdr *ip_h)
+ipv4_hdr_cksum(struct rte_ipv4_hdr *ip_h)
 {
 	uint16_t *v16_h;
 	uint32_t ip_cksum;
@@ -270,21 +269,19 @@ ipv4_hdr_cksum(struct ipv4_hdr *ip_h)
  * Receive a burst of packets, lookup for ICMP echo requests, and, if any,
  * send back ICMP echo replies.
  */
-static void
+static bool
 reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	struct rte_mbuf *pkt;
-	struct ether_hdr *eth_h;
-	struct vlan_hdr *vlan_h;
-	struct arp_hdr  *arp_h;
-	struct ipv4_hdr *ip_h;
-	struct icmp_hdr *icmp_h;
-	struct ether_addr eth_addr;
-	uint32_t retry;
+	struct rte_ether_hdr *eth_h;
+	struct rte_vlan_hdr *vlan_h;
+	struct rte_arp_hdr  *arp_h;
+	struct rte_ipv4_hdr *ip_h;
+	struct rte_icmp_hdr *icmp_h;
+	struct rte_ether_addr eth_addr;
 	uint32_t ip_addr;
 	uint16_t nb_rx;
-	uint16_t nb_tx;
 	uint16_t nb_replies;
 	uint16_t eth_type;
 	uint16_t vlan_id;
@@ -293,47 +290,33 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 	uint32_t cksum;
 	uint8_t  i;
 	int l2_len;
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	uint64_t start_tsc;
-	uint64_t end_tsc;
-	uint64_t core_cycles;
-#endif
-
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	start_tsc = rte_rdtsc();
-#endif
 
 	/*
 	 * First, receive a burst of packets.
 	 */
-	nb_rx = rte_eth_rx_burst(fs->rx_port, fs->rx_queue, pkts_burst,
-				 nb_pkt_per_burst);
+	nb_rx = common_fwd_stream_receive(fs, pkts_burst, nb_pkt_per_burst);
 	if (unlikely(nb_rx == 0))
-		return;
+		return false;
 
-#ifdef RTE_TEST_PMD_RECORD_BURST_STATS
-	fs->rx_burst_stats.pkt_burst_spread[nb_rx]++;
-#endif
-	fs->rx_packets += nb_rx;
 	nb_replies = 0;
 	for (i = 0; i < nb_rx; i++) {
 		if (likely(i < nb_rx - 1))
 			rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[i + 1],
 						       void *));
 		pkt = pkts_burst[i];
-		eth_h = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+		eth_h = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
 		eth_type = RTE_BE_TO_CPU_16(eth_h->ether_type);
-		l2_len = sizeof(struct ether_hdr);
+		l2_len = sizeof(struct rte_ether_hdr);
 		if (verbose_level > 0) {
 			printf("\nPort %d pkt-len=%u nb-segs=%u\n",
 			       fs->rx_port, pkt->pkt_len, pkt->nb_segs);
-			ether_addr_dump("  ETH:  src=", &eth_h->s_addr);
-			ether_addr_dump(" dst=", &eth_h->d_addr);
+			ether_addr_dump("  ETH:  src=", &eth_h->src_addr);
+			ether_addr_dump(" dst=", &eth_h->dst_addr);
 		}
-		if (eth_type == ETHER_TYPE_VLAN) {
-			vlan_h = (struct vlan_hdr *)
-				((char *)eth_h + sizeof(struct ether_hdr));
-			l2_len  += sizeof(struct vlan_hdr);
+		if (eth_type == RTE_ETHER_TYPE_VLAN) {
+			vlan_h = (struct rte_vlan_hdr *)
+				((char *)eth_h + sizeof(struct rte_ether_hdr));
+			l2_len  += sizeof(struct rte_vlan_hdr);
 			eth_type = rte_be_to_cpu_16(vlan_h->eth_proto);
 			if (verbose_level > 0) {
 				vlan_id = rte_be_to_cpu_16(vlan_h->vlan_tci)
@@ -346,23 +329,23 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 		}
 
 		/* Reply to ARP requests */
-		if (eth_type == ETHER_TYPE_ARP) {
-			arp_h = (struct arp_hdr *) ((char *)eth_h + l2_len);
-			arp_op = RTE_BE_TO_CPU_16(arp_h->arp_op);
-			arp_pro = RTE_BE_TO_CPU_16(arp_h->arp_pro);
+		if (eth_type == RTE_ETHER_TYPE_ARP) {
+			arp_h = (struct rte_arp_hdr *) ((char *)eth_h + l2_len);
+			arp_op = RTE_BE_TO_CPU_16(arp_h->arp_opcode);
+			arp_pro = RTE_BE_TO_CPU_16(arp_h->arp_protocol);
 			if (verbose_level > 0) {
 				printf("  ARP:  hrd=%d proto=0x%04x hln=%d "
 				       "pln=%d op=%u (%s)\n",
-				       RTE_BE_TO_CPU_16(arp_h->arp_hrd),
-				       arp_pro, arp_h->arp_hln,
-				       arp_h->arp_pln, arp_op,
+				       RTE_BE_TO_CPU_16(arp_h->arp_hardware),
+				       arp_pro, arp_h->arp_hlen,
+				       arp_h->arp_plen, arp_op,
 				       arp_op_name(arp_op));
 			}
-			if ((RTE_BE_TO_CPU_16(arp_h->arp_hrd) !=
-			     ARP_HRD_ETHER) ||
-			    (arp_pro != ETHER_TYPE_IPv4) ||
-			    (arp_h->arp_hln != 6) ||
-			    (arp_h->arp_pln != 4)
+			if ((RTE_BE_TO_CPU_16(arp_h->arp_hardware) !=
+			     RTE_ARP_HRD_ETHER) ||
+			    (arp_pro != RTE_ETHER_TYPE_IPV4) ||
+			    (arp_h->arp_hlen != 6) ||
+			    (arp_h->arp_plen != 4)
 			    ) {
 				rte_pktmbuf_free(pkt);
 				if (verbose_level > 0)
@@ -370,18 +353,20 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 				continue;
 			}
 			if (verbose_level > 0) {
-				ether_addr_copy(&arp_h->arp_data.arp_sha, &eth_addr);
+				rte_ether_addr_copy(&arp_h->arp_data.arp_sha,
+						&eth_addr);
 				ether_addr_dump("        sha=", &eth_addr);
 				ip_addr = arp_h->arp_data.arp_sip;
 				ipv4_addr_dump(" sip=", ip_addr);
 				printf("\n");
-				ether_addr_copy(&arp_h->arp_data.arp_tha, &eth_addr);
+				rte_ether_addr_copy(&arp_h->arp_data.arp_tha,
+						&eth_addr);
 				ether_addr_dump("        tha=", &eth_addr);
 				ip_addr = arp_h->arp_data.arp_tip;
 				ipv4_addr_dump(" tip=", ip_addr);
 				printf("\n");
 			}
-			if (arp_op != ARP_OP_REQUEST) {
+			if (arp_op != RTE_ARP_OP_REQUEST) {
 				rte_pktmbuf_free(pkt);
 				continue;
 			}
@@ -391,15 +376,18 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 			 */
 
 			/* Use source MAC address as destination MAC address. */
-			ether_addr_copy(&eth_h->s_addr, &eth_h->d_addr);
+			rte_ether_addr_copy(&eth_h->src_addr, &eth_h->dst_addr);
 			/* Set source MAC address with MAC address of TX port */
-			ether_addr_copy(&ports[fs->tx_port].eth_addr,
-					&eth_h->s_addr);
+			rte_ether_addr_copy(&ports[fs->tx_port].eth_addr,
+					&eth_h->src_addr);
 
-			arp_h->arp_op = rte_cpu_to_be_16(ARP_OP_REPLY);
-			ether_addr_copy(&arp_h->arp_data.arp_tha, &eth_addr);
-			ether_addr_copy(&arp_h->arp_data.arp_sha, &arp_h->arp_data.arp_tha);
-			ether_addr_copy(&eth_h->s_addr, &arp_h->arp_data.arp_sha);
+			arp_h->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
+			rte_ether_addr_copy(&arp_h->arp_data.arp_tha,
+					&eth_addr);
+			rte_ether_addr_copy(&arp_h->arp_data.arp_sha,
+					&arp_h->arp_data.arp_tha);
+			rte_ether_addr_copy(&eth_h->src_addr,
+					&arp_h->arp_data.arp_sha);
 
 			/* Swap IP addresses in ARP payload */
 			ip_addr = arp_h->arp_data.arp_sip;
@@ -409,11 +397,11 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 			continue;
 		}
 
-		if (eth_type != ETHER_TYPE_IPv4) {
+		if (eth_type != RTE_ETHER_TYPE_IPV4) {
 			rte_pktmbuf_free(pkt);
 			continue;
 		}
-		ip_h = (struct ipv4_hdr *) ((char *)eth_h + l2_len);
+		ip_h = (struct rte_ipv4_hdr *) ((char *)eth_h + l2_len);
 		if (verbose_level > 0) {
 			ipv4_addr_dump("  IPV4: src=", ip_h->src_addr);
 			ipv4_addr_dump(" dst=", ip_h->dst_addr);
@@ -425,10 +413,10 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 		/*
 		 * Check if packet is a ICMP echo request.
 		 */
-		icmp_h = (struct icmp_hdr *) ((char *)ip_h +
-					      sizeof(struct ipv4_hdr));
+		icmp_h = (struct rte_icmp_hdr *) ((char *)ip_h +
+					      sizeof(struct rte_ipv4_hdr));
 		if (! ((ip_h->next_proto_id == IPPROTO_ICMP) &&
-		       (icmp_h->icmp_type == IP_ICMP_ECHO_REQUEST) &&
+		       (icmp_h->icmp_type == RTE_IP_ICMP_ECHO_REQUEST) &&
 		       (icmp_h->icmp_code == 0))) {
 			rte_pktmbuf_free(pkt);
 			continue;
@@ -452,13 +440,13 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 		 *     - switch the request IP source and destination
 		 *       addresses in the reply IP header,
 		 *     - keep the IP header checksum unchanged.
-		 * - set IP_ICMP_ECHO_REPLY in ICMP header.
+		 * - set RTE_IP_ICMP_ECHO_REPLY in ICMP header.
 		 * ICMP checksum is computed by assuming it is valid in the
 		 * echo request and not verified.
 		 */
-		ether_addr_copy(&eth_h->s_addr, &eth_addr);
-		ether_addr_copy(&eth_h->d_addr, &eth_h->s_addr);
-		ether_addr_copy(&eth_addr, &eth_h->d_addr);
+		rte_ether_addr_copy(&eth_h->src_addr, &eth_addr);
+		rte_ether_addr_copy(&eth_h->dst_addr, &eth_h->src_addr);
+		rte_ether_addr_copy(&eth_addr, &eth_h->dst_addr);
 		ip_addr = ip_h->src_addr;
 		if (is_multicast_ipv4_addr(ip_h->dst_addr)) {
 			uint32_t ip_src;
@@ -475,10 +463,10 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 			ip_h->src_addr = ip_h->dst_addr;
 			ip_h->dst_addr = ip_addr;
 		}
-		icmp_h->icmp_type = IP_ICMP_ECHO_REPLY;
+		icmp_h->icmp_type = RTE_IP_ICMP_ECHO_REPLY;
 		cksum = ~icmp_h->icmp_cksum & 0xffff;
-		cksum += ~htons(IP_ICMP_ECHO_REQUEST << 8) & 0xffff;
-		cksum += htons(IP_ICMP_ECHO_REPLY << 8);
+		cksum += ~RTE_BE16(RTE_IP_ICMP_ECHO_REQUEST << 8) & 0xffff;
+		cksum += RTE_BE16(RTE_IP_ICMP_ECHO_REPLY << 8);
 		cksum = (cksum & 0xffff) + (cksum >> 16);
 		cksum = (cksum & 0xffff) + (cksum >> 16);
 		icmp_h->icmp_cksum = ~cksum;
@@ -486,45 +474,14 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 	}
 
 	/* Send back ICMP echo replies, if any. */
-	if (nb_replies > 0) {
-		nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, pkts_burst,
-					 nb_replies);
-		/*
-		 * Retry if necessary
-		 */
-		if (unlikely(nb_tx < nb_replies) && fs->retry_enabled) {
-			retry = 0;
-			while (nb_tx < nb_replies &&
-					retry++ < burst_tx_retry_num) {
-				rte_delay_us(burst_tx_delay_time);
-				nb_tx += rte_eth_tx_burst(fs->tx_port,
-						fs->tx_queue,
-						&pkts_burst[nb_tx],
-						nb_replies - nb_tx);
-			}
-		}
-		fs->tx_packets += nb_tx;
-#ifdef RTE_TEST_PMD_RECORD_BURST_STATS
-		fs->tx_burst_stats.pkt_burst_spread[nb_tx]++;
-#endif
-		if (unlikely(nb_tx < nb_replies)) {
-			fs->fwd_dropped += (nb_replies - nb_tx);
-			do {
-				rte_pktmbuf_free(pkts_burst[nb_tx]);
-			} while (++nb_tx < nb_replies);
-		}
-	}
+	if (nb_replies > 0)
+		common_fwd_stream_transmit(fs, pkts_burst, nb_replies);
 
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	end_tsc = rte_rdtsc();
-	core_cycles = (end_tsc - start_tsc);
-	fs->core_cycles = (uint64_t) (fs->core_cycles + core_cycles);
-#endif
+	return true;
 }
 
 struct fwd_engine icmp_echo_engine = {
 	.fwd_mode_name  = "icmpecho",
-	.port_fwd_begin = NULL,
-	.port_fwd_end   = NULL,
+	.stream_init    = common_fwd_stream_init,
 	.packet_fwd     = reply_to_icmp_echo_rqsts,
 };

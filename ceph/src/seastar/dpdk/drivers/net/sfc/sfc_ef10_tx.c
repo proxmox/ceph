@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -19,6 +19,7 @@
 #include "efx_regs.h"
 #include "efx_regs_ef10.h"
 
+#include "sfc_debug.h"
 #include "sfc_dp_tx.h"
 #include "sfc_tweak.h"
 #include "sfc_kvargs.h"
@@ -27,6 +28,9 @@
 
 #define sfc_ef10_tx_err(dpq, ...) \
 	SFC_DP_LOG(SFC_KVARG_DATAPATH_EF10, ERR, dpq, __VA_ARGS__)
+
+#define sfc_ef10_tx_info(dpq, ...) \
+	SFC_DP_LOG(SFC_KVARG_DATAPATH_EF10, INFO, dpq, __VA_ARGS__)
 
 /** Maximum length of the DMA descriptor data */
 #define SFC_EF10_TX_DMA_DESC_LEN_MAX \
@@ -243,7 +247,8 @@ sfc_ef10_tx_qpush(struct sfc_ef10_txq *txq, unsigned int added,
 	 */
 	rte_io_wmb();
 
-	*(volatile __m128i *)txq->doorbell = oword.eo_u128[0];
+	*(volatile efsys_uint128_t *)txq->doorbell = oword.eo_u128[0];
+	txq->dp.dpq.dbells++;
 }
 
 static unsigned int
@@ -336,7 +341,7 @@ sfc_ef10_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		 * the size limit. Perform the check in debug mode since MTU
 		 * more than 9k is not supported, but the limit here is 16k-1.
 		 */
-		if (!(m->ol_flags & PKT_TX_TCP_SEG)) {
+		if (!(m->ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
 			struct rte_mbuf *m_seg;
 
 			for (m_seg = m; m_seg != NULL; m_seg = m_seg->next) {
@@ -348,7 +353,7 @@ sfc_ef10_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			}
 		}
 #endif
-		ret = sfc_dp_tx_prepare_pkt(m,
+		ret = sfc_dp_tx_prepare_pkt(m, 0, SFC_TSOH_STD_LEN,
 				txq->tso_tcp_header_offset_limit,
 				txq->max_fill_level,
 				SFC_EF10_TSO_OPT_DESCS_NUM, 0);
@@ -366,14 +371,14 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 		      unsigned int *added, unsigned int *dma_desc_space,
 		      bool *reap_done)
 {
-	size_t iph_off = ((m_seg->ol_flags & PKT_TX_TUNNEL_MASK) ?
+	size_t iph_off = ((m_seg->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ?
 			  m_seg->outer_l2_len + m_seg->outer_l3_len : 0) +
 			 m_seg->l2_len;
 	size_t tcph_off = iph_off + m_seg->l3_len;
 	size_t header_len = tcph_off + m_seg->l4_len;
 	/* Offset of the payload in the last segment that contains the header */
 	size_t in_off = 0;
-	const struct tcp_hdr *th;
+	const struct rte_tcp_hdr *th;
 	uint16_t packet_id = 0;
 	uint16_t outer_packet_id = 0;
 	uint32_t sent_seq;
@@ -478,18 +483,37 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 	}
 
 	/*
+	 * 8000-series EF10 hardware requires that innermost IP length
+	 * be greater than or equal to the value which each segment is
+	 * supposed to have; otherwise, TCP checksum will be incorrect.
+	 *
+	 * The same concern applies to outer UDP datagram length field.
+	 */
+	switch (m_seg->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
+	case RTE_MBUF_F_TX_TUNNEL_VXLAN:
+		/* FALLTHROUGH */
+	case RTE_MBUF_F_TX_TUNNEL_GENEVE:
+		sfc_tso_outer_udp_fix_len(first_m_seg, hdr_addr);
+		break;
+	default:
+		break;
+	}
+
+	sfc_tso_innermost_ip_fix_len(first_m_seg, hdr_addr, iph_off);
+
+	/*
 	 * Tx prepare has debug-only checks that offload flags are correctly
-	 * filled in in TSO mbuf. Use zero IPID if there is no IPv4 flag.
+	 * filled in TSO mbuf. Use zero IPID if there is no IPv4 flag.
 	 * If the packet is still IPv4, HW will simply start from zero IPID.
 	 */
-	if (first_m_seg->ol_flags & PKT_TX_IPV4)
+	if (first_m_seg->ol_flags & RTE_MBUF_F_TX_IPV4)
 		packet_id = sfc_tso_ip4_get_ipid(hdr_addr, iph_off);
 
-	if (first_m_seg->ol_flags & PKT_TX_OUTER_IPV4)
+	if (first_m_seg->ol_flags & RTE_MBUF_F_TX_OUTER_IPV4)
 		outer_packet_id = sfc_tso_ip4_get_ipid(hdr_addr,
 						first_m_seg->outer_l2_len);
 
-	th = (const struct tcp_hdr *)(hdr_addr + tcph_off);
+	th = (const struct rte_tcp_hdr *)(hdr_addr + tcph_off);
 	rte_memcpy(&sent_seq, &th->sent_seq, sizeof(uint32_t));
 	sent_seq = rte_be_to_cpu_32(sent_seq);
 
@@ -624,7 +648,7 @@ sfc_ef10_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		if (likely(pktp + 1 != pktp_end))
 			rte_mbuf_prefetch_part1(pktp[1]);
 
-		if (m_seg->ol_flags & PKT_TX_TCP_SEG) {
+		if (m_seg->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			int rc;
 
 			rc = sfc_ef10_xmit_tso_pkt(txq, m_seg, &added,
@@ -781,7 +805,7 @@ sfc_ef10_simple_prepare_pkts(__rte_unused void *tx_queue,
 
 		/* ef10_simple does not support TSO and VLAN insertion */
 		if (unlikely(m->ol_flags &
-			     (PKT_TX_TCP_SEG | PKT_TX_VLAN_PKT))) {
+			     (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_VLAN))) {
 			rte_errno = ENOTSUP;
 			break;
 		}
@@ -918,6 +942,10 @@ sfc_ef10_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 	if (info->txq_entries != info->evq_entries)
 		goto fail_bad_args;
 
+	rc = ENOTSUP;
+	if (info->nic_dma_info->nb_regions > 0)
+		goto fail_nic_dma;
+
 	rc = ENOMEM;
 	txq = rte_zmalloc_socket("sfc-ef10-txq", sizeof(*txq),
 				 RTE_CACHE_LINE_SIZE, socket_id);
@@ -934,9 +962,9 @@ sfc_ef10_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 	if (txq->sw_ring == NULL)
 		goto fail_sw_ring_alloc;
 
-	if (info->offloads & (DEV_TX_OFFLOAD_TCP_TSO |
-			      DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
-			      DEV_TX_OFFLOAD_GENEVE_TNL_TSO)) {
+	if (info->offloads & (RTE_ETH_TX_OFFLOAD_TCP_TSO |
+			      RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
+			      RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO)) {
 		txq->tsoh = rte_calloc_socket("sfc-ef10-txq-tsoh",
 					      info->txq_entries,
 					      SFC_TSOH_STD_LEN,
@@ -959,6 +987,8 @@ sfc_ef10_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 	txq->evq_hw_ring = info->evq_hw_ring;
 	txq->tso_tcp_header_offset_limit = info->tso_tcp_header_offset_limit;
 
+	sfc_ef10_tx_info(&txq->dp.dpq, "TxQ doorbell is %p", txq->doorbell);
+
 	*dp_txqp = &txq->dp;
 	return 0;
 
@@ -969,6 +999,7 @@ fail_sw_ring_alloc:
 	rte_free(txq);
 
 fail_txq_alloc:
+fail_nic_dma:
 fail_bad_args:
 	return rc;
 }
@@ -1098,12 +1129,15 @@ struct sfc_dp_tx sfc_ef10_tx = {
 		.type		= SFC_DP_TX,
 		.hw_fw_caps	= SFC_DP_HW_FW_CAP_EF10,
 	},
-	.features		= SFC_DP_TX_FEAT_TSO |
-				  SFC_DP_TX_FEAT_TSO_ENCAP |
-				  SFC_DP_TX_FEAT_MULTI_SEG |
-				  SFC_DP_TX_FEAT_MULTI_POOL |
-				  SFC_DP_TX_FEAT_REFCNT |
-				  SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.dev_offload_capa	= RTE_ETH_TX_OFFLOAD_MULTI_SEGS,
+	.queue_offload_capa	= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_TCP_TSO |
+				  RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO |
+				  RTE_ETH_TX_OFFLOAD_GENEVE_TNL_TSO,
 	.get_dev_info		= sfc_ef10_get_dev_info,
 	.qsize_up_rings		= sfc_ef10_tx_qsize_up_rings,
 	.qcreate		= sfc_ef10_tx_qcreate,
@@ -1123,6 +1157,11 @@ struct sfc_dp_tx sfc_ef10_simple_tx = {
 		.type		= SFC_DP_TX,
 	},
 	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.dev_offload_capa	= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
+	.queue_offload_capa	= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+				  RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM,
 	.get_dev_info		= sfc_ef10_get_dev_info,
 	.qsize_up_rings		= sfc_ef10_tx_qsize_up_rings,
 	.qcreate		= sfc_ef10_tx_qcreate,

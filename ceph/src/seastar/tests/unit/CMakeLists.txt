@@ -103,6 +103,7 @@ function (seastar_add_test name)
     elseif (parsed_args_KIND STREQUAL "BOOST")
       list (APPEND libraries
         Boost::unit_test_framework
+        Boost::dynamic_linking
         seastar_private)
 
       if (NOT (Seastar_JENKINS STREQUAL ""))
@@ -131,6 +132,12 @@ function (seastar_add_test name)
           SEASTAR_THREAD_STACK_GUARDS)
     endif ()
 
+    if (Seastar_HEAP_PROFILING)
+      target_compile_definitions (${executable_target}
+        PRIVATE
+          SEASTAR_HEAPPROF)
+    endif ()
+
     target_include_directories (${executable_target}
       PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -141,13 +148,13 @@ function (seastar_add_test name)
         OUTPUT_NAME ${name}_test)
 
     add_dependencies (unit_tests ${executable_target})
-    set (forwarded_args COMMAND ${executable_target} ${args})
+    set (forwarded_args COMMAND ${CMAKE_COMMAND} -E env "${Seastar_TEST_ENVIRONMENT}" $<TARGET_FILE:${executable_target}> ${args})
   else ()
     if (NOT (parsed_args_KIND STREQUAL "CUSTOM"))
       message (FATAL_ERROR "SOURCES are required for ${parsed_args_KIND} tests")
     endif ()
 
-    set (forwarded_args COMMAND ${parsed_args_RUN_ARGS})
+    set (forwarded_args COMMAND ${CMAKE_COMMAND} -E env "${Seastar_TEST_ENVIRONMENT}" ${parsed_args_RUN_ARGS})
   endif ()
 
   #
@@ -174,8 +181,7 @@ function (seastar_add_test name)
 
   set_tests_properties (Seastar.unit.${name}
     PROPERTIES
-      TIMEOUT ${Seastar_TEST_TIMEOUT}
-      ENVIRONMENT "${Seastar_TEST_ENVIRONMENT}")
+      TIMEOUT ${Seastar_TEST_TIMEOUT})
 endfunction ()
 
 #
@@ -250,15 +256,18 @@ seastar_add_test (checked_ptr
   SOURCES checked_ptr_test.cc)
 
 seastar_add_test (chunked_fifo
+  KIND BOOST
   SOURCES chunked_fifo_test.cc)
 
 seastar_add_test (chunk_parsers
   SOURCES chunk_parsers_test.cc)
 
 seastar_add_test (circular_buffer
+  KIND BOOST
   SOURCES circular_buffer_test.cc)
 
 seastar_add_test (circular_buffer_fixed_capacity
+  KIND BOOST
   SOURCES circular_buffer_fixed_capacity_test.cc)
 
 seastar_add_test (condition_variable
@@ -274,9 +283,11 @@ seastar_add_test (coroutines
   SOURCES coroutines_test.cc)
 
 seastar_add_test (defer
+  KIND BOOST
   SOURCES defer_test.cc)
 
 seastar_add_test (deleter
+  KIND BOOST
   SOURCES deleter_test.cc)
 
 seastar_add_app_test (directory
@@ -404,6 +415,10 @@ seastar_add_test (simple_stream
 seastar_add_app_test (smp
   SOURCES smp_test.cc)
 
+seastar_add_test (app-template
+  KIND BOOST
+  SOURCES app-template_test.cc)
+
 seastar_add_test (socket
   SOURCES socket_test.cc)
 
@@ -483,6 +498,18 @@ function(seastar_add_certgen name)
   if (NOT CERT_EMAIL)
     set(CERT_EMAIL postmaster@${CERT_DOMAIN})
   endif()
+  if (NOT CERT_ALT_EMAIL_1)
+    set(CERT_ALT_EMAIL_1 alt1@${CERT_DOMAIN})
+  endif()
+  if (NOT CERT_ALT_EMAIL_2)
+    set(CERT_ALT_EMAIL_2 alt2@${CERT_DOMAIN})
+  endif()
+  if (NOT CERT_ALT_IP_1)
+    set(CERT_ALT_IP_1 127.0.0.1)
+  endif()
+  if (NOT CERT_ALT_DNS)
+    set(CERT_ALT_DNS ${CERT_COMMON})
+  endif()
   if (NOT CERT_WIDTH)
     set(CERT_WIDTH 4096)
   endif()
@@ -508,6 +535,9 @@ function(seastar_add_certgen name)
   )
 
   find_program(OPENSSL openssl)
+  if (NOT OPENSSL)
+    message(FATAL_ERROR "openssl is required for performing tests!")
+  endif ()
 
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_PRIVKEY}"
     COMMAND ${OPENSSL} genpkey -quiet -out ${CERT_PRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
@@ -515,7 +545,7 @@ function(seastar_add_certgen name)
   )
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_REQ}"
     COMMAND ${OPENSSL} req -new -key ${CERT_PRIVKEY} -out ${CERT_REQ} -config ${CERT_NAME}.cfg
-    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_PRIVKEY}"
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_PRIVKEY}" "${CMAKE_CURRENT_BINARY_DIR}/${CERT_NAME}.cfg"
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
 
@@ -525,13 +555,14 @@ function(seastar_add_certgen name)
   )
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAROOT}"
     COMMAND ${OPENSSL} req -x509 -new -nodes -key ${CERT_CAPRIVKEY} -days ${CERT_DAYS} -config ${CERT_NAME}.cfg -out ${CERT_CAROOT}
-    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAPRIVKEY}"
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAPRIVKEY}" "${CMAKE_CURRENT_BINARY_DIR}/${CERT_NAME}.cfg"
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
 
+  
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CERT}"
-    COMMAND ${OPENSSL} x509 -req -in ${CERT_REQ} -CA ${CERT_CAROOT} -CAkey ${CERT_CAPRIVKEY} -CAcreateserial -out ${CERT_CERT} -days ${CERT_DAYS}
-    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_REQ}"  "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAROOT}"
+    COMMAND ${OPENSSL} x509 -req -in ${CERT_REQ} -CA ${CERT_CAROOT} -CAkey ${CERT_CAPRIVKEY} -CAcreateserial -out ${CERT_CERT} -days ${CERT_DAYS} -extensions req_ext -extfile ${CERT_NAME}.cfg
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_REQ}"  "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAROOT}" "${CMAKE_CURRENT_BINARY_DIR}/${CERT_NAME}.cfg"
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
 
@@ -540,68 +571,88 @@ function(seastar_add_certgen name)
   )
 endfunction()
 
+function(seastar_sign_cert name)
+  # create and sign a cert with specified CN and optional CA
+  cmake_parse_arguments(CERT
+    ""
+    "CA;SERIAL_NUM;COMMON_NAME"
+    ""
+    ${ARGN})
+  set(cert ${name}.crt)
+  set(privkey ${name}.key)
+  set(extension "subjectAltName = IP:127.0.0.1")
+  set(subj "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=${CERT_COMMON_NAME}")
+
+  add_custom_command(OUTPUT ${privkey}
+    COMMAND ${OPENSSL} ecparam
+      -name prime256v1 -genkey -noout
+      -out ${privkey}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+  if(DEFINED CERT_CA)
+    # create a request instead of a cert if CA is specified
+    set(req ${name}.csr)
+    add_custom_command(OUTPUT ${req}
+      COMMAND ${OPENSSL} req
+        -new -sha256
+        -key ${privkey}
+        -out ${req}
+        -subj ${subj}
+      DEPENDS ${privkey}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+    # sign the cert with the request
+    set(ca_cert ${CERT_CA}.crt)
+    set(ca_privkey ${CERT_CA}.key)
+    add_custom_command(OUTPUT ${cert}
+      COMMAND ${OPENSSL} x509
+        -req -days 1000 -sha256
+        -set_serial ${CERT_SERIAL_NUM}
+        -in ${req}
+        -CA ${ca_cert}
+        -CAkey ${ca_privkey}
+        -out ${cert}
+      DEPENDS ${req} ${ca_cert} ${ca_privkey}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  else(DEFINED CERT_CA)
+    # create a cert if CA is not specified
+    add_custom_command(OUTPUT ${cert}
+      COMMAND ${OPENSSL} req
+        -new -x509 -sha256
+        -key ${privkey}
+        -out ${cert}
+        -subj ${subj}
+        -addext ${extension}
+      DEPENDS ${privkey}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  endif(DEFINED CERT_CA)
+endfunction(seastar_sign_cert)
+
 function(seastar_gen_mtls_certs)
   find_program(OPENSSL openssl)
+  if (NOT OPENSSL)
+    message (FATAL_ERROR "openssl is required for performing tests!")
+  endif ()
 
-  set(SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=redpanda.com")
-  set(EXTENSION "subjectAltName = IP:127.0.0.1")
-  set(CLIENT1_SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=client1.org")
-  set(CLIENT2_SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=client2.org")
-
-  add_custom_command(OUTPUT mtls_ca.key
-    COMMAND ${OPENSSL} ecparam -name prime256v1 -genkey -noout -out mtls_ca.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
-  add_custom_command(OUTPUT mtls_ca.crt
-    COMMAND ${OPENSSL} req -new -x509 -sha256 -key mtls_ca.key -out mtls_ca.crt -subj ${SUBJECT} -addext ${EXTENSION}
-    DEPENDS mtls_ca.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
+  # create a CA cert
+  set(cert_ca "mtls_ca")
+  seastar_sign_cert(${cert_ca}
+    COMMON_NAME "redpanda.com")
   # server certificates
-  add_custom_command(OUTPUT mtls_server.key
-    COMMAND ${OPENSSL} ecparam -name prime256v1 -genkey -noout -out mtls_server.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
-  add_custom_command(OUTPUT mtls_server.csr
-    COMMAND ${OPENSSL} req -new -sha256 -key mtls_server.key -out mtls_server.csr -subj ${SUBJECT}
-    DEPENDS mtls_server.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
-  add_custom_command(OUTPUT mtls_server.crt
-    COMMAND ${OPENSSL} x509 -req -in mtls_server.csr -CA mtls_ca.crt -CAkey mtls_ca.key -CAcreateserial -out mtls_server.crt -days 1000 -sha256
-    DEPENDS mtls_server.csr mtls_ca.crt mtls_ca.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
+  seastar_sign_cert("mtls_server"
+    CA ${cert_ca}
+    SERIAL_NUM 1
+    COMMON_NAME "redpanda.com")
   # client1 certificates
-  add_custom_command(OUTPUT mtls_client1.key
-    COMMAND ${OPENSSL} ecparam -name prime256v1 -genkey -noout -out mtls_client1.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
-  add_custom_command(OUTPUT mtls_client1.csr
-    COMMAND ${OPENSSL} req -new -sha256 -key mtls_client1.key -out mtls_client1.csr -subj ${CLIENT1_SUBJECT}
-    DEPENDS mtls_client1.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
-  add_custom_command(OUTPUT mtls_client1.crt
-    COMMAND ${OPENSSL} x509 -req -in mtls_client1.csr -CA mtls_ca.crt -CAkey mtls_ca.key -CAcreateserial -out mtls_client1.crt -days 1000 -sha256
-    DEPENDS mtls_client1.csr mtls_ca.crt mtls_ca.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
+  seastar_sign_cert("mtls_client1"
+    CA ${cert_ca}
+    SERIAL_NUM 2
+    COMMON_NAME "client1.org")
   # client2 certificates
-  add_custom_command(OUTPUT mtls_client2.key
-    COMMAND ${OPENSSL} ecparam -name prime256v1 -genkey -noout -out mtls_client2.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
-  add_custom_command(OUTPUT mtls_client2.csr
-    COMMAND ${OPENSSL} req -new -sha256 -key mtls_client2.key -out mtls_client2.csr -subj ${CLIENT2_SUBJECT}
-    DEPENDS mtls_client2.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
-  add_custom_command(OUTPUT mtls_client2.crt
-    COMMAND ${OPENSSL} x509 -req -in mtls_client2.csr -CA mtls_ca.crt -CAkey mtls_ca.key -CAcreateserial -out mtls_client2.crt -days 1000 -sha256
-    DEPENDS mtls_client2.csr mtls_ca.crt mtls_ca.key
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
+  seastar_sign_cert("mtls_client2"
+    CA ${cert_ca}
+    SERIAL_NUM 3
+    COMMON_NAME "client2.org")
 
   add_custom_target(mtls_certs
     DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/mtls_client1.crt" "${CMAKE_CURRENT_BINARY_DIR}/mtls_client2.crt" "${CMAKE_CURRENT_BINARY_DIR}/mtls_server.crt"

@@ -4,8 +4,13 @@
  * All rights reserved.
  */
 
+#include <rte_kvargs.h>
+
 #include "nfb_rx.h"
 #include "nfb.h"
+
+uint64_t nfb_timestamp_rx_dynflag;
+int nfb_timestamp_dynfield_offset = -1;
 
 int
 nfb_eth_rx_queue_start(struct rte_eth_dev *dev, uint16_t rxq_id)
@@ -70,6 +75,8 @@ nfb_eth_rx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	rxq->flags = 0;
+
 	ret = nfb_eth_rx_queue_init(internals->nfb,
 		rx_queue_id,
 		dev->data->port_id,
@@ -116,9 +123,10 @@ nfb_eth_rx_queue_init(struct nfb_device *nfb,
 }
 
 void
-nfb_eth_rx_queue_release(void *q)
+nfb_eth_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	struct ndp_rx_queue *rxq = (struct ndp_rx_queue *)q;
+	struct ndp_rx_queue *rxq = dev->data->rx_queues[qid];
+
 	if (rxq->queue != NULL) {
 		ndp_close_rx_queue(rxq->queue);
 		rte_free(rxq);

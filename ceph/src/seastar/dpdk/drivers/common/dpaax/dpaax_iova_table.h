@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018 NXP
+ * Copyright 2018-2021 NXP
  */
 
 #ifndef _DPAAX_IOVA_TABLE_H_
@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <arpa/inet.h>
 
+#include <rte_compat.h>
 #include <rte_eal.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
@@ -32,7 +33,7 @@ struct dpaax_iovat_element {
 
 struct dpaax_iova_table {
 	unsigned int count; /**< No. of blocks of contiguous physical pages */
-	struct dpaax_iovat_element entries[0];
+	struct dpaax_iovat_element entries[];
 };
 
 /* Pointer to the table, which is common for DPAA/DPAA2 and only a single
@@ -45,6 +46,8 @@ extern struct dpaax_iova_table *dpaax_iova_table_p;
  * is SoC dependent, or even Uboot fixup dependent.
  */
 #define MEM_NODE_PATH_GLOB "/proc/device-tree/memory[@0-9]*/reg"
+/* For Virtual Machines memory node is at different path (below) */
+#define MEM_NODE_PATH_GLOB_VM "/proc/device-tree/memory/reg"
 /* Device file should be multiple of 16 bytes, each containing 8 byte of addr
  * and its length. Assuming max of 5 entries.
  */
@@ -59,12 +62,16 @@ extern struct dpaax_iova_table *dpaax_iova_table_p;
 #define DPAAX_MEM_SPLIT_MASK_OFF (DPAAX_MEM_SPLIT - 1) /**< Offset */
 
 /* APIs exposed */
+__rte_internal
 int dpaax_iova_table_populate(void);
+__rte_internal
 void dpaax_iova_table_depopulate(void);
+__rte_internal
 int dpaax_iova_table_update(phys_addr_t paddr, void *vaddr, size_t length);
+__rte_internal
 void dpaax_iova_table_dump(void);
 
-static inline void *dpaax_iova_table_get_va(phys_addr_t paddr) __attribute__((hot));
+static inline void *dpaax_iova_table_get_va(phys_addr_t paddr) __rte_hot;
 
 static inline void *
 dpaax_iova_table_get_va(phys_addr_t paddr) {
@@ -95,6 +102,12 @@ dpaax_iova_table_get_va(phys_addr_t paddr) {
 
 		/* paddr > entry->start && paddr <= entry->(start+len) */
 		index = (paddr_align - entry[i].start)/DPAAX_MEM_SPLIT;
+		/* paddr is within range, but no vaddr entry ever written
+		 * at index
+		 */
+		if ((void *)(uintptr_t)entry[i].pages[index] == NULL)
+			return NULL;
+
 		vaddr = (void *)((uintptr_t)entry[i].pages[index] + offset);
 		break;
 	} while (1);

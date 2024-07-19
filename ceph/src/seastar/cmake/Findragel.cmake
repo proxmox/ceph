@@ -23,6 +23,9 @@
 find_program (
   ragel_RAGEL_EXECUTABLE
   ragel)
+if (NOT ragel_RAGEL_EXECUTABLE)
+  message (FATAL_ERROR "ragel is required for processing .rl source files!")
+endif ()
 
 mark_as_advanced (ragel_RAGEL_EXECUTABLE)
 
@@ -31,8 +34,7 @@ set (_ragel_version_pattern "[0-9]+\\.[0-9]+\\.[0-9]+(\\.[0-9]+)?")
 if (ragel_RAGEL_EXECUTABLE)
   set (ragel_FOUND ON)
 
-  exec_program (${ragel_RAGEL_EXECUTABLE}
-    ARGS -v
+  execute_process (COMMAND ${ragel_RAGEL_EXECUTABLE} -v
     OUTPUT_VARIABLE _ragel_version_output)
 
   if (${_ragel_version_output} MATCHES "version (${_ragel_version_pattern})")

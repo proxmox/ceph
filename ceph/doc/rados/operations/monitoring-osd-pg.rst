@@ -24,13 +24,11 @@ Monitoring OSDs
 ===============
 
 An OSD is either *in* service (``in``) or *out* of service (``out``). An OSD is
-either running and reachable (``up``), or it is not running and not reachable
-(``down``). 
+either running and reachable (``up``), or it is not running and not
+reachable (``down``). 
 
 If an OSD is ``up``, it may be either ``in`` service (clients can read and
-write data) or it is ``out`` of service. If the OSD was ``in`` but then due to
-a failure or a manual action was set to the ``out`` state, Ceph will migrate
-placement groups to the other OSDs to maintin the configured redundancy.  
+write data) or it is ``out`` of service. If the OSD was ``in`` but then due to a failure or a manual action was set to the ``out`` state, Ceph will migrate placement groups to the other OSDs to maintin the configured redundancy.  
 
 If an OSD is ``out`` of service, CRUSH will not assign placement groups to it.
 If an OSD is ``down``, it will also be ``out``.
@@ -174,7 +172,7 @@ Peering
 Before you can write data to a PG, it must be in an ``active`` state and it
 will preferably be in a ``clean`` state. For Ceph to determine the current
 state of a PG, peering must take place.  That is, the primary OSD of the PG
-(that is, the first OSD in the Acting Set) must peer with the secondary and
+(the first OSD in the Acting Set) must peer with the secondary and the following
 OSDs so that consensus on the current state of the PG can be established. In
 the following diagram, we assume a pool with three replicas of the PG:
 

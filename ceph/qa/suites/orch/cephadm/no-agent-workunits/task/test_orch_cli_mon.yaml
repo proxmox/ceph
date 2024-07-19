@@ -1,3 +1,9 @@
+overrides:
+  ceph:
+    log-ignorelist:
+      - MON_DOWN
+    log-only-match:
+      - CEPHADM_
 roles:
 - - host.a
   - osd.0

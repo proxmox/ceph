@@ -21,15 +21,22 @@
 
 #pragma once
 
-#include <execinfo.h>
-#include <iosfwd>
-#include <variant>
-#include <boost/container/static_vector.hpp>
-
 #include <seastar/core/sstring.hh>
 #include <seastar/core/print.hh>
 #include <seastar/core/scheduling.hh>
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/util/modules.hh>
+
+#ifndef SEASTAR_MODULE
+#if __has_include(<execinfo.h>)
+#include <execinfo.h>
+#define HAVE_EXECINFO
+#endif
+#include <iosfwd>
+#include <memory>
+#include <variant>
+#include <boost/container/static_vector.hpp>
+#endif
 
 namespace seastar {
 
@@ -52,8 +59,10 @@ bool operator==(const frame& a, const frame& b) noexcept;
 frame decorate(uintptr_t addr) noexcept;
 
 // Invokes func for each frame passing it as argument.
+SEASTAR_MODULE_EXPORT
 template<typename Func>
 void backtrace(Func&& func) noexcept(noexcept(func(frame()))) {
+#ifdef HAVE_EXECINFO
     constexpr size_t max_backtrace = 100;
     void* buffer[max_backtrace];
     int n = ::backtrace(buffer, max_backtrace);
@@ -61,9 +70,14 @@ void backtrace(Func&& func) noexcept(noexcept(func(frame()))) {
         auto ip = reinterpret_cast<uintptr_t>(buffer[i]);
         func(decorate(ip - 1));
     }
+#else
+// Not implemented yet
+#define SEASTAR_BACKTRACE_UNIMPLEMENTED
+#endif
 }
 
 // Represents a call stack of a single thread.
+SEASTAR_MODULE_EXPORT
 class simple_backtrace {
 public:
     using vector_type = boost::container::static_vector<frame, 64>;
@@ -74,8 +88,8 @@ private:
 private:
     size_t calculate_hash() const noexcept;
 public:
-    simple_backtrace(char delimeter = ' ') noexcept : _delimeter(delimeter) {}
-    simple_backtrace(vector_type f, char delimeter = ' ') noexcept : _frames(std::move(f)), _delimeter(delimeter) {}
+    simple_backtrace(vector_type f, char delimeter = ' ') noexcept : _frames(std::move(f)), _hash(calculate_hash()), _delimeter(delimeter) {}
+    simple_backtrace(char delimeter = ' ') noexcept : simple_backtrace({}, delimeter) {}
 
     size_t hash() const noexcept { return _hash; }
     char delimeter() const noexcept { return _delimeter; }
@@ -116,6 +130,7 @@ public:
 
 // Extended backtrace which consists of a backtrace of the currently running task
 // and information about the chain of tasks waiting for the current operation to complete.
+SEASTAR_MODULE_EXPORT
 class tasktrace {
 public:
     using entry = std::variant<shared_backtrace, task_entry>;
@@ -128,6 +143,8 @@ private:
 public:
     tasktrace() = default;
     tasktrace(simple_backtrace main, vector_type prev, size_t prev_hash, scheduling_group sg) noexcept;
+    tasktrace(const tasktrace&) = default;
+    tasktrace& operator=(const tasktrace&) = default;
     ~tasktrace();
 
     size_t hash() const noexcept { return _hash; }
@@ -146,6 +163,7 @@ public:
 
 namespace std {
 
+SEASTAR_MODULE_EXPORT
 template<>
 struct hash<seastar::simple_backtrace> {
     size_t operator()(const seastar::simple_backtrace& b) const {
@@ -153,6 +171,7 @@ struct hash<seastar::simple_backtrace> {
     }
 };
 
+SEASTAR_MODULE_EXPORT
 template<>
 struct hash<seastar::tasktrace> {
     size_t operator()(const seastar::tasktrace& b) const {
@@ -164,6 +183,7 @@ struct hash<seastar::tasktrace> {
 
 #if FMT_VERSION >= 90000
 template <> struct fmt::formatter<seastar::tasktrace> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<seastar::simple_backtrace> : fmt::ostream_formatter {};
 #endif
 
 namespace seastar {
@@ -211,10 +231,11 @@ public:
 /// \tparam Args types of arguments forwarded to the constructor of Exc
 /// \param args arguments forwarded to the constructor of Exc
 /// \return std::exception_ptr containing the exception with the backtrace.
+SEASTAR_MODULE_EXPORT
 template <class Exc, typename... Args>
 std::exception_ptr make_backtraced_exception_ptr(Args&&... args) {
     using exc_type = std::decay_t<Exc>;
-    static_assert(std::is_base_of<std::exception, exc_type>::value,
+    static_assert(std::is_base_of_v<std::exception, exc_type>,
             "throw_with_backtrace only works with exception types");
     return std::make_exception_ptr<internal::backtraced<exc_type>>(Exc(std::forward<Args>(args)...));
 }
@@ -228,6 +249,7 @@ std::exception_ptr make_backtraced_exception_ptr(Args&&... args) {
      * @param args arguments forwarded to the constructor of Exc
      * @return never returns (throws an exception)
      */
+SEASTAR_MODULE_EXPORT
 template <class Exc, typename... Args>
 [[noreturn]]
 void

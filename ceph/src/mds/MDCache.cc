@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <map>
+#include <memory>
 
 #include "MDCache.h"
 #include "MDSRank.h"
@@ -54,6 +55,7 @@
 #include "osdc/Filer.h"
 
 #include "events/ESubtreeMap.h"
+#include "events/ELid.h"
 #include "events/EUpdate.h"
 #include "events/EPeerUpdate.h"
 #include "events/EImportFinish.h"
@@ -115,13 +117,24 @@ public:
   explicit MDCacheLogContext(MDCache *mdc_) : mdcache(mdc_) {}
 };
 
+struct QuiesceInodeState {
+  MDRequestRef qrmdr;
+  std::shared_ptr<MDCache::QuiesceStatistics> qs;
+  std::chrono::milliseconds delay = 0ms;
+  bool splitauth = false;
+};
+using QuiesceInodeStateRef = std::shared_ptr<QuiesceInodeState>;
+
 MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
   mds(m),
   open_file_table(m),
   filer(m->objecter, m->finisher),
   stray_manager(m, purge_queue_),
   recovery_queue(m),
-  trim_counter(g_conf().get_val<double>("mds_cache_trim_decay_rate"))
+  trim_counter(g_conf().get_val<double>("mds_cache_trim_decay_rate")),
+  quiesce_counter(g_conf().get_val<double>("mds_cache_trim_decay_rate")),
+  quiesce_threshold(g_conf().get_val<Option::size_t>("mds_cache_quiesce_threshold")),
+  quiesce_sleep(g_conf().get_val<std::chrono::milliseconds>("mds_cache_quiesce_sleep"))
 {
   migrator.reset(new Migrator(mds, this));
 
@@ -138,6 +151,8 @@ MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
   export_ephemeral_random_max = g_conf().get_val<double>("mds_export_ephemeral_random_max");
 
   symlink_recovery = g_conf().get_val<bool>("mds_symlink_recovery");
+
+  kill_shutdown_at = g_conf().get_val<uint64_t>("mds_kill_shutdown_at");
 
   lru.lru_set_midpoint(g_conf().get_val<double>("mds_cache_mid"));
 
@@ -192,12 +207,24 @@ void MDCache::handle_conf_change(const std::set<std::string>& changed, const MDS
     cache_health_threshold = g_conf().get_val<double>("mds_health_cache_threshold");
   if (changed.count("mds_cache_mid"))
     lru.lru_set_midpoint(g_conf().get_val<double>("mds_cache_mid"));
+  if (changed.count("mds_cache_quiesce_decay_rate")) {
+    quiesce_counter = DecayCounter(g_conf().get_val<double>("mds_cache_quiesce_decay_rate"));
+  }
+  if (changed.count("mds_cache_quiesce_threshold")) {
+    quiesce_threshold = g_conf().get_val<Option::size_t>("mds_cache_quiesce_threshold");
+  }
+  if (changed.count("mds_cache_quiesce_sleep")) {
+    quiesce_sleep = g_conf().get_val<std::chrono::milliseconds>("mds_cache_quiesce_sleep");
+  }
   if (changed.count("mds_cache_trim_decay_rate")) {
     trim_counter = DecayCounter(g_conf().get_val<double>("mds_cache_trim_decay_rate"));
   }
   if (changed.count("mds_symlink_recovery")) {
     symlink_recovery = g_conf().get_val<bool>("mds_symlink_recovery");
     dout(10) << "Storing symlink targets on file object's head " << symlink_recovery << dendl;
+  }
+  if (changed.count("mds_kill_shutdown_at")) {
+    kill_shutdown_at = g_conf().get_val<uint64_t>("mds_kill_shutdown_at");
   }
 
   migrator->handle_conf_change(changed, mdsmap);
@@ -532,7 +559,6 @@ void MDCache::_create_system_file(CDir *dir, std::string_view name, CInode *in, 
 
   mut->ls = mds->mdlog->get_current_segment();
   EUpdate *le = new EUpdate(mds->mdlog, "create system file");
-  mds->mdlog->start_entry(le);
 
   if (!in->is_mdsdir()) {
     predirty_journal_parents(mut, &le->metablob, in, dir, PREDIRTY_PRIMARY|PREDIRTY_DIR, 1);
@@ -2106,8 +2132,6 @@ void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
   bool do_parent_mtime = flags & PREDIRTY_DIR;
   bool shallow = flags & PREDIRTY_SHALLOW;
 
-  ceph_assert(mds->mdlog->entry_is_open());
-
   // make sure stamp is set
   if (mut->get_mds_stamp() == utime_t())
     mut->set_mds_stamp(ceph_clock_now());
@@ -2391,8 +2415,7 @@ void MDCache::log_leader_commit(metareqid_t reqid)
 {
   dout(10) << "log_leader_commit " << reqid << dendl;
   uncommitted_leaders[reqid].committing = true;
-  mds->mdlog->start_submit_entry(new ECommitted(reqid), 
-				 new C_MDC_CommittedLeader(this, reqid));
+  mds->mdlog->submit_entry(new ECommitted(reqid), new C_MDC_CommittedLeader(this, reqid));
 }
 
 void MDCache::_logged_leader_commit(metareqid_t reqid)
@@ -2509,7 +2532,6 @@ ESubtreeMap *MDCache::create_subtree_map()
   show_subtrees();
 
   ESubtreeMap *le = new ESubtreeMap();
-  mds->mdlog->_start_entry(le);
   
   map<dirfrag_t, CDir*> dirs_to_add;
 
@@ -2655,7 +2677,7 @@ void MDCache::dump_resolve_status(Formatter *f) const
 {
   f->open_object_section("resolve_status");
   f->dump_stream("resolve_gather") << resolve_gather;
-  f->dump_stream("resolve_ack_gather") << resolve_gather;
+  f->dump_stream("resolve_ack_gather") << resolve_ack_gather;
   f->close_section();
 }
 
@@ -3385,7 +3407,7 @@ void MDCache::handle_resolve_ack(const cref_t<MMDSResolveAck> &ack)
       ceph_assert(su);
 
       // log commit
-      mds->mdlog->start_submit_entry(new EPeerUpdate(mds->mdlog, "unknown", p.first, from,
+      mds->mdlog->submit_entry(new EPeerUpdate(mds->mdlog, "unknown", p.first, from,
 						      EPeerUpdate::OP_COMMIT, su->origop),
 				     new C_MDC_PeerCommit(this, from, p.first));
       mds->mdlog->flush();
@@ -3530,7 +3552,7 @@ MDPeerUpdate* MDCache::get_uncommitted_peer(metareqid_t reqid, mds_rank_t leader
   return su;
 }
 
-void MDCache::finish_rollback(metareqid_t reqid, MDRequestRef& mdr) {
+void MDCache::finish_rollback(metareqid_t reqid, const MDRequestRef& mdr) {
   auto p = resolve_need_rollback.find(reqid);
   ceph_assert(p != resolve_need_rollback.end());
   if (mds->is_resolve()) {
@@ -3598,7 +3620,7 @@ void MDCache::disambiguate_my_imports()
       dout(10) << "ambiguous import auth known, must not be me " << *dir << dendl;
       cancel_ambiguous_import(dir);
 
-      mds->mdlog->start_submit_entry(new EImportFinish(dir, false));
+      mds->mdlog->submit_entry(new EImportFinish(dir, false));
 
       // subtree may have been swallowed by another node claiming dir
       // as their own.
@@ -3610,7 +3632,7 @@ void MDCache::disambiguate_my_imports()
     } else {
       dout(10) << "ambiguous import auth unclaimed, must be me " << *dir << dendl;
       finish_ambiguous_import(q->first);
-      mds->mdlog->start_submit_entry(new EImportFinish(dir, true));
+      mds->mdlog->submit_entry(new EImportFinish(dir, true));
     }
   }
   ceph_assert(my_ambiguous_imports.empty());
@@ -5438,7 +5460,7 @@ bool MDCache::process_imported_caps()
 							      finish->session_map);
       ESessions *le = new ESessions(pv, std::move(rejoin_client_map),
 				    std::move(rejoin_client_metadata_map));
-      mds->mdlog->start_submit_entry(le, finish);
+      mds->mdlog->submit_entry(le, finish);
       mds->mdlog->flush();
       rejoin_client_map.clear();
       rejoin_client_metadata_map.clear();
@@ -5862,17 +5884,10 @@ void MDCache::do_delayed_cap_imports()
   ceph_assert(delayed_imported_caps.empty());
 }
 
-struct C_MDC_OpenSnapRealms : public MDCacheContext {
-  explicit C_MDC_OpenSnapRealms(MDCache *c) : MDCacheContext(c) {}
-  void finish(int r) override {
-    mdcache->open_snaprealms();
-  }
-};
-
 void MDCache::open_snaprealms()
 {
   dout(10) << "open_snaprealms" << dendl;
-  
+
   auto it = rejoin_pending_snaprealms.begin();
   while (it != rejoin_pending_snaprealms.end()) {
     CInode *in = *it;
@@ -6288,7 +6303,6 @@ void MDCache::queue_file_recover(CInode *in)
     auto mut(std::make_shared<MutationImpl>());
     mut->ls = mds->mdlog->get_current_segment();
     EUpdate *le = new EUpdate(mds->mdlog, "queue_file_recover cow");
-    mds->mdlog->start_entry(le);
     predirty_journal_parents(mut, &le->metablob, in, 0, PREDIRTY_PRIMARY);
 
     s.erase(*s.begin());
@@ -6533,7 +6547,7 @@ void MDCache::_truncate_inode(CInode *in, LogSegment *ls)
              << header.change_attr << " offset: " << header.file_offset << " blen: "
 	     << header.block_size << dendl;
     filer.write(in->ino(), &layout, *snapc, header.file_offset, header.block_size,
-                data, ceph::real_time::min(), 0,
+                data, ceph::real_clock::zero(), 0,
                 new C_OnFinisher(new C_IO_MDC_TruncateWriteFinish(this, in, ls,
                                                                   header.block_size),
                                  mds->finisher));
@@ -6554,7 +6568,7 @@ void MDCache::_truncate_inode(CInode *in, LogSegment *ls)
 
     dout(10) << "_truncate_inode truncate on inode " << *in << dendl;
     filer.truncate(in->ino(), &layout, *snapc, pi->truncate_size, length,
-                   pi->truncate_seq, ceph::real_time::min(), 0,
+                   pi->truncate_seq, ceph::real_clock::zero(), 0,
                    new C_OnFinisher(new C_IO_MDC_TruncateFinish(this, in, ls),
                                     mds->finisher));
   }
@@ -6610,7 +6624,7 @@ void MDCache::truncate_inode_write_finish(CInode *in, LogSegment *ls,
    */
   uint64_t length = pi->truncate_from - pi->truncate_size + block_size;
   filer.truncate(in->ino(), &layout, *snapc, pi->truncate_size, length,
-                 pi->truncate_seq, ceph::real_time::min(), 0,
+                 pi->truncate_seq, ceph::real_clock::zero(), 0,
                  new C_OnFinisher(new C_IO_MDC_TruncateFinish(this, in, ls),
                                   mds->finisher));
 }
@@ -6634,7 +6648,6 @@ void MDCache::truncate_inode_finish(CInode *in, LogSegment *ls)
   pi.inode->fscrypt_last_block = bufferlist();
 
   EUpdate *le = new EUpdate(mds->mdlog, "truncate finish");
-  mds->mdlog->start_entry(le);
 
   predirty_journal_parents(mut, &le->metablob, in, 0, PREDIRTY_PRIMARY);
   journal_dirty_inode(mut.get(), &le->metablob, in);
@@ -6748,7 +6761,7 @@ void MDCache::purge_inodes(const interval_set<inodeno_t>& inos, LogSegment *ls)
       mds->inotable->project_release_ids(inos);
       version_t piv = mds->inotable->get_projected_version();
       ceph_assert(piv != 0);
-      mds->mdlog->start_submit_entry(new EPurged(inos, ls->seq, piv),
+      mds->mdlog->submit_entry(new EPurged(inos, ls->seq, piv),
 				     new C_MDS_purge_completed_finish(this, inos, ls, piv));
       mds->mdlog->flush();
     });
@@ -7870,6 +7883,7 @@ void MDCache::shutdown_start()
 bool MDCache::shutdown_pass()
 {
   dout(7) << "shutdown_pass" << dendl;
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_START);
 
   if (mds->is_stopped()) {
     dout(7) << " already shut down" << dendl;
@@ -7884,6 +7898,7 @@ bool MDCache::shutdown_pass()
   // trim cache
   trim(UINT64_MAX);
   dout(5) << "lru size now " << lru.lru_get_size() << "/" << bottom_lru.lru_get_size() << dendl;
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_POSTTRIM);
 
   // Export all subtrees to another active (usually rank 0) if not rank 0
   int num_auth_subtree = 0;
@@ -7914,8 +7929,11 @@ bool MDCache::shutdown_pass()
 	dest = 0;
       dout(7) << "sending " << *dir << " back to mds." << dest << dendl;
       migrator->export_dir_nicely(dir, dest);
+      ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_POSTONEEXPORT);
     }
   }
+
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_POSTALLEXPORTS);
 
   if (!strays_all_exported) {
     dout(7) << "waiting for strays to migrate" << dendl;
@@ -7935,17 +7953,20 @@ bool MDCache::shutdown_pass()
       mds->server->terminate_sessions();
     return false;
   }
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_SESSIONTERMINATE);
 
   // Fully trim the log so that all objects in cache are clean and may be
   // trimmed by a future MDCache::trim. Note that MDSRank::tick does not
   // trim the log such that the cache eventually becomes clean.
-  if (mds->mdlog->get_num_segments() > 0) {
+  if (mds->mdlog->get_num_segments() > 0 && !mds->mdlog->is_capped()) {
     auto ls = mds->mdlog->get_current_segment();
     if (ls->num_events > 1 || !ls->dirty_dirfrags.empty()) {
       // Current segment contains events other than subtreemap or
       // there are dirty dirfrags (see CDir::log_mark_dirty())
-      mds->mdlog->start_new_segment();
+      auto sle = create_subtree_map();
+      mds->mdlog->submit_entry(sle);
       mds->mdlog->flush();
+      ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_SUBTREEMAP);
     }
   }
   mds->mdlog->trim_all();
@@ -7953,6 +7974,7 @@ bool MDCache::shutdown_pass()
     dout(7) << "still >1 segments, waiting for log to trim" << dendl;
     return false;
   }
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_TRIMALL);
 
   // drop our reference to our stray dir inode
   for (int i = 0; i < NUM_STRAY; ++i) {
@@ -7963,6 +7985,7 @@ bool MDCache::shutdown_pass()
       strays[i]->put_stickydirs();
     }
   }
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_STRAYPUT);
 
   CDir *mydir = myin ? myin->get_dirfrag(frag_t()) : NULL;
   if (mydir && !mydir->is_subtree_root())
@@ -7996,25 +8019,10 @@ bool MDCache::shutdown_pass()
   // (only do this once!)
   if (!mds->mdlog->is_capped()) {
     dout(7) << "capping the mdlog" << dendl;
+    mds->mdlog->submit_entry(new ELid());
+    mds->mdlog->flush();
     mds->mdlog->cap();
-  }
-  
-  if (!mds->mdlog->empty())
-    mds->mdlog->trim(0);
-
-  if (!mds->mdlog->empty()) {
-    dout(7) << "waiting for log to flush.. " << mds->mdlog->get_num_events() 
-	    << " in " << mds->mdlog->get_num_segments() << " segments" << dendl;
-    return false;
-  }
-  
-  if (!did_shutdown_log_cap) {
-    // flush journal header
-    dout(7) << "writing header for (now-empty) journal" << dendl;
-    ceph_assert(mds->mdlog->empty());
-    mds->mdlog->write_head(0);  
-    // NOTE: filer active checker below will block us until this completes.
-    did_shutdown_log_cap = true;
+    ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_LOGCAP);
     return false;
   }
 
@@ -8045,16 +8053,19 @@ bool MDCache::shutdown_pass()
     myin->close_dirfrag(mydir->get_frag());
   }
   ceph_assert(subtrees.empty());
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_EMPTYSUBTREES);
 
   if (myin) {
     remove_inode(myin);
     ceph_assert(!myin);
   }
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_MYINREMOVAL);
 
   if (global_snaprealm) {
     remove_inode(global_snaprealm->inode);
     global_snaprealm = nullptr;
   }
+  ceph_assert(kill_shutdown_at != KILL_SHUTDOWN_AT::SHUTDOWN_GLOBALSNAPREALMREMOVAL);
   
   // done!
   dout(5) << "shutdown done." << dendl;
@@ -8250,7 +8261,25 @@ void MDCache::dispatch(const cref_t<Message> &m)
   }
 }
 
-int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
+/**
+ * In 246f647566095c173e5e0e54661696cea230f96e, an updated rule for locking order
+ * was established (differing from past strategies):
+ *
+ *  [The helper function is for requests that operate on two paths. It
+ *  ensures that the two paths get locks in proper order.] The rule is:
+ *
+ *   1. Lock directory inodes or dentries according to which trees they
+ *      are under. Lock objects under fs root before objects under mdsdir.
+ *   2. Lock directory inodes or dentries according to their depth, in
+ *      ascending order.
+ *   3. Lock directory inodes or dentries according to inode numbers or
+ *      dentries' parent inode numbers, in ascending order.
+ *   4. Lock dentries in the same directory in order of their keys.
+ *   5. Lock non-directory inodes according to inode numbers, in ascending
+ *      order.
+ */
+
+int MDCache::path_traverse(const MDRequestRef& mdr, MDSContextFactory& cf,
                            const filepath& path, int flags,
                            vector<CDentry*> *pdnvec, CInode **pin)
 {
@@ -8264,6 +8293,7 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
   bool rdlock_path = (flags & MDS_TRAVERSE_RDLOCK_PATH);
   bool xlock_dentry = (flags & MDS_TRAVERSE_XLOCK_DENTRY);
   bool rdlock_authlock = (flags & MDS_TRAVERSE_RDLOCK_AUTHLOCK);
+  bool forimport = (flags & MDS_TRAVERSE_IMPORT);
 
   if (forward)
     ceph_assert(mdr);  // forward requires a request
@@ -8374,11 +8404,17 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
         curdir = cur->get_or_open_dirfrag(this, fg);
       } else {
         // discover?
-	dout(10) << "traverse: need dirfrag " << fg << ", doing discover from " << *cur << dendl;
-	discover_path(cur, snapid, path.postfixpath(depth), cf.build(),
-		      path_locked);
-	if (mds->logger) mds->logger->inc(l_mds_traverse_discover);
-        return 1;
+        if (forimport && cur->is_quiesced()) {
+          /* block discover for import */
+          dout(5) << __func__ << ": blocking discover due to quiesced parent: " << *cur << dendl;
+          return -CEPHFS_EAGAIN;
+        } else {
+	  dout(10) << "traverse: need dirfrag " << fg << ", doing discover from " << *cur << dendl;
+	  discover_path(cur, snapid, path.postfixpath(depth), cf.build(),
+		        path_locked);
+	  if (mds->logger) mds->logger->inc(l_mds_traverse_discover);
+          return 1;
+        }
       }
     }
     ceph_assert(curdir);
@@ -8611,13 +8647,19 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
 	discover = true;
       }
 
-      if ((discover)) {
-	dout(7) << "traverse: discover from " << path[depth] << " from " << *curdir << dendl;
-	discover_path(curdir, snapid, path.postfixpath(depth), cf.build(),
-		      path_locked);
-	if (mds->logger) mds->logger->inc(l_mds_traverse_discover);
-        return 1;
-      } 
+      if (discover) {
+        if (forimport && cur->is_quiesced()) {
+          /* block discover for import */
+          dout(5) << __func__ << ": blocking discover due to quiesced parent: " << *cur << dendl;
+          return -CEPHFS_EAGAIN;
+        } else {
+	  dout(7) << "traverse: discover from " << path[depth] << " from " << *curdir << dendl;
+	  discover_path(curdir, snapid, path.postfixpath(depth), cf.build(),
+		        path_locked);
+	  if (mds->logger) mds->logger->inc(l_mds_traverse_discover);
+          return 1;
+        }
+      }
       if (forward) {
         // forward
         dout(7) << "traverse: not auth for " << path << " in " << *curdir << dendl;
@@ -8667,7 +8709,7 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
   return 0;
 }
 
-int MDCache::maybe_request_forward_to_auth(MDRequestRef& mdr, MDSContextFactory& cf,
+int MDCache::maybe_request_forward_to_auth(const MDRequestRef& mdr, MDSContextFactory& cf,
 					   MDSCacheObject *p)
 {
   if (p->is_ambiguous_auth()) {
@@ -8749,7 +8791,7 @@ void MDCache::open_remote_dirfrag(CInode *diri, frag_t approxfg, MDSContext *fin
  * will return inode for primary, or link up/open up remote link's inode as necessary.
  * If it's not available right now, puts mdr on wait list and returns null.
  */
-CInode *MDCache::get_dentry_inode(CDentry *dn, MDRequestRef& mdr, bool projected)
+CInode *MDCache::get_dentry_inode(CDentry *dn, const MDRequestRef& mdr, bool projected)
 {
   CDentry::linkage_t *dnl;
   if (projected)
@@ -9655,8 +9697,18 @@ MDRequestRef MDCache::request_start_internal(int op)
   params.all_read = now;
   params.dispatched = now;
   params.internal_op = op;
-  MDRequestRef mdr =
-      mds->op_tracker.create_request<MDRequestImpl,MDRequestImpl::Params*>(&params);
+
+  switch (op) {
+    case CEPH_MDS_OP_QUIESCE_PATH:
+    case CEPH_MDS_OP_QUIESCE_INODE:
+      params.continuous = true;
+      break;
+    default:
+      params.continuous = false;
+      break;
+  }
+
+  MDRequestRef mdr = mds->op_tracker.create_request<MDRequestImpl,MDRequestImpl::Params*>(&params);
 
   if (active_requests.count(mdr->reqid)) {
     auto& _mdr = active_requests[mdr->reqid];
@@ -9677,7 +9729,7 @@ MDRequestRef MDCache::request_get(metareqid_t rid)
   return p->second;
 }
 
-void MDCache::request_finish(MDRequestRef& mdr)
+void MDCache::request_finish(const MDRequestRef& mdr)
 {
   dout(7) << "request_finish " << *mdr << dendl;
   mdr->mark_event("finishing request");
@@ -9700,6 +9752,12 @@ void MDCache::request_finish(MDRequestRef& mdr)
   }
 
   switch(mdr->internal_op) {
+    case CEPH_MDS_OP_QUIESCE_PATH:
+      logger->inc(l_mdss_ireq_quiesce_path);
+      break;
+    case CEPH_MDS_OP_QUIESCE_INODE:
+      logger->inc(l_mdss_ireq_quiesce_inode);
+      break;
     case CEPH_MDS_OP_FRAGMENTDIR:
       logger->inc(l_mdss_ireq_fragmentdir);
       break;
@@ -9724,7 +9782,7 @@ void MDCache::request_finish(MDRequestRef& mdr)
 }
 
 
-void MDCache::request_forward(MDRequestRef& mdr, mds_rank_t who, int port)
+void MDCache::request_forward(const MDRequestRef& mdr, mds_rank_t who, int port)
 {
   CachedStackStringStream css;
   *css << "forwarding request to mds." << who;
@@ -9749,14 +9807,29 @@ void MDCache::request_forward(MDRequestRef& mdr, mds_rank_t who, int port)
 }
 
 
-void MDCache::dispatch_request(MDRequestRef& mdr)
+void MDCache::dispatch_request(const MDRequestRef& mdr)
 {
+  if (mdr->dead) {
+    dout(20) << __func__ << ": dead " << *mdr << dendl;
+    return;
+  }
   if (mdr->client_request) {
     mds->server->dispatch_client_request(mdr);
   } else if (mdr->peer_request) {
     mds->server->dispatch_peer_request(mdr);
   } else {
+    if (mdr->aborted) {
+      mdr->aborted = false;
+      request_kill(mdr);
+      return;
+    }
     switch (mdr->internal_op) {
+    case CEPH_MDS_OP_QUIESCE_PATH:
+      dispatch_quiesce_path(mdr);
+      break;
+    case CEPH_MDS_OP_QUIESCE_INODE:
+      dispatch_quiesce_inode(mdr);
+      break;
     case CEPH_MDS_OP_FRAGMENTDIR:
       dispatch_fragment_dir(mdr);
       break;
@@ -9785,7 +9858,7 @@ void MDCache::dispatch_request(MDRequestRef& mdr)
 }
 
 
-void MDCache::request_drop_foreign_locks(MDRequestRef& mdr)
+void MDCache::request_drop_foreign_locks(const MDRequestRef& mdr)
 {
   if (!mdr->has_more())
     return;
@@ -9840,27 +9913,51 @@ void MDCache::request_drop_foreign_locks(MDRequestRef& mdr)
                                 * this function can get called more than once */
 }
 
-void MDCache::request_drop_non_rdlocks(MDRequestRef& mdr)
+void MDCache::request_drop_non_rdlocks(const MDRequestRef& mdr)
 {
   request_drop_foreign_locks(mdr);
   mds->locker->drop_non_rdlocks(mdr.get());
 }
 
-void MDCache::request_drop_locks(MDRequestRef& mdr)
+void MDCache::request_drop_locks(const MDRequestRef& mdr)
 {
   request_drop_foreign_locks(mdr);
   mds->locker->drop_locks(mdr.get());
 }
 
-void MDCache::request_cleanup(MDRequestRef& mdr)
+void MDCache::request_cleanup(const MDRequestRef& mdr)
 {
   dout(15) << "request_cleanup " << *mdr << dendl;
+
+  mdr->dead = true;
 
   if (mdr->has_more()) {
     if (mdr->more()->is_ambiguous_auth)
       mdr->clear_ambiguous_auth();
     if (!mdr->more()->waiting_for_finish.empty())
       mds->queue_waiters(mdr->more()->waiting_for_finish);
+    uint64_t count = 0;
+    for (auto& [in, reqid] : mdr->more()->quiesce_ops) {
+      if (auto it = active_requests.find(reqid); it != active_requests.end()) {
+        auto qimdr = it->second;
+        dout(20) << "killing quiesce op " << *qimdr << dendl;
+        request_kill(qimdr);
+        if (!(++count % mds->heartbeat_reset_grace())) {
+          mds->heartbeat_reset();
+        }
+      }
+    }
+  }
+
+  switch(mdr->internal_op) {
+    case CEPH_MDS_OP_QUIESCE_INODE: {
+      auto* qisp = static_cast<QuiesceInodeStateRef*>(mdr->internal_op_private);
+      delete qisp;
+      mdr->internal_op_private = nullptr;
+      break;
+    }
+    default:
+      break;
   }
 
   request_drop_locks(mdr);
@@ -9894,8 +9991,13 @@ void MDCache::request_cleanup(MDRequestRef& mdr)
   mdr->mark_event("cleaned up request");
 }
 
-void MDCache::request_kill(MDRequestRef& mdr)
+void MDCache::request_kill(const MDRequestRef& mdr)
 {
+  if (mdr->killed || mdr->dead) {
+    /* ignore duplicate kills */
+    return;
+  }
+
   // rollback peer requests is tricky. just let the request proceed.
   if (mdr->has_more() &&
       (!mdr->more()->witnessed.empty() || !mdr->more()->waiting_on_peer.empty())) {
@@ -9915,6 +10017,18 @@ void MDCache::request_kill(MDRequestRef& mdr)
     return;
   }
 
+  /* quiesce ops are all completed via request_kill */
+  switch(mdr->internal_op) {
+    case CEPH_MDS_OP_QUIESCE_PATH:
+      logger->inc(l_mdss_ireq_quiesce_path);
+      break;
+    case CEPH_MDS_OP_QUIESCE_INODE:
+      logger->inc(l_mdss_ireq_quiesce_inode);
+      break;
+    default:
+      break;
+  }
+
   mdr->killed = true;
   mdr->mark_event("killing request");
 
@@ -9923,6 +10037,10 @@ void MDCache::request_kill(MDRequestRef& mdr)
     mdr->item_session_request.remove_myself();
   } else {
     dout(10) << "request_kill " << *mdr << dendl;
+    if (mdr->internal_op_finish) {
+      mdr->internal_op_finish->complete(-CEPHFS_ECANCELED);
+      mdr->internal_op_finish = nullptr;
+    }
     request_cleanup(mdr);
   }
 }
@@ -11142,19 +11260,23 @@ void MDCache::decode_remote_dentry_link(CDir *dir, CDentry *dn, bufferlist::cons
   DECODE_FINISH(p);
 }
 
-void MDCache::send_dentry_link(CDentry *dn, MDRequestRef& mdr)
+void MDCache::send_dentry_link(CDentry *dn, const MDRequestRef& mdr)
 {
   dout(7) << __func__ << " " << *dn << dendl;
 
   CDir *subtree = get_subtree_root(dn->get_dir());
   for (const auto &p : dn->get_replicas()) {
     // don't tell (rename) witnesses; they already know
-    if (mdr.get() && mdr->more()->witnessed.count(p.first))
+    if (mdr.get() && mdr->more()->witnessed.count(p.first)) {
+      dout(20) << __func__ << " witnesses already know, skip notifying replica for the dentry " << *dn << dendl;
       continue;
+    }
     if (mds->mdsmap->get_state(p.first) < MDSMap::STATE_REJOIN ||
 	(mds->mdsmap->get_state(p.first) == MDSMap::STATE_REJOIN &&
-	 rejoin_gather.count(p.first)))
+	 rejoin_gather.count(p.first))) {
+      dout(20) << __func__ << " mds is not ready, skip notifying replica for the dentry " << *dn << dendl;
       continue;
+    }
     CDentry::linkage_t *dnl = dn->get_linkage();
     auto m = make_message<MDentryLink>(subtree->dirfrag(), dn->get_dir()->dirfrag(), dn->get_name(), dnl->is_primary());
     if (dnl->is_primary()) {
@@ -11212,7 +11334,7 @@ void MDCache::handle_dentry_link(const cref_t<MDentryLink> &m)
 
 // UNLINK
 
-void MDCache::send_dentry_unlink(CDentry *dn, CDentry *straydn, MDRequestRef& mdr)
+void MDCache::send_dentry_unlink(CDentry *dn, CDentry *straydn, const MDRequestRef& mdr)
 {
   dout(10) << __func__ << " " << *dn << dendl;
   // share unlink news with replicas
@@ -11228,13 +11350,17 @@ void MDCache::send_dentry_unlink(CDentry *dn, CDentry *straydn, MDRequestRef& md
        it != replicas.end();
        ++it) {
     // don't tell (rmdir) witnesses; they already know
-    if (mdr.get() && mdr->more()->witnessed.count(*it))
+    if (mdr.get() && mdr->more()->witnessed.count(*it)) {
+      dout(20) << __func__ << " witnesses already know, skip notifying replica for the dentry " << *dn << dendl;
       continue;
+    }
 
     if (mds->mdsmap->get_state(*it) < MDSMap::STATE_REJOIN ||
 	(mds->mdsmap->get_state(*it) == MDSMap::STATE_REJOIN &&
-	 rejoin_gather.count(*it)))
+	 rejoin_gather.count(*it))) {
+      dout(20) << __func__ << " mds is not ready, skip notifying replica for the dentry " << *dn << dendl;
       continue;
+    }
 
     auto unlink = make_message<MDentryUnlink>(dn->get_dir()->dirfrag(), dn->get_name());
     if (straydn) {
@@ -11532,7 +11658,7 @@ class C_MDC_FragmentFrozen : public MDSInternalContext {
   MDCache *mdcache;
   MDRequestRef mdr;
 public:
-  C_MDC_FragmentFrozen(MDCache *m, MDRequestRef& r) :
+  C_MDC_FragmentFrozen(MDCache *m, const MDRequestRef& r) :
     MDSInternalContext(m->mds), mdcache(m), mdr(r) {}
   void finish(int r) override {
     mdcache->fragment_frozen(mdr, r);
@@ -11690,13 +11816,13 @@ void MDCache::fragment_freeze_dirs(const std::vector<CDir*>& dirs)
 class C_MDC_FragmentMarking : public MDCacheContext {
   MDRequestRef mdr;
 public:
-  C_MDC_FragmentMarking(MDCache *m, MDRequestRef& r) : MDCacheContext(m), mdr(r) {}
+  C_MDC_FragmentMarking(MDCache *m, const MDRequestRef& r) : MDCacheContext(m), mdr(r) {}
   void finish(int r) override {
     mdcache->fragment_mark_and_complete(mdr);
   }
 };
 
-void MDCache::fragment_mark_and_complete(MDRequestRef& mdr)
+void MDCache::fragment_mark_and_complete(const MDRequestRef& mdr)
 {
   dirfrag_t basedirfrag = mdr->more()->fragment_base;
   map<dirfrag_t,fragment_info_t>::iterator it = fragments.find(basedirfrag);
@@ -11878,7 +12004,7 @@ void MDCache::find_stale_fragment_freeze()
 class C_MDC_FragmentPrep : public MDCacheLogContext {
   MDRequestRef mdr;
 public:
-  C_MDC_FragmentPrep(MDCache *m, MDRequestRef& r) : MDCacheLogContext(m),  mdr(r) {}
+  C_MDC_FragmentPrep(MDCache *m, const MDRequestRef& r) : MDCacheLogContext(m),  mdr(r) {}
   void finish(int r) override {
     mdcache->_fragment_logged(mdr);
   }
@@ -11887,7 +12013,7 @@ public:
 class C_MDC_FragmentStore : public MDCacheContext {
   MDRequestRef mdr;
 public:
-  C_MDC_FragmentStore(MDCache *m, MDRequestRef& r) : MDCacheContext(m), mdr(r) {}
+  C_MDC_FragmentStore(MDCache *m, const MDRequestRef& r) : MDCacheContext(m), mdr(r) {}
   void finish(int r) override {
     mdcache->_fragment_stored(mdr);
   }
@@ -11921,7 +12047,7 @@ public:
   }
 };
 
-void MDCache::fragment_frozen(MDRequestRef& mdr, int r)
+void MDCache::fragment_frozen(const MDRequestRef& mdr, int r)
 {
   dirfrag_t basedirfrag = mdr->more()->fragment_base;
   map<dirfrag_t,fragment_info_t>::iterator it = fragments.find(basedirfrag);
@@ -11940,7 +12066,7 @@ void MDCache::fragment_frozen(MDRequestRef& mdr, int r)
   dispatch_fragment_dir(mdr);
 }
 
-void MDCache::dispatch_fragment_dir(MDRequestRef& mdr)
+void MDCache::dispatch_fragment_dir(const MDRequestRef& mdr)
 {
   dirfrag_t basedirfrag = mdr->more()->fragment_base;
   map<dirfrag_t,fragment_info_t>::iterator it = fragments.find(basedirfrag);
@@ -11965,7 +12091,7 @@ void MDCache::dispatch_fragment_dir(MDRequestRef& mdr)
     // prevent a racing gather on any other scatterlocks too
     lov.lock_scatter_gather(&diri->nestlock);
     lov.lock_scatter_gather(&diri->filelock);
-    if (!mds->locker->acquire_locks(mdr, lov, NULL, true)) {
+    if (!mds->locker->acquire_locks(mdr, lov, NULL, {}, true)) {
       if (!mdr->aborted)
 	return;
     }
@@ -11986,7 +12112,6 @@ void MDCache::dispatch_fragment_dir(MDRequestRef& mdr)
 
   mdr->ls = mds->mdlog->get_current_segment();
   EFragment *le = new EFragment(mds->mdlog, EFragment::OP_PREPARE, basedirfrag, info.bits);
-  mds->mdlog->start_entry(le);
 
   for (const auto& dir : info.dirs) {
     dirfrag_rollback rollback;
@@ -12046,7 +12171,7 @@ void MDCache::dispatch_fragment_dir(MDRequestRef& mdr)
   mds->mdlog->flush();
 }
 
-void MDCache::_fragment_logged(MDRequestRef& mdr)
+void MDCache::_fragment_logged(const MDRequestRef& mdr)
 {
   dirfrag_t basedirfrag = mdr->more()->fragment_base;
   auto& info = fragments.at(basedirfrag);
@@ -12076,7 +12201,7 @@ void MDCache::_fragment_logged(MDRequestRef& mdr)
   gather.activate();
 }
 
-void MDCache::_fragment_stored(MDRequestRef& mdr)
+void MDCache::_fragment_stored(const MDRequestRef& mdr)
 {
   dirfrag_t basedirfrag = mdr->more()->fragment_base;
   fragment_info_t &info = fragments.at(basedirfrag);
@@ -12130,7 +12255,7 @@ void MDCache::_fragment_stored(MDRequestRef& mdr)
 
   // journal commit
   EFragment *le = new EFragment(mds->mdlog, EFragment::OP_COMMIT, basedirfrag, info.bits);
-  mds->mdlog->start_submit_entry(le, new C_MDC_FragmentCommit(this, basedirfrag, mdr));
+  mds->mdlog->submit_entry(le, new C_MDC_FragmentCommit(this, basedirfrag, mdr));
 
 
   // unfreeze resulting frags
@@ -12200,7 +12325,7 @@ void MDCache::_fragment_old_purged(dirfrag_t basedirfrag, int bits, const MDRequ
     mdr->mark_event("old frags purged");
 
   EFragment *le = new EFragment(mds->mdlog, EFragment::OP_FINISH, basedirfrag, bits);
-  mds->mdlog->start_submit_entry(le);
+  mds->mdlog->submit_entry(le);
 
   finish_uncommitted_fragment(basedirfrag, EFragment::OP_FINISH);
 
@@ -12415,7 +12540,6 @@ void MDCache::rollback_uncommitted_fragments()
     MutationRef mut(new MutationImpl());
     mut->ls = mds->mdlog->get_current_segment();
     EFragment *le = new EFragment(mds->mdlog, EFragment::OP_ROLLBACK, p->first, uf.bits);
-    mds->mdlog->start_entry(le);
     bool diri_auth = (diri->authority() != CDIR_AUTH_UNDEF);
 
     frag_vec_t old_frags;
@@ -12969,7 +13093,7 @@ void MDCache::enqueue_scrub(
   enqueue_scrub_work(mdr);
 }
 
-void MDCache::enqueue_scrub_work(MDRequestRef& mdr)
+void MDCache::enqueue_scrub_work(const MDRequestRef& mdr)
 {
   CInode *in;
   CF_MDS_RetryRequestFactory cf(this, mdr, true);
@@ -13001,7 +13125,7 @@ void MDCache::enqueue_scrub_work(MDRequestRef& mdr)
 
 struct C_MDC_RespondInternalRequest : public MDCacheLogContext {
   MDRequestRef mdr;
-  C_MDC_RespondInternalRequest(MDCache *c, MDRequestRef& m) :
+  C_MDC_RespondInternalRequest(MDCache *c, const MDRequestRef& m) :
     MDCacheLogContext(c), mdr(m) {}
   void finish(int r) override {
     mdr->apply();
@@ -13033,7 +13157,7 @@ void MDCache::repair_dirfrag_stats(CDir *dir)
   repair_dirfrag_stats_work(mdr);
 }
 
-void MDCache::repair_dirfrag_stats_work(MDRequestRef& mdr)
+void MDCache::repair_dirfrag_stats_work(const MDRequestRef& mdr)
 {
   CDir *dir = static_cast<CDir*>(mdr->internal_op_private);
   dout(10) << __func__ << " " << *dir << dendl;
@@ -13101,7 +13225,6 @@ void MDCache::repair_dirfrag_stats_work(MDRequestRef& mdr)
 
   mdr->ls = mds->mdlog->get_current_segment();
   EUpdate *le = new EUpdate(mds->mdlog, "repair_dirfrag");
-  mds->mdlog->start_entry(le);
 
   if (!good_fragstat) {
     if (pf->fragstat.mtime > frag_info.mtime)
@@ -13141,7 +13264,7 @@ void MDCache::repair_inode_stats(CInode *diri)
   repair_inode_stats_work(mdr);
 }
 
-void MDCache::repair_inode_stats_work(MDRequestRef& mdr)
+void MDCache::repair_inode_stats_work(const MDRequestRef& mdr)
 {
   CInode *diri = static_cast<CInode*>(mdr->internal_op_private);
   dout(10) << __func__ << " " << *diri << dendl;
@@ -13241,7 +13364,7 @@ void MDCache::rdlock_dirfrags_stats(CInode *diri, MDSInternalContext* fin)
   return rdlock_dirfrags_stats_work(mdr);
 }
 
-void MDCache::rdlock_dirfrags_stats_work(MDRequestRef& mdr)
+void MDCache::rdlock_dirfrags_stats_work(const MDRequestRef& mdr)
 {
   CInode *diri = static_cast<CInode*>(mdr->internal_op_private);
   dout(10) << __func__ << " " << *diri << dendl;
@@ -13287,11 +13410,11 @@ protected:
   MDRequestRef mdr;
   MDSRank *get_mds() override { return mds; }
 public:
-  C_FinishIOMDR(MDSRank *mds_, MDRequestRef& mdr_) : mds(mds_), mdr(mdr_) {}
+  C_FinishIOMDR(MDSRank *mds_, const MDRequestRef& mdr_) : mds(mds_), mdr(mdr_) {}
   void finish(int r) override { mds->server->respond_to_request(mdr, r); }
 };
 
-void MDCache::flush_dentry_work(MDRequestRef& mdr)
+void MDCache::flush_dentry_work(const MDRequestRef& mdr)
 {
   MutationImpl::LockOpVec lov;
   CInode *in = mds->server->rdlock_path_pin_ref(mdr, true);
@@ -13356,6 +13479,10 @@ void MDCache::register_perfcounters()
                         "Stray dentries migrated");
 
     // low prio internal request stats
+    pcb.add_u64_counter(l_mdss_ireq_quiesce_path, "ireq_quiesce_path",
+                        "Internal Request type quiesce subvolume");
+    pcb.add_u64_counter(l_mdss_ireq_quiesce_inode, "ireq_quiesce_inode",
+                        "Internal Request type quiesce subvolume inode");
     pcb.add_u64_counter(l_mdss_ireq_enqueue_scrub, "ireq_enqueue_scrub",
                         "Internal Request type enqueue scrub");
     pcb.add_u64_counter(l_mdss_ireq_exportdir, "ireq_exportdir",
@@ -13423,6 +13550,315 @@ void MDCache::clear_dirty_bits_for_stray(CInode* diri) {
     diri->clear_scatter_dirty();
   }
 }
+
+void MDCache::dispatch_quiesce_inode(const MDRequestRef& mdr)
+{
+  if (mdr->internal_op_finish == nullptr) {
+    dout(20) << __func__ << " " << *mdr << " already finished quiesce" << dendl;
+    return;
+  }
+
+  auto& qis = *static_cast<QuiesceInodeStateRef*>(mdr->internal_op_private);
+  auto& qrmdr = qis->qrmdr;
+  auto& qops = qrmdr->more()->quiesce_ops;
+  auto& qs = *qis->qs;
+  auto& delay = qis->delay;
+  auto& splitauth = qis->splitauth;
+
+  auto ino = mdr->get_filepath().get_ino();
+  CInode *in = get_inode(ino);
+  if (in == nullptr) {
+    dout(20) << " failed to lookup " << ino << dendl;
+    /* It has been trimmed from cache before we could acquire locks/pins, complete quietly. */
+    qops.erase(ino); // allow a future try if it comes back into cache
+    qs.inc_inodes_dropped();
+    mds->server->respond_to_request(mdr, 0);
+    return;
+  }
+
+  dout(20) << __func__ << " " << *mdr << " quiescing " << *in << dendl;
+
+  if (quiesce_counter.get() > quiesce_threshold) {
+    dout(20) << __func__
+             << " quiesce counter " << quiesce_counter
+             << " threshold (" << quiesce_threshold
+             << ") reached: scheduling retry" << dendl;
+    mds->timer.add_event_after(quiesce_sleep, new C_MDS_RetryRequest(this, mdr));
+    return;
+  }
+  quiesce_counter.hit();
+
+  /* Acquire cap-related locks. This pushes the lock state in the right
+   * direction.
+   *
+   * The quiescelock, once held exclusively, prevents future operations from
+   * acquiring the cap-related locks. It also prevents issuance of caps to
+   * clients.
+   *
+   * Because we're dropping the cap-related locks, other MDS can still complete
+   * operations requiring those locks or issue caps. This protocol necessarily
+   * requires that all ranks cooperatively quiesce the same tree. This is
+   * effected through the QuiesceDB.
+   *
+   * The xlock on the quiescelock is important to prevent future requests from
+   * blocking on other inode locks while holding path traversal locks.  See dev
+   * doc doc/dev/mds_internals/quiesce.rst for more details.
+   */
+
+  ceph_assert(in->is_auth() || splitauth);
+
+  if (in->is_quiesced()) {
+    auto qimdr = get_quiesce_inode_op(in);
+    if (qimdr != mdr) {
+      dout(5) << __func__ << ": already quiesced by " << *qimdr << dendl;
+      qs.add_failed(mdr, -CEPHFS_EINPROGRESS);
+      mds->server->respond_to_request(mdr, -CEPHFS_EINPROGRESS);
+      return;
+    }
+  }
+
+  if (!(mdr->locking_state & MutationImpl::ALL_LOCKED)) {
+    MutationImpl::LockOpVec lov;
+    lov.add_rdlock(&in->authlock);
+    lov.add_rdlock(&in->filelock);
+    lov.add_rdlock(&in->linklock);
+    lov.add_xlock(&in->quiescelock); /* !! */
+    lov.add_rdlock(&in->xattrlock);
+    if (!mds->locker->acquire_locks(mdr, lov, nullptr, {in}, false, true)) {
+      return;
+    }
+    mdr->locking_state |= MutationImpl::ALL_LOCKED;
+
+    if (in->get_projected_inode()->get_quiesce_block()) {
+      dout(10) << __func__ << " quiesce is blocked for this inode; dropping locks!" << dendl;
+      mdr->mark_event("quiesce blocked");
+      mds->locker->drop_locks(mdr.get());
+      /* keep authpins! */
+      qs.inc_inodes_blocked();
+      auto* c = mdr->internal_op_finish;
+      mdr->internal_op_finish = nullptr; // prevent ::request_kill recursion
+      c->complete(0);
+      return;
+    }
+
+    if (splitauth) {
+      /* Once we have the queiscelock, we no longer need these locks.  However,
+       * if splitauth==false, the replicas do not try quiescing so we must keep
+       * them locked.
+       */
+      mds->locker->drop_lock(mdr.get(), &in->authlock);
+      mds->locker->drop_lock(mdr.get(), &in->filelock);
+      mds->locker->drop_lock(mdr.get(), &in->linklock);
+      mds->locker->drop_lock(mdr.get(), &in->xattrlock);
+    }
+  }
+
+  if (in->is_dir()) {
+    for (auto& dir : in->get_dirfrags()) {
+      if (!dir->is_auth() && !splitauth) {
+        dout(5) << "auth is split and splitauth is false: " << *dir << dendl;
+        qs.add_failed(mdr, -CEPHFS_EPERM);
+        mds->server->respond_to_request(mdr, -CEPHFS_EPERM);
+        return;
+      }
+    }
+    MDSGatherBuilder gather(g_ceph_context, new C_MDS_RetryRequest(this, mdr));
+    std::vector<MDRequestRef> todispatch;
+    for (auto& dir : in->get_dirfrags()) {
+      dout(25) << " iterating " << *dir << dendl;
+      for (auto& [dnk, dn] : *dir) {
+        dout(25) << " evaluating (" << dnk << ", " << *dn << ")" << dendl;
+        auto* in = dn->get_projected_inode();
+        if (!in) {
+          dout(25) << " skipping dentry: " << *dn << dendl;
+          continue;
+        } else if (!in->is_head()) {
+          dout(25) << " skipping non-head inode: " << *in << dendl;
+          continue;
+        } else if (auto it = qops.find(in->ino()); it != qops.end()) {
+          dout(25) << " existing quiesce metareqid: "  << it->second << dendl;
+          continue;
+        }
+        dout(10) << __func__ << ": scheduling op to quiesce " << *in << dendl;
+
+        MDRequestRef qimdr = request_start_internal(CEPH_MDS_OP_QUIESCE_INODE);
+        qimdr->set_filepath(filepath(in->ino()));
+        qimdr->internal_op_finish = gather.new_sub();
+        qimdr->internal_op_private = new QuiesceInodeStateRef(qis);
+        qops[in->ino()] = qimdr->reqid;
+        qs.inc_inodes();
+        if (delay > 0ms) {
+          mds->timer.add_event_after(delay, new LambdaContext([cache=this,qimdr](int r) {
+            cache->dispatch_request(qimdr);
+          }));
+        } else {
+          todispatch.push_back(qimdr);
+        }
+      }
+    }
+    for (auto& qimdr : todispatch) {
+      dispatch_request(qimdr);
+      if (!(qs.inc_heartbeat_count() % mds->heartbeat_reset_grace())) {
+        mds->heartbeat_reset();
+      }
+    }
+    if (gather.has_subs()) {
+      dout(20) << __func__ << ": waiting for sub-ops to gather" << dendl;
+      gather.activate();
+      return;
+    }
+  }
+
+  if (in->is_auth()) {
+    dout(10) << __func__ << " " << *mdr << " quiesce complete of " << *in << dendl;
+    mdr->mark_event("quiesce complete");
+  } else {
+    dout(10) << __func__ << " " << *mdr << " non-auth quiesce complete of " << *in << dendl;
+    mdr->mark_event("quiesce complete for non-auth inode");
+  }
+
+  qs.inc_inodes_quiesced();
+  auto* c = mdr->internal_op_finish;
+  mdr->internal_op_finish = nullptr; // prevent ::request_kill recursion
+  c->complete(0);
+
+  /* do not respond/complete so locks are not lost, parent request will complete */
+}
+
+void MDCache::add_quiesce(CInode* parent, CInode* in)
+{
+  ceph_assert(parent->is_quiesced());
+  auto mdr = get_quiesce_inode_op(parent);
+
+  auto& qis = *static_cast<QuiesceInodeStateRef*>(mdr->internal_op_private);
+  auto& qrmdr = qis->qrmdr;
+  auto& qs = *qis->qs;
+  auto& qops = qrmdr->more()->quiesce_ops;
+
+  if (auto it = qops.find(in->ino()); it != qops.end()) {
+    dout(25) << __func__ << ": existing quiesce metareqid: "  << it->second << dendl;
+    return;
+  }
+  dout(10) << __func__ << ": scheduling op to quiesce " << *in << dendl;
+
+  MDRequestRef qimdr = request_start_internal(CEPH_MDS_OP_QUIESCE_INODE);
+  qimdr->set_filepath(filepath(in->ino()));
+  qimdr->internal_op_finish = new LambdaContext([](int r) {});
+  qimdr->internal_op_private = new QuiesceInodeStateRef(qis);
+  qops[in->ino()] = qimdr->reqid;
+  qs.inc_inodes();
+  dispatch_request(qimdr);
+  if (!(qs.inc_heartbeat_count() % mds->heartbeat_reset_grace())) {
+    mds->heartbeat_reset();
+  }
+}
+
+void MDCache::dispatch_quiesce_path(const MDRequestRef& mdr)
+{
+  if (!mds->is_active()) {
+    dout(20) << __func__ << " is not active!" << dendl;
+    mds->server->respond_to_request(mdr, -CEPHFS_EAGAIN);
+    return;
+  }
+
+  ceph_assert(mdr->internal_op_finish);
+
+  dout(5) << __func__ << ": dispatching" << dendl;
+
+  C_MDS_QuiescePath* qfinisher = static_cast<C_MDS_QuiescePath*>(mdr->internal_op_finish);
+  auto& qs = *qfinisher->qs;
+  auto delay = g_conf().get_val<std::chrono::milliseconds>("mds_cache_quiesce_delay");
+  auto splitauth = g_conf().get_val<bool>("mds_cache_quiesce_splitauth");
+
+  QuiesceInodeStateRef qis = std::make_shared<QuiesceInodeState>();
+  *qis = {mdr, qfinisher->qs, delay, splitauth};
+
+  CInode* diri = nullptr;
+  CF_MDS_RetryRequestFactory cf(this, mdr, true);
+  static const int ptflags = 0
+    | MDS_TRAVERSE_DISCOVER
+    | MDS_TRAVERSE_RDLOCK_PATH
+    | MDS_TRAVERSE_WANT_INODE
+    ;
+  int r = path_traverse(mdr, cf, mdr->get_filepath(), ptflags, nullptr, &diri);
+  if (r > 0)
+    return;
+  if (r < 0) {
+    mds->server->respond_to_request(mdr, r);
+    return;
+  }
+
+  auto dirino = diri->ino();
+
+  if (!diri->is_dir()) {
+    dout(5) << __func__ << ": file is not a directory" << dendl;
+    mds->server->respond_to_request(mdr, -CEPHFS_ENOTDIR);
+    return;
+  }
+
+  qfinisher->mdr = mdr;
+
+  {
+    int myrc = 0;
+    for (auto& [qimdr, rc] : qs.get_failed()) {
+      dout(5) << __func__ << ": op " << *qimdr << " failed with " << rc << "!" << dendl;
+      myrc = rc;
+    }
+    if (myrc) {
+      mds->server->respond_to_request(mdr, myrc);
+      return;
+    }
+  }
+
+  if (!diri->is_auth() && !splitauth) {
+    dout(5) << __func__ << ": skipping recursive quiesce of path for non-auth inode" << dendl;
+    mdr->mark_event("quiesce complete for non-auth tree");
+  } else if (auto& qops = mdr->more()->quiesce_ops; qops.count(dirino) == 0) {
+    MDRequestRef qimdr = request_start_internal(CEPH_MDS_OP_QUIESCE_INODE);
+    qimdr->set_filepath(filepath(dirino));
+    qimdr->internal_op_finish = new C_MDS_RetryRequest(this, mdr);
+    qimdr->internal_op_private = new QuiesceInodeStateRef(qis);
+    qops[dirino] = qimdr->reqid;
+    qs.inc_inodes();
+    if (delay > 0ms) {
+      mds->timer.add_event_after(delay, new LambdaContext([cache=this,qimdr](int r) {
+        cache->dispatch_request(qimdr);
+      }));
+    } else {
+      dispatch_request(qimdr);
+    }
+    return;
+  } else {
+    dout(5) << __func__ << ": fully quiesced "  << *diri << dendl;
+    mdr->mark_event("quiesce complete");
+  }
+
+  if (qfinisher) {
+    auto* c = mdr->internal_op_finish;
+    mdr->internal_op_finish = nullptr; // prevent ::request_kill recursion
+    c->complete(0);
+  }
+  mdr->result = 0;
+
+  /* caller kills this op */
+}
+
+MDRequestRef MDCache::quiesce_path(filepath p, C_MDS_QuiescePath* c, Formatter *f, std::chrono::milliseconds delay) {
+  MDRequestRef mdr = request_start_internal(CEPH_MDS_OP_QUIESCE_PATH);
+  mdr->set_filepath(p);
+  mdr->internal_op_finish = c;
+
+  if (delay > 0ms) {
+    mds->timer.add_event_after(delay, new LambdaContext([cache=this,mdr=mdr](int r) {
+      cache->dispatch_request(mdr);
+    }));
+  } else {
+    dispatch_request(mdr);
+  }
+
+  return mdr;
+}
+
 
 bool MDCache::dump_inode(Formatter *f, uint64_t number) {
   CInode *in = get_inode(number);

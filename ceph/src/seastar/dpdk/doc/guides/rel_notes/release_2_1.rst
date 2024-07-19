@@ -4,7 +4,6 @@
 DPDK Release 2.1
 ================
 
-
 New Features
 ------------
 
@@ -243,7 +242,7 @@ New Features
 * **Added fm10k jumbo frame support.**
 
   Added support for jumbo frame less than 15K in both VF and PF functions in the
-  fm10k pmd.
+  fm10k PMD.
 
 
 * **Added fm10k mac vlan filtering support.**
@@ -385,7 +384,6 @@ New Features
   This allows user application to run as non-root but with higher memory
   allocations, and removes a constraint on ``--no-huge`` mode being limited to
   64M.
-
 
 
 Resolved Issues
@@ -673,7 +671,7 @@ Resolved Issues
   value 0.
 
 
-  Fixes: 40b966a211ab ("ivshmem: library changes for mmaping using ivshmem")
+  Fixes: 40b966a211ab ("ivshmem: library changes for mmapping using ivshmem")
 
 
 * **ixgbe/base: Fix SFP probing.**

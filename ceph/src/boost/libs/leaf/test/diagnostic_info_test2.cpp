@@ -19,7 +19,7 @@ namespace leaf = boost::leaf;
 template <int I>
 struct info
 {
-    friend std::ostream & operator<<( std::ostream & os, info const & x )
+    friend std::ostream & operator<<( std::ostream & os, info const & )
     {
         return os << "printed info<" << I << '>';
     }
@@ -73,12 +73,12 @@ int main()
                     leaf::try_catch(
                         []
                         {
-                            throw leaf::exception(info<1>{});
+                            leaf::throw_exception(info<1>{});
                         },
                         []
                         {
                         } );
-                    throw leaf::exception(info<2>{});
+                    leaf::throw_exception(info<2>{});
                 },
                 []( info<1> )
                 {

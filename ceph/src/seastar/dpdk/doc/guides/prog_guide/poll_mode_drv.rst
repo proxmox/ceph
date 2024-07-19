@@ -57,7 +57,7 @@ Whenever needed and appropriate, asynchronous communication should be introduced
 
 Avoiding lock contention is a key issue in a multi-core environment.
 To address this issue, PMDs are designed to work with per-core private resources as much as possible.
-For example, a PMD maintains a separate transmit queue per-core, per-port, if the PMD is not ``DEV_TX_OFFLOAD_MT_LOCKFREE`` capable.
+For example, a PMD maintains a separate transmit queue per-core, per-port, if the PMD is not ``RTE_ETH_TX_OFFLOAD_MT_LOCKFREE`` capable.
 In the same way, every receive queue of a port is assigned to and polled by a single logical core (lcore).
 
 To comply with Non-Uniform Memory Access (NUMA), memory management is designed to assign to each logical core
@@ -119,7 +119,7 @@ This is also true for the pipe-line model provided all logical cores used are lo
 
 Multiple logical cores should never share receive or transmit queues for interfaces since this would require global locks and hinder performance.
 
-If the PMD is ``DEV_TX_OFFLOAD_MT_LOCKFREE`` capable, multiple threads can invoke ``rte_eth_tx_burst()``
+If the PMD is ``RTE_ETH_TX_OFFLOAD_MT_LOCKFREE`` capable, multiple threads can invoke ``rte_eth_tx_burst()``
 concurrently on the same tx queue without SW lock. This PMD feature found in some NICs and useful in the following use cases:
 
 *  Remove explicit spinlock in some applications where lcores are not mapped to Tx queues with 1:1 relation.
@@ -127,7 +127,7 @@ concurrently on the same tx queue without SW lock. This PMD feature found in som
 *  In the eventdev use case, avoid dedicating a separate TX core for transmitting and thus
    enables more scaling as all workers can send the packets.
 
-See `Hardware Offload`_ for ``DEV_TX_OFFLOAD_MT_LOCKFREE`` capability probing details.
+See `Hardware Offload`_ for ``RTE_ETH_TX_OFFLOAD_MT_LOCKFREE`` capability probing details.
 
 Device Identification, Ownership and Configuration
 --------------------------------------------------
@@ -146,13 +146,17 @@ Based on their PCI identifier, NIC ports are assigned two other identifiers:
 
 Port Ownership
 ~~~~~~~~~~~~~~
+
 The Ethernet devices ports can be owned by a single DPDK entity (application, library, PMD, process, etc).
 The ownership mechanism is controlled by ethdev APIs and allows to set/remove/get a port owner by DPDK entities.
-Allowing this should prevent any multiple management of Ethernet port by different entities.
+It prevents Ethernet ports to be managed by different entities.
 
 .. note::
 
     It is the DPDK entity responsibility to set the port owner before using it and to manage the port usage synchronization between different threads or processes.
+
+It is recommended to set port ownership early,
+like during the probing notification ``RTE_ETH_EVENT_NEW``.
 
 Device Configuration
 ~~~~~~~~~~~~~~~~~~~~
@@ -311,7 +315,7 @@ The ``dev_info->[rt]x_queue_offload_capa`` returned from ``rte_eth_dev_info_get(
 The ``dev_info->[rt]x_offload_capa`` returned from ``rte_eth_dev_info_get()`` includes all pure per-port and per-queue offloading capabilities.
 Supported offloads can be either per-port or per-queue.
 
-Offloads are enabled using the existing ``DEV_TX_OFFLOAD_*`` or ``DEV_RX_OFFLOAD_*`` flags.
+Offloads are enabled using the existing ``RTE_ETH_TX_OFFLOAD_*`` or ``RTE_ETH_RX_OFFLOAD_*`` flags.
 Any requested offloading by an application must be within the device capabilities.
 Any offloading is disabled by default if it is not set in the parameter
 ``dev_conf->[rt]xmode.offloads`` to ``rte_eth_dev_configure()`` and
@@ -372,11 +376,19 @@ parameters to those ports.
 
 * ``representor`` for a device which supports the creation of representor ports
   this argument allows user to specify which switch ports to enable port
-  representors for.::
+  representors for. Multiple representors in one device argument is invalid::
 
-   -w DBDF,representor=0
-   -w DBDF,representor=[0,4,6,9]
-   -w DBDF,representor=[0-31]
+   -a DBDF,representor=vf0
+   -a DBDF,representor=vf[0,4,6,9]
+   -a DBDF,representor=vf[0-31]
+   -a DBDF,representor=vf[0,2-4,7,9-11]
+   -a DBDF,representor=sf0
+   -a DBDF,representor=sf[1,3,5]
+   -a DBDF,representor=sf[0-1023]
+   -a DBDF,representor=sf[0,2-4,7,9-11]
+   -a DBDF,representor=pf1vf0
+   -a DBDF,representor=pf[0-1]sf[0-127]
+   -a DBDF,representor=pf1
 
 Note: PMDs are not required to support the standard device arguments and users
 should consult the relevant PMD documentation to see support devargs.
@@ -600,9 +612,9 @@ thread safety all these operations should be called from the same thread.
 For example when PF is reset, the PF sends a message to notify VFs of
 this event and also trigger an interrupt to VFs. Then in the interrupt
 service routine the VFs detects this notification message and calls
-_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_RESET, NULL).
+rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_RESET, NULL).
 This means that a PF reset triggers an RTE_ETH_EVENT_INTR_RESET
-event within VFs. The function _rte_eth_dev_callback_process() will
+event within VFs. The function rte_eth_dev_callback_process() will
 call the registered callback function. The callback function can trigger
 the application to handle all operations the VF reset requires including
 stopping Rx/Tx queues and calling rte_eth_dev_reset().
@@ -615,3 +627,52 @@ by application.
 The PMD itself should not call rte_eth_dev_reset(). The PMD can trigger
 the application to handle reset event. It is duty of application to
 handle all synchronization before it calls rte_eth_dev_reset().
+
+The above error handling mode is known as ``RTE_ETH_ERROR_HANDLE_MODE_PASSIVE``.
+
+Proactive Error Handling Mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This mode is known as ``RTE_ETH_ERROR_HANDLE_MODE_PROACTIVE``,
+different from the application invokes recovery in PASSIVE mode,
+the PMD automatically recovers from error in PROACTIVE mode,
+and only a small amount of work is required for the application.
+
+During error detection and automatic recovery,
+the PMD sets the data path pointers to dummy functions
+(which will prevent the crash),
+and also make sure the control path operations fail with a return code ``-EBUSY``.
+
+Because the PMD recovers automatically,
+the application can only sense that the data flow is disconnected for a while
+and the control API returns an error in this period.
+
+In order to sense the error happening/recovering,
+as well as to restore some additional configuration,
+three events are available:
+
+``RTE_ETH_EVENT_ERR_RECOVERING``
+   Notify the application that an error is detected
+   and the recovery is being started.
+   Upon receiving the event, the application should not invoke
+   any control path function until receiving
+   ``RTE_ETH_EVENT_RECOVERY_SUCCESS`` or ``RTE_ETH_EVENT_RECOVERY_FAILED`` event.
+
+.. note::
+
+   Before the PMD reports the recovery result,
+   the PMD may report the ``RTE_ETH_EVENT_ERR_RECOVERING`` event again,
+   because a larger error may occur during the recovery.
+
+``RTE_ETH_EVENT_RECOVERY_SUCCESS``
+   Notify the application that the recovery from error is successful,
+   the PMD already re-configures the port,
+   and the effect is the same as a restart operation.
+
+``RTE_ETH_EVENT_RECOVERY_FAILED``
+   Notify the application that the recovery from error failed,
+   the port should not be usable anymore.
+   The application should close the port.
+
+The error handling mode supported by the PMD can be reported through
+``rte_eth_dev_info_get``.

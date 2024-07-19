@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018 NXP
+ * Copyright 2018-2021 NXP
  */
 
 #ifndef _RTE_PMD_DPAA2_H
@@ -9,37 +9,12 @@
  * @file rte_pmd_dpaa2.h
  *
  * NXP dpaa2 PMD specific functions.
- *
- * @warning
- * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
- *
  */
 
+#include <rte_compat.h>
 #include <rte_flow.h>
 
-enum pmd_dpaa2_ts {
-	PMD_DPAA2_DISABLE_TS,
-	PMD_DPAA2_ENABLE_TS
-};
-
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
- *
- * Enable/Disable timestamping update in mbuf for LX2160 kind of devices.
- * For LS2088/LS1088 devices, timestamping will be updated in mbuf without
- * calling this API.
- *
- * @param pmd_dpaa2_ts
- *    Enum to enable/disable timestamp update in mbuf for LX2160 devices.
- */
-__rte_experimental
-void rte_pmd_dpaa2_set_timestamp(enum pmd_dpaa2_ts);
-
-/**
- * @warning
- * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
- *
  * Create a flow rule to demultiplex ethernet traffic to separate network
  * interfaces.
  *
@@ -53,7 +28,6 @@ void rte_pmd_dpaa2_set_timestamp(enum pmd_dpaa2_ts);
  * @return
  *    A valid handle in case of success, NULL otherwise.
  */
-__rte_experimental
 struct rte_flow *
 rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
 			      struct rte_flow_item *pattern[],
@@ -63,6 +37,19 @@ rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
  * @warning
  * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
  *
+ * demultiplex interface max rx frame length configure
+ *
+ * @param dpdmux_id
+ *    ID of the DPDMUX MC object.
+ * @param max_rx_frame_len
+ *    maximum receive frame length (will be checked to be minimux of all dpnis)
+ *
+ */
+__rte_experimental
+int
+rte_pmd_dpaa2_mux_rx_frame_len(uint32_t dpdmux_id, uint16_t max_rx_frame_len);
+
+/**
  * Create a custom hash key on basis of offset of start of packet and size.
  * for e.g. if we need GRE packets (non-vlan and without any extra headers)
  * to be hashed on basis of inner IP header, we will provide offset as:
@@ -81,10 +68,38 @@ rte_pmd_dpaa2_mux_flow_create(uint32_t dpdmux_id,
  *   - 0 if successful.
  *   - Negative in case of failure.
  */
-__rte_experimental
 int
 rte_pmd_dpaa2_set_custom_hash(uint16_t port_id,
 			      uint16_t offset,
 			      uint8_t size);
 
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
+ *
+ * Do thread specific initialization
+ */
+__rte_experimental
+void
+rte_pmd_dpaa2_thread_init(void);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
+ *
+ * Generate the DPAA2 WRIOP based hash value
+ *
+ * @param key
+ *    Array of key data
+ * @param size
+ *    Size of the hash input key in bytes
+ *
+ * @return
+ *   - 0 if successful.
+ *   - Negative in case of failure.
+ */
+
+__rte_experimental
+uint32_t
+rte_pmd_dpaa2_get_tlu_hash(uint8_t *key, int size);
 #endif /* _RTE_PMD_DPAA2_H */

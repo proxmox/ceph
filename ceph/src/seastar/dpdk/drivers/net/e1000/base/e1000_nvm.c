@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2001-2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2020 Intel Corporation
+ */
 
 #include "e1000_api.h"
 
@@ -61,6 +32,9 @@ void e1000_init_nvm_ops_generic(struct e1000_hw *hw)
 /**
  *  e1000_null_nvm_read - No-op function, return 0
  *  @hw: pointer to the HW structure
+ *  @a: dummy variable
+ *  @b: dummy variable
+ *  @c: dummy variable
  **/
 s32 e1000_null_read_nvm(struct e1000_hw E1000_UNUSEDARG *hw,
 			u16 E1000_UNUSEDARG a, u16 E1000_UNUSEDARG b,
@@ -85,6 +59,7 @@ void e1000_null_nvm_generic(struct e1000_hw E1000_UNUSEDARG *hw)
 /**
  *  e1000_null_led_default - No-op function, return 0
  *  @hw: pointer to the HW structure
+ *  @data: dummy variable
  **/
 s32 e1000_null_led_default(struct e1000_hw E1000_UNUSEDARG *hw,
 			   u16 E1000_UNUSEDARG *data)
@@ -97,6 +72,9 @@ s32 e1000_null_led_default(struct e1000_hw E1000_UNUSEDARG *hw,
 /**
  *  e1000_null_write_nvm - No-op function, return 0
  *  @hw: pointer to the HW structure
+ *  @a: dummy variable
+ *  @b: dummy variable
+ *  @c: dummy variable
  **/
 s32 e1000_null_write_nvm(struct e1000_hw E1000_UNUSEDARG *hw,
 			 u16 E1000_UNUSEDARG a, u16 E1000_UNUSEDARG b,
@@ -573,7 +551,7 @@ s32 e1000_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 	}
 
 	for (i = 0; i < words; i++) {
-		eerd = ((offset+i) << E1000_NVM_RW_ADDR_SHIFT) +
+		eerd = ((offset + i) << E1000_NVM_RW_ADDR_SHIFT) +
 		       E1000_NVM_RW_REG_START;
 
 		E1000_WRITE_REG(hw, E1000_EERD, eerd);
@@ -778,8 +756,9 @@ s32 e1000_read_pba_string_generic(struct e1000_hw *hw, u8 *pba_num,
 
 	DEBUGFUNC("e1000_read_pba_string_generic");
 
-	if ((hw->mac.type >= e1000_i210) &&
-	    !e1000_get_flash_presence_i210(hw)) {
+	if ((hw->mac.type == e1000_i210 ||
+	     hw->mac.type == e1000_i211) &&
+	     !e1000_get_flash_presence_i210(hw)) {
 		DEBUGOUT("Flashless no PBA string\n");
 		return -E1000_ERR_NVM_PBA_SECTION;
 	}

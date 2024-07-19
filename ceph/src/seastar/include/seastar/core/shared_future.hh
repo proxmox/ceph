@@ -22,10 +22,15 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <seastar/core/future.hh>
 #include <seastar/core/abortable_fifo.hh>
 #include <seastar/core/abort_on_expiry.hh>
 #include <seastar/core/timed_out_error.hh>
+#include <seastar/util/modules.hh>
+#include <exception>
+#include <optional>
+#endif
 
 namespace seastar {
 
@@ -41,24 +46,28 @@ struct with_clock {};
 template <typename... T>
 struct future_option_traits;
 
-template <typename Clock, typename... T>
-struct future_option_traits<with_clock<Clock>, T...> {
+template <typename Clock, typename T>
+struct future_option_traits<with_clock<Clock>, T> {
     using clock_type = Clock;
 
-    template<template <typename...> class Class>
-    struct parametrize {
-        using type = Class<T...>;
-    };
+    using future_type = future<T>;
+    using promise_type = promise<T>;
 };
 
-template <typename... T>
-struct future_option_traits {
-    using clock_type = lowres_clock;
+template <typename Clock>
+struct future_option_traits<with_clock<Clock>> {
+    using clock_type = Clock;
 
-    template<template <typename...> class Class>
-    struct parametrize {
-        using type = Class<T...>;
-    };
+    using future_type = future<>;
+    using promise_type = promise<>;
+};
+
+template <typename T>
+struct future_option_traits<T> : public future_option_traits<with_clock<lowres_clock>, T> {
+};
+
+template <>
+struct future_option_traits<> : future_option_traits<void> {
 };
 
 /// \endcond
@@ -102,13 +111,15 @@ class shared_future {
 public:
     using clock = typename options::clock_type;
     using time_point = typename clock::time_point;
-    using future_type = typename future_option_traits<T...>::template parametrize<future>::type;
-    using promise_type = typename future_option_traits<T...>::template parametrize<promise>::type;
-    using value_tuple_type = typename future_option_traits<T...>::template parametrize<std::tuple>::type;
+    using future_type = typename future_option_traits<T...>::future_type;
+    using promise_type = typename future_option_traits<T...>::promise_type;
+    using value_tuple_type = typename future_type::tuple_type;
 private:
     /// \cond internal
-    class shared_state : public enable_lw_shared_from_this<shared_state> {
+    class shared_state final : public enable_lw_shared_from_this<shared_state>, public task {
         future_type _original_future;
+        // Ensures that shared_state is alive until run_and_dispose() runs (if the task was scheduled)
+        lw_shared_ptr<shared_state> _keepaliver;
         struct entry {
             promise_type pr;
             std::optional<abort_on_expiry<clock>> timer;
@@ -135,9 +146,11 @@ private:
                 _original_future.ignore_ready_future();
             }
         }
-        explicit shared_state(future_type f) noexcept : _original_future(std::move(f)) { }
-        void resolve(future_type&& f) noexcept {
-            _original_future = std::move(f);
+        explicit shared_state(future_type f) noexcept
+                : task(default_scheduling_group()) // SG is set later, when the task is scheduled
+                , _original_future(std::move(f)) {
+        }
+        void run_and_dispose() noexcept override {
             auto& state = _original_future._state;
             if (_original_future.failed()) {
                 while (_peers) {
@@ -155,6 +168,14 @@ private:
                     _peers.pop_front();
                 }
             }
+            // _peer is now empty, but let's also make sure it releases any
+            // memory it might hold in reserve.
+            _peers = {};
+            _keepaliver.release();
+        }
+
+        task* waiting_task() noexcept override {
+            return nullptr;
         }
 
         future_type get_future(time_point timeout = time_point::max()) noexcept {
@@ -174,11 +195,10 @@ private:
                     abort_source& as = e.timer->abort_source();
                    _peers.make_back_abortable(as);
                 }
-                if (_original_future._state.valid()) {
-                    // _original_future's result is forwarded to each peer.
-                    (void)_original_future.then_wrapped([s = this->shared_from_this()] (future_type&& f) mutable {
-                        s->resolve(std::move(f));
-                    });
+                if (!_keepaliver) {
+                    this->set_scheduling_group(current_scheduling_group());
+                    _original_future.set_task(*this);
+                    _keepaliver = this->shared_from_this();
                 }
                 return f;
             } else if (_original_future.failed()) {
@@ -201,11 +221,10 @@ private:
 
                 auto f = e.pr.get_future();
                 _peers.make_back_abortable(as);
-                if (_original_future._state.valid()) {
-                    // _original_future's result is forwarded to each peer.
-                    (void)_original_future.then_wrapped([s = this->shared_from_this()] (future_type&& f) mutable {
-                        s->resolve(std::move(f));
-                    });
+                if (!_keepaliver) {
+                    this->set_scheduling_group(current_scheduling_group());
+                    _original_future.set_task(*this);
+                    _keepaliver = this->shared_from_this();
                 }
                 return f;
             } else if (_original_future.failed()) {
@@ -221,6 +240,11 @@ private:
 
         bool failed() const noexcept {
             return _original_future.failed();
+        }
+
+        // Used only in tests (see shared_future_tester in futures_test.cc)
+        bool has_scheduled_task() const noexcept {
+            return _keepaliver != nullptr;
         }
     };
     /// \endcond
@@ -279,6 +303,10 @@ public:
     bool valid() const noexcept {
         return bool(_state);
     }
+
+    /// \cond internal
+    friend class shared_future_tester;
+    /// \endcond
 };
 
 /// \brief Like \ref promise except that its counterpart is \ref shared_future instead of \ref future
@@ -286,6 +314,7 @@ public:
 /// When the shared_promise is made ready, every waiter is also made ready.
 ///
 /// Like the shared_future, the types in the parameter pack T must all be copy-constructible.
+SEASTAR_MODULE_EXPORT
 template <typename... T>
 class shared_promise {
 public:

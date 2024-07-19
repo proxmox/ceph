@@ -21,12 +21,21 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
+#include <boost/intrusive/list.hpp>
+
 #include <seastar/core/future.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
+#include <cassert>
 #include <exception>
+#include <optional>
+#include <utility>
+#endif
 
 #ifdef SEASTAR_DEBUG
-#define SEASTAR_GATE_HOLDER_DEBUG
+// See: https://tracker.ceph.com/issues/64332
+// #define SEASTAR_GATE_HOLDER_DEBUG
 #endif
 
 namespace seastar {
@@ -36,6 +45,7 @@ namespace seastar {
 
 /// Exception thrown when a \ref gate object has been closed
 /// by the \ref gate::close() method.
+SEASTAR_MODULE_EXPORT
 class gate_closed_exception : public std::exception {
 public:
     virtual const char* what() const noexcept override {
@@ -48,26 +58,22 @@ public:
 /// When stopping a service that serves asynchronous requests, we are faced with
 /// two problems: preventing new requests from coming in, and knowing when existing
 /// requests have completed.  The \c gate class provides a solution.
+SEASTAR_MODULE_EXPORT
 class gate {
     size_t _count = 0;
     std::optional<promise<>> _stopped;
 
 #ifdef SEASTAR_GATE_HOLDER_DEBUG
-    size_t _holders = 0;
-
-    void assert_not_held_when_moved() const noexcept {
-        assert(!_holders && "gate moved with outstanding holders");
-    }
-    void assert_not_held_when_destroyed() const noexcept {
-        assert(!_holders && "gate destroyed with outstanding holders");
-    }
+    void assert_not_held_when_moved() const noexcept;
+    void assert_not_held_when_destroyed() const noexcept;
 #else   // SEASTAR_GATE_HOLDER_DEBUG
     void assert_not_held_when_moved() const noexcept {}
     void assert_not_held_when_destroyed() const noexcept {}
 #endif  // SEASTAR_GATE_HOLDER_DEBUG
 
 public:
-    gate() = default;
+    // Implemented to force noexcept due to boost:intrusive::list
+    gate() noexcept {};
     gate(const gate&) = delete;
     gate(gate&& x) noexcept
         : _count(std::exchange(x._count, 0)), _stopped(std::exchange(x._stopped, std::nullopt)) {
@@ -156,7 +162,7 @@ public:
 
     /// Facility to hold a gate opened using RAII.
     ///
-    /// A \ref gate::holder is usually obtained using \ref gate::get_holder.
+    /// A \ref gate::holder is usually obtained using \ref gate::hold.
     ///
     /// The \c gate is entered when the \ref gate::holder is constructed,
     /// And the \c gate is left when the \ref gate::holder is destroyed.
@@ -165,7 +171,35 @@ public:
     /// Moving the \ref gate::holder is supported and has no effect on the \c gate itself.
     class holder {
         gate* _g;
+#ifdef SEASTAR_GATE_HOLDER_DEBUG
+        using member_hook_t = boost::intrusive::list_member_hook<boost::intrusive::link_mode<boost::intrusive::auto_unlink>>;
+        member_hook_t _link;
 
+        void debug_hold_gate() noexcept {
+            if (_g) {
+                _g->_holders.push_back(*this);
+            }
+        }
+
+        void debug_release_gate() noexcept {
+            _link.unlink();
+        }
+#else   // SEASTAR_GATE_HOLDER_DEBUG
+        void debug_hold_gate() noexcept {}
+        void debug_release_gate() noexcept {}
+#endif  // SEASTAR_GATE_HOLDER_DEBUG
+
+        // release the holder from the gate without leaving it.
+        // used for release and move.
+        gate* release_gate() noexcept {
+            auto* g = std::exchange(_g, nullptr);
+            if (g) {
+                debug_release_gate();
+            }
+            return g;
+        }
+
+        friend class gate;
     public:
         /// Construct a default \ref holder, referencing no \ref gate.
         /// Never throws.
@@ -193,7 +227,9 @@ public:
         /// Construct a \ref holder by moving another \c holder.
         /// The referenced \ref gate is unaffected, and so the
         /// move-constructor must never throw.
-        holder(holder&& x) noexcept : _g(std::exchange(x._g, nullptr)) { }
+        holder(holder&& x) noexcept : _g(std::move(x).release_gate()) {
+            debug_hold_gate();
+        }
 
         /// Destroy a \ref holder and leave the referenced \ref gate.
         ~holder() {
@@ -225,33 +261,18 @@ public:
         holder& operator=(holder&& x) noexcept {
             if (&x != this) {
                 release();
-                _g = std::exchange(x._g, nullptr);
+                _g = std::move(x).release_gate();
+                debug_hold_gate();
             }
             return *this;
         }
 
         /// Leave the held \c gate
         void release() noexcept {
-            if (_g) {
-                _g->leave();
-                debug_release_gate();
-                _g = nullptr;
+            if (auto g = release_gate()) {
+                g->leave();
             }
         }
-
-    private:
-#ifdef SEASTAR_GATE_HOLDER_DEBUG
-        void debug_hold_gate() noexcept {
-            ++_g->_holders;
-        }
-
-        void debug_release_gate() noexcept {
-            --_g->_holders;
-        }
-#else   // SEASTAR_GATE_HOLDER_DEBUG
-        void debug_hold_gate() noexcept {}
-        void debug_release_gate() noexcept {}
-#endif  // SEASTAR_GATE_HOLDER_DEBUG
     };
 
     /// Get a RAII-based gate::holder object that \ref enter "enter()s"
@@ -259,18 +280,37 @@ public:
     holder hold() {
         return holder(*this);
     }
+
+private:
+#ifdef SEASTAR_GATE_HOLDER_DEBUG
+    using holders_list_t = boost::intrusive::list<holder,
+        boost::intrusive::member_hook<holder, holder::member_hook_t, &holder::_link>,
+        boost::intrusive::constant_time_size<false>>;
+
+    holders_list_t _holders;
+#endif  // SEASTAR_GATE_HOLDER_DEBUG
 };
+
+#ifdef SEASTAR_GATE_HOLDER_DEBUG
+SEASTAR_MODULE_EXPORT
+inline void gate::assert_not_held_when_moved() const noexcept {
+    assert(_holders.empty() && "gate moved with outstanding holders");
+}
+inline void gate::assert_not_held_when_destroyed() const noexcept {
+    assert(_holders.empty() && "gate destroyed with outstanding holders");
+}
+#endif  // SEASTAR_GATE_HOLDER_DEBUG
 
 namespace internal {
 
 template <typename Func>
 inline
 auto
-invoke_func_with_gate(gate& g, Func&& func) noexcept {
-    return futurize_invoke(std::forward<Func>(func)).finally([&g] { g.leave(); });
+invoke_func_with_gate(gate::holder&& gh, Func&& func) noexcept {
+    return futurize_invoke(std::forward<Func>(func)).finally([gh = std::forward<gate::holder>(gh)] {});
 }
 
-} // namespace intgernal
+} // namespace internal
 
 /// Executes the function \c func making sure the gate \c g is properly entered
 /// and later on, properly left.
@@ -280,12 +320,12 @@ invoke_func_with_gate(gate& g, Func&& func) noexcept {
 /// \returns whatever \c func returns
 ///
 /// \relates gate
+SEASTAR_MODULE_EXPORT
 template <typename Func>
 inline
 auto
 with_gate(gate& g, Func&& func) {
-    g.enter();
-    return internal::invoke_func_with_gate(g, std::forward<Func>(func));
+    return internal::invoke_func_with_gate(g.hold(), std::forward<Func>(func));
 }
 
 /// Executes the function \c func if the gate \c g can be entered
@@ -299,16 +339,18 @@ with_gate(gate& g, Func&& func) {
 /// \returns whatever \c func returns.
 ///
 /// \relates gate
+SEASTAR_MODULE_EXPORT
 template <typename Func>
 inline
 auto
 try_with_gate(gate& g, Func&& func) noexcept {
-    if (!g.try_enter()) {
+    if (g.is_closed()) {
         using futurator = futurize<std::invoke_result_t<Func>>;
         return futurator::make_exception_future(gate_closed_exception());
     }
-    return internal::invoke_func_with_gate(g, std::forward<Func>(func));
+    return internal::invoke_func_with_gate(g.hold(), std::forward<Func>(func));
 }
 /// @}
+
 
 }

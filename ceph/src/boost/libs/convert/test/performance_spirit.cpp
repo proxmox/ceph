@@ -9,7 +9,7 @@
 
 #include "./test.hpp"
 
-#if defined(BOOST_CONVERT_IS_NOT_SUPPORTED)
+#if !defined(BOOST_CONVERT_CXX14)
 int main(int, char const* []) { return 0; }
 #else
 
@@ -20,7 +20,6 @@ int main(int, char const* []) { return 0; }
 #include <boost/convert/lexical_cast.hpp>
 
 #include <libs/spirit/workbench/measure.hpp>
-#include <boost/spirit/include/qi.hpp>
 #include <vector>
 
 namespace

@@ -74,6 +74,24 @@ options:
   - mds
   flags:
   - runtime
+- name: mds_cache_quiesce_delay
+  type: millisecs
+  level: dev
+  desc: delay before starting recursive quiesce inode operations
+  default: 0
+  services:
+  - mds
+  flags:
+  - runtime
+- name: mds_cache_quiesce_splitauth
+  type: bool
+  level: advanced
+  desc: allow recursive quiesce across auth boundaries
+  default: true
+  services:
+  - mds
+  flags:
+  - runtime
 - name: mds_cache_release_free_interval
   type: secs
   level: dev
@@ -141,6 +159,33 @@ options:
   level: advanced
   desc: threshold for number of dentries that can be trimmed
   default: 256_K
+  services:
+  - mds
+  flags:
+  - runtime
+- name: mds_cache_quiesce_decay_rate
+  type: float
+  level: advanced
+  desc: decay rate for quiescing inodes throttle
+  default: 1
+  services:
+  - mds
+  flags:
+  - runtime
+- name: mds_cache_quiesce_threshold
+  type: size
+  level: advanced
+  desc: threshold for number of inodes that can be quiesced
+  default: 512_K
+  services:
+  - mds
+  flags:
+  - runtime
+- name: mds_cache_quiesce_sleep
+  type: millisecs
+  level: advanced
+  desc: sleep time for request after passing quiesce threshold
+  default: 200
   services:
   - mds
   flags:
@@ -336,9 +381,8 @@ options:
   type: float
   level: advanced
   desc: decay rate for session readdir caps leading to readdir throttle
-  long_desc: The half-life for the session cap acquisition counter of caps
-    acquired by readdir. This is used for throttling readdir requests from
-    clients.
+  long_desc: The half-life for the session cap acquisition counter of caps acquired
+    by readdir. This is used for throttling readdir requests from clients.
   default: 30
   services:
   - mds
@@ -497,7 +541,13 @@ options:
   default: false
   services:
   - mds
-  with_legacy: true
+- name: mds_log_event_large_threshold
+  type: uint
+  level: advanced
+  default: 512_K
+  min: 1_K
+  services:
+  - mds
 - name: mds_log_skip_corrupt_events
   type: bool
   level: dev
@@ -506,7 +556,19 @@ options:
   - mds
   fmt_desc: Determines whether the MDS should try to skip corrupt journal
     events during journal replay.
-  with_legacy: true
+  flags:
+  - runtime
+- name: mds_log_skip_unbounded_events
+  type: bool
+  level: dev
+  default: false
+  services:
+  - mds
+  fmt_desc: Determines whether the MDS should try to skip journal
+    events during journal replay that wrongly exist before
+    a major segment boundary.
+  flags:
+  - runtime
 - name: mds_log_max_events
   type: int
   level: advanced
@@ -516,15 +578,24 @@ options:
   default: -1
   services:
   - mds
-  with_legacy: true
 - name: mds_log_events_per_segment
-  type: int
+  type: uint
   level: advanced
   desc: maximum number of events in an MDS journal segment
   default: 1024
+  min: 1
   services:
   - mds
-  with_legacy: true
+- name: mds_log_major_segment_event_ratio
+  type: uint
+  level: advanced
+  desc: multiple of mds_log_events_per_segment between major segments
+  default: 12
+  services:
+  - mds
+  min: 1
+  see_also:
+  - mds_log_events_per_segment
 # segment size for mds log, default to default file_layout_t
 - name: mds_log_segment_size
   type: size
@@ -541,9 +612,9 @@ options:
   fmt_desc: The maximum number of segments (objects) in the journal before
     we initiate trimming. Set to ``-1`` to disable limits.
   default: 128
+  min: 8
   services:
   - mds
-  with_legacy: true
 - name: mds_log_warn_factor
   type: float
   level: advanced
@@ -793,6 +864,16 @@ options:
   services:
   - mds
   with_legacy: true
+# must be overloaded for more than these epochs before we export anything
+- name: mds_bal_overload_epochs
+  type: int
+  level: dev
+  default: 2
+  services:
+  - mds
+  fmt_desc: The number of epochs the overload lasts before Ceph migrates,
+    setting it to a higher value can avoid frequent migrations caused by load fluctuations.
+  with_legacy: true
 # if we need less than this, we don't do anything
 - name: mds_bal_min_start
   type: float
@@ -984,6 +1065,12 @@ options:
   services:
   - mds
   fmt_desc: probabilistically inject corrupt CDentry::first at journal load
+- name: mds_kill_shutdown_at
+  type: uint
+  level: dev
+  default: 0
+  services:
+  - mds
   flags:
   - runtime
 - name: mds_kill_mdstable_at
@@ -1533,6 +1620,18 @@ options:
   - mds
   flags:
   - runtime
+- name: defer_client_eviction_on_laggy_osds
+  type: bool
+  level: advanced
+  desc: Do not evict client if any osd is laggy
+  long_desc: Laggy OSD(s) can make clients laggy or unresponsive, this can
+    lead to their eviction, this option once enabled can help defer client
+    eviction.
+  default: false
+  services:
+  - mds
+  flags:
+  - runtime
 - name: mds_session_metadata_threshold
   type: size
   level: advanced
@@ -1542,15 +1641,41 @@ options:
   services:
   - mds
   flags:
-  - runtime  
-- name: defer_client_eviction_on_laggy_osds
-  type: bool
+  - runtime
+- name: mds_log_trim_threshold
+  type: size
   level: advanced
-  desc: Do not evict client if any osd is laggy
-  long_desc: Laggy OSD(s) can make clients laggy or unresponsive, this can
-    lead to their eviction, this option once enabled can help defer client
-    eviction.
-  default: false
+  desc: MDS log trim threshold
+  long_desc: The threshold of the number of log segment that can be trimmed.
+  default: 128
+  min: 1
+  services:
+  - mds
+  see_also:
+  - mds_log_max_events
+  - mds_log_max_segments
+  flags:
+  - runtime
+- name: mds_log_trim_decay_rate
+  type: float
+  level: advanced
+  desc: MDS log trim decay rate
+  long_desc: The decay rate for trimming the MDS log. Increasing this value leads to the MDS spending less time in trimming the log.
+  default: 1.0
+  min: 0.01
+  services:
+  - mds
+  see_also:
+  - mds_log_max_events
+  - mds_log_max_segments
+  flags:
+  - runtime
+- name: mds_log_trim_upkeep_interval
+  type: millisecs
+  level: advanced
+  desc: MDS log trimming interval
+  long_desc: Interval in milliseconds to trim MDS logs.
+  default: 1000
   services:
   - mds
   flags:

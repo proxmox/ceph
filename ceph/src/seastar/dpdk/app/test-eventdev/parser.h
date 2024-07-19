@@ -5,6 +5,7 @@
 #ifndef __INCLUDE_PARSER_H__
 #define __INCLUDE_PARSER_H__
 
+#include <ctype.h>
 #include <stdint.h>
 
 #define PARSE_DELIMITER				" \f\n\r\t\v"
@@ -42,9 +43,9 @@ int parser_read_uint8_hex(uint8_t *value, const char *p);
 
 int parser_read_int32(int32_t *value, const char *p);
 
-int parse_hex_string(char *src, uint8_t *dst, uint32_t *size);
+int parse_hex_string(const char *src, uint8_t *dst, uint32_t *size);
 
 int parse_tokenize_string(char *string, char *tokens[], uint32_t *n_tokens);
 
-int parse_lcores_list(bool lcores[], const char *corelist);
+int parse_lcores_list(bool lcores[], int lcores_num, const char *corelist);
 #endif

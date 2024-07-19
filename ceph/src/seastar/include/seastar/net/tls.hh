@@ -20,18 +20,21 @@
  */
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <functional>
 #include <unordered_set>
 #include <map>
-
 #include <boost/any.hpp>
+#endif
 
 #include <seastar/core/future.hh>
 #include <seastar/core/internal/api-level.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/net/socket_defs.hh>
+#include <seastar/net/inet_address.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
 #include <seastar/net/api.hh>
 
 namespace seastar {
@@ -52,7 +55,9 @@ class socket_address;
  * with OpenSSL or similar.
  *
  */
+SEASTAR_MODULE_EXPORT
 namespace tls {
+
     enum class x509_crt_format {
         DER,
         PEM,
@@ -110,9 +115,13 @@ namespace tls {
     };
 
     class abstract_credentials {
-    public:
+    protected:
+        abstract_credentials() = default;
+        abstract_credentials(const abstract_credentials&) = default;
+        abstract_credentials& operator=(abstract_credentials&) = default;
+        abstract_credentials& operator=(abstract_credentials&&) = default;
         virtual ~abstract_credentials() {};
-
+    public:
         virtual void set_x509_trust(const blob&, x509_crt_format) = 0;
         virtual void set_x509_crl(const blob&, x509_crt_format) = 0;
         virtual void set_x509_key(const blob& cert, const blob& key, x509_crt_format) = 0;
@@ -300,17 +309,42 @@ namespace tls {
         sstring _priority;
     };
 
+    /// TLS configuration options
+    struct tls_options {
+        /// \brief whether to wait for EOF from server on session termination
+        bool wait_for_eof_on_shutdown = true;
+        /// \brief server name to be used for the SNI TLS extension
+        sstring server_name = {};
+    };
+
     /**
      * Creates a TLS client connection using the default network stack and the
      * supplied credentials.
      * Typically these should contain enough information
      * to validate the remote certificate (i.e. trust info).
      *
-     * \param name An optional expected server name for the remote end point
+     * ATTN: The method is going to be deprecated
+     *
+     * \param name The expected server name for the remote end point
      */
     /// @{
-    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, sstring name = {});
-    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, socket_address local, sstring name = {});
+    [[deprecated("Use overload with tls_options parameter")]]
+    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, sstring name);
+    [[deprecated("Use overload with tls_options parameter")]]
+    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, socket_address local, sstring name);
+    /// @}
+
+    /**
+     * Creates a TLS client connection using the default network stack and the
+     * supplied credentials.
+     * Typically these should contain enough information
+     * to validate the remote certificate (i.e. trust info).
+     *
+     * \param options Optional additional session configuration
+     */
+    /// @{
+    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, tls_options option = {});
+    future<connected_socket> connect(shared_ptr<certificate_credentials>, socket_address, socket_address local, tls_options options = {});
     /// @}
 
     /**
@@ -319,16 +353,47 @@ namespace tls {
      * Typically these should contain enough information
      * to validate the remote certificate (i.e. trust info).
      *
-     * \param name An optional expected server name for the remote end point
+     * ATTN: The method is going to be deprecated
+     *
+     * \param name The expected server name for the remote end point
      */
     /// @{
-    ::seastar::socket socket(shared_ptr<certificate_credentials>, sstring name = {});
+    [[deprecated("Use overload with tls_options parameter")]]
+    ::seastar::socket socket(shared_ptr<certificate_credentials>, sstring name);
     /// @}
 
-    /** Wraps an existing connection in SSL/TLS. */
+    /**
+     * Creates a socket through which a TLS client connection can be created,
+     * using the default network stack and the supplied credentials.
+     * Typically these should contain enough information
+     * to validate the remote certificate (i.e. trust info).
+     *
+     * \param options Optional additional session configuration
+     */
     /// @{
-    future<connected_socket> wrap_client(shared_ptr<certificate_credentials>, connected_socket&&, sstring name = {});
+    ::seastar::socket socket(shared_ptr<certificate_credentials>, tls_options options = {});
+    /// @}
+
+    /**
+     * Wraps an existing connection in SSL/TLS.
+     *
+     * ATTN: The method is going to be deprecated
+     *
+     * \param name The expected server name for the remote end point
+     */
+    /// @{
+    [[deprecated("Use overload with tls_options parameter")]]
+    future<connected_socket> wrap_client(shared_ptr<certificate_credentials>, connected_socket&&, sstring name);
     future<connected_socket> wrap_server(shared_ptr<server_credentials>, connected_socket&&);
+    /// @}
+
+    /**
+     * Wraps an existing connection in SSL/TLS.
+     *
+     * \param options Optional additional session configuration
+     */
+    /// @{
+    future<connected_socket> wrap_client(shared_ptr<certificate_credentials>, connected_socket&&, tls_options options = {});
     /// @}
 
     /**
@@ -354,6 +419,80 @@ namespace tls {
      * system_error exception will be thrown.
      */
     future<std::optional<session_dn>> get_dn_information(connected_socket& socket);
-}
-}
 
+    /**
+     * Subject alt name types. 
+    */
+    enum class subject_alt_name_type {
+        dnsname = 1, // string value representing a 'DNS' entry
+        rfc822name, // string value representing an 'email' entry 
+        uri, // string value representing an 'uri' entry
+        ipaddress, // inet_address value representing an 'IP' entry
+        othername, // string value 
+        dn, // string value 
+    };
+
+    // Subject alt name entry
+    struct subject_alt_name {
+        using value_type = std::variant<
+            sstring,
+            net::inet_address
+        >;
+        subject_alt_name_type type;
+        value_type value;
+    };
+
+    /**
+     * Returns the alt name entries of matching types, or all entries if 'types' is empty
+     * The values are extracted from the client authentication certificate, if available.
+     * If no certificate authentication is used in the connection, en empty list is returned.
+     * 
+     * If the socket is not connected a system_error exception will be thrown.
+     * If the socket is not a TLS socket an exception will be thrown.
+    */
+    future<std::vector<subject_alt_name>> get_alt_name_information(connected_socket& socket, std::unordered_set<subject_alt_name_type> types = {});
+
+    std::ostream& operator<<(std::ostream&, const subject_alt_name::value_type&);
+    std::ostream& operator<<(std::ostream&, const subject_alt_name&);
+
+    /**
+     * Alt name to string. 
+     * Note: because naming of alternative names is inconsistent between tools,
+     * and because openssl is probably more popular when creating certs anyway,
+     * this routine will be inconsistent with both gnutls and openssl (though more
+     * in line with the latter) and name the constants as follows:
+     * 
+     * dnsname: "DNS"
+     * rfc822name: "EMAIL"
+     * uri: "URI"
+     * ipaddress "IP"
+     * othername: "OTHERNAME"
+     * dn: "DIRNAME"
+    */
+    std::string_view format_as(subject_alt_name_type);
+    std::ostream& operator<<(std::ostream&, subject_alt_name_type);
+
+    /**
+     * Error handling.
+     * 
+     * The error_category instance used by exceptions thrown by TLS
+     */
+    const std::error_category& error_category();
+
+    /**
+     * The more common error codes encountered in TLS.
+     * Not an exhaustive list. Add exports as needed.
+     */
+    extern const int ERROR_UNKNOWN_COMPRESSION_ALGORITHM;
+    extern const int ERROR_UNKNOWN_CIPHER_TYPE;
+    extern const int ERROR_INVALID_SESSION;
+    extern const int ERROR_UNEXPECTED_HANDSHAKE_PACKET;
+    extern const int ERROR_UNKNOWN_CIPHER_SUITE;
+    extern const int ERROR_UNKNOWN_ALGORITHM;
+    extern const int ERROR_UNSUPPORTED_SIGNATURE_ALGORITHM;
+    extern const int ERROR_SAFE_RENEGOTIATION_FAILED;
+    extern const int ERROR_UNSAFE_RENEGOTIATION_DENIED;
+    extern const int ERROR_UNKNOWN_SRP_USERNAME;
+    extern const int ERROR_PREMATURE_TERMINATION;
+}
+}

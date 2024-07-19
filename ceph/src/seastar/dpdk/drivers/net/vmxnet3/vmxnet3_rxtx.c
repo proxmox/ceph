@@ -32,7 +32,7 @@
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_prefetch.h>
 #include <rte_ip.h>
 #include <rte_udp.h>
@@ -48,17 +48,14 @@
 #include "vmxnet3_logs.h"
 #include "vmxnet3_ethdev.h"
 
-#define	VMXNET3_TX_OFFLOAD_MASK	( \
-		PKT_TX_VLAN_PKT | \
-		PKT_TX_IPV6 |     \
-		PKT_TX_IPV4 |     \
-		PKT_TX_L4_MASK |  \
-		PKT_TX_TCP_SEG)
+#define	VMXNET3_TX_OFFLOAD_MASK	(RTE_MBUF_F_TX_VLAN | \
+		RTE_MBUF_F_TX_IPV6 |     \
+		RTE_MBUF_F_TX_IPV4 |     \
+		RTE_MBUF_F_TX_L4_MASK |  \
+		RTE_MBUF_F_TX_TCP_SEG)
 
 #define	VMXNET3_TX_OFFLOAD_NOTSUP_MASK	\
-	(PKT_TX_OFFLOAD_MASK ^ VMXNET3_TX_OFFLOAD_MASK)
-
-static const uint32_t rxprod_reg[2] = {VMXNET3_REG_RXPROD, VMXNET3_REG_RXPROD2};
+	(RTE_MBUF_F_TX_OFFLOAD_MASK ^ VMXNET3_TX_OFFLOAD_MASK)
 
 static int vmxnet3_post_rx_bufs(vmxnet3_rx_queue_t*, uint8_t);
 static void vmxnet3_tq_tx_complete(vmxnet3_tx_queue_t *);
@@ -165,9 +162,9 @@ vmxnet3_cmd_ring_release(vmxnet3_cmd_ring_t *ring)
 }
 
 void
-vmxnet3_dev_tx_queue_release(void *txq)
+vmxnet3_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
-	vmxnet3_tx_queue_t *tq = txq;
+	vmxnet3_tx_queue_t *tq = dev->data->tx_queues[qid];
 
 	if (tq != NULL) {
 		/* Release mbufs */
@@ -182,10 +179,10 @@ vmxnet3_dev_tx_queue_release(void *txq)
 }
 
 void
-vmxnet3_dev_rx_queue_release(void *rxq)
+vmxnet3_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 {
 	int i;
-	vmxnet3_rx_queue_t *rq = rxq;
+	vmxnet3_rx_queue_t *rq = dev->data->rx_queues[qid];
 
 	if (rq != NULL) {
 		/* Release mbufs */
@@ -341,6 +338,9 @@ vmxnet3_tq_tx_complete(vmxnet3_tx_queue_t *txq)
 	}
 
 	PMD_TX_LOG(DEBUG, "Processed %d tx comps & command descs.", completed);
+
+	/* To avoid compiler warnings when not in DEBUG mode. */
+	RTE_SET_USED(completed);
 }
 
 uint16_t
@@ -359,30 +359,38 @@ vmxnet3_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		/* Non-TSO packet cannot occupy more than
 		 * VMXNET3_MAX_TXD_PER_PKT TX descriptors.
 		 */
-		if ((ol_flags & PKT_TX_TCP_SEG) == 0 &&
+		if ((ol_flags & RTE_MBUF_F_TX_TCP_SEG) == 0 &&
 				m->nb_segs > VMXNET3_MAX_TXD_PER_PKT) {
-			rte_errno = -EINVAL;
+			rte_errno = EINVAL;
+			return i;
+		}
+		/* TSO packet cannot occupy more than
+		 * VMXNET3_MAX_TSO_TXD_PER_PKT TX descriptors.
+		 */
+		if ((ol_flags & RTE_MBUF_F_TX_TCP_SEG) != 0 &&
+				m->nb_segs > VMXNET3_MAX_TSO_TXD_PER_PKT) {
+			rte_errno = EINVAL;
 			return i;
 		}
 
 		/* check that only supported TX offloads are requested. */
 		if ((ol_flags & VMXNET3_TX_OFFLOAD_NOTSUP_MASK) != 0 ||
-				(ol_flags & PKT_TX_L4_MASK) ==
-				PKT_TX_SCTP_CKSUM) {
-			rte_errno = -ENOTSUP;
+				(ol_flags & RTE_MBUF_F_TX_L4_MASK) ==
+				RTE_MBUF_F_TX_SCTP_CKSUM) {
+			rte_errno = ENOTSUP;
 			return i;
 		}
 
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 #endif
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 	}
@@ -410,13 +418,13 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	nb_tx = 0;
 	while (nb_tx < nb_pkts) {
-		Vmxnet3_GenericDesc *gdesc;
-		vmxnet3_buf_info_t *tbi;
+		Vmxnet3_GenericDesc *gdesc = NULL;
+		vmxnet3_buf_info_t *tbi = NULL;
 		uint32_t first2fill, avail, dw2;
 		struct rte_mbuf *txm = tx_pkts[nb_tx];
 		struct rte_mbuf *m_seg = txm;
 		int copy_size = 0;
-		bool tso = (txm->ol_flags & PKT_TX_TCP_SEG) != 0;
+		bool tso = (txm->ol_flags & RTE_MBUF_F_TX_TCP_SEG) != 0;
 		/* # of descriptors needed for a packet. */
 		unsigned count = txm->nb_segs;
 
@@ -444,11 +452,21 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			continue;
 		}
 
-		/* Drop non-TSO packet that is excessively fragmented */
-		if (unlikely(!tso && count > VMXNET3_MAX_TXD_PER_PKT)) {
-			PMD_TX_LOG(ERR, "Non-TSO packet cannot occupy more than %d tx "
-				   "descriptors. Packet dropped.", VMXNET3_MAX_TXD_PER_PKT);
+		/* Drop non-TSO or TSO packet that is excessively fragmented */
+		if (unlikely((!tso && count > VMXNET3_MAX_TXD_PER_PKT) ||
+			     (tso && count > VMXNET3_MAX_TSO_TXD_PER_PKT))) {
+			PMD_TX_LOG(ERR, "Non-TSO or TSO packet cannot occupy more than "
+				   "%d or %d tx descriptors respectively. Packet dropped.",
+				   VMXNET3_MAX_TXD_PER_PKT, VMXNET3_MAX_TSO_TXD_PER_PKT);
 			txq->stats.drop_too_many_segs++;
+			txq->stats.drop_total++;
+			rte_pktmbuf_free(txm);
+			nb_tx++;
+			continue;
+		}
+
+		/* Skip empty packets */
+		if (unlikely(rte_pktmbuf_pkt_len(txm) == 0)) {
 			txq->stats.drop_total++;
 			rte_pktmbuf_free(txm);
 			nb_tx++;
@@ -458,14 +476,6 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		if (txm->nb_segs == 1 &&
 		    rte_pktmbuf_pkt_len(txm) <= txq->txdata_desc_size) {
 			struct Vmxnet3_TxDataDesc *tdd;
-
-			/* Skip empty packets */
-			if (unlikely(rte_pktmbuf_pkt_len(txm) == 0)) {
-				txq->stats.drop_total++;
-				rte_pktmbuf_free(txm);
-				nb_tx++;
-				continue;
-			}
 
 			tdd = (struct Vmxnet3_TxDataDesc *)
 				((uint8 *)txq->data_ring.base +
@@ -479,6 +489,10 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		dw2 = (txq->cmd_ring.gen ^ 0x1) << VMXNET3_TXD_GEN_SHIFT;
 		first2fill = txq->cmd_ring.next2fill;
 		do {
+			/* Skip empty segments */
+			if (unlikely(m_seg->data_len == 0))
+				continue;
+
 			/* Remember the transmit buffer for cleanup */
 			tbi = txq->cmd_ring.buf_info + txq->cmd_ring.next2fill;
 
@@ -487,10 +501,6 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 * maximum size of mbuf segment size.
 			 */
 			gdesc = txq->cmd_ring.base + txq->cmd_ring.next2fill;
-
-			/* Skip empty segments */
-			if (unlikely(m_seg->data_len == 0))
-				continue;
 
 			if (copy_size) {
 				uint64 offset =
@@ -512,6 +522,11 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			/* use the right gen for non-SOP desc */
 			dw2 = txq->cmd_ring.gen << VMXNET3_TXD_GEN_SHIFT;
 		} while ((m_seg = m_seg->next) != NULL);
+		/* We must have executed the complete preceding loop at least
+		 * once without skipping an empty segment, as we can't have
+		 * a packet with only empty segments.
+		 * Thus, tbi and gdesc have been initialized.
+		 */
 
 		/* set the last buf_info for the pkt */
 		tbi->m = txm;
@@ -520,7 +535,7 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 		/* Add VLAN tag if present */
 		gdesc = txq->cmd_ring.base + first2fill;
-		if (txm->ol_flags & PKT_TX_VLAN_PKT) {
+		if (txm->ol_flags & RTE_MBUF_F_TX_VLAN) {
 			gdesc->txd.ti = 1;
 			gdesc->txd.tci = txm->vlan_tci;
 		}
@@ -535,20 +550,23 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			gdesc->txd.msscof = mss;
 
 			deferred += (rte_pktmbuf_pkt_len(txm) - gdesc->txd.hlen + mss - 1) / mss;
-		} else if (txm->ol_flags & PKT_TX_L4_MASK) {
+		} else if (txm->ol_flags & RTE_MBUF_F_TX_L4_MASK) {
 			gdesc->txd.om = VMXNET3_OM_CSUM;
 			gdesc->txd.hlen = txm->l2_len + txm->l3_len;
 
-			switch (txm->ol_flags & PKT_TX_L4_MASK) {
-			case PKT_TX_TCP_CKSUM:
-				gdesc->txd.msscof = gdesc->txd.hlen + offsetof(struct tcp_hdr, cksum);
+			switch (txm->ol_flags & RTE_MBUF_F_TX_L4_MASK) {
+			case RTE_MBUF_F_TX_TCP_CKSUM:
+				gdesc->txd.msscof = gdesc->txd.hlen +
+					offsetof(struct rte_tcp_hdr, cksum);
 				break;
-			case PKT_TX_UDP_CKSUM:
-				gdesc->txd.msscof = gdesc->txd.hlen + offsetof(struct udp_hdr, dgram_cksum);
+			case RTE_MBUF_F_TX_UDP_CKSUM:
+				gdesc->txd.msscof = gdesc->txd.hlen +
+					offsetof(struct rte_udp_hdr,
+						dgram_cksum);
 				break;
 			default:
 				PMD_TX_LOG(WARNING, "requested cksum offload not supported %#llx",
-					   txm->ol_flags & PKT_TX_L4_MASK);
+					   txm->ol_flags & RTE_MBUF_F_TX_L4_MASK);
 				abort();
 			}
 			deferred++;
@@ -572,7 +590,7 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	if (deferred >= rte_le_to_cpu_32(txq_ctrl->txThreshold)) {
 		txq_ctrl->txNumDeferred = 0;
 		/* Notify vSwitch that packets are available. */
-		VMXNET3_WRITE_BAR0_REG(hw, (VMXNET3_REG_TXPROD + txq->queue_id * VMXNET3_REG_ALIGN),
+		VMXNET3_WRITE_BAR0_REG(hw, (hw->tx_prod_offset + txq->queue_id * VMXNET3_REG_ALIGN),
 				       txq->cmd_ring.next2fill);
 	}
 
@@ -667,32 +685,32 @@ vmxnet3_guess_mss(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 		struct rte_mbuf *rxm)
 {
 	uint32_t hlen, slen;
-	struct ipv4_hdr *ipv4_hdr;
-	struct ipv6_hdr *ipv6_hdr;
-	struct tcp_hdr *tcp_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	struct rte_tcp_hdr *tcp_hdr;
 	char *ptr;
+	uint8_t segs;
 
 	RTE_ASSERT(rcd->tcp);
 
 	ptr = rte_pktmbuf_mtod(rxm, char *);
 	slen = rte_pktmbuf_data_len(rxm);
-	hlen = sizeof(struct ether_hdr);
+	hlen = sizeof(struct rte_ether_hdr);
 
 	if (rcd->v4) {
-		if (unlikely(slen < hlen + sizeof(struct ipv4_hdr)))
-			return hw->mtu - sizeof(struct ipv4_hdr)
-					- sizeof(struct tcp_hdr);
+		if (unlikely(slen < hlen + sizeof(struct rte_ipv4_hdr)))
+			return hw->mtu - sizeof(struct rte_ipv4_hdr)
+					- sizeof(struct rte_tcp_hdr);
 
-		ipv4_hdr = (struct ipv4_hdr *)(ptr + hlen);
-		hlen += (ipv4_hdr->version_ihl & IPV4_HDR_IHL_MASK) *
-				IPV4_IHL_MULTIPLIER;
+		ipv4_hdr = (struct rte_ipv4_hdr *)(ptr + hlen);
+		hlen += rte_ipv4_hdr_len(ipv4_hdr);
 	} else if (rcd->v6) {
-		if (unlikely(slen < hlen + sizeof(struct ipv6_hdr)))
-			return hw->mtu - sizeof(struct ipv6_hdr) -
-					sizeof(struct tcp_hdr);
+		if (unlikely(slen < hlen + sizeof(struct rte_ipv6_hdr)))
+			return hw->mtu - sizeof(struct rte_ipv6_hdr) -
+					sizeof(struct rte_tcp_hdr);
 
-		ipv6_hdr = (struct ipv6_hdr *)(ptr + hlen);
-		hlen += sizeof(struct ipv6_hdr);
+		ipv6_hdr = (struct rte_ipv6_hdr *)(ptr + hlen);
+		hlen += sizeof(struct rte_ipv6_hdr);
 		if (unlikely(ipv6_hdr->proto != IPPROTO_TCP)) {
 			int frag;
 
@@ -701,18 +719,18 @@ vmxnet3_guess_mss(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 		}
 	}
 
-	if (unlikely(slen < hlen + sizeof(struct tcp_hdr)))
-		return hw->mtu - hlen - sizeof(struct tcp_hdr) +
-				sizeof(struct ether_hdr);
+	if (unlikely(slen < hlen + sizeof(struct rte_tcp_hdr)))
+		return hw->mtu - hlen - sizeof(struct rte_tcp_hdr) +
+				sizeof(struct rte_ether_hdr);
 
-	tcp_hdr = (struct tcp_hdr *)(ptr + hlen);
+	tcp_hdr = (struct rte_tcp_hdr *)(ptr + hlen);
 	hlen += (tcp_hdr->data_off & 0xf0) >> 2;
 
-	if (rxm->udata64 > 1)
-		return (rte_pktmbuf_pkt_len(rxm) - hlen +
-				rxm->udata64 - 1) / rxm->udata64;
+	segs = *vmxnet3_segs_dynfield(rxm);
+	if (segs > 1)
+		return (rte_pktmbuf_pkt_len(rxm) - hlen + segs - 1) / segs;
 	else
-		return hw->mtu - hlen + sizeof(struct ether_hdr);
+		return hw->mtu - hlen + sizeof(struct rte_ether_hdr);
 }
 
 /* Receive side checksum and other offloads */
@@ -735,36 +753,53 @@ vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 					(const Vmxnet3_RxCompDescExt *)rcd;
 
 			rxm->tso_segsz = rcde->mss;
-			rxm->udata64 = rcde->segCnt;
-			ol_flags |= PKT_RX_LRO;
+			*vmxnet3_segs_dynfield(rxm) = rcde->segCnt;
+			ol_flags |= RTE_MBUF_F_RX_LRO;
 		}
 	} else { /* Offloads set in eop */
 		/* Check for RSS */
 		if (rcd->rssType != VMXNET3_RCD_RSS_TYPE_NONE) {
-			ol_flags |= PKT_RX_RSS_HASH;
+			ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 			rxm->hash.rss = rcd->rssHash;
 		}
 
 		/* Check for hardware stripped VLAN tag */
 		if (rcd->ts) {
-			ol_flags |= (PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED);
+			ol_flags |= (RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED);
 			rxm->vlan_tci = rte_le_to_cpu_16((uint16_t)rcd->tci);
 		}
 
 		/* Check packet type, checksum errors, etc. */
 		if (rcd->cnc) {
-			ol_flags |= PKT_RX_L4_CKSUM_UNKNOWN;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
+
+			if (rcd->v4) {
+				packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
+				if (rcd->tcp)
+					packet_type |= RTE_PTYPE_L4_TCP;
+				else if (rcd->udp)
+					packet_type |= RTE_PTYPE_L4_UDP;
+			} else if (rcd->v6) {
+				packet_type |= RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
+				if (rcd->tcp)
+					packet_type |= RTE_PTYPE_L4_TCP;
+				else if (rcd->udp)
+					packet_type |= RTE_PTYPE_L4_UDP;
+			} else {
+				packet_type |= RTE_PTYPE_UNKNOWN;
+			}
+
 		} else {
 			if (rcd->v4) {
 				packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
 
 				if (rcd->ipc)
-					ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+					ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 				else
-					ol_flags |= PKT_RX_IP_CKSUM_BAD;
+					ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 
 				if (rcd->tuc) {
-					ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+					ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 					if (rcd->tcp)
 						packet_type |= RTE_PTYPE_L4_TCP;
 					else
@@ -772,17 +807,17 @@ vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 				} else {
 					if (rcd->tcp) {
 						packet_type |= RTE_PTYPE_L4_TCP;
-						ol_flags |= PKT_RX_L4_CKSUM_BAD;
+						ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 					} else if (rcd->udp) {
 						packet_type |= RTE_PTYPE_L4_UDP;
-						ol_flags |= PKT_RX_L4_CKSUM_BAD;
+						ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 					}
 				}
 			} else if (rcd->v6) {
 				packet_type |= RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
 
 				if (rcd->tuc) {
-					ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+					ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 					if (rcd->tcp)
 						packet_type |= RTE_PTYPE_L4_TCP;
 					else
@@ -790,10 +825,10 @@ vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 				} else {
 					if (rcd->tcp) {
 						packet_type |= RTE_PTYPE_L4_TCP;
-						ol_flags |= PKT_RX_L4_CKSUM_BAD;
+						ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 					} else if (rcd->udp) {
 						packet_type |= RTE_PTYPE_L4_UDP;
-						ol_flags |= PKT_RX_L4_CKSUM_BAD;
+						ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 					}
 				}
 			} else {
@@ -801,7 +836,7 @@ vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
 			}
 
 			/* Old variants of vmxnet3 do not provide MSS */
-			if ((ol_flags & PKT_RX_LRO) && rxm->tso_segsz == 0)
+			if ((ol_flags & RTE_MBUF_F_RX_LRO) && rxm->tso_segsz == 0)
 				rxm->tso_segsz = vmxnet3_guess_mss(hw,
 						rcd, rxm);
 		}
@@ -947,13 +982,17 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 			RTE_ASSERT(rxd->btype == VMXNET3_RXD_BTYPE_BODY);
 
-			if (rxm->data_len) {
+			if (likely(start && rxm->data_len > 0)) {
 				start->pkt_len += rxm->data_len;
 				start->nb_segs++;
 
 				rxq->last_seg->next = rxm;
 				rxq->last_seg = rxm;
 			} else {
+				PMD_RX_LOG(ERR, "Error received empty or out of order frame.");
+				rxq->stats.drop_total++;
+				rxq->stats.drop_err++;
+
 				rte_pktmbuf_free_seg(rxm);
 			}
 		}
@@ -973,8 +1012,10 @@ rcd_done:
 
 		/* It's time to renew descriptors */
 		vmxnet3_renew_desc(rxq, ring_idx, newm);
-		if (unlikely(rxq->shared->ctrl.updateRxProd)) {
-			VMXNET3_WRITE_BAR0_REG(hw, rxprod_reg[ring_idx] + (rxq->queue_id * VMXNET3_REG_ALIGN),
+		if (unlikely(rxq->shared->ctrl.updateRxProd &&
+			 (rxq->cmd_ring[ring_idx].next2fill & 0xf) == 0)) {
+			VMXNET3_WRITE_BAR0_REG(hw, hw->rx_prod_offset[ring_idx] +
+					       (rxq->queue_id * VMXNET3_REG_ALIGN),
 					       rxq->cmd_ring[ring_idx].next2fill);
 		}
 
@@ -992,22 +1033,56 @@ rcd_done:
 
 	if (unlikely(nb_rxd == 0)) {
 		uint32_t avail;
+		uint32_t posted = 0;
 		for (ring_idx = 0; ring_idx < VMXNET3_RX_CMDRING_SIZE; ring_idx++) {
 			avail = vmxnet3_cmd_ring_desc_avail(&rxq->cmd_ring[ring_idx]);
 			if (unlikely(avail > 0)) {
 				/* try to alloc new buf and renew descriptors */
-				vmxnet3_post_rx_bufs(rxq, ring_idx);
+				if (vmxnet3_post_rx_bufs(rxq, ring_idx) > 0)
+					posted |= (1 << ring_idx);
 			}
 		}
 		if (unlikely(rxq->shared->ctrl.updateRxProd)) {
 			for (ring_idx = 0; ring_idx < VMXNET3_RX_CMDRING_SIZE; ring_idx++) {
-				VMXNET3_WRITE_BAR0_REG(hw, rxprod_reg[ring_idx] + (rxq->queue_id * VMXNET3_REG_ALIGN),
-						       rxq->cmd_ring[ring_idx].next2fill);
+				if (posted & (1 << ring_idx))
+					VMXNET3_WRITE_BAR0_REG(hw, hw->rx_prod_offset[ring_idx] +
+							       (rxq->queue_id * VMXNET3_REG_ALIGN),
+							       rxq->cmd_ring[ring_idx].next2fill);
 			}
 		}
 	}
 
 	return nb_rx;
+}
+
+uint32_t
+vmxnet3_dev_rx_queue_count(void *rx_queue)
+{
+	const vmxnet3_rx_queue_t *rxq;
+	const Vmxnet3_RxCompDesc *rcd;
+	uint32_t idx, nb_rxd = 0;
+	uint8_t gen;
+
+	rxq = rx_queue;
+	if (unlikely(rxq->stopped)) {
+		PMD_RX_LOG(DEBUG, "Rx queue is stopped.");
+		return 0;
+	}
+
+	gen = rxq->comp_ring.gen;
+	idx = rxq->comp_ring.next2proc;
+	rcd = &rxq->comp_ring.base[idx].rcd;
+	while (rcd->gen == gen) {
+		if (rcd->eop)
+			++nb_rxd;
+		if (++idx == rxq->comp_ring.size) {
+			idx = 0;
+			gen ^= 1;
+		}
+		rcd = &rxq->comp_ring.base[idx].rcd;
+	}
+
+	return nb_rxd;
 }
 
 int
@@ -1057,6 +1132,8 @@ vmxnet3_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -EINVAL;
 	} else {
 		ring->size = nb_desc;
+		if (VMXNET3_VERSION_GE_7(hw))
+			ring->size = rte_align32prevpow2(nb_desc);
 		ring->size &= ~VMXNET3_RING_SIZE_MASK;
 	}
 	comp_ring->size = data_ring->size = ring->size;
@@ -1137,6 +1214,9 @@ vmxnet3_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	rxq->mp = mp;
+	/* Remember buffer size for initialization in dev start. */
+	hw->rxdata_buf_size =
+		rte_pktmbuf_data_room_size(mp) - RTE_PKTMBUF_HEADROOM;
 	rxq->queue_id = queue_idx;
 	rxq->port_id = dev->data->port_id;
 	rxq->shared = NULL; /* set in vmxnet3_setup_driver_shared() */
@@ -1161,6 +1241,8 @@ vmxnet3_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		return -EINVAL;
 	} else {
 		ring0->size = nb_desc;
+		if (VMXNET3_VERSION_GE_7(hw))
+			ring0->size = rte_align32prevpow2(nb_desc);
 		ring0->size &= ~VMXNET3_RING_SIZE_MASK;
 		ring1->size = ring0->size;
 	}
@@ -1255,18 +1337,26 @@ vmxnet3_dev_rxtx_init(struct rte_eth_dev *dev)
 		for (j = 0; j < VMXNET3_RX_CMDRING_SIZE; j++) {
 			/* Passing 0 as alloc_num will allocate full ring */
 			ret = vmxnet3_post_rx_bufs(rxq, j);
-			if (ret <= 0) {
+
+			/* Zero number of descriptors in the configuration of the RX queue */
+			if (ret == 0) {
 				PMD_INIT_LOG(ERR,
-					     "ERROR: Posting Rxq: %d buffers ring: %d",
-					     i, j);
-				return -ret;
+					"Invalid configuration in Rx queue: %d, buffers ring: %d\n",
+					i, j);
+				return -EINVAL;
+			}
+			/* Return the error number */
+			if (ret < 0) {
+				PMD_INIT_LOG(ERR, "Posting Rxq: %d buffers ring: %d", i, j);
+				return ret;
 			}
 			/*
 			 * Updating device with the index:next2fill to fill the
 			 * mbufs for coming packets.
 			 */
 			if (unlikely(rxq->shared->ctrl.updateRxProd)) {
-				VMXNET3_WRITE_BAR0_REG(hw, rxprod_reg[j] + (rxq->queue_id * VMXNET3_REG_ALIGN),
+				VMXNET3_WRITE_BAR0_REG(hw, hw->rx_prod_offset[j] +
+						       (rxq->queue_id * VMXNET3_REG_ALIGN),
 						       rxq->cmd_ring[j].next2fill);
 			}
 		}
@@ -1308,16 +1398,24 @@ vmxnet3_v4_rss_configure(struct rte_eth_dev *dev)
 
 	cmdInfo->setRSSFields = 0;
 	port_rss_conf = &dev->data->dev_conf.rx_adv_conf.rss_conf;
+
+	if ((port_rss_conf->rss_hf & VMXNET3_MANDATORY_V4_RSS) !=
+	    VMXNET3_MANDATORY_V4_RSS) {
+		PMD_INIT_LOG(WARNING, "RSS: IPv4/6 TCP is required for vmxnet3 v4 RSS,"
+			     "automatically setting it");
+		port_rss_conf->rss_hf |= VMXNET3_MANDATORY_V4_RSS;
+	}
+
 	rss_hf = port_rss_conf->rss_hf &
 		(VMXNET3_V4_RSS_MASK | VMXNET3_RSS_OFFLOAD_ALL);
 
-	if (rss_hf & ETH_RSS_NONFRAG_IPV4_TCP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_TCP)
 		cmdInfo->setRSSFields |= VMXNET3_RSS_FIELDS_TCPIP4;
-	if (rss_hf & ETH_RSS_NONFRAG_IPV6_TCP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV6_TCP)
 		cmdInfo->setRSSFields |= VMXNET3_RSS_FIELDS_TCPIP6;
-	if (rss_hf & ETH_RSS_NONFRAG_IPV4_UDP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_UDP)
 		cmdInfo->setRSSFields |= VMXNET3_RSS_FIELDS_UDPIP4;
-	if (rss_hf & ETH_RSS_NONFRAG_IPV6_UDP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV6_UDP)
 		cmdInfo->setRSSFields |= VMXNET3_RSS_FIELDS_UDPIP6;
 
 	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD,
@@ -1353,7 +1451,7 @@ vmxnet3_rss_configure(struct rte_eth_dev *dev)
 	/* loading hashKeySize */
 	dev_rss_conf->hashKeySize = VMXNET3_RSS_MAX_KEY_SIZE;
 	/* loading indTableSize: Must not exceed VMXNET3_RSS_MAX_IND_TABLE_SIZE (128)*/
-	dev_rss_conf->indTableSize = (uint16_t)(hw->num_rx_queues * 4);
+	dev_rss_conf->indTableSize = (uint16_t)((MAX_RX_QUEUES(hw)) * 4);
 
 	if (port_rss_conf->rss_key == NULL) {
 		/* Default hash key */
@@ -1374,13 +1472,13 @@ vmxnet3_rss_configure(struct rte_eth_dev *dev)
 	/* loading hashType */
 	dev_rss_conf->hashType = 0;
 	rss_hf = port_rss_conf->rss_hf & VMXNET3_RSS_OFFLOAD_ALL;
-	if (rss_hf & ETH_RSS_IPV4)
+	if (rss_hf & RTE_ETH_RSS_IPV4)
 		dev_rss_conf->hashType |= VMXNET3_RSS_HASH_TYPE_IPV4;
-	if (rss_hf & ETH_RSS_NONFRAG_IPV4_TCP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_TCP)
 		dev_rss_conf->hashType |= VMXNET3_RSS_HASH_TYPE_TCP_IPV4;
-	if (rss_hf & ETH_RSS_IPV6)
+	if (rss_hf & RTE_ETH_RSS_IPV6)
 		dev_rss_conf->hashType |= VMXNET3_RSS_HASH_TYPE_IPV6;
-	if (rss_hf & ETH_RSS_NONFRAG_IPV6_TCP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV6_TCP)
 		dev_rss_conf->hashType |= VMXNET3_RSS_HASH_TYPE_TCP_IPV6;
 
 	return VMXNET3_SUCCESS;

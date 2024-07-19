@@ -1,55 +1,86 @@
-..  BSD LICENSE
+..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2016 Canonical Limited. All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 dpdk-pmdinfo Application
 ========================
 
-The ``dpdk-pmdinfo`` tool is a Data Plane Development Kit (DPDK) utility that
-can dump a PMDs hardware support info.
+The ``dpdk-pmdinfo.py`` tool is a Data Plane Development Kit (DPDK) utility that
+can dump a PMDs hardware support info in the JSON format.
 
+Synopsis
+--------
 
-Running the Application
------------------------
+::
 
-The tool has a number of command line options:
+   dpdk-pmdinfo.py [-h] [-p] [-v] ELF_FILE [ELF_FILE ...]
+
+Arguments
+---------
+
+.. program:: dpdk-pmdinfo.py
+
+.. option:: -h, --help
+
+   Show the inline help.
+
+.. option:: -p, --search-plugins
+
+   In addition of ``ELF_FILE``\s and their linked dynamic libraries,
+   also scan the DPDK plugins path.
+
+.. option:: -v, --verbose
+
+   Display warnings due to linked libraries not found
+   or ELF/JSON parsing errors in these libraries.
+   Use twice to show debug messages.
+
+.. option:: ELF_FILE
+
+   DPDK application binary or dynamic library.
+   Any linked ``librte_*.so`` library (as reported by ``ldd``) will also be analyzed.
+   Can be specified multiple times.
+
+Environment Variables
+---------------------
+
+.. envvar:: LD_LIBRARY_PATH
+
+   If specified, the linked ``librte_*.so`` libraries will be looked up here first.
+
+Examples
+--------
+
+Get the complete info for a given driver:
 
 .. code-block:: console
 
-   dpdk-pmdinfo [-hrtp] [-d <pci id file] <elf-file>
+   $ dpdk-pmdinfo.py /usr/bin/dpdk-testpmd | \
+       jq '.[] | select(.name == "net_ice_dcf")'
+   {
+     "name": "net_ice_dcf",
+     "params": "cap=dcf",
+     "kmod": "* igb_uio | vfio-pci",
+     "pci_ids": [
+       {
+         "vendor": "8086",
+         "device": "1889"
+       }
+     ]
+   }
 
-   -h, --help            Show a short help message and exit
-   -r, --raw             Dump as raw json strings
-   -d FILE, --pcidb=FILE Specify a pci database to get vendor names from
-   -t, --table           Output information on hw support as a hex table
-   -p, --plugindir       Scan dpdk for autoload plugins
+Get only the required kernel modules for a given driver:
 
-.. Note::
+.. code-block:: console
 
-   * Parameters inside the square brackets represents optional parameters.
+   $ dpdk-pmdinfo.py /usr/bin/dpdk-testpmd | \
+       jq '.[] | select(.name == "net_cn10k").kmod'
+   "vfio-pci"
+
+Get only the required kernel modules for a given device:
+
+.. code-block:: console
+
+   $ dpdk-pmdinfo.py /usr/bin/dpdk-testpmd | \
+       jq '.[] | select(.pci_ids[] | .vendor == "15b3" and .device == "1013").kmod'
+   "* ib_uverbs & mlx5_core & mlx5_ib"

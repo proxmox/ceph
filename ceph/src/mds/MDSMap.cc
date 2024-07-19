@@ -52,6 +52,8 @@ CompatSet MDSMap::get_compat_set_all() {
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_NOANCHOR);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_FILE_LAYOUT_V2);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_SNAPREALM_V2);
+  feature_incompat.insert(MDS_FEATURE_INCOMPAT_MINORLOGSEGMENTS);
+  feature_incompat.insert(MDS_FEATURE_INCOMPAT_QUIESCE_SUBVOLUMES);
 
   return CompatSet(feature_compat, feature_ro_compat, feature_incompat);
 }
@@ -69,6 +71,8 @@ CompatSet MDSMap::get_compat_set_default() {
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_NOANCHOR);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_FILE_LAYOUT_V2);
   feature_incompat.insert(MDS_FEATURE_INCOMPAT_SNAPREALM_V2);
+  feature_incompat.insert(MDS_FEATURE_INCOMPAT_MINORLOGSEGMENTS);
+  feature_incompat.insert(MDS_FEATURE_INCOMPAT_QUIESCE_SUBVOLUMES);
 
   return CompatSet(feature_compat, feature_ro_compat, feature_incompat);
 }
@@ -226,6 +230,12 @@ void MDSMap::dump(Formatter *f) const
   f->dump_string("balancer", balancer);
   f->dump_string("bal_rank_mask", bal_rank_mask);
   f->dump_int("standby_count_wanted", std::max(0, standby_count_wanted));
+  f->dump_unsigned("qdb_leader", qdb_cluster_leader);
+  f->open_array_section("qdb_cluster");
+  for (auto m: qdb_cluster_members) {
+    f->dump_int("member", m);
+  }
+  f->close_section();
 }
 
 void MDSMap::dump_flags_state(Formatter *f) const
@@ -288,6 +298,7 @@ void MDSMap::print(ostream& out) const
   out << "balancer\t" << balancer << "\n";
   out << "bal_rank_mask\t" << bal_rank_mask << "\n";
   out << "standby_count_wanted\t" << std::max(0, standby_count_wanted) << "\n";
+  out << "qdb_cluster\tleader: " << qdb_cluster_leader << " members: " << qdb_cluster_members << std::endl;
 
   multimap< pair<mds_rank_t, unsigned>, mds_gid_t > foo;
   for (const auto &p : mds_info) {
@@ -771,7 +782,7 @@ void MDSMap::encode(bufferlist& bl, uint64_t features) const
   encode(data_pools, bl);
   encode(cas_pool, bl);
 
-  __u16 ev = 18;
+  __u16 ev = 19;
   encode(ev, bl);
   encode(compat, bl);
   encode(metadata_pool, bl);
@@ -800,6 +811,8 @@ void MDSMap::encode(bufferlist& bl, uint64_t features) const
   encode(required_client_features, bl);
   encode(bal_rank_mask, bl);
   encode(max_xattr_size, bl);
+  encode(qdb_cluster_leader, bl);
+  encode(qdb_cluster_members, bl);
   ENCODE_FINISH(bl);
 }
 
@@ -824,7 +837,6 @@ void MDSMap::decode(bufferlist::const_iterator& p)
 {
   std::map<mds_rank_t,int32_t> inc;  // Legacy field, parse and drop
 
-  cached_up_features = 0;
   DECODE_START_LEGACY_COMPAT_LEN_16(5, 4, 4, p);
   decode(epoch, p);
   decode(flags, p);
@@ -954,6 +966,11 @@ void MDSMap::decode(bufferlist::const_iterator& p)
 
   if (ev >= 18) {
     decode(max_xattr_size, p);
+  }
+
+  if (ev >= 19) {
+    decode(qdb_cluster_leader, p);
+    decode(qdb_cluster_members, p);
   }
 
   /* All MDS since at least v14.0.0 understand INLINE */
@@ -1109,24 +1126,20 @@ void MDSMap::get_up_mds_set(std::set<mds_rank_t>& s) const {
     s.insert(p->first);
 }
 
-uint64_t MDSMap::get_up_features() {
-  if (!cached_up_features) {
-    bool first = true;
-    for (std::map<mds_rank_t, mds_gid_t>::const_iterator p = up.begin();
-         p != up.end();
-         ++p) {
-      std::map<mds_gid_t, mds_info_t>::const_iterator q =
-        mds_info.find(p->second);
-      ceph_assert(q != mds_info.end());
-      if (first) {
-        cached_up_features = q->second.mds_features;
-        first = false;
-      } else {
-        cached_up_features &= q->second.mds_features;
-      }
+uint64_t MDSMap::get_up_features() const {
+  uint64_t features = 0;
+  bool first = true;
+  for ([[maybe_unused]] auto& [rank, gid] : up) {
+    auto it = mds_info.find(gid);
+    ceph_assert(it != mds_info.end());
+    if (first) {
+      features = it->second.mds_features;
+      first = false;
+    } else {
+      features &= it->second.mds_features;
     }
   }
-  return cached_up_features;
+  return features;
 }
 
 void MDSMap::get_recovery_mds_set(std::set<mds_rank_t>& s) const {

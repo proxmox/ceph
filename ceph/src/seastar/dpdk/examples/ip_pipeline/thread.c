@@ -32,7 +32,7 @@
 #endif
 
 /**
- * Master thead: data plane thread context
+ * Main thread: data plane thread context
  */
 struct thread {
 	struct rte_ring *msgq_req;
@@ -78,7 +78,7 @@ struct thread_data {
 static struct thread_data thread_data[RTE_MAX_LCORE];
 
 /**
- * Master thread: data plane thread init
+ * Main thread: data plane thread init
  */
 static void
 thread_free(void)
@@ -92,11 +92,9 @@ thread_free(void)
 			continue;
 
 		/* MSGQs */
-		if (t->msgq_req)
-			rte_ring_free(t->msgq_req);
+		rte_ring_free(t->msgq_req);
 
-		if (t->msgq_rsp)
-			rte_ring_free(t->msgq_rsp);
+		rte_ring_free(t->msgq_rsp);
 	}
 }
 
@@ -105,7 +103,7 @@ thread_init(void)
 {
 	uint32_t i;
 
-	RTE_LCORE_FOREACH_SLAVE(i) {
+	RTE_LCORE_FOREACH_WORKER(i) {
 		char name[NAME_MAX];
 		struct rte_ring *msgq_req, *msgq_rsp;
 		struct thread *t = &thread[i];
@@ -137,7 +135,7 @@ thread_init(void)
 			return -1;
 		}
 
-		/* Master thread records */
+		/* Main thread records */
 		t->msgq_req = msgq_req;
 		t->msgq_rsp = msgq_rsp;
 		t->enabled = 1;
@@ -179,7 +177,7 @@ pipeline_is_running(struct pipeline *p)
 }
 
 /**
- * Master thread & data plane threads: message passing
+ * Main thread & data plane threads: message passing
  */
 enum thread_req_type {
 	THREAD_REQ_PIPELINE_ENABLE = 0,
@@ -213,7 +211,7 @@ struct thread_msg_rsp {
 };
 
 /**
- * Master thread
+ * Main thread
  */
 static struct thread_msg_req *
 thread_msg_alloc(void)
@@ -325,8 +323,6 @@ thread_pipeline_enable(uint32_t thread_id,
 
 	/* Send request and wait for response */
 	rsp = thread_msg_send_recv(thread_id, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -412,8 +408,6 @@ thread_pipeline_disable(uint32_t thread_id,
 
 	/* Send request and wait for response */
 	rsp = thread_msg_send_recv(thread_id, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -436,7 +430,7 @@ thread_pipeline_disable(uint32_t thread_id,
 static inline struct thread_msg_req *
 thread_msg_recv(struct rte_ring *msgq_req)
 {
-	struct thread_msg_req *req;
+	struct thread_msg_req *req = NULL;
 
 	int status = rte_ring_sc_dequeue(msgq_req, (void **) &req);
 
@@ -560,7 +554,7 @@ thread_msg_handle(struct thread_data *t)
 }
 
 /**
- * Master thread & data plane threads: message passing
+ * Main thread & data plane threads: message passing
  */
 enum pipeline_req_type {
 	/* Port IN */
@@ -734,7 +728,7 @@ struct pipeline_msg_rsp {
 };
 
 /**
- * Master thread
+ * Main thread
  */
 static struct pipeline_msg_req *
 pipeline_msg_alloc(void)
@@ -815,8 +809,6 @@ pipeline_port_in_stats_read(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -863,8 +855,6 @@ pipeline_port_in_enable(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -909,8 +899,6 @@ pipeline_port_in_disable(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -963,8 +951,6 @@ pipeline_port_out_stats_read(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -1019,8 +1005,6 @@ pipeline_table_stats_read(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -1436,10 +1420,6 @@ pipeline_table_rule_add(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL) {
-		free(rule);
-		return -1;
-	}
 
 	/* Read response */
 	status = rsp->status;
@@ -1538,10 +1518,6 @@ pipeline_table_rule_add_default(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL) {
-		free(rule);
-		return -1;
-	}
 
 	/* Read response */
 	status = rsp->status;
@@ -1655,10 +1631,6 @@ pipeline_table_rule_add_bulk(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL) {
-		table_rule_list_free(list);
-		return -ENOMEM;
-	}
 
 	/* Read response */
 	status = rsp->status;
@@ -1733,8 +1705,6 @@ pipeline_table_rule_delete(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -1790,8 +1760,6 @@ pipeline_table_rule_delete_default(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -1857,8 +1825,6 @@ pipeline_table_rule_stats_read(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -1915,8 +1881,6 @@ pipeline_table_mtr_profile_add(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -1967,8 +1931,6 @@ pipeline_table_mtr_profile_delete(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -2037,8 +1999,6 @@ pipeline_table_rule_mtr_read(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -2096,8 +2056,6 @@ pipeline_table_dscp_table_update(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -2164,8 +2122,6 @@ pipeline_table_rule_ttl_read(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;
@@ -2229,8 +2185,6 @@ pipeline_table_rule_time_read(const char *pipeline_name,
 
 	/* Send request and wait for response */
 	rsp = pipeline_msg_send_recv(p, req);
-	if (rsp == NULL)
-		return -1;
 
 	/* Read response */
 	status = rsp->status;

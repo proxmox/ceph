@@ -27,6 +27,7 @@
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/queue.hh>
 #include <seastar/core/loop.hh>
+#include <seastar/core/sleep.hh>
 #include <seastar/core/do_with.hh>
 #include <seastar/net/stack.hh>
 #include <seastar/core/sharded.hh>
@@ -41,6 +42,7 @@ struct loopback_error_injector {
     virtual error client_rcv_error() { return error::none; }
     virtual error client_snd_error() { return error::none; }
     virtual error connect_error()    { return error::none; }
+    virtual std::chrono::microseconds connect_delay() { return std::chrono::microseconds(0); }
 };
 
 class loopback_buffer {
@@ -54,6 +56,7 @@ private:
     queue<temporary_buffer<char>> _q{1};
     loopback_error_injector* _error_injector;
     type _type;
+    promise<> _shutdown;
 public:
     loopback_buffer(loopback_error_injector* error_injection, type t) : _error_injector(error_injection), _type(t) {}
     future<> push(temporary_buffer<char>&& b) {
@@ -89,16 +92,27 @@ public:
         return _q.pop_eventually();
     }
     void shutdown() noexcept {
+        if (!_aborted) {
+            // it can be called by both -- reader and writer socket impls
+            _shutdown.set_value();
+        }
         _aborted = true;
         _q.abort(std::make_exception_ptr(std::system_error(EPIPE, std::system_category())));
+    }
+
+    future<> wait_input_shutdown() {
+        return _shutdown.get_future();
     }
 };
 
 class loopback_data_sink_impl : public data_sink_impl {
     lw_shared_ptr<foreign_ptr<lw_shared_ptr<loopback_buffer>>> _buffer;
+    noncopyable_function<void()> _batch_flush_error;
 public:
-    explicit loopback_data_sink_impl(lw_shared_ptr<foreign_ptr<lw_shared_ptr<loopback_buffer>>> buffer)
-            : _buffer(buffer) {
+    explicit loopback_data_sink_impl(lw_shared_ptr<foreign_ptr<lw_shared_ptr<loopback_buffer>>> buffer, noncopyable_function<void()> flush_error)
+            : _buffer(buffer)
+            , _batch_flush_error(std::move(flush_error))
+    {
     }
     future<> put(net::packet data) override {
         return do_with(data.release(), [this] (std::vector<temporary_buffer<char>>& bufs) {
@@ -118,6 +132,9 @@ public:
             });
         });
     }
+
+    bool can_batch_flushes() const noexcept override { return true; }
+    void on_batch_flush_error() noexcept override { _batch_flush_error(); }
 };
 
 class loopback_data_source_impl : public data_source_impl {
@@ -131,9 +148,9 @@ public:
         return _buffer->pop().then_wrapped([this] (future<temporary_buffer<char>>&& b) {
             _eof = b.failed();
             if (!_eof) {
-                // future::get0() is destructive, so we have to play these games
-                // FIXME: make future::get0() non-destructive
-                auto&& tmp = b.get0();
+                // future::get() is destructive, so we have to play these games
+                // FIXME: make future::get() non-destructive
+                auto&& tmp = b.get();
                 _eof = tmp.empty();
                 b = make_ready_future<temporary_buffer<char>>(std::move(tmp));
             }
@@ -160,7 +177,7 @@ public:
         return data_source(std::make_unique<loopback_data_source_impl>(_rx));
     }
     data_sink sink() override {
-        return data_sink(std::make_unique<loopback_data_sink_impl>(_tx));
+        return data_sink(std::make_unique<loopback_data_sink_impl>(_tx, [this] { shutdown_input(); }));
     }
     void shutdown_input() override {
         _rx->shutdown();
@@ -193,9 +210,12 @@ public:
         // dummy
         return {};
     }
+    socket_address remote_address() const noexcept override {
+        // dummy
+        return {};
+    }
     future<> wait_input_shutdown() override {
-        abort(); // No tests use this
-        return make_ready_future<>();
+        return _rx->wait_input_shutdown();
     }
 };
 
@@ -291,7 +311,15 @@ public:
                 return make_foreign(b2);
             });
         }).then([this] (foreign_ptr<lw_shared_ptr<loopback_buffer>> b2) {
-            return _factory.make_new_client_connection(_b1, std::move(b2));
+            if (_error_injector) {
+                auto delay = _error_injector->connect_delay();
+                if (delay != std::chrono::microseconds(0)) {
+                    return seastar::sleep(delay).then([this, b2 = std::move(b2)] () mutable {
+                        return _factory.make_new_client_connection(_b1, std::move(b2));
+                    });
+                }
+            }
+            return make_ready_future<connected_socket>(_factory.make_new_client_connection(_b1, std::move(b2)));
         });
     }
     virtual void set_reuseaddr(bool reuseaddr) override {}

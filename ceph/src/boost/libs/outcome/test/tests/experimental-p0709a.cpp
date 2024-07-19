@@ -1,5 +1,5 @@
 /* Unit testing for outcomes
-(C) 2017-2022 Niall Douglas <http://www.nedproductions.biz/> (7 commits)
+(C) 2017-2023 Niall Douglas <http://www.nedproductions.biz/> (7 commits)
 
 
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -62,6 +62,12 @@ public:
   {
     static string_ref v("arithmetic error domain");
     return v;  // NOLINT
+  }
+
+  virtual payload_info_t payload_info() const noexcept override
+  {
+    return {sizeof(value_type), sizeof(status_code_domain *) + sizeof(value_type),
+            (alignof(value_type) > alignof(status_code_domain *)) ? alignof(value_type) : alignof(status_code_domain *)};
   }
 
 protected:

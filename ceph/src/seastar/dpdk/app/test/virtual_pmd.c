@@ -4,9 +4,9 @@
 
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_memory.h>
@@ -48,23 +48,27 @@ virtual_ethdev_start_fail(struct rte_eth_dev *eth_dev __rte_unused)
 
 	return -1;
 }
-static void  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
+static int  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
 {
 	void *pkt = NULL;
 	struct virtual_ethdev_private *prv = eth_dev->data->dev_private;
 
-	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	eth_dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 	eth_dev->data->dev_started = 0;
 	while (rte_ring_dequeue(prv->rx_queue, &pkt) != -ENOENT)
 		rte_pktmbuf_free(pkt);
 
 	while (rte_ring_dequeue(prv->tx_queue, &pkt) != -ENOENT)
 		rte_pktmbuf_free(pkt);
+
+	return 0;
 }
 
-static void
+static int
 virtual_ethdev_close(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
 static int
 virtual_ethdev_configure_success(struct rte_eth_dev *dev __rte_unused)
@@ -78,7 +82,7 @@ virtual_ethdev_configure_fail(struct rte_eth_dev *dev __rte_unused)
 	return -1;
 }
 
-static void
+static int
 virtual_ethdev_info_get(struct rte_eth_dev *dev __rte_unused,
 		struct rte_eth_dev_info *dev_info)
 {
@@ -91,6 +95,8 @@ virtual_ethdev_info_get(struct rte_eth_dev *dev __rte_unused,
 	dev_info->max_tx_queues = (uint16_t)512;
 
 	dev_info->min_rx_bufsize = 0;
+
+	return 0;
 }
 
 static int
@@ -157,22 +163,12 @@ virtual_ethdev_tx_queue_setup_fail(struct rte_eth_dev *dev __rte_unused,
 	return -1;
 }
 
-static void
-virtual_ethdev_rx_queue_release(void *q __rte_unused)
-{
-}
-
-static void
-virtual_ethdev_tx_queue_release(void *q __rte_unused)
-{
-}
-
 static int
 virtual_ethdev_link_update_success(struct rte_eth_dev *bonded_eth_dev,
 		int wait_to_complete __rte_unused)
 {
 	if (!bonded_eth_dev->data->dev_started)
-		bonded_eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
+		bonded_eth_dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 
 	return 0;
 }
@@ -195,7 +191,7 @@ virtual_ethdev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	return 0;
 }
 
-static void
+static int
 virtual_ethdev_stats_reset(struct rte_eth_dev *dev)
 {
 	struct virtual_ethdev_private *dev_private = dev->data->dev_private;
@@ -206,19 +202,25 @@ virtual_ethdev_stats_reset(struct rte_eth_dev *dev)
 
 	/* Reset internal statistics */
 	memset(&dev_private->eth_stats, 0, sizeof(dev_private->eth_stats));
+
+	return 0;
 }
 
-static void
+static int
 virtual_ethdev_promiscuous_mode_enable(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
-static void
+static int
 virtual_ethdev_promiscuous_mode_disable(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
 static int
 virtual_ethdev_mac_address_set(__rte_unused struct rte_eth_dev *dev,
-			       __rte_unused struct ether_addr *addr)
+			       __rte_unused struct rte_ether_addr *addr)
 {
 	return 0;
 }
@@ -231,8 +233,6 @@ static const struct eth_dev_ops virtual_ethdev_default_dev_ops = {
 	.dev_infos_get = virtual_ethdev_info_get,
 	.rx_queue_setup = virtual_ethdev_rx_queue_setup_success,
 	.tx_queue_setup = virtual_ethdev_tx_queue_setup_success,
-	.rx_queue_release = virtual_ethdev_rx_queue_release,
-	.tx_queue_release = virtual_ethdev_tx_queue_release,
 	.link_update = virtual_ethdev_link_update_success,
 	.mac_addr_set = virtual_ethdev_mac_address_set,
 	.stats_get = virtual_ethdev_stats_get,
@@ -397,8 +397,7 @@ virtual_ethdev_tx_burst_fail(void *queue, struct rte_mbuf **bufs,
 		/* free packets in burst */
 		for (i = 0; i < successfully_txd; i++) {
 			/* free packets in burst */
-			if (bufs[i] != NULL)
-				rte_pktmbuf_free(bufs[i]);
+			rte_pktmbuf_free(bufs[i]);
 
 			bufs[i] = NULL;
 		}
@@ -415,10 +414,14 @@ virtual_ethdev_rx_burst_fn_set_success(uint16_t port_id, uint8_t success)
 {
 	struct rte_eth_dev *vrtl_eth_dev = &rte_eth_devices[port_id];
 
+	rte_eth_dev_stop(port_id);
+
 	if (success)
 		vrtl_eth_dev->rx_pkt_burst = virtual_ethdev_rx_burst_success;
 	else
 		vrtl_eth_dev->rx_pkt_burst = virtual_ethdev_rx_burst_fail;
+
+	rte_eth_dev_start(port_id);
 }
 
 
@@ -428,6 +431,7 @@ virtual_ethdev_tx_burst_fn_set_success(uint16_t port_id, uint8_t success)
 	struct virtual_ethdev_private *dev_private = NULL;
 	struct rte_eth_dev *vrtl_eth_dev = &rte_eth_devices[port_id];
 
+	rte_eth_dev_stop(port_id);
 	dev_private = vrtl_eth_dev->data->dev_private;
 
 	if (success)
@@ -436,6 +440,7 @@ virtual_ethdev_tx_burst_fn_set_success(uint16_t port_id, uint8_t success)
 		vrtl_eth_dev->tx_pkt_burst = virtual_ethdev_tx_burst_fail;
 
 	dev_private->tx_burst_fail_count = 0;
+	rte_eth_dev_start(port_id);
 }
 
 void
@@ -444,7 +449,6 @@ virtual_ethdev_tx_burst_fn_set_tx_pkt_fail_count(uint16_t port_id,
 {
 	struct virtual_ethdev_private *dev_private = NULL;
 	struct rte_eth_dev *vrtl_eth_dev = &rte_eth_devices[port_id];
-
 
 	dev_private = vrtl_eth_dev->data->dev_private;
 	dev_private->tx_burst_fail_count = packet_fail_count;
@@ -466,8 +470,8 @@ virtual_ethdev_simulate_link_status_interrupt(uint16_t port_id,
 
 	vrtl_eth_dev->data->dev_link.link_status = link_status;
 
-	_rte_eth_dev_callback_process(vrtl_eth_dev, RTE_ETH_EVENT_INTR_LSC,
-				      NULL);
+	rte_eth_dev_callback_process(vrtl_eth_dev, RTE_ETH_EVENT_INTR_LSC,
+				     NULL);
 }
 
 int
@@ -496,7 +500,7 @@ virtual_ethdev_get_mbufs_from_tx_queue(uint16_t port_id,
 
 
 int
-virtual_ethdev_create(const char *name, struct ether_addr *mac_addr,
+virtual_ethdev_create(const char *name, struct rte_ether_addr *mac_addr,
 		uint8_t socket_id, uint8_t isr_support)
 {
 	struct rte_pci_device *pci_dev = NULL;
@@ -562,11 +566,11 @@ virtual_ethdev_create(const char *name, struct ether_addr *mac_addr,
 	eth_dev->data->nb_rx_queues = (uint16_t)1;
 	eth_dev->data->nb_tx_queues = (uint16_t)1;
 
-	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
-	eth_dev->data->dev_link.link_speed = ETH_SPEED_NUM_10G;
-	eth_dev->data->dev_link.link_duplex = ETH_LINK_FULL_DUPLEX;
+	eth_dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
+	eth_dev->data->dev_link.link_speed = RTE_ETH_SPEED_NUM_10G;
+	eth_dev->data->dev_link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 
-	eth_dev->data->mac_addrs = rte_zmalloc(name, ETHER_ADDR_LEN, 0);
+	eth_dev->data->mac_addrs = rte_zmalloc(name, RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL)
 		goto err;
 

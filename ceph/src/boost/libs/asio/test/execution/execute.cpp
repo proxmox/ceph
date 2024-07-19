@@ -2,7 +2,7 @@
 // execute.cpp
 // ~~~~~~~~~~~
 //
-// Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2023 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -26,6 +26,8 @@
 #else // defined(BOOST_ASIO_HAS_BOOST_BIND)
 # include <functional>
 #endif // defined(BOOST_ASIO_HAS_BOOST_BIND)
+
+#if !defined(BOOST_ASIO_NO_DEPRECATED)
 
 namespace exec = boost::asio::execution;
 
@@ -394,7 +396,17 @@ void test_execute()
 
 BOOST_ASIO_TEST_SUITE
 (
-  "blocking",
+  "execute",
   BOOST_ASIO_TEST_CASE(test_can_execute)
   BOOST_ASIO_TEST_CASE(test_execute)
 )
+
+#else // !defined(BOOST_ASIO_NO_DEPRECATED)
+
+BOOST_ASIO_TEST_SUITE
+(
+  "execute",
+  BOOST_ASIO_TEST_CASE(null_test)
+)
+
+#endif // !defined(BOOST_ASIO_NO_DEPRECATED)

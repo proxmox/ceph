@@ -12,6 +12,7 @@ import testing ;
 local SOURCES =
     array.cpp
     basic_parser.cpp
+    conversion.cpp
     doc_background.cpp
     doc_forward_conversion.cpp
     doc_parsing.cpp
@@ -48,6 +49,7 @@ local SOURCES =
     value_stack.cpp
     value_to.cpp
     value_ref.cpp
+    utf8.cpp
     visit.cpp
     ryu/d2s_intrinsics_test.cpp
     ryu/d2s_table_test.cpp
@@ -68,3 +70,5 @@ run limits.cpp main.cpp /boost/json//json_sources
     <define>BOOST_JSON_MAX_STRUCTURED_SIZE=20
     <define>BOOST_JSON_STACK_BUFFER_SIZE=256
     ;
+
+run intrusive_macros.cpp main.cpp /boost/json//json_deps ;

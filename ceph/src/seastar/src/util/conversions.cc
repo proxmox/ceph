@@ -19,14 +19,20 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
-#ifndef CONVERSIONS_CC_
-#define CONVERSIONS_CC_
+#ifdef SEASTAR_MODULE
+module;
+#endif
 
-#include <seastar/util/conversions.hh>
-#include <seastar/core/print.hh>
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
 #include <cctype>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/util/conversions.hh>
+#include <seastar/core/print.hh>
+#endif
 
 namespace seastar {
 
@@ -61,4 +67,3 @@ size_t parse_memory_size(std::string_view s) {
 
 }
 
-#endif /* CONVERSIONS_CC_ */

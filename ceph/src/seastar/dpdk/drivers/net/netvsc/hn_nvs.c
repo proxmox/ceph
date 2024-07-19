@@ -28,8 +28,8 @@
 #include <rte_cycles.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
-#include <rte_dev.h>
-#include <rte_bus_vmbus.h>
+#include <dev_driver.h>
+#include <bus_vmbus_driver.h>
 
 #include "hn_logs.h"
 #include "hn_var.h"
@@ -54,7 +54,7 @@ static int hn_nvs_req_send(struct hn_data *hv,
 }
 
 static int
-hn_nvs_execute(struct hn_data *hv,
+__hn_nvs_execute(struct hn_data *hv,
 	       void *req, uint32_t reqlen,
 	       void *resp, uint32_t resplen,
 	       uint32_t type)
@@ -62,6 +62,7 @@ hn_nvs_execute(struct hn_data *hv,
 	struct vmbus_channel *chan = hn_primary_chan(hv);
 	char buffer[NVS_RESPSIZE_MAX];
 	const struct hn_nvs_hdr *hdr;
+	uint64_t xactid;
 	uint32_t len;
 	int ret;
 
@@ -77,7 +78,7 @@ hn_nvs_execute(struct hn_data *hv,
 
  retry:
 	len = sizeof(buffer);
-	ret = rte_vmbus_chan_recv(chan, buffer, &len, NULL);
+	ret = rte_vmbus_chan_recv(chan, buffer, &len, &xactid);
 	if (ret == -EAGAIN) {
 		rte_delay_us(HN_CHAN_INTERVAL_US);
 		goto retry;
@@ -88,7 +89,24 @@ hn_nvs_execute(struct hn_data *hv,
 		return ret;
 	}
 
+	if (len < sizeof(*hdr)) {
+		PMD_DRV_LOG(ERR, "response missing NVS header");
+		return -EINVAL;
+	}
+
 	hdr = (struct hn_nvs_hdr *)buffer;
+
+	/* Silently drop received packets while waiting for response */
+	switch (hdr->type) {
+	case NVS_TYPE_RNDIS:
+		hn_nvs_ack_rxbuf(chan, xactid);
+		/* fallthrough */
+
+	case NVS_TYPE_TXTBL_NOTE:
+		PMD_DRV_LOG(DEBUG, "discard packet type 0x%x", hdr->type);
+		goto retry;
+	}
+
 	if (hdr->type != type) {
 		PMD_DRV_LOG(ERR, "unexpected NVS resp %#x, expect %#x",
 			    hdr->type, type);
@@ -106,6 +124,29 @@ hn_nvs_execute(struct hn_data *hv,
 
 	/* All pass! */
 	return 0;
+}
+
+
+/*
+ * Execute one control command and get the response.
+ * Only one command can be active on a channel at once
+ * Unlike BSD, DPDK does not have an interrupt context
+ * so the polling is required to wait for response.
+ */
+static int
+hn_nvs_execute(struct hn_data *hv,
+	       void *req, uint32_t reqlen,
+	       void *resp, uint32_t resplen,
+	       uint32_t type)
+{
+	struct hn_rx_queue *rxq = hv->primary;
+	int ret;
+
+	rte_spinlock_lock(&rxq->ring_lock);
+	ret = __hn_nvs_execute(hv, req, reqlen, resp, resplen, type);
+	rte_spinlock_unlock(&rxq->ring_lock);
+
+	return ret;
 }
 
 static int
@@ -152,11 +193,11 @@ hn_nvs_conn_rxbuf(struct hn_data *hv)
 	 * Connect RXBUF to NVS.
 	 */
 	conn.type = NVS_TYPE_RXBUF_CONN;
-	conn.gpadl = hv->rxbuf_res->phys_addr;
+	conn.gpadl = hv->rxbuf_res.phys_addr;
 	conn.sig = NVS_RXBUF_SIG;
 	PMD_DRV_LOG(DEBUG, "connect rxbuff va=%p gpad=%#" PRIx64,
-		    hv->rxbuf_res->addr,
-		    hv->rxbuf_res->phys_addr);
+		    hv->rxbuf_res.addr,
+		    hv->rxbuf_res.phys_addr);
 
 	error = hn_nvs_execute(hv, &conn, sizeof(conn),
 			       &resp, sizeof(resp),
@@ -187,9 +228,15 @@ hn_nvs_conn_rxbuf(struct hn_data *hv)
 		    resp.nvs_sect[0].slotcnt);
 	hv->rxbuf_section_cnt = resp.nvs_sect[0].slotcnt;
 
-	hv->rxbuf_info = rte_calloc("HN_RXBUF_INFO", hv->rxbuf_section_cnt,
-				    sizeof(*hv->rxbuf_info), RTE_CACHE_LINE_SIZE);
-	if (!hv->rxbuf_info) {
+	/*
+	 * Primary queue's rxbuf_info is not allocated at creation time.
+	 * Now we can allocate it after we figure out the slotcnt.
+	 */
+	hv->primary->rxbuf_info = rte_calloc("HN_RXBUF_INFO",
+			hv->rxbuf_section_cnt,
+			sizeof(*hv->primary->rxbuf_info),
+			RTE_CACHE_LINE_SIZE);
+	if (!hv->primary->rxbuf_info) {
 		PMD_DRV_LOG(ERR,
 			    "could not allocate rxbuf info");
 		return -ENOMEM;
@@ -219,7 +266,6 @@ hn_nvs_disconn_rxbuf(struct hn_data *hv)
 			    error);
 	}
 
-	rte_free(hv->rxbuf_info);
 	/*
 	 * Linger long enough for NVS to disconnect RXBUF.
 	 */
@@ -262,17 +308,17 @@ hn_nvs_conn_chim(struct hn_data *hv)
 	struct hn_nvs_chim_conn chim;
 	struct hn_nvs_chim_connresp resp;
 	uint32_t sectsz;
-	unsigned long len = hv->chim_res->len;
+	unsigned long len = hv->chim_res.len;
 	int error;
 
 	/* Connect chimney sending buffer to NVS */
 	memset(&chim, 0, sizeof(chim));
 	chim.type = NVS_TYPE_CHIM_CONN;
-	chim.gpadl = hv->chim_res->phys_addr;
+	chim.gpadl = hv->chim_res.phys_addr;
 	chim.sig = NVS_CHIM_SIG;
 	PMD_DRV_LOG(DEBUG, "connect send buf va=%p gpad=%#" PRIx64,
-		    hv->chim_res->addr,
-		    hv->chim_res->phys_addr);
+		    hv->chim_res.addr,
+		    hv->chim_res.phys_addr);
 
 	error = hn_nvs_execute(hv, &chim, sizeof(chim),
 			       &resp, sizeof(resp),
@@ -323,7 +369,7 @@ hn_nvs_conf_ndis(struct hn_data *hv, unsigned int mtu)
 
 	memset(&conf, 0, sizeof(conf));
 	conf.type = NVS_TYPE_NDIS_CONF;
-	conf.mtu = mtu + ETHER_HDR_LEN;
+	conf.mtu = mtu + RTE_ETHER_HDR_LEN;
 	conf.caps = NVS_NDIS_CONF_VLAN;
 
 	/* enable SRIOV */
@@ -528,7 +574,7 @@ hn_nvs_alloc_subchans(struct hn_data *hv, uint32_t *nsubch)
 	return 0;
 }
 
-void
+int
 hn_nvs_set_datapath(struct hn_data *hv, uint32_t path)
 {
 	struct hn_nvs_datapath dp;
@@ -547,4 +593,6 @@ hn_nvs_set_datapath(struct hn_data *hv, uint32_t path)
 			    "send set datapath failed: %d",
 			    error);
 	}
+
+	return error;
 }

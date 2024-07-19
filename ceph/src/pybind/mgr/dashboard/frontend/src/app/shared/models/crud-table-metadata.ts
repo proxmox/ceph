@@ -14,6 +14,6 @@ export class CrudMetadata {
   actions: CdTableAction[];
   forms: any;
   columnKey: string;
-  detail_columns: string[];
   resource: string;
+  detail_columns: string[];
 }

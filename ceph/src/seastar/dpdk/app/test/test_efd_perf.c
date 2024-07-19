@@ -2,6 +2,18 @@
  * Copyright(c) 2016-2017 Intel Corporation
  */
 
+#include "test.h"
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_efd_perf(void)
+{
+	printf("EFD not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <stdio.h>
 #include <inttypes.h>
 
@@ -12,8 +24,6 @@
 #include <rte_efd.h>
 #include <rte_memcpy.h>
 #include <rte_thash.h>
-
-#include "test.h"
 
 #define NUM_KEYSIZES 10
 #define NUM_SHUFFLES 10
@@ -29,11 +39,11 @@
 #endif
 static unsigned int test_socket_id;
 
-static inline uint8_t efd_get_all_sockets_bitmask(void)
+static inline uint64_t efd_get_all_sockets_bitmask(void)
 {
-	uint8_t all_cpu_sockets_bitmask = 0;
+	uint64_t all_cpu_sockets_bitmask = 0;
 	unsigned int i;
-	unsigned int next_lcore = rte_get_master_lcore();
+	unsigned int next_lcore = rte_get_main_lcore();
 	const int val_true = 1, val_false = 0;
 	for (i = 0; i < rte_lcore_count(); i++) {
 		all_cpu_sockets_bitmask |= 1 << rte_lcore_to_socket_id(next_lcore);
@@ -71,13 +81,13 @@ static uint32_t hashtest_key_lens[] = {
 };
 
 /* Array to store number of cycles per operation */
-uint64_t cycles[NUM_KEYSIZES][NUM_OPERATIONS];
+static uint64_t cycles[NUM_KEYSIZES][NUM_OPERATIONS];
 
 /* Array to store the data */
-efd_value_t data[KEYS_TO_ADD];
+static efd_value_t data[KEYS_TO_ADD];
 
 /* Array to store all input keys */
-uint8_t keys[KEYS_TO_ADD][MAX_KEYSIZE];
+static uint8_t keys[KEYS_TO_ADD][MAX_KEYSIZE];
 
 /* Shuffle the keys that have been added, so lookups will be totally random */
 static void
@@ -143,7 +153,6 @@ setup_keys_and_data(struct efd_perf_params *params, unsigned int cycle)
 		qsort(keys, KEYS_TO_ADD, MAX_KEYSIZE, key_compare);
 
 		/* Sift through the list of keys and look for duplicates */
-		int num_duplicates = 0;
 		for (i = 0; i < KEYS_TO_ADD - 1; i++) {
 			if (memcmp(keys[i], keys[i + 1], params->key_size) == 0) {
 				/* This key already exists, try again */
@@ -381,5 +390,7 @@ test_efd_perf(void)
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(efd_perf_autotest, test_efd_perf);

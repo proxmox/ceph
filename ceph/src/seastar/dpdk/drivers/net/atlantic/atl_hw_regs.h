@@ -8,6 +8,7 @@
 #ifndef AQ_HW_UTILS_H
 #define AQ_HW_UTILS_H
 
+#include <errno.h>
 #include <rte_common.h>
 #include <rte_io.h>
 #include <rte_byteorder.h>
@@ -26,7 +27,7 @@
 
 #define mdelay rte_delay_ms
 #define udelay rte_delay_us
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+#define ARRAY_SIZE(arr) RTE_DIM(arr)
 #define BIT(x)	(1UL << (x))
 
 #define AQ_HW_WAIT_FOR(_B_, _US_, _N_) \

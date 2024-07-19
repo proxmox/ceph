@@ -3,12 +3,13 @@
  * Copyright 2019 Mellanox Technologies, Ltd
  */
 
-#include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <rte_eal.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_string_fns.h>
 
 #include "mlx4.h"
@@ -62,7 +63,7 @@ mp_primary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 	uint32_t lkey;
 	int ret;
 
-	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	if (!rte_eth_dev_is_valid_port(param->port_id)) {
 		rte_errno = ENODEV;
 		ERROR("port %u invalid port ID", param->port_id);
@@ -112,9 +113,12 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 	const struct mlx4_mp_param *param =
 		(const struct mlx4_mp_param *)mp_msg->param;
 	struct rte_eth_dev *dev;
+#ifdef HAVE_IBV_MLX4_UAR_MMAP_OFFSET
+	struct mlx4_proc_priv *ppriv;
+#endif
 	int ret;
 
-	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_SECONDARY);
 	if (!rte_eth_dev_is_valid_port(param->port_id)) {
 		rte_errno = ENODEV;
 		ERROR("port %u invalid port ID", param->port_id);
@@ -124,17 +128,36 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 	switch (param->type) {
 	case MLX4_MP_REQ_START_RXTX:
 		INFO("port %u starting datapath", dev->data->port_id);
-		rte_mb();
 		dev->tx_pkt_burst = mlx4_tx_burst;
 		dev->rx_pkt_burst = mlx4_rx_burst;
+#ifdef HAVE_IBV_MLX4_UAR_MMAP_OFFSET
+		ppriv = (struct mlx4_proc_priv *)dev->process_private;
+		if (ppriv->uar_table_sz != dev->data->nb_tx_queues) {
+			mlx4_tx_uar_uninit_secondary(dev);
+			mlx4_proc_priv_uninit(dev);
+			ret = mlx4_proc_priv_init(dev);
+			if (ret) {
+				close(mp_msg->fds[0]);
+				return -rte_errno;
+			}
+			ret = mlx4_tx_uar_init_secondary(dev, mp_msg->fds[0]);
+			if (ret) {
+				close(mp_msg->fds[0]);
+				mlx4_proc_priv_uninit(dev);
+				return -rte_errno;
+			}
+		}
+#endif
+		close(mp_msg->fds[0]);
+		rte_mb();
 		mp_init_msg(dev, &mp_res, param->type);
 		res->result = 0;
 		ret = rte_mp_reply(&mp_res, peer);
 		break;
 	case MLX4_MP_REQ_STOP_RXTX:
 		INFO("port %u stopping datapath", dev->data->port_id);
-		dev->tx_pkt_burst = mlx4_tx_burst_removed;
-		dev->rx_pkt_burst = mlx4_rx_burst_removed;
+		dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
+		dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
 		rte_mb();
 		mp_init_msg(dev, &mp_res, param->type);
 		res->result = 0;
@@ -164,10 +187,11 @@ mp_req_on_rxtx(struct rte_eth_dev *dev, enum mlx4_mp_req_type type)
 	struct rte_mp_reply mp_rep;
 	struct mlx4_mp_param *res __rte_unused;
 	struct timespec ts = {.tv_sec = MLX4_MP_REQ_TIMEOUT_SEC, .tv_nsec = 0};
+	struct mlx4_priv *priv;
 	int ret;
 	int i;
 
-	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	if (!mlx4_shared_data->secondary_cnt)
 		return;
 	if (type != MLX4_MP_REQ_START_RXTX && type != MLX4_MP_REQ_STOP_RXTX) {
@@ -176,10 +200,16 @@ mp_req_on_rxtx(struct rte_eth_dev *dev, enum mlx4_mp_req_type type)
 		return;
 	}
 	mp_init_msg(dev, &mp_req, type);
+	if (type == MLX4_MP_REQ_START_RXTX) {
+		priv = dev->data->dev_private;
+		mp_req.num_fds = 1;
+		mp_req.fds[0] = priv->ctx->cmd_fd;
+	}
 	ret = rte_mp_request_sync(&mp_req, &mp_rep, &ts);
 	if (ret) {
-		ERROR("port %u failed to request stop/start Rx/Tx (%d)",
-		      dev->data->port_id, type);
+		if (rte_errno != ENOTSUP)
+			ERROR("port %u failed to request stop/start Rx/Tx (%d)",
+					dev->data->port_id, type);
 		goto exit;
 	}
 	if (mp_rep.nb_sent != mp_rep.nb_received) {
@@ -248,7 +278,7 @@ mlx4_mp_req_mr_create(struct rte_eth_dev *dev, uintptr_t addr)
 	struct timespec ts = {.tv_sec = MLX4_MP_REQ_TIMEOUT_SEC, .tv_nsec = 0};
 	int ret;
 
-	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_SECONDARY);
 	mp_init_msg(dev, &mp_req, MLX4_MP_REQ_CREATE_MR);
 	req->args.addr = addr;
 	ret = rte_mp_request_sync(&mp_req, &mp_rep, &ts);
@@ -257,7 +287,7 @@ mlx4_mp_req_mr_create(struct rte_eth_dev *dev, uintptr_t addr)
 		      dev->data->port_id);
 		return -rte_errno;
 	}
-	assert(mp_rep.nb_received == 1);
+	MLX4_ASSERT(mp_rep.nb_received == 1);
 	mp_res = &mp_rep.msgs[0];
 	res = (struct mlx4_mp_param *)mp_res->param;
 	ret = res->result;
@@ -286,7 +316,7 @@ mlx4_mp_req_verbs_cmd_fd(struct rte_eth_dev *dev)
 	struct timespec ts = {.tv_sec = MLX4_MP_REQ_TIMEOUT_SEC, .tv_nsec = 0};
 	int ret;
 
-	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_SECONDARY);
 	mp_init_msg(dev, &mp_req, MLX4_MP_REQ_VERBS_CMD_FD);
 	ret = rte_mp_request_sync(&mp_req, &mp_rep, &ts);
 	if (ret) {
@@ -294,7 +324,7 @@ mlx4_mp_req_verbs_cmd_fd(struct rte_eth_dev *dev)
 		      dev->data->port_id);
 		return -rte_errno;
 	}
-	assert(mp_rep.nb_received == 1);
+	MLX4_ASSERT(mp_rep.nb_received == 1);
 	mp_res = &mp_rep.msgs[0];
 	res = (struct mlx4_mp_param *)mp_res->param;
 	if (res->result) {
@@ -304,7 +334,7 @@ mlx4_mp_req_verbs_cmd_fd(struct rte_eth_dev *dev)
 		ret = -rte_errno;
 		goto exit;
 	}
-	assert(mp_res->num_fds == 1);
+	MLX4_ASSERT(mp_res->num_fds == 1);
 	ret = mp_res->fds[0];
 	DEBUG("port %u command FD from primary is %d",
 	      dev->data->port_id, ret);
@@ -316,11 +346,18 @@ exit:
 /**
  * Initialize by primary process.
  */
-void
+int
 mlx4_mp_init_primary(void)
 {
-	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
-	rte_mp_action_register(MLX4_MP_NAME, mp_primary_handle);
+	int ret;
+
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
+
+	/* primary is allowed to not support IPC */
+	ret = rte_mp_action_register(MLX4_MP_NAME, mp_primary_handle);
+	if (ret && rte_errno != ENOTSUP)
+		return -1;
+	return 0;
 }
 
 /**
@@ -329,18 +366,18 @@ mlx4_mp_init_primary(void)
 void
 mlx4_mp_uninit_primary(void)
 {
-	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	rte_mp_action_unregister(MLX4_MP_NAME);
 }
 
 /**
  * Initialize by secondary process.
  */
-void
+int
 mlx4_mp_init_secondary(void)
 {
-	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
-	rte_mp_action_register(MLX4_MP_NAME, mp_secondary_handle);
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_SECONDARY);
+	return rte_mp_action_register(MLX4_MP_NAME, mp_secondary_handle);
 }
 
 /**
@@ -349,6 +386,6 @@ mlx4_mp_init_secondary(void)
 void
 mlx4_mp_uninit_secondary(void)
 {
-	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
+	MLX4_ASSERT(rte_eal_process_type() == RTE_PROC_SECONDARY);
 	rte_mp_action_unregister(MLX4_MP_NAME);
 }

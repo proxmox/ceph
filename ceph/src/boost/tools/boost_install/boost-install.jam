@@ -71,13 +71,38 @@ local rule remap-library ( lib )
 
         return "bz2" ;
 
+    case "icuuc" :
+
+        if [ modules.peek : ICU_ICUUC_NAME ]
+        {
+            return [ modules.peek : ICU_ICUUC_NAME ] ;
+        }
+        else
+        {
+            return "icuuc" ;
+        }
+
     case "icudt" :
 
-        return "icudata" ;
+        if [ modules.peek : ICU_ICUDT_NAME ]
+        {
+            return [ modules.peek : ICU_ICUDT_NAME ] ;
+        }
+        else
+        {
+            return "icudata" ;
+        }
 
     case "icuin" :
 
-        return "icui18n" ;
+        if [ modules.peek : ICU_ICUIN_NAME ]
+        {
+            return [ modules.peek : ICU_ICUIN_NAME ] ;
+        }
+        else
+        {
+            return "icui18n" ;
+        }
 
     case * :
 
@@ -202,7 +227,7 @@ rule generate-cmake-variant- ( target : sources * : properties * )
         print.text
 
             "if(Boost_COMPILER)"
-            "  if(NOT Boost_COMPILER STREQUAL \"$(toolset)\" AND NOT Boost_COMPILER STREQUAL \"-$(toolset)\")"
+            "  if(NOT \"$(toolset)\" IN_LIST Boost_COMPILER AND NOT \"-$(toolset)\" IN_LIST Boost_COMPILER)"
             "    _BOOST_SKIPPED(\"$(fname)\" \"$(toolset), Boost_COMPILER=${Boost_COMPILER}\")"
             "    return()"
             "  endif()"

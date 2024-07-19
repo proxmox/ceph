@@ -28,11 +28,14 @@
 // Similar to libstdc++'s std::deque, except that it uses a single level
 // store, and so is more efficient for simple stored items.
 
+#ifndef SEASTAR_MODULE
 #include <type_traits>
 #include <cstddef>
 #include <iterator>
 #include <utility>
-
+#include <memory>
+#include <seastar/util/modules.hh>
+#endif
 
 /// \file
 
@@ -45,6 +48,7 @@ namespace seastar {
 ///
 /// \tparam T type of objects stored in the container; must be noexcept move enabled
 /// \tparam Capacity maximum number of objects that can be stored in the container; must be a power of 2
+SEASTAR_MODULE_EXPORT
 template <typename T, size_t Capacity>
 class circular_buffer_fixed_capacity {
     size_t _begin = 0;
@@ -61,7 +65,7 @@ private:
     const T* obj(size_t idx) const { return &_storage[mask(idx)].data; }
 public:
     static_assert((Capacity & (Capacity - 1)) == 0, "capacity must be a power of two");
-    static_assert(std::is_nothrow_move_constructible<T>::value && std::is_nothrow_move_assignable<T>::value,
+    static_assert(std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T>,
             "circular_buffer_fixed_capacity only supports nothrow-move value types");
     using value_type = T;
     using size_type = size_t;
@@ -73,7 +77,7 @@ public:
 public:
     template <typename ValueType>
     class cbiterator {
-        using holder = std::conditional_t<std::is_const<ValueType>::value, const maybe_storage, maybe_storage>;
+        using holder = std::conditional_t<std::is_const_v<ValueType>, const maybe_storage, maybe_storage>;
         holder* _start;
         size_t _idx;
     private:
@@ -221,11 +225,7 @@ template <typename T, size_t Capacity>
 inline
 circular_buffer_fixed_capacity<T, Capacity>::circular_buffer_fixed_capacity(circular_buffer_fixed_capacity&& x) noexcept
         : _begin(x._begin), _end(x._end) {
-    // This is std::uninitialized_move, but that is c++17 only
-    auto dest = begin();
-    for (auto& obj : x) {
-        new (&*dest++) T(std::move(obj));
-    }
+    std::uninitialized_move(x.begin(), x.end(), begin());
 }
 
 template <typename T, size_t Capacity>
@@ -338,7 +338,7 @@ template <typename T, size_t Capacity>
 inline
 typename circular_buffer_fixed_capacity<T, Capacity>::iterator
 circular_buffer_fixed_capacity<T, Capacity>::erase(iterator first, iterator last) {
-    static_assert(std::is_nothrow_move_assignable<T>::value, "erase() assumes move assignment does not throw");
+    static_assert(std::is_nothrow_move_assignable_v<T>, "erase() assumes move assignment does not throw");
     if (first == last) {
         return last;
     }

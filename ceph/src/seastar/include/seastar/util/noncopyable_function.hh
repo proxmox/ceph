@@ -21,11 +21,15 @@
 
 #pragma once
 
+#include <seastar/util/modules.hh>
 #include <seastar/util/used_size.hh>
-#include <seastar/util/concepts.hh>
+
+#ifndef SEASTAR_MODULE
+#include <concepts>
 #include <utility>
 #include <type_traits>
 #include <functional>
+#endif
 
 namespace seastar {
 
@@ -86,7 +90,7 @@ struct is_nothrow_if_object {
 
 template<typename Arg>
 struct is_nothrow_if_object<Arg> {
-    static constexpr bool value = !std::is_object<Arg>::value || std::is_nothrow_move_constructible<Arg>::value;
+    static constexpr bool value = !std::is_object_v<Arg> || std::is_nothrow_move_constructible_v<Arg>;
 };
 
 template<>
@@ -98,6 +102,7 @@ struct is_nothrow_if_object<> {
 
 /// A clone of \c std::function, but only invokes the move constructor
 /// of the contained function.
+SEASTAR_MODULE_EXPORT
 template <typename Ret, typename... Args, bool Noexcept>
 class noncopyable_function<Ret (Args...) noexcept(Noexcept)> : private internal::noncopyable_function_base {
     using call_type = Ret (*)(const noncopyable_function* func, Args...);
@@ -128,15 +133,15 @@ private:
             destroy(from);
         }
         static constexpr move_type select_move_thunk() {
-            bool can_trivially_move = std::is_trivially_move_constructible<Func>::value
-                    && std::is_trivially_destructible<Func>::value;
+            bool can_trivially_move = std::is_trivially_move_constructible_v<Func>
+                    && std::is_trivially_destructible_v<Func>;
             return can_trivially_move ? trivial_direct_move<internal::used_size<Func>::value> : move;
         }
         static void destroy(noncopyable_function_base* func) {
             access(func)->~Func();
         }
         static constexpr destroy_type select_destroy_thunk() {
-            return std::is_trivially_destructible<Func>::value ? trivial_direct_destroy : destroy;
+            return std::is_trivially_destructible_v<Func> ? trivial_direct_destroy : destroy;
         }
         static void initialize(Func&& from, noncopyable_function* to) {
             new (access(to)) Func(std::move(from));
@@ -168,14 +173,14 @@ private:
     template <typename Func>
     static constexpr bool is_direct() {
         return sizeof(Func) <= nr_direct && alignof(Func) <= alignof(storage)
-                && std::is_nothrow_move_constructible<Func>::value;
+                && std::is_nothrow_move_constructible_v<Func>;
     }
     template <typename Func>
     struct vtable_for : select_vtable_for<Func, is_direct<Func>()> {};
 public:
     noncopyable_function() noexcept : _vtable(&_s_empty_vtable) {}
     template <typename Func>
-    SEASTAR_CONCEPT( requires std::is_invocable_r_v<Ret, Func, Args...> )
+    requires std::is_invocable_r_v<Ret, Func, Args...>
     noncopyable_function(Func func) {
         static_assert(!Noexcept || noexcept(std::declval<Func>()(std::declval<Args>()...)));
         vtable_for<Func>::initialize(std::move(func), this);
@@ -215,9 +220,6 @@ public:
     }
 };
 
-
-template <typename Ret, typename... Args, bool Noexcept>
-constexpr typename noncopyable_function<Ret (Args...) noexcept(Noexcept)>::vtable noncopyable_function<Ret (Args...) noexcept(Noexcept)>::_s_empty_vtable;
 
 template <typename Ret, typename... Args, bool Noexcept>
 template <typename Func>

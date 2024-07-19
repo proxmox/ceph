@@ -7,10 +7,14 @@
 # DPDK instance, use 'make'
 
 if not is_linux
-	build = false
+    build = false
+    subdir_done()
 endif
+
 deps += 'vhost'
+deps += 'dmadev'
 allow_experimental_apis = true
 sources = files(
-	'main.c', 'virtio_net.c'
+        'main.c',
+        'virtio_net.c',
 )

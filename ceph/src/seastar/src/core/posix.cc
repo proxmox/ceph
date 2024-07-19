@@ -19,11 +19,28 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <memory>
+#include <cassert>
+#include <set>
+#include <vector>
+#include <functional>
+#include <fmt/format.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/inotify.h>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/posix.hh>
 #include <seastar/core/align.hh>
 #include <seastar/util/critical_alloc_section.hh>
-#include <sys/mman.h>
-#include <sys/inotify.h>
+#endif
 
 namespace seastar {
 
@@ -105,11 +122,25 @@ posix_thread::posix_thread(attr a, std::function<void ()> func)
     }
 #endif
 
+#ifdef SEASTAR_PTHREAD_ATTR_SETAFFINITY_NP
+    if (a._affinity) {
+        auto& cpuset = *a._affinity;
+        pthread_attr_setaffinity_np(&pa, sizeof(cpuset), &cpuset);
+    }
+#endif
+
     r = pthread_create(&_pthread, &pa,
                 &posix_thread::start_routine, _func.get());
     if (r) {
         throw std::system_error(r, std::system_category());
     }
+
+#ifndef SEASTAR_PTHREAD_ATTR_SETAFFINITY_NP
+    if (a._affinity) {
+        auto& cpuset = *a._affinity;
+        pthread_setaffinity_np(_pthread, sizeof(cpuset), &cpuset);
+    }
+#endif
 }
 
 posix_thread::posix_thread(posix_thread&& x)

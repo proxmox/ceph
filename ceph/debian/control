@@ -64,6 +64,7 @@ Build-Depends: automake,
                libsqlite3-dev,
                libssl-dev,
                libtool,
+               liblmdb-dev,
                libudev-dev,
                libnl-genl-3-dev,
                libxml2-dev,
@@ -71,7 +72,6 @@ Build-Depends: automake,
                libre2-dev,
                libutf8proc-dev (>= 2.2.0),
                librdkafka-dev,
-               luarocks,
                libthrift-dev (>= 0.13.0),
                libyaml-cpp-dev (>= 0.6),
                libzstd-dev <pkg.ceph.check>,
@@ -96,6 +96,7 @@ Build-Depends: automake,
                tox <pkg.ceph.check>,
                python3-coverage <pkg.ceph.check>,
                python3-dateutil <pkg.ceph.check>,
+               python3-grpcio <pkg.ceph.check>,
                python3-openssl <pkg.ceph.check>,
                python3-prettytable <pkg.ceph.check>,
                python3-requests <pkg.ceph.check>,
@@ -352,30 +353,6 @@ Description: debugging symbols for ceph-mgr
  .
  This package contains the debugging symbols for ceph-mgr.
 
-Package: ceph-exporter
-Architecture: linux-any
-Depends: ceph-base (= ${binary:Version}),
-Description: metrics exporter for the ceph distributed storage system
- Ceph is a massively scalable, open-source, distributed
- storage system that runs on commodity hardware and delivers object,
- block and file system storage.
- .
- This package contains the metrics exporter daemon, which is used to expose
- the performance metrics.
-
-Package: ceph-exporter-dbg
-Architecture: linux-any
-Section: debug
-Priority: extra
-Depends: ceph-exporter (= ${binary:Version}),
-         ${misc:Depends},
-Description: debugging symbols for ceph-exporter
- Ceph is a massively scalable, open-source, distributed
- storage system that runs on commodity hardware and delivers object,
- block and file system storage.
- .
- This package contains the debugging symbols for ceph-exporter.
-
 Package: ceph-mon
 Architecture: linux-any
 Depends: ceph-base (= ${binary:Version}),
@@ -413,6 +390,7 @@ Depends: ceph-base (= ${binary:Version}),
          ${misc:Depends},
          ${python3:Depends},
          ${shlibs:Depends},
+         libprotobuf23 <pkg.ceph.crimson>,
 Replaces: ceph (<< 10),
           ceph-test (<< 12.2.2-14),
           ceph-osd (<< 17.0.0)
@@ -943,6 +921,8 @@ Section: libs
 Depends: librados2 (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends},
+         liblua5.3-dev,
+         luarocks,
 Description: RADOS Gateway client library
  RADOS is a distributed object store used by the Ceph distributed
  storage system.  This package provides a REST gateway to the

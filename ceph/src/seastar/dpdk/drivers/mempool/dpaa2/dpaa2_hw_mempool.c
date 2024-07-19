@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016 NXP
+ *   Copyright 2016-2019 NXP
  *
  */
 
@@ -14,15 +14,16 @@
 #include <errno.h>
 
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include "rte_dpaa2_mempool.h"
 
+#include "fslmc_vfio.h"
 #include <fslmc_logs.h>
 #include <mc/fsl_dpbp.h>
 #include <portal/dpaa2_hw_pvt.h>
@@ -34,9 +35,6 @@
 
 struct dpaa2_bp_info *rte_dpaa2_bpid_info;
 static struct dpaa2_bp_list *h_bp_list;
-
-/* Dynamic logging identified for mempool */
-int dpaa2_logtype_mempool;
 
 static int
 rte_hw_mbuf_create_pool(struct rte_mempool *mp)
@@ -68,7 +66,9 @@ rte_hw_mbuf_create_pool(struct rte_mempool *mp)
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret) {
-			DPAA2_MEMPOOL_ERR("Failure in affining portal");
+			DPAA2_MEMPOOL_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			goto err1;
 		}
 	}
@@ -191,13 +191,15 @@ rte_dpaa2_mbuf_release(struct rte_mempool *pool __rte_unused,
 	struct qbman_release_desc releasedesc;
 	struct qbman_swp *swp;
 	int ret;
-	int i, n;
+	int i, n, retry_count;
 	uint64_t bufs[DPAA2_MBUF_MAX_ACQ_REL];
 
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret != 0) {
-			DPAA2_MEMPOOL_ERR("Failed to allocate IO portal");
+			DPAA2_MEMPOOL_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return;
 		}
 	}
@@ -224,9 +226,15 @@ rte_dpaa2_mbuf_release(struct rte_mempool *pool __rte_unused,
 	}
 
 	/* feed them to bman */
-	do {
-		ret = qbman_swp_release(swp, &releasedesc, bufs, n);
-	} while (ret == -EBUSY);
+	retry_count = 0;
+	while ((ret = qbman_swp_release(swp, &releasedesc, bufs, n)) ==
+			-EBUSY) {
+		retry_count++;
+		if (retry_count > DPAA2_MAX_TX_RETRY_COUNT) {
+			DPAA2_MEMPOOL_ERR("bman release retry exceeded, low fbpr?");
+			return;
+		}
+	}
 
 aligned:
 	/* if there are more buffers to free */
@@ -242,12 +250,40 @@ aligned:
 #endif
 		}
 
-		do {
-			ret = qbman_swp_release(swp, &releasedesc, bufs,
-						DPAA2_MBUF_MAX_ACQ_REL);
-		} while (ret == -EBUSY);
+		retry_count = 0;
+		while ((ret = qbman_swp_release(swp, &releasedesc, bufs,
+					DPAA2_MBUF_MAX_ACQ_REL)) == -EBUSY) {
+			retry_count++;
+			if (retry_count > DPAA2_MAX_TX_RETRY_COUNT) {
+				DPAA2_MEMPOOL_ERR("bman release retry exceeded, low fbpr?");
+				return;
+			}
+		}
 		n += DPAA2_MBUF_MAX_ACQ_REL;
 	}
+}
+
+int rte_dpaa2_bpid_info_init(struct rte_mempool *mp)
+{
+	struct dpaa2_bp_info *bp_info = mempool_to_bpinfo(mp);
+	uint32_t bpid = bp_info->bpid;
+
+	if (!rte_dpaa2_bpid_info) {
+		rte_dpaa2_bpid_info = (struct dpaa2_bp_info *)rte_malloc(NULL,
+				      sizeof(struct dpaa2_bp_info) * MAX_BPID,
+				      RTE_CACHE_LINE_SIZE);
+		if (rte_dpaa2_bpid_info == NULL)
+			return -ENOMEM;
+		memset(rte_dpaa2_bpid_info, 0,
+		       sizeof(struct dpaa2_bp_info) * MAX_BPID);
+	}
+
+	rte_dpaa2_bpid_info[bpid].meta_data_size = sizeof(struct rte_mbuf)
+				+ rte_pktmbuf_priv_size(mp);
+	rte_dpaa2_bpid_info[bpid].bp_list = bp_info->bp_list;
+	rte_dpaa2_bpid_info[bpid].bpid = bpid;
+
+	return 0;
 }
 
 uint16_t
@@ -305,7 +341,9 @@ rte_dpaa2_mbuf_alloc_bulk(struct rte_mempool *pool,
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret != 0) {
-			DPAA2_MEMPOOL_ERR("Failed to allocate IO portal");
+			DPAA2_MEMPOOL_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return ret;
 		}
 	}
@@ -378,6 +416,7 @@ rte_hw_mbuf_get_count(const struct rte_mempool *mp)
 	unsigned int num_of_bufs = 0;
 	struct dpaa2_bp_info *bp_info;
 	struct dpaa2_dpbp_dev *dpbp_node;
+	struct fsl_mc_io mc_io;
 
 	if (!mp || !mp->pool_data) {
 		DPAA2_MEMPOOL_ERR("Invalid mempool provided");
@@ -387,7 +426,12 @@ rte_hw_mbuf_get_count(const struct rte_mempool *mp)
 	bp_info = (struct dpaa2_bp_info *)mp->pool_data;
 	dpbp_node = bp_info->bp_list->buf_pool.dpbp_node;
 
-	ret = dpbp_get_num_free_bufs(&dpbp_node->dpbp, CMD_PRI_LOW,
+	/* In case as secondary process access stats, MCP portal in priv-hw may
+	 * have primary process address. Need the secondary process based MCP
+	 * portal address for this object.
+	 */
+	mc_io.regs = dpaa2_get_mcp_ptr(MC_PORTAL_INDEX);
+	ret = dpbp_get_num_free_bufs(&mc_io, CMD_PRI_LOW,
 				     dpbp_node->token, &num_of_bufs);
 	if (ret) {
 		DPAA2_MEMPOOL_ERR("Unable to obtain free buf count (err=%d)",
@@ -405,11 +449,23 @@ dpaa2_populate(struct rte_mempool *mp, unsigned int max_objs,
 	      void *vaddr, rte_iova_t paddr, size_t len,
 	      rte_mempool_populate_obj_cb_t *obj_cb, void *obj_cb_arg)
 {
+	struct rte_memseg_list *msl;
+	/* The memsegment list exists incase the memory is not external.
+	 * So, DMA-Map is required only when memory is provided by user,
+	 * i.e. External.
+	 */
+	msl = rte_mem_virt2memseg_list(vaddr);
+
+	if (!msl) {
+		DPAA2_MEMPOOL_DEBUG("Memsegment is External.\n");
+		rte_fslmc_vfio_mem_dmamap((size_t)vaddr,
+				(size_t)paddr, (size_t)len);
+	}
 	/* Insert entry into the PA->VA Table */
 	dpaax_iova_table_update(paddr, vaddr, len);
 
-	return rte_mempool_op_populate_default(mp, max_objs, vaddr, paddr, len,
-					       obj_cb, obj_cb_arg);
+	return rte_mempool_op_populate_helper(mp, 0, max_objs, vaddr, paddr,
+					       len, obj_cb, obj_cb_arg);
 }
 
 static const struct rte_mempool_ops dpaa2_mpool_ops = {
@@ -422,11 +478,6 @@ static const struct rte_mempool_ops dpaa2_mpool_ops = {
 	.populate = dpaa2_populate,
 };
 
-MEMPOOL_REGISTER_OPS(dpaa2_mpool_ops);
+RTE_MEMPOOL_REGISTER_OPS(dpaa2_mpool_ops);
 
-RTE_INIT(dpaa2_mempool_init_log)
-{
-	dpaa2_logtype_mempool = rte_log_register("mempool.dpaa2");
-	if (dpaa2_logtype_mempool >= 0)
-		rte_log_set_level(dpaa2_logtype_mempool, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER_DEFAULT(dpaa2_logtype_mempool, NOTICE);

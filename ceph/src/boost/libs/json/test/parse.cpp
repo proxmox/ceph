@@ -1,5 +1,6 @@
 //
 // Copyright (c) 2019 Vinnie Falco (vinnie.falco@gmail.com)
+// Copyright (c) 2022 Dmitry Arkhipov (grisumbras@yandex.ru)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -17,7 +18,8 @@
 #include "test.hpp"
 #include "test_suite.hpp"
 
-BOOST_JSON_NS_BEGIN
+namespace boost {
+namespace json {
 
 class parse_test
 {
@@ -42,6 +44,12 @@ public:
             return;
         BOOST_TEST(
             serialize(jv) == s);
+
+        std::stringstream ss(s);
+        auto jv2 = parse(ss, ec);
+        if(! BOOST_TEST(! ec))
+            return;
+        BOOST_TEST( jv == jv2 );
     }
 
     template <class ErrorCode>
@@ -50,6 +58,12 @@ public:
     {
         ErrorCode ec;
         auto jv = parse(s, ec);
+        BOOST_TEST(ec);
+        BOOST_TEST(hasLocation(ec));
+
+        ec = {};
+        std::stringstream ss(s);
+        auto jv2 = parse(ss, ec);
         BOOST_TEST(ec);
         BOOST_TEST(hasLocation(ec));
     }
@@ -73,6 +87,7 @@ public:
     {
         good("null");
         good("[1,2,3]");
+        good("17");
         bad ("[1,2,3] #");
         bad ("555415214748364655415E2147483646");
         bad ("9.88874836020e-2147483640");
@@ -168,13 +183,38 @@ public:
     }
 
     void
+    testIssue726()
+    {
+        parse_options opt;
+        opt.allow_comments = true;
+        opt.allow_trailing_commas = true;
+        char const* text1 = "[ 123, //\n]";
+        value arr = parse(text1, {}, opt);
+        BOOST_TEST(arr == array{123});
+    }
+
+    void
+    testIstream()
+    {
+        std::stringstream ss("null");
+        parse(ss); // does not throw
+
+        ss.clear();
+        ss.setstate(std::ios::failbit);
+        BOOST_TEST_THROWS( parse(ss), system_error );
+    }
+
+    void
     run()
     {
         testParse();
         testMemoryUsage();
+        testIssue726();
+        testIstream();
     }
 };
 
 TEST_SUITE(parse_test, "boost.json.parse");
 
-BOOST_JSON_NS_END
+} // namespace json
+} // namespace boost

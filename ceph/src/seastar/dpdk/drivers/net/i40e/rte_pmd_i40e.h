@@ -14,7 +14,13 @@
  *
  */
 
-#include <rte_ethdev_driver.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <rte_compat.h>
+#include <rte_ethdev.h>
+#include <rte_ether.h>
 
 /**
  * Response sent back to i40e driver from user app after callback
@@ -453,7 +459,7 @@ int rte_pmd_i40e_set_vf_multicast_promisc(uint16_t port,
  *   - (-EINVAL) if *vf* or *mac_addr* is invalid.
  */
 int rte_pmd_i40e_set_vf_mac_addr(uint16_t port, uint16_t vf_id,
-				 struct ether_addr *mac_addr);
+				 struct rte_ether_addr *mac_addr);
 
 /**
  * Remove the VF MAC address.
@@ -471,7 +477,7 @@ int rte_pmd_i40e_set_vf_mac_addr(uint16_t port, uint16_t vf_id,
  */
 int
 rte_pmd_i40e_remove_vf_mac_addr(uint16_t port, uint16_t vf_id,
-	struct ether_addr *mac_addr);
+	struct rte_ether_addr *mac_addr);
 
 /**
  * Enable/Disable vf vlan strip for all queues in a pool
@@ -854,7 +860,7 @@ int rte_pmd_i40e_ptype_mapping_replace(uint16_t port,
  *   - (-EINVAL) if *vf* or *mac_addr* is invalid.
  */
 int rte_pmd_i40e_add_vf_mac_addr(uint16_t port, uint16_t vf_id,
-				 struct ether_addr *mac_addr);
+				 struct rte_ether_addr *mac_addr);
 
 #define RTE_PMD_I40E_PCTYPE_MAX		64
 #define RTE_PMD_I40E_FLOW_TYPE_MAX	64
@@ -924,7 +930,7 @@ int rte_pmd_i40e_flow_type_mapping_reset(uint16_t port);
  *    -ENOTSUP: i40e not supported for this port.
  */
 int rte_pmd_i40e_query_vfid_by_mac(uint16_t port,
-					const struct ether_addr *vf_mac);
+					const struct rte_ether_addr *vf_mac);
 
 /**
  * Do RSS queue region configuration for that port as
@@ -1060,5 +1066,93 @@ rte_pmd_i40e_inset_field_clear(uint64_t *inset, uint8_t field_idx)
 
 	return 0;
 }
+
+/**
+ * Get port fdir info
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param fdir_info
+ *   The fdir info of the port
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_i40e_get_fdir_info(uint16_t port, struct rte_eth_fdir_info *fdir_info);
+
+/**
+ * Get port fdir status
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param fdir_stat
+ *   The fdir status of the port
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_i40e_get_fdir_stats(uint16_t port,
+			    struct rte_eth_fdir_stats *fdir_stat);
+
+/**
+ * Set GRE key length
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param len
+ *   Length of gre-key
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_i40e_set_gre_key_len(uint16_t port, uint8_t len);
+
+/**
+ * For ipn3ke, i40e works with FPGA.
+ * In this situation, i40e get link status from fpga,
+ * fpga works as switch_dev for i40e.
+ * This function set switch_dev for i40e.
+ *
+ * @param port_id
+ *    port_id of i40e device to be set switch device.
+ * @param switch_dev
+ *    target switch device from which i40e device to get link status from.
+ * @return
+ *   - (less than 0) if failed.
+ *   - (0) if success.
+ */
+__rte_experimental
+int
+rte_pmd_i40e_set_switch_dev(uint16_t port_id, struct rte_eth_dev *switch_dev);
+
+/**
+ * Enable/Disable source prune on all the PF.
+ *
+ * @param port
+ *    The port identifier of the Ethernet device.
+ * @param on
+ *    1 - Enable source prune.
+ *    0 - Disable source prune.
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-EINVAL) if bad parameter.
+ */
+__rte_experimental
+int rte_pmd_i40e_set_pf_src_prune(uint16_t port,
+				 uint8_t on);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _PMD_I40E_H_ */

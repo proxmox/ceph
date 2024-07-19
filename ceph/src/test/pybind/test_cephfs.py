@@ -1,7 +1,7 @@
 # vim: expandtab smarttab shiftwidth=4 softtabstop=4
-from assertions import assert_raises, assert_equal, assert_not_equal, assert_greater
 import collections
 collections.Callable = collections.abc.Callable
+from assertions import assert_raises, assert_equal, assert_not_equal, assert_greater
 import cephfs as libcephfs
 import fcntl
 import os

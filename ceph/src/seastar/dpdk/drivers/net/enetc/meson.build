@@ -2,10 +2,14 @@
 # Copyright 2018 NXP
 
 if not is_linux
-	build = false
+    build = false
+    reason = 'only supported on Linux'
 endif
 
-sources = files('enetc_ethdev.c',
-		'enetc_rxtx.c')
+deps += ['common_dpaax']
+sources = files(
+        'enetc_ethdev.c',
+        'enetc_rxtx.c',
+)
 
 includes += include_directories('base')

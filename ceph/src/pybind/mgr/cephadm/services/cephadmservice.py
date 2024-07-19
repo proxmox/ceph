@@ -14,6 +14,7 @@ from ceph.deployment.service_spec import (
     ArgumentList,
     CephExporterSpec,
     GeneralArgList,
+    InitContainerSpec,
     MONSpec,
     RGWSpec,
     ServiceSpec,
@@ -54,6 +55,24 @@ def get_auth_entity(daemon_type: str, daemon_id: str, host: str = "") -> AuthEnt
         raise OrchestratorError(f"unknown daemon type {daemon_type}")
 
 
+def simplified_keyring(entity: str, contents: str) -> str:
+    # strip down keyring
+    #  - don't include caps (auth get includes them; get-or-create does not)
+    #  - use pending key if present
+    key = None
+    for line in contents.splitlines():
+        if ' = ' not in line:
+            continue
+        line = line.strip()
+        (ls, rs) = line.split(' = ', 1)
+        if ls == 'key' and not key:
+            key = rs
+        if ls == 'pending key':
+            key = rs
+    keyring = f'[{entity}]\nkey = {key}\n'
+    return keyring
+
+
 class CephadmDaemonDeploySpec:
     # typing.NamedTuple + Generic is broken in py36
     def __init__(self, host: str, daemon_id: str,
@@ -71,6 +90,7 @@ class CephadmDaemonDeploySpec:
                  rank_generation: Optional[int] = None,
                  extra_container_args: Optional[ArgumentList] = None,
                  extra_entrypoint_args: Optional[ArgumentList] = None,
+                 init_containers: Optional[List[InitContainerSpec]] = None,
                  ):
         """
         A data struction to encapsulate `cephadm deploy ...
@@ -115,6 +135,16 @@ class CephadmDaemonDeploySpec:
 
         self.extra_container_args = extra_container_args
         self.extra_entrypoint_args = extra_entrypoint_args
+        self.init_containers = init_containers
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if value is not None and name in ('extra_container_args', 'extra_entrypoint_args'):
+            for v in value:
+                tname = str(type(v))
+                if 'ArgumentSpec' not in tname:
+                    raise TypeError(f"{name} is not all ArgumentSpec values: {v!r}(is {type(v)} in {value!r}")
+
+        super().__setattr__(name, value)
 
     def name(self) -> str:
         return '%s.%s' % (self.daemon_type, self.daemon_id)
@@ -240,6 +270,7 @@ class CephadmService(metaclass=ABCMeta):
                 spec, 'extra_container_args') else None,
             extra_entrypoint_args=spec.extra_entrypoint_args if hasattr(
                 spec, 'extra_entrypoint_args') else None,
+            init_containers=getattr(spec, 'init_containers', None),
         )
 
     def prepare_create(self, daemon_spec: CephadmDaemonDeploySpec) -> CephadmDaemonDeploySpec:
@@ -294,22 +325,7 @@ class CephadmService(metaclass=ABCMeta):
             })
             if err:
                 raise OrchestratorError(f"Unable to fetch keyring for {entity}: {err}")
-
-        # strip down keyring
-        #  - don't include caps (auth get includes them; get-or-create does not)
-        #  - use pending key if present
-        key = None
-        for line in keyring.splitlines():
-            if ' = ' not in line:
-                continue
-            line = line.strip()
-            (ls, rs) = line.split(' = ', 1)
-            if ls == 'key' and not key:
-                key = rs
-            if ls == 'pending key':
-                key = rs
-        keyring = f'[{entity}]\nkey = {key}\n'
-        return keyring
+        return simplified_keyring(entity, keyring)
 
     def _inventory_get_fqdn(self, hostname: str) -> str:
         """Get a host's FQDN with its hostname.
@@ -952,6 +968,17 @@ class RgwService(CephService):
                 'val': cert_data,
             })
 
+        if spec.zonegroup_hostnames:
+            zg_update_cmd = {
+                'prefix': 'rgw zonegroup modify',
+                'realm_name': spec.rgw_realm,
+                'zonegroup_name': spec.rgw_zonegroup,
+                'zone_name': spec.rgw_zone,
+                'hostnames': spec.zonegroup_hostnames,
+            }
+            logger.debug(f'rgw cmd: {zg_update_cmd}')
+            ret, out, err = self.mgr.check_mon_command(zg_update_cmd)
+
         # TODO: fail, if we don't have a spec
         logger.info('Saving service %s spec with placement %s' % (
             spec.service_name(), spec.placement.pretty_str()))
@@ -1009,13 +1036,45 @@ class RgwService(CephService):
             args.extend(spec.rgw_frontend_extra_args)
 
         frontend = f'{ftype} {" ".join(args)}'
+        daemon_name = utils.name_to_config_section(daemon_spec.name())
 
         ret, out, err = self.mgr.check_mon_command({
             'prefix': 'config set',
-            'who': utils.name_to_config_section(daemon_spec.name()),
+            'who': daemon_name,
             'name': 'rgw_frontends',
             'value': frontend
         })
+
+        if spec.rgw_user_counters_cache:
+            ret, out, err = self.mgr.check_mon_command({
+                'prefix': 'config set',
+                'who': daemon_name,
+                'name': 'rgw_user_counters_cache',
+                'value': 'true',
+            })
+        if spec.rgw_bucket_counters_cache:
+            ret, out, err = self.mgr.check_mon_command({
+                'prefix': 'config set',
+                'who': daemon_name,
+                'name': 'rgw_bucket_counters_cache',
+                'value': 'true',
+            })
+
+        if spec.rgw_user_counters_cache_size:
+            ret, out, err = self.mgr.check_mon_command({
+                'prefix': 'config set',
+                'who': daemon_name,
+                'name': 'rgw_user_counters_cache_size',
+                'value': str(spec.rgw_user_counters_cache_size),
+            })
+
+        if spec.rgw_bucket_counters_cache_size:
+            ret, out, err = self.mgr.check_mon_command({
+                'prefix': 'config set',
+                'who': daemon_name,
+                'name': 'rgw_bucket_counters_cache_size',
+                'value': str(spec.rgw_bucket_counters_cache_size),
+            })
 
         daemon_spec.keyring = keyring
         daemon_spec.final_config, daemon_spec.deps = self.generate_config(daemon_spec)

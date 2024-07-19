@@ -6,9 +6,10 @@
 # To build this example as a standalone application with an already-installed
 # DPDK instance, use 'make'
 
+allow_experimental_apis = true
 deps += 'eventdev'
 sources = files(
-	'main.c',
-	'pipeline_worker_generic.c',
-	'pipeline_worker_tx.c'
+        'main.c',
+        'pipeline_worker_generic.c',
+        'pipeline_worker_tx.c',
 )

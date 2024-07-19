@@ -70,7 +70,7 @@
 /* Maximum length for digest */
 #define DIGEST_LENGTH_MAX	64
 
-/* SHA LSB intialiazation values */
+/* SHA LSB initialization values */
 
 #define SHA1_H0		0x67452301UL
 #define SHA1_H1		0xefcdab89UL
@@ -353,7 +353,9 @@ int process_ops_to_enqueue(struct ccp_qp *qp,
 			   struct rte_crypto_op **op,
 			   struct ccp_queue *cmd_q,
 			   uint16_t nb_ops,
-			   int slots_req);
+			   uint16_t total_nb_ops,
+			   int slots_req,
+			   uint16_t b_idx);
 
 /**
  * process crypto ops to be dequeued
@@ -365,7 +367,8 @@ int process_ops_to_enqueue(struct ccp_qp *qp,
  */
 int process_ops_to_dequeue(struct ccp_qp *qp,
 			   struct rte_crypto_op **op,
-			   uint16_t nb_ops);
+			   uint16_t nb_ops,
+			   uint16_t *total_nb_ops);
 
 
 /**

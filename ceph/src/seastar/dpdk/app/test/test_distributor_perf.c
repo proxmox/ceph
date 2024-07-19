@@ -10,6 +10,17 @@
 #include <rte_cycles.h>
 #include <rte_common.h>
 #include <rte_mbuf.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_distributor_perf(void)
+{
+	printf("distributor perf not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <rte_distributor.h>
 #include <rte_pause.h>
 
@@ -25,7 +36,7 @@ static volatile unsigned worker_idx;
 struct worker_stats {
 	volatile unsigned handled_packets;
 } __rte_cache_aligned;
-struct worker_stats worker_stats[RTE_MAX_LCORE];
+static struct worker_stats worker_stats[RTE_MAX_LCORE];
 
 /*
  * worker thread used for testing the time to do a round-trip of a cache
@@ -54,10 +65,10 @@ time_cache_line_switch(void)
 	/* allocate a full cache line for data, we use only first byte of it */
 	uint64_t data[RTE_CACHE_LINE_SIZE*3 / sizeof(uint64_t)];
 
-	unsigned i, slaveid = rte_get_next_lcore(rte_lcore_id(), 0, 0);
+	unsigned int i, workerid = rte_get_next_lcore(rte_lcore_id(), 0, 0);
 	volatile uint64_t *pdata = &data[0];
 	*pdata = 1;
-	rte_eal_remote_launch((lcore_function_t *)flip_bit, &data[0], slaveid);
+	rte_eal_remote_launch((lcore_function_t *)flip_bit, &data[0], workerid);
 	while (*pdata)
 		rte_pause();
 
@@ -72,7 +83,7 @@ time_cache_line_switch(void)
 	while (*pdata)
 		rte_pause();
 	*pdata = 2;
-	rte_eal_wait_lcore(slaveid);
+	rte_eal_wait_lcore(workerid);
 	printf("==== Cache line switch test ===\n");
 	printf("Time for %u iterations = %"PRIu64" ticks\n", (1<<ITER_POWER_CL),
 			end_time-start_time);
@@ -108,10 +119,9 @@ static int
 handle_work(void *arg)
 {
 	struct rte_distributor *d = arg;
-	unsigned int count = 0;
 	unsigned int num = 0;
 	int i;
-	unsigned int id = __sync_fetch_and_add(&worker_idx, 1);
+	unsigned int id = __atomic_fetch_add(&worker_idx, 1, __ATOMIC_RELAXED);
 	struct rte_mbuf *buf[8] __rte_cache_aligned;
 
 	for (i = 0; i < 8; i++)
@@ -120,11 +130,9 @@ handle_work(void *arg)
 	num = rte_distributor_get_pkt(d, id, buf, buf, num);
 	while (!quit) {
 		worker_stats[id].handled_packets += num;
-		count += num;
 		num = rte_distributor_get_pkt(d, id, buf, buf, num);
 	}
 	worker_stats[id].handled_packets += num;
-	count += num;
 	rte_distributor_return_pkt(d, id, buf, num);
 	return 0;
 }
@@ -188,13 +196,15 @@ quit_workers(struct rte_distributor *d, struct rte_mempool *p)
 	rte_mempool_get_bulk(p, (void *)bufs, num_workers);
 
 	quit = 1;
-	for (i = 0; i < num_workers; i++)
+	for (i = 0; i < num_workers; i++) {
 		bufs[i]->hash.usr = i << 1;
-	rte_distributor_process(d, bufs, num_workers);
+		rte_distributor_process(d, &bufs[i], 1);
+	}
 
 	rte_mempool_put_bulk(p, (void *)bufs, num_workers);
 
 	rte_distributor_process(d, NULL, 0);
+	rte_distributor_flush(d);
 	rte_eal_mp_wait_lcore();
 	quit = 0;
 	worker_idx = 0;
@@ -208,8 +218,8 @@ test_distributor_perf(void)
 	static struct rte_mempool *p;
 
 	if (rte_lcore_count() < 2) {
-		printf("ERROR: not enough cores to test distributor\n");
-		return -1;
+		printf("Not enough cores for distributor_perf_autotest, expecting at least 2\n");
+		return TEST_SKIPPED;
 	}
 
 	/* first time how long it takes to round-trip a cache line */
@@ -251,18 +261,20 @@ test_distributor_perf(void)
 	}
 
 	printf("=== Performance test of distributor (single mode) ===\n");
-	rte_eal_mp_remote_launch(handle_work, ds, SKIP_MASTER);
+	rte_eal_mp_remote_launch(handle_work, ds, SKIP_MAIN);
 	if (perf_test(ds, p) < 0)
 		return -1;
 	quit_workers(ds, p);
 
 	printf("=== Performance test of distributor (burst mode) ===\n");
-	rte_eal_mp_remote_launch(handle_work, db, SKIP_MASTER);
+	rte_eal_mp_remote_launch(handle_work, db, SKIP_MAIN);
 	if (perf_test(db, p) < 0)
 		return -1;
 	quit_workers(db, p);
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(distributor_perf_autotest, test_distributor_perf);

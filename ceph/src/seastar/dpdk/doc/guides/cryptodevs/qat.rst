@@ -7,7 +7,7 @@ Intel(R) QuickAssist (QAT) Crypto Poll Mode Driver
 QAT documentation consists of three parts:
 
 * Details of the symmetric and asymmetric crypto services below.
-* Details of the `compression service <http://doc.dpdk.org/guides/compressdevs/qat_comp.html>`_
+* Details of the :doc:`compression service <../compressdevs/qat_comp>`
   in the compressdev drivers section.
 * Details of building the common QAT infrastructure and the PMDs to support the
   above services. See :ref:`building_qat` below.
@@ -22,8 +22,10 @@ poll mode crypto driver support for the following hardware accelerator devices:
 * ``Intel QuickAssist Technology DH895xCC``
 * ``Intel QuickAssist Technology C62x``
 * ``Intel QuickAssist Technology C3xxx``
+* ``Intel QuickAssist Technology 200xx``
 * ``Intel QuickAssist Technology D15xx``
 * ``Intel QuickAssist Technology C4xxx``
+* ``Intel QuickAssist Technology 4xxx``
 
 
 Features
@@ -52,11 +54,20 @@ Cipher algorithms:
 
 Hash algorithms:
 
+* ``RTE_CRYPTO_AUTH_SHA1``
 * ``RTE_CRYPTO_AUTH_SHA1_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA224``
 * ``RTE_CRYPTO_AUTH_SHA224_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA256``
 * ``RTE_CRYPTO_AUTH_SHA256_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA384``
 * ``RTE_CRYPTO_AUTH_SHA384_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA512``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA3_224``
+* ``RTE_CRYPTO_AUTH_SHA3_256``
+* ``RTE_CRYPTO_AUTH_SHA3_384``
+* ``RTE_CRYPTO_AUTH_SHA3_512``
 * ``RTE_CRYPTO_AUTH_AES_XCBC_MAC``
 * ``RTE_CRYPTO_AUTH_SNOW3G_UIA2``
 * ``RTE_CRYPTO_AUTH_MD5_HMAC``
@@ -65,11 +76,41 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_AES_GMAC``
 * ``RTE_CRYPTO_AUTH_ZUC_EIA3``
 * ``RTE_CRYPTO_AUTH_AES_CMAC``
+* ``RTE_CRYPTO_AUTH_SM3``
+* ``RTE_CRYPTO_AUTH_SM3_HMAC``
 
 Supported AEAD algorithms:
 
 * ``RTE_CRYPTO_AEAD_AES_GCM``
 * ``RTE_CRYPTO_AEAD_AES_CCM``
+* ``RTE_CRYPTO_AEAD_CHACHA20_POLY1305``
+
+Protocol offloads:
+
+* ``RTE_SECURITY_PROTOCOL_DOCSIS``
+
+Supported Chains
+~~~~~~~~~~~~~~~~
+
+All the usual chains are supported and also some mixed chains:
+
+.. table:: Supported hash-cipher chains for wireless digest-encrypted cases
+
+   +------------------+-----------+-------------+----------+----------+
+   | Cipher algorithm | NULL AUTH | SNOW3G UIA2 | ZUC EIA3 | AES CMAC |
+   +==================+===========+=============+==========+==========+
+   | NULL CIPHER      | Y         | 2&3         | 2&3      | Y        |
+   +------------------+-----------+-------------+----------+----------+
+   | SNOW3G UEA2      | 2&3       | 1&2&3       | 2&3      | 2&3      |
+   +------------------+-----------+-------------+----------+----------+
+   | ZUC EEA3         | 2&3       | 2&3         | 2&3      | 2&3      |
+   +------------------+-----------+-------------+----------+----------+
+   | AES CTR          | 1&2&3     | 2&3         | 2&3      | Y        |
+   +------------------+-----------+-------------+----------+----------+
+
+* The combinations marked as "Y" are supported on all QAT hardware versions.
+* The combinations marked as "2&3" are supported on GEN2 and GEN3 QAT hardware only.
+* The combinations marked as "1&2&3" are supported on GEN1, GEN2 and GEN3 QAT hardware only.
 
 
 Limitations
@@ -81,7 +122,29 @@ Limitations
 * No BSD support as BSD QAT kernel driver not available.
 * ZUC EEA3/EIA3 is not supported by dh895xcc devices
 * Maximum additional authenticated data (AAD) for GCM is 240 bytes long and must be passed to the device in a buffer rounded up to the nearest block-size multiple (x16) and padded with zeros.
-* Queue pairs are not thread-safe (that is, within a single queue pair, RX and TX from different lcores is not supported).
+* Queue-pairs are thread-safe on Intel CPUs but Queues are not (that is, within a single
+  queue-pair all enqueues to the TX queue must be done from one thread and all dequeues
+  from the RX queue must be done from one thread, but enqueues and dequeues may be done
+  in different threads.)
+* A GCM limitation exists, but only in the case where there are multiple
+  generations of QAT devices on a single platform.
+  To optimise performance, the GCM crypto session should be initialised for the
+  device generation to which the ops will be enqueued. Specifically if a GCM
+  session is initialised on a GEN2 device, but then attached to an op enqueued
+  to a GEN3 device, it will work but cannot take advantage of hardware
+  optimisations in the GEN3 device. And if a GCM session is initialised on a
+  GEN3 device, then attached to an op sent to a GEN1/GEN2 device, it will not be
+  enqueued to the device and will be marked as failed. The simplest way to
+  mitigate this is to use the PCI allowlist to avoid mixing devices of different
+  generations in the same process if planning to use for GCM.
+* The mixed algo feature on GEN2 is not supported by all kernel drivers. Check
+  the notes under the Available Kernel Drivers table below for specific details.
+* Out-of-place is not supported for combined Crypto-CRC DOCSIS security
+  protocol.
+* ``RTE_CRYPTO_CIPHER_DES_DOCSISBPI`` is not supported for combined Crypto-CRC
+  DOCSIS security protocol.
+* Multi-segment buffers are not supported for combined Crypto-CRC DOCSIS
+  security protocol.
 
 Extra notes on KASUMI F9
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -112,17 +175,27 @@ poll mode crypto driver support for the following hardware accelerator devices:
 * ``Intel QuickAssist Technology C3xxx``
 * ``Intel QuickAssist Technology D15xx``
 * ``Intel QuickAssist Technology C4xxx``
+* ``Intel QuickAssist Technology 4xxx``
+* ``Intel QuickAssist Technology 401xxx``
 
 The QAT ASYM PMD has support for:
 
 * ``RTE_CRYPTO_ASYM_XFORM_MODEX``
 * ``RTE_CRYPTO_ASYM_XFORM_MODINV``
+* ``RTE_CRYPTO_ASYM_XFORM_RSA``
+* ``RTE_CRYPTO_ASYM_XFORM_ECDSA``
+* ``RTE_CRYPTO_ASYM_XFORM_ECPM``
+* ``RTE_CRYPTO_ASYM_XFORM_ECDH``
 
 Limitations
 ~~~~~~~~~~~
 
 * Big integers longer than 4096 bits are not supported.
-* Queue pairs are not thread-safe (that is, within a single queue pair, RX and TX from different lcores is not supported).
+* Queue-pairs are thread-safe on Intel CPUs but Queues are not (that is, within a single
+  queue-pair all enqueues to the TX queue must be done from one thread and all dequeues
+  from the RX queue must be done from one thread, but enqueues and dequeues may be done
+  in different threads.)
+* RSA-2560, RSA-3584 are not supported
 
 .. _building_qat:
 
@@ -146,28 +219,7 @@ Configuring and Building the DPDK QAT PMDs
 
 
 Further information on configuring, building and installing DPDK is described
-`here <http://doc.dpdk.org/guides/linux_gsg/build_dpdk.html>`_.
-
-
-Quick instructions for QAT cryptodev PMD are as follows:
-
-.. code-block:: console
-
-	cd to the top-level DPDK directory
-	make defconfig
-	sed -i 's,\(CONFIG_RTE_LIBRTE_PMD_QAT_SYM\)=n,\1=y,' build/.config
-	or/and
-	sed -i 's,\(CONFIG_RTE_LIBRTE_PMD_QAT_ASYM\)=n,\1=y,' build/.config
-	make
-
-Quick instructions for QAT compressdev PMD are as follows:
-
-.. code-block:: console
-
-	cd to the top-level DPDK directory
-	make defconfig
-	make
-
+:doc:`here <../linux_gsg/build_dpdk>`.
 
 .. _building_qat_config:
 
@@ -178,38 +230,44 @@ These are the build configuration options affecting QAT, and their default value
 
 .. code-block:: console
 
-	CONFIG_RTE_LIBRTE_PMD_QAT=y
-	CONFIG_RTE_LIBRTE_PMD_QAT_SYM=n
-	CONFIG_RTE_LIBRTE_PMD_QAT_ASYM=n
-	CONFIG_RTE_PMD_QAT_MAX_PCI_DEVICES=48
-	CONFIG_RTE_PMD_QAT_COMP_IM_BUFFER_SIZE=65536
-
-CONFIG_RTE_LIBRTE_PMD_QAT must be enabled for any QAT PMD to be built.
+	RTE_PMD_QAT_MAX_PCI_DEVICES=48
+	RTE_PMD_QAT_COMP_IM_BUFFER_SIZE=65536
 
 Both QAT SYM PMD and QAT ASYM PMD have an external dependency on libcrypto, so are not
-built by default. CONFIG_RTE_LIBRTE_PMD_QAT_SYM/ASYM should be enabled to build them.
+built by default.
 
-The QAT compressdev PMD has no external dependencies, so needs no configuration
-options and is built by default.
+Ubuntu
+
+.. code-block:: console
+
+   apt install libssl-dev
+
+RHEL
+
+.. code-block:: console
+
+   dnf install openssl-devel
+
+The QAT compressdev PMD has no external dependencies, so is built by default.
 
 The number of VFs per PF varies - see table below. If multiple QAT packages are
-installed on a platform then CONFIG_RTE_PMD_QAT_MAX_PCI_DEVICES should be
+installed on a platform then RTE_PMD_QAT_MAX_PCI_DEVICES should be
 adjusted to the number of VFs which the QAT common code will need to handle.
 
 .. Note::
 
         There are separate config items (not QAT-specific) for max cryptodevs
-        CONFIG_RTE_CRYPTO_MAX_DEVS and max compressdevs CONFIG_RTE_COMPRESS_MAX_DEVS,
+        RTE_CRYPTO_MAX_DEVS and max compressdevs RTE_COMPRESS_MAX_DEVS,
         if necessary these should be adjusted to handle the total of QAT and other
         devices which the process will use. In particular for crypto, where each
         QAT VF may expose two crypto devices, sym and asym, it may happen that the
         number of devices will be bigger than MAX_DEVS and the process will show an error
-        during PMD initialisation. To avoid this problem CONFIG_RTE_CRYPTO_MAX_DEVS may be
-        increased or -w, pci-whitelist domain:bus:devid:func option may be used.
+        during PMD initialisation. To avoid this problem RTE_CRYPTO_MAX_DEVS may be
+        increased or -a, allow domain:bus:devid:func option may be used.
 
 
 QAT compression PMD needs intermediate buffers to support Deflate compression
-with Dynamic Huffman encoding. CONFIG_RTE_PMD_QAT_COMP_IM_BUFFER_SIZE
+with Dynamic Huffman encoding. RTE_PMD_QAT_COMP_IM_BUFFER_SIZE
 specifies the size of a single buffer, the PMD will allocate a multiple of these,
 plus some extra space for associated meta-data. For GEN2 devices, 20 buffers are
 allocated while for GEN1 devices, 12 buffers are allocated, plus 1472 bytes overhead.
@@ -217,12 +275,86 @@ allocated while for GEN1 devices, 12 buffers are allocated, plus 1472 bytes over
 .. Note::
 
 	If the compressed output of a Deflate operation using Dynamic Huffman
-        Encoding is too big to fit in an intermediate buffer, then the
-	operation will fall back to fixed compression rather than failing the operation.
+	Encoding is too big to fit in an intermediate buffer, then the
+	operation will be split into smaller operations and their results will
+	be merged afterwards.
+	This is not possible if any checksum calculation was requested - in such
+	case the code falls back to fixed compression.
 	To avoid this less performant case, applications should configure
 	the intermediate buffer size to be larger than the expected input data size
 	(compressed output size is usually unknown, so the only option is to make
 	larger than the input size).
+
+
+Running QAT PMD with insecure crypto algorithms
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A few insecure crypto algorithms are deprecated from QAT drivers.
+This needs to be reflected in DPDK QAT PMD.
+DPDK QAT PMD has by default disabled all the insecure crypto algorithms from Gen 1, 2, 3 and 4.
+A PMD devarg is used to enable the capability.
+
+- qat_legacy_capa
+
+To use this feature the user must set the devarg on process start as a device additional devarg::
+
+  -a b1:01.2,qat_legacy_capa=1
+
+
+Running QAT PMD with minimum threshold for burst size
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If only a small number or packets can be enqueued. Each enqueue causes an expensive MMIO write.
+These MMIO write occurrences can be optimised by setting any of the following parameters:
+
+- qat_sym_enq_threshold
+- qat_asym_enq_threshold
+- qat_comp_enq_threshold
+
+When any of these parameters is set rte_cryptodev_enqueue_burst function will
+return 0 (thereby avoiding an MMIO) if the device is congested and number of packets
+possible to enqueue is smaller.
+To use this feature the user must set the parameter on process start as a device additional parameter::
+
+  -a 03:01.1,qat_sym_enq_threshold=32,qat_comp_enq_threshold=16
+
+All parameters can be used with the same device regardless of order. Parameters are separated
+by comma. When the same parameter is used more than once first occurrence of the parameter
+is used.
+Maximum threshold that can be set is 32.
+
+
+Running QAT PMD with Cipher-CRC offload feature
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Support has been added to the QAT symmetric crypto PMD for combined Cipher-CRC offload,
+primarily for the Crypto-CRC DOCSIS security protocol, on GEN2/GEN3/GEN4 QAT devices.
+
+The following devarg enables a Cipher-CRC offload capability check to determine
+if the feature is supported on the QAT device.
+
+- qat_sym_cipher_crc_enable
+
+When enabled, a capability check for the combined Cipher-CRC offload feature is triggered
+to the QAT firmware during queue pair initialization. If supported by the firmware,
+any subsequent runtime Crypto-CRC DOCSIS security protocol requests handled by the QAT PMD
+are offloaded to the QAT device by setting up the content descriptor and request accordingly.
+If not supported, the CRC is calculated by the QAT PMD using the NET CRC API.
+
+To use this feature the user must set the devarg on process start as a device additional devarg::
+
+ -a 03:01.1,qat_sym_cipher_crc_enable=1
+
+
+Running QAT PMD with Intel IPsec MB library for symmetric precomputes function
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The QAT PMD uses Intel IPsec MB library for partial hash calculation
+in symmetric precomputes function by default,
+the minimum required version of IPsec MB library is v1.4.
+If this version of IPsec is not met, it will fallback to use OpenSSL.
+ARM will always default to using OpenSSL
+as ARM IPsec MB does not support the necessary algorithms.
 
 
 Device and driver naming
@@ -243,7 +375,7 @@ The "rte_cryptodev_devices_get()" returns the devices exposed by either of these
 
 	The cryptodev driver name is passed to the dpdk-test-crypto-perf tool in the "-devtype" parameter.
 
-	The qat crypto device name is in the format of the slave parameter passed to the crypto scheduler.
+	The qat crypto device name is in the format of the worker parameter passed to the crypto scheduler.
 
 * The qat compressdev driver name is "compress_qat".
   The rte_compressdev_devices_get() returns the devices exposed by this driver.
@@ -297,22 +429,36 @@ to see the full table)
    +=====+=====+=====+=====+==========+===============+===============+============+========+======+========+========+
    | Yes | No  | No  | 1   | DH895xCC | linux/4.4+    | qat_dh895xcc  | dh895xcc   | 435    | 1    | 443    | 32     |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
-   | Yes | Yes | No  | "   | "        | 01.org/4.2.0+ | "             | "          | "      | "    | "      | "      |
+   | Yes | Yes | No  | "   | "        | IDZ/4.12.0+   | "             | "          | "      | "    | "      | "      |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
-   | Yes | Yes | Yes | "   | "        | 01.org/4.3.0+ | "             | "          | "      | "    | "      | "      |
+   | Yes | Yes | Yes | "   | "        | IDZ/4.13.0+   | "             | "          | "      | "    | "      | "      |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
    | Yes | No  | No  | 2   | C62x     | linux/4.5+    | qat_c62x      | c6xx       | 37c8   | 3    | 37c9   | 16     |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
-   | Yes | Yes | Yes | "   | "        | 01.org/4.2.0+ | "             | "          | "      | "    | "      | "      |
+   | Yes | Yes | Yes | "   | "        | IDZ/4.12.0+   | "             | "          | "      | "    | "      | "      |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
    | Yes | No  | No  | 2   | C3xxx    | linux/4.5+    | qat_c3xxx     | c3xxx      | 19e2   | 1    | 19e3   | 16     |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
-   | Yes | Yes | Yes | "   | "        | 01.org/4.2.0+ | "             | "          | "      | "    | "      | "      |
+   | Yes | Yes | Yes | "   | "        | IDZ/4.12.0+   | "             | "          | "      | "    | "      | "      |
+   +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+   | Yes | No  | No  | 2   | 200xx    | p             | qat_200xx     | 200xx      | 18ee   | 1    | 18ef   | 16     |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
    | Yes | No  | No  | 2   | D15xx    | p             | qat_d15xx     | d15xx      | 6f54   | 1    | 6f55   | 16     |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
-   | Yes | No  | No  | 3   | C4xxx    | p             | qat_c4xxx     | c4xxx      | 18a0   | 1    | 18a1   | 128    |
+   | Yes | Yes | No  | 3   | C4xxx    | p             | qat_c4xxx     | c4xxx      | 18a0   | 1    | 18a1   | 128    |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+   | Yes | Yes | No  | 4   | 4xxx     | linux/5.11+   | qat_4xxx      | 4xxx       | 4940   | 4    | 4941   | 16     |
+   +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+   | Yes | Yes | Yes | 4   | 4xxx     | linux/5.17+   | qat_4xxx      | 4xxx       | 4940   | 4    | 4941   | 16     |
+   +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+   | Yes | No  | No  | 4   | 4xxx     | IDZ/ N/A      | qat_4xxx      | 4xxx       | 4940   | 4    | 4941   | 16     |
+   +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+   | Yes | Yes | Yes | 4   | 401xxx   | linux/5.19+   | qat_401xxx    | 4xxx       | 4942   | 2    | 4943   | 16     |
+   +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+   | Yes | No  | No  | 4   | 401xxx   | IDZ/ N/A      | qat_401xxx    | 4xxx       | 4942   | 2    | 4943   | 16     |
+   +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+
+* Note: Symmetric mixed crypto algorithms feature on Gen 2 works only with IDZ driver version 4.9.0+
 
 The first 3 columns indicate the service:
 
@@ -321,14 +467,19 @@ The first 3 columns indicate the service:
 * C = Compression service (via compressdev API)
 
 The ``Driver`` column indicates either the Linux kernel version in which
-support for this device was introduced or a driver available on Intel's 01.org
-website. There are both linux in-tree and 01.org kernel drivers available for some
+support for this device was introduced or a driver available on Intel Developer Zone (IDZ).
+There are both linux in-tree and IDZ kernel drivers available for some
 devices. p = release pending.
 
 If you are running on a kernel which includes a driver for your device, see
 `Installation using kernel.org driver`_ below. Otherwise see
-`Installation using 01.org QAT driver`_.
+`Installation using IDZ QAT driver`_.
 
+.. note::
+
+   The asymmetric service is not supported by DPDK QAT PMD for the Gen 3 platform.
+   The actual crypto services enabled on the system depend
+   on QAT driver capabilities and hardware slice configuration.
 
 Installation using kernel.org driver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -373,7 +524,7 @@ Check that the VFs are available for use. For example ``lspci -d:37c9`` should
 list 48 VF devices available for a ``C62x`` device.
 
 To complete the installation follow the instructions in
-`Binding the available VFs to the DPDK UIO driver`_.
+`Binding the available VFs to the vfio-pci driver`_.
 
 .. Note::
 
@@ -394,19 +545,18 @@ To complete the installation follow the instructions in
       insmod ./drivers/crypto/qat/qat_common/intel_qat.ko
       insmod ./drivers/crypto/qat/qat_dh895xcc/qat_dh895xcc.ko
 
-
 .. Note::
 
    If you see the following warning in ``/var/log/messages`` it can be ignored:
    ``IOMMU should be enabled for SR-IOV to work correctly``.
 
 
-Installation using 01.org QAT driver
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Installation using IDZ QAT driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Download the latest QuickAssist Technology Driver from `01.org
-<https://01.org/packet-processing/intel%C2%AE-quickassist-technology-drivers-and-patches>`_.
-Consult the *Getting Started Guide* at the same URL for further information.
+Download the latest QuickAssist Technology Driver from `Intel Developer Zone
+<https://developer.intel.com/quickassist>`_.
+Consult the *Quick Start Guide* at the same URL for further information.
 
 The steps below assume you are:
 
@@ -445,7 +595,8 @@ Confirm the presence of 48 VF devices - 16 per PF::
     lspci -d:37c9
 
 
-To complete the installation - follow instructions in `Binding the available VFs to the DPDK UIO driver`_.
+To complete the installation - follow instructions in
+`Binding the available VFs to the vfio-pci driver`_.
 
 .. Note::
 
@@ -494,11 +645,56 @@ To complete the installation - follow instructions in `Binding the available VFs
       sudo yum install kernel-src-`uname -r`
       sudo yum install kernel-devel-`uname -r`
 
+.. Note::
 
-Binding the available VFs to the DPDK UIO driver
+   If the build fails on newer GCC versions (such as GCC 12) with an error relating to
+   ``-lc`` not being found, apply the following patch:
+
+   .. code-block:: diff
+
+      /QAT/quickassist/lookaside/access_layer/src/Makefile
+      cd $(ICP_FINAL_OUTPUT_DIR);\
+      cmd="$(LINKER) $(LIB_SHARED_FLAGS) -o \
+        $(LIB_SHARED) $(ADDITIONAL_OBJECTS) $(ADDITIONAL_LIBS) *.o -lpthread -ludev \
+      - -Bstatic -L$(ADF_DIR)/src/build/$(ICP_OS)/$(ICP_OS_LEVEL) \
+      - -ladf_user -L$(OSAL_DIR)/src/build/$(ICP_OS)/$(ICP_OS_LEVEL)/ \
+      - -losal -Bdynamic -lc"; \
+      + -Bstatic -L$(ADF_DIR)/src/build/$(ICP_OS)/$(ICP_OS_LEVEL) \
+      + -ladf_user -L$(OSAL_DIR)/src/build/$(ICP_OS)/$(ICP_OS_LEVEL)/ \
+      + -losal -Bdynamic -L/lib/x86_64-linux-gnu/ -lc"; \
+      echo "$$cmd"; \
+      $$cmd
+
+   Followed by this patch:
+
+   .. code-block:: diff
+
+      /QAT/quickassist/build_system/build_files/OS/linux_common_user_space_rules.mk
+      @echo 'Creating shared library ${LIB_SHARED}'; \
+      cd $($(PROG_ACY)_FINAL_OUTPUT_DIR);\
+      -  echo $(LINKER) $(LIB_SHARED_FLAGS) -o $@  $(OBJECTS) $(ADDITIONAL_OBJECTS) -lc;\
+      -  $(LINKER) $(LIB_SHARED_FLAGS) -o $@  $(OBJECTS) $(ADDITIONAL_OBJECTS) -lc ;
+      +  echo $(LINKER) $(LIB_SHARED_FLAGS) -o $@  $(OBJECTS) $(ADDITIONAL_OBJECTS) \
+      +  -L/lib/x86_64-linux-gnu/ -lc;\
+      +  $(LINKER) $(LIB_SHARED_FLAGS) -o $@  $(OBJECTS) $(ADDITIONAL_OBJECTS) \
+      +  -L/lib/x86_64-linux-gnu/ -lc ;
+
+
+Binding the available VFs to the vfio-pci driver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Unbind the VFs from the stock driver so they can be bound to the uio driver.
+Note:
+
+* Please note that due to security issues, the usage of older DPDK igb_uio
+  driver is not recommended. This document shows how to use the more secure
+  vfio-pci driver.
+* If QAT fails to bind to vfio-pci on Linux kernel 5.9+, please see the
+  QATE-39220 and QATE-7495 issues in
+  `IDZ doc <https://cdrdv2.intel.com/v1/dl/getContent/710057?explicitVersion=true>`_
+  which details the constraint about trusted guests and add `disable_denylist=1`
+  to the vfio-pci params to use QAT. See also `this patch description <https://lkml.org/lkml/2020/7/23/1155>`_.
+
+Unbind the VFs from the stock driver so they can be bound to the vfio-pci driver.
 
 For an Intel(R) QuickAssist Technology DH895xCC device
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -506,10 +702,10 @@ For an Intel(R) QuickAssist Technology DH895xCC device
 The unbind command below assumes ``BDFs`` of ``03:01.00-03:04.07``, if your
 VFs are different adjust the unbind command below::
 
+    cd to the top-level DPDK directory
     for device in $(seq 1 4); do \
         for fn in $(seq 0 7); do \
-            echo -n 0000:03:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:03\:0${device}.${fn}/driver/unbind; \
+            usertools/dpdk-devbind.py -u 0000:03:0${device}.${fn}; \
         done; \
     done
 
@@ -520,78 +716,64 @@ The unbind command below assumes ``BDFs`` of ``1a:01.00-1a:02.07``,
 ``3d:01.00-3d:02.07`` and ``3f:01.00-3f:02.07``, if your VFs are different
 adjust the unbind command below::
 
+    cd to the top-level DPDK directory
     for device in $(seq 1 2); do \
         for fn in $(seq 0 7); do \
-            echo -n 0000:1a:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:1a\:0${device}.${fn}/driver/unbind; \
-
-            echo -n 0000:3d:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:3d\:0${device}.${fn}/driver/unbind; \
-
-            echo -n 0000:3f:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:3f\:0${device}.${fn}/driver/unbind; \
+            usertools/dpdk-devbind.py -u 0000:1a:0${device}.${fn}; \
+            usertools/dpdk-devbind.py -u 0000:3d:0${device}.${fn}; \
+            usertools/dpdk-devbind.py -u 0000:3f:0${device}.${fn}; \
         done; \
     done
 
-For Intel(R) QuickAssist Technology C3xxx or D15xx device
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+For Intel(R) QuickAssist Technology C3xxx or 200xx or D15xx device
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The unbind command below assumes ``BDFs`` of ``01:01.00-01:02.07``, if your
 VFs are different adjust the unbind command below::
 
+    cd to the top-level DPDK directory
     for device in $(seq 1 2); do \
         for fn in $(seq 0 7); do \
-            echo -n 0000:01:0${device}.${fn} > \
-            /sys/bus/pci/devices/0000\:01\:0${device}.${fn}/driver/unbind; \
+            usertools/dpdk-devbind.py -u 0000:01:0${device}.${fn}; \
         done; \
     done
 
-Bind to the DPDK uio driver
+Bind to the vfio-pci driver
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Install the DPDK igb_uio driver, bind the VF PCI Device id to it and use lspci
-to confirm the VF devices are now in use by igb_uio kernel driver,
+Load the vfio-pci driver, bind the VF PCI Device id to it using the
+``dpdk-devbind.py`` script then use the ``--status`` option
+to confirm the VF devices are now in use by vfio-pci kernel driver,
 e.g. for the C62x device::
 
     cd to the top-level DPDK directory
-    modprobe uio
-    insmod ./build/kmod/igb_uio.ko
-    echo "8086 37c9" > /sys/bus/pci/drivers/igb_uio/new_id
-    lspci -vvd:37c9
+    modprobe vfio-pci
+    usertools/dpdk-devbind.py -b vfio-pci 0000:03:01.1
+    usertools/dpdk-devbind.py --status
 
-
-Another way to bind the VFs to the DPDK UIO driver is by using the
-``dpdk-devbind.py`` script::
-
-    cd to the top-level DPDK directory
-    ./usertools/dpdk-devbind.py -b igb_uio 0000:03:01.1
+Use ``modprobe vfio-pci disable_denylist=1`` from kernel 5.9 onwards.
+See note in the section `Binding the available VFs to the vfio-pci driver`_
+above.
 
 Testing
 ~~~~~~~
 
 QAT SYM crypto PMD can be tested by running the test application::
 
-    make defconfig
-    make -j
-    cd ./build/app
-    ./test -l1 -n1 -w <your qat bdf>
+    cd ./<build_dir>/app/test
+    ./dpdk-test -l1 -n1 -a <your qat bdf>
     RTE>>cryptodev_qat_autotest
 
 QAT ASYM crypto PMD can be tested by running the test application::
 
-    make defconfig
-    make -j
-    cd ./build/app
-    ./test -l1 -n1 -w <your qat bdf>
+    cd ./<build_dir>/app/test
+    ./dpdk-test -l1 -n1 -a <your qat bdf>
     RTE>>cryptodev_qat_asym_autotest
 
 QAT compression PMD can be tested by running the test application::
 
-    make defconfig
-    sed -i 's,\(CONFIG_RTE_COMPRESSDEV_TEST\)=n,\1=y,' build/.config
-    make -j
-    cd ./build/app
-    ./test -l1 -n1 -w <your qat bdf>
+    cd ./<build_dir>/app/test
+    ./dpdk-test -l1 -n1 -a <your qat bdf>
     RTE>>compressdev_autotest
 
 
@@ -600,23 +782,23 @@ Debugging
 
 There are 2 sets of trace available via the dynamic logging feature:
 
-* pmd.qat_dp exposes trace on the data-path.
-* pmd.qat_general exposes all other trace.
+* pmd.qat.dp exposes trace on the data-path.
+* pmd.qat.general exposes all other trace.
 
 pmd.qat exposes both sets of traces.
 They can be enabled using the log-level option (where 8=maximum log level) on
 the process cmdline, e.g. using any of the following::
 
-    --log-level="pmd.qat_general,8"
-    --log-level="pmd.qat_dp,8"
+    --log-level="pmd.qat.general,8"
+    --log-level="pmd.qat.dp,8"
     --log-level="pmd.qat,8"
 
 .. Note::
 
     The global RTE_LOG_DP_LEVEL overrides data-path trace so must be set to
     RTE_LOG_DEBUG to see all the trace. This variable is in config/rte_config.h
-    for meson build and config/common_base for gnu make.
+    for meson build.
     Also the dynamic global log level overrides both sets of trace, so e.g. no
     QAT trace would display in this case::
 
-	--log-level="7" --log-level="pmd.qat_general,8"
+	--log-level="7" --log-level="pmd.qat.general,8"

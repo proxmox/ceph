@@ -9,6 +9,8 @@
 /* CSR write macro */
 #define ADF_CSR_WR(csrAddr, csrOffset, val)		\
 	rte_write32(val, (((uint8_t *)csrAddr) + csrOffset))
+#define ADF_CSR_WC_WR(csrAddr, csrOffset, val)		\
+	rte_write32_wc(val, (((uint8_t *)csrAddr) + csrOffset))
 
 /* CSR read macro */
 #define ADF_CSR_RD(csrAddr, csrOffset)			\
@@ -49,9 +51,11 @@
 #define ADF_MIN_RING_SIZE ADF_RING_SIZE_128
 #define ADF_MAX_RING_SIZE ADF_RING_SIZE_4M
 #define ADF_DEFAULT_RING_SIZE ADF_RING_SIZE_16K
+/* ARB CSR offset */
+#define ADF_ARB_RINGSRVARBEN_OFFSET 0x19C
 
 /* Maximum number of qps on a device for any service type */
-#define ADF_MAX_QPS_ON_ANY_SERVICE	2
+#define ADF_MAX_QPS_ON_ANY_SERVICE	4
 #define ADF_RING_DIR_TX			0
 #define ADF_RING_DIR_RX			1
 
@@ -68,7 +72,7 @@
 #define ADF_SIZE_TO_RING_SIZE_IN_BYTES(SIZE) ((1 << (SIZE - 1)) << 7)
 #define ADF_RING_SIZE_IN_BYTES_TO_SIZE(SIZE) ((1 << (SIZE - 1)) >> 7)
 
-/* Minimum ring bufer size for memory allocation */
+/* Minimum ring buffer size for memory allocation */
 #define ADF_RING_SIZE_BYTES_MIN(SIZE) ((SIZE < ADF_RING_SIZE_4K) ? \
 				ADF_RING_SIZE_4K : SIZE)
 #define ADF_RING_SIZE_MODULO(SIZE) (SIZE + 0x6)
@@ -110,10 +114,10 @@ do { \
 		ADF_RING_CSR_RING_UBASE + (ring << 2), u_base);	\
 } while (0)
 #define WRITE_CSR_RING_HEAD(csr_base_addr, bank, ring, value) \
-	ADF_CSR_WR(csr_base_addr, (ADF_RING_BUNDLE_SIZE * bank) + \
+	ADF_CSR_WC_WR(csr_base_addr, (ADF_RING_BUNDLE_SIZE * bank) + \
 		ADF_RING_CSR_RING_HEAD + (ring << 2), value)
 #define WRITE_CSR_RING_TAIL(csr_base_addr, bank, ring, value) \
-	ADF_CSR_WR(csr_base_addr, (ADF_RING_BUNDLE_SIZE * bank) + \
+	ADF_CSR_WC_WR(csr_base_addr, (ADF_RING_BUNDLE_SIZE * bank) + \
 		ADF_RING_CSR_RING_TAIL + (ring << 2), value)
 #define WRITE_CSR_INT_SRCSEL(csr_base_addr, bank) \
 do { \

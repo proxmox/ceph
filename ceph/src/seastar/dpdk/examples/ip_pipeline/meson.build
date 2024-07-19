@@ -7,21 +7,25 @@
 # DPDK instance, use 'make'
 
 build = cc.has_header('sys/epoll.h')
+if not build
+    subdir_done()
+endif
+
 deps += ['pipeline', 'bus_pci']
 allow_experimental_apis = true
 sources = files(
-	'action.c',
-	'cli.c',
-	'conn.c',
-	'kni.c',
-	'link.c',
-	'main.c',
-	'mempool.c',
-	'parser.c',
-	'pipeline.c',
-	'swq.c',
-	'tap.c',
-	'thread.c',
-	'tmgr.c',
-	'cryptodev.c'
+        'action.c',
+        'cli.c',
+        'conn.c',
+        'cryptodev.c',
+        'kni.c',
+        'link.c',
+        'main.c',
+        'mempool.c',
+        'parser.c',
+        'pipeline.c',
+        'swq.c',
+        'tap.c',
+        'thread.c',
+        'tmgr.c',
 )

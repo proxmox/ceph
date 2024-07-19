@@ -2,6 +2,12 @@
 // Use, modification and distribution are subject to the Boost Software License,
 // Version 1.0. See http://www.boost.org/LICENSE_1_0.txt.
 
+#include "../test/test.hpp"
+
+#if !defined(BOOST_CONVERT_CXX14)
+int main(int, char const* []) { return 0; }
+#else
+
 #include <boost/convert.hpp>
 #include <boost/convert/lexical_cast.hpp>
 
@@ -19,8 +25,6 @@ struct boost::cnv::by_default : boost::cnv::cstream {};
 namespace cnv = boost::cnv;
 namespace arg = boost::cnv::parameter;
 //]
-
-#include "../test/test.hpp"
 
 static
 void
@@ -99,3 +103,5 @@ main(int, char const* [])
 
     return boost::report_errors();
 }
+
+#endif

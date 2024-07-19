@@ -2,6 +2,8 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#ifndef RTE_EXEC_ENV_WINDOWS
+
 #include <string.h>
 #include <rte_pipeline.h>
 #include <rte_log.h>
@@ -74,11 +76,11 @@ table_action_stub_miss(struct rte_pipeline *p, struct rte_mbuf **pkts,
 	uint64_t pkts_mask, struct rte_pipeline_table_entry *entry, void *arg);
 
 rte_pipeline_table_action_handler_hit
-table_action_0x00(__attribute__((unused)) struct rte_pipeline *p,
-	__attribute__((unused)) struct rte_mbuf **pkts,
+table_action_0x00(__rte_unused struct rte_pipeline *p,
+	__rte_unused struct rte_mbuf **pkts,
 	uint64_t pkts_mask,
-	__attribute__((unused)) struct rte_pipeline_table_entry **entry,
-	__attribute__((unused)) void *arg)
+	__rte_unused struct rte_pipeline_table_entry **entry,
+	__rte_unused void *arg)
 {
 	printf("Table Action, setting pkts_mask to 0x00\n");
 	pkts_mask = ~0x00;
@@ -87,11 +89,11 @@ table_action_0x00(__attribute__((unused)) struct rte_pipeline *p,
 }
 
 rte_pipeline_table_action_handler_hit
-table_action_stub_hit(__attribute__((unused)) struct rte_pipeline *p,
-	__attribute__((unused)) struct rte_mbuf **pkts,
+table_action_stub_hit(__rte_unused struct rte_pipeline *p,
+	__rte_unused struct rte_mbuf **pkts,
 	uint64_t pkts_mask,
-	__attribute__((unused)) struct rte_pipeline_table_entry **entry,
-	__attribute__((unused)) void *arg)
+	__rte_unused struct rte_pipeline_table_entry **entry,
+	__rte_unused void *arg)
 {
 	printf("STUB Table Action Hit - doing nothing\n");
 	printf("STUB Table Action Hit - setting mask to 0x%"PRIx64"\n",
@@ -103,10 +105,10 @@ table_action_stub_hit(__attribute__((unused)) struct rte_pipeline *p,
 
 static int
 table_action_stub_miss(struct rte_pipeline *p,
-	__attribute__((unused)) struct rte_mbuf **pkts,
+	__rte_unused struct rte_mbuf **pkts,
 	uint64_t pkts_mask,
-	__attribute__((unused)) struct rte_pipeline_table_entry *entry,
-	__attribute__((unused)) void *arg)
+	__rte_unused struct rte_pipeline_table_entry *entry,
+	__rte_unused void *arg)
 {
 	printf("STUB Table Action Miss - setting mask to 0x%"PRIx64"\n",
 		override_miss_mask);
@@ -190,11 +192,13 @@ check_pipeline_invalid_params(void)
 		goto fail;
 	}
 
-	p = rte_pipeline_create(&pipeline_params_3);
-	if (p != NULL) {
-		RTE_LOG(INFO, PIPELINE, "%s: Configure pipeline with invalid "
-			"socket\n", __func__);
-		goto fail;
+	if (rte_eal_has_hugepages()) {
+		p = rte_pipeline_create(&pipeline_params_3);
+		if (p != NULL) {
+			RTE_LOG(INFO, PIPELINE, "%s: Configure pipeline with "
+				"invalid socket\n", __func__);
+			goto fail;
+		}
 	}
 
 	/* Check pipeline consistency */
@@ -362,7 +366,7 @@ setup_pipeline(int test_type)
 				.action = RTE_PIPELINE_ACTION_PORT,
 				{.port_id = port_out_id[i^1]},
 			};
-			printf("Setting secont table to output to port\n");
+			printf("Setting second table to output to port\n");
 
 			/* Add the default action for the table. */
 			ret = rte_pipeline_table_default_entry_add(p,
@@ -567,3 +571,5 @@ test_table_pipeline(void)
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */

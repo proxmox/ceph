@@ -56,6 +56,24 @@ and needs to create an event port for it. The callback is expected to fill the
 
         err = rte_event_eth_tx_adapter_create(id, dev_id, &tx_p_conf);
 
+Event device configuration for service based adapter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When ``rte_event_eth_tx_adapter_create()`` is used for creating
+adapter instance, ``rte_event_dev_config::nb_event_ports`` is
+automatically incremented, and the event device is reconfigured
+with additional event port during service initialization.
+This event device reconfigure logic also increments
+the ``rte_event_dev_config::nb_single_link_event_port_queues``
+parameter if the adapter event port config is of type
+``RTE_EVENT_PORT_CFG_SINGLE_LINK``.
+
+Application no longer needs to configure the event device with
+``rte_event_dev_config::nb_event_ports`` and
+``rte_event_dev_config::nb_single_link_event_port_queues``
+parameters required for eth Tx adapter when the adapter is created
+using the above-mentioned API.
+
 Adding Tx Queues to the Adapter Instance
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -137,11 +155,12 @@ should use the ``rte_event_enqueue_burst()`` function.
 	if (cap & RTE_EVENT_ETH_TX_ADAPTER_CAP_INTERNAL_PORT) {
 
 		event.mbuf = m;
+		eq_flags = 0;
 
 		m->port = tx_port;
 		rte_event_eth_tx_adapter_txq_set(m, tx_queue_id);
 
-		rte_event_eth_tx_adapter_enqueue(dev_id, ev_port, &event, 1);
+		rte_event_eth_tx_adapter_enqueue(dev_id, ev_port, &event, 1, eq_flags);
 	} else {
 
 		event.queue_id = qid; /* event queue linked to adapter port */
@@ -163,3 +182,55 @@ The  ``rte_event_eth_tx_adapter_stats_get()`` function reports counters defined
 in struct ``rte_event_eth_tx_adapter_stats``. The counter values are the sum of
 the counts from the eventdev PMD callback if the callback is supported, and
 the counts maintained by the service function, if one exists.
+
+Getting Adapter Instance ID
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``rte_event_eth_tx_adapter_instance_get()`` function reports
+Tx adapter instance ID for a specified ethernet device ID and Tx queue index.
+
+Tx event vectorization
+~~~~~~~~~~~~~~~~~~~~~~
+
+The event device, ethernet device pairs which support the capability
+``RTE_EVENT_ETH_TX_ADAPTER_CAP_EVENT_VECTOR`` can process event vector of mbufs.
+Additionally, application can provide a hint to the Tx adapter that all the
+mbufs are destined to the same ethernet port and queue by setting the bit
+``rte_event_vector::attr_valid`` and filling `rte_event_vector::port`` and
+``rte_event_vector::queue``.
+If ``rte_event_vector::attr_valid`` is not set then the Tx adapter should peek
+into each mbuf and transmit them to the requested ethernet port and queue pair.
+
+Queue start/stop
+~~~~~~~~~~~~~~~~
+
+The adapter can be configured to start/stop enqueueing of packets to a
+associated NIC queue using ``rte_event_eth_tx_adapter_queue_start()`` or
+``rte_event_eth_tx_adapter_queue_stop()`` respectively. By default the queue
+is in start state.
+
+These APIs help avoid some unexpected behavior with application stopping ethdev
+Tx queues and adapter being unaware of it. With these APIs, the application can
+call stop API to notify adapter that corresponding ethdev Tx queue is stopped
+and any in-flight packets are freed by adapter dataplane code. Adapter queue
+stop API is called before stopping the ethdev Tx queue. When ethdev Tx queue
+is enabled, application can notify adapter to resume processing of the packets
+for that queue by calling the start API. The ethdev Tx queue is started before
+calling adapter start API.
+
+Start function enables the adapter runtime to start enqueueing of packets
+to the Tx queue.
+
+Stop function stops the adapter runtime function from enqueueing any
+packets to the associated Tx queue. This API also frees any packets that
+may have been buffered for this queue. All inflight packets destined to the
+queue are freed by the adapter runtime until the queue is started again.
+
+Set/Get adapter runtime configuration parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The runtime configuration parameters of adapter can be set/get using
+``rte_event_eth_tx_adapter_runtime_params_set()`` and
+``rte_event_eth_tx_adapter_runtime_params_get()`` respectively.
+The parameters that can be set/get are defined in
+``struct rte_event_eth_tx_adapter_runtime_params``.

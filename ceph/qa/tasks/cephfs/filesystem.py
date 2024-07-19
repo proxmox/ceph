@@ -68,6 +68,14 @@ class FSMissing(Exception):
     def __str__(self):
         return f"File system {self.ident} does not exist in the map"
 
+class NoSuchRank(Exception):
+    def __init__(self, fscid, rank):
+        self.fscid = fscid
+        self.rank = rank
+
+    def __str__(self):
+        return f"No such rank {self.fscid}:{self.rank}"
+
 class FSStatus(RunCephCmd):
     """
     Operations on a snapshot of the FSMap.
@@ -163,7 +171,7 @@ class FSStatus(RunCephCmd):
         for info in self.get_ranks(fscid):
             if info['rank'] == rank:
                 return info
-        raise RuntimeError("FSCID {0} has no rank {1}".format(fscid, rank))
+        raise NoSuchRank(fscid, rank)
 
     def get_mds(self, name):
         """
@@ -270,7 +278,8 @@ class CephCluster(RunCephCmd):
                 j = json.loads(response_data.replace('inf', 'Infinity'),
                             parse_constant=get_nonnumeric_values)
             except json.decoder.JSONDecodeError:
-                raise RuntimeError(response_data) # assume it is an error message, pass it up
+                log.error(f"could not decode:\n{response_data}")
+                raise
             
             pretty = json.dumps(j, sort_keys=True, indent=2)
             log.debug(f"_json_asok output\n{pretty}")
@@ -593,6 +602,10 @@ class Filesystem(MDSCluster):
         a = map(lambda x: str(x).lower(), args)
         self.run_ceph_cmd("fs", "flag", "set", var, *a)
 
+    def set_config(self, opt, val, rank=0, status=None):
+        command = ["config", "set", opt, val]
+        self.rank_asok(command, rank=rank, status=status)
+
     def set_allow_multifs(self, yes=True):
         self.set_flag("enable_multiple", yes)
 
@@ -767,7 +780,7 @@ class Filesystem(MDSCluster):
                 assert(isinstance(subvols['create'], int))
                 assert(subvols['create'] > 0)
 
-                self.mon_manager.raw_cluster_cmd('fs', 'subvolumegroup', 'create', self.name, 'qa')
+                self.run_ceph_cmd('fs', 'subvolumegroup', 'create', self.name, 'qa')
                 subvol_options = self.fs_config.get('subvol_options', '')
 
                 for sv in range(0, subvols['create']):
@@ -782,14 +795,15 @@ class Filesystem(MDSCluster):
                     ]
                     if subvol_options:
                         cmd.append(subvol_options)
-                    self.run_ceph_cmd(cmd)
+                    self.run_ceph_cmd(*cmd)
 
                     if self.name not in self._ctx.created_subvols:
                         self._ctx.created_subvols[self.name] = []
                     
                     subvol_path = self.get_ceph_cmd_stdout(
                         'fs', 'subvolume', 'getpath', self.name,
-                        '--group_name', 'qa', sv_name)
+                        '--group_name', 'qa',
+                        sv_name)
                     subvol_path = subvol_path.strip()
                     self._ctx.created_subvols[self.name].append(subvol_path)
             else:
@@ -1167,6 +1181,38 @@ class Filesystem(MDSCluster):
 
         return result
 
+    def wait_for_death(self, rank=0, timeout=None, status=None):
+        """
+        Wait until rank fails and cluster is healthy.
+        :return: status
+        """
+
+        if timeout is None:
+            timeout = DAEMON_WAIT_TIMEOUT
+
+        if status is None:
+            status = self.status()
+
+        rinfo = self.get_rank(rank=rank, status=status)
+        elapsed = 0
+        while True:
+            try:
+                info = self.get_rank(rank=rank, status=status)
+                if rinfo['gid'] != info['gid']:
+                    log.info(f"mds.{rinfo['name']}:{rinfo['gid']} failed")
+                    break
+            except NoSuchRank:
+                log.info(f"mds.{rinfo['name']}:{rinfo['gid']} failed")
+                break
+            time.sleep(1)
+            elapsed += 1
+
+            if elapsed > timeout:
+                log.debug("status = {0}".format(status))
+                raise RuntimeError("Timed out waiting for rank to fail")
+
+            status = self.status()
+
     def wait_for_daemons(self, timeout=None, skip_max_mds_check=False, status=None):
         """
         Wait until all daemons are healthy
@@ -1253,36 +1299,44 @@ class Filesystem(MDSCluster):
 
         return version
 
-    def mds_asok(self, command, mds_id=None, timeout=None):
+    def mds_asok(self, *args, mds_id=None, **kwargs):
         if mds_id is None:
-            return self.rank_asok(command, timeout=timeout)
+            return self.rank_asok(*args, **kwargs)
+        if len(args) == 1 and isinstance(args[0], (tuple, list)):
+            args = list(args[0])
 
-        return self.json_asok(command, 'mds', mds_id, timeout=timeout)
+        kwargs.pop('status', None) # not useful
+        return self.json_asok(list(args), 'mds', mds_id, **kwargs)
 
-    def mds_tell(self, command, mds_id=None):
+    def mds_tell(self, *args, mds_id=None, **kwargs):
         if mds_id is None:
-            return self.rank_tell(command)
+            return self.rank_tell(*args, **kwargs)
+        if len(args) == 1 and isinstance(args[0], (tuple, list)):
+            args = list(args[0])
 
-        return json.loads(self.get_ceph_cmd_stdout("tell", f"mds.{mds_id}", *command))
-
-    def rank_asok(self, command, rank=0, status=None, timeout=None):
-        info = self.get_rank(rank=rank, status=status)
-        return self.json_asok(command, 'mds', info['name'], timeout=timeout)
-
-    def rank_tell(self, command, rank=0, status=None, timeout=120):
+        kwargs.pop('status', None) # not useful
         try:
-            out = self.get_ceph_cmd_stdout("tell", f"mds.{self.id}:{rank}", *command)
+            out = self.get_ceph_cmd_stdout("tell", f"mds.{mds_id}", *args, **kwargs)
             return json.loads(out)
         except json.decoder.JSONDecodeError:
             log.error("could not decode: {}".format(out))
             raise
 
-    def ranks_tell(self, command, status=None):
+    def rank_asok(self, *args, rank=0, status=None, **kwargs):
+        info = self.get_rank(rank=rank, status=status)
+        return self.mds_asok(*args, mds_id=info['name'], **kwargs)
+
+    def rank_tell(self, *args, rank=None, **kwargs):
+        if rank is None:
+            rank = 0
+        return self.mds_tell(*args, mds_id=f"{self.id}:{rank}", **kwargs)
+
+    def ranks_tell(self, *args, status=None):
         if status is None:
             status = self.status()
         out = []
         for r in status.get_ranks(self.id):
-            result = self.rank_tell(command, rank=r['rank'], status=status)
+            result = self.rank_tell(*args, rank=r['rank'], status=status)
             out.append((r['rank'], result))
         return sorted(out)
 
@@ -1293,14 +1347,21 @@ class Filesystem(MDSCluster):
             out.append((rank, f(perf)))
         return out
 
-    def read_cache(self, path, depth=None, rank=None):
-        cmd = ["dump", "tree", path]
+    def read_cache(self, root, depth=None, path=None, rank=0, status=None):
+        name = self.get_rank(rank=rank, status=status)['name']
+        cmd = ["dump", "tree", root]
         if depth is not None:
             cmd.append(depth.__str__())
-        result = self.rank_asok(cmd, rank=rank)
+        if path:
+            cmd.append(f'--path={path}')
+        result = self.rank_asok(cmd, rank=rank, status=status)
         if result is None or len(result) == 0:
             raise RuntimeError("Path not found in cache: {0}".format(path))
-
+        if path:
+            mds_remote = self.mon_manager.find_remote('mds', name)
+            blob = misc.get_file(mds_remote, path, sudo=True).decode('utf-8')
+            log.debug(f"read {len(blob)}B of cache")
+            result = json.loads(blob)
         return result
 
     def wait_for_state(self, goal_state, reject=None, timeout=None, mds_id=None, rank=None):
@@ -1733,3 +1794,24 @@ class Filesystem(MDSCluster):
             return result
         else:
             return self.rank_tell(['damage', 'ls'], rank=rank)
+
+    def get_ops(self, locks=False, path=None, rank=None, status=None):
+        name = self.get_rank(rank=rank, status=status)['name']
+        cmd = ['ops']
+        if locks:
+            cmd.append('--flags=locks')
+        if path:
+            cmd.append(f'--path={path}')
+        J = self.rank_tell(cmd, rank=rank)
+        if path:
+            mds_remote = self.mon_manager.find_remote('mds', name)
+            blob = misc.get_file(mds_remote, path, sudo=True).decode('utf-8')
+            log.debug(f"read {len(blob)}B of ops")
+            J = json.loads(blob)
+        return J
+
+    def get_op(self, reqid, rank=None):
+        return self.rank_tell(['op', 'get', reqid], rank=rank)
+
+    def kill_op(self, reqid, rank=None):
+        return self.rank_tell(['op', 'kill', reqid], rank=rank)

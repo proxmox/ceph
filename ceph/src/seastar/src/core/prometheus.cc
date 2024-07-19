@@ -20,10 +20,11 @@
  */
 
 #include <seastar/core/prometheus.hh>
+#include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
+#include "proto/metrics2.pb.h"
 #include <sstream>
 
-#include <seastar/core/scollectd_api.hh>
-#include "core/scollectd-impl.hh"
 #include <seastar/core/metrics_api.hh>
 #include <seastar/http/function_handlers.hh>
 #include <boost/algorithm/string/replace.hpp>
@@ -40,8 +41,161 @@ namespace seastar {
 extern seastar::logger seastar_logger;
 
 namespace prometheus {
+namespace pm = io::prometheus::client;
 
 namespace mi = metrics::impl;
+
+/**
+ * Taken from an answer in stackoverflow:
+ * http://stackoverflow.com/questions/2340730/are-there-c-equivalents-for-the-protocol-buffers-delimited-i-o-functions-in-ja
+ */
+static bool write_delimited_to(const google::protobuf::MessageLite& message,
+        google::protobuf::io::ZeroCopyOutputStream* rawOutput) {
+    google::protobuf::io::CodedOutputStream output(rawOutput);
+
+#if GOOGLE_PROTOBUF_VERSION >= 3004000
+    const size_t size = message.ByteSizeLong();
+    output.WriteVarint64(size);
+#else
+    const int size = message.ByteSize();
+    output.WriteVarint32(size);
+#endif
+
+    uint8_t* buffer = output.GetDirectBufferForNBytesAndAdvance(size);
+    if (buffer != nullptr) {
+        message.SerializeWithCachedSizesToArray(buffer);
+    } else {
+        message.SerializeWithCachedSizes(&output);
+        if (output.HadError()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static pm::Metric* add_label(pm::Metric* mt, const metrics::impl::labels_type & id, const config& ctx) {
+    mt->mutable_label()->Reserve(id.size() + 1);
+    if (ctx.label) {
+        auto label = mt->add_label();
+        label->set_name(std::string(ctx.label->key()));
+        label->set_value(std::string(ctx.label->value()));
+    }
+    for (auto && [name, value] : id) {
+        auto label = mt->add_label();
+        label->set_name(std::string(name));
+        label->set_value(std::string(value));
+    }
+    return mt;
+}
+
+static void fill_old_type_histogram(const metrics::histogram& h, ::io::prometheus::client::Histogram* mh) {
+    mh->set_sample_count(h.sample_count);
+    mh->set_sample_sum(h.sample_sum);
+    for (auto b : h.buckets) {
+        auto bc = mh->add_bucket();
+        bc->set_cumulative_count(b.count);
+        bc->set_upper_bound(b.upper_bound);
+    }
+}
+/*!
+ * Fill a histogram using the Prometheus native histogram representation.
+ *
+ * Prometheus Native histogram (also known as sparse histograms)
+ * uses an exponential bucket size with a coefficient equal to 2^(2^-schema).
+ * Besides the schema, a native histogram has a list of BucketSpan and a list of deltas.
+ * Each entry in the list of deltas represents a nonempty bucket,
+ * the bucket value is stored as a delta from the previous nonempty bucket.
+ * The bucket-spans list describes the buckets ids.
+ * Each back span represents multiple consecutive nonempty buckets.
+ * It holds the id of the first bucket in the span of buckets and the length (number of nonempty consecutive buckets).
+ */
+static void fill_native_type_histogram(const metrics::histogram& h, ::io::prometheus::client::Histogram* mh) {
+    mh->set_sample_count(h.sample_count);
+    mh->set_sample_sum(h.sample_sum);
+    size_t id = h.native_histogram.value().min_id;
+
+    mh->set_schema(h.native_histogram.value().schema);
+    double last_bucket = 0;
+    double count = 0;
+
+    size_t length = 0;
+    size_t last_bucket_id = 0;
+    ::io::prometheus::client::BucketSpan* bucket_span = nullptr;
+    for (auto b : h.buckets) {
+        // Metrics histograms are aggregated histograms
+        // A non empty bucket is bigger than the previous one
+        if (count < b.count) {
+            // If we are not part of an existing bucket-span, create one
+            if (!bucket_span) {
+                bucket_span = mh->add_positive_span();
+                bucket_span->set_offset(id - last_bucket_id);
+                length = 0;
+            }
+            length++;
+            mh->add_positive_delta(b.count - count - last_bucket);
+            last_bucket = b.count - count;
+        } else {
+            // The current bucket is empty, if there is an existing bucket-span
+            // set its length
+            if (bucket_span) {
+                bucket_span->set_length(length);
+                bucket_span = nullptr;
+                last_bucket_id = id;
+            }
+        }
+        count = b.count;
+        id++;
+    }
+    // maybe there is an open bucket span (the last bucket was part of a bucket-span)
+    // set its length
+    if (bucket_span) {
+        bucket_span->set_length(length);
+    }
+}
+
+static void fill_metric(pm::MetricFamily& mf, const metrics::impl::metric_value& c,
+        const metrics::impl::labels_type & id, const config& ctx) {
+    switch (c.type()) {
+    case scollectd::data_type::GAUGE:
+        add_label(mf.add_metric(), id, ctx)->mutable_gauge()->set_value(c.d());
+        mf.set_type(pm::MetricType::GAUGE);
+        break;
+    case scollectd::data_type::SUMMARY: {
+        auto& h = c.get_histogram();
+        auto mh = add_label(mf.add_metric(), id,ctx)->mutable_summary();
+        mh->set_sample_count(h.sample_count);
+        mh->set_sample_sum(h.sample_sum);
+        for (auto b : h.buckets) {
+            auto bc = mh->add_quantile();
+            bc->set_value(b.count);
+            bc->set_quantile(b.upper_bound);
+        }
+        mf.set_type(pm::MetricType::SUMMARY);
+        break;
+    }
+    case scollectd::data_type::HISTOGRAM:
+    {
+        auto& h = c.get_histogram();
+        auto mh = add_label(mf.add_metric(), id,ctx)->mutable_histogram();
+        mh->set_sample_count(h.sample_count);
+        mh->set_sample_sum(h.sample_sum);
+        if (h.native_histogram) {
+            fill_native_type_histogram(h, mh);
+        } else {
+            fill_old_type_histogram(h, mh);
+        }
+        mf.set_type(pm::MetricType::HISTOGRAM);
+        break;
+    }
+    case scollectd::data_type::REAL_COUNTER:
+        [[fallthrough]];
+    case scollectd::data_type::COUNTER:
+        add_label(mf.add_metric(), id, ctx)->mutable_counter()->set_value(c.d());
+        mf.set_type(pm::MetricType::COUNTER);
+        break;
+    }
+}
 
 static std::string to_str(seastar::metrics::impl::data_type dt) {
     switch (dt) {
@@ -82,9 +236,11 @@ static void add_name(std::ostream& s, const sstring& name, const std::map<sstrin
 
     if (!labels.empty()) {
         for (auto l : labels) {
-            s << delimiter;
-            s << l.first  << "=\"" << l.second << '"';
-            delimiter = ",";
+            if (!boost::algorithm::starts_with(l.first, "__")) {
+                s << delimiter;
+                s << l.first  << "=\"" << l.second << '"';
+                delimiter = ",";
+            }
         }
     }
     s << "} ";
@@ -253,7 +409,7 @@ public:
         return *_name;
     }
 
-    const uint32_t size() const {
+    uint32_t size() const {
         return _size;
     }
 
@@ -366,7 +522,7 @@ public:
         return *_info._name;
     }
 
-    const uint32_t size() const {
+    uint32_t size() const {
         return _info._size;
     }
 
@@ -392,7 +548,7 @@ public:
             // does not exist, because everything is sorted by metric family name, this is fine.
             if (metadata.mf.name == name()) {
                 const mi::value_vector& values = metric_family->values[pos_in_metric_per_shard];
-                const mi::metric_metadata_vector& metrics_metadata = metadata.metrics;
+                const mi::metric_metadata_fifo& metrics_metadata = metadata.metrics;
                 for (auto&& vm : boost::combine(values, metrics_metadata)) {
                     auto& value = boost::get<0>(vm);
                     auto& metric_metadata = boost::get<1>(vm);
@@ -588,7 +744,7 @@ future<> write_text_representation(output_stream<char>& out, const config& ctx, 
             found = false;
             metric_aggregate_by_labels aggregated_values(metric_family.metadata().aggregate_labels);
             bool should_aggregate = !metric_family.metadata().aggregate_labels.empty();
-            metric_family.foreach_metric([&s, &out, &ctx, &found, &name, &metric_family, &aggregated_values, should_aggregate, show_help, &filter](auto value, auto value_info) mutable {
+            metric_family.foreach_metric([&s, &out, &ctx, &found, &name, &metric_family, &aggregated_values, should_aggregate, show_help, &filter](const mi::metric_value& value, const mi::metric_info& value_info) mutable {
                 s.clear();
                 s.str("");
                 if ((value_info.should_skip_when_empty && value.is_empty()) || !filter(value_info.id.labels())) {
@@ -632,7 +788,55 @@ future<> write_text_representation(output_stream<char>& out, const config& ctx, 
     });
 }
 
-class metrics_handler : public handler_base  {
+future<> write_protobuf_representation(output_stream<char>& out, const config& ctx, metric_family_range& m, std::function<bool(const mi::labels_type&)> filter) {
+    return do_for_each(m, [&ctx, &out, filter=std::move(filter)](metric_family& metric_family) mutable {
+        std::string s;
+        google::protobuf::io::StringOutputStream os(&s);
+        metric_aggregate_by_labels aggregated_values(metric_family.metadata().aggregate_labels);
+        bool should_aggregate = !metric_family.metadata().aggregate_labels.empty();
+        auto& name = metric_family.name();
+        pm::MetricFamily mtf;
+        bool empty_metric = true;
+        mtf.set_name(fmt::format("{}_{}", ctx.prefix, name));
+        mtf.mutable_metric()->Reserve(metric_family.size());
+        metric_family.foreach_metric([&mtf, &ctx, &filter, &aggregated_values, &empty_metric, should_aggregate](auto value, auto value_info) {
+            if ((value_info.should_skip_when_empty && value.is_empty()) || !filter(value_info.id.labels())) {
+                return;
+            }
+            if (should_aggregate) {
+                aggregated_values.add(value, value_info.id.labels());
+            } else {
+                fill_metric(mtf, value, value_info.id.labels(), ctx);
+                empty_metric = false;
+            }
+        });
+        for (auto& [labels, value] : aggregated_values.get_values()) {
+            fill_metric(mtf, value, labels, ctx);
+            empty_metric = false;
+        }
+        if (empty_metric) {
+            return make_ready_future<>();
+        }
+        if (!write_delimited_to(mtf, &os)) {
+            seastar_logger.warn("Failed to write protobuf metrics");
+        }
+        return out.write(s);
+    });
+}
+
+bool is_accept_protobuf(const std::string& accept) {
+    std::vector<std::string> strs;
+    boost::split(strs, accept, boost::is_any_of(","));
+    for (auto i : strs) {
+        boost::trim(i);
+        if (boost::starts_with(i, "application/vnd.google.protobuf;")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+class metrics_handler : public httpd::handler_base  {
     sstring _prefix;
     config _ctx;
     static std::function<bool(const mi::labels_type&)> _true_function;
@@ -688,18 +892,19 @@ public:
 
     future<std::unique_ptr<http::reply>> handle(const sstring& path,
         std::unique_ptr<http::request> req, std::unique_ptr<http::reply> rep) override {
+        auto is_protobuf_format = _ctx.allow_protobuf && is_accept_protobuf(req->get_header("Accept"));
         sstring metric_family_name = req->get_query_param("__name__");
         bool prefix = trim_asterisk(metric_family_name);
         bool show_help = req->get_query_param("__help__") != "false";
         std::function<bool(const mi::labels_type&)> filter = make_filter(*req);
-
-        rep->write_body("txt", [this, metric_family_name, prefix, show_help, filter] (output_stream<char>&& s) {
+        rep->write_body(is_protobuf_format ? "proto" : "txt", [this, is_protobuf_format, metric_family_name, prefix, show_help, filter] (output_stream<char>&& s) {
             return do_with(metrics_families_per_shard(), output_stream<char>(std::move(s)),
-                    [this, prefix, &metric_family_name, show_help, filter] (metrics_families_per_shard& families, output_stream<char>& s) mutable {
-                return get_map_value(families).then([&s, &families, this, prefix, &metric_family_name, show_help, filter]() mutable {
+                    [this, is_protobuf_format, prefix, &metric_family_name, show_help, filter] (metrics_families_per_shard& families, output_stream<char>& s) mutable {
+                return get_map_value(families).then([&s, &families, this, is_protobuf_format, prefix, &metric_family_name, show_help, filter]() mutable {
                     return do_with(get_range(families, metric_family_name, prefix),
-                            [&s, this, show_help, filter](metric_family_range& m) {
-                        return write_text_representation(s, _ctx, m, show_help, filter);
+                            [&s, this, is_protobuf_format, show_help, filter](metric_family_range& m) {
+                        return (is_protobuf_format) ?  write_protobuf_representation(s, _ctx, m, filter) :
+                                write_text_representation(s, _ctx, m, show_help, filter);
                     });
                 }).finally([&s] () mutable {
                     return s.close();
@@ -714,13 +919,13 @@ std::function<bool(const mi::labels_type&)> metrics_handler::_true_function = []
     return true;
 };
 
-future<> add_prometheus_routes(http_server& server, config ctx) {
-    server._routes.put(GET, "/metrics", new metrics_handler(ctx));
+future<> add_prometheus_routes(httpd::http_server& server, config ctx) {
+    server._routes.put(httpd::GET, "/metrics", new metrics_handler(ctx));
     return make_ready_future<>();
 }
 
-future<> add_prometheus_routes(distributed<http_server>& server, config ctx) {
-    return server.invoke_on_all([ctx](http_server& s) {
+future<> add_prometheus_routes(distributed<httpd::http_server>& server, config ctx) {
+    return server.invoke_on_all([ctx](httpd::http_server& s) {
         return add_prometheus_routes(s, ctx);
     });
 }

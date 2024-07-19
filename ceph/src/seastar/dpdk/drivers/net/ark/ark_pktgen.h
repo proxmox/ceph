@@ -41,7 +41,7 @@ struct ark_pkt_gen_regs {
 	uint32_t hdr_dw[7];
 	uint32_t start_offset;
 	uint32_t bytes_per_cycle;
-} __attribute__ ((packed));
+} __rte_packed;
 
 struct ark_pkt_gen_inst {
 	struct rte_eth_dev_info *dev_info;
@@ -75,5 +75,6 @@ void ark_pktgen_set_hdr_dW(ark_pkt_gen_t handle, uint32_t *hdr);
 void ark_pktgen_set_start_offset(ark_pkt_gen_t handle, uint32_t x);
 void ark_pktgen_parse(char *argv);
 void ark_pktgen_setup(ark_pkt_gen_t handle);
+void *ark_pktgen_delay_start(void *arg);
 
 #endif

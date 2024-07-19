@@ -64,7 +64,7 @@ It consist of calls to the pthread library (more specifically, pthread_self(), p
 .. note::
 
     Initialization of objects, such as memory zones, rings, memory pools, lpm tables and hash tables,
-    should be done as part of the overall application initialization on the master lcore.
+    should be done as part of the overall application initialization on the main lcore.
     The creation and initialization functions for these objects are not multi-thread safe.
     However, once initialized, the objects themselves can safely be used in multiple threads simultaneously.
 
@@ -86,7 +86,7 @@ See chapter
 Memory Mapping Discovery and Memory Reservation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The allocation of large contiguous physical memory is done using the hugetlbfs kernel filesystem.
+The allocation of large contiguous physical memory is done using hugepages.
 The EAL provides an API to reserve named memory zones in this contiguous memory.
 The physical address of the reserved memory for that memory zone is also returned to the user by the memory zone reservation API.
 
@@ -95,11 +95,13 @@ and legacy mode. Both modes are explained below.
 
 .. note::
 
-    Memory reservations done using the APIs provided by rte_malloc are also backed by pages from the hugetlbfs filesystem.
+    Memory reservations done using the APIs provided by rte_malloc
+    are also backed by hugepages unless ``--no-huge`` option is given.
 
-+ Dynamic memory mode
+Dynamic Memory Mode
+^^^^^^^^^^^^^^^^^^^
 
-Currently, this mode is only supported on Linux.
+Currently, this mode is only supported on Linux and Windows.
 
 In this mode, usage of hugepages by DPDK application will grow and shrink based
 on application's requests. Any memory allocation through ``rte_malloc()``,
@@ -155,7 +157,8 @@ of memory that can be used by DPDK application.
     :ref:`Multi-process Support <Multi-process_Support>` for more details about
     DPDK IPC.
 
-+ Legacy memory mode
+Legacy Memory Mode
+^^^^^^^^^^^^^^^^^^
 
 This mode is enabled by specifying ``--legacy-mem`` command-line switch to the
 EAL. This switch will have no effect on FreeBSD as FreeBSD only supports
@@ -168,7 +171,8 @@ not allow acquiring or releasing hugepages from the system at runtime.
 If neither ``-m`` nor ``--socket-mem`` were specified, the entire available
 hugepage memory will be preallocated.
 
-+ Hugepage allocation matching
+Hugepage Allocation Matching
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This behavior is enabled by specifying the ``--match-allocations`` command-line
 switch to the EAL. This switch is Linux-only and not supported with
@@ -182,17 +186,19 @@ matching can be used by these types of applications to satisfy both of these
 requirements. This can result in some increased memory usage which is
 very dependent on the memory allocation patterns of the application.
 
-+ 32-bit support
+32-bit Support
+^^^^^^^^^^^^^^
 
 Additional restrictions are present when running in 32-bit mode. In dynamic
 memory mode, by default maximum of 2 gigabytes of VA space will be preallocated,
-and all of it will be on master lcore NUMA node unless ``--socket-mem`` flag is
+and all of it will be on main lcore NUMA node unless ``--socket-mem`` flag is
 used.
 
 In legacy mode, VA space will only be preallocated for segments that were
 requested (plus padding, to keep IOVA-contiguousness).
 
-+ Maximum amount of memory
+Maximum Amount of Memory
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 All possible virtual memory space that can ever be used for hugepage mapping in
 a DPDK process is preallocated at startup, thereby placing an upper limit on how
@@ -201,16 +207,16 @@ each segment is strictly one physical page. It is possible to change the amount
 of virtual memory being preallocated at startup by editing the following config
 variables:
 
-* ``CONFIG_RTE_MAX_MEMSEG_LISTS`` controls how many segment lists can DPDK have
-* ``CONFIG_RTE_MAX_MEM_MB_PER_LIST`` controls how much megabytes of memory each
+* ``RTE_MAX_MEMSEG_LISTS`` controls how many segment lists can DPDK have
+* ``RTE_MAX_MEM_MB_PER_LIST`` controls how much megabytes of memory each
   segment list can address
-* ``CONFIG_RTE_MAX_MEMSEG_PER_LIST`` controls how many segments each segment can
-  have
-* ``CONFIG_RTE_MAX_MEMSEG_PER_TYPE`` controls how many segments each memory type
+* ``RTE_MAX_MEMSEG_PER_LIST`` controls how many segments each segment list
+  can have
+* ``RTE_MAX_MEMSEG_PER_TYPE`` controls how many segments each memory type
   can have (where "type" is defined as "page size + NUMA node" combination)
-* ``CONFIG_RTE_MAX_MEM_MB_PER_TYPE`` controls how much megabytes of memory each
+* ``RTE_MAX_MEM_MB_PER_TYPE`` controls how much megabytes of memory each
   memory type can address
-* ``CONFIG_RTE_MAX_MEM_MB`` places a global maximum on the amount of memory
+* ``RTE_MAX_MEM_MB`` places a global maximum on the amount of memory
   DPDK can reserve
 
 Normally, these options do not need to be changed.
@@ -222,7 +228,92 @@ Normally, these options do not need to be changed.
     can later be mapped into that preallocated VA space (if dynamic memory mode
     is enabled), and can optionally be mapped into it at startup.
 
-+ Segment file descriptors
+.. _hugepage_mapping:
+
+Hugepage Mapping
+^^^^^^^^^^^^^^^^
+
+Below is an overview of methods used for each OS to obtain hugepages,
+explaining why certain limitations and options exist in EAL.
+See the user guide for a specific OS for configuration details.
+
+FreeBSD uses ``contigmem`` kernel module
+to reserve a fixed number of hugepages at system start,
+which are mapped by EAL at initialization using a specific ``sysctl()``.
+
+Windows EAL allocates hugepages from the OS as needed using Win32 API,
+so available amount depends on the system load.
+It uses ``virt2phys`` kernel module to obtain physical addresses,
+unless running in IOVA-as-VA mode (e.g. forced with ``--iova-mode=va``).
+
+Linux allows to select any combination of the following:
+
+* use files in hugetlbfs (the default)
+  or anonymous mappings (``--in-memory``);
+* map each hugepage from its own file (the default)
+  or map multiple hugepages from one big file (``--single-file-segments``).
+
+Mapping hugepages from files in hugetlbfs is essential for multi-process,
+because secondary processes need to map the same hugepages.
+EAL creates files like ``rtemap_0``
+in directories specified with ``--huge-dir`` option
+(or in the mount point for a specific hugepage size).
+The ``rte`` prefix can be changed using ``--file-prefix``.
+This may be needed for running multiple primary processes
+that share a hugetlbfs mount point.
+Each backing file by default corresponds to one hugepage,
+it is opened and locked for the entire time the hugepage is used.
+This may exhaust the number of open files limit (``NOFILE``).
+See :ref:`segment-file-descriptors` section
+on how the number of open backing file descriptors can be reduced.
+
+In dynamic memory mode, EAL removes a backing hugepage file
+when all pages mapped from it are freed back to the system.
+However, backing files may persist after the application terminates
+in case of a crash or a leak of DPDK memory (e.g. ``rte_free()`` is missing).
+This reduces the number of hugepages available to other processes
+as reported by ``/sys/kernel/mm/hugepages/hugepages-*/free_hugepages``.
+EAL can remove the backing files after opening them for mapping
+if ``--huge-unlink`` is given to avoid polluting hugetlbfs.
+However, since it disables multi-process anyway,
+using anonymous mapping (``--in-memory``) is recommended instead.
+
+:ref:`EAL memory allocator <malloc>` relies on hugepages being zero-filled.
+Hugepages are cleared by the kernel when a file in hugetlbfs or its part
+is mapped for the first time system-wide
+to prevent data leaks from previous users of the same hugepage.
+EAL ensures this behavior by removing existing backing files at startup
+and by recreating them before opening for mapping (as a precaution).
+
+One exception is ``--huge-unlink=never`` mode.
+It is used to speed up EAL initialization, usually on application restart.
+Clearing memory constitutes more than 95% of hugepage mapping time.
+EAL can save it by remapping existing backing files
+with all the data left in the mapped hugepages ("dirty" memory).
+Such segments are marked with ``RTE_MEMSEG_FLAG_DIRTY``.
+Memory allocator detects dirty segments and handles them accordingly,
+in particular, it clears memory requested with ``rte_zmalloc*()``.
+In this mode EAL also does not remove a backing file
+when all pages mapped from it are freed,
+because they are intended to be reusable at restart.
+
+Anonymous mapping does not allow multi-process architecture.
+This mode does not use hugetlbfs
+and thus does not require root permissions for memory management
+(the limit of locked memory amount, ``MEMLOCK``, still applies).
+It is free of filename conflict and leftover file issues.
+If ``memfd_create(2)`` is supported both at build and run time,
+DPDK memory manager can provide file descriptors for memory segments,
+which are required for VirtIO with vhost-user backend.
+This can exhaust the number of open files limit (``NOFILE``)
+despite not creating any visible files.
+See :ref:`segment-file-descriptors` section
+on how the number of open file descriptors used by EAL can be reduced.
+
+.. _segment-file-descriptors:
+
+Segment File Descriptors
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 On Linux, in most cases, EAL will store segment file descriptors in EAL. This
 can become a problem when using smaller page sizes due to underlying limitations
@@ -240,6 +331,25 @@ Another option is to use bigger page sizes. Since fewer pages are required to
 cover the same memory area, fewer file descriptors will be stored internally
 by EAL.
 
+Hugepage Worker Stacks
+^^^^^^^^^^^^^^^^^^^^^^
+
+When the ``--huge-worker-stack[=size]`` EAL option is specified, worker
+thread stacks are allocated from hugepage memory local to the NUMA node
+of the thread. Worker stack size defaults to system pthread stack size
+if the optional size parameter is not specified.
+
+.. warning::
+    Stacks allocated from hugepage memory are not protected by guard
+    pages. Worker stacks must be sufficiently sized to prevent stack
+    overflow when this option is used.
+
+    As with normal thread stacks, hugepage worker thread stack size is
+    fixed and is not dynamically resized. Therefore, an application that
+    is free of stack page faults under a given load should be safe with
+    hugepage worker thread stacks given the same thread stack size and
+    loading conditions.
+
 Support for Externally Allocated Memory
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -249,7 +359,7 @@ manual memory management.
 
 + Using heap API's for externally allocated memory
 
-Using using a set of malloc heap API's is the recommended way to use externally
+Using a set of malloc heap API's is the recommended way to use externally
 allocated memory in DPDK. In this way, support for externally allocated memory
 is implemented through overloading the socket ID - externally allocated heaps
 will have socket ID's that would be considered invalid under normal
@@ -297,7 +407,7 @@ set of API's under the ``rte_extmem_*`` namespace.
 
 These API's are (as their name implies) intended to allow registering or
 unregistering externally allocated memory to/from DPDK's internal page table, to
-allow API's like ``rte_virt2memseg`` etc. to work with externally allocated
+allow API's like ``rte_mem_virt2memseg`` etc. to work with externally allocated
 memory. Memory added this way will not be available for any regular DPDK
 allocators; DPDK will leave this memory for the user application to manage.
 
@@ -407,17 +517,101 @@ device having emitted a Device Removal Event. In such case, calling
 callback. Care must be taken not to close the device from the interrupt handler
 context. It is necessary to reschedule such closing operation.
 
-Blacklisting
-~~~~~~~~~~~~
+Block list
+~~~~~~~~~~
 
-The EAL PCI device blacklist functionality can be used to mark certain NIC ports as blacklisted,
+The EAL PCI device block list functionality can be used to mark certain NIC ports as unavailable,
 so they are ignored by the DPDK.
-The ports to be blacklisted are identified using the PCIe* description (Domain:Bus:Device.Function).
+The ports to be blocked are identified using the PCIe* description (Domain:Bus:Device.Function).
 
 Misc Functions
 ~~~~~~~~~~~~~~
 
 Locks and atomic operations are per-architecture (i686 and x86_64).
+
+Lock annotations
+~~~~~~~~~~~~~~~~
+
+R/W locks, seq locks and spinlocks have been instrumented to help developers in
+catching issues in DPDK.
+
+This instrumentation relies on
+`clang Thread Safety checks <https://clang.llvm.org/docs/ThreadSafetyAnalysis.html>`_.
+All attributes are prefixed with __rte and are fully described in the clang
+documentation.
+
+Some general comments:
+
+- it is important that lock requirements are expressed at the function
+  declaration level in headers so that other code units can be inspected,
+- when some global lock is necessary to some user-exposed API, it is preferred
+  to expose it via an internal helper rather than expose the global variable,
+- there are a list of known limitations with clang instrumentation, but before
+  waiving checks with ``__rte_no_thread_safety_analysis`` in your code, please
+  discuss it on the mailing list,
+
+The checks are enabled by default for libraries and drivers.
+They can be disabled by setting ``annotate_locks`` to ``false`` in
+the concerned library/driver ``meson.build``.
+
+IOVA Mode Detection
+~~~~~~~~~~~~~~~~~~~
+
+IOVA Mode is selected by considering what the current usable Devices on the
+system require and/or support.
+
+On FreeBSD, RTE_IOVA_PA is always the default. On Linux, the IOVA mode is
+detected based on a 2-step heuristic detailed below.
+
+For the first step, EAL asks each bus its requirement in terms of IOVA mode
+and decides on a preferred IOVA mode.
+
+- if all buses report RTE_IOVA_PA, then the preferred IOVA mode is RTE_IOVA_PA,
+- if all buses report RTE_IOVA_VA, then the preferred IOVA mode is RTE_IOVA_VA,
+- if all buses report RTE_IOVA_DC, no bus expressed a preference, then the
+  preferred mode is RTE_IOVA_DC,
+- if the buses disagree (at least one wants RTE_IOVA_PA and at least one wants
+  RTE_IOVA_VA), then the preferred IOVA mode is RTE_IOVA_DC (see below with the
+  check on Physical Addresses availability),
+
+If the buses have expressed no preference on which IOVA mode to pick, then a
+default is selected using the following logic:
+
+- if physical addresses are not available, RTE_IOVA_VA mode is used
+- if /sys/kernel/iommu_groups is not empty, RTE_IOVA_VA mode is used
+- otherwise, RTE_IOVA_PA mode is used
+
+In the case when the buses had disagreed on their preferred IOVA mode, part of
+the buses won't work because of this decision.
+
+The second step checks if the preferred mode complies with the Physical
+Addresses availability since those are only available to root user in recent
+kernels. Namely, if the preferred mode is RTE_IOVA_PA but there is no access to
+Physical Addresses, then EAL init fails early, since later probing of the
+devices would fail anyway.
+
+.. note::
+
+    The RTE_IOVA_VA mode is preferred as the default in most cases for the
+    following reasons:
+
+    - All drivers are expected to work in RTE_IOVA_VA mode, irrespective of
+      physical address availability.
+    - By default, the mempool, first asks for IOVA-contiguous memory using
+      ``RTE_MEMZONE_IOVA_CONTIG``. This is slow in RTE_IOVA_PA mode and it may
+      affect the application boot time.
+    - It is easy to enable large amount of IOVA-contiguous memory use cases
+      with IOVA in VA mode.
+
+    It is expected that all PCI drivers work in both RTE_IOVA_PA and
+    RTE_IOVA_VA modes.
+
+    If a PCI driver does not support RTE_IOVA_PA mode, the
+    ``RTE_PCI_DRV_NEED_IOVA_AS_VA`` flag is used to dictate that this PCI
+    driver can only work in RTE_IOVA_VA mode.
+
+    When the KNI kernel module is detected, RTE_IOVA_PA mode is preferred as a
+    performance penalty is expected in RTE_IOVA_VA mode.
 
 IOVA Mode Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -426,6 +620,40 @@ Auto detection of the IOVA mode, based on probing the bus and IOMMU configuratio
 the desired addressing mode when virtual devices that are not directly attached to the bus are present.
 To facilitate forcing the IOVA mode to a specific value the EAL command line option ``--iova-mode`` can
 be used to select either physical addressing('pa') or virtual addressing('va').
+
+.. _max_simd_bitwidth:
+
+
+Max SIMD bitwidth
+~~~~~~~~~~~~~~~~~
+
+The EAL provides a single setting to limit the max SIMD bitwidth used by DPDK,
+which is used in determining the vector path, if any, chosen by a component.
+The value can be set at runtime by an application using the
+'rte_vect_set_max_simd_bitwidth(uint16_t bitwidth)' function,
+which should only be called once at initialization, before EAL init.
+The value can be overridden by the user using the EAL command-line option '--force-max-simd-bitwidth'.
+
+When choosing a vector path, along with checking the CPU feature support,
+the value of the max SIMD bitwidth must also be checked, and can be retrieved using the
+'rte_vect_get_max_simd_bitwidth()' function.
+The value should be compared against the enum values for accepted max SIMD bitwidths:
+
+.. code-block:: c
+
+   enum rte_vect_max_simd {
+       RTE_VECT_SIMD_DISABLED = 64,
+       RTE_VECT_SIMD_128 = 128,
+       RTE_VECT_SIMD_256 = 256,
+       RTE_VECT_SIMD_512 = 512,
+       RTE_VECT_SIMD_MAX = INT16_MAX + 1,
+   };
+
+    if (rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_512)
+        /* Take AVX-512 vector path */
+    else if (rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
+        /* Take AVX2 vector path */
+
 
 Memory Segments and Memory Zones (memzone)
 ------------------------------------------
@@ -505,9 +733,13 @@ It's also compatible with the pattern of corelist('-l') option.
 non-EAL pthread support
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-It is possible to use the DPDK execution context with any user pthread (aka. Non-EAL pthreads).
-In a non-EAL pthread, the *_lcore_id* is always LCORE_ID_ANY which identifies that it is not an EAL thread with a valid, unique, *_lcore_id*.
-Some libraries will use an alternative unique ID (e.g. TID), some will not be impacted at all, and some will work but with limitations (e.g. timer and mempool libraries).
+It is possible to use the DPDK execution context with any user pthread (aka. non-EAL pthreads).
+There are two kinds of non-EAL pthreads:
+
+- a registered non-EAL pthread with a valid *_lcore_id* that was successfully assigned by calling ``rte_thread_register()``,
+- a non registered non-EAL pthread with a LCORE_ID_ANY,
+
+For non registered non-EAL pthread (with a LCORE_ID_ANY *_lcore_id*), some libraries will use an alternative unique ID (e.g. TID), some will not be impacted at all, and some will work but with limitations (e.g. timer and mempool libraries).
 
 All these impacts are mentioned in :ref:`known_issue_label` section.
 
@@ -544,7 +776,7 @@ controlled with tools like taskset (Linux) or cpuset (FreeBSD),
 - with affinity restricted to 2-4, the Control Threads will end up on
   CPU 4.
 - with affinity restricted to 2-3, the Control Threads will end up on
-  CPU 2 (master lcore, which is the default when no CPU is available).
+  CPU 2 (main lcore, which is the default when no CPU is available).
 
 .. _known_issue_label:
 
@@ -554,14 +786,14 @@ Known Issues
 + rte_mempool
 
   The rte_mempool uses a per-lcore cache inside the mempool.
-  For non-EAL pthreads, ``rte_lcore_id()`` will not return a valid number.
-  So for now, when rte_mempool is used with non-EAL pthreads, the put/get operations will bypass the default mempool cache and there is a performance penalty because of this bypass.
-  Only user-owned external caches can be used in a non-EAL context in conjunction with ``rte_mempool_generic_put()`` and ``rte_mempool_generic_get()`` that accept an explicit cache parameter.
+  For unregistered non-EAL pthreads, ``rte_lcore_id()`` will not return a valid number.
+  So for now, when rte_mempool is used with unregistered non-EAL pthreads, the put/get operations will bypass the default mempool cache and there is a performance penalty because of this bypass.
+  Only user-owned external caches can be used in an unregistered non-EAL context in conjunction with ``rte_mempool_generic_put()`` and ``rte_mempool_generic_get()`` that accept an explicit cache parameter.
 
 + rte_ring
 
   rte_ring supports multi-producer enqueue and multi-consumer dequeue.
-  However, it is non-preemptive, this has a knock on effect of making rte_mempool non-preemptable.
+  However, it is non-preemptive, this has a knock on effect of making rte_mempool non-preemptible.
 
   .. note::
 
@@ -592,8 +824,8 @@ Known Issues
   Alternatively, applications can use the lock-free stack mempool handler. When
   considering this handler, note that:
 
-  - It is currently limited to the x86_64 platform, because it uses an
-    instruction (16-byte compare-and-swap) that is not yet available on other
+  - It is currently limited to the aarch64 and x86_64 platforms, because it uses
+    an instruction (16-byte compare-and-swap) that is not yet available on other
     platforms.
   - It has worse average-case performance than the non-preemptive rte_ring, but
     software caching (e.g. the mempool cache) can mitigate this by reducing the
@@ -601,15 +833,85 @@ Known Issues
 
 + rte_timer
 
-  Running  ``rte_timer_manage()`` on a non-EAL pthread is not allowed. However, resetting/stopping the timer from a non-EAL pthread is allowed.
+  Running  ``rte_timer_manage()`` on an unregistered non-EAL pthread is not allowed. However, resetting/stopping the timer from a non-EAL pthread is allowed.
 
 + rte_log
 
-  In non-EAL pthreads, there is no per thread loglevel and logtype, global loglevels are used.
+  In unregistered non-EAL pthreads, there is no per thread loglevel and logtype, global loglevels are used.
 
 + misc
 
-  The debug statistics of rte_ring, rte_mempool and rte_timer are not supported in a non-EAL pthread.
+  The debug statistics of rte_ring, rte_mempool and rte_timer are not supported in an unregistered non-EAL pthread.
+
+Signal Safety
+~~~~~~~~~~~~~
+
+  The Posix API defines an async-signal-safe function as one that can be safely
+  called from with a signal handler. Many DPDK functions are non-reentrant and
+  therefore are unsafe to call from a signal handler.
+
+  The kinds of issues that make DPDK functions unsafe can be understood when
+  one considers that much of the code in DPDK uses locks and other shared
+  resources. For example, calling ``rte_mempool_lookup()`` from a signal
+  would deadlock if the signal happened during previous call ``rte_mempool``
+  routines.
+
+  Other functions are not signal safe because they use one or more
+  library routines that are not themselves signal safe.
+  For example, calling ``rte_panic()`` is not safe in a signal handler
+  because it uses ``rte_log()`` and ``rte_log()`` calls the
+  ``syslog()`` library function which is in the list of
+  signal safe functions in
+  `Signal-Safety manual page <https://man7.org/linux/man-pages/man7/signal-safety.7.html>`_.
+
+  The set of functions that are expected to be async-signal-safe in DPDK
+  is shown in the following table. The functions not otherwise noted
+  are not async-signal-safe.
+
+.. csv-table:: **Signal Safe Functions**
+   :header: "Function"
+   :widths: 32
+
+   rte_dump_stack
+   rte_eal_get_lcore_state
+   rte_eal_get_runtime_dir
+   rte_eal_has_hugepages
+   rte_eal_has_pci
+   rte_eal_lcore_role
+   rte_eal_process_type
+   rte_eal_using_phys_addrs
+   rte_get_hpet_cycles
+   rte_get_hpet_hz
+   rte_get_main_lcore
+   rte_get_next_lcore
+   rte_get_tsc_hz
+   rte_hypervisor_get
+   rte_hypervisor_get_name
+   rte_lcore_count
+   rte_lcore_cpuset
+   rte_lcore_has_role
+   rte_lcore_index
+   rte_lcore_is_enabled
+   rte_lcore_to_cpu_id
+   rte_lcore_to_socket_id
+   rte_log_get_global_level
+   rte_log_get_level
+   rte_memory_get_nchannel
+   rte_memory_get_nrank
+   rte_reciprocal_value
+   rte_reciprocal_value_u64
+   rte_socket_count
+   rte_socket_id
+   rte_socket_id_by_idx
+   rte_strerror
+   rte_strscpy
+   rte_strsplit
+   rte_sys_gettid
+   rte_uuid_compare
+   rte_uuid_is_null
+   rte_uuid_parse
+   rte_uuid_unparse
+
 
 cgroup control
 ~~~~~~~~~~~~~~
@@ -634,6 +936,7 @@ We expect only 50% of CPU spend on packet IO.
     echo 100000 > pkt_io/cpu.cfs_period_us
     echo  50000 > pkt_io/cpu.cfs_quota_us
 
+.. _malloc:
 
 Malloc
 ------
@@ -652,11 +955,6 @@ However, they can be used in configuration code.
 Refer to the rte_malloc() function description in the *DPDK API Reference*
 manual for more information.
 
-Cookies
-~~~~~~~
-
-When CONFIG_RTE_MALLOC_DEBUG is enabled, the allocated memory contains
-overwrite protection fields to help identify buffer overflows.
 
 Alignment and NUMA Constraints
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -785,6 +1083,11 @@ to be virtually contiguous.
     constraints.
     In that case, the pad header is used to locate the actual malloc element
     header for the block.
+
+*   dirty - this flag is only meaningful when ``state`` is ``FREE``.
+    It indicates that the content of the element is not fully zero-filled.
+    Memory from such blocks must be cleared when requested via ``rte_zmalloc*()``.
+    Dirty elements only appear with ``--huge-unlink=never``.
 
 *   pad - this holds the length of the padding present at the start of the block.
     In the case of a normal block header, it is added to the address of the end

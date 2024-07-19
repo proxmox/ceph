@@ -14,7 +14,7 @@
 #include <rte_string_fns.h>
 #include <rte_pci.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 
@@ -28,6 +28,28 @@
 #include "rte_pmd_i40e.h"
 
 #define I40E_CFG_CRCSTRIP_DEFAULT 1
+
+/* Supported RSS offloads */
+#define I40E_DEFAULT_RSS_HENA ( \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_SCTP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_TCP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_OTHER) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_FRAG_IPV4) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_TCP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_SCTP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_OTHER) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_FRAG_IPV6) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_L2_PAYLOAD))
+
+#define I40E_DEFAULT_RSS_HENA_EXPANDED (I40E_DEFAULT_RSS_HENA | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV4_TCP_SYN_NO_ACK) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_UNICAST_IPV4_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV4_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_IPV6_TCP_SYN_NO_ACK) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_UNICAST_IPV6_UDP) | \
+	BIT_ULL(I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV6_UDP))
 
 static int
 i40e_pf_host_switch_queues(struct i40e_pf_vf *vf,
@@ -321,7 +343,7 @@ i40e_pf_host_process_cmd_get_vf_resource(struct i40e_pf_vf *vf, uint8_t *msg,
 		vf->request_caps = *(uint32_t *)msg;
 
 	/* enable all RSS by default,
-	 * doesn't support hena setting by virtchnnl yet.
+	 * doesn't support hena setting by virtchnl yet.
 	 */
 	if (vf->request_caps & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
 		I40E_WRITE_REG(hw, I40E_VFQF_HENA1(0, vf->vf_idx),
@@ -333,6 +355,10 @@ i40e_pf_host_process_cmd_get_vf_resource(struct i40e_pf_vf *vf, uint8_t *msg,
 
 	vf_res->vf_cap_flags = vf->request_caps &
 				   I40E_VIRTCHNL_OFFLOAD_CAPS;
+
+	if (vf->request_caps & VIRTCHNL_VF_OFFLOAD_REQ_QUEUES)
+		vf_res->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_REQ_QUEUES;
+
 	/* For X722, it supports write back on ITR
 	 * without binding queue to interrupt vector.
 	 */
@@ -348,8 +374,8 @@ i40e_pf_host_process_cmd_get_vf_resource(struct i40e_pf_vf *vf, uint8_t *msg,
 	vf_res->vsi_res[0].vsi_type = VIRTCHNL_VSI_SRIOV;
 	vf_res->vsi_res[0].vsi_id = vf->vsi->vsi_id;
 	vf_res->vsi_res[0].num_queue_pairs = vf->vsi->nb_qps;
-	ether_addr_copy(&vf->mac_addr,
-		(struct ether_addr *)vf_res->vsi_res[0].default_mac_addr);
+	rte_ether_addr_copy(&vf->mac_addr,
+		(struct rte_ether_addr *)vf_res->vsi_res[0].default_mac_addr);
 
 send_msg:
 	i40e_pf_host_send_msg_to_vf(vf, VIRTCHNL_OP_GET_VF_RESOURCES,
@@ -571,14 +597,14 @@ i40e_pf_config_irq_link_list(struct i40e_pf_vf *vf,
 	tempmap = vvm->rxq_map;
 	for (i = 0; i < sizeof(vvm->rxq_map) * BITS_PER_CHAR; i++) {
 		if (tempmap & 0x1)
-			linklistmap |= (1 << (2 * i));
+			linklistmap |= RTE_BIT64(2 * i);
 		tempmap >>= 1;
 	}
 
 	tempmap = vvm->txq_map;
 	for (i = 0; i < sizeof(vvm->txq_map) * BITS_PER_CHAR; i++) {
 		if (tempmap & 0x1)
-			linklistmap |= (1 << (2 * i + 1));
+			linklistmap |= RTE_BIT64(2 * i + 1);
 		tempmap >>= 1;
 	}
 
@@ -699,7 +725,7 @@ i40e_pf_host_process_cmd_config_irq_map(struct i40e_pf_vf *vf,
 		if ((map->rxq_map < qbit_max) && (map->txq_map < qbit_max)) {
 			i40e_pf_config_irq_link_list(vf, map);
 		} else {
-			/* configured queue size excceed limit */
+			/* configured queue size exceed limit */
 			ret = I40E_ERR_PARAM;
 			goto send_msg;
 		}
@@ -823,7 +849,7 @@ i40e_pf_host_process_cmd_add_ether_address(struct i40e_pf_vf *vf,
 			(struct virtchnl_ether_addr_list *)msg;
 	struct i40e_mac_filter_info filter;
 	int i;
-	struct ether_addr *mac;
+	struct rte_ether_addr *mac;
 
 	if (!b_op) {
 		i40e_pf_host_send_msg_to_vf(
@@ -842,10 +868,10 @@ i40e_pf_host_process_cmd_add_ether_address(struct i40e_pf_vf *vf,
 	}
 
 	for (i = 0; i < addr_list->num_elements; i++) {
-		mac = (struct ether_addr *)(addr_list->list[i].addr);
-		rte_memcpy(&filter.mac_addr, mac, ETHER_ADDR_LEN);
-		filter.filter_type = RTE_MACVLAN_PERFECT_MATCH;
-		if (is_zero_ether_addr(mac) ||
+		mac = (struct rte_ether_addr *)(addr_list->list[i].addr);
+		rte_memcpy(&filter.mac_addr, mac, RTE_ETHER_ADDR_LEN);
+		filter.filter_type = I40E_MACVLAN_PERFECT_MATCH;
+		if (rte_is_zero_ether_addr(mac) ||
 		    i40e_vsi_add_mac(vf->vsi, &filter)) {
 			ret = I40E_ERR_INVALID_MAC_ADDR;
 			goto send_msg;
@@ -869,7 +895,7 @@ i40e_pf_host_process_cmd_del_ether_address(struct i40e_pf_vf *vf,
 	struct virtchnl_ether_addr_list *addr_list =
 		(struct virtchnl_ether_addr_list *)msg;
 	int i;
-	struct ether_addr *mac;
+	struct rte_ether_addr *mac;
 
 	if (!b_op) {
 		i40e_pf_host_send_msg_to_vf(
@@ -886,8 +912,8 @@ i40e_pf_host_process_cmd_del_ether_address(struct i40e_pf_vf *vf,
 	}
 
 	for (i = 0; i < addr_list->num_elements; i++) {
-		mac = (struct ether_addr *)(addr_list->list[i].addr);
-		if(is_zero_ether_addr(mac) ||
+		mac = (struct rte_ether_addr *)(addr_list->list[i].addr);
+		if (rte_is_zero_ether_addr(mac) ||
 			i40e_vsi_delete_mac(vf->vsi, mac)) {
 			ret = I40E_ERR_INVALID_MAC_ADDR;
 			goto send_msg;
@@ -1181,24 +1207,24 @@ i40e_notify_vf_link_status(struct rte_eth_dev *dev, struct i40e_pf_vf *vf)
 	event.event_data.link_event.link_status =
 		dev->data->dev_link.link_status;
 
-	/* need to convert the ETH_SPEED_xxx into VIRTCHNL_LINK_SPEED_xxx */
+	/* need to convert the RTE_ETH_SPEED_xxx into VIRTCHNL_LINK_SPEED_xxx */
 	switch (dev->data->dev_link.link_speed) {
-	case ETH_SPEED_NUM_100M:
+	case RTE_ETH_SPEED_NUM_100M:
 		event.event_data.link_event.link_speed = VIRTCHNL_LINK_SPEED_100MB;
 		break;
-	case ETH_SPEED_NUM_1G:
+	case RTE_ETH_SPEED_NUM_1G:
 		event.event_data.link_event.link_speed = VIRTCHNL_LINK_SPEED_1GB;
 		break;
-	case ETH_SPEED_NUM_10G:
+	case RTE_ETH_SPEED_NUM_10G:
 		event.event_data.link_event.link_speed = VIRTCHNL_LINK_SPEED_10GB;
 		break;
-	case ETH_SPEED_NUM_20G:
+	case RTE_ETH_SPEED_NUM_20G:
 		event.event_data.link_event.link_speed = VIRTCHNL_LINK_SPEED_20GB;
 		break;
-	case ETH_SPEED_NUM_25G:
+	case RTE_ETH_SPEED_NUM_25G:
 		event.event_data.link_event.link_speed = VIRTCHNL_LINK_SPEED_25GB;
 		break;
-	case ETH_SPEED_NUM_40G:
+	case RTE_ETH_SPEED_NUM_40G:
 		event.event_data.link_event.link_speed = VIRTCHNL_LINK_SPEED_40GB;
 		break;
 	default:
@@ -1284,6 +1310,37 @@ i40e_pf_host_process_cmd_request_queues(struct i40e_pf_vf *vf, uint8_t *msg)
 				(u8 *)vfres, sizeof(*vfres));
 }
 
+static void
+i40e_pf_host_process_cmd_get_rss_hena(struct i40e_pf_vf *vf)
+{
+	struct virtchnl_rss_hena vrh = {0};
+	struct i40e_pf *pf = vf->pf;
+
+	if (pf->adapter->hw.mac.type == I40E_MAC_X722)
+		vrh.hena = I40E_DEFAULT_RSS_HENA_EXPANDED;
+	else
+		vrh.hena = I40E_DEFAULT_RSS_HENA;
+
+	i40e_pf_host_send_msg_to_vf(vf, VIRTCHNL_OP_GET_RSS_HENA_CAPS,
+				    I40E_SUCCESS, (uint8_t *)&vrh, sizeof(vrh));
+}
+
+static void
+i40e_pf_host_process_cmd_set_rss_hena(struct i40e_pf_vf *vf, uint8_t *msg)
+{
+	struct virtchnl_rss_hena *vrh =
+		(struct virtchnl_rss_hena *)msg;
+	struct i40e_hw *hw = &vf->pf->adapter->hw;
+
+	i40e_write_rx_ctl(hw, I40E_VFQF_HENA1(0, vf->vf_idx),
+			  (uint32_t)vrh->hena);
+	i40e_write_rx_ctl(hw, I40E_VFQF_HENA1(1, vf->vf_idx),
+			  (uint32_t)(vrh->hena >> 32));
+
+	i40e_pf_host_send_msg_to_vf(vf, VIRTCHNL_OP_SET_RSS_HENA,
+				    I40E_SUCCESS, NULL, 0);
+}
+
 void
 i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 			   uint16_t abs_vf_id, uint32_t opcode,
@@ -1297,6 +1354,7 @@ i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 	/* AdminQ will pass absolute VF id, transfer to internal vf id */
 	uint16_t vf_id = abs_vf_id - hw->func_caps.vf_base_id;
 	struct rte_pmd_i40e_mb_event_param ret_param;
+	uint64_t first_cycle, cur_cycle;
 	bool b_op = TRUE;
 	int ret;
 
@@ -1306,11 +1364,18 @@ i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 	}
 
 	vf = &pf->vfs[vf_id];
+
+	cur_cycle = rte_get_timer_cycles();
+
+	/* if the VF being blocked, ignore the message and return */
+	if (cur_cycle < vf->ignore_end_cycle)
+		return;
+
 	if (!vf->vsi) {
 		PMD_DRV_LOG(ERR, "NO VSI associated with VF found");
 		i40e_pf_host_send_msg_to_vf(vf, opcode,
 			I40E_ERR_NO_AVAILABLE_VSI, NULL, 0);
-		return;
+		goto check;
 	}
 
 	/* perform basic checks on the msg */
@@ -1334,7 +1399,7 @@ i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 			    vf_id, opcode, msglen);
 		i40e_pf_host_send_msg_to_vf(vf, opcode,
 					    I40E_ERR_PARAM, NULL, 0);
-		return;
+		goto check;
 	}
 
 	/**
@@ -1355,7 +1420,7 @@ i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 	 * do nothing and send not_supported to VF. As PF must send a response
 	 * to VF and ACK/NACK is not defined.
 	 */
-	_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_VF_MBOX, &ret_param);
+	rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_VF_MBOX, &ret_param);
 	if (ret_param.retval != RTE_PMD_I40E_MB_EVENT_PROCEED) {
 		PMD_DRV_LOG(WARNING, "VF to PF message(%d) is not permitted!",
 			    opcode);
@@ -1446,6 +1511,14 @@ i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 		PMD_DRV_LOG(INFO, "OP_REQUEST_QUEUES received");
 		i40e_pf_host_process_cmd_request_queues(vf, msg);
 		break;
+	case VIRTCHNL_OP_GET_RSS_HENA_CAPS:
+		PMD_DRV_LOG(INFO, "OP_GET_RSS_HENA_CAPS received");
+		i40e_pf_host_process_cmd_get_rss_hena(vf);
+		break;
+	case VIRTCHNL_OP_SET_RSS_HENA:
+		PMD_DRV_LOG(INFO, "OP_SET_RSS_HENA received");
+		i40e_pf_host_process_cmd_set_rss_hena(vf, msg);
+		break;
 
 	/* Don't add command supported below, which will
 	 * return an error code.
@@ -1456,6 +1529,37 @@ i40e_pf_host_handle_vf_msg(struct rte_eth_dev *dev,
 								NULL, 0);
 		break;
 	}
+
+check:
+	/* if message validation not enabled */
+	if (!pf->vf_msg_cfg.max_msg)
+		return;
+
+	/* store current cycle */
+	vf->msg_timestamps[vf->msg_index++] = cur_cycle;
+	vf->msg_index %= pf->vf_msg_cfg.max_msg;
+
+	/* read the timestamp of earliest message */
+	first_cycle = vf->msg_timestamps[vf->msg_index];
+
+	/*
+	 * If the time span from the arrival time of first message to
+	 * the arrival time of current message smaller than `period`,
+	 * that mean too much message in this statistic period.
+	 */
+	if (first_cycle && cur_cycle < first_cycle +
+			(uint64_t)pf->vf_msg_cfg.period * rte_get_timer_hz()) {
+		PMD_DRV_LOG(WARNING, "VF %u too much messages(%u in %u"
+				" seconds),\n\tany new message from which"
+				" will be ignored during next %u seconds!",
+				vf_id, pf->vf_msg_cfg.max_msg,
+				(uint32_t)((cur_cycle - first_cycle +
+				rte_get_timer_hz() - 1) / rte_get_timer_hz()),
+				pf->vf_msg_cfg.ignore_second);
+		vf->ignore_end_cycle = rte_get_timer_cycles() +
+				pf->vf_msg_cfg.ignore_second *
+				rte_get_timer_hz();
+	}
 }
 
 int
@@ -1463,6 +1567,7 @@ i40e_pf_host_init(struct rte_eth_dev *dev)
 {
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
+	size_t size;
 	int ret, i;
 	uint32_t val;
 
@@ -1489,10 +1594,24 @@ i40e_pf_host_init(struct rte_eth_dev *dev)
 	I40E_WRITE_REG(hw, I40E_PFGEN_PORTMDIO_NUM, val);
 	I40E_WRITE_FLUSH(hw);
 
+	/* calculate the memory size for storing timestamp of messages */
+	size = pf->vf_msg_cfg.max_msg * sizeof(uint64_t);
+
 	for (i = 0; i < pf->vf_num; i++) {
 		pf->vfs[i].pf = pf;
 		pf->vfs[i].state = I40E_VF_INACTIVE;
 		pf->vfs[i].vf_idx = i;
+
+		if (size) {
+			/* allocate memory for store timestamp of messages */
+			pf->vfs[i].msg_timestamps =
+					rte_zmalloc("i40e_pf_vf", size, 0);
+			if (pf->vfs[i].msg_timestamps == NULL) {
+				ret = -ENOMEM;
+				goto fail;
+			}
+		}
+
 		ret = i40e_pf_host_vf_reset(&pf->vfs[i], 0);
 		if (ret != I40E_SUCCESS)
 			goto fail;
@@ -1505,6 +1624,8 @@ i40e_pf_host_init(struct rte_eth_dev *dev)
 	return I40E_SUCCESS;
 
 fail:
+	for (; i >= 0; i--)
+		rte_free(pf->vfs[i].msg_timestamps);
 	rte_free(pf->vfs);
 	i40e_pf_enable_irq0(hw);
 
@@ -1517,6 +1638,7 @@ i40e_pf_host_uninit(struct rte_eth_dev *dev)
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
 	uint32_t val;
+	int i;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -1528,6 +1650,10 @@ i40e_pf_host_uninit(struct rte_eth_dev *dev)
 		(pf->vf_num == 0) ||
 		(pf->vf_nb_qps == 0))
 		return I40E_SUCCESS;
+
+	/* free memory for store timestamp of messages */
+	for (i = 0; i < pf->vf_num; i++)
+		rte_free(pf->vfs[i].msg_timestamps);
 
 	/* free memory to store VF structure */
 	rte_free(pf->vfs);

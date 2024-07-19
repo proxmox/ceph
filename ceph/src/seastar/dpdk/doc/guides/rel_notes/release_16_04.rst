@@ -4,7 +4,6 @@
 DPDK Release 16.04
 ==================
 
-
 New Features
 ------------
 
@@ -57,7 +56,7 @@ New Features
 
 * **Enabled Virtio 1.0 support.**
 
-  Enabled Virtio 1.0 support for Virtio pmd driver.
+  Enabled Virtio 1.0 support for Virtio PMD.
 
 * **Supported Virtio for ARM.**
 

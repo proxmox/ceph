@@ -20,16 +20,22 @@
  */
 #pragma once
 
-#include <iosfwd>
-#include <array>
+#ifndef SEASTAR_MODULE
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/ip.h>
+#include <array>
+#include <cassert>
+#include <functional>
+#include <iosfwd>
+#include <fmt/ostream.h>
+#endif
 #include <seastar/net/byteorder.hh>
 #include <seastar/net/unix_address.hh>
-#include <cassert>
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 namespace net {
 class inet_address;
@@ -155,7 +161,7 @@ std::ostream& operator<<(std::ostream&, const ipv6_addr&);
 inline bool operator==(const ipv4_addr &lhs, const ipv4_addr& rhs) noexcept {
     return lhs.ip == rhs.ip && lhs.port == rhs.port;
 }
-
+SEASTAR_MODULE_EXPORT_END
 }
 
 namespace std {

@@ -14,7 +14,6 @@
 // https://www.boost.org/LICENSE_1_0.txt
 
 #include <boost/core/demangle.hpp>
-#include <boost/core/is_same.hpp>
 #include <boost/config.hpp>
 #include <string>
 #include <functional>
@@ -185,13 +184,22 @@ template<class T> std::string array_template_name()
 # pragma warning( disable: 4996 )
 #endif
 
+// Use snprintf if available as some compilers (clang 14.0) issue deprecation warnings for sprintf
+#if ( defined(_MSC_VER) && _MSC_VER < 1900 ) || ( defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR) )
+# define BOOST_CORE_DETAIL_SNPRINTF(buffer, format, arg) std::sprintf(buffer, format, arg)
+#else
+# define BOOST_CORE_DETAIL_SNPRINTF(buffer, format, arg) std::snprintf(buffer, sizeof(buffer)/sizeof(buffer[0]), format, arg)
+#endif
+
 inline std::string tn_to_string( std::size_t n )
 {
     char buffer[ 32 ];
-    std::sprintf( buffer, "%lu", static_cast< unsigned long >( n ) );
+    BOOST_CORE_DETAIL_SNPRINTF( buffer, "%lu", static_cast< unsigned long >( n ) );
 
     return buffer;
 }
+
+#undef BOOST_CORE_DETAIL_SNPRINTF
 
 #if defined(BOOST_MSVC)
 # pragma warning( pop )
@@ -304,6 +312,26 @@ template<> struct tn_holder<boost::ulong_long_type>
         return "unsigned long long" + suffix;
     }
 };
+
+#if defined(BOOST_HAS_INT128)
+
+template<> struct tn_holder<boost::int128_type>
+{
+    static std::string type_name( std::string const& suffix )
+    {
+        return "__int128" + suffix;
+    }
+};
+
+template<> struct tn_holder<boost::uint128_type>
+{
+    static std::string type_name( std::string const& suffix )
+    {
+        return "unsigned __int128" + suffix;
+    }
+};
+
+#endif
 
 template<> struct tn_holder<wchar_t>
 {

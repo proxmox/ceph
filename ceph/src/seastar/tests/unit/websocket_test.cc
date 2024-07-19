@@ -27,7 +27,7 @@ SEASTAR_TEST_CASE(test_websocket_handshake) {
 
         auto acceptor = factory.get_server_socket().accept();
         auto connector = lsi.connect(socket_address(), socket_address());
-        connected_socket sock = connector.get0();
+        connected_socket sock = connector.get();
         auto input = sock.input();
         auto output = sock.output();
 
@@ -49,10 +49,9 @@ SEASTAR_TEST_CASE(test_websocket_handshake) {
                     });
                 });
             });
-        websocket::connection conn(dummy, acceptor.get0().connection);
+        websocket::connection conn(dummy, acceptor.get().connection);
         future<> serve = conn.process();
         auto close = defer([&conn, &input, &output, &serve] () noexcept {
-            conn.shutdown();
             conn.close().get();
             input.close().get();
             output.close().get();
@@ -67,7 +66,7 @@ SEASTAR_TEST_CASE(test_websocket_handshake) {
         http_response_parser parser;
         parser.init();
         input.consume(parser).get();
-        std::unique_ptr<http_response> resp = parser.get_parsed_response();
+        std::unique_ptr<http::reply> resp = parser.get_parsed_response();
         BOOST_ASSERT(resp);
         sstring websocket_accept = resp->_headers["Sec-WebSocket-Accept"];
         // Trim possible whitespace prefix
@@ -91,7 +90,7 @@ SEASTAR_TEST_CASE(test_websocket_handler_registration) {
 
         auto acceptor = factory.get_server_socket().accept();
         auto connector = lsi.connect(socket_address(), socket_address());
-        connected_socket sock = connector.get0();
+        connected_socket sock = connector.get();
         auto input = sock.input();
         auto output = sock.output();
 
@@ -114,11 +113,10 @@ SEASTAR_TEST_CASE(test_websocket_handler_registration) {
                 });
             });
         });
-        websocket::connection conn(ws, acceptor.get0().connection);
+        websocket::connection conn(ws, acceptor.get().connection);
         future<> serve = conn.process();
 
         auto close = defer([&conn, &input, &output, &serve] () noexcept {
-            conn.shutdown();
             conn.close().get();
             input.close().get();
             output.close().get();

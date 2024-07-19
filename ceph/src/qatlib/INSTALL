@@ -1,0 +1,811 @@
+===============================================================================
+===============================================================================
+
+
+Reference
+=========
+
+
+ - Intel® Communications Chipset 4xxx Series Software for Linux*
+   Getting Started Guide
+
+===============================================================================
+
+
+Overview
+=========
+
+Intel® QuickAssist Technology provides security and compression acceleration
+capabilities used to improve performance and efficiency across the data center.
+
+Previously existing build system has been replaced by Autotools solution
+in order to provide with the widely known and easy to use tool to build and
+install source packages.
+
+===============================================================================
+
+
+Licensing
+=========
+
+This product is released under the BSD-3-Clause License.
+
+Files within this project have various inbound licenses, listed below:
+        - Dual BSD/GPLv2 License
+        - BSD License
+
+This package also links against files with the following licenses:
+        - OpenSSL License
+        - ZLIB License
+
+For BSD-3-Clause license, please see the file LICENSE contained in the top
+level folder.
+For Dual BSD/GPLv2 please see the file headers of the relevant files.
+
+===============================================================================
+
+QATlib User's Guide
+===================
+
+Web-based documentation for QATlib and related components is available at:
+    https://intel.github.io/quickassist/qatlib/index.html
+
+
+Using the QATlib package
+========================
+
+    Note: Instructions assume running on Fedora and as non-root user who can
+    get root access using sudo, i.e. user is in sudoers group. Command-lines
+    may be different in other Linux distributions.
+
+
+Check System Prerequisites
+==========================
+
+    There are some prerequisites to running the software in this package. If
+    running from a distro many of these are taken care of, if not here they
+    are:
+
+     * platform must have one of the following Intel® Communications devices:
+        4xxx  : Use "lspci -d 8086:4940" to check Physical Function (PF)
+                devices are present.
+        401xx : Use "lspci -d 8086:4942" to check PF devices are present.
+        Note: Later, after "systemctl start qat" or "make install" steps, the
+        corresponding Virtual Function devices will also be visible and bound
+        to the vfio-pci driver.
+        4xxx  : Use "lspci -d 8086:4941" to check VF devices have been created.
+        401xx : Use "lspci -d 8086:4943" to check VF devices have been created.
+     * firmware must be available
+        Check that these files exist:
+        /lib/firmware/qat_4xxx.bin or /lib/firmware/qat_4xxx.bin.xz
+        /lib/firmware/qat_4xxx_mmp.bin or /lib/firmware/qat_4xxx_mmp.bin.xz
+        If not, download the firmware images from linux-firmware and copy them
+        to /lib/firmware:
+        wget https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/qat_4xxx.bin
+        wget https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/qat_4xxx_mmp.bin
+        sudo mv qat_4xxx.bin /lib/firmware
+        sudo mv qat_4xxx_mmp.bin /lib/firmware
+        On updating these files run "sudo dracut --force" to update initramfs.
+     * kernel driver must be running
+        Use "lsmod | grep qat" to check that these kernel modules are running:
+        intel_qat
+        qat_4xxx
+        They should load by default if using any of the following:
+        * A recent Linux kernel (see https://intel.github.io/quickassist/qatlib/requirements.html#kernel-firmware-requirements )
+        * Fedora 36+
+        * RHEL 8.4+ (for compression use 9.0+)
+     * each PF device must be bound to the 4xxx driver
+        Use "ls /sys/bus/pci/drivers/4xxx/" to show the BDFs of each bound PF
+     * BIOS settings
+        Intel VT-d and SR-IOV must be enabled in the platform BIOS.
+        Consult your platform guide on how to do this.
+        If using an Intel BKC these usually default to on, you can verify by
+        rebooting, entering F2 on the console to get to the BIOS menus and
+        checking these are enabled:
+        EDKII Menu
+          -> Socket Configuration
+           -> IIO Configuration
+            -> Intel VT for Directed I/O (VT-d)
+             -> Intel VT for Directed I/O
+        EDKII Menu
+         -> Platform Configuration
+          -> Miscellaneous Configuration
+           -> SR-IOV Support
+     * Grub settings
+        set intel_iommu on in grub file, e.g. in Fedora:
+         * sudo vi /etc/default/grub
+         * to GRUB_CMDLINE_LINUX add "intel_iommu=on"
+         * sudo grub2-mkconfig -o /etc/grub2-efi.cfg
+         * sudo shutdown -r now
+
+
+===============================================================================
+
+
+Compilation and installation - quickstart instructions
+======================================================
+
+    Note, more detailed instructions in following section.
+
+    ---------------------------------------------------------------------------
+
+    Summary if running from Fedora 34+:
+        # Install qatlib
+        sudo dnf install -y qatlib
+
+        # Add your user to qat group and re-login to make the change effective
+        sudo usermod -a -G qat `whoami`
+        sudo su -l $USER
+
+        # Enable qat service and make persistent after reboot
+        sudo systemctl enable qat
+        sudo systemctl start qat
+
+        # The library is now ready to use with your application
+
+        # You can also follow these steps to try out a pre-built sample
+        # application:
+
+        # Install qatlib-tests rpm
+        sudo dnf install -y qatlib-tests
+
+        # cpa_sample_code requires a minimum of 500MB to run its compression demo
+        # To increase amount of locked memory for your user to 500MB:
+        sudo cp /etc/security/limits.conf /etc/security/limits.conf.qatlib_bak
+        echo `whoami` - memlock 500000  | sudo tee -a /etc/security/limits.conf > /dev/null
+        # Re-login in order to make the change effective
+        sudo su -l $USER
+
+        # Run it! (takes several minutes to complete)
+        cpa_sample_code
+
+    ----------------------------------------------------------------------------
+
+    Summary if building from sources.
+
+        # Install dependencies
+        sudo dnf install -y gcc systemd-devel automake autoconf libtool
+        sudo dnf install -y pkg-config openssl-devel zlib-devel nasm
+
+        # Clone QATlib into ~/qatlib, i.e. in your home dir
+        cd ~
+        git clone https://github.com/intel/qatlib.git
+        # If instead you upgrade an earlier clone, follow the steps in
+        # "Remove the libraries and cleanup" before fetching.
+
+        # Build and install library
+        cd qatlib
+        ./autogen.sh
+        ./configure --enable-service
+        make -j
+        sudo make install
+
+        # Add your user to the "qat" group which was automatically
+        # created by --enable-service. Then re-login to make the change
+        # effective, this will also move you back into your home directory
+        sudo usermod -a -G qat `whoami`
+        sudo su -l $USER
+
+        # The library is now ready to use with your application
+
+        # You can also follow these steps to try out a sample application:
+
+        # cpa_sample_code requires a minimum of 500MB to run its compression demo
+        # To increase the amount of locked memory for your user to 500MB:
+        sudo cp /etc/security/limits.conf /etc/security/limits.conf.qatlib_bak
+        echo `whoami` - memlock 500000  | sudo tee -a /etc/security/limits.conf > /dev/null
+        # Re-login in order to make the change effective
+        sudo su -l $USER
+
+        # Compression sample code expects to find data files at a known location,
+        # so call the samples-install target to put them there
+        cd qatlib
+        sudo make samples-install
+
+        # Run it! (takes several minutes to complete)
+        cpa_sample_code
+
+        # No need to leave the samples installed, so cleanup
+        sudo make samples-uninstall
+
+===============================================================================
+
+
+Compilation and installation - detailed instructions
+====================================================
+
+    1) Install compilation dependencies
+
+        If running from a distro most or all of QATlib depends are taken care
+        of, if not use your OS-specific commands to install the following:
+
+        tools:
+            gcc
+            make
+            autotools (automake, autoconf, libtool)
+            pkg-config
+            systemd-devel
+            nasm
+        Note: If nasm compiler is unavailable see
+        --disable-fast-crc-in-assembler option in Configuration section below
+
+        libraries:
+            openssl-devel
+            zlib-devel
+
+    ----------------------------------------------------------------------------
+
+    2) Download package and configure it
+
+        To generate configure script - call:
+            ./autogen.sh
+
+        To setup the default build configuration - call:
+            ./configure
+
+        Full list of configuration options can be found under
+        "Configuration options" section below or by calling:
+            ./configure --help
+
+        To run in Managed Mode, enable qat service. This can be done
+        automatically during installation by calling:
+            ./configure --enable-service
+
+        In some case, e.g. containers, it may be preferable to build without
+        the qat service, to avoid a dependency on systemd. This is referred to
+        as Standalone Mode. In this case use:
+            ./configure --enable-systemd=no
+
+        See also the "Configuration and tuning section" below.
+
+    ----------------------------------------------------------------------------
+
+    3) Configure the system
+
+        Create the "qat" group.
+            qat.service requires "qat" group
+            This is automatically created by configure --enable-service so this
+            step can be skipped. To manually create the group:
+                sudo groupadd qat
+
+        Add your user to "qat" group.
+            To be able to use QATlib functionalities as non root user, user must
+            be part of the qat group. To add your user to the qat group
+                sudo usermod -a -G qat <your user>
+
+        Set maximum amount of locked memory for your user.
+            The maximum amount of locked memory should be set correctly by
+            defining memlock limit which is 16MB per VF plus whatever 
+            the application requires.
+            For cpa_sample_code running crypto at least 200MB are required,
+            if running compression set at least 500MB.
+            To set 500MB add a line like this
+            <your user> - memlock 500000
+            in the file /etc/security/limits.conf.
+
+        After making user changes it's necessary to re-login for them to
+        take effect
+            sudo su -l $USER
+
+    ----------------------------------------------------------------------------
+
+    4) Compile and install the library
+
+        Build and install:
+            make -j
+            sudo make install
+
+        If the service was not configured to start automatically, by using
+        --enable-service then it will need to be started. To start it
+        and make persistent after reboot:
+            systemctl enable qat
+            systemctl start qat
+
+    ----------------------------------------------------------------------------
+
+    5) Run sample application
+
+        Sample code is built by default.
+        Information on running the performance sample-code is at
+        ./quickassist/lookaside/access_layer/src/sample_code/README.txt
+
+        Examples:
+            Compression sample code expects to find data files at a known
+            location, so call the samples-install target to put them there:
+            sudo make samples-install
+
+            Run all performance tests:
+            ./cpa_sample_code
+
+            Symmetric crypto tests only:
+            ./cpa_sample_code runTests=1
+
+            Asymmetric crypto RSA tests only:
+            ./cpa_sample_code runTests=2
+
+            Compression tests only:
+            ./cpa_sample_code runTests=32
+
+        Examples of other samples for a specific functionality:
+            Run just one symmetric cipher operation:
+            ./cipher_sample
+
+            Run just one compress/decompress operation:
+            ./dc_stateless_sample
+
+            Run just one chaining hash then compress operation:
+            ./chaining_sample
+
+    ----------------------------------------------------------------------------
+
+    6) Remove the libraries and cleanup
+
+        Note: These make commands should be run using the Makefiles that were
+        generated by the original call to the configure script. I.e. there is
+        no need to call ./configure again. If it is ever called again it must
+        be called with exactly the same options as were originally used so
+        whatever was installed can be correctly cleaned up.
+
+        Uninstall:
+            sudo make samples-uninstall #if samples installed
+            sudo systemctl stop qat
+            sudo make uninstall
+
+        Clean up:
+            make clean
+            make distclean
+
+    ----------------------------------------------------------------------------
+
+    7) Configuration and tuning
+
+        There are parameters which can be tweaked to optimize for an
+        application's workload which might work in two modes:
+        managed (when qat service is enabled) and standalone (without service)
+
+        MANAGED MODE
+
+        In Managed mode, qatmgr manages allocation of the VF resources to
+        each process on process startup.
+        The following parameters can be set in /etc/sysconfig/qat:
+
+        POLICY
+            Indicates how many VFs will be assigned to each process.
+
+            POLICY=0 or not set
+                (Default) One VF from each PF will be assigned to each process.
+
+            POLICY=N
+                N VFs will be assigned to each process.
+
+        ServicesEnabled
+            Tells the kernel driver which Services to enable on PFs. All VFs on
+            a PF have the same service.
+
+            Unset
+                (Default) Every even-numbered PF has sym;asym,
+                every odd-numbered PF has dc. I.e. PF0, PF2 ... support crypto
+                and PF1, PF3 ... support data compression.
+
+            ServicesEnabled=sym
+                All PFs, and so all VFs, have sym only.
+
+            ServicesEnabled=asym
+                All PFs, and so all VFs, have asym only.
+
+            ServicesEnabled=sym;asym
+                All PFs, and so all VFs, have sym;asym only.
+
+            ServicesEnabled=dc
+                All PFs, and so all VFs, have dc only.
+
+            ServicesEnabled=sym;dc
+                All PFs, and so all VFs, have sym;dc only.
+
+            ServicesEnabled=asym;dc
+                All PFs, and so all VFs, have asym;dc only.
+
+            ServicesEnabled=dcc
+                All PFs, and so all VFs, have dc instances enabled for chaining
+                operations (hash then compress) only.
+
+                Note:  Throughput is lower than dc.  Only use this setting when
+                chaining is needed.
+
+
+        The following examples are based on a one-socket QAT 4xxx platform
+        with 4 PFs, each PF has 16 VFs. Each VF enabled for sym, asym, dc
+        has 4 instances. Each VF enabled for mixed services like sym;asym,
+        sym;dc, asym;dc has 2 instances of each type, so sym;asym has 2 cy
+        instances (note that cy instance is and sym and asym together), sym;dc
+        has 2 sym instances and 2 dc instances, asym;dc has 2 asym instances
+        and 2 dc instances.
+
+        An instance is an abstraction used on the APIs to identify a unique path
+        to the hardware. In a multi-threaded process, typically at least one
+        instance is needed per thread.
+
+        Usage
+            Flexibility
+                On default configuration, with neither param set, each process
+                will be allocated one VF from each PF, so 4 VFs. It will have
+                2 sym;asym VFs, so 4 sym instances and 4 asym instances
+                and 2 dc VFs, so 8 dc instances.
+                The maximum number of processes is 8. N sockets will have 8 * N.
+
+            Scalability and flexibility
+                POLICY=2. ServicesEnabled unset. Each process will be
+                allocated 2 VFs, 1 with sym;asym, 1 with dc. So each will have
+                2 sym instances, 2 asym instance and 4 dc instances.
+                The maximum number of processes is 32. 16 VFs * 4 PFs / POLICY.
+                N sockets will have 32 * N.
+
+            Scalability and flexibility for crypto symmetric or asymmetric
+                plus compression.
+                POLICY=1. ServicesEnabled sym;dc or asym;dc. Each process will be
+                allocated 1 VF, with sym;dc or asym;dc. So each will have
+                2 sym or asym instances and 2 dc instances.
+                The maximum number of processes is 64. 16 VFs * 4 PFs / POLICY.
+                N sockets will have 64 * N.
+
+            Crypto-only scalability
+                POLICY=1. ServicesEnabled=sym;asym. All VFs have sym;asym.
+                Each process will be allocated 1 VF so will have 2 sym instances
+                and 2 asym instances.
+                The maximum number of processes is 64. 16 VFs * 4 PFs.
+                N sockets will have 64 * N.
+                Note:  This configuration also provides optimized-throughput for
+                asym.
+
+            Crypto-only optimized-throughput
+                POLICY=0. ServicesEnabled=sym;asym. All VFs have sym;asym.
+                Each process will be allocated 1 VF per PF which will have 2 sym
+                instances and 2 asym instances, so each process will have
+                (2 * number of PFs) of each instance type.
+                The maximum number of processes is 16.
+
+            Sym-only optimized-throughput
+                POLICY=0. ServicesEnabled=sym. All VFs have sym.
+                Each process will be allocated 1 VF per PF which will have
+                4 sym instances, so each process will have
+                (4 * number of PFs) instances.
+                The maximum number of processes is 16.
+
+            Compression-only scalability
+                POLICY=1. ServicesEnabled=dc. All VFs have dc. Each process
+                will be allocated 1 VF so will have 4 dc instances.
+                The maximum number of processes is 64.  16 VFs * 4 PFs.
+                N sockets will have 64 * N.
+
+            Compression-only optimized-throughput
+                POLICY=0. ServicesEnabled=dc. All VFs have dc.
+                Each process will be allocated 1 VF per PF which will have
+                4 dc instances, so each process will have
+                (4 * number of PFs) instances.
+                The maximum number of processes is 16.
+
+            Compression chaining scalability:
+                POLICY=1. ServicesEnabled=dcc. All VFs have dc with sym
+                capabilities but only for chaining operations. Each process
+                will be allocated 1 VF so will have 4 dc instances.
+                The maximum number of processes is 64. 16 VFs * 4 PFs.
+                N sockets will have 64 * N.
+
+        STANDALONE MODE
+
+        In standalone mode, there is no qat service running.
+        This is the preferred way to run on containers where a subset of VFs
+        are explicitly passed through and so no qatmgr managed resource
+        mgr is needed.
+
+        Each standalone process assumes VF devices which it can't open are in
+        use by another process and looks for unopened VFs.
+
+        In standalone mode /quickassist/utilities/service/qat_init.sh can be
+        called on the host to bind VFs to vfio-pci and to enable services based
+        on the ServicesEnabled param. In this mode the POLICY parameter should
+        not be set in /etc/sysconfig/qat, if it is set it will be ignored,
+        instead an environment variable QAT_POLICY can be set. Valid values
+        are the same as for POLICY, except that for QAT_POLICY=0 a maximum
+        of 6 VFs will be allocated.
+
+        Note1: The ServicesEnabled configuration requires Linux kernel v6.0
+        or later and applies to all PFs on the platform. The script below can be
+        used to view the PF/VF service config. Config can also be set per PF,
+        follow the instructions provided in the following link:
+        https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-driver-qat.
+        If an alternative config is set per PF following those instructions,
+        then neither ServicesEnabled nor POLICY should be set in
+        /etc/sysconfig/qat, else it will not be deterministic which instances
+        a process receives.
+
+        RUNNING IN A VIRTUAL MACHINE / GUEST
+
+        When passing VFs to a guest, the BDFs on the guest should facilitate qatlib
+        recognizing whether VFs are from the same PF or not.
+        So the libvirt XML file should specify that VFs from the same host
+        (same domain + bus) are assigned to a common (domain + bus) on the guest,
+        which is different to the (domain + bus) used for VFs from other PFs.
+
+        e.g. if VF on host 0000:6b:00.1 maps to <xxxx:xx>:00.1 on guest
+                            then  0000:6b:00.6 should map to <xxxx:xx>:00.6
+                            and   0000:7a:00.3 should map to <yyyy:yy>:00.3
+
+        The first VF, mapped to function='0x0', should also set multifunction='on'.
+
+        Sufficient VFs should be passed from the host to the guest to satisfy the
+        type of services and number of processes needed by the guest. See here for
+        more information on host configuration:
+        https://intel.github.io/quickassist/qatlib/configuration.html#
+
+        If using the default kernel configuration, at least 2 VFs are needed per
+        process so that the process has both CY and DC instances.
+        Set either POLICY=0 or POLICY=2 (or 4, 6, ...) in /etc/sysconfig/qat on
+        the guest and restart qatmgr.
+
+
+
+        SCRIPT TO VIEW QAT PF/VF SERVICE CONFIG
+
+        ------------------------------------------------------------------------
+        #!/bin/bash
+
+        printf "%-13s | %-5s | %-12s | %-12s | %-10s\n"  "VFIO GROUP" "NODE"   \
+        "PF BDF" "VF BDF" "SERVICES"
+        echo "--------------------------------------------------------------"
+
+        for vfio_group in /dev/vfio/*; do
+            if [ $vfio_group = "/dev/vfio/vfio" ]; then
+                continue
+            fi
+
+            group=${vfio_group##*/}
+            # assume one bdf per iommu group
+            bdf=$(ls /sys/kernel/iommu_groups/$group/devices/)
+            vendor=$(cat /sys/kernel/iommu_groups/$group/devices/$bdf/vendor)
+            node=$(cat /sys/kernel/iommu_groups/$group/devices/$bdf/numa_node)
+            did=$(cat /sys/kernel/iommu_groups/$group/devices/$bdf/device)
+
+            if [ "$vendor" != "0x8086" ]; then
+                continue
+            fi
+
+            if [ "$did" != "0x4941" ] && [ "$did" != "0x4943" ]; then
+                continue
+            fi
+
+            regex='([a-z0-9]+):([a-z0-9]+):.*'
+            [[ $bdf =~ $regex ]]
+            pf_domain=${BASH_REMATCH[1]}
+            pf_bus=${BASH_REMATCH[2]}
+            pf_bdf="$pf_domain:$pf_bus:00.0"
+
+            printf "%-15s %-7s %-14s %-14s %-10s\n"  "$vfio_group"  "$node"    \
+            "$pf_bdf"   "$bdf"                                                 \
+            "$(cat /sys/bus/pci/devices/$pf_bdf/qat/cfg_services)"
+
+        done
+        ------------------------------------------------------------------------
+
+        Note2: As the library assumes that all VFs from the same PF have
+        the same services, take care when passing VFs through to a VM that all
+        VFs from the same Host PF are passed through with a common Domain/Bus.
+
+===============================================================================
+
+
+Full list of Configuration options
+==================================
+
+    Typical examples of how to update configuration options are as follows:
+
+                ./configure ICP_ANY_FLAG=value or
+                ./configure --enable-something
+
+    If it is required to use more than one flag at once:
+
+                ./configure ICP_ANY_PATH=path ICP_ANY_NAME=name --enable-something
+
+    Features flags:
+        Enables or disables the additional features supported by 4xxx package
+
+        --disable-option-checking
+                Ignores unrecognized configure options when run along with it.
+
+        --disable-FEATURE
+                Does not include FEATURE (same as --enable-FEATURE=no).
+
+        --enable-FEATURE[=ARG]
+                Includes FEATURE [ARG=yes].
+
+        --enable-silent-rules
+                Less verbose build output (undo: "make V=1").
+
+        --disable-silent-rules
+                Verbose build output (undo: "make V=0").
+
+        --enable-maintainer-mode
+                Enables make rules and dependencies not useful (and
+                sometimes confusing) to the casual installer.
+
+        --enable-dependency-tracking
+                Does not reject slow dependency extractors.
+
+        --disable-dependency-tracking
+                Speeds up one-time build
+
+        --enable-icp-debug
+                Enables debugging.
+
+        --disable-param-check
+                Disables parameters checking in the top-level APIs
+                (Use for performance optimization).
+
+        --disable-stats
+                Disables statistic collection (Use for performance optimization).
+
+        --disable-fast-crc-in-assembler
+                Force use of C code instead of faster assembler implementation
+                of CRC for DC integrityCrc feature. Not recommended unless
+                nasm assembler compiler is unavailable.
+
+        --enable-icp-log-syslog
+                Enables debugging messages to be outputted to the
+                system log instead of standard output.
+
+        --enable-icp-trace
+                Enables tracing for the Cryptography API.
+
+        --enable-dc-error-simulation
+                Enables Data Compression Error Simulation.
+
+        --enable-legacy-lib-names
+                Enables legacy names for libraries.
+
+        --enable-systemd 
+                Enable systemd support. Set to No to remove dependency on
+                systemd [default=yes] Note: --enable-service should not be used
+                in this case.
+
+        --enable-service
+                Automatically creates "qat" group and enables systemd service
+                during installation.
+
+        --enable-legacy-algorithms
+                Enable deprecated legacy crypto algorithms. See the README.md
+                for the list of algorithms which are deprecated by default.
+
+        MAX_MR
+                Number of Miller Rabin rounds for prime operations. Setting this
+                to a smaller value reduces the memory usage required by the
+                driver.
+
+                Type: value
+                Default value: 50
+
+
+===============================================================================
+
+
+Common issues
+=============
+
+    Issue: errors like these are seen in system logs:
+         * 4xxx 0000:6b:00.0: IOMMU should be enabled for SR-IOV to work
+         * vfio-pci: probe of 0000:6b:00.1 failed with error -22
+    Likely cause: Check VT-d, SR-IOV and intel_iommu settings are correct as
+        described above. One way to check that is to run:
+        dmesg | grep "Virtualization Technology"
+        If you get output similar to below, everything is ready, otherwise
+        there is something misconfigured.
+        "[57.503644] DMAR: Intel(R) Virtualization Technology for Directed I/O"
+
+    Issue: On running sample code:
+        qaeMemInit started
+        Open failed on /dev/vfio/15
+        No device found
+        ADF_UIO_PROXY err: icp_adf_userProcessToStart: Failed to start SSL...
+    Likely cause: Incorrect permissions. Use "id <your user>" to verify the
+        user is in the qat group and logout/login to the shell to ensure group
+        changes take effect.
+
+    Issue: On running sample code:
+        qaeMemInit started
+        No device found
+        ADF_UIO_PROXY err: icp_adf_userProcessToStart: Failed to start SSL...
+    Likely cause: (1) No PF driver available. Check that PFs are available and
+        bound to qat_4xxx:
+        sudo lspci -vvd:4940 | grep "Kernel driver in use".
+        sudo lspci -vvd:4942 | grep "Kernel driver in use"
+        upgrade to a recent Linux Kernel.
+        (2) No VFs available. Check VFs are available and bound to vfio-pci
+        sudo lspci -vvd:4941 | grep "Kernel driver in use"
+        sudo lspci -vvd:4943 | grep "Kernel driver in use"
+
+    Issue: On running ./autogen.sh following warning appears:
+        aclocal: warning: couldn't open directory 'm4': No such file or dir...
+    Likely cause: This warning can be ignored, as is resolved subsequently
+
+    Issue: After upgrading to new version following error may be received:
+         This qatlib v21.8 received response from incompatible qatmgr v0.0
+    Likely cause: if qat service was already running during upgrade, it won't
+        be restarted automatically.
+        After upgrading ensure that qat service is restarted.
+
+    Issue: "DC Instances are not present" error when trying to run
+        compression operations, e.g. using "cpa_sample_code runTests=32"
+    Likely cause: QAT driver in Linux kernel before v5.17 doesn't support
+        compression service. Upgrade to a later kernel.
+
+    Issue: "Could not open corpus file: /usr/local/share/qat/calgary"
+        seen when running compression sample code.
+    Likely cause: sample code data files not installed at the expected location
+        Run: sudo make samples-install
+
+    Issue: Error "memFreeNUMA:1313 Address to be freed cannot be NULL"
+        seen when running cpa_sample_code.
+        Also dmesg | grep MEMLOCK shows messages like this:
+        "hvfio_pin_pages_remote: RLIMIT_MEMLOCK (204800000) exceeded"
+    Likely cause: Not enough locked memory. Increase the amount of locked
+        memory for your user – see instructions above.
+        After updating re-login so the changes take effect:
+        sudo su -l $USER
+
+    Issue: error on make install or on systemctl start qat
+        "Job for qat.service failed because the control process exited with
+        error code"
+        System logs (dmesg) show QAT kernel module failed with error like:
+        "4xxx 0000:6b:00.0: enabling device (0140 -> 0142)
+         QAT: authentication error (FCU_STATUS = 0x3),retry = 0
+         4xxx 0000:6b:00.0: Failed to load MMP
+         4xxx 0000:6b:00.0: Failed to load acceleration FW
+         4xxx 0000:6b:00.0: Resetting device qat_dev0
+         4xxx: probe of 0000:6b:00.0 failed with error -14"
+    Likely cause: firmware files not present in initramfs on module loading
+        early in boot process.
+    Fix: First make sure you have the firmware installed in /lib/firmware,
+        see pre-requisites section above.
+        In order to load the firmware, the driver must be reloaded, i.e. run:
+        "sudo rmmod qat_4xxx; sudo modprobe qat_4xxx; sudo systemctl start qat".
+        For a persistent change (on future reboots) run "sudo dracut --force".
+
+    Issue: X kernel taint flag seen on SUSE from SLES15-SP4 onwards
+        "intel_qat: externally supported module,setting X kernel taint flag."
+        "qat_4xxx: externally supported module,setting X kernel taint flag."
+    Likely cause: This is normal on load of the kernel driver in a SUSE distro.
+        See explanation for X flag here:
+        https://www.suse.com/support/kb/doc/?id=000016321
+        It indicates that the modules are supported by external parties, in
+        this case Intel.
+    Fix: None necessary, qatlib can be used as normal despite this message.
+
+    Issue: make: *** No rule to make target 'sample-uninstall'.  Stop.
+    Likely cause: There was a name change between 21.11 and 22.07, note the
+        extra 's'. Sorry if it causes confusion.
+    Fix: sudo make samples-uninstall
+
+===============================================================================
+
+
+Legal/Disclaimers
+===================
+
+INFORMATION IN THIS DOCUMENT IS PROVIDED IN CONNECTION WITH INTEL(R) PRODUCTS.
+NO LICENSE, EXPRESS OR IMPLIED, BY ESTOPPEL OR OTHERWISE, TO ANY INTELLECTUAL
+PROPERTY RIGHTS IS GRANTED BY THIS DOCUMENT. EXCEPT AS PROVIDED IN INTEL'S
+TERMS AND CONDITIONS OF SALE FOR SUCH PRODUCTS, INTEL ASSUMES NO LIABILITY
+WHATSOEVER, AND INTEL DISCLAIMS ANY EXPRESS OR IMPLIED WARRANTY, RELATING TO
+SALE AND/OR USE OF INTEL PRODUCTS INCLUDING LIABILITY OR WARRANTIES RELATING
+TO FITNESS FOR A PARTICULAR PURPOSE, MERCHANTABILITY, OR INFRINGEMENT OF ANY
+PATENT, COPYRIGHT OR OTHER INTELLECTUAL PROPERTY RIGHT. Intel products are
+not intended for use in medical, life saving, life sustaining, critical control
+ or safety systems, or in nuclear facility applications.
+
+Intel may make changes to specifications and product descriptions at any time,
+without notice.
+
+(C) Intel Corporation 2022
+
+* Other names and brands may be claimed as the property of others.
+
+===============================================================================

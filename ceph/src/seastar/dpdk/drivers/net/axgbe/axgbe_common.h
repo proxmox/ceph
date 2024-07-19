@@ -21,6 +21,7 @@
 #include <inttypes.h>
 #include <pthread.h>
 
+#include <rte_bitops.h>
 #include <rte_byteorder.h>
 #include <rte_memory.h>
 #include <rte_malloc.h>
@@ -32,19 +33,20 @@
 #include <rte_memzone.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_errno.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_pci.h>
 #include <rte_common.h>
 #include <rte_cycles.h>
 #include <rte_io.h>
 
 #define BIT(nr)	                       (1 << (nr))
 #ifndef ARRAY_SIZE
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+#define ARRAY_SIZE(arr) RTE_DIM(arr)
 #endif
 
 #define AXGBE_HZ				250
+#define NSEC_PER_SEC    1000000000L
 
 /* DMA register offsets */
 #define DMA_MR				0x3000
@@ -257,6 +259,7 @@
 #define MAC_HWF0R			0x011c
 #define MAC_HWF1R			0x0120
 #define MAC_HWF2R			0x0124
+#define MAC_HWF3R			0x0128
 #define MAC_MDIOSCAR			0x0200
 #define MAC_MDIOSCCDR			0x0204
 #define MAC_MDIOISR			0x0214
@@ -282,12 +285,30 @@
 #define MAC_TXSNR			0x0d30
 #define MAC_TXSSR			0x0d34
 
+/*VLAN control bit mask*/
+#define AXGBE_VLNCTRL_MASK		0x0000FFFF
+#define VLAN_PRIO_MASK			0xe000 /* Priority Code Point */
+#define VLAN_PRIO_SHIFT			13
+#define VLAN_CFI_MASK			0x1000 /* Canonical Format Indicator */
+#define VLAN_TAG_PRESENT		VLAN_CFI_MASK
+#define VLAN_VID_MASK			0x0fff /* VLAN Identifier */
+#define VLAN_N_VID			4096
+#define VLAN_TABLE_SIZE			64
+#define VLAN_TABLE_BIT(vlan_id)	(1UL << ((vlan_id) & 0x3F))
+#define VLAN_TABLE_IDX(vlan_id)	((vlan_id) >> 6)
+#define RX_CVLAN_TAG_PRESENT                   9
+
 #define MAC_QTFCR_INC			4
 #define MAC_MACA_INC			4
 #define MAC_HTR_INC			4
 
 #define MAC_RQC2_INC			4
 #define MAC_RQC2_Q_PER_REG		4
+
+#define MAC_MACAHR(i)	(MAC_MACA0HR + ((i) * 8))
+#define MAC_MACALR(i)	(MAC_MACA0LR + ((i) * 8))
+
+#define MAC_HTR(i)	(MAC_HTR0 + ((i) * MAC_HTR_INC))
 
 /* MAC register entry bit positions and sizes */
 #define MAC_HWF0R_ADDMACADRSEL_INDEX	18
@@ -354,6 +375,10 @@
 #define MAC_HWF2R_TXCHCNT_WIDTH		4
 #define MAC_HWF2R_TXQCNT_INDEX		6
 #define MAC_HWF2R_TXQCNT_WIDTH		4
+#define MAC_HWF3R_CBTISEL_INDEX		4
+#define MAC_HWF3R_CBTISEL_WIDTH		1
+#define MAC_HWF3R_NRVF_INDEX		0
+#define MAC_HWF3R_NRVF_WIDTH		3
 #define MAC_IER_TSIE_INDEX		12
 #define MAC_IER_TSIE_WIDTH		1
 #define MAC_ISR_MMCRXIS_INDEX		9
@@ -486,6 +511,8 @@
 #define MAC_TSCR_TSEVNTENA_WIDTH	1
 #define MAC_TSCR_TSINIT_INDEX		2
 #define MAC_TSCR_TSINIT_WIDTH		1
+#define MAC_TSCR_TSUPDT_INDEX		3
+#define MAC_TSCR_TSUPDT_WIDTH		1
 #define MAC_TSCR_TSIPENA_INDEX		11
 #define MAC_TSCR_TSIPENA_WIDTH		1
 #define MAC_TSCR_TSIPV4ENA_INDEX	13
@@ -500,6 +527,8 @@
 #define MAC_TSCR_TXTSSTSM_WIDTH		1
 #define MAC_TSSR_TXTSC_INDEX		15
 #define MAC_TSSR_TXTSC_WIDTH		1
+#define MAC_STNUR_ADDSUB_INDEX          31
+#define MAC_STNUR_ADDSUB_WIDTH          1
 #define MAC_TXSNR_TXTSSTSMIS_INDEX	31
 #define MAC_TXSNR_TXTSSTSMIS_WIDTH	1
 #define MAC_VLANHTR_VLHT_INDEX		0
@@ -508,6 +537,8 @@
 #define MAC_VLANIR_VLTI_WIDTH		1
 #define MAC_VLANIR_CSVL_INDEX		19
 #define MAC_VLANIR_CSVL_WIDTH		1
+#define MAC_VLANIR_VLC_INDEX		16
+#define MAC_VLANIR_VLC_WIDTH		2
 #define MAC_VLANTR_DOVLTC_INDEX		20
 #define MAC_VLANTR_DOVLTC_WIDTH		1
 #define MAC_VLANTR_ERSVLM_INDEX		19
@@ -518,12 +549,18 @@
 #define MAC_VLANTR_ETV_WIDTH		1
 #define MAC_VLANTR_EVLS_INDEX		21
 #define MAC_VLANTR_EVLS_WIDTH		2
+#define MAC_VLANTR_EIVLS_INDEX		21
+#define MAC_VLANTR_EIVLS_WIDTH		2
 #define MAC_VLANTR_EVLRXS_INDEX		24
 #define MAC_VLANTR_EVLRXS_WIDTH		1
+#define MAC_VLANTR_EIVLRXS_INDEX	31
+#define MAC_VLANTR_EIVLRXS_WIDTH	1
 #define MAC_VLANTR_VL_INDEX		0
 #define MAC_VLANTR_VL_WIDTH		16
 #define MAC_VLANTR_VTHM_INDEX		25
 #define MAC_VLANTR_VTHM_WIDTH		1
+#define MAC_VLANTR_EDVLP_INDEX		26
+#define MAC_VLANTR_EDVLP_WIDTH		1
 #define MAC_VLANTR_VTIM_INDEX		17
 #define MAC_VLANTR_VTIM_WIDTH		1
 #define MAC_VR_DEVID_INDEX		8
@@ -532,6 +569,11 @@
 #define MAC_VR_SNPSVER_WIDTH		8
 #define MAC_VR_USERVER_INDEX		16
 #define MAC_VR_USERVER_WIDTH		8
+#define MAC_VLANIR_VLT_INDEX		0
+#define MAC_VLANIR_VLT_WIDTH		16
+#define MAC_VLANTR_ERIVLT_INDEX		27
+#define MAC_VLANTR_ERIVLT_WIDTH		1
+
 
 /* MMC register offsets */
 #define MMC_CR				0x0800
@@ -832,6 +874,22 @@
 #define MTL_TC_ETSCR_TSA_WIDTH		2
 #define MTL_TC_QWR_QW_INDEX		0
 #define MTL_TC_QWR_QW_WIDTH		21
+#define MTL_TCPM0R_PSTC0_INDEX		0
+#define MTL_TCPM0R_PSTC0_WIDTH		8
+#define MTL_TCPM0R_PSTC1_INDEX		8
+#define MTL_TCPM0R_PSTC1_WIDTH		8
+#define MTL_TCPM0R_PSTC2_INDEX		16
+#define MTL_TCPM0R_PSTC2_WIDTH		8
+#define MTL_TCPM0R_PSTC3_INDEX		24
+#define MTL_TCPM0R_PSTC3_WIDTH		8
+#define MTL_TCPM1R_PSTC4_INDEX		0
+#define MTL_TCPM1R_PSTC4_WIDTH		8
+#define MTL_TCPM1R_PSTC5_INDEX		8
+#define MTL_TCPM1R_PSTC5_WIDTH		8
+#define MTL_TCPM1R_PSTC6_INDEX		16
+#define MTL_TCPM1R_PSTC6_WIDTH		8
+#define MTL_TCPM1R_PSTC7_INDEX		24
+#define MTL_TCPM1R_PSTC7_WIDTH		8
 
 /* MTL traffic class register value */
 #define MTL_TSA_SP			0x00
@@ -841,6 +899,10 @@
 #define PCS_V1_WINDOW_SELECT		0x03fc
 #define PCS_V2_WINDOW_DEF		0x9060
 #define PCS_V2_WINDOW_SELECT		0x9064
+#define PCS_V2_RV_WINDOW_DEF		0x1060
+#define PCS_V2_RV_WINDOW_SELECT		0x1064
+#define PCS_V2_YC_WINDOW_DEF		0x18060
+#define PCS_V2_YC_WINDOW_SELECT		0x18064
 
 /* PCS register entry bit positions and sizes */
 #define PCS_V2_WINDOW_DEF_OFFSET_INDEX	6
@@ -972,8 +1034,8 @@
 #define XP_PROP_0_PORT_ID_WIDTH			8
 #define XP_PROP_0_PORT_MODE_INDEX		8
 #define XP_PROP_0_PORT_MODE_WIDTH		4
-#define XP_PROP_0_PORT_SPEEDS_INDEX		23
-#define XP_PROP_0_PORT_SPEEDS_WIDTH		4
+#define XP_PROP_0_PORT_SPEEDS_INDEX		22
+#define XP_PROP_0_PORT_SPEEDS_WIDTH		5
 #define XP_PROP_1_MAX_RX_DMA_INDEX		24
 #define XP_PROP_1_MAX_RX_DMA_WIDTH		5
 #define XP_PROP_1_MAX_RX_QUEUES_INDEX		8
@@ -1133,6 +1195,8 @@
 #define RX_NORMAL_DESC3_PL_WIDTH		14
 #define RX_NORMAL_DESC3_RSV_INDEX		26
 #define RX_NORMAL_DESC3_RSV_WIDTH		1
+#define RX_NORMAL_DESC3_LD_INDEX		28
+#define RX_NORMAL_DESC3_LD_WIDTH		1
 
 #define RX_DESC3_L34T_IPV4_TCP			1
 #define RX_DESC3_L34T_IPV4_UDP			2
@@ -1145,6 +1209,8 @@
 #define RX_CONTEXT_DESC3_TSA_WIDTH		1
 #define RX_CONTEXT_DESC3_TSD_INDEX		6
 #define RX_CONTEXT_DESC3_TSD_WIDTH		1
+#define RX_CONTEXT_DESC3_PMT_INDEX		0
+#define RX_CONTEXT_DESC3_PMT_WIDTH		4
 
 #define TX_PACKET_ATTRIBUTES_CSUM_ENABLE_INDEX	0
 #define TX_PACKET_ATTRIBUTES_CSUM_ENABLE_WIDTH	1
@@ -1206,8 +1272,16 @@
 #define MDIO_PMA_10GBR_FECCTRL		0x00ab
 #endif
 
+#ifndef MDIO_PMA_RX_CTRL1
+#define MDIO_PMA_RX_CTRL1		0x8051
+#endif
+
 #ifndef MDIO_PCS_DIG_CTRL
 #define MDIO_PCS_DIG_CTRL		0x8000
+#endif
+
+#ifndef MDIO_PCS_DIGITAL_STAT
+#define MDIO_PCS_DIGITAL_STAT		0x8010
 #endif
 
 #ifndef MDIO_AN_XNP
@@ -1250,6 +1324,11 @@
 #define MDIO_VEND2_PMA_CDR_CONTROL	0x8056
 #endif
 
+#ifndef MDIO_VEND2_PMA_MISC_CTRL0
+#define MDIO_VEND2_PMA_MISC_CTRL0	0x8090
+#endif
+
+
 #ifndef MDIO_CTRL1_SPEED1G
 #define MDIO_CTRL1_SPEED1G		(MDIO_CTRL1_SPEED10G & ~BMCR_SPEED100)
 #endif
@@ -1285,6 +1364,8 @@
 #define AXGBE_KR_TRAINING_ENABLE	BIT(1)
 
 #define AXGBE_PCS_CL37_BP		BIT(12)
+#define XGBE_PCS_PSEQ_STATE_MASK	0x1c
+#define XGBE_PCS_PSEQ_STATE_POWER_GOOD	0x10
 
 #define AXGBE_AN_CL37_INT_CMPLT		BIT(0)
 #define AXGBE_AN_CL37_INT_MASK		0x01
@@ -1296,6 +1377,7 @@
 #define AXGBE_AN_CL37_PCS_MODE_BASEX	0x00
 #define AXGBE_AN_CL37_PCS_MODE_SGMII	0x04
 #define AXGBE_AN_CL37_TX_CONFIG_MASK	0x08
+#define AXGBE_AN_CL37_MII_CTRL_8BIT     0x0100
 
 #define AXGBE_PMA_CDR_TRACK_EN_MASK	0x01
 #define AXGBE_PMA_CDR_TRACK_EN_OFF	0x00
@@ -1326,6 +1408,14 @@ static inline uint32_t high32_value(uint64_t addr)
 {
 	return (addr >> 32) & 0x0ffffffff;
 }
+
+#define XGBE_PMA_PLL_CTRL_MASK         BIT(15)
+#define XGBE_PMA_PLL_CTRL_SET          BIT(15)
+#define XGBE_PMA_PLL_CTRL_CLEAR                0x0000
+
+#define XGBE_PMA_RX_RST_0_MASK         BIT(4)
+#define XGBE_PMA_RX_RST_0_RESET_ON     0x10
+#define XGBE_PMA_RX_RST_0_RESET_OFF    0x00
 
 /*END*/
 
@@ -1673,34 +1763,6 @@ do {									\
 
 #define time_after_eq(a, b)     ((long)((a) - (b)) >= 0)
 #define time_before_eq(a, b)	time_after_eq(b, a)
-
-/*---bitmap support apis---*/
-static inline int axgbe_test_bit(int nr, volatile unsigned long *addr)
-{
-	int res;
-
-	rte_mb();
-	res = ((*addr) & (1UL << nr)) != 0;
-	rte_mb();
-	return res;
-}
-
-static inline void axgbe_set_bit(unsigned int nr, volatile unsigned long *addr)
-{
-	__sync_fetch_and_or(addr, (1UL << nr));
-}
-
-static inline void axgbe_clear_bit(int nr, volatile unsigned long *addr)
-{
-	__sync_fetch_and_and(addr, ~(1UL << nr));
-}
-
-static inline int axgbe_test_and_clear_bit(int nr, volatile unsigned long *addr)
-{
-	unsigned long mask = (1UL << nr);
-
-	return __sync_fetch_and_and(addr, ~mask) & mask;
-}
 
 static inline unsigned long msecs_to_timer_cycles(unsigned int m)
 {

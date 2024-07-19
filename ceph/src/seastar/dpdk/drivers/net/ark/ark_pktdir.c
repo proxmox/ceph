@@ -18,11 +18,11 @@ ark_pktdir_init(void *base)
 			   sizeof(struct ark_pkt_dir_inst),
 			   0);
 	if (inst == NULL) {
-		PMD_DRV_LOG(ERR, "Failed to malloc ark_pkt_dir_inst.\n");
+		ARK_PMD_LOG(ERR, "Failed to malloc ark_pkt_dir_inst.\n");
 		return inst;
 	}
 	inst->regs = (struct ark_pkt_dir_regs *)base;
-	inst->regs->ctrl = 0x00110110;	/* POR state */
+	inst->regs->ctrl = ARK_PKT_DIR_INIT_VAL; /* POR state */
 	return inst;
 }
 

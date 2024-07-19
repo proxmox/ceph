@@ -14,7 +14,7 @@
 
 #include <rte_mempool.h>
 
-#include <rte_dpaa_bus.h>
+#include <bus_dpaa_driver.h>
 #include <rte_dpaa_logs.h>
 
 #include <fsl_usd.h>
@@ -57,5 +57,24 @@ DPAA_MEMPOOL_PTOV(struct dpaa_bp_info *bp_info __rte_unused, uint64_t addr)
 extern struct dpaa_bp_info *rte_dpaa_bpid_info;
 
 #define DPAA_BPID_TO_POOL_INFO(__bpid) (&rte_dpaa_bpid_info[__bpid])
+
+/* Mempool related logs */
+
+#define DPAA_MEMPOOL_LOG(level, fmt, args...) \
+	rte_log(RTE_LOG_ ## level, dpaa_logtype_mempool, "%s(): " fmt "\n", \
+		__func__, ##args)
+
+#define MEMPOOL_INIT_FUNC_TRACE() DPAA_MEMPOOL_LOG(DEBUG, " >>")
+
+#define DPAA_MEMPOOL_DPDEBUG(fmt, args...) \
+	RTE_LOG_DP(DEBUG, PMD, fmt, ## args)
+#define DPAA_MEMPOOL_DEBUG(fmt, args...) \
+	DPAA_MEMPOOL_LOG(DEBUG, fmt, ## args)
+#define DPAA_MEMPOOL_ERR(fmt, args...) \
+	DPAA_MEMPOOL_LOG(ERR, fmt, ## args)
+#define DPAA_MEMPOOL_INFO(fmt, args...) \
+	DPAA_MEMPOOL_LOG(INFO, fmt, ## args)
+#define DPAA_MEMPOOL_WARN(fmt, args...) \
+	DPAA_MEMPOOL_LOG(WARNING, fmt, ## args)
 
 #endif

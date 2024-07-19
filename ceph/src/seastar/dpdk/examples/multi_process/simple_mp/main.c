@@ -4,7 +4,7 @@
 
 /*
  * This sample application is a simple multi-process application which
- * demostrates sharing of queues and memory pools between processes, and
+ * demonstrates sharing of queues and memory pools between processes, and
  * using those queues/pools for communication between the processes.
  *
  * Application is designed to run with two processes, a primary and a
@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -30,7 +31,6 @@
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_debug.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_ring.h>
 #include <rte_log.h>
@@ -53,7 +53,7 @@ struct rte_mempool *message_pool;
 volatile int quit = 0;
 
 static int
-lcore_recv(__attribute__((unused)) void *arg)
+lcore_recv(__rte_unused void *arg)
 {
 	unsigned lcore_id = rte_lcore_id();
 
@@ -87,6 +87,7 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Cannot init EAL\n");
 
+	/* Start of ring structure. 8< */
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY){
 		send_ring = rte_ring_create(_PRI_2_SEC, ring_size, rte_socket_id(), flags);
 		recv_ring = rte_ring_create(_SEC_2_PRI, ring_size, rte_socket_id(), flags);
@@ -99,6 +100,7 @@ main(int argc, char **argv)
 		send_ring = rte_ring_lookup(_SEC_2_PRI);
 		message_pool = rte_mempool_lookup(_MSG_POOL);
 	}
+	/* >8 End of ring structure. */
 	if (send_ring == NULL)
 		rte_exit(EXIT_FAILURE, "Problem getting sending ring\n");
 	if (recv_ring == NULL)
@@ -108,12 +110,12 @@ main(int argc, char **argv)
 
 	RTE_LOG(INFO, APP, "Finished Process Init.\n");
 
-	/* call lcore_recv() on every slave lcore */
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	/* call lcore_recv() on every worker lcore */
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		rte_eal_remote_launch(lcore_recv, NULL, lcore_id);
 	}
 
-	/* call cmd prompt on master lcore */
+	/* call cmd prompt on main lcore */
 	struct cmdline *cl = cmdline_stdin_new(simple_mp_ctx, "\nsimple_mp > ");
 	if (cl == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create cmdline instance\n");
@@ -121,5 +123,9 @@ main(int argc, char **argv)
 	cmdline_stdin_exit(cl);
 
 	rte_eal_mp_wait_lcore();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

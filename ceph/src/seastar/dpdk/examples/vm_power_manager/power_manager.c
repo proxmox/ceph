@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <inttypes.h>
-#include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -60,16 +59,15 @@ core_info_init(void)
 	ci = get_core_info();
 
 	ci->core_count = get_nprocs_conf();
-	ci->branch_ratio_threshold = BRANCH_RATIO_THRESHOLD;
 	ci->cd = malloc(ci->core_count * sizeof(struct core_details));
+	memset(ci->cd, 0, ci->core_count * sizeof(struct core_details));
 	if (!ci->cd) {
 		RTE_LOG(ERR, POWER_MANAGER, "Failed to allocate memory for core info.");
 		return -1;
 	}
 	for (i = 0; i < ci->core_count; i++) {
 		ci->cd[i].global_enabled_cpus = 1;
-		ci->cd[i].oob_enabled = 0;
-		ci->cd[i].msr_fd = 0;
+		ci->cd[i].branch_ratio_threshold = BRANCH_RATIO_THRESHOLD;
 	}
 	printf("%d cores in system\n", ci->core_count);
 	return 0;
@@ -98,6 +96,9 @@ power_manager_init(void)
 		max_core_num = ci->core_count;
 
 	for (i = 0; i < max_core_num; i++) {
+		if (rte_lcore_index(i) == -1)
+			continue;
+
 		if (ci->cd[i].global_enabled_cpus) {
 			if (rte_power_init(i) < 0)
 				RTE_LOG(ERR, POWER_MANAGER,
@@ -172,6 +173,9 @@ power_manager_exit(void)
 		max_core_num = ci->core_count;
 
 	for (i = 0; i < max_core_num; i++) {
+		if (rte_lcore_index(i) == -1)
+			continue;
+
 		if (ci->cd[i].global_enabled_cpus) {
 			if (rte_power_exit(i) < 0) {
 				RTE_LOG(ERR, POWER_MANAGER, "Unable to shutdown power manager "

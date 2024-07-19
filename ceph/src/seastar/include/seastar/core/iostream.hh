@@ -35,15 +35,25 @@
 
 #pragma once
 
-#include <boost/intrusive/slist.hpp>
 #include <seastar/core/future.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/scattered_message.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
+#include <boost/intrusive/slist.hpp>
+#include <algorithm>
+#include <memory>
+#include <optional>
+#include <variant>
+#include <vector>
+#endif
 
 namespace bi = boost::intrusive;
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 namespace net { class packet; }
 
@@ -121,6 +131,18 @@ public:
         assert(false && "Data sink must have the buffer_size() method overload");
         return 0;
     }
+
+    // In order to support flushes batching (output_stream_options.batch_flushes)
+    // the sink mush handle flush errors that may happen in the background by
+    // overriding the on_batch_flush_error() method. If the sink doesn't do it,
+    // turning on batch_flushes would have no effect
+    virtual bool can_batch_flushes() const noexcept {
+        return false;
+    }
+
+    virtual void on_batch_flush_error() noexcept {
+        assert(false && "Data sink must implement on_batch_flush_error() method");
+    }
 };
 
 class data_sink {
@@ -170,6 +192,8 @@ public:
     }
 
     size_t buffer_size() const noexcept { return _dsi->buffer_size(); }
+    bool can_batch_flushes() const noexcept { return _dsi->can_batch_flushes(); }
+    void on_batch_flush_error() noexcept { _dsi->on_batch_flush_error(); }
 };
 
 struct continue_consuming {};
@@ -219,7 +243,7 @@ private:
 };
 
 // Consumer concept, for consume() method
-SEASTAR_CONCEPT(
+
 // The consumer should operate on the data given to it, and
 // return a future "consumption result", which can be
 //  - continue_consuming, if the consumer has consumed all the input given
@@ -247,7 +271,6 @@ template <typename Consumer, typename CharType>
 concept ObsoleteInputStreamConsumer = requires (Consumer c) {
     { c(temporary_buffer<CharType>{}) } -> std::same_as<future<std::optional<temporary_buffer<CharType>>>>;
 };
-)
 
 /// Buffers data from a data_source and provides a stream interface to the user.
 ///
@@ -286,10 +309,10 @@ public:
     /// prematurely reaching the end of stream is *not* an I/O error.
     future<temporary_buffer<CharType>> read_exactly(size_t n) noexcept;
     template <typename Consumer>
-    SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
+    requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>
     future<> consume(Consumer&& c) noexcept(std::is_nothrow_move_constructible_v<Consumer>);
     template <typename Consumer>
-    SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
+    requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>
     future<> consume(Consumer& c) noexcept(std::is_nothrow_move_constructible_v<Consumer>);
     /// Returns true if the end-of-file flag is set on the stream.
     /// Note that the eof flag is only set after a previous attempt to read
@@ -331,7 +354,7 @@ public:
     /// \returns the data_source
     data_source detach() &&;
 private:
-    future<temporary_buffer<CharType>> read_exactly_part(size_t n, tmp_buf buf, size_t completed) noexcept;
+    future<temporary_buffer<CharType>> read_exactly_part(size_t n) noexcept;
 };
 
 struct output_stream_options {
@@ -382,10 +405,10 @@ public:
     using char_type = CharType;
     output_stream() noexcept = default;
     output_stream(data_sink fd, size_t size, output_stream_options opts = {}) noexcept
-        : _fd(std::move(fd)), _size(size), _trim_to_size(opts.trim_to_size), _batch_flushes(opts.batch_flushes) {}
+        : _fd(std::move(fd)), _size(size), _trim_to_size(opts.trim_to_size), _batch_flushes(opts.batch_flushes && _fd.can_batch_flushes()) {}
     [[deprecated("use output_stream_options instead of booleans")]]
     output_stream(data_sink fd, size_t size, bool trim_to_size, bool batch_flushes = false) noexcept
-        : _fd(std::move(fd)), _size(size), _trim_to_size(trim_to_size), _batch_flushes(batch_flushes) {}
+        : _fd(std::move(fd)), _size(size), _trim_to_size(trim_to_size), _batch_flushes(batch_flushes && _fd.can_batch_flushes()) {}
     output_stream(data_sink fd) noexcept
         : _fd(std::move(fd)), _size(_fd.buffer_size()), _trim_to_size(true) {}
     output_stream(output_stream&&) noexcept = default;
@@ -440,6 +463,7 @@ private:
 template <typename CharType>
 future<> copy(input_stream<CharType>&, output_stream<CharType>&);
 
+SEASTAR_MODULE_EXPORT_END
 }
 
 #include "iostream-impl.hh"

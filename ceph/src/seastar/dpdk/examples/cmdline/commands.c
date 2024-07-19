@@ -8,17 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <errno.h>
-#include <netinet/in.h>
-#include <termios.h>
-#ifndef __linux__
-	#ifdef __FreeBSD__
-		#include <sys/socket.h>
-	#else
-		#include <net/socket.h>
-	#endif
-#endif
 
 #include <cmdline_rdline.h>
 #include <cmdline_parse.h>
@@ -67,6 +57,7 @@ struct object_list global_obj_list;
 
 /**********************************************************/
 
+/* Show or delete tokens. 8< */
 struct cmd_obj_del_show_result {
 	cmdline_fixed_string_t action;
 	struct object *obj;
@@ -74,7 +65,7 @@ struct cmd_obj_del_show_result {
 
 static void cmd_obj_del_show_parsed(void *parsed_result,
 				    struct cmdline *cl,
-				    __attribute__((unused)) void *data)
+				    __rte_unused void *data)
 {
 	struct cmd_obj_del_show_result *res = parsed_result;
 	char ip_str[INET6_ADDRSTRLEN];
@@ -115,6 +106,7 @@ cmdline_parse_inst_t cmd_obj_del_show = {
 		NULL,
 	},
 };
+/* >8 End of show or delete tokens. */
 
 /**********************************************************/
 
@@ -126,7 +118,7 @@ struct cmd_obj_add_result {
 
 static void cmd_obj_add_parsed(void *parsed_result,
 			       struct cmdline *cl,
-			       __attribute__((unused)) void *data)
+			       __rte_unused void *data)
 {
 	struct cmd_obj_add_result *res = parsed_result;
 	struct object *o;
@@ -185,9 +177,9 @@ struct cmd_help_result {
 	cmdline_fixed_string_t help;
 };
 
-static void cmd_help_parsed(__attribute__((unused)) void *parsed_result,
+static void cmd_help_parsed(__rte_unused void *parsed_result,
 			    struct cmdline *cl,
-			    __attribute__((unused)) void *data)
+			    __rte_unused void *data)
 {
 	cmdline_printf(cl,
 		       "Demo example of command line interface in RTE\n\n"
@@ -221,9 +213,11 @@ cmdline_parse_inst_t cmd_help = {
 /**********************************************************/
 /****** CONTEXT (list of instruction) */
 
+/* Cmdline context list of commands in NULL-terminated table. 8< */
 cmdline_parse_ctx_t main_ctx[] = {
 	(cmdline_parse_inst_t *)&cmd_obj_del_show,
 	(cmdline_parse_inst_t *)&cmd_obj_add,
 	(cmdline_parse_inst_t *)&cmd_help,
 	NULL,
 };
+/* >8 End of context list. */

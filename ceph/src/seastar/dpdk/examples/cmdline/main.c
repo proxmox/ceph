@@ -8,7 +8,6 @@
 #include <string.h>
 #include <stdint.h>
 #include <errno.h>
-#include <termios.h>
 #include <sys/queue.h>
 
 #include <cmdline_rdline.h>
@@ -22,6 +21,7 @@
 
 #include "commands.h"
 
+/* Initialization of the Environment Abstraction Layer (EAL). 8< */
 int main(int argc, char **argv)
 {
 	int ret;
@@ -30,12 +30,18 @@ int main(int argc, char **argv)
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_panic("Cannot init EAL\n");
+	/* >8 End of initialization of Environment Abstraction Layer (EAL). */
 
+	/* Creating a new command line object. 8< */
 	cl = cmdline_stdin_new(main_ctx, "example> ");
 	if (cl == NULL)
 		rte_panic("Cannot create cmdline instance\n");
 	cmdline_interact(cl);
 	cmdline_stdin_exit(cl);
+	/* >8 End of creating a new command line object. */
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

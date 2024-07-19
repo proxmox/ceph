@@ -6,6 +6,21 @@
 #include "qat_device.h"
 #include "qat_logs.h"
 
+const char *
+qat_service_get_str(enum qat_service_type type)
+{
+	switch (type) {
+	case QAT_SERVICE_SYMMETRIC:
+		return "sym";
+	case QAT_SERVICE_ASYMMETRIC:
+		return "asym";
+	case QAT_SERVICE_COMPRESSION:
+		return "comp";
+	default:
+		return "invalid";
+	}
+}
+
 int
 qat_sgl_fill_array(struct rte_mbuf *buf, int64_t offset,
 		void *list_in, uint32_t data_len,
@@ -94,6 +109,9 @@ void qat_stats_get(struct qat_pci_device *dev,
 		stats->dequeued_count += qp[i]->stats.dequeued_count;
 		stats->enqueue_err_count += qp[i]->stats.enqueue_err_count;
 		stats->dequeue_err_count += qp[i]->stats.dequeue_err_count;
+		stats->threshold_hit_count += qp[i]->stats.threshold_hit_count;
+		QAT_LOG(DEBUG, "Threshold was used for qp %d %"PRIu64" times",
+				i, stats->threshold_hit_count);
 	}
 }
 

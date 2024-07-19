@@ -8,6 +8,7 @@
 #
 
 local SOURCES =
+    any_completion_handler.cpp
     basic_dynamic_body.cpp
     basic_file_body.cpp
     basic_parser.cpp
@@ -19,6 +20,7 @@ local SOURCES =
     field_compiles.cpp
     fields.cpp
     file_body.cpp
+    message_generator.cpp
     message.cpp
     parser.cpp
     read.cpp

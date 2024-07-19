@@ -19,11 +19,15 @@
  * Copyright (C) 2019 Scylla DB Ltd
  */
 
+#ifndef SEASTAR_MODULE
 #include <boost/range/adaptor/filtered.hpp>
 #include <seastar/core/scheduling.hh>
 #include <seastar/core/map_reduce.hh>
+#include <seastar/util/modules.hh>
 #include <array>
+#include <typeindex>
 #include <vector>
+#endif
 
 #pragma once
 
@@ -45,11 +49,15 @@ struct scheduling_group_specific_thread_local_data {
     std::vector<scheduling_group_key_config> scheduling_group_key_configs;
 };
 
+#ifdef SEASTAR_BUILD_SHARED_LIBS
+scheduling_group_specific_thread_local_data** get_scheduling_group_specific_thread_local_data_ptr() noexcept;
+#else
 inline
 scheduling_group_specific_thread_local_data** get_scheduling_group_specific_thread_local_data_ptr() noexcept {
     static thread_local scheduling_group_specific_thread_local_data* data;
     return &data;
 }
+#endif
 inline
 scheduling_group_specific_thread_local_data& get_scheduling_group_specific_thread_local_data() noexcept {
     return **get_scheduling_group_specific_thread_local_data_ptr();
@@ -80,6 +88,8 @@ T* scheduling_group_get_specific_ptr(scheduling_group sg, scheduling_group_key k
 }
 
 }
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /**
  * Returns a reference to the given scheduling group specific data.
@@ -133,9 +143,9 @@ T& scheduling_group_get_specific(scheduling_group_key key) noexcept {
  * SpecificValType.
  */
 template<typename SpecificValType, typename Mapper, typename Reducer, typename Initial>
-SEASTAR_CONCEPT( requires requires(SpecificValType specific_val, Mapper mapper, Reducer reducer, Initial initial) {
+requires requires(SpecificValType specific_val, Mapper mapper, Reducer reducer, Initial initial) {
     {reducer(initial, mapper(specific_val))} -> std::convertible_to<Initial>;
-})
+}
 future<typename function_traits<Reducer>::return_type>
 map_reduce_scheduling_group_specific(Mapper mapper, Reducer reducer,
         Initial initial_val, scheduling_group_key key) {
@@ -167,9 +177,9 @@ map_reduce_scheduling_group_specific(Mapper mapper, Reducer reducer,
  * SpecificValType.
  */
 template<typename SpecificValType, typename Reducer, typename Initial>
-SEASTAR_CONCEPT( requires requires(SpecificValType specific_val, Reducer reducer, Initial initial) {
+requires requires(SpecificValType specific_val, Reducer reducer, Initial initial) {
     {reducer(initial, specific_val)} -> std::convertible_to<Initial>;
-})
+}
 future<typename function_traits<Reducer>::return_type>
 reduce_scheduling_group_specific(Reducer reducer, Initial initial_val, scheduling_group_key key) {
     using per_scheduling_group = internal::scheduling_group_specific_thread_local_data::per_scheduling_group;
@@ -185,5 +195,7 @@ reduce_scheduling_group_specific(Reducer reducer, Initial initial_val, schedulin
             | boost::adaptors::filtered(std::mem_fn(&per_scheduling_group::queue_is_initialized)),
             mapper, std::move(initial_val), reducer);
 }
+
+SEASTAR_MODULE_EXPORT_END
 
 }

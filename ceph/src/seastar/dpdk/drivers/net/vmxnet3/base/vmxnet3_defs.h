@@ -26,6 +26,12 @@
 #define VMXNET3_REG_MACH  0x30   /* MAC Address High */
 #define VMXNET3_REG_ICR   0x38   /* Interrupt Cause Register */
 #define VMXNET3_REG_ECR   0x40   /* Event Cause Register */
+#define VMXNET3_REG_DCR   0x48   /* Device capability register,
+				  * from 0x48 to 0x80
+				  */
+#define VMXNET3_REG_PTCR  0x88   /* Passthru capbility register
+				  * from 0x88 to 0xb0
+				  */
 
 #define VMXNET3_REG_WSAL  0xF00  /* Wireless Shared Address Lo  */
 #define VMXNET3_REG_WSAH  0xF08  /* Wireless Shared Address Hi  */
@@ -37,8 +43,16 @@
 #define VMXNET3_REG_RXPROD   0x800 /* Rx Producer Index for ring 1 */
 #define VMXNET3_REG_RXPROD2  0xA00 /* Rx Producer Index for ring 2 */
 
-#define VMXNET3_PT_REG_SIZE     4096    /* BAR 0 */
-#define VMXNET3_VD_REG_SIZE     4096    /* BAR 1 */
+/* For Large PT BAR, the following offset to DB register */
+#define VMXNET3_REG_LB_TXPROD   0x1000 /* Tx Producer Index */
+#define VMXNET3_REG_LB_RXPROD   0x1400 /* Rx Producer Index for ring 1 */
+#define VMXNET3_REG_LB_RXPROD2  0x1800 /* Rx Producer Index for ring 2 */
+
+#define VMXNET3_PT_REG_SIZE         4096           /* BAR 0 */
+#define VMXNET3_LARGE_PT_REG_SIZE   8192           /* large PT pages */
+#define VMXNET3_VD_REG_SIZE         4096           /* BAR 1 */
+#define VMXNET3_LARGE_BAR0_REG_SIZE (4096 * 4096)  /* LARGE BAR 0 */
+#define VMXNET3_OOB_REG_SIZE        (4094 * 4096)  /* OOB pages */
 
 /*
  * The two Vmxnet3 MMIO Register PCI BARs (BAR 0 at offset 10h and BAR 1 at
@@ -50,6 +64,7 @@
  * VMXNET3_MSIX_BAR_SIZE is defined in "vmxnet3Int.h"
  */
 #define VMXNET3_PHYSMEM_PAGES   4
+#define VMXNET3_PHYSMEM_LB_PAGES 4099 /* 4096 + 1 + 2 */
 
 #define VMXNET3_REG_ALIGN       8  /* All registers are 8-byte aligned. */
 #define VMXNET3_REG_ALIGN_MASK  0x7
@@ -90,6 +105,9 @@ typedef enum {
    VMXNET3_CMD_RESERVED4,
    VMXNET3_CMD_REGISTER_MEMREGS,
    VMXNET3_CMD_SET_RSS_FIELDS,
+   VMXNET3_CMD_RESERVED9,
+   VMXNET3_CMD_RESERVED10,
+   VMXNET3_CMD_SET_RING_BUFFER_SIZE,
 
    VMXNET3_CMD_FIRST_GET = 0xF00D0000,
    VMXNET3_CMD_GET_QUEUE_STATUS = VMXNET3_CMD_FIRST_GET,
@@ -104,6 +122,12 @@ typedef enum {
    VMXNET3_CMD_GET_ADAPTIVE_RING_INFO,
    VMXNET3_CMD_GET_TXDATA_DESC_SIZE,
    VMXNET3_CMD_RESERVED5,
+   VMXNET3_CMD_RESERVED6,
+   VMXNET3_CMD_RESERVED7,
+   VMXNET3_CMD_RESERVED8,
+   VMXNET3_CMD_GET_MAX_QUEUES_CONF,
+   VMXNET3_CMD_GET_MAX_CAPABILITIES,
+   VMXNET3_CMD_GET_DCR0_REG,
 } Vmxnet3_Cmd;
 
 /* Adaptive Ring Info Flags */
@@ -395,6 +419,8 @@ typedef union Vmxnet3_GenericDesc {
 
 /* max # of tx descs for a non-tso pkt */
 #define VMXNET3_MAX_TXD_PER_PKT 16
+/* max # of tx descs for a tso pkt */
+#define VMXNET3_MAX_TSO_TXD_PER_PKT 24
 
 /* Max size of a single rx buffer */
 #define VMXNET3_MAX_RX_BUF_SIZE  ((1 << 14) - 1)
@@ -571,13 +597,31 @@ enum vmxnet3_intr_type {
 /* addition 1 for events */
 #define VMXNET3_MAX_INTRS      25
 
+/* Version 6 and later will use below macros */
+#define VMXNET3_EXT_MAX_TX_QUEUES  32
+#define VMXNET3_EXT_MAX_RX_QUEUES  32
+
+/* Version-dependent MAX RX/TX queues macro */
+#define MAX_RX_QUEUES(hw) \
+	(VMXNET3_VERSION_GE_6((hw)) ? \
+	VMXNET3_EXT_MAX_RX_QUEUES : \
+	VMXNET3_MAX_RX_QUEUES)
+#define MAX_TX_QUEUES(hw) \
+	(VMXNET3_VERSION_GE_6((hw)) ? \
+	VMXNET3_EXT_MAX_TX_QUEUES : \
+	VMXNET3_MAX_TX_QUEUES)
+
+/* addition 1 for events */
+#define VMXNET3_EXT_MAX_INTRS      65
+#define VMXNET3_FIRST_SET_INTRS    64
+
 /* value of intrCtrl */
 #define VMXNET3_IC_DISABLE_ALL  0x1   /* bit 0 */
 
 typedef
 #include "vmware_pack_begin.h"
 struct Vmxnet3_IntrConf {
-   Bool   autoMask;
+   bool   autoMask;
    uint8  numIntrs;      /* # of interrupts */
    uint8  eventIntrIdx;
    uint8  modLevels[VMXNET3_MAX_INTRS]; /* moderation level for each intr */
@@ -587,13 +631,28 @@ struct Vmxnet3_IntrConf {
 #include "vmware_pack_end.h"
 Vmxnet3_IntrConf;
 
+typedef
+#include "vmware_pack_begin.h"
+struct Vmxnet3_IntrConfExt {
+	uint8    autoMask;
+	uint8    numIntrs;      /* # of interrupts */
+	uint8    eventIntrIdx;
+	uint8    reserved;
+	__le32   intrCtrl;
+	__le32   reserved1;
+	uint8    modLevels[VMXNET3_EXT_MAX_INTRS]; /* moderation level for each intr */
+	uint8    reserved2[3];
+}
+#include "vmware_pack_end.h"
+Vmxnet3_IntrConfExt;
+
 /* one bit per VLAN ID, the size is in the units of uint32 */
 #define VMXNET3_VFT_SIZE  (4096 / (sizeof(uint32) * 8))
 
 typedef
 #include "vmware_pack_begin.h"
 struct Vmxnet3_QueueStatus {
-   Bool    stopped;
+   bool    stopped;
    uint8   _pad[3];
    __le32  error;
 }
@@ -613,7 +672,7 @@ Vmxnet3_TxQueueCtrl;
 typedef
 #include "vmware_pack_begin.h"
 struct Vmxnet3_RxQueueCtrl {
-   Bool    updateRxProd;
+   bool    updateRxProd;
    uint8   _pad[7];
    __le64  reserved;
 }
@@ -694,6 +753,15 @@ Vmxnet3_DSDevRead;
 
 typedef
 #include "vmware_pack_begin.h"
+struct Vmxnet3_DSDevReadExt {
+	/* read-only region for device, read by dev in response to a SET cmd */
+	struct Vmxnet3_IntrConfExt    intrConfExt;
+}
+#include "vmware_pack_end.h"
+Vmxnet3_DSDevReadExt;
+
+typedef
+#include "vmware_pack_begin.h"
 struct Vmxnet3_TxQueueDesc {
    Vmxnet3_TxQueueCtrl ctrl;
    Vmxnet3_TxQueueConf conf;
@@ -759,6 +827,17 @@ typedef enum Vmxnet3_RSSField {
    VMXNET3_RSS_FIELDS_ESPIP6 = 0x0020,
 } Vmxnet3_RSSField;
 
+typedef
+#include "vmware_pack_begin.h"
+struct Vmxnet3_RingBufferSize {
+	__le16      ring1BufSizeType0;
+	__le16      ring1BufSizeType1;
+	__le16      ring2BufSizeType1;
+	__le16      pad;
+}
+#include "vmware_pack_end.h"
+Vmxnet3_RingBufferSize;
+
 /*
  * If the command data <= 16 bytes, use the shared memory direcly.
  * Otherwise, use the variable length configuration descriptor.
@@ -769,6 +848,7 @@ union Vmxnet3_CmdInfo {
    Vmxnet3_VariableLenConfDesc varConf;
    Vmxnet3_SetPolling          setPolling;
    Vmxnet3_RSSField            setRSSFields;
+   Vmxnet3_RingBufferSize      ringBufSize;
    __le16                      reserved[2];
    __le64                      data[2];
 }
@@ -778,18 +858,18 @@ Vmxnet3_CmdInfo;
 typedef
 #include "vmware_pack_begin.h"
 struct Vmxnet3_DriverShared {
-   __le32               magic;
-   __le32               pad; /* make devRead start at 64-bit boundaries */
-   Vmxnet3_DSDevRead    devRead;
-   __le32               ecr;
-   __le32               reserved;
+	__le32               magic;
+	__le32               size;    /* size of DriverShared */
+	Vmxnet3_DSDevRead    devRead;
+	__le32               ecr;
+	__le32               reserved;
 
-   union {
-      __le32            reserved1[4];
-      Vmxnet3_CmdInfo   cmdInfo; /* only valid in the context of executing the
-				  * relevant command
-				  */
-   } cu;
+	union {
+		__le32			reserved1[4];
+		/* only valid in the context of executing the relevant command */
+		Vmxnet3_CmdInfo	cmdInfo;
+	} cu;
+	struct Vmxnet3_DSDevReadExt   devReadExt;
 }
 #include "vmware_pack_end.h"
 Vmxnet3_DriverShared;
@@ -821,6 +901,7 @@ do {\
    ((vfTable[vid >> 5] & (1 << (vid & 31))) != 0)
 
 #define VMXNET3_MAX_MTU     9000
+#define VMXNET3_V6_MAX_MTU  9190
 #define VMXNET3_MIN_MTU     60
 
 #define VMXNET3_LINK_UP         (10000 << 16 | 1)    // 10 Gbps, up
@@ -829,5 +910,31 @@ do {\
 #define VMXWIFI_DRIVER_SHARED_LEN 8192
 
 #define VMXNET3_DID_PASSTHRU    0xFFFF
+
+#define VMXNET3_DCR_ERROR                          31   /* error when bit 31 of DCR is set */
+#define VMXNET3_CAP_UDP_RSS                        0    /* bit 0 of DCR 0 */
+#define VMXNET3_CAP_ESP_RSS_IPV4                   1    /* bit 1 of DCR 0 */
+#define VMXNET3_CAP_GENEVE_CHECKSUM_OFFLOAD        2    /* bit 2 of DCR 0 */
+#define VMXNET3_CAP_GENEVE_TSO                     3    /* bit 3 of DCR 0 */
+#define VMXNET3_CAP_VXLAN_CHECKSUM_OFFLOAD         4    /* bit 4 of DCR 0 */
+#define VMXNET3_CAP_VXLAN_TSO                      5    /* bit 5 of DCR 0 */
+#define VMXNET3_CAP_GENEVE_OUTER_CHECKSUM_OFFLOAD  6    /* bit 6 of DCR 0 */
+#define VMXNET3_CAP_VXLAN_OUTER_CHECKSUM_OFFLOAD   7    /* bit 7 of DCR 0 */
+#define VMXNET3_CAP_PKT_STEERING_IPV4              8    /* bit 8 of DCR 0 */
+#define VMXNET3_CAP_VERSION_4_MAX                  VMXNET3_CAP_PKT_STEERING_IPV4
+#define VMXNET3_CAP_ESP_RSS_IPV6                   9    /* bit 9 of DCR 0 */
+#define VMXNET3_CAP_VERSION_5_MAX                  VMXNET3_CAP_ESP_RSS_IPV6
+#define VMXNET3_CAP_ESP_OVER_UDP_RSS               10   /* bit 10 of DCR 0 */
+#define VMXNET3_CAP_INNER_RSS                      11   /* bit 11 of DCR 0 */
+#define VMXNET3_CAP_INNER_ESP_RSS                  12   /* bit 12 of DCR 0 */
+#define VMXNET3_CAP_CRC32_HASH_FUNC                13   /* bit 13 of DCR 0 */
+#define VMXNET3_CAP_VERSION_6_MAX                  VMXNET3_CAP_CRC32_HASH_FUNC
+#define VMXNET3_CAP_OAM_FILTER                     14   /* bit 14 of DCR 0 */
+#define VMXNET3_CAP_ESP_QS                         15   /* bit 15 of DCR 0 */
+#define VMXNET3_CAP_LARGE_BAR                      16   /* bit 16 of DCR 0 */
+#define VMXNET3_CAP_OOORX_COMP                     17   /* bit 17 of DCR 0 */
+#define VMXNET3_CAP_VERSION_7_MAX                  18
+/* when new capability is introduced, update VMXNET3_CAP_MAX */
+#define VMXNET3_CAP_MAX                            VMXNET3_CAP_VERSION_7_MAX
 
 #endif /* _VMXNET3_DEFS_H_ */

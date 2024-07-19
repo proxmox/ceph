@@ -416,7 +416,10 @@ void test_areal()
     TEST_UNION(ticket_10108_a, count_set(1, 2), 0, 8, 0.0435229);
     TEST_UNION(ticket_10108_b, count_set(1, 2), 0, 10, 2424.3449);
 
+#if ! defined(BOOST_GEOMETRY_USE_RESCALING) || defined(BOOST_GEOMETRY_TEST_FAILURES)
+    // With rescaling, there is a dependency on cluster tolerance, which alters the result.
     TEST_UNION(ticket_10866, 1, 0, 14, 332760303.5);
+#endif
 
     TEST_UNION(ticket_11725, 1, 1, 10, 7.5);
 
@@ -443,6 +446,21 @@ void test_areal()
 
     TEST_UNION(issue_838, 1, 0, -1, expectation_limits(1.3333, 1.33785));
     TEST_UNION_REV(issue_838, 1, 0, -1, expectation_limits(1.3333, 1.33785));
+
+    TEST_UNION(issue_1076, 1, 0, -1, 1225.0);
+    TEST_UNION_REV(issue_1076, 1, 0, -1, 1225.0);
+
+    TEST_UNION(issue_1081a, 1, 2, -1, 1600.56);
+    TEST_UNION_REV(issue_1081a, 1, 2, -1, 1600.56);
+
+    TEST_UNION(issue_1081b, 1, 2, -1, 1600.56);
+    TEST_UNION_REV(issue_1081b, 1, 2, -1, 1600.56);
+
+    TEST_UNION(issue_1081c, 1, 1, -1, 2338.08);
+    TEST_UNION_REV(issue_1081c, 1, 1, -1, 2338.08);
+
+    TEST_UNION(issue_1108, 1, 0, -1, 12.1742);
+    TEST_UNION_REV(issue_1108, 1, 0, -1, 12.1742);
 
     {
         // Rescaling produces an invalid result

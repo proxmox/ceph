@@ -6,16 +6,19 @@
 #ifndef _ENIC_RXTX_COMMON_H_
 #define _ENIC_RXTX_COMMON_H_
 
+#include <rte_byteorder.h>
+
 static inline uint16_t
 enic_cq_rx_desc_ciflags(struct cq_enet_rq_desc *crd)
 {
-	return le16_to_cpu(crd->completed_index_flags) & ~CQ_DESC_COMP_NDX_MASK;
+	return rte_le_to_cpu_16(crd->completed_index_flags) &
+				~CQ_DESC_COMP_NDX_MASK;
 }
 
 static inline uint16_t
 enic_cq_rx_desc_bwflags(struct cq_enet_rq_desc *crd)
 {
-	return le16_to_cpu(crd->bytes_written_flags) &
+	return rte_le_to_cpu_16(crd->bytes_written_flags) &
 			   ~CQ_ENET_RQ_DESC_BYTES_WRITTEN_MASK;
 }
 
@@ -36,7 +39,7 @@ enic_cq_rx_desc_eop(uint16_t ciflags)
 static inline uint8_t
 enic_cq_rx_desc_csum_not_calc(struct cq_enet_rq_desc *cqrd)
 {
-	return (le16_to_cpu(cqrd->q_number_rss_type_flags) &
+	return (rte_le_to_cpu_16(cqrd->q_number_rss_type_flags) &
 		CQ_ENET_RQ_DESC_FLAGS_CSUM_NOT_CALC) ==
 		CQ_ENET_RQ_DESC_FLAGS_CSUM_NOT_CALC;
 }
@@ -58,27 +61,27 @@ enic_cq_rx_desc_tcp_udp_csum_ok(struct cq_enet_rq_desc *cqrd)
 static inline uint8_t
 enic_cq_rx_desc_rss_type(struct cq_enet_rq_desc *cqrd)
 {
-	return (uint8_t)((le16_to_cpu(cqrd->q_number_rss_type_flags) >>
+	return (uint8_t)((rte_le_to_cpu_16(cqrd->q_number_rss_type_flags) >>
 		CQ_DESC_Q_NUM_BITS) & CQ_ENET_RQ_DESC_RSS_TYPE_MASK);
 }
 
 static inline uint32_t
 enic_cq_rx_desc_rss_hash(struct cq_enet_rq_desc *cqrd)
 {
-	return le32_to_cpu(cqrd->rss_hash);
+	return rte_le_to_cpu_32(cqrd->rss_hash);
 }
 
 static inline uint16_t
 enic_cq_rx_desc_vlan(struct cq_enet_rq_desc *cqrd)
 {
-	return le16_to_cpu(cqrd->vlan);
+	return rte_le_to_cpu_16(cqrd->vlan);
 }
 
 static inline uint16_t
 enic_cq_rx_desc_n_bytes(struct cq_desc *cqd)
 {
 	struct cq_enet_rq_desc *cqrd = (struct cq_enet_rq_desc *)cqd;
-	return le16_to_cpu(cqrd->bytes_written_flags) &
+	return rte_le_to_cpu_16(cqrd->bytes_written_flags) &
 		CQ_ENET_RQ_DESC_BYTES_WRITTEN_MASK;
 }
 
@@ -206,11 +209,11 @@ enic_cq_rx_to_pkt_flags(struct cq_desc *cqd, struct rte_mbuf *mbuf)
 
 	/* VLAN STRIPPED flag. The L2 packet type updated here also */
 	if (bwflags & CQ_ENET_RQ_DESC_FLAGS_VLAN_STRIPPED) {
-		pkt_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
+		pkt_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
 		mbuf->packet_type |= RTE_PTYPE_L2_ETHER;
 	} else {
 		if (vlan_tci != 0) {
-			pkt_flags |= PKT_RX_VLAN;
+			pkt_flags |= RTE_MBUF_F_RX_VLAN;
 			mbuf->packet_type |= RTE_PTYPE_L2_ETHER_VLAN;
 		} else {
 			mbuf->packet_type |= RTE_PTYPE_L2_ETHER;
@@ -224,16 +227,16 @@ enic_cq_rx_to_pkt_flags(struct cq_desc *cqd, struct rte_mbuf *mbuf)
 		clsf_cqd = (struct cq_enet_rq_clsf_desc *)cqd;
 		filter_id = clsf_cqd->filter_id;
 		if (filter_id) {
-			pkt_flags |= PKT_RX_FDIR;
+			pkt_flags |= RTE_MBUF_F_RX_FDIR;
 			if (filter_id != ENIC_MAGIC_FILTER_ID) {
 				/* filter_id = mark id + 1, so subtract 1 */
 				mbuf->hash.fdir.hi = filter_id - 1;
-				pkt_flags |= PKT_RX_FDIR_ID;
+				pkt_flags |= RTE_MBUF_F_RX_FDIR_ID;
 			}
 		}
 	} else if (enic_cq_rx_desc_rss_type(cqrd)) {
 		/* RSS flag */
-		pkt_flags |= PKT_RX_RSS_HASH;
+		pkt_flags |= RTE_MBUF_F_RX_RSS_HASH;
 		mbuf->hash.rss = enic_cq_rx_desc_rss_hash(cqrd);
 	}
 
@@ -251,17 +254,17 @@ enic_cq_rx_to_pkt_flags(struct cq_desc *cqd, struct rte_mbuf *mbuf)
 			 */
 			if (mbuf->packet_type & RTE_PTYPE_L3_IPV4) {
 				if (enic_cq_rx_desc_ipv4_csum_ok(cqrd))
-					pkt_flags |= PKT_RX_IP_CKSUM_GOOD;
+					pkt_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 				else
-					pkt_flags |= PKT_RX_IP_CKSUM_BAD;
+					pkt_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 			}
 
 			if (l4_flags == RTE_PTYPE_L4_UDP ||
 			    l4_flags == RTE_PTYPE_L4_TCP) {
 				if (enic_cq_rx_desc_tcp_udp_csum_ok(cqrd))
-					pkt_flags |= PKT_RX_L4_CKSUM_GOOD;
+					pkt_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 				else
-					pkt_flags |= PKT_RX_L4_CKSUM_BAD;
+					pkt_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			}
 		}
 	}

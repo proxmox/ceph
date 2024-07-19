@@ -19,19 +19,20 @@
  * Copyright (C) 2015 Cloudius Systems, Ltd.
  */
 
-#include <seastar/core/ragel.hh>
+#ifndef SEASTAR_MODULE
 #include <memory>
 #include <unordered_map>
+#endif
+
+#include <seastar/core/ragel.hh>
+#include <seastar/util/modules.hh>
+#include <seastar/http/reply.hh>
 
 namespace seastar {
 
-struct http_response {
-    sstring _version;
-    std::unordered_map<sstring, sstring> _headers;
-    int _status_code;
-};
+SEASTAR_MODULE_EXPORT_BEGIN
 
-%% machine http_response;
+%% machine reply;
 
 %%{
 
@@ -79,7 +80,7 @@ action extend_field  {
 }
 
 action store_status {
-    _rsp->_status_code = std::atoi(str().c_str());
+    _rsp->_status = static_cast<http::reply::status_type>(std::atoi(str().c_str()));
 }
 
 action done {
@@ -127,14 +128,14 @@ public:
         eof,
         done,
     };
-    std::unique_ptr<http_response> _rsp;
+    std::unique_ptr<http::reply> _rsp;
     sstring _field_name;
     sstring _value;
     state _state;
 public:
     void init() {
         init_base();
-        _rsp.reset(new http_response());
+        _rsp.reset(new http::reply());
         _state = state::eof;
         %% write init;
     }
@@ -149,7 +150,10 @@ public:
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmisleading-indentation"
 #endif
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
         %% write exec;
+#pragma GCC diagnostic pop
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
@@ -176,5 +180,5 @@ public:
         return _state == state::error;
     }
 };
-
+SEASTAR_MODULE_EXPORT_END
 }

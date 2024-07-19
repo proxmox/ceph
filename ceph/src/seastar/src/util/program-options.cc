@@ -20,10 +20,20 @@
  * Copyright (C) 2017 ScyllaDB
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <boost/any.hpp>
+#include <boost/intrusive/list.hpp>
+#include <boost/program_options.hpp>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/util/program-options.hh>
 #include <seastar/util/log-cli.hh>
-
-#include <regex>
+#endif
 
 namespace bpo = boost::program_options;
 

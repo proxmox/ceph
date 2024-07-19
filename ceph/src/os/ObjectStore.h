@@ -111,6 +111,13 @@ public:
    * This appears to be called with nothing locked.
    */
   virtual objectstore_perf_stat_t get_cur_stats() = 0;
+  /**
+   * Propagate Object Store performance counters with the actual values
+   *
+   *
+   * Intended primarily for testing purposes
+   */
+  virtual void refresh_perf_counters() = 0;
 
   /**
    * Fetch Object Store performance counters.
@@ -604,7 +611,7 @@ public:
    *
    * @param cid collection for object
    * @param oid oid of object
-   * @param aset place to put output result.
+   * @param aset upon success, will contain exactly the object attrs
    * @returns 0 on success, negative error code on failure.
    */
   virtual int getattrs(CollectionHandle &c, const ghobject_t& oid,
@@ -615,13 +622,14 @@ public:
    *
    * @param cid collection for object
    * @param oid oid of object
-   * @param aset place to put output result.
+   * @param aset upon success, will contain exactly the object attrs
    * @returns 0 on success, negative error code on failure.
    */
   int getattrs(CollectionHandle &c, const ghobject_t& oid,
 	       std::map<std::string,ceph::buffer::list,std::less<>>& aset) {
     std::map<std::string,ceph::buffer::ptr,std::less<>> bmap;
     int r = getattrs(c, oid, bmap);
+    aset.clear();
     for (auto i = bmap.begin(); i != bmap.end(); ++i) {
       aset[i->first].append(i->second);
     }

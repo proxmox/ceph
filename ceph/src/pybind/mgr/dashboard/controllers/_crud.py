@@ -156,7 +156,7 @@ class Container:
         raise NotImplementedError
 
     def to_dict(self, key=''):
-        # intialize the schema of this container
+        # initialize the schema of this container
         ui_schemas = []
         control_schema = {
             'type': self._property_type(),
@@ -332,7 +332,7 @@ class CRUDEndpoint:
     CRUDClassMetadata: Optional[RESTController] = None
 
     def __init__(self, router: APIRouter, doc: APIDoc,
-                 set_column: Optional[Dict[str, Dict[str, str]]] = None,
+                 set_column: Optional[Dict[str, Dict[str, Union[str, bool]]]] = None,
                  actions: Optional[List[TableAction]] = None,
                  permissions: Optional[List[str]] = None, forms: Optional[List[Form]] = None,
                  column_key: Optional[str] = None,

@@ -30,7 +30,7 @@ after a primary process has already configured the hugepage shared memory for th
     Secondary processes should run alongside primary process with same DPDK version.
 
     Secondary processes which requires access to physical devices in Primary process, must
-    be passed with the same whitelist and blacklist options.
+    be passed with the same allow and block options.
 
 To support these two process types, and other multi-process setups described later,
 two additional command-line parameters are available to the EAL:
@@ -75,7 +75,7 @@ and point to the same objects, in both processes.
 
 
 The EAL also supports an auto-detection mode (set by EAL ``--proc-type=auto`` flag ),
-whereby an DPDK process is started as a secondary instance if a primary instance is already running.
+whereby a DPDK process is started as a secondary instance if a primary instance is already running.
 
 Deployment Models
 -----------------
@@ -107,15 +107,19 @@ Running Multiple Independent DPDK Applications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In addition to the above scenarios involving multiple DPDK processes working together,
-it is possible to run multiple DPDK processes side-by-side,
+it is possible to run multiple DPDK processes concurrently,
 where those processes are all working independently.
 Support for this usage scenario is provided using the ``--file-prefix`` parameter to the EAL.
 
-By default, the EAL creates hugepage files on each hugetlbfs filesystem using the rtemap_X filename,
+The EAL puts shared runtime files in a directory based on standard conventions.
+If ``$RUNTIME_DIRECTORY`` is defined in the environment,
+it is used (as ``$RUNTIME_DIRECTORY/dpdk``).
+Otherwise, if DPDK is run as root user, it uses ``/var/run/dpdk``
+or if run as non-root user then the ``/tmp/dpdk`` (or ``$XDG_RUNTIME_DIRECTORY/dpdk``) is used.
+Hugepage files on each hugetlbfs filesystem use the ``rtemap_X`` filename,
 where X is in the range 0 to the maximum number of hugepages -1.
-Similarly, it creates shared configuration files, memory mapped in each process, using the /var/run/.rte_config filename,
-when run as root (or $HOME/.rte_config when run as a non-root user;
-if filesystem and device permissions are set up to allow this).
+Similarly, it creates shared configuration files, memory mapped in each process,
+using the ``.rte_config`` filename.
 The rte part of the filenames of each of the above is configurable using the file-prefix parameter.
 
 In addition to specifying the file-prefix parameter,
@@ -131,7 +135,7 @@ can use).
 .. note::
 
     Independent DPDK instances running side-by-side on a single machine cannot share any network ports.
-    Any network ports being used by one process should be blacklisted in every other process.
+    Any network ports being used by one process should be blocked by every other process.
 
 Running Multiple Independent Groups of DPDK Applications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -325,7 +329,7 @@ supported. However, since sending messages (not requests) does not involve an
 IPC thread, sending messages while processing another message or request is
 supported.
 
-Since the memory sybsystem uses IPC internally, memory allocations and IPC must
+Since the memory subsystem uses IPC internally, memory allocations and IPC must
 not be mixed: it is not safe to use IPC inside a memory-related callback, nor is
 it safe to allocate/free memory inside IPC callbacks. Attempting to do so may
 lead to a deadlock.

@@ -121,3 +121,37 @@
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #define HAVE_SIGNAL_FUNCTIONS_OWN_HEADER
 #endif
+
+/*
+ * iova to kva mapping support can be provided since 4.6.0, but required
+ * kernel version increased to >= 4.10.0 because of the updates in
+ * get_user_pages_remote() kernel API
+ */
+#if KERNEL_VERSION(4, 10, 0) <= LINUX_VERSION_CODE
+#define HAVE_IOVA_TO_KVA_MAPPING_SUPPORT
+#endif
+
+#if KERNEL_VERSION(5, 6, 0) <= LINUX_VERSION_CODE || \
+	(defined(RHEL_RELEASE_CODE) && \
+	 RHEL_RELEASE_VERSION(8, 3) <= RHEL_RELEASE_CODE) || \
+	 (defined(CONFIG_SUSE_KERNEL) && defined(HAVE_ARG_TX_QUEUE))
+#define HAVE_TX_TIMEOUT_TXQUEUE
+#endif
+
+#if KERNEL_VERSION(5, 9, 0) > LINUX_VERSION_CODE
+#define HAVE_TSK_IN_GUP
+#endif
+
+#if KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE
+#define HAVE_ETH_HW_ADDR_SET
+#endif
+
+#if KERNEL_VERSION(5, 18, 0) > LINUX_VERSION_CODE && \
+	(!(defined(RHEL_RELEASE_CODE) && \
+	 RHEL_RELEASE_VERSION(9, 1) <= RHEL_RELEASE_CODE))
+#define HAVE_NETIF_RX_NI
+#endif
+
+#if KERNEL_VERSION(6, 5, 0) > LINUX_VERSION_CODE
+#define HAVE_VMA_IN_GUP
+#endif

@@ -1,5 +1,5 @@
 /*
-Copyright 2019 Glen Joseph Fernandes
+Copyright 2019-2023 Glen Joseph Fernandes
 (glenjofe@gmail.com)
 
 Distributed under the Boost Software License, Version 1.0.
@@ -116,6 +116,14 @@ void test_construct_range()
     boost::span<int> s(c);
     BOOST_TEST_EQ(s.data(), c.data());
     BOOST_TEST_EQ(s.size(), c.size());
+}
+
+void test_construct_initializer_list()
+{
+    std::initializer_list<int> l{1, 2};
+    boost::span<const int> s(l);
+    BOOST_TEST_EQ(s.data(), l.begin());
+    BOOST_TEST_EQ(s.size(), l.size());
 }
 
 void test_construct_span_dynamic()
@@ -362,18 +370,6 @@ void test_crend()
     BOOST_TEST_EQ((boost::span<int>(&a[0], 4).crend().base()), &a[0]);
 }
 
-void test_begin_span()
-{
-    int a[4];
-    BOOST_TEST_EQ((begin(boost::span<int>(&a[0], 4))), &a[0]);
-}
-
-void test_end_span()
-{
-    int a[4];
-    BOOST_TEST_EQ((end(boost::span<int>(&a[0], 4))), &a[4]);
-}
-
 int main()
 {
     test_extent();
@@ -388,6 +384,7 @@ int main()
     test_construct_const_std_array_dynamic();
     test_construct_const_std_array_static();
     test_construct_range();
+    test_construct_initializer_list();
     test_construct_span_dynamic();
     test_construct_span_dynamic_static();
     test_construct_span_static();
@@ -421,8 +418,6 @@ int main()
     test_cend();
     test_crbegin();
     test_crend();
-    test_begin_span();
-    test_end_span();
     return boost::report_errors();
 }
 #else

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _I40E_OSDEP_H_
@@ -20,6 +20,7 @@
 #include <rte_io.h>
 
 #include "../i40e_logs.h"
+#include "i40e_status.h"
 
 #define INLINE inline
 #define STATIC static
@@ -67,6 +68,15 @@ typedef enum i40e_status_code i40e_status;
 #define false           0
 #define true            1
 
+/* Avoid macro redefinition warning on Windows */
+#ifdef RTE_EXEC_ENV_WINDOWS
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+#endif
 #define min(a,b) RTE_MIN(a,b)
 #define max(a,b) RTE_MAX(a,b)
 
@@ -133,24 +143,38 @@ static inline uint32_t i40e_read_addr(volatile void *addr)
 	return rte_le_to_cpu_32(I40E_PCI_REG(addr));
 }
 
+#define I40E_PCI_REG64(reg)		rte_read64(reg)
+#define I40E_PCI_REG64_ADDR(a, reg) \
+	((volatile uint64_t *)((char *)(a)->hw_addr + (reg)))
+static inline uint64_t i40e_read64_addr(volatile void *addr)
+{
+	return rte_le_to_cpu_64(I40E_PCI_REG64(addr));
+}
+
 #define I40E_PCI_REG_WRITE(reg, value)		\
 	rte_write32((rte_cpu_to_le_32(value)), reg)
 #define I40E_PCI_REG_WRITE_RELAXED(reg, value)	\
 	rte_write32_relaxed((rte_cpu_to_le_32(value)), reg)
 
+#define I40E_PCI_REG_WC_WRITE(reg, value) \
+	rte_write32_wc((rte_cpu_to_le_32(value)), reg)
+#define I40E_PCI_REG_WC_WRITE_RELAXED(reg, value) \
+	rte_write32_wc_relaxed((rte_cpu_to_le_32(value)), reg)
+
 #define I40E_WRITE_FLUSH(a) I40E_READ_REG(a, I40E_GLGEN_STAT)
-#define I40EVF_WRITE_FLUSH(a) I40E_READ_REG(a, I40E_VFGEN_RSTAT)
 
 #define I40E_READ_REG(hw, reg) i40e_read_addr(I40E_PCI_REG_ADDR((hw), (reg)))
 #define I40E_WRITE_REG(hw, reg, value) \
 	I40E_PCI_REG_WRITE(I40E_PCI_REG_ADDR((hw), (reg)), (value))
+
+#define I40E_READ_REG64(hw, reg) i40e_read64_addr(I40E_PCI_REG64_ADDR((hw), (reg)))
 
 #define rd32(a, reg) i40e_read_addr(I40E_PCI_REG_ADDR((a), (reg)))
 #define wr32(a, reg, value) \
 	I40E_PCI_REG_WRITE(I40E_PCI_REG_ADDR((a), (reg)), (value))
 #define flush(a) i40e_read_addr(I40E_PCI_REG_ADDR((a), (I40E_GLGEN_STAT)))
 
-#define ARRAY_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
+#define ARRAY_SIZE(arr) RTE_DIM(arr)
 
 /* memory allocation tracking */
 struct i40e_dma_mem {
@@ -158,7 +182,7 @@ struct i40e_dma_mem {
 	u64 pa;
 	u32 size;
 	const void *zone;
-} __attribute__((packed));
+} __rte_packed;
 
 #define i40e_allocate_dma_mem(h, m, unused, s, a) \
 			i40e_allocate_dma_mem_d(h, m, s, a)
@@ -167,7 +191,7 @@ struct i40e_dma_mem {
 struct i40e_virt_mem {
 	void *va;
 	u32 size;
-} __attribute__((packed));
+} __rte_packed;
 
 #define i40e_allocate_virt_mem(h, m, s) i40e_allocate_virt_mem_d(h, m, s)
 #define i40e_free_virt_mem(h, m) i40e_free_virt_mem_d(h, m)
@@ -191,10 +215,10 @@ struct i40e_spinlock {
 	rte_spinlock_t spinlock;
 };
 
-#define i40e_init_spinlock(_sp) i40e_init_spinlock_d(_sp)
-#define i40e_acquire_spinlock(_sp) i40e_acquire_spinlock_d(_sp)
-#define i40e_release_spinlock(_sp) i40e_release_spinlock_d(_sp)
-#define i40e_destroy_spinlock(_sp) i40e_destroy_spinlock_d(_sp)
+#define i40e_init_spinlock(sp) rte_spinlock_init(&(sp)->spinlock)
+#define i40e_acquire_spinlock(sp) rte_spinlock_lock(&(sp)->spinlock)
+#define i40e_release_spinlock(sp) rte_spinlock_unlock(&(sp)->spinlock)
+#define i40e_destroy_spinlock(sp) RTE_SET_USED(sp)
 
 #define I40E_NTOHS(a) rte_be_to_cpu_16(a)
 #define I40E_NTOHL(a) rte_be_to_cpu_32(a)

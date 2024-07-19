@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+# Copyright (c) 2003-2023 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 #
 # Distributed under the Boost Software License, Version 1.0. (See accompanying
 # file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -40,6 +40,8 @@ project
   ;
 
 test-suite "asio-experimental-coro" :
+  [ run allocator.cpp ]
+  [ run allocator.cpp : : : $(USE_SELECT) : allocator_select ]
   [ run cancel.cpp ]
   [ run cancel.cpp : : : $(USE_SELECT) : cancel_select ]
   [ run co_spawn.cpp ]

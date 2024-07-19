@@ -16,6 +16,7 @@
 
 #include <array>
 #include <memory>
+#include <span>
 #include <string>
 #include <set>
 #include <map>
@@ -47,7 +48,6 @@
 #include "rgw_log.h"
 
 #include "rgw_lc.h"
-#include "rgw_torrent.h"
 #include "rgw_tag.h"
 #include "rgw_object_lock.h"
 #include "cls/rgw/cls_rgw_client.h"
@@ -60,31 +60,27 @@
 
 #include "include/ceph_assert.h"
 
-using ceph::crypto::SHA1;
-
 struct req_state;
 class RGWOp;
 class RGWRados;
 class RGWMultiCompleteUpload;
+class RGWPutObj_Torrent;
 
+namespace rgw::auth::registry { class StrategyRegistry; }
 
-namespace rgw {
-namespace auth {
-namespace registry {
-
-class StrategyRegistry;
-
-}
-}
-}
+int rgw_forward_request_to_master(const DoutPrefixProvider* dpp,
+                                  const rgw::SiteConfig& site,
+                                  const rgw_owner& effective_owner,
+                                  bufferlist* indata, JSONParser* jp,
+                                  req_info& req, optional_yield y);
 
 int rgw_op_get_bucket_policy_from_attr(const DoutPrefixProvider *dpp,
                                        CephContext *cct,
-				       rgw::sal::Driver* driver,
-                                       RGWBucketInfo& bucket_info,
+                                       rgw::sal::Driver* driver,
+                                       const rgw_user& bucket_owner,
                                        std::map<std::string, bufferlist>& bucket_attrs,
-                                       RGWAccessControlPolicy *policy,
-				       optional_yield y);
+                                       RGWAccessControlPolicy& policy,
+                                       optional_yield y);
 
 class RGWHandler {
 protected:
@@ -167,6 +163,36 @@ int rgw_rest_get_json_input(CephContext *cct, req_state *s, T& out,
   }
 
   return 0;
+}
+
+// So! Now and then when we try to update bucket information, the
+// bucket has changed during the course of the operation. (Or we have
+// a cache consistency problem that Watch/Notify isn't ruling out
+// completely.)
+//
+// When this happens, we need to update the bucket info and try
+// again. We have, however, to try the right *part* again.  We can't
+// simply re-send, since that will obliterate the previous update.
+//
+// Thus, callers of this function should include everything that
+// merges information to be changed into the bucket information as
+// well as the call to set it.
+//
+// The called function must return an integer, negative on error. In
+// general, they should just return op_ret.
+template<typename F>
+int retry_raced_bucket_write(const DoutPrefixProvider *dpp,
+                             rgw::sal::Bucket *b,
+                             const F &f,
+                             optional_yield y) {
+  auto r = f();
+  for (auto i = 0u; i < 15u && r == -ECANCELED; ++i) {
+    r = b->try_refresh_info(dpp, nullptr, y);
+    if (r >= 0) {
+      r = f();
+    }
+  }
+  return r;
 }
 
 /**
@@ -331,7 +357,6 @@ public:
 
 class RGWGetObj : public RGWOp {
 protected:
-  seed torrent; // get torrent
   const char *range_str;
   const char *if_mod;
   const char *if_unmod;
@@ -349,6 +374,7 @@ protected:
   ceph::real_time *mod_ptr;
   ceph::real_time *unmod_ptr;
   rgw::sal::Attrs attrs;
+  bool get_torrent = false;
   bool get_data;
   bool partial_content;
   bool ignore_invalid_range;
@@ -374,6 +400,11 @@ protected:
 
   bool get_retention;
   bool get_legal_hold;
+
+  // optional partNumber param for s3
+  std::optional<int> multipart_part_num;
+  // PartsCount response when partNumber is specified
+  std::optional<int> multipart_parts_count;
 
   int init_common();
 public:
@@ -419,7 +450,7 @@ public:
   int read_user_manifest_part(
     rgw::sal::Bucket* bucket,
     const rgw_bucket_dir_entry& ent,
-    RGWAccessControlPolicy * const bucket_acl,
+    const RGWAccessControlPolicy& bucket_acl,
     const boost::optional<rgw::IAM::Policy>& bucket_policy,
     const off_t start_ofs,
     const off_t end_ofs,
@@ -837,7 +868,7 @@ public:
   void execute(optional_yield y) override;
 
   virtual int get_params(optional_yield y) = 0;
-  virtual void handle_listing_chunk(rgw::sal::BucketList&& buckets) {
+  virtual void handle_listing_chunk(std::span<RGWBucketEnt> buckets) {
     /* The default implementation, used by e.g. S3, just generates a new
      * part of listing and sends it client immediately. Swift can behave
      * differently: when the reverse option is requested, all incoming
@@ -845,7 +876,7 @@ public:
     return send_response_data(buckets);
   }
   virtual void send_response_begin(bool has_buckets) = 0;
-  virtual void send_response_data(rgw::sal::BucketList& buckets) = 0;
+  virtual void send_response_data(std::span<const RGWBucketEnt> buckets) = 0;
   virtual void send_response_end() = 0;
   void send_response() override {}
 
@@ -912,23 +943,21 @@ protected:
   std::string max_keys;
   std::string delimiter;
   std::string encoding_type;
-  bool list_versions;
-  int max;
+  bool list_versions{false};
+  int max{0};
   std::vector<rgw_bucket_dir_entry> objs;
   std::map<std::string, bool> common_prefixes;
+  std::optional<RGWStorageStats> stats; // initialized if need_container_stats()
 
-  int default_max;
-  bool is_truncated;
-  bool allow_unordered;
+  int default_max{0};
+  bool is_truncated{false};
+  bool allow_unordered{false};
 
-  int shard_id;
+  int shard_id{-1};
 
   int parse_max_keys();
 
 public:
-  RGWListBucket() : list_versions(false), max(0),
-                    default_max(0), is_truncated(false),
-		    allow_unordered(false), shard_id(-1) {}
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
@@ -1065,6 +1094,7 @@ public:
 class RGWStatBucket : public RGWOp {
 protected:
   std::unique_ptr<rgw::sal::Bucket> bucket;
+  RGWStorageStats stats;
 
 public:
   int verify_permission(optional_yield y) override;
@@ -1078,37 +1108,26 @@ public:
 };
 
 class RGWCreateBucket : public RGWOp {
-protected:
+ protected:
+  rgw::sal::Bucket::CreateParams createparams;
   RGWAccessControlPolicy policy;
   std::string location_constraint;
-  rgw_placement_rule placement_rule;
-  RGWBucketInfo info;
-  obj_version ep_objv;
-  bool has_cors;
-  bool relaxed_region_enforcement;
-  bool obj_lock_enabled;
+  bool has_cors = false;
+  bool relaxed_region_enforcement = false;
   RGWCORSConfiguration cors_config;
-  boost::optional<std::string> swift_ver_location;
-  std::map<std::string, buffer::list> attrs;
   std::set<std::string> rmattr_names;
-
-  bufferlist in_data;
 
   virtual bool need_metadata_upload() const { return false; }
 
-public:
-  RGWCreateBucket() : has_cors(false), relaxed_region_enforcement(false), obj_lock_enabled(false) {}
-
+ public:
   void emplace_attr(std::string&& key, buffer::list&& bl) {
-    attrs.emplace(std::move(key), std::move(bl)); /* key and bl are r-value refs */
+    createparams.attrs.emplace(std::move(key), std::move(bl)); /* key and bl are r-value refs */
   }
-
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
   void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
     RGWOp::init(driver, s, h);
-    policy.set_ctx(s->cct);
     relaxed_region_enforcement =
 	s->cct->_conf.get_val<bool>("rgw_relaxed_region_enforcement");
   }
@@ -1191,7 +1210,6 @@ WRITE_CLASS_ENCODER(RGWSLOInfo)
 
 class RGWPutObj : public RGWOp {
 protected:
-  seed torrent;
   off_t ofs;
   const char *supplied_md5_b64;
   const char *supplied_etag;
@@ -1223,7 +1241,7 @@ protected:
   std::string multipart_upload_id;
   std::string multipart_part_str;
   int multipart_part_num = 0;
-  jspan multipart_trace;
+  jspan_ptr multipart_trace;
 
   boost::optional<ceph::real_time> delete_at;
   //append obj
@@ -1260,11 +1278,6 @@ public:
     delete obj_legal_hold;
   }
 
-  void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
-    RGWOp::init(driver, s, h);
-    policy.set_ctx(s->cct);
-  }
-
   virtual int init_processing(optional_yield y) override;
 
   void emplace_attr(std::string&& key, buffer::list&& bl) {
@@ -1287,6 +1300,9 @@ public:
                                  rgw::sal::DataProcessor *cb) {
     return 0;
   }
+  // if configured, construct a filter to generate torrent metadata
+  auto get_torrent_filter(rgw::sal::DataProcessor *cb)
+      -> std::optional<RGWPutObj_Torrent>;
 
   // get lua script to run as a "put object" filter
   int get_lua_filter(std::unique_ptr<rgw::sal::DataProcessor>* filter,
@@ -1336,11 +1352,7 @@ public:
     attrs.emplace(std::move(key), std::move(bl)); /* key and bl are r-value refs */
   }
 
-  void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
-    RGWOp::init(driver, s, h);
-    policy.set_ctx(s->cct);
-  }
-
+  int init_processing(optional_yield y) override;
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
@@ -1375,10 +1387,6 @@ public:
       has_policy(false) {
   }
 
-  void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
-    RGWOp::init(driver, s, h);
-    policy.set_ctx(s->cct);
-  }
   int init_processing(optional_yield y) override;
   int verify_permission(optional_yield y) override;
   void pre_exec() override { }
@@ -1403,7 +1411,7 @@ protected:
   RGWAccessControlPolicy policy;
   RGWCORSConfiguration cors_config;
   rgw_placement_rule placement_rule;
-  boost::optional<std::string> swift_ver_location;
+  std::optional<std::string> swift_ver_location;
 
 public:
   RGWPutMetadataBucket()
@@ -1412,11 +1420,6 @@ public:
 
   void emplace_attr(std::string&& key, buffer::list&& bl) {
     attrs.emplace(std::move(key), std::move(bl)); /* key and bl are r-value refs */
-  }
-
-  void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
-    RGWOp::init(driver, s, h);
-    policy.set_ctx(s->cct);
   }
 
   int verify_permission(optional_yield y) override;
@@ -1441,10 +1444,6 @@ public:
     : dlo_manifest(NULL)
   {}
 
-  void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
-    RGWOp::init(driver, s, h);
-    policy.set_ctx(s->cct);
-  }
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
@@ -1478,6 +1477,7 @@ public:
       bypass_governance_mode(false) {
   }
 
+  int init_processing(optional_yield y) override;
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
@@ -1568,10 +1568,6 @@ public:
     attrs.emplace(std::move(key), std::move(bl));
   }
 
-  void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
-    RGWOp::init(driver, s, h);
-    dest_policy.set_ctx(s->cct);
-  }
   int init_processing(optional_yield y) override;
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
@@ -1612,7 +1608,6 @@ public:
 class RGWPutACLs : public RGWOp {
 protected:
   bufferlist data;
-  ACLOwner owner;
 
 public:
   RGWPutACLs() {}
@@ -1622,7 +1617,8 @@ public:
   void pre_exec() override;
   void execute(optional_yield y) override;
 
-  virtual int get_policy_from_state(rgw::sal::Driver* driver, req_state *s, std::stringstream& ss) { return 0; }
+  virtual int get_policy_from_state(const ACLOwner& owner,
+                                    RGWAccessControlPolicy& p) { return 0; }
   virtual int get_params(optional_yield y) = 0;
   void send_response() override = 0;
   const char* name() const override { return "put_acls"; }
@@ -1672,7 +1668,6 @@ public:
   void pre_exec() override;
   void execute(optional_yield y) override;
 
-//  virtual int get_policy_from_state(RGWRados* driver, req_state *s, std::stringstream& ss) { return 0; }
   virtual int get_params(optional_yield y) = 0;
   void send_response() override = 0;
   const char* name() const override { return "put_lifecycle"; }
@@ -1847,15 +1842,14 @@ protected:
   std::string upload_id;
   RGWAccessControlPolicy policy;
   ceph::real_time mtime;
-  jspan multipart_trace;
+  jspan_ptr multipart_trace;
+  //object lock
+  std::optional<RGWObjectRetention> obj_retention = std::nullopt;
+  std::optional<RGWObjectLegalHold> obj_legal_hold = std::nullopt;
 
 public:
   RGWInitMultipart() {}
 
-  void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
-    RGWOp::init(driver, s, h);
-    policy.set_ctx(s->cct);
-  }
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
@@ -1875,12 +1869,9 @@ protected:
   std::string version_id;
   bufferlist data;
   std::unique_ptr<rgw::sal::MPSerializer> serializer;
-  jspan multipart_trace;
+  jspan_ptr multipart_trace;
   ceph::real_time upload_time;
-  std::unique_ptr<rgw::sal::Object> target_obj;
   std::unique_ptr<rgw::sal::Notification> res;
-  std::unique_ptr<rgw::sal::Object> meta_obj;
-  off_t ofs = 0;
 
 public:
   RGWCompleteMultipart() {}
@@ -1901,7 +1892,7 @@ public:
 
 class RGWAbortMultipart : public RGWOp {
 protected:
-  jspan multipart_trace;
+  jspan_ptr multipart_trace;
 public:
   RGWAbortMultipart() {}
 
@@ -1932,10 +1923,6 @@ public:
     truncated = false;
   }
 
-  void init(rgw::sal::Driver* driver, req_state *s, RGWHandler *h) override {
-    RGWOp::init(driver, s, h);
-    policy = RGWAccessControlPolicy(s->cct);
-  }
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
@@ -2065,7 +2052,6 @@ protected:
   rgw::sal::Bucket* bucket;
   bool quiet;
   bool status_dumped;
-  bool acl_allowed = false;
   bool bypass_perm;
   bool bypass_governance_mode;
 
@@ -2077,6 +2063,7 @@ public:
     bypass_governance_mode = false;
   }
 
+  int init_processing(optional_yield y) override;
   int verify_permission(optional_yield y) override;
   void pre_exec() override;
   void execute(optional_yield y) override;
@@ -2112,9 +2099,6 @@ extern int rgw_build_object_policies(const DoutPrefixProvider *dpp, rgw::sal::Dr
 				     req_state *s, bool prefetch_data, optional_yield y);
 extern void rgw_build_iam_environment(rgw::sal::Driver* driver,
 				      req_state* s);
-extern std::vector<rgw::IAM::Policy> get_iam_user_policy_from_attr(CephContext* cct,
-                        std::map<std::string, bufferlist>& attrs,
-                        const std::string& tenant);
 
 inline int get_system_versioning_params(req_state *s,
 					uint64_t *olh_epoch,
@@ -2211,7 +2195,7 @@ inline int rgw_get_request_metadata(const DoutPrefixProvider *dpp,
         return -ENAMETOOLONG;
       }
 
-      /* Similar remarks apply to the check for value size. We're veryfing
+      /* Similar remarks apply to the check for value size. We're verifying
        * it early at the RGW's side as it's being claimed in /info. */
       const auto max_attr_size = cct->_conf->rgw_max_attr_size;
       if (max_attr_size && xattr.length() > max_attr_size) {

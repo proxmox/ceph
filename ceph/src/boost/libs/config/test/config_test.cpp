@@ -1,4 +1,4 @@
-//  This file was automatically generated on Thu Feb  3 18:10:41 2022
+//  This file was automatically generated on Sun Jun  5 16:50:18 2022
 //  by libs/config/tools/generate.cpp
 //  Copyright John Maddock 2002-21.
 //  Use, modification and distribution are subject to the 
@@ -121,6 +121,11 @@ namespace boost_no_cxx11_addressof = empty_boost;
 #include "boost_no_cxx11_alignas.ipp"
 #else
 namespace boost_no_cxx11_alignas = empty_boost;
+#endif
+#ifndef BOOST_NO_CXX11_ALIGNOF
+#include "boost_no_cxx11_alignof.ipp"
+#else
+namespace boost_no_cxx11_alignof = empty_boost;
 #endif
 #ifndef BOOST_NO_CXX11_ALLOCATOR
 #include "boost_no_cxx11_allocator.ipp"
@@ -371,6 +376,11 @@ namespace boost_no_cxx14_variable_templates = empty_boost;
 #include "boost_no_cxx17.ipp"
 #else
 namespace boost_no_cxx17 = empty_boost;
+#endif
+#ifndef BOOST_NO_CXX17_DEDUCTION_GUIDES
+#include "boost_no_cxx17_deduction_guides.ipp"
+#else
+namespace boost_no_cxx17_deduction_guides = empty_boost;
 #endif
 #ifndef BOOST_NO_CXX17_FOLD_EXPRESSIONS
 #include "boost_no_cxx17_fold_expressions.ipp"
@@ -1431,6 +1441,11 @@ int main( int, char *[] )
       std::cerr << "Failed test for BOOST_NO_CXX11_ALIGNAS at: " << __FILE__ << ":" << __LINE__ << std::endl;
       ++error_count;
    }
+   if(0 != boost_no_cxx11_alignof::test())
+   {
+      std::cerr << "Failed test for BOOST_NO_CXX11_ALIGNOF at: " << __FILE__ << ":" << __LINE__ << std::endl;
+      ++error_count;
+   }
    if(0 != boost_no_cxx11_allocator::test())
    {
       std::cerr << "Failed test for BOOST_NO_CXX11_ALLOCATOR at: " << __FILE__ << ":" << __LINE__ << std::endl;
@@ -1679,6 +1694,11 @@ int main( int, char *[] )
    if(0 != boost_no_cxx17::test())
    {
       std::cerr << "Failed test for BOOST_NO_CXX17 at: " << __FILE__ << ":" << __LINE__ << std::endl;
+      ++error_count;
+   }
+   if(0 != boost_no_cxx17_deduction_guides::test())
+   {
+      std::cerr << "Failed test for BOOST_NO_CXX17_DEDUCTION_GUIDES at: " << __FILE__ << ":" << __LINE__ << std::endl;
       ++error_count;
    }
    if(0 != boost_no_cxx17_fold_expressions::test())

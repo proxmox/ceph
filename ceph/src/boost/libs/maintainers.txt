@@ -61,9 +61,9 @@ functional/forward    Tobias Schwinger <tschwinger -at- isonews2.com>
 functional/hash       Daniel James <dnljms -at- gmail.com>
 functional/overloaded_function  Lorenzo Caminiti <lorcaminiti -at- gmail.com>
 fusion                Joel de Guzman <joel -at- boost-consulting.com>, Dan Marsden <danmarsden -at- yahoo.co.uk>, Tobias Schwinger <tschwinger -at- isonews2.com>
-geometry              Barend Gehrels <barend -at- xs4all.nl>, Bruno Lalande <bruno.lalande -at- gmail.com>, Mateusz Loskot <mateusz -at- loskot.net>, Adam Wulkiewicz <adam.wulkiewicz -at- gmail.com>
+geometry              Barend Gehrels <barend -at- xs4all.nl>, Bruno Lalande <bruno.lalande -at- gmail.com>, Mateusz Loskot <mateusz -at- loskot.net>, Adam Wulkiewicz <adam.wulkiewicz -at- gmail.com>, Vissarion Fisikopoulos <fisikop -at- gmail.com>
 geometry/extensions   Barend Gehrels <barend -at- xs4all.nl>, Bruno Lalande <bruno.lalande -at- gmail.com>, Mateusz Loskot <mateusz -at- loskot.net>, Adam Wulkiewicz <adam.wulkiewicz -at- gmail.com>
-geometry/index        Barend Gehrels <barend -at- xs4all.nl>, Bruno Lalande <bruno.lalande -at- gmail.com>, Mateusz Loskot <mateusz -at- loskot.net>, Adam Wulkiewicz <adam.wulkiewicz -at- gmail.com>
+geometry/index        Barend Gehrels <barend -at- xs4all.nl>, Bruno Lalande <bruno.lalande -at- gmail.com>, Mateusz Loskot <mateusz -at- loskot.net>, Adam Wulkiewicz <adam.wulkiewicz -at- gmail.com>, Vissarion Fisikopoulos <fisikop -at- gmail.com>
 gil                   Stefan Seefeld <stefan -at- seefeld.name>, Mateusz Loskot <mateusz -at- loskot.net>, Pranam Lashkari <plashkari628 -at- gmail.com>
 graph                 K. Noel Belcourt <kbelco -at- sandia.gov>
 graph_parallel        K. Noel Belcourt <kbelco -at- sandia.gov>
@@ -85,7 +85,7 @@ lambda2               Peter Dimov <pdimov -at- gmail.com>
 leaf                  Emil Dotchevski
 lexical_cast          Antony Polukhin <antoshkka -at- gmail.com>
 local_function        Lorenzo Caminiti <lorcaminiti -at- gmail.com>
-locale                Artyom Beilis <artyomtnk -at- yahoo.com>
+locale                Artyom Beilis <artyomtnk -at- yahoo.com>, Alexander Grund <alex -at- grundis.de>
 lockfree              Tim Blechmann <tim -at- klingt.org>
 log                   Andrey Semashev <andrey.semashev -at- gmail.com>
 logic                 Douglas Gregor <dgregor -at- cs.indiana.edu>
@@ -99,6 +99,7 @@ msm                   Christophe Henry <christophe.j.henry -at-  googlemail.com>
 multi_array           Ronald Garcia <garcia -at- osl.iu.edu>
 multi_index           Joaquin M Lopez Munoz <joaquin.lopezmunoz -at- gmail.com>
 multiprecision        John Maddock <john -at- johnmaddock.co.uk>, christopher Kormanyos <e_float -at- yahoo.com>
+mysql                 Rubén Pérez <rubenperez038@gmail.com>
 nowide                Alexander Grund <alex -at- grundis.de>
 numeric/conversion    Fernando Cacciola <fernando_cacciola -at- ciudad.com.ar>, Brandon Kohn <blkohn -at- hotmail.com>
 numeric/interval      Sylvain Pion <Sylvain.Pion -at- sophia.inria.fr>, Herve Bronnimann <hbr -at- poly.edu>, Guillaume Melquiond <guillaume.melquiond -at- ens-lyon.fr>
@@ -144,7 +145,7 @@ spirit/repository     Joel de Guzman <joel -at- boost-consulting.com>, Hartmut K
 stacktrace            Antony Polukhin <antoshkka -at- gmail.com>
 statechart            Andreas Huber <ahd6974-boostorg -at- yahoo.com>
 static_assert         John Maddock <john -at- johnmaddock.co.uk>
-static_string         Krystian Stasiowski <sdkrystian@gmail.com>, Vinnie Falco <vinnie.falco@gmail.com>
+static_string         Alan de Freitas <alandefreitas@gmail.com>, Vinnie Falco <vinnie.falco@gmail.com>
 stl_interfaces        Zach Laine <whatwasthataddress -at- gmail.com>
 system                Peter Dimov <pdimov -at- gmail.com>
 test                  Gennadiy Rozental <rogeeff -at- gmail.com>, Raffi Enficiaud <raffi.enficiaud -at- free.fr>
@@ -161,6 +162,7 @@ type_traits           John Maddock <john -at- johnmaddock.co.uk>
 typeof                Arkadiy Vertleyb <vertleyb -at- hotmail.com>, Peder Holt <peder.holt -at- gmail.com>
 units                 Jürgen Hunold <jhunold -at- gmx.eu>, Steven Watanabe <steven -at- providere-consulting.com>
 unordered             Daniel James <dnljms -at- gmail.com>
+url                   Vinnie Falco <vinnie.falco@gmail.com>, Alan de Freitas <alandefreitas@gmail.com>
 utility
 utility/enable_if     Jaakko Jarvi <jarvi -at- cs.tamu.edu>, Jeremiah Willcock <jewillco -at- osl.iu.edu>
 utility/identity_type Lorenzo Caminiti <lorcaminiti -at- gmail.com>

@@ -12,6 +12,11 @@
 #include <string.h>
 #include <time.h>
 
+#if OPENSSL_VERSION_NUMBER < 0x10100003L
+#define TLS_client_method SSLv23_client_method
+#define OPENSSL_init_ssl(a,b)	SSL_library_init()
+#endif
+
 #include "kmip.h"
 #include "kmip_bio.h"
 #include "kmip_memset.h"
@@ -151,7 +156,7 @@ use_low_level_api(const char *server_address,
     kmip_set_buffer(&kmip_context, encoding, buffer_total_size);
     
     /* Build the request message. */
-    Attribute a[3] = {0};
+    Attribute a[3] = {{0,0,0}};
     for(int i = 0; i < 3; i++)
         kmip_init_attribute(&a[i]);
     

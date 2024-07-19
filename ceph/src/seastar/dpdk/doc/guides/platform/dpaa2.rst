@@ -40,9 +40,9 @@ Common Offload HW Block Drivers
 
    See :doc:`../rawdevs/dpaa2_cmdif` for NXP dpaa2 AIOP command interface driver information.
 
-5. **Rawdev QDMA Driver**
+5. **DMA Driver**
 
-   See :doc:`../rawdevs/dpaa2_qdma` for NXP dpaa2 QDMA driver information.
+   See :doc:`../dmadevs/dpaa2` for NXP dpaa2 QDMA driver information.
 
 
 Steps To Setup Platform
@@ -70,6 +70,10 @@ compatible board:
 
    DPAA2 based resources can be configured easily with the help of ready scripts
    as provided in the DPDK Extra repository.
+
+5. **Build Config**
+
+   Use dpaa build configs, they work for both DPAA2 and DPAA platforms.
 
 As an alternative method, DPAA2 PMD can also be executed using images provided
 as part of SDK from NXP. The SDK includes all the above prerequisites necessary
@@ -101,8 +105,8 @@ separately:
 
 Currently supported by DPDK:
 
-- NXP SDK **2.0+** (preferred: LSDK 19.03).
-- MC Firmware version **10.14.0** and higher.
+- NXP SDK **LSDK 19.09++**.
+- MC Firmware version **10.18.0** and higher.
 - Supported architectures:  **arm64 LE**.
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>`

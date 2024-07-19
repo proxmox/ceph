@@ -27,7 +27,7 @@ Line length is recommended to be not more than 80 characters, including comments
 .. note::
 
 	The above is recommendation, and not a hard limit.
-	However, it is expected that the recommendations should be followed in all but the rarest situations.
+	Generally, line lengths up to 100 characters are acceptable in the code.
 
 C Comment Style
 ---------------
@@ -54,8 +54,13 @@ To document a public API, a doxygen-like format must be used: refer to :ref:`dox
 License Header
 ~~~~~~~~~~~~~~
 
-Each file should begin with a special comment containing the appropriate copyright and license for the file.
-Generally this is the BSD License, except for code for Linux Kernel modules.
+Each file must begin with a special comment containing the
+`Software Package Data Exchange (SPDX) License Identifier <https://spdx.org/using-spdx-license-identifier>`_.
+
+Generally this is the BSD License, except for code granted special exceptions.
+The SPDX licences identifier is sufficient, a file should not contain
+an additional text version of the license (boilerplate).
+
 After any copyright header, a blank line should be left before any other contents, e.g. include statements in a C file.
 
 C Preprocessor Directives
@@ -131,6 +136,30 @@ For example:
 Conditional Compilation
 ~~~~~~~~~~~~~~~~~~~~~~~
 
+.. note::
+
+   Conditional compilation should be used only when absolutely necessary,
+   as it increases the number of target binaries that need to be built and tested.
+   See below for details of some utility macros/defines available
+   to allow ifdefs/macros to be replaced by C conditional in some cases.
+
+Some high-level guidelines on the use of conditional compilation:
+
+* If code can compile on all platforms/systems,
+  but cannot run on some due to lack of support,
+  then regular C conditionals, as described in the next section,
+  should be used instead of conditional compilation.
+* If the code in question cannot compile on all systems,
+  but constitutes only a small fragment of a file,
+  then conditional compilation should be used, as described in this section.
+* If the code for conditional compilation implements an interface in an OS
+  or platform-specific way, then create a file for each OS or platform
+  and select the appropriate file using the Meson build system.
+  In most cases, these environment-specific files should be created inside the EAL library,
+  rather than having each library implement its own abstraction layer.
+
+Additional style guidance for the use of conditional compilation macros:
+
 * When code is conditionally compiled using ``#ifdef`` or ``#if``, a comment may be added following the matching
   ``#endif`` or ``#else`` to permit the reader to easily discern where conditionally compiled code regions end.
 * This comment should be used only for (subjectively) long regions, regions greater than 20 lines, or where a series of nested ``#ifdef``'s may be confusing to the reader.
@@ -160,9 +189,45 @@ Conditional Compilation
  /* Or here. */
  #endif /* !COMPAT_43 */
 
-.. note::
+Defines to Avoid Conditional Compilation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
- Conditional compilation should be used only when absolutely necessary, as it increases the number of target binaries that need to be built and tested.
+In many cases in DPDK, one wants to run code based on
+the target platform, or runtime environment.
+While this can be done using the conditional compilation directives,
+e.g. ``#ifdef RTE_EXEC_ENV_LINUX``, present in DPDK for many releases,
+this can also be done in many cases using regular ``if`` statements
+and the following defines:
+
+* ``RTE_ENV_FREEBSD``, ``RTE_ENV_LINUX``, ``RTE_ENV_WINDOWS`` -
+  these define ids for each operating system environment.
+* ``RTE_EXEC_ENV`` - this defines the id of the current environment,
+  i.e. one of the items in list above.
+* ``RTE_EXEC_ENV_IS_FREEBSD``, ``RTE_EXEC_ENV_IS_LINUX``, ``RTE_EXEC_ENV_IS_WINDOWS`` -
+  0/1 values indicating if the current environment is that specified,
+  shortcuts for checking e.g. ``RTE_EXEC_ENV == RTE_ENV_WINDOWS``
+
+Examples of use:
+
+.. code-block:: c
+
+   /* report a unit tests as unsupported on Windows */
+   if (RTE_EXEC_ENV_IS_WINDOWS)
+       return TEST_SKIPPED;
+
+   /* set different default values depending on OS Environment */
+   switch (RTE_EXEC_ENV) {
+   case RTE_ENV_FREEBSD:
+       default = x;
+       break;
+   case RTE_ENV_LINUX:
+       default = y;
+       break;
+   case RTE_ENV_WINDOWS:
+       default = z;
+       break;
+   }
+
 
 C Types
 -------
@@ -278,6 +343,29 @@ Thus, the previous example would be better written:
 DPDK also provides an optimized way to store elements in lockless rings.
 This should be used in all data-path code, when there are several consumer and/or producers to avoid locking for concurrent access.
 
+Naming
+------
+
+For symbol names and documentation, new usage of
+'master / slave' (or 'slave' independent of 'master') and 'blacklist /
+whitelist' is not allowed.
+
+Recommended replacements for 'master / slave' are:
+    '{primary,main} / {secondary,replica,subordinate}'
+    '{initiator,requester} / {target,responder}'
+    '{controller,host} / {device,worker,proxy}'
+    'leader / follower'
+    'director / performer'
+
+Recommended replacements for 'blacklist/whitelist' are:
+    'denylist / allowlist'
+    'blocklist / passlist'
+
+Exceptions for introducing new usage is to maintain compatibility
+with an existing (as of 2020) hardware or protocol
+specification that mandates those terms.
+
+
 Typedefs
 ~~~~~~~~
 
@@ -334,7 +422,7 @@ For example:
 	typedef int (lcore_function_t)(void *);
 
 	/* launch a function of lcore_function_t type */
-	int rte_eal_remote_launch(lcore_function_t *f, void *arg, unsigned slave_id);
+	int rte_eal_remote_launch(lcore_function_t *f, void *arg, unsigned worker_id);
 
 
 C Indentation
@@ -470,6 +558,7 @@ Local Variables
 
 * Variables should be declared at the start of a block of code rather than in the middle.
   The exception to this is when the variable is ``const`` in which case the declaration must be at the point of first use/assignment.
+  Declaring variable inside a for loop is OK.
 * When declaring variables in functions, multiple variables per line are OK.
   However, if multiple declarations would cause the line to exceed a reasonable line length, begin a new set of declarations on the next line rather than using a line continuation.
 * Be careful to not obfuscate the code by initializing variables in the declarations, only the last variable on a line should be initialized.
@@ -591,7 +680,7 @@ Return Value
 ~~~~~~~~~~~~
 
 * Functions which create objects, or allocate memory, should return pointer types, and NULL on error.
-  The error type should be indicated may setting the variable ``rte_errno`` appropriately.
+  The error type should be indicated by setting the variable ``rte_errno`` appropriately.
 * Functions which work on bursts of packets, such as RX-like or TX-like functions, should return the number of packets handled.
 * Other functions returning int should generally behave like system calls:
   returning 0 on success and -1 on error, setting ``rte_errno`` to indicate the specific type of error.
@@ -631,10 +720,10 @@ In the DPDK environment, use the logging interface provided:
 
  /* log in debug level */
  rte_log_set_global_level(RTE_LOG_DEBUG);
- RTE_LOG(DEBUG, my_logtype1, "this is is a debug level message\n");
- RTE_LOG(INFO, my_logtype1, "this is is a info level message\n");
- RTE_LOG(WARNING, my_logtype1, "this is is a warning level message\n");
- RTE_LOG(WARNING, my_logtype2, "this is is a debug level message (not displayed)\n");
+ RTE_LOG(DEBUG, my_logtype1, "this is a debug level message\n");
+ RTE_LOG(INFO, my_logtype1, "this is a info level message\n");
+ RTE_LOG(WARNING, my_logtype1, "this is a warning level message\n");
+ RTE_LOG(WARNING, my_logtype2, "this is a debug level message (not displayed)\n");
 
  /* log in info level */
  rte_log_set_global_level(RTE_LOG_INFO);
@@ -706,6 +795,8 @@ Control Statements
                  /* NOTREACHED */
          }
 
+.. _dynamic_logging:
+
 Dynamic Logging
 ---------------
 
@@ -714,6 +805,29 @@ useful for enabling debug output without recompilation. To enable or disable
 logging of a particular topic, the ``--log-level`` parameter can be provided
 to EAL, which will change the log level. DPDK code can register topics,
 which allows the user to adjust the log verbosity for that specific topic.
+
+To register a library or driver for dynamic logging,
+using the standardized naming scheme described below,
+use ``RTE_LOG_REGISTER_DEFAULT`` macro
+to define a log-type variable inside your component's main C file.
+Thereafter, it is usual to define a macro or macros inside your component
+to make logging more convenient.
+
+For example, the ``rte_cfgfile`` library defines:
+
+.. literalinclude:: ../../../lib/cfgfile/rte_cfgfile.c
+   :language: c
+   :start-after: Setting up dynamic logging 8<
+   :end-before: >8 End of setting up dynamic logging
+
+.. note::
+
+   The statically-defined log types defined in ``rte_log.h`` are for legacy components,
+   and they will likely be removed in a future release.
+   Do not add new entries to this file.
+
+Dynamic Logging Naming Scheme
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In general, the naming scheme is as follows: ``type.section.name``
 
@@ -731,7 +845,7 @@ Examples:
  * The virtio network PMD in ``drivers/net/virtio`` uses ``pmd.net.virtio``
  * The eventdev software poll mode driver in ``drivers/event/sw`` uses ``pmd.event.sw``
  * The octeontx mempool driver in ``drivers/mempool/octeontx`` uses ``pmd.mempool.octeontx``
- * The DPDK hash library in ``lib/librte_hash`` uses ``lib.hash``
+ * The DPDK hash library in ``lib/hash`` uses ``lib.hash``
 
 Specializations
 ~~~~~~~~~~~~~~~
@@ -749,6 +863,8 @@ A specialization looks like this:
  * Initialization output: ``type.section.name.init``
  * PF/VF mailbox output: ``type.section.name.mbox``
 
+These specializations are created using the ``RTE_LOG_REGISTER_SUFFIX`` macro.
+
 A real world example is the i40e poll mode driver which exposes two
 specializations, one for initialization ``pmd.net.i40e.init`` and the other for
 the remaining driver logs ``pmd.net.i40e.driver``.
@@ -760,7 +876,7 @@ specializations, run the ``app/test`` binary, and use the ``dump_log_types``
 Python Code
 -----------
 
-All Python code should work with Python 2.7+ and 3.2+ and be compliant with
+All Python code should be compliant with
 `PEP8 (Style Guide for Python Code) <https://www.python.org/dev/peps/pep-0008/>`_.
 
 The ``pep8`` tool can be used for testing compliance with the guidelines.
@@ -768,53 +884,20 @@ The ``pep8`` tool can be used for testing compliance with the guidelines.
 Integrating with the Build System
 ---------------------------------
 
-DPDK supports being built in two different ways:
+DPDK is built using the tools ``meson`` and ``ninja``.
 
-* using ``make`` - or more specifically "GNU make", i.e. ``gmake`` on FreeBSD
-* using the tools ``meson`` and ``ninja``
+.. note::
 
-Any new library or driver to be integrated into DPDK should support being
-built with both systems. While building using ``make`` is a legacy approach, and
-most build-system enhancements are being done using ``meson`` and ``ninja``
-there are no plans at this time to deprecate the legacy ``make`` build system.
+   In order to catch possible issues as soon as possible,
+   it is recommended that developers build DPDK in "developer mode" to enable additional checks.
+   By default, this mode is enabled if the build is being done from a git checkout,
+   but the mode can be manually enabled/disabled using the
+   ``developer_mode`` meson configuration option.
 
-Therefore all new component additions should include both a ``Makefile`` and a
-``meson.build`` file, and should be added to the component lists in both the
-``Makefile`` and ``meson.build`` files in the relevant top-level directory:
+Therefore all new component additions should include a ``meson.build`` file,
+and should be added to the component lists in the ``meson.build`` files in the
+relevant top-level directory:
 either ``lib`` directory or a ``driver`` subdirectory.
-
-Makefile Contents
-~~~~~~~~~~~~~~~~~
-
-The ``Makefile`` for the component should be of the following format, where
-``<name>`` corresponds to the name of the library in question, e.g. hash,
-lpm, etc. For drivers, the same format of Makefile is used.
-
-.. code-block:: none
-
-	# pull in basic DPDK definitions, including whether library is to be
-	# built or not
-	include $(RTE_SDK)/mk/rte.vars.mk
-
-	# library name
-	LIB = librte_<name>.a
-
-	# any library cflags needed. Generally add "-O3 $(WERROR_FLAGS)"
-	CFLAGS += -O3
-	CFLAGS += $(WERROR_FLAGS)
-
-	# the symbol version information for the library, and .so version
-	EXPORT_MAP := rte_<name>_version.map
-	LIBABIVER := 1
-
-	# all source filenames are stored in SRCS-y
-	SRCS-$(CONFIG_RTE_LIBRTE_<NAME>) += rte_<name>.c
-
-	# install includes
-	SYMLINK-$(CONFIG_RTE_LIBRTE_<NAME>)-include += rte_<name>.h
-
-	# pull in rules to build the library
-	include $(RTE_SDK)/mk/rte.lib.mk
 
 Meson Build File Contents - Libraries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -843,21 +926,18 @@ sources
 
 The optional fields are:
 
-allow_experimental_apis
-	**Default Value = false**
-	Used to allow the library to make use of APIs marked as experimental.
-	Set to ``true`` if the C files in the library call any functions
-	marked as experimental in any included header files.
-
 build
 	**Default Value = true**
 	Used to optionally compile a library, based on its dependencies or
-	environment. A simple example of use would be:
+	environment. When set to "false" the ``reason`` value, explained below, should
+	also be set to explain to the user why the component is not being built.
+	A simple example of use would be:
 
 .. code-block:: python
 
 	if not is_linux
 	        build = false
+	        reason = 'only supported on Linux'
 	endif
 
 
@@ -904,9 +984,21 @@ ext_deps
 headers
 	**Default Value = []**.
 	Used to return the list of header files for the library that should be
-	installed to $PREFIX/include when ``ninja install`` is run. As with
+	installed to $PREFIX/include when ``meson install`` is run. As with
 	source files, these should be specified using the meson ``files()``
 	function.
+	When ``check_includes`` build option is set to ``true``, each header file
+	has additional checks performed on it, for example to ensure that it is
+	not missing any include statements for dependent headers.
+	For header files which are public, but only included indirectly in
+	applications, these checks can be skipped by using the ``indirect_headers``
+	variable rather than ``headers``.
+
+indirect_headers
+	**Default Value = []**.
+	As with ``headers`` option above, except that the files are not checked
+	for all needed include files as part of a DPDK build when
+	``check_includes`` is set to ``true``.
 
 includes:
 	**Default Value = []**.
@@ -922,7 +1014,7 @@ name
 	If a library's .so or .a file differs from that given in the directory
 	name, the name should be specified using this variable. In practice,
 	since the convention is that for a library called ``librte_xyz.so``, the
-	sources are stored in a directory ``lib/librte_xyz``, this value should
+	sources are stored in a directory ``lib/xyz``, this value should
 	never be needed for new libraries.
 
 .. note::
@@ -938,19 +1030,25 @@ objs
 	objects that were compiled up as part of another target given in the
 	included library ``meson.build`` file.
 
-version
-	**Default Value = 1**.
-	Specifies the ABI version of the library, and is used as the major
-	version number of the resulting ``.so`` library.
+reason
+	**Default Value = '<unknown reason>'**.
+	This variable should be used when a library is not to be built i.e. when
+	``build`` is set to "false", to specify the reason why a library will not be
+	built. For missing dependencies this should be of the form
+	``'missing dependency, "libname"'``.
+
+use_function_versioning
+	**Default Value = false**.
+	Specifies if the library in question has ABI versioned functions. If it
+	has, this value should be set to ensure that the C files are compiled
+	twice with suitable parameters for each of shared or static library
+	builds.
 
 Meson Build File Contents - Drivers
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For drivers, the values are largely the same as for libraries. The variables
 supported are:
-
-allow_experimental_apis
-	As above.
 
 build
 	As above.
@@ -991,8 +1089,70 @@ pkgconfig_extra_libs
 	using static libraries. Anything added here will be appended to the end
 	of the ``pkgconfig --libs`` output.
 
+reason
+	As above.
+
 sources [mandatory]
+	As above
+
+headers
 	As above
 
 version
 	As above
+
+
+Meson Coding Style
+------------------
+
+The following guidelines apply to the build system code in meson.build files in DPDK.
+
+* Indentation should be using 4 spaces, no hard tabs.
+
+* Line continuations should be doubly-indented to ensure visible difference from normal indentation.
+  Any line continuations beyond the first may be singly indented to avoid large amounts of indentation.
+
+* Where a line is split in the middle of a statement, e.g. a multiline `if` statement,
+  brackets should be used in preference to escaping the line break.
+
+Example::
+
+    if (condition1 and condition2            # line breaks inside () need no escaping
+            and condition3 and condition4)
+        x = y
+    endif
+
+* Lists of files or components must be alphabetical unless doing so would cause errors.
+
+* Two formats are supported for lists of files or list of components:
+
+   * For a small number of list entries, generally 3 or fewer, all elements may be put on a single line.
+     In this case, the opening and closing braces of the list must be on the same line as the list items.
+     No trailing comma is put on the final list entry.
+   * For lists with more than 3 items,
+     it is recommended that the lists be put in the files with a *single* entry per line.
+     In this case, the opening brace, or ``files`` function call must be on a line on its own,
+     and the closing brace must similarly be on a line on its own at the end.
+     To help with readability of nested sublists, the closing brace should be dedented to appear
+     at the same level as the opening braced statement.
+     The final list entry must have a trailing comma,
+     so that adding a new entry to the list never modifies any other line in the list.
+
+Examples::
+
+    sources = files('file1.c', 'file2.c')
+
+    subdirs = ['dir1', 'dir2']
+
+    headers = files(
+            'header1.c',
+            'header2.c',
+            'header3.c',   # always include trailing comma
+    )                      # closing brace at indent level of opening brace
+
+    components = [
+            'comp1',
+            'comp2',
+            ...
+            'compN',
+    ]

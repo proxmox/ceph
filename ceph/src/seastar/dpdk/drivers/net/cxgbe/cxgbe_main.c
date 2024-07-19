@@ -4,6 +4,7 @@
  */
 
 #include <sys/queue.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -11,6 +12,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <inttypes.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 
 #include <rte_byteorder.h>
@@ -20,26 +22,98 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_tailq.h>
 #include <rte_eal.h>
 #include <rte_alarm.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_random.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_kvargs.h>
 
 #include "base/common.h"
 #include "base/t4_regs.h"
 #include "base/t4_msg.h"
 #include "cxgbe.h"
+#include "cxgbe_pfvf.h"
 #include "clip_tbl.h"
 #include "l2t.h"
+#include "smt.h"
 #include "mps_tcam.h"
+
+static const u16 cxgbe_filter_mode_features[] = {
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE |
+	 F_PROTOCOL | F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE |
+	 F_PROTOCOL | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_TOS |
+	 F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_TOS |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_TOS |
+	 F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_VLAN |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_VNIC_ID |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_TOS | F_VLAN |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_TOS | F_VNIC_ID |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_VLAN | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_MACMATCH | F_VNIC_ID | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_PROTOCOL | F_TOS |
+	 F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_VLAN | F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_VLAN | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_VNIC_ID | F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_ETHERTYPE | F_VNIC_ID | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VLAN | F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VLAN | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VNIC_ID |
+	 F_PORT),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VNIC_ID |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_VLAN | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_PROTOCOL | F_VNIC_ID | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_TOS | F_VLAN | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_TOS | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MPSHITTYPE | F_VLAN | F_VNIC_ID | F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_ETHERTYPE | F_PROTOCOL | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_ETHERTYPE | F_TOS | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_PROTOCOL | F_VLAN | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_PROTOCOL | F_VNIC_ID | F_PORT |
+	 F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_TOS | F_VLAN | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_MACMATCH | F_TOS | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_ETHERTYPE | F_VLAN | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_ETHERTYPE | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_FRAGMENTATION | F_PROTOCOL | F_TOS | F_VLAN | F_FCOE),
+	(F_FRAGMENTATION | F_PROTOCOL | F_TOS | F_VNIC_ID | F_FCOE),
+	(F_FRAGMENTATION | F_VLAN | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_PROTOCOL | F_PORT |
+	 F_FCOE),
+	(F_MPSHITTYPE | F_MACMATCH | F_ETHERTYPE | F_TOS | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_VLAN | F_PORT),
+	(F_MPSHITTYPE | F_MACMATCH | F_PROTOCOL | F_VNIC_ID | F_PORT),
+	(F_MPSHITTYPE | F_MACMATCH | F_TOS | F_VLAN | F_PORT),
+	(F_MPSHITTYPE | F_MACMATCH | F_TOS | F_VNIC_ID | F_PORT),
+	(F_MPSHITTYPE | F_ETHERTYPE | F_VLAN | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_ETHERTYPE | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VLAN | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_PROTOCOL | F_TOS | F_VNIC_ID | F_PORT | F_FCOE),
+	(F_MPSHITTYPE | F_VLAN | F_VNIC_ID | F_PORT),
+};
 
 /**
  * Allocate a chunk of memory. The allocated memory is cleared.
@@ -92,19 +166,23 @@ static int fwevtq_handler(struct sge_rspq *q, const __be64 *rsp,
 	} else if (opcode == CPL_ABORT_RPL_RSS) {
 		const struct cpl_abort_rpl_rss *p = (const void *)rsp;
 
-		hash_del_filter_rpl(q->adapter, p);
+		cxgbe_hash_del_filter_rpl(q->adapter, p);
 	} else if (opcode == CPL_SET_TCB_RPL) {
 		const struct cpl_set_tcb_rpl *p = (const void *)rsp;
 
-		filter_rpl(q->adapter, p);
+		cxgbe_filter_rpl(q->adapter, p);
 	} else if (opcode == CPL_ACT_OPEN_RPL) {
 		const struct cpl_act_open_rpl *p = (const void *)rsp;
 
-		hash_filter_rpl(q->adapter, p);
+		cxgbe_hash_filter_rpl(q->adapter, p);
 	} else if (opcode == CPL_L2T_WRITE_RPL) {
 		const struct cpl_l2t_write_rpl *p = (const void *)rsp;
 
-		do_l2t_write_rpl(q->adapter, p);
+		cxgbe_do_l2t_write_rpl(q->adapter, p);
+	} else if (opcode == CPL_SMT_WRITE_RPL) {
+		const struct cpl_smt_write_rpl *p = (const void *)rsp;
+
+		cxgbe_do_smt_write_rpl(q->adapter, p);
 	} else {
 		dev_err(adapter, "unexpected CPL %#x on FW event queue\n",
 			opcode);
@@ -340,13 +418,15 @@ void cxgbe_remove_tid(struct tid_info *t, unsigned int chan, unsigned int tid,
 
 	if (t->tid_tab[tid]) {
 		t->tid_tab[tid] = NULL;
-		rte_atomic32_dec(&t->conns_in_use);
+		__atomic_fetch_sub(&t->conns_in_use, 1, __ATOMIC_RELAXED);
 		if (t->hash_base && tid >= t->hash_base) {
 			if (family == FILTER_TYPE_IPV4)
-				rte_atomic32_dec(&t->hash_tids_in_use);
+				__atomic_fetch_sub(&t->hash_tids_in_use, 1,
+						   __ATOMIC_RELAXED);
 		} else {
 			if (family == FILTER_TYPE_IPV4)
-				rte_atomic32_dec(&t->tids_in_use);
+				__atomic_fetch_sub(&t->tids_in_use, 1,
+						   __ATOMIC_RELAXED);
 		}
 	}
 
@@ -368,13 +448,15 @@ void cxgbe_insert_tid(struct tid_info *t, void *data, unsigned int tid,
 	t->tid_tab[tid] = data;
 	if (t->hash_base && tid >= t->hash_base) {
 		if (family == FILTER_TYPE_IPV4)
-			rte_atomic32_inc(&t->hash_tids_in_use);
+			__atomic_fetch_add(&t->hash_tids_in_use, 1,
+					   __ATOMIC_RELAXED);
 	} else {
 		if (family == FILTER_TYPE_IPV4)
-			rte_atomic32_inc(&t->tids_in_use);
+			__atomic_fetch_add(&t->tids_in_use, 1,
+					   __ATOMIC_RELAXED);
 	}
 
-	rte_atomic32_inc(&t->conns_in_use);
+	__atomic_fetch_add(&t->conns_in_use, 1, __ATOMIC_RELAXED);
 }
 
 /**
@@ -383,8 +465,7 @@ void cxgbe_insert_tid(struct tid_info *t, void *data, unsigned int tid,
 static void tid_free(struct tid_info *t)
 {
 	if (t->tid_tab) {
-		if (t->ftid_bmap)
-			rte_bitmap_free(t->ftid_bmap);
+		rte_bitmap_free(t->ftid_bmap);
 
 		if (t->ftid_bmap_array)
 			t4_os_free(t->ftid_bmap_array);
@@ -427,10 +508,8 @@ static int tid_init(struct tid_info *t)
 
 	t->afree = NULL;
 	t->atids_in_use = 0;
-	rte_atomic32_init(&t->tids_in_use);
-	rte_atomic32_set(&t->tids_in_use, 0);
-	rte_atomic32_init(&t->conns_in_use);
-	rte_atomic32_set(&t->conns_in_use, 0);
+	t->tids_in_use = 0;
+	t->conns_in_use = 0;
 
 	/* Setup the free list for atid_tab and clear the stid bitmap. */
 	if (natids) {
@@ -449,22 +528,6 @@ static int tid_init(struct tid_info *t)
 	return 0;
 }
 
-static inline bool is_x_1g_port(const struct link_config *lc)
-{
-	return (lc->pcaps & FW_PORT_CAP32_SPEED_1G) != 0;
-}
-
-static inline bool is_x_10g_port(const struct link_config *lc)
-{
-	unsigned int speeds, high_speeds;
-
-	speeds = V_FW_PORT_CAP32_SPEED(G_FW_PORT_CAP32_SPEED(lc->pcaps));
-	high_speeds = speeds &
-		      ~(FW_PORT_CAP32_SPEED_100M | FW_PORT_CAP32_SPEED_1G);
-
-	return high_speeds != 0;
-}
-
 static inline void init_rspq(struct adapter *adap, struct sge_rspq *q,
 		      unsigned int us, unsigned int cnt,
 		      unsigned int size, unsigned int iqe_size)
@@ -477,20 +540,35 @@ static inline void init_rspq(struct adapter *adap, struct sge_rspq *q,
 
 int cxgbe_cfg_queue_count(struct rte_eth_dev *eth_dev)
 {
-	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	struct port_info *temp_pi, *pi = eth_dev->data->dev_private;
 	struct adapter *adap = pi->adapter;
+	u16 first_txq = 0, first_rxq = 0;
 	struct sge *s = &adap->sge;
-	unsigned int max_queues = s->max_ethqsets / adap->params.nports;
+	u16 i, max_rxqs, max_txqs;
+
+	max_rxqs = s->max_ethqsets;
+	max_txqs = s->max_ethqsets;
+	for_each_port(adap, i) {
+		temp_pi = adap2pinfo(adap, i);
+		if (i == pi->port_id)
+			break;
+
+		if (max_rxqs <= temp_pi->n_rx_qsets ||
+		    max_txqs <= temp_pi->n_tx_qsets)
+			return -ENOMEM;
+
+		first_rxq += temp_pi->n_rx_qsets;
+		first_txq += temp_pi->n_tx_qsets;
+		max_rxqs -= temp_pi->n_rx_qsets;
+		max_txqs -= temp_pi->n_tx_qsets;
+	}
 
 	if ((eth_dev->data->nb_rx_queues < 1) ||
 	    (eth_dev->data->nb_tx_queues < 1))
 		return -EINVAL;
 
-	if ((eth_dev->data->nb_rx_queues > max_queues) ||
-	    (eth_dev->data->nb_tx_queues > max_queues))
-		return -EINVAL;
-
-	if (eth_dev->data->nb_rx_queues > pi->rss_size)
+	if (eth_dev->data->nb_rx_queues > max_rxqs ||
+	    eth_dev->data->nb_tx_queues > max_txqs)
 		return -EINVAL;
 
 	/* We must configure RSS, since config has changed*/
@@ -498,69 +576,65 @@ int cxgbe_cfg_queue_count(struct rte_eth_dev *eth_dev)
 
 	pi->n_rx_qsets = eth_dev->data->nb_rx_queues;
 	pi->n_tx_qsets = eth_dev->data->nb_tx_queues;
+	pi->first_rxqset = first_rxq;
+	pi->first_txqset = first_txq;
 
 	return 0;
 }
 
-void cxgbe_cfg_queues(struct rte_eth_dev *eth_dev)
+void cxgbe_cfg_queues_free(struct adapter *adap)
 {
-	struct rte_config *config = rte_eal_get_configuration();
-	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	if (adap->sge.ethtxq) {
+		rte_free(adap->sge.ethtxq);
+		adap->sge.ethtxq = NULL;
+	}
+
+	if (adap->sge.ethrxq) {
+		rte_free(adap->sge.ethrxq);
+		adap->sge.ethrxq = NULL;
+	}
+
+	adap->flags &= ~CFG_QUEUES;
+}
+
+int cxgbe_cfg_queues(struct rte_eth_dev *eth_dev)
+{
+	struct port_info *pi = eth_dev->data->dev_private;
 	struct adapter *adap = pi->adapter;
 	struct sge *s = &adap->sge;
-	unsigned int i, nb_ports = 0, qidx = 0;
-	unsigned int q_per_port = 0;
+	u16 i;
 
 	if (!(adap->flags & CFG_QUEUES)) {
-		for_each_port(adap, i) {
-			struct port_info *tpi = adap2pinfo(adap, i);
+		s->ethrxq = rte_calloc_socket(NULL, s->max_ethqsets,
+					      sizeof(struct sge_eth_rxq), 0,
+					      rte_socket_id());
+		if (!s->ethrxq)
+			return -ENOMEM;
 
-			nb_ports += (is_x_10g_port(&tpi->link_cfg)) ||
-				     is_x_1g_port(&tpi->link_cfg) ? 1 : 0;
+		s->ethtxq = rte_calloc_socket(NULL, s->max_ethqsets,
+					      sizeof(struct sge_eth_txq), 0,
+					      rte_socket_id());
+		if (!s->ethtxq) {
+			rte_free(s->ethrxq);
+			s->ethrxq = NULL;
+			return -ENOMEM;
 		}
 
-		/*
-		 * We default up to # of cores queues per 1G/10G port.
-		 */
-		if (nb_ports)
-			q_per_port = (s->max_ethqsets -
-				     (adap->params.nports - nb_ports)) /
-				     nb_ports;
-
-		if (q_per_port > config->lcore_count)
-			q_per_port = config->lcore_count;
-
-		for_each_port(adap, i) {
-			struct port_info *pi = adap2pinfo(adap, i);
-
-			pi->first_qset = qidx;
-
-			/* Initially n_rx_qsets == n_tx_qsets */
-			pi->n_rx_qsets = (is_x_10g_port(&pi->link_cfg) ||
-					  is_x_1g_port(&pi->link_cfg)) ?
-					  q_per_port : 1;
-			pi->n_tx_qsets = pi->n_rx_qsets;
-
-			if (pi->n_rx_qsets > pi->rss_size)
-				pi->n_rx_qsets = pi->rss_size;
-
-			qidx += pi->n_rx_qsets;
-		}
-
-		for (i = 0; i < ARRAY_SIZE(s->ethrxq); i++) {
+		for (i = 0; i < s->max_ethqsets; i++) {
 			struct sge_eth_rxq *r = &s->ethrxq[i];
+			struct sge_eth_txq *t = &s->ethtxq[i];
 
 			init_rspq(adap, &r->rspq, 5, 32, 1024, 64);
-			r->usembufs = 1;
-			r->fl.size = (r->usembufs ? 1024 : 72);
-		}
+			r->fl.size = 1024;
 
-		for (i = 0; i < ARRAY_SIZE(s->ethtxq); i++)
-			s->ethtxq[i].q.size = 1024;
+			t->q.size = 1024;
+		}
 
 		init_rspq(adap, &adap->sge.fw_evtq, 0, 0, 1024, 64);
 		adap->flags |= CFG_QUEUES;
 	}
+
+	return 0;
 }
 
 void cxgbe_stats_get(struct port_info *pi, struct port_stats *stats)
@@ -659,7 +733,7 @@ void cxgbe_print_port_info(struct adapter *adap)
 			--bufp;
 		sprintf(bufp, "BASE-%s",
 			t4_get_port_type_description(
-					(enum fw_port_type)pi->port_type));
+				(enum fw_port_type)pi->link_cfg.port_type));
 
 		dev_info(adap,
 			 " " PCI_PRI_FMT " Chelsio rev %d %s %s\n",
@@ -670,19 +744,39 @@ void cxgbe_print_port_info(struct adapter *adap)
 	}
 }
 
-static int
-check_devargs_handler(__rte_unused const char *key, const char *value,
-		      __rte_unused void *opaque)
+static int check_devargs_handler(const char *key, const char *value, void *p)
 {
-	if (strcmp(value, "1"))
-		return -1;
+	if (!strncmp(key, CXGBE_DEVARG_CMN_KEEP_OVLAN, strlen(key)) ||
+	    !strncmp(key, CXGBE_DEVARG_CMN_TX_MODE_LATENCY, strlen(key)) ||
+	    !strncmp(key, CXGBE_DEVARG_VF_FORCE_LINK_UP, strlen(key))) {
+		if (!strncmp(value, "1", 1)) {
+			bool *dst_val = (bool *)p;
+
+			*dst_val = true;
+		}
+	}
+
+	if (!strncmp(key, CXGBE_DEVARG_PF_FILTER_MODE, strlen(key)) ||
+	    !strncmp(key, CXGBE_DEVARG_PF_FILTER_MASK, strlen(key))) {
+		u32 *dst_val = (u32 *)p;
+		char *endptr = NULL;
+		u32 arg_val;
+
+		arg_val = strtoul(value, &endptr, 16);
+		if (errno || endptr == value)
+			return -EINVAL;
+
+		*dst_val = arg_val;
+	}
 
 	return 0;
 }
 
-int cxgbe_get_devargs(struct rte_devargs *devargs, const char *key)
+static int cxgbe_get_devargs(struct rte_devargs *devargs, const char *key,
+			     void *p)
 {
 	struct rte_kvargs *kvlist;
+	int ret = 0;
 
 	if (!devargs)
 		return 0;
@@ -691,24 +785,69 @@ int cxgbe_get_devargs(struct rte_devargs *devargs, const char *key)
 	if (!kvlist)
 		return 0;
 
-	if (!rte_kvargs_count(kvlist, key)) {
-		rte_kvargs_free(kvlist);
-		return 0;
-	}
+	if (!rte_kvargs_count(kvlist, key))
+		goto out;
 
-	if (rte_kvargs_process(kvlist, key,
-			       check_devargs_handler, NULL) < 0) {
-		rte_kvargs_free(kvlist);
-		return 0;
-	}
+	ret = rte_kvargs_process(kvlist, key, check_devargs_handler, p);
+
+out:
 	rte_kvargs_free(kvlist);
 
-	return 1;
+	return ret;
+}
+
+static void cxgbe_get_devargs_int(struct adapter *adap, bool *dst,
+				  const char *key, bool default_value)
+{
+	struct rte_pci_device *pdev = adap->pdev;
+	int ret;
+	bool devarg_value = default_value;
+
+	*dst = default_value;
+	if (!pdev)
+		return;
+
+	ret = cxgbe_get_devargs(pdev->device.devargs, key, &devarg_value);
+	if (ret)
+		return;
+
+	*dst = devarg_value;
+}
+
+static void cxgbe_get_devargs_u32(struct adapter *adap, u32 *dst,
+				  const char *key, u32 default_value)
+{
+	struct rte_pci_device *pdev = adap->pdev;
+	u32 devarg_value = default_value;
+	int ret;
+
+	*dst = default_value;
+	if (!pdev)
+		return;
+
+	ret = cxgbe_get_devargs(pdev->device.devargs, key, &devarg_value);
+	if (ret)
+		return;
+
+	*dst = devarg_value;
+}
+
+void cxgbe_process_devargs(struct adapter *adap)
+{
+	cxgbe_get_devargs_int(adap, &adap->devargs.keep_ovlan,
+			      CXGBE_DEVARG_CMN_KEEP_OVLAN, false);
+	cxgbe_get_devargs_int(adap, &adap->devargs.tx_mode_latency,
+			      CXGBE_DEVARG_CMN_TX_MODE_LATENCY, false);
+	cxgbe_get_devargs_int(adap, &adap->devargs.force_link_up,
+			      CXGBE_DEVARG_VF_FORCE_LINK_UP, false);
+	cxgbe_get_devargs_u32(adap, &adap->devargs.filtermode,
+			      CXGBE_DEVARG_PF_FILTER_MODE, 0);
+	cxgbe_get_devargs_u32(adap, &adap->devargs.filtermask,
+			      CXGBE_DEVARG_PF_FILTER_MASK, 0);
 }
 
 static void configure_vlan_types(struct adapter *adapter)
 {
-	struct rte_pci_device *pdev = adapter->pdev;
 	int i;
 
 	for_each_port(adapter, i) {
@@ -724,12 +863,6 @@ static void configure_vlan_types(struct adapter *adapter)
 				 V_OVLAN_ETYPE(M_OVLAN_ETYPE),
 				 V_OVLAN_MASK(M_OVLAN_MASK) |
 				 V_OVLAN_ETYPE(0x9100));
-		/* OVLAN Type 0x8100 */
-		t4_set_reg_field(adapter, MPS_PORT_RX_OVLAN_REG(i, A_RX_OVLAN2),
-				 V_OVLAN_MASK(M_OVLAN_MASK) |
-				 V_OVLAN_ETYPE(M_OVLAN_ETYPE),
-				 V_OVLAN_MASK(M_OVLAN_MASK) |
-				 V_OVLAN_ETYPE(0x8100));
 
 		/* IVLAN 0X8100 */
 		t4_set_reg_field(adapter, MPS_PORT_RX_IVLAN(i),
@@ -738,14 +871,354 @@ static void configure_vlan_types(struct adapter *adapter)
 
 		t4_set_reg_field(adapter, MPS_PORT_RX_CTL(i),
 				 F_OVLAN_EN0 | F_OVLAN_EN1 |
-				 F_OVLAN_EN2 | F_IVLAN_EN,
+				 F_IVLAN_EN,
 				 F_OVLAN_EN0 | F_OVLAN_EN1 |
-				 F_OVLAN_EN2 | F_IVLAN_EN);
+				 F_IVLAN_EN);
 	}
 
-	if (cxgbe_get_devargs(pdev->device.devargs, CXGBE_DEVARG_KEEP_OVLAN))
-		t4_tp_wr_bits_indirect(adapter, A_TP_INGRESS_CONFIG,
-				       V_RM_OVLAN(1), V_RM_OVLAN(0));
+	t4_tp_wr_bits_indirect(adapter, A_TP_INGRESS_CONFIG, V_RM_OVLAN(1),
+			       V_RM_OVLAN(!adapter->devargs.keep_ovlan));
+}
+
+static int cxgbe_get_filter_vnic_mode_from_devargs(u32 val)
+{
+	u32 vnic_mode;
+
+	vnic_mode = val & (CXGBE_DEVARGS_FILTER_MODE_PF_VF |
+			   CXGBE_DEVARGS_FILTER_MODE_VLAN_OUTER);
+	if (vnic_mode) {
+		switch (vnic_mode) {
+		case CXGBE_DEVARGS_FILTER_MODE_VLAN_OUTER:
+			return CXGBE_FILTER_VNIC_MODE_OVLAN;
+		case CXGBE_DEVARGS_FILTER_MODE_PF_VF:
+			return CXGBE_FILTER_VNIC_MODE_PFVF;
+		default:
+			return -EINVAL;
+		}
+	}
+
+	return CXGBE_FILTER_VNIC_MODE_NONE;
+}
+
+static int cxgbe_get_filter_mode_from_devargs(u32 val, bool closest_match)
+{
+	int vnic_mode, fmode = 0;
+	bool found = false;
+	u8 i;
+
+	if (val >= CXGBE_DEVARGS_FILTER_MODE_MAX) {
+		pr_err("Unsupported flags set in filter mode. Must be < 0x%x\n",
+		       CXGBE_DEVARGS_FILTER_MODE_MAX);
+		return -ERANGE;
+	}
+
+	vnic_mode = cxgbe_get_filter_vnic_mode_from_devargs(val);
+	if (vnic_mode < 0) {
+		pr_err("Unsupported Vnic-mode, more than 1 Vnic-mode selected\n");
+		return vnic_mode;
+	}
+
+	if (vnic_mode)
+		fmode |= F_VNIC_ID;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_PHYSICAL_PORT)
+		fmode |= F_PORT;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_ETHERNET_DSTMAC)
+		fmode |= F_MACMATCH;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_ETHERNET_ETHTYPE)
+		fmode |= F_ETHERTYPE;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_VLAN_INNER)
+		fmode |= F_VLAN;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_IP_TOS)
+		fmode |= F_TOS;
+	if (val & CXGBE_DEVARGS_FILTER_MODE_IP_PROTOCOL)
+		fmode |= F_PROTOCOL;
+
+	for (i = 0; i < ARRAY_SIZE(cxgbe_filter_mode_features); i++) {
+		if ((cxgbe_filter_mode_features[i] & fmode) == fmode) {
+			found = true;
+			break;
+		}
+	}
+
+	if (!found)
+		return -EINVAL;
+
+	return closest_match ? cxgbe_filter_mode_features[i] : fmode;
+}
+
+static int configure_filter_mode_mask(struct adapter *adap)
+{
+	u32 params[2], val[2], nparams = 0;
+	int ret;
+
+	if (!adap->devargs.filtermode && !adap->devargs.filtermask)
+		return 0;
+
+	if (!adap->devargs.filtermode || !adap->devargs.filtermask) {
+		pr_err("Unsupported, Provide both filtermode and filtermask devargs\n");
+		return -EINVAL;
+	}
+
+	if (adap->devargs.filtermask & ~adap->devargs.filtermode) {
+		pr_err("Unsupported, filtermask (0x%x) must be subset of filtermode (0x%x)\n",
+		       adap->devargs.filtermask, adap->devargs.filtermode);
+
+		return -EINVAL;
+	}
+
+	params[0] = CXGBE_FW_PARAM_DEV(FILTER) |
+		    V_FW_PARAMS_PARAM_Y(FW_PARAM_DEV_FILTER_MODE_MASK);
+
+	ret = cxgbe_get_filter_mode_from_devargs(adap->devargs.filtermode,
+						 true);
+	if (ret < 0) {
+		pr_err("Unsupported filtermode devargs combination:0x%x\n",
+		       adap->devargs.filtermode);
+		return ret;
+	}
+
+	val[0] = V_FW_PARAMS_PARAM_FILTER_MODE(ret);
+
+	ret = cxgbe_get_filter_mode_from_devargs(adap->devargs.filtermask,
+						 false);
+	if (ret < 0) {
+		pr_err("Unsupported filtermask devargs combination:0x%x\n",
+		       adap->devargs.filtermask);
+		return ret;
+	}
+
+	val[0] |= V_FW_PARAMS_PARAM_FILTER_MASK(ret);
+
+	nparams++;
+
+	ret = cxgbe_get_filter_vnic_mode_from_devargs(adap->devargs.filtermode);
+	if (ret < 0)
+		return ret;
+
+	if (ret) {
+		params[1] = CXGBE_FW_PARAM_DEV(FILTER) |
+			    V_FW_PARAMS_PARAM_Y(FW_PARAM_DEV_FILTER_VNIC_MODE);
+
+		val[1] = ret - 1;
+
+		nparams++;
+	}
+
+	return t4_set_params(adap, adap->mbox, adap->pf, 0, nparams,
+			     params, val);
+}
+
+#define CXGBE_FW_CONFIG_PATH_T5 "/lib/firmware/cxgb4/t5-config.txt"
+#define CXGBE_FW_CONFIG_PATH_T6 "/lib/firmware/cxgb4/t6-config.txt"
+
+/*
+ * Load firmware configuration from file in /lib/firmware/cxgb4/ path,
+ * if it is present.
+ */
+static int cxgbe_load_fw_config_from_filesystem(struct adapter *adap,
+						const char **config_name,
+						u32 *mem_type, u32 *mem_addr)
+{
+	u32 param, val, mtype, maddr;
+	const char *fw_cfg_path;
+	char *fw_cfg = NULL;
+	struct stat st;
+	int ret, fd;
+
+	switch (CHELSIO_CHIP_VERSION(adap->params.chip)) {
+	case CHELSIO_T5:
+		fw_cfg_path = CXGBE_FW_CONFIG_PATH_T5;
+		break;
+	case CHELSIO_T6:
+		fw_cfg_path = CXGBE_FW_CONFIG_PATH_T6;
+		break;
+	default:
+		return -ENOENT;
+	}
+
+	ret = open(fw_cfg_path, O_RDONLY);
+	if (ret < 0) {
+		dev_debug(adap, "Couldn't open FW config file\n");
+		return ret;
+	}
+
+	fd = ret;
+
+	ret = fstat(fd, &st);
+	if (ret < 0) {
+		dev_debug(adap, "Couldn't get FW config file size\n");
+		goto out_err;
+	}
+
+	if (st.st_size >= FLASH_CFG_MAX_SIZE) {
+		dev_debug(adap, "FW config file size >= max(%u)\n",
+			  FLASH_CFG_MAX_SIZE);
+		ret = -ENOMEM;
+		goto out_err;
+	}
+
+	fw_cfg = rte_zmalloc(NULL, st.st_size, 0);
+	if (fw_cfg == NULL) {
+		ret = -ENOMEM;
+		goto out_err;
+	}
+
+	if (read(fd, fw_cfg, st.st_size) != st.st_size) {
+		dev_debug(adap, "Couldn't read FW config file data\n");
+		ret = -EIO;
+		goto out_err;
+	}
+
+	close(fd);
+
+	/* Send it to FW to verify and update to new configuration */
+	param = V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) |
+		V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_CF);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1, &param, &val);
+	if (ret < 0) {
+		dev_debug(adap, "FW config param query failed: %d\n", ret);
+		goto out_free;
+	}
+
+	mtype = val >> 8;
+	maddr = (val & 0xff) << 16;
+
+	t4_os_lock(&adap->win0_lock);
+	ret = t4_memory_rw(adap, MEMWIN_NIC, mtype, maddr, st.st_size,
+			   fw_cfg, T4_MEMORY_WRITE);
+	t4_os_unlock(&adap->win0_lock);
+	if (ret < 0) {
+		dev_debug(adap, "FW config file update failed: %d\n", ret);
+		goto out_free;
+	}
+
+	rte_free(fw_cfg);
+
+	*mem_type = mtype;
+	*mem_addr = maddr;
+	*config_name = fw_cfg_path;
+	return 0;
+
+out_err:
+	close(fd);
+out_free:
+	rte_free(fw_cfg);
+	return ret;
+}
+
+static int cxgbe_load_fw_config(struct adapter *adap)
+{
+	struct fw_caps_config_cmd caps_cmd = { 0 };
+	u32 finiver, finicsum, cfcsum, param, val;
+	const char *config_name = NULL;
+	u32 mtype = 0, maddr = 0;
+	int ret;
+
+	ret = cxgbe_load_fw_config_from_filesystem(adap, &config_name,
+						   &mtype, &maddr);
+	if (ret < 0) {
+		config_name = "On Flash";
+
+		ret = t4_flash_cfg_addr(adap);
+		if (ret < 0) {
+			dev_warn(adap,
+				 "Finding address for FW config file in flash failed: %d\n",
+				 ret);
+			goto out_default_config;
+		}
+
+		mtype = FW_MEMTYPE_CF_FLASH;
+		maddr = ret;
+	}
+
+	/* Enable HASH filter region when support is available. */
+	val = 1;
+	param = CXGBE_FW_PARAM_DEV(HASHFILTER_WITH_OFLD);
+	t4_set_params(adap, adap->mbox, adap->pf, 0, 1, &param, &val);
+
+	/*
+	 * Issue a Capability Configuration command to the firmware to get it
+	 * to parse the Configuration File.
+	 */
+	caps_cmd.op_to_write = cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
+					   F_FW_CMD_REQUEST | F_FW_CMD_READ);
+	caps_cmd.cfvalid_to_len16 =
+		cpu_to_be32(F_FW_CAPS_CONFIG_CMD_CFVALID |
+			    V_FW_CAPS_CONFIG_CMD_MEMTYPE_CF(mtype) |
+			    V_FW_CAPS_CONFIG_CMD_MEMADDR64K_CF(maddr >> 16) |
+			    FW_LEN16(caps_cmd));
+	ret = t4_wr_mbox(adap, adap->mbox, &caps_cmd, sizeof(caps_cmd),
+			 &caps_cmd);
+
+out_default_config:
+	/*
+	 * If the CAPS_CONFIG failed with an ENOENT (for a Firmware
+	 * Configuration File in filesystem or FLASH), our last gasp
+	 * effort is to use the Firmware Configuration File which is
+	 * embedded in the firmware.
+	 */
+	if (ret == -ENOENT) {
+		config_name = "Firmware Default";
+
+		memset(&caps_cmd, 0, sizeof(caps_cmd));
+		caps_cmd.op_to_write =
+			cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
+				    F_FW_CMD_REQUEST | F_FW_CMD_READ);
+		caps_cmd.cfvalid_to_len16 = cpu_to_be32(FW_LEN16(caps_cmd));
+		ret = t4_wr_mbox(adap, adap->mbox, &caps_cmd, sizeof(caps_cmd),
+				 &caps_cmd);
+	}
+
+	if (ret < 0) {
+		dev_info(adap,
+			 "Failed to configure using %s Firmware Configuration file: %d\n",
+			 config_name, ret);
+		return ret;
+	}
+
+	finiver = be32_to_cpu(caps_cmd.finiver);
+	finicsum = be32_to_cpu(caps_cmd.finicsum);
+	cfcsum = be32_to_cpu(caps_cmd.cfcsum);
+	if (finicsum != cfcsum)
+		dev_warn(adap,
+			 "Configuration File checksum mismatch: [fini] csum=0x%x, computed csum=0x%x\n",
+			 finicsum, cfcsum);
+
+	/*
+	 * If we're a pure NIC driver then disable all offloading facilities.
+	 * This will allow the firmware to optimize aspects of the hardware
+	 * configuration which will result in improved performance.
+	 */
+	caps_cmd.niccaps &= cpu_to_be16(~FW_CAPS_CONFIG_NIC_ETHOFLD);
+	caps_cmd.toecaps = 0;
+	caps_cmd.iscsicaps = 0;
+	caps_cmd.rdmacaps = 0;
+	caps_cmd.fcoecaps = 0;
+	caps_cmd.cryptocaps = 0;
+
+	/*
+	 * And now tell the firmware to use the configuration we just loaded.
+	 */
+	caps_cmd.op_to_write = cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
+					   F_FW_CMD_REQUEST | F_FW_CMD_WRITE);
+	caps_cmd.cfvalid_to_len16 = htonl(FW_LEN16(caps_cmd));
+	ret = t4_wr_mbox(adap, adap->mbox, &caps_cmd, sizeof(caps_cmd),
+			 NULL);
+	if (ret < 0) {
+		dev_warn(adap, "Unable to finalize Firmware Capabilities %d\n",
+			 ret);
+		return ret;
+	}
+
+	/*
+	 * Return successfully and note that we're operating with parameters
+	 * not supplied by the driver, rather than from hard-wired
+	 * initialization constants buried in the driver.
+	 */
+	dev_info(adap,
+		 "Successfully configured using Firmware Configuration File \"%s\", version: 0x%x, computed csum: 0x%x\n",
+		 config_name, finiver, cfcsum);
+	return 0;
 }
 
 static void configure_pcie_ext_tag(struct adapter *adapter)
@@ -781,34 +1254,31 @@ static void configure_pcie_ext_tag(struct adapter *adapter)
 /* Figure out how many Queue Sets we can support */
 void cxgbe_configure_max_ethqsets(struct adapter *adapter)
 {
-	unsigned int ethqsets;
+	unsigned int ethqsets, reserved;
 
-	/*
-	 * We need to reserve an Ingress Queue for the Asynchronous Firmware
-	 * Event Queue.
+	/* We need to reserve an Ingress Queue for the Asynchronous Firmware
+	 * Event Queue and 1 Control Queue per port.
 	 *
 	 * For each Queue Set, we'll need the ability to allocate two Egress
 	 * Contexts -- one for the Ingress Queue Free List and one for the TX
 	 * Ethernet Queue.
 	 */
+	reserved = max(adapter->params.nports, 1);
 	if (is_pf4(adapter)) {
 		struct pf_resources *pfres = &adapter->params.pfres;
 
-		ethqsets = pfres->niqflint - 1;
-		if (pfres->neq < ethqsets * 2)
+		ethqsets = min(pfres->niqflint, pfres->nethctrl);
+		if (ethqsets > (pfres->neq / 2))
 			ethqsets = pfres->neq / 2;
 	} else {
 		struct vf_resources *vfres = &adapter->params.vfres;
 
-		ethqsets = vfres->niqflint - 1;
-		if (vfres->nethctrl != ethqsets)
-			ethqsets = min(vfres->nethctrl, ethqsets);
-		if (vfres->neq < ethqsets * 2)
+		ethqsets = min(vfres->niqflint, vfres->nethctrl);
+		if (ethqsets > (vfres->neq / 2))
 			ethqsets = vfres->neq / 2;
 	}
 
-	if (ethqsets > MAX_ETH_QSETS)
-		ethqsets = MAX_ETH_QSETS;
+	ethqsets -= reserved;
 	adapter->sge.max_ethqsets = ethqsets;
 }
 
@@ -864,13 +1334,7 @@ static int adap_init0_tweaks(struct adapter *adapter)
  */
 static int adap_init0_config(struct adapter *adapter, int reset)
 {
-	struct fw_caps_config_cmd caps_cmd;
-	unsigned long mtype = 0, maddr = 0;
-	u32 finiver, finicsum, cfcsum;
 	int ret;
-	int config_issued = 0;
-	int cfg_addr;
-	char config_name[20];
 
 	/*
 	 * Reset device if necessary.
@@ -885,90 +1349,9 @@ static int adap_init0_config(struct adapter *adapter, int reset)
 		}
 	}
 
-	cfg_addr = t4_flash_cfg_addr(adapter);
-	if (cfg_addr < 0) {
-		ret = cfg_addr;
-		dev_warn(adapter, "Finding address for firmware config file in flash failed, error %d\n",
-			 -ret);
-		goto bye;
-	}
-
-	strcpy(config_name, "On Flash");
-	mtype = FW_MEMTYPE_CF_FLASH;
-	maddr = cfg_addr;
-
-	/*
-	 * Issue a Capability Configuration command to the firmware to get it
-	 * to parse the Configuration File.  We don't use t4_fw_config_file()
-	 * because we want the ability to modify various features after we've
-	 * processed the configuration file ...
-	 */
-	memset(&caps_cmd, 0, sizeof(caps_cmd));
-	caps_cmd.op_to_write = cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
-					   F_FW_CMD_REQUEST | F_FW_CMD_READ);
-	caps_cmd.cfvalid_to_len16 =
-		cpu_to_be32(F_FW_CAPS_CONFIG_CMD_CFVALID |
-			    V_FW_CAPS_CONFIG_CMD_MEMTYPE_CF(mtype) |
-			    V_FW_CAPS_CONFIG_CMD_MEMADDR64K_CF(maddr >> 16) |
-			    FW_LEN16(caps_cmd));
-	ret = t4_wr_mbox(adapter, adapter->mbox, &caps_cmd, sizeof(caps_cmd),
-			 &caps_cmd);
-	/*
-	 * If the CAPS_CONFIG failed with an ENOENT (for a Firmware
-	 * Configuration File in FLASH), our last gasp effort is to use the
-	 * Firmware Configuration File which is embedded in the firmware.  A
-	 * very few early versions of the firmware didn't have one embedded
-	 * but we can ignore those.
-	 */
-	if (ret == -ENOENT) {
-		dev_info(adapter, "%s: Going for embedded config in firmware..\n",
-			 __func__);
-
-		memset(&caps_cmd, 0, sizeof(caps_cmd));
-		caps_cmd.op_to_write =
-			cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
-				    F_FW_CMD_REQUEST | F_FW_CMD_READ);
-		caps_cmd.cfvalid_to_len16 = cpu_to_be32(FW_LEN16(caps_cmd));
-		ret = t4_wr_mbox(adapter, adapter->mbox, &caps_cmd,
-				 sizeof(caps_cmd), &caps_cmd);
-		strcpy(config_name, "Firmware Default");
-	}
-
-	config_issued = 1;
+	ret = cxgbe_load_fw_config(adapter);
 	if (ret < 0)
 		goto bye;
-
-	finiver = be32_to_cpu(caps_cmd.finiver);
-	finicsum = be32_to_cpu(caps_cmd.finicsum);
-	cfcsum = be32_to_cpu(caps_cmd.cfcsum);
-	if (finicsum != cfcsum)
-		dev_warn(adapter, "Configuration File checksum mismatch: [fini] csum=%#x, computed csum=%#x\n",
-			 finicsum, cfcsum);
-
-	/*
-	 * If we're a pure NIC driver then disable all offloading facilities.
-	 * This will allow the firmware to optimize aspects of the hardware
-	 * configuration which will result in improved performance.
-	 */
-	caps_cmd.niccaps &= cpu_to_be16(~FW_CAPS_CONFIG_NIC_ETHOFLD);
-	caps_cmd.toecaps = 0;
-	caps_cmd.iscsicaps = 0;
-	caps_cmd.rdmacaps = 0;
-	caps_cmd.fcoecaps = 0;
-
-	/*
-	 * And now tell the firmware to use the configuration we just loaded.
-	 */
-	caps_cmd.op_to_write = cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
-					   F_FW_CMD_REQUEST | F_FW_CMD_WRITE);
-	caps_cmd.cfvalid_to_len16 = htonl(FW_LEN16(caps_cmd));
-	ret = t4_wr_mbox(adapter, adapter->mbox, &caps_cmd, sizeof(caps_cmd),
-			 NULL);
-	if (ret < 0) {
-		dev_warn(adapter, "Unable to finalize Firmware Capabilities %d\n",
-			 -ret);
-		goto bye;
-	}
 
 	/*
 	 * Tweak configuration based on system architecture, etc.
@@ -990,27 +1373,9 @@ static int adap_init0_config(struct adapter *adapter, int reset)
 		goto bye;
 	}
 
-	/*
-	 * Return successfully and note that we're operating with parameters
-	 * not supplied by the driver, rather than from hard-wired
-	 * initialization constants buried in the driver.
-	 */
-	dev_info(adapter,
-		 "Successfully configured using Firmware Configuration File \"%s\", version %#x, computed checksum %#x\n",
-		 config_name, finiver, cfcsum);
-
 	return 0;
 
-	/*
-	 * Something bad happened.  Return the error ...  (If the "error"
-	 * is that there's no Configuration File on the adapter we don't
-	 * want to issue a warning since this is fairly common.)
-	 */
 bye:
-	if (config_issued && ret != -ENOENT)
-		dev_warn(adapter, "\"%s\" configuration file error %d\n",
-			 config_name, -ret);
-
 	dev_debug(adapter, "%s: returning ret = %d ..\n", __func__, ret);
 	return ret;
 }
@@ -1135,20 +1500,10 @@ static int adap_init0(struct adapter *adap)
 	/*
 	 * Grab some of our basic fundamental operating parameters.
 	 */
-#define FW_PARAM_DEV(param) \
-	(V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) | \
-	 V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_##param))
-
-#define FW_PARAM_PFVF(param) \
-	(V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_PFVF) | \
-	 V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_PFVF_##param) |  \
-	 V_FW_PARAMS_PARAM_Y(0) | \
-	 V_FW_PARAMS_PARAM_Z(0))
-
-	params[0] = FW_PARAM_PFVF(L2T_START);
-	params[1] = FW_PARAM_PFVF(L2T_END);
-	params[2] = FW_PARAM_PFVF(FILTER_START);
-	params[3] = FW_PARAM_PFVF(FILTER_END);
+	params[0] = CXGBE_FW_PARAM_PFVF(L2T_START);
+	params[1] = CXGBE_FW_PARAM_PFVF(L2T_END);
+	params[2] = CXGBE_FW_PARAM_PFVF(FILTER_START);
+	params[3] = CXGBE_FW_PARAM_PFVF(FILTER_END);
 	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 4, params, val);
 	if (ret < 0)
 		goto bye;
@@ -1157,8 +1512,8 @@ static int adap_init0(struct adapter *adap)
 	adap->tids.ftid_base = val[2];
 	adap->tids.nftids = val[3] - val[2] + 1;
 
-	params[0] = FW_PARAM_PFVF(CLIP_START);
-	params[1] = FW_PARAM_PFVF(CLIP_END);
+	params[0] = CXGBE_FW_PARAM_PFVF(CLIP_START);
+	params[1] = CXGBE_FW_PARAM_PFVF(CLIP_END);
 	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 2, params, val);
 	if (ret < 0)
 		goto bye;
@@ -1180,7 +1535,7 @@ static int adap_init0(struct adapter *adap)
 
 	if ((caps_cmd.niccaps & cpu_to_be16(FW_CAPS_CONFIG_NIC_HASHFILTER)) &&
 	    is_t6(adap->params.chip)) {
-		if (init_hash_filter(adap) < 0)
+		if (cxgbe_init_hash_filter(adap) < 0)
 			goto bye;
 	}
 
@@ -1188,14 +1543,23 @@ static int adap_init0(struct adapter *adap)
 	if (is_t4(adap->params.chip)) {
 		adap->params.filter2_wr_support = 0;
 	} else {
-		params[0] = FW_PARAM_DEV(FILTER2_WR);
+		params[0] = CXGBE_FW_PARAM_DEV(FILTER2_WR);
 		ret = t4_query_params(adap, adap->mbox, adap->pf, 0,
 				      1, params, val);
 		adap->params.filter2_wr_support = (ret == 0 && val[0] != 0);
 	}
 
+	/* Check if FW supports returning vin.
+	 * If this is not supported, driver will interpret
+	 * these values from viid.
+	 */
+	params[0] = CXGBE_FW_PARAM_DEV(OPAQUE_VIID_SMT_EXTN);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0,
+			      1, params, val);
+	adap->params.viid_smt_extn_support = (ret == 0 && val[0] != 0);
+
 	/* query tid-related parameters */
-	params[0] = FW_PARAM_DEV(NTID);
+	params[0] = CXGBE_FW_PARAM_DEV(NTID);
 	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1,
 			      params, val);
 	if (ret < 0)
@@ -1208,7 +1572,7 @@ static int adap_init0(struct adapter *adap)
 	 * firmware won't understand this and we'll just get
 	 * unencapsulated messages ...
 	 */
-	params[0] = FW_PARAM_PFVF(CPLFW4MSG_ENCAP);
+	params[0] = CXGBE_FW_PARAM_PFVF(CPLFW4MSG_ENCAP);
 	val[0] = 1;
 	(void)t4_set_params(adap, adap->mbox, adap->pf, 0, 1, params, val);
 
@@ -1221,10 +1585,36 @@ static int adap_init0(struct adapter *adap)
 	if (is_t4(adap->params.chip)) {
 		adap->params.ulptx_memwrite_dsgl = false;
 	} else {
-		params[0] = FW_PARAM_DEV(ULPTX_MEMWRITE_DSGL);
+		params[0] = CXGBE_FW_PARAM_DEV(ULPTX_MEMWRITE_DSGL);
 		ret = t4_query_params(adap, adap->mbox, adap->pf, 0,
 				      1, params, val);
 		adap->params.ulptx_memwrite_dsgl = (ret == 0 && val[0] != 0);
+	}
+
+	/* Query for max number of packets that can be coalesced for Tx */
+	params[0] = CXGBE_FW_PARAM_PFVF(MAX_PKTS_PER_ETH_TX_PKTS_WR);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1, params, val);
+	if (!ret && val[0] > 0)
+		adap->params.max_tx_coalesce_num = val[0];
+	else
+		adap->params.max_tx_coalesce_num = ETH_COALESCE_PKT_NUM;
+
+	params[0] = CXGBE_FW_PARAM_DEV(VI_ENABLE_INGRESS_AFTER_LINKUP);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1, params, val);
+	adap->params.vi_enable_rx = (ret == 0 && val[0] != 0);
+
+	/* Read the RAW MPS entries. In T6, the last 2 TCAM entries
+	 * are reserved for RAW MAC addresses (rawf = 2, one per port).
+	 */
+	if (CHELSIO_CHIP_VERSION(adap->params.chip) > CHELSIO_T5) {
+		params[0] = CXGBE_FW_PARAM_PFVF(RAWF_START);
+		params[1] = CXGBE_FW_PARAM_PFVF(RAWF_END);
+		ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 2,
+				      params, val);
+		if (ret == 0) {
+			adap->params.rawf_start = val[0];
+			adap->params.rawf_size = val[1] - val[0] + 1;
+		}
 	}
 
 	/*
@@ -1265,6 +1655,9 @@ static int adap_init0(struct adapter *adap)
 			     adap->params.b_wnd);
 	}
 	t4_init_sge_params(adap);
+	ret = configure_filter_mode_mask(adap);
+	if (ret < 0)
+		goto bye;
 	t4_init_tp_params(adap);
 	configure_pcie_ext_tag(adap);
 	configure_vlan_types(adap);
@@ -1303,35 +1696,58 @@ void t4_os_portmod_changed(const struct adapter *adap, int port_id)
 
 	const struct port_info *pi = adap2pinfo(adap, port_id);
 
-	if (pi->mod_type == FW_PORT_MOD_TYPE_NONE)
+	if (pi->link_cfg.mod_type == FW_PORT_MOD_TYPE_NONE)
 		dev_info(adap, "Port%d: port module unplugged\n", pi->port_id);
-	else if (pi->mod_type < ARRAY_SIZE(mod_str))
+	else if (pi->link_cfg.mod_type < ARRAY_SIZE(mod_str))
 		dev_info(adap, "Port%d: %s port module inserted\n", pi->port_id,
-			 mod_str[pi->mod_type]);
-	else if (pi->mod_type == FW_PORT_MOD_TYPE_NOTSUPPORTED)
+			 mod_str[pi->link_cfg.mod_type]);
+	else if (pi->link_cfg.mod_type == FW_PORT_MOD_TYPE_NOTSUPPORTED)
 		dev_info(adap, "Port%d: unsupported port module inserted\n",
 			 pi->port_id);
-	else if (pi->mod_type == FW_PORT_MOD_TYPE_UNKNOWN)
+	else if (pi->link_cfg.mod_type == FW_PORT_MOD_TYPE_UNKNOWN)
 		dev_info(adap, "Port%d: unknown port module inserted\n",
 			 pi->port_id);
-	else if (pi->mod_type == FW_PORT_MOD_TYPE_ERROR)
+	else if (pi->link_cfg.mod_type == FW_PORT_MOD_TYPE_ERROR)
 		dev_info(adap, "Port%d: transceiver module error\n",
 			 pi->port_id);
 	else
 		dev_info(adap, "Port%d: unknown module type %d inserted\n",
-			 pi->port_id, pi->mod_type);
+			 pi->port_id, pi->link_cfg.mod_type);
+}
+
+void t4_os_link_changed(struct adapter *adap, int port_id)
+{
+	struct port_info *pi = adap2pinfo(adap, port_id);
+
+	/* If link status has not changed or if firmware doesn't
+	 * support enabling/disabling VI's Rx path during runtime,
+	 * then return.
+	 */
+	if (adap->params.vi_enable_rx == 0 ||
+	    pi->vi_en_rx == pi->link_cfg.link_ok)
+		return;
+
+	/* Don't enable VI Rx path, if link has been administratively
+	 * turned off.
+	 */
+	if (pi->vi_en_tx == 0 && pi->vi_en_rx == 0)
+		return;
+
+	/* When link goes down, disable the port's Rx path to drop
+	 * Rx traffic closer to the wire, instead of processing it
+	 * further in the Rx pipeline. The Rx path will be re-enabled
+	 * once the link up message comes in firmware event queue.
+	 */
+	pi->vi_en_rx = pi->link_cfg.link_ok;
+	t4_enable_vi(adap, adap->mbox, pi->viid, pi->vi_en_rx, pi->vi_en_tx);
 }
 
 bool cxgbe_force_linkup(struct adapter *adap)
 {
-	struct rte_pci_device *pdev = adap->pdev;
-
 	if (is_pf4(adap))
-		return false;	/* force_linkup not required for pf driver*/
-	if (!cxgbe_get_devargs(pdev->device.devargs,
-			       CXGBE_DEVARG_FORCE_LINK_UP))
-		return false;
-	return true;
+		return false;	/* force_linkup not required for pf driver */
+
+	return adap->devargs.force_link_up;
 }
 
 /**
@@ -1347,8 +1763,7 @@ int cxgbe_link_start(struct port_info *pi)
 	unsigned int mtu;
 	int ret;
 
-	mtu = pi->eth_dev->data->dev_conf.rxmode.max_rx_pkt_len -
-	      (ETHER_HDR_LEN + ETHER_CRC_LEN);
+	mtu = pi->eth_dev->data->mtu;
 
 	conf_offloads = pi->eth_dev->data->dev_conf.rxmode.offloads;
 
@@ -1357,7 +1772,7 @@ int cxgbe_link_start(struct port_info *pi)
 	 * that step explicitly.
 	 */
 	ret = t4_set_rxmode(adapter, adapter->mbox, pi->viid, mtu, -1, -1, -1,
-			    !!(conf_offloads & DEV_RX_OFFLOAD_VLAN_STRIP),
+			    !!(conf_offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP),
 			    true);
 	if (ret == 0) {
 		ret = cxgbe_mpstcam_modify(pi, (int)pi->xact_addr_filt,
@@ -1368,22 +1783,20 @@ int cxgbe_link_start(struct port_info *pi)
 		}
 	}
 	if (ret == 0 && is_pf4(adapter))
-		ret = t4_link_l1cfg(adapter, adapter->mbox, pi->tx_chan,
-				    &pi->link_cfg);
+		ret = t4_link_l1cfg(pi, pi->link_cfg.admin_caps);
 	if (ret == 0) {
-		/*
-		 * Enabling a Virtual Interface can result in an interrupt
-		 * during the processing of the VI Enable command and, in some
-		 * paths, result in an attempt to issue another command in the
-		 * interrupt context.  Thus, we disable interrupts during the
-		 * course of the VI Enable command ...
+		/* Disable VI Rx until link up message is received in
+		 * firmware event queue, if firmware supports enabling/
+		 * disabling VI Rx at runtime.
 		 */
+		pi->vi_en_rx = adapter->params.vi_enable_rx ? 0 : 1;
+		pi->vi_en_tx = 1;
 		ret = t4_enable_vi_params(adapter, adapter->mbox, pi->viid,
-					  true, true, false);
+					  pi->vi_en_rx, pi->vi_en_tx, false);
 	}
 
 	if (ret == 0 && cxgbe_force_linkup(adapter))
-		pi->eth_dev->data->dev_link.link_status = ETH_LINK_UP;
+		pi->eth_dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 	return ret;
 }
 
@@ -1414,10 +1827,10 @@ int cxgbe_write_rss_conf(const struct port_info *pi, uint64_t rss_hf)
 	if (rss_hf & CXGBE_RSS_HF_IPV4_MASK)
 		flags |= F_FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN;
 
-	if (rss_hf & ETH_RSS_NONFRAG_IPV4_TCP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_TCP)
 		flags |= F_FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN;
 
-	if (rss_hf & ETH_RSS_NONFRAG_IPV4_UDP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_UDP)
 		flags |= F_FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN |
 			 F_FW_RSS_VI_CONFIG_CMD_UDPEN;
 
@@ -1433,7 +1846,7 @@ int cxgbe_write_rss_conf(const struct port_info *pi, uint64_t rss_hf)
 			 F_FW_RSS_VI_CONFIG_CMD_IP6FOURTUPEN |
 			 F_FW_RSS_VI_CONFIG_CMD_UDPEN;
 
-	rxq = &adapter->sge.ethrxq[pi->first_qset];
+	rxq = &adapter->sge.ethrxq[pi->first_rxqset];
 	rss = rxq[0].rspq.abs_id;
 
 	/* If Tunnel All Lookup isn't specified in the global RSS
@@ -1464,7 +1877,7 @@ int cxgbe_write_rss(const struct port_info *pi, const u16 *queues)
 	/*  Should never be called before setting up sge eth rx queues */
 	BUG_ON(!(adapter->flags & FULL_INIT_DONE));
 
-	rxq = &adapter->sge.ethrxq[pi->first_qset];
+	rxq = &adapter->sge.ethrxq[pi->first_rxqset];
 	rss = rte_zmalloc(NULL, pi->rss_size * sizeof(u16), 0);
 	if (!rss)
 		return -ENOMEM;
@@ -1536,7 +1949,7 @@ void cxgbe_enable_rx_queues(struct port_info *pi)
 	unsigned int i;
 
 	for (i = 0; i < pi->n_rx_qsets; i++)
-		enable_rx(adap, &s->ethrxq[pi->first_qset + i].rspq);
+		enable_rx(adap, &s->ethrxq[pi->first_rxqset + i].rspq);
 }
 
 /**
@@ -1554,7 +1967,7 @@ static void fw_caps_to_speed_caps(enum fw_port_type port_type,
 {
 #define SET_SPEED(__speed_name) \
 	do { \
-		*speed_caps |= ETH_LINK_ ## __speed_name; \
+		*speed_caps |= RTE_ETH_LINK_ ## __speed_name; \
 	} while (0)
 
 #define FW_CAPS_TO_SPEED(__fw_name) \
@@ -1637,11 +2050,11 @@ void cxgbe_get_speed_caps(struct port_info *pi, u32 *speed_caps)
 {
 	*speed_caps = 0;
 
-	fw_caps_to_speed_caps(pi->port_type, pi->link_cfg.pcaps,
+	fw_caps_to_speed_caps(pi->link_cfg.port_type, pi->link_cfg.pcaps,
 			      speed_caps);
 
 	if (!(pi->link_cfg.pcaps & FW_PORT_CAP32_ANEG))
-		*speed_caps |= ETH_LINK_SPEED_FIXED;
+		*speed_caps |= RTE_ETH_LINK_SPEED_FIXED;
 }
 
 /**
@@ -1656,7 +2069,13 @@ int cxgbe_set_link_status(struct port_info *pi, bool status)
 	struct adapter *adapter = pi->adapter;
 	int err = 0;
 
-	err = t4_enable_vi(adapter, adapter->mbox, pi->viid, status, status);
+	/* Wait for link up message from firmware to enable Rx path,
+	 * if firmware supports enabling/disabling VI Rx at runtime.
+	 */
+	pi->vi_en_rx = adapter->params.vi_enable_rx ? 0 : status;
+	pi->vi_en_tx = status;
+	err = t4_enable_vi(adapter, adapter->mbox, pi->viid, pi->vi_en_rx,
+			   pi->vi_en_tx);
 	if (err) {
 		dev_err(adapter, "%s: disable_vi failed: %d\n", __func__, err);
 		return err;
@@ -1701,39 +2120,64 @@ int cxgbe_down(struct port_info *pi)
  */
 void cxgbe_close(struct adapter *adapter)
 {
-	struct port_info *pi;
-	int i;
-
 	if (adapter->flags & FULL_INIT_DONE) {
 		tid_free(&adapter->tids);
 		t4_cleanup_mpstcam(adapter);
 		t4_cleanup_clip_tbl(adapter);
 		t4_cleanup_l2t(adapter);
+		t4_cleanup_smt(adapter);
 		if (is_pf4(adapter))
 			t4_intr_disable(adapter);
 		t4_sge_tx_monitor_stop(adapter);
 		t4_free_sge_resources(adapter);
-		for_each_port(adapter, i) {
-			pi = adap2pinfo(adapter, i);
-			if (pi->viid != 0)
-				t4_free_vi(adapter, adapter->mbox,
-					   adapter->pf, 0, pi->viid);
-			rte_eth_dev_release_port(pi->eth_dev);
-		}
 		adapter->flags &= ~FULL_INIT_DONE;
 	}
+
+	cxgbe_cfg_queues_free(adapter);
 
 	if (is_pf4(adapter) && (adapter->flags & FW_OK))
 		t4_fw_bye(adapter, adapter->mbox);
 }
 
+static void adap_smt_index(struct adapter *adapter, u32 *smt_start_idx,
+			   u32 *smt_size)
+{
+	u32 params[2], smt_val[2];
+	int ret;
+
+	params[0] = CXGBE_FW_PARAM_PFVF(GET_SMT_START);
+	params[1] = CXGBE_FW_PARAM_PFVF(GET_SMT_SIZE);
+
+	ret = t4_query_params(adapter, adapter->mbox, adapter->pf, 0,
+			      2, params, smt_val);
+
+	/* if FW doesn't recognize this command then set it to default setting
+	 * which is start index as 0 and size as 256.
+	 */
+	if (ret < 0) {
+		*smt_start_idx = 0;
+		*smt_size = SMT_SIZE;
+	} else {
+		*smt_start_idx = smt_val[0];
+		/* smt size can be zero, if nsmt is not yet configured in
+		 * the config file or set as zero, then configure all the
+		 * remaining entries to this PF itself.
+		 */
+		if (!smt_val[1])
+			*smt_size = SMT_SIZE - *smt_start_idx;
+		else
+			*smt_size = smt_val[1];
+	}
+}
+
 int cxgbe_probe(struct adapter *adapter)
 {
+	u32 smt_start_idx, smt_size;
 	struct port_info *pi;
-	int chip;
 	int func, i;
 	int err = 0;
 	u32 whoami;
+	int chip;
 
 	whoami = t4_read_reg(adapter, A_PL_WHOAMI);
 	chip = t4_get_chip_type(adapter,
@@ -1825,7 +2269,7 @@ int cxgbe_probe(struct adapter *adapter)
 			goto out_free;
 
 allocate_mac:
-		pi = (struct port_info *)eth_dev->data->dev_private;
+		pi = eth_dev->data->dev_private;
 		adapter->port[i] = pi;
 		pi->eth_dev = eth_dev;
 		pi->adapter = adapter;
@@ -1841,7 +2285,7 @@ allocate_mac:
 		rte_eth_copy_pci_info(pi->eth_dev, adapter->pdev);
 
 		pi->eth_dev->data->mac_addrs = rte_zmalloc(name,
-							   ETHER_ADDR_LEN, 0);
+							RTE_ETHER_ADDR_LEN, 0);
 		if (!pi->eth_dev->data->mac_addrs) {
 			dev_err(adapter, "%s: Mem allocation failed for storing mac addr, aborting\n",
 				__func__);
@@ -1864,7 +2308,9 @@ allocate_mac:
 		}
 	}
 
-	cxgbe_cfg_queues(adapter->eth_dev);
+	err = cxgbe_cfg_queues(adapter->eth_dev);
+	if (err)
+		goto out_free;
 
 	cxgbe_print_adapter_info(adapter);
 	cxgbe_print_port_info(adapter);
@@ -1878,6 +2324,11 @@ allocate_mac:
 		dev_warn(adapter, "could not allocate CLIP. Continuing\n");
 	}
 
+	adap_smt_index(adapter, &smt_start_idx, &smt_size);
+	adapter->smt = t4_init_smt(smt_start_idx, smt_size);
+	if (!adapter->smt)
+		dev_warn(adapter, "could not allocate SMT, continuing\n");
+
 	adapter->l2t = t4_init_l2t(adapter->l2t_start, adapter->l2t_end);
 	if (!adapter->l2t) {
 		/* We tolerate a lack of L2T, giving up some functionality */
@@ -1889,6 +2340,8 @@ allocate_mac:
 		dev_warn(adapter, "could not allocate TID table, "
 			 "filter support disabled. Continuing\n");
 	}
+
+	t4_os_lock_init(&adapter->flow_lock);
 
 	adapter->mpstcam = t4_init_mpstcam(adapter);
 	if (!adapter->mpstcam)
@@ -1916,6 +2369,8 @@ allocate_mac:
 	return 0;
 
 out_free:
+	cxgbe_cfg_queues_free(adapter);
+
 	for_each_port(adapter, i) {
 		pi = adap2pinfo(adapter, i);
 		if (pi->viid != 0)

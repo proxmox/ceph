@@ -16,7 +16,7 @@
 #include <boost/process/env.hpp>
 #include <boost/process/cmd.hpp>
 
-#include <boost/filesystem/path.hpp>
+#include <boost/process/filesystem.hpp>
 #include <boost/filesystem/operations.hpp>
 
 #include <system_error>
@@ -27,10 +27,10 @@
 #include <cstdlib>
 
 namespace bp = boost::process;
-namespace fs = boost::filesystem;
+namespace fs = boost::process::filesystem;
 
 
-BOOST_AUTO_TEST_CASE(excplicit)
+BOOST_AUTO_TEST_CASE(explicit_)
 {
     using boost::unit_test::framework::master_test_suite;
 
@@ -83,3 +83,24 @@ BOOST_AUTO_TEST_CASE(implicit)
         BOOST_TEST_MESSAGE(ec.message());
     BOOST_CHECK_EQUAL(ret, 21);
 }
+
+BOOST_AUTO_TEST_CASE(empty_cmd)
+{
+    using boost::unit_test::framework::master_test_suite;
+
+    std::error_code ec;
+
+    fs::path pth = master_test_suite().argv[1];
+    auto env = boost::this_process::environment();
+
+    auto itr = std::find_if(env.begin(), env.end(),
+    [](const bp::native_environment::entry_type & e){return boost::to_upper_copy(e.get_name()) == "PATH";});
+
+    BOOST_REQUIRE(itr != env.end());
+
+    (*itr) += fs::canonical(fs::absolute(pth.parent_path())).string();
+    BOOST_REQUIRE(itr != env.end());
+
+    bp::system("sparring_partner \"\" ", ec);
+}
+

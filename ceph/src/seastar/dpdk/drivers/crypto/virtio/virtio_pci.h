@@ -7,8 +7,9 @@
 
 #include <stdint.h>
 
+#include <rte_eal_paging.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_cryptodev.h>
 
 #include "virtio_crypto.h"
@@ -67,7 +68,7 @@ struct virtqueue;
  *
  * Note the sizeof(struct vring_desc) is 16 bytes.
  */
-#define VIRTIO_MAX_INDIRECT ((int) (PAGE_SIZE / 16))
+#define VIRTIO_MAX_INDIRECT ((int) (rte_mem_page_size() / 16))
 
 /* Do we get callbacks when the ring is completely used, even if we've
  * suppressed them?
@@ -201,10 +202,10 @@ struct virtio_hw_internal {
 	struct rte_pci_ioport io;
 };
 
-#define VTPCI_OPS(hw)	(virtio_hw_internal[(hw)->dev_id].vtpci_ops)
-#define VTPCI_IO(hw)	(&virtio_hw_internal[(hw)->dev_id].io)
+#define VTPCI_OPS(hw)	(crypto_virtio_hw_internal[(hw)->dev_id].vtpci_ops)
+#define VTPCI_IO(hw)	(&crypto_virtio_hw_internal[(hw)->dev_id].io)
 
-extern struct virtio_hw_internal virtio_hw_internal[RTE_MAX_VIRTIO_CRYPTO];
+extern struct virtio_hw_internal crypto_virtio_hw_internal[RTE_MAX_VIRTIO_CRYPTO];
 
 /*
  * How many bits to shift physical queue address written to QUEUE_PFN.

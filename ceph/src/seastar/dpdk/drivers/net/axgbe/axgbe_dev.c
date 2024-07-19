@@ -8,10 +8,50 @@
 #include "axgbe_phy.h"
 #include "axgbe_rxtx.h"
 
+static uint32_t bitrev32(uint32_t x)
+{
+	x = (x >> 16) | (x << 16);
+	x = (((x & 0xff00ff00) >> 8) | ((x & 0x00ff00ff) << 8));
+	x = (((x & 0xf0f0f0f0) >> 4) | ((x & 0x0f0f0f0f) << 4));
+	x = (((x & 0xcccccccc) >> 2) | ((x & 0x33333333) << 2));
+	x = (((x & 0xaaaaaaaa) >> 1) | ((x & 0x55555555) << 1));
+	return x;
+}
+
+/*MSB set bit from 32 to 1*/
+static int get_lastbit_set(int x)
+{
+	int r = 32;
+
+	if (!x)
+		return 0;
+	if (!(x & 0xffff0000)) {
+		x <<= 16;
+		r -= 16;
+	}
+	if (!(x & 0xff000000)) {
+		x <<= 8;
+		r -= 8;
+	}
+	if (!(x & 0xf0000000)) {
+		x <<= 4;
+		r -= 4;
+	}
+	if (!(x & 0xc0000000)) {
+		x <<= 2;
+		r -= 2;
+	}
+	if (!(x & 0x80000000)) {
+		x <<= 1;
+		r -= 1;
+	}
+	return r;
+}
+
 static inline unsigned int axgbe_get_max_frame(struct axgbe_port *pdata)
 {
-	return pdata->eth_dev->data->mtu + ETHER_HDR_LEN +
-		ETHER_CRC_LEN + VLAN_HLEN;
+	return pdata->eth_dev->data->mtu + RTE_ETHER_HDR_LEN +
+		RTE_ETHER_CRC_LEN + RTE_VLAN_HLEN;
 }
 
 /* query busy bit */
@@ -260,6 +300,9 @@ static int axgbe_enable_tx_flow_control(struct axgbe_port *pdata)
 			ehfc = 1;
 
 		AXGMAC_MTL_IOWRITE_BITS(pdata, i, MTL_Q_RQOMR, EHFC, ehfc);
+
+		PMD_DRV_LOG(DEBUG, "flow control %s for RXq%u\n",
+			    ehfc ? "enabled" : "disabled", i);
 	}
 
 	/* Set MAC flow control */
@@ -402,6 +445,120 @@ static void axgbe_config_flow_control_threshold(struct axgbe_port *pdata)
 		AXGMAC_MTL_IOWRITE_BITS(pdata, i, MTL_Q_RQFCR, RFD,
 					pdata->rx_rfd[i]);
 	}
+}
+
+static int axgbe_enable_rx_vlan_stripping(struct axgbe_port *pdata)
+{
+	/* Put the VLAN tag in the Rx descriptor */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, EVLRXS, 1);
+
+	/* Don't check the VLAN type */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, DOVLTC, 1);
+
+	/* Check only C-TAG (0x8100) packets */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, ERSVLM, 0);
+
+	/* Don't consider an S-TAG (0x88A8) packet as a VLAN packet */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, ESVL, 0);
+
+	/* Enable VLAN tag stripping */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, EVLS, 0x3);
+	return 0;
+}
+
+static int axgbe_disable_rx_vlan_stripping(struct axgbe_port *pdata)
+{
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, EVLS, 0);
+	return 0;
+}
+
+static int axgbe_enable_rx_vlan_filtering(struct axgbe_port *pdata)
+{
+	/* Enable VLAN filtering */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, VTFE, 1);
+
+	/* Enable VLAN Hash Table filtering */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, VTHM, 1);
+
+	/* Disable VLAN tag inverse matching */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, VTIM, 0);
+
+	/* Only filter on the lower 12-bits of the VLAN tag */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, ETV, 1);
+
+	/* In order for the VLAN Hash Table filtering to be effective,
+	 * the VLAN tag identifier in the VLAN Tag Register must not
+	 * be zero.  Set the VLAN tag identifier to "1" to enable the
+	 * VLAN Hash Table filtering.  This implies that a VLAN tag of
+	 * 1 will always pass filtering.
+	 */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANTR, VL, 1);
+	return 0;
+}
+
+static int axgbe_disable_rx_vlan_filtering(struct axgbe_port *pdata)
+{
+	/* Disable VLAN filtering */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_PFR, VTFE, 0);
+	return 0;
+}
+
+static u32 axgbe_vid_crc32_le(__le16 vid_le)
+{
+	u32 poly = 0xedb88320;  /* CRCPOLY_LE */
+	u32 crc = ~0;
+	u32 temp = 0;
+	unsigned char *data = (unsigned char *)&vid_le;
+	unsigned char data_byte = 0;
+	int i, bits;
+
+	bits = get_lastbit_set(VLAN_VID_MASK);
+	for (i = 0; i < bits; i++) {
+		if ((i % 8) == 0)
+			data_byte = data[i / 8];
+
+		temp = ((crc & 1) ^ data_byte) & 1;
+		crc >>= 1;
+		data_byte >>= 1;
+
+		if (temp)
+			crc ^= poly;
+	}
+	return crc;
+}
+
+static int axgbe_update_vlan_hash_table(struct axgbe_port *pdata)
+{
+	u32 crc = 0;
+	u16 vid;
+	__le16 vid_le = 0;
+	u16 vlan_hash_table = 0;
+	unsigned int reg = 0;
+	unsigned long vid_idx, vid_valid;
+
+	/* Generate the VLAN Hash Table value */
+	for (vid = 0; vid < VLAN_N_VID; vid++) {
+		vid_idx = VLAN_TABLE_IDX(vid);
+		vid_valid = pdata->active_vlans[vid_idx];
+		vid_valid = (unsigned long)vid_valid >> (vid - (64 * vid_idx));
+		if (vid_valid & 1)
+			PMD_DRV_LOG(DEBUG,
+				    "vid:%d pdata->active_vlans[%ld]=0x%lx\n",
+				    vid, vid_idx, pdata->active_vlans[vid_idx]);
+		else
+			continue;
+
+		vid_le = rte_cpu_to_le_16(vid);
+		crc = bitrev32(~axgbe_vid_crc32_le(vid_le)) >> 28;
+		vlan_hash_table |= (1 << crc);
+		PMD_DRV_LOG(DEBUG, "crc = %d vlan_hash_table = 0x%x\n",
+			    crc, vlan_hash_table);
+	}
+	/* Set the VLAN Hash Table filtering register */
+	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANHTR, VLHT, vlan_hash_table);
+	reg = AXGMAC_IOREAD(pdata, MAC_VLANHTR);
+	PMD_DRV_LOG(DEBUG, "vlan_hash_table reg val = 0x%x\n", reg);
+	return 0;
 }
 
 static int __axgbe_exit(struct axgbe_port *pdata)
@@ -611,7 +768,7 @@ static int axgbe_write_rss_reg(struct axgbe_port *pdata, unsigned int type,
 	return -EBUSY;
 }
 
-static int axgbe_write_rss_hash_key(struct axgbe_port *pdata)
+int axgbe_write_rss_hash_key(struct axgbe_port *pdata)
 {
 	struct rte_eth_rss_conf *rss_conf;
 	unsigned int key_regs = sizeof(pdata->rss_key) / sizeof(u32);
@@ -635,7 +792,7 @@ static int axgbe_write_rss_hash_key(struct axgbe_port *pdata)
 	return 0;
 }
 
-static int axgbe_write_rss_lookup_table(struct axgbe_port *pdata)
+int axgbe_write_rss_lookup_table(struct axgbe_port *pdata)
 {
 	unsigned int i;
 	int ret;
@@ -680,13 +837,14 @@ static void axgbe_rss_options(struct axgbe_port *pdata)
 	uint64_t rss_hf;
 
 	rss_conf = &pdata->eth_dev->data->dev_conf.rx_adv_conf.rss_conf;
+	pdata->rss_hf = rss_conf->rss_hf;
 	rss_hf = rss_conf->rss_hf;
 
-	if (rss_hf & (ETH_RSS_IPV4 | ETH_RSS_IPV6))
+	if (rss_hf & (RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_IPV6))
 		AXGMAC_SET_BITS(pdata->rss_options, MAC_RSSCR, IP2TE, 1);
-	if (rss_hf & (ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV6_TCP))
+	if (rss_hf & (RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_NONFRAG_IPV6_TCP))
 		AXGMAC_SET_BITS(pdata->rss_options, MAC_RSSCR, TCP4TE, 1);
-	if (rss_hf & (ETH_RSS_NONFRAG_IPV4_UDP | ETH_RSS_NONFRAG_IPV6_UDP))
+	if (rss_hf & (RTE_ETH_RSS_NONFRAG_IPV4_UDP | RTE_ETH_RSS_NONFRAG_IPV6_UDP))
 		AXGMAC_SET_BITS(pdata->rss_options, MAC_RSSCR, UDP4TE, 1);
 }
 
@@ -792,7 +950,7 @@ static int wrapper_rx_desc_init(struct axgbe_port *pdata)
 			if (mbuf == NULL) {
 				PMD_DRV_LOG(ERR, "RX mbuf alloc failed queue_id = %u, idx = %d\n",
 					    (unsigned int)rxq->queue_id, j);
-				axgbe_dev_rx_queue_release(rxq);
+				axgbe_dev_rx_queue_release(pdata->eth_dev, i);
 				return -ENOMEM;
 			}
 			rxq->sw_ring[j] = mbuf;
@@ -888,7 +1046,7 @@ static int axgbe_config_rx_threshold(struct axgbe_port *pdata,
 	return 0;
 }
 
-/*Distrubting fifo size  */
+/* Distributing FIFO size */
 static void axgbe_config_rx_fifo_size(struct axgbe_port *pdata)
 {
 	unsigned int fifo_size;
@@ -915,6 +1073,9 @@ static void axgbe_config_rx_fifo_size(struct axgbe_port *pdata)
 	/*Calculate and config Flow control threshold*/
 	axgbe_calculate_flow_control_threshold(pdata);
 	axgbe_config_flow_control_threshold(pdata);
+
+	PMD_DRV_LOG(DEBUG, "%d Rx hardware queues, %d byte fifo per queue\n",
+		    pdata->rx_q_count, q_fifo_size);
 }
 
 static void axgbe_config_tx_fifo_size(struct axgbe_port *pdata)
@@ -938,6 +1099,9 @@ static void axgbe_config_tx_fifo_size(struct axgbe_port *pdata)
 
 	for (i = 0; i < pdata->tx_q_count; i++)
 		AXGMAC_MTL_IOWRITE_BITS(pdata, i, MTL_Q_TQOMR, TQS, p_fifo);
+
+	PMD_DRV_LOG(DEBUG, "%d Tx hardware queues, %d byte fifo per queue\n",
+		    pdata->tx_q_count, q_fifo_size);
 }
 
 static void axgbe_config_queue_mapping(struct axgbe_port *pdata)
@@ -952,12 +1116,16 @@ static void axgbe_config_queue_mapping(struct axgbe_port *pdata)
 	qptc_extra = pdata->tx_q_count % pdata->hw_feat.tc_cnt;
 
 	for (i = 0, queue = 0; i < pdata->hw_feat.tc_cnt; i++) {
-		for (j = 0; j < qptc; j++)
+		for (j = 0; j < qptc; j++) {
+			PMD_DRV_LOG(DEBUG, "TXq%u mapped to TC%u\n", queue, i);
 			AXGMAC_MTL_IOWRITE_BITS(pdata, queue, MTL_Q_TQOMR,
 						Q2TCMAP, i);
-		if (i < qptc_extra)
+		}
+		if (i < qptc_extra) {
+			PMD_DRV_LOG(DEBUG, "TXq%u mapped to TC%u\n", queue, i);
 			AXGMAC_MTL_IOWRITE_BITS(pdata, queue, MTL_Q_TQOMR,
 						Q2TCMAP, i);
+		}
 	}
 
 	if (pdata->rss_enable) {
@@ -995,6 +1163,69 @@ static void axgbe_enable_mtl_interrupts(struct axgbe_port *pdata)
 	}
 }
 
+static uint32_t crc32_le(uint32_t crc, uint8_t *p, uint32_t len)
+{
+	int i;
+	while (len--) {
+		crc ^= *p++;
+		for (i = 0; i < 8; i++)
+			crc = (crc >> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+	}
+	return crc;
+}
+
+void axgbe_set_mac_hash_table(struct axgbe_port *pdata, u8 *addr, bool add)
+{
+	uint32_t crc, htable_index, htable_bitmask;
+
+	crc = bitrev32(~crc32_le(~0, addr, RTE_ETHER_ADDR_LEN));
+	crc >>= pdata->hash_table_shift;
+	htable_index = crc >> 5;
+	htable_bitmask = 1 << (crc & 0x1f);
+
+	if (add) {
+		pdata->uc_hash_table[htable_index] |= htable_bitmask;
+		pdata->uc_hash_mac_addr++;
+	} else {
+		pdata->uc_hash_table[htable_index] &= ~htable_bitmask;
+		pdata->uc_hash_mac_addr--;
+	}
+	PMD_DRV_LOG(DEBUG, "%s MAC hash table Bit %d at Index %#x\n",
+		    add ? "set" : "clear", (crc & 0x1f), htable_index);
+
+	AXGMAC_IOWRITE(pdata, MAC_HTR(htable_index),
+		       pdata->uc_hash_table[htable_index]);
+}
+
+void axgbe_set_mac_addn_addr(struct axgbe_port *pdata, u8 *addr, uint32_t index)
+{
+	unsigned int mac_addr_hi, mac_addr_lo;
+	u8 *mac_addr;
+
+	mac_addr_lo = 0;
+	mac_addr_hi = 0;
+
+	if (addr) {
+		mac_addr = (u8 *)&mac_addr_lo;
+		mac_addr[0] = addr[0];
+		mac_addr[1] = addr[1];
+		mac_addr[2] = addr[2];
+		mac_addr[3] = addr[3];
+		mac_addr = (u8 *)&mac_addr_hi;
+		mac_addr[0] = addr[4];
+		mac_addr[1] = addr[5];
+
+		/*Address Enable: Use this Addr for Perfect Filtering */
+		AXGMAC_SET_BITS(mac_addr_hi, MAC_MACA1HR, AE, 1);
+	}
+
+	PMD_DRV_LOG(DEBUG, "%s mac address at %#x\n",
+		    addr ? "set" : "clear", index);
+
+	AXGMAC_IOWRITE(pdata, MAC_MACAHR(index), mac_addr_hi);
+	AXGMAC_IOWRITE(pdata, MAC_MACALR(index), mac_addr_lo);
+}
+
 static int axgbe_set_mac_address(struct axgbe_port *pdata, u8 *addr)
 {
 	unsigned int mac_addr_hi, mac_addr_lo;
@@ -1007,6 +1238,21 @@ static int axgbe_set_mac_address(struct axgbe_port *pdata, u8 *addr)
 	AXGMAC_IOWRITE(pdata, MAC_MACA0LR, mac_addr_lo);
 
 	return 0;
+}
+
+static void axgbe_config_mac_hash_table(struct axgbe_port *pdata)
+{
+	struct axgbe_hw_features *hw_feat = &pdata->hw_feat;
+
+	pdata->hash_table_shift = 0;
+	pdata->hash_table_count = 0;
+	pdata->uc_hash_mac_addr = 0;
+	memset(pdata->uc_hash_table, 0, sizeof(pdata->uc_hash_table));
+
+	if (hw_feat->hash_table_size) {
+		pdata->hash_table_shift = 26 - (hw_feat->hash_table_size >> 7);
+		pdata->hash_table_count = hw_feat->hash_table_size / 32;
+	}
 }
 
 static void axgbe_config_mac_address(struct axgbe_port *pdata)
@@ -1034,6 +1280,20 @@ static void axgbe_config_checksum_offload(struct axgbe_port *pdata)
 		AXGMAC_IOWRITE_BITS(pdata, MAC_RCR, IPC, 1);
 	else
 		AXGMAC_IOWRITE_BITS(pdata, MAC_RCR, IPC, 0);
+}
+
+static void axgbe_config_mmc(struct axgbe_port *pdata)
+{
+	struct axgbe_mmc_stats *stats = &pdata->mmc_stats;
+
+	/* Reset stats */
+	memset(stats, 0, sizeof(*stats));
+
+	/* Set counters to reset on read */
+	AXGMAC_IOWRITE_BITS(pdata, MMC_CR, ROR, 1);
+
+	/* Reset the counters */
+	AXGMAC_IOWRITE_BITS(pdata, MMC_CR, CR, 1);
 }
 
 static int axgbe_init(struct axgbe_port *pdata)
@@ -1073,11 +1333,13 @@ static int axgbe_init(struct axgbe_port *pdata)
 	axgbe_enable_mtl_interrupts(pdata);
 
 	/* Initialize MAC related features */
+	axgbe_config_mac_hash_table(pdata);
 	axgbe_config_mac_address(pdata);
 	axgbe_config_jumbo_enable(pdata);
 	axgbe_config_flow_control(pdata);
 	axgbe_config_mac_speed(pdata);
 	axgbe_config_checksum_offload(pdata);
+	axgbe_config_mmc(pdata);
 
 	return 0;
 }
@@ -1100,4 +1362,11 @@ void axgbe_init_function_ptrs_dev(struct axgbe_hw_if *hw_if)
 	/* For FLOW ctrl */
 	hw_if->config_tx_flow_control = axgbe_config_tx_flow_control;
 	hw_if->config_rx_flow_control = axgbe_config_rx_flow_control;
+
+	/*vlan*/
+	hw_if->enable_rx_vlan_stripping = axgbe_enable_rx_vlan_stripping;
+	hw_if->disable_rx_vlan_stripping = axgbe_disable_rx_vlan_stripping;
+	hw_if->enable_rx_vlan_filtering = axgbe_enable_rx_vlan_filtering;
+	hw_if->disable_rx_vlan_filtering = axgbe_disable_rx_vlan_filtering;
+	hw_if->update_vlan_hash_table = axgbe_update_vlan_hash_table;
 }

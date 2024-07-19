@@ -40,8 +40,11 @@
 #define	NIC_MBOX_MSG_ALLOC_SQS		0x12	/* Allocate secondary Qset */
 #define	NIC_MBOX_MSG_LOOPBACK		0x16	/* Set interface in loopback */
 #define	NIC_MBOX_MSG_RESET_STAT_COUNTER 0x17	/* Reset statistics counters */
+#define	NIC_MBOX_MSG_SET_LINK		0x21	/* Set link up/down */
+#define	NIC_MBOX_MSG_CHANGE_MODE	0x22	/* Change mode */
 #define	NIC_MBOX_MSG_CFG_DONE		0xF0	/* VF configuration done */
 #define	NIC_MBOX_MSG_SHUTDOWN		0xF1	/* VF is being shutdown */
+#define NIC_MBOX_MSG_RESET_XCAST	0xF2    /* Reset DCAM filtering mode */
 #define	NIC_MBOX_MSG_MAX		0x100	/* Maximum number of messages */
 
 /* Get vNIC VF configuration */
@@ -169,6 +172,24 @@ struct reset_stat_cfg {
 	uint16_t   sq_stat_mask;
 };
 
+/* Set link up/down */
+struct set_link_state {
+	uint8_t    msg;
+	uint8_t    vf_id;
+	bool	   enable;
+};
+
+/* Change link mode */
+struct change_link_mode_msg {
+	uint8_t    msg;
+	uint8_t    vf_id;
+	uint8_t    qlm_mode;
+	bool	   autoneg;
+	uint8_t    duplex;
+	uint32_t   speed;
+
+};
+
 struct nic_mbx {
 /* 128 bit shared memory between PF and each VF */
 union {
@@ -186,6 +207,8 @@ union {
 	struct sqs_alloc	sqs_alloc;
 	struct set_loopback	lbk;
 	struct reset_stat_cfg	reset_stat;
+	struct set_link_state	set_link;
+	struct change_link_mode_msg mode;
 };
 };
 
@@ -210,7 +233,11 @@ int nicvf_mbox_rq_sync(struct nicvf *nic);
 int nicvf_mbox_loopback_config(struct nicvf *nic, bool enable);
 int nicvf_mbox_reset_stat_counters(struct nicvf *nic, uint16_t rx_stat_mask,
 	uint8_t tx_stat_mask, uint16_t rq_stat_mask, uint16_t sq_stat_mask);
+int nicvf_mbox_set_link_up_down(struct nicvf *nic, bool enable);
 void nicvf_mbox_shutdown(struct nicvf *nic);
 void nicvf_mbox_cfg_done(struct nicvf *nic);
+void nicvf_mbox_link_change(struct nicvf *nic);
+void nicvf_mbox_reset_xcast(struct nicvf *nic);
+int nicvf_mbox_change_mode(struct nicvf *nic, struct change_link_mode *cfg);
 
 #endif /* __THUNDERX_NICVF_MBOX__ */

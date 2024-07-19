@@ -104,7 +104,7 @@ ${DSC}: ${BUILDSRC}
 .PHONY: download
 download:
 	rm -rf ${SRCDIR}.tmp ${SRCDIR}
-	dgit -cdgit-distro.ceph.archive-query=aptget: -cdgit-distro.ceph.mirror=http://download.ceph.com/debian-reef -cdgit-distro.ceph.git-check=false --apt-get:--option=Dir::Etc::Trusted=${CURDIR}/upstream-key.asc -d ceph clone ceph jammy ./${SRCDIR}.tmp
+	dgit -cdgit-distro.ceph.archive-query=aptget: -cdgit-distro.ceph.mirror=http://download.ceph.com/debian-squid -cdgit-distro.ceph.git-check=false --apt-get:--option=Dir::Etc::Trusted=${CURDIR}/upstream-key.asc -d ceph clone ceph bookworm ./${SRCDIR}.tmp
 	@echo "WARNING"
 	@echo "Check output above for verification errors!"
 	@echo "WARNING"

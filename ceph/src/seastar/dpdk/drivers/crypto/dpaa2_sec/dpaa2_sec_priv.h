@@ -1,17 +1,27 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016 NXP
+ *   Copyright 2016,2020-2022 NXP
  *
  */
 
-#ifndef _RTE_DPAA2_SEC_PMD_PRIVATE_H_
-#define _RTE_DPAA2_SEC_PMD_PRIVATE_H_
+#ifndef _DPAA2_SEC_PMD_PRIVATE_H_
+#define _DPAA2_SEC_PMD_PRIVATE_H_
 
 #include <rte_security_driver.h>
 
 #define CRYPTODEV_NAME_DPAA2_SEC_PMD	crypto_dpaa2_sec
 /**< NXP DPAA2 - SEC PMD device name */
+
+extern uint8_t cryptodev_driver_id;
+
+/* FLE_POOL_NUM_BUFS is set as per the ipsec-secgw application */
+#define FLE_POOL_NUM_BUFS	32000
+#define FLE_POOL_BUF_SIZE	256
+#define FLE_POOL_CACHE_SIZE	512
+#define FLE_SG_MEM_SIZE(num)	(FLE_POOL_BUF_SIZE + ((num) * 32))
+#define SEC_FLC_DHR_OUTBOUND	-114
+#define SEC_FLC_DHR_INBOUND	0
 
 #define MAX_QUEUES		64
 #define MAX_DESC_SIZE		64
@@ -19,17 +29,19 @@
 struct dpaa2_sec_dev_private {
 	void *mc_portal; /**< MC Portal for configuring this device */
 	void *hw; /**< Hardware handle for this device.Used by NADK framework */
-	struct rte_mempool *fle_pool; /* per device memory pool for FLE */
 	int32_t hw_id; /**< An unique ID of this device instance */
 	int32_t vfio_fd; /**< File descriptor received via VFIO */
 	uint16_t token; /**< Token required by DPxxx objects */
 	unsigned int max_nb_queue_pairs;
 	/**< Max number of queue pairs supported by device */
+	uint8_t en_ordered;
+	uint8_t en_loose_ordered;
 };
 
 struct dpaa2_sec_qp {
 	struct dpaa2_queue rx_vq;
 	struct dpaa2_queue tx_vq;
+	struct rte_mempool *fle_pool; /* per device memory pool for FLE */
 };
 
 enum shr_desc_type {
@@ -40,6 +52,8 @@ enum shr_desc_type {
 
 #define DIR_ENC                 1
 #define DIR_DEC                 0
+
+#define DPAA2_IPv6_DEFAULT_VTC_FLOW	0x60000000
 
 #define DPAA2_SET_FLC_EWS(flc)  (flc->word1_bits23_16 |= 0x1)
 #define DPAA2_SET_FLC_RSC(flc)  (flc->word1_bits31_24 |= 0x1)
@@ -111,7 +125,6 @@ struct sec_flc_desc {
 };
 
 struct ctxt_priv {
-	struct rte_mempool *fle_pool; /* per device memory pool for FLE */
 	struct sec_flc_desc flc_desc[0];
 };
 
@@ -145,10 +158,31 @@ struct dpaa2_pdcp_ctxt {
 	int8_t bearer;	/*!< PDCP bearer ID */
 	int8_t pkt_dir;/*!< PDCP Frame Direction 0:UL 1:DL*/
 	int8_t hfn_ovd;/*!< Overwrite HFN per packet*/
+	uint8_t sn_size;	/*!< Sequence number size, 5/7/12/15/18 */
+	uint32_t hfn_ovd_offset;/*!< offset from rte_crypto_op at which
+				 * per packet hfn is stored
+				 */
 	uint32_t hfn;	/*!< Hyper Frame Number */
 	uint32_t hfn_threshold;	/*!< HFN Threashold for key renegotiation */
-	uint8_t sn_size;	/*!< Sequence number size, 7/12/15 */
 };
+
+typedef int (*dpaa2_sec_build_fd_t)(
+	void *qp, uint8_t *drv_ctx, struct rte_crypto_vec *data_vec,
+	uint16_t n_data_vecs, union rte_crypto_sym_ofs ofs,
+	struct rte_crypto_va_iova_ptr *iv,
+	struct rte_crypto_va_iova_ptr *digest,
+	struct rte_crypto_va_iova_ptr *aad_or_auth_iv,
+	void *user_data);
+
+typedef int (*dpaa2_sec_build_raw_dp_fd_t)(uint8_t *drv_ctx,
+		       struct rte_crypto_sgl *sgl,
+		       struct rte_crypto_sgl *dest_sgl,
+		       struct rte_crypto_va_iova_ptr *iv,
+		       struct rte_crypto_va_iova_ptr *digest,
+		       struct rte_crypto_va_iova_ptr *auth_iv,
+		       union rte_crypto_sym_ofs ofs,
+		       void *userdata,
+		       struct qbman_fd *fd);
 
 typedef struct dpaa2_sec_session_entry {
 	void *ctxt;
@@ -157,6 +191,8 @@ typedef struct dpaa2_sec_session_entry {
 	enum rte_crypto_cipher_algorithm cipher_alg; /*!< Cipher Algorithm*/
 	enum rte_crypto_auth_algorithm auth_alg; /*!< Authentication Algorithm*/
 	enum rte_crypto_aead_algorithm aead_alg; /*!< AEAD Algorithm*/
+	dpaa2_sec_build_fd_t build_fd;
+	dpaa2_sec_build_raw_dp_fd_t build_raw_dp_fd;
 	union {
 		struct {
 			uint8_t *data;	/**< pointer to key data */
@@ -190,6 +226,28 @@ typedef struct dpaa2_sec_session_entry {
 } dpaa2_sec_session;
 
 static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
+	/* Symmetric capabilities */
+	{	/* MD5 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_MD5,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
 	{	/* MD5 HMAC */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -206,6 +264,27 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 					.min = 1,
 					.max = 16,
 					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA1 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA1,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 20,
+					.max = 20,
+					.increment = 0
 				},
 				.iv_size = { 0 }
 			}, }
@@ -232,6 +311,27 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 			}, }
 		}, }
 	},
+	{	/* SHA224 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA224,
+				.block_size = 64,
+					.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 28,
+					.max = 28,
+					.increment = 0
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
 	{	/* SHA224 HMAC */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -248,6 +348,27 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 					.min = 1,
 					.max = 28,
 					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA256 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA256,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 32,
+					.max = 32,
+					.increment = 0
 				},
 				.iv_size = { 0 }
 			}, }
@@ -271,9 +392,30 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 					.increment = 1
 				},
 				.iv_size = { 0 }
-				}, }
 			}, }
-		},
+		}, }
+	},
+	{	/* SHA384 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA384,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 48,
+					.max = 48,
+					.increment = 0
+					},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
 	{	/* SHA384 HMAC */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -290,6 +432,27 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 					.min = 1,
 					.max = 48,
 					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA512 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA512,
+				.block_size = 128,
+				.key_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 64,
+					.max = 64,
+					.increment = 0
 				},
 				.iv_size = { 0 }
 			}, }
@@ -346,6 +509,50 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 			}, }
 		}, }
 	},
+	{	/* AES XCBC HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_AES_XCBC_MAC,
+				.block_size = 16,
+				.key_size = {
+					.min = 1,
+					.max = 16,
+					.increment = 1
+				},
+				.digest_size = {
+					.min = 12,
+					.max = 16,
+					.increment = 4
+				},
+				.aad_size = { 0 },
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* AES CMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_AES_CMAC,
+				.block_size = 16,
+				.key_size = {
+					.min = 1,
+					.max = 16,
+					.increment = 1
+				},
+				.digest_size = {
+					.min = 12,
+					.max = 16,
+					.increment = 4
+				},
+				.aad_size = { 0 },
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
 	{	/* AES CBC */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -386,6 +593,26 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 			}, }
 		}, }
 	},
+	{	/* DES CBC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_DES_CBC,
+				.block_size = 8,
+				.key_size = {
+					.min = 8,
+					.max = 8,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 8,
+					.max = 8,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
 	{	/* 3DES CBC */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -406,7 +633,96 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 			}, }
 		}, }
 	},
-
+	{	/* SNOW 3G (UIA2) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SNOW3G_UIA2,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 4,
+					.max = 4,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* SNOW 3G (UEA2) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_SNOW3G_UEA2,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* ZUC (EEA3) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_ZUC_EEA3,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* ZUC (EIA3) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_ZUC_EIA3,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 4,
+					.max = 4,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
 };
 
@@ -574,7 +890,8 @@ static const struct rte_security_capability dpaa2_sec_security_cap[] = {
 			.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP,
 			.mode = RTE_SECURITY_IPSEC_SA_MODE_TUNNEL,
 			.direction = RTE_SECURITY_IPSEC_SA_DIR_EGRESS,
-			.options = { 0 }
+			.options = { 0 },
+			.replay_win_sz_max = 128
 		},
 		.crypto_capabilities = dpaa2_sec_capabilities
 	},
@@ -585,7 +902,8 @@ static const struct rte_security_capability dpaa2_sec_security_cap[] = {
 			.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP,
 			.mode = RTE_SECURITY_IPSEC_SA_MODE_TUNNEL,
 			.direction = RTE_SECURITY_IPSEC_SA_DIR_INGRESS,
-			.options = { 0 }
+			.options = { 0 },
+			.replay_win_sz_max = 128
 		},
 		.crypto_capabilities = dpaa2_sec_capabilities
 	},
@@ -607,11 +925,19 @@ static const struct rte_security_capability dpaa2_sec_security_cap[] = {
 		},
 		.crypto_capabilities = dpaa2_pdcp_capabilities
 	},
+	{ /* PDCP Lookaside Protocol offload Short MAC */
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+		.protocol = RTE_SECURITY_PROTOCOL_PDCP,
+		.pdcp = {
+			.domain = RTE_SECURITY_PDCP_MODE_SHORT_MAC,
+			.capa_flags = 0
+		},
+		.crypto_capabilities = dpaa2_pdcp_capabilities
+	},
 	{
 		.action = RTE_SECURITY_ACTION_TYPE_NONE
 	}
 };
-
 /**
  * Checksum
  *
@@ -640,4 +966,14 @@ calc_chksum(void *buffer, int len)
 	return  result;
 }
 
-#endif /* _RTE_DPAA2_SEC_PMD_PRIVATE_H_ */
+int
+dpaa2_sec_configure_raw_dp_ctx(struct rte_cryptodev *dev, uint16_t qp_id,
+	struct rte_crypto_raw_dp_ctx *raw_dp_ctx,
+	enum rte_crypto_op_sess_type sess_type,
+	union rte_cryptodev_session_ctx session_ctx, uint8_t is_update);
+
+int
+dpaa2_sec_get_dp_ctx_size(struct rte_cryptodev *dev);
+
+
+#endif /* _DPAA2_SEC_PMD_PRIVATE_H_ */

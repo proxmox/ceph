@@ -21,6 +21,13 @@
 
 #pragma once
 
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
+#if FMT_VERSION >= 100000
+#include <fmt/std.h>
+#endif
+
 #include <seastar/net/api.hh>
 #include <stdexcept>
 #include <string>
@@ -55,9 +62,41 @@ struct stats {
     counter_type timeout = 0;
 };
 
+class connection_id {
+    uint64_t _id;
+
+public:
+    uint64_t id() const {
+        return _id;
+    }
+    bool operator==(const connection_id& o) const {
+        return _id == o._id;
+    }
+    explicit operator bool() const {
+        return shard() != 0xffff;
+    }
+    size_t shard() const {
+        return size_t(_id & 0xffff);
+    }
+    constexpr static connection_id make_invalid_id(uint64_t _id = 0) {
+        return make_id(_id, 0xffff);
+    }
+    constexpr static connection_id make_id(uint64_t _id, uint16_t shard) {
+        return {_id << 16 | shard};
+    }
+    constexpr connection_id(uint64_t id) : _id(id) {}
+};
+
+constexpr connection_id invalid_connection_id = connection_id::make_invalid_id();
+
+std::ostream& operator<<(std::ostream&, const connection_id&);
+
+class server;
 
 struct client_info {
     socket_address addr;
+    rpc::server& server;
+    connection_id conn_id;
     std::unordered_map<sstring, boost::any> user_data;
     template <typename T>
     void attach_auxiliary(const sstring& key, T&& object) {
@@ -70,8 +109,8 @@ struct client_info {
         return boost::any_cast<T&>(it->second);
     }
     template <typename T>
-    typename std::add_const<T>::type& retrieve_auxiliary(const sstring& key) const {
-        return const_cast<client_info*>(this)->retrieve_auxiliary<typename std::add_const<T>::type>(key);
+    std::add_const_t<T>& retrieve_auxiliary(const sstring& key) const {
+        return const_cast<client_info*>(this)->retrieve_auxiliary<std::add_const_t<T>>(key);
     }
     template <typename T>
     T* retrieve_auxiliary_opt(const sstring& key) noexcept {
@@ -244,6 +283,7 @@ public:
     // decompress data
     virtual rcv_buf decompress(rcv_buf data) = 0;
     virtual sstring name() const = 0;
+    virtual future<> close() noexcept { return make_ready_future<>(); };
     
     // factory to create compressor for a connection
     class factory {
@@ -252,34 +292,17 @@ public:
         // return feature string that will be sent as part of protocol negotiation
         virtual const sstring& supported() const = 0;
         // negotiate compress algorithm
+        // send_empty_frame() requests an empty frame to be sent to the peer compressor on the other side of the connection. 
+        // By attaching a header to this empty frame, the compressor can communicate somthing to the peer,
+        // send_empty_frame() mustn't be called from inside compress() or decompress().
+        virtual std::unique_ptr<compressor> negotiate(sstring feature, bool is_server, std::function<future<>()> send_empty_frame) const {
+            return negotiate(feature, is_server);
+        }
         virtual std::unique_ptr<compressor> negotiate(sstring feature, bool is_server) const = 0;
     };
 };
 
 class connection;
-
-struct connection_id {
-    uint64_t id;
-    bool operator==(const connection_id& o) const {
-        return id == o.id;
-    }
-    explicit operator bool() const {
-        return shard() != 0xffff;
-    }
-    size_t shard() const {
-        return size_t(id & 0xffff);
-    }
-    constexpr static connection_id make_invalid_id(uint64_t id = 0) {
-        return make_id(id, 0xffff);
-    }
-    constexpr static connection_id make_id(uint64_t id, uint16_t shard) {
-        return {id << 16 | shard};
-    }
-};
-
-constexpr connection_id invalid_connection_id = connection_id::make_invalid_id();
-
-std::ostream& operator<<(std::ostream&, const connection_id&);
 
 using xshard_connection_ptr = lw_shared_ptr<foreign_ptr<shared_ptr<connection>>>;
 constexpr size_t max_queued_stream_buffers = 50;
@@ -390,7 +413,7 @@ template<>
 struct hash<seastar::rpc::connection_id> {
     size_t operator()(const seastar::rpc::connection_id& id) const {
         size_t h = 0;
-        boost::hash_combine(h, std::hash<uint64_t>{}(id.id));
+        boost::hash_combine(h, std::hash<uint64_t>{}(id.id()));
         return h;
     }
 };
@@ -407,4 +430,14 @@ struct tuple_element<I, seastar::rpc::tuple<T...>> : tuple_element<I, tuple<T...
 
 #if FMT_VERSION >= 90000
 template <> struct fmt::formatter<seastar::rpc::connection_id> : fmt::ostream_formatter {};
+#endif
+
+#if FMT_VERSION >= 100000
+template <typename T>
+struct fmt::formatter<seastar::rpc::optional<T>> : private fmt::formatter<std::optional<T>> {
+    using fmt::formatter<std::optional<T>>::parse;
+    auto format(const seastar::rpc::optional<T>& opt, fmt::format_context& ctx) const {
+        return fmt::formatter<std::optional<T>>::format(opt, ctx);
+    }
+};
 #endif

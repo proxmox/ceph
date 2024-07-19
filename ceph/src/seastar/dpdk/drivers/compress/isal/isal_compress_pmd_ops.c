@@ -4,6 +4,7 @@
 #include <isa-l.h>
 
 #include <rte_common.h>
+#include <rte_cpuflags.h>
 #include <rte_compressdev_pmd.h>
 #include <rte_malloc.h>
 
@@ -139,6 +140,7 @@ isal_comp_pmd_info_get(struct rte_compressdev *dev __rte_unused,
 		/* Check CPU for supported vector instruction and set
 		 * feature_flags
 		 */
+#if defined(RTE_ARCH_X86)
 		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F))
 			dev_info->feature_flags |= RTE_COMPDEV_FF_CPU_AVX512;
 		else if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2))
@@ -147,6 +149,10 @@ isal_comp_pmd_info_get(struct rte_compressdev *dev __rte_unused,
 			dev_info->feature_flags |= RTE_COMPDEV_FF_CPU_AVX;
 		else
 			dev_info->feature_flags |= RTE_COMPDEV_FF_CPU_SSE;
+#elif defined(RTE_ARCH_ARM)
+		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_NEON))
+			dev_info->feature_flags |= RTE_COMPDEV_FF_CPU_NEON;
+#endif
 	}
 }
 
@@ -171,18 +177,12 @@ isal_comp_pmd_qp_release(struct rte_compressdev *dev, uint16_t qp_id)
 	if (qp == NULL)
 		return -EINVAL;
 
-	if (qp->stream != NULL)
-		rte_free(qp->stream);
-
-	if (qp->stream->level_buf != NULL)
+	if (qp->stream)
 		rte_free(qp->stream->level_buf);
 
-	if (qp->state != NULL)
-		rte_free(qp->state);
-
-	if (qp->processed_pkts != NULL)
-		rte_ring_free(qp->processed_pkts);
-
+	rte_free(qp->state);
+	rte_ring_free(qp->processed_pkts);
+	rte_free(qp->stream);
 	rte_free(qp);
 	dev->data->queue_pairs[qp_id] = NULL;
 
@@ -222,7 +222,7 @@ isal_comp_pmd_qp_set_unique_name(struct rte_compressdev *dev,
 struct isal_comp_qp *qp)
 {
 	unsigned int n = snprintf(qp->name, sizeof(qp->name),
-			"isal_compression_pmd_%u_qp_%u",
+			"isal_comp_pmd_%u_qp_%u",
 			dev->data->dev_id, qp->id);
 
 	if (n >= sizeof(qp->name))
@@ -255,16 +255,27 @@ isal_comp_pmd_qp_setup(struct rte_compressdev *dev, uint16_t qp_id,
 	qp->stream = rte_zmalloc_socket("Isa-l compression stream ",
 			sizeof(struct isal_zstream),  RTE_CACHE_LINE_SIZE,
 			socket_id);
-
+	if (qp->stream == NULL) {
+		ISAL_PMD_LOG(ERR, "Failed to allocate compression stream memory");
+		goto qp_setup_cleanup;
+	}
 	/* Initialize memory for compression level buffer */
 	qp->stream->level_buf = rte_zmalloc_socket("Isa-l compression lev_buf",
 			ISAL_DEF_LVL3_DEFAULT, RTE_CACHE_LINE_SIZE,
 			socket_id);
+	if (qp->stream->level_buf == NULL) {
+		ISAL_PMD_LOG(ERR, "Failed to allocate compression level_buf memory");
+		goto qp_setup_cleanup;
+	}
 
 	/* Initialize memory for decompression state structure */
 	qp->state = rte_zmalloc_socket("Isa-l decompression state",
 			sizeof(struct inflate_state), RTE_CACHE_LINE_SIZE,
 			socket_id);
+	if (qp->state == NULL) {
+		ISAL_PMD_LOG(ERR, "Failed to allocate decompression state memory");
+		goto qp_setup_cleanup;
+	}
 
 	qp->id = qp_id;
 	dev->data->queue_pairs[qp_id] = qp;
@@ -290,8 +301,11 @@ isal_comp_pmd_qp_setup(struct rte_compressdev *dev, uint16_t qp_id,
 	return 0;
 
 qp_setup_cleanup:
-	if (qp)
-		rte_free(qp);
+	if (qp->stream)
+		rte_free(qp->stream->level_buf);
+	rte_free(qp->stream);
+	rte_free(qp->state);
+	rte_free(qp);
 
 	return -1;
 }

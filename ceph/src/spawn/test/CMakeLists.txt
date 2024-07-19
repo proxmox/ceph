@@ -1,7 +1,7 @@
-add_subdirectory(dependency)
+find_package(GTest REQUIRED)
 
 add_library(test_base INTERFACE)
-target_link_libraries(test_base INTERFACE gtest_main)
+target_link_libraries(test_base INTERFACE GTest::Main)
 
 # all warnings as errors
 if(MSVC)

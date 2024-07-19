@@ -6,7 +6,8 @@
 # To build this example as a standalone application with an already-installed
 # DPDK instance, use 'make'
 
+allow_experimental_apis = true
 deps += ['lpm', 'ip_frag']
 sources = files(
-	'main.c'
+        'main.c',
 )

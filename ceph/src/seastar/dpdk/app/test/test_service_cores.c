@@ -22,6 +22,7 @@ static uint64_t service_tick;
 static uint32_t service_remote_launch_flag;
 
 #define SERVICE_DELAY 1
+#define TIMEOUT_MS 1000
 
 #define DUMMY_SERVICE_NAME "dummy_service"
 #define MT_SAFE_SERVICE_NAME "mt_safe_service"
@@ -30,7 +31,7 @@ static int
 testsuite_setup(void)
 {
 	slcore_id = rte_get_next_lcore(/* start core */ -1,
-				       /* skip master */ 1,
+				       /* skip main */ 1,
 				       /* wrap */ 0);
 
 	return TEST_SUCCESS;
@@ -53,20 +54,22 @@ static int32_t dummy_cb(void *args)
 static int32_t dummy_mt_unsafe_cb(void *args)
 {
 	/* before running test, the initialization has set pass_test to 1.
-	 * If the cmpset in service-cores is working correctly, the code here
+	 * If the CAS in service-cores is working correctly, the code here
 	 * should never fail to take the lock. If the lock *is* taken, fail the
 	 * test, because two threads are concurrently in a non-MT safe callback.
 	 */
 	uint32_t *test_params = args;
-	uint32_t *atomic_lock = &test_params[0];
+	uint32_t *lock = &test_params[0];
 	uint32_t *pass_test = &test_params[1];
-	int lock_taken = rte_atomic32_cmpset(atomic_lock, 0, 1);
+	uint32_t exp = 0;
+	int lock_taken = __atomic_compare_exchange_n(lock, &exp, 1, 0,
+					__ATOMIC_RELAXED, __ATOMIC_RELAXED);
 	if (lock_taken) {
 		/* delay with the lock held */
 		rte_delay_ms(250);
-		rte_atomic32_clear((rte_atomic32_t *)atomic_lock);
+		__atomic_store_n(lock, 0, __ATOMIC_RELAXED);
 	} else {
-		/* 2nd thread will fail to take lock, so set pass flag */
+		/* 2nd thread will fail to take lock, so clear pass flag */
 		*pass_test = 0;
 	}
 
@@ -83,13 +86,15 @@ static int32_t dummy_mt_safe_cb(void *args)
 	 *    that 2 threads are running the callback at the same time: MT safe
 	 */
 	uint32_t *test_params = args;
-	uint32_t *atomic_lock = &test_params[0];
+	uint32_t *lock = &test_params[0];
 	uint32_t *pass_test = &test_params[1];
-	int lock_taken = rte_atomic32_cmpset(atomic_lock, 0, 1);
+	uint32_t exp = 0;
+	int lock_taken = __atomic_compare_exchange_n(lock, &exp, 1, 0,
+					__ATOMIC_RELAXED, __ATOMIC_RELAXED);
 	if (lock_taken) {
 		/* delay with the lock held */
 		rte_delay_ms(250);
-		rte_atomic32_clear((rte_atomic32_t *)atomic_lock);
+		__atomic_store_n(lock, 0, __ATOMIC_RELAXED);
 	} else {
 		/* 2nd thread will fail to take lock, so set pass flag */
 		*pass_test = 1;
@@ -114,8 +119,20 @@ unregister_all(void)
 	}
 
 	rte_service_lcore_reset_all();
+	rte_eal_mp_wait_lcore();
 
 	return TEST_SUCCESS;
+}
+
+/* Wait until service lcore not active, or for TIMEOUT_MS */
+static void
+wait_slcore_inactive(uint32_t slcore_id)
+{
+	int i;
+
+	for (i = 0; rte_service_lcore_may_be_active(slcore_id) == 1 &&
+			i < TIMEOUT_MS; i++)
+		rte_delay_ms(1);
 }
 
 /* register a single dummy service */
@@ -302,7 +319,15 @@ service_attr_get(void)
 	TEST_ASSERT_EQUAL(1, cycles_gt_zero,
 			"attr_get() failed to get cycles (expected > zero)");
 
-	rte_service_lcore_stop(slcore_id);
+	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(id, slcore_id, 0),
+			"Disabling valid service and core failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_stop(slcore_id),
+			"Failed to stop service lcore");
+
+	wait_slcore_inactive(slcore_id);
+
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_may_be_active(slcore_id),
+			  "Service lcore not stopped after waiting.");
 
 	TEST_ASSERT_EQUAL(0, rte_service_attr_get(id, attr_calls, &attr_value),
 			"Valid attr_get() call didn't return success");
@@ -361,6 +386,9 @@ service_lcore_attr_get(void)
 			"Service core add did not return zero");
 	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(id, slcore_id, 1),
 			"Enabling valid service and core failed");
+	/* Ensure service is not active before starting */
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_may_be_active(slcore_id),
+			"Not-active service core reported as active");
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_start(slcore_id),
 			"Starting service core failed");
 
@@ -376,12 +404,24 @@ service_lcore_attr_get(void)
 			"lcore_attr_get() failed to get loops "
 			"(expected > zero)");
 
-	lcore_attr_id++;  // invalid lcore attr id
+	lcore_attr_id = 42; /* invalid lcore attr id */
 	TEST_ASSERT_EQUAL(-EINVAL, rte_service_lcore_attr_get(slcore_id,
 			lcore_attr_id, &lcore_attr_value),
 			"Invalid lcore attr didn't return -EINVAL");
 
-	rte_service_lcore_stop(slcore_id);
+	/* Ensure service is active */
+	TEST_ASSERT_EQUAL(1, rte_service_lcore_may_be_active(slcore_id),
+			"Active service core reported as not-active");
+
+	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(id, slcore_id, 0),
+			"Disabling valid service and core failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_stop(slcore_id),
+			"Failed to stop service lcore");
+
+	wait_slcore_inactive(slcore_id);
+
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_may_be_active(slcore_id),
+			  "Service lcore not stopped after waiting.");
 
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_attr_reset_all(slcore_id),
 			  "Valid lcore_attr_reset_all() didn't return success");
@@ -483,7 +523,7 @@ service_lcore_en_dis_able(void)
 	int ret = rte_eal_remote_launch(service_remote_launch_func, NULL,
 					slcore_id);
 	TEST_ASSERT_EQUAL(0, ret, "Ex-service core remote launch failed.");
-	rte_eal_mp_wait_lcore();
+	rte_eal_wait_lcore(slcore_id);
 	TEST_ASSERT_EQUAL(1, service_remote_launch_flag,
 			"Ex-service core function call had no effect.");
 
@@ -502,6 +542,10 @@ service_lcore_running_check(void)
 static int
 service_lcore_add_del(void)
 {
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1) ||
+	    !rte_lcore_is_enabled(2) || !rte_lcore_is_enabled(3))
+		return TEST_SKIPPED;
+
 	/* check initial count */
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_count(),
 			"Service lcore count has value before adding a lcore");
@@ -528,12 +572,12 @@ service_lcore_add_del(void)
 	TEST_ASSERT_EQUAL(1, rte_service_lcore_count(),
 			"Service core count not equal to one");
 	uint32_t slcore_1 = rte_get_next_lcore(/* start core */ -1,
-					       /* skip master */ 1,
+					       /* skip main */ 1,
 					       /* wrap */ 0);
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore_1),
 			"Service core add did not return zero");
 	uint32_t slcore_2 = rte_get_next_lcore(/* start core */ slcore_1,
-					       /* skip master */ 1,
+					       /* skip main */ 1,
 					       /* wrap */ 0);
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore_2),
 			"Service core add did not return zero");
@@ -579,19 +623,19 @@ service_threaded_test(int mt_safe)
 
 	/* add next 2 cores */
 	uint32_t slcore_1 = rte_get_next_lcore(/* start core */ -1,
-					       /* skip master */ 1,
+					       /* skip main */ 1,
 					       /* wrap */ 0);
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore_1),
 			"mt safe lcore add fail");
 	uint32_t slcore_2 = rte_get_next_lcore(/* start core */ slcore_1,
-					       /* skip master */ 1,
+					       /* skip main */ 1,
 					       /* wrap */ 0);
 	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore_2),
 			"mt safe lcore add fail");
 
-	/* Use atomic locks to verify that two threads are in the same function
-	 * at the same time. These are passed to the unit tests through the
-	 * callback userdata parameter
+	/* Use locks to verify that two threads are in the same function
+	 * at the same time. These are passed to the unit tests through
+	 * the callback userdata parameter.
 	 */
 	uint32_t test_params[2];
 	memset(test_params, 0, sizeof(uint32_t) * 2);
@@ -669,18 +713,28 @@ static int
 service_mt_safe_poll(void)
 {
 	int mt_safe = 1;
+
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1) ||
+	    !rte_lcore_is_enabled(2))
+		return TEST_SKIPPED;
+
 	TEST_ASSERT_EQUAL(1, service_threaded_test(mt_safe),
 			"Error: MT Safe service not run by two cores concurrently");
 	return TEST_SUCCESS;
 }
 
 /* tests a NON mt safe service with two cores, the callback is serialized
- * using the atomic cmpset.
+ * using the CAS.
  */
 static int
 service_mt_unsafe_poll(void)
 {
 	int mt_safe = 0;
+
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1) ||
+	    !rte_lcore_is_enabled(2))
+		return TEST_SKIPPED;
+
 	TEST_ASSERT_EQUAL(1, service_threaded_test(mt_safe),
 			"Error: NON MT Safe service run by two cores concurrently");
 	return TEST_SUCCESS;
@@ -692,17 +746,17 @@ delay_as_a_mt_safe_service(void *args)
 	RTE_SET_USED(args);
 	uint32_t *params = args;
 
-	/* retrieve done flag and atomic lock to inc/dec */
+	/* retrieve done flag and lock to add/sub */
 	uint32_t *done = &params[0];
-	rte_atomic32_t *lock = (rte_atomic32_t *)&params[1];
+	uint32_t *lock = &params[1];
 
 	while (!*done) {
-		rte_atomic32_inc(lock);
+		__atomic_fetch_add(lock, 1, __ATOMIC_RELAXED);
 		rte_delay_us(500);
-		if (rte_atomic32_read(lock) > 1)
+		if (__atomic_load_n(lock, __ATOMIC_RELAXED) > 1)
 			/* pass: second core has simultaneously incremented */
 			*done = 1;
-		rte_atomic32_dec(lock);
+		__atomic_fetch_sub(lock, 1, __ATOMIC_RELAXED);
 	}
 
 	return 0;
@@ -722,6 +776,22 @@ service_run_on_app_core_func(void *arg)
 {
 	uint32_t *delay_service_id = (uint32_t *)arg;
 	return rte_service_run_iter_on_app_lcore(*delay_service_id, 1);
+}
+
+static float
+service_app_lcore_perf_measure(uint32_t id)
+{
+	/* Performance test: call in a loop, and measure tsc() */
+	const uint32_t perf_iters = (1 << 12);
+	uint64_t start = rte_rdtsc();
+	uint32_t i;
+	for (i = 0; i < perf_iters; i++) {
+		int err = service_run_on_app_core_func(&id);
+		TEST_ASSERT_EQUAL(0, err, "perf test: returned run failure");
+	}
+	uint64_t end = rte_rdtsc();
+
+	return (end - start)/(float)perf_iters;
 }
 
 static int
@@ -775,8 +845,17 @@ service_app_lcore_poll_impl(const int mt_safe)
 				"MT Unsafe: App core1 didn't return -EBUSY");
 	}
 
-	unregister_all();
+	/* Measure performance of no-stats and with-stats. */
+	float cyc_no_stats = service_app_lcore_perf_measure(id);
 
+	TEST_ASSERT_EQUAL(0, rte_service_set_stats_enable(id, 1),
+			"failed to enable stats for service.");
+	float cyc_with_stats = service_app_lcore_perf_measure(id);
+
+	printf("perf test for %s, no stats: %0.1f, with stats %0.1f cycles/call\n",
+		mt_safe ? "MT Safe" : "MT Unsafe", cyc_no_stats, cyc_with_stats);
+
+	unregister_all();
 	return TEST_SUCCESS;
 }
 
@@ -843,12 +922,25 @@ service_lcore_start_stop(void)
 	return unregister_all();
 }
 
+static int
+service_ensure_stopped_with_timeout(uint32_t sid)
+{
+	/* give the service time to stop running */
+	int i;
+	for (i = 0; i < TIMEOUT_MS; i++) {
+		if (!rte_service_may_be_active(sid))
+			break;
+		rte_delay_ms(1);
+	}
+
+	return rte_service_may_be_active(sid);
+}
+
 /* stop a service and wait for it to become inactive */
 static int
 service_may_be_active(void)
 {
 	const uint32_t sid = 0;
-	int i;
 
 	/* expected failure cases */
 	TEST_ASSERT_EQUAL(-EINVAL, rte_service_may_be_active(10000),
@@ -868,19 +960,55 @@ service_may_be_active(void)
 	TEST_ASSERT_EQUAL(1, service_lcore_running_check(),
 			"Service core expected to poll service but it didn't");
 
+	/* stop the service, and wait for not-active with timeout */
+	TEST_ASSERT_EQUAL(0, rte_service_runstate_set(sid, 0),
+			"Error: Service stop returned non-zero");
+	TEST_ASSERT_EQUAL(0, service_ensure_stopped_with_timeout(sid),
+			  "Error: Service not stopped after timeout period.");
+
+	return unregister_all();
+}
+
+/* check service may be active when service is running on a second lcore */
+static int
+service_active_two_cores(void)
+{
+	if (!rte_lcore_is_enabled(0) || !rte_lcore_is_enabled(1) ||
+	    !rte_lcore_is_enabled(2))
+		return TEST_SKIPPED;
+
+	const uint32_t sid = 0;
+
+	uint32_t lcore = rte_get_next_lcore(/* start core */ -1,
+					    /* skip main */ 1,
+					    /* wrap */ 0);
+	uint32_t slcore = rte_get_next_lcore(/* start core */ lcore,
+					     /* skip main */ 1,
+					     /* wrap */ 0);
+
+	/* start the service on the second available lcore */
+	TEST_ASSERT_EQUAL(0, rte_service_runstate_set(sid, 1),
+			"Starting valid service failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_add(slcore),
+			"Add service core failed when not in use before");
+	TEST_ASSERT_EQUAL(0, rte_service_map_lcore_set(sid, slcore, 1),
+			"Enabling valid service on valid core failed");
+	TEST_ASSERT_EQUAL(0, rte_service_lcore_start(slcore),
+			"Service core start after add failed");
+
+	/* ensures core really is running the service function */
+	TEST_ASSERT_EQUAL(1, service_lcore_running_check(),
+			"Service core expected to poll service but it didn't");
+
+	/* ensures that service may be active reports running state */
+	TEST_ASSERT_EQUAL(1, rte_service_may_be_active(sid),
+			"Service may be active did not report running state");
+
 	/* stop the service */
 	TEST_ASSERT_EQUAL(0, rte_service_runstate_set(sid, 0),
 			"Error: Service stop returned non-zero");
-
-	/* give the service 100ms to stop running */
-	for (i = 0; i < 100; i++) {
-		if (!rte_service_may_be_active(sid))
-			break;
-		rte_delay_ms(SERVICE_DELAY);
-	}
-
-	TEST_ASSERT_EQUAL(0, rte_service_may_be_active(sid),
-			  "Error: Service not stopped after 100ms");
+	TEST_ASSERT_EQUAL(0, service_ensure_stopped_with_timeout(sid),
+			  "Error: Service not stopped after timeout period.");
 
 	return unregister_all();
 }
@@ -894,18 +1022,14 @@ static struct unit_test_suite service_tests  = {
 		TEST_CASE_ST(dummy_register, NULL, service_name),
 		TEST_CASE_ST(dummy_register, NULL, service_get_by_name),
 		TEST_CASE_ST(dummy_register, NULL, service_dump),
-		TEST_CASE_ST(dummy_register, NULL, service_attr_get),
-		TEST_CASE_ST(dummy_register, NULL, service_lcore_attr_get),
 		TEST_CASE_ST(dummy_register, NULL, service_probe_capability),
 		TEST_CASE_ST(dummy_register, NULL, service_start_stop),
 		TEST_CASE_ST(dummy_register, NULL, service_lcore_add_del),
-		TEST_CASE_ST(dummy_register, NULL, service_lcore_start_stop),
 		TEST_CASE_ST(dummy_register, NULL, service_lcore_en_dis_able),
 		TEST_CASE_ST(dummy_register, NULL, service_mt_unsafe_poll),
 		TEST_CASE_ST(dummy_register, NULL, service_mt_safe_poll),
-		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_safe),
-		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_unsafe),
 		TEST_CASE_ST(dummy_register, NULL, service_may_be_active),
+		TEST_CASE_ST(dummy_register, NULL, service_active_two_cores),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -917,3 +1041,25 @@ test_service_common(void)
 }
 
 REGISTER_TEST_COMMAND(service_autotest, test_service_common);
+
+static struct unit_test_suite service_perf_tests  = {
+	.suite_name = "service core performance test suite",
+	.setup = testsuite_setup,
+	.teardown = testsuite_teardown,
+	.unit_test_cases = {
+		TEST_CASE_ST(dummy_register, NULL, service_attr_get),
+		TEST_CASE_ST(dummy_register, NULL, service_lcore_attr_get),
+		TEST_CASE_ST(dummy_register, NULL, service_lcore_start_stop),
+		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_safe),
+		TEST_CASE_ST(dummy_register, NULL, service_app_lcore_mt_unsafe),
+		TEST_CASES_END() /**< NULL terminate unit test array */
+	}
+};
+
+static int
+test_service_perf(void)
+{
+	return unit_test_suite_runner(&service_perf_tests);
+}
+
+REGISTER_TEST_COMMAND(service_perf_autotest, test_service_perf);

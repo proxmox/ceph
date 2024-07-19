@@ -8,13 +8,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#include <netinet/in.h>
-#include <termios.h>
-#ifndef __linux__
-#ifndef __FreeBSD__
-#include <net/socket.h>
-#endif
-#endif
 #include <inttypes.h>
 #include <errno.h>
 #include <sys/queue.h>
@@ -30,7 +23,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_ring.h>
 #include <rte_malloc.h>
@@ -64,8 +56,8 @@ struct cmd_autotest_result {
 };
 
 static void cmd_autotest_parsed(void *parsed_result,
-				__attribute__((unused)) struct cmdline *cl,
-				__attribute__((unused)) void *data)
+				__rte_unused struct cmdline *cl,
+				__rte_unused void *data)
 {
 	struct test_command *t;
 	struct cmd_autotest_result *res = parsed_result;
@@ -117,8 +109,8 @@ dump_struct_sizes(void)
 }
 
 static void cmd_dump_parsed(void *parsed_result,
-			    __attribute__((unused)) struct cmdline *cl,
-			    __attribute__((unused)) void *data)
+			    __rte_unused struct cmdline *cl,
+			    __rte_unused void *data)
 {
 	struct cmd_dump_result *res = parsed_result;
 
@@ -172,7 +164,7 @@ struct cmd_dump_one_result {
 };
 
 static void cmd_dump_one_parsed(void *parsed_result, struct cmdline *cl,
-				__attribute__((unused)) void *data)
+				__rte_unused void *data)
 {
 	struct cmd_dump_one_result *res = parsed_result;
 
@@ -221,9 +213,9 @@ struct cmd_quit_result {
 };
 
 static void
-cmd_quit_parsed(__attribute__((unused)) void *parsed_result,
+cmd_quit_parsed(__rte_unused void *parsed_result,
 		struct cmdline *cl,
-		__attribute__((unused)) void *data)
+		__rte_unused void *data)
 {
 	cmdline_quit(cl);
 }
@@ -250,7 +242,7 @@ struct cmd_set_rxtx_result {
 };
 
 static void cmd_set_rxtx_parsed(void *parsed_result, struct cmdline *cl,
-				__attribute__((unused)) void *data)
+				__rte_unused void *data)
 {
 	struct cmd_set_rxtx_result *res = parsed_result;
 	if (test_set_rxtx_conf(res->mode) < 0)
@@ -286,7 +278,7 @@ struct cmd_set_rxtx_anchor {
 static void
 cmd_set_rxtx_anchor_parsed(void *parsed_result,
 			   struct cmdline *cl,
-			   __attribute__((unused)) void *data)
+			   __rte_unused void *data)
 {
 	struct cmd_set_rxtx_anchor *res = parsed_result;
 	if (test_set_rxtx_anchor(res->type) < 0)
@@ -323,7 +315,7 @@ struct cmd_set_rxtx_sc {
 static void
 cmd_set_rxtx_sc_parsed(void *parsed_result,
 			   struct cmdline *cl,
-			   __attribute__((unused)) void *data)
+			   __rte_unused void *data)
 {
 	struct cmd_set_rxtx_sc *res = parsed_result;
 	if (test_set_rxtx_sc(res->type) < 0)

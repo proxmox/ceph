@@ -426,7 +426,7 @@
     <xsl:copy/>
   </xsl:template>
 
-  <xsl:template match="node()" mode="annotation">
+  <xsl:template match="*" mode="annotation">
     <xsl:param name="highlight" select="false()"/>
 
     <xsl:element name="{name(.)}">

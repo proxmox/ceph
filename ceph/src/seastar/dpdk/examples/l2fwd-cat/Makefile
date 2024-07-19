@@ -7,9 +7,12 @@ APP = l2fwd-cat
 # all source are stored in SRCS-y
 SRCS-y := l2fwd-cat.c cat.c
 
+PKGCONF ?= pkg-config
+
 # Build using pkg-config variables if possible
-$(shell pkg-config --exists libdpdk)
-ifeq ($(.SHELLSTATUS),0)
+ifneq ($(shell $(PKGCONF) --exists libdpdk && echo 0),0)
+$(error "no installation of DPDK found")
+endif
 
 all: shared
 .PHONY: shared static
@@ -18,10 +21,21 @@ shared: build/$(APP)-shared
 static: build/$(APP)-static
 	ln -sf $(APP)-static build/$(APP)
 
-PC_FILE := $(shell pkg-config --path libdpdk)
-CFLAGS += -O3 $(shell pkg-config --cflags libdpdk)
-LDFLAGS_SHARED = $(shell pkg-config --libs libdpdk)
-LDFLAGS_STATIC = -Wl,-Bstatic $(shell pkg-config --static --libs libdpdk)
+PC_FILE := $(shell $(PKGCONF) --path libdpdk 2>/dev/null)
+CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
+LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
+LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
+
+ifeq ($(MAKECMDGOALS),static)
+# check for broken pkg-config
+ifeq ($(shell echo $(LDFLAGS_STATIC) | grep 'whole-archive.*l:lib.*no-whole-archive'),)
+$(warning "pkg-config output list does not contain drivers between 'whole-archive'/'no-whole-archive' flags.")
+$(error "Cannot generate statically-linked binaries with this version of pkg-config")
+endif
+endif
+
+CFLAGS += -DALLOW_EXPERIMENTAL_API
+CFLAGS += -D_GNU_SOURCE
 
 LDFLAGS += -lpqos
 
@@ -37,37 +51,4 @@ build:
 .PHONY: clean
 clean:
 	rm -f build/$(APP) build/$(APP)-static build/$(APP)-shared
-	rmdir --ignore-fail-on-non-empty build
-
-else # Build using legacy build system
-
-ifeq ($(RTE_SDK),)
-$(error "Please define RTE_SDK environment variable")
-endif
-
-ifeq ($(PQOS_INSTALL_PATH),)
-$(error "Please define PQOS_INSTALL_PATH environment variable")
-endif
-
-# Default target, detect a build directory, by looking for a path with a .config
-RTE_TARGET ?= $(notdir $(abspath $(dir $(firstword $(wildcard $(RTE_SDK)/*/.config)))))
-
-include $(RTE_SDK)/mk/rte.vars.mk
-
-CFLAGS += $(WERROR_FLAGS)
-
-# workaround for a gcc bug with noreturn attribute
-# http://gcc.gnu.org/bugzilla/show_bug.cgi?id=12603
-ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
-CFLAGS_main.o += -Wno-return-type
-endif
-
-EXTRA_CFLAGS += -O3 -g -Wfatal-errors
-
-CFLAGS += -I$(PQOS_INSTALL_PATH)/../include
-
-LDLIBS += -L$(PQOS_INSTALL_PATH)
-LDLIBS += -lpqos
-
-include $(RTE_SDK)/mk/rte.extapp.mk
-endif
+	test -d build && rmdir -p build || true

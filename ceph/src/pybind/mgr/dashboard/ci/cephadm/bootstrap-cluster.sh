@@ -5,11 +5,13 @@ set -x
 export PATH=/root/bin:$PATH
 mkdir /root/bin
 
-export CEPHADM_IMAGE='quay.ceph.io/ceph-ci/ceph:reef'
+export CEPHADM_IMAGE='quay.ceph.io/ceph-ci/ceph:main'
 
 CEPHADM="/root/bin/cephadm"
+CEPHADM_SRC="/mnt/{{ ceph_dev_folder }}/src/cephadm/cephadm"
 
-/mnt/{{ ceph_dev_folder }}/src/cephadm/build.sh $CEPHADM
+cp $CEPHADM_SRC $CEPHADM
+
 mkdir -p /etc/ceph
 mon_ip=$(ifconfig eth0  | grep 'inet ' | awk '{ print $2}')
 

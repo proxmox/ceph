@@ -1,38 +1,9 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <stdint.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_malloc.h>
 
 #include "base/i40e_prototype.h"
@@ -40,135 +11,104 @@
 #include "i40e_ethdev.h"
 #include "i40e_rxtx.h"
 #include "i40e_rxtx_vec_common.h"
+#include "i40e_rxtx_common_avx.h"
 
-#include <x86intrin.h>
+#include <rte_vect.h>
 
 #ifndef __INTEL_COMPILER
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #endif
 
-static inline void
+static __rte_always_inline void
 i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 {
-	int i;
-	uint16_t rx_id;
-	volatile union i40e_rx_desc *rxdp;
-	struct i40e_rx_entry *rxep = &rxq->sw_ring[rxq->rxrearm_start];
-
-	rxdp = rxq->rx_ring + rxq->rxrearm_start;
-
-	/* Pull 'n' more MBUFs into the software ring */
-	if (rte_mempool_get_bulk(rxq->mp,
-				 (void *)rxep,
-				 RTE_I40E_RXQ_REARM_THRESH) < 0) {
-		if (rxq->rxrearm_nb + RTE_I40E_RXQ_REARM_THRESH >=
-		    rxq->nb_rx_desc) {
-			__m128i dma_addr0;
-			dma_addr0 = _mm_setzero_si128();
-			for (i = 0; i < RTE_I40E_DESCS_PER_LOOP; i++) {
-				rxep[i].mbuf = &rxq->fake_mbuf;
-				_mm_store_si128((__m128i *)&rxdp[i].read,
-						dma_addr0);
-			}
-		}
-		rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
-			RTE_I40E_RXQ_REARM_THRESH;
-		return;
-	}
+	return i40e_rxq_rearm_common(rxq, false);
+}
 
 #ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
-	struct rte_mbuf *mb0, *mb1;
-	__m128i dma_addr0, dma_addr1;
-	__m128i hdr_room = _mm_set_epi64x(RTE_PKTMBUF_HEADROOM,
-			RTE_PKTMBUF_HEADROOM);
-	/* Initialize the mbufs in vector, process 2 mbufs in one loop */
-	for (i = 0; i < RTE_I40E_RXQ_REARM_THRESH; i += 2, rxep += 2) {
-		__m128i vaddr0, vaddr1;
+/* Handles 32B descriptor FDIR ID processing:
+ * rxdp: receive descriptor ring, required to load 2nd 16B half of each desc
+ * rx_pkts: required to store metadata back to mbufs
+ * pkt_idx: offset into the burst, increments in vector widths
+ * desc_idx: required to select the correct shift at compile time
+ */
+static inline __m256i
+desc_fdir_processing_32b(volatile union i40e_rx_desc *rxdp,
+			 struct rte_mbuf **rx_pkts,
+			 const uint32_t pkt_idx,
+			 const uint32_t desc_idx)
+{
+	/* 32B desc path: load rxdp.wb.qword2 for EXT_STATUS and FLEXBH_STAT */
+	__m128i *rxdp_desc_0 = (void *)(&rxdp[desc_idx + 0].wb.qword2);
+	__m128i *rxdp_desc_1 = (void *)(&rxdp[desc_idx + 1].wb.qword2);
+	const __m128i desc_qw2_0 = _mm_load_si128(rxdp_desc_0);
+	const __m128i desc_qw2_1 = _mm_load_si128(rxdp_desc_1);
 
-		mb0 = rxep[0].mbuf;
-		mb1 = rxep[1].mbuf;
+	/* Mask for FLEXBH_STAT, and the FDIR_ID value to compare against. The
+	 * remaining data is set to all 1's to pass through data.
+	 */
+	const __m256i flexbh_mask = _mm256_set_epi32(-1, -1, -1, 3 << 4,
+						     -1, -1, -1, 3 << 4);
+	const __m256i flexbh_id   = _mm256_set_epi32(-1, -1, -1, 1 << 4,
+						     -1, -1, -1, 1 << 4);
 
-		/* load buf_addr(lo 64bit) and buf_physaddr(hi 64bit) */
-		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_physaddr) !=
-				offsetof(struct rte_mbuf, buf_addr) + 8);
-		vaddr0 = _mm_loadu_si128((__m128i *)&mb0->buf_addr);
-		vaddr1 = _mm_loadu_si128((__m128i *)&mb1->buf_addr);
+	/* Load descriptor, check for FLEXBH bits, generate a mask for both
+	 * packets in the register.
+	 */
+	__m256i desc_qw2_0_1 =
+		_mm256_inserti128_si256(_mm256_castsi128_si256(desc_qw2_0),
+					desc_qw2_1, 1);
+	__m256i desc_tmp_msk = _mm256_and_si256(flexbh_mask, desc_qw2_0_1);
+	__m256i fdir_mask = _mm256_cmpeq_epi32(flexbh_id, desc_tmp_msk);
+	__m256i fdir_data = _mm256_alignr_epi8(desc_qw2_0_1, desc_qw2_0_1, 12);
+	__m256i desc_fdir_data = _mm256_and_si256(fdir_mask, fdir_data);
 
-		/* convert pa to dma_addr hdr/data */
-		dma_addr0 = _mm_unpackhi_epi64(vaddr0, vaddr0);
-		dma_addr1 = _mm_unpackhi_epi64(vaddr1, vaddr1);
+	/* Write data out to the mbuf. There is no store to this area of the
+	 * mbuf today, so we cannot combine it with another store.
+	 */
+	const uint32_t idx_0 = pkt_idx + desc_idx;
+	const uint32_t idx_1 = pkt_idx + desc_idx + 1;
+	rx_pkts[idx_0]->hash.fdir.hi = _mm256_extract_epi32(desc_fdir_data, 0);
+	rx_pkts[idx_1]->hash.fdir.hi = _mm256_extract_epi32(desc_fdir_data, 4);
 
-		/* add headroom to pa values */
-		dma_addr0 = _mm_add_epi64(dma_addr0, hdr_room);
-		dma_addr1 = _mm_add_epi64(dma_addr1, hdr_room);
+	/* Create mbuf flags as required for mbuf_flags layout
+	 *  (That's high lane [1,3,5,7, 0,2,4,6] as u32 lanes).
+	 * Approach:
+	 * - Mask away bits not required from the fdir_mask
+	 * - Leave the PKT_FDIR_ID bit (1 << 13)
+	 * - Position that bit correctly based on packet number
+	 * - OR in the resulting bit to mbuf_flags
+	 */
+	RTE_BUILD_BUG_ON(RTE_MBUF_F_RX_FDIR_ID != (1 << 13));
+	__m256i mbuf_flag_mask = _mm256_set_epi32(0, 0, 0, 1 << 13,
+						  0, 0, 0, 1 << 13);
+	__m256i desc_flag_bit =  _mm256_and_si256(mbuf_flag_mask, fdir_mask);
 
-		/* flush desc with pa dma_addr */
-		_mm_store_si128((__m128i *)&rxdp++->read, dma_addr0);
-		_mm_store_si128((__m128i *)&rxdp++->read, dma_addr1);
+	/* For static-inline function, this will be stripped out
+	 * as the desc_idx is a hard-coded constant.
+	 */
+	switch (desc_idx) {
+	case 0:
+		return _mm256_alignr_epi8(desc_flag_bit, desc_flag_bit,  4);
+	case 2:
+		return _mm256_alignr_epi8(desc_flag_bit, desc_flag_bit,  8);
+	case 4:
+		return _mm256_alignr_epi8(desc_flag_bit, desc_flag_bit, 12);
+	case 6:
+		return desc_flag_bit;
+	default:
+		break;
 	}
-#else
-	struct rte_mbuf *mb0, *mb1, *mb2, *mb3;
-	__m256i dma_addr0_1, dma_addr2_3;
-	__m256i hdr_room = _mm256_set1_epi64x(RTE_PKTMBUF_HEADROOM);
-	/* Initialize the mbufs in vector, process 4 mbufs in one loop */
-	for (i = 0; i < RTE_I40E_RXQ_REARM_THRESH;
-			i += 4, rxep += 4, rxdp += 4) {
-		__m128i vaddr0, vaddr1, vaddr2, vaddr3;
-		__m256i vaddr0_1, vaddr2_3;
 
-		mb0 = rxep[0].mbuf;
-		mb1 = rxep[1].mbuf;
-		mb2 = rxep[2].mbuf;
-		mb3 = rxep[3].mbuf;
-
-		/* load buf_addr(lo 64bit) and buf_physaddr(hi 64bit) */
-		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_physaddr) !=
-				offsetof(struct rte_mbuf, buf_addr) + 8);
-		vaddr0 = _mm_loadu_si128((__m128i *)&mb0->buf_addr);
-		vaddr1 = _mm_loadu_si128((__m128i *)&mb1->buf_addr);
-		vaddr2 = _mm_loadu_si128((__m128i *)&mb2->buf_addr);
-		vaddr3 = _mm_loadu_si128((__m128i *)&mb3->buf_addr);
-
-		/*
-		 * merge 0 & 1, by casting 0 to 256-bit and inserting 1
-		 * into the high lanes. Similarly for 2 & 3
-		 */
-		vaddr0_1 = _mm256_inserti128_si256(
-				_mm256_castsi128_si256(vaddr0), vaddr1, 1);
-		vaddr2_3 = _mm256_inserti128_si256(
-				_mm256_castsi128_si256(vaddr2), vaddr3, 1);
-
-		/* convert pa to dma_addr hdr/data */
-		dma_addr0_1 = _mm256_unpackhi_epi64(vaddr0_1, vaddr0_1);
-		dma_addr2_3 = _mm256_unpackhi_epi64(vaddr2_3, vaddr2_3);
-
-		/* add headroom to pa values */
-		dma_addr0_1 = _mm256_add_epi64(dma_addr0_1, hdr_room);
-		dma_addr2_3 = _mm256_add_epi64(dma_addr2_3, hdr_room);
-
-		/* flush desc with pa dma_addr */
-		_mm256_store_si256((__m256i *)&rxdp->read, dma_addr0_1);
-		_mm256_store_si256((__m256i *)&(rxdp + 2)->read, dma_addr2_3);
-	}
-
-#endif
-
-	rxq->rxrearm_start += RTE_I40E_RXQ_REARM_THRESH;
-	if (rxq->rxrearm_start >= rxq->nb_rx_desc)
-		rxq->rxrearm_start = 0;
-
-	rxq->rxrearm_nb -= RTE_I40E_RXQ_REARM_THRESH;
-
-	rx_id = (uint16_t)((rxq->rxrearm_start == 0) ?
-			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
-
-	/* Update the tail pointer on the NIC */
-	I40E_PCI_REG_WRITE(rxq->qrx_tail, rx_id);
+	/* NOT REACHED, see above switch returns */
+	return _mm256_setzero_si256();
 }
+#endif /* RTE_LIBRTE_I40E_16BYTE_RX_DESC */
 
 #define PKTLEN_SHIFT     10
 
-static inline uint16_t
+/* Force inline as some compilers will not inline by default. */
+static __rte_always_inline uint16_t
 _recv_raw_pkts_vec_avx2(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts, uint8_t *split_packet)
 {
@@ -269,8 +209,8 @@ _recv_raw_pkts_vec_avx2(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	 * destination
 	 */
 	const __m256i vlan_flags_shuf = _mm256_set_epi32(
-			0, 0, PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED, 0,
-			0, 0, PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED, 0);
+			0, 0, RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED, 0,
+			0, 0, RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED, 0);
 	/*
 	 * data to be shuffled by result of flag mask, shifted down 11.
 	 * If RSS/FDIR bits are set, shuffle moves appropriate flags in
@@ -278,11 +218,11 @@ _recv_raw_pkts_vec_avx2(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	 */
 	const __m256i rss_flags_shuf = _mm256_set_epi8(
 			0, 0, 0, 0, 0, 0, 0, 0,
-			PKT_RX_RSS_HASH | PKT_RX_FDIR, PKT_RX_RSS_HASH, 0, 0,
-			0, 0, PKT_RX_FDIR, 0, /* end up 128-bits */
+			RTE_MBUF_F_RX_RSS_HASH | RTE_MBUF_F_RX_FDIR, RTE_MBUF_F_RX_RSS_HASH, 0, 0,
+			0, 0, RTE_MBUF_F_RX_FDIR, 0, /* end up 128-bits */
 			0, 0, 0, 0, 0, 0, 0, 0,
-			PKT_RX_RSS_HASH | PKT_RX_FDIR, PKT_RX_RSS_HASH, 0, 0,
-			0, 0, PKT_RX_FDIR, 0);
+			RTE_MBUF_F_RX_RSS_HASH | RTE_MBUF_F_RX_FDIR, RTE_MBUF_F_RX_RSS_HASH, 0, 0,
+			0, 0, RTE_MBUF_F_RX_FDIR, 0);
 
 	/*
 	 * data to be shuffled by the result of the flags mask shifted by 22
@@ -290,29 +230,37 @@ _recv_raw_pkts_vec_avx2(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	 */
 	const __m256i l3_l4_flags_shuf = _mm256_set_epi8(0, 0, 0, 0, 0, 0, 0, 0,
 			/* shift right 1 bit to make sure it not exceed 255 */
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_EIP_CKSUM_BAD) >> 1,
-			(PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD) >> 1,
-			PKT_RX_IP_CKSUM_BAD >> 1,
-			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD) >> 1,
+			(RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD  |
+			 RTE_MBUF_F_RX_IP_CKSUM_BAD) >> 1,
+			(RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD  |
+			 RTE_MBUF_F_RX_IP_CKSUM_GOOD) >> 1,
+			(RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_GOOD |
+			 RTE_MBUF_F_RX_IP_CKSUM_BAD) >> 1,
+			(RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_GOOD |
+			 RTE_MBUF_F_RX_IP_CKSUM_GOOD) >> 1,
+			(RTE_MBUF_F_RX_L4_CKSUM_BAD  | RTE_MBUF_F_RX_IP_CKSUM_BAD) >> 1,
+			(RTE_MBUF_F_RX_L4_CKSUM_BAD  | RTE_MBUF_F_RX_IP_CKSUM_GOOD) >> 1,
+			(RTE_MBUF_F_RX_L4_CKSUM_GOOD | RTE_MBUF_F_RX_IP_CKSUM_BAD) >> 1,
+			(RTE_MBUF_F_RX_L4_CKSUM_GOOD | RTE_MBUF_F_RX_IP_CKSUM_GOOD) >> 1,
 			/* second 128-bits */
 			0, 0, 0, 0, 0, 0, 0, 0,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_EIP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD) >> 1,
-			(PKT_RX_EIP_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_EIP_CKSUM_BAD) >> 1,
-			(PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD) >> 1,
-			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD) >> 1,
-			PKT_RX_IP_CKSUM_BAD >> 1,
-			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD) >> 1);
+			(RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD  |
+			 RTE_MBUF_F_RX_IP_CKSUM_BAD) >> 1,
+			(RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD  |
+			 RTE_MBUF_F_RX_IP_CKSUM_GOOD) >> 1,
+			(RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_GOOD |
+			 RTE_MBUF_F_RX_IP_CKSUM_BAD) >> 1,
+			(RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_GOOD |
+			 RTE_MBUF_F_RX_IP_CKSUM_GOOD) >> 1,
+			(RTE_MBUF_F_RX_L4_CKSUM_BAD  | RTE_MBUF_F_RX_IP_CKSUM_BAD) >> 1,
+			(RTE_MBUF_F_RX_L4_CKSUM_BAD  | RTE_MBUF_F_RX_IP_CKSUM_GOOD) >> 1,
+			(RTE_MBUF_F_RX_L4_CKSUM_GOOD | RTE_MBUF_F_RX_IP_CKSUM_BAD) >> 1,
+			(RTE_MBUF_F_RX_L4_CKSUM_GOOD | RTE_MBUF_F_RX_IP_CKSUM_GOOD) >> 1);
 
 	const __m256i cksum_mask = _mm256_set1_epi32(
-			PKT_RX_IP_CKSUM_GOOD | PKT_RX_IP_CKSUM_BAD |
-			PKT_RX_L4_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD |
-			PKT_RX_EIP_CKSUM_BAD);
+			RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_IP_CKSUM_BAD |
+			RTE_MBUF_F_RX_L4_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_BAD |
+			RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD);
 
 	RTE_SET_USED(avx_aligned); /* for 32B descriptors we don't use this */
 
@@ -448,8 +396,10 @@ _recv_raw_pkts_vec_avx2(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* set vlan and rss flags */
 		const __m256i vlan_flags = _mm256_shuffle_epi8(
 				vlan_flags_shuf, flag_bits);
-		const __m256i rss_flags = _mm256_shuffle_epi8(
-				rss_flags_shuf, _mm256_srli_epi32(flag_bits, 11));
+		const __m256i rss_fdir_bits = _mm256_srli_epi32(flag_bits, 11);
+		const __m256i rss_flags = _mm256_shuffle_epi8(rss_flags_shuf,
+							      rss_fdir_bits);
+
 		/*
 		 * l3_l4_error flags, shuffle, then shift to correct adjustment
 		 * of flags in flags_shuf, and finally mask out extra bits
@@ -460,8 +410,110 @@ _recv_raw_pkts_vec_avx2(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		l3_l4_flags = _mm256_and_si256(l3_l4_flags, cksum_mask);
 
 		/* merge flags */
-		const __m256i mbuf_flags = _mm256_or_si256(l3_l4_flags,
+		__m256i mbuf_flags = _mm256_or_si256(l3_l4_flags,
 				_mm256_or_si256(rss_flags, vlan_flags));
+
+		/* If the rxq has FDIR enabled, read and process the FDIR info
+		 * from the descriptor. This can cause more loads/stores, so is
+		 * not always performed. Branch over the code when not enabled.
+		 */
+		if (rxq->fdir_enabled) {
+#ifdef RTE_LIBRTE_I40E_16BYTE_RX_DESC
+			/* 16B descriptor code path:
+			 * RSS and FDIR ID use the same offset in the desc, so
+			 * only one can be present at a time. The code below
+			 * identifies an FDIR ID match, and zeros the RSS value
+			 * in the mbuf on FDIR match to keep mbuf data clean.
+			 */
+#define FDIR_BLEND_MASK ((1 << 3) | (1 << 7))
+
+			/* Flags:
+			 * - Take flags, shift bits to null out
+			 * - CMPEQ with known FDIR ID, to get 0xFFFF or 0 mask
+			 * - Strip bits from mask, leaving 0 or 1 for FDIR ID
+			 * - Merge with mbuf_flags
+			 */
+			/* FLM = 1, FLTSTAT = 0b01, (FLM | FLTSTAT) == 3.
+			 * Shift left by 28 to avoid having to mask.
+			 */
+			const __m256i fdir = _mm256_slli_epi32(rss_fdir_bits, 28);
+			const __m256i fdir_id = _mm256_set1_epi32(3 << 28);
+
+			/* As above, the fdir_mask to packet mapping is this:
+			 * order (hi->lo): [1, 3, 5, 7, 0, 2, 4, 6]
+			 * Then OR FDIR flags to mbuf_flags on FDIR ID hit.
+			 */
+			RTE_BUILD_BUG_ON(RTE_MBUF_F_RX_FDIR_ID != (1 << 13));
+			const __m256i pkt_fdir_bit = _mm256_set1_epi32(1 << 13);
+			const __m256i fdir_mask = _mm256_cmpeq_epi32(fdir, fdir_id);
+			__m256i fdir_bits = _mm256_and_si256(fdir_mask, pkt_fdir_bit);
+			mbuf_flags = _mm256_or_si256(mbuf_flags, fdir_bits);
+
+			/* Based on FDIR_MASK, clear the RSS or FDIR value.
+			 * The FDIR ID value is masked to zero if not a hit,
+			 * otherwise the mb0_1 register RSS field is zeroed.
+			 */
+			const __m256i fdir_zero_mask = _mm256_setzero_si256();
+			__m256i tmp0_1 = _mm256_blend_epi32(fdir_zero_mask,
+						fdir_mask, FDIR_BLEND_MASK);
+			__m256i fdir_mb0_1 = _mm256_and_si256(mb0_1, fdir_mask);
+			mb0_1 = _mm256_andnot_si256(tmp0_1, mb0_1);
+
+			/* Write to mbuf: no stores to combine with, so just a
+			 * scalar store to push data here.
+			 */
+			rx_pkts[i + 0]->hash.fdir.hi = _mm256_extract_epi32(fdir_mb0_1, 3);
+			rx_pkts[i + 1]->hash.fdir.hi = _mm256_extract_epi32(fdir_mb0_1, 7);
+
+			/* Same as above, only shift the fdir_mask to align
+			 * the packet FDIR mask with the FDIR_ID desc lane.
+			 */
+			__m256i tmp2_3 = _mm256_alignr_epi8(fdir_mask, fdir_mask, 12);
+			__m256i fdir_mb2_3 = _mm256_and_si256(mb2_3, tmp2_3);
+			tmp2_3 = _mm256_blend_epi32(fdir_zero_mask, tmp2_3,
+						    FDIR_BLEND_MASK);
+			mb2_3 = _mm256_andnot_si256(tmp2_3, mb2_3);
+			rx_pkts[i + 2]->hash.fdir.hi = _mm256_extract_epi32(fdir_mb2_3, 3);
+			rx_pkts[i + 3]->hash.fdir.hi = _mm256_extract_epi32(fdir_mb2_3, 7);
+
+			__m256i tmp4_5 = _mm256_alignr_epi8(fdir_mask, fdir_mask, 8);
+			__m256i fdir_mb4_5 = _mm256_and_si256(mb4_5, tmp4_5);
+			tmp4_5 = _mm256_blend_epi32(fdir_zero_mask, tmp4_5,
+						    FDIR_BLEND_MASK);
+			mb4_5 = _mm256_andnot_si256(tmp4_5, mb4_5);
+			rx_pkts[i + 4]->hash.fdir.hi = _mm256_extract_epi32(fdir_mb4_5, 3);
+			rx_pkts[i + 5]->hash.fdir.hi = _mm256_extract_epi32(fdir_mb4_5, 7);
+
+			__m256i tmp6_7 = _mm256_alignr_epi8(fdir_mask, fdir_mask, 4);
+			__m256i fdir_mb6_7 = _mm256_and_si256(mb6_7, tmp6_7);
+			tmp6_7 = _mm256_blend_epi32(fdir_zero_mask, tmp6_7,
+						    FDIR_BLEND_MASK);
+			mb6_7 = _mm256_andnot_si256(tmp6_7, mb6_7);
+			rx_pkts[i + 6]->hash.fdir.hi = _mm256_extract_epi32(fdir_mb6_7, 3);
+			rx_pkts[i + 7]->hash.fdir.hi = _mm256_extract_epi32(fdir_mb6_7, 7);
+
+			/* End of 16B descriptor handling */
+#else
+			/* 32B descriptor FDIR ID mark handling. Returns bits
+			 * to be OR-ed into the mbuf olflags.
+			 */
+			__m256i fdir_add_flags;
+			fdir_add_flags = desc_fdir_processing_32b(rxdp, rx_pkts, i, 0);
+			mbuf_flags = _mm256_or_si256(mbuf_flags, fdir_add_flags);
+
+			fdir_add_flags = desc_fdir_processing_32b(rxdp, rx_pkts, i, 2);
+			mbuf_flags = _mm256_or_si256(mbuf_flags, fdir_add_flags);
+
+			fdir_add_flags = desc_fdir_processing_32b(rxdp, rx_pkts, i, 4);
+			mbuf_flags = _mm256_or_si256(mbuf_flags, fdir_add_flags);
+
+			fdir_add_flags = desc_fdir_processing_32b(rxdp, rx_pkts, i, 6);
+			mbuf_flags = _mm256_or_si256(mbuf_flags, fdir_add_flags);
+			/* End 32B desc handling */
+#endif /* RTE_LIBRTE_I40E_16BYTE_RX_DESC */
+
+		} /* if() on FDIR enabled */
+
 		/*
 		 * At this point, we have the 8 sets of flags in the low 16-bits
 		 * of each 32-bit value in vlan0.
@@ -619,6 +671,7 @@ i40e_recv_scattered_burst_vec_avx2(void *rx_queue, struct rte_mbuf **rx_pkts,
 			i++;
 		if (i == nb_bufs)
 			return nb_bufs;
+		rxq->pkt_first_seg = rx_pkts[i];
 	}
 	return i + reassemble_packets(rxq, &rx_pkts[i], nb_bufs - i,
 		&split_flags[i]);
@@ -657,7 +710,7 @@ vtx1(volatile struct i40e_tx_desc *txdp,
 			((uint64_t)pkt->data_len << I40E_TXD_QW1_TX_BUF_SZ_SHIFT));
 
 	__m128i descriptor = _mm_set_epi64x(high_qw,
-				pkt->buf_physaddr + pkt->data_off);
+				pkt->buf_iova + pkt->data_off);
 	_mm_store_si128((__m128i *)txdp, descriptor);
 }
 
@@ -686,11 +739,11 @@ vtx(volatile struct i40e_tx_desc *txdp,
 				((uint64_t)pkt[0]->data_len << I40E_TXD_QW1_TX_BUF_SZ_SHIFT);
 
 		__m256i desc2_3 = _mm256_set_epi64x(
-				hi_qw3, pkt[3]->buf_physaddr + pkt[3]->data_off,
-				hi_qw2, pkt[2]->buf_physaddr + pkt[2]->data_off);
+				hi_qw3, pkt[3]->buf_iova + pkt[3]->data_off,
+				hi_qw2, pkt[2]->buf_iova + pkt[2]->data_off);
 		__m256i desc0_1 = _mm256_set_epi64x(
-				hi_qw1, pkt[1]->buf_physaddr + pkt[1]->data_off,
-				hi_qw0, pkt[0]->buf_physaddr + pkt[0]->data_off);
+				hi_qw1, pkt[1]->buf_iova + pkt[1]->data_off,
+				hi_qw0, pkt[0]->buf_iova + pkt[0]->data_off);
 		_mm256_store_si256((void *)(txdp + 2), desc2_3);
 		_mm256_store_si256((void *)txdp, desc0_1);
 	}
@@ -712,9 +765,6 @@ i40e_xmit_fixed_burst_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint16_t n, nb_commit, tx_id;
 	uint64_t flags = I40E_TD_CMD;
 	uint64_t rs = I40E_TX_DESC_CMD_RS | I40E_TD_CMD;
-
-	/* cross rx_thresh boundary is not allowed */
-	nb_pkts = RTE_MIN(nb_pkts, txq->tx_rs_thresh);
 
 	if (txq->nb_tx_free < txq->tx_free_thresh)
 		i40e_tx_free_bufs(txq);
@@ -764,7 +814,7 @@ i40e_xmit_fixed_burst_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	txq->tx_tail = tx_id;
 
-	I40E_PCI_REG_WRITE(txq->qtx_tail, txq->tx_tail);
+	I40E_PCI_REG_WC_WRITE(txq->qtx_tail, txq->tx_tail);
 
 	return nb_pkts;
 }
@@ -779,6 +829,7 @@ i40e_xmit_pkts_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
 	while (nb_pkts) {
 		uint16_t ret, num;
 
+		/* cross rs_thresh boundary is not allowed */
 		num = (uint16_t)RTE_MIN(nb_pkts, txq->tx_rs_thresh);
 		ret = i40e_xmit_fixed_burst_vec_avx2(tx_queue, &tx_pkts[nb_tx],
 						num);

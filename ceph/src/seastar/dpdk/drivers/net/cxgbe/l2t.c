@@ -14,15 +14,16 @@
  */
 void cxgbe_l2t_release(struct l2t_entry *e)
 {
-	if (rte_atomic32_read(&e->refcnt) != 0)
-		rte_atomic32_dec(&e->refcnt);
+	if (__atomic_load_n(&e->refcnt, __ATOMIC_RELAXED) != 0)
+		__atomic_fetch_sub(&e->refcnt, 1, __ATOMIC_RELAXED);
 }
 
 /**
  * Process a CPL_L2T_WRITE_RPL. Note that the TID in the reply is really
  * the L2T index it refers to.
  */
-void do_l2t_write_rpl(struct adapter *adap, const struct cpl_l2t_write_rpl *rpl)
+void cxgbe_do_l2t_write_rpl(struct adapter *adap,
+			    const struct cpl_l2t_write_rpl *rpl)
 {
 	struct l2t_data *d = adap->l2t;
 	unsigned int tid = GET_TID(rpl);
@@ -81,10 +82,10 @@ static int write_l2e(struct rte_eth_dev *dev, struct l2t_entry *e, int sync,
 				  V_L2T_W_NOREPLY(!sync));
 	req->l2t_idx = cpu_to_be16(l2t_idx);
 	req->vlan = cpu_to_be16(e->vlan);
-	rte_memcpy(req->dst_mac, e->dmac, ETHER_ADDR_LEN);
+	rte_memcpy(req->dst_mac, e->dmac, RTE_ETHER_ADDR_LEN);
 
 	if (loopback)
-		memset(req->dst_mac, 0, ETHER_ADDR_LEN);
+		memset(req->dst_mac, 0, RTE_ETHER_ADDR_LEN);
 
 	t4_mgmt_tx(ctrlq, mbuf);
 
@@ -111,12 +112,12 @@ static struct l2t_entry *find_or_alloc_l2e(struct l2t_data *d, u16 vlan,
 	struct l2t_entry *first_free = NULL;
 
 	for (e = &d->l2tab[0], end = &d->l2tab[d->l2t_size]; e != end; ++e) {
-		if (rte_atomic32_read(&e->refcnt) == 0) {
+		if (__atomic_load_n(&e->refcnt, __ATOMIC_RELAXED) == 0) {
 			if (!first_free)
 				first_free = e;
 		} else {
 			if (e->state == L2T_STATE_SWITCHING) {
-				if ((!memcmp(e->dmac, dmac, ETHER_ADDR_LEN)) &&
+				if ((!memcmp(e->dmac, dmac, RTE_ETHER_ADDR_LEN)) &&
 				    e->vlan == vlan && e->lport == port)
 					goto exists;
 			}
@@ -150,18 +151,18 @@ static struct l2t_entry *t4_l2t_alloc_switching(struct rte_eth_dev *dev,
 	e = find_or_alloc_l2e(d, vlan, port, eth_addr);
 	if (e) {
 		t4_os_lock(&e->lock);
-		if (!rte_atomic32_read(&e->refcnt)) {
+		if (__atomic_load_n(&e->refcnt, __ATOMIC_RELAXED) == 0) {
 			e->state = L2T_STATE_SWITCHING;
 			e->vlan = vlan;
 			e->lport = port;
-			rte_memcpy(e->dmac, eth_addr, ETHER_ADDR_LEN);
-			rte_atomic32_set(&e->refcnt, 1);
+			rte_memcpy(e->dmac, eth_addr, RTE_ETHER_ADDR_LEN);
+			__atomic_store_n(&e->refcnt, 1, __ATOMIC_RELAXED);
 			ret = write_l2e(dev, e, 0, !L2T_LPBK, !L2T_ARPMISS);
 			if (ret < 0)
 				dev_debug(adap, "Failed to write L2T entry: %d",
 					  ret);
 		} else {
-			rte_atomic32_inc(&e->refcnt);
+			__atomic_fetch_add(&e->refcnt, 1, __ATOMIC_RELAXED);
 		}
 		t4_os_unlock(&e->lock);
 	}
@@ -212,7 +213,7 @@ struct l2t_data *t4_init_l2t(unsigned int l2t_start, unsigned int l2t_end)
 		d->l2tab[i].idx = i;
 		d->l2tab[i].state = L2T_STATE_UNUSED;
 		t4_os_lock_init(&d->l2tab[i].lock);
-		rte_atomic32_set(&d->l2tab[i].refcnt, 0);
+		d->l2tab[i].refcnt = 0;
 	}
 
 	return d;

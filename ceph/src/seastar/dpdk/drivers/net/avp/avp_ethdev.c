@@ -8,21 +8,21 @@
 #include <errno.h>
 #include <unistd.h>
 
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_ether.h>
 #include <rte_common.h>
 #include <rte_cycles.h>
 #include <rte_spinlock.h>
 #include <rte_byteorder.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
 #include <rte_io.h>
@@ -32,21 +32,19 @@
 
 #include "avp_logs.h"
 
-int avp_logtype_driver;
-
 static int avp_dev_create(struct rte_pci_device *pci_dev,
 			  struct rte_eth_dev *eth_dev);
 
 static int avp_dev_configure(struct rte_eth_dev *dev);
 static int avp_dev_start(struct rte_eth_dev *dev);
-static void avp_dev_stop(struct rte_eth_dev *dev);
-static void avp_dev_close(struct rte_eth_dev *dev);
-static void avp_dev_info_get(struct rte_eth_dev *dev,
-			     struct rte_eth_dev_info *dev_info);
+static int avp_dev_stop(struct rte_eth_dev *dev);
+static int avp_dev_close(struct rte_eth_dev *dev);
+static int avp_dev_info_get(struct rte_eth_dev *dev,
+			    struct rte_eth_dev_info *dev_info);
 static int avp_vlan_offload_set(struct rte_eth_dev *dev, int mask);
 static int avp_dev_link_update(struct rte_eth_dev *dev, int wait_to_complete);
-static void avp_dev_promiscuous_enable(struct rte_eth_dev *dev);
-static void avp_dev_promiscuous_disable(struct rte_eth_dev *dev);
+static int avp_dev_promiscuous_enable(struct rte_eth_dev *dev);
+static int avp_dev_promiscuous_disable(struct rte_eth_dev *dev);
 
 static int avp_dev_rx_queue_setup(struct rte_eth_dev *dev,
 				  uint16_t rx_queue_id,
@@ -77,18 +75,18 @@ static uint16_t avp_xmit_pkts(void *tx_queue,
 			      struct rte_mbuf **tx_pkts,
 			      uint16_t nb_pkts);
 
-static void avp_dev_rx_queue_release(void *rxq);
-static void avp_dev_tx_queue_release(void *txq);
+static void avp_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+static void avp_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 static int avp_dev_stats_get(struct rte_eth_dev *dev,
 			      struct rte_eth_stats *stats);
-static void avp_dev_stats_reset(struct rte_eth_dev *dev);
+static int avp_dev_stats_reset(struct rte_eth_dev *dev);
 
 
 #define AVP_MAX_RX_BURST 64
 #define AVP_MAX_TX_BURST 64
 #define AVP_MAX_MAC_ADDRS 1
-#define AVP_MIN_RX_BUFSIZE ETHER_MIN_LEN
+#define AVP_MIN_RX_BUFSIZE RTE_ETHER_MIN_LEN
 
 
 /*
@@ -159,7 +157,7 @@ static const struct eth_dev_ops avp_eth_dev_ops = {
 struct avp_dev {
 	uint32_t magic; /**< Memory validation marker */
 	uint64_t device_id; /**< Unique system identifier */
-	struct ether_addr ethaddr; /**< Host specified MAC address */
+	struct rte_ether_addr ethaddr; /**< Host specified MAC address */
 	struct rte_eth_dev_data *dev_data;
 	/**< Back pointer to ethernet device data */
 	volatile uint32_t flags; /**< Device operational flags */
@@ -269,7 +267,7 @@ avp_dev_process_request(struct avp_dev *avp, struct rte_avp_request *request)
 			break;
 		}
 
-		if ((count < 1) && (retry == 0)) {
+		if (retry == 0) {
 			PMD_DRV_LOG(ERR, "Timeout while waiting for a response for %u\n",
 				    request->req_id);
 			ret = -ETIME;
@@ -713,7 +711,7 @@ avp_dev_interrupt_handler(void *data)
 			    status);
 
 	/* re-enable UIO interrupt handling */
-	ret = rte_intr_enable(&pci_dev->intr_handle);
+	ret = rte_intr_ack(pci_dev->intr_handle);
 	if (ret < 0) {
 		PMD_DRV_LOG(ERR, "Failed to re-enable UIO interrupts, ret=%d\n",
 			    ret);
@@ -732,7 +730,7 @@ avp_dev_enable_interrupts(struct rte_eth_dev *eth_dev)
 		return -EINVAL;
 
 	/* enable UIO interrupt handling */
-	ret = rte_intr_enable(&pci_dev->intr_handle);
+	ret = rte_intr_enable(pci_dev->intr_handle);
 	if (ret < 0) {
 		PMD_DRV_LOG(ERR, "Failed to enable UIO interrupts, ret=%d\n",
 			    ret);
@@ -761,7 +759,7 @@ avp_dev_disable_interrupts(struct rte_eth_dev *eth_dev)
 		    RTE_PTR_ADD(registers, RTE_AVP_INTERRUPT_MASK_OFFSET));
 
 	/* enable UIO interrupt handling */
-	ret = rte_intr_disable(&pci_dev->intr_handle);
+	ret = rte_intr_disable(pci_dev->intr_handle);
 	if (ret < 0) {
 		PMD_DRV_LOG(ERR, "Failed to disable UIO interrupts, ret=%d\n",
 			    ret);
@@ -778,7 +776,7 @@ avp_dev_setup_interrupts(struct rte_eth_dev *eth_dev)
 	int ret;
 
 	/* register a callback handler with UIO for interrupt notifications */
-	ret = rte_intr_callback_register(&pci_dev->intr_handle,
+	ret = rte_intr_callback_register(pci_dev->intr_handle,
 					 avp_dev_interrupt_handler,
 					 (void *)eth_dev);
 	if (ret < 0) {
@@ -867,7 +865,7 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 		avp->host_features = host_info->features;
 		rte_spinlock_init(&avp->lock);
 		memcpy(&avp->ethaddr.addr_bytes[0],
-		       host_info->ethaddr, ETHER_ADDR_LEN);
+		       host_info->ethaddr, RTE_ETHER_ADDR_LEN);
 		/* adjust max values to not exceed our max */
 		avp->max_tx_queues =
 			RTE_MIN(host_info->max_tx_queues, RTE_AVP_MAX_QUEUES);
@@ -976,6 +974,7 @@ eth_avp_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	/* Check current migration status */
 	if (avp_dev_migration_pending(eth_dev)) {
@@ -1006,15 +1005,16 @@ eth_avp_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	/* Allocate memory for storing MAC addresses */
-	eth_dev->data->mac_addrs = rte_zmalloc("avp_ethdev", ETHER_ADDR_LEN, 0);
+	eth_dev->data->mac_addrs = rte_zmalloc("avp_ethdev",
+					RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL) {
 		PMD_DRV_LOG(ERR, "Failed to allocate %d bytes needed to store MAC addresses\n",
-			    ETHER_ADDR_LEN);
+			    RTE_ETHER_ADDR_LEN);
 		return -ENOMEM;
 	}
 
 	/* Get a mac from device config */
-	ether_addr_copy(&avp->ethaddr, &eth_dev->data->mac_addrs[0]);
+	rte_ether_addr_copy(&avp->ethaddr, &eth_dev->data->mac_addrs[0]);
 
 	return 0;
 }
@@ -1022,19 +1022,13 @@ eth_avp_dev_init(struct rte_eth_dev *eth_dev)
 static int
 eth_avp_dev_uninit(struct rte_eth_dev *eth_dev)
 {
-	int ret;
-
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return -EPERM;
 
 	if (eth_dev->data == NULL)
 		return 0;
 
-	ret = avp_dev_disable_interrupts(eth_dev);
-	if (ret != 0) {
-		PMD_DRV_LOG(ERR, "Failed to disable interrupts, ret=%d\n", ret);
-		return ret;
-	}
+	avp_dev_close(eth_dev);
 
 	return 0;
 }
@@ -1065,17 +1059,18 @@ static int
 avp_dev_enable_scattered(struct rte_eth_dev *eth_dev,
 			 struct avp_dev *avp)
 {
-	unsigned int max_rx_pkt_len;
+	unsigned int max_rx_pktlen;
 
-	max_rx_pkt_len = eth_dev->data->dev_conf.rxmode.max_rx_pkt_len;
+	max_rx_pktlen = eth_dev->data->mtu + RTE_ETHER_HDR_LEN +
+		RTE_ETHER_CRC_LEN;
 
-	if ((max_rx_pkt_len > avp->guest_mbuf_size) ||
-	    (max_rx_pkt_len > avp->host_mbuf_size)) {
+	if (max_rx_pktlen > avp->guest_mbuf_size ||
+	    max_rx_pktlen > avp->host_mbuf_size) {
 		/*
 		 * If the guest MTU is greater than either the host or guest
 		 * buffers then chained mbufs have to be enabled in the TX
 		 * direction.  It is assumed that the application will not need
-		 * to send packets larger than their max_rx_pkt_len (MRU).
+		 * to send packets larger than their MTU.
 		 */
 		return 1;
 	}
@@ -1130,7 +1125,7 @@ avp_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 
 	PMD_DRV_LOG(DEBUG, "AVP max_rx_pkt_len=(%u,%u) mbuf_size=(%u,%u)\n",
 		    avp->max_rx_pkt_len,
-		    eth_dev->data->dev_conf.rxmode.max_rx_pkt_len,
+		    eth_dev->data->mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN,
 		    avp->host_mbuf_size,
 		    avp->guest_mbuf_size);
 
@@ -1199,7 +1194,7 @@ avp_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 }
 
 static inline int
-_avp_cmp_ether_addr(struct ether_addr *a, struct ether_addr *b)
+_avp_cmp_ether_addr(struct rte_ether_addr *a, struct rte_ether_addr *b)
 {
 	uint16_t *_a = (uint16_t *)&a->addr_bytes[0];
 	uint16_t *_b = (uint16_t *)&b->addr_bytes[0];
@@ -1209,19 +1204,19 @@ _avp_cmp_ether_addr(struct ether_addr *a, struct ether_addr *b)
 static inline int
 _avp_mac_filter(struct avp_dev *avp, struct rte_mbuf *m)
 {
-	struct ether_hdr *eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
-	if (likely(_avp_cmp_ether_addr(&avp->ethaddr, &eth->d_addr) == 0)) {
+	if (likely(_avp_cmp_ether_addr(&avp->ethaddr, &eth->dst_addr) == 0)) {
 		/* allow all packets destined to our address */
 		return 0;
 	}
 
-	if (likely(is_broadcast_ether_addr(&eth->d_addr))) {
+	if (likely(rte_is_broadcast_ether_addr(&eth->dst_addr))) {
 		/* allow all broadcast packets */
 		return 0;
 	}
 
-	if (likely(is_multicast_ether_addr(&eth->d_addr))) {
+	if (likely(rte_is_multicast_ether_addr(&eth->dst_addr))) {
 		/* allow all multicast packets */
 		return 0;
 	}
@@ -1316,7 +1311,7 @@ avp_dev_copy_from_buffers(struct avp_dev *avp,
 	src_offset = 0;
 
 	if (pkt_buf->ol_flags & RTE_AVP_RX_VLAN_PKT) {
-		ol_flags = PKT_RX_VLAN;
+		ol_flags = RTE_MBUF_F_RX_VLAN;
 		vlan_tci = pkt_buf->vlan_tci;
 	} else {
 		ol_flags = 0;
@@ -1574,7 +1569,7 @@ avp_recv_pkts(void *rx_queue,
 		m->port = avp->port_id;
 
 		if (pkt_buf->ol_flags & RTE_AVP_RX_VLAN_PKT) {
-			m->ol_flags = PKT_RX_VLAN;
+			m->ol_flags = RTE_MBUF_F_RX_VLAN;
 			m->vlan_tci = pkt_buf->vlan_tci;
 		}
 
@@ -1680,7 +1675,7 @@ avp_dev_copy_to_buffers(struct avp_dev *avp,
 	first_buf->nb_segs = count;
 	first_buf->pkt_len = total_length;
 
-	if (mbuf->ol_flags & PKT_TX_VLAN_PKT) {
+	if (mbuf->ol_flags & RTE_MBUF_F_TX_VLAN) {
 		first_buf->ol_flags |= RTE_AVP_TX_VLAN_PKT;
 		first_buf->vlan_tci = mbuf->vlan_tci;
 	}
@@ -1697,7 +1692,7 @@ avp_xmit_scattered_pkts(void *tx_queue,
 			uint16_t nb_pkts)
 {
 	struct rte_avp_desc *avp_bufs[(AVP_MAX_TX_BURST *
-				       RTE_AVP_MAX_MBUF_SEGMENTS)];
+				       RTE_AVP_MAX_MBUF_SEGMENTS)] = {};
 	struct avp_queue *txq = (struct avp_queue *)tx_queue;
 	struct rte_avp_desc *tx_bufs[AVP_MAX_TX_BURST];
 	struct avp_dev *avp = txq->avp;
@@ -1895,8 +1890,8 @@ avp_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			 * function; send it truncated to avoid the performance
 			 * hit of having to manage returning the already
 			 * allocated buffer to the free list.  This should not
-			 * happen since the application should have set the
-			 * max_rx_pkt_len based on its MTU and it should be
+			 * happen since the application should have not send
+			 * packages larger than its MTU and it should be
 			 * policing its own packet sizes.
 			 */
 			txq->errors++;
@@ -1911,7 +1906,7 @@ avp_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		pkt_buf->nb_segs = 1;
 		pkt_buf->next = NULL;
 
-		if (m->ol_flags & PKT_TX_VLAN_PKT) {
+		if (m->ol_flags & RTE_MBUF_F_TX_VLAN) {
 			pkt_buf->ol_flags |= RTE_AVP_TX_VLAN_PKT;
 			pkt_buf->vlan_tci = m->vlan_tci;
 		}
@@ -1932,30 +1927,50 @@ avp_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 }
 
 static void
-avp_dev_rx_queue_release(void *rx_queue)
+avp_dev_rx_queue_release(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 {
-	struct avp_queue *rxq = (struct avp_queue *)rx_queue;
-	struct avp_dev *avp = rxq->avp;
-	struct rte_eth_dev_data *data = avp->dev_data;
-	unsigned int i;
-
-	for (i = 0; i < avp->num_rx_queues; i++) {
-		if (data->rx_queues[i] == rxq)
-			data->rx_queues[i] = NULL;
+	if (eth_dev->data->rx_queues[rx_queue_id] != NULL) {
+		rte_free(eth_dev->data->rx_queues[rx_queue_id]);
+		eth_dev->data->rx_queues[rx_queue_id] = NULL;
 	}
 }
 
 static void
-avp_dev_tx_queue_release(void *tx_queue)
+avp_dev_rx_queue_release_all(struct rte_eth_dev *eth_dev)
 {
-	struct avp_queue *txq = (struct avp_queue *)tx_queue;
-	struct avp_dev *avp = txq->avp;
+	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+	struct rte_eth_dev_data *data = avp->dev_data;
+	unsigned int i;
+
+	for (i = 0; i < avp->num_rx_queues; i++) {
+		if (data->rx_queues[i]) {
+			rte_free(data->rx_queues[i]);
+			data->rx_queues[i] = NULL;
+		}
+	}
+}
+
+static void
+avp_dev_tx_queue_release(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
+{
+	if (eth_dev->data->tx_queues[tx_queue_id] != NULL) {
+		rte_free(eth_dev->data->tx_queues[tx_queue_id]);
+		eth_dev->data->tx_queues[tx_queue_id] = NULL;
+	}
+}
+
+static void
+avp_dev_tx_queue_release_all(struct rte_eth_dev *eth_dev)
+{
+	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 	struct rte_eth_dev_data *data = avp->dev_data;
 	unsigned int i;
 
 	for (i = 0; i < avp->num_tx_queues; i++) {
-		if (data->tx_queues[i] == txq)
+		if (data->tx_queues[i]) {
+			rte_free(data->tx_queues[i]);
 			data->tx_queues[i] = NULL;
+		}
 	}
 }
 
@@ -1983,9 +1998,9 @@ avp_dev_configure(struct rte_eth_dev *eth_dev)
 	/* Setup required number of queues */
 	_avp_set_queue_counts(eth_dev);
 
-	mask = (ETH_VLAN_STRIP_MASK |
-		ETH_VLAN_FILTER_MASK |
-		ETH_VLAN_EXTEND_MASK);
+	mask = (RTE_ETH_VLAN_STRIP_MASK |
+		RTE_ETH_VLAN_FILTER_MASK |
+		RTE_ETH_VLAN_EXTEND_MASK);
 	ret = avp_vlan_offload_set(eth_dev, mask);
 	if (ret < 0) {
 		PMD_DRV_LOG(ERR, "VLAN offload set failed by host, ret=%d\n",
@@ -2048,7 +2063,7 @@ unlock:
 	return ret;
 }
 
-static void
+static int
 avp_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
@@ -2057,6 +2072,7 @@ avp_dev_stop(struct rte_eth_dev *eth_dev)
 	rte_spinlock_lock(&avp->lock);
 	if (avp->flags & AVP_F_DETACHED) {
 		PMD_DRV_LOG(ERR, "Operation not supported during VM live migration\n");
+		ret = -ENOTSUP;
 		goto unlock;
 	}
 
@@ -2072,13 +2088,17 @@ avp_dev_stop(struct rte_eth_dev *eth_dev)
 
 unlock:
 	rte_spinlock_unlock(&avp->lock);
+	return ret;
 }
 
-static void
+static int
 avp_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 	int ret;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
 
 	rte_spinlock_lock(&avp->lock);
 	if (avp->flags & AVP_F_DETACHED) {
@@ -2104,8 +2124,13 @@ avp_dev_close(struct rte_eth_dev *eth_dev)
 		/* continue */
 	}
 
+	/* release dynamic storage for rx/tx queues */
+	avp_dev_rx_queue_release_all(eth_dev);
+	avp_dev_tx_queue_release_all(eth_dev);
+
 unlock:
 	rte_spinlock_unlock(&avp->lock);
+	return 0;
 }
 
 static int
@@ -2115,14 +2140,14 @@ avp_dev_link_update(struct rte_eth_dev *eth_dev,
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 	struct rte_eth_link *link = &eth_dev->data->dev_link;
 
-	link->link_speed = ETH_SPEED_NUM_10G;
-	link->link_duplex = ETH_LINK_FULL_DUPLEX;
+	link->link_speed = RTE_ETH_SPEED_NUM_10G;
+	link->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 	link->link_status = !!(avp->flags & AVP_F_LINKUP);
 
 	return -1;
 }
 
-static void
+static int
 avp_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
@@ -2134,9 +2159,11 @@ avp_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
 			    eth_dev->data->port_id);
 	}
 	rte_spinlock_unlock(&avp->lock);
+
+	return 0;
 }
 
-static void
+static int
 avp_dev_promiscuous_disable(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
@@ -2148,9 +2175,11 @@ avp_dev_promiscuous_disable(struct rte_eth_dev *eth_dev)
 			    eth_dev->data->port_id);
 	}
 	rte_spinlock_unlock(&avp->lock);
+
+	return 0;
 }
 
-static void
+static int
 avp_dev_info_get(struct rte_eth_dev *eth_dev,
 		 struct rte_eth_dev_info *dev_info)
 {
@@ -2162,9 +2191,11 @@ avp_dev_info_get(struct rte_eth_dev *eth_dev,
 	dev_info->max_rx_pktlen = avp->max_rx_pkt_len;
 	dev_info->max_mac_addrs = AVP_MAX_MAC_ADDRS;
 	if (avp->host_features & RTE_AVP_FEATURE_VLAN_OFFLOAD) {
-		dev_info->rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP;
-		dev_info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT;
+		dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+		dev_info->tx_offload_capa = RTE_ETH_TX_OFFLOAD_VLAN_INSERT;
 	}
+
+	return 0;
 }
 
 static int
@@ -2174,9 +2205,9 @@ avp_vlan_offload_set(struct rte_eth_dev *eth_dev, int mask)
 	struct rte_eth_conf *dev_conf = &eth_dev->data->dev_conf;
 	uint64_t offloads = dev_conf->rxmode.offloads;
 
-	if (mask & ETH_VLAN_STRIP_MASK) {
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
 		if (avp->host_features & RTE_AVP_FEATURE_VLAN_OFFLOAD) {
-			if (offloads & DEV_RX_OFFLOAD_VLAN_STRIP)
+			if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
 				avp->features |= RTE_AVP_FEATURE_VLAN_OFFLOAD;
 			else
 				avp->features &= ~RTE_AVP_FEATURE_VLAN_OFFLOAD;
@@ -2185,13 +2216,13 @@ avp_vlan_offload_set(struct rte_eth_dev *eth_dev, int mask)
 		}
 	}
 
-	if (mask & ETH_VLAN_FILTER_MASK) {
-		if (offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
+	if (mask & RTE_ETH_VLAN_FILTER_MASK) {
+		if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER)
 			PMD_DRV_LOG(ERR, "VLAN filter offload not supported\n");
 	}
 
-	if (mask & ETH_VLAN_EXTEND_MASK) {
-		if (offloads & DEV_RX_OFFLOAD_VLAN_EXTEND)
+	if (mask & RTE_ETH_VLAN_EXTEND_MASK) {
+		if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_EXTEND)
 			PMD_DRV_LOG(ERR, "VLAN extend offload not supported\n");
 	}
 
@@ -2228,14 +2259,13 @@ avp_dev_stats_get(struct rte_eth_dev *eth_dev, struct rte_eth_stats *stats)
 
 			stats->q_opackets[i] += txq->packets;
 			stats->q_obytes[i] += txq->bytes;
-			stats->q_errors[i] += txq->errors;
 		}
 	}
 
 	return 0;
 }
 
-static void
+static int
 avp_dev_stats_reset(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
@@ -2260,14 +2290,10 @@ avp_dev_stats_reset(struct rte_eth_dev *eth_dev)
 			txq->errors = 0;
 		}
 	}
+
+	return 0;
 }
 
 RTE_PMD_REGISTER_PCI(net_avp, rte_avp_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_avp, pci_id_avp_map);
-
-RTE_INIT(avp_init_log)
-{
-	avp_logtype_driver = rte_log_register("pmd.net.avp.driver");
-	if (avp_logtype_driver >= 0)
-		rte_log_set_level(avp_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER_SUFFIX(avp_logtype_driver, driver, NOTICE);

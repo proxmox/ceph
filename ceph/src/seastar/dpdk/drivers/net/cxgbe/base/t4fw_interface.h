@@ -248,6 +248,9 @@ struct fw_filter2_wr {
 #define S_FW_FILTER_WR_DMAC	19
 #define V_FW_FILTER_WR_DMAC(x)	((x) << S_FW_FILTER_WR_DMAC)
 
+#define S_FW_FILTER_WR_SMAC     18
+#define V_FW_FILTER_WR_SMAC(x)  ((x) << S_FW_FILTER_WR_SMAC)
+
 #define S_FW_FILTER_WR_INSVLAN		17
 #define V_FW_FILTER_WR_INSVLAN(x)	((x) << S_FW_FILTER_WR_INSVLAN)
 
@@ -624,7 +627,7 @@ struct fw_caps_config_cmd {
 	__be16 niccaps;
 	__be16 toecaps;
 	__be16 rdmacaps;
-	__be16 r4;
+	__be16 cryptocaps;
 	__be16 iscsicaps;
 	__be16 fcoecaps;
 	__be32 cfcsum;
@@ -668,6 +671,23 @@ enum fw_params_mnem {
 /*
  * device parameters
  */
+
+#define S_FW_PARAMS_PARAM_FILTER_MODE 16
+#define M_FW_PARAMS_PARAM_FILTER_MODE 0xffff
+#define V_FW_PARAMS_PARAM_FILTER_MODE(x)          \
+	((x) << S_FW_PARAMS_PARAM_FILTER_MODE)
+#define G_FW_PARAMS_PARAM_FILTER_MODE(x)          \
+	(((x) >> S_FW_PARAMS_PARAM_FILTER_MODE) & \
+	M_FW_PARAMS_PARAM_FILTER_MODE)
+
+#define S_FW_PARAMS_PARAM_FILTER_MASK 0
+#define M_FW_PARAMS_PARAM_FILTER_MASK 0xffff
+#define V_FW_PARAMS_PARAM_FILTER_MASK(x)          \
+	((x) << S_FW_PARAMS_PARAM_FILTER_MASK)
+#define G_FW_PARAMS_PARAM_FILTER_MASK(x)          \
+	(((x) >> S_FW_PARAMS_PARAM_FILTER_MASK) & \
+	M_FW_PARAMS_PARAM_FILTER_MASK)
+
 enum fw_params_param_dev {
 	FW_PARAMS_PARAM_DEV_CCLK	= 0x00, /* chip core clock in khz */
 	FW_PARAMS_PARAM_DEV_PORTVEC	= 0x01, /* the port vector */
@@ -677,8 +697,15 @@ enum fw_params_param_dev {
 						 */
 	FW_PARAMS_PARAM_DEV_FWREV	= 0x0B, /* fw version */
 	FW_PARAMS_PARAM_DEV_TPREV	= 0x0C, /* tp version */
+	FW_PARAMS_PARAM_DEV_CF		= 0x0D,
 	FW_PARAMS_PARAM_DEV_ULPTX_MEMWRITE_DSGL = 0x17,
 	FW_PARAMS_PARAM_DEV_FILTER2_WR	= 0x1D,
+	FW_PARAMS_PARAM_DEV_OPAQUE_VIID_SMT_EXTN = 0x27,
+	FW_PARAMS_PARAM_DEV_HASHFILTER_WITH_OFLD = 0x28,
+	FW_PARAMS_PARAM_DEV_FILTER      = 0x2E,
+	FW_PARAMS_PARAM_DEV_VI_ENABLE_INGRESS_AFTER_LINKUP = 0x32,
+	FW_PARAMS_PARAM_PFVF_RAWF_START = 0x36,
+	FW_PARAMS_PARAM_PFVF_RAWF_END   = 0x37,
 };
 
 /*
@@ -692,7 +719,10 @@ enum fw_params_param_pfvf {
 	FW_PARAMS_PARAM_PFVF_L2T_START = 0x13,
 	FW_PARAMS_PARAM_PFVF_L2T_END = 0x14,
 	FW_PARAMS_PARAM_PFVF_CPLFW4MSG_ENCAP = 0x31,
-	FW_PARAMS_PARAM_PFVF_PORT_CAPS32 = 0x3A
+	FW_PARAMS_PARAM_PFVF_PORT_CAPS32 = 0x3A,
+	FW_PARAMS_PARAM_PFVF_MAX_PKTS_PER_ETH_TX_PKTS_WR = 0x3D,
+	FW_PARAMS_PARAM_PFVF_GET_SMT_START = 0x3E,
+	FW_PARAMS_PARAM_PFVF_GET_SMT_SIZE = 0x3F,
 };
 
 /*
@@ -701,6 +731,11 @@ enum fw_params_param_pfvf {
 enum fw_params_param_dmaq {
 	FW_PARAMS_PARAM_DMAQ_IQ_INTCNTTHRESH = 0x01,
 	FW_PARAMS_PARAM_DMAQ_CONM_CTXT = 0x20,
+};
+
+enum fw_params_param_dev_filter {
+	FW_PARAM_DEV_FILTER_VNIC_MODE   = 0x00,
+	FW_PARAM_DEV_FILTER_MODE_MASK   = 0x01,
 };
 
 #define S_FW_PARAMS_MNEM	24
@@ -1234,6 +1269,18 @@ enum fw_vi_func {
 	FW_VI_FUNC_ETH,
 };
 
+/* Macros for VIID parsing:
+ * VIID - [10:8] PFN, [7] VI Valid, [6:0] VI number
+ */
+
+#define S_FW_VIID_VIVLD         7
+#define M_FW_VIID_VIVLD         0x1
+#define G_FW_VIID_VIVLD(x)      (((x) >> S_FW_VIID_VIVLD) & M_FW_VIID_VIVLD)
+
+#define S_FW_VIID_VIN           0
+#define M_FW_VIID_VIN           0x7F
+#define G_FW_VIID_VIN(x)        (((x) >> S_FW_VIID_VIN) & M_FW_VIID_VIN)
+
 struct fw_vi_cmd {
 	__be32 op_to_vfn;
 	__be32 alloc_to_len16;
@@ -1275,6 +1322,16 @@ struct fw_vi_cmd {
 #define G_FW_VI_CMD_FREE(x)	(((x) >> S_FW_VI_CMD_FREE) & M_FW_VI_CMD_FREE)
 #define F_FW_VI_CMD_FREE	V_FW_VI_CMD_FREE(1U)
 
+#define S_FW_VI_CMD_VFVLD       24
+#define M_FW_VI_CMD_VFVLD       0x1
+#define G_FW_VI_CMD_VFVLD(x)    \
+	(((x) >> S_FW_VI_CMD_VFVLD) & M_FW_VI_CMD_VFVLD)
+
+#define S_FW_VI_CMD_VIN         16
+#define M_FW_VI_CMD_VIN         0xff
+#define G_FW_VI_CMD_VIN(x)      \
+	(((x) >> S_FW_VI_CMD_VIN) & M_FW_VI_CMD_VIN)
+
 #define S_FW_VI_CMD_TYPE	15
 #define M_FW_VI_CMD_TYPE	0x1
 #define V_FW_VI_CMD_TYPE(x)	((x) << S_FW_VI_CMD_TYPE)
@@ -1309,8 +1366,8 @@ struct fw_vi_cmd {
 #define FW_VI_MAC_ID_BASED_FREE         0x3FC
 
 enum fw_vi_mac_smac {
-	FW_VI_MAC_MPS_TCAM_ENTRY,
-	FW_VI_MAC_SMT_AND_MPSTCAM
+	FW_VI_MAC_MPS_TCAM_ENTRY = 0x0,
+	FW_VI_MAC_SMT_AND_MPSTCAM = 0x3
 };
 
 enum fw_vi_mac_entry_types {
@@ -1545,41 +1602,6 @@ struct fw_vi_stats_cmd {
 #define S_FW_VI_STATS_CMD_IX		0
 #define V_FW_VI_STATS_CMD_IX(x)		((x) << S_FW_VI_STATS_CMD_IX)
 
-/* old 16-bit port capabilities bitmap */
-enum fw_port_cap {
-	FW_PORT_CAP_SPEED_100M		= 0x0001,
-	FW_PORT_CAP_SPEED_1G		= 0x0002,
-	FW_PORT_CAP_SPEED_25G		= 0x0004,
-	FW_PORT_CAP_SPEED_10G		= 0x0008,
-	FW_PORT_CAP_SPEED_40G		= 0x0010,
-	FW_PORT_CAP_SPEED_100G		= 0x0020,
-	FW_PORT_CAP_FC_RX		= 0x0040,
-	FW_PORT_CAP_FC_TX		= 0x0080,
-	FW_PORT_CAP_ANEG		= 0x0100,
-	FW_PORT_CAP_MDIX		= 0x0200,
-	FW_PORT_CAP_MDIAUTO		= 0x0400,
-	FW_PORT_CAP_FEC_RS              = 0x0800,
-	FW_PORT_CAP_FEC_BASER_RS        = 0x1000,
-	FW_PORT_CAP_FEC_RESERVED        = 0x2000,
-	FW_PORT_CAP_802_3_PAUSE		= 0x4000,
-	FW_PORT_CAP_802_3_ASM_DIR	= 0x8000,
-};
-
-#define S_FW_PORT_CAP_SPEED     0
-#define M_FW_PORT_CAP_SPEED     0x3f
-#define V_FW_PORT_CAP_SPEED(x)  ((x) << S_FW_PORT_CAP_SPEED)
-#define G_FW_PORT_CAP_SPEED(x) \
-	(((x) >> S_FW_PORT_CAP_SPEED) & M_FW_PORT_CAP_SPEED)
-
-enum fw_port_mdi {
-	FW_PORT_CAP_MDI_AUTO,
-};
-
-#define S_FW_PORT_CAP_MDI 9
-#define M_FW_PORT_CAP_MDI 3
-#define V_FW_PORT_CAP_MDI(x) ((x) << S_FW_PORT_CAP_MDI)
-#define G_FW_PORT_CAP_MDI(x) (((x) >> S_FW_PORT_CAP_MDI) & M_FW_PORT_CAP_MDI)
-
 /* new 32-bit port capabilities bitmap (fw_port_cap32_t) */
 #define FW_PORT_CAP32_SPEED_100M        0x00000001UL
 #define FW_PORT_CAP32_SPEED_1G          0x00000002UL
@@ -1597,6 +1619,9 @@ enum fw_port_mdi {
 #define FW_PORT_CAP32_MDIAUTO           0x00400000UL
 #define FW_PORT_CAP32_FEC_RS            0x00800000UL
 #define FW_PORT_CAP32_FEC_BASER_RS      0x01000000UL
+#define FW_PORT_CAP32_FEC_NO_FEC        0x02000000UL
+#define FW_PORT_CAP32_FORCE_PAUSE       0x10000000UL
+#define FW_PORT_CAP32_FORCE_FEC         0x20000000UL
 
 #define S_FW_PORT_CAP32_SPEED           0
 #define M_FW_PORT_CAP32_SPEED           0xfff
@@ -1604,8 +1629,16 @@ enum fw_port_mdi {
 #define G_FW_PORT_CAP32_SPEED(x) \
 	(((x) >> S_FW_PORT_CAP32_SPEED) & M_FW_PORT_CAP32_SPEED)
 
+#define S_FW_PORT_CAP32_FC             16
+#define M_FW_PORT_CAP32_FC             0x3
+#define V_FW_PORT_CAP32_FC(x)          ((x) << S_FW_PORT_CAP32_FC)
+
+#define S_FW_PORT_CAP32_802_3          18
+#define M_FW_PORT_CAP32_802_3          0x3
+#define V_FW_PORT_CAP32_802_3(x)       ((x) << S_FW_PORT_CAP32_802_3)
+
 enum fw_port_mdi32 {
-	FW_PORT_CAP32_MDI_AUTO,
+	FW_PORT_CAP32_MDI_AUTO = 1,
 };
 
 #define S_FW_PORT_CAP32_MDI 21
@@ -1614,9 +1647,11 @@ enum fw_port_mdi32 {
 #define G_FW_PORT_CAP32_MDI(x) \
 	(((x) >> S_FW_PORT_CAP32_MDI) & M_FW_PORT_CAP32_MDI)
 
+#define S_FW_PORT_CAP32_FEC     23
+#define M_FW_PORT_CAP32_FEC     0x1f
+#define V_FW_PORT_CAP32_FEC(x)  ((x) << S_FW_PORT_CAP32_FEC)
+
 enum fw_port_action {
-	FW_PORT_ACTION_L1_CFG		= 0x0001,
-	FW_PORT_ACTION_GET_PORT_INFO	= 0x0003,
 	FW_PORT_ACTION_L1_CFG32         = 0x0009,
 	FW_PORT_ACTION_GET_PORT_INFO32  = 0x000a,
 };
@@ -1761,36 +1796,11 @@ struct fw_port_cmd {
 	(((x) >> S_FW_PORT_CMD_RXPAUSE) & M_FW_PORT_CMD_RXPAUSE)
 #define F_FW_PORT_CMD_RXPAUSE	V_FW_PORT_CMD_RXPAUSE(1U)
 
-#define S_FW_PORT_CMD_MDIOCAP		21
-#define M_FW_PORT_CMD_MDIOCAP		0x1
-#define V_FW_PORT_CMD_MDIOCAP(x)	((x) << S_FW_PORT_CMD_MDIOCAP)
-#define G_FW_PORT_CMD_MDIOCAP(x)	\
-	(((x) >> S_FW_PORT_CMD_MDIOCAP) & M_FW_PORT_CMD_MDIOCAP)
-#define F_FW_PORT_CMD_MDIOCAP	V_FW_PORT_CMD_MDIOCAP(1U)
-
-#define S_FW_PORT_CMD_MDIOADDR		16
-#define M_FW_PORT_CMD_MDIOADDR		0x1f
-#define V_FW_PORT_CMD_MDIOADDR(x)	((x) << S_FW_PORT_CMD_MDIOADDR)
-#define G_FW_PORT_CMD_MDIOADDR(x)	\
-	(((x) >> S_FW_PORT_CMD_MDIOADDR) & M_FW_PORT_CMD_MDIOADDR)
-
 #define S_FW_PORT_CMD_PTYPE	8
 #define M_FW_PORT_CMD_PTYPE	0x1f
 #define V_FW_PORT_CMD_PTYPE(x)	((x) << S_FW_PORT_CMD_PTYPE)
 #define G_FW_PORT_CMD_PTYPE(x)	\
 	(((x) >> S_FW_PORT_CMD_PTYPE) & M_FW_PORT_CMD_PTYPE)
-
-#define S_FW_PORT_CMD_LINKDNRC		5
-#define M_FW_PORT_CMD_LINKDNRC		0x7
-#define V_FW_PORT_CMD_LINKDNRC(x)	((x) << S_FW_PORT_CMD_LINKDNRC)
-#define G_FW_PORT_CMD_LINKDNRC(x)	\
-	(((x) >> S_FW_PORT_CMD_LINKDNRC) & M_FW_PORT_CMD_LINKDNRC)
-
-#define S_FW_PORT_CMD_MODTYPE		0
-#define M_FW_PORT_CMD_MODTYPE		0x1f
-#define V_FW_PORT_CMD_MODTYPE(x)	((x) << S_FW_PORT_CMD_MODTYPE)
-#define G_FW_PORT_CMD_MODTYPE(x)	\
-	(((x) >> S_FW_PORT_CMD_MODTYPE) & M_FW_PORT_CMD_MODTYPE)
 
 #define S_FW_PORT_CMD_LSTATUS32                31
 #define M_FW_PORT_CMD_LSTATUS32                0x1
@@ -1871,10 +1881,10 @@ enum fw_port_module_type {
 	FW_PORT_MOD_TYPE_TWINAX_PASSIVE	= 0x4,
 	FW_PORT_MOD_TYPE_TWINAX_ACTIVE	= 0x5,
 	FW_PORT_MOD_TYPE_LRM		= 0x6,
-	FW_PORT_MOD_TYPE_ERROR		= M_FW_PORT_CMD_MODTYPE - 3,
-	FW_PORT_MOD_TYPE_UNKNOWN	= M_FW_PORT_CMD_MODTYPE - 2,
-	FW_PORT_MOD_TYPE_NOTSUPPORTED	= M_FW_PORT_CMD_MODTYPE - 1,
-	FW_PORT_MOD_TYPE_NONE		= M_FW_PORT_CMD_MODTYPE
+	FW_PORT_MOD_TYPE_ERROR		= M_FW_PORT_CMD_MODTYPE32 - 3,
+	FW_PORT_MOD_TYPE_UNKNOWN	= M_FW_PORT_CMD_MODTYPE32 - 2,
+	FW_PORT_MOD_TYPE_NOTSUPPORTED	= M_FW_PORT_CMD_MODTYPE32 - 1,
+	FW_PORT_MOD_TYPE_NONE		= M_FW_PORT_CMD_MODTYPE32
 };
 
 /* used by FW and tools may use this to generate VPD */

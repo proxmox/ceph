@@ -17,6 +17,7 @@ enum {
 				 * for a specific entry
 				 */
 	MPS_ENTRY_USED,
+	MPS_ENTRY_RAWF, /* Reserved for RAW MAC Filters */
 };
 
 struct mps_tcam_entry {
@@ -24,11 +25,11 @@ struct mps_tcam_entry {
 	u16 idx;
 
 	/* add data here which uniquely defines an entry */
-	u8 eth_addr[ETHER_ADDR_LEN];
-	u8 mask[ETHER_ADDR_LEN];
+	u8 eth_addr[RTE_ETHER_ADDR_LEN];
+	u8 mask[RTE_ETHER_ADDR_LEN];
 
 	struct mpstcam_table *mpstcam; /* backptr */
-	rte_atomic32_t refcnt;
+	u32 refcnt;
 };
 
 struct mpstcam_table {
@@ -40,7 +41,7 @@ struct mpstcam_table {
 			 * free_idx cannot alone determine
 			 * if the table is full
 			 */
-	struct mps_tcam_entry entry[0];
+	struct mps_tcam_entry entry[];
 };
 
 struct mpstcam_table *t4_init_mpstcam(struct adapter *adap);
@@ -48,5 +49,6 @@ void t4_cleanup_mpstcam(struct adapter *adap);
 int cxgbe_mpstcam_alloc(struct port_info *pi, const u8 *mac, const u8 *mask);
 int cxgbe_mpstcam_remove(struct port_info *pi, u16 idx);
 int cxgbe_mpstcam_modify(struct port_info *pi, int idx, const u8 *addr);
-
+int cxgbe_mpstcam_rawf_enable(struct port_info *pi);
+int cxgbe_mpstcam_rawf_disable(struct port_info *pi);
 #endif /* _CXGBE_MPSTCAM_H_ */

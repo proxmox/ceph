@@ -18,19 +18,30 @@
 /*
  * Copyright 2017 ScyllaDB
  */
-#include <seastar/util/backtrace.hh>
+#ifdef SEASTAR_MODULE
+module;
+#endif
 
 #include <link.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <algorithm>
+#include <cstddef>
+#include <cerrno>
+#include <cstring>
+#include <iostream>
+#include <variant>
+#include <vector>
+#include <boost/container/static_vector.hpp>
 
-#include <errno.h>
-#include <string.h>
-
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
+#include <seastar/util/backtrace.hh>
 #include <seastar/core/print.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/core/reactor.hh>
-
+#endif
 
 namespace seastar {
 
@@ -40,8 +51,8 @@ static int dl_iterate_phdr_callback(struct dl_phdr_info *info, size_t size, void
     for (int i = 0; i < info->dlpi_phnum; i++) {
         const auto hdr = info->dlpi_phdr[i];
 
-        // Only account loadable, executable (text) segments
-        if (hdr.p_type == PT_LOAD && (hdr.p_flags & PF_X) == PF_X) {
+        // Only account loadable segments
+        if (hdr.p_type == PT_LOAD) {
             total_size += hdr.p_memsz;
         }
     }

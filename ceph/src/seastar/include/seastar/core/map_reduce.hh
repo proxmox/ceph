@@ -22,12 +22,17 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <iterator>
 
 #include <seastar/core/future.hh>
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/util/modules.hh>
+#endif
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /// \addtogroup future-util
 /// @{
@@ -52,7 +57,7 @@ template <typename T, typename Ptr>
 struct reducer_with_get_traits<T, Ptr, true> {
     using future_type = decltype(std::declval<T>().get());
     static future_type maybe_call_get(future<> f, Ptr r) {
-        return f.then([r = std::move(r)] () mutable {
+        return f.then([r = r.get()] {
             return r->reducer.get();
         }).then_wrapped([r] (future_type f) {
             return f;
@@ -91,12 +96,12 @@ struct reducer_traits<T, Ptr, decltype(std::declval<T>().get(), void())> : publi
 
 // TODO: specialize for non-deferring reducer
 template <typename Iterator, typename Mapper, typename Reducer>
-SEASTAR_CONCEPT( requires requires (Iterator i, Mapper mapper, Reducer reduce) {
+requires requires (Iterator i, Mapper mapper, Reducer reduce) {
      *i++;
      { i != i } -> std::convertible_to<bool>;
      mapper(*i);
-     reduce(futurize_invoke(mapper, *i).get0());
-} )
+     reduce(futurize_invoke(mapper, *i).get());
+}
 inline
 auto
 map_reduce(Iterator begin, Iterator end, Mapper&& mapper, Reducer&& r)
@@ -115,7 +120,7 @@ map_reduce(Iterator begin, Iterator end, Mapper&& mapper, Reducer&& r)
                     f.ignore_ready_future();
                     return rf;
                 } else {
-                    return futurize_invoke(s->reducer, std::move(f.get0()));
+                    return futurize_invoke(s->reducer, std::move(f.get()));
                 }
             });
         });
@@ -166,13 +171,13 @@ map_reduce(Iterator begin, Iterator end, Mapper&& mapper, Reducer&& r)
 ///       Sharded services have their own \ref sharded::map_reduce() which
 ///       map-reduces across all shards.
 template <typename Iterator, typename Mapper, typename Initial, typename Reduce>
-SEASTAR_CONCEPT( requires requires (Iterator i, Mapper mapper, Initial initial, Reduce reduce) {
+requires requires (Iterator i, Mapper mapper, Initial initial, Reduce reduce) {
      *i++;
      { i != i} -> std::convertible_to<bool>;
      mapper(*i);
      requires is_future<decltype(mapper(*i))>::value;
-     { reduce(std::move(initial), mapper(*i).get0()) } -> std::convertible_to<Initial>;
-} )
+     { reduce(std::move(initial), mapper(*i).get()) } -> std::convertible_to<Initial>;
+}
 inline
 future<Initial>
 map_reduce(Iterator begin, Iterator end, Mapper&& mapper, Initial initial, Reduce reduce) {
@@ -186,7 +191,7 @@ map_reduce(Iterator begin, Iterator end, Mapper&& mapper, Initial initial, Reduc
     while (begin != end) {
         ret = futurize_invoke(s->mapper, *begin++).then_wrapped([s = s.get(), ret = std::move(ret)] (auto f) mutable {
             try {
-                s->result = s->reduce(std::move(s->result), std::move(f.get0()));
+                s->result = s->reduce(std::move(s->result), f.get());
                 return std::move(ret);
             } catch (...) {
                 return std::move(ret).then_wrapped([ex = std::current_exception()] (auto f) {
@@ -244,13 +249,13 @@ map_reduce(Iterator begin, Iterator end, Mapper&& mapper, Initial initial, Reduc
 ///       Sharded services have their own \ref sharded::map_reduce() which
 ///       map-reduces across all shards.
 template <typename Range, typename Mapper, typename Initial, typename Reduce>
-SEASTAR_CONCEPT( requires requires (Range range, Mapper mapper, Initial initial, Reduce reduce) {
+requires requires (Range range, Mapper mapper, Initial initial, Reduce reduce) {
      std::begin(range);
      std::end(range);
      mapper(*std::begin(range));
      requires is_future<std::remove_reference_t<decltype(mapper(*std::begin(range)))>>::value;
-     { reduce(std::move(initial), mapper(*std::begin(range)).get0()) } -> std::convertible_to<Initial>;
-} )
+     { reduce(std::move(initial), mapper(*std::begin(range)).get()) } -> std::convertible_to<Initial>;
+}
 inline
 future<Initial>
 map_reduce(Range&& range, Mapper&& mapper, Initial initial, Reduce reduce) {
@@ -275,5 +280,7 @@ public:
 };
 
 /// @}
+
+SEASTAR_MODULE_EXPORT_END
 
 } // namespace seastar

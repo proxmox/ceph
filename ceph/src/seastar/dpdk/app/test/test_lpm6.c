@@ -2,6 +2,8 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include "test.h"
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -10,7 +12,6 @@
 #include <rte_memory.h>
 #include <rte_lpm6.h>
 
-#include "test.h"
 #include "test_lpm6_data.h"
 
 #define TEST_LPM_ASSERT(cond) do {                                            \
@@ -85,7 +86,6 @@ rte_lpm6_test tests6[] = {
 	test28,
 };
 
-#define NUM_LPM6_TESTS                (sizeof(tests6)/sizeof(tests6[0]))
 #define MAX_DEPTH                                                    128
 #define MAX_RULES                                                1000000
 #define NUMBER_TBL8S                                           (1 << 16)
@@ -262,7 +262,7 @@ test4(void)
 	status = rte_lpm6_add(NULL, ip, depth, next_hop);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm6_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -300,7 +300,7 @@ test5(void)
 	status = rte_lpm6_delete(NULL, ip, depth);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm6_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -338,7 +338,7 @@ test6(void)
 	status = rte_lpm6_lookup(NULL, ip, &next_hop_return);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm6_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -376,7 +376,7 @@ test7(void)
 	status = rte_lpm6_lookup_bulk_func(NULL, ip, next_hop_return, 10);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm6_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -414,7 +414,7 @@ test8(void)
 	status = rte_lpm6_delete_bulk_func(NULL, ip, depth, 10);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm6_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -434,7 +434,7 @@ test8(void)
 /*
  * Call add, lookup and delete for a single rule with depth < 24.
  * Check all the combinations for the first three bytes that result in a hit.
- * Delete the rule and check that the same test returs a miss.
+ * Delete the rule and check that the same test returns a miss.
  */
 int32_t
 test9(void)
@@ -1739,7 +1739,7 @@ test27(void)
  * Call add, lookup and delete for a single rule with maximum 21bit next_hop
  * size.
  * Check that next_hop returned from lookup is equal to provisioned value.
- * Delete the rule and check that the same test returs a miss.
+ * Delete the rule and check that the same test returns a miss.
  */
 int32_t
 test28(void)
@@ -1780,7 +1780,7 @@ test_lpm6(void)
 	unsigned i;
 	int status = -1, global_status = 0;
 
-	for (i = 0; i < NUM_LPM6_TESTS; i++) {
+	for (i = 0; i < RTE_DIM(tests6); i++) {
 		printf("# test %02d\n", i);
 		status = tests6[i]();
 

@@ -21,7 +21,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -69,17 +68,16 @@ struct app_params app = {
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.split_hdr_size = 0,
-		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
+		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_IP,
+			.rss_hf = RTE_ETH_RSS_IP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -155,22 +153,30 @@ static void
 app_ports_check_link(void)
 {
 	uint32_t all_ports_up, i;
-
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 	all_ports_up = 1;
 
 	for (i = 0; i < app.n_ports; i++) {
 		struct rte_eth_link link;
 		uint16_t port;
+		int ret;
 
 		port = app.ports[i];
 		memset(&link, 0, sizeof(link));
-		rte_eth_link_get_nowait(port, &link);
-		RTE_LOG(INFO, USER1, "Port %u (%u Gbps) %s\n",
+		ret = rte_eth_link_get_nowait(port, &link);
+		if (ret < 0) {
+			RTE_LOG(INFO, USER1,
+				"Failed to get port %u link status: %s\n",
+				port, rte_strerror(-ret));
+			all_ports_up = 0;
+			continue;
+		}
+		rte_eth_link_to_str(link_status_text, sizeof(link_status_text),
+				    &link);
+		RTE_LOG(INFO, USER1, "Port %u %s\n",
 			port,
-			link.link_speed / 1000,
-			link.link_status ? "UP" : "DOWN");
-
-		if (link.link_status == ETH_LINK_DOWN)
+			link_status_text);
+		if (link.link_status == RTE_ETH_LINK_DOWN)
 			all_ports_up = 0;
 	}
 
@@ -200,7 +206,10 @@ app_init_ports(void)
 		if (ret < 0)
 			rte_panic("Cannot init NIC port %u (%d)\n", port, ret);
 
-		rte_eth_promiscuous_enable(port);
+		ret = rte_eth_promiscuous_enable(port);
+		if (ret != 0)
+			rte_panic("Cannot enable promiscuous mode for port %u: %s\n",
+				port, rte_strerror(-ret));
 
 		/* Init RX queues */
 		ret = rte_eth_rx_queue_setup(

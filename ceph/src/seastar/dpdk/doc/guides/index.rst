@@ -19,6 +19,11 @@ DPDK documentation
    bbdevs/index
    cryptodevs/index
    compressdevs/index
+   vdpadevs/index
+   regexdevs/index
+   mldevs/index
+   dmadevs/index
+   gpus/index
    eventdevs/index
    rawdevs/index
    mempool/index

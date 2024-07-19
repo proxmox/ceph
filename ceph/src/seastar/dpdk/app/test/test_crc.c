@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2017 Intel Corporation
+ * Copyright(c) 2017-2020 Intel Corporation
  */
 
 #include "test.h"
@@ -14,7 +14,6 @@
 #define CRC32_VEC_LEN2     348
 #define CRC16_VEC_LEN1     12
 #define CRC16_VEC_LEN2     2
-#define LINE_LEN           75
 
 /* CRC test vector */
 static const uint8_t crc_vec[CRC_VEC_LEN] = {
@@ -80,6 +79,8 @@ test_crc_calc(void)
 
 	/* 32-bit ethernet CRC: Test 2 */
 	test_data = rte_zmalloc(NULL, CRC32_VEC_LEN1, 0);
+	if (test_data == NULL)
+		return -7;
 
 	for (i = 0; i < CRC32_VEC_LEN1; i += 12)
 		rte_memcpy(&test_data[i], crc32_vec1, 12);
@@ -146,6 +147,15 @@ test_crc(void)
 	ret = test_crc_calc();
 	if (ret < 0) {
 		printf("test_crc (x86_64_SSE4.2): failed (%d)\n", ret);
+		return ret;
+	}
+
+	/* set CRC avx512 mode */
+	rte_net_crc_set_alg(RTE_NET_CRC_AVX512);
+
+	ret = test_crc_calc();
+	if (ret < 0) {
+		printf("test crc (x86_64 AVX512): failed (%d)\n", ret);
 		return ret;
 	}
 

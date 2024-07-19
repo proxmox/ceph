@@ -8,13 +8,15 @@
  * Dump the mbuf into stdout if it is an ARP packet (aka tcpdump 'arp').
  *
  * To compile on x86:
- * clang -O2 -U __GNUC__ -I${RTE_SDK}/${RTE_TARGET}/include \
- * -target bpf -Wno-int-to-void-pointer-cast -c t3.c
+ * clang -O2 -U __GNUC__ -target bpf -Wno-int-to-void-pointer-cast -c t3.c
  *
  * To compile on ARM:
- * clang -O2 -I/usr/include/aarch64-linux-gnu \
- * -I${RTE_SDK}/${RTE_TARGET}/include -target bpf \
+ * clang -O2 -I/usr/include/aarch64-linux-gnu -target bpf \
  * -Wno-int-to-void-pointer-cast -c t3.c
+ *
+ * NOTE: if DPDK is not installed system-wide, add compiler flag with path
+ * to DPDK rte_mbuf.h file to above commands,
+ * e.g. "clang -I/path/to/dpdk/headers -O2 ..."
  */
 
 #include <stdint.h>
@@ -22,7 +24,7 @@
 #include <stdio.h>
 #include <net/ethernet.h>
 #include <rte_config.h>
-#include "mbuf.h"
+#include <rte_mbuf_core.h>
 #include <arpa/inet.h>
 
 extern void rte_pktmbuf_dump(FILE *, const struct rte_mbuf *, unsigned int);

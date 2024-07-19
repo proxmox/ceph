@@ -3,27 +3,16 @@
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <boost/leaf/handle_errors.hpp>
-#include "lightweight_test.hpp"
-
-namespace leaf = boost::leaf;
+#include <boost/leaf/config.hpp>
 
 #ifdef BOOST_LEAF_NO_EXCEPTIONS
 
+#include <iostream>
+
 int main()
 {
-    int r = leaf::try_catch(
-        []
-        {
-            return 42;
-        },
-        []
-        {
-            return 1;
-        } );
-    BOOST_TEST_EQ(r, 42);
-
-    return boost::report_errors();
+    std::cout << "Unit test not applicable." << std::endl;
+    return 0;
 }
 
 #else
@@ -31,8 +20,13 @@ int main()
 #ifdef BOOST_LEAF_TEST_SINGLE_HEADER
 #   include "leaf.hpp"
 #else
+#   include <boost/leaf/handle_errors.hpp>
 #   include <boost/leaf/pred.hpp>
 #endif
+
+#include "lightweight_test.hpp"
+
+namespace leaf = boost::leaf;
 
 template <int> struct info { int value; };
 
@@ -45,7 +39,7 @@ struct exc_val: std::exception { int value; explicit exc_val(int v): value(v) { 
 template <class R,class Ex>
 R failing( Ex && ex )
 {
-    throw leaf::exception(std::move(ex), info<1>{1}, info<2>{2}, info<3>{3});
+    leaf::throw_exception(std::move(ex), info<1>{1}, info<2>{2}, info<3>{3});
 }
 
 template <class R>
@@ -427,7 +421,7 @@ int main()
         int r = leaf::try_catch(
             []
             {
-                int r = leaf::try_catch(
+                int r1 = leaf::try_catch(
                     []
                     {
                         return failing<int>(error1());
@@ -437,7 +431,7 @@ int main()
                         return 1;
                     } );
                 BOOST_TEST(false);
-                return r;
+                return r1;
             },
             []( error1 const &, info<1> const & x, info<2> y )
             {
@@ -457,7 +451,7 @@ int main()
         int r = leaf::try_catch(
             []
             {
-                int r = leaf::try_catch(
+                int r1 = leaf::try_catch(
                     []
                     {
                         return failing<int>(error1());
@@ -467,7 +461,7 @@ int main()
                         return 1;
                     } );
                 BOOST_TEST(false);
-                return r;
+                return r1;
             },
             []( leaf::catch_<error2,error1>, info<1> const & x, info<2> y )
             {
@@ -487,7 +481,7 @@ int main()
         int r = leaf::try_catch(
             []
             {
-                int r = leaf::try_catch(
+                int r1 = leaf::try_catch(
                     []
                     {
                         return failing<int>(error1());
@@ -498,8 +492,8 @@ int main()
                         BOOST_TEST_EQ(y.value, 2);
                         return 1;
                     } );
-                BOOST_TEST_EQ(r, 1);
-                return r;
+                BOOST_TEST_EQ(r1, 1);
+                return r1;
             },
             []( error1 const & )
             {
@@ -517,7 +511,7 @@ int main()
         int r = leaf::try_catch(
             []
             {
-                int r = leaf::try_catch(
+                int r1 = leaf::try_catch(
                     []
                     {
                         return failing<int>(error1());
@@ -528,8 +522,8 @@ int main()
                         BOOST_TEST_EQ(y.value, 2);
                         return 1;
                     } );
-                BOOST_TEST_EQ(r, 1);
-                return r;
+                BOOST_TEST_EQ(r1, 1);
+                return r1;
             },
             []( error1 const & )
             {
@@ -549,7 +543,7 @@ int main()
         int r = leaf::try_catch(
             []
             {
-                throw leaf::exception(exc_val{42});
+                leaf::throw_exception(exc_val{42});
                 return 0;
             },
             []( leaf::match_value<exc_val, 42> )
@@ -566,7 +560,7 @@ int main()
         int r = leaf::try_catch(
             []
             {
-                throw leaf::exception(exc_val{42});
+                leaf::throw_exception(exc_val{42});
                 return 0;
             },
             []( leaf::match_value<exc_val, 41> )

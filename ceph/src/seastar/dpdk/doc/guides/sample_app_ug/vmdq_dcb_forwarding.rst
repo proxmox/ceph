@@ -26,13 +26,13 @@ multiple queues. When run with 8 threads, that is, with the -c FF option, each t
 As supplied, the sample application configures the VMDQ feature to have 32 pools with 4 queues each as indicated in :numref:`figure_vmdq_dcb_example`.
 The Intel® 82599 10 Gigabit Ethernet Controller NIC also supports the splitting of traffic into 16 pools of 8 queues. While the
 Intel® X710 or XL710 Ethernet Controller NICs support many configurations of VMDQ pools of 4 or 8 queues each. For simplicity, only 16
-or 32 pools is supported in this sample. And queues numbers for each VMDQ pool can be changed by setting CONFIG_RTE_LIBRTE_I40E_QUEUE_NUM_PER_VM
-in config/common_* file.
+or 32 pools is supported in this sample. And queues numbers for each VMDQ pool can be changed by setting RTE_LIBRTE_I40E_QUEUE_NUM_PER_VM
+in config/rte_config.h file.
 The nb-pools, nb-tcs and enable-rss parameters can be passed on the command line, after the EAL parameters:
 
 .. code-block:: console
 
-    ./build/vmdq_dcb [EAL options] -- -p PORTMASK --nb-pools NP --nb-tcs TC --enable-rss
+    ./<build_dir>/examples/dpdk-vmdq_dcb [EAL options] -- -p PORTMASK --nb-pools NP --nb-tcs TC --enable-rss
 
 where, NP can be 16 or 32, TC can be 4 or 8, rss is disabled by default.
 
@@ -72,7 +72,7 @@ To run the example in a linux environment:
 
 .. code-block:: console
 
-    user@target:~$ ./build/vmdq_dcb -l 0-3 -n 4 -- -p 0x3 --nb-pools 32 --nb-tcs 4
+    user@target:~$ ./<build_dir>/examples/dpdk-vmdq_dcb -l 0-3 -n 4 -- -p 0x3 --nb-pools 32 --nb-tcs 4
 
 Refer to the *DPDK Getting Started Guide* for general information on running applications and
 the Environment Abstraction Layer (EAL) options.
@@ -95,50 +95,10 @@ rte_eth_conf structure passed to the rte_eth_dev_configure() API.
 Initially in the application,
 a default structure is provided for VMDQ and DCB configuration to be filled in later by the application.
 
-.. code-block:: c
-
-    /* empty vmdq+dcb configuration structure. Filled in programmatically */
-    static const struct rte_eth_conf vmdq_dcb_conf_default = {
-        .rxmode = {
-            .mq_mode        = ETH_MQ_RX_VMDQ_DCB,
-            .split_hdr_size = 0,
-        },
-        .txmode = {
-            .mq_mode = ETH_MQ_TX_VMDQ_DCB,
-        },
-        /*
-         * should be overridden separately in code with
-         * appropriate values
-         */
-        .rx_adv_conf = {
-            .vmdq_dcb_conf = {
-                .nb_queue_pools = ETH_32_POOLS,
-                .enable_default_pool = 0,
-                .default_pool = 0,
-                .nb_pool_maps = 0,
-                .pool_map = {{0, 0},},
-                .dcb_tc = {0},
-            },
-            .dcb_rx_conf = {
-                .nb_tcs = ETH_4_TCS,
-                /** Traffic class each UP mapped to. */
-                .dcb_tc = {0},
-            },
-            .vmdq_rx_conf = {
-                .nb_queue_pools = ETH_32_POOLS,
-                .enable_default_pool = 0,
-                .default_pool = 0,
-                .nb_pool_maps = 0,
-                .pool_map = {{0, 0},},
-            },
-        },
-        .tx_adv_conf = {
-            .vmdq_dcb_tx_conf = {
-                .nb_queue_pools = ETH_32_POOLS,
-                .dcb_tc = {0},
-            },
-        },
-    };
+.. literalinclude:: ../../../examples/vmdq_dcb/main.c
+    :language: c
+    :start-after: Empty vmdq+dcb configuration structure. Filled in programmatically. 8<
+    :end-before: >8 End of empty vmdq+dcb configuration structure.
 
 The get_eth_conf() function fills in an rte_eth_conf structure with the appropriate values,
 based on the global vlan_tags array,
@@ -155,92 +115,16 @@ For destination MAC, each VMDQ pool will be assigned with a MAC address. In this
 is assigned to the MAC like 52:54:00:12:<port_id>:<pool_id>, that is,
 the MAC of VMDQ pool 2 on port 1 is 52:54:00:12:01:02.
 
-.. code-block:: c
+.. literalinclude:: ../../../examples/vmdq_dcb/main.c
+    :language: c
+    :start-after: Dividing up the possible user priority values. 8<
+    :end-before: >8 End of dividing up the possible user priority values.
 
-    const uint16_t vlan_tags[] = {
-        0, 1, 2, 3, 4, 5, 6, 7,
-        8, 9, 10, 11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20, 21, 22, 23,
-        24, 25, 26, 27, 28, 29, 30, 31
-    };
-
-    /* pool mac addr template, pool mac addr is like: 52 54 00 12 port# pool# */
-    static struct ether_addr pool_addr_template = {
-        .addr_bytes = {0x52, 0x54, 0x00, 0x12, 0x00, 0x00}
-    };
-
-    /* Builds up the correct configuration for vmdq+dcb based on the vlan tags array
-     * given above, and the number of traffic classes available for use. */
-    static inline int
-    get_eth_conf(struct rte_eth_conf *eth_conf)
-    {
-        struct rte_eth_vmdq_dcb_conf conf;
-        struct rte_eth_vmdq_rx_conf  vmdq_conf;
-        struct rte_eth_dcb_rx_conf   dcb_conf;
-        struct rte_eth_vmdq_dcb_tx_conf tx_conf;
-        uint8_t i;
-
-        conf.nb_queue_pools = (enum rte_eth_nb_pools)num_pools;
-        vmdq_conf.nb_queue_pools = (enum rte_eth_nb_pools)num_pools;
-        tx_conf.nb_queue_pools = (enum rte_eth_nb_pools)num_pools;
-        conf.nb_pool_maps = num_pools;
-        vmdq_conf.nb_pool_maps = num_pools;
-        conf.enable_default_pool = 0;
-        vmdq_conf.enable_default_pool = 0;
-        conf.default_pool = 0; /* set explicit value, even if not used */
-        vmdq_conf.default_pool = 0;
-
-        for (i = 0; i < conf.nb_pool_maps; i++) {
-            conf.pool_map[i].vlan_id = vlan_tags[i];
-            vmdq_conf.pool_map[i].vlan_id = vlan_tags[i];
-            conf.pool_map[i].pools = 1UL << i ;
-            vmdq_conf.pool_map[i].pools = 1UL << i;
-        }
-        for (i = 0; i < ETH_DCB_NUM_USER_PRIORITIES; i++){
-            conf.dcb_tc[i] = i % num_tcs;
-            dcb_conf.dcb_tc[i] = i % num_tcs;
-            tx_conf.dcb_tc[i] = i % num_tcs;
-        }
-        dcb_conf.nb_tcs = (enum rte_eth_nb_tcs)num_tcs;
-        (void)(rte_memcpy(eth_conf, &vmdq_dcb_conf_default, sizeof(*eth_conf)));
-        (void)(rte_memcpy(&eth_conf->rx_adv_conf.vmdq_dcb_conf, &conf,
-                  sizeof(conf)));
-        (void)(rte_memcpy(&eth_conf->rx_adv_conf.dcb_rx_conf, &dcb_conf,
-                  sizeof(dcb_conf)));
-        (void)(rte_memcpy(&eth_conf->rx_adv_conf.vmdq_rx_conf, &vmdq_conf,
-                  sizeof(vmdq_conf)));
-        (void)(rte_memcpy(&eth_conf->tx_adv_conf.vmdq_dcb_tx_conf, &tx_conf,
-                  sizeof(tx_conf)));
-        if (rss_enable) {
-            eth_conf->rxmode.mq_mode= ETH_MQ_RX_VMDQ_DCB_RSS;
-            eth_conf->rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP |
-                                ETH_RSS_UDP |
-                                ETH_RSS_TCP |
-                                ETH_RSS_SCTP;
-        }
-        return 0;
-    }
-
-    ......
-
-    /* Set mac for each pool.*/
-    for (q = 0; q < num_pools; q++) {
-        struct ether_addr mac;
-        mac = pool_addr_template;
-        mac.addr_bytes[4] = port;
-        mac.addr_bytes[5] = q;
-        printf("Port %u vmdq pool %u set mac %02x:%02x:%02x:%02x:%02x:%02x\n",
-            port, q,
-            mac.addr_bytes[0], mac.addr_bytes[1],
-            mac.addr_bytes[2], mac.addr_bytes[3],
-            mac.addr_bytes[4], mac.addr_bytes[5]);
-        retval = rte_eth_dev_mac_addr_add(port, &mac,
-                q + vmdq_pool_base);
-        if (retval) {
-            printf("mac addr add failed at pool %d\n", q);
-            return retval;
-        }
-    }
+.. literalinclude:: ../../../examples/vmdq_dcb/main.c
+    :language: c
+    :start-after: Set mac for each pool. 8<
+    :end-before: >8 End of set mac for each pool.
+    :dedent: 1
 
 Once the network port has been initialized using the correct VMDQ and DCB values,
 the initialization of the port's RX and TX hardware rings is performed similarly to that

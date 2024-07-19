@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "i40e_osdep.h"
@@ -516,7 +516,7 @@ configure_lan_hmc_out:
 }
 
 /**
- * i40e_delete_hmc_object - remove hmc objects
+ * i40e_delete_lan_hmc_object - remove hmc objects
  * @hw: pointer to the HW structure
  * @info: pointer to i40e_hmc_delete_obj_info struct
  *

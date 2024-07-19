@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2001-2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2020 Intel Corporation
+ */
 
 #include "e1000_api.h"
 
@@ -146,7 +117,7 @@ void e1000_release_swfw_sync_i210(struct e1000_hw *hw, u16 mask)
 		; /* Empty */
 
 	swfw_sync = E1000_READ_REG(hw, E1000_SW_FW_SYNC);
-	swfw_sync &= ~mask;
+	swfw_sync &= (u32)~mask;
 	E1000_WRITE_REG(hw, E1000_SW_FW_SYNC, swfw_sync);
 
 	e1000_put_hw_semaphore_generic(hw);
@@ -339,7 +310,9 @@ STATIC s32 e1000_write_nvm_srwr(struct e1000_hw *hw, u16 offset, u16 words,
 	}
 
 	for (i = 0; i < words; i++) {
-		eewr = ((offset+i) << E1000_NVM_RW_ADDR_SHIFT) |
+		ret_val = -E1000_ERR_NVM;
+
+		eewr = ((offset + i) << E1000_NVM_RW_ADDR_SHIFT) |
 			(data[i] << E1000_NVM_RW_REG_DATA) |
 			E1000_NVM_RW_REG_START;
 
@@ -426,9 +399,9 @@ STATIC s32 e1000_read_invm_i210(struct e1000_hw *hw, u16 offset,
 	switch (offset) {
 	case NVM_MAC_ADDR:
 		ret_val = e1000_read_invm_word_i210(hw, (u8)offset, &data[0]);
-		ret_val |= e1000_read_invm_word_i210(hw, (u8)offset+1,
+		ret_val |= e1000_read_invm_word_i210(hw, (u8)offset + 1,
 						     &data[1]);
-		ret_val |= e1000_read_invm_word_i210(hw, (u8)offset+2,
+		ret_val |= e1000_read_invm_word_i210(hw, (u8)offset + 2,
 						     &data[2]);
 		if (ret_val != E1000_SUCCESS)
 			DEBUGOUT("MAC Addr not found in iNVM\n");
@@ -805,8 +778,6 @@ void e1000_init_function_pointers_i210(struct e1000_hw *hw)
 {
 	e1000_init_function_pointers_82575(hw);
 	hw->nvm.ops.init_params = e1000_init_nvm_params_i210;
-
-	return;
 }
 
 /**
@@ -845,77 +816,6 @@ out:
 }
 
 /**
- *  __e1000_access_xmdio_reg - Read/write XMDIO register
- *  @hw: pointer to the HW structure
- *  @address: XMDIO address to program
- *  @dev_addr: device address to program
- *  @data: pointer to value to read/write from/to the XMDIO address
- *  @read: boolean flag to indicate read or write
- **/
-STATIC s32 __e1000_access_xmdio_reg(struct e1000_hw *hw, u16 address,
-				    u8 dev_addr, u16 *data, bool read)
-{
-	s32 ret_val;
-
-	DEBUGFUNC("__e1000_access_xmdio_reg");
-
-	ret_val = hw->phy.ops.write_reg(hw, E1000_MMDAC, dev_addr);
-	if (ret_val)
-		return ret_val;
-
-	ret_val = hw->phy.ops.write_reg(hw, E1000_MMDAAD, address);
-	if (ret_val)
-		return ret_val;
-
-	ret_val = hw->phy.ops.write_reg(hw, E1000_MMDAC, E1000_MMDAC_FUNC_DATA |
-							 dev_addr);
-	if (ret_val)
-		return ret_val;
-
-	if (read)
-		ret_val = hw->phy.ops.read_reg(hw, E1000_MMDAAD, data);
-	else
-		ret_val = hw->phy.ops.write_reg(hw, E1000_MMDAAD, *data);
-	if (ret_val)
-		return ret_val;
-
-	/* Recalibrate the device back to 0 */
-	ret_val = hw->phy.ops.write_reg(hw, E1000_MMDAC, 0);
-	if (ret_val)
-		return ret_val;
-
-	return ret_val;
-}
-
-/**
- *  e1000_read_xmdio_reg - Read XMDIO register
- *  @hw: pointer to the HW structure
- *  @addr: XMDIO address to program
- *  @dev_addr: device address to program
- *  @data: value to be read from the EMI address
- **/
-s32 e1000_read_xmdio_reg(struct e1000_hw *hw, u16 addr, u8 dev_addr, u16 *data)
-{
-	DEBUGFUNC("e1000_read_xmdio_reg");
-
-	return __e1000_access_xmdio_reg(hw, addr, dev_addr, data, true);
-}
-
-/**
- *  e1000_write_xmdio_reg - Write XMDIO register
- *  @hw: pointer to the HW structure
- *  @addr: XMDIO address to program
- *  @dev_addr: device address to program
- *  @data: value to be written to the XMDIO address
- **/
-s32 e1000_write_xmdio_reg(struct e1000_hw *hw, u16 addr, u8 dev_addr, u16 data)
-{
-	DEBUGFUNC("e1000_read_xmdio_reg");
-
-	return __e1000_access_xmdio_reg(hw, addr, dev_addr, &data, false);
-}
-
-/**
  * e1000_pll_workaround_i210
  * @hw: pointer to the HW structure
  *
@@ -929,6 +829,8 @@ STATIC s32 e1000_pll_workaround_i210(struct e1000_hw *hw)
 	u16 nvm_word, phy_word, pci_word, tmp_nvm;
 	int i;
 
+	/* Get PHY semaphore */
+	hw->phy.ops.acquire(hw);
 	/* Get and set needed register values */
 	wuc = E1000_READ_REG(hw, E1000_WUC);
 	mdicnfg = E1000_READ_REG(hw, E1000_MDICNFG);
@@ -944,8 +846,11 @@ STATIC s32 e1000_pll_workaround_i210(struct e1000_hw *hw)
 	phy_word = E1000_PHY_PLL_UNCONF;
 	for (i = 0; i < E1000_MAX_PLL_TRIES; i++) {
 		/* check current state directly from internal PHY */
-		e1000_read_phy_reg_gs40g(hw, (E1000_PHY_PLL_FREQ_PAGE |
-					 E1000_PHY_PLL_FREQ_REG), &phy_word);
+		e1000_write_phy_reg_mdic(hw, GS40G_PAGE_SELECT, 0xFC);
+		usec_delay(20);
+		e1000_read_phy_reg_mdic(hw, E1000_PHY_PLL_FREQ_REG, &phy_word);
+		usec_delay(20);
+		e1000_write_phy_reg_mdic(hw, GS40G_PAGE_SELECT, 0);
 		if ((phy_word & E1000_PHY_PLL_UNCONF)
 		    != E1000_PHY_PLL_UNCONF) {
 			ret_val = E1000_SUCCESS;
@@ -979,6 +884,8 @@ STATIC s32 e1000_pll_workaround_i210(struct e1000_hw *hw)
 	}
 	/* restore MDICNFG setting */
 	E1000_WRITE_REG(hw, E1000_MDICNFG, mdicnfg);
+	/* Release PHY semaphore */
+	hw->phy.ops.release(hw);
 	return ret_val;
 }
 
@@ -1020,6 +927,7 @@ STATIC s32 e1000_get_cfg_done_i210(struct e1000_hw *hw)
 s32 e1000_init_hw_i210(struct e1000_hw *hw)
 {
 	s32 ret_val;
+	struct e1000_mac_info *mac = &hw->mac;
 
 	DEBUGFUNC("e1000_init_hw_i210");
 	if ((hw->mac.type >= e1000_i210) &&
@@ -1029,6 +937,10 @@ s32 e1000_init_hw_i210(struct e1000_hw *hw)
 			return ret_val;
 	}
 	hw->phy.ops.get_cfg_done = e1000_get_cfg_done_i210;
-	ret_val = e1000_init_hw_82575(hw);
+
+	/* Initialize identification LED */
+	ret_val = mac->ops.id_led_init(hw);
+
+	ret_val = e1000_init_hw_base(hw);
 	return ret_val;
 }

@@ -26,13 +26,33 @@ from mgr_util import to_pretty_timedelta, format_bytes
 from mgr_module import MgrModule, HandleCommandResult, Option
 from object_format import Format
 
-from ._interface import OrchestratorClientMixin, DeviceLightLoc, _cli_read_command, \
-    raise_if_exception, _cli_write_command, OrchestratorError, \
-    NoOrchestrator, OrchestratorValidationError, NFSServiceSpec, \
-    RGWSpec, InventoryFilter, InventoryHost, HostSpec, CLICommandMeta, \
-    ServiceDescription, DaemonDescription, IscsiServiceSpec, json_to_generic_spec, \
-    GenericSpec, DaemonDescriptionStatus, SNMPGatewaySpec, MDSSpec, TunedProfileSpec, \
-    NvmeofServiceSpec
+from ._interface import (
+    CLICommandMeta,
+    DaemonDescription,
+    DaemonDescriptionStatus,
+    DeviceLightLoc,
+    GenericSpec,
+    HostSpec,
+    InventoryFilter,
+    InventoryHost,
+    IscsiServiceSpec,
+    MDSSpec,
+    NFSServiceSpec,
+    NoOrchestrator,
+    NvmeofServiceSpec,
+    OrchestratorClientMixin,
+    OrchestratorError,
+    OrchestratorValidationError,
+    RGWSpec,
+    SMBSpec,
+    SNMPGatewaySpec,
+    ServiceDescription,
+    TunedProfileSpec,
+    _cli_read_command,
+    _cli_write_command,
+    json_to_generic_spec,
+    raise_if_exception,
+)
 
 
 def nice_delta(now: datetime.datetime, t: Optional[datetime.datetime], suffix: str = '') -> str:
@@ -129,7 +149,7 @@ class HostDetails:
         return _cls
 
     @staticmethod
-    def yaml_representer(dumper: 'yaml.SafeDumper', data: 'HostDetails') -> Any:
+    def yaml_representer(dumper: 'yaml.Dumper', data: 'HostDetails') -> yaml.Node:
         return dumper.represent_dict(cast(Mapping, data.to_json().items()))
 
 
@@ -139,7 +159,7 @@ yaml.add_representer(HostDetails, HostDetails.yaml_representer)
 class DaemonFields(enum.Enum):
     service_name = 'service_name'
     daemon_type = 'daemon_type'
-    name = 'name'
+    name = 'name'  # type: ignore
     host = 'host'
     status = 'status'
     refreshed = 'refreshed'
@@ -1143,6 +1163,18 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         except ArgumentError as e:
             return HandleCommandResult(-errno.EINVAL, "", (str(e)))
 
+    @_cli_write_command('orch prometheus set-target')
+    def _set_prometheus_target(self, url: str) -> HandleCommandResult:
+        completion = self.set_prometheus_target(url)
+        result = raise_if_exception(completion)
+        return HandleCommandResult(stdout=json.dumps(result))
+
+    @_cli_write_command('orch prometheus remove-target')
+    def _remove_prometheus_target(self, url: str) -> HandleCommandResult:
+        completion = self.remove_prometheus_target(url)
+        result = raise_if_exception(completion)
+        return HandleCommandResult(stdout=json.dumps(result))
+
     @_cli_write_command('orch alertmanager set-credentials')
     def _set_alertmanager_access_info(self, username: Optional[str] = None, password: Optional[str] = None, inbuf: Optional[str] = None) -> HandleCommandResult:
         try:
@@ -1530,6 +1562,21 @@ Usage:
                         except KeyError:
                             raise SpecValidationError(f'Invalid config option {k} in spec')
 
+                # There is a general "osd" service with no service id, but we use
+                # that to dump osds created individually with "ceph orch daemon add osd"
+                # and those made with "ceph orch apply osd --all-available-devices"
+                # For actual user created OSD specs, we should promote users having a
+                # service id so it doesn't get mixed in with those other OSDs. This
+                # check is being done in this spot in particular as this is the only
+                # place we can 100% differentiate between an actual user created OSD
+                # spec and a spec we made ourselves to cover the all-available-devices case
+                if (
+                    isinstance(spec, DriveGroupSpec)
+                    and spec.service_type == 'osd'
+                    and not spec.service_id
+                ):
+                    raise SpecValidationError('Please provide the service_id field in your OSD spec')
+
                 if dry_run and not isinstance(spec, HostSpec):
                     spec.preview_only = dry_run
 
@@ -1773,6 +1820,42 @@ Usage:
                            unmanaged=unmanaged)
         specs: List[ServiceSpec] = spec.get_tracing_specs()
         return self._apply_misc(specs, dry_run, format, no_overwrite)
+
+    @_cli_write_command('orch apply smb')
+    def _apply_smb(
+        self,
+        cluster_id: str,
+        config_uri: str,
+        features: str = '',
+        join_sources: Optional[List[str]] = None,
+        custom_dns: Optional[List[str]] = None,
+        include_ceph_users: Optional[List[str]] = None,
+        placement: Optional[str] = None,
+        unmanaged: bool = False,
+        dry_run: bool = False,
+        format: Format = Format.plain,
+        no_overwrite: bool = False,
+    ) -> HandleCommandResult:
+        """Apply an SMB network file system gateway service configuration."""
+
+        _features = features.replace(',', ' ').split()
+        spec = SMBSpec(
+            service_id=cluster_id,
+            placement=PlacementSpec.from_string(placement),
+            unmanaged=unmanaged,
+            preview_only=dry_run,
+            cluster_id=cluster_id,
+            features=_features,
+            config_uri=config_uri,
+            join_sources=join_sources,
+            custom_dns=custom_dns,
+            include_ceph_users=include_ceph_users,
+        )
+
+        spec.validate()  # force any validation exceptions to be caught correctly
+        # The previous comment makes no sense to JJM. But when in rome.
+
+        return self._apply_misc([spec], dry_run, format, no_overwrite)
 
     @_cli_write_command('orch set-unmanaged')
     def _set_unmanaged(self, service_name: str) -> HandleCommandResult:

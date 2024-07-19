@@ -19,10 +19,6 @@
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
-static const struct rte_eth_conf port_conf_default = {
-	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN }
-};
-
 /* l2fwd-cat.c: CAT enabled, basic DPDK skeleton forwarding example. */
 
 /*
@@ -32,7 +28,7 @@ static const struct rte_eth_conf port_conf_default = {
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
-	struct rte_eth_conf port_conf = port_conf_default;
+	struct rte_eth_conf port_conf;
 	const uint16_t rx_rings = 1, tx_rings = 1;
 	int retval;
 	uint16_t q;
@@ -41,6 +37,8 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
+
+	memset(&port_conf, 0, sizeof(struct rte_eth_conf));
 
 	/* Configure the Ethernet device. */
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
@@ -73,17 +71,19 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 
 	/* Display the port MAC address. */
-	struct ether_addr addr;
-	rte_eth_macaddr_get(port, &addr);
+	struct rte_ether_addr addr;
+	retval = rte_eth_macaddr_get(port, &addr);
+	if (retval < 0)
+		return retval;
+
 	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			port, RTE_ETHER_ADDR_BYTES(&addr));
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
-	rte_eth_promiscuous_enable(port);
+	retval = rte_eth_promiscuous_enable(port);
+	if (retval != 0)
+		return retval;
 
 	return 0;
 }
@@ -92,7 +92,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
  * The lcore main. This is the main thread that does the work, reading from
  * an input port and writing to an output port.
  */
-static __attribute__((noreturn)) void
+static __rte_noreturn void
 lcore_main(void)
 {
 	uint16_t port;
@@ -102,7 +102,7 @@ lcore_main(void)
 	 * for best performance.
 	 */
 	RTE_ETH_FOREACH_DEV(port)
-		if (rte_eth_dev_socket_id(port) > 0 &&
+		if (rte_eth_dev_socket_id(port) >= 0 &&
 				rte_eth_dev_socket_id(port) !=
 						(int)rte_socket_id())
 			printf("WARNING, port %u is on remote NUMA node to "
@@ -153,10 +153,11 @@ main(int argc, char *argv[])
 	unsigned nb_ports;
 	uint16_t portid;
 
-	/* Initialize the Environment Abstraction Layer (EAL). */
+	/* Initialize the Environment Abstraction Layer (EAL). 8< */
 	int ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+	/* >8 End of initialization the Environment Abstraction Layer (EAL). */
 
 	argc -= ret;
 	argv += ret;
@@ -165,9 +166,12 @@ main(int argc, char *argv[])
 	 * Initialize the PQoS library and configure CAT.
 	 * Please see l2fwd-cat documentation for more info.
 	 */
+
+	/* Initialize the PQoS. 8< */
 	ret = cat_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "PQOS: L3CA init failed!\n");
+	/* >8 End of initialization of PQoS. */
 
 	argc -= ret;
 	argv += ret;
@@ -193,8 +197,11 @@ main(int argc, char *argv[])
 	if (rte_lcore_count() > 1)
 		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
 
-	/* Call lcore_main on the master core only. */
+	/* Call lcore_main on the main core only. */
 	lcore_main();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

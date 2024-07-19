@@ -6,10 +6,8 @@
 #include <dirent.h>
 
 #include <rte_log.h>
-#include <rte_bus.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
-#include <rte_eal_memconfig.h>
 #include <rte_malloc.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
@@ -22,14 +20,8 @@
 
 /**
  * @file
- * PCI probing under linux
- *
- * This code is used to simulate a PCI probe by parsing information in sysfs.
- * When a registered device matches a driver, it is then initialized with
- * IGB_UIO driver (or doesn't initialize, if the device wasn't bound to it).
+ * PCI probing using Linux sysfs.
  */
-
-extern struct rte_pci_bus rte_pci_bus;
 
 static int
 pci_get_kernel_driver_by_path(const char *filename, char *dri_name,
@@ -69,14 +61,14 @@ rte_pci_map_device(struct rte_pci_device *dev)
 
 	/* try mapping the NIC resources using VFIO if it exists */
 	switch (dev->kdrv) {
-	case RTE_KDRV_VFIO:
+	case RTE_PCI_KDRV_VFIO:
 #ifdef VFIO_PRESENT
 		if (pci_vfio_is_enabled())
 			ret = pci_vfio_map_resource(dev);
 #endif
 		break;
-	case RTE_KDRV_IGB_UIO:
-	case RTE_KDRV_UIO_GENERIC:
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
 		if (rte_eal_using_phys_addrs()) {
 			/* map resources for devices that use uio */
 			ret = pci_uio_map_resource(dev);
@@ -98,14 +90,14 @@ rte_pci_unmap_device(struct rte_pci_device *dev)
 {
 	/* try unmapping the NIC resources using VFIO if it exists */
 	switch (dev->kdrv) {
-	case RTE_KDRV_VFIO:
+	case RTE_PCI_KDRV_VFIO:
 #ifdef VFIO_PRESENT
 		if (pci_vfio_is_enabled())
 			pci_vfio_unmap_resource(dev);
 #endif
 		break;
-	case RTE_KDRV_IGB_UIO:
-	case RTE_KDRV_UIO_GENERIC:
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
 		/* unmap resources for devices that use uio */
 		pci_uio_unmap_resource(dev);
 		break;
@@ -219,22 +211,26 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 {
 	char filename[PATH_MAX];
 	unsigned long tmp;
+	struct rte_pci_device_internal *pdev;
 	struct rte_pci_device *dev;
 	char driver[PATH_MAX];
 	int ret;
 
-	dev = malloc(sizeof(*dev));
-	if (dev == NULL)
+	pdev = malloc(sizeof(*pdev));
+	if (pdev == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot allocate memory for internal pci device\n");
 		return -1;
+	}
 
-	memset(dev, 0, sizeof(*dev));
+	memset(pdev, 0, sizeof(*pdev));
+	dev = &pdev->device;
 	dev->device.bus = &rte_pci_bus.bus;
 	dev->addr = *addr;
 
 	/* get vendor id */
 	snprintf(filename, sizeof(filename), "%s/vendor", dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(pdev);
 		return -1;
 	}
 	dev->id.vendor_id = (uint16_t)tmp;
@@ -242,7 +238,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	/* get device id */
 	snprintf(filename, sizeof(filename), "%s/device", dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(pdev);
 		return -1;
 	}
 	dev->id.device_id = (uint16_t)tmp;
@@ -251,7 +247,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	snprintf(filename, sizeof(filename), "%s/subsystem_vendor",
 		 dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(pdev);
 		return -1;
 	}
 	dev->id.subsystem_vendor_id = (uint16_t)tmp;
@@ -260,7 +256,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	snprintf(filename, sizeof(filename), "%s/subsystem_device",
 		 dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(pdev);
 		return -1;
 	}
 	dev->id.subsystem_device_id = (uint16_t)tmp;
@@ -269,7 +265,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	snprintf(filename, sizeof(filename), "%s/class",
 		 dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(pdev);
 		return -1;
 	}
 	/* the least 24 bits are valid: class, subclass, program interface */
@@ -291,25 +287,21 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	}
 
 	/* get numa node, default to 0 if not present */
-	snprintf(filename, sizeof(filename), "%s/numa_node",
-		 dirname);
+	snprintf(filename, sizeof(filename), "%s/numa_node", dirname);
 
-	if (access(filename, F_OK) != -1) {
-		if (eal_parse_sysfs_value(filename, &tmp) == 0)
-			dev->device.numa_node = tmp;
-		else
-			dev->device.numa_node = -1;
-	} else {
-		dev->device.numa_node = 0;
-	}
+	if (access(filename, F_OK) == 0 &&
+	    eal_parse_sysfs_value(filename, &tmp) == 0)
+		dev->device.numa_node = tmp;
+	else
+		dev->device.numa_node = SOCKET_ID_ANY;
 
-	pci_name_set(dev);
+	pci_common_set(dev);
 
 	/* parse resources */
 	snprintf(filename, sizeof(filename), "%s/resource", dirname);
 	if (pci_parse_sysfs_resource(filename, dev) < 0) {
 		RTE_LOG(ERR, EAL, "%s(): cannot parse resource\n", __func__);
-		free(dev);
+		pci_free(pdev);
 		return -1;
 	}
 
@@ -318,22 +310,23 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	ret = pci_get_kernel_driver_by_path(filename, driver, sizeof(driver));
 	if (ret < 0) {
 		RTE_LOG(ERR, EAL, "Fail to get kernel driver\n");
-		free(dev);
+		pci_free(pdev);
 		return -1;
 	}
 
 	if (!ret) {
 		if (!strcmp(driver, "vfio-pci"))
-			dev->kdrv = RTE_KDRV_VFIO;
+			dev->kdrv = RTE_PCI_KDRV_VFIO;
 		else if (!strcmp(driver, "igb_uio"))
-			dev->kdrv = RTE_KDRV_IGB_UIO;
+			dev->kdrv = RTE_PCI_KDRV_IGB_UIO;
 		else if (!strcmp(driver, "uio_pci_generic"))
-			dev->kdrv = RTE_KDRV_UIO_GENERIC;
+			dev->kdrv = RTE_PCI_KDRV_UIO_GENERIC;
 		else
-			dev->kdrv = RTE_KDRV_UNKNOWN;
-	} else
-		dev->kdrv = RTE_KDRV_NONE;
-
+			dev->kdrv = RTE_PCI_KDRV_UNKNOWN;
+	} else {
+		pci_free(pdev);
+		return 0;
+	}
 	/* device is valid, add in list (sorted) */
 	if (TAILQ_EMPTY(&rte_pci_bus.device_list)) {
 		rte_pci_add_device(dev);
@@ -352,7 +345,8 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 				if (!rte_dev_is_probed(&dev2->device)) {
 					dev2->kdrv = dev->kdrv;
 					dev2->max_vfs = dev->max_vfs;
-					pci_name_set(dev2);
+					dev2->id = dev->id;
+					pci_common_set(dev2);
 					memmove(dev2->mem_resource,
 						dev->mem_resource,
 						sizeof(dev->mem_resource));
@@ -365,7 +359,8 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 					 * need to do anything here unless...
 					 **/
 					if (dev2->kdrv != dev->kdrv ||
-						dev2->max_vfs != dev->max_vfs)
+						dev2->max_vfs != dev->max_vfs ||
+						memcmp(&dev2->id, &dev->id, sizeof(dev2->id)))
 						/*
 						 * This should not happens.
 						 * But it is still possible if
@@ -378,8 +373,13 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 						 */
 						RTE_LOG(ERR, EAL, "Unexpected device scan at %s!\n",
 							filename);
+					else if (dev2->device.devargs !=
+						 dev->device.devargs) {
+						rte_devargs_remove(dev2->device.devargs);
+						pci_common_set(dev2);
+					}
 				}
-				free(dev);
+				pci_free(pdev);
 			}
 			return 0;
 		}
@@ -388,18 +388,6 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	}
 
 	return 0;
-}
-
-int
-pci_update_device(const struct rte_pci_addr *addr)
-{
-	char filename[PATH_MAX];
-
-	snprintf(filename, sizeof(filename), "%s/" PCI_PRI_FMT,
-		 rte_pci_get_sysfs_path(), addr->domain, addr->bus, addr->devid,
-		 addr->function);
-
-	return pci_scan_one(filename, addr);
 }
 
 /*
@@ -464,11 +452,6 @@ rte_pci_scan(void)
 	if (!rte_eal_has_pci())
 		return 0;
 
-#ifdef VFIO_PRESENT
-	if (!pci_vfio_is_enabled())
-		RTE_LOG(DEBUG, EAL, "VFIO PCI modules not loaded\n");
-#endif
-
 	dir = opendir(rte_pci_get_sysfs_path());
 	if (dir == NULL) {
 		RTE_LOG(ERR, EAL, "%s(): opendir failed: %s\n",
@@ -481,6 +464,9 @@ rte_pci_scan(void)
 			continue;
 
 		if (parse_pci_addr_format(e->d_name, sizeof(e->d_name), &addr) != 0)
+			continue;
+
+		if (rte_pci_ignore_device(&addr))
 			continue;
 
 		snprintf(dirname, sizeof(dirname), "%s/%s",
@@ -497,94 +483,13 @@ error:
 	return -1;
 }
 
-/*
- * Is pci device bound to any kdrv
- */
-static inline int
-pci_one_device_is_bound(void)
-{
-	struct rte_pci_device *dev = NULL;
-	int ret = 0;
-
-	FOREACH_DEVICE_ON_PCIBUS(dev) {
-		if (dev->kdrv == RTE_KDRV_UNKNOWN ||
-		    dev->kdrv == RTE_KDRV_NONE) {
-			continue;
-		} else {
-			ret = 1;
-			break;
-		}
-	}
-	return ret;
-}
-
-/*
- * Any one of the device bound to uio
- */
-static inline int
-pci_one_device_bound_uio(void)
-{
-	struct rte_pci_device *dev = NULL;
-	struct rte_devargs *devargs;
-	int need_check;
-
-	FOREACH_DEVICE_ON_PCIBUS(dev) {
-		devargs = dev->device.devargs;
-
-		need_check = 0;
-		switch (rte_pci_bus.bus.conf.scan_mode) {
-		case RTE_BUS_SCAN_WHITELIST:
-			if (devargs && devargs->policy == RTE_DEV_WHITELISTED)
-				need_check = 1;
-			break;
-		case RTE_BUS_SCAN_UNDEFINED:
-		case RTE_BUS_SCAN_BLACKLIST:
-			if (devargs == NULL ||
-			    devargs->policy != RTE_DEV_BLACKLISTED)
-				need_check = 1;
-			break;
-		}
-
-		if (!need_check)
-			continue;
-
-		if (dev->kdrv == RTE_KDRV_IGB_UIO ||
-		   dev->kdrv == RTE_KDRV_UIO_GENERIC) {
-			return 1;
-		}
-	}
-	return 0;
-}
-
-/*
- * Any one of the device has iova as va
- */
-static inline int
-pci_one_device_has_iova_va(void)
-{
-	struct rte_pci_device *dev = NULL;
-	struct rte_pci_driver *drv = NULL;
-
-	FOREACH_DRIVER_ON_PCIBUS(drv) {
-		if (drv && drv->drv_flags & RTE_PCI_DRV_IOVA_AS_VA) {
-			FOREACH_DEVICE_ON_PCIBUS(dev) {
-				if (dev->kdrv == RTE_KDRV_VFIO &&
-				    rte_pci_match(drv, dev))
-					return 1;
-			}
-		}
-	}
-	return 0;
-}
-
 #if defined(RTE_ARCH_X86)
-static bool
-pci_one_device_iommu_support_va(struct rte_pci_device *dev)
+bool
+pci_device_iommu_support_va(const struct rte_pci_device *dev)
 {
 #define VTD_CAP_MGAW_SHIFT	16
 #define VTD_CAP_MGAW_MASK	(0x3fULL << VTD_CAP_MGAW_SHIFT)
-#define X86_VA_WIDTH 47 /* From Documentation/x86/x86_64/mm.txt */
-	struct rte_pci_addr *addr = &dev->addr;
+	const struct rte_pci_addr *addr = &dev->addr;
 	char filename[PATH_MAX];
 	FILE *fp;
 	uint64_t mgaw, vtd_cap_reg = 0;
@@ -593,18 +498,19 @@ pci_one_device_iommu_support_va(struct rte_pci_device *dev)
 		 "%s/" PCI_PRI_FMT "/iommu/intel-iommu/cap",
 		 rte_pci_get_sysfs_path(), addr->domain, addr->bus, addr->devid,
 		 addr->function);
-	if (access(filename, F_OK) == -1) {
-		/* We don't have an Intel IOMMU, assume VA supported*/
-		return true;
-	}
 
-	/* We have an intel IOMMU */
 	fp = fopen(filename, "r");
 	if (fp == NULL) {
-		RTE_LOG(ERR, EAL, "%s(): can't open %s\n", __func__, filename);
+		/* We don't have an Intel IOMMU, assume VA supported */
+		if (errno == ENOENT)
+			return true;
+
+		RTE_LOG(ERR, EAL, "%s(): can't open %s: %s\n",
+			__func__, filename, strerror(errno));
 		return false;
 	}
 
+	/* We have an Intel IOMMU */
 	if (fscanf(fp, "%" PRIx64, &vtd_cap_reg) != 1) {
 		RTE_LOG(ERR, EAL, "%s(): can't read %s\n", __func__, filename);
 		fclose(fp);
@@ -627,81 +533,103 @@ pci_one_device_iommu_support_va(struct rte_pci_device *dev)
 	return true;
 }
 #elif defined(RTE_ARCH_PPC_64)
-static bool
-pci_one_device_iommu_support_va(__rte_unused struct rte_pci_device *dev)
+bool
+pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
 {
-	return false;
-}
-#else
-static bool
-pci_one_device_iommu_support_va(__rte_unused struct rte_pci_device *dev)
-{
-	return true;
-}
-#endif
+	/*
+	 * All POWER systems support an IOMMU, but only IOMMUv2 supports
+	 * IOVA = VA in DPDK. Check contents of /proc/cpuinfo to find the
+	 * system.
+	 *
+	 * Platform | Model |  IOMMU  | VA? |             Comment
+	 * ---------+-------+---------+-----+---------------------------------
+	 *  PowerNV |  N/A  | IOMMUv2 | Yes | OpenPOWER (Bare Metal)
+	 *  pSeries | ~qemu | IOMMUv2 | Yes | PowerVM Logical Partition (LPAR)
+	 *  pSeries |  qemu | IOMMUv1 |  No | QEMU Virtual Machine
+	 */
 
-/*
- * All devices IOMMUs support VA as IOVA
- */
-static bool
-pci_devices_iommu_support_va(void)
-{
-	struct rte_pci_device *dev = NULL;
-	struct rte_pci_driver *drv = NULL;
+	char *line = NULL;
+	size_t len = 0;
+	char filename[PATH_MAX] = "/proc/cpuinfo";
+	FILE *fp = fopen(filename, "r");
+	bool pseries = false, powernv = false, qemu = false;
+	bool ret = false;
 
-	FOREACH_DRIVER_ON_PCIBUS(drv) {
-		FOREACH_DEVICE_ON_PCIBUS(dev) {
-			if (!rte_pci_match(drv, dev))
-				continue;
-			/*
-			 * just one PCI device needs to be checked out because
-			 * the IOMMU hardware is the same for all of them.
-			 */
-			return pci_one_device_iommu_support_va(dev);
+	if (fp == NULL) {
+		RTE_LOG(ERR, EAL, "%s(): can't open %s: %s\n",
+			__func__, filename, strerror(errno));
+		return ret;
+	}
+
+	/* Check the "platform" and "model" fields */
+	while (getline(&line, &len, fp) != -1) {
+		if (strstr(line, "platform") != NULL) {
+			if (strstr(line, "PowerNV") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Running on a PowerNV platform\n");
+				powernv = true;
+			} else if (strstr(line, "pSeries") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Running on a pSeries platform\n");
+				pseries = true;
+			}
+		} else if (strstr(line, "model") != NULL) {
+			if (strstr(line, "qemu") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Found qemu emulation\n");
+				qemu = true;
+			}
 		}
 	}
+
+	free(line);
+	fclose(fp);
+
+	if (powernv || (pseries && !qemu))
+		ret = true;
+	return ret;
+}
+#else
+bool
+pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
+{
 	return true;
 }
-
-/*
- * Get iommu class of PCI devices on the bus.
- */
-enum rte_iova_mode
-rte_pci_get_iommu_class(void)
-{
-	bool is_bound;
-	bool is_vfio_noiommu_enabled = true;
-	bool has_iova_va;
-	bool is_bound_uio;
-	bool iommu_no_va;
-
-	is_bound = pci_one_device_is_bound();
-	if (!is_bound)
-		return RTE_IOVA_DC;
-
-	has_iova_va = pci_one_device_has_iova_va();
-	is_bound_uio = pci_one_device_bound_uio();
-	iommu_no_va = !pci_devices_iommu_support_va();
-#ifdef VFIO_PRESENT
-	is_vfio_noiommu_enabled = rte_vfio_noiommu_is_enabled() == true ?
-					true : false;
 #endif
 
-	if (has_iova_va && !is_bound_uio && !is_vfio_noiommu_enabled &&
-			!iommu_no_va)
-		return RTE_IOVA_VA;
+enum rte_iova_mode
+pci_device_iova_mode(const struct rte_pci_driver *pdrv,
+		     const struct rte_pci_device *pdev)
+{
+	enum rte_iova_mode iova_mode = RTE_IOVA_DC;
 
-	if (has_iova_va) {
-		RTE_LOG(WARNING, EAL, "Some devices want iova as va but pa will be used because.. ");
-		if (is_vfio_noiommu_enabled)
-			RTE_LOG(WARNING, EAL, "vfio-noiommu mode configured\n");
-		if (is_bound_uio)
-			RTE_LOG(WARNING, EAL, "few device bound to UIO\n");
-		if (iommu_no_va)
-			RTE_LOG(WARNING, EAL, "IOMMU does not support IOVA as VA\n");
+	switch (pdev->kdrv) {
+	case RTE_PCI_KDRV_VFIO: {
+#ifdef VFIO_PRESENT
+		static int is_vfio_noiommu_enabled = -1;
+
+		if (is_vfio_noiommu_enabled == -1) {
+			if (rte_vfio_noiommu_is_enabled() == 1)
+				is_vfio_noiommu_enabled = 1;
+			else
+				is_vfio_noiommu_enabled = 0;
+		}
+		if (is_vfio_noiommu_enabled != 0)
+			iova_mode = RTE_IOVA_PA;
+		else if ((pdrv->drv_flags & RTE_PCI_DRV_NEED_IOVA_AS_VA) != 0)
+			iova_mode = RTE_IOVA_VA;
+#endif
+		break;
 	}
 
-	return RTE_IOVA_PA;
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
+		iova_mode = RTE_IOVA_PA;
+		break;
+
+	default:
+		if ((pdrv->drv_flags & RTE_PCI_DRV_NEED_IOVA_AS_VA) != 0)
+			iova_mode = RTE_IOVA_VA;
+		break;
+	}
+	return iova_mode;
 }
 
 /* Read PCI config space. */
@@ -709,15 +637,15 @@ int rte_pci_read_config(const struct rte_pci_device *device,
 		void *buf, size_t len, off_t offset)
 {
 	char devname[RTE_DEV_NAME_MAX_LEN] = "";
-	const struct rte_intr_handle *intr_handle = &device->intr_handle;
+	const struct rte_intr_handle *intr_handle = device->intr_handle;
 
 	switch (device->kdrv) {
-	case RTE_KDRV_IGB_UIO:
-	case RTE_KDRV_UIO_GENERIC:
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
 		return pci_uio_read_config(intr_handle, buf, len, offset);
 #ifdef VFIO_PRESENT
-	case RTE_KDRV_VFIO:
-		return pci_vfio_read_config(intr_handle, buf, len, offset);
+	case RTE_PCI_KDRV_VFIO:
+		return pci_vfio_read_config(device, buf, len, offset);
 #endif
 	default:
 		rte_pci_device_name(&device->addr, devname,
@@ -733,15 +661,15 @@ int rte_pci_write_config(const struct rte_pci_device *device,
 		const void *buf, size_t len, off_t offset)
 {
 	char devname[RTE_DEV_NAME_MAX_LEN] = "";
-	const struct rte_intr_handle *intr_handle = &device->intr_handle;
+	const struct rte_intr_handle *intr_handle = device->intr_handle;
 
 	switch (device->kdrv) {
-	case RTE_KDRV_IGB_UIO:
-	case RTE_KDRV_UIO_GENERIC:
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
 		return pci_uio_write_config(intr_handle, buf, len, offset);
 #ifdef VFIO_PRESENT
-	case RTE_KDRV_VFIO:
-		return pci_vfio_write_config(intr_handle, buf, len, offset);
+	case RTE_PCI_KDRV_VFIO:
+		return pci_vfio_write_config(device, buf, len, offset);
 #endif
 	default:
 		rte_pci_device_name(&device->addr, devname,
@@ -752,64 +680,51 @@ int rte_pci_write_config(const struct rte_pci_device *device,
 	}
 }
 
-#if defined(RTE_ARCH_X86)
-static int
-pci_ioport_map(struct rte_pci_device *dev, int bar __rte_unused,
-		struct rte_pci_ioport *p)
+/* Read PCI MMIO space. */
+int rte_pci_mmio_read(const struct rte_pci_device *device, int bar,
+		void *buf, size_t len, off_t offset)
 {
-	uint16_t start, end;
-	FILE *fp;
-	char *line = NULL;
-	char pci_id[16];
-	int found = 0;
-	size_t linesz;
+	char devname[RTE_DEV_NAME_MAX_LEN] = "";
 
-	snprintf(pci_id, sizeof(pci_id), PCI_PRI_FMT,
-		 dev->addr.domain, dev->addr.bus,
-		 dev->addr.devid, dev->addr.function);
-
-	fp = fopen("/proc/ioports", "r");
-	if (fp == NULL) {
-		RTE_LOG(ERR, EAL, "%s(): can't open ioports\n", __func__);
-		return -1;
-	}
-
-	while (getdelim(&line, &linesz, '\n', fp) > 0) {
-		char *ptr = line;
-		char *left;
-		int n;
-
-		n = strcspn(ptr, ":");
-		ptr[n] = 0;
-		left = &ptr[n + 1];
-
-		while (*left && isspace(*left))
-			left++;
-
-		if (!strncmp(left, pci_id, strlen(pci_id))) {
-			found = 1;
-
-			while (*ptr && isspace(*ptr))
-				ptr++;
-
-			sscanf(ptr, "%04hx-%04hx", &start, &end);
-
-			break;
-		}
-	}
-
-	free(line);
-	fclose(fp);
-
-	if (!found)
-		return -1;
-
-	p->base = start;
-	RTE_LOG(DEBUG, EAL, "PCI Port IO found start=0x%x\n", start);
-
-	return 0;
-}
+	switch (device->kdrv) {
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
+		return pci_uio_mmio_read(device, bar, buf, len, offset);
+#ifdef VFIO_PRESENT
+	case RTE_PCI_KDRV_VFIO:
+		return pci_vfio_mmio_read(device, bar, buf, len, offset);
 #endif
+	default:
+		rte_pci_device_name(&device->addr, devname,
+				    RTE_DEV_NAME_MAX_LEN);
+		RTE_LOG(ERR, EAL,
+			"Unknown driver type for %s\n", devname);
+		return -1;
+	}
+}
+
+/* Write PCI MMIO space. */
+int rte_pci_mmio_write(const struct rte_pci_device *device, int bar,
+		const void *buf, size_t len, off_t offset)
+{
+	char devname[RTE_DEV_NAME_MAX_LEN] = "";
+
+	switch (device->kdrv) {
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
+		return pci_uio_mmio_write(device, bar, buf, len, offset);
+#ifdef VFIO_PRESENT
+	case RTE_PCI_KDRV_VFIO:
+		return pci_vfio_mmio_write(device, bar, buf, len, offset);
+#endif
+	default:
+		rte_pci_device_name(&device->addr, devname,
+				    RTE_DEV_NAME_MAX_LEN);
+		RTE_LOG(ERR, EAL,
+			"Unknown driver type for %s\n", devname);
+		return -1;
+	}
+}
 
 int
 rte_pci_ioport_map(struct rte_pci_device *dev, int bar,
@@ -819,25 +734,14 @@ rte_pci_ioport_map(struct rte_pci_device *dev, int bar,
 
 	switch (dev->kdrv) {
 #ifdef VFIO_PRESENT
-	case RTE_KDRV_VFIO:
+	case RTE_PCI_KDRV_VFIO:
 		if (pci_vfio_is_enabled())
 			ret = pci_vfio_ioport_map(dev, bar, p);
 		break;
 #endif
-	case RTE_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
 		ret = pci_uio_ioport_map(dev, bar, p);
-		break;
-	case RTE_KDRV_UIO_GENERIC:
-#if defined(RTE_ARCH_X86)
-		ret = pci_ioport_map(dev, bar, p);
-#else
-		ret = pci_uio_ioport_map(dev, bar, p);
-#endif
-		break;
-	case RTE_KDRV_NONE:
-#if defined(RTE_ARCH_X86)
-		ret = pci_ioport_map(dev, bar, p);
-#endif
 		break;
 	default:
 		break;
@@ -855,20 +759,13 @@ rte_pci_ioport_read(struct rte_pci_ioport *p,
 {
 	switch (p->dev->kdrv) {
 #ifdef VFIO_PRESENT
-	case RTE_KDRV_VFIO:
+	case RTE_PCI_KDRV_VFIO:
 		pci_vfio_ioport_read(p, data, len, offset);
 		break;
 #endif
-	case RTE_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
 		pci_uio_ioport_read(p, data, len, offset);
-		break;
-	case RTE_KDRV_UIO_GENERIC:
-		pci_uio_ioport_read(p, data, len, offset);
-		break;
-	case RTE_KDRV_NONE:
-#if defined(RTE_ARCH_X86)
-		pci_uio_ioport_read(p, data, len, offset);
-#endif
 		break;
 	default:
 		break;
@@ -881,20 +778,13 @@ rte_pci_ioport_write(struct rte_pci_ioport *p,
 {
 	switch (p->dev->kdrv) {
 #ifdef VFIO_PRESENT
-	case RTE_KDRV_VFIO:
+	case RTE_PCI_KDRV_VFIO:
 		pci_vfio_ioport_write(p, data, len, offset);
 		break;
 #endif
-	case RTE_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
 		pci_uio_ioport_write(p, data, len, offset);
-		break;
-	case RTE_KDRV_UIO_GENERIC:
-		pci_uio_ioport_write(p, data, len, offset);
-		break;
-	case RTE_KDRV_NONE:
-#if defined(RTE_ARCH_X86)
-		pci_uio_ioport_write(p, data, len, offset);
-#endif
 		break;
 	default:
 		break;
@@ -908,25 +798,14 @@ rte_pci_ioport_unmap(struct rte_pci_ioport *p)
 
 	switch (p->dev->kdrv) {
 #ifdef VFIO_PRESENT
-	case RTE_KDRV_VFIO:
+	case RTE_PCI_KDRV_VFIO:
 		if (pci_vfio_is_enabled())
 			ret = pci_vfio_ioport_unmap(p);
 		break;
 #endif
-	case RTE_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_IGB_UIO:
+	case RTE_PCI_KDRV_UIO_GENERIC:
 		ret = pci_uio_ioport_unmap(p);
-		break;
-	case RTE_KDRV_UIO_GENERIC:
-#if defined(RTE_ARCH_X86)
-		ret = 0;
-#else
-		ret = pci_uio_ioport_unmap(p);
-#endif
-		break;
-	case RTE_KDRV_NONE:
-#if defined(RTE_ARCH_X86)
-		ret = 0;
-#endif
 		break;
 	default:
 		break;

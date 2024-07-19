@@ -22,10 +22,13 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
+#include <unordered_map>
+#endif
 #include <seastar/net/net.hh>
 #include <seastar/core/byteorder.hh>
 #include <seastar/net/ethernet.hh>
-#include <unordered_map>
+#include <seastar/util/modules.hh>
 
 namespace seastar {
 
@@ -44,7 +47,12 @@ public:
     arp_for_protocol(arp& a, uint16_t proto_num);
     virtual ~arp_for_protocol();
     virtual future<> received(packet p) = 0;
-    virtual bool forward(forward_hash& out_hash_data, packet& p, size_t off) { return false; }
+    virtual bool forward(forward_hash& out_hash_data, packet& p, size_t off) {
+      std::ignore = out_hash_data;
+      std::ignore = p;
+      std::ignore = off;
+      return false;
+    }
 };
 
 class arp {

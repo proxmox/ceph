@@ -11,7 +11,7 @@
 
 #include "test.h"
 
-/* incrementd in handler, to check it is properly called once per
+/* incremented in handler, to check it is properly called once per
  * key/value association */
 static unsigned count;
 
@@ -35,6 +35,25 @@ static int check_handler(const char *key, const char *value,
 	return 0;
 }
 
+/* test parsing. */
+static int test_kvargs_parsing(const char *args, unsigned int n)
+{
+	struct rte_kvargs *kvlist;
+
+	kvlist = rte_kvargs_parse(args, NULL);
+	if (kvlist == NULL) {
+		printf("rte_kvargs_parse() error: %s\n", args);
+		return -1;
+	}
+	if (kvlist->count != n) {
+		printf("invalid count value %d: %s\n", kvlist->count, args);
+		rte_kvargs_free(kvlist);
+		return -1;
+	}
+	rte_kvargs_free(kvlist);
+	return 0;
+}
+
 /* test a valid case */
 static int test_valid_kvargs(void)
 {
@@ -42,6 +61,19 @@ static int test_valid_kvargs(void)
 	const char *args;
 	const char *valid_keys_list[] = { "foo", "check", NULL };
 	const char **valid_keys;
+	static const struct {
+		unsigned int expected;
+		const char *input;
+	} valid_inputs[] = {
+		{ 2, "foo=1,foo=" },
+		{ 2, "foo=1,foo=" },
+		{ 2, "foo=1,foo" },
+		{ 2, "foo=1,=2" },
+		{ 1, "foo=[1,2" },
+		{ 1, ",=" },
+		{ 1, "foo=[" },
+	};
+	unsigned int i;
 
 	/* empty args is valid */
 	args = "";
@@ -75,14 +107,14 @@ static int test_valid_kvargs(void)
 		goto fail;
 	}
 	count = 0;
-	/* call check_handler() for all entries with key="unexistant_key" */
-	if (rte_kvargs_process(kvlist, "unexistant_key", check_handler, NULL) < 0) {
+	/* call check_handler() for all entries with key="nonexistent_key" */
+	if (rte_kvargs_process(kvlist, "nonexistent_key", check_handler, NULL) < 0) {
 		printf("rte_kvargs_process() error\n");
 		rte_kvargs_free(kvlist);
 		goto fail;
 	}
 	if (count != 0) {
-		printf("invalid count value %d after rte_kvargs_process(unexistant_key)\n",
+		printf("invalid count value %d after rte_kvargs_process(nonexistent_key)\n",
 			count);
 		rte_kvargs_free(kvlist);
 		goto fail;
@@ -103,10 +135,10 @@ static int test_valid_kvargs(void)
 		rte_kvargs_free(kvlist);
 		goto fail;
 	}
-	/* count all entries with key="unexistant_key" */
-	count = rte_kvargs_count(kvlist, "unexistant_key");
+	/* count all entries with key="nonexistent_key" */
+	count = rte_kvargs_count(kvlist, "nonexistent_key");
 	if (count != 0) {
-		printf("invalid count value %d after rte_kvargs_count(unexistant_key)\n",
+		printf("invalid count value %d after rte_kvargs_count(nonexistent_key)\n",
 			count);
 		rte_kvargs_free(kvlist);
 		goto fail;
@@ -124,7 +156,7 @@ static int test_valid_kvargs(void)
 	/* call check_handler() on all entries with key="check", it
 	 * should fail as the value is not recognized by the handler */
 	if (rte_kvargs_process(kvlist, "check", check_handler, NULL) == 0) {
-		printf("rte_kvargs_process() is success bu should not\n");
+		printf("rte_kvargs_process() is success but should not\n");
 		rte_kvargs_free(kvlist);
 		goto fail;
 	}
@@ -142,7 +174,7 @@ static int test_valid_kvargs(void)
 	valid_keys = valid_keys_list;
 	kvlist = rte_kvargs_parse(args, valid_keys);
 	if (kvlist == NULL) {
-		printf("rte_kvargs_parse() error");
+		printf("rte_kvargs_parse() error\n");
 		goto fail;
 	}
 	if (strcmp(kvlist->pairs[0].value, "[0,1]") != 0) {
@@ -156,6 +188,48 @@ static int test_valid_kvargs(void)
 		goto fail;
 	}
 	rte_kvargs_free(kvlist);
+
+	/* test using empty string (it is valid) */
+	args = "";
+	kvlist = rte_kvargs_parse(args, NULL);
+	if (kvlist == NULL) {
+		printf("rte_kvargs_parse() error\n");
+		goto fail;
+	}
+	if (rte_kvargs_count(kvlist, NULL) != 0) {
+		printf("invalid count value\n");
+		goto fail;
+	}
+	rte_kvargs_free(kvlist);
+
+	/* test using empty elements (it is valid) */
+	args = "foo=1,,check=value2,,";
+	kvlist = rte_kvargs_parse(args, NULL);
+	if (kvlist == NULL) {
+		printf("rte_kvargs_parse() error\n");
+		goto fail;
+	}
+	if (rte_kvargs_count(kvlist, NULL) != 2) {
+		printf("invalid count value\n");
+		goto fail;
+	}
+	if (rte_kvargs_count(kvlist, "foo") != 1) {
+		printf("invalid count value for 'foo'\n");
+		goto fail;
+	}
+	if (rte_kvargs_count(kvlist, "check") != 1) {
+		printf("invalid count value for 'check'\n");
+		goto fail;
+	}
+	rte_kvargs_free(kvlist);
+
+	valid_keys = NULL;
+
+	for (i = 0; i < RTE_DIM(valid_inputs); ++i) {
+		args = valid_inputs[i].input;
+		if (test_kvargs_parsing(args, valid_inputs[i].expected))
+			goto fail;
+	}
 
 	return 0;
 
@@ -178,12 +252,6 @@ static int test_invalid_kvargs(void)
 	/* list of argument that should fail */
 	const char *args_list[] = {
 		"wrong-key=x",     /* key not in valid_keys_list */
-		"foo=1,foo=",      /* empty value */
-		"foo=1,,foo=2",    /* empty key/value */
-		"foo=1,foo",       /* no value */
-		"foo=1,=2",        /* no key */
-		"foo=[1,2",        /* no closing bracket in value */
-		",=",              /* also test with a smiley */
 		NULL };
 	const char **args;
 	const char *valid_keys_list[] = { "foo", "check", NULL };
@@ -197,8 +265,8 @@ static int test_invalid_kvargs(void)
 			rte_kvargs_free(kvlist);
 			goto fail;
 		}
-		return 0;
 	}
+	return 0;
 
  fail:
 	printf("while processing <%s>", *args);

@@ -23,7 +23,11 @@
 
 #include <seastar/core/circular_buffer.hh>
 #include <seastar/core/internal/io_request.hh>
-#include <seastar/util/concepts.hh>
+
+#include <concepts>
+#include <cstddef>
+#include <type_traits>
+#include <utility>
 
 namespace seastar {
 
@@ -52,7 +56,7 @@ public:
     template <typename Fn>
     // Fn should return whether the request was consumed and
     // draining should try to drain more
-    SEASTAR_CONCEPT( requires std::is_invocable_r<bool, Fn, internal::io_request&, io_completion*>::value )
+    requires std::is_invocable_r<bool, Fn, internal::io_request&, io_completion*>::value
     size_t drain(Fn&& consume) {
         size_t pending = _pending_io.size();
         size_t drained = 0;

@@ -11,7 +11,7 @@
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_memory.h>
 
 struct nicvf_rbdr {
@@ -55,7 +55,7 @@ union mbuf_initializer {
 };
 
 struct nicvf_rxq {
-	MARKER rxq_fastpath_data_start;
+	RTE_MARKER rxq_fastpath_data_start;
 	uint8_t  rbptr_offset;
 	uint16_t rx_free_thresh;
 	uint32_t head;
@@ -69,7 +69,7 @@ struct nicvf_rxq {
 	struct rte_mempool *pool;
 	union cq_entry_t *desc;
 	union mbuf_initializer mbuf_initializer;
-	MARKER rxq_fastpath_data_end;
+	RTE_MARKER rxq_fastpath_data_end;
 	uint8_t rx_drop_en;
 	uint16_t precharge_cnt;
 	uint16_t port_id;
@@ -100,17 +100,26 @@ struct nicvf {
 	uint16_t subsystem_vendor_id;
 	struct nicvf_rbdr *rbdr;
 	struct nicvf_rss_reta_info rss_info;
-	struct rte_intr_handle intr_handle;
+	struct rte_intr_handle *intr_handle;
 	uint8_t cpi_alg;
 	uint16_t mtu;
 	int skip_bytes;
 	bool vlan_filter_en;
-	uint8_t mac_addr[ETHER_ADDR_LEN];
+	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 	/* secondary queue set support */
 	uint8_t sqs_id;
 	uint8_t sqs_count;
 #define MAX_SQS_PER_VF 11
 	struct nicvf *snicvf[MAX_SQS_PER_VF];
 } __rte_cache_aligned;
+
+struct change_link_mode {
+	bool	   enable;
+	uint8_t    qlm_mode;
+	bool	   autoneg;
+	uint8_t    duplex;
+	uint32_t   speed;
+
+};
 
 #endif /* _THUNDERX_NICVF_STRUCT_H */

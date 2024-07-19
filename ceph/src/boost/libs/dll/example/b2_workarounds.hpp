@@ -1,5 +1,5 @@
 // Copyright 2014 Renato Tegon Forti, Antony Polukhin.
-// Copyright Antony Polukhin, 2015-2022.
+// Copyright Antony Polukhin, 2015-2023.
 //
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE_1_0.txt
@@ -46,6 +46,12 @@ inline bool is_shared_library(const char* p) {
 inline bool is_shared_library(const boost::filesystem::path& p) {
     return b2_workarounds::is_shared_library(p.string());
 }
+
+#ifdef BOOST_DLL_USE_STD_FS
+inline bool is_shared_library(const std::filesystem::path& p) {
+    return b2_workarounds::is_shared_library(p.string());
+}
+#endif
 
 inline boost::dll::fs::path first_lib_from_argv(int argc, char* argv[]) {
     BOOST_ASSERT(argc > 1);

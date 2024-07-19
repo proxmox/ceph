@@ -2,7 +2,7 @@
 // address_v6.cpp
 // ~~~~~~~~~~~~~~
 //
-// Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2023 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -409,6 +409,6 @@ void test()
 BOOST_ASIO_TEST_SUITE
 (
   "ip/address_v6",
-  BOOST_ASIO_TEST_CASE(ip_address_v6_compile::test)
+  BOOST_ASIO_COMPILE_TEST_CASE(ip_address_v6_compile::test)
   BOOST_ASIO_TEST_CASE(ip_address_v6_runtime::test)
 )

@@ -1,11 +1,11 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright 2016 NXP
+    Copyright 2016,2020-2021 NXP
 
 
 DPAA2 Poll Mode Driver
 ======================
 
-The DPAA2 NIC PMD (**librte_pmd_dpaa2**) provides poll mode driver
+The DPAA2 NIC PMD (**librte_net_dpaa2**) provides poll mode driver
 support for the inbuilt NIC found in the **NXP DPAA2** SoC family.
 
 More information can be found at `NXP Official Website
@@ -300,7 +300,7 @@ The diagram below shows the dpaa2 drivers involved in a networking
 scenario and the objects bound to each driver.  A brief description
 of each driver follows.
 
-.. code-block: console
+.. code-block:: console
 
 
                                        +------------+
@@ -406,6 +406,8 @@ Features of the DPAA2 PMD are:
 - Jumbo frames
 - Link flow control
 - Scattered and gather for TX and RX
+- :ref:`Traffic Management API <dptmapi>`
+
 
 Supported DPAA2 SoCs
 --------------------
@@ -419,12 +421,6 @@ Prerequisites
 
 See :doc:`../platform/dpaa2` for setup information
 
-Currently supported by DPDK:
-
-- NXP LSDK **19.03+**.
-- MC Firmware version **10.14.0** and higher.
-- Supported architectures:  **arm64 LE**.
-
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
 .. note::
@@ -432,32 +428,6 @@ Currently supported by DPDK:
    Some part of fslmc bus code (mc flib - object library) routines are
    dual licensed (BSD & GPLv2), however they are used as BSD in DPDK in userspace.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_FSLMC_BUS`` (default ``n``)
-
-  By default it is enabled only for defconfig_arm64-dpaa2-* config.
-  Toggle compilation of the ``librte_bus_fslmc`` driver.
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_PMD`` (default ``n``)
-
-  By default it is enabled only for defconfig_arm64-dpaa2-* config.
-  Toggle compilation of the ``librte_pmd_dpaa2`` driver.
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_DEBUG_DRIVER`` (default ``n``)
-
-  Toggle display of debugging messages/logic
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_USE_PHYS_IOVA`` (default ``y``)
-
-  Toggle to use physical address vs virtual address for hardware accelerators.
 
 Driver compilation and testing
 ------------------------------
@@ -475,7 +445,7 @@ for details.
 
    .. code-block:: console
 
-      ./testpmd -c 0xff -n 1 -- -i --portmask=0x3 --nb-cores=1 --no-flush-rx
+      ./dpdk-testpmd -c 0xff -n 1 -- -i --portmask=0x3 --nb-cores=1 --no-flush-rx
 
       .....
       EAL: Registered [pci] bus.
@@ -504,6 +474,20 @@ for details.
   driver level. Any packet received will be reflected back by the
   driver on same port. e.g. ``fslmc:dpni.1,drv_loopback=1``
 
+* Use dev arg option ``drv_no_prefetch=1`` to disable prefetching
+  of the packet pull command which is issued  in the previous cycle.
+  e.g. ``fslmc:dpni.1,drv_no_prefetch=1``
+
+* Use dev arg option  ``drv_tx_conf=1`` to enable TX confirmation mode.
+  In this mode tx conf queues need to be polled to free the buffers.
+  e.g. ``fslmc:dpni.1,drv_tx_conf=1``
+
+* Use dev arg option  ``drv_error_queue=1`` to enable Packets in Error queue.
+  DPAA2 hardware drops the error packet in hardware. This option enables the
+  hardware to not drop the error packet and let the driver dump the error
+  packets, so that user can check what is wrong with those packets.
+  e.g. ``fslmc:dpni.1,drv_error_queue=1``
+
 Enabling logs
 -------------
 
@@ -525,16 +509,29 @@ which are lower than logging ``level``.
 Using ``pmd.net.dpaa2`` as log matching criteria, all PMD logs can be enabled
 which are lower than logging ``level``.
 
-Whitelisting & Blacklisting
----------------------------
+Allowing & Blocking
+-------------------
 
-For blacklisting a DPAA2 device, following commands can be used.
+For blocking a DPAA2 device, following commands can be used.
 
  .. code-block:: console
 
     <dpdk app> <EAL args> -b "fslmc:dpni.x" -- ...
 
 Where x is the device object id as configured in resource container.
+
+Running secondary debug app without blocklist
+---------------------------------------------
+
+dpaa2 hardware imposes limits on some H/W access devices like Management
+Control Port and H/W portal. This causes issue in their shared usages in
+case of multi-process applications. It can overcome by using
+allowlist/blocklist in primary and secondary applications.
+
+In order to ease usage of standard debugging apps like dpdk-procinfo, dpaa2
+driver reserves extra Management Control Port and H/W portal which can be
+used by debug application to debug any existing application without
+blocking these devices in primary process.
 
 Limitations
 -----------
@@ -548,7 +545,7 @@ Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
 The DPAA2 SoC family support a maximum of a 10240 jumbo frame. The value
-is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
+is fixed and cannot be changed. So, even when the ``rxmode.mtu``
 member of ``struct rte_eth_conf`` is set to a value lower than 10240, frames
 up to 10240 bytes can still reach the host interface.
 
@@ -557,3 +554,119 @@ Other Limitations
 
 - RSS hash key cannot be modified.
 - RSS RETA cannot be configured.
+
+.. _dptmapi:
+
+Traffic Management API
+----------------------
+
+DPAA2 PMD supports generic DPDK Traffic Management API which allows to
+configure the following features:
+
+1. Hierarchical scheduling
+2. Traffic shaping
+
+Internally TM is represented by a hierarchy (tree) of nodes.
+Node which has a parent is called a leaf whereas node without
+parent is called a non-leaf (root).
+
+Nodes hold following types of settings:
+
+- for egress scheduler configuration: weight
+- for egress rate limiter: private shaper
+
+Hierarchy is always constructed from the top, i.e first a root node is added
+then some number of leaf nodes. Number of leaf nodes cannot exceed number
+of configured tx queues.
+
+After hierarchy is complete it can be committed.
+
+For an additional description please refer to DPDK :doc:`Traffic Management API <../prog_guide/traffic_management>`.
+
+Supported Features
+~~~~~~~~~~~~~~~~~~
+
+The following capabilities are supported:
+
+- Level0 (root node), Level1 and Level2 are supported.
+- 1 private shaper at root node (port level) is supported.
+- 8 TX queues per port supported (1 channel per port)
+- Both SP and WFQ scheduling mechanisms are supported on all 8 queues.
+- Congestion notification is supported. It means if there is congestion on
+    the network, DPDK driver will not enqueue any packet (no taildrop or WRED)
+
+  User can also check node, level capabilities using testpmd commands.
+
+Usage example
+~~~~~~~~~~~~~
+
+For a detailed usage description please refer to "Traffic Management" section in DPDK :doc:`Testpmd Runtime Functions <../testpmd_app_ug/testpmd_funcs>`.
+
+1. Run testpmd as follows:
+
+   .. code-block:: console
+
+	./dpdk-testpmd  -c 0xf -n 1 -- -i --portmask 0x3 --nb-cores=1 --txq=4 --rxq=4
+
+2. Stop all ports:
+
+   .. code-block:: console
+
+	testpmd> port stop all
+
+3. Add shaper profile:
+
+   One port level shaper and strict priority on all 4 queues of port 0:
+
+   .. code-block:: console
+
+	add port tm node shaper profile 0 1 104857600 64 100 0 0
+	add port tm nonleaf node 0 8 -1 0 1 0 1 1 1 0
+	add port tm leaf node 0 0 8 0 1 1 -1 0 0 0 0
+	add port tm leaf node 0 1 8 1 1 1 -1 0 0 0 0
+	add port tm leaf node 0 2 8 2 1 1 -1 0 0 0 0
+	add port tm leaf node 0 3 8 3 1 1 -1 0 0 0 0
+	port tm hierarchy commit 0 no
+
+	or
+
+   One port level shaper and WFQ on all 4 queues of port 0:
+
+   .. code-block:: console
+
+	add port tm node shaper profile 0 1 104857600 64 100 0 0
+	add port tm nonleaf node 0 8 -1 0 1 0 1 1 1 0
+	add port tm leaf node 0 0 8 0 200 1 -1 0 0 0 0
+	add port tm leaf node 0 1 8 0 300 1 -1 0 0 0 0
+	add port tm leaf node 0 2 8 0 400 1 -1 0 0 0 0
+	add port tm leaf node 0 3 8 0 500 1 -1 0 0 0 0
+	port tm hierarchy commit 0 no
+
+4. Create flows as per the source IP addresses:
+
+   .. code-block:: console
+
+	flow create 1 group 0 priority 1 ingress pattern ipv4 src is \
+	10.10.10.1 / end actions queue index 0 / end
+	flow create 1 group 0 priority 2 ingress pattern ipv4 src is \
+	10.10.10.2 / end actions queue index 1 / end
+	flow create 1 group 0 priority 3 ingress pattern ipv4 src is \
+	10.10.10.3 / end actions queue index 2 / end
+	flow create 1 group 0 priority 4 ingress pattern ipv4 src is \
+	10.10.10.4 / end actions queue index 3 / end
+
+5. Start all ports
+
+   .. code-block:: console
+
+	testpmd> port start all
+
+
+
+6. Enable forwarding
+
+   .. code-block:: console
+
+		testpmd> start
+
+7. Inject the traffic on port1 as per the configured flows, you will see shaped and scheduled forwarded traffic on port0

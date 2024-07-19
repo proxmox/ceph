@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2010-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP
+ * Copyright 2017-2020 NXP
  *
  */
 
@@ -11,7 +11,7 @@
 
 /* This header declares the driver interface we implement */
 #include <fman.h>
-#include <of.h>
+#include <dpaa_of.h>
 #include <rte_malloc.h>
 #include <rte_dpaa_logs.h>
 #include <rte_string_fns.h>
@@ -50,7 +50,7 @@ if_destructor(struct __fman_if *__if)
 		free(bp);
 	}
 cleanup:
-	free(__if);
+	rte_free(__if);
 }
 
 static int
@@ -145,6 +145,61 @@ fman_get_mac_index(uint64_t regs_addr_host, uint8_t *mac_idx)
 	return ret;
 }
 
+static void fman_if_vsp_init(struct __fman_if *__if)
+{
+	const phandle *prop;
+	int cell_index;
+	const struct device_node *dev;
+	size_t lenp;
+	const uint8_t mac_idx[] = {-1, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1};
+
+	if (__if->__if.mac_type == fman_mac_1g) {
+		for_each_compatible_node(dev, NULL,
+			"fsl,fman-port-1g-rx-extended-args") {
+			prop = of_get_property(dev, "cell-index", &lenp);
+			if (prop) {
+				cell_index = of_read_number(
+						&prop[0],
+						lenp / sizeof(phandle));
+				if (cell_index == mac_idx[__if->__if.mac_idx]) {
+					prop = of_get_property(
+							dev,
+							"vsp-window", &lenp);
+					if (prop) {
+						__if->__if.num_profiles =
+							of_read_number(
+								&prop[0], 1);
+						__if->__if.base_profile_id =
+							of_read_number(
+								&prop[1], 1);
+					}
+				}
+			}
+		}
+	} else if (__if->__if.mac_type == fman_mac_10g) {
+		for_each_compatible_node(dev, NULL,
+			"fsl,fman-port-10g-rx-extended-args") {
+			prop = of_get_property(dev, "cell-index", &lenp);
+			if (prop) {
+				cell_index = of_read_number(
+					&prop[0], lenp / sizeof(phandle));
+				if (cell_index == mac_idx[__if->__if.mac_idx]) {
+					prop = of_get_property(
+						dev, "vsp-window", &lenp);
+					if (prop) {
+						__if->__if.num_profiles =
+							of_read_number(
+								&prop[0], 1);
+						__if->__if.base_profile_id =
+							of_read_number(
+								&prop[1], 1);
+					}
+				}
+			}
+		}
+	}
+}
+
 static int
 fman_if_init(const struct device_node *dpa_node)
 {
@@ -156,26 +211,134 @@ fman_if_init(const struct device_node *dpa_node)
 	const phandle *mac_phandle, *ports_phandle, *pools_phandle;
 	const phandle *tx_channel_id = NULL, *mac_addr, *cell_idx;
 	const phandle *rx_phandle, *tx_phandle;
+	const phandle *port_cell_idx, *ext_args_cell_idx;
+	const struct device_node *parent_node_ext_args;
 	uint64_t tx_phandle_host[4] = {0};
-	uint64_t rx_phandle_host[4] = {0};
+	uint64_t rx_phandle_host[6] = {0};
 	uint64_t regs_addr_host = 0;
 	uint64_t cell_idx_host = 0;
+	uint64_t port_cell_idx_val = 0;
+	uint64_t ext_args_cell_idx_val = 0;
 
-	const struct device_node *mac_node = NULL, *tx_node;
+	const struct device_node *mac_node = NULL, *tx_node, *ext_args_node;
 	const struct device_node *pool_node, *fman_node, *rx_node;
 	const uint32_t *regs_addr = NULL;
 	const char *mname, *fname;
 	const char *dname = dpa_node->full_name;
 	size_t lenp;
-	int _errno;
+	int _errno, is_shared = 0;
 	const char *char_prop;
 	uint32_t na;
 
 	if (of_device_is_available(dpa_node) == false)
 		return 0;
 
+	if (!of_device_is_compatible(dpa_node, "fsl,dpa-ethernet-init") &&
+		!of_device_is_compatible(dpa_node, "fsl,dpa-ethernet")) {
+		return 0;
+	}
+
 	rprop = "fsl,qman-frame-queues-rx";
 	mprop = "fsl,fman-mac";
+
+	/* Obtain the MAC node used by this interface except macless */
+	mac_phandle = of_get_property(dpa_node, mprop, &lenp);
+	if (!mac_phandle) {
+		FMAN_ERR(-EINVAL, "%s: no %s\n", dname, mprop);
+		return -EINVAL;
+	}
+	assert(lenp == sizeof(phandle));
+	mac_node = of_find_node_by_phandle(*mac_phandle);
+	if (!mac_node) {
+		FMAN_ERR(-ENXIO, "%s: bad 'fsl,fman-mac\n", dname);
+		return -ENXIO;
+	}
+	mname = mac_node->full_name;
+
+	/* Extract the Rx and Tx ports */
+	ports_phandle = of_get_property(mac_node, "fsl,port-handles",
+					&lenp);
+	if (!ports_phandle)
+		ports_phandle = of_get_property(mac_node, "fsl,fman-ports",
+						&lenp);
+	if (!ports_phandle) {
+		FMAN_ERR(-EINVAL, "%s: no fsl,port-handles\n",
+			 mname);
+		return -EINVAL;
+	}
+	assert(lenp == (2 * sizeof(phandle)));
+	rx_node = of_find_node_by_phandle(ports_phandle[0]);
+	if (!rx_node) {
+		FMAN_ERR(-ENXIO, "%s: bad fsl,port-handle[0]\n", mname);
+		return -ENXIO;
+	}
+	tx_node = of_find_node_by_phandle(ports_phandle[1]);
+	if (!tx_node) {
+		FMAN_ERR(-ENXIO, "%s: bad fsl,port-handle[1]\n", mname);
+		return -ENXIO;
+	}
+
+	/* Check if the port is shared interface */
+	if (of_device_is_compatible(dpa_node, "fsl,dpa-ethernet")) {
+		port_cell_idx = of_get_property(rx_node, "cell-index", &lenp);
+		if (!port_cell_idx) {
+			FMAN_ERR(-ENXIO,
+				 "%s: no cell-index for port\n", mname);
+			return -ENXIO;
+		}
+		assert(lenp == sizeof(*port_cell_idx));
+		port_cell_idx_val =
+			of_read_number(port_cell_idx, lenp / sizeof(phandle));
+
+		if (of_device_is_compatible(rx_node, "fsl,fman-port-1g-rx"))
+			port_cell_idx_val -= 0x8;
+		else if (of_device_is_compatible(
+				rx_node, "fsl,fman-port-10g-rx"))
+			port_cell_idx_val -= 0x10;
+
+		parent_node_ext_args = of_find_compatible_node(NULL,
+			NULL, "fsl,fman-extended-args");
+		if (!parent_node_ext_args)
+			return 0;
+
+		for_each_child_node(parent_node_ext_args, ext_args_node) {
+			ext_args_cell_idx = of_get_property(ext_args_node,
+				"cell-index", &lenp);
+			if (!ext_args_cell_idx) {
+				FMAN_ERR(-ENXIO,
+					 "%s: no cell-index for ext args\n",
+					 mname);
+				return -ENXIO;
+			}
+			assert(lenp == sizeof(*ext_args_cell_idx));
+			ext_args_cell_idx_val =
+				of_read_number(ext_args_cell_idx, lenp /
+				sizeof(phandle));
+
+			if (port_cell_idx_val == ext_args_cell_idx_val) {
+				if (of_device_is_compatible(ext_args_node,
+					"fsl,fman-port-1g-rx-extended-args") &&
+					of_device_is_compatible(rx_node,
+					"fsl,fman-port-1g-rx")) {
+					if (of_get_property(ext_args_node,
+						"vsp-window", &lenp))
+						is_shared = 1;
+					break;
+				}
+				if (of_device_is_compatible(ext_args_node,
+					"fsl,fman-port-10g-rx-extended-args") &&
+					of_device_is_compatible(rx_node,
+					"fsl,fman-port-10g-rx")) {
+					if (of_get_property(ext_args_node,
+						"vsp-window", &lenp))
+						is_shared = 1;
+					break;
+				}
+			}
+		}
+		if (!is_shared)
+			return 0;
+	}
 
 	/* Allocate an object for this network interface */
 	__if = rte_malloc(NULL, sizeof(*__if), RTE_CACHE_LINE_SIZE);
@@ -185,22 +348,10 @@ fman_if_init(const struct device_node *dpa_node)
 	}
 	memset(__if, 0, sizeof(*__if));
 	INIT_LIST_HEAD(&__if->__if.bpool_list);
+	strlcpy(__if->node_name, dpa_node->name, IF_NAME_MAX_LEN - 1);
+	__if->node_name[IF_NAME_MAX_LEN - 1] = '\0';
 	strlcpy(__if->node_path, dpa_node->full_name, PATH_MAX - 1);
 	__if->node_path[PATH_MAX - 1] = '\0';
-
-	/* Obtain the MAC node used by this interface except macless */
-	mac_phandle = of_get_property(dpa_node, mprop, &lenp);
-	if (!mac_phandle) {
-		FMAN_ERR(-EINVAL, "%s: no %s\n", dname, mprop);
-		goto err;
-	}
-	assert(lenp == sizeof(phandle));
-	mac_node = of_find_node_by_phandle(*mac_phandle);
-	if (!mac_node) {
-		FMAN_ERR(-ENXIO, "%s: bad 'fsl,fman-mac\n", dname);
-		goto err;
-	}
-	mname = mac_node->full_name;
 
 	/* Map the CCSR regs for the MAC node */
 	regs_addr = of_get_address(mac_node, 0, &__if->regs_size, NULL);
@@ -224,7 +375,6 @@ fman_if_init(const struct device_node *dpa_node)
 	na = of_n_addr_cells(mac_node);
 	/* Get rid of endianness (issues). Convert to host byte order */
 	regs_addr_host = of_read_number(regs_addr, na);
-
 
 	/* Get the index of the Fman this i/f belongs to */
 	fman_node = of_get_parent(mac_node);
@@ -263,7 +413,7 @@ fman_if_init(const struct device_node *dpa_node)
 		fman_dealloc_bufs_mask_hi = 0;
 		fman_dealloc_bufs_mask_lo = 0;
 	}
-	/* Is the MAC node 1G, 10G? */
+	/* Is the MAC node 1G, 2.5G, 10G? */
 	__if->__if.is_memac = 0;
 
 	if (of_device_is_compatible(mac_node, "fsl,fman-1g-mac"))
@@ -279,7 +429,9 @@ fman_if_init(const struct device_node *dpa_node)
 			/* Right now forcing memac to 1g in case of error*/
 			__if->__if.mac_type = fman_mac_1g;
 		} else {
-			if (strstr(char_prop, "sgmii"))
+			if (strstr(char_prop, "sgmii-2500"))
+				__if->__if.mac_type = fman_mac_2_5g;
+			else if (strstr(char_prop, "sgmii"))
 				__if->__if.mac_type = fman_mac_1g;
 			else if (strstr(char_prop, "rgmii")) {
 				__if->__if.mac_type = fman_mac_1g;
@@ -317,25 +469,6 @@ fman_if_init(const struct device_node *dpa_node)
 	}
 	memcpy(&__if->__if.mac_addr, mac_addr, ETHER_ADDR_LEN);
 
-	/* Extract the Tx port (it's the second of the two port handles)
-	 * and get its channel ID
-	 */
-	ports_phandle = of_get_property(mac_node, "fsl,port-handles",
-					&lenp);
-	if (!ports_phandle)
-		ports_phandle = of_get_property(mac_node, "fsl,fman-ports",
-						&lenp);
-	if (!ports_phandle) {
-		FMAN_ERR(-EINVAL, "%s: no fsl,port-handles\n",
-			 mname);
-		goto err;
-	}
-	assert(lenp == (2 * sizeof(phandle)));
-	tx_node = of_find_node_by_phandle(ports_phandle[1]);
-	if (!tx_node) {
-		FMAN_ERR(-ENXIO, "%s: bad fsl,port-handle[1]\n", mname);
-		goto err;
-	}
 	/* Extract the channel ID (from tx-port-handle) */
 	tx_channel_id = of_get_property(tx_node, "fsl,qman-channel-id",
 					&lenp);
@@ -345,11 +478,6 @@ fman_if_init(const struct device_node *dpa_node)
 		goto err;
 	}
 
-	rx_node = of_find_node_by_phandle(ports_phandle[0]);
-	if (!rx_node) {
-		FMAN_ERR(-ENXIO, "%s: bad fsl,port-handle[0]\n", mname);
-		goto err;
-	}
 	regs_addr = of_get_address(rx_node, 0, &__if->regs_size, NULL);
 	if (!regs_addr) {
 		FMAN_ERR(-EINVAL, "of_get_address(%s)\n", mname);
@@ -383,7 +511,11 @@ fman_if_init(const struct device_node *dpa_node)
 		goto err;
 	}
 
-	assert(lenp == (4 * sizeof(phandle)));
+	/* Check if "fsl,qman-frame-queues-rx" in dtb file is valid entry or
+	 * not. A valid entry contains at least 4 entries, rx_error_queue,
+	 * rx_error_queue_count, fqid_rx_def and rx_error_queue_count.
+	 */
+	assert(lenp >= (4 * sizeof(phandle)));
 
 	na = of_n_addr_cells(mac_node);
 	/* Get rid of endianness (issues). Convert to host byte order */
@@ -391,10 +523,20 @@ fman_if_init(const struct device_node *dpa_node)
 	rx_phandle_host[1] = of_read_number(&rx_phandle[1], na);
 	rx_phandle_host[2] = of_read_number(&rx_phandle[2], na);
 	rx_phandle_host[3] = of_read_number(&rx_phandle[3], na);
+	rx_phandle_host[4] = of_read_number(&rx_phandle[4], na);
+	rx_phandle_host[5] = of_read_number(&rx_phandle[5], na);
 
 	assert((rx_phandle_host[1] == 1) && (rx_phandle_host[3] == 1));
 	__if->__if.fqid_rx_err = rx_phandle_host[0];
 	__if->__if.fqid_rx_def = rx_phandle_host[2];
+
+	/* If there are 6 entries in "fsl,qman-frame-queues-rx" in dtb file, it
+	 * means PCD queues are also available. Hence, store that information.
+	 */
+	if (lenp == 6 * sizeof(phandle)) {
+		__if->__if.fqid_rx_pcd = rx_phandle_host[4];
+		__if->__if.fqid_rx_pcd_count = rx_phandle_host[5];
+	}
 
 	/* Extract the Tx FQIDs */
 	tx_phandle = of_get_property(dpa_node,
@@ -404,7 +546,7 @@ fman_if_init(const struct device_node *dpa_node)
 		goto err;
 	}
 
-	assert(lenp == (4 * sizeof(phandle)));
+	assert(lenp >= (4 * sizeof(phandle)));
 	/*TODO: Fix for other cases also */
 	na = of_n_addr_cells(mac_node);
 	/* Get rid of endianness (issues). Convert to host byte order */
@@ -504,6 +646,11 @@ fman_if_init(const struct device_node *dpa_node)
 		pools_phandle++;
 	}
 
+	if (is_shared)
+		__if->__if.is_shared_mac = 1;
+
+	fman_if_vsp_init(__if);
+
 	/* Parsing of the network interface is complete, add it to the list */
 	DPAA_BUS_LOG(DEBUG, "Found %s, Tx Channel = %x, FMAN = %x,"
 		    "Port ID = %x",
@@ -520,7 +667,7 @@ err:
 int
 fman_init(void)
 {
-	const struct device_node *dpa_node;
+	const struct device_node *dpa_node, *parent_node;
 	int _errno;
 
 	/* If multiple dependencies try to initialise the Fman driver, don't
@@ -535,7 +682,13 @@ fman_init(void)
 		return fman_ccsr_map_fd;
 	}
 
-	for_each_compatible_node(dpa_node, NULL, "fsl,dpa-ethernet-init") {
+	parent_node = of_find_compatible_node(NULL, NULL, "fsl,dpaa");
+	if (!parent_node) {
+		DPAA_BUS_LOG(ERR, "Unable to find fsl,dpaa node");
+		return -ENODEV;
+	}
+
+	for_each_child_node(parent_node, dpa_node) {
 		_errno = fman_if_init(dpa_node);
 		if (_errno) {
 			FMAN_ERR(_errno, "if_init(%s)\n", dpa_node->full_name);

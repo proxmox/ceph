@@ -102,7 +102,7 @@ If your submodules are out of date, run the following commands:
 
    .. prompt:: bash $
 
-      git submodule update --force --init --recursive
+      git submodule update --force --init --recursive --progress
       git clean -fdx
       git submodule foreach git clean -fdx
 

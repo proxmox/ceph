@@ -60,7 +60,7 @@
                 as QEMU or Xen, and (3) a hypervisor abstraction layer such as
                 ``libvirt``.
 
-	Ceph Client
+	:ref:`Ceph Client <architecture_ceph_clients>`
                 Any of the Ceph components that can access a Ceph Storage
                 Cluster. This includes the Ceph Object Gateway, the Ceph Block
                 Device, the Ceph File System, and their corresponding
@@ -464,7 +464,7 @@
                 "inconsistent" (that is, the PG is marked "inconsistent"). 
 
                 There are two kinds of scrubbing: light scrubbing and deep
-                scrubbing (also called "normal scrubbing" and "deep scrubbing",
+                scrubbing (also called "shallow scrubbing" and "deep scrubbing",
                 respectively). Light scrubbing is performed daily and does
                 nothing more than confirm that a given object exists and that
                 its metadata is correct. Deep scrubbing is performed weekly and

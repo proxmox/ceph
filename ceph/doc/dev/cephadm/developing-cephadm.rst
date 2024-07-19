@@ -451,7 +451,7 @@ were enabled), and a summary of the top-level contents of the zipapp. Example::
         "requirements_entry": "MarkupSafe == 2.1.3"
       }
     ],
-     "zip_root_entries": [
+    "zip_root_entries": [
       "Jinja2-3.1.2-py3.9.egg-info",
       "MarkupSafe-2.1.3-py3.9.egg-info",
       "__main__.py",

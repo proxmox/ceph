@@ -346,13 +346,13 @@ void Mirror::handle_enable_mirroring(const Filesystem &filesystem,
 
   std::scoped_lock locker(m_lock);
   auto &mirror_action = m_mirror_actions.at(filesystem);
-  ceph_assert(mirror_action.action_in_progress);
 
-  mirror_action.action_in_progress = false;
-  m_cond.notify_all();
   if (r < 0) {
     derr << ": failed to initialize FSMirror for filesystem=" << filesystem
          << ": " << cpp_strerror(r) << dendl;
+    // since init failed, don't assert, just unset it directly
+    mirror_action.action_in_progress = false;
+    m_cond.notify_all();
     m_service_daemon->add_or_update_fs_attribute(filesystem.fscid,
                                                  SERVICE_DAEMON_MIRROR_ENABLE_FAILED_KEY,
                                                  true);
@@ -361,6 +361,11 @@ void Mirror::handle_enable_mirroring(const Filesystem &filesystem,
     }
     return;
   }
+
+  ceph_assert(mirror_action.action_in_progress);
+
+  mirror_action.action_in_progress = false;
+  m_cond.notify_all();
 
   for (auto &peer : peers) {
     mirror_action.fs_mirror->add_peer(peer);
@@ -377,13 +382,13 @@ void Mirror::handle_enable_mirroring(const Filesystem &filesystem, int r) {
 
   std::scoped_lock locker(m_lock);
   auto &mirror_action = m_mirror_actions.at(filesystem);
-  ceph_assert(mirror_action.action_in_progress);
-
-  mirror_action.action_in_progress = false;
-  m_cond.notify_all();
+  
   if (r < 0) {
     derr << ": failed to initialize FSMirror for filesystem=" << filesystem
          << ": " << cpp_strerror(r) << dendl;
+    // since init failed, don't assert, just unset it directly
+    mirror_action.action_in_progress = false;
+    m_cond.notify_all();
     m_service_daemon->add_or_update_fs_attribute(filesystem.fscid,
                                                  SERVICE_DAEMON_MIRROR_ENABLE_FAILED_KEY,
                                                  true);
@@ -392,6 +397,11 @@ void Mirror::handle_enable_mirroring(const Filesystem &filesystem, int r) {
     }
     return;
   }
+
+  ceph_assert(mirror_action.action_in_progress);
+
+  mirror_action.action_in_progress = false;
+  m_cond.notify_all();
 
   dout(10) << ": Initialized FSMirror for filesystem=" << filesystem << dendl;
   if (m_perf_counters) {

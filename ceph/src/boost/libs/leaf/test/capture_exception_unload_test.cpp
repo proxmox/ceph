@@ -139,7 +139,7 @@ void test( F f_ )
             {
                 std::rethrow_exception(ep); return true;
             },
-            []( info<1> const & x, info<2> const & )
+            []( info<1> const &, info<2> const & )
             {
                 return true;
             },
@@ -149,7 +149,7 @@ void test( F f_ )
                 BOOST_TEST_EQ(y.value, 3);
                 return false;
             },
-            []( info<1> const & x )
+            []( info<1> const & )
             {
                 return true;
             },
@@ -167,7 +167,7 @@ void test( F f_ )
             {
                 std::rethrow_exception(ep); return false;
             },
-            []( info<1> const & x, info<2> const & )
+            []( info<1> const &, info<2> const & )
             {
                 return false;
             },
@@ -177,7 +177,7 @@ void test( F f_ )
                 BOOST_TEST_EQ(y.value, 3);
                 return true;
             },
-            []( info<1> const & x )
+            []( info<1> const & )
             {
                 return false;
             },
@@ -194,13 +194,13 @@ int main()
     test<info<1>, info<2>, info<3>>(
         []
         {
-            throw leaf::exception(info<1>{1}, info<3>{3}); // Derives from leaf::leaf::error_id
+            leaf::throw_exception(info<1>{1}, info<3>{3}); // Derives from leaf::leaf::error_id
         } );
     test<info<1>, info<2>, info<3>>(
         []
         {
             auto load = leaf::on_error( info<1>{1}, info<3>{3} );
-            throw leaf::exception(); // Derives from leaf::leaf::error_id
+            leaf::throw_exception(); // Derives from leaf::leaf::error_id
         } );
     test<info<1>, info<2>, info<3>>(
         []

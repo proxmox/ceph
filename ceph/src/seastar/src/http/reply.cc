@@ -28,12 +28,20 @@
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
+
+#ifdef SEASTAR_MODULE
+module;
+#include <iostream>
+#include <utility>
+module seastar;
+#else
 #include <seastar/http/reply.hh>
 #include <seastar/core/print.hh>
 #include <seastar/http/httpd.hh>
 #include <seastar/http/common.hh>
 #include <seastar/http/response_parser.hh>
 #include <seastar/core/loop.hh>
+#endif
 
 namespace seastar {
 
@@ -175,15 +183,6 @@ static const sstring& to_string(reply::status_type status) {
 
 std::ostream& operator<<(std::ostream& os, reply::status_type st) {
     return os << status_strings::to_string(st);
-}
-
-reply::reply(http_response&& resp)
-        : _status(static_cast<status_type>(resp._status_code))
-        , _headers(std::move(resp._headers))
-        , _version(std::move(resp._version))
-{
-    sstring length_header = get_header("Content-Length");
-    content_length = strtol(length_header.c_str(), nullptr, 10);
 }
 
 sstring reply::response_line() {

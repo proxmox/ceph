@@ -162,7 +162,7 @@ describe('HostsComponent', () => {
     expect(spans[2].textContent).toContain('rgw: 1');
   });
 
-  it('should test if host facts are tranformed correctly if orch available', () => {
+  it('should test if host facts are transformed correctly if orch available', () => {
     const features = [OrchestratorFeature.HOST_FACTS];
     const payload = [
       {
@@ -224,10 +224,10 @@ describe('HostsComponent', () => {
     const spans = fixture.debugElement.nativeElement.querySelectorAll(
       '.datatable-body-cell-label span'
     );
-    expect(spans[7].textContent).toBe('N/A');
+    expect(spans[7].textContent).toBe('-');
   });
 
-  it('should test if host facts are unavailable if get_fatcs orch feature is not available', () => {
+  it('should test if host facts are unavailable if get_facts orch feature is not available', () => {
     const payload = [
       {
         hostname: 'host_test',
@@ -251,7 +251,7 @@ describe('HostsComponent', () => {
     const spans = fixture.debugElement.nativeElement.querySelectorAll(
       '.datatable-body-cell-label span'
     );
-    expect(spans[7].textContent).toBe('N/A');
+    expect(spans[7].textContent).toBe('-');
   });
 
   it('should test if memory/raw capacity columns shows N/A if facts are available but in fetching state', () => {

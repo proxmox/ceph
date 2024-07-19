@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -13,9 +13,11 @@
 
 #include "sfc.h"
 #include "sfc_debug.h"
+#include "sfc_flow_tunnel.h"
 #include "sfc_log.h"
 #include "sfc_ev.h"
 #include "sfc_rx.h"
+#include "sfc_mae_counter.h"
 #include "sfc_kvargs.h"
 #include "sfc_tweak.h"
 
@@ -50,6 +52,28 @@ sfc_rx_qflush_failed(struct sfc_rxq_info *rxq_info)
 {
 	rxq_info->state |= SFC_RXQ_FLUSH_FAILED;
 	rxq_info->state &= ~SFC_RXQ_FLUSHING;
+}
+
+/* This returns the running counter, which is not bounded by ring size */
+unsigned int
+sfc_rx_get_pushed(struct sfc_adapter *sa, struct sfc_dp_rxq *dp_rxq)
+{
+	SFC_ASSERT(sa->priv.dp_rx->get_pushed != NULL);
+
+	return sa->priv.dp_rx->get_pushed(dp_rxq);
+}
+
+static int
+sfc_efx_rx_qprime(struct sfc_efx_rxq *rxq)
+{
+	int rc = 0;
+
+	if (rxq->evq->read_ptr_primed != rxq->evq->read_ptr) {
+		rc = efx_ev_qprime(rxq->evq->common, rxq->evq->read_ptr);
+		if (rc == 0)
+			rxq->evq->read_ptr_primed = rxq->evq->read_ptr;
+	}
+	return rc;
 }
 
 static void
@@ -96,7 +120,7 @@ sfc_efx_rx_qrefill(struct sfc_efx_rxq *rxq)
 		     ++i, id = (id + 1) & rxq->ptr_mask) {
 			m = objs[i];
 
-			MBUF_RAW_ALLOC_CHECK(m);
+			__rte_mbuf_raw_sanity_check(m);
 
 			rxd = &rxq->sw_desc[id];
 			rxd->mbuf = m;
@@ -115,6 +139,7 @@ sfc_efx_rx_qrefill(struct sfc_efx_rxq *rxq)
 	SFC_ASSERT(added != rxq->added);
 	rxq->added = added;
 	efx_rx_qpush(rxq->common, added, &rxq->pushed);
+	rxq->dp.dpq.dbells++;
 }
 
 static uint64_t
@@ -124,15 +149,15 @@ sfc_efx_rx_desc_flags_to_offload_flags(const unsigned int desc_flags)
 
 	switch (desc_flags & (EFX_PKT_IPV4 | EFX_CKSUM_IPV4)) {
 	case (EFX_PKT_IPV4 | EFX_CKSUM_IPV4):
-		mbuf_flags |= PKT_RX_IP_CKSUM_GOOD;
+		mbuf_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 		break;
 	case EFX_PKT_IPV4:
-		mbuf_flags |= PKT_RX_IP_CKSUM_BAD;
+		mbuf_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 		break;
 	default:
-		RTE_BUILD_BUG_ON(PKT_RX_IP_CKSUM_UNKNOWN != 0);
-		SFC_ASSERT((mbuf_flags & PKT_RX_IP_CKSUM_MASK) ==
-			   PKT_RX_IP_CKSUM_UNKNOWN);
+		RTE_BUILD_BUG_ON(RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN != 0);
+		SFC_ASSERT((mbuf_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK) ==
+			   RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN);
 		break;
 	}
 
@@ -140,16 +165,16 @@ sfc_efx_rx_desc_flags_to_offload_flags(const unsigned int desc_flags)
 		 (EFX_PKT_TCP | EFX_PKT_UDP | EFX_CKSUM_TCPUDP))) {
 	case (EFX_PKT_TCP | EFX_CKSUM_TCPUDP):
 	case (EFX_PKT_UDP | EFX_CKSUM_TCPUDP):
-		mbuf_flags |= PKT_RX_L4_CKSUM_GOOD;
+		mbuf_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 		break;
 	case EFX_PKT_TCP:
 	case EFX_PKT_UDP:
-		mbuf_flags |= PKT_RX_L4_CKSUM_BAD;
+		mbuf_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 		break;
 	default:
-		RTE_BUILD_BUG_ON(PKT_RX_L4_CKSUM_UNKNOWN != 0);
-		SFC_ASSERT((mbuf_flags & PKT_RX_L4_CKSUM_MASK) ==
-			   PKT_RX_L4_CKSUM_UNKNOWN);
+		RTE_BUILD_BUG_ON(RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN != 0);
+		SFC_ASSERT((mbuf_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK) ==
+			   RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN);
 		break;
 	}
 
@@ -200,7 +225,7 @@ sfc_efx_rx_set_rss_hash(struct sfc_efx_rxq *rxq, unsigned int flags,
 						      EFX_RX_HASHALG_TOEPLITZ,
 						      mbuf_data);
 
-		m->ol_flags |= PKT_RX_RSS_HASH;
+		m->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 	}
 }
 
@@ -306,6 +331,9 @@ discard:
 
 	sfc_efx_rx_qrefill(rxq);
 
+	if (rxq->flags & SFC_EFX_RXQ_FLAG_INTR_EN)
+		sfc_efx_rx_qprime(rxq);
+
 	return done_pkts;
 }
 
@@ -362,10 +390,20 @@ sfc_efx_rx_qdesc_status(struct sfc_dp_rxq *dp_rxq, uint16_t offset)
 
 boolean_t
 sfc_rx_check_scatter(size_t pdu, size_t rx_buf_size, uint32_t rx_prefix_size,
-		     boolean_t rx_scatter_enabled, const char **error)
+		     boolean_t rx_scatter_enabled, uint32_t rx_scatter_max,
+		     const char **error)
 {
-	if ((rx_buf_size < pdu + rx_prefix_size) && !rx_scatter_enabled) {
-		*error = "Rx scatter is disabled and RxQ mbuf pool object size is too small";
+	uint32_t effective_rx_scatter_max;
+	uint32_t rx_scatter_bufs;
+
+	effective_rx_scatter_max = rx_scatter_enabled ? rx_scatter_max : 1;
+	rx_scatter_bufs = EFX_DIV_ROUND_UP(pdu + rx_prefix_size, rx_buf_size);
+
+	if (rx_scatter_bufs > effective_rx_scatter_max) {
+		if (rx_scatter_enabled)
+			*error = "Possible number of Rx scatter buffers exceeds maximum number";
+		else
+			*error = "Rx scatter is disabled and RxQ mbuf pool object size is too small";
 		return B_FALSE;
 	}
 
@@ -445,6 +483,10 @@ sfc_efx_rx_qcreate(uint16_t port_id, uint16_t queue_id,
 	struct sfc_efx_rxq *rxq;
 	int rc;
 
+	rc = ENOTSUP;
+	if (info->nic_dma_info->nb_regions > 0)
+		goto fail_nic_dma;
+
 	rc = ENOMEM;
 	rxq = rte_zmalloc_socket("sfc-efx-rxq", sizeof(*rxq),
 				 RTE_CACHE_LINE_SIZE, socket_id);
@@ -480,6 +522,7 @@ fail_desc_alloc:
 	rte_free(rxq);
 
 fail_rxq_alloc:
+fail_nic_dma:
 	return rc;
 }
 
@@ -493,14 +536,30 @@ sfc_efx_rx_qdestroy(struct sfc_dp_rxq *dp_rxq)
 	rte_free(rxq);
 }
 
+
+/* Use qstop and qstart functions in the case of qstart failure */
+static sfc_dp_rx_qstop_t sfc_efx_rx_qstop;
+static sfc_dp_rx_qpurge_t sfc_efx_rx_qpurge;
+
+
 static sfc_dp_rx_qstart_t sfc_efx_rx_qstart;
 static int
 sfc_efx_rx_qstart(struct sfc_dp_rxq *dp_rxq,
-		  __rte_unused unsigned int evq_read_ptr)
+		  __rte_unused unsigned int evq_read_ptr,
+		  const efx_rx_prefix_layout_t *pinfo)
 {
 	/* libefx-based datapath is specific to libefx-based PMD */
 	struct sfc_efx_rxq *rxq = sfc_efx_rxq_by_dp_rxq(dp_rxq);
 	struct sfc_rxq *crxq = sfc_rxq_by_dp_rxq(dp_rxq);
+	int rc;
+
+	/*
+	 * libefx API is used to extract information from Rx prefix and
+	 * it guarantees consistency. Just do length check to ensure
+	 * that we reserved space in Rx buffers correctly.
+	 */
+	if (rxq->prefix_size != pinfo->erpl_length)
+		return ENOTSUP;
 
 	rxq->common = crxq->common;
 
@@ -510,10 +569,20 @@ sfc_efx_rx_qstart(struct sfc_dp_rxq *dp_rxq,
 
 	rxq->flags |= (SFC_EFX_RXQ_FLAG_STARTED | SFC_EFX_RXQ_FLAG_RUNNING);
 
+	if (rxq->flags & SFC_EFX_RXQ_FLAG_INTR_EN) {
+		rc = sfc_efx_rx_qprime(rxq);
+		if (rc != 0)
+			goto fail_rx_qprime;
+	}
+
 	return 0;
+
+fail_rx_qprime:
+	sfc_efx_rx_qstop(dp_rxq, NULL);
+	sfc_efx_rx_qpurge(dp_rxq);
+	return rc;
 }
 
-static sfc_dp_rx_qstop_t sfc_efx_rx_qstop;
 static void
 sfc_efx_rx_qstop(struct sfc_dp_rxq *dp_rxq,
 		 __rte_unused unsigned int *evq_read_ptr)
@@ -528,7 +597,6 @@ sfc_efx_rx_qstop(struct sfc_dp_rxq *dp_rxq,
 	 */
 }
 
-static sfc_dp_rx_qpurge_t sfc_efx_rx_qpurge;
 static void
 sfc_efx_rx_qpurge(struct sfc_dp_rxq *dp_rxq)
 {
@@ -551,14 +619,44 @@ sfc_efx_rx_qpurge(struct sfc_dp_rxq *dp_rxq)
 	rxq->flags &= ~SFC_EFX_RXQ_FLAG_STARTED;
 }
 
+static sfc_dp_rx_intr_enable_t sfc_efx_rx_intr_enable;
+static int
+sfc_efx_rx_intr_enable(struct sfc_dp_rxq *dp_rxq)
+{
+	struct sfc_efx_rxq *rxq = sfc_efx_rxq_by_dp_rxq(dp_rxq);
+	int rc = 0;
+
+	rxq->flags |= SFC_EFX_RXQ_FLAG_INTR_EN;
+	if (rxq->flags & SFC_EFX_RXQ_FLAG_STARTED) {
+		rc = sfc_efx_rx_qprime(rxq);
+		if (rc != 0)
+			rxq->flags &= ~SFC_EFX_RXQ_FLAG_INTR_EN;
+	}
+	return rc;
+}
+
+static sfc_dp_rx_intr_disable_t sfc_efx_rx_intr_disable;
+static int
+sfc_efx_rx_intr_disable(struct sfc_dp_rxq *dp_rxq)
+{
+	struct sfc_efx_rxq *rxq = sfc_efx_rxq_by_dp_rxq(dp_rxq);
+
+	/* Cannot disarm, just disable rearm */
+	rxq->flags &= ~SFC_EFX_RXQ_FLAG_INTR_EN;
+	return 0;
+}
+
 struct sfc_dp_rx sfc_efx_rx = {
 	.dp = {
 		.name		= SFC_KVARG_DATAPATH_EFX,
 		.type		= SFC_DP_RX,
-		.hw_fw_caps	= 0,
+		.hw_fw_caps	= SFC_DP_HW_FW_CAP_RX_EFX,
 	},
-	.features		= SFC_DP_RX_FEAT_SCATTER |
-				  SFC_DP_RX_FEAT_CHECKSUM,
+	.features		= SFC_DP_RX_FEAT_INTR,
+	.dev_offload_capa	= RTE_ETH_RX_OFFLOAD_CHECKSUM |
+				  RTE_ETH_RX_OFFLOAD_RSS_HASH |
+				  RTE_ETH_RX_OFFLOAD_KEEP_CRC,
+	.queue_offload_capa	= RTE_ETH_RX_OFFLOAD_SCATTER,
 	.qsize_up_rings		= sfc_efx_rx_qsize_up_rings,
 	.qcreate		= sfc_efx_rx_qcreate,
 	.qdestroy		= sfc_efx_rx_qdestroy,
@@ -568,18 +666,23 @@ struct sfc_dp_rx sfc_efx_rx = {
 	.supported_ptypes_get	= sfc_efx_supported_ptypes_get,
 	.qdesc_npending		= sfc_efx_rx_qdesc_npending,
 	.qdesc_status		= sfc_efx_rx_qdesc_status,
+	.intr_enable		= sfc_efx_rx_intr_enable,
+	.intr_disable		= sfc_efx_rx_intr_disable,
 	.pkt_burst		= sfc_efx_recv_pkts,
 };
 
 static void
-sfc_rx_qflush(struct sfc_adapter *sa, unsigned int sw_index)
+sfc_rx_qflush(struct sfc_adapter *sa, sfc_sw_index_t sw_index)
 {
+	struct sfc_adapter_shared *sas = sfc_sa2shared(sa);
+	sfc_ethdev_qid_t ethdev_qid;
 	struct sfc_rxq_info *rxq_info;
 	struct sfc_rxq *rxq;
 	unsigned int retry_count;
 	unsigned int wait_count;
 	int rc;
 
+	ethdev_qid = sfc_ethdev_rx_qid_by_rxq_sw_index(sas, sw_index);
 	rxq_info = &sfc_sa2shared(sa)->rxq_info[sw_index];
 	SFC_ASSERT(rxq_info->state & SFC_RXQ_STARTED);
 
@@ -616,13 +719,16 @@ sfc_rx_qflush(struct sfc_adapter *sa, unsigned int sw_index)
 			 (wait_count++ < SFC_RX_QFLUSH_POLL_ATTEMPTS));
 
 		if (rxq_info->state & SFC_RXQ_FLUSHING)
-			sfc_err(sa, "RxQ %u flush timed out", sw_index);
+			sfc_err(sa, "RxQ %d (internal %u) flush timed out",
+				ethdev_qid, sw_index);
 
 		if (rxq_info->state & SFC_RXQ_FLUSH_FAILED)
-			sfc_err(sa, "RxQ %u flush failed", sw_index);
+			sfc_err(sa, "RxQ %d (internal %u) flush failed",
+				ethdev_qid, sw_index);
 
 		if (rxq_info->state & SFC_RXQ_FLUSHED)
-			sfc_notice(sa, "RxQ %u flushed", sw_index);
+			sfc_notice(sa, "RxQ %d (internal %u) flushed",
+				   ethdev_qid, sw_index);
 	}
 
 	sa->priv.dp_rx->qpurge(rxq_info->dp);
@@ -656,7 +762,8 @@ retry:
 		sfc_warn(sa, "promiscuous mode will be disabled");
 
 		port->promisc = B_FALSE;
-		rc = sfc_set_rx_mode(sa);
+		sa->eth_dev->data->promiscuous = 0;
+		rc = sfc_set_rx_mode_unchecked(sa);
 		if (rc != 0)
 			return rc;
 
@@ -669,7 +776,8 @@ retry:
 		sfc_warn(sa, "all-multicast mode will be disabled");
 
 		port->allmulti = B_FALSE;
-		rc = sfc_set_rx_mode(sa);
+		sa->eth_dev->data->all_multicast = 0;
+		rc = sfc_set_rx_mode_unchecked(sa);
 		if (rc != 0)
 			return rc;
 
@@ -680,16 +788,20 @@ retry:
 }
 
 int
-sfc_rx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
+sfc_rx_qstart(struct sfc_adapter *sa, sfc_sw_index_t sw_index)
 {
+	struct sfc_adapter_shared *sas = sfc_sa2shared(sa);
+	sfc_ethdev_qid_t ethdev_qid;
 	struct sfc_rxq_info *rxq_info;
 	struct sfc_rxq *rxq;
 	struct sfc_evq *evq;
+	efx_rx_prefix_layout_t pinfo;
 	int rc;
 
-	sfc_log_init(sa, "sw_index=%u", sw_index);
-
 	SFC_ASSERT(sw_index < sfc_sa2shared(sa)->rxq_count);
+	ethdev_qid = sfc_ethdev_rx_qid_by_rxq_sw_index(sas, sw_index);
+
+	sfc_log_init(sa, "RxQ %d (internal %u)", ethdev_qid, sw_index);
 
 	rxq_info = &sfc_sa2shared(sa)->rxq_info[sw_index];
 	SFC_ASSERT(rxq_info->state == SFC_RXQ_INITIALIZED);
@@ -697,7 +809,7 @@ sfc_rx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 	rxq = &sa->rxq_ctrl[sw_index];
 	evq = rxq->evq;
 
-	rc = sfc_ev_qstart(evq, sfc_evq_index_by_rxq_sw_index(sa, sw_index));
+	rc = sfc_ev_qstart(evq, sfc_evq_sw_index_by_rxq_sw_index(sa, sw_index));
 	if (rc != 0)
 		goto fail_ev_qstart;
 
@@ -736,32 +848,40 @@ sfc_rx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 	if (rc != 0)
 		goto fail_rx_qcreate;
 
+	rc = efx_rx_prefix_get_layout(rxq->common, &pinfo);
+	if (rc != 0)
+		goto fail_prefix_get_layout;
+
 	efx_rx_qenable(rxq->common);
 
-	rc = sa->priv.dp_rx->qstart(rxq_info->dp, evq->read_ptr);
+	rc = sa->priv.dp_rx->qstart(rxq_info->dp, evq->read_ptr, &pinfo);
 	if (rc != 0)
 		goto fail_dp_qstart;
 
 	rxq_info->state |= SFC_RXQ_STARTED;
 
-	if (sw_index == 0 && !sfc_sa2shared(sa)->isolated) {
+	if (ethdev_qid == 0 && !sfc_sa2shared(sa)->isolated) {
 		rc = sfc_rx_default_rxq_set_filter(sa, rxq);
 		if (rc != 0)
 			goto fail_mac_filter_default_rxq_set;
 	}
 
 	/* It seems to be used by DPDK for debug purposes only ('rte_ether') */
-	sa->eth_dev->data->rx_queue_state[sw_index] =
-		RTE_ETH_QUEUE_STATE_STARTED;
+	if (ethdev_qid != SFC_ETHDEV_QID_INVALID)
+		sa->eth_dev->data->rx_queue_state[ethdev_qid] =
+			RTE_ETH_QUEUE_STATE_STARTED;
 
 	return 0;
 
 fail_mac_filter_default_rxq_set:
+	sfc_rx_qflush(sa, sw_index);
 	sa->priv.dp_rx->qstop(rxq_info->dp, &rxq->evq->read_ptr);
+	rxq_info->state = SFC_RXQ_INITIALIZED;
 
 fail_dp_qstart:
-	sfc_rx_qflush(sa, sw_index);
+	efx_rx_qdestroy(rxq->common);
 
+fail_prefix_get_layout:
 fail_rx_qcreate:
 fail_bad_contig_block_size:
 fail_mp_get_info:
@@ -772,14 +892,17 @@ fail_ev_qstart:
 }
 
 void
-sfc_rx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
+sfc_rx_qstop(struct sfc_adapter *sa, sfc_sw_index_t sw_index)
 {
+	struct sfc_adapter_shared *sas = sfc_sa2shared(sa);
+	sfc_ethdev_qid_t ethdev_qid;
 	struct sfc_rxq_info *rxq_info;
 	struct sfc_rxq *rxq;
 
-	sfc_log_init(sa, "sw_index=%u", sw_index);
-
 	SFC_ASSERT(sw_index < sfc_sa2shared(sa)->rxq_count);
+	ethdev_qid = sfc_ethdev_rx_qid_by_rxq_sw_index(sas, sw_index);
+
+	sfc_log_init(sa, "RxQ %d (internal %u)", ethdev_qid, sw_index);
 
 	rxq_info = &sfc_sa2shared(sa)->rxq_info[sw_index];
 
@@ -788,13 +911,14 @@ sfc_rx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
 	SFC_ASSERT(rxq_info->state & SFC_RXQ_STARTED);
 
 	/* It seems to be used by DPDK for debug purposes only ('rte_ether') */
-	sa->eth_dev->data->rx_queue_state[sw_index] =
-		RTE_ETH_QUEUE_STATE_STOPPED;
+	if (ethdev_qid != SFC_ETHDEV_QID_INVALID)
+		sa->eth_dev->data->rx_queue_state[ethdev_qid] =
+			RTE_ETH_QUEUE_STATE_STOPPED;
 
 	rxq = &sa->rxq_ctrl[sw_index];
 	sa->priv.dp_rx->qstop(rxq_info->dp, &rxq->evq->read_ptr);
 
-	if (sw_index == 0)
+	if (ethdev_qid == 0)
 		efx_mac_filter_default_rxq_clear(sa->nic);
 
 	sfc_rx_qflush(sa, sw_index);
@@ -806,36 +930,36 @@ sfc_rx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
 	sfc_ev_qstop(rxq->evq);
 }
 
+static uint64_t
+sfc_rx_get_offload_mask(struct sfc_adapter *sa)
+{
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
+	uint64_t no_caps = 0;
+
+	if (encp->enc_tunnel_encapsulations_supported == 0)
+		no_caps |= RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM;
+
+	if (encp->enc_rx_include_fcs_supported == 0)
+		no_caps |= RTE_ETH_RX_OFFLOAD_KEEP_CRC;
+
+	if (encp->enc_rx_vlan_stripping_supported == 0)
+		no_caps |= RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+
+	return ~no_caps;
+}
+
 uint64_t
 sfc_rx_get_dev_offload_caps(struct sfc_adapter *sa)
 {
-	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
-	uint64_t caps = 0;
+	uint64_t caps = sa->priv.dp_rx->dev_offload_capa;
 
-	caps |= DEV_RX_OFFLOAD_JUMBO_FRAME;
-
-	if (sa->priv.dp_rx->features & SFC_DP_RX_FEAT_CHECKSUM) {
-		caps |= DEV_RX_OFFLOAD_IPV4_CKSUM;
-		caps |= DEV_RX_OFFLOAD_UDP_CKSUM;
-		caps |= DEV_RX_OFFLOAD_TCP_CKSUM;
-	}
-
-	if (encp->enc_tunnel_encapsulations_supported &&
-	    (sa->priv.dp_rx->features & SFC_DP_RX_FEAT_TUNNELS))
-		caps |= DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM;
-
-	return caps;
+	return caps & sfc_rx_get_offload_mask(sa);
 }
 
 uint64_t
 sfc_rx_get_queue_offload_caps(struct sfc_adapter *sa)
 {
-	uint64_t caps = 0;
-
-	if (sa->priv.dp_rx->features & SFC_DP_RX_FEAT_SCATTER)
-		caps |= DEV_RX_OFFLOAD_SCATTER;
-
-	return caps;
+	return sa->priv.dp_rx->queue_offload_capa & sfc_rx_get_offload_mask(sa);
 }
 
 static int
@@ -940,7 +1064,7 @@ sfc_rx_mb_pool_buf_size(struct sfc_adapter *sa, struct rte_mempool *mb_pool)
 	/* Make sure that end padding does not write beyond the buffer */
 	if (buf_aligned < nic_align_end) {
 		/*
-		 * Estimate space which can be lost. If guarnteed buffer
+		 * Estimate space which can be lost. If guaranteed buffer
 		 * size is odd, lost space is (nic_align_end - 1). More
 		 * accurate formula is below.
 		 */
@@ -961,18 +1085,24 @@ sfc_rx_mb_pool_buf_size(struct sfc_adapter *sa, struct rte_mempool *mb_pool)
 		 * Start is aligned the same or better than end,
 		 * just align length.
 		 */
-		buf_size = P2ALIGN(buf_size, nic_align_end);
+		buf_size = EFX_P2ALIGN(uint32_t, buf_size, nic_align_end);
 	}
 
-	return buf_size;
+	/*
+	 * Buffer length field of a Rx descriptor may not be wide
+	 * enough to store a 16-bit data count taken from an mbuf.
+	 */
+	return MIN(buf_size, encp->enc_rx_dma_desc_size_max);
 }
 
 int
-sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
+sfc_rx_qinit(struct sfc_adapter *sa, sfc_sw_index_t sw_index,
 	     uint16_t nb_rx_desc, unsigned int socket_id,
 	     const struct rte_eth_rxconf *rx_conf,
 	     struct rte_mempool *mb_pool)
 {
+	struct sfc_adapter_shared *sas = sfc_sa2shared(sa);
+	sfc_ethdev_qid_t ethdev_qid;
 	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
 	struct sfc_rss *rss = &sfc_sa2shared(sa)->rss;
 	int rc;
@@ -986,6 +1116,7 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	struct sfc_rxq *rxq;
 	struct sfc_dp_rx_qcreate_info info;
 	struct sfc_dp_rx_hw_limits hw_limits;
+	struct sfc_port *port = &sa->port;
 	uint16_t rx_free_thresh;
 	const char *error;
 
@@ -1004,29 +1135,38 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	SFC_ASSERT(rxq_entries <= sa->rxq_max_entries);
 	SFC_ASSERT(rxq_max_fill_level <= nb_rx_desc);
 
-	offloads = rx_conf->offloads |
-		sa->eth_dev->data->dev_conf.rxmode.offloads;
+	ethdev_qid = sfc_ethdev_rx_qid_by_rxq_sw_index(sas, sw_index);
+
+	offloads = rx_conf->offloads;
+	/* Add device level Rx offloads if the queue is an ethdev Rx queue */
+	if (ethdev_qid != SFC_ETHDEV_QID_INVALID)
+		offloads |= sa->eth_dev->data->dev_conf.rxmode.offloads;
+
 	rc = sfc_rx_qcheck_conf(sa, rxq_max_fill_level, rx_conf, offloads);
 	if (rc != 0)
 		goto fail_bad_conf;
 
 	buf_size = sfc_rx_mb_pool_buf_size(sa, mb_pool);
 	if (buf_size == 0) {
-		sfc_err(sa, "RxQ %u mbuf pool object size is too small",
-			sw_index);
+		sfc_err(sa,
+			"RxQ %d (internal %u) mbuf pool object size is too small",
+			ethdev_qid, sw_index);
 		rc = EINVAL;
 		goto fail_bad_conf;
 	}
 
 	if (!sfc_rx_check_scatter(sa->port.pdu, buf_size,
 				  encp->enc_rx_prefix_size,
-				  (offloads & DEV_RX_OFFLOAD_SCATTER),
+				  (offloads & RTE_ETH_RX_OFFLOAD_SCATTER),
+				  encp->enc_rx_scatter_max,
 				  &error)) {
-		sfc_err(sa, "RxQ %u MTU check failed: %s", sw_index, error);
-		sfc_err(sa, "RxQ %u calculated Rx buffer size is %u vs "
+		sfc_err(sa, "RxQ %d (internal %u) MTU check failed: %s",
+			ethdev_qid, sw_index, error);
+		sfc_err(sa,
+			"RxQ %d (internal %u) calculated Rx buffer size is %u vs "
 			"PDU size %u plus Rx prefix %u bytes",
-			sw_index, buf_size, (unsigned int)sa->port.pdu,
-			encp->enc_rx_prefix_size);
+			ethdev_qid, sw_index, buf_size,
+			(unsigned int)sa->port.pdu, encp->enc_rx_prefix_size);
 		rc = EINVAL;
 		goto fail_bad_conf;
 	}
@@ -1042,13 +1182,27 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	else
 		rxq_info->type = EFX_RXQ_TYPE_DEFAULT;
 
-	rxq_info->type_flags =
-		(offloads & DEV_RX_OFFLOAD_SCATTER) ?
+	rxq_info->type_flags |=
+		(offloads & RTE_ETH_RX_OFFLOAD_SCATTER) ?
 		EFX_RXQ_FLAG_SCATTER : EFX_RXQ_FLAG_NONE;
 
 	if ((encp->enc_tunnel_encapsulations_supported != 0) &&
-	    (sa->priv.dp_rx->features & SFC_DP_RX_FEAT_TUNNELS))
+	    (sfc_dp_rx_offload_capa(sa->priv.dp_rx) &
+	     RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM) != 0)
 		rxq_info->type_flags |= EFX_RXQ_FLAG_INNER_CLASSES;
+
+	if (offloads & RTE_ETH_RX_OFFLOAD_RSS_HASH)
+		rxq_info->type_flags |= EFX_RXQ_FLAG_RSS_HASH;
+
+	if ((sa->negotiated_rx_metadata & RTE_ETH_RX_METADATA_USER_FLAG) != 0)
+		rxq_info->type_flags |= EFX_RXQ_FLAG_USER_FLAG;
+
+	if ((sa->negotiated_rx_metadata & RTE_ETH_RX_METADATA_USER_MARK) != 0 ||
+	    sfc_ft_is_active(sa))
+		rxq_info->type_flags |= EFX_RXQ_FLAG_USER_MARK;
+
+	if (port->vlan_strip)
+		rxq_info->type_flags |= EFX_RXQ_FLAG_VLAN_STRIPPED_TCI;
 
 	rc = sfc_ev_qinit(sa, SFC_EVQ_TYPE_RX, sw_index,
 			  evq_entries, socket_id, &evq);
@@ -1075,9 +1229,22 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	rxq_info->refill_threshold =
 		RTE_MAX(rx_free_thresh, SFC_RX_REFILL_BULK);
 	rxq_info->refill_mb_pool = mb_pool;
+
+	if (rss->hash_support == EFX_RX_HASH_AVAILABLE && rss->channels > 0 &&
+	    (offloads & RTE_ETH_RX_OFFLOAD_RSS_HASH))
+		rxq_info->rxq_flags = SFC_RXQ_FLAG_RSS_HASH;
+	else
+		rxq_info->rxq_flags = 0;
+
+	if (rxq_info->type_flags & EFX_RXQ_FLAG_INGRESS_MPORT)
+		rxq_info->rxq_flags |= SFC_RXQ_FLAG_INGRESS_MPORT;
+
+	if (rxq_info->type_flags & EFX_RXQ_FLAG_VLAN_STRIPPED_TCI)
+		rxq_info->rxq_flags |= SFC_RXQ_FLAG_VLAN_STRIPPED_TCI;
+
 	rxq->buf_size = buf_size;
 
-	rc = sfc_dma_alloc(sa, "rxq", sw_index,
+	rc = sfc_dma_alloc(sa, "rxq", sw_index, EFX_NIC_DMA_ADDR_RX_RING,
 			   efx_rxq_size(sa->nic, rxq_info->entries),
 			   socket_id, &rxq->mem);
 	if (rc != 0)
@@ -1091,16 +1258,23 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	info.batch_max = encp->enc_rx_batch_max;
 	info.prefix_size = encp->enc_rx_prefix_size;
 
-	if (rss->hash_support == EFX_RX_HASH_AVAILABLE && rss->channels > 0)
-		info.flags |= SFC_RXQ_FLAG_RSS_HASH;
+	if (sfc_ft_is_active(sa))
+		info.user_mark_mask = SFC_FT_USER_MARK_MASK;
+	else
+		info.user_mark_mask = UINT32_MAX;
 
+	info.flags = rxq_info->rxq_flags;
 	info.rxq_entries = rxq_info->entries;
 	info.rxq_hw_ring = rxq->mem.esm_base;
+	info.evq_hw_index = sfc_evq_sw_index_by_rxq_sw_index(sa, sw_index);
 	info.evq_entries = evq_entries;
 	info.evq_hw_ring = evq->mem.esm_base;
 	info.hw_index = rxq->hw_index;
 	info.mem_bar = sa->mem_bar.esb_base;
 	info.vi_window_shift = encp->enc_vi_window_shift;
+	info.fcw_offset = sa->fcw_offset;
+
+	info.nic_dma_info = &sas->nic_dma_info;
 
 	rc = sa->priv.dp_rx->qcreate(sa->eth_dev->data->port_id, sw_index,
 				     &RTE_ETH_DEV_TO_PCI(sa->eth_dev)->addr,
@@ -1132,13 +1306,18 @@ fail_size_up_rings:
 }
 
 void
-sfc_rx_qfini(struct sfc_adapter *sa, unsigned int sw_index)
+sfc_rx_qfini(struct sfc_adapter *sa, sfc_sw_index_t sw_index)
 {
+	struct sfc_adapter_shared *sas = sfc_sa2shared(sa);
+	sfc_ethdev_qid_t ethdev_qid;
 	struct sfc_rxq_info *rxq_info;
 	struct sfc_rxq *rxq;
 
 	SFC_ASSERT(sw_index < sfc_sa2shared(sa)->rxq_count);
-	sa->eth_dev->data->rx_queues[sw_index] = NULL;
+	ethdev_qid = sfc_ethdev_rx_qid_by_rxq_sw_index(sas, sw_index);
+
+	if (ethdev_qid != SFC_ETHDEV_QID_INVALID)
+		sa->eth_dev->data->rx_queues[ethdev_qid] = NULL;
 
 	rxq_info = &sfc_sa2shared(sa)->rxq_info[sw_index];
 
@@ -1162,19 +1341,19 @@ sfc_rx_qfini(struct sfc_adapter *sa, unsigned int sw_index)
  * Mapping between RTE RSS hash functions and their EFX counterparts.
  */
 static const struct sfc_rss_hf_rte_to_efx sfc_rss_hf_map[] = {
-	{ ETH_RSS_NONFRAG_IPV4_TCP,
+	{ RTE_ETH_RSS_NONFRAG_IPV4_TCP,
 	  EFX_RX_HASH(IPV4_TCP, 4TUPLE) },
-	{ ETH_RSS_NONFRAG_IPV4_UDP,
+	{ RTE_ETH_RSS_NONFRAG_IPV4_UDP,
 	  EFX_RX_HASH(IPV4_UDP, 4TUPLE) },
-	{ ETH_RSS_NONFRAG_IPV6_TCP | ETH_RSS_IPV6_TCP_EX,
+	{ RTE_ETH_RSS_NONFRAG_IPV6_TCP | RTE_ETH_RSS_IPV6_TCP_EX,
 	  EFX_RX_HASH(IPV6_TCP, 4TUPLE) },
-	{ ETH_RSS_NONFRAG_IPV6_UDP | ETH_RSS_IPV6_UDP_EX,
+	{ RTE_ETH_RSS_NONFRAG_IPV6_UDP | RTE_ETH_RSS_IPV6_UDP_EX,
 	  EFX_RX_HASH(IPV6_UDP, 4TUPLE) },
-	{ ETH_RSS_IPV4 | ETH_RSS_FRAG_IPV4 | ETH_RSS_NONFRAG_IPV4_OTHER,
+	{ RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_FRAG_IPV4 | RTE_ETH_RSS_NONFRAG_IPV4_OTHER,
 	  EFX_RX_HASH(IPV4_TCP, 2TUPLE) | EFX_RX_HASH(IPV4_UDP, 2TUPLE) |
 	  EFX_RX_HASH(IPV4, 2TUPLE) },
-	{ ETH_RSS_IPV6 | ETH_RSS_FRAG_IPV6 | ETH_RSS_NONFRAG_IPV6_OTHER |
-	  ETH_RSS_IPV6_EX,
+	{ RTE_ETH_RSS_IPV6 | RTE_ETH_RSS_FRAG_IPV6 | RTE_ETH_RSS_NONFRAG_IPV6_OTHER |
+	  RTE_ETH_RSS_IPV6_EX,
 	  EFX_RX_HASH(IPV6_TCP, 2TUPLE) | EFX_RX_HASH(IPV6_UDP, 2TUPLE) |
 	  EFX_RX_HASH(IPV6, 2TUPLE) }
 };
@@ -1342,7 +1521,7 @@ sfc_rx_process_adv_conf_rss(struct sfc_adapter *sa,
 
 	if (conf->rss_key != NULL) {
 		if (conf->rss_key_len != sizeof(rss->key)) {
-			sfc_err(sa, "RSS key size is wrong (should be %lu)",
+			sfc_err(sa, "RSS key size is wrong (should be %zu)",
 				sizeof(rss->key));
 			return EINVAL;
 		}
@@ -1380,14 +1559,41 @@ finish:
 	return rc;
 }
 
+struct sfc_rxq_info *
+sfc_rxq_info_by_ethdev_qid(struct sfc_adapter_shared *sas,
+			   sfc_ethdev_qid_t ethdev_qid)
+{
+	sfc_sw_index_t sw_index;
+
+	SFC_ASSERT((unsigned int)ethdev_qid < sas->ethdev_rxq_count);
+	SFC_ASSERT(ethdev_qid != SFC_ETHDEV_QID_INVALID);
+
+	sw_index = sfc_rxq_sw_index_by_ethdev_rx_qid(sas, ethdev_qid);
+	return &sas->rxq_info[sw_index];
+}
+
+struct sfc_rxq *
+sfc_rxq_ctrl_by_ethdev_qid(struct sfc_adapter *sa, sfc_ethdev_qid_t ethdev_qid)
+{
+	struct sfc_adapter_shared *sas = sfc_sa2shared(sa);
+	sfc_sw_index_t sw_index;
+
+	SFC_ASSERT((unsigned int)ethdev_qid < sas->ethdev_rxq_count);
+	SFC_ASSERT(ethdev_qid != SFC_ETHDEV_QID_INVALID);
+
+	sw_index = sfc_rxq_sw_index_by_ethdev_rx_qid(sas, ethdev_qid);
+	return &sa->rxq_ctrl[sw_index];
+}
+
 int
 sfc_rx_start(struct sfc_adapter *sa)
 {
 	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
-	unsigned int sw_index;
+	sfc_sw_index_t sw_index;
 	int rc;
 
-	sfc_log_init(sa, "rxq_count=%u", sas->rxq_count);
+	sfc_log_init(sa, "rxq_count=%u (internal %u)", sas->ethdev_rxq_count,
+		     sas->rxq_count);
 
 	rc = efx_rx_init(sa->nic);
 	if (rc != 0)
@@ -1425,9 +1631,10 @@ void
 sfc_rx_stop(struct sfc_adapter *sa)
 {
 	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
-	unsigned int sw_index;
+	sfc_sw_index_t sw_index;
 
-	sfc_log_init(sa, "rxq_count=%u", sas->rxq_count);
+	sfc_log_init(sa, "rxq_count=%u (internal %u)", sas->ethdev_rxq_count,
+		     sas->rxq_count);
 
 	sw_index = sas->rxq_count;
 	while (sw_index-- > 0) {
@@ -1438,8 +1645,9 @@ sfc_rx_stop(struct sfc_adapter *sa)
 	efx_rx_fini(sa->nic);
 }
 
-static int
-sfc_rx_qinit_info(struct sfc_adapter *sa, unsigned int sw_index)
+int
+sfc_rx_qinit_info(struct sfc_adapter *sa, sfc_sw_index_t sw_index,
+		  unsigned int extra_efx_type_flags)
 {
 	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
 	struct sfc_rxq_info *rxq_info = &sas->rxq_info[sw_index];
@@ -1450,6 +1658,7 @@ sfc_rx_qinit_info(struct sfc_adapter *sa, unsigned int sw_index)
 	SFC_ASSERT(rte_is_power_of_2(max_entries));
 
 	rxq_info->max_entries = max_entries;
+	rxq_info->type_flags = extra_efx_type_flags;
 
 	return 0;
 }
@@ -1464,10 +1673,10 @@ sfc_rx_check_mode(struct sfc_adapter *sa, struct rte_eth_rxmode *rxmode)
 	int rc = 0;
 
 	switch (rxmode->mq_mode) {
-	case ETH_MQ_RX_NONE:
+	case RTE_ETH_MQ_RX_NONE:
 		/* No special checks are required */
 		break;
-	case ETH_MQ_RX_RSS:
+	case RTE_ETH_MQ_RX_RSS:
 		if (rss->context_type == EFX_RX_SCALE_UNAVAILABLE) {
 			sfc_err(sa, "RSS is not available");
 			rc = EINVAL;
@@ -1484,16 +1693,16 @@ sfc_rx_check_mode(struct sfc_adapter *sa, struct rte_eth_rxmode *rxmode)
 	 * so unsupported offloads cannot be added as the result of
 	 * below check.
 	 */
-	if ((rxmode->offloads & DEV_RX_OFFLOAD_CHECKSUM) !=
-	    (offloads_supported & DEV_RX_OFFLOAD_CHECKSUM)) {
+	if ((rxmode->offloads & RTE_ETH_RX_OFFLOAD_CHECKSUM) !=
+	    (offloads_supported & RTE_ETH_RX_OFFLOAD_CHECKSUM)) {
 		sfc_warn(sa, "Rx checksum offloads cannot be disabled - always on (IPv4/TCP/UDP)");
-		rxmode->offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+		rxmode->offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
 	}
 
-	if ((offloads_supported & DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM) &&
-	    (~rxmode->offloads & DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM)) {
+	if ((offloads_supported & RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM) &&
+	    (~rxmode->offloads & RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM)) {
 		sfc_warn(sa, "Rx outer IPv4 checksum offload cannot be disabled - always on");
-		rxmode->offloads |= DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM;
+		rxmode->offloads |= RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM;
 	}
 
 	return rc;
@@ -1507,17 +1716,29 @@ static void
 sfc_rx_fini_queues(struct sfc_adapter *sa, unsigned int nb_rx_queues)
 {
 	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
-	int sw_index;
+	sfc_sw_index_t sw_index;
+	sfc_ethdev_qid_t ethdev_qid;
 
-	SFC_ASSERT(nb_rx_queues <= sas->rxq_count);
+	SFC_ASSERT(nb_rx_queues <= sas->ethdev_rxq_count);
 
-	sw_index = sas->rxq_count;
-	while (--sw_index >= (int)nb_rx_queues) {
-		if (sas->rxq_info[sw_index].state & SFC_RXQ_INITIALIZED)
+	/*
+	 * Finalize only ethdev queues since other ones are finalized only
+	 * on device close and they may require additional deinitialization.
+	 */
+	ethdev_qid = sas->ethdev_rxq_count;
+	while (--ethdev_qid >= (int)nb_rx_queues) {
+		struct sfc_rxq_info *rxq_info;
+
+		rxq_info = sfc_rxq_info_by_ethdev_qid(sas, ethdev_qid);
+		if (rxq_info->state & SFC_RXQ_INITIALIZED) {
+			sw_index = sfc_rxq_sw_index_by_ethdev_rx_qid(sas,
+								ethdev_qid);
 			sfc_rx_qfini(sa, sw_index);
+		}
+
 	}
 
-	sas->rxq_count = nb_rx_queues;
+	sas->ethdev_rxq_count = nb_rx_queues;
 }
 
 /**
@@ -1535,21 +1756,27 @@ sfc_rx_configure(struct sfc_adapter *sa)
 	struct sfc_rss *rss = &sas->rss;
 	struct rte_eth_conf *dev_conf = &sa->eth_dev->data->dev_conf;
 	const unsigned int nb_rx_queues = sa->eth_dev->data->nb_rx_queues;
+	const unsigned int nb_rsrv_rx_queues = sfc_nb_reserved_rxq(sas);
+	const unsigned int nb_rxq_total = nb_rx_queues + nb_rsrv_rx_queues;
+	bool reconfigure;
 	int rc;
 
 	sfc_log_init(sa, "nb_rx_queues=%u (old %u)",
-		     nb_rx_queues, sas->rxq_count);
+		     nb_rx_queues, sas->ethdev_rxq_count);
 
 	rc = sfc_rx_check_mode(sa, &dev_conf->rxmode);
 	if (rc != 0)
 		goto fail_check_mode;
 
-	if (nb_rx_queues == sas->rxq_count)
+	if (nb_rxq_total == sas->rxq_count) {
+		reconfigure = true;
 		goto configure_rss;
+	}
 
 	if (sas->rxq_info == NULL) {
+		reconfigure = false;
 		rc = ENOMEM;
-		sas->rxq_info = rte_calloc_socket("sfc-rxqs", nb_rx_queues,
+		sas->rxq_info = rte_calloc_socket("sfc-rxqs", nb_rxq_total,
 						  sizeof(sas->rxq_info[0]), 0,
 						  sa->socket_id);
 		if (sas->rxq_info == NULL)
@@ -1560,56 +1787,73 @@ sfc_rx_configure(struct sfc_adapter *sa)
 		 * since it should not be shared.
 		 */
 		rc = ENOMEM;
-		sa->rxq_ctrl = calloc(nb_rx_queues, sizeof(sa->rxq_ctrl[0]));
+		sa->rxq_ctrl = calloc(nb_rxq_total, sizeof(sa->rxq_ctrl[0]));
 		if (sa->rxq_ctrl == NULL)
 			goto fail_rxqs_ctrl_alloc;
 	} else {
 		struct sfc_rxq_info *new_rxq_info;
 		struct sfc_rxq *new_rxq_ctrl;
 
-		if (nb_rx_queues < sas->rxq_count)
+		reconfigure = true;
+
+		/* Do not uninitialize reserved queues */
+		if (nb_rx_queues < sas->ethdev_rxq_count)
 			sfc_rx_fini_queues(sa, nb_rx_queues);
 
 		rc = ENOMEM;
 		new_rxq_info =
 			rte_realloc(sas->rxq_info,
-				    nb_rx_queues * sizeof(sas->rxq_info[0]), 0);
-		if (new_rxq_info == NULL && nb_rx_queues > 0)
+				    nb_rxq_total * sizeof(sas->rxq_info[0]), 0);
+		if (new_rxq_info == NULL && nb_rxq_total > 0)
 			goto fail_rxqs_realloc;
 
 		rc = ENOMEM;
 		new_rxq_ctrl = realloc(sa->rxq_ctrl,
-				       nb_rx_queues * sizeof(sa->rxq_ctrl[0]));
-		if (new_rxq_ctrl == NULL && nb_rx_queues > 0)
+				       nb_rxq_total * sizeof(sa->rxq_ctrl[0]));
+		if (new_rxq_ctrl == NULL && nb_rxq_total > 0)
 			goto fail_rxqs_ctrl_realloc;
 
 		sas->rxq_info = new_rxq_info;
 		sa->rxq_ctrl = new_rxq_ctrl;
-		if (nb_rx_queues > sas->rxq_count) {
-			memset(&sas->rxq_info[sas->rxq_count], 0,
-			       (nb_rx_queues - sas->rxq_count) *
+		if (nb_rxq_total > sas->rxq_count) {
+			unsigned int rxq_count = sas->rxq_count;
+
+			memset(&sas->rxq_info[rxq_count], 0,
+			       (nb_rxq_total - rxq_count) *
 			       sizeof(sas->rxq_info[0]));
-			memset(&sa->rxq_ctrl[sas->rxq_count], 0,
-			       (nb_rx_queues - sas->rxq_count) *
+			memset(&sa->rxq_ctrl[rxq_count], 0,
+			       (nb_rxq_total - rxq_count) *
 			       sizeof(sa->rxq_ctrl[0]));
 		}
 	}
 
-	while (sas->rxq_count < nb_rx_queues) {
-		rc = sfc_rx_qinit_info(sa, sas->rxq_count);
+	while (sas->ethdev_rxq_count < nb_rx_queues) {
+		sfc_sw_index_t sw_index;
+
+		sw_index = sfc_rxq_sw_index_by_ethdev_rx_qid(sas,
+							sas->ethdev_rxq_count);
+		rc = sfc_rx_qinit_info(sa, sw_index, 0);
 		if (rc != 0)
 			goto fail_rx_qinit_info;
 
-		sas->rxq_count++;
+		sas->ethdev_rxq_count++;
+	}
+
+	sas->rxq_count = sas->ethdev_rxq_count + nb_rsrv_rx_queues;
+
+	if (!reconfigure) {
+		rc = sfc_mae_counter_rxq_init(sa);
+		if (rc != 0)
+			goto fail_count_rxq_init;
 	}
 
 configure_rss:
-	rss->channels = (dev_conf->rxmode.mq_mode == ETH_MQ_RX_RSS) ?
-			 MIN(sas->rxq_count, EFX_MAXRSS) : 0;
+	rss->channels = (dev_conf->rxmode.mq_mode == RTE_ETH_MQ_RX_RSS) ?
+			 MIN(sas->ethdev_rxq_count, EFX_MAXRSS) : 0;
 
 	if (rss->channels > 0) {
 		struct rte_eth_rss_conf *adv_conf_rss;
-		unsigned int sw_index;
+		sfc_sw_index_t sw_index;
 
 		for (sw_index = 0; sw_index < EFX_RSS_TBL_SIZE; ++sw_index)
 			rss->tbl[sw_index] = sw_index % rss->channels;
@@ -1623,6 +1867,10 @@ configure_rss:
 	return 0;
 
 fail_rx_process_adv_conf_rss:
+	if (!reconfigure)
+		sfc_mae_counter_rxq_fini(sa);
+
+fail_count_rxq_init:
 fail_rx_qinit_info:
 fail_rxqs_ctrl_realloc:
 fail_rxqs_realloc:
@@ -1646,6 +1894,7 @@ sfc_rx_close(struct sfc_adapter *sa)
 	struct sfc_rss *rss = &sfc_sa2shared(sa)->rss;
 
 	sfc_rx_fini_queues(sa, 0);
+	sfc_mae_counter_rxq_fini(sa);
 
 	rss->channels = 0;
 

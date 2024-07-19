@@ -121,6 +121,8 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_SHA384_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
 * ``RTE_CRYPTO_AUTH_MD5_HMAC``
+* ``RTE_CRYPTO_AUTH_AES_XCBC_MAC``
+* ``RTE_CRYPTO_AUTH_AES_CMAC``
 
 AEAD algorithms:
 
@@ -134,10 +136,10 @@ Supported DPAA2 SoCs
 * LS2088A/LS2048A
 * LS1088A/LS1048A
 
-Whitelisting & Blacklisting
----------------------------
+Allowing & Blocking
+-------------------
 
-For blacklisting a DPAA2 SEC device, following commands can be used.
+The DPAA2 SEC device can be blocked with the following:
 
  .. code-block:: console
 
@@ -159,39 +161,8 @@ The following dependencies are not part of DPDK and must be installed separately
 
 See :doc:`../platform/dpaa2` for setup information
 
-Currently supported by DPDK:
-
-- NXP SDK **19.03+**.
-- MC Firmware version **10.14.0** and higher.
-- Supported architectures:  **arm64 LE**.
-
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-Basic DPAA2 config file options are described in :ref:`dpaa2_overview`.
-In addition to those, the following options can be modified in the ``config`` file
-to enable DPAA2_SEC PMD.
-
-Please note that enabling debugging options may affect system performance.
-
-* ``CONFIG_RTE_LIBRTE_PMD_DPAA2_SEC`` (default ``n``)
-  By default it is only enabled in defconfig_arm64-dpaa2-* config.
-  Toggle compilation of the ``librte_pmd_dpaa2_sec`` driver.
-
-Installations
--------------
-To compile the DPAA2_SEC PMD for Linux arm64 gcc target, run the
-following ``make`` command:
-
-.. code-block:: console
-
-   cd <DPDK-source-directory>
-   make config T=arm64-dpaa2-linux-gcc install
 
 Enabling logs
 -------------
@@ -204,3 +175,20 @@ For enabling logs, use the following EAL parameter:
 
 Using ``crypto.dpaa2`` as log matching criteria, all Crypto PMD logs can be
 enabled which are lower than logging ``level``.
+
+Enabling debug prints
+---------------------
+
+Use dev arg option ``drv_dump_mode=x`` to dump useful debug prints on HW sec
+error. There are 3 dump modes available 0, 1 and 2. Mode 0 means no dump print
+on error, mode 1 means dump HW error code and mode 2 means dump HW error code
+along with other useful debugging information like session, queue, descriptor
+data.
+e.g. ``fslmc:dpseci.1,drv_dump_mode=1``
+
+Enable strict ordering
+----------------------
+
+Use dev arg option ``drv_strict_order=1`` to enable strict ordering.
+By default, loose ordering is set for ordered schedule type event.
+e.g. ``fslmc:dpseci.1,drv_strict_order=1``

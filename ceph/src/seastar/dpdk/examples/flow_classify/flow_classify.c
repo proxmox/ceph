@@ -59,12 +59,7 @@ static struct{
 } parm_config;
 const char cb_port_delim[] = ":";
 
-static const struct rte_eth_conf port_conf_default = {
-	.rxmode = {
-		.max_rx_pkt_len = ETHER_MAX_LEN,
-	},
-};
-
+/* Creation of flow classifier object. 8< */
 struct flow_classifier {
 	struct rte_flow_classifier *cls;
 };
@@ -72,9 +67,11 @@ struct flow_classifier {
 struct flow_classifier_acl {
 	struct flow_classifier cls;
 } __rte_cache_aligned;
+/* >8 End of creation of flow classifier object. */
+
+/*  Creation of ACL table during initialization of application. 8< */
 
 /* ACL field definitions for IPv4 5 tuple rule */
-
 enum {
 	PROTO_FIELD_IPV4,
 	SRC_FIELD_IPV4,
@@ -98,8 +95,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint8_t),
 		.field_index = PROTO_FIELD_IPV4,
 		.input_index = PROTO_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, next_proto_id),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, next_proto_id),
 	},
 	/* next input field (IPv4 source address) - 4 consecutive bytes. */
 	{
@@ -108,8 +105,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint32_t),
 		.field_index = SRC_FIELD_IPV4,
 		.input_index = SRC_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, src_addr),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, src_addr),
 	},
 	/* next input field (IPv4 destination address) - 4 consecutive bytes. */
 	{
@@ -118,8 +115,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint32_t),
 		.field_index = DST_FIELD_IPV4,
 		.input_index = DST_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, dst_addr),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, dst_addr),
 	},
 	/*
 	 * Next 2 fields (src & dst ports) form 4 consecutive bytes.
@@ -131,9 +128,9 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint16_t),
 		.field_index = SRCP_FIELD_IPV4,
 		.input_index = SRCP_DESTP_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			sizeof(struct ipv4_hdr) +
-			offsetof(struct tcp_hdr, src_port),
+		.offset = sizeof(struct rte_ether_hdr) +
+			sizeof(struct rte_ipv4_hdr) +
+			offsetof(struct rte_tcp_hdr, src_port),
 	},
 	{
 		/* rte_flow uses a bit mask for protocol ports */
@@ -141,19 +138,21 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint16_t),
 		.field_index = DSTP_FIELD_IPV4,
 		.input_index = SRCP_DESTP_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			sizeof(struct ipv4_hdr) +
-			offsetof(struct tcp_hdr, dst_port),
+		.offset = sizeof(struct rte_ether_hdr) +
+			sizeof(struct rte_ipv4_hdr) +
+			offsetof(struct rte_tcp_hdr, dst_port),
 	},
 };
+/* >8 End of creation of ACL table. */
 
-/* flow classify data */
+/* Flow classify data. 8< */
 static int num_classify_rules;
 static struct rte_flow_classify_rule *rules[MAX_NUM_CLASSIFY];
 static struct rte_flow_classify_ipv4_5tuple_stats ntuple_stats;
 static struct rte_flow_classify_stats classify_stats = {
 		.stats = (void **)&ntuple_stats
 };
+/* >8 End of flow classify data. */
 
 /* parameters for rte_flow_classify_validate and
  * rte_flow_classify_table_entry_add functions
@@ -188,11 +187,13 @@ static struct rte_flow_attr attr;
  * Initializes a given port using global settings and with the RX buffers
  * coming from the mbuf_pool passed as a parameter.
  */
+
+/* Initializing port using global settings. 8< */
 static inline int
 port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 {
-	struct rte_eth_conf port_conf = port_conf_default;
-	struct ether_addr addr;
+	struct rte_eth_conf port_conf;
+	struct rte_ether_addr addr;
 	const uint16_t rx_rings = 1, tx_rings = 1;
 	int retval;
 	uint16_t q;
@@ -202,10 +203,18 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
-	rte_eth_dev_info_get(port, &dev_info);
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	memset(&port_conf, 0, sizeof(struct rte_eth_conf));
+
+	retval = rte_eth_dev_info_get(port, &dev_info);
+	if (retval != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port, strerror(-retval));
+		return retval;
+	}
+
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	/* Configure the Ethernet device. */
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
@@ -230,31 +239,37 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 			return retval;
 	}
 
-	/* Start the Ethernet port. */
+	/* Start the Ethernet port. 8< */
 	retval = rte_eth_dev_start(port);
+	/* >8 End of starting the Ethernet port. */
 	if (retval < 0)
 		return retval;
 
 	/* Display the port MAC address. */
-	rte_eth_macaddr_get(port, &addr);
+	retval = rte_eth_macaddr_get(port, &addr);
+	if (retval != 0)
+		return retval;
+
 	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			port, RTE_ETHER_ADDR_BYTES(&addr));
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
-	rte_eth_promiscuous_enable(port);
+	retval = rte_eth_promiscuous_enable(port);
+	if (retval != 0)
+		return retval;
 
 	return 0;
 }
+/* >8 End of initializing a given port. */
 
 /*
  * The lcore main. This is the main thread that does the work, reading from
  * an input port classifying the packets and writing to an output port.
  */
-static __attribute__((noreturn)) void
+
+/* Classifying the packets. 8< */
+static __rte_noreturn void
 lcore_main(struct flow_classifier *cls_app)
 {
 	uint16_t port;
@@ -273,7 +288,7 @@ lcore_main(struct flow_classifier *cls_app)
 	 * for best performance.
 	 */
 	RTE_ETH_FOREACH_DEV(port)
-		if (rte_eth_dev_socket_id(port) > 0 &&
+		if (rte_eth_dev_socket_id(port) >= 0 &&
 			rte_eth_dev_socket_id(port) != (int)rte_socket_id()) {
 			printf("\n\n");
 			printf("WARNING: port %u is on remote NUMA node\n",
@@ -284,7 +299,7 @@ lcore_main(struct flow_classifier *cls_app)
 	printf("\nCore %u forwarding packets. ", rte_lcore_id());
 	printf("[Ctrl+C to quit]\n");
 
-	/* Run until the application is quit or killed. */
+	/* Run until the application is quit or killed. 8< */
 	for (;;) {
 		/*
 		 * Receive packets on a port, classify them and forward them
@@ -334,7 +349,9 @@ lcore_main(struct flow_classifier *cls_app)
 			}
 		}
 	}
+	/* >8 End of main loop. */
 }
+/* >8 End of lcore main. */
 
 /*
  * Parse IPv4 5 tuple rules file, ipv4_rules_file.txt.
@@ -379,7 +396,7 @@ parse_ipv4_net(char *in, uint32_t *addr, uint32_t *mask_len)
 	if (get_cb_field(&in, &m, 0, sizeof(uint32_t) * CHAR_BIT, 0))
 		return -EINVAL;
 
-	addr[0] = IPv4(a, b, c, d);
+	addr[0] = RTE_IPV4(a, b, c, d);
 	mask_len[0] = m;
 	return 0;
 }
@@ -413,7 +430,7 @@ parse_ipv4_5tuple_rule(char *str, struct rte_eth_ntuple_filter *ntuple_filter)
 			&ntuple_filter->dst_ip,
 			&ntuple_filter->dst_ip_mask);
 	if (ret != 0) {
-		flow_classify_log("failed to read source address/mask: %s\n",
+		flow_classify_log("failed to read destination address/mask: %s\n",
 			in[CB_FLD_DST_ADDR]);
 		return ret;
 	}
@@ -644,6 +661,7 @@ add_classify_rule(struct rte_eth_ntuple_filter *ntuple_filter,
 	return 0;
 }
 
+/* Reads file and calls the add_classify_rule function. 8< */
 static int
 add_rules(const char *rule_path, struct flow_classifier *cls_app)
 {
@@ -691,6 +709,7 @@ add_rules(const char *rule_path, struct flow_classifier *cls_app)
 	fclose(fh);
 	return 0;
 }
+/* >8 End of add_rules. */
 
 /* display usage */
 static void
@@ -760,43 +779,49 @@ main(int argc, char *argv[])
 	struct rte_flow_classifier_params cls_params;
 	uint32_t size;
 
-	/* Initialize the Environment Abstraction Layer (EAL). */
+	/* Initialize the Environment Abstraction Layer (EAL). 8< */
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+	/* >8 End of initialization of EAL. */
 
 	argc -= ret;
 	argv += ret;
 
-	/* parse application arguments (after the EAL ones) */
+	/* Parse application arguments (after the EAL ones). 8< */
 	ret = parse_args(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid flow_classify parameters\n");
+	/* >8 End of parse application arguments. */
 
 	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports < 2 || (nb_ports & 1))
 		rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
 
-	/* Creates a new mempool in memory to hold the mbufs. */
+	/* Creates a new mempool in memory to hold the mbufs. 8< */
 	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
 		MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	/* >8 End of creation of new mempool in memory. */
 
 	if (mbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
-	/* Initialize all ports. */
+	/* Initialize all ports. 8< */
 	RTE_ETH_FOREACH_DEV(portid)
 		if (port_init(portid, mbuf_pool) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu8 "\n",
 					portid);
+	/* >8 End of initialization of all ports. */
 
 	if (rte_lcore_count() > 1)
 		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
 
 	socket_id = rte_eth_dev_socket_id(0);
+	if (socket_id == SOCKET_ID_ANY)
+		socket_id = rte_lcore_to_socket_id(rte_get_next_lcore(-1, 0, 0));
 
-	/* Memory allocation */
+	/* Memory allocation. 8< */
 	size = RTE_CACHE_LINE_ROUNDUP(sizeof(struct flow_classifier_acl));
 	cls_app = rte_zmalloc(NULL, size, RTE_CACHE_LINE_SIZE);
 	if (cls_app == NULL)
@@ -828,19 +853,26 @@ main(int argc, char *argv[])
 		rte_free(cls_app);
 		rte_exit(EXIT_FAILURE, "Failed to create classifier table\n");
 	}
+	/* >8 End of initialization of table create params. */
 
 	/* read file of IPv4 5 tuple rules and initialize parameters
 	 * for rte_flow_classify_validate and rte_flow_classify_table_entry_add
 	 * API's.
 	 */
+
+	/* Read file of IPv4 tuple rules. 8< */
 	if (add_rules(parm_config.rule_ipv4_name, cls_app)) {
 		rte_flow_classifier_free(cls_app->cls);
 		rte_free(cls_app);
 		rte_exit(EXIT_FAILURE, "Failed to add rules\n");
 	}
+	/* >8 End of reading file of IPv4 5 tuple rules. */
 
-	/* Call lcore_main on the master core only. */
+	/* Call lcore_main on the main core only. */
 	lcore_main(cls_app);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

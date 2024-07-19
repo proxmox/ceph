@@ -86,6 +86,7 @@ class Rgw(BaseController):
 class RgwMultisiteStatus(RESTController):
     @Endpoint()
     @ReadPermission
+    @EndpointDoc("Get the multisite sync status")
     # pylint: disable=R0801
     def status(self):
         status = {'available': True, 'message': None}
@@ -110,6 +111,10 @@ class RgwMultisiteStatus(RESTController):
                                                          secret_key)
         return result
 
+
+@APIRouter('rgw/multisite', Scope.RGW)
+@APIDoc("RGW Multisite Management API", "RgwMultisite")
+class RgwMultisiteSyncStatus(RESTController):
     @RESTController.Collection(method='GET', path='/sync_status')
     @allow_empty_body
     # pylint: disable=W0102,W0613
@@ -865,9 +870,12 @@ edit_role_form = Form(path='/edit',
         "MaxSessionDuration": {'cellTemplate': 'duration'},
         "RoleId": {'isHidden': True},
         "AssumeRolePolicyDocument": {'isHidden': True},
-        "PermissionPolicies": {'isHidden': True}
+        "PermissionPolicies": {'isHidden': True},
+        "Description": {'isHidden': True},
+        "AccountId": {'isHidden': True}
     },
-    detail_columns=['RoleId', 'AssumeRolePolicyDocument', 'PermissionPolicies'],
+    detail_columns=['RoleId', 'Description',
+                    'AssumeRolePolicyDocument', 'PermissionPolicies', 'AccountId'],
     meta=CRUDMeta()
 )
 class RgwUserRole(NamedTuple):
@@ -879,6 +887,8 @@ class RgwUserRole(NamedTuple):
     MaxSessionDuration: int
     AssumeRolePolicyDocument: str
     PermissionPolicies: List
+    Description: str
+    AccountId: str
 
 
 @APIRouter('/rgw/realm', Scope.RGW)

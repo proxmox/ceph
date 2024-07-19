@@ -35,9 +35,16 @@
 #include <seastar/core/io_intent.hh>
 #include <seastar/util/later.hh>
 #include <chrono>
+#include <optional>
+#include <utility>
+#include <unordered_set>
 #include <vector>
 #include <boost/range/irange.hpp>
 #include <boost/algorithm/string.hpp>
+
+#pragma GCC diagnostic push
+// see https://github.com/boostorg/accumulators/pull/54
+#pragma GCC diagnostic ignored "-Wuninitialized"
 #include <boost/accumulators/accumulators.hpp>
 #include <boost/accumulators/statistics/stats.hpp>
 #include <boost/accumulators/statistics/max.hpp>
@@ -45,6 +52,7 @@
 #include <boost/accumulators/statistics/p_square_quantile.hpp>
 #include <boost/accumulators/statistics/extended_p_square.hpp>
 #include <boost/accumulators/statistics/extended_p_square_quantile.hpp>
+#pragma GCC diagnostic pop
 #include <boost/range/adaptor/filtered.hpp>
 #include <boost/range/adaptor/map.hpp>
 #include <boost/array.hpp>
@@ -57,10 +65,10 @@ using namespace std::chrono_literals;
 using namespace boost::accumulators;
 
 static auto random_seed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-static std::default_random_engine random_generator(random_seed);
+static thread_local std::default_random_engine random_generator(random_seed);
 
 class context;
-enum class request_type { seqread, seqwrite, randread, randwrite, append, cpu };
+enum class request_type { seqread, seqwrite, randread, randwrite, append, cpu, unlink };
 
 namespace std {
 
@@ -71,6 +79,49 @@ struct hash<request_type> {
     }
 };
 
+}
+
+auto allocate_and_fill_buffer(size_t buffer_size) {
+    constexpr size_t alignment{4096u};
+    auto buffer = allocate_aligned_buffer<char>(buffer_size, alignment);
+
+    std::uniform_int_distribution<int> fill('@', '~');
+    memset(buffer.get(), fill(random_generator), buffer_size);
+
+    return buffer;
+}
+
+future<std::pair<file, uint64_t>> create_and_fill_file(sstring name, uint64_t fsize, open_flags flags, file_open_options options) {
+    return open_file_dma(name, flags, options).then([fsize] (auto f) mutable {
+        return do_with(std::move(f), [fsize] (auto& f) {
+            return f.size().then([f, fsize] (uint64_t pre_truncate_size) mutable {
+                return f.truncate(fsize).then([f, fsize, pre_truncate_size] () mutable {
+                    if (pre_truncate_size >= fsize) {
+                        return make_ready_future<std::pair<file, uint64_t>>(std::pair{f, 0u});
+                    }
+
+                    const uint64_t buffer_size{256ul << 10};
+                    const uint64_t buffers_count{static_cast<uint64_t>(fsize / buffer_size) + 1u};
+                    const uint64_t last_buffer_id = (buffers_count - 1u);
+                    const uint64_t last_write_position = buffer_size * last_buffer_id;
+
+                    return do_with(boost::irange(UINT64_C(0), buffers_count), [f, buffer_size] (auto& buffers_range) mutable {
+                        return max_concurrent_for_each(buffers_range.begin(), buffers_range.end(), 64, [f, buffer_size] (auto buffer_id) mutable {
+                            auto source_buffer = allocate_and_fill_buffer(buffer_size);
+                            auto write_position = buffer_id * buffer_size;
+                            return do_with(std::move(source_buffer), [f, write_position, buffer_size] (const auto& buffer) mutable {
+                                return f.dma_write(write_position, buffer.get(), buffer_size).discard_result();
+                            });
+                        });
+                    }).then([f]() mutable {
+                        return f.flush();
+                    }).then([f, last_write_position]() {
+                        return make_ready_future<std::pair<file, uint64_t>>(std::pair{f, last_write_position});
+                    });
+                });
+            });
+        });
+    });
 }
 
 future<> busyloop_sleep(std::chrono::steady_clock::time_point until, std::chrono::steady_clock::time_point now) {
@@ -165,7 +216,9 @@ public:
 struct shard_info {
     unsigned parallelism = 0;
     unsigned rps = 0;
+    unsigned limit = std::numeric_limits<unsigned>::max();
     unsigned shares = 10;
+    std::string sched_class = "";
     uint64_t request_size = 4 << 10;
     uint64_t bandwidth = 0;
     std::chrono::duration<float> think_time = 0ms;
@@ -190,14 +243,26 @@ struct job_config {
     ::options options;
     // size of each individual file. Every class and every shard have its file, so in a normal
     // system with many shards we'll naturally have many files and that will push the data out
-    // of the disk's cache
+    // of the disk's cache. An exception to that rule is unlink_class_data, that creates files_count
+    // files with file_size/files_count.
     uint64_t file_size;
+    // the number of files to create and unlink by unlink_class_data per shard
+    // remaining operations utilize only one file per shard
+    std::optional<uint64_t> files_count;
     uint64_t offset_in_bdev;
     std::unique_ptr<class_data> gen_class_data();
 };
 
 std::array<double, 4> quantiles = { 0.5, 0.95, 0.99, 0.999};
 static bool keep_files = false;
+
+future<> maybe_remove_file(sstring fname) {
+    return keep_files ? make_ready_future<>() : remove_file(fname);
+}
+
+future<> maybe_close_file(file& f) {
+    return f ? f.close() : make_ready_future<>();
+}
 
 class class_data {
 protected:
@@ -208,7 +273,6 @@ protected:
     uint64_t _last_pos = 0;
     uint64_t _offset = 0;
 
-    io_priority_class _iop;
     seastar::scheduling_group _sg;
 
     size_t _data = 0;
@@ -229,7 +293,6 @@ public:
     class_data(job_config cfg)
         : _config(std::move(cfg))
         , _alignment(_config.shard_info.request_size >= 4096 ? 4096 : 512)
-        , _iop(io_priority_class::register_one(name(), _config.shard_info.shares))
         , _sg(cfg.shard_info.scheduling_group)
         , _latencies(extended_p_square_probabilities = quantiles)
         , _pos_distribution(0,  _config.file_size / _config.shard_info.request_size)
@@ -261,7 +324,7 @@ private:
         return parallel_for_each(boost::irange(0u, parallelism), [this, stop] (auto dummy) mutable {
             auto bufptr = allocate_aligned_buffer<char>(this->req_size(), _alignment);
             auto buf = bufptr.get();
-            return do_until([stop] { return std::chrono::steady_clock::now() > stop; }, [this, buf, stop] () mutable {
+            return do_until([this, stop] { return std::chrono::steady_clock::now() > stop || requests() > limit(); }, [this, buf, stop] () mutable {
                 auto start = std::chrono::steady_clock::now();
                 return issue_request(buf, nullptr).then([this, start, stop] (auto size) {
                     auto now = std::chrono::steady_clock::now();
@@ -282,13 +345,13 @@ private:
                 auto pause = std::chrono::duration_cast<std::chrono::microseconds>(1s) / rps;
                 auto pause_dist = _config.options.pause_fn(pause);
                 return seastar::sleep((pause / parallelism) * dummy).then([this, buf, stop, pause = pause_dist.get(), &intent, &in_flight] () mutable {
-                    return do_until([stop] { return std::chrono::steady_clock::now() > stop; }, [this, buf, stop, pause, &intent, &in_flight] () mutable {
+                    return do_until([this, stop] { return std::chrono::steady_clock::now() > stop || requests() > limit(); }, [this, buf, stop, pause, &intent, &in_flight] () mutable {
                         auto start = std::chrono::steady_clock::now();
                         in_flight++;
                         return issue_request(buf, &intent).then_wrapped([this, start, pause, stop, &in_flight] (auto size_f) {
                             size_t size;
                             try {
-                                size = size_f.get0();
+                                size = size_f.get();
                             } catch (...) {
                                 // cancelled
                                 in_flight--;
@@ -340,20 +403,21 @@ public:
             return make_ready_future<>();
         }
     }
-    // Generate the test file for reads and writes alike. It is much simpler to just generate one file per job instead of expecting
-    // job dependencies between creators and consumers. So every job (a class in a shard) will have its own file and will operate
-    // this file differently depending on the type:
+    // Generate the test file(s) for reads and writes alike. It is much simpler to just generate one file per job instead of expecting
+    // job dependencies between creators and consumers. Removal of files is an exception - it creates multiple files during startup to
+    // unlink them. So every job (a class in a shard) will have its own file(s) and will operate differently depending on the type:
     //
     // sequential reads  : will read the file from pos = 0 onwards, back to 0 on EOF
     // sequential writes : will write the file from pos = 0 onwards, back to 0 on EOF
     // random reads      : will read the file at random positions, between 0 and EOF
     // random writes     : will overwrite the file at a random position, between 0 and EOF
     // append            : will write to the file from pos = EOF onwards, always appending to the end.
+    // unlink            : will unlink files created at the beginning of the execution
     // cpu               : CPU-only load, file is not created.
     future<> start(sstring dir, directory_entry_type type) {
         return do_start(dir, type).then([this] {
             if (this_shard_id() == 0 && _config.shard_info.bandwidth != 0) {
-                return _iop.update_bandwidth(_config.shard_info.bandwidth);
+                return make_ready_future<>(); // FIXME _iop.update_bandwidth(_config.shard_info.bandwidth);
             } else {
                 return make_ready_future<>();
             }
@@ -361,10 +425,9 @@ public:
     }
 
     future<> stop() {
-        if (_file) {
-            return _file.close();
-        }
-        return make_ready_future<>();
+        return stop_hook().finally([this] {
+            return maybe_close_file(_file);
+        });
     }
 
     const sstring name() const {
@@ -380,6 +443,7 @@ protected:
             { request_type::randwrite, "RAND WRITE" },
             { request_type::append , "APPEND" },
             { request_type::cpu , "CPU" },
+            { request_type::unlink, "UNLINK" },
         }[_config.type];;
     }
 
@@ -405,6 +469,10 @@ protected:
 
     unsigned rps() const {
         return _config.shard_info.rps;
+    }
+
+    unsigned limit() const noexcept {
+        return _config.shard_info.limit;
     }
 
     unsigned shares() const {
@@ -468,6 +536,9 @@ protected:
 
 public:
     virtual void emit_results(YAML::Emitter& out) = 0;
+    virtual future<> stop_hook() {
+        return make_ready_future<>();
+    }
 };
 
 class io_class_data : public class_data {
@@ -513,38 +584,16 @@ private:
         file_open_options options;
         options.extent_allocation_size_hint = _config.file_size;
         options.append_is_unlikely = true;
-        return open_file_dma(fname, flags, options).then([this, fname] (auto f) {
-            _file = f;
-            auto maybe_remove_file = [] (sstring fname) {
-                return keep_files ? make_ready_future<>() : remove_file(fname);
-            };
-            return maybe_remove_file(fname).then([this] {
-                return _file.size().then([this] (uint64_t size) {
-                    return _file.truncate(_config.file_size).then([this, size] {
-                        if (size >= _config.file_size) {
-                            return make_ready_future<>();
-                        }
 
-                        auto bufsize = 256ul << 10;
-                        return do_with(boost::irange(0ul, (_config.file_size / bufsize) + 1), [this, bufsize] (auto& pos) mutable {
-                            return max_concurrent_for_each(pos.begin(), pos.end(), 64, [this, bufsize] (auto pos) mutable {
-                                auto bufptr = allocate_aligned_buffer<char>(bufsize, 4096);
-                                auto buf = bufptr.get();
-                                std::uniform_int_distribution<int> fill('@', '~');
-                                memset(buf, fill(random_generator), bufsize);
-                                pos = pos * bufsize;
-                                return _file.dma_write(pos, buf, bufsize).finally([this, bufptr = std::move(bufptr), pos] {
-                                    if ((this->req_type() == request_type::append) && (pos > _last_pos)) {
-                                        _last_pos = pos;
-                                    }
-                                }).discard_result();
-                            });
-                        }).then([this] {
-                            return _file.flush();
-                        });
-                    });
-                });
-            });
+        return create_and_fill_file(fname, _config.file_size, flags, options).then([this](std::pair<file, uint64_t> p) {
+            _file = std::move(p.first);
+            _last_pos = (req_type() == request_type::append) ? p.second : 0u;
+
+            return make_ready_future<>();
+        }).then([fname] {
+            // If keep_files == false, then the file shall not exist after the execution.
+            // After the following function call the usage of the file is valid until `this->_file` object is closed.
+            return maybe_remove_file(fname);
         });
     }
 
@@ -624,7 +673,7 @@ public:
     read_io_class_data(job_config cfg) : io_class_data(std::move(cfg)) {}
 
     future<size_t> issue_request(char *buf, io_intent* intent) override {
-        auto f = _file.dma_read(this->get_pos(), buf, this->req_size(), _iop, intent);
+        auto f = _file.dma_read(this->get_pos(), buf, this->req_size(), intent);
         return on_io_completed(std::move(f));
     }
 };
@@ -634,8 +683,104 @@ public:
     write_io_class_data(job_config cfg) : io_class_data(std::move(cfg)) {}
 
     future<size_t> issue_request(char *buf, io_intent* intent) override {
-        auto f = _file.dma_write(this->get_pos(), buf, this->req_size(), _iop, intent);
+        auto f = _file.dma_write(this->get_pos(), buf, this->req_size(), intent);
         return on_io_completed(std::move(f));
+    }
+};
+
+class unlink_class_data : public class_data {
+private:
+    sstring _dir_path{};
+    uint64_t _file_id_to_remove{0u};
+
+public:
+    unlink_class_data(job_config cfg) : class_data(std::move(cfg)) {
+        if (!_config.files_count.has_value()) {
+            throw std::runtime_error("request_type::unlink requires specifying 'files_count'");
+        }
+    }
+
+    future<> do_start(sstring path, directory_entry_type type) override {
+        if (type == directory_entry_type::directory) {
+            return do_start_on_directory(path);
+        }
+        throw std::runtime_error(format("Unsupported storage. {} should be directory", path));
+    }
+
+    future<size_t> issue_request(char *buf, io_intent* intent) override {
+        if (all_files_removed()) {
+            fmt::print("[WARNING]: Cannot issue request in unlink_class_data! All files have been removed for shard_id={}\n"
+                       "[WARNING]: Please create more files or adjust the frequency of unlinks.", this_shard_id());
+            return make_ready_future<size_t>(0u);
+        }
+
+        const auto fname = get_filename(_file_id_to_remove);
+        ++_file_id_to_remove;
+
+        return remove_file(fname).then([]{
+            return make_ready_future<size_t>(0u);
+        });
+    }
+
+    void emit_results(YAML::Emitter& out) override {
+        const auto iops = requests() / total_duration().count();
+        out << YAML::Key << "IOPS" << YAML::Value << iops;
+        out << YAML::Key << "latencies" << YAML::Comment("usec");
+        out << YAML::BeginMap;
+        out << YAML::Key << "average" << YAML::Value << average_latency();
+        out << YAML::Key << "max" << YAML::Value << max_latency();
+        out << YAML::EndMap;
+        out << YAML::Key << "stats" << YAML::BeginMap;
+        out << YAML::Key << "total_requests" << YAML::Value << requests();
+        out << YAML::EndMap;
+    }
+
+private:
+    future<> stop_hook() override {
+        if (all_files_removed() || keep_files) {
+            return make_ready_future<>();
+        }
+
+        return max_concurrent_for_each(boost::irange(_file_id_to_remove, files_count()), max_concurrency(), [this] (uint64_t file_id) {
+            const auto fname = get_filename(file_id);
+            return remove_file(fname);
+        });
+    }
+
+    uint64_t files_count() const {
+        return *_config.files_count;
+    }
+
+    uint64_t max_concurrency() const {
+        // When we have many files it is easy to exceed the limit of open file descriptors.
+        // To avoid that the limit is divided between shards (leaving some room for other jobs).
+        return static_cast<uint64_t>((1024u / smp::count) * 0.8);
+    }
+
+    bool all_files_removed() const {
+        return files_count() <= _file_id_to_remove;
+    }
+
+    sstring get_filename(uint64_t file_id) const {
+        return format("{}/test-{}-shard-{:d}-file-{}", _dir_path, name(), this_shard_id(), file_id);
+    }
+
+    future<> do_start_on_directory(sstring path) {
+        _dir_path = std::move(path);
+
+        return max_concurrent_for_each(boost::irange(UINT64_C(0), files_count()), max_concurrency(), [this] (uint64_t file_id) {
+            const auto fname = get_filename(file_id);
+            const auto fsize = _config.file_size / files_count();
+            const auto flags = open_flags::rw | open_flags::create;
+
+            file_open_options options;
+            options.extent_allocation_size_hint = fsize;
+            options.append_is_unlikely = true;
+
+            return create_and_fill_file(fname, fsize, flags, options).then([](std::pair<file, uint64_t> p) {
+                return p.first.close();
+            });
+        });
     }
 };
 
@@ -666,6 +811,8 @@ public:
 std::unique_ptr<class_data> job_config::gen_class_data() {
     if (type == request_type::cpu) {
         return std::make_unique<cpu_class_data>(*this);
+    } else if (type == request_type::unlink) {
+        return std::make_unique<unlink_class_data>(*this);
     } else if ((type == request_type::seqread) || (type == request_type::randread)) {
         return std::make_unique<read_io_class_data>(*this);
     } else {
@@ -747,6 +894,7 @@ struct convert<request_type> {
             { "randwrite", request_type::randwrite },
             { "append", request_type::append},
             { "cpu", request_type::cpu},
+            { "unlink", request_type::unlink },
         };
         auto reqstr = node.as<std::string>();
         if (!mappings.count(reqstr)) {
@@ -766,9 +914,14 @@ struct convert<shard_info> {
         if (node["rps"]) {
             sl.rps = node["rps"].as<unsigned>();
         }
+        if (node["limit"]) {
+            sl.limit = node["limit"].as<unsigned>();
+        }
 
         if (node["shares"]) {
             sl.shares = node["shares"].as<unsigned>();
+        } else if (node["class"]) {
+            sl.sched_class = node["class"].as<std::string>();
         }
         if (node["bandwidth"]) {
             sl.bandwidth = node["bandwidth"].as<byte_size>().size;
@@ -835,12 +988,21 @@ struct convert<job_config> {
         } else {
             cl.file_size = 1ull << 30; // 1G by default
         }
+
+        // By default a job may create 0 or 1 file.
+        // That is not the case for unlink_class_data - it creates multiple
+        // files that are unlinked during the execution.
+        if (node["files_count"]) {
+            cl.files_count = node["files_count"].as<uint64_t>();
+        }
+
         if (node["shard_info"]) {
             cl.shard_info = node["shard_info"].as<shard_info>();
         }
         if (node["options"]) {
             cl.options = node["options"].as<options>();
         }
+
         return true;
     }
 };
@@ -936,16 +1098,16 @@ int main(int ac, char** av) {
             auto& opts = app.configuration();
             auto& storage = opts["storage"].as<sstring>();
 
-            auto st_type = engine().file_type(storage).get0();
+            auto st_type = engine().file_type(storage).get();
 
             if (!st_type) {
                 throw std::runtime_error(format("Unknown storage {}", storage));
             }
 
             if (*st_type == directory_entry_type::directory) {
-                auto fs = file_system_at(storage).get0();
+                auto fs = file_system_at(storage).get();
                 if (fs != fs_type::xfs) {
-                    throw std::runtime_error(format("This is a performance test. {} is not on XFS", storage));
+                    std::cout << "WARNING!!! This is a performance test. " << storage << " is not on XFS" << std::endl;
                 }
             }
 
@@ -955,11 +1117,29 @@ int main(int ac, char** av) {
             YAML::Node doc = YAML::LoadFile(yaml);
             auto reqs = doc.as<std::vector<job_config>>();
 
-            parallel_for_each(reqs, [] (auto& r) {
-                return seastar::create_scheduling_group(r.name, r.shard_info.shares).then([&r] (seastar::scheduling_group sg) {
-                    r.shard_info.scheduling_group = sg;
+            struct sched_class {
+                seastar::scheduling_group sg;
+            };
+            std::unordered_map<std::string, sched_class> sched_classes;
+
+            parallel_for_each(reqs, [&sched_classes] (auto& r) {
+                if (r.shard_info.sched_class != "") {
+                    return make_ready_future<>();
+                }
+
+                return seastar::create_scheduling_group(r.name, r.shard_info.shares).then([&r, &sched_classes] (seastar::scheduling_group sg) {
+                    sched_classes.insert(std::make_pair(r.name, sched_class {
+                        .sg = sg,
+                    }));
                 });
             }).get();
+
+            for (job_config& r : reqs) {
+                auto cname = r.shard_info.sched_class != "" ? r.shard_info.sched_class : r.name;
+                fmt::print("Job {} -> sched class {}\n", r.name, cname);
+                auto& sc = sched_classes.at(cname);
+                r.shard_info.scheduling_group = sc.sg;
+            }
 
             if (*st_type == directory_entry_type::block_device) {
                 uint64_t off = 0;
@@ -969,7 +1149,7 @@ int main(int ac, char** av) {
                 }
             }
 
-            ctx.start(storage, *st_type, reqs, duration).get0();
+            ctx.start(storage, *st_type, reqs, duration).get();
             engine().at_exit([&ctx] {
                 return ctx.stop();
             });
@@ -982,7 +1162,7 @@ int main(int ac, char** av) {
                 return c.issue_requests();
             }).get();
             show_results(ctx);
-            ctx.stop().get0();
+            ctx.stop().get();
         }).or_terminate();
     });
 }

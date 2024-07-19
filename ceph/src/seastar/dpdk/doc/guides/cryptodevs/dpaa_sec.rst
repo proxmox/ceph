@@ -58,6 +58,8 @@ Cipher algorithms:
 * ``RTE_CRYPTO_CIPHER_AES128_CTR``
 * ``RTE_CRYPTO_CIPHER_AES192_CTR``
 * ``RTE_CRYPTO_CIPHER_AES256_CTR``
+* ``RTE_CRYPTO_CIPHER_SNOW3G_UEA2``
+* ``RTE_CRYPTO_CIPHER_ZUC_EEA3``
 
 Hash algorithms:
 
@@ -66,7 +68,9 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_SHA256_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA384_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
+* ``RTE_CRYPTO_AUTH_SNOW3G_UIA2``
 * ``RTE_CRYPTO_AUTH_MD5_HMAC``
+* ``RTE_CRYPTO_AUTH_ZUC_EIA3``
 
 AEAD algorithms:
 
@@ -78,18 +82,18 @@ Supported DPAA SoCs
 * LS1046A/LS1026A
 * LS1043A/LS1023A
 
-Whitelisting & Blacklisting
----------------------------
+Allowing & Blocking
+-------------------
 
-For blacklisting a DPAA device, following commands can be used.
+For blocking a DPAA device, following commands can be used.
 
  .. code-block:: console
 
-    <dpdk app> <EAL args> -b "dpaa_bus:dpaa-secX" -- ...
-    e.g. "dpaa_bus:dpaa-sec0"
+    <dpdk app> <EAL args> -b "dpaa:dpaa_sec-X" -- ...
+    e.g. "dpaa:dpaa_sec-1"
 
     or to disable all 4 SEC devices
-    -b "dpaa_sec:dpaa-sec0"  -b "dpaa_sec:dpaa-sec1" -b "dpaa_sec:dpaa-sec2" -b "dpaa_sec:dpaa-sec3"
+    -b "dpaa:dpaa_sec-1"  -b "dpaa:dpaa_sec-2" -b "dpaa:dpaa_sec-3" -b "dpaa:dpaa_sec-4"
 
 Limitations
 -----------
@@ -107,31 +111,6 @@ See :doc:`../platform/dpaa` for setup information
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-Basic DPAA config file options are described in :ref:`dpaa_overview`.
-In addition to those, the following options can be modified in the ``config`` file
-to enable DPAA_SEC PMD.
-
-Please note that enabling debugging options may affect system performance.
-
-* ``CONFIG_RTE_LIBRTE_PMD_DPAA_SEC`` (default ``n``)
-  By default it is only enabled in defconfig_arm64-dpaa-* config.
-  Toggle compilation of the ``librte_pmd_dpaa_sec`` driver.
-
-Installations
--------------
-To compile the DPAA_SEC PMD for Linux arm64 gcc target, run the
-following ``make`` command:
-
-.. code-block:: console
-
-   cd <DPDK-source-directory>
-   make config T=arm64-dpaa-linux-gcc install
 
 Enabling logs
 -------------
@@ -144,3 +123,13 @@ For enabling logs, use the following EAL parameter:
 
 Using ``pmd.crypto.dpaa`` as log matching criteria, all Crypto PMD logs can be
 enabled which are lower than logging ``level``.
+
+Enabling debug prints
+---------------------
+
+Use dev arg option ``drv_dump_mode=x`` to dump useful debug prints on HW sec
+error. There are 3 dump modes available 0, 1 and 2. Mode 0 means no dump print
+on error, mode 1 means dump HW error code and mode 2 means dump HW error code
+along with other useful debugging information like session, queue, descriptor
+data.
+e.g. ``dpaa_bus:dpaa_sec-1,drv_dump_mode=1``

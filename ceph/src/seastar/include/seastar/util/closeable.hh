@@ -21,9 +21,9 @@
 
 #pragma once
 
+#include <concepts>
 #include <functional>
 #include <seastar/core/future.hh>
-#include <seastar/util/concepts.hh>
 #include <seastar/util/defer.hh>
 
 /// \file
@@ -32,12 +32,10 @@
 
 namespace seastar {
 
-SEASTAR_CONCEPT(
 template <typename Object>
 concept closeable = requires (Object o) {
     { o.close() } SEASTAR_DEFERRED_ACTION_NOEXCEPT -> std::same_as<future<>>;
 };
-)
 
 /// Template helper to auto-close \c obj when destroyed.
 ///
@@ -47,8 +45,8 @@ concept closeable = requires (Object o) {
 /// Must be used in a seastar thread as the destructor
 /// needs to wait on the \c obj close() future.
 template <typename Object>
-SEASTAR_CONCEPT( requires closeable<Object> )
-class [[nodiscard("unassigned deferred_close")]] deferred_close {
+requires closeable<Object>
+class [[nodiscard]] deferred_close {
     std::reference_wrapper<Object> _obj;
     bool _closed = false;
 
@@ -92,11 +90,8 @@ public:
     }
 };
 
-template <typename Closeable, typename Func>
-SEASTAR_CONCEPT(
-requires closeable<Closeable> && std::invocable<Func, Closeable&> &&
-        std::is_nothrow_move_constructible_v<Closeable> && std::is_nothrow_move_constructible_v<Func>
-)
+template <closeable Closeable, std::invocable<Closeable&> Func>
+requires std::is_nothrow_move_constructible_v<Closeable> && std::is_nothrow_move_constructible_v<Func>
 inline futurize_t<std::invoke_result_t<Func, Closeable&>>
 with_closeable(Closeable&& obj, Func func) noexcept {
     return do_with(std::move(obj), [func = std::move(func)] (Closeable& obj) mutable {
@@ -106,12 +101,10 @@ with_closeable(Closeable&& obj, Func func) noexcept {
     });
 }
 
-SEASTAR_CONCEPT(
 template <typename Object>
 concept stoppable = requires (Object o) {
     { o.stop() } SEASTAR_DEFERRED_ACTION_NOEXCEPT -> std::same_as<future<>>;
 };
-)
 
 /// Template helper to auto-stop \c obj when destroyed.
 ///
@@ -121,8 +114,8 @@ concept stoppable = requires (Object o) {
 /// Must be used in a seastar thread as the destructor
 /// needs to wait on the \c obj stop() future.
 template <typename Object>
-SEASTAR_CONCEPT( requires stoppable<Object> )
-class [[nodiscard("unassigned deferred_stop")]] deferred_stop {
+requires stoppable<Object>
+class [[nodiscard]] deferred_stop {
     std::reference_wrapper<Object> _obj;
     bool _stopped = false;
 
@@ -166,11 +159,8 @@ public:
     }
 };
 
-template <typename Stoppable, typename Func>
-SEASTAR_CONCEPT(
-requires stoppable<Stoppable> && std::invocable<Func, Stoppable&> &&
-        std::is_nothrow_move_constructible_v<Stoppable> && std::is_nothrow_move_constructible_v<Func>
-)
+template <stoppable Stoppable, std::invocable<Stoppable&> Func>
+requires std::is_nothrow_move_constructible_v<Stoppable> && std::is_nothrow_move_constructible_v<Func>
 inline futurize_t<std::invoke_result_t<Func, Stoppable&>>
 with_stoppable(Stoppable&& obj, Func func) noexcept {
     return do_with(std::move(obj), [func = std::move(func)] (Stoppable& obj) mutable {

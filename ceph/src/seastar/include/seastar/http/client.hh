@@ -19,15 +19,43 @@
  * Copyright (C) 2022 Scylladb, Ltd.
  */
 
+#pragma once
+
+#ifndef SEASTAR_MODULE
+#include <boost/intrusive/list.hpp>
+#endif
 #include <seastar/net/api.hh>
+#include <seastar/http/reply.hh>
+#include <seastar/core/condition-variable.hh>
 #include <seastar/core/iostream.hh>
+#include <seastar/util/modules.hh>
+
+namespace bi = boost::intrusive;
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT_BEGIN
+
+namespace tls { class certificate_credentials; }
+
 namespace http {
 
+namespace experimental { class client; }
 struct request;
 struct reply;
+
+namespace internal {
+
+class client_ref {
+    http::experimental::client* _c;
+public:
+    client_ref(http::experimental::client* c) noexcept;
+    ~client_ref();
+    client_ref(client_ref&& o) noexcept : _c(std::exchange(o._c, nullptr)) {}
+    client_ref(const client_ref&) = delete;
+};
+
+}
 
 namespace experimental {
 
@@ -37,10 +65,21 @@ namespace experimental {
  * Check the demos/http_client_demo.cc for usage example
  */
 
-class connection {
+class connection : public enable_shared_from_this<connection> {
+    friend class client;
+    using hook_t = bi::list_member_hook<bi::link_mode<bi::auto_unlink>>;
+    using reply_ptr = std::unique_ptr<reply>;
+
     connected_socket _fd;
     input_stream<char> _read_buf;
     output_stream<char> _write_buf;
+    hook_t _hook;
+    future<> _closed;
+    internal::client_ref _ref;
+    // Client sends HTTP-1.1 version and assumes the server is 1.1-compatible
+    // too and thus the connection will be persistent by default. If the server
+    // responds with older version, this flag will be dropped (see recv_reply())
+    bool _persistent = true;
 
 public:
     /**
@@ -49,7 +88,7 @@ public:
      * Construct the connection that will work over the provided \fd transport socket
      *
      */
-    connection(connected_socket&& fd);
+    connection(connected_socket&& fd, internal::client_ref cr);
 
     /**
      * \brief Send the request and wait for response
@@ -87,14 +126,167 @@ public:
     future<> close();
 
 private:
-    future<> send_request_head(request& rq);
-    future<std::optional<reply>> maybe_wait_for_continue(request& req);
-    future<> write_body(request& rq);
-    future<reply> recv_reply();
+    future<reply_ptr> do_make_request(request rq);
+    void setup_request(request& rq);
+    future<> send_request_head(const request& rq);
+    future<reply_ptr> maybe_wait_for_continue(const request& req);
+    future<> write_body(const request& rq);
+    future<reply_ptr> recv_reply();
+};
+
+/**
+ * \brief Factory that provides transport for \ref client
+ *
+ * This customization point allows callers provide its own transport for client. The
+ * client code calls factory when it needs more connections to the server and maintains
+ * the pool of re-usable sockets internally
+ */
+
+class connection_factory {
+public:
+    /**
+     * \brief Make a \ref connected_socket
+     *
+     * The implementations of this method should return ready-to-use socket that will
+     * be used by \ref client as transport for its http connections
+     */
+    virtual future<connected_socket> make() = 0;
+    virtual ~connection_factory() {}
+};
+
+/**
+ * \brief Class client wraps communications using HTTP protocol
+ *
+ * The class allows making HTTP requests and handling replies. It's up to the caller to
+ * provide a transport, though for simple cases the class provides out-of-the-box
+ * facilities.
+ *
+ * The main benefit client provides against \ref connection is the transparent support
+ * for Keep-Alive transport sockets.
+ */
+
+class client {
+    friend class http::internal::client_ref;
+    using connections_list_t = bi::list<connection, bi::member_hook<connection, typename connection::hook_t, &connection::_hook>, bi::constant_time_size<false>>;
+    static constexpr unsigned default_max_connections = 100;
+
+    std::unique_ptr<connection_factory> _new_connections;
+    unsigned _nr_connections = 0;
+    unsigned _max_connections;
+    unsigned long _total_new_connections = 0;
+    condition_variable _wait_con;
+    connections_list_t _pool;
+
+    using connection_ptr = seastar::shared_ptr<connection>;
+
+    future<connection_ptr> get_connection();
+    future<> put_connection(connection_ptr con);
+    future<> shrink_connections();
+
+    template <std::invocable<connection&> Fn>
+    auto with_connection(Fn&& fn);
+
+public:
+    using reply_handler = noncopyable_function<future<>(const reply&, input_stream<char>&& body)>;
+    /**
+     * \brief Construct a simple client
+     *
+     * This creates a simple client that connects to provided address via plain (non-TLS)
+     * socket
+     *
+     * \param addr -- host address to connect to
+     *
+     */
+    explicit client(socket_address addr);
+
+    /**
+     * \brief Construct a secure client
+     *
+     * This creates a client that connects to provided address via TLS socket with
+     * given credentials. In simple words -- this makes an HTTPS client
+     *
+     * \param addr -- host address to connect to
+     * \param creds -- credentials
+     * \param host -- optional host name
+     *
+     */
+    client(socket_address addr, shared_ptr<tls::certificate_credentials> creds, sstring host = {});
+
+    /**
+     * \brief Construct a client with connection factory
+     *
+     * This creates a client that uses factory to get \ref connected_socket that is then
+     * used as transport. The client may withdraw more than one socket from the factory and
+     * may re-use the sockets on its own
+     *
+     * \param f -- the factory pointer
+     *
+     */
+    explicit client(std::unique_ptr<connection_factory> f, unsigned max_connections = default_max_connections);
+
+    /**
+     * \brief Send the request and handle the response
+     *
+     * Sends the provided request to the server and calls the provided callback to handle
+     * the response when it arrives. If the expected status is specified and the response's
+     * status is not the expected one, the handler is not called and the method resolves
+     * with exceptional future. Otherwise returns the handler's future
+     *
+     * \param req -- request to be sent
+     * \param handle -- the response handler
+     * \param expected -- the optional expected reply status code, default is std::nullopt
+     *
+     */
+    future<> make_request(request req, reply_handler handle, std::optional<reply::status_type> expected = std::nullopt);
+
+    /**
+     * \brief Updates the maximum number of connections a client may have
+     *
+     * If the new limit is less than the amount of connections a client has, they will be
+     * closed. The returned future resolves when all excessive connections get closed
+     *
+     * \param nr -- the new limit on the number of connections
+     */
+    future<> set_maximum_connections(unsigned nr);
+
+    /**
+     * \brief Closes the client
+     *
+     * Client must be closed before destruction unconditionally
+     */
+    future<> close();
+
+    /**
+     * \brief Returns the total number of connections
+     */
+
+    unsigned connections_nr() const noexcept {
+        return _nr_connections;
+    }
+
+    /**
+     * \brief Returns the number of idle connections
+     */
+
+    unsigned idle_connections_nr() const noexcept {
+        return _pool.size();
+    }
+
+    /**
+     * \brief Returns the total number of connection factory invocations made so far
+     *
+     * This is the monotonically-increasing counter describing how "frequently" the
+     * client kicks its factory for new connections.
+     */
+
+    unsigned long total_new_connections_nr() const noexcept {
+        return _total_new_connections;
+    }
 };
 
 } // experimental namespace
 
 } // http namespace
 
+SEASTAR_MODULE_EXPORT_END
 } // seastar namespace

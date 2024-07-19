@@ -10,22 +10,50 @@ NICs. These adapters are also referred to as vNICs below. If you are running
 or would like to run DPDK software applications on Cisco UCS servers using
 Cisco VIC adapters the following documentation is relevant.
 
+Supported Cisco VIC adapters
+----------------------------
+
+ENIC PMD supports all recent generations of Cisco VIC adapters including:
+
+- VIC 1200 series
+- VIC 1300 series
+- VIC 1400 series
+
+Supported features
+------------------
+
+- Unicast, multicast and broadcast transmission and reception
+- Receive queue polling
+- Port Hardware Statistics
+- Hardware VLAN acceleration
+- IP checksum offload
+- Receive side VLAN stripping
+- Multiple receive and transmit queues
+- Promiscuous mode
+- Setting RX VLAN (supported via UCSM/CIMC only)
+- VLAN filtering (supported via UCSM/CIMC only)
+- Execution of application by unprivileged system users
+- IPV4, IPV6 and TCP RSS hashing
+- UDP RSS hashing (1400 series and later adapters)
+- Scattered Rx
+- MTU update
+- SR-IOV on UCS managed servers connected to Fabric Interconnects
+- Flow API
+- Overlay offload
+
+  - Rx/Tx checksum offloads for VXLAN, NVGRE, GENEVE
+  - TSO for VXLAN and GENEVE packets
+  - Inner RSS
+
 How to obtain ENIC PMD integrated DPDK
 --------------------------------------
 
 ENIC PMD support is integrated into the DPDK suite. dpdk-<version>.tar.gz
-should be downloaded from http://core.dpdk.org/download/
+should be downloaded from https://core.dpdk.org/download/
 
 
 Configuration information
 -------------------------
-
-- **DPDK Configuration Parameters**
-
-  The following configuration options are available for the ENIC PMD:
-
-  - **CONFIG_RTE_LIBRTE_ENIC_PMD** (default y): Enables or disables inclusion
-    of the ENIC PMD driver in the DPDK compilation.
 
 - **vNIC Configuration Parameters**
 
@@ -107,24 +135,6 @@ Configuration information
     TCP, IPv4, TCP-IPv4, IPv6, TCP-IPv6, IPv6 Extension, TCP-IPv6 Extension.
 
 
-.. _enic-flow-director:
-
-Flow director support
----------------------
-
-Advanced filtering support was added to 1300 series VIC firmware starting
-with version 2.0.13 for C-series UCS servers and version 3.1.2 for UCSM
-managed blade servers. In order to enable advanced filtering the 'Advanced
-filter' radio button should be enabled via CIMC or UCSM followed by a reboot
-of the server.
-
-With advanced filters, perfect matching of all fields of IPv4, IPv6 headers
-as well as TCP, UDP and SCTP L4 headers is available through flow director.
-Masking of these fields for partial match is also supported.
-
-Without advanced filter support, the flow director is limited to IPv4
-perfect filtering of the 5-tuple with no masking of fields supported.
-
 SR-IOV mode utilization
 -----------------------
 
@@ -205,7 +215,7 @@ or ``vfio`` in non-IOMMU mode.
 
 In the VM, the kernel enic driver may be automatically bound to the VF during
 boot. Unbinding it currently hangs due to a known issue with the driver. To
-work around the issue, blacklist the enic module as follows.
+work around the issue, block the enic module as follows.
 Please see :ref:`Limitations <enic_limitations>` for limitations in
 the use of SR-IOV.
 
@@ -229,7 +239,13 @@ the use of SR-IOV.
 Generic Flow API support
 ------------------------
 
-Generic Flow API is supported. The baseline support is:
+Generic Flow API (also called "rte_flow" API) is supported. More advanced
+capabilities are available when "Advanced Filtering" is enabled on the adapter.
+Advanced filtering was added to 1300 series VIC firmware starting with version
+2.0.13 for C-series UCS servers and version 3.1.2 for UCSM managed blade
+servers. Advanced filtering is available on 1400 series adapters and beyond.
+To enable advanced filtering, the 'Advanced filter' radio button should be
+selected via CIMC or UCSM followed by a reboot of the server.
 
 - **1200 series VICs**
 
@@ -260,11 +276,14 @@ Generic Flow API is supported. The baseline support is:
   - Selectors: 'is', 'spec' and 'mask'. 'last' is not supported
   - In total, up to 64 bytes of mask is allowed across all headers
 
-- **1400 and later series VICS with advanced filters enabled**
+- **1400 and later series VICs with Flow Manager API enabled**
 
-  All the above plus:
-
-  - Action: count
+  - Attributes: ingress, egress
+  - Items: eth, vlan, ipv4, ipv6, sctp, udp, tcp, vxlan, raw, inner eth, vlan, ipv4, ipv6, sctp, udp, tcp
+  - Ingress Actions: count, drop, flag, jump, mark, port_id, passthru, queue, rss, vxlan_decap, vxlan_encap, and void
+  - Egress Actions: count, drop, jump, passthru, vxlan_encap, and void
+  - Selectors: 'is', 'spec' and 'mask'. 'last' is not supported
+  - In total, up to 64 bytes of mask is allowed across all headers
 
 The VIC performs packet matching after applying VLAN strip. If VLAN
 stripping is enabled, EtherType in the ETH item corresponds to the
@@ -295,9 +314,9 @@ inner and outer packets can be IPv4 or IPv6.
 - Rx checksum offloads.
 
   The NIC validates IPv4/UDP/TCP checksums of both inner and outer packets.
-  Good checksum flags (e.g. ``PKT_RX_L4_CKSUM_GOOD``) indicate that the inner
+  Good checksum flags (e.g. ``RTE_MBUF_F_RX_L4_CKSUM_GOOD``) indicate that the inner
   packet has the correct checksum, and if applicable, the outer packet also
-  has the correct checksum. Bad checksum flags (e.g. ``PKT_RX_L4_CKSUM_BAD``)
+  has the correct checksum. Bad checksum flags (e.g. ``RTE_MBUF_F_RX_L4_CKSUM_BAD``)
   indicate that the inner and/or outer packets have invalid checksum values.
 
 - Inner Rx packet type classification
@@ -310,23 +329,31 @@ inner and outer packets can be IPv4 or IPv6.
 
   RSS hash calculation, therefore queue selection, is done on inner packets.
 
-In order to enable overlay offload, the 'Enable VXLAN' box should be checked
+In order to enable overlay offload, enable VXLAN and/or Geneve on vNIC
 via CIMC or UCSM followed by a reboot of the server. When PMD successfully
-enables overlay offload, it prints the following message on the console.
+enables overlay offload, it prints one of the following messages on the console.
 
 .. code-block:: console
 
-    Overlay offload is enabled
+    Overlay offload is enabled (VxLAN)
+    Overlay offload is enabled (Geneve)
+    Overlay offload is enabled (VxLAN, Geneve)
 
 By default, PMD enables overlay offload if hardware supports it. To disable
 it, set ``devargs`` parameter ``disable-overlay=1``. For example::
 
-    -w 12:00.0,disable-overlay=1
+    -a 12:00.0,disable-overlay=1
 
-By default, the NIC uses 4789 as the VXLAN port. The user may change
-it through ``rte_eth_dev_udp_tunnel_port_{add,delete}``. However, as
-the current NIC has a single VXLAN port number, the user cannot
-configure multiple port numbers.
+By default, the NIC uses 4789 and 6081 as the VXLAN and Geneve ports,
+respectively. The user may change them through
+``rte_eth_dev_udp_tunnel_port_{add,delete}``. However, as the current
+NIC has a single VXLAN port number and a single Geneve port number,
+the user cannot configure multiple port numbers for each tunnel type.
+
+Geneve offload support has evolved over VIC models. On older models,
+Geneve offload and advanced filters are mutually exclusive.  This is
+enforced by UCSM and CIMC, which only allow one of the two features
+to be selected at one time. Newer VIC models do not have this restriction.
 
 Ingress VLAN Rewrite
 --------------------
@@ -375,7 +402,7 @@ vectorized handler, take the following steps.
   PMD consider the vectorized handler when selecting the receive handler.
   For example::
 
-    -w 12:00.0,enable-avx2-rx=1
+    -a 12:00.0,enable-avx2-rx=1
 
   As the current implementation is intended for field trials, by default, the
   vectorized handler is not considered (``enable-avx2-rx=0``).
@@ -391,6 +418,31 @@ vectorized handler is selected, enable debug logging
 .. code-block:: console
 
     enic_use_vector_rx_handler use the non-scatter avx2 Rx handler
+
+64B Completion Queue Entry
+--------------------------
+
+Recent VIC adapters support 64B completion queue entries, as well as
+16B entries that are available on all adapter models. ENIC PMD enables
+and uses 64B entries by default, if available. 64B entries generally
+lower CPU cycles per Rx packet, as they avoid partial DMA writes and
+reduce cache contention between DMA and polling CPU. The effect is
+most pronounced when multiple Rx queues are used on Intel platforms
+with Data Direct I/O Technology (DDIO).
+
+If 64B entries are not available, PMD uses 16B entries. The user may
+explicitly disable 64B entries and use 16B entries by setting
+``devarg`` parameter ``cq64=0``. For example::
+
+    -a 12:00.0,cq64=0
+
+To verify the selected entry size, enable debug logging
+(``--log-level=enic,debug``) and check the following messages.
+
+.. code-block:: console
+
+    PMD: rte_enic_pmd: Supported CQ entry sizes: 16 32
+    PMD: rte_enic_pmd: Using 16B CQ entry size
 
 .. _enic_limitations:
 
@@ -415,22 +467,16 @@ Limitations
 .. code-block:: console
 
      vlan_offload = rte_eth_dev_get_vlan_offload(port);
-     vlan_offload |= ETH_VLAN_STRIP_OFFLOAD;
+     vlan_offload |= RTE_ETH_VLAN_STRIP_OFFLOAD;
      rte_eth_dev_set_vlan_offload(port, vlan_offload);
 
 Another alternative is modify the adapter's ingress VLAN rewrite mode so that
 packets with the default VLAN tag are stripped by the adapter and presented to
-DPDK as untagged packets. In this case mbuf->vlan_tci and the PKT_RX_VLAN and
-PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
+DPDK as untagged packets. In this case mbuf->vlan_tci and the RTE_MBUF_F_RX_VLAN and
+RTE_MBUF_F_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
 ``devargs`` parameter ``ig-vlan-rewrite=untag``. For example::
 
-    -w 12:00.0,ig-vlan-rewrite=untag
-
-- Limited flow director support on 1200 series and 1300 series Cisco VIC
-  adapters with old firmware. Please see :ref:`enic-flow-director`.
-
-- Flow director features are not supported on generation 1 Cisco VIC adapters
-  (M81KR and P81E)
+    -a 12:00.0,ig-vlan-rewrite=untag
 
 - **SR-IOV**
 
@@ -440,7 +486,7 @@ PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
   - VF devices are not usable directly from the host. They can  only be used
     as assigned devices on VM instances.
   - Currently, unbind of the ENIC kernel mode driver 'enic.ko' on the VM
-    instance may hang. As a workaround, enic.ko should be blacklisted or removed
+    instance may hang. As a workaround, enic.ko should be blocked or removed
     from the boot process.
   - pci_generic cannot be used as the uio module in the VM. igb_uio or
     vfio in non-IOMMU mode can be used.
@@ -462,6 +508,12 @@ PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
     packets and then receive them normally. These require 1400 series VIC adapters
     and latest firmware.
   - RAW items are limited to matching UDP tunnel headers like VXLAN.
+  - GTP, GTP-C and GTP-U header matching is enabled, however matching items within
+    the tunnel is not supported.
+  - For 1400 VICs, all flows using the RSS action on a port use same hash
+    configuration. The RETA is ignored. The queues used in the RSS group must be
+    sequential. There is a performance hit if the number of queues is not a power of 2.
+    Only level 0 (outer header) RSS is allowed.
 
 - **Statistics**
 
@@ -493,47 +545,11 @@ Refer to the document :ref:`compiling and testing a PMD for a NIC
 For configuring and using UIO and VFIO frameworks, please refer to the
 documentation that comes with DPDK suite.
 
-Supported Cisco VIC adapters
-----------------------------
-
-ENIC PMD supports all recent generations of Cisco VIC adapters including:
-
-- VIC 1200 series
-- VIC 1300 series
-- VIC 1400 series
-
 Supported Operating Systems
 ---------------------------
 
 Any Linux distribution fulfilling the conditions described in Dependencies
 section of DPDK documentation.
-
-Supported features
-------------------
-
-- Unicast, multicast and broadcast transmission and reception
-- Receive queue polling
-- Port Hardware Statistics
-- Hardware VLAN acceleration
-- IP checksum offload
-- Receive side VLAN stripping
-- Multiple receive and transmit queues
-- Flow Director ADD, UPDATE, DELETE, STATS operation support IPv4 and IPv6
-- Promiscuous mode
-- Setting RX VLAN (supported via UCSM/CIMC only)
-- VLAN filtering (supported via UCSM/CIMC only)
-- Execution of application by unprivileged system users
-- IPV4, IPV6 and TCP RSS hashing
-- UDP RSS hashing (1400 series and later adapters)
-- Scattered Rx
-- MTU update
-- SR-IOV on UCS managed servers connected to Fabric Interconnects
-- Flow API
-- Overlay offload
-
-  - Rx/Tx checksum offloads for VXLAN, NVGRE, GENEVE
-  - TSO for VXLAN and GENEVE packets
-  - Inner RSS
 
 Known bugs and unsupported features in this release
 ---------------------------------------------------
@@ -583,22 +599,8 @@ The value depends on the memory configuration of the application, DPDK and
 PMD.  Typically, the limit has to be raised to higher than 2GB.
 e.g., 2621440
 
-The compilation of any unused drivers can be disabled using the
-configuration file in config/ directory (e.g., config/common_linux).
-This would help in bringing down the time taken for building the
-libraries and the initialization time of the application.
-
 Additional Reference
 --------------------
 
 - https://www.cisco.com/c/en/us/products/servers-unified-computing/index.html
 - https://www.cisco.com/c/en/us/products/interfaces-modules/unified-computing-system-adapters/index.html
-
-Contact Information
--------------------
-
-Any questions or bugs should be reported to DPDK community and to the ENIC PMD
-maintainers:
-
-- John Daley <johndale@cisco.com>
-- Hyong Youb Kim <hyonkim@cisco.com>

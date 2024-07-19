@@ -17,6 +17,7 @@ install and manage a Ceph cluster.
   CLI and dashboard features that are used to manage cluster deployment.
 * cephadm requires container support (in the form of Podman or Docker) and
   Python 3.
+* cephadm requires systemd.
 
 `Rook <https://rook.io/>`_ deploys and manages Ceph clusters running
 in Kubernetes, while also enabling management of storage resources and

@@ -2,6 +2,8 @@
  * Copyright(c) 2016-2017 Intel Corporation
  */
 
+#include <stdlib.h>
+
 #include <rte_malloc.h>
 #include <rte_cycles.h>
 #include <rte_crypto.h>
@@ -18,7 +20,7 @@ struct cperf_throughput_ctx {
 
 	struct rte_mempool *pool;
 
-	struct rte_cryptodev_sym_session *sess;
+	void *sess;
 
 	cperf_populate_ops_t populate_ops;
 
@@ -32,22 +34,34 @@ struct cperf_throughput_ctx {
 static void
 cperf_throughput_test_free(struct cperf_throughput_ctx *ctx)
 {
-	if (ctx) {
-		if (ctx->sess) {
-			rte_cryptodev_sym_session_clear(ctx->dev_id, ctx->sess);
-			rte_cryptodev_sym_session_free(ctx->sess);
+	if (!ctx)
+		return;
+	if (ctx->sess) {
+		if (ctx->options->op_type == CPERF_ASYM_MODEX)
+			rte_cryptodev_asym_session_free(ctx->dev_id,
+					(void *)ctx->sess);
+#ifdef RTE_LIB_SECURITY
+		else if (ctx->options->op_type == CPERF_PDCP ||
+			 ctx->options->op_type == CPERF_DOCSIS ||
+			 ctx->options->op_type == CPERF_IPSEC) {
+			struct rte_security_ctx *sec_ctx =
+				(struct rte_security_ctx *)
+					rte_cryptodev_get_sec_ctx(ctx->dev_id);
+			rte_security_session_destroy(
+				sec_ctx,
+				(void *)ctx->sess);
 		}
-
-		if (ctx->pool)
-			rte_mempool_free(ctx->pool);
-
-		rte_free(ctx);
+#endif
+		else
+			rte_cryptodev_sym_session_free(ctx->dev_id, ctx->sess);
 	}
+	rte_mempool_free(ctx->pool);
+
+	rte_free(ctx);
 }
 
 void *
 cperf_throughput_test_constructor(struct rte_mempool *sess_mp,
-		struct rte_mempool *sess_priv_mp,
 		uint8_t dev_id, uint16_t qp_id,
 		const struct cperf_options *options,
 		const struct cperf_test_vector *test_vector,
@@ -70,7 +84,7 @@ cperf_throughput_test_constructor(struct rte_mempool *sess_mp,
 	uint16_t iv_offset = sizeof(struct rte_crypto_op) +
 		sizeof(struct rte_crypto_sym_op);
 
-	ctx->sess = op_fns->sess_create(sess_mp, sess_priv_mp, dev_id, options,
+	ctx->sess = op_fns->sess_create(sess_mp, dev_id, options,
 			test_vector, iv_offset);
 	if (ctx->sess == NULL)
 		goto err;
@@ -95,7 +109,7 @@ cperf_throughput_test_runner(void *test_ctx)
 	uint8_t burst_size_idx = 0;
 	uint32_t imix_idx = 0;
 
-	static int only_once;
+	static uint16_t display_once;
 
 	struct rte_crypto_op *ops[ctx->options->max_burst_size];
 	struct rte_crypto_op *ops_processed[ctx->options->max_burst_size];
@@ -108,7 +122,8 @@ cperf_throughput_test_runner(void *test_ctx)
 	int linearize = 0;
 
 	/* Check if source mbufs require coalescing */
-	if (ctx->options->segment_sz < ctx->options->max_buffer_size) {
+	if ((ctx->options->op_type != CPERF_ASYM_MODEX) &&
+	    (ctx->options->segment_sz < ctx->options->max_buffer_size)) {
 		rte_cryptodev_info_get(ctx->dev_id, &dev_info);
 		if ((dev_info.feature_flags &
 				RTE_CRYPTODEV_FF_MBUF_SCATTER_GATHER) == 0)
@@ -167,7 +182,7 @@ cperf_throughput_test_runner(void *test_ctx)
 					ctx->dst_buf_offset,
 					ops_needed, ctx->sess,
 					ctx->options, ctx->test_vector,
-					iv_offset, &imix_idx);
+					iv_offset, &imix_idx, &tsc_start);
 
 			/**
 			 * When ops_needed is smaller than ops_enqd, the
@@ -189,7 +204,8 @@ cperf_throughput_test_runner(void *test_ctx)
 				 * We need to linearize it before enqueuing.
 				 */
 				for (i = 0; i < burst_size; i++)
-					rte_pktmbuf_linearize(ops[i]->sym->m_src);
+					rte_pktmbuf_linearize(
+						ops[i]->sym->m_src);
 			}
 #endif /* CPERF_LINEARIZATION_ENABLE */
 
@@ -261,14 +277,15 @@ cperf_throughput_test_runner(void *test_ctx)
 		double cycles_per_packet = ((double)tsc_duration /
 				ctx->options->total_ops);
 
+		uint16_t exp = 0;
 		if (!ctx->options->csv) {
-			if (!only_once)
+			if (__atomic_compare_exchange_n(&display_once, &exp, 1, 0,
+					__ATOMIC_RELAXED, __ATOMIC_RELAXED))
 				printf("%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s\n\n",
 					"lcore id", "Buf Size", "Burst Size",
 					"Enqueued", "Dequeued", "Failed Enq",
 					"Failed Deq", "MOps", "Gbps",
 					"Cycles/Buf");
-			only_once = 1;
 
 			printf("%12u%12u%12u%12"PRIu64"%12"PRIu64"%12"PRIu64
 					"%12"PRIu64"%12.4f%12.4f%12.2f\n",
@@ -283,15 +300,15 @@ cperf_throughput_test_runner(void *test_ctx)
 					throughput_gbps,
 					cycles_per_packet);
 		} else {
-			if (!only_once)
+			if (__atomic_compare_exchange_n(&display_once, &exp, 1, 0,
+					__ATOMIC_RELAXED, __ATOMIC_RELAXED))
 				printf("#lcore id,Buffer Size(B),"
 					"Burst Size,Enqueued,Dequeued,Failed Enq,"
 					"Failed Deq,Ops(Millions),Throughput(Gbps),"
 					"Cycles/Buf\n\n");
-			only_once = 1;
 
-			printf("%u;%u;%u;%"PRIu64";%"PRIu64";%"PRIu64";%"PRIu64";"
-					"%.3f;%.3f;%.3f\n",
+			printf("%u,%u,%u,%"PRIu64",%"PRIu64",%"PRIu64",%"PRIu64","
+					"%.3f,%.3f,%.3f\n",
 					ctx->lcore_id,
 					ctx->options->test_buffer_size,
 					test_burst_size,

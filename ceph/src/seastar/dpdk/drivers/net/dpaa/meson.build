@@ -1,14 +1,23 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright 2018 NXP
+# Copyright 2018-2020 NXP
 
 if not is_linux
-	build = false
+    build = false
+    reason = 'only supported on Linux'
 endif
 deps += ['mempool_dpaa']
 
-sources = files('dpaa_ethdev.c',
-		'dpaa_rxtx.c')
+sources = files(
+        'dpaa_ethdev.c',
+        'fmlib/fm_lib.c',
+        'fmlib/fm_vsp.c',
+        'dpaa_flow.c',
+        'dpaa_rxtx.c',
+        'dpaa_fmc.c',
+)
 
-allow_experimental_apis = true
+if cc.has_argument('-Wno-pointer-arith')
+    cflags += '-Wno-pointer-arith'
+endif
 
-install_headers('rte_pmd_dpaa.h')
+headers = files('rte_pmd_dpaa.h')

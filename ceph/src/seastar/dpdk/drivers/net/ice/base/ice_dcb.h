@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #ifndef _ICE_DCB_H_
 #define _ICE_DCB_H_
 
 #include "ice_type.h"
+#include "ice_common.h"
 
 #define ICE_DCBX_OFFLOAD_DIS		0
 #define ICE_DCBX_OFFLOAD_ENABLED	1
@@ -27,6 +28,13 @@
 
 #define ICE_CEE_DCBX_OUI		0x001B21
 #define ICE_CEE_DCBX_TYPE		2
+
+#define ICE_DSCP_OUI			0xFFFFFF
+#define ICE_DSCP_SUBTYPE_DSCP2UP	0x41
+#define ICE_DSCP_SUBTYPE_ENFORCE	0x42
+#define ICE_DSCP_SUBTYPE_TCBW		0x43
+#define ICE_DSCP_SUBTYPE_PFC		0x44
+#define ICE_DSCP_IPV6_OFFSET		80
 
 #define ICE_CEE_SUBTYPE_CTRL		1
 #define ICE_CEE_SUBTYPE_PG_CFG		2
@@ -96,25 +104,27 @@
 #define ICE_IEEE_TLV_ID_APP_PRI		6
 #define ICE_TLV_ID_END_OF_LLDPPDU	7
 #define ICE_TLV_ID_START		ICE_IEEE_TLV_ID_ETS_CFG
+#define ICE_TLV_ID_DSCP_UP		3
+#define ICE_TLV_ID_DSCP_ENF		4
+#define ICE_TLV_ID_DSCP_TC_BW		5
+#define ICE_TLV_ID_DSCP_TO_PFC		6
 
 #define ICE_IEEE_ETS_TLV_LEN		25
 #define ICE_IEEE_PFC_TLV_LEN		6
 #define ICE_IEEE_APP_TLV_LEN		11
 
-#pragma pack(1)
-/* IEEE 802.1AB LLDP TLV structure */
-struct ice_lldp_generic_tlv {
-	__be16 typelen;
-	u8 tlvinfo[1];
-};
+#define ICE_DSCP_UP_TLV_LEN		148
+#define ICE_DSCP_ENF_TLV_LEN		132
+#define ICE_DSCP_TC_BW_TLV_LEN		25
+#define ICE_DSCP_PFC_TLV_LEN		6
 
+#pragma pack(1)
 /* IEEE 802.1AB LLDP Organization specific TLV */
 struct ice_lldp_org_tlv {
 	__be16 typelen;
 	__be32 ouisubtype;
-	u8 tlvinfo[1];
+	u8 tlvinfo[STRUCT_HACK_VAR_LEN];
 };
-
 #pragma pack()
 
 struct ice_cee_tlv_hdr {
@@ -136,7 +146,7 @@ struct ice_cee_feat_tlv {
 #define ICE_CEE_FEAT_TLV_WILLING_M	0x40
 #define ICE_CEE_FEAT_TLV_ERR_M		0x20
 	u8 subtype;
-	u8 tlvinfo[1];
+	u8 tlvinfo[STRUCT_HACK_VAR_LEN];
 };
 
 #pragma pack(1)
@@ -147,7 +157,6 @@ struct ice_cee_app_prio {
 	__be16 lower_oui;
 	u8 prio_map;
 };
-
 #pragma pack()
 
 /* TODO: The below structures related LLDP/DCBX variables
@@ -184,20 +193,21 @@ ice_aq_get_lldp_mib(struct ice_hw *hw, u8 bridge_type, u8 mib_type, void *buf,
 		    u16 buf_size, u16 *local_len, u16 *remote_len,
 		    struct ice_sq_cd *cd);
 enum ice_status
-ice_aq_set_lldp_mib(struct ice_hw *hw, u8 mib_type, void *buf, u16 buf_size,
-		    struct ice_sq_cd *cd);
-enum ice_status
 ice_aq_get_cee_dcb_cfg(struct ice_hw *hw,
 		       struct ice_aqc_get_cee_dcb_cfg_resp *buff,
 		       struct ice_sq_cd *cd);
-u8 ice_get_dcbx_status(struct ice_hw *hw);
+enum ice_status
+ice_aq_set_pfc_mode(struct ice_hw *hw, u8 pfc_mode, struct ice_sq_cd *cd);
 enum ice_status ice_lldp_to_dcb_cfg(u8 *lldpmib, struct ice_dcbx_cfg *dcbcfg);
+u8 ice_get_dcbx_status(struct ice_hw *hw);
 enum ice_status
 ice_aq_get_dcb_cfg(struct ice_hw *hw, u8 mib_type, u8 bridgetype,
 		   struct ice_dcbx_cfg *dcbcfg);
 enum ice_status ice_get_dcb_cfg(struct ice_port_info *pi);
 enum ice_status ice_set_dcb_cfg(struct ice_port_info *pi);
-enum ice_status ice_init_dcb(struct ice_hw *hw);
+void ice_get_dcb_cfg_from_mib_change(struct ice_port_info *pi,
+				     struct ice_rq_event_info *event);
+enum ice_status ice_init_dcb(struct ice_hw *hw, bool enable_mib_change);
 void ice_dcb_cfg_to_lldp(u8 *lldpmib, u16 *miblen, struct ice_dcbx_cfg *dcbcfg);
 enum ice_status
 ice_query_port_ets(struct ice_port_info *pi,
@@ -211,12 +221,14 @@ enum ice_status
 ice_update_port_tc_tree_cfg(struct ice_port_info *pi,
 			    struct ice_aqc_port_ets_elem *buf);
 enum ice_status
-ice_aq_stop_lldp(struct ice_hw *hw, bool shutdown_lldp_agent,
+ice_aq_stop_lldp(struct ice_hw *hw, bool shutdown_lldp_agent, bool persist,
 		 struct ice_sq_cd *cd);
-enum ice_status ice_aq_start_lldp(struct ice_hw *hw, struct ice_sq_cd *cd);
+enum ice_status
+ice_aq_start_lldp(struct ice_hw *hw, bool persist, struct ice_sq_cd *cd);
 enum ice_status
 ice_aq_start_stop_dcbx(struct ice_hw *hw, bool start_dcbx_agent,
 		       bool *dcbx_agent_status, struct ice_sq_cd *cd);
+enum ice_status ice_cfg_lldp_mib_change(struct ice_hw *hw, bool ena_mib);
 enum ice_status
 ice_aq_cfg_lldp_mib_change(struct ice_hw *hw, bool ena_update,
 			   struct ice_sq_cd *cd);

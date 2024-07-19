@@ -49,7 +49,7 @@ to set the CPUFreq governor and set the frequency of specific cores.
 
 This application includes a P-state power management algorithm to generate a frequency hint to be sent to CPUFreq.
 The algorithm uses the number of received and available Rx packets on recent polls to make a heuristic decision to scale frequency up/down.
-Specifically, some thresholds are checked to see whether a specific core running an DPDK polling thread needs to increase frequency
+Specifically, some thresholds are checked to see whether a specific core running a DPDK polling thread needs to increase frequency
 a step up based on the near to full trend of polled Rx queues.
 Also, it decreases frequency a step if packet processed per loop is far less than the expected threshold
 or the thread's sleeping time exceeds a threshold.
@@ -88,7 +88,7 @@ The application has a number of command line options:
 
 .. code-block:: console
 
-    ./build/l3fwd_power [EAL options] -- -p PORTMASK [-P]  --config(port,queue,lcore)[,(port,queue,lcore)] [--enable-jumbo [--max-pkt-len PKTLEN]] [--no-numa]
+    ./<build_dir>/examples/dpdk-l3fwd_power [EAL options] -- -p PORTMASK [-P]  --config(port,queue,lcore)[,(port,queue,lcore)] [--max-pkt-len PKTLEN] [--no-numa]
 
 where,
 
@@ -97,15 +97,29 @@ where,
 *   -P: Sets all ports to promiscuous mode so that packets are accepted regardless of the packet's Ethernet MAC destination address.
     Without this option, only packets with the Ethernet MAC destination address set to the Ethernet address of the port are accepted.
 
-*   --config (port,queue,lcore)[,(port,queue,lcore)]: determines which queues from which ports are mapped to which cores.
+*   -u: optional, sets uncore min/max frequency to minimum value.
 
-*   --enable-jumbo: optional, enables jumbo frames
+*   -U: optional, sets uncore min/max frequency to maximum value.
+
+*   -i (frequency index): optional, sets uncore frequency to frequency index value, by setting min and max values to be the same.
+
+*   --config (port,queue,lcore)[,(port,queue,lcore)]: determines which queues from which ports are mapped to which cores.
 
 *   --max-pkt-len: optional, maximum packet length in decimal (64-9600)
 
 *   --no-numa: optional, disables numa awareness
 
-*   --empty-poll: Traffic Aware power management. See below for details
+*   --telemetry:  Telemetry mode.
+
+*   --pmd-mgmt: PMD power management mode.
+
+*   --max-empty-polls : Number of empty polls to wait before entering sleep state. Applies to --pmd-mgmt mode only.
+
+*   --pause-duration: Set the duration of the pause callback (microseconds). Applies to --pmd-mgmt mode only.
+
+*   --scale-freq-min: Set minimum frequency for scaling. Applies to --pmd-mgmt mode only.
+
+*   --scale-freq-max: Set maximum frequency for scaling. Applies to --pmd-mgmt mode only.
 
 See :doc:`l3_forward` for details.
 The L3fwd-power example reuses the L3fwd command line options.
@@ -130,54 +144,10 @@ responsible for checking if it needs to scale down frequency at run time by chec
 
     Only the power management related initialization is shown.
 
-.. code-block:: c
-
-    int main(int argc, char **argv)
-    {
-        struct lcore_conf *qconf;
-        int ret;
-        unsigned nb_ports;
-        uint16_t queueid, portid;
-        unsigned lcore_id;
-        uint64_t hz;
-        uint32_t n_tx_queue, nb_lcores;
-        uint8_t nb_rx_queue, queue, socketid;
-
-        // ...
-
-        /* init RTE timer library to be used to initialize per-core timers */
-
-        rte_timer_subsystem_init();
-
-        // ...
-
-
-        /* per-core initialization */
-
-        for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
-            if (rte_lcore_is_enabled(lcore_id) == 0)
-                continue;
-
-            /* init power management library for a specified core */
-
-            ret = rte_power_init(lcore_id);
-            if (ret)
-                rte_exit(EXIT_FAILURE, "Power management library "
-                    "initialization failed on core%d\n", lcore_id);
-
-            /* init timer structures for each enabled lcore */
-
-            rte_timer_init(&power_timers[lcore_id]);
-
-            hz = rte_get_hpet_hz();
-
-            rte_timer_reset(&power_timers[lcore_id], hz/TIMER_NUMBER_PER_SECOND, SINGLE, lcore_id, power_timer_cb, NULL);
-
-            // ...
-        }
-
-        // ...
-    }
+.. literalinclude:: ../../../examples/l3fwd-power/main.c
+    :language: c
+    :start-after: Power library initialized in the main routine. 8<
+    :end-before: >8 End of power library initialization.
 
 Monitoring Loads of Rx Queues
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -201,109 +171,10 @@ to generate hints based on recent network load trends.
 
     Only power control related code is shown.
 
-.. code-block:: c
-
-    static
-    attribute ((noreturn)) int main_loop( attribute ((unused)) void *dummy)
-    {
-        // ...
-
-        while (1) {
-        // ...
-
-        /**
-         * Read packet from RX queues
-         */
-
-        lcore_scaleup_hint = FREQ_CURRENT;
-        lcore_rx_idle_count = 0;
-
-        for (i = 0; i < qconf->n_rx_queue; ++i)
-        {
-            rx_queue = &(qconf->rx_queue_list[i]);
-            rx_queue->idle_hint = 0;
-            portid = rx_queue->port_id;
-            queueid = rx_queue->queue_id;
-
-            nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst, MAX_PKT_BURST);
-            stats[lcore_id].nb_rx_processed += nb_rx;
-
-            if (unlikely(nb_rx == 0)) {
-                /**
-                 * no packet received from rx queue, try to
-                 * sleep for a while forcing CPU enter deeper
-                 * C states.
-                 */
-
-                rx_queue->zero_rx_packet_count++;
-
-                if (rx_queue->zero_rx_packet_count <= MIN_ZERO_POLL_COUNT)
-                    continue;
-
-                rx_queue->idle_hint = power_idle_heuristic(rx_queue->zero_rx_packet_count);
-                lcore_rx_idle_count++;
-            } else {
-                rx_ring_length = rte_eth_rx_queue_count(portid, queueid);
-
-                rx_queue->zero_rx_packet_count = 0;
-
-                /**
-                 * do not scale up frequency immediately as
-                 * user to kernel space communication is costly
-                 * which might impact packet I/O for received
-                 * packets.
-                 */
-
-                rx_queue->freq_up_hint = power_freq_scaleup_heuristic(lcore_id, rx_ring_length);
-            }
-
-            /* Prefetch and forward packets */
-
-            // ...
-        }
-
-        if (likely(lcore_rx_idle_count != qconf->n_rx_queue)) {
-            for (i = 1, lcore_scaleup_hint = qconf->rx_queue_list[0].freq_up_hint; i < qconf->n_rx_queue; ++i) {
-                x_queue = &(qconf->rx_queue_list[i]);
-
-                if (rx_queue->freq_up_hint > lcore_scaleup_hint)
-
-                    lcore_scaleup_hint = rx_queue->freq_up_hint;
-            }
-
-            if (lcore_scaleup_hint == FREQ_HIGHEST)
-
-                rte_power_freq_max(lcore_id);
-
-            else if (lcore_scaleup_hint == FREQ_HIGHER)
-                rte_power_freq_up(lcore_id);
-            } else {
-                /**
-                 *  All Rx queues empty in recent consecutive polls,
-                 *  sleep in a conservative manner, meaning sleep as
-                 * less as possible.
-                 */
-
-                for (i = 1, lcore_idle_hint = qconf->rx_queue_list[0].idle_hint; i < qconf->n_rx_queue; ++i) {
-                    rx_queue = &(qconf->rx_queue_list[i]);
-                    if (rx_queue->idle_hint < lcore_idle_hint)
-                        lcore_idle_hint = rx_queue->idle_hint;
-                }
-
-                if ( lcore_idle_hint < SLEEP_GEAR1_THRESHOLD)
-                    /**
-                     *   execute "pause" instruction to avoid context
-                     *   switch for short sleep.
-                     */
-                    rte_delay_us(lcore_idle_hint);
-                else
-                    /* long sleep force ruining thread to suspend */
-                    usleep(lcore_idle_hint);
-
-               stats[lcore_id].sleep_time += lcore_idle_hint;
-            }
-        }
-    }
+.. literalinclude:: ../../../examples/l3fwd-power/main.c
+    :language: c
+    :start-after: Main processing loop. 8<
+    :end-before: >8 End of main processing loop.
 
 P-State Heuristic Algorithm
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -365,69 +236,93 @@ If a thread polls multiple Rx queues and different queue returns different sleep
 the algorithm controls the sleep time in a conservative manner by sleeping for the least possible time
 in order to avoid a potential performance impact.
 
-Empty Poll Mode
+Telemetry Mode
+--------------
+
+The telemetry mode support for ``l3fwd-power`` is a standalone mode, in this mode
+``l3fwd-power`` does simple l3fwding along with calculating empty polls, full polls,
+and busy percentage for each forwarding core. The aggregation of these
+values of all cores is reported as application level telemetry to metric
+library for every 500ms from the main core.
+
+The busy percentage is calculated by recording the poll_count
+and when the count reaches a defined value the total
+cycles it took is measured and compared with minimum and maximum
+reference cycles and accordingly busy rate is set  to either 0% or
+50% or 100%.
+
+.. code-block:: console
+
+        ./<build_dir>/examples/dpdk-l3fwd-power --telemetry -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --telemetry
+
+The new stats ``empty_poll`` , ``full_poll`` and ``busy_percent`` can be viewed by running the script
+``/usertools/dpdk-telemetry-client.py`` and selecting the menu option ``Send for global Metrics``.
+
+PMD power management Mode
 -------------------------
-Additionally, there is a traffic aware mode of operation called "Empty
-Poll" where the number of empty polls can be monitored to keep track
-of how busy the application is. Empty poll mode can be enabled by the
-command line option --empty-poll.
 
-See :doc:`Power Management<../prog_guide/power_man>` chapter in the DPDK Programmer's Guide for empty poll mode details.
-
-.. code-block:: console
-
-    ./l3fwd-power -l xxx   -n 4   -w 0000:xx:00.0 -w 0000:xx:00.1 -- -p 0x3 -P --config="(0,0,xx),(1,0,xx)" --empty-poll="0,0,0" -l 14 -m 9 -h 1
-
-Where,
-
---empty-poll: Enable the empty poll mode instead of original algorithm
-
---empty-poll="training_flag, med_threshold, high_threshold"
-
-* ``training_flag`` : optional, enable/disable training mode. Default value is 0. If the training_flag is set as 1(true), then the application will start in training mode and print out the trained threshold values. If the training_flag is set as 0(false), the application will start in normal mode, and will use either the default thresholds or those supplied on the command line. The trained threshold values are specific to the user’s system, may give a better power profile when compared to the default threshold values.
-
-* ``med_threshold`` : optional, sets the empty poll threshold of a modestly busy system state. If this is not supplied, the application will apply the default value of 350000.
-
-* ``high_threshold`` : optional, sets the empty poll threshold of a busy system state. If this is not supplied, the application will apply the default value of 580000.
-
-* -l : optional, set up the LOW power state frequency index
-
-* -m : optional, set up the MED power state frequency index
-
-* -h : optional, set up the HIGH power state frequency index
-
-Empty Poll Mode Example Usage
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-To initially obtain the ideal thresholds for the system, the training
-mode should be run first. This is achieved by running the l3fwd-power
-app with the training flag set to “1”, and the other parameters set to
-0.
+The PMD power management  mode support for ``l3fwd-power`` is a standalone mode.
+In this mode, ``l3fwd-power`` does simple l3fwding
+along with enabling the power saving scheme on specific port/queue/lcore.
+Main purpose for this mode is to demonstrate
+how to use the PMD power management API.
 
 .. code-block:: console
 
-        ./examples/l3fwd-power/build/l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --empty-poll "1,0,0" –P
+        ./build/examples/dpdk-l3fwd-power -l 1-3 --  --pmd-mgmt -p 0x0f --config="(0,0,2),(0,1,3)"
 
-This will run the training algorithm for x seconds on each core (cores 2
-and 3), and then print out the recommended threshold values for those
-cores. The thresholds should be very similar for each core.
+PMD Power Management Mode
+-------------------------
+
+There is also a traffic-aware operating mode that,
+instead of using explicit power management,
+will use automatic PMD power management.
+This mode is limited to one queue per core,
+and has three available power management schemes:
+
+``monitor``
+  This will use ``rte_power_monitor()`` function to enter
+  a power-optimized state (subject to platform support).
+
+``pause``
+  This will use ``rte_power_pause()`` or ``rte_pause()``
+  to avoid busy looping when there is no traffic.
+
+``scale``
+  This will use frequency scaling routines
+  available in the ``librte_power`` library.
+  The reaction time of the scale mode is longer
+  than the pause and monitor mode.
+
+See :doc:`Power Management<../prog_guide/power_man>` chapter
+in the DPDK Programmer's Guide for more details on PMD power management.
 
 .. code-block:: console
 
-        POWER: Bring up the Timer
-        POWER: set the power freq to MED
-        POWER: Low threshold is 230277
-        POWER: MED threshold is 335071
-        POWER: HIGH threshold is 523769
-        POWER: Training is Complete for 2
-        POWER: set the power freq to MED
-        POWER: Low threshold is 236814
-        POWER: MED threshold is 344567
-        POWER: HIGH threshold is 538580
-        POWER: Training is Complete for 3
+        ./<build_dir>/examples/dpdk-l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --pmd-mgmt=scale
 
-Once the values have been measured for a particular system, the app can
-then be started without the training mode so traffic can start immediately.
+Setting Uncore Values
+---------------------
+
+Uncore frequency can be adjusted through manipulating related sysfs entries
+to adjust the minimum and maximum uncore values.
+This will be set for each package and die on the SKU.
+The driver for enabling this is available from kernel version 5.6 and above.
+Three options are available for setting uncore frequency:
+
+``-u``
+  This will set uncore minimum and maximum frequencies to minimum possible value.
+
+``-U``
+  This will set uncore minimum and maximum frequencies to maximum possible value.
+
+``-i``
+  This will allow you to set the specific uncore frequency index that you want,
+  by setting the uncore frequency to a frequency pointed by index.
+  Frequency index's are set 100MHz apart from maximum to minimum.
+  Frequency index values are in descending order,
+  i.e., index 0 is maximum frequency index.
 
 .. code-block:: console
 
-        ./examples/l3fwd-power/build/l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --empty-poll "0,340000,540000" –P
+   dpdk-l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" -i 1

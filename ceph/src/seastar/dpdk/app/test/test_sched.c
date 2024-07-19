@@ -14,33 +14,57 @@
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_byteorder.h>
-#include <rte_sched.h>
 
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_sched(void)
+{
+	printf("sched not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+#else
+
+#include <rte_sched.h>
 
 #define SUBPORT         0
 #define PIPE            1
 #define TC              2
-#define QUEUE           3
-
-static struct rte_sched_subport_params subport_param[] = {
-	{
-		.tb_rate = 1250000000,
-		.tb_size = 1000000,
-
-		.tc_rate = {1250000000, 1250000000, 1250000000, 1250000000},
-		.tc_period = 10,
-	},
-};
+#define QUEUE           0
+#define MAX_SCHED_SUBPORT_PROFILES  8
 
 static struct rte_sched_pipe_params pipe_profile[] = {
 	{ /* Profile #0 */
 		.tb_rate = 305175,
 		.tb_size = 1000000,
 
-		.tc_rate = {305175, 305175, 305175, 305175},
+		.tc_rate = {305175, 305175, 305175, 305175, 305175, 305175,
+			305175, 305175, 305175, 305175, 305175, 305175, 305175},
 		.tc_period = 40,
+		.tc_ov_weight = 1,
 
-		.wrr_weights = {1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1},
+		.wrr_weights = {1, 1, 1, 1},
+	},
+};
+
+static struct rte_sched_subport_profile_params
+		subport_profile[] = {
+	{
+		.tb_rate = 1250000000,
+		.tb_size = 1000000,
+		.tc_rate = {1250000000, 1250000000, 1250000000, 1250000000,
+			1250000000, 1250000000, 1250000000, 1250000000, 1250000000,
+			1250000000, 1250000000, 1250000000, 1250000000},
+		.tc_period = 10,
+	},
+};
+
+static struct rte_sched_subport_params subport_param[] = {
+	{
+		.n_pipes_per_subport_enabled = 1024,
+		.qsize = {32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32},
+		.pipe_profiles = pipe_profile,
+		.n_pipe_profiles = 1,
+		.n_max_pipe_profiles = 1,
 	},
 };
 
@@ -50,10 +74,10 @@ static struct rte_sched_port_params port_param = {
 	.mtu = 1522,
 	.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
 	.n_subports_per_port = 1,
+	.n_subport_profiles = 1,
+	.subport_profiles = subport_profile,
+	.n_max_subport_profiles = MAX_SCHED_SUBPORT_PROFILES,
 	.n_pipes_per_subport = 1024,
-	.qsize = {32, 32, 32, 32},
-	.pipe_profiles = pipe_profile,
-	.n_pipe_profiles = 1,
 };
 
 #define NB_MBUF          32
@@ -78,21 +102,25 @@ create_mempool(void)
 static void
 prepare_pkt(struct rte_sched_port *port, struct rte_mbuf *mbuf)
 {
-	struct ether_hdr *eth_hdr;
-	struct vlan_hdr *vlan1, *vlan2;
-	struct ipv4_hdr *ip_hdr;
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_vlan_hdr *vlan1, *vlan2;
+	struct rte_ipv4_hdr *ip_hdr;
 
 	/* Simulate a classifier */
-	eth_hdr = rte_pktmbuf_mtod(mbuf, struct ether_hdr *);
-	vlan1 = (struct vlan_hdr *)(&eth_hdr->ether_type );
-	vlan2 = (struct vlan_hdr *)((uintptr_t)&eth_hdr->ether_type + sizeof(struct vlan_hdr));
-	eth_hdr = (struct ether_hdr *)((uintptr_t)&eth_hdr->ether_type + 2 *sizeof(struct vlan_hdr));
-	ip_hdr = (struct ipv4_hdr *)((uintptr_t)eth_hdr +  sizeof(eth_hdr->ether_type));
+	eth_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+	vlan1 = (struct rte_vlan_hdr *)(&eth_hdr->ether_type);
+	vlan2 = (struct rte_vlan_hdr *)(
+		(uintptr_t)&eth_hdr->ether_type + sizeof(struct rte_vlan_hdr));
+	eth_hdr = (struct rte_ether_hdr *)(
+		(uintptr_t)&eth_hdr->ether_type +
+		2 * sizeof(struct rte_vlan_hdr));
+	ip_hdr = (struct rte_ipv4_hdr *)(
+		(uintptr_t)eth_hdr + sizeof(eth_hdr->ether_type));
 
 	vlan1->vlan_tci = rte_cpu_to_be_16(SUBPORT);
 	vlan2->vlan_tci = rte_cpu_to_be_16(PIPE);
-	eth_hdr->ether_type =  rte_cpu_to_be_16(ETHER_TYPE_IPv4);
-	ip_hdr->dst_addr = IPv4(0,0,TC,QUEUE);
+	eth_hdr->ether_type =  rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+	ip_hdr->dst_addr = RTE_IPV4(0,0,TC,QUEUE);
 
 
 	rte_sched_port_pkt_write(port, mbuf, SUBPORT, PIPE, TC, QUEUE,
@@ -128,10 +156,10 @@ test_sched(void)
 	port = rte_sched_port_config(&port_param);
 	TEST_ASSERT_NOT_NULL(port, "Error config sched port\n");
 
-	err = rte_sched_subport_config(port, SUBPORT, subport_param);
+	err = rte_sched_subport_config(port, SUBPORT, subport_param, 0);
 	TEST_ASSERT_SUCCESS(err, "Error config sched, err=%d\n", err);
 
-	for (pipe = 0; pipe < port_param.n_pipes_per_subport; pipe ++) {
+	for (pipe = 0; pipe < subport_param[0].n_pipes_per_subport_enabled; pipe++) {
 		err = rte_sched_pipe_config(port, SUBPORT, pipe, 0);
 		TEST_ASSERT_SUCCESS(err, "Error config sched pipe %u, err=%d\n", pipe, err);
 	}
@@ -184,5 +212,7 @@ test_sched(void)
 
 	return 0;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(sched_autotest, test_sched);

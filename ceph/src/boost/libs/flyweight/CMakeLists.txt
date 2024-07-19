@@ -24,7 +24,6 @@ target_link_libraries(boost_flyweight
     Boost::multi_index
     Boost::parameter
     Boost::preprocessor
-    Boost::serialization
     Boost::smart_ptr
     Boost::throw_exception
     Boost::type_traits

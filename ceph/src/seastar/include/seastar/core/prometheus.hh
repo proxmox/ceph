@@ -21,13 +21,19 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <seastar/http/httpd.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/modules.hh>
+#include <optional>
+#endif
 
 namespace seastar {
 
 namespace prometheus {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /*!
  * Holds prometheus related configuration
@@ -37,15 +43,17 @@ struct config {
     sstring hostname; //!< hostname is deprecated, use label instead
     std::optional<metrics::label_instance> label; //!< A label that will be added to all metrics, we advice not to use it and set it on the prometheus server
     sstring prefix = "seastar"; //!< a prefix that will be added to metric names
+    bool allow_protobuf = false; // protobuf support is experimental and off by default
 };
 
 future<> start(httpd::http_server_control& http_server, config ctx);
 
 /// \defgroup add_prometheus_routes adds a /metrics endpoint that returns prometheus metrics
-///    in txt format
+///    both in txt format and in protobuf according to the prometheus spec
 /// @{
-future<> add_prometheus_routes(distributed<http_server>& server, config ctx);
-future<> add_prometheus_routes(http_server& server, config ctx);
+future<> add_prometheus_routes(distributed<httpd::http_server>& server, config ctx);
+future<> add_prometheus_routes(httpd::http_server& server, config ctx);
 /// @}
+SEASTAR_MODULE_EXPORT_END
 }
 }

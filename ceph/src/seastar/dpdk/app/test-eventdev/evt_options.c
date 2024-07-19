@@ -3,6 +3,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 #include <getopt.h>
@@ -26,6 +27,7 @@ evt_options_default(struct evt_options *opt)
 	opt->nb_flows = 1024;
 	opt->socket_id = SOCKET_ID_ANY;
 	opt->pool_sz = 16 * 1024;
+	opt->prod_enq_burst_sz = 0;
 	opt->wkr_deq_dep = 16;
 	opt->nb_pkts = (1ULL << 26); /* do ~64M packets */
 	opt->nb_timers = 1E8;
@@ -34,6 +36,12 @@ evt_options_default(struct evt_options *opt)
 	opt->max_tmo_nsec = 1E5;  /* 100000ns ~100us */
 	opt->expiry_nsec = 1E4;   /* 10000ns ~10us */
 	opt->prod_type = EVT_PROD_TYPE_SYNT;
+	opt->eth_queues = 1;
+	opt->vector_size = 64;
+	opt->vector_tmo_nsec = 100E3;
+	opt->crypto_op_type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
+	opt->crypto_cipher_alg = RTE_CRYPTO_CIPHER_NULL;
+	opt->crypto_cipher_key_sz = 0;
 }
 
 typedef int (*option_parser_t)(struct evt_options *opt,
@@ -103,6 +111,26 @@ evt_parse_eth_prod_type(struct evt_options *opt, const char *arg __rte_unused)
 }
 
 static int
+evt_parse_tx_first(struct evt_options *opt, const char *arg __rte_unused)
+{
+	int ret;
+
+	ret = parser_read_uint32(&(opt->tx_first), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_tx_pkt_sz(struct evt_options *opt, const char *arg __rte_unused)
+{
+	int ret;
+
+	ret = parser_read_uint16(&(opt->tx_pkt_sz), arg);
+
+	return ret;
+}
+
+static int
 evt_parse_timer_prod_type(struct evt_options *opt, const char *arg __rte_unused)
 {
 	opt->prod_type = EVT_PROD_TYPE_EVENT_TIMER_ADPTR;
@@ -116,6 +144,93 @@ evt_parse_timer_prod_type_burst(struct evt_options *opt,
 	opt->prod_type = EVT_PROD_TYPE_EVENT_TIMER_ADPTR;
 	opt->timdev_use_burst = 1;
 	return 0;
+}
+
+static int
+evt_parse_crypto_prod_type(struct evt_options *opt,
+			   const char *arg __rte_unused)
+{
+	opt->prod_type = EVT_PROD_TYPE_EVENT_CRYPTO_ADPTR;
+	return 0;
+}
+
+static int
+evt_parse_crypto_adptr_mode(struct evt_options *opt, const char *arg)
+{
+	uint8_t mode;
+	int ret;
+
+	ret = parser_read_uint8(&mode, arg);
+	opt->crypto_adptr_mode = mode ? RTE_EVENT_CRYPTO_ADAPTER_OP_FORWARD :
+					RTE_EVENT_CRYPTO_ADAPTER_OP_NEW;
+	return ret;
+}
+
+static int
+evt_parse_crypto_op_type(struct evt_options *opt, const char *arg)
+{
+	uint8_t op_type;
+	int ret;
+
+	ret = parser_read_uint8(&op_type, arg);
+	opt->crypto_op_type = op_type ? RTE_CRYPTO_OP_TYPE_ASYMMETRIC :
+					RTE_CRYPTO_OP_TYPE_SYMMETRIC;
+	return ret;
+}
+
+static bool
+cipher_alg_is_bit_mode(enum rte_crypto_cipher_algorithm alg)
+{
+	return (alg == RTE_CRYPTO_CIPHER_SNOW3G_UEA2 ||
+		alg == RTE_CRYPTO_CIPHER_ZUC_EEA3 ||
+		alg == RTE_CRYPTO_CIPHER_KASUMI_F8);
+}
+
+static int
+evt_parse_crypto_cipher_alg(struct evt_options *opt, const char *arg)
+{
+	enum rte_crypto_cipher_algorithm cipher_alg;
+
+	if (rte_cryptodev_get_cipher_algo_enum(&cipher_alg, arg) < 0) {
+		RTE_LOG(ERR, USER1, "Invalid cipher algorithm specified\n");
+		return -1;
+	}
+
+	opt->crypto_cipher_alg = cipher_alg;
+	opt->crypto_cipher_bit_mode = cipher_alg_is_bit_mode(cipher_alg);
+
+	return 0;
+}
+
+static int
+evt_parse_crypto_cipher_key(struct evt_options *opt, const char *arg)
+{
+	opt->crypto_cipher_key_sz = EVT_CRYPTO_MAX_KEY_SIZE;
+	if (parse_hex_string(arg, opt->crypto_cipher_key,
+			     (uint32_t *)&opt->crypto_cipher_key_sz)) {
+		RTE_LOG(ERR, USER1, "Invalid cipher key specified\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int
+evt_parse_crypto_cipher_iv_sz(struct evt_options *opt, const char *arg)
+{
+	uint16_t iv_sz;
+	int ret;
+
+	ret = parser_read_uint16(&(iv_sz), arg);
+	if (iv_sz > EVT_CRYPTO_MAX_IV_SIZE) {
+		RTE_LOG(ERR, USER1,
+			"Unsupported cipher IV length [%d] specified\n",
+			iv_sz);
+		return -1;
+	}
+
+	opt->crypto_cipher_iv_sz = iv_sz;
+	return ret;
 }
 
 static int
@@ -197,6 +312,10 @@ evt_parse_nb_timer_adptrs(struct evt_options *opt, const char *arg)
 	int ret;
 
 	ret = parser_read_uint8(&(opt->nb_timer_adptrs), arg);
+	if (opt->nb_timer_adptrs <= 0) {
+		evt_err("Number of timer adapters cannot be <= 0");
+		return -EINVAL;
+	}
 
 	return ret;
 }
@@ -214,7 +333,7 @@ evt_parse_plcores(struct evt_options *opt, const char *corelist)
 {
 	int ret;
 
-	ret = parse_lcores_list(opt->plcores, corelist);
+	ret = parse_lcores_list(opt->plcores, RTE_MAX_LCORE, corelist);
 	if (ret == -E2BIG)
 		evt_err("duplicate lcores in plcores");
 
@@ -226,9 +345,83 @@ evt_parse_work_lcores(struct evt_options *opt, const char *corelist)
 {
 	int ret;
 
-	ret = parse_lcores_list(opt->wlcores, corelist);
+	ret = parse_lcores_list(opt->wlcores, RTE_MAX_LCORE, corelist);
 	if (ret == -E2BIG)
 		evt_err("duplicate lcores in wlcores");
+
+	return ret;
+}
+
+static int
+evt_parse_mbuf_sz(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint16(&(opt->mbuf_sz), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_max_pkt_sz(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint32(&(opt->max_pkt_sz), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_ena_vector(struct evt_options *opt, const char *arg __rte_unused)
+{
+	opt->ena_vector = 1;
+	return 0;
+}
+
+static int
+evt_parse_vector_size(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint16(&(opt->vector_size), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_vector_tmo_ns(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint64(&(opt->vector_tmo_nsec), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_eth_queues(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint16(&(opt->eth_queues), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_per_port_pool(struct evt_options *opt, const char *arg __rte_unused)
+{
+	opt->per_port_pool = 1;
+	return 0;
+}
+
+static int
+evt_parse_prod_enq_burst_sz(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint32(&(opt->prod_enq_burst_sz), arg);
 
 	return ret;
 }
@@ -253,8 +446,9 @@ usage(char *program)
 		"\t--queue_priority   : enable queue priority\n"
 		"\t--deq_tmo_nsec     : global dequeue timeout\n"
 		"\t--prod_type_ethdev : use ethernet device as producer.\n"
+		"\t--prod_type_cryptodev : use crypto device as producer.\n"
 		"\t--prod_type_timerdev : use event timer device as producer.\n"
-		"\t                     expity_nsec would be the timeout\n"
+		"\t                     expiry_nsec would be the timeout\n"
 		"\t                     in ns.\n"
 		"\t--prod_type_timerdev_burst : use timer device as producer\n"
 		"\t                             burst mode.\n"
@@ -262,7 +456,28 @@ usage(char *program)
 		"\t--nb_timer_adptrs  : number of timer adapters to use.\n"
 		"\t--timer_tick_nsec  : timer tick interval in ns.\n"
 		"\t--max_tmo_nsec     : max timeout interval in ns.\n"
-		"\t--expiry_nsec        : event timer expiry ns.\n"
+		"\t--expiry_nsec      : event timer expiry ns.\n"
+		"\t--crypto_adptr_mode : 0 for OP_NEW mode (default) and\n"
+		"\t                      1 for OP_FORWARD mode.\n"
+		"\t--crypto_op_type   : 0 for SYM ops (default) and\n"
+		"\t                     1 for ASYM ops.\n"
+		"\t--crypto_cipher_alg : cipher algorithm to be used\n"
+		"\t                      default algorithm is NULL.\n"
+		"\t--crypto_cipher_key : key for the cipher algorithm selected\n"
+		"\t--crypto_cipher_iv_sz : IV size for the cipher algorithm\n"
+		"\t                        selected\n"
+		"\t--mbuf_sz          : packet mbuf size.\n"
+		"\t--max_pkt_sz       : max packet size.\n"
+		"\t--prod_enq_burst_sz : producer enqueue burst size.\n"
+		"\t--nb_eth_queues    : number of ethernet Rx queues.\n"
+		"\t--enable_vector    : enable event vectorization.\n"
+		"\t--vector_size      : Max vector size.\n"
+		"\t--vector_tmo_ns    : Max vector timeout in nanoseconds\n"
+		"\t--per_port_pool    : Configure unique pool per ethdev port\n"
+		"\t--tx_first         : Transmit given number of packets\n"
+		"                       across all the ethernet devices before\n"
+		"                       event workers start.\n"
+		"\t--tx_pkt_sz        : Packet size to use with Tx first."
 		);
 	printf("available tests:\n");
 	evt_test_dump_names();
@@ -325,14 +540,30 @@ static struct option lgopts[] = {
 	{ EVT_QUEUE_PRIORITY,      0, 0, 0 },
 	{ EVT_DEQ_TMO_NSEC,        1, 0, 0 },
 	{ EVT_PROD_ETHDEV,         0, 0, 0 },
+	{ EVT_PROD_CRYPTODEV,      0, 0, 0 },
 	{ EVT_PROD_TIMERDEV,       0, 0, 0 },
 	{ EVT_PROD_TIMERDEV_BURST, 0, 0, 0 },
+	{ EVT_CRYPTO_ADPTR_MODE,   1, 0, 0 },
+	{ EVT_CRYPTO_OP_TYPE,	   1, 0, 0 },
+	{ EVT_CRYPTO_CIPHER_ALG,   1, 0, 0 },
+	{ EVT_CRYPTO_CIPHER_KEY,   1, 0, 0 },
+	{ EVT_CRYPTO_CIPHER_IV_SZ, 1, 0, 0 },
 	{ EVT_NB_TIMERS,           1, 0, 0 },
 	{ EVT_NB_TIMER_ADPTRS,     1, 0, 0 },
 	{ EVT_TIMER_TICK_NSEC,     1, 0, 0 },
 	{ EVT_MAX_TMO_NSEC,        1, 0, 0 },
 	{ EVT_EXPIRY_NSEC,         1, 0, 0 },
+	{ EVT_MBUF_SZ,             1, 0, 0 },
+	{ EVT_MAX_PKT_SZ,          1, 0, 0 },
+	{ EVT_PROD_ENQ_BURST_SZ,   1, 0, 0 },
+	{ EVT_NB_ETH_QUEUES,       1, 0, 0 },
+	{ EVT_ENA_VECTOR,          0, 0, 0 },
+	{ EVT_VECTOR_SZ,           1, 0, 0 },
+	{ EVT_VECTOR_TMO,          1, 0, 0 },
+	{ EVT_PER_PORT_POOL,       0, 0, 0 },
 	{ EVT_HELP,                0, 0, 0 },
+	{ EVT_TX_FIRST,            1, 0, 0 },
+	{ EVT_TX_PKT_SZ,           1, 0, 0 },
 	{ NULL,                    0, 0, 0 }
 };
 
@@ -357,13 +588,29 @@ evt_opts_parse_long(int opt_idx, struct evt_options *opt)
 		{ EVT_QUEUE_PRIORITY, evt_parse_queue_priority},
 		{ EVT_DEQ_TMO_NSEC, evt_parse_deq_tmo_nsec},
 		{ EVT_PROD_ETHDEV, evt_parse_eth_prod_type},
+		{ EVT_PROD_CRYPTODEV, evt_parse_crypto_prod_type},
 		{ EVT_PROD_TIMERDEV, evt_parse_timer_prod_type},
 		{ EVT_PROD_TIMERDEV_BURST, evt_parse_timer_prod_type_burst},
+		{ EVT_CRYPTO_ADPTR_MODE, evt_parse_crypto_adptr_mode},
+		{ EVT_CRYPTO_OP_TYPE, evt_parse_crypto_op_type},
+		{ EVT_CRYPTO_CIPHER_ALG, evt_parse_crypto_cipher_alg},
+		{ EVT_CRYPTO_CIPHER_KEY, evt_parse_crypto_cipher_key},
+		{ EVT_CRYPTO_CIPHER_IV_SZ, evt_parse_crypto_cipher_iv_sz},
 		{ EVT_NB_TIMERS, evt_parse_nb_timers},
 		{ EVT_NB_TIMER_ADPTRS, evt_parse_nb_timer_adptrs},
 		{ EVT_TIMER_TICK_NSEC, evt_parse_timer_tick_nsec},
 		{ EVT_MAX_TMO_NSEC, evt_parse_max_tmo_nsec},
 		{ EVT_EXPIRY_NSEC, evt_parse_expiry_nsec},
+		{ EVT_MBUF_SZ, evt_parse_mbuf_sz},
+		{ EVT_MAX_PKT_SZ, evt_parse_max_pkt_sz},
+		{ EVT_PROD_ENQ_BURST_SZ, evt_parse_prod_enq_burst_sz},
+		{ EVT_NB_ETH_QUEUES, evt_parse_eth_queues},
+		{ EVT_ENA_VECTOR, evt_parse_ena_vector},
+		{ EVT_VECTOR_SZ, evt_parse_vector_size},
+		{ EVT_VECTOR_TMO, evt_parse_vector_tmo_ns},
+		{ EVT_PER_PORT_POOL, evt_parse_per_port_pool},
+		{ EVT_TX_FIRST, evt_parse_tx_first},
+		{ EVT_TX_PKT_SZ, evt_parse_tx_pkt_sz},
 	};
 
 	for (i = 0; i < RTE_DIM(parsermap); i++) {
@@ -412,7 +659,7 @@ evt_options_dump(struct evt_options *opt)
 	evt_dump("verbose_level", "%d", opt->verbose_level);
 	evt_dump("socket_id", "%d", opt->socket_id);
 	evt_dump("pool_sz", "%d", opt->pool_sz);
-	evt_dump("master lcore", "%d", rte_get_master_lcore());
+	evt_dump("main lcore", "%d", rte_get_main_lcore());
 	evt_dump("nb_pkts", "%"PRIu64, opt->nb_pkts);
 	evt_dump("nb_timers", "%"PRIu64, opt->nb_timers);
 	evt_dump_begin("available lcores");

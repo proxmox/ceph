@@ -1,16 +1,18 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2017-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2017-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
  */
 
+#include <stdbool.h>
+
 #include <rte_byteorder.h>
 #include <rte_tailq.h>
 #include <rte_common.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_ether.h>
 #include <rte_flow.h>
 #include <rte_flow_driver.h>
@@ -18,15 +20,74 @@
 #include "efx.h"
 
 #include "sfc.h"
+#include "sfc_debug.h"
 #include "sfc_rx.h"
 #include "sfc_filter.h"
 #include "sfc_flow.h"
+#include "sfc_flow_rss.h"
+#include "sfc_flow_tunnel.h"
 #include "sfc_log.h"
 #include "sfc_dp_rx.h"
+#include "sfc_mae_counter.h"
+#include "sfc_switch.h"
+
+struct sfc_flow_ops_by_spec {
+	sfc_flow_parse_cb_t	*parse;
+	sfc_flow_verify_cb_t	*verify;
+	sfc_flow_cleanup_cb_t	*cleanup;
+	sfc_flow_insert_cb_t	*insert;
+	sfc_flow_remove_cb_t	*remove;
+	sfc_flow_query_cb_t	*query;
+};
+
+static sfc_flow_parse_cb_t sfc_flow_parse_rte_to_filter;
+static sfc_flow_parse_cb_t sfc_flow_parse_rte_to_mae;
+static sfc_flow_insert_cb_t sfc_flow_filter_insert;
+static sfc_flow_remove_cb_t sfc_flow_filter_remove;
+static sfc_flow_cleanup_cb_t sfc_flow_cleanup;
+
+static const struct sfc_flow_ops_by_spec sfc_flow_ops_filter = {
+	.parse = sfc_flow_parse_rte_to_filter,
+	.verify = NULL,
+	.cleanup = sfc_flow_cleanup,
+	.insert = sfc_flow_filter_insert,
+	.remove = sfc_flow_filter_remove,
+	.query = NULL,
+};
+
+static const struct sfc_flow_ops_by_spec sfc_flow_ops_mae = {
+	.parse = sfc_flow_parse_rte_to_mae,
+	.verify = sfc_mae_flow_verify,
+	.cleanup = sfc_mae_flow_cleanup,
+	.insert = sfc_mae_flow_insert,
+	.remove = sfc_mae_flow_remove,
+	.query = sfc_mae_flow_query,
+};
+
+static const struct sfc_flow_ops_by_spec *
+sfc_flow_get_ops_by_spec(struct rte_flow *flow)
+{
+	struct sfc_flow_spec *spec = &flow->spec;
+	const struct sfc_flow_ops_by_spec *ops = NULL;
+
+	switch (spec->type) {
+	case SFC_FLOW_SPEC_FILTER:
+		ops = &sfc_flow_ops_filter;
+		break;
+	case SFC_FLOW_SPEC_MAE:
+		ops = &sfc_flow_ops_mae;
+		break;
+	default:
+		SFC_ASSERT(false);
+		break;
+	}
+
+	return ops;
+}
 
 /*
- * At now flow API is implemented in such a manner that each
- * flow rule is converted to one or more hardware filters.
+ * Currently, filter-based (VNIC) flow API is implemented in such a manner
+ * that each flow rule is converted to one or more hardware filters.
  * All elements of flow rule (attributes, pattern items, actions)
  * correspond to one or more fields in the efx_filter_spec_s structure
  * that is responsible for the hardware filter.
@@ -34,25 +95,6 @@
  * of filter copies will be created to cover all possible values
  * of such a field.
  */
-
-enum sfc_flow_item_layers {
-	SFC_FLOW_ITEM_ANY_LAYER,
-	SFC_FLOW_ITEM_START_LAYER,
-	SFC_FLOW_ITEM_L2,
-	SFC_FLOW_ITEM_L3,
-	SFC_FLOW_ITEM_L4,
-};
-
-typedef int (sfc_flow_item_parse)(const struct rte_flow_item *item,
-				  efx_filter_spec_t *spec,
-				  struct rte_flow_error *error);
-
-struct sfc_flow_item {
-	enum rte_flow_item_type type;		/* Type of item */
-	enum sfc_flow_item_layers layer;	/* Layer of item */
-	enum sfc_flow_item_layers prev_layer;	/* Previous layer of item */
-	sfc_flow_item_parse *parse;		/* Parsing function */
-};
 
 static sfc_flow_item_parse sfc_flow_parse_void;
 static sfc_flow_item_parse sfc_flow_parse_eth;
@@ -64,6 +106,7 @@ static sfc_flow_item_parse sfc_flow_parse_udp;
 static sfc_flow_item_parse sfc_flow_parse_vxlan;
 static sfc_flow_item_parse sfc_flow_parse_geneve;
 static sfc_flow_item_parse sfc_flow_parse_nvgre;
+static sfc_flow_item_parse sfc_flow_parse_pppoex;
 
 typedef int (sfc_flow_spec_set_vals)(struct sfc_flow_spec *spec,
 				     unsigned int filters_count_for_one_val,
@@ -110,7 +153,7 @@ sfc_flow_is_zero(const uint8_t *buf, unsigned int size)
 /*
  * Validate item and prepare structures spec and mask for parsing
  */
-static int
+int
 sfc_flow_parse_init(const struct rte_flow_item *item,
 		    const void **spec_ptr,
 		    const void **mask_ptr,
@@ -209,7 +252,7 @@ exit:
 
 static int
 sfc_flow_parse_void(__rte_unused const struct rte_flow_item *item,
-		    __rte_unused efx_filter_spec_t *efx_spec,
+		    __rte_unused struct sfc_flow_parse_ctx *parse_ctx,
 		    __rte_unused struct rte_flow_error *error)
 {
 	return 0;
@@ -231,19 +274,20 @@ sfc_flow_parse_void(__rte_unused const struct rte_flow_item *item,
  */
 static int
 sfc_flow_parse_eth(const struct rte_flow_item *item,
-		   efx_filter_spec_t *efx_spec,
+		   struct sfc_flow_parse_ctx *parse_ctx,
 		   struct rte_flow_error *error)
 {
 	int rc;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_eth *spec = NULL;
 	const struct rte_flow_item_eth *mask = NULL;
 	const struct rte_flow_item_eth supp_mask = {
-		.dst.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
-		.src.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
-		.type = 0xffff,
+		.hdr.dst_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+		.hdr.src_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+		.hdr.ether_type = 0xffff,
 	};
 	const struct rte_flow_item_eth ifrm_supp_mask = {
-		.dst.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+		.hdr.dst_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 	};
 	const uint8_t ig_mask[EFX_MAC_ADDR_LEN] = {
 		0x01, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -277,15 +321,15 @@ sfc_flow_parse_eth(const struct rte_flow_item *item,
 	if (spec == NULL)
 		return 0;
 
-	if (is_same_ether_addr(&mask->dst, &supp_mask.dst)) {
+	if (rte_is_same_ether_addr(&mask->hdr.dst_addr, &supp_mask.hdr.dst_addr)) {
 		efx_spec->efs_match_flags |= is_ifrm ?
 			EFX_FILTER_MATCH_IFRM_LOC_MAC :
 			EFX_FILTER_MATCH_LOC_MAC;
-		rte_memcpy(loc_mac, spec->dst.addr_bytes,
+		rte_memcpy(loc_mac, spec->hdr.dst_addr.addr_bytes,
 			   EFX_MAC_ADDR_LEN);
-	} else if (memcmp(mask->dst.addr_bytes, ig_mask,
+	} else if (memcmp(mask->hdr.dst_addr.addr_bytes, ig_mask,
 			  EFX_MAC_ADDR_LEN) == 0) {
-		if (is_unicast_ether_addr(&spec->dst))
+		if (rte_is_unicast_ether_addr(&spec->hdr.dst_addr))
 			efx_spec->efs_match_flags |= is_ifrm ?
 				EFX_FILTER_MATCH_IFRM_UNKNOWN_UCAST_DST :
 				EFX_FILTER_MATCH_UNKNOWN_UCAST_DST;
@@ -293,7 +337,7 @@ sfc_flow_parse_eth(const struct rte_flow_item *item,
 			efx_spec->efs_match_flags |= is_ifrm ?
 				EFX_FILTER_MATCH_IFRM_UNKNOWN_MCAST_DST :
 				EFX_FILTER_MATCH_UNKNOWN_MCAST_DST;
-	} else if (!is_zero_ether_addr(&mask->dst)) {
+	} else if (!rte_is_zero_ether_addr(&mask->hdr.dst_addr)) {
 		goto fail_bad_mask;
 	}
 
@@ -302,11 +346,11 @@ sfc_flow_parse_eth(const struct rte_flow_item *item,
 	 * ethertype masks are equal to zero in inner frame,
 	 * so these fields are filled in only for the outer frame
 	 */
-	if (is_same_ether_addr(&mask->src, &supp_mask.src)) {
+	if (rte_is_same_ether_addr(&mask->hdr.src_addr, &supp_mask.hdr.src_addr)) {
 		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_REM_MAC;
-		rte_memcpy(efx_spec->efs_rem_mac, spec->src.addr_bytes,
+		rte_memcpy(efx_spec->efs_rem_mac, spec->hdr.src_addr.addr_bytes,
 			   EFX_MAC_ADDR_LEN);
-	} else if (!is_zero_ether_addr(&mask->src)) {
+	} else if (!rte_is_zero_ether_addr(&mask->hdr.src_addr)) {
 		goto fail_bad_mask;
 	}
 
@@ -314,10 +358,10 @@ sfc_flow_parse_eth(const struct rte_flow_item *item,
 	 * Ether type is in big-endian byte order in item and
 	 * in little-endian in efx_spec, so byte swap is used
 	 */
-	if (mask->type == supp_mask.type) {
+	if (mask->hdr.ether_type == supp_mask.hdr.ether_type) {
 		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_ETHER_TYPE;
-		efx_spec->efs_ether_type = rte_bswap16(spec->type);
-	} else if (mask->type != 0) {
+		efx_spec->efs_ether_type = rte_bswap16(spec->hdr.ether_type);
+	} else if (mask->hdr.ether_type != 0) {
 		goto fail_bad_mask;
 	}
 
@@ -343,16 +387,17 @@ fail_bad_mask:
  */
 static int
 sfc_flow_parse_vlan(const struct rte_flow_item *item,
-		    efx_filter_spec_t *efx_spec,
+		    struct sfc_flow_parse_ctx *parse_ctx,
 		    struct rte_flow_error *error)
 {
 	int rc;
 	uint16_t vid;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_vlan *spec = NULL;
 	const struct rte_flow_item_vlan *mask = NULL;
 	const struct rte_flow_item_vlan supp_mask = {
-		.tci = rte_cpu_to_be_16(ETH_VLAN_ID_MAX),
-		.inner_type = RTE_BE16(0xffff),
+		.hdr.vlan_tci = rte_cpu_to_be_16(RTE_ETH_VLAN_ID_MAX),
+		.hdr.eth_proto = RTE_BE16(0xffff),
 	};
 
 	rc = sfc_flow_parse_init(item,
@@ -371,9 +416,9 @@ sfc_flow_parse_vlan(const struct rte_flow_item *item,
 	 * If two VLAN items are included, the first matches
 	 * the outer tag and the next matches the inner tag.
 	 */
-	if (mask->tci == supp_mask.tci) {
+	if (mask->hdr.vlan_tci == supp_mask.hdr.vlan_tci) {
 		/* Apply mask to keep VID only */
-		vid = rte_bswap16(spec->tci & mask->tci);
+		vid = rte_bswap16(spec->hdr.vlan_tci & mask->hdr.vlan_tci);
 
 		if (!(efx_spec->efs_match_flags &
 		      EFX_FILTER_MATCH_OUTER_VID)) {
@@ -402,13 +447,13 @@ sfc_flow_parse_vlan(const struct rte_flow_item *item,
 				   "VLAN TPID matching is not supported");
 		return -rte_errno;
 	}
-	if (mask->inner_type == supp_mask.inner_type) {
+	if (mask->hdr.eth_proto == supp_mask.hdr.eth_proto) {
 		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_ETHER_TYPE;
-		efx_spec->efs_ether_type = rte_bswap16(spec->inner_type);
-	} else if (mask->inner_type) {
+		efx_spec->efs_ether_type = rte_bswap16(spec->hdr.eth_proto);
+	} else if (mask->hdr.eth_proto) {
 		rte_flow_error_set(error, EINVAL,
 				   RTE_FLOW_ERROR_TYPE_ITEM, item,
-				   "Bad mask for VLAN inner_type");
+				   "Bad mask for VLAN inner type");
 		return -rte_errno;
 	}
 
@@ -429,10 +474,11 @@ sfc_flow_parse_vlan(const struct rte_flow_item *item,
  */
 static int
 sfc_flow_parse_ipv4(const struct rte_flow_item *item,
-		    efx_filter_spec_t *efx_spec,
+		    struct sfc_flow_parse_ctx *parse_ctx,
 		    struct rte_flow_error *error)
 {
 	int rc;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_ipv4 *spec = NULL;
 	const struct rte_flow_item_ipv4 *mask = NULL;
 	const uint16_t ether_type_ipv4 = rte_cpu_to_le_16(EFX_ETHER_TYPE_IPV4);
@@ -519,10 +565,11 @@ fail_bad_mask:
  */
 static int
 sfc_flow_parse_ipv6(const struct rte_flow_item *item,
-		    efx_filter_spec_t *efx_spec,
+		    struct sfc_flow_parse_ctx *parse_ctx,
 		    struct rte_flow_error *error)
 {
 	int rc;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_ipv6 *spec = NULL;
 	const struct rte_flow_item_ipv6 *mask = NULL;
 	const uint16_t ether_type_ipv6 = rte_cpu_to_le_16(EFX_ETHER_TYPE_IPV6);
@@ -627,10 +674,11 @@ fail_bad_mask:
  */
 static int
 sfc_flow_parse_tcp(const struct rte_flow_item *item,
-		   efx_filter_spec_t *efx_spec,
+		   struct sfc_flow_parse_ctx *parse_ctx,
 		   struct rte_flow_error *error)
 {
 	int rc;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_tcp *spec = NULL;
 	const struct rte_flow_item_tcp *mask = NULL;
 	const struct rte_flow_item_tcp supp_mask = {
@@ -708,10 +756,11 @@ fail_bad_mask:
  */
 static int
 sfc_flow_parse_udp(const struct rte_flow_item *item,
-		   efx_filter_spec_t *efx_spec,
+		   struct sfc_flow_parse_ctx *parse_ctx,
 		   struct rte_flow_error *error)
 {
 	int rc;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_udp *spec = NULL;
 	const struct rte_flow_item_udp *mask = NULL;
 	const struct rte_flow_item_udp supp_mask = {
@@ -866,14 +915,15 @@ sfc_flow_set_efx_spec_vni_or_vsid(efx_filter_spec_t *efx_spec,
  */
 static int
 sfc_flow_parse_vxlan(const struct rte_flow_item *item,
-		     efx_filter_spec_t *efx_spec,
+		     struct sfc_flow_parse_ctx *parse_ctx,
 		     struct rte_flow_error *error)
 {
 	int rc;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_vxlan *spec = NULL;
 	const struct rte_flow_item_vxlan *mask = NULL;
 	const struct rte_flow_item_vxlan supp_mask = {
-		.vni = { 0xff, 0xff, 0xff }
+		.hdr.vni = { 0xff, 0xff, 0xff }
 	};
 
 	rc = sfc_flow_parse_init(item,
@@ -897,8 +947,8 @@ sfc_flow_parse_vxlan(const struct rte_flow_item *item,
 	if (spec == NULL)
 		return 0;
 
-	rc = sfc_flow_set_efx_spec_vni_or_vsid(efx_spec, spec->vni,
-					       mask->vni, item, error);
+	rc = sfc_flow_set_efx_spec_vni_or_vsid(efx_spec, spec->hdr.vni,
+					       mask->hdr.vni, item, error);
 
 	return rc;
 }
@@ -918,10 +968,11 @@ sfc_flow_parse_vxlan(const struct rte_flow_item *item,
  */
 static int
 sfc_flow_parse_geneve(const struct rte_flow_item *item,
-		      efx_filter_spec_t *efx_spec,
+		      struct sfc_flow_parse_ctx *parse_ctx,
 		      struct rte_flow_error *error)
 {
 	int rc;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_geneve *spec = NULL;
 	const struct rte_flow_item_geneve *mask = NULL;
 	const struct rte_flow_item_geneve supp_mask = {
@@ -951,7 +1002,7 @@ sfc_flow_parse_geneve(const struct rte_flow_item *item,
 		return 0;
 
 	if (mask->protocol == supp_mask.protocol) {
-		if (spec->protocol != rte_cpu_to_be_16(ETHER_TYPE_TEB)) {
+		if (spec->protocol != rte_cpu_to_be_16(RTE_ETHER_TYPE_TEB)) {
 			rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM, item,
 				"GENEVE encap. protocol must be Ethernet "
@@ -985,10 +1036,11 @@ sfc_flow_parse_geneve(const struct rte_flow_item *item,
  */
 static int
 sfc_flow_parse_nvgre(const struct rte_flow_item *item,
-		     efx_filter_spec_t *efx_spec,
+		     struct sfc_flow_parse_ctx *parse_ctx,
 		     struct rte_flow_error *error)
 {
 	int rc;
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
 	const struct rte_flow_item_nvgre *spec = NULL;
 	const struct rte_flow_item_nvgre *mask = NULL;
 	const struct rte_flow_item_nvgre supp_mask = {
@@ -1022,65 +1074,158 @@ sfc_flow_parse_nvgre(const struct rte_flow_item *item,
 	return rc;
 }
 
+/**
+ * Convert PPPoEx item to EFX filter specification.
+ *
+ * @param item[in]
+ *   Item specification.
+ *   Matching on PPPoEx fields is not supported.
+ *   This item can only be used to set or validate the EtherType filter.
+ *   Only zero masks are allowed.
+ *   Ranging is not supported.
+ * @param efx_spec[in, out]
+ *   EFX filter specification to update.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_parse_pppoex(const struct rte_flow_item *item,
+		      struct sfc_flow_parse_ctx *parse_ctx,
+		      struct rte_flow_error *error)
+{
+	efx_filter_spec_t *efx_spec = parse_ctx->filter;
+	const struct rte_flow_item_pppoe *spec = NULL;
+	const struct rte_flow_item_pppoe *mask = NULL;
+	const struct rte_flow_item_pppoe supp_mask = {};
+	const struct rte_flow_item_pppoe def_mask = {};
+	uint16_t ether_type;
+	int rc;
+
+	rc = sfc_flow_parse_init(item,
+				 (const void **)&spec,
+				 (const void **)&mask,
+				 &supp_mask,
+				 &def_mask,
+				 sizeof(struct rte_flow_item_pppoe),
+				 error);
+	if (rc != 0)
+		return rc;
+
+	if (item->type == RTE_FLOW_ITEM_TYPE_PPPOED)
+		ether_type = RTE_ETHER_TYPE_PPPOE_DISCOVERY;
+	else
+		ether_type = RTE_ETHER_TYPE_PPPOE_SESSION;
+
+	if ((efx_spec->efs_match_flags & EFX_FILTER_MATCH_ETHER_TYPE) != 0) {
+		if (efx_spec->efs_ether_type != ether_type) {
+			rte_flow_error_set(error, EINVAL,
+					   RTE_FLOW_ERROR_TYPE_ITEM, item,
+					   "Invalid EtherType for a PPPoE flow item");
+			return -rte_errno;
+		}
+	} else {
+		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_ETHER_TYPE;
+		efx_spec->efs_ether_type = ether_type;
+	}
+
+	return 0;
+}
+
 static const struct sfc_flow_item sfc_flow_items[] = {
 	{
 		.type = RTE_FLOW_ITEM_TYPE_VOID,
+		.name = "VOID",
 		.prev_layer = SFC_FLOW_ITEM_ANY_LAYER,
 		.layer = SFC_FLOW_ITEM_ANY_LAYER,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_void,
 	},
 	{
 		.type = RTE_FLOW_ITEM_TYPE_ETH,
+		.name = "ETH",
 		.prev_layer = SFC_FLOW_ITEM_START_LAYER,
 		.layer = SFC_FLOW_ITEM_L2,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_eth,
 	},
 	{
 		.type = RTE_FLOW_ITEM_TYPE_VLAN,
+		.name = "VLAN",
 		.prev_layer = SFC_FLOW_ITEM_L2,
 		.layer = SFC_FLOW_ITEM_L2,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_vlan,
 	},
 	{
+		.type = RTE_FLOW_ITEM_TYPE_PPPOED,
+		.name = "PPPOED",
+		.prev_layer = SFC_FLOW_ITEM_L2,
+		.layer = SFC_FLOW_ITEM_L2,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
+		.parse = sfc_flow_parse_pppoex,
+	},
+	{
+		.type = RTE_FLOW_ITEM_TYPE_PPPOES,
+		.name = "PPPOES",
+		.prev_layer = SFC_FLOW_ITEM_L2,
+		.layer = SFC_FLOW_ITEM_L2,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
+		.parse = sfc_flow_parse_pppoex,
+	},
+	{
 		.type = RTE_FLOW_ITEM_TYPE_IPV4,
+		.name = "IPV4",
 		.prev_layer = SFC_FLOW_ITEM_L2,
 		.layer = SFC_FLOW_ITEM_L3,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_ipv4,
 	},
 	{
 		.type = RTE_FLOW_ITEM_TYPE_IPV6,
+		.name = "IPV6",
 		.prev_layer = SFC_FLOW_ITEM_L2,
 		.layer = SFC_FLOW_ITEM_L3,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_ipv6,
 	},
 	{
 		.type = RTE_FLOW_ITEM_TYPE_TCP,
+		.name = "TCP",
 		.prev_layer = SFC_FLOW_ITEM_L3,
 		.layer = SFC_FLOW_ITEM_L4,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_tcp,
 	},
 	{
 		.type = RTE_FLOW_ITEM_TYPE_UDP,
+		.name = "UDP",
 		.prev_layer = SFC_FLOW_ITEM_L3,
 		.layer = SFC_FLOW_ITEM_L4,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_udp,
 	},
 	{
 		.type = RTE_FLOW_ITEM_TYPE_VXLAN,
+		.name = "VXLAN",
 		.prev_layer = SFC_FLOW_ITEM_L4,
 		.layer = SFC_FLOW_ITEM_START_LAYER,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_vxlan,
 	},
 	{
 		.type = RTE_FLOW_ITEM_TYPE_GENEVE,
+		.name = "GENEVE",
 		.prev_layer = SFC_FLOW_ITEM_L4,
 		.layer = SFC_FLOW_ITEM_START_LAYER,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_geneve,
 	},
 	{
 		.type = RTE_FLOW_ITEM_TYPE_NVGRE,
+		.name = "NVGRE",
 		.prev_layer = SFC_FLOW_ITEM_L3,
 		.layer = SFC_FLOW_ITEM_START_LAYER,
+		.ctx_type = SFC_FLOW_PARSE_CTX_FILTER,
 		.parse = sfc_flow_parse_nvgre,
 	},
 };
@@ -1089,10 +1234,16 @@ static const struct sfc_flow_item sfc_flow_items[] = {
  * Protocol-independent flow API support
  */
 static int
-sfc_flow_parse_attr(const struct rte_flow_attr *attr,
+sfc_flow_parse_attr(struct sfc_adapter *sa,
+		    const struct rte_flow_attr *attr,
 		    struct rte_flow *flow,
 		    struct rte_flow_error *error)
 {
+	struct sfc_flow_spec *spec = &flow->spec;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
+	struct sfc_flow_spec_mae *spec_mae = &spec->mae;
+	struct sfc_mae *mae = &sa->mae;
+
 	if (attr == NULL) {
 		rte_flow_error_set(error, EINVAL,
 				   RTE_FLOW_ERROR_TYPE_ATTR, NULL,
@@ -1105,53 +1256,71 @@ sfc_flow_parse_attr(const struct rte_flow_attr *attr,
 				   "Groups are not supported");
 		return -rte_errno;
 	}
-	if (attr->priority != 0) {
-		rte_flow_error_set(error, ENOTSUP,
-				   RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY, attr,
-				   "Priorities are not supported");
-		return -rte_errno;
-	}
-	if (attr->egress != 0) {
+	if (attr->egress != 0 && attr->transfer == 0) {
 		rte_flow_error_set(error, ENOTSUP,
 				   RTE_FLOW_ERROR_TYPE_ATTR_EGRESS, attr,
 				   "Egress is not supported");
 		return -rte_errno;
 	}
-	if (attr->transfer != 0) {
-		rte_flow_error_set(error, ENOTSUP,
-				   RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER, attr,
-				   "Transfer is not supported");
-		return -rte_errno;
-	}
-	if (attr->ingress == 0) {
+	if (attr->ingress == 0 && attr->transfer == 0) {
 		rte_flow_error_set(error, ENOTSUP,
 				   RTE_FLOW_ERROR_TYPE_ATTR_INGRESS, attr,
-				   "Only ingress is supported");
+				   "Ingress is compulsory");
 		return -rte_errno;
 	}
-
-	flow->spec.template.efs_flags |= EFX_FILTER_FLAG_RX;
-	flow->spec.template.efs_rss_context = EFX_RSS_CONTEXT_DEFAULT;
+	if (attr->transfer == 0) {
+		if (attr->priority != 0) {
+			rte_flow_error_set(error, ENOTSUP,
+					   RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
+					   attr, "Priorities are unsupported");
+			return -rte_errno;
+		}
+		spec->type = SFC_FLOW_SPEC_FILTER;
+		spec_filter->template.efs_flags |= EFX_FILTER_FLAG_RX;
+		spec_filter->template.efs_rss_context = EFX_RSS_CONTEXT_DEFAULT;
+		spec_filter->template.efs_priority = EFX_FILTER_PRI_MANUAL;
+	} else {
+		if (mae->status != SFC_MAE_STATUS_ADMIN) {
+			rte_flow_error_set(error, ENOTSUP,
+					   RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER,
+					   attr, "Transfer is not supported");
+			return -rte_errno;
+		}
+		if (attr->priority > mae->nb_action_rule_prios_max) {
+			rte_flow_error_set(error, ENOTSUP,
+					   RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
+					   attr, "Unsupported priority level");
+			return -rte_errno;
+		}
+		spec->type = SFC_FLOW_SPEC_MAE;
+		spec_mae->priority = attr->priority;
+		spec_mae->action_rule = NULL;
+	}
 
 	return 0;
 }
 
 /* Get item from array sfc_flow_items */
 static const struct sfc_flow_item *
-sfc_flow_get_item(enum rte_flow_item_type type)
+sfc_flow_get_item(const struct sfc_flow_item *items,
+		  unsigned int nb_items,
+		  enum rte_flow_item_type type)
 {
 	unsigned int i;
 
-	for (i = 0; i < RTE_DIM(sfc_flow_items); i++)
-		if (sfc_flow_items[i].type == type)
-			return &sfc_flow_items[i];
+	for (i = 0; i < nb_items; i++)
+		if (items[i].type == type)
+			return &items[i];
 
 	return NULL;
 }
 
-static int
-sfc_flow_parse_pattern(const struct rte_flow_item pattern[],
-		       struct rte_flow *flow,
+int
+sfc_flow_parse_pattern(struct sfc_adapter *sa,
+		       const struct sfc_flow_item *flow_items,
+		       unsigned int nb_flow_items,
+		       const struct rte_flow_item pattern[],
+		       struct sfc_flow_parse_ctx *parse_ctx,
 		       struct rte_flow_error *error)
 {
 	int rc;
@@ -1167,7 +1336,8 @@ sfc_flow_parse_pattern(const struct rte_flow_item pattern[],
 	}
 
 	for (; pattern->type != RTE_FLOW_ITEM_TYPE_END; pattern++) {
-		item = sfc_flow_get_item(pattern->type);
+		item = sfc_flow_get_item(flow_items, nb_flow_items,
+					 pattern->type);
 		if (item == NULL) {
 			rte_flow_error_set(error, ENOTSUP,
 					   RTE_FLOW_ERROR_TYPE_ITEM, pattern,
@@ -1211,7 +1381,8 @@ sfc_flow_parse_pattern(const struct rte_flow_item pattern[],
 			break;
 
 		default:
-			if (is_ifrm) {
+			if (parse_ctx->type == SFC_FLOW_PARSE_CTX_FILTER &&
+			    is_ifrm) {
 				rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ITEM,
 					pattern,
@@ -1222,9 +1393,19 @@ sfc_flow_parse_pattern(const struct rte_flow_item pattern[],
 			break;
 		}
 
-		rc = item->parse(pattern, &flow->spec.template, error);
-		if (rc != 0)
+		if (parse_ctx->type != item->ctx_type) {
+			rte_flow_error_set(error, EINVAL,
+					RTE_FLOW_ERROR_TYPE_ITEM, pattern,
+					"Parse context type mismatch");
+			return -rte_errno;
+		}
+
+		rc = item->parse(pattern, parse_ctx, error);
+		if (rc != 0) {
+			sfc_err(sa, "failed to parse item %s: %s",
+				item->name, strerror(-rc));
 			return rc;
+		}
 
 		if (item->layer != SFC_FLOW_ITEM_ANY_LAYER)
 			prev_layer = item->layer;
@@ -1238,13 +1419,26 @@ sfc_flow_parse_queue(struct sfc_adapter *sa,
 		     const struct rte_flow_action_queue *queue,
 		     struct rte_flow *flow)
 {
+	struct sfc_flow_spec *spec = &flow->spec;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	struct sfc_rxq *rxq;
+	struct sfc_rxq_info *rxq_info;
 
-	if (queue->index >= sfc_sa2shared(sa)->rxq_count)
+	if (queue->index >= sfc_sa2shared(sa)->ethdev_rxq_count)
 		return -EINVAL;
 
-	rxq = &sa->rxq_ctrl[queue->index];
-	flow->spec.template.efs_dmaq_id = (uint16_t)rxq->hw_index;
+	rxq = sfc_rxq_ctrl_by_ethdev_qid(sa, queue->index);
+	spec_filter->template.efs_dmaq_id = (uint16_t)rxq->hw_index;
+
+	rxq_info = &sfc_sa2shared(sa)->rxq_info[queue->index];
+
+	if ((rxq_info->rxq_flags & SFC_RXQ_FLAG_RSS_HASH) != 0) {
+		struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
+		struct sfc_rss *ethdev_rss = &sas->rss;
+
+		spec_filter->template.efs_flags |= EFX_FILTER_FLAG_RX_RSS;
+		spec_filter->rss_ctx = &ethdev_rss->dummy_ctx;
+	}
 
 	return 0;
 }
@@ -1254,100 +1448,30 @@ sfc_flow_parse_rss(struct sfc_adapter *sa,
 		   const struct rte_flow_action_rss *action_rss,
 		   struct rte_flow *flow)
 {
-	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
-	struct sfc_rss *rss = &sas->rss;
-	unsigned int rxq_sw_index;
+	struct sfc_flow_spec_filter *spec_filter = &flow->spec.filter;
+	struct sfc_flow_rss_conf conf;
+	uint16_t sw_qid_min;
 	struct sfc_rxq *rxq;
-	unsigned int rxq_hw_index_min;
-	unsigned int rxq_hw_index_max;
-	efx_rx_hash_type_t efx_hash_types;
-	const uint8_t *rss_key;
-	struct sfc_flow_rss *sfc_rss_conf = &flow->rss_conf;
-	unsigned int i;
+	int rc;
 
-	if (action_rss->queue_num == 0)
-		return -EINVAL;
+	spec_filter->template.efs_flags |= EFX_FILTER_FLAG_RX_RSS;
 
-	rxq_sw_index = sfc_sa2shared(sa)->rxq_count - 1;
-	rxq = &sa->rxq_ctrl[rxq_sw_index];
-	rxq_hw_index_min = rxq->hw_index;
-	rxq_hw_index_max = 0;
+	rc = sfc_flow_rss_parse_conf(sa, action_rss, &conf, &sw_qid_min);
+	if (rc != 0)
+		return -rc;
 
-	for (i = 0; i < action_rss->queue_num; ++i) {
-		rxq_sw_index = action_rss->queue[i];
+	rxq = sfc_rxq_ctrl_by_ethdev_qid(sa, sw_qid_min);
+	spec_filter->template.efs_dmaq_id = rxq->hw_index;
 
-		if (rxq_sw_index >= sfc_sa2shared(sa)->rxq_count)
-			return -EINVAL;
-
-		rxq = &sa->rxq_ctrl[rxq_sw_index];
-
-		if (rxq->hw_index < rxq_hw_index_min)
-			rxq_hw_index_min = rxq->hw_index;
-
-		if (rxq->hw_index > rxq_hw_index_max)
-			rxq_hw_index_max = rxq->hw_index;
-	}
-
-	switch (action_rss->func) {
-	case RTE_ETH_HASH_FUNCTION_DEFAULT:
-	case RTE_ETH_HASH_FUNCTION_TOEPLITZ:
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	if (action_rss->level)
-		return -EINVAL;
-
-	/*
-	 * Dummy RSS action with only one queue and no specific settings
-	 * for hash types and key does not require dedicated RSS context
-	 * and may be simplified to single queue action.
-	 */
-	if (action_rss->queue_num == 1 && action_rss->types == 0 &&
-	    action_rss->key_len == 0) {
-		flow->spec.template.efs_dmaq_id = rxq_hw_index_min;
+	spec_filter->rss_ctx = sfc_flow_rss_ctx_reuse(sa, &conf, sw_qid_min,
+						      action_rss->queue);
+	if (spec_filter->rss_ctx != NULL)
 		return 0;
-	}
 
-	if (action_rss->types) {
-		int rc;
-
-		rc = sfc_rx_hf_rte_to_efx(sa, action_rss->types,
-					  &efx_hash_types);
-		if (rc != 0)
-			return -rc;
-	} else {
-		unsigned int i;
-
-		efx_hash_types = 0;
-		for (i = 0; i < rss->hf_map_nb_entries; ++i)
-			efx_hash_types |= rss->hf_map[i].efx;
-	}
-
-	if (action_rss->key_len) {
-		if (action_rss->key_len != sizeof(rss->key))
-			return -EINVAL;
-
-		rss_key = action_rss->key;
-	} else {
-		rss_key = rss->key;
-	}
-
-	flow->rss = B_TRUE;
-
-	sfc_rss_conf->rxq_hw_index_min = rxq_hw_index_min;
-	sfc_rss_conf->rxq_hw_index_max = rxq_hw_index_max;
-	sfc_rss_conf->rss_hash_types = efx_hash_types;
-	rte_memcpy(sfc_rss_conf->rss_key, rss_key, sizeof(rss->key));
-
-	for (i = 0; i < RTE_DIM(sfc_rss_conf->rss_tbl); ++i) {
-		unsigned int nb_queues = action_rss->queue_num;
-		unsigned int rxq_sw_index = action_rss->queue[i % nb_queues];
-		struct sfc_rxq *rxq = &sa->rxq_ctrl[rxq_sw_index];
-
-		sfc_rss_conf->rss_tbl[i] = rxq->hw_index - rxq_hw_index_min;
-	}
+	rc = sfc_flow_rss_ctx_add(sa, &conf, sw_qid_min, action_rss->queue,
+				  &spec_filter->rss_ctx);
+	if (rc != 0)
+		return -rc;
 
 	return 0;
 }
@@ -1356,13 +1480,14 @@ static int
 sfc_flow_spec_flush(struct sfc_adapter *sa, struct sfc_flow_spec *spec,
 		    unsigned int filters_count)
 {
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	unsigned int i;
 	int ret = 0;
 
 	for (i = 0; i < filters_count; i++) {
 		int rc;
 
-		rc = efx_filter_remove(sa->nic, &spec->filters[i]);
+		rc = efx_filter_remove(sa->nic, &spec_filter->filters[i]);
 		if (ret == 0 && rc != 0) {
 			sfc_err(sa, "failed to remove filter specification "
 				"(rc = %d)", rc);
@@ -1376,11 +1501,12 @@ sfc_flow_spec_flush(struct sfc_adapter *sa, struct sfc_flow_spec *spec,
 static int
 sfc_flow_spec_insert(struct sfc_adapter *sa, struct sfc_flow_spec *spec)
 {
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	unsigned int i;
 	int rc = 0;
 
-	for (i = 0; i < spec->count; i++) {
-		rc = efx_filter_insert(sa->nic, &spec->filters[i]);
+	for (i = 0; i < spec_filter->count; i++) {
+		rc = efx_filter_insert(sa->nic, &spec_filter->filters[i]);
 		if (rc != 0) {
 			sfc_flow_spec_flush(sa, spec, i);
 			break;
@@ -1393,43 +1519,25 @@ sfc_flow_spec_insert(struct sfc_adapter *sa, struct sfc_flow_spec *spec)
 static int
 sfc_flow_spec_remove(struct sfc_adapter *sa, struct sfc_flow_spec *spec)
 {
-	return sfc_flow_spec_flush(sa, spec, spec->count);
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
+
+	return sfc_flow_spec_flush(sa, spec, spec_filter->count);
 }
 
 static int
 sfc_flow_filter_insert(struct sfc_adapter *sa,
 		       struct rte_flow *flow)
 {
-	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
-	struct sfc_rss *rss = &sas->rss;
-	struct sfc_flow_rss *flow_rss = &flow->rss_conf;
-	uint32_t efs_rss_context = EFX_RSS_CONTEXT_DEFAULT;
-	unsigned int i;
+	struct sfc_flow_spec_filter *spec_filter = &flow->spec.filter;
+	struct sfc_flow_rss_ctx *rss_ctx = spec_filter->rss_ctx;
 	int rc = 0;
 
-	if (flow->rss) {
-		unsigned int rss_spread = MIN(flow_rss->rxq_hw_index_max -
-					      flow_rss->rxq_hw_index_min + 1,
-					      EFX_MAXRSS);
+	rc = sfc_flow_rss_ctx_program(sa, rss_ctx);
+	if (rc != 0)
+		goto fail_rss_ctx_program;
 
-		rc = efx_rx_scale_context_alloc(sa->nic,
-						EFX_RX_SCALE_EXCLUSIVE,
-						rss_spread,
-						&efs_rss_context);
-		if (rc != 0)
-			goto fail_scale_context_alloc;
-
-		rc = efx_rx_scale_mode_set(sa->nic, efs_rss_context,
-					   rss->hash_alg,
-					   flow_rss->rss_hash_types, B_TRUE);
-		if (rc != 0)
-			goto fail_scale_mode_set;
-
-		rc = efx_rx_scale_key_set(sa->nic, efs_rss_context,
-					  flow_rss->rss_key,
-					  sizeof(rss->key));
-		if (rc != 0)
-			goto fail_scale_key_set;
+	if (rss_ctx != NULL) {
+		unsigned int i;
 
 		/*
 		 * At this point, fully elaborated filter specifications
@@ -1437,12 +1545,10 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 		 * RSS behaviour is consistent between them, set the same
 		 * RSS context value everywhere.
 		 */
-		for (i = 0; i < flow->spec.count; i++) {
-			efx_filter_spec_t *spec = &flow->spec.filters[i];
+		for (i = 0; i < spec_filter->count; i++) {
+			efx_filter_spec_t *spec = &spec_filter->filters[i];
 
-			spec->efs_rss_context = efs_rss_context;
-			spec->efs_dmaq_id = flow_rss->rxq_hw_index_min;
-			spec->efs_flags |= EFX_FILTER_FLAG_RX_RSS;
+			spec->efs_rss_context = rss_ctx->nic_handle;
 		}
 	}
 
@@ -1450,34 +1556,12 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 	if (rc != 0)
 		goto fail_filter_insert;
 
-	if (flow->rss) {
-		/*
-		 * Scale table is set after filter insertion because
-		 * the table entries are relative to the base RxQ ID
-		 * and the latter is submitted to the HW by means of
-		 * inserting a filter, so by the time of the request
-		 * the HW knows all the information needed to verify
-		 * the table entries, and the operation will succeed
-		 */
-		rc = efx_rx_scale_tbl_set(sa->nic, efs_rss_context,
-					  flow_rss->rss_tbl,
-					  RTE_DIM(flow_rss->rss_tbl));
-		if (rc != 0)
-			goto fail_scale_tbl_set;
-	}
-
 	return 0;
 
-fail_scale_tbl_set:
-	sfc_flow_spec_remove(sa, &flow->spec);
-
 fail_filter_insert:
-fail_scale_key_set:
-fail_scale_mode_set:
-	if (efs_rss_context != EFX_RSS_CONTEXT_DEFAULT)
-		efx_rx_scale_context_free(sa->nic, efs_rss_context);
+	sfc_flow_rss_ctx_terminate(sa, rss_ctx);
 
-fail_scale_context_alloc:
+fail_rss_ctx_program:
 	return rc;
 }
 
@@ -1485,24 +1569,16 @@ static int
 sfc_flow_filter_remove(struct sfc_adapter *sa,
 		       struct rte_flow *flow)
 {
+	struct sfc_flow_spec_filter *spec_filter = &flow->spec.filter;
 	int rc = 0;
 
 	rc = sfc_flow_spec_remove(sa, &flow->spec);
 	if (rc != 0)
 		return rc;
 
-	if (flow->rss) {
-		/*
-		 * All specifications for a given flow rule have the same RSS
-		 * context, so that RSS context value is taken from the first
-		 * filter specification
-		 */
-		efx_filter_spec_t *spec = &flow->spec.filters[0];
+	sfc_flow_rss_ctx_terminate(sa, spec_filter->rss_ctx);
 
-		rc = efx_rx_scale_context_free(sa->nic, spec->efs_rss_context);
-	}
-
-	return rc;
+	return 0;
 }
 
 static int
@@ -1510,13 +1586,20 @@ sfc_flow_parse_mark(struct sfc_adapter *sa,
 		    const struct rte_flow_action_mark *mark,
 		    struct rte_flow *flow)
 {
+	struct sfc_flow_spec *spec = &flow->spec;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
+	uint32_t mark_max;
 
-	if (mark == NULL || mark->id > encp->enc_filter_action_mark_max)
+	mark_max = encp->enc_filter_action_mark_max;
+	if (sfc_ft_is_active(sa))
+		mark_max = RTE_MIN(mark_max, SFC_FT_USER_MARK_MASK);
+
+	if (mark == NULL || mark->id > mark_max)
 		return EINVAL;
 
-	flow->spec.template.efs_flags |= EFX_FILTER_FLAG_ACTION_MARK;
-	flow->spec.template.efs_mark = mark->id;
+	spec_filter->template.efs_flags |= EFX_FILTER_FLAG_ACTION_MARK;
+	spec_filter->template.efs_mark = mark->id;
 
 	return 0;
 }
@@ -1528,7 +1611,10 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 		       struct rte_flow_error *error)
 {
 	int rc;
+	struct sfc_flow_spec *spec = &flow->spec;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	const unsigned int dp_rx_features = sa->priv.dp_rx->features;
+	const uint64_t rx_metadata = sa->negotiated_rx_metadata;
 	uint32_t actions_set = 0;
 	const uint32_t fate_actions_mask = (1UL << RTE_FLOW_ACTION_TYPE_QUEUE) |
 					   (1UL << RTE_FLOW_ACTION_TYPE_RSS) |
@@ -1542,9 +1628,6 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 				   "NULL actions");
 		return -rte_errno;
 	}
-
-#define SFC_BUILD_SET_OVERFLOW(_action, _set) \
-	RTE_BUILD_BUG_ON(_action >= sizeof(_set) * CHAR_BIT)
 
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
 		switch (actions->type) {
@@ -1589,7 +1672,7 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 			if ((actions_set & fate_actions_mask) != 0)
 				goto fail_fate_actions;
 
-			flow->spec.template.efs_dmaq_id =
+			spec_filter->template.efs_dmaq_id =
 				EFX_FILTER_SPEC_RX_DMAQ_ID_DROP;
 			break;
 
@@ -1604,9 +1687,15 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 					RTE_FLOW_ERROR_TYPE_ACTION, NULL,
 					"FLAG action is not supported on the current Rx datapath");
 				return -rte_errno;
+			} else if ((rx_metadata &
+				    RTE_ETH_RX_METADATA_USER_FLAG) == 0) {
+				rte_flow_error_set(error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ACTION, NULL,
+					"flag delivery has not been negotiated");
+				return -rte_errno;
 			}
 
-			flow->spec.template.efs_flags |=
+			spec_filter->template.efs_flags |=
 				EFX_FILTER_FLAG_ACTION_FLAG;
 			break;
 
@@ -1620,6 +1709,12 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 				rte_flow_error_set(error, ENOTSUP,
 					RTE_FLOW_ERROR_TYPE_ACTION, NULL,
 					"MARK action is not supported on the current Rx datapath");
+				return -rte_errno;
+			} else if ((rx_metadata &
+				    RTE_ETH_RX_METADATA_USER_MARK) == 0) {
+				rte_flow_error_set(error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ACTION, NULL,
+					"mark delivery has not been negotiated");
 				return -rte_errno;
 			}
 
@@ -1641,11 +1736,10 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 
 		actions_set |= (1UL << actions->type);
 	}
-#undef SFC_BUILD_SET_OVERFLOW
 
 	/* When fate is unknown, drop traffic. */
 	if ((actions_set & fate_actions_mask) == 0) {
-		flow->spec.template.efs_dmaq_id =
+		spec_filter->template.efs_dmaq_id =
 			EFX_FILTER_SPEC_RX_DMAQ_ID_DROP;
 	}
 
@@ -1682,12 +1776,13 @@ sfc_flow_set_unknown_dst_flags(struct sfc_flow_spec *spec,
 			       struct rte_flow_error *error)
 {
 	unsigned int i;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	static const efx_filter_match_flags_t vals[] = {
 		EFX_FILTER_MATCH_UNKNOWN_UCAST_DST,
 		EFX_FILTER_MATCH_UNKNOWN_MCAST_DST
 	};
 
-	if (filters_count_for_one_val * RTE_DIM(vals) != spec->count) {
+	if (filters_count_for_one_val * RTE_DIM(vals) != spec_filter->count) {
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 			"Number of specifications is incorrect while copying "
@@ -1695,9 +1790,9 @@ sfc_flow_set_unknown_dst_flags(struct sfc_flow_spec *spec,
 		return -rte_errno;
 	}
 
-	for (i = 0; i < spec->count; i++) {
+	for (i = 0; i < spec_filter->count; i++) {
 		/* The check above ensures that divisor can't be zero here */
-		spec->filters[i].efs_match_flags |=
+		spec_filter->filters[i].efs_match_flags |=
 			vals[i / filters_count_for_one_val];
 	}
 
@@ -1756,11 +1851,12 @@ sfc_flow_set_ethertypes(struct sfc_flow_spec *spec,
 			struct rte_flow_error *error)
 {
 	unsigned int i;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	static const uint16_t vals[] = {
 		EFX_ETHER_TYPE_IPV4, EFX_ETHER_TYPE_IPV6
 	};
 
-	if (filters_count_for_one_val * RTE_DIM(vals) != spec->count) {
+	if (filters_count_for_one_val * RTE_DIM(vals) != spec_filter->count) {
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 			"Number of specifications is incorrect "
@@ -1768,15 +1864,15 @@ sfc_flow_set_ethertypes(struct sfc_flow_spec *spec,
 		return -rte_errno;
 	}
 
-	for (i = 0; i < spec->count; i++) {
-		spec->filters[i].efs_match_flags |=
+	for (i = 0; i < spec_filter->count; i++) {
+		spec_filter->filters[i].efs_match_flags |=
 			EFX_FILTER_MATCH_ETHER_TYPE;
 
 		/*
 		 * The check above ensures that
 		 * filters_count_for_one_val is not 0
 		 */
-		spec->filters[i].efs_ether_type =
+		spec_filter->filters[i].efs_ether_type =
 			vals[i / filters_count_for_one_val];
 	}
 
@@ -1800,9 +1896,10 @@ sfc_flow_set_outer_vid_flag(struct sfc_flow_spec *spec,
 			    unsigned int filters_count_for_one_val,
 			    struct rte_flow_error *error)
 {
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	unsigned int i;
 
-	if (filters_count_for_one_val != spec->count) {
+	if (filters_count_for_one_val != spec_filter->count) {
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 			"Number of specifications is incorrect "
@@ -1810,11 +1907,11 @@ sfc_flow_set_outer_vid_flag(struct sfc_flow_spec *spec,
 		return -rte_errno;
 	}
 
-	for (i = 0; i < spec->count; i++) {
-		spec->filters[i].efs_match_flags |=
+	for (i = 0; i < spec_filter->count; i++) {
+		spec_filter->filters[i].efs_match_flags |=
 			EFX_FILTER_MATCH_OUTER_VID;
 
-		spec->filters[i].efs_outer_vid = 0;
+		spec_filter->filters[i].efs_outer_vid = 0;
 	}
 
 	return 0;
@@ -1839,12 +1936,13 @@ sfc_flow_set_ifrm_unknown_dst_flags(struct sfc_flow_spec *spec,
 				    struct rte_flow_error *error)
 {
 	unsigned int i;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	static const efx_filter_match_flags_t vals[] = {
 		EFX_FILTER_MATCH_IFRM_UNKNOWN_UCAST_DST,
 		EFX_FILTER_MATCH_IFRM_UNKNOWN_MCAST_DST
 	};
 
-	if (filters_count_for_one_val * RTE_DIM(vals) != spec->count) {
+	if (filters_count_for_one_val * RTE_DIM(vals) != spec_filter->count) {
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 			"Number of specifications is incorrect while copying "
@@ -1852,9 +1950,9 @@ sfc_flow_set_ifrm_unknown_dst_flags(struct sfc_flow_spec *spec,
 		return -rte_errno;
 	}
 
-	for (i = 0; i < spec->count; i++) {
+	for (i = 0; i < spec_filter->count; i++) {
 		/* The check above ensures that divisor can't be zero here */
-		spec->filters[i].efs_match_flags |=
+		spec_filter->filters[i].efs_match_flags |=
 			vals[i / filters_count_for_one_val];
 	}
 
@@ -1998,6 +2096,7 @@ sfc_flow_spec_add_match_flag(struct sfc_flow_spec *spec,
 	unsigned int new_filters_count;
 	unsigned int filters_count_for_one_val;
 	const struct sfc_flow_copy_flag *copy_flag;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	int rc;
 
 	copy_flag = sfc_flow_get_copy_flag(flag);
@@ -2008,7 +2107,7 @@ sfc_flow_spec_add_match_flag(struct sfc_flow_spec *spec,
 		return -rte_errno;
 	}
 
-	new_filters_count = spec->count * copy_flag->vals_count;
+	new_filters_count = spec_filter->count * copy_flag->vals_count;
 	if (new_filters_count > SF_FLOW_SPEC_NB_FILTERS_MAX) {
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
@@ -2017,11 +2116,13 @@ sfc_flow_spec_add_match_flag(struct sfc_flow_spec *spec,
 	}
 
 	/* Copy filters specifications */
-	for (i = spec->count; i < new_filters_count; i++)
-		spec->filters[i] = spec->filters[i - spec->count];
+	for (i = spec_filter->count; i < new_filters_count; i++) {
+		spec_filter->filters[i] =
+			spec_filter->filters[i - spec_filter->count];
+	}
 
-	filters_count_for_one_val = spec->count;
-	spec->count = new_filters_count;
+	filters_count_for_one_val = spec_filter->count;
+	spec_filter->count = new_filters_count;
 
 	rc = copy_flag->set_vals(spec, filters_count_for_one_val, error);
 	if (rc != 0)
@@ -2096,6 +2197,7 @@ sfc_flow_spec_filters_complete(struct sfc_adapter *sa,
 			       struct sfc_flow_spec *spec,
 			       struct rte_flow_error *error)
 {
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 	struct sfc_filter *filter = &sa->filter;
 	efx_filter_match_flags_t miss_flags;
 	efx_filter_match_flags_t min_miss_flags = 0;
@@ -2105,12 +2207,12 @@ sfc_flow_spec_filters_complete(struct sfc_adapter *sa,
 	unsigned int i;
 	int rc;
 
-	match = spec->template.efs_match_flags;
+	match = spec_filter->template.efs_match_flags;
 	for (i = 0; i < filter->supported_match_num; i++) {
 		if ((match & filter->supported_match[i]) == match) {
 			miss_flags = filter->supported_match[i] & (~match);
 			multiplier = sfc_flow_check_missing_flags(miss_flags,
-				&spec->template, filter);
+				&spec_filter->template, filter);
 			if (multiplier > 0) {
 				if (multiplier <= min_multiplier) {
 					min_multiplier = multiplier;
@@ -2184,16 +2286,17 @@ sfc_flow_is_match_flags_exception(struct sfc_filter *filter,
 	uint16_t ether_type;
 	uint8_t ip_proto;
 	efx_filter_match_flags_t match_flags;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
 
-	for (i = 0; i < spec->count; i++) {
-		match_flags = spec->filters[i].efs_match_flags;
+	for (i = 0; i < spec_filter->count; i++) {
+		match_flags = spec_filter->filters[i].efs_match_flags;
 
 		if (sfc_flow_is_match_with_vids(match_flags,
 						EFX_FILTER_MATCH_ETHER_TYPE) ||
 		    sfc_flow_is_match_with_vids(match_flags,
 						EFX_FILTER_MATCH_ETHER_TYPE |
 						EFX_FILTER_MATCH_LOC_MAC)) {
-			ether_type = spec->filters[i].efs_ether_type;
+			ether_type = spec_filter->filters[i].efs_ether_type;
 			if (filter->supports_ip_proto_or_addr_filter &&
 			    (ether_type == EFX_ETHER_TYPE_IPV4 ||
 			     ether_type == EFX_ETHER_TYPE_IPV6))
@@ -2205,7 +2308,7 @@ sfc_flow_is_match_flags_exception(struct sfc_filter *filter,
 				EFX_FILTER_MATCH_ETHER_TYPE |
 				EFX_FILTER_MATCH_IP_PROTO |
 				EFX_FILTER_MATCH_LOC_MAC)) {
-			ip_proto = spec->filters[i].efs_ip_proto;
+			ip_proto = spec_filter->filters[i].efs_ip_proto;
 			if (filter->supports_rem_or_local_port_filter &&
 			    (ip_proto == EFX_IPPROTO_TCP ||
 			     ip_proto == EFX_IPPROTO_UDP))
@@ -2221,13 +2324,15 @@ sfc_flow_validate_match_flags(struct sfc_adapter *sa,
 			      struct rte_flow *flow,
 			      struct rte_flow_error *error)
 {
-	efx_filter_spec_t *spec_tmpl = &flow->spec.template;
+	struct sfc_flow_spec *spec = &flow->spec;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
+	efx_filter_spec_t *spec_tmpl = &spec_filter->template;
 	efx_filter_match_flags_t match_flags = spec_tmpl->efs_match_flags;
 	int rc;
 
 	/* Initialize the first filter spec with template */
-	flow->spec.filters[0] = *spec_tmpl;
-	flow->spec.count = 1;
+	spec_filter->filters[0] = *spec_tmpl;
+	spec_filter->count = 1;
 
 	if (!sfc_filter_is_match_supported(sa, match_flags)) {
 		rc = sfc_flow_spec_filters_complete(sa, &flow->spec, error);
@@ -2246,21 +2351,23 @@ sfc_flow_validate_match_flags(struct sfc_adapter *sa,
 }
 
 static int
-sfc_flow_parse(struct rte_eth_dev *dev,
-	       const struct rte_flow_attr *attr,
-	       const struct rte_flow_item pattern[],
-	       const struct rte_flow_action actions[],
-	       struct rte_flow *flow,
-	       struct rte_flow_error *error)
+sfc_flow_parse_rte_to_filter(struct rte_eth_dev *dev,
+			     const struct rte_flow_item pattern[],
+			     const struct rte_flow_action actions[],
+			     struct rte_flow *flow,
+			     struct rte_flow_error *error)
 {
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	struct sfc_flow_spec *spec = &flow->spec;
+	struct sfc_flow_spec_filter *spec_filter = &spec->filter;
+	struct sfc_flow_parse_ctx ctx;
 	int rc;
 
-	rc = sfc_flow_parse_attr(attr, flow, error);
-	if (rc != 0)
-		goto fail_bad_value;
+	ctx.type = SFC_FLOW_PARSE_CTX_FILTER;
+	ctx.filter = &spec_filter->template;
 
-	rc = sfc_flow_parse_pattern(pattern, flow, error);
+	rc = sfc_flow_parse_pattern(sa, sfc_flow_items, RTE_DIM(sfc_flow_items),
+				    pattern, &ctx, error);
 	if (rc != 0)
 		goto fail_bad_value;
 
@@ -2279,17 +2386,175 @@ fail_bad_value:
 }
 
 static int
+sfc_flow_parse_rte_to_mae(struct rte_eth_dev *dev,
+			  const struct rte_flow_item pattern[],
+			  const struct rte_flow_action actions[],
+			  struct rte_flow *flow,
+			  struct rte_flow_error *error)
+{
+	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+
+	return sfc_mae_rule_parse(sa, pattern, actions, flow, error);
+}
+
+static int
+sfc_flow_parse(struct rte_eth_dev *dev,
+	       const struct rte_flow_attr *attr,
+	       const struct rte_flow_item pattern[],
+	       const struct rte_flow_action actions[],
+	       struct rte_flow *flow,
+	       struct rte_flow_error *error)
+{
+	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	const struct sfc_flow_ops_by_spec *ops;
+	int rc;
+
+	rc = sfc_flow_parse_attr(sa, attr, flow, error);
+	if (rc != 0)
+		return rc;
+
+	ops = sfc_flow_get_ops_by_spec(flow);
+	if (ops == NULL || ops->parse == NULL) {
+		rte_flow_error_set(error, ENOTSUP,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "No backend to handle this flow");
+		return -rte_errno;
+	}
+
+	return ops->parse(dev, pattern, actions, flow, error);
+}
+
+static struct rte_flow *
+sfc_flow_zmalloc(struct rte_flow_error *error)
+{
+	struct rte_flow *flow;
+
+	flow = rte_zmalloc("sfc_rte_flow", sizeof(*flow), 0);
+	if (flow == NULL) {
+		rte_flow_error_set(error, ENOMEM,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "Failed to allocate memory");
+	}
+
+	return flow;
+}
+
+static void
+sfc_flow_free(struct sfc_adapter *sa, struct rte_flow *flow)
+{
+	const struct sfc_flow_ops_by_spec *ops;
+
+	ops = sfc_flow_get_ops_by_spec(flow);
+	if (ops != NULL && ops->cleanup != NULL)
+		ops->cleanup(sa, flow);
+
+	rte_free(flow);
+}
+
+static int
+sfc_flow_insert(struct sfc_adapter *sa, struct rte_flow *flow,
+		struct rte_flow_error *error)
+{
+	const struct sfc_flow_ops_by_spec *ops;
+	int rc;
+
+	ops = sfc_flow_get_ops_by_spec(flow);
+	if (ops == NULL || ops->insert == NULL) {
+		rte_flow_error_set(error, ENOTSUP,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "No backend to handle this flow");
+		return rte_errno;
+	}
+
+	rc = ops->insert(sa, flow);
+	if (rc != 0) {
+		rte_flow_error_set(error, rc, RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				   NULL, "Failed to insert the flow rule");
+	}
+
+	return rc;
+}
+
+static int
+sfc_flow_remove(struct sfc_adapter *sa, struct rte_flow *flow,
+		struct rte_flow_error *error)
+{
+	const struct sfc_flow_ops_by_spec *ops;
+	int rc;
+
+	ops = sfc_flow_get_ops_by_spec(flow);
+	if (ops == NULL || ops->remove == NULL) {
+		rte_flow_error_set(error, ENOTSUP,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "No backend to handle this flow");
+		return rte_errno;
+	}
+
+	rc = ops->remove(sa, flow);
+	if (rc != 0) {
+		rte_flow_error_set(error, rc, RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				   NULL, "Failed to remove the flow rule");
+	}
+
+	return rc;
+}
+
+static int
+sfc_flow_verify(struct sfc_adapter *sa, struct rte_flow *flow,
+		struct rte_flow_error *error)
+{
+	const struct sfc_flow_ops_by_spec *ops;
+	int rc = 0;
+
+	ops = sfc_flow_get_ops_by_spec(flow);
+	if (ops == NULL) {
+		rte_flow_error_set(error, ENOTSUP,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "No backend to handle this flow");
+		return -rte_errno;
+	}
+
+	if (ops->verify != NULL) {
+		SFC_ASSERT(sfc_adapter_is_locked(sa));
+		rc = ops->verify(sa, flow);
+	}
+
+	if (rc != 0) {
+		rte_flow_error_set(error, rc,
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"Failed to verify flow validity with FW");
+		return -rte_errno;
+	}
+
+	return 0;
+}
+
+static int
 sfc_flow_validate(struct rte_eth_dev *dev,
 		  const struct rte_flow_attr *attr,
 		  const struct rte_flow_item pattern[],
 		  const struct rte_flow_action actions[],
 		  struct rte_flow_error *error)
 {
-	struct rte_flow flow;
+	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	struct rte_flow *flow;
+	int rc;
 
-	memset(&flow, 0, sizeof(flow));
+	flow = sfc_flow_zmalloc(error);
+	if (flow == NULL)
+		return -rte_errno;
 
-	return sfc_flow_parse(dev, attr, pattern, actions, &flow, error);
+	sfc_adapter_lock(sa);
+
+	rc = sfc_flow_parse(dev, attr, pattern, actions, flow, error);
+	if (rc == 0)
+		rc = sfc_flow_verify(sa, flow, error);
+
+	sfc_flow_free(sa, flow);
+
+	sfc_adapter_unlock(sa);
+
+	return rc;
 }
 
 static struct rte_flow *
@@ -2300,71 +2565,55 @@ sfc_flow_create(struct rte_eth_dev *dev,
 		struct rte_flow_error *error)
 {
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
-	struct rte_flow *flow = NULL;
-	int rc;
-
-	flow = rte_zmalloc("sfc_rte_flow", sizeof(*flow), 0);
-	if (flow == NULL) {
-		rte_flow_error_set(error, ENOMEM,
-				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
-				   "Failed to allocate memory");
-		goto fail_no_mem;
-	}
-
-	rc = sfc_flow_parse(dev, attr, pattern, actions, flow, error);
-	if (rc != 0)
-		goto fail_bad_value;
-
-	TAILQ_INSERT_TAIL(&sa->filter.flow_list, flow, entries);
+	struct rte_flow *flow;
 
 	sfc_adapter_lock(sa);
-
-	if (sa->state == SFC_ADAPTER_STARTED) {
-		rc = sfc_flow_filter_insert(sa, flow);
-		if (rc != 0) {
-			rte_flow_error_set(error, rc,
-				RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
-				"Failed to insert filter");
-			goto fail_filter_insert;
-		}
-	}
-
+	flow = sfc_flow_create_locked(sa, false, attr, pattern, actions, error);
 	sfc_adapter_unlock(sa);
 
 	return flow;
-
-fail_filter_insert:
-	TAILQ_REMOVE(&sa->filter.flow_list, flow, entries);
-
-fail_bad_value:
-	rte_free(flow);
-	sfc_adapter_unlock(sa);
-
-fail_no_mem:
-	return NULL;
 }
 
-static int
-sfc_flow_remove(struct sfc_adapter *sa,
-		struct rte_flow *flow,
-		struct rte_flow_error *error)
+struct rte_flow *
+sfc_flow_create_locked(struct sfc_adapter *sa, bool internal,
+		       const struct rte_flow_attr *attr,
+		       const struct rte_flow_item pattern[],
+		       const struct rte_flow_action actions[],
+		       struct rte_flow_error *error)
 {
-	int rc = 0;
+	struct rte_flow *flow = NULL;
+	int rc;
 
 	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
-	if (sa->state == SFC_ADAPTER_STARTED) {
-		rc = sfc_flow_filter_remove(sa, flow);
+	flow = sfc_flow_zmalloc(error);
+	if (flow == NULL)
+		goto fail_no_mem;
+
+	flow->internal = internal;
+
+	rc = sfc_flow_parse(sa->eth_dev, attr, pattern, actions, flow, error);
+	if (rc != 0)
+		goto fail_bad_value;
+
+	TAILQ_INSERT_TAIL(&sa->flow_list, flow, entries);
+
+	if (flow->internal || sa->state == SFC_ETHDEV_STARTED) {
+		rc = sfc_flow_insert(sa, flow, error);
 		if (rc != 0)
-			rte_flow_error_set(error, rc,
-				RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
-				"Failed to destroy flow rule");
+			goto fail_flow_insert;
 	}
 
-	TAILQ_REMOVE(&sa->filter.flow_list, flow, entries);
-	rte_free(flow);
+	return flow;
 
-	return rc;
+fail_flow_insert:
+	TAILQ_REMOVE(&sa->flow_list, flow, entries);
+
+fail_bad_value:
+	sfc_flow_free(sa, flow);
+
+fail_no_mem:
+	return NULL;
 }
 
 static int
@@ -2373,12 +2622,25 @@ sfc_flow_destroy(struct rte_eth_dev *dev,
 		 struct rte_flow_error *error)
 {
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	int rc;
+
+	sfc_adapter_lock(sa);
+	rc = sfc_flow_destroy_locked(sa, flow, error);
+	sfc_adapter_unlock(sa);
+
+	return rc;
+}
+
+int
+sfc_flow_destroy_locked(struct sfc_adapter *sa, struct rte_flow *flow,
+			struct rte_flow_error *error)
+{
 	struct rte_flow *flow_ptr;
 	int rc = EINVAL;
 
-	sfc_adapter_lock(sa);
+	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
-	TAILQ_FOREACH(flow_ptr, &sa->filter.flow_list, entries) {
+	TAILQ_FOREACH(flow_ptr, &sa->flow_list, entries) {
 		if (flow_ptr == flow)
 			rc = 0;
 	}
@@ -2389,11 +2651,13 @@ sfc_flow_destroy(struct rte_eth_dev *dev,
 		goto fail_bad_value;
 	}
 
-	rc = sfc_flow_remove(sa, flow, error);
+	if (flow->internal || sa->state == SFC_ETHDEV_STARTED)
+		rc = sfc_flow_remove(sa, flow, error);
+
+	TAILQ_REMOVE(&sa->flow_list, flow, entries);
+	sfc_flow_free(sa, flow);
 
 fail_bad_value:
-	sfc_adapter_unlock(sa);
-
 	return -rc;
 }
 
@@ -2403,20 +2667,73 @@ sfc_flow_flush(struct rte_eth_dev *dev,
 {
 	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
 	struct rte_flow *flow;
-	int rc = 0;
 	int ret = 0;
+	void *tmp;
 
 	sfc_adapter_lock(sa);
 
-	while ((flow = TAILQ_FIRST(&sa->filter.flow_list)) != NULL) {
-		rc = sfc_flow_remove(sa, flow, error);
-		if (rc != 0)
-			ret = rc;
+	RTE_TAILQ_FOREACH_SAFE(flow, &sa->flow_list, entries, tmp) {
+		if (flow->internal)
+			continue;
+
+		if (sa->state == SFC_ETHDEV_STARTED) {
+			int rc;
+
+			rc = sfc_flow_remove(sa, flow, error);
+			if (rc != 0)
+				ret = rc;
+		}
+
+		TAILQ_REMOVE(&sa->flow_list, flow, entries);
+		sfc_flow_free(sa, flow);
 	}
 
 	sfc_adapter_unlock(sa);
 
 	return -ret;
+}
+
+static int
+sfc_flow_query(struct rte_eth_dev *dev,
+	       struct rte_flow *flow,
+	       const struct rte_flow_action *action,
+	       void *data,
+	       struct rte_flow_error *error)
+{
+	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	const struct sfc_flow_ops_by_spec *ops;
+	int ret;
+
+	sfc_adapter_lock(sa);
+
+	ops = sfc_flow_get_ops_by_spec(flow);
+	if (ops == NULL || ops->query == NULL) {
+		ret = rte_flow_error_set(error, ENOTSUP,
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"No backend to handle this flow");
+		goto fail_no_backend;
+	}
+
+	if (sa->state != SFC_ETHDEV_STARTED) {
+		ret = rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"Can't query the flow: the adapter is not started");
+		goto fail_not_started;
+	}
+
+	ret = ops->query(dev, flow, action, data, error);
+	if (ret != 0)
+		goto fail_query;
+
+	sfc_adapter_unlock(sa);
+
+	return 0;
+
+fail_query:
+fail_not_started:
+fail_no_backend:
+	sfc_adapter_unlock(sa);
+	return ret;
 }
 
 static int
@@ -2427,7 +2744,7 @@ sfc_flow_isolate(struct rte_eth_dev *dev, int enable,
 	int ret = 0;
 
 	sfc_adapter_lock(sa);
-	if (sa->state != SFC_ADAPTER_INITIALIZED) {
+	if (sa->state != SFC_ETHDEV_INITIALIZED) {
 		rte_flow_error_set(error, EBUSY,
 				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 				   NULL, "please close the port first");
@@ -2440,13 +2757,163 @@ sfc_flow_isolate(struct rte_eth_dev *dev, int enable,
 	return ret;
 }
 
+static int
+sfc_flow_pick_transfer_proxy(struct rte_eth_dev *dev,
+			     uint16_t *transfer_proxy_port,
+			     struct rte_flow_error *error)
+{
+	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	int ret;
+
+	ret = sfc_mae_get_switch_domain_admin(sa->mae.switch_domain_id,
+					      transfer_proxy_port);
+	if (ret != 0) {
+		return rte_flow_error_set(error, ret,
+					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					  NULL, NULL);
+	}
+
+	return 0;
+}
+
+static struct rte_flow_action_handle *
+sfc_flow_action_handle_create(struct rte_eth_dev *dev,
+			      const struct rte_flow_indir_action_conf *conf,
+			      const struct rte_flow_action *action,
+			      struct rte_flow_error *error)
+{
+	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	struct rte_flow_action_handle *handle;
+	int ret;
+
+	if (!conf->transfer) {
+		rte_flow_error_set(error, ENOTSUP,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "non-transfer domain does not support indirect actions");
+		return NULL;
+	}
+
+	if (conf->ingress || conf->egress) {
+		rte_flow_error_set(error, EINVAL,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				   NULL, "cannot combine ingress/egress with transfer");
+		return NULL;
+	}
+
+	handle = rte_zmalloc("sfc_rte_flow_action_handle", sizeof(*handle), 0);
+	if (handle == NULL) {
+		rte_flow_error_set(error, ENOMEM,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "failed to allocate memory");
+		return NULL;
+	}
+
+	sfc_adapter_lock(sa);
+
+	ret = sfc_mae_indir_action_create(sa, action, handle, error);
+	if (ret != 0) {
+		sfc_adapter_unlock(sa);
+		rte_free(handle);
+		return NULL;
+	}
+
+	TAILQ_INSERT_TAIL(&sa->flow_indir_actions, handle, entries);
+
+	handle->transfer = (bool)conf->transfer;
+
+	sfc_adapter_unlock(sa);
+
+	return handle;
+}
+
+static int
+sfc_flow_action_handle_destroy(struct rte_eth_dev *dev,
+			       struct rte_flow_action_handle *handle,
+			       struct rte_flow_error *error)
+{
+	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	struct rte_flow_action_handle *entry;
+	int rc = EINVAL;
+
+	sfc_adapter_lock(sa);
+
+	TAILQ_FOREACH(entry, &sa->flow_indir_actions, entries) {
+		if (entry != handle)
+			continue;
+
+		if (entry->transfer) {
+			rc = sfc_mae_indir_action_destroy(sa, handle,
+							  error);
+			if (rc != 0)
+				goto exit;
+		} else {
+			SFC_ASSERT(B_FALSE);
+		}
+
+		TAILQ_REMOVE(&sa->flow_indir_actions, entry, entries);
+		rte_free(entry);
+		goto exit;
+	}
+
+	rc = rte_flow_error_set(error, ENOENT,
+				RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				"indirect action handle not found");
+
+exit:
+	sfc_adapter_unlock(sa);
+	return rc;
+}
+
+static int
+sfc_flow_action_handle_query(struct rte_eth_dev *dev,
+			     const struct rte_flow_action_handle *handle,
+			     void *data, struct rte_flow_error *error)
+{
+	struct sfc_adapter *sa = sfc_adapter_by_eth_dev(dev);
+	struct rte_flow_action_handle *entry;
+	int rc = EINVAL;
+
+	sfc_adapter_lock(sa);
+
+	TAILQ_FOREACH(entry, &sa->flow_indir_actions, entries) {
+		if (entry != handle)
+			continue;
+
+		if (entry->transfer) {
+			rc = sfc_mae_indir_action_query(sa, handle,
+							data, error);
+		} else {
+			SFC_ASSERT(B_FALSE);
+		}
+
+		goto exit;
+	}
+
+	rc = rte_flow_error_set(error, ENOENT,
+				RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				"indirect action handle not found");
+
+exit:
+	sfc_adapter_unlock(sa);
+	return rc;
+}
+
 const struct rte_flow_ops sfc_flow_ops = {
 	.validate = sfc_flow_validate,
 	.create = sfc_flow_create,
 	.destroy = sfc_flow_destroy,
 	.flush = sfc_flow_flush,
-	.query = NULL,
+	.query = sfc_flow_query,
 	.isolate = sfc_flow_isolate,
+	.action_handle_create = sfc_flow_action_handle_create,
+	.action_handle_destroy = sfc_flow_action_handle_destroy,
+	.action_handle_query = sfc_flow_action_handle_query,
+	.tunnel_decap_set = sfc_ft_decap_set,
+	.tunnel_match = sfc_ft_match,
+	.tunnel_action_decap_release = sfc_ft_action_decap_release,
+	.tunnel_item_release = sfc_ft_item_release,
+	.get_restore_info = sfc_ft_get_restore_info,
+	.pick_transfer_proxy = sfc_flow_pick_transfer_proxy,
 };
 
 void
@@ -2454,19 +2921,24 @@ sfc_flow_init(struct sfc_adapter *sa)
 {
 	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
-	TAILQ_INIT(&sa->filter.flow_list);
+	TAILQ_INIT(&sa->flow_indir_actions);
+	TAILQ_INIT(&sa->flow_list);
 }
 
 void
 sfc_flow_fini(struct sfc_adapter *sa)
 {
 	struct rte_flow *flow;
+	void *tmp;
 
 	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
-	while ((flow = TAILQ_FIRST(&sa->filter.flow_list)) != NULL) {
-		TAILQ_REMOVE(&sa->filter.flow_list, flow, entries);
-		rte_free(flow);
+	RTE_TAILQ_FOREACH_SAFE(flow, &sa->flow_list, entries, tmp) {
+		if (flow->internal)
+			continue;
+
+		TAILQ_REMOVE(&sa->flow_list, flow, entries);
+		sfc_flow_free(sa, flow);
 	}
 }
 
@@ -2477,8 +2949,16 @@ sfc_flow_stop(struct sfc_adapter *sa)
 
 	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
-	TAILQ_FOREACH(flow, &sa->filter.flow_list, entries)
-		sfc_flow_filter_remove(sa, flow);
+	TAILQ_FOREACH(flow, &sa->flow_list, entries) {
+		if (!flow->internal)
+			sfc_flow_remove(sa, flow, NULL);
+	}
+
+	/*
+	 * MAE counter service is not stopped on flow rule remove to avoid
+	 * extra work. Make sure that it is stopped here.
+	 */
+	sfc_mae_counter_stop(sa);
 }
 
 int
@@ -2491,8 +2971,13 @@ sfc_flow_start(struct sfc_adapter *sa)
 
 	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
-	TAILQ_FOREACH(flow, &sa->filter.flow_list, entries) {
-		rc = sfc_flow_filter_insert(sa, flow);
+	sfc_ft_counters_reset(sa);
+
+	TAILQ_FOREACH(flow, &sa->flow_list, entries) {
+		if (flow->internal)
+			continue;
+
+		rc = sfc_flow_insert(sa, flow, NULL);
 		if (rc != 0)
 			goto fail_bad_flow;
 	}
@@ -2501,4 +2986,13 @@ sfc_flow_start(struct sfc_adapter *sa)
 
 fail_bad_flow:
 	return rc;
+}
+
+static void
+sfc_flow_cleanup(struct sfc_adapter *sa, struct rte_flow *flow)
+{
+	if (flow == NULL)
+		return;
+
+	sfc_flow_rss_ctx_del(sa, flow->spec.filter.rss_ctx);
 }

@@ -290,7 +290,7 @@ options:
   desc: Max number of items in RGW metadata cache.
   long_desc: When full, the RGW metadata cache evicts least recently used entries.
   fmt_desc: The number of entries in the Ceph Object Gateway cache.
-  default: 10000
+  default: 25000
   services:
   - rgw
   see_also:
@@ -801,6 +801,13 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_keystone_accepted_reader_roles
+  type: str
+  level: advanced
+  desc: List of roles that can only be used for reads (Keystone).
+  services:
+  - rgw
+  with_legacy: true
 - name: rgw_keystone_token_cache_size
   type: int
   level: advanced
@@ -885,6 +892,15 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_s3_auth_disable_signature_url
+  type: bool
+  level: advanced
+  desc: Should authentication with presigned URLs be disabled
+  long_desc: 'If enabled, any request that is presigned with either V2 or V4 signature will be denied'
+  default: false
+  services:
+  - rgw
+  with_legacy: true
 - name: rgw_barbican_url
   type: str
   level: advanced
@@ -897,8 +913,8 @@ options:
 - name: rgw_ldap_uri
   type: str
   level: advanced
-  desc: Space-separated list of LDAP servers in URI format.
-  default: ldaps://<ldap.your.domain>
+  desc: Space-separated list of LDAP servers in URI format, e.g., "ldaps://<ldap.your.domain>".
+  default:
   services:
   - rgw
   with_legacy: true
@@ -2284,6 +2300,31 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_account_default_quota_max_objects
+  type: int
+  level: basic
+  desc: Account quota max objects
+  long_desc: The default quota configuration for total number of objects for a single
+    account. A negative number means 'unlimited'.
+  fmt_desc: Default max number of objects for a account. This includes all
+    objects in all buckets owned by the account. Set on new accounts
+    if no other quota is specified. Has no effect on existing accounts.
+  default: -1
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_account_default_quota_max_size
+  type: int
+  level: basic
+  desc: Account quota max size
+  long_desc: The default quota configuration for total size of objects for a single
+    account. A negative number means 'unlimited'.
+  fmt_desc: The value for account max size quota in bytes set on new accounts,
+    if no other quota is specified.  Has no effect on existing accounts.
+  default: -1
+  services:
+  - rgw
+  with_legacy: true
 - name: rgw_multipart_min_part_size
   type: size
   level: advanced
@@ -2635,6 +2676,16 @@ options:
   - rgw
   - rgw
   min: 30
+- name: rgw_debug_inject_latency_bi_unlink
+  type: uint
+  level: dev
+  desc: Latency (in seconds) injected before rgw bucket index unlink op calls to simulate
+    queueing latency and validate behavior of simultaneuous delete requests which
+    target the same object.
+  default: 0
+  with_legacy: true
+  services:
+  - rgw
 - name: rgw_debug_inject_set_olh_err
   type: uint
   level: dev
@@ -3154,6 +3205,16 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_torrent_max_size
+  type: size
+  level: advanced
+  desc: Objects over this size will not store torrent info.
+  default: 5_G
+  services:
+  - rgw
+  see_also:
+  - rgw_torrent_flag
+  with_legacy: true
 - name: rgw_dynamic_resharding
   type: bool
   level: basic
@@ -3282,8 +3343,11 @@ options:
   type: uint
   level: advanced
   desc: Session token max duration
-  long_desc: Max duration in seconds for which the session token is valid.
+  long_desc: This option can be used to configure the upper limit of the
+    durationSeconds of temporary credentials returned by 'GetSessionToken'.
   default: 43200
+  see_also:
+  - rgw_sts_min_session_duration
   services:
   - rgw
   with_legacy: true
@@ -3291,10 +3355,14 @@ options:
   type: uint
   level: advanced
   desc: Minimum allowed duration of a session
+  long_desc: This option can be used to configure the lower limit of
+    durationSeconds of temporary credentials returned by 'AssumeRole*' calls.
   default: 900
   services:
   - rgw
   with_legacy: true
+  see_also:
+  - rgw_sts_max_session_duration
 - name: rgw_max_listing_results
   type: uint
   level: advanced
@@ -3597,14 +3665,15 @@ options:
   type: str
   level: advanced
   desc: experimental Option to set a filter
-  long_desc: defaults to none. Other valid values are base and trace (both experimental).
+  long_desc: defaults to none. Other valid values are base and d4n (both experimental).
   default: none
   services:
   - rgw
   enum_values:
   - none
   - base
-  - trace
+  - d4n
+  - posix
 - name: dbstore_db_dir
   type: str
   level: advanced
@@ -3692,11 +3761,56 @@ options:
   default: false
   services:
   - rgw
+- name: rgw_posix_base_path
+  type: str
+  level: advanced
+  desc: experimental Option to set base path for POSIX Driver
+  long_desc: Base path for the POSIX driver.  All operations are relative to this path.
+    Defaults to /tmp/rgw_posix_driver
+  default: /tmp/rgw_posix_driver
+  services:
+  - rgw
+- name: rgw_posix_database_root
+  type: str
+  level: advanced
+  desc: experimental Path to parent of POSIX Driver LMDB bucket listing cache
+  long_desc: Parent directory of LMDB bucket listing cache databases.
+  default: /var/lib/ceph/radosgw
+  services:
+  - rgw
+- name: rgw_posix_cache_max_buckets
+  type: int
+  level: advanced
+  desc: experimental Number of buckets to maintain in the ordered listing cache
+  default: 100
+  services:
+  - rgw
+- name: rgw_posix_cache_lanes
+  type: int
+  level: advanced
+  desc: experimental Number of lanes in cache LRU
+  default: 3
+  services:
+  - rgw
+- name: rgw_posix_cache_partitions
+  type: int
+  level: advanced
+  desc: experimental Number of partitions in cache AVL
+  default: 3
+  services:
+  - rgw
+- name: rgw_posix_cache_lmdb_count
+  type: int
+  level: advanced
+  desc: experimental Number of lmdb partitions in the ordered listing cache
+  default: 3
+  services:
+  - rgw
 - name: rgw_luarocks_location
   type: str
   level: advanced
   desc: Directory where luarocks install packages from allowlist
-  default: @rgw_luarocks_location@
+  default: /tmp/rgw_luarocks/$name
   services:
   - rgw
   flags:
@@ -3772,3 +3886,160 @@ options:
   default: true
   services:
   - rgw
+- name: rgw_d4n_host
+  type: str
+  level: advanced
+  desc: The rgw directory host
+  default: 127.0.0.1
+  services: 
+  - rgw
+  flags:
+  - startup
+  with_legacy: true
+- name: rgw_d4n_port
+  type: int
+  level: advanced
+  desc: The rgw directory port
+  default: 6379
+  services: 
+  - rgw
+  flags:
+  - startup
+  with_legacy: true
+- name: rgw_topic_persistency_time_to_live
+  type: uint
+  level: advanced
+  desc: The rgw retention of persistent topics by time (seconds)
+  default: 0
+  services:
+  - rgw
+  flags:
+  - startup
+  with_legacy: true
+- name: rgw_topic_persistency_max_retries
+  type: uint
+  level: advanced
+  desc: The maximum number sending a persistent notification would be tried.
+    Note that the value of one would mean no retries,
+    and the value of zero would mean that the notification would be tried indefinitely
+  default: 0
+  services:
+  - rgw
+  flags:
+  - startup
+  with_legacy: true
+- name: rgw_topic_persistency_sleep_duration
+  type: uint
+  level: advanced
+  desc: The minimum time (in seconds) between two tries of the same persistent notification.
+    note that the actual time between the tries may be longer
+  default: 0
+  services:
+  - rgw
+  flags:
+  - startup
+  with_legacy: true
+- name: rgw_lua_max_memory_per_state
+  type: uint
+  level: advanced
+  desc: Max size of memory used by a single lua state
+  long_desc: This is the maximum size in bytes that a lua state can allocate for its own use.
+    Note that this does not include any memory that can be accessed from lua, but managed by the RGW.
+    If not set, it would use a default of 128K. If set to zero, the amount of memory would 
+    only be limited by the system.
+  default: 128000
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_topic_require_publish_policy
+  type: bool
+  level: basic
+  desc: Whether to validate user permissions to publish notifications to topics.
+  long_desc: If true, all users (other then the owner of the topic) will need
+    to have a policy to publish notifications to topics.
+    The topic policy can be set by owner via CreateTopic() or SetTopicAttribute().
+    Following permissions can be granted "sns:Publish", "sns:GetTopicAttributes",
+    "sns:SetTopicAttributes", "sns:DeleteTopic" and "sns:CreateTopic" via Policy.
+    NOTE that even if set to "false" topics will still follow the policies if set on them.
+  default: false
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_user_counters_cache
+  type: bool
+  level: dev
+  default: false
+  desc: enable a rgw perf counters cache for counters with user label
+  long desc: If set to true, rgw creates perf counters with a label for the user and stores them
+    in a perf counters cache. This perf counters cache contains only perf counters labeled by user.
+  see_also:
+  - rgw_user_counters_cache_size
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_user_counters_cache_size
+  type: uint
+  level: advanced
+  desc: Number of labeled perf counters the user perf counters cache can store
+  default: 10000
+  services:
+  - rgw
+  see_also:
+  - rgw_user_counters_cache
+  with_legacy: true
+- name: rgw_bucket_counters_cache
+  type: bool
+  level: dev
+  default: false
+  desc: enable a rgw perf counters cache for counters with bucket label
+  long desc: If set to true, rgw creates perf counters with a label for the bucket and stores them
+    in a perf counters cache. This perf counters cache contains only perf counters labeled by bucket.
+  see_also:
+  - rgw_bucket_counters_cache_size
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_bucket_counters_cache_size
+  type: uint
+  level: advanced
+  desc: Number of labeled perf counters the bucket perf counters cache can store
+  default: 10000
+  services:
+  - rgw
+  see_also:
+  - rgw_bucket_counters_cache
+  with_legacy: true
+- name: rgw_kafka_connection_idle
+  type: uint 
+  level: advanced
+  desc: Time in seconds to delete idle kafka connections
+  long_desc: A conection will be considered "idle" if no messages
+    are sent to it for more than the time defined.
+    Note that the connection will not be considered idle, even if it is down,
+    as long as there are attempts to send messages to it.
+  default: 300
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_kafka_sleep_timeout
+  type: uint 
+  level: advanced
+  desc: Time in milliseconds to sleep while polling for kafka replies
+  long_desc: This will be used to prevent busy waiting for the kafka replies
+    As well as for the cases where the broker is down and we try to reconnect.
+    The same values times 3 will be used to sleep if there were no messages
+    sent or received across all kafka connections
+  default: 10
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_kafka_message_timeout
+  type: uint 
+  level: advanced
+  desc: This is the maximum time in milliseconds to deliver a message (including retries)
+  long_desc: Delivery error occurs when the message timeout is exceeded.
+    Value must be greater than zero, if set to zero, a value of 1 millisecond will be used.
+  default: 5000
+  services:
+  - rgw
+  with_legacy: true

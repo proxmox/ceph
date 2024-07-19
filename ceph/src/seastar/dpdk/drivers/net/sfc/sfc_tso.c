@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -95,7 +95,7 @@ sfc_efx_tso_do(struct sfc_efx_txq *txq, unsigned int idx,
 	       unsigned int *pkt_descs, size_t *pkt_len)
 {
 	uint8_t *tsoh;
-	const struct tcp_hdr *th;
+	const struct rte_tcp_hdr *th;
 	efsys_dma_addr_t header_paddr;
 	uint16_t packet_id = 0;
 	uint32_t sent_seq;
@@ -141,16 +141,23 @@ sfc_efx_tso_do(struct sfc_efx_txq *txq, unsigned int idx,
 	}
 
 	/*
+	 * 8000-series EF10 hardware requires that innermost IP length
+	 * be greater than or equal to the value which each segment is
+	 * supposed to have; otherwise, TCP checksum will be incorrect.
+	 */
+	sfc_tso_innermost_ip_fix_len(m, tsoh, nh_off);
+
+	/*
 	 * Handle IP header. Tx prepare has debug-only checks that offload flags
-	 * are correctly filled in in TSO mbuf. Use zero IPID if there is no
+	 * are correctly filled in TSO mbuf. Use zero IPID if there is no
 	 * IPv4 flag. If the packet is still IPv4, HW will simply start from
 	 * zero IPID.
 	 */
-	if (m->ol_flags & PKT_TX_IPV4)
+	if (m->ol_flags & RTE_MBUF_F_TX_IPV4)
 		packet_id = sfc_tso_ip4_get_ipid(tsoh, nh_off);
 
 	/* Handle TCP header */
-	th = (const struct tcp_hdr *)(tsoh + tcph_off);
+	th = (const struct rte_tcp_hdr *)(tsoh + tcph_off);
 
 	rte_memcpy(&sent_seq, &th->sent_seq, sizeof(uint32_t));
 	sent_seq = rte_be_to_cpu_32(sent_seq);

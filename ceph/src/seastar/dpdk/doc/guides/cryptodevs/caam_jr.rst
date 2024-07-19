@@ -24,7 +24,7 @@ accelerators. This provides significant improvement to system level performance.
 
 SEC HW accelerator above 4.x+ version are also known as CAAM.
 
-caam_jr PMD is one of DPAA drivers which uses uio interface to interact with
+caam_jr PMD is one of DPAA drivers which uses UIO interface to interact with
 Linux kernel for configure and destroy the device instance (ring).
 
 
@@ -109,36 +109,6 @@ Currently supported by DPDK:
 
 * Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file
-to enable caam_jr PMD.
-
-Please note that enabling debugging options may affect system performance.
-
-* ``CONFIG_RTE_LIBRTE_PMD_CAAM_JR`` (default ``n``)
-  By default it is only enabled in common_linux config.
-  Toggle compilation of the ``librte_pmd_caam_jr`` driver.
-
-* ``CONFIG_RTE_LIBRTE_PMD_CAAM_JR_BE`` (default ``n``)
-  By default it is disabled.
-  It can be used when the underlying hardware supports the CAAM in BE mode.
-  e.g. LS1043A, LS1046A supports CAAM in BE mode.
-  BE mode is enabled by default in defconfig-arm64-dpaa-linux-gcc.
-
-Installations
--------------
-To compile the caam_jr PMD for Linux arm64 gcc target, run the
-following ``make`` command:
-
-.. code-block:: console
-
-   cd <DPDK-source-directory>
-   make config T=arm64-armv8a-linux-gcc install
 
 Enabling logs
 -------------

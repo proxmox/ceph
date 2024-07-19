@@ -1,19 +1,10 @@
->=18.2.2
---------
-
-* RBD: When diffing against the beginning of time (`fromsnapname == NULL`) in
-  fast-diff mode (`whole_object == true` with `fast-diff` image feature enabled
-  and valid), diff-iterate is now guaranteed to execute locally if exclusive
-  lock is available.  This brings a dramatic performance improvement for QEMU
-  live disk synchronization and backup use cases.
-* RADOS: `get_pool_is_selfmanaged_snaps_mode` C++ API has been deprecated
-  due to being prone to false negative results.  It's safer replacement is
-  `pool_is_in_selfmanaged_snaps_mode`.
-* RBD: The option ``--image-id`` has been added to `rbd children` CLI command,
-  so it can be run for images in the trash.
-
 >=19.0.0
 
+* RGW: GetObject and HeadObject requests now return a x-rgw-replicated-at
+  header for replicated objects. This timestamp can be compared against the
+  Last-Modified header to determine how long the object took to replicate.
+* The cephfs-shell utility is now packaged for RHEL 9 / CentOS 9 as required
+  python dependencies are now available in EPEL9.
 * RGW: S3 multipart uploads using Server-Side Encryption now replicate correctly in
   multi-site. Previously, the replicas of such objects were corrupted on decryption.
   A new tool, ``radosgw-admin bucket resync encrypted multipart``, can be used to
@@ -22,10 +13,28 @@
   For multi-site deployments that make any use of Server-Side Encryption, we
   recommended running this command against every bucket in every zone after all
   zones have upgraded.
+* Tracing: The blkin tracing feature (see https://docs.ceph.com/en/reef/dev/blkin/)
+  is now deprecated in favor of Opentracing (https://docs.ceph.com/en/reef/dev/developer_guide/jaegertracing/)
+  and will be removed in a later release.
+* RGW: Introducing a new data layout for the Topic metadata associated with S3
+  Bucket Notifications, where each Topic is stored as a separate RADOS object
+  and the bucket notification configuration is stored in a bucket attribute.
+  This new representation supports multisite replication via metadata sync and
+  can scale to many topics. This is on by default for new deployments, but is
+  is not enabled by default on upgrade. Once all radosgws have upgraded (on all
+  zones in a multisite configuration), the ``notification_v2`` zone feature can
+  be enabled to migrate to the new format. See
+  https://docs.ceph.com/en/squid/radosgw/zone-features for details. The "v1"
+  format is now considered deprecated and may be removed after 2 major releases.
 * CEPHFS: MDS evicts clients which are not advancing their request tids which causes
   a large buildup of session metadata resulting in the MDS going read-only due to
   the RADOS operation exceeding the size threshold. `mds_session_metadata_threshold`
   config controls the maximum size that a (encoded) session metadata can grow.
+* CephFS: For clusters with multiple CephFS file systems, all the snap-schedule
+  commands now expect the '--fs' argument.
+* CephFS: The period specifier ``m`` now implies minutes and the period specifier
+  ``M`` now implies months. This has been made consistent with the rest
+  of the system.
 * RGW: New tools have been added to radosgw-admin for identifying and
   correcting issues with versioned bucket indexes. Historical bugs with the
   versioned bucket index transaction workflow made it possible for the index
@@ -59,8 +68,43 @@
   recommend that users with versioned buckets, especially those that existed
   on prior releases, use these new tools to check whether their buckets are
   affected and to clean them up accordingly.
-* mgr/snap-schedule: For clusters with multiple CephFS file systems, all the
-  snap-schedule commands now expect the '--fs' argument.
+* rgw: The User Accounts feature unlocks several new AWS-compatible IAM APIs
+  for the self-service management of users, keys, groups, roles, policy and
+  more. Existing users can be adopted into new accounts. This process is optional
+  but irreversible. See https://docs.ceph.com/en/squid/radosgw/account and
+  https://docs.ceph.com/en/squid/radosgw/iam for details.
+* rgw: On startup, radosgw and radosgw-admin now validate the ``rgw_realm``
+  config option. Previously, they would ignore invalid or missing realms and
+  go on to load a zone/zonegroup in a different realm. If startup fails with
+  a  "failed to load realm" error, fix or remove the ``rgw_realm`` option.
+* CephFS: Running the command "ceph fs authorize" for an existing entity now
+  upgrades the entity's capabilities instead of printing an error. It can now
+  also change read/write permissions in a capability that the entity already
+  holds. If the capability passed by user is same as one of the capabilities
+  that the entity already holds, idempotency is maintained.
+* CephFS: Two FS names can now be swapped, optionally along with their IDs,
+  using "ceph fs swap" command. The function of this API is to facilitate
+  file system swaps for disaster recovery. In particular, it avoids situations
+  where a named file system is temporarily missing which would prompt a higher
+  level storage operator (like Rook) to recreate the missing file system.
+  See https://docs.ceph.com/en/latest/cephfs/administration/#file-systems
+  docs for more information.
+* CephFS: Before running the command "ceph fs rename", the filesystem to be
+  renamed must be offline and the config "refuse_client_session" must be set
+  for it. The config "refuse_client_session" can be removed/unset and
+  filesystem can be online after the rename operation is complete.
+* RADOS: A POOL_APP_NOT_ENABLED health warning will now be reported if
+  the application is not enabled for the pool irrespective of whether
+  the pool is in use or not. Always tag a pool with an application
+  using ``ceph osd pool application enable`` command to avoid reporting
+  of POOL_APP_NOT_ENABLED health warning for that pool.
+  The user might temporarily mute this warning using
+  ``ceph health mute POOL_APP_NOT_ENABLED``.
+CephFS: Disallow delegating preallocated inode ranges to clients. Config
+  `mds_client_delegate_inos_pct` defaults to 0 which disables async dirops
+  in the kclient.
+* S3 Get/HeadObject now support query parameter `partNumber` to read a specific
+  part of a completed multipart upload.
 * RGW: Fixed a S3 Object Lock bug with PutObjectRetention requests that specify
   a RetainUntilDate after the year 2106. This date was truncated to 32 bits when
   stored, so a much earlier date was used for object lock enforcement. This does
@@ -84,13 +128,42 @@
   module is now available. Users may run `ceph balancer status detail` to see more
   details about which PGs were updated in the balancer's last optimization.
   See https://docs.ceph.com/en/latest/rados/operations/balancer/ for more information.
-* CephFS: For clusters with multiple CephFS file systems, all the snap-schedule
-  commands now expect the '--fs' argument.
-* CephFS: The period specifier ``m`` now implies minutes and the period specifier
-  ``M`` now implies months. This has been made consistent with the rest
-  of the system.
 * CephFS: Full support for subvolumes and subvolume groups is now available
   for snap_schedule Manager module.
+* RGW: The SNS CreateTopic API now enforces the same topic naming requirements as AWS:
+  Topic names must be made up of only uppercase and lowercase ASCII letters, numbers,
+  underscores, and hyphens, and must be between 1 and 256 characters long.
+* RBD: When diffing against the beginning of time (`fromsnapname == NULL`) in
+  fast-diff mode (`whole_object == true` with `fast-diff` image feature enabled
+  and valid), diff-iterate is now guaranteed to execute locally if exclusive
+  lock is available.  This brings a dramatic performance improvement for QEMU
+  live disk synchronization and backup use cases.
+* RBD: The ``try-netlink`` mapping option for rbd-nbd has become the default
+  and is now deprecated. If the NBD netlink interface is not supported by the
+  kernel, then the mapping is retried using the legacy ioctl interface.
+* RADOS: Read balancing may now be managed automatically via the balancer
+  manager module. Users may choose between two new modes: ``upmap-read``, which
+  offers upmap and read optimization simultaneously, or ``read``, which may be used
+  to only optimize reads. For more detailed information see https://docs.ceph.com/en/latest/rados/operations/read-balancer/#online-optimization.
+* CephFS: MDS log trimming is now driven by a separate thread which tries to
+  trim the log every second (`mds_log_trim_upkeep_interval` config). Also,
+  a couple of configs govern how much time the MDS spends in trimming its
+  logs. These configs are `mds_log_trim_threshold` and `mds_log_trim_decay_rate`.
+* RGW: Notification topics are now owned by the user that created them. 
+  By default, only the owner can read/write their topics. Topic policy documents
+  are now supported to grant these permissions to other users. Preexisting topics
+  are treated as if they have no owner, and any user can read/write them using the SNS API. 
+  If such a topic is recreated with CreateTopic, the issuing user becomes the new owner.
+  For backward compatibility, all users still have permission to publish bucket 
+  notifications to topics owned by other users. A new configuration parameter:
+  ``rgw_topic_require_publish_policy`` can be enabled to deny ``sns:Publish``
+  permissions unless explicitly granted by topic policy.
+* RBD: The option ``--image-id`` has been added to `rbd children` CLI command,
+  so it can be run for images in the trash.
+* PG dump: The default output of `ceph pg dump --format json` has changed. The
+  default json format produces a rather massive output in large clusters and
+  isn't scalable. So we have removed the 'network_ping_times' section from
+  the output. Details in the tracker: https://tracker.ceph.com/issues/57460
 
 * CephFS: The `subvolume snapshot clone` command now depends on the config option
   `snapshot_clone_no_wait` which is used to reject the clone operation when
@@ -100,13 +173,6 @@
    `ceph config get mgr mgr/volumes/snapshot_clone_no_wait`
   and it can be disabled by using:
    `ceph config set mgr mgr/volumes/snapshot_clone_no_wait false`
-* CephFS: fixes to the implementation of the ``root_squash`` mechanism enabled
-  via cephx ``mds`` caps on a client credential require a new client feature
-  bit, ``client_mds_auth_caps``. Clients using credentials with ``root_squash``
-  without this feature will trigger the MDS to raise a HEALTH_ERR on the
-  cluster, MDS_CLIENTS_BROKEN_ROOTSQUASH. See the documentation on this warning
-  and the new feature bit for more information.
-
 
 >=18.0.0
 
@@ -282,9 +348,6 @@
   * The QoS allocations in all the mClock profiles are optimized based on the above
     fixes and enhancements.
   * For more detailed information see:
-    https://docs.ceph.com/en/reef/rados/configuration/mclock-config-ref/
-* CEPHFS: After recovering a Ceph File System post following the disaster recovery
-  procedure, the recovered files under `lost+found` directory can now be deleted.
     https://docs.ceph.com/en/latest/rados/configuration/mclock-config-ref/
 * mgr/snap_schedule: The snap-schedule mgr module now retains one less snapshot
   than the number mentioned against the config tunable `mds_max_snaps_per_dir`
@@ -330,19 +393,6 @@ Relevant tracker: https://tracker.ceph.com/issues/55521
   <MAPPING_PREFIX><poolid>_<snapid>_
   without the object-unique suffix. The conversion is fixed in this release.
   Relevant tracker: https://tracker.ceph.com/issues/56147
-  
-* Cephadm may now be configured to carry out CephFS MDS upgrades without
-reducing ``max_mds`` to 1. Previously, Cephadm would reduce ``max_mds`` to 1 to
-avoid having two active MDS modifying on-disk structures with new versions,
-communicating cross-version-incompatible messages, or other potential
-incompatibilities. This could be disruptive for large-scale CephFS deployments
-because the cluster cannot easily reduce active MDS daemons to 1.
-NOTE: Staggered upgrade of the mons/mgrs may be necessary to take advantage
-of the feature, refer this link on how to perform it:
-https://docs.ceph.com/en/quincy/cephadm/upgrade/#staggered-upgrade
-Relevant tracker: https://tracker.ceph.com/issues/55715
-
-  Relevant tracker: https://tracker.ceph.com/issues/5614
   
 * Cephadm may now be configured to carry out CephFS MDS upgrades without
 reducing ``max_mds`` to 1. Previously, Cephadm would reduce ``max_mds`` to 1 to

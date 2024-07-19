@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -17,6 +17,16 @@ extern "C" {
 #endif
 
 #define SFC_KVARG_VALUES_BOOL		"[1|y|yes|on|0|n|no|off]"
+
+#define SFC_KVARG_SWITCH_MODE_LEGACY	"legacy"
+#define SFC_KVARG_SWITCH_MODE_SWITCHDEV	"switchdev"
+
+#define SFC_KVARG_SWITCH_MODE		"switch_mode"
+#define SFC_KVARG_VALUES_SWITCH_MODE \
+	"[" SFC_KVARG_SWITCH_MODE_LEGACY "|" \
+	    SFC_KVARG_SWITCH_MODE_SWITCHDEV "]"
+
+#define SFC_KVARG_REPRESENTOR		"representor"
 
 #define SFC_KVARG_PERF_PROFILE		"perf_profile"
 
@@ -34,18 +44,21 @@ extern "C" {
 #define SFC_KVARG_DATAPATH_EF10		"ef10"
 #define SFC_KVARG_DATAPATH_EF10_SIMPLE	"ef10_simple"
 #define SFC_KVARG_DATAPATH_EF10_ESSB	"ef10_essb"
+#define SFC_KVARG_DATAPATH_EF100	"ef100"
 
 #define SFC_KVARG_RX_DATAPATH		"rx_datapath"
 #define SFC_KVARG_VALUES_RX_DATAPATH \
 	"[" SFC_KVARG_DATAPATH_EFX "|" \
 	    SFC_KVARG_DATAPATH_EF10 "|" \
-	    SFC_KVARG_DATAPATH_EF10_ESSB "]"
+	    SFC_KVARG_DATAPATH_EF10_ESSB "|" \
+	    SFC_KVARG_DATAPATH_EF100 "]"
 
 #define SFC_KVARG_TX_DATAPATH		"tx_datapath"
 #define SFC_KVARG_VALUES_TX_DATAPATH \
 	"[" SFC_KVARG_DATAPATH_EFX "|" \
 	    SFC_KVARG_DATAPATH_EF10 "|" \
-	    SFC_KVARG_DATAPATH_EF10_SIMPLE "]"
+	    SFC_KVARG_DATAPATH_EF10_SIMPLE "|" \
+	    SFC_KVARG_DATAPATH_EF100 "]"
 
 #define SFC_KVARG_FW_VARIANT		"fw_variant"
 

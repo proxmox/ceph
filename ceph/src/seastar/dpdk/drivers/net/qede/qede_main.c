@@ -5,11 +5,15 @@
  */
 
 #include <limits.h>
-#include <time.h>
+
 #include <rte_alarm.h>
 #include <rte_string_fns.h>
 
+#include "eal_firmware.h"
+
 #include "qede_ethdev.h"
+/* ######### DEBUG ###########*/
+#include "qede_debug.h"
 
 /* Alarm timeout. */
 #define QEDE_ALARM_TIMEOUT_US 100000
@@ -18,7 +22,7 @@
 char qede_fw_file[PATH_MAX];
 
 static const char * const QEDE_DEFAULT_FIRMWARE =
-	"/lib/firmware/qed/qed_init_values-8.37.7.0.bin";
+	"/lib/firmware/qed/qed_init_values-8.40.33.0.bin";
 
 static void
 qed_update_pf_params(struct ecore_dev *edev, struct ecore_pf_params *params)
@@ -36,6 +40,7 @@ static void qed_init_pci(struct ecore_dev *edev, struct rte_pci_device *pci_dev)
 	edev->regview = pci_dev->mem_resource[0].addr;
 	edev->doorbells = pci_dev->mem_resource[2].addr;
 	edev->db_size = pci_dev->mem_resource[2].len;
+	edev->pci_dev = pci_dev;
 }
 
 static int
@@ -56,13 +61,23 @@ qed_probe(struct ecore_dev *edev, struct rte_pci_device *pci_dev,
 	qed_init_pci(edev, pci_dev);
 
 	memset(&hw_prepare_params, 0, sizeof(hw_prepare_params));
+
+	if (is_vf)
+		hw_prepare_params.acquire_retry_cnt = ECORE_VF_ACQUIRE_THRESH;
+
 	hw_prepare_params.personality = ECORE_PCI_ETH;
 	hw_prepare_params.drv_resc_alloc = false;
 	hw_prepare_params.chk_reg_fifo = false;
 	hw_prepare_params.initiate_pf_flr = true;
 	hw_prepare_params.allow_mdump = false;
 	hw_prepare_params.b_en_pacing = false;
-	hw_prepare_params.epoch = (u32)time(NULL);
+	hw_prepare_params.epoch = OSAL_GET_EPOCH(ECORE_LEADING_HWFN(edev));
+	rc = ecore_mz_mapping_alloc();
+	if (rc) {
+		DP_ERR(edev, "mem zones array allocation failed\n");
+		return rc;
+	}
+
 	rc = ecore_hw_prepare(edev, &hw_prepare_params);
 	if (rc) {
 		DP_ERR(edev, "hw prepare failed\n");
@@ -121,51 +136,40 @@ static void qed_free_stream_mem(struct ecore_dev *edev)
 #ifdef CONFIG_ECORE_BINARY_FW
 static int qed_load_firmware_data(struct ecore_dev *edev)
 {
-	int fd;
-	struct stat st;
 	const char *fw = RTE_LIBRTE_QEDE_FW;
+	void *buf;
+	size_t bufsz;
+	int ret;
 
 	if (strcmp(fw, "") == 0)
 		strcpy(qede_fw_file, QEDE_DEFAULT_FIRMWARE);
 	else
 		strcpy(qede_fw_file, fw);
 
-	fd = open(qede_fw_file, O_RDONLY);
-	if (fd < 0) {
-		DP_ERR(edev, "Can't open firmware file\n");
-		return -ENOENT;
-	}
-
-	if (fstat(fd, &st) < 0) {
-		DP_ERR(edev, "Can't stat firmware file\n");
-		close(fd);
+	if (rte_firmware_read(qede_fw_file, &buf, &bufsz) < 0) {
+		DP_ERR(edev, "Can't read firmware data: %s\n", qede_fw_file);
 		return -1;
 	}
 
-	edev->firmware = rte_zmalloc("qede_fw", st.st_size,
-				    RTE_CACHE_LINE_SIZE);
+	edev->firmware = rte_zmalloc("qede_fw", bufsz, RTE_CACHE_LINE_SIZE);
 	if (!edev->firmware) {
 		DP_ERR(edev, "Can't allocate memory for firmware\n");
-		close(fd);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto out;
 	}
 
-	if (read(fd, edev->firmware, st.st_size) != st.st_size) {
-		DP_ERR(edev, "Can't read firmware data\n");
-		close(fd);
-		return -1;
-	}
-
-	edev->fw_len = st.st_size;
+	memcpy(edev->firmware, buf, bufsz);
+	edev->fw_len = bufsz;
 	if (edev->fw_len < 104) {
 		DP_ERR(edev, "Invalid fw size: %" PRIu64 "\n",
 			  edev->fw_len);
-		close(fd);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
-
-	close(fd);
-	return 0;
+	ret = 0;
+out:
+	free(buf);
+	return ret;
 }
 #endif
 
@@ -215,7 +219,9 @@ static void qed_stop_iov_task(struct ecore_dev *edev)
 
 	for_each_hwfn(edev, i) {
 		p_hwfn = &edev->hwfns[i];
-		if (!IS_PF(edev))
+		if (IS_PF(edev))
+			rte_eal_alarm_cancel(qed_iov_pf_task, p_hwfn);
+		else
 			rte_eal_alarm_cancel(qede_vf_task, p_hwfn);
 	}
 }
@@ -273,9 +279,14 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 	qed_start_iov_task(edev);
 
 #ifdef CONFIG_ECORE_BINARY_FW
-	if (IS_PF(edev))
+	if (IS_PF(edev)) {
 		data = (const uint8_t *)edev->firmware + sizeof(u32);
+
+		/* ############### DEBUG ################## */
+		qed_dbg_pf_init(edev);
+	}
 #endif
+
 
 	/* Start the slowpath */
 	memset(&hw_init_params, 0, sizeof(hw_init_params));
@@ -330,8 +341,7 @@ err1:
 err:
 #ifdef CONFIG_ECORE_BINARY_FW
 	if (IS_PF(edev)) {
-		if (edev->firmware)
-			rte_free(edev->firmware);
+		rte_free(edev->firmware);
 		edev->firmware = NULL;
 	}
 #endif
@@ -368,8 +378,8 @@ qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 	dev_info->mtu = ECORE_LEADING_HWFN(edev)->hw_info.mtu;
 	dev_info->dev_type = edev->type;
 
-	rte_memcpy(&dev_info->hw_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
-	       ETHER_ADDR_LEN);
+	memcpy(&dev_info->hw_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
+	       RTE_ETHER_ADDR_LEN);
 
 	dev_info->fw_major = FW_MAJOR_VERSION;
 	dev_info->fw_minor = FW_MINOR_VERSION;
@@ -378,8 +388,8 @@ qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 
 	if (IS_PF(edev)) {
 		dev_info->b_inter_pf_switch =
-			OSAL_TEST_BIT(ECORE_MF_INTER_PF_SWITCH, &edev->mf_bits);
-		if (!OSAL_TEST_BIT(ECORE_MF_DISABLE_ARFS, &edev->mf_bits))
+			OSAL_GET_BIT(ECORE_MF_INTER_PF_SWITCH, &edev->mf_bits);
+		if (!OSAL_GET_BIT(ECORE_MF_DISABLE_ARFS, &edev->mf_bits))
 			dev_info->b_arfs_capable = true;
 		dev_info->tx_switching = false;
 
@@ -389,6 +399,9 @@ qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 		if (ptt) {
 			ecore_mcp_get_mfw_ver(ECORE_LEADING_HWFN(edev), ptt,
 					      &dev_info->mfw_rev, NULL);
+
+			ecore_mcp_get_mbi_ver(ECORE_LEADING_HWFN(edev), ptt,
+					      &dev_info->mbi_version);
 
 			ecore_mcp_get_flash_size(ECORE_LEADING_HWFN(edev), ptt,
 						 &dev_info->flash_size);
@@ -433,8 +446,8 @@ qed_fill_eth_dev_info(struct ecore_dev *edev, struct qed_dev_eth_info *info)
 		info->num_vlan_filters = RESC_NUM(&edev->hwfns[0], ECORE_VLAN) -
 					 max_vf_vlan_filters;
 
-		rte_memcpy(&info->port_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
-			   ETHER_ADDR_LEN);
+		memcpy(&info->port_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
+			   RTE_ETHER_ADDR_LEN);
 	} else {
 		ecore_vf_get_num_rxqs(ECORE_LEADING_HWFN(edev),
 				      &info->num_queues);
@@ -455,7 +468,7 @@ qed_fill_eth_dev_info(struct ecore_dev *edev, struct qed_dev_eth_info *info)
 	qed_fill_dev_info(edev, &info->common);
 
 	if (IS_VF(edev))
-		memset(&info->common.hw_mac, 0, ETHER_ADDR_LEN);
+		memset(&info->common.hw_mac, 0, RTE_ETHER_ADDR_LEN);
 
 	return 0;
 }
@@ -464,7 +477,7 @@ static void qed_set_name(struct ecore_dev *edev, char name[NAME_SIZE])
 {
 	int i;
 
-	rte_memcpy(edev->name, name, NAME_SIZE);
+	memcpy(edev->name, name, NAME_SIZE);
 	for_each_hwfn(edev, i) {
 		snprintf(edev->hwfns[i].name, NAME_SIZE, "%s-%d", name, i);
 	}
@@ -506,10 +519,9 @@ static void qed_fill_link(struct ecore_hwfn *hwfn,
 
 	/* Prepare source inputs */
 	if (IS_PF(hwfn->p_dev)) {
-		rte_memcpy(&params, ecore_mcp_get_link_params(hwfn),
-		       sizeof(params));
-		rte_memcpy(&link, ecore_mcp_get_link_state(hwfn), sizeof(link));
-		rte_memcpy(&link_caps, ecore_mcp_get_link_capabilities(hwfn),
+		memcpy(&params, ecore_mcp_get_link_params(hwfn), sizeof(params));
+		memcpy(&link, ecore_mcp_get_link_state(hwfn), sizeof(link));
+		memcpy(&link_caps, ecore_mcp_get_link_capabilities(hwfn),
 		       sizeof(link_caps));
 	} else {
 		ecore_vf_read_bulletin(hwfn, &change);
@@ -571,13 +583,12 @@ qed_get_current_link(struct ecore_dev *edev, struct qed_link_output *if_link)
 	hwfn = &edev->hwfns[0];
 	if (IS_PF(edev)) {
 		ptt = ecore_ptt_acquire(hwfn);
-		if (!ptt)
-			DP_NOTICE(hwfn, true, "Failed to fill link; No PTT\n");
-
+		if (ptt) {
 			qed_fill_link(hwfn, ptt, if_link);
-
-		if (ptt)
 			ecore_ptt_release(hwfn, ptt);
+		} else {
+			DP_NOTICE(hwfn, true, "Failed to fill link; No PTT\n");
+		}
 	} else {
 		qed_fill_link(hwfn, NULL, if_link);
 	}
@@ -635,10 +646,13 @@ void qed_link_update(struct ecore_hwfn *hwfn)
 	struct ecore_dev *edev = hwfn->p_dev;
 	struct qede_dev *qdev = (struct qede_dev *)edev;
 	struct rte_eth_dev *dev = (struct rte_eth_dev *)qdev->ethdev;
+	int rc;
 
-	if (!qede_link_update(dev, 0))
-		_rte_eth_dev_callback_process(dev,
-					      RTE_ETH_EVENT_INTR_LSC, NULL);
+	rc = qede_link_update(dev, 0);
+	qed_inform_vf_link_state(hwfn);
+
+	if (!rc)
+		rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
 }
 
 static int qed_drain(struct ecore_dev *edev)
@@ -714,6 +728,7 @@ static void qed_remove(struct ecore_dev *edev)
 		return;
 
 	ecore_hw_remove(edev);
+	ecore_mz_mapping_free();
 }
 
 static int qed_send_drv_state(struct ecore_dev *edev, bool active)
@@ -773,11 +788,42 @@ const struct qed_common_ops qed_common_ops_pass = {
 	INIT_STRUCT_FIELD(slowpath_stop, &qed_slowpath_stop),
 	INIT_STRUCT_FIELD(remove, &qed_remove),
 	INIT_STRUCT_FIELD(send_drv_state, &qed_send_drv_state),
+	/* ############### DEBUG ####################*/
+
+	INIT_STRUCT_FIELD(dbg_get_debug_engine, &qed_get_debug_engine),
+	INIT_STRUCT_FIELD(dbg_set_debug_engine, &qed_set_debug_engine),
+
+	INIT_STRUCT_FIELD(dbg_protection_override,
+			  &qed_dbg_protection_override),
+	INIT_STRUCT_FIELD(dbg_protection_override_size,
+			  &qed_dbg_protection_override_size),
+
+	INIT_STRUCT_FIELD(dbg_grc, &qed_dbg_grc),
+	INIT_STRUCT_FIELD(dbg_grc_size, &qed_dbg_grc_size),
+
+	INIT_STRUCT_FIELD(dbg_idle_chk, &qed_dbg_idle_chk),
+	INIT_STRUCT_FIELD(dbg_idle_chk_size, &qed_dbg_idle_chk_size),
+
+	INIT_STRUCT_FIELD(dbg_mcp_trace, &qed_dbg_mcp_trace),
+	INIT_STRUCT_FIELD(dbg_mcp_trace_size, &qed_dbg_mcp_trace_size),
+
+	INIT_STRUCT_FIELD(dbg_fw_asserts, &qed_dbg_fw_asserts),
+	INIT_STRUCT_FIELD(dbg_fw_asserts_size, &qed_dbg_fw_asserts_size),
+
+	INIT_STRUCT_FIELD(dbg_ilt, &qed_dbg_ilt),
+	INIT_STRUCT_FIELD(dbg_ilt_size, &qed_dbg_ilt_size),
+
+	INIT_STRUCT_FIELD(dbg_reg_fifo_size, &qed_dbg_reg_fifo_size),
+	INIT_STRUCT_FIELD(dbg_reg_fifo, &qed_dbg_reg_fifo),
+
+	INIT_STRUCT_FIELD(dbg_igu_fifo_size, &qed_dbg_igu_fifo_size),
+	INIT_STRUCT_FIELD(dbg_igu_fifo, &qed_dbg_igu_fifo),
 };
 
 const struct qed_eth_ops qed_eth_ops_pass = {
 	INIT_STRUCT_FIELD(common, &qed_common_ops_pass),
 	INIT_STRUCT_FIELD(fill_dev_info, &qed_fill_eth_dev_info),
+	INIT_STRUCT_FIELD(sriov_configure, &qed_sriov_configure),
 };
 
 const struct qed_eth_ops *qed_get_eth_ops(void)

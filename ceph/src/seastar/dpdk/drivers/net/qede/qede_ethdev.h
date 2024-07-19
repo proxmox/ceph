@@ -11,9 +11,9 @@
 #include <sys/queue.h>
 
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
-#include <rte_dev.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
+#include <dev_driver.h>
 #include <rte_ip.h>
 
 /* ecore includes */
@@ -34,6 +34,7 @@
 #include "base/ecore_l2.h"
 #include "base/ecore_vf.h"
 
+#include "qede_sriov.h"
 #include "qede_logs.h"
 #include "qede_if.h"
 #include "qede_rxtx.h"
@@ -42,20 +43,27 @@
 #define qede_stringify(x...)		qede_stringify1(x)
 
 /* Driver versions */
+#define QEDE_PMD_DRV_VER_STR_SIZE NAME_SIZE /* 128 */
 #define QEDE_PMD_VER_PREFIX		"QEDE PMD"
 #define QEDE_PMD_VERSION_MAJOR		2
-#define QEDE_PMD_VERSION_MINOR	        10
-#define QEDE_PMD_VERSION_REVISION       0
+#define QEDE_PMD_VERSION_MINOR	        11
+#define QEDE_PMD_VERSION_REVISION       3
 #define QEDE_PMD_VERSION_PATCH	        1
 
-#define QEDE_PMD_VERSION qede_stringify(QEDE_PMD_VERSION_MAJOR) "."     \
-			 qede_stringify(QEDE_PMD_VERSION_MINOR) "."     \
-			 qede_stringify(QEDE_PMD_VERSION_REVISION) "."  \
-			 qede_stringify(QEDE_PMD_VERSION_PATCH)
+#define QEDE_PMD_DRV_VERSION qede_stringify(QEDE_PMD_VERSION_MAJOR) "."     \
+			     qede_stringify(QEDE_PMD_VERSION_MINOR) "."     \
+			     qede_stringify(QEDE_PMD_VERSION_REVISION) "."  \
+			     qede_stringify(QEDE_PMD_VERSION_PATCH)
 
-#define QEDE_PMD_DRV_VER_STR_SIZE NAME_SIZE
-#define QEDE_PMD_VER_PREFIX "QEDE PMD"
+#define QEDE_PMD_BASE_VERSION qede_stringify(ECORE_MAJOR_VERSION) "."       \
+			      qede_stringify(ECORE_MINOR_VERSION) "."       \
+			      qede_stringify(ECORE_REVISION_VERSION) "."    \
+			      qede_stringify(ECORE_ENGINEERING_VERSION)
 
+#define QEDE_PMD_FW_VERSION qede_stringify(FW_MAJOR_VERSION) "."            \
+			    qede_stringify(FW_MINOR_VERSION) "."            \
+			    qede_stringify(FW_REVISION_VERSION) "."         \
+			    qede_stringify(FW_ENGINEERING_VERSION)
 
 #define QEDE_RSS_INDIR_INITED     (1 << 0)
 #define QEDE_RSS_KEY_INITED       (1 << 1)
@@ -66,8 +74,8 @@
 					(edev)->dev_info.num_tc)
 
 #define QEDE_QUEUE_CNT(qdev) ((qdev)->num_queues)
-#define QEDE_RSS_COUNT(qdev) ((qdev)->num_rx_queues)
-#define QEDE_TSS_COUNT(qdev) ((qdev)->num_tx_queues)
+#define QEDE_RSS_COUNT(dev) ((dev)->data->nb_rx_queues)
+#define QEDE_TSS_COUNT(dev) ((dev)->data->nb_tx_queues)
 
 #define QEDE_DUPLEX_FULL	1
 #define QEDE_DUPLEX_HALF	2
@@ -140,12 +148,12 @@ struct qede_vlan_entry {
 };
 
 struct qede_mcast_entry {
-	struct ether_addr mac;
+	struct rte_ether_addr mac;
 	SLIST_ENTRY(qede_mcast_entry) list;
 };
 
 struct qede_ucast_entry {
-	struct ether_addr mac;
+	struct rte_ether_addr mac;
 	uint16_t vlan;
 	uint16_t vni;
 	SLIST_ENTRY(qede_ucast_entry) list;
@@ -179,6 +187,7 @@ struct qede_arfs_entry {
 	uint32_t soft_id; /* unused for now */
 	uint16_t pkt_len; /* actual packet length to match */
 	uint16_t rx_queue; /* queue to be steered to */
+	bool is_drop; /* drop action */
 	const struct rte_memzone *mz; /* mz used to hold L2 frame */
 	struct qede_arfs_tuple tuple;
 	SLIST_ENTRY(qede_arfs_entry) list;
@@ -206,6 +215,8 @@ struct qede_tunn_params {
 	uint16_t udp_port;
 };
 
+#define QEDE_FW_DUMP_FILE_SIZE 128
+
 /*
  *  Structure to store private data for each port.
  */
@@ -215,7 +226,9 @@ struct qede_dev {
 	struct qed_dev_eth_info dev_info;
 	struct ecore_sb_info *sb_array;
 	struct qede_fastpath *fp_array;
+	struct qede_fastpath_cmt *fp_array_cmt;
 	uint16_t mtu;
+	uint16_t new_mtu;
 	bool enable_tx_switching;
 	bool rss_enable;
 	struct rte_eth_rss_conf rss_conf;
@@ -228,7 +241,7 @@ struct qede_dev {
 	SLIST_HEAD(vlan_list_head, qede_vlan_entry)vlan_list_head;
 	uint16_t configured_vlans;
 	bool accept_any_vlan;
-	struct ether_addr primary_mac;
+	struct rte_ether_addr primary_mac;
 	SLIST_HEAD(mc_list_head, qede_mcast_entry) mc_list_head;
 	uint16_t num_mc_addr;
 	SLIST_HEAD(uc_list_head, qede_ucast_entry) uc_list_head;
@@ -242,6 +255,7 @@ struct qede_dev {
 	char drv_ver[QEDE_PMD_DRV_VER_STR_SIZE];
 	bool vport_started;
 	int vlan_offload_mask;
+	char dump_file[QEDE_FW_DUMP_FILE_SIZE];
 	void *ethdev;
 };
 
@@ -271,18 +285,10 @@ int qede_dev_set_link_state(struct rte_eth_dev *eth_dev, bool link_up);
 int qede_link_update(struct rte_eth_dev *eth_dev,
 		     __rte_unused int wait_to_complete);
 
-int qede_dev_filter_ctrl(struct rte_eth_dev *dev, enum rte_filter_type type,
-			 enum rte_filter_op op, void *arg);
-
-int qede_ntuple_filter_conf(struct rte_eth_dev *eth_dev,
-			    enum rte_filter_op filter_op, void *arg);
+int qede_dev_flow_ops_get(struct rte_eth_dev *dev,
+			  const struct rte_flow_ops **ops);
 
 int qede_check_fdir_support(struct rte_eth_dev *eth_dev);
-
-uint16_t qede_fdir_construct_pkt(struct rte_eth_dev *eth_dev,
-				 struct rte_eth_fdir_filter *fdir,
-				 void *buff,
-				 struct ecore_arfs_config_params *params);
 
 void qede_fdir_dealloc_resc(struct rte_eth_dev *eth_dev);
 
@@ -303,4 +309,26 @@ void qede_config_accept_any_vlan(struct qede_dev *qdev, bool flg);
 int qede_ucast_filter(struct rte_eth_dev *eth_dev,
 		      struct ecore_filter_ucast *ucast,
 		      bool add);
+
+#define REGDUMP_HEADER_SIZE sizeof(u32)
+#define REGDUMP_HEADER_FEATURE_SHIFT 24
+#define REGDUMP_HEADER_ENGINE_SHIFT 31
+#define REGDUMP_HEADER_OMIT_ENGINE_SHIFT 30
+
+enum debug_print_features {
+	OLD_MODE = 0,
+	IDLE_CHK = 1,
+	GRC_DUMP = 2,
+	MCP_TRACE = 3,
+	REG_FIFO = 4,
+	PROTECTION_OVERRIDE = 5,
+	IGU_FIFO = 6,
+	PHY = 7,
+	FW_ASSERTS = 8,
+};
+
+int qede_get_regs_len(struct qede_dev *qdev);
+int qede_get_regs(struct rte_eth_dev *dev, struct rte_dev_reg_info *regs);
+void qede_config_rx_mode(struct rte_eth_dev *eth_dev);
+void qed_dbg_dump(struct rte_eth_dev *eth_dev);
 #endif /* _QEDE_ETHDEV_H_ */

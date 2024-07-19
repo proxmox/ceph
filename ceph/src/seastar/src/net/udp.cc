@@ -19,9 +19,21 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#include <cstdint>
+#include <utility>
+#include <cstring>
+#include <exception>
+#include <system_error>
+#include <optional>
+#include <memory>
+module seastar;
+#else
 #include <seastar/net/ip.hh>
 #include <seastar/net/stack.hh>
 #include <seastar/net/inet_address.hh>
+#endif
 
 namespace seastar {
 
@@ -36,7 +48,7 @@ to_ipv4_addr(ipv4_address a, uint16_t port) {
     return {a.ip, port};
 }
 
-class native_datagram : public udp_datagram_impl {
+class native_datagram : public datagram_impl {
 private:
     ipv4_addr _src;
     ipv4_addr _dst;
@@ -68,7 +80,7 @@ public:
     }
 };
 
-class native_channel : public udp_channel_impl {
+class native_channel : public datagram_channel_impl {
 private:
     ipv4_udp& _proto;
     ipv4_udp::registration _reg;
@@ -94,7 +106,7 @@ public:
         return socket_address(_proto.inet().host_address(), _reg.port());
     }
 
-    virtual future<udp_datagram> receive() override {
+    virtual future<datagram> receive() override {
         return _state->_queue.pop_eventually();
     }
 
@@ -160,7 +172,7 @@ bool ipv4_udp::forward(forward_hash& out_hash_data, packet& p, size_t off)
 
 void ipv4_udp::received(packet p, ipv4_address from, ipv4_address to)
 {
-    udp_datagram dgram(std::make_unique<native_datagram>(from, to, std::move(p)));
+    datagram dgram(std::make_unique<native_datagram>(from, to, std::move(p)));
 
     auto chan_it = _channels.find(dgram.get_dst_port());
     if (chan_it != _channels.end()) {

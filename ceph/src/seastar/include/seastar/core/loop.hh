@@ -22,18 +22,24 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
+#include <cassert>
 #include <cstddef>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <vector>
-
+#endif
 #include <seastar/core/future.hh>
 #include <seastar/core/task.hh>
 #include <seastar/util/bool_class.hh>
+#include <seastar/util/modules.hh>
 #include <seastar/core/semaphore.hh>
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /// \addtogroup future-util
 /// @{
@@ -61,7 +67,7 @@ public:
             delete this;
             return;
         } else {
-            if (_state.get0() == stop_iteration::yes) {
+            if (_state.get() == stop_iteration::yes) {
                 _promise.set_value();
                 delete this;
                 return;
@@ -75,7 +81,7 @@ public:
                     internal::set_callback(std::move(f), this);
                     return;
                 }
-                if (f.get0() == stop_iteration::yes) {
+                if (f.get() == stop_iteration::yes) {
                     _promise.set_value();
                     delete this;
                     return;
@@ -110,11 +116,11 @@ future<> repeat(AsyncAction& action) noexcept = delete;
 /// \return a ready future if we stopped successfully, or a failed future if
 ///         a call to to \c action failed.
 template<typename AsyncAction>
-SEASTAR_CONCEPT( requires seastar::InvokeReturns<AsyncAction, stop_iteration> || seastar::InvokeReturns<AsyncAction, future<stop_iteration>> )
+requires std::is_invocable_r_v<stop_iteration, AsyncAction> || std::is_invocable_r_v<future<stop_iteration>, AsyncAction>
 inline
 future<> repeat(AsyncAction&& action) noexcept {
     using futurator = futurize<std::invoke_result_t<AsyncAction>>;
-    static_assert(std::is_same<future<stop_iteration>, typename futurator::type>::value, "bad AsyncAction signature");
+    static_assert(std::is_same_v<future<stop_iteration>, typename futurator::type>, "bad AsyncAction signature");
     for (;;) {
         // Do not type-erase here in case this is a short repeat()
         auto f = futurator::invoke(action);
@@ -129,7 +135,7 @@ future<> repeat(AsyncAction&& action) noexcept {
             }();
         }
 
-        if (f.get0() == stop_iteration::yes) {
+        if (f.get() == stop_iteration::yes) {
             return make_ready_future<>();
         }
     }
@@ -177,7 +183,7 @@ public:
             delete this;
             return;
         } else {
-            auto v = std::move(this->_state).get0();
+            auto v = std::move(this->_state).get();
             if (v) {
                 _promise.set_value(std::move(*v));
                 delete this;
@@ -192,7 +198,7 @@ public:
                     internal::set_callback(std::move(f), this);
                     return;
                 }
-                auto ret = f.get0();
+                auto ret = f.get();
                 if (ret) {
                     _promise.set_value(std::move(*ret));
                     delete this;
@@ -223,10 +229,10 @@ public:
 /// \return a ready future if we stopped successfully, or a failed future if
 ///         a call to to \c action failed.  The \c optional's value is returned.
 template<typename AsyncAction>
-SEASTAR_CONCEPT( requires requires (AsyncAction aa) {
-    bool(futurize_invoke(aa).get0());
-    futurize_invoke(aa).get0().value();
-} )
+requires requires (AsyncAction aa) {
+    bool(futurize_invoke(aa).get());
+    futurize_invoke(aa).get().value();
+}
 repeat_until_value_return_type<AsyncAction>
 repeat_until_value(AsyncAction action) noexcept {
     using futurator = futurize<std::invoke_result_t<AsyncAction>>;
@@ -251,7 +257,7 @@ repeat_until_value(AsyncAction action) noexcept {
             return make_exception_future<value_type>(f.get_exception());
         }
 
-        optional_type&& optional = std::move(f).get0();
+        optional_type&& optional = std::move(f).get();
         if (optional) {
             return make_ready_future<value_type>(std::move(optional.value()));
         }
@@ -328,7 +334,7 @@ public:
 /// \return a ready future if we stopped successfully, or a failed future if
 ///         a call to to \c action or a call to \c stop_cond failed.
 template<typename AsyncAction, typename StopCondition>
-SEASTAR_CONCEPT( requires seastar::InvokeReturns<StopCondition, bool> && seastar::InvokeReturns<AsyncAction, future<>> )
+requires std::is_invocable_r_v<bool, StopCondition> && std::is_invocable_r_v<future<>, AsyncAction>
 inline
 future<> do_until(StopCondition stop_cond, AsyncAction action) noexcept {
     using namespace internal;
@@ -364,7 +370,7 @@ future<> do_until(StopCondition stop_cond, AsyncAction action) noexcept {
 ///        that becomes ready when you wish it to be called again.
 /// \return a future<> that will resolve to the first failure of \c action
 template<typename AsyncAction>
-SEASTAR_CONCEPT( requires seastar::InvokeReturns<AsyncAction, future<>> )
+requires std::is_invocable_r_v<future<>, AsyncAction>
 inline
 future<> keep_doing(AsyncAction action) noexcept {
     return repeat([action = std::move(action)] () mutable {
@@ -449,9 +455,9 @@ future<> do_for_each_impl(Iterator begin, Iterator end, AsyncAction action) {
 /// \return a ready future on success, or the first failed future if
 ///         \c action failed.
 template<typename Iterator, typename AsyncAction>
-SEASTAR_CONCEPT( requires requires (Iterator i, AsyncAction aa) {
+requires requires (Iterator i, AsyncAction aa) {
     { futurize_invoke(aa, *i) } -> std::same_as<future<>>;
-} )
+}
 inline
 future<> do_for_each(Iterator begin, Iterator end, AsyncAction action) noexcept {
     try {
@@ -473,10 +479,10 @@ future<> do_for_each(Iterator begin, Iterator end, AsyncAction action) noexcept 
 /// \return a ready future on success, or the first failed future if
 ///         \c action failed.
 template<typename Container, typename AsyncAction>
-SEASTAR_CONCEPT( requires requires (Container c, AsyncAction aa) {
+requires requires (Container c, AsyncAction aa) {
     { futurize_invoke(aa, *std::begin(c)) } -> std::same_as<future<>>;
     std::end(c);
-} )
+}
 inline
 future<> do_for_each(Container& c, AsyncAction action) noexcept {
     try {
@@ -497,17 +503,14 @@ struct has_iterator_category<T, std::void_t<typename std::iterator_traits<T>::it
 template <typename Iterator, typename Sentinel, typename IteratorCategory>
 inline
 size_t
-iterator_range_estimate_vector_capacity(Iterator const&, Sentinel const&, IteratorCategory) {
+iterator_range_estimate_vector_capacity(Iterator begin, Sentinel end, IteratorCategory) {
+    // May be linear time below random_access_iterator_tag, but still better than reallocation
+    if constexpr (std::is_base_of_v<std::forward_iterator_tag, IteratorCategory>) {
+        return std::distance(begin, end);
+    }
+
     // For InputIterators we can't estimate needed capacity
     return 0;
-}
-
-template <typename Iterator, typename Sentinel>
-inline
-size_t
-iterator_range_estimate_vector_capacity(Iterator begin, Sentinel end, std::forward_iterator_tag) {
-    // May be linear time below random_access_iterator_tag, but still better than reallocation
-    return std::distance(begin, end);
 }
 
 } // namespace internal
@@ -553,7 +556,7 @@ public:
 ///       current shard. If you want to run a function on all shards in parallel,
 ///       have a look at \ref smp::invoke_on_all() instead.
 template <typename Iterator, typename Sentinel, typename Func>
-SEASTAR_CONCEPT( requires (requires (Func f, Iterator i) { { f(*i) } -> std::same_as<future<>>; { i++ }; } && (std::same_as<Sentinel, Iterator> || std::sentinel_for<Sentinel, Iterator>)))
+requires (requires (Func f, Iterator i) { { f(*i) } -> std::same_as<future<>>; { i++ }; } && (std::same_as<Sentinel, Iterator> || std::sentinel_for<Sentinel, Iterator>))
 // We use a conjunction with std::same_as<Sentinel, Iterator> because std::sentinel_for requires Sentinel to be semiregular,
 // which implies that it requires Sentinel to be default-constructible, which is unnecessarily strict in below's context and could
 // break legacy code, for which it holds that Sentinel equals Iterator.
@@ -626,10 +629,10 @@ parallel_for_each_impl(Range&& range, Func&& func) {
 } // namespace internal
 
 template <typename Range, typename Func>
-SEASTAR_CONCEPT( requires requires (Func f, Range r) {
+requires requires (Func f, Range r) {
     { f(*std::begin(r)) } -> std::same_as<future<>>;
     std::end(r);
-} )
+}
 inline
 future<>
 parallel_for_each(Range&& range, Func&& func) noexcept {
@@ -659,7 +662,7 @@ parallel_for_each(Range&& range, Func&& func) noexcept {
 ///       current shard. If you want to run a function on all shards in parallel,
 ///       have a look at \ref smp::invoke_on_all() instead.
 template <typename Iterator, typename Sentinel, typename Func>
-SEASTAR_CONCEPT( requires (requires (Func f, Iterator i) { { f(*i) } -> std::same_as<future<>>; { ++i }; } && (std::same_as<Sentinel, Iterator> || std::sentinel_for<Sentinel, Iterator>) ) )
+requires (requires (Func f, Iterator i) { { f(*i) } -> std::same_as<future<>>; { ++i }; } && (std::same_as<Sentinel, Iterator> || std::sentinel_for<Sentinel, Iterator>) )
 // We use a conjunction with std::same_as<Sentinel, Iterator> because std::sentinel_for requires Sentinel to be semiregular,
 // which implies that it requires Sentinel to be default-constructible, which is unnecessarily strict in below's context and could
 // break legacy code, for which it holds that Sentinel equals Iterator.
@@ -740,10 +743,10 @@ max_concurrent_for_each(Iterator begin, Sentinel end, size_t max_concurrent, Fun
 ///       current shard. If you want to run a function on all shards in parallel,
 ///       have a look at \ref smp::invoke_on_all() instead.
 template <typename Range, typename Func>
-SEASTAR_CONCEPT( requires requires (Func f, Range r) {
+requires requires (Func f, Range r) {
     { f(*std::begin(r)) } -> std::same_as<future<>>;
     std::end(r);
-} )
+}
 inline
 future<>
 max_concurrent_for_each(Range&& range, size_t max_concurrent, Func&& func) noexcept {
@@ -755,5 +758,7 @@ max_concurrent_for_each(Range&& range, size_t max_concurrent, Func&& func) noexc
 }
 
 /// @}
+
+SEASTAR_MODULE_EXPORT_END
 
 } // namespace seastar

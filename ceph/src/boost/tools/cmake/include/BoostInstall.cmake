@@ -249,6 +249,13 @@ function(boost_install_target)
     set_target_properties(${LIB} PROPERTIES EXPORT_NAME ${CMAKE_MATCH_1})
   endif()
 
+  if(BOOST_SKIP_INSTALL_RULES)
+
+    boost_message(DEBUG "boost_install_target: not installing target '${__TARGET}' due to BOOST_SKIP_INSTALL_RULES=${BOOST_SKIP_INSTALL_RULES}")
+    return()
+
+  endif()
+
   if(CMAKE_SKIP_INSTALL_RULES)
 
     boost_message(DEBUG "boost_install_target: not installing target '${__TARGET}' due to CMAKE_SKIP_INSTALL_RULES=${CMAKE_SKIP_INSTALL_RULES}")
@@ -356,6 +363,10 @@ function(boost_install_target)
 
         string(APPEND icu_components " uc")
 
+      elseif (dep MATCHES "^OpenSSL::(.*)$")
+
+        string(APPEND CONFIG_FILE_CONTENTS "find_dependency(OpenSSL)\n")
+
       endif()
 
     endforeach()
@@ -440,7 +451,7 @@ function(boost_install)
 
   endif()
 
-  if(__HEADER_DIRECTORY AND NOT CMAKE_SKIP_INSTALL_RULES)
+  if(__HEADER_DIRECTORY AND NOT BOOST_SKIP_INSTALL_RULES AND NOT CMAKE_SKIP_INSTALL_RULES)
 
     get_filename_component(__HEADER_DIRECTORY "${__HEADER_DIRECTORY}" ABSOLUTE)
     install(DIRECTORY "${__HEADER_DIRECTORY}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")

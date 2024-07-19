@@ -43,7 +43,9 @@ debian_packages=(
     liburing-dev
     gcc
     make
+    meson
     python3
+    python3-pyelftools
     systemtap-sdt-dev
     libtool
     cmake
@@ -57,6 +59,8 @@ debian_packages=(
     doxygen
     openssl
     pkg-config
+    libprotobuf-dev
+    protobuf-compiler
 )
 
 # seastar doesn't directly depend on these packages. They are
@@ -70,7 +74,6 @@ redhat_packages=(
     hwloc-devel
     numactl-devel
     libpciaccess-devel
-    cryptopp-devel
     libxml2-devel
     xfsprogs-devel
     gnutls-devel
@@ -79,7 +82,9 @@ redhat_packages=(
     liburing-devel
     gcc
     make
+    meson
     python3
+    python3-pyelftools
     systemtap-sdt-devel
     libtool
     cmake
@@ -92,6 +97,8 @@ redhat_packages=(
     fmt-devel
     boost-devel
     valgrind-devel
+    protobuf-devel
+    protobuf-compiler
     "${transitive[@]}"
 )
 
@@ -131,6 +138,17 @@ centos8_packages=(
     gcc-toolset-11-libatomic-devel
 )
 
+centos9_packages=(
+    "${redhat_packages[@]}"
+    ninja-build
+    ragel
+    gcc-toolset-13-gcc
+    gcc-toolset-13-gcc-c++
+    gcc-toolset-13-libubsan-devel
+    gcc-toolset-13-libasan-devel
+    gcc-toolset-13-libatomic-devel
+)
+
 # 1) glibc 2.30-3 has sys/sdt.h (systemtap include)
 #    some old containers may contain glibc older,
 #    so enforce update on that one.
@@ -154,6 +172,9 @@ arch_packages=(
     lksctp-tools
     lz4
     make
+    meson
+    python-pyelftools
+    protobuf
     libtool
     cmake
     yaml-cpp
@@ -183,7 +204,6 @@ opensuse_packages=(
     libboost_test1_66_0-devel
     libboost_thread1_66_0
     libboost_thread1_66_0-devel
-    libcryptopp-devel
     libboost_atomic1_66_0
     libboost_atomic1_66_0-devel
     libboost_date_time1_66_0
@@ -195,10 +215,12 @@ opensuse_packages=(
     liblz4-devel
     libnuma-devel
     lksctp-tools-devel
+    meson
     ninja
     ragel
     xfsprogs-devel
     yaml-cpp-devel
+    protobuf-devel
     libtool
     stow
     openssl
@@ -218,6 +240,9 @@ case "$ID" in
         elif [ "${VERSION_ID%%.*}" = "8" ]; then
             dnf install -y epel-release
             dnf install -y "${centos8_packages[@]}"
+        elif [ "${VERSION_ID%%.*}" = "9" ]; then
+            dnf install -y epel-release
+            dnf install -y "${centos9_packages[@]}"
         fi
     ;;
     opensuse-leap)

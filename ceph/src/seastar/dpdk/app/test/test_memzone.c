@@ -13,12 +13,13 @@
 #include <rte_memory.h>
 #include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_eal_memconfig.h>
+#include <rte_lcore.h>
 #include <rte_common.h>
 #include <rte_string_fns.h>
 #include <rte_errno.h>
 #include <rte_malloc.h>
-#include "../../lib/librte_eal/common/malloc_elem.h"
+
+#include "malloc_elem.h"
 
 #include "test.h"
 
@@ -76,6 +77,26 @@ test_memzone_invalid_alignment(void)
 					 100, SOCKET_ID_ANY, 0, 100);
 	if (mz != NULL) {
 		printf("Zone with invalid alignment has been reserved\n");
+		return -1;
+	}
+	return 0;
+}
+
+static int
+test_memzone_invalid_flags(void)
+{
+	const struct rte_memzone *mz;
+
+	mz = rte_memzone_lookup(TEST_MEMZONE_NAME("invalid_flags"));
+	if (mz != NULL) {
+		printf("Zone with invalid flags has been reserved\n");
+		return -1;
+	}
+
+	mz = rte_memzone_reserve(TEST_MEMZONE_NAME("invalid_flags"),
+		100, SOCKET_ID_ANY, RTE_MEMZONE_IOVA_CONTIG << 1);
+	if (mz != NULL) {
+		printf("Zone with invalid flags has been reserved\n");
 		return -1;
 	}
 	return 0;
@@ -475,7 +496,8 @@ find_max_block_free_size(unsigned int align, unsigned int socket_id)
 	struct rte_malloc_socket_stats stats;
 	size_t len, overhead;
 
-	rte_malloc_get_socket_stats(socket_id, &stats);
+	if (rte_malloc_get_socket_stats(socket_id, &stats) < 0)
+		return 0;
 
 	len = stats.greatest_free_size;
 	overhead = MALLOC_ELEM_OVERHEAD;
@@ -521,7 +543,7 @@ test_memzone_reserve_max(void)
 		}
 
 		if (mz->len != maxlen) {
-			printf("Memzone reserve with 0 size did not return bigest block\n");
+			printf("Memzone reserve with 0 size did not return biggest block\n");
 			printf("Expected size = %zu, actual size = %zu\n",
 					maxlen, mz->len);
 			rte_dump_physmem_layout(stdout);
@@ -584,7 +606,7 @@ test_memzone_reserve_max_aligned(void)
 
 		if (mz->len < minlen || mz->len > maxlen) {
 			printf("Memzone reserve with 0 size and alignment %u did not return"
-					" bigest block\n", align);
+					" biggest block\n", align);
 			printf("Expected size = %zu-%zu, actual size = %zu\n",
 					minlen, maxlen, mz->len);
 			rte_dump_physmem_layout(stdout);
@@ -849,9 +871,17 @@ test_memzone_bounded(void)
 static int
 test_memzone_free(void)
 {
-	const struct rte_memzone *mz[RTE_MAX_MEMZONE + 1];
+	const struct rte_memzone **mz;
 	int i;
 	char name[20];
+	int rc = -1;
+
+	mz = rte_calloc("memzone_test", rte_memzone_max_get() + 1,
+			sizeof(struct rte_memzone *), 0);
+	if (!mz) {
+		printf("Fail allocating memzone test array\n");
+		return rc;
+	}
 
 	mz[0] = rte_memzone_reserve(TEST_MEMZONE_NAME("tempzone0"), 2000,
 			SOCKET_ID_ANY, 0);
@@ -859,42 +889,42 @@ test_memzone_free(void)
 			SOCKET_ID_ANY, 0);
 
 	if (mz[0] > mz[1])
-		return -1;
+		goto exit_test;
 	if (!rte_memzone_lookup(TEST_MEMZONE_NAME("tempzone0")))
-		return -1;
+		goto exit_test;
 	if (!rte_memzone_lookup(TEST_MEMZONE_NAME("tempzone1")))
-		return -1;
+		goto exit_test;
 
 	if (rte_memzone_free(mz[0])) {
 		printf("Fail memzone free - tempzone0\n");
-		return -1;
+		goto exit_test;
 	}
 	if (rte_memzone_lookup(TEST_MEMZONE_NAME("tempzone0"))) {
 		printf("Found previously free memzone - tempzone0\n");
-		return -1;
+		goto exit_test;
 	}
 	mz[2] = rte_memzone_reserve(TEST_MEMZONE_NAME("tempzone2"), 2000,
 			SOCKET_ID_ANY, 0);
 
 	if (mz[2] > mz[1]) {
 		printf("tempzone2 should have gotten the free entry from tempzone0\n");
-		return -1;
+		goto exit_test;
 	}
 	if (rte_memzone_free(mz[2])) {
 		printf("Fail memzone free - tempzone2\n");
-		return -1;
+		goto exit_test;
 	}
 	if (rte_memzone_lookup(TEST_MEMZONE_NAME("tempzone2"))) {
 		printf("Found previously free memzone - tempzone2\n");
-		return -1;
+		goto exit_test;
 	}
 	if (rte_memzone_free(mz[1])) {
 		printf("Fail memzone free - tempzone1\n");
-		return -1;
+		goto exit_test;
 	}
 	if (rte_memzone_lookup(TEST_MEMZONE_NAME("tempzone1"))) {
 		printf("Found previously free memzone - tempzone1\n");
-		return -1;
+		goto exit_test;
 	}
 
 	i = 0;
@@ -906,7 +936,7 @@ test_memzone_free(void)
 
 	if (rte_memzone_free(mz[0])) {
 		printf("Fail memzone free - tempzone0\n");
-		return -1;
+		goto exit_test;
 	}
 	mz[0] = rte_memzone_reserve(TEST_MEMZONE_NAME("tempzone0new"), 0,
 			SOCKET_ID_ANY, 0);
@@ -914,17 +944,31 @@ test_memzone_free(void)
 	if (mz[0] == NULL) {
 		printf("Fail to create memzone - tempzone0new - when MAX memzones were "
 				"created and one was free\n");
-		return -1;
+		goto exit_test;
 	}
 
 	for (i = i - 2; i >= 0; i--) {
 		if (rte_memzone_free(mz[i])) {
 			printf("Fail memzone free - tempzone%d\n", i);
-			return -1;
+			goto exit_test;
 		}
 	}
 
-	return 0;
+	rc = 0;
+
+exit_test:
+	rte_free(mz);
+	return rc;
+}
+
+static int test_memzones_left;
+static int memzone_walk_cnt;
+static void memzone_walk_clb(const struct rte_memzone *mz,
+			     void *arg __rte_unused)
+{
+	memzone_walk_cnt++;
+	if (!strncmp(TEST_MEMZONE_NAME(""), mz->name, RTE_MEMZONE_NAMESIZE))
+		test_memzones_left++;
 }
 
 static int
@@ -936,8 +980,12 @@ test_memzone_basic(void)
 	const struct rte_memzone *memzone4;
 	const struct rte_memzone *mz;
 	int memzone_cnt_after, memzone_cnt_expected;
-	int memzone_cnt_before =
-			rte_eal_get_configuration()->mem_config->memzones.count;
+	int memzone_cnt_before;
+
+	memzone_walk_cnt = 0;
+	test_memzones_left = 0;
+	rte_memzone_walk(memzone_walk_clb, NULL);
+	memzone_cnt_before = memzone_walk_cnt;
 
 	memzone1 = rte_memzone_reserve(TEST_MEMZONE_NAME("testzone1"), 100,
 				SOCKET_ID_ANY, 0);
@@ -960,8 +1008,10 @@ test_memzone_basic(void)
 			(memzone1 != NULL) + (memzone2 != NULL) +
 			(memzone3 != NULL) + (memzone4 != NULL);
 
-	memzone_cnt_after =
-			rte_eal_get_configuration()->mem_config->memzones.count;
+	memzone_walk_cnt = 0;
+	test_memzones_left = 0;
+	rte_memzone_walk(memzone_walk_clb, NULL);
+	memzone_cnt_after = memzone_walk_cnt;
 
 	if (memzone_cnt_after != memzone_cnt_expected)
 		return -1;
@@ -1016,7 +1066,7 @@ test_memzone_basic(void)
 	if (mz != memzone1)
 		return -1;
 
-	printf("test duplcate zone name\n");
+	printf("test duplicate zone name\n");
 	mz = rte_memzone_reserve(TEST_MEMZONE_NAME("testzone1"), 100,
 			SOCKET_ID_ANY, 0);
 	if (mz != NULL)
@@ -1039,30 +1089,26 @@ test_memzone_basic(void)
 		return -1;
 	}
 
-	memzone_cnt_after =
-			rte_eal_get_configuration()->mem_config->memzones.count;
+	memzone_walk_cnt = 0;
+	test_memzones_left = 0;
+	rte_memzone_walk(memzone_walk_clb, NULL);
+	memzone_cnt_after = memzone_walk_cnt;
 	if (memzone_cnt_after != memzone_cnt_before)
 		return -1;
 
 	return 0;
 }
 
-static int test_memzones_left;
-static int memzone_walk_cnt;
-static void memzone_walk_clb(const struct rte_memzone *mz,
-			     void *arg __rte_unused)
-{
-	memzone_walk_cnt++;
-	if (!strncmp(TEST_MEMZONE_NAME(""), mz->name, RTE_MEMZONE_NAMESIZE))
-		test_memzones_left++;
-}
-
 static int
 test_memzone(void)
 {
 	/* take note of how many memzones were allocated before running */
-	int memzone_cnt =
-			rte_eal_get_configuration()->mem_config->memzones.count;
+	int memzone_cnt;
+
+	memzone_walk_cnt = 0;
+	test_memzones_left = 0;
+	rte_memzone_walk(memzone_walk_clb, NULL);
+	memzone_cnt = memzone_walk_cnt;
 
 	printf("test basic memzone API\n");
 	if (test_memzone_basic() < 0)
@@ -1090,6 +1136,10 @@ test_memzone(void)
 
 	printf("test invalid alignment for memzone_reserve\n");
 	if (test_memzone_invalid_alignment() < 0)
+		return -1;
+
+	printf("test invalid flags for memzone_reserve\n");
+	if (test_memzone_invalid_flags() < 0)
 		return -1;
 
 	printf("test reserving the largest size memzone possible\n");

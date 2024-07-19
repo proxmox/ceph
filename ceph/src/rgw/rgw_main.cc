@@ -57,7 +57,11 @@ static int usage()
 
 /*
  * start up the RADOS connection and then handle HTTP messages as they come in
+ *
+ * This has an uncaught exception. Even if the exception is caught, the program
+ * would need to be terminated, so the warning is simply suppressed.
  */
+// coverity[root_function:SUPPRESS]
 int main(int argc, char *argv[])
 { 
   int r{0};
@@ -130,20 +134,21 @@ int main(int argc, char *argv[])
   register_async_signal_handler(SIGTERM, rgw::signal::handle_sigterm);
   register_async_signal_handler(SIGINT, rgw::signal::handle_sigterm);
   register_async_signal_handler(SIGUSR1, rgw::signal::handle_sigterm);
+  register_async_signal_handler(SIGXFSZ, rgw::signal::sig_handler_noop);
   sighandler_alrm = signal(SIGALRM, godown_alarm);
 
   main.init_perfcounters();
   main.init_http_clients();
 
-  main.init_storage();
-  if (! main.get_driver()) {
+  r = main.init_storage();
+  if (r < 0) {
     mutex.lock();
     init_timer.cancel_all_events();
     init_timer.shutdown();
     mutex.unlock();
 
     derr << "Couldn't init storage provider (RADOS)" << dendl;
-    return EIO;
+    return -r;
   }
 
   main.cond_init_apis();
@@ -180,6 +185,7 @@ int main(int argc, char *argv[])
     unregister_async_signal_handler(SIGTERM, rgw::signal::handle_sigterm);
     unregister_async_signal_handler(SIGINT, rgw::signal::handle_sigterm);
     unregister_async_signal_handler(SIGUSR1, rgw::signal::handle_sigterm);
+    unregister_async_signal_handler(SIGXFSZ, rgw::signal::sig_handler_noop);
     shutdown_async_signal_handler();
   };
 

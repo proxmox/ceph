@@ -63,7 +63,8 @@
                                         associated.
       image-meta set                    Image metadata set key with value.
       import                            Import image from file.
-      import-diff                       Import an incremental diff.
+      import-diff                       Apply an incremental diff to image HEAD,
+                                        then create a snapshot.
       info                              Show information about image size,
                                         striping, etc.
       journal client disconnect         Flag image journal client as disconnected.
@@ -595,7 +596,7 @@
                              ])
   
   Optional arguments
-    -t [ --device-type ] arg device type [ggate, krbd (default), nbd]
+    -t [ --device-type ] arg device type [ggate, krbd (default), nbd, ubbd]
     -p [ --pool ] arg        pool name
     --namespace arg          namespace name
     --image arg              image name
@@ -626,7 +627,7 @@
                                     p-name>] or <device-path>
   
   Optional arguments
-    -t [ --device-type ] arg        device type [ggate, krbd (default), nbd]
+    -t [ --device-type ] arg        device type [ggate, krbd (default), nbd, ubbd]
     -p [ --pool ] arg               pool name
     --namespace arg                 namespace name
     --image arg                     image name
@@ -641,7 +642,7 @@
   List mapped rbd images.
   
   Optional arguments
-    -t [ --device-type ] arg device type [ggate, krbd (default), nbd]
+    -t [ --device-type ] arg device type [ggate, krbd (default), nbd, ubbd]
     --format arg             output format (plain, json, or xml) [default: plain]
     --pretty-format          pretty formatting (json and xml)
   
@@ -663,7 +664,7 @@
                              ])
   
   Optional arguments
-    -t [ --device-type ] arg device type [ggate, krbd (default), nbd]
+    -t [ --device-type ] arg device type [ggate, krbd (default), nbd, ubbd]
     -p [ --pool ] arg        pool name
     --namespace arg          namespace name
     --image arg              image name
@@ -692,7 +693,7 @@
                                     p-name>] or <device-path>
   
   Optional arguments
-    -t [ --device-type ] arg        device type [ggate, krbd (default), nbd]
+    -t [ --device-type ] arg        device type [ggate, krbd (default), nbd, ubbd]
     -p [ --pool ] arg               pool name
     --namespace arg                 namespace name
     --image arg                     image name
@@ -1255,7 +1256,7 @@
                          [--sparse-size <sparse-size>] [--no-progress] 
                          <path-name> <image-spec> 
   
-  Import an incremental diff.
+  Apply an incremental diff to image HEAD, then create a snapshot.
   
   Positional arguments
     <path-name>          import file (or '-' for stdin)

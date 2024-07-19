@@ -14,7 +14,8 @@
 #include <boost/json/serializer.hpp>
 #include <ostream>
 
-BOOST_JSON_NS_BEGIN
+namespace boost {
+namespace json {
 
 static
 void
@@ -41,6 +42,8 @@ serialize_impl(
         s.size() >= len * 2);
     std::memcpy(&s[0],
         sv.data(), sv.size());
+    auto const lim =
+        s.max_size() / 2;
     for(;;)
     {
         sv = sr.read(
@@ -49,10 +52,11 @@ serialize_impl(
         len += sv.size();
         if(sr.done())
             break;
-        s.reserve(
-            s.capacity() + 1);
-        s.resize(
-            s.capacity());
+        // growth factor 2x
+        if(s.size() < lim)
+            s.resize(s.size() * 2);
+        else
+            s.resize(2 * lim);
     }
     s.resize(len);
 }
@@ -61,9 +65,13 @@ std::string
 serialize(
     value const& jv)
 {
-    std::string s;
-    serializer sr;
+    unsigned char buf[256];
+    serializer sr(
+        storage_ptr(),
+        buf,
+        sizeof(buf));
     sr.reset(&jv);
+    std::string s;
     serialize_impl(s, sr);
     return s;
 }
@@ -72,8 +80,12 @@ std::string
 serialize(
     array const& arr)
 {
+    unsigned char buf[256];
+    serializer sr(
+        storage_ptr(),
+        buf,
+        sizeof(buf));
     std::string s;
-    serializer sr;
     sr.reset(&arr);
     serialize_impl(s, sr);
     return s;
@@ -83,8 +95,12 @@ std::string
 serialize(
     object const& obj)
 {
+    unsigned char buf[256];
+    serializer sr(
+        storage_ptr(),
+        buf,
+        sizeof(buf));
     std::string s;
-    serializer sr;
     sr.reset(&obj);
     serialize_impl(s, sr);
     return s;
@@ -94,11 +110,7 @@ std::string
 serialize(
     string const& str)
 {
-    std::string s;
-    serializer sr;
-    sr.reset(&str);
-    serialize_impl(s, sr);
-    return s;
+    return serialize( str.subview() );
 }
 
 // this is here for key_value_pair::key()
@@ -106,8 +118,12 @@ std::string
 serialize(
     string_view sv)
 {
+    unsigned char buf[256];
+    serializer sr(
+        storage_ptr(),
+        buf,
+        sizeof(buf));
     std::string s;
-    serializer sr;
     sr.reset(sv);
     serialize_impl(s, sr);
     return s;
@@ -188,6 +204,7 @@ operator<<(
     return os;
 }
 
-BOOST_JSON_NS_END
+} // namespace json
+} // namespace boost
 
 #endif

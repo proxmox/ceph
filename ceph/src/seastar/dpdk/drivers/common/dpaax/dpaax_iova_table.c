@@ -7,9 +7,6 @@
 #include "dpaax_iova_table.h"
 #include "dpaax_logs.h"
 
-/* Global dpaax logger identifier */
-int dpaax_logger;
-
 /* Global table reference */
 struct dpaax_iova_table *dpaax_iova_table_p;
 
@@ -68,9 +65,12 @@ read_memory_node(unsigned int *count)
 	*count = 0;
 
 	ret = glob(MEM_NODE_PATH_GLOB, 0, NULL, &result);
+	if (ret != 0)
+		ret = glob(MEM_NODE_PATH_GLOB_VM, 0, NULL, &result);
+
 	if (ret != 0) {
-		DPAAX_DEBUG("Unable to glob device-tree memory node: (%s)(%d)",
-			    MEM_NODE_PATH_GLOB, ret);
+		DPAAX_DEBUG("Unable to glob device-tree memory node (err: %d)",
+			ret);
 		goto out;
 	}
 
@@ -99,7 +99,7 @@ read_memory_node(unsigned int *count)
 		goto cleanup;
 	}
 
-	DPAAX_DEBUG("Size of device-tree mem node: %lu", statbuf.st_size);
+	DPAAX_DEBUG("Size of device-tree mem node: %" PRIu64, statbuf.st_size);
 	if (statbuf.st_size > MEM_NODE_FILE_LEN) {
 		DPAAX_DEBUG("More memory nodes available than assumed.");
 		DPAAX_DEBUG("System may not work properly!");
@@ -118,7 +118,7 @@ read_memory_node(unsigned int *count)
 	 */
 	*count = (statbuf.st_size / 16);
 	if ((*count) <= 0 || (statbuf.st_size % 16 != 0)) {
-		DPAAX_DEBUG("Invalid memory node values or count. (size=%lu)",
+		DPAAX_DEBUG("Invalid memory node values or count. (size=%" PRIu64 ")",
 			    statbuf.st_size);
 		goto cleanup;
 	}
@@ -140,7 +140,8 @@ read_memory_node(unsigned int *count)
 
 	DPAAX_DEBUG("Device-tree memory node data:");
 	do {
-		DPAAX_DEBUG("\n    %08" PRIx64 " %08zu", nodes[j].addr, nodes[j].len);
+		DPAAX_DEBUG("    %08" PRIx64 " %08zu",
+			    nodes[j].addr, nodes[j].len);
 	} while (--j);
 
 cleanup:
@@ -241,7 +242,7 @@ dpaax_iova_table_populate(void)
 	/* Release memory associated with nodes array - not required now */
 	free(nodes);
 
-	DPAAX_DEBUG("Adding mem-event handler\n");
+	DPAAX_DEBUG("Adding mem-event handler");
 	ret = dpaax_handle_memevents();
 	if (ret) {
 		DPAAX_ERR("Unable to add mem-event handler");
@@ -260,7 +261,7 @@ dpaax_iova_table_depopulate(void)
 	rte_free(dpaax_iova_table_p->entries);
 	dpaax_iova_table_p = NULL;
 
-	DPAAX_DEBUG("IOVA Table cleanedup");
+	DPAAX_DEBUG("IOVA Table cleaned");
 }
 
 int
@@ -306,10 +307,11 @@ dpaax_iova_table_update(phys_addr_t paddr, void *vaddr, size_t length)
 			 * case.
 			 */
 			entry[i].pages[e_offset] = align_vaddr;
+#ifdef RTE_COMMON_DPAAX_DEBUG
 			DPAAX_DEBUG("Added: vaddr=%zu for Phy:%"PRIu64" at %zu"
 				    " remaining len %zu", align_vaddr,
 				    align_paddr, e_offset, req_length);
-
+#endif
 			/* Incoming request can be larger than the
 			 * DPAAX_MEM_SPLIT size - in which case, multiple
 			 * entries in entry->pages[] are filled up.
@@ -336,10 +338,11 @@ dpaax_iova_table_update(phys_addr_t paddr, void *vaddr, size_t length)
 			    vaddr, paddr);
 		return -1;
 	}
-
+#ifdef RTE_COMMON_DPAAX_DEBUG
 	DPAAX_DEBUG("Add: Found slot at (%"PRIu64")[(%zu)] for vaddr:(%p),"
 		    " phy(%"PRIu64"), len(%zu)", entry[i].start, e_offset,
 		    vaddr, paddr, length);
+#endif
 	return 0;
 }
 
@@ -363,8 +366,10 @@ dpaax_iova_table_dump(void)
 	}
 
 	DPAAX_DEBUG(" === Start of PA->VA Translation Table ===");
-	if (dpaax_iova_table_p == NULL)
+	if (dpaax_iova_table_p == NULL) {
 		DPAAX_DEBUG("\tNULL");
+		return;
+	}
 
 	entry = dpaax_iova_table_p->entries;
 	for (i = 0; i < dpaax_iova_table_p->count; i++) {
@@ -404,13 +409,13 @@ dpaax_memevent_cb(enum rte_mem_event type, const void *addr, size_t len,
 		phys_addr = rte_mem_virt2phy(ms->addr);
 		virt_addr = ms->addr;
 		map_len = ms->len;
-
+#ifdef RTE_COMMON_DPAAX_DEBUG
 		DPAAX_DEBUG("Request for %s, va=%p, virt_addr=%p,"
 			    "iova=%"PRIu64", map_len=%zu",
 			    type == RTE_MEM_EVENT_ALLOC ?
 			    "alloc" : "dealloc",
 			    va, virt_addr, phys_addr, map_len);
-
+#endif
 		if (type == RTE_MEM_EVENT_ALLOC)
 			ret = dpaax_iova_table_update(phys_addr, virt_addr,
 						      map_len);
@@ -437,7 +442,7 @@ dpaax_memevent_walk_memsegs(const struct rte_memseg_list *msl __rte_unused,
 			    void *arg __rte_unused)
 {
 	DPAAX_DEBUG("Walking for %p (pa=%"PRIu64") and len %zu",
-		    ms->addr, ms->phys_addr, len);
+		    ms->addr, ms->iova, len);
 	dpaax_iova_table_update(rte_mem_virt2phy(ms->addr), ms->addr, len);
 	return 0;
 }
@@ -457,9 +462,4 @@ dpaax_handle_memevents(void)
 					       dpaax_memevent_cb, NULL);
 }
 
-RTE_INIT(dpaax_log)
-{
-	dpaax_logger = rte_log_register("pmd.common.dpaax");
-	if (dpaax_logger >= 0)
-		rte_log_set_level(dpaax_logger, RTE_LOG_ERR);
-}
+RTE_LOG_REGISTER_DEFAULT(dpaax_logger, ERR);

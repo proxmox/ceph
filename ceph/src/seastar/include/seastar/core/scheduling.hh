@@ -21,25 +21,24 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <chrono>
+#include <concepts>
+#include <functional>
 #include <typeindex>
+#endif
 #include <seastar/core/sstring.hh>
 #include <seastar/core/function_traits.hh>
-#include <seastar/util/concepts.hh>
+#include <seastar/util/modules.hh>
 
 /// \file
 
 namespace seastar {
 
+SEASTAR_MODULE_EXPORT_BEGIN
 constexpr unsigned max_scheduling_groups() { return SEASTAR_SCHEDULING_GROUPS_COUNT; }
 
-#if SEASTAR_API_LEVEL < 6
-#define SEASTAR_ELLIPSIS ...
-template <typename SEASTAR_ELLIPSIS T>
-#else
-#define SEASTAR_ELLIPSIS
 template <typename T = void>
-#endif
 class future;
 
 class reactor;
@@ -48,6 +47,7 @@ class scheduling_group;
 class scheduling_group_key;
 
 using sched_clock = std::chrono::steady_clock;
+SEASTAR_MODULE_EXPORT_END
 
 namespace internal {
 
@@ -62,6 +62,7 @@ T* scheduling_group_get_specific_ptr(scheduling_group sg, scheduling_group_key k
 
 }
 
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /// Creates a scheduling group with a specified number of shares.
 ///
@@ -74,6 +75,21 @@ T* scheduling_group_get_specific_ptr(scheduling_group sg, scheduling_group_key k
 ///              Use numbers in the 1-1000 range (but can go above).
 /// \return a scheduling group that can be used on any shard
 future<scheduling_group> create_scheduling_group(sstring name, float shares) noexcept;
+
+/// Creates a scheduling group with a specified number of shares.
+///
+/// The operation is global and affects all shards. The returned scheduling
+/// group can then be used in any shard.
+///
+/// \param name A name that identifies the group; will be used as a label
+///             in the group's metrics
+/// \param shortname A name that identifies the group; will be printed in the
+///                  logging message aside of the shard id. please note, the
+///                  \c shortname will be truncated to 4 characters.
+/// \param shares number of shares of the CPU time allotted to the group;
+///              Use numbers in the 1-1000 range (but can go above).
+/// \return a scheduling group that can be used on any shard
+future<scheduling_group> create_scheduling_group(sstring name, sstring shortname, float shares) noexcept;
 
 /// Destroys a scheduling group.
 ///
@@ -97,6 +113,18 @@ future<> destroy_scheduling_group(scheduling_group sg) noexcept;
 /// \param new_name The new name for the scheduling group.
 /// \return a future that is ready when the scheduling group has been renamed
 future<> rename_scheduling_group(scheduling_group sg, sstring new_name) noexcept;
+/// Rename scheduling group.
+///
+/// Renames a \ref scheduling_group previously created with create_scheduling_group().
+///
+/// The operation is global and affects all shards.
+/// The operation affects the exported statistics labels.
+///
+/// \param sg The scheduling group to be renamed
+/// \param new_name The new name for the scheduling group.
+/// \param new_shortname The new shortname for the scheduling group.
+/// \return a future that is ready when the scheduling group has been renamed
+future<> rename_scheduling_group(scheduling_group sg, sstring new_name, sstring new_shortname) noexcept;
 
 
 /**
@@ -137,6 +165,8 @@ struct scheduling_group_key_config {
     std::type_index type_index;
     /// A function that will be called for each newly allocated value
     std::function<void (void*)> constructor;
+    /// A function that will be called for each value after the scheduling group is renamed.
+    std::function<void (void*)> rename;
     /// A function that will be called for each element that is about
     /// to be dealocated.
     std::function<void (void*)> destructor;
@@ -172,6 +202,7 @@ private:
     friend unsigned long internal::scheduling_group_key_id(scheduling_group_key key) noexcept;
 };
 
+SEASTAR_MODULE_EXPORT_END
 namespace internal {
 
 inline unsigned long scheduling_group_key_id(scheduling_group_key key) noexcept {
@@ -201,6 +232,7 @@ void apply_constructor(void* pre_alocated_mem, Tuple args, std::index_sequence<I
     new (pre_alocated_mem) ConstructorType(std::get<Idx>(args)...);
 }
 }
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /**
  * A template function that builds a scheduling group specific value configuration.
@@ -260,9 +292,11 @@ public:
     constexpr scheduling_group() noexcept : _id(0) {} // must be constexpr for current_scheduling_group_holder
     bool active() const noexcept;
     const sstring& name() const noexcept;
+    const sstring& short_name() const noexcept;
     bool operator==(scheduling_group x) const noexcept { return _id == x._id; }
     bool operator!=(scheduling_group x) const noexcept { return _id != x._id; }
     bool is_main() const noexcept { return _id == 0; }
+    bool is_at_exit() const noexcept { return _id == 1; }
     template<typename T>
     /**
      * Returnes a reference to this scheduling group specific value
@@ -286,24 +320,42 @@ public:
     /// \param shares number of shares allotted to the group. Use numbers
     ///               in the 1-1000 range.
     void set_shares(float shares) noexcept;
-    friend future<scheduling_group> create_scheduling_group(sstring name, float shares) noexcept;
+
+    /// Returns the number of shares the group has
+    ///
+    /// Similarly to the \ref set_shares, the returned value is only relevant to
+    /// the calling shard
+    float get_shares() const noexcept;
+
+#if SEASTAR_API_LEVEL >= 7
+    /// \brief Updates the current IO bandwidth for a given scheduling group
+    ///
+    /// The bandwidth applied is NOT shard-local, instead it is applied so that
+    /// all shards cannot consume more bytes-per-second altogether
+    ///
+    /// \param bandwidth the new bandwidth value in bytes/second
+    /// \return a future that is ready when the bandwidth update is applied
+    future<> update_io_bandwidth(uint64_t bandwidth) const;
+#endif
+
+    friend future<scheduling_group> create_scheduling_group(sstring name, sstring shortname, float shares) noexcept;
     friend future<> destroy_scheduling_group(scheduling_group sg) noexcept;
-    friend future<> rename_scheduling_group(scheduling_group sg, sstring new_name) noexcept;
+    friend future<> rename_scheduling_group(scheduling_group sg, sstring new_name, sstring new_shortname) noexcept;
     friend class reactor;
     friend unsigned internal::scheduling_group_index(scheduling_group sg) noexcept;
     friend scheduling_group internal::scheduling_group_from_index(unsigned index) noexcept;
 
     template<typename SpecificValType, typename Mapper, typename Reducer, typename Initial>
-    SEASTAR_CONCEPT( requires requires(SpecificValType specific_val, Mapper mapper, Reducer reducer, Initial initial) {
+    requires requires(SpecificValType specific_val, Mapper mapper, Reducer reducer, Initial initial) {
         {reducer(initial, mapper(specific_val))} -> std::convertible_to<Initial>;
-    })
+    }
     friend future<typename function_traits<Reducer>::return_type>
     map_reduce_scheduling_group_specific(Mapper mapper, Reducer reducer, Initial initial_val, scheduling_group_key key);
 
     template<typename SpecificValType, typename Reducer, typename Initial>
-    SEASTAR_CONCEPT( requires requires(SpecificValType specific_val, Reducer reducer, Initial initial) {
+    requires requires(SpecificValType specific_val, Reducer reducer, Initial initial) {
         {reducer(initial, specific_val)} -> std::convertible_to<Initial>;
-    })
+    }
     friend future<typename function_traits<Reducer>::return_type>
         reduce_scheduling_group_specific(Reducer reducer, Initial initial_val, scheduling_group_key key);
 
@@ -311,6 +363,7 @@ public:
 };
 
 /// \cond internal
+SEASTAR_MODULE_EXPORT_END
 namespace internal {
 
 inline
@@ -325,6 +378,10 @@ scheduling_group_from_index(unsigned index) noexcept {
     return scheduling_group(index);
 }
 
+#ifdef SEASTAR_BUILD_SHARED_LIBS
+scheduling_group*
+current_scheduling_group_ptr() noexcept;
+#else
 inline
 scheduling_group*
 current_scheduling_group_ptr() noexcept {
@@ -332,10 +389,11 @@ current_scheduling_group_ptr() noexcept {
     static thread_local scheduling_group sg;
     return &sg;
 }
-
+#endif
 }
 /// \endcond
 
+SEASTAR_MODULE_EXPORT_BEGIN
 /// Returns the current scheduling group
 inline
 scheduling_group
@@ -349,6 +407,8 @@ default_scheduling_group() noexcept {
     return scheduling_group();
 }
 
+SEASTAR_MODULE_EXPORT_END
+
 inline
 bool
 scheduling_group::active() const noexcept {
@@ -359,6 +419,7 @@ scheduling_group::active() const noexcept {
 
 namespace std {
 
+SEASTAR_MODULE_EXPORT
 template <>
 struct hash<seastar::scheduling_group> {
     size_t operator()(seastar::scheduling_group sg) const noexcept {

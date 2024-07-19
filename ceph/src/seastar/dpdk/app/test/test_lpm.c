@@ -8,6 +8,7 @@
 
 #include <rte_ip.h>
 #include <rte_lpm.h>
+#include <rte_malloc.h>
 
 #include "test.h"
 #include "test_xmmt_ops.h"
@@ -40,6 +41,9 @@ static int32_t test15(void);
 static int32_t test16(void);
 static int32_t test17(void);
 static int32_t test18(void);
+static int32_t test19(void);
+static int32_t test20(void);
+static int32_t test21(void);
 
 rte_lpm_test tests[] = {
 /* Test Cases */
@@ -61,10 +65,12 @@ rte_lpm_test tests[] = {
 	test15,
 	test16,
 	test17,
-	test18
+	test18,
+	test19,
+	test20,
+	test21
 };
 
-#define NUM_LPM_TESTS (sizeof(tests)/sizeof(tests[0]))
 #define MAX_DEPTH 32
 #define MAX_RULES 256
 #define NUMBER_TBL8S 256
@@ -165,7 +171,7 @@ test3(void)
 	config.max_rules = MAX_RULES;
 	config.number_tbl8s = NUMBER_TBL8S;
 	config.flags = 0;
-	uint32_t ip = IPv4(0, 0, 0, 0), next_hop = 100;
+	uint32_t ip = RTE_IPV4(0, 0, 0, 0), next_hop = 100;
 	uint8_t depth = 24;
 	int32_t status = 0;
 
@@ -173,7 +179,7 @@ test3(void)
 	status = rte_lpm_add(NULL, ip, depth, next_hop);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -203,7 +209,7 @@ test4(void)
 	config.max_rules = MAX_RULES;
 	config.number_tbl8s = NUMBER_TBL8S;
 	config.flags = 0;
-	uint32_t ip = IPv4(0, 0, 0, 0);
+	uint32_t ip = RTE_IPV4(0, 0, 0, 0);
 	uint8_t depth = 24;
 	int32_t status = 0;
 
@@ -211,7 +217,7 @@ test4(void)
 	status = rte_lpm_delete(NULL, ip, depth);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -242,14 +248,14 @@ test5(void)
 	config.max_rules = MAX_RULES;
 	config.number_tbl8s = NUMBER_TBL8S;
 	config.flags = 0;
-	uint32_t ip = IPv4(0, 0, 0, 0), next_hop_return = 0;
+	uint32_t ip = RTE_IPV4(0, 0, 0, 0), next_hop_return = 0;
 	int32_t status = 0;
 
 	/* rte_lpm_lookup: lpm == NULL */
 	status = rte_lpm_lookup(NULL, ip, &next_hop_return);
 	TEST_LPM_ASSERT(status < 0);
 
-	/*Create vaild lpm to use in rest of test. */
+	/*Create valid lpm to use in rest of test. */
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
@@ -276,7 +282,7 @@ test6(void)
 	config.max_rules = MAX_RULES;
 	config.number_tbl8s = NUMBER_TBL8S;
 	config.flags = 0;
-	uint32_t ip = IPv4(0, 0, 0, 0), next_hop_add = 100, next_hop_return = 0;
+	uint32_t ip = RTE_IPV4(0, 0, 0, 0), next_hop_add = 100, next_hop_return = 0;
 	uint8_t depth = 24;
 	int32_t status = 0;
 
@@ -315,7 +321,7 @@ test7(void)
 	config.max_rules = MAX_RULES;
 	config.number_tbl8s = NUMBER_TBL8S;
 	config.flags = 0;
-	uint32_t ip = IPv4(0, 0, 0, 0), next_hop_add = 100, next_hop_return = 0;
+	uint32_t ip = RTE_IPV4(0, 0, 0, 0), next_hop_add = 100, next_hop_return = 0;
 	uint8_t depth = 32;
 	int32_t status = 0;
 
@@ -366,7 +372,7 @@ test8(void)
 	config.max_rules = MAX_RULES;
 	config.number_tbl8s = NUMBER_TBL8S;
 	config.flags = 0;
-	uint32_t ip1 = IPv4(127, 255, 255, 255), ip2 = IPv4(128, 0, 0, 0);
+	uint32_t ip1 = RTE_IPV4(127, 255, 255, 255), ip2 = RTE_IPV4(128, 0, 0, 0);
 	uint32_t next_hop_add, next_hop_return;
 	uint8_t depth;
 	int32_t status = 0;
@@ -457,7 +463,7 @@ test9(void)
 	int32_t status = 0;
 
 	/* Add & lookup to hit invalid TBL24 entry */
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 24;
 	next_hop_add = 100;
 
@@ -479,7 +485,7 @@ test9(void)
 	rte_lpm_delete_all(lpm);
 
 	/* Add & lookup to hit valid TBL24 entry not extended */
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 23;
 	next_hop_add = 100;
 
@@ -515,7 +521,7 @@ test9(void)
 
 	/* Add & lookup to hit valid extended TBL24 entry with invalid TBL8
 	 * entry */
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 32;
 	next_hop_add = 100;
 
@@ -525,7 +531,7 @@ test9(void)
 	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 	TEST_LPM_ASSERT((status == 0) && (next_hop_return == next_hop_add));
 
-	ip = IPv4(128, 0, 0, 5);
+	ip = RTE_IPV4(128, 0, 0, 5);
 	depth = 32;
 	next_hop_add = 101;
 
@@ -541,7 +547,7 @@ test9(void)
 	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 	TEST_LPM_ASSERT(status == -ENOENT);
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 32;
 	next_hop_add = 100;
 
@@ -558,11 +564,11 @@ test9(void)
 
 	/* Add & lookup to hit valid extended TBL24 entry with valid TBL8
 	 * entry */
-	ip_1 = IPv4(128, 0, 0, 0);
+	ip_1 = RTE_IPV4(128, 0, 0, 0);
 	depth_1 = 25;
 	next_hop_add_1 = 101;
 
-	ip_2 = IPv4(128, 0, 0, 5);
+	ip_2 = RTE_IPV4(128, 0, 0, 5);
 	depth_2 = 32;
 	next_hop_add_2 = 102;
 
@@ -629,7 +635,7 @@ test10(void)
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 16;
 	next_hop_add = 100;
 
@@ -647,7 +653,7 @@ test10(void)
 
 	rte_lpm_delete_all(lpm);
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 25;
 	next_hop_add = 100;
 
@@ -665,14 +671,14 @@ test10(void)
 	/* Add rule that extends a TBL24 valid entry & lookup for both rules
 	 * (& delete & lookup) */
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 24;
 	next_hop_add = 100;
 
 	status = rte_lpm_add(lpm, ip, depth, next_hop_add);
 	TEST_LPM_ASSERT(status == 0);
 
-	ip = IPv4(128, 0, 0, 10);
+	ip = RTE_IPV4(128, 0, 0, 10);
 	depth = 32;
 	next_hop_add = 101;
 
@@ -682,13 +688,13 @@ test10(void)
 	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 	TEST_LPM_ASSERT((status == 0) && (next_hop_return == next_hop_add));
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	next_hop_add = 100;
 
 	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 	TEST_LPM_ASSERT((status == 0) && (next_hop_return == next_hop_add));
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 24;
 
 	status = rte_lpm_delete(lpm, ip, depth);
@@ -697,7 +703,7 @@ test10(void)
 	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 	TEST_LPM_ASSERT(status == -ENOENT);
 
-	ip = IPv4(128, 0, 0, 10);
+	ip = RTE_IPV4(128, 0, 0, 10);
 	depth = 32;
 
 	status = rte_lpm_delete(lpm, ip, depth);
@@ -711,7 +717,7 @@ test10(void)
 	/* Add rule that updates the next hop in TBL24 & lookup
 	 * (& delete & lookup) */
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 24;
 	next_hop_add = 100;
 
@@ -740,7 +746,7 @@ test10(void)
 	/* Add rule that updates the next hop in TBL8 & lookup
 	 * (& delete & lookup) */
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 32;
 	next_hop_add = 100;
 
@@ -768,7 +774,7 @@ test10(void)
 
 	/* Delete a rule that is not present in the TBL24 & lookup */
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 24;
 
 	status = rte_lpm_delete(lpm, ip, depth);
@@ -781,7 +787,7 @@ test10(void)
 
 	/* Delete a rule that is not present in the TBL8 & lookup */
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 32;
 
 	status = rte_lpm_delete(lpm, ip, depth);
@@ -818,14 +824,14 @@ test11(void)
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 24;
 	next_hop_add = 100;
 
 	status = rte_lpm_add(lpm, ip, depth, next_hop_add);
 	TEST_LPM_ASSERT(status == 0);
 
-	ip = IPv4(128, 0, 0, 10);
+	ip = RTE_IPV4(128, 0, 0, 10);
 	depth = 32;
 	next_hop_add = 101;
 
@@ -835,13 +841,13 @@ test11(void)
 	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 	TEST_LPM_ASSERT((status == 0) && (next_hop_return == next_hop_add));
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	next_hop_add = 100;
 
 	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 	TEST_LPM_ASSERT((status == 0) && (next_hop_return == next_hop_add));
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 24;
 
 	status = rte_lpm_delete(lpm, ip, depth);
@@ -850,7 +856,7 @@ test11(void)
 	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 	TEST_LPM_ASSERT(status == -ENOENT);
 
-	ip = IPv4(128, 0, 0, 10);
+	ip = RTE_IPV4(128, 0, 0, 10);
 	depth = 32;
 
 	status = rte_lpm_delete(lpm, ip, depth);
@@ -889,7 +895,7 @@ test12(void)
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 32;
 	next_hop_add = 100;
 
@@ -944,7 +950,7 @@ test13(void)
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
-	ip = IPv4(128, 0, 0, 0);
+	ip = RTE_IPV4(128, 0, 0, 0);
 	depth = 24;
 	next_hop_add_1 = 100;
 
@@ -987,7 +993,7 @@ test13(void)
 }
 
 /*
- * Fore TBL8 extension exhaustion. Add 256 rules that require a tbl8 extension.
+ * For TBL8 extension exhaustion. Add 512 rules that require a tbl8 extension.
  * No more tbl8 extensions will be allowed. Now add one more rule that required
  * a tbl8 extension and get fail.
  * */
@@ -1002,36 +1008,45 @@ test14(void)
 	struct rte_lpm_config config;
 
 	config.max_rules = 256 * 32;
-	config.number_tbl8s = NUMBER_TBL8S;
+	config.number_tbl8s = 512;
 	config.flags = 0;
-	uint32_t ip, next_hop_add, next_hop_return;
+	uint32_t ip, next_hop_base, next_hop_return;
 	uint8_t depth;
 	int32_t status = 0;
+	xmm_t ipx4;
+	uint32_t hop[4];
 
 	/* Add enough space for 256 rules for every depth */
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
 	depth = 32;
-	next_hop_add = 100;
-	ip = IPv4(0, 0, 0, 0);
+	next_hop_base = 100;
+	ip = RTE_IPV4(0, 0, 0, 0);
 
 	/* Add 256 rules that require a tbl8 extension */
-	for (; ip <= IPv4(0, 0, 255, 0); ip += 256) {
-		status = rte_lpm_add(lpm, ip, depth, next_hop_add);
+	for (; ip <= RTE_IPV4(0, 1, 255, 0); ip += 256) {
+		status = rte_lpm_add(lpm, ip, depth, next_hop_base + ip);
 		TEST_LPM_ASSERT(status == 0);
 
 		status = rte_lpm_lookup(lpm, ip, &next_hop_return);
 		TEST_LPM_ASSERT((status == 0) &&
-				(next_hop_return == next_hop_add));
+				(next_hop_return == next_hop_base + ip));
+
+		ipx4 = vect_set_epi32(ip + 3, ip + 2, ip + 1, ip);
+		rte_lpm_lookupx4(lpm, ipx4, hop, UINT32_MAX);
+		TEST_LPM_ASSERT(hop[0] == next_hop_base + ip);
+		TEST_LPM_ASSERT(hop[1] == UINT32_MAX);
+		TEST_LPM_ASSERT(hop[2] == UINT32_MAX);
+		TEST_LPM_ASSERT(hop[3] == UINT32_MAX);
 	}
 
 	/* All tbl8 extensions have been used above. Try to add one more and
 	 * we get a fail */
-	ip = IPv4(1, 0, 0, 0);
+	ip = RTE_IPV4(1, 0, 0, 0);
 	depth = 32;
 
-	status = rte_lpm_add(lpm, ip, depth, next_hop_add);
+	status = rte_lpm_add(lpm, ip, depth, next_hop_base + ip);
 	TEST_LPM_ASSERT(status < 0);
 
 	rte_lpm_free(lpm);
@@ -1125,9 +1140,9 @@ test17(void)
 	config.max_rules = MAX_RULES;
 	config.number_tbl8s = NUMBER_TBL8S;
 	config.flags = 0;
-	const uint32_t ip_10_32 = IPv4(10, 10, 10, 2);
-	const uint32_t ip_10_24 = IPv4(10, 10, 10, 0);
-	const uint32_t ip_20_25 = IPv4(10, 10, 20, 2);
+	const uint32_t ip_10_32 = RTE_IPV4(10, 10, 10, 2);
+	const uint32_t ip_10_24 = RTE_IPV4(10, 10, 10, 0);
+	const uint32_t ip_20_25 = RTE_IPV4(10, 10, 20, 2);
 	const uint8_t d_ip_10_32 = 32,
 			d_ip_10_24 = 24,
 			d_ip_20_25 = 25;
@@ -1221,7 +1236,7 @@ test18(void)
 	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
 	TEST_LPM_ASSERT(lpm != NULL);
 
-	ip = IPv4(192, 168, 100, 100);
+	ip = RTE_IPV4(192, 168, 100, 100);
 	depth = 28;
 	next_hop = 1;
 	rte_lpm_add(lpm, ip, depth, next_hop);
@@ -1267,6 +1282,288 @@ test18(void)
 }
 
 /*
+ * rte_lpm_rcu_qsbr_add positive and negative tests.
+ *  - Add RCU QSBR variable to LPM
+ *  - Add another RCU QSBR variable to LPM
+ *  - Check returns
+ */
+int32_t
+test19(void)
+{
+	struct rte_lpm *lpm = NULL;
+	struct rte_lpm_config config;
+	size_t sz;
+	struct rte_rcu_qsbr *qsv;
+	struct rte_rcu_qsbr *qsv2;
+	int32_t status;
+	struct rte_lpm_rcu_config rcu_cfg = {0};
+
+	config.max_rules = MAX_RULES;
+	config.number_tbl8s = NUMBER_TBL8S;
+	config.flags = 0;
+
+	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
+	TEST_LPM_ASSERT(lpm != NULL);
+
+	/* Create RCU QSBR variable */
+	sz = rte_rcu_qsbr_get_memsize(RTE_MAX_LCORE);
+	qsv = (struct rte_rcu_qsbr *)rte_zmalloc_socket(NULL, sz,
+					RTE_CACHE_LINE_SIZE, SOCKET_ID_ANY);
+	TEST_LPM_ASSERT(qsv != NULL);
+
+	status = rte_rcu_qsbr_init(qsv, RTE_MAX_LCORE);
+	TEST_LPM_ASSERT(status == 0);
+
+	rcu_cfg.v = qsv;
+	/* Invalid QSBR mode */
+	rcu_cfg.mode = 2;
+	status = rte_lpm_rcu_qsbr_add(lpm, &rcu_cfg);
+	TEST_LPM_ASSERT(status != 0);
+
+	rcu_cfg.mode = RTE_LPM_QSBR_MODE_DQ;
+	/* Attach RCU QSBR to LPM table */
+	status = rte_lpm_rcu_qsbr_add(lpm, &rcu_cfg);
+	TEST_LPM_ASSERT(status == 0);
+
+	/* Create and attach another RCU QSBR to LPM table */
+	qsv2 = (struct rte_rcu_qsbr *)rte_zmalloc_socket(NULL, sz,
+					RTE_CACHE_LINE_SIZE, SOCKET_ID_ANY);
+	TEST_LPM_ASSERT(qsv2 != NULL);
+
+	rcu_cfg.v = qsv2;
+	rcu_cfg.mode = RTE_LPM_QSBR_MODE_SYNC;
+	status = rte_lpm_rcu_qsbr_add(lpm, &rcu_cfg);
+	TEST_LPM_ASSERT(status != 0);
+
+	rte_lpm_free(lpm);
+	rte_free(qsv);
+	rte_free(qsv2);
+
+	return PASS;
+}
+
+/*
+ * rte_lpm_rcu_qsbr_add DQ mode functional test.
+ * Reader and writer are in the same thread in this test.
+ *  - Create LPM which supports 1 tbl8 group at max
+ *  - Add RCU QSBR variable to LPM
+ *  - Add a rule with depth=28 (> 24)
+ *  - Register a reader thread (not a real thread)
+ *  - Reader lookup existing rule
+ *  - Writer delete the rule
+ *  - Reader lookup the rule
+ *  - Writer re-add the rule (no available tbl8 group)
+ *  - Reader report quiescent state and unregister
+ *  - Writer re-add the rule
+ *  - Reader lookup the rule
+ */
+int32_t
+test20(void)
+{
+	struct rte_lpm *lpm = NULL;
+	struct rte_lpm_config config;
+	size_t sz;
+	struct rte_rcu_qsbr *qsv;
+	int32_t status;
+	uint32_t ip, next_hop, next_hop_return;
+	uint8_t depth;
+	struct rte_lpm_rcu_config rcu_cfg = {0};
+
+	config.max_rules = MAX_RULES;
+	config.number_tbl8s = 1;
+	config.flags = 0;
+
+	lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
+	TEST_LPM_ASSERT(lpm != NULL);
+
+	/* Create RCU QSBR variable */
+	sz = rte_rcu_qsbr_get_memsize(1);
+	qsv = (struct rte_rcu_qsbr *)rte_zmalloc_socket(NULL, sz,
+				RTE_CACHE_LINE_SIZE, SOCKET_ID_ANY);
+	TEST_LPM_ASSERT(qsv != NULL);
+
+	status = rte_rcu_qsbr_init(qsv, 1);
+	TEST_LPM_ASSERT(status == 0);
+
+	rcu_cfg.v = qsv;
+	rcu_cfg.mode = RTE_LPM_QSBR_MODE_DQ;
+	/* Attach RCU QSBR to LPM table */
+	status = rte_lpm_rcu_qsbr_add(lpm, &rcu_cfg);
+	TEST_LPM_ASSERT(status == 0);
+
+	ip = RTE_IPV4(192, 0, 2, 100);
+	depth = 28;
+	next_hop = 1;
+	status = rte_lpm_add(lpm, ip, depth, next_hop);
+	TEST_LPM_ASSERT(status == 0);
+	TEST_LPM_ASSERT(lpm->tbl24[ip>>8].valid_group);
+
+	/* Register pseudo reader */
+	status = rte_rcu_qsbr_thread_register(qsv, 0);
+	TEST_LPM_ASSERT(status == 0);
+	rte_rcu_qsbr_thread_online(qsv, 0);
+
+	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
+	TEST_LPM_ASSERT(status == 0);
+	TEST_LPM_ASSERT(next_hop_return == next_hop);
+
+	/* Writer update */
+	status = rte_lpm_delete(lpm, ip, depth);
+	TEST_LPM_ASSERT(status == 0);
+	TEST_LPM_ASSERT(!lpm->tbl24[ip>>8].valid);
+
+	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
+	TEST_LPM_ASSERT(status != 0);
+
+	status = rte_lpm_add(lpm, ip, depth, next_hop);
+	TEST_LPM_ASSERT(status != 0);
+
+	/* Reader quiescent */
+	rte_rcu_qsbr_quiescent(qsv, 0);
+
+	status = rte_lpm_add(lpm, ip, depth, next_hop);
+	TEST_LPM_ASSERT(status == 0);
+
+	rte_rcu_qsbr_thread_offline(qsv, 0);
+	status = rte_rcu_qsbr_thread_unregister(qsv, 0);
+	TEST_LPM_ASSERT(status == 0);
+
+	status = rte_lpm_lookup(lpm, ip, &next_hop_return);
+	TEST_LPM_ASSERT(status == 0);
+	TEST_LPM_ASSERT(next_hop_return == next_hop);
+
+	rte_lpm_free(lpm);
+	rte_free(qsv);
+
+	return PASS;
+}
+
+static struct rte_lpm *g_lpm;
+static struct rte_rcu_qsbr *g_v;
+static uint32_t g_ip = RTE_IPV4(192, 0, 2, 100);
+static volatile uint8_t writer_done;
+/* Report quiescent state interval every 1024 lookups. Larger critical
+ * sections in reader will result in writer polling multiple times.
+ */
+#define QSBR_REPORTING_INTERVAL 1024
+#define WRITER_ITERATIONS	512
+
+/*
+ * Reader thread using rte_lpm data structure with RCU.
+ */
+static int
+test_lpm_rcu_qsbr_reader(void *arg)
+{
+	int i;
+	uint32_t next_hop_return = 0;
+
+	RTE_SET_USED(arg);
+	/* Register this thread to report quiescent state */
+	rte_rcu_qsbr_thread_register(g_v, 0);
+	rte_rcu_qsbr_thread_online(g_v, 0);
+
+	do {
+		for (i = 0; i < QSBR_REPORTING_INTERVAL; i++)
+			rte_lpm_lookup(g_lpm, g_ip, &next_hop_return);
+
+		/* Update quiescent state */
+		rte_rcu_qsbr_quiescent(g_v, 0);
+	} while (!writer_done);
+
+	rte_rcu_qsbr_thread_offline(g_v, 0);
+	rte_rcu_qsbr_thread_unregister(g_v, 0);
+
+	return 0;
+}
+
+/*
+ * rte_lpm_rcu_qsbr_add sync mode functional test.
+ * 1 Reader and 1 writer. They cannot be in the same thread in this test.
+ *  - Create LPM which supports 1 tbl8 group at max
+ *  - Add RCU QSBR variable with sync mode to LPM
+ *  - Register a reader thread. Reader keeps looking up a specific rule.
+ *  - Writer keeps adding and deleting a specific rule with depth=28 (> 24)
+ */
+int32_t
+test21(void)
+{
+	struct rte_lpm_config config;
+	size_t sz;
+	int32_t status;
+	uint32_t i, next_hop;
+	uint8_t depth;
+	struct rte_lpm_rcu_config rcu_cfg = {0};
+
+	if (rte_lcore_count() < 2) {
+		printf("Not enough cores for %s, expecting at least 2\n",
+			__func__);
+		return TEST_SKIPPED;
+	}
+
+	config.max_rules = MAX_RULES;
+	config.number_tbl8s = 1;
+	config.flags = 0;
+
+	g_lpm = rte_lpm_create(__func__, SOCKET_ID_ANY, &config);
+	TEST_LPM_ASSERT(g_lpm != NULL);
+
+	/* Create RCU QSBR variable */
+	sz = rte_rcu_qsbr_get_memsize(1);
+	g_v = (struct rte_rcu_qsbr *)rte_zmalloc_socket(NULL, sz,
+				RTE_CACHE_LINE_SIZE, SOCKET_ID_ANY);
+	TEST_LPM_ASSERT(g_v != NULL);
+
+	status = rte_rcu_qsbr_init(g_v, 1);
+	TEST_LPM_ASSERT(status == 0);
+
+	rcu_cfg.v = g_v;
+	rcu_cfg.mode = RTE_LPM_QSBR_MODE_SYNC;
+	/* Attach RCU QSBR to LPM table */
+	status = rte_lpm_rcu_qsbr_add(g_lpm, &rcu_cfg);
+	TEST_LPM_ASSERT(status == 0);
+
+	writer_done = 0;
+	/* Launch reader thread */
+	rte_eal_remote_launch(test_lpm_rcu_qsbr_reader, NULL,
+				rte_get_next_lcore(-1, 1, 0));
+
+	depth = 28;
+	next_hop = 1;
+	status = rte_lpm_add(g_lpm, g_ip, depth, next_hop);
+	if (status != 0) {
+		printf("%s: Failed to add rule\n", __func__);
+		goto error;
+	}
+
+	/* Writer update */
+	for (i = 0; i < WRITER_ITERATIONS; i++) {
+		status = rte_lpm_delete(g_lpm, g_ip, depth);
+		if (status != 0) {
+			printf("%s: Failed to delete rule at iteration %d\n",
+				__func__, i);
+			goto error;
+		}
+
+		status = rte_lpm_add(g_lpm, g_ip, depth, next_hop);
+		if (status != 0) {
+			printf("%s: Failed to add rule at iteration %d\n",
+				__func__, i);
+			goto error;
+		}
+	}
+
+error:
+	writer_done = 1;
+	/* Wait until reader exited. */
+	rte_eal_mp_wait_lcore();
+
+	rte_lpm_free(g_lpm);
+	rte_free(g_v);
+
+	return (status == 0) ? PASS : -1;
+}
+
+/*
  * Do all unit tests.
  */
 
@@ -1276,7 +1573,7 @@ test_lpm(void)
 	unsigned i;
 	int status, global_status = 0;
 
-	for (i = 0; i < NUM_LPM_TESTS; i++) {
+	for (i = 0; i < RTE_DIM(tests); i++) {
 		status = tests[i]();
 		if (status < 0) {
 			printf("ERROR: LPM Test %u: FAIL\n", i);

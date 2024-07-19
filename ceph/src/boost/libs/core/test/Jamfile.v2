@@ -148,6 +148,7 @@ run-fail lightweight_test_fail12.cpp ;
 run-fail lightweight_test_fail13.cpp ;
 run-fail lightweight_test_fail14.cpp ;
 run-fail lightweight_test_fail15.cpp ;
+run-fail lightweight_test_fail16.cpp : ;
 run-fail lightweight_test_lt_fail.cpp ;
 run-fail lightweight_test_le_fail.cpp ;
 run-fail lightweight_test_gt_fail.cpp ;
@@ -174,7 +175,7 @@ run demangle_test.cpp
 run demangled_name_test.cpp
   : : : <test-info>always_show_run_output ;
 
-run demangled_name_test.cpp  : : : <rtti>off <test-info>always_show_run_output : demangled_name_test_no_rtti ;
+run demangled_name_test.cpp : : : <rtti>off <test-info>always_show_run_output : demangled_name_test_no_rtti ;
 
 run scoped_enum.cpp ;
 compile-fail scoped_enum_compile_fail_conv_from_int.cpp
@@ -183,6 +184,8 @@ compile-fail scoped_enum_compile_fail_conv_to_int.cpp
   : $(warning-as-errors-off) ;
 
 run underlying_type.cpp ;
+
+run fclose_deleter_test.cpp : : : <target-os>windows:<define>_CRT_SECURE_NO_WARNINGS <target-os>windows:<define>_CRT_SECURE_NO_DEPRECATE ;
 
 run pointer_traits_pointer_test.cpp ;
 run pointer_traits_element_type_test.cpp ;
@@ -203,6 +206,7 @@ compile first_scalar_constexpr_test.cpp ;
 run empty_value_test.cpp ;
 run empty_value_size_test.cpp ;
 run empty_value_final_test.cpp ;
+run empty_value_constexpr_test.cpp ;
 
 run quick_exit_test.cpp ;
 run-fail quick_exit_fail.cpp ;
@@ -240,6 +244,10 @@ run allocator_allocate_hint_test.cpp ;
 run allocator_deallocate_test.cpp ;
 run allocator_max_size_test.cpp ;
 run allocator_soccc_test.cpp ;
+run allocator_construct_test.cpp ;
+run allocator_destroy_test.cpp ;
+run allocator_construct_n_test.cpp ;
+run allocator_destroy_n_test.cpp ;
 run allocator_traits_test.cpp ;
 
 lib lib_typeid : lib_typeid.cpp : <link>shared:<define>LIB_TYPEID_DYN_LINK=1 ;
@@ -289,7 +297,12 @@ run bit_popcount_test.cpp
 run bit_endian_test.cpp
   : : : $(pedantic-errors) ;
 
+compile-fail bit_width_fail.cpp
+  : <warnings>off ;
+
 run type_name_test.cpp ;
+
+run snprintf_test.cpp ;
 
 run sv_types_test.cpp ;
 run sv_construct_test.cpp ;
@@ -320,6 +333,8 @@ run sv_conversion_test2.cpp : ;
 run sv_common_reference_test.cpp ;
 compile sv_common_reference_test2.cpp ;
 compile sv_windows_h_test.cpp ;
+compile-fail sv_nullptr_fail.cpp
+  : $(warning-as-errors-off) ;
 
 run span_test.cpp ;
 run span_types_test.cpp ;
@@ -327,6 +342,8 @@ run span_constructible_test.cpp ;
 run span_deduction_guide_test.cpp ;
 run as_bytes_test.cpp ;
 run as_writable_bytes_test.cpp ;
+compile span_boost_begin_test.cpp ;
+run make_span_test.cpp ;
 
 run splitmix64_test.cpp
   : : : $(pedantic-errors) ;
@@ -335,6 +352,24 @@ run-fail verbose_terminate_handler_fail.cpp : ;
 run-fail verbose_terminate_handler_fail.cpp : : : <exception-handling>off : verbose_terminate_handler_fail_nx ;
 run-fail verbose_terminate_handler_fail.cpp : : : <rtti>off : verbose_terminate_handler_fail_nr ;
 run-fail verbose_terminate_handler_fail.cpp : : : <exception-handling>off <rtti>off : verbose_terminate_handler_fail_nxr ;
+
+run launder_test.cpp ;
+
+run alignof_test.cpp ;
+run max_align_test.cpp ;
+
+run memory_resource_test.cpp ;
+
+run data_test.cpp ;
+run size_test.cpp ;
+
+run serialization_nvp_test.cpp : : : <library>/boost//serialization/<warnings>off <undefined-sanitizer>norecover:<build>no ;
+run serialization_split_free_test.cpp : : : <library>/boost//serialization/<warnings>off <undefined-sanitizer>norecover:<link>static ;
+run serialization_split_member_test.cpp : : : <library>/boost//serialization/<warnings>off <undefined-sanitizer>norecover:<link>static ;
+run serialization_construct_data_test.cpp : : : <library>/boost//serialization/<warnings>off <undefined-sanitizer>norecover:<link>static ;
+
+run identity_test.cpp ;
+run identity_rvalue_test.cpp ;
 
 use-project /boost/core/swap : ./swap ;
 build-project ./swap ;

@@ -9,7 +9,7 @@
 
 /* See http://doc.dpdk.org/guides/tools/testeventdev.html for test details */
 
-static inline __attribute__((always_inline)) void
+static __rte_always_inline void
 order_queue_process_stage_0(struct rte_event *const ev)
 {
 	ev->queue_id = 1; /* q1 atomic queue */
@@ -19,7 +19,7 @@ order_queue_process_stage_0(struct rte_event *const ev)
 }
 
 static int
-order_queue_worker(void *arg)
+order_queue_worker(void *arg, const bool flow_id_cap)
 {
 	ORDER_WORKER_INIT;
 	struct rte_event ev;
@@ -28,11 +28,14 @@ order_queue_worker(void *arg)
 		uint16_t event = rte_event_dequeue_burst(dev_id, port,
 					&ev, 1, 0);
 		if (!event) {
-			if (rte_atomic64_read(outstand_pkts) <= 0)
+			if (__atomic_load_n(outstand_pkts, __ATOMIC_RELAXED) <= 0)
 				break;
 			rte_pause();
 			continue;
 		}
+
+		if (!flow_id_cap)
+			order_flow_id_copy_from_mbuf(t, &ev);
 
 		if (ev.queue_id == 0) { /* from ordered queue */
 			order_queue_process_stage_0(&ev);
@@ -50,7 +53,7 @@ order_queue_worker(void *arg)
 }
 
 static int
-order_queue_worker_burst(void *arg)
+order_queue_worker_burst(void *arg, const bool flow_id_cap)
 {
 	ORDER_WORKER_INIT;
 	struct rte_event ev[BURST_SIZE];
@@ -61,13 +64,17 @@ order_queue_worker_burst(void *arg)
 				BURST_SIZE, 0);
 
 		if (nb_rx == 0) {
-			if (rte_atomic64_read(outstand_pkts) <= 0)
+			if (__atomic_load_n(outstand_pkts, __ATOMIC_RELAXED) <= 0)
 				break;
 			rte_pause();
 			continue;
 		}
 
 		for (i = 0; i < nb_rx; i++) {
+
+			if (!flow_id_cap)
+				order_flow_id_copy_from_mbuf(t, &ev[i]);
+
 			if (ev[i].queue_id == 0) { /* from ordered queue */
 				order_queue_process_stage_0(&ev[i]);
 			} else if (ev[i].queue_id == 1) {/* from atomic queue */
@@ -95,11 +102,19 @@ worker_wrapper(void *arg)
 {
 	struct worker_data *w  = arg;
 	const bool burst = evt_has_burst_mode(w->dev_id);
+	const bool flow_id_cap = evt_has_flow_id(w->dev_id);
 
-	if (burst)
-		return order_queue_worker_burst(arg);
-	else
-		return order_queue_worker(arg);
+	if (burst) {
+		if (flow_id_cap)
+			return order_queue_worker_burst(arg, true);
+		else
+			return order_queue_worker_burst(arg, false);
+	} else {
+		if (flow_id_cap)
+			return order_queue_worker(arg, true);
+		else
+			return order_queue_worker(arg, false);
+	}
 }
 
 static int

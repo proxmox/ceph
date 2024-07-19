@@ -4,111 +4,219 @@
 ABI and API Deprecation
 =======================
 
-See the :doc:`guidelines document for details of the ABI policy </contributing/versioning>`.
-API and ABI deprecation notices are to be posted here.
+See the guidelines document for details of the :doc:`ABI policy
+<../contributing/abi_policy>`.
 
+With DPDK 23.11, there will be a new major ABI version: 24.
+This means that during the development of 23.11,
+new items may be added to structs or enums,
+even if those additions involve an ABI compatibility breakage.
+
+Other API and ABI deprecation notices are to be posted below.
 
 Deprecation Notices
 -------------------
 
-* meson: The minimum supported version of meson for configuring and building
-  DPDK will be increased to v0.47.1 (from 0.41) from DPDK 19.05 onwards. For
-  those users with a version earlier than 0.47.1, an updated copy of meson
-  can be got using the ``pip``, or ``pip3``, tool for downloading python
-  packages.
+* C Compiler: From DPDK 23.11 onwards,
+  building DPDK will require a C compiler which supports the C11 standard,
+  including support for C11 standard atomics.
 
-* network includes: Network structures, definitions and functions will
-  be prefixed by ``rte_`` to resolve conflicts with libc headers.
-  This change will break many DPDK APIs.
+  More specifically, the requirements will be:
+
+  * Support for flag "-std=c11" (or similar)
+  * __STDC_NO_ATOMICS__ is *not defined* when using c11 flag
+
+  Please note:
+
+  * C11, including standard atomics, is supported from GCC version 5 onwards,
+    and is the default language version in that release
+    (Ref: https://gcc.gnu.org/gcc-5/changes.html)
+  * C11 is the default compilation mode in Clang from version 3.6,
+    which also added support for standard atomics
+    (Ref: https://releases.llvm.org/3.6.0/tools/clang/docs/ReleaseNotes.html)
+
+* build: Enabling deprecated libraries (``flow_classify``, ``kni``)
+  won't be possible anymore through the use of the ``disable_libs`` build option.
+  A new build option for deprecated libraries will be introduced instead.
 
 * kvargs: The function ``rte_kvargs_process`` will get a new parameter
   for returning key match count. It will ease handling of no-match case.
 
-* eal: The function ``rte_eal_remote_launch`` will return new error codes
-  after read or write error on the pipe, instead of calling ``rte_panic``.
+* cmdline: The function ``cmdline_poll`` does not work correctly on either
+  Linux or Windows and is unused by any part of DPDK.
+  This function is now deprecated and will be removed in DPDK 23.11.
 
-* eal: the ``rte_mem_config`` struct will be made private to remove it from the
-  externally visible ABI and allow it to be updated in the future.
+* telemetry: The functions ``rte_tel_data_add_array_u64`` and ``rte_tel_data_add_dict_u64``,
+  used by telemetry callbacks for adding unsigned integer values to be returned to the user,
+  are renamed to ``rte_tel_data_add_array_uint`` and ``rte_tel_data_add_dict_uint`` respectively.
+  As such, the old function names are deprecated and will be removed in a future release.
 
-* eal: both declaring and identifying devices will be streamlined in v18.11.
-  New functions will appear to query a specific port from buses, classes of
-  device and device drivers. Device declaration will be made coherent with the
-  new scheme of device identification.
-  As such, ``rte_devargs`` device representation will change.
+* eal: RTE_FUNC_PTR_OR_* macros have been marked deprecated and will be removed
+  in the future. Applications can use ``devtools/cocci/func_or_ret.cocci``
+  to update their code.
 
-  - The enum ``rte_devtype`` was used to identify a bus and will disappear.
-  - Functions previously deprecated will change or disappear:
+* eal: The functions ``rte_thread_setname`` and ``rte_ctrl_thread_create``
+  are planned to be deprecated starting with the 23.07 release, subject to
+  the replacement API rte_thread_set_name and rte_thread_create_control being
+  marked as stable, and planned to be removed by the 23.11 release.
 
-    + ``rte_eal_devargs_type_count``
+* eal: ``RTE_CPUFLAG_NUMFLAGS`` will be removed in DPDK 23.11 release.
+  This is to allow new CPU features to be added without ABI breakage.
 
-* vfio: removal of ``rte_vfio_dma_map`` and ``rte_vfio_dma_unmap`` APIs which
-  have been replaced with ``rte_dev_dma_map`` and ``rte_dev_dma_unmap``
-  functions.  The due date for the removal targets DPDK 20.02.
+* rte_atomicNN_xxx: These APIs do not take memory order parameter. This does
+  not allow for writing optimized code for all the CPU architectures supported
+  in DPDK. DPDK has adopted the atomic operations from
+  https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html. These
+  operations must be used for patches that need to be merged in 20.08 onwards.
+  This change will not introduce any performance degradation.
 
-* pci: Several exposed functions are misnamed.
-  The following functions are deprecated starting from v17.11 and are replaced:
+* rte_smp_*mb: These APIs provide full barrier functionality. However, many
+  use cases do not require full barriers. To support such use cases, DPDK has
+  adopted atomic operations from
+  https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html. These
+  operations and a new wrapper ``rte_atomic_thread_fence`` instead of
+  ``__atomic_thread_fence`` must be used for patches that need to be merged in
+  20.08 onwards. This change will not introduce any performance degradation.
 
-  - ``eal_parse_pci_BDF`` replaced by ``rte_pci_addr_parse``
-  - ``eal_parse_pci_DomBDF`` replaced by ``rte_pci_addr_parse``
-  - ``rte_eal_compare_pci_addr`` replaced by ``rte_pci_addr_cmp``
+* kni: The KNI kernel module and library are not recommended for use by new
+  applications - other technologies such as virtio-user are recommended instead.
+  Following the DPDK technical board
+  `decision <https://mails.dpdk.org/archives/dev/2021-January/197077.html>`_
+  and `refinement <https://mails.dpdk.org/archives/dev/2022-June/243596.html>`_,
+  the KNI kernel module, library and PMD will be removed from the DPDK 23.11 release.
 
-* dpaa2: removal of ``rte_dpaa2_memsegs`` structure which has been replaced
-  by a pa-va search library. This structure was earlier being used for holding
-  memory segments used by dpaa2 driver for faster pa->va translation. This
-  structure would be made internal (or removed if all dependencies are cleared)
-  in future releases.
+* lib: will fix extending some enum/define breaking the ABI. There are multiple
+  samples in DPDK that enum/define terminated with a ``.*MAX.*`` value which is
+  used by iterators, and arrays holding these values are sized with this
+  ``.*MAX.*`` value. So extending this enum/define increases the ``.*MAX.*``
+  value which increases the size of the array and depending on how/where the
+  array is used this may break the ABI.
+  ``RTE_ETH_FLOW_MAX`` is one sample of the mentioned case, adding a new flow
+  type will break the ABI because of ``flex_mask[RTE_ETH_FLOW_MAX]`` array
+  usage in following public struct hierarchy:
+  ``rte_eth_fdir_flex_conf -> rte_eth_fdir_conf -> rte_eth_conf (in the middle)``.
+  Need to identify this kind of usages and fix in 20.11, otherwise this blocks
+  us extending existing enum/define.
+  One solution can be using a fixed size array instead of ``.*MAX.*`` value.
 
-* ethdev: the legacy filter API, including
-  ``rte_eth_dev_filter_supported()``, ``rte_eth_dev_filter_ctrl()`` as well
-  as filter types MACVLAN, ETHERTYPE, FLEXIBLE, SYN, NTUPLE, TUNNEL, FDIR,
-  HASH and L2_TUNNEL, is superseded by the generic flow API (rte_flow) in
-  PMDs that implement the latter.
-  Target release for removal of the legacy API will be defined once most
-  PMDs have switched to rte_flow.
+* ethdev: The flow API matching pattern structures, ``struct rte_flow_item_*``,
+  should start with relevant protocol header structure from lib/net/.
+  The individual protocol header fields and the protocol header struct
+  may be kept together in a union as a first migration step.
+  In future (target is DPDK 23.11), the protocol header fields will be cleaned
+  and only protocol header struct will remain.
 
-* kni: remove KNI ethtool support. To clarify, this is not to remove the KNI,
-  but only to remove ethtool support of it that is disabled by default and
-  can be enabled via ``CONFIG_RTE_KNI_KMOD_ETHTOOL`` config option.
-  Existing KNI ethtool implementation is only supported by ``igb`` & ``ixgbe``
-  drivers, by using a copy of kernel drivers in DPDK. This model cannot be
-  extended to all drivers in DPDK and it is too much effort to maintain
-  kernel modules in DPDK. As a result users won't be able to use ``ethtool``
-  via ``igb`` & ``ixgbe`` anymore.
+  These items are not compliant (not including struct from lib/net/):
 
-* cryptodev: New member in ``rte_cryptodev_config`` to allow applications to
-  disable features supported by the crypto device. Only the following features
-  would be allowed to be disabled this way,
+  - ``rte_flow_item_ah``
+  - ``rte_flow_item_e_tag``
+  - ``rte_flow_item_geneve``
+  - ``rte_flow_item_geneve_opt``
+  - ``rte_flow_item_gre``
+  - ``rte_flow_item_icmp6``
+  - ``rte_flow_item_icmp6_nd_na``
+  - ``rte_flow_item_icmp6_nd_ns``
+  - ``rte_flow_item_icmp6_nd_opt``
+  - ``rte_flow_item_icmp6_nd_opt_sla_eth``
+  - ``rte_flow_item_icmp6_nd_opt_tla_eth``
+  - ``rte_flow_item_igmp``
+  - ``rte_flow_item_ipv6_ext``
+  - ``rte_flow_item_l2tpv3oip``
+  - ``rte_flow_item_mpls``
+  - ``rte_flow_item_nsh``
+  - ``rte_flow_item_nvgre``
+  - ``rte_flow_item_pfcp``
+  - ``rte_flow_item_pppoe``
+  - ``rte_flow_item_pppoe_proto_id``
 
-  - ``RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO``
-  - ``RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO``
-  - ``RTE_CRYPTODEV_FF_SECURITY``
+* ethdev: Queue specific stats fields will be removed from ``struct rte_eth_stats``.
+  Mentioned fields are: ``q_ipackets``, ``q_opackets``, ``q_ibytes``, ``q_obytes``,
+  ``q_errors``.
+  Instead queue stats will be received via xstats API. Current method support
+  will be limited to maximum 256 queues.
+  Also compile time flag ``RTE_ETHDEV_QUEUE_STAT_CNTRS`` will be removed.
 
-  Disabling unused features would facilitate efficient usage of HW/SW offload.
+* ethdev: Flow actions ``PF`` and ``VF`` have been deprecated since DPDK 21.11
+  and are yet to be removed. That still has not happened because there are net
+  drivers which support combined use of either action ``PF`` or action ``VF``
+  with action ``QUEUE``, namely, i40e, ixgbe and txgbe (L2 tunnel rule).
+  It is unclear whether it is acceptable to just drop support for
+  such a complex use case, so maintainers of the said drivers
+  should take a closer look at this and provide assistance.
 
-  - Member ``uint64_t ff_disable`` in ``rte_cryptodev_config``
+* ethdev: Actions ``OF_DEC_NW_TTL``, ``SET_IPV4_SRC``, ``SET_IPV4_DST``,
+  ``SET_IPV6_SRC``, ``SET_IPV6_DST``, ``SET_TP_SRC``, ``SET_TP_DST``,
+  ``DEC_TTL``, ``SET_TTL``, ``SET_MAC_SRC``, ``SET_MAC_DST``, ``INC_TCP_SEQ``,
+  ``DEC_TCP_SEQ``, ``INC_TCP_ACK``, ``DEC_TCP_ACK``, ``SET_IPV4_DSCP``,
+  ``SET_IPV6_DSCP``, ``SET_TAG``, ``SET_META`` are marked as legacy and
+  superseded by the generic ``RTE_FLOW_ACTION_TYPE_MODIFY_FIELD``.
+  The legacy actions should be removed
+  once ``MODIFY_FIELD`` alternative is implemented in drivers.
 
-  The field would be added in v19.08.
+* bonding: The macro ``RTE_ETH_DEV_BONDED_SLAVE`` will be
+  deprecated in DPDK 23.07, and removed in DPDK 23.11.
+  The relevant code can be updated using ``RTE_ETH_DEV_BONDING_MEMBER``.
+  The data structure ``struct rte_eth_bond_8023ad_slave_info`` will be
+  renamed to ``struct rte_eth_bond_8023ad_member_info`` in DPDK 23.11.
+  The following functions will be removed in DPDK 23.11.
+  The old functions:
+  ``rte_eth_bond_8023ad_slave_info``,
+  ``rte_eth_bond_active_slaves_get``,
+  ``rte_eth_bond_slave_add``,
+  ``rte_eth_bond_slave_remove``, and
+  ``rte_eth_bond_slaves_get``
+  will be replaced by:
+  ``rte_eth_bond_8023ad_member_info``,
+  ``rte_eth_bond_active_members_get``,
+  ``rte_eth_bond_member_add``,
+  ``rte_eth_bond_member_remove``, and
+  ``rte_eth_bond_members_get``.
 
-* cryptodev: the ``uint8_t *data`` member of ``key`` structure in the xforms
-  structure (``rte_crypto_cipher_xform``, ``rte_crypto_auth_xform``, and
-  ``rte_crypto_aead_xform``) will be changed to ``const uint8_t *data``.
+* cryptodev: The function ``rte_cryptodev_cb_fn`` will be updated
+  to have another parameter ``qp_id`` to return the queue pair ID
+  which got error interrupt to the application,
+  so that application can reset that particular queue pair.
 
-* cryptodev: support for using IV with all sizes is added, J0 still can
-  be used but only when IV length in following structs ``rte_crypto_auth_xform``,
-  ``rte_crypto_aead_xform`` is set to zero. When IV length is greater or equal
-  to one it means it represents IV, when is set to zero it means J0 is used
-  directly, in this case 16 bytes of J0 need to be passed.
+* cryptodev: The arrays of algorithm strings ``rte_crypto_cipher_algorithm_strings``,
+  ``rte_crypto_auth_algorithm_strings``, ``rte_crypto_aead_algorithm_strings`` and
+  ``rte_crypto_asym_xform_strings`` are deprecated and will be removed in DPDK 23.11.
+  Application can use the new APIs ``rte_cryptodev_get_cipher_algo_string``,
+  ``rte_cryptodev_get_auth_algo_string``, ``rte_cryptodev_get_aead_algo_string`` and
+  ``rte_cryptodev_asym_get_xform_string`` respectively.
 
-* sched: To allow more traffic classes, flexible mapping of pipe queues to
-  traffic classes, and subport level configuration of pipes and queues
-  changes will be made to macros, data structures and API functions defined
-  in "rte_sched.h". These changes are aligned to improvements suggested in the
-  RFC https://mails.dpdk.org/archives/dev/2018-November/120035.html.
+* security: Hide structures ``rte_security_ops`` and ``rte_security_ctx``
+  as these are internal to DPDK library and drivers.
 
-* metrics: The function ``rte_metrics_init`` will have a non-void return
-  in order to notify errors instead of calling ``rte_exit``.
+* security: New SA option ``ingress_oop`` would be added in structure
+  ``rte_security_ipsec_sa_options`` to support out of place processing
+  for inline inbound SA from DPDK 23.11. ``reserved_opts`` field in the
+  same struct would be removed as discussed in techboard meeting.
 
-* power: ``rte_power_set_env`` function will no longer return 0 on attempt
-  to set new power environment if power environment was already initialized.
-  In this case the function will return -1 unless the environment is unset first
-  (using ``rte_power_unset_env``). Other function usage scenarios will not change.
+* eventdev: The single-event (non-burst) enqueue and dequeue operations,
+  used by static inline burst enqueue and dequeue functions in ``rte_eventdev.h``,
+  will be removed in DPDK 23.11.
+  This simplification includes changing the layout and potentially also
+  the size of the public ``rte_event_fp_ops`` struct, breaking the ABI.
+  Since these functions are not called directly by the application,
+  the API remains unaffected.
+
+* flow_classify: The flow_classify library and example have no maintainer.
+  The library is experimental and, as such, it could be removed from DPDK.
+  Its removal has been postponed to let potential users report interest
+  in maintaining it.
+  In the absence of such interest, this library will be removed in DPDK 23.11.
+
+* pipeline: The pipeline library legacy API (functions rte_pipeline_*)
+  will be deprecated and subsequently removed in DPDK 24.11 release.
+  Before this, the new pipeline library API (functions rte_swx_pipeline_*)
+  will gradually transition from experimental to stable status.
+
+* table: The table library legacy API (functions rte_table_*)
+  will be deprecated and subsequently removed in DPDK 24.11 release.
+  Before this, the new table library API (functions rte_swx_table_*)
+  will gradually transition from experimental to stable status.
+
+* port: The port library legacy API (functions rte_port_*)
+  will be deprecated and subsequently removed in DPDK 24.11 release.
+  Before this, the new port library API (functions rte_swx_port_*)
+  will gradually transition from experimental to stable status.

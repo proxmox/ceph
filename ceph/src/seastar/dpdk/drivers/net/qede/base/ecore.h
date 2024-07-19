@@ -24,12 +24,13 @@
 #include "ecore_hsi_debug_tools.h"
 #include "ecore_hsi_init_func.h"
 #include "ecore_hsi_init_tool.h"
+#include "ecore_hsi_func_common.h"
 #include "ecore_proto_if.h"
 #include "mcp_public.h"
 
 #define ECORE_MAJOR_VERSION		8
-#define ECORE_MINOR_VERSION		37
-#define ECORE_REVISION_VERSION		20
+#define ECORE_MINOR_VERSION		40
+#define ECORE_REVISION_VERSION		26
 #define ECORE_ENGINEERING_VERSION	0
 
 #define ECORE_VERSION							\
@@ -422,8 +423,8 @@ struct ecore_hw_info {
 	u8 max_chains_per_vf;
 
 	u32 port_mode;
-	u32	hw_mode;
-	unsigned long device_capabilities;
+	u32 hw_mode;
+	u32 device_capabilities;
 
 	/* Default DCBX mode */
 	u8 dcbx_mode;
@@ -466,6 +467,8 @@ struct ecore_wfq_data {
 	u32 min_speed; /* when feature is configured for any 1 vport */
 	bool configured;
 };
+
+#define OFLD_GRP_SIZE 4
 
 struct ecore_qm_info {
 	struct init_qm_pq_params    *qm_pq_params;
@@ -513,6 +516,8 @@ struct ecore_fw_data {
 	const u8 *modes_tree_buf;
 	union init_op *init_ops;
 	const u32 *arr_data;
+	const u32 *fw_overlays;
+	u32 fw_overlays_len;
 	u32 init_ops_size;
 };
 
@@ -571,6 +576,12 @@ enum BAR_ID {
 	BAR_ID_1	/* Used for doorbells */
 };
 
+struct ecore_nvm_image_info {
+	u32				num_images;
+	struct bist_nvm_image_att	*image_att;
+	bool				valid;
+};
+
 struct ecore_hwfn {
 	struct ecore_dev		*p_dev;
 	u8				my_id;		/* ID inside the PF */
@@ -592,6 +603,7 @@ struct ecore_hwfn {
 
 	u8				num_funcs_on_engine;
 	u8				enabled_func_idx;
+	u8				num_funcs_on_port;
 
 	/* BAR access */
 	void OSAL_IOMEM			*regview;
@@ -666,6 +678,7 @@ struct ecore_hwfn {
 
 	struct dbg_tools_data		dbg_info;
 	void				*dbg_user_info;
+	struct virt_mem_desc		dbg_arrays[MAX_BIN_DBG_BUFFER_TYPE];
 
 	struct z_stream_s		*stream;
 
@@ -694,8 +707,17 @@ struct ecore_hwfn {
 	 */
 	bool b_en_pacing;
 
+	/* Nvm images number and attributes */
+	struct ecore_nvm_image_info     nvm_info;
+
+	struct phys_mem_desc            *fw_overlay_mem;
+
 	/* @DPDK */
 	struct ecore_ptt		*p_arfs_ptt;
+
+	/* DPDK specific, not the part of vanilla ecore */
+	osal_spinlock_t spq_lock;
+	u32 iov_task_flags;
 };
 
 enum ecore_mf_mode {
@@ -705,26 +727,34 @@ enum ecore_mf_mode {
 	ECORE_MF_UFP,
 };
 
+enum ecore_dev_type {
+	ECORE_DEV_TYPE_BB,
+	ECORE_DEV_TYPE_AH,
+};
+
 /* @DPDK */
+enum ecore_dbg_features {
+	DBG_FEATURE_GRC,
+	DBG_FEATURE_IDLE_CHK,
+	DBG_FEATURE_MCP_TRACE,
+	DBG_FEATURE_REG_FIFO,
+	DBG_FEATURE_IGU_FIFO,
+	DBG_FEATURE_PROTECTION_OVERRIDE,
+	DBG_FEATURE_FW_ASSERTS,
+	DBG_FEATURE_ILT,
+	DBG_FEATURE_NUM
+};
+
 struct ecore_dbg_feature {
 	u8				*dump_buf;
 	u32				buf_size;
 	u32				dumped_dwords;
 };
 
-enum qed_dbg_features {
-	DBG_FEATURE_BUS,
-	DBG_FEATURE_GRC,
-	DBG_FEATURE_IDLE_CHK,
-	DBG_FEATURE_MCP_TRACE,
-	DBG_FEATURE_REG_FIFO,
-	DBG_FEATURE_PROTECTION_OVERRIDE,
-	DBG_FEATURE_NUM
-};
-
-enum ecore_dev_type {
-	ECORE_DEV_TYPE_BB,
-	ECORE_DEV_TYPE_AH,
+struct ecore_dbg_params {
+	struct ecore_dbg_feature features[DBG_FEATURE_NUM];
+	u8 engine_for_debug;
+	bool print_data;
 };
 
 struct ecore_dev {
@@ -745,7 +775,6 @@ struct ecore_dev {
 #endif
 #define ECORE_IS_AH(dev)	((dev)->type == ECORE_DEV_TYPE_AH)
 #define ECORE_IS_K2(dev)	ECORE_IS_AH(dev)
-#define ECORE_IS_E4(dev)	(ECORE_IS_BB(dev) || ECORE_IS_AH(dev))
 
 	u16 vendor_id;
 	u16 device_id;
@@ -801,7 +830,7 @@ struct ecore_dev {
 
 	u8				path_id;
 
-	unsigned long			mf_bits;
+	u32				mf_bits;
 	enum ecore_mf_mode		mf_mode;
 #define IS_MF_DEFAULT(_p_hwfn)	\
 	(((_p_hwfn)->p_dev)->mf_mode == ECORE_MF_DEFAULT)
@@ -834,8 +863,8 @@ struct ecore_dev {
 	u8				cache_shift;
 
 	/* Init */
-	const struct iro		*iro_arr;
-	#define IRO (p_hwfn->p_dev->iro_arr)
+	const u32			*iro_arr;
+#define IRO	((const struct iro *)p_hwfn->p_dev->iro_arr)
 
 	/* HW functions */
 	u8				num_hwfns;
@@ -893,6 +922,7 @@ struct ecore_dev {
 
 #ifndef ASIC_ONLY
 	bool				b_is_emul_full;
+	bool				b_is_emul_mac;
 #endif
 	/* LLH info */
 	u8				ppfid_bitmap;
@@ -905,22 +935,63 @@ struct ecore_dev {
 	void				*firmware;
 	u64				fw_len;
 #endif
+	bool				disable_ilt_dump;
 
 	/* @DPDK */
 	struct ecore_dbg_feature	dbg_features[DBG_FEATURE_NUM];
-	u8				engine_for_debug;
+	struct ecore_dbg_params		dbg_params;
+	osal_mutex_t			dbg_lock;
+
+	/* DPDK specific ecore field */
+	struct rte_pci_device		*pci_dev;
 };
 
-#define NUM_OF_VFS(dev)		(ECORE_IS_BB(dev) ? MAX_NUM_VFS_BB \
-						  : MAX_NUM_VFS_K2)
-#define NUM_OF_L2_QUEUES(dev)	(ECORE_IS_BB(dev) ? MAX_NUM_L2_QUEUES_BB \
-						  : MAX_NUM_L2_QUEUES_K2)
-#define NUM_OF_PORTS(dev)	(ECORE_IS_BB(dev) ? MAX_NUM_PORTS_BB \
-						  : MAX_NUM_PORTS_K2)
-#define NUM_OF_SBS(dev)		(ECORE_IS_BB(dev) ? MAX_SB_PER_PATH_BB \
-						  : MAX_SB_PER_PATH_K2)
-#define NUM_OF_ENG_PFS(dev)	(ECORE_IS_BB(dev) ? MAX_NUM_PFS_BB \
-						  : MAX_NUM_PFS_K2)
+enum ecore_hsi_def_type {
+	ECORE_HSI_DEF_MAX_NUM_VFS,
+	ECORE_HSI_DEF_MAX_NUM_L2_QUEUES,
+	ECORE_HSI_DEF_MAX_NUM_PORTS,
+	ECORE_HSI_DEF_MAX_SB_PER_PATH,
+	ECORE_HSI_DEF_MAX_NUM_PFS,
+	ECORE_HSI_DEF_MAX_NUM_VPORTS,
+	ECORE_HSI_DEF_NUM_ETH_RSS_ENGINE,
+	ECORE_HSI_DEF_MAX_QM_TX_QUEUES,
+	ECORE_HSI_DEF_NUM_PXP_ILT_RECORDS,
+	ECORE_HSI_DEF_NUM_RDMA_STATISTIC_COUNTERS,
+	ECORE_HSI_DEF_MAX_QM_GLOBAL_RLS,
+	ECORE_HSI_DEF_MAX_PBF_CMD_LINES,
+	ECORE_HSI_DEF_MAX_BTB_BLOCKS,
+	ECORE_NUM_HSI_DEFS
+};
+
+u32 ecore_get_hsi_def_val(struct ecore_dev *p_dev,
+			  enum ecore_hsi_def_type type);
+
+#define NUM_OF_VFS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_VFS)
+#define NUM_OF_L2_QUEUES(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_L2_QUEUES)
+#define NUM_OF_PORTS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_PORTS)
+#define NUM_OF_SBS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_SB_PER_PATH)
+#define NUM_OF_ENG_PFS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_PFS)
+#define NUM_OF_VPORTS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_VPORTS)
+#define NUM_OF_RSS_ENGINES(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_NUM_ETH_RSS_ENGINE)
+#define NUM_OF_QM_TX_QUEUES(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_QM_TX_QUEUES)
+#define NUM_OF_PXP_ILT_RECORDS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_NUM_PXP_ILT_RECORDS)
+#define NUM_OF_RDMA_STATISTIC_COUNTERS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_NUM_RDMA_STATISTIC_COUNTERS)
+#define NUM_OF_QM_GLOBAL_RLS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_QM_GLOBAL_RLS)
+#define NUM_OF_PBF_CMD_LINES(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_PBF_CMD_LINES)
+#define NUM_OF_BTB_BLOCKS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_BTB_BLOCKS)
 
 #define CRC8_TABLE_SIZE 256
 
@@ -948,7 +1019,6 @@ static OSAL_INLINE u8 ecore_concrete_to_sw_fid(u32 concrete_fid)
 }
 
 #define PKT_LB_TC 9
-#define MAX_NUM_VOQS_E4 20
 
 int ecore_configure_vport_wfq(struct ecore_dev *p_dev, u16 vp_id, u32 rate);
 void ecore_configure_vp_wfq_on_link_change(struct ecore_dev *p_dev,
@@ -1022,5 +1092,21 @@ enum _ecore_status_t ecore_all_ppfids_wr(struct ecore_hwfn *p_hwfn,
 /* Utility functions for dumping the content of the NIG LLH filters */
 enum _ecore_status_t ecore_llh_dump_ppfid(struct ecore_dev *p_dev, u8 ppfid);
 enum _ecore_status_t ecore_llh_dump_all(struct ecore_dev *p_dev);
+
+/**
+ * @brief ecore_set_platform_str - Set the debug dump platform string.
+ * Write the ecore version and device's string to the given buffer.
+ *
+ * @param p_hwfn
+ * @param buf_str
+ * @param buf_size
+ */
+void ecore_set_platform_str(struct ecore_hwfn *p_hwfn,
+			    char *buf_str, u32 buf_size);
+
+#define TSTORM_QZONE_START	PXP_VF_BAR0_START_SDM_ZONE_A
+
+#define MSTORM_QZONE_START(dev) \
+	(TSTORM_QZONE_START + (TSTORM_QZONE_SIZE * NUM_OF_L2_QUEUES(dev)))
 
 #endif /* __ECORE_H */

@@ -7,9 +7,9 @@ Cephadm Operations
 Watching cephadm log messages
 =============================
 
-Cephadm writes logs to the ``cephadm`` cluster log channel. You can
-monitor Ceph's activity in real time by reading the logs as they fill
-up. Run the following command to see the logs in real time:
+The cephadm orchestrator module writes logs to the ``cephadm`` cluster log
+channel. You can monitor Ceph's activity in real time by reading the logs as
+they fill up. Run the following command to see the logs in real time:
 
 .. prompt:: bash #
 
@@ -171,6 +171,75 @@ Modifying the log retention schedule
 By default, cephadm sets up log rotation on each host to rotate these
 files.  You can configure the logging retention schedule by modifying
 ``/etc/logrotate.d/ceph.<cluster-fsid>``.
+
+
+Per-node cephadm logs
+=====================
+
+The cephadm executable, either run directly by a user or by the cephadm
+orchestration module, may also generate logs. It does so independently of
+the other Ceph components running in containers. By default, this executable
+logs to the file ``/var/log/ceph/cephadm.log``.
+
+This logging destination is configurable and you may choose to log to the
+file, to the syslog/journal, or to both.
+
+Setting a cephadm log destination during bootstrap
+--------------------------------------------------
+
+The ``cephadm`` command may be executed with the option ``--log-dest=file``
+or with ``--log-dest=syslog`` or both. These options control where cephadm
+will store persistent logs for each invocation. When these options are
+specified for the ``cephadm bootstrap`` command the system will automatically
+record these settings for future invocations of ``cephadm`` by the cephadm
+orchestration module.
+
+For example:
+
+.. prompt:: bash #
+
+  cephadm --log-dest=syslog bootstrap # ... other bootstrap arguments ...
+
+If you want to manually specify exactly what log destination to use
+during bootstrap, independent from the ``--log-dest`` options, you may add
+a configuration key ``mgr/cephadm/cephadm_log_destination`` to the
+initial configuration file, under the ``[mgr]`` section. Valid values for
+the key are: ``file``, ``syslog``, and ``file,syslog``.
+
+For example:
+
+.. prompt:: bash #
+
+  cat >/tmp/bootstrap.conf <<EOF
+  [mgr]
+  mgr/cephadm/cephadm_log_destination = syslog
+  EOF
+  cephadm bootstrap --config /tmp/bootstrap.conf # ... other bootstrap arguments ...
+
+Setting a cephadm log destination on an existing cluster
+--------------------------------------------------------
+
+An existing Ceph cluster can be configured to use a specific cephadm log
+destination by setting the ``mgr/cephadm/cephadm_log_destination``
+configuration value to one of ``file``, ``syslog``, or ``file,syslog``. This
+will cause the cephadm orchestration module to run ``cephadm`` so that logs go
+to ``/var/log/ceph/cephadm.log``, the syslog/journal, or both, respectively.
+
+For example:
+
+.. prompt:: bash #
+
+  # set the cephadm executable to log to syslog
+  ceph config set mgr mgr/cephadm/cephadm_log_destination syslog
+  # set the cephadm executable to log to both the log file and syslog
+  ceph config set mgr mgr/cephadm/cephadm_log_destination file,syslog
+  # set the cephadm executable to log to the log file
+  ceph config set mgr mgr/cephadm/cephadm_log_destination file
+
+.. note:: If you execute cephadm commands directly, such as cephadm shell,
+   this option will not apply. To have cephadm log to locations other than
+   the default log file When running cephadm commands directly use the
+   ``--log-dest`` options described in the bootstrap section above.
 
 
 Data location
@@ -532,6 +601,13 @@ The resulting keyring file is:
 
   -rw-r-----. 1 qemu qemu 156 Apr 21 08:47 /etc/ceph/client.client.rbd.keyring
 
+By default, cephadm will also manage ``/etc/ceph/ceph.conf`` on hosts where it writes the keyrings.
+This feature can be suppressed by passing ``--no-ceph-conf`` when setting the keyring.
+
+.. prompt:: bash #
+
+  ceph orch client-keyring set client.foo label:foo 0:0 --no-ceph-conf
+
 Disabling Management of a Keyring File
 --------------------------------------
 
@@ -588,6 +664,51 @@ For example, to distribute configs to hosts with the ``bare_config`` label, run 
   ceph config set mgr mgr/cephadm/manage_etc_ceph_ceph_conf_hosts label:bare_config
 
 (See :ref:`orchestrator-cli-placement-spec` for more information about placement specs.)
+
+
+Limiting Password-less sudo Access
+==================================
+
+By default, the cephadm install guide recommends enabling password-less
+``sudo`` for the cephadm user. This option is the most flexible and
+future-proof but may not be preferred in all environments. An administrator can
+restrict ``sudo`` to only running an exact list of commands without password
+access.  Note that this list may change between Ceph versions and
+administrators choosing this option should read the release notes and review
+this list in the destination version of the Ceph documentation. If the list
+differs one must extend the list of password-less ``sudo`` commands prior to
+upgrade.
+
+Commands requiring password-less sudo support:
+
+  - ``chmod``
+  - ``chown``
+  - ``ls``
+  - ``mkdir``
+  - ``mv``
+  - ``rm``
+  - ``sysctl``
+  - ``touch``
+  - ``true``
+  - ``which`` (see note)
+  - ``/usr/bin/cephadm`` or python executable (see note)
+
+.. note:: Typically cephadm will execute ``which`` to determine what python3
+   command is available and then use the command returned by ``which`` in
+   subsequent commands.
+   Before configuring ``sudo`` run ``which python3`` to determine what
+   python command to add to the ``sudo`` configuration.
+   In some rare configurations ``/usr/bin/cephadm`` will be used instead.
+
+
+Configuring the ``sudoers`` file can be performed using a tool like ``visudo``
+and adding or replacing a user configuration line such as the following:
+
+.. code-block::
+
+  # assuming the cephadm user is named "ceph"
+  ceph ALL=(ALL) NOPASSWD:/usr/bin/chmod,/usr/bin/chown,/usr/bin/ls,/usr/bin/mkdir,/usr/bin/mv,/usr/bin/rm,/usr/sbin/sysctl,/usr/bin/touch,/usr/bin/true,/usr/bin/which,/usr/bin/cephadm,/usr/bin/python3
+
 
 Purging a cluster
 =================

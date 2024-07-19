@@ -1,5 +1,5 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright 2017 NXP
+    Copyright 2017,2020-2021 NXP
 
 
 
@@ -10,8 +10,9 @@ The security library provides a framework for management and provisioning
 of security protocol operations offloaded to hardware based devices. The
 library defines generic APIs to create and free security sessions which can
 support full protocol offload as well as inline crypto operation with
-NIC or crypto devices. The framework currently only supports the IPsec and PDCP
-protocol and associated operations, other protocols will be added in future.
+NIC or crypto devices. The framework currently only supports the IPsec, PDCP
+and DOCSIS protocols and associated operations, other protocols will be added
+in the future.
 
 Design Principles
 -----------------
@@ -51,7 +52,7 @@ however all security protocol related headers are still attached to the
 packet. e.g. In case of IPsec, the IPsec tunnel headers (if any),
 ESP/AH headers will remain in the packet but the received packet
 contains the decrypted data where the encrypted data was when the packet
-arrived. The driver Rx path check the descriptors and and based on the
+arrived. The driver Rx path check the descriptors and based on the
 crypto status sets additional flags in the rte_mbuf.ol_flags field.
 
 .. note::
@@ -65,7 +66,7 @@ Egress Data path - The software prepares the egress packet by adding
 relevant security protocol headers. Only the data will not be
 encrypted by the software. The driver will accordingly configure the
 tx descriptors. The hardware device will encrypt the data before sending the
-the packet out.
+packet out.
 
 .. note::
 
@@ -124,8 +125,9 @@ ESP/AH headers will be removed from the packet and the received packet
 will contains the decrypted packet only. The driver Rx path checks the
 descriptors and based on the crypto status sets additional flags in
 ``rte_mbuf.ol_flags`` field. The driver would also set device-specific
-metadata in ``rte_mbuf.udata64`` field. This will allow the application
-to identify the security processing done on the packet.
+metadata in ``RTE_SECURITY_DYNFIELD_NAME`` field.
+This will allow the application to identify the security processing
+done on the packet.
 
 .. note::
 
@@ -144,7 +146,9 @@ adding the relevant protocol headers and encrypting the data before sending
 the packet out. The software should make sure that the buffer
 has required head room and tail room for any protocol header addition. The
 software may also do early fragmentation if the resultant packet is expected
-to cross the MTU size.
+to cross the MTU size. The software should also make sure that L2 header contents
+are updated with the final L2 header which is expected post IPsec processing as
+the IPsec offload will only update L3 and above in egress path.
 
 
 .. note::
@@ -296,6 +300,106 @@ Just like IPsec, in case of PDCP also header addition/deletion, cipher/
 de-cipher, integrity protection/verification is done based on the action
 type chosen.
 
+DOCSIS Protocol
+~~~~~~~~~~~~~~~
+
+The Data Over Cable Service Interface Specification (DOCSIS) support comprises
+the combination of encryption/decryption and CRC generation/verification, for
+use in a DOCSIS-MAC pipeline.
+
+.. code-block:: c
+
+
+               Downlink                       Uplink
+               --------                       ------
+
+            Ethernet frame                Ethernet frame
+           from core network              to core network
+                  |                              ^
+                  ~                              |
+                  |                              ~         ----+
+                  V                              |             |
+        +---------|----------+        +----------|---------+   |
+        |   CRC generation   |        |  CRC verification  |   |
+        +---------|----------+        +----------|---------+   |   combined
+                  |                              |             > Crypto + CRC
+        +---------|----------+        +----------|---------+   |
+        |     Encryption     |        |     Decryption     |   |
+        +---------|----------+        +----------|---------+   |
+                  |                              ^             |
+                  ~                              |         ----+
+                  |                              ~
+                  V                              |
+             DOCSIS frame                  DOCSIS frame
+            to Cable Modem               from Cable Modem
+
+The encryption/decryption is a combination of CBC and CFB modes using either AES
+or DES algorithms as specified in the DOCSIS Security Specification (from DPDK
+lib_rtecryptodev perspective, these are RTE_CRYPTO_CIPHER_AES_DOCSISBPI and
+RTE_CRYPTO_CIPHER_DES_DOCSISBPI).
+
+The CRC is Ethernet CRC-32 as specified in Ethernet/[ISO/IEC 8802-3].
+
+.. note::
+
+    * The offset and length of data for which CRC needs to be computed are
+      specified via the auth offset and length fields of the rte_crypto_sym_op.
+    * Other DOCSIS protocol functionality such as Header Checksum (HCS)
+      calculation may be added in the future.
+
+MACSEC Protocol
+~~~~~~~~~~~~~~~
+
+Media Access Control security (MACsec) provides point-to-point security
+on Ethernet links and is defined by IEEE standard 802.1AE.
+MACsec secures an Ethernet link for almost all traffic,
+including frames from the Link Layer Discovery Protocol (LLDP),
+Link Aggregation Control Protocol (LACP),
+Dynamic Host Configuration Protocol (DHCP),
+Address Resolution Protocol (ARP),
+and other protocols that are not typically secured on an Ethernet link
+because of limitations with other security solutions.
+
+.. code-block:: c
+
+             Receive                                                Transmit
+             -------                                                --------
+
+         Ethernet frame                                          Ethernet frame
+          from network                                           towards network
+                |                                                      ^
+                ~                                                      |
+                |                                                      ~
+                V                                                      |
+    +-----------------------+      +------------------+      +-------------------------+
+    | Secure Frame Verify   |      | Cipher Suite(SA) |      | Secure Frame Generation |
+    +-----------------------+<-----+------------------+----->+-------------------------+
+    | SecTAG + ICV remove   |      |  SECY   |   SC   |      | SecTAG + ICV Added      |
+    +---+-------------------+      +------------------+      +-------------------------+
+                |                                                      ^
+                |                                                      |
+                V                                                      |
+        Packet to Core/App                                     Packet from Core/App
+
+
+
+To configure MACsec on an inline NIC device or a lookaside crypto device,
+a security association (SA) and a secure channel (SC) are created
+before creating rte_security session.
+
+SA is created using API ``rte_security_macsec_sa_create``
+which allows setting SA keys, salt, SSCI, packet number (PN) into the PMD,
+and the API returns a handle which can be used to map it with a secure channel,
+using the API ``rte_security_macsec_sc_create``.
+Same SAs can be used for multiple SCs.
+The Rx SC will need a set of 4 SAs for each of the association numbers (AN).
+For Tx SC a single SA is set which will be used by hardware to process the packet.
+
+The API ``rte_security_macsec_sc_create`` returns a handle for SC,
+and this handle is set in ``rte_security_macsec_xform``
+to create a MACsec session using ``rte_security_session_create``.
+
+
 Device Features and Capabilities
 ---------------------------------
 
@@ -359,6 +463,15 @@ PMD which supports the IPsec and PDCP protocol.
                 },
                 .crypto_capabilities = pmd_capabilities
         },
+	{ /* PDCP Lookaside Protocol offload short MAC-I */
+                .action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+                .protocol = RTE_SECURITY_PROTOCOL_PDCP,
+                .pdcp = {
+                        .domain = RTE_SECURITY_PDCP_MODE_SHORT_MAC,
+                        .capa_flags = 0
+                },
+                .crypto_capabilities = pmd_capabilities
+        },
         {
                 .action = RTE_SECURITY_ACTION_TYPE_NONE
         }
@@ -408,6 +521,85 @@ PMD which supports the IPsec and PDCP protocol.
         }
     }
 
+Below is an example of the capabilities for a PMD which supports the DOCSIS
+protocol.
+
+.. code-block:: c
+
+    static const struct rte_security_capability pmd_security_capabilities[] = {
+        { /* DOCSIS Uplink */
+                .action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+                .protocol = RTE_SECURITY_PROTOCOL_DOCSIS,
+                .docsis = {
+                        .direction = RTE_SECURITY_DOCSIS_UPLINK
+                },
+                .crypto_capabilities = pmd_capabilities
+        },
+        { /* DOCSIS Downlink */
+                .action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+                .protocol = RTE_SECURITY_PROTOCOL_DOCSIS,
+                .docsis = {
+                        .direction = RTE_SECURITY_DOCSIS_DOWNLINK
+                },
+                .crypto_capabilities = pmd_capabilities
+        },
+        {
+                .action = RTE_SECURITY_ACTION_TYPE_NONE
+        }
+    };
+    static const struct rte_cryptodev_capabilities pmd_capabilities[] = {
+        {    /* AES DOCSIS BPI */
+            .op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+            .sym = {
+                .xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+                .cipher = {
+                    .algo = RTE_CRYPTO_CIPHER_AES_DOCSISBPI,
+                    .block_size = 16,
+                    .key_size = {
+                        .min = 16,
+                        .max = 32,
+                        .increment = 16
+                    },
+                    .iv_size = {
+                        .min = 16,
+                        .max = 16,
+                        .increment = 0
+                    }
+                }
+            }
+        },
+
+        RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
+    };
+
+Below is the example PMD capability for MACsec
+
+.. code-block:: c
+
+    static const struct rte_security_capability pmd_security_capabilities[] = {
+        {
+                .action = RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL,
+                .protocol = RTE_SECURITY_PROTOCOL_MACSEC,
+                .macsec = {
+                        .mtu = 1500,
+                        .alg = RTE_SECURITY_MACSEC_ALG_GCM_128,
+                        .max_nb_sc = 64,
+                        .max_nb_sa = 128,
+                        .max_nb_sess = 64,
+                        .replay_win_sz = 4096,
+                        .relative_sectag_insert = 1,
+                        .fixed_sectag_insert = 1,
+                        .icv_include_da_sa = 1,
+                        .ctrl_port_enable = 1,
+                        .preserve_sectag = 1,
+                        .preserve_icv = 1,
+                        .validate_frames = 1,
+                        .re_key = 1,
+                        .anti_replay = 1,
+                },
+                .crypto_capabilities = NULL,
+        },
+    };
 
 Capabilities Discovery
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -435,8 +627,12 @@ and this allows further acceleration of the offload of Crypto workloads.
 
 The Security framework provides APIs to create and free sessions for crypto/ethernet
 devices, where sessions are mempool objects. It is the application's responsibility
-to create and manage the session mempools. The mempool object size should be able to
-accommodate the driver's private data of security session.
+to create and manage two session mempools - one for session and other for session
+private data. The private session data mempool object size should be able to
+accommodate the driver's private data of security session. The application can get
+the size of session private data using API ``rte_security_session_get_size``.
+And the session mempool object size should be enough to accommodate
+``rte_security_session``.
 
 Once the session mempools have been created, ``rte_security_session_create()``
 is used to allocate and initialize a session for the required crypto/ethernet device.
@@ -457,17 +653,12 @@ created by the application is attached to the security session by the API
 
 For Inline Crypto and Inline protocol offload, device specific defined metadata is
 updated in the mbuf using ``rte_security_set_pkt_metadata()`` if
-``DEV_TX_OFFLOAD_SEC_NEED_MDATA`` is set.
-
-For inline protocol offloaded ingress traffic, the application can register a
-pointer, ``userdata`` , in the security session. When the packet is received,
-``rte_security_get_userdata()`` would return the userdata registered for the
-security session which processed the packet.
+``RTE_ETH_TX_OFFLOAD_SEC_NEED_MDATA`` is set.
 
 .. note::
 
-    In case of inline processed packets, ``rte_mbuf.udata64`` field would be
-    used by the driver to relay information on the security processing
+    In case of inline processed packets, ``RTE_SECURITY_DYNFIELD_NAME`` field
+    would be used by the driver to relay information on the security processing
     associated with the packet. In ingress, the driver would set this in Rx
     path while in egress, ``rte_security_set_pkt_metadata()`` would perform a
     similar operation. The application is expected not to modify the field
@@ -491,6 +682,7 @@ Security Session configuration structure is defined as ``rte_security_session_co
                 struct rte_security_ipsec_xform ipsec;
                 struct rte_security_macsec_xform macsec;
                 struct rte_security_pdcp_xform pdcp;
+                struct rte_security_docsis_xform docsis;
         };
         /**< Configuration parameters for security session */
         struct rte_crypto_sym_xform *crypto_xform;
@@ -511,13 +703,20 @@ Offload.
         /**< No security actions */
         RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO,
         /**< Crypto processing for security protocol is processed inline
-         * during transmission */
+         * during transmission
+         */
         RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL,
         /**< All security protocol processing is performed inline during
-         * transmission */
-        RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL
+         * transmission
+         */
+        RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
         /**< All security protocol processing including crypto is performed
-         * on a lookaside accelerator */
+         * on a lookaside accelerator
+         */
+        RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO
+        /**< Similar to ACTION_TYPE_NONE but crypto processing for security
+         * protocol is processed synchronously by a CPU.
+         */
     };
 
 The ``rte_security_session_protocol`` is defined as
@@ -531,6 +730,8 @@ The ``rte_security_session_protocol`` is defined as
         /**< MACSec Protocol */
         RTE_SECURITY_PROTOCOL_PDCP,
         /**< PDCP Protocol */
+        RTE_SECURITY_PROTOCOL_DOCSIS,
+        /**< DOCSIS Protocol */
     };
 
 Currently the library defines configuration parameters for IPsec and PDCP only.
@@ -539,53 +740,11 @@ which will be updated in the future.
 
 IPsec related configuration parameters are defined in ``rte_security_ipsec_xform``
 
-.. code-block:: c
-
-    struct rte_security_ipsec_xform {
-        uint32_t spi;
-        /**< SA security parameter index */
-        uint32_t salt;
-        /**< SA salt */
-        struct rte_security_ipsec_sa_options options;
-        /**< various SA options */
-        enum rte_security_ipsec_sa_direction direction;
-        /**< IPsec SA Direction - Egress/Ingress */
-        enum rte_security_ipsec_sa_protocol proto;
-        /**< IPsec SA Protocol - AH/ESP */
-        enum rte_security_ipsec_sa_mode mode;
-        /**< IPsec SA Mode - transport/tunnel */
-        struct rte_security_ipsec_tunnel_param tunnel;
-        /**< Tunnel parameters, NULL for transport mode */
-    };
+MACsec related configuration parameters are defined in ``rte_security_macsec_xform``
 
 PDCP related configuration parameters are defined in ``rte_security_pdcp_xform``
 
-.. code-block:: c
-
-    struct rte_security_pdcp_xform {
-        int8_t bearer;	/**< PDCP bearer ID */
-        /** Enable in order delivery, this field shall be set only if
-         * driver/HW is capable. See RTE_SECURITY_PDCP_ORDERING_CAP.
-         */
-        uint8_t en_ordering;
-        /** Notify driver/HW to detect and remove duplicate packets.
-         * This field should be set only when driver/hw is capable.
-         * See RTE_SECURITY_PDCP_DUP_DETECT_CAP.
-         */
-        uint8_t remove_duplicates;
-        /** PDCP mode of operation: Control or data */
-        enum rte_security_pdcp_domain domain;
-        /** PDCP Frame Direction 0:UL 1:DL */
-        enum rte_security_pdcp_direction pkt_dir;
-        /** Sequence number size, 5/7/12/15/18 */
-        enum rte_security_pdcp_sn_size sn_size;
-        /** Starting Hyper Frame Number to be used together with the SN
-         * from the PDCP frames
-         */
-        uint32_t hfn;
-        /** HFN Threshold for key renegotiation */
-        uint32_t hfn_threshold;
-    };
+DOCSIS related configuration parameters are defined in ``rte_security_docsis_xform``
 
 
 Security API
@@ -604,7 +763,7 @@ The ingress/egress flow attribute should match that specified in the security
 session if the security session supports the definition of the direction.
 
 Multiple flows can be configured to use the same security session. For
-example if the security session specifies an egress IPsec SA, then multiple
+example if the security session specifies an egress IPsec/MACsec SA, then multiple
 flows can be specified to that SA. In the case of an ingress IPsec SA then
 it is only valid to have a single flow to map to that security session.
 
@@ -614,8 +773,8 @@ it is only valid to have a single flow to map to that security session.
                  |
         +--------|--------+
         |    Add/Remove   |
-        |     IPsec SA    |   <------ Build security flow action of
-        |        |        |           ipsec transform
+        | IPsec/MACsec SA |   <------ Build security flow action of
+        |        |        |           IPsec/MACsec transform
         |--------|--------|
                  |
         +--------V--------+
@@ -634,9 +793,9 @@ it is only valid to have a single flow to map to that security session.
         |                 |
         +--------|--------+
 
-* Add/Delete SA flow:
+* Add/Delete IPsec SA flow:
   To add a new inline SA construct a rte_flow_item for Ethernet + IP + ESP
-  using the SA selectors and the ``rte_crypto_ipsec_xform`` as the ``rte_flow_action``.
+  using the SA selectors and the ``rte_security_ipsec_xform`` as the ``rte_flow_action``.
   Note that any rte_flow_items may be empty, which means it is not checked.
 
 .. code-block:: console
@@ -650,3 +809,48 @@ it is only valid to have a single flow to map to that security session.
         +-------+            +--------+    +-----+
         |  Eth  | ->  ... -> |   ESP  | -> | END |
         +-------+            +--------+    +-----+
+
+* Add/Delete MACsec SA flow:
+  To add a new inline SA construct a rte_flow_item for Ethernet + SecTAG
+  using the SA selectors and the ``rte_security_macsec_xform`` as the ``rte_flow_action``.
+  Note that any rte_flow_items may be empty, which means it is not checked.
+
+.. code-block:: console
+
+    In its most basic form, MACsec flow specification is as follows:
+        +-------+     +----------+     +-----+
+        |  Eth  | ->  |  SecTag  |  -> | END |
+        +-------+     +----------+     +-----+
+
+    However, the API can represent, MACsec offload with any encapsulation:
+        +-------+            +--------+    +-----+
+        |  Eth  | ->  ... -> | SecTag | -> | END |
+        +-------+            +--------+    +-----+
+
+
+Telemetry support
+-----------------
+
+The Security library has support for displaying Crypto device information
+with respect to its Security capabilities. Telemetry commands that can be used
+are shown below.
+
+#. Get the list of available Crypto devices by ID, that supports Security features::
+
+     --> /security/cryptodev/list
+     {"/security/cryptodev/list": [0, 1, 2, 3]}
+
+#. Get the security capabilities of a Crypto device::
+
+     --> /security/cryptodev/sec_caps,0
+	 {"/security/cryptodev/sec_caps": {"sec_caps": [<array of serialized bytes of
+	 capabilities>], "sec_caps_n": <number of capabilities>}}
+
+ #. Get the security crypto capabilities of a Crypto device::
+
+     --> /security/cryptodev/crypto_caps,0,0
+	 {"/security/cryptodev/crypto_caps": {"crypto_caps": [<array of serialized bytes of
+	 capabilities>], "crypto_caps_n": <number of capabilities>}}
+
+For more information on how to use the Telemetry interface, see
+the :doc:`../howto/telemetry`.

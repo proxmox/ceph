@@ -19,22 +19,32 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <fstream>
+#include <cstdlib>
+#include <chrono>
+#include <iostream>
+#include <fmt/format.h>
+#include <boost/program_options.hpp>
+#include <boost/make_shared.hpp>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/core/app-template.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/alien.hh>
 #include <seastar/core/scollectd.hh>
 #include <seastar/core/metrics_api.hh>
-#include <boost/program_options.hpp>
 #include <seastar/core/print.hh>
 #include <seastar/util/log.hh>
 #include <seastar/util/log-cli.hh>
 #include <seastar/net/native-stack.hh>
-#include <boost/program_options.hpp>
-#include <boost/make_shared.hpp>
-#include <fstream>
-#include <cstdlib>
-
 #include "program_options.hh"
+#endif
 
 namespace seastar {
 
@@ -51,7 +61,7 @@ seastar_options_from_config(app_template::config cfg) {
     opts.auto_handle_sigint_sigterm = std::move(cfg.auto_handle_sigint_sigterm);
     opts.reactor_opts.task_quota_ms.set_default_value(cfg.default_task_quota / 1ms);
     opts.reactor_opts.max_networking_io_control_blocks.set_default_value(cfg.max_networking_aio_io_control_blocks);
-    opts.smp_opts.reserve_additional_memory = cfg.reserve_additional_memory;
+    opts.smp_opts.reserve_additional_memory_per_shard = cfg.reserve_additional_memory_per_shard;
     return opts;
 }
 

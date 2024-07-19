@@ -13,7 +13,7 @@
 
 #include <linux/if_tun.h>
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_ether.h>
 #include <rte_gso.h>
 #include "tap_log.h"
@@ -70,8 +70,8 @@ struct pmd_internals {
 	char remote_iface[RTE_ETH_NAME_MAX_LEN]; /* Remote netdevice name */
 	char name[RTE_ETH_NAME_MAX_LEN];  /* Internal Tap device name */
 	int type;                         /* Type field - TUN|TAP */
-	struct ether_addr eth_addr;       /* Mac address of the device port */
-	struct ifreq remote_initial_flags;   /* Remote netdevice flags on init */
+	struct rte_ether_addr eth_addr;   /* Mac address of the device port */
+	struct ifreq remote_initial_flags;/* Remote netdevice flags on init */
 	int remote_if_index;              /* remote netdevice IF_INDEX */
 	int if_index;                     /* IF_INDEX for the port */
 	int ioctl_sock;                   /* socket for ioctl calls */
@@ -80,6 +80,7 @@ struct pmd_internals {
 	int flower_support;               /* 1 if kernel supports, else 0 */
 	int flower_vlan_support;          /* 1 if kernel supports, else 0 */
 	int rss_enabled;                  /* 1 if RSS is enabled, else 0 */
+	int persist;			  /* 1 if keep link up, else 0 */
 	/* implicit rules set when RSS is enabled */
 	int map_fd;                       /* BPF RSS map fd */
 	int bpf_fd[RTE_PMD_TAP_MAX_QUEUES];/* List of bpf fds per queue */
@@ -89,8 +90,9 @@ struct pmd_internals {
 	LIST_HEAD(tap_implicit_flows, rte_flow) implicit_flows;
 	struct rx_queue rxq[RTE_PMD_TAP_MAX_QUEUES]; /* List of RX queues */
 	struct tx_queue txq[RTE_PMD_TAP_MAX_QUEUES]; /* List of TX queues */
-	struct rte_intr_handle intr_handle;          /* LSC interrupt handle. */
+	struct rte_intr_handle *intr_handle;         /* LSC interrupt handle. */
 	int ka_fd;                        /* keep-alive file descriptor */
+	struct rte_mempool *gso_ctx_mp;     /* Mempool for GSO packets */
 };
 
 struct pmd_process_private {

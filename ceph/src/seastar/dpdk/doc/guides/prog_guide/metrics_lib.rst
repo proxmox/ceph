@@ -154,6 +154,20 @@ print out all metrics for a given port:
     }
 
 
+Deinitialising the library
+--------------------------
+
+Once the library usage is done, it must be deinitialized by calling
+``rte_metrics_deinit()`` which will free the shared memory reserved
+during initialization.
+
+.. code-block:: c
+
+    err = rte_metrics_deinit(void);
+
+If the return value is negative, it means deinitialization failed.
+This function **must** be called from a primary process.
+
 Bit-rate statistics library
 ---------------------------
 
@@ -276,7 +290,7 @@ Timestamp and latency calculation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The Latency stats library marks the time in the timestamp field of the
-mbuf for the ingress packets and sets the ``PKT_RX_TIMESTAMP`` flag of
+mbuf for the ingress packets and sets the ``RTE_MBUF_F_RX_TIMESTAMP`` flag of
 ``ol_flags`` for the mbuf to indicate the marked time as a valid one.
 At the egress, the mbufs with the flag set are considered having valid
 timestamp and are used for the latency calculation.

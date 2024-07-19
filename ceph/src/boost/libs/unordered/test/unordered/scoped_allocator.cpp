@@ -1,12 +1,13 @@
 
-// Copyright 2021 Christian Mazakas.
+// Copyright 2021-2023 Christian Mazakas.
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
 #include <boost/config.hpp>
 #include <boost/config/pragma_message.hpp>
+#include <boost/config/workaround.hpp>
 
-#if BOOST_CXX_VERSION <= 199711L
+#if BOOST_CXX_VERSION <= 199711L || BOOST_WORKAROUND(BOOST_GCC_VERSION, < 40800)
 
 BOOST_PRAGMA_MESSAGE(
   "scoped allocator adaptor tests only work under C++11 and above")
@@ -18,12 +19,7 @@ int main() {}
 // https://github.com/boostorg/unordered/issues/22
 //
 
-// clang-format off
-#include "../helpers/prefix.hpp"
-#include <boost/unordered_set.hpp>
-#include <boost/unordered_map.hpp>
-#include "../helpers/postfix.hpp"
-// clang-format on
+#include "../helpers/unordered.hpp"
 
 #include "../helpers/test.hpp"
 
@@ -31,10 +27,10 @@ int main() {}
 
 #include <boost/core/ignore_unused.hpp>
 
+#include <scoped_allocator>
 #include <string>
 #include <utility>
 #include <vector>
-#include <scoped_allocator>
 
 namespace test {
   template <class T> struct allocator
@@ -69,15 +65,12 @@ typedef std::scoped_allocator_adaptor<test::allocator<pair_type>,
   test::allocator<boost::uint64_t> >
   allocator_type;
 
-typedef boost::unordered_map<const boost::uint64_t, vector_type,
-  boost::hash<boost::uint64_t>, std::equal_to<boost::uint64_t>, allocator_type>
-  map_type;
-
-UNORDERED_AUTO_TEST (scoped_allocator) {
+template <class X> static void scoped_allocator(X*)
+{
   allocator_type alloc(
     test::allocator<pair_type>(1337), test::allocator<boost::uint64_t>(7331));
 
-  map_type map(alloc);
+  X map(alloc);
 
   for (unsigned i = 0; i < 10; ++i) {
     boost::ignore_unused(map[i]);
@@ -85,6 +78,24 @@ UNORDERED_AUTO_TEST (scoped_allocator) {
 
   BOOST_TEST(map.size() == 10);
 }
+
+#ifdef BOOST_UNORDERED_FOA_TESTS
+static boost::unordered_flat_map<const boost::uint64_t, vector_type,
+  boost::hash<boost::uint64_t>, std::equal_to<boost::uint64_t>, allocator_type>*
+  test_map;
+
+static boost::unordered_node_map<const boost::uint64_t, vector_type,
+  boost::hash<boost::uint64_t>, std::equal_to<boost::uint64_t>, allocator_type>*
+  test_node_map;
+
+UNORDERED_TEST(scoped_allocator, ((test_map)(test_node_map)))
+#else
+static boost::unordered_map<const boost::uint64_t, vector_type,
+  boost::hash<boost::uint64_t>, std::equal_to<boost::uint64_t>, allocator_type>*
+  test_map;
+
+UNORDERED_TEST(scoped_allocator, ((test_map)))
+#endif
 
 RUN_TESTS()
 

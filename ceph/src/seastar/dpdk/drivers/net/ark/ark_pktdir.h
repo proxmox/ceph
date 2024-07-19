@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-#define ARK_PKTDIR_BASE_ADR  0xa0000
+#define ARK_PKT_DIR_INIT_VAL 0x0110
 
 typedef void *ark_pkt_dir_t;
 
@@ -26,7 +26,7 @@ struct ark_pkt_dir_regs {
 	uint32_t ctrl;
 	uint32_t status;
 	uint32_t stall_cnt;
-} __attribute__ ((packed));
+} __rte_packed;
 
 struct ark_pkt_dir_inst {
 	volatile struct ark_pkt_dir_regs *regs;

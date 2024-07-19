@@ -86,33 +86,29 @@ steps below:
 Enabling security for the monitoring stack
 ----------------------------------------------
 
-By default, in a cephadm-managed cluster, the monitoring components are set up and configured without enabling security measures.
-While this suffices for certain deployments, others with strict security needs may find it necessary to protect the
-monitoring stack against unauthorized access. In such cases, cephadm relies on a specific configuration parameter,
+By default, in a cephadm managed cluster, the monitoring components are set up and configured without incorporating any security measures.
+While this setup might suffice for certain deployments, other users with stricter security needs may find it necessary to protect their
+monitoring stack against unauthorized access to metrics and data. In such cases, cephadm relies on a specific configuration parameter,
 `mgr/cephadm/secure_monitoring_stack`, which toggles the security settings for all monitoring components. To activate security
-measures, set this option to ``true`` with a command of the following form:
+measures, users must set this variable to true, as following:
 
    .. prompt:: bash #
 
      ceph config set mgr mgr/cephadm/secure_monitoring_stack true
 
-This change will trigger a sequence of reconfigurations across all monitoring daemons, typically requiring
+This configuration change will trigger a sequence of reconfigurations across all monitoring daemons, typically requiring
 few minutes until all components are fully operational. The updated secure configuration includes the following modifications:
 
-#. Prometheus: basic authentication is required to access the web portal and TLS is enabled for secure communication.
-#. Alertmanager: basic authentication is required to access the web portal and TLS is enabled for secure communication.
+#. Prometheus: basic authentication is requiered to access the web portal and TLS is enabled for secure communication.
+#. Alertmanager: basic authentication is requiered to access the web portal and TLS is enabled for secure communication.
 #. Node Exporter: TLS is enabled for secure communication.
 #. Grafana: TLS is enabled and authentication is requiered to access the datasource information.
 
-In this secure setup, users will need to setup authentication
-(username/password) for both Prometheus and Alertmanager. By default the
-username and password are set to ``admin``/``admin``. The user can change these
-value with the commands ``ceph orch prometheus set-credentials`` and ``ceph
-orch alertmanager set-credentials`` respectively. These commands offer the
-flexibility to input the username/password either as parameters or via a JSON
-file, which enhances security. Additionally, Cephadm provides the commands
-`orch prometheus get-credentials` and `orch alertmanager get-credentials` to
-retrieve the current credentials.
+In this secure setup, users will need to setup authentication (username/password) for both Prometheus and Alertmanager. By default user/password are
+set to admin/admin. The user can change these value through the commands `orch prometheus set-credentials` and `orch alertmanager set-credentials`
+respectively. These commands offer the flexibility to input the username/password either as parameters or via a JSON file, which enhances security. Additionally,
+Cephadm provides commands such as `orch prometheus get-credentials` and `orch alertmanager get-credentials` to retrieve the currently configured credentials such
+as default values.
 
 .. _cephadm-monitoring-centralized-logs:
 
@@ -160,6 +156,108 @@ example spec file:
 
 .. _cephadm_monitoring-images:
 
+.. _cephadm_default_images:
+
+Default images
+~~~~~~~~~~~~~~
+
+*The information in this section was developed by Eugen Block in a thread on
+the [ceph-users] mailing list in April of 2024. The thread can be viewed here:
+``https://lists.ceph.io/hyperkitty/list/ceph-users@ceph.io/thread/QGC66QIFBKRTPZAQMQEYFXOGZJ7RLWBN/``.*
+
+``cephadm`` stores a local copy of the ``cephadm`` binary in
+``var/lib/ceph/{FSID}/cephadm.{DIGEST}``, where ``{DIGEST}`` is an alphanumeric
+string representing the currently-running version of Ceph.
+
+To see the default container images, run a command of the following form:
+
+.. prompt:: bash #
+
+   grep -E "DEFAULT*IMAGE" /var/lib/ceph/{FSID}/cephadm.{DIGEST}
+
+::
+
+   DEFAULT_PROMETHEUS_IMAGE = 'quay.io/prometheus/prometheus:v2.51.0'
+   DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:2.9.5'    
+   DEFAULT_PROMTAIL_IMAGE = 'docker.io/grafana/promtail:2.9.5'    
+   DEFAULT_NODE_EXPORTER_IMAGE = 'quay.io/prometheus/node-exporter:v1.7.0'    
+   DEFAULT_ALERT_MANAGER_IMAGE = 'quay.io/prometheus/alertmanager:v0.27.0'   
+   DEFAULT_GRAFANA_IMAGE = 'quay.io/ceph/grafana:10.4.0'
+
+``cephadm`` stores a local copy of the ``cephadm`` binary in
+``var/lib/ceph/{FSID}/cephadm.{DIGEST}``, where ``{DIGEST}`` is an alphanumeric
+string representing the currently-running version of Ceph. In the Squid and
+Reef releases of Ceph, this ``cephadm`` file is stored as a zip file and must
+be unzipped before its contents can be examined.
+
+This procedure explains how to generate a list of the default container images
+used by ``cephadm``.
+
+.. note:: This procedure applies only to the Reef and Squid releases of Ceph.
+   If you are using a different version of Ceph, you cannot use this procedure
+   to examine the list of default containers used by cephadm. Make sure that
+   you are reading the documentation for the release of Ceph that you have
+   installed.
+
+#. To create a directory called ``cephadm_dir``, run the following command:
+
+   .. prompt:: bash #
+
+      mkdir cephadm_dir
+
+#. To unzip ``/var/lib/ceph/{FSID}/cephadm.{DIGEST}`` in the directory
+   ``cephadm_dir``, run a command of the following form:
+
+   .. prompt:: bash #
+
+      unzip /var/lib/ceph/{FSID}/cephadm.{DIGEST} -d cephadm_dir > /dev/null
+
+   ::
+
+      warning [/var/lib/ceph/{FSID}/cephadm.{DIGEST}]:  14 extra bytes at
+      beginning or within zipfile
+      (attempting to process anyway)
+
+
+#. To use ``egrep`` to search for the string ``_IMAGE`` in the file
+   ``cephadm_dir_cephadmlib/constants.py``, run the following command: 
+
+   .. prompt:: bash #
+
+      egrep "_IMAGE" cephadm_dir/cephadmlib/constants.py
+
+   ::
+
+      DEFAULT_IMAGE = 'quay.ceph.io/ceph-ci/ceph:main'
+      DEFAULT_IMAGE_IS_MAIN = True
+      DEFAULT_IMAGE_RELEASE = 'squid'
+      DEFAULT_PROMETHEUS_IMAGE = 'quay.io/prometheus/prometheus:v2.43.0'
+      DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:2.4.0'
+      DEFAULT_PROMTAIL_IMAGE = 'docker.io/grafana/promtail:2.4.0'
+      DEFAULT_NODE_EXPORTER_IMAGE = 'quay.io/prometheus/node-exporter:v1.5.0'
+      DEFAULT_ALERT_MANAGER_IMAGE = 'quay.io/prometheus/alertmanager:v0.25.0'
+      DEFAULT_GRAFANA_IMAGE = 'quay.io/ceph/grafana:9.4.12'
+      DEFAULT_HAPROXY_IMAGE = 'quay.io/ceph/haproxy:2.3'
+      DEFAULT_KEEPALIVED_IMAGE = 'quay.io/ceph/keepalived:2.2.4'
+      DEFAULT_NVMEOF_IMAGE = 'quay.io/ceph/nvmeof:1.2.1'
+      DEFAULT_SNMP_GATEWAY_IMAGE = 'docker.io/maxwo/snmp-notifier:v1.2.1'
+      DEFAULT_ELASTICSEARCH_IMAGE = 'quay.io/omrizeneva/elasticsearch:6.8.23'
+      DEFAULT_JAEGER_COLLECTOR_IMAGE = 'quay.io/jaegertracing/jaeger-collector:1.29'
+      DEFAULT_JAEGER_AGENT_IMAGE = 'quay.io/jaegertracing/jaeger-agent:1.29'
+      DEFAULT_JAEGER_QUERY_IMAGE = 'quay.io/jaegertracing/jaeger-query:1.29'
+      DEFAULT_SMB_IMAGE = 'quay.io/samba.org/samba-server:devbuilds-centos-amd64'
+
+Default monitoring images are specified in
+``/src/cephadm/cephadmlib/constants.py`` and in
+``/src/pybind/mgr/cephadm/module.py``.
+
+*The information in the "Default Images" section was developed by Eugen Block
+in a thread on the [ceph-users] mailing list in April of 2024 and updated for
+Squid and Reef by Adam King in a thread on GitHub here:*
+`Default Images Squid GitHub discussion <https://github.com/ceph/ceph/pull/57208#discussion_r1586614140>`_.
+*The [ceph-users] thread can be viewed here:*
+`Default Images [ceph-users] mailing list thread <https://lists.ceph.io/hyperkitty/list/ceph-users@ceph.io/thread/QGC66QIFBKRTPZAQMQEYFXOGZJ7RLWBN/>`_.
+
 Using custom images
 ~~~~~~~~~~~~~~~~~~~
 
@@ -171,6 +269,15 @@ configuration first.  The following configuration options are available.
 - ``container_image_grafana``
 - ``container_image_alertmanager``
 - ``container_image_node_exporter``
+- ``container_image_loki``
+- ``container_image_promtail``
+- ``container_image_haproxy``
+- ``container_image_keepalived``
+- ``container_image_snmp_gateway``
+- ``container_image_elasticsearch``
+- ``container_image_jaeger_agent``
+- ``container_image_jaeger_collector``
+- ``container_image_jaeger_query``
 
 Custom images can be set with the ``ceph config`` command
 

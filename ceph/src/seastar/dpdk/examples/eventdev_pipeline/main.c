@@ -2,13 +2,17 @@
  * Copyright(c) 2016-2017 Intel Corporation
  */
 
+#include <ctype.h>
 #include <getopt.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <signal.h>
 #include <sched.h>
 
 #include "pipeline_common.h"
+
+struct fastpath_data *fdata;
 
 struct config_data cdata = {
 	.num_packets = (1L << 25), /* do ~32M packets */
@@ -19,6 +23,32 @@ struct config_data cdata = {
 	.num_stages = 1,
 	.worker_cq_depth = 16
 };
+
+static void
+dump_core_info(unsigned int lcore_id, struct worker_data *data,
+		unsigned int worker_idx)
+{
+	if (fdata->rx_core[lcore_id])
+		printf(
+			"[%s()] lcore %d executing NIC Rx\n",
+			__func__, lcore_id);
+
+	if (fdata->tx_core[lcore_id])
+		printf(
+			"[%s()] lcore %d executing NIC Tx\n",
+			__func__, lcore_id);
+
+	if (fdata->sched_core[lcore_id])
+		printf(
+			"[%s()] lcore %d executing scheduler\n",
+			__func__, lcore_id);
+
+	if (fdata->worker_core[lcore_id])
+		printf(
+			"[%s()] lcore %d executing worker, using eventdev port %u\n",
+			__func__, lcore_id,
+			data[worker_idx].port_id);
+}
 
 static bool
 core_in_use(unsigned int lcore_id) {
@@ -79,7 +109,7 @@ parse_coremask(const char *coremask)
 		val = xdigit2val(c);
 		for (j = 0; j < BITS_HEX && idx < MAX_NUM_CORE; j++, idx++) {
 			if ((1 << j) & val) {
-				mask |= (1UL << idx);
+				mask |= (1ULL << idx);
 				count++;
 			}
 		}
@@ -230,129 +260,23 @@ parse_app_args(int argc, char **argv)
 		usage();
 
 	for (i = 0; i < MAX_NUM_CORE; i++) {
-		fdata->rx_core[i] = !!(rx_lcore_mask & (1UL << i));
-		fdata->tx_core[i] = !!(tx_lcore_mask & (1UL << i));
-		fdata->sched_core[i] = !!(sched_lcore_mask & (1UL << i));
-		fdata->worker_core[i] = !!(worker_lcore_mask & (1UL << i));
+		fdata->rx_core[i] = !!(rx_lcore_mask & (1ULL << i));
+		fdata->tx_core[i] = !!(tx_lcore_mask & (1ULL << i));
+		fdata->sched_core[i] = !!(sched_lcore_mask & (1ULL << i));
+		fdata->worker_core[i] = !!(worker_lcore_mask & (1ULL << i));
 
 		if (fdata->worker_core[i])
 			cdata.num_workers++;
-		if (core_in_use(i))
-			cdata.active_cores++;
-	}
-}
-
-/*
- * Initializes a given port using global settings and with the RX buffers
- * coming from the mbuf_pool passed as a parameter.
- */
-static inline int
-port_init(uint8_t port, struct rte_mempool *mbuf_pool)
-{
-	struct rte_eth_rxconf rx_conf;
-	static const struct rte_eth_conf port_conf_default = {
-		.rxmode = {
-			.mq_mode = ETH_MQ_RX_RSS,
-			.max_rx_pkt_len = ETHER_MAX_LEN,
-		},
-		.rx_adv_conf = {
-			.rss_conf = {
-				.rss_hf = ETH_RSS_IP |
-					  ETH_RSS_TCP |
-					  ETH_RSS_UDP,
+		if (core_in_use(i)) {
+			if (!rte_lcore_is_enabled(i)) {
+				printf("lcore %d is not enabled in lcore list\n",
+					i);
+				rte_exit(EXIT_FAILURE,
+					"check lcore params failed\n");
 			}
+			cdata.active_cores++;
 		}
-	};
-	const uint16_t rx_rings = 1, tx_rings = 1;
-	const uint16_t rx_ring_size = 512, tx_ring_size = 512;
-	struct rte_eth_conf port_conf = port_conf_default;
-	int retval;
-	uint16_t q;
-	struct rte_eth_dev_info dev_info;
-	struct rte_eth_txconf txconf;
-
-	if (!rte_eth_dev_is_valid_port(port))
-		return -1;
-
-	rte_eth_dev_info_get(port, &dev_info);
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
-		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
-	rx_conf = dev_info.default_rxconf;
-	rx_conf.offloads = port_conf.rxmode.offloads;
-
-	port_conf.rx_adv_conf.rss_conf.rss_hf &=
-		dev_info.flow_type_rss_offloads;
-	if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-			port_conf_default.rx_adv_conf.rss_conf.rss_hf) {
-		printf("Port %u modified RSS hash function based on hardware support,"
-			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
-			port,
-			port_conf_default.rx_adv_conf.rss_conf.rss_hf,
-			port_conf.rx_adv_conf.rss_conf.rss_hf);
 	}
-
-	/* Configure the Ethernet device. */
-	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
-	if (retval != 0)
-		return retval;
-
-	/* Allocate and set up 1 RX queue per Ethernet port. */
-	for (q = 0; q < rx_rings; q++) {
-		retval = rte_eth_rx_queue_setup(port, q, rx_ring_size,
-				rte_eth_dev_socket_id(port), &rx_conf,
-				mbuf_pool);
-		if (retval < 0)
-			return retval;
-	}
-
-	txconf = dev_info.default_txconf;
-	txconf.offloads = port_conf_default.txmode.offloads;
-	/* Allocate and set up 1 TX queue per Ethernet port. */
-	for (q = 0; q < tx_rings; q++) {
-		retval = rte_eth_tx_queue_setup(port, q, tx_ring_size,
-				rte_eth_dev_socket_id(port), &txconf);
-		if (retval < 0)
-			return retval;
-	}
-
-	/* Display the port MAC address. */
-	struct ether_addr addr;
-	rte_eth_macaddr_get(port, &addr);
-	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			(unsigned int)port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
-
-	/* Enable RX in promiscuous mode for the Ethernet device. */
-	rte_eth_promiscuous_enable(port);
-
-	return 0;
-}
-
-static int
-init_ports(uint16_t num_ports)
-{
-	uint16_t portid;
-
-	if (!cdata.num_mbuf)
-		cdata.num_mbuf = 16384 * num_ports;
-
-	struct rte_mempool *mp = rte_pktmbuf_pool_create("packet_pool",
-			/* mbufs */ cdata.num_mbuf,
-			/* cache_size */ 512,
-			/* priv_size*/ 0,
-			/* data_room_size */ RTE_MBUF_DEFAULT_BUF_SIZE,
-			rte_socket_id());
-
-	RTE_ETH_FOREACH_DEV(portid)
-		if (port_init(portid, mp) != 0)
-			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
-					portid);
-
-	return 0;
 }
 
 static void
@@ -391,7 +315,6 @@ static void
 signal_handler(int signum)
 {
 	static uint8_t once;
-	uint16_t portid;
 
 	if (fdata->done)
 		rte_exit(1, "Exiting on signal %d\n", signum);
@@ -402,22 +325,6 @@ signal_handler(int signum)
 			rte_event_dev_dump(0, stdout);
 		once = 1;
 		fdata->done = 1;
-		rte_smp_wmb();
-
-		RTE_ETH_FOREACH_DEV(portid) {
-			rte_event_eth_rx_adapter_stop(portid);
-			rte_event_eth_tx_adapter_stop(portid);
-			rte_eth_dev_stop(portid);
-		}
-
-		rte_eal_mp_wait_lcore();
-
-		RTE_ETH_FOREACH_DEV(portid) {
-			rte_eth_dev_close(portid);
-		}
-
-		rte_event_dev_stop(0);
-		rte_event_dev_close(0);
 	}
 	if (signum == SIGTSTP)
 		rte_event_dev_dump(0, stdout);
@@ -501,7 +408,6 @@ main(int argc, char **argv)
 	if (dev_id < 0)
 		rte_exit(EXIT_FAILURE, "Error setting up eventdev\n");
 
-	init_ports(num_ports);
 	fdata->cap.adptr_setup(num_ports);
 
 	/* Start the Ethernet port. */
@@ -513,7 +419,7 @@ main(int argc, char **argv)
 	}
 
 	int worker_idx = 0;
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (lcore_id >= MAX_NUM_CORE)
 			break;
 
@@ -523,25 +429,7 @@ main(int argc, char **argv)
 			!fdata->sched_core[lcore_id])
 			continue;
 
-		if (fdata->rx_core[lcore_id])
-			printf(
-				"[%s()] lcore %d executing NIC Rx\n",
-				__func__, lcore_id);
-
-		if (fdata->tx_core[lcore_id])
-			printf(
-				"[%s()] lcore %d executing NIC Tx\n",
-				__func__, lcore_id);
-
-		if (fdata->sched_core[lcore_id])
-			printf("[%s()] lcore %d executing scheduler\n",
-					__func__, lcore_id);
-
-		if (fdata->worker_core[lcore_id])
-			printf(
-				"[%s()] lcore %d executing worker, using eventdev port %u\n",
-				__func__, lcore_id,
-				worker_data[worker_idx].port_id);
+		dump_core_info(lcore_id, worker_data, worker_idx);
 
 		err = rte_eal_remote_launch(fdata->cap.worker,
 				&worker_data[worker_idx], lcore_id);
@@ -556,8 +444,13 @@ main(int argc, char **argv)
 
 	lcore_id = rte_lcore_id();
 
-	if (core_in_use(lcore_id))
-		fdata->cap.worker(&worker_data[worker_idx++]);
+	if (core_in_use(lcore_id)) {
+		dump_core_info(lcore_id, worker_data, worker_idx);
+		fdata->cap.worker(&worker_data[worker_idx]);
+
+		if (fdata->worker_core[lcore_id])
+			worker_idx++;
+	}
 
 	rte_eal_mp_wait_lcore();
 
@@ -580,6 +473,19 @@ main(int argc, char **argv)
 		}
 
 	}
+
+	RTE_ETH_FOREACH_DEV(portid) {
+		rte_event_eth_rx_adapter_stop(portid);
+		rte_event_eth_tx_adapter_stop(portid);
+		if (rte_eth_dev_stop(portid) < 0)
+			printf("Failed to stop port %u", portid);
+		rte_eth_dev_close(portid);
+	}
+
+	rte_event_dev_stop(0);
+	rte_event_dev_close(0);
+
+	rte_eal_cleanup();
 
 	return 0;
 }

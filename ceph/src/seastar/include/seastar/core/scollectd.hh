@@ -21,6 +21,7 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <type_traits>
 #include <utility>
 #include <functional>
@@ -31,6 +32,7 @@
 #include <string>
 #include <tuple>
 #include <chrono>
+#endif
 
 #include <seastar/core/future.hh>
 #include <seastar/net/byteorder.hh>
@@ -38,7 +40,7 @@
 #include <seastar/core/sstring.hh>
 #include <seastar/util/log.hh>
 #include <seastar/util/program-options.hh>
-
+#include <seastar/util/modules.hh>
 #include <seastar/core/metrics_api.hh>
 
 namespace seastar {
@@ -283,7 +285,7 @@ struct typed {
 };
 
 template<typename T>
-static inline typed<T> make_typed(data_type type, T&& t) {
+inline typed<T> make_typed(data_type type, T&& t) {
     return typed<T>(type, std::forward<T>(t));
 }
 
@@ -546,31 +548,31 @@ struct is_callable;
 
 template<typename T>
 struct is_callable<T,
-typename std::enable_if<
-!std::is_void<std::invoke_result_t<T>>::value,
-void>::type> : public std::true_type {
+std::enable_if_t<
+!std::is_void_v<std::invoke_result_t<T>>,
+void>> : public std::true_type {
 };
 
 template<typename T>
 struct is_callable<T,
-typename std::enable_if<std::is_fundamental<T>::value, void>::type> : public std::false_type {
+std::enable_if_t<std::is_fundamental_v<T>, void>> : public std::false_type {
 };
 
 template<typename T>
 struct data_type_for<T,
-typename std::enable_if<
-std::is_integral<T>::value && std::is_unsigned<T>::value,
-void>::type> : public std::integral_constant<data_type,
+std::enable_if_t<
+std::is_integral_v<T> && std::is_unsigned_v<T>,
+void>> : public std::integral_constant<data_type,
 data_type::COUNTER> {
 };
 template<typename T>
 struct data_type_for<T,
-typename std::enable_if<std::is_floating_point<T>::value, void>::type> : public std::integral_constant<
+std::enable_if_t<std::is_floating_point_v<T>, void>> : public std::integral_constant<
 data_type, data_type::GAUGE> {
 };
 template<typename T>
 struct data_type_for<T,
-typename std::enable_if<is_callable<T>::value, void>::type> : public data_type_for<
+std::enable_if_t<is_callable<T>::value, void>> : public data_type_for<
 std::invoke_result_t<T>> {
 };
 template<typename T>
@@ -591,10 +593,10 @@ public:
         const W & _v;
     };
 
-    typedef typename std::remove_reference<T>::type value_type;
-    typedef typename std::conditional<
-            is_callable<typename std::remove_reference<T>::type>::value,
-            value_type, wrap<value_type> >::type stored_type;
+    typedef std::remove_reference_t<T> value_type;
+    typedef std::conditional_t<
+            is_callable<std::remove_reference_t<T>>::value,
+            value_type, wrap<value_type> > stored_type;
 
     value(const value_type & t)
     : value<T>(data_type_for<value_type>::value, t) {
@@ -630,14 +632,14 @@ private:
         }
     }
     template<typename V>
-    typename std::enable_if<std::is_integral<V>::value, uint64_t>::type convert(
+    std::enable_if_t<std::is_integral_v<V>, uint64_t> convert(
             V v) const {
         uint64_t i = v;
         // network byte order
         return ntohq(i);
     }
     template<typename V>
-    typename std::enable_if<std::is_floating_point<V>::value, uint64_t>::type convert(
+    std::enable_if_t<std::is_floating_point_v<V>, uint64_t> convert(
             V t) const {
         union {
             uint64_t i;
@@ -859,6 +861,6 @@ typed_value::typed_value(const type_id& tid, const scollectd::type_instance& ti,
 
 // Send a message packet (string)
 future<> send_notification(const type_instance_id & id, const sstring & msg);
-};
+}
 
 }

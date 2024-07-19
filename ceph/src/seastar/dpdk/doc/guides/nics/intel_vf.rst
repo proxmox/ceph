@@ -26,7 +26,7 @@ Refer to :numref:`figure_single_port_nic`.
 
 Therefore, a NIC is logically distributed among multiple virtual machines (as shown in :numref:`figure_single_port_nic`),
 while still having global data in common to share with the Physical Function and other Virtual Functions.
-The DPDK fm10kvf, i40evf, igbvf or ixgbevf as a Poll Mode Driver (PMD) serves for the Intel® 82576 Gigabit Ethernet Controller,
+The DPDK fm10kvf, iavf, igbvf or ixgbevf as a Poll Mode Driver (PMD) serves for the Intel® 82576 Gigabit Ethernet Controller,
 Intel® Ethernet Controller I350 family, Intel® 82599 10 Gigabit Ethernet Controller NIC,
 Intel® Fortville 10/40 Gigabit Ethernet Controller NIC's virtual PCI function, or PCIe host-interface of the Intel Ethernet Switch
 FM10000 Series.
@@ -88,6 +88,19 @@ For more detail on SR-IOV, please refer to the following documents:
     assignment in hypervisor. Take qemu for example, the device assignment should carry the IAVF device id (0x1889) like
     ``-device vfio-pci,x-pci-device-id=0x1889,host=03:0a.0``.
 
+    When IAVF is backed by an Intel® E810 device, the "Protocol Extraction" feature which is supported by ice PMD is also
+    available for IAVF PMD. The same devargs with the same parameters can be applied to IAVF PMD, for detail please reference
+    the section ``Protocol extraction for per queue`` of ice.rst.
+
+    Quanta size configuration is also supported when IAVF is backed by an Intel® E810 device by setting ``devargs``
+    parameter ``quanta_size`` like ``-a 18:00.0,quanta_size=2048``. The default value is 1024, and quanta size should be
+    set as the product of 64 in legacy host interface mode.
+
+    When IAVF is backed by an Intel® E810 device or an Intel® 700 Series Ethernet device, the reset watchdog is enabled
+    when link state changes to down. The default period is 2000us, defined by ``IAVF_DEV_WATCHDOG_PERIOD``.
+    Set ``devargs`` parameter ``watchdog_period`` to adjust the watchdog period in microseconds, or set it to 0 to disable the watchdog,
+    for example, ``-a 18:01.0,watchdog_period=5000`` or ``-a 18:01.0,watchdog_period=0``.
+
 The PCIE host-interface of Intel Ethernet Switch FM10000 Series VF infrastructure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -124,7 +137,6 @@ Intel® X710/XL710 Gigabit Ethernet Controller VF Infrastructure
 
 In a virtualized environment, the programmer can enable a maximum of *128 Virtual Functions (VF)*
 globally per Intel® X710/XL710 Gigabit Ethernet Controller NIC device.
-The number of queue pairs of each VF can be configured by ``CONFIG_RTE_LIBRTE_I40E_QUEUE_NUM_PER_VF`` in ``config`` file.
 The Physical Function in host could be either configured by the Linux* i40e driver
 (in the case of the Linux Kernel-based Virtual Machine [KVM]) or by DPDK PMD PF driver.
 When using both DPDK PMD PF/VF drivers, the whole NIC will be taken over by DPDK based application.
@@ -213,21 +225,21 @@ For example,
     *   If the max number of VFs (max_vfs) is set in the range of 1 to 32:
 
         If the number of Rx queues is specified as 4 (``--rxq=4`` in testpmd), then there are totally 32
-        pools (ETH_32_POOLS), and each VF could have 4 Rx queues;
+        pools (RTE_ETH_32_POOLS), and each VF could have 4 Rx queues;
 
         If the number of Rx queues is specified as 2 (``--rxq=2`` in testpmd), then there are totally 32
-        pools (ETH_32_POOLS), and each VF could have 2 Rx queues;
+        pools (RTE_ETH_32_POOLS), and each VF could have 2 Rx queues;
 
     *   If the max number of VFs (max_vfs) is in the range of 33 to 64:
 
         If the number of Rx queues in specified as 4 (``--rxq=4`` in testpmd), then error message is expected
         as ``rxq`` is not correct at this case;
 
-        If the number of rxq is 2 (``--rxq=2`` in testpmd), then there is totally 64 pools (ETH_64_POOLS),
+        If the number of rxq is 2 (``--rxq=2`` in testpmd), then there is totally 64 pools (RTE_ETH_64_POOLS),
         and each VF have 2 Rx queues;
 
-    On host, to enable VF RSS functionality, rx mq mode should be set as ETH_MQ_RX_VMDQ_RSS
-    or ETH_MQ_RX_RSS mode, and SRIOV mode should be activated (max_vfs >= 1).
+    On host, to enable VF RSS functionality, rx mq mode should be set as RTE_ETH_MQ_RX_VMDQ_RSS
+    or RTE_ETH_MQ_RX_RSS mode, and SRIOV mode should be activated (max_vfs >= 1).
     It also needs config VF RSS information like hash function, RSS key, RSS key length.
 
 .. note::
@@ -325,6 +337,8 @@ The expected guest operating systems in a virtualized environment are:
 
 For supported kernel versions, refer to the *DPDK Release Notes*.
 
+.. _intel_vf_kvm:
+
 Setting Up a KVM Virtual Machine Monitor
 ----------------------------------------
 
@@ -383,9 +397,8 @@ The setup procedure is as follows:
 #.  Create a Virtual Machine and install Fedora 14 on the Virtual Machine.
     This is referred to as the Guest Operating System (Guest OS).
 
-#.  Download and install the latest ixgbe driver from:
-
-    `http://downloadcenter.intel.com/Detail_Desc.aspx?agr=Y&amp;DwnldID=14687 <http://downloadcenter.intel.com/Detail_Desc.aspx?agr=Y&amp;DwnldID=14687>`_
+#.  Download and install the latest ixgbe driver from
+    `intel.com <https://downloadcenter.intel.com/download/14687>`_.
 
 #.  In the Host OS
 
@@ -521,20 +534,12 @@ The setup procedure is as follows:
 
     .. code-block:: console
 
-        make install T=x86_64-native-linux-gcc
-        ./x86_64-native-linux-gcc/app/testpmd -l 0-3 -n 4 -- -i
+        ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 -- -i
 
 #.  Finally, access the Guest OS using vncviewer with the localhost:5900 port and check the lspci command output in the Guest OS.
     The virtual functions will be listed as available for use.
 
-#.  Configure and install the DPDK with an x86_64-native-linux-gcc configuration on the Guest OS as normal,
-    that is, there is no change to the normal installation procedure.
-
-    .. code-block:: console
-
-        make config T=x86_64-native-linux-gcc O=x86_64-native-linux-gcc
-        cd x86_64-native-linux-gcc
-        make
+#.  Configure and install the DPDK on the Guest OS as normal, that is, there is no change to the normal installation procedure.
 
 .. note::
 
@@ -575,7 +580,7 @@ Fast Host-based Packet Processing
 
 Software Defined Network (SDN) trends are demanding fast host-based packet handling.
 In a virtualization environment,
-the DPDK VF PMD driver performs the same throughput result as a non-VT native environment.
+the DPDK VF PMD performs the same throughput result as a non-VT native environment.
 
 With such host instance fast packet processing, lots of services such as filtering, QoS,
 DPI can be offloaded on the host fast path.
@@ -615,3 +620,109 @@ which belongs to the destination VF on the VM.
 .. figure:: img/inter_vm_comms.*
 
    Inter-VM Communication
+
+
+Windows Support
+---------------
+
+*   IAVF PMD currently is supported only inside Windows guest created on Linux host.
+
+*   Physical PCI resources are exposed as virtual functions
+    into Windows VM using SR-IOV pass-through feature.
+
+*   Create a Windows guest on Linux host using KVM hypervisor.
+    Refer to the steps mentioned in the above section: :ref:`intel_vf_kvm`.
+
+*   In the Host machine, download and install the kernel Ethernet driver
+    for `i40e <https://downloadcenter.intel.com/download/24411>`_
+    or `ice <https://downloadcenter.intel.com/download/29746>`_.
+
+*   For Windows guest, install NetUIO driver
+    in place of existing built-in (inbox) Virtual Function driver.
+
+*   To load NetUIO driver, follow the steps mentioned in `dpdk-kmods repository
+    <https://git.dpdk.org/dpdk-kmods/tree/windows/netuio/README.rst>`_.
+
+
+Inline IPsec Support
+--------------------
+
+*   IAVF PMD supports inline crypto processing depending on the underlying
+    hardware crypto capabilities. IPsec Security Gateway Sample Application
+    supports inline IPsec processing for IAVF PMD. For more details see the
+    IPsec Security Gateway Sample Application and Security library
+    documentation.
+
+
+Limitations or Knowing issues
+-----------------------------
+
+16 Byte RX Descriptor setting is not available
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Currently the VF's RX descriptor size is decided by PF. There's no PF-VF
+interface for VF to request the RX descriptor size, also no interface to notify
+VF its own RX descriptor size.
+For all available versions of the kernel PF drivers, these drivers don't
+support 16 bytes RX descriptor. If the Linux kernel driver is used as host driver,
+while DPDK iavf PMD is used as the VF driver, DPDK cannot choose 16 bytes receive
+descriptor. The reason is that the RX descriptor is already set to 32 bytes by
+the all existing kernel driver.
+In the future, if the any kernel driver supports 16 bytes RX descriptor, user
+should make sure the DPDK VF uses the same RX descriptor size.
+
+i40e: VF performance is impacted by PCI extended tag setting
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To reach maximum NIC performance in the VF the PCI extended tag must be
+enabled. But the kernel driver does not set this feature during initialization.
+So when running traffic on a VF which is managed by the kernel PF driver, a
+significant NIC performance downgrade has been observed (for 64 byte packets,
+there is about 25% line-rate downgrade for a 25GbE device and about 35% for a
+40GbE device).
+
+For kernel version >= 4.11, the kernel's PCI driver will enable the extended
+tag if it detects that the device supports it. So by default, this is not an
+issue. For kernels <= 4.11 or when the PCI extended tag is disabled it can be
+enabled using the steps below.
+
+#. Get the current value of the PCI configure register::
+
+      setpci -s <XX:XX.X> a8.w
+
+#. Set bit 8::
+
+      value = value | 0x100
+
+#. Set the PCI configure register with new value::
+
+      setpci -s <XX:XX.X> a8.w=<value>
+
+i40e: Vlan strip of VF
+~~~~~~~~~~~~~~~~~~~~~~
+
+The VF vlan strip function is only supported in the i40e kernel driver >= 2.1.26.
+
+i40e: Vlan filtering of VF
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For i40e driver 2.17.15, configuring VLAN filters from the DPDK VF is unsupported.
+When applying VLAN filters on the VF it must first be configured from the
+corresponding PF.
+
+ice: VF inserts VLAN tag incorrectly on AVX-512 Tx path
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When the kernel driver requests the VF to use the L2TAG2 field of the Tx context
+descriptor to insert the hardware offload VLAN tag,
+AVX-512 Tx path cannot handle this case correctly
+due to its lack of support for the Tx context descriptor.
+
+The VLAN tag will be inserted to the wrong location (inner of QinQ)
+on AVX-512 Tx path.
+That is inconsistent with the behavior of PF (outer of QinQ).
+The ice kernel driver version newer than 1.8.9 requests to use L2TAG2
+and has this issue.
+
+Set the parameter `--force-max-simd-bitwidth` as 64/128/256
+to avoid selecting AVX-512 Tx path.

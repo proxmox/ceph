@@ -6,6 +6,7 @@
 #include <rte_pci.h>
 #include <rte_malloc.h>
 
+#include "ethdev_driver.h"
 #include "base/ixgbe_type.h"
 #include "base/ixgbe_vf.h"
 #include "ixgbe_ethdev.h"
@@ -25,7 +26,7 @@ ixgbe_vf_representor_link_update(struct rte_eth_dev *ethdev,
 
 static int
 ixgbe_vf_representor_mac_addr_set(struct rte_eth_dev *ethdev,
-	struct ether_addr *mac_addr)
+	struct rte_ether_addr *mac_addr)
 {
 	struct ixgbe_vf_representor *representor = ethdev->data->dev_private;
 
@@ -34,7 +35,7 @@ ixgbe_vf_representor_mac_addr_set(struct rte_eth_dev *ethdev,
 		representor->vf_id, mac_addr);
 }
 
-static void
+static int
 ixgbe_vf_representor_dev_infos_get(struct rte_eth_dev *ethdev,
 	struct rte_eth_dev_info *dev_info)
 {
@@ -57,25 +58,27 @@ ixgbe_vf_representor_dev_infos_get(struct rte_eth_dev *ethdev,
 	dev_info->max_mac_addrs = hw->mac.num_rar_entries;
 	/**< Maximum number of MAC addresses. */
 
-	dev_info->rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP |
-		DEV_RX_OFFLOAD_IPV4_CKSUM |	DEV_RX_OFFLOAD_UDP_CKSUM  |
-		DEV_RX_OFFLOAD_TCP_CKSUM;
+	dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP |
+		RTE_ETH_RX_OFFLOAD_IPV4_CKSUM |	RTE_ETH_RX_OFFLOAD_UDP_CKSUM  |
+		RTE_ETH_RX_OFFLOAD_TCP_CKSUM;
 	/**< Device RX offload capabilities. */
 
-	dev_info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT |
-		DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM |
-		DEV_TX_OFFLOAD_TCP_CKSUM | DEV_TX_OFFLOAD_SCTP_CKSUM |
-		DEV_TX_OFFLOAD_TCP_TSO | DEV_TX_OFFLOAD_MULTI_SEGS;
+	dev_info->tx_offload_capa = RTE_ETH_TX_OFFLOAD_VLAN_INSERT |
+		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_CKSUM | RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |
+		RTE_ETH_TX_OFFLOAD_TCP_TSO | RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
 	/**< Device TX offload capabilities. */
 
 	dev_info->speed_capa =
 		representor->pf_ethdev->data->dev_link.link_speed;
-	/**< Supported speeds bitmap (ETH_LINK_SPEED_). */
+	/**< Supported speeds bitmap (RTE_ETH_LINK_SPEED_). */
 
 	dev_info->switch_info.name =
 		representor->pf_ethdev->device->name;
 	dev_info->switch_info.domain_id = representor->switch_domain_id;
 	dev_info->switch_info.port_id = representor->vf_id;
+
+	return 0;
 }
 
 static int ixgbe_vf_representor_dev_configure(
@@ -110,8 +113,9 @@ static int ixgbe_vf_representor_dev_start(__rte_unused struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void ixgbe_vf_representor_dev_stop(__rte_unused struct rte_eth_dev *dev)
+static int ixgbe_vf_representor_dev_stop(__rte_unused struct rte_eth_dev *dev)
 {
+	return 0;
 }
 
 static int
@@ -193,6 +197,7 @@ ixgbe_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params)
 
 	ethdev->data->dev_flags |= RTE_ETH_DEV_REPRESENTOR;
 	ethdev->data->representor_id = representor->vf_id;
+	ethdev->data->backer_port_id = representor->pf_ethdev->data->port_id;
 
 	/* Set representor device ops */
 	ethdev->dev_ops = &ixgbe_vf_representor_dev_ops;
@@ -211,7 +216,7 @@ ixgbe_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params)
 	vf_data = *IXGBE_DEV_PRIVATE_TO_P_VFDATA(
 		representor->pf_ethdev->data->dev_private);
 
-	ethdev->data->mac_addrs = (struct ether_addr *)
+	ethdev->data->mac_addrs = (struct rte_ether_addr *)
 		vf_data[representor->vf_id].vf_mac_addresses;
 
 	/* Link state. Inherited from PF */

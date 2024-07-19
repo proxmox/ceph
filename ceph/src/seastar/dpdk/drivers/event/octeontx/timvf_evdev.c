@@ -2,16 +2,12 @@
  * Copyright(c) 2017 Cavium, Inc
  */
 
+#include "ssovf_evdev.h"
 #include "timvf_evdev.h"
 
-int otx_logtype_timvf;
+RTE_LOG_REGISTER_SUFFIX(otx_logtype_timvf, timer, NOTICE);
 
-RTE_INIT(otx_timvf_init_log)
-{
-	otx_logtype_timvf = rte_log_register("pmd.event.octeontx.timer");
-	if (otx_logtype_timvf >= 0)
-		rte_log_set_level(otx_logtype_timvf, RTE_LOG_NOTICE);
-}
+static struct rte_eventdev *event_dev;
 
 struct __rte_packed timvf_mbox_dev_info {
 	uint64_t ring_active[4];
@@ -229,21 +225,21 @@ timvf_ring_stop(const struct rte_event_timer_adapter *adptr)
 static int
 timvf_ring_create(struct rte_event_timer_adapter *adptr)
 {
-	char pool_name[25];
-	int ret;
-	uint64_t nb_timers;
 	struct rte_event_timer_adapter_conf *rcfg = &adptr->data->conf;
-	struct timvf_ring *timr;
-	struct timvf_info tinfo;
-	const char *mempool_ops;
+	uint16_t free_idx = UINT16_MAX;
 	unsigned int mp_flags = 0;
+	struct ssovf_evdev *edev;
+	struct timvf_ring *timr;
+	const char *mempool_ops;
+	uint8_t tim_ring_id;
+	char pool_name[25];
+	int i, ret;
 
-	if (timvf_info(&tinfo) < 0)
+	tim_ring_id = timvf_get_ring();
+	if (tim_ring_id == UINT8_MAX)
 		return -ENODEV;
 
-	if (adptr->data->id >= tinfo.total_timvfs)
-		return -ENODEV;
-
+	edev = ssovf_pmd_priv(event_dev);
 	timr = rte_zmalloc("octeontx_timvf_priv",
 			sizeof(struct timvf_ring), 0);
 	if (timr == NULL)
@@ -259,16 +255,48 @@ timvf_ring_create(struct rte_event_timer_adapter *adptr)
 	}
 
 	timr->clk_src = (int) rcfg->clk_src;
-	timr->tim_ring_id = adptr->data->id;
+	timr->tim_ring_id = tim_ring_id;
 	timr->tck_nsec = RTE_ALIGN_MUL_CEIL(rcfg->timer_tick_ns, 10);
 	timr->max_tout = rcfg->max_tmo_ns;
 	timr->nb_bkts = (timr->max_tout / timr->tck_nsec);
 	timr->vbar0 = timvf_bar(timr->tim_ring_id, 0);
 	timr->bkt_pos = (uint8_t *)timr->vbar0 + TIM_VRING_REL;
-	nb_timers = rcfg->nb_timers;
+	timr->nb_timers = rcfg->nb_timers;
 	timr->get_target_bkt = bkt_mod;
 
-	timr->nb_chunks = nb_timers / nb_chunk_slots;
+	if (edev->available_events < timr->nb_timers) {
+		timvf_log_err(
+			"Max available events %"PRIu32" requested timer events %"PRIu64"",
+			edev->available_events, timr->nb_timers);
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < edev->tim_ring_cnt; i++) {
+		if (edev->tim_ring_ids[i] == UINT16_MAX)
+			free_idx = i;
+	}
+
+	if (free_idx == UINT16_MAX) {
+		void *old_ptr;
+
+		edev->tim_ring_cnt++;
+		old_ptr = edev->tim_ring_ids;
+		edev->tim_ring_ids =
+			rte_realloc(edev->tim_ring_ids,
+				    sizeof(uint16_t) * edev->tim_ring_cnt, 0);
+		if (edev->tim_ring_ids == NULL) {
+			edev->tim_ring_ids = old_ptr;
+			edev->tim_ring_cnt--;
+			return -ENOMEM;
+		}
+
+		edev->available_events -= timr->nb_timers;
+	} else {
+		edev->tim_ring_ids[free_idx] = tim_ring_id;
+		edev->available_events -= timr->nb_timers;
+	}
+
+	timr->nb_chunks = timr->nb_timers / nb_chunk_slots;
 
 	/* Try to optimize the bucket parameters. */
 	if ((rcfg->flags & RTE_EVENT_TIMER_ADAPTER_F_ADJUST_RES)
@@ -282,7 +310,7 @@ timvf_ring_create(struct rte_event_timer_adapter *adptr)
 	}
 
 	if (rcfg->flags & RTE_EVENT_TIMER_ADAPTER_F_SP_PUT) {
-		mp_flags = MEMPOOL_F_SP_PUT | MEMPOOL_F_SC_GET;
+		mp_flags = RTE_MEMPOOL_F_SP_PUT | RTE_MEMPOOL_F_SC_GET;
 		timvf_log_info("Using single producer mode");
 	}
 
@@ -337,8 +365,21 @@ static int
 timvf_ring_free(struct rte_event_timer_adapter *adptr)
 {
 	struct timvf_ring *timr = adptr->data->adapter_priv;
+	struct ssovf_evdev *edev;
+	int i;
+
+	edev = ssovf_pmd_priv(event_dev);
+	for (i = 0; i < edev->tim_ring_cnt; i++) {
+		if (edev->tim_ring_ids[i] == timr->tim_ring_id) {
+			edev->available_events += timr->nb_timers;
+			edev->tim_ring_ids[i] = UINT16_MAX;
+			break;
+		}
+	}
+
 	rte_mempool_free(timr->chunk_pool);
 	rte_free(timr->bkt);
+	timvf_release_ring(timr->tim_ring_id);
 	rte_free(adptr->data->adapter_priv);
 	return 0;
 }
@@ -366,18 +407,19 @@ timvf_stats_reset(const struct rte_event_timer_adapter *adapter)
 	return 0;
 }
 
-static struct rte_event_timer_adapter_ops timvf_ops = {
-	.init		= timvf_ring_create,
-	.uninit		= timvf_ring_free,
-	.start		= timvf_ring_start,
-	.stop		= timvf_ring_stop,
-	.get_info	= timvf_ring_info_get,
+static struct event_timer_adapter_ops timvf_ops = {
+	.init = timvf_ring_create,
+	.uninit = timvf_ring_free,
+	.start = timvf_ring_start,
+	.stop = timvf_ring_stop,
+	.get_info = timvf_ring_info_get,
 };
 
 int
 timvf_timer_adapter_caps_get(const struct rte_eventdev *dev, uint64_t flags,
-		uint32_t *caps, const struct rte_event_timer_adapter_ops **ops,
-		uint8_t enable_stats)
+			     uint32_t *caps,
+			     const struct event_timer_adapter_ops **ops,
+			     uint8_t enable_stats)
 {
 	RTE_SET_USED(dev);
 
@@ -402,4 +444,10 @@ timvf_timer_adapter_caps_get(const struct rte_eventdev *dev, uint64_t flags,
 	*caps = RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT;
 	*ops = &timvf_ops;
 	return 0;
+}
+
+void
+timvf_set_eventdevice(struct rte_eventdev *dev)
+{
+	event_dev = dev;
 }

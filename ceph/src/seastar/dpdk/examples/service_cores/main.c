@@ -118,7 +118,7 @@ apply_profile(int profile_id)
 	struct profile *p = &profiles[profile_id];
 	const uint8_t core_off = 1;
 
-	if (p->num_cores > rte_lcore_count() + 1) {
+	if (p->num_cores > rte_lcore_count() - 1) {
 		printf("insufficent cores to run (%s)",
 			p->name);
 		return;
@@ -176,6 +176,7 @@ main(int argc, char **argv)
 	for (i = 0; i < NUM_SERVICES; i++) {
 		services[i].callback_userdata = 0;
 		uint32_t id;
+		/* Register a service as an application. 8< */
 		ret = rte_service_component_register(&services[i], &id);
 		if (ret)
 			rte_exit(-1, "service register() failed");
@@ -198,6 +199,7 @@ main(int argc, char **argv)
 		ret = rte_service_runstate_set(id, 1);
 		if (ret)
 			return -ENOEXEC;
+		/* >8 End of registering a service as an application. */
 	}
 
 	i = 0;
@@ -209,16 +211,19 @@ main(int argc, char **argv)
 		apply_profile(i);
 		printf("\n==> Profile: %s\n\n", profiles[i].name);
 
-		sleep(1);
+		rte_delay_us_sleep(1 * US_PER_S);
 		rte_service_dump(stdout, UINT32_MAX);
 
-		sleep(5);
+		rte_delay_us_sleep(5 * US_PER_S);
 		rte_service_dump(stdout, UINT32_MAX);
 
 		i++;
 		if (i >= NUM_PROFILES)
 			i = 0;
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

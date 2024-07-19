@@ -19,15 +19,26 @@
  * Copyright (C) 2016 ScyllaDB.
  */
 
+#ifdef SEASTAR_MODULE
+module;
+#endif
+
+#include <algorithm>
 #include <ostream>
 #include <arpa/inet.h>
 #include <boost/functional/hash.hpp>
+#include <fmt/ostream.h>
+
+#ifdef SEASTAR_MODULE
+module seastar;
+#else
 #include <seastar/net/inet_address.hh>
 #include <seastar/net/socket_defs.hh>
 #include <seastar/net/dns.hh>
 #include <seastar/net/ip.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/print.hh>
+#endif
 
 static_assert(std::is_nothrow_default_constructible_v<seastar::net::ipv4_address>);
 static_assert(std::is_nothrow_copy_constructible_v<seastar::net::ipv4_address>);
@@ -221,7 +232,7 @@ seastar::net::ipv6_address::ipv6_address() noexcept
 
 seastar::net::ipv6_address::ipv6_address(const std::string& addr) {
     if (!::inet_pton(AF_INET6, addr.c_str(), ip.data())) {
-        throw std::runtime_error(format("Wrong format for IPv6 address {}. Please ensure it's in colon-hex format",
+        throw std::runtime_error(fmt::format("Wrong format for IPv6 address {}. Please ensure it's in colon-hex format",
                                         addr));
     }
 }

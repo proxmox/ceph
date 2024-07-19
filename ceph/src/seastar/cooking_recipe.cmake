@@ -119,14 +119,6 @@ cooking_ingredient (numactl
     BUILD_COMMAND <DISABLE>
     INSTALL_COMMAND ${make_command} install)
 
-cooking_ingredient (zlib
-  EXTERNAL_PROJECT_ARGS
-    URL https://zlib.net/zlib-1.2.12.tar.gz
-    URL_MD5 5fc414a9726be31427b440b434d05f78
-    CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=<INSTALL_DIR>
-    BUILD_COMMAND <DISABLE>
-    INSTALL_COMMAND ${make_command} install)
-
 ##
 ## Private and private/public dependencies.
 ##
@@ -202,6 +194,14 @@ cooking_ingredient (GnuTLS
     BUILD_COMMAND <DISABLE>
     INSTALL_COMMAND ${make_command} install)
 
+cooking_ingredient (Protobuf
+  REQUIRES zlib
+  EXTERNAL_PROJECT_ARGS
+    URL https://github.com/protocolbuffers/protobuf/releases/download/v21.11//protobuf-cpp-3.21.11.tar.gz
+    URL_MD5 e2cf711edae444bba0da199bc034e031
+  CMAKE_ARGS
+    -Dprotobuf_BUILD_TESTS=OFF)
+
 cooking_ingredient (hwloc
   REQUIRES
     numactl
@@ -260,51 +260,44 @@ cooking_ingredient (c-ares
     BUILD_COMMAND <DISABLE>
     INSTALL_COMMAND ${make_command} install)
 
-cooking_ingredient (cryptopp
-  EXTERNAL_PROJECT_ARGS
-    URL https://github.com/weidai11/cryptopp/archive/CRYPTOPP_8_7_0.tar.gz
-    URL_MD5 69b11e59094c10d437f295f11e51c16a
-    CONFIGURE_COMMAND <DISABLE>
-    BUILD_IN_SOURCE ON
-    BUILD_COMMAND
-      ${CMAKE_COMMAND} -E env CXX=${CMAKE_CXX_COMPILER} CXXFLAGS=${CMAKE_CXX_FLAGS} ${make_command} static
-    INSTALL_COMMAND
-      ${CMAKE_COMMAND} -E env CXX=${CMAKE_CXX_COMPILER} CXXFLAGS=${CMAKE_CXX_FLAGS} ${make_command} install-lib PREFIX=<INSTALL_DIR>)
-
-
-# Use the "native" profile that DPDK defines in `dpdk/config`, but in `dpdk_configure.cmake` we override
-# CONFIG_RTE_MACHINE with `Seastar_DPDK_MACHINE`.
-if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
-  set (dpdk_quadruple arm64-armv8a-linuxapp-gcc)
-else()
-  set (dpdk_quadruple ${CMAKE_SYSTEM_PROCESSOR}-native-linuxapp-gcc)
-endif()
-
 set (dpdk_args
-  # gcc 10 defaults to -fno-common, which dpdk is not prepared for
-  "EXTRA_CFLAGS=-Wno-error -fcommon -fpie"
-  O=<BINARY_DIR>
-  DESTDIR=<INSTALL_DIR>
-  T=${dpdk_quadruple})
+  --default-library=static
+  -Dc_args="-Wno-error"
+  -Denable_docs=false
+  -Denable_apps=dpdk-testpmd
+  -Dtests=false
+  -Dexamples=
+  -Dmbuf_refcnt_atomic=false
+  -Dmax_memseg_lists=8192
+  -Ddisable_drivers="net/softnic,net/bonding"
+  -Ddisable_libs="jobstats,power,port,table,pipeline,member"
+  -Dcpu_instruction_set=${Seastar_DPDK_MACHINE})
+
+if (CMAKE_BUILD_TYPE STREQUAL Debug)
+  list (APPEND dpdk_args -Dbuildtype=debug)
+endif ()
+
+find_program (Meson_EXECUTABLE
+  meson)
+if (NOT Meson_EXECUTABLE)
+  message (FATAL_ERROR "Cooking: Meson is required!")
+endif ()
+
+find_program (Ninja_EXECUTABLE
+  ninja)
+if (NOT Ninja_EXECUTABLE)
+  message (FATAL_ERROR "Cooking: Ninja is required!")
+endif ()
 
 cooking_ingredient (dpdk
   EXTERNAL_PROJECT_ARGS
     SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dpdk
     CONFIGURE_COMMAND
-      COMMAND
-        ${CMAKE_COMMAND} -E chdir <SOURCE_DIR>
-        make ${dpdk_args} config
-      COMMAND
-        ${CMAKE_COMMAND}
-        -DSeastar_DPDK_MACHINE=${Seastar_DPDK_MACHINE}
-        -DSeastar_DPDK_CONFIG_FILE_IN=<BINARY_DIR>/.config
-        -DSeastar_DPDK_CONFIG_FILE_CHANGES=${CMAKE_CURRENT_SOURCE_DIR}/dpdk_config
-        -DSeastar_DPDK_CONFIG_FILE_OUT=<BINARY_DIR>/${dpdk_quadruple}/.config
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/dpdk_configure.cmake
-    BUILD_COMMAND <DISABLE>
+      env CC=${CMAKE_C_COMPILER} ${Meson_EXECUTABLE} setup ${dpdk_args} --prefix=<INSTALL_DIR> <BINARY_DIR> <SOURCE_DIR>
+    BUILD_COMMAND
+      ${Ninja_EXECUTABLE} -C <BINARY_DIR>
     INSTALL_COMMAND
-      ${CMAKE_COMMAND} -E chdir <SOURCE_DIR>
-      ${make_command} ${dpdk_args} install)
+      ${Ninja_EXECUTABLE} -C <BINARY_DIR> install)
 
 cooking_ingredient (fmt
   EXTERNAL_PROJECT_ARGS
@@ -318,7 +311,9 @@ cooking_ingredient (liburing
   EXTERNAL_PROJECT_ARGS
     URL https://github.com/axboe/liburing/archive/liburing-2.1.tar.gz
     URL_MD5 78f13d9861b334b9a9ca0d12cf2a6d3c
-    CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=<INSTALL_DIR>
+    CONFIGURE_COMMAND
+      ${CMAKE_COMMAND} -E env CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER}
+      <SOURCE_DIR>/configure --prefix=<INSTALL_DIR>
     BUILD_COMMAND <DISABLE>
     BUILD_BYPRODUCTS "<SOURCE_DIR>/src/liburing.a"
     BUILD_IN_SOURCE ON

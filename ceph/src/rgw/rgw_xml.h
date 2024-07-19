@@ -9,6 +9,7 @@
 #include <iosfwd>
 #include <include/types.h>
 #include <common/Formatter.h>
+#include "common/ceph_time.h"
 
 class XMLObj;
 class RGWXMLParser;
@@ -190,6 +191,7 @@ void decode_xml_obj(bool& val, XMLObj *obj);
 void decode_xml_obj(bufferlist& val, XMLObj *obj);
 class utime_t;
 void decode_xml_obj(utime_t& val, XMLObj *obj);
+void decode_xml_obj(ceph::real_time& val, XMLObj *obj);
 
 template<class T>
 void decode_xml_obj(std::optional<T>& val, XMLObj *obj)
@@ -331,6 +333,7 @@ static void encode_xml(const char *name, const char *ns, const T& val, ceph::For
 }
 
 void encode_xml(const char *name, const std::string& val, ceph::Formatter *f);
+void encode_xml(const char *name, const std::string_view& val, ceph::Formatter *f);
 void encode_xml(const char *name, const char *val, ceph::Formatter *f);
 void encode_xml(const char *name, bool val, ceph::Formatter *f);
 void encode_xml(const char *name, int val, ceph::Formatter *f);

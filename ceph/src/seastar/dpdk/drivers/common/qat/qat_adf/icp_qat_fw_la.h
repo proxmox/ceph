@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
- * Copyright(c) 2015-2018 Intel Corporation
+ * Copyright(c) 2015-2019 Intel Corporation
  */
 #ifndef _ICP_QAT_FW_LA_H_
 #define _ICP_QAT_FW_LA_H_
@@ -18,7 +18,8 @@ enum icp_qat_fw_la_cmd_id {
 	ICP_QAT_FW_LA_CMD_MGF1 = 9,
 	ICP_QAT_FW_LA_CMD_AUTH_PRE_COMP = 10,
 	ICP_QAT_FW_LA_CMD_CIPHER_PRE_COMP = 11,
-	ICP_QAT_FW_LA_CMD_DELIMITER = 12
+	ICP_QAT_FW_LA_CMD_CIPHER_CRC = 17,
+	ICP_QAT_FW_LA_CMD_DELIMITER = 18
 };
 
 #define ICP_QAT_FW_LA_ICV_VER_STATUS_PASS ICP_QAT_FW_COMN_STATUS_FLAG_OK
@@ -34,6 +35,9 @@ struct icp_qat_fw_la_bulk_req {
 	struct icp_qat_fw_comn_req_cd_ctrl cd_ctrl;
 };
 
+#define QAT_FW_LA_SINGLE_PASS_PROTO_FLAG_BITPOS 13
+#define ICP_QAT_FW_LA_SINGLE_PASS_PROTO 1
+#define QAT_FW_LA_SINGLE_PASS_PROTO_FLAG_MASK 0x1
 #define ICP_QAT_FW_LA_GCM_IV_LEN_12_OCTETS 1
 #define ICP_QAT_FW_LA_GCM_IV_LEN_NOT_12_OCTETS 0
 #define QAT_FW_LA_ZUC_3G_PROTO_FLAG_BITPOS 12
@@ -152,6 +156,10 @@ struct icp_qat_fw_la_bulk_req {
 	QAT_FIELD_SET(flags, val, QAT_FW_LA_ZUC_3G_PROTO_FLAG_BITPOS, \
 	QAT_FW_LA_ZUC_3G_PROTO_FLAG_MASK)
 
+#define ICP_QAT_FW_LA_SINGLE_PASS_PROTO_FLAG_SET(flags, val) \
+	QAT_FIELD_SET(flags, val, QAT_FW_LA_SINGLE_PASS_PROTO_FLAG_BITPOS, \
+	QAT_FW_LA_SINGLE_PASS_PROTO_FLAG_MASK)
+
 #define ICP_QAT_FW_LA_GCM_IV_LEN_FLAG_SET(flags, val) \
 	QAT_FIELD_SET(flags, val, QAT_LA_GCM_IV_LEN_FLAG_BITPOS, \
 	QAT_LA_GCM_IV_LEN_FLAG_MASK)
@@ -179,6 +187,16 @@ struct icp_qat_fw_la_bulk_req {
 #define ICP_QAT_FW_LA_PARTIAL_SET(flags, val) \
 	QAT_FIELD_SET(flags, val, QAT_LA_PARTIAL_BITPOS, \
 	QAT_LA_PARTIAL_MASK)
+
+#define QAT_FW_LA_MODE2 1
+#define QAT_FW_LA_NO_MODE2 0
+#define QAT_FW_LA_MODE2_MASK 0x1
+#define QAT_FW_LA_MODE2_BITPOS 5
+#define ICP_QAT_FW_HASH_FLAG_MODE2_SET(flags, val) \
+QAT_FIELD_SET(flags, \
+		val, \
+		QAT_FW_LA_MODE2_BITPOS, \
+		QAT_FW_LA_MODE2_MASK)
 
 struct icp_qat_fw_cipher_req_hdr_cd_pars {
 	union {
@@ -266,9 +284,10 @@ struct icp_qat_fw_cipher_auth_cd_ctrl_hdr {
 
 #define ICP_QAT_FW_AUTH_HDR_FLAG_DO_NESTED 1
 #define ICP_QAT_FW_AUTH_HDR_FLAG_NO_NESTED 0
+#define ICP_QAT_FW_AUTH_HDR_FLAG_SNOW3G_UIA2_BITPOS 3
+#define ICP_QAT_FW_AUTH_HDR_FLAG_ZUC_EIA3_BITPOS 4
 #define ICP_QAT_FW_CCM_GCM_AAD_SZ_MAX	240
-#define ICP_QAT_FW_HASH_REQUEST_PARAMETERS_OFFSET \
-	(sizeof(struct icp_qat_fw_la_cipher_req_params_t))
+#define ICP_QAT_FW_HASH_REQUEST_PARAMETERS_OFFSET 24
 #define ICP_QAT_FW_CIPHER_REQUEST_PARAMETERS_OFFSET (0)
 
 struct icp_qat_fw_la_cipher_req_params {
@@ -281,7 +300,12 @@ struct icp_qat_fw_la_cipher_req_params {
 			uint64_t resrvd1;
 		} s;
 	} u;
-};
+	uint64_t spc_aad_addr;
+	uint64_t spc_auth_res_addr;
+	uint16_t spc_aad_sz;
+	uint8_t reserved;
+	uint8_t spc_auth_res_sz;
+} __rte_packed;
 
 struct icp_qat_fw_la_auth_req_params {
 	uint32_t auth_off;
@@ -357,5 +381,33 @@ struct icp_qat_fw_la_resp {
 	((((cd_ctrl_hdr_t)->next_curr_id_auth) \
 	& ICP_QAT_FW_COMN_NEXT_ID_MASK) | \
 	((val) & ICP_QAT_FW_COMN_CURR_ID_MASK)) }
+
+#define ICP_QAT_FW_LA_USE_WIRELESS_SLICE_TYPE 2
+#define ICP_QAT_FW_LA_USE_UCS_SLICE_TYPE 1
+#define ICP_QAT_FW_LA_USE_LEGACY_SLICE_TYPE 0
+#define QAT_LA_SLICE_TYPE_BITPOS 14
+#define QAT_LA_SLICE_TYPE_MASK 0x3
+#define ICP_QAT_FW_LA_SLICE_TYPE_SET(flags, val)	\
+	QAT_FIELD_SET(flags, val, QAT_LA_SLICE_TYPE_BITPOS,	\
+		QAT_LA_SLICE_TYPE_MASK)
+
+struct icp_qat_fw_la_cipher_20_req_params {
+	uint32_t cipher_offset;
+	uint32_t cipher_length;
+	union {
+	uint32_t cipher_IV_array[ICP_QAT_FW_NUM_LONGWORDS_4];
+	struct {
+		uint64_t cipher_IV_ptr;
+		uint64_t resrvd1;
+		} s;
+
+	} u;
+	uint32_t   spc_aad_offset;
+	uint32_t   spc_aad_sz;
+	uint64_t   spc_aad_addr;
+	uint64_t   spc_auth_res_addr;
+	uint8_t    reserved[3];
+	uint8_t    spc_auth_res_sz;
+};
 
 #endif

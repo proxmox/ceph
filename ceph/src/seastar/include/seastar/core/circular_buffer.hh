@@ -23,9 +23,12 @@
 
 #include <seastar/core/transfer.hh>
 #include <seastar/core/bitops.hh>
-#include <seastar/util/concepts.hh>
+#include <seastar/util/modules.hh>
+#ifndef SEASTAR_MODULE
+#include <concepts>
 #include <memory>
 #include <algorithm>
+#endif
 
 namespace seastar {
 
@@ -55,6 +58,7 @@ namespace seastar {
 ///     * pop_back() will invalidate end().
 ///
 /// reserve() may also invalidate all iterators and references.
+SEASTAR_MODULE_EXPORT
 template <typename T, typename Alloc = std::allocator<T>>
 class circular_buffer {
     struct impl : Alloc {
@@ -84,7 +88,7 @@ public:
     using const_reference = const T&;
     using const_pointer = const T*;
 public:
-    circular_buffer() noexcept SEASTAR_CONCEPT(requires std::default_initializable<Alloc>) : circular_buffer(Alloc()) {}
+    circular_buffer() noexcept requires std::default_initializable<Alloc> : circular_buffer(Alloc()) {}
     circular_buffer(Alloc alloc) noexcept;
     circular_buffer(circular_buffer&& X) noexcept;
     circular_buffer(const circular_buffer& X) = delete;
@@ -190,9 +194,10 @@ private:
        difference_type operator-(const cbiterator<CB, ValueType>& rhs) const noexcept {
             return idx - rhs.idx;
         }
+        cbiterator() = default;
     private:
-        CB* cb;
-        size_t idx;
+        CB* cb{nullptr};
+        size_t idx{0};
         cbiterator(CB* b, size_t i) noexcept : cb(b), idx(i) {}
         friend class circular_buffer;
     };
@@ -486,7 +491,7 @@ template <typename T, typename Alloc>
 inline
 typename circular_buffer<T, Alloc>::iterator
 circular_buffer<T, Alloc>::erase(iterator first, iterator last) noexcept {
-    static_assert(std::is_nothrow_move_assignable<T>::value, "erase() assumes move assignment does not throw");
+    static_assert(std::is_nothrow_move_assignable_v<T>, "erase() assumes move assignment does not throw");
     if (first == last) {
         return last;
     }

@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_ethdev.h>
 #include <rte_pci.h>
 #include <rte_malloc.h>
@@ -14,12 +14,12 @@
 
 #include <rte_mbuf.h>
 #include <rte_sched.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 
 #include <rte_io.h>
 #include <rte_rawdev.h>
 #include <rte_rawdev_pmd.h>
-#include <rte_bus_ifpga.h>
+#include <bus_ifpga_driver.h>
 #include <ifpga_logs.h>
 
 #include "ipn3ke_rawdev_api.h"
@@ -440,6 +440,8 @@ ipn3ke_tm_capabilities_get(__rte_unused struct rte_eth_dev *dev,
 	cap->shaper_private_dual_rate_n_max = 0;
 	cap->shaper_private_rate_min = 1;
 	cap->shaper_private_rate_max = 1 + IPN3KE_TM_VT_NODE_NUM;
+	cap->shaper_private_packet_mode_supported = 0;
+	cap->shaper_private_byte_mode_supported = 1;
 
 	cap->shaper_shared_n_max = 0;
 	cap->shaper_shared_n_nodes_per_shaper_max = 0;
@@ -447,6 +449,8 @@ ipn3ke_tm_capabilities_get(__rte_unused struct rte_eth_dev *dev,
 	cap->shaper_shared_dual_rate_n_max = 0;
 	cap->shaper_shared_rate_min = 0;
 	cap->shaper_shared_rate_max = 0;
+	cap->shaper_shared_packet_mode_supported = 0;
+	cap->shaper_shared_byte_mode_supported = 0;
 
 	cap->shaper_pkt_length_adjust_min = RTE_TM_ETH_FRAMING_OVERHEAD_FCS;
 	cap->shaper_pkt_length_adjust_max = RTE_TM_ETH_FRAMING_OVERHEAD_FCS;
@@ -456,6 +460,8 @@ ipn3ke_tm_capabilities_get(__rte_unused struct rte_eth_dev *dev,
 	cap->sched_wfq_n_children_per_group_max = UINT32_MAX;
 	cap->sched_wfq_n_groups_max = 1;
 	cap->sched_wfq_weight_max = UINT32_MAX;
+	cap->sched_wfq_packet_mode_supported = 0;
+	cap->sched_wfq_byte_mode_supported = 1;
 
 	cap->cman_wred_packet_mode_supported = 0;
 	cap->cman_wred_byte_mode_supported = 0;
@@ -517,13 +523,19 @@ ipn3ke_tm_level_capabilities_get(struct rte_eth_dev *dev,
 		cap->nonleaf.shaper_private_dual_rate_supported = 0;
 		cap->nonleaf.shaper_private_rate_min = 1;
 		cap->nonleaf.shaper_private_rate_max = UINT32_MAX;
+		cap->nonleaf.shaper_private_packet_mode_supported = 0;
+		cap->nonleaf.shaper_private_byte_mode_supported = 1;
 		cap->nonleaf.shaper_shared_n_max = 0;
+		cap->nonleaf.shaper_shared_packet_mode_supported = 0;
+		cap->nonleaf.shaper_shared_byte_mode_supported = 0;
 
 		cap->nonleaf.sched_n_children_max = IPN3KE_TM_VT_NODE_NUM;
 		cap->nonleaf.sched_sp_n_priorities_max = 1;
 		cap->nonleaf.sched_wfq_n_children_per_group_max = 0;
 		cap->nonleaf.sched_wfq_n_groups_max = 0;
 		cap->nonleaf.sched_wfq_weight_max = 0;
+		cap->nonleaf.sched_wfq_packet_mode_supported = 0;
+		cap->nonleaf.sched_wfq_byte_mode_supported = 0;
 
 		cap->nonleaf.stats_mask = STATS_MASK_DEFAULT;
 		break;
@@ -539,13 +551,19 @@ ipn3ke_tm_level_capabilities_get(struct rte_eth_dev *dev,
 		cap->nonleaf.shaper_private_dual_rate_supported = 0;
 		cap->nonleaf.shaper_private_rate_min = 1;
 		cap->nonleaf.shaper_private_rate_max = UINT32_MAX;
+		cap->nonleaf.shaper_private_packet_mode_supported = 0;
+		cap->nonleaf.shaper_private_byte_mode_supported = 1;
 		cap->nonleaf.shaper_shared_n_max = 0;
+		cap->nonleaf.shaper_shared_packet_mode_supported = 0;
+		cap->nonleaf.shaper_shared_byte_mode_supported = 0;
 
 		cap->nonleaf.sched_n_children_max = IPN3KE_TM_COS_NODE_NUM;
 		cap->nonleaf.sched_sp_n_priorities_max = 1;
 		cap->nonleaf.sched_wfq_n_children_per_group_max = 0;
 		cap->nonleaf.sched_wfq_n_groups_max = 0;
 		cap->nonleaf.sched_wfq_weight_max = 0;
+		cap->nonleaf.sched_wfq_packet_mode_supported = 0;
+		cap->nonleaf.sched_wfq_byte_mode_supported = 0;
 
 		cap->nonleaf.stats_mask = STATS_MASK_DEFAULT;
 		break;
@@ -561,7 +579,11 @@ ipn3ke_tm_level_capabilities_get(struct rte_eth_dev *dev,
 		cap->leaf.shaper_private_dual_rate_supported = 0;
 		cap->leaf.shaper_private_rate_min = 0;
 		cap->leaf.shaper_private_rate_max = 0;
+		cap->leaf.shaper_private_packet_mode_supported = 0;
+		cap->leaf.shaper_private_byte_mode_supported = 1;
 		cap->leaf.shaper_shared_n_max = 0;
+		cap->leaf.shaper_shared_packet_mode_supported = 0;
+		cap->leaf.shaper_shared_byte_mode_supported = 0;
 
 		cap->leaf.cman_head_drop_supported = 0;
 		cap->leaf.cman_wred_packet_mode_supported = WRED_SUPPORTED;
@@ -632,7 +654,11 @@ ipn3ke_tm_node_capabilities_get(struct rte_eth_dev *dev,
 		cap->shaper_private_dual_rate_supported = 0;
 		cap->shaper_private_rate_min = 1;
 		cap->shaper_private_rate_max = UINT32_MAX;
+		cap->shaper_private_packet_mode_supported = 0;
+		cap->shaper_private_byte_mode_supported = 1;
 		cap->shaper_shared_n_max = 0;
+		cap->shaper_shared_packet_mode_supported = 0;
+		cap->shaper_shared_byte_mode_supported = 0;
 
 		cap->nonleaf.sched_n_children_max = IPN3KE_TM_VT_NODE_NUM;
 		cap->nonleaf.sched_sp_n_priorities_max = 1;
@@ -640,6 +666,8 @@ ipn3ke_tm_node_capabilities_get(struct rte_eth_dev *dev,
 			IPN3KE_TM_VT_NODE_NUM;
 		cap->nonleaf.sched_wfq_n_groups_max = 1;
 		cap->nonleaf.sched_wfq_weight_max = 1;
+		cap->nonleaf.sched_wfq_packet_mode_supported = 0;
+		cap->nonleaf.sched_wfq_byte_mode_supported = 0;
 
 		cap->stats_mask = STATS_MASK_DEFAULT;
 		break;
@@ -649,7 +677,11 @@ ipn3ke_tm_node_capabilities_get(struct rte_eth_dev *dev,
 		cap->shaper_private_dual_rate_supported = 0;
 		cap->shaper_private_rate_min = 1;
 		cap->shaper_private_rate_max = UINT32_MAX;
+		cap->shaper_private_packet_mode_supported = 0;
+		cap->shaper_private_byte_mode_supported = 1;
 		cap->shaper_shared_n_max = 0;
+		cap->shaper_shared_packet_mode_supported = 0;
+		cap->shaper_shared_byte_mode_supported = 0;
 
 		cap->nonleaf.sched_n_children_max = IPN3KE_TM_COS_NODE_NUM;
 		cap->nonleaf.sched_sp_n_priorities_max = 1;
@@ -657,6 +689,8 @@ ipn3ke_tm_node_capabilities_get(struct rte_eth_dev *dev,
 			IPN3KE_TM_COS_NODE_NUM;
 		cap->nonleaf.sched_wfq_n_groups_max = 1;
 		cap->nonleaf.sched_wfq_weight_max = 1;
+		cap->nonleaf.sched_wfq_packet_mode_supported = 0;
+		cap->nonleaf.sched_wfq_byte_mode_supported = 0;
 
 		cap->stats_mask = STATS_MASK_DEFAULT;
 		break;
@@ -666,7 +700,11 @@ ipn3ke_tm_node_capabilities_get(struct rte_eth_dev *dev,
 		cap->shaper_private_dual_rate_supported = 0;
 		cap->shaper_private_rate_min = 0;
 		cap->shaper_private_rate_max = 0;
+		cap->shaper_private_packet_mode_supported = 0;
+		cap->shaper_private_byte_mode_supported = 0;
 		cap->shaper_shared_n_max = 0;
+		cap->shaper_shared_packet_mode_supported = 0;
+		cap->shaper_shared_byte_mode_supported = 0;
 
 		cap->leaf.cman_head_drop_supported = 0;
 		cap->leaf.cman_wred_packet_mode_supported = WRED_SUPPORTED;
@@ -1087,7 +1125,6 @@ ipn3ke_tm_node_add_check_mount(uint32_t tm_id,
 	uint32_t node_id, uint32_t parent_node_id, uint32_t level_id,
 	struct rte_tm_error *error)
 {
-	/*struct ipn3ke_tm_internals *tm = IPN3KE_DEV_PRIVATE_TO_TM(dev);*/
 	uint32_t node_index;
 	uint32_t parent_index;
 	uint32_t parent_index1;
@@ -1510,12 +1547,6 @@ ipn3ke_tm_hierarchy_commit_check(struct rte_eth_dev *dev,
 						RTE_TM_ERROR_TYPE_UNSPECIFIED,
 						NULL,
 						rte_strerror(EINVAL));
-			} else {
-				return -rte_tm_error_set(error,
-						EINVAL,
-						RTE_TM_ERROR_TYPE_UNSPECIFIED,
-						NULL,
-						rte_strerror(EINVAL));
 			}
 		}
 	}
@@ -1541,23 +1572,12 @@ ipn3ke_tm_hierarchy_commit_check(struct rte_eth_dev *dev,
 						NULL,
 						rte_strerror(EINVAL));
 			}
-		} else if (n->node_state ==
-			IPN3KE_TM_NODE_STATE_CONFIGURED_DEL) {
-			if (n->level != IPN3KE_TM_NODE_LEVEL_VT ||
-				n->n_children != 0) {
-				return -rte_tm_error_set(error,
+		} else if (n->node_state == IPN3KE_TM_NODE_STATE_CONFIGURED_DEL)
+			return -rte_tm_error_set(error,
 						EINVAL,
 						RTE_TM_ERROR_TYPE_UNSPECIFIED,
 						NULL,
 						rte_strerror(EINVAL));
-			} else {
-				return -rte_tm_error_set(error,
-						EINVAL,
-						RTE_TM_ERROR_TYPE_UNSPECIFIED,
-						NULL,
-						rte_strerror(EINVAL));
-			}
-		}
 	}
 
 	n = tm->h.port_commit_node;
@@ -1579,7 +1599,8 @@ ipn3ke_tm_hierarchy_commit_check(struct rte_eth_dev *dev,
 
 static int
 ipn3ke_hw_tm_node_wr(struct ipn3ke_hw *hw,
-				struct ipn3ke_tm_node *n)
+	struct ipn3ke_tm_node *n,
+	struct ipn3ke_tm_node *parent_node)
 {
 	uint32_t level;
 
@@ -1650,11 +1671,12 @@ ipn3ke_hw_tm_node_wr(struct ipn3ke_hw *hw,
 		/**
 		 * Configure Map
 		 */
-		IPN3KE_MASK_WRITE_REG(hw,
-				IPN3KE_QOS_MAP_L2_X,
-				n->node_index,
-				n->parent_node->node_index,
-				IPN3KE_QOS_MAP_L2_MASK);
+		if (parent_node)
+			IPN3KE_MASK_WRITE_REG(hw,
+					IPN3KE_QOS_MAP_L2_X,
+					n->node_index,
+					parent_node->node_index,
+					IPN3KE_QOS_MAP_L2_MASK);
 
 		break;
 	case IPN3KE_TM_NODE_LEVEL_COS:
@@ -1707,11 +1729,12 @@ ipn3ke_hw_tm_node_wr(struct ipn3ke_hw *hw,
 					0x80000000))
 			;
 
-		IPN3KE_MASK_WRITE_REG(hw,
-			IPN3KE_QM_UID_CONFIG_DATA,
-			0,
-			(1 << 8 | n->parent_node->parent_node->node_index),
-			0x1FF);
+		if (parent_node && parent_node->parent_node)
+			IPN3KE_MASK_WRITE_REG(hw,
+				IPN3KE_QM_UID_CONFIG_DATA,
+				0,
+				(1 << 8 | parent_node->parent_node->node_index),
+				0x1FF);
 
 		IPN3KE_MASK_WRITE_REG(hw,
 				IPN3KE_QM_UID_CONFIG_CTRL,
@@ -1728,11 +1751,12 @@ ipn3ke_hw_tm_node_wr(struct ipn3ke_hw *hw,
 		/**
 		 * Configure Map
 		 */
-		IPN3KE_MASK_WRITE_REG(hw,
-				IPN3KE_QOS_MAP_L1_X,
-				n->node_index,
-				n->parent_node->node_index,
-				IPN3KE_QOS_MAP_L1_MASK);
+		if (parent_node)
+			IPN3KE_MASK_WRITE_REG(hw,
+					IPN3KE_QOS_MAP_L1_X,
+					n->node_index,
+					parent_node->node_index,
+					IPN3KE_QOS_MAP_L1_MASK);
 
 		break;
 	default:
@@ -1772,7 +1796,8 @@ ipn3ke_tm_hierarchy_hw_commit(struct rte_eth_dev *dev,
 						NULL,
 						rte_strerror(EINVAL));
 		}
-		ipn3ke_hw_tm_node_wr(hw, n);
+		parent_node = n->parent_node;
+		ipn3ke_hw_tm_node_wr(hw, n, parent_node);
 	}
 
 	nl = &tm->h.vt_commit_node_list;
@@ -1802,7 +1827,7 @@ ipn3ke_tm_hierarchy_hw_commit(struct rte_eth_dev *dev,
 						NULL,
 						rte_strerror(EINVAL));
 		}
-		ipn3ke_hw_tm_node_wr(hw, n);
+		ipn3ke_hw_tm_node_wr(hw, n, parent_node);
 	}
 
 	nl = &tm->h.cos_commit_node_list;
@@ -1836,7 +1861,7 @@ ipn3ke_tm_hierarchy_hw_commit(struct rte_eth_dev *dev,
 						NULL,
 						rte_strerror(EINVAL));
 		}
-		ipn3ke_hw_tm_node_wr(hw, n);
+		ipn3ke_hw_tm_node_wr(hw, n, parent_node);
 	}
 
 	return 0;
@@ -2066,4 +2091,3 @@ ipn3ke_tm_ops_get(struct rte_eth_dev *ethdev,
 
 	return 0;
 }
-

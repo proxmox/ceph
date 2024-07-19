@@ -1,5 +1,5 @@
 /* Unit testing for outcomes
-(C) 2013-2022 Niall Douglas <http://www.nedproductions.biz/> (8 commits)
+(C) 2013-2023 Niall Douglas <http://www.nedproductions.biz/> (8 commits)
 
 
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -78,6 +78,13 @@ public:
   static inline constexpr const _payload_domain &get();
 
   virtual _base::string_ref name() const noexcept override final { return string_ref("payload domain"); }  // NOLINT
+
+  virtual payload_info_t payload_info() const noexcept override
+  {
+    return {sizeof(value_type), sizeof(status_code_domain *) + sizeof(value_type),
+            (alignof(value_type) > alignof(status_code_domain *)) ? alignof(value_type) : alignof(status_code_domain *)};
+  }
+
 protected:
   virtual bool _do_failure(const BOOST_OUTCOME_SYSTEM_ERROR2_NAMESPACE::status_code<void> &code) const noexcept override final  // NOLINT
   {

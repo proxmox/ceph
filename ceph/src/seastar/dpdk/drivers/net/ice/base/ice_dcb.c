@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2023 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -74,6 +74,9 @@ ice_aq_cfg_lldp_mib_change(struct ice_hw *hw, bool ena_update,
 
 	if (!ena_update)
 		cmd->command |= ICE_AQ_LLDP_MIB_UPDATE_DIS;
+	else
+		cmd->command |= ICE_AQ_LLDP_MIB_PENDING_ENABLE <<
+				ICE_AQ_LLDP_MIB_PENDING_S;
 
 	return ice_aq_send_cmd(hw, &desc, NULL, 0, cd);
 }
@@ -83,12 +86,14 @@ ice_aq_cfg_lldp_mib_change(struct ice_hw *hw, bool ena_update,
  * @hw: pointer to the HW struct
  * @shutdown_lldp_agent: True if LLDP Agent needs to be Shutdown
  *			 False if LLDP Agent needs to be Stopped
+ * @persist: True if Stop/Shutdown of LLDP Agent needs to be persistent across
+ *	     reboots
  * @cd: pointer to command details structure or NULL
  *
  * Stop or Shutdown the embedded LLDP Agent (0x0A05)
  */
 enum ice_status
-ice_aq_stop_lldp(struct ice_hw *hw, bool shutdown_lldp_agent,
+ice_aq_stop_lldp(struct ice_hw *hw, bool shutdown_lldp_agent, bool persist,
 		 struct ice_sq_cd *cd)
 {
 	struct ice_aqc_lldp_stop *cmd;
@@ -101,17 +106,22 @@ ice_aq_stop_lldp(struct ice_hw *hw, bool shutdown_lldp_agent,
 	if (shutdown_lldp_agent)
 		cmd->command |= ICE_AQ_LLDP_AGENT_SHUTDOWN;
 
+	if (persist)
+		cmd->command |= ICE_AQ_LLDP_AGENT_PERSIST_DIS;
+
 	return ice_aq_send_cmd(hw, &desc, NULL, 0, cd);
 }
 
 /**
  * ice_aq_start_lldp
  * @hw: pointer to the HW struct
+ * @persist: True if Start of LLDP Agent needs to be persistent across reboots
  * @cd: pointer to command details structure or NULL
  *
  * Start the embedded LLDP Agent on all ports. (0x0A06)
  */
-enum ice_status ice_aq_start_lldp(struct ice_hw *hw, struct ice_sq_cd *cd)
+enum ice_status
+ice_aq_start_lldp(struct ice_hw *hw, bool persist, struct ice_sq_cd *cd)
 {
 	struct ice_aqc_lldp_start *cmd;
 	struct ice_aq_desc desc;
@@ -122,40 +132,10 @@ enum ice_status ice_aq_start_lldp(struct ice_hw *hw, struct ice_sq_cd *cd)
 
 	cmd->command = ICE_AQ_LLDP_AGENT_START;
 
+	if (persist)
+		cmd->command |= ICE_AQ_LLDP_AGENT_PERSIST_ENA;
+
 	return ice_aq_send_cmd(hw, &desc, NULL, 0, cd);
-}
-
-/**
- * ice_aq_set_lldp_mib - Set the LLDP MIB
- * @hw: pointer to the HW struct
- * @mib_type: Local, Remote or both Local and Remote MIBs
- * @buf: pointer to the caller-supplied buffer to store the MIB block
- * @buf_size: size of the buffer (in bytes)
- * @cd: pointer to command details structure or NULL
- *
- * Set the LLDP MIB. (0x0A08)
- */
-enum ice_status
-ice_aq_set_lldp_mib(struct ice_hw *hw, u8 mib_type, void *buf, u16 buf_size,
-		    struct ice_sq_cd *cd)
-{
-	struct ice_aqc_lldp_set_local_mib *cmd;
-	struct ice_aq_desc desc;
-
-	cmd = &desc.params.lldp_set_mib;
-
-	if (buf_size == 0 || !buf)
-		return ICE_ERR_PARAM;
-
-	ice_fill_dflt_direct_cmd_desc(&desc, ice_aqc_opc_lldp_set_local_mib);
-
-	desc.flags |= CPU_TO_LE16((u16)ICE_AQ_FLAG_RD);
-	desc.datalen = CPU_TO_LE16(buf_size);
-
-	cmd->type = mib_type;
-	cmd->length = CPU_TO_LE16(buf_size);
-
-	return ice_aq_send_cmd(hw, &desc, buf, buf_size, cd);
 }
 
 /**
@@ -435,8 +415,14 @@ ice_parse_cee_pgcfg_tlv(struct ice_cee_feat_tlv *tlv,
 	 *        |pg0|pg1|pg2|pg3|pg4|pg5|pg6|pg7|
 	 *        ---------------------------------
 	 */
-	ice_for_each_traffic_class(i)
+	ice_for_each_traffic_class(i) {
 		etscfg->tcbwtable[i] = buf[offset++];
+
+		if (etscfg->prio_table[i] == ICE_CEE_PGID_STRICT)
+			dcbcfg->etscfg.tsatable[i] = ICE_IEEE_TSA_STRICT;
+		else
+			dcbcfg->etscfg.tsatable[i] = ICE_IEEE_TSA_ETS;
+	}
 
 	/* Number of TCs supported (1 octet) */
 	etscfg->maxtcs = buf[offset];
@@ -659,7 +645,7 @@ enum ice_status ice_lldp_to_dcb_cfg(u8 *lldpmib, struct ice_dcbx_cfg *dcbcfg)
 /**
  * ice_aq_get_dcb_cfg
  * @hw: pointer to the HW struct
- * @mib_type: mib type for the query
+ * @mib_type: MIB type for the query
  * @bridgetype: bridge type for the query (remote)
  * @dcbcfg: store for LLDPDU data
  *
@@ -690,13 +676,13 @@ ice_aq_get_dcb_cfg(struct ice_hw *hw, u8 mib_type, u8 bridgetype,
 }
 
 /**
- * ice_aq_start_stop_dcbx - Start/Stop DCBx service in FW
+ * ice_aq_start_stop_dcbx - Start/Stop DCBX service in FW
  * @hw: pointer to the HW struct
- * @start_dcbx_agent: True if DCBx Agent needs to be started
- *		      False if DCBx Agent needs to be stopped
- * @dcbx_agent_status: FW indicates back the DCBx agent status
- *		       True if DCBx Agent is active
- *		       False if DCBx Agent is stopped
+ * @start_dcbx_agent: True if DCBX Agent needs to be started
+ *		      False if DCBX Agent needs to be stopped
+ * @dcbx_agent_status: FW indicates back the DCBX agent status
+ *		       True if DCBX Agent is active
+ *		       False if DCBX Agent is stopped
  * @cd: pointer to command details structure or NULL
  *
  * Start/Stop the embedded dcbx Agent. In case that this wrapper function
@@ -708,9 +694,9 @@ ice_aq_start_stop_dcbx(struct ice_hw *hw, bool start_dcbx_agent,
 		       bool *dcbx_agent_status, struct ice_sq_cd *cd)
 {
 	struct ice_aqc_lldp_stop_start_specific_agent *cmd;
-	enum ice_status status;
+	enum ice_adminq_opc opcode;
 	struct ice_aq_desc desc;
-	u16 opcode;
+	enum ice_status status;
 
 	cmd = &desc.params.lldp_agent_ctrl;
 
@@ -753,24 +739,69 @@ ice_aq_get_cee_dcb_cfg(struct ice_hw *hw,
 }
 
 /**
+ * ice_aq_set_pfc_mode - Set PFC mode
+ * @hw: pointer to the HW struct
+ * @pfc_mode: value of PFC mode to set
+ * @cd: pointer to command details structure or NULL
+ *
+ * This AQ call configures the PFC mdoe to DSCP-based PFC mode or VLAN
+ * -based PFC (0x0303)
+ */
+enum ice_status
+ice_aq_set_pfc_mode(struct ice_hw *hw, u8 pfc_mode, struct ice_sq_cd *cd)
+{
+	struct ice_aqc_set_query_pfc_mode *cmd;
+	struct ice_aq_desc desc;
+	enum ice_status status;
+
+	if (pfc_mode > ICE_AQC_PFC_DSCP_BASED_PFC)
+		return ICE_ERR_PARAM;
+
+	cmd = &desc.params.set_query_pfc_mode;
+
+	ice_fill_dflt_direct_cmd_desc(&desc, ice_aqc_opc_set_pfc_mode);
+
+	cmd->pfc_mode = pfc_mode;
+
+	status = ice_aq_send_cmd(hw, &desc, NULL, 0, cd);
+	if (status)
+		return status;
+
+	/* FW will write the PFC mode set back into cmd->pfc_mode, but if DCB is
+	 * disabled, FW will write back 0 to cmd->pfc_mode. After the AQ has
+	 * been executed, check if cmd->pfc_mode is what was requested. If not,
+	 * return an error.
+	 */
+	if (cmd->pfc_mode != pfc_mode)
+		return ICE_ERR_NOT_SUPPORTED;
+
+	return ICE_SUCCESS;
+}
+
+/**
  * ice_cee_to_dcb_cfg
  * @cee_cfg: pointer to CEE configuration struct
- * @dcbcfg: DCB configuration struct
+ * @pi: port information structure
  *
  * Convert CEE configuration from firmware to DCB configuration
  */
 static void
 ice_cee_to_dcb_cfg(struct ice_aqc_get_cee_dcb_cfg_resp *cee_cfg,
-		   struct ice_dcbx_cfg *dcbcfg)
+		   struct ice_port_info *pi)
 {
 	u32 status, tlv_status = LE32_TO_CPU(cee_cfg->tlv_status);
 	u32 ice_aqc_cee_status_mask, ice_aqc_cee_status_shift;
+	u8 i, j, err, sync, oper, app_index, ice_app_sel_type;
 	u16 app_prio = LE16_TO_CPU(cee_cfg->oper_app_prio);
-	u8 i, err, sync, oper, app_index, ice_app_sel_type;
 	u16 ice_aqc_cee_app_mask, ice_aqc_cee_app_shift;
+	struct ice_dcbx_cfg *cmp_dcbcfg, *dcbcfg;
 	u16 ice_app_prot_id_type;
 
-	/* CEE PG data to ETS config */
+	dcbcfg = &pi->qos_cfg.local_dcbx_cfg;
+	dcbcfg->dcbx_mode = ICE_DCBX_MODE_CEE;
+	dcbcfg->tlv_status = tlv_status;
+
+	/* CEE PG data */
 	dcbcfg->etscfg.maxtcs = cee_cfg->oper_num_tc;
 
 	/* Note that the FW creates the oper_prio_tc nibbles reversed
@@ -797,9 +828,15 @@ ice_cee_to_dcb_cfg(struct ice_aqc_get_cee_dcb_cfg_resp *cee_cfg,
 		}
 	}
 
-	/* CEE PFC data to ETS config */
+	/* CEE PFC data */
 	dcbcfg->pfc.pfcena = cee_cfg->oper_pfc_en;
 	dcbcfg->pfc.pfccap = ICE_MAX_TRAFFIC_CLASS;
+
+	/* CEE APP TLV data */
+	if (dcbcfg->app_mode == ICE_DCBX_APPS_NON_WILLING)
+		cmp_dcbcfg = &pi->qos_cfg.desired_dcbx_cfg;
+	else
+		cmp_dcbcfg = &pi->qos_cfg.remote_dcbx_cfg;
 
 	app_index = 0;
 	for (i = 0; i < 3; i++) {
@@ -819,6 +856,18 @@ ice_cee_to_dcb_cfg(struct ice_aqc_get_cee_dcb_cfg_resp *cee_cfg,
 			ice_aqc_cee_app_shift = ICE_AQC_CEE_APP_ISCSI_S;
 			ice_app_sel_type = ICE_APP_SEL_TCPIP;
 			ice_app_prot_id_type = ICE_APP_PROT_ID_ISCSI;
+
+			for (j = 0; j < cmp_dcbcfg->numapps; j++) {
+				u16 prot_id = cmp_dcbcfg->app[j].prot_id;
+				u8 sel = cmp_dcbcfg->app[j].selector;
+
+				if  (sel == ICE_APP_SEL_TCPIP &&
+				     (prot_id == ICE_APP_PROT_ID_ISCSI ||
+				      prot_id == ICE_APP_PROT_ID_ISCSI_860)) {
+					ice_app_prot_id_type = prot_id;
+					break;
+				}
+			}
 		} else {
 			/* FIP APP */
 			ice_aqc_cee_status_mask = ICE_AQC_CEE_FIP_STATUS_M;
@@ -839,8 +888,8 @@ ice_cee_to_dcb_cfg(struct ice_aqc_get_cee_dcb_cfg_resp *cee_cfg,
 		 */
 		if (!err && sync && oper) {
 			dcbcfg->app[app_index].priority =
-				(app_prio & ice_aqc_cee_app_mask) >>
-				ice_aqc_cee_app_shift;
+				(u8)((app_prio & ice_aqc_cee_app_mask) >>
+				     ice_aqc_cee_app_shift);
 			dcbcfg->app[app_index].selector = ice_app_sel_type;
 			dcbcfg->app[app_index].prot_id = ice_app_prot_id_type;
 			app_index++;
@@ -851,7 +900,7 @@ ice_cee_to_dcb_cfg(struct ice_aqc_get_cee_dcb_cfg_resp *cee_cfg,
 }
 
 /**
- * ice_get_ieee_dcb_cfg
+ * ice_get_ieee_or_cee_dcb_cfg
  * @pi: port information structure
  * @dcbx_mode: mode of DCBX (IEEE or CEE)
  *
@@ -867,9 +916,9 @@ ice_get_ieee_or_cee_dcb_cfg(struct ice_port_info *pi, u8 dcbx_mode)
 		return ICE_ERR_PARAM;
 
 	if (dcbx_mode == ICE_DCBX_MODE_IEEE)
-		dcbx_cfg = &pi->local_dcbx_cfg;
+		dcbx_cfg = &pi->qos_cfg.local_dcbx_cfg;
 	else if (dcbx_mode == ICE_DCBX_MODE_CEE)
-		dcbx_cfg = &pi->desired_dcbx_cfg;
+		dcbx_cfg = &pi->qos_cfg.desired_dcbx_cfg;
 
 	/* Get Local DCB Config in case of ICE_DCBX_MODE_IEEE
 	 * or get CEE DCB Desired Config in case of ICE_DCBX_MODE_CEE
@@ -880,7 +929,7 @@ ice_get_ieee_or_cee_dcb_cfg(struct ice_port_info *pi, u8 dcbx_mode)
 		goto out;
 
 	/* Get Remote DCB Config */
-	dcbx_cfg = &pi->remote_dcbx_cfg;
+	dcbx_cfg = &pi->qos_cfg.remote_dcbx_cfg;
 	ret = ice_aq_get_dcb_cfg(pi->hw, ICE_AQ_LLDP_MIB_REMOTE,
 				 ICE_AQ_LLDP_BRID_TYPE_NEAREST_BRID, dcbx_cfg);
 	/* Don't treat ENOENT as an error for Remote MIBs */
@@ -909,14 +958,11 @@ enum ice_status ice_get_dcb_cfg(struct ice_port_info *pi)
 	ret = ice_aq_get_cee_dcb_cfg(pi->hw, &cee_cfg, NULL);
 	if (ret == ICE_SUCCESS) {
 		/* CEE mode */
-		dcbx_cfg = &pi->local_dcbx_cfg;
-		dcbx_cfg->dcbx_mode = ICE_DCBX_MODE_CEE;
-		dcbx_cfg->tlv_status = LE32_TO_CPU(cee_cfg.tlv_status);
-		ice_cee_to_dcb_cfg(&cee_cfg, dcbx_cfg);
 		ret = ice_get_ieee_or_cee_dcb_cfg(pi, ICE_DCBX_MODE_CEE);
+		ice_cee_to_dcb_cfg(&cee_cfg, pi);
 	} else if (pi->hw->adminq.sq_last_status == ICE_AQ_RC_ENOENT) {
 		/* CEE mode not enabled try querying IEEE data */
-		dcbx_cfg = &pi->local_dcbx_cfg;
+		dcbx_cfg = &pi->qos_cfg.local_dcbx_cfg;
 		dcbx_cfg->dcbx_mode = ICE_DCBX_MODE_IEEE;
 		ret = ice_get_ieee_or_cee_dcb_cfg(pi, ICE_DCBX_MODE_IEEE);
 	}
@@ -925,40 +971,108 @@ enum ice_status ice_get_dcb_cfg(struct ice_port_info *pi)
 }
 
 /**
+ * ice_get_dcb_cfg_from_mib_change
+ * @pi: port information structure
+ * @event: pointer to the admin queue receive event
+ *
+ * Set DCB configuration from received MIB Change event
+ */
+void ice_get_dcb_cfg_from_mib_change(struct ice_port_info *pi,
+				     struct ice_rq_event_info *event)
+{
+	struct ice_dcbx_cfg *dcbx_cfg = &pi->qos_cfg.local_dcbx_cfg;
+	struct ice_aqc_lldp_get_mib *mib;
+	u8 change_type, dcbx_mode;
+
+	mib = (struct ice_aqc_lldp_get_mib *)&event->desc.params.raw;
+
+	change_type = mib->type & ICE_AQ_LLDP_MIB_TYPE_M;
+	if (change_type == ICE_AQ_LLDP_MIB_REMOTE)
+		dcbx_cfg = &pi->qos_cfg.remote_dcbx_cfg;
+
+	dcbx_mode = ((mib->type & ICE_AQ_LLDP_DCBX_M) >>
+		     ICE_AQ_LLDP_DCBX_S);
+
+	switch (dcbx_mode) {
+	case ICE_AQ_LLDP_DCBX_IEEE:
+		dcbx_cfg->dcbx_mode = ICE_DCBX_MODE_IEEE;
+		ice_lldp_to_dcb_cfg(event->msg_buf, dcbx_cfg);
+		break;
+
+	case ICE_AQ_LLDP_DCBX_CEE:
+		pi->qos_cfg.desired_dcbx_cfg = pi->qos_cfg.local_dcbx_cfg;
+		ice_cee_to_dcb_cfg((struct ice_aqc_get_cee_dcb_cfg_resp *)
+				   event->msg_buf, pi);
+		break;
+	}
+}
+
+/**
  * ice_init_dcb
  * @hw: pointer to the HW struct
+ * @enable_mib_change: enable MIB change event
  *
  * Update DCB configuration from the Firmware
  */
-enum ice_status ice_init_dcb(struct ice_hw *hw)
+enum ice_status ice_init_dcb(struct ice_hw *hw, bool enable_mib_change)
 {
-	struct ice_port_info *pi = hw->port_info;
+	struct ice_qos_cfg *qos_cfg = &hw->port_info->qos_cfg;
 	enum ice_status ret = ICE_SUCCESS;
 
 	if (!hw->func_caps.common_cap.dcb)
 		return ICE_ERR_NOT_SUPPORTED;
 
-	pi->is_sw_lldp = true;
+	qos_cfg->is_sw_lldp = true;
 
 	/* Get DCBX status */
-	pi->dcbx_status = ice_get_dcbx_status(hw);
+	qos_cfg->dcbx_status = ice_get_dcbx_status(hw);
 
-	if (pi->dcbx_status == ICE_DCBX_STATUS_DONE ||
-	    pi->dcbx_status == ICE_DCBX_STATUS_IN_PROGRESS) {
+	if (qos_cfg->dcbx_status == ICE_DCBX_STATUS_DONE ||
+	    qos_cfg->dcbx_status == ICE_DCBX_STATUS_IN_PROGRESS ||
+	    qos_cfg->dcbx_status == ICE_DCBX_STATUS_NOT_STARTED) {
 		/* Get current DCBX configuration */
-		ret = ice_get_dcb_cfg(pi);
-		pi->is_sw_lldp = (hw->adminq.sq_last_status == ICE_AQ_RC_EPERM);
+		ret = ice_get_dcb_cfg(hw->port_info);
 		if (ret)
 			return ret;
-	} else if (pi->dcbx_status == ICE_DCBX_STATUS_DIS) {
+		qos_cfg->is_sw_lldp = false;
+	} else if (qos_cfg->dcbx_status == ICE_DCBX_STATUS_DIS) {
 		return ICE_ERR_NOT_READY;
-	} else if (pi->dcbx_status == ICE_DCBX_STATUS_MULTIPLE_PEERS) {
 	}
 
 	/* Configure the LLDP MIB change event */
-	ret = ice_aq_cfg_lldp_mib_change(hw, true, NULL);
+	if (enable_mib_change) {
+		ret = ice_aq_cfg_lldp_mib_change(hw, true, NULL);
+		if (ret)
+			qos_cfg->is_sw_lldp = true;
+	}
+
+	return ret;
+}
+
+/**
+ * ice_cfg_lldp_mib_change
+ * @hw: pointer to the HW struct
+ * @ena_mib: enable/disable MIB change event
+ *
+ * Configure (disable/enable) MIB
+ */
+enum ice_status ice_cfg_lldp_mib_change(struct ice_hw *hw, bool ena_mib)
+{
+	struct ice_qos_cfg *qos_cfg = &hw->port_info->qos_cfg;
+	enum ice_status ret;
+
+	if (!hw->func_caps.common_cap.dcb)
+		return ICE_ERR_NOT_SUPPORTED;
+
+	/* Get DCBX status */
+	qos_cfg->dcbx_status = ice_get_dcbx_status(hw);
+
+	if (qos_cfg->dcbx_status == ICE_DCBX_STATUS_DIS)
+		return ICE_ERR_NOT_READY;
+
+	ret = ice_aq_cfg_lldp_mib_change(hw, ena_mib, NULL);
 	if (!ret)
-		pi->is_sw_lldp = false;
+		qos_cfg->is_sw_lldp = !ena_mib;
 
 	return ret;
 }
@@ -1173,7 +1287,140 @@ ice_add_ieee_app_pri_tlv(struct ice_lldp_org_tlv *tlv,
 }
 
 /**
- * ice_add_dcb_tlv - Add all IEEE TLVs
+ * ice_add_dscp_up_tlv - Prepare DSCP to UP TLV
+ * @tlv: location to build the TLV data
+ * @dcbcfg: location of data to convert to TLV
+ */
+static void
+ice_add_dscp_up_tlv(struct ice_lldp_org_tlv *tlv, struct ice_dcbx_cfg *dcbcfg)
+{
+	u8 *buf = tlv->tlvinfo;
+	u32 ouisubtype;
+	u16 typelen;
+	int i;
+
+	typelen = ((ICE_TLV_TYPE_ORG << ICE_LLDP_TLV_TYPE_S) |
+		   ICE_DSCP_UP_TLV_LEN);
+	tlv->typelen = HTONS(typelen);
+
+	ouisubtype = (u32)((ICE_DSCP_OUI << ICE_LLDP_TLV_OUI_S) |
+			   ICE_DSCP_SUBTYPE_DSCP2UP);
+	tlv->ouisubtype = HTONL(ouisubtype);
+
+	/* bytes 0 - 63 - IPv4 DSCP2UP LUT */
+	for (i = 0; i < ICE_DSCP_NUM_VAL; i++) {
+		/* IPv4 mapping */
+		buf[i] = dcbcfg->dscp_map[i];
+		/* IPv6 mapping */
+		buf[i + ICE_DSCP_IPV6_OFFSET] = dcbcfg->dscp_map[i];
+	}
+
+	/* byte 64 - IPv4 untagged traffic */
+	buf[i] = 0;
+
+	/* byte 144 - IPv6 untagged traffic */
+	buf[i + ICE_DSCP_IPV6_OFFSET] = 0;
+}
+
+#define ICE_BYTES_PER_TC	8
+/**
+ * ice_add_dscp_enf_tlv - Prepare DSCP Enforcement TLV
+ * @tlv: location to build the TLV data
+ */
+static void
+ice_add_dscp_enf_tlv(struct ice_lldp_org_tlv *tlv)
+{
+	u8 *buf = tlv->tlvinfo;
+	u32 ouisubtype;
+	u16 typelen;
+
+	typelen = ((ICE_TLV_TYPE_ORG << ICE_LLDP_TLV_TYPE_S) |
+		   ICE_DSCP_ENF_TLV_LEN);
+	tlv->typelen = HTONS(typelen);
+
+	ouisubtype = (u32)((ICE_DSCP_OUI << ICE_LLDP_TLV_OUI_S) |
+			   ICE_DSCP_SUBTYPE_ENFORCE);
+	tlv->ouisubtype = HTONL(ouisubtype);
+
+	/* Allow all DSCP values to be valid for all TC's (IPv4 and IPv6) */
+	memset(buf, 0, 2 * (ICE_MAX_TRAFFIC_CLASS * ICE_BYTES_PER_TC));
+}
+
+/**
+ * ice_add_dscp_tc_bw_tlv - Prepare DSCP BW for TC TLV
+ * @tlv: location to build the TLV data
+ * @dcbcfg: location of the data to convert to TLV
+ */
+static void
+ice_add_dscp_tc_bw_tlv(struct ice_lldp_org_tlv *tlv,
+		       struct ice_dcbx_cfg *dcbcfg)
+{
+	struct ice_dcb_ets_cfg *etscfg;
+	u8 *buf = tlv->tlvinfo;
+	u32 ouisubtype;
+	u8 offset = 0;
+	u16 typelen;
+	int i;
+
+	typelen = ((ICE_TLV_TYPE_ORG << ICE_LLDP_TLV_TYPE_S) |
+		   ICE_DSCP_TC_BW_TLV_LEN);
+	tlv->typelen = HTONS(typelen);
+
+	ouisubtype = (u32)((ICE_DSCP_OUI << ICE_LLDP_TLV_OUI_S) |
+			   ICE_DSCP_SUBTYPE_TCBW);
+	tlv->ouisubtype = HTONL(ouisubtype);
+
+	/* First Octet after subtype
+	 * ----------------------------
+	 * | RSV | CBS | RSV | Max TCs |
+	 * | 1b  | 1b  | 3b  | 3b      |
+	 * ----------------------------
+	 */
+	etscfg = &dcbcfg->etscfg;
+	buf[0] = etscfg->maxtcs & ICE_IEEE_ETS_MAXTC_M;
+
+	/* bytes 1 - 4 reserved */
+	offset = 5;
+
+	/* TC BW table
+	 * bytes 0 - 7 for TC 0 - 7
+	 *
+	 * TSA Assignment table
+	 * bytes 8 - 15 for TC 0 - 7
+	 */
+	for (i = 0; i < ICE_MAX_TRAFFIC_CLASS; i++) {
+		buf[offset] = etscfg->tcbwtable[i];
+		buf[offset + ICE_MAX_TRAFFIC_CLASS] = etscfg->tsatable[i];
+		offset++;
+	}
+}
+
+/**
+ * ice_add_dscp_pfc_tlv - Prepare DSCP PFC TLV
+ * @tlv: Fill PFC TLV in IEEE format
+ * @dcbcfg: Local store which holds the PFC CFG data
+ */
+static void
+ice_add_dscp_pfc_tlv(struct ice_lldp_org_tlv *tlv, struct ice_dcbx_cfg *dcbcfg)
+{
+	u8 *buf = tlv->tlvinfo;
+	u32 ouisubtype;
+	u16 typelen;
+
+	typelen = ((ICE_TLV_TYPE_ORG << ICE_LLDP_TLV_TYPE_S) |
+		   ICE_DSCP_PFC_TLV_LEN);
+	tlv->typelen = HTONS(typelen);
+
+	ouisubtype = (u32)((ICE_DSCP_OUI << ICE_LLDP_TLV_OUI_S) |
+			   ICE_DSCP_SUBTYPE_PFC);
+	tlv->ouisubtype = HTONL(ouisubtype);
+
+	buf[0] = dcbcfg->pfc.pfccap & 0xF;
+	buf[1] = dcbcfg->pfc.pfcena;
+}
+
+/**
+ * ice_add_dcb_tlv - Add all IEEE or DSCP TLVs
  * @tlv: Fill TLV data in IEEE format
  * @dcbcfg: Local store which holds the DCB Config
  * @tlvid: Type of IEEE TLV
@@ -1184,28 +1431,48 @@ static void
 ice_add_dcb_tlv(struct ice_lldp_org_tlv *tlv, struct ice_dcbx_cfg *dcbcfg,
 		u16 tlvid)
 {
-	switch (tlvid) {
-	case ICE_IEEE_TLV_ID_ETS_CFG:
-		ice_add_ieee_ets_tlv(tlv, dcbcfg);
-		break;
-	case ICE_IEEE_TLV_ID_ETS_REC:
-		ice_add_ieee_etsrec_tlv(tlv, dcbcfg);
-		break;
-	case ICE_IEEE_TLV_ID_PFC_CFG:
-		ice_add_ieee_pfc_tlv(tlv, dcbcfg);
-		break;
-	case ICE_IEEE_TLV_ID_APP_PRI:
-		ice_add_ieee_app_pri_tlv(tlv, dcbcfg);
-		break;
-	default:
-		break;
+	if (dcbcfg->pfc_mode == ICE_QOS_MODE_VLAN) {
+		switch (tlvid) {
+		case ICE_IEEE_TLV_ID_ETS_CFG:
+			ice_add_ieee_ets_tlv(tlv, dcbcfg);
+			break;
+		case ICE_IEEE_TLV_ID_ETS_REC:
+			ice_add_ieee_etsrec_tlv(tlv, dcbcfg);
+			break;
+		case ICE_IEEE_TLV_ID_PFC_CFG:
+			ice_add_ieee_pfc_tlv(tlv, dcbcfg);
+			break;
+		case ICE_IEEE_TLV_ID_APP_PRI:
+			ice_add_ieee_app_pri_tlv(tlv, dcbcfg);
+			break;
+		default:
+			break;
+		}
+	} else {
+		/* pfc_mode == ICE_QOS_MODE_DSCP */
+		switch (tlvid) {
+		case ICE_TLV_ID_DSCP_UP:
+			ice_add_dscp_up_tlv(tlv, dcbcfg);
+			break;
+		case ICE_TLV_ID_DSCP_ENF:
+			ice_add_dscp_enf_tlv(tlv);
+			break;
+		case ICE_TLV_ID_DSCP_TC_BW:
+			ice_add_dscp_tc_bw_tlv(tlv, dcbcfg);
+			break;
+		case ICE_TLV_ID_DSCP_TO_PFC:
+			ice_add_dscp_pfc_tlv(tlv, dcbcfg);
+			break;
+		default:
+			break;
+		}
 	}
 }
 
 /**
  * ice_dcb_cfg_to_lldp - Convert DCB configuration to MIB format
  * @lldpmib: pointer to the HW struct
- * @miblen: length of LLDP mib
+ * @miblen: length of LLDP MIB
  * @dcbcfg: Local store which holds the DCB Config
  *
  * Convert the DCB configuration to MIB format
@@ -1255,7 +1522,7 @@ enum ice_status ice_set_dcb_cfg(struct ice_port_info *pi)
 	hw = pi->hw;
 
 	/* update the HW local config */
-	dcbcfg = &pi->local_dcbx_cfg;
+	dcbcfg = &pi->qos_cfg.local_dcbx_cfg;
 	/* Allocate the LLDPDU */
 	lldpmib = (u8 *)ice_malloc(hw, ICE_LLDPDU_SIZE);
 	if (!lldpmib)
@@ -1275,13 +1542,13 @@ enum ice_status ice_set_dcb_cfg(struct ice_port_info *pi)
 }
 
 /**
- * ice_aq_query_port_ets - query port ets configuration
+ * ice_aq_query_port_ets - query port ETS configuration
  * @pi: port information structure
  * @buf: pointer to buffer
  * @buf_size: buffer size in bytes
  * @cd: pointer to command details structure or NULL
  *
- * query current port ets configuration
+ * query current port ETS configuration
  */
 enum ice_status
 ice_aq_query_port_ets(struct ice_port_info *pi,
@@ -1296,7 +1563,8 @@ ice_aq_query_port_ets(struct ice_port_info *pi,
 		return ICE_ERR_PARAM;
 	cmd = &desc.params.port_ets;
 	ice_fill_dflt_direct_cmd_desc(&desc, ice_aqc_opc_query_port_ets);
-	cmd->port_teid = pi->root->info.node_teid;
+	if (pi->root)
+		cmd->port_teid = pi->root->info.node_teid;
 
 	status = ice_aq_send_cmd(pi->hw, &desc, buf, buf_size, cd);
 	return status;
@@ -1314,7 +1582,7 @@ ice_update_port_tc_tree_cfg(struct ice_port_info *pi,
 			    struct ice_aqc_port_ets_elem *buf)
 {
 	struct ice_sched_node *node, *tc_node;
-	struct ice_aqc_get_elem elem;
+	struct ice_aqc_txsched_elem_data elem;
 	enum ice_status status = ICE_SUCCESS;
 	u32 teid1, teid2;
 	u8 i, j;
@@ -1356,7 +1624,7 @@ ice_update_port_tc_tree_cfg(struct ice_port_info *pi,
 		/* new TC */
 		status = ice_sched_query_elem(pi->hw, teid2, &elem);
 		if (!status)
-			status = ice_sched_add_node(pi, 1, &elem.generic[0]);
+			status = ice_sched_add_node(pi, 1, &elem, NULL);
 		if (status)
 			break;
 		/* update the TC number */
@@ -1368,13 +1636,13 @@ ice_update_port_tc_tree_cfg(struct ice_port_info *pi,
 }
 
 /**
- * ice_query_port_ets - query port ets configuration
+ * ice_query_port_ets - query port ETS configuration
  * @pi: port information structure
  * @buf: pointer to buffer
  * @buf_size: buffer size in bytes
  * @cd: pointer to command details structure or NULL
  *
- * query current port ets configuration and update the
+ * query current port ETS configuration and update the
  * SW DB with the TC changes
  */
 enum ice_status

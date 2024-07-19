@@ -19,14 +19,26 @@
  * Copyright (C) 2019 ScyllaDB Ltd.
  */
 
+
+#ifdef SEASTAR_MODULE
+module;
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <array>
+#include <pthread.h>
+#include <signal.h>
+module seastar;
+#else
 #include <seastar/core/reactor.hh>
 #include "core/thread_pool.hh"
+#endif
 
 namespace seastar {
 
 /* not yet implemented for OSv. TODO: do the notification like we do class smp. */
 #ifndef HAVE_OSV
-thread_pool::thread_pool(reactor* r, sstring name) : _reactor(r), _worker_thread([this, name] { work(name); }) {
+thread_pool::thread_pool(reactor& r, sstring name) : _reactor(r), _worker_thread([this, name] { work(name); }) {
 }
 
 void thread_pool::work(sstring name) {
@@ -51,10 +63,13 @@ void thread_pool::work(sstring name) {
             auto wi = *p;
             wi->process();
             inter_thread_wq._completed.push(wi);
-        }
-        if (_main_thread_idle.load(std::memory_order_seq_cst)) {
-            uint64_t one = 1;
-            ::write(_reactor->_notify_eventfd.get(), &one, 8);
+
+            // Prevent the following load of _main_thread_idle to be hoisted before the writes to _completed above.
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            if (_main_thread_idle.load(std::memory_order_relaxed)) {
+                uint64_t one = 1;
+                ::write(_reactor._notify_eventfd.get(), &one, 8);
+            }
         }
     }
 }

@@ -22,15 +22,20 @@
 
 #pragma once
 
+#ifndef SEASTAR_MODULE
 #include <chrono>
-#include <functional>
 
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/lowres_clock.hh>
+#include <seastar/core/manual_clock.hh>
 #include <seastar/core/timer.hh>
+#include <seastar/util/modules.hh>
+#endif
 
 namespace seastar {
+
+SEASTAR_MODULE_EXPORT_BEGIN
 
 /// \file
 
@@ -89,5 +94,7 @@ future<> sleep_abortable(typename Clock::duration dur, abort_source& as);
 
 extern template future<> sleep_abortable<steady_clock_type>(typename steady_clock_type::duration, abort_source&);
 extern template future<> sleep_abortable<lowres_clock>(typename lowres_clock::duration, abort_source&);
+extern template future<> sleep_abortable<manual_clock>(typename manual_clock::duration, abort_source&);
 
+SEASTAR_MODULE_EXPORT_END
 }

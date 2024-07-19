@@ -241,15 +241,15 @@ public:
     virtual void pass(char const* expr, char const* file, int line, char const* func) = 0;
     virtual void fail(char const* expr, char const* file, int line, char const* func) = 0;
 
-    template<class Bool
+    template<class T
 #if 0
         ,class = typename std::enable_if<
-            std::is_convertible<bool, Bool>::Value>::type
+            std::is_convertible<bool, T>::Value>::type
 #endif
     >
     bool
     maybe_fail(
-        Bool cond,
+        T cond,
         char const* expr,
         char const* file,
         int line,
@@ -626,9 +626,13 @@ current_function_helper()
 */
 using log_type = detail::log_ostream<char>;
 
+#define BOOST_JSON_PP_DO_CONCAT(x, y) x ## y
+
+#define BOOST_JSON_PP_CONCAT(x, y) BOOST_JSON_PP_DO_CONCAT(x, y)
+
 #define BOOST_TEST_CHECKPOINT(...) \
     ::test_suite::detail::checkpoint \
-        _BOOST_TEST_CHECKPOINT ## __LINE__ ( \
+        BOOST_JSON_PP_CONCAT(_BOOST_TEST_CHECKPOINT, __LINE__) ( \
             __FILE__, __LINE__, __VA_ARGS__ + 0)
 
 #define BOOST_TEST(expr) \

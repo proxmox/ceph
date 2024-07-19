@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+set -ex
 
 wget -O linux.tar.xz http://download.ceph.com/qa/linux-6.5.11.tar.xz
 

@@ -1,19 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2014 Intel Corporation
  */
-
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-#include <netinet/in.h>
-
-#ifndef __linux__
-#ifndef __FreeBSD__
-#include <net/socket.h>
-#else
-#include <sys/socket.h>
-#endif
-#endif
 
 #include <rte_string_fns.h>
 
@@ -22,7 +12,7 @@
 
 #include "test_cmdline.h"
 
-#define IP4(a,b,c,d) {((uint32_t)(((a) & 0xff)) | \
+#define IP4(a,b,c,d) {.s_addr = (uint32_t)(((a) & 0xff) | \
 					   (((b) & 0xff) << 8) | \
 					   (((c) & 0xff) << 16)  | \
 					   ((d) & 0xff)  << 24)}
@@ -32,7 +22,11 @@
 
 /* create IPv6 address, swapping bytes where needed */
 #ifndef s6_addr16
-# define s6_addr16      __u6_addr.__u6_addr16
+#ifdef RTE_EXEC_ENV_WINDOWS
+#define s6_addr16 u.Word
+#else
+#define s6_addr16 __u6_addr.__u6_addr16
+#endif
 #endif
 #define IP6(a,b,c,d,e,f,g,h) .ipv6 = \
 		{.s6_addr16 = \
@@ -173,8 +167,6 @@ const char * ipaddr_garbage_network6_strs[] = {
 };
 #define IPv6_GARBAGE_PREFIX 64
 
-
-
 const char * ipaddr_invalid_strs[] = {
 		/** IPv4 **/
 
@@ -262,25 +254,12 @@ const char * ipaddr_invalid_strs[] = {
 		/** misc **/
 
 		/* too long */
-		"1234:1234:1234:1234:1234:1234:1234:1234:1234:1234:1234"
+		"1234:1234:1234:1234:1234:1234:1234:1234:1234:1234:1234",
 		"random invalid text",
 		"",
 		"\0",
 		" ",
 };
-
-#define IPADDR_VALID_STRS_SIZE \
-	(sizeof(ipaddr_valid_strs) / sizeof(ipaddr_valid_strs[0]))
-#define IPADDR_GARBAGE_ADDR4_STRS_SIZE \
-	(sizeof(ipaddr_garbage_addr4_strs) / sizeof(ipaddr_garbage_addr4_strs[0]))
-#define IPADDR_GARBAGE_ADDR6_STRS_SIZE \
-	(sizeof(ipaddr_garbage_addr6_strs) / sizeof(ipaddr_garbage_addr6_strs[0]))
-#define IPADDR_GARBAGE_NETWORK4_STRS_SIZE \
-	(sizeof(ipaddr_garbage_network4_strs) / sizeof(ipaddr_garbage_network4_strs[0]))
-#define IPADDR_GARBAGE_NETWORK6_STRS_SIZE \
-	(sizeof(ipaddr_garbage_network6_strs) / sizeof(ipaddr_garbage_network6_strs[0]))
-#define IPADDR_INVALID_STRS_SIZE \
-	(sizeof(ipaddr_invalid_strs) / sizeof(ipaddr_invalid_strs[0]))
 
 static void
 dump_addr(cmdline_ipaddr_t addr)
@@ -374,7 +353,7 @@ test_parse_ipaddr_valid(void)
 	}
 
 	/* test valid strings */
-	for (i = 0; i < IPADDR_VALID_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ipaddr_valid_strs); i++) {
 
 		/* test each valid string against different flags */
 		for (flags = 1; flags < 0x8; flags++) {
@@ -422,7 +401,7 @@ test_parse_ipaddr_valid(void)
 	}
 
 	/* test garbage ipv4 address strings */
-	for (i = 0; i < IPADDR_GARBAGE_ADDR4_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ipaddr_garbage_addr4_strs); i++) {
 
 		struct in_addr tmp = IPv4_GARBAGE_ADDR;
 
@@ -464,7 +443,7 @@ test_parse_ipaddr_valid(void)
 	}
 
 	/* test garbage ipv6 address strings */
-	for (i = 0; i < IPADDR_GARBAGE_ADDR6_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ipaddr_garbage_addr6_strs); i++) {
 
 		cmdline_ipaddr_t tmp = {.addr = IPv6_GARBAGE_ADDR};
 
@@ -507,7 +486,7 @@ test_parse_ipaddr_valid(void)
 
 
 	/* test garbage ipv4 network strings */
-	for (i = 0; i < IPADDR_GARBAGE_NETWORK4_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ipaddr_garbage_network4_strs); i++) {
 
 		struct in_addr tmp = IPv4_GARBAGE_ADDR;
 
@@ -549,7 +528,7 @@ test_parse_ipaddr_valid(void)
 	}
 
 	/* test garbage ipv6 address strings */
-	for (i = 0; i < IPADDR_GARBAGE_NETWORK6_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ipaddr_garbage_network6_strs); i++) {
 
 		cmdline_ipaddr_t tmp = {.addr = IPv6_GARBAGE_ADDR};
 
@@ -606,7 +585,7 @@ test_parse_ipaddr_invalid_data(void)
 	memset(&result, 0, sizeof(result));
 
 	/* test invalid strings */
-	for (i = 0; i < IPADDR_INVALID_STRS_SIZE; i++) {
+	for (i = 0; i < RTE_DIM(ipaddr_invalid_strs); i++) {
 
 		/* test each valid string against different flags */
 		for (flags = 1; flags < 0x8; flags++) {
