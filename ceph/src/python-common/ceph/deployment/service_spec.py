@@ -127,17 +127,120 @@ class HostPlacementSpec(NamedTuple):
         assert_valid_host(self.hostname)
 
 
+HostPatternType = Union[str, None, Dict[str, Union[str, bool, None]], "HostPattern"]
+
+
+class PatternType(enum.Enum):
+    fnmatch = 'fnmatch'
+    regex = 'regex'
+
+
+class HostPattern():
+    def __init__(self,
+                 pattern: Optional[str] = None,
+                 pattern_type: PatternType = PatternType.fnmatch) -> None:
+        self.pattern: Optional[str] = pattern
+        self.pattern_type: PatternType = pattern_type
+        self.compiled_regex = None
+        if self.pattern_type == PatternType.regex and self.pattern:
+            self.compiled_regex = re.compile(self.pattern)
+
+    def filter_hosts(self, hosts: List[str]) -> List[str]:
+        if not self.pattern:
+            return []
+        if not self.pattern_type or self.pattern_type == PatternType.fnmatch:
+            return fnmatch.filter(hosts, self.pattern)
+        elif self.pattern_type == PatternType.regex:
+            if not self.compiled_regex:
+                self.compiled_regex = re.compile(self.pattern)
+            return [h for h in hosts if re.match(self.compiled_regex, h)]
+        raise SpecValidationError(f'Got unexpected pattern_type: {self.pattern_type}')
+
+    @classmethod
+    def to_host_pattern(cls, arg: HostPatternType) -> "HostPattern":
+        if arg is None:
+            return cls()
+        elif isinstance(arg, str):
+            return cls(arg)
+        elif isinstance(arg, cls):
+            return arg
+        elif isinstance(arg, dict):
+            if 'pattern' not in arg:
+                raise SpecValidationError("Got dict for host pattern "
+                                          f"with no pattern field: {arg}")
+            pattern = arg['pattern']
+            if not pattern:
+                raise SpecValidationError("Got dict for host pattern"
+                                          f"with empty pattern: {arg}")
+            assert isinstance(pattern, str)
+            if 'pattern_type' in arg:
+                pattern_type = arg['pattern_type']
+                if not pattern_type or pattern_type == 'fnmatch':
+                    return cls(pattern, pattern_type=PatternType.fnmatch)
+                elif pattern_type == 'regex':
+                    return cls(pattern, pattern_type=PatternType.regex)
+                else:
+                    raise SpecValidationError("Got dict for host pattern "
+                                              f"with unknown pattern type: {arg}")
+            return cls(pattern)
+        raise SpecValidationError(f"Cannot convert {type(arg)} object to HostPattern")
+
+    def __eq__(self, other: Any) -> bool:
+        try:
+            other_hp = self.to_host_pattern(other)
+        except SpecValidationError:
+            return False
+        return self.pattern == other_hp.pattern and self.pattern_type == other_hp.pattern_type
+
+    def pretty_str(self) -> str:
+        # Placement specs must be able to be converted between the Python object
+        # representation and a pretty str both ways. So we need a corresponding
+        # function for HostPattern to convert it to a pretty str that we can
+        # convert back later.
+        res = self.pattern if self.pattern else ''
+        if self.pattern_type == PatternType.regex:
+            res = 'regex:' + res
+        return res
+
+    @classmethod
+    def from_pretty_str(cls, val: str) -> "HostPattern":
+        if 'regex:' in val:
+            return cls(val[6:], pattern_type=PatternType.regex)
+        else:
+            return cls(val)
+
+    def __repr__(self) -> str:
+        return f'HostPattern(pattern=\'{self.pattern}\', pattern_type={str(self.pattern_type)})'
+
+    def to_json(self) -> Union[str, Dict[str, Any], None]:
+        if self.pattern_type and self.pattern_type != PatternType.fnmatch:
+            return {
+                'pattern': self.pattern,
+                'pattern_type': self.pattern_type.name
+            }
+        return self.pattern
+
+    @classmethod
+    def from_json(self, val: Dict[str, Any]) -> "HostPattern":
+        return self.to_host_pattern(val)
+
+    def __bool__(self) -> bool:
+        if self.pattern:
+            return True
+        return False
+
+
 class PlacementSpec(object):
     """
     For APIs that need to specify a host subset
     """
 
     def __init__(self,
-                 label=None,  # type: Optional[str]
-                 hosts=None,  # type: Union[List[str],List[HostPlacementSpec], None]
-                 count=None,  # type: Optional[int]
-                 count_per_host=None,  # type: Optional[int]
-                 host_pattern=None,  # type: Optional[str]
+                 label: Optional[str] = None,
+                 hosts: Union[List[str], List[HostPlacementSpec], None] = None,
+                 count: Optional[int] = None,
+                 count_per_host: Optional[int] = None,
+                 host_pattern: HostPatternType = None,
                  ):
         # type: (...) -> None
         self.label = label
@@ -150,7 +253,7 @@ class PlacementSpec(object):
         self.count_per_host = count_per_host   # type: Optional[int]
 
         #: fnmatch patterns to select hosts. Can also be a single host.
-        self.host_pattern = host_pattern  # type: Optional[str]
+        self.host_pattern: HostPattern = HostPattern.to_host_pattern(host_pattern)
 
         self.validate()
 
@@ -190,10 +293,11 @@ class PlacementSpec(object):
             all_hosts = [hs.hostname for hs in hostspecs]
             return [h.hostname for h in self.hosts if h.hostname in all_hosts]
         if self.label:
-            return [hs.hostname for hs in hostspecs if self.label in hs.labels]
-        all_hosts = [hs.hostname for hs in hostspecs]
+            all_hosts = [hs.hostname for hs in hostspecs if self.label in hs.labels]
+        else:
+            all_hosts = [hs.hostname for hs in hostspecs]
         if self.host_pattern:
-            return fnmatch.filter(all_hosts, self.host_pattern)
+            return self.host_pattern.filter_hosts(all_hosts)
         return all_hosts
 
     def get_target_count(self, hostspecs: Iterable[HostSpec]) -> int:
@@ -217,7 +321,7 @@ class PlacementSpec(object):
         if self.label:
             kv.append('label:%s' % self.label)
         if self.host_pattern:
-            kv.append(self.host_pattern)
+            kv.append(self.host_pattern.pretty_str())
         return ';'.join(kv)
 
     def __repr__(self) -> str:
@@ -258,7 +362,7 @@ class PlacementSpec(object):
         if self.count_per_host:
             r['count_per_host'] = self.count_per_host
         if self.host_pattern:
-            r['host_pattern'] = self.host_pattern
+            r['host_pattern'] = self.host_pattern.to_json()
         return r
 
     def validate(self) -> None:
@@ -302,8 +406,9 @@ class PlacementSpec(object):
                 "count-per-host cannot be combined explicit placement with names or networks"
             )
         if self.host_pattern:
-            if not isinstance(self.host_pattern, str):
-                raise SpecValidationError('host_pattern must be of type string')
+            # if we got an invalid type for the host_pattern, it would have
+            # triggered a SpecValidationError when attemptying to convert it
+            # to a HostPattern type, so no type checking is needed here.
             if self.hosts:
                 raise SpecValidationError('cannot combine host patterns and hosts')
 
@@ -341,10 +446,17 @@ tPlacementSpec(hostname='host2', network='', name='')])
         >>> PlacementSpec.from_string('3 label:mon')
         PlacementSpec(count=3, label='mon')
 
-        fnmatch is also supported:
+        You can specify a regex to match with `regex:<regex>`
+
+        >>> PlacementSpec.from_string('regex:Foo[0-9]|Bar[0-9]')
+        PlacementSpec(host_pattern=HostPattern(pattern='Foo[0-9]|Bar[0-9]', \
+pattern_type=PatternType.regex))
+
+        fnmatch is the default for a single string if "regex:" is not provided:
 
         >>> PlacementSpec.from_string('data[1-3]')
-        PlacementSpec(host_pattern='data[1-3]')
+        PlacementSpec(host_pattern=HostPattern(pattern='data[1-3]', \
+pattern_type=PatternType.fnmatch))
 
         >>> PlacementSpec.from_string(None)
         PlacementSpec()
@@ -394,7 +506,8 @@ tPlacementSpec(hostname='host2', network='', name='')])
 
         advanced_hostspecs = [h for h in strings if
                               (':' in h or '=' in h or not any(c in '[]?*:=' for c in h)) and
-                              'label:' not in h]
+                              'label:' not in h and
+                              'regex:' not in h]
         for a_h in advanced_hostspecs:
             strings.remove(a_h)
 
@@ -406,15 +519,20 @@ tPlacementSpec(hostname='host2', network='', name='')])
         label = labels[0][6:] if labels else None
 
         host_patterns = strings
+        host_pattern: Optional[HostPattern] = None
         if len(host_patterns) > 1:
             raise SpecValidationError(
                 'more than one host pattern provided: {}'.format(host_patterns))
+        if host_patterns:
+            # host_patterns is a list not > 1, and not empty, so we should
+            # be guaranteed just a single string here
+            host_pattern = HostPattern.from_pretty_str(host_patterns[0])
 
         ps = PlacementSpec(count=count,
                            count_per_host=count_per_host,
                            hosts=advanced_hostspecs,
                            label=label,
-                           host_pattern=host_patterns[0] if host_patterns else None)
+                           host_pattern=host_pattern)
         return ps
 
 
@@ -625,7 +743,8 @@ class ServiceSpec(object):
     KNOWN_SERVICE_TYPES = 'alertmanager crash grafana iscsi nvmeof loki promtail mds mgr mon nfs ' \
                           'node-exporter osd prometheus rbd-mirror rgw agent ceph-exporter ' \
                           'container ingress cephfs-mirror snmp-gateway jaeger-tracing ' \
-                          'elasticsearch jaeger-agent jaeger-collector jaeger-query'.split()
+                          'elasticsearch jaeger-agent jaeger-collector jaeger-query ' \
+                          'node-proxy'.split()
     REQUIRES_SERVICE_ID = 'iscsi nvmeof mds nfs rgw container ingress '.split()
     MANAGED_CONFIG_OPTIONS = [
         'mds_join_fs',
@@ -951,6 +1070,7 @@ class NFSServiceSpec(ServiceSpec):
                  extra_container_args: Optional[GeneralArgList] = None,
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
                  enable_haproxy_protocol: bool = False,
+                 idmap_conf: Optional[Dict[str, Dict[str, str]]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'nfs'
@@ -963,6 +1083,7 @@ class NFSServiceSpec(ServiceSpec):
         self.port = port
         self.virtual_ip = virtual_ip
         self.enable_haproxy_protocol = enable_haproxy_protocol
+        self.idmap_conf = idmap_conf
 
     def get_port_start(self) -> List[int]:
         if self.port:
@@ -1294,6 +1415,7 @@ class IngressSpec(ServiceSpec):
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
                  enable_haproxy_protocol: bool = False,
                  custom_configs: Optional[List[CustomConfig]] = None,
+                 health_check_interval: Optional[str] = None,
                  ):
         assert service_type == 'ingress'
 
@@ -1326,6 +1448,8 @@ class IngressSpec(ServiceSpec):
         self.ssl = ssl
         self.keepalive_only = keepalive_only
         self.enable_haproxy_protocol = enable_haproxy_protocol
+        self.health_check_interval = health_check_interval.strip(
+        ) if health_check_interval else None
 
     def get_port_start(self) -> List[int]:
         ports = []
@@ -1356,6 +1480,13 @@ class IngressSpec(ServiceSpec):
         if self.virtual_ip is not None and self.virtual_ips_list is not None:
             raise SpecValidationError(
                 'Cannot add ingress: Single and multiple virtual IPs specified')
+        if self.health_check_interval:
+            valid_units = ['s', 'm', 'h']
+            m = re.search(rf"^(\d+)({'|'.join(valid_units)})$", self.health_check_interval)
+            if not m:
+                raise SpecValidationError(
+                    f'Cannot add ingress: Invalid health_check_interval specified. '
+                    f'Valid units are: {valid_units}')
 
 
 yaml.add_representer(IngressSpec, ServiceSpec.yaml_representer)
@@ -1372,7 +1503,6 @@ class CustomContainerSpec(ServiceSpec):
                  preview_only: bool = False,
                  image: Optional[str] = None,
                  entrypoint: Optional[str] = None,
-                 extra_entrypoint_args: Optional[GeneralArgList] = None,
                  uid: Optional[int] = None,
                  gid: Optional[int] = None,
                  volume_mounts: Optional[Dict[str, str]] = {},
@@ -1384,6 +1514,9 @@ class CustomContainerSpec(ServiceSpec):
                  ports: Optional[List[int]] = [],
                  dirs: Optional[List[str]] = [],
                  files: Optional[Dict[str, Any]] = {},
+                 extra_container_args: Optional[GeneralArgList] = None,
+                 extra_entrypoint_args: Optional[GeneralArgList] = None,
+                 custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'container'
         assert service_id is not None
@@ -1393,7 +1526,9 @@ class CustomContainerSpec(ServiceSpec):
             service_type, service_id,
             placement=placement, unmanaged=unmanaged,
             preview_only=preview_only, config=config,
-            networks=networks, extra_entrypoint_args=extra_entrypoint_args)
+            networks=networks, extra_container_args=extra_container_args,
+            extra_entrypoint_args=extra_entrypoint_args,
+            custom_configs=custom_configs)
 
         self.image = image
         self.entrypoint = entrypoint
@@ -1425,6 +1560,19 @@ class CustomContainerSpec(ServiceSpec):
             if value is not None:
                 config_json[prop] = value
         return config_json
+
+    def validate(self) -> None:
+        super(CustomContainerSpec, self).validate()
+
+        if self.args and self.extra_container_args:
+            raise SpecValidationError(
+                '"args" and "extra_container_args" are mutually exclusive '
+                '(and both serve the same purpose)')
+
+        if self.files and self.custom_configs:
+            raise SpecValidationError(
+                '"files" and "custom_configs" are mutually exclusive '
+                '(and both serve the same purpose)')
 
 
 yaml.add_representer(CustomContainerSpec, ServiceSpec.yaml_representer)
@@ -1540,6 +1688,7 @@ class GrafanaSpec(MonitoringSpec):
                  preview_only: bool = False,
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
+                 only_bind_port_on_networks: bool = False,
                  port: Optional[int] = None,
                  protocol: Optional[str] = 'https',
                  initial_admin_password: Optional[str] = None,
@@ -1559,6 +1708,12 @@ class GrafanaSpec(MonitoringSpec):
         self.initial_admin_password = initial_admin_password
         self.anonymous_access = anonymous_access
         self.protocol = protocol
+
+        # whether ports daemons for this service bind to should
+        # bind to only hte networks listed in networks param, or
+        # to all networks. Defaults to false which is saying to bind
+        # on all networks.
+        self.only_bind_port_on_networks = only_bind_port_on_networks
 
     def validate(self) -> None:
         super(GrafanaSpec, self).validate()
@@ -1585,6 +1740,7 @@ class PrometheusSpec(MonitoringSpec):
                  preview_only: bool = False,
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
+                 only_bind_port_on_networks: bool = False,
                  port: Optional[int] = None,
                  retention_time: Optional[str] = None,
                  retention_size: Optional[str] = None,
@@ -1602,6 +1758,7 @@ class PrometheusSpec(MonitoringSpec):
 
         self.retention_time = retention_time.strip() if retention_time else None
         self.retention_size = retention_size.strip() if retention_size else None
+        self.only_bind_port_on_networks = only_bind_port_on_networks
 
     def validate(self) -> None:
         super(PrometheusSpec, self).validate()
@@ -1820,6 +1977,7 @@ class MONSpec(ServiceSpec):
                  preview_only: bool = False,
                  networks: Optional[List[str]] = None,
                  extra_container_args: Optional[GeneralArgList] = None,
+                 extra_entrypoint_args: Optional[GeneralArgList] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  crush_locations: Optional[Dict[str, List[str]]] = None,
                  ):
@@ -1832,6 +1990,7 @@ class MONSpec(ServiceSpec):
                                       preview_only=preview_only,
                                       networks=networks,
                                       extra_container_args=extra_container_args,
+                                      extra_entrypoint_args=extra_entrypoint_args,
                                       custom_configs=custom_configs)
 
         self.crush_locations = crush_locations
@@ -1980,6 +2139,7 @@ class CephExporterSpec(ServiceSpec):
                  unmanaged: bool = False,
                  preview_only: bool = False,
                  extra_container_args: Optional[GeneralArgList] = None,
+                 extra_entrypoint_args: Optional[GeneralArgList] = None,
                  ):
         assert service_type == 'ceph-exporter'
 
@@ -1988,7 +2148,8 @@ class CephExporterSpec(ServiceSpec):
             placement=placement,
             unmanaged=unmanaged,
             preview_only=preview_only,
-            extra_container_args=extra_container_args)
+            extra_container_args=extra_container_args,
+            extra_entrypoint_args=extra_entrypoint_args)
 
         self.service_type = service_type
         self.sock_dir = sock_dir

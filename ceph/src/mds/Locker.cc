@@ -1237,6 +1237,19 @@ void Locker::eval_gather(SimpleLock *lock, bool first, bool *pneed_issue, MDSCon
 	  send_lock_message(lock, LOCK_AC_SYNC, softdata);
 	}
 	break;
+      case LOCK_XLOCKSNAP:
+	if (lock->get_sm() == &sm_filelock) {
+	  int pending = lock->gcaps_allowed(CAP_ANY) ||
+	                lock->gcaps_allowed(CAP_LONER) ||
+			lock->gcaps_allowed(CAP_XLOCKER);
+	  int revoke = ~pending & (loner_issued | other_issued | xlocker_issued);
+
+	  // wait for 'Fb' to be revoked
+	  if (revoke & CEPH_CAP_GBUFFER) {
+	    return;
+	  }
+	}
+	break;
       }
 
     }
@@ -3567,6 +3580,36 @@ void Locker::kick_cap_releases(MDRequestRef& mdr)
   }
 }
 
+__u32 Locker::get_xattr_total_length(CInode::mempool_xattr_map &xattr)
+{
+  __u32 total = 0;
+
+  for (const auto &p : xattr)
+    total += (p.first.length() + p.second.length());
+  return total;
+}
+
+void Locker::decode_new_xattrs(CInode::mempool_inode *inode,
+			       CInode::mempool_xattr_map *px,
+			       const cref_t<MClientCaps> &m)
+{
+  CInode::mempool_xattr_map tmp;
+
+  auto p = m->xattrbl.cbegin();
+  decode_noshare(tmp, p);
+  __u32 total = get_xattr_total_length(tmp);
+  inode->xattr_version = m->head.xattr_version;
+  if (total > mds->mdsmap->get_max_xattr_size()) {
+    dout(1) << "Maximum xattr size exceeded: " << total
+	    << " max size: " << mds->mdsmap->get_max_xattr_size() << dendl;
+    // Ignore new xattr (!!!) but increase xattr version
+    // XXX how to force the client to drop cached xattrs?
+    inode->xattr_version++;
+  } else {
+    *px = std::move(tmp);
+  }
+}
+
 /**
  * m and ack might be NULL, so don't dereference them unless dirty != 0
  */
@@ -3637,10 +3680,8 @@ void Locker::_do_snap_update(CInode *in, snapid_t snap, int dirty, snapid_t foll
   // xattr
   if (xattrs) {
     dout(7) << " xattrs v" << i->xattr_version << " -> " << m->head.xattr_version
-	    << " len " << m->xattrbl.length() << dendl;
-    i->xattr_version = m->head.xattr_version;
-    auto p = m->xattrbl.cbegin();
-    decode(*px, p);
+            << " len " << m->xattrbl.length() << dendl;
+    decode_new_xattrs(i, px, m);
   }
 
   {
@@ -3879,13 +3920,6 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   if (!dirty && !change_max)
     return false;
 
-  Session *session = mds->get_session(m);
-  if (session->check_access(in, MAY_WRITE,
-			    m->caller_uid, m->caller_gid, NULL, 0, 0) < 0) {
-    dout(10) << "check_access failed, dropping cap update on " << *in << dendl;
-    return false;
-  }
-
   // do the update.
   EUpdate *le = new EUpdate(mds->mdlog, "cap update");
   mds->mdlog->start_entry(le);
@@ -3932,9 +3966,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   // xattrs update?
   if (xattr) {
     dout(7) << " xattrs v" << pi.inode->xattr_version << " -> " << m->head.xattr_version << dendl;
-    pi.inode->xattr_version = m->head.xattr_version;
-    auto p = m->xattrbl.cbegin();
-    decode_noshare(*pi.xattrs, p);
+    decode_new_xattrs(pi.inode.get(), pi.xattrs.get(), m);
     wrlock_force(&in->xattrlock, mut);
   }
   
@@ -5769,6 +5801,7 @@ void Locker::handle_file_lock(ScatterLock *lock, const cref_t<MLock> &m)
   case LOCK_AC_SYNC:
     ceph_assert(lock->get_state() == LOCK_LOCK ||
 	   lock->get_state() == LOCK_MIX ||
+	   lock->get_state() == LOCK_MIX_SYNC ||
 	   lock->get_state() == LOCK_MIX_SYNC2);
     
     if (lock->get_state() == LOCK_MIX) {

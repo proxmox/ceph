@@ -5028,7 +5028,9 @@ void BlueStore::_init_logger()
 	    PerfCountersBuilder::PRIO_CRITICAL,
 	    unit_t(UNIT_BYTES));
   b.add_u64(l_bluestore_fragmentation, "fragmentation_micros",
-            "How fragmented bluestore free space is (free extents / max possible number of free extents) * 1000");
+            "How fragmented bluestore free space is (free extents / max possible number of free extents) * 1000",
+	    "fbss",
+	    PerfCountersBuilder::PRIO_USEFUL);
   b.add_u64(l_bluestore_alloc_unit, "alloc_unit",
 	    "allocation unit size in bytes",
 	    "au_b",
@@ -7655,17 +7657,16 @@ int BlueStore::expand_devices(ostream& out)
           << std::endl;
       }
     }
-
-    if (fm && fm->is_null_manager()) {
-      // we grow the allocation range, must reflect it in the allocation file
-      alloc->init_add_free(size0, size - size0);
-      need_to_destage_allocation_file = true;
-    }
     _close_db_and_around();
 
     // mount in read/write to sync expansion changes
     r = _mount();
     ceph_assert(r == 0);
+    if (fm && fm->is_null_manager()) {
+      // we grow the allocation range, must reflect it in the allocation file
+      alloc->init_add_free(size0, size - size0);
+      need_to_destage_allocation_file = true;
+    }
     umount();
   } else {
     _close_db_and_around();
@@ -10373,6 +10374,7 @@ void BlueStore::collect_metadata(map<string,string> *pm)
     }
   }
   (*pm)["bluestore_min_alloc_size"] = stringify(min_alloc_size);
+  (*pm)["bluestore_allocation_from_file"] = stringify(fm && fm->is_null_manager());
 }
 
 int BlueStore::get_numa_node(

@@ -302,6 +302,7 @@ endif(WITH_BLKIN)
 set(mds_files)
 list(APPEND mds_files
   mds/MDSMap.cc
+  mds/MDSAuthCaps.cc
   mds/FSMap.cc
   mds/FSMapUser.cc
   mds/inode_backtrace.cc
@@ -653,6 +654,7 @@ endif()
 if(NOT WIN32)
 add_subdirectory(pybind)
 add_subdirectory(ceph-volume)
+add_subdirectory(ceph-node-proxy)
 add_subdirectory(python-common)
 add_subdirectory(cephadm)
 endif(NOT WIN32)

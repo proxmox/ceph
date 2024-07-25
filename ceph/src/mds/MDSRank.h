@@ -43,6 +43,7 @@
 #include "Server.h"
 #include "MetricsHandler.h"
 #include "osdc/Journaler.h"
+#include "MDSMetaRequest.h"
 
 // Full .h import instead of forward declaration for PerfCounter, for the
 // benefit of those including this header and using MDSRank::logger
@@ -253,6 +254,10 @@ class MDSRank {
       progress_thread.signal();
     }
 
+    uint64_t get_global_id() const {
+      return monc->get_global_id();
+    }
+
     // Daemon lifetime functions: these guys break the abstraction
     // and call up into the parent MDSDaemon instance.  It's kind
     // of unavoidable: if we want any depth into our calls 
@@ -423,6 +428,8 @@ class MDSRank {
     PerfCounters *logger = nullptr, *mlogger = nullptr;
     OpTracker op_tracker;
 
+    std::map<ceph_tid_t, std::unique_ptr<MDSMetaRequest>> internal_client_requests;
+
     // The last different state I held before current
     MDSMap::DaemonState last_state = MDSMap::STATE_BOOT;
     // The state assigned to me by the MDSMap
@@ -519,6 +526,7 @@ class MDSRank {
     void command_openfiles_ls(Formatter *f);
     void command_dump_tree(const cmdmap_t &cmdmap, std::ostream &ss, Formatter *f);
     void command_dump_inode(Formatter *f, const cmdmap_t &cmdmap, std::ostream &ss);
+    void command_dump_dir(Formatter *f, const cmdmap_t &cmdmap, std::ostream &ss);
     void command_cache_drop(uint64_t timeout, Formatter *f, Context *on_finish);
 
     // FIXME the state machine logic should be separable from the dispatch

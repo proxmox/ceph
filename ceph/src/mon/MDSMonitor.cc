@@ -136,6 +136,7 @@ void MDSMonitor::update_from_paxos(bool *need_bootstrap)
 	   << ", my e " << get_fsmap().epoch << dendl;
   ceph_assert(version > get_fsmap().epoch);
 
+  load_metadata(pending_metadata);
   load_health();
 
   // read and decode
@@ -274,6 +275,7 @@ void MDSMonitor::encode_pending(MonitorDBStore::TransactionRef t)
   }
   pending.get_health_checks(&new_checks);
   for (auto& p : new_checks.checks) {
+    // TODO: handle "client_count" metadata when summarizing
     p.second.summary = std::regex_replace(
       p.second.summary,
       std::regex("%num%"),

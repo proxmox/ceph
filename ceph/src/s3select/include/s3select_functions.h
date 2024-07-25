@@ -350,6 +350,7 @@ private:
   s3select_functions* m_s3select_functions;
   variable m_result;
   bool m_is_aggregate_function;
+  value eval_result;
 
   void _resolve_name()
   {
@@ -437,14 +438,28 @@ public:
     {//all rows prior to last row
       if(m_skip_non_aggregate_op == false || is_aggregate() == true)
       {
-        (*m_func_impl)(&arguments, &m_result);
+	try {
+	  (*m_func_impl)(&arguments, &m_result);
+	}
+	catch(std::exception& e)
+	{
+	  std::string error_msg = "[" + m_func_impl->m_function_name + " failed : " + std::string(e.what()) + "]"; 
+	  throw base_s3select_exception(error_msg.data(), base_s3select_exception::s3select_exp_en_t::FATAL);
+	}
       }
       else if(m_skip_non_aggregate_op == true)
       {
         for(auto& p : arguments)
         {//evaluating the arguments (not the function itself, which is a non-aggregate function)
 	 //i.e. in the following use case substring( , sum(),count() ) ; only sum() and count() are evaluated.
-          p->eval();
+	  try {
+	    p->eval();
+	  }
+	  catch(std::exception& e)
+	  {
+	  std::string error_msg = m_func_impl->m_function_name + " failed : " + std::string(e.what());
+	  throw base_s3select_exception(error_msg.data(), base_s3select_exception::s3select_exp_en_t::FATAL);
+	  }
         }
       }
     }
@@ -452,9 +467,27 @@ public:
     {//on the last row, the aggregate function is finalized, 
      //and non-aggregate function is evaluated with the result of aggregate function.
       if(is_aggregate())
-        (*m_func_impl).get_aggregate_result(&m_result);
+      {
+	try{
+	  (*m_func_impl).get_aggregate_result(&m_result);
+	}
+	catch(std::exception& e)
+	{
+	  std::string error_msg = m_func_impl->m_function_name + " failed : " + std::string(e.what());
+	  throw base_s3select_exception(error_msg.data(), base_s3select_exception::s3select_exp_en_t::FATAL);
+	}
+      }
       else
-        (*m_func_impl)(&arguments, &m_result);
+      {
+	try{
+	  (*m_func_impl)(&arguments, &m_result);
+	}
+	catch(std::exception& e)
+	{
+	  std::string error_msg = m_func_impl->m_function_name + " failed : " + std::string(e.what());
+	  throw base_s3select_exception(error_msg.data(), base_s3select_exception::s3select_exp_en_t::FATAL);
+	}
+      }
     }
 
     return m_result.get_value();
@@ -736,6 +769,10 @@ struct _fn_to_int : public base_function
       var_result = static_cast<int64_t>(v.dbl());
       break;
 
+    case value::value_En_t::S3NULL:
+      var_result.setnull();
+      break;
+
     default:
       var_result = v.i64();
       break;
@@ -780,6 +817,10 @@ struct _fn_to_float : public base_function
 
     case value::value_En_t::FLOAT:
       var_result = v.dbl();
+      break;
+
+    case value::value_En_t::S3NULL:
+      var_result.setnull();
       break;
 
     default:
@@ -2017,6 +2058,11 @@ struct _fn_to_bool : public base_function
     {
       i = func_arg.i64();
     }
+    else if (func_arg.type == value::value_En_t::S3NULL)
+    {
+      result->set_null();
+      return true;
+    }
     else
     {
       i = 0;
@@ -2035,12 +2081,14 @@ struct _fn_to_bool : public base_function
 
 struct _fn_trim : public base_function {
 
+  //TODO base function trim
     std::string input_string;
     value v_remove;
     value v_input;
 
     _fn_trim()
     {
+	//default character to remove is blank
     	v_remove = " "; 
     }
 
@@ -2053,13 +2101,16 @@ struct _fn_trim : public base_function {
     	base_statement* str = *iter;
         v_input = str->eval();
         if(v_input.type != value::value_En_t::STRING) {
-            throw base_s3select_exception("content is not string");
+            throw base_s3select_exception("content type is not a string");
         }
         input_string = v_input.str();
         if (args_size == 2) {
         	iter++;
             base_statement* next = *iter;
             v_remove = next->eval();
+	    if(v_remove.type != value::value_En_t::STRING) {
+	      throw base_s3select_exception("remove type is not a string");
+	    }
         }
         boost::trim_right_if(input_string,boost::is_any_of(v_remove.str()));
         boost::trim_left_if(input_string,boost::is_any_of(v_remove.str()));
@@ -2069,13 +2120,13 @@ struct _fn_trim : public base_function {
 }; 
 
 struct _fn_leading : public base_function {
-
     std::string input_string;
     value v_remove;
     value v_input;
 
     _fn_leading()
     {
+	//default character to remove is blank
     	v_remove = " "; 
     }
 
@@ -2088,13 +2139,16 @@ struct _fn_leading : public base_function {
     	base_statement* str = *iter;
         v_input = str->eval();
         if(v_input.type != value::value_En_t::STRING) {
-            throw base_s3select_exception("content is not string");
+            throw base_s3select_exception("content type is not a string");
         }
         input_string = v_input.str();
         if (args_size == 2) {
         	iter++;
             base_statement* next = *iter;
             v_remove = next->eval();
+	    if(v_remove.type != value::value_En_t::STRING) {
+	      throw base_s3select_exception("remove type is not a string");
+	    }
         }
         boost::trim_left_if(input_string,boost::is_any_of(v_remove.str()));
     	result->set_value(input_string.c_str());
@@ -2110,6 +2164,7 @@ struct _fn_trailing : public base_function {
 
     _fn_trailing()
     {
+	//default character to remove is blank
     	v_remove = " "; 
     }
 
@@ -2122,13 +2177,16 @@ struct _fn_trailing : public base_function {
     	base_statement* str = *iter;
         v_input = str->eval();
         if(v_input.type != value::value_En_t::STRING) {
-            throw base_s3select_exception("content is not string");
+            throw base_s3select_exception("content type is not a string");
         }
         input_string = v_input.str();
         if (args_size == 2) {
         	iter++;
             base_statement* next = *iter;
             v_remove = next->eval();
+	    if(v_remove.type != value::value_En_t::STRING) {
+	      throw base_s3select_exception("remove type is not a string");
+	    }
         }
         boost::trim_right_if(input_string,boost::is_any_of(v_remove.str()));
     	result->set_value(input_string.c_str());
@@ -2183,7 +2241,8 @@ struct _fn_decimal_operator : public base_function {
     iter++;
     base_statement* expr_scale = *iter;
     value expr_scale_val = expr_scale->eval();
-    
+   
+    //parser does the type checking 
     precision = expr_precision_val.i64();
     scale = expr_scale_val.i64();
 
@@ -2195,20 +2254,20 @@ struct _fn_decimal_operator : public base_function {
 
 struct _fn_engine_version : public base_function {
 
-  const char* version_description =R"(PR #137 : 
-the change handle the use cases where the JSON input starts with an anonymous array/object this may cause wrong search result per the user request(SQL statement) 
-
-handle the use-case where the user requests a json-key-path that may point to a non-discrete value. i.e. array or an object. 
-editorial changes.
-
-fix for CSV flow, in the case of a "broken row" (upon processing stream of data) 
-
-null results upon aggregation functions on an empty group (no match for where clause).
+  const char* version_description =R"(
+-- trim operator: case insensitive #140
+-- add exception handling to avoid crashes, and produce informative messages instead #141
+-- case-insensitive in the case of is null or is not null predicates. #141
+-- a fix for missing check-type, which cause a crash(trim operator) #142
+-- cast null operations returned false instead of null. #143
+-- adding another way to generate TPCDS data, this method is faster and efficient, it launches multiple instances of data-generators and uses less disk space #145
+-- the scripts use the dsdgen application resides on https://github.com/galsalomon66/tpc-ds-datagen-to-aws-s3
+the whole system resides in a container [ docker pull galsl/fedora_38:tpcds_v2 ] #146
+-- upon logical_operand(and/or) the parser-builder does not use case-insensitive compare function, resulting in wrong evaluation #147
 )";
 
-
   _fn_engine_version()
-  {
+  {//it means it will return a single result line, in case of multi-rows input object
     aggregate = true;
   }
 
@@ -2533,6 +2592,17 @@ bool base_statement::is_column_reference() const
   }
 
   return false;
+}
+
+std::string base_statement::get_key_from_projection()
+{
+  variable* v_name = dynamic_cast<variable*>(this);
+
+  if(v_name)  {
+    return v_name->get_name();
+  } else {
+    throw base_s3select_exception("key not present");
+  }
 }
 
 bool base_statement::is_nested_aggregate(bool &aggr_flow) const

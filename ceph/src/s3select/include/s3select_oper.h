@@ -389,7 +389,20 @@ struct binop_modulo
     {
       throw base_s3select_exception("Mod zero is not allowed");
     } else {
-      return a % b;
+      return a % b;     
+    }
+  }
+};
+
+struct binop_float_modulo
+{
+  double operator()(double a, double b)
+  {
+    if (b == 0)
+    {
+      throw base_s3select_exception("Mod zero is not allowed");
+    } else {
+      return fmod(a, b);     
     }
   }
 };
@@ -1098,8 +1111,10 @@ public:
 
   value & operator%(const value &v)
   {
-    if(v.type == value_En_t::DECIMAL) {
+    if(v.type == value_En_t::DECIMAL && this->type == value_En_t::DECIMAL) {
       return compute<binop_modulo>(*this,v);
+    } else if(v.type == value_En_t::FLOAT || this->type == value_En_t::FLOAT) {
+      return compute<binop_float_modulo>(*this,v);
     } else {
       throw base_s3select_exception("wrong use of modulo operation!");
     }
@@ -1478,6 +1493,7 @@ public:
   const base_statement* get_aggregate() const;
   bool is_nested_aggregate(bool&) const;
   bool is_column_reference() const;
+  std::string get_key_from_projection();
   bool mark_aggreagtion_subtree_to_execute();
   bool is_statement_contain_star_operation() const;
   void push_for_cleanup(std::set<base_statement*>&);
@@ -1714,7 +1730,7 @@ public:
 
   virtual bool is_column() const //is reference to column.
   {
-    if(m_var_type == var_t::VARIABLE_NAME || m_var_type == var_t::POS || m_var_type == var_t::STAR_OPERATION)
+    if(m_var_type == var_t::VARIABLE_NAME || m_var_type == var_t::POS || m_var_type == var_t::STAR_OPERATION || m_var_type == var_t::JSON_VARIABLE)
     {
       return true;
     }
@@ -1817,7 +1833,7 @@ public:
         }
       }
 
-    }
+    } 
 
     if (m_projection_alias)
     {
@@ -2375,6 +2391,17 @@ class base_date_diff : public base_function
       ptime1 += boost::posix_time::minutes(ts1_td.minutes() * -1);
       ptime2 = ts2_ptime + boost::posix_time::hours(ts2_td.hours() * -1);
       ptime2 += boost::posix_time::minutes(ts2_td.minutes() * -1);
+
+      try{
+	ptime1.date().year();
+	ptime2.date().year();
+      }
+      catch(std::exception& e)
+      {
+	std::string error_msg = "the input timestamp for the diff operation is not correct : " + std::string(e.what());
+        throw base_s3select_exception(error_msg.data(),base_s3select_exception::s3select_exp_en_t::FATAL);
+      }
+
     }
 
 };

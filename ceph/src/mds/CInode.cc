@@ -965,17 +965,34 @@ CInode *CInode::get_parent_inode()
   return NULL;
 }
 
-bool CInode::is_ancestor_of(const CInode *other) const
+bool CInode::is_ancestor_of(const CInode *other, std::unordered_map<CInode const*,bool>* visited) const
 {
+  std::vector<CInode const*> my_visited = {};
   while (other) {
-    if (other == this)
+    if (visited && other->is_dir()) {
+      if (auto it = visited->find(other); it != visited->end()) {
+        for (auto& in : my_visited) {
+          (*visited)[in] = it->second;
+        }
+        return it->second;
+      }
+      my_visited.push_back(other);  /* N.B.: this being non-empty means visited is assumed non-null */
+    }
+    if (other == this) {
+      for (auto& in : my_visited) {
+        (*visited)[in] = true;
+      }
       return true;
+    }
     const CDentry *pdn = other->get_oldest_parent_dn();
     if (!pdn) {
       ceph_assert(other->is_base());
       break;
     }
     other = pdn->get_dir()->get_inode();
+  }
+  for (auto& in : my_visited) {
+    (*visited)[in] = false;
   }
   return false;
 }
@@ -3457,7 +3474,7 @@ void CInode::remove_client_cap(client_t client)
 
 void CInode::move_to_realm(SnapRealm *realm)
 {
-  dout(10) << __func__ << " joining realm " << *realm
+  dout(20) << __func__ << " joining realm " << *realm
 	   << ", leaving realm " << *containing_realm << dendl;
   for (auto& p : client_caps) {
     containing_realm->remove_cap(p.first, &p.second);
@@ -4788,6 +4805,7 @@ next:
                            false);
         // Flag that we repaired this BT so that it won't go into damagetable
         results->backtrace.repaired = true;
+        in->mdcache->mds->damage_table.remove_backtrace_damage_entry(in->ino());
         if (in->mdcache->mds->logger)
           in->mdcache->mds->logger->inc(l_mds_scrub_backtrace_repaired);
       }
@@ -4926,6 +4944,9 @@ next:
 	    << "freshly-calculated rstats don't match existing ones (will be fixed)";
 	  in->mdcache->repair_inode_stats(in);
           results->raw_stats.repaired = true;
+          for (const auto &p : in->dirfrags){
+            in->mdcache->mds->damage_table.remove_dirfrag_damage_entry(p.second);
+          }
 	} else {
 	  results->raw_stats.error_str
 	    << "freshly-calculated rstats don't match existing ones";
@@ -5165,6 +5186,11 @@ void CInode::dump(Formatter *f, int flags) const
     }
     f->close_section();
   }
+
+  auto realm = find_snaprealm();
+  inodeno_t subvol_ino = realm->get_subvolume_ino();
+  bool is_subvol = (subvol_ino && subvol_ino == ino());
+  f->dump_bool("is_subvolume", is_subvol);
 }
 
 /****** Scrub Stuff *****/

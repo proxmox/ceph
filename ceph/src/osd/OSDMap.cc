@@ -933,6 +933,10 @@ void OSDMap::Incremental::decode(ceph::buffer::list::const_iterator& bl)
       decode(new_last_up_change, bl);
       decode(new_last_in_change, bl);
     }
+    if (struct_v >= 9) {
+      decode(new_pg_upmap_primary, bl);
+      decode(old_pg_upmap_primary, bl);
+    }
     DECODE_FINISH(bl); // client-usable data
   }
 
@@ -1743,9 +1747,12 @@ uint64_t OSDMap::get_features(int entity_type, uint64_t *pmask) const
   }
   mask |= CEPH_FEATURES_CRUSH;
 
-  if (!pg_upmap.empty() || !pg_upmap_items.empty() || !pg_upmap_primaries.empty())
+  if (!pg_upmap.empty() || !pg_upmap_items.empty())
     features |= CEPH_FEATUREMASK_OSDMAP_PG_UPMAP;
   mask |= CEPH_FEATUREMASK_OSDMAP_PG_UPMAP;
+  if (!pg_upmap_primaries.empty())
+    features |= CEPH_FEATUREMASK_SERVER_REEF;
+  mask |= CEPH_FEATUREMASK_SERVER_REEF;
 
   for (auto &pool: pools) {
     if (pool.second.has_flag(pg_pool_t::FLAG_HASHPSPOOL)) {
@@ -1817,6 +1824,9 @@ ceph_release_t OSDMap::get_min_compat_client() const
 {
   uint64_t f = get_features(CEPH_ENTITY_TYPE_CLIENT, nullptr);
 
+  if (HAVE_FEATURE(f, SERVER_REEF)) {	 // v18.2.3 (upmap-primary; see #61948)
+    return ceph_release_t::reef;
+  }
   if (HAVE_FEATURE(f, OSDMAP_PG_UPMAP) ||      // v12.0.0-1733-g27d6f43
       HAVE_FEATURE(f, CRUSH_CHOOSE_ARGS)) {    // v12.0.1-2172-gef1ef28
     return ceph_release_t::luminous;  // v12.2.0
@@ -1869,6 +1879,18 @@ void OSDMap::_calc_up_osd_features()
 uint64_t OSDMap::get_up_osd_features() const
 {
   return cached_up_osd_features;
+}
+
+bool OSDMap::any_osd_laggy() const
+{
+  for (int osd = 0; osd < max_osd; ++osd) {
+    if (!is_up(osd)) { continue; }
+    const auto &xi = get_xinfo(osd);
+    if (xi.laggy_probability || xi.laggy_interval) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void OSDMap::dedup(const OSDMap *o, OSDMap *n)

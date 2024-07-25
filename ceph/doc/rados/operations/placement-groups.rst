@@ -4,6 +4,21 @@
  Placement Groups
 ==================
 
+Placement groups (PGs) are subsets of each logical Ceph pool. Placement groups
+perform the function of placing objects (as a group) into OSDs. Ceph manages
+data internally at placement-group granularity: this scales better than would
+managing individual RADOS objects. A cluster that has a larger number of
+placement groups (for example, 150 per OSD) is better balanced than an
+otherwise identical cluster with a smaller number of placement groups.
+
+Ceph’s internal RADOS objects are each mapped to a specific placement group,
+and each placement group belongs to exactly one Ceph pool.
+
+See Sage Weil's blog post `New in Nautilus: PG merging and autotuning
+<https://ceph.io/en/news/blog/2019/new-in-nautilus-pg-merging-and-autotuning/>`_
+for more information about the relationship of placement groups to pools and to
+objects.
+
 .. _pg-autoscaler:
 
 Autoscaling placement groups
@@ -131,11 +146,11 @@ The output will resemble the following::
   if a ``pg_num`` change is in progress, the current number of PGs that the
   pool is working towards. 
 
-- **NEW PG_NUM** (if present) is the value that the system is recommending the
-  ``pg_num`` of the pool to be changed to. It is always a power of 2, and it is
-  present only if the recommended value varies from the current value by more
-  than the default factor of ``3``. To adjust this factor (in the following
-  example, it is changed to ``2``), run the following command:
+- **NEW PG_NUM** (if present) is the value that the system recommends that the
+  ``pg_num`` of the pool should be. It is always a power of two, and it
+  is present only if the recommended value varies from the current value by
+  more than the default factor of ``3``. To adjust this multiple (in the
+  following example, it is changed to ``2``), run the following command:
 
   .. prompt:: bash #
 
@@ -168,7 +183,6 @@ The output will resemble the following::
    .. prompt:: bash #
 
       ceph osd pool set .mgr crush_rule replicated-ssd
-      ceph osd pool set pool 1 crush_rule to replicated-ssd
 
    This intervention will result in a small amount of backfill, but
    typically this traffic completes quickly.
@@ -626,14 +640,13 @@ pools, each with 512 PGs on 10 OSDs, the OSDs will have to handle ~50,000 PGs
 each. This cluster will require significantly more resources and significantly
 more time for peering.
 
-For determining the optimal number of PGs per OSD, we recommend the `PGCalc`_
-tool.
-
 
 .. _setting the number of placement groups:
 
 Setting the Number of PGs
 =========================
+
+:ref:`Placement Group Link <pgcalc>`
 
 Setting the initial number of PGs in a pool must be done at the time you create
 the pool. See `Create a Pool`_ for details. 
@@ -894,4 +907,3 @@ about it entirely (if it is too new to have a previous version). To mark the
 
 .. _Create a Pool: ../pools#createpool
 .. _Mapping PGs to OSDs: ../../../architecture#mapping-pgs-to-osds
-.. _pgcalc: https://old.ceph.com/pgcalc/

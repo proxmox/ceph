@@ -32,6 +32,7 @@
 #include "include/unordered_set.h"
 #include "include/cephfs/metrics/Types.h"
 #include "mds/mdstypes.h"
+#include "mds/MDSAuthCaps.h"
 #include "include/cephfs/types.h"
 #include "msg/Dispatcher.h"
 #include "msg/MessageRef.h"
@@ -97,6 +98,7 @@ class MDSCommandOp : public CommandOp
   mds_gid_t     mds_gid;
 
   explicit MDSCommandOp(ceph_tid_t t) : CommandOp(t) {}
+  explicit MDSCommandOp(ceph_tid_t t, ceph_tid_t multi_id) : CommandOp(t, multi_id) {}
 };
 
 /* error code for ceph_fuse */
@@ -161,7 +163,7 @@ struct dir_result_t {
   };
 
 
-  explicit dir_result_t(Inode *in, const UserPerm& perms);
+  explicit dir_result_t(Inode *in, const UserPerm& perms, int fd);
 
 
   static uint64_t make_fpos(unsigned h, unsigned l, bool hash) {
@@ -238,6 +240,8 @@ struct dir_result_t {
 
   std::vector<dentry> buffer;
   struct dirent de;
+
+  int fd;                // fd attached using fdopendir (-1 if none)
 };
 
 class Client : public Dispatcher, public md_config_obs_t {
@@ -550,6 +554,9 @@ public:
              mode_t mode=0, const std::map<std::string, std::string> &metadata={});
   int rmsnap(const char *path, const char *name, const UserPerm& perm, bool check_perms=false);
 
+  // cephx mds auth caps checking
+  int mds_check_access(std::string& path, const UserPerm& perms, int mask);
+
   // Inode permission checking
   int inode_permission(Inode *in, const UserPerm& perms, unsigned want);
 
@@ -695,6 +702,7 @@ public:
 
   client_t get_nodeid() { return whoami; }
 
+  inodeno_t _get_root_ino(bool fake=true);
   inodeno_t get_root_ino();
   Inode *get_root();
 
@@ -1274,9 +1282,9 @@ private:
   };
 
   enum {
-    MAY_EXEC = 1,
-    MAY_WRITE = 2,
-    MAY_READ = 4,
+    CLIENT_MAY_EXEC = 1,
+    CLIENT_MAY_WRITE = 2,
+    CLIENT_MAY_READ = 4,
   };
 
   typedef std::function<void(dir_result_t*, MetaRequest*, InodeRef&, frag_t)> fill_readdir_args_cb_t;
@@ -1296,7 +1304,7 @@ private:
 
   void fill_dirent(struct dirent *de, const char *name, int type, uint64_t ino, loff_t next_off);
 
-  int _opendir(Inode *in, dir_result_t **dirpp, const UserPerm& perms);
+  int _opendir(Inode *in, dir_result_t **dirpp, const UserPerm& perms, int fd = -1);
   void _readdir_drop_dirp_buffer(dir_result_t *dirp);
   bool _readdir_have_frag(dir_result_t *dirp);
   void _readdir_next_frag(dir_result_t *dirp);
@@ -1356,6 +1364,7 @@ private:
 	       const UserPerm& perms, std::string alternate_name, InodeRef *inp = 0);
   int _mknod(Inode *dir, const char *name, mode_t mode, dev_t rdev,
 	     const UserPerm& perms, InodeRef *inp = 0);
+  bool make_absolute_path_string(Inode *in, std::string& path);
   int _do_setattr(Inode *in, struct ceph_statx *stx, int mask,
 		  const UserPerm& perms, InodeRef *inp,
 		  std::vector<uint8_t>* aux=nullptr);
@@ -1628,6 +1637,10 @@ private:
   uint64_t nr_metadata_request = 0;
   uint64_t nr_read_request = 0;
   uint64_t nr_write_request = 0;
+
+  std::vector<MDSCapAuth> cap_auths;
+
+  feature_bitset_t myfeatures;
 };
 
 /**

@@ -374,11 +374,26 @@ COMMAND("fs get name=fs_name,type=CephString",
 	"fs", "r")
 COMMAND("fs set "
 	"name=fs_name,type=CephString "
-	"name=var,type=CephChoices,strings=max_mds|max_file_size"
-        "|allow_new_snaps|inline_data|cluster_down|allow_dirfrags|balancer"
-        "|standby_count_wanted|session_timeout|session_autoclose"
-        "|allow_standby_replay|down|joinable|min_compat_client|bal_rank_mask"
-	"|refuse_client_session "
+	"name=var,type=CephChoices,strings=max_mds"
+          "|allow_dirfrags"
+          "|allow_new_snaps"
+          "|allow_standby_replay"
+          "|bal_rank_mask"
+          "|balance_automate"
+          "|balancer"
+          "|cluster_down"
+          "|down"
+          "|inline_data"
+          "|joinable"
+          "|max_file_size"
+          "|max_xattr_size"
+          "|min_compat_client"
+          "|refuse_client_session"
+          "|refuse_standby_for_another_fs"
+          "|session_autoclose"
+          "|session_timeout"
+          "|standby_count_wanted"
+          " "
 	"name=val,type=CephString "
 	"name=yes_i_really_mean_it,type=CephBool,req=false "
 	"name=yes_i_really_really_mean_it,type=CephBool,req=false",
@@ -1273,6 +1288,10 @@ COMMAND("mgr dump "
 	"name=epoch,type=CephInt,range=0,req=false",
 	"dump the latest MgrMap",
 	"mgr", "r")
+COMMAND("mgr set "
+	"name=var,type=CephChoices,strings=down "
+	"name=val,type=CephString ",
+	"set mgr parameter <var> to <val>", "mgr", "rw")
 COMMAND("mgr fail name=who,type=CephString,req=false",
 	"treat the named manager daemon as failed", "mgr", "rw")
 COMMAND("mgr module ls",

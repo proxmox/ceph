@@ -834,16 +834,17 @@ void ObjectListSnapsRequest<I>::handle_list_snaps(int r) {
                        end_snap_id, &diff, &end_size, &exists,
                        &clone_end_snap_id, &read_whole_object);
 
-    if (read_whole_object ||
-        (!diff.empty() &&
-         ((m_list_snaps_flags & LIST_SNAPS_FLAG_WHOLE_OBJECT) != 0))) {
+    if (read_whole_object) {
       ldout(cct, 1) << "need to read full object" << dendl;
-      diff.clear();
       diff.insert(0, image_ctx->layout.object_size);
+      exists = true;
       end_size = image_ctx->layout.object_size;
       clone_end_snap_id = end_snap_id;
-    } else if (!exists) {
-      end_size = 0;
+    } else if ((m_list_snaps_flags & LIST_SNAPS_FLAG_WHOLE_OBJECT) != 0 &&
+               !diff.empty()) {
+      ldout(cct, 20) << "expanding diff from " << diff << dendl;
+      diff.clear();
+      diff.insert(0, image_ctx->layout.object_size);
     }
 
     if (exists) {
@@ -863,7 +864,8 @@ void ObjectListSnapsRequest<I>::handle_list_snaps(int r) {
 
     // clip diff to size of object (in case it was truncated)
     interval_set<uint64_t> zero_interval;
-    if (end_size < prev_end_size) {
+    if (end_size < prev_end_size &&
+        (m_list_snaps_flags & LIST_SNAPS_FLAG_WHOLE_OBJECT) == 0) {
       zero_interval.insert(end_size, prev_end_size - end_size);
       zero_interval.intersection_of(object_interval);
 
@@ -884,7 +886,7 @@ void ObjectListSnapsRequest<I>::handle_list_snaps(int r) {
                    << "end_size=" << end_size << ", "
                    << "prev_end_size=" << prev_end_size << ", "
                    << "exists=" << exists << ", "
-                   << "whole_object=" << read_whole_object << dendl;
+                   << "read_whole_object=" << read_whole_object << dendl;
 
     // check if object exists prior to start of incremental snap delta so that
     // we don't DNE the object if no additional deltas exist

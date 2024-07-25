@@ -622,6 +622,9 @@ void Session::dump(Formatter *f, bool cap_dump) const
   f->dump_object("session_cache_liveness", session_cache_liveness);
   f->dump_object("cap_acquisition", cap_acquisition);
 
+  f->dump_unsigned("last_trim_completed_requests_tid", last_trim_completed_requests_tid);
+  f->dump_unsigned("last_trim_completed_flushes_tid", last_trim_completed_flushes_tid);
+
   f->open_array_section("delegated_inos");
   for (const auto& [start, len] : delegated_inos) {
     f->open_object_section("ino_range");
@@ -702,6 +705,7 @@ void SessionMap::remove_session(Session *s)
 
   s->trim_completed_requests(0);
   s->item_session_list.remove_myself();
+  broken_root_squash_clients.erase(s);
   session_map.erase(s->info.inst.name);
   dirty_sessions.erase(s->info.inst.name);
   null_sessions.insert(s->info.inst.name);

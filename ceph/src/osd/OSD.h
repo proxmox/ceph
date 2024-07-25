@@ -511,7 +511,7 @@ public:
                               GenContext<ThreadPool::TPHandle&> *c,
                               uint64_t cost,
 			      int priority);
-  void queue_for_snap_trim(PG *pg);
+  void queue_for_snap_trim(PG *pg, uint64_t cost);
   void queue_for_scrub(PG* pg, Scrub::scrub_prio_t with_priority);
 
   void queue_scrub_after_repair(PG* pg, Scrub::scrub_prio_t with_priority);
@@ -1050,12 +1050,14 @@ struct OSDShard {
   void register_and_wake_split_child(PG *pg);
   void unprime_split_children(spg_t parent, unsigned old_pg_num);
   void update_scheduler_config();
-  std::string get_scheduler_type();
+  op_queue_type_t get_op_queue_type() const;
 
   OSDShard(
     int id,
     CephContext *cct,
-    OSD *osd);
+    OSD *osd,
+    op_queue_type_t osd_op_queue,
+    unsigned osd_op_queue_cut_off);
 };
 
 class OSD : public Dispatcher,
@@ -1235,8 +1237,9 @@ private:
   // -- superblock --
   OSDSuperblock superblock;
 
-  void write_superblock();
-  void write_superblock(ObjectStore::Transaction& t);
+  static void write_superblock(CephContext* cct,
+                               OSDSuperblock& sb,
+                               ObjectStore::Transaction& t);
   int read_superblock();
 
   void clear_temp_objects();
@@ -2054,6 +2057,9 @@ public:
 public:
   OSDService service;
   friend class OSDService;
+
+  /// op queue type set for the OSD
+  op_queue_type_t osd_op_queue_type() const;
 
 private:
   void set_perf_queries(const ConfigPayload &config_payload);

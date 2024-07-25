@@ -621,18 +621,29 @@ int rgw_build_bucket_policies(const DoutPrefixProvider *dpp, rgw::sal::Driver* d
       }
     } catch (const std::exception& e) {
       ldpp_dout(dpp, -1) << "Error reading IAM User Policy: " << e.what() << dendl;
-      ret = -EACCES;
+      if (!s->system_request) {
+        ret = -EACCES;
+      }
     }
   }
 
   try {
     s->iam_policy = get_iam_policy_from_attr(s->cct, s->bucket_attrs, s->bucket_tenant);
   } catch (const std::exception& e) {
-    // Really this is a can't happen condition. We parse the policy
-    // when it's given to us, so perhaps we should abort or otherwise
-    // raise bloody murder.
     ldpp_dout(dpp, 0) << "Error reading IAM Policy: " << e.what() << dendl;
-    ret = -EACCES;
+
+    // This really shouldn't happen. We parse the policy when it's given to us,
+    // so a parsing failure here means we broke backward compatibility. The only
+    // sensible thing to do in this case is to deny access, because the policy
+    // may have.
+    //
+    // However, the only way for an administrator to repair such a bucket is to
+    // send a PutBucketPolicy or DeleteBucketPolicy request as an admin/system
+    // user. We can allow such requests, because even if the policy denied
+    // access, admin/system users override that error from verify_permission().
+    if (!s->system_request) {
+      ret = -EACCES;
+    }
   }
 
   bool success = driver->get_zone()->get_redirect_endpoint(&s->redirect_zone_endpoint);
@@ -2229,11 +2240,11 @@ void RGWGetObj::execute(optional_yield y)
   read_op->params.lastmod = &lastmod;
 
   op_ret = read_op->prepare(s->yield, this);
-  if (op_ret < 0)
-    goto done_err;
   version_id = s->object->get_instance();
   s->obj_size = s->object->get_obj_size();
   attrs = s->object->get_attrs();
+  if (op_ret < 0)
+    goto done_err;
 
   /* STAT ops don't need data, and do no i/o */
   if (get_type() == RGW_OP_STAT_OBJ) {
@@ -4350,7 +4361,7 @@ void RGWPutObj::execute(optional_yield y)
   op_ret = processor->complete(s->obj_size, etag, &mtime, real_time(), attrs,
                                (delete_at ? *delete_at : real_time()), if_match, if_nomatch,
                                (user_data.empty() ? nullptr : &user_data), nullptr, nullptr,
-                               s->yield);
+                               s->yield, rgw::sal::FLAG_LOG_OP);
   tracepoint(rgw_op, processor_complete_exit, s->req_id.c_str());
 
   /* produce torrent */
@@ -4628,7 +4639,7 @@ void RGWPostObj::execute(optional_yield y)
     op_ret = processor->complete(s->obj_size, etag, nullptr, real_time(), attrs,
                                 (delete_at ? *delete_at : real_time()),
                                 nullptr, nullptr, nullptr, nullptr, nullptr,
-                                s->yield);
+                                s->yield, rgw::sal::FLAG_LOG_OP);
     if (op_ret < 0) {
       return;
     }
@@ -5191,7 +5202,7 @@ void RGWDeleteObj::execute(optional_yield y)
       del_op->params.olh_epoch = epoch;
       del_op->params.marker_version_id = version_id;
 
-      op_ret = del_op->delete_obj(this, y);
+      op_ret = del_op->delete_obj(this, y, rgw::sal::FLAG_LOG_OP);
       if (op_ret >= 0) {
 	delete_marker = del_op->result.delete_marker;
 	version_id = del_op->result.version_id;
@@ -6444,9 +6455,6 @@ void RGWCompleteMultipart::execute(optional_yield y)
   RGWMultiCompleteUpload *parts;
   RGWMultiXMLParser parser;
   std::unique_ptr<rgw::sal::MultipartUpload> upload;
-  off_t ofs = 0;
-  std::unique_ptr<rgw::sal::Object> meta_obj;
-  std::unique_ptr<rgw::sal::Object> target_obj;
   uint64_t olh_epoch = 0;
 
   op_ret = get_params(y);
@@ -6535,8 +6543,8 @@ void RGWCompleteMultipart::execute(optional_yield y)
   
 
   // make reservation for notification if needed
-  std::unique_ptr<rgw::sal::Notification> res
-    = driver->get_notification(meta_obj.get(), nullptr, s, rgw::notify::ObjectCreatedCompleteMultipartUpload, y, &s->object->get_name());
+  res = driver->get_notification(meta_obj.get(), nullptr, s, rgw::notify::ObjectCreatedCompleteMultipartUpload, y,
+                                 &s->object->get_name());
   op_ret = res->publish_reserve(this);
   if (op_ret < 0) {
     return;
@@ -6559,21 +6567,10 @@ void RGWCompleteMultipart::execute(optional_yield y)
     return;
   }
 
-  // remove the upload meta object ; the meta object is not versioned
-  // when the bucket is, as that would add an unneeded delete marker
-  int r = meta_obj->delete_object(this, y, true /* prevent versioning */);
-  if (r >= 0)  {
-    /* serializer's exclusive lock is released */
-    serializer->clear_locked();
-  } else {
-    ldpp_dout(this, 0) << "WARNING: failed to remove object " << meta_obj << dendl;
-  }
-
-  // send request to notification manager
-  int ret = res->publish_commit(this, ofs, upload->get_mtime(), etag, target_obj->get_instance());
-  if (ret < 0) {
-    ldpp_dout(this, 1) << "ERROR: publishing notification failed, with error: " << ret << dendl;
-    // too late to rollback operation, hence op_ret is not set here
+  upload_time = upload->get_mtime();
+  int r = serializer->unlock();
+  if (r < 0) {
+    ldpp_dout(this, 0) << "WARNING: failed to unlock " << *serializer.get() << dendl;
   }
 } // RGWCompleteMultipart::execute
 
@@ -6626,7 +6623,42 @@ void RGWCompleteMultipart::complete()
     }
   }
 
-  etag = s->object->get_attrs()[RGW_ATTR_ETAG].to_str();
+  if (op_ret >= 0 && target_obj.get() != nullptr) {
+    s->object->set_attrs(target_obj->get_attrs());
+    etag = s->object->get_attrs()[RGW_ATTR_ETAG].to_str();
+    // send request to notification manager
+    if (res.get() != nullptr) {
+      int ret = res->publish_commit(this, ofs, upload_time, etag, target_obj->get_instance());
+      if (ret < 0) {
+        ldpp_dout(this, 1) << "ERROR: publishing notification failed, with error: " << ret << dendl;
+        // too late to rollback operation, hence op_ret is not set here
+      }
+    } else {
+      ldpp_dout(this, 1) << "ERROR: reservation is null" << dendl;
+    }
+  } else {
+    ldpp_dout(this, 1) << "ERROR: either op_ret is negative (execute failed) or target_obj is null, op_ret: "
+                       << op_ret << dendl;
+  }
+
+  // remove the upload meta object ; the meta object is not versioned
+  // when the bucket is, as that would add an unneeded delete marker
+  // moved to complete to prevent segmentation fault in publish commit
+  if (meta_obj.get() != nullptr) {
+    int ret = meta_obj->delete_object(this, null_yield, rgw::sal::FLAG_PREVENT_VERSIONING | rgw::sal::FLAG_LOG_OP);
+    if (ret >= 0) {
+      /* serializer's exclusive lock is released */
+      serializer->clear_locked();
+    } else {
+      ldpp_dout(this, 0) << "WARNING: failed to remove object " << meta_obj << ", ret: " << ret << dendl;
+    }
+  } else {
+    ldpp_dout(this, 0) << "WARNING: meta_obj is null" << dendl;
+  }
+
+  res.reset();
+  meta_obj.reset();
+  target_obj.reset();
 
   send_response();
 }
@@ -7088,7 +7120,7 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
   del_op->params.bucket_owner = s->bucket_owner;
   del_op->params.marker_version_id = version_id;
 
-  op_ret = del_op->delete_obj(this, y);
+  op_ret = del_op->delete_obj(this, y, rgw::sal::FLAG_LOG_OP);
   if (op_ret == -ENOENT) {
     op_ret = 0;
   }
@@ -7264,7 +7296,7 @@ bool RGWBulkDelete::Deleter::delete_single(const acct_path_t& path, optional_yie
     del_op->params.obj_owner = bowner;
     del_op->params.bucket_owner = bucket_owner;
 
-    ret = del_op->delete_obj(dpp, y);
+    ret = del_op->delete_obj(dpp, y, rgw::sal::FLAG_LOG_OP);
     if (ret < 0) {
       goto delop_fail;
     }
@@ -7754,7 +7786,7 @@ int RGWBulkUploadOp::handle_file(const std::string_view path,
   op_ret = processor->complete(size, etag, nullptr, ceph::real_time(),
                               attrs, ceph::real_time() /* delete_at */,
                               nullptr, nullptr, nullptr, nullptr, nullptr,
-                              s->yield);
+                              s->yield, rgw::sal::FLAG_LOG_OP);
   if (op_ret < 0) {
     ldpp_dout(this, 20) << "processor::complete returned op_ret=" << op_ret << dendl;
   }

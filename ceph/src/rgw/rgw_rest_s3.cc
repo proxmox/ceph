@@ -563,6 +563,20 @@ done:
   }
 
   if (op_ret == -ERR_NOT_MODIFIED) {
+      dump_last_modified(s, lastmod);
+
+      auto iter = attrs.find(RGW_ATTR_ETAG);
+      if (iter != attrs.end())
+        dump_etag(s, iter->second.to_str());
+
+      iter = attrs.find(RGW_ATTR_CACHE_CONTROL);
+      if (iter != attrs.end())
+        dump_header(s, rgw_to_http_attrs[RGW_ATTR_CACHE_CONTROL], iter->second);
+
+      iter = attrs.find(RGW_ATTR_EXPIRES);
+      if (iter != attrs.end())
+        dump_header(s, rgw_to_http_attrs[RGW_ATTR_EXPIRES], iter->second);
+
       end_header(s, this);
   } else {
       if (!content_type)
@@ -5192,8 +5206,9 @@ void parse_post_action(const std::string& post_body, req_state* s)
           if (boost::starts_with(key, "Attributes.")) {
             update_attribute_map(t, map);
           } else {
+            constexpr bool in_query = true; // replace '+' with ' '
             s->info.args.append(t.substr(0, pos),
-                              url_decode(t.substr(pos+1, t.size() -1)));
+                              url_decode(t.substr(pos+1, t.size() -1), in_query));
           }
         }
       }
@@ -6239,7 +6254,7 @@ rgw::auth::s3::LocalEngine::authenticate(
   if (driver->get_user_by_access_key(dpp, access_key_id, y, &user) < 0) {
       ldpp_dout(dpp, 5) << "error reading user info, uid=" << access_key_id
               << " can't authenticate" << dendl;
-      return result_t::deny(-ERR_INVALID_ACCESS_KEY);
+      return result_t::reject(-ERR_INVALID_ACCESS_KEY);
   }
   //TODO: Uncomment, when we have a migration plan in place.
   /*else {
@@ -6253,7 +6268,7 @@ rgw::auth::s3::LocalEngine::authenticate(
   const auto iter = user->get_info().access_keys.find(access_key_id);
   if (iter == std::end(user->get_info().access_keys)) {
     ldpp_dout(dpp, 0) << "ERROR: access key not encoded in user info" << dendl;
-    return result_t::deny(-EPERM);
+    return result_t::reject(-EPERM);
   }
   const RGWAccessKey& k = iter->second;
 
@@ -6269,7 +6284,7 @@ rgw::auth::s3::LocalEngine::authenticate(
   ldpp_dout(dpp, 15) << "compare=" << compare << dendl;
 
   if (compare != 0) {
-    return result_t::deny(-ERR_SIGNATURE_NO_MATCH);
+    return result_t::reject(-ERR_SIGNATURE_NO_MATCH);
   }
 
   auto apl = apl_factory->create_apl_local(cct, s, user->get_info(),

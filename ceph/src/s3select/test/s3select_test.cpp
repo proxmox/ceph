@@ -1,5 +1,6 @@
 #include "s3select_test.h"
 
+
 TEST(TestS3SElect, s3select_vs_C)
 {
 //purpose: validate correct processing of arithmetical expression, it is done by running the same expression
@@ -880,7 +881,10 @@ void test_single_column_single_row(const char* input_query,const char* expected_
       {
 	  ASSERT_TRUE(false);
       }
-      ASSERT_EQ(s3_csv_object.get_error_description(),error_description);
+      if(s3_csv_object.get_error_description().find(error_description) == std::string::npos )
+      {	
+	FAIL() << "getting error: " << s3_csv_object.get_error_description() << " instead of: " << error_description << std::endl;
+      }
       return;
     }
 
@@ -1730,6 +1734,7 @@ TEST(TestS3selectFunctions, boolcast)
   test_single_column_single_row("select cast(0 as bool) from s3object;","false\n");
   test_single_column_single_row("select cast(true as bool) from s3object;","true\n");
   test_single_column_single_row("select cast('a' as bool) from s3object;","false\n");
+  test_single_column_single_row("select cast(null as bool) from s3object;","null\n");
 }
 
 TEST(TestS3selectFunctions, floatcast)
@@ -1737,6 +1742,7 @@ TEST(TestS3selectFunctions, floatcast)
   test_single_column_single_row("select cast('1234a' as float) from s3object;","#failure#","extra characters after the number");
   test_single_column_single_row("select cast('a1234' as float) from s3object;","#failure#","text cannot be converted to a number");
   test_single_column_single_row("select cast('999e+999' as float) from s3object;","#failure#","converted value would fall out of the range of the result type!");
+  test_single_column_single_row("select cast(null as float) from s3object;","null\n");
 }
 
 TEST(TestS3selectFunctions, intcast)
@@ -1745,6 +1751,7 @@ TEST(TestS3selectFunctions, intcast)
   test_single_column_single_row("select cast('a1234' as int) from s3object;","#failure#","text cannot be converted to a number");
   test_single_column_single_row("select cast('9223372036854775808' as int) from s3object;","#failure#","converted value would fall out of the range of the result type!");
   test_single_column_single_row("select cast('-9223372036854775809' as int) from s3object;","#failure#","converted value would fall out of the range of the result type!");
+  test_single_column_single_row("select cast(null as int) from s3object;","null\n");
 }
 
 TEST(TestS3selectFunctions, predicate_as_projection_column)
@@ -2064,6 +2071,12 @@ TEST(TestS3selectFunctions, mod)
 test_single_column_single_row( "select 5%2 from stdin;","1\n");
 }
 
+TEST(TestS3selectFunctions, modfloat)
+{
+test_single_column_single_row( "select 5.2%2 from stdin;","1.2000000000000002\n");
+test_single_column_single_row( "select 5.2%2.5 from stdin;","0.20000000000000018\n");
+}
+
 TEST(TestS3selectFunctions, modzero)
 {
 test_single_column_single_row( "select 0%2 from stdin;","0\n");
@@ -2122,6 +2135,13 @@ test_single_column_single_row( "select \"true\" from stdin where nullif(1,1) is 
 TEST(TestS3selectFunctions, isnullnot)
 {
 test_single_column_single_row( "select \"true\" from stdin where not nullif(1,2) is null;" ,"true\n");
+}
+
+TEST(TestS3selectFunctions, case_insensitive_not_null)
+{
+test_single_column_single_row( "select \"false\" from stdin where nullif(1,1) is NOT null;" ,"");
+test_single_column_single_row( "select \"false\" from stdin where nullif(1,1) is not Null;" ,"");
+test_single_column_single_row( "select \"true\" from stdin where nullif(1,1) is  Null;" ,"true\n");
 }
 
 TEST(TestS3selectFunctions, isnull1)
@@ -2527,6 +2547,16 @@ test_single_column_single_row( "select trim(trim(leading from \"   foobar   \"))
 TEST(TestS3selectFunctions, trim11)
 {
 test_single_column_single_row( "select trim(trailing from trim(leading from \"   foobar   \")) from stdin ;" ,"foobar\n");
+}
+
+TEST(TestS3selectFunctions, trim12)
+{
+test_single_column_single_row( "select trim(LEADING '1' from '111abcdef111')  from s3object ;" ,"abcdef111\n");
+}
+
+TEST(TestS3selectFunctions, trim13)
+{
+test_single_column_single_row( "select trim(TRAILING '1' from '111abcdef111')  from s3object ;" ,"111abcdef\n");
 }
 
 TEST(TestS3selectFunctions, likescape)
@@ -3444,3 +3474,327 @@ input_json_data = R"(
 
 
  }
+
+ TEST(TestS3selectFunctions, json_queries_format)
+{
+  std::string result;
+  std::string expected_result;
+  std::string input_query;
+
+std::string input_json_data = R"(
+  {"root" : [
+  {"c1": 891,"c2": 903,"c3": 78,"c4": 566,"c5": 134,"c6": 121,"c7": 203,"c8": 795,"c9": 82,"c10": 135},
+  {"c1": 218,"c2": 881,"c3": 840,"c4": 385,"c5": 385,"c6": 674,"c7": 618,"c8": 99,"c9": 296,"c10": 545},
+  {"c1": 218,"c2": 881,"c3": 840,"c4": 385,"c5": 385,"c6": 674,"c7": 618,"c8": 99,"c9": 296,"c10": 545}
+  ]
+  }
+  )";
+  
+  expected_result=R"({"_1":1327}
+)";
+  input_query = "select sum(_1.c1) from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"_1":1461}
+)";
+  input_query = "select sum(_1.c1) + min(_1.c5) from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+  
+
+  expected_result=R"({"c1":891}
+{"c1":218}
+{"c1":218}
+)";
+  input_query = "select _1.c1 from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"_1":218,"_2":903}
+)";
+  input_query = "select min(_1.c1), max(_1.c2) from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+  
+  expected_result=R"({"c1":891,"c2":903}
+{"c1":218,"c2":881}
+{"c1":218,"c2":881}
+)";
+  input_query = "select _1.c1, _1.c2 from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result); 
+
+  expected_result=R"({"c2":903,"c1":891,"c4":566}
+{"c2":881,"c1":218,"c4":385}
+{"c2":881,"c1":218,"c4":385}
+)";
+  input_query = "select _1.c2, _1.c1, _1.c4  from s3object[*].root ;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"_1":1794}
+{"_1":1099}
+{"_1":1099}
+)";
+  input_query = "select _1.c2 + _1.c1  from s3object[*].root ;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"_1":891}
+{"_1":218}
+{"_1":218}
+)";
+  input_query = "select nullif(_1.c1, _1.c2) from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"_1":991}
+{"_1":318}
+{"_1":318}
+)";
+  input_query = "select _1.c1 + 100 from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"c13":null}
+{"c13":null}
+{"c13":null}
+)";
+  input_query = "select _1.c13 from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"_1":null}
+{"_1":null}
+{"_1":null}
+)";
+  input_query = "select _1.c15 * 2 from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"_1":null}
+{"_1":null}
+{"_1":null}
+)";
+  input_query = "select _1.c15 + _1.c13 from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"x":891}
+{"x":218}
+{"x":218}
+)";
+  input_query = "select coalesce(_1.c1, 0) as x from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"x":891,"c2":903}
+{"x":218,"c2":881}
+{"x":218,"c2":881}
+)";
+  input_query = "select _1.c1 as x, _1.c2 from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"c2":903,"x":891}
+{"c2":881,"x":218}
+{"c2":881,"x":218}
+)";
+  input_query = "select _1.c2, _1.c1 as x from s3object[*].root;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+}
+
+TEST(TestS3selectFunctions, json_queries_format_1)
+{
+  std::string result;
+  std::string expected_result;
+  std::string input_query;
+
+  std::string input_json_data = R"(
+{
+"firstName": "Joe",
+"lastName": "Jackson",
+"gender": "male",
+"age": "twenty",
+"address": {
+"streetAddress": "101",
+"city": "San Diego",
+"state": "CA"
+},
+"phoneNumbers": [
+{ "type": "home1", "number": "7349282_1", "addr": 11},
+{ "type": "home2", "number": "7349282_2", "addr": 22},
+{ "type": "home3", "number": "734928_3", "addr": 33},
+{ "type": "home4", "number": "734928_4", "addr": 44},
+{ "type": "home5", "number": "734928_5", "addr": 55},
+{ "type": "home6", "number": "734928_6", "addr": 66},
+{ "type": "home7", "number": "734928_7", "addr": 77}
+]
+}
+)";
+
+  expected_result=R"({"gender":male}
+)";
+  input_query = "select _1.gender from s3object[*] ;";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"streetAddress":101}
+)";
+  input_query = "select _1.address.streetAddress from s3object[*];";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+  expected_result=R"({"addr":11}
+)";
+  input_query = "select _1.phoneNumbers[0].addr from s3object[*];";
+
+  run_json_query(input_query.c_str(), input_json_data, result, true);
+  ASSERT_EQ(result,expected_result);
+
+}
+
+TEST(TestS3selectFunctions, json_format_csv_object)
+{
+  std::string input_query{};
+  std::string s3select_res{};
+
+  std::string input = R"(383,886,777,915,793,335,386,492,649,421
+362,27,690,59,763,926,540,426,172,736
+211,368,567,429,782,530,862,123,67,135
+929,802,22,58,69,167,393,456,11,42
+229,373,421,919,784,537,198,324,315,370
+413,526,91,980,956,873,862,170,996,281
+305,925,84,327,336,505,846,729,313,857
+124,895,582,545,814,367,434,364,43,750
+87,808,276,178,788,584,403,651,754,399
+932,60,676,368,739,12,226,586,94,539
+)";
+  
+  std::string expected_result{};
+
+  expected_result=R"({"_1":383,"_2":886}
+{"_1":362,"_2":27}
+{"_1":211,"_2":368}
+{"_1":929,"_2":802}
+{"_1":229,"_2":373}
+{"_1":413,"_2":526}
+{"_1":305,"_2":925}
+{"_1":124,"_2":895}
+{"_1":87,"_2":808}
+{"_1":932,"_2":60}
+)";
+
+  input_query = "select _1,_2 from s3object;";
+
+  s3select_res = run_s3select(input_query, input, "", true, true);
+
+  ASSERT_EQ(s3select_res, expected_result);
+
+  expected_result=R"({"_1":3975}
+)";
+
+  input_query = "select sum(int(_1)) from s3object;";
+
+  s3select_res = run_s3select(input_query, input, "", true, true);
+
+  ASSERT_EQ(s3select_res, expected_result);
+
+  expected_result=R"({"x":383,"y":886}
+{"x":362,"y":27}
+{"x":211,"y":368}
+{"x":929,"y":802}
+{"x":229,"y":373}
+{"x":413,"y":526}
+{"x":305,"y":925}
+{"x":124,"y":895}
+{"x":87,"y":808}
+{"x":932,"y":60}
+)";
+
+  input_query = "select _1 as x, _2 as y from s3object;";
+
+  s3select_res = run_s3select(input_query, input, "", true, true);
+
+  ASSERT_EQ(s3select_res, expected_result);
+
+  expected_result = R"({"_1":8}
+{"_1":2}
+{"_1":3}
+{"_1":8}
+{"_1":3}
+{"_1":5}
+{"_1":9}
+{"_1":8}
+{"_1":8}
+{"_1":6}
+)";
+
+  input_query = "select substring(_2, 1, 1) from s3object;";
+
+  s3select_res = run_s3select(input_query, input, "", true, true);
+
+  ASSERT_EQ(s3select_res, expected_result);
+
+  expected_result = R"({"x":8}
+{"x":2}
+{"x":3}
+{"x":8}
+{"x":3}
+{"x":5}
+{"x":9}
+{"x":8}
+{"x":8}
+{"x":6}
+)";
+
+  input_query = "select substring(_2, 1, 1) as x from s3object;";
+
+  s3select_res = run_s3select(input_query, input, "", true, true);
+
+  ASSERT_EQ(s3select_res, expected_result);
+
+  expected_result = R"({"c1":383,"_1":385}
+{"c1":362,"_1":364}
+{"c1":211,"_1":213}
+{"c1":929,"_1":931}
+{"c1":229,"_1":231}
+{"c1":413,"_1":415}
+{"c1":305,"_1":307}
+{"c1":124,"_1":126}
+{"c1":87,"_1":89}
+{"c1":932,"_1":934}
+)";
+
+  input_query = "select cast(_1 as int) as c1, c1 + 2 from s3object;";
+
+  s3select_res = run_s3select(input_query, input, "", true, true);
+
+  ASSERT_EQ(s3select_res, expected_result);
+
+}
+
+
+
+
+
+

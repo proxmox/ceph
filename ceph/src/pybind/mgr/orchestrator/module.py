@@ -95,8 +95,9 @@ class HostDetails:
 
         if self._facts:
             self.server = f"{self._facts.get('vendor', '').strip()} {self._facts.get('model', '').strip()}"
-            _cores = self._facts.get('cpu_cores', 0) * self._facts.get('cpu_count', 0)
-            _threads = self._facts.get('cpu_threads', 0) * _cores
+            _cpu_count = self._facts.get('cpu_count', 1)
+            _cores = self._facts.get('cpu_cores', 0) * _cpu_count
+            _threads = self._facts.get('cpu_threads', 0) * _cpu_count
             self.os = self._facts.get('operating_system', 'N/A')
             self.cpu_summary = f"{_cores}C/{_threads}T" if _cores > 0 else 'N/A'
 
@@ -487,10 +488,168 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
 
         return self._apply_misc([s], False, Format.plain)
 
+    @_cli_write_command('orch hardware status')
+    def _hardware_status(self, hostname: Optional[str] = None, _end_positional_: int = 0, category: str = 'summary', format: Format = Format.plain) -> HandleCommandResult:
+        """
+        Display hardware status summary
+
+        :param hostname: hostname
+        """
+        table_heading_mapping = {
+            'summary': ['HOST', 'STORAGE', 'CPU', 'NET', 'MEMORY', 'POWER', 'FANS'],
+            'fullreport': [],
+            'firmwares': ['HOST', 'COMPONENT', 'NAME', 'DATE', 'VERSION', 'STATUS'],
+            'criticals': ['HOST', 'COMPONENT', 'NAME', 'STATUS', 'STATE'],
+            'memory': ['HOST', 'NAME', 'STATUS', 'STATE'],
+            'storage': ['HOST', 'NAME', 'MODEL', 'SIZE', 'PROTOCOL', 'SN', 'STATUS', 'STATE'],
+            'processors': ['HOST', 'NAME', 'MODEL', 'CORES', 'THREADS', 'STATUS', 'STATE'],
+            'network': ['HOST', 'NAME', 'SPEED', 'STATUS', 'STATE'],
+            'power': ['HOST', 'ID', 'NAME', 'MODEL', 'MANUFACTURER', 'STATUS', 'STATE'],
+            'fans': ['HOST', 'ID', 'NAME', 'STATUS', 'STATE']
+        }
+
+        if category not in table_heading_mapping.keys():
+            return HandleCommandResult(stdout=f"'{category}' is not a valid category.")
+
+        table_headings = table_heading_mapping.get(category, [])
+        table = PrettyTable(table_headings, border=True)
+        output = ''
+
+        if category == 'summary':
+            completion = self.node_proxy_summary(hostname=hostname)
+            summary: Dict[str, Any] = raise_if_exception(completion)
+            if format == Format.json:
+                output = json.dumps(summary)
+            else:
+                for k, v in summary.items():
+                    row = [k]
+                    row.extend([v['status'][key] for key in ['storage', 'processors', 'network', 'memory', 'power', 'fans']])
+                    table.add_row(row)
+                output = table.get_string()
+        elif category == 'fullreport':
+            if hostname is None:
+                output = "Missing host name"
+            elif format != Format.json:
+                output = "fullreport only supports json output"
+            else:
+                completion = self.node_proxy_fullreport(hostname=hostname)
+                fullreport: Dict[str, Any] = raise_if_exception(completion)
+                output = json.dumps(fullreport)
+        elif category == 'firmwares':
+            output = "Missing host name" if hostname is None else self._firmwares_table(hostname, table, format)
+        elif category == 'criticals':
+            output = self._criticals_table(hostname, table, format)
+        else:
+            output = self._common_table(category, hostname, table, format)
+
+        return HandleCommandResult(stdout=output)
+
+    def _firmwares_table(self, hostname: Optional[str], table: PrettyTable, format: Format) -> str:
+        completion = self.node_proxy_firmwares(hostname=hostname)
+        data = raise_if_exception(completion)
+        # data = self.node_proxy_firmware(hostname=hostname)
+        if format == Format.json:
+            return json.dumps(data)
+        for host, details in data.items():
+            for k, v in details.items():
+                table.add_row((host, k, v['name'], v['release_date'], v['version'], v['status']['health']))
+        return table.get_string()
+
+    def _criticals_table(self, hostname: Optional[str], table: PrettyTable, format: Format) -> str:
+        completion = self.node_proxy_criticals(hostname=hostname)
+        data = raise_if_exception(completion)
+        # data = self.node_proxy_criticals(hostname=hostname)
+        if format == Format.json:
+            return json.dumps(data)
+        for host, host_details in data.items():
+            for component, component_details in host_details.items():
+                for member, member_details in component_details.items():
+                    description = member_details.get('description') or member_details.get('name')
+                    table.add_row((host, component, description, member_details['status']['health'], member_details['status']['state']))
+        return table.get_string()
+
+    def _common_table(self, category: str, hostname: Optional[str], table: PrettyTable, format: Format) -> str:
+        completion = self.node_proxy_common(category=category, hostname=hostname)
+        data = raise_if_exception(completion)
+        # data = self.node_proxy_common(category=category, hostname=hostname)
+        if format == Format.json:
+            return json.dumps(data)
+        mapping = {
+            'memory': ('description', 'health', 'state'),
+            'storage': ('description', 'model', 'capacity_bytes', 'protocol', 'serial_number', 'health', 'state'),
+            'processors': ('model', 'total_cores', 'total_threads', 'health', 'state'),
+            'network': ('name', 'speed_mbps', 'health', 'state'),
+            'power': ('name', 'model', 'manufacturer', 'health', 'state'),
+            'fans': ('name', 'health', 'state')
+        }
+
+        fields = mapping.get(category, ())
+        for host, details in data.items():
+            for k, v in details.items():
+                row = []
+                for field in fields:
+                    if field in v:
+                        row.append(v[field])
+                    elif field in v.get('status', {}):
+                        row.append(v['status'][field])
+                    else:
+                        row.append('')
+                if category in ('power', 'fans', 'processors'):
+                    table.add_row((host,) + (k,) + tuple(row))
+                else:
+                    table.add_row((host,) + tuple(row))
+
+        return table.get_string()
+
+    class HardwareLightType(enum.Enum):
+        chassis = 'chassis'
+        device = 'drive'
+
+    class HardwareLightAction(enum.Enum):
+        on = 'on'
+        off = 'off'
+        get = 'get'
+
+    @_cli_write_command('orch hardware light')
+    def _hardware_light(self,
+                        light_type: HardwareLightType, action: HardwareLightAction,
+                        hostname: str, device: Optional[str] = None) -> HandleCommandResult:
+        """Enable or Disable a device or chassis LED"""
+        if light_type == self.HardwareLightType.device and not device:
+            return HandleCommandResult(stderr='you must pass a device ID.',
+                                       retval=-errno.ENOENT)
+
+        completion = self.hardware_light(light_type.value, action.value, hostname, device)
+        data = raise_if_exception(completion)
+        output: str = ''
+        if action == self.HardwareLightAction.get:
+            status = 'on' if data["LocationIndicatorActive"] else 'off'
+            if light_type == self.HardwareLightType.device:
+                output = f'ident LED for {device} on {hostname} is: {status}'
+            else:
+                output = f'ident chassis LED for {hostname} is: {status}'
+        else:
+            pass
+        return HandleCommandResult(stdout=output)
+
+    @_cli_write_command('orch hardware powercycle')
+    def _hardware_powercycle(self, hostname: str, yes_i_really_mean_it: bool = False) -> HandleCommandResult:
+        """Reboot a host"""
+        completion = self.hardware_powercycle(hostname, yes_i_really_mean_it=yes_i_really_mean_it)
+        raise_if_exception(completion)
+        return HandleCommandResult(stdout=completion.result_str())
+
+    @_cli_write_command('orch hardware shutdown')
+    def _hardware_shutdown(self, hostname: str, force: Optional[bool] = False, yes_i_really_mean_it: bool = False) -> HandleCommandResult:
+        """Shutdown a host"""
+        completion = self.hardware_shutdown(hostname, force, yes_i_really_mean_it=yes_i_really_mean_it)
+        raise_if_exception(completion)
+        return HandleCommandResult(stdout=completion.result_str())
+
     @_cli_write_command('orch host rm')
-    def _remove_host(self, hostname: str, force: bool = False, offline: bool = False) -> HandleCommandResult:
+    def _remove_host(self, hostname: str, force: bool = False, offline: bool = False, rm_crush_entry: bool = False) -> HandleCommandResult:
         """Remove a host"""
-        completion = self.remove_host(hostname, force, offline)
+        completion = self.remove_host(hostname, force, offline, rm_crush_entry)
         raise_if_exception(completion)
         return HandleCommandResult(stdout=completion.result_str())
 
@@ -635,7 +794,8 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                       hostname: Optional[List[str]] = None,
                       format: Format = Format.plain,
                       refresh: bool = False,
-                      wide: bool = False) -> HandleCommandResult:
+                      wide: bool = False,
+                      summary: bool = False) -> HandleCommandResult:
         """
         List devices on a host
         """
@@ -682,8 +842,22 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
             table.left_padding_width = 0
             table.right_padding_width = 2
             now = datetime_now()
+            host_count = 0
+            available_count = 0
+            device_count = {
+                "hdd": 0,
+                "ssd": 0}
+
             for host_ in natsorted(inv_hosts, key=lambda h: h.name):  # type: InventoryHost
+                host_count += 1
                 for d in sorted(host_.devices.devices, key=lambda d: d.path):  # type: Device
+
+                    if d.available:
+                        available_count += 1
+                    try:
+                        device_count[d.human_readable_type] += 1
+                    except KeyError:
+                        device_count[d.human_readable_type] = 1
 
                     led_ident = 'N/A'
                     led_fail = 'N/A'
@@ -723,6 +897,11 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                             )
                         )
             out.append(table.get_string())
+
+            if summary:
+                device_summary = [f"{device_count[devtype]} {devtype.upper()}" for devtype in sorted(device_count.keys())]
+                out.append(f"{host_count} host(s), {', '.join(device_summary)}, {available_count} available")
+
             return HandleCommandResult(stdout='\n'.join(out))
 
     @_cli_write_command('orch device zap')

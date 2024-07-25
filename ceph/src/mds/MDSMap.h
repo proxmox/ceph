@@ -50,6 +50,12 @@ static inline const auto MDS_FEATURE_INCOMPAT_SNAPREALM_V2 = CompatSet::Feature(
 
 #define MDS_FS_NAME_DEFAULT "cephfs"
 
+/*
+ * Maximum size of xattrs the MDS can handle per inode by default.  This
+ * includes the attribute name and 4+4 bytes for the key/value sizes.
+ */
+#define MDS_MAX_XATTR_SIZE (1<<16) /* 64K */
+
 class health_check_map_t;
 
 class MDSMap {
@@ -196,6 +202,9 @@ public:
   uint64_t get_max_filesize() const { return max_file_size; }
   void set_max_filesize(uint64_t m) { max_file_size = m; }
 
+  uint64_t get_max_xattr_size() const { return max_xattr_size; }
+  void set_max_xattr_size(uint64_t m) { max_xattr_size = m; }
+
   void set_min_compat_client(ceph_release_t version);
 
   void add_required_client_feature(size_t bit) {
@@ -233,6 +242,15 @@ public:
   void clear_standby_replay_allowed() { clear_flag(CEPH_MDSMAP_ALLOW_STANDBY_REPLAY); }
   bool allows_standby_replay() const { return test_flag(CEPH_MDSMAP_ALLOW_STANDBY_REPLAY); }
   bool was_standby_replay_ever_allowed() const { return ever_allowed_features & CEPH_MDSMAP_ALLOW_STANDBY_REPLAY; }
+
+  void set_balance_automate() {
+    set_flag(CEPH_MDSMAP_BALANCE_AUTOMATE);
+    ever_allowed_features |= CEPH_MDSMAP_BALANCE_AUTOMATE;
+    explicitly_allowed_features |= CEPH_MDSMAP_BALANCE_AUTOMATE;
+  }
+  void clear_balance_automate() { clear_flag(CEPH_MDSMAP_BALANCE_AUTOMATE); }
+  bool allows_balance_automate() const { return test_flag(CEPH_MDSMAP_BALANCE_AUTOMATE); }
+  bool was_balance_automate_ever_allowed() const { return ever_allowed_features & CEPH_MDSMAP_BALANCE_AUTOMATE; }
 
   void set_multimds_snaps_allowed() {
     set_flag(CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS);
@@ -620,6 +638,8 @@ protected:
   __u32 session_autoclose = 300;
   uint64_t max_file_size = 1ULL<<40; /* 1TB */
 
+  uint64_t max_xattr_size = MDS_MAX_XATTR_SIZE;
+
   feature_bitset_t required_client_features;
 
   std::vector<int64_t> data_pools;  // file data pools available to clients (via an ioctl).  first is the default.
@@ -664,7 +684,9 @@ private:
     {CEPH_MDSMAP_ALLOW_SNAPS, "allow_snaps"},
     {CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS, "allow_multimds_snaps"},
     {CEPH_MDSMAP_ALLOW_STANDBY_REPLAY, "allow_standby_replay"},
-    {CEPH_MDSMAP_REFUSE_CLIENT_SESSION, "refuse_client_session"}
+    {CEPH_MDSMAP_REFUSE_CLIENT_SESSION, "refuse_client_session"},
+    {CEPH_MDSMAP_REFUSE_STANDBY_FOR_ANOTHER_FS, "refuse_standby_for_another_fs"},
+    {CEPH_MDSMAP_BALANCE_AUTOMATE, "balance_automate"}
   };
 };
 WRITE_CLASS_ENCODER_FEATURES(MDSMap::mds_info_t)

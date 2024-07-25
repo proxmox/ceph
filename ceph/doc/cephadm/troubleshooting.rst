@@ -32,7 +32,7 @@ completely by running the following commands:
   ceph orch set backend ''
   ceph mgr module disable cephadm
 
-These commands disable all of the ``ceph orch ...`` CLI commands. All
+These commands disable all ``ceph orch ...`` CLI commands. All
 previously deployed daemon containers continue to run and will start just as
 they were before you ran these commands.
 
@@ -56,7 +56,7 @@ following form:
 
   ceph orch ls --service_name=<service-name> --format yaml
 
-This will return something in the following form:
+This will return information in the following form:
 
 .. code-block:: yaml
 
@@ -252,16 +252,17 @@ For more detail on operations of this kind, see
 Accessing the Admin Socket
 --------------------------
 
-Each Ceph daemon provides an admin socket that bypasses the MONs (See
-:ref:`rados-monitoring-using-admin-socket`).
+Each Ceph daemon provides an admin socket that allows runtime option setting and statistic reading. See
+:ref:`rados-monitoring-using-admin-socket`.
 
 #. To access the admin socket, enter the daemon container on the host::
 
    [root@mon1 ~]# cephadm enter --name <daemon-name>
 
-#. Run a command of the following form to see the admin socket's configuration::
+#. Run a command of the following forms to see the admin socket's configuration and other available actions::
   
    [ceph: root@mon1 /]# ceph --admin-daemon /var/run/ceph/ceph-<daemon-name>.asok config show
+   [ceph: root@mon1 /]# ceph --admin-daemon /var/run/ceph/ceph-<daemon-name>.asok help
 
 Running Various Ceph Tools
 --------------------------------
@@ -444,11 +445,11 @@ Running repeated debugging sessions
 When using ``cephadm shell``, as in the example above, any changes made to the
 container that is spawned by the shell command are ephemeral. After the shell
 session exits, the files that were downloaded and installed cease to be
-available. You can simply re-run the same commands every time ``cephadm
-shell`` is invoked, but in order to save time and resources one can create a
-new container image and use it for repeated debugging sessions.
+available. You can simply re-run the same commands every time ``cephadm shell``
+is invoked, but to save time and resources you can create a new container image
+and use it for repeated debugging sessions.
 
-In the following example, we create a simple file that will construct the
+In the following example, we create a simple file that constructs the
 container image. The command below uses podman but it is expected to work
 correctly even if ``podman`` is replaced with ``docker``::
 
@@ -463,14 +464,14 @@ correctly even if ``podman`` is replaced with ``docker``::
 
 The above file creates a new local image named ``ceph:debugging``. This image
 can be used on the same machine that built it. The image can also be pushed to
-a container repository or saved and copied to a node runing other Ceph
-containers. Consult the ``podman`` or ``docker`` documentation for more
+a container repository or saved and copied to a node that is running other Ceph
+containers. See the ``podman`` or ``docker`` documentation for more
 information about the container workflow.
 
 After the image has been built, it can be used to initiate repeat debugging
 sessions. By using an image in this way, you avoid the trouble of having to
-re-install the debug tools and debuginfo packages every time you need to run a
-debug session. To debug a core file using this image, in the same way as
+re-install the debug tools and the debuginfo packages every time you need to
+run a debug session. To debug a core file using this image, in the same way as
 previously described, run:
 
 .. prompt:: bash #

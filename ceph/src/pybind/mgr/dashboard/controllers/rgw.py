@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+# pylint: disable=C0302
 import json
 import logging
 import re
@@ -134,6 +135,16 @@ class RgwDaemon(RESTController):
             for service in server['services']:
                 metadata = service['metadata']
 
+                frontend_config = metadata['frontend_config#0']
+                port_match = re.search(r"port=(\d+)", frontend_config)
+                port = None
+                if port_match:
+                    port = port_match.group(1)
+                else:
+                    match_from_endpoint = re.search(r"endpoint=\S+:(\d+)", frontend_config)
+                    if match_from_endpoint:
+                        port = match_from_endpoint.group(1)
+
                 # extract per-daemon service data and health
                 daemon = {
                     'id': metadata['id'],
@@ -144,7 +155,7 @@ class RgwDaemon(RESTController):
                     'zonegroup_name': metadata['zonegroup_name'],
                     'zone_name': metadata['zone_name'],
                     'default': instance.daemon.name == metadata['id'],
-                    'port': int(re.findall(r'port=(\d+)', metadata['frontend_config#0'])[0])
+                    'port': int(port) if port else None
                 }
 
                 daemons.append(daemon)
@@ -276,6 +287,26 @@ class RgwBucket(RgwRESTController):
                                              retention_period_days,
                                              retention_period_years)
 
+    def _get_policy(self, bucket: str):
+        rgw_client = RgwClient.admin_instance()
+        return rgw_client.get_bucket_policy(bucket)
+
+    def _set_policy(self, bucket_name: str, policy: str, daemon_name, owner):
+        rgw_client = RgwClient.instance(owner, daemon_name)
+        return rgw_client.set_bucket_policy(bucket_name, policy)
+
+    def _set_tags(self, bucket_name, tags, daemon_name, owner):
+        rgw_client = RgwClient.instance(owner, daemon_name)
+        return rgw_client.set_tags(bucket_name, tags)
+
+    def _get_acl(self, bucket_name, daemon_name, owner):
+        rgw_client = RgwClient.instance(owner, daemon_name)
+        return str(rgw_client.get_acl(bucket_name))
+
+    def _set_acl(self, bucket_name: str, acl: str, owner, daemon_name):
+        rgw_client = RgwClient.instance(owner, daemon_name)
+        return rgw_client.set_acl(bucket_name, acl)
+
     @staticmethod
     def strip_tenant_from_bucket_name(bucket_name):
         # type (str) -> str
@@ -328,6 +359,8 @@ class RgwBucket(RgwRESTController):
         result['encryption'] = encryption['Status']
         result['versioning'] = versioning['Status']
         result['mfa_delete'] = versioning['MfaDelete']
+        result['bucket_policy'] = self._get_policy(bucket_name)
+        result['acl'] = self._get_acl(bucket_name, daemon_name, result['owner'])
 
         # Append the locking configuration.
         locking = self._get_locking(result['owner'], daemon_name, bucket_name)
@@ -340,7 +373,8 @@ class RgwBucket(RgwRESTController):
                lock_enabled='false', lock_mode=None,
                lock_retention_period_days=None,
                lock_retention_period_years=None, encryption_state='false',
-               encryption_type=None, key_id=None, daemon_name=None):
+               encryption_type=None, key_id=None, tags=None,
+               bucket_policy=None, canned_acl=None, daemon_name=None):
         lock_enabled = str_to_bool(lock_enabled)
         encryption_state = str_to_bool(encryption_state)
         try:
@@ -356,6 +390,15 @@ class RgwBucket(RgwRESTController):
             if encryption_state:
                 self._set_encryption(bucket, encryption_type, key_id, daemon_name, uid)
 
+            if tags:
+                self._set_tags(bucket, tags, daemon_name, uid)
+
+            if bucket_policy:
+                self._set_policy(bucket, bucket_policy, daemon_name, uid)
+
+            if canned_acl:
+                self._set_acl(bucket, canned_acl, uid, daemon_name)
+
             return result
         except RequestException as e:  # pragma: no cover - handling is too obvious
             raise DashboardException(e, http_status_code=500, component='rgw')
@@ -365,7 +408,8 @@ class RgwBucket(RgwRESTController):
             encryption_state='false', encryption_type=None, key_id=None,
             mfa_delete=None, mfa_token_serial=None, mfa_token_pin=None,
             lock_mode=None, lock_retention_period_days=None,
-            lock_retention_period_years=None, daemon_name=None):
+            lock_retention_period_years=None, tags=None, bucket_policy=None,
+            canned_acl=None, daemon_name=None):
         encryption_state = str_to_bool(encryption_state)
         # When linking a non-tenant-user owned bucket to a tenanted user, we
         # need to prefix bucket name with '/'. e.g. photos -> /photos
@@ -405,6 +449,12 @@ class RgwBucket(RgwRESTController):
             self._set_encryption(bucket_name, encryption_type, key_id, daemon_name, uid)
         if encryption_status['Status'] == 'Enabled' and (not encryption_state):
             self._delete_encryption(bucket_name, daemon_name, uid)
+        if tags:
+            self._set_tags(bucket_name, tags, daemon_name, uid)
+        if bucket_policy:
+            self._set_policy(bucket_name, bucket_policy, daemon_name, uid)
+        if canned_acl:
+            self._set_acl(bucket_name, canned_acl, uid, daemon_name)
         return self._append_bid(result)
 
     def delete(self, bucket, purge_objects='true', daemon_name=None):
@@ -540,7 +590,7 @@ class RgwUser(RgwRESTController):
 
     @allow_empty_body
     def create(self, uid, display_name, email=None, max_buckets=None,
-               suspended=None, generate_key=None, access_key=None,
+               system=None, suspended=None, generate_key=None, access_key=None,
                secret_key=None, daemon_name=None):
         params = {'uid': uid}
         if display_name is not None:
@@ -549,6 +599,8 @@ class RgwUser(RgwRESTController):
             params['email'] = email
         if max_buckets is not None:
             params['max-buckets'] = max_buckets
+        if system is not None:
+            params['system'] = system
         if suspended is not None:
             params['suspended'] = suspended
         if generate_key is not None:
@@ -562,7 +614,7 @@ class RgwUser(RgwRESTController):
 
     @allow_empty_body
     def set(self, uid, display_name=None, email=None, max_buckets=None,
-            suspended=None, daemon_name=None):
+            system=None, suspended=None, daemon_name=None):
         params = {'uid': uid}
         if display_name is not None:
             params['display-name'] = display_name
@@ -570,6 +622,8 @@ class RgwUser(RgwRESTController):
             params['email'] = email
         if max_buckets is not None:
             params['max-buckets'] = max_buckets
+        if system is not None:
+            params['system'] = system
         if suspended is not None:
             params['suspended'] = suspended
         result = self.proxy(daemon_name, 'POST', 'user', params)
@@ -702,12 +756,46 @@ class RGWRoleEndpoints:
         rgw_client.create_role(role_name, role_path, role_assume_policy_doc)
         return f'Role {role_name} created successfully'
 
+    @staticmethod
+    def role_update(_, role_name: str, max_session_duration: str):
+        assert role_name
+        assert max_session_duration
+        # convert max_session_duration which is in hours to seconds
+        max_session_duration = int(float(max_session_duration) * 3600)
+        rgw_client = RgwClient.admin_instance()
+        rgw_client.update_role(role_name, str(max_session_duration))
+        return f'Role {role_name} updated successfully'
+
+    @staticmethod
+    def role_delete(_, role_name: str):
+        assert role_name
+        rgw_client = RgwClient.admin_instance()
+        rgw_client.delete_role(role_name)
+        return f'Role {role_name} deleted successfully'
+
+    @staticmethod
+    def model(role_name: str):
+        assert role_name
+        rgw_client = RgwClient.admin_instance()
+        role = rgw_client.get_role(role_name)
+        model = {'role_name': '', 'max_session_duration': ''}
+        model['role_name'] = role['RoleName']
+
+        # convert maxsessionduration which is in seconds to hours
+        if role['MaxSessionDuration']:
+            model['max_session_duration'] = role['MaxSessionDuration'] / 3600
+        return model
+
 
 # pylint: disable=C0301
 assume_role_policy_help = (
     'Paste a json assume role policy document, to find more information on how to get this document, <a '  # noqa: E501
     'href="https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html#cfn-iam-role-assumerolepolicydocument"'  # noqa: E501
     'target="_blank">click here.</a>'
+)
+
+max_session_duration_help = (
+    'The maximum session duration (in hours) that you want to set for the specified role.This setting can have a value from 1 hour to 12 hours.'  # noqa: E501
 )
 
 create_container = VerticalContainer('Create Role', 'create_role', fields=[
@@ -719,11 +807,26 @@ create_container = VerticalContainer('Create Role', 'create_role', fields=[
               field_type='textarea',
               validators=[Validator.JSON]),
 ])
-create_role_form = Form(path='/rgw/roles/create',
+
+edit_container = VerticalContainer('Edit Role', 'edit_role', fields=[
+    FormField('Role name', 'role_name', readonly=True),
+    FormField('Max Session Duration', 'max_session_duration',
+              help=max_session_duration_help,
+              validators=[Validator.RGW_ROLE_SESSION_DURATION])
+])
+
+create_role_form = Form(path='/create',
                         root_container=create_container,
                         task_info=FormTaskInfo("IAM RGW Role '{role_name}' created successfully",
                                                ['role_name']),
                         method_type=MethodType.POST.value)
+
+edit_role_form = Form(path='/edit',
+                      root_container=edit_container,
+                      task_info=FormTaskInfo("IAM RGW Role '{role_name}' edited successfully",
+                                             ['role_name']),
+                      method_type=MethodType.PUT.value,
+                      model_callback=RGWRoleEndpoints.model)
 
 
 @CRUDEndpoint(
@@ -731,25 +834,40 @@ create_role_form = Form(path='/rgw/roles/create',
     doc=APIDoc("List of RGW roles", "RGW"),
     actions=[
         TableAction(name='Create', permission='create', icon=Icon.ADD.value,
-                    routerLink='/rgw/roles/create')
+                    routerLink='/rgw/roles/create'),
+        TableAction(name='Edit', permission='update', icon=Icon.EDIT.value,
+                    click='edit', routerLink='/rgw/roles/edit'),
+        TableAction(name='Delete', permission='delete', icon=Icon.DESTROY.value,
+                    click='delete', disable=True),
     ],
-    forms=[create_role_form],
-    permissions=[Scope.CONFIG_OPT],
+    forms=[create_role_form, edit_role_form],
+    column_key='RoleName',
+    resource='Role',
+    permissions=[Scope.RGW],
     get_all=CRUDCollectionMethod(
         func=RGWRoleEndpoints.role_list,
         doc=EndpointDoc("List RGW roles")
     ),
     create=CRUDCollectionMethod(
         func=RGWRoleEndpoints.role_create,
-        doc=EndpointDoc("Create Ceph User")
+        doc=EndpointDoc("Create RGW role")
+    ),
+    edit=CRUDCollectionMethod(
+        func=RGWRoleEndpoints.role_update,
+        doc=EndpointDoc("Edit RGW role")
+    ),
+    delete=CRUDCollectionMethod(
+        func=RGWRoleEndpoints.role_delete,
+        doc=EndpointDoc("Delete RGW role")
     ),
     set_column={
         "CreateDate": {'cellTemplate': 'date'},
         "MaxSessionDuration": {'cellTemplate': 'duration'},
         "RoleId": {'isHidden': True},
-        "AssumeRolePolicyDocument": {'isHidden': True}
+        "AssumeRolePolicyDocument": {'isHidden': True},
+        "PermissionPolicies": {'isHidden': True}
     },
-    detail_columns=['RoleId', 'AssumeRolePolicyDocument'],
+    detail_columns=['RoleId', 'AssumeRolePolicyDocument', 'PermissionPolicies'],
     meta=CRUDMeta()
 )
 class RgwUserRole(NamedTuple):
@@ -760,6 +878,7 @@ class RgwUserRole(NamedTuple):
     CreateDate: str
     MaxSessionDuration: int
     AssumeRolePolicyDocument: str
+    PermissionPolicies: List
 
 
 @APIRouter('/rgw/realm', Scope.RGW)

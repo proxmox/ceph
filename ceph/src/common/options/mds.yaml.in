@@ -65,15 +65,6 @@ options:
   - mds
   flags:
   - runtime
-# max xattr kv pairs size for each dir/file
-- name: mds_max_xattr_pairs_size
-  type: size
-  level: advanced
-  desc: maximum aggregate size of extended attributes on a file
-  default: 64_K
-  services:
-  - mds
-  with_legacy: true
 - name: mds_cache_trim_interval
   type: secs
   level: advanced
@@ -1175,6 +1166,24 @@ options:
   services:
   - mds
   with_legacy: true
+# Max number of slow ops to track
+- name: mds_op_history_slow_op_size
+  type: uint
+  level: advanced
+  desc: maximum size for list of historical slow operations
+  default: 20
+  services:
+  - mds
+  with_legacy: true
+# Track the op if over this threshold
+- name: mds_op_history_slow_op_threshold
+  type: uint
+  level: advanced
+  desc: track the op if over this threshold
+  default: 10
+  services:
+  - mds
+  with_legacy: true
 # how many seconds old makes an op complaint-worthy
 - name: mds_op_complaint_time
   type: float
@@ -1530,6 +1539,18 @@ options:
   desc: Evict non-advancing client-tid sessions exceeding the config size.
   long_desc: Evict clients which are not advancing their request tids which causes a large buildup of session metadata (`completed_requests`) in the MDS causing the MDS to go read-only since the RADOS operation exceeds the size threashold. This config is the maximum size (in bytes) that a session metadata (encoded) can grow.
   default: 16_M
+  services:
+  - mds
+  flags:
+  - runtime  
+- name: defer_client_eviction_on_laggy_osds
+  type: bool
+  level: advanced
+  desc: Do not evict client if any osd is laggy
+  long_desc: Laggy OSD(s) can make clients laggy or unresponsive, this can
+    lead to their eviction, this option once enabled can help defer client
+    eviction.
+  default: false
   services:
   - mds
   flags:

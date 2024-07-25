@@ -658,6 +658,30 @@ class RgwClient(RestClient):
                                      http_status_code=error.status_code,
                                      component='rgw')
 
+    @RestClient.api_get('/{bucket_name}?acl')
+    def get_acl(self, bucket_name, request=None):
+        # pylint: disable=unused-argument
+        try:
+            result = request(raw_content=True)  # type: ignore
+            return result.decode("utf-8")
+        except RequestException as error:
+            msg = 'Error getting ACLs'
+            if error.status_code == 404:
+                msg = '{}: {}'.format(msg, str(error))
+            raise DashboardException(msg=msg,
+                                     http_status_code=error.status_code,
+                                     component='rgw')
+
+    @RestClient.api_put('/{bucket_name}?acl')
+    def set_acl(self, bucket_name, acl, request=None):
+        # pylint: disable=unused-argument
+        headers = {'x-amz-acl': acl}
+        try:
+            result = request(headers=headers)  # type: ignore
+        except RequestException as e:
+            raise DashboardException(msg=str(e), component='rgw')
+        return result
+
     @RestClient.api_get('/{bucket_name}?encryption')
     def get_bucket_encryption(self, bucket_name, request=None):
         # pylint: disable=unused-argument
@@ -701,6 +725,19 @@ class RgwClient(RestClient):
             _ = request(data=data)  # type: ignore
         except RequestException as e:
             raise DashboardException(msg=str(e), component='rgw')
+
+    @RestClient.api_put('/{bucket_name}?tagging')
+    def set_tags(self, bucket_name, tags, request=None):
+        # pylint: disable=unused-argument
+        try:
+            ET.fromstring(tags)
+        except ET.ParseError:
+            return "Data must be properly formatted"
+        try:
+            result = request(data=tags)  # type: ignore
+        except RequestException as e:
+            raise DashboardException(msg=str(e), component='rgw')
+        return result
 
     @RestClient.api_get('/{bucket_name}?object-lock')
     def get_bucket_locking(self, bucket_name, request=None):
@@ -806,6 +843,9 @@ class RgwClient(RestClient):
             logger.warning('Error listing roles with code %d: %s', code, err)
             return []
 
+        for role in roles:
+            if 'PermissionPolicies' not in role:
+                role['PermissionPolicies'] = []
         return roles
 
     def create_role(self, role_name: str, role_path: str, role_assume_policy_doc: str) -> None:
@@ -851,6 +891,74 @@ class RgwClient(RestClient):
                    'Looks like the document has a wrong format.'
                    f' For more information about the format look at {link}')
             raise DashboardException(msg=msg, component='rgw')
+
+    def get_role(self, role_name: str):
+        rgw_get_role_command = ['role', 'get', '--role-name', role_name]
+        code, role, _err = mgr.send_rgwadmin_command(rgw_get_role_command)
+        if code != 0:
+            raise DashboardException(msg=f'Error getting role with code {code}: {_err}',
+                                     component='rgw')
+        return role
+
+    def update_role(self, role_name: str, max_session_duration: str):
+        rgw_update_role_command = ['role', 'update', '--role-name',
+                                   role_name, '--max_session_duration', max_session_duration]
+        code, _, _err = mgr.send_rgwadmin_command(rgw_update_role_command,
+                                                  stdout_as_json=False)
+        if code != 0:
+            raise DashboardException(msg=f'Error updating role with code {code}: {_err}',
+                                     component='rgw')
+
+    def delete_role(self, role_name: str) -> None:
+        rgw_delete_role_command = ['role', 'delete', '--role-name', role_name]
+        code, _, _err = mgr.send_rgwadmin_command(rgw_delete_role_command,
+                                                  stdout_as_json=False)
+        if code != 0:
+            raise DashboardException(msg=f'Error deleting role with code {code}: {_err}',
+                                     component='rgw')
+
+    @RestClient.api_get('/{bucket_name}?policy')
+    def get_bucket_policy(self, bucket_name: str, request=None):
+        """
+        Gets the bucket policy for a bucket.
+        :param bucket_name: The name of the bucket.
+        :type bucket_name: str
+        :rtype: None
+        """
+        # pylint: disable=unused-argument
+
+        try:
+            request = request()
+            return request
+        except RequestException as e:
+            if e.content:
+                content = json_str_to_object(e.content)
+                if content.get(
+                        'Code') == 'NoSuchBucketPolicy':
+                    return None
+            raise e
+
+    @RestClient.api_put('/{bucket_name}?policy')
+    def set_bucket_policy(self, bucket_name: str, policy: str, request=None):
+        """
+        Sets the bucket policy for a bucket.
+        :param bucket_name: The name of the bucket.
+        :type bucket_name: str
+        :param policy: The bucket policy.
+        :type policy: JSON Structured Document
+        :return: The bucket policy.
+        :rtype: Dict
+        """
+        # pylint: disable=unused-argument
+        try:
+            request = request(data=policy)
+        except RequestException as e:
+            if e.content:
+                content = json_str_to_object(e.content)
+                if content.get("Code") == "InvalidArgument":
+                    msg = "Invalid JSON document"
+                    raise DashboardException(msg=msg, component='rgw')
+            raise DashboardException(e)
 
     def perform_validations(self, retention_period_days, retention_period_years, mode):
         try:
@@ -956,7 +1064,7 @@ class RgwMultisite:
     def create_realm(self, realm_name: str, default: bool):
         rgw_realm_create_cmd = ['realm', 'create']
         cmd_create_realm_options = ['--rgw-realm', realm_name]
-        if default != 'false':
+        if default:
             cmd_create_realm_options.append('--default')
         rgw_realm_create_cmd += cmd_create_realm_options
         try:

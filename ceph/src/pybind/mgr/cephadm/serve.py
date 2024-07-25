@@ -67,7 +67,6 @@ class CephadmServe:
         of cephadm. This loop will then attempt to apply this new state.
         """
         self.log.debug("serve starting")
-        self.mgr.config_checker.load_network_config()
 
         while self.mgr.run:
             self.log.debug("serve loop start")
@@ -113,8 +112,14 @@ class CephadmServe:
                     if self.mgr.agent_helpers._handle_use_agent_setting():
                         continue
 
+                    if self.mgr.node_proxy_service.handle_hw_monitoring_setting():
+                        continue
+
                     if self.mgr.upgrade.continue_upgrade():
                         continue
+
+                    # refresh node-proxy cache
+                    self.mgr.node_proxy_cache.load()
 
             except OrchestratorError as e:
                 if e.event_subject:
@@ -316,7 +321,9 @@ class CephadmServe:
         self.mgr.agent_helpers._update_agent_down_healthcheck(agents_down)
         self.mgr.http_server.config_update()
 
-        self.mgr.config_checker.run_checks()
+        if self.mgr.config_checks_enabled:
+            self.mgr.config_checker.load_network_config()
+            self.mgr.config_checker.run_checks()
 
         for k in [
                 'CEPHADM_HOST_CHECK_FAILED',
@@ -882,6 +889,13 @@ class CephadmServe:
                         hosts_altered.add(d.hostname)
                         break
 
+                # do not attempt to deploy node-proxy agent when oob details are not provided.
+                if slot.daemon_type == 'node-proxy' and slot.hostname not in self.mgr.node_proxy_cache.oob.keys():
+                    self.log.debug(
+                        f'Not deploying node-proxy agent on {slot.hostname} as oob details are not present.'
+                    )
+                    continue
+
                 # deploy new daemon
                 daemon_id = slot.name
 
@@ -1060,6 +1074,11 @@ class CephadmServe:
                     diff = list(set(last_deps) - set(deps))
                     if any('secure_monitoring_stack' in e for e in diff):
                         action = 'redeploy'
+                elif dd.daemon_type == 'jaeger-agent':
+                    # changes to jaeger-agent deps affect the way the unit.run for
+                    # the daemon is written, which we rewrite on redeploy, but not
+                    # on reconfig.
+                    action = 'redeploy'
 
             elif spec is not None and hasattr(spec, 'extra_container_args') and dd.extra_container_args != spec.extra_container_args:
                 self.log.debug(

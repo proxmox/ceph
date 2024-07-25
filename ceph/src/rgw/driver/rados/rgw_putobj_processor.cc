@@ -124,6 +124,11 @@ void RadosWriter::add_write_hint(librados::ObjectWriteOperation& op) {
   op.set_alloc_hint2(0, 0, alloc_hint_flags);
 }
 
+void RadosWriter::set_head_obj(const rgw_obj& head)
+{
+  head_obj = head;
+}
+
 int RadosWriter::set_stripe_obj(const rgw_raw_obj& raw_obj)
 {
   stripe_obj = store->svc.rados->obj(raw_obj);
@@ -339,7 +344,8 @@ int AtomicObjectProcessor::complete(size_t accounted_size,
                                     const char *if_nomatch,
                                     const std::string *user_data,
                                     rgw_zone_set *zones_trace,
-                                    bool *pcanceled, optional_yield y)
+                                    bool *pcanceled, optional_yield y,
+                                    uint32_t flags)
 {
   int r = writer.drain();
   if (r < 0) {
@@ -376,7 +382,8 @@ int AtomicObjectProcessor::complete(size_t accounted_size,
 
   read_cloudtier_info_from_attrs(attrs, obj_op.meta.category, manifest);
 
-  r = obj_op.write_meta(dpp, actual_size, accounted_size, attrs, y);
+  r = obj_op.write_meta(dpp, actual_size, accounted_size, attrs, y,
+                        flags & rgw::sal::FLAG_LOG_OP);
   if (r < 0) {
     if (r == -ETIMEDOUT) {
       // The head object write may eventually succeed, clear the set of objects for deletion. if it
@@ -451,6 +458,9 @@ int MultipartObjectProcessor::prepare_head()
   RGWSI_Tier_RADOS::raw_obj_to_obj(head_obj.bucket, stripe_obj, &head_obj);
   head_obj.index_hash_source = target_obj.key.name;
 
+  // point part uploads at the part head instead of the final multipart head
+  writer.set_head_obj(head_obj);
+
   r = writer.set_stripe_obj(stripe_obj);
   if (r < 0) {
     return r;
@@ -480,7 +490,8 @@ int MultipartObjectProcessor::complete(size_t accounted_size,
                                        const char *if_nomatch,
                                        const std::string *user_data,
                                        rgw_zone_set *zones_trace,
-                                       bool *pcanceled, optional_yield y)
+                                       bool *pcanceled, optional_yield y,
+                                       uint32_t flags)
 {
   int r = writer.drain();
   if (r < 0) {
@@ -504,7 +515,8 @@ int MultipartObjectProcessor::complete(size_t accounted_size,
   obj_op.meta.zones_trace = zones_trace;
   obj_op.meta.modify_tail = true;
 
-  r = obj_op.write_meta(dpp, actual_size, accounted_size, attrs, y);
+  r = obj_op.write_meta(dpp, actual_size, accounted_size, attrs, y,
+                        flags & rgw::sal::FLAG_LOG_OP);
   if (r < 0)
     return r;
 
@@ -684,7 +696,7 @@ int AppendObjectProcessor::complete(size_t accounted_size, const string &etag, c
                                     ceph::real_time set_mtime, rgw::sal::Attrs& attrs,
                                     ceph::real_time delete_at, const char *if_match, const char *if_nomatch,
                                     const string *user_data, rgw_zone_set *zones_trace, bool *pcanceled,
-                                    optional_yield y)
+                                    optional_yield y, uint32_t flags)
 {
   int r = writer.drain();
   if (r < 0)
@@ -742,7 +754,7 @@ int AppendObjectProcessor::complete(size_t accounted_size, const string &etag, c
   }
   r = obj_op.write_meta(dpp, actual_size + cur_size,
 			accounted_size + *cur_accounted_size,
-			attrs, y);
+			attrs, y, flags & rgw::sal::FLAG_LOG_OP);
   if (r < 0) {
     return r;
   }

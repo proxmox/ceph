@@ -428,7 +428,7 @@ class TestDataScan(CephFSTestCase):
         self.fs.data_scan(["scan_links"])
 
         # Mark the MDS repaired
-        self.fs.mon_manager.raw_cluster_cmd('mds', 'repaired', '0')
+        self.run_ceph_cmd('mds', 'repaired', '0')
 
         # Start the MDS
         self.fs.mds_restart()
@@ -491,10 +491,11 @@ class TestDataScan(CephFSTestCase):
 
         file_count = 100
         file_names = ["%s" % n for n in range(0, file_count)]
+        split_size = 100 * file_count
 
         # Make sure and disable dirfrag auto merging and splitting
-        self.fs.set_ceph_conf('mds', 'mds bal merge size', 0)
-        self.fs.set_ceph_conf('mds', 'mds bal split size', 100 * file_count)
+        self.config_set('mds', 'mds_bal_merge_size', 0)
+        self.config_set('mds', 'mds_bal_split_size', split_size)
 
         # Create a directory of `file_count` files, each named after its
         # decimal number and containing the string of its decimal number
@@ -603,7 +604,7 @@ class TestDataScan(CephFSTestCase):
             file_path = "mydir/myfile_{0}".format(i)
             ino = self.mount_a.path_to_ino(file_path)
             obj = "{0:x}.{1:08x}".format(ino, 0)
-            pgid = json.loads(self.fs.mon_manager.raw_cluster_cmd(
+            pgid = json.loads(self.get_ceph_cmd_stdout(
                 "osd", "map", self.fs.get_data_pool_name(), obj,
                 "--format=json-pretty"
             ))['pgid']
