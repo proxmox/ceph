@@ -1,3 +1,9 @@
+ceph (18.2.4-pve1) bookworm; urgency=medium
+
+  * update Ceph to Reef 18.2.4 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 25 Jul 2024 18:50:50 +0200
+
 ceph (18.2.2-pve1) bookworm; urgency=medium
 
   * update Ceph to Reef 18.2.2 stable release
