@@ -12,3 +12,5 @@
 0012-ceph-osd-postinst-do-not-always-reload-all-sysctl-se.patch
 0013-debian-recursively-adjust-permissions-of-var-lib-cep.patch
 0014-ceph-crash-change-order-of-client-names.patch
+0015-ceph-volume-fix-set_dmcrypt_no_workqueue.patch
+0016-ceph-volume-fix-regex-usage-in-set_dmcrypt_no_workqu.patch

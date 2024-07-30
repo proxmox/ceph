@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Guillaume Abrioux <gabrioux@ibm.com>
+Date: Wed, 19 Jun 2024 15:06:52 +0200
+Subject: [PATCH] ceph-volume: fix regex usage in `set_dmcrypt_no_workqueue`
+
+- Updated the regex pattern to `r'(\d+\.?)+'` to more accurately
+  capture version numbers.
+
+- Replaced `re.match` with `re.search` to properly match the cryptsetup
+  version in the output.
+
+- `re.match` only checks for a match at the beginning of the string,
+   while `re.search` looks for a match anywhere in the string.
+
+This fix ensures that the function correctly retrieves the
+cryptsetup version from the output.
+
+Fixes: https://tracker.ceph.com/issues/66393
+
+Signed-off-by: Guillaume Abrioux <gabrioux@ibm.com>
+(cherry picked from commit 607eb34b2c278566c386efcbf3018629cf08ccfd)
+(cherry picked from commit d49b2888486623415a038630da54f5e1c99f1c63)
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ .../ceph_volume/tests/util/test_encryption.py | 40 ++++++++++++++++++-
+ .../ceph_volume/util/encryption.py            |  4 +-
+ 2 files changed, 41 insertions(+), 3 deletions(-)
+
+diff --git a/src/ceph-volume/ceph_volume/tests/util/test_encryption.py b/src/ceph-volume/ceph_volume/tests/util/test_encryption.py
+index cd2ea8f187f..200f1da84d8 100644
+--- a/src/ceph-volume/ceph_volume/tests/util/test_encryption.py
++++ b/src/ceph-volume/ceph_volume/tests/util/test_encryption.py
+@@ -1,6 +1,44 @@
+ from ceph_volume.util import encryption
+-from mock.mock import patch
++from mock.mock import patch, Mock
+ import base64
++import pytest
++
++
++class TestNoWorkqueue:
++    def setup_method(self):
++        encryption.conf.dmcrypt_no_workqueue = None
++
++    @patch('ceph_volume.util.encryption.process.call',
++           Mock(return_value=(['cryptsetup 2.7.2 flags: UDEV BLKID KEYRING' \
++                               'FIPS KERNEL_CAPI PWQUALITY '], [''], 0)))
++    def test_set_dmcrypt_no_workqueue_true(self):
++        encryption.set_dmcrypt_no_workqueue()
++        assert encryption.conf.dmcrypt_no_workqueue
++
++    @patch('ceph_volume.util.encryption.process.call',
++           Mock(return_value=(['cryptsetup 2.0.0'], [''], 0)))
++    def test_set_dmcrypt_no_workqueue_false(self):
++        encryption.set_dmcrypt_no_workqueue()
++        assert encryption.conf.dmcrypt_no_workqueue is None
++
++    @patch('ceph_volume.util.encryption.process.call',
++           Mock(return_value=([''], ['fake error'], 1)))
++    def test_set_dmcrypt_no_workqueue_cryptsetup_version_fails(self):
++        with pytest.raises(RuntimeError):
++            encryption.set_dmcrypt_no_workqueue()
++
++    @patch('ceph_volume.util.encryption.process.call',
++           Mock(return_value=(['unexpected output'], [''], 0)))
++    def test_set_dmcrypt_no_workqueue_pattern_not_found(self):
++        with pytest.raises(RuntimeError):
++            encryption.set_dmcrypt_no_workqueue()
++
++    @patch('ceph_volume.util.encryption.process.call',
++           Mock(return_value=([], [''], 0)))
++    def test_set_dmcrypt_no_workqueue_index_error(self):
++        with pytest.raises(RuntimeError):
++            encryption.set_dmcrypt_no_workqueue()
++
+ 
+ class TestGetKeySize(object):
+     def test_get_size_from_conf_default(self, conf_ceph_stub):
+diff --git a/src/ceph-volume/ceph_volume/util/encryption.py b/src/ceph-volume/ceph_volume/util/encryption.py
+index 09f1cccf384..15a31315645 100644
+--- a/src/ceph-volume/ceph_volume/util/encryption.py
++++ b/src/ceph-volume/ceph_volume/util/encryption.py
+@@ -41,13 +41,13 @@ def set_dmcrypt_no_workqueue(target_version: str = '2.3.4') -> None:
+ 
+     # This regex extracts the version number from
+     # the `cryptsetup --version` output
+-    pattern: str = r'\b\d+(\.\d+)*\b'
++    pattern: str = r'(\d+\.?)+'
+ 
+     if rc:
+         raise RuntimeError(f"Can't retrieve cryptsetup version: {err}")
+ 
+     try:
+-        cryptsetup_version = re.match(pattern, out[0])
++        cryptsetup_version = re.search(pattern, out[0])
+ 
+         if cryptsetup_version is None:
+             _output: str = "\n".join(out)
