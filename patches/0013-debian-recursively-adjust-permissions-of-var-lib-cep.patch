@@ -49,6 +49,3 @@ index 75eeb59c624..424c2c889d5 100644
      ;;
      abort-upgrade|abort-remove|abort-deconfigure)
  	:
--- 
-2.39.2
-

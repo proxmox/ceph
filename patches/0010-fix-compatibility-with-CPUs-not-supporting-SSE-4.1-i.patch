@@ -16,7 +16,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/src/erasure-code/jerasure/CMakeLists.txt b/src/erasure-code/jerasure/CMakeLists.txt
-index f9cd22e11..b0a355235 100644
+index f9cd22e1176..b0a355235d3 100644
 --- a/src/erasure-code/jerasure/CMakeLists.txt
 +++ b/src/erasure-code/jerasure/CMakeLists.txt
 @@ -67,7 +67,7 @@ endif()

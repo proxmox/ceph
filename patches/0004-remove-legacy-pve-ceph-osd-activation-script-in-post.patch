@@ -17,7 +17,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 13 insertions(+)
 
 diff --git a/debian/ceph-osd.postinst b/debian/ceph-osd.postinst
-index 04e33b860..6c2513d4d 100644
+index 04e33b8601f..6c2513d4db5 100644
 --- a/debian/ceph-osd.postinst
 +++ b/debian/ceph-osd.postinst
 @@ -26,6 +26,19 @@ case "$1" in

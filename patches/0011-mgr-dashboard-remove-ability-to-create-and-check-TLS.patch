@@ -40,7 +40,7 @@ Signed-off-by: Max Carrara <m.carrara@proxmox.com>
  1 file changed, 43 insertions(+), 15 deletions(-)
 
 diff --git a/src/pybind/mgr/dashboard/module.py b/src/pybind/mgr/dashboard/module.py
-index 68725be6e35..c8b263d9786 100644
+index 68725be6e35..0759da05064 100644
 --- a/src/pybind/mgr/dashboard/module.py
 +++ b/src/pybind/mgr/dashboard/module.py
 @@ -23,8 +23,7 @@ if TYPE_CHECKING:
@@ -123,6 +123,3 @@ index 68725be6e35..c8b263d9786 100644
  
      @CLIWriteCommand("dashboard set-rgw-credentials")
      def set_rgw_credentials(self):
--- 
-2.39.2
-

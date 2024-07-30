@@ -9,10 +9,10 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 2 insertions(+)
 
 diff --git a/debian/control b/debian/control
-index 837a55a37..a845ba795 100644
+index ddba52be7bb..484804f6b7a 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -155,6 +155,7 @@ Replaces: ceph (<< 10),
+@@ -154,6 +154,7 @@ Replaces: ceph (<< 10),
  Breaks: ceph (<< 10),
          ceph-test (<< 12.2.2-14),
          python-ceph (<< 0.92-1223),
@@ -20,7 +20,7 @@ index 837a55a37..a845ba795 100644
  Description: common ceph daemon libraries and management tools
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -634,6 +635,7 @@ Breaks: ceph (<< 10),
+@@ -659,6 +660,7 @@ Breaks: ceph (<< 10),
          ceph-test (<< 9.0.3-1646),
          librbd1 (<< 0.92-1238),
          python-ceph (<< 0.92-1223),

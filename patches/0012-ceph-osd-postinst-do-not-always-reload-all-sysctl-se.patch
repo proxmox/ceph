@@ -1,4 +1,4 @@
-From 232b1fa3210a56354b27f9c6154819307412b91c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Friedrich Weber <f.weber@proxmox.com>
 Date: Thu, 8 Feb 2024 16:20:08 +0100
 Subject: [PATCH] ceph-osd postinst: do not always reload all sysctl settings
@@ -26,7 +26,7 @@ Signed-off-by: Friedrich Weber <f.weber@proxmox.com>
  1 file changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/debian/ceph-osd.postinst b/debian/ceph-osd.postinst
-index 04e33b8601f..2bcd8d4dcb4 100644
+index 6c2513d4db5..95adfd6afb0 100644
 --- a/debian/ceph-osd.postinst
 +++ b/debian/ceph-osd.postinst
 @@ -24,7 +24,11 @@ set -e
@@ -40,8 +40,5 @@ index 04e33b8601f..2bcd8d4dcb4 100644
 +		    >/dev/null || :
 +	fi
  	[ -x /sbin/start ] && start ceph-osd-all || :
-     ;;
-     abort-upgrade|abort-remove|abort-deconfigure)
--- 
-2.39.2
-
+ 
+ 	# remove legacy osd activation service, FIXME remove with next ceph >> 14

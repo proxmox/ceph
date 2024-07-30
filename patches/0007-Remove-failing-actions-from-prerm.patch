@@ -21,7 +21,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  5 files changed, 85 deletions(-)
 
 diff --git a/debian/ceph-base.prerm b/debian/ceph-base.prerm
-index bfd7d3d6f..37460790a 100644
+index bfd7d3d6fb2..37460790a09 100644
 --- a/debian/ceph-base.prerm
 +++ b/debian/ceph-base.prerm
 @@ -1,23 +1,6 @@
@@ -49,7 +49,7 @@ index bfd7d3d6f..37460790a 100644
  
  exit 0
 diff --git a/debian/ceph-mds.prerm b/debian/ceph-mds.prerm
-index 654518a7d..37460790a 100644
+index 654518a7d55..37460790a09 100644
 --- a/debian/ceph-mds.prerm
 +++ b/debian/ceph-mds.prerm
 @@ -1,23 +1,6 @@
@@ -77,7 +77,7 @@ index 654518a7d..37460790a 100644
  
  exit 0
 diff --git a/debian/ceph-mgr.prerm b/debian/ceph-mgr.prerm
-index 6fb7b245a..37460790a 100644
+index 6fb7b245a78..37460790a09 100644
 --- a/debian/ceph-mgr.prerm
 +++ b/debian/ceph-mgr.prerm
 @@ -1,23 +1,6 @@
@@ -105,7 +105,7 @@ index 6fb7b245a..37460790a 100644
  
  exit 0
 diff --git a/debian/ceph-mon.prerm b/debian/ceph-mon.prerm
-index 5f64058a5..37460790a 100644
+index 5f64058a5da..37460790a09 100644
 --- a/debian/ceph-mon.prerm
 +++ b/debian/ceph-mon.prerm
 @@ -1,23 +1,6 @@
@@ -133,7 +133,7 @@ index 5f64058a5..37460790a 100644
  
  exit 0
 diff --git a/debian/ceph-osd.prerm b/debian/ceph-osd.prerm
-index 40f07b621..37460790a 100644
+index 40f07b62152..37460790a09 100644
 --- a/debian/ceph-osd.prerm
 +++ b/debian/ceph-osd.prerm
 @@ -1,23 +1,6 @@

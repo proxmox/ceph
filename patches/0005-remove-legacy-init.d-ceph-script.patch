@@ -11,7 +11,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  2 files changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/debian/ceph-base.install b/debian/ceph-base.install
-index a3d7757a5..51fafb6e9 100644
+index a3d7757a585..51fafb6e90a 100644
 --- a/debian/ceph-base.install
 +++ b/debian/ceph-base.install
 @@ -1,4 +1,3 @@
@@ -20,7 +20,7 @@ index a3d7757a5..51fafb6e9 100644
  usr/bin/ceph-crash
  usr/bin/ceph-debugpack
 diff --git a/debian/ceph-base.maintscript b/debian/ceph-base.maintscript
-index 196dc0841..180b7dfde 100644
+index 196dc084135..180b7dfde4d 100644
 --- a/debian/ceph-base.maintscript
 +++ b/debian/ceph-base.maintscript
 @@ -1,2 +1,3 @@
