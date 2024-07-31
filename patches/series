@@ -14,3 +14,4 @@
 0014-ceph-crash-change-order-of-client-names.patch
 0015-ceph-volume-fix-set_dmcrypt_no_workqueue.patch
 0016-ceph-volume-fix-regex-usage-in-set_dmcrypt_no_workqu.patch
+0017-debian-pkg-record-python3-packaging-dependency-for-c.patch
