@@ -1,3 +1,9 @@
+ceph (19.2.0-pve1) bookworm; urgency=medium
+
+  * update Ceph to the first stable release from the Squid 19.2 series
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 27 Sep 2024 17:43:16 +0200
+
 ceph (19.1.0-pve1) bookworm; urgency=medium
 
   * update Ceph to the first release candidate of the upcoming Squid 19 stable
