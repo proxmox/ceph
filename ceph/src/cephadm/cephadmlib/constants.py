@@ -1,12 +1,12 @@
 # constants.py - constant values used throughout the cephadm sources
 
 # Default container images -----------------------------------------------------
-DEFAULT_IMAGE = 'quay.ceph.io/ceph-ci/ceph:main'
+DEFAULT_IMAGE = 'quay.io/ceph/ceph:v19'
 DEFAULT_IMAGE_IS_MAIN = True
 DEFAULT_IMAGE_RELEASE = 'squid'
 DEFAULT_PROMETHEUS_IMAGE = 'quay.io/prometheus/prometheus:v2.43.0'
-DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:2.4.0'
-DEFAULT_PROMTAIL_IMAGE = 'docker.io/grafana/promtail:2.4.0'
+DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:3.0.0'
+DEFAULT_PROMTAIL_IMAGE = 'docker.io/grafana/promtail:3.0.0'
 DEFAULT_NODE_EXPORTER_IMAGE = 'quay.io/prometheus/node-exporter:v1.5.0'
 DEFAULT_ALERT_MANAGER_IMAGE = 'quay.io/prometheus/alertmanager:v0.25.0'
 DEFAULT_GRAFANA_IMAGE = 'quay.io/ceph/grafana:9.4.12'
@@ -22,7 +22,7 @@ DEFAULT_SMB_IMAGE = 'quay.io/samba.org/samba-server:devbuilds-centos-amd64'
 DEFAULT_REGISTRY = 'docker.io'  # normalize unqualified digests to this
 # ------------------------------------------------------------------------------
 
-LATEST_STABLE_RELEASE = 'reef'
+LATEST_STABLE_RELEASE = 'squid'
 DATA_DIR = '/var/lib/ceph'
 LOG_DIR = '/var/log/ceph'
 LOCK_DIR = '/run/cephadm'

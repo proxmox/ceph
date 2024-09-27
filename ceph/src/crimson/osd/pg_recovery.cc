@@ -42,7 +42,12 @@ PGRecovery::start_recovery_ops(
 {
   assert(pg->is_primary());
   assert(pg->is_peered());
-  assert(pg->is_recovering());
+
+  if (!pg->is_recovering() && !pg->is_backfilling()) {
+    logger().debug("recovery raced and were queued twice, ignoring!");
+    return seastar::make_ready_future<bool>(false);
+  }
+
   // in ceph-osd the do_recovery() path handles both the pg log-based
   // recovery and the backfill, albeit they are separated at the layer
   // of PeeringState. In crimson-osd backfill has been cut from it, so
@@ -64,6 +69,12 @@ PGRecovery::start_recovery_ops(
 					[] (auto&& ifut) {
     return std::move(ifut);
   }).then_interruptible([this] {
+    //TODO: maybe we should implement a recovery race interruptor in the future
+    if (!pg->is_recovering() && !pg->is_backfilling()) {
+      logger().debug("recovery raced and were queued twice, ignoring!");
+      return seastar::make_ready_future<bool>(false);
+    }
+
     bool done = !pg->get_peering_state().needs_recovery();
     if (done) {
       logger().debug("start_recovery_ops: AllReplicasRecovered for pg: {}",
@@ -135,10 +146,22 @@ size_t PGRecovery::start_primary_recovery_ops(
     } else {
       soid = p->second;
     }
-    const pg_missing_item& item = missing.get_items().find(p->second)->second;
-    ++p;
 
     hobject_t head = soid.get_head();
+
+    if (pg->get_peering_state().get_missing_loc().is_unfound(soid)) {
+      logger().debug("{}: object {} unfound", __func__, soid);
+      ++skipped;
+      continue;
+    }
+    if (pg->get_peering_state().get_missing_loc().is_unfound(head)) {
+      logger().debug("{}: head object {} unfound", __func__, soid);
+      ++skipped;
+      continue;
+    }
+
+    const pg_missing_item& item = missing.get_items().find(p->second)->second;
+    ++p;
 
     bool head_missing = missing.is_missing(head);
     logger().info(

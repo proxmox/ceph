@@ -70,6 +70,10 @@ configure_file(
   ${CMAKE_SOURCE_DIR}/src/ceph_ver.h.in.cmake
   ${CMAKE_BINARY_DIR}/src/include/ceph_ver.h
   @ONLY)
+configure_file(
+  ${CMAKE_SOURCE_DIR}/src/ceph_release.h.in.cmake
+  ${CMAKE_BINARY_DIR}/src/include/ceph_release.h
+  @ONLY)
 
 add_definitions(
   -DHAVE_CONFIG_H
@@ -380,6 +384,7 @@ if(WITH_SEASTAR)
   endmacro ()
   set(Seastar_API_LEVEL "6" CACHE STRING "" FORCE)
   set(Seastar_HWLOC OFF CACHE BOOL "" FORCE)
+  set(Seastar_IO_URING OFF CACHE BOOL "" FORCE)
   set(Seastar_STD_OPTIONAL_VARIANT_STRINGVIEW ON CACHE BOOL "" FORCE)
   if(Seastar_DPDK)
     find_package(dpdk QUIET)

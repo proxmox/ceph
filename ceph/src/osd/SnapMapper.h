@@ -256,8 +256,6 @@ private:
   std::pair<std::string, ceph::buffer::list> to_raw(
     const std::pair<snapid_t, hobject_t> &to_map) const;
 
-  static bool is_mapping(const std::string &to_test);
-
   static std::pair<snapid_t, hobject_t> from_raw(
     const std::pair<std::string, ceph::buffer::list> &image);
 
@@ -317,6 +315,8 @@ private:
     return std::string(buf, r) + '_';
   }
 
+  static bool is_mapping(const std::string &to_test);
+
   uint32_t mask_bits;
   const uint32_t match;
   std::string last_key_checked;
@@ -355,6 +355,11 @@ private:
 
   const std::set<std::string>::iterator get_prefix_itr() {
     return prefix_itr;
+  }
+
+  /// reset the MapCacher backend, this should be called on pg interval change
+  void reset_backend() {
+    backend.reset();
   }
 
   /// Update snaps for oid, empty new_snaps removes the mapping

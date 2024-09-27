@@ -136,7 +136,7 @@ PG::PG(
     osdriver(
       &shard_services.get_store(),
       coll_ref,
-      pgid.make_pgmeta_oid()),
+      pgid.make_snapmapper_oid()),
     snap_mapper(
       this->shard_services.get_cct(),
       &osdriver,
@@ -212,6 +212,15 @@ pg_stat_t PG::get_stats() const
   return pg_stats.value_or(pg_stat_t{});
 }
 
+void PG::apply_stats(
+  const hobject_t &soid,
+  const object_stat_sum_t &delta_stats)
+{
+  peering_state.apply_op_stats(soid, delta_stats);
+  scrubber.handle_op_stats(soid, delta_stats);
+  publish_stats_to_osd();
+}
+
 void PG::queue_check_readable(epoch_t last_peering_reset, ceph::timespan delay)
 {
   // handle the peering event in the background
@@ -233,6 +242,40 @@ void PG::queue_check_readable(epoch_t last_peering_reset, ceph::timespan delay)
     });
   check_readable_timer.arm(
     std::chrono::duration_cast<seastar::lowres_clock::duration>(delay));
+}
+
+PG::interruptible_future<> PG::find_unfound(epoch_t epoch_started)
+{
+  if (!have_unfound()) {
+    return interruptor::now();
+  }
+  PeeringCtx rctx;
+  if (!peering_state.discover_all_missing(rctx)) {
+    if (peering_state.state_test(PG_STATE_BACKFILLING)) {
+      logger().debug(
+        "{} {} no luck, giving up on this pg for now (in backfill)",
+        *this, __func__);
+      std::ignore = get_shard_services().start_operation<LocalPeeringEvent>(
+        this,
+        get_pg_whoami(),
+        get_pgid(),
+        epoch_started,
+        epoch_started,
+        PeeringState::UnfoundBackfill());
+    } else if (peering_state.state_test(PG_STATE_RECOVERING)) {
+      logger().debug(
+        "{} {} no luck, giving up on this pg for now (in recovery)",
+        *this, __func__);
+      std::ignore = get_shard_services().start_operation<LocalPeeringEvent>(
+        this,
+        get_pg_whoami(),
+        get_pgid(),
+        epoch_started,
+        epoch_started,
+        PeeringState::UnfoundRecovery());
+    }
+  }
+  return get_shard_services().dispatch_context(get_collection_ref(), std::move(rctx));
 }
 
 void PG::recheck_readable()
@@ -470,54 +513,78 @@ Context *PG::on_clean()
   return nullptr;
 }
 
+PG::interruptible_future<seastar::stop_iteration> PG::trim_snap(
+  snapid_t to_trim,
+  bool needs_pause)
+{
+  return interruptor::repeat([this, to_trim, needs_pause] {
+    logger().debug("{}: going to start SnapTrimEvent, to_trim={}",
+                   *this, to_trim);
+    return shard_services.start_operation_may_interrupt<
+      interruptor, SnapTrimEvent>(
+      this,
+      snap_mapper,
+      to_trim,
+      needs_pause
+    ).second.handle_error_interruptible(
+      crimson::ct_error::enoent::handle([this] {
+        logger().error("{}: ENOENT saw, trimming stopped", *this);
+        peering_state.state_set(PG_STATE_SNAPTRIM_ERROR);
+        publish_stats_to_osd();
+        return seastar::make_ready_future<seastar::stop_iteration>(
+          seastar::stop_iteration::yes);
+      })
+    );
+  }).then_interruptible([this, trimmed=to_trim] {
+    logger().debug("{}: trimmed snap={}", *this, trimmed);
+    snap_trimq.erase(trimmed);
+    return seastar::make_ready_future<seastar::stop_iteration>(
+      seastar::stop_iteration::no);
+  });
+}
+
 void PG::on_active_actmap()
 {
   logger().debug("{}: {} snap_trimq={}", *this, __func__, snap_trimq);
   peering_state.state_clear(PG_STATE_SNAPTRIM_ERROR);
-  // loops until snap_trimq is empty or SNAPTRIM_ERROR.
-  Ref<PG> pg_ref = this;
-  std::ignore = seastar::do_until(
-    [this] { return snap_trimq.empty()
-                    || peering_state.state_test(PG_STATE_SNAPTRIM_ERROR);
-    },
-    [this] {
-      peering_state.state_set(PG_STATE_SNAPTRIM);
-      publish_stats_to_osd();
-      const auto to_trim = snap_trimq.range_start();
-      snap_trimq.erase(to_trim);
-      const auto needs_pause = !snap_trimq.empty();
-      return seastar::repeat([to_trim, needs_pause, this] {
-        logger().debug("{}: going to start SnapTrimEvent, to_trim={}",
-                       *this, to_trim);
-        return shard_services.start_operation<SnapTrimEvent>(
-          this,
-          snap_mapper,
-          to_trim,
-          needs_pause
-        ).second.handle_error(
-          crimson::ct_error::enoent::handle([this] {
-            logger().error("{}: ENOENT saw, trimming stopped", *this);
-            peering_state.state_set(PG_STATE_SNAPTRIM_ERROR);
-            publish_stats_to_osd();
+  if (peering_state.is_active() && peering_state.is_clean()) {
+    if (peering_state.state_test(PG_STATE_SNAPTRIM)) {
+      logger().debug("{}: {} already trimming.", *this, __func__);
+      return;
+    }
+    // loops until snap_trimq is empty or SNAPTRIM_ERROR.
+    Ref<PG> pg_ref = this;
+    std::ignore = interruptor::with_interruption([this] {
+      return interruptor::repeat(
+        [this]() -> interruptible_future<seastar::stop_iteration> {
+          if (snap_trimq.empty()
+              || peering_state.state_test(PG_STATE_SNAPTRIM_ERROR)) {
             return seastar::make_ready_future<seastar::stop_iteration>(
               seastar::stop_iteration::yes);
-          }), crimson::ct_error::eagain::handle([this] {
-            logger().info("{}: EAGAIN saw, trimming restarted", *this);
-            return seastar::make_ready_future<seastar::stop_iteration>(
-              seastar::stop_iteration::no);
-          })
-        );
-      }).then([this, trimmed=to_trim] {
-        logger().debug("{}: trimmed snap={}", *this, trimmed);
+          }
+          peering_state.state_set(PG_STATE_SNAPTRIM);
+          publish_stats_to_osd();
+          const auto to_trim = snap_trimq.range_start();
+          const auto needs_pause = !snap_trimq.empty();
+          return trim_snap(to_trim, needs_pause);
+        }
+      ).then_interruptible([this] {
+        logger().debug("{}: PG::on_active_actmap() finished trimming",
+                       *this);
+        peering_state.state_clear(PG_STATE_SNAPTRIM);
+        peering_state.state_clear(PG_STATE_SNAPTRIM_ERROR);
+        return seastar::now();
       });
-    }
-  ).finally([this, pg_ref=std::move(pg_ref)] {
-    logger().debug("{}: PG::on_active_actmap() finished trimming",
-                   *this);
-    peering_state.state_clear(PG_STATE_SNAPTRIM);
-    peering_state.state_clear(PG_STATE_SNAPTRIM_ERROR);
-    publish_stats_to_osd();
-  });
+    }, [this](std::exception_ptr eptr) {
+      logger().debug("{}: snap trimming interrupted", *this);
+      ceph_assert(!peering_state.state_test(PG_STATE_SNAPTRIM));
+    }, pg_ref).finally([pg_ref, this] {
+      publish_stats_to_osd();
+    });
+  } else {
+    logger().debug("{}: pg not clean, skipping snap trim");
+    ceph_assert(!peering_state.state_test(PG_STATE_SNAPTRIM));
+  }
 }
 
 void PG::on_active_advmap(const OSDMapRef &osdmap)
@@ -596,7 +663,7 @@ void PG::schedule_renew_lease(epoch_t last_peering_reset, ceph::timespan delay)
 }
 
 
-void PG::init(
+seastar::future<> PG::init(
   int role,
   const vector<int>& newup, int new_up_primary,
   const vector<int>& newacting, int new_acting_primary,
@@ -607,6 +674,16 @@ void PG::init(
   peering_state.init(
     role, newup, new_up_primary, newacting,
     new_acting_primary, history, pi, t);
+  assert(coll_ref);
+  return shard_services.get_store().exists(
+    get_collection_ref(), pgid.make_snapmapper_oid()
+  ).safe_then([&t, this](bool existed) {
+      if (!existed) {
+        t.touch(coll_ref->get_cid(), pgid.make_snapmapper_oid());
+      }
+    },
+    ::crimson::ct_error::assert_all{"unexpected eio"}
+  );
 }
 
 seastar::future<> PG::read_state(crimson::os::FuturizedStore::Shard* store)
@@ -653,64 +730,67 @@ seastar::future<> PG::read_state(crimson::os::FuturizedStore::Shard* store)
 	PeeringState::Initialize());
 
     return seastar::now();
+  }).then([this, store]() {
+    logger().debug("{} setting collection options", __func__);
+    return store->set_collection_opts(
+          coll_ref,
+          get_pgpool().info.opts);
   });
 }
 
-PG::interruptible_future<> PG::do_peering_event(
+void PG::do_peering_event(
   PGPeeringEvent& evt, PeeringCtx &rctx)
 {
   if (peering_state.pg_has_reset_since(evt.get_epoch_requested()) ||
       peering_state.pg_has_reset_since(evt.get_epoch_sent())) {
     logger().debug("{} ignoring {} -- pg has reset", __func__, evt.get_desc());
-    return interruptor::now();
   } else {
     logger().debug("{} handling {} for pg: {}", __func__, evt.get_desc(), pgid);
-    // all peering event handling needs to be run in a dedicated seastar::thread,
-    // so that event processing can involve I/O reqs freely, for example: PG::on_removal,
-    // PG::on_new_interval
-    return interruptor::async([this, &evt, &rctx] {
-      peering_state.handle_event(
-        evt.get_event(),
-        &rctx);
-      peering_state.write_if_dirty(rctx.transaction);
-    });
+    peering_state.handle_event(
+      evt.get_event(),
+      &rctx);
+    peering_state.write_if_dirty(rctx.transaction);
   }
 }
 
-seastar::future<> PG::handle_advance_map(
+void PG::handle_advance_map(
   cached_map_t next_map, PeeringCtx &rctx)
 {
-  return seastar::async([this, next_map=std::move(next_map), &rctx] {
-    vector<int> newup, newacting;
-    int up_primary, acting_primary;
-    next_map->pg_to_up_acting_osds(
-      pgid.pgid,
-      &newup, &up_primary,
-      &newacting, &acting_primary);
-    peering_state.advance_map(
-      next_map,
-      peering_state.get_osdmap(),
-      newup,
-      up_primary,
-      newacting,
-      acting_primary,
-      rctx);
-    osdmap_gate.got_map(next_map->get_epoch());
-  });
+  vector<int> newup, newacting;
+  int up_primary, acting_primary;
+  next_map->pg_to_up_acting_osds(
+    pgid.pgid,
+    &newup, &up_primary,
+    &newacting, &acting_primary);
+  peering_state.advance_map(
+    next_map,
+    peering_state.get_osdmap(),
+    newup,
+    up_primary,
+    newacting,
+    acting_primary,
+    rctx);
+  osdmap_gate.got_map(next_map->get_epoch());
 }
 
-seastar::future<> PG::handle_activate_map(PeeringCtx &rctx)
+void PG::handle_activate_map(PeeringCtx &rctx)
 {
-  return seastar::async([this, &rctx] {
-    peering_state.activate_map(rctx);
-  });
+  peering_state.activate_map(rctx);
 }
 
-seastar::future<> PG::handle_initialize(PeeringCtx &rctx)
+void PG::handle_initialize(PeeringCtx &rctx)
 {
-  return seastar::async([this, &rctx] {
-    peering_state.handle_event(PeeringState::Initialize{}, &rctx);
-  });
+  peering_state.handle_event(PeeringState::Initialize{}, &rctx);
+}
+
+void PG::init_collection_pool_opts()
+{
+  std::ignore = shard_services.get_store().set_collection_opts(coll_ref, get_pgpool().info.opts);
+}
+
+void PG::on_pool_change()
+{
+  init_collection_pool_opts();
 }
 
 
@@ -755,7 +835,6 @@ PG::submit_transaction(
   }
 
   epoch_t map_epoch = get_osdmap_epoch();
-  ceph_assert(!has_reset_since(osd_op_p.at_version.epoch));
 
   peering_state.pre_submit_op(obc->obs.oi.soid, log_entries, osd_op_p.at_version);
   peering_state.update_trim_to();
@@ -1275,6 +1354,15 @@ PG::with_locked_obc(const hobject_t &hobj,
   };
 }
 
+void PG::update_stats(const pg_stat_t &stat) {
+  peering_state.update_stats(
+    [&stat] (auto& history, auto& stats) {
+      stats = stat;
+      return false;
+    }
+  );
+}
+
 PG::interruptible_future<> PG::handle_rep_op(Ref<MOSDRepOp> req)
 {
   if (__builtin_expect(stopping, false)) {
@@ -1293,6 +1381,7 @@ PG::interruptible_future<> PG::handle_rep_op(Ref<MOSDRepOp> req)
   auto p = req->logbl.cbegin();
   std::vector<pg_log_entry_t> log_entries;
   decode(log_entries, p);
+  update_stats(req->pg_stats);
   log_operation(std::move(log_entries),
                 req->pg_trim_to,
                 req->version,
@@ -1530,6 +1619,12 @@ void PG::on_change(ceph::os::Transaction &t) {
   }
   scrubber.on_interval_change();
   obc_registry.invalidate_on_interval_change();
+  // snap trim events are all going to be interrupted,
+  // clearing PG_STATE_SNAPTRIM/PG_STATE_SNAPTRIM_ERROR here
+  // is save and in time.
+  peering_state.state_clear(PG_STATE_SNAPTRIM);
+  peering_state.state_clear(PG_STATE_SNAPTRIM_ERROR);
+  snap_mapper.reset_backend();
 }
 
 void PG::context_registry_on_change() {

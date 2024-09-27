@@ -717,16 +717,10 @@ void Server::handle_client_session(const cref_t<MClientSession> &m)
 	break;
       }
 
-      if (session->auth_caps.root_squash_in_caps() && !client_metadata.features.test(CEPHFS_FEATURE_MDS_AUTH_CAPS_CHECK)) {
-	CachedStackStringStream css;
-	*css << "client lacks CEPHFS_FEATURE_MDS_AUTH_CAPS_CHECK needed to enforce 'root_squash' MDS auth caps";
-	send_reject_message(css->strv());
-	mds->clog->warn() << "client session (" << session->info.inst
-                          << ") lacks CEPHFS_FEATURE_MDS_AUTH_CAPS_CHECK "
-                          << " needed to enforce 'root_squash' MDS auth caps";
-	session->clear();
-	break;
-
+      std::string_view fs_name = mds->mdsmap->get_fs_name();
+      bool client_caps_check = client_metadata.features.test(CEPHFS_FEATURE_MDS_AUTH_CAPS_CHECK);
+      if (session->auth_caps.root_squash_in_caps(fs_name) && !client_caps_check) {
+        mds->sessionmap.add_to_broken_root_squash_clients(session);
       }
       // Special case for the 'root' metadata path; validate that the claimed
       // root is actually within the caps of the session
@@ -1573,11 +1567,10 @@ void Server::handle_client_reconnect(const cref_t<MClientReconnect> &m)
 	*css << "missing required features '" << missing_features << "'";
 	error_str = css->strv();
       }
-      if (session->auth_caps.root_squash_in_caps() &&
-          !session->info.client_metadata.features.test(CEPHFS_FEATURE_MDS_AUTH_CAPS_CHECK)) {
-	CachedStackStringStream css;
-	*css << "client lacks CEPHFS_FEATURE_MDS_AUTH_CAPS_CHECK needed to enforce 'root_squash' MDS auth caps";
-	error_str = css->strv();
+      std::string_view fs_name = mds->mdsmap->get_fs_name();
+      bool client_caps_check = session->info.client_metadata.features.test(CEPHFS_FEATURE_MDS_AUTH_CAPS_CHECK);
+      if (session->auth_caps.root_squash_in_caps(fs_name) && !client_caps_check) {
+        mds->sessionmap.add_to_broken_root_squash_clients(session);
       }
     }
 
@@ -2332,7 +2325,7 @@ void Server::reply_client_request(const MDRequestRef& mdr, const ref_t<MClientRe
   }
 
   // drop non-rdlocks before replying, so that we can issue leases
-  mdcache->request_drop_non_rdlocks(mdr);
+  mds->locker->request_drop_non_rdlocks(mdr);
 
   // reply at all?
   if (session && !client_inst.name.is_mds()) {
@@ -2484,6 +2477,31 @@ void Server::trim_completed_request_list(ceph_tid_t tid, Session *session)
   }
 }
 
+void Server::set_reply_extra_bl(const cref_t<MClientRequest> &req, inodeno_t ino, bufferlist& extra_bl)
+{
+  Session *session = mds->get_session(req);
+
+  if (session->info.has_feature(CEPHFS_FEATURE_DELEG_INO)) {
+    openc_response_t ocresp;
+
+    dout(10) << "adding created_ino and delegated_inos" << dendl;
+    ocresp.created_ino = ino;
+
+    if (delegate_inos_pct && !req->is_queued_for_replay()) {
+      // Try to delegate some prealloc_inos to the client, if it's down to half the max
+      unsigned frac = 100 / delegate_inos_pct;
+      if (session->delegated_inos.size() < (unsigned)g_conf()->mds_client_prealloc_inos / frac / 2)
+	session->delegate_inos(g_conf()->mds_client_prealloc_inos / frac, ocresp.delegated_inos);
+    }
+
+    encode(ocresp, extra_bl);
+  } else if (req->get_connection()->has_feature(CEPH_FEATURE_REPLY_CREATE_INODE)) {
+    dout(10) << "adding ino to reply to indicate inode was created" << dendl;
+    // add the file created flag onto the reply if create_flags features is supported
+    encode(ino, extra_bl);
+  }
+}
+
 void Server::handle_client_request(const cref_t<MClientRequest> &req)
 {
   dout(4) << "handle_client_request " << *req << dendl;
@@ -2544,7 +2562,7 @@ void Server::handle_client_request(const cref_t<MClientRequest> &req)
         auto reply = make_message<MClientReply>(*req, 0);
 	if (created != inodeno_t()) {
 	  bufferlist extra;
-	  encode(created, extra);
+	  set_reply_extra_bl(req, created, extra);
 	  reply->set_extra_bl(extra);
 	}
         mds->send_message_client(reply, session);
@@ -2765,10 +2783,18 @@ void Server::dispatch_client_request(const MDRequestRef& mdr)
 
     // funky.
   case CEPH_MDS_OP_CREATE:
-    if (mdr->has_completed)
+    if (mdr->has_completed) {
+      inodeno_t created;
+
+      ceph_assert(mdr->session);
+      mdr->session->have_completed_request(req->get_reqid().tid, &created);
+      ceph_assert(created != inodeno_t());
+
+      set_reply_extra_bl(req, created, mdr->reply_extra_bl);
       handle_client_open(mdr);  // already created.. just open
-    else
+    } else {
       handle_client_openc(mdr);
+    }
     break;
 
   case CEPH_MDS_OP_OPEN:
@@ -3048,6 +3074,9 @@ void Server::dispatch_peer_request(const MDRequestRef& mdr)
       SimpleLock *lock = mds->locker->get_lock(mdr->peer_request->get_lock_type(),
 					       mdr->peer_request->get_object_info());
 
+      // we shouldn't be getting peer requests about local locks
+      ceph_assert(!lock->is_locallock());
+
       if (!lock) {
 	dout(10) << "don't have object, dropping" << dendl;
 	ceph_abort_msg("don't have object"); // can this happen, if we auth pinned properly.
@@ -3077,8 +3106,14 @@ void Server::dispatch_peer_request(const MDRequestRef& mdr)
 	  break;
 	}
 
-        // don't add quiescelock, let the peer acquire that lock themselves
-	if (!mds->locker->acquire_locks(mdr, lov, nullptr, {}, false, true))
+        // avoid taking the quiesce lock, as we can't communicate a failure to lock it
+        // Without communicating the failure which would make the peer request drop all locks,
+        // blocking on quiesce here will create an opportunity for a deadlock
+        // The current quiesce design shouldn't suffer from this though. The reason quiesce
+        // will want to take other locks is to prevent issuing unwanted client capabilities,
+        // but since replicas can't issue capabilities, it should be fine allowing remote locks
+        // without taking the quiesce lock.
+	if (!mds->locker->acquire_locks(mdr, lov, nullptr, false, true))
 	  return;
 	
 	// ack
@@ -3150,12 +3185,8 @@ void Server::handle_peer_auth_pin(const MDRequestRef& mdr)
   list<MDSCacheObject*> objects;
   CInode *auth_pin_freeze = NULL;
   bool nonblocking = mdr->peer_request->is_nonblocking();
-  bool bypassfreezing = mdr->peer_request->is_bypassfreezing();
   bool fail = false, wouldblock = false, readonly = false;
   ref_t<MMDSPeerRequest> reply;
-
-  dout(15) << " nonblocking=" << nonblocking
-           << " bypassfreezing=" << bypassfreezing << dendl;
 
   if (mdcache->is_readonly()) {
     dout(10) << " read-only FS" << dendl;
@@ -3188,7 +3219,7 @@ void Server::handle_peer_auth_pin(const MDRequestRef& mdr)
       }
       if (mdr->is_auth_pinned(obj))
 	continue;
-      if (!mdr->can_auth_pin(obj, bypassfreezing)) {
+      if (!mdr->can_auth_pin(obj)) {
 	if (nonblocking) {
 	  dout(10) << " can't auth_pin (freezing?) " << *obj << " nonblocking" << dendl;
 	  fail = true;
@@ -4611,7 +4642,7 @@ public:
     ceph_assert(r == 0);
 
     // crash current MDS and the replacing MDS will test the journal
-    ceph_assert(!g_conf()->mds_kill_skip_replaying_inotable);
+    ceph_assert(!g_conf()->mds_kill_after_journal_logs_flushed);
 
     dn->pop_projected_linkage();
 
@@ -4789,25 +4820,7 @@ void Server::handle_client_openc(const MDRequestRef& mdr)
 
   C_MDS_openc_finish *fin = new C_MDS_openc_finish(this, mdr, dn, newi);
 
-  if (mdr->session->info.has_feature(CEPHFS_FEATURE_DELEG_INO)) {
-    openc_response_t	ocresp;
-
-    dout(10) << "adding created_ino and delegated_inos" << dendl;
-    ocresp.created_ino = _inode->ino;
-
-    if (delegate_inos_pct && !req->is_queued_for_replay()) {
-      // Try to delegate some prealloc_inos to the client, if it's down to half the max
-      unsigned frac = 100 / delegate_inos_pct;
-      if (mdr->session->delegated_inos.size() < (unsigned)g_conf()->mds_client_prealloc_inos / frac / 2)
-	mdr->session->delegate_inos(g_conf()->mds_client_prealloc_inos / frac, ocresp.delegated_inos);
-    }
-
-    encode(ocresp, mdr->reply_extra_bl);
-  } else if (mdr->client_request->get_connection()->has_feature(CEPH_FEATURE_REPLY_CREATE_INODE)) {
-    dout(10) << "adding ino to reply to indicate inode was created" << dendl;
-    // add the file created flag onto the reply if create_flags features is supported
-    encode(newi->ino(), mdr->reply_extra_bl);
-  }
+  set_reply_extra_bl(req, _inode->ino, mdr->reply_extra_bl);
 
   journal_and_reply(mdr, newi, dn, le, fin);
 
@@ -6188,28 +6201,24 @@ void Server::handle_set_vxattr(const MDRequestRef& mdr, CInode *cur)
      * rdlock.
      */
     if (!mdr->more()->rdonly_checks) {
-      if (!(mdr->locking_state & MutationImpl::ALL_LOCKED)) {
-        lov.add_rdlock(&cur->policylock);
-        if (!mds->locker->acquire_locks(mdr, lov))
-          return;
-        mdr->locking_state |= MutationImpl::ALL_LOCKED;
-      }
+      lov.add_rdlock(&cur->policylock);
+      if (!mds->locker->acquire_locks(mdr, lov))
+        return;
+
       bool is_blocked = cur->get_projected_inode()->get_quiesce_block();
       if (is_blocked == val) {
         dout(20) << "already F_QUIESCE_BLOCK set" << dendl;
         respond_to_request(mdr, 0);
         return;
       }
-      mdr->more()->rdonly_checks = true;
-    }
 
-    if ((mdr->locking_state & MutationImpl::ALL_LOCKED) && !mdr->is_xlocked(&cur->policylock)) {
-      /* drop the rdlock and acquire xlocks */
+      mdr->more()->rdonly_checks = true;
       dout(20) << "dropping rdlocks" << dendl;
       mds->locker->drop_locks(mdr.get());
-      if (!xlock_policylock(mdr, cur, false, true))
-        return;
     }
+
+    if (!xlock_policylock(mdr, cur, false, true))
+      return;
 
     /* repeat rdonly checks in case changed between rdlock -> xlock */
     bool is_blocked = cur->get_projected_inode()->get_quiesce_block();
@@ -6244,28 +6253,24 @@ void Server::handle_set_vxattr(const MDRequestRef& mdr, CInode *cur)
      * rdlock.
      */
     if (!mdr->more()->rdonly_checks) {
-      if (!(mdr->locking_state & MutationImpl::ALL_LOCKED)) {
-        lov.add_rdlock(&cur->snaplock);
-        if (!mds->locker->acquire_locks(mdr, lov))
-          return;
-        mdr->locking_state |= MutationImpl::ALL_LOCKED;
-      }
+      lov.add_rdlock(&cur->snaplock);
+      if (!mds->locker->acquire_locks(mdr, lov))
+        return;
+
       const auto srnode = cur->get_projected_srnode();
       if (val == (srnode && srnode->is_subvolume())) {
         dout(20) << "already marked subvolume" << dendl;
         respond_to_request(mdr, 0);
         return;
       }
-      mdr->more()->rdonly_checks = true;
-    }
 
-    if ((mdr->locking_state & MutationImpl::ALL_LOCKED) && !mdr->is_xlocked(&cur->snaplock)) {
-      /* drop the rdlock and acquire xlocks */
+      mdr->more()->rdonly_checks = true;
       dout(20) << "dropping rdlocks" << dendl;
       mds->locker->drop_locks(mdr.get());
-      if (!xlock_policylock(mdr, cur, false, true))
-        return;
     }
+
+    if (!xlock_policylock(mdr, cur, false, true))
+      return;
 
     /* repeat rdonly checks in case changed between rdlock -> xlock */
     SnapRealm *realm = cur->find_snaprealm();
@@ -6509,6 +6514,11 @@ int Server::xattr_validate(CInode *cur, const InodeStoreBase::xattr_map_const_pt
       return -CEPHFS_ENODATA;
     }
 
+    if ((flags & CEPH_XATTR_REMOVE2) && !(xattrs && xattrs->count(mempool::mds_co::string(xattr_name)))) {
+      dout(10) << "setxattr '" << xattr_name << "' XATTR_REMOVE2 and CEPHFS_ENODATA on " << *cur << dendl;
+      return -CEPHFS_ENODATA;
+    }
+
     return 0;
   }
 
@@ -6718,7 +6728,7 @@ void Server::handle_client_setxattr(const MDRequestRef& mdr)
   pi.inode->change_attr++;
   pi.inode->xattr_version++;
 
-  if ((flags & CEPH_XATTR_REMOVE)) {
+  if ((flags & (CEPH_XATTR_REMOVE | CEPH_XATTR_REMOVE2))) {
     std::invoke(handler->removexattr, this, cur, pi.xattrs, xattr_op);
   } else {
     std::invoke(handler->setxattr, this, cur, pi.xattrs, xattr_op);
@@ -6977,7 +6987,7 @@ public:
     ceph_assert(r == 0);
 
     // crash current MDS and the replacing MDS will test the journal
-    ceph_assert(!g_conf()->mds_kill_skip_replaying_inotable);
+    ceph_assert(!g_conf()->mds_kill_after_journal_logs_flushed);
 
     // link the inode
     dn->pop_projected_linkage();
@@ -7274,7 +7284,7 @@ void Server::handle_client_symlink(const MDRequestRef& mdr)
   mds->balancer->maybe_fragment(dir, false);
 
   // flush the journal as soon as possible
-  if (g_conf()->mds_kill_skip_replaying_inotable) {
+  if (g_conf()->mds_kill_after_journal_logs_flushed) {
     mdlog->flush();
   }
 }
@@ -9996,14 +10006,14 @@ void Server::handle_peer_rename_prep(const MDRequestRef& mdr)
       dout(10) << " freezing srci " << *srcdnl->get_inode() << " with allowance " << allowance << dendl;
       bool frozen_inode = srcdnl->get_inode()->freeze_inode(allowance);
 
+      if (!frozen_inode) {
+        srcdnl->get_inode()->add_waiter(CInode::WAIT_FROZEN, new C_MDS_RetryRequest(mdcache, mdr));
+        return;
+      }
+
       // unfreeze auth pin after freezing the inode to avoid queueing waiters
       if (srcdnl->get_inode()->is_frozen_auth_pin())
-	mdr->unfreeze_auth_pin();
-
-      if (!frozen_inode) {
-	srcdnl->get_inode()->add_waiter(CInode::WAIT_FROZEN, new C_MDS_RetryRequest(mdcache, mdr));
-	return;
-      }
+        mdr->unfreeze_auth_pin();
 
       /*
        * set ambiguous auth for srci

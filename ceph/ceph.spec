@@ -181,7 +181,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	19.1.0
+Version:	19.2.0
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -197,7 +197,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-19.1.0.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-19.2.0.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x riscv64
@@ -689,6 +689,7 @@ BuildArch:      noarch
 Group:          System/Filesystems
 %endif
 Requires:       python%{python3_pkgversion}-bcrypt
+Requires:       python%{python3_pkgversion}-packaging
 Requires:       python%{python3_pkgversion}-pecan
 Requires:       python%{python3_pkgversion}-pyOpenSSL
 Requires:       python%{python3_pkgversion}-requests
@@ -1334,7 +1335,7 @@ This package provides a Ceph hardware monitoring agent.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-19.1.0
+%autosetup -p1 -n ceph-19.2.0
 
 %build
 # Disable lto on systems that do not support symver attribute
@@ -1634,6 +1635,7 @@ rm -rf %{_vpath_builddir}
 %if %{with lttng}
 %{_libdir}/libos_tp.so*
 %{_libdir}/libosd_tp.so*
+%{_libdir}/libmgr_op_tp.so*
 %endif
 %config(noreplace) %{_sysconfdir}/logrotate.d/ceph
 %if 0%{?fedora} || 0%{?rhel} || 0%{?openEuler}
@@ -2681,6 +2683,5 @@ exit 0
 %dir %{python3_sitelib}/ceph_node_proxy
 %{python3_sitelib}/ceph_node_proxy/*
 %{python3_sitelib}/ceph_node_proxy-*
-#%{_mandir}/man8/ceph-node-proxy.8*
 
 %changelog

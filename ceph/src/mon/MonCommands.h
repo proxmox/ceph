@@ -294,6 +294,9 @@ COMMAND("versions",
 
 #define FS_NAME_GOODCHARS "[A-Za-z0-9-_.]"
 COMMAND_WITH_FLAG("mds stat", "show MDS status", "mds", "r", FLAG(HIDDEN))
+COMMAND("mds last-seen name=id,type=CephString,req=true",
+	"fetch metadata for mds <id>",
+	"mds", "r")
 COMMAND("fs dump "
 	"name=epoch,type=CephInt,req=false,range=0",
 	"dump all CephFS status, optionally from epoch", "mds", "r")
@@ -319,7 +322,8 @@ COMMAND_WITH_FLAG("mds set_state "
 	"name=gid,type=CephInt,range=0 "
 	"name=state,type=CephInt,range=0|20",
 	"set mds state of <gid> to <numeric-state>", "mds", "rw", FLAG(HIDDEN))
-COMMAND("mds fail name=role_or_gid,type=CephString",
+COMMAND("mds fail name=role_or_gid,type=CephString "
+        "name=yes_i_really_mean_it,type=CephBool,req=false",
 	"Mark MDS failed: trigger a failover if a standby is available",
         "mds", "rw")
 COMMAND("mds repaired name=role,type=CephString",
@@ -353,7 +357,8 @@ COMMAND("fs new "
 	"make new filesystem using named pools <metadata> and <data>",
 	"fs", "rw")
 COMMAND("fs fail "
-	"name=fs_name,type=CephString ",
+	"name=fs_name,type=CephString "
+        "name=yes_i_really_mean_it,type=CephBool,req=false",
 	"bring the file system down and all of its ranks",
 	"fs", "rw")
 COMMAND("fs rm "
@@ -849,7 +854,8 @@ COMMAND("osd unpause", "unpause osd", "osd", "rw")
 COMMAND("osd erasure-code-profile set "
 	"name=name,type=CephString,goodchars=[A-Za-z0-9-_.] "
 	"name=profile,type=CephString,n=N,req=false "
-	"name=force,type=CephBool,req=false",
+	"name=force,type=CephBool,req=false "
+	"name=yes_i_really_mean_it,type=CephBool,req=false",
 	"create erasure code profile <name> with [<key[=value]> ...] pairs. Add a --force at the end to override an existing profile (VERY DANGEROUS)",
 	"osd", "rw")
 COMMAND("osd erasure-code-profile get "

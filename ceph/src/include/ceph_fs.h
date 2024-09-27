@@ -439,6 +439,7 @@ enum {
 	CEPH_MDS_OP_RDLOCK_FRAGSSTATS = 0x01507,
 	CEPH_MDS_OP_QUIESCE_PATH = 0x01508,
 	CEPH_MDS_OP_QUIESCE_INODE = 0x01509,
+	CEPH_MDS_OP_LOCK_PATH = 0x0150a,
 };
 
 #define IS_CEPH_MDS_OP_NEWINODE(op) (op == CEPH_MDS_OP_CREATE     || \
@@ -487,6 +488,7 @@ int ceph_flags_sys2wire(int flags);
  */
 #define CEPH_XATTR_CREATE  (1 << 0)
 #define CEPH_XATTR_REPLACE (1 << 1)
+#define CEPH_XATTR_REMOVE2 (1 << 30)
 #define CEPH_XATTR_REMOVE  (1 << 31)
 
 /*

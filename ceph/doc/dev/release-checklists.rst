@@ -105,6 +105,7 @@ Code cleanup
   `ceph_release_t::*`)
 - [ ] search code for `require_osd_release`
 - [ ] search code for `min_mon_release`
+- [ ] check include/denc.h if DENC_START macro still needs reference to squid
 
 QA suite
 --------
@@ -158,6 +159,6 @@ First release candidate
 First stable release
 ====================
 
-- [ ] src/ceph_release: change type `stable`
+- [x] src/ceph_release: change type `stable`
 - [ ] generate new object corpus for encoding/decoding tests - see :doc:`corpus`
 - [ ] src/cephadm/cephadmlib/constants.py: update `LATEST_STABLE_RELEASE`

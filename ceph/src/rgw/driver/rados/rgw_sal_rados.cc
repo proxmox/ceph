@@ -1726,6 +1726,22 @@ int RadosStore::list_account_topics(const DoutPrefixProvider* dpp,
                                 listing.topics, listing.next_marker);
 }
 
+int RadosStore::add_persistent_topic(const DoutPrefixProvider* dpp,
+                                     optional_yield y,
+                                     const std::string& topic_queue)
+{
+  return rgw::notify::add_persistent_topic(
+      dpp, getRados()->get_notif_pool_ctx(), topic_queue, y);
+}
+
+int RadosStore::remove_persistent_topic(const DoutPrefixProvider* dpp,
+                                        optional_yield y,
+                                        const std::string& topic_queue)
+{
+  return rgw::notify::remove_persistent_topic(
+      dpp, getRados()->get_notif_pool_ctx(), topic_queue, y);
+}
+
 int RadosStore::remove_bucket_mapping_from_topics(
     const rgw_pubsub_bucket_topics& bucket_topics,
     const std::string& bucket_key,
@@ -2271,12 +2287,15 @@ int RadosObject::read_attrs(const DoutPrefixProvider* dpp, RGWRados::Object::Rea
 int RadosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y)
 {
   Attrs empty;
+  // make a tiny adjustment to the existing mtime so that fetch_remote_obj()
+  // won't return ERR_NOT_MODIFIED when syncing the modified object
+  const auto mtime = state.mtime + std::chrono::nanoseconds(1);
   return store->getRados()->set_attrs(dpp, rados_ctx,
 			bucket->get_info(),
 			get_obj(),
 			setattrs ? *setattrs : empty,
 			delattrs ? delattrs : nullptr,
-			y);
+			y, mtime);
 }
 
 int RadosObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj)
@@ -2583,6 +2602,7 @@ int RadosObject::write_cloud_tier(const DoutPrefixProvider* dpp,
   RGWRados::Object op_target(store->getRados(), bucket->get_info(), *rados_ctx, get_obj());
   RGWRados::Object::Write obj_op(&op_target);
 
+  set_atomic();
   obj_op.meta.modify_tail = true;
   obj_op.meta.flags = PUT_OBJ_CREATE;
   obj_op.meta.category = RGWObjCategory::CloudTiered;
@@ -2843,6 +2863,7 @@ int RadosObject::copy_object(const ACLOwner& owner,
 				optional_yield y)
 {
   return store->getRados()->copy_obj(*rados_ctx,
+				     *static_cast<RadosObject*>(dest_object)->rados_ctx,
 				     owner,
 				     remote_user,
 				     info,
@@ -3296,9 +3317,13 @@ int RadosMultipartUpload::complete(const DoutPrefixProvider *dpp,
       bool part_compressed = (obj_part.cs_info.compression_type != "none");
       if ((handled_parts > 0) &&
           ((part_compressed != compressed) ||
-            (cs_info.compression_type != obj_part.cs_info.compression_type))) {
-          ldpp_dout(dpp, 0) << "ERROR: compression type was changed during multipart upload ("
-                           << cs_info.compression_type << ">>" << obj_part.cs_info.compression_type << ")" << dendl;
+           (cs_info.compression_type != obj_part.cs_info.compression_type) ||
+           (cs_info.compressor_message.has_value() &&
+           (cs_info.compressor_message != obj_part.cs_info.compressor_message)))) {
+          ldpp_dout(dpp, 0) << "ERROR: compression type or compressor message was changed during multipart upload ("
+                            << cs_info.compression_type << ">>" << obj_part.cs_info.compression_type << "), "
+                            << cs_info.compressor_message << ">>" << obj_part.cs_info.compressor_message << ") "
+                            << dendl;
           ret = -ERR_INVALID_PART;
           return ret;
       }
@@ -3317,8 +3342,11 @@ int RadosMultipartUpload::complete(const DoutPrefixProvider *dpp,
           cs_info.blocks.push_back(cb);
           new_ofs = cb.new_ofs + cb.len;
         }
-        if (!compressed)
+        if (!compressed) {
           cs_info.compression_type = obj_part.cs_info.compression_type;
+          if (obj_part.cs_info.compressor_message.has_value())
+            cs_info.compressor_message = obj_part.cs_info.compressor_message;
+        }
         cs_info.orig_size += obj_part.cs_info.orig_size;
         compressed = true;
       }

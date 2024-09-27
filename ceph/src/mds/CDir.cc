@@ -2500,6 +2500,7 @@ void CDir::_omap_commit_ops(int r, int op_prio, int64_t metapool, version_t vers
       bl.append('i');         // inode
 
       ENCODE_START(2, 1, bl);
+      // WARNING: always put new fields at the end of bl
       encode(item.alternate_name, bl);
       _encode_primary_inode_base(item, dfts, bl);
       ENCODE_FINISH(bl);
@@ -3450,23 +3451,16 @@ void CDir::adjust_freeze_after_rename(CDir *dir)
   mdcache->mds->queue_waiters(unfreeze_waiters);
 }
 
-bool CDir::can_auth_pin(int *err_ret, bool bypassfreezing) const
+bool CDir::can_auth_pin(int *err_ret) const
 {
   int err;
   if (!is_auth()) {
     err = ERR_NOT_AUTH;
-  } else if (is_freezing_dir()) {
-    if (bypassfreezing) {
-      dout(20) << "allowing authpin with freezing" << dendl;
-      err = 0;
-    } else {
-      err = ERR_FRAGMENTING_DIR;
-    }
-  } else if (is_frozen_dir()) {
+  } else if (is_freezing_dir() || is_frozen_dir()) {
     err = ERR_FRAGMENTING_DIR;
   } else {
     auto p = is_freezing_or_frozen_tree();
-    if (p.first && !bypassfreezing) {
+    if (p.first) {
       err = ERR_EXPORTING_TREE;
     } else if (p.second) {
       err = ERR_EXPORTING_TREE;

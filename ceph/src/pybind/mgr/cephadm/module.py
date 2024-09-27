@@ -14,8 +14,6 @@ from tempfile import TemporaryDirectory, NamedTemporaryFile
 from urllib.error import HTTPError
 from threading import Event
 
-from cephadm.service_discovery import ServiceDiscovery
-
 from ceph.deployment.service_spec import PrometheusSpec
 
 import string
@@ -78,8 +76,19 @@ from .services.jaeger import ElasticSearchService, JaegerAgentService, JaegerCol
 from .services.node_proxy import NodeProxy
 from .services.smb import SMBService
 from .schedule import HostAssignment
-from .inventory import Inventory, SpecStore, HostCache, AgentCache, EventStore, \
-    ClientKeyringStore, ClientKeyringSpec, TunedProfileStore, NodeProxyCache
+from .inventory import (
+    Inventory,
+    SpecStore,
+    HostCache,
+    AgentCache,
+    EventStore,
+    ClientKeyringStore,
+    ClientKeyringSpec,
+    TunedProfileStore,
+    NodeProxyCache,
+    CertKeyStore,
+    OrchSecretNotFound,
+)
 from .upgrade import CephadmUpgrade
 from .template import TemplateMgr
 from .utils import CEPH_IMAGE_TYPES, RESCHEDULE_FROM_OFFLINE_HOSTS_TYPES, forall_hosts, \
@@ -120,9 +129,9 @@ os._exit = os_exit_noop   # type: ignore
 DEFAULT_IMAGE = 'quay.io/ceph/ceph'
 DEFAULT_PROMETHEUS_IMAGE = 'quay.io/prometheus/prometheus:v2.43.0'
 DEFAULT_NODE_EXPORTER_IMAGE = 'quay.io/prometheus/node-exporter:v1.5.0'
-DEFAULT_NVMEOF_IMAGE = 'quay.io/ceph/nvmeof:1.2.1'
-DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:2.4.0'
-DEFAULT_PROMTAIL_IMAGE = 'docker.io/grafana/promtail:2.4.0'
+DEFAULT_NVMEOF_IMAGE = 'quay.io/ceph/nvmeof:1.2.5'
+DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:3.0.0'
+DEFAULT_PROMTAIL_IMAGE = 'docker.io/grafana/promtail:3.0.0'
 DEFAULT_ALERT_MANAGER_IMAGE = 'quay.io/prometheus/alertmanager:v0.25.0'
 DEFAULT_GRAFANA_IMAGE = 'quay.io/ceph/grafana:9.4.12'
 DEFAULT_HAPROXY_IMAGE = 'quay.io/ceph/haproxy:2.3'
@@ -654,6 +663,9 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
 
         self.tuned_profile_utils = TunedProfileUtils(self)
 
+        self.cert_key_store = CertKeyStore(self)
+        self.cert_key_store.load()
+
         # ensure the host lists are in sync
         for h in self.inventory.keys():
             if h not in self.cache.daemons:
@@ -729,6 +741,11 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
 
         self.offline_watcher = OfflineHostWatcher(self)
         self.offline_watcher.start()
+
+        # Maps daemon names to timestamps (creation/removal time) for recently created or
+        # removed daemons. Daemons are added to the dict upon creation or removal and cleared
+        # as part of the handling of stray daemons
+        self.recently_altered_daemons: Dict[str, datetime.datetime] = {}
 
     def shutdown(self) -> None:
         self.log.debug('shutdown')
@@ -2259,8 +2276,9 @@ Then run the following:
             if service_name is not None and service_name != nm:
                 continue
 
-            if spec.service_type not in ['osd', 'node-proxy']:
-                size = spec.placement.get_target_count(self.cache.get_schedulable_hosts())
+            if spec.service_type == 'osd':
+                # osd counting is special
+                size = 0
             elif spec.service_type == 'node-proxy':
                 # we only deploy node-proxy daemons on hosts we have oob info for
                 # Let's make the expected daemon count `orch ls` displays reflect that
@@ -2268,8 +2286,7 @@ Then run the following:
                 oob_info_hosts = [h for h in schedulable_hosts if h.hostname in self.node_proxy_cache.oob.keys()]
                 size = spec.placement.get_target_count(oob_info_hosts)
             else:
-                # osd counting is special
-                size = 0
+                size = spec.placement.get_target_count(self.cache.get_schedulable_hosts())
 
             sm[nm] = orchestrator.ServiceDescription(
                 spec=spec,
@@ -3009,7 +3026,7 @@ Then run the following:
             )
             daemons.append(sd)
 
-        @ forall_hosts
+        @forall_hosts
         def create_func_map(*args: Any) -> str:
             daemon_spec = self.cephadm_services[daemon_type].prepare_create(*args)
             with self.async_timeout_handler(daemon_spec.host, f'cephadm deploy ({daemon_spec.daemon_type} daemon)'):
@@ -3088,6 +3105,14 @@ Then run the following:
         return 'prometheus multi-cluster targets updated'
 
     @handle_orch_error
+    def set_custom_prometheus_alerts(self, alerts_file: str) -> str:
+        self.set_store('services/prometheus/alerting/custom_alerts.yml', alerts_file)
+        # need to reconfig prometheus daemon(s) to pick up new alerts file
+        for prometheus_daemon in self.cache.get_daemons_by_type('prometheus'):
+            self._schedule_daemon_action(prometheus_daemon.name(), 'reconfig')
+        return 'Updated alerts file and scheduled reconfig of prometheus daemon(s)'
+
+    @handle_orch_error
     def set_alertmanager_access_info(self, user: str, password: str) -> str:
         self.set_store(AlertmanagerService.USER_CFG_KEY, user)
         self.set_store(AlertmanagerService.PASS_CFG_KEY, password)
@@ -3106,6 +3131,38 @@ Then run the following:
         return {'user': user,
                 'password': password,
                 'certificate': self.http_server.service_discovery.ssl_certs.get_root_cert()}
+
+    @handle_orch_error
+    def cert_store_cert_ls(self) -> Dict[str, Any]:
+        return self.cert_key_store.cert_ls()
+
+    @handle_orch_error
+    def cert_store_key_ls(self) -> Dict[str, Any]:
+        return self.cert_key_store.key_ls()
+
+    @handle_orch_error
+    def cert_store_get_cert(
+        self,
+        entity: str,
+        service_name: Optional[str] = None,
+        hostname: Optional[str] = None
+    ) -> str:
+        cert = self.cert_key_store.get_cert(entity, service_name or '', hostname or '')
+        if not cert:
+            raise OrchSecretNotFound(entity=entity, service_name=service_name, hostname=hostname)
+        return cert
+
+    @handle_orch_error
+    def cert_store_get_key(
+        self,
+        entity: str,
+        service_name: Optional[str] = None,
+        hostname: Optional[str] = None
+    ) -> str:
+        key = self.cert_key_store.get_key(entity, service_name or '', hostname or '')
+        if not key:
+            raise OrchSecretNotFound(entity=entity, service_name=service_name, hostname=hostname)
+        return key
 
     @handle_orch_error
     def apply_mon(self, spec: ServiceSpec) -> str:
@@ -3223,7 +3280,7 @@ Then run the following:
 
     @handle_orch_error
     def service_discovery_dump_cert(self) -> str:
-        root_cert = self.get_store(ServiceDiscovery.KV_STORE_SD_ROOT_CERT)
+        root_cert = self.cert_key_store.get_cert('service_discovery_root_cert')
         if not root_cert:
             raise OrchestratorError('No certificate found for service discovery')
         return root_cert
@@ -3328,7 +3385,7 @@ Then run the following:
                         (f'The maximum number of {spec.service_type} daemons allowed with {host_count} hosts is {max(5, host_count)}.'))
             elif spec.service_type != 'osd':
                 if spec.placement.count > (max_count * host_count):
-                    raise OrchestratorError((f'The maximum number of {spec.service_type} daemons allowed with {host_count} hosts is {host_count*max_count} ({host_count}x{max_count}).'
+                    raise OrchestratorError((f'The maximum number of {spec.service_type} daemons allowed with {host_count} hosts is {host_count * max_count} ({host_count}x{max_count}).'
                                              + ' This limit can be adjusted by changing the mgr/cephadm/max_count_per_host config option'))
 
         if spec.placement.count_per_host is not None and spec.placement.count_per_host > max_count and spec.service_type != 'osd':

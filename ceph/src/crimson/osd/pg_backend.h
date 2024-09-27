@@ -228,9 +228,42 @@ public:
     epoch_t min_epoch,
     epoch_t map_epoch,
     std::vector<pg_log_entry_t>&& log_entries);
+
+  /**
+   * list_objects
+   *
+   * List a prefix of length up to limit of the ordered set of logical
+   * librados objects in [start, end) stored by the PG.
+   *
+   * Output excludes objects maintained locally on each pg instance such as:
+   * - pg_meta object (see hobject_t::is_pgmeta, ghobject_t::make_pgmeta)
+   * - snap mapper
+   * as well as
+   * - temp objects (see hobject_t::is_temp(), hobject_t::make_temp_hobject())
+   * - ec rollback objects (see ghobject_t::is_no_gen)
+   *
+   * @param [in] start inclusive beginning of range
+   * @param [in] end exclusive end of range
+   * @param [in] limit upper bound on number of objects to return
+   * @return pair<object_list, next> where object_list is the output list
+   *         above and next is > the elements in object_list and <= the
+   *         least eligible object in the pg > the elements in object_list
+   */
   interruptible_future<std::tuple<std::vector<hobject_t>, hobject_t>> list_objects(
     const hobject_t& start,
+    const hobject_t& end,
     uint64_t limit) const;
+  interruptible_future<std::tuple<std::vector<hobject_t>, hobject_t>> list_objects(
+    const hobject_t& start,
+    uint64_t limit) const {
+    return list_objects(start, hobject_t::get_max(), limit);
+  }
+  interruptible_future<std::tuple<std::vector<hobject_t>, hobject_t>> list_objects(
+    const hobject_t& start,
+    const hobject_t& end) {
+    return list_objects(start, end, std::numeric_limits<uint64_t>::max());
+  }
+
   using setxattr_errorator = crimson::errorator<
     crimson::ct_error::file_too_large,
     crimson::ct_error::enametoolong>;
@@ -453,8 +486,6 @@ private:
   friend class ::crimson::osd::PG;
 
 protected:
-  boost::container::flat_set<hobject_t> temp_contents;
-
   template <class... Args>
   void add_temp_obj(Args&&... args) {
     temp_contents.insert(std::forward<Args>(args)...);
@@ -468,5 +499,15 @@ protected:
       clear_temp_obj(oid);
     }
   }
+  template <typename Func>
+  void for_each_temp_obj(Func &&f) {
+    std::for_each(temp_contents.begin(), temp_contents.end(), f);
+  }
+  void clear_temp_objs() {
+    temp_contents.clear();
+  }
+private:
+  boost::container::flat_set<hobject_t> temp_contents;
+
   friend class RecoveryBackend;
 };
