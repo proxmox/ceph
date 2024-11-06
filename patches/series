@@ -13,3 +13,4 @@
 0013-debian-recursively-adjust-permissions-of-var-lib-cep.patch
 0014-ceph-crash-change-order-of-client-names.patch
 0017-debian-pkg-record-python3-packaging-dependency-for-c.patch
+0018-d-control-fix-lua-dependencies-for-librgw2.patch
