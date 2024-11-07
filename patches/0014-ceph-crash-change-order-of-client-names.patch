@@ -6,6 +6,7 @@ Subject: [PATCH] ceph-crash: change order of client names
 This simply puts 'client.crash' before 'client.crash.${HOSTNAME}'.
 
 Signed-off-by: Max Carrara <m.carrara@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  src/ceph-crash.in | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)

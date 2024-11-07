@@ -30,10 +30,10 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/debian/control b/debian/control
-index 041dfcc7980..0a519635f47 100644
+index ef64f2bea29..b508a585938 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -921,10 +921,10 @@ Package: librgw2
+@@ -924,10 +924,10 @@ Package: librgw2
  Architecture: linux-any
  Section: libs
  Depends: librados2 (= ${binary:Version}),

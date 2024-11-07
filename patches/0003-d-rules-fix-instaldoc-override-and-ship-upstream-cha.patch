@@ -15,10 +15,10 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/debian/rules b/debian/rules
-index 68c69e04474..f821908340e 100755
+index 442ea28d4e0..24d43f5c7e7 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -80,7 +80,7 @@ override_dh_auto_install:
+@@ -81,7 +81,7 @@ override_dh_auto_install:
  
  # doc/changelog is a directory, which confuses dh_installchangelogs
  override_dh_installchangelogs:

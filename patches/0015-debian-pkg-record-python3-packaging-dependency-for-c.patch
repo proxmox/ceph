@@ -10,10 +10,10 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 1 insertion(+)
 
 diff --git a/debian/control b/debian/control
-index fa61368ad8b..fb1d5d5ac74 100644
+index 1d45d47b413..ef64f2bea29 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -453,6 +453,7 @@ Depends: ceph-osd (= ${binary:Version}),
+@@ -433,6 +433,7 @@ Depends: ceph-osd (= ${binary:Version}),
           e2fsprogs,
           lvm2,
           parted,
