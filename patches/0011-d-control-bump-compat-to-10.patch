@@ -5,8 +5,8 @@ Subject: [PATCH] d/control: bump compat to 10
 
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
- debian/compat  | 2 +-
- 1 files changed, 1 insertions(+), 1 deletions(-)
+ debian/compat | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/debian/compat b/debian/compat
 index ec635144f60..f599e28b8ab 100644
@@ -15,6 +15,3 @@ index ec635144f60..f599e28b8ab 100644
 @@ -1 +1 @@
 -9
 +10
--- 
-2.29.2
-

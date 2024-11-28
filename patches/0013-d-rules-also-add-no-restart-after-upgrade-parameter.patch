@@ -1,10 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Fabian=20Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
-Date: Wed, 20 May 2021 15:36:34 +0200
+Date: Thu, 20 May 2021 15:36:34 +0200
 Subject: [PATCH] d/rules: also add --no-restart-after-upgrade parameter
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 is only a problem with dh compat >= 10 as that enables the
 restart-after-upgrade by default.
@@ -18,11 +15,11 @@ explicit.
 
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
- debian/rules | 3 +++
- 1 file changed, 3 insertions(+)
+ debian/rules | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/debian/rules b/debian/rules
-index b5ce42c6f3..00e9ac6b16 100755
+index a2a06f267b5..9da4c80fcc6 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -104,7 +104,7 @@ override_dh_installinit:
@@ -34,4 +31,3 @@ index b5ce42c6f3..00e9ac6b16 100755
  
  override_dh_systemd_enable:
  	# systemd enable done as part of dh_installinit
-

@@ -3,15 +3,16 @@ From: Alwin Antreich <a.antreich@proxmox.com>
 Date: Wed, 24 Oct 2018 10:38:19 +0200
 Subject: [PATCH] debian/control: add break libpvestorage-perl
 
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  debian/control | 2 ++
  1 file changed, 2 insertions(+)
 
 diff --git a/debian/control b/debian/control
-index 83dc414788..1cfa2250de 100644
+index 55eacdd4971..37f480fc530 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -154,6 +154,7 @@ Replaces: ceph (<< 10),
+@@ -155,6 +155,7 @@ Replaces: ceph (<< 10),
  Breaks: ceph (<< 10),
          ceph-test (<< 12.2.2-14),
          python-ceph (<< 0.92-1223),
@@ -19,7 +20,7 @@ index 83dc414788..1cfa2250de 100644
  Description: common ceph daemon libraries and management tools
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -660,6 +661,7 @@ Breaks: ceph (<< 10),
+@@ -662,6 +663,7 @@ Breaks: ceph (<< 10),
          ceph-test (<< 9.0.3-1646),
          librbd1 (<< 0.92-1238),
          python-ceph (<< 0.92-1223),

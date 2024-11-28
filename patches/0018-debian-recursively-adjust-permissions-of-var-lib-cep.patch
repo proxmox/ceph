@@ -18,6 +18,7 @@ of `find | xargs`.
 [0]: https://github.com/ceph/ceph/pull/48713
 
 Signed-off-by: Max Carrara <m.carrara@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  debian/ceph-base.postinst | 16 +++++++++-------
  1 file changed, 9 insertions(+), 7 deletions(-)
@@ -49,6 +50,3 @@ index 75eeb59c624..424c2c889d5 100644
      ;;
      abort-upgrade|abort-remove|abort-deconfigure)
  	:
--- 
-2.39.2
-

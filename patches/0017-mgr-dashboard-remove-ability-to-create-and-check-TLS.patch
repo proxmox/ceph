@@ -35,12 +35,13 @@ These changes allow the dashboard to launch with TLS enabled again.
 [1]: https://docs.ceph.com/en/reef/mgr/dashboard/#ssl-tls-support
 
 Signed-off-by: Max Carrara <m.carrara@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  src/pybind/mgr/dashboard/module.py | 58 ++++++++++++++++++++++--------
  1 file changed, 43 insertions(+), 15 deletions(-)
 
 diff --git a/src/pybind/mgr/dashboard/module.py b/src/pybind/mgr/dashboard/module.py
-index 68725be6e35..c8b263d9786 100644
+index 3482663dbfa..46063e3a0c6 100644
 --- a/src/pybind/mgr/dashboard/module.py
 +++ b/src/pybind/mgr/dashboard/module.py
 @@ -23,8 +23,7 @@ if TYPE_CHECKING:
@@ -53,7 +54,7 @@ index 68725be6e35..c8b263d9786 100644
  
  from . import mgr
  from .controllers import Router, json_error_page
-@@ -172,11 +171,29 @@ class CherryPyConfig(object):
+@@ -168,11 +167,29 @@ class CherryPyConfig(object):
              else:
                  pkey_fname = self.get_localized_module_option('key_file')  # type: ignore
  
@@ -87,7 +88,7 @@ index 68725be6e35..c8b263d9786 100644
              if sys.version_info >= (3, 7):
                  if Settings.UNSAFE_TLS_v1_2:
                      context.minimum_version = ssl.TLSVersion.TLSv1_2
-@@ -473,15 +490,26 @@ class Module(MgrModule, CherryPyConfig):
+@@ -469,15 +486,26 @@ class Module(MgrModule, CherryPyConfig):
  
      @CLIWriteCommand("dashboard create-self-signed-cert")
      def set_mgr_created_self_signed_cert(self):
@@ -123,6 +124,3 @@ index 68725be6e35..c8b263d9786 100644
  
      @CLIWriteCommand("dashboard set-rgw-credentials")
      def set_rgw_credentials(self):
--- 
-2.39.2
-

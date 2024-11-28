@@ -7,12 +7,13 @@ Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
- debian/rules | 3 +++
- 1 file changed, 3 insertions(+)
+ debian/rules | 5 +++++
+ 1 file changed, 5 insertions(+)
 
 diff --git a/debian/rules b/debian/rules
-index b5ce42c6f3..00e9ac6b16 100755
+index 9f49deabb0e..b123ae95424 100755
 --- a/debian/rules
 +++ b/debian/rules
 @@ -98,6 +98,11 @@ override_dh_installinit:

@@ -10,7 +10,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/src/ceph-crash.in b/src/ceph-crash.in
-index 0e02837fa..010d6ea2e 100755
+index 0e02837fadd..010d6ea2e82 100755
 --- a/src/ceph-crash.in
 +++ b/src/ceph-crash.in
 @@ -97,7 +97,7 @@ def drop_privs():

@@ -22,6 +22,7 @@ enabled.
 Fixes: https://forum.proxmox.com/threads/ceph-warning-post-upgrade-to-v8.129371
 Signed-off-by: Daniel Persson <mailto.woden@gmail.com>
 Signed-off-by: Max Carrara <m.carrara@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  ceph.spec.in                                  |  4 --
  debian/control                                |  1 -
@@ -34,7 +35,7 @@ Signed-off-by: Max Carrara <m.carrara@proxmox.com>
  8 files changed, 75 insertions(+), 16 deletions(-)
 
 diff --git a/ceph.spec.in b/ceph.spec.in
-index e4cbbef6943..457d7a6dc56 100644
+index 2af66b1d432..447f8249566 100644
 --- a/ceph.spec.in
 +++ b/ceph.spec.in
 @@ -403,7 +403,6 @@ BuildRequires:	xmlsec1-nss
@@ -53,15 +54,15 @@ index e4cbbef6943..457d7a6dc56 100644
  BuildRequires:	python%{python3_pkgversion}-Routes
  BuildRequires:	python%{python3_pkgversion}-Werkzeug
  BuildRequires:	python%{python3_pkgversion}-numpy-devel
-@@ -608,7 +606,6 @@ Requires:       ceph-prometheus-alerts = %{_epoch_prefix}%{version}-%{release}
+@@ -611,7 +609,6 @@ Requires:       ceph-prometheus-alerts = %{_epoch_prefix}%{version}-%{release}
  Requires:       python%{python3_pkgversion}-setuptools
- %if 0%{?fedora} || 0%{?rhel}
+ %if 0%{?fedora} || 0%{?rhel} || 0%{?openEuler}
  Requires:       python%{python3_pkgversion}-cherrypy
 -Requires:       python%{python3_pkgversion}-jwt
  Requires:       python%{python3_pkgversion}-routes
  Requires:       python%{python3_pkgversion}-werkzeug
  %if 0%{?weak_deps}
-@@ -617,7 +614,6 @@ Recommends:     python%{python3_pkgversion}-saml
+@@ -620,7 +617,6 @@ Recommends:     python%{python3_pkgversion}-saml
  %endif
  %if 0%{?suse_version}
  Requires:       python%{python3_pkgversion}-CherryPy
@@ -70,7 +71,7 @@ index e4cbbef6943..457d7a6dc56 100644
  Requires:       python%{python3_pkgversion}-Werkzeug
  Recommends:     python%{python3_pkgversion}-python3-saml
 diff --git a/debian/control b/debian/control
-index e3f2073ce8f..ba34a163f54 100644
+index 5b23b2c78ae..61ae922a031 100644
 --- a/debian/control
 +++ b/debian/control
 @@ -87,7 +87,6 @@ Build-Depends: automake,
@@ -113,25 +114,25 @@ index 96cbc523356..d396a38d2c3 100644
 +class InvalidAlgorithmError(Exception):
 +    pass
 diff --git a/src/pybind/mgr/dashboard/requirements-lint.txt b/src/pybind/mgr/dashboard/requirements-lint.txt
-index d82fa1ace1d..5fe9957c32a 100644
+index 57e51915740..571c92a4ebf 100644
 --- a/src/pybind/mgr/dashboard/requirements-lint.txt
 +++ b/src/pybind/mgr/dashboard/requirements-lint.txt
 @@ -9,3 +9,4 @@ autopep8==1.5.7
  pyfakefs==4.5.0
  isort==5.5.3
- jsonschema==4.16.0
+ jsonschema~=4.0
 +PyJWT~=2.0
 diff --git a/src/pybind/mgr/dashboard/requirements-test.txt b/src/pybind/mgr/dashboard/requirements-test.txt
-index 4e925e8616f..78fd1d5b742 100644
+index da283d0b64a..aa80b3336b5 100644
 --- a/src/pybind/mgr/dashboard/requirements-test.txt
 +++ b/src/pybind/mgr/dashboard/requirements-test.txt
 @@ -2,3 +2,4 @@ pytest-cov
  pytest-instafail
  pyfakefs==4.5.0
- jsonschema==4.16.0
+ jsonschema~=4.0
 +PyJWT~=2.0
 diff --git a/src/pybind/mgr/dashboard/requirements.txt b/src/pybind/mgr/dashboard/requirements.txt
-index 8003d62a552..292971819c9 100644
+index 01f468afc53..24bb3d3864d 100644
 --- a/src/pybind/mgr/dashboard/requirements.txt
 +++ b/src/pybind/mgr/dashboard/requirements.txt
 @@ -1,7 +1,6 @@
@@ -274,6 +275,3 @@ index f13963abffd..3c600231252 100644
          except UserDoesNotExist:
              cls.logger.debug(  # type: ignore
                  "Invalid token: user %s does not exist", dtoken['username']
--- 
-2.39.2
-

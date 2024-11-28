@@ -5,15 +5,15 @@ Subject: [PATCH] d/control: move python dependencies over to python3
 
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
- debian/control | 24 ++++++++++++------------
- debian/rules   | 10 ------------
- 2 files changed, 12 insertions(+), 22 deletions(-)
+ debian/control | 23 ++++++++++++-----------
+ debian/rules   | 10 ----------
+ 2 files changed, 12 insertions(+), 21 deletions(-)
 
 diff --git a/debian/control b/debian/control
-index c93aa3c21..aa8edb3d2 100644
+index 152b56f31c4..5b23b2c78ae 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -137,7 +137,7 @@ Depends: binutils,
+@@ -138,7 +138,7 @@ Depends: binutils,
           parted,
           psmisc,
           ${misc:Depends},
@@ -22,7 +22,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Recommends: btrfs-tools,
              ceph-mds (= ${binary:Version}),
-@@ -185,7 +185,7 @@ Package: cephadm
+@@ -186,7 +186,7 @@ Package: cephadm
  Architecture: linux-any
  Recommends: podman (>= 2.0.2) | docker.io
  Depends: lvm2,
@@ -31,7 +31,7 @@ index c93aa3c21..aa8edb3d2 100644
  Description: cephadm utility to bootstrap ceph daemons with systemd and containers
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -239,8 +239,9 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -240,8 +240,9 @@ Depends: ceph-base (= ${binary:Version}),
           python3-werkzeug,
           libsqlite3-mod-ceph (= ${binary:Version}),
           librados2 (= ${binary:Version}),
@@ -42,7 +42,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Suggests: ceph-mgr-dashboard,
            ceph-mgr-diskprediction-local,
-@@ -267,7 +267,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -268,7 +269,7 @@ Depends: ceph-mgr (= ${binary:Version}),
           python3-werkzeug,
           python3-routes,
           ${misc:Depends},
@@ -51,7 +51,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: dashboard module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -288,7 +288,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -289,7 +290,7 @@ Depends: ceph-mgr (= ${binary:Version}),
           python3-scipy,
           python3-sklearn,
           ${misc:Depends},
@@ -60,7 +60,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: diskprediction-local module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -301,7 +301,7 @@ Description: diskprediction-local module for ceph-mgr
+@@ -302,7 +303,7 @@ Description: diskprediction-local module for ceph-mgr
  Package: ceph-mgr-modules-core
  Architecture: all
  Depends: ${misc:Depends},
@@ -69,7 +69,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
           python3-dateutil,
           python3-openssl,
-@@ -320,7 +320,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -322,7 +323,7 @@ Architecture: all
  Depends: ceph-mgr (= ${binary:Version}),
           python3-jsonpatch
           ${misc:Depends},
@@ -78,7 +78,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Description: rook module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
-@@ -336,7 +336,7 @@ Architecture: all
+@@ -338,7 +339,7 @@ Architecture: all
  Depends: ceph-mgr (= ${binary:Version}),
           python3-kubernetes,
           ${misc:Depends},
@@ -87,7 +87,7 @@ index c93aa3c21..aa8edb3d2 100644
  Description: kubernetes events module for ceph-mgr
   Ceph is a massively scalable, open-source, distributed
   storage system that runs on commodity hardware and delivers object,
-@@ -351,7 +351,7 @@ Depends: ceph-mgr (= ${binary:Version}),
+@@ -353,7 +354,7 @@ Architecture: all
  Depends: ceph-mgr (= ${binary:Version}),
  	 cephadm,
           ${misc:Depends},
@@ -96,7 +96,7 @@ index c93aa3c21..aa8edb3d2 100644
           openssh-client,
           python3-jinja2,
           python3-cherrypy3,
-@@ -413,7 +413,7 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -415,7 +416,7 @@ Architecture: linux-any
  Depends: ceph-base (= ${binary:Version}),
           sudo,
           ${misc:Depends},
@@ -105,7 +105,7 @@ index c93aa3c21..aa8edb3d2 100644
           ${shlibs:Depends},
  Replaces: ceph (<< 10),
            ceph-test (<< 12.2.2-14),
-@@ -646,7 +646,7 @@ Depends: librbd1 (= ${binary:Version}),
+@@ -648,7 +649,7 @@ Depends: librbd1 (= ${binary:Version}),
           python3-rbd (= ${binary:Version}),
           python3-rgw (= ${binary:Version}),
           ${misc:Depends},
@@ -115,10 +115,10 @@ index c93aa3c21..aa8edb3d2 100644
  Conflicts: ceph-client-tools,
  Replaces: ceph (<< 10),
 diff --git a/debian/rules b/debian/rules
-index c93aa3c21..aa8edb3d2 100755
+index 1e33397f55b..a2a06f267b5 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -141,16 +141,6 @@
+@@ -141,16 +141,6 @@ override_dh_strip:
  override_dh_shlibdeps:
  	dh_shlibdeps -a --exclude=erasure-code --exclude=rados-classes --exclude=compressor --exclude=ceph_crypto
  
