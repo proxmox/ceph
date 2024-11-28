@@ -403,14 +403,14 @@ else
 	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove ceph-build-deps
 	if [ "$control" != "debian/control" ] ; then rm $control; fi
         ;;
-    centos|fedora|rhel|ol|virtuozzo)
+    almalinux|rocky|centos|fedora|rhel|ol|virtuozzo)
         builddepcmd="dnf -y builddep --allowerasing"
         echo "Using dnf to install dependencies"
         case "$ID" in
             fedora)
                 $SUDO dnf install -y dnf-utils
                 ;;
-            centos|rhel|ol|virtuozzo)
+            almalinux|rocky|centos|rhel|ol|virtuozzo)
                 MAJOR_VERSION="$(echo $VERSION_ID | cut -d. -f1)"
                 $SUDO dnf install -y dnf-utils selinux-policy-targeted
                 rpm --quiet --query epel-release || \
@@ -512,6 +512,9 @@ function preload_wheels_for_tox() {
 if $for_make_check; then
     mkdir -p install-deps-cache
     top_srcdir=$(pwd)
+    if [ -n "$XDG_CACHE_HOME" ]; then
+        ORIGINAL_XDG_CACHE_HOME=$XDG_CACHE_HOME
+    fi
     export XDG_CACHE_HOME=$top_srcdir/install-deps-cache
     wip_wheelhouse=wheelhouse-wip
     #
@@ -522,5 +525,10 @@ if $for_make_check; then
     done
     rm -rf $top_srcdir/install-deps-python3
     rm -rf $XDG_CACHE_HOME
+    if [ -n "$ORIGINAL_XDG_CACHE_HOME" ]; then
+        XDG_CACHE_HOME=$ORIGINAL_XDG_CACHE_HOME
+    else
+        unset XDG_CACHE_HOME
+    fi
     type git > /dev/null || (echo "Dashboard uses git to pull dependencies." ; false)
 fi

@@ -1,7 +1,7 @@
 from io import StringIO
 
 from tasks.cephfs.fuse_mount import FuseMount
-from tasks.cephfs.cephfs_test_case import CephFSTestCase
+from tasks.cephfs.cephfs_test_case import CephFSTestCase, classhook
 from teuthology.exceptions import CommandFailedError
 from textwrap import dedent
 from threading import Thread
@@ -95,16 +95,15 @@ class TestMisc(CephFSTestCase):
 
         self.fs.fail()
 
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'rm', self.fs.name,
-                                            '--yes-i-really-mean-it')
+        self.run_ceph_cmd('fs', 'rm', self.fs.name, '--yes-i-really-mean-it')
 
-        self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'delete',
-                                            self.fs.metadata_pool_name,
-                                            self.fs.metadata_pool_name,
-                                            '--yes-i-really-really-mean-it')
-        self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'create',
-                                            self.fs.metadata_pool_name,
-                                            '--pg_num_min', str(self.fs.pg_num_min))
+        self.run_ceph_cmd('osd', 'pool', 'delete',
+                          self.fs.metadata_pool_name,
+                          self.fs.metadata_pool_name,
+                           '--yes-i-really-really-mean-it')
+        self.run_ceph_cmd('osd', 'pool', 'create',
+                          self.fs.metadata_pool_name,
+                          '--pg_num_min', str(self.fs.pg_num_min))
 
         # insert a garbage object
         self.fs.radosm(["put", "foo", "-"], stdin=StringIO("bar"))
@@ -118,33 +117,34 @@ class TestMisc(CephFSTestCase):
         self.wait_until_true(lambda: get_pool_df(self.fs, self.fs.metadata_pool_name), timeout=30)
 
         try:
-            self.fs.mon_manager.raw_cluster_cmd('fs', 'new', self.fs.name,
-                                                self.fs.metadata_pool_name,
-                                                data_pool_name)
+            self.run_ceph_cmd('fs', 'new', self.fs.name,
+                              self.fs.metadata_pool_name,
+                              data_pool_name)
         except CommandFailedError as e:
             self.assertEqual(e.exitstatus, errno.EINVAL)
         else:
             raise AssertionError("Expected EINVAL")
 
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'new', self.fs.name,
-                                            self.fs.metadata_pool_name,
-                                            data_pool_name, "--force")
+        self.run_ceph_cmd('fs', 'new', self.fs.name,
+                          self.fs.metadata_pool_name,
+                          data_pool_name, "--force")
 
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'fail', self.fs.name)
+        self.run_ceph_cmd('fs', 'fail', self.fs.name)
 
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'rm', self.fs.name,
-                                            '--yes-i-really-mean-it')
+        self.run_ceph_cmd('fs', 'rm', self.fs.name,
+                          '--yes-i-really-mean-it')
 
-        self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'delete',
-                                            self.fs.metadata_pool_name,
-                                            self.fs.metadata_pool_name,
-                                            '--yes-i-really-really-mean-it')
-        self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'create',
-                                            self.fs.metadata_pool_name,
-                                            '--pg_num_min', str(self.fs.pg_num_min))
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'new', self.fs.name,
-                                            self.fs.metadata_pool_name,
-                                            data_pool_name)
+        self.run_ceph_cmd('osd', 'pool', 'delete',
+                          self.fs.metadata_pool_name,
+                          self.fs.metadata_pool_name,
+                          '--yes-i-really-really-mean-it')
+        self.run_ceph_cmd('osd', 'pool', 'create',
+                          self.fs.metadata_pool_name,
+                          '--pg_num_min', str(self.fs.pg_num_min))
+        self.run_ceph_cmd('fs', 'new', self.fs.name,
+                          self.fs.metadata_pool_name,
+                          data_pool_name,
+                          '--allow_dangerous_metadata_overlay')
 
     def test_cap_revoke_nonresponder(self):
         """
@@ -197,9 +197,8 @@ class TestMisc(CephFSTestCase):
         pool_name = self.fs.get_data_pool_name()
         raw_df = self.fs.get_pool_df(pool_name)
         raw_avail = float(raw_df["max_avail"])
-        out = self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'get',
-                                                  pool_name, 'size',
-                                                  '-f', 'json-pretty')
+        out = self.get_ceph_cmd_stdout('osd', 'pool', 'get', pool_name,
+                                       'size', '-f', 'json-pretty')
         _ = json.loads(out)
 
         proc = self.mount_a.run_shell(['df', '.'])
@@ -208,18 +207,39 @@ class TestMisc(CephFSTestCase):
         fs_avail = float(fs_avail) * 1024
 
         ratio = raw_avail / fs_avail
-        assert 0.9 < ratio < 1.1
+        self.assertTrue(0.9 < ratio < 1.1)
 
     def test_dump_inode(self):
         info = self.fs.mds_asok(['dump', 'inode', '1'])
-        assert(info['path'] == "/")
+        self.assertEqual(info['path'], "/")
 
     def test_dump_inode_hexademical(self):
         self.mount_a.run_shell(["mkdir", "-p", "foo"])
         ino = self.mount_a.path_to_ino("foo")
-        assert type(ino) is int
+        self.assertTrue(type(ino) is int)
         info = self.fs.mds_asok(['dump', 'inode', hex(ino)])
-        assert info['path'] == "/foo"
+        self.assertEqual(info['path'], "/foo")
+
+    def test_dump_dir(self):
+        self.mount_a.run_shell(["mkdir", "-p", "foo/bar"])
+        dirs = self.fs.mds_asok(['dump', 'dir', '/foo'])
+        self.assertTrue(type(dirs) is list)
+        for dir in dirs:
+            self.assertEqual(dir['path'], "/foo")
+            self.assertFalse("dentries" in dir)
+        dirs = self.fs.mds_asok(['dump', 'dir', '/foo', '--dentry_dump'])
+        self.assertTrue(type(dirs) is list)
+        found_dentry = False
+        for dir in dirs:
+            self.assertEqual(dir['path'], "/foo")
+            self.assertTrue(type(dir['dentries']) is list)
+            if found_dentry:
+                continue
+            for dentry in dir['dentries']:
+                if dentry['path'] == "foo/bar":
+                    found_dentry = True
+                    break
+        self.assertTrue(found_dentry)
 
     def test_fs_lsflags(self):
         """
@@ -230,9 +250,8 @@ class TestMisc(CephFSTestCase):
         self.fs.set_allow_new_snaps(False)
         self.fs.set_allow_standby_replay(True)
 
-        lsflags = json.loads(self.fs.mon_manager.raw_cluster_cmd('fs', 'lsflags',
-                                                                 self.fs.name,
-                                                                 "--format=json-pretty"))
+        lsflags = json.loads(self.get_ceph_cmd_stdout(
+            'fs', 'lsflags', self.fs.name, "--format=json-pretty"))
         self.assertEqual(lsflags["joinable"], False)
         self.assertEqual(lsflags["allow_snaps"], False)
         self.assertEqual(lsflags["allow_multimds_snaps"], True)
@@ -256,30 +275,30 @@ class TestMisc(CephFSTestCase):
                 self.mount_a.run_shell(["mkdir", os.path.join(dir_path, f"{i}_{j}")])
             start = time.time()
             if file_sync:
-                self.mount_a.run_shell(['python3', '-c', sync_dir_pyscript])
+                self.mount_a.run_shell(['python3', '-c', sync_dir_pyscript], timeout=4)
             else:
-                self.mount_a.run_shell(["sync"])
+                self.mount_a.run_shell(["sync"], timeout=4)
+            # the real duration should be less than the rough one
             duration = time.time() - start
-            log.info(f"sync mkdir i = {i}, duration = {duration}")
-            self.assertLess(duration, 4)
+            log.info(f"sync mkdir i = {i}, rough duration = {duration}")
 
             for j in range(5):
                 self.mount_a.run_shell(["rm", "-rf", os.path.join(dir_path, f"{i}_{j}")])
             start = time.time()
             if file_sync:
-                self.mount_a.run_shell(['python3', '-c', sync_dir_pyscript])
+                self.mount_a.run_shell(['python3', '-c', sync_dir_pyscript], timeout=4)
             else:
-                self.mount_a.run_shell(["sync"])
+                self.mount_a.run_shell(["sync"], timeout=4)
+            # the real duration should be less than the rough one
             duration = time.time() - start
-            log.info(f"sync rmdir i = {i}, duration = {duration}")
-            self.assertLess(duration, 4)
+            log.info(f"sync rmdir i = {i}, rough duration = {duration}")
 
         self.mount_a.run_shell(["rm", "-rf", dir_path])
 
     def test_filesystem_sync_stuck_for_around_5s(self):
         """
-        To check whether the fsync will be stuck to wait for the mdlog to be
-        flushed for at most 5 seconds.
+        To check whether the filesystem sync will be stuck to wait for the
+        mdlog to be flushed for at most 5 seconds.
         """
 
         dir_path = "filesystem_sync_do_not_wait_mdlog_testdir"
@@ -287,8 +306,8 @@ class TestMisc(CephFSTestCase):
 
     def test_file_sync_stuck_for_around_5s(self):
         """
-        To check whether the filesystem sync will be stuck to wait for the
-        mdlog to be flushed for at most 5 seconds.
+        To check whether the fsync will be stuck to wait for the mdlog to
+        be flushed for at most 5 seconds.
         """
 
         dir_path = "file_sync_do_not_wait_mdlog_testdir"
@@ -382,6 +401,86 @@ class TestMisc(CephFSTestCase):
 
     def test_client_ls(self):
         self._session_client_ls(['client', 'ls'])
+
+
+@classhook('_add_session_client_evictions')
+class TestSessionClientEvict(CephFSTestCase):
+    CLIENTS_REQUIRED = 3
+
+    def _evict_without_filter(self, cmd):
+        info_initial = self.fs.rank_asok(cmd + ['ls'])
+        # without any filter or flags
+        with self.assertRaises(CommandFailedError) as ce:
+            self.fs.rank_asok(cmd + ['evict'])
+        self.assertEqual(ce.exception.exitstatus, errno.EINVAL)
+        # without any filter but with existing flag
+        with self.assertRaises(CommandFailedError) as ce:
+            self.fs.rank_asok(cmd + ['evict', '--help'])
+        self.assertEqual(ce.exception.exitstatus, errno.EINVAL)
+        info = self.fs.rank_asok(cmd + ['ls'])
+        self.assertEqual(len(info), len(info_initial))
+        # without any filter but with non-existing flag
+        with self.assertRaises(CommandFailedError) as ce:
+            self.fs.rank_asok(cmd + ['evict', '--foo'])
+        self.assertEqual(ce.exception.exitstatus, errno.EINVAL)
+        info = self.fs.rank_asok(cmd + ['ls'])
+        self.assertEqual(len(info), len(info_initial))
+
+    def _evict_with_id_zero(self, cmd):
+        # with id=0
+        with self.assertRaises(CommandFailedError) as ce:
+            self.fs.rank_tell(cmd + ['evict', 'id=0'])
+        self.assertEqual(ce.exception.exitstatus, errno.EINVAL)
+
+    def _evict_with_invalid_id(self, cmd):
+        info_initial = self.fs.rank_asok(cmd + ['ls'])
+        # with invalid id
+        self.fs.rank_tell(cmd + ['evict', 'id=1'])
+        info = self.fs.rank_asok(cmd + ['ls'])
+        self.assertEqual(len(info), len(info_initial)) # session list is status-quo
+
+    def _evict_with_negative_id(self, cmd):
+        info_initial = self.fs.rank_asok(cmd + ['ls'])
+        # with negative id
+        self.fs.rank_tell(cmd + ['evict', 'id=-9'])
+        info = self.fs.rank_asok(cmd + ['ls'])
+        self.assertEqual(len(info), len(info_initial)) # session list is status-quo
+
+    def _evict_with_valid_id(self, cmd):
+        info_initial = self.fs.rank_asok(cmd + ['ls'])
+        mount_a_client_id = self.mount_a.get_global_id()
+        # with a valid id
+        self.fs.rank_asok(cmd + ['evict', f'id={mount_a_client_id}'])
+        info = self.fs.rank_asok(cmd + ['ls'])
+        self.assertEqual(len(info), len(info_initial) - 1) # client with id provided is evicted
+        self.assertNotIn(mount_a_client_id, [val['id'] for val in info])
+
+    def _evict_all_clients(self, cmd):
+        # with id=* to evict all clients
+        info = self.fs.rank_asok(cmd + ['ls'])
+        self.assertGreater(len(info), 0)
+        self.fs.rank_asok(cmd + ['evict', 'id=*'])
+        info = self.fs.rank_asok(cmd + ['ls'])
+        self.assertEqual(len(info), 0) # multiple clients are evicted
+    
+    @classmethod
+    def _add_session_client_evictions(cls):
+        tests = [
+            "_evict_without_filter",
+            "_evict_with_id_zero",
+            "_evict_with_invalid_id",
+            "_evict_with_negative_id",
+            "_evict_with_valid_id",
+            "_evict_all_clients",
+        ]
+        def create_test(t, cmd):
+            def test(self):
+                getattr(self, t)(cmd)
+            return test
+        for t in tests:
+            setattr(cls, 'test_session' + t, create_test(t, ['session']))
+            setattr(cls, 'test_client' + t, create_test(t, ['client']))
+
         
 class TestCacheDrop(CephFSTestCase):
     CLIENTS_REQUIRED = 1

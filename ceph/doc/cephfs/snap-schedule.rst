@@ -30,14 +30,21 @@ assumed to be keyword arguments too.
 Snapshot schedules are identified by path, their repeat interval and their start
 time. The
 repeat interval defines the time between two subsequent snapshots. It is
-specified by a number and a period multiplier, one of `h(our)`, `d(ay)` and
-`w(eek)`. E.g. a repeat interval of `12h` specifies one snapshot every 12
-hours.
+specified by a number and a period multiplier, one of `h(our)`, `d(ay)`,
+`w(eek)`, `M(onth)` and `y(ear)`. E.g. a repeat interval of `12h` specifies one
+snapshot every 12 hours.
 The start time is specified as a time string (more details about passing times
 below). By default
 the start time is last midnight. So when a snapshot schedule with repeat
 interval `1h` is added at 13:50
 with the default start time, the first snapshot will be taken at 14:00.
+The time zone is assumed to be UTC if none is explicitly included in the string.
+An explicit time zone will be mapped to UTC at execution.
+The start time must be in ISO8601 format. Examples below:
+
+UTC: 2022-08-08T05:30:00 i.e. 5:30 AM UTC, without explicit time zone offset
+IDT: 2022-08-08T09:00:00+03:00 i.e. 6:00 AM UTC
+EDT: 2022-08-08T05:30:00-04:00 i.e. 9:30 AM UTC
 
 Retention specifications are identified by path and the retention spec itself. A
 retention spec consists of either a number and a time period separated by a
@@ -45,8 +52,8 @@ space or concatenated pairs of `<number><time period>`.
 The semantics are that a spec will ensure `<number>` snapshots are kept that are
 at least `<time period>` apart. For Example `7d` means the user wants to keep 7
 snapshots that are at least one day (but potentially longer) apart from each other.
-The following time periods are recognized: `h(our), d(ay), w(eek), m(onth),
-y(ear)` and `n`. The latter is a special modifier where e.g. `10n` means keep
+The following time periods are recognized: `h(our)`, `d(ay)`, `w(eek)`, `M(onth)`, 
+`y(ear)` and `n`. The latter is a special modifier where e.g. `10n` means keep
 the last 10 snapshots regardless of timing,
 
 All subcommands take optional `fs` argument to specify paths in
@@ -159,6 +166,8 @@ Examples::
    config tunable `mds_max_snaps_per_dir`. This tunable defaults to 100.
    To ensure a new snapshot can be created, one snapshot less than this will be
    retained. So by default, a maximum of 99 snapshots will be retained.
+
+.. note: The --fs argument is now required if there is more than one file system.
 
 Active and inactive schedules
 -----------------------------

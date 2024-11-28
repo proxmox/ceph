@@ -227,15 +227,14 @@ bool MDSAuthCaps::is_capable(std::string_view inode_path,
 			     uid_t new_uid, gid_t new_gid,
 			     const entity_addr_t& addr) const
 {
-  if (cct)
-    ldout(cct, 10) << __func__ << " inode(path /" << inode_path
-		   << " owner " << inode_uid << ":" << inode_gid
-		   << " mode 0" << std::oct << inode_mode << std::dec
-		   << ") by caller " << caller_uid << ":" << caller_gid
+  ldout(g_ceph_context, 10) << __func__ << " inode(path /" << inode_path
+		 << " owner " << inode_uid << ":" << inode_gid
+		 << " mode 0" << std::oct << inode_mode << std::dec
+		 << ") by caller " << caller_uid << ":" << caller_gid
 // << "[" << caller_gid_list << "]";
-		   << " mask " << mask
-		   << " new " << new_uid << ":" << new_gid
-		   << " cap: " << *this << dendl;
+		 << " mask " << mask
+		 << " new " << new_uid << ":" << new_gid
+		 << " cap: " << *this << dendl;
 
   for (const auto& grant : grants) {
     if (grant.network.size() &&
@@ -339,7 +338,7 @@ void MDSAuthCaps::set_allow_all()
 				 {}));
 }
 
-bool MDSAuthCaps::parse(CephContext *c, std::string_view str, ostream *err)
+bool MDSAuthCaps::parse(std::string_view str, ostream *err)
 {
   // Special case for legacy caps
   if (str == "allow") {
@@ -354,7 +353,6 @@ bool MDSAuthCaps::parse(CephContext *c, std::string_view str, ostream *err)
   MDSCapParser<decltype(iter)> g;
 
   bool r = qi::phrase_parse(iter, end, g, ascii::space, *this);
-  cct = c;  // set after parser self-assignment
   if (r && iter == end) {
     for (auto& grant : grants) {
       std::sort(grant.match.gids.begin(), grant.match.gids.end());
@@ -365,10 +363,15 @@ bool MDSAuthCaps::parse(CephContext *c, std::string_view str, ostream *err)
     // Make sure no grants are kept after parsing failed!
     grants.clear();
 
-    if (err)
-      *err << "mds capability parse failed, stopped at '"
-	   << std::string(iter, end)
-           << "' of '" << str << "'";
+    if (err) {
+      if (string(iter, end).find("allow") != string::npos) {
+       *err << "Permission flags in MDS caps must start with 'r' or " <<
+	       "'rw' or be '*' or 'all'";
+      } else {
+       *err << "mds capability parse failed, stopped at '"
+            << string(iter, end) << "' of '" << str << "'";
+      }
+    }
     return false; 
   }
 }

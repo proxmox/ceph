@@ -216,7 +216,7 @@ public:
 
 class RGWBucketInstanceMetaHandlerAllocator {
 public:
-  static RGWBucketInstanceMetadataHandlerBase *alloc();
+  static RGWBucketInstanceMetadataHandlerBase *alloc(rgw::sal::Store* store);
 };
 
 class RGWArchiveBucketMetaHandlerAllocator {
@@ -226,7 +226,7 @@ public:
 
 class RGWArchiveBucketInstanceMetaHandlerAllocator {
 public:
-  static RGWBucketInstanceMetadataHandlerBase *alloc();
+  static RGWBucketInstanceMetadataHandlerBase *alloc(rgw::sal::Store* store);
 };
 
 extern int rgw_remove_object(const DoutPrefixProvider *dpp, rgw::sal::Store* store, rgw::sal::Bucket* bucket, rgw_obj_key& key);
@@ -352,9 +352,12 @@ public:
   int init(rgw::sal::Store* storage, RGWBucketAdminOpState& op_state, optional_yield y,
              const DoutPrefixProvider *dpp, std::string *err_msg = NULL);
 
-  int check_bad_index_multipart(RGWBucketAdminOpState& op_state,
-              RGWFormatterFlusher& flusher,
-              const DoutPrefixProvider *dpp, std::string *err_msg = NULL);
+  int check_bad_index_multipart(rgw::sal::RadosStore* const rados_store,
+				RGWBucketAdminOpState& op_state,
+				RGWFormatterFlusher& flusher,
+				const DoutPrefixProvider *dpp,
+				optional_yield y,
+				std::string *err_msg = nullptr);
 
   int check_object_index(const DoutPrefixProvider *dpp, 
                          RGWBucketAdminOpState& op_state,

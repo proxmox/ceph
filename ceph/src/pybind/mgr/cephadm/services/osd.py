@@ -13,6 +13,7 @@ from ceph.utils import datetime_to_str, str_to_datetime
 from datetime import datetime
 import orchestrator
 from cephadm.serve import CephadmServe
+from cephadm.utils import SpecialHostLabels
 from ceph.utils import datetime_now
 from orchestrator import OrchestratorError, DaemonDescription
 from mgr_module import MonCommandFailed
@@ -42,7 +43,7 @@ class OSDService(CephService):
                     host, drive_group))
                 return None
             # skip this host if we cannot schedule here
-            if self.mgr.inventory.has_label(host, '_no_schedule'):
+            if self.mgr.inventory.has_label(host, SpecialHostLabels.DRAIN_DAEMONS):
                 return None
 
             osd_id_claims_for_host = osd_id_claims.filtered_by_host(host)
@@ -318,11 +319,16 @@ class OSDService(CephService):
                             logger.exception('Cannot decode JSON: \'%s\'' % ' '.join(out))
                             concat_out = {}
                         notes = []
-                        if osdspec.data_devices is not None and osdspec.data_devices.limit and len(concat_out) < osdspec.data_devices.limit:
+                        if (
+                            osdspec.data_devices is not None
+                            and osdspec.data_devices.limit
+                            and (len(concat_out) + ds.existing_daemons) < osdspec.data_devices.limit
+                        ):
                             found = len(concat_out)
                             limit = osdspec.data_devices.limit
                             notes.append(
-                                f'NOTE: Did not find enough disks matching filter on host {host} to reach data device limit (Found: {found} | Limit: {limit})')
+                                f'NOTE: Did not find enough disks matching filter on host {host} to reach data device limit\n'
+                                f'(New Devices: {found} | Existing Matching Daemons: {ds.existing_daemons} | Limit: {limit})')
                         ret_all.append({'data': concat_out,
                                         'osdspec': osdspec.service_id,
                                         'host': host,
@@ -615,7 +621,8 @@ class OSD:
                  force: bool = False,
                  hostname: Optional[str] = None,
                  zap: bool = False,
-                 no_destroy: bool = False):
+                 no_destroy: bool = False,
+                 original_weight: Optional[float] = None):
         # the ID of the OSD
         self.osd_id = osd_id
 
@@ -650,7 +657,7 @@ class OSD:
         # mgr obj to make mgr/mon calls
         self.rm_util: RemoveUtil = remove_util
 
-        self.original_weight: Optional[float] = None
+        self.original_weight: Optional[float] = original_weight
 
         # Whether devices associated with the OSD should be zapped (DATA ERASED)
         self.zap = zap
@@ -663,6 +670,7 @@ class OSD:
             return None
         self.started = True
         self.stopped = False
+        self.original_weight = self.rm_util.get_weight(self)
 
     def start_draining(self) -> bool:
         if self.stopped:
@@ -671,7 +679,6 @@ class OSD:
         if self.replace:
             self.rm_util.set_osd_flag([self], 'out')
         else:
-            self.original_weight = self.rm_util.get_weight(self)
             self.rm_util.reweight_osd(self, 0.0)
         self.drain_started_at = datetime.utcnow()
         self.draining = True
@@ -760,6 +767,7 @@ class OSD:
         out['force'] = self.force
         out['zap'] = self.zap
         out['hostname'] = self.hostname  # type: ignore
+        out['original_weight'] = self.original_weight
 
         for k in ['drain_started_at', 'drain_stopped_at', 'drain_done_at', 'process_started_at']:
             if getattr(self, k):
@@ -951,6 +959,16 @@ class OSDRemovalQueue(object):
         with self.lock:
             self.osds.add(osd)
         osd.start()
+
+    def rm_by_osd_id(self, osd_id: int) -> None:
+        osd: Optional["OSD"] = None
+        for o in self.osds:
+            if o.osd_id == osd_id:
+                osd = o
+        if not osd:
+            logger.debug(f"Could not find osd with id {osd_id} in queue.")
+            raise KeyError(f'No osd with id {osd_id} in removal queue')
+        self.rm(osd)
 
     def rm(self, osd: "OSD") -> None:
         if not osd.exists:

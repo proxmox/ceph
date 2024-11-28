@@ -268,7 +268,7 @@ void usage()
   cout << "  role delete                remove a role\n";
   cout << "  role get                   get a role\n";
   cout << "  role list                  list roles with specified path prefix\n";
-  cout << "  role modify                modify the assume role policy of an existing role\n";
+  cout << "  role-trust-policy modify   modify the assume role policy of an existing role\n";
   cout << "  role-policy put            add/update permission policy to role\n";
   cout << "  role-policy list           list policies attached to a role\n";
   cout << "  role-policy get            get the specified inline policy document embedded with the given role\n";
@@ -791,7 +791,7 @@ enum class OPT {
   ROLE_CREATE,
   ROLE_DELETE,
   ROLE_GET,
-  ROLE_MODIFY,
+  ROLE_TRUST_POLICY_MODIFY,
   ROLE_LIST,
   ROLE_POLICY_PUT,
   ROLE_POLICY_LIST,
@@ -1017,7 +1017,7 @@ static SimpleCmd::Commands all_cmds = {
   { "role create", OPT::ROLE_CREATE },
   { "role delete", OPT::ROLE_DELETE },
   { "role get", OPT::ROLE_GET },
-  { "role modify", OPT::ROLE_MODIFY },
+  { "role-trust-policy modify", OPT::ROLE_TRUST_POLICY_MODIFY },
   { "role list", OPT::ROLE_LIST },
   { "role policy put", OPT::ROLE_POLICY_PUT },
   { "role-policy put", OPT::ROLE_POLICY_PUT },
@@ -2491,7 +2491,7 @@ static int bucket_source_sync_status(const DoutPrefixProvider *dpp, rgw::sal::Ra
   out << indented{width, "source zone"} << source.id << " (" << source.name << ")" << std::endl;
 
   // syncing from this zone?
-  if (!zone.syncs_from(source.name)) {
+  if (!store->svc()->zone->zone_syncs_from(zone, source)) {
     out << indented{width} << "does not sync from zone\n";
     return 0;
   }
@@ -4303,7 +4303,7 @@ int main(int argc, const char **argv)
       if (rgw::sal::User::empty(user) && opt_cmd != OPT::ROLE_CREATE
                           && opt_cmd != OPT::ROLE_DELETE
                           && opt_cmd != OPT::ROLE_GET
-                          && opt_cmd != OPT::ROLE_MODIFY
+                          && opt_cmd != OPT::ROLE_TRUST_POLICY_MODIFY
                           && opt_cmd != OPT::ROLE_LIST
                           && opt_cmd != OPT::ROLE_POLICY_PUT
                           && opt_cmd != OPT::ROLE_POLICY_LIST
@@ -4311,7 +4311,10 @@ int main(int argc, const char **argv)
                           && opt_cmd != OPT::ROLE_POLICY_DELETE
                           && opt_cmd != OPT::RESHARD_ADD
                           && opt_cmd != OPT::RESHARD_CANCEL
-                          && opt_cmd != OPT::RESHARD_STATUS) {
+                          && opt_cmd != OPT::RESHARD_STATUS
+                          && opt_cmd != OPT::PUBSUB_TOPICS_LIST
+                          && opt_cmd != OPT::PUBSUB_TOPIC_GET
+                          && opt_cmd != OPT::PUBSUB_TOPIC_RM) {
         cerr << "ERROR: --tenant is set, but there's no user ID" << std::endl;
         return EINVAL;
       }
@@ -6181,11 +6184,10 @@ int main(int argc, const char **argv)
   else if (opt_cmd == OPT::USER_SUSPEND)
     user_op.set_suspension(true);
 
-  if (!placement_id.empty() ||
-      (opt_storage_class && !opt_storage_class->empty())) {
+  if (!placement_id.empty()) {
     rgw_placement_rule target_rule;
     target_rule.name = placement_id;
-    target_rule.storage_class = *opt_storage_class;
+    target_rule.storage_class = opt_storage_class.value_or("");
     if (!store->get_zone()->get_params().valid_placement(target_rule)) {
       cerr << "NOTICE: invalid dest placement: " << target_rule.to_str() << std::endl;
       return EINVAL;
@@ -6470,7 +6472,7 @@ int main(int argc, const char **argv)
       show_role_info(role.get(), formatter.get());
       return 0;
     }
-  case OPT::ROLE_MODIFY:
+  case OPT::ROLE_TRUST_POLICY_MODIFY:
     {
       if (role_name.empty()) {
         cerr << "ERROR: role name is empty" << std::endl;
@@ -7795,6 +7797,8 @@ next:
     rgw_obj_index_key index_key;
     key.get_index_key(&index_key);
     oid_list.push_back(index_key);
+
+    // note: under rados this removes directly from rados index objects
     ret = bucket->remove_objs_from_index(dpp(), oid_list);
     if (ret < 0) {
       cerr << "ERROR: remove_obj_from_index() returned error: " << cpp_strerror(-ret) << std::endl;
@@ -8977,12 +8981,15 @@ next:
       return -EINVAL;
     }
     if (!start_marker.empty()) {
-      std::cerr << "end-date not allowed." << std::endl;
+      std::cerr << "start-marker not allowed." << std::endl;
       return -EINVAL;
     }
     if (!end_marker.empty()) {
-      std::cerr << "end-date not allowed." << std::endl;
+      std::cerr << "end_marker not allowed." << std::endl;
       return -EINVAL;
+    }
+    if (marker.empty()) {
+      marker = "9"; // trims everything
     }
 
     if (shard_id < 0) {
@@ -9214,11 +9221,15 @@ next:
       }
     }
 
-    pipe->source.add_zones(*opt_source_zone_ids);
+    if (opt_source_zone_ids) {
+      pipe->source.add_zones(*opt_source_zone_ids);
+    }
     pipe->source.set_bucket(opt_source_tenant,
                             opt_source_bucket_name,
                             opt_source_bucket_id);
-    pipe->dest.add_zones(*opt_dest_zone_ids);
+    if (opt_dest_zone_ids) {
+      pipe->dest.add_zones(*opt_dest_zone_ids);
+    }
     pipe->dest.set_bucket(opt_dest_tenant,
                             opt_dest_bucket_name,
                             opt_dest_bucket_id);

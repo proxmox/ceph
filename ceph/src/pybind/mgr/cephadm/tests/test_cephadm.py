@@ -8,8 +8,9 @@ import pytest
 
 from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection
 from cephadm.serve import CephadmServe
-from cephadm.inventory import HostCacheStatus
+from cephadm.inventory import HostCacheStatus, ClientKeyringSpec
 from cephadm.services.osd import OSD, OSDRemovalQueue, OsdIdClaims
+from cephadm.utils import SpecialHostLabels
 
 try:
     from typing import List
@@ -21,7 +22,7 @@ from ceph.deployment.service_spec import ServiceSpec, PlacementSpec, RGWSpec, \
     CustomConfig, PrometheusSpec
 from ceph.deployment.drive_selection.selector import DriveSelection
 from ceph.deployment.inventory import Devices, Device
-from ceph.utils import datetime_to_str, datetime_now
+from ceph.utils import datetime_to_str, datetime_now, str_to_datetime
 from orchestrator import DaemonDescription, InventoryHost, \
     HostSpec, OrchestratorError, DaemonDescriptionStatus, OrchestratorEvent
 from tests import mock
@@ -393,6 +394,42 @@ class TestCephadm(object):
                         f'rgw.{daemon_id}')]
 
                     assert 'myerror' in ''.join(evs)
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
+    def test_daemon_action_event_timestamp_update(self, cephadm_module: CephadmOrchestrator):
+        # Test to make sure if a new daemon event is created with the same subject
+        # and message that the timestamp of the event is updated to let users know
+        # when it most recently occurred.
+        cephadm_module.service_cache_timeout = 10
+        with with_host(cephadm_module, 'test'):
+            with with_service(cephadm_module, RGWSpec(service_id='myrgw.foobar', unmanaged=True)) as _, \
+                    with_daemon(cephadm_module, RGWSpec(service_id='myrgw.foobar'), 'test') as daemon_id:
+
+                d_name = 'rgw.' + daemon_id
+
+                now = str_to_datetime('2023-10-18T22:45:29.119250Z')
+                with mock.patch("cephadm.inventory.datetime_now", lambda: now):
+                    c = cephadm_module.daemon_action('redeploy', d_name)
+                    assert wait(cephadm_module,
+                                c) == f"Scheduled to redeploy rgw.{daemon_id} on host 'test'"
+
+                    CephadmServe(cephadm_module)._check_daemons()
+
+                d_events = cephadm_module.events.get_for_daemon(d_name)
+                assert len(d_events) == 1
+                assert d_events[0].created == now
+
+                later = str_to_datetime('2023-10-18T23:46:37.119250Z')
+                with mock.patch("cephadm.inventory.datetime_now", lambda: later):
+                    c = cephadm_module.daemon_action('redeploy', d_name)
+                    assert wait(cephadm_module,
+                                c) == f"Scheduled to redeploy rgw.{daemon_id} on host 'test'"
+
+                    CephadmServe(cephadm_module)._check_daemons()
+
+                d_events = cephadm_module.events.get_for_daemon(d_name)
+                assert len(d_events) == 1
+                assert d_events[0].created == later
 
     @pytest.mark.parametrize(
         "action",
@@ -774,7 +811,7 @@ class TestCephadm(object):
         assert osd_claims.filtered_by_host('host1') == ['0']
         assert osd_claims.filtered_by_host('host1.domain.com') == ['0']
 
-    @ pytest.mark.parametrize(
+    @pytest.mark.parametrize(
         "ceph_services, cephadm_daemons, strays_expected, metadata",
         # [ ([(daemon_type, daemon_id), ... ], [...], [...]), ... ]
         [
@@ -996,7 +1033,8 @@ class TestCephadm(object):
     @mock.patch('cephadm.services.osd.OSDService.driveselection_to_ceph_volume')
     @mock.patch('cephadm.services.osd.OsdIdClaims.refresh', lambda _: None)
     @mock.patch('cephadm.services.osd.OsdIdClaims.get', lambda _: {})
-    def test_limit_not_reached(self, d_to_cv, _run_cv_cmd, cephadm_module):
+    @mock.patch('cephadm.inventory.HostCache.get_daemons_by_service')
+    def test_limit_not_reached(self, _get_daemons_by_service, d_to_cv, _run_cv_cmd, cephadm_module):
         with with_host(cephadm_module, 'test'):
             dg = DriveGroupSpec(placement=PlacementSpec(host_pattern='test'),
                                 data_devices=DeviceSelection(limit=5, rotational=1),
@@ -1006,12 +1044,14 @@ class TestCephadm(object):
                 '[{"data": "/dev/vdb", "data_size": "50.00 GB", "encryption": "None"}, {"data": "/dev/vdc", "data_size": "50.00 GB", "encryption": "None"}]']
             d_to_cv.return_value = 'foo'
             _run_cv_cmd.side_effect = async_side_effect((disks_found, '', 0))
+            _get_daemons_by_service.return_value = [DaemonDescription(daemon_type='osd', hostname='test', service_name='not_enough')]
             preview = cephadm_module.osd_service.generate_previews([dg], 'test')
 
             for osd in preview:
                 assert 'notes' in osd
                 assert osd['notes'] == [
-                    'NOTE: Did not find enough disks matching filter on host test to reach data device limit (Found: 2 | Limit: 5)']
+                    ('NOTE: Did not find enough disks matching filter on host test to reach '
+                     'data device limit\n(New Devices: 2 | Existing Matching Daemons: 1 | Limit: 5)')]
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
     def test_prepare_drivegroup(self, cephadm_module):
@@ -1090,7 +1130,11 @@ class TestCephadm(object):
     ))
     @mock.patch("cephadm.services.osd.OSD.exists", True)
     @mock.patch("cephadm.services.osd.RemoveUtil.get_pg_count", lambda _, __: 0)
-    def test_remove_osds(self, cephadm_module):
+    @mock.patch("cephadm.services.osd.RemoveUtil.get_weight")
+    @mock.patch("cephadm.services.osd.RemoveUtil.reweight_osd")
+    def test_remove_osds(self, _reweight_osd, _get_weight, cephadm_module):
+        osd_initial_weight = 2.1
+        _get_weight.return_value = osd_initial_weight
         with with_host(cephadm_module, 'test'):
             CephadmServe(cephadm_module)._refresh_host_daemons('test')
             c = cephadm_module.list_daemons()
@@ -1100,13 +1144,23 @@ class TestCephadm(object):
             out = wait(cephadm_module, c)
             assert out == ["Removed osd.0 from host 'test'"]
 
-            cephadm_module.to_remove_osds.enqueue(OSD(osd_id=0,
-                                                      replace=False,
-                                                      force=False,
-                                                      hostname='test',
-                                                      process_started_at=datetime_now(),
-                                                      remove_util=cephadm_module.to_remove_osds.rm_util
-                                                      ))
+            osd_0 = OSD(osd_id=0,
+                        replace=False,
+                        force=False,
+                        hostname='test',
+                        process_started_at=datetime_now(),
+                        remove_util=cephadm_module.to_remove_osds.rm_util
+                        )
+
+            cephadm_module.to_remove_osds.enqueue(osd_0)
+            _get_weight.assert_called()
+
+            # test that OSD is properly reweighted on removal
+            cephadm_module.stop_remove_osds([0])
+            _reweight_osd.assert_called_with(mock.ANY, osd_initial_weight)
+
+            # add OSD back to queue and test normal removal queue processing
+            cephadm_module.to_remove_osds.enqueue(osd_0)
             cephadm_module.to_remove_osds.process_removal_queue()
             assert cephadm_module.to_remove_osds == OSDRemovalQueue(cephadm_module)
 
@@ -1753,15 +1807,11 @@ class TestCephadm(object):
 
                         # being in offline/maint mode should disqualify hosts from being
                         # candidates for scheduling
-                        candidates = [
-                            h.hostname for h in cephadm_module.cache.get_schedulable_hosts()]
-                        assert 'test2' in candidates
-                        assert 'test3' in candidates
+                        assert cephadm_module.cache.is_host_schedulable('test2')
+                        assert cephadm_module.cache.is_host_schedulable('test3')
 
-                        unreachable = [
-                            h.hostname for h in cephadm_module.cache.get_unreachable_hosts()]
-                        assert 'test2' in unreachable
-                        assert 'test3' in unreachable
+                        assert cephadm_module.cache.is_host_unreachable('test2')
+                        assert cephadm_module.cache.is_host_unreachable('test3')
 
                         with with_service(cephadm_module, ServiceSpec('crash', placement=PlacementSpec(host_pattern='*'))):
                             # re-apply services. No mgr should be removed from maint/offline hosts
@@ -1942,9 +1992,9 @@ class TestCephadm(object):
         cephadm_module.offline_hosts.add('host3')
 
         # verify host2 and host3 are correctly marked as unreachable but host1 is not
-        assert 'host1' not in [h.hostname for h in cephadm_module.cache.get_unreachable_hosts()]
-        assert 'host2' in [h.hostname for h in cephadm_module.cache.get_unreachable_hosts()]
-        assert 'host3' in [h.hostname for h in cephadm_module.cache.get_unreachable_hosts()]
+        assert not cephadm_module.cache.is_host_unreachable('host1')
+        assert cephadm_module.cache.is_host_unreachable('host2')
+        assert cephadm_module.cache.is_host_unreachable('host3')
 
         _get_client_files.side_effect = Exception('Called _get_client_files')
 
@@ -1958,6 +2008,21 @@ class TestCephadm(object):
         # having been raised
         CephadmServe(cephadm_module)._write_client_files({}, 'host2')
         CephadmServe(cephadm_module)._write_client_files({}, 'host3')
+
+    @mock.patch('cephadm.CephadmOrchestrator.mon_command')
+    @mock.patch("cephadm.inventory.HostCache.get_host_client_files")
+    def test_dont_write_etc_ceph_client_files_when_turned_off(self, _get_client_files, _mon_command, cephadm_module):
+        cephadm_module.keys.update(ClientKeyringSpec('keyring1', PlacementSpec(label='keyring1'), include_ceph_conf=False))
+        cephadm_module.inventory.add_host(HostSpec('host1', '1.2.3.1', labels=['keyring1']))
+        cephadm_module.cache.update_host_daemons('host1', {})
+
+        _mon_command.return_value = (0, 'my-keyring', '')
+
+        client_files = CephadmServe(cephadm_module)._calc_client_files()
+
+        assert 'host1' in client_files
+        assert '/etc/ceph/ceph.keyring1.keyring' in client_files['host1']
+        assert '/etc/ceph/ceph.conf' not in client_files['host1']
 
     def test_etc_ceph_init(self):
         with with_cephadm_module({'manage_etc_ceph_ceph_conf': True}) as m:
@@ -2004,6 +2069,35 @@ osd_k2 = osd_v2
 """
 
         assert cephadm_module.get_minimal_ceph_conf() == expected_combined_conf
+
+    def test_client_keyrings_special_host_labels(self, cephadm_module):
+        cephadm_module.inventory.add_host(HostSpec('host1', labels=['keyring1']))
+        cephadm_module.inventory.add_host(HostSpec('host2', labels=['keyring1', SpecialHostLabels.DRAIN_DAEMONS]))
+        cephadm_module.inventory.add_host(HostSpec('host3', labels=['keyring1', SpecialHostLabels.DRAIN_DAEMONS, SpecialHostLabels.DRAIN_CONF_KEYRING]))
+        # hosts need to be marked as having had refresh to be available for placement
+        # so "refresh" with empty daemon list
+        cephadm_module.cache.update_host_daemons('host1', {})
+        cephadm_module.cache.update_host_daemons('host2', {})
+        cephadm_module.cache.update_host_daemons('host3', {})
+
+        assert 'host1' in [h.hostname for h in cephadm_module.cache.get_conf_keyring_available_hosts()]
+        assert 'host2' in [h.hostname for h in cephadm_module.cache.get_conf_keyring_available_hosts()]
+        assert 'host3' not in [h.hostname for h in cephadm_module.cache.get_conf_keyring_available_hosts()]
+
+        assert 'host1' not in [h.hostname for h in cephadm_module.cache.get_conf_keyring_draining_hosts()]
+        assert 'host2' not in [h.hostname for h in cephadm_module.cache.get_conf_keyring_draining_hosts()]
+        assert 'host3' in [h.hostname for h in cephadm_module.cache.get_conf_keyring_draining_hosts()]
+
+        cephadm_module.keys.update(ClientKeyringSpec('keyring1', PlacementSpec(label='keyring1')))
+
+        with mock.patch("cephadm.module.CephadmOrchestrator.mon_command") as _mon_cmd:
+            _mon_cmd.return_value = (0, 'real-keyring', '')
+            client_files = CephadmServe(cephadm_module)._calc_client_files()
+            assert 'host1' in client_files.keys()
+            assert '/etc/ceph/ceph.keyring1.keyring' in client_files['host1'].keys()
+            assert 'host2' in client_files.keys()
+            assert '/etc/ceph/ceph.keyring1.keyring' in client_files['host2'].keys()
+            assert 'host3' not in client_files.keys()
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
     def test_registry_login(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
@@ -2206,12 +2300,12 @@ Traceback (most recent call last):
     def test_host_rm_last_admin(self, cephadm_module: CephadmOrchestrator):
         with pytest.raises(OrchestratorError):
             with with_host(cephadm_module, 'test', refresh_hosts=False, rm_with_force=False):
-                cephadm_module.inventory.add_label('test', '_admin')
+                cephadm_module.inventory.add_label('test', SpecialHostLabels.ADMIN)
                 pass
             assert False
         with with_host(cephadm_module, 'test1', refresh_hosts=False, rm_with_force=True):
             with with_host(cephadm_module, 'test2', refresh_hosts=False, rm_with_force=False):
-                cephadm_module.inventory.add_label('test2', '_admin')
+                cephadm_module.inventory.add_label('test2', SpecialHostLabels.ADMIN)
 
     @pytest.mark.parametrize("facts, settings, expected_value",
                              [
@@ -2411,3 +2505,14 @@ Traceback (most recent call last):
         with pytest.raises(OrchestratorError, match=r'Command "very slow" timed out on host hostC \(non-default 999 second timeout\)'):
             with cephadm_module.async_timeout_handler('hostC', 'very slow', 999):
                 cephadm_module.wait_async(_timeout())
+
+    @mock.patch("cephadm.CephadmOrchestrator.remove_osds")
+    @mock.patch("cephadm.CephadmOrchestrator.add_host_label", lambda *a, **kw: None)
+    @mock.patch("cephadm.inventory.HostCache.get_daemons_by_host", lambda *a, **kw: [])
+    def test_host_drain_zap(self, _rm_osds, cephadm_module):
+        # pass force=true in these tests to bypass _admin label check
+        cephadm_module.drain_host('host1', force=True, zap_osd_devices=False)
+        assert _rm_osds.called_with([], zap=False)
+
+        cephadm_module.drain_host('host1', force=True, zap_osd_devices=True)
+        assert _rm_osds.called_with([], zap=True)

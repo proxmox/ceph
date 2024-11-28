@@ -38,6 +38,7 @@
 #include "mon/MonClient.h"
 #include "common/HeartbeatMap.h"
 #include "ScrubStack.h"
+#include "Mutation.h"
 
 
 #include "MDSRank.h"
@@ -550,6 +551,8 @@ MDSRank::MDSRank(
                                          cct->_conf->mds_op_log_threshold);
   op_tracker.set_history_size_and_duration(cct->_conf->mds_op_history_size,
                                            cct->_conf->mds_op_history_duration);
+  op_tracker.set_history_slow_op_size_and_threshold(cct->_conf->mds_op_history_slow_op_size,
+                                                    cct->_conf->mds_op_history_slow_op_threshold);
 
   schedule_update_timer_task();
 }
@@ -743,6 +746,7 @@ void MDSRankDispatcher::tick()
 
   // ...
   if (is_clientreplay() || is_active() || is_stopping()) {
+    server->clear_laggy_clients();
     server->find_idle_sessions();
     server->evict_cap_revoke_non_responders();
     locker->tick();
@@ -1401,7 +1405,7 @@ Session *MDSRank::get_session(const cref_t<Message> &m)
     dout(20) << "get_session have " << session << " " << session->info.inst
 	     << " state " << session->get_state_name() << dendl;
     // Check if we've imported an open session since (new sessions start closed)
-    if (session->is_closed()) {
+    if (session->is_closed() && m->get_type() == CEPH_MSG_CLIENT_SESSION) {
       Session *imported_session = sessionmap.get_session(session->info.inst.name);
       if (imported_session && imported_session != session) {
         dout(10) << __func__ << " replacing connection bootstrap session "
@@ -2061,6 +2065,7 @@ bool MDSRank::queue_one_replay()
   if (!replay_queue.empty()) {
     queue_waiter(replay_queue.front());
     replay_queue.pop_front();
+    dout(10) << " queued next replay op" << dendl;
     return true;
   }
   if (!replaying_requests_done) {
@@ -2068,6 +2073,7 @@ bool MDSRank::queue_one_replay()
     mdlog->flush();
   }
   maybe_clientreplay_done();
+  dout(10) << " journaled last replay op" << dendl;
   return false;
 }
 
@@ -2616,9 +2622,29 @@ void MDSRankDispatcher::handle_asok_command(
   int r = 0;
   CachedStackStringStream css;
   bufferlist outbl;
-  if (command == "dump_ops_in_flight" ||
-      command == "ops") {
+  dout(10) << __func__ << ": " << command << dendl;
+  if (command == "dump_ops_in_flight") {
     if (!op_tracker.dump_ops_in_flight(f)) {
+      *css << "op_tracker disabled; set mds_enable_op_tracker=true to enable";
+    }
+  } else if (command == "ops") {
+    vector<string> flags;
+    cmd_getval(cmdmap, "flags", flags);
+    std::unique_lock l(mds_lock, std::defer_lock);
+    auto lambda = OpTracker::default_dumper;
+    if (flags.size()) {
+      /* use std::function if we actually want to capture flags someday */
+      lambda = [](const TrackedOp& op, Formatter* f) {
+        auto* req = dynamic_cast<const MDRequestImpl*>(&op);
+        if (req) {
+          req->dump_with_mds_lock(f);
+        } else {
+          op.dump_type(f);
+        }
+      };
+      l.lock();
+    }
+    if (!op_tracker.dump_ops_in_flight(f, false, {""}, lambda)) {
       *css << "op_tracker disabled; set mds_enable_op_tracker=true to enable";
     }
   } else if (command == "dump_blocked_ops") {
@@ -2705,7 +2731,12 @@ void MDSRankDispatcher::handle_asok_command(
     r = config_client(client_id, !got_value, option, value, *css);
   } else if (command == "scrub start" ||
 	     command == "scrub_start") {
-    if (whoami != 0) {
+    if (!is_active()) {
+      *css << "MDS is not active";
+      r = -CEPHFS_EINVAL;
+      goto out;
+    }
+    else if (whoami != 0) {
       *css << "Not rank 0";
       r = -CEPHFS_EXDEV;
       goto out;
@@ -2731,7 +2762,12 @@ void MDSRankDispatcher::handle_asok_command(
 	}));
     return;
   } else if (command == "scrub abort") {
-    if (whoami != 0) {
+    if (!is_active()) {
+      *css << "MDS is not active";
+      r = -CEPHFS_EINVAL;
+      goto out;
+    }
+    else if (whoami != 0) {
       *css << "Not rank 0";
       r = -CEPHFS_EXDEV;
       goto out;
@@ -2753,7 +2789,12 @@ void MDSRankDispatcher::handle_asok_command(
 	}));
     return;
   } else if (command == "scrub pause") {
-    if (whoami != 0) {
+    if (!is_active()) {
+      *css << "MDS is not active";
+      r = -CEPHFS_EINVAL;
+      goto out;
+    }
+    else if (whoami != 0) {
       *css << "Not rank 0";
       r = -CEPHFS_EXDEV;
       goto out;
@@ -2775,7 +2816,12 @@ void MDSRankDispatcher::handle_asok_command(
 	}));
     return;
   } else if (command == "scrub resume") {
-    if (whoami != 0) {
+    if (!is_active()) {
+      *css << "MDS is not active";
+      r = -CEPHFS_EINVAL;
+      goto out;
+    }
+    else if (whoami != 0) {
       *css << "Not rank 0";
       r = -CEPHFS_EXDEV;
       goto out;
@@ -2881,6 +2927,8 @@ void MDSRankDispatcher::handle_asok_command(
     command_openfiles_ls(f);
   } else if (command == "dump inode") {
     command_dump_inode(f, cmdmap, *css);
+  } else if (command == "dump dir") {
+    command_dump_dir(f, cmdmap, *css);
   } else if (command == "damage ls") {
     std::lock_guard l(mds_lock);
     damage_table.dump(f);
@@ -2932,7 +2980,7 @@ void MDSRankDispatcher::evict_clients(
   dout(20) << __func__ << " matched " << victims.size() << " sessions" << dendl;
 
   if (victims.empty()) {
-    on_finish(0, {}, outbl);
+    on_finish(0, "no hosts match", outbl);
     return;
   }
 
@@ -3321,6 +3369,42 @@ void MDSRank::command_dump_inode(Formatter *f, const cmdmap_t &cmdmap, std::ostr
   }
 }
 
+void MDSRank::command_dump_dir(Formatter *f, const cmdmap_t &cmdmap, std::ostream &ss)
+{
+  std::lock_guard l(mds_lock);
+  std::string path;
+  bool got = cmd_getval(cmdmap, "path", path);
+  if (!got) {
+    ss << "missing path argument";
+    return;
+  }
+
+  bool dentry_dump = false;
+  cmd_getval(cmdmap, "dentry_dump", dentry_dump);
+
+  CInode *in = mdcache->cache_traverse(filepath(path.c_str()));
+  if (!in) {
+    ss << "directory inode not in cache";
+    return;
+  }
+
+  f->open_array_section("dirs");
+  frag_vec_t leaves;
+  in->dirfragtree.get_leaves_under(frag_t(), leaves);
+  for (const auto& leaf : leaves) {
+    CDir *dir = in->get_dirfrag(leaf);
+    if (dir) {
+      mdcache->dump_dir(f, dir, dentry_dump);
+    } else {
+      f->open_object_section("frag");
+      f->dump_stream("frag") << leaf;
+      f->dump_string("status", "dirfrag not in cache");
+      f->close_section();
+    }
+  }
+  f->close_section();
+}
+
 void MDSRank::dump_status(Formatter *f) const
 {
   f->dump_string("fs_name", std::string(mdsmap->get_fs_name()));
@@ -3472,6 +3556,9 @@ void MDSRank::create_logger()
                     PerfCountersBuilder::PRIO_INTERESTING);
     mdm_plb.add_u64(l_mdm_dn, "dn", "Dentries", "dn",
                     PerfCountersBuilder::PRIO_INTERESTING);
+    // mds rss metric is set to PRIO_USEFUL as it can be useful to detect mds cache oversizing
+    mdm_plb.add_u64(l_mdm_rss, "rss", "RSS", "rss",
+                    PerfCountersBuilder::PRIO_USEFUL);
 
     mdm_plb.set_prio_default(PerfCountersBuilder::PRIO_USEFUL);
     mdm_plb.add_u64_counter(l_mdm_inoa, "ino+", "Inodes opened");
@@ -3485,9 +3572,6 @@ void MDSRank::create_logger()
     mdm_plb.add_u64_counter(l_mdm_capa, "cap+", "Capabilities added");
     mdm_plb.add_u64_counter(l_mdm_caps, "cap-", "Capabilities removed");
     mdm_plb.add_u64(l_mdm_heap, "heap", "Heap size");
-
-    mdm_plb.set_prio_default(PerfCountersBuilder::PRIO_DEBUGONLY);
-    mdm_plb.add_u64(l_mdm_rss, "rss", "RSS");
 
     mlogger = mdm_plb.create_perf_counters();
     g_ceph_context->get_perfcounters_collection()->add(mlogger);
@@ -3807,6 +3891,9 @@ void MDSRankDispatcher::handle_conf_change(const ConfigProxy& conf, const std::s
   }
   if (changed.count("mds_op_history_size") || changed.count("mds_op_history_duration")) {
     op_tracker.set_history_size_and_duration(conf->mds_op_history_size, conf->mds_op_history_duration);
+  }
+  if (changed.count("mds_op_history_slow_op_size") || changed.count("mds_op_history_slow_op_threshold")) {
+    op_tracker.set_history_slow_op_size_and_threshold(conf->mds_op_history_slow_op_size, conf->mds_op_history_slow_op_threshold);
   }
   if (changed.count("mds_enable_op_tracker")) {
     op_tracker.set_tracking(conf->mds_enable_op_tracker);

@@ -14,9 +14,12 @@ class TestClusterAffinity(CephFSTestCase):
     CLIENTS_REQUIRED = 0
     MDSS_REQUIRED = 4
 
-    def _verify_join_fs(self, target, status=None):
+    def _verify_join_fs(self, target, status=None, fs=None):
+        fs_select = fs
+        if fs_select is None:
+            fs_select = self.fs
         if status is None:
-            status = self.fs.wait_for_daemons(timeout=30)
+            status = fs_select.wait_for_daemons(timeout=30)
             log.debug("%s", status)
         target = sorted(target, key=operator.itemgetter('name'))
         log.info("target = %s", target)
@@ -37,11 +40,14 @@ class TestClusterAffinity(CephFSTestCase):
                 return
         self.fail("no entity")
 
-    def _verify_init(self):
-        status = self.fs.status()
+    def _verify_init(self, fs=None):
+        fs_select = fs
+        if fs_select is None:
+            fs_select = self.fs
+        status = fs_select.status()
         log.info("status = {0}".format(status))
         target = [{'join_fscid': -1, 'name': info['name']} for info in status.get_all()]
-        self._verify_join_fs(target, status=status)
+        self._verify_join_fs(target, status=status, fs=fs_select)
         return (status, target)
 
     def _reach_target(self, target):
@@ -107,12 +113,21 @@ class TestClusterAffinity(CephFSTestCase):
         fs2 = self.mds_cluster.newfs(name="cephfs2")
         status, target = self._verify_init()
         active = self.fs.get_active_names(status=status)[0]
+        status2, _ = self._verify_init(fs=fs2)
+        active2 = fs2.get_active_names(status=status2)[0]
         standbys = [info['name'] for info in status.get_standbys()]
         victim = standbys.pop()
         # Set a bogus fs on the others
         for mds in standbys:
             self.config_set('mds.'+mds, 'mds_join_fs', 'cephfs2')
             self._change_target_state(target, mds, {'join_fscid': fs2.id})
+        # The active MDS for cephfs2 will be replaced by the MDS for which
+        # file system affinity has been set. Also, set the affinity for
+        # the earlier active MDS so that it is not chosen by the monitors
+        # as an active MDS for the existing file system.
+        log.info(f'assigning affinity to cephfs2 for active mds (mds.{active2})')
+        self.config_set(f'mds.{active2}', 'mds_join_fs', 'cephfs2')
+        self._change_target_state(target, active2, {'join_fscid': fs2.id})
         self.fs.rank_fail()
         self._change_target_state(target, victim, {'state': 'up:active'})
         self._reach_target(target)
@@ -399,7 +414,7 @@ class TestFailover(CephFSTestCase):
 
         standbys = self.mds_cluster.get_standby_daemons()
         self.assertGreaterEqual(len(standbys), 1)
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'set', self.fs.name, 'standby_count_wanted', str(len(standbys)))
+        self.run_ceph_cmd('fs', 'set', self.fs.name, 'standby_count_wanted', str(len(standbys)))
 
         # Kill a standby and check for warning
         victim = standbys.pop()
@@ -417,11 +432,11 @@ class TestFailover(CephFSTestCase):
         # Set it one greater than standbys ever seen
         standbys = self.mds_cluster.get_standby_daemons()
         self.assertGreaterEqual(len(standbys), 1)
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'set', self.fs.name, 'standby_count_wanted', str(len(standbys)+1))
+        self.run_ceph_cmd('fs', 'set', self.fs.name, 'standby_count_wanted', str(len(standbys)+1))
         self.wait_for_health("MDS_INSUFFICIENT_STANDBY", self.fs.beacon_timeout)
 
         # Set it to 0
-        self.fs.mon_manager.raw_cluster_cmd('fs', 'set', self.fs.name, 'standby_count_wanted', '0')
+        self.run_ceph_cmd('fs', 'set', self.fs.name, 'standby_count_wanted', '0')
         self.wait_for_health_clear(timeout=30)
 
     def test_discontinuous_mdsmap(self):
@@ -536,6 +551,9 @@ class TestStandbyReplay(CephFSTestCase):
         """
         That a standby-replay daemon can cause the rank to go damaged correctly.
         """
+
+        for mount in self.mounts:
+            mount.umount_wait()
 
         self._confirm_no_replay()
         self.config_set("mds", "mds_standby_replay_damaged", True)
@@ -670,9 +688,8 @@ class TestMultiFilesystems(CephFSTestCase):
 
     def setUp(self):
         super(TestMultiFilesystems, self).setUp()
-        self.mds_cluster.mon_manager.raw_cluster_cmd("fs", "flag", "set",
-            "enable_multiple", "true",
-            "--yes-i-really-mean-it")
+        self.run_ceph_cmd("fs", "flag", "set", "enable_multiple",
+                          "true", "--yes-i-really-mean-it")
 
     def _setup_two(self):
         fs_a = self.mds_cluster.newfs(name="alpha")
@@ -686,7 +703,7 @@ class TestMultiFilesystems(CephFSTestCase):
 
         # Reconfigure client auth caps
         for mount in self.mounts:
-            self.mds_cluster.mon_manager.raw_cluster_cmd_result(
+            self.get_ceph_cmd_result(
                 'auth', 'caps', "client.{0}".format(mount.client_id),
                 'mds', 'allow',
                 'mon', 'allow r',
@@ -754,7 +771,7 @@ class TestMultiFilesystems(CephFSTestCase):
 
         # Kill fs_a's active MDS, see a standby take over
         self.mds_cluster.mds_stop(original_a)
-        self.mds_cluster.mon_manager.raw_cluster_cmd("mds", "fail", original_a)
+        self.run_ceph_cmd("mds", "fail", original_a)
         self.wait_until_equal(lambda: len(fs_a.get_active_names()), 1, 30,
                               reject_fn=lambda v: v > 1)
         # Assert that it's a *different* daemon that has now appeared in the map for fs_a
@@ -762,7 +779,7 @@ class TestMultiFilesystems(CephFSTestCase):
 
         # Kill fs_b's active MDS, see a standby take over
         self.mds_cluster.mds_stop(original_b)
-        self.mds_cluster.mon_manager.raw_cluster_cmd("mds", "fail", original_b)
+        self.run_ceph_cmd("mds", "fail", original_b)
         self.wait_until_equal(lambda: len(fs_b.get_active_names()), 1, 30,
                               reject_fn=lambda v: v > 1)
         # Assert that it's a *different* daemon that has now appeared in the map for fs_a

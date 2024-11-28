@@ -280,7 +280,6 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
 Monitor::~Monitor()
 {
   op_tracker.on_shutdown();
-
   delete logger;
   ceph_assert(session_map.sessions.empty());
 }
@@ -2004,6 +2003,7 @@ void Monitor::handle_probe_reply(MonOpRequestRef op)
       dout(10) << " got newer/committed monmap epoch " << newmap->get_epoch()
 	       << ", mine was " << monmap->get_epoch() << dendl;
       int epoch_diff = newmap->get_epoch() - monmap->get_epoch();
+      dout(20) << " new monmap is " << *newmap  << dendl;
       delete newmap;
       monmap->decode(m->monmap_bl);
       dout(20) << "has_ever_joined: " << has_ever_joined << dendl;
@@ -6360,7 +6360,9 @@ int Monitor::handle_auth_request(
       &auth_meta->connection_secret,
       &auth_meta->authorizer_challenge);
     if (isvalid) {
-      ms_handle_fast_authentication(con);
+      if (!ms_handle_fast_authentication(con)) {
+        return -EACCES;
+      }
       return 1;
     }
     if (!more && !was_challenge && auth_meta->authorizer_challenge) {
@@ -6481,7 +6483,9 @@ int Monitor::handle_auth_request(
   }
   if (r > 0 &&
       !s->authenticated) {
-    ms_handle_fast_authentication(con);
+    if (!ms_handle_fast_authentication(con)) {
+      return -EACCES;
+    }
   }
 
   dout(30) << " r " << r << " reply:\n";
@@ -6519,18 +6523,23 @@ void Monitor::ms_handle_accept(Connection *con)
   }
 }
 
-int Monitor::ms_handle_fast_authentication(Connection *con)
+bool Monitor::ms_handle_fast_authentication(Connection *con)
 {
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_MON) {
     // mon <-> mon connections need no Session, and setting one up
     // creates an awkward ref cycle between Session and Connection.
-    return 1;
+    return true;
   }
 
   auto priv = con->get_priv();
   MonSession *s = static_cast<MonSession*>(priv.get());
   if (!s) {
     // must be msgr2, otherwise dispatch would have set up the session.
+    if (state == STATE_SHUTDOWN) {
+      dout(10) << __func__ << " ignoring new con " << con << " (shutdown)" << dendl;
+      con->mark_down();
+      return -EACCES;
+    }
     s = session_map.new_session(
       entity_name_t(con->get_peer_type(), -1),  // we don't know yet
       con->get_peer_addrs(),
@@ -6547,11 +6556,10 @@ int Monitor::ms_handle_fast_authentication(Connection *con)
 	   << " " << *s << dendl;
 
   AuthCapsInfo &caps_info = con->get_peer_caps_info();
-  int ret = 0;
   if (caps_info.allow_all) {
     s->caps.set_allow_all();
     s->authenticated = true;
-    ret = 1;
+    return true;
   } else if (caps_info.caps.length()) {
     bufferlist::const_iterator p = caps_info.caps.cbegin();
     string str;
@@ -6560,22 +6568,19 @@ int Monitor::ms_handle_fast_authentication(Connection *con)
     } catch (const ceph::buffer::error &err) {
       derr << __func__ << " corrupt cap data for " << con->get_peer_entity_name()
 	   << " in auth db" << dendl;
-      str.clear();
-      ret = -EACCES;
+      return false;
     }
-    if (ret >= 0) {
-      if (s->caps.parse(str, NULL)) {
-	s->authenticated = true;
-	ret = 1;
-      } else {
-	derr << __func__ << " unparseable caps '" << str << "' for "
-	     << con->get_peer_entity_name() << dendl;
-	ret = -EACCES;
-      }
+    if (s->caps.parse(str, NULL)) {
+      s->authenticated = true;
+      return true;
+    } else {
+      derr << __func__ << " unparseable caps '" << str << "' for "
+           << con->get_peer_entity_name() << dendl;
+      return false;
     }
+  } else {
+    return false;
   }
-
-  return ret;
 }
 
 void Monitor::set_mon_crush_location(const string& loc)
@@ -6636,14 +6641,16 @@ void Monitor::notify_new_monmap(bool can_change_external_state, bool remove_rank
 void Monitor::set_elector_disallowed_leaders(bool allow_election)
 {
   set<int> dl;
+  // inherit dl from monmap
   for (auto name : monmap->disallowed_leaders) {
     dl.insert(monmap->get_rank(name));
-  }
-  if (is_stretch_mode()) {
-    for (auto name : monmap->stretch_marked_down_mons) {
-      dl.insert(monmap->get_rank(name));
-    }
-    dl.insert(monmap->get_rank(monmap->tiebreaker_mon));
+  } // unconditionally add stretch_marked_down_mons to the new dl copy
+  for (auto name : monmap->stretch_marked_down_mons) {
+    dl.insert(monmap->get_rank(name));
+  } // add the tiebreaker_mon incase it is not in monmap->disallowed_leaders
+  if (!monmap->tiebreaker_mon.empty() &&
+      monmap->contains(monmap->tiebreaker_mon)) {
+      dl.insert(monmap->get_rank(monmap->tiebreaker_mon));
   }
 
   bool disallowed_changed = elector.set_disallowed_leaders(dl);

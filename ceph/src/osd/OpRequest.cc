@@ -31,7 +31,7 @@ using std::stringstream;
 using ceph::Formatter;
 
 OpRequest::OpRequest(Message* req, OpTracker* tracker)
-    : TrackedOp(tracker, req->get_throttle_stamp()),
+    : TrackedOp(tracker, req->get_recv_stamp()),
       request(req),
       hit_flag_points(0),
       latest_flag_point(0),
@@ -88,7 +88,7 @@ void OpRequest::_dump(Formatter *f) const
   }
 }
 
-void OpRequest::_dump_op_descriptor_unlocked(ostream& stream) const
+void OpRequest::_dump_op_descriptor(ostream& stream) const
 {
   get_req()->print(stream);
 }

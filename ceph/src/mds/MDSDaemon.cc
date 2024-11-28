@@ -157,6 +157,7 @@ void MDSDaemon::asok_command(
 		    // our response before seeing us disappear from mdsmap
 		    sleep(1);
 		    std::lock_guard l(mds_lock);
+                    derr << "Exiting due to admin socket command" << dendl;
 		    suicide();
 		  });
     t.detach();
@@ -258,7 +259,9 @@ void MDSDaemon::set_up_admin_socket()
   r = admin_socket->register_command("dump_ops_in_flight", asok_hook,
 				     "show the ops currently in flight");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("ops", asok_hook,
+  r = admin_socket->register_command("ops "
+				     "name=flags,type=CephChoices,strings=locks,n=N,req=false ",
+                                     asok_hook,
 				     "show the ops currently in flight");
   ceph_assert(r == 0);
   r = admin_socket->register_command("dump_blocked_ops",
@@ -359,11 +362,11 @@ void MDSDaemon::set_up_admin_socket()
 				     asok_hook,
 				     "List client sessions based on a filter");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("session evict name=filters,type=CephString,n=N,req=false",
+  r = admin_socket->register_command("session evict name=filters,type=CephString,n=N,req=true",
 				     asok_hook,
 				     "Evict client session(s) based on a filter");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("client evict name=filters,type=CephString,n=N,req=false",
+  r = admin_socket->register_command("client evict name=filters,type=CephString,n=N,req=true",
 				     asok_hook,
 				     "Evict client session(s) based on a filter");
   ceph_assert(r == 0);
@@ -436,6 +439,12 @@ void MDSDaemon::set_up_admin_socket()
                                      "name=number,type=CephInt,req=true",
 				     asok_hook,
 				     "dump inode by inode number");
+  ceph_assert(r == 0);
+  r = admin_socket->register_command("dump dir "
+				     "name=path,type=CephString,req=true "
+				     "name=dentry_dump,type=CephBool,req=false",
+				     asok_hook,
+				     "dump directory by path");
   ceph_assert(r == 0);
   r = admin_socket->register_command("exit",
 				     asok_hook,
@@ -1065,7 +1074,7 @@ bool MDSDaemon::parse_caps(const AuthCapsInfo& info, MDSAuthCaps& caps)
 
     dout(10) << __func__ << ": parsing auth_cap_str='" << auth_cap_str << "'" << dendl;
     CachedStackStringStream cs;
-    if (caps.parse(g_ceph_context, auth_cap_str, cs.get())) {
+    if (caps.parse(auth_cap_str, cs.get())) {
       return true;
     } else {
       dout(1) << __func__ << ": auth cap parse error: " << cs->strv() << " parsing '" << auth_cap_str << "'" << dendl;
@@ -1074,11 +1083,11 @@ bool MDSDaemon::parse_caps(const AuthCapsInfo& info, MDSAuthCaps& caps)
   }
 }
 
-int MDSDaemon::ms_handle_fast_authentication(Connection *con)
+bool MDSDaemon::ms_handle_fast_authentication(Connection *con)
 {
   /* N.B. without mds_lock! */
   MDSAuthCaps caps;
-  return parse_caps(con->get_peer_caps_info(), caps) ? 0 : -1;
+  return parse_caps(con->get_peer_caps_info(), caps);
 }
 
 void MDSDaemon::ms_handle_accept(Connection *con)

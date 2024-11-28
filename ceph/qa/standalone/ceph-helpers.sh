@@ -1744,8 +1744,47 @@ function test_wait_for_peered() {
     teardown $dir || return 1
 }
 
+function wait_for_string() {
+    local logfile=$1
+    local searchstr=$2
+
+    status=1
+    for ((i=0; i < $TIMEOUT; i++)); do
+        echo $i
+        if ! grep "$searchstr" $logfile; then
+            sleep 1
+        else
+            status=0
+            break
+        fi
+    done
+    return $status
+}
 
 #######################################################################
+
+##
+# Wait until the cluster's health condition disappeared.
+# $TIMEOUT default
+#
+# @param string to grep for in health detail
+# @return 0 if the cluster health doesn't matches request,
+# 1 otherwise if after $TIMEOUT seconds health condition remains.
+#
+function wait_for_health_gone() {
+    local grepstr=$1
+    local -a delays=($(get_timeout_delays $TIMEOUT .1))
+    local -i loop=0
+
+    while ceph health detail | grep "$grepstr" ; do
+	if (( $loop >= ${#delays[*]} )) ; then
+            ceph health detail
+            return 1
+        fi
+        sleep ${delays[$loop]}
+        loop+=1
+    done
+}
 
 ##
 # Wait until the cluster has health condition passed as arg

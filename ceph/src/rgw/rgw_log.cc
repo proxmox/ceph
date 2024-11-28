@@ -467,6 +467,10 @@ int OpsLogFile::log_json(struct req_state* s, bufferlist& bl)
   return 0;
 }
 
+unsigned OpsLogFile::get_subsys() const {
+  return dout_subsys;
+}
+
 JsonOpsLogSink::JsonOpsLogSink() {
   formatter = new JSONFormatter;
 }
@@ -601,13 +605,9 @@ int rgw_log_op(RGWREST* const rest, struct req_state *s, const RGWOp* op, OpsLog
     uri.append(s->info.env->get("REQUEST_URI"));
   }
 
-  if (s->info.env->exists("QUERY_STRING")) {
-    const char* qs = s->info.env->get("QUERY_STRING");
-    if(qs && (*qs != '\0')) {
-      uri.append("?");
-      uri.append(qs);
-    }
-  }
+  /* Formerly, we appended QUERY_STRING to uri, but in RGW, QUERY_STRING is a
+   * substring of REQUEST_URI--appending qs to uri here duplicates qs to the
+   * ops log */
 
   if (s->info.env->exists("HTTP_VERSION")) {
     uri.append(" ");
@@ -720,4 +720,3 @@ void rgw_log_entry::dump(Formatter *f) const
   f->dump_string("trans_id", trans_id);
   f->dump_unsigned("identity_type", identity_type);
 }
-

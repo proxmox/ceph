@@ -1,5 +1,6 @@
 local g = import 'grafonnet/grafana.libsonnet';
 
+
 (import 'utils.libsonnet') {
   'osds-overview.json':
     $.dashboardSchema(
@@ -89,19 +90,70 @@ local g = import 'grafonnet/grafana.libsonnet';
           ),
         ],
       ),
-      $.addTableSchema(
-        '$datasource',
-        "This table shows the osd's that are delivering the 10 highest read latencies within the cluster",
-        { col: 2, desc: true },
-        [
-          $.overviewStyle('OSD ID', 'ceph_daemon', 'string', 'short'),
-          $.overviewStyle('Latency (ms)', 'Value', 'number', 'none'),
-          $.overviewStyle('', '/.*/', 'hidden', 'short'),
+
+      $.addTableExtended(
+        datasource='${datasource}',
+        title='Highest READ Latencies',
+        gridPosition={ h: 8, w: 4, x: 8, y: 0 },
+        options={
+          footer: {
+            fields: '',
+            reducer: ['sum'],
+            countRows: false,
+            enablePagination: false,
+            show: false,
+          },
+          frameIndex: 1,
+          showHeader: true,
+        },
+        custom={ align: 'null', cellOptions: { type: 'auto' }, filterable: true, inspect: false },
+        thresholds={
+          mode: 'absolute',
+          steps: [
+            { color: 'green', value: null },
+            { color: 'red', value: 80 },
+          ],
+        },
+        overrides=[
+          {
+            matcher: { id: 'byName', options: 'ceph_daemon' },
+            properties: [
+              { id: 'displayName', value: 'OSD ID' },
+              { id: 'unit', value: 'short' },
+              { id: 'decimals', value: 2 },
+              { id: 'custom.align', value: null },
+            ],
+          },
+          {
+            matcher: { id: 'byName', options: 'Value' },
+            properties: [
+              { id: 'displayName', value: 'Latency (ms)' },
+              { id: 'unit', value: 'none' },
+              { id: 'decimals', value: 2 },
+              { id: 'custom.align', value: null },
+            ],
+          },
         ],
-        'Highest READ Latencies',
-        'table'
+        pluginVersion='10.4.0'
       )
-      .addTarget(
+      .addTransformations([
+        {
+          id: 'merge',
+          options: { reducers: [] },
+        },
+        {
+          id: 'organize',
+          options: {
+            excludeByName: {
+              Time: true,
+              cluster: true,
+            },
+            indexByName: {},
+            renameByName: {},
+            includeByName: {},
+          },
+        },
+      ]).addTarget(
         $.addTargetSchema(
           |||
             topk(10,
@@ -119,7 +171,8 @@ local g = import 'grafonnet/grafana.libsonnet';
           1,
           true
         )
-      ) + { gridPos: { x: 8, y: 0, w: 4, h: 8 } },
+      ),
+
       $.simpleGraphPanel(
         {
           '@95%ile write': '#e0752d',
@@ -164,21 +217,80 @@ local g = import 'grafonnet/grafana.libsonnet';
           ),
         ],
       ),
-      $.addTableSchema(
-        '$datasource',
-        "This table shows the osd's that are delivering the 10 highest write latencies within the cluster",
-        { col: 2, desc: true },
-        [
-          $.overviewStyle(
-            'OSD ID', 'ceph_daemon', 'string', 'short'
-          ),
-          $.overviewStyle('Latency (ms)', 'Value', 'number', 'none'),
-          $.overviewStyle('', '/.*/', 'hidden', 'short'),
+
+      $.addTableExtended(
+        datasource='${datasource}',
+        title='Highest WRITE Latencies',
+        description="This table shows the osd's that are delivering the 10 highest write latencies within the cluster",
+        gridPosition={ h: 8, w: 4, x: 20, y: 0 },
+        options={
+          footer: {
+            fields: '',
+            reducer: ['sum'],
+            countRows: false,
+            enablePagination: false,
+            show: false,
+          },
+          frameIndex: 1,
+          showHeader: true,
+        },
+        custom={ align: 'null', cellOptions: { type: 'auto' }, filterable: true, inspect: false },
+        thresholds={
+          mode: 'absolute',
+          steps: [
+            { color: 'green', value: null },
+            { color: 'red', value: 80 },
+          ],
+        },
+        overrides=[
+          {
+            matcher: { id: 'byName', options: 'ceph_daemon' },
+            properties: [
+              { id: 'displayName', value: 'OSD ID' },
+              { id: 'unit', value: 'short' },
+              { id: 'decimals', value: 2 },
+              { id: 'custom.align', value: null },
+            ],
+          },
+          {
+            matcher: { id: 'byName', options: 'Value' },
+            properties: [
+              { id: 'displayName', value: 'Latency (ms)' },
+              { id: 'unit', value: 'none' },
+              { id: 'decimals', value: 2 },
+              { id: 'custom.align', value: null },
+            ],
+          },
+          {
+            matcher: { id: 'byName', options: 'Value' },
+            properties: [
+              { id: 'mappings', value: [{ type: 'value', options: { NaN: { text: '0.00', index: 0 } } }] },
+              { id: 'unit', value: 'none' },
+              { id: 'decimals', value: 2 },
+              { id: 'custom.align', value: null },
+            ],
+          },
         ],
-        'Highest WRITE Latencies',
-        'table'
+        pluginVersion='10.4.0'
       )
-      .addTarget(
+      .addTransformations([
+        {
+          id: 'merge',
+          options: { reducers: [] },
+        },
+        {
+          id: 'organize',
+          options: {
+            excludeByName: {
+              Time: true,
+              cluster: true,
+            },
+            indexByName: {},
+            renameByName: {},
+            includeByName: {},
+          },
+        },
+      ]).addTarget(
         $.addTargetSchema(
           |||
             topk(10,
@@ -194,29 +306,20 @@ local g = import 'grafonnet/grafana.libsonnet';
           1,
           true
         )
-      ) + { gridPos: { x: 20, y: 0, w: 4, h: 8 } },
-      $.simplePieChart(
-        {}, '', 'OSD Types Summary'
-      )
+      ),
+
+      $.pieChartPanel('OSD Types Summary', '', '$datasource', { x: 0, y: 8, w: 4, h: 8 }, 'table', 'bottom', true, ['percent'], { mode: 'single', sort: 'none' }, 'pie', ['percent', 'value'], 'palette-classic')
       .addTarget(
         $.addTargetSchema('count by (device_class) (ceph_osd_metadata{%(matchers)s})' % $.matchers(), '{{device_class}}')
-      ) + { gridPos: { x: 0, y: 8, w: 4, h: 8 } },
-      $.simplePieChart(
-        { 'Non-Encrypted': '#E5AC0E' }, '', 'OSD Objectstore Types'
-      )
-      .addTarget(
-        $.addTargetSchema(
-          'count(ceph_bluefs_wal_total_bytes{%(matchers)s})' % $.matchers(), 'bluestore', 'time_series', 2
-        )
-      )
-      .addTarget(
-        $.addTargetSchema(
-          'absent(ceph_bluefs_wal_total_bytes{%(matchers)s}) * count(ceph_osd_metadata{%(matchers)s})' % $.matchers(), 'filestore', 'time_series', 2
-        )
-      ) + { gridPos: { x: 4, y: 8, w: 4, h: 8 } },
-      $.simplePieChart(
-        {}, 'The pie chart shows the various OSD sizes used within the cluster', 'OSD Size Summary'
-      )
+      ),
+      $.pieChartPanel('OSD Objectstore Types', '', '$datasource', { x: 4, y: 8, w: 4, h: 8 }, 'table', 'bottom', true, ['percent'], { mode: 'single', sort: 'none' }, 'pie', ['percent', 'value'], 'palette-classic')
+      .addTarget($.addTargetSchema(
+        'count(ceph_bluefs_wal_total_bytes{%(matchers)s})' % $.matchers(), 'bluestore', 'time_series', 2
+      ))
+      .addTarget($.addTargetSchema(
+        'absent(ceph_bluefs_wal_total_bytes{job=~"$job"}) * count(ceph_osd_metadata{job=~"$job"})' % $.matchers(), 'filestore', 'time_series', 2
+      )),
+      $.pieChartPanel('OSD Size Summary', 'The pie chart shows the various OSD sizes used within the cluster', '$datasource', { x: 8, y: 8, w: 4, h: 8 }, 'table', 'bottom', true, ['percent'], { mode: 'single', sort: 'none' }, 'pie', ['percent', 'value'], 'palette-classic')
       .addTarget($.addTargetSchema(
         'count(ceph_osd_stat_bytes{%(matchers)s} < 1099511627776)' % $.matchers(), '<1TB', 'time_series', 2
       ))
@@ -243,7 +346,7 @@ local g = import 'grafonnet/grafana.libsonnet';
       ))
       .addTarget($.addTargetSchema(
         'count(ceph_osd_stat_bytes{%(matchers)s} >= 13194139533312)' % $.matchers(), '<12TB+', 'time_series', 2
-      )) + { gridPos: { x: 8, y: 8, w: 4, h: 8 } },
+      )),
       g.graphPanel.new(bars=true,
                        datasource='$datasource',
                        title='Distribution of PGs per OSD',
@@ -257,7 +360,7 @@ local g = import 'grafonnet/grafana.libsonnet';
                        nullPointMode='null')
       .addTarget($.addTargetSchema(
         'ceph_osd_numpg{%(matchers)s}' % $.matchers(), 'PGs per OSD', 'time_series', 1, true
-      )) + { gridPos: { x: 12, y: 8, w: 8, h: 8 } },
+      )) + { type: 'timeseries' } + { fieldConfig: { defaults: { unit: 'short', custom: { fillOpacity: 8, showPoints: 'never' } } } } + { gridPos: { x: 12, y: 8, w: 8, h: 8 } },
       $.gaugeSingleStatPanel(
         'percentunit',
         'OSD onode Hits Ratio',
@@ -300,19 +403,75 @@ local g = import 'grafonnet/grafana.libsonnet';
       .addTargets([$.addTargetSchema(
         'round(sum(rate(ceph_pool_wr{%(matchers)s}[$__rate_interval])))' % $.matchers(), 'Writes'
       )]),
-      $.addTableSchema(
-        '$datasource',
-        'This table shows the 10 OSDs with the highest number of slow ops',
-        { col: 2, desc: true },
-        [
-          $.overviewStyle('OSD ID', 'ceph_daemon', 'string', 'short'),
-          $.overviewStyle('Slow Ops', 'Value', 'number', 'none'),
-          $.overviewStyle('', '/.*/', 'hidden', 'short'),
+
+      $.addTableExtended(
+        datasource='${datasource}',
+        title='Top Slow Ops',
+        description='This table shows the 10 OSDs with the highest number of slow ops',
+        gridPosition={ h: 8, w: 5, x: 0, y: 25 },
+        options={
+          footer: {
+            fields: '',
+            reducer: ['sum'],
+            countRows: false,
+            enablePagination: false,
+            show: false,
+          },
+          frameIndex: 1,
+          showHeader: true,
+        },
+        custom={ align: 'null', cellOptions: { type: 'auto' }, filterable: true, inspect: false },
+        thresholds={
+          mode: 'absolute',
+          steps: [
+            { color: 'green', value: null },
+            { color: 'red', value: 80 },
+          ],
+        },
+        overrides=[
+          {
+            matcher: { id: 'byName', options: 'ceph_daemon' },
+            properties: [
+              { id: 'displayName', value: 'OSD ID' },
+              { id: 'unit', value: 'short' },
+              { id: 'decimals', value: 2 },
+              { id: 'custom.align', value: null },
+            ],
+          },
+          {
+            matcher: { id: 'byName', options: 'Value' },
+            properties: [
+              { id: 'displayName', value: 'Slow Ops' },
+              { id: 'unit', value: 'none' },
+              { id: 'decimals', value: 2 },
+              { id: 'custom.align', value: null },
+            ],
+          },
         ],
-        'Top Slow Ops',
-        'table'
+        pluginVersion='10.4.0'
       )
-      .addTarget(
+      .addTransformations([
+        {
+          id: 'merge',
+          options: { reducers: [] },
+        },
+        {
+          id: 'organize',
+          options: {
+            excludeByName: {
+              Time: true,
+              __name__: true,
+              instance: true,
+              job: true,
+              type: true,
+              cluster: true,
+            },
+            indexByName: {},
+            renameByName: {},
+            includeByName: {},
+          },
+        },
+      ]).addTarget(
         $.addTargetSchema(
           |||
             topk(10,
@@ -324,7 +483,7 @@ local g = import 'grafonnet/grafana.libsonnet';
           1,
           true
         )
-      ) + { gridPos: { x: 0, y: 20, w: 4, h: 8 } },
+      ),
     ]),
   'osd-device-details.json':
     local OsdDeviceDetailsPanel(title,
@@ -342,7 +501,7 @@ local g = import 'grafonnet/grafana.libsonnet';
       $.graphPanelSchema({},
                          title,
                          description,
-                         'null',
+                         'null as zero',
                          false,
                          formatY1,
                          'short',
@@ -357,7 +516,7 @@ local g = import 'grafonnet/grafana.libsonnet';
                             legendFormat1),
           $.addTargetSchema(expr2, legendFormat2),
         ]
-      ) + { gridPos: { x: x, y: y, w: w, h: h } };
+      ) + { type: 'timeseries' } + { fieldConfig: { defaults: { unit: formatY1, custom: { fillOpacity: 8, showPoints: 'never' } } } } + { gridPos: { x: x, y: y, w: w, h: h } };
 
     $.dashboardSchema(
       'OSD device details',
@@ -613,6 +772,6 @@ local g = import 'grafonnet/grafana.libsonnet';
           )
         ||| % $.matchers(),
         '{{device}} on {{instance}}'
-      )) + { gridPos: { x: 18, y: 11, w: 6, h: 9 } },
+      )) + { type: 'timeseries' } + { fieldConfig: { defaults: { unit: 'percentunit', custom: { fillOpacity: 8, showPoints: 'never' } } } } + { gridPos: { x: 18, y: 11, w: 6, h: 9 } },
     ]),
 }

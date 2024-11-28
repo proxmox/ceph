@@ -59,8 +59,8 @@ class TestCephAdm(object):
 
         for side_effect, expected_exception in (
             (os_error(errno.EADDRINUSE), cd.PortOccupiedError),
-            (os_error(errno.EAFNOSUPPORT), cd.Error),
-            (os_error(errno.EADDRNOTAVAIL), cd.Error),
+            (os_error(errno.EAFNOSUPPORT), OSError),
+            (os_error(errno.EADDRNOTAVAIL), OSError),
             (None, None),
         ):
             _socket = mock.Mock()
@@ -75,23 +75,71 @@ class TestCephAdm(object):
 
     @mock.patch('cephadm.attempt_bind')
     @mock.patch('cephadm.logger')
-    def test_port_in_use(self, logger, attempt_bind):
+    def test_port_in_use(self, logger, _attempt_bind):
         empty_ctx = None
 
-        assert cd.port_in_use(empty_ctx, 9100) == False
+        assert cd.port_in_use(empty_ctx, cd.EndPoint('0.0.0.0', 9100)) == False
 
-        attempt_bind.side_effect = cd.PortOccupiedError('msg')
-        assert cd.port_in_use(empty_ctx, 9100) == True
+        _attempt_bind.side_effect = cd.PortOccupiedError('msg')
+        assert cd.port_in_use(empty_ctx, cd.EndPoint('0.0.0.0', 9100)) == True
 
         os_error = OSError()
         os_error.errno = errno.EADDRNOTAVAIL
-        attempt_bind.side_effect = os_error
-        assert cd.port_in_use(empty_ctx, 9100) == False
+        _attempt_bind.side_effect = os_error
+        assert cd.port_in_use(empty_ctx, cd.EndPoint('0.0.0.0', 9100)) == False
 
         os_error = OSError()
         os_error.errno = errno.EAFNOSUPPORT
-        attempt_bind.side_effect = os_error
-        assert cd.port_in_use(empty_ctx, 9100) == False
+        _attempt_bind.side_effect = os_error
+        assert cd.port_in_use(empty_ctx, cd.EndPoint('0.0.0.0', 9100)) == False
+
+    @mock.patch('cephadm.socket.socket.bind')
+    @mock.patch('cephadm.logger')
+    def test_port_in_use_special_cases(self, _logger, _bind):
+        # port_in_use has special handling for
+        # EAFNOSUPPORT and EADDRNOTAVAIL errno OSErrors.
+        # If we get those specific errors when attempting
+        # to bind to the ip:port we should not say the
+        # port is in use
+
+        def os_error(errno):
+            _os_error = OSError()
+            _os_error.errno = errno
+            return _os_error
+
+        _bind.side_effect = os_error(errno.EADDRNOTAVAIL)
+        in_use = cd.port_in_use(None, cd.EndPoint('1.2.3.4', 10000))
+        assert in_use == False
+
+        _bind.side_effect = os_error(errno.EAFNOSUPPORT)
+        in_use = cd.port_in_use(None, cd.EndPoint('1.2.3.4', 10000))
+        assert in_use == False
+
+        # this time, have it raise the actual port taken error
+        # so it should report the port is in use
+        _bind.side_effect = os_error(errno.EADDRINUSE)
+        in_use = cd.port_in_use(None, cd.EndPoint('1.2.3.4', 10000))
+        assert in_use == True
+
+    @mock.patch('cephadm.attempt_bind')
+    @mock.patch('cephadm.logger')
+    def test_port_in_use_with_specific_ips(self, _logger, _attempt_bind):
+        empty_ctx = None
+
+        def _fake_attempt_bind(ctx, s: socket.socket, addr: str, port: int) -> None:
+            occupied_error = cd.PortOccupiedError('msg')
+            if addr.startswith('200'):
+                raise occupied_error
+            if addr.startswith('100'):
+                if port == 4567:
+                    raise occupied_error
+
+        _attempt_bind.side_effect = _fake_attempt_bind
+
+        assert cd.port_in_use(empty_ctx, cd.EndPoint('200.0.0.0', 9100)) == True
+        assert cd.port_in_use(empty_ctx, cd.EndPoint('100.0.0.0', 9100)) == False
+        assert cd.port_in_use(empty_ctx, cd.EndPoint('100.0.0.0', 4567)) == True
+        assert cd.port_in_use(empty_ctx, cd.EndPoint('155.0.0.0', 4567)) == False
 
     @mock.patch('socket.socket')
     @mock.patch('cephadm.logger')
@@ -127,8 +175,8 @@ class TestCephAdm(object):
         ):
             for side_effect, expected_exception in (
                 (os_error(errno.EADDRINUSE), cd.PortOccupiedError),
-                (os_error(errno.EADDRNOTAVAIL), cd.Error),
-                (os_error(errno.EAFNOSUPPORT), cd.Error),
+                (os_error(errno.EADDRNOTAVAIL), OSError),
+                (os_error(errno.EAFNOSUPPORT), OSError),
                 (None, None),
             ):
                 mock_socket_obj = mock.Mock()
@@ -300,6 +348,7 @@ class TestCephAdm(object):
     @mock.patch('cephadm.migrate_sysctl_dir')
     @mock.patch('cephadm.check_unit', lambda *args, **kwargs: (None, 'running', None))
     @mock.patch('cephadm.get_unit_name', lambda *args, **kwargs: 'mon-unit-name')
+    @mock.patch('cephadm.extract_uid_gid', lambda *args, **kwargs: (167, 167))
     @mock.patch('cephadm.get_deployment_container')
     def test_mon_crush_location(self, _get_deployment_container, _migrate_sysctl, _make_var_run, _get_parm, _deploy_daemon, _file_lock, _logger):
         """
@@ -314,6 +363,7 @@ class TestCephAdm(object):
         ctx.allow_ptrace = True
         ctx.config_json = '-'
         ctx.osd_fsid = '0'
+        ctx.tcp_ports = '3300 6789'
         _get_parm.return_value = {
             'crush_location': 'database=a'
         }
@@ -1137,7 +1187,7 @@ class TestMaintenance:
         ctx: cd.CephadmContext = cd.cephadm_init_ctx(
             ['host-maintenance', 'enter', '--fsid', TestMaintenance.fsid])
         ctx.container_engine = mock_podman()
-        retval = cd.command_maintenance(ctx)
+        retval = cd.change_maintenance_mode(ctx)
         assert retval.startswith('failed')
 
     @mock.patch('os.listdir', return_value=[])
@@ -1149,7 +1199,7 @@ class TestMaintenance:
         ctx: cd.CephadmContext = cd.cephadm_init_ctx(
             ['host-maintenance', 'enter', '--fsid', TestMaintenance.fsid])
         ctx.container_engine = mock_podman()
-        retval = cd.command_maintenance(ctx)
+        retval = cd.change_maintenance_mode(ctx)
         assert retval.startswith('failed')
 
     @mock.patch('os.listdir', return_value=[])
@@ -1163,7 +1213,7 @@ class TestMaintenance:
         ctx: cd.CephadmContext = cd.cephadm_init_ctx(
             ['host-maintenance', 'exit', '--fsid', TestMaintenance.fsid])
         ctx.container_engine = mock_podman()
-        retval = cd.command_maintenance(ctx)
+        retval = cd.change_maintenance_mode(ctx)
         assert retval.startswith('failed')
 
     @mock.patch('os.listdir', return_value=[])
@@ -1177,7 +1227,7 @@ class TestMaintenance:
         ctx: cd.CephadmContext = cd.cephadm_init_ctx(
             ['host-maintenance', 'exit', '--fsid', TestMaintenance.fsid])
         ctx.container_engine = mock_podman()
-        retval = cd.command_maintenance(ctx)
+        retval = cd.change_maintenance_mode(ctx)
         assert retval.startswith('failed')
 
 
@@ -1751,11 +1801,11 @@ if ! grep -qs /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id
 # iscsi tcmu-runner container
 ! /usr/bin/podman rm -f ceph-9b9d7609-f4d5-4aba-94c8-effa764d96c9-iscsi.daemon_id-tcmu 2> /dev/null
 ! /usr/bin/podman rm -f ceph-9b9d7609-f4d5-4aba-94c8-effa764d96c9-iscsi-daemon_id-tcmu 2> /dev/null
-/usr/bin/podman run --rm --ipc=host --stop-signal=SIGTERM --net=host --entrypoint /usr/bin/tcmu-runner --privileged --group-add=disk --init --name ceph-9b9d7609-f4d5-4aba-94c8-effa764d96c9-iscsi-daemon_id-tcmu --pids-limit=0 -e CONTAINER_IMAGE=ceph/ceph -e NODE_NAME=host1 -e CEPH_USE_RANDOM_NONCE=1 -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/config:/etc/ceph/ceph.conf:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/keyring:/etc/ceph/keyring:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/iscsi-gateway.cfg:/etc/ceph/iscsi-gateway.cfg:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/configfs:/sys/kernel/config -v /var/log/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9:/var/log:z -v /dev:/dev --mount type=bind,source=/lib/modules,destination=/lib/modules,ro=true ceph/ceph &
+/usr/bin/podman run --rm --ipc=host --stop-signal=SIGTERM --net=host --entrypoint /usr/local/scripts/tcmu-runner-entrypoint.sh --privileged --group-add=disk --init --name ceph-9b9d7609-f4d5-4aba-94c8-effa764d96c9-iscsi-daemon_id-tcmu --pids-limit=0 -e CONTAINER_IMAGE=ceph/ceph -e NODE_NAME=host1 -e CEPH_USE_RANDOM_NONCE=1 -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/config:/etc/ceph/ceph.conf:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/keyring:/etc/ceph/keyring:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/iscsi-gateway.cfg:/etc/ceph/iscsi-gateway.cfg:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/configfs:/sys/kernel/config -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/tcmu-runner-entrypoint.sh:/usr/local/scripts/tcmu-runner-entrypoint.sh -v /var/log/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9:/var/log:z -v /dev:/dev --mount type=bind,source=/lib/modules,destination=/lib/modules,ro=true ceph/ceph &
 # iscsi.daemon_id
 ! /usr/bin/podman rm -f ceph-9b9d7609-f4d5-4aba-94c8-effa764d96c9-iscsi.daemon_id 2> /dev/null
 ! /usr/bin/podman rm -f ceph-9b9d7609-f4d5-4aba-94c8-effa764d96c9-iscsi-daemon_id 2> /dev/null
-/usr/bin/podman run --rm --ipc=host --stop-signal=SIGTERM --net=host --entrypoint /usr/bin/rbd-target-api --privileged --group-add=disk --init --name ceph-9b9d7609-f4d5-4aba-94c8-effa764d96c9-iscsi-daemon_id --pids-limit=0 -e CONTAINER_IMAGE=ceph/ceph -e NODE_NAME=host1 -e CEPH_USE_RANDOM_NONCE=1 -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/config:/etc/ceph/ceph.conf:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/keyring:/etc/ceph/keyring:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/iscsi-gateway.cfg:/etc/ceph/iscsi-gateway.cfg:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/configfs:/sys/kernel/config -v /var/log/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9:/var/log:z -v /dev:/dev --mount type=bind,source=/lib/modules,destination=/lib/modules,ro=true ceph/ceph
+/usr/bin/podman run --rm --ipc=host --stop-signal=SIGTERM --net=host --entrypoint /usr/bin/rbd-target-api --privileged --group-add=disk --init --name ceph-9b9d7609-f4d5-4aba-94c8-effa764d96c9-iscsi-daemon_id --pids-limit=0 -e CONTAINER_IMAGE=ceph/ceph -e NODE_NAME=host1 -e CEPH_USE_RANDOM_NONCE=1 -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/config:/etc/ceph/ceph.conf:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/keyring:/etc/ceph/keyring:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/iscsi-gateway.cfg:/etc/ceph/iscsi-gateway.cfg:z -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/configfs:/sys/kernel/config -v /var/lib/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9/iscsi.daemon_id/tcmu-runner-entrypoint.sh:/usr/local/scripts/tcmu-runner-entrypoint.sh -v /var/log/ceph/9b9d7609-f4d5-4aba-94c8-effa764d96c9:/var/log:z -v /dev:/dev --mount type=bind,source=/lib/modules,destination=/lib/modules,ro=true ceph/ceph
 """
 
     def test_get_container(self):

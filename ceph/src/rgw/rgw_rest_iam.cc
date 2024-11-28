@@ -30,8 +30,9 @@ void RGWHandler_REST_IAM::rgw_iam_parse_input()
       for (const auto& t : tokens) {
         auto pos = t.find("=");
         if (pos != string::npos) {
+          constexpr bool in_query = true; // replace '+' with ' '
           s->info.args.append(t.substr(0,pos),
-                              url_decode(t.substr(pos+1, t.size() -1)));
+                              url_decode(t.substr(pos+1, t.size() -1), in_query));
         }
       }
     }
@@ -53,7 +54,7 @@ RGWOp *RGWHandler_REST_IAM::op_post()
     if (action.compare("GetRole") == 0)
       return new RGWGetRole;
     if (action.compare("UpdateAssumeRolePolicy") == 0)
-      return new RGWModifyRole(this->bl_post_body);
+      return new RGWModifyRoleTrustPolicy(this->bl_post_body);
     if (action.compare("ListRoles") == 0)
       return new RGWListRoles;
     if (action.compare("PutRolePolicy") == 0)

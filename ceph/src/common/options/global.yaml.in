@@ -104,8 +104,8 @@ options:
 - name: public_network_interface
   type: str
   level: advanced
-  desc: Interface name(s) from which to choose an address from a public_network to
-    bind to; public_network must also be specified.
+  desc: Interface name(s) from which to choose an address from a ``public_network`` to
+    bind to; ``public_network`` must also be specified.
   tags:
   - network
   services:
@@ -135,8 +135,8 @@ options:
 - name: cluster_network_interface
   type: str
   level: advanced
-  desc: Interface name(s) from which to choose an address from a cluster_network to
-    bind to; cluster_network must also be specified.
+  desc: Interface name(s) from which to choose an address from a ``cluster_network`` to
+    bind to; ``cluster_network`` must also be specified.
   tags:
   - network
   services:
@@ -473,6 +473,7 @@ options:
     to the log.  For example, debug_osd=1/5 will write everything <= 1 to the log
     unconditionally but keep entries at levels 2-5 in memory.  If there is a seg fault
     or assertion failure, all entries will be dumped to the log.
+  min: 1
   default: 500
   daemon_default: 10000
   # default changed by common_preinit()
@@ -1012,8 +1013,10 @@ options:
   type: str
   level: advanced
   desc: Compression algorithm to use in Messenger when communicating with OSD
-  long_desc: Compression algorithm for connections with OSD in order of preference
-  default: snappy zlib zstd lz4
+  long_desc: Compression algorithm for connections with OSD in order of preference 
+    Although the default value is set to snappy, a list
+    (like snappy zlib zstd etc.) is acceptable as well. 
+  default: snappy
   services:
   - osd
   see_also:
@@ -4124,6 +4127,7 @@ options:
   - bitmap
   - stupid
   - avl
+  - btree
   - hybrid
   with_legacy: true
 - name: bluefs_log_replay_check_allocations
@@ -4903,6 +4907,7 @@ options:
   - bitmap
   - stupid
   - avl
+  - btree
   - hybrid
   - zoned
   with_legacy: true
@@ -4982,10 +4987,17 @@ options:
     [hash_begin..hash_end) defines characters to use for hash calculation. Recommended
     hash ranges: O(0-13) P(0-8) m(0-16). Sharding of S,T,C,M,B prefixes is inadvised'
   fmt_desc: Definition of BlueStore's RocksDB sharding.
-    The optimal value depends on multiple factors, and modification is invadvisable.
+    The optimal value depends on multiple factors, and modification is inadvisable.
     This setting is used only when OSD is doing ``--mkfs``.
     Next runs of OSD retrieve sharding from disk.
   default: m(3) p(3,0-12) O(3,0-13)=block_cache={type=binned_lru} L P
+- name: bluestore_async_db_compaction
+  type: bool
+  level: dev
+  desc: Perform DB compaction requests asynchronously
+  long_desc: 'How to perform DB compactions triggered either through async socket or
+    by OSD initialization procedure on start.'
+  default: true
 - name: bluestore_qfsck_on_mount
   type: bool
   level: dev
@@ -5302,6 +5314,18 @@ options:
   level: advanced
   desc: Enable health indication when spurious read errors are observed by OSD
   default: true
+  with_legacy: true
+- name: bluestore_slow_ops_warn_lifetime
+  type: uint
+  level: advanced
+  desc: A configurable duration for slow ops warning to be appeared if number of occurence pass `bluestore_slow_ops_warn_threshold` in `bluestore_slow_ops_warn_lifetime` seconds
+  default: 86400
+  with_legacy: true
+- name: bluestore_slow_ops_warn_threshold
+  type: uint
+  level: advanced
+  desc: A configurable number for slow ops warning to be appeared if number of occurence pass `bluestore_slow_ops_warn_threshold` in `bluestore_slow_ops_warn_lifetime` seconds
+  default: 1
   with_legacy: true
 - name: bluestore_fsck_error_on_no_per_pool_omap
   type: bool
@@ -6338,6 +6362,18 @@ options:
   - spdk
   - pmem
   - hm_smr
+- name: bdev_stalled_read_warn_lifetime
+  type: uint
+  level: advanced
+  desc: A configurable duration for stalled read warning to be appeared if number of stalled read occurence pass `bdev_stalled_read_warn_threshold` in `bdev_stalled_read_warn_lifetime` seconds
+  default: 86400
+  with_legacy: true
+- name: bdev_stalled_read_warn_threshold
+  type: uint
+  level: advanced
+  desc: A configurable number for stalled read warning to be appeared if number of stalled read occurence pass `bdev_stalled_read_warn_threshold` in `bdev_stalled_read_warn_lifetime` seconds
+  default: 1
+  with_legacy: true
 - name: bluestore_cleaner_sleep_interval
   type: float
   level: advanced
@@ -6360,3 +6396,9 @@ options:
   default: 0
   services:
   - mgr
+- name: objectstore_debug_throw_on_failed_txc
+  type: bool
+  level: dev
+  desc: Enables exception throwing instead of process abort on transaction submission error.
+  default: false
+  with_legacy: false

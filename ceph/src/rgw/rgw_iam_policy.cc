@@ -143,7 +143,7 @@ static const actpair actpairs[] =
  { "iam:CreateRole", iamCreateRole},
  { "iam:DeleteRole", iamDeleteRole},
  { "iam:GetRole", iamGetRole},
- { "iam:ModifyRole", iamModifyRole},
+ { "iam:ModifyRoleTrustPolicy", iamModifyRoleTrustPolicy},
  { "iam:ListRoles", iamListRoles},
  { "iam:PutRolePolicy", iamPutRolePolicy},
  { "iam:GetRolePolicy", iamGetRolePolicy},
@@ -529,7 +529,7 @@ bool ParseState::do_string(CephContext* cct, const char* s, size_t l) {
         t->action = allValue : t->notaction = allValue);
     } else {
       for (auto& p : actpairs) {
-        if (match_policy({s, l}, p.name, MATCH_POLICY_ACTION)) {
+        if (match_policy(string(s, l), p.name, MATCH_POLICY_ACTION)) {
           is_validaction = true;
           (w->id == TokenID::Action ? t->action[p.bit] = 1 : t->notaction[p.bit] = 1);
         }
@@ -1325,8 +1325,8 @@ const char* action_bit_string(uint64_t action) {
   case iamGetRole:
     return "iam:GetRole";
 
-  case iamModifyRole:
-    return "iam:ModifyRole";
+  case iamModifyRoleTrustPolicy:
+    return "iam:ModifyRoleTrustPolicy";
 
   case iamListRoles:
     return "iam:ListRoles";

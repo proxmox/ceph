@@ -624,18 +624,29 @@ int rgw_build_bucket_policies(const DoutPrefixProvider *dpp, rgw::sal::Store* st
       }
     } catch (const std::exception& e) {
       ldpp_dout(dpp, -1) << "Error reading IAM User Policy: " << e.what() << dendl;
-      ret = -EACCES;
+      if (!s->system_request) {
+        ret = -EACCES;
+      }
     }
   }
 
   try {
     s->iam_policy = get_iam_policy_from_attr(s->cct, s->bucket_attrs, s->bucket_tenant);
   } catch (const std::exception& e) {
-    // Really this is a can't happen condition. We parse the policy
-    // when it's given to us, so perhaps we should abort or otherwise
-    // raise bloody murder.
     ldpp_dout(dpp, 0) << "Error reading IAM Policy: " << e.what() << dendl;
-    ret = -EACCES;
+
+    // This really shouldn't happen. We parse the policy when it's given to us,
+    // so a parsing failure here means we broke backward compatibility. The only
+    // sensible thing to do in this case is to deny access, because the policy
+    // may have.
+    //
+    // However, the only way for an administrator to repair such a bucket is to
+    // send a PutBucketPolicy or DeleteBucketPolicy request as an admin/system
+    // user. We can allow such requests, because even if the policy denied
+    // access, admin/system users override that error from verify_permission().
+    if (!s->system_request) {
+      ret = -EACCES;
+    }
   }
 
   bool success = store->get_zone()->get_redirect_endpoint(&s->redirect_zone_endpoint);
@@ -784,6 +795,22 @@ static int rgw_iam_add_buckettags(const DoutPrefixProvider *dpp, struct req_stat
   return rgw_iam_add_buckettags(dpp, s, s->bucket.get());
 }
 
+static void rgw_iam_add_crypt_attrs(rgw::IAM::Environment& e,
+                                    const meta_map_t& attrs)
+{
+  constexpr auto encrypt_attr = "x-amz-server-side-encryption";
+  constexpr auto s3_encrypt_attr = "s3:x-amz-server-side-encryption";
+  if (auto h = attrs.find(encrypt_attr); h != attrs.end()) {
+    rgw_add_to_iam_environment(e, s3_encrypt_attr, h->second);
+  }
+
+  constexpr auto kms_attr = "x-amz-server-side-encryption-aws-kms-key-id";
+  constexpr auto s3_kms_attr = "s3:x-amz-server-side-encryption-aws-kms-key-id";
+  if (auto h = attrs.find(kms_attr); h != attrs.end()) {
+    rgw_add_to_iam_environment(e, s3_kms_attr, h->second);
+  }
+}
+
 static std::tuple<bool, bool> rgw_check_policy_condition(const DoutPrefixProvider *dpp,
                                                           boost::optional<rgw::IAM::Policy> iam_policy,
                                                           boost::optional<vector<rgw::IAM::Policy>> identity_policies,
@@ -914,6 +941,41 @@ void rgw_build_iam_environment(rgw::sal::Store* store,
   } else {
     s->env.emplace("sts:authentication", "false");
   }
+}
+
+/*
+ * GET on CloudTiered objects is processed only when sent from the sync client.
+ * In all other cases, fail with `ERR_INVALID_OBJECT_STATE`.
+ */
+int handle_cloudtier_obj(rgw::sal::Attrs& attrs, bool sync_cloudtiered) {
+  int op_ret = 0;
+  auto attr_iter = attrs.find(RGW_ATTR_MANIFEST);
+  if (attr_iter != attrs.end()) {
+    RGWObjManifest m;
+    try {
+      decode(m, attr_iter->second);
+      if (m.get_tier_type() == "cloud-s3") {
+        if (!sync_cloudtiered) {
+          /* XXX: Instead send presigned redirect or read-through */
+          op_ret = -ERR_INVALID_OBJECT_STATE;
+        } else { // fetch object for sync and set cloud_tier attrs
+          bufferlist t, t_tier;
+          RGWObjTier tier_config;
+          m.get_tier_config(&tier_config);
+
+          t.append("cloud-s3");
+          attrs[RGW_ATTR_CLOUD_TIER_TYPE] = t;
+          encode(tier_config, t_tier);
+          attrs[RGW_ATTR_CLOUD_TIER_CONFIG] = t_tier;
+        }
+      }
+    } catch (const buffer::end_of_buffer&) {
+      // ignore empty manifest; it's not cloud-tiered
+    } catch (const std::exception& e) {
+    }
+  }
+
+  return op_ret;
 }
 
 void rgw_bucket_object_pre_exec(struct req_state *s)
@@ -1350,9 +1412,8 @@ int RGWOp::init_quota()
     return 0;
   }
 
-  /* only interested in object related ops */
-  if (rgw::sal::Bucket::empty(s->bucket.get())
-      || rgw::sal::Object::empty(s->object.get())) {
+  /* Need a bucket to get quota */
+  if (rgw::sal::Bucket::empty(s->bucket.get())) {
     return 0;
   }
 
@@ -2143,11 +2204,11 @@ void RGWGetObj::execute(optional_yield y)
   read_op->params.lastmod = &lastmod;
 
   op_ret = read_op->prepare(s->yield, this);
-  if (op_ret < 0)
-    goto done_err;
   version_id = s->object->get_instance();
   s->obj_size = s->object->get_obj_size();
   attrs = s->object->get_attrs();
+  if (op_ret < 0)
+    goto done_err;
 
   /* STAT ops don't need data, and do no i/o */
   if (get_type() == RGW_OP_STAT_OBJ) {
@@ -2198,15 +2259,14 @@ void RGWGetObj::execute(optional_yield y)
       filter = &*decompress;
   }
 
-  attr_iter = attrs.find(RGW_ATTR_MANIFEST);
-  if (attr_iter != attrs.end() && get_type() == RGW_OP_GET_OBJ && get_data) {
-    RGWObjManifest m;
-    decode(m, attr_iter->second);
-    if (m.get_tier_type() == "cloud-s3") {
-      /* XXX: Instead send presigned redirect or read-through */
-      op_ret = -ERR_INVALID_OBJECT_STATE;
-      ldpp_dout(this, 0) << "ERROR: Cannot get cloud tiered object. Failing with "
-		       << op_ret << dendl;
+  if (get_type() == RGW_OP_GET_OBJ && get_data) {
+    op_ret = handle_cloudtier_obj(attrs, sync_cloudtiered);
+    if (op_ret < 0) {
+      ldpp_dout(this, 4) << "Cannot get cloud tiered object: " << *s->object
+          <<". Failing with " << op_ret << dendl;
+      if (op_ret == -ERR_INVALID_OBJECT_STATE) {
+        s->err.message = "This object was transitioned to cloud-s3";
+      }
       goto done_err;
     }
   }
@@ -3294,7 +3354,7 @@ void RGWCreateBucket::execute(optional_yield y)
    * recover from a partial create by retrying it. */
   ldpp_dout(this, 20) << "rgw_create_bucket returned ret=" << op_ret << " bucket=" << s->bucket.get() << dendl;
 
-  if (op_ret)
+  if (op_ret < 0 && op_ret != -EEXIST && op_ret != -ERR_BUCKET_EXISTS)
     return;
 
   const bool existed = s->bucket_exists;
@@ -3572,7 +3632,7 @@ int RGWPutObj::verify_permission(optional_yield y)
         auto usr_policy_res = Effect::Pass;
         rgw::ARN obj_arn(cs_object->get_obj());
         for (auto& user_policy : s->iam_user_policies) {
-          if (usr_policy_res = user_policy.eval(s->env, *s->auth.identity,
+          if (usr_policy_res = user_policy.eval(s->env, boost::none,
 			      cs_object->get_instance().empty() ?
 			      rgw::IAM::s3GetObject :
 			      rgw::IAM::s3GetObjectVersion,
@@ -3630,19 +3690,8 @@ int RGWPutObj::verify_permission(optional_yield y)
       }
     }
 
-    constexpr auto encrypt_attr = "x-amz-server-side-encryption";
-    constexpr auto s3_encrypt_attr = "s3:x-amz-server-side-encryption";
-    auto enc_header = s->info.crypt_attribute_map.find(encrypt_attr);
-    if (enc_header != s->info.crypt_attribute_map.end()){
-      rgw_add_to_iam_environment(s->env, s3_encrypt_attr, enc_header->second);
-    }
-
-    constexpr auto kms_attr = "x-amz-server-side-encryption-aws-kms-key-id";
-    constexpr auto s3_kms_attr = "s3:x-amz-server-side-encryption-aws-kms-key-id";
-    auto kms_header = s->info.crypt_attribute_map.find(kms_attr);
-    if (kms_header != s->info.crypt_attribute_map.end()){
-      rgw_add_to_iam_environment(s->env, s3_kms_attr, kms_header->second);
-    }
+    // add server-side encryption headers
+    rgw_iam_add_crypt_attrs(s->env, s->info.crypt_attribute_map);
 
     // Add bucket tags for authorization
     auto [has_s3_existing_tag, has_s3_resource_tag] = rgw_check_policy_condition(this, s, false);
@@ -3996,12 +4045,20 @@ void RGWPutObj::execute(optional_yield y)
     bufferlist bl;
     if (astate->get_attr(RGW_ATTR_MANIFEST, bl)) {
       RGWObjManifest m;
-      decode(m, bl);
-      if (m.get_tier_type() == "cloud-s3") {
-        op_ret = -ERR_INVALID_OBJECT_STATE;
-        ldpp_dout(this, 0) << "ERROR: Cannot copy cloud tiered object. Failing with "
-		       << op_ret << dendl;
-        return;
+      try{
+        decode(m, bl);
+        if (m.get_tier_type() == "cloud-s3") {
+          op_ret = -ERR_INVALID_OBJECT_STATE;
+          s->err.message = "This object was transitioned to cloud-s3";
+          ldpp_dout(this, 4) << "Cannot copy cloud tiered object. Failing with "
+                         << op_ret << dendl;
+          return;
+        }
+      } catch (const buffer::end_of_buffer&) {
+        // ignore empty manifest; it's not cloud-tiered
+      } catch (const std::exception& e) {
+        ldpp_dout(this, 1) << "WARNING: failed to decode object manifest for "
+            << *s->object << ": " << e.what() << dendl;
       }
     }
 
@@ -4245,6 +4302,9 @@ void RGWPostObj::execute(optional_yield y)
     return;
   }
 
+  // add server-side encryption headers
+  rgw_iam_add_crypt_attrs(s->env, s->info.crypt_attribute_map);
+
   if (s->iam_policy || ! s->iam_user_policies.empty() || !s->session_policies.empty()) {
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
                                             rgw::IAM::s3PutObject,
@@ -4324,7 +4384,6 @@ void RGWPostObj::execute(optional_yield y)
     // Allow use of MD5 digest in FIPS mode for non-cryptographic purposes
     hash.SetFlags(EVP_MD_CTX_FLAG_NON_FIPS_ALLOW);
     ceph::buffer::list bl, aclbl;
-    int len = 0;
 
     op_ret = s->bucket->check_quota(this, user_quota, bucket_quota, s->content_length, y);
     if (op_ret < 0) {
@@ -4392,7 +4451,7 @@ void RGWPostObj::execute(optional_yield y)
     bool again;
     do {
       ceph::bufferlist data;
-      len = get_data(data, again);
+      int len = get_data(data, again);
 
       if (len < 0) {
         op_ret = len;
@@ -4423,7 +4482,7 @@ void RGWPostObj::execute(optional_yield y)
       return;
     }
 
-    if (len < min_len) {
+    if (ofs < min_len) {
       op_ret = -ERR_TOO_SMALL;
       return;
     }
@@ -5448,12 +5507,20 @@ void RGWCopyObj::execute(optional_yield y)
     bufferlist bl;
     if (astate->get_attr(RGW_ATTR_MANIFEST, bl)) {
       RGWObjManifest m;
-      decode(m, bl);
-      if (m.get_tier_type() == "cloud-s3") {
-        op_ret = -ERR_INVALID_OBJECT_STATE;
-        ldpp_dout(this, 0) << "ERROR: Cannot copy cloud tiered object. Failing with "
-		       << op_ret << dendl;
-        return;
+      try{
+        decode(m, bl);
+        if (m.get_tier_type() == "cloud-s3") {
+          op_ret = -ERR_INVALID_OBJECT_STATE;
+          s->err.message = "This object was transitioned to cloud-s3";
+          ldpp_dout(this, 4) << "Cannot copy cloud tiered object. Failing with "
+                         << op_ret << dendl;
+          return;
+        }
+      } catch (const buffer::end_of_buffer&) {
+        // ignore empty manifest; it's not cloud-tiered
+      } catch (const std::exception& e) {
+        ldpp_dout(this, 1) << "WARNING: failed to decode object manifest for "
+            << *s->object << ": " << e.what() << dendl;
       }
     }
 
@@ -6074,16 +6141,15 @@ void RGWSetRequestPayment::pre_exec()
 void RGWSetRequestPayment::execute(optional_yield y)
 {
 
+  op_ret = get_params(y);
+  if (op_ret < 0)
+    return;
+  
   op_ret = store->forward_request_to_master(this, s->user.get(), nullptr, in_data, nullptr, s->info, y);
   if (op_ret < 0) {
     ldpp_dout(this, 0) << "forward_request_to_master returned ret=" << op_ret << dendl;
     return;
   }
-
-  op_ret = get_params(y);
-
-  if (op_ret < 0)
-    return;
 
   s->bucket->get_info().requester_pays = requester_pays;
   op_ret = s->bucket->put_info(this, false, real_time());
@@ -6100,6 +6166,9 @@ int RGWInitMultipart::verify_permission(optional_yield y)
   auto [has_s3_existing_tag, has_s3_resource_tag] = rgw_check_policy_condition(this, s);
   if (has_s3_existing_tag || has_s3_resource_tag)
     rgw_iam_add_objtags(this, s, has_s3_existing_tag, has_s3_resource_tag);
+
+  // add server-side encryption headers
+  rgw_iam_add_crypt_attrs(s->env, s->info.crypt_attribute_map);
 
   if (s->iam_policy || ! s->iam_user_policies.empty() || !s->session_policies.empty()) {
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
@@ -6213,6 +6282,9 @@ int RGWCompleteMultipart::verify_permission(optional_yield y)
   auto [has_s3_existing_tag, has_s3_resource_tag] = rgw_check_policy_condition(this, s);
   if (has_s3_existing_tag || has_s3_resource_tag)
     rgw_iam_add_objtags(this, s, has_s3_existing_tag, has_s3_resource_tag);
+
+  // add server-side encryption headers
+  rgw_iam_add_crypt_attrs(s->env, s->info.crypt_attribute_map);
 
   if (s->iam_policy || ! s->iam_user_policies.empty() || ! s->session_policies.empty()) {
     auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env,
@@ -6463,6 +6535,9 @@ void RGWCompleteMultipart::complete()
       ldpp_dout(this, 0) << "WARNING: failed to unlock " << serializer->oid << dendl;
     }
   }
+
+  etag = s->object->get_attrs()[RGW_ATTR_ETAG].to_str();
+
   send_response();
 }
 
@@ -6931,7 +7006,6 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
     op_ret = 0;
   }
 
-  send_partial_response(o, obj->get_delete_marker(), del_op->result.version_id, op_ret, formatter_flush_cond);
 
   // send request to notification manager
   int ret = res->publish_commit(this, obj_size, ceph::real_clock::now(), etag, version_id);
@@ -6939,6 +7013,8 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
     ldpp_dout(this, 1) << "ERROR: publishing notification failed, with error: " << ret << dendl;
     // too late to rollback operation, hence op_ret is not set here
   }
+  
+  send_partial_response(o, del_op->result.delete_marker, del_op->result.version_id, op_ret, formatter_flush_cond);
 }
 
 void RGWDeleteMultiObj::execute(optional_yield y)

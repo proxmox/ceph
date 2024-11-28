@@ -165,6 +165,17 @@ class ContainerInfo:
                 and self.version == other.version)
 
 
+class DeploymentType(Enum):
+    # Fresh deployment of a daemon.
+    DEFAULT = 'Deploy'
+    # Redeploying a daemon. Works the same as fresh
+    # deployment minus port checking.
+    REDEPLOY = 'Redeploy'
+    # Reconfiguring a daemon. Rewrites config
+    # files and potentially restarts daemon.
+    RECONFIG = 'Reconfig'
+
+
 class BaseConfig:
 
     def __init__(self) -> None:
@@ -230,9 +241,8 @@ class ContainerEngine:
     def __init__(self) -> None:
         self.path = find_program(self.EXE)
 
-    @classmethod
     @property
-    def EXE(cls) -> str:
+    def EXE(self) -> str:
         raise NotImplementedError()
 
     def __str__(self) -> str:
@@ -464,13 +474,10 @@ class SNMPGateway:
 
     @property
     def port(self) -> int:
-        if not self.ctx.tcp_ports:
+        endpoints = fetch_tcp_ports(self.ctx)
+        if not endpoints:
             return self.DEFAULT_PORT
-        else:
-            if len(self.ctx.tcp_ports) > 0:
-                return int(self.ctx.tcp_ports.split()[0])
-            else:
-                return self.DEFAULT_PORT
+        return endpoints[0].port
 
     def get_daemon_args(self) -> List[str]:
         v3_args = []
@@ -846,6 +853,7 @@ class CephIscsi(object):
         mounts[os.path.join(data_dir, 'keyring')] = '/etc/ceph/keyring:z'
         mounts[os.path.join(data_dir, 'iscsi-gateway.cfg')] = '/etc/ceph/iscsi-gateway.cfg:z'
         mounts[os.path.join(data_dir, 'configfs')] = '/sys/kernel/config'
+        mounts[os.path.join(data_dir, 'tcmu-runner-entrypoint.sh')] = '/usr/local/scripts/tcmu-runner-entrypoint.sh'
         mounts[log_dir] = '/var/log:z'
         mounts['/dev'] = '/dev'
         return mounts
@@ -864,14 +872,31 @@ class CephIscsi(object):
     @staticmethod
     def get_version(ctx, container_id):
         # type: (CephadmContext, str) -> Optional[str]
-        version = None
-        out, err, code = call(ctx,
-                              [ctx.container_engine.path, 'exec', container_id,
-                               '/usr/bin/python3', '-c', "import pkg_resources; print(pkg_resources.require('ceph_iscsi')[0].version)"],
-                              verbosity=CallVerbosity.QUIET)
+        def python(s: str) -> Tuple[str, str, int]:
+            return call(
+                ctx,
+                [
+                    ctx.container_engine.path,
+                    'exec',
+                    container_id,
+                    '/usr/bin/python3',
+                    '-c',
+                    s,
+                ],
+                verbosity=CallVerbosity.QUIET,
+            )
+
+        out, _, code = python(
+            "from importlib.metadata import version; print(version('ceph_iscsi'))"
+        )
         if code == 0:
-            version = out.strip()
-        return version
+            return out.strip()
+        out, _, code = python(
+            "import pkg_resources; print(pkg_resources.require('ceph_iscsi')[0].version)"
+        )
+        if code == 0:
+            return out.strip()
+        return None
 
     def validate(self):
         # type: () -> None
@@ -909,8 +934,18 @@ class CephIscsi(object):
         configfs_dir = os.path.join(data_dir, 'configfs')
         makedirs(configfs_dir, uid, gid, 0o755)
 
+        # set up the tcmu-runner entrypoint script
+        # to be mounted into the container. For more info
+        # on why we need this script, see the
+        # tcmu_runner_entrypoint_script function
+        self.files['tcmu-runner-entrypoint.sh'] = self.tcmu_runner_entrypoint_script()
+
         # populate files from the config-json
         populate_files(data_dir, self.files, uid, gid)
+
+        # we want the tcmu runner entrypoint script to be executable
+        # populate_files will give it 0o600 by default
+        os.chmod(os.path.join(data_dir, 'tcmu-runner-entrypoint.sh'), 0o700)
 
     @staticmethod
     def configfs_mount_umount(data_dir, mount=True):
@@ -924,15 +959,54 @@ class CephIscsi(object):
                   'umount {0}; fi'.format(mount_path)
         return cmd.split()
 
+    @staticmethod
+    def tcmu_runner_entrypoint_script() -> str:
+        # since we are having tcmu-runner be a background
+        # process in its systemd unit (rbd-target-api being
+        # the main process) systemd will not restart it when
+        # it fails. in order to try and get around that for now
+        # we can have a script mounted in the container that
+        # that attempts to do the restarting for us. This script
+        # can then become the entrypoint for the tcmu-runner
+        # container
+
+        # This is intended to be dropped for a better solution
+        # for at least the squid release onward
+        return """#!/bin/bash
+RUN_DIR=/var/run/tcmu-runner
+
+if [ ! -d "${RUN_DIR}" ] ; then
+    mkdir -p "${RUN_DIR}"
+fi
+
+rm -rf "${RUN_DIR}"/*
+
+while true
+do
+    touch "${RUN_DIR}"/start-up-$(date -Ins)
+    /usr/bin/tcmu-runner
+
+    # If we got around 3 kills/segfaults in the last minute,
+    # don't start anymore
+    if [ $(find "${RUN_DIR}" -type f -cmin -1 | wc -l) -ge 3 ] ; then
+        exit 0
+    fi
+
+    sleep 1
+done
+"""
+
     def get_tcmu_runner_container(self):
         # type: () -> CephContainer
-        tcmu_container = get_container(self.ctx, self.fsid, self.daemon_type, self.daemon_id)
-        tcmu_container.entrypoint = '/usr/bin/tcmu-runner'
+        # daemon_id, is used to generated the cid and pid files used by podman but as both tcmu-runner
+        # and rbd-target-api have the same daemon_id, it conflits and prevent the second container from
+        # starting. .tcmu runner is appended to the daemon_id to fix that.
+        tcmu_container = get_deployment_container(self.ctx, self.fsid, self.daemon_type, str(self.daemon_id) + '.tcmu')
+        # TODO: Eventually we don't want to run tcmu-runner through this script.
+        # This is intended to be a workaround backported to older releases
+        # and should eventually be removed in at least squid onward
+        tcmu_container.entrypoint = '/usr/local/scripts/tcmu-runner-entrypoint.sh'
         tcmu_container.cname = self.get_container_name(desc='tcmu')
-        # remove extra container args for tcmu container.
-        # extra args could cause issue with forking service type
-        tcmu_container.container_args = []
-        set_pids_limit_unlimited(self.ctx, tcmu_container.container_args)
         return tcmu_container
 
 ##################################
@@ -1318,22 +1392,21 @@ def attempt_bind(ctx, s, address, port):
             logger.warning(msg)
             raise PortOccupiedError(msg)
         else:
-            raise Error(e)
+            raise e
     except Exception as e:
         raise Error(e)
     finally:
         s.close()
 
 
-def port_in_use(ctx, port_num):
-    # type: (CephadmContext, int) -> bool
+def port_in_use(ctx: CephadmContext, endpoint: EndPoint) -> bool:
     """Detect whether a port is in use on the local machine - IPv4 and IPv6"""
-    logger.info('Verifying port %d ...' % port_num)
+    logger.info('Verifying port %s ...' % str(endpoint))
 
     def _port_in_use(af: socket.AddressFamily, address: str) -> bool:
         try:
             s = socket.socket(af, socket.SOCK_STREAM)
-            attempt_bind(ctx, s, address, port_num)
+            attempt_bind(ctx, s, address, endpoint.port)
         except PortOccupiedError:
             return True
         except OSError as e:
@@ -1345,6 +1418,13 @@ def port_in_use(ctx, port_num):
             else:
                 raise e
         return False
+
+    if endpoint.ip != '0.0.0.0' and endpoint.ip != '::':
+        if is_ipv6(endpoint.ip):
+            return _port_in_use(socket.AF_INET6, endpoint.ip)
+        else:
+            return _port_in_use(socket.AF_INET, endpoint.ip)
+
     return any(_port_in_use(af, address) for af, address in (
         (socket.AF_INET, '0.0.0.0'),
         (socket.AF_INET6, '::')
@@ -2625,9 +2705,11 @@ def get_daemon_args(ctx, fsid, daemon_type, daemon_id):
                     ip = meta['ip']
                 if 'ports' in meta and meta['ports']:
                     port = meta['ports'][0]
-            r += [f'--web.listen-address={ip}:{port}']
             if daemon_type == 'prometheus':
                 config = get_parm(ctx.config_json)
+                ip_to_bind_to = config.get('ip_to_bind_to', '')
+                if ip_to_bind_to:
+                    ip = ip_to_bind_to
                 retention_time = config.get('retention_time', '15d')
                 retention_size = config.get('retention_size', '0')  # default to disabled
                 r += [f'--storage.tsdb.retention.time={retention_time}']
@@ -2642,6 +2724,7 @@ def get_daemon_args(ctx, fsid, daemon_type, daemon_id):
                     addr = next(iter(ipv4_addrs or ipv6_addrs), None)
                     host = wrap_ipv6(addr) if addr else host
                 r += [f'--web.external-url={scheme}://{host}:{port}']
+            r += [f'--web.listen-address={ip}:{port}']
         if daemon_type == 'alertmanager':
             config = get_parm(ctx.config_json)
             peers = config.get('peers', list())  # type: ignore
@@ -2794,6 +2877,17 @@ def _write_custom_conf_files(ctx: CephadmContext, daemon_type: str, daemon_id: s
                 os.fchown(f.fileno(), uid, gid)
                 os.fchmod(f.fileno(), 0o600)
                 f.write(ccf['content'])
+            # temporary workaround to make custom config files work for tcmu-runner
+            # container we deploy with iscsi until iscsi is refactored
+            if daemon_type == 'iscsi':
+                tcmu_config_dir = custom_config_dir + '.tcmu'
+                if not os.path.exists(tcmu_config_dir):
+                    makedirs(tcmu_config_dir, uid, gid, 0o755)
+                tcmu_file_path = os.path.join(tcmu_config_dir, os.path.basename(ccf['mount_path']))
+                with open(tcmu_file_path, 'w+', encoding='utf-8') as f:
+                    os.fchown(f.fileno(), uid, gid)
+                    os.fchmod(f.fileno(), 0o600)
+                    f.write(ccf['content'])
 
 
 def get_parm(option: str) -> Dict[str, str]:
@@ -2842,6 +2936,32 @@ def _get_config_json(option: str) -> Dict[str, Any]:
         raise Error('Invalid JSON in {}: {}'.format(option, e))
     else:
         return js
+
+
+def fetch_tcp_ports(ctx: CephadmContext) -> List[EndPoint]:
+    """Return a list of Endpoints, which have a port and ip attribute
+    """
+    ports = getattr(ctx, 'tcp_ports', None)
+    if ports is None:
+        ports = []
+    if isinstance(ports, str):
+        ports = list(map(int, ports.split()))
+    port_ips: Dict[str, str] = {}
+    port_ips_attr: Union[str, Dict[str, str], None] = getattr(ctx, 'port_ips', None)
+    if isinstance(port_ips_attr, str):
+        port_ips = json.loads(port_ips_attr)
+    elif port_ips_attr is not None:
+        # if it's not None or a str, assume it's already the dict we want
+        port_ips = port_ips_attr
+
+    endpoints: List[EndPoint] = []
+    for port in ports:
+        if str(port) in port_ips:
+            endpoints.append(EndPoint(port_ips[str(port)], port))
+        else:
+            endpoints.append(EndPoint('0.0.0.0', port))
+
+    return endpoints
 
 
 def get_config_and_keyring(ctx):
@@ -2995,6 +3115,10 @@ def get_container_mounts(ctx, fsid, daemon_type, daemon_id,
     if daemon_type == CephIscsi.daemon_type:
         assert daemon_id
         data_dir = get_data_dir(fsid, ctx.data_dir, daemon_type, daemon_id)
+        # Removes ending ".tcmu" from data_dir a tcmu-runner uses the same data_dir
+        # as rbd-runner-api
+        if data_dir.endswith('.tcmu'):
+            data_dir = re.sub(r'\.tcmu$', '', data_dir)
         log_dir = get_log_dir(fsid, ctx.log_dir)
         mounts.update(CephIscsi.get_container_mounts(data_dir, log_dir))
 
@@ -3220,26 +3344,29 @@ def extract_uid_gid(ctx, img='', file_path='/var/lib/ceph'):
     raise RuntimeError('uid/gid not found')
 
 
-def deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid,
-                  config=None, keyring=None,
-                  osd_fsid=None,
-                  reconfig=False,
-                  ports=None):
-    # type: (CephadmContext, str, str, Union[int, str], Optional[CephContainer], int, int, Optional[str], Optional[str], Optional[str], Optional[bool], Optional[List[int]]) -> None
+def deploy_daemon(ctx: CephadmContext, fsid: str, daemon_type: str,
+                  daemon_id: Union[int, str], c: Optional['CephContainer'],
+                  uid: int, gid: int, config: Optional[str] = None,
+                  keyring: Optional[str] = None, osd_fsid: Optional[str] = None,
+                  deployment_type: DeploymentType = DeploymentType.DEFAULT,
+                  endpoints: Optional[List[EndPoint]] = None) -> None:
 
-    ports = ports or []
-    if any([port_in_use(ctx, port) for port in ports]):
-        if daemon_type == 'mgr':
-            # non-fatal for mgr when we are in mgr_standby_modules=false, but we can't
-            # tell whether that is the case here.
-            logger.warning(
-                f"ceph-mgr TCP port(s) {','.join(map(str, ports))} already in use"
-            )
-        else:
-            raise Error("TCP Port(s) '{}' required for {} already in use".format(','.join(map(str, ports)), daemon_type))
+    # only check port in use if fresh deployment since service
+    # we are redeploying/reconfiguring will already be using the port
+    if deployment_type == DeploymentType.DEFAULT:
+        if endpoints is not None:
+            if any([port_in_use(ctx, e) for e in endpoints]):
+                if daemon_type == 'mgr':
+                    # non-fatal for mgr when we are in mgr_standby_modules=false, but we can't
+                    # tell whether that is the case here.
+                    logger.warning(
+                        f"ceph-mgr TCP port(s) {','.join(map(str, endpoints))} already in use"
+                    )
+                else:
+                    raise Error("TCP Port(s) '{}' required for {} already in use".format(','.join(map(str, endpoints)), daemon_type))
 
     data_dir = get_data_dir(fsid, ctx.data_dir, daemon_type, daemon_id)
-    if reconfig and not os.path.exists(data_dir):
+    if deployment_type == DeploymentType.RECONFIG and not os.path.exists(data_dir):
         raise Error('cannot reconfig, data path %s does not exist' % data_dir)
     if daemon_type == 'mon' and not os.path.exists(data_dir):
         assert config
@@ -3286,7 +3413,9 @@ def deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid,
             uid, gid,
             config, keyring)
 
-    if not reconfig:
+    # only write out unit files and start daemon
+    # with systemd if this is not a reconfig
+    if deployment_type != DeploymentType.RECONFIG:
         if daemon_type == CephadmAgent.daemon_type:
             if ctx.config_json == '-':
                 config_js = get_parm('-')
@@ -3299,7 +3428,7 @@ def deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid,
         else:
             if c:
                 deploy_daemon_units(ctx, fsid, uid, gid, daemon_type, daemon_id,
-                                    c, osd_fsid=osd_fsid, ports=ports)
+                                    c, osd_fsid=osd_fsid, endpoints=endpoints)
             else:
                 raise RuntimeError('attempting to deploy a daemon without a container image')
 
@@ -3317,12 +3446,14 @@ def deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid,
     update_firewalld(ctx, daemon_type)
 
     # Open ports explicitly required for the daemon
-    if ports:
+    if endpoints:
         fw = Firewalld(ctx)
-        fw.open_ports(ports + fw.external_ports.get(daemon_type, []))
+        fw.open_ports([e.port for e in endpoints] + fw.external_ports.get(daemon_type, []))
         fw.apply_rules()
 
-    if reconfig and daemon_type not in Ceph.daemons:
+    # If this was a reconfig and the daemon is not a Ceph daemon, restart it
+    # so it can pick up potential changes to its configuration files
+    if deployment_type == DeploymentType.RECONFIG and daemon_type not in Ceph.daemons:
         # ceph daemons do not need a restart; others (presumably) do to pick
         # up the new config
         call_throws(ctx, ['systemctl', 'reset-failed',
@@ -3393,7 +3524,7 @@ def deploy_daemon_units(
     enable: bool = True,
     start: bool = True,
     osd_fsid: Optional[str] = None,
-    ports: Optional[List[int]] = None,
+    endpoints: Optional[List[EndPoint]] = None,
 ) -> None:
     # cmd
 
@@ -3479,7 +3610,10 @@ def deploy_daemon_units(
             'memory_limit': int(ctx.memory_limit) if ctx.memory_limit else None,
         })
         if not meta.get('ports'):
-            meta['ports'] = ports
+            if endpoints:
+                meta['ports'] = [e.port for e in endpoints]
+            else:
+                meta['ports'] = []
         metaf.write(json.dumps(meta, indent=4) + '\n')
 
         os.fchmod(f.fileno(), 0o600)
@@ -3511,9 +3645,12 @@ def deploy_daemon_units(
             _write_container_cmd_to_bash(ctx, f, poststop, 'deactivate osd')
         elif daemon_type == CephIscsi.daemon_type:
             # make sure we also stop the tcmu container
+            runtime_dir = '/run'
             ceph_iscsi = CephIscsi.init(ctx, fsid, daemon_id)
             tcmu_container = ceph_iscsi.get_tcmu_runner_container()
             f.write('! ' + ' '.join(tcmu_container.stop_cmd()) + '\n')
+            f.write('! ' + 'rm ' + runtime_dir + '/ceph-%s@%s.%s.service-pid' % (fsid, daemon_type, str(daemon_id) + '.tcmu') + '\n')
+            f.write('! ' + 'rm ' + runtime_dir + '/ceph-%s@%s.%s.service-cid' % (fsid, daemon_type, str(daemon_id) + '.tcmu') + '\n')
             f.write(' '.join(CephIscsi.configfs_mount_umount(data_dir, mount=False)) + '\n')
         os.fchmod(f.fileno(), 0o600)
         os.rename(data_dir + '/unit.poststop.new',
@@ -3814,6 +3951,18 @@ def install_base_units(ctx, fsid):
         first child (bash), but that isn't the ceph daemon.  This is simpler and
         should be harmless.
         """
+        targets: List[str] = [
+            'ceph-mon',
+            'ceph-mgr',
+            'ceph-mds',
+            'ceph-osd',
+            'ceph-fuse',
+            'radosgw',
+            'rbd-mirror',
+            'cephfs-mirror',
+            'tcmu-runner'
+        ]
+
         f.write("""# created by cephadm
 /var/log/ceph/%s/*.log {
     rotate 7
@@ -3821,13 +3970,13 @@ def install_base_units(ctx, fsid):
     compress
     sharedscripts
     postrotate
-        killall -q -1 ceph-mon ceph-mgr ceph-mds ceph-osd ceph-fuse radosgw rbd-mirror cephfs-mirror || pkill -1 -x 'ceph-mon|ceph-mgr|ceph-mds|ceph-osd|ceph-fuse|radosgw|rbd-mirror|cephfs-mirror' || true
+        killall -q -1 %s || pkill -1 -x '%s' || true
     endscript
     missingok
     notifempty
     su root root
 }
-""" % fsid)
+""" % (fsid, ' '.join(targets), '|'.join(targets)))
 
 
 def get_unit_file(ctx, fsid):
@@ -4365,7 +4514,7 @@ WantedBy=ceph-{fsid}.target
 
         try:
             for _ in range(1001):
-                if not port_in_use(self.ctx, self.starting_port):
+                if not port_in_use(self.ctx, EndPoint('0.0.0.0', self.starting_port)):
                     self.listener_port = str(self.starting_port)
                     break
                 self.starting_port += 1
@@ -4931,7 +5080,7 @@ def infer_mon_network(ctx: CephadmContext, mon_eps: List[EndPoint]) -> Optional[
     mon_networks = []
     for net, ifaces in list_networks(ctx).items():
         # build local_ips list for the specified network
-        local_ips: List[str] = []
+        local_ips: List[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]] = []
         for _, ls in ifaces.items():
             local_ips.extend([ipaddress.ip_address(ip) for ip in ls])
 
@@ -5185,8 +5334,11 @@ def create_mgr(
     mgr_c = get_container(ctx, fsid, 'mgr', mgr_id)
     # Note:the default port used by the Prometheus node exporter is opened in fw
     ctx.meta_json = json.dumps({'service_name': 'mgr'})
+    endpoints = [EndPoint('0.0.0.0', 9283), EndPoint('0.0.0.0', 8765)]
+    if not ctx.skip_monitoring_stack:
+        endpoints.append(EndPoint('0.0.0.0', 8443))
     deploy_daemon(ctx, fsid, 'mgr', mgr_id, mgr_c, uid, gid,
-                  config=config, keyring=mgr_keyring, ports=[9283])
+                  config=config, keyring=mgr_keyring, endpoints=endpoints)
 
     # wait for the service to become available
     logger.info('Waiting for mgr to start...')
@@ -5229,6 +5381,15 @@ def prepare_ssh(
         cli(['cephadm', 'set-priv-key', '-i', '/tmp/cephadm-ssh-key'], extra_mounts=mounts)
         cli(['cephadm', 'set-pub-key', '-i', '/tmp/cephadm-ssh-key.pub'], extra_mounts=mounts)
         ssh_pub = cli(['cephadm', 'get-pub-key'])
+        authorize_ssh_key(ssh_pub, ctx.ssh_user)
+    elif ctx.ssh_private_key and ctx.ssh_signed_cert:
+        logger.info('Using provided ssh private key and signed cert ...')
+        mounts = {
+            pathify(ctx.ssh_private_key.name): '/tmp/cephadm-ssh-key:z',
+            pathify(ctx.ssh_signed_cert.name): '/tmp/cephadm-ssh-key-cert.pub:z'
+        }
+        cli(['cephadm', 'set-priv-key', '-i', '/tmp/cephadm-ssh-key'], extra_mounts=mounts)
+        cli(['cephadm', 'set-signed-cert', '-i', '/tmp/cephadm-ssh-key-cert.pub'], extra_mounts=mounts)
     else:
         logger.info('Generating ssh key...')
         cli(['cephadm', 'generate-key'])
@@ -5236,8 +5397,7 @@ def prepare_ssh(
         with open(ctx.output_pub_ssh_key, 'w') as f:
             f.write(ssh_pub)
         logger.info('Wrote public SSH key to %s' % ctx.output_pub_ssh_key)
-
-    authorize_ssh_key(ssh_pub, ctx.ssh_user)
+        authorize_ssh_key(ssh_pub, ctx.ssh_user)
 
     host = get_hostname()
     logger.info('Adding host %s...' % host)
@@ -5450,8 +5610,10 @@ def finish_bootstrap_config(
         cli(['config', 'set', 'global', 'container_image', f'{ctx.image}'])
 
     if mon_network:
-        logger.info(f'Setting mon public_network to {mon_network}')
-        cli(['config', 'set', 'mon', 'public_network', mon_network])
+        cp = read_config(ctx.config)
+        cfg_section = 'global' if cp.has_option('global', 'public_network') else 'mon'
+        logger.info(f'Setting public_network to {mon_network} in {cfg_section} config section')
+        cli(['config', 'set', cfg_section, 'public_network', mon_network])
 
     if cluster_network:
         logger.info(f'Setting cluster_network to {cluster_network}')
@@ -5460,6 +5622,12 @@ def finish_bootstrap_config(
     if ipv6 or ipv6_cluster_network:
         logger.info('Enabling IPv6 (ms_bind_ipv6) binding')
         cli(['config', 'set', 'global', 'ms_bind_ipv6', 'true'])
+        # note: Ceph does not fully support dual stack.
+        # kernel clients: https://tracker.ceph.com/issues/49581
+        # if we do not disable ipv4 binding, daemons will bind
+        # to 0.0.0.0 and clients will misbehave.
+        logger.info('Disabling IPv4 (ms_bind_ipv4) binding')
+        cli(['config', 'set', 'global', 'ms_bind_ipv4', 'false'])
 
     with open(ctx.output_config, 'w') as f:
         f.write(config)
@@ -5601,8 +5769,19 @@ def command_bootstrap(ctx):
     if not ctx.output_pub_ssh_key:
         ctx.output_pub_ssh_key = os.path.join(ctx.output_dir, CEPH_PUBKEY)
 
-    if bool(ctx.ssh_private_key) is not bool(ctx.ssh_public_key):
-        raise Error('--ssh-private-key and --ssh-public-key must be provided together or not at all.')
+    if (
+        (bool(ctx.ssh_private_key) is not bool(ctx.ssh_public_key))
+        and (bool(ctx.ssh_private_key) is not bool(ctx.ssh_signed_cert))
+    ):
+        raise Error('--ssh-private-key must be passed with either --ssh-public-key in the case of standard pubkey '
+                    'authentication or with --ssh-signed-cert in the case of CA signed signed keys or not provided at all.')
+
+    if (bool(ctx.ssh_public_key) and bool(ctx.ssh_signed_cert)):
+        raise Error('--ssh-public-key and --ssh-signed-cert are mututally exclusive. --ssh-public-key is intended '
+                    'for standard pubkey encryption where the public key is set as an authorized key on cluster hosts. '
+                    '--ssh-signed-cert is intended for the CA signed keys use case where cluster hosts are configured to trust '
+                    'a CA pub key and authentication during SSH is done by authenticating the signed cert, requiring no '
+                    'public key to be installed on the cluster hosts.')
 
     if ctx.fsid:
         data_dir_base = os.path.join(ctx.data_dir, ctx.fsid)
@@ -5784,6 +5963,10 @@ def command_bootstrap(ctx):
 
     cli(['config', 'set', 'mgr', 'mgr/cephadm/container_init', str(ctx.container_init), '--force'])
 
+    if ctx.no_cgroups_split:
+        logger.info('Setting mgr/cephadm/cgroups_split to false')
+        cli(['config', 'set', 'mgr', 'mgr/cephadm/cgroups_split', 'false', '--force'])
+
     if not ctx.skip_dashboard:
         prepare_dashboard(ctx, uid, gid, cli, wait_for_mgr_restart)
 
@@ -5801,7 +5984,10 @@ def command_bootstrap(ctx):
         with open(ctx.apply_spec) as f:
             host_dicts = _extract_host_info_from_applied_spec(f)
             for h in host_dicts:
-                _distribute_ssh_keys(ctx, h, hostname)
+                if ctx.ssh_signed_cert:
+                    logger.info('Key distribution is not supported for signed CA key setups. Skipping ...')
+                else:
+                    _distribute_ssh_keys(ctx, h, hostname)
 
         mounts = {}
         mounts[pathify(ctx.apply_spec)] = '/tmp/spec.yml:ro'
@@ -5933,6 +6119,24 @@ def get_deployment_container(ctx: CephadmContext,
     return c
 
 
+def get_deployment_type(ctx: CephadmContext, daemon_type: str, daemon_id: str) -> DeploymentType:
+    deployment_type: DeploymentType = DeploymentType.DEFAULT
+    if ctx.reconfig:
+        deployment_type = DeploymentType.RECONFIG
+    unit_name = get_unit_name(ctx.fsid, daemon_type, daemon_id)
+    (_, state, _) = check_unit(ctx, unit_name)
+    if state == 'running' or is_container_running(ctx, CephContainer.for_daemon(ctx, ctx.fsid, daemon_type, daemon_id, 'bash')):
+        # if reconfig was set, that takes priority over redeploy. If
+        # this is considered a fresh deployment at this stage,
+        # mark it as a redeploy to avoid port checking
+        if deployment_type == DeploymentType.DEFAULT:
+            deployment_type = DeploymentType.REDEPLOY
+
+    logger.info(f'{deployment_type.value} daemon {ctx.name} ...')
+
+    return deployment_type
+
+
 @default_image
 def command_deploy(ctx):
     # type: (CephadmContext) -> None
@@ -5944,30 +6148,13 @@ def command_deploy(ctx):
     if daemon_type not in get_supported_daemons():
         raise Error('daemon type %s not recognized' % daemon_type)
 
-    redeploy = False
-    unit_name = get_unit_name(ctx.fsid, daemon_type, daemon_id)
-    (_, state, _) = check_unit(ctx, unit_name)
-    if state == 'running' or is_container_running(ctx, CephContainer.for_daemon(ctx, ctx.fsid, daemon_type, daemon_id, 'bash')):
-        redeploy = True
-
-    if ctx.reconfig:
-        logger.info('%s daemon %s ...' % ('Reconfig', ctx.name))
-    elif redeploy:
-        logger.info('%s daemon %s ...' % ('Redeploy', ctx.name))
-    else:
-        logger.info('%s daemon %s ...' % ('Deploy', ctx.name))
+    deployment_type: DeploymentType = get_deployment_type(ctx, daemon_type, daemon_id)
 
     # Migrate sysctl conf files from /usr/lib to /etc
     migrate_sysctl_dir(ctx, ctx.fsid)
 
     # Get and check ports explicitly required to be opened
-    daemon_ports = []  # type: List[int]
-
-    # only check port in use if not reconfig or redeploy since service
-    # we are redeploying/reconfiguring will already be using the port
-    if not ctx.reconfig and not redeploy:
-        if ctx.tcp_ports:
-            daemon_ports = list(map(int, ctx.tcp_ports.split()))
+    daemon_endpoints = fetch_tcp_ports(ctx)
 
     if daemon_type in Ceph.daemons:
         config, keyring = get_config_and_keyring(ctx)
@@ -5992,8 +6179,8 @@ def command_deploy(ctx):
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, c, uid, gid,
                       config=config, keyring=keyring,
                       osd_fsid=ctx.osd_fsid,
-                      reconfig=ctx.reconfig,
-                      ports=daemon_ports)
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
 
     elif daemon_type in Monitoring.components:
         # monitoring daemon - prometheus, grafana, alertmanager, node-exporter
@@ -6014,12 +6201,14 @@ def command_deploy(ctx):
         uid, gid = extract_uid_gid_monitoring(ctx, daemon_type)
         c = get_deployment_container(ctx, ctx.fsid, daemon_type, daemon_id)
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, c, uid, gid,
-                      reconfig=ctx.reconfig,
-                      ports=daemon_ports)
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
 
     elif daemon_type == NFSGanesha.daemon_type:
-        if not ctx.reconfig and not redeploy and not daemon_ports:
-            daemon_ports = list(NFSGanesha.port_map.values())
+        # only check ports if this is a fresh deployment
+        if deployment_type == DeploymentType.DEFAULT and not daemon_endpoints:
+            nfs_ports = list(NFSGanesha.port_map.values())
+            daemon_endpoints = [EndPoint('0.0.0.0', p) for p in nfs_ports]
 
         config, keyring = get_config_and_keyring(ctx)
         # TODO: extract ganesha uid/gid (997, 994) ?
@@ -6027,8 +6216,8 @@ def command_deploy(ctx):
         c = get_deployment_container(ctx, ctx.fsid, daemon_type, daemon_id)
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, c, uid, gid,
                       config=config, keyring=keyring,
-                      reconfig=ctx.reconfig,
-                      ports=daemon_ports)
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
 
     elif daemon_type == CephIscsi.daemon_type:
         config, keyring = get_config_and_keyring(ctx)
@@ -6036,50 +6225,54 @@ def command_deploy(ctx):
         c = get_deployment_container(ctx, ctx.fsid, daemon_type, daemon_id)
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, c, uid, gid,
                       config=config, keyring=keyring,
-                      reconfig=ctx.reconfig,
-                      ports=daemon_ports)
-
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
     elif daemon_type == HAproxy.daemon_type:
         haproxy = HAproxy.init(ctx, ctx.fsid, daemon_id)
         uid, gid = haproxy.extract_uid_gid_haproxy()
         c = get_deployment_container(ctx, ctx.fsid, daemon_type, daemon_id)
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, c, uid, gid,
-                      reconfig=ctx.reconfig,
-                      ports=daemon_ports)
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
 
     elif daemon_type == Keepalived.daemon_type:
         keepalived = Keepalived.init(ctx, ctx.fsid, daemon_id)
         uid, gid = keepalived.extract_uid_gid_keepalived()
         c = get_deployment_container(ctx, ctx.fsid, daemon_type, daemon_id)
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, c, uid, gid,
-                      reconfig=ctx.reconfig,
-                      ports=daemon_ports)
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
 
     elif daemon_type == CustomContainer.daemon_type:
         cc = CustomContainer.init(ctx, ctx.fsid, daemon_id)
-        if not ctx.reconfig and not redeploy:
-            daemon_ports.extend(cc.ports)
+        # only check ports if this is a fresh deployment
+        if deployment_type == DeploymentType.DEFAULT:
+            daemon_endpoints.extend([EndPoint('0.0.0.0', p) for p in cc.ports])
         c = get_deployment_container(ctx, ctx.fsid, daemon_type, daemon_id,
                                      privileged=cc.privileged,
                                      ptrace=ctx.allow_ptrace)
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, c,
                       uid=cc.uid, gid=cc.gid, config=None,
-                      keyring=None, reconfig=ctx.reconfig,
-                      ports=daemon_ports)
+                      keyring=None,
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
 
     elif daemon_type == CephadmAgent.daemon_type:
         # get current user gid and uid
         uid = os.getuid()
         gid = os.getgid()
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, None,
-                      uid, gid, ports=daemon_ports)
+                      uid, gid,
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
 
     elif daemon_type == SNMPGateway.daemon_type:
         sc = SNMPGateway.init(ctx, ctx.fsid, daemon_id)
         c = get_deployment_container(ctx, ctx.fsid, daemon_type, daemon_id)
         deploy_daemon(ctx, ctx.fsid, daemon_type, daemon_id, c,
                       sc.uid, sc.gid,
-                      ports=daemon_ports)
+                      deployment_type=deployment_type,
+                      endpoints=daemon_endpoints)
 
     else:
         raise Error('daemon type {} not implemented in command_deploy function'
@@ -6193,6 +6386,10 @@ def command_shell(ctx):
         envs=ctx.env,
         privileged=True)
     command = c.shell_cmd(command)
+
+    if ctx.dry_run:
+        print(' '.join(shlex.quote(arg) for arg in command))
+        return 0
 
     return call_timeout(ctx, command, ctx.timeout)
 
@@ -7004,6 +7201,10 @@ def command_adopt_prometheus(ctx, daemon_id, fsid):
     # type: (CephadmContext, str, str) -> None
     daemon_type = 'prometheus'
     (uid, gid) = extract_uid_gid_monitoring(ctx, daemon_type)
+    # should try to set the ports we know cephadm defaults
+    # to for these services in the firewall.
+    ports = Monitoring.port_map['prometheus']
+    endpoints = [EndPoint('0.0.0.0', p) for p in ports]
 
     _stop_and_disable(ctx, 'prometheus')
 
@@ -7025,7 +7226,8 @@ def command_adopt_prometheus(ctx, daemon_id, fsid):
 
     make_var_run(ctx, fsid, uid, gid)
     c = get_container(ctx, fsid, daemon_type, daemon_id)
-    deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid)
+    deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid,
+                  deployment_type=DeploymentType.REDEPLOY, endpoints=endpoints)
     update_firewalld(ctx, daemon_type)
 
 
@@ -7034,6 +7236,10 @@ def command_adopt_grafana(ctx, daemon_id, fsid):
 
     daemon_type = 'grafana'
     (uid, gid) = extract_uid_gid_monitoring(ctx, daemon_type)
+    # should try to set the ports we know cephadm defaults
+    # to for these services in the firewall.
+    ports = Monitoring.port_map['grafana']
+    endpoints = [EndPoint('0.0.0.0', p) for p in ports]
 
     _stop_and_disable(ctx, 'grafana-server')
 
@@ -7079,7 +7285,8 @@ def command_adopt_grafana(ctx, daemon_id, fsid):
 
     make_var_run(ctx, fsid, uid, gid)
     c = get_container(ctx, fsid, daemon_type, daemon_id)
-    deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid)
+    deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid,
+                  deployment_type=DeploymentType.REDEPLOY, endpoints=endpoints)
     update_firewalld(ctx, daemon_type)
 
 
@@ -7088,6 +7295,10 @@ def command_adopt_alertmanager(ctx, daemon_id, fsid):
 
     daemon_type = 'alertmanager'
     (uid, gid) = extract_uid_gid_monitoring(ctx, daemon_type)
+    # should try to set the ports we know cephadm defaults
+    # to for these services in the firewall.
+    ports = Monitoring.port_map['alertmanager']
+    endpoints = [EndPoint('0.0.0.0', p) for p in ports]
 
     _stop_and_disable(ctx, 'prometheus-alertmanager')
 
@@ -7109,7 +7320,8 @@ def command_adopt_alertmanager(ctx, daemon_id, fsid):
 
     make_var_run(ctx, fsid, uid, gid)
     c = get_container(ctx, fsid, daemon_type, daemon_id)
-    deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid)
+    deploy_daemon(ctx, fsid, daemon_type, daemon_id, c, uid, gid,
+                  deployment_type=DeploymentType.REDEPLOY, endpoints=endpoints)
     update_firewalld(ctx, daemon_type)
 
 
@@ -7185,8 +7397,9 @@ def command_rm_daemon(ctx):
     else:
         call_throws(ctx, ['rm', '-rf', data_dir])
 
-    if 'tcp_ports' in ctx and ctx.tcp_ports is not None:
-        ports: List[int] = [int(p) for p in ctx.tcp_ports.split()]
+    endpoints = fetch_tcp_ports(ctx)
+    ports: List[int] = [e.port for e in endpoints]
+    if ports:
         try:
             fw = Firewalld(ctx)
             fw.close_ports(ports)
@@ -7366,6 +7579,7 @@ def check_time_sync(ctx, enabler=None):
         'ntp.service',  # 18.04 (at least)
         'ntpsec.service',  # 20.04 (at least) / buster
         'openntpd.service',  # ubuntu / debian
+        'timemaster.service',  # linuxptp on ubuntu/debian
     ]
     if not check_units(ctx, units, enabler):
         logger.warning('No time sync service is running; checked for %s' % units)
@@ -7504,11 +7718,17 @@ def check_ssh_connectivity(ctx: CephadmContext) -> None:
         logger.warning('Cannot check ssh connectivity. Skipping...')
         return
 
-    logger.info('Verifying ssh connectivity ...')
+    ssh_priv_key_path = ''
+    ssh_pub_key_path = ''
+    ssh_signed_cert_path = ''
     if ctx.ssh_private_key and ctx.ssh_public_key:
         # let's use the keys provided by the user
         ssh_priv_key_path = pathify(ctx.ssh_private_key.name)
         ssh_pub_key_path = pathify(ctx.ssh_public_key.name)
+    elif ctx.ssh_private_key and ctx.ssh_signed_cert:
+        # CA signed keys use case
+        ssh_priv_key_path = pathify(ctx.ssh_private_key.name)
+        ssh_signed_cert_path = pathify(ctx.ssh_signed_cert.name)
     else:
         # no custom keys, let's generate some random keys just for this check
         ssh_priv_key_path = f'/tmp/ssh_key_{uuid.uuid1()}'
@@ -7519,31 +7739,35 @@ def check_ssh_connectivity(ctx: CephadmContext) -> None:
             logger.warning('Cannot generate keys to check ssh connectivity.')
             return
 
-    with open(ssh_pub_key_path, 'r') as f:
-        key = f.read().strip()
-    new_key = authorize_ssh_key(key, ctx.ssh_user)
-    ssh_cfg_file_arg = ['-F', pathify(ctx.ssh_config.name)] if ctx.ssh_config else []
-    _, _, code = call(ctx, ['ssh', '-o StrictHostKeyChecking=no',
-                            *ssh_cfg_file_arg, '-i', ssh_priv_key_path,
-                            '-o PasswordAuthentication=no',
-                            f'{ctx.ssh_user}@{get_hostname()}',
-                            'sudo echo'])
+    if ssh_signed_cert_path:
+        logger.info('Verification for CA signed keys authentication not implemented. Skipping ...')
+    elif ssh_pub_key_path:
+        logger.info('Verifying ssh connectivity using standard pubkey authentication ...')
+        with open(ssh_pub_key_path, 'r') as f:
+            key = f.read().strip()
+        new_key = authorize_ssh_key(key, ctx.ssh_user)
+        ssh_cfg_file_arg = ['-F', pathify(ctx.ssh_config.name)] if ctx.ssh_config else []
+        _, _, code = call(ctx, ['ssh', '-o StrictHostKeyChecking=no',
+                                *ssh_cfg_file_arg, '-i', ssh_priv_key_path,
+                                '-o PasswordAuthentication=no',
+                                f'{ctx.ssh_user}@{get_hostname()}',
+                                'sudo echo'])
 
-    # we only remove the key if it's a new one. In case the user has provided
-    # some already existing key then we don't alter authorized_keys file
-    if new_key:
-        revoke_ssh_key(key, ctx.ssh_user)
+        # we only remove the key if it's a new one. In case the user has provided
+        # some already existing key then we don't alter authorized_keys file
+        if new_key:
+            revoke_ssh_key(key, ctx.ssh_user)
 
-    pub_key_msg = '- The public key file configured by --ssh-public-key is valid\n' if ctx.ssh_public_key else ''
-    prv_key_msg = '- The private key file configured by --ssh-private-key is valid\n' if ctx.ssh_private_key else ''
-    ssh_cfg_msg = '- The ssh configuration file configured by --ssh-config is valid\n' if ctx.ssh_config else ''
-    err_msg = f"""
+        pub_key_msg = '- The public key file configured by --ssh-public-key is valid\n' if ctx.ssh_public_key else ''
+        prv_key_msg = '- The private key file configured by --ssh-private-key is valid\n' if ctx.ssh_private_key else ''
+        ssh_cfg_msg = '- The ssh configuration file configured by --ssh-config is valid\n' if ctx.ssh_config else ''
+        err_msg = f"""
 ** Please verify your user's ssh configuration and make sure:
 - User {ctx.ssh_user} must have passwordless sudo access
 {pub_key_msg}{prv_key_msg}{ssh_cfg_msg}
 """
-    if code != 0:
-        raise Error(err_msg)
+        if code != 0:
+            raise Error(err_msg)
 
 
 def command_prepare_host(ctx: CephadmContext) -> None:
@@ -8844,7 +9068,17 @@ def target_exists(ctx: CephadmContext) -> bool:
 
 
 @infer_fsid
-def command_maintenance(ctx: CephadmContext) -> str:
+def command_maintenance(ctx: CephadmContext) -> int:
+    msg = change_maintenance_mode(ctx)
+    # mgr module reads the string emitted here from stderr
+    sys.stderr.write(msg + '\n')
+    sys.stderr.flush()
+    if msg.startswith('fail'):
+        return 1
+    return 0
+
+
+def change_maintenance_mode(ctx: CephadmContext) -> str:
     if not ctx.fsid:
         raise Error('failed - must pass --fsid to specify cluster')
 
@@ -9041,6 +9275,11 @@ def _get_parser():
         action='store_true',
         default=CONTAINER_INIT,
         help=argparse.SUPPRESS)
+    parser_adopt.add_argument(
+        '--no-cgroups-split',
+        action='store_true',
+        default=False,
+        help='Do not run containers with --cgroups=split (currently only relevant when using podman)')
 
     parser_rm_daemon = subparsers.add_parser(
         'rm-daemon', help='remove daemon instance')
@@ -9141,6 +9380,10 @@ def _get_parser():
         '--no-hosts',
         action='store_true',
         help='dont pass /etc/hosts through to the container')
+    parser_shell.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='print, but do not execute, the container command to start the shell')
 
     parser_enter = subparsers.add_parser(
         'enter', help='run an interactive shell inside a running daemon container')
@@ -9298,6 +9541,10 @@ def _get_parser():
         type=argparse.FileType('r'),
         help='SSH public key')
     parser_bootstrap.add_argument(
+        '--ssh-signed-cert',
+        type=argparse.FileType('r'),
+        help='Signed cert for setups using CA signed SSH keys')
+    parser_bootstrap.add_argument(
         '--ssh-user',
         default='root',
         help='set user for SSHing to cluster hosts, passwordless sudo will be needed for non-root users')
@@ -9428,6 +9675,10 @@ def _get_parser():
     parser_deploy.add_argument(
         '--tcp-ports',
         help='List of tcp ports to open in the host firewall')
+    parser_deploy.add_argument(
+        '--port-ips',
+        help='JSON dict mapping ports to IPs they need to be bound on'
+    )
     parser_deploy.add_argument(
         '--reconfig',
         action='store_true',

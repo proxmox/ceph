@@ -224,7 +224,7 @@ options:
   long_desc: The lifecycle maintenance thread is responsible for lifecycle related
     maintenance work. The thread itself can be disabled, but in order for lifecycle
     to work correctly, at least one RGW in each zone needs to have this thread running.
-    Havingthe thread enabled on multiple RGW processes within the same zone can spread
+    Having the thread enabled on multiple RGW processes within the same zone can spread
     some of the maintenance work between them.
   default: true
   services:
@@ -349,7 +349,11 @@ options:
   type: str
   level: advanced
   desc: Lifecycle allowed work time
-  long_desc: Local time window in which the lifecycle maintenance thread can work.
+  long_desc: Local time window in which the lifecycle maintenance thread can work. It expects
+    24-hour time notation. For example, "00:00-23:59" means starting at midnight lifecycle
+    is allowed to run for the whole day (24 hours). When lifecycle completes, it waits for the
+    next maintenance window. In this example, if it completes at 01:00, it will resume processing
+    23 hours later at the following midnight.
   default: 00:00-06:00
   services:
   - rgw
@@ -678,6 +682,45 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_keystone_service_token_enabled
+  type: bool
+  level: advanced
+  desc: Service tokens allowing the usage of expired Keystone auth tokens
+  fmt_desc: The service token support allows the incoming request to contain
+    a X-Service-Token header with a Keystone token that if it has acceptable
+    roles allows using an expired token in the X-Auth-Token header.
+  default: false
+  see_also:
+  - rgw_keystone_service_token_accepted_roles
+  - rgw_keystone_expired_token_cache_expiration
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_keystone_service_token_accepted_roles
+  type: str
+  level: advanced
+  desc: Only users with one of these roles will be valid for service users.
+  fmt_desc: The users that created the service token given must have one of
+    these roles to be considered a valid service user.
+  default: admin
+  see_also:
+  - rgw_keystone_service_token_enabled
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_keystone_expired_token_cache_expiration
+  type: int
+  level: advanced
+  desc: The number of seconds to add to current time for expired token expiration
+  fmt_desc: The expired token that is allowed when a valid service token is given
+    need a new expiration date for the caching. This is the seconds to add to the
+    current time and then set on an expired token that is verified with a service token.
+  default: 3600
+  services:
+  - rgw
+  see_also:
+  - rgw_keystone_service_token_enabled
+  with_legacy: true
 - name: rgw_keystone_barbican_user
   type: str
   level: advanced
@@ -832,6 +875,15 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_s3_auth_disable_signature_url
+  type: bool
+  level: advanced
+  desc: Should authentication with presigned URLs be disabled
+  long_desc: 'If enabled, any request that is presigned with either V2 or V4 signature will be denied'
+  default: false
+  services:
+  - rgw
+  with_legacy: true
 - name: rgw_barbican_url
   type: str
   level: advanced
@@ -844,8 +896,8 @@ options:
 - name: rgw_ldap_uri
   type: str
   level: advanced
-  desc: Space-separated list of LDAP servers in URI format.
-  default: ldaps://<ldap.your.domain>
+  desc: Space-separated list of LDAP servers in URI format, e.g., "ldaps://<ldap.your.domain>".
+  default:
   services:
   - rgw
   with_legacy: true
@@ -1373,7 +1425,7 @@ options:
   desc: Ops log object name format
   long_desc: Defines the format of the RADOS objects names that ops log uses to store
     ops log data
-  fmt_desc: The logging format for an object name. See ma npage
+  fmt_desc: The logging format for an object name. See man page
     :manpage:`date` for details about format specifiers.
   default: '%Y-%m-%d-%H-%i-%n'
   services:
@@ -2471,6 +2523,16 @@ options:
   - rgw
   - rgw
   min: 30
+- name: rgw_debug_inject_latency_bi_unlink
+  type: uint
+  level: dev
+  desc: Latency (in seconds) injected before rgw bucket index unlink op calls to simulate
+    queueing latency and validate behavior of simultaneuous delete requests which
+    target the same object.
+  default: 0
+  with_legacy: true
+  services:
+  - rgw
 - name: rgw_debug_inject_set_olh_err
   type: uint
   level: dev
@@ -3425,3 +3487,25 @@ options:
   - rgw
   flags:
   - startup
+- name: rgw_kafka_connection_idle
+  type: uint 
+  level: advanced
+  desc: Time in seconds to delete idle kafka connections
+  long_desc: A conection will be considered "idle" if no messages
+    are sent to it for more than the time defined.
+    Note that the connection will not be considered idle, even if it is down,
+    as long as there are attempts to send messages to it.
+  default: 300
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_kafka_message_timeout
+  type: uint 
+  level: advanced
+  desc: This is the maximum time in milliseconds to deliver a message (including retries)
+  long_desc: Delivery error occurs when the message timeout is exceeded.
+    Value must be greater than zero, if set to zero, a value of 1 millisecond will be used.
+  default: 5000
+  services:
+  - rgw
+  with_legacy: true

@@ -137,7 +137,7 @@ public:
     batch_reqs.clear();
     server->reply_client_request(mdr, make_message<MClientReply>(*mdr->client_request, r));
   }
-  void print(std::ostream& o) {
+  void print(std::ostream& o) const override {
     o << "[batch front=" << *mdr << "]";
   }
 };
@@ -303,6 +303,7 @@ void Server::dispatch(const cref_t<Message> &m)
 	return;
       }
       bool queue_replay = false;
+      dout(5) << "dispatch request in up:reconnect: " << *req << dendl;
       if (req->is_replay() || req->is_async()) {
 	dout(3) << "queuing replayed op" << dendl;
 	queue_replay = true;
@@ -321,10 +322,13 @@ void Server::dispatch(const cref_t<Message> &m)
 	// process completed request in clientreplay stage. The completed request
 	// might have created new file/directorie. This guarantees MDS sends a reply
 	// to client before other request modifies the new file/directorie.
-	if (session->have_completed_request(req->get_reqid().tid, NULL)) {
-	  dout(3) << "queuing completed op" << dendl;
+        bool r = session->have_completed_request(req->get_reqid().tid, NULL);
+	if (r) {
+	  dout(3) << __func__ << ": queuing completed op" << dendl;
 	  queue_replay = true;
-	}
+	} else {
+          dout(20) << __func__  << ": request not complete" << dendl;
+        }
 	// this request was created before the cap reconnect message, drop any embedded
 	// cap releases.
 	req->releases.clear();
@@ -1123,10 +1127,12 @@ void Server::find_idle_sessions()
     return;
   }
 
-  std::vector<Session*> to_evict;
-
   bool defer_session_stale = g_conf().get_val<bool>("mds_defer_session_stale");
   const auto sessions_p1 = mds->sessionmap.by_state.find(Session::STATE_OPEN);
+  bool defer_client_eviction =
+  g_conf().get_val<bool>("defer_client_eviction_on_laggy_osds")
+  && mds->objecter->with_osdmap([](const OSDMap &map) {
+    return map.any_osd_laggy(); });
   if (sessions_p1 != mds->sessionmap.by_state.end() && !sessions_p1->second->empty()) {
     std::vector<Session*> new_stale;
 
@@ -1151,7 +1157,7 @@ void Server::find_idle_sessions()
 	dout(20) << "evicting session " << session->info.inst << " since autoclose "
 		    "has arrived" << dendl;
 	// evict session without marking it stale
-	to_evict.push_back(session);
+	laggy_clients.insert(session->get_client());
 	continue;
       }
 
@@ -1180,7 +1186,7 @@ void Server::find_idle_sessions()
 	}
 
 	// do not go through stale, evict it directly.
-	to_evict.push_back(session);
+	laggy_clients.insert(session->get_client());
       } else {
 	dout(10) << "new stale session " << session->info.inst
 		 << " last renewed caps " << last_cap_renew_span << "s ago" << dendl;
@@ -1196,7 +1202,7 @@ void Server::find_idle_sessions()
 	auto m = make_message<MClientSession>(CEPH_SESSION_STALE, session->get_push_seq());
 	mds->send_message_client(m, session);
       } else {
-	to_evict.push_back(session);
+	laggy_clients.insert(session->get_client());
       }
     }
   }
@@ -1215,11 +1221,21 @@ void Server::find_idle_sessions()
 		 << " and recently renewed caps " << last_cap_renew_span << "s ago" << dendl;
 	break;
       }
-      to_evict.push_back(session);
+      laggy_clients.insert(session->get_client());
     }
   }
 
-  for (auto session: to_evict) {
+  // don't evict client(s) if osds are laggy
+  if(defer_client_eviction && !laggy_clients.empty()) {
+    dout(5) << "Detected " << laggy_clients.size()
+            << " laggy clients, possibly due to laggy OSDs."
+               " Eviction is skipped until the OSDs return to normal."
+            << dendl;
+    return;
+  }
+
+  for (auto client: laggy_clients) {
+    Session *session = mds->sessionmap.get_session(entity_name_t::CLIENT(client.v));
     if (session->is_importing()) {
       dout(10) << "skipping session " << session->info.inst << ", it's being imported" << dendl;
       continue;
@@ -1238,6 +1254,8 @@ void Server::find_idle_sessions()
       kill_session(session, NULL);
     }
   }
+  // clear as there's no use to keep the evicted clients in laggy_clients
+  clear_laggy_clients();
 }
 
 void Server::evict_cap_revoke_non_responders() {
@@ -1246,6 +1264,20 @@ void Server::evict_cap_revoke_non_responders() {
   }
 
   auto&& to_evict = mds->locker->get_late_revoking_clients(cap_revoke_eviction_timeout);
+  // don't evict client(s) if osds are laggy
+  bool defer_client_eviction =
+  g_conf().get_val<bool>("defer_client_eviction_on_laggy_osds")
+  && mds->objecter->with_osdmap([](const OSDMap &map) {
+    return map.any_osd_laggy(); })
+  && to_evict.size();
+  if(defer_client_eviction) {
+    laggy_clients.insert(to_evict.begin(), to_evict.end());
+    dout(0) << "Detected " << to_evict.size()
+            << " unresponsive clients, possibly due to laggy OSDs."
+               " Eviction is skipped until the OSDs return to normal."
+            << dendl;
+    return;
+  }
 
   for (auto const &client: to_evict) {
     mds->clog->warn() << "client id " << client << " has not responded to"
@@ -1960,12 +1992,15 @@ void Server::journal_and_reply(MDRequestRef& mdr, CInode *in, CDentry *dn, LogEv
   mdr->committing = true;
   submit_mdlog_entry(le, fin, mdr, __func__);
 
-  if (mdr->client_request && mdr->client_request->is_queued_for_replay()) {
-    if (mds->queue_one_replay()) {
-      dout(10) << " queued next replay op" << dendl;
-    } else {
-      dout(10) << " journaled last replay op" << dendl;
-    }
+  if (mdr->is_queued_for_replay()) {
+
+    /* We want to queue the next replay op while waiting for the journaling, so
+     * do it now when the early (unsafe) replay is dispatched. Don't wait until
+     * this request is cleaned up in MDCache.cc.
+     */
+
+    mdr->set_queued_next_replay_op();
+    mds->queue_one_replay();
   } else if (mdr->did_early_reply) {
     mds->locker->drop_rdlocks_for_early_reply(mdr.get());
     if (dn && dn->is_waiter_for(CDentry::WAIT_UNLINK_FINISH))
@@ -2273,15 +2308,12 @@ void Server::reply_client_request(MDRequestRef& mdr, const ref_t<MClientReply> &
     mds->send_message(reply, mdr->client_request->get_connection());
   }
 
-  if (req->is_queued_for_replay() &&
-      (mdr->has_completed || reply->get_result() < 0)) {
-    if (reply->get_result() < 0) {
-      int r = reply->get_result();
+  if (req->is_queued_for_replay()) {
+    if (int r = reply->get_result(); r < 0) {
       derr << "reply_client_request: failed to replay " << *req
-	   << " error " << r << " (" << cpp_strerror(r)  << ")" << dendl;
+           << " error " << r << " (" << cpp_strerror(r)  << ")" << dendl;
       mds->clog->warn() << "failed to replay " << req->get_reqid() << " error " << r;
     }
-    mds->queue_one_replay();
   }
 
   // clean up request
@@ -2328,7 +2360,7 @@ void Server::set_trace_dist(const ref_t<MClientReply> &reply,
       realm = in->find_snaprealm();
     else
       realm = dn->get_dir()->get_inode()->find_snaprealm();
-    reply->snapbl = realm->get_snap_trace();
+    reply->snapbl = get_snap_trace(session, realm);
     dout(10) << "set_trace_dist snaprealm " << *realm << " len=" << reply->snapbl.length() << dendl;
   }
 
@@ -2479,8 +2511,12 @@ void Server::handle_client_request(const cref_t<MClientRequest> &req)
 
   // register + dispatch
   MDRequestRef mdr = mdcache->request_start(req);
-  if (!mdr.get())
+  if (!mdr.get()) {
+    dout(5) << __func__ << ": possibly duplicate op " << *req << dendl;
+    if (req->is_queued_for_replay())
+      mds->queue_one_replay();
     return;
+  }
 
   if (session) {
     mdr->session = session;
@@ -2555,21 +2591,9 @@ void Server::dispatch_client_request(MDRequestRef& mdr)
   ceph_assert(!mdr->has_more() || mdr->more()->waiting_on_peer.empty());
 
   if (mdr->killed) {
-    dout(10) << "request " << *mdr << " was killed" << dendl;
-    //if the mdr is a "batch_op" and it has followers, pick a follower as
-    //the new "head of the batch ops" and go on processing the new one.
-    if (mdr->is_batch_head()) {
-      int mask = mdr->client_request->head.args.getattr.mask;
-      auto it = mdr->batch_op_map->find(mask);
-      auto new_batch_head = it->second->find_new_head();
-      if (!new_batch_head) {
-	mdr->batch_op_map->erase(it);
-	return;
-      }
-      mdr = std::move(new_batch_head);
-    } else {
-      return;
-    }
+    // Should already be reset in request_cleanup().
+    ceph_assert(!mdr->is_batch_head());
+    return;
   } else if (mdr->aborted) {
     mdr->aborted = false;
     mdcache->request_kill(mdr);
@@ -3445,10 +3469,12 @@ CInode* Server::prepare_new_inode(MDRequestRef& mdr, CDir *dir, inodeno_t useino
       _inode->mode |= S_ISGID;
     }
   } else {
-    _inode->gid = mdr->client_request->get_caller_gid();
+    _inode->gid = mdr->client_request->get_owner_gid();
+    ceph_assert(_inode->gid != (unsigned)-1);
   }
 
-  _inode->uid = mdr->client_request->get_caller_uid();
+  _inode->uid = mdr->client_request->get_owner_uid();
+  ceph_assert(_inode->uid != (unsigned)-1);
 
   _inode->btime = _inode->ctime = _inode->mtime = _inode->atime =
     mdr->get_op_stamp();
@@ -4851,7 +4877,7 @@ void Server::handle_client_readdir(MDRequestRef& mdr)
   //  this isn't perfect, but we should capture the main variable/unbounded size items!
   int front_bytes = dirbl.length() + sizeof(__u32) + sizeof(__u8)*2;
   int bytes_left = max_bytes - front_bytes;
-  bytes_left -= realm->get_snap_trace().length();
+  bytes_left -= get_snap_trace(session, realm).length();
 
   // build dir contents
   bufferlist dnbl;
@@ -6052,6 +6078,10 @@ void Server::handle_set_vxattr(MDRequestRef& mdr, CInode *cur)
       inodeno_t subvol_ino = realm->get_subvolume_ino();
       // can't create subvolume inside another subvolume
       if (subvol_ino && subvol_ino != cur->ino()) {
+	dout(20) << "subvol ino changed between rdlock release and xlock "
+		 << "policylock; subvol_ino: " << subvol_ino << ", "
+		 << "cur->ino: " << cur->ino()
+		 << dendl;
 	respond_to_request(mdr, -CEPHFS_EINVAL);
 	return;
       }
@@ -6066,10 +6096,13 @@ void Server::handle_set_vxattr(MDRequestRef& mdr, CInode *cur)
     auto pi = cur->project_inode(mdr, false, true);
     if (!srnode)
       pi.snapnode->created = pi.snapnode->seq = realm->get_newest_seq();
-    if (val)
+    if (val) {
+      dout(20) << "marking subvolume for ino: " << cur->ino() << dendl;
       pi.snapnode->mark_subvolume();
-    else
+    } else {
+      dout(20) << "clearing subvolume for ino: " << cur->ino() << dendl;
       pi.snapnode->clear_subvolume();
+    }
 
     mdr->no_early_reply = true;
     pip = pi.inode.get();
@@ -11059,6 +11092,8 @@ void Server::handle_client_mksnap(MDRequestRef& mdr)
     em.first->second = info;
   newsnap.seq = snapid;
   newsnap.last_created = snapid;
+  newsnap.last_modified = info.stamp;
+  newsnap.change_attr++;
 
   // journal the inode changes
   mdr->ls = mdlog->get_current_segment();
@@ -11149,7 +11184,6 @@ void Server::handle_client_rmsnap(MDRequestRef& mdr)
   }
   snapid_t snapid = diri->snaprealm->resolve_snapname(snapname, diri->ino());
   dout(10) << " snapname " << snapname << " is " << snapid << dendl;
-
   if (!(mdr->locking_state & MutationImpl::ALL_LOCKED)) {
     MutationImpl::LockOpVec lov;
     lov.add_xlock(&diri->snaplock);
@@ -11197,6 +11231,8 @@ void Server::handle_client_rmsnap(MDRequestRef& mdr)
   newnode.snaps.erase(snapid);
   newnode.seq = seq;
   newnode.last_destroyed = seq;
+  newnode.last_modified = mdr->get_op_stamp();
+  newnode.change_attr++;
 
   le->metablob.add_client_req(req->get_reqid(), req->get_oldest_client_tid());
   le->metablob.add_table_transaction(TABLE_SNAP, stid);
@@ -11229,6 +11265,8 @@ void Server::_rmsnap_finish(MDRequestRef& mdr, CInode *diri, snapid_t snapid)
 
   // yay
   mdr->in[0] = diri;
+  mdr->tracei = diri;
+  mdr->snapid = snapid;
   respond_to_request(mdr, 0);
 
   // purge snapshot data
@@ -11334,6 +11372,8 @@ void Server::handle_client_renamesnap(MDRequestRef& mdr)
   auto it = newsnap.snaps.find(snapid);
   ceph_assert(it != newsnap.snaps.end());
   it->second.name = dstname;
+  newsnap.last_modified = mdr->get_op_stamp();
+  newsnap.change_attr++;
 
   // journal the inode changes
   mdr->ls = mdlog->get_current_segment();
@@ -11387,4 +11427,19 @@ void Server::dump_reconnect_status(Formatter *f) const
   f->open_object_section("reconnect_status");
   f->dump_stream("client_reconnect_gather") << client_reconnect_gather;
   f->close_section();
+}
+
+const bufferlist& Server::get_snap_trace(Session *session, SnapRealm *realm) const {
+  ceph_assert(session);
+  ceph_assert(realm);
+  if (session->info.has_feature(CEPHFS_FEATURE_NEW_SNAPREALM_INFO)) {
+    return realm->get_snap_trace_new();
+  } else {
+    return realm->get_snap_trace();
+  }
+}
+
+const bufferlist& Server::get_snap_trace(client_t client, SnapRealm *realm) const {
+  Session *session = mds->sessionmap.get_session(entity_name_t::CLIENT(client.v));
+  return get_snap_trace(session, realm);
 }

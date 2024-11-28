@@ -5638,7 +5638,7 @@ void MDCache::prepare_realm_split(SnapRealm *realm, client_t client, inodeno_t i
     snap = make_message<MClientSnap>(CEPH_SNAP_OP_SPLIT);
     splits.emplace(std::piecewise_construct, std::forward_as_tuple(client), std::forward_as_tuple(snap));
     snap->head.split = realm->inode->ino();
-    snap->bl = realm->get_snap_trace();
+    snap->bl = mds->server->get_snap_trace(client, realm);
 
     for (const auto& child : realm->open_children)
       snap->split_realms.push_back(child->inode->ino());
@@ -5669,7 +5669,7 @@ void MDCache::prepare_realm_merge(SnapRealm *realm, SnapRealm *parent_realm,
       update->head.split = parent_realm->inode->ino();
       update->split_inos = split_inos;
       update->split_realms = split_realms;
-      update->bl = parent_realm->get_snap_trace();
+      update->bl = mds->server->get_snap_trace(p.first, parent_realm);
       em.first->second = std::move(update);
     }
   }
@@ -5866,7 +5866,7 @@ void MDCache::do_cap_import(Session *session, CInode *in, Capability *cap,
 					cap->get_last_seq(), cap->pending(), cap->wanted(),
 					0, cap->get_mseq(), mds->get_osd_epoch_barrier());
   in->encode_cap_message(reap, cap);
-  reap->snapbl = realm->get_snap_trace();
+  reap->snapbl = mds->server->get_snap_trace(session, realm);
   reap->set_cap_peer(p_cap_id, p_seq, p_mseq, peer, p_flags);
   mds->send_message_client_counted(reap, session);
 }
@@ -6033,7 +6033,7 @@ void MDCache::finish_snaprealm_reconnect(client_t client, SnapRealm *realm, snap
     dout(10) << "finish_snaprealm_reconnect client." << client << " has old seq " << seq << " < " 
 	     << realm->get_newest_seq() << " on " << *realm << dendl;
     auto snap = make_message<MClientSnap>(CEPH_SNAP_OP_UPDATE);
-    snap->bl = realm->get_snap_trace();
+    snap->bl = mds->server->get_snap_trace(client, realm);
     updates.emplace(std::piecewise_construct, std::forward_as_tuple(client), std::forward_as_tuple(snap));
   } else {
     dout(10) << "finish_snaprealm_reconnect client." << client << " up to date"
@@ -6668,6 +6668,13 @@ std::pair<bool, uint64_t> MDCache::trim_lru(uint64_t count, expiremap& expiremap
           << " pinned=" << lru.lru_get_num_pinned()
           << dendl;
 
+  dout(20) << "bottom_lru: " << bottom_lru.lru_get_size() << " items"
+              ", " << bottom_lru.lru_get_top() << " top"
+              ", " << bottom_lru.lru_get_bot() << " bot"
+              ", " << bottom_lru.lru_get_pintail() << " pintail"
+              ", " << bottom_lru.lru_get_num_pinned() << " pinned"
+              << dendl;
+
   const uint64_t trim_counter_start = trim_counter.get();
   bool throttled = false;
   while (1) {
@@ -6688,20 +6695,25 @@ std::pair<bool, uint64_t> MDCache::trim_lru(uint64_t count, expiremap& expiremap
   }
   unexpirables.clear();
 
+  dout(20) << "lru: " << lru.lru_get_size() << " items"
+              ", " << lru.lru_get_top() << " top"
+              ", " << lru.lru_get_bot() << " bot"
+              ", " << lru.lru_get_pintail() << " pintail"
+              ", " << lru.lru_get_num_pinned() << " pinned"
+              << dendl;
+
   // trim dentries from the LRU until count is reached
-  // if mds is in standby_replay and skip trimming the inodes
-  while (!throttled && (cache_toofull() || count > 0 || is_standby_replay)) {
+  while (!throttled && (cache_toofull() || count > 0)) {
     throttled |= trim_counter_start+trimmed >= trim_threshold;
     if (throttled) break;
     CDentry *dn = static_cast<CDentry*>(lru.lru_expire());
     if (!dn) {
       break;
     }
-    if (is_standby_replay && dn->get_linkage()->inode) {
-      // we move the inodes that need to be trimmed to the end of the lru queue.
-      // refer to MDCache::standby_trim_segment
-      lru.lru_insert_bot(dn);
-      break;
+    if ((is_standby_replay && dn->get_linkage()->inode &&
+        dn->get_linkage()->inode->item_open_file.is_on_list())) {
+      dout(20) << "unexpirable: " << *dn << dendl;
+      unexpirables.push_back(dn);
     } else if (trim_dentry(dn, expiremap)) {
       unexpirables.push_back(dn);
     } else {
@@ -7346,69 +7358,42 @@ void MDCache::try_trim_non_auth_subtree(CDir *dir)
 
 void MDCache::standby_trim_segment(LogSegment *ls)
 {
-  auto try_trim_inode = [this](CInode *in) {
-    if (in->get_num_ref() == 0 &&
-	!in->item_open_file.is_on_list() &&
-	in->parent != NULL &&
-	in->parent->get_num_ref() == 0){
-      touch_dentry_bottom(in->parent);
-    }
-  };
-
-  auto try_trim_dentry = [this](CDentry *dn) {
-    if (dn->get_num_ref() > 0)
-      return;
-    auto in = dn->get_linkage()->inode;
-    if(in && in->item_open_file.is_on_list())
-      return;
-    touch_dentry_bottom(dn);
-  };
-  
   ls->new_dirfrags.clear_list();
   ls->open_files.clear_list();
 
   while (!ls->dirty_dirfrags.empty()) {
     CDir *dir = ls->dirty_dirfrags.front();
     dir->mark_clean();
-    if (dir->inode)
-      try_trim_inode(dir->inode);
   }
   while (!ls->dirty_inodes.empty()) {
     CInode *in = ls->dirty_inodes.front();
     in->mark_clean();
-    try_trim_inode(in);
   }
   while (!ls->dirty_dentries.empty()) {
     CDentry *dn = ls->dirty_dentries.front();
     dn->mark_clean();
-    try_trim_dentry(dn);
   }
   while (!ls->dirty_parent_inodes.empty()) {
     CInode *in = ls->dirty_parent_inodes.front();
     in->clear_dirty_parent();
-    try_trim_inode(in);
   }
   while (!ls->dirty_dirfrag_dir.empty()) {
     CInode *in = ls->dirty_dirfrag_dir.front();
     in->filelock.remove_dirty();
-    try_trim_inode(in);
   }
   while (!ls->dirty_dirfrag_nest.empty()) {
     CInode *in = ls->dirty_dirfrag_nest.front();
     in->nestlock.remove_dirty();
-    try_trim_inode(in);
   }
   while (!ls->dirty_dirfrag_dirfragtree.empty()) {
     CInode *in = ls->dirty_dirfrag_dirfragtree.front();
     in->dirfragtreelock.remove_dirty();
-    try_trim_inode(in);
   }
   while (!ls->truncating_inodes.empty()) {
     auto it = ls->truncating_inodes.begin();
     CInode *in = *it;
     ls->truncating_inodes.erase(it);
     in->put(CInode::PIN_TRUNCATING);
-    try_trim_inode(in);
   }
 }
 
@@ -9711,6 +9696,19 @@ void MDCache::request_cleanup(MDRequestRef& mdr)
 {
   dout(15) << "request_cleanup " << *mdr << dendl;
 
+  if (mdr->killed && mdr->client_request && mdr->is_batch_head()) {
+    dout(10) << "request " << *mdr << " was killed and dead" << dendl;
+    //if the mdr is a "batch_op" and it has followers, pick a follower as
+    //the new "head of the batch ops" and go on processing the new one.
+    int mask = mdr->client_request->head.args.getattr.mask;
+    auto it = mdr->batch_op_map->find(mask);
+    auto new_batch_head = it->second->find_new_head();
+    if (!new_batch_head) {
+      mdr->batch_op_map->erase(it);
+    }
+    mds->finisher->queue(new C_MDS_RetryRequest(this, new_batch_head));
+  }
+
   if (mdr->has_more()) {
     if (mdr->more()->is_ambiguous_auth)
       mdr->clear_ambiguous_auth();
@@ -9736,6 +9734,12 @@ void MDCache::request_cleanup(MDRequestRef& mdr)
 
   // remove from map
   active_requests.erase(mdr->reqid);
+
+  // queue next replay op?
+  if (mdr->is_queued_for_replay() && !mdr->get_queued_next_replay_op()) {
+    mdr->set_queued_next_replay_op();
+    mds->queue_one_replay();
+  }
 
   if (mds->logger)
     log_stat();
@@ -9827,7 +9831,7 @@ void MDCache::do_realm_invalidate_and_update_notify(CInode *in, int snapop, bool
 	  update->head.split = in->ino();
 	  update->split_inos = split_inos;
 	  update->split_realms = split_realms;
-	  update->bl = in->snaprealm->get_snap_trace();
+	  update->bl = mds->server->get_snap_trace(em.first->first, in->snaprealm);
 	  em.first->second = std::move(update);
 	}
       }
@@ -9921,7 +9925,7 @@ void MDCache::notify_global_snaprealm_update(int snap_op)
       continue;
     auto update = make_message<MClientSnap>(snap_op);
     update->head.split = global_snaprealm->inode->ino();
-    update->bl = global_snaprealm->get_snap_trace();
+    update->bl = mds->server->get_snap_trace(session, global_snaprealm);
     mds->send_message_client_counted(update, session);
   }
 }
@@ -13339,6 +13343,12 @@ bool MDCache::dump_inode(Formatter *f, uint64_t number) {
   return true;
 }
 
+void MDCache::dump_dir(Formatter *f, CDir *dir, bool dentry_dump) {
+  f->open_object_section("dir");
+  dir->dump(f, dentry_dump ? CDir::DUMP_ALL : CDir::DUMP_DEFAULT);
+  f->close_section();
+}
+
 void MDCache::handle_mdsmap(const MDSMap &mdsmap, const MDSMap &oldmap) {
   const mds_rank_t max_mds = mdsmap.get_max_mds();
 
@@ -13401,7 +13411,7 @@ void MDCache::upkeep_main(void)
         if (active_with_clients) {
           trim_client_leases();
         }
-        if (is_open()) {
+        if (is_open() || mds->is_standby_replay()) {
           trim();
         }
         if (active_with_clients) {

@@ -59,11 +59,13 @@ def test_parse_host_placement_specs(test_input, expected, require_network):
         ('2 host1 host2', "PlacementSpec(count=2, hosts=[HostPlacementSpec(hostname='host1', network='', name=''), HostPlacementSpec(hostname='host2', network='', name='')])"),
         ('label:foo', "PlacementSpec(label='foo')"),
         ('3 label:foo', "PlacementSpec(count=3, label='foo')"),
-        ('*', "PlacementSpec(host_pattern='*')"),
-        ('3 data[1-3]', "PlacementSpec(count=3, host_pattern='data[1-3]')"),
-        ('3 data?', "PlacementSpec(count=3, host_pattern='data?')"),
-        ('3 data*', "PlacementSpec(count=3, host_pattern='data*')"),
+        ('*', "PlacementSpec(host_pattern=HostPattern(pattern='*', pattern_type=PatternType.fnmatch))"),
+        ('3 data[1-3]', "PlacementSpec(count=3, host_pattern=HostPattern(pattern='data[1-3]', pattern_type=PatternType.fnmatch))"),
+        ('3 data?', "PlacementSpec(count=3, host_pattern=HostPattern(pattern='data?', pattern_type=PatternType.fnmatch))"),
+        ('3 data*', "PlacementSpec(count=3, host_pattern=HostPattern(pattern='data*', pattern_type=PatternType.fnmatch))"),
         ("count-per-host:4 label:foo", "PlacementSpec(count_per_host=4, label='foo')"),
+        ('regex:Foo[0-9]|Bar[0-9]', "PlacementSpec(host_pattern=HostPattern(pattern='Foo[0-9]|Bar[0-9]', pattern_type=PatternType.regex))"),
+        ('3 regex:Foo[0-9]|Bar[0-9]', "PlacementSpec(count=3, host_pattern=HostPattern(pattern='Foo[0-9]|Bar[0-9]', pattern_type=PatternType.regex))"),
     ])
 def test_parse_placement_specs(test_input, expected):
     ret = PlacementSpec.from_string(test_input)
@@ -76,6 +78,9 @@ def test_parse_placement_specs(test_input, expected):
         ("host=a host*"),
         ("host=a label:wrong"),
         ("host? host*"),
+        ("host? regex:host*"),
+        ("regex:host? host*"),
+        ("regex:host? regex:host*"),
         ('host=a count-per-host:0'),
         ('host=a count-per-host:-10'),
         ('count:2 count-per-host:1'),
@@ -182,6 +187,28 @@ def test_servicespec_map_test(s_type, o_spec, s_id):
     assert spec.validate() is None
     ServiceSpec.from_json(spec.to_json())
 
+
+@pytest.mark.parametrize(
+    "realm, zone, frontend_type, raise_exception, msg",
+    [
+        ('realm', 'zone1', 'beast', False, ''),
+        ('realm', 'zone2', 'civetweb', False, ''),
+        ('realm', None, 'beast', True, 'Cannot add RGW: Realm specified but no zone specified'),
+        (None, 'zone1', 'beast', True, 'Cannot add RGW: Zone specified but no realm specified'),
+        ('realm', 'zone', 'invalid-beast', True, '^Invalid rgw_frontend_type value'),
+        ('realm', 'zone', 'invalid-civetweb', True, '^Invalid rgw_frontend_type value'),
+    ])
+def test_rgw_servicespec_parse(realm, zone, frontend_type, raise_exception, msg):
+    spec = RGWSpec(service_id='foo',
+                   rgw_realm=realm,
+                   rgw_zone=zone,
+                   rgw_frontend_type=frontend_type)
+    if raise_exception:
+        with pytest.raises(SpecValidationError, match=msg):
+            spec.validate()
+    else:
+        spec.validate()
+
 def test_osd_unmanaged():
     osd_spec = {"placement": {"host_pattern": "*"},
                 "service_id": "all-available-devices",
@@ -205,6 +232,13 @@ service_name: crash
 placement:
   host_pattern: '*'
 unmanaged: true
+---
+service_type: crash
+service_name: crash
+placement:
+  host_pattern:
+    pattern: Foo[0-9]|Bar[0-9]
+    pattern_type: regex
 ---
 service_type: rgw
 service_id: default-rgw-realm.eu-central-1.1
@@ -361,6 +395,14 @@ spec:
   privacy_protocol: AES
   snmp_destination: 192.168.1.42:162
   snmp_version: V3
+---
+service_type: grafana
+service_name: grafana
+placement:
+  count: 1
+spec:
+  anonymous_access: false
+  initial_admin_password: password
 """.split('---\n'))
 def test_yaml(y):
     data = yaml.safe_load(y)

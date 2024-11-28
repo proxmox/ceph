@@ -13,6 +13,7 @@
  *
  */
 
+#include "include/rados/librados.hpp"
 #include "rgw_aio.h"
 #include "rgw_putobj_processor.h"
 #include "rgw_multi.h"
@@ -26,6 +27,41 @@
 using namespace std;
 
 namespace rgw::putobj {
+
+/*
+ * For the cloudtiered objects, update the object manifest with the
+ * cloudtier config info read from the attrs.
+ * Since these attrs are used internally for only replication, do not store them
+ * in the head object.
+ */
+void read_cloudtier_info_from_attrs(rgw::sal::Attrs& attrs, RGWObjCategory& category,
+                          RGWObjManifest& manifest) {
+  auto attr_iter = attrs.find(RGW_ATTR_CLOUD_TIER_TYPE);
+  if (attr_iter != attrs.end()) {
+    auto i = attr_iter->second;
+    string m = i.to_str();
+
+    if (m == "cloud-s3") {
+      category = RGWObjCategory::CloudTiered;
+      manifest.set_tier_type("cloud-s3");
+
+      auto config_iter = attrs.find(RGW_ATTR_CLOUD_TIER_CONFIG);
+      if (config_iter != attrs.end()) {
+        auto i = config_iter->second.cbegin();
+        RGWObjTier tier_config;
+
+        try {
+          using ceph::decode;
+          decode(tier_config, i);
+          manifest.set_tier_config(tier_config);
+          attrs.erase(config_iter);
+        } catch (buffer::error& err) {
+        }
+      }
+    }
+    attrs.erase(attr_iter);
+  }
+}
 
 int HeadObjectProcessor::process(bufferlist&& data, uint64_t logical_offset)
 {
@@ -87,6 +123,11 @@ void RadosWriter::add_write_hint(librados::ObjectWriteOperation& op) {
   }
 
   op.set_alloc_hint2(0, 0, alloc_hint_flags);
+}
+
+void RadosWriter::set_head_obj(std::unique_ptr<rgw::sal::Object> head)
+{
+  head_obj = std::move(head);
 }
 
 int RadosWriter::set_stripe_obj(const rgw_raw_obj& raw_obj)
@@ -334,6 +375,8 @@ int AtomicObjectProcessor::complete(size_t accounted_size,
   obj_op.meta.zones_trace = zones_trace;
   obj_op.meta.modify_tail = true;
 
+  read_cloudtier_info_from_attrs(attrs, obj_op.meta.category, manifest);
+
   r = obj_op.write_meta(dpp, actual_size, accounted_size, attrs, y);
   if (r < 0) {
     if (r == -ETIMEDOUT) {
@@ -412,6 +455,9 @@ int MultipartObjectProcessor::prepare_head()
   dynamic_cast<rgw::sal::RadosObject*>(head_obj.get())->raw_obj_to_obj(stripe_obj);
   head_obj->set_hash_source(target_obj->get_name());
 
+  // point part uploads at the part head instead of the final multipart head
+  writer.set_head_obj(head_obj->clone());
+
   r = writer.set_stripe_obj(stripe_obj);
   if (r < 0) {
     return r;
@@ -471,7 +517,6 @@ int MultipartObjectProcessor::complete(size_t accounted_size,
   if (r < 0)
     return r;
 
-  bufferlist bl;
   RGWUploadPartInfo info;
   string p = "part.";
   bool sorted_omap = is_v2_upload_id(upload_id);
@@ -497,13 +542,32 @@ int MultipartObjectProcessor::complete(size_t accounted_size,
     return r;
   }
 
-  encode(info, bl);
-
   std::unique_ptr<rgw::sal::Object> meta_obj =
     head_obj->get_bucket()->get_object(rgw_obj_key(mp.get_meta(), std::string(), RGW_OBJ_NS_MULTIPART));
   meta_obj->set_in_extra_data(true);
 
-  r = meta_obj->omap_set_val_by_key(dpp, p, bl, true, null_yield);
+  rgw_raw_obj meta_raw_obj;
+  store->getRados()->obj_to_raw(meta_obj->get_bucket()->get_placement_rule(), 
+                                meta_obj->get_obj(),
+                                &meta_raw_obj);
+  rgw_rados_ref meta_obj_ref;
+  r = store->getRados()->get_raw_obj_ref(dpp, meta_raw_obj, &meta_obj_ref);
+  if (r < 0) {
+    ldpp_dout(dpp, -1) << "ERROR: failed to get obj ref of meta obj with ret=" << r << dendl;
+    return r;
+  }
+
+  librados::ObjectWriteOperation op;
+  cls_rgw_mp_upload_part_info_update(op, p, info);
+  r = rgw_rados_operate(dpp, meta_obj_ref.pool.ioctx(), meta_obj_ref.obj.oid, &op, y);
+  ldpp_dout(dpp, 20) << "Update meta: " << meta_obj_ref.obj.oid << " part " << p << " prefix " << info.manifest.get_prefix() << " return " << r << dendl;
+
+  if (r == -EOPNOTSUPP) {
+    // New CLS call to update part info is not yet supported. Fall back to the old handling.
+    bufferlist bl;
+    encode(info, bl);
+    r = meta_obj->omap_set_val_by_key(dpp, p, bl, true, null_yield);
+  }
   if (r < 0) {
     return r == -ENOENT ? -ERR_NO_SUCH_UPLOAD : r;
   }
@@ -582,6 +646,8 @@ int AppendObjectProcessor::prepare(optional_yield y)
     iter = astate->attrset.find(RGW_ATTR_STORAGE_CLASS);
     if (iter != astate->attrset.end()) {
       tail_placement_rule.storage_class = iter->second.to_str();
+    } else {
+      tail_placement_rule.storage_class = RGW_STORAGE_CLASS_STANDARD;
     }
     cur_manifest = &(*astate->manifest);
     manifest.set_prefix(cur_manifest->get_prefix());

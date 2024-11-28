@@ -1,4 +1,5 @@
 local g = import 'grafonnet/grafana.libsonnet';
+local pieChartPanel = import 'piechart_panel.libsonnet';
 
 {
   _config:: error 'must provide _config',
@@ -144,14 +145,6 @@ local g = import 'grafonnet/grafana.libsonnet';
                         title=title,
                         valueName=valueName),
 
-  addTableSchema(datasource, description, sort, styles, title, transform)::
-    g.tablePanel.new(datasource=datasource,
-                     description=description,
-                     sort=sort,
-                     styles=styles,
-                     title=title,
-                     transform=transform),
-
   addStyle(alias,
            colorMode,
            colors,
@@ -266,7 +259,7 @@ local g = import 'grafonnet/grafana.libsonnet';
                        '$datasource')
     .addTargets(
       [$.addTargetSchema(expr, legendFormat)]
-    ) + { gridPos: { x: x, y: y, w: w, h: h } },
+    ) + { type: 'timeseries' } + { fieldConfig: { defaults: { unit: formatY1, custom: { fillOpacity: 8, showPoints: 'never' } } } } + { gridPos: { x: x, y: y, w: w, h: h } },
 
   simpleSingleStatPanel(format,
                         title,
@@ -330,4 +323,76 @@ local g = import 'grafonnet/grafana.libsonnet';
                         'pie',
                         title,
                         'current'),
+
+  pieChartPanel(
+    title,
+    description='',
+    datasource=null,
+    gridPos={},
+    displayMode='table',
+    placement='bottom',
+    showLegend=true,
+    displayLabels=[],
+    tooltip={},
+    pieType='pie',
+    values=[],
+    colorMode='auto',
+    overrides=[],
+    reduceOptions={},
+  )::
+    pieChartPanel.new(
+      title,
+      description=description,
+      datasource=datasource,
+      gridPos=gridPos,
+      displayMode=displayMode,
+      placement=placement,
+      showLegend=showLegend,
+      displayLabels=displayLabels,
+      tooltip=tooltip,
+      pieType=pieType,
+      values=values,
+      colorMode=colorMode,
+      overrides=overrides,
+      reduceOptions=reduceOptions,
+    ),
+
+  addTableExtended(
+    title='',
+    datasource=null,
+    description=null,
+    sort=null,
+    styles='',
+    transform=null,
+    pluginVersion='9.1.3',
+    options=null,
+    gridPosition={},
+    custom=null,
+    decimals=null,
+    thresholds=null,
+    unit=null,
+    overrides=[],
+    color=null
+  )::
+    g.tablePanel.new(datasource=datasource,
+                     description=description,
+                     sort=sort,
+                     styles=styles,
+                     title=title,
+                     transform=transform) + {
+      pluginVersion: pluginVersion,
+      gridPos: gridPosition,
+      [if options != null then 'options']: options,
+      fieldConfig+: {
+        defaults+: {
+          [if custom != null then 'custom']: custom,
+          [if decimals != null then 'decimals']: decimals,
+          [if thresholds != null then 'thresholds']: thresholds,
+          [if unit != null then 'unit']: unit,
+          [if color != null then 'color']: color,
+
+        },
+        overrides: overrides,
+      },
+    },
 }

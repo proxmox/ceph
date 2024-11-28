@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(ceph
-  VERSION 17.2.7
+  VERSION 17.2.8
   LANGUAGES CXX C ASM)
 
 cmake_policy(SET CMP0028 NEW)
@@ -242,6 +242,15 @@ set(HAVE_LIBURING ${WITH_LIBURING})
 
 CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_LIBURING "Require and build with system liburing" OFF
   "HAVE_LIBAIO;WITH_BLUESTORE" OFF)
+
+if(WITH_LIBURING)
+  if(WITH_SYSTEM_LIBURING)
+    find_package(uring REQUIRED)
+  else()
+    include(Builduring)
+    build_uring()
+  endif()
+endif()
 
 CMAKE_DEPENDENT_OPTION(WITH_BLUESTORE_PMEM "Enable PMDK libraries" OFF
   "WITH_BLUESTORE" OFF)
@@ -657,7 +666,7 @@ if(WITH_SYSTEM_NPM)
     message(FATAL_ERROR "Can't find npm.")
   endif()
 endif()
-set(DASHBOARD_FRONTEND_LANGS "" CACHE STRING
+set(DASHBOARD_FRONTEND_LANGS "ALL" CACHE STRING
   "List of comma separated ceph-dashboard frontend languages to build. \
   Use value `ALL` to build all languages")
 CMAKE_DEPENDENT_OPTION(WITH_MGR_ROOK_CLIENT "Enable the mgr's Rook support" ON

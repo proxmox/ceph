@@ -16,16 +16,14 @@ NFS_POOL_NAME = '.nfs'  # should match mgr_module.py
 # TODO Add test for cluster update when ganesha can be deployed on multiple ports.
 class TestNFS(MgrTestCase):
     def _cmd(self, *args):
-        return self.mgr_cluster.mon_manager.raw_cluster_cmd(*args)
+        return self.get_ceph_cmd_stdout(args)
 
     def _nfs_cmd(self, *args):
         return self._cmd("nfs", *args)
 
     def _nfs_complete_cmd(self, cmd):
-        return self.mgr_cluster.mon_manager.run_cluster_cmd(args=f"nfs {cmd}",
-                                                            stdout=StringIO(),
-                                                            stderr=StringIO(),
-                                                            check_status=False)
+        return self.run_ceph_cmd(args=f"nfs {cmd}", stdout=StringIO(),
+                                 stderr=StringIO(), check_status=False)
 
     def _orch_cmd(self, *args):
         return self._cmd("orch", *args)
@@ -142,7 +140,7 @@ class TestNFS(MgrTestCase):
         :param cmd_args: nfs command arguments to be run
         '''
         cmd_func()
-        ret = self.mgr_cluster.mon_manager.raw_cluster_cmd_result(*cmd_args)
+        ret = self.get_ceph_cmd_result(*cmd_args)
         if ret != 0:
             self.fail("Idempotency test failed")
 
@@ -812,10 +810,14 @@ class TestNFS(MgrTestCase):
         """
         Test that cluster info doesn't throw junk data for non-existent cluster
         """
-        cluseter_ls = self._nfs_cmd('cluster', 'ls')
-        self.assertNotIn('foo', cluseter_ls, 'cluster foo exists')
-        cluster_info = self._nfs_cmd('cluster', 'info', 'foo')
-        self.assertIn('cluster does not exist', cluster_info)
+        cluster_ls = self._nfs_cmd('cluster', 'ls')
+        self.assertNotIn('foo', cluster_ls, 'cluster foo exists')
+        try:
+            self._nfs_cmd('cluster', 'info', 'foo')
+            self.fail("nfs cluster info foo returned successfully for non-existent cluster")
+        except CommandFailedError as e:
+            if e.exitstatus != errno.ENOENT:
+                raise
 
     def test_nfs_export_with_invalid_path(self):
         """

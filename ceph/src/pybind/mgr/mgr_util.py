@@ -162,7 +162,7 @@ class CephfsConnectionPool(object):
             logger.debug("CephFS mounting...")
             self.fs.mount(filesystem_name=self.fs_name.encode('utf-8'))
             logger.debug("Connection to cephfs '{0}' complete".format(self.fs_name))
-            self.mgr._ceph_register_client(self.fs.get_addrs())
+            self.mgr._ceph_register_client(None, self.fs.get_addrs(), False)
 
         def disconnect(self) -> None:
             try:
@@ -171,7 +171,7 @@ class CephfsConnectionPool(object):
                 logger.info("disconnecting from cephfs '{0}'".format(self.fs_name))
                 addrs = self.fs.get_addrs()
                 self.fs.shutdown()
-                self.mgr._ceph_unregister_client(addrs)
+                self.mgr._ceph_unregister_client(None, addrs)
                 self.fs = None
             except Exception as e:
                 logger.debug("disconnect: ({0})".format(e))
@@ -544,7 +544,7 @@ def verify_cacrt_content(crt):
     # type: (str) -> None
     from OpenSSL import crypto
     try:
-        x509 = crypto.load_certificate(crypto.FILETYPE_PEM, crt)
+        x509 = crypto.load_certificate(crypto.FILETYPE_PEM, crt.encode('utf-8'))
         if x509.has_expired():
             logger.warning('Certificate has expired: {}'.format(crt))
     except (ValueError, crypto.Error) as e:
@@ -581,7 +581,7 @@ def verify_tls(crt, key):
         raise ServerConfigException(
             'Invalid private key: {}'.format(str(e)))
     try:
-        _crt = crypto.load_certificate(crypto.FILETYPE_PEM, crt)
+        _crt = crypto.load_certificate(crypto.FILETYPE_PEM, crt.encode('utf-8'))
     except ValueError as e:
         raise ServerConfigException(
             'Invalid certificate key: {}'.format(str(e))

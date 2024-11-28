@@ -19,6 +19,7 @@ from ceph.deployment.inventory import Device  # noqa: F401; pylint: disable=unus
 from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection, OSDMethod
 from ceph.deployment.service_spec import PlacementSpec, ServiceSpec, service_spec_allow_invalid_from_json
 from ceph.deployment.hostspec import SpecValidationError
+from ceph.deployment.utils import unwrap_ipv6
 from ceph.utils import datetime_now
 
 from mgr_util import to_pretty_timedelta, format_bytes
@@ -439,21 +440,24 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         if labels and len(labels) == 1:
             labels = labels[0].split(',')
 
+        if addr is not None:
+            addr = unwrap_ipv6(addr)
+
         s = HostSpec(hostname=hostname, addr=addr, labels=labels, status=_status)
 
         return self._apply_misc([s], False, Format.plain)
 
     @_cli_write_command('orch host rm')
-    def _remove_host(self, hostname: str, force: bool = False, offline: bool = False) -> HandleCommandResult:
+    def _remove_host(self, hostname: str, force: bool = False, offline: bool = False, rm_crush_entry: bool = False) -> HandleCommandResult:
         """Remove a host"""
-        completion = self.remove_host(hostname, force, offline)
+        completion = self.remove_host(hostname, force, offline, rm_crush_entry)
         raise_if_exception(completion)
         return HandleCommandResult(stdout=completion.result_str())
 
     @_cli_write_command('orch host drain')
-    def _drain_host(self, hostname: str, force: bool = False) -> HandleCommandResult:
+    def _drain_host(self, hostname: str, force: bool = False, keep_conf_keyring: bool = False, zap_osd_devices: bool = False) -> HandleCommandResult:
         """drain all daemons from a host"""
-        completion = self.drain_host(hostname, force)
+        completion = self.drain_host(hostname, force, keep_conf_keyring, zap_osd_devices)
         raise_if_exception(completion)
         return HandleCommandResult(stdout=completion.result_str())
 
@@ -1257,6 +1261,7 @@ Usage:
                    realm: Optional[str] = None,
                    zonegroup: Optional[str] = None,
                    zone: Optional[str] = None,
+                   networks: Optional[List[str]] = None,
                    port: Optional[int] = None,
                    ssl: bool = False,
                    dry_run: bool = False,
@@ -1280,6 +1285,7 @@ Usage:
             rgw_realm=realm,
             rgw_zonegroup=zonegroup,
             rgw_zone=zone,
+            networks=networks,
             rgw_frontend_port=port,
             ssl=ssl,
             placement=PlacementSpec.from_string(placement),

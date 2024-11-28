@@ -37,6 +37,11 @@ using namespace std;
 #include "common/config.h"
 #include "common/errno.h"
 
+/* Note, by default debug_mds_balancer is 1/5. For debug messages 1<lvl<=5,
+ * should_gather (below) will be true; so, debug_mds will be ignored even if
+ * set to 20/20. For this reason, some messages may not appear in the log.
+ * Increase both debug levels to get expected output!
+ */
 #define dout_context g_ceph_context
 #undef dout_prefix
 #define dout_prefix *_dout << "mds." << mds->get_nodeid() << ".bal " << __func__ << " "
@@ -550,7 +555,8 @@ double MDBalancer::try_match(balance_state_t& state, mds_rank_t ex, double& maxe
 
 void MDBalancer::queue_split(const CDir *dir, bool fast)
 {
-  dout(10) << __func__ << " enqueuing " << *dir
+  constexpr const auto &_func_ = __func__;
+  dout(10) << _func_ << " enqueuing " << *dir
                        << " (fast=" << fast << ")" << dendl;
 
   const dirfrag_t df = dir->dirfrag();
@@ -561,6 +567,16 @@ void MDBalancer::queue_split(const CDir *dir, bool fast)
       // path, because we spawn two contexts, one with mds->timer and
       // one with mds->queue_waiter.  The loser can safely just drop
       // out.
+      return;
+    }
+
+    if (mds->is_stopping()) {
+      // not a good time. This could have been (!mds->is_active())
+      // or at least (mds->is_stopping() || mds->is_stopped()), but
+      // is_stopped() is never true because an MDS respawns as soon as it's removed from the map;
+      // the narrow is_stopping check is to avoid potential regressions
+      // due to unknown coupling with other parts of the MDS (especially multiple ranks).
+      dout(5) << "ignoring the " << _func_ << " callback because the MDS state is '" << ceph_mds_state_name(mds->get_state()) << "'" << dendl;
       return;
     }
 
@@ -578,7 +594,7 @@ void MDBalancer::queue_split(const CDir *dir, bool fast)
 
     // Pass on to MDCache: note that the split might still not
     // happen if the checks in MDCache::can_fragment fail.
-    dout(10) << __func__ << " splitting " << *dir << dendl;
+    dout(10) << _func_ << " splitting " << *dir << dendl;
     int bits = g_conf()->mds_bal_split_bits;
     if (dir->inode->is_ephemeral_dist()) {
       unsigned min_frag_bits = mdcache->get_ephemeral_dist_frag_bits();
@@ -608,6 +624,7 @@ void MDBalancer::queue_split(const CDir *dir, bool fast)
 void MDBalancer::queue_merge(CDir *dir)
 {
   const auto frag = dir->dirfrag();
+  constexpr const auto &_func_ = __func__;
   auto callback = [this, frag](int r) {
     ceph_assert(frag.frag != frag_t());
 
@@ -615,6 +632,16 @@ void MDBalancer::queue_merge(CDir *dir)
     // for a given frag at a time (because merge_pending is checked before
     // starting one), and this context is the only one that erases it.
     merge_pending.erase(frag);
+
+    if (mds->is_stopping()) {
+      // not a good time. This could have been (!mds->is_active())
+      // or at least (mds->is_stopping() || mds->is_stopped()), but
+      // is_stopped() is never true because an MDS respawns as soon as it's removed from the map;
+      // the narrow is_stopping check is to avoid potential regressions
+      // due to unknown coupling with other parts of the MDS (especially multiple ranks).
+      dout(5) << "ignoring the " << _func_ << " callback because the MDS state is '" << ceph_mds_state_name(mds->get_state()) << "'" << dendl;
+      return;
+    }
 
     auto mdcache = mds->mdcache;
     CDir *dir = mdcache->get_dirfrag(frag);
@@ -647,7 +674,12 @@ void MDBalancer::queue_merge(CDir *dir)
       }
       bool all = true;
       for (auto& sib : sibs) {
-        if (!sib->is_auth() || !sib->should_merge()) {
+	auto is_auth = sib->is_auth();
+	auto should_merge = sib->should_merge();
+
+	dout(20) << ": sib=" << *sib << ", is_auth=" << is_auth << ", should_merge="
+		 << should_merge << dendl;
+        if (!is_auth || !should_merge) {
           all = false;
           break;
         }

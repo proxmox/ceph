@@ -469,7 +469,7 @@ class RGWInitDataSyncStatusCoroutine : public RGWCoroutine {
   static constexpr uint32_t lock_duration = 30;
   RGWDataSyncCtx *sc;
   RGWDataSyncEnv *sync_env;
-  rgw::sal::RadosStore* store;
+  rgw::sal::RadosStore* store; // RGWDataSyncEnv also has a pointer to store
   const rgw_pool& pool;
   const uint32_t num_shards;
 
@@ -1280,13 +1280,13 @@ class RGWDataSyncSingleEntryCR : public RGWCoroutine {
   int sync_status = 0;
 public:
   RGWDataSyncSingleEntryCR(RGWDataSyncCtx *_sc, rgw::bucket_sync::Handle state,
-                           rgw_data_sync_obligation obligation,
+                           rgw_data_sync_obligation _obligation,
                            RGWDataSyncShardMarkerTrack *_marker_tracker,
                            const rgw_raw_obj& error_repo,
                            boost::intrusive_ptr<const RGWContinuousLeaseCR> lease_cr,
                            const RGWSyncTraceNodeRef& _tn_parent)
     : RGWCoroutine(_sc->cct), sc(_sc), sync_env(_sc->env),
-      state(std::move(state)), obligation(std::move(obligation)),
+      state(std::move(state)), obligation(std::move(_obligation)),
       marker_tracker(_marker_tracker), error_repo(error_repo),
       lease_cr(std::move(lease_cr)) {
     set_description() << "data sync single entry (source_zone=" << sc->source_zone << ") " << obligation;
@@ -2490,8 +2490,8 @@ public:
   RGWMetadataHandler *alloc_bucket_meta_handler() override {
     return RGWArchiveBucketMetaHandlerAllocator::alloc();
   }
-  RGWBucketInstanceMetadataHandlerBase *alloc_bucket_instance_meta_handler() override {
-    return RGWArchiveBucketInstanceMetaHandlerAllocator::alloc();
+  RGWBucketInstanceMetadataHandlerBase *alloc_bucket_instance_meta_handler(rgw::sal::Store* store) override {
+    return RGWArchiveBucketInstanceMetaHandlerAllocator::alloc(store);
   }
 };
 

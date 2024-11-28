@@ -127,17 +127,120 @@ class HostPlacementSpec(NamedTuple):
         assert_valid_host(self.hostname)
 
 
+HostPatternType = Union[str, None, Dict[str, Union[str, bool, None]], "HostPattern"]
+
+
+class PatternType(enum.Enum):
+    fnmatch = 'fnmatch'
+    regex = 'regex'
+
+
+class HostPattern():
+    def __init__(self,
+                 pattern: Optional[str] = None,
+                 pattern_type: PatternType = PatternType.fnmatch) -> None:
+        self.pattern: Optional[str] = pattern
+        self.pattern_type: PatternType = pattern_type
+        self.compiled_regex = None
+        if self.pattern_type == PatternType.regex and self.pattern:
+            self.compiled_regex = re.compile(self.pattern)
+
+    def filter_hosts(self, hosts: List[str]) -> List[str]:
+        if not self.pattern:
+            return []
+        if not self.pattern_type or self.pattern_type == PatternType.fnmatch:
+            return fnmatch.filter(hosts, self.pattern)
+        elif self.pattern_type == PatternType.regex:
+            if not self.compiled_regex:
+                self.compiled_regex = re.compile(self.pattern)
+            return [h for h in hosts if re.match(self.compiled_regex, h)]
+        raise SpecValidationError(f'Got unexpected pattern_type: {self.pattern_type}')
+
+    @classmethod
+    def to_host_pattern(cls, arg: HostPatternType) -> "HostPattern":
+        if arg is None:
+            return cls()
+        elif isinstance(arg, str):
+            return cls(arg)
+        elif isinstance(arg, cls):
+            return arg
+        elif isinstance(arg, dict):
+            if 'pattern' not in arg:
+                raise SpecValidationError("Got dict for host pattern "
+                                          f"with no pattern field: {arg}")
+            pattern = arg['pattern']
+            if not pattern:
+                raise SpecValidationError("Got dict for host pattern"
+                                          f"with empty pattern: {arg}")
+            assert isinstance(pattern, str)
+            if 'pattern_type' in arg:
+                pattern_type = arg['pattern_type']
+                if not pattern_type or pattern_type == 'fnmatch':
+                    return cls(pattern, pattern_type=PatternType.fnmatch)
+                elif pattern_type == 'regex':
+                    return cls(pattern, pattern_type=PatternType.regex)
+                else:
+                    raise SpecValidationError("Got dict for host pattern "
+                                              f"with unknown pattern type: {arg}")
+            return cls(pattern)
+        raise SpecValidationError(f"Cannot convert {type(arg)} object to HostPattern")
+
+    def __eq__(self, other: Any) -> bool:
+        try:
+            other_hp = self.to_host_pattern(other)
+        except SpecValidationError:
+            return False
+        return self.pattern == other_hp.pattern and self.pattern_type == other_hp.pattern_type
+
+    def pretty_str(self) -> str:
+        # Placement specs must be able to be converted between the Python object
+        # representation and a pretty str both ways. So we need a corresponding
+        # function for HostPattern to convert it to a pretty str that we can
+        # convert back later.
+        res = self.pattern if self.pattern else ''
+        if self.pattern_type == PatternType.regex:
+            res = 'regex:' + res
+        return res
+
+    @classmethod
+    def from_pretty_str(cls, val: str) -> "HostPattern":
+        if 'regex:' in val:
+            return cls(val[6:], pattern_type=PatternType.regex)
+        else:
+            return cls(val)
+
+    def __repr__(self) -> str:
+        return f'HostPattern(pattern=\'{self.pattern}\', pattern_type={str(self.pattern_type)})'
+
+    def to_json(self) -> Union[str, Dict[str, Any], None]:
+        if self.pattern_type and self.pattern_type != PatternType.fnmatch:
+            return {
+                'pattern': self.pattern,
+                'pattern_type': self.pattern_type.name
+            }
+        return self.pattern
+
+    @classmethod
+    def from_json(self, val: Dict[str, Any]) -> "HostPattern":
+        return self.to_host_pattern(val)
+
+    def __bool__(self) -> bool:
+        if self.pattern:
+            return True
+        return False
+
+
 class PlacementSpec(object):
     """
     For APIs that need to specify a host subset
     """
 
     def __init__(self,
-                 label=None,  # type: Optional[str]
-                 hosts=None,  # type: Union[List[str],List[HostPlacementSpec], None]
-                 count=None,  # type: Optional[int]
-                 count_per_host=None,  # type: Optional[int]
-                 host_pattern=None,  # type: Optional[str]
+                 label: Optional[str] = None,
+                 hosts: Union[List[str], List[HostPlacementSpec], None] = None,
+                 count: Optional[int] = None,
+                 count_per_host: Optional[int] = None,
+                 host_pattern: HostPatternType = None,
                  ):
         # type: (...) -> None
         self.label = label
@@ -150,7 +253,7 @@ class PlacementSpec(object):
         self.count_per_host = count_per_host   # type: Optional[int]
 
         #: fnmatch patterns to select hosts. Can also be a single host.
-        self.host_pattern = host_pattern  # type: Optional[str]
+        self.host_pattern: HostPattern = HostPattern.to_host_pattern(host_pattern)
 
         self.validate()
 
@@ -190,10 +293,11 @@ class PlacementSpec(object):
             all_hosts = [hs.hostname for hs in hostspecs]
             return [h.hostname for h in self.hosts if h.hostname in all_hosts]
         if self.label:
-            return [hs.hostname for hs in hostspecs if self.label in hs.labels]
-        all_hosts = [hs.hostname for hs in hostspecs]
+            all_hosts = [hs.hostname for hs in hostspecs if self.label in hs.labels]
+        else:
+            all_hosts = [hs.hostname for hs in hostspecs]
         if self.host_pattern:
-            return fnmatch.filter(all_hosts, self.host_pattern)
+            return self.host_pattern.filter_hosts(all_hosts)
         return all_hosts
 
     def get_target_count(self, hostspecs: Iterable[HostSpec]) -> int:
@@ -217,7 +321,7 @@ class PlacementSpec(object):
         if self.label:
             kv.append('label:%s' % self.label)
         if self.host_pattern:
-            kv.append(self.host_pattern)
+            kv.append(self.host_pattern.pretty_str())
         return ';'.join(kv)
 
     def __repr__(self) -> str:
@@ -258,7 +362,7 @@ class PlacementSpec(object):
         if self.count_per_host:
             r['count_per_host'] = self.count_per_host
         if self.host_pattern:
-            r['host_pattern'] = self.host_pattern
+            r['host_pattern'] = self.host_pattern.to_json()
         return r
 
     def validate(self) -> None:
@@ -302,8 +406,9 @@ class PlacementSpec(object):
                 "count-per-host cannot be combined explicit placement with names or networks"
             )
         if self.host_pattern:
-            if not isinstance(self.host_pattern, str):
-                raise SpecValidationError('host_pattern must be of type string')
+            # if we got an invalid type for the host_pattern, it would have
+            # triggered a SpecValidationError when attemptying to convert it
+            # to a HostPattern type, so no type checking is needed here.
             if self.hosts:
                 raise SpecValidationError('cannot combine host patterns and hosts')
 
@@ -341,10 +446,17 @@ tPlacementSpec(hostname='host2', network='', name='')])
         >>> PlacementSpec.from_string('3 label:mon')
         PlacementSpec(count=3, label='mon')
 
-        fnmatch is also supported:
+        You can specify a regex to match with `regex:<regex>`
+
+        >>> PlacementSpec.from_string('regex:Foo[0-9]|Bar[0-9]')
+        PlacementSpec(host_pattern=HostPattern(pattern='Foo[0-9]|Bar[0-9]', \
+pattern_type=PatternType.regex))
+
+        fnmatch is the default for a single string if "regex:" is not provided:
 
         >>> PlacementSpec.from_string('data[1-3]')
-        PlacementSpec(host_pattern='data[1-3]')
+        PlacementSpec(host_pattern=HostPattern(pattern='data[1-3]', \
+pattern_type=PatternType.fnmatch))
 
         >>> PlacementSpec.from_string(None)
         PlacementSpec()
@@ -394,7 +506,8 @@ tPlacementSpec(hostname='host2', network='', name='')])
 
         advanced_hostspecs = [h for h in strings if
                               (':' in h or '=' in h or not any(c in '[]?*:=' for c in h)) and
-                              'label:' not in h]
+                              'label:' not in h and
+                              'regex:' not in h]
         for a_h in advanced_hostspecs:
             strings.remove(a_h)
 
@@ -406,15 +519,20 @@ tPlacementSpec(hostname='host2', network='', name='')])
         label = labels[0][6:] if labels else None
 
         host_patterns = strings
+        host_pattern: Optional[HostPattern] = None
         if len(host_patterns) > 1:
             raise SpecValidationError(
                 'more than one host pattern provided: {}'.format(host_patterns))
+        if host_patterns:
+            # host_patterns is a list not > 1, and not empty, so we should
+            # be guaranteed just a single string here
+            host_pattern = HostPattern.from_pretty_str(host_patterns[0])
 
         ps = PlacementSpec(count=count,
                            count_per_host=count_per_host,
                            hosts=advanced_hostspecs,
                            label=label,
-                           host_pattern=host_patterns[0] if host_patterns else None)
+                           host_pattern=host_pattern)
         return ps
 
 
@@ -868,6 +986,7 @@ class RGWSpec(ServiceSpec):
                  rgw_frontend_port: Optional[int] = None,
                  rgw_frontend_ssl_certificate: Optional[List[str]] = None,
                  rgw_frontend_type: Optional[str] = None,
+                 rgw_frontend_extra_args: Optional[List[str]] = None,
                  unmanaged: bool = False,
                  ssl: bool = False,
                  preview_only: bool = False,
@@ -912,6 +1031,8 @@ class RGWSpec(ServiceSpec):
         self.rgw_frontend_ssl_certificate: Optional[List[str]] = rgw_frontend_ssl_certificate
         #: civetweb or beast (default: beast). See :ref:`rgw_frontends`
         self.rgw_frontend_type: Optional[str] = rgw_frontend_type
+        #: List of extra arguments for rgw_frontend in the form opt=value. See :ref:`rgw_frontends`
+        self.rgw_frontend_extra_args: Optional[List[str]] = rgw_frontend_extra_args
         #: enable SSL
         self.ssl = ssl
         self.rgw_realm_token = rgw_realm_token
@@ -937,6 +1058,13 @@ class RGWSpec(ServiceSpec):
                     'Cannot add RGW: Realm specified but no zone specified')
         if self.rgw_zone and not self.rgw_realm:
             raise SpecValidationError('Cannot add RGW: Zone specified but no realm specified')
+
+        if self.rgw_frontend_type is not None:
+            if self.rgw_frontend_type not in ['beast', 'civetweb']:
+                raise SpecValidationError(
+                    'Invalid rgw_frontend_type value. Valid values are: beast, civetweb.\n'
+                    'Additional rgw type parameters can be passed using rgw_frontend_extra_args.'
+                )
 
 
 yaml.add_representer(RGWSpec, ServiceSpec.yaml_representer)
@@ -1120,7 +1248,6 @@ class CustomContainerSpec(ServiceSpec):
                  preview_only: bool = False,
                  image: Optional[str] = None,
                  entrypoint: Optional[str] = None,
-                 extra_entrypoint_args: Optional[List[str]] = None,
                  uid: Optional[int] = None,
                  gid: Optional[int] = None,
                  volume_mounts: Optional[Dict[str, str]] = {},
@@ -1131,6 +1258,9 @@ class CustomContainerSpec(ServiceSpec):
                  ports: Optional[List[int]] = [],
                  dirs: Optional[List[str]] = [],
                  files: Optional[Dict[str, Any]] = {},
+                 extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
+                 custom_configs: Optional[List[CustomConfig]] = None,
                  ):
         assert service_type == 'container'
         assert service_id is not None
@@ -1140,7 +1270,9 @@ class CustomContainerSpec(ServiceSpec):
             service_type, service_id,
             placement=placement, unmanaged=unmanaged,
             preview_only=preview_only, config=config,
-            networks=networks, extra_entrypoint_args=extra_entrypoint_args)
+            networks=networks, extra_container_args=extra_container_args,
+            extra_entrypoint_args=extra_entrypoint_args,
+            custom_configs=custom_configs)
 
         self.image = image
         self.entrypoint = entrypoint
@@ -1172,6 +1304,19 @@ class CustomContainerSpec(ServiceSpec):
             if value is not None:
                 config_json[prop] = value
         return config_json
+
+    def validate(self) -> None:
+        super(CustomContainerSpec, self).validate()
+
+        if self.args and self.extra_container_args:
+            raise SpecValidationError(
+                '"args" and "extra_container_args" are mutually exclusive '
+                '(and both serve the same purpose)')
+
+        if self.files and self.custom_configs:
+            raise SpecValidationError(
+                '"files" and "custom_configs" are mutually exclusive '
+                '(and both serve the same purpose)')
 
 
 yaml.add_representer(CustomContainerSpec, ServiceSpec.yaml_representer)
@@ -1287,9 +1432,10 @@ class GrafanaSpec(MonitoringSpec):
                  preview_only: bool = False,
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
+                 only_bind_port_on_networks: bool = False,
                  port: Optional[int] = None,
                  initial_admin_password: Optional[str] = None,
-                 anonymous_access: Optional[bool] = True,
+                 anonymous_access: bool = True,
                  extra_container_args: Optional[List[str]] = None,
                  extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
@@ -1305,11 +1451,35 @@ class GrafanaSpec(MonitoringSpec):
         self.initial_admin_password = initial_admin_password
         self.anonymous_access = anonymous_access
 
+        # whether ports daemons for this service bind to should
+        # bind to only hte networks listed in networks param, or
+        # to all networks. Defaults to false which is saying to bind
+        # on all networks.
+        self.only_bind_port_on_networks = only_bind_port_on_networks
+
         if not self.anonymous_access and not self.initial_admin_password:
             err_msg = ('Either initial_admin_password must be set or anonymous_access '
                        'must be set to true. Otherwise the grafana dashboard will '
                        'be inaccessible.')
             raise SpecValidationError(err_msg)
+
+    def to_json(self) -> "OrderedDict[str, Any]":
+        json_dict = super(GrafanaSpec, self).to_json()
+        if not self.anonymous_access:
+            # This field was added as a boolean that defaults
+            # to True, which makes it get dropped when the user
+            # sets it to False and it is converted to json. This means
+            # the in memory version of the spec will have the option set
+            # correctly, but the persistent version we store in the config-key
+            # store will always drop this option. It's already been backported to
+            # some release versions, or we'd probably just rename it to
+            # no_anonymous_access and default it to False. This block is to
+            # handle this option specially and in the future, we should avoid
+            # boolean fields that default to True.
+            if 'spec' not in json_dict:
+                json_dict['spec'] = {}
+            json_dict['spec']['anonymous_access'] = False
+        return json_dict
 
 
 yaml.add_representer(GrafanaSpec, ServiceSpec.yaml_representer)
@@ -1324,6 +1494,7 @@ class PrometheusSpec(MonitoringSpec):
                  preview_only: bool = False,
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
+                 only_bind_port_on_networks: bool = False,
                  port: Optional[int] = None,
                  retention_time: Optional[str] = None,
                  retention_size: Optional[str] = None,
@@ -1341,6 +1512,7 @@ class PrometheusSpec(MonitoringSpec):
 
         self.retention_time = retention_time.strip() if retention_time else None
         self.retention_size = retention_size.strip() if retention_size else None
+        self.only_bind_port_on_networks = only_bind_port_on_networks
 
 
 yaml.add_representer(PrometheusSpec, ServiceSpec.yaml_representer)
@@ -1543,6 +1715,7 @@ class MONSpec(ServiceSpec):
                  preview_only: bool = False,
                  networks: Optional[List[str]] = None,
                  extra_container_args: Optional[List[str]] = None,
+                 extra_entrypoint_args: Optional[List[str]] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
                  crush_locations: Optional[Dict[str, List[str]]] = None,
                  ):
@@ -1555,6 +1728,7 @@ class MONSpec(ServiceSpec):
                                       preview_only=preview_only,
                                       networks=networks,
                                       extra_container_args=extra_container_args,
+                                      extra_entrypoint_args=extra_entrypoint_args,
                                       custom_configs=custom_configs)
 
         self.crush_locations = crush_locations

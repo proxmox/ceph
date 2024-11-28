@@ -140,7 +140,8 @@ int Service::get_admin_token(const DoutPrefixProvider *dpp,
                              CephContext* const cct,
                              TokenCache& token_cache,
                              const Config& config,
-                             std::string& token)
+                             std::string& token,
+                             bool& token_cached)
 {
   /* Let's check whether someone uses the deprecated "admin token" feauture
    * based on a shared secret from keystone.conf file. */
@@ -156,6 +157,7 @@ int Service::get_admin_token(const DoutPrefixProvider *dpp,
   if (token_cache.find_admin(t)) {
     ldpp_dout(dpp, 20) << "found cached admin token" << dendl;
     token = t.token.id;
+    token_cached = true;
     return 0;
   }
 
@@ -379,11 +381,18 @@ bool TokenCache::find(const std::string& token_id,
                       rgw::keystone::TokenEnvelope& token)
 {
   std::lock_guard l{lock};
-  return find_locked(token_id, token);
+  return find_locked(token_id, token, tokens, tokens_lru);
 }
 
-bool TokenCache::find_locked(const std::string& token_id,
-                             rgw::keystone::TokenEnvelope& token)
+bool TokenCache::find_service(const std::string& token_id,
+                              rgw::keystone::TokenEnvelope& token)
+{
+  std::lock_guard l{lock};
+  return find_locked(token_id, token, service_tokens, service_tokens_lru);
+}
+
+bool TokenCache::find_locked(const std::string& token_id, rgw::keystone::TokenEnvelope& token,
+                             std::map<std::string, token_entry>& tokens, std::list<std::string>& tokens_lru)
 {
   ceph_assert(ceph_mutex_is_locked_by_me(lock));
   map<string, token_entry>::iterator iter = tokens.find(token_id);
@@ -414,25 +423,32 @@ bool TokenCache::find_admin(rgw::keystone::TokenEnvelope& token)
 {
   std::lock_guard l{lock};
 
-  return find_locked(admin_token_id, token);
+  return find_locked(admin_token_id, token, tokens, tokens_lru);
 }
 
 bool TokenCache::find_barbican(rgw::keystone::TokenEnvelope& token)
 {
   std::lock_guard l{lock};
 
-  return find_locked(barbican_token_id, token);
+  return find_locked(barbican_token_id, token, tokens, tokens_lru);
 }
 
 void TokenCache::add(const std::string& token_id,
                      const rgw::keystone::TokenEnvelope& token)
 {
   std::lock_guard l{lock};
-  add_locked(token_id, token);
+  add_locked(token_id, token, tokens, tokens_lru);
 }
 
-void TokenCache::add_locked(const std::string& token_id,
-                            const rgw::keystone::TokenEnvelope& token)
+void TokenCache::add_service(const std::string& token_id,
+                             const rgw::keystone::TokenEnvelope& token)
+{
+  std::lock_guard l{lock};
+  add_locked(token_id, token, service_tokens, service_tokens_lru);
+}
+
+void TokenCache::add_locked(const std::string& token_id, const rgw::keystone::TokenEnvelope& token,
+                            std::map<std::string, token_entry>& tokens, std::list<std::string>& tokens_lru)
 {
   ceph_assert(ceph_mutex_is_locked_by_me(lock));
   map<string, token_entry>::iterator iter = tokens.find(token_id);
@@ -460,7 +476,7 @@ void TokenCache::add_admin(const rgw::keystone::TokenEnvelope& token)
   std::lock_guard l{lock};
 
   rgw_get_token_id(token.token.id, admin_token_id);
-  add_locked(admin_token_id, token);
+  add_locked(admin_token_id, token, tokens, tokens_lru);
 }
 
 void TokenCache::add_barbican(const rgw::keystone::TokenEnvelope& token)
@@ -468,7 +484,7 @@ void TokenCache::add_barbican(const rgw::keystone::TokenEnvelope& token)
   std::lock_guard l{lock};
 
   rgw_get_token_id(token.token.id, barbican_token_id);
-  add_locked(barbican_token_id, token);
+  add_locked(barbican_token_id, token, tokens, tokens_lru);
 }
 
 void TokenCache::invalidate(const DoutPrefixProvider *dpp, const std::string& token_id)
@@ -482,6 +498,11 @@ void TokenCache::invalidate(const DoutPrefixProvider *dpp, const std::string& to
   token_entry& e = iter->second;
   tokens_lru.erase(e.lru_iter);
   tokens.erase(iter);
+}
+
+void TokenCache::invalidate_admin(const DoutPrefixProvider *dpp)
+{
+  invalidate(dpp, admin_token_id);
 }
 
 bool TokenCache::going_down() const

@@ -480,7 +480,7 @@ class RgwClient(RestClient):
     def _is_system_user(self, admin_path, userid, request=None) -> bool:
         # pylint: disable=unused-argument
         response = request()
-        return strtobool(response['data']['system'])
+        return strtobool(response['data']['system'])  # type: ignore
 
     def is_system_user(self) -> bool:
         return self._is_system_user(self.admin_path, self.userid)
@@ -826,6 +826,9 @@ class RgwClient(RestClient):
             logger.warning('Error listing roles with code %d: %s', code, err)
             return []
 
+        for role in roles:
+            if 'PermissionPolicies' not in role:
+                role['PermissionPolicies'] = []
         return roles
 
     def create_role(self, role_name: str, role_path: str, role_assume_policy_doc: str) -> None:

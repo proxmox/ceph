@@ -103,6 +103,51 @@ public:
   }
 };
 
+struct RGWObjState {
+  rgw_obj obj;
+  bool is_atomic{false};
+  bool has_attrs{false};
+  bool exists{false};
+  uint64_t size{0}; //< size of raw object
+  uint64_t accounted_size{0}; //< size before compression, encryption
+  ceph::real_time mtime;
+  uint64_t epoch{0};
+  bufferlist obj_tag;
+  bufferlist tail_tag;
+  std::string write_tag;
+  bool fake_tag{false};
+  std::optional<RGWObjManifest> manifest;
+  std::string shadow_obj;
+  bool has_data{false};
+  bufferlist data;
+  bool prefetch_data{false};
+  bool keep_tail{false};
+  bool is_olh{false};
+  bufferlist olh_tag;
+  uint64_t pg_ver{false};
+  uint32_t zone_short_id{0};
+  bool compressed{false};
+
+  /* important! don't forget to update copy constructor */
+
+  RGWObjVersionTracker objv_tracker;
+
+  std::map<std::string, bufferlist> attrset;
+
+  RGWObjState();
+  RGWObjState(const RGWObjState& rhs);
+  ~RGWObjState();
+
+  bool get_attr(std::string name, bufferlist& dest) {
+    std::map<std::string, bufferlist>::iterator iter = attrset.find(name);
+    if (iter != attrset.end()) {
+      dest = iter->second;
+      return true;
+    }
+    return false;
+  }
+};
+
 /**
  * @defgroup RGWSAL RGW Store Abstraction Layer
  *
@@ -1423,6 +1468,8 @@ class Zone {
     virtual bool has_zonegroup_api(const std::string& api) const = 0;
     /** Get the current period ID for this zone */
     virtual const std::string& get_current_period_id() = 0;
+    /** Get the tier type for the zone */
+    virtual const std::string_view get_tier_type() = 0;
 };
 
 /**

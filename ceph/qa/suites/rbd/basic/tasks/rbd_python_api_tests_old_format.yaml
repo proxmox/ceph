@@ -3,6 +3,9 @@ overrides:
     log-ignorelist:
       - \(SLOW_OPS\)
       - slow request
+  install:
+    extra_system_packages:
+      - python3-pytest
 tasks:
 - workunit:
     clients:

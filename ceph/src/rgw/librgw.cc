@@ -541,8 +541,44 @@ namespace rgw {
       g_conf()->rgw_run_sync_thread &&
       g_conf()->rgw_nfs_run_sync_thread;
 
+    bool rgw_d3n_datacache_enabled =
+        cct->_conf->rgw_d3n_l1_local_datacache_enabled;
+    if (rgw_d3n_datacache_enabled &&
+        (cct->_conf->rgw_max_chunk_size != cct->_conf->rgw_obj_stripe_size)) {
+      lsubdout(cct, rgw_datacache, 0)
+          << "rgw_d3n:  WARNING: D3N DataCache disabling (D3N requires that "
+             "the chunk_size equals stripe_size)"
+          << dendl;
+      rgw_d3n_datacache_enabled = false;
+    }
+    if (rgw_d3n_datacache_enabled && !cct->_conf->rgw_beast_enable_async) {
+      lsubdout(cct, rgw_datacache, 0)
+          << "rgw_d3n:  WARNING: D3N DataCache disabling (D3N requires yield "
+             "context - rgw_beast_enable_async=true)"
+          << dendl;
+      rgw_d3n_datacache_enabled = false;
+    }
+    lsubdout(cct, rgw, 1) << "D3N datacache enabled: "
+                          << rgw_d3n_datacache_enabled << dendl;
+
+    std::string rgw_store = (!rgw_d3n_datacache_enabled) ? "rados" : "d3n";
+
+    const auto &config_store =
+        g_conf().get_val<std::string>("rgw_backend_store");
+#ifdef WITH_RADOSGW_DBSTORE
+    if (config_store == "dbstore") {
+      rgw_store = "dbstore";
+    }
+#endif
+
+#ifdef WITH_RADOSGW_MOTR
+    if (config_store == "motr") {
+      rgw_store = "motr";
+    }
+#endif
+
     store = StoreManager::get_storage(this, g_ceph_context,
-					 "rados",
+					 rgw_store,
 					 run_gc,
 					 run_lc,
 					 run_quota,
@@ -579,10 +615,12 @@ namespace rgw {
       store->ctx()->_conf->rgw_ldap_dnattr;
     std::string ldap_bindpw = parse_rgw_ldap_bindpw(store->ctx());
 
-    ldh = new rgw::LDAPHelper(ldap_uri, ldap_binddn, ldap_bindpw.c_str(),
-			      ldap_searchdn, ldap_searchfilter, ldap_dnattr);
-    ldh->init();
-    ldh->bind();
+    if (! ldap_uri.empty()) {
+      ldh = new rgw::LDAPHelper(ldap_uri, ldap_binddn, ldap_bindpw.c_str(),
+				ldap_searchdn, ldap_searchfilter, ldap_dnattr);
+      ldh->init();
+      ldh->bind();
+    }
 
     rgw_log_usage_init(g_ceph_context, store);
 

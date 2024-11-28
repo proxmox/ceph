@@ -6,11 +6,17 @@ import uuid
 import os
 from collections import defaultdict
 from typing import TYPE_CHECKING, Optional, List, cast, Dict, Any, Union, Tuple, Set, \
-    DefaultDict
+    DefaultDict, Callable
 
 from ceph.deployment import inventory
 from ceph.deployment.drive_group import DriveGroupSpec
-from ceph.deployment.service_spec import ServiceSpec, CustomContainerSpec, PlacementSpec, RGWSpec
+from ceph.deployment.service_spec import (
+    ServiceSpec,
+    CustomContainerSpec,
+    PlacementSpec,
+    RGWSpec,
+    IngressSpec,
+)
 from ceph.utils import datetime_now
 
 import orchestrator
@@ -20,7 +26,7 @@ from cephadm.services.cephadmservice import CephadmDaemonDeploySpec
 from cephadm.schedule import HostAssignment
 from cephadm.autotune import MemoryAutotuner
 from cephadm.utils import forall_hosts, cephadmNoImage, is_repo_digest, \
-    CephadmNoImage, CEPH_TYPES, ContainerInspectInfo
+    CephadmNoImage, CEPH_TYPES, ContainerInspectInfo, SpecialHostLabels
 from mgr_module import MonCommandFailed
 from mgr_util import format_bytes
 
@@ -58,7 +64,6 @@ class CephadmServe:
         of cephadm. This loop will then attempt to apply this new state.
         """
         self.log.debug("serve starting")
-        self.mgr.config_checker.load_network_config()
 
         while self.mgr.run:
             self.log.debug("serve loop start")
@@ -209,7 +214,7 @@ class CephadmServe:
 
             if (
                 not self.mgr.use_agent
-                or host not in [h.hostname for h in self.mgr.cache.get_non_draining_hosts()]
+                or self.mgr.cache.is_host_draining(host)
                 or host in agents_down
             ):
                 if self.mgr.cache.host_needs_daemon_refresh(host):
@@ -260,7 +265,7 @@ class CephadmServe:
 
             if (
                     self.mgr.cache.host_needs_autotune_memory(host)
-                    and not self.mgr.inventory.has_label(host, '_no_autotune_memory')
+                    and not self.mgr.inventory.has_label(host, SpecialHostLabels.NO_MEMORY_AUTOTUNE)
             ):
                 self.log.debug(f"autotuning memory for {host}")
                 self._autotune_host_memory(host)
@@ -271,7 +276,9 @@ class CephadmServe:
 
         self.mgr.agent_helpers._update_agent_down_healthcheck(agents_down)
 
-        self.mgr.config_checker.run_checks()
+        if self.mgr.config_checks_enabled:
+            self.mgr.config_checker.load_network_config()
+            self.mgr.config_checker.run_checks()
 
         for k in [
                 'CEPHADM_HOST_CHECK_FAILED',
@@ -287,6 +294,7 @@ class CephadmServe:
         self.mgr.update_failed_daemon_health_check()
 
     def _check_host(self, host: str) -> Optional[str]:
+        print('this is not possible')
         if host not in self.mgr.inventory:
             return None
         self.log.debug(' checking %s' % host)
@@ -654,8 +662,7 @@ class CephadmServe:
                 public_networks = [x.strip() for x in out.split(',')]
                 self.log.debug('mon public_network(s) is %s' % public_networks)
 
-        def matches_network(host):
-            # type: (str) -> bool
+        def matches_public_network(host: str, sspec: ServiceSpec) -> bool:
             # make sure the host has at least one network that belongs to some configured public network(s)
             for pn in public_networks:
                 public_network = ipaddress.ip_network(pn)
@@ -672,6 +679,40 @@ class CephadmServe:
             )
             return False
 
+        def has_interface_for_vip(host: str, sspec: ServiceSpec) -> bool:
+            # make sure the host has an interface that can
+            # actually accomodate the VIP
+            if not sspec or sspec.service_type != 'ingress':
+                return True
+            ingress_spec = cast(IngressSpec, sspec)
+            virtual_ips = []
+            if ingress_spec.virtual_ip:
+                virtual_ips.append(ingress_spec.virtual_ip)
+            elif ingress_spec.virtual_ips_list:
+                virtual_ips = ingress_spec.virtual_ips_list
+            for vip in virtual_ips:
+                found = False
+                bare_ip = str(vip).split('/')[0]
+                for subnet, ifaces in self.mgr.cache.networks.get(host, {}).items():
+                    if ifaces and ipaddress.ip_address(bare_ip) in ipaddress.ip_network(subnet):
+                        # found matching interface for this IP, move on
+                        self.log.debug(
+                            f'{bare_ip} is in {subnet} on {host} interface {list(ifaces.keys())[0]}'
+                        )
+                        found = True
+                        break
+                if not found:
+                    self.log.info(
+                        f"Filtered out host {host}: Host has no interface available for VIP: {vip}"
+                    )
+                    return False
+            return True
+
+        host_filters: Dict[str, Callable[[str, ServiceSpec], bool]] = {
+            'mon': matches_public_network,
+            'ingress': has_interface_for_vip
+        }
+
         rank_map = None
         if svc.ranked():
             rank_map = self.mgr.spec_store[spec.service_name()].rank_map or {}
@@ -684,10 +725,7 @@ class CephadmServe:
             daemons=daemons,
             related_service_daemons=related_service_daemons,
             networks=self.mgr.cache.networks,
-            filter_new_host=(
-                matches_network if service_type == 'mon'
-                else None
-            ),
+            filter_new_host=host_filters.get(service_type, None),
             allow_colo=svc.allow_colo(),
             primary_daemon_type=svc.primary_daemon_type(spec),
             per_host_daemon_type=svc.per_host_daemon_type(spec),
@@ -890,9 +928,11 @@ class CephadmServe:
                 hosts_altered.add(d.hostname)
                 self.mgr.spec_store.mark_needs_configuration(spec.service_name())
 
-            self.mgr.remote('progress', 'complete', progress_id)
+            if progress_total:
+                self.mgr.remote('progress', 'complete', progress_id)
         except Exception as e:
-            self.mgr.remote('progress', 'fail', progress_id, str(e))
+            if progress_total:
+                self.mgr.remote('progress', 'fail', progress_id, str(e))
             raise
         finally:
             if self.mgr.spec_store.needs_configuration(spec.service_name()):
@@ -900,8 +940,7 @@ class CephadmServe:
                 self.mgr.spec_store.mark_configured(spec.service_name())
             if self.mgr.use_agent:
                 # can only send ack to agents if we know for sure port they bound to
-                hosts_altered = set([h for h in hosts_altered if (h in self.mgr.agent_cache.agent_ports and h in [
-                                    h2.hostname for h2 in self.mgr.cache.get_non_draining_hosts()])])
+                hosts_altered = set([h for h in hosts_altered if (h in self.mgr.agent_cache.agent_ports and not self.mgr.cache.is_host_draining(h))])
                 self.mgr.agent_helpers._request_agent_acks(hosts_altered, increment=True)
 
         if r is None:
@@ -1078,9 +1117,9 @@ class CephadmServe:
                 pspec = PlacementSpec.from_string(self.mgr.manage_etc_ceph_ceph_conf_hosts)
                 ha = HostAssignment(
                     spec=ServiceSpec('mon', placement=pspec),
-                    hosts=self.mgr.cache.get_schedulable_hosts(),
+                    hosts=self.mgr.cache.get_conf_keyring_available_hosts(),
                     unreachable_hosts=self.mgr.cache.get_unreachable_hosts(),
-                    draining_hosts=self.mgr.cache.get_draining_hosts(),
+                    draining_hosts=self.mgr.cache.get_conf_keyring_draining_hosts(),
                     daemons=[],
                     networks=self.mgr.cache.networks,
                 )
@@ -1109,9 +1148,9 @@ class CephadmServe:
                     keyring.encode('utf-8')).digest())
                 ha = HostAssignment(
                     spec=ServiceSpec('mon', placement=ks.placement),
-                    hosts=self.mgr.cache.get_schedulable_hosts(),
+                    hosts=self.mgr.cache.get_conf_keyring_available_hosts(),
                     unreachable_hosts=self.mgr.cache.get_unreachable_hosts(),
-                    draining_hosts=self.mgr.cache.get_draining_hosts(),
+                    draining_hosts=self.mgr.cache.get_conf_keyring_draining_hosts(),
                     daemons=[],
                     networks=self.mgr.cache.networks,
                 )
@@ -1120,11 +1159,12 @@ class CephadmServe:
                     if host not in client_files:
                         client_files[host] = {}
                     ceph_conf = (0o644, 0, 0, bytes(config), str(config_digest))
-                    client_files[host]['/etc/ceph/ceph.conf'] = ceph_conf
-                    client_files[host][f'{cluster_cfg_dir}/ceph.conf'] = ceph_conf
-                    ceph_admin_key = (ks.mode, ks.uid, ks.gid, keyring.encode('utf-8'), digest)
-                    client_files[host][ks.path] = ceph_admin_key
-                    client_files[host][f'{cluster_cfg_dir}/{os.path.basename(ks.path)}'] = ceph_admin_key
+                    if ks.include_ceph_conf:
+                        client_files[host]['/etc/ceph/ceph.conf'] = ceph_conf
+                        client_files[host][f'{cluster_cfg_dir}/ceph.conf'] = ceph_conf
+                    client_key = (ks.mode, ks.uid, ks.gid, keyring.encode('utf-8'), digest)
+                    client_files[host][ks.path] = client_key
+                    client_files[host][f'{cluster_cfg_dir}/{os.path.basename(ks.path)}'] = client_key
             except Exception as e:
                 self.log.warning(
                     f'unable to calc client keyring {ks.entity} placement {ks.placement}: {e}')
@@ -1146,7 +1186,7 @@ class CephadmServe:
                             client_files: Dict[str, Dict[str, Tuple[int, int, int, bytes, str]]],
                             host: str) -> None:
         updated_files = False
-        if host in [h.hostname for h in self.mgr.cache.get_unreachable_hosts()]:
+        if self.mgr.cache.is_host_unreachable(host):
             return
         old_files = self.mgr.cache.get_host_client_files(host).copy()
         for path, m in client_files.get(host, {}).items():
@@ -1187,6 +1227,7 @@ class CephadmServe:
                 image = ''
                 start_time = datetime_now()
                 ports: List[int] = daemon_spec.ports if daemon_spec.ports else []
+                port_ips: Dict[str, str] = daemon_spec.port_ips if daemon_spec.port_ips else {}
 
                 if daemon_spec.daemon_type == 'container':
                     spec = cast(CustomContainerSpec,
@@ -1199,6 +1240,11 @@ class CephadmServe:
                 if len(ports) > 0:
                     daemon_spec.extra_args.extend([
                         '--tcp-ports', ' '.join(map(str, ports))
+                    ])
+
+                if port_ips:
+                    daemon_spec.extra_args.extend([
+                        '--port-ips', json.dumps(port_ips)
                     ])
 
                 # osd deployments needs an --osd-uuid arg

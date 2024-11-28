@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, NamedTuple, Optional, Union
 
 import cherrypy
@@ -95,6 +96,16 @@ class RgwDaemon(RESTController):
             for service in server['services']:
                 metadata = service['metadata']
 
+                frontend_config = metadata['frontend_config#0']
+                port_match = re.search(r"port=(\d+)", frontend_config)
+                port = None
+                if port_match:
+                    port = port_match.group(1)
+                else:
+                    match_from_endpoint = re.search(r"endpoint=\S+:(\d+)", frontend_config)
+                    if match_from_endpoint:
+                        port = match_from_endpoint.group(1)
+
                 # extract per-daemon service data and health
                 daemon = {
                     'id': metadata['id'],
@@ -105,7 +116,7 @@ class RgwDaemon(RESTController):
                     'zonegroup_name': metadata['zonegroup_name'],
                     'zone_name': metadata['zone_name'],
                     'default': instance.daemon.name == metadata['id'],
-                    'port': int(metadata['frontend_config#0'].split('port=')[1])
+                    'port': int(port) if port else None
                 }
 
                 daemons.append(daemon)
@@ -670,9 +681,10 @@ create_role_form = Form(path='/rgw/roles/create',
         "CreateDate": {'cellTemplate': 'date'},
         "MaxSessionDuration": {'cellTemplate': 'duration'},
         "RoleId": {'isHidden': True},
-        "AssumeRolePolicyDocument": {'isHidden': True}
+        "AssumeRolePolicyDocument": {'isHidden': True},
+        "PermissionPolicies": {'isHidden': True}
     },
-    detail_columns=['RoleId', 'AssumeRolePolicyDocument'],
+    detail_columns=['RoleId', 'AssumeRolePolicyDocument', 'PermissionPolicies'],
     meta=CRUDMeta()
 )
 class RgwUserRole(NamedTuple):
@@ -683,3 +695,4 @@ class RgwUserRole(NamedTuple):
     CreateDate: str
     MaxSessionDuration: int
     AssumeRolePolicyDocument: str
+    PermissionPolicies: List

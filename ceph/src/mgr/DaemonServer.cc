@@ -124,6 +124,16 @@ int DaemonServer::init(uint64_t gid, entity_addrvec_t client_addrs)
 			   "mgr",
 			   Messenger::get_pid_nonce());
   msgr->set_default_policy(Messenger::Policy::stateless_server(0));
+  // throttle policy
+  msgr->set_policy(entity_name_t::TYPE_OSD,
+                   Messenger::Policy::stateless_server(
+                     CEPH_FEATURE_SERVER_LUMINOUS));
+  msgr->set_policy(entity_name_t::TYPE_MON,
+                   Messenger::Policy::lossy_client(CEPH_FEATURE_UID |
+                                                   CEPH_FEATURE_PGID64));
+  msgr->set_policy(entity_name_t::TYPE_MDS,
+                   Messenger::Policy::stateless_server(
+                     CEPH_FEATURE_SERVER_LUMINOUS));
 
   msgr->set_auth_client(monc);
 
@@ -180,7 +190,7 @@ entity_addrvec_t DaemonServer::get_myaddrs() const
   return msgr->get_myaddrs();
 }
 
-int DaemonServer::ms_handle_fast_authentication(Connection *con)
+bool DaemonServer::ms_handle_fast_authentication(Connection *con)
 {
   auto s = ceph::make_ref<MgrSession>(cct);
   con->set_priv(s);
@@ -205,17 +215,17 @@ int DaemonServer::ms_handle_fast_authentication(Connection *con)
     catch (buffer::error& e) {
       dout(10) << " session " << s << " " << s->entity_name
                << " failed to decode caps" << dendl;
-      return -EACCES;
+      return false;
     }
     if (!s->caps.parse(str)) {
       dout(10) << " session " << s << " " << s->entity_name
 	       << " failed to parse caps '" << str << "'" << dendl;
-      return -EACCES;
+      return false;
     }
     dout(10) << " session " << s << " " << s->entity_name
              << " has caps " << s->caps << " '" << str << "'" << dendl;
   }
-  return 1;
+  return true;
 }
 
 void DaemonServer::ms_handle_accept(Connection* con)
@@ -650,9 +660,8 @@ bool DaemonServer::handle_report(const ref_t<MMgrReport>& m)
 
     DaemonStatePtr daemon;
     // Look up the DaemonState
-    if (daemon_state.exists(key)) {
+    if (daemon = daemon_state.get(key); daemon != nullptr) {
       dout(20) << "updating existing DaemonState for " << key << dendl;
-      daemon = daemon_state.get(key);
     } else {
       locker.unlock();
 

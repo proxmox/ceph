@@ -27,10 +27,9 @@ all code contributions go through a collaborative review process (and
 undergo testing) before being merged.  The specifics of this process
 are dynamic and evolving over time.
 
-New committers are added to the project (or committers removed from
-the project) at the discretion of the Ceph Leadership Team (below).
-The criteria for becoming a contributor include a consistent level of
-quality and engagement in the project over time.
+* Dan van der Ster <dan.vanderster@clyso.com>
+* Josh Durgin <jdurgin@redhat.com>
+* Neha Ojha <nojha@redhat.com>
 
 
 .. _clt:
@@ -55,16 +54,16 @@ Current CLT members are:
  * Casey Bodley <cbodley@redhat.com>
  * Dan van der Ster <dan.vanderster@clyso.com>
  * David Orman <ormandj@1111systems.com>
- * Ernesto Puerta <epuerta@redhat.com>
+ * Ernesto Puerta <epuertat@redhat.com>
  * Gregory Farnum <gfarnum@redhat.com>
  * Haomai Wang <haomai@xsky.com>
  * Ilya Dryomov <idryomov@redhat.com>
  * Igor Fedotov <igor.fedotov@croit.io>
  * Jeff Layton <jlayton@redhat.com>
  * Josh Durgin <jdurgin@redhat.com>
- * João Eduardo Luis <joao@suse.de>
+ * João Eduardo Luis <joao@clyso.com>
  * Ken Dreyer <kdreyer@redhat.com>
- * Mark Nelson <mnelson@redhat.com>
+ * Mark Nelson <mark.nelson@clyso.com>
  * Matt Benjamin <mbenjami@redhat.com>
  * Mike Perez <miperez@redhat.com>
  * Myoungwon Oh <myoungwon.oh@samsung.com>
@@ -76,7 +75,7 @@ Current CLT members are:
  * Xie Xingguo <xie.xingguo@zte.com.cn>
  * Yehuda Sadeh <yehuda@redhat.com>
  * Yuri Weinstein <yweinste@redhat.com>
- * Zac Dover <zac.dover@gmail.com>
+ * Zac Dover <zac.dover@proton.me>
 
 Component Leads
 ---------------

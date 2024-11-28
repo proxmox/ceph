@@ -131,7 +131,7 @@ std::string_view CInode::pin_name(int p) const
 }
 
 //int cinode_pins[CINODE_NUM_PINS];  // counts
-ostream& CInode::print_db_line_prefix(ostream& out)
+ostream& CInode::print_db_line_prefix(ostream& out) const
 {
   return out << ceph_clock_now() << " mds." << mdcache->mds->get_nodeid() << ".cache.ino(" << ino() << ") ";
 }
@@ -338,7 +338,7 @@ CInode::CInode(MDCache *c, bool auth, snapid_t f, snapid_t l) :
     state_set(STATE_AUTH);
 }
 
-void CInode::print(ostream& out)
+void CInode::print(ostream& out) const
 {
   out << *this;
 }
@@ -523,6 +523,10 @@ sr_t *CInode::prepare_new_srnode(snapid_t snapid)
     new_srnode->seq = snapid;
     new_srnode->created = snapid;
     new_srnode->current_parent_since = get_oldest_snap();
+    SnapRealm *sr = find_snaprealm();
+    dout(20) << __func__ << ": inheriting change_attr from " << *sr
+             << dendl;
+    new_srnode->change_attr = sr->srnode.change_attr;
   }
   return new_srnode;
 }
@@ -5151,6 +5155,11 @@ void CInode::dump(Formatter *f, int flags) const
     }
     f->close_section();
   }
+
+  auto realm = find_snaprealm();
+  inodeno_t subvol_ino = realm->get_subvolume_ino();
+  bool is_subvol = (subvol_ino && subvol_ino == ino());
+  f->dump_bool("is_subvolume", is_subvol);
 }
 
 /****** Scrub Stuff *****/

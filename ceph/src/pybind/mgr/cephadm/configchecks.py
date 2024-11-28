@@ -91,7 +91,7 @@ class SubnetLookup:
             speed: [hostname]
         }
 
-    @ property
+    @property
     def host_list(self) -> List[str]:
         hosts = []
         for mtu in self.mtu_map:
@@ -674,7 +674,7 @@ class CephadmConfigChecks:
             self.host_to_role[hostname] = list(self.mgr.cache.get_daemon_types(hostname))
 
     def run_checks(self) -> None:
-        checks_enabled = self.mgr.get_module_option('config_checks_enabled')
+        checks_enabled = self.mgr.config_checks_enabled
         if checks_enabled is not True:
             return
 

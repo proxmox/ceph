@@ -369,12 +369,14 @@ enum {
   CEPH_OSD_RMW_FLAG_SKIP_PROMOTE      = (1 << 9),
   CEPH_OSD_RMW_FLAG_RWORDERED         = (1 << 10),
   CEPH_OSD_RMW_FLAG_RETURNVEC = (1 << 11),
+  CEPH_OSD_RMW_FLAG_READ_DATA  = (1 << 12),
 };
 
 
 // pg stuff
 
 #define OSD_SUPERBLOCK_GOBJECT ghobject_t(hobject_t(sobject_t(object_t("osd_superblock"), 0)))
+#define OSD_SUPERBLOCK_OMAP_KEY "osd_superblock"
 
 // placement seed (a hash value)
 typedef uint32_t ps_t;

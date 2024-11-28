@@ -97,15 +97,15 @@ We'll use a stable/regular 15.2.17 release of Octopus as an example throughout t
 
 4. Use https://docs.ceph.com/en/latest/start/os-recommendations/?highlight=debian#platforms to determine the ``DISTROS`` parameter.  For example,
 
-    +-------------------+-------------------------------------------+
-    | Release           | Distro Codemap                            |
-    +===================+===========================================+
-    | octopus (15.X.X)  | ``focal bionic centos7 centos8 buster``   |
-    +-------------------+-------------------------------------------+
-    | pacific (16.X.X)  | ``focal bionic centos8 buster bullseye``  |
-    +-------------------+-------------------------------------------+
-    | quincy (17.X.X)   | ``focal centos8 centos9 bullseye``        |
-    +-------------------+-------------------------------------------+
+    +-------------------+--------------------------------------------------+
+    | Release           | Distro Codemap                                   |
+    +===================+==================================================+
+    | octopus (15.X.X)  | ``focal bionic centos7 centos8 buster``          |
+    +-------------------+--------------------------------------------------+
+    | pacific (16.X.X)  | ``focal bionic buster bullseye``                 |
+    +-------------------+--------------------------------------------------+
+    | quincy (17.X.X)   | ``jammy focal centos9 bullseye``                 |
+    +-------------------+--------------------------------------------------+
 
 5. Click ``Build``.
 
@@ -179,11 +179,11 @@ See `the Ceph Tracker wiki page that explains how to write the release notes <ht
 
    .. prompt:: bash
 
-      sign-rpms octopus
+      sign-rpms ceph octopus
 
    Example::
-   
-      $ sign-rpms octopus
+
+      $ sign-rpms ceph octopus
       Checking packages in: /opt/repos/ceph/octopus-15.2.17/centos/7
       signing:  /opt/repos/ceph/octopus-15.2.17/centos/7/SRPMS/ceph-release-1-1.el7.src.rpm
       /opt/repos/ceph/octopus-15.2.17/centos/7/SRPMS/ceph-release-1-1.el7.src.rpm:
@@ -197,7 +197,13 @@ See `the Ceph Tracker wiki page that explains how to write the release notes <ht
 
    .. prompt:: bash $
 
-      sync-push octopus
+      sync-push ceph octopus
+
+This leaves the packages in a password-protected prerelease area
+at https://download.ceph.com/prerelease/ceph.  Verify them from there.
+When done and ready for release, mv the directories to the release
+directory (that is, "mv <whatever you're promoting> ../..".
+
 
 5. Build Containers
 ===================

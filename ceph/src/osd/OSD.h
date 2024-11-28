@@ -727,6 +727,7 @@ public:
   void start_shutdown();
   void shutdown_reserver();
   void shutdown();
+  void fast_shutdown();
 
   // -- stats --
   ceph::mutex stat_lock = ceph::make_mutex("OSDService::stat_lock");
@@ -1239,8 +1240,9 @@ private:
   // -- superblock --
   OSDSuperblock superblock;
 
-  void write_superblock();
-  void write_superblock(ObjectStore::Transaction& t);
+  static void write_superblock(CephContext* cct,
+                               OSDSuperblock& sb,
+                               ObjectStore::Transaction& t);
   int read_superblock();
 
   void clear_temp_objects();
@@ -1529,7 +1531,7 @@ public:
     bool ms_handle_refused(Connection *con) override {
       return osd->ms_handle_refused(con);
     }
-    int ms_handle_fast_authentication(Connection *con) override {
+    bool ms_handle_fast_authentication(Connection *con) override {
       return true;
     }
   } heartbeat_dispatcher;
@@ -1988,7 +1990,7 @@ private:
   void ms_handle_connect(Connection *con) override;
   void ms_handle_fast_connect(Connection *con) override;
   void ms_handle_fast_accept(Connection *con) override;
-  int ms_handle_fast_authentication(Connection *con) override;
+  bool ms_handle_fast_authentication(Connection *con) override;
   bool ms_handle_reset(Connection *con) override;
   void ms_handle_remote_reset(Connection *con) override {}
   bool ms_handle_refused(Connection *con) override;

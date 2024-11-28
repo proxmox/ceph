@@ -111,6 +111,13 @@ public:
    * This appears to be called with nothing locked.
    */
   virtual objectstore_perf_stat_t get_cur_stats() = 0;
+  /**
+   * Propagate Object Store performance counters with the actual values
+   *
+   *
+   * Intended primarily for testing purposes
+   */
+  virtual void refresh_perf_counters() = 0;
 
   /**
    * Fetch Object Store performance counters.
@@ -777,7 +784,7 @@ public:
   virtual void inject_data_error(const ghobject_t &oid) {}
   virtual void inject_mdata_error(const ghobject_t &oid) {}
 
-  virtual void compact() {}
+  virtual int compact() { return -ENOTSUP; }
   virtual bool has_builtin_csum() const {
     return false;
   }

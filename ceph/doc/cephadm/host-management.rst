@@ -71,9 +71,9 @@ To add each new host to the cluster, perform two steps:
      ceph orch host add host2 10.10.0.102
      ceph orch host add host3 10.10.0.103
 
-   It is best to explicitly provide the host IP address.  If an IP is
+   It is best to explicitly provide the host IP address.  If an address is
    not provided, then the host name will be immediately resolved via
-   DNS and that IP will be used.
+   DNS and the result will be used.
 
    One or more labels can also be included to immediately label the
    new host.  For example, by default the ``_admin`` label will make
@@ -98,16 +98,47 @@ To drain all daemons from a host, run a command of the following form:
 
    ceph orch host drain *<host>*
 
-The ``_no_schedule`` label will be applied to the host. See
-:ref:`cephadm-special-host-labels`.
+The ``_no_schedule`` and ``_no_conf_keyring`` labels will be applied to the
+host. See :ref:`cephadm-special-host-labels`.
 
-All OSDs on the host will be scheduled to be removed. You can check the progress of the OSD removal operation with the following command:
+If you only want to drain daemons but leave managed ceph conf and keyring
+files on the host, you may pass the ``--keep-conf-keyring`` flag to the
+drain command.
+
+.. prompt:: bash #
+
+   ceph orch host drain *<host>* --keep-conf-keyring
+
+This will apply the ``_no_schedule`` label to the host but not the
+``_no_conf_keyring`` label.
+
+If you want to drain daemons but leave managed `ceph.conf` and keyring
+files on the host, you may pass the ``--keep-conf-keyring`` flag to the
+drain command.
+
+.. prompt:: bash #
+
+   ceph orch host drain *<host>* --keep-conf-keyring
+
+This will apply the ``_no_schedule`` label to the host but not the
+``_no_conf_keyring`` label.
+
+All OSDs on the host will be scheduled to be removed. You can check
+progress of the OSD removal operation with the following command:
 
 .. prompt:: bash #
 
    ceph orch osd rm status
 
 See :ref:`cephadm-osd-removal` for more details about OSD removal.
+
+The ``orch host drain`` command also supports a ``--zap-osd-devices``
+flag. Setting this flag while draining a host will cause cephadm to zap
+the devices of the OSDs it is removing as part of the drain process
+
+.. prompt:: bash #
+
+   ceph orch host drain *<host>* --zap-osd-devices
 
 Use the following command to determine whether any daemons are still on the
 host:
@@ -126,7 +157,7 @@ cluster by running the following command:
 Offline host removal
 --------------------
 
-Even if a host is offline and can not be recovered, it can be removed from the
+If a host is offline and can not be recovered, it can be removed from the
 cluster by running a command of the following form:
 
 .. prompt:: bash #
@@ -180,6 +211,12 @@ The following host labels have a special meaning to cephadm.  All start with ``_
   an existing host that already contains Ceph daemons, it will cause cephadm to move
   those daemons elsewhere (except OSDs, which are not removed automatically).
 
+* ``_no_conf_keyring``: *Do not deploy config files or keyrings on this host*.
+
+  This label is effectively the same as ``_no_schedule`` but instead of working for
+  daemons it works for client keyrings and ceph conf files that are being managed
+  by cephadm
+
 * ``_no_autotune_memory``: *Do not autotune memory on this host*.
 
   This label will prevent daemon memory from being tuned even when the
@@ -222,8 +259,8 @@ Rescanning Host Devices
 =======================
 
 Some servers and external enclosures may not register device removal or insertion with the
-kernel. In these scenarios, you'll need to perform a host rescan. A rescan is typically
-non-disruptive, and can be performed with the following CLI command:
+kernel. In these scenarios, you'll need to perform a device rescan on the appropriate host.
+A rescan is typically non-disruptive, and can be performed with the following CLI command:
 
 .. prompt:: bash #
 
@@ -274,7 +311,10 @@ Setting the initial CRUSH location of host
 ==========================================
 
 Hosts can contain a ``location`` identifier which will instruct cephadm to 
-create a new CRUSH host located in the specified hierarchy.
+create a new CRUSH host bucket located in the specified hierarchy.
+You can specify more than one element of the tree when doing so (for
+instance if you want to ensure that the rack that a host is being
+added to is also added to the default bucket), for example:
 
 .. code-block:: yaml
 
@@ -282,23 +322,48 @@ create a new CRUSH host located in the specified hierarchy.
     hostname: node-00
     addr: 192.168.0.10
     location:
+      root: default
       rack: rack1
 
 .. note:: 
 
-  The ``location`` attribute will be only affect the initial CRUSH location. Subsequent
-  changes of the ``location`` property will be ignored. Also, removing a host will not remove
-  any CRUSH buckets.
+  The ``location`` attribute will be only affect the initial CRUSH location.
+  Subsequent changes of the ``location`` property will be ignored. Also,
+  removing a host will not remove an associated CRUSH bucket unless the
+  ``--rm-crush-entry`` flag is provided to the ``orch host rm`` command
 
 See also :ref:`crush_map_default_types`.
+
+Removing a host from the CRUSH map
+==================================
+
+The ``ceph orch host rm`` command has support for removing the associated host bucket
+from the CRUSH map. This is done by providing the ``--rm-crush-entry`` flag.
+
+.. prompt:: bash [ceph:root@host1/]#
+
+   ceph orch host rm host1 --rm-crush-entry
+
+When this flag is specified, cephadm will attempt to remove the host bucket
+from the CRUSH map as part of the host removal process. Note that if
+it fails to do so, cephadm will report the failure and the host will remain under
+cephadm control.
+
+.. note:: 
+
+  Removal from the CRUSH map will fail if there are OSDs deployed on the
+  host. If you would like to remove all the host's OSDs as well, please start
+  by using  the ``ceph orch host drain`` command to do so. Once the OSDs
+  have been removed, then you may direct cephadm remove the CRUSH bucket
+  along with the host using the ``--rm-crush-entry`` flag.
 
 OS Tuning Profiles
 ==================
 
-Cephadm can be used to manage operating-system-tuning profiles that apply sets
-of sysctl settings to sets of hosts. 
+Cephadm can be used to manage operating system tuning profiles that apply
+``sysctl`` settings to sets of hosts. 
 
-Create a YAML spec file in the following format:
+To do so, create a YAML spec file in the following format:
 
 .. code-block:: yaml
 
@@ -317,18 +382,21 @@ Apply the tuning profile with the following command:
 
    ceph orch tuned-profile apply -i <tuned-profile-file-name>
 
-This profile is written to ``/etc/sysctl.d/`` on each host that matches the
-hosts specified in the placement block of the yaml, and ``sysctl --system`` is
+This profile is written to a file under ``/etc/sysctl.d/`` on each host
+specified in the ``placement`` block, then ``sysctl --system`` is
 run on the host.
 
 .. note::
 
   The exact filename that the profile is written to within ``/etc/sysctl.d/``
   is ``<profile-name>-cephadm-tuned-profile.conf``, where ``<profile-name>`` is
-  the ``profile_name`` setting that you specify in the YAML spec. Because
+  the ``profile_name`` setting that you specify in the YAML spec. We suggest
+  naming these profiles following the usual ``sysctl.d`` `NN-xxxxx` convention. Because
   sysctl settings are applied in lexicographical order (sorted by the filename
-  in which the setting is specified), you may want to set the ``profile_name``
-  in your spec so that it is applied before or after other conf files.
+  in which the setting is specified), you may want to carefully choose
+  the ``profile_name`` in your spec so that it is applied before or after other
+  conf files.  Careful selection ensures that values supplied here override or
+  do not override those in other ``sysctl.d`` files as desired.
 
 .. note::
 
@@ -337,7 +405,7 @@ run on the host.
 
 .. note::
 
-  Applying tuned profiles is idempotent when the ``--no-overwrite`` option is
+  Applying tuning profiles is idempotent when the ``--no-overwrite`` option is
   passed. Moreover, if the ``--no-overwrite`` option is passed, existing
   profiles with the same name are not overwritten.
 
@@ -497,12 +565,28 @@ There are two ways to customize this configuration for your environment:
 
    We do *not recommend* this approach.  The path name must be
    visible to *any* mgr daemon, and cephadm runs all daemons as
-   containers. That means that the file either need to be placed
+   containers. That means that the file must either be placed
    inside a customized container image for your deployment, or
    manually distributed to the mgr data directory
    (``/var/lib/ceph/<cluster-fsid>/mgr.<id>`` on the host, visible at
    ``/var/lib/ceph/mgr/ceph-<id>`` from inside the container).
-   
+
+Setting up CA signed keys for the cluster
+-----------------------------------------
+
+Cephadm also supports using CA signed keys for SSH authentication
+across cluster nodes. In this setup, instead of needing a private
+key and public key, we instead need a private key and certificate
+created by signing that private key with a CA key. For more info
+on setting up nodes for authentication using a CA signed key, see
+:ref:`cephadm-bootstrap-ca-signed-keys`. Once you have your private
+key and signed cert, they can be set up for cephadm to use by running:
+
+.. prompt:: bash #
+
+   ceph config-key set mgr/cephadm/ssh_identity_key -i <private-key-file>
+   ceph config-key set mgr/cephadm/ssh_identity_cert -i <signed-cert-file>
+
 .. _cephadm-fqdn:
 
 Fully qualified domain names vs bare host names
@@ -534,8 +618,8 @@ Note that ``man hostname`` recommends ``hostname`` to return the bare
 host name:
 
     The FQDN (Fully Qualified Domain Name) of the system is the
-    name that the resolver(3) returns for the host name, such as,
-    ursula.example.com. It is usually the hostname followed by the DNS
+    name that the resolver(3) returns for the host name, for example
+    ``ursula.example.com``. It is usually the short hostname followed by the DNS
     domain name (the part after the first dot). You can check the FQDN
     using ``hostname --fqdn`` or the domain name using ``dnsdomainname``.
 

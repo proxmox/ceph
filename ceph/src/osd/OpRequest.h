@@ -35,6 +35,7 @@ public:
   bool op_info_needs_init() const { return op_info.get_flags() == 0; }
   bool check_rmw(int flag) const { return op_info.check_rmw(flag); }
   bool may_read() const { return op_info.may_read(); }
+  bool may_read_data() const { return op_info.may_read_data(); }
   bool may_write() const { return op_info.may_write(); }
   bool may_cache() const { return op_info.may_cache(); }
   bool rwordered_forced() const { return op_info.rwordered_forced(); }
@@ -75,7 +76,7 @@ private:
   OpRequest(Message *req, OpTracker *tracker);
 
 protected:
-  void _dump_op_descriptor_unlocked(std::ostream& stream) const override;
+  void _dump_op_descriptor(std::ostream& stream) const override;
   void _unregistered() override;
   bool filter_out(const std::set<std::string>& filters) override;
 
@@ -108,7 +109,7 @@ public:
     return latest_flag_point;
   }
 
-  std::string_view state_string() const override {
+  std::string _get_state_string() const override {
     switch(latest_flag_point) {
     case flag_queued_for_pg: return "queued for pg";
     case flag_reached_pg: return "reached pg";

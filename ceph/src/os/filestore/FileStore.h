@@ -139,6 +139,8 @@ public:
     perf_tracker.update_from_perfcounters(*logger);
     return perf_tracker.get_cur_stats();
   }
+  void refresh_perf_counters() override {
+  }
   const PerfCounters* get_perf_counters() const override {
     return logger;
   }
@@ -673,9 +675,10 @@ public:
   void inject_data_error(const ghobject_t &oid) override;
   void inject_mdata_error(const ghobject_t &oid) override;
 
-  void compact() override {
+  int compact() override {
     ceph_assert(object_map);
     object_map->compact();
+    return 0;
   }
 
   bool has_builtin_csum() const override {

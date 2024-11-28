@@ -1,4 +1,5 @@
 import asyncio
+import concurrent
 import json
 import errno
 import ipaddress
@@ -36,7 +37,13 @@ from cephadm.services.cephadmservice import CephadmDaemonDeploySpec
 from cephadm.agent import CherryPyThread, CephadmAgentHelpers
 
 
-from mgr_module import MgrModule, HandleCommandResult, Option, NotifyType
+from mgr_module import (
+    MgrModule,
+    HandleCommandResult,
+    Option,
+    NotifyType,
+    MonCommandFailed,
+)
 import orchestrator
 from orchestrator.module import to_format, Format
 
@@ -64,7 +71,7 @@ from .inventory import Inventory, SpecStore, HostCache, AgentCache, EventStore, 
 from .upgrade import CephadmUpgrade
 from .template import TemplateMgr
 from .utils import CEPH_IMAGE_TYPES, RESCHEDULE_FROM_OFFLINE_HOSTS_TYPES, forall_hosts, \
-    cephadmNoImage, CEPH_UPGRADE_ORDER
+    cephadmNoImage, CEPH_UPGRADE_ORDER, SpecialHostLabels
 from .configchecks import CephadmConfigChecks
 from .offline_watcher import OfflineHostWatcher
 from .tuned_profiles import TunedProfileUtils
@@ -419,7 +426,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         ),
         Option(
             'default_cephadm_command_timeout',
-            type='secs',
+            type='int',
             default=15 * 60,
             desc='Default timeout applied to cephadm commands run directly on '
             'the host (in seconds)'
@@ -476,6 +483,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             self.registry_password: Optional[str] = None
             self.registry_insecure: bool = False
             self.use_repo_digest = True
+            self.config_checks_enabled = False
             self.default_registry = ''
             self.autotune_memory_target_ratio = 0.0
             self.autotune_interval = 0
@@ -487,6 +495,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             self._temp_files: List = []
             self.ssh_key: Optional[str] = None
             self.ssh_pub: Optional[str] = None
+            self.ssh_cert: Optional[str] = None
             self.use_agent = False
             self.agent_refresh_rate = 0
             self.agent_down_multiplier = 0.0
@@ -651,7 +660,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         # are provided, that will be included in the OrchestratorError's message
         try:
             yield
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
             err_str: str = ''
             if cmd:
                 err_str = f'Command "{cmd}" timed out '
@@ -663,6 +672,16 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
                 err_str += f'(non-default {timeout} second timeout)'
             else:
                 err_str += (f'(default {self.default_cephadm_command_timeout} second timeout)')
+            raise OrchestratorError(err_str)
+        except concurrent.futures.CancelledError as e:
+            err_str = ''
+            if cmd:
+                err_str = f'Command "{cmd}" failed '
+            else:
+                err_str = 'Command failed '
+            if host:
+                err_str += f'on host {host} '
+            err_str += f' - {str(e)}'
             raise OrchestratorError(err_str)
 
     def set_container_image(self, entity: str, image: str) -> None:
@@ -881,6 +900,17 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             self.set_health_warning('CEPHADM_FAILED_DAEMON', f'{len(failed_daemons)} failed cephadm daemon(s)', len(
                 failed_daemons), failed_daemons)
 
+    def get_first_matching_network_ip(self, host: str, sspec: ServiceSpec) -> Optional[str]:
+        sspec_networks = sspec.networks
+        for subnet, ifaces in self.cache.networks.get(host, {}).items():
+            host_network = ipaddress.ip_network(subnet)
+            for spec_network_str in sspec_networks:
+                spec_network = ipaddress.ip_network(spec_network_str)
+                if host_network.overlaps(spec_network):
+                    return list(ifaces.values())[0][0]
+                logger.error(f'{spec_network} from {sspec.service_name()} spec does not overlap with {host_network} on {host}')
+        return None
+
     @staticmethod
     def can_run() -> Tuple[bool, str]:
         if asyncssh is not None:
@@ -1018,11 +1048,24 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         return 0, "", ""
 
     @orchestrator._cli_write_command(
+        'cephadm set-signed-cert')
+    def _set_signed_cert(self, inbuf: Optional[str] = None) -> Tuple[int, str, str]:
+        """Set a signed cert if CA signed keys are being used (use -i <cert_filename>)"""
+        if inbuf is None or len(inbuf) == 0:
+            return -errno.EINVAL, "", "empty cert file provided"
+        old = self.ssh_cert
+        if inbuf == old:
+            return 0, "value unchanged", ""
+        self._validate_and_set_ssh_val('ssh_identity_cert', inbuf, old)
+        return 0, "", ""
+
+    @orchestrator._cli_write_command(
         'cephadm clear-key')
     def _clear_key(self) -> Tuple[int, str, str]:
         """Clear cluster SSH key"""
         self.set_store('ssh_identity_key', None)
         self.set_store('ssh_identity_pub', None)
+        self.set_store('ssh_identity_cert', None)
         self.ssh._reconfig_ssh()
         self.log.info('Cleared cluster SSH key')
         return 0, '', ''
@@ -1035,6 +1078,15 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             return 0, self.ssh_pub, ''
         else:
             return -errno.ENOENT, '', 'No cluster SSH key defined'
+
+    @orchestrator._cli_read_command(
+        'cephadm get-signed-cert')
+    def _get_signed_cert(self) -> Tuple[int, str, str]:
+        """Show SSH signed cert for connecting to cluster hosts using CA signed keys"""
+        if self.ssh_cert:
+            return 0, self.ssh_cert, ''
+        else:
+            return -errno.ENOENT, '', 'No signed cert defined'
 
     @orchestrator._cli_read_command(
         'cephadm get-user')
@@ -1230,7 +1282,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
     @orchestrator._cli_read_command('cephadm config-check status')
     def _config_check_status(self) -> HandleCommandResult:
         """Show whether the configuration checker feature is enabled/disabled"""
-        status = self.get_module_option('config_checks_enabled')
+        status = self.config_checks_enabled
         return HandleCommandResult(stdout="Enabled" if status else "Disabled")
 
     @orchestrator._cli_write_command('cephadm config-check enable')
@@ -1331,7 +1383,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             output = to_format(self.keys.keys.values(), format, many=True, cls=ClientKeyringSpec)
         else:
             table = PrettyTable(
-                ['ENTITY', 'PLACEMENT', 'MODE', 'OWNER', 'PATH'],
+                ['ENTITY', 'PLACEMENT', 'MODE', 'OWNER', 'PATH', 'INCLUDE_CEPH_CONF'],
                 border=False)
             table.align = 'l'
             table.left_padding_width = 0
@@ -1342,6 +1394,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
                     utils.file_mode_to_str(ks.mode),
                     f'{ks.uid}:{ks.gid}',
                     ks.path,
+                    ks.include_ceph_conf
                 ))
             output = table.get_string()
         return HandleCommandResult(stdout=output)
@@ -1353,6 +1406,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             placement: str,
             owner: Optional[str] = None,
             mode: Optional[str] = None,
+            no_ceph_conf: bool = False,
     ) -> HandleCommandResult:
         """
         Add or update client keyring under cephadm management
@@ -1375,7 +1429,14 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         else:
             imode = 0o600
         pspec = PlacementSpec.from_string(placement)
-        ks = ClientKeyringSpec(entity, pspec, mode=imode, uid=uid, gid=gid)
+        ks = ClientKeyringSpec(
+            entity,
+            pspec,
+            mode=imode,
+            uid=uid,
+            gid=gid,
+            include_ceph_conf=(not no_ceph_conf)
+        )
         self.keys.update(ks)
         self._kick_serve_loop()
         return HandleCommandResult()
@@ -1521,7 +1582,7 @@ Then run the following:
         return self._add_host(spec)
 
     @handle_orch_error
-    def remove_host(self, host: str, force: bool = False, offline: bool = False) -> str:
+    def remove_host(self, host: str, force: bool = False, offline: bool = False, rm_crush_entry: bool = False) -> str:
         """
         Remove a host from orchestrator management.
 
@@ -1563,11 +1624,11 @@ Then run the following:
 
         # check, if there we're removing the last _admin host
         if not force:
-            p = PlacementSpec(label='_admin')
+            p = PlacementSpec(label=SpecialHostLabels.ADMIN)
             admin_hosts = p.filter_matching_hostspecs(self.inventory.all_specs())
             if len(admin_hosts) == 1 and admin_hosts[0] == host:
-                raise OrchestratorValidationError(f"Host {host} is the last host with the '_admin'"
-                                                  " label. Please add the '_admin' label to a host"
+                raise OrchestratorValidationError(f"Host {host} is the last host with the '{SpecialHostLabels.ADMIN}'"
+                                                  f" label. Please add the '{SpecialHostLabels.ADMIN}' label to a host"
                                                   " or add --force to this command")
 
         def run_cmd(cmd_args: dict) -> None:
@@ -1599,6 +1660,17 @@ Then run the following:
                 'name': host
             }
             run_cmd(cmd_args)
+
+        if rm_crush_entry:
+            try:
+                self.check_mon_command({
+                    'prefix': 'osd crush remove',
+                    'name': host,
+                })
+            except MonCommandFailed as e:
+                self.log.error(f'Couldn\'t remove host {host} from CRUSH map: {str(e)}')
+                return (f'Cephadm failed removing host {host}\n'
+                        f'Failed to remove host {host} from the CRUSH map: {str(e)}')
 
         self.inventory.rm_host(host)
         self.cache.rm_host(host)
@@ -1652,14 +1724,14 @@ Then run the following:
     def remove_host_label(self, host: str, label: str, force: bool = False) -> str:
         # if we remove the _admin label from the only host that has it we could end up
         # removing the only instance of the config and keyring and cause issues
-        if not force and label == '_admin':
-            p = PlacementSpec(label='_admin')
+        if not force and label == SpecialHostLabels.ADMIN:
+            p = PlacementSpec(label=SpecialHostLabels.ADMIN)
             admin_hosts = p.filter_matching_hostspecs(self.inventory.all_specs())
             if len(admin_hosts) == 1 and admin_hosts[0] == host:
-                raise OrchestratorValidationError(f"Host {host} is the last host with the '_admin'"
-                                                  " label.\nRemoving the _admin label from this host could cause the removal"
+                raise OrchestratorValidationError(f"Host {host} is the last host with the '{SpecialHostLabels.ADMIN}'"
+                                                  f" label.\nRemoving the {SpecialHostLabels.ADMIN} label from this host could cause the removal"
                                                   " of the last cluster config/keyring managed by cephadm.\n"
-                                                  "It is recommended to add the _admin label to another host"
+                                                  f"It is recommended to add the {SpecialHostLabels.ADMIN} label to another host"
                                                   " before completing this operation.\nIf you're certain this is"
                                                   " what you want rerun this command with --force.")
         self.inventory.rm_label(host, label)
@@ -2634,7 +2706,7 @@ Then run the following:
             )
             daemons.append(sd)
 
-        @ forall_hosts
+        @forall_hosts
         def create_func_map(*args: Any) -> str:
             daemon_spec = self.cephadm_services[daemon_type].prepare_create(*args)
             with self.async_timeout_handler(daemon_spec.host, f'cephadm deploy ({daemon_spec.daemon_type} daemon)'):
@@ -2685,7 +2757,6 @@ Then run the following:
     def _get_candidate_hosts(self, placement: PlacementSpec) -> List[str]:
         """Return a list of candidate hosts according to the placement specification."""
         all_hosts = self.cache.get_schedulable_hosts()
-        draining_hosts = [dh.hostname for dh in self.cache.get_draining_hosts()]
         candidates = []
         if placement.hosts:
             candidates = [h.hostname for h in placement.hosts if h.hostname in placement.hosts]
@@ -2695,7 +2766,7 @@ Then run the following:
             candidates = [x for x in placement.filter_matching_hostspecs(all_hosts)]
         elif (placement.count is not None or placement.count_per_host is not None):
             candidates = [x.hostname for x in all_hosts]
-        return [h for h in candidates if h not in draining_hosts]
+        return [h for h in candidates if not self.cache.is_host_draining(h)]
 
     def _validate_one_shot_placement_spec(self, spec: PlacementSpec) -> None:
         """Validate placement specification for TunedProfileSpec and ClientKeyringSpec."""
@@ -2875,7 +2946,7 @@ Then run the following:
                         (f'The maximum number of {spec.service_type} daemons allowed with {host_count} hosts is {max(5, host_count)}.'))
             elif spec.service_type != 'osd':
                 if spec.placement.count > (max_count * host_count):
-                    raise OrchestratorError((f'The maximum number of {spec.service_type} daemons allowed with {host_count} hosts is {host_count*max_count} ({host_count}x{max_count}).'
+                    raise OrchestratorError((f'The maximum number of {spec.service_type} daemons allowed with {host_count} hosts is {host_count * max_count} ({host_count}x{max_count}).'
                                              + ' This limit can be adjusted by changing the mgr/cephadm/max_count_per_host config option'))
 
         if spec.placement.count_per_host is not None and spec.placement.count_per_host > max_count and spec.service_type != 'osd':
@@ -3149,8 +3220,7 @@ Then run the following:
         """
         for osd_id in osd_ids:
             try:
-                self.to_remove_osds.rm(OSD(osd_id=int(osd_id),
-                                           remove_util=self.to_remove_osds.rm_util))
+                self.to_remove_osds.rm_by_osd_id(int(osd_id))
             except (NotFoundError, KeyError, ValueError):
                 return f'Unable to find OSD in the queue: {osd_id}'
 
@@ -3166,8 +3236,7 @@ Then run the following:
         return self.to_remove_osds.all_osds()
 
     @handle_orch_error
-    def drain_host(self, hostname, force=False):
-        # type: (str, bool) -> str
+    def drain_host(self, hostname: str, force: bool = False, keep_conf_keyring: bool = False, zap_osd_devices: bool = False) -> str:
         """
         Drain all daemons from a host.
         :param host: host name
@@ -3176,22 +3245,24 @@ Then run the following:
         # if we drain the last admin host we could end up removing the only instance
         # of the config and keyring and cause issues
         if not force:
-            p = PlacementSpec(label='_admin')
+            p = PlacementSpec(label=SpecialHostLabels.ADMIN)
             admin_hosts = p.filter_matching_hostspecs(self.inventory.all_specs())
             if len(admin_hosts) == 1 and admin_hosts[0] == hostname:
-                raise OrchestratorValidationError(f"Host {hostname} is the last host with the '_admin'"
+                raise OrchestratorValidationError(f"Host {hostname} is the last host with the '{SpecialHostLabels.ADMIN}'"
                                                   " label.\nDraining this host could cause the removal"
                                                   " of the last cluster config/keyring managed by cephadm.\n"
-                                                  "It is recommended to add the _admin label to another host"
+                                                  f"It is recommended to add the {SpecialHostLabels.ADMIN} label to another host"
                                                   " before completing this operation.\nIf you're certain this is"
                                                   " what you want rerun this command with --force.")
 
         self.add_host_label(hostname, '_no_schedule')
+        if not keep_conf_keyring:
+            self.add_host_label(hostname, SpecialHostLabels.DRAIN_CONF_KEYRING)
 
         daemons: List[orchestrator.DaemonDescription] = self.cache.get_daemons_by_host(hostname)
 
         osds_to_remove = [d.daemon_id for d in daemons if d.daemon_type == 'osd']
-        self.remove_osds(osds_to_remove)
+        self.remove_osds(osds_to_remove, zap=zap_osd_devices)
 
         daemons_table = ""
         daemons_table += "{:<20} {:<15}\n".format("type", "id")

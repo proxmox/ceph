@@ -529,6 +529,15 @@ void OSDService::shutdown()
   next_osdmap = OSDMapRef();
 }
 
+void OSDService::fast_shutdown()
+{
+  mono_timer.suspend();
+  {
+    std::lock_guard l(watch_lock);
+    watch_timer.shutdown();
+  }
+}
+
 void OSDService::init()
 {
   reserver_finisher.start();
@@ -1420,14 +1429,14 @@ MOSDMap *OSDService::build_incremental_map_msg(epoch_t since, epoch_t to,
   for (epoch_t e = since + 1; e <= to; ++e) {
     bufferlist bl;
     if (get_inc_map_bl(e, bl)) {
-      m->incremental_maps[e] = std::move(bl);
+      m->incremental_maps[e] = bl;
     } else {
       dout(10) << __func__ << " missing incremental map " << e << dendl;
       if (!get_map_bl(e, bl)) {
 	derr << __func__ << " also missing full map " << e << dendl;
 	goto panic;
       }
-      m->maps[e] = std::move(bl);
+      m->maps[e] = bl;
     }
     max--;
     max_bytes -= bl.length();
@@ -2100,6 +2109,22 @@ int heap(CephContext& cct,
 
 } // namespace ceph::osd_cmds
 
+void OSD::write_superblock(CephContext* cct, OSDSuperblock& sb, ObjectStore::Transaction& t)
+{
+  dout(10) << "write_superblock " << sb << dendl;
+
+  //hack: at minimum it's using the baseline feature set
+  if (!sb.compat_features.incompat.contains(CEPH_OSD_FEATURE_INCOMPAT_BASE))
+    sb.compat_features.incompat.insert(CEPH_OSD_FEATURE_INCOMPAT_BASE);
+
+  bufferlist bl;
+  encode(sb, bl);
+  t.write(coll_t::meta(), OSD_SUPERBLOCK_GOBJECT, 0, bl.length(), bl);
+  std::map<std::string, ceph::buffer::list> attrs;
+  attrs.emplace(OSD_SUPERBLOCK_OMAP_KEY, bl);
+  t.omap_setkeys(coll_t::meta(), OSD_SUPERBLOCK_GOBJECT, attrs);
+}
+
 int OSD::mkfs(CephContext *cct,
 	      std::unique_ptr<ObjectStore> store,
 	      uuid_d fsid,
@@ -2161,15 +2186,11 @@ int OSD::mkfs(CephContext *cct,
     sb.osd_fsid = store->get_fsid();
     sb.whoami = whoami;
     sb.compat_features = get_osd_initial_compat_set();
-
-    bufferlist bl;
-    encode(sb, bl);
-
     ObjectStore::CollectionHandle ch = store->create_new_collection(
       coll_t::meta());
     ObjectStore::Transaction t;
     t.create_collection(coll_t::meta(), 0);
-    t.write(coll_t::meta(), OSD_SUPERBLOCK_GOBJECT, 0, bl.length(), bl);
+    write_superblock(cct, sb, t);
     ret = store->queue_transaction(ch, std::move(t));
     if (ret) {
       derr << "OSD::mkfs: error while writing OSD_SUPERBLOCK_GOBJECT: "
@@ -2921,15 +2942,22 @@ will start to track new ops received afterwards.";
   } else if (prefix == "compact") {
     dout(1) << "triggering manual compaction" << dendl;
     auto start = ceph::coarse_mono_clock::now();
-    store->compact();
-    auto end = ceph::coarse_mono_clock::now();
-    double duration = std::chrono::duration<double>(end-start).count();
-    dout(1) << "finished manual compaction in "
-            << duration
-            << " seconds" << dendl;
-    f->open_object_section("compact_result");
-    f->dump_float("elapsed_time", duration);
-    f->close_section();
+    int r = store->compact();
+    if (r == 0) {
+      auto end = ceph::coarse_mono_clock::now();
+      double duration = std::chrono::duration<double>(end-start).count();
+
+      dout(1) << "finished manual compaction in "
+              << duration
+              << " seconds" << dendl;
+      f->open_object_section("compact_result");
+      f->dump_float("elapsed_time", duration);
+      f->close_section();
+    } else  if ( r == -EINPROGRESS) {
+      dout(1) << "manual compaction is being executed asynchronously" << dendl;
+    } else {
+      derr << "error starting manual compaction:" << cpp_strerror(r) << dendl;
+    }
   } else if (prefix == "get_mapped_pools") {
     f->open_array_section("mapped_pools");
     set<int64_t> poollist = get_mapped_pools();
@@ -3118,6 +3146,19 @@ will start to track new ops received afterwards.";
   else if (prefix == "scrub_purged_snaps") {
     lock_guard l(osd_lock);
     scrub_purged_snaps();
+  }
+
+  else if (prefix == "reset_purged_snaps_last") {
+    lock_guard l(osd_lock);
+    superblock.purged_snaps_last = 0;
+    ObjectStore::Transaction t;
+    dout(10) << __func__ << " updating superblock" << dendl;
+    write_superblock(cct, superblock, t);
+    ret = store->queue_transaction(service.meta_ch, std::move(t), nullptr);
+    if (ret < 0) {
+      ss << "Error writing superblock: " << cpp_strerror(ret);
+      goto out;
+    }
   }
 
   else if (prefix == "dump_osd_network") {
@@ -3761,7 +3802,7 @@ int OSD::init()
     }
 
     ObjectStore::Transaction t;
-    write_superblock(t);
+    write_superblock(cct, superblock, t);
     r = store->queue_transaction(service.meta_ch, std::move(t));
     if (r < 0)
       goto out;
@@ -3812,7 +3853,7 @@ int OSD::init()
   dout(2) << "superblock: I am osd." << superblock.whoami << dendl;
 
   if (cct->_conf.get_val<bool>("osd_compact_on_start")) {
-    dout(2) << "compacting object store's omap" << dendl;
+    dout(2) << "compacting object store's DB" << dendl;
     store->compact();
   }
 
@@ -4293,6 +4334,11 @@ void OSD::final_init()
     "Scrub purged_snaps vs snapmapper index");
   ceph_assert(r == 0);
   r = admin_socket->register_command(
+    "reset_purged_snaps_last",
+    asok_hook,
+    "Reset the superblock's purged_snaps_last");
+  ceph_assert(r == 0);
+  r = admin_socket->register_command(
     "scrubdebug "						\
     "name=pgid,type=CephPgid "	                                \
     "name=cmd,type=CephChoices,strings=block|unblock|set|unset " \
@@ -4467,15 +4513,18 @@ int OSD::shutdown()
 
     utime_t  start_time_umount = ceph_clock_now();
     store->prepare_for_fast_shutdown();
+    service.fast_shutdown();
     std::lock_guard lock(osd_lock);
     // TBD: assert in allocator that nothing is being add
     store->umount();
 
     utime_t end_time = ceph_clock_now();
-    if (cct->_conf->osd_fast_shutdown_timeout) {
-      ceph_assert(end_time - start_time_func < cct->_conf->osd_fast_shutdown_timeout);
-    }
     dout(0) <<"Fast Shutdown duration total     :" << end_time              - start_time_func       << " seconds" << dendl;
+    if (cct->_conf->osd_fast_shutdown_timeout &&
+        end_time - start_time_func > cct->_conf->osd_fast_shutdown_timeout) {
+      dout(0) << "Fast Shutdown duration exceeded :" << cct->_conf->osd_fast_shutdown_timeout       << " seconds"
+              << dendl;
+    }
     dout(0) <<"Fast Shutdown duration osd_drain :" << start_time_umount     - start_time_osd_drain  << " seconds" << dendl;
     dout(0) <<"Fast Shutdown duration umount    :" << end_time              - start_time_umount     << " seconds" << dendl;
     dout(0) <<"Fast Shutdown duration timer     :" << start_time_osd_drain  - start_time_timer      << " seconds" << dendl;
@@ -4557,7 +4606,7 @@ int OSD::shutdown()
   superblock.mounted = service.get_boot_epoch();
   superblock.clean_thru = get_osdmap_epoch();
   ObjectStore::Transaction t;
-  write_superblock(t);
+  write_superblock(cct, superblock, t);
   int r = store->queue_transaction(service.meta_ch, std::move(t));
   if (r) {
     derr << "OSD::shutdown: error writing superblock: "
@@ -4755,31 +4804,81 @@ int OSD::update_crush_device_class()
   }
 }
 
-void OSD::write_superblock(ObjectStore::Transaction& t)
-{
-  dout(10) << "write_superblock " << superblock << dendl;
-
-  //hack: at minimum it's using the baseline feature set
-  if (!superblock.compat_features.incompat.contains(CEPH_OSD_FEATURE_INCOMPAT_BASE))
-    superblock.compat_features.incompat.insert(CEPH_OSD_FEATURE_INCOMPAT_BASE);
-
-  bufferlist bl;
-  encode(superblock, bl);
-  t.write(coll_t::meta(), OSD_SUPERBLOCK_GOBJECT, 0, bl.length(), bl);
-}
 
 int OSD::read_superblock()
 {
+  // Read superblock from both object data and omap metadata
+  // for better robustness.
+  // Use the most recent superblock replica if obtained versions
+  // mismatch.
   bufferlist bl;
-  int r = store->read(service.meta_ch, OSD_SUPERBLOCK_GOBJECT, 0, 0, bl);
-  if (r < 0)
-    return r;
 
-  auto p = bl.cbegin();
-  decode(superblock, p);
+  set<string> keys;
+  keys.insert(OSD_SUPERBLOCK_OMAP_KEY);
+  map<string, bufferlist> vals;
+  OSDSuperblock super_omap;
+  OSDSuperblock super_disk;
+  int r_omap = store->omap_get_values(
+    service.meta_ch, OSD_SUPERBLOCK_GOBJECT, keys, &vals);
+  if (r_omap >= 0 && vals.size() > 0) {
+    try {
+      auto p = vals.begin()->second.cbegin();
+      decode(super_omap, p);
+    } catch(...) {
+      derr << __func__ << " omap replica is corrupted."
+            << dendl;
+      r_omap = -EFAULT;
+    }
+  } else {
+    derr << __func__ << " omap replica is missing."
+         << dendl;
+    r_omap = -ENOENT;
+  }
+  int r_disk = store->read(service.meta_ch, OSD_SUPERBLOCK_GOBJECT, 0, 0, bl);
+  if (r_disk >= 0) {
+    try {
+      auto p = bl.cbegin();
+      decode(super_disk, p);
+    } catch(...) {
+      derr << __func__ << " disk replica is corrupted."
+            << dendl;
+      r_disk = -EFAULT;
+    }
+  } else {
+    derr << __func__ << " disk replica is missing."
+         << dendl;
+    r_disk = -ENOENT;
+  }
+
+  if (r_omap >= 0 && r_disk < 0) {
+    std::swap(superblock, super_omap);
+    dout(1) << __func__ << " got omap replica but failed to get disk one."
+            << dendl;
+  } else if (r_omap < 0 && r_disk >= 0) {
+    std::swap(superblock, super_disk);
+    dout(1) << __func__ << " got disk replica but failed to get omap one."
+            << dendl;
+  } else if (r_omap < 0 && r_disk < 0) {
+    // error to be logged by the caller
+    return -ENOENT;
+  } else {
+    std::swap(superblock, super_omap); // let omap be the primary source
+    if (superblock.current_epoch != super_disk.current_epoch) {
+      derr << __func__ << " got mismatching superblocks, omap:"
+           << superblock << " vs. disk:" << super_disk
+           << dendl;
+      if (superblock.current_epoch < super_disk.current_epoch) {
+        std::swap(superblock, super_disk);
+        dout(0) << __func__ << " using disk superblock"
+                << dendl;
+      } else {
+        dout(0) << __func__ << " using omap superblock"
+                << dendl;
+      }
+    }
+  }
 
   dout(10) << "read_superblock " << superblock << dendl;
-
   return 0;
 }
 
@@ -6754,7 +6853,7 @@ void OSD::handle_get_purged_snaps_reply(MMonGetPurgedSnapsReply *m)
 				  make_purged_snaps_oid(), &t,
 				  m->purged_snaps);
   superblock.purged_snaps_last = m->last;
-  write_superblock(t);
+  write_superblock(cct, superblock, t);
   store->queue_transaction(
     service.meta_ch,
     std::move(t));
@@ -7238,7 +7337,7 @@ void OSD::scrub_purged_snaps()
   dout(10) << __func__ << " done queueing pgs, updating superblock" << dendl;
   ObjectStore::Transaction t;
   superblock.last_purged_snaps_scrub = ceph_clock_now();
-  write_superblock(t);
+  write_superblock(cct, superblock, t);
   int tr = store->queue_transaction(service.meta_ch, std::move(t), nullptr);
   ceph_assert(tr == 0);
   if (is_active()) {
@@ -7505,9 +7604,8 @@ void OSD::ms_fast_dispatch(Message *m)
   OID_EVENT_TRACE_WITH_MSG(m, "MS_FAST_DISPATCH_END", false);
 }
 
-int OSD::ms_handle_fast_authentication(Connection *con)
+bool OSD::ms_handle_fast_authentication(Connection *con)
 {
-  int ret = 0;
   auto s = ceph::ref_cast<Session>(con->get_priv());
   if (!s) {
     s = ceph::make_ref<Session>(cct, con);
@@ -7525,6 +7623,7 @@ int OSD::ms_handle_fast_authentication(Connection *con)
   AuthCapsInfo &caps_info = con->get_peer_caps_info();
   if (caps_info.allow_all) {
     s->caps.set_allow_all();
+    return true;
   } else if (caps_info.caps.length() > 0) {
     bufferlist::const_iterator p = caps_info.caps.cbegin();
     string str;
@@ -7534,23 +7633,22 @@ int OSD::ms_handle_fast_authentication(Connection *con)
     catch (ceph::buffer::error& e) {
       dout(10) << __func__ << " session " << s << " " << s->entity_name
 	       << " failed to decode caps string" << dendl;
-      ret = -EACCES;
+      return false;
     }
-    if (!ret) {
-      bool success = s->caps.parse(str);
-      if (success) {
-	dout(10) << __func__ << " session " << s
-		 << " " << s->entity_name
-		 << " has caps " << s->caps << " '" << str << "'" << dendl;
-	ret = 1;
-      } else {
-	dout(10) << __func__ << " session " << s << " " << s->entity_name
-		 << " failed to parse caps '" << str << "'" << dendl;
-	ret = -EACCES;
-      }
+    bool success = s->caps.parse(str);
+    if (success) {
+      dout(10) << __func__ << " session " << s
+               << " " << s->entity_name
+               << " has caps " << s->caps << " '" << str << "'" << dendl;
+      return true;
+    } else {
+      dout(10) << __func__ << " session " << s << " " << s->entity_name
+               << " failed to parse caps '" << str << "'" << dendl;
+      return false;
     }
+  } else {
+    return false;
   }
-  return ret;
 }
 
 void OSD::do_waiters()
@@ -8042,7 +8140,7 @@ void OSD::trim_maps(epoch_t oldest, int nreceived, bool skip_maps)
     num++;
     if (num >= cct->_conf->osd_target_transaction_size && num >= nreceived) {
       service.publish_superblock(superblock);
-      write_superblock(t);
+      write_superblock(cct, superblock, t);
       int tr = store->queue_transaction(service.meta_ch, std::move(t), nullptr);
       ceph_assert(tr == 0);
       num = 0;
@@ -8058,7 +8156,7 @@ void OSD::trim_maps(epoch_t oldest, int nreceived, bool skip_maps)
   }
   if (num > 0) {
     service.publish_superblock(superblock);
-    write_superblock(t);
+    write_superblock(cct, superblock, t);
     int tr = store->queue_transaction(service.meta_ch, std::move(t), nullptr);
     ceph_assert(tr == 0);
   }
@@ -8370,7 +8468,19 @@ void OSD::handle_osd_map(MOSDMap *m)
   {
     bufferlist bl;
     ::encode(pg_num_history, bl);
-    t.write(coll_t::meta(), make_pg_num_history_oid(), 0, bl.length(), bl);
+    auto oid = make_pg_num_history_oid();
+    t.truncate(coll_t::meta(), oid, 0); // we don't need bytes left if new data
+                                        // block is shorter than the previous
+                                        // one. And better to trim them, e.g.
+                                        // this allows to avoid csum eroors
+                                        // when issuing overwrite
+                                        // (which happens to be partial)
+                                        // and original data is corrupted.
+                                        // Another side effect is that the
+                                        // superblock is not permanently
+                                        // anchored to a fixed disk location
+                                        // any more.
+    t.write(coll_t::meta(), oid, 0, bl.length(), bl);
     dout(20) << __func__ << " pg_num_history " << pg_num_history << dendl;
   }
 
@@ -8387,7 +8497,7 @@ void OSD::handle_osd_map(MOSDMap *m)
   }
 
   // superblock and commit
-  write_superblock(t);
+  write_superblock(cct, superblock, t);
   t.register_on_commit(new C_OnMapCommit(this, start, last, m));
   store->queue_transaction(
     service.meta_ch,
@@ -8705,7 +8815,7 @@ void OSD::check_osdmap_features()
       dout(0) << __func__ << " enabling on-disk ERASURE CODES compat feature" << dendl;
       superblock.compat_features.incompat.insert(CEPH_OSD_FEATURE_INCOMPAT_SHARDS);
       ObjectStore::Transaction t;
-      write_superblock(t);
+      write_superblock(cct, superblock, t);
       int err = store->queue_transaction(service.meta_ch, std::move(t), NULL);
       ceph_assert(err == 0);
     }
