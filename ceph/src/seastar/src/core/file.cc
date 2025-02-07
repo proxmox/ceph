@@ -25,9 +25,7 @@ module;
 
 #include <algorithm>
 #include <atomic>
-#ifdef SEASTAR_COROUTINES_ENABLED
 #include <coroutine>
-#endif
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -65,7 +63,6 @@ module seastar;
 #include <seastar/core/reactor.hh>
 #include <seastar/core/file.hh>
 #include <seastar/core/report_exception.hh>
-#include <seastar/core/linux-aio.hh>
 #include <seastar/util/later.hh>
 #include <seastar/util/internal/magic.hh>
 #include <seastar/util/internal/iovec_utils.hh>
@@ -123,9 +120,8 @@ file_handle::to_file() && {
 }
 
 posix_file_impl::posix_file_impl(int fd, open_flags f, file_open_options options, dev_t device_id, bool nowait_works)
-        : _device_id(device_id)
-        , _nowait_works(nowait_works)
-        , _io_queue(engine().get_io_queue(_device_id))
+        : _nowait_works(nowait_works)
+        , _io_queue(engine().get_io_queue(device_id))
         , _open_flags(f)
         , _fd(fd)
 {
@@ -174,7 +170,7 @@ posix_file_impl::dup() {
     if (!_refcount) {
         _refcount = new std::atomic<unsigned>(1u);
     }
-    auto ret = std::make_unique<posix_file_handle_impl>(_fd, _open_flags, _refcount, _device_id,
+    auto ret = std::make_unique<posix_file_handle_impl>(_fd, _open_flags, _refcount, _io_queue.dev_id(),
             _memory_dma_alignment, _disk_read_dma_alignment, _disk_write_dma_alignment, _disk_overwrite_dma_alignment,
             _nowait_works);
     _refcount->fetch_add(1, std::memory_order_relaxed);
@@ -188,9 +184,8 @@ posix_file_impl::posix_file_impl(int fd, open_flags f, std::atomic<unsigned>* re
         uint32_t disk_overwrite_dma_alignment,
         bool nowait_works)
         : _refcount(refcount)
-        , _device_id(device_id)
         , _nowait_works(nowait_works)
-        , _io_queue(engine().get_io_queue(_device_id))
+        , _io_queue(engine().get_io_queue(device_id))
         , _open_flags(f)
         , _fd(fd) {
     _memory_dma_alignment = memory_dma_alignment;
@@ -399,7 +394,6 @@ static std::optional<directory_entry_type> dirent_type(const linux_dirent64& de)
     return type;
 }
 
-#ifdef SEASTAR_COROUTINES_ENABLED
 static coroutine::experimental::generator<directory_entry> make_list_directory_generator(int fd) {
     temporary_buffer<char> buf(8192);
 
@@ -432,7 +426,6 @@ coroutine::experimental::generator<directory_entry> posix_file_impl::experimenta
     // is allocated out of this buffer, so the buffer would grow up to ~200 bytes
     return make_list_directory_generator(_fd);
 }
-#endif
 
 subscription<directory_entry>
 posix_file_impl::list_directory(std::function<future<> (directory_entry de)> next) {
@@ -1084,8 +1077,9 @@ make_file_impl(int fd, file_open_options options, int flags, struct stat st) noe
     auto st_dev = st.st_dev;
     static thread_local std::unordered_map<decltype(st_dev), internal::fs_info> s_fstype;
 
-    future<> get_fs_info = s_fstype.count(st_dev) ? make_ready_future<>() :
-        engine().fstatfs(fd).then([fd, st_dev] (struct statfs sfs) {
+    auto i = s_fstype.find(st_dev);
+    if (i == s_fstype.end()) [[unlikely]] {
+        return engine().fstatfs(fd).then([fd, options = std::move(options), flags, st = std::move(st)] (struct statfs sfs) {
             internal::fs_info fsi;
             fsi.block_size = sfs.f_bsize;
             switch (sfs.f_type) {
@@ -1132,15 +1126,16 @@ make_file_impl(int fd, file_open_options options, int flags, struct stat st) noe
                 fsi.fsync_is_exclusive = true;
                 fsi.nowait_works = false;
             }
-            s_fstype[st_dev] = std::move(fsi);
+            s_fstype.insert(std::make_pair(st.st_dev, std::move(fsi)));
+            return make_file_impl(fd, std::move(options), flags, std::move(st));
         });
-    return get_fs_info.then([st_dev, fd, flags, options = std::move(options)] () mutable {
-        const internal::fs_info& fsi = s_fstype[st_dev];
-        if (!fsi.append_challenged || options.append_is_unlikely || ((flags & O_ACCMODE) == O_RDONLY)) {
-            return make_ready_future<shared_ptr<file_impl>>(make_shared<posix_file_real_impl>(fd, open_flags(flags), std::move(options), fsi, st_dev));
-        }
-        return make_ready_future<shared_ptr<file_impl>>(make_shared<append_challenged_posix_file_impl>(fd, open_flags(flags), std::move(options), fsi, st_dev));
-    });
+    }
+
+    const internal::fs_info& fsi = i->second;
+    if (!fsi.append_challenged || options.append_is_unlikely || ((flags & O_ACCMODE) == O_RDONLY)) {
+        return make_ready_future<shared_ptr<file_impl>>(make_shared<posix_file_real_impl>(fd, open_flags(flags), std::move(options), fsi, st_dev));
+    }
+    return make_ready_future<shared_ptr<file_impl>>(make_shared<append_challenged_posix_file_impl>(fd, open_flags(flags), std::move(options), fsi, st_dev));
 }
 
 file::file(seastar::file_handle&& handle) noexcept
@@ -1167,11 +1162,9 @@ file::list_directory(std::function<future<>(directory_entry de)> next) {
     return _file_impl->list_directory(std::move(next));
 }
 
-#ifdef SEASTAR_COROUTINES_ENABLED
 coroutine::experimental::generator<directory_entry> file::experimental_list_directory() {
     return _file_impl->experimental_list_directory();
 }
-#endif
 
 future<int> file::ioctl(uint64_t cmd, void* argp) noexcept {
     return _file_impl->ioctl(cmd, argp);
@@ -1376,7 +1369,6 @@ file_impl::dup() {
     throw std::runtime_error("this file type cannot be duplicated");
 }
 
-#ifdef SEASTAR_COROUTINES_ENABLED
 static coroutine::experimental::generator<directory_entry> make_list_directory_fallback_generator(file_impl& me) {
     queue<std::optional<directory_entry>> ents(16);
     auto lister = me.list_directory([&ents] (directory_entry de) {
@@ -1400,7 +1392,6 @@ static coroutine::experimental::generator<directory_entry> make_list_directory_f
 coroutine::experimental::generator<directory_entry> file_impl::experimental_list_directory() {
     return make_list_directory_fallback_generator(*this);
 }
-#endif
 
 future<int> file_impl::ioctl(uint64_t cmd, void* argp) noexcept {
     return make_exception_future<int>(std::runtime_error("this file type does not support ioctl"));

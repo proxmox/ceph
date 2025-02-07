@@ -1,7 +1,7 @@
 Seastar
 =======
 
-[![CircleCI](https://circleci.com/gh/scylladb/seastar.svg?style=svg)](https://circleci.com/gh/scylladb/seastar)
+[![Test](https://github.com/scylladb/seastar/actions/workflows/tests.yaml/badge.svg)](https://github.com/scylladb/seastar/actions/workflows/tests.yaml)
 [![Version](https://img.shields.io/github/tag/scylladb/seastar.svg?label=version&colorB=green)](https://github.com/scylladb/seastar/releases)
 [![License: Apache2](https://img.shields.io/github/license/scylladb/seastar.svg)](https://github.com/scylladb/seastar/blob/master/LICENSE)
 [![n00b issues](https://img.shields.io/github/issues/scylladb/seastar/n00b.svg?colorB=green)](https://github.com/scylladb/seastar/labels/n00b)
@@ -144,11 +144,11 @@ There are also instructions for building on any host that supports [Docker](doc/
 
 Use of the [DPDK](http://dpdk.org) is [optional](doc/building-dpdk.md).
 
-#### Seastar's C++ standard: C++17 or C++20
+#### Seastar's C++ standard: C++20 or C++23
 
-Seastar supports both C++17, and C++20. The build defaults to the latest
+Seastar supports both C++20, and C++23. The build defaults to the latest
 standard supported by your compiler, but can be explicitly selected with
-the `--c++-standard` configure option, e.g., `--c++-standard=17`,
+the `--c++-standard` configure option, e.g., `--c++-standard=20`,
 or if using CMake directly, by setting on the `CMAKE_CXX_STANDARD` CMake
 variable.
 

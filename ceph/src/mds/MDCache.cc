@@ -338,6 +338,7 @@ void MDCache::remove_inode(CInode *o)
     inode_map.erase(o->ino());
   } else {
     o->item_caps.remove_myself();
+    o->item_to_flush.remove_myself();
     snap_inode_map.erase(o->vino());
   }
 
@@ -9896,6 +9897,19 @@ void MDCache::request_cleanup(const MDRequestRef& mdr)
   dout(15) << "request_cleanup " << *mdr << dendl;
 
   mdr->dead = true;
+
+  if (mdr->killed && mdr->client_request && mdr->is_batch_head()) {
+    dout(10) << "request " << *mdr << " was killed and dead" << dendl;
+    //if the mdr is a "batch_op" and it has followers, pick a follower as
+    //the new "head of the batch ops" and go on processing the new one.
+    int mask = mdr->client_request->head.args.getattr.mask;
+    auto it = mdr->batch_op_map->find(mask);
+    auto new_batch_head = it->second->find_new_head();
+    if (!new_batch_head) {
+      mdr->batch_op_map->erase(it);
+    }
+    mds->finisher->queue(new C_MDS_RetryRequest(this, new_batch_head));
+  }
 
   if (mdr->has_more()) {
     if (mdr->more()->is_ambiguous_auth)

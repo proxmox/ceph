@@ -67,9 +67,10 @@ def task(ctx, config):
 
         with contextutil.safe_while(sleep=1, tries=15) as proceed:
             while proceed():
+                remote.run(args=['lsblk'], stdout=StringIO())
                 p = remote.run(args=['sudo', 'nvme', 'list', '-o', 'json'], stdout=StringIO())
                 new_devs = []
-                # `nvme list -o json` will return the following output:
+                # `nvme list -o json` will return one of the following output:
                 '''{
                      "Devices" : [
                        {
@@ -90,12 +91,112 @@ def task(ctx, config):
                        }
                      ]
                    }'''
+                '''{
+                  "Devices":[
+                    {
+                      "HostNQN":"nqn.2014-08.org.nvmexpress:uuid:00000000-0000-0000-0000-0cc47ada6ba4",
+                      "HostID":"898a0e10-da2d-4a42-8017-d9c445089d0c",
+                      "Subsystems":[
+                        {
+                          "Subsystem":"nvme-subsys0",
+                          "SubsystemNQN":"nqn.2014.08.org.nvmexpress:80868086CVFT623300LN400BGN  INTEL SSDPEDMD400G4",
+                          "Controllers":[
+                            {
+                              "Controller":"nvme0",
+                              "Cntlid":"0",
+                              "SerialNumber":"CVFT623300LN400BGN",
+                              "ModelNumber":"INTEL SSDPEDMD400G4",
+                              "Firmware":"8DV101H0",
+                              "Transport":"pcie",
+                              "Address":"0000:02:00.0",
+                              "Slot":"2",
+                              "Namespaces":[
+                                {
+                                  "NameSpace":"nvme0n1",
+                                  "Generic":"ng0n1",
+                                  "NSID":1,
+                                  "UsedBytes":400088457216,
+                                  "MaximumLBA":781422768,
+                                  "PhysicalSize":400088457216,
+                                  "SectorSize":512
+                                }
+                              ],
+                              "Paths":[
+                              ]
+                            }
+                          ],
+                          "Namespaces":[
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+                '''
+                '''{
+                  "Devices":[
+                    {
+                      "HostNQN":"nqn.2014-08.org.nvmexpress:uuid:00000000-0000-0000-0000-0cc47ada6ba4",
+                      "HostID":"898a0e10-da2d-4a42-8017-d9c445089d0c",
+                      "Subsystems":[
+                        {
+                          "Subsystem":"nvme-subsys0",
+                          "SubsystemNQN":"nqn.2014.08.org.nvmexpress:80868086CVFT534400C2400BGN  INTEL SSDPEDMD400G4",
+                          "Controllers":[
+                            {
+                              "Controller":"nvme0",
+                              "Cntlid":"0",
+                              "SerialNumber":"CVFT534400C2400BGN",
+                              "ModelNumber":"INTEL SSDPEDMD400G4",
+                              "Firmware":"8DV101H0",
+                              "Transport":"pcie",
+                              "Address":"0000:02:00.0",
+                              "Slot":"2",
+                              "Namespaces":[
+                                {
+                                  "NameSpace":"nvme0n1",
+                                  "Generic":"ng0n1",
+                                  "NSID":1,
+                                  "UsedBytes":400088457216,
+                                  "MaximumLBA":781422768,
+                                  "PhysicalSize":400088457216,
+                                  "SectorSize":512
+                                }
+                              ],
+                              "Paths":[
+                              ]
+                            }
+                          ],
+                          "Namespaces":[
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+                '''
                 nvme_list = json.loads(p.stdout.getvalue())
                 for device in nvme_list['Devices']:
-                    dev = device['DevicePath']
-                    vendor = device['ModelNumber']
-                    if dev.startswith('/dev/') and vendor == 'Linux':
-                        new_devs.append(dev)
+                    try:
+                        # first try format 1 / older format
+                        dev = device['DevicePath']
+                        vendor = device['ModelNumber']
+                        if dev.startswith('/dev/') and vendor == 'Linux':
+                            new_devs.append(dev)
+                            bluestore_zap(remote, dev)
+                    except KeyError:
+                        for subsystem in device['Subsystems']:
+                            # format 2
+                            if 'Namespaces' in subsystem and subsystem['Namespaces']:
+                                dev = '/dev/' + subsystem['Namespaces'][0]['NameSpace']
+                            # try format 3 last
+                            else:
+                                dev = '/dev/' + subsystem['Controllers'][0]['Namespaces'][0]['NameSpace']
+                            # vendor is the same for format 2 and 3
+                            vendor = subsystem['Controllers'][0]['ModelNumber']
+                            if vendor == 'Linux':
+                                new_devs.append(dev)
+                                bluestore_zap(remote, dev)
                 log.info(f'new_devs {new_devs}')
                 assert len(new_devs) <= len(devs)
                 if len(new_devs) == len(devs):
@@ -128,3 +229,13 @@ def task(ctx, config):
                 data=old_scratch_by_remote[remote],
                 sudo=True
             )
+
+def bluestore_zap(remote, device: str) -> None:
+    for offset in [0, 1073741824, 10737418240]:
+        remote.run(args=['sudo', 'dd',
+                         'if=/dev/zero', f'of={device}',
+                         f'seek={offset}', 'bs=1',
+                         'count=4096'], stdout=StringIO())
+        remote.run(args=['sudo', 'hexdump', '-n22',
+                         '-C', f'-s{offset}', f'{device}'],
+                   stdout=StringIO())

@@ -33,6 +33,7 @@
 #include <functional>
 #include <optional>
 #include <queue>
+#include <fmt/ostream.h>
 
 namespace bi = boost::intrusive;
 
@@ -364,7 +365,7 @@ public:
     ///
     /// \param cfg an instance of the class \ref config
     explicit fair_queue(fair_group& shared, config cfg);
-    fair_queue(fair_queue&&);
+    fair_queue(fair_queue&&) = delete;
     ~fair_queue();
 
     sstring label() const noexcept { return _config.label; }

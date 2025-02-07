@@ -59,6 +59,7 @@ export class RgwMultisiteSyncPolicyComponent extends ListWithDetails implements 
     this.columns = [
       {
         prop: 'uniqueId',
+        isInvisible: true,
         isHidden: true
       },
       {
@@ -87,12 +88,22 @@ export class RgwMultisiteSyncPolicyComponent extends ListWithDetails implements 
       {
         name: $localize`Zonegroup`,
         prop: 'zonegroup',
-        flexGrow: 1
+        flexGrow: 1,
+        cellTransformation: CellTemplate.map,
+        customTemplateConfig: {
+          undefined: '-',
+          '': '-'
+        }
       },
       {
         name: $localize`Bucket`,
         prop: 'bucket',
-        flexGrow: 1
+        flexGrow: 1,
+        cellTransformation: CellTemplate.map,
+        customTemplateConfig: {
+          undefined: '-',
+          '': '-'
+        }
       }
     ];
     this.rgwDaemonService.list().subscribe();
@@ -136,7 +147,7 @@ export class RgwMultisiteSyncPolicyComponent extends ListWithDetails implements 
           groupName: policy['id'],
           status: policy['status'],
           bucket: policy['bucketName'],
-          zonegroup: ''
+          zonegroup: policy['zonegroup']
         });
       });
       this.syncPolicyData = [...this.syncPolicyData];

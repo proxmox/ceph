@@ -771,6 +771,7 @@ public:
 	uint64_t *epoch;
         int* part_num = nullptr;
         std::optional<int> parts_count;
+        RGWObjVersionTracker *objv_tracker = nullptr;
 
         Params() : lastmod(nullptr), obj_size(nullptr), attrs(nullptr),
 		   target_obj(nullptr), epoch(nullptr)
@@ -853,8 +854,9 @@ public:
         rgw_zone_set *zones_trace;
 	bool abortmp;
 	uint64_t parts_accounted_size;
+	obj_version *check_objv;
 
-        DeleteParams() : versioning_status(0), olh_epoch(0), bilog_flags(0), remove_objs(NULL), high_precision_time(false), zones_trace(nullptr), abortmp(false), parts_accounted_size(0) {}
+        DeleteParams() : versioning_status(0), olh_epoch(0), bilog_flags(0), remove_objs(NULL), high_precision_time(false), zones_trace(nullptr), abortmp(false), parts_accounted_size(0), check_objv(nullptr) {}
       } params;
 
       struct DeleteResult {
@@ -1617,8 +1619,8 @@ public:
    * will encode that info as a suggested update.)
    */
   int check_disk_state(const DoutPrefixProvider *dpp,
-                       librados::IoCtx io_ctx,
                        RGWBucketInfo& bucket_info,
+                       const rgw_bucket_entry_ver& index_ver,
                        rgw_bucket_dir_entry& list_state,
                        rgw_bucket_dir_entry& object,
                        bufferlist& suggested_updates,

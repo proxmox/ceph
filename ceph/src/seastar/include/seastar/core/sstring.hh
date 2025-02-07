@@ -37,7 +37,7 @@
 #include <ostream>
 #include <functional>
 #include <type_traits>
-#include <fmt/ostream.h>
+#include <fmt/format.h>
 #endif
 #include <seastar/util/std-compat.hh>
 #include <seastar/util/modules.hh>
@@ -715,8 +715,11 @@ string_type uninitialized_string(size_t size) {
         return string_type(typename string_type::initialized_later(), size);
     } else {
         string_type ret;
-        // FIXME: use __resize_default_init if available
+#ifdef __cpp_lib_string_resize_and_overwrite
+        ret.resize_and_overwrite(size, [](typename string_type::value_type*, typename string_type::size_type n) { return n; });
+#else
         ret.resize(size);
+#endif
         return ret;
     }
 }
@@ -833,10 +836,13 @@ string_type to_sstring(T value) {
 }
 }
 
+#ifdef SEASTAR_DEPRECATED_OSTREAM_FORMATTERS
+
 namespace std {
 
 SEASTAR_MODULE_EXPORT
 template <typename T>
+[[deprecated("Use {fmt} instead")]]
 inline
 std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
     bool first = true;
@@ -855,6 +861,7 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
 
 SEASTAR_MODULE_EXPORT
 template <typename Key, typename T, typename Hash, typename KeyEqual, typename Allocator>
+[[deprecated("Use {fmt} instead")]]
 std::ostream& operator<<(std::ostream& os, const std::unordered_map<Key, T, Hash, KeyEqual, Allocator>& v) {
     bool first = true;
     os << "{";
@@ -871,6 +878,8 @@ std::ostream& operator<<(std::ostream& os, const std::unordered_map<Key, T, Hash
 }
 }
 
+#endif
+
 #if FMT_VERSION >= 90000
 
 // Due to https://github.com/llvm/llvm-project/issues/68849, we inherit
@@ -879,12 +888,12 @@ std::ostream& operator<<(std::ostream& os, const std::unordered_map<Key, T, Hash
 SEASTAR_MODULE_EXPORT
 template <typename char_type, typename Size, Size max_size, bool NulTerminate>
 struct fmt::formatter<seastar::basic_sstring<char_type, Size, max_size, NulTerminate>>
-    : public fmt::formatter<std::basic_string_view<char_type>> {
-    using format_as_t = std::basic_string_view<char_type>;
+    : public fmt::formatter<basic_string_view<char_type>> {
+    using format_as_t = basic_string_view<char_type>;
     using base = fmt::formatter<format_as_t>;
     template <typename FormatContext>
     auto format(const ::seastar::basic_sstring<char_type, Size, max_size, NulTerminate>& s, FormatContext& ctx) const {
-        return base::format(format_as_t{s}, ctx);
+        return base::format(format_as_t{s.c_str(), s.size()}, ctx);
     }
 };
 

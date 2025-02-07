@@ -39,6 +39,7 @@ inline depth_le_t init_depth_le(uint32_t i) {
 }
 
 using checksum_t = uint32_t;
+constexpr checksum_t CRC_NULL = 0;
 
 // Immutable metadata for seastore to set at mkfs time
 struct seastore_meta_t {
@@ -2365,7 +2366,7 @@ struct writer_stats_t {
   grouped_io_stats io_depth_stats;
   uint64_t record_group_padding_bytes = 0;
   uint64_t record_group_metadata_bytes = 0;
-  uint64_t record_group_data_bytes = 0;
+  uint64_t data_bytes = 0;
   counter_by_src_t<trans_writer_stats_t> stats_by_src;
 
   bool is_empty() const {
@@ -2375,7 +2376,7 @@ struct writer_stats_t {
   uint64_t get_total_bytes() const {
     return record_group_padding_bytes +
            record_group_metadata_bytes +
-           record_group_data_bytes;
+           data_bytes;
   }
 
   void add(const writer_stats_t &o) {
@@ -2383,7 +2384,7 @@ struct writer_stats_t {
     io_depth_stats.add(o.io_depth_stats);
     record_group_padding_bytes += o.record_group_padding_bytes;
     record_group_metadata_bytes += o.record_group_metadata_bytes;
-    record_group_data_bytes += o.record_group_data_bytes;
+    data_bytes += o.data_bytes;
     add_srcs(stats_by_src, o.stats_by_src);
   }
 
@@ -2392,7 +2393,7 @@ struct writer_stats_t {
     io_depth_stats.minus(o.io_depth_stats);
     record_group_padding_bytes -= o.record_group_padding_bytes;
     record_group_metadata_bytes -= o.record_group_metadata_bytes;
-    record_group_data_bytes -= o.record_group_data_bytes;
+    data_bytes -= o.data_bytes;
     minus_srcs(stats_by_src, o.stats_by_src);
   }
 };
@@ -2401,6 +2402,96 @@ struct writer_stats_printer_t {
   const writer_stats_t &stats;
 };
 std::ostream& operator<<(std::ostream&, const writer_stats_printer_t&);
+
+struct shard_stats_t {
+  // transaction_type_t::MUTATE
+  uint64_t io_num = 0;
+  uint64_t repeat_io_num = 0;
+  uint64_t pending_io_num = 0;
+  uint64_t starting_io_num = 0;
+  uint64_t waiting_collock_io_num = 0;
+  uint64_t waiting_throttler_io_num = 0;
+  uint64_t processing_inlock_io_num = 0;
+  uint64_t processing_postlock_io_num = 0;
+
+  // transaction_type_t::READ
+  uint64_t read_num = 0;
+  uint64_t repeat_read_num = 0;
+  uint64_t pending_read_num = 0;
+
+  // transaction_type_t::TRIM_DIRTY~CLEANER_COLD
+  uint64_t pending_bg_num = 0;
+  uint64_t trim_alloc_num = 0;
+  uint64_t repeat_trim_alloc_num = 0;
+  uint64_t trim_dirty_num = 0;
+  uint64_t repeat_trim_dirty_num = 0;
+  uint64_t cleaner_main_num = 0;
+  uint64_t repeat_cleaner_main_num = 0;
+  uint64_t cleaner_cold_num = 0;
+  uint64_t repeat_cleaner_cold_num = 0;
+
+  uint64_t flush_num = 0;
+  uint64_t pending_flush_num = 0;
+
+  uint64_t get_bg_num() const {
+    return trim_alloc_num +
+           trim_dirty_num +
+           cleaner_main_num +
+           cleaner_cold_num;
+  }
+
+  uint64_t get_repeat_bg_num() const {
+    return repeat_trim_alloc_num +
+           repeat_trim_dirty_num +
+           repeat_cleaner_main_num +
+           repeat_cleaner_cold_num;
+  }
+
+  void add(const shard_stats_t &o) {
+    io_num += o.io_num;
+    repeat_io_num += o.repeat_io_num;
+    pending_io_num += o.pending_io_num;
+    starting_io_num += o.starting_io_num;
+    waiting_collock_io_num += o.waiting_collock_io_num;
+    waiting_throttler_io_num += o.waiting_throttler_io_num;
+    processing_inlock_io_num += o.processing_inlock_io_num;
+    processing_postlock_io_num += o.processing_postlock_io_num;
+
+    read_num += o.read_num;
+    repeat_read_num += o.repeat_read_num;
+    pending_read_num += o.pending_read_num;
+
+    pending_bg_num += o.pending_bg_num;
+    trim_alloc_num += o.trim_alloc_num;
+    repeat_trim_alloc_num += o.repeat_trim_alloc_num;
+    trim_dirty_num += o.trim_dirty_num;
+    repeat_trim_dirty_num += o.repeat_trim_dirty_num;
+    cleaner_main_num += o.cleaner_main_num;
+    repeat_cleaner_main_num += o.repeat_cleaner_main_num;
+    cleaner_cold_num += o.cleaner_cold_num;
+    repeat_cleaner_cold_num += o.repeat_cleaner_cold_num;
+
+    flush_num += o.flush_num;
+    pending_flush_num += o.pending_flush_num;
+  }
+
+  void minus(const shard_stats_t &o) {
+    // realtime(e.g. pending) stats are not related
+    io_num -= o.io_num;
+    repeat_io_num -= o.repeat_io_num;
+    read_num -= o.read_num;
+    repeat_read_num -= o.repeat_read_num;
+    trim_alloc_num -= o.trim_alloc_num;
+    repeat_trim_alloc_num -= o.repeat_trim_alloc_num;
+    trim_dirty_num -= o.trim_dirty_num;
+    repeat_trim_dirty_num -= o.repeat_trim_dirty_num;
+    cleaner_main_num -= o.cleaner_main_num;
+    repeat_cleaner_main_num -= o.repeat_cleaner_main_num;
+    cleaner_cold_num -= o.cleaner_cold_num;
+    repeat_cleaner_cold_num -= o.repeat_cleaner_cold_num;
+    flush_num -= o.flush_num;
+  }
+};
 
 }
 

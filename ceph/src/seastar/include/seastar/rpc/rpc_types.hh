@@ -60,6 +60,8 @@ struct stats {
     counter_type sent_messages = 0;
     counter_type wait_reply = 0;
     counter_type timeout = 0;
+    counter_type delay_samples = 0;
+    std::chrono::duration<double> delay_total = std::chrono::duration<double>(0);
 };
 
 class connection_id {
@@ -432,7 +434,29 @@ struct tuple_element<I, seastar::rpc::tuple<T...>> : tuple_element<I, tuple<T...
 template <> struct fmt::formatter<seastar::rpc::connection_id> : fmt::ostream_formatter {};
 #endif
 
-#if FMT_VERSION >= 100000
+#if FMT_VERSION < 100000
+// fmt v10 introduced formatter for std::exception
+template <std::derived_from<seastar::rpc::error> T>
+struct fmt::formatter<T> : fmt::formatter<string_view> {
+    auto format(const T& e, fmt::format_context& ctx) const {
+        return fmt::format_to(ctx.out(), "{}", e.what());
+    }
+};
+#endif
+
+#if FMT_VERSION < 100000
+template <typename T>
+struct fmt::formatter<seastar::rpc::optional<T>> {
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+    auto format(const seastar::rpc::optional<T>& opt, fmt::format_context& ctx) const {
+        if (opt) {
+            return fmt::format_to(ctx.out(), "optional({})", *opt);
+        } else {
+            return fmt::format_to(ctx.out(), "none");
+        }
+    }
+};
+#else
 template <typename T>
 struct fmt::formatter<seastar::rpc::optional<T>> : private fmt::formatter<std::optional<T>> {
     using fmt::formatter<std::optional<T>>::parse;

@@ -65,6 +65,10 @@ option (Seastar_SSTRING
   "Use seastar's own string implementation"
   ON)
 
+option (Seastar_DEPRECATED_OSTREAM_FORMATTERS
+  "Enable operator<< for formatting standard library containers, which will be deprecated in future"
+  ON)
+
 set (Seastar_API_LEVEL
   "7"
   CACHE
@@ -417,10 +421,11 @@ function (seastar_generate_protobuf)
   set (source_out ${args_OUT_DIR}/${in_file_name}.pb.cc)
 
   add_custom_command (
-    DEPENDS ${args_IN_FILE}
+    DEPENDS ${args_IN_FILE} protobuf::protoc
     OUTPUT ${header_out} ${source_out}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${args_OUT_DIR}
-    COMMAND ${Protobuf_PROTOC_EXECUTABLE} --cpp_out=${args_OUT_DIR} -I${in_file_dir} ${args_IN_FILE})
+    COMMAND protobuf::protoc
+    ARGS --cpp_out=${args_OUT_DIR} -I${in_file_dir} ${args_IN_FILE})
 
   add_custom_target (${args_TARGET}
     DEPENDS
@@ -802,12 +807,27 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
     FMT_VERSION VERSION_LESS 10.1.1 AND
     CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 13.0.0)
     # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=107852
+  # include (CheckGcc107852)
+  # if (NOT Cxx_Compiler_BZ107852_Free)
+    list (APPEND Seastar_PRIVATE_CXX_FLAGS
+      -Wno-error=stringop-overflow
+      -Wno-error=array-bounds)
+  # endif ()
   list (APPEND Seastar_PRIVATE_CXX_FLAGS
-    -Wno-error=stringop-overflow
-    -Wno-error=array-bounds)
+    -Wdeprecated-declarations
+    -Wno-error=deprecated-declarations)
 endif ()
 
-if (NOT BUILD_SHARED_LIBS)
+if (BUILD_SHARED_LIBS)
+  # use initial-exec TLS, as it puts the TLS variables in the static TLS space
+  # instead of allocating them using malloc. otherwise intercepting mallocs and
+  # friends could lead to recursive call of malloc functions when a dlopen'ed
+  # shared object references a TLS variable and it in turn uses malloc. the
+  # downside of this workaround is that the static TLS space is used, and it is
+  # a global resource.
+  list (APPEND Seastar_PRIVATE_CXX_FLAGS
+    $<$<IN_LIST:$<CONFIG>,RelWithDebInfo;Dev>:-ftls-model=initial-exec>)
+else ()
   list (APPEND Seastar_PRIVATE_CXX_FLAGS -fvisibility=hidden)
 endif ()
 
@@ -835,8 +855,17 @@ target_link_libraries (seastar
     rt::rt
     ucontext::ucontext
     yaml-cpp::yaml-cpp
-    "$<BUILD_INTERFACE:Valgrind::valgrind>"
     Threads::Threads)
+if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.26)
+  target_link_libraries (seastar
+    PRIVATE
+      "$<BUILD_LOCAL_INTERFACE:Valgrind::valgrind>")
+else ()
+  target_link_libraries (seastar
+    PRIVATE
+      "$<BUILD_INTERFACE:Valgrind::valgrind>")
+endif ()
+
 if (Seastar_DPDK)
   target_link_libraries (seastar
     PRIVATE
@@ -864,13 +893,6 @@ endif ()
 set( MEMORYCHECK_COMMAND_OPTIONS "--error-exitcode=1 --leak-check=no --trace-children=yes" )
 include (CTest)
 
-if (Seastar_MODULE)
-  if (POLICY CMP0155)
-    cmake_policy (SET CMP0155 NEW)
-  endif ()
-  include (CxxModulesRules)
-  add_subdirectory (src)
-endif ()
 #
 # We want asserts enabled on all modes, but cmake defaults to passing
 # -DNDEBUG in some modes. We add -UNDEBUG to our private options to
@@ -910,6 +932,11 @@ endif ()
 if (Seastar_SSTRING)
   target_compile_definitions (seastar
     PUBLIC SEASTAR_SSTRING)
+endif ()
+
+if (Seastar_DEPRECATED_OSTREAM_FORMATTERS)
+  target_compile_definitions (seastar
+    PUBLIC SEASTAR_DEPRECATED_OSTREAM_FORMATTERS)
 endif ()
 
 if (LinuxMembarrier_FOUND)
@@ -1169,6 +1196,14 @@ if (Seastar_INSTALL OR Seastar_TESTING)
     PUBLIC
     seastar)
 
+endif ()
+
+if (Seastar_MODULE)
+  if (POLICY CMP0155)
+    cmake_policy (SET CMP0155 NEW)
+  endif ()
+  include (CxxModulesRules)
+  add_subdirectory (src)
 endif ()
 
 #

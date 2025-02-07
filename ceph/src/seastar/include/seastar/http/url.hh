@@ -19,6 +19,8 @@
  * Copyright (C) 2022 Scylladb, Ltd.
  */
 
+#pragma once
+
 #include <seastar/core/sstring.hh>
 
 namespace seastar {
@@ -26,7 +28,9 @@ namespace seastar {
 namespace http {
 namespace internal {
 
-bool url_decode(const std::string_view& in, sstring& out);
+bool url_decode(std::string_view in, sstring& out);
+
+bool path_decode(std::string_view in, sstring& out);
 
 /**
  * Makes a percent-encoded string out of the given parameter
@@ -36,7 +40,7 @@ bool url_decode(const std::string_view& in, sstring& out);
  * the URL into path and arguments (both names and values) and use
  * this helper to encode individual strings
  */
-sstring url_encode(const std::string_view& in);
+sstring url_encode(std::string_view in);
 
 } // internal namespace
 } // http namespace

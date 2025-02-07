@@ -81,6 +81,18 @@ Data Center B. In a situation of this kind, the loss of Data Center A means
 that the data is lost and Ceph will not be able to operate on it. This
 situation is surprisingly difficult to avoid using only standard CRUSH rules.
 
+Individual Stretch Pools
+========================
+Setting individual ``stretch pool`` is an option that allows for the configuration
+of specific pools to be distributed across ``two or more data centers``.
+This is achieved by executing the ``ceph osd pool stretch set`` command on each desired pool,
+as opposed to applying a cluster-wide configuration ``with stretch mode``.
+See :ref:`setting_values_for_a_stretch_pool`
+
+Use ``stretch mode`` when you have exactly ``two data centers`` and require a uniform
+configuration across the entire cluster. Conversely, opt for a ``stretch pool``
+when you need a particular pool to be replicated across ``more than two data centers``,
+providing a more granular level of control and a larger cluster size.
 
 Stretch Mode
 ============
@@ -260,8 +272,21 @@ SSDs (including NVMe OSDs). Hybrid HDD+SDD or HDD-only OSDs are not recommended
 due to the long time it takes for them to recover after connectivity between
 data centers has been restored. This reduces the potential for data loss.
 
-In the future, stretch mode might support erasure-coded pools and might support
-deployments that have more than two data centers.
+.. warning:: Device class is currently not supported in stretch mode.
+   For example, the following rule containing ``device class`` will not work::
+
+      rule stretch_replicated_rule {
+                 id 2
+                 type replicated class hdd
+                 step take default
+                 step choose firstn 0 type datacenter
+                 step chooseleaf firstn 2 type host
+                 step emit
+      }
+
+In the future, stretch mode could support erasure-coded pools,
+enable deployments across multiple data centers,
+and accommodate various device classes.
 
 Other commands
 ==============

@@ -143,6 +143,7 @@ module seastar;
 #include <seastar/core/reactor.hh>
 #include <seastar/core/report_exception.hh>
 #include <seastar/core/resource.hh>
+#include <seastar/core/scheduling.hh>
 #include <seastar/core/scheduling_specific.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/smp_options.hh>
@@ -173,7 +174,6 @@ module seastar;
 #include <seastar/util/spinlock.hh>
 #include <seastar/util/internal/iovec_utils.hh>
 #include <seastar/util/internal/magic.hh>
-#include "core/scollectd-impl.hh"
 #include "core/reactor_backend.hh"
 #include "core/syscall_result.hh"
 #include "core/thread_pool.hh"
@@ -849,6 +849,9 @@ static void print_with_backtrace(backtrace_buffer& buf, bool oneline) noexcept {
     if (local_engine) {
         buf.append(" on shard ");
         buf.append_decimal(this_shard_id());
+
+        buf.append(", in scheduling group ");
+        buf.append(current_scheduling_group().name().c_str());
     }
 
   if (!oneline) {
@@ -1521,36 +1524,6 @@ reactor::block_notifier(int) {
     engine()._cpu_stall_detector->on_signal();
 }
 
-template <typename T, typename E, typename EnableFunc>
-void reactor::complete_timers(T& timers, E& expired_timers, EnableFunc&& enable_fn) noexcept(noexcept(enable_fn())) {
-    expired_timers = timers.expire(timers.now());
-    for (auto& t : expired_timers) {
-        t._expired = true;
-    }
-    const auto prev_sg = current_scheduling_group();
-    while (!expired_timers.empty()) {
-        auto t = &*expired_timers.begin();
-        expired_timers.pop_front();
-        t->_queued = false;
-        if (t->_armed) {
-            t->_armed = false;
-            if (t->_period) {
-                t->readd_periodic();
-            }
-            try {
-                *internal::current_scheduling_group_ptr() = t->_sg;
-                t->_callback();
-            } catch (...) {
-                seastar_logger.error("Timer callback failed: {}", std::current_exception());
-            }
-        }
-    }
-    // complete_timers() can be called from the context of run_tasks()
-    // as well so we need to restore the previous scheduling group (set by run_tasks()).
-    *internal::current_scheduling_group_ptr() = prev_sg;
-    enable_fn();
-}
-
 #ifdef HAVE_OSV
 void reactor::timer_thread_func() {
     sched::timer tmr(*sched::thread::current());
@@ -1563,7 +1536,7 @@ void reactor::timer_thread_func() {
                     _timer_due = 0;
                     _engine_thread->unsafe_stop();
                     _pending_tasks.push_front(make_task(default_scheduling_group(), [this] {
-                        complete_timers(_timers, _expired_timers, [this] {
+                        _timers.complete(_expired_timers, [this] {
                             if (!_timers.empty()) {
                                 enable_timer(_timers.get_next_timeout());
                             }
@@ -1901,6 +1874,8 @@ reactor::open_file_dma(std::string_view nameref, open_flags flags, file_open_opt
                     attr.fsx_xflags |= XFS_XFLAG_EXTSIZE;
                     attr.fsx_extsize = std::min(options.extent_allocation_size_hint,
                                         file_open_options::max_extent_allocation_size_hint);
+
+                    attr.fsx_extsize = align_up<uint32_t>(attr.fsx_extsize, file_open_options::min_extent_size_hint_alignment);
 
                     // Ignore error; may be !xfs, and just a hint anyway
                     ::ioctl(fd, XFS_IOC_FSSETXATTR, &attr);
@@ -2490,12 +2465,7 @@ bool reactor::queue_timer(timer<steady_clock_type>* tmr) noexcept {
 }
 
 void reactor::del_timer(timer<steady_clock_type>* tmr) noexcept {
-    if (tmr->_expired) {
-        _expired_timers.erase(_expired_timers.iterator_to(*tmr));
-        tmr->_expired = false;
-    } else {
-        _timers.remove(*tmr);
-    }
+    _timers.remove(*tmr, _expired_timers);
 }
 
 void reactor::add_timer(timer<lowres_clock>* tmr) noexcept {
@@ -2509,12 +2479,7 @@ bool reactor::queue_timer(timer<lowres_clock>* tmr) noexcept {
 }
 
 void reactor::del_timer(timer<lowres_clock>* tmr) noexcept {
-    if (tmr->_expired) {
-        _expired_lowres_timers.erase(_expired_lowres_timers.iterator_to(*tmr));
-        tmr->_expired = false;
-    } else {
-        _lowres_timers.remove(*tmr);
-    }
+    _lowres_timers.remove(*tmr, _expired_lowres_timers);
 }
 
 void reactor::add_timer(timer<manual_clock>* tmr) noexcept {
@@ -2526,12 +2491,7 @@ bool reactor::queue_timer(timer<manual_clock>* tmr) noexcept {
 }
 
 void reactor::del_timer(timer<manual_clock>* tmr) noexcept {
-    if (tmr->_expired) {
-        _expired_manual_timers.erase(_expired_manual_timers.iterator_to(*tmr));
-        tmr->_expired = false;
-    } else {
-        _manual_timers.remove(*tmr);
-    }
+    _manual_timers.remove(*tmr, _expired_manual_timers);
 }
 
 void reactor::at_exit(noncopyable_function<future<> ()> func) {
@@ -2585,7 +2545,9 @@ uint64_t
 reactor::pending_task_count() const {
     uint64_t ret = 0;
     for (auto&& tq : _task_queues) {
-        ret += tq->_q.size();
+        if (tq) {
+            ret += tq->_q.size();
+        }
     }
     return ret;
 }
@@ -2702,6 +2664,7 @@ void reactor::run_tasks(task_queue& tq) {
                 // need_preempt() checks breaking out of loops and .then() calls. See
                 // #302.
                 reset_preemption_monitor();
+                lowres_clock::update();
             }
         }
     }
@@ -2742,7 +2705,7 @@ bool
 reactor::do_expire_lowres_timers() noexcept {
     auto now = lowres_clock::now();
     if (now >= _lowres_next_timeout) {
-        complete_timers(_lowres_timers, _expired_lowres_timers, [this] () noexcept {
+        _lowres_timers.complete(_expired_lowres_timers, [this] () noexcept {
             if (!_lowres_timers.empty()) {
                 _lowres_next_timeout = _lowres_timers.get_next_timeout();
             } else {
@@ -2756,7 +2719,7 @@ reactor::do_expire_lowres_timers() noexcept {
 
 void
 reactor::expire_manual_timers() noexcept {
-    complete_timers(_manual_timers, _expired_manual_timers, [] () noexcept {});
+    _manual_timers.complete(_expired_manual_timers, [] () noexcept {});
 }
 
 void
@@ -3014,6 +2977,13 @@ public:
 
 void
 reactor::wakeup() {
+    if (!_sleeping.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    // We are free to clear it, because we're sending a signal now
+    _sleeping.store(false, std::memory_order_relaxed);
+
     uint64_t one = 1;
     ::write(_notify_eventfd.get(), &one, sizeof(one));
 }
@@ -3149,10 +3119,8 @@ reactor::run_some_tasks() {
         insert_activating_task_queues();
         task_queue* tq = pop_active_task_queue(t_run_started);
         sched_print("running tq {} {}", (void*)tq, tq->_name);
-        tq->_current = true;
         _last_vruntime = std::max(tq->_vruntime, _last_vruntime);
         run_tasks(*tq);
-        tq->_current = false;
         t_run_completed = now();
         auto delta = t_run_completed - t_run_started;
         account_runtime(*tq, delta);
@@ -3201,7 +3169,7 @@ reactor::activate(task_queue& tq) {
 }
 
 void reactor::service_highres_timer() noexcept {
-    complete_timers(_timers, _expired_timers, [this] () noexcept {
+    _timers.complete(_expired_timers, [this] () noexcept {
         if (!_timers.empty()) {
             enable_timer(_timers.get_next_timeout());
         }
@@ -3636,7 +3604,7 @@ void smp_message_queue::submit_item(shard_id t, smp_timeout_clock::time_point ti
 
 void smp_message_queue::respond(work_item* item) {
     _completed_fifo.push_back(item);
-    if (_completed_fifo.size() >= batch_size || engine()._stopped) {
+    if (_completed_fifo.size() >= batch_size || engine().stopped()) {
         flush_response_batch();
     }
 }
@@ -3674,11 +3642,7 @@ smp_message_queue::lf_queue::maybe_wakeup() {
     //
     // However, we do need a compiler barrier:
     std::atomic_signal_fence(std::memory_order_seq_cst);
-    if (remote->_sleeping.load(std::memory_order_relaxed)) {
-        // We are free to clear it, because we're sending a signal now
-        remote->_sleeping.store(false, std::memory_order_relaxed);
-        remote->wakeup();
-    }
+    remote->wakeup();
 }
 
 smp_message_queue::lf_queue::~lf_queue() {
@@ -3934,12 +3898,6 @@ smp_options::smp_options(program_options::option_group* parent_group)
 {
 }
 
-thread_local scollectd::impl scollectd_impl;
-
-scollectd::impl & scollectd::get_impl() {
-    return scollectd_impl;
-}
-
 struct reactor_deleter {
     void operator()(reactor* p) {
         p->~reactor();
@@ -4094,7 +4052,8 @@ void smp::qs_deleter::operator()(smp_message_queue** qs) const {
         for (unsigned j = 0; j < smp::count; j++) {
             qs[i][j].~smp_message_queue();
         }
-        ::operator delete[](qs[i]);
+        ::operator delete[](qs[i], std::align_val_t(alignof(smp_message_queue))
+        );
     }
     delete[](qs);
 }
@@ -4423,6 +4382,11 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
     std::optional<memory::internal::numa_layout> layout;
     if (smp_opts.memory_allocator == memory_allocator::seastar) {
         layout = memory::configure(allocations[0].mem, mbind, use_transparent_hugepages, hugepages_path);
+    } else {
+        // #2148 - if running seastar allocator but options that contradict this, we still need to
+        // init memory at least minimally, otherwise a bunch of stuff breaks.
+        // Previously, we got away wth this by accident due to #2137.
+        memory::configure_minimal();
     }
 
     if (reactor_opts.abort_on_seastar_bad_alloc) {
@@ -4536,6 +4500,9 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
                 auto another_layout = memory::configure(allocation.mem, mbind, use_transparent_hugepages, hugepages_path);
                 auto guard = std::lock_guard(mtx);
                 *layout = memory::internal::merge(std::move(*layout), std::move(another_layout));
+            } else {
+                // See comment above (shard 0)
+                memory::configure_minimal();
             }
             if (heapprof_sampling_rate) {
                 memory::set_heap_profiling_sampling_rate(heapprof_sampling_rate);
@@ -4593,7 +4560,14 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
     _qs_owner = decltype(smp::_qs_owner){new smp_message_queue* [smp::count], qs_deleter{}};
     _qs = _qs_owner.get();
     for(unsigned i = 0; i < smp::count; i++) {
-        smp::_qs_owner[i] = reinterpret_cast<smp_message_queue*>(operator new[] (sizeof(smp_message_queue) * smp::count));
+        smp::_qs_owner[i] = reinterpret_cast<smp_message_queue*>(operator new[] (sizeof(smp_message_queue) * smp::count
+        // smp_message_queue has members with hefty alignment requirements.
+        // if we are reactor thread, or not running with dpdk, doing this
+        // new default aligned seemingly works, as does reordering
+        // dlinit dependencies (ugh). But we should enforce calling out to
+        // aligned_alloc, instead of pure malloc, if possible.
+            , std::align_val_t(alignof(smp_message_queue))
+        ));
         for (unsigned j = 0; j < smp::count; ++j) {
             new (&smp::_qs_owner[i][j]) smp_message_queue(reactors[j], reactors[i]);
         }
@@ -4849,18 +4823,18 @@ deallocate_scheduling_group_id(unsigned id) noexcept {
 }
 
 void
-reactor::allocate_scheduling_group_specific_data(scheduling_group sg, scheduling_group_key key) {
+reactor::allocate_scheduling_group_specific_data(scheduling_group sg, unsigned long key_id) {
     auto& sg_data = _scheduling_group_specific_data;
     auto& this_sg = sg_data.per_scheduling_group_data[sg._id];
-    this_sg.specific_vals.resize(std::max<size_t>(this_sg.specific_vals.size(), key.id()+1));
-    this_sg.specific_vals[key.id()] =
-        aligned_alloc(sg_data.scheduling_group_key_configs[key.id()].alignment,
-                sg_data.scheduling_group_key_configs[key.id()].allocation_size);
-    if (!this_sg.specific_vals[key.id()]) {
+    this_sg.specific_vals.resize(std::max<size_t>(this_sg.specific_vals.size(), key_id+1));
+    this_sg.specific_vals[key_id] =
+        aligned_alloc(sg_data.scheduling_group_key_configs[key_id].alignment,
+                sg_data.scheduling_group_key_configs[key_id].allocation_size);
+    if (!this_sg.specific_vals[key_id]) {
         std::abort();
     }
-    if (sg_data.scheduling_group_key_configs[key.id()].constructor) {
-        sg_data.scheduling_group_key_configs[key.id()].constructor(this_sg.specific_vals[key.id()]);
+    if (sg_data.scheduling_group_key_configs[key_id].constructor) {
+        sg_data.scheduling_group_key_configs[key_id].constructor(this_sg.specific_vals[key_id]);
     }
 }
 
@@ -4889,7 +4863,7 @@ reactor::init_scheduling_group(seastar::scheduling_group sg, sstring name, sstri
 
     return with_scheduling_group(sg, [this, num_keys, sg] () {
         for (unsigned long key_id = 0; key_id < num_keys; key_id++) {
-            allocate_scheduling_group_specific_data(sg, scheduling_group_key(key_id));
+            allocate_scheduling_group_specific_data(sg, key_id);
         }
     });
 }
@@ -4897,9 +4871,10 @@ reactor::init_scheduling_group(seastar::scheduling_group sg, sstring name, sstri
 future<>
 reactor::init_new_scheduling_group_key(scheduling_group_key key, scheduling_group_key_config cfg) {
     auto& sg_data = _scheduling_group_specific_data;
-    sg_data.scheduling_group_key_configs.resize(std::max<size_t>(sg_data.scheduling_group_key_configs.size(), key.id() + 1));
-    sg_data.scheduling_group_key_configs[key.id()] = cfg;
-    return parallel_for_each(_task_queues, [this, cfg, key] (std::unique_ptr<task_queue>& tq) {
+    auto key_id = internal::scheduling_group_key_id(key);
+    sg_data.scheduling_group_key_configs.resize(std::max<size_t>(sg_data.scheduling_group_key_configs.size(), key_id + 1));
+    sg_data.scheduling_group_key_configs[key_id] = cfg;
+    return parallel_for_each(_task_queues, [this, cfg, key_id] (std::unique_ptr<task_queue>& tq) {
         if (tq) {
             scheduling_group sg = scheduling_group(tq->_id);
             if (tq.get() == _at_destroy_tasks) {
@@ -4907,10 +4882,10 @@ reactor::init_new_scheduling_group_key(scheduling_group_key key, scheduling_grou
                 auto curr = current_scheduling_group();
                 auto cleanup = defer([curr] () noexcept { *internal::current_scheduling_group_ptr() = curr; });
                 *internal::current_scheduling_group_ptr() = sg;
-                allocate_scheduling_group_specific_data(sg, key);
+                allocate_scheduling_group_specific_data(sg, key_id);
             } else {
-                return with_scheduling_group(sg, [this, key, sg] () {
-                    allocate_scheduling_group_specific_data(sg, key);
+                return with_scheduling_group(sg, [this, key_id, sg] () {
+                    allocate_scheduling_group_specific_data(sg, key_id);
                 });
             }
         }
@@ -5170,6 +5145,10 @@ size_t scheduling_group_count() {
 void
 run_in_background(future<> f) {
     engine().run_in_background(std::move(f));
+}
+
+void log_timer_callback_exception(std::exception_ptr ex) noexcept {
+    seastar_logger.error("Timer callback failed: {}", std::current_exception());
 }
 
 }

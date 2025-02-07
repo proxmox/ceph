@@ -29,6 +29,7 @@
 #ifndef SEASTAR_MODULE
 #include <boost/intrusive/list.hpp>
 #include <chrono>
+#include <optional>
 #endif
 
 /// \file
@@ -216,8 +217,9 @@ public:
     time_point get_timeout() const noexcept {
         return _expiry;
     }
-    friend class reactor;
+
     friend class timer_set<timer, &timer::_link>;
+    using set_t = timer_set<timer, &timer::_link>;
 };
 
 extern template class timer<steady_clock_type>;

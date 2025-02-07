@@ -96,7 +96,10 @@ class CephadmServe:
                 if not self.mgr.paused:
                     self._run_async_actions()
 
-                    self.mgr.to_remove_osds.process_removal_queue()
+                    removal_queue_result = self.mgr.to_remove_osds.process_removal_queue()
+                    self.log.debug(f'process_removal_queue() returned = {removal_queue_result}')
+                    if removal_queue_result:
+                        continue
 
                     self.mgr.migration.migrate()
                     if self.mgr.migration.is_migration_ongoing():
@@ -663,7 +666,11 @@ class CephadmServe:
         for s in self.mgr.cache.get_daemons_by_service(rgw_spec.service_name()):
             if s.ports:
                 for p in s.ports:
-                    ep.append(f'{protocol}://{s.hostname}:{p}')
+                    if s.hostname is not None:
+                        host_addr = self.mgr.inventory.get_addr(s.hostname)
+                        ep.append(f'{protocol}://{host_addr}:{p}')
+                    else:
+                        logger.error("Hostname is None for service: %s", s)
         zone_update_cmd = {
             'prefix': 'rgw zone modify',
             'realm_name': rgw_spec.rgw_realm,
@@ -918,6 +925,10 @@ class CephadmServe:
                     )
                     continue
 
+                # set multisite config before deploying the rgw daemon
+                if service_type == 'rgw':
+                    self.mgr.rgw_service.set_realm_zg_zone(cast(RGWSpec, spec))
+
                 # deploy new daemon
                 daemon_id = slot.name
 
@@ -1095,7 +1106,7 @@ class CephadmServe:
                 action = 'reconfig'
                 # we need only redeploy if secure_monitoring_stack value has changed:
                 if dd.daemon_type in ['prometheus', 'node-exporter', 'alertmanager']:
-                    diff = list(set(last_deps) - set(deps))
+                    diff = list(set(last_deps).symmetric_difference(set(deps)))
                     if any('secure_monitoring_stack' in e for e in diff):
                         action = 'redeploy'
                 elif dd.daemon_type == 'jaeger-agent':

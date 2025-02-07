@@ -408,11 +408,11 @@ void MDSDaemon::set_up_admin_socket()
 				     asok_hook,
 				     "List client sessions based on a filter");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("session evict name=filters,type=CephString,n=N,req=false",
+  r = admin_socket->register_command("session evict name=filters,type=CephString,n=N,req=true",
 				     asok_hook,
 				     "Evict client session(s) based on a filter");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("client evict name=filters,type=CephString,n=N,req=false",
+  r = admin_socket->register_command("client evict name=filters,type=CephString,n=N,req=true",
 				     asok_hook,
 				     "Evict client session(s) based on a filter");
   ceph_assert(r == 0);
@@ -1151,11 +1151,11 @@ bool MDSDaemon::parse_caps(const AuthCapsInfo& info, MDSAuthCaps& caps)
   }
 }
 
-int MDSDaemon::ms_handle_fast_authentication(Connection *con)
+bool MDSDaemon::ms_handle_fast_authentication(Connection *con)
 {
   /* N.B. without mds_lock! */
   MDSAuthCaps caps;
-  return parse_caps(con->get_peer_caps_info(), caps) ? 0 : -1;
+  return parse_caps(con->get_peer_caps_info(), caps);
 }
 
 void MDSDaemon::ms_handle_accept(Connection *con)

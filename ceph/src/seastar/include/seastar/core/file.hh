@@ -22,10 +22,8 @@
 #pragma once
 
 #include <seastar/util/std-compat.hh>
-#ifdef SEASTAR_COROUTINES_ENABLED
 #include <seastar/core/coroutine.hh>
 #include <seastar/coroutine/generator.hh>
-#endif
 #include <seastar/core/do_with.hh>
 #include <seastar/core/stream.hh>
 #include <seastar/core/sstring.hh>
@@ -96,6 +94,10 @@ struct file_open_options {
 
     // The fsxattr.fsx_extsize is 32-bit
     static constexpr uint64_t max_extent_allocation_size_hint = 1 << 31;
+
+    // XFS ignores hints that are not aligned to the logical block size.
+    // To fulfill the requirement, we ensure that hint is aligned to 128KB (best guess).
+    static constexpr uint32_t min_extent_size_hint_alignment{128u << 10}; // 128KB
 };
 
 class file;
@@ -170,11 +172,9 @@ public:
     virtual future<> close() = 0;
     virtual std::unique_ptr<file_handle_impl> dup();
     virtual subscription<directory_entry> list_directory(std::function<future<> (directory_entry de)> next) = 0;
-#ifdef SEASTAR_COROUTINES_ENABLED
     // due to https://github.com/scylladb/seastar/issues/1913, we cannot use
     // buffered generator yet.
     virtual coroutine::experimental::generator<directory_entry> experimental_list_directory();
-#endif
 };
 
 future<shared_ptr<file_impl>> make_file_impl(int fd, file_open_options options, int oflags, struct stat st) noexcept;
@@ -688,12 +688,10 @@ public:
     /// Returns a directory listing, given that this file object is a directory.
     subscription<directory_entry> list_directory(std::function<future<> (directory_entry de)> next);
 
-#ifdef SEASTAR_COROUTINES_ENABLED
     /// Returns a directory listing, given that this file object is a directory.
     // due to https://github.com/scylladb/seastar/issues/1913, we cannot use
     // buffered generator yet.
     coroutine::experimental::generator<directory_entry> experimental_list_directory();
-#endif
 
 #if SEASTAR_API_LEVEL < 7
     /**
@@ -779,7 +777,6 @@ private:
     future<uint64_t> get_lifetime_hint_impl(int op) noexcept;
     future<> set_lifetime_hint_impl(int op, uint64_t hint) noexcept;
 
-    friend class reactor;
     friend class file_impl;
     friend class file_data_sink_impl;
     friend class file_data_source_impl;

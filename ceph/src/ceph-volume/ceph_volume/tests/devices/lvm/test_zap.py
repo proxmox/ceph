@@ -1,16 +1,35 @@
 import os
 import pytest
 from copy import deepcopy
-from mock.mock import patch, call
+from mock.mock import patch, call, Mock
 from ceph_volume import process
 from ceph_volume.api import lvm as api
 from ceph_volume.devices.lvm import zap
 
 
-class TestZap(object):
-    def test_invalid_osd_id_passed(self):
+class TestZap:
+    def test_invalid_osd_id_passed(self) -> None:
         with pytest.raises(SystemExit):
             zap.Zap(argv=['--osd-id', 'foo']).main()
+
+    @patch('ceph_volume.util.disk._dd_write', Mock())
+    @patch('ceph_volume.util.arg_validators.Device')
+    def test_clear_replace_header_is_being_replaced(self, m_device: Mock) -> None:
+        m_dev = m_device.return_value
+        m_dev.is_being_replaced = True
+        with pytest.raises(SystemExit) as e:
+            zap.Zap(argv=['--clear', '/dev/foo']).main()
+        assert e.value.code == 0
+
+    @patch('ceph_volume.util.disk._dd_write', Mock())
+    @patch('ceph_volume.util.arg_validators.Device')
+    def test_clear_replace_header_is_not_being_replaced(self, m_device: Mock) -> None:
+        m_dev = m_device.return_value
+        m_dev.is_being_replaced = False
+        with pytest.raises(SystemExit) as e:
+            zap.Zap(argv=['--clear', '/dev/foo']).main()
+        assert e.value.code == 1
+
 
 class TestFindAssociatedDevices(object):
 
@@ -100,6 +119,7 @@ class TestFindAssociatedDevices(object):
 
 class TestEnsureAssociatedLVs(object):
 
+    @patch('ceph_volume.devices.lvm.zap.api', Mock(return_value=[]))
     def test_nothing_is_found(self):
         volumes = []
         result = zap.ensure_associated_lvs(volumes)
@@ -148,6 +168,7 @@ class TestEnsureAssociatedLVs(object):
         result = zap.ensure_associated_lvs(volumes)
         assert result == ['/dev/VolGroup/lv']
 
+    @patch('ceph_volume.api.lvm.process.call', Mock(return_value=('', '', 0)))
     def test_multiple_journals_are_found(self):
         tags = 'ceph.osd_id=0,ceph.osd_fsid=asdf-lkjh,ceph.journal_uuid=x,ceph.type=journal'
         volumes = []
@@ -160,6 +181,7 @@ class TestEnsureAssociatedLVs(object):
         assert '/dev/VolGroup/lv1' in result
         assert '/dev/VolGroup/lv2' in result
 
+    @patch('ceph_volume.api.lvm.process.call', Mock(return_value=('', '', 0)))
     def test_multiple_dbs_are_found(self):
         tags = 'ceph.osd_id=0,ceph.osd_fsid=asdf-lkjh,ceph.journal_uuid=x,ceph.type=db'
         volumes = []
@@ -172,6 +194,7 @@ class TestEnsureAssociatedLVs(object):
         assert '/dev/VolGroup/lv1' in result
         assert '/dev/VolGroup/lv2' in result
 
+    @patch('ceph_volume.api.lvm.process.call', Mock(return_value=('', '', 0)))
     def test_multiple_wals_are_found(self):
         tags = 'ceph.osd_id=0,ceph.osd_fsid=asdf-lkjh,ceph.wal_uuid=x,ceph.type=wal'
         volumes = []
@@ -184,6 +207,7 @@ class TestEnsureAssociatedLVs(object):
         assert '/dev/VolGroup/lv1' in result
         assert '/dev/VolGroup/lv2' in result
 
+    @patch('ceph_volume.api.lvm.process.call', Mock(return_value=('', '', 0)))
     def test_multiple_backing_devs_are_found(self):
         volumes = []
         for _type in ['journal', 'db', 'wal']:

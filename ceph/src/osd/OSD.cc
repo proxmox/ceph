@@ -2989,15 +2989,22 @@ will start to track new ops received afterwards.";
   } else if (prefix == "compact") {
     dout(1) << "triggering manual compaction" << dendl;
     auto start = ceph::coarse_mono_clock::now();
-    store->compact();
-    auto end = ceph::coarse_mono_clock::now();
-    double duration = std::chrono::duration<double>(end-start).count();
-    dout(1) << "finished manual compaction in "
-            << duration
-            << " seconds" << dendl;
-    f->open_object_section("compact_result");
-    f->dump_float("elapsed_time", duration);
-    f->close_section();
+    int r = store->compact();
+    if (r == 0) {
+      auto end = ceph::coarse_mono_clock::now();
+      double duration = std::chrono::duration<double>(end-start).count();
+
+      dout(1) << "finished manual compaction in "
+              << duration
+              << " seconds" << dendl;
+      f->open_object_section("compact_result");
+      f->dump_float("elapsed_time", duration);
+      f->close_section();
+    } else  if ( r == -EINPROGRESS) {
+      dout(1) << "manual compaction is being executed asynchronously" << dendl;
+    } else {
+      derr << "error starting manual compaction:" << cpp_strerror(r) << dendl;
+    }
   } else if (prefix == "get_mapped_pools") {
     f->open_array_section("mapped_pools");
     set<int64_t> poollist = get_mapped_pools();
@@ -3913,7 +3920,7 @@ int OSD::init()
   dout(2) << "superblock: I am osd." << superblock.whoami << dendl;
 
   if (cct->_conf.get_val<bool>("osd_compact_on_start")) {
-    dout(2) << "compacting object store's omap" << dendl;
+    dout(2) << "compacting object store's DB" << dendl;
     store->compact();
   }
 
@@ -7626,9 +7633,8 @@ void OSD::ms_fast_dispatch(Message *m)
   OID_EVENT_TRACE_WITH_MSG(m, "MS_FAST_DISPATCH_END", false);
 }
 
-int OSD::ms_handle_fast_authentication(Connection *con)
+bool OSD::ms_handle_fast_authentication(Connection *con)
 {
-  int ret = 0;
   auto s = ceph::ref_cast<Session>(con->get_priv());
   if (!s) {
     s = ceph::make_ref<Session>(cct, con);
@@ -7646,6 +7652,7 @@ int OSD::ms_handle_fast_authentication(Connection *con)
   AuthCapsInfo &caps_info = con->get_peer_caps_info();
   if (caps_info.allow_all) {
     s->caps.set_allow_all();
+    return true;
   } else if (caps_info.caps.length() > 0) {
     bufferlist::const_iterator p = caps_info.caps.cbegin();
     string str;
@@ -7655,23 +7662,22 @@ int OSD::ms_handle_fast_authentication(Connection *con)
     catch (ceph::buffer::error& e) {
       dout(10) << __func__ << " session " << s << " " << s->entity_name
 	       << " failed to decode caps string" << dendl;
-      ret = -EACCES;
+      return false;
     }
-    if (!ret) {
-      bool success = s->caps.parse(str);
-      if (success) {
-	dout(10) << __func__ << " session " << s
-		 << " " << s->entity_name
-		 << " has caps " << s->caps << " '" << str << "'" << dendl;
-	ret = 1;
-      } else {
-	dout(10) << __func__ << " session " << s << " " << s->entity_name
-		 << " failed to parse caps '" << str << "'" << dendl;
-	ret = -EACCES;
-      }
+    bool success = s->caps.parse(str);
+    if (success) {
+      dout(10) << __func__ << " session " << s
+               << " " << s->entity_name
+               << " has caps " << s->caps << " '" << str << "'" << dendl;
+      return true;
+    } else {
+      dout(10) << __func__ << " session " << s << " " << s->entity_name
+               << " failed to parse caps '" << str << "'" << dendl;
+      return false;
     }
+  } else {
+    return false;
   }
-  return ret;
 }
 
 void OSD::_dispatch(Message *m)
@@ -10084,22 +10090,28 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
             << dendl;
 
     // Get the threshold IOPS set for the underlying hdd/ssd.
-    double threshold_iops = 0.0;
+    double hi_threshold_iops = 0.0;
+    double lo_threshold_iops = 0.0;
     if (store_is_rotational) {
-      threshold_iops = cct->_conf.get_val<double>(
+      hi_threshold_iops = cct->_conf.get_val<double>(
         "osd_mclock_iops_capacity_threshold_hdd");
+      lo_threshold_iops = cct->_conf.get_val<double>(
+        "osd_mclock_iops_capacity_low_threshold_hdd");
     } else {
-      threshold_iops = cct->_conf.get_val<double>(
+      hi_threshold_iops = cct->_conf.get_val<double>(
         "osd_mclock_iops_capacity_threshold_ssd");
+      lo_threshold_iops = cct->_conf.get_val<double>(
+        "osd_mclock_iops_capacity_low_threshold_ssd");
     }
 
     // Persist the iops value to the MON store or throw cluster warning
-    // if the measured iops exceeds the set threshold. If the iops exceed
-    // the threshold, the default value is used.
-    if (iops > threshold_iops) {
+    // if the measured iops is not in the threshold range. If the iops is
+    // not within the threshold range, the current/default value is retained.
+    if (iops < lo_threshold_iops || iops > hi_threshold_iops) {
       clog->warn() << "OSD bench result of " << std::to_string(iops)
-                   << " IOPS exceeded the threshold limit of "
-                   << std::to_string(threshold_iops) << " IOPS for osd."
+                   << " IOPS is not within the threshold limit range of "
+                   << std::to_string(lo_threshold_iops) << " IOPS and "
+                   << std::to_string(hi_threshold_iops) << " IOPS for osd."
                    << std::to_string(whoami) << ". IOPS capacity is unchanged"
                    << " at " << std::to_string(cur_iops) << " IOPS. The"
                    << " recommendation is to establish the osd's IOPS capacity"

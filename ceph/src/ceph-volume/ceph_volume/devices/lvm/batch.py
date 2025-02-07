@@ -224,7 +224,6 @@ class Batch(object):
             action='store_true',
             help=('deploy multi-device OSDs if rotational and non-rotational drives '
                   'are passed in DEVICES'),
-            default=True
         )
         parser.add_argument(
             '--no-auto',
@@ -266,6 +265,12 @@ class Batch(object):
             '--dmcrypt',
             action=arg_validators.DmcryptAction,
             help='Enable device encryption via dm-crypt',
+        )
+        parser.add_argument(
+            '--with-tpm',
+            dest='with_tpm',
+            help='Whether encrypted OSDs should be enrolled with TPM.',
+            action='store_true'
         )
         parser.add_argument(
             '--crush-device-class',
@@ -377,7 +382,6 @@ class Batch(object):
         '''
         mlogger.warning('DEPRECATION NOTICE')
         mlogger.warning('You are using the legacy automatic disk sorting behavior')
-        mlogger.warning('The Pacific release will change the default to --no-auto')
         rotating = []
         ssd = []
         for d in self.args.devices:
@@ -423,6 +427,7 @@ class Batch(object):
         global_args = [
             'bluestore',
             'dmcrypt',
+            'with_tpm',
             'crush_device_class',
             'no_systemd',
         ]

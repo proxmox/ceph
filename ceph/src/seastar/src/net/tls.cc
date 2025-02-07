@@ -28,6 +28,7 @@ module;
 #include <system_error>
 #include <memory>
 #include <chrono>
+#include <unordered_set>
 
 #include <netinet/in.h>
 #include <sys/stat.h>
@@ -39,6 +40,7 @@ module;
 #include <boost/range/adaptor/map.hpp>
 
 #include <fmt/core.h>
+#include <fmt/ostream.h>
 
 #ifdef SEASTAR_MODULE
 module seastar;
@@ -331,6 +333,31 @@ future<tls::x509_cert> tls::x509_cert::from_file(
     });
 }
 
+// wrapper for gnutls_datum, with raii free
+struct gnutls_datum : public gnutls_datum_t {
+    gnutls_datum() {
+        data = nullptr;
+        size = 0;
+    }
+    gnutls_datum(const gnutls_datum&) = delete;
+    gnutls_datum& operator=(gnutls_datum&& other) {
+        if (this == &other) {
+            return *this;
+        }
+        if (data != nullptr) {
+            ::gnutls_free(data);
+        }
+        data = std::exchange(other.data, nullptr);
+        size = std::exchange(other.size, 0);
+        return *this;
+    }
+    ~gnutls_datum() {
+        if (data != nullptr) {
+            ::gnutls_free(data);
+        }
+    }
+};
+
 class tls::certificate_credentials::impl: public gnutlsobj {
 public:
     impl()
@@ -403,6 +430,20 @@ public:
     client_auth get_client_auth() const {
         return _client_auth;
     }
+    void set_session_resume_mode(session_resume_mode m) {
+        _session_resume_mode = m;
+        // (re-)generate session key
+        if (m != session_resume_mode::NONE) {
+            _session_resume_key = {};
+            gnutls_session_ticket_key_generate(&_session_resume_key);
+        }
+    }
+    session_resume_mode get_session_resume_mode() const {
+        return _session_resume_mode;
+    }
+    const gnutls_datum_t* get_session_resume_key() const {
+        return &_session_resume_key;
+    }
     void set_priority_string(const sstring& prio) {
         const char * err = prio.c_str();
         try {
@@ -440,9 +481,11 @@ private:
     std::unique_ptr<tls::dh_params::impl> _dh_params;
     std::unique_ptr<std::remove_pointer_t<gnutls_priority_t>, void(*)(gnutls_priority_t)> _priority;
     client_auth _client_auth = client_auth::NONE;
+    session_resume_mode _session_resume_mode = session_resume_mode::NONE;
     bool _load_system_trust = false;
     semaphore _system_trust_sem {1};
     dn_callback _dn_callback;
+    gnutls_datum _session_resume_key;
 };
 
 tls::certificate_credentials::certificate_credentials()
@@ -541,6 +584,11 @@ tls::server_credentials& tls::server_credentials::operator=(
 void tls::server_credentials::set_client_auth(client_auth ca) {
     _impl->set_client_auth(ca);
 }
+
+void tls::server_credentials::set_session_resume_mode(session_resume_mode m) {
+    _impl->set_session_resume_mode(m);
+}
+
 
 static const sstring dh_level_key = "dh_level";
 static const sstring x509_trust_key = "x509_trust";
@@ -644,6 +692,10 @@ void tls::credentials_builder::set_priority_string(const sstring& prio) {
     _priority = prio;
 }
 
+void tls::credentials_builder::set_session_resume_mode(session_resume_mode m) {
+    _session_resume_mode = m;
+}
+
 template<typename Blobs, typename Visitor>
 static void visit_blobs(Blobs& blobs, Visitor&& visitor) {
     auto visit = [&](const sstring& key, auto* vt) {
@@ -691,6 +743,8 @@ void tls::credentials_builder::apply_to(certificate_credentials& creds) const {
     }
 
     creds._impl->set_client_auth(_client_auth);
+    // Note: this causes server session key rotation on cert reload
+    creds._impl->set_session_resume_mode(_session_resume_mode);
 }
 
 shared_ptr<tls::certificate_credentials> tls::credentials_builder::build_certificate_credentials() const {
@@ -1027,8 +1081,17 @@ public:
                     gnutls_certificate_server_set_request(*this, GNUTLS_CERT_REQUIRE);
                     break;
             }
+            // Maybe set up server session ticket support
+            switch (_creds->get_session_resume_mode()) {
+                case session_resume_mode::NONE: 
+                default:
+                    break;
+                case session_resume_mode::TLS13_SESSION_TICKET:
+                    gnutls_session_ticket_enable_server(*this, _creds->get_session_resume_key());
+                    break;
+            }
         }
-
+ 
         auto prio = _creds->get_priority();
         if (prio) {
             gtls_chk(gnutls_priority_set(*this, prio));
@@ -1045,6 +1108,11 @@ public:
             gnutls_session_set_verify_function(*this, &verify_wrapper);
         }
 #endif
+        // if we are a client, check if we have a session ticket to unpack.
+        if (_type == type::CLIENT && !_options.session_resume_data.empty()) {
+            gtls_chk(gnutls_session_set_data(*this, _options.session_resume_data.data(), _options.session_resume_data.size()));
+        }
+        _options.session_resume_data.clear(); // no need to keep around
     }
     session(type t, shared_ptr<certificate_credentials> creds,
             connected_socket sock,
@@ -1522,7 +1590,7 @@ public:
         if (!std::exchange(_shutdown, true)) {
             auto me = shared_from_this();
             // running in background. try to bye-handshake us nicely, but after 10s we forcefully close.
-            (void)with_timeout(timer<>::clock::now() + std::chrono::seconds(10), shutdown()).finally([this] {
+            engine().run_in_background(with_timeout(timer<>::clock::now() + std::chrono::seconds(10), shutdown()).finally([this] {
                 _eof = true;
                 try {
                     (void)_in.close().handle_exception([](std::exception_ptr) {}); // should wake any waiters
@@ -1540,7 +1608,7 @@ public:
                 });
             }).then_wrapped([me = std::move(me)](future<> f) { // must keep object alive until here.
                 f.ignore_ready_future();
-            });
+            }));
         }
     }
     // helper for sink
@@ -1550,12 +1618,15 @@ public:
         });
     }
 
-    seastar::net::connected_socket_impl & socket() const {
+    seastar::net::connected_socket_impl& socket() const {
         return *_sock;
     }
 
-    future<std::optional<session_dn>> get_distinguished_name() {
-        using result_t = std::optional<session_dn>;
+    // helper routine.
+    template<typename Func, typename... Args>
+    auto state_checked_access(Func&& f, Args&& ...args) {
+        using future_type = typename futurize<std::invoke_result_t<Func, Args...>>::type;
+        using result_t = typename future_type::value_type;
         if (_error) {
             return make_exception_future<result_t>(_error);
         }
@@ -1563,35 +1634,55 @@ public:
             return make_exception_future<result_t>(std::system_error(ENOTCONN, std::system_category()));
         }
         if (!_connected) {
-            return handshake().then([this]() mutable {
-               return get_distinguished_name();
+            return handshake().then([this, f = std::move(f), ...args = std::forward<Args>(args)]() mutable {
+                // always recurse, in case malicious api caller does a shutdown while the above handshake is
+                // happening. I.e. misuses the api.
+                return session::state_checked_access(std::move(f), std::forward<Args>(args)...);
             });
         }
-        result_t dn = extract_dn_information();
-        return make_ready_future<result_t>(std::move(dn));
+        return futurize_invoke(f, std::forward<Args>(args)...);
     }
+
+    future<bool> is_resumed() {
+        return state_checked_access([this] {
+            return gnutls_session_is_resumed(*this) != 0;
+        });
+    }
+    future<session_data> get_session_resume_data() {
+        return state_checked_access([this] {
+            /**
+             * Session ticket data is not available just because handshake 
+             * was done. First off, of course other part must support it,
+             * but we also (mostly?) need to actually transfer data before
+             * the ticket is received.
+             * 
+             * Check session flags so we can return no data in the case
+             * none is avail. Gnutls returns a 4-byte "empty marker" 
+             * on none avail.
+            */
+            auto flags = gnutls_session_get_flags(*this);
+            if ((flags & GNUTLS_SFLAGS_SESSION_TICKET) == 0) {
+                return session_data{};
+            }
+            gnutls_datum tmp;
+            gtls_chk(gnutls_session_get_data2(*this, &tmp));
+            return session_data(tmp.data, tmp.data + tmp.size);
+        });
+    }
+    future<std::optional<session_dn>> get_distinguished_name() {
+        return state_checked_access([this] {
+            return extract_dn_information();
+        });
+    }    
     future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type> types) {
-        using result_t = std::vector<subject_alt_name>;
+        return state_checked_access([this](std::unordered_set<subject_alt_name_type> types) {
+            std::vector<subject_alt_name> res;
 
-        if (_error) {
-            return make_exception_future<result_t>(_error);
-        }
-        if (_shutdown) {
-            return make_exception_future<result_t>(std::system_error(ENOTCONN, std::system_category()));
-        }
-        if (!_connected) {
-            return handshake().then([this, types = std::move(types)]() mutable {
-               return get_alt_name_information(std::move(types));
-            });
-        }
+            auto peer = get_peer_certificate();
+            if (!peer) {
+                return res;
+            }
 
-        auto peer = get_peer_certificate();
-        if (!peer) {
-            return make_ready_future<result_t>();
-        }
-
-        return futurize_invoke([&] {
-            result_t res;
         	for (auto i = 0u; ; i++) {
                 size_t size = 0;
 
@@ -1657,7 +1748,7 @@ public:
                 res.emplace_back(std::move(v));
         	}
             return res;
-        });
+        }, std::move(types));
     }
 
     struct session_ref;
@@ -1794,6 +1885,12 @@ public:
     }
     future<> wait_input_shutdown() override {
         return _session->socket().wait_input_shutdown();
+    }
+    future<bool> check_session_is_resumed() {
+        return _session->is_resumed();
+    }
+    future<session_data> get_session_resume_data() {
+        return _session->get_session_resume_data();
     }
 };
 
@@ -1977,6 +2074,14 @@ future<std::vector<tls::subject_alt_name>> tls::get_alt_name_information(connect
     return get_tls_socket(socket)->get_alt_name_information(std::move(types));
 }
 
+future<bool> tls::check_session_is_resumed(connected_socket& socket) {
+    return get_tls_socket(socket)->check_session_is_resumed();
+}
+
+future<tls::session_data> tls::get_session_resume_data(connected_socket& socket) {
+    return get_tls_socket(socket)->get_session_resume_data();
+}
+
 std::string_view tls::format_as(subject_alt_name_type type) {
     switch (type) {
         case subject_alt_name_type::dnsname:
@@ -2001,12 +2106,13 @@ std::ostream& tls::operator<<(std::ostream& os, subject_alt_name_type type) {
 }
 
 std::ostream& tls::operator<<(std::ostream& os, const subject_alt_name::value_type& v) {
-    std::visit([&](auto& vv) { os << vv; }, v);
+    fmt::print(os, "{}", v);
     return os;
 }
 
 std::ostream& tls::operator<<(std::ostream& os, const subject_alt_name& a) {
-    return os << a.type << "=" << a.value;
+    fmt::print(os, "{}", a);
+    return os;
 }
 
 
@@ -2023,3 +2129,10 @@ const int seastar::tls::ERROR_SAFE_RENEGOTIATION_FAILED = GNUTLS_E_SAFE_RENEGOTI
 const int seastar::tls::ERROR_UNSAFE_RENEGOTIATION_DENIED = GNUTLS_E_UNSAFE_RENEGOTIATION_DENIED;
 const int seastar::tls::ERROR_UNKNOWN_SRP_USERNAME = GNUTLS_E_UNKNOWN_SRP_USERNAME;
 const int seastar::tls::ERROR_PREMATURE_TERMINATION = GNUTLS_E_PREMATURE_TERMINATION;
+const int seastar::tls::ERROR_PUSH = GNUTLS_E_PUSH_ERROR;
+const int seastar::tls::ERROR_PULL = GNUTLS_E_PULL_ERROR;
+const int seastar::tls::ERROR_UNEXPECTED_PACKET = GNUTLS_E_UNEXPECTED_PACKET;
+const int seastar::tls::ERROR_UNSUPPORTED_VERSION = GNUTLS_E_UNSUPPORTED_VERSION_PACKET;
+const int seastar::tls::ERROR_NO_CIPHER_SUITES = GNUTLS_E_NO_CIPHER_SUITES;
+const int seastar::tls::ERROR_DECRYPTION_FAILED = GNUTLS_E_DECRYPTION_FAILED;
+const int seastar::tls::ERROR_MAC_VERIFY_FAILED = GNUTLS_E_MAC_VERIFY_FAILED;

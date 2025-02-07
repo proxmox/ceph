@@ -760,8 +760,8 @@ namespace internal {
 template <typename T = void>
 future<T> make_exception_future(future_state_base&& state) noexcept;
 
-template <typename... T, typename U>
-void set_callback(future<T...>&& fut, U* callback) noexcept;
+template <typename T = void>
+void set_callback(future<T>&& fut, continuation_base<T>* callback) noexcept;
 
 class future_base;
 
@@ -1142,9 +1142,7 @@ protected:
 
     void do_wait() noexcept;
 
-#ifdef SEASTAR_COROUTINES_ENABLED
     void set_coroutine(task& coroutine) noexcept;
-#endif
 
     friend class promise_base;
 };
@@ -1354,12 +1352,25 @@ public:
     /// Gets the value returned by the computation.
     ///
     /// Similar to \ref get(), but instead of returning a
-    /// tuple, returns the first value of the tuple.  This is
-    /// useful for the common case of a \c future<T> with exactly
-    /// one type parameter.
+    /// \c T&&, returns \c T.
     ///
-    /// Equivalent to: \c std::get<0>(f.get()).
+    /// \note The \c get0() method is deprecated. It's a remnant from older
+    /// versions of Seastar that supported variadic futures, capable of
+    /// returning multiple values through a tuple. Back then, \c get0() served
+    /// the purpose of retrieving the first (and usually the only) value.
+    /// Today, the \ref get() method accomplishes the same task. However,
+    /// there's a subtle difference in return types: \c get0() returned
+    /// \c T, while \ref get() returns \c T&& (an rvalue reference to
+    /// \c T). This distinction typically won't cause issues when switching
+    /// from \c get0() to \ref get(). However, in specific metaprogramming
+    /// scenarios, especially when the code expects type \c T, you'll need
+    /// to use \c std::remove_reference_t<decltype(fut.get())> to extract
+    /// the underlying type \c T.
+    /// For new code that utilizes \c future<tuple<...>>, employ
+    /// \c std::get<0>(fut.get()) to access the first element of the tuple,
+    /// rather than the deprecated \ref get0().
     using get0_return_type = typename future_state::get0_return_type;
+    [[deprecated("Use get() instead")]]
     get0_return_type get0() {
         return (get0_return_type)get();
     }
@@ -1758,9 +1769,8 @@ public:
         _state.ignore();
     }
 
-#ifdef SEASTAR_COROUTINES_ENABLED
     using future_base::set_coroutine;
-#endif
+
 private:
     void set_task(task& t) noexcept {
         assert(_promise);
@@ -1797,8 +1807,8 @@ private:
     friend future<U> internal::make_exception_future(future_state_base&& state) noexcept;
     template <typename U>
     friend future<U> current_exception_as_future() noexcept;
-    template <typename... U, typename V>
-    friend void internal::set_callback(future<U...>&&, V*) noexcept;
+    template <typename U>
+    friend void internal::set_callback(future<U>&&, continuation_base<U>*) noexcept;
     /// \endcond
 };
 
@@ -2069,11 +2079,9 @@ auto futurize_apply(Func&& func, std::tuple<Args...>&& args) noexcept {
 
 namespace internal {
 
-template <typename... T, typename U>
+template <typename T>
 inline
-void set_callback(future<T...>&& fut, U* callback) noexcept {
-    // It would be better to use continuation_base<T...> for U, but
-    // then a derived class of continuation_base<T...> won't be matched
+void set_callback(future<T>&& fut, continuation_base<T>* callback) noexcept {
     return std::move(fut).set_callback(callback);
 }
 

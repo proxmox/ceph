@@ -72,7 +72,6 @@ public:
 
 class posix_file_impl : public file_impl {
     std::atomic<unsigned>* _refcount = nullptr;
-    const dev_t _device_id;
     const bool _nowait_works;
     io_queue& _io_queue;
     const open_flags _open_flags;
@@ -104,9 +103,7 @@ public:
     virtual future<> close() noexcept override;
     virtual std::unique_ptr<seastar::file_handle_impl> dup() override;
     virtual subscription<directory_entry> list_directory(std::function<future<> (directory_entry de)> next) override;
-#ifdef SEASTAR_COROUTINES_ENABLED
     virtual coroutine::experimental::generator<directory_entry> experimental_list_directory() override;
-#endif
 
 #if SEASTAR_API_LEVEL >= 7
     virtual future<size_t> read_dma(uint64_t pos, void* buffer, size_t len, io_intent* intent) noexcept override = 0;

@@ -152,11 +152,13 @@ size_t PGRecovery::start_primary_recovery_ops(
     if (pg->get_peering_state().get_missing_loc().is_unfound(soid)) {
       logger().debug("{}: object {} unfound", __func__, soid);
       ++skipped;
+      ++p;
       continue;
     }
     if (pg->get_peering_state().get_missing_loc().is_unfound(head)) {
       logger().debug("{}: head object {} unfound", __func__, soid);
       ++skipped;
+      ++p;
       continue;
     }
 
@@ -429,8 +431,6 @@ void PGRecovery::on_global_recover (
   pg->get_peering_state().object_recovered(soid, stat_diff);
   pg->publish_stats_to_osd();
   auto& recovery_waiter = pg->get_recovery_backend()->get_recovering(soid);
-  if (!is_delete)
-    recovery_waiter.obc->drop_recovery_read();
   recovery_waiter.set_recovered();
   pg->get_recovery_backend()->remove_recovering(soid);
 }

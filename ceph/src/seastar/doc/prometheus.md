@@ -44,7 +44,7 @@ To get all metrics without a `service` label:
 http://localhost:9180/metrics?service=
 
 To get all metrics with a `service` label equals `prometheus` and from shard `0`:
-http://localhost:9180/service=prometheus&shard=0
+http://localhost:9180/metrics?service=prometheus&shard=0
 
 ## Remove the help lines
 Sending the help associated with each metric on each request is an overhead.
@@ -53,6 +53,16 @@ Seastar supports an option to remove those lines from the metrics output using t
 To remove the help lines set `__help__=false`
 for example:
 `http://localhost:9180/metrics?__help__=false`
+
+## Aggregation
+In Seastar, metrics can be defined with implicit aggregation by specific labels,
+which occurs at query time. This feature is useful, for instance to define metrics
+per shard or even more finely grained per an application-defined entity while reporting
+them in a more aggregated manner, such as sum or histogram per server.
+
+However, there are times when it is necessary to inspect the fine-grained metrics.
+This can be achieved by adding `__aggregate__=false` to the query string. For example:
+`http://localhost:9180/metrics?__aggregate__=false`
 
 ### Configuring the Prometheus server for picking specific metrics
 The [Prometheus configuration](https://prometheus.io/docs/prometheus/1.8/configuration/configuration/) describes the general Prometheus configuration.

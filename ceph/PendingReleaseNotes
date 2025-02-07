@@ -173,6 +173,11 @@ CephFS: Disallow delegating preallocated inode ranges to clients. Config
   default json format produces a rather massive output in large clusters and
   isn't scalable. So we have removed the 'network_ping_times' section from
   the output. Details in the tracker: https://tracker.ceph.com/issues/57460
+* mgr/REST: The REST manager module will trim requests based on the 'max_requests' option.
+  Without this feature, and in the absence of manual deletion of old requests,
+  the accumulation of requests in the array can lead to Out Of Memory (OOM) issues, 
+  resulting in the Manager crashing.
+
 * CephFS: The `subvolume snapshot clone` command now depends on the config option
   `snapshot_clone_no_wait` which is used to reject the clone operation when
   all the cloner threads are busy. This config option is enabled by default which means 
@@ -231,6 +236,23 @@ CephFS: Disallow delegating preallocated inode ranges to clients. Config
   confirmation flag when some MDSs exhibit health warning MDS_TRIM or
   MDS_CACHE_OVERSIZED. This is to prevent accidental MDS failover causing
   further delays in recovery.
+* Based on tests performed at scale on a HDD based Ceph cluster, it was found
+  that scheduling with mClock was not optimal with multiple OSD shards. For
+  example, in the test cluster with multiple OSD node failures, the client
+  throughput was found to be inconsistent across test runs coupled with multiple
+  reported slow requests. However, the same test with a single OSD shard and
+  with multiple worker threads yielded significantly better results in terms of
+  consistency of client and recovery throughput across multiple test runs.
+  Therefore, as an interim measure until the issue with multiple OSD shards
+  (or multiple mClock queues per OSD) is investigated and fixed, the following
+  change to the default HDD OSD shard configuration is made:
+   - osd_op_num_shards_hdd = 1 (was 5)
+   - osd_op_num_threads_per_shard_hdd = 5 (was 1)
+  For more details see https://tracker.ceph.com/issues/66289.
+* NFS: The export create/apply of CephFS based exports will now have a additional parameter `cmount_path` under FSAL block,
+* NFS: The export create/apply of CephFS based exports will now have a additional parameter `cmount_path` under the FSAL block,
+  which specifies the path within the CephFS to mount this export on. If this and the other
+  `EXPORT { FSAL {} }` options are the same between multiple exports, those exports will share a single CephFS client. If not specified, the default is `/`.
 
 >=18.0.0
 

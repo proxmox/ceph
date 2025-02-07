@@ -420,7 +420,9 @@ seastar_add_test (app-template
   SOURCES app-template_test.cc)
 
 seastar_add_test (socket
-  SOURCES socket_test.cc)
+  SOURCES socket_test.cc
+  # https://github.com/scylladb/seastar/issues/2302
+  RUN_ARGS --reactor-backend linux-aio)
 
 seastar_add_test (sstring
   KIND BOOST
@@ -730,3 +732,52 @@ seastar_add_test (pipe
 
 seastar_add_test (spawn
   SOURCES spawn_test.cc)
+
+seastar_generate_swagger (
+  TARGET rest_api_httpd_swagger
+  VAR rest_api_httpd_swagger_files
+  IN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/api.json
+  OUT_DIR ${CMAKE_CURRENT_BINARY_DIR})
+
+add_executable (rest_api_httpd
+  ${rest_api_httpd_swagger_files}
+  rest_api_httpd.cc)
+target_link_libraries (rest_api_httpd
+  PRIVATE seastar_private)
+target_include_directories (rest_api_httpd
+  PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+add_dependencies (rest_api_httpd rest_api_httpd_swagger)
+add_dependencies (unit_tests rest_api_httpd)
+add_custom_target (test_unit_json2code_run
+  COMMAND ${CMAKE_COMMAND} -E env ${Seastar_TEST_ENVIRONMENT} ${CMAKE_CURRENT_SOURCE_DIR}/json2code_test.py --rest-api-httpd $<TARGET_FILE:rest_api_httpd>
+  USES_TERMINAL)
+add_dependencies (test_unit_json2code_run rest_api_httpd)
+add_test (
+  NAME Seastar.unit.json2code
+  COMMAND ${CMAKE_COMMAND} --build ${Seastar_BINARY_DIR} --target test_unit_json2code_run)
+set_tests_properties (Seastar.unit.json2code
+  PROPERTIES
+    TIMEOUT ${Seastar_TEST_TIMEOUT})
+
+add_executable (metrics_tester
+  metrics_tester.cc)
+target_link_libraries (metrics_tester
+  PRIVATE
+    seastar_private
+    yaml-cpp::yaml-cpp)
+
+add_dependencies (unit_tests metrics_tester)
+add_custom_target (test_unit_prometheus_run
+  COMMAND ${CMAKE_COMMAND} -E env ${Seastar_TEST_ENVIRONMENT}
+    ${CMAKE_CURRENT_SOURCE_DIR}/prometheus_test.py
+    --exporter $<TARGET_FILE:metrics_tester>
+    --config ${CMAKE_CURRENT_SOURCE_DIR}/conf-example.yaml
+  USES_TERMINAL)
+add_dependencies (test_unit_prometheus_run metrics_tester)
+add_test (
+  NAME Seastar.unit.prometheus
+  COMMAND ${CMAKE_COMMAND} --build ${Seastar_BINARY_DIR} --target test_unit_prometheus_run)
+set_tests_properties (Seastar.unit.prometheus
+  PROPERTIES
+    TIMEOUT ${Seastar_TEST_TIMEOUT})

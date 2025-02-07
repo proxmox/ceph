@@ -64,6 +64,8 @@ using namespace seastar;
 using namespace std::chrono_literals;
 using namespace boost::accumulators;
 
+static constexpr uint64_t extent_size_hint_alignment{1u << 20}; // 1MB
+
 static auto random_seed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 static thread_local std::default_random_engine random_generator(random_seed);
 
@@ -101,7 +103,8 @@ future<std::pair<file, uint64_t>> create_and_fill_file(sstring name, uint64_t fs
                     }
 
                     const uint64_t buffer_size{256ul << 10};
-                    const uint64_t buffers_count{static_cast<uint64_t>(fsize / buffer_size) + 1u};
+                    const uint64_t additional_iteration = (fsize % buffer_size == 0) ? 0 : 1;
+                    const uint64_t buffers_count{static_cast<uint64_t>(fsize / buffer_size) + additional_iteration};
                     const uint64_t last_buffer_id = (buffers_count - 1u);
                     const uint64_t last_write_position = buffer_size * last_buffer_id;
 
@@ -246,6 +249,9 @@ struct job_config {
     // of the disk's cache. An exception to that rule is unlink_class_data, that creates files_count
     // files with file_size/files_count.
     uint64_t file_size;
+    // the value passed as a hint for allocated extent size
+    // if not specified, then file_size is used as a hint
+    std::optional<uint64_t> extent_allocation_size_hint;
     // the number of files to create and unlink by unlink_class_data per shard
     // remaining operations utilize only one file per shard
     std::optional<uint64_t> files_count;
@@ -582,7 +588,7 @@ private:
             flags |= open_flags::dsync;
         }
         file_open_options options;
-        options.extent_allocation_size_hint = _config.file_size;
+        options.extent_allocation_size_hint = _config.extent_allocation_size_hint.value_or(_config.file_size);
         options.append_is_unlikely = true;
 
         return create_and_fill_file(fname, _config.file_size, flags, options).then([this](std::pair<file, uint64_t> p) {
@@ -770,15 +776,17 @@ private:
 
         return max_concurrent_for_each(boost::irange(UINT64_C(0), files_count()), max_concurrency(), [this] (uint64_t file_id) {
             const auto fname = get_filename(file_id);
-            const auto fsize = _config.file_size / files_count();
+            const auto fsize = align_up<uint64_t>(_config.file_size / files_count(), extent_size_hint_alignment);
             const auto flags = open_flags::rw | open_flags::create;
 
             file_open_options options;
-            options.extent_allocation_size_hint = fsize;
+            options.extent_allocation_size_hint = _config.extent_allocation_size_hint.value_or(fsize);
             options.append_is_unlikely = true;
 
             return create_and_fill_file(fname, fsize, flags, options).then([](std::pair<file, uint64_t> p) {
-                return p.first.close();
+                return do_with(std::move(p.first), [] (auto& f) {
+                    return f.close();
+                });
             });
         });
     }
@@ -984,9 +992,16 @@ struct convert<job_config> {
         // constant) disk space between workloads. Each shard inside the
         // workload thus uses its portion of the assigned space.
         if (node["data_size"]) {
-            cl.file_size = node["data_size"].as<byte_size>().size / smp::count;
+            const uint64_t per_shard_bytes = node["data_size"].as<byte_size>().size / smp::count;
+            cl.file_size = align_up<uint64_t>(per_shard_bytes, extent_size_hint_alignment);
         } else {
             cl.file_size = 1ull << 30; // 1G by default
+        }
+
+        // By default the file size is used as the allocation hint.
+        // However, certain tests may require using a specific value (e.g. 32MB).
+        if (node["extent_allocation_size_hint"]) {
+            cl.extent_allocation_size_hint = node["extent_allocation_size_hint"].as<byte_size>().size;
         }
 
         // By default a job may create 0 or 1 file.

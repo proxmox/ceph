@@ -41,13 +41,11 @@ module;
 module seastar;
 #else
 #include <seastar/core/file.hh>
-#include <seastar/core/fair_queue.hh>
 #include <seastar/core/io_queue.hh>
 #include <seastar/core/io_intent.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/when_all.hh>
 #include <seastar/core/metrics.hh>
-#include <seastar/core/linux-aio.hh>
 #include <seastar/core/internal/io_desc.hh>
 #include <seastar/core/internal/io_sink.hh>
 #include <seastar/core/io_priority_class.hh>
@@ -59,7 +57,6 @@ namespace seastar {
 logger io_log("io");
 
 using namespace std::chrono_literals;
-using namespace internal::linux_abi;
 using io_direction_and_length = internal::io_direction_and_length;
 static constexpr auto io_direction_read = io_direction_and_length::read_idx;
 static constexpr auto io_direction_write = io_direction_and_length::write_idx;
@@ -531,7 +528,7 @@ sstring io_request::opname() const {
 }
 
 const fair_group& get_fair_group(const io_queue& ioq, unsigned stream) {
-    return *(ioq._group->_fgs[stream]);
+    return ioq._group->_fgs[stream];
 }
 
 } // internal namespace
@@ -572,11 +569,11 @@ io_queue::io_queue(io_group_ptr group, internal::io_sink& sink)
     auto& cfg = get_config();
     if (cfg.duplex) {
         static_assert(internal::io_direction_and_length::write_idx == 0);
-        _streams.emplace_back(*_group->_fgs[0], make_fair_queue_config(cfg, "write"));
+        _streams.emplace_back(_group->_fgs[0], make_fair_queue_config(cfg, "write"));
         static_assert(internal::io_direction_and_length::read_idx == 1);
-        _streams.emplace_back(*_group->_fgs[1], make_fair_queue_config(cfg, "read"));
+        _streams.emplace_back(_group->_fgs[1], make_fair_queue_config(cfg, "read"));
     } else {
-        _streams.emplace_back(*_group->_fgs[0], make_fair_queue_config(cfg, "rw"));
+        _streams.emplace_back(_group->_fgs[0], make_fair_queue_config(cfg, "rw"));
     }
     _flow_ratio_update.arm_periodic(std::chrono::duration_cast<std::chrono::milliseconds>(_group->io_latency_goal() * cfg.flow_ratio_ticks));
 
@@ -605,7 +602,7 @@ fair_group::config io_group::make_fair_group_config(const io_queue::config& qcfg
 }
 
 std::chrono::duration<double> io_group::io_latency_goal() const noexcept {
-    return _fgs.front()->rate_limit_duration();
+    return _fgs.front().rate_limit_duration();
 }
 
 io_group::io_group(io_queue::config io_cfg, unsigned nr_queues)
@@ -613,14 +610,14 @@ io_group::io_group(io_queue::config io_cfg, unsigned nr_queues)
     , _allocated_on(this_shard_id())
 {
     auto fg_cfg = make_fair_group_config(_config);
-    _fgs.push_back(std::make_unique<fair_group>(fg_cfg, nr_queues));
+    _fgs.emplace_back(fg_cfg, nr_queues);
     if (_config.duplex) {
-        _fgs.push_back(std::make_unique<fair_group>(fg_cfg, nr_queues));
+        _fgs.emplace_back(fg_cfg, nr_queues);
     }
 
     auto goal = io_latency_goal();
-    auto lvl = goal > 1.1 * io_cfg.rate_limit_duration ? log_level::warn : log_level::debug;
-    seastar_logger.log(lvl, "IO queue uses {:.2f}ms latency goal for device {}", goal.count() * 1000, io_cfg.devid);
+    auto lvl = goal > 1.1 * _config.rate_limit_duration ? log_level::warn : log_level::debug;
+    seastar_logger.log(lvl, "IO queue uses {:.2f}ms latency goal for device {}", goal.count() * 1000, _config.devid);
 
     /*
      * The maximum request size shouldn't result in the capacity that would
@@ -632,10 +629,10 @@ io_group::io_group(io_queue::config io_cfg, unsigned nr_queues)
      */
     auto update_max_size = [this] (unsigned idx) {
         auto g_idx = _config.duplex ? idx : 0;
-        auto max_cap = _fgs[g_idx]->maximum_capacity();
+        auto max_cap = _fgs[g_idx].maximum_capacity();
         for (unsigned shift = 0; ; shift++) {
             auto tokens = internal::request_tokens(io_direction_and_length(idx, 1 << (shift + io_queue::block_size_shift)), _config);
-            auto cap = _fgs[g_idx]->tokens_capacity(tokens);
+            auto cap = _fgs[g_idx].tokens_capacity(tokens);
             if (cap > max_cap) {
                 if (shift == 0) {
                     throw std::runtime_error("IO-group limits are too low");

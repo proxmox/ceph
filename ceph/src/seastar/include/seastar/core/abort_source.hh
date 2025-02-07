@@ -185,6 +185,11 @@ public:
         }
     }
 
+    /// Returns an exception with which an abort was requested.
+    const std::exception_ptr& abort_requested_exception_ptr() const noexcept {
+        return _ex;
+    }
+
     /// Returns the default exception type (\ref abort_requested_exception) for this abort source.
     /// Overridable by derived classes.
     virtual std::exception_ptr get_default_exception() const noexcept {
@@ -197,3 +202,13 @@ public:
 SEASTAR_MODULE_EXPORT_END
 
 }
+
+#if FMT_VERSION < 100000
+// fmt v10 introduced formatter for std::exception
+template <>
+struct fmt::formatter<seastar::abort_requested_exception> : fmt::formatter<string_view> {
+    auto format(const seastar::abort_requested_exception& e, fmt::format_context& ctx) const {
+        return fmt::format_to(ctx.out(), "{}", e.what());
+    }
+};
+#endif

@@ -22,6 +22,7 @@
 #pragma once
 
 #include <ostream>
+#include <fmt/core.h>
 
 namespace seastar {
 
@@ -84,15 +85,8 @@ public:
         return bool_class(!x._value);
     }
 
-    /// Equal-to operator.
-    friend bool operator==(bool_class x, bool_class y) noexcept {
-        return x._value == y._value;
-    }
-
-    /// Not-equal-to operator.
-    friend bool operator!=(bool_class x, bool_class y) noexcept {
-        return x._value != y._value;
-    }
+    /// Equal-to and not-equal-to operators.
+    friend bool operator==(bool_class x, bool_class y) noexcept = default;
 
     /// Prints bool_class value to an output stream.
     friend std::ostream& operator<<(std::ostream& os, bool_class v) {
@@ -108,3 +102,12 @@ const bool_class<Tag> bool_class<Tag>::no { false };
 /// @}
 
 }
+
+template<typename Tag>
+struct fmt::formatter<seastar::bool_class<Tag>> {
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+    template <typename FormatContext>
+    auto format(seastar::bool_class<Tag> v, FormatContext& ctx) const{
+        return fmt::format_to(ctx.out(), "{}", bool(v));
+    }
+};

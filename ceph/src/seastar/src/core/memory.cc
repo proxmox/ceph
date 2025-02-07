@@ -98,6 +98,7 @@ module;
 #include <mutex>
 #include <functional>
 #include <cstring>
+#include <utility>
 #include <boost/intrusive/list.hpp>
 #include <sys/mman.h>
 
@@ -1639,9 +1640,36 @@ void *allocate_slowpath(size_t size) {
             alloc_stats::increment(alloc_stats::types::foreign_mallocs);
             return original_malloc_func(size);
         }
+
         // original_malloc_func might be null for allocations before main
         // in constructors before original_malloc_func ctor is called
+        // Note on #2137: Moved to here, because there is lots of code 
+        // that implicitly relies on the static init fiasco below to have occurred, and thus
+        // cpu_mem_ptr being available and inited. This is not great.
         init_cpu_mem();
+
+        // #2137 - static init fiasco for fallback functions. 
+        // If dependent libraries do malloc _before_ the above declaration inits are run,
+        // we end up here with nowhere to go. Add a second check and attempt the full init
+        // already. If we find the functions, all is good. Otherwise, trudge along and probably
+        // crash terribly later.
+        // Note: this is only relevant if we're in dlinit phase, in which case we are single
+        // threaded. Or there is no external func to find. No need for atomics or fences.
+        static bool double_checked = false;
+        if (!double_checked) {
+            double_checked = true;
+
+            original_malloc_func = reinterpret_cast<malloc_func_type>(dlsym(RTLD_NEXT, "malloc"));
+            original_free_func = reinterpret_cast<free_func_type>(dlsym(RTLD_NEXT, "free"));
+            original_realloc_func = reinterpret_cast<realloc_func_type>(dlsym(RTLD_NEXT, "realloc"));
+            original_aligned_alloc_func = reinterpret_cast<aligned_alloc_type>(dlsym(RTLD_NEXT, "aligned_alloc"));
+            original_malloc_trim_func = reinterpret_cast<malloc_trim_type>(dlsym(RTLD_NEXT, "malloc_trim"));
+            original_malloc_usable_size_func = reinterpret_cast<malloc_usable_size_type>(dlsym(RTLD_NEXT, "malloc_usable_size"));
+
+            if (original_malloc_func) {
+                return allocate_slowpath(size);
+            }
+        }
     }
     // On the fast path we've already called maybe_sample, except in the case
     // of !is_reactor_thread (we don't sample such alloctions).
@@ -1798,6 +1826,10 @@ size_t get_large_allocation_warning_threshold() {
 
 void disable_large_allocation_warning() {
     get_cpu_mem().large_allocation_warning_threshold = std::numeric_limits<size_t>::max();
+}
+
+void configure_minimal() {
+    init_cpu_mem();
 }
 
 internal::numa_layout
@@ -2254,8 +2286,6 @@ void* realloc(void* ptr, size_t size) {
         abort();
     }
     // if we're here, it's a non-null seastar memory ptr
-    // or original functions aren't available.
-    // at any rate, using the seastar allocator is OK now.
     auto old_size = ptr ? object_size(ptr) : 0;
     if (size == old_size) {
         return ptr;
@@ -2264,10 +2294,16 @@ void* realloc(void* ptr, size_t size) {
         ::free(ptr);
         return nullptr;
     }
-    if (size < old_size) {
+    if (size < old_size && cpu_pages::is_local_pointer(ptr)) {
+        // local pointers can sometimes be shrunk by returning freed
+        // pages to the buddy allocator
         seastar::memory::shrink(ptr, size);
         return ptr;
     }
+
+    // either a request to realloc larger than the existing allocation size
+    // or a cross-shard pointer: in either case we allocate a new local
+    // pointer and copy the contents
     auto nptr = malloc(size);
     if (!nptr) {
         return nptr;
@@ -2467,8 +2503,6 @@ void operator delete[](void* ptr, size_t size, std::nothrow_t) noexcept {
     seastar::memory::free(ptr, size);
 }
 
-#ifdef __cpp_aligned_new
-
 extern "C++"
 [[gnu::visibility("default")]]
 void* operator new(size_t size, std::align_val_t a) {
@@ -2543,8 +2577,6 @@ void operator delete[](void* ptr, std::align_val_t a, const std::nothrow_t&) noe
     seastar::memory::free(ptr);
 }
 
-#endif
-
 namespace seastar {
 
 #else
@@ -2608,6 +2640,9 @@ configure(std::vector<resource::memory> m, bool mbind,
         std::optional<std::string> hugepages_path) {
     return {};
 }
+
+void configure_minimal() 
+{}
 
 statistics stats() {
     return statistics{0, 0, 0, 1 << 30, 1 << 30, 0, 0, 0, 0, 0, 0};

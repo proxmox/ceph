@@ -22,11 +22,6 @@
 #pragma once
 
 #ifndef SEASTAR_MODULE
-#include <iostream>
-#include <algorithm>
-#include <unordered_map>
-#include <queue>
-#include <bitset>
 #include <limits>
 #include <cctype>
 #include <vector>
@@ -247,7 +242,7 @@ public:
     }
 
     future<> start(const sstring& name = generate_server_name());
-    future<> stop();
+    future<> stop() noexcept;
     future<> set_routes(std::function<void(routes& r)> fun);
     future<> listen(socket_address addr);
     future<> listen(socket_address addr, http_server::server_credentials_ptr credentials);

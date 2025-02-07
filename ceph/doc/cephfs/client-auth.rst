@@ -106,6 +106,8 @@ If quotas are not enabled or if no quota is set on the mounted sub-directory,
 then the overall usage of the file system will be reported irrespective of the
 value of this setting.
 
+.. _cephfs-layout-and-quota-restriction:
+
 Layout and Quota restriction (the 'p' flag)
 ===========================================
 
@@ -274,7 +276,7 @@ Client ``someuser`` is authorized for only one file system:
         caps mon = "allow r"
         caps osd = "allow rw tag cephfs data=cephfs"
 
-Mounting ``cephfs1`` on the already-created mountpoint  ``/mnt/cephfs1``  with
+Mounting ``cephfs1`` on the already-created mount point  ``/mnt/cephfs1``  with
 ``someuser`` works:
 
 .. prompt:: bash #

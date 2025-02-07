@@ -27,14 +27,13 @@
 #include <seastar/core/circular_buffer_fixed_capacity.hh>
 #include <seastar/core/condition-variable.hh>
 #include <seastar/core/enum.hh>
-#include <seastar/core/fair_queue.hh>
 #include <seastar/core/file.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/idle_cpu_handler.hh>
+#include <seastar/core/internal/io_desc.hh>
 #include <seastar/core/internal/io_request.hh>
 #include <seastar/core/internal/io_sink.hh>
 #include <seastar/core/iostream.hh>
-#include <seastar/core/linux-aio.hh>
 #include <seastar/core/lowres_clock.hh>
 #include <seastar/core/make_task.hh>
 #include <seastar/core/manual_clock.hh>
@@ -97,7 +96,6 @@ namespace seastar {
 using shard_id = unsigned;
 
 namespace alien {
-class message_queue;
 class instance;
 }
 SEASTAR_MODULE_EXPORT
@@ -142,7 +140,6 @@ void increase_thrown_exceptions_counter() noexcept;
 
 }
 
-class kernel_completion;
 class io_queue;
 SEASTAR_MODULE_EXPORT
 class io_intent;
@@ -266,12 +263,12 @@ private:
     std::unique_ptr<internal::cpu_stall_detector> _cpu_stall_detector;
 
     unsigned _max_task_backlog = 1000;
-    timer_set<timer<>, &timer<>::_link> _timers;
-    timer_set<timer<>, &timer<>::_link>::timer_list_t _expired_timers;
-    timer_set<timer<lowres_clock>, &timer<lowres_clock>::_link> _lowres_timers;
-    timer_set<timer<lowres_clock>, &timer<lowres_clock>::_link>::timer_list_t _expired_lowres_timers;
-    timer_set<timer<manual_clock>, &timer<manual_clock>::_link> _manual_timers;
-    timer_set<timer<manual_clock>, &timer<manual_clock>::_link>::timer_list_t _expired_manual_timers;
+    timer<>::set_t _timers;
+    timer<>::set_t::timer_list_t _expired_timers;
+    timer<lowres_clock>::set_t _lowres_timers;
+    timer<lowres_clock>::set_t::timer_list_t _expired_lowres_timers;
+    timer<manual_clock>::set_t _manual_timers;
+    timer<manual_clock>::set_t::timer_list_t _expired_manual_timers;
     io_stats _io_stats;
     uint64_t _fsyncs = 0;
     uint64_t _cxx_exceptions = 0;
@@ -281,7 +278,6 @@ private:
         int64_t _vruntime = 0;
         float _shares;
         int64_t _reciprocal_shares_times_2_power_32;
-        bool _current = false;
         bool _active = false;
         uint8_t _id;
         sched_clock::time_point _ts; // to help calculating wait/starve-times
@@ -356,8 +352,6 @@ private:
     void expire_manual_timers() noexcept;
     void start_aio_eventfd_loop();
     void stop_aio_eventfd_loop();
-    template <typename T, typename E, typename EnableFunc>
-    void complete_timers(T&, E&, EnableFunc&& enable_fn) noexcept(noexcept(enable_fn()));
 
     /**
      * Returns TRUE if all pollers allow blocking.
@@ -371,6 +365,8 @@ public:
     /// Register a user-defined signal handler
     void handle_signal(int signo, noncopyable_function<void ()>&& handler);
     void wakeup();
+    /// @private
+    bool stopped() const noexcept { return _stopped; }
 
 private:
     class signals {
@@ -410,7 +406,7 @@ private:
     void insert_activating_task_queues();
     void account_runtime(task_queue& tq, sched_clock::duration runtime);
     void account_idle(sched_clock::duration idletime);
-    void allocate_scheduling_group_specific_data(scheduling_group sg, scheduling_group_key key);
+    void allocate_scheduling_group_specific_data(scheduling_group sg, unsigned long key_id);
     future<> rename_scheduling_group_specific_data(scheduling_group sg);
     future<> init_scheduling_group(scheduling_group sg, sstring name, sstring shortname, float shares);
     future<> init_new_scheduling_group_key(scheduling_group_key key, scheduling_group_key_config cfg);
@@ -633,7 +629,6 @@ private:
 
     future<> run_exit_tasks();
     void stop();
-    friend class alien::message_queue;
     friend class pollable_fd;
     friend class pollable_fd_state;
     friend class posix_file_impl;
@@ -642,7 +637,6 @@ private:
     friend class timer<lowres_clock>;
     friend class timer<manual_clock>;
     friend class smp;
-    friend class smp_message_queue;
     friend class internal::poller;
     friend class scheduling_group;
     friend void internal::add_to_flush_poller(output_stream<char>& os) noexcept;

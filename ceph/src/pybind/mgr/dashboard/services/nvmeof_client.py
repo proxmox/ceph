@@ -22,13 +22,41 @@ else:
     class NVMeoFClient(object):
         pb2 = pb2
 
-        def __init__(self):
+        def __init__(self, gw_group: Optional[str] = None, traddr: Optional[str] = None):
             logger.info("Initiating nvmeof gateway connection...")
-            service_name, self.gateway_addr = NvmeofGatewaysConfig.get_service_info()
+            try:
+                if not gw_group:
+                    service_name, self.gateway_addr = NvmeofGatewaysConfig.get_service_info()
+                else:
+                    service_name, self.gateway_addr = NvmeofGatewaysConfig.get_service_info(
+                        gw_group
+                    )
+            except TypeError as e:
+                raise DashboardException(
+                    f'Unable to retrieve the gateway info: {e}'
+                )
+
+            # While creating listener need to direct request to the gateway
+            # address where listener is supposed to be added.
+            if traddr:
+                gateways_info = NvmeofGatewaysConfig.get_gateways_config()
+                matched_gateway = next(
+                    (
+                        gateway
+                        for gateways in gateways_info['gateways'].values()
+                        for gateway in gateways
+                        if traddr in gateway['service_url']
+                    ),
+                    None
+                )
+                if matched_gateway:
+                    self.gateway_addr = matched_gateway.get('service_url')
+                    logger.debug("Gateway address set to: %s", self.gateway_addr)
 
             root_ca_cert = NvmeofGatewaysConfig.get_root_ca_cert(service_name)
-            client_key = NvmeofGatewaysConfig.get_client_key(service_name)
-            client_cert = NvmeofGatewaysConfig.get_client_cert(service_name)
+            if root_ca_cert:
+                client_key = NvmeofGatewaysConfig.get_client_key(service_name)
+                client_cert = NvmeofGatewaysConfig.get_client_cert(service_name)
 
             if root_ca_cert and client_key and client_cert:
                 logger.info('Securely connecting to: %s', self.gateway_addr)
