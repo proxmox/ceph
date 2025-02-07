@@ -1,3 +1,9 @@
+ceph (19.2.1-pve1) bookworm; urgency=medium
+
+  * update Ceph to Squid 19.2.1 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 07 Feb 2025 15:11:21 +0100
+
 ceph (19.2.0-pve2) bookworm; urgency=medium
 
   * d/control: fix lua dependencies for librgw2 to avoid pulling in a huge
