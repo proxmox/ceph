@@ -1,3 +1,10 @@
+ceph (17.2.8-pve2) bookworm; urgency=medium
+
+  * cherry-pick fix for extending OSD log to avoid crash after updating the
+    OSDs
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 28 Feb 2025 14:54:04 +0100
+
 ceph (17.2.8-pve1) bookworm; urgency=medium
 
   * new upstream quincy 17.2.8 stable release
