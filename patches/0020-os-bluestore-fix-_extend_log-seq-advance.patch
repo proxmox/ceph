@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Pere Diaz Bou <pdiabou@redhat.com>
+Date: Fri, 29 Sep 2023 13:17:03 +0200
+Subject: [PATCH] os/bluestore: fix _extend_log seq advance
+
+when extending the log, the sequence was left on a bad state because it would first create a transaction to update with the current seq number but leave the "real" transaction with the same sequence number which should be `extend_log_transaction.seq + 1`.
+
+Signed-off-by: Pere Diaz Bou <pdiabou@redhat.com>
+(cherry picked from commit 63f0a0df14c9d8e68be61e374438bc75cef45a1f)
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/os/bluestore/BlueFS.cc | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/os/bluestore/BlueFS.cc b/src/os/bluestore/BlueFS.cc
+index 1c14cd24d1d..eefdc334967 100644
+--- a/src/os/bluestore/BlueFS.cc
++++ b/src/os/bluestore/BlueFS.cc
+@@ -3108,12 +3108,13 @@ void BlueFS::_extend_log(uint64_t amount) {
+   _pad_bl(bl, super.block_size);
+   log.writer->append(bl);
+   ceph_assert(allocated_before_extension >= log.writer->get_effective_write_pos());
+-  log.t.seq = log.seq_live;
+ 
+   // before sync_core we advance the seq
+   {
+     std::unique_lock<ceph::mutex> l(dirty.lock);
+-    _log_advance_seq();
++    dirty.seq_live++;
++    log.seq_live++;
++    log.t.seq++;
+   }
+ }
+ 

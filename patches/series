@@ -18,3 +18,4 @@
 0017-mgr-dashboard-remove-ability-to-create-and-check-TLS.patch
 0018-debian-recursively-adjust-permissions-of-var-lib-cep.patch
 0019-ceph-crash-change-order-of-client-names.patch
+0020-os-bluestore-fix-_extend_log-seq-advance.patch
