@@ -14,3 +14,4 @@
 0014-ceph-crash-change-order-of-client-names.patch
 0015-debian-pkg-record-python3-packaging-dependency-for-c.patch
 0016-d-control-fix-lua-dependencies-for-librgw2.patch
+0017-common-pick_address-Add-IPv6-support-to-is_addr_in_s.patch
