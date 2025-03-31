@@ -1,3 +1,9 @@
+ceph (19.2.1-pve2) bookworm; urgency=medium
+
+  * backport fix for IPv6-only OSDs
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 31 Mar 2025 22:19:14 +0200
+
 ceph (19.2.1-pve1) bookworm; urgency=medium
 
   * update Ceph to Squid 19.2.1 stable release
