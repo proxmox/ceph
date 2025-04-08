@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stoiko Ivanov <s.ivanov@proxmox.com>
+Date: Tue, 8 Apr 2025 12:13:10 +0200
+Subject: [PATCH] disable elastic_shared_blob to prevent crashing OSDs
+
+reported in our community forum and upstream:
+https://forum.proxmox.com/threads/164735/
+https://tracker.ceph.com/issues/70390
+https://github.com/ceph/ceph/pull/62724
+
+fix seems trivial, and the feature is quite new:
+https://ceph.io/assets/pdfs/events/2024/ceph-days-nyc/Diving%20Deep%20with%20Squid.pdf
+
+Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
+---
+ ceph/src/common/options/global.yaml.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/common/options/global.yaml.in b/ceph/src/common/options/global.yaml.in
+index 76a4f4d9551ada1ce20913197dab2b0bdb716b5c..c9b76d378aa7226944e8c0edb14956ad1265a4ae 100644
+--- a/src/common/options/global.yaml.in
++++ b/src/common/options/global.yaml.in
+@@ -4952,7 +4952,7 @@ options:
+   long_desc: Overwrites on snapped objects cause shared blob count to grow.
+     It has a very negative performance effect. When enabled shared blob count
+     is significantly reduced.
+-  default: true
++  default: false
+   flags:
+   - create
+   with_legacy: false

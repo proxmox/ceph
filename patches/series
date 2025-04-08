@@ -15,3 +15,4 @@
 0015-debian-pkg-record-python3-packaging-dependency-for-c.patch
 0016-d-control-fix-lua-dependencies-for-librgw2.patch
 0017-common-pick_address-Add-IPv6-support-to-is_addr_in_s.patch
+0018-disable-elastic_shared_blob-to-prevent-crashing-OSDs.patch
