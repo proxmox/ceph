@@ -83,9 +83,6 @@ void Background::start() {
   }
   started = true;
   runner = std::thread(&Background::run, this);
-  const auto rc = ceph_pthread_setname(runner.native_handle(),
-      "lua_background");
-  ceph_assert(rc == 0);
 }
 
 void Background::pause() {
@@ -132,6 +129,7 @@ void Background::run() {
   set_package_path(L, luarocks_path);
   create_debug_action(L, cct);
   create_background_metatable(L);
+  ceph_pthread_setname("lua_background");
   const DoutPrefixProvider* const dpp = &dp;
 
   while (!stopped) {

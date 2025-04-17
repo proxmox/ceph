@@ -16,12 +16,15 @@
 
 #include "HTMLFormatter.h"
 #include "common/escape.h"
+#include "common/StackStringStream.h"
 #include "include/buffer.h"
 
 #include <fmt/format.h>
 #include <algorithm>
 #include <set>
 #include <limits>
+#include <utility>
+#include <boost/container/small_vector.hpp>
 
 // -----------------------
 namespace ceph {
@@ -289,6 +292,17 @@ void JSONFormatter::finish_pending_string()
   }
 }
 
+void JSONFormatter::add_value(std::string_view name, double val) {
+  CachedStackStringStream css;
+  if (!std::isfinite(val) || std::isnan(val)) {
+    *css << "null";
+  } else {
+    css->precision(std::numeric_limits<double>::max_digits10);
+    *css << val;
+  }
+  add_value(name, css->strv(), false);
+}
+
 template <class T>
 void JSONFormatter::add_value(std::string_view name, T val)
 {
@@ -346,10 +360,21 @@ std::ostream& JSONFormatter::dump_stream(std::string_view name)
 
 void JSONFormatter::dump_format_va(std::string_view name, const char *ns, bool quoted, const char *fmt, va_list ap)
 {
-  char buf[LARGE_SIZE];
-  vsnprintf(buf, LARGE_SIZE, fmt, ap);
+  auto buf = boost::container::small_vector<char, LARGE_SIZE>{
+      LARGE_SIZE, boost::container::default_init};
 
-  add_value(name, buf, quoted);
+  va_list ap_copy;
+  va_copy(ap_copy, ap);
+  int len = vsnprintf(buf.data(), buf.size(), fmt, ap_copy);
+  va_end(ap_copy);
+
+  if (std::cmp_greater_equal(len, buf.size())) {
+    // output was truncated, allocate a buffer large enough
+    buf.resize(len + 1, boost::container::default_init);
+    vsnprintf(buf.data(), buf.size(), fmt, ap);
+  }
+
+  add_value(name, buf.data(), quoted);
 }
 
 int JSONFormatter::get_len() const
@@ -531,15 +556,27 @@ std::ostream& XMLFormatter::dump_stream(std::string_view name)
 
 void XMLFormatter::dump_format_va(std::string_view name, const char *ns, bool quoted, const char *fmt, va_list ap)
 {
-  char buf[LARGE_SIZE];
-  size_t len = vsnprintf(buf, LARGE_SIZE, fmt, ap);
+  auto buf = boost::container::small_vector<char, LARGE_SIZE>{
+      LARGE_SIZE, boost::container::default_init};
+
+  va_list ap_copy;
+  va_copy(ap_copy, ap);
+  int len = vsnprintf(buf.data(), buf.size(), fmt, ap_copy);
+  va_end(ap_copy);
+
+  if (std::cmp_greater_equal(len, buf.size())) {
+    // output was truncated, allocate a buffer large enough
+    buf.resize(len + 1, boost::container::default_init);
+    vsnprintf(buf.data(), buf.size(), fmt, ap);
+  }
+
   auto e = get_xml_name(name);
 
   print_spaces();
   if (ns) {
-    m_ss << "<" << e << " xmlns=\"" << ns << "\">" << xml_stream_escaper(std::string_view(buf, len)) << "</" << e << ">";
+    m_ss << "<" << e << " xmlns=\"" << ns << "\">" << xml_stream_escaper(std::string_view(buf.data(), len)) << "</" << e << ">";
   } else {
-    m_ss << "<" << e << ">" << xml_stream_escaper(std::string_view(buf, len)) << "</" << e << ">";
+    m_ss << "<" << e << ">" << xml_stream_escaper(std::string_view(buf.data(), len)) << "</" << e << ">";
   }
 
   if (m_pretty)
@@ -908,14 +945,26 @@ void TableFormatter::dump_format_va(std::string_view name,
 				    const char *fmt, va_list ap)
 {
   finish_pending_string();
-  char buf[LARGE_SIZE];
-  vsnprintf(buf, LARGE_SIZE, fmt, ap);
+  auto buf = boost::container::small_vector<char, LARGE_SIZE>{
+      LARGE_SIZE, boost::container::default_init};
+
+  va_list ap_copy;
+  va_copy(ap_copy, ap);
+  int len = vsnprintf(buf.data(), buf.size(), fmt, ap_copy);
+  va_end(ap_copy);
+
+  if (std::cmp_greater_equal(len, buf.size())) {
+    // output was truncated, allocate a buffer large enough
+    buf.resize(len + 1, boost::container::default_init);
+    vsnprintf(buf.data(), buf.size(), fmt, ap); 
+  }
 
   size_t i = m_vec_index(name);
   if (ns) {
-    m_ss << ns << "." << buf;
-  } else
-    m_ss << buf;
+    m_ss << ns << "." << buf.data();
+  } else {
+    m_ss << buf.data();
+  }
 
   m_vec[i].push_back(std::make_pair(get_section_name(name), m_ss.str()));
   m_ss.clear();

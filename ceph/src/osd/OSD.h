@@ -118,6 +118,8 @@ public:
 
   void enqueue_back(OpSchedulerItem&& qi);
   void enqueue_front(OpSchedulerItem&& qi);
+  /// scheduler cost per io, only valid for mclock, asserts for wpq
+  double get_cost_per_io() const;
 
   void maybe_inject_dispatch_delay() {
     if (g_conf()->osd_debug_inject_dispatch_delay_probability > 0) {
@@ -533,7 +535,7 @@ public:
   void queue_scrub_applied_update(PG* pg, Scrub::scrub_prio_t with_priority);
 
   /// Signals that the selected chunk (objects range) is available for scrubbing
-  void queue_scrub_chunk_free(PG* pg, Scrub::scrub_prio_t with_priority);
+  void queue_scrub_chunk_free(PG* pg, Scrub::scrub_prio_t with_priority, uint64_t cost);
 
   /// The chunk selected is blocked by user operations, and cannot be scrubbed now
   void queue_scrub_chunk_busy(PG* pg, Scrub::scrub_prio_t with_priority);
@@ -562,7 +564,8 @@ public:
   void queue_for_rep_scrub(PG* pg,
 			   Scrub::scrub_prio_t with_high_priority,
 			   unsigned int qu_priority,
-			   Scrub::act_token_t act_token);
+			   Scrub::act_token_t act_token,
+			   uint64_t cost);
 
   /// Signals a change in the number of in-flight recovery writes
   void queue_scrub_replica_pushes(PG *pg, Scrub::scrub_prio_t with_priority);
@@ -575,7 +578,7 @@ public:
 				   unsigned int qu_priority,
 				   Scrub::act_token_t act_token);
 
-  void queue_for_pg_delete(spg_t pgid, epoch_t e);
+  void queue_for_pg_delete(spg_t pgid, epoch_t e, int64_t num_objects);
   bool try_finish_pg_delete(PG *pg, unsigned old_pg_num);
 
 private:
@@ -595,14 +598,20 @@ private:
   void queue_scrub_event_msg(PG* pg,
 			     Scrub::scrub_prio_t with_priority,
 			     unsigned int qu_priority,
-			     Scrub::act_token_t act_token);
+			     Scrub::act_token_t act_token,
+			     uint64_t cost);
 
   /// An alternative version of queue_scrub_event_msg(), in which the queuing priority is
   /// provided by the executing scrub (i.e. taken from PgScrubber::m_flags)
   template <class MSG_TYPE>
-  void queue_scrub_event_msg(PG* pg, Scrub::scrub_prio_t with_priority);
-  int64_t get_scrub_cost();
-
+  void queue_scrub_event_msg(PG* pg, Scrub::scrub_prio_t with_priority, uint64_t cost);
+  template <class MSG_TYPE>
+  void queue_scrub_event_msg_default_cost(PG* pg, Scrub::scrub_prio_t with_priority);
+  template <class MSG_TYPE>
+  void queue_scrub_event_msg_default_cost(PG* pg,
+		                          Scrub::scrub_prio_t with_priority,
+					  unsigned int qu_priority,
+					  Scrub::act_token_t act_token);
   utime_t defer_recovery_until;
   uint64_t recovery_ops_active;
   uint64_t recovery_ops_reserved;
@@ -724,6 +733,7 @@ public:
   void start_shutdown();
   void shutdown_reserver();
   void shutdown();
+  void fast_shutdown();
 
   // -- stats --
   ceph::mutex stat_lock = ceph::make_mutex("OSDService::stat_lock");
@@ -1528,7 +1538,7 @@ public:
     bool ms_handle_refused(Connection *con) override {
       return osd->ms_handle_refused(con);
     }
-    int ms_handle_fast_authentication(Connection *con) override {
+    bool ms_handle_fast_authentication(Connection *con) override {
       return true;
     }
   } heartbeat_dispatcher;
@@ -1651,6 +1661,11 @@ protected:
       for (auto p : oncommits) {
 	p->complete(0);
       }
+    }
+
+    double get_cost_per_io() const {
+      auto &sdata = osd->shards[0];
+      return sdata->scheduler->get_cost_per_io();
     }
   } op_shardedwq;
 
@@ -1951,7 +1966,7 @@ private:
   void ms_handle_connect(Connection *con) override;
   void ms_handle_fast_connect(Connection *con) override;
   void ms_handle_fast_accept(Connection *con) override;
-  int ms_handle_fast_authentication(Connection *con) override;
+  bool ms_handle_fast_authentication(Connection *con) override;
   bool ms_handle_reset(Connection *con) override;
   void ms_handle_remote_reset(Connection *con) override {}
   bool ms_handle_refused(Connection *con) override;
@@ -2016,7 +2031,6 @@ private:
   void maybe_override_sleep_options_for_qos();
   bool maybe_override_options_for_qos(
     const std::set<std::string> *changed = nullptr);
-  void maybe_override_cost_for_qos();
   int run_osd_bench_test(int64_t count,
                          int64_t bsize,
                          int64_t osize,
@@ -2024,7 +2038,6 @@ private:
                          double *elapsed,
                          std::ostream& ss);
   void mon_cmd_set_config(const std::string &key, const std::string &val);
-  bool unsupported_objstore_for_qos();
 
   void scrub_purged_snaps();
   void probe_smart(const std::string& devid, std::ostream& ss);

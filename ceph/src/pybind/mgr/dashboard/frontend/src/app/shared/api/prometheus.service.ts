@@ -142,7 +142,6 @@ export class PrometheusService {
       }
       this.timerGetPrometheusDataSub = timer(0, this.timerTime).subscribe(() => {
         selectedTime = this.updateTimeStamp(selectedTime);
-
         for (const queryName in queries) {
           if (queries.hasOwnProperty(queryName)) {
             const query = queries[queryName];
@@ -162,12 +161,9 @@ export class PrometheusService {
                 queriesResults[queryName] !== '' &&
                 checkNan
               ) {
-                queriesResults[queryName].forEach((valueArray: string[]) => {
-                  if (valueArray.includes('NaN')) {
-                    const index = valueArray.indexOf('NaN');
-                    if (index !== -1) {
-                      valueArray[index] = '0';
-                    }
+                queriesResults[queryName].forEach((valueArray: any[]) => {
+                  if (isNaN(parseFloat(valueArray[1]))) {
+                    valueArray[1] = '0';
                   }
                 });
               }

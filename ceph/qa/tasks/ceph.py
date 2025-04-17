@@ -426,12 +426,7 @@ def create_rbd_pool(ctx, config):
             args=['sudo', 'ceph', '--cluster', cluster_name,
                   'osd', 'pool', 'create', 'rbd', '8'])
         mon_remote.run(
-            args=[
-                'sudo', 'ceph', '--cluster', cluster_name,
-                'osd', 'pool', 'application', 'enable',
-                'rbd', 'rbd', '--yes-i-really-mean-it'
-            ],
-            check_status=False)
+            args=['rbd', '--cluster', cluster_name, 'pool', 'init', 'rbd'])
     yield
 
 @contextlib.contextmanager
@@ -1154,8 +1149,18 @@ def cluster(ctx, config):
             args.extend([
                 run.Raw('|'), 'head', '-n', '1',
             ])
-            stdout = mon0_remote.sh(args)
-            return stdout or None
+            r = mon0_remote.run(
+                stdout=BytesIO(),
+                args=args,
+                stderr=StringIO(),
+            )
+            stdout = r.stdout.getvalue().decode()
+            if stdout:
+                return stdout
+            stderr = r.stderr.getvalue()
+            if stderr:
+                return stderr
+            return None
 
         if first_in_ceph_log('\[ERR\]|\[WRN\]|\[SEC\]',
                              config['log_ignorelist']) is not None:

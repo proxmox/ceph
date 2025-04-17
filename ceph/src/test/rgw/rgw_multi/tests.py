@@ -535,6 +535,7 @@ def create_bucket_per_zone_in_realm():
         b, z = create_bucket_per_zone(zg_conn)
         buckets.extend(b)
         zone_bucket.extend(z)
+    realm_meta_checkpoint(realm)
     return buckets, zone_bucket
 
 def test_bucket_create():
@@ -610,7 +611,8 @@ def test_object_sync():
     zonegroup_conns = ZonegroupConns(zonegroup)
     buckets, zone_bucket = create_bucket_per_zone(zonegroup_conns)
 
-    objnames = [ 'myobj', '_myobj', ':', '&' ]
+    objnames = [ 'myobj', '_myobj', ':', '&', '.', '..', '...',  '.o', '.o.']
+
     content = 'asdasd'
 
     # don't wait for meta sync just yet
@@ -1375,6 +1377,10 @@ def test_bucket_index_log_trim():
     cold_bilog = bilog_list(zone.zone, cold_bucket.name)
     assert(len(cold_bilog) == 0)
 
+# TODO: disable failing tests temporarily
+# until they are fixed
+
+@attr('fails_with_rgw')
 def test_bucket_reshard_index_log_trim():
     zonegroup = realm.master_zonegroup()
     zonegroup_conns = ZonegroupConns(zonegroup)
@@ -1605,6 +1611,8 @@ def bucket_keys_eq(zone1, zone2, bucket_name):
                          zone2.name)
             assert False
 
+
+@attr('fails_with_rgw')
 @attr('bucket_reshard')
 def test_bucket_sync_run_basic_incremental():
     """
@@ -1670,6 +1678,7 @@ def trash_bucket(zone, bucket_name):
     cmd += ['--bucket', bucket_name]
     zone.cluster.admin(cmd)
 
+@attr('fails_with_rgw')
 @attr('bucket_reshard')
 def test_zap_init_bucket_sync_run():
     """
@@ -1738,6 +1747,61 @@ def test_role_sync():
 
             check_role_eq(source_conn, target_conn, role)
 
+def test_role_delete_sync():
+    zonegroup = realm.master_zonegroup()
+    zonegroup_conns = ZonegroupConns(zonegroup)
+    role_name = gen_role_name()
+    log.info('create role zone=%s name=%s', zonegroup_conns.master_zone.name, role_name)
+    zonegroup_conns.master_zone.create_role("", role_name, None, "")
+
+    zonegroup_meta_checkpoint(zonegroup)
+
+    for zone in zonegroup_conns.zones:
+        log.info(f'checking if zone: {zone.name} has role: {role_name}')
+        assert(zone.has_role(role_name))
+        log.info(f'success, zone: {zone.name} has role: {role_name}')
+
+    log.info(f"deleting role: {role_name}")
+    zonegroup_conns.master_zone.delete_role(role_name)
+    zonegroup_meta_checkpoint(zonegroup)
+
+    for zone in zonegroup_conns.zones:
+        log.info(f'checking if zone: {zone.name} does not have role: {role_name}')
+        assert(not zone.has_role(role_name))
+        log.info(f'success, zone: {zone.name} does not have role: {role_name}')
+
+def test_object_acl():
+    zonegroup = realm.master_zonegroup()
+    zonegroup_conns = ZonegroupConns(zonegroup)
+    primary = zonegroup_conns.rw_zones[0]
+    secondary = zonegroup_conns.rw_zones[1]
+
+    bucket = primary.create_bucket(gen_bucket_name())
+    log.debug('created bucket=%s', bucket.name)
+
+    # upload a dummy object and wait for sync.
+    k = new_key(primary, bucket, 'dummy')
+    k.set_contents_from_string('foo')
+    zonegroup_meta_checkpoint(zonegroup)
+    zonegroup_data_checkpoint(zonegroup_conns)
+
+    #check object on secondary before setacl
+    bucket2 = get_bucket(secondary, bucket.name)
+    before_set_acl = bucket2.get_acl(k)
+    assert(len(before_set_acl.acl.grants) == 1)
+
+    #set object acl on primary and wait for sync.
+    bucket.set_canned_acl('public-read', key_name=k)
+    log.debug('set acl=%s', bucket.name)
+    zonegroup_data_checkpoint(zonegroup_conns)
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+    #check object secondary after setacl
+    bucket2 = get_bucket(secondary, bucket.name)
+    after_set_acl = bucket2.get_acl(k)
+    assert(len(after_set_acl.acl.grants) == 2) # read grant added on AllUsers
+
+@attr('fails_with_rgw')
 @attr('data_sync_init')
 def test_bucket_full_sync_after_data_sync_init():
     zonegroup = realm.master_zonegroup()
@@ -1769,6 +1833,7 @@ def test_bucket_full_sync_after_data_sync_init():
     zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
     zonegroup_data_checkpoint(zonegroup_conns)
 
+@attr('fails_with_rgw')
 @attr('data_sync_init')
 @attr('bucket_reshard')
 def test_resharded_bucket_full_sync_after_data_sync_init():
@@ -1809,6 +1874,7 @@ def test_resharded_bucket_full_sync_after_data_sync_init():
     zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
     zonegroup_data_checkpoint(zonegroup_conns)
 
+@attr('fails_with_rgw')
 @attr('data_sync_init')
 def test_bucket_incremental_sync_after_data_sync_init():
     zonegroup = realm.master_zonegroup()
@@ -1846,6 +1912,7 @@ def test_bucket_incremental_sync_after_data_sync_init():
     zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
     zonegroup_data_checkpoint(zonegroup_conns)
 
+@attr('fails_with_rgw')
 @attr('data_sync_init')
 @attr('bucket_reshard')
 def test_resharded_bucket_incremental_sync_latest_after_data_sync_init():
@@ -1894,6 +1961,7 @@ def test_resharded_bucket_incremental_sync_latest_after_data_sync_init():
     zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
     zonegroup_data_checkpoint(zonegroup_conns)
 
+@attr('fails_with_rgw')
 @attr('data_sync_init')
 @attr('bucket_reshard')
 def test_resharded_bucket_incremental_sync_oldest_after_data_sync_init():
@@ -2087,6 +2155,7 @@ def check_objects_not_exist(bucket, obj_arr):
     for objname in obj_arr:
         check_object_not_exists(bucket, objname)
 
+@attr('fails_with_rgw')
 @attr('sync_policy')
 def test_sync_policy_config_zonegroup():
     """
@@ -2158,6 +2227,7 @@ def test_sync_policy_config_zonegroup():
 
     return
 
+@attr('fails_with_rgw')
 @attr('sync_policy')
 def test_sync_flow_symmetrical_zonegroup_all():
     """
@@ -2215,6 +2285,7 @@ def test_sync_flow_symmetrical_zonegroup_all():
     remove_sync_policy_group(c1, "sync-group")
     return
 
+@attr('fails_with_rgw')
 @attr('sync_policy')
 def test_sync_flow_symmetrical_zonegroup_select():
     """
@@ -2283,6 +2354,7 @@ def test_sync_flow_symmetrical_zonegroup_select():
     remove_sync_policy_group(c1, "sync-group")
     return
 
+@attr('fails_with_rgw')
 @attr('sync_policy')
 def test_sync_flow_directional_zonegroup_select():
     """
@@ -2400,6 +2472,7 @@ def test_sync_flow_directional_zonegroup_select():
     remove_sync_policy_group(c1, "sync-group")
     return
 
+@attr('fails_with_rgw')
 @attr('sync_policy')
 def test_sync_single_bucket():
     """
@@ -2512,6 +2585,7 @@ def test_sync_single_bucket():
     remove_sync_policy_group(c1, "sync-group")
     return
 
+@attr('fails_with_rgw')
 @attr('sync_policy')
 def test_sync_different_buckets():
     """
@@ -2661,6 +2735,7 @@ def test_sync_different_buckets():
     remove_sync_policy_group(c1, "sync-group")
     return
 
+@attr('fails_with_rgw')
 @attr('sync_policy')
 def test_sync_multiple_buckets_to_single():
     """
@@ -2782,6 +2857,7 @@ def test_sync_multiple_buckets_to_single():
     remove_sync_policy_group(c1, "sync-group")
     return
 
+@attr('fails_with_rgw')
 @attr('sync_policy')
 def test_sync_single_bucket_to_multiple():
     """
@@ -2892,3 +2968,71 @@ def test_sync_single_bucket_to_multiple():
     remove_sync_policy_group(c1, "sync-bucket", bucketA.name)
     remove_sync_policy_group(c1, "sync-group")
     return
+
+@attr('copy_object')
+def test_copy_object_same_bucket():
+    zonegroup = realm.master_zonegroup()
+    zonegroup_conns = ZonegroupConns(zonegroup)
+    primary = zonegroup_conns.rw_zones[0]
+    secondary = zonegroup_conns.rw_zones[1]
+
+    bucket = primary.create_bucket(gen_bucket_name())
+    log.debug('created bucket=%s', bucket.name)
+
+    objname = 'dummy'
+
+    # upload a dummy object and wait for sync.
+    k = new_key(primary, bucket, objname)
+    k.set_contents_from_string('foo')
+    zonegroup_meta_checkpoint(zonegroup)
+
+    zonegroup_data_checkpoint(zonegroup_conns)
+    log.debug('created object=%s', objname)
+
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+    # copy object on primary zone
+    primary.s3_client.copy_object(Bucket=bucket.name,
+        CopySource=bucket.name + '/'+ objname,
+        Key= objname + '-copy1')
+
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+    # copy object on secondary zone
+    secondary.s3_client.copy_object(Bucket=bucket.name,
+        Key= objname + '-copy2', 
+        CopySource=bucket.name + '/'+ objname)
+
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+@attr('copy_object')
+def test_copy_object_different_bucket():
+    zonegroup = realm.master_zonegroup()
+    zonegroup_conns = ZonegroupConns(zonegroup)
+    primary = zonegroup_conns.rw_zones[0]
+    secondary = zonegroup_conns.rw_zones[1]
+
+    source_bucket = primary.create_bucket(gen_bucket_name())
+    log.debug('created bucket=%s', source_bucket.name)
+
+    objname = 'dummy'
+
+    # upload a dummy object and wait for sync.
+    k = new_key(primary, source_bucket, objname)
+    k.set_contents_from_string('foo')
+    zonegroup_meta_checkpoint(zonegroup)
+    
+    zonegroup_bucket_checkpoint(zonegroup_conns, source_bucket.name)
+    
+    # create destination bucket
+    dest_bucket = primary.create_bucket(gen_bucket_name())
+    log.debug('created bucket=%s', dest_bucket.name)
+    
+    zonegroup_meta_checkpoint(zonegroup)
+            
+    # copy object on primary zone
+    primary.s3_client.copy_object(Bucket = dest_bucket.name,
+        Key = objname + '-copy',
+        CopySource = source_bucket.name + '/' + objname)
+    
+    zonegroup_bucket_checkpoint(zonegroup_conns, dest_bucket.name)

@@ -677,6 +677,9 @@ class TestMonitoring:
                 global:
                   scrape_interval: 10s
                   evaluation_interval: 10s
+                  external_labels:
+                    cluster: fsid
+
                 rule_files:
                   - /etc/prometheus/alerting/*
 
@@ -689,25 +692,61 @@ class TestMonitoring:
                 scrape_configs:
                   - job_name: 'ceph'
                     honor_labels: true
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
+                    - source_labels: [instance]
+                      target_label: instance
+                      replacement: 'ceph_cluster'
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=mgr-prometheus
 
                   - job_name: 'node'
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=node-exporter
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
 
                   - job_name: 'haproxy'
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=haproxy
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
 
                   - job_name: 'ceph-exporter'
                     honor_labels: true
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=ceph-exporter
 
                   - job_name: 'nvmeof'
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=nvmeof
+
+                  - job_name: 'nfs'
+                    http_sd_configs:
+                    - url: http://[::1]:8765/sd/prometheus/sd-config?service=nfs
+
+                  - job_name: 'federate'
+                    scrape_interval: 15s
+                    honor_labels: true
+                    metrics_path: '/federate'
+                    params:
+                      'match[]':
+                        - '{job="ceph"}'
+                        - '{job="node"}'
+                        - '{job="haproxy"}'
+                        - '{job="ceph-exporter"}'
+                    static_configs:
+                    - targets: []
                 """).lstrip()
 
                 _run_cephadm.assert_called_with(
@@ -797,6 +836,7 @@ class TestMonitoring:
                 global:
                   scrape_interval: 10s
                   evaluation_interval: 10s
+
                 rule_files:
                   - /etc/prometheus/alerting/*
 
@@ -822,6 +862,10 @@ class TestMonitoring:
                     tls_config:
                       ca_file: mgr_prometheus_cert.pem
                     honor_labels: true
+                    relabel_configs:
+                    - source_labels: [instance]
+                      target_label: instance
+                      replacement: 'ceph_cluster'
                     http_sd_configs:
                     - url: https://[::1]:8765/sd/prometheus/sd-config?service=mgr-prometheus
                       basic_auth:
@@ -879,6 +923,20 @@ class TestMonitoring:
                         password: sd_password
                       tls_config:
                         ca_file: root_cert.pem
+
+                  - job_name: 'nfs'
+                    honor_labels: true
+                    scheme: https
+                    tls_config:
+                      ca_file: root_cert.pem
+                    http_sd_configs:
+                    - url: https://[::1]:8765/sd/prometheus/sd-config?service=nfs
+                      basic_auth:
+                        username: sd_user
+                        password: sd_password
+                      tls_config:
+                        ca_file: root_cert.pem
+
                 """).lstrip()
 
                 _run_cephadm.assert_called_with(
@@ -955,6 +1013,13 @@ class TestMonitoring:
                       store: boltdb-shipper
                       object_store: filesystem
                       schema: v11
+                      index:
+                        prefix: index_
+                        period: 24h
+                    - from: 2024-05-03
+                      store: tsdb
+                      object_store: filesystem
+                      schema: v13
                       index:
                         prefix: index_
                         period: 24h""").lstrip()
@@ -1726,6 +1791,10 @@ class TestIngressService:
                         {
                             'keepalived.conf':
                                 '# This file is generated by cephadm.\n'
+                                'global_defs {\n    '
+                                'enable_script_security\n    '
+                                'script_user root\n'
+                                '}\n\n'
                                 'vrrp_script check_backend {\n    '
                                 'script "/usr/bin/curl http://1.2.3.7:8999/health"\n    '
                                 'weight -20\n    '
@@ -1849,6 +1918,10 @@ class TestIngressService:
                         {
                             'keepalived.conf':
                                 '# This file is generated by cephadm.\n'
+                                'global_defs {\n    '
+                                'enable_script_security\n    '
+                                'script_user root\n'
+                                '}\n\n'
                                 'vrrp_script check_backend {\n    '
                                 'script "/usr/bin/curl http://[1::4]:8999/health"\n    '
                                 'weight -20\n    '
@@ -1975,6 +2048,10 @@ class TestIngressService:
                         {
                             'keepalived.conf':
                                 '# This file is generated by cephadm.\n'
+                                'global_defs {\n    '
+                                'enable_script_security\n    '
+                                'script_user root\n'
+                                '}\n\n'
                                 'vrrp_script check_backend {\n    '
                                 'script "/usr/bin/curl http://1.2.3.7:8999/health"\n    '
                                 'weight -20\n    '
@@ -2147,6 +2224,10 @@ class TestIngressService:
                             {
                                 'keepalived.conf':
                                     '# This file is generated by cephadm.\n'
+                                    'global_defs {\n    '
+                                    'enable_script_security\n    '
+                                    'script_user root\n'
+                                    '}\n\n'
                                     'vrrp_script check_backend {\n    '
                                     'script "/usr/bin/curl http://1.2.3.1:8999/health"\n    '
                                     'weight -20\n    '
@@ -2300,6 +2381,10 @@ class TestIngressService:
                         {
                             'keepalived.conf':
                                 '# This file is generated by cephadm.\n'
+                                'global_defs {\n    '
+                                'enable_script_security\n    '
+                                'script_user root\n'
+                                '}\n\n'
                                 'vrrp_script check_backend {\n    '
                                 'script "/usr/bin/false"\n    '
                                 'weight -20\n    '
@@ -2376,6 +2461,7 @@ class TestIngressService:
                 hosts=['host1', 'host2']),
             port=12049,
             enable_haproxy_protocol=True,
+            enable_nlm=True,
         )
 
         ispec = IngressSpec(
@@ -2445,7 +2531,7 @@ class TestIngressService:
         nfs_ganesha_txt = (
             "# This file is generated by cephadm.\n"
             'NFS_CORE_PARAM {\n'
-            '        Enable_NLM = false;\n'
+            '        Enable_NLM = true;\n'
             '        Enable_RQUOTA = false;\n'
             '        Protocols = 4;\n'
             '        NFS_Port = 2049;\n'
@@ -2454,7 +2540,7 @@ class TestIngressService:
             '\n'
             'NFSv4 {\n'
             '        Delegations = false;\n'
-            "        RecoveryBackend = 'rados_cluster';\n"
+            '        RecoveryBackend = "rados_cluster";\n'
             '        Minor_Versions = 1, 2;\n'
             '        IdmapConf = "/etc/ganesha/idmap.conf";\n'
             '}\n'

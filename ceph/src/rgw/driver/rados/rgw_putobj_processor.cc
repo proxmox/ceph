@@ -105,7 +105,7 @@ static int process_completed(const AioResultList& completed, RawObjSet *written)
   std::optional<int> error;
   for (auto& r : completed) {
     if (r.result >= 0) {
-      written->insert(r.obj.get_ref().obj);
+      written->insert(r.obj);
     } else if (!error) { // record first error code
       error = r.result;
     }
@@ -150,7 +150,8 @@ int RadosWriter::process(bufferlist&& bl, uint64_t offset)
     op.write(offset, data);
   }
   constexpr uint64_t id = 0; // unused
-  auto c = aio->get(stripe_obj, Aio::librados_op(std::move(op), y), cost, id);
+  auto& ref = stripe_obj.get_ref();
+  auto c = aio->get(ref.obj, Aio::librados_op(ref.pool.ioctx(), std::move(op), y), cost, id);
   return process_completed(c, &written);
 }
 
@@ -164,7 +165,8 @@ int RadosWriter::write_exclusive(const bufferlist& data)
   op.write_full(data);
 
   constexpr uint64_t id = 0; // unused
-  auto c = aio->get(stripe_obj, Aio::librados_op(std::move(op), y), cost, id);
+  auto& ref = stripe_obj.get_ref();
+  auto c = aio->get(ref.obj, Aio::librados_op(ref.pool.ioctx(), std::move(op), y), cost, id);
   auto d = aio->drain();
   c.splice(c.end(), d);
   return process_completed(c, &written);
@@ -578,6 +580,11 @@ int MultipartObjectProcessor::complete(size_t accounted_size,
     r = rgw_rados_operate(dpp, meta_obj_ref.pool.ioctx(), meta_obj_ref.obj.oid, &op, y);
   }
   if (r < 0) {
+    if (r == -ETIMEDOUT) {
+      // The meta_obj_ref write may eventually succeed, clear the set of objects for deletion. if it
+      // doesn't ever succeed, we'll orphan any tail objects as if we'd crashed before that write
+      writer.clear_written();
+    }
     return r == -ENOENT ? -ERR_NO_SUCH_UPLOAD : r;
   }
 
@@ -660,7 +667,7 @@ int AppendObjectProcessor::prepare(optional_yield y)
       tail_placement_rule.storage_class = RGW_STORAGE_CLASS_STANDARD;
     }
     manifest.set_prefix(cur_manifest->get_prefix());
-    astate->keep_tail = true;
+    keep_tail = true;
   }
   manifest.set_multipart_part_rule(store->ctx()->_conf->rgw_obj_stripe_size, cur_part_num);
 
@@ -726,6 +733,7 @@ int AppendObjectProcessor::complete(size_t accounted_size, const string &etag, c
   obj_op.meta.user_data = user_data;
   obj_op.meta.zones_trace = zones_trace;
   obj_op.meta.modify_tail = true;
+  obj_op.meta.keep_tail = keep_tail;
   obj_op.meta.appendable = true;
   //Add the append part number
   bufferlist cur_part_num_bl;
@@ -756,6 +764,11 @@ int AppendObjectProcessor::complete(size_t accounted_size, const string &etag, c
 			accounted_size + *cur_accounted_size,
 			attrs, y, flags & rgw::sal::FLAG_LOG_OP);
   if (r < 0) {
+      if (r == -ETIMEDOUT) {
+      // The head object write may eventually succeed, clear the set of objects for deletion. if it
+      // doesn't ever succeed, we'll orphan any tail objects as if we'd crashed before that write
+      writer.clear_written();
+    }
     return r;
   }
   if (!obj_op.meta.canceled) {

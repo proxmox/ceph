@@ -3050,6 +3050,55 @@ paths:
       - jwt: []
       tags:
       - Cephfs
+  /api/cephfs/{fs_id}/rename-path:
+    put:
+      description: "\n        Rename a file or directory.\n        :param fs_id: The\
+        \ filesystem identifier.\n        :param src_path: The path to the existing\
+        \ file or directory.\n        :param dst_path: The new name of the file or\
+        \ directory.\n        "
+      parameters:
+      - in: path
+        name: fs_id
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                dst_path:
+                  type: string
+                src_path:
+                  type: string
+              required:
+              - src_path
+              - dst_path
+              type: object
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource updated.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      tags:
+      - Cephfs
   /api/cephfs/{fs_id}/snapshot:
     delete:
       description: "\n        Remove a snapshot.\n        :param fs_id: The filesystem\
@@ -3836,10 +3885,27 @@ paths:
           application/json:
             schema:
               properties:
+                force_update:
+                  description: Force update the config option
+                  type: boolean
                 name:
+                  description: Config option name
                   type: string
                 value:
-                  type: string
+                  description: Section and Value of the config option
+                  items:
+                    properties:
+                      section:
+                        description: Section/Client where config needs to be updated
+                        type: string
+                      value:
+                        description: Value of the config option
+                        type: string
+                    required:
+                    - section
+                    - value
+                    type: object
+                  type: array
               required:
               - name
               - value
@@ -3866,6 +3932,7 @@ paths:
             trace.
       security:
       - jwt: []
+      summary: Create/Update Cluster Configuration
       tags:
       - ClusterConfiguration
     put:
@@ -4794,6 +4861,28 @@ paths:
       tags:
       - Health
   /api/health/get_cluster_fsid:
+    get:
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      tags:
+      - Health
+  /api/health/get_telemetry_status:
     get:
       parameters: []
       responses:
@@ -7675,11 +7764,31 @@ paths:
       - NFS-Ganesha
   /api/osd:
     get:
-      parameters: []
+      parameters:
+      - default: 0
+        in: query
+        name: offset
+        schema:
+          type: integer
+      - default: 10
+        in: query
+        name: limit
+        schema:
+          type: integer
+      - default: ''
+        in: query
+        name: search
+        schema:
+          type: string
+      - default: ''
+        in: query
+        name: sort
+        schema:
+          type: string
       responses:
         '200':
           content:
-            application/vnd.ceph.api.v1.0+json:
+            application/vnd.ceph.api.v1.1+json:
               type: object
           description: OK
         '400':
@@ -9648,11 +9757,6 @@ paths:
       - in: path
         name: bucket
         required: true
-        schema:
-          type: string
-      - default: 'true'
-        in: query
-        name: purge_objects
         schema:
           type: string
       - allowEmptyValue: true

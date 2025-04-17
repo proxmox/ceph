@@ -641,7 +641,11 @@ class CephadmServe:
         for s in self.mgr.cache.get_daemons_by_service(rgw_spec.service_name()):
             if s.ports:
                 for p in s.ports:
-                    ep.append(f'{protocol}://{s.hostname}:{p}')
+                    if s.hostname is not None:
+                        host_addr = self.mgr.inventory.get_addr(s.hostname)
+                        ep.append(f'{protocol}://{host_addr}:{p}')
+                    else:
+                        logger.error("Hostname is None for service: %s", s)
         zone_update_cmd = {
             'prefix': 'rgw zone modify',
             'realm_name': rgw_spec.rgw_realm,
@@ -895,6 +899,10 @@ class CephadmServe:
                         f'Not deploying node-proxy agent on {slot.hostname} as oob details are not present.'
                     )
                     continue
+
+                # set multisite config before deploying the rgw daemon
+                if service_type == 'rgw':
+                    self.mgr.rgw_service.set_realm_zg_zone(cast(RGWSpec, spec))
 
                 # deploy new daemon
                 daemon_id = slot.name
@@ -1228,11 +1236,12 @@ class CephadmServe:
                     if host not in client_files:
                         client_files[host] = {}
                     ceph_conf = (0o644, 0, 0, bytes(config), str(config_digest))
-                    client_files[host]['/etc/ceph/ceph.conf'] = ceph_conf
-                    client_files[host][f'{cluster_cfg_dir}/ceph.conf'] = ceph_conf
-                    ceph_admin_key = (ks.mode, ks.uid, ks.gid, keyring.encode('utf-8'), digest)
-                    client_files[host][ks.path] = ceph_admin_key
-                    client_files[host][f'{cluster_cfg_dir}/{os.path.basename(ks.path)}'] = ceph_admin_key
+                    if ks.include_ceph_conf:
+                        client_files[host]['/etc/ceph/ceph.conf'] = ceph_conf
+                        client_files[host][f'{cluster_cfg_dir}/ceph.conf'] = ceph_conf
+                    client_key = (ks.mode, ks.uid, ks.gid, keyring.encode('utf-8'), digest)
+                    client_files[host][ks.path] = client_key
+                    client_files[host][f'{cluster_cfg_dir}/{os.path.basename(ks.path)}'] = client_key
             except Exception as e:
                 self.log.warning(
                     f'unable to calc client keyring {ks.entity} placement {ks.placement}: {e}')

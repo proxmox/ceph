@@ -159,23 +159,6 @@ class S3tests_java(Task):
             stdout=BytesIO()
         )
 
-        endpoint = self.ctx.rgw.role_endpoints[client]
-        if endpoint.cert:
-            path = 'lib/security/cacerts'
-            self.ctx.cluster.only(client).run(
-                args=['sudo',
-                      'keytool',
-                      '-import', '-alias', '{alias}'.format(
-                          alias=endpoint.hostname),
-                      '-keystore',
-                      run.Raw(
-                          '$(readlink -e $(dirname $(readlink -e $(which keytool)))/../{path})'.format(path=path)),
-                      '-file', endpoint.cert.certificate,
-                      '-storepass', 'changeit',
-                      ],
-                stdout=BytesIO()
-            )
-
     def create_users(self):
         """
         Create a main and an alternative s3 user.
@@ -301,6 +284,7 @@ class S3tests_java(Task):
             args = ['cd',
                     '{tdir}/s3-tests-java'.format(tdir=testdir),
                     run.Raw('&&'),
+                    run.Raw('JAVA_HOME=$(alternatives --list | grep jre_1.8.0 | head -n 1 | awk \'{print $3}\')'),
                     '/opt/gradle/gradle/bin/gradle', 'clean', 'test',
                     '--rerun-tasks', '--no-build-cache',
                     ]

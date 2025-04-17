@@ -38,6 +38,7 @@
 #include "crush/CrushTreeDumper.h"
 #include "common/Clock.h"
 #include "mon/PGMap.h"
+#include "common/pick_address.h"
 
 using std::list;
 using std::make_pair;
@@ -882,7 +883,7 @@ void OSDMap::Incremental::decode(ceph::buffer::list::const_iterator& bl)
     return;
   }
   {
-    DECODE_START(8, bl); // client-usable data
+    DECODE_START(9, bl); // client-usable data
     decode(fsid, bl);
     decode(epoch, bl);
     decode(modified, bl);
@@ -1629,6 +1630,27 @@ void OSDMap::get_full_osd_counts(set<int> *full, set<int> *backfill,
 	backfill->emplace(i);
       else if (osd_state[i] & CEPH_OSD_NEARFULL)
 	nearfull->emplace(i);
+    }
+  }
+}
+
+void OSDMap::get_out_of_subnet_osd_counts(CephContext *cct,
+                                          std::string const &public_network,
+                                          set<int> *unreachable) const
+{
+  unreachable->clear();
+  for (int i = 0; i < max_osd; i++) {
+    if (exists(i) && is_up(i)) {
+      if (const auto& addrs = get_addrs(i).v; addrs.size() >= 2) {
+        auto v1_addr = addrs[0].ip_only_to_str();
+        if (!is_addr_in_subnet(cct, public_network, v1_addr)) {
+          unreachable->emplace(i);
+        }
+        auto v2_addr = addrs[1].ip_only_to_str();
+        if (!is_addr_in_subnet(cct, public_network, v2_addr)) {
+          unreachable->emplace(i);
+        }
+      }
     }
   }
 }
@@ -3526,7 +3548,7 @@ void OSDMap::decode(ceph::buffer::list::const_iterator& bl)
    * Since we made it past that hurdle, we can use our normal paths.
    */
   {
-    DECODE_START(9, bl); // client-usable data
+    DECODE_START(10, bl); // client-usable data
     // base
     decode(fsid, bl);
     decode(epoch, bl);
@@ -5134,6 +5156,20 @@ int OSDMap::balance_primaries(
 
   ldout(cct, 10) << __func__ << " num_changes " << num_changes << dendl;
   return num_changes;
+}
+
+void OSDMap::rm_all_upmap_prims(
+  CephContext *cct,
+  OSDMap::Incremental *pending_inc)
+{
+  for (const auto& [pg, _] : pg_upmap_primaries) {
+    if (pending_inc->new_pg_upmap_primary.contains(pg)) {
+        ldout(cct, 30) << __func__ << "Removing pending pg_upmap_prim for pg " << pg << dendl;
+        pending_inc->new_pg_upmap_primary.erase(pg);
+      }
+    ldout(cct, 30) << __func__ << "Removing pg_upmap_prim for pg " << pg << dendl;
+    pending_inc->old_pg_upmap_primary.insert(pg);
+  }
 }
 
 int OSDMap::calc_desired_primary_distribution(
@@ -7250,6 +7286,29 @@ void OSDMap::check_health(CephContext *cct,
       checks->add("UNEVEN_WEIGHTS_STRETCH_MODE", HEALTH_WARN, ss.str(), 0);
     }
   }
+
+  // PUBLIC ADDRESS IS IN SUBNET MASK
+  {
+    auto public_network = cct->_conf.get_val<std::string>("public_network");
+
+    if (!public_network.empty()) {
+      set<int> unreachable;
+      get_out_of_subnet_osd_counts(cct, public_network, &unreachable);
+      if (unreachable.size()) {
+        ostringstream ss;
+        ss << unreachable.size()
+           << " osds(s) "
+           << (unreachable.size() == 1 ? "is" : "are")
+           << " not reachable";
+        auto& d = checks->add("OSD_UNREACHABLE", HEALTH_ERR, ss.str(), unreachable.size());
+        for (auto& i: unreachable) {
+          ostringstream ss;
+          ss << "osd." << i << "'s public address is not in '" << public_network << "' subnet";
+          d.detail.push_back(ss.str());
+        }
+      }
+    }
+  }
 }
 
 int OSDMap::parse_osd_id_list(const vector<string>& ls, set<int> *out,
@@ -7378,6 +7437,10 @@ unsigned OSDMap::get_device_class_flags(int id) const
 
 std::optional<std::string> OSDMap::pending_require_osd_release() const
 {
+  if (HAVE_FEATURE(get_up_osd_features(), SERVER_REEF) &&
+      require_osd_release < ceph_release_t::reef) {
+    return "reef";
+  }
   if (HAVE_FEATURE(get_up_osd_features(), SERVER_QUINCY) &&
       require_osd_release < ceph_release_t::quincy) {
     return "quincy";

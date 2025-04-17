@@ -16,7 +16,7 @@ with buckets it owns.
 
 A notification entity must be created in order to send event notifications for
 a specific bucket. A notification entity can be created either for a subset
-of event types or for all event types (which is the default). The
+of event types or for all "Removed" and "Created" event types (which is the default). The
 notification may also filter out events based on matches of the prefixes and
 suffixes of (1) the keys, (2) the metadata attributes attached to the object,
 or (3) the object tags. Regular-expression matching can also be used on these
@@ -57,9 +57,15 @@ Asynchronous Notifications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Notifications can be sent asynchronously. They are committed into persistent
-storage and then asynchronously sent to the topic's configured endpoint. In
-this case, the only latency added to the original operation is the latency
+storage and then asynchronously sent to the topic's configured endpoint.
+The notification will be committed to persistent storage only if the triggering
+operation was successful.
+In this case, the only latency added to the original operation is the latency
 added when the notification is committed to persistent storage.
+If the endpoint of the topic to which the notification is sent is not available for a long
+period of time, the persistent storage allocated for this topic will eventually fill up.
+When this happens the triggering operations will fail with ``503 Service Unavailable``, 
+which tells the client that it may retry later.
 
 .. note:: If the notification fails with an error, cannot be delivered, or
    times out, it is retried until it is successfully acknowledged.

@@ -89,6 +89,7 @@ struct bluefs_fnode_t {
   void recalc_allocated() {
     allocated = 0;
     extents_index.reserve(extents.size());
+    extents_index.clear();
     for (auto& p : extents) {
       extents_index.emplace_back(allocated);
       allocated += p.length;
@@ -308,6 +309,7 @@ struct bluefs_transaction_t {
     encode(delta, op_bl);
     file.reset_delta();
   }
+
   void op_file_remove(uint64_t ino) {
     using ceph::encode;
     encode((__u8)OP_FILE_REMOVE, op_bl);
@@ -328,6 +330,7 @@ struct bluefs_transaction_t {
     op_bl.claim_append(from.op_bl);
   }
 
+  void bound_encode(size_t &s) const;
   void encode(ceph::buffer::list& bl) const;
   void decode(ceph::buffer::list::const_iterator& p);
   void dump(ceph::Formatter *f) const;

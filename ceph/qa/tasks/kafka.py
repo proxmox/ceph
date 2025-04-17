@@ -4,6 +4,7 @@ Deploy and configure Kafka for Teuthology
 import contextlib
 import logging
 import time
+import os
 
 from teuthology import misc as teuthology
 from teuthology import contextutil
@@ -17,9 +18,11 @@ def get_kafka_version(config):
             kafka_version = client_config.get('kafka_version')
     return kafka_version
 
+kafka_prefix = 'kafka_2.13-'
+
 def get_kafka_dir(ctx, config):
     kafka_version = get_kafka_version(config)
-    current_version = 'kafka-' + kafka_version + '-src'
+    current_version = kafka_prefix + kafka_version
     return '{tdir}/{ver}'.format(tdir=teuthology.get_testdir(ctx),ver=current_version)
 
 
@@ -31,19 +34,28 @@ def install_kafka(ctx, config):
     assert isinstance(config, dict)
     log.info('Installing Kafka...')
 
+    # programmatically find a nearby mirror so as not to hammer archive.apache.org
+    apache_mirror_cmd="curl 'https://www.apache.org/dyn/closer.cgi' 2>/dev/null | " \
+        "grep -o '<strong>[^<]*</strong>' | sed 's/<[^>]*>//g' | head -n 1"
+    log.info("determining apache mirror by running: " + apache_mirror_cmd)
+    apache_mirror_url_front = os.popen(apache_mirror_cmd).read().rstrip() # note: includes trailing slash (/)
+    log.info("chosen apache mirror is " + apache_mirror_url_front)
+
     for (client, _) in config.items():
         (remote,) = ctx.cluster.only(client).remotes.keys()
         test_dir=teuthology.get_testdir(ctx)
         current_version = get_kafka_version(config)
 
-        link1 = 'https://archive.apache.org/dist/kafka/' + current_version + '/kafka-' + current_version + '-src.tgz'
+        kafka_file =  kafka_prefix + current_version + '.tgz'
+
+        link1 = '{apache_mirror_url_front}/kafka/'.format(apache_mirror_url_front=apache_mirror_url_front) + \
+            current_version + '/' + kafka_file
         ctx.cluster.only(client).run(
             args=['cd', '{tdir}'.format(tdir=test_dir), run.Raw('&&'), 'wget', link1],
         )
 
-        file1 = 'kafka-' + current_version + '-src.tgz'
         ctx.cluster.only(client).run(
-            args=['cd', '{tdir}'.format(tdir=test_dir), run.Raw('&&'), 'tar', '-xvzf', file1],
+            args=['cd', '{tdir}'.format(tdir=test_dir), run.Raw('&&'), 'tar', '-xvzf', kafka_file],
         )
 
     try:
@@ -61,9 +73,8 @@ def install_kafka(ctx, config):
                 args=['rm', '-rf', test_dir],
             )
 
-            rmfile1 = 'kafka-' + current_version + '-src.tgz'
             ctx.cluster.only(client).run(
-                args=['rm', '-rf', '{tdir}/{doc}'.format(tdir=teuthology.get_testdir(ctx),doc=rmfile1)],
+                args=['rm', '-rf', '{tdir}/{doc}'.format(tdir=teuthology.get_testdir(ctx),doc=kafka_file)],
             )
 
 
@@ -78,13 +89,6 @@ def run_kafka(ctx,config):
     log.info('Bringing up Zookeeper and Kafka services...')
     for (client,_) in config.items():
         (remote,) = ctx.cluster.only(client).remotes.keys()
-
-        ctx.cluster.only(client).run(
-            args=['cd', '{tdir}'.format(tdir=get_kafka_dir(ctx, config)), run.Raw('&&'),
-             './gradlew', 'jar', 
-             '-PscalaVersion=2.13.2'
-            ],
-        )
 
         ctx.cluster.only(client).run(
             args=['cd', '{tdir}/bin'.format(tdir=get_kafka_dir(ctx, config)), run.Raw('&&'),

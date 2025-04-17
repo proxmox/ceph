@@ -58,7 +58,10 @@ options:
     in recovery and 1 shard of another recovering PG.
   fmt_desc: The maximum number of backfills allowed to or from a single OSD.
     Note that this is applied separately for read and write operations.
+    This setting is automatically reset when the mClock scheduler is used.
   default: 1
+  see_also:
+  - osd_mclock_override_recovery_settings
   flags:
   - runtime
   with_legacy: true
@@ -95,6 +98,7 @@ options:
   fmt_desc: Time in seconds to sleep before the next recovery or backfill op.
     Increasing this value will slow down recovery operation while
     client operations will be less impacted.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0
   flags:
   - runtime
@@ -105,6 +109,7 @@ options:
   desc: Time in seconds to sleep before next recovery or backfill op for HDDs
   fmt_desc: Time in seconds to sleep before next recovery or backfill op
     for HDDs.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0.1
   flags:
   - runtime
@@ -115,6 +120,7 @@ options:
   desc: Time in seconds to sleep before next recovery or backfill op for SSDs
   fmt_desc: Time in seconds to sleep before the next recovery or backfill op
     for SSDs.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0
   see_also:
   - osd_recovery_sleep
@@ -128,6 +134,7 @@ options:
     on HDD and journal is on SSD
   fmt_desc: Time in seconds to sleep before the next recovery or backfill op
     when OSD data is on HDD and OSD journal / WAL+DB is on SSD.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0.025
   see_also:
   - osd_recovery_sleep
@@ -141,6 +148,7 @@ options:
   fmt_desc: Time in seconds to sleep before next snap trim op.
     Increasing this value will slow down snap trimming.
     This option overrides backend specific variants.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0
   flags:
   - runtime
@@ -149,6 +157,7 @@ options:
   type: float
   level: advanced
   desc: Time in seconds to sleep before next snap trim for HDDs
+  note: This setting is ignored when the mClock scheduler is used.
   default: 5
   flags:
   - runtime
@@ -158,6 +167,7 @@ options:
   desc: Time in seconds to sleep before next snap trim for SSDs
   fmt_desc: Time in seconds to sleep before next snap trim op
     for SSD OSDs (including NVMe).
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0
   flags:
   - runtime
@@ -168,6 +178,7 @@ options:
     is on SSD
   fmt_desc: Time in seconds to sleep before next snap trim op
     when OSD data is on an HDD and the OSD journal or WAL+DB is on an SSD.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 2
   flags:
   - runtime
@@ -182,6 +193,7 @@ options:
   desc: Maximum concurrent scrubs on a single OSD
   fmt_desc: The maximum number of simultaneous scrub operations for
     a Ceph OSD Daemon.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 3
   with_legacy: true
 - name: osd_scrub_during_recovery
@@ -344,8 +356,10 @@ options:
   type: int
   level: advanced
   desc: Maximum number of objects to deep-scrub in a single chunk
-  fmt_desc: The maximum number of object store chunks to scrub during single operation.
-  default: 25
+  fmt_desc: The maximum number of objects to deep-scrub during single internal
+    scrub operation. Large values would improve scrubbing performance but
+    may adversely affect client operations latency.
+  default: 15
   see_also:
   - osd_scrub_chunk_min
   with_legacy: true
@@ -376,9 +390,11 @@ options:
 - name: osd_scrub_sleep
   type: float
   level: advanced
-  desc: Duration to inject a delay during scrubbing
-  fmt_desc: Time to sleep before scrubbing the next group of chunks. Increasing this value will slow
-    down the overall rate of scrubbing so that client operations will be less impacted.
+  desc: Duration (in seconds) of delay injected between chunks when scrubbing
+  fmt_desc: Sleep time in seconds before scrubbing the next group of objects (the next chunk).
+    Increasing this value will slow down the overall rate of scrubbing, reducing scrub
+    impact on client operations.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0
   flags:
   - runtime
@@ -387,7 +403,13 @@ options:
 - name: osd_scrub_extended_sleep
   type: float
   level: advanced
-  desc: Duration to inject a delay during scrubbing out of scrubbing hours
+  desc: Duration (in seconds) of delay injected between chunks when scrubbing out
+    of scrubbing hours
+  fmt_desc: Sleep time in seconds before scrubbing the next group of objects (the next chunk).
+    This configuration value is used for scrubbing out of scrubbing hours.
+    Increasing this value will slow down the overall rate of scrubbing, reducing scrub
+    impact on client operations.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0
   see_also:
   - osd_scrub_begin_hour
@@ -837,6 +859,9 @@ options:
 - name: osd_op_num_threads_per_shard
   type: int
   level: advanced
+  fmt_desc: The number of worker threads spawned per OSD shard for a given OSD.
+    Each worker thread when operational processes items in the shard queue.
+    This setting overrides _ssd and _hdd if non-zero.
   default: 0
   flags:
   - startup
@@ -844,7 +869,9 @@ options:
 - name: osd_op_num_threads_per_shard_hdd
   type: int
   level: advanced
-  default: 1
+  fmt_desc: The number of worker threads spawned per OSD shard for a given OSD
+    (for rotational media).
+  default: 5
   see_also:
   - osd_op_num_threads_per_shard
   flags:
@@ -853,6 +880,8 @@ options:
 - name: osd_op_num_threads_per_shard_ssd
   type: int
   level: advanced
+  fmt_desc: The number of worker threads spawned per OSD shard for a given OSD
+    (for solid state media).
   default: 2
   see_also:
   - osd_op_num_threads_per_shard
@@ -873,7 +902,7 @@ options:
   type: int
   level: advanced
   fmt_desc: the number of shards allocated for a given OSD (for rotational media).
-  default: 5
+  default: 1
   see_also:
   - osd_op_num_shards
   flags:
@@ -1208,12 +1237,33 @@ options:
   level: basic
   desc: The threshold IOPs capacity (at 4KiB block size) beyond which to ignore
     the OSD bench results for an OSD (for rotational media)
-  long_desc: This option specifies the threshold IOPS capacity for an OSD under
-    which the OSD bench results can be considered for QoS calculations. Only
-    considered for osd_op_queue = mclock_scheduler
+  long_desc: This option specifies the high threshold IOPS capacity for an OSD
+    below which the OSD bench results can be considered for QoS calculations.
+    Only considered when osd_op_queue = mclock_scheduler
   fmt_desc: The threshold IOPS capacity (at 4KiB block size) beyond which to
-    ignore OSD bench results for an OSD (for rotational media)
+    ignore OSD bench results for an OSD (for rotational media) and fall back to
+    the last valid or default IOPS capacity defined by
+    ``osd_mclock_max_capacity_iops_hdd``.
   default: 500
+  see_also:
+  - osd_mclock_max_capacity_iops_hdd
+  flags:
+  - runtime
+- name: osd_mclock_iops_capacity_low_threshold_hdd
+  type: float
+  level: basic
+  desc: The threshold IOPs capacity (at 4KiB block size) below which to ignore
+    the OSD bench results for an OSD (for rotational media)
+  long_desc: This option specifies the low threshold IOPS capacity of an OSD
+    above which the OSD bench results can be considered for QoS calculations.
+    Only considered when osd_op_queue = mclock_scheduler
+  fmt_desc: The threshold IOPS capacity (at 4KiB block size) below which to
+    ignore OSD bench results for an OSD (for rotational media) and fall back to
+    the last valid or default IOPS capacity defined by
+    ``osd_mclock_max_capacity_iops_hdd``.
+  default: 50
+  see_also:
+  - osd_mclock_max_capacity_iops_hdd
   flags:
   - runtime
 - name: osd_mclock_iops_capacity_threshold_ssd
@@ -1221,12 +1271,33 @@ options:
   level: basic
   desc: The threshold IOPs capacity (at 4KiB block size) beyond which to ignore
     the OSD bench results for an OSD (for solid state media)
-  long_desc: This option specifies the threshold IOPS capacity for an OSD under
-    which the OSD bench results can be considered for QoS calculations. Only
-    considered for osd_op_queue = mclock_scheduler
+  long_desc: This option specifies the high threshold IOPS capacity for an OSD
+    below which the OSD bench results can be considered for QoS calculations.
+    Only considered when osd_op_queue = mclock_scheduler
   fmt_desc: The threshold IOPS capacity (at 4KiB block size) beyond which to
-    ignore OSD bench results for an OSD (for solid state media)
+    ignore OSD bench results for an OSD (for solid state media) and fall back to
+    the last valid or default IOPS capacity defined by
+    ``osd_mclock_max_capacity_iops_ssd``.
   default: 80000
+  see_also:
+  - osd_mclock_max_capacity_iops_ssd
+  flags:
+  - runtime
+- name: osd_mclock_iops_capacity_low_threshold_ssd
+  type: float
+  level: basic
+  desc: The threshold IOPs capacity (at 4KiB block size) below which to ignore
+    the OSD bench results for an OSD (for solid state media)
+  long_desc: This option specifies the low threshold IOPS capacity for an OSD
+    above which the OSD bench results can be considered for QoS calculations.
+    Only considered when osd_op_queue = mclock_scheduler
+  fmt_desc: The threshold IOPS capacity (at 4KiB block size) below which to
+    ignore OSD bench results for an OSD (for solid state media) and fall back to
+    the last valid or default IOPS capacity defined by
+    ``osd_mclock_max_capacity_iops_ssd``.
+  default: 1000
+  see_also:
+  - osd_mclock_max_capacity_iops_ssd
   flags:
   - runtime
 # Set to true for testing.  Users should NOT set this.
@@ -1256,10 +1327,12 @@ options:
     is ``0``, which means that the ``hdd`` or ``ssd`` values
     (below) are used, depending on the type of the primary
     device backing the OSD.
+    This setting is automatically reset when the mClock scheduler is used.
   default: 0
   see_also:
   - osd_recovery_max_active_hdd
   - osd_recovery_max_active_ssd
+  - osd_mclock_override_recovery_settings
   flags:
   - runtime
   with_legacy: true
@@ -1270,10 +1343,12 @@ options:
     devices)
   fmt_desc: The number of active recovery requests per OSD at one time, if the
     primary device is rotational.
+  note: This setting is automatically reset when the mClock scheduler is used.
   default: 3
   see_also:
   - osd_recovery_max_active
   - osd_recovery_max_active_ssd
+  - osd_mclock_override_recovery_settings
   flags:
   - runtime
   with_legacy: true
@@ -1284,10 +1359,12 @@ options:
     solid state devices)
   fmt_desc: The number of active recovery requests per OSD at one time, if the
     primary device is non-rotational (i.e., an SSD).
+  note: This setting is automatically reset when the mClock scheduler is used.
   default: 10
   see_also:
   - osd_recovery_max_active
   - osd_recovery_max_active_hdd
+  - osd_mclock_override_recovery_settings
   flags:
   - runtime
   with_legacy: true
@@ -1382,13 +1459,15 @@ options:
     overrides _ssd, _hdd, and _hybrid if non-zero.
   fmt_desc: Time in seconds to sleep before the next removal transaction. This
     throttles the PG deletion process.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 0
   flags:
   - runtime
 - name: osd_delete_sleep_hdd
   type: float
   level: advanced
-  desc: Time in seconds to sleep before next removal transaction for HDDs
+  desc: Time in seconds to sleep before next removal transaction for HDDs.
+  note: This setting is ignored when the mClock scheduler is used.
   default: 5
   flags:
   - runtime
@@ -1396,6 +1475,7 @@ options:
   type: float
   level: advanced
   desc: Time in seconds to sleep before next removal transaction for SSDs
+  note: This setting is ignored when the mClock scheduler is used.
   default: 1
   flags:
   - runtime
@@ -1404,6 +1484,7 @@ options:
   level: advanced
   desc: Time in seconds to sleep before next removal transaction when OSD data is on HDD
     and OSD journal or WAL+DB is on SSD
+  note: This setting is ignored when the mClock scheduler is used.
   default: 1
   flags:
   - runtime

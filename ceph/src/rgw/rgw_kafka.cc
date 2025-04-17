@@ -18,16 +18,6 @@
 
 #define dout_subsys ceph_subsys_rgw
 
-// TODO investigation, not necessarily issues:
-// (1) in case of single threaded writer context use spsc_queue
-// (2) check performance of emptying queue to local list, and go over the list and publish
-// (3) use std::shared_mutex (c++17) or equivalent for the connections lock
-
-// cmparisson operator between topic pointer and name
-bool operator==(const rd_kafka_topic_t* rkt, const std::string& name) {
-    return name == std::string_view(rd_kafka_topic_name(rkt)); 
-}
-
 namespace rgw::kafka {
 
 // status codes for publishing
@@ -62,7 +52,15 @@ typedef std::vector<reply_callback_with_tag_t> CallbackList;
 struct connection_t {
   rd_kafka_t* producer = nullptr;
   rd_kafka_conf_t* temp_conf = nullptr;
-  std::vector<rd_kafka_topic_t*> topics;
+
+  struct rd_kafka_topic_deleter {
+    void operator()(rd_kafka_topic_t* topic) {
+      rd_kafka_topic_destroy(topic);
+    }
+  };
+  using topic_ptr = std::unique_ptr<rd_kafka_topic_t, rd_kafka_topic_deleter>;
+  std::map<std::string, topic_ptr> topics;
+
   uint64_t delivery_tag = 1;
   int status = STATUS_OK;
   CephContext* const cct;
@@ -93,7 +91,7 @@ struct connection_t {
     // wait for all remaining acks/nacks
     rd_kafka_flush(producer, 5*1000 /* wait for max 5 seconds */);
     // destroy all topics
-    std::for_each(topics.begin(), topics.end(), [](auto topic) {rd_kafka_topic_destroy(topic);});
+    topics.clear();
     // destroy producer
     rd_kafka_destroy(producer);
     producer = nullptr;
@@ -210,7 +208,14 @@ bool new_producer(connection_t* conn) {
     return false;
   }
 
-  // get list of brokers based on the bootsrap broker
+  // set message timeout
+  // according to documentation, value of zero will expire the message based on retries.
+  // however, testing with librdkafka v1.6.1 did not expire the message in that case. hence, a value of zero is changed to 1ms
+  constexpr std::uint64_t min_message_timeout = 1;
+  const auto message_timeout = std::max(min_message_timeout, conn->cct->_conf->rgw_kafka_message_timeout);
+  if (rd_kafka_conf_set(conn->temp_conf, "message.timeout.ms", 
+        std::to_string(message_timeout).c_str(), errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) goto conf_error;
+  // get list of brokers based on the bootstrap broker
   if (rd_kafka_conf_set(conn->temp_conf, "bootstrap.servers", conn->broker.c_str(), errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) goto conf_error;
 
   if (conn->use_ssl) {
@@ -326,7 +331,6 @@ public:
   const size_t max_connections;
   const size_t max_inflight;
   const size_t max_queue;
-  const size_t max_idle_time;
 private:
   std::atomic<size_t> connection_count;
   bool stopped;
@@ -365,10 +369,9 @@ private:
     }
 
     // create a new topic unless it was already created
-    auto topic_it = std::find(conn->topics.begin(), conn->topics.end(), message->topic);
-    rd_kafka_topic_t* topic = nullptr;
+    auto topic_it = conn->topics.find(message->topic);
     if (topic_it == conn->topics.end()) {
-      topic = rd_kafka_topic_new(conn->producer, message->topic.c_str(), nullptr);
+      connection_t::topic_ptr topic(rd_kafka_topic_new(conn->producer, message->topic.c_str(), nullptr));
       if (!topic) {
         const auto err = rd_kafka_last_error();
         ldout(conn->cct, 1) << "Kafka publish: failed to create topic: " << message->topic << " error: " << status_to_string(err) << dendl;
@@ -378,17 +381,15 @@ private:
         conn->destroy(err);
         return;
       }
-      // TODO use the topics list as an LRU cache
-      conn->topics.push_back(topic);
+      topic_it = conn->topics.emplace(message->topic, std::move(topic)).first;
       ldout(conn->cct, 20) << "Kafka publish: successfully created topic: " << message->topic << dendl;
     } else {
-        topic = *topic_it;
         ldout(conn->cct, 20) << "Kafka publish: reused existing topic: " << message->topic << dendl;
     }
 
     const auto tag = (message->cb == nullptr ? nullptr : new uint64_t(conn->delivery_tag++));
     const auto rc = rd_kafka_produce(
-            topic,
+            topic_it->second.get(),
             // TODO: non builtin partitioning
             RD_KAFKA_PARTITION_UA,
             // make a copy of the payload
@@ -441,6 +442,7 @@ private:
   // (4) TODO reconnect on connection errors
   // (5) TODO cleanup timedout callbacks
   void run() noexcept {
+    ceph_pthread_setname("kafka_manager");
     while (!stopped) {
 
       // publish all messages in the queue
@@ -462,7 +464,7 @@ private:
         auto& conn = conn_it->second;
 
         // Checking the connection idlesness
-        if(conn->timestamp.sec() + max_idle_time < ceph_clock_now()) {
+        if(conn->timestamp.sec() + conn->cct->_conf->rgw_kafka_connection_idle < ceph_clock_now()) {
           ldout(conn->cct, 20) << "kafka run: deleting a connection due to idle behaviour: " << ceph_clock_now() << dendl;
           std::lock_guard lock(connections_lock);
           conn->status = STATUS_CONNECTION_IDLE;
@@ -514,7 +516,6 @@ public:
     max_connections(_max_connections),
     max_inflight(_max_inflight),
     max_queue(_max_queue),
-    max_idle_time(30),
     connection_count(0),
     stopped(false),
     read_timeout_ms(_read_timeout_ms),
@@ -529,9 +530,6 @@ public:
       // This is to prevent rehashing so that iterators are not invalidated 
       // when a new connection is added.
       connections.max_load_factor(10.0);
-      // give the runner thread a name for easier debugging
-      const auto rc = ceph_pthread_setname(runner.native_handle(), "kafka_manager");
-      ceph_assert(rc==0);
   }
 
   // non copyable

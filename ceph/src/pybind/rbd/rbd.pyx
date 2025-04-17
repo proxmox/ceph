@@ -114,6 +114,8 @@ RBD_IMAGE_OPTION_ORDER = _RBD_IMAGE_OPTION_ORDER
 RBD_IMAGE_OPTION_STRIPE_UNIT = _RBD_IMAGE_OPTION_STRIPE_UNIT
 RBD_IMAGE_OPTION_STRIPE_COUNT = _RBD_IMAGE_OPTION_STRIPE_COUNT
 RBD_IMAGE_OPTION_DATA_POOL = _RBD_IMAGE_OPTION_DATA_POOL
+RBD_IMAGE_OPTION_FLATTEN = _RBD_IMAGE_OPTION_FLATTEN
+RBD_IMAGE_OPTION_CLONE_FORMAT = _RBD_IMAGE_OPTION_CLONE_FORMAT
 
 RBD_SNAP_NAMESPACE_TYPE_USER = _RBD_SNAP_NAMESPACE_TYPE_USER
 RBD_SNAP_NAMESPACE_TYPE_GROUP = _RBD_SNAP_NAMESPACE_TYPE_GROUP
@@ -631,7 +633,7 @@ class RBD(object):
 
     def clone(self, p_ioctx, p_name, p_snapname, c_ioctx, c_name,
               features=None, order=None, stripe_unit=None, stripe_count=None,
-              data_pool=None):
+              data_pool=None, clone_format=None):
         """
         Clone a parent rbd snapshot into a COW sparse child.
 
@@ -655,6 +657,8 @@ class RBD(object):
         :type stripe_count: int
         :param data_pool: optional separate pool for data blocks
         :type data_pool: str
+        :param clone_format: 1 (requires a protected snapshot), 2 (requires mimic+ clients)
+        :type clone_format: int
         :raises: :class:`TypeError`
         :raises: :class:`InvalidArgument`
         :raises: :class:`ImageExists`
@@ -690,6 +694,9 @@ class RBD(object):
             if data_pool is not None:
                 rbd_image_options_set_string(opts, RBD_IMAGE_OPTION_DATA_POOL,
                                              data_pool)
+            if clone_format is not None:
+                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_CLONE_FORMAT,
+                                             clone_format)
             with nogil:
                 ret = rbd_clone3(_p_ioctx, _p_name, _p_snapname,
                                  _c_ioctx, _c_name, opts)
@@ -955,7 +962,7 @@ class RBD(object):
 
     def migration_prepare(self, ioctx, image_name, dest_ioctx, dest_image_name,
                           features=None, order=None, stripe_unit=None, stripe_count=None,
-                          data_pool=None):
+                          data_pool=None, clone_format=None, flatten=False):
         """
         Prepare an RBD image migration.
 
@@ -977,6 +984,12 @@ class RBD(object):
         :type stripe_count: int
         :param data_pool: optional separate pool for data blocks
         :type data_pool: str
+        :param clone_format: if the source image is a clone, which clone format
+                             to use for the destination image
+        :type clone_format: int
+        :param flatten: if the source image is a clone, whether to flatten the
+                        destination image or make it a clone of the same parent
+        :type flatten: bool
         :raises: :class:`TypeError`
         :raises: :class:`InvalidArgument`
         :raises: :class:`ImageExists`
@@ -1009,6 +1022,10 @@ class RBD(object):
             if data_pool is not None:
                 rbd_image_options_set_string(opts, RBD_IMAGE_OPTION_DATA_POOL,
                                              data_pool)
+            if clone_format is not None:
+                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_CLONE_FORMAT,
+                                             clone_format)
+            rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_FLATTEN, flatten)
             with nogil:
                 ret = rbd_migration_prepare(_ioctx, _image_name, _dest_ioctx,
                                             _dest_image_name, opts)
@@ -3437,7 +3454,8 @@ cdef class Image(object):
 
     @requires_not_closed
     def deep_copy(self, dest_ioctx, dest_name, features=None, order=None,
-                  stripe_unit=None, stripe_count=None, data_pool=None):
+                  stripe_unit=None, stripe_count=None, data_pool=None,
+                  clone_format=None, flatten=False):
         """
         Deep copy the image to another location.
 
@@ -3455,6 +3473,12 @@ cdef class Image(object):
         :type stripe_count: int
         :param data_pool: optional separate pool for data blocks
         :type data_pool: str
+        :param clone_format: if the source image is a clone, which clone format
+                             to use for the destination image
+        :type clone_format: int
+        :param flatten: if the source image is a clone, whether to flatten the
+                        destination image or make it a clone of the same parent
+        :type flatten: bool
         :raises: :class:`TypeError`
         :raises: :class:`InvalidArgument`
         :raises: :class:`ImageExists`
@@ -3485,12 +3509,16 @@ cdef class Image(object):
             if data_pool is not None:
                 rbd_image_options_set_string(opts, RBD_IMAGE_OPTION_DATA_POOL,
                                              data_pool)
+            if clone_format is not None:
+                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_CLONE_FORMAT,
+                                             clone_format)
+            rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_FLATTEN, flatten)
             with nogil:
                 ret = rbd_deep_copy(self.image, _dest_ioctx, _dest_name, opts)
         finally:
             rbd_image_options_destroy(opts)
         if ret < 0:
-            raise make_ex(ret, 'error copying image %s to %s' % (self.name, dest_name))
+            raise make_ex(ret, 'error deep copying image %s to %s' % (self.name, dest_name))
 
     @requires_not_closed
     def list_snaps(self):
@@ -3898,15 +3926,16 @@ cdef class Image(object):
         Raises :class:`InvalidArgument` if from_snapshot is after
         the currently set snapshot.
 
-        Raises :class:`ImageNotFound` if from_snapshot is not the name
+        Raises :class:`ImageNotFound` if from_snapshot is not the name or id
         of a snapshot of the image.
 
         :param offset: start offset in bytes
         :type offset: int
         :param length: size of region to report on, in bytes
         :type length: int
-        :param from_snapshot: starting snapshot name, or None
-        :type from_snapshot: str or None
+        :param from_snapshot: starting snapshot name or id, or None to
+                              get all allocated extents
+        :type from_snapshot: str or int
         :param iterate_cb: function to call for each extent
         :type iterate_cb: function acception arguments for offset,
                            length, and exists
@@ -3917,18 +3946,45 @@ cdef class Image(object):
         :raises: :class:`InvalidArgument`, :class:`IOError`,
                  :class:`ImageNotFound`
         """
-        from_snapshot = cstr(from_snapshot, 'from_snapshot', opt=True)
         cdef:
-            char *_from_snapshot = opt_str(from_snapshot)
+            char *_from_snap_name = NULL
+            uint64_t _from_snap_id = 0
             uint64_t _offset = offset, _length = length
             uint8_t _include_parent = include_parent
             uint8_t _whole_object = whole_object
-        with nogil:
-            ret = rbd_diff_iterate2(self.image, _from_snapshot, _offset,
-                                    _length, _include_parent, _whole_object,
-                                    &diff_iterate_cb, <void *>iterate_cb)
+            uint32_t _flags = 0
+
+        if from_snapshot is not None:
+            if isinstance(from_snapshot, str):
+                from_snap_name = cstr(from_snapshot, 'from_snapshot')
+                _from_snap_name = from_snap_name
+            elif isinstance(from_snapshot, int):
+                from_snap_name = None
+                _from_snap_id = from_snapshot
+            else:
+                raise TypeError("from_snapshot must be a string or an integer")
+        else:
+            from_snap_name = None
+
+        if from_snap_name is not None:
+            with nogil:
+                ret = rbd_diff_iterate2(self.image, _from_snap_name, _offset,
+                                        _length, _include_parent, _whole_object,
+                                        &diff_iterate_cb, <void *>iterate_cb)
+        else:
+            if include_parent:
+                _flags |= _RBD_DIFF_ITERATE_FLAG_INCLUDE_PARENT
+            if whole_object:
+                _flags |= _RBD_DIFF_ITERATE_FLAG_WHOLE_OBJECT
+            with nogil:
+                ret = rbd_diff_iterate3(self.image, _from_snap_id, _offset,
+                                        _length, _flags, &diff_iterate_cb,
+                                        <void *>iterate_cb)
         if ret < 0:
-            msg = 'error generating diff from snapshot %s' % from_snapshot
+            if from_snap_name is not None:
+                msg = 'error generating diff from snapshot %s' % from_snapshot
+            else:
+                msg = 'error generating diff from snapshot id %d' % _from_snap_id
             raise make_ex(ret, msg)
 
     @requires_not_closed

@@ -911,10 +911,9 @@ class RgwService(CephService):
     def allow_colo(self) -> bool:
         return True
 
-    def config(self, spec: RGWSpec) -> None:  # type: ignore
+    def set_realm_zg_zone(self, spec: RGWSpec) -> None:
         assert self.TYPE == spec.service_type
 
-        # set rgw_realm rgw_zonegroup and rgw_zone, if present
         if spec.rgw_realm:
             ret, out, err = self.mgr.check_mon_command({
                 'prefix': 'config set',
@@ -936,6 +935,12 @@ class RgwService(CephService):
                 'name': 'rgw_zone',
                 'value': spec.rgw_zone,
             })
+
+    def config(self, spec: RGWSpec) -> None:  # type: ignore
+        assert self.TYPE == spec.service_type
+
+        # set rgw_realm rgw_zonegroup and rgw_zone, if present
+        self.set_realm_zg_zone(spec)
 
         if spec.rgw_frontend_ssl_certificate:
             if isinstance(spec.rgw_frontend_ssl_certificate, list):
@@ -976,6 +981,14 @@ class RgwService(CephService):
         # configure frontend
         args = []
         ftype = spec.rgw_frontend_type or "beast"
+
+        # if an ssl_certificate arg was passed as part of rgw_frontend_extra_args
+        # then we shouldn't add it automatically else the rgw won't start
+        extra_ssl_cert_provided = any(
+            arg.startswith("ssl_certificate=")
+            for arg in (spec.rgw_frontend_extra_args or [])
+        )
+
         if ftype == 'beast':
             if spec.ssl:
                 if daemon_spec.ip:
@@ -983,7 +996,8 @@ class RgwService(CephService):
                         f"ssl_endpoint={build_url(host=daemon_spec.ip, port=port).lstrip('/')}")
                 else:
                     args.append(f"ssl_port={port}")
-                args.append(f"ssl_certificate=config://rgw/cert/{spec.service_name()}")
+                if not extra_ssl_cert_provided:
+                    args.append(f"ssl_certificate=config://rgw/cert/{spec.service_name()}")
             else:
                 if daemon_spec.ip:
                     args.append(f"endpoint={build_url(host=daemon_spec.ip, port=port).lstrip('/')}")
@@ -996,7 +1010,8 @@ class RgwService(CephService):
                     args.append(f"port={build_url(host=daemon_spec.ip, port=port).lstrip('/')}s")
                 else:
                     args.append(f"port={port}s")  # note the 's' suffix on port
-                args.append(f"ssl_certificate=config://rgw/cert/{spec.service_name()}")
+                if not extra_ssl_cert_provided:
+                    args.append(f"ssl_certificate=config://rgw/cert/{spec.service_name()}")
             else:
                 if daemon_spec.ip:
                     args.append(f"port={build_url(host=daemon_spec.ip, port=port).lstrip('/')}")

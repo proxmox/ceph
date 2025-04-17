@@ -430,7 +430,8 @@ class KafkaReceiver(object):
                 self.consumer = KafkaConsumer(topic, 
                         bootstrap_servers = kafka_server+':'+str(port), 
                         security_protocol=security_type,
-                        consumer_timeout_ms=16000)
+                        consumer_timeout_ms=16000,
+                        auto_offset_reset='earliest')
                 print('Kafka consumer created on topic: '+topic)
                 break
             except Exception as error:
@@ -486,10 +487,6 @@ def stop_kafka_receiver(receiver, task):
 
 
 def get_ip():
-    return 'localhost'
-
-
-def get_ip_http():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # address should not be reachable
@@ -1591,8 +1588,8 @@ def test_ps_s3_notification_push_kafka_on_master():
         time_diff = time.time() - start_time
         print('average time for creation + kafka notification is: ' + str(time_diff*1000/number_of_objects) + ' milliseconds')
 
-        print('wait for 5sec for the messages...')
-        time.sleep(5)
+        print('wait for 10sec for the messages...')
+        time.sleep(10)
         keys = list(bucket.list())
         receiver.verify_s3_events(keys, exact_match=True, etags=etags)
 
@@ -1608,12 +1605,11 @@ def test_ps_s3_notification_push_kafka_on_master():
         time_diff = time.time() - start_time
         print('average time for deletion + kafka notification is: ' + str(time_diff*1000/number_of_objects) + ' milliseconds')
 
-        print('wait for 5sec for the messages...')
-        time.sleep(5)
+        print('wait for 10sec for the messages...')
+        time.sleep(10)
         receiver.verify_s3_events(keys, exact_match=True, deletions=True, etags=etags)
     except Exception as e:
-        print(e)
-        assert False
+        assert False, str(e)
     finally:
         # cleanup
         if s3_notification_conf is not None:
@@ -1701,7 +1697,7 @@ def test_ps_s3_notification_multi_delete_on_master():
 @attr('http_test')
 def test_ps_s3_notification_push_http_on_master():
     """ test pushing http s3 notification on master """
-    hostname = get_ip_http()
+    hostname = get_ip()
     conn = connection()
     zonegroup = 'default'
 
@@ -1785,7 +1781,7 @@ def test_ps_s3_notification_push_http_on_master():
 @attr('http_test')
 def test_ps_s3_notification_push_cloudevents_on_master():
     """ test pushing cloudevents notification on master """
-    hostname = get_ip_http()
+    hostname = get_ip()
     conn = connection()
     zonegroup = 'default'
 
@@ -3600,7 +3596,7 @@ def persistent_notification(endpoint_type):
     host = get_ip()
     if endpoint_type == 'http':
         # create random port for the http server
-        host = get_ip_http()
+        host = get_ip()
         port = random.randint(10000, 20000)
         # start an http server in a separate thread
         receiver = StreamingHTTPServer(host, port, num_workers=10)

@@ -322,6 +322,7 @@ CInode::CInode(MDCache *c, bool auth, snapid_t f, snapid_t l) :
     item_dirty_dirfrag_dir(this),
     item_dirty_dirfrag_nest(this),
     item_dirty_dirfrag_dirfragtree(this),
+    item_to_flush(this),
     pop(c->decayrate),
     versionlock(this, &versionlock_type),
     authlock(this, &authlock_type),
@@ -997,6 +998,19 @@ bool CInode::is_ancestor_of(const CInode *other, std::unordered_map<CInode const
   return false;
 }
 
+bool CInode::is_any_ancestor_inode_a_replica() {
+  CDentry *pdn = get_parent_dn();
+  while (pdn) {
+    CInode *diri = pdn->get_dir()->get_inode();
+    if (!diri->is_auth()) {
+      return true;
+    }
+    pdn = diri->get_parent_dn();
+  }
+
+  return false;
+}
+
 bool CInode::is_projected_ancestor_of(const CInode *other) const
 {
   while (other) {
@@ -1364,7 +1378,7 @@ void CInode::_commit_ops(int r, C_GatherBuilder &gather_bld,
 }
 
 void CInode::_store_backtrace(std::vector<CInodeCommitOperation> &ops_vec,
-                              inode_backtrace_t &bt, int op_prio)
+                              inode_backtrace_t &bt, int op_prio, bool ignore_old_pools)
 {
   dout(10) << __func__ << " on " << *this << dendl;
   ceph_assert(is_dirty_parent());
@@ -1385,8 +1399,8 @@ void CInode::_store_backtrace(std::vector<CInodeCommitOperation> &ops_vec,
   ops_vec.emplace_back(op_prio, pool, get_inode()->layout,
                        mdcache->mds->mdsmap->get_up_features(), slink);
 
-  if (!state_test(STATE_DIRTYPOOL) || get_inode()->old_pools.empty()) {
-    dout(20) << __func__ << ": no dirtypool or no old pools" << dendl;
+  if (!state_test(STATE_DIRTYPOOL) || get_inode()->old_pools.empty() || ignore_old_pools) {
+    dout(20) << __func__ << ": no dirtypool or no old pools or ignore_old_pools" << dendl;
     return;
   }
 
@@ -1409,7 +1423,7 @@ void CInode::store_backtrace(MDSContext *fin, int op_prio)
   inode_backtrace_t bt;
   auto version = get_inode()->backtrace_version;
 
-  _store_backtrace(ops_vec, bt, op_prio);
+  _store_backtrace(ops_vec, bt, op_prio, false);
 
   C_GatherBuilder gather(g_ceph_context,
 			 new C_OnFinisher(
@@ -1420,12 +1434,14 @@ void CInode::store_backtrace(MDSContext *fin, int op_prio)
   gather.activate();
 }
 
-void CInode::store_backtrace(CInodeCommitOperations &op, int op_prio)
+void CInode::store_backtrace(CInodeCommitOperations &op, int op_prio,
+			     bool ignore_old_pools)
 {
   op.version = get_inode()->backtrace_version;
   op.in = this;
 
-  _store_backtrace(op.ops_vec, op.bt, op_prio);
+  // update backtraces in old pools
+  _store_backtrace(op.ops_vec, op.bt, op_prio, ignore_old_pools);
 }
 
 void CInode::_stored_backtrace(int r, version_t v, Context *fin)
@@ -4790,7 +4806,11 @@ void CInode::validate_disk_state(CInode::validated_data *results,
           dout(20) << "divergent backtraces are acceptable when dn "
                       "is being purged or has been renamed or moved to a "
                       "different directory " << *in << dendl;
-        }
+        } else if (in->is_any_ancestor_inode_a_replica()) {
+          results->backtrace.passed = true;
+          dout(20) << "divergent backtraces are acceptable when some "
+	              "ancestor inodes are replicas " << *in << dendl;
+	}
       } else {
         results->backtrace.passed = true;
       }

@@ -84,7 +84,7 @@ def get_prune_set(candidates: Set[Tuple[cephfs.DirEntry, datetime]],
         ("d", '%Y-%m-%d'),
         ("w", '%G-%V'),
         ("M", '%Y-%m'),
-        ("Y", '%Y'),
+        ("y", '%Y'),
     ])
     keep = []
     if not retention:
@@ -361,7 +361,7 @@ class SnapSchedClient(CephfsClient):
             path = sched.path
             prune_candidates = set()
             time = datetime.now(timezone.utc)
-            mds_max_snaps_per_dir = self.mgr.get_ceph_option('mds_max_snaps_per_dir')
+            mds_max_snaps_per_dir = self.mgr.get_foreign_ceph_option('mds', 'mds_max_snaps_per_dir')
             with open_filesystem(self, sched.fs) as fs_handle:
                 snap_dir = self.mgr.rados.conf_get('client_snapdir')
                 with fs_handle.opendir(f'{path}/{snap_dir}') as d_handle:
@@ -414,7 +414,7 @@ class SnapSchedClient(CephfsClient):
         if sched.parse_schedule(sched.schedule)[1] == 'm' and not self.allow_minute_snaps:
             log.error('not allowed')
             raise ValueError('invalid schedule specified - multiplier should '
-                             'be one of h,d,w,M,Y')
+                             'be one of h,d,w,M,y')
         log.debug(f'attempting to add schedule {sched}')
         with self.get_schedule_db(fs) as conn_mgr:
             db = conn_mgr.dbinfo.db

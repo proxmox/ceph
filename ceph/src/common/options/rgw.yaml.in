@@ -897,8 +897,8 @@ options:
 - name: rgw_ldap_uri
   type: str
   level: advanced
-  desc: Space-separated list of LDAP servers in URI format.
-  default: ldaps://<ldap.your.domain>
+  desc: Space-separated list of LDAP servers in URI format, e.g., "ldaps://<ldap.your.domain>".
+  default:
   services:
   - rgw
   with_legacy: true
@@ -1444,7 +1444,7 @@ options:
   desc: Ops log object name format
   long_desc: Defines the format of the RADOS objects names that ops log uses to store
     ops log data
-  fmt_desc: The logging format for an object name. See ma npage
+  fmt_desc: The logging format for an object name. See man page
     :manpage:`date` for details about format specifiers.
   default: '%Y-%m-%d-%H-%i-%n'
   services:
@@ -3772,3 +3772,25 @@ options:
   default: true
   services:
   - rgw
+- name: rgw_kafka_connection_idle
+  type: uint 
+  level: advanced
+  desc: Time in seconds to delete idle kafka connections
+  long_desc: A conection will be considered "idle" if no messages
+    are sent to it for more than the time defined.
+    Note that the connection will not be considered idle, even if it is down,
+    as long as there are attempts to send messages to it.
+  default: 300
+  services:
+  - rgw
+  with_legacy: true
+- name: rgw_kafka_message_timeout
+  type: uint 
+  level: advanced
+  desc: This is the maximum time in milliseconds to deliver a message (including retries)
+  long_desc: Delivery error occurs when the message timeout is exceeded.
+    Value must be greater than zero, if set to zero, a value of 1 millisecond will be used.
+  default: 5000
+  services:
+  - rgw
+  with_legacy: true

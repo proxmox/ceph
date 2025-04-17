@@ -412,6 +412,10 @@ private:
   MOSDMap *build_incremental(epoch_t first, epoch_t last, uint64_t features);
   void send_full(MonOpRequestRef op);
   void send_incremental(MonOpRequestRef op, epoch_t first);
+
+  bool remove_pool_snap(std::string_view snapname,
+                        pg_pool_t &pp, int64_t pool);
+
 public:
   /**
    * Make sure the existing (up) OSDs support the given features
@@ -718,8 +722,8 @@ public:
   void do_osd_create(const int32_t id, const uuid_d& uuid,
 		     const std::string& device_class,
 		     int32_t* new_id);
-  int prepare_command_osd_purge(int32_t id, std::stringstream& ss);
-  int prepare_command_osd_destroy(int32_t id, std::stringstream& ss);
+  int prepare_command_osd_purge(MonOpRequestRef op, int32_t id, std::stringstream& ss);
+  int prepare_command_osd_destroy(MonOpRequestRef op, int32_t id, std::stringstream& ss);
   int _prepare_command_osd_crush_remove(
       CrushWrapper &newcrush,
       int32_t id,

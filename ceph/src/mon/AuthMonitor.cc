@@ -1133,11 +1133,12 @@ int AuthMonitor::validate_osd_destroy(
   return 0;
 }
 
-int AuthMonitor::do_osd_destroy(
-    const EntityName& cephx_entity,
-    const EntityName& lockbox_entity)
+void AuthMonitor::do_osd_destroy(
+     const EntityName& cephx_entity,
+     const EntityName& lockbox_entity)
 {
   ceph_assert(paxos.is_plugged());
+  ceph_assert(is_writeable());
 
   dout(10) << __func__ << " cephx " << cephx_entity
                        << " lockbox " << lockbox_entity << dendl;
@@ -1160,14 +1161,13 @@ int AuthMonitor::do_osd_destroy(
 
   if (!removed) {
     dout(10) << __func__ << " entities do not exist -- no-op." << dendl;
-    return 0;
+    return;
   }
 
   // given we have paxos plugged, this will not result in a proposal
   // being triggered, but it will still be needed so that we get our
   // pending state encoded into the paxos' pending transaction.
   propose_pending();
-  return 0;
 }
 
 int _create_auth(
@@ -1454,7 +1454,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
       return true;
     }
     err = 0;
-    wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
+    wait_for_commit(op, new Monitor::C_Command(mon, op, 0, rs,
 					      get_last_committed() + 1));
     return true;
   } else if (prefix == "auth add" && !entity_name.empty()) {
@@ -1488,7 +1488,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
 
     // are we about to have it?
     if (entity_is_pending(entity)) {
-      wait_for_finished_proposal(op,
+      wait_for_commit(op,
           new Monitor::C_Command(mon, op, 0, rs, get_last_committed() + 1));
       return true;
     }
@@ -1550,7 +1550,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
 
     ss << "added key for " << auth_inc.name;
     getline(ss, rs);
-    wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
+    wait_for_commit(op, new Monitor::C_Command(mon, op, 0, rs,
 						   get_last_committed() + 1));
     return true;
   } else if ((prefix == "auth get-or-create-pending" ||
@@ -1577,7 +1577,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
 	decode(auth_inc, q);
 	if (auth_inc.op == KeyServerData::AUTH_INC_ADD &&
 	    auth_inc.name == entity) {
-	  wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
+	  wait_for_commit(op, new Monitor::C_Command(mon, op, 0, rs,
 						get_last_committed() + 1));
 	  return true;
 	}
@@ -1634,7 +1634,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
       auth_inc.auth.pending_key.clear();
       push_cephx_inc(auth_inc);
     }
-    wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs, rdata,
+    wait_for_commit(op, new Monitor::C_Command(mon, op, 0, rs, rdata,
 					      get_last_committed() + 1));
     return true;
   } else if ((prefix == "auth get-or-create-key" ||
@@ -1701,7 +1701,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
 	decode(auth_inc, q);
 	if (auth_inc.op == KeyServerData::AUTH_INC_ADD &&
 	    auth_inc.name == entity) {
-	  wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
+	  wait_for_commit(op, new Monitor::C_Command(mon, op, 0, rs,
 						get_last_committed() + 1));
 	  return true;
 	}
@@ -1736,7 +1736,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
 
     rdata.append(ds);
     getline(ss, rs);
-    wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs, rdata,
+    wait_for_commit(op, new Monitor::C_Command(mon, op, 0, rs, rdata,
 					      get_last_committed() + 1));
     return true;
   } else if (prefix == "fs authorize") {
@@ -1913,7 +1913,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
     auth_inc.op = KeyServerData::AUTH_INC_DEL;
     push_cephx_inc(auth_inc);
 
-    wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
+    wait_for_commit(op, new Monitor::C_Command(mon, op, 0, rs,
 					      get_last_committed() + 1));
     return true;
   }

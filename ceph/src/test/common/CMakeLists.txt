@@ -229,6 +229,12 @@ add_executable(unittest_xmlformatter
 add_ceph_unittest(unittest_xmlformatter)
 target_link_libraries(unittest_xmlformatter ceph-common)
 
+add_executable(unittest_htmlformatter
+    test_htmlformatter.cc
+    )
+add_ceph_unittest(unittest_htmlformatter)
+target_link_libraries(unittest_htmlformatter ceph-common)
+
 # unittest_bit_vector
 add_executable(unittest_bit_vector
   test_bit_vector.cc
@@ -356,6 +362,7 @@ target_link_libraries(unittest_cdc global ceph-common)
 add_ceph_unittest(unittest_cdc)
 
 add_executable(unittest_ceph_timer test_ceph_timer.cc)
+target_link_libraries(unittest_ceph_timer ceph-common)
 add_ceph_unittest(unittest_ceph_timer)
 
 add_executable(unittest_option test_option.cc)

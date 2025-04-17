@@ -273,6 +273,16 @@ class LocalRemoteProcess(object):
         else:
             return False
 
+    def poll(self):
+        if self.finished:
+            if self.exitstatus is not None:
+                if self.check_status and self.exitstatus != 0:
+                    raise CommandFailedError(self.args, self.exitstatus)
+                else:
+                    return self.exitstatus
+        else:
+            return None
+
     def kill(self):
         log.debug("kill ")
         if self.subproc.pid and not self.finished:
@@ -407,7 +417,13 @@ sudo() {
 
         usr_args, args = self._omit_cmd_args(args, omit_sudo)
 
-        log.debug('> ' + usr_args)
+        # Let's print all commands on INFO log level since some logging level
+        # might be changed to INFO from DEBUG during a vstart_runner.py's
+        # execution due to code added for teuthology. This happened for
+        # ceph_test_case.RunCephCmd.negtest_ceph_cmd(). Commands it executes
+        # weren't printed in output because logging level for
+        # ceph_test_case.py is set to INFO by default.
+        log.info('> ' + usr_args)
 
         return args, usr_args
 
@@ -539,7 +555,7 @@ class LocalDaemon(object):
 
         self.proc = self.controller.run(args=[
             os.path.join(BIN_PREFIX, "ceph-{0}".format(self.daemon_type)),
-            "-i", self.daemon_id])
+            "-i", self.daemon_id, "-f"], wait=False)
 
     def signal(self, sig, silent=False):
         if not self.running():

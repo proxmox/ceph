@@ -297,7 +297,10 @@ Delete Default Zonegroup and Zone
 
 #. Delete the ``default`` pools in your Ceph storage cluster if they exist.
 
-   .. important:: The following step assumes a multi-site configuration that uses newly installed systems that aren’t currently storing data. DO NOT DELETE the ``default`` zonegroup if you are already using it to store data.
+   .. important:: The following step assumes a multi-site configuration that
+      uses freshly installed pools (that together constitute a zone) that store
+      no data. DO NOT DELETE the ``default`` pools if you are already using
+      them to store data.
 
    .. prompt:: bash #
    
@@ -507,7 +510,7 @@ For example:
 Updating the Period
 -------------------
 
-After updating the master zone configuration, update the period:
+After updating the secondary zone configuration, update the period:
 
 .. prompt:: bash #
 

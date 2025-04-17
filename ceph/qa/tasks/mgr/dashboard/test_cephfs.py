@@ -74,6 +74,12 @@ class CephfsTest(DashboardTestCase):
         yield 1
         self.rm_dir(self.QUOTA_PATH)
 
+    def rename_path(self, src_path, dst_path):
+        params = {'src_path': src_path, 'dst_path': dst_path}
+        self._put(f"/api/cephfs/{self.get_fs_id()}/rename-path",
+                  data=params)
+        self.assertStatus(200)
+
     @DashboardTestCase.RunAs('test', 'test', ['block-manager'])
     def test_access_permissions(self):
         fs_id = self.get_fs_id()
@@ -290,3 +296,23 @@ class CephfsTest(DashboardTestCase):
         ui_api_ls = self.ui_ls_dir('/pictures', 0)
         self.assertEqual(api_ls, ui_api_ls)
         self.rm_dir('/pictures')
+
+    def test_cephfs_clients_get_after_mds_down(self):
+        fs_id = self.get_fs_id()
+        self._get(f"/api/cephfs/{fs_id}/clients")
+        self.assertStatus(200)
+
+        self.fs.fail()
+        params = {'suppress_client_ls_errors': 'False'}
+        self._get(f"/api/cephfs/{fs_id}/clients", params=params)
+        self.assertStatus(500)
+
+        self.fs.set_joinable()
+        self._get(f"/api/cephfs/{fs_id}/clients")
+        self.assertStatus(200)
+
+    def test_rename_path(self):
+        self.mk_dirs('/apple')
+        self.rename_path('/apple', '/orange')
+        self.ls_dir('/orange', 0)
+        self.rm_dir('/orange')

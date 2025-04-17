@@ -287,8 +287,8 @@ class RgwBucket(RgwRESTController):
                                              retention_period_days,
                                              retention_period_years)
 
-    def _get_policy(self, bucket: str):
-        rgw_client = RgwClient.admin_instance()
+    def _get_policy(self, bucket: str, daemon_name, owner):
+        rgw_client = RgwClient.instance(owner, daemon_name)
         return rgw_client.get_bucket_policy(bucket)
 
     def _set_policy(self, bucket_name: str, policy: str, daemon_name, owner):
@@ -359,7 +359,7 @@ class RgwBucket(RgwRESTController):
         result['encryption'] = encryption['Status']
         result['versioning'] = versioning['Status']
         result['mfa_delete'] = versioning['MfaDelete']
-        result['bucket_policy'] = self._get_policy(bucket_name)
+        result['bucket_policy'] = self._get_policy(bucket_name, daemon_name, result['owner'])
         result['acl'] = self._get_acl(bucket_name, daemon_name, result['owner'])
 
         # Append the locking configuration.
@@ -457,11 +457,18 @@ class RgwBucket(RgwRESTController):
             self._set_acl(bucket_name, canned_acl, uid, daemon_name)
         return self._append_bid(result)
 
-    def delete(self, bucket, purge_objects='true', daemon_name=None):
-        return self.proxy(daemon_name, 'DELETE', 'bucket', {
-            'bucket': bucket,
-            'purge-objects': purge_objects
-        }, json_response=False)
+    def delete(self, bucket, daemon_name=None):
+        try:
+            bucket_info = self.proxy(daemon_name, 'GET', 'bucket', {'bucket': bucket})
+            num_objects = bucket_info.get('usage', {}).get('rgw.main', {}).get('num_objects', 0)
+            if num_objects > 0:
+                raise DashboardException(msg='Unable to delete bucket"{}" - Bucket is not empty. '
+                                         'Remove all objects before deletion.'.format(bucket))
+            return self.proxy(daemon_name, 'DELETE', 'bucket', {
+                'bucket': bucket
+            }, json_response=False)
+        except (DashboardException, RequestException) as e:  # pragma: no cover
+            raise DashboardException(e, component='rgw')
 
     @RESTController.Collection(method='PUT', path='/setEncryptionConfig')
     @allow_empty_body
@@ -569,6 +576,9 @@ class RgwUser(RgwRESTController):
         return users
 
     def get(self, uid, daemon_name=None, stats=True) -> dict:
+        return self._get(uid, daemon_name=daemon_name, stats=stats)
+
+    def _get(self, uid, daemon_name=None, stats=True) -> dict:
         query_params = '?stats' if stats else ''
         result = self.proxy(daemon_name, 'GET', 'user{}'.format(query_params),
                             {'uid': uid, 'stats': stats})
@@ -583,7 +593,7 @@ class RgwUser(RgwRESTController):
         # type: (Optional[str]) -> List[str]
         emails = []
         for uid in json.loads(self.list(daemon_name)):  # type: ignore
-            user = json.loads(self.get(uid, daemon_name))  # type: ignore
+            user = self._get(uid, daemon_name)  # type: ignore
             if user["email"]:
                 emails.append(user["email"])
         return emails
@@ -703,7 +713,7 @@ class RgwUser(RgwRESTController):
                        secret_key=None, daemon_name=None):
         # pylint: disable=R1705
         subusr_array = []
-        user = json.loads(self.get(uid, daemon_name))  # type: ignore
+        user = self._get(uid, daemon_name)  # type: ignore
         subusers = user["subusers"]
         for sub_usr in subusers:
             subusr_array.append(sub_usr["id"])

@@ -762,6 +762,9 @@ public:
   void get_full_osd_counts(std::set<int> *full, std::set<int> *backfill,
 			   std::set<int> *nearfull) const;
 
+  void get_out_of_subnet_osd_counts(CephContext *cct,
+                                    std::string const &public_network,
+                                    std::set<int> *unreachable) const;
 
   /***** cluster state *****/
   /* osds */
@@ -1476,6 +1479,10 @@ public:
     int64_t pid,
     Incremental *pending_inc,
     OSDMap& tmp_osd_map) const;
+
+  void rm_all_upmap_prims(
+    CephContext *cct,
+    OSDMap::Incremental *pending_inc); // total
 
   int calc_desired_primary_distribution(
     CephContext *cct,

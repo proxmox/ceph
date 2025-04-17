@@ -527,6 +527,15 @@ void OSDService::shutdown()
   next_osdmap = OSDMapRef();
 }
 
+void OSDService::fast_shutdown()
+{
+  mono_timer.suspend();
+  {
+    std::lock_guard l(watch_lock);
+    watch_timer.shutdown();
+  }
+}
+
 void OSDService::init()
 {
   reserver_finisher.start();
@@ -1694,6 +1703,11 @@ void OSDService::enqueue_front(OpSchedulerItem&& qi)
   osd->op_shardedwq.queue_front(std::move(qi));
 }
 
+double OSDService::get_cost_per_io() const
+{
+  return osd->op_shardedwq.get_cost_per_io();
+}
+
 void OSDService::queue_recovery_context(
   PG *pg,
   GenContext<ThreadPool::TPHandle&> *c,
@@ -1762,56 +1776,66 @@ template <class MSG_TYPE>
 void OSDService::queue_scrub_event_msg(PG* pg,
 				       Scrub::scrub_prio_t with_priority,
 				       unsigned int qu_priority,
-				       Scrub::act_token_t act_token)
+				       Scrub::act_token_t act_token,
+				       uint64_t cost)
 {
   const auto epoch = pg->get_osdmap_epoch();
   auto msg = new MSG_TYPE(pg->get_pgid(), epoch, act_token);
   dout(15) << "queue a scrub event (" << *msg << ") for " << *pg
            << ". Epoch: " << epoch << " token: " << act_token << dendl;
   enqueue_back(OpSchedulerItem(
-    unique_ptr<OpSchedulerItem::OpQueueable>(msg), get_scrub_cost(),
+    unique_ptr<OpSchedulerItem::OpQueueable>(msg), cost,
     pg->scrub_requeue_priority(with_priority, qu_priority), ceph_clock_now(), 0, epoch));
 }
 
 template <class MSG_TYPE>
 void OSDService::queue_scrub_event_msg(PG* pg,
-                                       Scrub::scrub_prio_t with_priority)
+                                       Scrub::scrub_prio_t with_priority,
+				        uint64_t cost)
 {
   const auto epoch = pg->get_osdmap_epoch();
   auto msg = new MSG_TYPE(pg->get_pgid(), epoch);
   dout(15) << "queue a scrub event (" << *msg << ") for " << *pg << ". Epoch: " << epoch << dendl;
   enqueue_back(OpSchedulerItem(
-    unique_ptr<OpSchedulerItem::OpQueueable>(msg), get_scrub_cost(),
+    unique_ptr<OpSchedulerItem::OpQueueable>(msg), cost,
     pg->scrub_requeue_priority(with_priority), ceph_clock_now(), 0, epoch));
 }
 
-int64_t OSDService::get_scrub_cost()
+template <class MSG_TYPE>
+void OSDService::queue_scrub_event_msg_default_cost(PG* pg,
+		                                     Scrub::scrub_prio_t with_priority,
+						     unsigned int qu_priority,
+						     Scrub::act_token_t act_token)
 {
+  uint64_t cost = cct->_conf->osd_scrub_event_cost;
+  queue_scrub_event_msg<MSG_TYPE>(pg, with_priority, qu_priority, act_token, cost);
+}
 
-  int64_t cost_for_queue = cct->_conf->osd_scrub_cost;
-  if (op_queue_type_t::mClockScheduler == osd->osd_op_queue_type()) {
-    cost_for_queue = cct->_conf->osd_scrub_event_cost *
-                     cct->_conf->osd_shallow_scrub_chunk_max;
-  }
-  return cost_for_queue;
+template <class MSG_TYPE>
+void OSDService::queue_scrub_event_msg_default_cost(PG* pg,
+		                                     Scrub::scrub_prio_t with_priority)
+{
+  uint64_t cost = cct->_conf->osd_scrub_event_cost;
+  queue_scrub_event_msg<MSG_TYPE>(pg, with_priority, cost);
 }
 
 void OSDService::queue_for_scrub(PG* pg, Scrub::scrub_prio_t with_priority)
 {
-  queue_scrub_event_msg<PGScrub>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrub>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_after_repair(PG* pg, Scrub::scrub_prio_t with_priority)
 {
-  queue_scrub_event_msg<PGScrubAfterRepair>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubAfterRepair>(pg, with_priority);
 }
 
 void OSDService::queue_for_rep_scrub(PG* pg,
 				     Scrub::scrub_prio_t with_priority,
 				     unsigned int qu_priority,
-				     Scrub::act_token_t act_token)
+				     Scrub::act_token_t act_token,
+				     uint64_t cost)
 {
-  queue_scrub_event_msg<PGRepScrub>(pg, with_priority, qu_priority, act_token);
+  queue_scrub_event_msg<PGRepScrub>(pg, with_priority, qu_priority, act_token, cost);
 }
 
 void OSDService::queue_for_rep_scrub_resched(PG* pg,
@@ -1820,101 +1844,108 @@ void OSDService::queue_for_rep_scrub_resched(PG* pg,
 					     Scrub::act_token_t act_token)
 {
   // Resulting scrub event: 'SchedReplica'
-  queue_scrub_event_msg<PGRepScrubResched>(pg, with_priority, qu_priority,
-					   act_token);
+  queue_scrub_event_msg_default_cost<PGRepScrubResched>(pg, with_priority, qu_priority,
+					                act_token);
 }
 
 void OSDService::queue_for_scrub_granted(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'RemotesReserved'
-  queue_scrub_event_msg<PGScrubResourcesOK>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubResourcesOK>(pg, with_priority);
 }
 
 void OSDService::queue_for_scrub_denied(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'ReservationFailure'
-  queue_scrub_event_msg<PGScrubDenied>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubDenied>(pg, with_priority);
 }
 
 void OSDService::queue_for_scrub_resched(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'InternalSchedScrub'
-  queue_scrub_event_msg<PGScrubResched>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubResched>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_pushes_update(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'ActivePushesUpd'
-  queue_scrub_event_msg<PGScrubPushesUpdate>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubPushesUpdate>(pg, with_priority);
 }
 
-void OSDService::queue_scrub_chunk_free(PG* pg, Scrub::scrub_prio_t with_priority)
+void OSDService::queue_scrub_chunk_free(PG* pg, Scrub::scrub_prio_t with_priority, uint64_t cost)
 {
   // Resulting scrub event: 'SelectedChunkFree'
-  queue_scrub_event_msg<PGScrubChunkIsFree>(pg, with_priority);
+  queue_scrub_event_msg<PGScrubChunkIsFree>(pg, with_priority, cost);
 }
 
 void OSDService::queue_scrub_chunk_busy(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'ChunkIsBusy'
-  queue_scrub_event_msg<PGScrubChunkIsBusy>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubChunkIsBusy>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_applied_update(PG* pg, Scrub::scrub_prio_t with_priority)
 {
-  queue_scrub_event_msg<PGScrubAppliedUpdate>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubAppliedUpdate>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_unblocking(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'Unblocked'
-  queue_scrub_event_msg<PGScrubUnblocked>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubUnblocked>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_digest_update(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'DigestUpdate'
-  queue_scrub_event_msg<PGScrubDigestUpdate>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubDigestUpdate>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_got_local_map(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'IntLocalMapDone'
-  queue_scrub_event_msg<PGScrubGotLocalMap>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubGotLocalMap>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_got_repl_maps(PG* pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'GotReplicas'
-  queue_scrub_event_msg<PGScrubGotReplMaps>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubGotReplMaps>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_replica_pushes(PG *pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'ReplicaPushesUpd'
-  queue_scrub_event_msg<PGScrubReplicaPushes>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubReplicaPushes>(pg, with_priority);
 }
 
 void OSDService::queue_scrub_is_finished(PG *pg)
 {
   // Resulting scrub event: 'ScrubFinished'
-  queue_scrub_event_msg<PGScrubScrubFinished>(pg, Scrub::scrub_prio_t::high_priority);
+  queue_scrub_event_msg_default_cost<PGScrubScrubFinished>(pg, Scrub::scrub_prio_t::high_priority);
 }
 
 void OSDService::queue_scrub_next_chunk(PG *pg, Scrub::scrub_prio_t with_priority)
 {
   // Resulting scrub event: 'NextChunk'
-  queue_scrub_event_msg<PGScrubGetNextChunk>(pg, with_priority);
+  queue_scrub_event_msg_default_cost<PGScrubGetNextChunk>(pg, with_priority);
 }
 
-void OSDService::queue_for_pg_delete(spg_t pgid, epoch_t e)
+void OSDService::queue_for_pg_delete(spg_t pgid, epoch_t e, int64_t num_objects)
 {
   dout(10) << __func__ << " on " << pgid << " e " << e  << dendl;
+  uint64_t cost_for_queue = [this, num_objects] {
+    if (op_queue_type_t::mClockScheduler == osd->osd_op_queue_type()) {
+      return num_objects * cct->_conf->osd_pg_delete_cost;
+    } else {
+      return cct->_conf->osd_pg_delete_cost;
+    }
+  }();
   enqueue_back(
     OpSchedulerItem(
       unique_ptr<OpSchedulerItem::OpQueueable>(
 	new PGDelete(pgid, e)),
-      cct->_conf->osd_pg_delete_cost,
+      cost_for_queue,
       cct->_conf->osd_pg_delete_priority,
       ceph_clock_now(),
       0,
@@ -2994,15 +3025,22 @@ will start to track new ops received afterwards.";
   } else if (prefix == "compact") {
     dout(1) << "triggering manual compaction" << dendl;
     auto start = ceph::coarse_mono_clock::now();
-    store->compact();
-    auto end = ceph::coarse_mono_clock::now();
-    double duration = std::chrono::duration<double>(end-start).count();
-    dout(1) << "finished manual compaction in "
-            << duration
-            << " seconds" << dendl;
-    f->open_object_section("compact_result");
-    f->dump_float("elapsed_time", duration);
-    f->close_section();
+    int r = store->compact();
+    if (r == 0) {
+      auto end = ceph::coarse_mono_clock::now();
+      double duration = std::chrono::duration<double>(end-start).count();
+
+      dout(1) << "finished manual compaction in "
+              << duration
+              << " seconds" << dendl;
+      f->open_object_section("compact_result");
+      f->dump_float("elapsed_time", duration);
+      f->close_section();
+    } else  if ( r == -EINPROGRESS) {
+      dout(1) << "manual compaction is being executed asynchronously" << dendl;
+    } else {
+      derr << "error starting manual compaction:" << cpp_strerror(r) << dendl;
+    }
   } else if (prefix == "get_mapped_pools") {
     f->open_array_section("mapped_pools");
     set<int64_t> poollist = get_mapped_pools();
@@ -3898,7 +3936,7 @@ int OSD::init()
   dout(2) << "superblock: I am osd." << superblock.whoami << dendl;
 
   if (cct->_conf.get_val<bool>("osd_compact_on_start")) {
-    dout(2) << "compacting object store's omap" << dendl;
+    dout(2) << "compacting object store's DB" << dendl;
     store->compact();
   }
 
@@ -4073,7 +4111,6 @@ int OSD::init()
 
   // Override a few options if mclock scheduler is enabled.
   maybe_override_sleep_options_for_qos();
-  maybe_override_cost_for_qos();
   maybe_override_options_for_qos();
   maybe_override_max_osd_capacity_for_qos();
 
@@ -4576,15 +4613,18 @@ int OSD::shutdown()
 
     utime_t  start_time_umount = ceph_clock_now();
     store->prepare_for_fast_shutdown();
+    service.fast_shutdown();
     std::lock_guard lock(osd_lock);
     // TBD: assert in allocator that nothing is being add
     store->umount();
 
     utime_t end_time = ceph_clock_now();
-    if (cct->_conf->osd_fast_shutdown_timeout) {
-      ceph_assert(end_time - start_time_func < cct->_conf->osd_fast_shutdown_timeout);
-    }
     dout(0) <<"Fast Shutdown duration total     :" << end_time              - start_time_func       << " seconds" << dendl;
+    if (cct->_conf->osd_fast_shutdown_timeout &&
+        end_time - start_time_func > cct->_conf->osd_fast_shutdown_timeout) {
+      dout(0) << "Fast Shutdown duration exceeded :" << cct->_conf->osd_fast_shutdown_timeout       << " seconds"
+              << dendl;
+    }
     dout(0) <<"Fast Shutdown duration osd_drain :" << start_time_umount     - start_time_osd_drain  << " seconds" << dendl;
     dout(0) <<"Fast Shutdown duration umount    :" << end_time              - start_time_umount     << " seconds" << dendl;
     dout(0) <<"Fast Shutdown duration timer     :" << start_time_osd_drain  - start_time_timer      << " seconds" << dendl;
@@ -7584,9 +7624,8 @@ void OSD::ms_fast_dispatch(Message *m)
   OID_EVENT_TRACE_WITH_MSG(m, "MS_FAST_DISPATCH_END", false);
 }
 
-int OSD::ms_handle_fast_authentication(Connection *con)
+bool OSD::ms_handle_fast_authentication(Connection *con)
 {
-  int ret = 0;
   auto s = ceph::ref_cast<Session>(con->get_priv());
   if (!s) {
     s = ceph::make_ref<Session>(cct, con);
@@ -7604,6 +7643,7 @@ int OSD::ms_handle_fast_authentication(Connection *con)
   AuthCapsInfo &caps_info = con->get_peer_caps_info();
   if (caps_info.allow_all) {
     s->caps.set_allow_all();
+    return true;
   } else if (caps_info.caps.length() > 0) {
     bufferlist::const_iterator p = caps_info.caps.cbegin();
     string str;
@@ -7613,23 +7653,22 @@ int OSD::ms_handle_fast_authentication(Connection *con)
     catch (ceph::buffer::error& e) {
       dout(10) << __func__ << " session " << s << " " << s->entity_name
 	       << " failed to decode caps string" << dendl;
-      ret = -EACCES;
+      return false;
     }
-    if (!ret) {
-      bool success = s->caps.parse(str);
-      if (success) {
-	dout(10) << __func__ << " session " << s
-		 << " " << s->entity_name
-		 << " has caps " << s->caps << " '" << str << "'" << dendl;
-	ret = 1;
-      } else {
-	dout(10) << __func__ << " session " << s << " " << s->entity_name
-		 << " failed to parse caps '" << str << "'" << dendl;
-	ret = -EACCES;
-      }
+    bool success = s->caps.parse(str);
+    if (success) {
+      dout(10) << __func__ << " session " << s
+               << " " << s->entity_name
+               << " has caps " << s->caps << " '" << str << "'" << dendl;
+      return true;
+    } else {
+      dout(10) << __func__ << " session " << s << " " << s->entity_name
+               << " failed to parse caps '" << str << "'" << dendl;
+      return false;
     }
+  } else {
+    return false;
   }
-  return ret;
 }
 
 void OSD::_dispatch(Message *m)
@@ -9943,9 +9982,6 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
       changed.count("osd_recovery_sleep_hybrid")) {
     maybe_override_sleep_options_for_qos();
   }
-  if (changed.count("osd_pg_delete_cost")) {
-    maybe_override_cost_for_qos();
-  }
   if (changed.count("osd_min_recovery_priority")) {
     service.local_reserver.set_min_priority(cct->_conf->osd_min_recovery_priority);
     service.remote_reserver.set_min_priority(cct->_conf->osd_min_recovery_priority);
@@ -10042,7 +10078,7 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
   // osd bench test. This is later used to setup mclock.
   if ((op_queue_type_t::mClockScheduler == osd_op_queue_type()) &&
       (cct->_conf.get_val<bool>("osd_mclock_skip_benchmark") == false) &&
-      (!unsupported_objstore_for_qos())) {
+      (store->get_type() != "memstore")) {
     std::string max_capacity_iops_config;
     bool force_run_benchmark =
       cct->_conf.get_val<bool>("osd_mclock_force_run_benchmark_on_init");
@@ -10109,22 +10145,28 @@ void OSD::maybe_override_max_osd_capacity_for_qos()
             << dendl;
 
     // Get the threshold IOPS set for the underlying hdd/ssd.
-    double threshold_iops = 0.0;
+    double hi_threshold_iops = 0.0;
+    double lo_threshold_iops = 0.0;
     if (store_is_rotational) {
-      threshold_iops = cct->_conf.get_val<double>(
+      hi_threshold_iops = cct->_conf.get_val<double>(
         "osd_mclock_iops_capacity_threshold_hdd");
+      lo_threshold_iops = cct->_conf.get_val<double>(
+        "osd_mclock_iops_capacity_low_threshold_hdd");
     } else {
-      threshold_iops = cct->_conf.get_val<double>(
+      hi_threshold_iops = cct->_conf.get_val<double>(
         "osd_mclock_iops_capacity_threshold_ssd");
+      lo_threshold_iops = cct->_conf.get_val<double>(
+        "osd_mclock_iops_capacity_low_threshold_ssd");
     }
 
     // Persist the iops value to the MON store or throw cluster warning
-    // if the measured iops exceeds the set threshold. If the iops exceed
-    // the threshold, the default value is used.
-    if (iops > threshold_iops) {
+    // if the measured iops is not in the threshold range. If the iops is
+    // not within the threshold range, the current/default value is retained.
+    if (iops < lo_threshold_iops || iops > hi_threshold_iops) {
       clog->warn() << "OSD bench result of " << std::to_string(iops)
-                   << " IOPS exceeded the threshold limit of "
-                   << std::to_string(threshold_iops) << " IOPS for osd."
+                   << " IOPS is not within the threshold limit range of "
+                   << std::to_string(lo_threshold_iops) << " IOPS and "
+                   << std::to_string(hi_threshold_iops) << " IOPS for osd."
                    << std::to_string(whoami) << ". IOPS capacity is unchanged"
                    << " at " << std::to_string(cur_iops) << " IOPS. The"
                    << " recommendation is to establish the osd's IOPS capacity"
@@ -10140,8 +10182,7 @@ bool OSD::maybe_override_options_for_qos(const std::set<std::string> *changed)
 {
   // Override options only if the scheduler enabled is mclock and the
   // underlying objectstore is supported by mclock
-  if (op_queue_type_t::mClockScheduler == osd_op_queue_type() &&
-      !unsupported_objstore_for_qos()) {
+  if (op_queue_type_t::mClockScheduler == osd_op_queue_type()) {
     static const std::map<std::string, uint64_t> recovery_qos_defaults {
       {"osd_recovery_max_active", 0},
       {"osd_recovery_max_active_hdd", 3},
@@ -10242,8 +10283,7 @@ void OSD::maybe_override_sleep_options_for_qos()
 {
   // Override options only if the scheduler enabled is mclock and the
   // underlying objectstore is supported by mclock
-  if (op_queue_type_t::mClockScheduler == osd_op_queue_type() &&
-      !unsupported_objstore_for_qos()) {
+  if (op_queue_type_t::mClockScheduler == osd_op_queue_type()) {
     // Override the various sleep settings
     // Disable recovery sleep
     cct->_conf.set_val("osd_recovery_sleep", std::to_string(0));
@@ -10268,16 +10308,6 @@ void OSD::maybe_override_sleep_options_for_qos()
   }
 }
 
-void OSD::maybe_override_cost_for_qos()
-{
-  // If the scheduler enabled is mclock, override the default PG deletion cost
-  // so that mclock can meet the QoS goals.
-  if (op_queue_type_t::mClockScheduler == osd_op_queue_type() &&
-      !unsupported_objstore_for_qos()) {
-    uint64_t pg_delete_cost = 15728640;
-    cct->_conf.set_val("osd_pg_delete_cost", std::to_string(pg_delete_cost));
-  }
-}
 
 /**
  * A context for receiving status from a background mon command to set
@@ -10336,14 +10366,6 @@ void OSD::mon_cmd_set_config(const std::string &key, const std::string &val)
                                                val, update_shard);
   dout(10) << __func__ << " Set " << key << " = " << val << dendl;
   monc->start_mon_command(vcmd, {}, nullptr, nullptr, on_finish);
-}
-
-bool OSD::unsupported_objstore_for_qos()
-{
-  static const std::vector<std::string> unsupported_objstores = { "filestore" };
-  return std::find(unsupported_objstores.begin(),
-                   unsupported_objstores.end(),
-                   store->get_type()) != unsupported_objstores.end();
 }
 
 op_queue_type_t OSD::osd_op_queue_type() const

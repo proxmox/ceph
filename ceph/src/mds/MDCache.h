@@ -269,6 +269,8 @@ class MDCache {
   bool is_readonly() { return readonly; }
   void force_readonly();
 
+  void maybe_fragment(CDir* dir);
+
   static file_layout_t gen_default_file_layout(const MDSMap &mdsmap);
   static file_layout_t gen_default_log_layout(const MDSMap &mdsmap);
 
@@ -524,6 +526,8 @@ class MDCache {
   void _move_subtree_map_bound(dirfrag_t df, dirfrag_t oldparent, dirfrag_t newparent,
 			       std::map<dirfrag_t,std::vector<dirfrag_t> >& subtrees);
   ESubtreeMap *create_subtree_map();
+
+  MDRequestRef lock_path(filepath p, std::vector<std::string> locks);
 
   void clean_open_file_lists();
   void dump_openfiles(Formatter *f);
@@ -1349,7 +1353,11 @@ class MDCache {
   void finish_uncommitted_fragment(dirfrag_t basedirfrag, int op);
   void rollback_uncommitted_fragment(dirfrag_t basedirfrag, frag_vec_t&& old_frags);
 
+  void dispatch_lock_path(MDRequestRef& mdr);
+
   void upkeep_main(void);
+
+  bool is_ready_to_trim_cache(void);
 
   uint64_t cache_memory_limit;
   double cache_reservation;

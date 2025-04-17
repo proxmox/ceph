@@ -53,9 +53,9 @@ public:
 };
 
 enum {
-  l_osd_slow_op_first = 1000,
-  l_osd_slow_op_count,
-  l_osd_slow_op_last,
+  l_trackedop_slow_op_first = 1000,
+  l_trackedop_slow_op_count,
+  l_trackedop_slow_op_last,
 };
 
 class OpHistory {
@@ -76,9 +76,11 @@ class OpHistory {
 
 public:
   OpHistory(CephContext *c) : cct(c), opsvc(this) {
-    PerfCountersBuilder b(cct, "osd-slow-ops",
-                         l_osd_slow_op_first, l_osd_slow_op_last);
-    b.add_u64_counter(l_osd_slow_op_count, "slow_ops_count",
+    PerfCountersBuilder b(cct, "trackedop",
+                         l_trackedop_slow_op_first, l_trackedop_slow_op_last);
+    b.set_prio_default(PerfCountersBuilder::PRIO_USEFUL);
+
+    b.add_u64_counter(l_trackedop_slow_op_count, "slow_ops_count",
                       "Number of operations taking over ten second");
 
     logger.reset(b.create_perf_counters());
@@ -210,8 +212,8 @@ public:
     typename T::Ref retval(new T(params, this));
     retval->tracking_start();
     if (is_tracking()) {
-      retval->mark_event("throttled", params->get_throttle_stamp());
       retval->mark_event("header_read", params->get_recv_stamp());
+      retval->mark_event("throttled", params->get_throttle_stamp());
       retval->mark_event("all_read", params->get_recv_complete_stamp());
       retval->mark_event("dispatched", params->get_dispatch_stamp());
     }

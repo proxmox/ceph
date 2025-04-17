@@ -281,6 +281,7 @@ static inline const char* to_mime_type(const RGWFormat f)
 #define ERR_NO_SUCH_OBJECT_LOCK_CONFIGURATION  2046
 #define ERR_INVALID_RETENTION_PERIOD 2047
 #define ERR_NO_SUCH_BUCKET_ENCRYPTION_CONFIGURATION 2048
+#define ERR_NO_SUCH_PUBLIC_ACCESS_BLOCK_CONFIGURATION 2049
 #define ERR_USER_SUSPENDED       2100
 #define ERR_INTERNAL_ERROR       2200
 #define ERR_NOT_IMPLEMENTED      2201
@@ -444,8 +445,10 @@ public:
   }
 };
 
+using env_map_t = std::map<std::string, std::string, ltstr_nocase>;
+
 class RGWEnv {
-  std::map<std::string, std::string, ltstr_nocase> env_map;
+  env_map_t env_map;
   RGWConf conf;
 public:
   void init(CephContext *cct);
@@ -1073,7 +1076,7 @@ struct req_info {
 
   req_info(CephContext *cct, const RGWEnv *env);
   void rebuild_from(req_info& src);
-  void init_meta_info(const DoutPrefixProvider *dpp, bool *found_bad_meta);
+  void init_meta_info(const DoutPrefixProvider *dpp, bool *found_bad_meta, const int prot_flags);
 };
 
 struct req_init_state {
@@ -1111,6 +1114,7 @@ struct req_state : DoutPrefixProvider {
   uint64_t obj_size{0};
   bool enable_ops_log;
   bool enable_usage_log;
+  rgw_s3select_usage_data s3select_usage;
   uint8_t defer_to_bucket_acls;
   uint32_t perm_mask{0};
 
@@ -1753,11 +1757,11 @@ static constexpr uint32_t MATCH_POLICY_RESOURCE = 0x02;
 static constexpr uint32_t MATCH_POLICY_ARN = 0x04;
 static constexpr uint32_t MATCH_POLICY_STRING = 0x08;
 
-extern bool match_policy(std::string_view pattern, std::string_view input,
+extern bool match_policy(const std::string& pattern, const std::string& input,
                          uint32_t flag);
 
-extern std::string camelcase_dash_http_attr(const std::string& orig);
-extern std::string lowercase_dash_http_attr(const std::string& orig);
+extern std::string camelcase_dash_http_attr(const std::string& orig, bool convert2dash = true);
+extern std::string lowercase_dash_http_attr(const std::string& orig, bool bidirection = false);
 
 void rgw_setup_saved_curl_handles();
 void rgw_release_all_curl_handles();
@@ -1832,6 +1836,18 @@ int decode_bl(bufferlist& bl, T& t)
   }
   return 0;
 }
+
+static inline std::string ys_header_mangle(std::string_view name)
+{
+  /* can we please stop doing this? */
+  std::string out;
+  out.reserve(name.length());
+  std::transform(std::begin(name), std::end(name),
+		 std::back_inserter(out), [](const int c) {
+		   return c == '-' ? '_' : c == '_' ? '-' : std::toupper(c);
+		 });
+  return out;
+} /* ys_header_mangle */
 
 extern int rgw_bucket_parse_bucket_instance(const std::string& bucket_instance, std::string *bucket_name, std::string *bucket_id, int *shard_id);
 

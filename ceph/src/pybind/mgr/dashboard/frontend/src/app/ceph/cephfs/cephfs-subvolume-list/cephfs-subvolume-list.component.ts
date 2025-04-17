@@ -28,11 +28,15 @@ import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
 import { FormControl } from '@angular/forms';
 import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
 import { CdForm } from '~/app/shared/forms/cd-form';
-import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { DeleteConfirmationModalComponent } from '~/app/shared/components/delete-confirmation-modal/delete-confirmation-modal.component';
 import { CephfsSubvolumeGroupService } from '~/app/shared/api/cephfs-subvolume-group.service';
 import { CephfsSubvolumeGroup } from '~/app/shared/models/cephfs-subvolume-group.model';
 import { CephfsMountDetailsComponent } from '../cephfs-mount-details/cephfs-mount-details.component';
 import { HealthService } from '~/app/shared/api/health.service';
+import _ from 'lodash';
+import { DeletionImpact } from '~/app/shared/enum/delete-confirmation-modal-impact.enum';
+
+const DEFAULT_SUBVOLUME_GROUP = '_nogroup';
 
 @Component({
   selector: 'cd-cephfs-subvolume-list',
@@ -160,6 +164,18 @@ export class CephfsSubvolumeListComponent extends CdForm implements OnInit, OnCh
         click: () => this.showAttachInfo()
       },
       {
+        name: this.actionLabels.NFS_EXPORT,
+        permission: 'create',
+        icon: Icons.nfsExport,
+        routerLink: () => [
+          '/cephfs/nfs/create',
+          this.fsName,
+          _.isEmpty(this.activeGroupName) ? DEFAULT_SUBVOLUME_GROUP : this.activeGroupName,
+          { subvolume: this.selection?.first()?.name }
+        ],
+        disable: () => !this.selection?.hasSingleSelection
+      },
+      {
         name: this.actionLabels.REMOVE,
         permission: 'delete',
         icon: Icons.destroy,
@@ -235,7 +251,8 @@ export class CephfsSubvolumeListComponent extends CdForm implements OnInit, OnCh
     });
     this.errorMessage = '';
     this.selectedName = this.selection.first().name;
-    this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
+    this.modalRef = this.modalService.show(DeleteConfirmationModalComponent, {
+      impact: DeletionImpact.high,
       actionDescription: 'Remove',
       itemNames: [this.selectedName],
       itemDescription: 'Subvolume',

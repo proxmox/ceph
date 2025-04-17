@@ -496,16 +496,16 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         :param hostname: hostname
         """
         table_heading_mapping = {
-            'summary': ['HOST', 'STORAGE', 'CPU', 'NET', 'MEMORY', 'POWER', 'FANS'],
+            'summary': ['HOST', 'SN', 'STORAGE', 'CPU', 'NET', 'MEMORY', 'POWER', 'FANS'],
             'fullreport': [],
             'firmwares': ['HOST', 'COMPONENT', 'NAME', 'DATE', 'VERSION', 'STATUS'],
             'criticals': ['HOST', 'COMPONENT', 'NAME', 'STATUS', 'STATE'],
-            'memory': ['HOST', 'NAME', 'STATUS', 'STATE'],
-            'storage': ['HOST', 'NAME', 'MODEL', 'SIZE', 'PROTOCOL', 'SN', 'STATUS', 'STATE'],
-            'processors': ['HOST', 'NAME', 'MODEL', 'CORES', 'THREADS', 'STATUS', 'STATE'],
-            'network': ['HOST', 'NAME', 'SPEED', 'STATUS', 'STATE'],
-            'power': ['HOST', 'ID', 'NAME', 'MODEL', 'MANUFACTURER', 'STATUS', 'STATE'],
-            'fans': ['HOST', 'ID', 'NAME', 'STATUS', 'STATE']
+            'memory': ['HOST', 'SYS_ID', 'NAME', 'STATUS', 'STATE'],
+            'storage': ['HOST', 'SYS_ID', 'NAME', 'MODEL', 'SIZE', 'PROTOCOL', 'SN', 'STATUS', 'STATE'],
+            'processors': ['HOST', 'SYS_ID', 'NAME', 'MODEL', 'CORES', 'THREADS', 'STATUS', 'STATE'],
+            'network': ['HOST', 'SYS_ID', 'NAME', 'SPEED', 'STATUS', 'STATE'],
+            'power': ['HOST', 'CHASSIS_ID', 'ID', 'NAME', 'MODEL', 'MANUFACTURER', 'STATUS', 'STATE'],
+            'fans': ['HOST', 'CHASSIS_ID', 'ID', 'NAME', 'STATUS', 'STATE']
         }
 
         if category not in table_heading_mapping.keys():
@@ -522,21 +522,23 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                 output = json.dumps(summary)
             else:
                 for k, v in summary.items():
-                    row = [k]
-                    row.extend([v['status'][key] for key in ['storage', 'processors', 'network', 'memory', 'power', 'fans']])
+                    row = [k, v['sn']]
+                    row.extend([v['status'][key] for key in ['storage', 'processors',
+                                                             'network', 'memory',
+                                                             'power', 'fans']])
                     table.add_row(row)
                 output = table.get_string()
         elif category == 'fullreport':
             if hostname is None:
-                output = "Missing host name"
+                output = 'Missing host name'
             elif format != Format.json:
-                output = "fullreport only supports json output"
+                output = 'fullreport only supports json output'
             else:
                 completion = self.node_proxy_fullreport(hostname=hostname)
                 fullreport: Dict[str, Any] = raise_if_exception(completion)
                 output = json.dumps(fullreport)
         elif category == 'firmwares':
-            output = "Missing host name" if hostname is None else self._firmwares_table(hostname, table, format)
+            output = 'Missing host name' if hostname is None else self._firmwares_table(hostname, table, format)
         elif category == 'criticals':
             output = self._criticals_table(hostname, table, format)
         else:
@@ -552,7 +554,11 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
             return json.dumps(data)
         for host, details in data.items():
             for k, v in details.items():
-                table.add_row((host, k, v['name'], v['release_date'], v['version'], v['status']['health']))
+                try:
+                    status = v['status']['health']
+                except (KeyError, TypeError):
+                    status = 'N/A'
+                table.add_row((host, k, v['name'], v['release_date'], v['version'], status))
         return table.get_string()
 
     def _criticals_table(self, hostname: Optional[str], table: PrettyTable, format: Format) -> str:
@@ -584,20 +590,21 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         }
 
         fields = mapping.get(category, ())
-        for host, details in data.items():
-            for k, v in details.items():
-                row = []
-                for field in fields:
-                    if field in v:
-                        row.append(v[field])
-                    elif field in v.get('status', {}):
-                        row.append(v['status'][field])
+        for host in data.keys():
+            for sys_id, details in data[host].items():
+                for k, v in details.items():
+                    row = []
+                    for field in fields:
+                        if field in v:
+                            row.append(v[field])
+                        elif field in v.get('status', {}):
+                            row.append(v['status'][field])
+                        else:
+                            row.append('')
+                    if category in ('power', 'fans', 'processors'):
+                        table.add_row((host, sys_id,) + (k,) + tuple(row))
                     else:
-                        row.append('')
-                if category in ('power', 'fans', 'processors'):
-                    table.add_row((host,) + (k,) + tuple(row))
-                else:
-                    table.add_row((host,) + tuple(row))
+                        table.add_row((host, sys_id,) + tuple(row))
 
         return table.get_string()
 
@@ -623,7 +630,7 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         data = raise_if_exception(completion)
         output: str = ''
         if action == self.HardwareLightAction.get:
-            status = 'on' if data["LocationIndicatorActive"] else 'off'
+            status = 'on' if data['LocationIndicatorActive'] else 'off'
             if light_type == self.HardwareLightType.device:
                 output = f'ident LED for {device} on {hostname} is: {status}'
             else:
@@ -1143,6 +1150,18 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         except ArgumentError as e:
             return HandleCommandResult(-errno.EINVAL, "", (str(e)))
 
+    @_cli_write_command('orch prometheus set-target')
+    def _set_prometheus_target(self, url: str) -> HandleCommandResult:
+        completion = self.set_prometheus_target(url)
+        result = raise_if_exception(completion)
+        return HandleCommandResult(stdout=json.dumps(result))
+
+    @_cli_write_command('orch prometheus remove-target')
+    def _remove_prometheus_target(self, url: str) -> HandleCommandResult:
+        completion = self.remove_prometheus_target(url)
+        result = raise_if_exception(completion)
+        return HandleCommandResult(stdout=json.dumps(result))
+
     @_cli_write_command('orch alertmanager set-credentials')
     def _set_alertmanager_access_info(self, username: Optional[str] = None, password: Optional[str] = None, inbuf: Optional[str] = None) -> HandleCommandResult:
         try:
@@ -1233,12 +1252,14 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         usage = """
 Usage:
   ceph orch daemon add osd host:device1,device2,...
-  ceph orch daemon add osd host:data_devices=device1,device2,db_devices=device3,osds_per_device=2,...
+  ceph orch daemon add osd host:data_devices=device1,device2,db_devices=device3,osds_per_device=2[,encrypted=true|True|1]
+  ceph orch daemon add osd host:data_devices=device1[,encrypted=false|False|0]
 """
         if not svc_arg:
             return HandleCommandResult(-errno.EINVAL, stderr=usage)
         try:
             host_name, raw = svc_arg.split(":")
+            list_drive_group_spec_bool_arg: List[str] = []
             drive_group_spec = {
                 'data_devices': []
             }  # type: Dict
@@ -1254,6 +1275,8 @@ Usage:
                                             'journal_devices']:
                         drive_group_spec[drv_grp_spec_arg] = []
                         drive_group_spec[drv_grp_spec_arg].append(value)
+                        if value.lower() in ['true', 'false']:
+                            list_drive_group_spec_bool_arg.append(drv_grp_spec_arg)
                     else:
                         drive_group_spec[drv_grp_spec_arg] = value
                 elif drv_grp_spec_arg is not None:
@@ -1265,6 +1288,10 @@ Usage:
             for dev_type in ['data_devices', 'db_devices', 'wal_devices', 'journal_devices']:
                 drive_group_spec[dev_type] = DeviceSelection(
                     paths=drive_group_spec[dev_type]) if drive_group_spec.get(dev_type) else None
+
+            for drive_group_spec_bool_arg in list_drive_group_spec_bool_arg:
+                drive_group_spec_value: str = drive_group_spec[drive_group_spec_bool_arg]
+                drive_group_spec[drive_group_spec_bool_arg] = drive_group_spec_value.lower() == "true"
 
             drive_group = DriveGroupSpec(
                 placement=PlacementSpec(host_pattern=host_name),
@@ -1518,7 +1545,13 @@ Usage:
             specs: List[Union[ServiceSpec, HostSpec]] = []
             # YAML '---' document separator with no content generates
             # None entries in the output. Let's skip them silently.
-            content = [o for o in yaml_objs if o is not None]
+            try:
+                content = [o for o in yaml_objs if o is not None]
+            except yaml.scanner.ScannerError as e:
+                msg = f"Invalid YAML received : {str(e)}"
+                self.log.exception(msg)
+                return HandleCommandResult(-errno.EINVAL, stderr=msg)
+
             for s in content:
                 spec = json_to_generic_spec(s)
 
@@ -1909,7 +1942,13 @@ Usage:
             specs: List[TunedProfileSpec] = []
             # YAML '---' document separator with no content generates
             # None entries in the output. Let's skip them silently.
-            content = [o for o in yaml_objs if o is not None]
+            try:
+                content = [o for o in yaml_objs if o is not None]
+            except yaml.scanner.ScannerError as e:
+                msg = f"Invalid YAML received : {str(e)}"
+                self.log.exception(msg)
+                return HandleCommandResult(-errno.EINVAL, stderr=msg)
+
             for spec in content:
                 specs.append(TunedProfileSpec.from_json(spec))
         else:

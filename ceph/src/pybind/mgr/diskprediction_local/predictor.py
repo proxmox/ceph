@@ -158,7 +158,7 @@ class RHDiskFailurePredictor(Predictor):
         # view structured array as 2d array for applying rolling window transforms
         # do not include capacity_bytes in this. only use smart_attrs
         disk_days_attrs = disk_days_sa[[attr for attr in model_smart_attr if 'smart_' in attr]]\
-            .view(np.float64).reshape(disk_days_sa.shape + (-1,))
+            .view(np.float64).reshape(disk_days_sa.shape + (-1,))  # type:ignore
 
         # featurize n (6 to 12) days data - mean,std,coefficient of variation
         # current model is trained on 6 days of data because that is what will be
@@ -168,14 +168,14 @@ class RHDiskFailurePredictor(Predictor):
         roll_window_size = 6
 
         # rolling means generator
-        dataset_size = disk_days_attrs.shape[0] - roll_window_size + 1
-        gen = (disk_days_attrs[i: i + roll_window_size, ...].mean(axis=0)
-               for i in range(dataset_size))
+        dataset_size = disk_days_attrs.shape[0] - roll_window_size + 1  # type:ignore
+        gen = (disk_days_attrs[i: i + roll_window_size, ...].mean(axis=0)  # type:ignore
+               for i in range(dataset_size))  # type:ignore
         means = np.vstack(gen)  # type: ignore
 
         # rolling stds generator
-        gen = (disk_days_attrs[i: i + roll_window_size, ...].std(axis=0, ddof=1)
-               for i in range(dataset_size))
+        gen = (disk_days_attrs[i: i + roll_window_size, ...].std(axis=0, ddof=1)  # type: ignore
+               for i in range(dataset_size))  # type:ignore
         stds = np.vstack(gen)  # type: ignore
 
         # coefficient of variation

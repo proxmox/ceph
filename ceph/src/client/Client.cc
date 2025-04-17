@@ -1698,7 +1698,6 @@ mds_rank_t Client::choose_target_mds(MetaRequest *req, Inode** phash_diri)
 
   if (req->resend_mds >= 0) {
     mds = req->resend_mds;
-    req->resend_mds = -1;
     ldout(cct, 10) << __func__ << " resend_mds specified as mds." << mds << dendl;
     goto out;
   }
@@ -2054,6 +2053,7 @@ int Client::make_request(MetaRequest *request,
 
     // wait for signal
     ldout(cct, 20) << "awaiting reply|forward|kick on " << &caller_cond << dendl;
+    request->resend_mds = -1; /* reset for retries */
     request->kick = false;
     std::unique_lock l{client_lock, std::adopt_lock};
     caller_cond.wait(l, [request] {
@@ -5910,6 +5910,11 @@ int Client::mds_check_access(std::string& path, const UserPerm& perms, int mask)
     }
   }
 
+  // drop any leading /
+  while (path.length() && path[0] == '/') {
+    path = path.substr(1);
+  }
+
   for (auto& s: cap_auths) {
     ldout(cct, 20) << __func__ << " auth match path " << s.match.path << " r: " << s.readable
                    << " w: " << s.writeable << dendl;
@@ -6026,18 +6031,22 @@ int Client::may_setattr(Inode *in, struct ceph_statx *stx, int mask,
   }
 
   if (mask & CEPH_SETATTR_MODE) {
+    bool allowed = false;
+    /*
+     * Currently the kernel fuse and libfuse code is buggy and
+     * won't pass the ATTR_KILL_SUID/ATTR_KILL_SGID to ceph-fuse.
+     * But will just set the ATTR_MODE and at the same time by
+     * clearing the suid/sgid bits.
+     *
+     * Only allow unprivileged users to clear S_ISUID and S_ISUID.
+     */
+    if ((in->mode & (S_ISUID | S_ISGID)) != (stx->stx_mode & (S_ISUID | S_ISGID)) &&
+        (in->mode & ~(S_ISUID | S_ISGID)) == (stx->stx_mode & ~(S_ISUID | S_ISGID))) {
+      allowed = true;
+    }
     uint32_t m = ~stx->stx_mode & in->mode; // mode bits removed
     ldout(cct, 20) << __func__ << " " << *in << " = " << hex << m << dec <<  dendl;
-    if (perms.uid() != 0 && perms.uid() != in->uid &&
-	/*
-	 * Currently the kernel fuse and libfuse code is buggy and
-	 * won't pass the ATTR_KILL_SUID/ATTR_KILL_SGID to ceph-fuse.
-	 * But will just set the ATTR_MODE and at the same time by
-	 * clearing the suid/sgid bits.
-	 *
-	 * Only allow unprivileged users to clear S_ISUID and S_ISUID.
-	 */
-	(m & ~(S_ISUID | S_ISGID)))
+    if (perms.uid() != 0 && perms.uid() != in->uid && !allowed)
       goto out;
 
     gid_t i_gid = (mask & CEPH_SETATTR_GID) ? stx->stx_gid : in->gid;
@@ -6085,6 +6094,10 @@ int Client::may_open(Inode *in, int flags, const UserPerm& perms)
   int r = 0;
   switch (in->mode & S_IFMT) {
     case S_IFLNK:
+#if defined(__linux__) && defined(O_PATH)
+      if (flags & O_PATH)
+        break;
+#endif
       r = -CEPHFS_ELOOP;
       goto out;
     case S_IFDIR:
@@ -6247,7 +6260,13 @@ int Client::resolve_mds(
   int role_r = fsmap->parse_role(mds_spec, &role, *css);
   if (role_r == 0) {
     // We got a role, resolve it to a GID
-    auto& info = fsmap->get_filesystem(role.fscid)->mds_map.get_info(role.rank);
+    const auto& mdsmap = fsmap->get_filesystem(role.fscid)->get_mds_map();
+    if (mdsmap.is_down(role.rank)) {
+      lderr(cct) << __func__ << ": targets rank: " << role.rank
+                 << " is down" << dendl;
+      return -CEPHFS_EAGAIN;
+    }
+    auto& info = mdsmap.get_info(role.rank);
     ldout(cct, 10) << __func__ << ": resolved " << mds_spec << " to role '"
       << role << "' aka " << info.human_name() << dendl;
     targets->push_back(info.global_id);
@@ -6955,11 +6974,13 @@ void Client::_unmount(bool abort)
 
 void Client::unmount()
 {
+  ldout(cct, 2) << __func__ << dendl;
   _unmount(false);
 }
 
 void Client::abort_conn()
 {
+  ldout(cct, 2) << __func__ << dendl;
   _unmount(true);
 }
 
@@ -7895,6 +7916,12 @@ int Client::readlinkat(int dirfd, const char *relpath, char *buf, loff_t size, c
     return r;
   }
 
+  if (!strcmp(relpath, "")) {
+    if (!dirinode.get()->is_symlink())
+      return -CEPHFS_ENOENT;
+    return _readlink(dirinode.get(), buf, size);
+  }
+
   InodeRef in;
   filepath path(relpath);
   r = path_walk(path, &in, perms, false, 0, dirinode);
@@ -8004,6 +8031,10 @@ bool Client::make_absolute_path_string(Inode *in, std::string& path)
     return false;
   }
 
+  // Make sure this function returns path with single leading '/'
+  if (path.length() && path[0] == '/' && path[1] == '/')
+    path = path.substr(1);
+
   return true;
 }
 
@@ -8051,8 +8082,6 @@ int Client::_do_setattr(Inode *in, struct ceph_statx *stx, int mask,
     std::string path;
     if (make_absolute_path_string(in, path)) {
       ldout(cct, 20) << " absolute path: " << path << dendl;
-      if (path.length())
-        path = path.substr(1);    // drop leading /
       res = mds_check_access(path, perms, MAY_WRITE);
       if (res) {
         goto out;
@@ -9380,6 +9409,12 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p,
     int r = _getattr(dn->inode, mask, dirp->perms);
     if (r < 0)
       return r;
+
+    /* fix https://tracker.ceph.com/issues/56288 */
+    if (dirp->inode->dir == NULL) {
+      ldout(cct, 0) << " dir is closed, so we should return" << dendl;
+      return -CEPHFS_EAGAIN;
+    }
     
     // the content of readdir_cache may change after _getattr(), so pd may be invalid iterator    
     pd = dir->readdir_cache.begin() + idx;
@@ -10298,8 +10333,6 @@ int Client::_open(Inode *in, int flags, mode_t mode, Fh **fhp,
     std::string path;
     if (make_absolute_path_string(in, path)) {
       ldout(cct, 20) << __func__ << " absolute path: " << path << dendl;
-      if (path.length())
-        path = path.substr(1);    // drop leading /
       result = mds_check_access(path, perms, mask);
       if (result) {
         return result;
@@ -12159,6 +12192,8 @@ int Client::_sync_fs()
   // flush the mdlog before waiting for unsafe requests.
   flush_mdlog_sync();
 
+  flush_cap_releases();
+
   // wait for unsafe mds requests
   wait_unsafe_requests();
 
@@ -13213,7 +13248,7 @@ int Client::_do_setxattr(Inode *in, const char *name, const void *value,
 
   int xattr_flags = 0;
   if (!value)
-    xattr_flags |= CEPH_XATTR_REMOVE;
+    xattr_flags |= CEPH_XATTR_REMOVE | CEPH_XATTR_REMOVE2;
   if (flags & XATTR_CREATE)
     xattr_flags |= CEPH_XATTR_CREATE;
   if (flags & XATTR_REPLACE)
@@ -13271,6 +13306,7 @@ int Client::_setxattr(Inode *in, const char *name, const void *value,
       mode_t new_mode = in->mode;
       if (value) {
 	int ret = posix_acl_equiv_mode(value, size, &new_mode);
+	ldout(cct, 3) << __func__ << "(" << in->ino << ", \"" << name << "\") = " << ret << dendl;
 	if (ret < 0)
 	  return ret;
 	if (ret == 0) {
@@ -13319,6 +13355,11 @@ int Client::_setxattr(Inode *in, const char *name, const void *value,
 	!(in->snaprealm && in->snaprealm->ino == in->ino))
       ret = -CEPHFS_EOPNOTSUPP;
   }
+
+  if ((!strcmp(name, ACL_EA_ACCESS) ||
+      !strcmp(name, ACL_EA_DEFAULT)) &&
+      ret == -CEPHFS_ENODATA)
+    ret = 0;
 
   return ret;
 }
@@ -13408,7 +13449,7 @@ int Client::ll_setxattr(Inode *in, const char *name, const void *value,
 
   vinodeno_t vino = _get_vino(in);
 
-  ldout(cct, 3) << __func__ << " " << vino << " " << name << " size " << size << dendl;
+  ldout(cct, 3) << __func__ << " " << vino << " " << name << " size " << size << " value " << !!value << dendl;
   tout(cct) << __func__ << std::endl;
   tout(cct) << vino.ino.val << std::endl;
   tout(cct) << name << std::endl;
@@ -15127,18 +15168,24 @@ loff_t Client::ll_lseek(Fh *fh, loff_t offset, int whence)
 int Client::ll_read(Fh *fh, loff_t off, loff_t len, bufferlist *bl)
 {
   RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
-  if (!mref_reader.is_state_satisfied())
+  if (!mref_reader.is_state_satisfied()) {
     return -CEPHFS_ENOTCONN;
+  }
+
+  /* We can't return bytes written larger than INT_MAX, clamp len to that */
+  len = std::min(len, (loff_t)INT_MAX);
+
+  std::scoped_lock lock(client_lock);
+  if (fh == NULL || !_ll_fh_exists(fh)) {
+    ldout(cct, 3) << "(fh)" << fh << " is invalid" << dendl;
+    return -CEPHFS_EBADF;
+  }
 
   ldout(cct, 3) << "ll_read " << fh << " " << fh->inode->ino << " " << " " << off << "~" << len << dendl;
   tout(cct) << "ll_read" << std::endl;
   tout(cct) << (uintptr_t)fh << std::endl;
   tout(cct) << off << std::endl;
   tout(cct) << len << std::endl;
-
-  /* We can't return bytes written larger than INT_MAX, clamp len to that */
-  len = std::min(len, (loff_t)INT_MAX);
-  std::scoped_lock lock(client_lock);
 
   int r = _read(fh, off, len, bl);
   ldout(cct, 3) << "ll_read " << fh << " " << off << "~" << len << " = " << r
@@ -15265,20 +15312,26 @@ int Client::ll_commit_blocks(Inode *in,
 
 int Client::ll_write(Fh *fh, loff_t off, loff_t len, const char *data)
 {
+  RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
+  if (!mref_reader.is_state_satisfied()) {
+    return -CEPHFS_ENOTCONN;
+  }
+
+  /* We can't return bytes written larger than INT_MAX, clamp len to that */
+  len = std::min(len, (loff_t)INT_MAX);
+
+  std::scoped_lock lock(client_lock);
+  if (fh == NULL || !_ll_fh_exists(fh)) {
+    ldout(cct, 3) << "(fh)" << fh << " is invalid" << dendl;
+    return -CEPHFS_EBADF;
+  }
+
   ldout(cct, 3) << "ll_write " << fh << " " << fh->inode->ino << " " << off <<
     "~" << len << dendl;
   tout(cct) << "ll_write" << std::endl;
   tout(cct) << (uintptr_t)fh << std::endl;
   tout(cct) << off << std::endl;
   tout(cct) << len << std::endl;
-
-  RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
-  if (!mref_reader.is_state_satisfied())
-    return -CEPHFS_ENOTCONN;
-
-  /* We can't return bytes written larger than INT_MAX, clamp len to that */
-  len = std::min(len, (loff_t)INT_MAX);
-  std::scoped_lock lock(client_lock);
 
   int r = _write(fh, off, len, data, NULL, 0);
   ldout(cct, 3) << "ll_write " << fh << " " << off << "~" << len << " = " << r
@@ -15289,20 +15342,30 @@ int Client::ll_write(Fh *fh, loff_t off, loff_t len, const char *data)
 int64_t Client::ll_writev(struct Fh *fh, const struct iovec *iov, int iovcnt, int64_t off)
 {
   RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
-  if (!mref_reader.is_state_satisfied())
+  if (!mref_reader.is_state_satisfied()) {
     return -CEPHFS_ENOTCONN;
+  }
 
   std::scoped_lock cl(client_lock);
+  if (fh == NULL || !_ll_fh_exists(fh)) {
+    ldout(cct, 3) << "(fh)" << fh << " is invalid" << dendl;
+    return -CEPHFS_EBADF;
+  }
   return _preadv_pwritev_locked(fh, iov, iovcnt, off, true, false);
 }
 
 int64_t Client::ll_readv(struct Fh *fh, const struct iovec *iov, int iovcnt, int64_t off)
 {
   RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
-  if (!mref_reader.is_state_satisfied())
+  if (!mref_reader.is_state_satisfied()) {
     return -CEPHFS_ENOTCONN;
+  }
 
   std::scoped_lock cl(client_lock);
+  if (fh == NULL || !_ll_fh_exists(fh)) {
+    ldout(cct, 3) << "(fh)" << fh << " is invalid" << dendl;
+    return -CEPHFS_EBADF;
+  }
   return _preadv_pwritev_locked(fh, iov, iovcnt, off, false, false);
 }
 
@@ -15345,7 +15408,7 @@ int Client::ll_sync_inode(Inode *in, bool syncdataonly)
   if (!mref_reader.is_state_satisfied())
     return -CEPHFS_ENOTCONN;
 
-  ldout(cct, 3) << "ll_sync_inode " << *in << " " << dendl;
+  ldout(cct, 3) << "ll_sync_inode " << _get_vino(in) << " " << dendl;
   tout(cct) << "ll_sync_inode" << std::endl;
   tout(cct) << (uintptr_t)in << std::endl;
 

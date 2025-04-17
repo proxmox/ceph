@@ -102,9 +102,9 @@ This hook is passed several arguments (see below). The hook outputs a single
 line to ``stdout`` that contains the CRUSH location description. The arguments
 resemble the following:::
 
-  --cluster CLUSTER --id ID --type TYPE
+  --id ID --type TYPE
 
-Here the cluster name is typically ``ceph``, the ``id`` is the daemon
+Here the ``id`` is the daemon
 identifier or (in the case of OSDs) the OSD number, and the daemon type is
 ``osd``, ``mds``, ``mgr``, or ``mon``.
 
@@ -513,6 +513,16 @@ For details on this command's parameters, see the following:
    :Type: Key-value pairs.
    :Required: No
    :Example: ``datacenter=dc1 room=room1 row=foo rack=bar host=foo-bar-1``
+
+Renaming a bucket
+-----------------
+
+To rename a bucket while maintaining its position in the CRUSH map hierarchy,
+run a command of the following form:
+
+.. prompt:: bash #
+
+   ceph osd crush rename-bucket {oldname} {newname}
 
 Removing a Bucket
 -----------------

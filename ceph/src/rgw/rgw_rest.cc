@@ -394,6 +394,10 @@ void dump_content_length(req_state* const s, const uint64_t len)
 
 static void dump_chunked_encoding(req_state* const s)
 {
+  // omit transfer-encoding for HEAD requests so ChunkingFilter doesn't
+  // try to write the final chunk
+  if(s->op == OP_HEAD)
+    return;
   try {
     RESTFUL_IO(s)->send_chunked_transfer_encoding();
   } catch (rgw::io::Exception& e) {
@@ -603,6 +607,7 @@ void end_header(req_state* s, RGWOp* op, const char *content_type,
   if (!force_no_error && s->is_err()) {
     dump_start(s);
     dump(s);
+    s->formatter->output_footer();
     dump_content_length(s, s->formatter->get_len());
   } else {
     if (proposed_content_length == CHUNKED_TRANSFER_ENCODING) {
@@ -641,8 +646,10 @@ static void build_redirect_url(req_state *s, const string& redirect_base, string
     dest_uri = dest_uri.substr(0, dest_uri.size() - 1);
   }
   dest_uri += s->info.request_uri;
-  dest_uri += "?";
-  dest_uri += s->info.request_params;
+  if (!s->info.request_params.empty()) {
+    dest_uri += "?";
+    dest_uri += s->info.request_params;
+  }
 }
 
 void abort_early(req_state *s, RGWOp* op, int err_no,
@@ -658,13 +665,13 @@ void abort_early(req_state *s, RGWOp* op, int err_no,
   if (op != NULL) {
     int new_err_no;
     new_err_no = op->error_handler(err_no, &error_content, y);
-    ldpp_dout(s, 1) << "op->ERRORHANDLER: err_no=" << err_no
+    ldpp_dout(s, 20) << "op->ERRORHANDLER: err_no=" << err_no
 		      << " new_err_no=" << new_err_no << dendl;
     err_no = new_err_no;
   } else if (handler != NULL) {
     int new_err_no;
     new_err_no = handler->error_handler(err_no, &error_content, y);
-    ldpp_dout(s, 1) << "handler->ERRORHANDLER: err_no=" << err_no
+    ldpp_dout(s, 20) << "handler->ERRORHANDLER: err_no=" << err_no
 		      << " new_err_no=" << new_err_no << dendl;
     err_no = new_err_no;
   }
@@ -1084,7 +1091,7 @@ int RGWPutObj_ObjStore::get_data(bufferlist& bl)
   }
 
   return len;
-}
+} /* RGWPutObj_ObjStore::get_data(bufferlist& bl) */
 
 
 /*
@@ -2014,23 +2021,6 @@ RGWRESTMgr::~RGWRESTMgr()
   delete default_mgr;
 }
 
-int64_t parse_content_length(const char *content_length)
-{
-  int64_t len = -1;
-
-  if (*content_length == '\0') {
-    len = 0;
-  } else {
-    string err;
-    len = strict_strtoll(content_length, 10, &err);
-    if (!err.empty()) {
-      len = -1;
-    }
-  }
-
-  return len;
-}
-
 int RGWREST::preprocess(req_state *s, rgw::io::BasicClient* cio)
 {
   req_info& info = s->info;
@@ -2287,8 +2277,6 @@ int RGWREST::preprocess(req_state *s, rgw::io::BasicClient* cio)
   }
   s->op = op_from_method(info.method);
 
-  info.init_meta_info(s, &s->has_bad_meta);
-
   return 0;
 }
 
@@ -2330,6 +2318,8 @@ RGWHandler_REST* RGWREST::get_handler(
     m->put_handler(handler);
     return nullptr;
   }
+
+  s->info.init_meta_info(s, &s->has_bad_meta, s->prot_flags);
 
   return handler;
 } /* get stream handler */

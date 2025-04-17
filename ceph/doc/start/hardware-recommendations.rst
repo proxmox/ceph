@@ -22,13 +22,12 @@ another, but below are some general guidelines.
 CPU
 ===
 
-CephFS Metadata Servers (MDS) are CPU-intensive. They are
-are single-threaded and perform best with CPUs with a high clock rate (GHz). MDS
-servers do not need a large number of CPU cores unless they are also hosting other
-services, such as SSD OSDs for the CephFS metadata pool.
-OSD nodes need enough processing power to run the RADOS service, to calculate data
-placement with CRUSH, to replicate data, and to maintain their own copies of the
-cluster map.
+CephFS Metadata Servers (MDS) are CPU-intensive. They are single-threaded
+and perform best with CPUs with a high clock rate (GHz). MDS servers do not
+need a large number of CPU cores unless they are also hosting other services,
+such as SSD OSDs for the CephFS metadata pool.  OSD nodes need enough
+processing power to run the RADOS service, to calculate data placement with
+CRUSH, to replicate data, and to maintain their own copies of the cluster map.
 
 With earlier releases of Ceph, we would make hardware recommendations based on
 the number of cores per OSD, but this cores-per-osd metric is no longer as
@@ -38,7 +37,7 @@ clusters and up to about fourteen cores on single OSDs in isolation. So cores
 per OSD are no longer as pressing a concern as they were. When selecting
 hardware, select for IOPS per core.
 
-.. tip:: When we speak of CPU _cores_, we mean _threads_ when hyperthreading
+.. tip:: When we speak of CPU *cores*, we mean *threads* when hyperthreading
 	 is enabled.  Hyperthreading is usually beneficial for Ceph servers.
 
 Monitor nodes and Manager nodes do not have heavy CPU demands and require only
@@ -312,7 +311,7 @@ media cost.  Moreover, when using NVMe SSDs, you do not need *any* HBA.  This
 additionally reduces the HDD vs SSD cost gap when the system as a whole is
 considered. The initial cost of a fancy RAID HBA plus onboard cache plus
 battery backup (BBU or supercapacitor) can easily exceed more than 1000 US
-dollars even after discounts - a sum that goes a log way toward SSD cost parity.
+dollars even after discounts - a sum that goes a long way toward SSD cost parity.
 An HBA-free system may also cost hundreds of US dollars less every year if one
 purchases an annual maintenance contract or extended warranty.
 
@@ -447,10 +446,11 @@ Additional Considerations
 Ceph operators typically provision  multiple OSDs per host, but you should
 ensure that the aggregate throughput of your OSD drives doesn't exceed the
 network bandwidth required to service a client's read and write operations.
-You should also each host's percentage of the cluster's overall capacity. If
-the percentage located on a particular host is large and the host fails, it
-can lead to problems such as recovery causing OSDs to exceed the ``full ratio``,
-which in turn causes Ceph to halt operations to prevent data loss.
+You should also consider each host's percentage of the cluster's overall
+capacity. If the percentage located on a particular host is large and the host
+fails, it can lead to problems such as recovery causing OSDs to exceed the
+``full ratio``, which in turn causes Ceph to halt operations to prevent data
+loss.
 
 When you run multiple OSDs per host, you also need to ensure that the kernel
 is up to date. See `OS Recommendations`_ for notes on ``glibc`` and
@@ -539,7 +539,7 @@ Minimum Hardware Recommendations
 
 Ceph can run on inexpensive commodity hardware. Small production clusters
 and development clusters can run successfully with modest hardware.  As
-we noted above: when we speak of CPU _cores_, we mean _threads_ when
+we noted above: when we speak of CPU *cores*, we mean *threads* when
 hyperthreading (HT) is enabled.  Each modern physical x64 CPU core typically
 provides two logical CPU threads; other CPU architectures may vary.
 

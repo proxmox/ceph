@@ -590,6 +590,8 @@ int RGWHTTPClient::init_request(rgw_http_req_data *_req_data)
   curl_easy_setopt(easy_handle, CURLOPT_READFUNCTION, send_http_data);
   curl_easy_setopt(easy_handle, CURLOPT_READDATA, (void *)req_data);
   curl_easy_setopt(easy_handle, CURLOPT_BUFFERSIZE, cct->_conf->rgw_curl_buffersize);
+  curl_easy_setopt(easy_handle, CURLOPT_PATH_AS_IS, 1L);
+
   if (send_data_hint || is_upload_request(method)) {
     curl_easy_setopt(easy_handle, CURLOPT_UPLOAD, 1L);
   }
@@ -1144,7 +1146,6 @@ void *RGWHTTPManager::reqs_thread_entry()
           http_status = err.http_ret;
         }
         int id = req_data->id;
-	finish_request(req_data, status, http_status);
         switch (result) {
           case CURLE_OK:
             break;
@@ -1156,6 +1157,7 @@ void *RGWHTTPManager::reqs_thread_entry()
             dout(20) << "ERROR: curl error: " << curl_easy_strerror((CURLcode)result) << " req_data->error_buf=" << req_data->error_buf << dendl;
 	    break;
         }
+	finish_request(req_data, status, http_status);
       }
     }
   }

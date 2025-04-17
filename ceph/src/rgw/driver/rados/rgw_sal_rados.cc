@@ -1772,12 +1772,15 @@ int RadosObject::read_attrs(const DoutPrefixProvider* dpp, RGWRados::Object::Rea
 int RadosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y)
 {
   Attrs empty;
+  // make a tiny adjustment to the existing mtime so that fetch_remote_obj()
+  // won't return ERR_NOT_MODIFIED when syncing the modified object
+  const auto mtime = state.mtime + std::chrono::nanoseconds(1);
   return store->getRados()->set_attrs(dpp, rados_ctx,
 			bucket->get_info(),
 			get_obj(),
 			setattrs ? *setattrs : empty,
 			delattrs ? delattrs : nullptr,
-			y);
+			y, mtime);
 }
 
 int RadosObject::get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj)
@@ -2335,6 +2338,7 @@ int RadosObject::copy_object(User* user,
 				optional_yield y)
 {
   return store->getRados()->copy_obj(*rados_ctx,
+				     *static_cast<RadosObject*>(dest_object)->rados_ctx,
 				     user->get_id(),
 				     info,
 				     source_zone,
@@ -2565,7 +2569,7 @@ int RadosMultipartUpload::init(const DoutPrefixProvider *dpp, optional_yield y, 
     encode(upload_info, bl);
     obj_op.meta.data = &bl;
 
-    ret = obj_op.write_meta(dpp, bl.length(), 0, attrs, y);
+    ret = obj_op.write_meta(dpp, bl.length(), 0, attrs, y, false);
   } while (ret == -EEXIST);
 
   return ret;
@@ -3802,16 +3806,18 @@ int RadosRole::delete_obj(const DoutPrefixProvider *dpp, optional_yield y)
     return -ERR_DELETE_CONFLICT;
   }
 
-  // Delete id
-  std::string oid = get_info_oid_prefix() + info.id;
-  ret = rgw_delete_system_obj(dpp, store->svc()->sysobj, pool, oid, nullptr, y);
+  // Delete id & insert MD Log
+  RGWSI_MBSObj_RemoveParams params;
+  std::unique_ptr<RGWSI_MetaBackend::Context> ctx(store->svc()->role->svc.meta_be->alloc_ctx());
+  ctx->init(store->svc()->role->get_be_handler());
+  ret = store->svc()->role->svc.meta_be->remove(ctx.get(), info.id, params, &info.objv_tracker, y, dpp);
   if (ret < 0) {
-    ldpp_dout(dpp, 0) << "ERROR: deleting role id from Role pool: "
-                  << info.id << ": " << cpp_strerror(-ret) << dendl;
+    ldpp_dout(dpp, 0) << "ERROR: deleting role id: " << info.id << " failed with code: " << cpp_strerror(-ret) << dendl;
+    return ret;
   }
 
   // Delete name
-  oid = info.tenant + get_names_oid_prefix() + info.name;
+  std::string oid = info.tenant + get_names_oid_prefix() + info.name;
   ret = rgw_delete_system_obj(dpp, store->svc()->sysobj, pool, oid, nullptr, y);
   if (ret < 0) {
     ldpp_dout(dpp, 0) << "ERROR: deleting role name from Role pool: "

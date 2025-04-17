@@ -1200,6 +1200,7 @@ protected:
   std::string copy_source;
   const char *copy_source_range;
   RGWBucketInfo copy_source_bucket_info;
+  rgw::sal::Attrs copy_source_bucket_attrs;
   std::string copy_source_tenant_name;
   std::string copy_source_bucket_name;
   std::string copy_source_object_name;
@@ -1877,10 +1878,7 @@ protected:
   std::unique_ptr<rgw::sal::MPSerializer> serializer;
   jspan multipart_trace;
   ceph::real_time upload_time;
-  std::unique_ptr<rgw::sal::Object> target_obj;
   std::unique_ptr<rgw::sal::Notification> res;
-  std::unique_ptr<rgw::sal::Object> meta_obj;
-  off_t ofs = 0;
 
 public:
   RGWCompleteMultipart() {}

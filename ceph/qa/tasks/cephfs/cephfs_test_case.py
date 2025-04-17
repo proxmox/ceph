@@ -81,6 +81,13 @@ class CephFSTestCase(CephTestCase):
 
     LOAD_SETTINGS = [] # type: ignore
 
+    def _reqid_tostr(self, reqid):
+        """
+        Change a json reqid to a string representation.
+        """
+
+        return f"{reqid['entity']['type']}.{reqid['entity']['num']}:{reqid['tid']}"
+
     def _save_mount_details(self):
         """
         XXX: Tests may change details of mount objects, so let's stash them so
@@ -425,4 +432,4 @@ class CephFSTestCase(CephTestCase):
             cmd += ['mds', mdscap]
 
         self.run_ceph_cmd(*cmd)
-        return self.run_ceph_cmd(f'auth get {self.client_name}')
+        return self.get_ceph_cmd_stdout(f'auth get {self.client_name}')

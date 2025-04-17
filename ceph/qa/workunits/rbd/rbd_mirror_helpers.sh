@@ -299,9 +299,11 @@ setup_pools()
 
     rbd --cluster ${cluster} namespace create ${POOL}/${NS1}
     rbd --cluster ${cluster} namespace create ${POOL}/${NS2}
+    rbd --cluster ${cluster} namespace create ${PARENT_POOL}/${NS1}
 
     rbd --cluster ${cluster} mirror pool enable ${POOL}/${NS1} ${MIRROR_POOL_MODE}
     rbd --cluster ${cluster} mirror pool enable ${POOL}/${NS2} image
+    rbd --cluster ${cluster} mirror pool enable ${PARENT_POOL}/${NS1} ${MIRROR_POOL_MODE}
 
     if [ -z ${RBD_MIRROR_MANUAL_PEERS} ]; then
       if [ -z ${RBD_MIRROR_CONFIG_KEY} ]; then
@@ -621,6 +623,39 @@ flush()
     fi
 
     admin_daemons "${cluster}" ${cmd}
+}
+
+get_pool_status_json()
+{
+    local cluster="$1"
+    local pool="$2"
+
+    CEPH_ARGS='' rbd --cluster "${cluster}" mirror pool status "${pool}" --verbose --format json
+}
+
+test_health_state()
+{
+    local cluster="$1"
+    local pool="$2"
+    local state="$3"
+
+    local status
+    status="$(get_pool_status_json "${cluster}" "${pool}")"
+    jq -e '.summary.health == "'"${state}"'"' <<< "${status}"
+}
+
+wait_for_health_state()
+{
+    local cluster="$1"
+    local pool="$2"
+    local state="$3"
+    local s
+
+    for s in 1 2 4 8 8 8 8 8 8 8 8 16 16; do
+        sleep "${s}"
+        test_health_state "${cluster}" "${pool}" "${state}" && return 0
+    done
+    return 1
 }
 
 test_image_replay_state()
@@ -1176,6 +1211,15 @@ count_mirror_snaps()
 
     rbd --cluster ${cluster} snap ls ${pool}/${image} --all |
         grep -c -F " mirror ("
+}
+
+get_snaps_json()
+{
+    local cluster=$1
+    local pool=$2
+    local image=$3
+
+    rbd --cluster ${cluster} snap ls ${pool}/${image} --all --format json
 }
 
 write_image()

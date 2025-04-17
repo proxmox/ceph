@@ -913,6 +913,11 @@ function test_mon_mds()
   ceph fs set $FS_NAME cluster_down true
   ceph fs set $FS_NAME cluster_down false
 
+  ceph fs set $FS_NAME max_mds 2
+  ceph fs get $FS_NAME | expect_true grep -P -q 'max_mds\t2'
+  ceph fs set $FS_NAME down false
+  ceph fs get $FS_NAME | expect_true grep -P -q 'max_mds\t2'
+
   ceph mds compat rm_incompat 4
   ceph mds compat rm_incompat 4
 
@@ -2490,7 +2495,7 @@ function test_mon_osd_erasure_code()
   ceph osd erasure-code-profile set fooprofile a=b c=d
   ceph osd erasure-code-profile set fooprofile a=b c=d
   expect_false ceph osd erasure-code-profile set fooprofile a=b c=d e=f
-  ceph osd erasure-code-profile set fooprofile a=b c=d e=f --force
+  ceph osd erasure-code-profile set fooprofile a=b c=d e=f --force --yes-i-really-mean-it
   ceph osd erasure-code-profile set fooprofile a=b c=d e=f
   expect_false ceph osd erasure-code-profile set fooprofile a=b c=d e=f g=h
   # make sure rule-foo doesn't work anymore

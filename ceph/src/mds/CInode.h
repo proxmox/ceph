@@ -704,6 +704,8 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
   const CDir *get_projected_parent_dir() const;
   CDir *get_projected_parent_dir();
   CInode *get_parent_inode();
+
+  bool is_any_ancestor_inode_a_replica();
   
   bool is_lt(const MDSCacheObject *r) const override {
     const CInode *o = static_cast<const CInode*>(r);
@@ -745,8 +747,9 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
                    inode_backtrace_t &bt);
   void build_backtrace(int64_t pool, inode_backtrace_t& bt);
   void _store_backtrace(std::vector<CInodeCommitOperation> &ops_vec,
-                        inode_backtrace_t &bt, int op_prio);
-  void store_backtrace(CInodeCommitOperations &op, int op_prio);
+                        inode_backtrace_t &bt, int op_prio, bool ignore_old_pools);
+  void store_backtrace(CInodeCommitOperations &op, int op_prio,
+		       bool ignore_old_pools=false);
   void store_backtrace(MDSContext *fin, int op_prio=-1);
   void _stored_backtrace(int r, version_t v, Context *fin);
   void fetch_backtrace(Context *fin, ceph::buffer::list *backtrace);
@@ -1080,6 +1083,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
   elist<CInode*>::item item_dirty_dirfrag_dir;
   elist<CInode*>::item item_dirty_dirfrag_nest;
   elist<CInode*>::item item_dirty_dirfrag_dirfragtree;
+  elist<CInode*>::item item_to_flush;
 
   // also update RecoveryQueue::RecoveryQueue() if you change this
   elist<CInode*>::item& item_recover_queue = item_dirty_dirfrag_dir;
@@ -1115,6 +1119,14 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
   // -- caps -- (new)
   // client caps
   client_t loner_cap = -1, want_loner_cap = -1;
+
+  /**
+   * Return the pool ID where we currently write backtraces for
+   * this inode (in addition to inode.old_pools)
+   *
+   * @returns a pool ID >=0
+   */
+  int64_t get_backtrace_pool() const;
 
 protected:
   ceph_lock_state_t *get_fcntl_lock_state() {
@@ -1165,14 +1177,6 @@ protected:
     else
       clear_flock_lock_state();
   }
-
-  /**
-   * Return the pool ID where we currently write backtraces for
-   * this inode (in addition to inode.old_pools)
-   *
-   * @returns a pool ID >=0
-   */
-  int64_t get_backtrace_pool() const;
 
   // parent dentries in cache
   CDentry         *parent = nullptr;             // primary link

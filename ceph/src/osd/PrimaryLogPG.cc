@@ -4312,8 +4312,11 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     }
     reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
     // append to pg log for dup detection - don't save buffers for now
-    record_write_error(op, soid, reply, result,
-		       ctx->op->allows_returnvec() ? ctx : nullptr);
+    // store op's returnvec unconditionally-on-errors to ensure coherency
+    // with the original request handling (see `ignore_out_data` above).
+    record_write_error(
+      op, soid, reply, result,
+      (ctx->op->allows_returnvec() || result < 0) ? ctx : nullptr);
     close_op_ctx(ctx);
     return;
   }
@@ -5766,10 +5769,19 @@ int PrimaryLogPG::do_extent_cmp(OpContext *ctx, OSDOp& osd_op)
 
 int PrimaryLogPG::finish_extent_cmp(OSDOp& osd_op, const bufferlist &read_bl)
 {
-  for (uint64_t idx = 0; idx < osd_op.indata.length(); ++idx) {
-    char read_byte = (idx < read_bl.length() ? read_bl[idx] : 0);
-    if (osd_op.indata[idx] != read_byte) {
-        return (-MAX_ERRNO - idx);
+  auto input_iter = osd_op.indata.begin();
+  auto read_iter = read_bl.begin();
+  uint64_t idx = 0;
+
+  while (input_iter != osd_op.indata.end()) {
+    char read_byte = (read_iter != read_bl.end() ? *read_iter : 0);
+    if (*input_iter != read_byte) {
+      return (-MAX_ERRNO - idx);
+    }
+    ++idx;
+    ++input_iter;
+    if (read_iter != read_bl.end()) {
+      ++read_iter;
     }
   }
 
@@ -6736,6 +6748,8 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
               truncate_update_size_and_usage(ctx->delta_stats,
                                              oi,
                                              op.extent.truncate_size);
+	      //truncate modify oi.size, need clear old data_digest and DIGEST flag
+	      oi.clear_data_digest();
 	    }
 	  } else {
 	    dout(10) << " truncate_seq " << op.extent.truncate_seq << " > current " << seq
@@ -6754,10 +6768,16 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
 	if (op.extent.length == 0) {
 	  if (op.extent.offset > oi.size) {
-	    t->truncate(
-	      soid, op.extent.offset);
-            truncate_update_size_and_usage(ctx->delta_stats, oi,
-                                           op.extent.offset);
+	    if (seq && (seq > op.extent.truncate_seq)) {
+	      //do nothing
+	      //write arrived after truncate, we should not truncate to offset
+	    } else {
+	      t->truncate(
+	        soid, op.extent.offset);
+	      truncate_update_size_and_usage(ctx->delta_stats, oi,
+	                                     op.extent.offset);
+	      oi.clear_data_digest();
+	    }
 	  } else {
 	    t->nop(soid);
 	  }
@@ -8770,15 +8790,14 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
   ceph_assert(conn);
 
   auto session = conn->get_priv();
-  if (!session)
-    return;
 
   for (list<pair<watch_info_t,bool> >::iterator i = ctx->watch_connects.begin();
        i != ctx->watch_connects.end();
        ++i) {
     pair<uint64_t, entity_name_t> watcher(i->first.cookie, entity);
     dout(15) << "do_osd_op_effects applying watch connect on session "
-	     << session.get() << " watcher " << watcher << dendl;
+	     << (session ? session.get() : nullptr) << " watcher " << watcher
+	     << dendl;
     WatchRef watch;
     if (ctx->obc->watchers.count(watcher)) {
       dout(15) << "do_osd_op_effects found existing watch watcher " << watcher
@@ -8802,7 +8821,6 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
        p != ctx->notifies.end();
        ++p) {
     dout(10) << "do_osd_op_effects, notify " << *p << dendl;
-    ConnectionRef conn(ctx->op->get_req()->get_connection());
     NotifyRef notif(
       Notify::makeNotifyRef(
 	conn,
@@ -12876,7 +12894,9 @@ void PrimaryLogPG::on_removal(ObjectStore::Transaction &t)
 
   on_shutdown();
 
-  t.register_on_commit(new C_DeleteMore(this, get_osdmap_epoch()));
+  // starting PG deletion, num_objects can be 1
+  // do_delete_work will update num_objects
+  t.register_on_commit(new C_DeleteMore(this, get_osdmap_epoch(), 1));
 }
 
 void PrimaryLogPG::clear_async_reads()

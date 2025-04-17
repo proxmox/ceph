@@ -354,6 +354,10 @@ protected:
   virtual ~ImageRequestBase() {
   }
 
+  virtual bool open_read_only() const {
+    return false;
+  }
+
   virtual bool skip_get_info() const {
     return false;
   }
@@ -428,8 +432,13 @@ private:
     librbd::RBD rbd;
     auto aio_completion = utils::create_aio_completion<
       ImageRequestBase, &ImageRequestBase::handle_open_image>(this);
-    rbd.aio_open(m_io_ctx, m_image, m_image_name.c_str(), nullptr,
-                 aio_completion);
+    if (open_read_only()) {
+      rbd.aio_open_read_only(m_io_ctx, m_image, m_image_name.c_str(), nullptr,
+                             aio_completion);
+    } else {
+      rbd.aio_open(m_io_ctx, m_image, m_image_name.c_str(), nullptr,
+                   aio_completion);
+    }
   }
 
   void handle_open_image(int r) {
@@ -603,6 +612,10 @@ public:
   }
 
 protected:
+  bool open_read_only() const override {
+    return true;
+  }
+
   bool skip_get_info() const override {
     return true;
   }
@@ -1582,11 +1595,8 @@ int execute_status(const po::variables_map &vm,
     }
 
     // dump per-image status
-    librados::IoCtx default_ns_io_ctx;
-    default_ns_io_ctx.dup(io_ctx);
-    default_ns_io_ctx.set_namespace("");
     std::vector<librbd::mirror_peer_site_t> mirror_peers;
-    utils::get_mirror_peer_sites(default_ns_io_ctx, &mirror_peers);
+    utils::get_mirror_peer_sites(io_ctx, &mirror_peers);
 
     std::map<std::string, std::string> peer_mirror_uuids_to_name;
     utils::get_mirror_peer_mirror_uuids_to_names(mirror_peers,
@@ -1744,27 +1754,27 @@ Shell::Action action_set(
 
 Shell::Action action_disable(
   {"mirror", "pool", "disable"}, {},
-  "Disable RBD mirroring by default within a pool.", "",
+  "Disable RBD mirroring in a pool or namespace.", "",
   &get_disable_arguments, &execute_disable);
 Shell::Action action_enable(
   {"mirror", "pool", "enable"}, {},
-  "Enable RBD mirroring by default within a pool.", "",
+  "Enable RBD mirroring in a pool or namespace.", "",
   &get_enable_arguments, &execute_enable);
 Shell::Action action_info(
   {"mirror", "pool", "info"}, {},
-  "Show information about the pool mirroring configuration.", {},
+  "Show mirroring configuration for a pool or namespace.", {},
   &get_info_arguments, &execute_info);
 Shell::Action action_status(
   {"mirror", "pool", "status"}, {},
-  "Show status for all mirrored images in the pool.", {},
+  "Show status for all mirrored images in a pool or namespace.", {},
   &get_status_arguments, &execute_status);
 Shell::Action action_promote(
   {"mirror", "pool", "promote"}, {},
-  "Promote all non-primary images in the pool.", {},
+  "Promote all non-primary images in a pool or namespace.", {},
   &get_promote_arguments, &execute_promote);
 Shell::Action action_demote(
   {"mirror", "pool", "demote"}, {},
-  "Demote all primary images in the pool.", {},
+  "Demote all primary images in a pool or namespace.", {},
   &get_demote_arguments, &execute_demote);
 
 } // namespace mirror_pool

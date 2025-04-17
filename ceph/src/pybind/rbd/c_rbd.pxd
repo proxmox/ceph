@@ -44,6 +44,8 @@ cdef extern from "rbd/librbd.h" nogil:
         _RBD_IMAGE_OPTION_STRIPE_UNIT "RBD_IMAGE_OPTION_STRIPE_UNIT"
         _RBD_IMAGE_OPTION_STRIPE_COUNT "RBD_IMAGE_OPTION_STRIPE_COUNT"
         _RBD_IMAGE_OPTION_DATA_POOL "RBD_IMAGE_OPTION_DATA_POOL"
+        _RBD_IMAGE_OPTION_FLATTEN "RBD_IMAGE_OPTION_FLATTEN"
+        _RBD_IMAGE_OPTION_CLONE_FORMAT "RBD_IMAGE_OPTION_CLONE_FORMAT"
 
         RBD_MAX_BLOCK_NAME_SIZE
         RBD_MAX_IMAGE_NAME_SIZE
@@ -56,6 +58,9 @@ cdef extern from "rbd/librbd.h" nogil:
         _RBD_SNAP_REMOVE_FORCE "RBD_SNAP_REMOVE_FORCE"
 
         _RBD_WRITE_ZEROES_FLAG_THICK_PROVISION "RBD_WRITE_ZEROES_FLAG_THICK_PROVISION"
+
+        _RBD_DIFF_ITERATE_FLAG_INCLUDE_PARENT "RBD_DIFF_ITERATE_FLAG_INCLUDE_PARENT"
+        _RBD_DIFF_ITERATE_FLAG_WHOLE_OBJECT "RBD_DIFF_ITERATE_FLAG_WHOLE_OBJECT"
 
     ctypedef void* rados_t
     ctypedef void* rados_ioctx_t
@@ -595,6 +600,11 @@ cdef extern from "rbd/librbd.h" nogil:
                          int (*cb)(uint64_t, size_t, int, void *)
                              nogil except? -9000,
                          void *arg) except? -9000
+    int rbd_diff_iterate3(rbd_image_t image, uint64_t from_snap_id,
+                          uint64_t ofs, uint64_t len, uint32_t flags,
+                          int (*cb)(uint64_t, size_t, int, void *)
+                              nogil except? -9000,
+                          void *arg) except? -9000
 
     int rbd_flush(rbd_image_t image)
     int rbd_invalidate_cache(rbd_image_t image)

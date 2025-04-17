@@ -3439,7 +3439,7 @@ void RGWCreateBucket::execute(optional_yield y)
    * recover from a partial create by retrying it. */
   ldpp_dout(this, 20) << "rgw_create_bucket returned ret=" << op_ret << " bucket=" << s->bucket.get() << dendl;
 
-  if (op_ret)
+  if (op_ret < 0 && op_ret != -EEXIST && op_ret != -ERR_BUCKET_EXISTS)
     return;
 
   const bool existed = s->bucket_exists;
@@ -3644,6 +3644,7 @@ int RGWPutObj::init_processing(optional_yield y) {
       return ret;
     }
     copy_source_bucket_info = bucket->get_info();
+    copy_source_bucket_attrs = bucket->get_attrs();
 
     /* handle x-amz-copy-source-range */
     if (copy_source_range) {
@@ -3689,7 +3690,6 @@ int RGWPutObj::verify_permission(optional_yield y)
 
     RGWAccessControlPolicy cs_acl(s->cct);
     boost::optional<Policy> policy;
-    map<string, bufferlist> cs_attrs;
     std::unique_ptr<rgw::sal::Bucket> cs_bucket;
     int ret = driver->get_bucket(NULL, copy_source_bucket_info, &cs_bucket);
     if (ret < 0)
@@ -3702,7 +3702,7 @@ int RGWPutObj::verify_permission(optional_yield y)
     cs_object->set_prefetch_data();
 
     /* check source object permissions */
-    if (ret = read_obj_policy(this, driver, s, copy_source_bucket_info, cs_attrs, &cs_acl, nullptr,
+    if (ret = read_obj_policy(this, driver, s, copy_source_bucket_info, copy_source_bucket_attrs, &cs_acl, nullptr,
 			policy, cs_bucket.get(), cs_object.get(), y, true); ret < 0) {
       return ret;
     }
@@ -3717,7 +3717,7 @@ int RGWPutObj::verify_permission(optional_yield y)
         auto usr_policy_res = Effect::Pass;
         rgw::ARN obj_arn(cs_object->get_obj());
         for (auto& user_policy : s->iam_user_policies) {
-          if (usr_policy_res = user_policy.eval(s->env, *s->auth.identity,
+          if (usr_policy_res = user_policy.eval(s->env, boost::none,
 			      cs_object->get_instance().empty() ?
 			      rgw::IAM::s3GetObject :
 			      rgw::IAM::s3GetObjectVersion,
@@ -4357,11 +4357,15 @@ void RGWPutObj::execute(optional_yield y)
     emplace_attr(RGW_ATTR_OBJECT_RETENTION, std::move(obj_retention_bl));
   }
 
+  // don't track the individual parts of multipart uploads. they replicate in
+  // full after CompleteMultipart
+  const uint32_t complete_flags = multipart ? 0 : rgw::sal::FLAG_LOG_OP;
+
   tracepoint(rgw_op, processor_complete_enter, s->req_id.c_str());
   op_ret = processor->complete(s->obj_size, etag, &mtime, real_time(), attrs,
                                (delete_at ? *delete_at : real_time()), if_match, if_nomatch,
                                (user_data.empty() ? nullptr : &user_data), nullptr, nullptr,
-                               s->yield, rgw::sal::FLAG_LOG_OP);
+                               s->yield, complete_flags);
   tracepoint(rgw_op, processor_complete_exit, s->req_id.c_str());
 
   /* produce torrent */
@@ -6455,6 +6459,7 @@ void RGWCompleteMultipart::execute(optional_yield y)
   RGWMultiCompleteUpload *parts;
   RGWMultiXMLParser parser;
   std::unique_ptr<rgw::sal::MultipartUpload> upload;
+  off_t ofs = 0;
   uint64_t olh_epoch = 0;
 
   op_ret = get_params(y);
@@ -6506,7 +6511,7 @@ void RGWCompleteMultipart::execute(optional_yield y)
 
   list<rgw_obj_index_key> remove_objs; /* objects to be removed from index listing */
 
-  meta_obj = upload->get_meta_obj();
+  std::unique_ptr<rgw::sal::Object> meta_obj = upload->get_meta_obj();
   meta_obj->set_in_extra_data(true);
   meta_obj->set_hash_source(s->object->get_name());
 
@@ -6540,38 +6545,51 @@ void RGWCompleteMultipart::execute(optional_yield y)
   jspan_context trace_ctx(false, false);
   extract_span_context(meta_obj->get_attrs(), trace_ctx);
   multipart_trace = tracing::rgw::tracer.add_span(name(), trace_ctx);
-  
+
+  if (s->bucket->versioning_enabled()) {
+    if (!version_id.empty()) {
+      s->object->set_instance(version_id);
+    } else {
+      s->object->gen_rand_obj_instance_name();
+      version_id = s->object->get_instance();
+    }
+  }
+  s->object->set_attrs(meta_obj->get_attrs());
 
   // make reservation for notification if needed
-  res = driver->get_notification(meta_obj.get(), nullptr, s, rgw::notify::ObjectCreatedCompleteMultipartUpload, y,
-                                 &s->object->get_name());
+  std::unique_ptr<rgw::sal::Notification> res;
+  res = driver->get_notification(s->object.get(), nullptr, s, rgw::notify::ObjectCreatedCompleteMultipartUpload, y);
   op_ret = res->publish_reserve(this);
   if (op_ret < 0) {
     return;
   }
 
-  target_obj = s->bucket->get_object(rgw_obj_key(s->object->get_name()));
-  if (s->bucket->versioning_enabled()) {
-    if (!version_id.empty()) {
-      target_obj->set_instance(version_id);
-    } else {
-      target_obj->gen_rand_obj_instance_name();
-      version_id = target_obj->get_instance();
-    }
-  }
-  target_obj->set_attrs(meta_obj->get_attrs());
-
-  op_ret = upload->complete(this, y, s->cct, parts->parts, remove_objs, accounted_size, compressed, cs_info, ofs, s->req_id, s->owner, olh_epoch, target_obj.get());
+  op_ret = upload->complete(this, y, s->cct, parts->parts, remove_objs, accounted_size, compressed, cs_info, ofs, s->req_id, s->owner, olh_epoch, s->object.get());
   if (op_ret < 0) {
     ldpp_dout(this, 0) << "ERROR: upload complete failed ret=" << op_ret << dendl;
     return;
   }
 
-  upload_time = upload->get_mtime();
-  int r = serializer->unlock();
-  if (r < 0) {
-    ldpp_dout(this, 0) << "WARNING: failed to unlock " << *serializer.get() << dendl;
+  const ceph::real_time upload_time = upload->get_mtime();
+  etag = s->object->get_attrs()[RGW_ATTR_ETAG].to_str();
+
+  // send request to notification manager
+  int ret = res->publish_commit(this, ofs, upload_time, etag, s->object->get_instance());
+  if (ret < 0) {
+    ldpp_dout(this, 1) << "ERROR: publishing notification failed, with error: " << ret << dendl;
+    // too late to rollback operation, hence op_ret is not set here
   }
+
+  // remove the upload meta object ; the meta object is not versioned
+  // when the bucket is, as that would add an unneeded delete marker
+  ret = meta_obj->delete_object(this, y, rgw::sal::FLAG_PREVENT_VERSIONING);
+  if (ret >= 0) {
+    /* serializer's exclusive lock is released */
+    serializer->clear_locked();
+  } else {
+    ldpp_dout(this, 4) << "WARNING: failed to remove object " << meta_obj << ", ret: " << ret << dendl;
+  }
+
 } // RGWCompleteMultipart::execute
 
 bool RGWCompleteMultipart::check_previously_completed(const RGWMultiCompleteUpload* parts)
@@ -6622,43 +6640,6 @@ void RGWCompleteMultipart::complete()
       ldpp_dout(this, 0) << "WARNING: failed to unlock " << *serializer.get() << dendl;
     }
   }
-
-  if (op_ret >= 0 && target_obj.get() != nullptr) {
-    s->object->set_attrs(target_obj->get_attrs());
-    etag = s->object->get_attrs()[RGW_ATTR_ETAG].to_str();
-    // send request to notification manager
-    if (res.get() != nullptr) {
-      int ret = res->publish_commit(this, ofs, upload_time, etag, target_obj->get_instance());
-      if (ret < 0) {
-        ldpp_dout(this, 1) << "ERROR: publishing notification failed, with error: " << ret << dendl;
-        // too late to rollback operation, hence op_ret is not set here
-      }
-    } else {
-      ldpp_dout(this, 1) << "ERROR: reservation is null" << dendl;
-    }
-  } else {
-    ldpp_dout(this, 1) << "ERROR: either op_ret is negative (execute failed) or target_obj is null, op_ret: "
-                       << op_ret << dendl;
-  }
-
-  // remove the upload meta object ; the meta object is not versioned
-  // when the bucket is, as that would add an unneeded delete marker
-  // moved to complete to prevent segmentation fault in publish commit
-  if (meta_obj.get() != nullptr) {
-    int ret = meta_obj->delete_object(this, null_yield, rgw::sal::FLAG_PREVENT_VERSIONING | rgw::sal::FLAG_LOG_OP);
-    if (ret >= 0) {
-      /* serializer's exclusive lock is released */
-      serializer->clear_locked();
-    } else {
-      ldpp_dout(this, 0) << "WARNING: failed to remove object " << meta_obj << ", ret: " << ret << dendl;
-    }
-  } else {
-    ldpp_dout(this, 0) << "WARNING: meta_obj is null" << dendl;
-  }
-
-  res.reset();
-  meta_obj.reset();
-  target_obj.reset();
 
   send_response();
 }
@@ -6744,17 +6725,30 @@ void RGWAbortMultipart::execute(optional_yield y)
     return;
 
   upload = s->bucket->get_multipart_upload(s->object->get_name(), upload_id);
+  meta_obj = upload->get_meta_obj();
+  meta_obj->set_in_extra_data(true);
+  meta_obj->get_obj_attrs(s->yield, this);
+
   jspan_context trace_ctx(false, false);
   if (tracing::rgw::tracer.is_enabled()) {
     // read meta object attributes for trace info
-    meta_obj = upload->get_meta_obj();
-    meta_obj->set_in_extra_data(true);
-    meta_obj->get_obj_attrs(s->yield, this);
     extract_span_context(meta_obj->get_attrs(), trace_ctx);
   }
   multipart_trace = tracing::rgw::tracer.add_span(name(), trace_ctx);
 
+  int max_lock_secs_mp =
+    s->cct->_conf.get_val<int64_t>("rgw_mp_lock_max_time");
+  utime_t dur(max_lock_secs_mp, 0);
+  auto serializer = meta_obj->get_serializer(this, "RGWCompleteMultipart");
+  op_ret = serializer->try_lock(this, dur, y);
+  if (op_ret < 0) {
+    if (op_ret == -ENOENT) {
+      op_ret = -ERR_NO_SUCH_UPLOAD;
+    }
+    return;
+  }
   op_ret = upload->abort(this, s->cct);
+  serializer->unlock();
 }
 
 int RGWListMultipart::verify_permission(optional_yield y)
@@ -7125,7 +7119,6 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
     op_ret = 0;
   }
 
-  send_partial_response(o, del_op->result.delete_marker, del_op->result.version_id, op_ret, formatter_flush_cond);
 
   // send request to notification manager
   int ret = res->publish_commit(this, obj_size, ceph::real_clock::now(), etag, version_id);
@@ -7133,6 +7126,8 @@ void RGWDeleteMultiObj::handle_individual_object(const rgw_obj_key& o, optional_
     ldpp_dout(this, 1) << "ERROR: publishing notification failed, with error: " << ret << dendl;
     // too late to rollback operation, hence op_ret is not set here
   }
+  
+  send_partial_response(o, del_op->result.delete_marker, del_op->result.version_id, op_ret, formatter_flush_cond);
 }
 
 void RGWDeleteMultiObj::execute(optional_yield y)
@@ -8329,6 +8324,10 @@ void RGWGetBucketPolicy::execute(optional_yield y)
 
 void RGWDeleteBucketPolicy::send_response()
 {
+  if (!op_ret) {
+    /* A successful Delete Bucket Policy should return a 204 on success */
+    op_ret = STATUS_NO_CONTENT;
+  }
   if (op_ret) {
     set_req_state_err(s, op_ret);
   }
@@ -8802,7 +8801,7 @@ int RGWGetBucketPublicAccessBlock::verify_permission(optional_yield y)
   if (has_s3_resource_tag)
     rgw_iam_add_buckettags(this, s);
 
-  if (!verify_bucket_permission(this, s, rgw::IAM::s3GetBucketPolicy)) {
+  if (!verify_bucket_permission(this, s, rgw::IAM::s3GetBucketPublicAccessBlock)) {
     return -EACCES;
   }
 
@@ -8816,7 +8815,10 @@ void RGWGetBucketPublicAccessBlock::execute(optional_yield y)
       aiter == attrs.end()) {
     ldpp_dout(this, 0) << "can't find bucket IAM POLICY attr bucket_name = "
 		       << s->bucket_name << dendl;
-    // return the default;
+
+    op_ret = -ERR_NO_SUCH_PUBLIC_ACCESS_BLOCK_CONFIGURATION;
+    s->err.message = "The public access block configuration was not found";
+
     return;
   } else {
     bufferlist::const_iterator iter{&aiter->second};
@@ -8833,9 +8835,12 @@ void RGWGetBucketPublicAccessBlock::execute(optional_yield y)
 
 void RGWDeleteBucketPublicAccessBlock::send_response()
 {
-  if (op_ret) {
-    set_req_state_err(s, op_ret);
+  if (!op_ret) {
+    /* A successful Delete request should return a 204 */
+    op_ret = STATUS_NO_CONTENT;
   }
+
+  set_req_state_err(s, op_ret);
   dump_errno(s);
   end_header(s);
 }
@@ -8987,4 +8992,3 @@ void rgw_slo_entry::decode_json(JSONObj *obj)
   JSONDecoder::decode_json("etag", etag, obj);
   JSONDecoder::decode_json("size_bytes", size_bytes, obj);
 };
-

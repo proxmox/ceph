@@ -2380,6 +2380,19 @@ void Monitor::collect_metadata(Metadata *m)
   for (auto& i : errs) {
     dout(1) << __func__ << " " << i.first << ": " << i.second << dendl;
   }
+
+  string ceph_version_when_created;
+  int r = store->read_meta("ceph_version_when_created", &ceph_version_when_created);
+  if (r < 0 || ceph_version_when_created.empty()) {
+    ceph_version_when_created = "";
+  }
+  (*m)["ceph_version_when_created"] = ceph_version_when_created;
+  string created_at;
+  r = store->read_meta("created_at", &created_at);
+  if (r < 0 || created_at.empty()) {
+    created_at = "";
+  }
+  (*m)["created_at"] = created_at;
 }
 
 void Monitor::finish_election()
@@ -2652,6 +2665,7 @@ void Monitor::get_mon_status(Formatter *f)
   f->dump_int("rank", rank);
   f->dump_string("state", get_state_name());
   f->dump_int("election_epoch", get_epoch());
+  f->dump_int("uptime", get_uptime().count());
 
   f->open_array_section("quorum");
   for (set<int>::iterator p = quorum.begin(); p != quorum.end(); ++p) {
@@ -5687,7 +5701,12 @@ bool Monitor::_scrub(ScrubResult *r,
 
     bufferlist bl;
     int err = store->get(k.first, k.second, bl);
-    ceph_assert(err == 0);
+    if (err != 0) {
+      derr << __func__ << " store got: " << cpp_strerror(err)
+                       << " prefix: " << k.first << " key: " << k.second
+                       << dendl;
+      ceph_abort();
+    }
     
     uint32_t key_crc = bl.crc32c(0);
     dout(30) << __func__ << " " << k << " bl " << bl.length() << " bytes"
@@ -6381,7 +6400,9 @@ int Monitor::handle_auth_request(
       &auth_meta->connection_secret,
       &auth_meta->authorizer_challenge);
     if (isvalid) {
-      ms_handle_fast_authentication(con);
+      if (!ms_handle_fast_authentication(con)) {
+        return -EACCES;
+      }
       return 1;
     }
     if (!more && !was_challenge && auth_meta->authorizer_challenge) {
@@ -6502,7 +6523,9 @@ int Monitor::handle_auth_request(
   }
   if (r > 0 &&
       !s->authenticated) {
-    ms_handle_fast_authentication(con);
+    if (!ms_handle_fast_authentication(con)) {
+      return -EACCES;
+    }
   }
 
   dout(30) << " r " << r << " reply:\n";
@@ -6540,12 +6563,12 @@ void Monitor::ms_handle_accept(Connection *con)
   }
 }
 
-int Monitor::ms_handle_fast_authentication(Connection *con)
+bool Monitor::ms_handle_fast_authentication(Connection *con)
 {
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_MON) {
     // mon <-> mon connections need no Session, and setting one up
     // creates an awkward ref cycle between Session and Connection.
-    return 1;
+    return true;
   }
 
   auto priv = con->get_priv();
@@ -6568,11 +6591,10 @@ int Monitor::ms_handle_fast_authentication(Connection *con)
 	   << " " << *s << dendl;
 
   AuthCapsInfo &caps_info = con->get_peer_caps_info();
-  int ret = 0;
   if (caps_info.allow_all) {
     s->caps.set_allow_all();
     s->authenticated = true;
-    ret = 1;
+    return true;
   } else if (caps_info.caps.length()) {
     bufferlist::const_iterator p = caps_info.caps.cbegin();
     string str;
@@ -6581,22 +6603,19 @@ int Monitor::ms_handle_fast_authentication(Connection *con)
     } catch (const ceph::buffer::error &err) {
       derr << __func__ << " corrupt cap data for " << con->get_peer_entity_name()
 	   << " in auth db" << dendl;
-      str.clear();
-      ret = -EACCES;
+      return false;
     }
-    if (ret >= 0) {
-      if (s->caps.parse(str, NULL)) {
-	s->authenticated = true;
-	ret = 1;
-      } else {
-	derr << __func__ << " unparseable caps '" << str << "' for "
-	     << con->get_peer_entity_name() << dendl;
-	ret = -EACCES;
-      }
+    if (s->caps.parse(str, NULL)) {
+      s->authenticated = true;
+      return true;
+    } else {
+      derr << __func__ << " unparseable caps '" << str << "' for "
+           << con->get_peer_entity_name() << dendl;
+      return false;
     }
+  } else {
+    return false;
   }
-
-  return ret;
 }
 
 void Monitor::set_mon_crush_location(const string& loc)

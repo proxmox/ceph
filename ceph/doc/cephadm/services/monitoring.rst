@@ -158,65 +158,132 @@ example spec file:
       port: 4200
       protocol: http
 
+.. _cephadm_default_images:
+
+Default images
+~~~~~~~~~~~~~~
+
+``cephadm`` stores a local copy of the ``cephadm`` binary in
+``var/lib/ceph/{FSID}/cephadm.{DIGEST}``, where ``{DIGEST}`` is an alphanumeric
+string representing the currently-running version of Ceph. In the Squid and
+Reef releases of Ceph, this ``cephadm`` file is stored as a zip file and must
+be unzipped before its contents can be examined.
+
+This procedure explains how to generate a list of the default container images
+used by ``cephadm``.
+
+.. note:: This procedure applies only to the Reef and Squid releases of Ceph.
+   If you are using a different version of Ceph, you cannot use this procedure
+   to examine the list of default containers used by cephadm. Make sure that
+   you are reading the documentation for the release of Ceph that you have
+   installed.
+
+#. To create a directory called ``cephadm_dir``, run the following command:
+
+   .. prompt:: bash #
+
+      mkdir cephadm_dir
+
+#. To unzip ``/var/lib/ceph/{FSID}/cephadm.{DIGEST}`` in the directory
+   ``cephadm_dir``, run a command of the following form:
+
+   .. prompt:: bash #
+
+      unzip /var/lib/ceph/{FSID}/cephadm.{DIGEST} -d cephadm_dir > /dev/null
+
+   ::
+
+      warning [/var/lib/ceph/{FSID}/cephadm.{DIGEST}]:  14 extra bytes at
+      beginning or within zipfile
+      (attempting to process anyway)
+
+
+#. To use ``egrep`` to search for the string ``_IMAGE =`` in the file
+   ``cephadm_dir/__main__.py``, run the following command: 
+
+   .. prompt:: bash #
+
+      egrep "_IMAGE =" cephadm_dir/__main__.py
+
+   ::
+
+      DEFAULT_IMAGE = 'quay.io/ceph/ceph:v18'
+      DEFAULT_PROMETHEUS_IMAGE = 'quay.io/prometheus/prometheus:v2.43.0'
+      DEFAULT_LOKI_IMAGE = 'docker.io/grafana/loki:2.4.0'
+      DEFAULT_PROMTAIL_IMAGE = 'docker.io/grafana/promtail:2.4.0'
+      DEFAULT_NODE_EXPORTER_IMAGE = 'quay.io/prometheus/node-exporter:v1.5.0'
+      DEFAULT_ALERT_MANAGER_IMAGE = 'quay.io/prometheus/alertmanager:v0.25.0'
+      DEFAULT_GRAFANA_IMAGE = 'quay.io/ceph/ceph-grafana:9.4.7'
+      DEFAULT_HAPROXY_IMAGE = 'quay.io/ceph/haproxy:2.3'
+      DEFAULT_KEEPALIVED_IMAGE = 'quay.io/ceph/keepalived:2.2.4'
+      DEFAULT_NVMEOF_IMAGE = 'quay.io/ceph/nvmeof:1.0.0'
+      DEFAULT_SNMP_GATEWAY_IMAGE = 'docker.io/maxwo/snmp-notifier:v1.2.1'
+      DEFAULT_ELASTICSEARCH_IMAGE = 'quay.io/omrizeneva/elasticsearch:6.8.23'
+      DEFAULT_JAEGER_COLLECTOR_IMAGE = 'quay.io/jaegertracing/jaeger-collector:1.29'
+      DEFAULT_JAEGER_AGENT_IMAGE = 'quay.io/jaegertracing/jaeger-agent:1.29'
+      DEFAULT_JAEGER_QUERY_IMAGE = 'quay.io/jaegertracing/jaeger-query:1.29'
+
 .. _cephadm_monitoring-images:
 
 Using custom images
 ~~~~~~~~~~~~~~~~~~~
 
 It is possible to install or upgrade monitoring components based on other
-images.  To do so, the name of the image to be used needs to be stored in the
-configuration first.  The following configuration options are available.
+images. The ID of the image that you plan to use must be stored in the
+configuration. The following configuration options are available:
 
 - ``container_image_prometheus``
 - ``container_image_grafana``
 - ``container_image_alertmanager``
 - ``container_image_node_exporter``
 
-Custom images can be set with the ``ceph config`` command
+Custom images can be set with the ``ceph config`` command. To set custom images, run a command of the following form:
+ 
+.. prompt:: bash #
 
-.. code-block:: bash
+   ceph config set mgr mgr/cephadm/<option_name> <value>
 
-     ceph config set mgr mgr/cephadm/<option_name> <value>
-
-For example
-
-.. code-block:: bash
-
-     ceph config set mgr mgr/cephadm/container_image_prometheus prom/prometheus:v1.4.1
-
-If there were already running monitoring stack daemon(s) of the type whose
-image you've changed, you must redeploy the daemon(s) in order to have them
-actually use the new image.
-
-For example, if you had changed the prometheus image
+For example:
 
 .. prompt:: bash #
 
-     ceph orch redeploy prometheus
+   ceph config set mgr mgr/cephadm/container_image_prometheus prom/prometheus:v1.4.1
+
+If you were already running monitoring stack daemon(s) of the same image type
+that you changed, then you must redeploy the daemon(s) in order to make them
+use the new image.
+
+For example, if you changed the Prometheus image, you would have to run the
+following command in order to pick up the changes:
+
+.. prompt:: bash #
+
+   ceph orch redeploy prometheus
 
 
 .. note::
 
      By setting a custom image, the default value will be overridden (but not
-     overwritten).  The default value changes when updates become available.
-     By setting a custom image, you will not be able to update the component
-     you have set the custom image for automatically.  You will need to
-     manually update the configuration (image name and tag) to be able to
-     install updates.
+     overwritten). The default value will change when an update becomes
+     available. If you set a custom image, you will not be able automatically
+     to update the component you have modified with the custom image. You will
+     need to manually update the configuration (that includes the image name
+     and the tag) to be able to install updates.
 
-     If you choose to go with the recommendations instead, you can reset the
-     custom image you have set before.  After that, the default value will be
-     used again.  Use ``ceph config rm`` to reset the configuration option
+     If you choose to accept the recommendations, you can reset the custom
+     image that you have set before. If you do this, the default value will be
+     used again.  Use ``ceph config rm`` to reset the configuration option, in
+     a command of the following form:
 
-     .. code-block:: bash
+     .. prompt:: bash #
 
-          ceph config rm mgr mgr/cephadm/<option_name>
+        ceph config rm mgr mgr/cephadm/<option_name>
 
-     For example
+     For example:
 
-     .. code-block:: bash
+     .. prompt:: bash #
 
-          ceph config rm mgr mgr/cephadm/container_image_prometheus
+        ceph config rm mgr mgr/cephadm/container_image_prometheus
 
 See also :ref:`cephadm-airgap`.
 
@@ -236,7 +303,7 @@ definition and management of the embedded Prometheus service. The endpoint liste
 ``https://<mgr-ip>:8765/sd/`` (the port is
 configurable through the variable ``service_discovery_port``) and returns scrape target
 information in `http_sd_config format
-<https://prometheus.io/docs/prometheus/latest/configuration/configuration/#http_sd_config/>`_
+<https://prometheus.io/docs/prometheus/latest/configuration/configuration/#http_sd_config>`_
 
 Customers with external monitoring stack can use `ceph-mgr` service discovery endpoint
 to get scraping configuration. Root certificate of the server can be obtained by the
