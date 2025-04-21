@@ -26,17 +26,19 @@ diff --git a/debian/ceph-base.postinst b/debian/ceph-base.postinst
 index 75eeb59c624..424c2c889d5 100644
 --- a/debian/ceph-base.postinst
 +++ b/debian/ceph-base.postinst
-@@ -33,13 +33,15 @@ case "$1" in
+@@ -33,15 +33,15 @@ case "$1" in
  	rm -f /etc/init/ceph.conf
  	[ -x /sbin/start ] && start ceph-all || :
  
 -        # adjust file and directory permissions
 -	for DIR in /var/lib/ceph/* ; do
--	    if ! dpkg-statoverride --list $DIR >/dev/null
+-	    if ! dpkg-statoverride --list "${DIR}" >/dev/null
 -	    then
--		chown $SERVER_USER:$SERVER_GROUP $DIR
+-		chown "${SERVER_USER}:${SERVER_GROUP}" "${DIR}"
 -	    fi
 -	done
+-
+-	chown "${SERVER_USER}:${SERVER_GROUP}" -R /var/lib/ceph/crash/*;
 +	PERM_COMMAND="dpkg-statoverride --list '{}' > /dev/null || chown ${SERVER_USER}:${SERVER_GROUP} '{}'"
 +
 +	# adjust file and directory permissions

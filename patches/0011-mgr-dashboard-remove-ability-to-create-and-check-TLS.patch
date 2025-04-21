@@ -53,7 +53,7 @@ index 68725be6e35..0759da05064 100644
  
  from . import mgr
  from .controllers import Router, json_error_page
-@@ -172,11 +171,29 @@ class CherryPyConfig(object):
+@@ -168,11 +167,29 @@ class CherryPyConfig(object):
              else:
                  pkey_fname = self.get_localized_module_option('key_file')  # type: ignore
  
@@ -87,7 +87,7 @@ index 68725be6e35..0759da05064 100644
              if sys.version_info >= (3, 7):
                  if Settings.UNSAFE_TLS_v1_2:
                      context.minimum_version = ssl.TLSVersion.TLSv1_2
-@@ -473,15 +490,26 @@ class Module(MgrModule, CherryPyConfig):
+@@ -469,15 +486,26 @@ class Module(MgrModule, CherryPyConfig):
  
      @CLIWriteCommand("dashboard create-self-signed-cert")
      def set_mgr_created_self_signed_cert(self):
