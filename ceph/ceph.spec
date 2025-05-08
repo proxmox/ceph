@@ -170,7 +170,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	18.2.6
+Version:	18.2.7
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -186,7 +186,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-18.2.6.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-18.2.7.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x
@@ -1300,7 +1300,7 @@ This package provides a Ceph hardware monitoring agent.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-18.2.6
+%autosetup -p1 -n ceph-18.2.7
 
 %build
 # Disable lto on systems that do not support symver attribute
