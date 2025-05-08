@@ -1,0 +1,5 @@
+/*.buildinfo
+/*.changes
+/*.deb
+/*.[xg]z
+/ceph-[0-9]*/
