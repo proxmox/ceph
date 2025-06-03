@@ -16,3 +16,4 @@
 0019-mgr-stop-using-deprecated-API-to-initialize-Python.patch
 0020-mgr-set-argv-for-python-in-PyModuleRegistry.patch
 0021-mgr-add-site-package-paths-in-PyModuleRegistry.patch
+0022-d-rules-disable-jaeger-telemetry.patch
