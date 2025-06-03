@@ -47,8 +47,9 @@ def test_tree_exp_builder():
 
     assert expr.result().type == pa.int32()
 
+    config = gandiva.Configuration(dump_ir=True)
     projector = gandiva.make_projector(
-        schema, [expr], pa.default_memory_pool())
+        schema, [expr], pa.default_memory_pool(), "NONE", config)
 
     # Gandiva generates compute kernel function named `@expr_X`
     assert projector.llvm_ir.find("@expr_") != -1
@@ -104,7 +105,8 @@ def test_filter():
 
     assert condition.result().type == pa.bool_()
 
-    filter = gandiva.make_filter(table.schema, condition)
+    config = gandiva.Configuration(dump_ir=True)
+    filter = gandiva.make_filter(table.schema, condition, config)
     # Gandiva generates compute kernel function named `@expr_X`
     assert filter.llvm_ir.find("@expr_") != -1
 
@@ -389,3 +391,44 @@ def test_to_string():
     field_y = builder.make_field(pa.field('y', pa.bool_()))
     and_node = builder.make_and([func_node, field_y])
     assert str(and_node) == 'bool not((bool) z) && (bool) y'
+
+
+@pytest.mark.gandiva
+def test_rejects_none():
+    import pyarrow.gandiva as gandiva
+
+    builder = gandiva.TreeExprBuilder()
+
+    field_x = pa.field('x', pa.int32())
+    schema = pa.schema([field_x])
+    literal_true = builder.make_literal(True, pa.bool_())
+
+    with pytest.raises(TypeError):
+        builder.make_field(None)
+
+    with pytest.raises(TypeError):
+        builder.make_if(literal_true, None, None, None)
+
+    with pytest.raises(TypeError):
+        builder.make_and([literal_true, None])
+
+    with pytest.raises(TypeError):
+        builder.make_or([None, literal_true])
+
+    with pytest.raises(TypeError):
+        builder.make_in_expression(None, [1, 2, 3], pa.int32())
+
+    with pytest.raises(TypeError):
+        builder.make_expression(None, field_x)
+
+    with pytest.raises(TypeError):
+        builder.make_condition(None)
+
+    with pytest.raises(TypeError):
+        builder.make_function('less_than', [literal_true, None], pa.bool_())
+
+    with pytest.raises(TypeError):
+        gandiva.make_projector(schema, [None])
+
+    with pytest.raises(TypeError):
+        gandiva.make_filter(schema, None)

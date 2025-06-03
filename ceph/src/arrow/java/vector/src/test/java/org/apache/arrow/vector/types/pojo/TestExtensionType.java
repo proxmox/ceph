@@ -177,7 +177,7 @@ public class TestExtensionType {
             vector.allocateNewSafe();
           }
         });
-    assertTrue(e.getMessage().contains("underlyingVector can not be null."));
+    assertTrue(e.getMessage().contains("underlyingVector cannot be null."));
   }
 
   /**
@@ -380,7 +380,7 @@ public class TestExtensionType {
     }
   }
 
-  static class LocationVector extends ExtensionTypeVector<StructVector> {
+  public static class LocationVector extends ExtensionTypeVector<StructVector> {
 
     private static StructVector buildUnderlyingVector(String name, BufferAllocator allocator) {
       final StructVector underlyingVector =

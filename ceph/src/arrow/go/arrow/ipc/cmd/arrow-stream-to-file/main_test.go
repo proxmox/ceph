@@ -14,31 +14,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main // import "github.com/apache/arrow/go/v6/arrow/ipc/cmd/arrow-stream-to-file"
+package main
 
 import (
 	"io"
-	"io/ioutil"
 	"os"
 	"testing"
 
-	"github.com/apache/arrow/go/v6/arrow/internal/arrdata"
-	"github.com/apache/arrow/go/v6/arrow/memory"
+	"github.com/apache/arrow/go/v15/arrow/internal/arrdata"
+	"github.com/apache/arrow/go/v15/arrow/memory"
 )
 
 func TestStreamToFile(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "go-arrow-stream-to-file-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	for name, recs := range arrdata.Records {
 		t.Run(name, func(t *testing.T) {
 			mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
 			defer mem.AssertSize(t, 0)
 
-			f, err := ioutil.TempFile(tempDir, "go-arrow-stream-to-file-")
+			f, err := os.CreateTemp(tempDir, "go-arrow-stream-to-file-")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -56,10 +51,11 @@ func TestStreamToFile(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			o, err := ioutil.TempFile(tempDir, "go-arrow-stream-to-file-")
+			o, err := os.CreateTemp(tempDir, "go-arrow-stream-to-file-")
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer o.Close()
 
 			err = processStream(o, f)
 			if err != nil {

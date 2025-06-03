@@ -18,12 +18,12 @@
 package org.apache.arrow.algorithm.sort;
 
 import org.apache.arrow.memory.ArrowBuf;
+import org.apache.arrow.memory.util.MemoryUtil;
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.BaseFixedWidthVector;
+import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.BitVectorHelper;
 import org.apache.arrow.vector.IntVector;
-
-import io.netty.util.internal.PlatformDependent;
 
 /**
  * Default out-of-place sorter for fixed-width vectors.
@@ -36,6 +36,9 @@ public class FixedWidthOutOfPlaceVectorSorter<V extends BaseFixedWidthVector> im
 
   @Override
   public void sortOutOfPlace(V srcVector, V dstVector, VectorValueComparator<V> comparator) {
+    if (srcVector instanceof BitVector) {
+      throw new IllegalArgumentException("BitVector is not supported with FixedWidthOutOfPlaceVectorSorter.");
+    }
     comparator.attachVector(srcVector);
 
     int valueWidth = comparator.getValueWidth();
@@ -69,7 +72,7 @@ public class FixedWidthOutOfPlaceVectorSorter<V extends BaseFixedWidthVector> im
           BitVectorHelper.unsetBit(dstValidityBuffer, dstIndex);
         } else {
           BitVectorHelper.setBit(dstValidityBuffer, dstIndex);
-          PlatformDependent.copyMemory(
+          MemoryUtil.UNSAFE.copyMemory(
                   srcValueBuffer.memoryAddress() + srcIndex * valueWidth,
                   dstValueBuffer.memoryAddress() + dstIndex * valueWidth,
                   valueWidth);

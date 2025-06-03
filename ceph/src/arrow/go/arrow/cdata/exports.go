@@ -17,42 +17,26 @@
 package cdata
 
 import (
-	"reflect"
-	"sync"
-	"sync/atomic"
+	"runtime/cgo"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v6/arrow/array"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/array"
 )
 
 // #include <stdlib.h>
 // #include "arrow/c/helpers.h"
+//
+// typedef const char cchar_t;
+// extern int streamGetSchema(struct ArrowArrayStream*, struct ArrowSchema*);
+// extern int streamGetNext(struct ArrowArrayStream*, struct ArrowArray*);
+// extern const char* streamGetError(struct ArrowArrayStream*);
+// extern void streamRelease(struct ArrowArrayStream*);
+// // XXX(https://github.com/apache/arrow-adbc/issues/729)
+// int streamGetSchemaTrampoline(struct ArrowArrayStream* stream, struct ArrowSchema* out);
+// int streamGetNextTrampoline(struct ArrowArrayStream* stream, struct ArrowArray* out);
+//
 import "C"
-
-var (
-	handles   = sync.Map{}
-	handleIdx uintptr
-)
-
-type dataHandle uintptr
-
-func storeData(d *array.Data) dataHandle {
-	h := atomic.AddUintptr(&handleIdx, 1)
-	if h == 0 {
-		panic("cgo: ran out of space")
-	}
-	d.Retain()
-	handles.Store(h, d)
-	return dataHandle(h)
-}
-
-func (d dataHandle) releaseData() {
-	arrd, ok := handles.LoadAndDelete(uintptr(d))
-	if !ok {
-		panic("cgo: invalid datahandle")
-	}
-	arrd.(*array.Data).Release()
-}
 
 //export releaseExportedSchema
 func releaseExportedSchema(schema *CArrowSchema) {
@@ -69,18 +53,34 @@ func releaseExportedSchema(schema *CArrowSchema) {
 		return
 	}
 
-	var children []*CArrowSchema
-	s := (*reflect.SliceHeader)(unsafe.Pointer(&children))
-	s.Data = uintptr(unsafe.Pointer(schema.children))
-	s.Len = int(schema.n_children)
-	s.Cap = int(schema.n_children)
+	if schema.dictionary != nil {
+		C.ArrowSchemaRelease(schema.dictionary)
+		C.free(unsafe.Pointer(schema.dictionary))
+	}
 
+	children := unsafe.Slice(schema.children, schema.n_children)
 	for _, c := range children {
 		C.ArrowSchemaRelease(c)
 	}
 
 	C.free(unsafe.Pointer(children[0]))
 	C.free(unsafe.Pointer(schema.children))
+}
+
+// apache/arrow#33864: allocate a new cgo.Handle and store its address
+// in a heap-allocated uintptr_t.
+func createHandle(hndl cgo.Handle) unsafe.Pointer {
+	// uintptr_t* hptr = malloc(sizeof(uintptr_t));
+	hptr := (*C.uintptr_t)(C.malloc(C.sizeof_uintptr_t))
+	// *hptr = (uintptr)hndl;
+	*hptr = C.uintptr_t(uintptr(hndl))
+	return unsafe.Pointer(hptr)
+}
+
+func getHandle(ptr unsafe.Pointer) cgo.Handle {
+	// uintptr_t* hptr = (uintptr_t*)ptr;
+	hptr := (*C.uintptr_t)(ptr)
+	return cgo.Handle((uintptr)(*hptr))
 }
 
 //export releaseExportedArray
@@ -94,12 +94,13 @@ func releaseExportedArray(arr *CArrowArray) {
 		C.free(unsafe.Pointer(arr.buffers))
 	}
 
+	if arr.dictionary != nil {
+		C.ArrowArrayRelease(arr.dictionary)
+		C.free(unsafe.Pointer(arr.dictionary))
+	}
+
 	if arr.n_children > 0 {
-		var children []*CArrowArray
-		s := (*reflect.SliceHeader)(unsafe.Pointer(&children))
-		s.Data = uintptr(unsafe.Pointer(arr.children))
-		s.Len = int(arr.n_children)
-		s.Cap = int(arr.n_children)
+		children := unsafe.Slice(arr.children, arr.n_children)
 
 		for _, c := range children {
 			C.ArrowArrayRelease(c)
@@ -108,6 +109,49 @@ func releaseExportedArray(arr *CArrowArray) {
 		C.free(unsafe.Pointer(arr.children))
 	}
 
-	h := dataHandle(arr.private_data)
-	h.releaseData()
+	h := getHandle(arr.private_data)
+	h.Value().(arrow.ArrayData).Release()
+	h.Delete()
+	C.free(unsafe.Pointer(arr.private_data))
+}
+
+//export streamGetSchema
+func streamGetSchema(handle *CArrowArrayStream, out *CArrowSchema) C.int {
+	h := getHandle(handle.private_data)
+	rdr := h.Value().(cRecordReader)
+	return C.int(rdr.getSchema(out))
+}
+
+//export streamGetNext
+func streamGetNext(handle *CArrowArrayStream, out *CArrowArray) C.int {
+	h := getHandle(handle.private_data)
+	rdr := h.Value().(cRecordReader)
+	return C.int(rdr.next(out))
+}
+
+//export streamGetError
+func streamGetError(handle *CArrowArrayStream) *C.cchar_t {
+	h := getHandle(handle.private_data)
+	rdr := h.Value().(cRecordReader)
+	return rdr.getLastError()
+}
+
+//export streamRelease
+func streamRelease(handle *CArrowArrayStream) {
+	h := getHandle(handle.private_data)
+	h.Value().(cRecordReader).release()
+	h.Delete()
+	C.free(unsafe.Pointer(handle.private_data))
+	handle.release = nil
+	handle.private_data = nil
+}
+
+func exportStream(rdr array.RecordReader, out *CArrowArrayStream) {
+	out.get_schema = (*[0]byte)(C.streamGetSchemaTrampoline)
+	out.get_next = (*[0]byte)(C.streamGetNextTrampoline)
+	out.get_last_error = (*[0]byte)(C.streamGetError)
+	out.release = (*[0]byte)(C.streamRelease)
+	rdr.Retain()
+	h := cgo.NewHandle(cRecordReader{rdr: rdr, err: nil})
+	out.private_data = createHandle(h)
 }

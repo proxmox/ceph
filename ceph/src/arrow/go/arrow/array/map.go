@@ -14,25 +14,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package array // import "github.com/apache/arrow/go/v6/arrow/array"
+package array
 
 import (
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/memory"
+	"bytes"
+	"fmt"
+
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/internal/json"
 )
 
 // Map represents an immutable sequence of Key/Value structs. It is a
 // logical type that is implemented as a List<Struct: key, value>.
 type Map struct {
 	*List
-	keys, items Interface
+	keys, items arrow.Array
 }
 
+var _ ListLike = (*Map)(nil)
+
 // NewMapData returns a new Map array value, from data
-func NewMapData(data *Data) *Map {
+func NewMapData(data arrow.ArrayData) *Map {
 	a := &Map{List: &List{}}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
@@ -50,7 +56,7 @@ func (a *Map) validateData(data *Data) {
 		panic("arrow/array: expected one child array for map array")
 	}
 
-	if data.childData[0].dtype.ID() != arrow.STRUCT {
+	if data.childData[0].DataType().ID() != arrow.STRUCT {
 		panic("arrow/array: map array child should be struct type")
 	}
 
@@ -58,11 +64,11 @@ func (a *Map) validateData(data *Data) {
 		panic("arrow/array: map array child array should have no nulls")
 	}
 
-	if len(data.childData[0].childData) != 2 {
+	if len(data.childData[0].Children()) != 2 {
 		panic("arrow/array: map array child array should have two fields")
 	}
 
-	if data.childData[0].childData[0].NullN() != 0 {
+	if data.childData[0].Children()[0].NullN() != 0 {
 		panic("arrow/array: map array keys array should have no nulls")
 	}
 }
@@ -71,17 +77,17 @@ func (a *Map) setData(data *Data) {
 	a.validateData(data)
 
 	a.List.setData(data)
-	a.keys = MakeFromData(data.childData[0].childData[0])
-	a.items = MakeFromData(data.childData[0].childData[1])
+	a.keys = MakeFromData(data.childData[0].Children()[0])
+	a.items = MakeFromData(data.childData[0].Children()[1])
 }
 
 // Keys returns the full Array of Key values, equivalent to grabbing
 // the key field of the child struct.
-func (a *Map) Keys() Interface { return a.keys }
+func (a *Map) Keys() arrow.Array { return a.keys }
 
 // Items returns the full Array of Item values, equivalent to grabbing
 // the Value field (the second field) of the child struct.
-func (a *Map) Items() Interface { return a.items }
+func (a *Map) Items() arrow.Array { return a.items }
 
 // Retain increases the reference count by 1.
 // Retain may be called simultaneously from multiple goroutines.
@@ -108,7 +114,7 @@ func arrayEqualMap(left, right *Map) bool {
 type MapBuilder struct {
 	listBuilder *ListBuilder
 
-	etype                   arrow.DataType
+	etype                   *arrow.MapType
 	keytype, itemtype       arrow.DataType
 	keyBuilder, itemBuilder Builder
 	keysSorted              bool
@@ -122,30 +128,29 @@ type MapBuilder struct {
 // building using keys in sorted order for each value. The KeysSorted value will just be
 // used when creating the DataType for the map.
 //
-// Example
+// # Example
 //
 // Simple example provided of converting a []map[string]int32 to an array.Map
 // by using a MapBuilder:
 //
-//   /* assume maplist == []map[string]int32 */
-//   bldr := array.NewMapBuilder(memory.DefaultAllocator, arrow.BinaryTypes.String, arrow.PrimitiveTypes.Int32, false)
-//   defer bldr.Release()
-//   kb := bldr.KeyBuilder().(*array.StringBuilder)
-//   ib := bldr.ItemBuilder().(*array.Int32Builder)
-//   for _, m := range maplist {
-//       bldr.Append(true)
-//       for k, v := range m {
-//            kb.Append(k)
-//            ib.Append(v)
-//       }
-//   }
-//   maparr := bldr.NewMapArray()
-//   defer maparr.Release()
-//
+//	/* assume maplist == []map[string]int32 */
+//	bldr := array.NewMapBuilder(memory.DefaultAllocator, arrow.BinaryTypes.String, arrow.PrimitiveTypes.Int32, false)
+//	defer bldr.Release()
+//	kb := bldr.KeyBuilder().(*array.StringBuilder)
+//	ib := bldr.ItemBuilder().(*array.Int32Builder)
+//	for _, m := range maplist {
+//	    bldr.Append(true)
+//	    for k, v := range m {
+//	         kb.Append(k)
+//	         ib.Append(v)
+//	    }
+//	}
+//	maparr := bldr.NewMapArray()
+//	defer maparr.Release()
 func NewMapBuilder(mem memory.Allocator, keytype, itemtype arrow.DataType, keysSorted bool) *MapBuilder {
 	etype := arrow.MapOf(keytype, itemtype)
 	etype.KeysSorted = keysSorted
-	listBldr := NewListBuilder(mem, etype.ValueType())
+	listBldr := NewListBuilder(mem, etype.Elem())
 	keyBldr := listBldr.ValueBuilder().(*StructBuilder).FieldBuilder(0)
 	keyBldr.Retain()
 	itemBldr := listBldr.ValueBuilder().(*StructBuilder).FieldBuilder(1)
@@ -160,6 +165,25 @@ func NewMapBuilder(mem memory.Allocator, keytype, itemtype arrow.DataType, keysS
 		keysSorted:  keysSorted,
 	}
 }
+
+func NewMapBuilderWithType(mem memory.Allocator, dt *arrow.MapType) *MapBuilder {
+	listBldr := NewListBuilder(mem, dt.Elem())
+	keyBldr := listBldr.ValueBuilder().(*StructBuilder).FieldBuilder(0)
+	keyBldr.Retain()
+	itemBldr := listBldr.ValueBuilder().(*StructBuilder).FieldBuilder(1)
+	itemBldr.Retain()
+	return &MapBuilder{
+		listBuilder: listBldr,
+		keyBuilder:  keyBldr,
+		itemBuilder: itemBldr,
+		etype:       dt,
+		keytype:     dt.KeyType(),
+		itemtype:    dt.ItemType(),
+		keysSorted:  dt.KeysSorted,
+	}
+}
+
+func (b *MapBuilder) Type() arrow.DataType { return b.etype }
 
 // Retain increases the reference count by 1 for the sub-builders (list, key, item).
 // Retain may be called simultaneously from multiple goroutines.
@@ -186,6 +210,11 @@ func (b *MapBuilder) Cap() int { return b.listBuilder.Cap() }
 // NullN returns the number of null values in the array builder.
 func (b *MapBuilder) NullN() int { return b.listBuilder.NullN() }
 
+// IsNull returns if a previously appended value at a given index is null or not.
+func (b *MapBuilder) IsNull(i int) bool {
+	return b.listBuilder.IsNull(i)
+}
+
 // Append adds a new Map element to the array, calling Append(false) is
 // equivalent to calling AppendNull.
 func (b *MapBuilder) Append(v bool) {
@@ -193,9 +222,34 @@ func (b *MapBuilder) Append(v bool) {
 	b.listBuilder.Append(v)
 }
 
+func (b *MapBuilder) AppendWithSize(v bool, _ int) {
+	b.Append(v)
+}
+
 // AppendNull adds a null map entry to the array.
 func (b *MapBuilder) AppendNull() {
 	b.Append(false)
+}
+
+// AppendNulls adds null map entry to the array.
+func (b *MapBuilder) AppendNulls(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendNull()
+	}
+}
+
+func (b *MapBuilder) SetNull(i int) {
+	b.listBuilder.SetNull(i)
+}
+
+func (b *MapBuilder) AppendEmptyValue() {
+	b.Append(true)
+}
+
+func (b *MapBuilder) AppendEmptyValues(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendEmptyValue()
+	}
 }
 
 // Reserve enough space for n maps
@@ -210,6 +264,10 @@ func (b *MapBuilder) Resize(n int) { b.listBuilder.Resize(n) }
 func (b *MapBuilder) AppendValues(offsets []int32, valid []bool) {
 	b.adjustStructBuilderLen()
 	b.listBuilder.AppendValues(offsets, valid)
+}
+
+func (b *MapBuilder) UnsafeAppendBoolToBitmap(v bool) {
+	b.listBuilder.UnsafeAppendBoolToBitmap(v)
 }
 
 func (b *MapBuilder) init(capacity int)                  { b.listBuilder.init(capacity) }
@@ -228,13 +286,17 @@ func (b *MapBuilder) adjustStructBuilderLen() {
 
 // NewArray creates a new Map array from the memory buffers used by the builder, and
 // resets the builder so it can be used again to build a new Map array.
-func (b *MapBuilder) NewArray() Interface {
+func (b *MapBuilder) NewArray() arrow.Array {
 	return b.NewMapArray()
 }
 
 // NewMapArray creates a new Map array from the memory buffers used by the builder, and
 // resets the builder so it can be used again to build a new Map array.
 func (b *MapBuilder) NewMapArray() (a *Map) {
+	if !b.etype.ItemField().Nullable && b.ItemBuilder().NullN() > 0 {
+		panic("arrow/array: item not nullable")
+	}
+
 	data := b.newData()
 	defer data.Release()
 	a = NewMapData(data)
@@ -262,11 +324,38 @@ func (b *MapBuilder) ItemBuilder() Builder { return b.itemBuilder }
 // ValueBuilder can be used instead of separately using the Key/Item builders
 // to build the list as a List of Structs rather than building the keys/items
 // separately.
-func (b *MapBuilder) ValueBuilder() *StructBuilder {
-	return b.listBuilder.ValueBuilder().(*StructBuilder)
+func (b *MapBuilder) ValueBuilder() Builder {
+	return b.listBuilder.ValueBuilder()
+}
+
+func (b *MapBuilder) AppendValueFromString(s string) error {
+	return b.listBuilder.AppendValueFromString(s)
+}
+
+func (b *MapBuilder) UnmarshalOne(dec *json.Decoder) error {
+	return b.listBuilder.UnmarshalOne(dec)
+}
+
+func (b *MapBuilder) Unmarshal(dec *json.Decoder) error {
+	return b.listBuilder.Unmarshal(dec)
+}
+
+func (b *MapBuilder) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	if delim, ok := t.(json.Delim); !ok || delim != '[' {
+		return fmt.Errorf("map builder must unpack from json array, found %s", delim)
+	}
+
+	return b.Unmarshal(dec)
 }
 
 var (
-	_ Interface = (*Map)(nil)
-	_ Builder   = (*MapBuilder)(nil)
+	_ arrow.Array     = (*Map)(nil)
+	_ Builder         = (*MapBuilder)(nil)
+	_ ListLikeBuilder = (*MapBuilder)(nil)
 )

@@ -17,6 +17,7 @@
 
 import io
 import os
+import sys
 
 import pytest
 
@@ -36,6 +37,9 @@ try:
 except ImportError:
     pd = tm = None
 
+
+# Marks all of the tests in this module
+# Ignore these with pytest ... -m 'not parquet'
 pytestmark = pytest.mark.parquet
 
 
@@ -173,8 +177,12 @@ def test_parquet_file_pass_directory_instead_of_file(tempdir):
     path = tempdir / 'directory'
     os.mkdir(str(path))
 
-    with pytest.raises(IOError, match="Expected file path"):
+    msg = f"Cannot open for reading: path '{str(path)}' is a directory"
+    with pytest.raises(IOError) as exc:
         pq.ParquetFile(path)
+    if exc.errisinstance(PermissionError) and sys.platform == 'win32':
+        return  # Windows CI can get a PermissionError here.
+    exc.match(msg)
 
 
 def test_read_column_invalid_index():
@@ -201,7 +209,7 @@ def test_iter_batches_columns_reader(tempdir, batch_size):
     filename = tempdir / 'pandas_roundtrip.parquet'
     arrow_table = pa.Table.from_pandas(df)
     _write_table(arrow_table, filename, version='2.6',
-                 coerce_timestamps='ms', chunk_size=chunk_size)
+                 chunk_size=chunk_size)
 
     file_ = pq.ParquetFile(filename)
     for columns in [df.columns[:10], df.columns[10:]]:
@@ -225,7 +233,7 @@ def test_iter_batches_reader(tempdir, chunk_size):
     assert arrow_table.schema.pandas_metadata is not None
 
     _write_table(arrow_table, filename, version='2.6',
-                 coerce_timestamps='ms', chunk_size=chunk_size)
+                 chunk_size=chunk_size)
 
     file_ = pq.ParquetFile(filename)
 
@@ -274,3 +282,55 @@ def test_pre_buffer(pre_buffer):
     buf.seek(0)
     pf = pq.ParquetFile(buf, pre_buffer=pre_buffer)
     assert pf.read().num_rows == N
+
+
+def test_parquet_file_explicitly_closed(tempdir):
+    """
+    Unopened files should be closed explicitly after use,
+    and previously opened files should be left open.
+    Applies to read_table, ParquetDataset, and ParquetFile
+    """
+    # create test parquet file
+    fn = tempdir.joinpath('file.parquet')
+    table = pa.table({'col1': [0, 1], 'col2': [0, 1]})
+    pq.write_table(table, fn)
+
+    # ParquetFile with opened file (will leave open)
+    with open(fn, 'rb') as f:
+        with pq.ParquetFile(f) as p:
+            p.read()
+            assert not f.closed
+            assert not p.closed
+        assert not f.closed  # opened input file was not closed
+        assert not p.closed  # parquet file obj reports as not closed
+    assert f.closed
+    assert p.closed  # parquet file being closed reflects underlying file
+
+    # ParquetFile with unopened file (will close)
+    with pq.ParquetFile(fn) as p:
+        p.read()
+        assert not p.closed
+    assert p.closed  # parquet file obj reports as closed
+
+
+@pytest.mark.s3
+@pytest.mark.parametrize("use_uri", (True, False))
+def test_parquet_file_with_filesystem(s3_example_fs, use_uri):
+    s3_fs, s3_uri, s3_path = s3_example_fs
+
+    args = (s3_uri if use_uri else s3_path,)
+    kwargs = {} if use_uri else dict(filesystem=s3_fs)
+
+    table = pa.table({"a": range(10)})
+    pq.write_table(table, s3_path, filesystem=s3_fs)
+
+    parquet_file = pq.ParquetFile(*args, **kwargs)
+    assert parquet_file.read() == table
+    assert not parquet_file.closed
+    parquet_file.close()
+    assert parquet_file.closed
+
+    with pq.ParquetFile(*args, **kwargs) as f:
+        assert f.read() == table
+        assert not f.closed
+    assert f.closed

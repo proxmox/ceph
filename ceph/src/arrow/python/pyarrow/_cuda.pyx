@@ -16,10 +16,9 @@
 # under the License.
 
 
-from pyarrow.lib import tobytes
 from pyarrow.lib cimport *
 from pyarrow.includes.libarrow_cuda cimport *
-from pyarrow.lib import py_buffer, allocate_buffer, as_buffer, ArrowTypeError
+from pyarrow.lib import allocate_buffer, as_buffer, ArrowTypeError
 from pyarrow.util import get_contiguous_span
 cimport cpython as cp
 
@@ -344,7 +343,7 @@ cdef class IpcMemHandle(_Weakrefable):
         opaque_handle :
           a CUipcMemHandle as a const void*
 
-        Results
+        Returns
         -------
         ipc_handle : IpcMemHandle
         """
@@ -494,7 +493,7 @@ cdef class CudaBuffer(Buffer):
                     raise ValueError(
                         'requested more to copy than available from '
                         'device buffer')
-                # copy nbytes starting from position to new host buffeer
+                # copy nbytes starting from position to new host buffer
                 c_nbytes = nbytes
             buf = allocate_buffer(c_nbytes, memory_pool=memory_pool,
                                   resizable=resizable)
@@ -755,7 +754,6 @@ cdef class BufferReader(NativeFile):
         """
         cdef:
             int64_t c_nbytes
-            int64_t bytes_read = 0
             shared_ptr[CCudaBuffer] output
 
         if nbytes is None:

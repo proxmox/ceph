@@ -109,6 +109,8 @@ bool Codec::SupportsCompressionLevel(Compression::type codec) {
     case Compression::BROTLI:
     case Compression::ZSTD:
     case Compression::BZ2:
+    case Compression::LZ4_FRAME:
+    case Compression::LZ4:
       return true;
     default:
       return false;
@@ -134,7 +136,7 @@ Result<int> Codec::DefaultCompressionLevel(Compression::type codec_type) {
 }
 
 Result<std::unique_ptr<Codec>> Codec::Create(Compression::type codec_type,
-                                             int compression_level) {
+                                             const CodecOptions& codec_options) {
   if (!IsAvailable(codec_type)) {
     if (codec_type == Compression::LZO) {
       return Status::NotImplemented("LZO codec not implemented");
@@ -149,6 +151,7 @@ Result<std::unique_ptr<Codec>> Codec::Create(Compression::type codec_type,
                                   "' not built");
   }
 
+  auto compression_level = codec_options.compression_level;
   if (compression_level != kUseDefaultCompressionLevel &&
       !SupportsCompressionLevel(codec_type)) {
     return Status::Invalid("Codec '", GetCodecAsString(codec_type),
@@ -164,24 +167,31 @@ Result<std::unique_ptr<Codec>> Codec::Create(Compression::type codec_type,
       codec = internal::MakeSnappyCodec();
 #endif
       break;
-    case Compression::GZIP:
+    case Compression::GZIP: {
 #ifdef ARROW_WITH_ZLIB
-      codec = internal::MakeGZipCodec(compression_level);
+      auto opt = dynamic_cast<const GZipCodecOptions*>(&codec_options);
+      codec = internal::MakeGZipCodec(compression_level,
+                                      opt ? opt->gzip_format : GZipFormat::GZIP,
+                                      opt ? opt->window_bits : std::nullopt);
 #endif
       break;
-    case Compression::BROTLI:
+    }
+    case Compression::BROTLI: {
 #ifdef ARROW_WITH_BROTLI
-      codec = internal::MakeBrotliCodec(compression_level);
+      auto opt = dynamic_cast<const BrotliCodecOptions*>(&codec_options);
+      codec = internal::MakeBrotliCodec(compression_level,
+                                        opt ? opt->window_bits : std::nullopt);
 #endif
       break;
+    }
     case Compression::LZ4:
 #ifdef ARROW_WITH_LZ4
-      codec = internal::MakeLz4RawCodec();
+      codec = internal::MakeLz4RawCodec(compression_level);
 #endif
       break;
     case Compression::LZ4_FRAME:
 #ifdef ARROW_WITH_LZ4
-      codec = internal::MakeLz4FrameCodec();
+      codec = internal::MakeLz4FrameCodec(compression_level);
 #endif
       break;
     case Compression::LZ4_HADOOP:
@@ -206,6 +216,12 @@ Result<std::unique_ptr<Codec>> Codec::Create(Compression::type codec_type,
   DCHECK_NE(codec, nullptr);
   RETURN_NOT_OK(codec->Init());
   return std::move(codec);
+}
+
+// use compression level to create Codec
+Result<std::unique_ptr<Codec>> Codec::Create(Compression::type codec_type,
+                                             int compression_level) {
+  return Codec::Create(codec_type, CodecOptions{compression_level});
 }
 
 bool Codec::IsAvailable(Compression::type codec_type) {

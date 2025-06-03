@@ -37,7 +37,7 @@
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/decimal.h"
 #include "arrow/util/trie.h"
-#include "arrow/util/utf8.h"
+#include "arrow/util/utf8_internal.h"
 #include "arrow/util/value_parsing.h"  // IWYU pragma: keep
 
 namespace arrow {
@@ -96,16 +96,13 @@ Status InitializeTrie(const std::vector<std::string>& inputs, Trie* trie) {
 
 // Presize a builder based on parser contents
 template <typename BuilderType>
-enable_if_t<!is_base_binary_type<typename BuilderType::TypeClass>::value, Status>
-PresizeBuilder(const BlockParser& parser, BuilderType* builder) {
-  return builder->Resize(parser.num_rows());
-}
-
-// Same, for variable-sized binary builders
-template <typename T>
-Status PresizeBuilder(const BlockParser& parser, BaseBinaryBuilder<T>* builder) {
+Status PresizeBuilder(const BlockParser& parser, BuilderType* builder) {
   RETURN_NOT_OK(builder->Resize(parser.num_rows()));
-  return builder->ReserveData(parser.num_bytes());
+  if constexpr (is_base_binary_type<typename BuilderType::TypeClass>::value) {
+    return builder->ReserveData(parser.num_bytes());
+  } else {
+    return Status::OK();
+  }
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -125,8 +122,8 @@ struct ValueDecoder {
     if (quoted && !options_.quoted_strings_can_be_null) {
       return false;
     }
-    return null_trie_.Find(
-               util::string_view(reinterpret_cast<const char*>(data), size)) >= 0;
+    return null_trie_.Find(std::string_view(reinterpret_cast<const char*>(data), size)) >=
+           0;
   }
 
  protected:
@@ -166,7 +163,7 @@ struct FixedSizeBinaryValueDecoder : public ValueDecoder {
 
 template <bool CheckUTF8>
 struct BinaryValueDecoder : public ValueDecoder {
-  using value_type = util::string_view;
+  using value_type = std::string_view;
 
   using ValueDecoder::ValueDecoder;
 
@@ -176,7 +173,7 @@ struct BinaryValueDecoder : public ValueDecoder {
   }
 
   Status Decode(const uint8_t* data, uint32_t size, bool quoted, value_type* out) {
-    if (CheckUTF8 && ARROW_PREDICT_FALSE(!util::ValidateUTF8(data, size))) {
+    if (CheckUTF8 && ARROW_PREDICT_FALSE(!util::ValidateUTF8Inline(data, size))) {
       return Status::Invalid("CSV conversion error to ", type_->ToString(),
                              ": invalid UTF8 data");
     }
@@ -196,17 +193,29 @@ struct BinaryValueDecoder : public ValueDecoder {
 //
 
 template <typename T>
+static arrow::internal::StringConverter<T> MakeStringConverter(
+    const ConvertOptions& options) {
+  if constexpr (is_floating_type<T>::value) {
+    return arrow::internal::StringConverter<T>{options.decimal_point};
+  } else {
+    return arrow::internal::StringConverter<T>{};
+  }
+}
+
+template <typename T>
 struct NumericValueDecoder : public ValueDecoder {
   using value_type = typename T::c_type;
 
-  explicit NumericValueDecoder(const std::shared_ptr<DataType>& type,
-                               const ConvertOptions& options)
-      : ValueDecoder(type, options), concrete_type_(checked_cast<const T&>(*type)) {}
+  NumericValueDecoder(const std::shared_ptr<DataType>& type,
+                      const ConvertOptions& options)
+      : ValueDecoder(type, options),
+        concrete_type_(checked_cast<const T&>(*type)),
+        string_converter_(MakeStringConverter<T>(options)) {}
 
   Status Decode(const uint8_t* data, uint32_t size, bool quoted, value_type* out) {
     // XXX should quoted values be allowed at all?
     TrimWhiteSpace(&data, &size);
-    if (ARROW_PREDICT_FALSE(!internal::ParseValue<T>(
+    if (ARROW_PREDICT_FALSE(!string_converter_.Convert(
             concrete_type_, reinterpret_cast<const char*>(data), size, out))) {
       return GenericConversionError(type_, data, size);
     }
@@ -215,6 +224,7 @@ struct NumericValueDecoder : public ValueDecoder {
 
  protected:
   const T& concrete_type_;
+  arrow::internal::StringConverter<T> string_converter_;
 };
 
 //
@@ -235,12 +245,12 @@ struct BooleanValueDecoder : public ValueDecoder {
 
   Status Decode(const uint8_t* data, uint32_t size, bool quoted, value_type* out) {
     // XXX should quoted values be allowed at all?
-    if (false_trie_.Find(util::string_view(reinterpret_cast<const char*>(data), size)) >=
+    if (false_trie_.Find(std::string_view(reinterpret_cast<const char*>(data), size)) >=
         0) {
       *out = false;
       return Status::OK();
     }
-    if (ARROW_PREDICT_TRUE(true_trie_.Find(util::string_view(
+    if (ARROW_PREDICT_TRUE(true_trie_.Find(std::string_view(
                                reinterpret_cast<const char*>(data), size)) >= 0)) {
       *out = true;
       return Status::OK();
@@ -271,7 +281,7 @@ struct DecimalValueDecoder : public ValueDecoder {
     TrimWhiteSpace(&data, &size);
     Decimal128 decimal;
     int32_t precision, scale;
-    util::string_view view(reinterpret_cast<const char*>(data), size);
+    std::string_view view(reinterpret_cast<const char*>(data), size);
     RETURN_NOT_OK(Decimal128::FromString(view, &decimal, &precision, &scale));
     if (precision > type_precision_) {
       return Status::Invalid("Error converting '", view, "' to ", type_->ToString(),
@@ -292,8 +302,7 @@ struct DecimalValueDecoder : public ValueDecoder {
 };
 
 //
-// Value decoder wrapper for floating-point and decimals
-// with a non-default decimal point
+// Value decoder wrapper for decimals with a non-default decimal point
 //
 
 template <typename WrappedDecoder>
@@ -350,18 +359,37 @@ struct InlineISO8601ValueDecoder : public ValueDecoder {
   explicit InlineISO8601ValueDecoder(const std::shared_ptr<DataType>& type,
                                      const ConvertOptions& options)
       : ValueDecoder(type, options),
-        unit_(checked_cast<const TimestampType&>(*type_).unit()) {}
+        unit_(checked_cast<const TimestampType&>(*type_).unit()),
+        expect_timezone_(!checked_cast<const TimestampType&>(*type_).timezone().empty()) {
+  }
 
   Status Decode(const uint8_t* data, uint32_t size, bool quoted, value_type* out) {
-    if (ARROW_PREDICT_FALSE(!internal::ParseTimestampISO8601(
-            reinterpret_cast<const char*>(data), size, unit_, out))) {
+    bool zone_offset_present = false;
+    if (ARROW_PREDICT_FALSE(
+            !internal::ParseTimestampISO8601(reinterpret_cast<const char*>(data), size,
+                                             unit_, out, &zone_offset_present))) {
       return GenericConversionError(type_, data, size);
+    }
+    if (zone_offset_present != expect_timezone_) {
+      if (expect_timezone_) {
+        return Status::Invalid("CSV conversion error to ", type_->ToString(),
+                               ": expected a zone offset in '",
+                               std::string(reinterpret_cast<const char*>(data), size),
+                               "'. If these timestamps are in local time, parse them as "
+                               "timestamps without timezone, then call assume_timezone.");
+      } else {
+        return Status::Invalid("CSV conversion error to ", type_->ToString(),
+                               ": expected no zone offset in '",
+                               std::string(reinterpret_cast<const char*>(data), size),
+                               "'");
+      }
     }
     return Status::OK();
   }
 
  protected:
   TimeUnit::type unit_;
+  bool expect_timezone_;
 };
 
 struct SingleParserTimestampValueDecoder : public ValueDecoder {
@@ -371,18 +399,36 @@ struct SingleParserTimestampValueDecoder : public ValueDecoder {
                                              const ConvertOptions& options)
       : ValueDecoder(type, options),
         unit_(checked_cast<const TimestampType&>(*type_).unit()),
+        expect_timezone_(!checked_cast<const TimestampType&>(*type_).timezone().empty()),
         parser_(*options_.timestamp_parsers[0]) {}
 
   Status Decode(const uint8_t* data, uint32_t size, bool quoted, value_type* out) {
-    if (ARROW_PREDICT_FALSE(
-            !parser_(reinterpret_cast<const char*>(data), size, unit_, out))) {
+    bool zone_offset_present = false;
+    if (ARROW_PREDICT_FALSE(!parser_(reinterpret_cast<const char*>(data), size, unit_,
+                                     out, &zone_offset_present))) {
       return GenericConversionError(type_, data, size);
+    }
+    if (zone_offset_present != expect_timezone_) {
+      if (expect_timezone_) {
+        return Status::Invalid("CSV conversion error to ", type_->ToString(),
+                               ": expected a zone offset in '",
+                               std::string(reinterpret_cast<const char*>(data), size),
+                               "'. If these timestamps are in local time, parse them as "
+                               "timestamps without timezone, then call assume_timezone. "
+                               "If using strptime, ensure '%z' is in the format string.");
+      } else {
+        return Status::Invalid("CSV conversion error to ", type_->ToString(),
+                               ": expected no zone offset in '",
+                               std::string(reinterpret_cast<const char*>(data), size),
+                               "'");
+      }
     }
     return Status::OK();
   }
 
  protected:
   TimeUnit::type unit_;
+  bool expect_timezone_;
   const TimestampParser& parser_;
 };
 
@@ -393,11 +439,15 @@ struct MultipleParsersTimestampValueDecoder : public ValueDecoder {
                                                 const ConvertOptions& options)
       : ValueDecoder(type, options),
         unit_(checked_cast<const TimestampType&>(*type_).unit()),
+        expect_timezone_(!checked_cast<const TimestampType&>(*type_).timezone().empty()),
         parsers_(GetParsers(options_)) {}
 
   Status Decode(const uint8_t* data, uint32_t size, bool quoted, value_type* out) {
+    bool zone_offset_present = false;
     for (const auto& parser : parsers_) {
-      if (parser->operator()(reinterpret_cast<const char*>(data), size, unit_, out)) {
+      if (parser->operator()(reinterpret_cast<const char*>(data), size, unit_, out,
+                             &zone_offset_present) &&
+          zone_offset_present == expect_timezone_) {
         return Status::OK();
       }
     }
@@ -416,6 +466,7 @@ struct MultipleParsersTimestampValueDecoder : public ValueDecoder {
   }
 
   TimeUnit::type unit_;
+  bool expect_timezone_;
   std::vector<const TimestampParser*> parsers_;
 };
 
@@ -644,8 +695,8 @@ Result<std::shared_ptr<Converter>> Converter::Make(const std::shared_ptr<DataTyp
     NUMERIC_CONVERTER_CASE(Type::UINT16, UInt16Type)
     NUMERIC_CONVERTER_CASE(Type::UINT32, UInt32Type)
     NUMERIC_CONVERTER_CASE(Type::UINT64, UInt64Type)
-    REAL_CONVERTER_CASE(Type::FLOAT, FloatType, NumericValueDecoder<FloatType>)
-    REAL_CONVERTER_CASE(Type::DOUBLE, DoubleType, NumericValueDecoder<DoubleType>)
+    NUMERIC_CONVERTER_CASE(Type::FLOAT, FloatType)
+    NUMERIC_CONVERTER_CASE(Type::DOUBLE, DoubleType)
     REAL_CONVERTER_CASE(Type::DECIMAL, Decimal128Type, DecimalValueDecoder)
     NUMERIC_CONVERTER_CASE(Type::DATE32, Date32Type)
     NUMERIC_CONVERTER_CASE(Type::DATE64, Date64Type)
@@ -732,8 +783,8 @@ Result<std::shared_ptr<DictionaryConverter>> DictionaryConverter::Make(
     CONVERTER_CASE(Type::INT64, Int64Type, NumericValueDecoder<Int64Type>)
     CONVERTER_CASE(Type::UINT32, UInt32Type, NumericValueDecoder<UInt32Type>)
     CONVERTER_CASE(Type::UINT64, UInt64Type, NumericValueDecoder<UInt64Type>)
-    REAL_CONVERTER_CASE(Type::FLOAT, FloatType, NumericValueDecoder<FloatType>)
-    REAL_CONVERTER_CASE(Type::DOUBLE, DoubleType, NumericValueDecoder<DoubleType>)
+    CONVERTER_CASE(Type::FLOAT, FloatType, NumericValueDecoder<FloatType>)
+    CONVERTER_CASE(Type::DOUBLE, DoubleType, NumericValueDecoder<DoubleType>)
     REAL_CONVERTER_CASE(Type::DECIMAL, Decimal128Type, DecimalValueDecoder)
     CONVERTER_CASE(Type::FIXED_SIZE_BINARY, FixedSizeBinaryType,
                    FixedSizeBinaryValueDecoder)

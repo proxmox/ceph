@@ -32,20 +32,42 @@ class Schema;
 class Status;
 class Table;
 
-struct PrettyPrintOptions {
+/// \class PrettyPrintDelimiters
+/// \brief Options for controlling which delimiters to use when printing
+/// an Array or ChunkedArray.
+struct ARROW_EXPORT PrettyPrintDelimiters {
+  /// Delimiter to use when opening an Array or ChunkedArray (e.g. "[")
+  std::string open = "[";
+
+  /// Delimiter to use when closing an Array or ChunkedArray (e.g. "]")
+  std::string close = "]";
+
+  /// Delimiter for separating individual elements of an Array (e.g. ","),
+  /// or individual chunks of a ChunkedArray
+  std::string element = ",";
+
+  /// Create a PrettyPrintDelimiters instance with default values
+  static PrettyPrintDelimiters Defaults() { return PrettyPrintDelimiters(); }
+};
+
+/// \class PrettyPrintOptions
+/// \brief Options for controlling how various Arrow types should be printed.
+struct ARROW_EXPORT PrettyPrintOptions {
   PrettyPrintOptions() = default;
 
-  PrettyPrintOptions(int indent_arg,  // NOLINT runtime/explicit
-                     int window_arg = 10, int indent_size_arg = 2,
-                     std::string null_rep_arg = "null", bool skip_new_lines_arg = false,
-                     bool truncate_metadata_arg = true)
-      : indent(indent_arg),
-        indent_size(indent_size_arg),
-        window(window_arg),
-        null_rep(std::move(null_rep_arg)),
-        skip_new_lines(skip_new_lines_arg),
-        truncate_metadata(truncate_metadata_arg) {}
+  PrettyPrintOptions(int indent,  // NOLINT runtime/explicit
+                     int window = 10, int indent_size = 2, std::string null_rep = "null",
+                     bool skip_new_lines = false, bool truncate_metadata = true,
+                     int container_window = 2)
+      : indent(indent),
+        indent_size(indent_size),
+        window(window),
+        container_window(container_window),
+        null_rep(std::move(null_rep)),
+        skip_new_lines(skip_new_lines),
+        truncate_metadata(truncate_metadata) {}
 
+  /// Create a PrettyPrintOptions instance with default values
   static PrettyPrintOptions Defaults() { return PrettyPrintOptions(); }
 
   /// Number of spaces to shift entire formatted object to the right
@@ -56,6 +78,10 @@ struct PrettyPrintOptions {
 
   /// Maximum number of elements to show at the beginning and at the end.
   int window = 10;
+
+  /// Maximum number of elements to show at the beginning and at the end, for elements
+  /// that are containers (that is, list in ListArray and chunks in ChunkedArray)
+  int container_window = 2;
 
   /// String to use for representing a null value, defaults to "null"
   std::string null_rep = "null";
@@ -72,6 +98,12 @@ struct PrettyPrintOptions {
 
   /// If true, display schema metadata when pretty-printing a Schema
   bool show_schema_metadata = true;
+
+  /// Delimiters to use when printing an Array
+  PrettyPrintDelimiters array_delimiters = PrettyPrintDelimiters::Defaults();
+
+  /// Delimiters to use when printing a ChunkedArray
+  PrettyPrintDelimiters chunked_array_delimiters = PrettyPrintDelimiters::Defaults();
 };
 
 /// \brief Print human-readable representation of RecordBatch

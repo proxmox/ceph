@@ -19,14 +19,18 @@
 package encoding
 
 import (
+	"fmt"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/memory"
-	"github.com/apache/arrow/go/v6/parquet"
-	format "github.com/apache/arrow/go/v6/parquet/internal/gen-go/parquet"
-	"github.com/apache/arrow/go/v6/parquet/internal/utils"
-	"github.com/apache/arrow/go/v6/parquet/schema"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/array"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/internal/bitutils"
+	shared_utils "github.com/apache/arrow/go/v15/internal/utils"
+	"github.com/apache/arrow/go/v15/parquet"
+	format "github.com/apache/arrow/go/v15/parquet/internal/gen-go/parquet"
+	"github.com/apache/arrow/go/v15/parquet/internal/utils"
+	"github.com/apache/arrow/go/v15/parquet/schema"
 	"golang.org/x/xerrors"
 )
 
@@ -131,6 +135,11 @@ func (enc *DictInt32Encoder) Type() parquet.Type {
 	return parquet.Types.Int32
 }
 
+// WriteDict populates the byte slice with the dictionary index
+func (enc *DictInt32Encoder) WriteDict(out []byte) {
+	enc.memo.(NumericMemoTable).WriteOutLE(out)
+}
+
 // Put encodes the values passed in, adding to the index as needed.
 func (enc *DictInt32Encoder) Put(in []int32) {
 	for _, val := range in {
@@ -141,12 +150,35 @@ func (enc *DictInt32Encoder) Put(in []int32) {
 // PutSpaced is the same as Put but for when the data being encoded has slots open for
 // null values, using the bitmap provided to skip values as needed.
 func (enc *DictInt32Encoder) PutSpaced(in []int32, validBits []byte, validBitsOffset int64) {
-	utils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
+	bitutils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
 		for i := int64(0); i < length; i++ {
 			enc.dictEncoder.Put(in[i+pos])
 		}
 		return nil
 	})
+}
+
+// PutDictionary allows pre-seeding a dictionary encoder with
+// a dictionary from an Arrow Array.
+//
+// The passed in array must not have any nulls and this can only
+// be called on an empty encoder.
+func (enc *DictInt32Encoder) PutDictionary(values arrow.Array) error {
+	if err := enc.canPutDictionary(values); err != nil {
+		return err
+	}
+
+	enc.dictEncodedSize += values.Len() * arrow.Int32SizeBytes
+	data := values.(*array.Int32).Int32Values()
+	for _, v := range data {
+		if _, _, err := enc.memo.GetOrInsert(v); err != nil {
+			return err
+		}
+	}
+
+	values.Retain()
+	enc.preservedDict = values
+	return nil
 }
 
 // DictInt32Decoder is a decoder for decoding dictionary encoded data for int32 columns
@@ -160,10 +192,10 @@ func (DictInt32Decoder) Type() parquet.Type {
 }
 
 // Decode populates the passed in slice with min(len(out), remaining values) values,
-// decoding using hte dictionary to get the actual values. Returns the number of values
+// decoding using the dictionary to get the actual values. Returns the number of values
 // actually decoded and any error encountered.
 func (d *DictInt32Decoder) Decode(out []int32) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decode(out[:vals])
 	if err != nil {
 		return decoded, err
@@ -171,14 +203,13 @@ func (d *DictInt32Decoder) Decode(out []int32) (int, error) {
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
 // Decode spaced is like Decode but will space out the data leaving slots for null values
 // based on the provided bitmap.
 func (d *DictInt32Decoder) DecodeSpaced(out []int32, nullCount int, validBits []byte, validBitsOffset int64) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decodeSpaced(out[:vals], nullCount, validBits, validBitsOffset)
 	if err != nil {
 		return decoded, err
@@ -186,7 +217,6 @@ func (d *DictInt32Decoder) DecodeSpaced(out []int32, nullCount int, validBits []
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict spaced eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
@@ -225,7 +255,7 @@ func (dc *Int32DictConverter) ensure(idx utils.IndexType) error {
 // in the dictionary and if necessary decodes dictionary indexes up to the index
 // requested.
 func (dc *Int32DictConverter) IsValid(idxes ...utils.IndexType) bool {
-	min, max := utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
+	min, max := shared_utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
 	dc.ensure(utils.IndexType(max))
 
 	return min >= 0 && int(min) < len(dc.dict) && int(max) >= 0 && int(max) < len(dc.dict)
@@ -342,6 +372,11 @@ func (enc *DictInt64Encoder) Type() parquet.Type {
 	return parquet.Types.Int64
 }
 
+// WriteDict populates the byte slice with the dictionary index
+func (enc *DictInt64Encoder) WriteDict(out []byte) {
+	enc.memo.(NumericMemoTable).WriteOutLE(out)
+}
+
 // Put encodes the values passed in, adding to the index as needed.
 func (enc *DictInt64Encoder) Put(in []int64) {
 	for _, val := range in {
@@ -352,12 +387,35 @@ func (enc *DictInt64Encoder) Put(in []int64) {
 // PutSpaced is the same as Put but for when the data being encoded has slots open for
 // null values, using the bitmap provided to skip values as needed.
 func (enc *DictInt64Encoder) PutSpaced(in []int64, validBits []byte, validBitsOffset int64) {
-	utils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
+	bitutils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
 		for i := int64(0); i < length; i++ {
 			enc.dictEncoder.Put(in[i+pos])
 		}
 		return nil
 	})
+}
+
+// PutDictionary allows pre-seeding a dictionary encoder with
+// a dictionary from an Arrow Array.
+//
+// The passed in array must not have any nulls and this can only
+// be called on an empty encoder.
+func (enc *DictInt64Encoder) PutDictionary(values arrow.Array) error {
+	if err := enc.canPutDictionary(values); err != nil {
+		return err
+	}
+
+	enc.dictEncodedSize += values.Len() * arrow.Int64SizeBytes
+	data := values.(*array.Int64).Int64Values()
+	for _, v := range data {
+		if _, _, err := enc.memo.GetOrInsert(v); err != nil {
+			return err
+		}
+	}
+
+	values.Retain()
+	enc.preservedDict = values
+	return nil
 }
 
 // DictInt64Decoder is a decoder for decoding dictionary encoded data for int64 columns
@@ -371,10 +429,10 @@ func (DictInt64Decoder) Type() parquet.Type {
 }
 
 // Decode populates the passed in slice with min(len(out), remaining values) values,
-// decoding using hte dictionary to get the actual values. Returns the number of values
+// decoding using the dictionary to get the actual values. Returns the number of values
 // actually decoded and any error encountered.
 func (d *DictInt64Decoder) Decode(out []int64) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decode(out[:vals])
 	if err != nil {
 		return decoded, err
@@ -382,14 +440,13 @@ func (d *DictInt64Decoder) Decode(out []int64) (int, error) {
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
 // Decode spaced is like Decode but will space out the data leaving slots for null values
 // based on the provided bitmap.
 func (d *DictInt64Decoder) DecodeSpaced(out []int64, nullCount int, validBits []byte, validBitsOffset int64) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decodeSpaced(out[:vals], nullCount, validBits, validBitsOffset)
 	if err != nil {
 		return decoded, err
@@ -397,7 +454,6 @@ func (d *DictInt64Decoder) DecodeSpaced(out []int64, nullCount int, validBits []
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict spaced eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
@@ -436,7 +492,7 @@ func (dc *Int64DictConverter) ensure(idx utils.IndexType) error {
 // in the dictionary and if necessary decodes dictionary indexes up to the index
 // requested.
 func (dc *Int64DictConverter) IsValid(idxes ...utils.IndexType) bool {
-	min, max := utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
+	min, max := shared_utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
 	dc.ensure(utils.IndexType(max))
 
 	return min >= 0 && int(min) < len(dc.dict) && int(max) >= 0 && int(max) < len(dc.dict)
@@ -495,10 +551,9 @@ type int96EncoderTraits struct{}
 
 // Encoder returns an encoder for int96 type data, using the specified encoding type and whether or not
 // it should be dictionary encoded.
-// dictionary encoding does not exist for this type and Encoder will panic if useDict is true
 func (int96EncoderTraits) Encoder(e format.Encoding, useDict bool, descr *schema.Column, mem memory.Allocator) TypedEncoder {
 	if useDict {
-		panic("parquet: no parquet.Int96 dictionary encoding")
+		return &DictInt96Encoder{newDictEncoderBase(descr, NewBinaryDictionary(mem), mem)}
 	}
 
 	switch e {
@@ -521,7 +576,7 @@ func (int96DecoderTraits) BytesRequired(n int) int {
 // Decoder returns a decoder for int96 typed data of the requested encoding type if available
 func (int96DecoderTraits) Decoder(e parquet.Encoding, descr *schema.Column, useDict bool, mem memory.Allocator) TypedDecoder {
 	if useDict {
-		panic("dictionary decoding unimplemented for int96")
+		return &DictInt96Decoder{dictDecoder{decoder: newDecoderBase(format.Encoding_RLE_DICTIONARY, descr), mem: mem}}
 	}
 
 	switch e {
@@ -530,6 +585,164 @@ func (int96DecoderTraits) Decoder(e parquet.Encoding, descr *schema.Column, useD
 	default:
 		panic("unimplemented encoding type")
 	}
+}
+
+// DictInt96Encoder is an encoder for parquet.Int96 data using dictionary encoding
+type DictInt96Encoder struct {
+	dictEncoder
+}
+
+// Type returns the underlying physical type that can be encoded with this encoder
+func (enc *DictInt96Encoder) Type() parquet.Type {
+	return parquet.Types.Int96
+}
+
+// WriteDict populates the byte slice with the dictionary index
+func (enc *DictInt96Encoder) WriteDict(out []byte) {
+	enc.memo.(BinaryMemoTable).CopyFixedWidthValues(0, parquet.Int96SizeBytes, out)
+}
+
+// Put encodes the values passed in, adding to the index as needed
+func (enc *DictInt96Encoder) Put(in []parquet.Int96) {
+	for _, v := range in {
+		memoIdx, found, err := enc.memo.GetOrInsert(v)
+		if err != nil {
+			panic(err)
+		}
+		if !found {
+			enc.dictEncodedSize += parquet.Int96SizeBytes
+		}
+		enc.addIndex(memoIdx)
+	}
+}
+
+// PutSpaced is like Put but assumes space for nulls
+func (enc *DictInt96Encoder) PutSpaced(in []parquet.Int96, validBits []byte, validBitsOffset int64) {
+	bitutils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
+		enc.Put(in[pos : pos+length])
+		return nil
+	})
+}
+
+// PutDictionary allows pre-seeding a dictionary encoder with
+// a dictionary from an Arrow Array.
+//
+// The passed in array must not have any nulls and this can only
+// be called on an empty encoder.
+func (enc *DictInt96Encoder) PutDictionary(arrow.Array) error {
+	return fmt.Errorf("%w: direct PutDictionary to Int96", arrow.ErrNotImplemented)
+}
+
+// DictInt96Decoder is a decoder for decoding dictionary encoded data for parquet.Int96 columns
+type DictInt96Decoder struct {
+	dictDecoder
+}
+
+// Type returns the underlying physical type that can be decoded with this decoder
+func (DictInt96Decoder) Type() parquet.Type {
+	return parquet.Types.Int96
+}
+
+// Decode populates the passed in slice with min(len(out), remaining values) values,
+// decoding using the dictionary to get the actual values. Returns the number of values
+// actually decoded and any error encountered.
+func (d *DictInt96Decoder) Decode(out []parquet.Int96) (int, error) {
+	vals := shared_utils.Min(len(out), d.nvals)
+	decoded, err := d.decode(out[:vals])
+	if err != nil {
+		return decoded, err
+	}
+	if vals != decoded {
+		return decoded, xerrors.New("parquet: dict eof exception")
+	}
+	return vals, nil
+}
+
+// Decode spaced is like Decode but will space out the data leaving slots for null values
+// based on the provided bitmap.
+func (d *DictInt96Decoder) DecodeSpaced(out []parquet.Int96, nullCount int, validBits []byte, validBitsOffset int64) (int, error) {
+	vals := shared_utils.Min(len(out), d.nvals)
+	decoded, err := d.decodeSpaced(out[:vals], nullCount, validBits, validBitsOffset)
+	if err != nil {
+		return decoded, err
+	}
+	if vals != decoded {
+		return decoded, xerrors.New("parquet: dict spaced eof exception")
+	}
+	return vals, nil
+}
+
+// Int96DictConverter is a helper for dictionary handling which is used for converting
+// run length encoded indexes into the actual values that are stored in the dictionary index page.
+type Int96DictConverter struct {
+	valueDecoder Int96Decoder
+	dict         []parquet.Int96
+	zeroVal      parquet.Int96
+}
+
+// ensure validates that we've decoded dictionary values up to the index
+// provided so that we don't need to decode the entire dictionary at start.
+func (dc *Int96DictConverter) ensure(idx utils.IndexType) error {
+	if len(dc.dict) <= int(idx) {
+		if cap(dc.dict) <= int(idx) {
+			val := make([]parquet.Int96, int(idx+1)-len(dc.dict))
+			n, err := dc.valueDecoder.Decode(val)
+			if err != nil {
+				return err
+			}
+			dc.dict = append(dc.dict, val[:n]...)
+		} else {
+			cur := len(dc.dict)
+			n, err := dc.valueDecoder.Decode(dc.dict[cur : idx+1])
+			if err != nil {
+				return err
+			}
+			dc.dict = dc.dict[:cur+n]
+		}
+	}
+	return nil
+}
+
+// IsValid verifies that the set of indexes passed in are all valid indexes
+// in the dictionary and if necessary decodes dictionary indexes up to the index
+// requested.
+func (dc *Int96DictConverter) IsValid(idxes ...utils.IndexType) bool {
+	min, max := shared_utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
+	dc.ensure(utils.IndexType(max))
+
+	return min >= 0 && int(min) < len(dc.dict) && int(max) >= 0 && int(max) < len(dc.dict)
+}
+
+// Fill populates the slice passed in entirely with the value at dictionary index indicated by val
+func (dc *Int96DictConverter) Fill(out interface{}, val utils.IndexType) error {
+	o := out.([]parquet.Int96)
+	if err := dc.ensure(val); err != nil {
+		return err
+	}
+	o[0] = dc.dict[val]
+	for i := 1; i < len(o); i *= 2 {
+		copy(o[i:], o[:i])
+	}
+	return nil
+}
+
+// FillZero populates the entire slice of out with the zero value for parquet.Int96
+func (dc *Int96DictConverter) FillZero(out interface{}) {
+	o := out.([]parquet.Int96)
+	o[0] = dc.zeroVal
+	for i := 1; i < len(o); i *= 2 {
+		copy(o[i:], o[:i])
+	}
+}
+
+// Copy populates the slice provided with the values in the dictionary at the indexes
+// in the vals slice.
+func (dc *Int96DictConverter) Copy(out interface{}, vals []utils.IndexType) error {
+	o := out.([]parquet.Int96)
+	for idx, val := range vals {
+		o[idx] = dc.dict[val]
+	}
+	return nil
 }
 
 // Float32Encoder is the interface for all encoding types that implement encoding
@@ -599,6 +812,11 @@ func (enc *DictFloat32Encoder) Type() parquet.Type {
 	return parquet.Types.Float
 }
 
+// WriteDict populates the byte slice with the dictionary index
+func (enc *DictFloat32Encoder) WriteDict(out []byte) {
+	enc.memo.(NumericMemoTable).WriteOutLE(out)
+}
+
 // Put encodes the values passed in, adding to the index as needed.
 func (enc *DictFloat32Encoder) Put(in []float32) {
 	for _, val := range in {
@@ -609,12 +827,35 @@ func (enc *DictFloat32Encoder) Put(in []float32) {
 // PutSpaced is the same as Put but for when the data being encoded has slots open for
 // null values, using the bitmap provided to skip values as needed.
 func (enc *DictFloat32Encoder) PutSpaced(in []float32, validBits []byte, validBitsOffset int64) {
-	utils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
+	bitutils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
 		for i := int64(0); i < length; i++ {
 			enc.dictEncoder.Put(in[i+pos])
 		}
 		return nil
 	})
+}
+
+// PutDictionary allows pre-seeding a dictionary encoder with
+// a dictionary from an Arrow Array.
+//
+// The passed in array must not have any nulls and this can only
+// be called on an empty encoder.
+func (enc *DictFloat32Encoder) PutDictionary(values arrow.Array) error {
+	if err := enc.canPutDictionary(values); err != nil {
+		return err
+	}
+
+	enc.dictEncodedSize += values.Len() * arrow.Float32SizeBytes
+	data := values.(*array.Float32).Float32Values()
+	for _, v := range data {
+		if _, _, err := enc.memo.GetOrInsert(v); err != nil {
+			return err
+		}
+	}
+
+	values.Retain()
+	enc.preservedDict = values
+	return nil
 }
 
 // DictFloat32Decoder is a decoder for decoding dictionary encoded data for float32 columns
@@ -628,10 +869,10 @@ func (DictFloat32Decoder) Type() parquet.Type {
 }
 
 // Decode populates the passed in slice with min(len(out), remaining values) values,
-// decoding using hte dictionary to get the actual values. Returns the number of values
+// decoding using the dictionary to get the actual values. Returns the number of values
 // actually decoded and any error encountered.
 func (d *DictFloat32Decoder) Decode(out []float32) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decode(out[:vals])
 	if err != nil {
 		return decoded, err
@@ -639,14 +880,13 @@ func (d *DictFloat32Decoder) Decode(out []float32) (int, error) {
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
 // Decode spaced is like Decode but will space out the data leaving slots for null values
 // based on the provided bitmap.
 func (d *DictFloat32Decoder) DecodeSpaced(out []float32, nullCount int, validBits []byte, validBitsOffset int64) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decodeSpaced(out[:vals], nullCount, validBits, validBitsOffset)
 	if err != nil {
 		return decoded, err
@@ -654,7 +894,6 @@ func (d *DictFloat32Decoder) DecodeSpaced(out []float32, nullCount int, validBit
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict spaced eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
@@ -693,7 +932,7 @@ func (dc *Float32DictConverter) ensure(idx utils.IndexType) error {
 // in the dictionary and if necessary decodes dictionary indexes up to the index
 // requested.
 func (dc *Float32DictConverter) IsValid(idxes ...utils.IndexType) bool {
-	min, max := utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
+	min, max := shared_utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
 	dc.ensure(utils.IndexType(max))
 
 	return min >= 0 && int(min) < len(dc.dict) && int(max) >= 0 && int(max) < len(dc.dict)
@@ -798,6 +1037,11 @@ func (enc *DictFloat64Encoder) Type() parquet.Type {
 	return parquet.Types.Double
 }
 
+// WriteDict populates the byte slice with the dictionary index
+func (enc *DictFloat64Encoder) WriteDict(out []byte) {
+	enc.memo.(NumericMemoTable).WriteOutLE(out)
+}
+
 // Put encodes the values passed in, adding to the index as needed.
 func (enc *DictFloat64Encoder) Put(in []float64) {
 	for _, val := range in {
@@ -808,12 +1052,35 @@ func (enc *DictFloat64Encoder) Put(in []float64) {
 // PutSpaced is the same as Put but for when the data being encoded has slots open for
 // null values, using the bitmap provided to skip values as needed.
 func (enc *DictFloat64Encoder) PutSpaced(in []float64, validBits []byte, validBitsOffset int64) {
-	utils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
+	bitutils.VisitSetBitRuns(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) error {
 		for i := int64(0); i < length; i++ {
 			enc.dictEncoder.Put(in[i+pos])
 		}
 		return nil
 	})
+}
+
+// PutDictionary allows pre-seeding a dictionary encoder with
+// a dictionary from an Arrow Array.
+//
+// The passed in array must not have any nulls and this can only
+// be called on an empty encoder.
+func (enc *DictFloat64Encoder) PutDictionary(values arrow.Array) error {
+	if err := enc.canPutDictionary(values); err != nil {
+		return err
+	}
+
+	enc.dictEncodedSize += values.Len() * arrow.Float64SizeBytes
+	data := values.(*array.Float64).Float64Values()
+	for _, v := range data {
+		if _, _, err := enc.memo.GetOrInsert(v); err != nil {
+			return err
+		}
+	}
+
+	values.Retain()
+	enc.preservedDict = values
+	return nil
 }
 
 // DictFloat64Decoder is a decoder for decoding dictionary encoded data for float64 columns
@@ -827,10 +1094,10 @@ func (DictFloat64Decoder) Type() parquet.Type {
 }
 
 // Decode populates the passed in slice with min(len(out), remaining values) values,
-// decoding using hte dictionary to get the actual values. Returns the number of values
+// decoding using the dictionary to get the actual values. Returns the number of values
 // actually decoded and any error encountered.
 func (d *DictFloat64Decoder) Decode(out []float64) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decode(out[:vals])
 	if err != nil {
 		return decoded, err
@@ -838,14 +1105,13 @@ func (d *DictFloat64Decoder) Decode(out []float64) (int, error) {
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
 // Decode spaced is like Decode but will space out the data leaving slots for null values
 // based on the provided bitmap.
 func (d *DictFloat64Decoder) DecodeSpaced(out []float64, nullCount int, validBits []byte, validBitsOffset int64) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decodeSpaced(out[:vals], nullCount, validBits, validBitsOffset)
 	if err != nil {
 		return decoded, err
@@ -853,7 +1119,6 @@ func (d *DictFloat64Decoder) DecodeSpaced(out []float64, nullCount int, validBit
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict spaced eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
@@ -892,7 +1157,7 @@ func (dc *Float64DictConverter) ensure(idx utils.IndexType) error {
 // in the dictionary and if necessary decodes dictionary indexes up to the index
 // requested.
 func (dc *Float64DictConverter) IsValid(idxes ...utils.IndexType) bool {
-	min, max := utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
+	min, max := shared_utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
 	dc.ensure(utils.IndexType(max))
 
 	return min >= 0 && int(min) < len(dc.dict) && int(max) >= 0 && int(max) < len(dc.dict)
@@ -960,6 +1225,8 @@ func (boolEncoderTraits) Encoder(e format.Encoding, useDict bool, descr *schema.
 	switch e {
 	case format.Encoding_PLAIN:
 		return &PlainBooleanEncoder{encoder: newEncoderBase(e, descr, mem)}
+	case format.Encoding_RLE:
+		return &RleBooleanEncoder{encoder: newEncoderBase(e, descr, mem)}
 	default:
 		panic("unimplemented encoding type")
 	}
@@ -983,6 +1250,8 @@ func (boolDecoderTraits) Decoder(e parquet.Encoding, descr *schema.Column, useDi
 	switch e {
 	case parquet.Encodings.Plain:
 		return &PlainBooleanDecoder{decoder: newDecoderBase(format.Encoding(e), descr)}
+	case parquet.Encodings.RLE:
+		return &RleBooleanDecoder{decoder: newDecoderBase(format.Encoding(e), descr)}
 	default:
 		panic("unimplemented encoding type")
 	}
@@ -1093,10 +1362,10 @@ func (DictByteArrayDecoder) Type() parquet.Type {
 }
 
 // Decode populates the passed in slice with min(len(out), remaining values) values,
-// decoding using hte dictionary to get the actual values. Returns the number of values
+// decoding using the dictionary to get the actual values. Returns the number of values
 // actually decoded and any error encountered.
 func (d *DictByteArrayDecoder) Decode(out []parquet.ByteArray) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decode(out[:vals])
 	if err != nil {
 		return decoded, err
@@ -1104,14 +1373,13 @@ func (d *DictByteArrayDecoder) Decode(out []parquet.ByteArray) (int, error) {
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
 // Decode spaced is like Decode but will space out the data leaving slots for null values
 // based on the provided bitmap.
 func (d *DictByteArrayDecoder) DecodeSpaced(out []parquet.ByteArray, nullCount int, validBits []byte, validBitsOffset int64) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decodeSpaced(out[:vals], nullCount, validBits, validBitsOffset)
 	if err != nil {
 		return decoded, err
@@ -1119,7 +1387,6 @@ func (d *DictByteArrayDecoder) DecodeSpaced(out []parquet.ByteArray, nullCount i
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict spaced eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
@@ -1158,7 +1425,7 @@ func (dc *ByteArrayDictConverter) ensure(idx utils.IndexType) error {
 // in the dictionary and if necessary decodes dictionary indexes up to the index
 // requested.
 func (dc *ByteArrayDictConverter) IsValid(idxes ...utils.IndexType) bool {
-	min, max := utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
+	min, max := shared_utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
 	dc.ensure(utils.IndexType(max))
 
 	return min >= 0 && int(min) < len(dc.dict) && int(max) >= 0 && int(max) < len(dc.dict)
@@ -1274,10 +1541,10 @@ func (DictFixedLenByteArrayDecoder) Type() parquet.Type {
 }
 
 // Decode populates the passed in slice with min(len(out), remaining values) values,
-// decoding using hte dictionary to get the actual values. Returns the number of values
+// decoding using the dictionary to get the actual values. Returns the number of values
 // actually decoded and any error encountered.
 func (d *DictFixedLenByteArrayDecoder) Decode(out []parquet.FixedLenByteArray) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decode(out[:vals])
 	if err != nil {
 		return decoded, err
@@ -1285,14 +1552,13 @@ func (d *DictFixedLenByteArrayDecoder) Decode(out []parquet.FixedLenByteArray) (
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
 // Decode spaced is like Decode but will space out the data leaving slots for null values
 // based on the provided bitmap.
 func (d *DictFixedLenByteArrayDecoder) DecodeSpaced(out []parquet.FixedLenByteArray, nullCount int, validBits []byte, validBitsOffset int64) (int, error) {
-	vals := utils.MinInt(len(out), d.nvals)
+	vals := shared_utils.Min(len(out), d.nvals)
 	decoded, err := d.decodeSpaced(out[:vals], nullCount, validBits, validBitsOffset)
 	if err != nil {
 		return decoded, err
@@ -1300,7 +1566,6 @@ func (d *DictFixedLenByteArrayDecoder) DecodeSpaced(out []parquet.FixedLenByteAr
 	if vals != decoded {
 		return decoded, xerrors.New("parquet: dict spaced eof exception")
 	}
-	d.nvals -= vals
 	return vals, nil
 }
 
@@ -1339,7 +1604,7 @@ func (dc *FixedLenByteArrayDictConverter) ensure(idx utils.IndexType) error {
 // in the dictionary and if necessary decodes dictionary indexes up to the index
 // requested.
 func (dc *FixedLenByteArrayDictConverter) IsValid(idxes ...utils.IndexType) bool {
-	min, max := utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
+	min, max := shared_utils.GetMinMaxInt32(*(*[]int32)(unsafe.Pointer(&idxes)))
 	dc.ensure(utils.IndexType(max))
 
 	return min >= 0 && int(min) < len(dc.dict) && int(max) >= 0 && int(max) < len(dc.dict)
@@ -1385,6 +1650,8 @@ func NewDictConverter(dict TypedDecoder) utils.DictionaryConverter {
 		return &Int32DictConverter{valueDecoder: dict.(Int32Decoder), dict: make([]int32, 0, dict.ValuesLeft())}
 	case parquet.Types.Int64:
 		return &Int64DictConverter{valueDecoder: dict.(Int64Decoder), dict: make([]int64, 0, dict.ValuesLeft())}
+	case parquet.Types.Int96:
+		return &Int96DictConverter{valueDecoder: dict.(Int96Decoder), dict: make([]parquet.Int96, 0, dict.ValuesLeft())}
 	case parquet.Types.Float:
 		return &Float32DictConverter{valueDecoder: dict.(Float32Decoder), dict: make([]float32, 0, dict.ValuesLeft())}
 	case parquet.Types.Double:

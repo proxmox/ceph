@@ -22,17 +22,18 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/memory"
-	"github.com/apache/arrow/go/v6/parquet"
-	"github.com/apache/arrow/go/v6/parquet/internal/debug"
-	"github.com/apache/arrow/go/v6/parquet/internal/encoding"
-	"github.com/apache/arrow/go/v6/parquet/internal/utils"
-	format "github.com/apache/arrow/go/v6/parquet/internal/gen-go/parquet"
-	"github.com/apache/arrow/go/v6/parquet/schema"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/float16"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/internal/utils"
+	"github.com/apache/arrow/go/v15/parquet"
+	"github.com/apache/arrow/go/v15/parquet/internal/debug"
+	"github.com/apache/arrow/go/v15/parquet/internal/encoding"
+	format "github.com/apache/arrow/go/v15/parquet/internal/gen-go/parquet"
+	"github.com/apache/arrow/go/v15/parquet/schema"
 )
 
-//go:generate go run ../../arrow/_tools/tmpl/main.go -i -data=../internal/encoding/physical_types.tmpldata statistics_types.gen.go.tmpl
+//go:generate go run ../../arrow/_tools/tmpl/main.go -i -data=statistics_types.tmpldata statistics_types.gen.go.tmpl
 
 type StatProvider interface {
 	GetMin() []byte
@@ -169,6 +170,20 @@ type TypedStatistics interface {
 	// Merge the min/max/nullcounts and distinct count from the passed stat object
 	// into this one.
 	Merge(TypedStatistics)
+
+	// UpdateFromArrow updates the statistics from an Arrow Array,
+	// only updating the null and num value counts if updateCounts
+	// is true.
+	UpdateFromArrow(values arrow.Array, updateCounts bool) error
+	// IncNulls increments the number of nulls in the statistics
+	// and marks HasNullCount as true
+	IncNulls(int64)
+	// IncDistinct increments the number of distinct values in
+	// the statistics and marks HasDistinctCount as true
+	IncDistinct(int64)
+	// IncNumValues increments the total number of values in
+	// the statistics
+	IncNumValues(int64)
 }
 
 type statistics struct {
@@ -184,11 +199,14 @@ type statistics struct {
 	encoder encoding.TypedEncoder
 }
 
-func (s *statistics) incNulls(n int64) {
+func (s *statistics) IncNumValues(n int64) {
+	s.nvalues += n
+}
+func (s *statistics) IncNulls(n int64) {
 	s.stats.NullCount += n
 	s.hasNullCount = true
 }
-func (s *statistics) incDistinct(n int64) {
+func (s *statistics) IncDistinct(n int64) {
 	s.stats.DistinctCount += n
 	s.hasDistinctCount = true
 }
@@ -253,7 +271,7 @@ func signedByteLess(a, b []byte) bool {
 	sa := *(*[]int8)(unsafe.Pointer(&a))
 	sb := *(*[]int8)(unsafe.Pointer(&b))
 
-	// we can short circuit for different signd numbers or for equal length byte
+	// we can short circuit for different signed numbers or for equal length byte
 	// arrays that have different first bytes. The equality requirement is necessary
 	// for sign extension cases. 0xFF10 should be equal to 0x10 (due to big endian sign extension)
 	if int8(0x80&uint8(sa[0])) != int8(0x80&uint8(sb[0])) || (len(sa) == len(sb) && sa[0] != sb[0]) {
@@ -323,7 +341,7 @@ func (BooleanStatistics) defaultMin() bool { return true }
 func (BooleanStatistics) defaultMax() bool { return false }
 func (s *Int32Statistics) defaultMin() int32 {
 	if s.order == schema.SortUNSIGNED {
-		val := math.MaxUint32
+		val := uint32(math.MaxUint32)
 		return int32(val)
 	}
 	return math.MaxInt32
@@ -356,6 +374,9 @@ var (
 	defaultMinUInt96 parquet.Int96
 	defaultMaxInt96  parquet.Int96
 	defaultMaxUInt96 parquet.Int96
+
+	defaultMinFloat16 parquet.FixedLenByteArray = float16.MaxNum.ToLEBytes()
+	defaultMaxFloat16 parquet.FixedLenByteArray = float16.MinNum.ToLEBytes()
 )
 
 func init() {
@@ -390,6 +411,14 @@ func (s *Int96Statistics) defaultMax() parquet.Int96 {
 	return defaultMaxInt96
 }
 
+func (Float16Statistics) defaultMin() parquet.FixedLenByteArray {
+	return defaultMinFloat16
+}
+
+func (Float16Statistics) defaultMax() parquet.FixedLenByteArray {
+	return defaultMaxFloat16
+}
+
 func (Float32Statistics) defaultMin() float32                             { return math.MaxFloat32 }
 func (Float32Statistics) defaultMax() float32                             { return -math.MaxFloat32 }
 func (Float64Statistics) defaultMin() float64                             { return math.MaxFloat64 }
@@ -408,6 +437,10 @@ func (Int96Statistics) equal(a, b parquet.Int96) bool         { return bytes.Equ
 func (ByteArrayStatistics) equal(a, b parquet.ByteArray) bool { return bytes.Equal(a, b) }
 func (FixedLenByteArrayStatistics) equal(a, b parquet.FixedLenByteArray) bool {
 	return bytes.Equal(a, b)
+}
+
+func (Float16Statistics) equal(a, b parquet.FixedLenByteArray) bool {
+	return float16.FromLEBytes(a).Equal(float16.FromLEBytes(b))
 }
 
 func (BooleanStatistics) less(a, b bool) bool {
@@ -432,10 +465,10 @@ func (Float64Statistics) less(a, b float64) bool { return a < b }
 func (s *Int96Statistics) less(a, b parquet.Int96) bool {
 	i96a := arrow.Uint32Traits.CastFromBytes(a[:])
 	i96b := arrow.Uint32Traits.CastFromBytes(b[:])
-	
+
 	a0, a1, a2 := utils.ToLEUint32(i96a[0]), utils.ToLEUint32(i96a[1]), utils.ToLEUint32(i96a[2])
 	b0, b1, b2 := utils.ToLEUint32(i96b[0]), utils.ToLEUint32(i96b[1]), utils.ToLEUint32(i96b[2])
-	
+
 	if a2 != b2 {
 		// only the msb bit is by signed comparison
 		if s.order == schema.SortSIGNED {
@@ -462,6 +495,10 @@ func (s *FixedLenByteArrayStatistics) less(a, b parquet.FixedLenByteArray) bool 
 	}
 
 	return signedByteLess([]byte(a), []byte(b))
+}
+
+func (Float16Statistics) less(a, b parquet.FixedLenByteArray) bool {
+	return float16.FromLEBytes(a).Less(float16.FromLEBytes(b))
 }
 
 func (BooleanStatistics) cleanStat(minMax minmaxPairBoolean) *minmaxPairBoolean { return &minMax }
@@ -513,6 +550,29 @@ func (Float64Statistics) cleanStat(minMax minmaxPairFloat64) *minmaxPairFloat64 
 
 	if minMax[1] == zero && math.Signbit(minMax[1]) {
 		minMax[1] = -minMax[1]
+	}
+
+	return &minMax
+}
+
+func (Float16Statistics) cleanStat(minMax minmaxPairFloat16) *minmaxPairFloat16 {
+	min := float16.FromLEBytes(minMax[0][:])
+	max := float16.FromLEBytes(minMax[1][:])
+
+	if min.IsNaN() || max.IsNaN() {
+		return nil
+	}
+
+	if min.Equal(float16.MaxNum) && max.Equal(float16.MinNum) {
+		return nil
+	}
+
+	zero := float16.New(0)
+	if min.Equal(zero) && !min.Signbit() {
+		minMax[0] = min.Negate().ToLEBytes()
+	}
+	if max.Equal(zero) && max.Signbit() {
+		minMax[1] = max.Negate().ToLEBytes()
 	}
 
 	return &minMax

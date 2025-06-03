@@ -26,6 +26,8 @@ RUN dnf install -y \
 RUN ln -s /usr/bin/python3 /usr/local/bin/python && \
     ln -s /usr/bin/pip3 /usr/local/bin/pip
 
+RUN pip install -U pip setuptools wheel
+
 COPY python/requirements-build.txt \
      python/requirements-test.txt \
      /arrow/python/
@@ -34,8 +36,15 @@ RUN pip install \
     -r arrow/python/requirements-build.txt \
     -r arrow/python/requirements-test.txt
 
-ENV ARROW_PYTHON=ON \
+ENV ARROW_ACERO=ON \
     ARROW_BUILD_STATIC=OFF \
     ARROW_BUILD_TESTS=OFF \
     ARROW_BUILD_UTILITIES=OFF \
-    ARROW_USE_GLOG=OFF \
+    ARROW_COMPUTE=ON \
+    ARROW_CSV=ON \
+    ARROW_DATASET=ON \
+    ARROW_FILESYSTEM=ON \
+    ARROW_GDB=ON \
+    ARROW_HDFS=ON \
+    ARROW_JSON=ON \
+    ARROW_USE_GLOG=OFF

@@ -17,14 +17,21 @@
 
 package org.apache.arrow.adapter.jdbc;
 
+import static org.apache.arrow.vector.types.FloatingPointPrecision.DOUBLE;
+import static org.apache.arrow.vector.types.FloatingPointPrecision.SINGLE;
+
 import java.io.IOException;
+import java.math.RoundingMode;
 import java.sql.Date;
+import java.sql.ParameterMetaData;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
@@ -38,11 +45,13 @@ import org.apache.arrow.adapter.jdbc.consumer.BinaryConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.BitConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.CompositeJdbcConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.DateConsumer;
+import org.apache.arrow.adapter.jdbc.consumer.Decimal256Consumer;
 import org.apache.arrow.adapter.jdbc.consumer.DecimalConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.DoubleConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.FloatConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.IntConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.JdbcConsumer;
+import org.apache.arrow.adapter.jdbc.consumer.MapConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.NullConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.SmallIntConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.TimeConsumer;
@@ -50,11 +59,13 @@ import org.apache.arrow.adapter.jdbc.consumer.TimestampConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.TimestampTZConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.TinyIntConsumer;
 import org.apache.arrow.adapter.jdbc.consumer.VarCharConsumer;
+import org.apache.arrow.adapter.jdbc.consumer.exceptions.JdbcConsumerException;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.Decimal256Vector;
 import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.Float4Vector;
@@ -70,6 +81,9 @@ import org.apache.arrow.vector.VarBinaryVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.complex.MapVector;
+import org.apache.arrow.vector.types.DateUnit;
+import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -107,6 +121,105 @@ public class JdbcToArrowUtils {
   }
 
   /**
+   * Create Arrow {@link Schema} object for the given JDBC {@link ResultSetMetaData}.
+   *
+   * @param parameterMetaData The ResultSetMetaData containing the results, to read the JDBC metadata from.
+   * @param calendar          The calendar to use the time zone field of, to construct Timestamp fields from.
+   * @return {@link Schema}
+   * @throws SQLException on error
+   */
+  public static Schema jdbcToArrowSchema(final ParameterMetaData parameterMetaData, final Calendar calendar)
+      throws SQLException {
+    Preconditions.checkNotNull(calendar, "Calendar object can't be null");
+    Preconditions.checkNotNull(parameterMetaData);
+    final List<Field> parameterFields = new ArrayList<>(parameterMetaData.getParameterCount());
+    for (int parameterCounter = 1; parameterCounter <= parameterMetaData.getParameterCount();
+         parameterCounter++) {
+      final int jdbcDataType = parameterMetaData.getParameterType(parameterCounter);
+      final int jdbcIsNullable = parameterMetaData.isNullable(parameterCounter);
+      final boolean arrowIsNullable = jdbcIsNullable != ParameterMetaData.parameterNoNulls;
+      final int precision = parameterMetaData.getPrecision(parameterCounter);
+      final int scale = parameterMetaData.getScale(parameterCounter);
+      final ArrowType arrowType = getArrowTypeFromJdbcType(new JdbcFieldInfo(jdbcDataType, precision, scale), calendar);
+      final FieldType fieldType = new FieldType(arrowIsNullable, arrowType, /*dictionary=*/null);
+      parameterFields.add(new Field(null, fieldType, null));
+    }
+
+    return new Schema(parameterFields);
+  }
+
+  /**
+   * Converts the provided JDBC type to its respective {@link ArrowType} counterpart.
+   *
+   * @param fieldInfo the {@link JdbcFieldInfo} with information about the original JDBC type.
+   * @param calendar  the {@link Calendar} to use for datetime data types.
+   * @return a new {@link ArrowType}.
+   */
+  public static ArrowType getArrowTypeFromJdbcType(final JdbcFieldInfo fieldInfo, final Calendar calendar) {
+    switch (fieldInfo.getJdbcType()) {
+      case Types.BOOLEAN:
+      case Types.BIT:
+        return new ArrowType.Bool();
+      case Types.TINYINT:
+        return new ArrowType.Int(8, true);
+      case Types.SMALLINT:
+        return new ArrowType.Int(16, true);
+      case Types.INTEGER:
+        return new ArrowType.Int(32, true);
+      case Types.BIGINT:
+        return new ArrowType.Int(64, true);
+      case Types.NUMERIC:
+      case Types.DECIMAL:
+        int precision = fieldInfo.getPrecision();
+        int scale = fieldInfo.getScale();
+        if (precision > 38) {
+          return new ArrowType.Decimal(precision, scale, 256);
+        } else {
+          return new ArrowType.Decimal(precision, scale, 128);
+        }
+      case Types.REAL:
+      case Types.FLOAT:
+        return new ArrowType.FloatingPoint(SINGLE);
+      case Types.DOUBLE:
+        return new ArrowType.FloatingPoint(DOUBLE);
+      case Types.CHAR:
+      case Types.NCHAR:
+      case Types.VARCHAR:
+      case Types.NVARCHAR:
+      case Types.LONGVARCHAR:
+      case Types.LONGNVARCHAR:
+      case Types.CLOB:
+        return new ArrowType.Utf8();
+      case Types.DATE:
+        return new ArrowType.Date(DateUnit.DAY);
+      case Types.TIME:
+        return new ArrowType.Time(TimeUnit.MILLISECOND, 32);
+      case Types.TIMESTAMP:
+        final String timezone;
+        if (calendar != null) {
+          timezone = calendar.getTimeZone().getID();
+        } else {
+          timezone = null;
+        }
+        return new ArrowType.Timestamp(TimeUnit.MILLISECOND, timezone);
+      case Types.BINARY:
+      case Types.VARBINARY:
+      case Types.LONGVARBINARY:
+      case Types.BLOB:
+        return new ArrowType.Binary();
+      case Types.ARRAY:
+        return new ArrowType.List();
+      case Types.NULL:
+        return new ArrowType.Null();
+      case Types.STRUCT:
+        return new ArrowType.Struct();
+      default:
+        // no-op, shouldn't get here
+        throw new UnsupportedOperationException("Unmapped JDBC type: " + fieldInfo.getJdbcType());
+    }
+  }
+
+  /**
    * Create Arrow {@link Schema} object for the given JDBC {@link java.sql.ResultSetMetaData}.
    *
    * <p>
@@ -141,22 +254,32 @@ public class JdbcToArrowUtils {
     for (int i = 1; i <= columnCount; i++) {
       final String columnName = rsmd.getColumnLabel(i);
 
+      final Map<String, String> columnMetadata = config.getColumnMetadataByColumnIndex() != null ?
+              config.getColumnMetadataByColumnIndex().get(i) : null;
       final Map<String, String> metadata;
       if (config.shouldIncludeMetadata()) {
         metadata = new HashMap<>();
         metadata.put(Constants.SQL_CATALOG_NAME_KEY, rsmd.getCatalogName(i));
+        metadata.put(Constants.SQL_SCHEMA_NAME_KEY, rsmd.getSchemaName(i));
         metadata.put(Constants.SQL_TABLE_NAME_KEY, rsmd.getTableName(i));
         metadata.put(Constants.SQL_COLUMN_NAME_KEY, columnName);
         metadata.put(Constants.SQL_TYPE_KEY, rsmd.getColumnTypeName(i));
-
+        if (columnMetadata != null && !columnMetadata.isEmpty()) {
+          metadata.putAll(columnMetadata);
+        }
       } else {
-        metadata = null;
+        if (columnMetadata != null && !columnMetadata.isEmpty()) {
+          metadata = columnMetadata;
+        } else {
+          metadata = null;
+        }
       }
 
-      final ArrowType arrowType = config.getJdbcToArrowTypeConverter().apply(new JdbcFieldInfo(rsmd, i));
+      final JdbcFieldInfo columnFieldInfo = getJdbcFieldInfoForColumn(rsmd, i, config);
+      final ArrowType arrowType = config.getJdbcToArrowTypeConverter().apply(columnFieldInfo);
       if (arrowType != null) {
         final FieldType fieldType = new FieldType(
-                isColumnNullable(rsmd, i), arrowType, /* dictionary encoding */ null, metadata);
+                isColumnNullable(rsmd, i, columnFieldInfo), arrowType, /* dictionary encoding */ null, metadata);
 
         List<Field> children = null;
         if (arrowType.getTypeID() == ArrowType.List.TYPE_TYPE) {
@@ -167,13 +290,44 @@ public class JdbcToArrowUtils {
           children = new ArrayList<Field>();
           final ArrowType childType = config.getJdbcToArrowTypeConverter().apply(arrayFieldInfo);
           children.add(new Field("child", FieldType.nullable(childType), null));
+        } else if (arrowType.getTypeID() == ArrowType.ArrowTypeID.Map) {
+          FieldType mapType = new FieldType(false, ArrowType.Struct.INSTANCE, null, null);
+          FieldType keyType = new FieldType(false, new ArrowType.Utf8(), null, null);
+          FieldType valueType = new FieldType(false, new ArrowType.Utf8(), null, null);
+          children = new ArrayList<>();
+          children.add(new Field("child", mapType,
+                  Arrays.asList(new Field(MapVector.KEY_NAME, keyType, null),
+                          new Field(MapVector.VALUE_NAME, valueType, null))));
         }
 
         fields.add(new Field(columnName, fieldType, children));
       }
     }
+    return new Schema(fields, config.getSchemaMetadata());
+  }
 
-    return new Schema(fields, null);
+  static JdbcFieldInfo getJdbcFieldInfoForColumn(
+      ResultSetMetaData rsmd,
+      int arrayColumn,
+      JdbcToArrowConfig config)
+          throws SQLException {
+    Preconditions.checkNotNull(rsmd, "ResultSet MetaData object cannot be null");
+    Preconditions.checkNotNull(config, "Configuration must not be null");
+    Preconditions.checkArgument(
+            arrayColumn > 0,
+            "ResultSetMetaData columns start with 1; column cannot be less than 1");
+    Preconditions.checkArgument(
+            arrayColumn <= rsmd.getColumnCount(),
+            "Column number cannot be more than the number of columns");
+
+    JdbcFieldInfo fieldInfo = config.getExplicitTypeByColumnIndex(arrayColumn);
+    if (fieldInfo == null) {
+      fieldInfo = config.getExplicitTypeByColumnName(rsmd.getColumnLabel(arrayColumn));
+    }
+    if (fieldInfo != null) {
+      return fieldInfo;
+    }
+    return new JdbcFieldInfo(rsmd, arrayColumn);
   }
 
   /* Uses the configuration to determine what the array sub-type JdbcFieldInfo is.
@@ -219,12 +373,14 @@ public class JdbcToArrowUtils {
     jdbcToArrowVectors(rs, root, new JdbcToArrowConfig(new RootAllocator(0), calendar));
   }
 
-  static boolean isColumnNullable(ResultSet resultSet, int index) throws SQLException {
-    return isColumnNullable(resultSet.getMetaData(), index);
-  }
-
-  static boolean isColumnNullable(ResultSetMetaData resultSetMetadata, int index) throws SQLException {
-    int nullableValue = resultSetMetadata.isNullable(index);
+  static boolean isColumnNullable(ResultSetMetaData resultSetMetadata, int index, JdbcFieldInfo info)
+      throws SQLException {
+    int nullableValue;
+    if (info != null && info.isNullable() != ResultSetMetaData.columnNullableUnknown) {
+      nullableValue = info.isNullable();
+    } else {
+      nullableValue = resultSetMetadata.isNullable(index);
+    }
     return nullableValue == ResultSetMetaData.columnNullable ||
         nullableValue == ResultSetMetaData.columnNullableUnknown;
   }
@@ -237,6 +393,7 @@ public class JdbcToArrowUtils {
    * @param root   Arrow {@link VectorSchemaRoot} object to populate
    * @param config The configuration to use when reading the data.
    * @throws SQLException on error
+   * @throws JdbcConsumerException on error from VectorConsumer
    */
   public static void jdbcToArrowVectors(ResultSet rs, VectorSchemaRoot root, JdbcToArrowConfig config)
       throws SQLException, IOException {
@@ -247,7 +404,9 @@ public class JdbcToArrowUtils {
     JdbcConsumer[] consumers = new JdbcConsumer[columnCount];
     for (int i = 1; i <= columnCount; i++) {
       FieldVector vector = root.getVector(rsmd.getColumnLabel(i));
-      consumers[i - 1] = getConsumer(vector.getField().getType(), i, isColumnNullable(rs, i), vector, config);
+      final JdbcFieldInfo columnFieldInfo = getJdbcFieldInfoForColumn(rsmd, i, config);
+      consumers[i - 1] = getConsumer(
+          vector.getField().getType(), i, isColumnNullable(rsmd, i, columnFieldInfo), vector, config);
     }
 
     CompositeJdbcConsumer compositeConsumer = null;
@@ -263,7 +422,7 @@ public class JdbcToArrowUtils {
           readRowCount++;
         }
       } else {
-        while (rs.next() && readRowCount < config.getTargetBatchSize()) {
+        while (readRowCount < config.getTargetBatchSize() && rs.next()) {
           compositeConsumer.consume(rs);
           readRowCount++;
         }
@@ -279,7 +438,18 @@ public class JdbcToArrowUtils {
     }
   }
 
-  static JdbcConsumer getConsumer(ArrowType arrowType, int columnIndex, boolean nullable,
+  /**
+   * Default function used for JdbcConsumerFactory. This function gets a JdbcConsumer for the
+   * given column based on the Arrow type and provided vector.
+   *
+   * @param arrowType   Arrow type for the column.
+   * @param columnIndex Column index to fetch from the ResultSet
+   * @param nullable    Whether the value is nullable or not
+   * @param vector      Vector to store the consumed value
+   * @param config      Associated JdbcToArrowConfig, used mainly for the Calendar.
+   * @return {@link JdbcConsumer}
+   */
+  public static JdbcConsumer getConsumer(ArrowType arrowType, int columnIndex, boolean nullable,
       FieldVector vector, JdbcToArrowConfig config) {
     final Calendar calendar = config.getCalendar();
 
@@ -300,7 +470,13 @@ public class JdbcToArrowUtils {
             return null;
         }
       case Decimal:
-        return DecimalConsumer.createConsumer((DecimalVector) vector, columnIndex, nullable);
+        final RoundingMode bigDecimalRoundingMode = config.getBigDecimalRoundingMode();
+        if (((ArrowType.Decimal) arrowType).getBitWidth() == 256) {
+          return Decimal256Consumer.createConsumer((Decimal256Vector) vector, columnIndex, nullable,
+                  bigDecimalRoundingMode);
+        } else {
+          return DecimalConsumer.createConsumer((DecimalVector) vector, columnIndex, nullable, bigDecimalRoundingMode);
+        }
       case FloatingPoint:
         switch (((ArrowType.FloatingPoint) arrowType).getPrecision()) {
           case SINGLE:
@@ -331,11 +507,13 @@ public class JdbcToArrowUtils {
         JdbcConsumer delegate = getConsumer(childVector.getField().getType(), JDBC_ARRAY_VALUE_COLUMN,
             childVector.getField().isNullable(), childVector, config);
         return ArrayConsumer.createConsumer((ListVector) vector, delegate, columnIndex, nullable);
+      case Map:
+        return MapConsumer.createConsumer((MapVector) vector, columnIndex, nullable);
       case Null:
         return new NullConsumer((NullVector) vector);
       default:
         // no-op, shouldn't get here
-        throw new UnsupportedOperationException();
+        throw new UnsupportedOperationException("No consumer for Arrow type: " + arrowType);
     }
   }
 }

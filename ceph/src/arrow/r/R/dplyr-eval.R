@@ -25,7 +25,7 @@ arrow_eval <- function(expr, mask) {
   tryCatch(eval_tidy(expr, mask), error = function(e) {
     # Look for the cases where bad input was given, i.e. this would fail
     # in regular dplyr anyway, and let those raise those as errors;
-    # else, for things not supported by Arrow return a "try-error",
+    # else, for things not supported in Arrow return a "try-error",
     # which we'll handle differently
     msg <- conditionMessage(e)
     if (getOption("arrow.debug", FALSE)) print(msg)
@@ -40,7 +40,7 @@ arrow_eval <- function(expr, mask) {
     }
 
     out <- structure(msg, class = "try-error", condition = e)
-    if (grepl("not supported.*Arrow", msg) || getOption("arrow.debug", FALSE)) {
+    if (grepl("not supported.*Arrow|NotImplemented", msg) || getOption("arrow.debug", FALSE)) {
       # One of ours. Mark it so that consumers can handle it differently
       class(out) <- c("arrow-try-error", class(out))
     }
@@ -72,7 +72,7 @@ i18ize_error_messages <- function() {
 # Helper to raise a common error
 arrow_not_supported <- function(msg) {
   # TODO: raise a classed error?
-  stop(paste(msg, "not supported by Arrow"), call. = FALSE)
+  stop(paste(msg, "not supported in Arrow"), call. = FALSE)
 }
 
 # Create a data mask for evaluating a dplyr expression
@@ -95,8 +95,9 @@ arrow_mask <- function(.data, aggregation = FALSE) {
     }
   }
 
+  schema <- .data$.data$schema
   # Assign the schema to the expressions
-  map(.data$selected_columns, ~ (.$schema <- .data$.data$schema))
+  walk(.data$selected_columns, ~ (.$schema <- schema))
 
   # Add the column references and make the mask
   out <- new_data_mask(

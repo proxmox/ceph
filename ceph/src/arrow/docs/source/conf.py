@@ -36,15 +36,66 @@ import os
 import sys
 import warnings
 from unittest import mock
-
-import pyarrow
-
+from docutils.parsers.rst import Directive, directives
 
 sys.path.extend([
     os.path.join(os.path.dirname(__file__),
                  '..', '../..')
 
 ])
+
+# -- Customization --------------------------------------------------------
+
+try:
+    import pyarrow
+    exclude_patterns = []
+    pyarrow_version =  pyarrow.__version__
+
+    # Conditional API doc generation
+
+    # Sphinx has two features for conditional inclusion:
+    # - The "only" directive
+    #   https://www.sphinx-doc.org/en/master/usage/restructuredtext/directives.html#including-content-based-on-tags
+    # - The "ifconfig" extension
+    #   https://www.sphinx-doc.org/en/master/usage/extensions/ifconfig.html
+    #
+    # Both have issues, but "ifconfig" seems to work in this setting.
+
+    try:
+        import pyarrow.cuda
+        cuda_enabled = True
+    except ImportError:
+        cuda_enabled = False
+        # Mock pyarrow.cuda to avoid autodoc warnings.
+        # XXX I can't get autodoc_mock_imports to work, so mock manually instead
+        # (https://github.com/sphinx-doc/sphinx/issues/2174#issuecomment-453177550)
+        pyarrow.cuda = sys.modules['pyarrow.cuda'] = mock.Mock()
+
+    try:
+        import pyarrow.flight
+        flight_enabled = True
+    except ImportError:
+        flight_enabled = False
+        pyarrow.flight = sys.modules['pyarrow.flight'] = mock.Mock()
+
+    try:
+        import pyarrow.orc
+        orc_enabled = True
+    except ImportError:
+        orc_enabled = False
+        pyarrow.orc = sys.modules['pyarrow.orc'] = mock.Mock()
+
+    try:
+        import pyarrow.parquet.encryption
+        parquet_encryption_enabled = True
+    except ImportError:
+        parquet_encryption_enabled = False
+        pyarrow.parquet.encryption = sys.modules['pyarrow.parquet.encryption'] = mock.Mock()
+except (ImportError, LookupError):
+    exclude_patterns = ['python']
+    pyarrow_version =  ""
+    cuda_enabled = False
+    flight_enabled = False
 
 # Suppresses all warnings printed when sphinx is traversing the code (e.g.
 # deprecation warnings)
@@ -60,21 +111,25 @@ warnings.filterwarnings("ignore", category=FutureWarning, message=".*pyarrow.*")
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'breathe',
+    'IPython.sphinxext.ipython_console_highlighting',
+    'IPython.sphinxext.ipython_directive',
+    'numpydoc',
+    'sphinx_design',
+    'sphinx_copybutton',
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
     'sphinx.ext.doctest',
     'sphinx.ext.ifconfig',
+    'sphinx.ext.intersphinx',
     'sphinx.ext.mathjax',
     'sphinx.ext.viewcode',
-    'sphinx.ext.napoleon',
-    'IPython.sphinxext.ipython_directive',
-    'IPython.sphinxext.ipython_console_highlighting',
-    'breathe'
 ]
 
 # Show members for classes in .. autosummary
 autodoc_default_options = {
     'members': None,
+    'special-members': '__dataframe__',
     'undoc-members': None,
     'show-inheritance': None,
     'inherited-members': None
@@ -84,14 +139,47 @@ autodoc_default_options = {
 breathe_projects = {"arrow_cpp": "../../cpp/apidoc/xml"}
 breathe_default_project = "arrow_cpp"
 
-# Overriden conditionally below
+# Overridden conditionally below
 autodoc_mock_imports = []
+
+# copybutton configuration
+copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: "
+copybutton_prompt_is_regexp = True
+copybutton_line_continuation_character = "\\"
 
 # ipython directive options
 ipython_mplbackend = ''
 
 # numpydoc configuration
-napoleon_use_rtype = False
+numpydoc_xref_param_type = True
+numpydoc_show_class_members = False
+numpydoc_xref_ignore = {
+    "or", "and", "of", "if", "default", "optional", "object",
+    "dicts", "rows", "Python", "source", "filesystem",
+    "dataset", "datasets",
+    # TODO those one could be linked to a glossary or python docs?
+    "file", "path", "paths", "mapping", "Mapping", "URI", "function",
+    "iterator", "Iterator",
+    # TODO this term is used regularly, but isn't actually exposed (base class)
+    "RecordBatchReader",
+    # additional ignores that could be fixed by rewriting the docstrings
+    "other", "supporting", "buffer", "protocol",  # from Codec / pa.compress
+    "depends", "on", "inputs",  # pyarrow.compute
+    "values", "coercible", "to", "arrays",  # pa.chunked_array, Table methods
+    "depending",  # to_pandas
+}
+numpydoc_xref_aliases = {
+    "array-like": ":func:`array-like <pyarrow.array>`",
+    "Array": "pyarrow.Array",
+    "Schema": "pyarrow.Schema",
+    "RecordBatch": "pyarrow.RecordBatch",
+    "Table": "pyarrow.Table",
+    "MemoryPool": "pyarrow.MemoryPool",
+    "NativeFile": "pyarrow.NativeFile",
+    "FileSystem": "pyarrow.fs.FileSystem",
+    "FileType": "pyarrow.fs.FileType",
+}
+
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -121,11 +209,10 @@ author = u'Apache Software Foundation'
 # built documents.
 #
 # The short X.Y version.
-version = os.environ.get('ARROW_DOCS_VERSION',
-                         pyarrow.__version__)
+version = os.environ.get('ARROW_DOCS_VERSION', pyarrow_version)
+
 # The full version, including alpha/beta/rc tags.
-release = os.environ.get('ARROW_DOCS_VERSION',
-                         pyarrow.__version__)
+release = os.environ.get('ARROW_DOCS_VERSION', pyarrow_version)
 
 if "+" in release:
     release = release.split(".dev")[0] + " (dev)"
@@ -135,7 +222,7 @@ if "+" in release:
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = "en"
 
 # There are two options for replacing |today|: either, you set today to some
 # non-false value, then it is used:
@@ -149,7 +236,7 @@ language = None
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This patterns also effect to html_static_path and html_extra_path
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+exclude_patterns = exclude_patterns + ['_build', 'Thumbs.db', '.DS_Store']
 
 # The reST default role (used for this markup: `text`) to use for all
 # documents.
@@ -182,6 +269,12 @@ pygments_style = 'sphinx'
 # If true, `todo` and `todoList` produce output, else they produce nothing.
 todo_include_todos = False
 
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3', None),
+    'numpy': ('https://numpy.org/doc/stable/', None),
+    'pandas': ('https://pandas.pydata.org/docs/', None)
+}
+
 
 # -- Options for HTML output ----------------------------------------------
 
@@ -194,16 +287,49 @@ html_theme = 'pydata_sphinx_theme'
 # further.  For a list of options available for each theme, see the
 # documentation.
 #
+
+switcher_version = version
+if ".dev" in version:
+    switcher_version = "dev/"
+else:
+    # If we are not building dev version of the docs, we are building
+    # docs for the stable version
+    switcher_version = ""
+
 html_theme_options = {
     "show_toc_level": 2,
-    "google_analytics_id": "UA-107500873-1",
+    "use_edit_page_button": True,
+    "logo": {
+      "image_light": "_static/arrow.png",
+      "image_dark": "_static/arrow-dark.png",
+    },
+    "header_links_before_dropdown": 2,
+    "header_dropdown_text": "Implementations",
+    "navbar_end": ["version-switcher", "theme-switcher", "navbar-icon-links"],
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/apache/arrow",
+            "icon": "fa-brands fa-square-github",
+        },
+        {
+            "name": "Twitter",
+            "url": "https://twitter.com/ApacheArrow",
+            "icon": "fa-brands fa-square-twitter",
+        },
+    ],
+    "show_version_warning_banner": True,
+    "switcher": {
+        "json_url": "/docs/_static/versions.json",
+        "version_match": switcher_version,
+    },
 }
 
 html_context = {
-    "switcher_json_url": "/docs/_static/versions.json",
-    "switcher_template_url": "https://arrow.apache.org/docs/{version}",
-    # for local testing
-    # "switcher_template_url": "http://0.0.0.0:8000/docs/{version}",
+    "github_user": "apache",
+    "github_repo": "arrow",
+    "github_version": "main",
+    "doc_path": "docs/source",
 }
 
 # Add any paths that contain custom themes here, relative to this directory.
@@ -221,7 +347,7 @@ html_title = u'Apache Arrow v{}'.format(version)
 # The name of an image file (relative to this directory) to place at the top
 # of the sidebar.
 #
-html_logo = "_static/arrow.png"
+# html_logo = "_static/arrow.png"
 
 # The name of an image file (relative to this directory) to use as a favicon of
 # the docs.  This file should be a Windows icon file (.ico) being 16x16 or
@@ -256,10 +382,9 @@ html_css_files = ['theme_overrides.css']
 
 # Custom sidebar templates, maps document names to template names.
 #
-html_sidebars = {
+# html_sidebars = {
 #    '**': ['sidebar-logo.html', 'sidebar-search-bs.html', 'sidebar-nav-bs.html'],
-    '**': ['docs-sidebar.html'],
-}
+# }
 
 # The base URL which points to the root of the HTML documentation,
 # used for canonical url
@@ -427,38 +552,54 @@ texinfo_documents = [
 # texinfo_no_detailmenu = False
 
 
-# -- Customization --------------------------------------------------------
-
-# Conditional API doc generation
-
-# Sphinx has two features for conditional inclusion:
-# - The "only" directive
-#   https://www.sphinx-doc.org/en/master/usage/restructuredtext/directives.html#including-content-based-on-tags
-# - The "ifconfig" extension
-#   https://www.sphinx-doc.org/en/master/usage/extensions/ifconfig.html
-#
-# Both have issues, but "ifconfig" seems to work in this setting.
-
-try:
-    import pyarrow.cuda
-    cuda_enabled = True
-except ImportError:
-    cuda_enabled = False
-    # Mock pyarrow.cuda to avoid autodoc warnings.
-    # XXX I can't get autodoc_mock_imports to work, so mock manually instead
-    # (https://github.com/sphinx-doc/sphinx/issues/2174#issuecomment-453177550)
-    pyarrow.cuda = sys.modules['pyarrow.cuda'] = mock.Mock()
-
-try:
-    import pyarrow.flight
-    flight_enabled = True
-except ImportError:
-    flight_enabled = False
-    pyarrow.flight = sys.modules['pyarrow.flight'] = mock.Mock()
-
-
 def setup(app):
     # Use a config value to indicate whether CUDA API docs can be generated.
     # This will also rebuild appropriately when the value changes.
     app.add_config_value('cuda_enabled', cuda_enabled, 'env')
     app.add_config_value('flight_enabled', flight_enabled, 'env')
+    app.add_directive('arrow-computefuncs', ComputeFunctionsTableDirective)
+
+
+class ComputeFunctionsTableDirective(Directive):
+    """Generate a table of Arrow compute functions.
+
+    .. arrow-computefuncs::
+        :kind: hash_aggregate
+
+    The generated table will include function name,
+    description and option class reference.
+
+    The functions listed in the table can be restricted
+    with the :kind: option.
+    """
+    has_content = True
+    option_spec = {
+        "kind": directives.unchanged
+    }
+
+    def run(self):
+        from docutils.statemachine import ViewList
+        from docutils import nodes
+        import pyarrow.compute as pc
+
+        result = ViewList()
+        function_kind = self.options.get('kind', None)
+
+        result.append(".. csv-table::", "<computefuncs>")
+        result.append("   :widths: 20, 60, 20", "<computefuncs>")
+        result.append("   ", "<computefuncs>")
+        for fname in pc.list_functions():
+            func = pc.get_function(fname)
+            option_class = ""
+            if func._doc.options_class:
+                option_class = f":class:`{func._doc.options_class}`"
+            if not function_kind or func.kind == function_kind:
+                result.append(
+                    f'   "{fname}", "{func._doc.summary}", "{option_class}"',
+                    "<computefuncs>"
+                )
+
+        node = nodes.section()
+        node.document = self.state.document
+        self.state.nested_parse(result, 0, node)
+        return node.children

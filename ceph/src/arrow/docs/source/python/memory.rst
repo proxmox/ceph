@@ -102,7 +102,7 @@ Let's allocate a resizable :class:`Buffer` from the default pool:
    pa.total_allocated_bytes()
 
 The default allocator requests memory in a minimum increment of 64 bytes. If
-the buffer is garbaged-collected, all of the memory is freed:
+the buffer is garbage-collected, all of the memory is freed:
 
 .. ipython:: python
 
@@ -121,7 +121,7 @@ name for a memory pool::
    :ref:`API documentation for memory pools <api.memory_pool>`.
 
 .. seealso::
-   On-GPU buffers using Arrow's optional :doc:`CUDA integration <cuda>`.
+   On-GPU buffers using Arrow's optional :doc:`CUDA integration <integration/cuda>`.
 
 
 Input and Output

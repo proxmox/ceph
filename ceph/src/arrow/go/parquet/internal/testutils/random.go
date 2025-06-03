@@ -19,15 +19,19 @@
 package testutils
 
 import (
+	"encoding/binary"
 	"math"
 	"time"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/array"
-	"github.com/apache/arrow/go/v6/arrow/bitutil"
-	"github.com/apache/arrow/go/v6/arrow/memory"
-	"github.com/apache/arrow/go/v6/parquet"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/array"
+	"github.com/apache/arrow/go/v15/arrow/bitutil"
+	"github.com/apache/arrow/go/v15/arrow/endian"
+	"github.com/apache/arrow/go/v15/arrow/float16"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/parquet"
+	"github.com/apache/arrow/go/v15/parquet/pqarrow"
 
 	"golang.org/x/exp/rand"
 	"gonum.org/v1/gonum/stat/distuv"
@@ -56,7 +60,7 @@ func (r *RandomArrayGenerator) GenerateBitmap(buffer []byte, n int64, prob float
 	count := int64(0)
 	r.extra++
 
-	// bernoulli distribution uses P to determine the probabitiliy of a 0 or a 1,
+	// bernoulli distribution uses P to determine the probability of a 0 or a 1,
 	// which we'll use to generate the bitmap.
 	dist := distuv.Bernoulli{P: prob, Src: rand.NewSource(r.seed + r.extra)}
 	for i := 0; int64(i) < n; i++ {
@@ -75,7 +79,7 @@ func (r *RandomArrayGenerator) GenerateBitmap(buffer []byte, n int64, prob float
 // with nullProb being the probability of a given index being null.
 //
 // For this generation we only generate ascii values with a min of 'A' and max of 'z'.
-func (r *RandomArrayGenerator) ByteArray(size int64, minLen, maxLen int32, nullProb float64) array.Interface {
+func (r *RandomArrayGenerator) ByteArray(size int64, minLen, maxLen int32, nullProb float64) arrow.Array {
 	if nullProb < 0 || nullProb > 1 {
 		panic("null prob must be between 0 and 1")
 	}
@@ -108,7 +112,7 @@ func (r *RandomArrayGenerator) ByteArray(size int64, minLen, maxLen int32, nullP
 
 // Uint8 generates a random array.Uint8 of the requested size whose values are between min and max
 // with prob as the probability that a given index will be null.
-func (r *RandomArrayGenerator) Uint8(size int64, min, max uint8, prob float64) array.Interface {
+func (r *RandomArrayGenerator) Uint8(size int64, min, max uint8, prob float64) arrow.Array {
 	buffers := make([]*memory.Buffer, 2)
 	nullCount := int64(0)
 
@@ -151,6 +155,28 @@ func (r *RandomArrayGenerator) Int32(size int64, min, max int32, pctNull float64
 	return array.NewInt32Data(array.NewData(arrow.PrimitiveTypes.Int32, int(size), buffers, nil, int(nullCount), 0))
 }
 
+// Int64 generates a random array.Int64 of the given size with each value between min and max,
+// and pctNull as the probability that a given index will be null.
+func (r *RandomArrayGenerator) Int64(size int64, min, max int64, pctNull float64) *array.Int64 {
+	buffers := make([]*memory.Buffer, 2)
+	nullCount := int64(0)
+
+	buffers[0] = memory.NewResizableBuffer(memory.DefaultAllocator)
+	buffers[0].Resize(int(bitutil.BytesForBits(size)))
+	nullCount = r.GenerateBitmap(buffers[0].Bytes(), size, 1-pctNull)
+
+	buffers[1] = memory.NewResizableBuffer(memory.DefaultAllocator)
+	buffers[1].Resize(arrow.Int64Traits.BytesRequired(int(size)))
+
+	r.extra++
+	dist := rand.New(rand.NewSource(r.seed + r.extra))
+	out := arrow.Int64Traits.CastFromBytes(buffers[1].Bytes())
+	for i := int64(0); i < size; i++ {
+		out[i] = dist.Int63n(max-min+1) + min
+	}
+	return array.NewInt64Data(array.NewData(arrow.PrimitiveTypes.Int64, int(size), buffers, nil, int(nullCount), 0))
+}
+
 // Float64 generates a random array.Float64 of the requested size with pctNull as the probability
 // that a given index will be null.
 func (r *RandomArrayGenerator) Float64(size int64, pctNull float64) *array.Float64 {
@@ -171,6 +197,35 @@ func (r *RandomArrayGenerator) Float64(size int64, pctNull float64) *array.Float
 		out[i] = dist.NormFloat64()
 	}
 	return array.NewFloat64Data(array.NewData(arrow.PrimitiveTypes.Float64, int(size), buffers, nil, int(nullCount), 0))
+}
+
+func (r *RandomArrayGenerator) StringWithRepeats(mem memory.Allocator, sz, unique int64, minLen, maxLen int32, nullProb float64) *array.String {
+	if unique > sz {
+		panic("invalid config for random StringWithRepeats")
+	}
+
+	// generate a random string dictionary without any nulls
+	arr := r.ByteArray(unique, minLen, maxLen, 0)
+	defer arr.Release()
+	dict := arr.(*array.String)
+
+	// generate random indices to sample dictionary with
+	idArray := r.Int64(sz, 0, unique-1, nullProb)
+	defer idArray.Release()
+
+	bldr := array.NewStringBuilder(mem)
+	defer bldr.Release()
+
+	for i := int64(0); i < sz; i++ {
+		if idArray.IsValid(int(i)) {
+			idx := idArray.Value(int(i))
+			bldr.Append(dict.Value(int(idx)))
+		} else {
+			bldr.AppendNull()
+		}
+	}
+
+	return bldr.NewStringArray()
 }
 
 // FillRandomInt8 populates the slice out with random int8 values between min and max using
@@ -315,6 +370,17 @@ func randFloat64(r *rand.Rand) float64 {
 	}
 }
 
+// randFloat16 creates a random float value with a normal distribution
+// to better spread the values out and ensure we do not return any NaN or Inf values.
+func randFloat16(r *rand.Rand) float16.Num {
+	for {
+		f := float16.FromBits(uint16(r.Uint64n(math.MaxUint16 + 1)))
+		if !f.IsNaN() {
+			return f
+		}
+	}
+}
+
 // FillRandomFloat32 populates out with random float32 values using seed as the random
 // seed for the generator to allow consistency for testing.
 func FillRandomFloat32(seed uint64, out []float32) {
@@ -330,6 +396,15 @@ func FillRandomFloat64(seed uint64, out []float64) {
 	r := rand.New(rand.NewSource(seed))
 	for idx := range out {
 		out[idx] = randFloat64(r)
+	}
+}
+
+// FillRandomFloat16 populates out with random float64 values using seed as the random
+// seed for the generator to allow consistency for testing.
+func FillRandomFloat16(seed uint64, out []float16.Num) {
+	r := rand.New(rand.NewSource(seed))
+	for idx := range out {
+		out[idx] = randFloat16(r)
 	}
 }
 
@@ -384,15 +459,16 @@ func fillRandomIsValid(seed uint64, pctNull float64, out []bool) {
 // If the type is parquet.ByteArray or parquet.FixedLenByteArray, heap must not be null.
 //
 // The default values are:
-//  []bool uses the current time as the seed with only values of 1 being false, for use
-//   of creating validity boolean slices.
-//  all other types use 0 as the seed
-//  a []parquet.ByteArray is populated with lengths between 2 and 12
-//  a []parquet.FixedLenByteArray is populated with fixed size random byte arrays of length 12.
+//
+//	[]bool uses the current time as the seed with only values of 1 being false, for use
+//	 of creating validity boolean slices.
+//	all other types use 0 as the seed
+//	a []parquet.ByteArray is populated with lengths between 2 and 12
+//	a []parquet.FixedLenByteArray is populated with fixed size random byte arrays of length 12.
 func InitValues(values interface{}, heap *memory.Buffer) {
 	switch arr := values.(type) {
 	case []bool:
-		fillRandomIsValid(uint64(time.Now().Unix()), 1.0, arr)
+		fillRandomIsValid(uint64(time.Now().Unix()), 0.5, arr)
 	case []int32:
 		FillRandomInt32(0, arr)
 	case []int64:
@@ -401,6 +477,8 @@ func InitValues(values interface{}, heap *memory.Buffer) {
 		FillRandomFloat32(0, arr)
 	case []float64:
 		FillRandomFloat64(0, arr)
+	case []float16.Num:
+		FillRandomFloat16(0, arr)
 	case []parquet.Int96:
 		FillRandomInt96(0, arr)
 	case []parquet.ByteArray:
@@ -427,26 +505,34 @@ func RandomByteArray(seed uint64, out []parquet.ByteArray, heap *memory.Buffer, 
 	}
 }
 
-// // RandomDecimals generates n random decimal values with precision determining the byte width
-// // for the values and seed as the random generator seed to allow consistency for testing. The
-// // resulting values will be either 32 bytes or 16 bytes each depending on the precision.
-// func RandomDecimals(n int64, seed uint64, precision int32) []byte {
-// 	r := rand.New(rand.NewSource(seed))
-// 	nreqBytes := pqarrow.DecimalSize(precision)
-// 	byteWidth := 32
-// 	if precision <= 38 {
-// 		byteWidth = 16
-// 	}
+// RandomDecimals generates n random decimal values with precision determining the byte width
+// for the values and seed as the random generator seed to allow consistency for testing. The
+// resulting values will be either 32 bytes or 16 bytes each depending on the precision.
+func RandomDecimals(n int64, seed uint64, precision int32) []byte {
+	r := rand.New(rand.NewSource(seed))
+	nreqBytes := pqarrow.DecimalSize(precision)
+	byteWidth := 32
+	if precision <= 38 {
+		byteWidth = 16
+	}
 
-// 	out := make([]byte, int(int64(byteWidth)*n))
-// 	for i := int64(0); i < n; i++ {
-// 		start := int(i) * byteWidth
-// 		r.Read(out[start : start+int(nreqBytes)])
-// 		// sign extend if the sign bit is set for the last generated byte
-// 		// 0b10000000 == 0x80 == 128
-// 		if out[start+int(nreqBytes)-1]&byte(0x80) != 0 {
-// 			memory.Set(out[start+int(nreqBytes):start+byteWidth], 0xFF)
-// 		}
-// 	}
-// 	return out
-// }
+	out := make([]byte, int(int64(byteWidth)*n))
+	for i := int64(0); i < n; i++ {
+		start := int(i) * byteWidth
+		r.Read(out[start : start+int(nreqBytes)])
+		// sign extend if the sign bit is set for the last generated byte
+		// 0b10000000 == 0x80 == 128
+		if out[start+int(nreqBytes)-1]&byte(0x80) != 0 {
+			memory.Set(out[start+int(nreqBytes):start+byteWidth], 0xFF)
+		}
+
+		// byte swap for big endian
+		if endian.IsBigEndian {
+			for j := 0; j+8 <= byteWidth; j += 8 {
+				v := binary.LittleEndian.Uint64(out[start+j : start+j+8])
+				binary.BigEndian.PutUint64(out[start+j:start+j+8], v)
+			}
+		}
+	}
+	return out
+}

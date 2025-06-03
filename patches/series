@@ -17,3 +17,6 @@
 0020-mgr-set-argv-for-python-in-PyModuleRegistry.patch
 0021-mgr-add-site-package-paths-in-PyModuleRegistry.patch
 0022-d-rules-disable-jaeger-telemetry.patch
+0023-fix-build-for-Apache-Arrow-15.0.0.-on-Debian.patch
+0024-Update-RGW-Arrow-Flight-code-to-adjust-to-API-change.patch
+0025-s3select-fix-compilation-with-Arrow-15.patch

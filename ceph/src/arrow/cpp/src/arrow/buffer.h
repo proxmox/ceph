@@ -20,7 +20,9 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -28,7 +30,7 @@
 #include "arrow/status.h"
 #include "arrow/type_fwd.h"
 #include "arrow/util/macros.h"
-#include "arrow/util/string_view.h"
+#include "arrow/util/span.h"
 #include "arrow/util/visibility.h"
 
 namespace arrow {
@@ -49,6 +51,8 @@ namespace arrow {
 /// The following invariant is always true: Size <= Capacity
 class ARROW_EXPORT Buffer {
  public:
+  ARROW_DISALLOW_COPY_AND_ASSIGN(Buffer);
+
   /// \brief Construct from buffer and size without copying memory
   ///
   /// \param[in] data a memory buffer
@@ -56,14 +60,31 @@ class ARROW_EXPORT Buffer {
   ///
   /// \note The passed memory must be kept alive through some other means
   Buffer(const uint8_t* data, int64_t size)
-      : is_mutable_(false), is_cpu_(true), data_(data), size_(size), capacity_(size) {
+      : is_mutable_(false),
+        is_cpu_(true),
+        data_(data),
+        size_(size),
+        capacity_(size),
+        device_type_(DeviceAllocationType::kCPU) {
     SetMemoryManager(default_cpu_memory_manager());
   }
 
   Buffer(const uint8_t* data, int64_t size, std::shared_ptr<MemoryManager> mm,
-         std::shared_ptr<Buffer> parent = NULLPTR)
-      : is_mutable_(false), data_(data), size_(size), capacity_(size), parent_(parent) {
+         std::shared_ptr<Buffer> parent = NULLPTR,
+         std::optional<DeviceAllocationType> device_type_override = std::nullopt)
+      : is_mutable_(false),
+        data_(data),
+        size_(size),
+        capacity_(size),
+        parent_(std::move(parent)) {
+    // SetMemoryManager will also set device_type_
     SetMemoryManager(std::move(mm));
+    // If a device type is specified, use that instead. Example of when this can be
+    // useful: the CudaMemoryManager can set device_type_ to kCUDA, but you can specify
+    // device_type_override=kCUDA_HOST as the device type to override it.
+    if (device_type_override != std::nullopt) {
+      device_type_ = *device_type_override;
+    }
   }
 
   Buffer(uintptr_t address, int64_t size, std::shared_ptr<MemoryManager> mm,
@@ -77,7 +98,7 @@ class ARROW_EXPORT Buffer {
   ///
   /// \note The memory viewed by data must not be deallocated in the lifetime of the
   /// Buffer; temporary rvalue strings must be stored in an lvalue somewhere
-  explicit Buffer(util::string_view data)
+  explicit Buffer(std::string_view data)
       : Buffer(reinterpret_cast<const uint8_t*>(data.data()),
                static_cast<int64_t>(data.size())) {}
 
@@ -132,6 +153,32 @@ class ARROW_EXPORT Buffer {
   /// \return a new Buffer instance
   static std::shared_ptr<Buffer> FromString(std::string data);
 
+  /// \brief Construct an immutable buffer that takes ownership of the contents
+  /// of an std::vector (without copying it). Only vectors of TrivialType objects
+  /// (integers, floating point numbers, ...) can be wrapped by this function.
+  ///
+  /// \param[in] vec a vector to own
+  /// \return a new Buffer instance
+  template <typename T>
+  static std::shared_ptr<Buffer> FromVector(std::vector<T> vec) {
+    static_assert(std::is_trivial_v<T>,
+                  "Buffer::FromVector can only wrap vectors of trivial objects");
+
+    if (vec.empty()) {
+      return std::shared_ptr<Buffer>{new Buffer()};
+    }
+
+    auto* data = reinterpret_cast<uint8_t*>(vec.data());
+    auto size_in_bytes = static_cast<int64_t>(vec.size() * sizeof(T));
+    return std::shared_ptr<Buffer>{
+        new Buffer{data, size_in_bytes},
+        // Keep the vector's buffer alive inside the shared_ptr's destructor until after
+        // we have deleted the Buffer. Note we can't use this trick in FromString since
+        // std::string's data is inline for short strings so moving invalidates pointers
+        // into the string's buffer.
+        [vec = std::move(vec)](Buffer* buffer) { delete buffer; }};
+  }
+
   /// \brief Create buffer referencing typed memory with some length without
   /// copying
   /// \param[in] data the typed memory as C array
@@ -159,15 +206,11 @@ class ARROW_EXPORT Buffer {
   /// \note Can throw std::bad_alloc if buffer is large
   std::string ToString() const;
 
-  /// \brief View buffer contents as a util::string_view
-  /// \return util::string_view
-  explicit operator util::string_view() const {
-    return util::string_view(reinterpret_cast<const char*>(data_), size_);
+  /// \brief View buffer contents as a std::string_view
+  /// \return std::string_view
+  explicit operator std::string_view() const {
+    return {reinterpret_cast<const char*>(data_), static_cast<size_t>(size_)};
   }
-
-  /// \brief View buffer contents as a util::bytes_view
-  /// \return util::bytes_view
-  explicit operator util::bytes_view() const { return util::bytes_view(data_, size_); }
 
   /// \brief Return a pointer to the buffer's data
   ///
@@ -180,6 +223,21 @@ class ARROW_EXPORT Buffer {
     CheckCPU();
 #endif
     return ARROW_PREDICT_TRUE(is_cpu_) ? data_ : NULLPTR;
+  }
+
+  /// \brief Return a pointer to the buffer's data cast to a specific type
+  ///
+  /// The buffer has to be a CPU buffer (`is_cpu()` is true).
+  /// Otherwise, an assertion may be thrown or a null pointer may be returned.
+  template <typename T>
+  const T* data_as() const {
+    return reinterpret_cast<const T*>(data());
+  }
+
+  /// \brief Return the buffer's data as a span
+  template <typename T>
+  util::span<const T> span_as() const {
+    return util::span(data_as<T>(), static_cast<size_t>(size() / sizeof(T)));
   }
 
   /// \brief Return a writable pointer to the buffer's data
@@ -197,6 +255,22 @@ class ARROW_EXPORT Buffer {
 #endif
     return ARROW_PREDICT_TRUE(is_cpu_ && is_mutable_) ? const_cast<uint8_t*>(data_)
                                                       : NULLPTR;
+  }
+
+  /// \brief Return a writable pointer to the buffer's data cast to a specific type
+  ///
+  /// The buffer has to be a mutable CPU buffer (`is_cpu()` and `is_mutable()`
+  /// are true).  Otherwise, an assertion may be thrown or a null pointer may
+  /// be returned.
+  template <typename T>
+  T* mutable_data_as() {
+    return reinterpret_cast<T*>(mutable_data());
+  }
+
+  /// \brief Return the buffer's mutable data as a span
+  template <typename T>
+  util::span<T> mutable_span_as() const {
+    return util::span(mutable_data_as<T>(), static_cast<size_t>(size() / sizeof(T)));
   }
 
   /// \brief Return the device address of the buffer's data
@@ -235,6 +309,8 @@ class ARROW_EXPORT Buffer {
 
   const std::shared_ptr<MemoryManager>& memory_manager() const { return memory_manager_; }
 
+  DeviceAllocationType device_type() const { return device_type_; }
+
   std::shared_ptr<Buffer> parent() const { return parent_; }
 
   /// \brief Get a RandomAccessFile for reading a buffer
@@ -254,6 +330,13 @@ class ARROW_EXPORT Buffer {
   /// given MemoryManager.  This function supports cross-device copies.
   static Result<std::shared_ptr<Buffer>> Copy(std::shared_ptr<Buffer> source,
                                               const std::shared_ptr<MemoryManager>& to);
+
+  /// \brief Copy a non-owned buffer
+  ///
+  /// This is useful for cases where the source memory area is externally managed
+  /// (its lifetime not tied to the source Buffer), otherwise please use Copy().
+  static Result<std::unique_ptr<Buffer>> CopyNonOwned(
+      const Buffer& source, const std::shared_ptr<MemoryManager>& to);
 
   /// \brief View buffer
   ///
@@ -276,12 +359,15 @@ class ARROW_EXPORT Buffer {
   static Result<std::shared_ptr<Buffer>> ViewOrCopy(
       std::shared_ptr<Buffer> source, const std::shared_ptr<MemoryManager>& to);
 
+  virtual std::shared_ptr<Device::SyncEvent> device_sync_event() { return NULLPTR; }
+
  protected:
   bool is_mutable_;
   bool is_cpu_;
   const uint8_t* data_;
   int64_t size_;
   int64_t capacity_;
+  DeviceAllocationType device_type_;
 
   // null by default, but may be set
   std::shared_ptr<Buffer> parent_;
@@ -291,17 +377,16 @@ class ARROW_EXPORT Buffer {
   std::shared_ptr<MemoryManager> memory_manager_;
 
  protected:
+  Buffer();
+
   void CheckMutable() const;
   void CheckCPU() const;
 
   void SetMemoryManager(std::shared_ptr<MemoryManager> mm) {
     memory_manager_ = std::move(mm);
     is_cpu_ = memory_manager_->is_cpu();
+    device_type_ = memory_manager_->device()->device_type();
   }
-
- private:
-  Buffer() = delete;
-  ARROW_DISALLOW_COPY_AND_ASSIGN(Buffer);
 };
 
 /// \defgroup buffer-slicing-functions Functions for slicing buffers
@@ -453,6 +538,9 @@ class ARROW_EXPORT ResizableBuffer : public MutableBuffer {
 ARROW_EXPORT
 Result<std::unique_ptr<Buffer>> AllocateBuffer(const int64_t size,
                                                MemoryPool* pool = NULLPTR);
+ARROW_EXPORT
+Result<std::unique_ptr<Buffer>> AllocateBuffer(const int64_t size, int64_t alignment,
+                                               MemoryPool* pool = NULLPTR);
 
 /// \brief Allocate a resizeable buffer from a memory pool, zero its padding.
 ///
@@ -461,6 +549,9 @@ Result<std::unique_ptr<Buffer>> AllocateBuffer(const int64_t size,
 ARROW_EXPORT
 Result<std::unique_ptr<ResizableBuffer>> AllocateResizableBuffer(
     const int64_t size, MemoryPool* pool = NULLPTR);
+ARROW_EXPORT
+Result<std::unique_ptr<ResizableBuffer>> AllocateResizableBuffer(
+    const int64_t size, const int64_t alignment, MemoryPool* pool = NULLPTR);
 
 /// \brief Allocate a bitmap buffer from a memory pool
 /// no guarantee on values is provided.
@@ -471,15 +562,16 @@ ARROW_EXPORT
 Result<std::shared_ptr<Buffer>> AllocateBitmap(int64_t length,
                                                MemoryPool* pool = NULLPTR);
 
-ARROW_EXPORT
-Status AllocateBitmap(MemoryPool* pool, int64_t length, std::shared_ptr<Buffer>* out);
-
 /// \brief Allocate a zero-initialized bitmap buffer from a memory pool
 ///
 /// \param[in] length size in bits of bitmap to allocate
 /// \param[in] pool memory pool to allocate memory from
 ARROW_EXPORT
 Result<std::shared_ptr<Buffer>> AllocateEmptyBitmap(int64_t length,
+                                                    MemoryPool* pool = NULLPTR);
+
+ARROW_EXPORT
+Result<std::shared_ptr<Buffer>> AllocateEmptyBitmap(int64_t length, int64_t alignment,
                                                     MemoryPool* pool = NULLPTR);
 
 /// \brief Concatenate multiple buffers into a single buffer
@@ -489,10 +581,6 @@ Result<std::shared_ptr<Buffer>> AllocateEmptyBitmap(int64_t length,
 ARROW_EXPORT
 Result<std::shared_ptr<Buffer>> ConcatenateBuffers(const BufferVector& buffers,
                                                    MemoryPool* pool = NULLPTR);
-
-ARROW_EXPORT
-Status ConcatenateBuffers(const BufferVector& buffers, MemoryPool* pool,
-                          std::shared_ptr<Buffer>* out);
 
 /// @}
 

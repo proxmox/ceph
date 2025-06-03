@@ -47,11 +47,20 @@ namespace red_arrow {
   extern ID id_new;
   extern ID id_to_datetime;
 
+  namespace symbols {
+    extern VALUE day;
+    extern VALUE millisecond;
+    extern VALUE month;
+    extern VALUE nanosecond;
+  }
+
   VALUE array_values(VALUE obj);
   VALUE chunked_array_values(VALUE obj);
 
   VALUE record_batch_raw_records(VALUE obj);
   VALUE table_raw_records(VALUE obj);
+  VALUE record_batch_each_raw_record(VALUE obj);
+  VALUE table_each_raw_record(VALUE obj);
 
   inline VALUE time_unit_to_scale(const arrow::TimeUnit::type unit) {
     switch (unit) {

@@ -28,6 +28,7 @@
 #include "arrow/compute/function.h"
 #include "arrow/compute/type_fwd.h"
 #include "arrow/result.h"
+#include "arrow/scalar.h"
 #include "arrow/status.h"
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/key_value_metadata.h"
@@ -74,7 +75,7 @@ Result<Enum> ValidateEnumValue(CType raw) {
   return Status::Invalid("Invalid value for ", EnumTraits<Enum>::name(), ": ", raw);
 }
 
-class GenericOptionsType : public FunctionOptionsType {
+class ARROW_EXPORT GenericOptionsType : public FunctionOptionsType {
  public:
   Result<std::shared_ptr<Buffer>> Serialize(const FunctionOptions&) const override;
   Result<std::unique_ptr<FunctionOptions>> Deserialize(
@@ -103,6 +104,12 @@ static inline enable_if_t<!has_enum_traits<T>::value, std::string> GenericToStri
   return ss.str();
 }
 
+template <typename T>
+static inline enable_if_t<!has_enum_traits<T>::value, std::string> GenericToString(
+    const std::optional<T>& value) {
+  return value.has_value() ? GenericToString(value.value()) : "nullopt";
+}
+
 static inline std::string GenericToString(bool value) { return value ? "true" : "false"; }
 
 static inline std::string GenericToString(const std::string& value) {
@@ -125,7 +132,11 @@ static inline std::string GenericToString(const std::shared_ptr<T>& value) {
 
 static inline std::string GenericToString(const std::shared_ptr<Scalar>& value) {
   std::stringstream ss;
-  ss << value->type->ToString() << ":" << value->ToString();
+  if (value) {
+    ss << value->type->ToString() << ":" << value->ToString();
+  } else {
+    ss << "<NULLPTR>";
+  }
   return ss.str();
 }
 
@@ -156,13 +167,9 @@ static inline std::string GenericToString(const Datum& value) {
       ss << value.type()->ToString() << ':' << value.make_array()->ToString();
       return ss.str();
     }
-    case Datum::CHUNKED_ARRAY:
-    case Datum::RECORD_BATCH:
-    case Datum::TABLE:
-    case Datum::COLLECTION:
+    default:
       return value.ToString();
   }
-  return value.ToString();
 }
 
 template <typename T>
@@ -265,7 +272,7 @@ template <typename T>
 static inline enable_if_same<T, SortKey, std::shared_ptr<DataType>>
 GenericTypeSingleton() {
   std::vector<std::shared_ptr<Field>> fields;
-  fields.emplace_back(new Field("name", GenericTypeSingleton<std::string>()));
+  fields.emplace_back(new Field("target", GenericTypeSingleton<std::string>()));
   fields.emplace_back(new Field("order", GenericTypeSingleton<SortOrder>()));
   return std::make_shared<StructType>(std::move(fields));
 }
@@ -283,16 +290,20 @@ static inline Result<std::shared_ptr<Scalar>> GenericToScalar(bool value) {
   return MakeScalar(value);
 }
 
+static inline Result<std::shared_ptr<Scalar>> GenericToScalar(const FieldRef& ref) {
+  return MakeScalar(ref.ToDotPath());
+}
+
 template <typename T, typename Enable = enable_if_t<has_enum_traits<T>::value>>
 static inline Result<std::shared_ptr<Scalar>> GenericToScalar(const T value) {
   using CType = typename EnumTraits<T>::CType;
   return GenericToScalar(static_cast<CType>(value));
 }
 
-static inline Result<std::shared_ptr<Scalar>> GenericToScalar(const SortKey& value) {
-  ARROW_ASSIGN_OR_RAISE(auto name, GenericToScalar(value.name));
-  ARROW_ASSIGN_OR_RAISE(auto order, GenericToScalar(value.order));
-  return StructScalar::Make({name, order}, {"name", "order"});
+static inline Result<std::shared_ptr<Scalar>> GenericToScalar(const SortKey& key) {
+  ARROW_ASSIGN_OR_RAISE(auto target, GenericToScalar(key.target));
+  ARROW_ASSIGN_OR_RAISE(auto order, GenericToScalar(key.order));
+  return StructScalar::Make({target, order}, {"target", "order"});
 }
 
 static inline Result<std::shared_ptr<Scalar>> GenericToScalar(
@@ -341,6 +352,10 @@ static inline Result<std::shared_ptr<Scalar>> GenericToScalar(
   return MakeNullScalar(value);
 }
 
+static inline Result<std::shared_ptr<Scalar>> GenericToScalar(const TypeHolder& value) {
+  return GenericToScalar(value.GetSharedPtr());
+}
+
 static inline Result<std::shared_ptr<Scalar>> GenericToScalar(
     const std::shared_ptr<Scalar>& value) {
   return value;
@@ -360,6 +375,16 @@ static inline Result<std::shared_ptr<Scalar>> GenericToScalar(const Datum& value
     default:
       return Status::NotImplemented("Cannot serialize Datum kind ", value.kind());
   }
+}
+
+static inline Result<std::shared_ptr<Scalar>> GenericToScalar(std::nullopt_t) {
+  return std::make_shared<NullScalar>();
+}
+
+template <typename T>
+static inline auto GenericToScalar(const std::optional<T>& value)
+    -> Result<decltype(MakeScalar(value.value()))> {
+  return value.has_value() ? MakeScalar(value.value()) : std::make_shared<NullScalar>();
 }
 
 template <typename T>
@@ -399,6 +424,13 @@ static inline enable_if_same_result<T, std::string> GenericFromScalar(
 }
 
 template <typename T>
+static inline enable_if_same_result<T, FieldRef> GenericFromScalar(
+    const std::shared_ptr<Scalar>& value) {
+  ARROW_ASSIGN_OR_RAISE(auto path, GenericFromScalar<std::string>(value));
+  return FieldRef::FromDotPath(path);
+}
+
+template <typename T>
 static inline enable_if_same_result<T, SortKey> GenericFromScalar(
     const std::shared_ptr<Scalar>& value) {
   if (value->type->id() != Type::STRUCT) {
@@ -406,15 +438,21 @@ static inline enable_if_same_result<T, SortKey> GenericFromScalar(
   }
   if (!value->is_valid) return Status::Invalid("Got null scalar");
   const auto& holder = checked_cast<const StructScalar&>(*value);
-  ARROW_ASSIGN_OR_RAISE(auto name_holder, holder.field("name"));
+  ARROW_ASSIGN_OR_RAISE(auto target_holder, holder.field("target"));
   ARROW_ASSIGN_OR_RAISE(auto order_holder, holder.field("order"));
-  ARROW_ASSIGN_OR_RAISE(auto name, GenericFromScalar<std::string>(name_holder));
+  ARROW_ASSIGN_OR_RAISE(auto target, GenericFromScalar<FieldRef>(target_holder));
   ARROW_ASSIGN_OR_RAISE(auto order, GenericFromScalar<SortOrder>(order_holder));
-  return SortKey{std::move(name), order};
+  return SortKey{std::move(target), order};
 }
 
 template <typename T>
 static inline enable_if_same_result<T, std::shared_ptr<DataType>> GenericFromScalar(
+    const std::shared_ptr<Scalar>& value) {
+  return value->type;
+}
+
+template <typename T>
+static inline enable_if_same_result<T, TypeHolder> GenericFromScalar(
     const std::shared_ptr<Scalar>& value) {
   return value->type;
 }
@@ -455,6 +493,23 @@ static inline enable_if_same_result<T, Datum> GenericFromScalar(
   }
   // TODO(ARROW-9434): handle other possible datum kinds by looking for a union
   return Status::Invalid("Cannot deserialize Datum from ", value->ToString());
+}
+
+template <typename>
+constexpr inline bool is_optional_v = false;
+template <typename T>
+constexpr inline bool is_optional_v<std::optional<T>> = true;
+template <>
+constexpr inline bool is_optional_v<std::nullopt_t> = true;
+
+template <typename T>
+static inline std::enable_if_t<is_optional_v<T>, Result<T>> GenericFromScalar(
+    const std::shared_ptr<Scalar>& value) {
+  using value_type = typename T::value_type;
+  if (value->type->id() == Type::NA) {
+    return std::nullopt;
+  }
+  return GenericFromScalar<value_type>(value);
 }
 
 template <typename T>
@@ -626,13 +681,13 @@ const FunctionOptionsType* GetFunctionOptionsType(const Properties&... propertie
     }
     Result<std::unique_ptr<FunctionOptions>> FromStructScalar(
         const StructScalar& scalar) const override {
-      auto options = std::unique_ptr<Options>(new Options());
+      auto options = std::make_unique<Options>();
       RETURN_NOT_OK(
           FromStructScalarImpl<Options>(options.get(), scalar, properties_).status_);
       return std::move(options);
     }
     std::unique_ptr<FunctionOptions> Copy(const FunctionOptions& options) const override {
-      auto out = std::unique_ptr<Options>(new Options());
+      auto out = std::make_unique<Options>();
       CopyImpl<Options>(out.get(), checked_cast<const Options&>(options), properties_);
       return std::move(out);
     }
@@ -642,6 +697,11 @@ const FunctionOptionsType* GetFunctionOptionsType(const Properties&... propertie
   } instance(arrow::internal::MakeProperties(properties...));
   return &instance;
 }
+
+Status CheckAllArrayOrScalar(const std::vector<Datum>& values);
+
+ARROW_EXPORT
+Result<std::vector<TypeHolder>> GetFunctionArgumentTypes(const std::vector<Datum>& args);
 
 }  // namespace internal
 }  // namespace compute

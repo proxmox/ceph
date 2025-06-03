@@ -31,10 +31,16 @@ on:
       - 'dev/tasks/**'
       - 'docker-compose.yml'
 
+env:
+  ARCHERY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
 concurrency:
-  group: ${{ github.repository }}-${{ github.ref }}-${{ github.workflow }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  
 jobs:
 
   test:
@@ -44,22 +50,22 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout Arrow
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Git Fixup
         shell: bash
-        run: git branch master origin/master || true
-      - name: Free Up Disk Space
-        run: ci/scripts/util_cleanup.sh
+        run: git branch $ARCHERY_DEFAULT_BRANCH origin/$ARCHERY_DEFAULT_BRANCH || true
       - name: Setup Python
-        uses: actions/setup-python@v1
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.6'
+          python-version: '3.8'
       - name: Install pygit2 binary wheel
         run: pip install pygit2 --only-binary pygit2
       - name: Install Archery, Crossbow- and Test Dependencies
-        run: pip install pytest responses -e dev/archery[all]
+        run: |
+          pip install -e dev/archery[all]
+          pip install -r dev/archery/requirements-test.txt
       - name: Archery Unittests
         working-directory: dev/archery
         run: pytest -v archery

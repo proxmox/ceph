@@ -17,7 +17,6 @@
 
 #include "./arrow_types.h"
 
-#if defined(ARROW_R_WITH_ARROW)
 #include <arrow/array/data.h>
 
 // [[arrow::export]]
@@ -27,23 +26,21 @@ std::shared_ptr<arrow::DataType> ArrayData__get_type(
 }
 
 // [[arrow::export]]
-int ArrayData__get_length(const std::shared_ptr<arrow::ArrayData>& x) {
-  return x->length;
+r_vec_size ArrayData__get_length(const std::shared_ptr<arrow::ArrayData>& x) {
+  return r_vec_size(x->length);
 }
 
 // [[arrow::export]]
-int ArrayData__get_null_count(const std::shared_ptr<arrow::ArrayData>& x) {
-  return x->null_count;
+r_vec_size ArrayData__get_null_count(const std::shared_ptr<arrow::ArrayData>& x) {
+  return r_vec_size(x->null_count);
 }
 
 // [[arrow::export]]
-int ArrayData__get_offset(const std::shared_ptr<arrow::ArrayData>& x) {
-  return x->offset;
+r_vec_size ArrayData__get_offset(const std::shared_ptr<arrow::ArrayData>& x) {
+  return r_vec_size(x->offset);
 }
 
 // [[arrow::export]]
 cpp11::list ArrayData__buffers(const std::shared_ptr<arrow::ArrayData>& x) {
   return arrow::r::to_r_list(x->buffers);
 }
-
-#endif

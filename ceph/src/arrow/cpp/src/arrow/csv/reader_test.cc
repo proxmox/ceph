@@ -48,8 +48,7 @@ class StreamingReaderAsTableReader : public TableReader {
       : reader_(std::move(reader)) {}
   virtual ~StreamingReaderAsTableReader() = default;
   virtual Result<std::shared_ptr<Table>> Read() {
-    std::shared_ptr<Table> table;
-    RETURN_NOT_OK(reader_->ReadAll(&table));
+    ARROW_ASSIGN_OR_RAISE(auto table, reader_->ToTable());
     return table;
   }
   virtual Future<std::shared_ptr<Table>> ReadAsync() {
@@ -316,6 +315,9 @@ TEST(StreamingReaderTests, InvalidRowsSkipped) {
   TestInvalidRowsSkipped(MakeStreamingFactory(/*use_threads=*/false), /*async=*/false);
 }
 TEST(StreamingReaderTests, InvalidRowsSkippedAsync) {
+  if (internal::GetCpuThreadPool()->GetCapacity() < 2) {
+    GTEST_SKIP() << "Test requires at least 2 threads";
+  }
   TestInvalidRowsSkipped(MakeStreamingFactory(), /*async=*/true);
 }
 

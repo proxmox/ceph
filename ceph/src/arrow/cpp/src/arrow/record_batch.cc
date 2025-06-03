@@ -25,12 +25,12 @@
 #include <utility>
 
 #include "arrow/array.h"
+#include "arrow/array/concatenate.h"
 #include "arrow/array/validate.h"
 #include "arrow/pretty_print.h"
 #include "arrow/status.h"
 #include "arrow/table.h"
 #include "arrow/type.h"
-#include "arrow/util/atomic_shared_ptr.h"
 #include "arrow/util/iterator.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/vector.h"
@@ -78,10 +78,10 @@ class SimpleRecordBatch : public RecordBatch {
   }
 
   std::shared_ptr<Array> column(int i) const override {
-    std::shared_ptr<Array> result = internal::atomic_load(&boxed_columns_[i]);
+    std::shared_ptr<Array> result = std::atomic_load(&boxed_columns_[i]);
     if (!result) {
       result = MakeArray(columns_[i]);
-      internal::atomic_store(&boxed_columns_[i], result);
+      std::atomic_store(&boxed_columns_[i], result);
     }
     return result;
   }
@@ -177,7 +177,8 @@ std::shared_ptr<RecordBatch> RecordBatch::Make(
     std::shared_ptr<Schema> schema, int64_t num_rows,
     std::vector<std::shared_ptr<Array>> columns) {
   DCHECK_EQ(schema->num_fields(), static_cast<int>(columns.size()));
-  return std::make_shared<SimpleRecordBatch>(std::move(schema), num_rows, columns);
+  return std::make_shared<SimpleRecordBatch>(std::move(schema), num_rows,
+                                             std::move(columns));
 }
 
 std::shared_ptr<RecordBatch> RecordBatch::Make(
@@ -188,22 +189,55 @@ std::shared_ptr<RecordBatch> RecordBatch::Make(
                                              std::move(columns));
 }
 
+Result<std::shared_ptr<RecordBatch>> RecordBatch::MakeEmpty(
+    std::shared_ptr<Schema> schema, MemoryPool* memory_pool) {
+  ArrayVector empty_batch(schema->num_fields());
+  for (int i = 0; i < schema->num_fields(); i++) {
+    ARROW_ASSIGN_OR_RAISE(empty_batch[i],
+                          MakeEmptyArray(schema->field(i)->type(), memory_pool));
+  }
+  return RecordBatch::Make(std::move(schema), 0, std::move(empty_batch));
+}
+
 Result<std::shared_ptr<RecordBatch>> RecordBatch::FromStructArray(
-    const std::shared_ptr<Array>& array) {
+    const std::shared_ptr<Array>& array, MemoryPool* memory_pool) {
   if (array->type_id() != Type::STRUCT) {
     return Status::TypeError("Cannot construct record batch from array of type ",
                              *array->type());
   }
-  if (array->null_count() != 0) {
-    return Status::Invalid(
-        "Unable to construct record batch from a StructArray with non-zero nulls.");
+  if (array->null_count() != 0 || array->offset() != 0) {
+    // If the struct array has a validity map or offset we need to push those into
+    // the child arrays via Flatten since the RecordBatch doesn't have validity/offset
+    const std::shared_ptr<StructArray>& struct_array =
+        internal::checked_pointer_cast<StructArray>(array);
+    ARROW_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Array>> fields,
+                          struct_array->Flatten(memory_pool));
+    return Make(arrow::schema(array->type()->fields()), array->length(),
+                std::move(fields));
   }
   return Make(arrow::schema(array->type()->fields()), array->length(),
               array->data()->child_data);
 }
 
+namespace {
+
+Status ValidateColumnLength(const RecordBatch& batch, int i) {
+  const auto& array = *batch.column(i);
+  if (ARROW_PREDICT_FALSE(array.length() != batch.num_rows())) {
+    return Status::Invalid("Number of rows in column ", i,
+                           " did not match batch: ", array.length(), " vs ",
+                           batch.num_rows());
+  }
+  return Status::OK();
+}
+
+}  // namespace
+
 Result<std::shared_ptr<StructArray>> RecordBatch::ToStructArray() const {
   if (num_columns() != 0) {
+    // Only check the first column because `StructArray::Make` already checks that the
+    // child lengths are equal.
+    RETURN_NOT_OK(ValidateColumnLength(*this, 0));
     return StructArray::Make(columns(), schema()->fields());
   }
   return std::make_shared<StructArray>(arrow::struct_({}), num_rows_,
@@ -217,19 +251,18 @@ const std::string& RecordBatch::column_name(int i) const {
   return schema_->field(i)->name();
 }
 
-bool RecordBatch::Equals(const RecordBatch& other, bool check_metadata) const {
+bool RecordBatch::Equals(const RecordBatch& other, bool check_metadata,
+                         const EqualOptions& opts) const {
   if (num_columns() != other.num_columns() || num_rows_ != other.num_rows()) {
     return false;
   }
 
-  if (check_metadata) {
-    if (!schema_->Equals(*other.schema(), /*check_metadata=*/true)) {
-      return false;
-    }
+  if (!schema_->Equals(*other.schema(), check_metadata)) {
+    return false;
   }
 
   for (int i = 0; i < num_columns(); ++i) {
-    if (!column(i)->Equals(other.column(i))) {
+    if (!column(i)->Equals(other.column(i), opts)) {
       return false;
     }
   }
@@ -237,18 +270,37 @@ bool RecordBatch::Equals(const RecordBatch& other, bool check_metadata) const {
   return true;
 }
 
-bool RecordBatch::ApproxEquals(const RecordBatch& other) const {
+bool RecordBatch::ApproxEquals(const RecordBatch& other, const EqualOptions& opts) const {
   if (num_columns() != other.num_columns() || num_rows_ != other.num_rows()) {
     return false;
   }
 
   for (int i = 0; i < num_columns(); ++i) {
-    if (!column(i)->ApproxEquals(other.column(i))) {
+    if (!column(i)->ApproxEquals(other.column(i), opts)) {
       return false;
     }
   }
 
   return true;
+}
+
+Result<std::shared_ptr<RecordBatch>> RecordBatch::ReplaceSchema(
+    std::shared_ptr<Schema> schema) const {
+  if (schema_->num_fields() != schema->num_fields())
+    return Status::Invalid("RecordBatch schema fields", schema_->num_fields(),
+                           ", did not match new schema fields: ", schema->num_fields());
+  auto fields = schema_->fields();
+  int n_fields = static_cast<int>(fields.size());
+  for (int i = 0; i < n_fields; i++) {
+    auto old_type = fields[i]->type();
+    auto replace_type = schema->field(i)->type();
+    if (!old_type->Equals(replace_type)) {
+      return Status::Invalid(
+          "RecordBatch schema field index ", i, " type is ", old_type->ToString(),
+          ", did not match new schema field type: ", replace_type->ToString());
+    }
+  }
+  return RecordBatch::Make(std::move(schema), num_rows(), columns());
 }
 
 Result<std::shared_ptr<RecordBatch>> RecordBatch::SelectColumns(
@@ -282,52 +334,56 @@ std::string RecordBatch::ToString() const {
   return ss.str();
 }
 
-Status RecordBatch::Validate() const {
-  for (int i = 0; i < num_columns(); ++i) {
-    const auto& array = *this->column(i);
-    if (array.length() != num_rows_) {
-      return Status::Invalid("Number of rows in column ", i,
-                             " did not match batch: ", array.length(), " vs ", num_rows_);
-    }
-    const auto& schema_type = *schema_->field(i)->type();
+namespace {
+
+Status ValidateBatch(const RecordBatch& batch, bool full_validation) {
+  for (int i = 0; i < batch.num_columns(); ++i) {
+    RETURN_NOT_OK(ValidateColumnLength(batch, i));
+    const auto& array = *batch.column(i);
+    const auto& schema_type = batch.schema()->field(i)->type();
     if (!array.type()->Equals(schema_type)) {
       return Status::Invalid("Column ", i,
                              " type not match schema: ", array.type()->ToString(), " vs ",
-                             schema_type.ToString());
+                             schema_type->ToString());
     }
-    RETURN_NOT_OK(internal::ValidateArray(array));
+    const auto st = full_validation ? internal::ValidateArrayFull(array)
+                                    : internal::ValidateArray(array);
+    if (!st.ok()) {
+      return Status::Invalid("In column ", i, ": ", st.ToString());
+    }
   }
   return Status::OK();
 }
 
+}  // namespace
+
+Status RecordBatch::Validate() const {
+  return ValidateBatch(*this, /*full_validation=*/false);
+}
+
 Status RecordBatch::ValidateFull() const {
-  RETURN_NOT_OK(Validate());
-  for (int i = 0; i < num_columns(); ++i) {
-    const auto& array = *this->column(i);
-    RETURN_NOT_OK(internal::ValidateArrayFull(array));
-  }
-  return Status::OK();
+  return ValidateBatch(*this, /*full_validation=*/true);
 }
 
 // ----------------------------------------------------------------------
 // Base record batch reader
 
-Status RecordBatchReader::ReadAll(std::vector<std::shared_ptr<RecordBatch>>* batches) {
+Result<RecordBatchVector> RecordBatchReader::ToRecordBatches() {
+  RecordBatchVector batches;
   while (true) {
     std::shared_ptr<RecordBatch> batch;
     RETURN_NOT_OK(ReadNext(&batch));
     if (!batch) {
       break;
     }
-    batches->emplace_back(std::move(batch));
+    batches.emplace_back(std::move(batch));
   }
-  return Status::OK();
+  return batches;
 }
 
-Status RecordBatchReader::ReadAll(std::shared_ptr<Table>* table) {
-  std::vector<std::shared_ptr<RecordBatch>> batches;
-  RETURN_NOT_OK(ReadAll(&batches));
-  return Table::FromRecordBatches(schema(), std::move(batches)).Value(table);
+Result<std::shared_ptr<Table>> RecordBatchReader::ToTable() {
+  ARROW_ASSIGN_OR_RAISE(auto batches, ToRecordBatches());
+  return Table::FromRecordBatches(schema(), std::move(batches));
 }
 
 class SimpleRecordBatchReader : public RecordBatchReader {
@@ -361,7 +417,52 @@ Result<std::shared_ptr<RecordBatchReader>> RecordBatchReader::Make(
     schema = batches[0]->schema();
   }
 
-  return std::make_shared<SimpleRecordBatchReader>(std::move(batches), schema);
+  return std::make_shared<SimpleRecordBatchReader>(std::move(batches), std::move(schema));
+}
+
+Result<std::shared_ptr<RecordBatchReader>> RecordBatchReader::MakeFromIterator(
+    Iterator<std::shared_ptr<RecordBatch>> batches, std::shared_ptr<Schema> schema) {
+  if (schema == nullptr) {
+    return Status::Invalid("Schema cannot be nullptr");
+  }
+
+  return std::make_shared<SimpleRecordBatchReader>(std::move(batches), std::move(schema));
+}
+
+RecordBatchReader::~RecordBatchReader() {
+  ARROW_WARN_NOT_OK(this->Close(), "Implicitly called RecordBatchReader::Close failed");
+}
+
+Result<std::shared_ptr<RecordBatch>> ConcatenateRecordBatches(
+    const RecordBatchVector& batches, MemoryPool* pool) {
+  int64_t length = 0;
+  size_t n = batches.size();
+  if (n == 0) {
+    return Status::Invalid("Must pass at least one recordbatch");
+  }
+  int cols = batches[0]->num_columns();
+  auto schema = batches[0]->schema();
+  for (size_t i = 0; i < batches.size(); ++i) {
+    length += batches[i]->num_rows();
+    if (!schema->Equals(batches[i]->schema())) {
+      return Status::Invalid(
+          "Schema of RecordBatch index ", i, " is ", batches[i]->schema()->ToString(),
+          ", which does not match index 0 recordbatch schema: ", schema->ToString());
+    }
+  }
+
+  std::vector<std::shared_ptr<Array>> concatenated_columns;
+  concatenated_columns.reserve(cols);
+  for (int col = 0; col < cols; ++col) {
+    ArrayVector column_arrays;
+    column_arrays.reserve(batches.size());
+    for (const auto& batch : batches) {
+      column_arrays.emplace_back(batch->column(col));
+    }
+    ARROW_ASSIGN_OR_RAISE(auto concatenated_column, Concatenate(column_arrays, pool))
+    concatenated_columns.emplace_back(std::move(concatenated_column));
+  }
+  return RecordBatch::Make(std::move(schema), length, std::move(concatenated_columns));
 }
 
 }  // namespace arrow

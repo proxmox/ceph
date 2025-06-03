@@ -28,19 +28,23 @@ namespace Apache.Arrow
         public ChunkedArray Data { get; }
 
         public Column(Field field, IList<Array> arrays)
+            : this(field, new ChunkedArray(arrays), doValidation: true)
         {
-            Data = new ChunkedArray(arrays);
+        }
+
+        public Column(Field field, IList<IArrowArray> arrays)
+            : this(field, new ChunkedArray(arrays), doValidation: true)
+        {
+        }
+
+        private Column(Field field, ChunkedArray data, bool doValidation = false)
+        {
+            Data = data;
             Field = field;
-            if (!ValidateArrayDataTypes())
+            if (doValidation && !ValidateArrayDataTypes())
             {
                 throw new ArgumentException($"{Field.DataType} must match {Data.DataType}");
             }
-        }
-
-        private Column(Field field, ChunkedArray arrays)
-        {
-            Field = field;
-            Data = arrays;
         }
 
         public long Length => Data.Length;
@@ -60,9 +64,18 @@ namespace Apache.Arrow
 
         private bool ValidateArrayDataTypes()
         {
+            var dataTypeComparer = new ArrayDataTypeComparer(Field.DataType);
+
             for (int i = 0; i < Data.ArrayCount; i++)
             {
-                if (Data.Array(i).Data.DataType != Field.DataType)
+                if (Data.ArrowArray(i).Data.DataType.TypeId != Field.DataType.TypeId)
+                {
+                    return false;
+                }
+
+                Data.ArrowArray(i).Data.DataType.Accept(dataTypeComparer);
+
+                if (!dataTypeComparer.DataTypeMatch)
                 {
                     return false;
                 }

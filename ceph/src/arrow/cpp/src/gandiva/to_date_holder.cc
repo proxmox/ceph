@@ -28,8 +28,7 @@
 
 namespace gandiva {
 
-Status ToDateHolder::Make(const FunctionNode& node,
-                          std::shared_ptr<ToDateHolder>* holder) {
+Result<std::shared_ptr<ToDateHolder>> ToDateHolder::Make(const FunctionNode& node) {
   if (node.children().size() != 2 && node.children().size() != 3) {
     return Status::Invalid("'to_date' function requires two or three parameters");
   }
@@ -45,13 +44,13 @@ Status ToDateHolder::Make(const FunctionNode& node,
     return Status::Invalid(
         "'to_date' function requires a string literal as the second parameter");
   }
-  auto pattern = arrow::util::get<std::string>(literal_pattern->holder());
+  auto pattern = std::get<std::string>(literal_pattern->holder());
 
   int suppress_errors = 0;
   if (node.children().size() == 3) {
     auto literal_suppress_errors =
         dynamic_cast<LiteralNode*>(node.children().at(2).get());
-    if (literal_pattern == nullptr) {
+    if (literal_suppress_errors == nullptr) {
       return Status::Invalid(
           "The (optional) third parameter to 'to_date' function needs to an integer "
           "literal to indicate whether to suppress the error");
@@ -63,20 +62,18 @@ Status ToDateHolder::Make(const FunctionNode& node,
           "The (optional) third parameter to 'to_date' function needs to an integer "
           "literal to indicate whether to suppress the error");
     }
-    suppress_errors = arrow::util::get<int>(literal_suppress_errors->holder());
+    suppress_errors = std::get<int>(literal_suppress_errors->holder());
   }
 
-  return Make(pattern, suppress_errors, holder);
+  return Make(pattern, suppress_errors);
 }
 
-Status ToDateHolder::Make(const std::string& sql_pattern, int32_t suppress_errors,
-                          std::shared_ptr<ToDateHolder>* holder) {
+Result<std::shared_ptr<ToDateHolder>> ToDateHolder::Make(const std::string& sql_pattern,
+                                                         int32_t suppress_errors) {
   std::shared_ptr<std::string> transformed_pattern;
   ARROW_RETURN_NOT_OK(DateUtils::ToInternalFormat(sql_pattern, &transformed_pattern));
-  auto lholder = std::shared_ptr<ToDateHolder>(
-      new ToDateHolder(*(transformed_pattern.get()), suppress_errors));
-  *holder = lholder;
-  return Status::OK();
+  return std::shared_ptr<ToDateHolder>(
+      new ToDateHolder(*transformed_pattern, suppress_errors));
 }
 
 int64_t ToDateHolder::operator()(ExecutionContext* context, const char* data,

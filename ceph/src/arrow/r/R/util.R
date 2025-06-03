@@ -29,9 +29,12 @@ if (!exists("str2lang")) {
   }
 }
 
-oxford_paste <- function(x, conjunction = "and", quote = TRUE) {
+oxford_paste <- function(x,
+                         conjunction = "and",
+                         quote = TRUE,
+                         quote_symbol = '"') {
   if (quote && is.character(x)) {
-    x <- paste0('"', x, '"')
+    x <- paste0(quote_symbol, x, quote_symbol)
   }
   if (length(x) < 2) {
     return(x)
@@ -90,6 +93,15 @@ all_funs <- function(expr) {
     expr <- quo_get_expr(expr)
   }
   names <- all.names(expr)
+  # if we have namespace-qualified functions, we rebuild the function name with
+  # the `pkg::` prefix
+  if ("::" %in% names) {
+    for (i in seq_along(names)) {
+      if (names[i] == "::") {
+        names[i] <- paste0(names[i + 1], names[i], names[i + 2])
+      }
+    }
+  }
   names[map_lgl(names, ~ is_function(expr, .))]
 }
 
@@ -113,39 +125,37 @@ read_compressed_error <- function(e) {
       msg,
       "\nIn order to read this file, you will need to reinstall arrow with additional features enabled.",
       "\nSet one of these environment variables before installing:",
-      sprintf("\n\n * LIBARROW_MINIMAL=false (for all optional features, including '%s')", compression),
-      sprintf("\n * ARROW_WITH_%s=ON (for just '%s')", toupper(compression), compression),
+      "\n\n * Sys.setenv(LIBARROW_MINIMAL = \"false\") ",
+      sprintf("(for all optional features, including '%s')", compression),
+      sprintf("\n * Sys.setenv(ARROW_WITH_%s = \"ON\") (for just '%s')", toupper(compression), compression),
       "\n\nSee https://arrow.apache.org/docs/r/articles/install.html for details"
     )
   }
   stop(e)
 }
 
-handle_parquet_io_error <- function(e, format) {
-  msg <- conditionMessage(e)
+handle_parquet_io_error <- function(msg, call, format) {
   if (grepl("Parquet magic bytes not found in footer", msg) && length(format) > 1 && is_character(format)) {
     # If length(format) > 1, that means it is (almost certainly) the default/not specified value
     # so let the user know that they should specify the actual (not parquet) format
-    abort(c(
+    msg <- c(
       msg,
       i = "Did you mean to specify a 'format' other than the default (parquet)?"
-    ))
+    )
+    abort(msg, call = call)
   }
-  stop(e)
 }
 
-is_writable_table <- function(x) {
-  inherits(x, c("data.frame", "ArrowTabular"))
-}
-
-# This attribute is used when is_writable is passed into assert_that, and allows
-# the call to form part of the error message when is_writable is FALSE
-attr(is_writable_table, "fail") <- function(call, env) {
-  paste0(
-    deparse(call$x),
-    " must be an object of class 'data.frame', 'RecordBatch', or 'Table', not '",
-    class(env[[deparse(call$x)]])[[1]],
-    "'."
+as_writable_table <- function(x) {
+  tryCatch(
+    as_arrow_table(x),
+    arrow_no_method_as_arrow_table = function(e) {
+      abort(
+        "Object must be coercible to an Arrow Table using `as_arrow_table()`",
+        parent = e,
+        call = caller_env(2)
+      )
+    }
   )
 }
 
@@ -156,12 +166,11 @@ attr(is_writable_table, "fail") <- function(call, env) {
 #' @keywords internal
 recycle_scalars <- function(arrays) {
   # Get lengths of items in arrays
-  arr_lens <- map_int(arrays, NROW)
+  arr_lens <- map_dbl(arrays, NROW)
 
   is_scalar <- arr_lens == 1
 
   if (length(arrays) > 1 && any(is_scalar) && !all(is_scalar)) {
-
     # Recycling not supported for tibbles and data.frames
     if (all(map_lgl(arrays, ~ inherits(.x, "data.frame")))) {
       abort(c(
@@ -192,4 +201,64 @@ repeat_value_as_array <- function(object, n) {
     return(Scalar$create(object$chunks[[1]])$as_array(n))
   }
   return(Scalar$create(object)$as_array(n))
+}
+
+handle_csv_read_error <- function(msg, call, schema) {
+  if (grepl("conversion error", msg) && inherits(schema, "Schema")) {
+    msg <- c(
+      msg,
+      i = paste(
+        "If you have supplied a schema and your data contains a header",
+        "row, you should supply the argument `skip = 1` to prevent the",
+        "header being read in as data."
+      )
+    )
+    abort(msg, call = call)
+  }
+}
+
+handle_augmented_field_misuse <- function(msg, call) {
+  if (grepl("No match for FieldRef.Name(__filename)", msg, fixed = TRUE)) {
+    msg <- c(
+      msg,
+      i = paste(
+        "`add_filename()` or use of the `__filename` augmented field can only",
+        "be used with Dataset objects, can only be added before doing",
+        "an aggregation or a join, and cannot be referenced in subsequent",
+        "pipeline steps until either compute() or collect() is called."
+      )
+    )
+    abort(msg, call = call)
+  }
+}
+
+is_compressed <- function(compression) {
+  !identical(compression, "uncompressed")
+}
+
+# handler function which checks for a number of different read errors
+augment_io_error_msg <- function(e, call, schema = NULL, format = NULL) {
+  msg <- conditionMessage(e)
+
+  if (!is.null(schema)) {
+    handle_csv_read_error(msg, call, schema)
+  }
+  if (!is.null(format)) {
+    handle_parquet_io_error(msg, call, format)
+  }
+
+  handle_augmented_field_misuse(msg, call)
+  abort(msg, call = call)
+}
+
+check_named_cols <- function(df) {
+  if (inherits(df, "data.frame") && is.null(names(df))) {
+    abort(
+      c(
+        "Input data frame columns must be named",
+        i = "Column names are NULL"
+      ),
+      call = caller_env(n = 3)
+    )
+  }
 }

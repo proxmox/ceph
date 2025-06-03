@@ -24,9 +24,7 @@
 #ifndef PARQUET_IMPL_NAMESPACE
 #error "PARQUET_IMPL_NAMESPACE must be defined"
 #endif
-namespace parquet {
-namespace internal {
-namespace PARQUET_IMPL_NAMESPACE {
+namespace parquet::internal::PARQUET_IMPL_NAMESPACE {
 /// Builds a bitmap by applying predicate to the level vector provided.
 ///
 /// \param[in] levels Rep or def level array.
@@ -43,7 +41,7 @@ inline uint64_t LevelsToBitmap(const int16_t* levels, int64_t num_levels,
   for (int x = 0; x < num_levels; x++) {
     mask |= static_cast<uint64_t>(predicate(levels[x]) ? 1 : 0) << x;
   }
-  return ::arrow::BitUtil::ToLittleEndian(mask);
+  return ::arrow::bit_util::ToLittleEndian(mask);
 }
 
 inline MinMax FindMinMaxImpl(const int16_t* levels, int64_t num_levels) {
@@ -60,6 +58,4 @@ inline uint64_t GreaterThanBitmapImpl(const int16_t* levels, int64_t num_levels,
   return LevelsToBitmap(levels, num_levels, [rhs](int16_t value) { return value > rhs; });
 }
 
-}  // namespace PARQUET_IMPL_NAMESPACE
-}  // namespace internal
-}  // namespace parquet
+}  // namespace parquet::internal::PARQUET_IMPL_NAMESPACE

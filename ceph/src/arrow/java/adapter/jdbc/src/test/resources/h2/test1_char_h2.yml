@@ -9,13 +9,13 @@
 #OF ANY KIND, either express or implied. See the License for the specific
 #language governing permissions and limitations under the License.
 
-name: 'table1'
+name: 'test1_char_h2'
 
 type: 'char'
 
 vector: 'CHAR_FIELD16'
 
-create: 'CREATE TABLE table1 (char_field16 CHAR(16));'
+create: 'CREATE TABLE table1 (char_field16 CHAR(14));'
 
 data:
   - 'INSERT INTO table1 VALUES (''some char text'');'

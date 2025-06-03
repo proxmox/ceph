@@ -25,7 +25,9 @@
 
 
 GAFlightStreamReader *
-gaflight_stream_reader_new_raw(arrow::flight::FlightStreamReader *flight_reader);
+gaflight_stream_reader_new_raw(
+  arrow::flight::FlightStreamReader *flight_reader,
+  gboolean is_owner);
 
 arrow::flight::FlightCallOptions *
 gaflight_call_options_get_raw(GAFlightCallOptions *options);
@@ -33,7 +35,8 @@ gaflight_call_options_get_raw(GAFlightCallOptions *options);
 arrow::flight::FlightClientOptions *
 gaflight_client_options_get_raw(GAFlightClientOptions *options);
 
-arrow::flight::FlightClient *
+std::shared_ptr<arrow::flight::FlightClient>
 gaflight_client_get_raw(GAFlightClient *client);
 GAFlightClient *
-gaflight_client_new_raw(arrow::flight::FlightClient *flight_client);
+gaflight_client_new_raw(
+  std::shared_ptr<arrow::flight::FlightClient> *flight_client);

@@ -26,6 +26,7 @@
 #include "arrow/filesystem/mockfs.h"
 #include "arrow/filesystem/path_util.h"
 #include "arrow/filesystem/test_util.h"
+#include "arrow/filesystem/util_internal.h"
 #include "arrow/io/interfaces.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/util/key_value_metadata.h"
@@ -86,6 +87,34 @@ TEST(PathUtil, SplitAbstractPath) {
   AssertPartsEqual(parts, {"abc", "def.ghi"});
 }
 
+TEST(PathUtil, SliceAbstractPath) {
+  std::string path = "abc";
+  ASSERT_EQ("abc", SliceAbstractPath(path, 0, 1));
+  ASSERT_EQ("abc", SliceAbstractPath(path, 0, 2));
+  ASSERT_EQ("", SliceAbstractPath(path, 0, 0));
+  ASSERT_EQ("", SliceAbstractPath(path, 1, 0));
+
+  path = "abc/def\\x/y.ext";
+  ASSERT_EQ("abc/def\\x/y.ext", SliceAbstractPath(path, 0, 4));
+  ASSERT_EQ("abc/def\\x/y.ext", SliceAbstractPath(path, 0, 3));
+  ASSERT_EQ("abc/def\\x", SliceAbstractPath(path, 0, 2));
+  ASSERT_EQ("abc", SliceAbstractPath(path, 0, 1));
+  ASSERT_EQ("def\\x/y.ext", SliceAbstractPath(path, 1, 2));
+  ASSERT_EQ("def\\x/y.ext", SliceAbstractPath(path, 1, 3));
+  ASSERT_EQ("def\\x", SliceAbstractPath(path, 1, 1));
+  ASSERT_EQ("y.ext", SliceAbstractPath(path, 2, 1));
+  ASSERT_EQ("", SliceAbstractPath(path, 3, 1));
+
+  path = "x/y\\z";
+  ASSERT_EQ("x", SliceAbstractPath(path, 0, 1));
+  ASSERT_EQ("x/y", SliceAbstractPath(path, 0, 1, /*sep=*/'\\'));
+
+  // Invalid cases but we shouldn't crash
+  ASSERT_EQ("", SliceAbstractPath(path, -1, 1));
+  ASSERT_EQ("", SliceAbstractPath(path, 0, -1));
+  ASSERT_EQ("", SliceAbstractPath(path, -1, -1));
+}
+
 TEST(PathUtil, GetAbstractPathExtension) {
   ASSERT_EQ(GetAbstractPathExtension("abc.txt"), "txt");
   ASSERT_EQ(GetAbstractPathExtension("dir/abc.txt"), "txt");
@@ -95,6 +124,19 @@ TEST(PathUtil, GetAbstractPathExtension) {
   ASSERT_EQ(GetAbstractPathExtension("abc"), "");
   ASSERT_EQ(GetAbstractPathExtension("/dir/abc"), "");
   ASSERT_EQ(GetAbstractPathExtension("/run.d/abc"), "");
+}
+
+TEST(PathUtil, GetAbstractPathDepth) {
+  ASSERT_EQ(0, GetAbstractPathDepth(""));
+  ASSERT_EQ(0, GetAbstractPathDepth("/"));
+  ASSERT_EQ(1, GetAbstractPathDepth("foo"));
+  ASSERT_EQ(1, GetAbstractPathDepth("foo/"));
+  ASSERT_EQ(1, GetAbstractPathDepth("/foo"));
+  ASSERT_EQ(1, GetAbstractPathDepth("/foo/"));
+  ASSERT_EQ(2, GetAbstractPathDepth("/foo/bar"));
+  ASSERT_EQ(2, GetAbstractPathDepth("/foo/bar/"));
+  ASSERT_EQ(2, GetAbstractPathDepth("foo/bar"));
+  ASSERT_EQ(2, GetAbstractPathDepth("foo/bar/"));
 }
 
 TEST(PathUtil, GetAbstractPathParent) {
@@ -264,6 +306,69 @@ TEST(PathUtil, ToSlashes) {
   ASSERT_EQ(ToSlashes("\\\\foo\\bar\\"), "\\\\foo\\bar\\");
 #endif
 }
+
+TEST(PathUtil, Globber) {
+  Globber empty("");
+  ASSERT_FALSE(empty.Matches("/1.txt"));
+
+  Globber star("/*");
+  ASSERT_TRUE(star.Matches("/a.txt"));
+  ASSERT_TRUE(star.Matches("/b.csv"));
+  ASSERT_FALSE(star.Matches("/foo/c.parquet"));
+
+  Globber question("/a?b");
+  ASSERT_TRUE(question.Matches("/acb"));
+  ASSERT_FALSE(question.Matches("/a/b"));
+
+  Globber localfs_linux("/f?o/bar/a?/1*.txt");
+  ASSERT_TRUE(localfs_linux.Matches("/foo/bar/a1/1.txt"));
+  ASSERT_TRUE(localfs_linux.Matches("/f#o/bar/ab/1000.txt"));
+  ASSERT_FALSE(localfs_linux.Matches("/f#o/bar/ab/1/23.txt"));
+
+  Globber localfs_windows("C:/f?o/bar/a?/1*.txt");
+  ASSERT_TRUE(localfs_windows.Matches("C:/f_o/bar/ac/1000.txt"));
+
+  Globber remotefs("/my|bucket(#?)/foo{*}/[?]bar~/b&z/a: *-c.txt");
+  ASSERT_TRUE(remotefs.Matches("/my|bucket(#0)/foo{}/[?]bar~/b&z/a: -c.txt"));
+  ASSERT_TRUE(remotefs.Matches("/my|bucket(#%)/foo{abc}/[_]bar~/b&z/a: ab-c.txt"));
+
+  Globber wildcards("/bucket?/f\\?o/\\*/*.parquet");
+  ASSERT_TRUE(wildcards.Matches("/bucket0/f?o/*/abc.parquet"));
+  ASSERT_FALSE(wildcards.Matches("/bucket0/foo/ab/a.parquet"));
+}
+
+void TestGlobFiles(const std::string& base_dir) {
+  auto fs = std::make_shared<MockFileSystem>(TimePoint{});
+
+  auto check_entries = [](const std::vector<FileInfo>& infos,
+                          std::vector<std::string> expected) -> void {
+    std::vector<std::string> actual(infos.size());
+    std::transform(infos.begin(), infos.end(), actual.begin(),
+                   [](const FileInfo& file) { return file.path(); });
+    std::sort(actual.begin(), actual.end());
+    ASSERT_EQ(actual, expected);
+  };
+
+  ASSERT_OK(fs->CreateDir(base_dir + "A/CD"));
+  ASSERT_OK(fs->CreateDir(base_dir + "AB/CD"));
+  ASSERT_OK(fs->CreateDir(base_dir + "AB/CD/ab"));
+  CreateFile(fs.get(), base_dir + "A/CD/ab.txt", "data");
+  CreateFile(fs.get(), base_dir + "AB/CD/a.txt", "data");
+  CreateFile(fs.get(), base_dir + "AB/CD/abc.txt", "data");
+  CreateFile(fs.get(), base_dir + "AB/CD/ab/c.txt", "data");
+
+  FileInfoVector infos;
+  ASSERT_OK_AND_ASSIGN(infos, GlobFiles(fs, base_dir + "A*/CD/?b*.txt"));
+  ASSERT_EQ(infos.size(), 2);
+  check_entries(infos, {base_dir + "A/CD/ab.txt", base_dir + "AB/CD/abc.txt"});
+
+  ASSERT_OK_AND_ASSIGN(infos, GlobFiles(fs, base_dir + "A*/CD/?/b*.txt"));
+  ASSERT_EQ(infos.size(), 0);
+}
+
+TEST(InternalUtil, GlobFilesWithoutLeadingSlash) { TestGlobFiles(""); }
+
+TEST(InternalUtil, GlobFilesWithLeadingSlash) { TestGlobFiles("/"); }
 
 ////////////////////////////////////////////////////////////////////////////
 // Generic MockFileSystem tests

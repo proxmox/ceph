@@ -20,7 +20,6 @@
 #include "arrow/array.h"
 #include "arrow/compute/api.h"
 #include "arrow/compute/kernels/test_util.h"
-#include "arrow/testing/gtest_common.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/random.h"
 #include "arrow/type.h"
@@ -49,10 +48,23 @@ TEST_F(TestBooleanValidityKernels, ArrayIsValid) {
                    "[false, true, true, false]");
 }
 
-TEST_F(TestBooleanValidityKernels, ArrayIsValidBufferPassthruOptimization) {
-  Datum arg = ArrayFromJSON(boolean(), "[null, 1, 0, null]");
-  ASSERT_OK_AND_ASSIGN(auto validity, arrow::compute::IsValid(arg));
-  ASSERT_EQ(validity.array()->buffers[1], arg.array()->buffers[0]);
+TEST_F(TestBooleanValidityKernels, TrueUnlessNull) {
+  CheckScalarUnary("true_unless_null", type_singleton(), "[]", type_singleton(), "[]");
+  CheckScalarUnary("true_unless_null", type_singleton(), "[null]", type_singleton(),
+                   "[null]");
+  CheckScalarUnary("true_unless_null", type_singleton(), "[0, 1]", type_singleton(),
+                   "[true, true]");
+  CheckScalarUnary("true_unless_null", type_singleton(), "[null, 1, 0, null]",
+                   type_singleton(), "[null, true, true, null]");
+}
+
+TEST_F(TestBooleanValidityKernels, IsValidIsNullNullType) {
+  CheckScalarUnary("is_null", std::make_shared<NullArray>(5),
+                   ArrayFromJSON(boolean(), "[true, true, true, true, true]"));
+  CheckScalarUnary("is_valid", std::make_shared<NullArray>(5),
+                   ArrayFromJSON(boolean(), "[false, false, false, false, false]"));
+  CheckScalarUnary("true_unless_null", std::make_shared<NullArray>(5),
+                   ArrayFromJSON(boolean(), "[null, null, null, null, null]"));
 }
 
 TEST_F(TestBooleanValidityKernels, IsNull) {
@@ -78,6 +90,45 @@ TEST_F(TestBooleanValidityKernels, IsNull) {
                    "[true, false, false, true]", &default_options);
   CheckScalarUnary("is_null", ty, "[null, 1, 0, null]", boolean(),
                    "[true, false, false, true]", &nan_is_null_options);
+}
+
+TEST(TestValidityKernels, IsFinite) {
+  for (const auto& ty : IntTypes()) {
+    CheckScalar("is_finite", {ArrayFromJSON(ty, "[0, 1, 42, null]")},
+                ArrayFromJSON(boolean(), "[true, true, true, null]"));
+  }
+  for (const auto& ty : {decimal128(4, 2), decimal256(4, 2)}) {
+    CheckScalar("is_finite", {ArrayFromJSON(ty, R"(["0.00", "1.01", "-42.00", null])")},
+                ArrayFromJSON(boolean(), "[true, true, true, null]"));
+  }
+  CheckScalar("is_finite", {std::make_shared<NullArray>(4)},
+              ArrayFromJSON(boolean(), "[null, null, null, null]"));
+}
+
+TEST(TestValidityKernels, IsInf) {
+  for (const auto& ty : IntTypes()) {
+    CheckScalar("is_inf", {ArrayFromJSON(ty, "[0, 1, 42, null]")},
+                ArrayFromJSON(boolean(), "[false, false, false, null]"));
+  }
+  for (const auto& ty : {decimal128(4, 2), decimal256(4, 2)}) {
+    CheckScalar("is_inf", {ArrayFromJSON(ty, R"(["0.00", "1.01", "-42.00", null])")},
+                ArrayFromJSON(boolean(), "[false, false, false, null]"));
+  }
+  CheckScalar("is_inf", {std::make_shared<NullArray>(4)},
+              ArrayFromJSON(boolean(), "[null, null, null, null]"));
+}
+
+TEST(TestValidityKernels, IsNan) {
+  for (const auto& ty : IntTypes()) {
+    CheckScalar("is_nan", {ArrayFromJSON(ty, "[0, 1, 42, null]")},
+                ArrayFromJSON(boolean(), "[false, false, false, null]"));
+  }
+  for (const auto& ty : {decimal128(4, 2), decimal256(4, 2)}) {
+    CheckScalar("is_nan", {ArrayFromJSON(ty, R"(["0.00", "1.01", "-42.00", null])")},
+                ArrayFromJSON(boolean(), "[false, false, false, null]"));
+  }
+  CheckScalar("is_nan", {std::make_shared<NullArray>(4)},
+              ArrayFromJSON(boolean(), "[null, null, null, null]"));
 }
 
 TEST(TestValidityKernels, IsValidIsNullNullType) {

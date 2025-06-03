@@ -16,8 +16,11 @@
 // under the License.
 
 #include <stdlib.h>
+
 #include "arrow/memory_pool.h"
 #include "arrow/status.h"
+#include "arrow/testing/gtest_util.h"
+#include "arrow/type_fwd.h"
 #include "benchmark/benchmark.h"
 #include "gandiva/decimal_type_util.h"
 #include "gandiva/projector.h"
@@ -249,6 +252,30 @@ static void TimedTestAllocs(benchmark::State& state) {
       schema, evaluator, data_generator, pool_, 1 * MILLION, 16 * THOUSAND, state);
   ASSERT_TRUE(status.ok());
 }
+
+static void TimedTestOutputStringAllocs(benchmark::State& state) {
+  // schema for input fields
+  auto field_a = field("abcdefghijklmnopqrstuvwxyz", arrow::utf8());
+  auto schema = arrow::schema({field_a});
+  auto pool_ = arrow::default_memory_pool();
+  // output field
+  auto field_res = field("res", utf8());
+
+  // Build expression
+  auto node_a = TreeExprBuilder::MakeField(field_a);
+  auto upper = TreeExprBuilder::MakeFunction("upper", {node_a}, utf8());
+  auto length = TreeExprBuilder::MakeFunction("octet_length", {upper}, int32());
+  auto expr = TreeExprBuilder::MakeExpression(upper, field_res);
+
+  std::shared_ptr<Projector> projector;
+  ASSERT_OK(Projector::Make(schema, {expr}, TestConfiguration(), &projector));
+
+  FastUtf8DataGenerator data_generator(64);
+  ProjectEvaluator evaluator(projector);
+
+  ASSERT_OK((TimedEvaluate<arrow::StringType, std::string>(
+      schema, evaluator, data_generator, pool_, 1 * MILLION, 16 * THOUSAND, state)));
+}
 // following two tests are for benchmark optimization of
 // in expr. will be used in follow-up PRs to optimize in expr.
 
@@ -394,6 +421,35 @@ static void DoDecimalAdd2(benchmark::State& state, int32_t precision, int32_t sc
   ASSERT_OK(status);
 }
 
+static void TimedTestExprCompilation(benchmark::State& state) {
+  int64_t iteration = 0;
+  for (auto _ : state) {
+    // schema for input fields
+    auto field0 = field("f0", int64());
+    auto field1 = field("f1", int64());
+    auto literal = TreeExprBuilder::MakeLiteral(iteration);
+    auto schema = arrow::schema({field0, field1});
+
+    // output field
+    auto field_add = field("c1", int64());
+    auto field_less_than = field("c2", boolean());
+
+    // Build expression
+    auto add_func = TreeExprBuilder::MakeFunction(
+        "add", {TreeExprBuilder::MakeField(field0), literal}, int64());
+    auto less_than_func = TreeExprBuilder::MakeFunction(
+        "less_than", {TreeExprBuilder::MakeField(field1), literal}, boolean());
+
+    auto expr_0 = TreeExprBuilder::MakeExpression(add_func, field_add);
+    auto expr_1 = TreeExprBuilder::MakeExpression(less_than_func, field_less_than);
+
+    std::shared_ptr<Projector> projector;
+    ASSERT_OK(Projector::Make(schema, {expr_0, expr_1}, TestConfiguration(), &projector));
+
+    ++iteration;
+  }
+}
+
 static void DecimalAdd2Fast(benchmark::State& state) {
   // use lesser precision to test the fast-path
   DoDecimalAdd2(state, DecimalTypeUtil::kMaxPrecision - 6, 18);
@@ -434,23 +490,25 @@ static void DecimalAdd3Large(benchmark::State& state) {
   DoDecimalAdd3(state, DecimalTypeUtil::kMaxPrecision, 18, true);
 }
 
-BENCHMARK(TimedTestAdd3)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestBigNested)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestExtractYear)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestFilterAdd2)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestFilterLike)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestCastFloatFromString)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestCastIntFromString)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestAllocs)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestMultiOr)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(TimedTestInExpr)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(DecimalAdd2Fast)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(DecimalAdd2LeadingZeroes)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(DecimalAdd2LeadingZeroesWithDiv)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(DecimalAdd2Large)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(DecimalAdd3Fast)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(DecimalAdd3LeadingZeroes)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(DecimalAdd3LeadingZeroesWithDiv)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
-BENCHMARK(DecimalAdd3Large)->MinTime(1.0)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestExprCompilation)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestAdd3)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestBigNested)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestExtractYear)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestFilterAdd2)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestFilterLike)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestCastFloatFromString)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestCastIntFromString)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestAllocs)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestOutputStringAllocs)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestMultiOr)->Unit(benchmark::kMicrosecond);
+BENCHMARK(TimedTestInExpr)->Unit(benchmark::kMicrosecond);
+BENCHMARK(DecimalAdd2Fast)->Unit(benchmark::kMicrosecond);
+BENCHMARK(DecimalAdd2LeadingZeroes)->Unit(benchmark::kMicrosecond);
+BENCHMARK(DecimalAdd2LeadingZeroesWithDiv)->Unit(benchmark::kMicrosecond);
+BENCHMARK(DecimalAdd2Large)->Unit(benchmark::kMicrosecond);
+BENCHMARK(DecimalAdd3Fast)->Unit(benchmark::kMicrosecond);
+BENCHMARK(DecimalAdd3LeadingZeroes)->Unit(benchmark::kMicrosecond);
+BENCHMARK(DecimalAdd3LeadingZeroesWithDiv)->Unit(benchmark::kMicrosecond);
+BENCHMARK(DecimalAdd3Large)->Unit(benchmark::kMicrosecond);
 
 }  // namespace gandiva

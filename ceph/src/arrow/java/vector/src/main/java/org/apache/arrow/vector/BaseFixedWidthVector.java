@@ -28,6 +28,7 @@ import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.util.ArrowBufPointer;
 import org.apache.arrow.memory.util.ByteFunctionHelpers;
+import org.apache.arrow.memory.util.MemoryUtil;
 import org.apache.arrow.memory.util.hash.ArrowBufHasher;
 import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.compare.VectorVisitor;
@@ -36,8 +37,6 @@ import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.util.CallBack;
 import org.apache.arrow.vector.util.OversizedAllocationException;
 import org.apache.arrow.vector.util.TransferPair;
-
-import io.netty.util.internal.PlatformDependent;
 
 /**
  * BaseFixedWidthVector provides an abstract interface for
@@ -479,7 +478,7 @@ public abstract class BaseFixedWidthVector extends BaseValueVector
   @Override
   public void initializeChildrenFromFields(List<Field> children) {
     if (!children.isEmpty()) {
-      throw new IllegalArgumentException("primitive type vector can not have children");
+      throw new IllegalArgumentException("primitive type vector cannot have children");
     }
   }
 
@@ -552,6 +551,13 @@ public abstract class BaseFixedWidthVector extends BaseValueVector
   }
 
   /**
+   * Validate the scalar values held by this vector.
+   */
+  public void validateScalars() {
+    // No validation by default.
+  }
+
+  /**
    * Construct a transfer pair of this vector and another vector of same type.
    * @param ref name of the target vector
    * @param allocator allocator for the target vector
@@ -561,6 +567,18 @@ public abstract class BaseFixedWidthVector extends BaseValueVector
   @Override
   public TransferPair getTransferPair(String ref, BufferAllocator allocator, CallBack callBack) {
     return getTransferPair(ref, allocator);
+  }
+
+  /**
+   * Construct a transfer pair of this vector and another vector of same type.
+   * @param field The field materialized by this vector.
+   * @param allocator allocator for the target vector
+   * @param callBack not used
+   * @return TransferPair
+   */
+  @Override
+  public TransferPair getTransferPair(Field field, BufferAllocator allocator, CallBack callBack) {
+    return getTransferPair(field, allocator);
   }
 
   /**
@@ -582,7 +600,15 @@ public abstract class BaseFixedWidthVector extends BaseValueVector
   public abstract TransferPair getTransferPair(String ref, BufferAllocator allocator);
 
   /**
-   * Transfer this vector'data to another vector. The memory associated
+   * Construct a transfer pair of this vector and another vector of same type.
+   * @param field Field object used by the target vector
+   * @param allocator allocator for the target vector
+   * @return TransferPair
+   */
+  public abstract TransferPair getTransferPair(Field field, BufferAllocator allocator);
+
+  /**
+   * Transfer this vector's data to another vector. The memory associated
    * with this vector is transferred to the allocator of target vector
    * for accounting and management purposes.
    * @param target destination vector for transfer
@@ -859,7 +885,7 @@ public abstract class BaseFixedWidthVector extends BaseValueVector
       BitVectorHelper.unsetBit(this.getValidityBuffer(), thisIndex);
     } else {
       BitVectorHelper.setBit(this.getValidityBuffer(), thisIndex);
-      PlatformDependent.copyMemory(from.getDataBuffer().memoryAddress() + (long) fromIndex * typeWidth,
+      MemoryUtil.UNSAFE.copyMemory(from.getDataBuffer().memoryAddress() + (long) fromIndex * typeWidth,
               this.getDataBuffer().memoryAddress() + (long) thisIndex * typeWidth, typeWidth);
     }
   }

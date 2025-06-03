@@ -19,14 +19,18 @@
 package metadata
 
 import (
+	"fmt"
 	"math"
 
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/memory"
-	"github.com/apache/arrow/go/v6/parquet"
-	"github.com/apache/arrow/go/v6/parquet/internal/encoding"
-	"github.com/apache/arrow/go/v6/parquet/internal/utils"
-	"github.com/apache/arrow/go/v6/parquet/schema"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/array"
+	"github.com/apache/arrow/go/v15/arrow/float16"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/internal/bitutils"
+	shared_utils "github.com/apache/arrow/go/v15/internal/utils"
+	"github.com/apache/arrow/go/v15/parquet"
+	"github.com/apache/arrow/go/v15/parquet/internal/encoding"
+	"github.com/apache/arrow/go/v15/parquet/schema"
 	"golang.org/x/xerrors"
 )
 
@@ -39,7 +43,7 @@ type Int32Statistics struct {
 	min int32
 	max int32
 
-	bitSetReader utils.SetBitRunReader
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // NewInt32Statistics constructs an appropriate stat object type using the
@@ -48,7 +52,7 @@ type Int32Statistics struct {
 // Panics if the physical type of descr is not parquet.Type.Int32
 func NewInt32Statistics(descr *schema.Column, mem memory.Allocator) *Int32Statistics {
 	if descr.PhysicalType() != parquet.Types.Int32 {
-		panic(xerrors.Errorf("parquet: invalid type %s for constructing a Int32 stat object", descr.PhysicalType()))
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a Int32 stat object", descr.PhysicalType()))
 	}
 
 	return &Int32Statistics{
@@ -63,16 +67,16 @@ func NewInt32Statistics(descr *schema.Column, mem memory.Allocator) *Int32Statis
 	}
 }
 
-// NewInt32StatisticsFromEncoded will construct a propertly typed statistics object
+// NewInt32StatisticsFromEncoded will construct a properly typed statistics object
 // initializing it with the provided information.
 func NewInt32StatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *Int32Statistics {
 	ret := NewInt32Statistics(descr, mem)
 	ret.nvalues += nvalues
 	if encoded.IsSetNullCount() {
-		ret.incNulls(encoded.GetNullCount())
+		ret.IncNulls(encoded.GetNullCount())
 	}
 	if encoded.IsSetDistinctCount() {
-		ret.incDistinct(encoded.GetDistinctCount())
+		ret.IncDistinct(encoded.GetDistinctCount())
 	}
 
 	encodedMin := encoded.GetMin()
@@ -150,9 +154,9 @@ func (s *Int32Statistics) Equals(other TypedStatistics) bool {
 
 func (s *Int32Statistics) getMinMax(values []int32) (min, max int32) {
 	if s.order == schema.SortSIGNED {
-		min, max = utils.GetMinMaxInt32(values)
+		min, max = shared_utils.GetMinMaxInt32(values)
 	} else {
-		umin, umax := utils.GetMinMaxUint32(arrow.Uint32Traits.CastFromBytes(arrow.Int32Traits.CastToBytes(values)))
+		umin, umax := shared_utils.GetMinMaxUint32(arrow.Uint32Traits.CastFromBytes(arrow.Int32Traits.CastToBytes(values)))
 		min, max = int32(umin), int32(umax)
 	}
 	return
@@ -163,16 +167,16 @@ func (s *Int32Statistics) getMinMaxSpaced(values []int32, validBits []byte, vali
 	max = s.defaultMax()
 	var fn func([]int32) (int32, int32)
 	if s.order == schema.SortSIGNED {
-		fn = utils.GetMinMaxInt32
+		fn = shared_utils.GetMinMaxInt32
 	} else {
 		fn = func(v []int32) (int32, int32) {
-			umin, umax := utils.GetMinMaxUint32(arrow.Uint32Traits.CastFromBytes(arrow.Int32Traits.CastToBytes(values)))
+			umin, umax := shared_utils.GetMinMaxUint32(arrow.Uint32Traits.CastFromBytes(arrow.Int32Traits.CastToBytes(values)))
 			return int32(umin), int32(umax)
 		}
 	}
 
 	if s.bitSetReader == nil {
-		s.bitSetReader = utils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
 	} else {
 		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
 	}
@@ -214,7 +218,7 @@ func (s *Int32Statistics) Merge(other TypedStatistics) {
 // Update is used to add more values to the current stat object, finding the
 // min and max values etc.
 func (s *Int32Statistics) Update(values []int32, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	s.nvalues += int64(len(values))
 
 	if len(values) == 0 {
@@ -227,7 +231,7 @@ func (s *Int32Statistics) Update(values []int32, numNull int64) {
 // UpdateSpaced is just like Update, but for spaced values using validBits to determine
 // and skip null values.
 func (s *Int32Statistics) UpdateSpaced(values []int32, validBits []byte, validBitsOffset, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	notnull := int64(len(values)) - numNull
 	s.nvalues += notnull
 
@@ -236,6 +240,26 @@ func (s *Int32Statistics) UpdateSpaced(values []int32, validBits []byte, validBi
 	}
 
 	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *Int32Statistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	if values.DataType().(arrow.FixedWidthDataType).Bytes() != arrow.Int32SizeBytes {
+		return fmt.Errorf("%w: cannot update int32 stats with %s arrow array",
+			arrow.ErrInvalid, values.DataType())
+	}
+
+	rawBytes := values.Data().Buffers()[1].Bytes()[values.Data().Offset()*arrow.Int32SizeBytes:]
+	s.SetMinMax(s.getMinMax(arrow.Int32Traits.CastFromBytes(rawBytes)))
+	return nil
 }
 
 // SetMinMax updates the min and max values only if they are not currently set
@@ -293,7 +317,7 @@ func (s *Int32Statistics) Encode() (enc EncodedStatistics, err error) {
 			case string:
 				err = xerrors.New(r)
 			default:
-				err = xerrors.Errorf("unknown error type thrown from panic: %v", r)
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
 			}
 		}
 	}()
@@ -319,7 +343,7 @@ type Int64Statistics struct {
 	min int64
 	max int64
 
-	bitSetReader utils.SetBitRunReader
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // NewInt64Statistics constructs an appropriate stat object type using the
@@ -328,7 +352,7 @@ type Int64Statistics struct {
 // Panics if the physical type of descr is not parquet.Type.Int64
 func NewInt64Statistics(descr *schema.Column, mem memory.Allocator) *Int64Statistics {
 	if descr.PhysicalType() != parquet.Types.Int64 {
-		panic(xerrors.Errorf("parquet: invalid type %s for constructing a Int64 stat object", descr.PhysicalType()))
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a Int64 stat object", descr.PhysicalType()))
 	}
 
 	return &Int64Statistics{
@@ -343,16 +367,16 @@ func NewInt64Statistics(descr *schema.Column, mem memory.Allocator) *Int64Statis
 	}
 }
 
-// NewInt64StatisticsFromEncoded will construct a propertly typed statistics object
+// NewInt64StatisticsFromEncoded will construct a properly typed statistics object
 // initializing it with the provided information.
 func NewInt64StatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *Int64Statistics {
 	ret := NewInt64Statistics(descr, mem)
 	ret.nvalues += nvalues
 	if encoded.IsSetNullCount() {
-		ret.incNulls(encoded.GetNullCount())
+		ret.IncNulls(encoded.GetNullCount())
 	}
 	if encoded.IsSetDistinctCount() {
-		ret.incDistinct(encoded.GetDistinctCount())
+		ret.IncDistinct(encoded.GetDistinctCount())
 	}
 
 	encodedMin := encoded.GetMin()
@@ -430,9 +454,9 @@ func (s *Int64Statistics) Equals(other TypedStatistics) bool {
 
 func (s *Int64Statistics) getMinMax(values []int64) (min, max int64) {
 	if s.order == schema.SortSIGNED {
-		min, max = utils.GetMinMaxInt64(values)
+		min, max = shared_utils.GetMinMaxInt64(values)
 	} else {
-		umin, umax := utils.GetMinMaxUint64(arrow.Uint64Traits.CastFromBytes(arrow.Int64Traits.CastToBytes(values)))
+		umin, umax := shared_utils.GetMinMaxUint64(arrow.Uint64Traits.CastFromBytes(arrow.Int64Traits.CastToBytes(values)))
 		min, max = int64(umin), int64(umax)
 	}
 	return
@@ -443,16 +467,16 @@ func (s *Int64Statistics) getMinMaxSpaced(values []int64, validBits []byte, vali
 	max = s.defaultMax()
 	var fn func([]int64) (int64, int64)
 	if s.order == schema.SortSIGNED {
-		fn = utils.GetMinMaxInt64
+		fn = shared_utils.GetMinMaxInt64
 	} else {
 		fn = func(v []int64) (int64, int64) {
-			umin, umax := utils.GetMinMaxUint64(arrow.Uint64Traits.CastFromBytes(arrow.Int64Traits.CastToBytes(values)))
+			umin, umax := shared_utils.GetMinMaxUint64(arrow.Uint64Traits.CastFromBytes(arrow.Int64Traits.CastToBytes(values)))
 			return int64(umin), int64(umax)
 		}
 	}
 
 	if s.bitSetReader == nil {
-		s.bitSetReader = utils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
 	} else {
 		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
 	}
@@ -494,7 +518,7 @@ func (s *Int64Statistics) Merge(other TypedStatistics) {
 // Update is used to add more values to the current stat object, finding the
 // min and max values etc.
 func (s *Int64Statistics) Update(values []int64, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	s.nvalues += int64(len(values))
 
 	if len(values) == 0 {
@@ -507,7 +531,7 @@ func (s *Int64Statistics) Update(values []int64, numNull int64) {
 // UpdateSpaced is just like Update, but for spaced values using validBits to determine
 // and skip null values.
 func (s *Int64Statistics) UpdateSpaced(values []int64, validBits []byte, validBitsOffset, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	notnull := int64(len(values)) - numNull
 	s.nvalues += notnull
 
@@ -516,6 +540,26 @@ func (s *Int64Statistics) UpdateSpaced(values []int64, validBits []byte, validBi
 	}
 
 	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *Int64Statistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	if values.DataType().(arrow.FixedWidthDataType).Bytes() != arrow.Int64SizeBytes {
+		return fmt.Errorf("%w: cannot update int64 stats with %s arrow array",
+			arrow.ErrInvalid, values.DataType())
+	}
+
+	rawBytes := values.Data().Buffers()[1].Bytes()[values.Data().Offset()*arrow.Int64SizeBytes:]
+	s.SetMinMax(s.getMinMax(arrow.Int64Traits.CastFromBytes(rawBytes)))
+	return nil
 }
 
 // SetMinMax updates the min and max values only if they are not currently set
@@ -573,7 +617,7 @@ func (s *Int64Statistics) Encode() (enc EncodedStatistics, err error) {
 			case string:
 				err = xerrors.New(r)
 			default:
-				err = xerrors.Errorf("unknown error type thrown from panic: %v", r)
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
 			}
 		}
 	}()
@@ -599,7 +643,7 @@ type Int96Statistics struct {
 	min parquet.Int96
 	max parquet.Int96
 
-	bitSetReader utils.SetBitRunReader
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // NewInt96Statistics constructs an appropriate stat object type using the
@@ -608,7 +652,7 @@ type Int96Statistics struct {
 // Panics if the physical type of descr is not parquet.Type.Int96
 func NewInt96Statistics(descr *schema.Column, mem memory.Allocator) *Int96Statistics {
 	if descr.PhysicalType() != parquet.Types.Int96 {
-		panic(xerrors.Errorf("parquet: invalid type %s for constructing a Int96 stat object", descr.PhysicalType()))
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a Int96 stat object", descr.PhysicalType()))
 	}
 
 	return &Int96Statistics{
@@ -623,16 +667,16 @@ func NewInt96Statistics(descr *schema.Column, mem memory.Allocator) *Int96Statis
 	}
 }
 
-// NewInt96StatisticsFromEncoded will construct a propertly typed statistics object
+// NewInt96StatisticsFromEncoded will construct a properly typed statistics object
 // initializing it with the provided information.
 func NewInt96StatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *Int96Statistics {
 	ret := NewInt96Statistics(descr, mem)
 	ret.nvalues += nvalues
 	if encoded.IsSetNullCount() {
-		ret.incNulls(encoded.GetNullCount())
+		ret.IncNulls(encoded.GetNullCount())
 	}
 	if encoded.IsSetDistinctCount() {
-		ret.incDistinct(encoded.GetDistinctCount())
+		ret.IncDistinct(encoded.GetDistinctCount())
 	}
 
 	encodedMin := encoded.GetMin()
@@ -727,7 +771,7 @@ func (s *Int96Statistics) getMinMaxSpaced(values []parquet.Int96, validBits []by
 	max = s.defaultMax()
 
 	if s.bitSetReader == nil {
-		s.bitSetReader = utils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
 	} else {
 		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
 	}
@@ -766,7 +810,7 @@ func (s *Int96Statistics) Merge(other TypedStatistics) {
 // Update is used to add more values to the current stat object, finding the
 // min and max values etc.
 func (s *Int96Statistics) Update(values []parquet.Int96, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	s.nvalues += int64(len(values))
 
 	if len(values) == 0 {
@@ -779,7 +823,7 @@ func (s *Int96Statistics) Update(values []parquet.Int96, numNull int64) {
 // UpdateSpaced is just like Update, but for spaced values using validBits to determine
 // and skip null values.
 func (s *Int96Statistics) UpdateSpaced(values []parquet.Int96, validBits []byte, validBitsOffset, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	notnull := int64(len(values)) - numNull
 	s.nvalues += notnull
 
@@ -788,6 +832,19 @@ func (s *Int96Statistics) UpdateSpaced(values []parquet.Int96, validBits []byte,
 	}
 
 	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *Int96Statistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	return fmt.Errorf("%w: update int96 stats from Arrow", arrow.ErrNotImplemented)
 }
 
 // SetMinMax updates the min and max values only if they are not currently set
@@ -845,7 +902,7 @@ func (s *Int96Statistics) Encode() (enc EncodedStatistics, err error) {
 			case string:
 				err = xerrors.New(r)
 			default:
-				err = xerrors.Errorf("unknown error type thrown from panic: %v", r)
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
 			}
 		}
 	}()
@@ -871,7 +928,7 @@ type Float32Statistics struct {
 	min float32
 	max float32
 
-	bitSetReader utils.SetBitRunReader
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // NewFloat32Statistics constructs an appropriate stat object type using the
@@ -880,7 +937,7 @@ type Float32Statistics struct {
 // Panics if the physical type of descr is not parquet.Type.Float
 func NewFloat32Statistics(descr *schema.Column, mem memory.Allocator) *Float32Statistics {
 	if descr.PhysicalType() != parquet.Types.Float {
-		panic(xerrors.Errorf("parquet: invalid type %s for constructing a Float32 stat object", descr.PhysicalType()))
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a Float32 stat object", descr.PhysicalType()))
 	}
 
 	return &Float32Statistics{
@@ -895,16 +952,16 @@ func NewFloat32Statistics(descr *schema.Column, mem memory.Allocator) *Float32St
 	}
 }
 
-// NewFloat32StatisticsFromEncoded will construct a propertly typed statistics object
+// NewFloat32StatisticsFromEncoded will construct a properly typed statistics object
 // initializing it with the provided information.
 func NewFloat32StatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *Float32Statistics {
 	ret := NewFloat32Statistics(descr, mem)
 	ret.nvalues += nvalues
 	if encoded.IsSetNullCount() {
-		ret.incNulls(encoded.GetNullCount())
+		ret.IncNulls(encoded.GetNullCount())
 	}
 	if encoded.IsSetDistinctCount() {
-		ret.incDistinct(encoded.GetDistinctCount())
+		ret.IncDistinct(encoded.GetDistinctCount())
 	}
 
 	encodedMin := encoded.GetMin()
@@ -1006,7 +1063,7 @@ func (s *Float32Statistics) getMinMaxSpaced(values []float32, validBits []byte, 
 	max = s.defaultMax()
 
 	if s.bitSetReader == nil {
-		s.bitSetReader = utils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
 	} else {
 		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
 	}
@@ -1045,7 +1102,7 @@ func (s *Float32Statistics) Merge(other TypedStatistics) {
 // Update is used to add more values to the current stat object, finding the
 // min and max values etc.
 func (s *Float32Statistics) Update(values []float32, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	s.nvalues += int64(len(values))
 
 	if len(values) == 0 {
@@ -1058,7 +1115,7 @@ func (s *Float32Statistics) Update(values []float32, numNull int64) {
 // UpdateSpaced is just like Update, but for spaced values using validBits to determine
 // and skip null values.
 func (s *Float32Statistics) UpdateSpaced(values []float32, validBits []byte, validBitsOffset, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	notnull := int64(len(values)) - numNull
 	s.nvalues += notnull
 
@@ -1067,6 +1124,26 @@ func (s *Float32Statistics) UpdateSpaced(values []float32, validBits []byte, val
 	}
 
 	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *Float32Statistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	if values.DataType().(arrow.FixedWidthDataType).Bytes() != arrow.Float32SizeBytes {
+		return fmt.Errorf("%w: cannot update float32 stats with %s arrow array",
+			arrow.ErrInvalid, values.DataType())
+	}
+
+	rawBytes := values.Data().Buffers()[1].Bytes()[values.Data().Offset()*arrow.Float32SizeBytes:]
+	s.SetMinMax(s.getMinMax(arrow.Float32Traits.CastFromBytes(rawBytes)))
+	return nil
 }
 
 // SetMinMax updates the min and max values only if they are not currently set
@@ -1124,7 +1201,7 @@ func (s *Float32Statistics) Encode() (enc EncodedStatistics, err error) {
 			case string:
 				err = xerrors.New(r)
 			default:
-				err = xerrors.Errorf("unknown error type thrown from panic: %v", r)
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
 			}
 		}
 	}()
@@ -1150,7 +1227,7 @@ type Float64Statistics struct {
 	min float64
 	max float64
 
-	bitSetReader utils.SetBitRunReader
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // NewFloat64Statistics constructs an appropriate stat object type using the
@@ -1159,7 +1236,7 @@ type Float64Statistics struct {
 // Panics if the physical type of descr is not parquet.Type.Double
 func NewFloat64Statistics(descr *schema.Column, mem memory.Allocator) *Float64Statistics {
 	if descr.PhysicalType() != parquet.Types.Double {
-		panic(xerrors.Errorf("parquet: invalid type %s for constructing a Float64 stat object", descr.PhysicalType()))
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a Float64 stat object", descr.PhysicalType()))
 	}
 
 	return &Float64Statistics{
@@ -1174,16 +1251,16 @@ func NewFloat64Statistics(descr *schema.Column, mem memory.Allocator) *Float64St
 	}
 }
 
-// NewFloat64StatisticsFromEncoded will construct a propertly typed statistics object
+// NewFloat64StatisticsFromEncoded will construct a properly typed statistics object
 // initializing it with the provided information.
 func NewFloat64StatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *Float64Statistics {
 	ret := NewFloat64Statistics(descr, mem)
 	ret.nvalues += nvalues
 	if encoded.IsSetNullCount() {
-		ret.incNulls(encoded.GetNullCount())
+		ret.IncNulls(encoded.GetNullCount())
 	}
 	if encoded.IsSetDistinctCount() {
-		ret.incDistinct(encoded.GetDistinctCount())
+		ret.IncDistinct(encoded.GetDistinctCount())
 	}
 
 	encodedMin := encoded.GetMin()
@@ -1285,7 +1362,7 @@ func (s *Float64Statistics) getMinMaxSpaced(values []float64, validBits []byte, 
 	max = s.defaultMax()
 
 	if s.bitSetReader == nil {
-		s.bitSetReader = utils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
 	} else {
 		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
 	}
@@ -1324,7 +1401,7 @@ func (s *Float64Statistics) Merge(other TypedStatistics) {
 // Update is used to add more values to the current stat object, finding the
 // min and max values etc.
 func (s *Float64Statistics) Update(values []float64, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	s.nvalues += int64(len(values))
 
 	if len(values) == 0 {
@@ -1337,7 +1414,7 @@ func (s *Float64Statistics) Update(values []float64, numNull int64) {
 // UpdateSpaced is just like Update, but for spaced values using validBits to determine
 // and skip null values.
 func (s *Float64Statistics) UpdateSpaced(values []float64, validBits []byte, validBitsOffset, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	notnull := int64(len(values)) - numNull
 	s.nvalues += notnull
 
@@ -1346,6 +1423,26 @@ func (s *Float64Statistics) UpdateSpaced(values []float64, validBits []byte, val
 	}
 
 	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *Float64Statistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	if values.DataType().(arrow.FixedWidthDataType).Bytes() != arrow.Float64SizeBytes {
+		return fmt.Errorf("%w: cannot update float64 stats with %s arrow array",
+			arrow.ErrInvalid, values.DataType())
+	}
+
+	rawBytes := values.Data().Buffers()[1].Bytes()[values.Data().Offset()*arrow.Float64SizeBytes:]
+	s.SetMinMax(s.getMinMax(arrow.Float64Traits.CastFromBytes(rawBytes)))
+	return nil
 }
 
 // SetMinMax updates the min and max values only if they are not currently set
@@ -1403,7 +1500,7 @@ func (s *Float64Statistics) Encode() (enc EncodedStatistics, err error) {
 			case string:
 				err = xerrors.New(r)
 			default:
-				err = xerrors.Errorf("unknown error type thrown from panic: %v", r)
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
 			}
 		}
 	}()
@@ -1429,7 +1526,7 @@ type BooleanStatistics struct {
 	min bool
 	max bool
 
-	bitSetReader utils.SetBitRunReader
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // NewBooleanStatistics constructs an appropriate stat object type using the
@@ -1438,7 +1535,7 @@ type BooleanStatistics struct {
 // Panics if the physical type of descr is not parquet.Type.Boolean
 func NewBooleanStatistics(descr *schema.Column, mem memory.Allocator) *BooleanStatistics {
 	if descr.PhysicalType() != parquet.Types.Boolean {
-		panic(xerrors.Errorf("parquet: invalid type %s for constructing a Boolean stat object", descr.PhysicalType()))
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a Boolean stat object", descr.PhysicalType()))
 	}
 
 	return &BooleanStatistics{
@@ -1453,16 +1550,16 @@ func NewBooleanStatistics(descr *schema.Column, mem memory.Allocator) *BooleanSt
 	}
 }
 
-// NewBooleanStatisticsFromEncoded will construct a propertly typed statistics object
+// NewBooleanStatisticsFromEncoded will construct a properly typed statistics object
 // initializing it with the provided information.
 func NewBooleanStatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *BooleanStatistics {
 	ret := NewBooleanStatistics(descr, mem)
 	ret.nvalues += nvalues
 	if encoded.IsSetNullCount() {
-		ret.incNulls(encoded.GetNullCount())
+		ret.IncNulls(encoded.GetNullCount())
 	}
 	if encoded.IsSetDistinctCount() {
-		ret.incDistinct(encoded.GetDistinctCount())
+		ret.IncDistinct(encoded.GetDistinctCount())
 	}
 
 	encodedMin := encoded.GetMin()
@@ -1557,7 +1654,7 @@ func (s *BooleanStatistics) getMinMaxSpaced(values []bool, validBits []byte, val
 	max = s.defaultMax()
 
 	if s.bitSetReader == nil {
-		s.bitSetReader = utils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
 	} else {
 		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
 	}
@@ -1596,7 +1693,7 @@ func (s *BooleanStatistics) Merge(other TypedStatistics) {
 // Update is used to add more values to the current stat object, finding the
 // min and max values etc.
 func (s *BooleanStatistics) Update(values []bool, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	s.nvalues += int64(len(values))
 
 	if len(values) == 0 {
@@ -1609,7 +1706,7 @@ func (s *BooleanStatistics) Update(values []bool, numNull int64) {
 // UpdateSpaced is just like Update, but for spaced values using validBits to determine
 // and skip null values.
 func (s *BooleanStatistics) UpdateSpaced(values []bool, validBits []byte, validBitsOffset, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	notnull := int64(len(values)) - numNull
 	s.nvalues += notnull
 
@@ -1618,6 +1715,19 @@ func (s *BooleanStatistics) UpdateSpaced(values []bool, validBits []byte, validB
 	}
 
 	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *BooleanStatistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	return fmt.Errorf("%w: update boolean stats from Arrow", arrow.ErrNotImplemented)
 }
 
 // SetMinMax updates the min and max values only if they are not currently set
@@ -1675,7 +1785,7 @@ func (s *BooleanStatistics) Encode() (enc EncodedStatistics, err error) {
 			case string:
 				err = xerrors.New(r)
 			default:
-				err = xerrors.Errorf("unknown error type thrown from panic: %v", r)
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
 			}
 		}
 	}()
@@ -1701,7 +1811,7 @@ type ByteArrayStatistics struct {
 	min parquet.ByteArray
 	max parquet.ByteArray
 
-	bitSetReader utils.SetBitRunReader
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // NewByteArrayStatistics constructs an appropriate stat object type using the
@@ -1710,7 +1820,7 @@ type ByteArrayStatistics struct {
 // Panics if the physical type of descr is not parquet.Type.ByteArray
 func NewByteArrayStatistics(descr *schema.Column, mem memory.Allocator) *ByteArrayStatistics {
 	if descr.PhysicalType() != parquet.Types.ByteArray {
-		panic(xerrors.Errorf("parquet: invalid type %s for constructing a ByteArray stat object", descr.PhysicalType()))
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a ByteArray stat object", descr.PhysicalType()))
 	}
 
 	return &ByteArrayStatistics{
@@ -1728,16 +1838,16 @@ func NewByteArrayStatistics(descr *schema.Column, mem memory.Allocator) *ByteArr
 	}
 }
 
-// NewByteArrayStatisticsFromEncoded will construct a propertly typed statistics object
+// NewByteArrayStatisticsFromEncoded will construct a properly typed statistics object
 // initializing it with the provided information.
 func NewByteArrayStatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *ByteArrayStatistics {
 	ret := NewByteArrayStatistics(descr, mem)
 	ret.nvalues += nvalues
 	if encoded.IsSetNullCount() {
-		ret.incNulls(encoded.GetNullCount())
+		ret.IncNulls(encoded.GetNullCount())
 	}
 	if encoded.IsSetDistinctCount() {
-		ret.incDistinct(encoded.GetDistinctCount())
+		ret.IncDistinct(encoded.GetDistinctCount())
 	}
 
 	encodedMin := encoded.GetMin()
@@ -1753,7 +1863,9 @@ func NewByteArrayStatisticsFromEncoded(descr *schema.Column, mem memory.Allocato
 }
 
 func (s *ByteArrayStatistics) plainEncode(src parquet.ByteArray) []byte {
-	return src
+	out := make([]byte, len(src))
+	copy(out, src)
+	return out
 }
 
 func (s *ByteArrayStatistics) plainDecode(src []byte) parquet.ByteArray {
@@ -1830,7 +1942,7 @@ func (s *ByteArrayStatistics) getMinMaxSpaced(values []parquet.ByteArray, validB
 	max = s.defaultMax()
 
 	if s.bitSetReader == nil {
-		s.bitSetReader = utils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
 	} else {
 		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
 	}
@@ -1869,7 +1981,7 @@ func (s *ByteArrayStatistics) Merge(other TypedStatistics) {
 // Update is used to add more values to the current stat object, finding the
 // min and max values etc.
 func (s *ByteArrayStatistics) Update(values []parquet.ByteArray, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	s.nvalues += int64(len(values))
 
 	if len(values) == 0 {
@@ -1882,7 +1994,7 @@ func (s *ByteArrayStatistics) Update(values []parquet.ByteArray, numNull int64) 
 // UpdateSpaced is just like Update, but for spaced values using validBits to determine
 // and skip null values.
 func (s *ByteArrayStatistics) UpdateSpaced(values []parquet.ByteArray, validBits []byte, validBitsOffset, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	notnull := int64(len(values)) - numNull
 	s.nvalues += notnull
 
@@ -1891,6 +2003,45 @@ func (s *ByteArrayStatistics) UpdateSpaced(values []parquet.ByteArray, validBits
 	}
 
 	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *ByteArrayStatistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	if !arrow.IsBaseBinary(values.DataType().ID()) {
+		return fmt.Errorf("%w: can only update ByteArray stats from binary or string array", arrow.ErrInvalid)
+	}
+
+	var (
+		min       = s.defaultMin()
+		max       = s.defaultMax()
+		arr       = values.(array.BinaryLike)
+		data      = arr.ValueBytes()
+		curOffset = int64(0)
+	)
+
+	for i := 0; i < arr.Len(); i++ {
+		nextOffset := arr.ValueOffset64(i + 1)
+		v := data[curOffset:nextOffset]
+		curOffset = nextOffset
+
+		if len(v) == 0 {
+			continue
+		}
+
+		min = s.minval(min, v)
+		max = s.maxval(max, v)
+	}
+
+	s.SetMinMax(min, max)
+	return nil
 }
 
 // SetMinMax updates the min and max values only if they are not currently set
@@ -1948,7 +2099,7 @@ func (s *ByteArrayStatistics) Encode() (enc EncodedStatistics, err error) {
 			case string:
 				err = xerrors.New(r)
 			default:
-				err = xerrors.Errorf("unknown error type thrown from panic: %v", r)
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
 			}
 		}
 	}()
@@ -1974,7 +2125,7 @@ type FixedLenByteArrayStatistics struct {
 	min parquet.FixedLenByteArray
 	max parquet.FixedLenByteArray
 
-	bitSetReader utils.SetBitRunReader
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // NewFixedLenByteArrayStatistics constructs an appropriate stat object type using the
@@ -1983,7 +2134,7 @@ type FixedLenByteArrayStatistics struct {
 // Panics if the physical type of descr is not parquet.Type.FixedLenByteArray
 func NewFixedLenByteArrayStatistics(descr *schema.Column, mem memory.Allocator) *FixedLenByteArrayStatistics {
 	if descr.PhysicalType() != parquet.Types.FixedLenByteArray {
-		panic(xerrors.Errorf("parquet: invalid type %s for constructing a FixedLenByteArray stat object", descr.PhysicalType()))
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a FixedLenByteArray stat object", descr.PhysicalType()))
 	}
 
 	return &FixedLenByteArrayStatistics{
@@ -1998,16 +2149,16 @@ func NewFixedLenByteArrayStatistics(descr *schema.Column, mem memory.Allocator) 
 	}
 }
 
-// NewFixedLenByteArrayStatisticsFromEncoded will construct a propertly typed statistics object
+// NewFixedLenByteArrayStatisticsFromEncoded will construct a properly typed statistics object
 // initializing it with the provided information.
 func NewFixedLenByteArrayStatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *FixedLenByteArrayStatistics {
 	ret := NewFixedLenByteArrayStatistics(descr, mem)
 	ret.nvalues += nvalues
 	if encoded.IsSetNullCount() {
-		ret.incNulls(encoded.GetNullCount())
+		ret.IncNulls(encoded.GetNullCount())
 	}
 	if encoded.IsSetDistinctCount() {
-		ret.incDistinct(encoded.GetDistinctCount())
+		ret.IncDistinct(encoded.GetDistinctCount())
 	}
 
 	encodedMin := encoded.GetMin()
@@ -2114,7 +2265,7 @@ func (s *FixedLenByteArrayStatistics) getMinMaxSpaced(values []parquet.FixedLenB
 	max = s.defaultMax()
 
 	if s.bitSetReader == nil {
-		s.bitSetReader = utils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
 	} else {
 		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
 	}
@@ -2153,7 +2304,7 @@ func (s *FixedLenByteArrayStatistics) Merge(other TypedStatistics) {
 // Update is used to add more values to the current stat object, finding the
 // min and max values etc.
 func (s *FixedLenByteArrayStatistics) Update(values []parquet.FixedLenByteArray, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	s.nvalues += int64(len(values))
 
 	if len(values) == 0 {
@@ -2166,7 +2317,7 @@ func (s *FixedLenByteArrayStatistics) Update(values []parquet.FixedLenByteArray,
 // UpdateSpaced is just like Update, but for spaced values using validBits to determine
 // and skip null values.
 func (s *FixedLenByteArrayStatistics) UpdateSpaced(values []parquet.FixedLenByteArray, validBits []byte, validBitsOffset, numNull int64) {
-	s.incNulls(numNull)
+	s.IncNulls(numNull)
 	notnull := int64(len(values)) - numNull
 	s.nvalues += notnull
 
@@ -2175,6 +2326,39 @@ func (s *FixedLenByteArrayStatistics) UpdateSpaced(values []parquet.FixedLenByte
 	}
 
 	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *FixedLenByteArrayStatistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	dt := values.DataType()
+	if dt.ID() != arrow.FIXED_SIZE_BINARY && dt.ID() != arrow.DECIMAL {
+		return fmt.Errorf("%w: only fixed size binary and decimal128 arrays are supported to update stats from arrow",
+			arrow.ErrInvalid)
+	}
+
+	var (
+		width = dt.(arrow.FixedWidthDataType).Bytes()
+		data  = values.Data().Buffers()[1].Bytes()[values.Data().Offset()*width:]
+		min   = s.defaultMin()
+		max   = s.defaultMax()
+	)
+
+	for i := 0; i < values.Len(); i++ {
+		v := data[i*width : (i+1)*width]
+		min = s.minval(min, v)
+		max = s.maxval(min, v)
+	}
+
+	s.SetMinMax(min, max)
+	return nil
 }
 
 // SetMinMax updates the min and max values only if they are not currently set
@@ -2232,7 +2416,315 @@ func (s *FixedLenByteArrayStatistics) Encode() (enc EncodedStatistics, err error
 			case string:
 				err = xerrors.New(r)
 			default:
-				err = xerrors.Errorf("unknown error type thrown from panic: %v", r)
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
+			}
+		}
+	}()
+	if s.HasMinMax() {
+		enc.SetMax(s.EncodeMax())
+		enc.SetMin(s.EncodeMin())
+	}
+	if s.HasNullCount() {
+		enc.SetNullCount(s.NullCount())
+	}
+	if s.HasDistinctCount() {
+		enc.SetDistinctCount(s.DistinctCount())
+	}
+	return
+}
+
+type minmaxPairFloat16 [2]parquet.FixedLenByteArray
+
+// Float16Statistics is the typed interface for managing stats for a column
+// of Float16 type.
+type Float16Statistics struct {
+	statistics
+	min parquet.FixedLenByteArray
+	max parquet.FixedLenByteArray
+
+	bitSetReader bitutils.SetBitRunReader
+}
+
+// NewFloat16Statistics constructs an appropriate stat object type using the
+// given column descriptor and allocator.
+//
+// Panics if the physical type of descr is not parquet.Type.FixedLenByteArray
+// Panics if the logical type of descr is not schema.Float16LogicalType
+func NewFloat16Statistics(descr *schema.Column, mem memory.Allocator) *Float16Statistics {
+	if descr.PhysicalType() != parquet.Types.FixedLenByteArray {
+		panic(fmt.Errorf("parquet: invalid type %s for constructing a Float16 stat object", descr.PhysicalType()))
+	}
+	if !descr.LogicalType().Equals(schema.Float16LogicalType{}) {
+		panic(fmt.Errorf("parquet: invalid logical type %s for constructing a Float16 stat object", descr.LogicalType().String()))
+	}
+
+	return &Float16Statistics{
+		statistics: statistics{
+			descr:            descr,
+			hasNullCount:     true,
+			hasDistinctCount: true,
+			order:            descr.SortOrder(),
+			encoder:          encoding.NewEncoder(descr.PhysicalType(), parquet.Encodings.Plain, false, descr, mem),
+			mem:              mem,
+		},
+	}
+}
+
+// NewFloat16StatisticsFromEncoded will construct a properly typed statistics object
+// initializing it with the provided information.
+func NewFloat16StatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalues int64, encoded StatProvider) *Float16Statistics {
+	ret := NewFloat16Statistics(descr, mem)
+	ret.nvalues += nvalues
+	if encoded.IsSetNullCount() {
+		ret.IncNulls(encoded.GetNullCount())
+	}
+	if encoded.IsSetDistinctCount() {
+		ret.IncDistinct(encoded.GetDistinctCount())
+	}
+
+	encodedMin := encoded.GetMin()
+	if encodedMin != nil && len(encodedMin) > 0 {
+		ret.min = ret.plainDecode(encodedMin)
+	}
+	encodedMax := encoded.GetMax()
+	if encodedMax != nil && len(encodedMax) > 0 {
+		ret.max = ret.plainDecode(encodedMax)
+	}
+	ret.hasMinMax = encoded.IsSetMax() || encoded.IsSetMin()
+	return ret
+}
+
+func (s *Float16Statistics) plainEncode(src parquet.FixedLenByteArray) []byte {
+	s.encoder.(encoding.FixedLenByteArrayEncoder).Put([]parquet.FixedLenByteArray{src})
+	buf, err := s.encoder.FlushValues()
+	if err != nil {
+		panic(err) // recovered by Encode
+	}
+	defer buf.Release()
+
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out
+}
+
+func (s *Float16Statistics) plainDecode(src []byte) parquet.FixedLenByteArray {
+	var buf [1]parquet.FixedLenByteArray
+
+	decoder := encoding.NewDecoder(s.descr.PhysicalType(), parquet.Encodings.Plain, s.descr, s.mem)
+	decoder.SetData(1, src)
+	decoder.(encoding.FixedLenByteArrayDecoder).Decode(buf[:])
+	return buf[0]
+}
+
+func (s *Float16Statistics) minval(a, b parquet.FixedLenByteArray) parquet.FixedLenByteArray {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case s.less(a, b):
+		return a
+	default:
+		return b
+	}
+}
+
+func (s *Float16Statistics) maxval(a, b parquet.FixedLenByteArray) parquet.FixedLenByteArray {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case s.less(a, b):
+		return b
+	default:
+		return a
+	}
+}
+
+// MinMaxEqual returns true if both stat objects have the same Min and Max values
+func (s *Float16Statistics) MinMaxEqual(rhs *Float16Statistics) bool {
+	return s.equal(s.min, rhs.min) && s.equal(s.max, rhs.max)
+}
+
+// Equals returns true only if both objects are the same type, have the same min and
+// max values, null count, distinct count and number of values.
+func (s *Float16Statistics) Equals(other TypedStatistics) bool {
+	if s.Type() != other.Type() || !s.descr.LogicalType().Equals(other.Descr().LogicalType()) {
+		return false
+	}
+	rhs, ok := other.(*Float16Statistics)
+	if !ok {
+		return false
+	}
+
+	if s.HasMinMax() != rhs.HasMinMax() {
+		return false
+	}
+	return (s.hasMinMax && s.MinMaxEqual(rhs)) &&
+		s.NullCount() == rhs.NullCount() &&
+		s.DistinctCount() == rhs.DistinctCount() &&
+		s.NumValues() == rhs.NumValues()
+}
+
+func (s *Float16Statistics) coalesce(val, fallback parquet.FixedLenByteArray) parquet.FixedLenByteArray {
+	if float16.FromLEBytes(val).IsNaN() {
+		return fallback
+	}
+	return val
+}
+
+func (s *Float16Statistics) getMinMax(values []parquet.FixedLenByteArray) (min, max parquet.FixedLenByteArray) {
+	defMin := s.defaultMin()
+	defMax := s.defaultMax()
+
+	min = defMin
+	max = defMax
+
+	for _, v := range values {
+		min = s.minval(min, s.coalesce(v, defMin))
+		max = s.maxval(max, s.coalesce(v, defMax))
+	}
+	return
+}
+
+func (s *Float16Statistics) getMinMaxSpaced(values []parquet.FixedLenByteArray, validBits []byte, validBitsOffset int64) (min, max parquet.FixedLenByteArray) {
+	min = s.defaultMin()
+	max = s.defaultMax()
+
+	if s.bitSetReader == nil {
+		s.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(values)))
+	} else {
+		s.bitSetReader.Reset(validBits, validBitsOffset, int64(len(values)))
+	}
+
+	for {
+		run := s.bitSetReader.NextRun()
+		if run.Length == 0 {
+			break
+		}
+		for _, v := range values[int(run.Pos):int(run.Pos+run.Length)] {
+			min = s.minval(min, coalesce(v, s.defaultMin()).(parquet.FixedLenByteArray))
+			max = s.maxval(max, coalesce(v, s.defaultMax()).(parquet.FixedLenByteArray))
+		}
+	}
+	return
+}
+
+func (s *Float16Statistics) Min() parquet.FixedLenByteArray { return s.min }
+func (s *Float16Statistics) Max() parquet.FixedLenByteArray { return s.max }
+
+// Merge merges the stats from other into this stat object, updating
+// the null count, distinct count, number of values and the min/max if
+// appropriate.
+func (s *Float16Statistics) Merge(other TypedStatistics) {
+	rhs, ok := other.(*Float16Statistics)
+	if !ok {
+		panic("incompatible stat type merge")
+	}
+
+	s.statistics.merge(rhs)
+	if rhs.HasMinMax() {
+		s.SetMinMax(rhs.Min(), rhs.Max())
+	}
+}
+
+// Update is used to add more values to the current stat object, finding the
+// min and max values etc.
+func (s *Float16Statistics) Update(values []parquet.FixedLenByteArray, numNull int64) {
+	s.IncNulls(numNull)
+	s.nvalues += int64(len(values))
+
+	if len(values) == 0 {
+		return
+	}
+
+	s.SetMinMax(s.getMinMax(values))
+}
+
+// UpdateSpaced is just like Update, but for spaced values using validBits to determine
+// and skip null values.
+func (s *Float16Statistics) UpdateSpaced(values []parquet.FixedLenByteArray, validBits []byte, validBitsOffset, numNull int64) {
+	s.IncNulls(numNull)
+	notnull := int64(len(values)) - numNull
+	s.nvalues += notnull
+
+	if notnull == 0 {
+		return
+	}
+
+	s.SetMinMax(s.getMinMaxSpaced(values, validBits, validBitsOffset))
+}
+
+func (s *Float16Statistics) UpdateFromArrow(values arrow.Array, updateCounts bool) error {
+	if updateCounts {
+		s.IncNulls(int64(values.NullN()))
+		s.nvalues += int64(values.Len() - values.NullN())
+	}
+
+	if values.NullN() == values.Len() {
+		return nil
+	}
+
+	return fmt.Errorf("%w: update float16 stats from Arrow", arrow.ErrNotImplemented)
+}
+
+// SetMinMax updates the min and max values only if they are not currently set
+// or if argMin is less than the current min / argMax is greater than the current max
+func (s *Float16Statistics) SetMinMax(argMin, argMax parquet.FixedLenByteArray) {
+	maybeMinMax := s.cleanStat([2]parquet.FixedLenByteArray{argMin, argMax})
+	if maybeMinMax == nil {
+		return
+	}
+
+	min := (*maybeMinMax)[0]
+	max := (*maybeMinMax)[1]
+
+	if !s.hasMinMax {
+		s.hasMinMax = true
+		s.min = min
+		s.max = max
+	} else {
+		if !s.less(s.min, min) {
+			s.min = min
+		}
+		if s.less(s.max, max) {
+			s.max = max
+		}
+	}
+}
+
+// EncodeMin returns the encoded min value with plain encoding.
+//
+// ByteArray stats do not include the length in the encoding.
+func (s *Float16Statistics) EncodeMin() []byte {
+	if s.HasMinMax() {
+		return s.plainEncode(s.min)
+	}
+	return nil
+}
+
+// EncodeMax returns the current encoded max value with plain encoding
+//
+// ByteArray stats do not include the length in the encoding
+func (s *Float16Statistics) EncodeMax() []byte {
+	if s.HasMinMax() {
+		return s.plainEncode(s.max)
+	}
+	return nil
+}
+
+// Encode returns a populated EncodedStatistics object
+func (s *Float16Statistics) Encode() (enc EncodedStatistics, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			switch r := r.(type) {
+			case error:
+				err = r
+			case string:
+				err = xerrors.New(r)
+			default:
+				err = fmt.Errorf("unknown error type thrown from panic: %v", r)
 			}
 		}
 	}()
@@ -2271,6 +2763,9 @@ func NewStatistics(descr *schema.Column, mem memory.Allocator) TypedStatistics {
 	case parquet.Types.ByteArray:
 		return NewByteArrayStatistics(descr, mem)
 	case parquet.Types.FixedLenByteArray:
+		if descr.LogicalType().Equals(schema.Float16LogicalType{}) {
+			return NewFloat16Statistics(descr, mem)
+		}
 		return NewFixedLenByteArrayStatistics(descr, mem)
 	default:
 		panic("not implemented")
@@ -2301,6 +2796,9 @@ func NewStatisticsFromEncoded(descr *schema.Column, mem memory.Allocator, nvalue
 	case parquet.Types.ByteArray:
 		return NewByteArrayStatisticsFromEncoded(descr, mem, nvalues, encoded)
 	case parquet.Types.FixedLenByteArray:
+		if descr.LogicalType().Equals(schema.Float16LogicalType{}) {
+			return NewFloat16StatisticsFromEncoded(descr, mem, nvalues, encoded)
+		}
 		return NewFixedLenByteArrayStatisticsFromEncoded(descr, mem, nvalues, encoded)
 	default:
 		panic("not implemented")

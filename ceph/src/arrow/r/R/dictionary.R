@@ -34,6 +34,19 @@ DictionaryType <- R6Class("DictionaryType",
   public = list(
     ToString = function() {
       prettier_dictionary_type(DataType__ToString(self))
+    },
+    code = function(namespace = FALSE) {
+      details <- list()
+      if (self$index_type != int32()) {
+        details$index_type <- self$index_type$code(namespace)
+      }
+      if (self$value_type != utf8()) {
+        details$value_type <- self$value_type$code(namespace)
+      }
+      if (isTRUE(self$ordered)) {
+        details$ordered <- TRUE
+      }
+      call2("dictionary", !!!details, .ns = if (namespace) "arrow")
     }
   ),
   active = list(

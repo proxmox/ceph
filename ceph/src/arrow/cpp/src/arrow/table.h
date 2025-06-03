@@ -63,9 +63,19 @@ class ARROW_EXPORT Table {
                                      const std::vector<std::shared_ptr<Array>>& arrays,
                                      int64_t num_rows = -1);
 
+  /// \brief Create an empty Table of a given schema
+  ///
+  /// The output Table will be created with a single empty chunk per column.
+  ///
+  /// \param[in] schema the schema of the empty Table
+  /// \param[in] pool the memory pool to allocate memory from
+  /// \return the resulting Table
+  static Result<std::shared_ptr<Table>> MakeEmpty(
+      std::shared_ptr<Schema> schema, MemoryPool* pool = default_memory_pool());
+
   /// \brief Construct a Table from a RecordBatchReader.
   ///
-  /// \param[in] reader the arrow::Schema for each batch
+  /// \param[in] reader the arrow::RecordBatchReader that produces batches
   static Result<std::shared_ptr<Table>> FromRecordBatchReader(RecordBatchReader* reader);
 
   /// \brief Construct a Table from RecordBatches, using schema supplied by the first
@@ -208,6 +218,15 @@ class ARROW_EXPORT Table {
   Result<std::shared_ptr<Table>> CombineChunks(
       MemoryPool* pool = default_memory_pool()) const;
 
+  /// \brief Make a new record batch by combining the chunks this table has.
+  ///
+  /// All the underlying chunks in the ChunkedArray of each column are
+  /// concatenated into a single chunk.
+  ///
+  /// \param[in] pool The pool for buffer allocations
+  Result<std::shared_ptr<RecordBatch>> CombineChunksToBatch(
+      MemoryPool* pool = default_memory_pool()) const;
+
  protected:
   Table();
 
@@ -226,6 +245,7 @@ class ARROW_EXPORT TableBatchReader : public RecordBatchReader {
  public:
   /// \brief Construct a TableBatchReader for the given table
   explicit TableBatchReader(const Table& table);
+  explicit TableBatchReader(std::shared_ptr<Table> table);
 
   std::shared_ptr<Schema> schema() const override;
 
@@ -238,6 +258,7 @@ class ARROW_EXPORT TableBatchReader : public RecordBatchReader {
   void set_chunksize(int64_t chunksize);
 
  private:
+  std::shared_ptr<Table> owned_table_;
   const Table& table_;
   std::vector<ChunkedArray*> column_data_;
   std::vector<int> chunk_numbers_;
@@ -260,28 +281,55 @@ struct ARROW_EXPORT ConcatenateTablesOptions {
   /// is the result of concatenating the corresponding columns in all input tables.
   bool unify_schemas = false;
 
+  /// options to control how fields are merged when unifying schemas
+  ///
+  /// This field will be ignored if unify_schemas is false
   Field::MergeOptions field_merge_options = Field::MergeOptions::Defaults();
 
   static ConcatenateTablesOptions Defaults() { return {}; }
 };
 
-/// \brief Construct table from multiple input tables.
+/// \brief Construct a new table from multiple input tables.
+///
+/// The new table is assembled from existing column chunks without copying,
+/// if schemas are identical. If schemas do not match exactly and
+/// unify_schemas is enabled in options (off by default), an attempt is
+/// made to unify them, and then column chunks are converted to their
+/// respective unified datatype, which will probably incur a copy.
+/// :func:`arrow::PromoteTableToSchema` is used to unify schemas.
+///
+/// Tables are concatenated in order they are provided in and the order of
+/// rows within tables will be preserved.
+///
+/// \param[in] tables a std::vector of Tables to be concatenated
+/// \param[in] options specify how to unify schema of input tables
+/// \param[in] memory_pool MemoryPool to be used if null-filled arrays need to
+/// be created or if existing column chunks need to endure type conversion
+/// \return new Table
+
 ARROW_EXPORT
 Result<std::shared_ptr<Table>> ConcatenateTables(
     const std::vector<std::shared_ptr<Table>>& tables,
     ConcatenateTablesOptions options = ConcatenateTablesOptions::Defaults(),
     MemoryPool* memory_pool = default_memory_pool());
 
+namespace compute {
+class CastOptions;
+}
+
 /// \brief Promotes a table to conform to the given schema.
 ///
-/// If a field in the schema does not have a corresponding column in the
-/// table, a column of nulls will be added to the resulting table.
-/// If the corresponding column is of type Null, it will be promoted to
-/// the type specified by schema, with null values filled.
+/// If a field in the schema does not have a corresponding column in
+/// the table, a column of nulls will be added to the resulting table.
+/// If the corresponding column is of type Null, it will be promoted
+/// to the type specified by schema, with null values filled. The
+/// column will be casted to the type specified by the schema.
+///
 /// Returns an error:
 /// - if the corresponding column's type is not compatible with the
 ///   schema.
 /// - if there is a column in the table that does not exist in the schema.
+/// - if the cast fails or casting would be required but is not available.
 ///
 /// \param[in] table the input Table
 /// \param[in] schema the target schema to promote to
@@ -291,5 +339,29 @@ ARROW_EXPORT
 Result<std::shared_ptr<Table>> PromoteTableToSchema(
     const std::shared_ptr<Table>& table, const std::shared_ptr<Schema>& schema,
     MemoryPool* pool = default_memory_pool());
+
+/// \brief Promotes a table to conform to the given schema.
+///
+/// If a field in the schema does not have a corresponding column in
+/// the table, a column of nulls will be added to the resulting table.
+/// If the corresponding column is of type Null, it will be promoted
+/// to the type specified by schema, with null values filled. The column
+/// will be casted to the type specified by the schema.
+///
+/// Returns an error:
+/// - if the corresponding column's type is not compatible with the
+///   schema.
+/// - if there is a column in the table that does not exist in the schema.
+/// - if the cast fails or casting would be required but is not available.
+///
+/// \param[in] table the input Table
+/// \param[in] schema the target schema to promote to
+/// \param[in] options The cast options to allow promotion of types
+/// \param[in] pool The memory pool to be used if null-filled arrays need to
+/// be created.
+ARROW_EXPORT
+Result<std::shared_ptr<Table>> PromoteTableToSchema(
+    const std::shared_ptr<Table>& table, const std::shared_ptr<Schema>& schema,
+    const compute::CastOptions& options, MemoryPool* pool = default_memory_pool());
 
 }  // namespace arrow

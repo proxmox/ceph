@@ -3,7 +3,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TargetFrameworks>net7.0</TargetFrameworks>
   </PropertyGroup>
 
   <ItemGroup>

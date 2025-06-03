@@ -33,8 +33,9 @@
 #' Linux distribution and version and find an appropriate C++ library. `FALSE`
 #' would tell the script not to retrieve a binary and instead build Arrow C++
 #' from source. Other valid values are strings corresponding to a Linux
-#' distribution-version, to override the value that would be detected.
-#' See `vignette("install", package = "arrow")` for further details.
+#' distribution-version, to override the value that would be detected. See the
+#' \href{https://arrow.apache.org/docs/r/articles/install.html}{install guide}
+#' for further details.
 #' @param use_system logical: Should we use `pkg-config` to look for Arrow
 #' system packages? Default is `FALSE`. If `TRUE`, source installation may be
 #' faster, but there is a risk of version mismatch. This sets the
@@ -49,9 +50,10 @@
 #' @param ... Additional arguments passed to `install.packages()`
 #' @export
 #' @importFrom utils install.packages
-#' @seealso [arrow_available()] to see if the package was configured with
-#' necessary C++ dependencies. `vignette("install", package = "arrow")` for
-#' more ways to tune installation on Linux.
+#' @seealso [arrow_info()] to see if the package was configured with
+#' necessary C++ dependencies.
+#' \href{https://arrow.apache.org/docs/r/articles/install.html}{install guide}
+#' for more ways to tune installation on Linux.
 install_arrow <- function(nightly = FALSE,
                           binary = Sys.getenv("LIBARROW_BINARY", TRUE),
                           use_system = Sys.getenv("ARROW_USE_PKG_CONFIG", FALSE),
@@ -59,7 +61,6 @@ install_arrow <- function(nightly = FALSE,
                           verbose = Sys.getenv("ARROW_R_DEV", FALSE),
                           repos = getOption("repos"),
                           ...) {
-  sysname <- tolower(Sys.info()[["sysname"]])
   conda <- isTRUE(grepl("conda", R.Version()$platform))
 
   if (conda) {
@@ -78,7 +79,7 @@ install_arrow <- function(nightly = FALSE,
     # On the M1, we can't use the usual autobrew, which pulls Intel dependencies
     apple_m1 <- grepl("arm-apple|aarch64.*darwin", R.Version()$platform)
     # On Rosetta, we have to build without JEMALLOC, so we also can't autobrew
-    rosetta <- identical(sysname, "darwin") && identical(system("sysctl -n sysctl.proc_translated", intern = TRUE), "1")
+    rosetta <- on_rosetta()
     if (rosetta) {
       Sys.setenv(ARROW_JEMALLOC = "OFF")
     }
@@ -113,7 +114,7 @@ arrow_repos <- function(repos = getOption("repos"), nightly = FALSE) {
     # Set the default/CDN
     repos <- "https://cloud.r-project.org/"
   }
-  dev_repo <- getOption("arrow.dev_repo", "https://arrow-r-nightly.s3.amazonaws.com")
+  dev_repo <- getOption("arrow.dev_repo", "https://nightlies.apache.org/arrow/r")
   # Remove it if it's there (so nightly=FALSE won't accidentally pull from it)
   repos <- setdiff(repos, dev_repo)
   if (nightly) {
@@ -169,7 +170,7 @@ reload_arrow <- function() {
 #'
 #' ### Using a computer with internet access, pre-download the dependencies:
 #' * Install the `arrow` package _or_ run
-#'   `source("https://raw.githubusercontent.com/apache/arrow/master/r/R/install-arrow.R")`
+#'   `source("https://raw.githubusercontent.com/apache/arrow/main/r/R/install-arrow.R")`
 #' * Run `create_package_with_all_dependencies("my_arrow_pkg.tar.gz")`
 #' * Copy the newly created `my_arrow_pkg.tar.gz` to the computer without internet access
 #'
@@ -189,6 +190,13 @@ reload_arrow <- function() {
 #' }
 #' @export
 create_package_with_all_dependencies <- function(dest_file = NULL, source_file = NULL) {
+  if (Sys.which("bash") == "") {
+    stop("
+    This function requires bash to be installed and available in your PATH.
+    If using RTools, it may be useful to run this code as:
+    pkgbuild::with_build_tools(create_package_with_all_dependencies())
+    ")
+  }
   if (is.null(source_file)) {
     pkg_download_dir <- tempfile()
     dir.create(pkg_download_dir)
@@ -208,17 +216,29 @@ create_package_with_all_dependencies <- function(dest_file = NULL, source_file =
   untar_dir <- tempfile()
   on.exit(unlink(untar_dir, recursive = TRUE), add = TRUE)
   utils::untar(source_file, exdir = untar_dir)
-  tools_dir <- file.path(untar_dir, "arrow/tools")
-  download_dependencies_sh <- file.path(tools_dir, "cpp/thirdparty/download_dependencies.sh")
+  tools_dir <- file.path(normalizePath(untar_dir, winslash = "/"), "arrow/tools")
+  download_dependencies_sh <- file.path(tools_dir, "download_dependencies_R.sh")
   # If you change this path, also need to edit nixlibs.R
   download_dir <- file.path(tools_dir, "thirdparty_dependencies")
   dir.create(download_dir)
+  download_script <- tempfile(fileext = ".R")
 
-  message("Downloading files to ", download_dir)
-  download_successful <- system2(download_dependencies_sh, download_dir, stdout = FALSE) == 0
-  if (!download_successful) {
-    stop("Failed to download thirdparty dependencies")
+  if (isTRUE(Sys.info()["sysname"] == "Windows")) {
+    download_dependencies_sh <- wslify_path(download_dependencies_sh)
   }
+
+  parse_versions_success <- system2(
+    "bash", c(download_dependencies_sh, download_dir),
+    stdout = download_script,
+    stderr = FALSE
+  ) == 0
+
+  if (!parse_versions_success) {
+    stop(paste("Failed to parse versions.txt; view ", download_script, "for more information", collapse = ""))
+  }
+  # `source` the download_script to use R to download all the dependency bundles
+  source(download_script)
+
   # Need to change directory to untar_dir so tar() will use relative paths. That
   # means we'll need a full, non-relative path for dest_file. (extra_flags="-C"
   # doesn't work with R's internal tar)
@@ -236,4 +256,27 @@ create_package_with_all_dependencies <- function(dest_file = NULL, source_file =
     stop("Failed to create new tar.gz file")
   }
   invisible(dest_file)
+}
+
+# Convert a Windows path to a WSL path
+# e.g. wslify_path("C:/Users/user/AppData/") returns "/mnt/c/Users/user/AppData"
+wslify_path <- function(path) {
+  m <- regexpr("[A-Z]:/", path)
+  drive_expr <- regmatches(path, m)
+  drive_letter <- strsplit(drive_expr, ":/")[[1]]
+  wslified_drive <- paste0("/mnt/", tolower(drive_letter))
+  end_path <- strsplit(path, drive_expr)[[1]][-1]
+  file.path(wslified_drive, end_path)
+}
+
+on_rosetta <- function() {
+  # make sure to suppress warnings and ignore the stderr so that this is silent where proc_translated doesn't exist
+  sysctl_out <- tryCatch(
+    suppressWarnings(system("sysctl -n sysctl.proc_translated", intern = TRUE, ignore.stderr = TRUE)),
+    error = function(e) {
+      # If this has errored, we assume that this is not on rosetta
+      return("0")
+    }
+  )
+  identical(tolower(Sys.info()[["sysname"]]), "darwin") && identical(sysctl_out, "1")
 }

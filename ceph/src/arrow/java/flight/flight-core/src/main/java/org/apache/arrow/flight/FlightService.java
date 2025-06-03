@@ -231,7 +231,7 @@ class FlightService extends FlightServiceImplBase {
     executors.submit(() -> {
       try {
         producer.acceptPut(makeContext(responseObserver), fs, ackStream).run();
-      } catch (Exception ex) {
+      } catch (Throwable ex) {
         ackStream.onError(ex);
       } finally {
         // ARROW-6136: Close the stream if and only if acceptPut hasn't closed it itself
@@ -249,6 +249,21 @@ class FlightService extends FlightServiceImplBase {
     try {
       info = producer
           .getFlightInfo(makeContext((ServerCallStreamObserver<?>) responseObserver), new FlightDescriptor(request));
+    } catch (Exception ex) {
+      // Don't capture exceptions from onNext or onCompleted with this block - because then we can't call onError
+      responseObserver.onError(StatusUtils.toGrpcException(ex));
+      return;
+    }
+    responseObserver.onNext(info.toProtocol());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void pollFlightInfo(Flight.FlightDescriptor request, StreamObserver<Flight.PollInfo> responseObserver) {
+    final PollInfo info;
+    try {
+      info = producer
+          .pollFlightInfo(makeContext((ServerCallStreamObserver<?>) responseObserver), new FlightDescriptor(request));
     } catch (Exception ex) {
       // Don't capture exceptions from onNext or onCompleted with this block - because then we can't call onError
       responseObserver.onError(StatusUtils.toGrpcException(ex));

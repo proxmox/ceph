@@ -15,16 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Binary } from '../type';
-import { toUint8Array } from '../util/buffer';
-import { BufferBuilder } from './buffer';
-import { VariableWidthBuilder, BuilderOptions } from '../builder';
+import { Binary } from '../type.js';
+import { BufferBuilder } from './buffer.js';
+import { VariableWidthBuilder, BuilderOptions } from '../builder.js';
+import { toUint8Array } from '../util/buffer.js';
 
 /** @ignore */
 export class BinaryBuilder<TNull = any> extends VariableWidthBuilder<Binary, TNull> {
     constructor(opts: BuilderOptions<Binary, TNull>) {
         super(opts);
-        this._values = new BufferBuilder(new Uint8Array(0));
+        this._values = new BufferBuilder(Uint8Array);
     }
     public get byteLength(): number {
         let size = this._pendingLength + (this.length * 4);
@@ -39,12 +39,12 @@ export class BinaryBuilder<TNull = any> extends VariableWidthBuilder<Binary, TNu
     protected _flushPending(pending: Map<number, Uint8Array | undefined>, pendingLength: number) {
         const offsets = this._offsets;
         const data = this._values.reserve(pendingLength).buffer;
-        let index = 0, length = 0, offset = 0, value: Uint8Array | undefined;
-        for ([index, value] of pending) {
+        let offset = 0;
+        for (const [index, value] of pending) {
             if (value === undefined) {
                 offsets.set(index, 0);
             } else {
-                length = value.length;
+                const length = value.length;
                 data.set(value, offset);
                 offsets.set(index, length);
                 offset += length;

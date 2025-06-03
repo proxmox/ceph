@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "arrow/util/checked_cast.h"
+#include "arrow/util/config.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/thread_pool.h"
 
@@ -79,7 +80,8 @@ class ThreadedTaskGroup : public TaskGroup {
       : executor_(executor),
         stop_token_(std::move(stop_token)),
         nremaining_(0),
-        ok_(true) {}
+        ok_(true),
+        finished_(false) {}
 
   ~ThreadedTaskGroup() override {
     // Make sure all pending tasks are finished, so that dangling references
@@ -101,29 +103,21 @@ class ThreadedTaskGroup : public TaskGroup {
 
       auto self = checked_pointer_cast<ThreadedTaskGroup>(shared_from_this());
 
-      struct Callable {
-        void operator()() {
-          if (self_->ok_.load(std::memory_order_acquire)) {
-            Status st;
-            if (stop_token_.IsStopRequested()) {
-              st = stop_token_.Poll();
-            } else {
-              // XXX what about exceptions?
-              st = std::move(task_)();
-            }
-            self_->UpdateStatus(std::move(st));
+      auto callable = [self = std::move(self), task = std::move(task),
+                       stop_token = stop_token_]() mutable {
+        if (self->ok_.load(std::memory_order_acquire)) {
+          Status st;
+          if (stop_token.IsStopRequested()) {
+            st = stop_token.Poll();
+          } else {
+            // XXX what about exceptions?
+            st = std::move(task)();
           }
-          self_->OneTaskDone();
+          self->UpdateStatus(std::move(st));
         }
-
-        std::shared_ptr<ThreadedTaskGroup> self_;
-        FnOnce<Status()> task_;
-        StopToken stop_token_;
+        self->OneTaskDone();
       };
-
-      Status st =
-          executor_->Spawn(Callable{std::move(self), std::move(task), stop_token_});
-      UpdateStatus(std::move(st));
+      UpdateStatus(executor_->Spawn(std::move(callable)));
     }
   }
 
@@ -135,12 +129,19 @@ class ThreadedTaskGroup : public TaskGroup {
   bool ok() const override { return ok_.load(); }
 
   Status Finish() override {
+#ifdef ARROW_ENABLE_THREADING
     std::unique_lock<std::mutex> lock(mutex_);
     if (!finished_) {
       cv_.wait(lock, [&]() { return nremaining_.load() == 0; });
       // Current tasks may start other tasks, so only set this when done
       finished_ = true;
     }
+#else
+    while (!finished_ && nremaining_.load() != 0) {
+      arrow::internal::SerialExecutor::RunTasksOnAllExecutors();
+    }
+    finished_ = true;
+#endif
     return status_;
   }
 
@@ -200,13 +201,13 @@ class ThreadedTaskGroup : public TaskGroup {
   StopToken stop_token_;
   std::atomic<int32_t> nremaining_;
   std::atomic<bool> ok_;
+  std::atomic<bool> finished_;
 
   // These members use locking
   std::mutex mutex_;
   std::condition_variable cv_;
   Status status_;
-  bool finished_ = false;
-  util::optional<Future<>> completion_future_;
+  std::optional<Future<>> completion_future_;
 };
 
 }  // namespace

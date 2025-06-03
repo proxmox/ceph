@@ -32,8 +32,14 @@ namespace parquet {
 
 class ColumnReader;
 class FileMetaData;
+class PageIndexReader;
+class BloomFilterReader;
 class PageReader;
 class RowGroupMetaData;
+
+namespace internal {
+class RecordReader;
+}
 
 class PARQUET_EXPORT RowGroupReader {
  public:
@@ -56,6 +62,11 @@ class PARQUET_EXPORT RowGroupReader {
   // column. Ownership is shared with the RowGroupReader.
   std::shared_ptr<ColumnReader> Column(int i);
 
+  // EXPERIMENTAL: Construct a RecordReader for the indicated column of the row group.
+  // Ownership is shared with the RowGroupReader.
+  std::shared_ptr<internal::RecordReader> RecordReader(int i,
+                                                       bool read_dictionary = false);
+
   // Construct a ColumnReader, trying to enable exposed encoding.
   //
   // For dictionary encoding, currently we only support column chunks that are fully
@@ -68,6 +79,18 @@ class PARQUET_EXPORT RowGroupReader {
   //
   // \note API EXPERIMENTAL
   std::shared_ptr<ColumnReader> ColumnWithExposeEncoding(
+      int i, ExposedEncoding encoding_to_expose);
+
+  // Construct a RecordReader, trying to enable exposed encoding.
+  //
+  // For dictionary encoding, currently we only support column chunks that are
+  // fully dictionary encoded byte arrays. The caller should verify if the reader can read
+  // and expose the dictionary by checking the reader's read_dictionary(). If a column
+  // chunk uses dictionary encoding but then falls back to plain encoding, the returned
+  // reader will read decoded data without exposing the dictionary.
+  //
+  // \note API EXPERIMENTAL
+  std::shared_ptr<internal::RecordReader> RecordReaderWithExposeEncoding(
       int i, ExposedEncoding encoding_to_expose);
 
   std::unique_ptr<PageReader> GetColumnPageReader(int i);
@@ -98,6 +121,8 @@ class PARQUET_EXPORT ParquetFileReader {
     virtual void Close() = 0;
     virtual std::shared_ptr<RowGroupReader> GetRowGroup(int i) = 0;
     virtual std::shared_ptr<FileMetaData> metadata() const = 0;
+    virtual std::shared_ptr<PageIndexReader> GetPageIndexReader() = 0;
+    virtual BloomFilterReader& GetBloomFilterReader() = 0;
   };
 
   ParquetFileReader();
@@ -113,7 +138,7 @@ class PARQUET_EXPORT ParquetFileReader {
   // API Convenience to open a serialized Parquet file on disk, using Arrow IO
   // interfaces.
   static std::unique_ptr<ParquetFileReader> OpenFile(
-      const std::string& path, bool memory_map = true,
+      const std::string& path, bool memory_map = false,
       const ReaderProperties& props = default_reader_properties(),
       std::shared_ptr<FileMetaData> metadata = NULLPTR);
 
@@ -132,6 +157,24 @@ class PARQUET_EXPORT ParquetFileReader {
 
   // Returns the file metadata. Only one instance is ever created
   std::shared_ptr<FileMetaData> metadata() const;
+
+  /// Returns the PageIndexReader. Only one instance is ever created.
+  ///
+  /// If the file does not have the page index, nullptr may be returned.
+  /// Because it pays to check existence of page index in the file, it
+  /// is possible to return a non null value even if page index does
+  /// not exist. It is the caller's responsibility to check the return
+  /// value and follow-up calls to PageIndexReader.
+  ///
+  /// WARNING: The returned PageIndexReader must not outlive the ParquetFileReader.
+  /// Initialize GetPageIndexReader() is not thread-safety.
+  std::shared_ptr<PageIndexReader> GetPageIndexReader();
+
+  /// Returns the BloomFilterReader. Only one instance is ever created.
+  ///
+  /// WARNING: The returned BloomFilterReader must not outlive the ParquetFileReader.
+  /// Initialize GetBloomFilterReader() is not thread-safety.
+  BloomFilterReader& GetBloomFilterReader();
 
   /// Pre-buffer the specified column indices in all row groups.
   ///

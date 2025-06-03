@@ -19,8 +19,10 @@
 
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <vector>
 
+#include "arrow/array/builder_primitive.h"
 #include "arrow/dataset/file_ipc.h"
 #include "arrow/filesystem/mockfs.h"
 #include "arrow/filesystem/test_util.h"
@@ -29,8 +31,10 @@
 #include "arrow/table.h"
 #include "arrow/testing/future_util.h"
 #include "arrow/testing/gtest_util.h"
-#include "arrow/util/optional.h"
+#include "arrow/util/config.h"
 #include "gtest/gtest.h"
+
+using namespace std::string_view_literals;  // NOLINT
 
 namespace arrow {
 namespace dataset {
@@ -45,6 +49,20 @@ class DatasetWriterTestFixture : public testing::Test {
     std::string filename;
     uint64_t start;
     uint64_t num_rows;
+    int num_record_batches;
+
+    ExpectedFile(std::string filename, uint64_t start, uint64_t num_rows)
+        : filename(std::move(filename)),
+          start(start),
+          num_rows(num_rows),
+          num_record_batches(1) {}
+
+    ExpectedFile(std::string filename, uint64_t start, uint64_t num_rows,
+                 int num_record_batches)
+        : filename(std::move(filename)),
+          start(start),
+          num_rows(num_rows),
+          num_record_batches(num_record_batches) {}
   };
 
   void SetUp() override {
@@ -66,6 +84,35 @@ class DatasetWriterTestFixture : public testing::Test {
     };
     std::shared_ptr<FileFormat> format = std::make_shared<IpcFileFormat>();
     write_options_.file_write_options = format->DefaultWriteOptions();
+    scheduler_finished_ =
+        util::AsyncTaskScheduler::Make([&](util::AsyncTaskScheduler* scheduler) {
+          scheduler_ = scheduler;
+          scheduler->AddSimpleTask(
+              [&] { return test_done_with_tasks_; },
+              "DatasetWriterTestFixture::WaitForTestMethodToFinish"sv);
+          return Status::OK();
+        });
+  }
+
+  void TearDown() override {
+    if (!test_done_with_tasks_.is_finished()) {
+      test_done_with_tasks_.MarkFinished();
+      ASSERT_FINISHES_OK(scheduler_finished_);
+    }
+  }
+
+  std::unique_ptr<DatasetWriter> MakeDatasetWriter(
+      uint64_t max_rows = kDefaultDatasetWriterMaxRowsQueued) {
+    EXPECT_OK_AND_ASSIGN(auto dataset_writer,
+                         DatasetWriter::Make(
+                             write_options_, scheduler_, [] {}, [] {}, [] {}, max_rows));
+    return dataset_writer;
+  }
+
+  void EndWriterChecked(DatasetWriter* writer) {
+    writer->Finish();
+    test_done_with_tasks_.MarkFinished();
+    ASSERT_FINISHES_OK(scheduler_finished_);
   }
 
   std::shared_ptr<fs::GatedMockFilesystem> UseGatedFs() {
@@ -92,13 +139,13 @@ class DatasetWriterTestFixture : public testing::Test {
     return batch;
   }
 
-  util::optional<MockFileInfo> FindFile(const std::string& filename) {
+  std::optional<MockFileInfo> FindFile(const std::string& filename) {
     for (const auto& mock_file : filesystem_->AllFiles()) {
       if (mock_file.full_path == filename) {
         return mock_file;
       }
     }
-    return util::nullopt;
+    return std::nullopt;
   }
 
   void AssertVisited(const std::vector<std::string>& actual_paths,
@@ -108,12 +155,14 @@ class DatasetWriterTestFixture : public testing::Test {
         << "The file " << expected_path << " was not in the list of files visited";
   }
 
-  std::shared_ptr<RecordBatch> ReadAsBatch(util::string_view data) {
+  std::shared_ptr<RecordBatch> ReadAsBatch(std::string_view data, int* num_batches) {
     std::shared_ptr<io::RandomAccessFile> in_stream =
         std::make_shared<io::BufferReader>(data);
     EXPECT_OK_AND_ASSIGN(std::shared_ptr<ipc::RecordBatchFileReader> reader,
-                         ipc::RecordBatchFileReader::Open(std::move(in_stream)));
+                         ipc::RecordBatchFileReader::Open(in_stream));
     RecordBatchVector batches;
+    *num_batches = reader->num_record_batches();
+    EXPECT_GT(*num_batches, 0);
     for (int i = 0; i < reader->num_record_batches(); i++) {
       EXPECT_OK_AND_ASSIGN(std::shared_ptr<RecordBatch> next_batch,
                            reader->ReadRecordBatch(i));
@@ -126,7 +175,7 @@ class DatasetWriterTestFixture : public testing::Test {
     return batch;
   }
 
-  void AssertFileCreated(const util::optional<MockFileInfo>& maybe_file,
+  void AssertFileCreated(const std::optional<MockFileInfo>& maybe_file,
                          const std::string& expected_filename) {
     ASSERT_TRUE(maybe_file.has_value())
         << "The file " << expected_filename << " was not created";
@@ -140,33 +189,38 @@ class DatasetWriterTestFixture : public testing::Test {
     }
   }
 
-  void AssertCreatedData(const std::vector<ExpectedFile>& expected_files) {
+  void AssertCreatedData(const std::vector<ExpectedFile>& expected_files,
+                         bool check_num_record_batches = true) {
     counter_ = 0;
     for (const auto& expected_file : expected_files) {
-      util::optional<MockFileInfo> written_file = FindFile(expected_file.filename);
+      std::optional<MockFileInfo> written_file = FindFile(expected_file.filename);
       AssertFileCreated(written_file, expected_file.filename);
+      int num_batches = 0;
       AssertBatchesEqual(*MakeBatch(expected_file.start, expected_file.num_rows),
-                         *ReadAsBatch(written_file->data));
+                         *ReadAsBatch(written_file->data, &num_batches));
+      if (check_num_record_batches) {
+        ASSERT_EQ(expected_file.num_record_batches, num_batches);
+      }
     }
   }
 
   void AssertFilesCreated(const std::vector<std::string>& expected_files) {
     for (const std::string& expected_file : expected_files) {
-      util::optional<MockFileInfo> written_file = FindFile(expected_file);
+      std::optional<MockFileInfo> written_file = FindFile(expected_file);
       AssertFileCreated(written_file, expected_file);
     }
   }
 
   void AssertNotFiles(const std::vector<std::string>& expected_non_files) {
     for (const auto& expected_non_file : expected_non_files) {
-      util::optional<MockFileInfo> file = FindFile(expected_non_file);
+      std::optional<MockFileInfo> file = FindFile(expected_non_file);
       ASSERT_FALSE(file.has_value());
     }
   }
 
   void AssertEmptyFiles(const std::vector<std::string>& expected_empty_files) {
     for (const auto& expected_empty_file : expected_empty_files) {
-      util::optional<MockFileInfo> file = FindFile(expected_empty_file);
+      std::optional<MockFileInfo> file = FindFile(expected_empty_file);
       ASSERT_TRUE(file.has_value());
       ASSERT_EQ("", file->data);
     }
@@ -176,103 +230,267 @@ class DatasetWriterTestFixture : public testing::Test {
   std::shared_ptr<Schema> schema_;
   std::vector<std::string> pre_finish_visited_;
   std::vector<std::string> post_finish_visited_;
+  Future<> test_done_with_tasks_ = Future<>::Make();
+  util::AsyncTaskScheduler* scheduler_;
+  Future<> scheduler_finished_;
   FileSystemDatasetWriteOptions write_options_;
   uint64_t counter_ = 0;
 };
 
 TEST_F(DatasetWriterTestFixture, Basic) {
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
-  Future<> queue_fut = dataset_writer->WriteRecordBatch(MakeBatch(100), "");
-  AssertFinished(queue_fut);
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(100), "");
+  EndWriterChecked(dataset_writer.get());
   AssertCreatedData({{"testdir/chunk-0.arrow", 0, 100}});
+}
+
+TEST_F(DatasetWriterTestFixture, BasicFilePrefix) {
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(100), "", "1_");
+  EndWriterChecked(dataset_writer.get());
+  AssertFilesCreated({"testdir/1_chunk-0.arrow"});
+}
+
+TEST_F(DatasetWriterTestFixture, BasicFileDirectoryPrefix) {
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(100), "a", "1_");
+  EndWriterChecked(dataset_writer.get());
+  AssertFilesCreated({"testdir/a/1_chunk-0.arrow"});
+}
+
+TEST_F(DatasetWriterTestFixture, DirectoryCreateFails) {
+  // This should fail to be created
+  write_options_.base_dir = "///doesnotexist";
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(100), "a", "1_");
+  dataset_writer->Finish();
+  test_done_with_tasks_.MarkFinished();
+  ASSERT_FINISHES_AND_RAISES(Invalid, scheduler_finished_);
 }
 
 TEST_F(DatasetWriterTestFixture, MaxRowsOneWrite) {
   write_options_.max_rows_per_file = 10;
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
-  Future<> queue_fut = dataset_writer->WriteRecordBatch(MakeBatch(35), "");
-  AssertFinished(queue_fut);
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
+  write_options_.max_rows_per_group = 10;
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(35), "");
+  EndWriterChecked(dataset_writer.get());
   AssertCreatedData({{"testdir/chunk-0.arrow", 0, 10},
                      {"testdir/chunk-1.arrow", 10, 10},
                      {"testdir/chunk-2.arrow", 20, 10},
                      {"testdir/chunk-3.arrow", 30, 5}});
 }
 
+TEST_F(DatasetWriterTestFixture, MaxRowsOneWriteBackpresure) {
+  // GH-38884: This test is to make sure that the writer can handle
+  //  throttle resources in `WriteRecordBatch`.
+
+  constexpr auto kFileSizeLimit = static_cast<uint64_t>(10);
+  write_options_.max_rows_per_file = kFileSizeLimit;
+  write_options_.max_rows_per_group = kFileSizeLimit;
+  write_options_.max_open_files = 2;
+  write_options_.min_rows_per_group = kFileSizeLimit - 1;
+  auto dataset_writer = MakeDatasetWriter(/*max_rows=*/kFileSizeLimit);
+  for (int i = 0; i < 5; ++i) {
+    dataset_writer->WriteRecordBatch(MakeBatch(kFileSizeLimit * 2), "");
+  }
+  EndWriterChecked(dataset_writer.get());
+  std::vector<ExpectedFile> expected_files;
+  for (int i = 0; i < 10; ++i) {
+    expected_files.emplace_back("testdir/chunk-" + std::to_string(i) + ".arrow",
+                                kFileSizeLimit * i, kFileSizeLimit);
+  }
+  // Not checking the number of record batches because file may contain the
+  // zero-length record batch.
+  AssertCreatedData(expected_files, /*check_num_record_batches=*/false);
+}
+
+TEST_F(DatasetWriterTestFixture, MaxRowsOneWriteWithFunctor) {
+  // Left padding with up to four zeros
+  write_options_.max_rows_per_group = 10;
+  write_options_.max_rows_per_file = 10;
+  write_options_.basename_template_functor = [](int v) {
+    size_t n_zero = 4;
+    return std::string(n_zero - std::min(n_zero, std::to_string(v).length()), '0') +
+           std::to_string(v);
+  };
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(25), "");
+  EndWriterChecked(dataset_writer.get());
+  AssertCreatedData({{"testdir/chunk-0000.arrow", 0, 10},
+                     {"testdir/chunk-0001.arrow", 10, 10},
+                     {"testdir/chunk-0002.arrow", 20, 5}});
+}
+
+TEST_F(DatasetWriterTestFixture, MaxRowsOneWriteWithBrokenFunctor) {
+  // Rewriting an exiting file will error out
+  write_options_.max_rows_per_group = 10;
+  write_options_.max_rows_per_file = 10;
+  write_options_.basename_template_functor = [](int v) { return "SAME"; };
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(25), "");
+  dataset_writer->Finish();
+  test_done_with_tasks_.MarkFinished();
+  ASSERT_FINISHES_AND_RAISES(Invalid, scheduler_finished_);
+}
+
 TEST_F(DatasetWriterTestFixture, MaxRowsManyWrites) {
   write_options_.max_rows_per_file = 10;
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(3), ""));
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(3), ""));
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(3), ""));
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(3), ""));
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(3), ""));
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(3), ""));
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
-  AssertCreatedData({{"testdir/chunk-0.arrow", 0, 10}, {"testdir/chunk-1.arrow", 10, 8}});
+  write_options_.max_rows_per_group = 10;
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(3), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(3), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(3), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(3), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(3), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(3), "");
+  EndWriterChecked(dataset_writer.get());
+  AssertCreatedData(
+      {{"testdir/chunk-0.arrow", 0, 10, 4}, {"testdir/chunk-1.arrow", 10, 8, 3}});
+}
+
+TEST_F(DatasetWriterTestFixture, MinRowGroup) {
+  write_options_.min_rows_per_group = 20;
+  auto dataset_writer = MakeDatasetWriter();
+  // Test hitting the limit exactly and inexactly
+  dataset_writer->WriteRecordBatch(MakeBatch(5), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(5), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(5), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(5), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(5), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(5), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(4), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(4), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(4), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(4), "");
+  EndWriterChecked(dataset_writer.get());
+  AssertCreatedData({{"testdir/chunk-0.arrow", 0, 46, 3}});
+}
+
+TEST_F(DatasetWriterTestFixture, MaxRowGroup) {
+  write_options_.max_rows_per_group = 10;
+  auto dataset_writer = MakeDatasetWriter();
+  // Test hitting the limit exactly and inexactly
+  dataset_writer->WriteRecordBatch(MakeBatch(10), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(15), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(15), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(20), "");
+  EndWriterChecked(dataset_writer.get());
+  AssertCreatedData({{"testdir/chunk-0.arrow", 0, 60, 7}});
+}
+
+TEST_F(DatasetWriterTestFixture, MinAndMaxRowGroup) {
+  write_options_.max_rows_per_group = 10;
+  write_options_.min_rows_per_group = 10;
+  auto dataset_writer = MakeDatasetWriter();
+  // Test hitting the limit exactly and inexactly
+  dataset_writer->WriteRecordBatch(MakeBatch(10), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(15), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(15), "");
+  dataset_writer->WriteRecordBatch(MakeBatch(20), "");
+  EndWriterChecked(dataset_writer.get());
+  AssertCreatedData({{"testdir/chunk-0.arrow", 0, 60, 6}});
+}
+
+TEST_F(DatasetWriterTestFixture, MinRowGroupBackpressure) {
+  // This tests the case where we end up queuing too much data because we're waiting for
+  // enough data to form a min row group and we fill up the dataset writer (it should
+  // auto-evict)
+  write_options_.min_rows_per_group = 10;
+  auto dataset_writer = MakeDatasetWriter(100);
+  std::vector<ExpectedFile> expected_files;
+  for (int i = 0; i < 12; i++) {
+    expected_files.push_back({"testdir/" + std::to_string(i) + "/chunk-0.arrow",
+                              static_cast<uint64_t>(i * 9), 9, 1});
+    dataset_writer->WriteRecordBatch(MakeBatch(9), std::to_string(i));
+  }
+  EndWriterChecked(dataset_writer.get());
+  AssertCreatedData(expected_files);
 }
 
 TEST_F(DatasetWriterTestFixture, ConcurrentWritesSameFile) {
+#ifndef ARROW_ENABLE_THREADING
+  GTEST_SKIP() << "Concurrent writes tests need threads";
+#endif
   // Use a gated filesystem to queue up many writes behind a file open to make sure the
   // file isn't opened multiple times.
   auto gated_fs = UseGatedFs();
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
+  auto dataset_writer = MakeDatasetWriter();
   for (int i = 0; i < 10; i++) {
-    Future<> queue_fut = dataset_writer->WriteRecordBatch(MakeBatch(10), "");
-    AssertFinished(queue_fut);
-    ASSERT_FINISHES_OK(queue_fut);
+    dataset_writer->WriteRecordBatch(MakeBatch(10), "");
   }
   ASSERT_OK(gated_fs->WaitForOpenOutputStream(1));
   ASSERT_OK(gated_fs->UnlockOpenOutputStream(1));
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
-  AssertCreatedData({{"testdir/chunk-0.arrow", 0, 100}});
+  EndWriterChecked(dataset_writer.get());
+  AssertCreatedData({{"testdir/chunk-0.arrow", 0, 100, 10}});
 }
 
 TEST_F(DatasetWriterTestFixture, ConcurrentWritesDifferentFiles) {
+#ifndef ARROW_ENABLE_THREADING
+  GTEST_SKIP() << "Concurrent writes tests need threads";
+#endif
   // NBATCHES must be less than I/O executor concurrency to avoid deadlock / test failure
   constexpr int NBATCHES = 6;
   auto gated_fs = UseGatedFs();
   std::vector<ExpectedFile> expected_files;
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
+  auto dataset_writer = MakeDatasetWriter();
   for (int i = 0; i < NBATCHES; i++) {
     std::string i_str = std::to_string(i);
     expected_files.push_back(ExpectedFile{"testdir/part" + i_str + "/chunk-0.arrow",
                                           static_cast<uint64_t>(i) * 10, 10});
-    Future<> queue_fut = dataset_writer->WriteRecordBatch(MakeBatch(10), "part" + i_str);
-    AssertFinished(queue_fut);
-    ASSERT_FINISHES_OK(queue_fut);
+    dataset_writer->WriteRecordBatch(MakeBatch(10), "part" + i_str);
   }
   ASSERT_OK(gated_fs->WaitForOpenOutputStream(NBATCHES));
   ASSERT_OK(gated_fs->UnlockOpenOutputStream(NBATCHES));
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
+  EndWriterChecked(dataset_writer.get());
   AssertCreatedData(expected_files);
 }
 
 TEST_F(DatasetWriterTestFixture, MaxOpenFiles) {
+#ifndef ARROW_ENABLE_THREADING
+  GTEST_SKIP() << "Concurrent writes tests need threads";
+#endif
   auto gated_fs = UseGatedFs();
+  std::atomic<bool> paused = false;
   write_options_.max_open_files = 2;
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
+  EXPECT_OK_AND_ASSIGN(auto dataset_writer,
+                       DatasetWriter::Make(
+                           write_options_, scheduler_, [&] { paused = true; },
+                           [&] { paused = false; }, [] {}));
 
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(10), "part0"));
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(10), "part1"));
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(10), "part0"));
-  Future<> fut = dataset_writer->WriteRecordBatch(MakeBatch(10), "part2");
+  dataset_writer->WriteRecordBatch(MakeBatch(10), "part0");
+  dataset_writer->WriteRecordBatch(MakeBatch(10), "part1");
+  dataset_writer->WriteRecordBatch(MakeBatch(10), "part0");
+  dataset_writer->WriteRecordBatch(MakeBatch(10), "part2");
   // Backpressure will be applied until an existing file can be evicted
-  AssertNotFinished(fut);
+  ASSERT_TRUE(paused);
 
   // Ungate the writes to relieve the pressure, testdir/part0 should be closed
   ASSERT_OK(gated_fs->WaitForOpenOutputStream(2));
   ASSERT_OK(gated_fs->UnlockOpenOutputStream(5));
-  ASSERT_FINISHES_OK(fut);
+  // This should free up things and allow us to continue
+  BusyWait(10, [&] { return !paused; });
 
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(10), "part0"));
+  dataset_writer->WriteRecordBatch(MakeBatch(10), "part0");
   // Following call should resume existing write but, on slow test systems, the old
   // write may have already been finished
-  ASSERT_FINISHES_OK(dataset_writer->WriteRecordBatch(MakeBatch(10), "part1"));
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
+  dataset_writer->WriteRecordBatch(MakeBatch(10), "part1");
+  EndWriterChecked(dataset_writer.get());
   AssertFilesCreated({"testdir/part0/chunk-0.arrow", "testdir/part0/chunk-1.arrow",
                       "testdir/part1/chunk-0.arrow", "testdir/part2/chunk-0.arrow"});
+}
+
+TEST_F(DatasetWriterTestFixture, NoExistingDirectory) {
+  fs::TimePoint mock_now = std::chrono::system_clock::now();
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<fs::FileSystem> fs,
+                       MockFileSystem::Make(mock_now, {::arrow::fs::Dir("testdir")}));
+  filesystem_ = std::dynamic_pointer_cast<MockFileSystem>(fs);
+  write_options_.filesystem = filesystem_;
+  write_options_.existing_data_behavior = ExistingDataBehavior::kDeleteMatchingPartitions;
+  write_options_.base_dir = "testdir/subdir";
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(100), "");
+  EndWriterChecked(dataset_writer.get());
+  AssertCreatedData({{"testdir/subdir/chunk-0.arrow", 0, 100}});
 }
 
 TEST_F(DatasetWriterTestFixture, DeleteExistingData) {
@@ -285,10 +503,9 @@ TEST_F(DatasetWriterTestFixture, DeleteExistingData) {
   filesystem_ = std::dynamic_pointer_cast<MockFileSystem>(fs);
   write_options_.filesystem = filesystem_;
   write_options_.existing_data_behavior = ExistingDataBehavior::kDeleteMatchingPartitions;
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
-  Future<> queue_fut = dataset_writer->WriteRecordBatch(MakeBatch(100), "");
-  AssertFinished(queue_fut);
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(100), "");
+  EndWriterChecked(dataset_writer.get());
   AssertCreatedData({{"testdir/chunk-0.arrow", 0, 100}});
   AssertNotFiles({"testdir/chunk-5.arrow", "testdir/blah.txt", "testdir/subdir/foo.txt"});
 }
@@ -303,10 +520,9 @@ TEST_F(DatasetWriterTestFixture, PartitionedDeleteExistingData) {
   filesystem_ = std::dynamic_pointer_cast<MockFileSystem>(fs);
   write_options_.filesystem = filesystem_;
   write_options_.existing_data_behavior = ExistingDataBehavior::kDeleteMatchingPartitions;
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
-  Future<> queue_fut = dataset_writer->WriteRecordBatch(MakeBatch(100), "part0");
-  AssertFinished(queue_fut);
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(100), "part0");
+  EndWriterChecked(dataset_writer.get());
   AssertCreatedData({{"testdir/part0/chunk-0.arrow", 0, 100}});
   AssertNotFiles({"testdir/part0/foo.arrow"});
   AssertEmptyFiles({"testdir/part1/bar.arrow"});
@@ -322,10 +538,9 @@ TEST_F(DatasetWriterTestFixture, LeaveExistingData) {
   filesystem_ = std::dynamic_pointer_cast<MockFileSystem>(fs);
   write_options_.filesystem = filesystem_;
   write_options_.existing_data_behavior = ExistingDataBehavior::kOverwriteOrIgnore;
-  EXPECT_OK_AND_ASSIGN(auto dataset_writer, DatasetWriter::Make(write_options_));
-  Future<> queue_fut = dataset_writer->WriteRecordBatch(MakeBatch(100), "");
-  AssertFinished(queue_fut);
-  ASSERT_FINISHES_OK(dataset_writer->Finish());
+  auto dataset_writer = MakeDatasetWriter();
+  dataset_writer->WriteRecordBatch(MakeBatch(100), "");
+  EndWriterChecked(dataset_writer.get());
   AssertCreatedData({{"testdir/chunk-0.arrow", 0, 100}});
   AssertEmptyFiles({"testdir/chunk-5.arrow", "testdir/blah.txt"});
 }
@@ -339,9 +554,23 @@ TEST_F(DatasetWriterTestFixture, ErrOnExistingData) {
                      fs::File("testdir/chunk-5.arrow"), fs::File("testdir/blah.txt")}));
   filesystem_ = std::dynamic_pointer_cast<MockFileSystem>(fs);
   write_options_.filesystem = filesystem_;
-  ASSERT_RAISES(Invalid, DatasetWriter::Make(write_options_));
+  ASSERT_RAISES(Invalid, DatasetWriter::Make(
+                             write_options_, scheduler_, [] {}, [] {}, [] {}));
   AssertEmptyFiles(
       {"testdir/chunk-0.arrow", "testdir/chunk-5.arrow", "testdir/blah.txt"});
+
+  // only a single file in the target directory
+  fs::TimePoint mock_now2 = std::chrono::system_clock::now();
+  ASSERT_OK_AND_ASSIGN(
+      std::shared_ptr<fs::FileSystem> fs2,
+      MockFileSystem::Make(
+          mock_now2, {::arrow::fs::Dir("testdir"), fs::File("testdir/part-0.arrow")}));
+  filesystem_ = std::dynamic_pointer_cast<MockFileSystem>(fs2);
+  write_options_.filesystem = filesystem_;
+  write_options_.base_dir = "testdir";
+  ASSERT_RAISES(Invalid, DatasetWriter::Make(
+                             write_options_, scheduler_, [] {}, [] {}, [] {}));
+  AssertEmptyFiles({"testdir/part-0.arrow"});
 }
 
 }  // namespace internal

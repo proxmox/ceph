@@ -49,8 +49,10 @@ fi
 : ${DEPLOY_AMAZON_LINUX:=${DEPLOY_DEFAULT}}
 : ${DEPLOY_CENTOS:=${DEPLOY_DEFAULT}}
 : ${DEPLOY_DEBIAN:=${DEPLOY_DEFAULT}}
+: ${DEPLOY_DOCS:=${DEPLOY_DEFAULT}}
 : ${DEPLOY_NUGET:=${DEPLOY_DEFAULT}}
 : ${DEPLOY_PYTHON:=${DEPLOY_DEFAULT}}
+: ${DEPLOY_R:=${DEPLOY_DEFAULT}}
 : ${DEPLOY_UBUNTU:=${DEPLOY_DEFAULT}}
 
 rake_tasks=()
@@ -72,11 +74,17 @@ if [ ${DEPLOY_DEBIAN} -gt 0 ]; then
   rake_tasks+=(apt:release)
   apt_targets+=(debian)
 fi
+if [ ${DEPLOY_DOCS} -gt 0 ]; then
+  rake_tasks+=(docs:release)
+fi
 if [ ${DEPLOY_NUGET} -gt 0 ]; then
   rake_tasks+=(nuget:release)
 fi
 if [ ${DEPLOY_PYTHON} -gt 0 ]; then
   rake_tasks+=(python:release)
+fi
+if [ ${DEPLOY_R} -gt 0 ]; then
+  rake_tasks+=(r:release)
 fi
 if [ ${DEPLOY_UBUNTU} -gt 0 ]; then
   rake_tasks+=(apt:release)
@@ -97,5 +105,6 @@ docker_run \
     ARTIFACTS_DIR="${tmp_dir}/artifacts" \
     RC=${rc} \
     STAGING=${STAGING:-no} \
+    VERBOSE=${VERBOSE:-no} \
     VERSION=${version} \
     YUM_TARGETS=$(IFS=,; echo "${yum_targets[*]}")

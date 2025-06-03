@@ -15,10 +15,27 @@
 # specific language governing permissions and limitations
 # under the License.
 
-skip_if_not_installed("duckdb", minimum_version = "0.2.8")
-skip_if_not_installed("dbplyr")
 skip_if_not_available("dataset")
 skip_on_cran()
+# DuckDB 0.7.1-1 may have errors with R<4.0
+skip_on_r_older_than("4.0")
+
+# this test needs to be the first one since all other test blocks are skipped
+# if duckdb is not installed
+test_that("meaningful error message when duckdb is not installed", {
+  # skipping if duckdb is installed since we're testing the to_duckdb function's
+  # complaint when a user tries to call it, but duckdb isn't available
+  skip_if(requireNamespace("duckdb", quietly = TRUE))
+  ds <- InMemoryDataset$create(example_data)
+  expect_error(
+    to_duckdb(ds),
+    regexp = "Please install the `duckdb` package to pass data with `to_duckdb()`.",
+    fixed = TRUE
+  )
+})
+
+skip_if_not_installed("duckdb", minimum_version = "0.3.2")
+skip_if_not_installed("dbplyr")
 
 library(duckdb, quietly = TRUE)
 library(dplyr, warn.conflicts = FALSE)
@@ -31,8 +48,11 @@ test_that("to_duckdb", {
       to_duckdb() %>%
       collect() %>%
       # factors don't roundtrip https://github.com/duckdb/duckdb/issues/1879
-      select(!fct),
-    select(example_data, !fct)
+      select(!fct) %>%
+      arrange(int),
+    example_data %>%
+      select(!fct) %>%
+      arrange(int)
   )
 
   expect_identical(
@@ -41,7 +61,8 @@ test_that("to_duckdb", {
       to_duckdb() %>%
       group_by(lgl) %>%
       summarise(mean_int = mean(int, na.rm = TRUE), mean_dbl = mean(dbl, na.rm = TRUE)) %>%
-      collect(),
+      collect() %>%
+      arrange(mean_int),
     tibble::tibble(
       lgl = c(TRUE, NA, FALSE),
       mean_int = c(3, 6.25, 8.5),
@@ -56,7 +77,8 @@ test_that("to_duckdb", {
       group_by(lgl) %>%
       to_duckdb() %>%
       summarise(mean_int = mean(int, na.rm = TRUE), mean_dbl = mean(dbl, na.rm = TRUE)) %>%
-      collect(),
+      collect() %>%
+      arrange(mean_int),
     tibble::tibble(
       lgl = c(TRUE, NA, FALSE),
       mean_int = c(3, 6.25, 8.5),
@@ -90,11 +112,14 @@ test_that("to_duckdb then to_arrow", {
     filter(int > 5)
 
   expect_identical(
-    collect(ds_rt),
+    ds_rt %>%
+      collect() %>%
+      arrange(int),
     ds %>%
       select(-fct) %>%
       filter(int > 5) %>%
-      collect()
+      collect() %>%
+      arrange(int)
   )
 
   # Now check errors
@@ -112,6 +137,59 @@ test_that("to_duckdb then to_arrow", {
   )
 })
 
+test_that("to_arrow roundtrip, with dataset", {
+  # With a multi-part dataset
+  tf <- tempfile()
+  new_ds <- rbind(
+    cbind(example_data, part = 1),
+    cbind(example_data, part = 2),
+    cbind(mutate(example_data, dbl = dbl * 3, dbl2 = dbl2 * 3), part = 3),
+    cbind(mutate(example_data, dbl = dbl * 4, dbl2 = dbl2 * 4), part = 4)
+  )
+  write_dataset(new_ds, tf, partitioning = "part")
+
+  ds <- open_dataset(tf)
+
+  expect_identical(
+    ds %>%
+      to_duckdb() %>%
+      select(-fct) %>%
+      mutate(dbl_plus = dbl + 1) %>%
+      to_arrow() %>%
+      filter(int > 5 & part > 1) %>%
+      collect() %>%
+      arrange(part, int) %>%
+      as.data.frame(),
+    ds %>%
+      select(-fct) %>%
+      filter(int > 5 & part > 1) %>%
+      mutate(dbl_plus = dbl + 1) %>%
+      collect() %>%
+      arrange(part, int) %>%
+      as.data.frame()
+  )
+})
+
+test_that("to_arrow roundtrip, with dataset (without wrapping)", {
+  # With a multi-part dataset
+  tf <- tempfile()
+  new_ds <- rbind(
+    cbind(example_data, part = 1),
+    cbind(example_data, part = 2),
+    cbind(mutate(example_data, dbl = dbl * 3, dbl2 = dbl2 * 3), part = 3),
+    cbind(mutate(example_data, dbl = dbl * 4, dbl2 = dbl2 * 4), part = 4)
+  )
+  write_dataset(new_ds, tf, partitioning = "part")
+
+  out <- open_dataset(tf) %>%
+    to_duckdb() %>%
+    select(-fct) %>%
+    mutate(dbl_plus = dbl + 1) %>%
+    to_arrow()
+
+  expect_r6_class(out, "RecordBatchReader")
+})
+
 # The next set of tests use an already-extant connection to test features of
 # persistence and querying against the table without using the `tbl` itself, so
 # we need to create a connection separate from the ephemeral one that is made
@@ -120,16 +198,13 @@ con <- dbConnect(duckdb::duckdb())
 dbExecute(con, "PRAGMA threads=2")
 on.exit(dbDisconnect(con, shutdown = TRUE), add = TRUE)
 
-# write one table to the connection so it is kept open
-DBI::dbWriteTable(con, "mtcars", mtcars)
-
 test_that("Joining, auto-cleanup enabled", {
   ds <- InMemoryDataset$create(example_data)
 
   table_one_name <- "my_arrow_table_1"
-  table_one <- to_duckdb(ds, con = con, table_name = table_one_name, auto_disconnect = TRUE)
+  table_one <- to_duckdb(ds, con = con, table_name = table_one_name)
   table_two_name <- "my_arrow_table_2"
-  table_two <- to_duckdb(ds, con = con, table_name = table_two_name, auto_disconnect = TRUE)
+  table_two <- to_duckdb(ds, con = con, table_name = table_two_name)
 
   res <- dbGetQuery(
     con,
@@ -142,24 +217,24 @@ test_that("Joining, auto-cleanup enabled", {
   expect_identical(dim(res), c(9L, 14L))
 
   # clean up cleans up the tables
-  expect_true(all(c(table_one_name, table_two_name) %in% DBI::dbListTables(con)))
+  expect_true(all(c(table_one_name, table_two_name) %in% duckdb::duckdb_list_arrow(con)))
   rm(table_one, table_two)
   gc()
-  expect_false(any(c(table_one_name, table_two_name) %in% DBI::dbListTables(con)))
+  expect_false(any(c(table_one_name, table_two_name) %in% duckdb::duckdb_list_arrow(con)))
 })
 
 test_that("Joining, auto-cleanup disabled", {
   ds <- InMemoryDataset$create(example_data)
 
   table_three_name <- "my_arrow_table_3"
-  table_three <- to_duckdb(ds, con = con, table_name = table_three_name)
+  table_three <- to_duckdb(ds, con = con, table_name = table_three_name, auto_disconnect = FALSE)
 
   # clean up does *not* clean these tables
-  expect_true(table_three_name %in% DBI::dbListTables(con))
+  expect_true(table_three_name %in% duckdb::duckdb_list_arrow(con))
   rm(table_three)
   gc()
   # but because we aren't auto_disconnecting then we still have this table.
-  expect_true(table_three_name %in% DBI::dbListTables(con))
+  expect_true(table_three_name %in% duckdb::duckdb_list_arrow(con))
 })
 
 test_that("to_duckdb with a table", {
@@ -173,11 +248,12 @@ test_that("to_duckdb with a table", {
         int_mean = mean(int, na.rm = TRUE),
         dbl_mean = mean(dbl, na.rm = TRUE)
       ) %>%
-      collect(),
+      collect() %>%
+      arrange(int_mean),
     tibble::tibble(
-      "int > 4" = c(FALSE, NA, TRUE),
-      int_mean = c(2, NA, 7.5),
-      dbl_mean = c(2.1, 4.1, 7.3)
+      "int > 4" = c(FALSE, TRUE, NA),
+      int_mean = c(2, 7.5, NA),
+      dbl_mean = c(2.1, 7.3, 4.1)
     )
   )
 })
@@ -201,7 +277,14 @@ test_that("to_duckdb passing a connection", {
   table_four <- ds %>%
     select(int, lgl, dbl) %>%
     to_duckdb(con = con_separate, auto_disconnect = FALSE)
-  table_four_name <- table_four$ops$x
+
+  # dbplyr 2.3.0 renamed this internal attribute to lazy_query;
+  # and 2.4.0 reserved $... for internal use + changed the identifier class
+  if (packageVersion("dbplyr") < "2.4.0") {
+    table_four_name <- unclass(table_four)$lazy_query$x
+  } else {
+    table_four_name <- unclass(unclass(table_four)$lazy_query$x)$table
+  }
 
   result <- DBI::dbGetQuery(
     con_separate,

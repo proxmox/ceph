@@ -17,7 +17,6 @@
 
 import contextlib
 import io
-import os
 import random
 import socket
 import subprocess
@@ -33,13 +32,10 @@ def guid():
 
 
 # SKIP categories
-SKIP_ARROW = 'arrow'
+SKIP_C_ARRAY = 'c_array'
+SKIP_C_SCHEMA = 'c_schema'
 SKIP_FLIGHT = 'flight'
-
-ARROW_ROOT_DEFAULT = os.environ.get(
-    'ARROW_ROOT',
-    os.path.abspath(__file__).rsplit("/", 5)[0]
-)
+SKIP_IPC = 'ipc'
 
 
 class _Printer:
@@ -131,12 +127,13 @@ def frombytes(o):
     return o
 
 
-def run_cmd(cmd):
+def run_cmd(cmd, **kwargs):
     if isinstance(cmd, str):
         cmd = cmd.split(' ')
 
     try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        kwargs.update(stderr=subprocess.STDOUT)
+        output = subprocess.check_output(cmd, **kwargs)
     except subprocess.CalledProcessError as e:
         # this avoids hiding the stdout / stderr of failed processes
         sio = io.StringIO()

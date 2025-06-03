@@ -21,14 +21,13 @@ Installing PyArrow
 System Compatibility
 --------------------
 
-PyArrow is regularly built and tested on Windows, macOS and various Linux
-distributions (including Ubuntu 16.04, Ubuntu 18.04).  We strongly recommend
-using a 64-bit system.
+PyArrow is regularly built and tested on Windows, macOS and various
+Linux distributions. We strongly recommend using a 64-bit system.
 
 Python Compatibility
 --------------------
 
-PyArrow is currently compatible with Python 3.6, 3.7, 3.8, and 3.9.
+PyArrow is currently compatible with Python 3.8, 3.9, 3.10 and 3.11.
 
 Using Conda
 -----------
@@ -57,34 +56,39 @@ need to install the `Visual C++ Redistributable for Visual Studio 2015
 .. warning::
    On Linux, you will need pip >= 19.0 to detect the prebuilt binary packages.
 
-Installing from source
-----------------------
+Installing nightly packages or from source
+------------------------------------------
 
 See :ref:`python-development`.
 
-Installing Nightly Packages
----------------------------
+Dependencies
+------------
 
-.. warning::
-    These packages are not official releases. Use them at your own risk.
+Required dependency
 
-PyArrow has nightly wheels and conda packages for testing purposes.
+* **NumPy 1.16.6** or higher.
 
-These may be suitable for downstream libraries in their continuous integration
-setup to maintain compatibility with the upcoming PyArrow features,
-deprecations and/or feature removals.
+Optional dependencies
 
-Install the development version of PyArrow from `arrow-nightlies
-<https://anaconda.org/arrow-nightlies/pyarrow>`_ conda channel:
+* **pandas 1.0** or higher,
+* **cffi**.
 
-.. code-block:: bash
+Additional packages PyArrow is compatible with are :ref:`fsspec <filesystem-fsspec>`
+and **pytz**, **dateutil** or **tzdata** package for timezones.
 
-    conda install -c arrow-nightlies pyarrow
+tzdata on Windows
+^^^^^^^^^^^^^^^^^
 
-Install the development version from an `alternative PyPI
-<https://gemfury.com/arrow-nightlies>`_ index:
+While Arrow uses the OS-provided timezone database on Linux and macOS, it requires a
+user-provided database on Windows. To download and extract the text version of
+the IANA timezone database follow the instructions in the C++
+:ref:`download-timezone-database`.
 
-.. code-block:: bash
+By default, the timezone database will be detected at ``%USERPROFILE%\Downloads\tzdata``.
+If the database has been downloaded in a different location, you will need to set
+a custom path to the database from Python:
 
-    pip install --extra-index-url https://pypi.fury.io/arrow-nightlies/ \
-        --prefer-binary --pre pyarrow
+.. code-block:: python
+
+   >>> import pyarrow as pa
+   >>> pa.set_timezone_db_path("custom_path")

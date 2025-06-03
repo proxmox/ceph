@@ -18,6 +18,7 @@
 from pyarrow.includes.libarrow cimport GetBuildInfo
 
 from collections import namedtuple
+import os
 
 
 VersionInfo = namedtuple('VersionInfo', ('major', 'minor', 'patch'))
@@ -26,7 +27,7 @@ BuildInfo = namedtuple(
     'BuildInfo',
     ('version', 'version_info', 'so_version', 'full_so_version',
      'compiler_id', 'compiler_version', 'compiler_flags',
-     'git_id', 'git_description', 'package_kind'))
+     'git_id', 'git_description', 'package_kind', 'build_type'))
 
 RuntimeInfo = namedtuple('RuntimeInfo',
                          ('simd_level', 'detected_simd_level'))
@@ -48,7 +49,9 @@ cdef _build_info():
                      compiler_flags=frombytes(c_info.compiler_flags),
                      git_id=frombytes(c_info.git_id),
                      git_description=frombytes(c_info.git_description),
-                     package_kind=frombytes(c_info.package_kind))
+                     package_kind=frombytes(c_info.package_kind),
+                     build_type=frombytes(c_info.build_type).lower(),
+                     )
 
 
 cpp_build_info = _build_info()
@@ -72,3 +75,21 @@ def runtime_info():
     return RuntimeInfo(
         simd_level=frombytes(c_info.simd_level),
         detected_simd_level=frombytes(c_info.detected_simd_level))
+
+
+def set_timezone_db_path(path):
+    """
+    Configure the path to text timezone database on Windows.
+
+    Parameters
+    ----------
+    path : str
+        Path to text timezone database.
+    """
+    cdef:
+        CGlobalOptions options
+
+    if path is not None:
+        options.timezone_db_path = <c_string>tobytes(path)
+
+    check_status(Initialize(options))

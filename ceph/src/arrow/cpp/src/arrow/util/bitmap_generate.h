@@ -39,8 +39,8 @@ void GenerateBits(uint8_t* bitmap, int64_t start_offset, int64_t length, Generat
     return;
   }
   uint8_t* cur = bitmap + start_offset / 8;
-  uint8_t bit_mask = BitUtil::kBitmask[start_offset % 8];
-  uint8_t current_byte = *cur & BitUtil::kPrecedingBitmask[start_offset % 8];
+  uint8_t bit_mask = bit_util::kBitmask[start_offset % 8];
+  uint8_t current_byte = *cur & bit_util::kPrecedingBitmask[start_offset % 8];
 
   for (int64_t index = 0; index < length; ++index) {
     const bool bit = g();
@@ -71,11 +71,11 @@ void GenerateBitsUnrolled(uint8_t* bitmap, int64_t start_offset, int64_t length,
   uint8_t current_byte;
   uint8_t* cur = bitmap + start_offset / 8;
   const uint64_t start_bit_offset = start_offset % 8;
-  uint8_t bit_mask = BitUtil::kBitmask[start_bit_offset];
+  uint8_t bit_mask = bit_util::kBitmask[start_bit_offset];
   int64_t remaining = length;
 
   if (bit_mask != 0x01) {
-    current_byte = *cur & BitUtil::kPrecedingBitmask[start_bit_offset];
+    current_byte = *cur & bit_util::kPrecedingBitmask[start_bit_offset];
     while (bit_mask != 0 && remaining > 0) {
       current_byte |= g() * bit_mask;
       bit_mask = static_cast<uint8_t>(bit_mask << 1);
@@ -90,9 +90,10 @@ void GenerateBitsUnrolled(uint8_t* bitmap, int64_t start_offset, int64_t length,
     for (int i = 0; i < 8; ++i) {
       out_results[i] = g();
     }
-    *cur++ = (out_results[0] | out_results[1] << 1 | out_results[2] << 2 |
-              out_results[3] << 3 | out_results[4] << 4 | out_results[5] << 5 |
-              out_results[6] << 6 | out_results[7] << 7);
+    *cur++ = static_cast<uint8_t>(out_results[0] | out_results[1] << 1 |
+                                  out_results[2] << 2 | out_results[3] << 3 |
+                                  out_results[4] << 4 | out_results[5] << 5 |
+                                  out_results[6] << 6 | out_results[7] << 7);
   }
 
   int64_t remaining_bits = remaining % 8;

@@ -27,10 +27,12 @@
 
 #include "arrow/array.h"
 #include "arrow/compute/api_scalar.h"
+#include "arrow/compute/cast.h"
 #include "arrow/compute/kernel.h"
 #include "arrow/datum.h"
 #include "arrow/memory_pool.h"
 #include "arrow/pretty_print.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/random.h"
 #include "arrow/testing/util.h"
@@ -67,6 +69,28 @@ inline std::string CompareOperatorToFunctionName(CompareOperator op) {
   return function_names[op];
 }
 
+// Construct an array of decimals, where negative scale is allowed.
+//
+// Works around DecimalXXX::FromString intentionally not inferring
+// negative scales.
+inline std::shared_ptr<Array> DecimalArrayFromJSON(const std::shared_ptr<DataType>& type,
+                                                   const std::string& json) {
+  const auto& ty = checked_cast<const DecimalType&>(*type);
+  if (ty.scale() >= 0) return ArrayFromJSON(type, json);
+  auto p = ty.precision() - ty.scale();
+  auto adjusted_ty = ty.id() == Type::DECIMAL128 ? decimal128(p, 0) : decimal256(p, 0);
+  return Cast(ArrayFromJSON(adjusted_ty, json), type).ValueOrDie().make_array();
+}
+
+inline std::shared_ptr<Scalar> DecimalScalarFromJSON(
+    const std::shared_ptr<DataType>& type, const std::string& json) {
+  const auto& ty = checked_cast<const DecimalType&>(*type);
+  if (ty.scale() >= 0) return ScalarFromJSON(type, json);
+  auto p = ty.precision() - ty.scale();
+  auto adjusted_ty = ty.id() == Type::DECIMAL128 ? decimal128(p, 0) : decimal256(p, 0);
+  return Cast(ScalarFromJSON(adjusted_ty, json), type).ValueOrDie().scalar();
+}
+
 // Call the function with the given arguments, as well as slices of
 // the arguments and scalars extracted from the arguments.
 void CheckScalar(std::string func_name, const ScalarVector& inputs,
@@ -100,6 +124,10 @@ void CheckScalarUnary(std::string func_name, Datum input, Datum expected,
 void CheckScalarBinary(std::string func_name, Datum left_input, Datum right_input,
                        Datum expected, const FunctionOptions* options = nullptr);
 
+void CheckScalarBinaryCommutative(std::string func_name, Datum left_input,
+                                  Datum right_input, Datum expected,
+                                  const FunctionOptions* options = nullptr);
+
 void CheckVectorUnary(std::string func_name, Datum input, Datum expected,
                       const FunctionOptions* options = nullptr);
 
@@ -129,12 +157,12 @@ void TestRandomPrimitiveCTypes() {
 }
 
 // Check that DispatchBest on a given function yields the same Kernel as
-// produced by DispatchExact on another set of ValueDescrs.
-void CheckDispatchBest(std::string func_name, std::vector<ValueDescr> descrs,
-                       std::vector<ValueDescr> exact_descrs);
+// produced by DispatchExact on another set of types
+void CheckDispatchBest(std::string func_name, std::vector<TypeHolder> types,
+                       std::vector<TypeHolder> exact_types);
 
-// Check that function fails to produce a Kernel for the set of ValueDescrs.
-void CheckDispatchFails(std::string func_name, std::vector<ValueDescr> descrs);
+// Check that function fails to produce a Kernel for the set of types
+void CheckDispatchFails(std::string func_name, std::vector<TypeHolder> types);
 
 // Helper to get a default instance of a type, including parameterized types
 template <typename T>
@@ -157,7 +185,10 @@ template <typename T>
 enable_if_decimal<T, std::shared_ptr<DataType>> default_type_instance() {
   return std::make_shared<T>(5, 2);
 }
-
+template <typename T>
+enable_if_duration<T, std::shared_ptr<DataType>> default_type_instance() {
+  return std::make_shared<T>(TimeUnit::type::SECOND);
+}
 // Random Generator Helpers
 class RandomImpl {
  protected:

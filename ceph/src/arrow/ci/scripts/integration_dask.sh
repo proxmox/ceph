@@ -28,13 +28,20 @@ python -c "import pyarrow.parquet"
 python -c "import dask.dataframe"
 
 # TODO(kszucs): the following tests are also uses pyarrow
-# pytest -sv --pyargs dask.bytes.tests.test_s3
 # pytest -sv --pyargs dask.bytes.tests.test_hdfs
 # pytest -sv --pyargs dask.bytes.tests.test_local
 
-# skip failing pickle test, see https://github.com/dask/dask/issues/6374
-pytest -v --pyargs dask.dataframe.tests.test_dataframe -k "not test_dataframe_picklable and not test_describe_empty"
+# The "skip_with_pyarrow_strings" marker is meant to skip automatically, but that doesn't work with --pyargs, so de-selecting manually
+# - The 'test_categorize_info' test is failing because of change in StringArray's nbytes and
+#   an upstream fix (https://github.com/apache/arrow/issues/39028)
+# - The 'test_describe_empty' test is flakey
+#   upstream issue: https://github.com/dask/dask/issues/10672
+# - The 'test_view' fails because we are not using the dev version of pandas
+#   where pd.Series.view is deprecated (https://pandas.pydata.org/docs/dev/reference/api/pandas.Series.view.html)
+pytest -v --pyargs dask.dataframe.tests.test_dataframe -m "not skip_with_pyarrow_strings" \
+  -k "not test_categorize_info and not test_describe_empty and not test_view"
 pytest -v --pyargs dask.dataframe.io.tests.test_orc
-# skip failing parquet tests, see https://github.com/dask/dask/issues/6243
 pytest -v --pyargs dask.dataframe.io.tests.test_parquet \
-  -k "not test_to_parquet_pyarrow_w_inconsistent_schema_by_partition_fails_by_default and not test_timeseries_nulls_in_schema"
+  -m "not skip_with_pyarrow_strings and not xfail_with_pyarrow_strings"
+# this file contains parquet tests that use S3 filesystem
+pytest -v --pyargs dask.bytes.tests.test_s3

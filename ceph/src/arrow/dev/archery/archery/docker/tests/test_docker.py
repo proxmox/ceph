@@ -114,6 +114,11 @@ services:
 arrow_compose_yml = """
 version: '3.5'
 
+x-sccache: &sccache
+  AWS_ACCESS_KEY_ID:
+  AWS_SECRET_ACCESS_KEY:
+  SCCACHE_BUCKET:
+
 x-with-gpus:
   - ubuntu-cuda
 
@@ -145,7 +150,7 @@ services:
       context: .
       dockerfile: ci/docker/conda-cpp.dockerfile
       args:
-        python: 3.6
+        python: 3.8
   conda-python-pandas:
     image: org/conda-python-pandas
     build:
@@ -162,6 +167,8 @@ services:
     image: org/ubuntu-cpp-cmake32
   ubuntu-c-glib:
     image: org/ubuntu-c-glib
+    environment:
+      <<: [*sccache]
   ubuntu-ruby:
     image: org/ubuntu-ruby
   ubuntu-cuda:
@@ -176,7 +183,7 @@ services:
 
 arrow_compose_env = {
     'UBUNTU': '20.04',  # overridden below
-    'PYTHON': '3.6',
+    'PYTHON': '3.8',
     'PANDAS': 'latest',
     'DASK': 'latest',  # overridden below
 }
@@ -252,12 +259,12 @@ def test_arrow_example_validation_passes(arrow_compose_path):
 def test_compose_default_params_and_env(arrow_compose_path):
     compose = DockerCompose(arrow_compose_path, params=dict(
         UBUNTU='18.04',
-        DASK='master'
+        DASK='upstream_devel'
     ))
     assert compose.config.dotenv == arrow_compose_env
     assert compose.config.params == {
         'UBUNTU': '18.04',
-        'DASK': 'master',
+        'DASK': 'upstream_devel',
     }
 
 
@@ -313,7 +320,7 @@ def test_compose_pull_params(arrow_compose_path):
         "pull --ignore-pull-failures conda-python",
     ]
     compose = DockerCompose(arrow_compose_path, params=dict(UBUNTU='18.04'))
-    expected_env = PartialEnv(PYTHON='3.6', PANDAS='latest')
+    expected_env = PartialEnv(PYTHON='3.8', PANDAS='latest')
     with assert_compose_calls(compose, expected_calls, env=expected_env):
         compose.clear_pull_memory()
         compose.pull('conda-python-pandas', pull_leaf=False)
@@ -392,7 +399,7 @@ def test_compose_build_params(arrow_compose_path):
         "build --no-cache conda-python-pandas",
     ]
     compose = DockerCompose(arrow_compose_path, params=dict(UBUNTU='18.04'))
-    expected_env = PartialEnv(PYTHON='3.6', PANDAS='latest')
+    expected_env = PartialEnv(PYTHON='3.8', PANDAS='latest')
     with assert_compose_calls(compose, expected_calls, env=expected_env):
         compose.build('conda-python-pandas', use_cache=False)
 
@@ -408,21 +415,21 @@ def test_compose_run(arrow_compose_path):
     expected_calls = [
         format_run("conda-python")
     ]
-    expected_env = PartialEnv(PYTHON='3.6')
-    with assert_compose_calls(compose, expected_calls, env=expected_env):
-        compose.run('conda-python')
-
-    compose = DockerCompose(arrow_compose_path, params=dict(PYTHON='3.8'))
     expected_env = PartialEnv(PYTHON='3.8')
     with assert_compose_calls(compose, expected_calls, env=expected_env):
         compose.run('conda-python')
 
-    compose = DockerCompose(arrow_compose_path, params=dict(PYTHON='3.8'))
+    compose = DockerCompose(arrow_compose_path, params=dict(PYTHON='3.9'))
+    expected_env = PartialEnv(PYTHON='3.9')
+    with assert_compose_calls(compose, expected_calls, env=expected_env):
+        compose.run('conda-python')
+
+    compose = DockerCompose(arrow_compose_path, params=dict(PYTHON='3.9'))
     for command in ["bash", "echo 1"]:
         expected_calls = [
             format_run(["conda-python", command]),
         ]
-        expected_env = PartialEnv(PYTHON='3.8')
+        expected_env = PartialEnv(PYTHON='3.9')
         with assert_compose_calls(compose, expected_calls, env=expected_env):
             compose.run('conda-python', command)
 
@@ -433,7 +440,7 @@ def test_compose_run(arrow_compose_path):
         )
     ]
     compose = DockerCompose(arrow_compose_path)
-    expected_env = PartialEnv(PYTHON='3.6')
+    expected_env = PartialEnv(PYTHON='3.8')
     with assert_compose_calls(compose, expected_calls, env=expected_env):
         env = collections.OrderedDict([
             ("CONTAINER_ENV_VAR_A", "a"),
@@ -468,8 +475,8 @@ def test_compose_run_with_resource_limits(arrow_compose_path):
 
 
 def test_compose_push(arrow_compose_path):
-    compose = DockerCompose(arrow_compose_path, params=dict(PYTHON='3.8'))
-    expected_env = PartialEnv(PYTHON="3.8")
+    compose = DockerCompose(arrow_compose_path, params=dict(PYTHON='3.9'))
+    expected_env = PartialEnv(PYTHON="3.9")
     expected_calls = [
         mock.call(["docker", "login", "-u", "user", "-p", "pass"], check=True),
     ]
@@ -485,7 +492,7 @@ def test_compose_push(arrow_compose_path):
 def test_compose_error(arrow_compose_path):
     compose = DockerCompose(arrow_compose_path, params=dict(
         PYTHON='3.8',
-        PANDAS='master'
+        PANDAS='upstream_devel'
     ))
 
     error = subprocess.CalledProcessError(99, [])
@@ -496,7 +503,7 @@ def test_compose_error(arrow_compose_path):
     exception_message = str(exc.value)
     assert "exited with a non-zero exit code 99" in exception_message
     assert "PANDAS: latest" in exception_message
-    assert "export PANDAS=master" in exception_message
+    assert "export PANDAS=upstream_devel" in exception_message
 
 
 def test_image_with_gpu(arrow_compose_path):
@@ -509,7 +516,7 @@ def test_image_with_gpu(arrow_compose_path):
             "-e", "OTHER_ENV=2",
             "-v", "/host:/container:rw",
             "org/ubuntu-cuda",
-            '/bin/bash -c "echo 1 > /tmp/dummy && cat /tmp/dummy"'
+            "/bin/bash", "-c", "echo 1 > /tmp/dummy && cat /tmp/dummy",
         ]
     ]
     with assert_docker_calls(compose, expected_calls):
@@ -528,4 +535,40 @@ def test_listing_images(arrow_compose_path):
         'ubuntu-cpp-cmake32',
         'ubuntu-cuda',
         'ubuntu-ruby',
+    ]
+
+
+def test_service_info(arrow_compose_path):
+    compose = DockerCompose(arrow_compose_path)
+    service = compose.config.raw_config["services"]["conda-cpp"]
+    assert compose.info(service) == [
+        "  image: org/conda-cpp",
+        "  build",
+        "    context: .",
+        "    dockerfile: ci/docker/conda-cpp.dockerfile"
+    ]
+
+
+def test_service_info_filters(arrow_compose_path):
+    compose = DockerCompose(arrow_compose_path)
+    service = compose.config.raw_config["services"]["conda-cpp"]
+    assert compose.info(service, filters="dockerfile") == [
+        "    dockerfile: ci/docker/conda-cpp.dockerfile"
+    ]
+
+
+def test_service_info_non_existing_filters(arrow_compose_path):
+    compose = DockerCompose(arrow_compose_path)
+    service = compose.config.raw_config["services"]["conda-cpp"]
+    assert compose.info(service, filters="non-existing") == []
+
+
+def test_service_info_inherited_env(arrow_compose_path):
+    compose = DockerCompose(arrow_compose_path)
+    service = compose.config.raw_config["services"]["ubuntu-c-glib"]
+    assert compose.info(service, filters="environment") == [
+        "  environment",
+        "    AWS_ACCESS_KEY_ID: <inherited>",
+        "    AWS_SECRET_ACCESS_KEY: <inherited>",
+        "    SCCACHE_BUCKET: <inherited>"
     ]

@@ -17,13 +17,15 @@
 package array
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/internal/debug"
-	"github.com/apache/arrow/go/v6/arrow/memory"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/internal/debug"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/internal/json"
 )
 
 // RecordReader reads a stream of records.
@@ -34,7 +36,8 @@ type RecordReader interface {
 	Schema() *arrow.Schema
 
 	Next() bool
-	Record() Record
+	Record() arrow.Record
+	Err() error
 }
 
 // simpleRecords is a simple iterator over a collection of records.
@@ -42,12 +45,12 @@ type simpleRecords struct {
 	refCount int64
 
 	schema *arrow.Schema
-	recs   []Record
-	cur    Record
+	recs   []arrow.Record
+	cur    arrow.Record
 }
 
 // NewRecordReader returns a simple iterator over the given slice of records.
-func NewRecordReader(schema *arrow.Schema, recs []Record) (*simpleRecords, error) {
+func NewRecordReader(schema *arrow.Schema, recs []arrow.Record) (*simpleRecords, error) {
 	rs := &simpleRecords{
 		refCount: 1,
 		schema:   schema,
@@ -93,7 +96,7 @@ func (rs *simpleRecords) Release() {
 }
 
 func (rs *simpleRecords) Schema() *arrow.Schema { return rs.schema }
-func (rs *simpleRecords) Record() Record        { return rs.cur }
+func (rs *simpleRecords) Record() arrow.Record  { return rs.cur }
 func (rs *simpleRecords) Next() bool {
 	if len(rs.recs) == 0 {
 		return false
@@ -105,30 +108,7 @@ func (rs *simpleRecords) Next() bool {
 	rs.recs = rs.recs[1:]
 	return true
 }
-
-// Record is a collection of equal-length arrays
-// matching a particular Schema.
-type Record interface {
-	Release()
-	Retain()
-
-	Schema() *arrow.Schema
-
-	NumRows() int64
-	NumCols() int64
-
-	Columns() []Interface
-	Column(i int) Interface
-	ColumnName(i int) string
-
-	// NewSlice constructs a zero-copy slice of the record with the indicated
-	// indices i and j, corresponding to array[i:j].
-	// The returned record must be Release()'d after use.
-	//
-	// NewSlice panics if the slice is outside the valid range of the record array.
-	// NewSlice panics if j < i.
-	NewSlice(i, j int64) Record
-}
+func (rs *simpleRecords) Err() error { return nil }
 
 // simpleRecord is a basic, non-lazy in-memory record batch.
 type simpleRecord struct {
@@ -137,19 +117,19 @@ type simpleRecord struct {
 	schema *arrow.Schema
 
 	rows int64
-	arrs []Interface
+	arrs []arrow.Array
 }
 
 // NewRecord returns a basic, non-lazy in-memory record batch.
 //
 // NewRecord panics if the columns and schema are inconsistent.
 // NewRecord panics if rows is larger than the height of the columns.
-func NewRecord(schema *arrow.Schema, cols []Interface, nrows int64) *simpleRecord {
+func NewRecord(schema *arrow.Schema, cols []arrow.Array, nrows int64) *simpleRecord {
 	rec := &simpleRecord{
 		refCount: 1,
 		schema:   schema,
 		rows:     nrows,
-		arrs:     make([]Interface, len(cols)),
+		arrs:     make([]arrow.Array, len(cols)),
 	}
 	copy(rec.arrs, cols)
 	for _, arr := range rec.arrs {
@@ -174,8 +154,38 @@ func NewRecord(schema *arrow.Schema, cols []Interface, nrows int64) *simpleRecor
 	return rec
 }
 
+func (rec *simpleRecord) SetColumn(i int, arr arrow.Array) (arrow.Record, error) {
+	if i < 0 || i >= len(rec.arrs) {
+		return nil, fmt.Errorf("arrow/array: column index out of range [0, %d): got=%d", len(rec.arrs), i)
+	}
+
+	if arr.Len() != int(rec.rows) {
+		return nil, fmt.Errorf("arrow/array: mismatch number of rows in column %q: got=%d, want=%d",
+			rec.schema.Field(i).Name,
+			arr.Len(), rec.rows,
+		)
+	}
+
+	f := rec.schema.Field(i)
+	if !arrow.TypeEqual(f.Type, arr.DataType()) {
+		return nil, fmt.Errorf("arrow/array: column %q type mismatch: got=%v, want=%v",
+			f.Name,
+			arr.DataType(), f.Type,
+		)
+	}
+	arrs := make([]arrow.Array, len(rec.arrs))
+	copy(arrs, rec.arrs)
+	arrs[i] = arr
+
+	return NewRecord(rec.schema, arrs, rec.rows), nil
+}
+
 func (rec *simpleRecord) validate() error {
-	if len(rec.arrs) != len(rec.schema.Fields()) {
+	if rec.rows == 0 && len(rec.arrs) == 0 {
+		return nil
+	}
+
+	if len(rec.arrs) != rec.schema.NumFields() {
 		return fmt.Errorf("arrow/array: number of columns/fields mismatch")
 	}
 
@@ -217,12 +227,12 @@ func (rec *simpleRecord) Release() {
 	}
 }
 
-func (rec *simpleRecord) Schema() *arrow.Schema   { return rec.schema }
-func (rec *simpleRecord) NumRows() int64          { return rec.rows }
-func (rec *simpleRecord) NumCols() int64          { return int64(len(rec.arrs)) }
-func (rec *simpleRecord) Columns() []Interface    { return rec.arrs }
-func (rec *simpleRecord) Column(i int) Interface  { return rec.arrs[i] }
-func (rec *simpleRecord) ColumnName(i int) string { return rec.schema.Field(i).Name }
+func (rec *simpleRecord) Schema() *arrow.Schema    { return rec.schema }
+func (rec *simpleRecord) NumRows() int64           { return rec.rows }
+func (rec *simpleRecord) NumCols() int64           { return int64(len(rec.arrs)) }
+func (rec *simpleRecord) Columns() []arrow.Array   { return rec.arrs }
+func (rec *simpleRecord) Column(i int) arrow.Array { return rec.arrs[i] }
+func (rec *simpleRecord) ColumnName(i int) string  { return rec.schema.Field(i).Name }
 
 // NewSlice constructs a zero-copy slice of the record with the indicated
 // indices i and j, corresponding to array[i:j].
@@ -230,8 +240,8 @@ func (rec *simpleRecord) ColumnName(i int) string { return rec.schema.Field(i).N
 //
 // NewSlice panics if the slice is outside the valid range of the record array.
 // NewSlice panics if j < i.
-func (rec *simpleRecord) NewSlice(i, j int64) Record {
-	arrs := make([]Interface, len(rec.arrs))
+func (rec *simpleRecord) NewSlice(i, j int64) arrow.Record {
+	arrs := make([]arrow.Array, len(rec.arrs))
 	for ii, arr := range rec.arrs {
 		arrs[ii] = NewSlice(arr, i, j)
 	}
@@ -254,6 +264,12 @@ func (rec *simpleRecord) String() string {
 	return o.String()
 }
 
+func (rec *simpleRecord) MarshalJSON() ([]byte, error) {
+	arr := RecordToStructArray(rec)
+	defer arr.Release()
+	return arr.MarshalJSON()
+}
+
 // RecordBuilder eases the process of building a Record, iteratively, from
 // a known Schema.
 type RecordBuilder struct {
@@ -269,11 +285,11 @@ func NewRecordBuilder(mem memory.Allocator, schema *arrow.Schema) *RecordBuilder
 		refCount: 1,
 		mem:      mem,
 		schema:   schema,
-		fields:   make([]Builder, len(schema.Fields())),
+		fields:   make([]Builder, schema.NumFields()),
 	}
 
-	for i, f := range schema.Fields() {
-		b.fields[i] = NewBuilder(b.mem, f.Type)
+	for i := 0; i < schema.NumFields(); i++ {
+		b.fields[i] = NewBuilder(b.mem, schema.Field(i).Type)
 	}
 
 	return b
@@ -313,11 +329,11 @@ func (b *RecordBuilder) Reserve(size int) {
 // The returned Record must be Release()'d after use.
 //
 // NewRecord panics if the fields' builder do not have the same length.
-func (b *RecordBuilder) NewRecord() Record {
-	cols := make([]Interface, len(b.fields))
+func (b *RecordBuilder) NewRecord() arrow.Record {
+	cols := make([]arrow.Array, len(b.fields))
 	rows := int64(0)
 
-	defer func(cols []Interface) {
+	defer func(cols []arrow.Array) {
 		for _, col := range cols {
 			if col == nil {
 				continue
@@ -338,7 +354,58 @@ func (b *RecordBuilder) NewRecord() Record {
 	return NewRecord(b.schema, cols, rows)
 }
 
+// UnmarshalJSON for record builder will read in a single object and add the values
+// to each field in the recordbuilder, missing fields will get a null and unexpected
+// keys will be ignored. If reading in an array of records as a single batch, then use
+// a structbuilder and use RecordFromStruct.
+func (b *RecordBuilder) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	// should start with a '{'
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	if delim, ok := t.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("record should start with '{', not %s", t)
+	}
+
+	keylist := make(map[string]bool)
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+
+		key := keyTok.(string)
+		if keylist[key] {
+			return fmt.Errorf("key %s shows up twice in row to be decoded", key)
+		}
+		keylist[key] = true
+
+		indices := b.schema.FieldIndices(key)
+		if len(indices) == 0 {
+			var extra interface{}
+			if err := dec.Decode(&extra); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := b.fields[indices[0]].UnmarshalOne(dec); err != nil {
+			return err
+		}
+	}
+
+	for i := 0; i < b.schema.NumFields(); i++ {
+		if !keylist[b.schema.Field(i).Name] {
+			b.fields[i].AppendNull()
+		}
+	}
+	return nil
+}
+
 var (
-	_ Record       = (*simpleRecord)(nil)
+	_ arrow.Record = (*simpleRecord)(nil)
 	_ RecordReader = (*simpleRecords)(nil)
 )

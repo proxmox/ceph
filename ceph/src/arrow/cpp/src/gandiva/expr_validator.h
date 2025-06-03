@@ -37,8 +37,9 @@ class FunctionRegistry;
 /// data types, signatures and return types
 class ExprValidator : public NodeVisitor {
  public:
-  explicit ExprValidator(LLVMTypes* types, SchemaPtr schema)
-      : types_(types), schema_(schema) {
+  explicit ExprValidator(LLVMTypes* types, SchemaPtr schema,
+                         std::shared_ptr<FunctionRegistry> registry)
+      : types_(types), schema_(schema), registry_(std::move(registry)) {
     for (auto& field : schema_->fields()) {
       field_map_[field->name()] = field;
     }
@@ -64,14 +65,12 @@ class ExprValidator : public NodeVisitor {
   Status Visit(const InExpressionNode<double>& node) override;
   Status Visit(const InExpressionNode<gandiva::DecimalScalar128>& node) override;
   Status Visit(const InExpressionNode<std::string>& node) override;
-  Status ValidateInExpression(size_t number_of_values, DataTypePtr in_expr_return_type,
-                              DataTypePtr type_of_values);
-
-  FunctionRegistry registry_;
 
   LLVMTypes* types_;
 
   SchemaPtr schema_;
+
+  std::shared_ptr<FunctionRegistry> registry_;
 
   using FieldMap = std::unordered_map<std::string, FieldPtr>;
   FieldMap field_map_;

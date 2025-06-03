@@ -15,6 +15,8 @@
 .. specific language governing permissions and limitations
 .. under the License.
 
+:html_theme.sidebar_secondary.remove:
+
 Apache Arrow
 ============
 
@@ -35,62 +37,93 @@ such topics as:
 **To learn how to use Arrow refer to the documentation specific to your
 target environment.**
 
-.. _toc.usage:
+.. grid:: 1 2 2 2
+   :gutter: 4
+   :padding: 2 2 0 0
+   :class-container: sd-text-center
 
-.. toctree::
-   :maxdepth: 1
-   :caption: Supported Environments
+   .. grid-item-card:: Specifications
+      :class-card: contrib-card
+      :shadow: none
 
-   C/GLib <c_glib/index>
-   C++ <cpp/index>
-   C# <https://github.com/apache/arrow/blob/master/csharp/README.md>
-   Go <https://godoc.org/github.com/apache/arrow/go/arrow>
-   Java <java/index>
-   JavaScript <js/index>
-   Julia <https://github.com/apache/arrow/blob/master/julia/Arrow/README.md>
-   MATLAB <https://github.com/apache/arrow/blob/master/matlab/README.md>
-   Python <python/index>
-   R <r/index>
-   Ruby <https://github.com/apache/arrow/blob/master/ruby/README.md>
-   Rust <https://docs.rs/crate/arrow/>
-   status
+      Read about the Apache Arrow format and its related specifications and
+      protocols.
 
-.. _toc.cookbook:
+      +++
 
-.. toctree::
-   :maxdepth: 1
-   :caption: Cookbooks
+      .. button-ref:: format
+         :ref-type: ref
+         :click-parent:
+         :color: primary
+         :expand:
 
-   C++ <https://arrow.apache.org/cookbook/cpp/>
-   Python <https://arrow.apache.org/cookbook/py/>
-   R <https://arrow.apache.org/cookbook/r/>
+         To Specifications
+
+   .. grid-item-card:: Development
+      :class-card: contrib-card
+      :shadow: none
+
+      Find documentation on building the libraries from source, building the
+      documentation, contributing and code reviews, continuous integration,
+      benchmarking, and the release process.
+
+      +++
+
+      .. button-ref:: developers
+         :ref-type: ref
+         :click-parent:
+         :color: primary
+         :expand:
+
+         To Development
 
 .. _toc.columnar:
 
 .. toctree::
    :maxdepth: 2
-   :caption: Specifications and Protocols
+   :hidden:
 
-   format/Versioning
-   format/Columnar
-   format/Flight
-   format/Integration
-   format/CDataInterface
-   format/CStreamInterface
-   format/Other   
+   format/index
 
 .. _toc.development:
 
 .. toctree::
    :maxdepth: 2
-   :caption: Development
+   :hidden:
 
-   developers/contributing
-   developers/cpp/index
-   developers/python
-   developers/archery
-   developers/crossbow
-   developers/docker
-   developers/benchmarks
-   developers/documentation
-   developers/computeir
+   developers/index
+
+Implementations
+---------------
+
+.. _toc.usage:
+
+.. toctree::
+   :maxdepth: 1
+
+   C/GLib <c_glib/index>
+   C++ <cpp/index>
+   C# <https://github.com/apache/arrow/blob/main/csharp/README.md>
+   Go <https://pkg.go.dev/github.com/apache/arrow/go>
+   Java <java/index>
+   JavaScript <js/index>
+   Julia <https://arrow.apache.org/julia/>
+   MATLAB <https://github.com/apache/arrow/blob/main/matlab/README.md>
+   Python <python/index>
+   R <r/index>
+   Ruby <https://github.com/apache/arrow/blob/main/ruby/README.md>
+   Rust <https://docs.rs/crate/arrow/>
+   status
+
+Examples
+--------
+
+.. _toc.cookbook:
+
+.. toctree::
+   :maxdepth: 1
+
+   C++ cookbook <https://arrow.apache.org/cookbook/cpp/>
+   Java cookbook <https://arrow.apache.org/cookbook/java/>
+   Python cookbook <https://arrow.apache.org/cookbook/py/>
+   R cookbook <https://arrow.apache.org/cookbook/r/>

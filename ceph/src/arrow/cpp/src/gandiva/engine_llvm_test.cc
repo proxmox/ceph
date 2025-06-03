@@ -24,14 +24,14 @@
 
 namespace gandiva {
 
-typedef int64_t (*add_vector_func_t)(int64_t* data, int n);
+using add_vector_func_t = int64_t (*)(int64_t*, int);
 
 class TestEngine : public ::testing::Test {
  protected:
-  llvm::Function* BuildVecAdd(Engine* engine) {
-    auto types = engine->types();
-    llvm::IRBuilder<>* builder = engine->ir_builder();
-    llvm::LLVMContext* context = engine->context();
+  std::string BuildVecAdd(Engine* gdv_engine) {
+    auto types = gdv_engine->types();
+    llvm::IRBuilder<>* builder = gdv_engine->ir_builder();
+    llvm::LLVMContext* context = gdv_engine->context();
 
     // Create fn prototype :
     //   int64_t add_longs(int64_t *elements, int32_t nelements)
@@ -42,10 +42,10 @@ class TestEngine : public ::testing::Test {
         llvm::FunctionType::get(types->i64_type(), arguments, false /*isVarArg*/);
 
     // Create fn
-    std::string func_name = "add_longs";
-    engine->AddFunctionToCompile(func_name);
+    std::string func_name = "add_longs_test_expr";
+    gdv_engine->AddFunctionToCompile(func_name);
     llvm::Function* fn = llvm::Function::Create(
-        prototype, llvm::GlobalValue::ExternalLinkage, func_name, engine->module());
+        prototype, llvm::GlobalValue::ExternalLinkage, func_name, gdv_engine->module());
     assert(fn != nullptr);
 
     // Name the arguments
@@ -80,8 +80,9 @@ class TestEngine : public ::testing::Test {
     loop_var->addIncoming(loop_update, loop_body);
 
     // get the current value
-    llvm::Value* offset = CreateGEP(builder, arg_elements, loop_var, "offset");
-    llvm::Value* current_value = CreateLoad(builder, offset, "value");
+    llvm::Value* offset =
+        builder->CreateGEP(types->i64_type(), arg_elements, loop_var, "offset");
+    llvm::Value* current_value = builder->CreateLoad(types->i64_type(), offset, "value");
 
     // setup sum PHI
     llvm::Value* sum_update = builder->CreateAdd(sum, current_value, "sum+ith");
@@ -95,10 +96,12 @@ class TestEngine : public ::testing::Test {
     // Loop exit
     builder->SetInsertPoint(loop_exit);
     builder->CreateRet(sum_update);
-    return fn;
+    return func_name;
   }
 
-  void BuildEngine() { ASSERT_OK(Engine::Make(TestConfiguration(), &engine)); }
+  void BuildEngine() {
+    ASSERT_OK_AND_ASSIGN(engine, Engine::Make(TestConfiguration(), false));
+  }
 
   std::unique_ptr<Engine> engine;
   std::shared_ptr<Configuration> configuration = TestConfiguration();
@@ -108,9 +111,10 @@ TEST_F(TestEngine, TestAddUnoptimised) {
   configuration->set_optimize(false);
   BuildEngine();
 
-  llvm::Function* ir_func = BuildVecAdd(engine.get());
+  std::string fn_name = BuildVecAdd(engine.get());
   ASSERT_OK(engine->FinalizeModule());
-  auto add_func = reinterpret_cast<add_vector_func_t>(engine->CompiledFunction(ir_func));
+  ASSERT_OK_AND_ASSIGN(auto fn_ptr, engine->CompiledFunction(fn_name));
+  auto add_func = reinterpret_cast<add_vector_func_t>(fn_ptr);
 
   int64_t my_array[] = {1, 3, -5, 8, 10};
   EXPECT_EQ(add_func(my_array, 5), 17);
@@ -120,9 +124,10 @@ TEST_F(TestEngine, TestAddOptimised) {
   configuration->set_optimize(true);
   BuildEngine();
 
-  llvm::Function* ir_func = BuildVecAdd(engine.get());
+  std::string fn_name = BuildVecAdd(engine.get());
   ASSERT_OK(engine->FinalizeModule());
-  auto add_func = reinterpret_cast<add_vector_func_t>(engine->CompiledFunction(ir_func));
+  EXPECT_OK_AND_ASSIGN(auto fn_ptr, engine->CompiledFunction(fn_name));
+  auto add_func = reinterpret_cast<add_vector_func_t>(fn_ptr);
 
   int64_t my_array[] = {1, 3, -5, 8, 10};
   EXPECT_EQ(add_func(my_array, 5), 17);

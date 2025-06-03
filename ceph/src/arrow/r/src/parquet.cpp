@@ -17,6 +17,8 @@
 
 #include "./arrow_types.h"
 
+#include "./safe-call-into-r.h"
+
 #if defined(ARROW_R_WITH_PARQUET)
 
 #include <arrow/table.h>
@@ -45,6 +47,35 @@ parquet___arrow___ArrowReaderProperties__Make(bool use_threads) {
 }
 
 // [[parquet::export]]
+std::shared_ptr<parquet::ReaderProperties> parquet___arrow___ReaderProperties__Make() {
+  return std::make_shared<parquet::ReaderProperties>();
+}
+
+// [[parquet::export]]
+int parquet___arrow___ReaderProperties__get_thrift_string_size_limit(
+    const std::shared_ptr<parquet::ReaderProperties>& properties) {
+  return properties->thrift_string_size_limit();
+}
+
+// [[parquet::export]]
+void parquet___arrow___ReaderProperties__set_thrift_string_size_limit(
+    const std::shared_ptr<parquet::ReaderProperties>& properties, int size) {
+  properties->set_thrift_string_size_limit(size);
+}
+
+// [[parquet::export]]
+int parquet___arrow___ReaderProperties__get_thrift_container_size_limit(
+    const std::shared_ptr<parquet::ReaderProperties>& properties) {
+  return properties->thrift_container_size_limit();
+}
+
+// [[parquet::export]]
+void parquet___arrow___ReaderProperties__set_thrift_container_size_limit(
+    const std::shared_ptr<parquet::ReaderProperties>& properties, int size) {
+  properties->set_thrift_container_size_limit(size);
+}
+
+// [[parquet::export]]
 void parquet___arrow___ArrowReaderProperties__set_use_threads(
     const std::shared_ptr<parquet::ArrowReaderProperties>& properties, bool use_threads) {
   properties->set_use_threads(use_threads);
@@ -70,12 +101,27 @@ void parquet___arrow___ArrowReaderProperties__set_read_dictionary(
 }
 
 // [[parquet::export]]
+void parquet___arrow___ArrowReaderProperties__set_coerce_int96_timestamp_unit(
+    const std::shared_ptr<parquet::ArrowReaderProperties>& properties,
+    arrow::TimeUnit::type unit) {
+  properties->set_coerce_int96_timestamp_unit(unit);
+}
+
+// [[parquet::export]]
+arrow::TimeUnit::type
+parquet___arrow___ArrowReaderProperties__get_coerce_int96_timestamp_unit(
+    const std::shared_ptr<parquet::ArrowReaderProperties>& properties) {
+  return properties->coerce_int96_timestamp_unit();
+}
+
+// [[parquet::export]]
 std::shared_ptr<parquet::arrow::FileReader> parquet___arrow___FileReader__OpenFile(
     const std::shared_ptr<arrow::io::RandomAccessFile>& file,
-    const std::shared_ptr<parquet::ArrowReaderProperties>& props) {
+    const std::shared_ptr<parquet::ArrowReaderProperties>& props,
+    const std::shared_ptr<parquet::ReaderProperties>& reader_props) {
   std::unique_ptr<parquet::arrow::FileReader> reader;
   parquet::arrow::FileReaderBuilder builder;
-  PARQUET_THROW_NOT_OK(builder.Open(file));
+  PARQUET_THROW_NOT_OK(builder.Open(file, *reader_props));
   PARQUET_THROW_NOT_OK(
       builder.memory_pool(gc_memory_pool())->properties(*props)->Build(&reader));
   return std::move(reader);
@@ -85,7 +131,10 @@ std::shared_ptr<parquet::arrow::FileReader> parquet___arrow___FileReader__OpenFi
 std::shared_ptr<arrow::Table> parquet___arrow___FileReader__ReadTable1(
     const std::shared_ptr<parquet::arrow::FileReader>& reader) {
   std::shared_ptr<arrow::Table> table;
-  PARQUET_THROW_NOT_OK(reader->ReadTable(&table));
+  auto result =
+      RunWithCapturedRIfPossibleVoid([&]() { return reader->ReadTable(&table); });
+
+  StopIfNotOk(result);
   return table;
 }
 
@@ -94,7 +143,10 @@ std::shared_ptr<arrow::Table> parquet___arrow___FileReader__ReadTable2(
     const std::shared_ptr<parquet::arrow::FileReader>& reader,
     const std::vector<int>& column_indices) {
   std::shared_ptr<arrow::Table> table;
-  PARQUET_THROW_NOT_OK(reader->ReadTable(column_indices, &table));
+  auto result = RunWithCapturedRIfPossibleVoid(
+      [&]() { return reader->ReadTable(column_indices, &table); });
+
+  StopIfNotOk(result);
   return table;
 }
 
@@ -102,7 +154,10 @@ std::shared_ptr<arrow::Table> parquet___arrow___FileReader__ReadTable2(
 std::shared_ptr<arrow::Table> parquet___arrow___FileReader__ReadRowGroup1(
     const std::shared_ptr<parquet::arrow::FileReader>& reader, int i) {
   std::shared_ptr<arrow::Table> table;
-  PARQUET_THROW_NOT_OK(reader->ReadRowGroup(i, &table));
+  auto result =
+      RunWithCapturedRIfPossibleVoid([&]() { return reader->ReadRowGroup(i, &table); });
+
+  StopIfNotOk(result);
   return table;
 }
 
@@ -111,7 +166,10 @@ std::shared_ptr<arrow::Table> parquet___arrow___FileReader__ReadRowGroup2(
     const std::shared_ptr<parquet::arrow::FileReader>& reader, int i,
     const std::vector<int>& column_indices) {
   std::shared_ptr<arrow::Table> table;
-  PARQUET_THROW_NOT_OK(reader->ReadRowGroup(i, column_indices, &table));
+  auto result = RunWithCapturedRIfPossibleVoid(
+      [&]() { return reader->ReadRowGroup(i, column_indices, &table); });
+
+  StopIfNotOk(result);
   return table;
 }
 
@@ -120,7 +178,10 @@ std::shared_ptr<arrow::Table> parquet___arrow___FileReader__ReadRowGroups1(
     const std::shared_ptr<parquet::arrow::FileReader>& reader,
     const std::vector<int>& row_groups) {
   std::shared_ptr<arrow::Table> table;
-  PARQUET_THROW_NOT_OK(reader->ReadRowGroups(row_groups, &table));
+  auto result = RunWithCapturedRIfPossibleVoid(
+      [&]() { return reader->ReadRowGroups(row_groups, &table); });
+
+  StopIfNotOk(result);
   return table;
 }
 
@@ -129,14 +190,17 @@ std::shared_ptr<arrow::Table> parquet___arrow___FileReader__ReadRowGroups2(
     const std::shared_ptr<parquet::arrow::FileReader>& reader,
     const std::vector<int>& row_groups, const std::vector<int>& column_indices) {
   std::shared_ptr<arrow::Table> table;
-  PARQUET_THROW_NOT_OK(reader->ReadRowGroups(row_groups, column_indices, &table));
+  auto result = RunWithCapturedRIfPossibleVoid(
+      [&]() { return reader->ReadRowGroups(row_groups, column_indices, &table); });
+
+  StopIfNotOk(result);
   return table;
 }
 
 // [[parquet::export]]
-int64_t parquet___arrow___FileReader__num_rows(
+r_vec_size parquet___arrow___FileReader__num_rows(
     const std::shared_ptr<parquet::arrow::FileReader>& reader) {
-  return reader->parquet_reader()->metadata()->num_rows();
+  return r_vec_size(reader->parquet_reader()->metadata()->num_rows());
 }
 
 // [[parquet::export]]
@@ -155,7 +219,10 @@ int parquet___arrow___FileReader__num_row_groups(
 std::shared_ptr<arrow::ChunkedArray> parquet___arrow___FileReader__ReadColumn(
     const std::shared_ptr<parquet::arrow::FileReader>& reader, int i) {
   std::shared_ptr<arrow::ChunkedArray> array;
-  PARQUET_THROW_NOT_OK(reader->ReadColumn(i - 1, &array));
+  auto result =
+      RunWithCapturedRIfPossibleVoid([&]() { return reader->ReadColumn(i - 1, &array); });
+
+  StopIfNotOk(result);
   return array;
 }
 
@@ -286,9 +353,9 @@ std::shared_ptr<parquet::arrow::FileWriter> parquet___arrow___ParquetFileWriter_
     const std::shared_ptr<arrow::io::OutputStream>& sink,
     const std::shared_ptr<parquet::WriterProperties>& properties,
     const std::shared_ptr<parquet::ArrowWriterProperties>& arrow_properties) {
-  std::unique_ptr<parquet::arrow::FileWriter> writer;
-  PARQUET_THROW_NOT_OK(parquet::arrow::FileWriter::Open(
-      *schema, gc_memory_pool(), sink, properties, arrow_properties, &writer));
+  std::unique_ptr<parquet::arrow::FileWriter> writer =
+      ValueOrStop(parquet::arrow::FileWriter::Open(*schema, gc_memory_pool(), sink,
+                                                   properties, arrow_properties));
   return std::move(writer);
 }
 

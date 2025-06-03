@@ -21,14 +21,14 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v6/parquet"
-	"github.com/apache/arrow/go/v6/parquet/metadata"
-	"github.com/apache/arrow/go/v6/parquet/schema"
+	"github.com/apache/arrow/go/v15/parquet"
+	"github.com/apache/arrow/go/v15/parquet/metadata"
+	"github.com/apache/arrow/go/v15/parquet/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func generateTableMetaData(schema *schema.Schema, props *parquet.WriterProperties, nrows int64, statsInt, statsFloat metadata.EncodedStatistics) (*metadata.FileMetaData, error) {
+func generateTableMetaData(schema *schema.Schema, props *parquet.WriterProperties, nrows int, statsInt, statsFloat metadata.EncodedStatistics) (*metadata.FileMetaData, error) {
 	fbuilder := metadata.NewFileMetadataBuilder(schema, props, nil)
 	rg1Builder := fbuilder.AppendRowGroup()
 	// metadata
@@ -43,8 +43,8 @@ func generateTableMetaData(schema *schema.Schema, props *parquet.WriterPropertie
 	statsFloat.Signed = true
 	col2Builder.SetStats(statsFloat)
 
-	col1Builder.Finish(metadata.ChunkMetaInfo{nrows / 2, 4, 0, 10, 512, 600}, true, false, metadata.EncodingStats{dictEncodingStats, dataEncodingStats}, nil)
-	col2Builder.Finish(metadata.ChunkMetaInfo{nrows / 2, 24, 0, 30, 512, 600}, true, false, metadata.EncodingStats{dictEncodingStats, dataEncodingStats}, nil)
+	col1Builder.Finish(metadata.ChunkMetaInfo{int64(nrows) / 2, 4, 0, 10, 512, 600}, true, false, metadata.EncodingStats{dictEncodingStats, dataEncodingStats}, nil)
+	col2Builder.Finish(metadata.ChunkMetaInfo{int64(nrows) / 2, 24, 0, 30, 512, 600}, true, false, metadata.EncodingStats{dictEncodingStats, dataEncodingStats}, nil)
 
 	rg1Builder.SetNumRows(nrows / 2)
 	rg1Builder.Finish(1024, -1)
@@ -57,8 +57,8 @@ func generateTableMetaData(schema *schema.Schema, props *parquet.WriterPropertie
 	col1Builder.SetStats(statsInt)
 	col2Builder.SetStats(statsFloat)
 	dictEncodingStats = make(map[parquet.Encoding]int32)
-	col1Builder.Finish(metadata.ChunkMetaInfo{nrows / 2, 0 /*dictionary page offset*/, 0, 10, 512, 600}, false /* has dictionary */, false, metadata.EncodingStats{dictEncodingStats, dataEncodingStats}, nil)
-	col2Builder.Finish(metadata.ChunkMetaInfo{nrows / 2, 16, 0, 26, 512, 600}, true, false, metadata.EncodingStats{dictEncodingStats, dataEncodingStats}, nil)
+	col1Builder.Finish(metadata.ChunkMetaInfo{int64(nrows) / 2, 0 /*dictionary page offset*/, 0, 10, 512, 600}, false /* has dictionary */, false, metadata.EncodingStats{dictEncodingStats, dataEncodingStats}, nil)
+	col2Builder.Finish(metadata.ChunkMetaInfo{int64(nrows) / 2, 16, 0, 26, 512, 600}, true, false, metadata.EncodingStats{dictEncodingStats, dataEncodingStats}, nil)
 
 	rg2Builder.SetNumRows(nrows / 2)
 	rg2Builder.Finish(1024, -1)
@@ -110,7 +110,7 @@ func TestBuildAccess(t *testing.T) {
 		SetMin((*(*[4]byte)(unsafe.Pointer(&floatMin)))[:]).
 		SetMax((*(*[4]byte)(unsafe.Pointer(&floatMax)))[:])
 
-	faccessor, err := generateTableMetaData(schema, props, nrows, statsInt, statsFloat)
+	faccessor, err := generateTableMetaData(schema, props, int(nrows), statsInt, statsFloat)
 	require.NoError(t, err)
 	serialized, err := faccessor.SerializeString(context.Background())
 	assert.NoError(t, err)
@@ -210,7 +210,7 @@ func TestBuildAccess(t *testing.T) {
 		assert.Equal(t, "/foo/bar/bar.parquet", rg2Col1.FilePath())
 	}
 
-	faccessor2, err := generateTableMetaData(schema, props, nrows, statsInt, statsFloat)
+	faccessor2, err := generateTableMetaData(schema, props, int(nrows), statsInt, statsFloat)
 	require.NoError(t, err)
 	faccessor.AppendRowGroups(faccessor2)
 	assert.Len(t, faccessor.RowGroups, 4)
@@ -270,6 +270,41 @@ func TestKeyValueMetadata(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, faccessor.KeyValueMetadata().Equals(kvmeta))
+}
+
+func TestKeyValueMetadataAppend(t *testing.T) {
+	props := parquet.NewWriterProperties(parquet.WithVersion(parquet.V1_0))
+
+	fields := schema.FieldList{
+		schema.NewInt32Node("int_col", parquet.Repetitions.Required, -1),
+		schema.NewFloat32Node("float_col", parquet.Repetitions.Required, -1),
+	}
+	root, err := schema.NewGroupNode("schema", parquet.Repetitions.Repeated, fields, -1)
+	require.NoError(t, err)
+	schema := schema.NewSchema(root)
+
+	kvmeta := metadata.NewKeyValueMetadata()
+	key1 := "test_key1"
+	value1 := "test_value1"
+	require.NoError(t, kvmeta.Append(key1, value1))
+
+	fbuilder := metadata.NewFileMetadataBuilder(schema, props, kvmeta)
+
+	key2 := "test_key2"
+	value2 := "test_value2"
+	require.NoError(t, fbuilder.AppendKeyValueMetadata(key2, value2))
+	faccessor, err := fbuilder.Finish()
+	require.NoError(t, err)
+
+	kv := faccessor.KeyValueMetadata()
+
+	got1 := kv.FindValue(key1)
+	require.NotNil(t, got1)
+	assert.Equal(t, value1, *got1)
+
+	got2 := kv.FindValue(key2)
+	require.NotNil(t, got2)
+	assert.Equal(t, value2, *got2)
 }
 
 func TestApplicationVersion(t *testing.T) {

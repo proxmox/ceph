@@ -141,13 +141,13 @@ struct EncodingTraits<ByteArrayType> {
   using Encoder = ByteArrayEncoder;
   using Decoder = ByteArrayDecoder;
 
+  using ArrowType = ::arrow::BinaryType;
   /// \brief Internal helper class for decoding BYTE_ARRAY data where we can
   /// overflow the capacity of a single arrow::BinaryArray
   struct Accumulator {
     std::unique_ptr<::arrow::BinaryBuilder> builder;
     std::vector<std::shared_ptr<::arrow::Array>> chunks;
   };
-  using ArrowType = ::arrow::BinaryType;
   using DictAccumulator = ::arrow::Dictionary32Builder<::arrow::BinaryType>;
 };
 
@@ -221,20 +221,19 @@ class DictEncoder : virtual public TypedEncoder<DType> {
   /// to size buffer.
   virtual int WriteIndices(uint8_t* buffer, int buffer_len) = 0;
 
-  virtual int dict_encoded_size() = 0;
-  // virtual int dict_encoded_size() { return dict_encoded_size_; }
+  virtual int dict_encoded_size() const = 0;
 
   virtual int bit_width() const = 0;
 
   /// Writes out the encoded dictionary to buffer. buffer must be preallocated to
   /// dict_encoded_size() bytes.
-  virtual void WriteDict(uint8_t* buffer) = 0;
+  virtual void WriteDict(uint8_t* buffer) const = 0;
 
   virtual int num_entries() const = 0;
 
   /// \brief EXPERIMENTAL: Append dictionary indices into the encoder. It is
   /// assumed (without any boundschecking) that the indices reference
-  /// pre-existing dictionary values
+  /// preexisting dictionary values
   /// \param[in] indices the dictionary index values. Only Int32Array currently
   /// supported
   virtual void PutIndices(const ::arrow::Array& indices) = 0;
@@ -397,6 +396,14 @@ class DictDecoder : virtual public TypedDecoder<DType> {
 class BooleanDecoder : virtual public TypedDecoder<BooleanType> {
  public:
   using TypedDecoder<BooleanType>::Decode;
+
+  /// \brief Decode and bit-pack values into a buffer
+  ///
+  /// \param[in] buffer destination for decoded values
+  /// This buffer will contain bit-packed values.
+  /// \param[in] max_values max values to decode.
+  /// \return The number of values decoded. Should be identical to max_values except
+  /// at the end of the current data page.
   virtual int Decode(uint8_t* buffer, int max_values) = 0;
 };
 
@@ -428,8 +435,9 @@ std::unique_ptr<typename EncodingTraits<DType>::Encoder> MakeTypedEncoder(
 }
 
 PARQUET_EXPORT
-std::unique_ptr<Decoder> MakeDecoder(Type::type type_num, Encoding::type encoding,
-                                     const ColumnDescriptor* descr = NULLPTR);
+std::unique_ptr<Decoder> MakeDecoder(
+    Type::type type_num, Encoding::type encoding, const ColumnDescriptor* descr = NULLPTR,
+    ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
 
 namespace detail {
 
@@ -451,9 +459,10 @@ std::unique_ptr<DictDecoder<DType>> MakeDictDecoder(
 
 template <typename DType>
 std::unique_ptr<typename EncodingTraits<DType>::Decoder> MakeTypedDecoder(
-    Encoding::type encoding, const ColumnDescriptor* descr = NULLPTR) {
+    Encoding::type encoding, const ColumnDescriptor* descr = NULLPTR,
+    ::arrow::MemoryPool* pool = ::arrow::default_memory_pool()) {
   using OutType = typename EncodingTraits<DType>::Decoder;
-  std::unique_ptr<Decoder> base = MakeDecoder(DType::type_num, encoding, descr);
+  std::unique_ptr<Decoder> base = MakeDecoder(DType::type_num, encoding, descr, pool);
   return std::unique_ptr<OutType>(dynamic_cast<OutType*>(base.release()));
 }
 

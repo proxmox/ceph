@@ -17,15 +17,23 @@
 
 package org.apache.arrow.flight;
 
+import static org.apache.arrow.flight.FlightTestUtil.LOCALHOST;
+import static org.apache.arrow.flight.Location.forGrpcInsecure;
 import static org.junit.jupiter.api.Assertions.fail;
+
+import java.util.Collections;
+import java.util.Optional;
 
 import org.apache.arrow.flight.impl.Flight;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.util.AutoCloseables;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.arrow.vector.ipc.message.IpcOption;
+import org.apache.arrow.vector.types.pojo.Schema;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import io.grpc.stub.ServerCallStreamObserver;
 
@@ -33,12 +41,12 @@ public class TestFlightService {
 
   private BufferAllocator allocator;
 
-  @Before
+  @BeforeEach
   public void setup() {
     allocator = new RootAllocator(Long.MAX_VALUE);
   }
 
-  @After
+  @AfterEach
   public void cleanup() throws Exception {
     AutoCloseables.close(allocator);
   }
@@ -121,5 +129,32 @@ public class TestFlightService {
     flightService.doGetCustom(Flight.Ticket.newBuilder().build(), observer);
 
     // fail() would have been called if an error happened during doGetCustom(), so this test passed.
+  }
+
+  @Test
+  public void supportsNullSchemas() throws Exception
+  {
+    final FlightProducer producer = new NoOpFlightProducer() {
+      @Override
+      public FlightInfo getFlightInfo(CallContext context,
+              FlightDescriptor descriptor) {
+        return new FlightInfo(null, descriptor, Collections.emptyList(),
+                0, 0, false, IpcOption.DEFAULT, "foo".getBytes());
+      }
+    };
+
+    try (final FlightServer s =
+            FlightServer.builder(allocator, forGrpcInsecure(LOCALHOST, 0), producer).build().start();
+            final FlightClient client = FlightClient.builder(allocator, s.getLocation()).build()) {
+      FlightInfo flightInfo = client.getInfo(FlightDescriptor.path("test"));
+      Assertions.assertEquals(Optional.empty(), flightInfo.getSchemaOptional());
+      Assertions.assertEquals(new Schema(Collections.emptyList()), flightInfo.getSchema());
+      Assertions.assertArrayEquals(flightInfo.getAppMetadata(), "foo".getBytes());
+
+      Exception e = Assertions.assertThrows(
+          FlightRuntimeException.class,
+          () -> client.getSchema(FlightDescriptor.path("test")));
+      Assertions.assertEquals("No schema is present in FlightInfo", e.getMessage());
+    }
   }
 }

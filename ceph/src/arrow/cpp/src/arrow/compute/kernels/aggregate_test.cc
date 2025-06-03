@@ -38,9 +38,8 @@
 #include "arrow/type_traits.h"
 #include "arrow/util/bitmap_reader.h"
 #include "arrow/util/checked_cast.h"
-#include "arrow/util/int_util_internal.h"
+#include "arrow/util/int_util_overflow.h"
 
-#include "arrow/testing/gtest_common.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/matchers.h"
 #include "arrow/testing/random.h"
@@ -145,9 +144,7 @@ void ValidateBooleanAgg(const std::string& json,
   SCOPED_TRACE(json);
   auto array = ArrayFromJSON(boolean(), json);
   ASSERT_OK_AND_ASSIGN(Datum result, Op(array, options, nullptr));
-
-  auto equal_options = EqualOptions::Defaults().nans_equal(true);
-  AssertScalarsEqual(*expected, *result.scalar(), /*verbose=*/true, equal_options);
+  AssertScalarsEqual(*expected, *result.scalar(), /*verbose=*/true);
 }
 
 TEST(TestBooleanAggregation, Sum) {
@@ -306,8 +303,7 @@ TEST(TestBooleanAggregation, Mean) {
   ASSERT_OK_AND_ASSIGN(
       auto result, Mean(MakeNullScalar(boolean()),
                         ScalarAggregateOptions(/*skip_nulls=*/true, /*min_count=*/0)));
-  AssertDatumsApproxEqual(result, ScalarFromJSON(float64(), "NaN"), /*detailed=*/true,
-                          EqualOptions::Defaults().nans_equal(true));
+  AssertDatumsApproxEqual(result, ScalarFromJSON(float64(), "NaN"), /*detailed=*/true);
   EXPECT_THAT(Mean(MakeNullScalar(boolean()),
                    ScalarAggregateOptions(/*skip_nulls=*/false, /*min_count=*/0)),
               ResultWith(ScalarFromJSON(float64(), "null")));
@@ -482,7 +478,7 @@ TEST_F(TestSumKernelRoundOff, Basics) {
 
   // array = np.arange(321000, dtype='float64')
   // array -= np.mean(array)
-  // array *= arrray
+  // array *= array
   double index = 0;
   ASSERT_OK_AND_ASSIGN(
       auto array, ArrayFromBuilderVisitor(
@@ -589,6 +585,32 @@ TEST(TestDecimalSumKernel, ScalarAggregateOptions) {
     EXPECT_THAT(Sum(null, ScalarAggregateOptions(/*skip_nulls=*/false)),
                 ResultWith(null));
   }
+}
+
+TEST(TestNullSumKernel, Basics) {
+  auto ty = null();
+  Datum null_result = std::make_shared<Int64Scalar>();
+  Datum zero_result = std::make_shared<Int64Scalar>(0);
+
+  EXPECT_THAT(Sum(ScalarFromJSON(ty, "null")), ResultWith(null_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[]")), ResultWith(null_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[null]")), ResultWith(null_result));
+  EXPECT_THAT(Sum(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"})),
+              ResultWith(null_result));
+
+  ScalarAggregateOptions options(/*skip_nulls=*/true, /*min_count=*/0);
+  EXPECT_THAT(Sum(ScalarFromJSON(ty, "null"), options), ResultWith(zero_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[null]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Sum(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+              ResultWith(zero_result));
+
+  options = ScalarAggregateOptions(/*skip_nulls=*/false, /*min_count=*/0);
+  EXPECT_THAT(Sum(ScalarFromJSON(ty, "null"), options), ResultWith(null_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[null]"), options), ResultWith(null_result));
+  EXPECT_THAT(Sum(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+              ResultWith(null_result));
 }
 
 //
@@ -797,6 +819,34 @@ TEST(TestProductKernel, Overflow) {
               ResultWith(Datum(static_cast<int64_t>(8589934592))));
 }
 
+TEST(TestNullProductKernel, Basics) {
+  auto ty = null();
+  Datum null_result = std::make_shared<Int64Scalar>();
+  Datum one_result = std::make_shared<Int64Scalar>(1);
+
+  EXPECT_THAT(Product(ScalarFromJSON(ty, "null")), ResultWith(null_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[]")), ResultWith(null_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[null]")), ResultWith(null_result));
+  EXPECT_THAT(Product(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"})),
+              ResultWith(null_result));
+
+  ScalarAggregateOptions options(/*skip_nulls=*/true, /*min_count=*/0);
+  EXPECT_THAT(Product(ScalarFromJSON(ty, "null"), options), ResultWith(one_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[]"), options), ResultWith(one_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[null]"), options), ResultWith(one_result));
+  EXPECT_THAT(
+      Product(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+      ResultWith(one_result));
+
+  options = ScalarAggregateOptions(/*skip_nulls=*/false, /*min_count=*/0);
+  EXPECT_THAT(Product(ScalarFromJSON(ty, "null"), options), ResultWith(null_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[]"), options), ResultWith(one_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[null]"), options), ResultWith(null_result));
+  EXPECT_THAT(
+      Product(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+      ResultWith(null_result));
+}
+
 //
 // Count
 //
@@ -892,12 +942,12 @@ class TestCountDistinctKernel : public ::testing::Test {
     CheckScalar("count_distinct", {input}, Expected(expected_all), &all);
   }
 
-  void Check(const std::shared_ptr<DataType>& type, util::string_view json,
+  void Check(const std::shared_ptr<DataType>& type, std::string_view json,
              int64_t expected_all, bool has_nulls = true) {
     Check(ArrayFromJSON(type, json), expected_all, has_nulls);
   }
 
-  void Check(const std::shared_ptr<DataType>& type, util::string_view json) {
+  void Check(const std::shared_ptr<DataType>& type, std::string_view json) {
     auto input = ScalarFromJSON(type, json);
     auto zero = ResultWith(Expected(0));
     auto one = ResultWith(Expected(1));
@@ -912,10 +962,82 @@ class TestCountDistinctKernel : public ::testing::Test {
     EXPECT_THAT(CallFunction("count_distinct", {input}, &all), one);
   }
 
+  void CheckChunkedArr(const std::shared_ptr<DataType>& type,
+                       const std::vector<std::string>& json, int64_t expected_all,
+                       bool has_nulls = true) {
+    Check(ChunkedArrayFromJSON(type, json), expected_all, has_nulls);
+  }
+
   CountOptions only_valid{CountOptions::ONLY_VALID};
   CountOptions only_null{CountOptions::ONLY_NULL};
   CountOptions all{CountOptions::ALL};
 };
+
+TEST_F(TestCountDistinctKernel, AllChunkedArrayTypesWithNulls) {
+  // Boolean
+  CheckChunkedArr(boolean(), {"[]", "[]"}, 0, /*has_nulls=*/false);
+  CheckChunkedArr(boolean(), {"[true, null]", "[false, null, false]", "[true]"}, 3);
+
+  // Number
+  for (auto ty : NumericTypes()) {
+    CheckChunkedArr(ty, {"[1, 1, null, 2]", "[5, 8, 9, 9, null, 10]", "[6, 6, 8, 9, 10]"},
+                    8);
+    CheckChunkedArr(ty, {"[1, 1, 8, 2]", "[5, 8, 9, 9, 10]", "[10, 6, 6]"}, 7,
+                    /*has_nulls=*/false);
+  }
+
+  // Date
+  CheckChunkedArr(date32(), {"[0, 11016]", "[0, null, 14241, 14241, null]"}, 4);
+  CheckChunkedArr(date64(), {"[0, null]", "[0, null, 0, 0, 1262217600000]"}, 3);
+
+  // Time
+  CheckChunkedArr(time32(TimeUnit::SECOND), {"[ 0, 11, 0, null]", "[14, 14, null]"}, 4);
+  CheckChunkedArr(time32(TimeUnit::MILLI), {"[ 0, 11000, 0]", "[null, 11000, 11000]"}, 3);
+
+  CheckChunkedArr(time64(TimeUnit::MICRO), {"[84203999999, 0, null, 84203999999]", "[0]"},
+                  3);
+  CheckChunkedArr(time64(TimeUnit::NANO),
+                  {"[11715003000000, 0, null, 0, 0]", "[0, 0, null]"}, 3);
+
+  // Timestamp & Duration
+  for (auto u : TimeUnit::values()) {
+    CheckChunkedArr(duration(u), {"[123456789, null, 987654321]", "[123456789, null]"},
+                    3);
+
+    CheckChunkedArr(duration(u),
+                    {"[123456789, 987654321, 123456789, 123456789]", "[123456789]"}, 2,
+                    /*has_nulls=*/false);
+
+    auto ts =
+        std::vector<std::string>{R"(["2009-12-31T04:20:20", "2009-12-31T04:20:20"])",
+                                 R"(["2020-01-01", null])", R"(["2020-01-01", null])"};
+    CheckChunkedArr(timestamp(u), ts, 3);
+    CheckChunkedArr(timestamp(u, "Pacific/Marquesas"), ts, 3);
+  }
+
+  // Interval
+  CheckChunkedArr(month_interval(), {"[9012, 5678, null, 9012]", "[5678, null, 9012]"},
+                  3);
+  CheckChunkedArr(day_time_interval(),
+                  {"[[0, 1], [0, 1]]", "[null, [0, 1], [1234, 5678]]"}, 3);
+  CheckChunkedArr(month_day_nano_interval(),
+                  {"[[0, 1, 2]]", "[[0, 1, 2], null, [0, 1, 2]]"}, 2);
+
+  // Binary & String & Fixed binary
+  auto samples = std::vector<std::string>{
+      R"([null, "abc", null])", R"(["abc", "abc", "cba"])", R"(["bca", "cba", null])"};
+
+  CheckChunkedArr(binary(), samples, 4);
+  CheckChunkedArr(large_binary(), samples, 4);
+  CheckChunkedArr(utf8(), samples, 4);
+  CheckChunkedArr(large_utf8(), samples, 4);
+  CheckChunkedArr(fixed_size_binary(3), samples, 4);
+
+  // Decimal
+  samples = {R"(["12345.679", "98765.421"])", R"([null, "12345.679", "98765.421"])"};
+  CheckChunkedArr(decimal128(21, 3), samples, 3);
+  CheckChunkedArr(decimal256(13, 3), samples, 3);
+}
 
 TEST_F(TestCountDistinctKernel, AllArrayTypesWithNulls) {
   // Boolean
@@ -1013,7 +1135,7 @@ TEST_F(TestCountDistinctKernel, Random) {
   };
   auto rand = random::RandomArrayGenerator(0x1205643);
   auto arr = rand.Numeric<UInt32Type>(1024, 0, 100, 0.0)->data();
-  auto r = VisitArrayDataInline<UInt32Type>(*arr, visit_value, visit_null);
+  auto r = VisitArraySpanInline<UInt32Type>(*arr, visit_value, visit_null);
   auto input = builder.Finish().ValueOrDie();
   Check(input, memo.size(), false);
 }
@@ -1039,8 +1161,7 @@ template <typename ArrowType>
 void ValidateMean(const Array& input, Datum expected,
                   const ScalarAggregateOptions& options) {
   ASSERT_OK_AND_ASSIGN(Datum result, Mean(input, options, nullptr));
-  auto equal_options = EqualOptions::Defaults().nans_equal(true);
-  AssertDatumsApproxEqual(expected, result, /*verbose=*/true, equal_options);
+  AssertDatumsApproxEqual(expected, result, /*verbose=*/true);
 }
 
 template <typename ArrowType>
@@ -1153,6 +1274,20 @@ TYPED_TEST(TestNumericMeanKernel, ScalarAggregateOptions) {
               ResultWith(Datum(MakeNullScalar(float64()))));
 }
 
+TEST(TestNumericMeanKernel, Overflow) {
+  // will overflow if intermediate sum is int64_t
+  EXPECT_THAT(
+      Mean(ArrayFromJSON(
+          int64(), "[9223372036854775805, 9223372036854775806, 9223372036854775807]")),
+      ResultWith(ScalarFromJSON(float64(), "9223372036854775806")));
+
+  // will overflow if intermediate sum is uint64_t
+  EXPECT_THAT(
+      Mean(ArrayFromJSON(
+          uint64(), "[9223372036854775805, 9223372036854775806, 9223372036854775807]")),
+      ResultWith(ScalarFromJSON(float64(), "9223372036854775806")));
+}
+
 template <typename ArrowType>
 class TestRandomNumericMeanKernel : public ::testing::Test {};
 
@@ -1215,10 +1350,31 @@ TEST(TestDecimalMeanKernel, SimpleMean) {
 
     EXPECT_THAT(Mean(ArrayFromJSON(ty, R"(["1.01", null, "1.01"])")),
                 ResultWith(ScalarFromJSON(ty, R"("1.01")")));
+
+    // Check rounding
     EXPECT_THAT(
         Mean(ArrayFromJSON(
             ty, R"(["1.01", "2.02", "3.03", "4.04", "5.05", "6.06", "7.07", "8.08"])")),
+        // 4.545 unrounded
+        ResultWith(ScalarFromJSON(ty, R"("4.55")")));
+    EXPECT_THAT(
+        Mean(ArrayFromJSON(
+            ty,
+            R"(["-1.01", "-2.02", "-3.03", "-4.04", "-5.05", "-6.06", "-7.07", "-8.08"])")),
+        // -4.545 unrounded
+        ResultWith(ScalarFromJSON(ty, R"("-4.55")")));
+    EXPECT_THAT(
+        Mean(ArrayFromJSON(
+            ty, R"(["1.01", "2.02", "3.00", "4.04", "5.05", "6.06", "7.07", "8.08"])")),
+        // 4.54125 unrounded
         ResultWith(ScalarFromJSON(ty, R"("4.54")")));
+    EXPECT_THAT(
+        Mean(ArrayFromJSON(
+            ty,
+            R"(["-1.01", "-2.02", "-3.00", "-4.04", "-5.05", "-6.06", "-7.07", "-8.08"])")),
+        // -4.54125 unrounded
+        ResultWith(ScalarFromJSON(ty, R"("-4.54")")));
+
     EXPECT_THAT(
         Mean(ArrayFromJSON(
             ty, R"(["0.00", "0.00", "0.00", "0.00", "0.00", "0.00", "0.00", "0.00"])")),
@@ -1232,6 +1388,34 @@ TEST(TestDecimalMeanKernel, SimpleMean) {
                 ResultWith(ScalarFromJSON(ty, R"("5.05")")));
     EXPECT_THAT(Mean(ScalarFromJSON(ty, R"(null)")),
                 ResultWith(ScalarFromJSON(ty, R"(null)")));
+  }
+
+  for (const auto& ty : {decimal128(3, -2), decimal256(3, -2)}) {
+    // Check rounding
+    EXPECT_THAT(
+        Mean(DecimalArrayFromJSON(
+            ty,
+            R"(["101E2", "202E2", "303E2", "404E2", "505E2", "606E2", "707E2", "808E2"])")),
+        // 45450 unrounded
+        ResultWith(DecimalScalarFromJSON(ty, R"("455E2")")));
+    EXPECT_THAT(
+        Mean(DecimalArrayFromJSON(
+            ty,
+            R"(["-101E2", "-202E2", "-303E2", "-404E2", "-505E2", "-606E2", "-707E2", "-808E2"])")),
+        // -45450 unrounded
+        ResultWith(DecimalScalarFromJSON(ty, R"("-455E2")")));
+    EXPECT_THAT(
+        Mean(DecimalArrayFromJSON(
+            ty,
+            R"(["101E2", "202E2", "300E2", "404E2", "505E2", "606E2", "707E2", "808E2"])")),
+        // 45412.5 unrounded
+        ResultWith(DecimalScalarFromJSON(ty, R"("454E2")")));
+    EXPECT_THAT(
+        Mean(DecimalArrayFromJSON(
+            ty,
+            R"(["-101E2", "-202E2", "-300E2", "-404E2", "-505E2", "-606E2", "-707E2", "-808E2"])")),
+        // -45412.5 unrounded
+        ResultWith(DecimalScalarFromJSON(ty, R"("-454E2")")));
   }
 }
 
@@ -1303,6 +1487,237 @@ TEST(TestDecimalMeanKernel, ScalarAggregateOptions) {
     EXPECT_THAT(Mean(null, ScalarAggregateOptions(/*skip_nulls=*/false)),
                 ResultWith(null));
   }
+}
+
+TEST(TestNullMeanKernel, Basics) {
+  auto ty = null();
+  Datum null_result = std::make_shared<DoubleScalar>();
+  Datum zero_result = std::make_shared<DoubleScalar>(0);
+
+  EXPECT_THAT(Mean(ScalarFromJSON(ty, "null")), ResultWith(null_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[]")), ResultWith(null_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[null]")), ResultWith(null_result));
+  EXPECT_THAT(Mean(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"})),
+              ResultWith(null_result));
+
+  ScalarAggregateOptions options(/*skip_nulls=*/true, /*min_count=*/0);
+  EXPECT_THAT(Mean(ScalarFromJSON(ty, "null"), options), ResultWith(zero_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[null]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Mean(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+              ResultWith(zero_result));
+
+  options = ScalarAggregateOptions(/*skip_nulls=*/false, /*min_count=*/0);
+  EXPECT_THAT(Mean(ScalarFromJSON(ty, "null"), options), ResultWith(null_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[null]"), options), ResultWith(null_result));
+  EXPECT_THAT(Mean(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+              ResultWith(null_result));
+}
+
+//
+// First / Last
+//
+
+template <typename ArrowType>
+class TestFirstLastKernel : public ::testing::Test {
+  using Traits = TypeTraits<ArrowType>;
+  using ArrayType = typename Traits::ArrayType;
+  using c_type = typename ArrowType::c_type;
+  using ScalarType = typename Traits::ScalarType;
+
+ public:
+  void AssertFirstLastIs(const Datum& array, c_type expected_first, c_type expected_last,
+                         const ScalarAggregateOptions& options) {
+    ASSERT_OK_AND_ASSIGN(Datum out, CallFunction("first", {array}, &options));
+    const auto& out_first = out.scalar_as<ScalarType>();
+    ASSERT_EQ(expected_first, out_first.value);
+
+    ASSERT_OK_AND_ASSIGN(out, CallFunction("last", {array}, &options));
+    const auto& out_last = out.scalar_as<ScalarType>();
+    ASSERT_EQ(expected_last, out_last.value);
+  }
+
+  void AssertFirstLastIsNull(const Datum& array, const ScalarAggregateOptions& options) {
+    ASSERT_OK_AND_ASSIGN(Datum out, First(array, options));
+    const auto& out_first = out.scalar_as<ScalarType>();
+    ASSERT_FALSE(out_first.is_valid);
+
+    ASSERT_OK_AND_ASSIGN(out, Last(array, options));
+    const auto& out_last = out.scalar_as<ScalarType>();
+    ASSERT_FALSE(out_last.is_valid);
+  }
+
+  void AssertFirstLastIsNull(const std::string& json,
+                             const ScalarAggregateOptions& options) {
+    auto array = ArrayFromJSON(type_singleton(), json);
+    AssertFirstLastIsNull(array, options);
+  }
+
+  void AssertFirstLastIsNull(const std::vector<std::string>& json,
+                             const ScalarAggregateOptions& options) {
+    auto array = ChunkedArrayFromJSON(type_singleton(), json);
+    AssertFirstLastIsNull(array, options);
+  }
+
+  void AssertFirstLastIs(const std::string& json, c_type expected_first,
+                         c_type expected_last, const ScalarAggregateOptions& options) {
+    auto array = ArrayFromJSON(type_singleton(), json);
+    AssertFirstLastIs(array, expected_first, expected_last, options);
+  }
+
+  void AssertFirstLastIs(const std::vector<std::string>& json, c_type expected_min,
+                         c_type expected_max, const ScalarAggregateOptions& options) {
+    auto array = ChunkedArrayFromJSON(type_singleton(), json);
+    AssertFirstLastIs(array, expected_min, expected_max, options);
+  }
+
+  std::shared_ptr<DataType> type_singleton() {
+    return default_type_instance<ArrowType>();
+  }
+};
+
+class TestBooleanFirstLastKernel : public TestFirstLastKernel<BooleanType> {};
+
+template <typename ArrowType>
+class TestNumericFirstLastKernel : public TestFirstLastKernel<ArrowType> {};
+
+template <typename ArrowType>
+class TestTemporalFirstLastKernel : public TestFirstLastKernel<ArrowType> {};
+
+TEST_F(TestBooleanFirstLastKernel, Basics) {
+  ScalarAggregateOptions options;
+  std::vector<std::string> chunked_input0 = {"[]", "[]"};
+  std::vector<std::string> chunked_input1 = {"[null, true, null]", "[true, null]"};
+  std::vector<std::string> chunked_input2 = {"[false, false, false]", "[false]"};
+  std::vector<std::string> chunked_input3 = {"[null, true]", "[false, null]"};
+  std::vector<std::string> chunked_input4 = {"[false, null]", "[null, true]"};
+  auto ty = struct_({field("first", boolean()), field("last", boolean())});
+
+  this->AssertFirstLastIsNull("[]", options);
+  this->AssertFirstLastIsNull("[null, null, null]", options);
+  this->AssertFirstLastIsNull(chunked_input0, options);
+  this->AssertFirstLastIs(chunked_input1, true, true, options);
+  this->AssertFirstLastIs(chunked_input2, false, false, options);
+  this->AssertFirstLastIs(chunked_input3, true, false, options);
+  this->AssertFirstLastIs(chunked_input4, false, true, options);
+
+  options.skip_nulls = false;
+  this->AssertFirstLastIsNull("[]", options);
+  this->AssertFirstLastIsNull("[null, null, null]", options);
+  this->AssertFirstLastIsNull(chunked_input0, options);
+  this->AssertFirstLastIsNull(chunked_input1, options);
+  this->AssertFirstLastIs(chunked_input2, false, false, options);
+  this->AssertFirstLastIsNull(chunked_input3, options);
+  this->AssertFirstLastIs(chunked_input4, false, true, options);
+}
+
+TYPED_TEST_SUITE(TestNumericFirstLastKernel, NumericArrowTypes);
+TYPED_TEST(TestNumericFirstLastKernel, Basics) {
+  ScalarAggregateOptions options;
+  std::vector<std::string> chunked_input1 = {"[5, 1, 2, 3, 4]", "[9, 8, null, 3, 4]"};
+  std::vector<std::string> chunked_input2 = {"[null, null, null, 7]",
+                                             "[null, 8, null, 3, 4, null]"};
+  std::vector<std::string> chunked_input3 = {"[null, null, null]", "[null, null]"};
+  auto item_ty = default_type_instance<TypeParam>();
+
+  this->AssertFirstLastIs("[5, 1, 2, 3, 4]", 5, 4, options);
+  this->AssertFirstLastIs("[5, null, 2, 3, null]", 5, 3, options);
+  this->AssertFirstLastIs(chunked_input1, 5, 4, options);
+  this->AssertFirstLastIs(chunked_input1[1], 9, 4, options);
+  this->AssertFirstLastIs(chunked_input2, 7, 4, options);
+  this->AssertFirstLastIsNull(chunked_input3[0], options);
+  this->AssertFirstLastIsNull(chunked_input3, options);
+
+  options.skip_nulls = false;
+  this->AssertFirstLastIsNull(chunked_input2[1], options);
+  this->AssertFirstLastIsNull(chunked_input2, options);
+}
+
+TYPED_TEST_SUITE(TestTemporalFirstLastKernel, TemporalArrowTypes);
+TYPED_TEST(TestTemporalFirstLastKernel, Basics) {
+  ScalarAggregateOptions options;
+  std::vector<std::string> chunked_input1 = {"[5, 1, 2, 3, 4]", "[9, 8, null, 3, 4]"};
+  std::vector<std::string> chunked_input2 = {"[null, null, null, null]",
+                                             "[null, 8, null, 3 ,4, null]"};
+  auto item_ty = default_type_instance<TypeParam>();
+
+  this->AssertFirstLastIs("[5, 1, 2, 3, 4]", 5, 4, options);
+  this->AssertFirstLastIs("[5, null, 2, 3, null]", 5, 3, options);
+  this->AssertFirstLastIs(chunked_input1, 5, 4, options);
+  this->AssertFirstLastIs(chunked_input2, 8, 4, options);
+
+  options.skip_nulls = false;
+  this->AssertFirstLastIsNull(chunked_input2, options);
+}
+
+template <typename ArrowType>
+class TestBaseBinaryFirstLastKernel : public ::testing::Test {};
+TYPED_TEST_SUITE(TestBaseBinaryFirstLastKernel, BaseBinaryArrowTypes);
+TYPED_TEST(TestBaseBinaryFirstLastKernel, Basics) {
+  std::vector<std::string> chunked_input1 = {R"(["cc", "", "aa", "b", "c"])",
+                                             R"(["d", "", null, "b", null])"};
+  std::vector<std::string> chunked_input2 = {R"(["aa", null, "aa", "b", "c"])",
+                                             R"(["d", "", "aa", "b", "bb"])"};
+  std::vector<std::string> chunked_input3 = {R"(["bb", "", "aa", "b", null])",
+                                             R"(["d", "", null, "b", "aa"])"};
+  auto ty = std::make_shared<TypeParam>();
+  Datum null = ScalarFromJSON(ty, R"(null)");
+
+  // SKIP nulls by default
+  EXPECT_THAT(First(ArrayFromJSON(ty, R"([])")), ResultWith(null));
+  EXPECT_THAT(First(ArrayFromJSON(ty, R"([null, null, null])")), ResultWith(null));
+  EXPECT_THAT(First(ArrayFromJSON(ty, chunked_input1[0])),
+              ResultWith(ScalarFromJSON(ty, R"("cc")")));
+  EXPECT_THAT(First(ChunkedArrayFromJSON(ty, chunked_input1)),
+              ResultWith(ScalarFromJSON(ty, R"("cc")")));
+  EXPECT_THAT(First(ChunkedArrayFromJSON(ty, chunked_input3)),
+              ResultWith(ScalarFromJSON(ty, R"("bb")")));
+
+  EXPECT_THAT(Last(ArrayFromJSON(ty, R"([])")), ResultWith(null));
+  EXPECT_THAT(Last(ArrayFromJSON(ty, R"([null, null, null])")), ResultWith(null));
+  EXPECT_THAT(Last(ArrayFromJSON(ty, chunked_input1[0])),
+              ResultWith(ScalarFromJSON(ty, R"("c")")));
+  EXPECT_THAT(Last(ChunkedArrayFromJSON(ty, chunked_input1)),
+              ResultWith(ScalarFromJSON(ty, R"("b")")));
+  EXPECT_THAT(Last(ChunkedArrayFromJSON(ty, chunked_input3)),
+              ResultWith(ScalarFromJSON(ty, R"("aa")")));
+
+  EXPECT_THAT(Last(MakeNullScalar(ty)), ResultWith(null));
+}
+
+TEST(TestFixedSizeBinaryFirstLastKernel, Basics) {
+  auto ty = fixed_size_binary(2);
+  std::vector<std::string> chunked_input1 = {R"(["cd", "aa", "ab", "bb", "cc"])",
+                                             R"(["da", "aa", null, "bb", "bb"])"};
+  std::vector<std::string> chunked_input2 = {R"([null, null, null, null, null])",
+                                             R"(["dd", "aa", "ab", "bb", "aa"])"};
+  std::vector<std::string> chunked_input3 = {R"(["aa", "aa", "ab", "bb", null])",
+                                             R"([null, null, null, null, null])"};
+  Datum null = ScalarFromJSON(ty, R"(null)");
+
+  // SKIP nulls by default
+  EXPECT_THAT(First(ArrayFromJSON(ty, R"([])")), ResultWith(null));
+  EXPECT_THAT(First(ArrayFromJSON(ty, R"([null, null, null])")), ResultWith(null));
+  EXPECT_THAT(First(ArrayFromJSON(ty, chunked_input1[0])),
+              ResultWith(ScalarFromJSON(ty, R"("cd")")));
+  EXPECT_THAT(First(ChunkedArrayFromJSON(ty, chunked_input1)),
+              ResultWith(ScalarFromJSON(ty, R"("cd")")));
+  EXPECT_THAT(First(ChunkedArrayFromJSON(ty, chunked_input2)),
+              ResultWith(ScalarFromJSON(ty, R"("dd")")));
+  EXPECT_THAT(First(ChunkedArrayFromJSON(ty, chunked_input3)),
+              ResultWith(ScalarFromJSON(ty, R"("aa")")));
+
+  EXPECT_THAT(Last(ArrayFromJSON(ty, R"([])")), ResultWith(null));
+  EXPECT_THAT(Last(ArrayFromJSON(ty, R"([null, null, null])")), ResultWith(null));
+  EXPECT_THAT(Last(ArrayFromJSON(ty, chunked_input1[0])),
+              ResultWith(ScalarFromJSON(ty, R"("cc")")));
+  EXPECT_THAT(Last(ChunkedArrayFromJSON(ty, chunked_input1)),
+              ResultWith(ScalarFromJSON(ty, R"("bb")")));
+  EXPECT_THAT(Last(ChunkedArrayFromJSON(ty, chunked_input2)),
+              ResultWith(ScalarFromJSON(ty, R"("aa")")));
+  EXPECT_THAT(Last(ChunkedArrayFromJSON(ty, chunked_input3)),
+              ResultWith(ScalarFromJSON(ty, R"("bb")")));
 }
 
 //
@@ -1384,8 +1799,6 @@ template <typename ArrowType>
 class TestFloatingMinMaxKernel : public TestPrimitiveMinMaxKernel<ArrowType> {};
 
 class TestBooleanMinMaxKernel : public TestPrimitiveMinMaxKernel<BooleanType> {};
-class TestDayTimeIntervalMinMaxKernel
-    : public TestPrimitiveMinMaxKernel<DayTimeIntervalType> {};
 
 TEST_F(TestBooleanMinMaxKernel, Basics) {
   ScalarAggregateOptions options;
@@ -1441,7 +1854,7 @@ TEST_F(TestBooleanMinMaxKernel, Basics) {
 TYPED_TEST_SUITE(TestIntegerMinMaxKernel, PhysicalIntegralArrowTypes);
 TYPED_TEST(TestIntegerMinMaxKernel, Basics) {
   ScalarAggregateOptions options;
-  std::vector<std::string> chunked_input1 = {"[5, 1, 2, 3, 4]", "[9, 1, null, 3, 4]"};
+  std::vector<std::string> chunked_input1 = {"[5, 1, 2, 3, 4]", "[9, 8, null, 3, 4]"};
   std::vector<std::string> chunked_input2 = {"[5, null, 2, 3, 4]", "[9, 1, 2, 3, 4]"};
   std::vector<std::string> chunked_input3 = {"[5, 1, 2, 3, null]", "[9, 1, null, 3, 4]"};
   auto item_ty = default_type_instance<TypeParam>();
@@ -1647,7 +2060,7 @@ TEST(TestNullMinMaxKernel, Basics) {
 
 template <typename ArrowType>
 class TestBaseBinaryMinMaxKernel : public ::testing::Test {};
-TYPED_TEST_SUITE(TestBaseBinaryMinMaxKernel, BinaryArrowTypes);
+TYPED_TEST_SUITE(TestBaseBinaryMinMaxKernel, BaseBinaryArrowTypes);
 TYPED_TEST(TestBaseBinaryMinMaxKernel, Basics) {
   std::vector<std::string> chunked_input1 = {R"(["cc", "", "aa", "b", "c"])",
                                              R"(["d", "", null, "b", "c"])"};
@@ -2109,24 +2522,23 @@ TEST_F(TestAllKernel, Basics) {
 // Index
 //
 
+void CheckIndex(Datum array, const std::shared_ptr<Scalar>& value, int64_t expected) {
+  IndexOptions options(value);
+  ASSERT_OK_AND_ASSIGN(Datum out, Index(array, options));
+  const Int64Scalar& out_index = out.scalar_as<Int64Scalar>();
+  ASSERT_EQ(out_index.value, expected);
+}
+
 template <typename ArrowType>
 class TestIndexKernel : public ::testing::Test {
  public:
   using ScalarType = typename TypeTraits<ArrowType>::ScalarType;
-  void AssertIndexIs(const Datum& array, const std::shared_ptr<ScalarType>& value,
-                     int64_t expected) {
-    IndexOptions options(value);
-    ASSERT_OK_AND_ASSIGN(Datum out, Index(array, options));
-    const Int64Scalar& out_index = out.scalar_as<Int64Scalar>();
-    ASSERT_EQ(out_index.value, expected);
-  }
-
   void AssertIndexIs(const std::string& json, const std::shared_ptr<ScalarType>& value,
                      int64_t expected) {
     SCOPED_TRACE("Value: " + value->ToString());
     SCOPED_TRACE("Input: " + json);
     auto array = ArrayFromJSON(type_singleton(), json);
-    AssertIndexIs(array, value, expected);
+    CheckIndex(array, value, expected);
   }
 
   void AssertIndexIs(const std::vector<std::string>& json,
@@ -2134,7 +2546,7 @@ class TestIndexKernel : public ::testing::Test {
     SCOPED_TRACE("Value: " + value->ToString());
     auto array = ChunkedArrayFromJSON(type_singleton(), json);
     SCOPED_TRACE("Input: " + array->ToString());
-    AssertIndexIs(array, value, expected);
+    CheckIndex(array, value, expected);
   }
 
   std::shared_ptr<DataType> type_singleton() { return std::make_shared<ArrowType>(); }
@@ -2173,7 +2585,7 @@ TYPED_TEST(TestNumericIndexKernel, Basics) {
   this->AssertIndexIs(chunked_input4, value, 5);
 
   EXPECT_RAISES_WITH_MESSAGE_THAT(
-      Invalid, ::testing::HasSubstr("Must provide IndexOptions"),
+      Invalid, ::testing::HasSubstr("Function 'index' cannot be called without options"),
       CallFunction("index", {ArrayFromJSON(this->type_singleton(), "[0]")}));
 }
 TYPED_TEST(TestNumericIndexKernel, Random) {
@@ -2208,7 +2620,7 @@ TYPED_TEST(TestNumericIndexKernel, Random) {
       if (expected >= 0) break;
     }
 
-    this->AssertIndexIs(Datum(chunked_array), value, expected);
+    CheckIndex(Datum(chunked_array), value, expected);
   }
 }
 
@@ -2249,7 +2661,7 @@ TYPED_TEST(TestBooleanIndexKernel, Basics) {
 
 template <typename ArrowType>
 class TestStringIndexKernel : public TestIndexKernel<ArrowType> {};
-TYPED_TEST_SUITE(TestStringIndexKernel, BinaryArrowTypes);
+TYPED_TEST_SUITE(TestStringIndexKernel, BaseBinaryArrowTypes);
 TYPED_TEST(TestStringIndexKernel, Basics) {
   auto buffer = Buffer::FromString("foo");
   auto value = std::make_shared<typename TestFixture::ScalarType>(buffer);
@@ -2265,9 +2677,117 @@ TYPED_TEST(TestStringIndexKernel, Basics) {
   this->AssertIndexIs(R"(["foo", null, null])", null_value, -1);
 }
 
+TEST(TestIndexKernel, FixedSizeBinary) {
+  auto ty = fixed_size_binary(3);
+  auto buffer = Buffer::FromString("foo");
+  auto value = std::make_shared<FixedSizeBinaryScalar>(buffer, ty);
+  auto null_value = std::make_shared<FixedSizeBinaryScalar>(buffer, ty);
+  null_value->is_valid = false;
+
+  CheckIndex(ArrayFromJSON(ty, R"([])"), value, -1);
+  CheckIndex(ArrayFromJSON(ty, R"(["foo"])"), value, 0);
+  CheckIndex(ArrayFromJSON(ty, R"(["bar", "bar", "bar", "bar"])"), value, -1);
+  CheckIndex(ArrayFromJSON(ty, R"(["bar", "bar", "bar", "bar", "foo"])"), value, 4);
+  CheckIndex(ArrayFromJSON(ty, R"([null, null, null])"), value, -1);
+  CheckIndex(ArrayFromJSON(ty, R"([null, null, null])"), null_value, -1);
+  CheckIndex(ArrayFromJSON(ty, R"(["foo", null, null])"), null_value, -1);
+}
+
+TEST(TestIndexKernel, Decimal) {
+  for (const auto& ty : {decimal128(3, 2), decimal256(3, 2)}) {
+    std::shared_ptr<Scalar> value, null_value;
+    if (ty->id() == Type::DECIMAL128) {
+      value = std::make_shared<Decimal128Scalar>(Decimal128(123), ty);
+      null_value = std::make_shared<Decimal128Scalar>(ty);
+    } else {
+      value = std::make_shared<Decimal256Scalar>(Decimal256(123), ty);
+      null_value = std::make_shared<Decimal256Scalar>(ty);
+    }
+
+    CheckIndex(ArrayFromJSON(ty, R"([])"), value, -1);
+    CheckIndex(ArrayFromJSON(ty, R"(["1.23"])"), value, 0);
+    CheckIndex(ArrayFromJSON(ty, R"(["9.99", "9.99", "9.99", "9.99"])"), value, -1);
+    CheckIndex(ArrayFromJSON(ty, R"(["9.99", "9.99", "9.99", "9.99", "1.23"])"), value,
+               4);
+    CheckIndex(ArrayFromJSON(ty, R"([null, null, null])"), value, -1);
+    CheckIndex(ArrayFromJSON(ty, R"([null, null, null])"), null_value, -1);
+    CheckIndex(ArrayFromJSON(ty, R"(["1.23", null, null])"), null_value, -1);
+  }
+}
+
+TEST(TestIndexKernel, Null) {
+  auto ty = null();
+  auto value = std::make_shared<NullScalar>();
+
+  CheckIndex(ArrayFromJSON(ty, R"([])"), value, -1);
+  CheckIndex(ArrayFromJSON(ty, R"([null])"), value, -1);
+  CheckIndex(ArrayFromJSON(ty, R"([null, null, null, null])"), value, -1);
+}
+
+TEST(TestIndexKernel, Errors) {
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      TypeError,
+      ::testing::HasSubstr(
+          "Expected IndexOptions.value to be of type string, but got int32"),
+      Index(ArrayFromJSON(utf8(), R"(["a"])"),
+            IndexOptions(ScalarFromJSON(int32(), "1"))));
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      TypeError,
+      ::testing::HasSubstr("Expected IndexOptions.value to be of type timestamp[ns], "
+                           "but got timestamp[ms]"),
+      Index(ArrayFromJSON(timestamp(TimeUnit::NANO), R"(["2020-01-01"])"),
+            IndexOptions(ScalarFromJSON(timestamp(TimeUnit::MILLI), R"("2020-01-01")"))));
+
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      Invalid, ::testing::HasSubstr("Must provide IndexOptions.value"),
+      Index(ArrayFromJSON(utf8(), R"(["a"])"), IndexOptions(nullptr)));
+}
+
 //
 // Mode
 //
+
+template <typename CType>
+void CheckModes(const Datum& array, const ModeOptions options,
+                const std::vector<CType>& expected_modes,
+                const std::vector<int64_t>& expected_counts) {
+  ARROW_SCOPED_TRACE("Mode Options: ", options.ToString());
+  ASSERT_OK_AND_ASSIGN(Datum out, Mode(array, options));
+  ValidateOutput(out);
+  const StructArray out_array(out.array());
+  ASSERT_EQ(out_array.length(), expected_modes.size());
+  ASSERT_EQ(out_array.num_fields(), 2);
+
+  const CType* out_modes = out_array.field(0)->data()->GetValues<CType>(1);
+  const int64_t* out_counts = out_array.field(1)->data()->GetValues<int64_t>(1);
+  for (int i = 0; i < out_array.length(); ++i) {
+    // equal or nan equal
+    ASSERT_TRUE((expected_modes[i] == out_modes[i]) ||
+                (expected_modes[i] != expected_modes[i] && out_modes[i] != out_modes[i]))
+        << "  Actual Value: " << out_modes[i] << "\n"
+        << "Expected Value: " << expected_modes[i];
+    ASSERT_EQ(expected_counts[i], out_counts[i]);
+  }
+}
+
+template <>
+void CheckModes<bool>(const Datum& array, const ModeOptions options,
+                      const std::vector<bool>& expected_modes,
+                      const std::vector<int64_t>& expected_counts) {
+  ARROW_SCOPED_TRACE("Mode Options: ", options.ToString());
+  ASSERT_OK_AND_ASSIGN(Datum out, Mode(array, options));
+  ValidateOutput(out);
+  const StructArray out_array(out.array());
+  ASSERT_EQ(out_array.length(), expected_modes.size());
+  ASSERT_EQ(out_array.num_fields(), 2);
+
+  const uint8_t* out_modes = out_array.field(0)->data()->GetValues<uint8_t>(1);
+  const int64_t* out_counts = out_array.field(1)->data()->GetValues<int64_t>(1);
+  for (int i = 0; i < out_array.length(); ++i) {
+    ASSERT_EQ(expected_modes[i], bit_util::GetBit(out_modes, i));
+    ASSERT_EQ(expected_counts[i], out_counts[i]);
+  }
+}
 
 template <typename T>
 class TestPrimitiveModeKernel : public ::testing::Test {
@@ -2279,21 +2799,7 @@ class TestPrimitiveModeKernel : public ::testing::Test {
   void AssertModesAre(const Datum& array, const ModeOptions options,
                       const std::vector<CType>& expected_modes,
                       const std::vector<int64_t>& expected_counts) {
-    ASSERT_OK_AND_ASSIGN(Datum out, Mode(array, options));
-    ValidateOutput(out);
-    const StructArray out_array(out.array());
-    ASSERT_EQ(out_array.length(), expected_modes.size());
-    ASSERT_EQ(out_array.num_fields(), 2);
-
-    const CType* out_modes = out_array.field(0)->data()->GetValues<CType>(1);
-    const int64_t* out_counts = out_array.field(1)->data()->GetValues<int64_t>(1);
-    for (int i = 0; i < out_array.length(); ++i) {
-      // equal or nan equal
-      ASSERT_TRUE(
-          (expected_modes[i] == out_modes[i]) ||
-          (expected_modes[i] != expected_modes[i] && out_modes[i] != out_modes[i]));
-      ASSERT_EQ(expected_counts[i], out_counts[i]);
-    }
+    CheckModes(array, options, expected_modes, expected_counts);
   }
 
   void AssertModesAre(const std::string& json, const int n,
@@ -2377,6 +2883,7 @@ TEST_F(TestBooleanModeKernel, Basics) {
   this->AssertModeIs({"[true, null]", "[]", "[null, false]"}, false, 1);
   this->AssertModesEmpty({"[null, null]", "[]", "[null]"});
 
+  this->AssertModesAre("[true, false]", 2, {false, true}, {1, 1});
   this->AssertModesAre("[false, false, true, true, true, false]", 2, {false, true},
                        {3, 3});
   this->AssertModesAre("[true, null, false, false, null, true, null, null, true]", 100,
@@ -2522,6 +3029,89 @@ TYPED_TEST(TestFloatingModeKernel, Floats) {
   this->AssertModesEmpty(ScalarFromJSON(in_ty, "null"), ModeOptions(/*n=*/1));
 }
 
+template <typename ArrowType>
+class TestDecimalModeKernel : public ::testing::Test {
+ public:
+  using CType = typename TypeTraits<ArrowType>::CType;
+
+  void AssertModesAre(const Datum& array, const ModeOptions options,
+                      const std::vector<std::string>& expected_modes,
+                      const std::vector<int64_t>& expected_counts) {
+    CheckModes<CType>(array, options, values(expected_modes), expected_counts);
+  }
+
+  CType value(const std::string& s) const {
+    EXPECT_OK_AND_ASSIGN(auto out, CType::FromString(s));
+    return out;
+  }
+
+  std::vector<CType> values(const std::vector<std::string>& strings) const {
+    std::vector<CType> values;
+    for (const auto& s : strings) {
+      values.push_back(value(s));
+    }
+    return values;
+  }
+
+  std::shared_ptr<DataType> type_instance() { return std::make_shared<ArrowType>(4, 2); }
+};
+
+TYPED_TEST_SUITE(TestDecimalModeKernel, DecimalArrowTypes);
+
+TYPED_TEST(TestDecimalModeKernel, Decimals) {
+  auto ty = this->type_instance();
+  this->AssertModesAre(ArrayFromJSON(ty, R"(["5.01", "-1.42", "-1.42", "5.01", "5.01"])"),
+                       ModeOptions(1), {"5.01"}, {3});
+  this->AssertModesAre(
+      ArrayFromJSON(ty, R"(["5.01", "-1.42", "-1.42", "5.01", "5.01", "-1.42"])"),
+      ModeOptions(1), {"-1.42"}, {3});
+  this->AssertModesAre(
+      ArrayFromJSON(ty, R"(["5.01", "-1.42", "-1.42", "5.01", "5.01", "-1.42"])"),
+      ModeOptions(2), {"-1.42", "5.01"}, {3, 3});
+
+  this->AssertModesAre(ArrayFromJSON(ty, "[]"), ModeOptions(1), {}, {});
+
+  this->AssertModesAre(ArrayFromJSON(ty, R"(["1.86", "-2.00", "-2.00", null])"),
+                       ModeOptions(/*n=*/1), {"-2.00"}, {2});
+  this->AssertModesAre(ArrayFromJSON(ty, R"(["1.86", "-2.00", "-2.00", null])"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/false), {}, {});
+  this->AssertModesAre(ArrayFromJSON(ty, R"(["1.86", "-2.00", "-2.00", null])"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/true, /*min_count=*/3),
+                       {"-2.00"}, {2});
+  this->AssertModesAre(ArrayFromJSON(ty, R"(["-2.00", "-2.00", null])"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/true, /*min_count=*/3), {},
+                       {});
+  this->AssertModesAre(ArrayFromJSON(ty, R"(["1.86", "-2.00", "-2.00"])"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/false, /*min_count=*/3),
+                       {"-2.00"}, {2});
+  this->AssertModesAre(ArrayFromJSON(ty, R"(["1.86", "-2.00", "-2.00", null])"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/false, /*min_count=*/3), {},
+                       {});
+  this->AssertModesAre(ArrayFromJSON(ty, R"(["1.86", "-2.00"])"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/false, /*min_count=*/3), {},
+                       {});
+
+  this->AssertModesAre(ScalarFromJSON(ty, R"("0.00")"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/false), {"0.00"}, {1});
+  this->AssertModesAre(ScalarFromJSON(ty, "null"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/false), {}, {});
+  this->AssertModesAre(ScalarFromJSON(ty, R"("0.00")"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/true, /*min_count=*/2), {},
+                       {});
+  this->AssertModesAre(ScalarFromJSON(ty, "null"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/true, /*min_count=*/2), {},
+                       {});
+  this->AssertModesAre(ScalarFromJSON(ty, R"("0.00")"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/false, /*min_count=*/2), {},
+                       {});
+  this->AssertModesAre(ScalarFromJSON(ty, "null"),
+                       ModeOptions(/*n=*/1, /*skip_nulls=*/false, /*min_count=*/2), {},
+                       {});
+  this->AssertModesAre(ScalarFromJSON(ty, R"("5.00")"), ModeOptions(/*n=*/1), {"5.00"},
+                       {1});
+  this->AssertModesAre(ScalarFromJSON(ty, "null"), ModeOptions(/*n=*/1), {}, {});
+}
+
 TEST_F(TestInt8ModeKernelValueRange, Basics) {
   this->AssertModeIs("[0, 127, -128, -128]", -128, 2);
   this->AssertModeIs("[127, 127, 127]", 127, 3);
@@ -2624,6 +3214,24 @@ TEST_F(TestInt32ModeKernel, Sliced) {
 // Variance/Stddev
 //
 
+void CheckVarStd(const Datum& array, const VarianceOptions& options,
+                 double expected_var) {
+  ASSERT_OK_AND_ASSIGN(Datum out_var, Variance(array, options));
+  ASSERT_OK_AND_ASSIGN(Datum out_std, Stddev(array, options));
+  auto var = checked_cast<const DoubleScalar*>(out_var.scalar().get());
+  auto std = checked_cast<const DoubleScalar*>(out_std.scalar().get());
+  ASSERT_TRUE(var->is_valid && std->is_valid);
+  // Near zero these macros don't work as well
+  // (and MinGW can give results slightly off from zero)
+  if (std::abs(expected_var) < 1e-20) {
+    ASSERT_NEAR(std->value * std->value, var->value, 1e-20);
+    ASSERT_NEAR(var->value, expected_var, 1e-20);
+  } else {
+    ASSERT_DOUBLE_EQ(std->value * std->value, var->value);
+    ASSERT_DOUBLE_EQ(var->value, expected_var);  // < 4ULP
+  }
+}
+
 template <typename ArrowType>
 class TestPrimitiveVarStdKernel : public ::testing::Test {
  public:
@@ -2632,12 +3240,12 @@ class TestPrimitiveVarStdKernel : public ::testing::Test {
 
   void AssertVarStdIs(const Array& array, const VarianceOptions& options,
                       double expected_var) {
-    AssertVarStdIsInternal(array, options, expected_var);
+    CheckVarStd(array, options, expected_var);
   }
 
   void AssertVarStdIs(const std::shared_ptr<ChunkedArray>& array,
                       const VarianceOptions& options, double expected_var) {
-    AssertVarStdIsInternal(array, options, expected_var);
+    CheckVarStd(array, options, expected_var);
   }
 
   void AssertVarStdIs(const std::string& json, const VarianceOptions& options,
@@ -2675,17 +3283,6 @@ class TestPrimitiveVarStdKernel : public ::testing::Test {
   std::shared_ptr<DataType> type_singleton() { return Traits::type_singleton(); }
 
  private:
-  void AssertVarStdIsInternal(const Datum& array, const VarianceOptions& options,
-                              double expected_var) {
-    ASSERT_OK_AND_ASSIGN(Datum out_var, Variance(array, options));
-    ASSERT_OK_AND_ASSIGN(Datum out_std, Stddev(array, options));
-    auto var = checked_cast<const ScalarType*>(out_var.scalar().get());
-    auto std = checked_cast<const ScalarType*>(out_std.scalar().get());
-    ASSERT_TRUE(var->is_valid && std->is_valid);
-    ASSERT_DOUBLE_EQ(std->value * std->value, var->value);
-    ASSERT_DOUBLE_EQ(var->value, expected_var);  // < 4ULP
-  }
-
   void AssertVarStdIsInvalidInternal(const Datum& array, const VarianceOptions& options) {
     ASSERT_OK_AND_ASSIGN(Datum out_var, Variance(array, options));
     ASSERT_OK_AND_ASSIGN(Datum out_std, Stddev(array, options));
@@ -2935,6 +3532,18 @@ TEST_F(TestVarStdKernelIntegerLength, Basics) {
 }
 #endif
 
+TEST(TestVarStdKernel, Decimal) {
+  // Effectively treated as double, sanity check results here
+  for (const auto& ty : {decimal128(3, 2), decimal256(3, 2)}) {
+    CheckVarStd(ArrayFromJSON(ty, R"(["1.00"])"), VarianceOptions(), 0);
+    CheckVarStd(ArrayFromJSON(ty, R"([null, "1.00", "2.00", "3.00"])"), VarianceOptions(),
+                0.6666666666666666);
+    CheckVarStd(ScalarFromJSON(ty, R"("1.00")"), VarianceOptions(), 0);
+    CheckVarStd(ArrayFromJSON(ty, R"([null, "1.00", "2.00"])"),
+                VarianceOptions(/*ddof=*/1), 0.5);
+  }
+}
+
 //
 // Quantile
 //
@@ -2951,6 +3560,7 @@ class TestPrimitiveQuantileKernel : public ::testing::Test {
 
     for (size_t i = 0; i < this->interpolations_.size(); ++i) {
       options.interpolation = this->interpolations_[i];
+      ARROW_SCOPED_TRACE("Quantile Options: ", options.ToString());
 
       ASSERT_OK_AND_ASSIGN(Datum out, Quantile(array, options));
       const auto& out_array = out.make_array();
@@ -2965,7 +3575,9 @@ class TestPrimitiveQuantileKernel : public ::testing::Test {
           const auto& numeric_scalar =
               checked_pointer_cast<DoubleScalar>(expected[j][i].scalar());
           ASSERT_TRUE((quantiles[j] == numeric_scalar->value) ||
-                      (std::isnan(quantiles[j]) && std::isnan(numeric_scalar->value)));
+                      (std::isnan(quantiles[j]) && std::isnan(numeric_scalar->value)))
+              << "  Actual Value: " << quantiles[j] << "\n"
+              << "Expected Value: " << numeric_scalar->value;
         }
       } else {
         AssertTypeEqual(out_array->type(), type_singleton());
@@ -3041,7 +3653,7 @@ class TestPrimitiveQuantileKernel : public ::testing::Test {
 
 #define INTYPE(x) Datum(static_cast<typename TypeParam::c_type>(x))
 #define DOUBLE(x) Datum(static_cast<double>(x))
-// output type per interplation: linear, lower, higher, nearest, midpoint
+// output type per interpolation: linear, lower, higher, nearest, midpoint
 #define O(a, b, c, d, e) \
   { DOUBLE(a), INTYPE(b), INTYPE(c), INTYPE(d), DOUBLE(e) }
 
@@ -3231,7 +3843,7 @@ TEST_F(TestInt64QuantileKernel, Int64) {
 #undef DOUBLE
 #undef O
 
-#ifndef __MINGW32__
+#if !defined(__MINGW32__) && !defined(__i386__)
 template <typename ArrowType>
 class TestRandomQuantileKernel : public TestPrimitiveQuantileKernel<ArrowType> {
   using CType = typename ArrowType::c_type;
@@ -3362,7 +3974,7 @@ class TestRandomQuantileKernel : public TestPrimitiveQuantileKernel<ArrowType> {
       const CType* values = array->data()->GetValues<CType>(1);
       const auto bitmap = array->null_bitmap_data();
       for (int64_t i = 0; i < array->length(); ++i) {
-        if ((!bitmap || BitUtil::GetBit(bitmap, array->data()->offset + i)) &&
+        if ((!bitmap || bit_util::GetBit(bitmap, array->data()->offset + i)) &&
             !std::isnan(static_cast<double>(values[i]))) {
           input[index++] = values[i];
         }
@@ -3476,6 +4088,24 @@ TEST(TestQuantileKernel, AllNullsOrNaNs) {
   }
 }
 
+TEST(TestQuantileKernel, Decimal) {
+  auto check = [](const std::shared_ptr<Array>& input, QuantileOptions options,
+                  const std::shared_ptr<Array>& expected) {
+    ASSERT_OK_AND_ASSIGN(Datum out, Quantile(input, options));
+    auto out_array = out.make_array();
+    ValidateOutput(*out_array);
+    AssertArraysEqual(*expected, *out_array, /*verbose=*/true);
+  };
+  for (const auto& ty : {decimal128(3, 2), decimal256(3, 2)}) {
+    check(ArrayFromJSON(ty, R"(["1.00", "5.00", null])"),
+          QuantileOptions(0.5, QuantileOptions::LINEAR),
+          ArrayFromJSON(float64(), R"([3.00])"));
+    check(ArrayFromJSON(ty, R"(["1.00", "2.00", "5.00"])"),
+          QuantileOptions(0.5, QuantileOptions::NEAREST),
+          ArrayFromJSON(ty, R"(["2.00"])"));
+  }
+}
+
 TEST(TestQuantileKernel, Scalar) {
   for (const auto& ty : {float64(), int64(), uint64()}) {
     QuantileOptions options(std::vector<double>{0.0, 0.5, 1.0});
@@ -3540,6 +4170,17 @@ TEST(TestTDigestKernel, AllNullsOrNaNs) {
     auto out_array = out.make_array();
     ValidateOutput(*out_array);
     AssertArraysEqual(*ArrayFromJSON(float64(), "[null]"), *out_array, /*verbose=*/true);
+  }
+}
+
+TEST(TestTDigestKernel, Decimal) {
+  for (const auto& ty : {decimal128(3, 2), decimal256(3, 2)}) {
+    ASSERT_OK_AND_ASSIGN(auto decimal_array,
+                         TDigest(ArrayFromJSON(ty, R"(["1.00", "2.00", "3.25"])")));
+    ASSERT_OK_AND_ASSIGN(auto float_array,
+                         TDigest(ArrayFromJSON(float64(), "[1, 2, 3.25]")));
+    AssertArraysApproxEqual(*float_array.make_array(), *decimal_array.make_array(),
+                            /*verbose=*/true);
   }
 }
 

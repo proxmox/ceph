@@ -22,7 +22,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "arrow/array/array_base.h"
@@ -32,7 +34,6 @@
 #include "arrow/type.h"
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/macros.h"
-#include "arrow/util/string_view.h"  // IWYU pragma: export
 #include "arrow/util/visibility.h"
 
 namespace arrow {
@@ -67,12 +68,16 @@ class BaseBinaryArray : public FlatArray {
   ///
   /// \param i the value index
   /// \return the view over the selected value
-  util::string_view GetView(int64_t i) const {
+  std::string_view GetView(int64_t i) const {
     // Account for base offset
     i += data_->offset;
     const offset_type pos = raw_value_offsets_[i];
-    return util::string_view(reinterpret_cast<const char*>(raw_data_ + pos),
-                             raw_value_offsets_[i + 1] - pos);
+    return std::string_view(reinterpret_cast<const char*>(raw_data_ + pos),
+                            raw_value_offsets_[i + 1] - pos);
+  }
+
+  std::optional<std::string_view> operator[](int64_t i) const {
+    return *IteratorType(*this, i);
   }
 
   /// \brief Get binary value as a string_view
@@ -80,7 +85,7 @@ class BaseBinaryArray : public FlatArray {
   ///
   /// \param i the value index
   /// \return the view over the selected value
-  util::string_view Value(int64_t i) const { return GetView(i); }
+  std::string_view Value(int64_t i) const { return GetView(i); }
 
   /// \brief Get binary value as a std::string
   ///
@@ -214,6 +219,65 @@ class ARROW_EXPORT LargeStringArray : public LargeBinaryArray {
 };
 
 // ----------------------------------------------------------------------
+// BinaryView and StringView
+
+/// Concrete Array class for variable-size binary view data using the
+/// BinaryViewType::c_type struct to reference in-line or out-of-line string values
+class ARROW_EXPORT BinaryViewArray : public FlatArray {
+ public:
+  using TypeClass = BinaryViewType;
+  using IteratorType = stl::ArrayIterator<BinaryViewArray>;
+  using c_type = BinaryViewType::c_type;
+
+  explicit BinaryViewArray(std::shared_ptr<ArrayData> data);
+
+  BinaryViewArray(std::shared_ptr<DataType> type, int64_t length,
+                  std::shared_ptr<Buffer> views, BufferVector data_buffers,
+                  std::shared_ptr<Buffer> null_bitmap = NULLPTR,
+                  int64_t null_count = kUnknownNullCount, int64_t offset = 0);
+
+  // For API compatibility with BinaryArray etc.
+  std::string_view GetView(int64_t i) const;
+  std::string GetString(int64_t i) const { return std::string{GetView(i)}; }
+
+  const auto& values() const { return data_->buffers[1]; }
+  const c_type* raw_values() const { return raw_values_; }
+
+  std::optional<std::string_view> operator[](int64_t i) const {
+    return *IteratorType(*this, i);
+  }
+
+  IteratorType begin() const { return IteratorType(*this); }
+  IteratorType end() const { return IteratorType(*this, length()); }
+
+ protected:
+  using FlatArray::FlatArray;
+
+  void SetData(std::shared_ptr<ArrayData> data) {
+    FlatArray::SetData(std::move(data));
+    raw_values_ = data_->GetValuesSafe<c_type>(1);
+  }
+
+  const c_type* raw_values_;
+};
+
+/// Concrete Array class for variable-size string view (utf-8) data using
+/// BinaryViewType::c_type to reference in-line or out-of-line string values
+class ARROW_EXPORT StringViewArray : public BinaryViewArray {
+ public:
+  using TypeClass = StringViewType;
+
+  explicit StringViewArray(std::shared_ptr<ArrayData> data);
+
+  using BinaryViewArray::BinaryViewArray;
+
+  /// \brief Validate that this array contains only valid UTF8 entries
+  ///
+  /// This check is also implied by ValidateFull()
+  Status ValidateUTF8() const;
+};
+
+// ----------------------------------------------------------------------
 // Fixed width binary
 
 /// Concrete Array class for fixed-size binary data
@@ -232,8 +296,12 @@ class ARROW_EXPORT FixedSizeBinaryArray : public PrimitiveArray {
   const uint8_t* GetValue(int64_t i) const;
   const uint8_t* Value(int64_t i) const { return GetValue(i); }
 
-  util::string_view GetView(int64_t i) const {
-    return util::string_view(reinterpret_cast<const char*>(GetValue(i)), byte_width());
+  std::string_view GetView(int64_t i) const {
+    return std::string_view(reinterpret_cast<const char*>(GetValue(i)), byte_width());
+  }
+
+  std::optional<std::string_view> operator[](int64_t i) const {
+    return *IteratorType(*this, i);
   }
 
   std::string GetString(int64_t i) const { return std::string(GetView(i)); }

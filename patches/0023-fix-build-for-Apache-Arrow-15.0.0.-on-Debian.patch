@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Tue, 3 Jun 2025 18:57:55 +0200
+Subject: [PATCH] fix build for Apache Arrow 15.0.0. on Debian
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ cmake/modules/BuildArrow.cmake | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/cmake/modules/BuildArrow.cmake b/cmake/modules/BuildArrow.cmake
+index 8a16b9b8899..0ee1d85b49f 100644
+--- a/cmake/modules/BuildArrow.cmake
++++ b/cmake/modules/BuildArrow.cmake
+@@ -69,6 +69,10 @@ function(build_arrow)
+     list(APPEND arrow_DEPENDS Boost)
+   endif()
+ 
++  # since Arrow 15.0.0 needs xsimd>=8.1.0 and since Ubuntu Jammy
++  # Jellyfish only provides 7.6.0, we'll have arrow build it as source
++  list(APPEND arrow_CMAKE_ARGS -Dxsimd_SOURCE=BUNDLED)
++
+   # cmake doesn't properly handle arguments containing ";", such as
+   # CMAKE_PREFIX_PATH, for which reason we'll have to use some other separator.
+   string(REPLACE ";" "!" CMAKE_PREFIX_PATH_ALT_SEP "${CMAKE_PREFIX_PATH}")

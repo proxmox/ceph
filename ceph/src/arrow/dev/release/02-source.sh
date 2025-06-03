@@ -18,11 +18,12 @@
 # under the License.
 #
 
-set -e
+set -eu
 
 : ${SOURCE_DEFAULT:=1}
 : ${SOURCE_RAT:=${SOURCE_DEFAULT}}
 : ${SOURCE_UPLOAD:=${SOURCE_DEFAULT}}
+: ${SOURCE_PR:=${SOURCE_DEFAULT}}
 : ${SOURCE_VOTE:=${SOURCE_DEFAULT}}
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,6 +38,8 @@ version=$1
 rc=$2
 
 tag=apache-arrow-${version}
+maint_branch=maint-${version}
+rc_branch="release-${version}-rc${rc}"
 tagrc=${tag}-rc${rc}
 rc_url="https://dist.apache.org/repos/dist/dev/arrow/${tagrc}"
 
@@ -62,7 +65,9 @@ rm -rf ${tag}
   git archive ${release_hash} --prefix ${tag}/) | \
   tar xf -
 
-# Resolve all hard and symbolic links
+# Resolve all hard and symbolic links.
+# If we change this, we must change ArrowSources.archive in
+# dev/archery/archery/utils/source.py too.
 rm -rf ${tag}.tmp
 mv ${tag} ${tag}.tmp
 cp -R -L ${tag}.tmp ${tag}
@@ -85,11 +90,20 @@ if [ ${SOURCE_RAT} -gt 0 ]; then
   "${SOURCE_DIR}/run-rat.sh" ${tarball}
 fi
 
+if type shasum >/dev/null 2>&1; then
+  sha256_generate="shasum -a 256"
+  sha512_generate="shasum -a 512"
+else
+  sha256_generate="sha256sum"
+  sha512_generate="sha512sum"
+fi
+
+
 if [ ${SOURCE_UPLOAD} -gt 0 ]; then
   # sign the archive
   gpg --armor --output ${tarball}.asc --detach-sig ${tarball}
-  shasum -a 256 $tarball > ${tarball}.sha256
-  shasum -a 512 $tarball > ${tarball}.sha512
+  ${sha256_generate} $tarball > ${tarball}.sha256
+  ${sha512_generate} $tarball > ${tarball}.sha512
 
   # check out the arrow RC folder
   svn co --depth=empty https://dist.apache.org/repos/dist/dev/arrow tmp
@@ -114,14 +128,40 @@ if [ ${SOURCE_UPLOAD} -gt 0 ]; then
   echo ""
 fi
 
+# Create Pull Request and Crossbow comment to run verify source tasks
+if [ ${SOURCE_PR} -gt 0 ]; then
+  archery crossbow \
+    verify-release-candidate \
+    --base-branch=${maint_branch} \
+    --create-pr \
+    --head-branch=${rc_branch} \
+    --pr-body="PR to verify Release Candidate" \
+    --pr-title="WIP: [Release] Verify ${rc_branch}" \
+    --remote=https://github.com/apache/arrow \
+    --rc=${rc} \
+    --verify-source \
+    --version=${version}
+fi
+
 if [ ${SOURCE_VOTE} -gt 0 ]; then
+  gh_api_url="https://api.github.com/graphql"
+  curl_options=($gh_api_url)
+  curl_options+=(--header "Authorization: Bearer ${ARROW_GITHUB_API_TOKEN}")
+  curl_options+=(--data "{\"query\": \"query {search(query: \\\"repo:apache/arrow is:issue is:closed milestone:${version}\\\", type:ISSUE) {issueCount}}\"}")
+  n_resolved_issues=$(curl "${curl_options[@]}" | jq ".data.search.issueCount")
+  curl_options=(--header "Accept: application/vnd.github+json")
+  if [ -n "${ARROW_GITHUB_API_TOKEN:-}" ]; then
+    curl_options+=(--header "Authorization: Bearer ${ARROW_GITHUB_API_TOKEN}")
+  fi
+  curl_options+=(--get)
+  curl_options+=(--data "state=open")
+  curl_options+=(--data "head=apache:${rc_branch}")
+  curl_options+=(https://api.github.com/repos/apache/arrow/pulls)
+  verify_pr_url=$(curl "${curl_options[@]}" | jq -r ".[0].html_url")
   echo "The following draft email has been created to send to the"
   echo "dev@arrow.apache.org mailing list"
   echo ""
   echo "---------------------------------------------------------"
-  jira_url="https://issues.apache.org/jira"
-  jql="project%20%3D%20ARROW%20AND%20status%20in%20%28Resolved%2C%20Closed%29%20AND%20fixVersion%20%3D%20${version}"
-  n_resolved_issues=$(curl "${jira_url}/rest/api/2/search/?jql=${jql}" | jq ".total")
   cat <<MAIL
 To: dev@arrow.apache.org
 Subject: [VOTE] Release Apache Arrow ${version} - RC${rc}
@@ -130,17 +170,19 @@ Hi,
 
 I would like to propose the following release candidate (RC${rc}) of Apache
 Arrow version ${version}. This is a release consisting of ${n_resolved_issues}
-resolved JIRA issues[1].
+resolved GitHub issues[1].
 
 This release candidate is based on commit:
 ${release_hash} [2]
 
 The source release rc${rc} is hosted at [3].
-The binary artifacts are hosted at [4][5][6][7][8][9].
-The changelog is located at [10].
+The binary artifacts are hosted at [4][5][6][7][8][9][10][11].
+The changelog is located at [12].
 
 Please download, verify checksums and signatures, run the unit tests,
-and vote on the release. See [11] for how to validate a release candidate.
+and vote on the release. See [13] for how to validate a release candidate.
+
+See also a verification result on GitHub pull request [14].
 
 The vote will be open for at least 72 hours.
 
@@ -148,17 +190,20 @@ The vote will be open for at least 72 hours.
 [ ] +0
 [ ] -1 Do not release this as Apache Arrow ${version} because...
 
-[1]: ${jira_url}/issues/?jql=${jql}
+[1]: https://github.com/apache/arrow/issues?q=is%3Aissue+milestone%3A${version}+is%3Aclosed
 [2]: https://github.com/apache/arrow/tree/${release_hash}
 [3]: ${rc_url}
-[4]: https://apache.jfrog.io/artifactory/arrow/amazon-linux-rc/
-[5]: https://apache.jfrog.io/artifactory/arrow/centos-rc/
-[6]: https://apache.jfrog.io/artifactory/arrow/debian-rc/
-[7]: https://apache.jfrog.io/artifactory/arrow/nuget-rc/${version}-rc${rc}
-[8]: https://apache.jfrog.io/artifactory/arrow/python-rc/${version}-rc${rc}
-[9]: https://apache.jfrog.io/artifactory/arrow/ubuntu-rc/
-[10]: https://github.com/apache/arrow/blob/${release_hash}/CHANGELOG.md
-[11]: https://cwiki.apache.org/confluence/display/ARROW/How+to+Verify+Release+Candidates
+[4]: https://apache.jfrog.io/artifactory/arrow/almalinux-rc/
+[5]: https://apache.jfrog.io/artifactory/arrow/amazon-linux-rc/
+[6]: https://apache.jfrog.io/artifactory/arrow/centos-rc/
+[7]: https://apache.jfrog.io/artifactory/arrow/debian-rc/
+[8]: https://apache.jfrog.io/artifactory/arrow/java-rc/${version}-rc${rc}
+[9]: https://apache.jfrog.io/artifactory/arrow/nuget-rc/${version}-rc${rc}
+[10]: https://apache.jfrog.io/artifactory/arrow/python-rc/${version}-rc${rc}
+[11]: https://apache.jfrog.io/artifactory/arrow/ubuntu-rc/
+[12]: https://github.com/apache/arrow/blob/${release_hash}/CHANGELOG.md
+[13]: https://cwiki.apache.org/confluence/display/ARROW/How+to+Verify+Release+Candidates
+[14]: ${verify_pr_url}
 MAIL
   echo "---------------------------------------------------------"
 fi

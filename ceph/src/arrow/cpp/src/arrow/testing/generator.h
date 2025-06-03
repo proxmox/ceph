@@ -22,10 +22,11 @@
 #include <string>
 #include <vector>
 
-#include "arrow/record_batch.h"
+#include "arrow/array/array_base.h"
+#include "arrow/compute/type_fwd.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/visibility.h"
-#include "arrow/type.h"
+#include "arrow/type_fwd.h"
 
 namespace arrow {
 
@@ -37,7 +38,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> Boolean(int64_t size, bool value = false);
+  static std::shared_ptr<Array> Boolean(int64_t size, bool value = false);
 
   /// \brief Generates a constant UInt8Array
   ///
@@ -45,7 +46,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> UInt8(int64_t size, uint8_t value = 0);
+  static std::shared_ptr<Array> UInt8(int64_t size, uint8_t value = 0);
 
   /// \brief Generates a constant Int8Array
   ///
@@ -53,7 +54,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> Int8(int64_t size, int8_t value = 0);
+  static std::shared_ptr<Array> Int8(int64_t size, int8_t value = 0);
 
   /// \brief Generates a constant UInt16Array
   ///
@@ -61,7 +62,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> UInt16(int64_t size, uint16_t value = 0);
+  static std::shared_ptr<Array> UInt16(int64_t size, uint16_t value = 0);
 
   /// \brief Generates a constant UInt16Array
   ///
@@ -69,7 +70,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> Int16(int64_t size, int16_t value = 0);
+  static std::shared_ptr<Array> Int16(int64_t size, int16_t value = 0);
 
   /// \brief Generates a constant UInt32Array
   ///
@@ -77,7 +78,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> UInt32(int64_t size, uint32_t value = 0);
+  static std::shared_ptr<Array> UInt32(int64_t size, uint32_t value = 0);
 
   /// \brief Generates a constant UInt32Array
   ///
@@ -85,7 +86,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> Int32(int64_t size, int32_t value = 0);
+  static std::shared_ptr<Array> Int32(int64_t size, int32_t value = 0);
 
   /// \brief Generates a constant UInt64Array
   ///
@@ -93,7 +94,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> UInt64(int64_t size, uint64_t value = 0);
+  static std::shared_ptr<Array> UInt64(int64_t size, uint64_t value = 0);
 
   /// \brief Generates a constant UInt64Array
   ///
@@ -101,7 +102,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> Int64(int64_t size, int64_t value = 0);
+  static std::shared_ptr<Array> Int64(int64_t size, int64_t value = 0);
 
   /// \brief Generates a constant Float32Array
   ///
@@ -109,7 +110,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> Float32(int64_t size, float value = 0);
+  static std::shared_ptr<Array> Float32(int64_t size, float value = 0);
 
   /// \brief Generates a constant Float64Array
   ///
@@ -117,7 +118,7 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> Float64(int64_t size, double value = 0);
+  static std::shared_ptr<Array> Float64(int64_t size, double value = 0);
 
   /// \brief Generates a constant StringArray
   ///
@@ -125,10 +126,10 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] value to repeat
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> String(int64_t size, std::string value = "");
+  static std::shared_ptr<Array> String(int64_t size, std::string value = "");
 
   template <typename ArrowType, typename CType = typename ArrowType::c_type>
-  static std::shared_ptr<arrow::Array> Numeric(int64_t size, CType value = 0) {
+  static std::shared_ptr<Array> Numeric(int64_t size, CType value = 0) {
     switch (ArrowType::type_id) {
       case Type::BOOL:
         return Boolean(size, static_cast<bool>(value));
@@ -152,6 +153,40 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
         return Float32(size, static_cast<float>(value));
       case Type::DOUBLE:
         return Float64(size, static_cast<double>(value));
+      case Type::INTERVAL_DAY_TIME:
+      case Type::DATE32: {
+        EXPECT_OK_AND_ASSIGN(auto viewed,
+                             Int32(size, static_cast<uint32_t>(value))->View(date32()));
+        return viewed;
+      }
+      case Type::INTERVAL_MONTHS: {
+        EXPECT_OK_AND_ASSIGN(auto viewed,
+                             Int32(size, static_cast<uint32_t>(value))
+                                 ->View(std::make_shared<MonthIntervalType>()));
+        return viewed;
+      }
+      case Type::TIME32: {
+        EXPECT_OK_AND_ASSIGN(auto viewed,
+                             Int32(size, static_cast<uint32_t>(value))
+                                 ->View(std::make_shared<Time32Type>(TimeUnit::SECOND)));
+        return viewed;
+      }
+      case Type::TIME64: {
+        EXPECT_OK_AND_ASSIGN(auto viewed, Int64(size, static_cast<uint64_t>(value))
+                                              ->View(std::make_shared<Time64Type>()));
+        return viewed;
+      }
+      case Type::DATE64: {
+        EXPECT_OK_AND_ASSIGN(auto viewed,
+                             Int64(size, static_cast<uint64_t>(value))->View(date64()));
+        return viewed;
+      }
+      case Type::TIMESTAMP: {
+        EXPECT_OK_AND_ASSIGN(
+            auto viewed, Int64(size, static_cast<int64_t>(value))
+                             ->View(std::make_shared<TimestampType>(TimeUnit::SECOND)));
+        return viewed;
+      }
       default:
         return nullptr;
     }
@@ -163,52 +198,8 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] type the type of the Array
   ///
   /// \return a generated Array
-  static std::shared_ptr<arrow::Array> Zeroes(int64_t size,
-                                              const std::shared_ptr<DataType>& type) {
-    switch (type->id()) {
-      case Type::NA:
-        return std::make_shared<NullArray>(size);
-      case Type::BOOL:
-        return Boolean(size);
-      case Type::UINT8:
-        return UInt8(size);
-      case Type::INT8:
-        return Int8(size);
-      case Type::UINT16:
-        return UInt16(size);
-      case Type::INT16:
-        return Int16(size);
-      case Type::UINT32:
-        return UInt32(size);
-      case Type::INT32:
-        return Int32(size);
-      case Type::UINT64:
-        return UInt64(size);
-      case Type::INT64:
-        return Int64(size);
-      case Type::TIME64:
-      case Type::DATE64:
-      case Type::TIMESTAMP: {
-        EXPECT_OK_AND_ASSIGN(auto viewed, Int64(size)->View(type));
-        return viewed;
-      }
-      case Type::INTERVAL_DAY_TIME:
-      case Type::INTERVAL_MONTHS:
-      case Type::TIME32:
-      case Type::DATE32: {
-        EXPECT_OK_AND_ASSIGN(auto viewed, Int32(size)->View(type));
-        return viewed;
-      }
-      case Type::FLOAT:
-        return Float32(size);
-      case Type::DOUBLE:
-        return Float64(size);
-      case Type::STRING:
-        return String(size);
-      default:
-        return nullptr;
-    }
-  }
+  static std::shared_ptr<Array> Zeroes(int64_t size,
+                                       const std::shared_ptr<DataType>& type);
 
   /// \brief Generates a RecordBatch of zeroes
   ///
@@ -218,16 +209,8 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// This function is handy to return of RecordBatch of a desired shape.
   ///
   /// \return a generated RecordBatch
-  static std::shared_ptr<arrow::RecordBatch> Zeroes(
-      int64_t size, const std::shared_ptr<Schema>& schema) {
-    std::vector<std::shared_ptr<Array>> arrays;
-
-    for (const auto& field : schema->fields()) {
-      arrays.emplace_back(Zeroes(size, field->type()));
-    }
-
-    return RecordBatch::Make(schema, size, arrays);
-  }
+  static std::shared_ptr<RecordBatch> Zeroes(int64_t size,
+                                             const std::shared_ptr<Schema>& schema);
 
   /// \brief Generates a RecordBatchReader by repeating a RecordBatch
   ///
@@ -235,12 +218,8 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] batch the RecordBatch to repeat
   ///
   /// \return a generated RecordBatchReader
-  static std::shared_ptr<arrow::RecordBatchReader> Repeat(
-      int64_t n_batch, const std::shared_ptr<RecordBatch> batch) {
-    std::vector<std::shared_ptr<RecordBatch>> batches(static_cast<size_t>(n_batch),
-                                                      batch);
-    return *RecordBatchReader::Make(batches);
-  }
+  static std::shared_ptr<RecordBatchReader> Repeat(
+      int64_t n_batch, const std::shared_ptr<RecordBatch> batch);
 
   /// \brief Generates a RecordBatchReader of zeroes batches
   ///
@@ -249,13 +228,94 @@ class ARROW_TESTING_EXPORT ConstantArrayGenerator {
   /// \param[in] schema to conform to
   ///
   /// \return a generated RecordBatchReader
-  static std::shared_ptr<arrow::RecordBatchReader> Zeroes(
-      int64_t n_batch, int64_t batch_size, const std::shared_ptr<Schema>& schema) {
-    return Repeat(n_batch, Zeroes(batch_size, schema));
-  }
+  static std::shared_ptr<RecordBatchReader> Zeroes(int64_t n_batch, int64_t batch_size,
+                                                   const std::shared_ptr<Schema>& schema);
 };
 
 ARROW_TESTING_EXPORT
 Result<std::shared_ptr<Array>> ScalarVectorToArray(const ScalarVector& scalars);
+
+namespace gen {
+
+class ARROW_TESTING_EXPORT ArrayGenerator {
+ public:
+  virtual ~ArrayGenerator() = default;
+  virtual Result<std::shared_ptr<Array>> Generate(int64_t num_rows) = 0;
+  virtual std::shared_ptr<DataType> type() const = 0;
+};
+
+// Same as DataGenerator below but instead of returning Result an ok status is EXPECT'd
+class ARROW_TESTING_EXPORT GTestDataGenerator {
+ public:
+  virtual ~GTestDataGenerator() = default;
+  virtual std::shared_ptr<::arrow::RecordBatch> RecordBatch(int64_t num_rows) = 0;
+  virtual std::vector<std::shared_ptr<::arrow::RecordBatch>> RecordBatches(
+      int64_t rows_per_batch, int num_batches) = 0;
+
+  virtual ::arrow::compute::ExecBatch ExecBatch(int64_t num_rows) = 0;
+  virtual std::vector<::arrow::compute::ExecBatch> ExecBatches(int64_t rows_per_batch,
+                                                               int num_batches) = 0;
+
+  virtual std::shared_ptr<::arrow::Table> Table(int64_t rows_per_chunk,
+                                                int num_chunks = 1) = 0;
+  virtual std::shared_ptr<::arrow::Schema> Schema() = 0;
+};
+
+class ARROW_TESTING_EXPORT DataGenerator {
+ public:
+  virtual ~DataGenerator() = default;
+  virtual Result<std::shared_ptr<::arrow::RecordBatch>> RecordBatch(int64_t num_rows) = 0;
+  virtual Result<std::vector<std::shared_ptr<::arrow::RecordBatch>>> RecordBatches(
+      int64_t rows_per_batch, int num_batches) = 0;
+
+  virtual Result<::arrow::compute::ExecBatch> ExecBatch(int64_t num_rows) = 0;
+  virtual Result<std::vector<::arrow::compute::ExecBatch>> ExecBatches(
+      int64_t rows_per_batch, int num_batches) = 0;
+
+  virtual Result<std::shared_ptr<::arrow::Table>> Table(int64_t rows_per_chunk,
+                                                        int num_chunks = 1) = 0;
+  virtual std::shared_ptr<::arrow::Schema> Schema() = 0;
+  /// @brief Converts this generator to a variant that fails (in a googletest sense)
+  ///        if any error is encountered.
+  virtual std::unique_ptr<GTestDataGenerator> FailOnError() = 0;
+};
+
+/// @brief A potentially named field
+///
+/// If name is not specified then a name will be generated automatically (e.g. f0, f1)
+struct ARROW_TESTING_EXPORT GeneratorField {
+ public:
+  GeneratorField(std::shared_ptr<ArrayGenerator> gen)  // NOLINT implicit conversion
+      : name(), gen(std::move(gen)) {}
+  GeneratorField(std::string name, std::shared_ptr<ArrayGenerator> gen)
+      : name(std::move(name)), gen(std::move(gen)) {}
+
+  std::optional<std::string> name;
+  std::shared_ptr<ArrayGenerator> gen;
+};
+
+/// Create a table generator with the given fields
+ARROW_TESTING_EXPORT std::shared_ptr<DataGenerator> Gen(
+    std::vector<GeneratorField> column_gens);
+
+/// make a generator that returns a constant value
+ARROW_TESTING_EXPORT std::shared_ptr<ArrayGenerator> Constant(
+    std::shared_ptr<Scalar> value);
+/// make a generator that returns an incrementing value
+///
+/// Note: overflow is not prevented standard unsigned integer overflow applies
+ARROW_TESTING_EXPORT std::shared_ptr<ArrayGenerator> Step(uint32_t start = 0,
+                                                          uint32_t step = 1,
+                                                          bool signed_int = false);
+/// make a generator that returns a random value
+ARROW_TESTING_EXPORT std::shared_ptr<ArrayGenerator> Random(
+    std::shared_ptr<DataType> type);
+/// TODO(if-needed) could add a repeat-scalars generator, e.g. Repeat({1, 2, 3}) for
+/// 1,2,3,1,2,3,1
+///
+/// TODO(if-needed) could add a repeat-from-json generator e.g. Repeat(int32(), "[1, 2,
+/// 3]")), same behavior as repeat-scalars
+
+}  // namespace gen
 
 }  // namespace arrow

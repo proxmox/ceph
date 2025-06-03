@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Field } from '../schema';
-import { DataBufferBuilder } from './buffer';
-import { Builder, BuilderOptions } from '../builder';
-import { Union, SparseUnion, DenseUnion } from '../type';
+import { Field } from '../schema.js';
+import { DataBufferBuilder } from './buffer.js';
+import { Builder, BuilderOptions } from '../builder.js';
+import { Union, SparseUnion, DenseUnion } from '../type.js';
 
 export interface UnionBuilderOptions<T extends Union = any, TNull = any> extends BuilderOptions<T, TNull> {
     valueToChildTypeId?: (builder: UnionBuilder<T, TNull>, value: any, offset: number) => number;
@@ -31,7 +31,7 @@ export abstract class UnionBuilder<T extends Union, TNull = any> extends Builder
 
     constructor(options: UnionBuilderOptions<T, TNull>) {
         super(options);
-        this._typeIds = new DataBufferBuilder(new Int8Array(0), 1);
+        this._typeIds = new DataBufferBuilder(Int8Array, 0, 1);
         if (typeof options['valueToChildTypeId'] === 'function') {
             this._valueToChildTypeId = options['valueToChildTypeId'];
         }
@@ -47,22 +47,22 @@ export abstract class UnionBuilder<T extends Union, TNull = any> extends Builder
         if (childTypeId === undefined) {
             childTypeId = this._valueToChildTypeId(this, value, index);
         }
-        if (this.setValid(index, this.isValid(value))) {
-            this.setValue(index, value, childTypeId);
-        }
+        this.setValue(index, value, childTypeId);
         return this;
     }
 
     public setValue(index: number, value: T['TValue'], childTypeId?: number) {
         this._typeIds.set(index, childTypeId!);
-        super.setValue(index, value);
+        const childIndex = this.type.typeIdToChildIndex[childTypeId!];
+        const child = this.children[childIndex];
+        child?.set(index, value);
     }
 
     public addChild(child: Builder, name = `${this.children.length}`) {
         const childTypeId = this.children.push(child);
         const { type: { children, mode, typeIds } } = this;
         const fields = [...children, new Field(name, child.type)];
-        this.type = <T> new Union(mode, [...typeIds, childTypeId], fields);
+        this.type = <T>new Union(mode, [...typeIds, childTypeId], fields);
         return childTypeId;
     }
 
@@ -76,7 +76,7 @@ or supply a \`valueToChildTypeId\` function as part of the UnionBuilder construc
 }
 
 /** @ignore */
-export class SparseUnionBuilder<T extends SparseUnion, TNull = any> extends UnionBuilder<T, TNull> {}
+export class SparseUnionBuilder<T extends SparseUnion, TNull = any> extends UnionBuilder<T, TNull> { }
 /** @ignore */
 export class DenseUnionBuilder<T extends DenseUnion, TNull = any> extends UnionBuilder<T, TNull> {
 
@@ -84,13 +84,14 @@ export class DenseUnionBuilder<T extends DenseUnion, TNull = any> extends UnionB
 
     constructor(options: UnionBuilderOptions<T, TNull>) {
         super(options);
-        this._offsets = new DataBufferBuilder(new Int32Array(0));
+        this._offsets = new DataBufferBuilder(Int32Array);
     }
 
     /** @ignore */
     public setValue(index: number, value: T['TValue'], childTypeId?: number) {
-        const childIndex = this.type.typeIdToChildIndex[childTypeId!];
-        this._offsets.set(index, this.getChildAt(childIndex)!.length);
-        return super.setValue(index, value, childTypeId);
+        const id = this._typeIds.set(index, childTypeId!).buffer[index];
+        const child = this.getChildAt(this.type.typeIdToChildIndex[id])!;
+        const denseIndex = this._offsets.set(index, child.length).buffer[index];
+        child?.set(denseIndex, value);
     }
 }

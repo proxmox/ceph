@@ -17,12 +17,17 @@
 package array
 
 import (
+	"bytes"
+	"fmt"
+	"reflect"
+	"strconv"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/bitutil"
-	"github.com/apache/arrow/go/v6/arrow/internal/debug"
-	"github.com/apache/arrow/go/v6/arrow/memory"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/bitutil"
+	"github.com/apache/arrow/go/v15/arrow/internal/debug"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/internal/json"
 )
 
 type BooleanBuilder struct {
@@ -35,6 +40,8 @@ type BooleanBuilder struct {
 func NewBooleanBuilder(mem memory.Allocator) *BooleanBuilder {
 	return &BooleanBuilder{builder: builder{refCount: 1, mem: mem}}
 }
+
+func (b *BooleanBuilder) Type() arrow.DataType { return arrow.FixedWidthTypes.Boolean }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
@@ -68,6 +75,36 @@ func (b *BooleanBuilder) AppendByte(v byte) {
 func (b *BooleanBuilder) AppendNull() {
 	b.Reserve(1)
 	b.UnsafeAppendBoolToBitmap(false)
+}
+
+func (b *BooleanBuilder) AppendNulls(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendNull()
+	}
+}
+
+func (b *BooleanBuilder) AppendEmptyValue() {
+	b.Reserve(1)
+	b.UnsafeAppend(false)
+}
+
+func (b *BooleanBuilder) AppendEmptyValues(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendEmptyValue()
+	}
+}
+
+func (b *BooleanBuilder) AppendValueFromString(s string) error {
+	if s == NullValueStr {
+		b.AppendNull()
+		return nil
+	}
+	val, err := strconv.ParseBool(s)
+	if err != nil {
+		return err
+	}
+	b.Append(val)
+	return nil
 }
 
 func (b *BooleanBuilder) UnsafeAppend(v bool) {
@@ -129,7 +166,7 @@ func (b *BooleanBuilder) Resize(n int) {
 
 // NewArray creates a Boolean array from the memory buffers used by the builder and resets the BooleanBuilder
 // so it can be used to build a new array.
-func (b *BooleanBuilder) NewArray() Interface {
+func (b *BooleanBuilder) NewArray() arrow.Array {
 	return b.NewBooleanArray()
 }
 
@@ -158,6 +195,67 @@ func (b *BooleanBuilder) newData() *Data {
 	}
 
 	return res
+}
+
+func (b *BooleanBuilder) UnmarshalOne(dec *json.Decoder) error {
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	switch v := t.(type) {
+	case bool:
+		b.Append(v)
+	case string:
+		val, err := strconv.ParseBool(v)
+		if err != nil {
+			return err
+		}
+		b.Append(val)
+	case json.Number:
+		val, err := strconv.ParseBool(v.String())
+		if err != nil {
+			return err
+		}
+		b.Append(val)
+	case nil:
+		b.AppendNull()
+	default:
+		return &json.UnmarshalTypeError{
+			Value:  fmt.Sprint(t),
+			Type:   reflect.TypeOf(true),
+			Offset: dec.InputOffset(),
+		}
+	}
+	return nil
+}
+
+func (b *BooleanBuilder) Unmarshal(dec *json.Decoder) error {
+	for dec.More() {
+		if err := b.UnmarshalOne(dec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *BooleanBuilder) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	if delim, ok := t.(json.Delim); !ok || delim != '[' {
+		return fmt.Errorf("boolean builder must unpack from json array, found %s", delim)
+	}
+
+	return b.Unmarshal(dec)
+}
+
+func (b *BooleanBuilder) Value(i int) bool {
+	return bitutil.BitIsSet(b.rawData, i)
 }
 
 var (

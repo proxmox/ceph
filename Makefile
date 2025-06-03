@@ -111,6 +111,7 @@ download:
 	rm -rf ${SRCDIR}.tmp/.git
 	find ${SRCDIR}.tmp/ -type f -name '.gitignore' -delete
 	mv ${SRCDIR}.tmp/debian/changelog ${SRCDIR}.tmp/changelog.upstream
+	grep -q 'Apache Arrow 15.0.0 (2024-01-16)' ${SRCDIR}.tmp/src/arrow/CHANGELOG.md || { echo "lost Apache Arrow 15 backport, check if this is alright!"; exit 1}
 	mv ${SRCDIR}.tmp ${SRCDIR}
 
 .PHONY: upload

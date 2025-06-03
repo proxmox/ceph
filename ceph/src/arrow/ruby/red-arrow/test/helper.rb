@@ -18,8 +18,11 @@
 require "arrow"
 
 require "fiddle"
+require "json"
 require "pathname"
 require "tempfile"
+require "timeout"
+require "webrick"
 require "zlib"
 
 require "test-unit"

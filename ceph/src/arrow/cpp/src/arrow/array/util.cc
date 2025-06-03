@@ -27,9 +27,8 @@
 #include <utility>
 #include <vector>
 
-#include "arrow/array/array_base.h"
-#include "arrow/array/array_dict.h"
-#include "arrow/array/array_primitive.h"
+#include "arrow/array.h"
+#include "arrow/array/builder_base.h"
 #include "arrow/array/concatenate.h"
 #include "arrow/buffer.h"
 #include "arrow/buffer_builder.h"
@@ -44,7 +43,10 @@
 #include "arrow/util/decimal.h"
 #include "arrow/util/endian.h"
 #include "arrow/util/logging.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/util/sort.h"
+#include "arrow/util/span.h"
+#include "arrow/visit_data_inline.h"
+#include "arrow/visit_type_inline.h"
 
 namespace arrow {
 
@@ -78,7 +80,9 @@ class ArrayDataWrapper {
 
 class ArrayDataEndianSwapper {
  public:
-  explicit ArrayDataEndianSwapper(const std::shared_ptr<ArrayData>& data) : data_(data) {
+  explicit ArrayDataEndianSwapper(const std::shared_ptr<ArrayData>& data,
+                                  MemoryPool* pool)
+      : data_(data), pool_(pool) {
     out_ = data->Copy();
   }
 
@@ -101,7 +105,7 @@ class ArrayDataEndianSwapper {
   Status SwapChildren(const FieldVector& child_fields) {
     for (size_t i = 0; i < child_fields.size(); i++) {
       ARROW_ASSIGN_OR_RAISE(out_->child_data[i],
-                            internal::SwapEndianArrayData(data_->child_data[i]));
+                            internal::SwapEndianArrayData(data_->child_data[i], pool_));
     }
     return Status::OK();
   }
@@ -114,12 +118,12 @@ class ArrayDataEndianSwapper {
       return in_buffer;
     }
     auto in_data = reinterpret_cast<const T*>(in_buffer->data());
-    ARROW_ASSIGN_OR_RAISE(auto out_buffer, AllocateBuffer(in_buffer->size()));
+    ARROW_ASSIGN_OR_RAISE(auto out_buffer, AllocateBuffer(in_buffer->size(), pool_));
     auto out_data = reinterpret_cast<T*>(out_buffer->mutable_data());
     // NOTE: data_->length not trusted (see warning above)
     int64_t length = in_buffer->size() / sizeof(T);
     for (int64_t i = 0; i < length; i++) {
-      out_data[i] = BitUtil::ByteSwap(in_data[i]);
+      out_data[i] = bit_util::ByteSwap(in_data[i]);
     }
     return std::move(out_buffer);
   }
@@ -130,7 +134,6 @@ class ArrayDataEndianSwapper {
       out_->buffers[index] = data_->buffers[index];
       return Status::OK();
     }
-    // Except union, offset has one more element rather than data->length
     ARROW_ASSIGN_OR_RAISE(out_->buffers[index],
                           ByteSwapBuffer<VALUE_TYPE>(data_->buffers[index]));
     return Status::OK();
@@ -150,7 +153,8 @@ class ArrayDataEndianSwapper {
 
   Status Visit(const Decimal128Type& type) {
     auto data = reinterpret_cast<const uint64_t*>(data_->buffers[1]->data());
-    ARROW_ASSIGN_OR_RAISE(auto new_buffer, AllocateBuffer(data_->buffers[1]->size()));
+    ARROW_ASSIGN_OR_RAISE(auto new_buffer,
+                          AllocateBuffer(data_->buffers[1]->size(), pool_));
     auto new_data = reinterpret_cast<uint64_t*>(new_buffer->mutable_data());
     // NOTE: data_->length not trusted (see warning above)
     const int64_t length = data_->buffers[1]->size() / Decimal128Type::kByteWidth;
@@ -158,12 +162,12 @@ class ArrayDataEndianSwapper {
       uint64_t tmp;
       auto idx = i * 2;
 #if ARROW_LITTLE_ENDIAN
-      tmp = BitUtil::FromBigEndian(data[idx]);
-      new_data[idx] = BitUtil::FromBigEndian(data[idx + 1]);
+      tmp = bit_util::FromBigEndian(data[idx]);
+      new_data[idx] = bit_util::FromBigEndian(data[idx + 1]);
       new_data[idx + 1] = tmp;
 #else
-      tmp = BitUtil::FromLittleEndian(data[idx]);
-      new_data[idx] = BitUtil::FromLittleEndian(data[idx + 1]);
+      tmp = bit_util::FromLittleEndian(data[idx]);
+      new_data[idx] = bit_util::FromLittleEndian(data[idx + 1]);
       new_data[idx + 1] = tmp;
 #endif
     }
@@ -181,18 +185,18 @@ class ArrayDataEndianSwapper {
       uint64_t tmp0, tmp1, tmp2;
       auto idx = i * 4;
 #if ARROW_LITTLE_ENDIAN
-      tmp0 = BitUtil::FromBigEndian(data[idx]);
-      tmp1 = BitUtil::FromBigEndian(data[idx + 1]);
-      tmp2 = BitUtil::FromBigEndian(data[idx + 2]);
-      new_data[idx] = BitUtil::FromBigEndian(data[idx + 3]);
+      tmp0 = bit_util::FromBigEndian(data[idx]);
+      tmp1 = bit_util::FromBigEndian(data[idx + 1]);
+      tmp2 = bit_util::FromBigEndian(data[idx + 2]);
+      new_data[idx] = bit_util::FromBigEndian(data[idx + 3]);
       new_data[idx + 1] = tmp2;
       new_data[idx + 2] = tmp1;
       new_data[idx + 3] = tmp0;
 #else
-      tmp0 = BitUtil::FromLittleEndian(data[idx]);
-      tmp1 = BitUtil::FromLittleEndian(data[idx + 1]);
-      tmp2 = BitUtil::FromLittleEndian(data[idx + 2]);
-      new_data[idx] = BitUtil::FromLittleEndian(data[idx + 3]);
+      tmp0 = bit_util::FromLittleEndian(data[idx]);
+      tmp1 = bit_util::FromLittleEndian(data[idx + 1]);
+      tmp2 = bit_util::FromLittleEndian(data[idx + 2]);
+      new_data[idx] = bit_util::FromLittleEndian(data[idx + 3]);
       new_data[idx + 1] = tmp2;
       new_data[idx + 2] = tmp1;
       new_data[idx + 3] = tmp0;
@@ -210,20 +214,21 @@ class ArrayDataEndianSwapper {
   Status Visit(const MonthDayNanoIntervalType& type) {
     using MonthDayNanos = MonthDayNanoIntervalType::MonthDayNanos;
     auto data = reinterpret_cast<const MonthDayNanos*>(data_->buffers[1]->data());
-    ARROW_ASSIGN_OR_RAISE(auto new_buffer, AllocateBuffer(data_->buffers[1]->size()));
+    ARROW_ASSIGN_OR_RAISE(auto new_buffer,
+                          AllocateBuffer(data_->buffers[1]->size(), pool_));
     auto new_data = reinterpret_cast<MonthDayNanos*>(new_buffer->mutable_data());
     // NOTE: data_->length not trusted (see warning above)
     const int64_t length = data_->buffers[1]->size() / sizeof(MonthDayNanos);
     for (int64_t i = 0; i < length; i++) {
       MonthDayNanos tmp = data[i];
 #if ARROW_LITTLE_ENDIAN
-      tmp.months = BitUtil::FromBigEndian(tmp.months);
-      tmp.days = BitUtil::FromBigEndian(tmp.days);
-      tmp.nanoseconds = BitUtil::FromBigEndian(tmp.nanoseconds);
+      tmp.months = bit_util::FromBigEndian(tmp.months);
+      tmp.days = bit_util::FromBigEndian(tmp.days);
+      tmp.nanoseconds = bit_util::FromBigEndian(tmp.nanoseconds);
 #else
-      tmp.months = BitUtil::FromLittleEndian(tmp.months);
-      tmp.days = BitUtil::FromLittleEndian(tmp.days);
-      tmp.nanoseconds = BitUtil::FromLittleEndian(tmp.nanoseconds);
+      tmp.months = bit_util::FromLittleEndian(tmp.months);
+      tmp.days = bit_util::FromLittleEndian(tmp.days);
+      tmp.nanoseconds = bit_util::FromLittleEndian(tmp.nanoseconds);
 #endif
       new_data[i] = tmp;
     }
@@ -238,6 +243,9 @@ class ArrayDataEndianSwapper {
   Status Visit(const FixedSizeBinaryType& type) { return Status::OK(); }
   Status Visit(const FixedSizeListType& type) { return Status::OK(); }
   Status Visit(const StructType& type) { return Status::OK(); }
+  Status Visit(const RunEndEncodedType& type) {
+    return Status::NotImplemented("swapping endianness of run-end encoded array");
+  }
   Status Visit(const UnionType& type) {
     out_->buffers[1] = data_->buffers[1];
     if (type.mode() == UnionMode::DENSE) {
@@ -265,12 +273,30 @@ class ArrayDataEndianSwapper {
     return Status::OK();
   }
 
+  Status Visit(const BinaryViewType& type) {
+    // TODO(GH-37879): This requires knowledge of whether the array is being swapped to
+    // native endian or from it so that we know what size to trust when deciding whether
+    // something is an inline view.
+    return Status::NotImplemented("Swapping endianness of ", type);
+  }
+
   Status Visit(const ListType& type) {
     RETURN_NOT_OK(SwapOffsets<int32_t>(1));
     return Status::OK();
   }
   Status Visit(const LargeListType& type) {
     RETURN_NOT_OK(SwapOffsets<int64_t>(1));
+    return Status::OK();
+  }
+
+  Status Visit(const ListViewType& type) {
+    RETURN_NOT_OK(SwapOffsets<int32_t>(1));
+    RETURN_NOT_OK(SwapOffsets<int32_t>(2));
+    return Status::OK();
+  }
+  Status Visit(const LargeListViewType& type) {
+    RETURN_NOT_OK(SwapOffsets<int64_t>(1));
+    RETURN_NOT_OK(SwapOffsets<int64_t>(2));
     return Status::OK();
   }
 
@@ -286,6 +312,7 @@ class ArrayDataEndianSwapper {
   }
 
   const std::shared_ptr<ArrayData>& data_;
+  MemoryPool* pool_;
   std::shared_ptr<ArrayData> out_;
 };
 
@@ -294,11 +321,11 @@ class ArrayDataEndianSwapper {
 namespace internal {
 
 Result<std::shared_ptr<ArrayData>> SwapEndianArrayData(
-    const std::shared_ptr<ArrayData>& data) {
+    const std::shared_ptr<ArrayData>& data, MemoryPool* pool) {
   if (data->offset != 0) {
     return Status::Invalid("Unsupported data format: data.offset != 0");
   }
-  ArrayDataEndianSwapper swapper(data);
+  ArrayDataEndianSwapper swapper(data, pool);
   RETURN_NOT_OK(swapper.SwapType(*data->type));
   return std::move(swapper.out_);
 }
@@ -318,13 +345,35 @@ std::shared_ptr<Array> MakeArray(const std::shared_ptr<ArrayData>& data) {
 
 namespace {
 
+static Result<std::shared_ptr<Scalar>> MakeScalarForRunEndValue(
+    const DataType& run_end_type, int64_t run_end) {
+  switch (run_end_type.id()) {
+    case Type::INT16:
+      if (run_end > std::numeric_limits<int16_t>::max()) {
+        return Status::Invalid("Array construction with int16 run end type cannot fit ",
+                               run_end);
+      }
+      return std::make_shared<Int16Scalar>(static_cast<int16_t>(run_end));
+    case Type::INT32:
+      if (run_end > std::numeric_limits<int32_t>::max()) {
+        return Status::Invalid("Array construction with int32 run end type cannot fit ",
+                               run_end);
+      }
+      return std::make_shared<Int32Scalar>(static_cast<int32_t>(run_end));
+    default:
+      break;
+  }
+  DCHECK_EQ(run_end_type.id(), Type::INT64);
+  return std::make_shared<Int64Scalar>(run_end);
+}
+
 // get the maximum buffer length required, then allocate a single zeroed buffer
 // to use anywhere a buffer is required
 class NullArrayFactory {
  public:
   struct GetBufferLength {
     GetBufferLength(const std::shared_ptr<DataType>& type, int64_t length)
-        : type_(*type), length_(length), buffer_length_(BitUtil::BytesForBits(length)) {}
+        : type_(*type), length_(length), buffer_length_(bit_util::BytesForBits(length)) {}
 
     Result<int64_t> Finish() && {
       RETURN_NOT_OK(VisitTypeInline(type_, this));
@@ -337,15 +386,28 @@ class NullArrayFactory {
     }
 
     template <typename T>
-    enable_if_var_size_list<T, Status> Visit(const T&) {
+    enable_if_var_size_list<T, Status> Visit(const T& type) {
       // values array may be empty, but there must be at least one offset of 0
-      return MaxOf(sizeof(typename T::offset_type) * (length_ + 1));
+      RETURN_NOT_OK(MaxOf(sizeof(typename T::offset_type) * (length_ + 1)));
+      RETURN_NOT_OK(MaxOf(GetBufferLength(type.value_type(), /*length=*/0)));
+      return Status::OK();
+    }
+
+    template <typename T>
+    enable_if_list_view<T, Status> Visit(const T& type) {
+      RETURN_NOT_OK(MaxOf(sizeof(typename T::offset_type) * length_));
+      RETURN_NOT_OK(MaxOf(GetBufferLength(type.value_type(), /*length=*/0)));
+      return Status::OK();
     }
 
     template <typename T>
     enable_if_base_binary<T, Status> Visit(const T&) {
       // values buffer may be empty, but there must be at least one offset of 0
       return MaxOf(sizeof(typename T::offset_type) * (length_ + 1));
+    }
+
+    Status Visit(const BinaryViewType& type) {
+      return MaxOf(sizeof(BinaryViewType::c_type) * length_);
     }
 
     Status Visit(const FixedSizeListType& type) {
@@ -363,15 +425,24 @@ class NullArrayFactory {
       return Status::OK();
     }
 
-    Status Visit(const UnionType& type) {
+    Status Visit(const SparseUnionType& type) {
       // type codes
       RETURN_NOT_OK(MaxOf(length_));
-      if (type.mode() == UnionMode::DENSE) {
-        // offsets
-        RETURN_NOT_OK(MaxOf(sizeof(int32_t) * length_));
-      }
+      // will create children of the same length as the union
       for (const auto& child : type.fields()) {
         RETURN_NOT_OK(MaxOf(GetBufferLength(child->type(), length_)));
+      }
+      return Status::OK();
+    }
+
+    Status Visit(const DenseUnionType& type) {
+      // type codes
+      RETURN_NOT_OK(MaxOf(length_));
+      // offsets
+      RETURN_NOT_OK(MaxOf(sizeof(int32_t) * length_));
+      // will create children of length 1
+      for (const auto& child : type.fields()) {
+        RETURN_NOT_OK(MaxOf(GetBufferLength(child->type(), 1)));
       }
       return Status::OK();
     }
@@ -379,6 +450,12 @@ class NullArrayFactory {
     Status Visit(const DictionaryType& type) {
       RETURN_NOT_OK(MaxOf(GetBufferLength(type.value_type(), length_)));
       return MaxOf(GetBufferLength(type.index_type(), length_));
+    }
+
+    Status Visit(const RunEndEncodedType& type) {
+      // RunEndEncodedType has no buffers, only child arrays
+      buffer_length_ = 0;
+      return Status::OK();
     }
 
     Status Visit(const ExtensionType& type) {
@@ -412,6 +489,10 @@ class NullArrayFactory {
       : pool_(pool), type_(type), length_(length) {}
 
   Status CreateBuffer() {
+    if (type_->id() == Type::RUN_END_ENCODED) {
+      buffer_ = NULLPTR;
+      return Status::OK();
+    }
     ARROW_ASSIGN_OR_RAISE(int64_t buffer_length,
                           GetBufferLength(type_, length_).Finish());
     ARROW_ASSIGN_OR_RAISE(buffer_, AllocateBuffer(buffer_length, pool_));
@@ -424,7 +505,10 @@ class NullArrayFactory {
       RETURN_NOT_OK(CreateBuffer());
     }
     std::vector<std::shared_ptr<ArrayData>> child_data(type_->num_fields());
-    out_ = ArrayData::Make(type_, length_, {buffer_}, child_data, length_, 0);
+    auto buffer_slice =
+        buffer_ ? SliceBuffer(buffer_, 0, bit_util::BytesForBits(length_)) : NULLPTR;
+    out_ = ArrayData::Make(type_, length_, {std::move(buffer_slice)}, child_data, length_,
+                           0);
     RETURN_NOT_OK(VisitTypeInline(*type_, this));
     return out_;
   }
@@ -445,22 +529,27 @@ class NullArrayFactory {
     return Status::OK();
   }
 
-  template <typename T>
-  enable_if_var_size_list<T, Status> Visit(const T& type) {
+  Status Visit(const BinaryViewType&) {
     out_->buffers.resize(2, buffer_);
-    ARROW_ASSIGN_OR_RAISE(out_->child_data[0], CreateChild(0, /*length=*/0));
+    return Status::OK();
+  }
+
+  template <typename T>
+  enable_if_var_length_list_like<T, Status> Visit(const T& type) {
+    out_->buffers.resize(is_list_view(T::type_id) ? 3 : 2, buffer_);
+    ARROW_ASSIGN_OR_RAISE(out_->child_data[0], CreateChild(type, 0, /*length=*/0));
     return Status::OK();
   }
 
   Status Visit(const FixedSizeListType& type) {
     ARROW_ASSIGN_OR_RAISE(out_->child_data[0],
-                          CreateChild(0, length_ * type.list_size()));
+                          CreateChild(type, 0, length_ * type.list_size()));
     return Status::OK();
   }
 
   Status Visit(const StructType& type) {
     for (int i = 0; i < type_->num_fields(); ++i) {
-      ARROW_ASSIGN_OR_RAISE(out_->child_data[i], CreateChild(i, length_));
+      ARROW_ASSIGN_OR_RAISE(out_->child_data[i], CreateChild(type, i, length_));
     }
     return Status::OK();
   }
@@ -490,7 +579,7 @@ class NullArrayFactory {
       child_length = 1;
     }
     for (int i = 0; i < type_->num_fields(); ++i) {
-      ARROW_ASSIGN_OR_RAISE(out_->child_data[i], CreateChild(i, child_length));
+      ARROW_ASSIGN_OR_RAISE(out_->child_data[i], CreateChild(type, i, child_length));
     }
     return Status::OK();
   }
@@ -502,7 +591,24 @@ class NullArrayFactory {
     return Status::OK();
   }
 
+  Status Visit(const RunEndEncodedType& type) {
+    std::shared_ptr<Array> run_ends, values;
+    if (length_ == 0) {
+      ARROW_ASSIGN_OR_RAISE(run_ends, MakeEmptyArray(type.run_end_type(), pool_));
+      ARROW_ASSIGN_OR_RAISE(values, MakeEmptyArray(type.value_type(), pool_));
+    } else {
+      ARROW_ASSIGN_OR_RAISE(auto run_end_scalar,
+                            MakeScalarForRunEndValue(*type.run_end_type(), length_));
+      ARROW_ASSIGN_OR_RAISE(run_ends, MakeArrayFromScalar(*run_end_scalar, 1, pool_));
+      ARROW_ASSIGN_OR_RAISE(values, MakeArrayOfNull(type.value_type(), 1, pool_));
+    }
+    out_->child_data[0] = run_ends->data();
+    out_->child_data[1] = values->data();
+    return Status::OK();
+  }
+
   Status Visit(const ExtensionType& type) {
+    out_->child_data.resize(type.storage_type()->num_fields());
     RETURN_NOT_OK(VisitTypeInline(*type.storage_type(), this));
     return Status::OK();
   }
@@ -511,14 +617,15 @@ class NullArrayFactory {
     return Status::NotImplemented("construction of all-null ", type);
   }
 
-  Result<std::shared_ptr<ArrayData>> CreateChild(int i, int64_t length) {
-    NullArrayFactory child_factory(pool_, type_->field(i)->type(), length);
+  Result<std::shared_ptr<ArrayData>> CreateChild(const DataType& type, int i,
+                                                 int64_t length) {
+    NullArrayFactory child_factory(pool_, type.field(i)->type(), length);
     child_factory.buffer_ = buffer_;
     return child_factory.Create();
   }
 
   MemoryPool* pool_;
-  std::shared_ptr<DataType> type_;
+  const std::shared_ptr<DataType>& type_;
   int64_t length_;
   std::shared_ptr<ArrayData> out_;
   std::shared_ptr<Buffer> buffer_;
@@ -528,6 +635,11 @@ class RepeatedArrayFactory {
  public:
   RepeatedArrayFactory(MemoryPool* pool, const Scalar& scalar, int64_t length)
       : pool_(pool), scalar_(scalar), length_(length) {}
+
+  template <typename T>
+  const auto& scalar() const {
+    return checked_cast<const typename TypeTraits<T>::ScalarType&>(scalar_);
+  }
 
   Result<std::shared_ptr<Array>> Create() {
     RETURN_NOT_OK(VisitTypeInline(*scalar_.type, this));
@@ -541,8 +653,8 @@ class RepeatedArrayFactory {
 
   Status Visit(const BooleanType&) {
     ARROW_ASSIGN_OR_RAISE(auto buffer, AllocateBitmap(length_, pool_));
-    BitUtil::SetBitsTo(buffer->mutable_data(), 0, length_,
-                       checked_cast<const BooleanScalar&>(scalar_).value);
+    bit_util::SetBitsTo(buffer->mutable_data(), 0, length_,
+                        checked_cast<const BooleanScalar&>(scalar_).value);
     out_ = std::make_shared<BooleanArray>(length_, buffer);
     return Status::OK();
   }
@@ -550,7 +662,7 @@ class RepeatedArrayFactory {
   template <typename T>
   enable_if_t<is_number_type<T>::value || is_temporal_type<T>::value, Status> Visit(
       const T&) {
-    auto value = checked_cast<const typename TypeTraits<T>::ScalarType&>(scalar_).value;
+    auto value = scalar<T>().value;
     return FinishFixedWidth(&value, sizeof(value));
   }
 
@@ -561,8 +673,7 @@ class RepeatedArrayFactory {
 
   template <typename T>
   enable_if_decimal<T, Status> Visit(const T&) {
-    using ScalarType = typename TypeTraits<T>::ScalarType;
-    auto value = checked_cast<const ScalarType&>(scalar_).value.ToBytes();
+    auto value = scalar<T>().value.ToBytes();
     return FinishFixedWidth(value.data(), value.size());
   }
 
@@ -573,33 +684,56 @@ class RepeatedArrayFactory {
 
   template <typename T>
   enable_if_base_binary<T, Status> Visit(const T&) {
-    std::shared_ptr<Buffer> value =
-        checked_cast<const typename TypeTraits<T>::ScalarType&>(scalar_).value;
+    const std::shared_ptr<Buffer>& value = scalar<T>().value;
     std::shared_ptr<Buffer> values_buffer, offsets_buffer;
     RETURN_NOT_OK(CreateBufferOf(value->data(), value->size(), &values_buffer));
     auto size = static_cast<typename T::offset_type>(value->size());
     RETURN_NOT_OK(CreateOffsetsBuffer(size, &offsets_buffer));
-    out_ = std::make_shared<typename TypeTraits<T>::ArrayType>(length_, offsets_buffer,
-                                                               values_buffer);
+    out_ = std::make_shared<typename TypeTraits<T>::ArrayType>(
+        length_, std::move(offsets_buffer), std::move(values_buffer));
+    return Status::OK();
+  }
+
+  template <typename T>
+  enable_if_binary_view_like<T, Status> Visit(const T& type) {
+    std::string_view value{*scalar<T>().value};
+    auto s = util::ToBinaryView(value, 0, 0);
+    RETURN_NOT_OK(FinishFixedWidth(&s, sizeof(s)));
+    if (!s.is_inline()) {
+      out_->data()->buffers.push_back(scalar<T>().value);
+    }
     return Status::OK();
   }
 
   template <typename T>
   enable_if_var_size_list<T, Status> Visit(const T& type) {
+    using ArrayType = typename TypeTraits<T>::ArrayType;
+
+    ArrayVector values(length_, scalar<T>().value);
+    ARROW_ASSIGN_OR_RAISE(auto value_array, Concatenate(values, pool_));
+
+    std::shared_ptr<Buffer> offsets_buffer;
+    auto size = static_cast<typename T::offset_type>(scalar<T>().value->length());
+    RETURN_NOT_OK(CreateOffsetsBuffer(size, &offsets_buffer));
+    out_ =
+        std::make_shared<ArrayType>(scalar_.type, length_, offsets_buffer, value_array);
+    return Status::OK();
+  }
+
+  template <typename T>
+  enable_if_list_view<T, Status> Visit(const T& type) {
     using ScalarType = typename TypeTraits<T>::ScalarType;
     using ArrayType = typename TypeTraits<T>::ArrayType;
 
     auto value = checked_cast<const ScalarType&>(scalar_).value;
 
-    ArrayVector values(length_, value);
-    ARROW_ASSIGN_OR_RAISE(auto value_array, Concatenate(values, pool_));
-
-    std::shared_ptr<Buffer> offsets_buffer;
     auto size = static_cast<typename T::offset_type>(value->length());
-    RETURN_NOT_OK(CreateOffsetsBuffer(size, &offsets_buffer));
-
-    out_ =
-        std::make_shared<ArrayType>(scalar_.type, length_, offsets_buffer, value_array);
+    ARROW_ASSIGN_OR_RAISE(auto offsets_buffer,
+                          CreateIntBuffer<typename T::offset_type>(0));
+    ARROW_ASSIGN_OR_RAISE(auto sizes_buffer,
+                          CreateIntBuffer<typename T::offset_type>(size));
+    out_ = std::make_shared<ArrayType>(scalar_.type, length_, std::move(offsets_buffer),
+                                       std::move(sizes_buffer), value);
     return Status::OK();
   }
 
@@ -652,22 +786,20 @@ class RepeatedArrayFactory {
   }
 
   Status Visit(const SparseUnionType& type) {
-    const auto& union_scalar = checked_cast<const UnionScalar&>(scalar_);
-    const auto& union_type = checked_cast<const UnionType&>(*scalar_.type);
+    const auto& union_scalar = checked_cast<const SparseUnionScalar&>(scalar_);
     const auto scalar_type_code = union_scalar.type_code;
-    const auto scalar_child_id = union_type.child_ids()[scalar_type_code];
 
     // Create child arrays: most of them are all-null, except for the child array
     // for the given type code (if the scalar is valid).
     ArrayVector fields;
     for (int i = 0; i < type.num_fields(); ++i) {
       fields.emplace_back();
-      if (i == scalar_child_id && scalar_.is_valid) {
-        ARROW_ASSIGN_OR_RAISE(fields.back(),
-                              MakeArrayFromScalar(*union_scalar.value, length_, pool_));
-      } else {
+      if (i == union_scalar.child_id && scalar_.is_valid) {
         ARROW_ASSIGN_OR_RAISE(
-            fields.back(), MakeArrayOfNull(union_type.field(i)->type(), length_, pool_));
+            fields.back(), MakeArrayFromScalar(*union_scalar.value[i], length_, pool_));
+      } else {
+        ARROW_ASSIGN_OR_RAISE(fields.back(),
+                              MakeArrayOfNull(type.field(i)->type(), length_, pool_));
       }
     }
 
@@ -679,7 +811,7 @@ class RepeatedArrayFactory {
   }
 
   Status Visit(const DenseUnionType& type) {
-    const auto& union_scalar = checked_cast<const UnionScalar&>(scalar_);
+    const auto& union_scalar = checked_cast<const DenseUnionScalar&>(scalar_);
     const auto& union_type = checked_cast<const UnionType&>(*scalar_.type);
     const auto scalar_type_code = union_scalar.type_code;
     const auto scalar_child_id = union_type.child_ids()[scalar_type_code];
@@ -719,6 +851,19 @@ class RepeatedArrayFactory {
     return Status::OK();
   }
 
+  Status Visit(const RunEndEncodedType& type) {
+    const auto& ree_scalar = checked_cast<const RunEndEncodedScalar&>(scalar_);
+    ARROW_ASSIGN_OR_RAISE(auto values,
+                          ree_scalar.is_valid
+                              ? MakeArrayFromScalar(*ree_scalar.value, 1, pool_)
+                              : MakeArrayOfNull(ree_scalar.value_type(), 1, pool_));
+    ARROW_ASSIGN_OR_RAISE(auto run_end_scalar,
+                          MakeScalarForRunEndValue(*ree_scalar.run_end_type(), length_));
+    ARROW_ASSIGN_OR_RAISE(auto run_ends, MakeArrayFromScalar(*run_end_scalar, 1, pool_));
+    ARROW_ASSIGN_OR_RAISE(out_, RunEndEncodedArray::Make(length_, run_ends, values));
+    return Status::OK();
+  }
+
   Status Visit(const ExtensionType& type) {
     return Status::NotImplemented("construction from scalar of type ", *scalar_.type);
   }
@@ -739,6 +884,15 @@ class RepeatedArrayFactory {
       builder.UnsafeAppend(offset);
     }
     return builder.Finish(out);
+  }
+
+  template <typename IntType>
+  Result<std::shared_ptr<Buffer>> CreateIntBuffer(IntType value) {
+    std::shared_ptr<Buffer> buffer;
+    TypedBufferBuilder<IntType> builder(pool_);
+    RETURN_NOT_OK(builder.Append(/*num_copies=*/length_, value));
+    RETURN_NOT_OK(builder.Finish(&buffer));
+    return buffer;
   }
 
   Status CreateBufferOf(const void* data, size_t data_length,
@@ -780,6 +934,21 @@ Result<std::shared_ptr<Array>> MakeArrayFromScalar(const Scalar& scalar, int64_t
     return MakeArrayOfNull(scalar.type, length, pool);
   }
   return RepeatedArrayFactory(pool, scalar, length).Create();
+}
+
+Result<std::shared_ptr<Array>> MakeEmptyArray(std::shared_ptr<DataType> type,
+                                              MemoryPool* memory_pool) {
+  if (type->id() == Type::EXTENSION) {
+    const auto& ext_type = checked_cast<const ExtensionType&>(*type);
+    ARROW_ASSIGN_OR_RAISE(auto storage,
+                          MakeEmptyArray(ext_type.storage_type(), memory_pool));
+    storage->data()->type = std::move(type);
+    return ext_type.MakeArray(storage->data());
+  }
+  std::unique_ptr<ArrayBuilder> builder;
+  RETURN_NOT_OK(MakeBuilder(memory_pool, type, &builder));
+  RETURN_NOT_OK(builder->Resize(0));
+  return builder->Finish();
 }
 
 namespace internal {

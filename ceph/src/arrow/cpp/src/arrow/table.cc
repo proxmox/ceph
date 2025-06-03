@@ -30,6 +30,7 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/array/util.h"
 #include "arrow/chunked_array.h"
+#include "arrow/compute/cast.h"
 #include "arrow/pretty_print.h"
 #include "arrow/record_batch.h"
 #include "arrow/result.h"
@@ -266,10 +267,18 @@ std::shared_ptr<Table> Table::Make(std::shared_ptr<Schema> schema,
   return std::make_shared<SimpleTable>(std::move(schema), arrays, num_rows);
 }
 
+Result<std::shared_ptr<Table>> Table::MakeEmpty(std::shared_ptr<Schema> schema,
+                                                MemoryPool* memory_pool) {
+  ChunkedArrayVector empty_table(schema->num_fields());
+  for (int i = 0; i < schema->num_fields(); i++) {
+    ARROW_ASSIGN_OR_RAISE(empty_table[i],
+                          ChunkedArray::MakeEmpty(schema->field(i)->type(), memory_pool));
+  }
+  return Table::Make(schema, empty_table, 0);
+}
+
 Result<std::shared_ptr<Table>> Table::FromRecordBatchReader(RecordBatchReader* reader) {
-  std::shared_ptr<Table> table = nullptr;
-  RETURN_NOT_OK(reader->ReadAll(&table));
-  return table;
+  return reader->ToTable();
 }
 
 Result<std::shared_ptr<Table>> Table::FromRecordBatches(
@@ -442,6 +451,13 @@ Result<std::shared_ptr<Table>> ConcatenateTables(
 Result<std::shared_ptr<Table>> PromoteTableToSchema(const std::shared_ptr<Table>& table,
                                                     const std::shared_ptr<Schema>& schema,
                                                     MemoryPool* pool) {
+  return PromoteTableToSchema(table, schema, compute::CastOptions::Safe(), pool);
+}
+
+Result<std::shared_ptr<Table>> PromoteTableToSchema(const std::shared_ptr<Table>& table,
+                                                    const std::shared_ptr<Schema>& schema,
+                                                    const compute::CastOptions& options,
+                                                    MemoryPool* pool) {
   const std::shared_ptr<Schema> current_schema = table->schema();
   if (current_schema->Equals(*schema, /*check_metadata=*/false)) {
     return table->ReplaceSchemaMetadata(schema->metadata());
@@ -479,8 +495,8 @@ Result<std::shared_ptr<Table>> PromoteTableToSchema(const std::shared_ptr<Table>
     const int field_index = field_indices[0];
     const auto& current_field = current_schema->field(field_index);
     if (!field->nullable() && current_field->nullable()) {
-      return Status::Invalid("Unable to promote field ", current_field->name(),
-                             ": it was nullable but the target schema was not.");
+      return Status::TypeError("Unable to promote field ", current_field->name(),
+                               ": it was nullable but the target schema was not.");
     }
 
     fields_seen[field_index] = true;
@@ -494,9 +510,15 @@ Result<std::shared_ptr<Table>> PromoteTableToSchema(const std::shared_ptr<Table>
       continue;
     }
 
-    return Status::Invalid("Unable to promote field ", field->name(),
-                           ": incompatible types: ", field->type()->ToString(), " vs ",
-                           current_field->type()->ToString());
+    if (!compute::CanCast(*current_field->type(), *field->type())) {
+      return Status::TypeError("Unable to promote field ", field->name(),
+                               ": incompatible types: ", field->type()->ToString(),
+                               " vs ", current_field->type()->ToString());
+    }
+    compute::ExecContext ctx(pool);
+    ARROW_ASSIGN_OR_RAISE(auto casted, compute::Cast(table->column(field_index),
+                                                     field->type(), options, &ctx));
+    columns.push_back(casted.chunked_array());
   }
 
   auto unseen_field_iter = std::find(fields_seen.begin(), fields_seen.end(), false);
@@ -568,11 +590,27 @@ Result<std::shared_ptr<Table>> Table::CombineChunks(MemoryPool* pool) const {
   return Table::Make(schema(), std::move(compacted_columns), num_rows_);
 }
 
+Result<std::shared_ptr<RecordBatch>> Table::CombineChunksToBatch(MemoryPool* pool) const {
+  ARROW_ASSIGN_OR_RAISE(std::shared_ptr<Table> combined, CombineChunks(pool));
+  std::vector<std::shared_ptr<Array>> arrays;
+  for (const auto& column : combined->columns()) {
+    if (column->num_chunks() == 0) {
+      DCHECK_EQ(num_rows(), 0) << "Empty chunk with more than 0 rows";
+      ARROW_ASSIGN_OR_RAISE(auto chunk,
+                            MakeArrayOfNull(column->type(), num_rows(), pool));
+      arrays.push_back(std::move(chunk));
+    } else {
+      arrays.push_back(column->chunk(0));
+    }
+  }
+  return RecordBatch::Make(schema_, num_rows_, std::move(arrays));
+}
 // ----------------------------------------------------------------------
 // Convert a table to a sequence of record batches
 
 TableBatchReader::TableBatchReader(const Table& table)
-    : table_(table),
+    : owned_table_(nullptr),
+      table_(table),
       column_data_(table.num_columns()),
       chunk_numbers_(table.num_columns(), 0),
       chunk_offsets_(table.num_columns(), 0),
@@ -580,6 +618,19 @@ TableBatchReader::TableBatchReader(const Table& table)
       max_chunksize_(std::numeric_limits<int64_t>::max()) {
   for (int i = 0; i < table.num_columns(); ++i) {
     column_data_[i] = table.column(i).get();
+  }
+}
+
+TableBatchReader::TableBatchReader(std::shared_ptr<Table> table)
+    : owned_table_(std::move(table)),
+      table_(*owned_table_),
+      column_data_(owned_table_->num_columns()),
+      chunk_numbers_(owned_table_->num_columns(), 0),
+      chunk_offsets_(owned_table_->num_columns(), 0),
+      absolute_row_position_(0),
+      max_chunksize_(std::numeric_limits<int64_t>::max()) {
+  for (int i = 0; i < owned_table_->num_columns(); ++i) {
+    column_data_[i] = owned_table_->column(i).get();
   }
 }
 
@@ -594,7 +645,8 @@ Status TableBatchReader::ReadNext(std::shared_ptr<RecordBatch>* out) {
   }
 
   // Determine the minimum contiguous slice across all columns
-  int64_t chunksize = std::min(table_.num_rows(), max_chunksize_);
+  int64_t chunksize =
+      std::min(table_.num_rows() - absolute_row_position_, max_chunksize_);
   std::vector<const Array*> chunks(table_.num_columns());
   for (int i = 0; i < table_.num_columns(); ++i) {
     auto chunk = column_data_[i]->chunk(chunk_numbers_[i]).get();

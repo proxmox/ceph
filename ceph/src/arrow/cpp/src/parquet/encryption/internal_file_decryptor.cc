@@ -16,15 +16,17 @@
 // under the License.
 
 #include "parquet/encryption/internal_file_decryptor.h"
+#include "arrow/util/logging.h"
 #include "parquet/encryption/encryption.h"
 #include "parquet/encryption/encryption_internal.h"
+#include "parquet/metadata.h"
 
 namespace parquet {
 
 // Decryptor
-Decryptor::Decryptor(encryption::AesDecryptor* aes_decryptor, const std::string& key,
-                     const std::string& file_aad, const std::string& aad,
-                     ::arrow::MemoryPool* pool)
+Decryptor::Decryptor(std::shared_ptr<encryption::AesDecryptor> aes_decryptor,
+                     const std::string& key, const std::string& file_aad,
+                     const std::string& aad, ::arrow::MemoryPool* pool)
     : aes_decryptor_(aes_decryptor),
       key_(key),
       file_aad_(file_aad),
@@ -61,7 +63,9 @@ InternalFileDecryptor::InternalFileDecryptor(FileDecryptionProperties* propertie
 void InternalFileDecryptor::WipeOutDecryptionKeys() {
   properties_->WipeOutDecryptionKeys();
   for (auto const& i : all_decryptors_) {
-    i->WipeOut();
+    if (auto aes_decryptor = i.lock()) {
+      aes_decryptor->WipeOut();
+    }
   }
 }
 
@@ -134,8 +138,11 @@ std::shared_ptr<Decryptor> InternalFileDecryptor::GetFooterDecryptor(
 
   // Create both data and metadata decryptors to avoid redundant retrieval of key
   // from the key_retriever.
-  auto aes_metadata_decryptor = GetMetaAesDecryptor(footer_key.size());
-  auto aes_data_decryptor = GetDataAesDecryptor(footer_key.size());
+  int key_len = static_cast<int>(footer_key.size());
+  auto aes_metadata_decryptor = encryption::AesDecryptor::Make(
+      algorithm_, key_len, /*metadata=*/true, &all_decryptors_);
+  auto aes_data_decryptor = encryption::AesDecryptor::Make(
+      algorithm_, key_len, /*metadata=*/false, &all_decryptors_);
 
   footer_metadata_decryptor_ = std::make_shared<Decryptor>(
       aes_metadata_decryptor, footer_key, file_aad_, aad, pool_);
@@ -195,8 +202,11 @@ std::shared_ptr<Decryptor> InternalFileDecryptor::GetColumnDecryptor(
 
   // Create both data and metadata decryptors to avoid redundant retrieval of key
   // using the key_retriever.
-  auto aes_metadata_decryptor = GetMetaAesDecryptor(column_key.size());
-  auto aes_data_decryptor = GetDataAesDecryptor(column_key.size());
+  int key_len = static_cast<int>(column_key.size());
+  auto aes_metadata_decryptor = encryption::AesDecryptor::Make(
+      algorithm_, key_len, /*metadata=*/true, &all_decryptors_);
+  auto aes_data_decryptor = encryption::AesDecryptor::Make(
+      algorithm_, key_len, /*metadata=*/false, &all_decryptors_);
 
   column_metadata_map_[column_path] = std::make_shared<Decryptor>(
       aes_metadata_decryptor, column_key, file_aad_, aad, pool_);
@@ -207,34 +217,57 @@ std::shared_ptr<Decryptor> InternalFileDecryptor::GetColumnDecryptor(
   return column_data_map_[column_path];
 }
 
-int InternalFileDecryptor::MapKeyLenToDecryptorArrayIndex(int key_len) {
-  if (key_len == 16)
-    return 0;
-  else if (key_len == 24)
-    return 1;
-  else if (key_len == 32)
-    return 2;
-  throw ParquetException("decryption key must be 16, 24 or 32 bytes in length");
+namespace {
+
+std::shared_ptr<Decryptor> GetColumnDecryptor(
+    const ColumnCryptoMetaData* crypto_metadata, InternalFileDecryptor* file_decryptor,
+    const std::function<std::shared_ptr<Decryptor>(
+        InternalFileDecryptor* file_decryptor, const std::string& column_path,
+        const std::string& column_key_metadata, const std::string& aad)>& func,
+    bool metadata) {
+  if (crypto_metadata == nullptr) {
+    return nullptr;
+  }
+
+  if (file_decryptor == nullptr) {
+    throw ParquetException("RowGroup is noted as encrypted but no file decryptor");
+  }
+
+  if (crypto_metadata->encrypted_with_footer_key()) {
+    return metadata ? file_decryptor->GetFooterDecryptorForColumnMeta()
+                    : file_decryptor->GetFooterDecryptorForColumnData();
+  }
+
+  // The column is encrypted with its own key
+  const std::string& column_key_metadata = crypto_metadata->key_metadata();
+  const std::string column_path = crypto_metadata->path_in_schema()->ToDotString();
+  return func(file_decryptor, column_path, column_key_metadata, /*aad=*/"");
 }
 
-encryption::AesDecryptor* InternalFileDecryptor::GetMetaAesDecryptor(size_t key_size) {
-  int key_len = static_cast<int>(key_size);
-  int index = MapKeyLenToDecryptorArrayIndex(key_len);
-  if (meta_decryptor_[index] == nullptr) {
-    meta_decryptor_[index].reset(
-        encryption::AesDecryptor::Make(algorithm_, key_len, true, &all_decryptors_));
-  }
-  return meta_decryptor_[index].get();
+}  // namespace
+
+std::shared_ptr<Decryptor> GetColumnMetaDecryptor(
+    const ColumnCryptoMetaData* crypto_metadata, InternalFileDecryptor* file_decryptor) {
+  return GetColumnDecryptor(crypto_metadata, file_decryptor,
+                            &InternalFileDecryptor::GetColumnMetaDecryptor,
+                            /*metadata=*/true);
 }
 
-encryption::AesDecryptor* InternalFileDecryptor::GetDataAesDecryptor(size_t key_size) {
-  int key_len = static_cast<int>(key_size);
-  int index = MapKeyLenToDecryptorArrayIndex(key_len);
-  if (data_decryptor_[index] == nullptr) {
-    data_decryptor_[index].reset(
-        encryption::AesDecryptor::Make(algorithm_, key_len, false, &all_decryptors_));
-  }
-  return data_decryptor_[index].get();
+std::shared_ptr<Decryptor> GetColumnDataDecryptor(
+    const ColumnCryptoMetaData* crypto_metadata, InternalFileDecryptor* file_decryptor) {
+  return GetColumnDecryptor(crypto_metadata, file_decryptor,
+                            &InternalFileDecryptor::GetColumnDataDecryptor,
+                            /*metadata=*/false);
+}
+
+void UpdateDecryptor(const std::shared_ptr<Decryptor>& decryptor,
+                     int16_t row_group_ordinal, int16_t column_ordinal,
+                     int8_t module_type) {
+  ARROW_DCHECK(!decryptor->file_aad().empty());
+  const std::string aad =
+      encryption::CreateModuleAad(decryptor->file_aad(), module_type, row_group_ordinal,
+                                  column_ordinal, kNonPageOrdinal);
+  decryptor->UpdateAad(aad);
 }
 
 }  // namespace parquet

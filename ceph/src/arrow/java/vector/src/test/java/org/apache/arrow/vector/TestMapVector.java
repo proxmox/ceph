@@ -20,6 +20,7 @@ package org.apache.arrow.vector;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
@@ -1108,6 +1109,73 @@ public class TestMapVector {
       resultStruct = (Map<?, ?>) resultSet.get(0);
       assertEquals(5L, getResultKey(resultStruct));
       assertEquals(55, getResultValue(resultStruct));
+    }
+  }
+
+  @Test
+  public void testGetTransferPair() {
+    try (MapVector mapVector = MapVector.empty("mapVector", allocator, false)) {
+
+      FieldType type = new FieldType(false, ArrowType.Struct.INSTANCE, null, null);
+      AddOrGetResult<StructVector> addResult = mapVector.addOrGetVector(type);
+      FieldType keyType = new FieldType(false, MinorType.BIGINT.getType(), null, null);
+      FieldType valueType = FieldType.nullable(MinorType.FLOAT8.getType());
+      addResult.getVector().addOrGet(MapVector.KEY_NAME, keyType, BigIntVector.class);
+      addResult.getVector().addOrGet(MapVector.VALUE_NAME, valueType, Float8Vector.class);
+      mapVector.allocateNew();
+      mapVector.setValueCount(0);
+
+      assertEquals(-1, mapVector.getLastSet());
+      TransferPair tp = mapVector.getTransferPair(mapVector.getName(), allocator, null);
+      tp.transfer();
+      ValueVector vector = tp.getTo();
+      assertSame(vector.getClass(), mapVector.getClass());
+      vector.clear();
+    }
+  }
+
+  @Test
+  public void testGetTransferPairWithField() {
+    try (MapVector mapVector = MapVector.empty("mapVector", allocator, false)) {
+
+      FieldType type = new FieldType(false, ArrowType.Struct.INSTANCE, null, null);
+      AddOrGetResult<StructVector> addResult = mapVector.addOrGetVector(type);
+      FieldType keyType = new FieldType(false, MinorType.BIGINT.getType(), null, null);
+      FieldType valueType = FieldType.nullable(MinorType.FLOAT8.getType());
+      addResult.getVector().addOrGet(MapVector.KEY_NAME, keyType, BigIntVector.class);
+      addResult.getVector().addOrGet(MapVector.VALUE_NAME, valueType, Float8Vector.class);
+      mapVector.allocateNew();
+      mapVector.setValueCount(0);
+
+      assertEquals(-1, mapVector.getLastSet());
+      TransferPair tp = mapVector.getTransferPair(mapVector.getField(), allocator);
+      tp.transfer();
+      MapVector toVector = (MapVector) tp.getTo();
+      assertSame(toVector.getField(), mapVector.getField());
+      toVector.clear();
+    }
+  }
+
+  @Test
+  public void testGetTransferPairWithFieldAndCallBack() {
+    SchemaChangeCallBack callBack = new SchemaChangeCallBack();
+    try (MapVector mapVector = MapVector.empty("mapVector", allocator, false)) {
+
+      FieldType type = new FieldType(false, ArrowType.Struct.INSTANCE, null, null);
+      AddOrGetResult<StructVector> addResult = mapVector.addOrGetVector(type);
+      FieldType keyType = new FieldType(false, MinorType.BIGINT.getType(), null, null);
+      FieldType valueType = FieldType.nullable(MinorType.FLOAT8.getType());
+      addResult.getVector().addOrGet(MapVector.KEY_NAME, keyType, BigIntVector.class);
+      addResult.getVector().addOrGet(MapVector.VALUE_NAME, valueType, Float8Vector.class);
+      mapVector.allocateNew();
+      mapVector.setValueCount(0);
+
+      assertEquals(-1, mapVector.getLastSet());
+      TransferPair tp = mapVector.getTransferPair(mapVector.getField(), allocator, callBack);
+      tp.transfer();
+      MapVector toVector = (MapVector) tp.getTo();
+      assertSame(toVector.getField(), mapVector.getField());
+      toVector.clear();
     }
   }
 }

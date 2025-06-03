@@ -21,7 +21,9 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "arrow/buffer.h"
@@ -34,8 +36,6 @@
 #include "arrow/util/async_generator.h"
 #include "arrow/util/future.h"
 #include "arrow/util/logging.h"
-#include "arrow/util/string_view.h"
-#include "arrow/util/variant.h"
 #include "arrow/util/windows_fixup.h"
 
 namespace arrow {
@@ -43,6 +43,13 @@ namespace fs {
 namespace internal {
 
 namespace {
+
+Status ValidatePath(std::string_view s) {
+  if (internal::IsLikelyUri(s)) {
+    return Status::Invalid("Expected a filesystem path, got a URI: '", s, "'");
+  }
+  return Status::OK();
+}
 
 ////////////////////////////////////////////////////////////////////////////
 // Filesystem structure
@@ -59,9 +66,9 @@ struct File {
 
   int64_t size() const { return data ? data->size() : 0; }
 
-  explicit operator util::string_view() const {
+  explicit operator std::string_view() const {
     if (data) {
-      return util::string_view(*data);
+      return std::string_view(*data);
     } else {
       return "";
     }
@@ -113,7 +120,7 @@ struct Directory {
 };
 
 // A filesystem entry
-using EntryBase = util::Variant<std::nullptr_t, File, Directory>;
+using EntryBase = std::variant<std::nullptr_t, File, Directory>;
 
 class Entry : public EntryBase {
  public:
@@ -122,13 +129,13 @@ class Entry : public EntryBase {
   explicit Entry(Directory&& v) : EntryBase(std::move(v)) {}
   explicit Entry(File&& v) : EntryBase(std::move(v)) {}
 
-  bool is_dir() const { return util::holds_alternative<Directory>(*this); }
+  bool is_dir() const { return std::holds_alternative<Directory>(*this); }
 
-  bool is_file() const { return util::holds_alternative<File>(*this); }
+  bool is_file() const { return std::holds_alternative<File>(*this); }
 
-  Directory& as_dir() { return util::get<Directory>(*this); }
+  Directory& as_dir() { return std::get<Directory>(*this); }
 
-  File& as_file() { return util::get<File>(*this); }
+  File& as_file() { return std::get<File>(*this); }
 
   // Get info for this entry.  Note the path() property isn't set.
   FileInfo GetInfo() {
@@ -365,7 +372,7 @@ class MockFileSystem::Impl {
       Entry* child = pair.second.get();
       if (child->is_file()) {
         auto& file = child->as_file();
-        out->push_back({path + file.name, file.mtime, util::string_view(file)});
+        out->push_back({path + file.name, file.mtime, std::string_view(file)});
       } else if (child->is_dir()) {
         DumpFiles(path, child->as_dir(), out);
       }
@@ -375,6 +382,7 @@ class MockFileSystem::Impl {
   Result<std::shared_ptr<io::OutputStream>> OpenOutputStream(
       const std::string& path, bool append,
       const std::shared_ptr<const KeyValueMetadata>& metadata) {
+    ARROW_RETURN_NOT_OK(internal::AssertNoTrailingSlash(path));
     auto parts = SplitAbstractPath(path);
     RETURN_NOT_OK(ValidateAbstractPathParts(parts));
 
@@ -405,6 +413,7 @@ class MockFileSystem::Impl {
   }
 
   Result<std::shared_ptr<io::BufferReader>> OpenInputReader(const std::string& path) {
+    ARROW_RETURN_NOT_OK(internal::AssertNoTrailingSlash(path));
     auto parts = SplitAbstractPath(path);
     RETURN_NOT_OK(ValidateAbstractPathParts(parts));
 
@@ -422,12 +431,21 @@ class MockFileSystem::Impl {
 MockFileSystem::~MockFileSystem() = default;
 
 MockFileSystem::MockFileSystem(TimePoint current_time, const io::IOContext& io_context) {
-  impl_ = std::unique_ptr<Impl>(new Impl(current_time, io_context.pool()));
+  impl_ = std::make_unique<Impl>(current_time, io_context.pool());
 }
 
 bool MockFileSystem::Equals(const FileSystem& other) const { return this == &other; }
 
+Result<std::string> MockFileSystem::PathFromUri(const std::string& uri_string) const {
+  ARROW_ASSIGN_OR_RAISE(
+      std::string parsed_path,
+      internal::PathFromUriHelper(uri_string, {"mock"}, /*accept_local_paths=*/true,
+                                  internal::AuthorityHandlingBehavior::kDisallow));
+  return std::string(internal::RemoveLeadingSlash(parsed_path));
+}
+
 Status MockFileSystem::CreateDir(const std::string& path, bool recursive) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto parts = SplitAbstractPath(path);
   RETURN_NOT_OK(ValidateAbstractPathParts(parts));
 
@@ -457,6 +475,7 @@ Status MockFileSystem::CreateDir(const std::string& path, bool recursive) {
 }
 
 Status MockFileSystem::DeleteDir(const std::string& path) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto parts = SplitAbstractPath(path);
   RETURN_NOT_OK(ValidateAbstractPathParts(parts));
 
@@ -480,7 +499,8 @@ Status MockFileSystem::DeleteDir(const std::string& path) {
   return Status::OK();
 }
 
-Status MockFileSystem::DeleteDirContents(const std::string& path) {
+Status MockFileSystem::DeleteDirContents(const std::string& path, bool missing_dir_ok) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto parts = SplitAbstractPath(path);
   RETURN_NOT_OK(ValidateAbstractPathParts(parts));
 
@@ -493,6 +513,9 @@ Status MockFileSystem::DeleteDirContents(const std::string& path) {
 
   Entry* entry = impl_->FindEntry(parts);
   if (entry == nullptr) {
+    if (missing_dir_ok) {
+      return Status::OK();
+    }
     return PathNotFound(path);
   }
   if (!entry->is_dir()) {
@@ -510,6 +533,7 @@ Status MockFileSystem::DeleteRootDirContents() {
 }
 
 Status MockFileSystem::DeleteFile(const std::string& path) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto parts = SplitAbstractPath(path);
   RETURN_NOT_OK(ValidateAbstractPathParts(parts));
 
@@ -533,6 +557,7 @@ Status MockFileSystem::DeleteFile(const std::string& path) {
 }
 
 Result<FileInfo> MockFileSystem::GetFileInfo(const std::string& path) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto parts = SplitAbstractPath(path);
   RETURN_NOT_OK(ValidateAbstractPathParts(parts));
 
@@ -550,6 +575,7 @@ Result<FileInfo> MockFileSystem::GetFileInfo(const std::string& path) {
 }
 
 Result<FileInfoVector> MockFileSystem::GetFileInfo(const FileSelector& selector) {
+  RETURN_NOT_OK(ValidatePath(selector.base_dir));
   auto parts = SplitAbstractPath(selector.base_dir);
   RETURN_NOT_OK(ValidateAbstractPathParts(parts));
 
@@ -590,6 +616,8 @@ struct BinaryOp {
   template <typename OpFunc>
   static Status Run(MockFileSystem::Impl* impl, const std::string& src,
                     const std::string& dest, OpFunc&& op_func) {
+    RETURN_NOT_OK(ValidatePath(src));
+    RETURN_NOT_OK(ValidatePath(dest));
     auto src_parts = SplitAbstractPath(src);
     auto dest_parts = SplitAbstractPath(dest);
     RETURN_NOT_OK(ValidateAbstractPathParts(src_parts));
@@ -685,6 +713,7 @@ Status MockFileSystem::CopyFile(const std::string& src, const std::string& dest)
 
 Result<std::shared_ptr<io::InputStream>> MockFileSystem::OpenInputStream(
     const std::string& path) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto guard = impl_->lock_guard();
 
   return impl_->OpenInputReader(path);
@@ -692,6 +721,7 @@ Result<std::shared_ptr<io::InputStream>> MockFileSystem::OpenInputStream(
 
 Result<std::shared_ptr<io::RandomAccessFile>> MockFileSystem::OpenInputFile(
     const std::string& path) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto guard = impl_->lock_guard();
 
   return impl_->OpenInputReader(path);
@@ -699,6 +729,7 @@ Result<std::shared_ptr<io::RandomAccessFile>> MockFileSystem::OpenInputFile(
 
 Result<std::shared_ptr<io::OutputStream>> MockFileSystem::OpenOutputStream(
     const std::string& path, const std::shared_ptr<const KeyValueMetadata>& metadata) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto guard = impl_->lock_guard();
 
   return impl_->OpenOutputStream(path, /*append=*/false, metadata);
@@ -706,6 +737,8 @@ Result<std::shared_ptr<io::OutputStream>> MockFileSystem::OpenOutputStream(
 
 Result<std::shared_ptr<io::OutputStream>> MockFileSystem::OpenAppendStream(
     const std::string& path, const std::shared_ptr<const KeyValueMetadata>& metadata) {
+  ARROW_RETURN_NOT_OK(internal::AssertNoTrailingSlash(path));
+  RETURN_NOT_OK(ValidatePath(path));
   auto guard = impl_->lock_guard();
 
   return impl_->OpenOutputStream(path, /*append=*/true, metadata);
@@ -727,8 +760,9 @@ std::vector<MockFileInfo> MockFileSystem::AllFiles() {
   return result;
 }
 
-Status MockFileSystem::CreateFile(const std::string& path, util::string_view contents,
+Status MockFileSystem::CreateFile(const std::string& path, std::string_view contents,
                                   bool recursive) {
+  RETURN_NOT_OK(ValidatePath(path));
   auto parent = fs::internal::GetAbstractPathParent(path).first;
 
   if (parent != "") {

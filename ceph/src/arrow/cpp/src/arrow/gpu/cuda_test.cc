@@ -39,9 +39,11 @@
 namespace arrow {
 
 using internal::checked_cast;
+using internal::checked_pointer_cast;
 
 namespace cuda {
 
+using internal::ContextSaver;
 using internal::StatusFromCuda;
 
 #define ASSERT_CUDA_OK(expr) ASSERT_OK(::arrow::cuda::internal::StatusFromCuda((expr)))
@@ -162,21 +164,39 @@ TEST_F(TestCudaDevice, Copy) {
   ASSERT_EQ(other_buffer->device(), device_);
   AssertCudaBufferEquals(*other_buffer, "some data");
 
+  // Copy non-owned
+  ASSERT_OK_AND_ASSIGN(other_buffer, Buffer::CopyNonOwned(*cpu_buffer, mm_));
+  ASSERT_EQ(other_buffer->device(), device_);
+  AssertCudaBufferEquals(*other_buffer, "some data");
+
   // device -> CPU
   ASSERT_OK_AND_ASSIGN(cpu_buffer, Buffer::Copy(other_buffer, cpu_mm_));
   ASSERT_TRUE(cpu_buffer->device()->is_cpu());
   AssertBufferEqual(*cpu_buffer, "some data");
 
+  // Copy non-owned
+  ASSERT_OK_AND_ASSIGN(cpu_buffer, Buffer::CopyNonOwned(*other_buffer, cpu_mm_));
+  ASSERT_TRUE(cpu_buffer->device()->is_cpu());
+  AssertBufferEqual(*cpu_buffer, "some data");
+
   // device -> device
-  const auto old_address = other_buffer->address();
+  auto old_address = other_buffer->address();
   ASSERT_OK_AND_ASSIGN(other_buffer, Buffer::Copy(other_buffer, mm_));
+  ASSERT_EQ(other_buffer->device(), device_);
+  ASSERT_NE(other_buffer->address(), old_address);
+  AssertCudaBufferEquals(*other_buffer, "some data");
+
+  // Copy non-owned
+  old_address = other_buffer->address();
+  ASSERT_OK_AND_ASSIGN(other_buffer, Buffer::CopyNonOwned(*other_buffer, mm_));
   ASSERT_EQ(other_buffer->device(), device_);
   ASSERT_NE(other_buffer->address(), old_address);
   AssertCudaBufferEquals(*other_buffer, "some data");
 
   // device (other context) -> device
   ASSERT_OK_AND_ASSIGN(auto other_context, NonPrimaryContext());
-  ASSERT_OK_AND_ASSIGN(auto cuda_buffer, other_context->Allocate(9));
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<CudaBuffer> cuda_buffer,
+                       other_context->Allocate(9));
   ASSERT_OK(cuda_buffer->CopyFromHost(0, "some data", 9));
   ASSERT_OK_AND_ASSIGN(other_buffer, Buffer::Copy(cuda_buffer, mm_));
   ASSERT_EQ(other_buffer->device(), device_);
@@ -192,6 +212,63 @@ TEST_F(TestCudaDevice, Copy) {
         other_buffer, Buffer::Copy(cuda_buffer, other_device->default_memory_manager()));
     ASSERT_EQ(other_buffer->device(), other_device);
     AssertCudaBufferEquals(*other_buffer, "some data");
+  }
+}
+
+TEST_F(TestCudaDevice, CreateSyncEvent) {
+  ASSERT_OK_AND_ASSIGN(auto ev, mm_->MakeDeviceSyncEvent());
+  ASSERT_TRUE(ev);
+  auto cuda_ev = checked_pointer_cast<CudaDevice::SyncEvent>(ev);
+  ASSERT_CUDA_OK(cuEventQuery(*cuda_ev));
+}
+
+TEST_F(TestCudaDevice, WrapDeviceSyncEvent) {
+  // need a context to call cuEventCreate
+  ContextSaver set_temporary(reinterpret_cast<CUcontext>(context_.get()->handle()));
+
+  CUevent event;
+  ASSERT_CUDA_OK(cuEventCreate(&event, CU_EVENT_DEFAULT));
+  ASSERT_CUDA_OK(cuEventQuery(event));
+
+  {
+    // wrap event with no-op destructor
+    ASSERT_OK_AND_ASSIGN(auto ev, mm_->WrapDeviceSyncEvent(&event, [](void*) {}));
+    ASSERT_TRUE(ev);
+    // verify it's the same event we passed in
+    ASSERT_EQ(ev->get_raw(), &event);
+    auto cuda_ev = checked_pointer_cast<CudaDevice::SyncEvent>(ev);
+    ASSERT_CUDA_OK(cuEventQuery(*cuda_ev));
+  }
+
+  // verify that the event is still valid on the device when the shared_ptr
+  // goes away since we didn't give it ownership.
+  ASSERT_CUDA_OK(cuEventQuery(event));
+  ASSERT_CUDA_OK(cuEventDestroy(event));
+}
+
+TEST_F(TestCudaDevice, DefaultStream) {
+  ASSERT_OK_AND_ASSIGN(auto stream, device_->MakeStream());
+  ASSERT_OK_AND_ASSIGN(auto ev, mm_->MakeDeviceSyncEvent());
+
+  ASSERT_OK(ev->Record(*stream));
+  ASSERT_OK(stream->WaitEvent(*ev));
+  ASSERT_OK(ev->Wait());
+  ASSERT_OK(stream->Synchronize());
+}
+
+TEST_F(TestCudaDevice, ExplicitStream) {
+  // need a context to call cuEventCreate
+  ContextSaver set_temporary(reinterpret_cast<CUcontext>(context_.get()->handle()));
+
+  CUstream cu_stream = CU_STREAM_PER_THREAD;
+  {
+    ASSERT_OK_AND_ASSIGN(auto stream, device_->WrapStream(&cu_stream, nullptr));
+    ASSERT_OK_AND_ASSIGN(auto ev, mm_->MakeDeviceSyncEvent());
+
+    ASSERT_OK(ev->Record(*stream));
+    ASSERT_OK(stream->WaitEvent(*ev));
+    ASSERT_OK(ev->Wait());
+    ASSERT_OK(stream->Synchronize());
   }
 }
 
@@ -346,6 +423,7 @@ TEST_F(TestCudaHostBuffer, AllocateGlobal) {
 
   ASSERT_TRUE(host_buffer->is_cpu());
   ASSERT_EQ(host_buffer->memory_manager(), cpu_mm_);
+  ASSERT_EQ(host_buffer->device_type(), DeviceAllocationType::kCUDA_HOST);
 
   ASSERT_OK_AND_ASSIGN(auto device_address, host_buffer->GetDeviceAddress(context_));
   ASSERT_NE(device_address, 0);
@@ -358,6 +436,7 @@ TEST_F(TestCudaHostBuffer, ViewOnDevice) {
 
   ASSERT_TRUE(host_buffer->is_cpu());
   ASSERT_EQ(host_buffer->memory_manager(), cpu_mm_);
+  ASSERT_EQ(host_buffer->device_type(), DeviceAllocationType::kCUDA_HOST);
 
   // Try to view the host buffer on the device.  This should correspond to
   // GetDeviceAddress() in the previous test.
@@ -367,6 +446,7 @@ TEST_F(TestCudaHostBuffer, ViewOnDevice) {
   ASSERT_NE(device_buffer->address(), 0);
   ASSERT_EQ(device_buffer->size(), host_buffer->size());
   ASSERT_EQ(device_buffer->parent(), host_buffer);
+  ASSERT_EQ(device_buffer->device_type(), DeviceAllocationType::kCUDA);
 
   // View back the device buffer on the CPU.  This should roundtrip.
   ASSERT_OK_AND_ASSIGN(auto buffer, Buffer::View(device_buffer, cpu_mm_));
@@ -375,6 +455,7 @@ TEST_F(TestCudaHostBuffer, ViewOnDevice) {
   ASSERT_EQ(buffer->address(), host_buffer->address());
   ASSERT_EQ(buffer->size(), host_buffer->size());
   ASSERT_EQ(buffer->parent(), device_buffer);
+  ASSERT_EQ(buffer->device_type(), DeviceAllocationType::kCUDA_HOST);
 }
 
 // ------------------------------------------------------------------------

@@ -16,7 +16,7 @@
 // under the License.
 
 #include <arrow/api.h>
-#include <arrow/compute/api_aggregate.h>
+#include <arrow/compute/api.h>
 #include <arrow/csv/api.h>
 #include <arrow/csv/writer.h>
 #include <arrow/io/api.h>
@@ -106,7 +106,7 @@ arrow::Status RunMain(int argc, char** argv) {
 int main(int argc, char** argv) {
   arrow::Status status = RunMain(argc, argv);
   if (!status.ok()) {
-    std::cerr << status << std::endl;
+    std::cerr << status.ToString() << std::endl;
     return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;

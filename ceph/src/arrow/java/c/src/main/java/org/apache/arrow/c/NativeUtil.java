@@ -17,6 +17,7 @@
 
 package org.apache.arrow.c;
 
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -52,7 +53,8 @@ public final class NativeUtil {
       length++;
     }
     byte[] bytes = new byte[length];
-    ((ByteBuffer) reader.rewind()).get(bytes);
+    // Force use of base class rewind() to avoid breaking change of ByteBuffer.rewind in JDK9+
+    ((ByteBuffer) ((Buffer) reader).rewind()).get(bytes);
     return new String(bytes, 0, length, StandardCharsets.UTF_8);
   }
 
@@ -113,7 +115,7 @@ public final class NativeUtil {
    * Get the address of a buffer or {@value #NULL} if the input buffer is null.
    * 
    * @param buf Buffer to get the address of
-   * @return Memory addresss or {@value #NULL}
+   * @return Memory address or {@value #NULL}
    */
   public static long addressOrNull(ArrowBuf buf) {
     if (buf == null) {
@@ -127,7 +129,7 @@ public final class NativeUtil {
    * struct is null.
    * 
    * @param struct C Data Interface struct to get the address of
-   * @return Memory addresss or {@value #NULL}
+   * @return Memory address or {@value #NULL}
    */
   public static long addressOrNull(BaseStruct struct) {
     if (struct == null) {

@@ -22,6 +22,7 @@ import sys
 import pytest
 
 import pyarrow as pa
+from pyarrow.lib import ArrowInvalid
 
 
 def test_get_include():
@@ -55,12 +56,42 @@ def test_io_thread_count():
         pa.set_io_thread_count(n)
 
 
+def test_env_var_io_thread_count():
+    # Test that the number of IO threads can be overridden with the
+    # ARROW_IO_THREADS environment variable.
+    code = """if 1:
+        import pyarrow as pa
+        print(pa.io_thread_count())
+        """
+
+    def run_with_env_var(env_var):
+        env = os.environ.copy()
+        env['ARROW_IO_THREADS'] = env_var
+        res = subprocess.run([sys.executable, "-c", code], env=env,
+                             capture_output=True)
+        res.check_returncode()
+        return res.stdout.decode(), res.stderr.decode()
+
+    out, err = run_with_env_var('17')
+    assert out.strip() == '17'
+    assert err == ''
+
+    for v in ('-1', 'z'):
+        out, err = run_with_env_var(v)
+        assert out.strip() == '8'  # default value
+        assert ("ARROW_IO_THREADS does not contain a valid number of threads"
+                in err.strip())
+
+
 def test_build_info():
     assert isinstance(pa.cpp_build_info, pa.BuildInfo)
     assert isinstance(pa.cpp_version_info, pa.VersionInfo)
     assert isinstance(pa.cpp_version, str)
     assert isinstance(pa.__version__, str)
     assert pa.cpp_build_info.version_info == pa.cpp_version_info
+
+    assert pa.cpp_build_info.build_type in (
+        'debug', 'release', 'minsizerel', 'relwithdebinfo')
 
     # assert pa.version == pa.__version__  # XXX currently false
 
@@ -84,6 +115,30 @@ def test_runtime_info():
                 info.detected_simd_level
             """
         subprocess.check_call([sys.executable, "-c", code], env=env)
+
+
+def test_import_at_shutdown():
+    # GH-38626: importing PyArrow at interpreter shutdown would crash
+    code = """if 1:
+        import atexit
+
+        def import_arrow():
+            import pyarrow
+
+        atexit.register(import_arrow)
+        """
+    subprocess.check_call([sys.executable, "-c", code])
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Path to timezone database is not configurable "
+                           "on non-Windows platforms")
+def test_set_timezone_db_path_non_windows():
+    # set_timezone_db_path raises an error on non-Windows platforms
+    with pytest.raises(ArrowInvalid,
+                       match="Arrow was set to use OS timezone "
+                             "database at compile time"):
+        pa.set_timezone_db_path("path")
 
 
 @pytest.mark.parametrize('klass', [
@@ -141,6 +196,7 @@ def test_runtime_info():
     pa.Decimal128Array,
     pa.Decimal256Array,
     pa.StructArray,
+    pa.RunEndEncodedArray,
     pa.Scalar,
     pa.BooleanScalar,
     pa.Int8Scalar,
@@ -172,6 +228,7 @@ def test_runtime_info():
     pa.UnionScalar,
     pa.StructScalar,
     pa.DictionaryScalar,
+    pa.RunEndEncodedScalar,
     pa.ipc.Message,
     pa.ipc.MessageReader,
     pa.MemoryPool,

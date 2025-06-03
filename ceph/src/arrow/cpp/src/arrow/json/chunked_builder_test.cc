@@ -27,6 +27,7 @@
 #include "arrow/json/options.h"
 #include "arrow/json/test_common.h"
 #include "arrow/table.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/util/task_group.h"
 #include "arrow/util/thread_pool.h"
@@ -34,7 +35,7 @@
 namespace arrow {
 namespace json {
 
-using util::string_view;
+using std::string_view;
 
 using internal::checked_cast;
 using internal::GetCpuThreadPool;

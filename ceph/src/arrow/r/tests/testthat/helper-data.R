@@ -59,9 +59,9 @@ haven_data <- tibble::tibble(
 example_with_times <- tibble::tibble(
   date = Sys.Date() + 1:10,
   posixct = lubridate::ymd_hms("2018-10-07 19:04:05") + 1:10,
-  posixct_tz = lubridate::ymd_hms("2018-10-07 19:04:05", tz = "US/Eastern") + 1:10,
+  posixct_tz = lubridate::ymd_hms("2018-10-07 19:04:05", tz = "America/New_York") + 1:10,
   posixlt = as.POSIXlt(lubridate::ymd_hms("2018-10-07 19:04:05") + 1:10),
-  posixlt_tz = as.POSIXlt(lubridate::ymd_hms("2018-10-07 19:04:05", tz = "US/Eastern") + 1:10)
+  posixlt_tz = as.POSIXlt(lubridate::ymd_hms("2018-10-07 19:04:05", tz = "America/New_York") + 1:10)
 )
 
 verses <- list(
@@ -120,9 +120,6 @@ make_string_of_size <- function(size = 1) {
   paste(rep(letters, length.out = 1000 * size), collapse = "")
 }
 
-example_with_extra_metadata <- example_with_metadata
-attributes(example_with_extra_metadata$b) <- list(lots = rep(make_string_of_size(1), 100))
-
 example_with_logical_factors <- tibble::tibble(
   starting_a_fight = factor(c(FALSE, TRUE, TRUE, TRUE)),
   consoling_a_child = factor(c(TRUE, FALSE, TRUE, TRUE)),
@@ -134,6 +131,9 @@ example_with_logical_factors <- tibble::tibble(
     "hey buddy"
   )
 )
+
+example_with_extra_metadata <- example_with_metadata
+attributes(example_with_extra_metadata$b) <- list(lots = rep(make_string_of_size(1), 100))
 
 # The values in each column of this tibble are in ascending order. There are
 # some ties, so tests should use two or more columns to ensure deterministic

@@ -14,10 +14,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !noasm
 // +build !noasm
 
 package utils
 
-import "io"
+import (
+	"github.com/klauspost/cpuid/v2"
+	// import for side effect of initializing feature flags
+	// based on ARM_ENABLE_EXT env var
+	_ "github.com/apache/arrow/go/v15/parquet/internal/bmi"
+)
 
-var unpack32 func(io.Reader, []uint32, int) int = unpack32Default
+func init() {
+	if cpuid.CPU.Has(cpuid.ASIMD) {
+		unpack32 = unpack32NEON
+	} else { // default to the pure go implementation if no avx2 available
+		unpack32 = unpack32Default
+	}
+}

@@ -19,6 +19,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gmock/gmock-matchers.h>
@@ -26,18 +27,22 @@
 
 #include "arrow/array.h"
 #include "arrow/array/builder_binary.h"
+#include "arrow/array/validate.h"
 #include "arrow/buffer.h"
 #include "arrow/memory_pool.h"
 #include "arrow/status.h"
-#include "arrow/testing/gtest_common.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/gtest_util.h"
+#include "arrow/testing/matchers.h"
+#include "arrow/testing/util.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/bit_util.h"
 #include "arrow/util/bitmap_builders.h"
 #include "arrow/util/checked_cast.h"
-#include "arrow/util/string_view.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/util/key_value_metadata.h"
+#include "arrow/util/logging.h"
+#include "arrow/visit_data_inline.h"
 
 namespace arrow {
 
@@ -62,7 +67,7 @@ void CheckStringArray(const ArrayType& array, const std::vector<std::string>& st
       auto view = array.GetView(i);
       ASSERT_EQ(value_pos, array.value_offset(i));
       ASSERT_EQ(strings[j].size(), view.size());
-      ASSERT_EQ(util::string_view(strings[j]), view);
+      ASSERT_EQ(std::string_view(strings[j]), view);
       value_pos += static_cast<int32_t>(view.size());
     } else {
       ASSERT_TRUE(array.IsNull(i));
@@ -104,6 +109,18 @@ class TestStringArray : public ::testing::Test {
     ASSERT_OK(strings_->ValidateFull());
     TestInitialized(*strings_);
     AssertZeroPadded(*strings_);
+  }
+
+  void TestArrayIndexOperator() {
+    const auto& arr = *strings_;
+    for (int64_t i = 0; i < arr.length(); ++i) {
+      if (valid_bytes_[i]) {
+        ASSERT_TRUE(arr[i].has_value());
+        ASSERT_EQ(expected_[i], arr[i].value());
+      } else {
+        ASSERT_FALSE(arr[i].has_value());
+      }
+    }
   }
 
   void TestArrayCtors() {
@@ -243,7 +260,7 @@ class TestStringArray : public ::testing::Test {
   }
 
   Status ValidateFull(int64_t length, std::vector<offset_type> offsets,
-                      util::string_view data, int64_t offset = 0) {
+                      std::string_view data, int64_t offset = 0) {
     ArrayType arr(length, Buffer::Wrap(offsets), std::make_shared<Buffer>(data),
                   /*null_bitmap=*/nullptr, /*null_count=*/0, offset);
     return arr.ValidateFull();
@@ -324,9 +341,11 @@ class TestStringArray : public ::testing::Test {
   std::shared_ptr<ArrayType> strings_;
 };
 
-TYPED_TEST_SUITE(TestStringArray, BinaryArrowTypes);
+TYPED_TEST_SUITE(TestStringArray, BaseBinaryArrowTypes);
 
 TYPED_TEST(TestStringArray, TestArrayBasics) { this->TestArrayBasics(); }
+
+TYPED_TEST(TestStringArray, TestArrayIndexOperator) { this->TestArrayIndexOperator(); }
 
 TYPED_TEST(TestStringArray, TestArrayCtors) { this->TestArrayCtors(); }
 
@@ -350,38 +369,134 @@ TYPED_TEST(TestStringArray, TestValidateOffsets) { this->TestValidateOffsets(); 
 
 TYPED_TEST(TestStringArray, TestValidateData) { this->TestValidateData(); }
 
+// Produce an Array of index/offset views from a std::vector of index/offset
+// BinaryViewType::c_type
+Result<std::shared_ptr<StringViewArray>> MakeBinaryViewArray(
+    BufferVector data_buffers, const std::vector<BinaryViewType::c_type>& views,
+    bool validate = true) {
+  auto length = static_cast<int64_t>(views.size());
+  auto arr = std::make_shared<StringViewArray>(
+      utf8_view(), length, Buffer::FromVector(views), std::move(data_buffers));
+  if (validate) {
+    RETURN_NOT_OK(arr->ValidateFull());
+  }
+  return arr;
+}
+
+TEST(StringViewArray, Validate) {
+  // Since this is a test of validation, we need to be able to construct invalid arrays.
+  auto buffer_s = Buffer::FromString("supercalifragilistic(sp?)");
+  auto buffer_y = Buffer::FromString("yyyyyyyyyyyyyyyyyyyyyyyyy");
+
+  // empty array is valid
+  EXPECT_THAT(MakeBinaryViewArray({}, {}), Ok());
+
+  // empty array with some data buffers is valid
+  EXPECT_THAT(MakeBinaryViewArray({buffer_s, buffer_y}, {}), Ok());
+
+  // inline views need not have a corresponding buffer
+  EXPECT_THAT(MakeBinaryViewArray({},
+                                  {
+                                      util::ToInlineBinaryView("hello"),
+                                      util::ToInlineBinaryView("world"),
+                                      util::ToInlineBinaryView("inline me"),
+                                  }),
+              Ok());
+
+  // non-inline views are expected to reference only buffers managed by the array
+  EXPECT_THAT(
+      MakeBinaryViewArray(
+          {buffer_s, buffer_y},
+          {util::ToBinaryView("supe", static_cast<int32_t>(buffer_s->size()), 0, 0),
+           util::ToBinaryView("yyyy", static_cast<int32_t>(buffer_y->size()), 1, 0)}),
+      Ok());
+
+  // views may not reference data buffers not present in the array
+  EXPECT_THAT(
+      MakeBinaryViewArray(
+          {}, {util::ToBinaryView("supe", static_cast<int32_t>(buffer_s->size()), 0, 0)}),
+      Raises(StatusCode::IndexError));
+  // ... or ranges which overflow the referenced data buffer
+  EXPECT_THAT(
+      MakeBinaryViewArray(
+          {buffer_s}, {util::ToBinaryView(
+                          "supe", static_cast<int32_t>(buffer_s->size() + 50), 0, 0)}),
+      Raises(StatusCode::IndexError));
+
+  // Additionally, the prefixes of non-inline views must match the data buffer
+  EXPECT_THAT(
+      MakeBinaryViewArray(
+          {buffer_s, buffer_y},
+          {util::ToBinaryView("SUPE", static_cast<int32_t>(buffer_s->size()), 0, 0),
+           util::ToBinaryView("yyyy", static_cast<int32_t>(buffer_y->size()), 1, 0)}),
+      Raises(StatusCode::Invalid));
+
+  // Invalid string views which are masked by a null bit do not cause validation to fail
+  auto invalid_but_masked =
+      MakeBinaryViewArray(
+          {buffer_s},
+          {util::ToBinaryView("SUPE", static_cast<int32_t>(buffer_s->size()), 0, 0),
+           util::ToBinaryView("yyyy", 50, 40, 30)},
+          /*validate=*/false)
+          .ValueOrDie()
+          ->data();
+  invalid_but_masked->null_count = 2;
+  invalid_but_masked->buffers[0] = *AllocateEmptyBitmap(2);
+  EXPECT_THAT(internal::ValidateArrayFull(*invalid_but_masked), Ok());
+
+  // overlapping views are allowed
+  EXPECT_THAT(
+      MakeBinaryViewArray(
+          {buffer_s},
+          {
+              util::ToBinaryView("supe", static_cast<int32_t>(buffer_s->size()), 0, 0),
+              util::ToBinaryView("uper", static_cast<int32_t>(buffer_s->size() - 1), 0,
+                                 1),
+              util::ToBinaryView("perc", static_cast<int32_t>(buffer_s->size() - 2), 0,
+                                 2),
+              util::ToBinaryView("erca", static_cast<int32_t>(buffer_s->size() - 3), 0,
+                                 3),
+          }),
+      Ok());
+}
+
 template <typename T>
 class TestUTF8Array : public ::testing::Test {
  public:
   using TypeClass = T;
-  using offset_type = typename TypeClass::offset_type;
   using ArrayType = typename TypeTraits<TypeClass>::ArrayType;
 
-  Status ValidateUTF8(int64_t length, std::vector<offset_type> offsets,
-                      util::string_view data, int64_t offset = 0) {
-    ArrayType arr(length, Buffer::Wrap(offsets), std::make_shared<Buffer>(data),
-                  /*null_bitmap=*/nullptr, /*null_count=*/0, offset);
-    return arr.ValidateUTF8();
+  std::shared_ptr<DataType> type() const {
+    if constexpr (is_binary_view_like_type<TypeClass>::value) {
+      return TypeClass::is_utf8 ? utf8_view() : binary_view();
+    } else {
+      return TypeTraits<TypeClass>::type_singleton();
+    }
   }
 
-  Status ValidateUTF8(const std::string& json) {
-    auto ty = TypeTraits<T>::type_singleton();
-    auto arr = ArrayFromJSON(ty, json);
-    return checked_cast<const ArrayType&>(*arr).ValidateUTF8();
+  Status ValidateUTF8(const Array& arr) {
+    return checked_cast<const ArrayType&>(arr).ValidateUTF8();
+  }
+
+  Status ValidateUTF8(std::vector<std::string> values) {
+    std::shared_ptr<Array> arr;
+    ArrayFromVector<T, std::string>(type(), values, &arr);
+    return ValidateUTF8(*arr);
   }
 
   void TestValidateUTF8() {
-    ASSERT_OK(ValidateUTF8(R"(["Voix", "ambiguë", "d’un", "cœur"])"));
-    ASSERT_OK(ValidateUTF8(1, {0, 4}, "\xf4\x8f\xbf\xbf"));  // \U0010ffff
+    ASSERT_OK(
+        ValidateUTF8(*ArrayFromJSON(type(), R"(["Voix", "ambiguë", "d’un", "cœur"])")));
+    ASSERT_OK(ValidateUTF8({"\xf4\x8f\xbf\xbf"}));  // \U0010ffff
 
-    ASSERT_RAISES(Invalid, ValidateUTF8(1, {0, 1}, "\xf4"));
+    ASSERT_RAISES(Invalid, ValidateUTF8({"\xf4"}));
 
     // More tests in TestValidateData() above
     // (ValidateFull() calls ValidateUTF8() internally)
   }
 };
 
-TYPED_TEST_SUITE(TestUTF8Array, StringArrowTypes);
+TYPED_TEST_SUITE(TestUTF8Array, StringOrStringViewArrowTypes);
 
 TYPED_TEST(TestUTF8Array, TestValidateUTF8) { this->TestValidateUTF8(); }
 
@@ -389,17 +504,14 @@ TYPED_TEST(TestUTF8Array, TestValidateUTF8) { this->TestValidateUTF8(); }
 // String builder tests
 
 template <typename T>
-class TestStringBuilder : public TestBuilder {
+class TestStringBuilder : public ::testing::Test {
  public:
   using TypeClass = T;
   using offset_type = typename TypeClass::offset_type;
   using ArrayType = typename TypeTraits<TypeClass>::ArrayType;
   using BuilderType = typename TypeTraits<TypeClass>::BuilderType;
 
-  void SetUp() {
-    TestBuilder::SetUp();
-    builder_.reset(new BuilderType(pool_));
-  }
+  void SetUp() { builder_.reset(new BuilderType(pool_)); }
 
   void Done() {
     std::shared_ptr<Array> out;
@@ -595,7 +707,7 @@ class TestStringBuilder : public TestBuilder {
     int reps = 15;
     int64_t length = 0;
     int64_t capacity = 1000;
-    int64_t expected_capacity = BitUtil::RoundUpToMultipleOf64(capacity);
+    int64_t expected_capacity = bit_util::RoundUpToMultipleOf64(capacity);
 
     ASSERT_OK(builder_->ReserveData(capacity));
 
@@ -613,7 +725,7 @@ class TestStringBuilder : public TestBuilder {
     }
 
     int extra_capacity = 500;
-    expected_capacity = BitUtil::RoundUpToMultipleOf64(length + extra_capacity);
+    expected_capacity = bit_util::RoundUpToMultipleOf64(length + extra_capacity);
 
     ASSERT_OK(builder_->ReserveData(extra_capacity));
 
@@ -657,11 +769,12 @@ class TestStringBuilder : public TestBuilder {
   }
 
  protected:
+  MemoryPool* pool_ = default_memory_pool();
   std::unique_ptr<BuilderType> builder_;
   std::shared_ptr<ArrayType> result_;
 };
 
-TYPED_TEST_SUITE(TestStringBuilder, BinaryArrowTypes);
+TYPED_TEST_SUITE(TestStringBuilder, BaseBinaryArrowTypes);
 
 TYPED_TEST(TestStringBuilder, TestScalarAppend) { this->TestScalarAppend(); }
 
@@ -846,7 +959,7 @@ TEST(TestChunkedStringBuilder, BasicOperation) {
 }
 
 // ----------------------------------------------------------------------
-// ArrayDataVisitor<binary-like> tests
+// ArraySpanVisitor<binary-like> tests
 
 struct BinaryAppender {
   Status VisitNull() {
@@ -854,34 +967,38 @@ struct BinaryAppender {
     return Status::OK();
   }
 
-  Status VisitValue(util::string_view v) {
+  Status VisitValue(std::string_view v) {
     data.push_back(v);
     return Status::OK();
   }
 
-  std::vector<util::string_view> data;
+  std::vector<std::string_view> data;
 };
 
 template <typename T>
-class TestBinaryDataVisitor : public ::testing::Test {
+class TestBaseBinaryDataVisitor : public ::testing::Test {
  public:
   using TypeClass = T;
 
   void SetUp() override { type_ = TypeTraits<TypeClass>::type_singleton(); }
 
   void TestBasics() {
-    auto array = ArrayFromJSON(type_, R"(["foo", null, "bar"])");
+    auto array = ArrayFromJSON(
+        type_,
+        R"(["foo", null, "bar", "inline_me", "allocate_me_aaaaa", "allocate_me_bbbb"])");
     BinaryAppender appender;
-    ArrayDataVisitor<TypeClass> visitor;
+    ArraySpanVisitor<TypeClass> visitor;
     ASSERT_OK(visitor.Visit(*array->data(), &appender));
-    ASSERT_THAT(appender.data, ::testing::ElementsAreArray({"foo", "(null)", "bar"}));
+    ASSERT_THAT(appender.data,
+                ::testing::ElementsAreArray({"foo", "(null)", "bar", "inline_me",
+                                             "allocate_me_aaaaa", "allocate_me_bbbb"}));
     ARROW_UNUSED(visitor);  // Workaround weird MSVC warning
   }
 
   void TestSliced() {
     auto array = ArrayFromJSON(type_, R"(["ab", null, "cd", "ef"])")->Slice(1, 2);
     BinaryAppender appender;
-    ArrayDataVisitor<TypeClass> visitor;
+    ArraySpanVisitor<TypeClass> visitor;
     ASSERT_OK(visitor.Visit(*array->data(), &appender));
     ASSERT_THAT(appender.data, ::testing::ElementsAreArray({"(null)", "cd"}));
     ARROW_UNUSED(visitor);  // Workaround weird MSVC warning
@@ -891,10 +1008,10 @@ class TestBinaryDataVisitor : public ::testing::Test {
   std::shared_ptr<DataType> type_;
 };
 
-TYPED_TEST_SUITE(TestBinaryDataVisitor, BinaryArrowTypes);
+TYPED_TEST_SUITE(TestBaseBinaryDataVisitor, BaseBinaryOrBinaryViewLikeArrowTypes);
 
-TYPED_TEST(TestBinaryDataVisitor, Basics) { this->TestBasics(); }
+TYPED_TEST(TestBaseBinaryDataVisitor, Basics) { this->TestBasics(); }
 
-TYPED_TEST(TestBinaryDataVisitor, Sliced) { this->TestSliced(); }
+TYPED_TEST(TestBaseBinaryDataVisitor, Sliced) { this->TestSliced(); }
 
 }  // namespace arrow

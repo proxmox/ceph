@@ -11,10 +11,10 @@
   language governing permissions and limitations under the License. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <parent>
-    <artifactId>arrow-java-root</artifactId>
+    <artifactId>arrow-flight</artifactId>
     <groupId>org.apache.arrow</groupId>
-    <version>6.0.1</version>
-    <relativePath>../../pom.xml</relativePath>
+    <version>15.0.0</version>
+    <relativePath>../pom.xml</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
@@ -24,8 +24,6 @@
   <packaging>jar</packaging>
 
   <properties>
-    <dep.grpc.version>1.41.0</dep.grpc.version>
-    <dep.protobuf.version>3.7.1</dep.protobuf.version>
     <forkCount>1</forkCount>
   </properties>
 
@@ -33,7 +31,6 @@
     <dependency>
       <groupId>org.apache.arrow</groupId>
       <artifactId>flight-core</artifactId>
-      <version>${project.version}</version>
       <exclusions>
         <exclusion>
           <groupId>io.netty</groupId>
@@ -51,30 +48,26 @@
     </dependency>
     <dependency>
       <groupId>io.grpc</groupId>
-      <artifactId>grpc-core</artifactId>
-      <version>${dep.grpc.version}</version>
+      <artifactId>grpc-stub</artifactId>
     </dependency>
-     <dependency>
-       <groupId>io.grpc</groupId>
-       <artifactId>grpc-stub</artifactId>
-       <version>${dep.grpc.version}</version>
-     </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-inprocess</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-memory-core</artifactId>
-      <version>${project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
        <groupId>org.apache.arrow</groupId>
        <artifactId>arrow-memory-netty</artifactId>
-       <version>${project.version}</version>
        <scope>runtime</scope>
      </dependency>
      <dependency>
        <groupId>io.grpc</groupId>
        <artifactId>grpc-protobuf</artifactId>
-       <version>${dep.grpc.version}</version>
      </dependency>
      <dependency>
        <groupId>com.google.guava</groupId>
@@ -83,12 +76,10 @@
      <dependency>
        <groupId>com.google.protobuf</groupId>
        <artifactId>protobuf-java</artifactId>
-       <version>${dep.protobuf.version}</version>
      </dependency>
      <dependency>
        <groupId>io.grpc</groupId>
        <artifactId>grpc-api</artifactId>
-       <version>${dep.grpc.version}</version>
      </dependency>
   </dependencies>
 
@@ -98,19 +89,19 @@
       <extension>
           <groupId>kr.motd.maven</groupId>
           <artifactId>os-maven-plugin</artifactId>
-          <version>1.5.0.Final</version>
+          <version>1.7.0</version>
       </extension>
     </extensions>
       <plugins>
         <plugin>
           <groupId>org.xolstice.maven.plugins</groupId>
           <artifactId>protobuf-maven-plugin</artifactId>
-          <version>0.5.0</version>
+          <version>0.6.1</version>
           <configuration>
-            <protocArtifact>com.google.protobuf:protoc:${dep.protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
+            <protocArtifact>com.google.protobuf:protoc:${dep.protobuf-bom.version}:exe:${os.detected.classifier}</protocArtifact>
             <clearOutputDirectory>false</clearOutputDirectory>
             <pluginId>grpc-java</pluginId>
-            <pluginArtifact>io.grpc:protoc-gen-grpc-java:${dep.grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
+            <pluginArtifact>io.grpc:protoc-gen-grpc-java:${dep.grpc-bom.version}:exe:${os.detected.classifier}</pluginArtifact>
           </configuration>
           <executions>
             <execution>

@@ -39,25 +39,10 @@ NPROC=$(nproc)
 cmake $ARROW_DIR/cpp \
     -DARROW_BUILD_SHARED=OFF \
     -DARROW_BUILD_STATIC=ON \
-    -DARROW_COMPUTE=ON \
     -DARROW_CSV=ON \
-    -DARROW_DATASET=ON \
     -DARROW_DEPENDENCY_SOURCE=${ARROW_DEPENDENCY_SOURCE} \
     -DARROW_DEPENDENCY_USE_SHARED=OFF \
-    -DARROW_FILESYSTEM=ON \
-    -DARROW_HDFS=ON \
-    -DARROW_JEMALLOC=ON \
-    -DARROW_JSON=ON \
-    -DARROW_ORC=ON \
-    -DARROW_PARQUET=ON \
-    -DARROW_PLASMA=ON \
-    -DARROW_WITH_BROTLI=ON \
-    -DARROW_WITH_BZ2=ON \
-    -DARROW_WITH_LZ4=ON \
-    -DARROW_WITH_SNAPPY=ON \
-    -DARROW_WITH_ZLIB=ON \
-    -DARROW_WITH_ZSTD=ON \
-    -DORC_SOURCE=BUNDLED \
+    -Dxsimd_SOURCE=BUNDLED \
     $ARROW_CMAKE_OPTIONS
 
 make -j$NPROC
@@ -90,7 +75,7 @@ echo
 
 pushd $EXAMPLE_DIR
 
-$EXAMPLE_BUILD_DIR/arrow_example
+$EXAMPLE_BUILD_DIR/arrow-example
 
 echo
 echo "=="
@@ -101,8 +86,8 @@ echo
 
 rm -rf $EXAMPLE_BUILD_DIR
 mkdir -p $EXAMPLE_BUILD_DIR
-${CXX:-c++} \
-  -o $EXAMPLE_BUILD_DIR/arrow_example \
+${CXX:-c++} -std=c++17 \
+  -o $EXAMPLE_BUILD_DIR/arrow-example \
   $EXAMPLE_DIR/example.cc \
   $(PKG_CONFIG_PATH=$ARROW_BUILD_DIR/lib/pkgconfig \
      pkg-config --cflags --libs --static arrow)
@@ -118,4 +103,4 @@ echo
 
 pushd $EXAMPLE_DIR
 
-$EXAMPLE_BUILD_DIR/arrow_example
+$EXAMPLE_BUILD_DIR/arrow-example

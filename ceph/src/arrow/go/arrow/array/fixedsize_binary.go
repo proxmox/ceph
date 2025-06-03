@@ -18,10 +18,12 @@ package array
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
-	"github.com/apache/arrow/go/v6/arrow"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/internal/json"
 )
 
 // A type which represents an immutable sequence of fixed-length binary strings.
@@ -33,10 +35,10 @@ type FixedSizeBinary struct {
 }
 
 // NewFixedSizeBinaryData constructs a new fixed-size binary array from data.
-func NewFixedSizeBinaryData(data *Data) *FixedSizeBinary {
+func NewFixedSizeBinaryData(data arrow.ArrayData) *FixedSizeBinary {
 	a := &FixedSizeBinary{bytewidth: int32(data.DataType().(arrow.FixedWidthDataType).BitWidth() / 8)}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
@@ -50,6 +52,12 @@ func (a *FixedSizeBinary) Value(i int) []byte {
 	)
 	return a.valueBytes[beg:end]
 }
+func (a *FixedSizeBinary) ValueStr(i int) string {
+	if a.IsNull(i) {
+		return NullValueStr
+	}
+	return base64.StdEncoding.EncodeToString(a.Value(i))
+}
 
 func (a *FixedSizeBinary) String() string {
 	o := new(strings.Builder)
@@ -60,7 +68,7 @@ func (a *FixedSizeBinary) String() string {
 		}
 		switch {
 		case a.IsNull(i):
-			o.WriteString("(null)")
+			o.WriteString(NullValueStr)
 		default:
 			fmt.Fprintf(o, "%q", a.Value(i))
 		}
@@ -78,6 +86,26 @@ func (a *FixedSizeBinary) setData(data *Data) {
 
 }
 
+func (a *FixedSizeBinary) GetOneForMarshal(i int) interface{} {
+	if a.IsNull(i) {
+		return nil
+	}
+
+	return a.Value(i)
+}
+
+func (a *FixedSizeBinary) MarshalJSON() ([]byte, error) {
+	vals := make([]interface{}, a.Len())
+	for i := 0; i < a.Len(); i++ {
+		if a.IsValid(i) {
+			vals[i] = a.Value(i)
+		} else {
+			vals[i] = nil
+		}
+	}
+	return json.Marshal(vals)
+}
+
 func arrayEqualFixedSizeBinary(left, right *FixedSizeBinary) bool {
 	for i := 0; i < left.Len(); i++ {
 		if left.IsNull(i) {
@@ -91,5 +119,5 @@ func arrayEqualFixedSizeBinary(left, right *FixedSizeBinary) bool {
 }
 
 var (
-	_ Interface = (*FixedSizeBinary)(nil)
+	_ arrow.Array = (*FixedSizeBinary)(nil)
 )

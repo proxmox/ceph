@@ -28,112 +28,176 @@
 #include "arrow/compute/api.h"
 #include "arrow/compute/kernels/test_util.h"
 #include "arrow/table.h"
-#include "arrow/testing/gtest_common.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/random.h"
 #include "arrow/testing/util.h"
+#include "arrow/util/logging.h"
 
 namespace arrow {
 
 using internal::checked_cast;
 using internal::checked_pointer_cast;
-using util::string_view;
+using std::string_view;
 
 namespace compute {
+
+namespace {
+
+template <typename T>
+Result<std::shared_ptr<Array>> REEncode(const T& array) {
+  ARROW_ASSIGN_OR_RAISE(auto datum, RunEndEncode(array));
+  return datum.make_array();
+}
+
+Result<std::shared_ptr<Array>> REEFromJSON(const std::shared_ptr<DataType>& ree_type,
+                                           const std::string& json) {
+  auto ree_type_ptr = checked_cast<const RunEndEncodedType*>(ree_type.get());
+  auto array = ArrayFromJSON(ree_type_ptr->value_type(), json);
+  ARROW_ASSIGN_OR_RAISE(
+      auto datum, RunEndEncode(array, RunEndEncodeOptions{ree_type_ptr->run_end_type()}));
+  return datum.make_array();
+}
+
+Result<std::shared_ptr<Array>> FilterFromJSON(
+    const std::shared_ptr<DataType>& filter_type, const std::string& json) {
+  if (filter_type->id() == Type::RUN_END_ENCODED) {
+    return REEFromJSON(filter_type, json);
+  } else {
+    return ArrayFromJSON(filter_type, json);
+  }
+}
+
+Result<std::shared_ptr<Array>> REEncode(const std::shared_ptr<Array>& array) {
+  ARROW_ASSIGN_OR_RAISE(auto datum, RunEndEncode(array));
+  return datum.make_array();
+}
+
+void CheckTakeIndicesCase(const BooleanArray& filter,
+                          const std::shared_ptr<Array>& expected_indices,
+                          FilterOptions::NullSelectionBehavior null_selection) {
+  ASSERT_OK_AND_ASSIGN(auto indices,
+                       internal::GetTakeIndices(*filter.data(), null_selection));
+  auto indices_array = MakeArray(indices);
+  ValidateOutput(indices);
+  AssertArraysEqual(*expected_indices, *indices_array, /*verbose=*/true);
+
+  ASSERT_OK_AND_ASSIGN(auto ree_filter, REEncode(filter));
+  ASSERT_OK_AND_ASSIGN(auto indices_from_ree,
+                       internal::GetTakeIndices(*ree_filter->data(), null_selection));
+  auto indices_from_ree_array = MakeArray(indices);
+  ValidateOutput(indices_from_ree);
+  AssertArraysEqual(*expected_indices, *indices_from_ree_array, /*verbose=*/true);
+}
+
+void CheckTakeIndicesCase(const std::string& filter_json, const std::string& indices_json,
+                          FilterOptions::NullSelectionBehavior null_selection,
+                          const std::shared_ptr<DataType>& indices_type = uint16()) {
+  auto filter = ArrayFromJSON(boolean(), filter_json);
+  auto expected_indices = ArrayFromJSON(indices_type, indices_json);
+  const auto& boolean_filter = checked_cast<const BooleanArray&>(*filter);
+  CheckTakeIndicesCase(boolean_filter, expected_indices, null_selection);
+}
+
+}  // namespace
 
 // ----------------------------------------------------------------------
 
 TEST(GetTakeIndices, Basics) {
-  auto CheckCase = [&](const std::string& filter_json, const std::string& indices_json,
-                       FilterOptions::NullSelectionBehavior null_selection,
-                       const std::shared_ptr<DataType>& indices_type = uint16()) {
-    auto filter = ArrayFromJSON(boolean(), filter_json);
-    auto expected_indices = ArrayFromJSON(indices_type, indices_json);
-    ASSERT_OK_AND_ASSIGN(auto indices,
-                         internal::GetTakeIndices(*filter->data(), null_selection));
-    auto indices_array = MakeArray(indices);
-    ValidateOutput(indices);
-    AssertArraysEqual(*expected_indices, *indices_array, /*verbose=*/true);
-  };
-
   // Drop null cases
-  CheckCase("[]", "[]", FilterOptions::DROP);
-  CheckCase("[null]", "[]", FilterOptions::DROP);
-  CheckCase("[null, false, true, true, false, true]", "[2, 3, 5]", FilterOptions::DROP);
+  CheckTakeIndicesCase("[]", "[]", FilterOptions::DROP);
+  CheckTakeIndicesCase("[null]", "[]", FilterOptions::DROP);
+  CheckTakeIndicesCase("[null, false, true, true, false, true]", "[2, 3, 5]",
+                       FilterOptions::DROP);
 
   // Emit null cases
-  CheckCase("[]", "[]", FilterOptions::EMIT_NULL);
-  CheckCase("[null]", "[null]", FilterOptions::EMIT_NULL);
-  CheckCase("[null, false, true, true]", "[null, 2, 3]", FilterOptions::EMIT_NULL);
+  CheckTakeIndicesCase("[]", "[]", FilterOptions::EMIT_NULL);
+  CheckTakeIndicesCase("[null]", "[null]", FilterOptions::EMIT_NULL);
+  CheckTakeIndicesCase("[null, false, true, true]", "[null, 2, 3]",
+                       FilterOptions::EMIT_NULL);
 }
 
 TEST(GetTakeIndices, NullValidityBuffer) {
   BooleanArray filter(1, *AllocateEmptyBitmap(1), /*null_bitmap=*/nullptr);
   auto expected_indices = ArrayFromJSON(uint16(), "[]");
 
-  ASSERT_OK_AND_ASSIGN(auto indices,
-                       internal::GetTakeIndices(*filter.data(), FilterOptions::DROP));
-  auto indices_array = MakeArray(indices);
-  ValidateOutput(indices);
-  AssertArraysEqual(*expected_indices, *indices_array, /*verbose=*/true);
-
-  ASSERT_OK_AND_ASSIGN(
-      indices, internal::GetTakeIndices(*filter.data(), FilterOptions::EMIT_NULL));
-  indices_array = MakeArray(indices);
-  ValidateOutput(indices);
-  AssertArraysEqual(*expected_indices, *indices_array, /*verbose=*/true);
+  CheckTakeIndicesCase(filter, expected_indices, FilterOptions::DROP);
+  CheckTakeIndicesCase(filter, expected_indices, FilterOptions::EMIT_NULL);
 }
 
 template <typename IndexArrayType>
 void CheckGetTakeIndicesCase(const Array& untyped_filter) {
   const auto& filter = checked_cast<const BooleanArray&>(untyped_filter);
+  ASSERT_OK_AND_ASSIGN(auto ree_filter, REEncode(*filter.data()));
+
   ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrayData> drop_indices,
                        internal::GetTakeIndices(*filter.data(), FilterOptions::DROP));
+  ASSERT_OK_AND_ASSIGN(
+      std::shared_ptr<ArrayData> drop_indices_from_ree,
+      internal::GetTakeIndices(*ree_filter->data(), FilterOptions::DROP));
   // Verify DROP indices
   {
     IndexArrayType indices(drop_indices);
+    IndexArrayType indices_from_ree(drop_indices);
     ValidateOutput(indices);
+    ValidateOutput(indices_from_ree);
 
     int64_t out_position = 0;
     for (int64_t i = 0; i < filter.length(); ++i) {
       if (filter.IsValid(i)) {
         if (filter.Value(i)) {
           ASSERT_EQ(indices.Value(out_position), i);
+          ASSERT_EQ(indices_from_ree.Value(out_position), i);
           ++out_position;
         }
       }
     }
     ASSERT_EQ(out_position, indices.length());
+    ASSERT_EQ(out_position, indices_from_ree.length());
+
     // Check that the end length agrees with the output of GetFilterOutputSize
     ASSERT_EQ(out_position,
               internal::GetFilterOutputSize(*filter.data(), FilterOptions::DROP));
+    ASSERT_EQ(out_position,
+              internal::GetFilterOutputSize(*ree_filter->data(), FilterOptions::DROP));
   }
 
   ASSERT_OK_AND_ASSIGN(
       std::shared_ptr<ArrayData> emit_indices,
       internal::GetTakeIndices(*filter.data(), FilterOptions::EMIT_NULL));
+  ASSERT_OK_AND_ASSIGN(
+      std::shared_ptr<ArrayData> emit_indices_from_ree,
+      internal::GetTakeIndices(*ree_filter->data(), FilterOptions::EMIT_NULL));
   // Verify EMIT_NULL indices
   {
     IndexArrayType indices(emit_indices);
+    IndexArrayType indices_from_ree(emit_indices);
     ValidateOutput(indices);
+    ValidateOutput(indices_from_ree);
 
     int64_t out_position = 0;
     for (int64_t i = 0; i < filter.length(); ++i) {
       if (filter.IsValid(i)) {
         if (filter.Value(i)) {
           ASSERT_EQ(indices.Value(out_position), i);
+          ASSERT_EQ(indices_from_ree.Value(out_position), i);
           ++out_position;
         }
       } else {
         ASSERT_TRUE(indices.IsNull(out_position));
+        ASSERT_TRUE(indices_from_ree.IsNull(out_position));
         ++out_position;
       }
     }
 
     ASSERT_EQ(out_position, indices.length());
+    ASSERT_EQ(out_position, indices_from_ree.length());
+
     // Check that the end length agrees with the output of GetFilterOutputSize
     ASSERT_EQ(out_position,
               internal::GetFilterOutputSize(*filter.data(), FilterOptions::EMIT_NULL));
+    ASSERT_EQ(out_position, internal::GetFilterOutputSize(*ree_filter->data(),
+                                                          FilterOptions::EMIT_NULL));
   }
 }
 
@@ -162,15 +226,25 @@ TEST(GetTakeIndices, RandomlyGenerated) {
 // Filter tests
 
 std::shared_ptr<Array> CoalesceNullToFalse(std::shared_ptr<Array> filter) {
-  if (filter->null_count() == 0) {
+  const bool is_ree = filter->type_id() == Type::RUN_END_ENCODED;
+  // Work directly on run values array in case of REE
+  const ArrayData& data = is_ree ? *filter->data()->child_data[1] : *filter->data();
+  if (data.GetNullCount() == 0) {
     return filter;
   }
-  const auto& data = *filter->data();
   auto is_true = std::make_shared<BooleanArray>(data.length, data.buffers[1], nullptr, 0,
                                                 data.offset);
   auto is_valid = std::make_shared<BooleanArray>(data.length, data.buffers[0], nullptr, 0,
                                                  data.offset);
   EXPECT_OK_AND_ASSIGN(Datum out_datum, And(is_true, is_valid));
+  if (is_ree) {
+    const auto& ree_filter = checked_cast<const RunEndEncodedArray&>(*filter);
+    EXPECT_OK_AND_ASSIGN(
+        auto new_ree_filter,
+        RunEndEncodedArray::Make(ree_filter.length(), ree_filter.run_ends(),
+                                 /*values=*/out_datum.make_array(), ree_filter.offset()));
+    return new_ree_filter;
+  }
   return out_datum.make_array();
 }
 
@@ -208,32 +282,34 @@ class TestFilterKernel : public ::testing::Test {
                     const std::shared_ptr<Array>& expected) {
     DoAssertFilter(values, filter, expected);
 
-    if (values->type_id() == Type::DENSE_UNION) {
-      // Concatenation of dense union not supported
-      return;
-    }
-
     // Check slicing: add M(=3) dummy values at the start and end of `values`,
     // add N(=2) dummy values at the start and end of `filter`.
     ARROW_SCOPED_TRACE("for sliced values and filter");
     ASSERT_OK_AND_ASSIGN(auto values_filler, MakeArrayOfNull(values->type(), 3));
-    auto filter_filler = ArrayFromJSON(boolean(), "[true, false]");
-    ASSERT_OK_AND_ASSIGN(auto values_sliced,
+    ASSERT_OK_AND_ASSIGN(auto filter_filler,
+                         FilterFromJSON(filter->type(), "[true, false]"));
+    ASSERT_OK_AND_ASSIGN(auto values_with_filler,
                          Concatenate({values_filler, values, values_filler}));
-    ASSERT_OK_AND_ASSIGN(auto filter_sliced,
+    ASSERT_OK_AND_ASSIGN(auto filter_with_filler,
                          Concatenate({filter_filler, filter, filter_filler}));
-    values_sliced = values_sliced->Slice(3, values->length());
-    filter_sliced = filter_sliced->Slice(2, filter->length());
+    auto values_sliced = values_with_filler->Slice(3, values->length());
+    auto filter_sliced = filter_with_filler->Slice(2, filter->length());
     DoAssertFilter(values_sliced, filter_sliced, expected);
   }
 
   void AssertFilter(const std::shared_ptr<DataType>& type, const std::string& values,
                     const std::string& filter, const std::string& expected) {
-    AssertFilter(ArrayFromJSON(type, values), ArrayFromJSON(boolean(), filter),
-                 ArrayFromJSON(type, expected));
+    auto values_array = ArrayFromJSON(type, values);
+    auto filter_array = ArrayFromJSON(boolean(), filter);
+    auto expected_array = ArrayFromJSON(type, expected);
+    AssertFilter(values_array, filter_array, expected_array);
+
+    ASSERT_OK_AND_ASSIGN(auto ree_filter, REEncode(filter_array));
+    ARROW_SCOPED_TRACE("for plain values and REE filter");
+    AssertFilter(values_array, ree_filter, expected_array);
   }
 
-  FilterOptions emit_null_, drop_;
+  const FilterOptions emit_null_, drop_;
 };
 
 void ValidateFilter(const std::shared_ptr<Array>& values,
@@ -475,6 +551,43 @@ TYPED_TEST(TestFilterKernelWithNumeric, ScalarInRangeAndFilterRandomNumeric) {
   }
 }
 
+template <typename ArrowType>
+class TestFilterKernelWithDecimal : public TestFilterKernel {
+ protected:
+  std::shared_ptr<DataType> type_singleton() { return std::make_shared<ArrowType>(3, 2); }
+};
+
+TYPED_TEST_SUITE(TestFilterKernelWithDecimal, DecimalArrowTypes);
+TYPED_TEST(TestFilterKernelWithDecimal, FilterNumeric) {
+  auto type = this->type_singleton();
+  this->AssertFilter(type, R"([])", "[]", R"([])");
+
+  this->AssertFilter(type, R"(["9.00"])", "[0]", R"([])");
+  this->AssertFilter(type, R"(["9.00"])", "[1]", R"(["9.00"])");
+  this->AssertFilter(type, R"(["9.00"])", "[null]", R"([null])");
+  this->AssertFilter(type, R"([null])", "[0]", R"([])");
+  this->AssertFilter(type, R"([null])", "[1]", R"([null])");
+  this->AssertFilter(type, R"([null])", "[null]", R"([null])");
+
+  this->AssertFilter(type, R"(["7.12", "8.00", "9.87"])", "[0, 1, 0]", R"(["8.00"])");
+  this->AssertFilter(type, R"(["7.12", "8.00", "9.87"])", "[1, 0, 1]",
+                     R"(["7.12", "9.87"])");
+  this->AssertFilter(type, R"([null, "8.00", "9.87"])", "[0, 1, 0]", R"(["8.00"])");
+  this->AssertFilter(type, R"(["7.12", "8.00", "9.87"])", "[null, 1, 0]",
+                     R"([null, "8.00"])");
+  this->AssertFilter(type, R"(["7.12", "8.00", "9.87"])", "[1, null, 1]",
+                     R"(["7.12", null, "9.87"])");
+
+  this->AssertFilter(ArrayFromJSON(type, R"(["7.12", "8.00", "9.87"])"),
+                     ArrayFromJSON(boolean(), "[0, 1, 1, 1, 0, 1]")->Slice(3, 3),
+                     ArrayFromJSON(type, R"(["7.12", "9.87"])"));
+
+  ASSERT_RAISES(Invalid, Filter(ArrayFromJSON(type, R"(["7.12", "8.00", "9.87"])"),
+                                ArrayFromJSON(boolean(), "[]"), this->emit_null_));
+  ASSERT_RAISES(Invalid, Filter(ArrayFromJSON(type, R"(["7.12", "8.00", "9.87"])"),
+                                ArrayFromJSON(boolean(), "[]"), this->drop_));
+}
+
 TEST(TestFilterKernel, NoValidityBitmapButUnknownNullCount) {
   auto values = ArrayFromJSON(int32(), "[1, 2, 3, 4]");
   auto filter = ArrayFromJSON(boolean(), "[true, true, false, true]");
@@ -518,7 +631,7 @@ class TestFilterKernelWithString : public TestFilterKernel {
   }
 };
 
-TYPED_TEST_SUITE(TestFilterKernelWithString, BinaryArrowTypes);
+TYPED_TEST_SUITE(TestFilterKernelWithString, BaseBinaryArrowTypes);
 
 TYPED_TEST(TestFilterKernelWithString, FilterString) {
   this->AssertFilter(R"(["a", "b", "c"])", "[0, 1, 0]", R"(["b"])");
@@ -641,8 +754,10 @@ TEST_F(TestFilterKernelWithStruct, FilterStruct) {
 class TestFilterKernelWithUnion : public TestFilterKernel {};
 
 TEST_F(TestFilterKernelWithUnion, FilterUnion) {
-  auto union_type = dense_union({field("a", int32()), field("b", utf8())}, {2, 5});
-  auto union_json = R"([
+  for (const auto& union_type :
+       {dense_union({field("a", int32()), field("b", utf8())}, {2, 5}),
+        sparse_union({field("a", int32()), field("b", utf8())}, {2, 5})}) {
+    auto union_json = R"([
       [2, null],
       [2, 222],
       [5, "hello"],
@@ -651,31 +766,21 @@ TEST_F(TestFilterKernelWithUnion, FilterUnion) {
       [2, 111],
       [5, null]
     ])";
-  this->AssertFilter(union_type, union_json, "[0, 0, 0, 0, 0, 0, 0]", "[]");
-  this->AssertFilter(union_type, union_json, "[0, 1, 1, null, 0, 1, 1]", R"([
+    this->AssertFilter(union_type, union_json, "[0, 0, 0, 0, 0, 0, 0]", "[]");
+    this->AssertFilter(union_type, union_json, "[0, 1, 1, null, 0, 1, 1]", R"([
       [2, 222],
       [5, "hello"],
       [2, null],
       [2, 111],
       [5, null]
     ])");
-  this->AssertFilter(union_type, union_json, "[1, 0, 1, 0, 1, 0, 0]", R"([
+    this->AssertFilter(union_type, union_json, "[1, 0, 1, 0, 1, 0, 0]", R"([
       [2, null],
       [5, "hello"],
       [2, null]
     ])");
-  this->AssertFilter(union_type, union_json, "[1, 1, 1, 1, 1, 1, 1]", union_json);
-
-  // Sliced
-  // (check this manually as concatenation of dense unions isn't supported: ARROW-4975)
-  auto values = ArrayFromJSON(union_type, union_json)->Slice(2, 4);
-  auto filter = ArrayFromJSON(boolean(), "[0, 1, 1, null, 0, 1, 1]")->Slice(2, 4);
-  auto expected = ArrayFromJSON(union_type, R"([
-      [5, "hello"],
-      [2, null],
-      [2, 111]
-    ])");
-  this->AssertFilter(values, filter, expected);
+    this->AssertFilter(union_type, union_json, "[1, 1, 1, 1, 1, 1, 1]", union_json);
+  }
 }
 
 class TestFilterKernelWithRecordBatch : public TestFilterKernel {
@@ -877,7 +982,7 @@ TEST_F(TestFilterKernelWithTable, FilterTable) {
 }
 
 TEST(TestFilterMetaFunction, ArityChecking) {
-  ASSERT_RAISES(Invalid, CallFunction("filter", {}));
+  ASSERT_RAISES(Invalid, CallFunction("filter", ExecBatch({}, 0)));
 }
 
 // ----------------------------------------------------------------------
@@ -908,13 +1013,11 @@ void CheckTake(const std::shared_ptr<DataType>& type, const std::string& values_
     AssertTakeArrays(values, indices, expected);
 
     // Check sliced values
-    if (type->id() != Type::DENSE_UNION) {
-      ASSERT_OK_AND_ASSIGN(auto values_filler, MakeArrayOfNull(type, 2));
-      ASSERT_OK_AND_ASSIGN(auto values_sliced,
-                           Concatenate({values_filler, values, values_filler}));
-      values_sliced = values_sliced->Slice(2, values->length());
-      AssertTakeArrays(values_sliced, indices, expected);
-    }
+    ASSERT_OK_AND_ASSIGN(auto values_filler, MakeArrayOfNull(type, 2));
+    ASSERT_OK_AND_ASSIGN(auto values_sliced,
+                         Concatenate({values_filler, values, values_filler}));
+    values_sliced = values_sliced->Slice(2, values->length());
+    AssertTakeArrays(values_sliced, indices, expected);
 
     // Check sliced indices
     ASSERT_OK_AND_ASSIGN(auto zero, MakeScalar(index_type, int8_t{0}));
@@ -1156,7 +1259,7 @@ class TestTakeKernelWithString : public TestTakeKernelTyped<TypeClass> {
   }
 };
 
-TYPED_TEST_SUITE(TestTakeKernelWithString, BinaryArrowTypes);
+TYPED_TEST_SUITE(TestTakeKernelWithString, BaseBinaryArrowTypes);
 
 TYPED_TEST(TestTakeKernelWithString, TakeString) {
   this->AssertTake(R"(["a", "b", "c"])", "[0, 1, 0]", R"(["a", "b", "a"])");
@@ -1359,32 +1462,34 @@ TEST_F(TestTakeKernelWithStruct, TakeStruct) {
 class TestTakeKernelWithUnion : public TestTakeKernelTyped<UnionType> {};
 
 TEST_F(TestTakeKernelWithUnion, TakeUnion) {
-  auto union_type = dense_union({field("a", int32()), field("b", utf8())}, {2, 5});
-  auto union_json = R"([
-      [2, null],
+  for (const auto& union_type :
+       {dense_union({field("a", int32()), field("b", utf8())}, {2, 5}),
+        sparse_union({field("a", int32()), field("b", utf8())}, {2, 5})}) {
+    auto union_json = R"([
       [2, 222],
+      [2, null],
       [5, "hello"],
       [5, "eh"],
       [2, null],
       [2, 111],
       [5, null]
     ])";
-  CheckTake(union_type, union_json, "[]", "[]");
-  CheckTake(union_type, union_json, "[3, 1, 3, 1, 3]", R"([
+    CheckTake(union_type, union_json, "[]", "[]");
+    CheckTake(union_type, union_json, "[3, 0, 3, 0, 3]", R"([
       [5, "eh"],
       [2, 222],
       [5, "eh"],
       [2, 222],
       [5, "eh"]
     ])");
-  CheckTake(union_type, union_json, "[4, 2, 1, 6]", R"([
+    CheckTake(union_type, union_json, "[4, 2, 0, 6]", R"([
       [2, null],
       [5, "hello"],
       [2, 222],
       [5, null]
     ])");
-  CheckTake(union_type, union_json, "[0, 1, 2, 3, 4, 5, 6]", union_json);
-  CheckTake(union_type, union_json, "[0, 2, 2, 2, 2, 2, 2]", R"([
+    CheckTake(union_type, union_json, "[0, 1, 2, 3, 4, 5, 6]", union_json);
+    CheckTake(union_type, union_json, "[1, 2, 2, 2, 2, 2, 2]", R"([
       [2, null],
       [5, "hello"],
       [5, "hello"],
@@ -1393,9 +1498,19 @@ TEST_F(TestTakeKernelWithUnion, TakeUnion) {
       [5, "hello"],
       [5, "hello"]
     ])");
+    CheckTake(union_type, union_json, "[0, null, 1, null, 2, 2, 2]", R"([
+      [2, 222],
+      [2, null],
+      [2, null],
+      [2, null],
+      [5, "hello"],
+      [5, "hello"],
+      [5, "hello"]
+    ])");
+  }
 }
 
-class TestPermutationsWithTake : public TestBase {
+class TestPermutationsWithTake : public ::testing::Test {
  protected:
   void DoTake(const Int16Array& values, const Int16Array& indices,
               std::shared_ptr<Int16Array>* out) {
@@ -1692,7 +1807,7 @@ TEST_F(TestTakeKernelWithTable, TakeTable) {
 }
 
 TEST(TestTakeMetaFunction, ArityChecking) {
-  ASSERT_RAISES(Invalid, CallFunction("take", {}));
+  ASSERT_RAISES(Invalid, CallFunction("take", ExecBatch({}, 0)));
 }
 
 // ----------------------------------------------------------------------
@@ -1924,7 +2039,7 @@ class TestDropNullKernelWithString : public TestDropNullKernelTyped<TypeClass> {
   }
 };
 
-TYPED_TEST_SUITE(TestDropNullKernelWithString, BinaryArrowTypes);
+TYPED_TEST_SUITE(TestDropNullKernelWithString, BaseBinaryArrowTypes);
 
 TYPED_TEST(TestDropNullKernelWithString, DropNullString) {
   this->AssertDropNull(R"(["a", "b", "c"])", R"(["a", "b", "c"])");
@@ -2044,8 +2159,10 @@ TEST_F(TestDropNullKernelWithStruct, DropNullStruct) {
 class TestDropNullKernelWithUnion : public TestDropNullKernelTyped<UnionType> {};
 
 TEST_F(TestDropNullKernelWithUnion, DropNullUnion) {
-  auto union_type = dense_union({field("a", int32()), field("b", utf8())}, {2, 5});
-  auto union_json = R"([
+  for (const auto& union_type :
+       {dense_union({field("a", int32()), field("b", utf8())}, {2, 5}),
+        sparse_union({field("a", int32()), field("b", utf8())}, {2, 5})}) {
+    auto union_json = R"([
       [2, null],
       [2, 222],
       [5, "hello"],
@@ -2054,7 +2171,8 @@ TEST_F(TestDropNullKernelWithUnion, DropNullUnion) {
       [2, 111],
       [5, null]
     ])";
-  CheckDropNull(union_type, union_json, union_json);
+    CheckDropNull(union_type, union_json, union_json);
+  }
 }
 
 class TestDropNullKernelWithRecordBatch : public TestDropNullKernelTyped<RecordBatch> {
@@ -2326,6 +2444,80 @@ TEST_F(TestDropNullKernelWithTable, DropNullTableWithSlices) {
                                                std::make_shared<ChunkedArray>(col_b)};
     *out_table_wo_slices = Table::Make(schm, std::move(table_content_wo_slices), size);
   });
+}
+
+TEST(TestIndicesNonZero, IndicesNonZero) {
+  Datum actual;
+  std::shared_ptr<Array> result;
+
+  for (const auto& type : NumericTypes()) {
+    ARROW_SCOPED_TRACE("Input type = ", type->ToString());
+
+    ASSERT_OK_AND_ASSIGN(
+        actual,
+        CallFunction("indices_nonzero", {ArrayFromJSON(type, "[null, 50, 0, 10]")}));
+    result = actual.make_array();
+    AssertArraysEqual(*ArrayFromJSON(uint64(), "[1, 3]"), *result, /*verbose*/ true);
+
+    // empty
+    ASSERT_OK_AND_ASSIGN(actual,
+                         CallFunction("indices_nonzero", {ArrayFromJSON(type, "[]")}));
+    result = actual.make_array();
+    AssertArraysEqual(*ArrayFromJSON(uint64(), "[]"), *result, /*verbose*/ true);
+
+    // chunked
+    ChunkedArray chunked_arr(
+        {ArrayFromJSON(type, "[1, 0, 3]"), ArrayFromJSON(type, "[4, 0, 6]")});
+    ASSERT_OK_AND_ASSIGN(
+        actual, CallFunction("indices_nonzero", {static_cast<Datum>(chunked_arr)}));
+    AssertArraysEqual(*ArrayFromJSON(uint64(), "[0, 2, 3, 5]"), *actual.make_array(),
+                      /*verbose*/ true);
+
+    // empty chunked
+    ChunkedArray chunked_arr_empty({ArrayFromJSON(type, "[1, 0, 3]"),
+                                    ArrayFromJSON(type, "[]"),
+                                    ArrayFromJSON(type, "[4, 0, 6]")});
+    ASSERT_OK_AND_ASSIGN(
+        actual, CallFunction("indices_nonzero", {static_cast<Datum>(chunked_arr_empty)}));
+    AssertArraysEqual(*ArrayFromJSON(uint64(), "[0, 2, 3, 5]"), *actual.make_array(),
+                      /*verbose*/ true);
+  }
+}
+
+TEST(TestIndicesNonZero, IndicesNonZeroBoolean) {
+  Datum actual;
+  std::shared_ptr<Array> result;
+
+  // bool
+  ASSERT_OK_AND_ASSIGN(
+      actual, CallFunction("indices_nonzero",
+                           {ArrayFromJSON(boolean(), "[null, true, false, true]")}));
+  result = actual.make_array();
+  AssertArraysEqual(*result, *ArrayFromJSON(uint64(), "[1, 3]"), /*verbose*/ true);
+}
+
+TEST(TestIndicesNonZero, IndicesNonZeroDecimal) {
+  Datum actual;
+  std::shared_ptr<Array> result;
+
+  for (const auto& decimal_factory : {decimal128, decimal256}) {
+    ASSERT_OK_AND_ASSIGN(
+        actual, CallFunction("indices_nonzero",
+                             {DecimalArrayFromJSON(decimal_factory(2, -2),
+                                                   R"(["12E2",null,"0","0"])")}));
+    result = actual.make_array();
+    AssertArraysEqual(*ArrayFromJSON(uint64(), "[0]"), *result, /*verbose*/ true);
+
+    ASSERT_OK_AND_ASSIGN(
+        actual,
+        CallFunction(
+            "indices_nonzero",
+            {DecimalArrayFromJSON(
+                decimal_factory(6, 9),
+                R"(["765483.999999999","0.000000000",null,"-987645.000000001"])")}));
+    result = actual.make_array();
+    AssertArraysEqual(*ArrayFromJSON(uint64(), "[0, 3]"), *result, /*verbose*/ true);
+  }
 }
 
 }  // namespace compute

@@ -17,14 +17,15 @@
 
 package org.apache.arrow.flight;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Optional;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -36,9 +37,9 @@ import org.apache.arrow.vector.types.UnionMode;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test clients/servers with different metadata versions.
@@ -50,7 +51,7 @@ public class TestMetadataVersion {
   private static IpcOption optionV5;
   private static Schema unionSchema;
 
-  @BeforeClass
+  @BeforeAll
   public static void setUpClass() {
     allocator = new RootAllocator(Integer.MAX_VALUE);
     schema = new Schema(Collections.singletonList(Field.nullable("foo", new ArrowType.Int(32, true))));
@@ -62,7 +63,7 @@ public class TestMetadataVersion {
     optionV5 = IpcOption.DEFAULT;
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDownClass() {
     allocator.close();
   }
@@ -72,7 +73,7 @@ public class TestMetadataVersion {
     try (final FlightServer server = startServer(optionV4);
          final FlightClient client = connect(server)) {
       final FlightInfo result = client.getInfo(FlightDescriptor.command(new byte[0]));
-      assertEquals(schema, result.getSchema());
+      assertEquals(Optional.of(schema), result.getSchemaOptional());
     }
   }
 
@@ -94,7 +95,7 @@ public class TestMetadataVersion {
          final FlightClient client = connect(server);
          final FlightStream stream = client.getStream(new Ticket("union".getBytes(StandardCharsets.UTF_8)))) {
       final FlightRuntimeException err = assertThrows(FlightRuntimeException.class, stream::next);
-      assertTrue(err.getMessage(), err.getMessage().contains("Cannot write union with V4 metadata"));
+      assertTrue(err.getMessage().contains("Cannot write union with V4 metadata"), err.getMessage());
     }
 
     try (final FlightServer server = startServer(optionV4);
@@ -105,7 +106,7 @@ public class TestMetadataVersion {
       final FlightClient.ClientStreamListener listener = client.startPut(descriptor, reader);
       final IllegalArgumentException err = assertThrows(IllegalArgumentException.class,
           () -> listener.start(root, null, optionV4));
-      assertTrue(err.getMessage(), err.getMessage().contains("Cannot write union with V4 metadata"));
+      assertTrue(err.getMessage().contains("Cannot write union with V4 metadata"), err.getMessage());
     }
   }
 

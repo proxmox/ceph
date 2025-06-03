@@ -14,18 +14,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package array // import "github.com/apache/arrow/go/v6/arrow/array"
+package array
 
 import (
+	"bytes"
 	"fmt"
+	"math"
+	"math/big"
+	"reflect"
 	"strings"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/bitutil"
-	"github.com/apache/arrow/go/v6/arrow/decimal128"
-	"github.com/apache/arrow/go/v6/arrow/internal/debug"
-	"github.com/apache/arrow/go/v6/arrow/memory"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/bitutil"
+	"github.com/apache/arrow/go/v15/arrow/decimal128"
+	"github.com/apache/arrow/go/v15/arrow/internal/debug"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/internal/json"
 )
 
 // A type which represents an immutable sequence of 128-bit decimal values.
@@ -35,14 +40,21 @@ type Decimal128 struct {
 	values []decimal128.Num
 }
 
-func NewDecimal128Data(data *Data) *Decimal128 {
+func NewDecimal128Data(data arrow.ArrayData) *Decimal128 {
 	a := &Decimal128{}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
 func (a *Decimal128) Value(i int) decimal128.Num { return a.values[i] }
+
+func (a *Decimal128) ValueStr(i int) string {
+	if a.IsNull(i) {
+		return NullValueStr
+	}
+	return a.GetOneForMarshal(i).(string)
+}
 
 func (a *Decimal128) Values() []decimal128.Num { return a.values }
 
@@ -55,7 +67,7 @@ func (a *Decimal128) String() string {
 		}
 		switch {
 		case a.IsNull(i):
-			o.WriteString("(null)")
+			o.WriteString(NullValueStr)
 		default:
 			fmt.Fprintf(o, "%v", a.Value(i))
 		}
@@ -73,6 +85,26 @@ func (a *Decimal128) setData(data *Data) {
 		end := beg + a.array.data.length
 		a.values = a.values[beg:end]
 	}
+}
+
+func (a *Decimal128) GetOneForMarshal(i int) interface{} {
+	if a.IsNull(i) {
+		return nil
+	}
+
+	typ := a.DataType().(*arrow.Decimal128Type)
+	f := (&big.Float{}).SetInt(a.Value(i).BigInt())
+	f.Quo(f, big.NewFloat(math.Pow10(int(typ.Scale))))
+	return f.Text('g', int(typ.Precision))
+}
+
+// ["1.23", ]
+func (a *Decimal128) MarshalJSON() ([]byte, error) {
+	vals := make([]interface{}, a.Len())
+	for i := 0; i < a.Len(); i++ {
+		vals[i] = a.GetOneForMarshal(i)
+	}
+	return json.Marshal(vals)
 }
 
 func arrayEqualDecimal128(left, right *Decimal128) bool {
@@ -101,6 +133,8 @@ func NewDecimal128Builder(mem memory.Allocator, dtype *arrow.Decimal128Type) *De
 		dtype:   dtype,
 	}
 }
+
+func (b *Decimal128Builder) Type() arrow.DataType { return b.dtype }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
@@ -134,6 +168,22 @@ func (b *Decimal128Builder) UnsafeAppend(v decimal128.Num) {
 func (b *Decimal128Builder) AppendNull() {
 	b.Reserve(1)
 	b.UnsafeAppendBoolToBitmap(false)
+}
+
+func (b *Decimal128Builder) AppendNulls(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendNull()
+	}
+}
+
+func (b *Decimal128Builder) AppendEmptyValue() {
+	b.Append(decimal128.Num{})
+}
+
+func (b *Decimal128Builder) AppendEmptyValues(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendEmptyValue()
+	}
 }
 
 func (b *Decimal128Builder) UnsafeAppendBoolToBitmap(isValid bool) {
@@ -198,7 +248,7 @@ func (b *Decimal128Builder) Resize(n int) {
 
 // NewArray creates a Decimal128 array from the memory buffers used by the builder and resets the Decimal128Builder
 // so it can be used to build a new array.
-func (b *Decimal128Builder) NewArray() Interface {
+func (b *Decimal128Builder) NewArray() arrow.Array {
 	return b.NewDecimal128Array()
 }
 
@@ -229,7 +279,87 @@ func (b *Decimal128Builder) newData() (data *Data) {
 	return
 }
 
+func (b *Decimal128Builder) AppendValueFromString(s string) error {
+	if s == NullValueStr {
+		b.AppendNull()
+		return nil
+	}
+	val, err := decimal128.FromString(s, b.dtype.Precision, b.dtype.Scale)
+	if err != nil {
+		b.AppendNull()
+		return err
+	}
+	b.Append(val)
+	return nil
+}
+
+func (b *Decimal128Builder) UnmarshalOne(dec *json.Decoder) error {
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	switch v := t.(type) {
+	case float64:
+		val, err := decimal128.FromFloat64(v, b.dtype.Precision, b.dtype.Scale)
+		if err != nil {
+			return err
+		}
+		b.Append(val)
+	case string:
+		val, err := decimal128.FromString(v, b.dtype.Precision, b.dtype.Scale)
+		if err != nil {
+			return err
+		}
+		b.Append(val)
+	case json.Number:
+		val, err := decimal128.FromString(v.String(), b.dtype.Precision, b.dtype.Scale)
+		if err != nil {
+			return err
+		}
+		b.Append(val)
+	case nil:
+		b.AppendNull()
+		return nil
+	default:
+		return &json.UnmarshalTypeError{
+			Value:  fmt.Sprint(t),
+			Type:   reflect.TypeOf(decimal128.Num{}),
+			Offset: dec.InputOffset(),
+		}
+	}
+
+	return nil
+}
+
+func (b *Decimal128Builder) Unmarshal(dec *json.Decoder) error {
+	for dec.More() {
+		if err := b.UnmarshalOne(dec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON will add the unmarshalled values to this builder.
+//
+// If the values are strings, they will get parsed with big.ParseFloat using
+// a rounding mode of big.ToNearestAway currently.
+func (b *Decimal128Builder) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	if delim, ok := t.(json.Delim); !ok || delim != '[' {
+		return fmt.Errorf("decimal128 builder must unpack from json array, found %s", delim)
+	}
+
+	return b.Unmarshal(dec)
+}
+
 var (
-	_ Interface = (*Decimal128)(nil)
-	_ Builder   = (*Decimal128Builder)(nil)
+	_ arrow.Array = (*Decimal128)(nil)
+	_ Builder     = (*Decimal128Builder)(nil)
 )

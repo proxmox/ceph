@@ -15,6 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
+library(tibble)
+
 # Not all types round trip via CSV 100% identical by default
 tbl <- example_data[, c("dbl", "lgl", "false", "chr")]
 tbl_no_dates <- tbl
@@ -219,12 +221,15 @@ test_that("read_csv_arrow() can read timestamps", {
   on.exit(unlink(tf))
   write.csv(tbl, tf, row.names = FALSE)
 
-  df <- read_csv_arrow(tf, col_types = schema(time = timestamp(timezone = "UTC")))
-  expect_equal(tbl, df)
-
+  df <- read_csv_arrow(tf, col_types = schema(time = timestamp()))
   # time zones are being read in as time zone-naive, hence ignore_attr = "tzone"
-  df <- read_csv_arrow(tf, col_types = "T", col_names = "time", skip = 1)
   expect_equal(tbl, df, ignore_attr = "tzone")
+
+  # work with schema to specify timestamp with time zone type
+  tbl <- tibble::tibble(time = "1970-01-01T12:00:00+12:00")
+  write.csv(tbl, tf, row.names = FALSE)
+  df <- read_csv_arrow(tf, col_types = schema(time = timestamp(unit = "us", timezone = "UTC")))
+  expect_equal(df, tibble::tibble(time = as.POSIXct("1970-01-01 00:00:00", tz = "UTC")))
 })
 
 test_that("read_csv_arrow(timestamp_parsers=)", {
@@ -235,10 +240,12 @@ test_that("read_csv_arrow(timestamp_parsers=)", {
 
   df <- read_csv_arrow(
     tf,
-    col_types = schema(time = timestamp(timezone = "UTC")),
+    col_types = schema(time = timestamp()),
     timestamp_parsers = "%d/%m/%Y"
   )
-  expect_equal(df$time, as.POSIXct(tbl$time, format = "%d/%m/%Y", tz = "UTC"))
+  # time zones are being read in as time zone-naive, hence ignore_attr = "tzone"
+  expected <- as.POSIXct(tbl$time, format = "%d/%m/%Y", tz = "UTC")
+  expect_equal(df$time, expected, ignore_attr = "tzone")
 })
 
 test_that("Skipping columns with null()", {
@@ -266,6 +273,90 @@ test_that("Mix of guessing and declaring types", {
   expect_identical(df, tbl[, c("dbl", "false", "chr")])
 })
 
+test_that("more informative error when reading a CSV with headers and schema", {
+  tf <- tempfile()
+  on.exit(unlink(tf))
+
+  write.csv(example_data, tf, row.names = FALSE)
+
+  share_schema <- schema(
+    int = int32(),
+    dbl = float64(),
+    dbl2 = float64(),
+    lgl = boolean(),
+    false = boolean(),
+    chr = utf8(),
+    fct = utf8()
+  )
+
+  expect_error(
+    read_csv_arrow(tf, schema = share_schema),
+    "header row"
+  )
+})
+
+test_that("read_csv_arrow() and write_csv_arrow() accept connection objects", {
+  skip_if_not(CanRunWithCapturedR())
+
+  tf <- tempfile()
+  on.exit(unlink(tf))
+
+  # make this big enough that we might expose concurrency problems,
+  # but not so big that it slows down the tests
+  test_tbl <- tibble::tibble(
+    x = 1:1e4,
+    y = vapply(x, rlang::hash, character(1), USE.NAMES = FALSE),
+    z = vapply(y, rlang::hash, character(1), USE.NAMES = FALSE)
+  )
+
+  write_csv_arrow(test_tbl, file(tf))
+  expect_identical(read_csv_arrow(tf), test_tbl)
+  expect_identical(read_csv_arrow(file(tf)), read_csv_arrow(tf))
+})
+
+test_that("CSV reader works on files with non-UTF-8 encoding", {
+  strings <- c("a", "\u00e9", "\U0001f4a9")
+  file_string <- paste0(
+    "col1,col2\n",
+    paste(strings, 1:30, sep = ",", collapse = "\n")
+  )
+  file_bytes_utf16 <- iconv(
+    file_string,
+    from = Encoding(file_string),
+    to = "UTF-16LE",
+    toRaw = TRUE
+  )[[1]]
+
+  tf <- tempfile()
+  on.exit(unlink(tf))
+  con <- file(tf, open = "wb")
+  writeBin(file_bytes_utf16, con)
+  close(con)
+
+  fs <- LocalFileSystem$create()
+  reader <- CsvTableReader$create(
+    fs$OpenInputStream(tf),
+    read_options = csv_read_options(encoding = "UTF-16LE")
+  )
+
+  table <- reader$Read()
+
+  # check that the CSV reader didn't create a binary column because of
+  # invalid bytes
+  expect_true(table$col1$type == string())
+
+  # check that the bytes are correct
+  expect_identical(
+    lapply(as.vector(table$col1$cast(binary())), as.raw),
+    rep(
+      list(as.raw(0x61), as.raw(c(0xc3, 0xa9)), as.raw(c(0xf0, 0x9f, 0x92, 0xa9))),
+      10
+    )
+  )
+
+  # check that the strings are correct
+  expect_identical(as.vector(table$col1), rep(strings, 10))
+})
 
 test_that("Write a CSV file with header", {
   tbl_out <- write_csv_arrow(tbl_no_dates, csv_file)
@@ -320,7 +411,7 @@ test_that("Write a CSV file with invalid input type", {
   bad_input <- Array$create(1:5)
   expect_error(
     write_csv_arrow(bad_input, csv_file),
-    regexp = "x must be an object of class 'data.frame', 'RecordBatch', or 'Table', not 'Array'."
+    regexp = "x must be an object of class .* not 'Array'."
   )
 })
 
@@ -328,6 +419,45 @@ test_that("Write a CSV file with invalid batch size", {
   expect_error(
     write_csv_arrow(tbl_no_dates, csv_file, batch_size = -1),
     regexp = "batch_size not greater than 0"
+  )
+})
+
+test_that("Write a CSV with custom NA value", {
+  tbl_out1 <- write_csv_arrow(tbl_no_dates, csv_file, na = "NULL_VALUE")
+  expect_true(file.exists(csv_file))
+  expect_identical(tbl_out1, tbl_no_dates)
+
+  csv_contents <- readLines(csv_file)
+  expect_true(any(grepl("NULL_VALUE", csv_contents)))
+
+  tbl_in1 <- read_csv_arrow(csv_file, na = "NULL_VALUE")
+  expect_identical(tbl_in1, tbl_no_dates)
+
+  # Also can use null_value in CsvWriteOptions
+  tbl_out1 <- write_csv_arrow(tbl_no_dates, csv_file,
+    write_options = csv_write_options(null_string = "another_null")
+  )
+  csv_contents <- readLines(csv_file)
+  expect_true(any(grepl("another_null", csv_contents)))
+
+  tbl_in1 <- read_csv_arrow(csv_file, na = "another_null")
+  expect_identical(tbl_in1, tbl_no_dates)
+
+  # Also can use empty string
+  write_csv_arrow(tbl_no_dates, csv_file, na = "")
+  expect_true(file.exists(csv_file))
+
+  csv_contents <- readLines(csv_file)
+  expect_true(any(grepl(",,", csv_contents)))
+
+  tbl_in1 <- read_csv_arrow(csv_file)
+  expect_identical(tbl_in1, tbl_no_dates)
+})
+
+test_that("Write a CSV file with invalid null value", {
+  expect_error(
+    write_csv_arrow(tbl_no_dates, csv_file, na = "MY\"VAL"),
+    regexp = "must not contain quote characters"
   )
 })
 
@@ -354,4 +484,259 @@ test_that("time mapping work as expected (ARROW-13624)", {
   )
 
   expect_equal(df, tbl, ignore_attr = "tzone")
+})
+
+test_that("Writing a CSV errors when unsupported (yet) readr args are used", {
+  expect_error(
+    write_csv_arrow(tbl, csv_file, append = FALSE),
+    "The following argument is not yet supported in Arrow: \"append\""
+  )
+  expect_error(
+    write_csv_arrow(tbl, csv_file, quote = "all"),
+    "The following argument is not yet supported in Arrow: \"quote\""
+  )
+  expect_error(
+    write_csv_arrow(tbl, csv_file, escape = "double"),
+    "The following argument is not yet supported in Arrow: \"escape\""
+  )
+  expect_error(
+    write_csv_arrow(tbl, csv_file, eol = "\n"),
+    "The following argument is not yet supported in Arrow: \"eol\""
+  )
+  expect_error(
+    write_csv_arrow(tbl, csv_file, num_threads = 8),
+    "The following argument is not yet supported in Arrow: \"num_threads\""
+  )
+  expect_error(
+    write_csv_arrow(tbl, csv_file, progress = FALSE),
+    "The following argument is not yet supported in Arrow: \"progress\""
+  )
+  expect_error(
+    write_csv_arrow(tbl, csv_file, append = FALSE, eol = "\n"),
+    "The following arguments are not yet supported in Arrow: \"append\" and \"eol\""
+  )
+  expect_error(
+    write_csv_arrow(
+      tbl,
+      csv_file,
+      append = FALSE,
+      quote = "all",
+      escape = "double",
+      eol = "\n"
+    ),
+    paste(
+      "The following arguments are not yet supported in Arrow: \"append\",",
+      "\"quote\", \"escape\", and \"eol\""
+    )
+  )
+})
+
+test_that("write_csv_arrow deals with duplication in sink/file", {
+  # errors when both file and sink are supplied
+  expect_error(
+    write_csv_arrow(tbl, file = csv_file, sink = csv_file),
+    paste(
+      "You have supplied both \"file\" and \"sink\" arguments. Please",
+      "supply only one of them"
+    )
+  )
+})
+
+test_that("write_csv_arrow deals with duplication in include_headers/col_names", {
+  expect_error(
+    write_csv_arrow(
+      tbl,
+      file = csv_file,
+      include_header = TRUE,
+      col_names = TRUE
+    ),
+    paste(
+      "You have supplied both \"col_names\" and \"include_header\"",
+      "arguments. Please supply only one of them"
+    )
+  )
+
+  written_tbl <- suppressMessages(
+    write_csv_arrow(tbl_no_dates, file = csv_file, col_names = FALSE)
+  )
+  expect_true(file.exists(csv_file))
+  expect_identical(tbl_no_dates, written_tbl)
+})
+
+test_that("read_csv_arrow() deals with BOMs (byte-order-marks) correctly", {
+  writeLines("\xef\xbb\xbfa,b\n1,2\n", con = csv_file)
+
+  expect_equal(
+    read_csv_arrow(csv_file),
+    tibble(a = 1, b = 2)
+  )
+})
+
+test_that("write_csv_arrow can write from Dataset objects", {
+  skip_if_not_available("dataset")
+  data_dir <- make_temp_dir()
+  write_dataset(tbl_no_dates, data_dir, partitioning = "lgl")
+  data_in <- open_dataset(data_dir)
+
+  csv_file <- tempfile()
+  tbl_out <- write_csv_arrow(data_in, csv_file)
+  expect_true(file.exists(csv_file))
+
+  tbl_in <- read_csv_arrow(csv_file)
+  expect_named(tbl_in, c("dbl", "false", "chr", "lgl"))
+  expect_equal(nrow(tbl_in), 10)
+})
+
+test_that("write_csv_arrow can write from RecordBatchReader objects", {
+  skip_if_not_available("dataset")
+  library(dplyr, warn.conflicts = FALSE)
+
+  query_obj <- arrow_table(tbl_no_dates) %>%
+    filter(lgl == TRUE)
+
+  csv_file <- tempfile()
+  on.exit(unlink(csv_file))
+  tbl_out <- write_csv_arrow(query_obj, csv_file)
+  expect_true(file.exists(csv_file))
+
+  tbl_in <- read_csv_arrow(csv_file)
+  expect_named(tbl_in, c("dbl", "lgl", "false", "chr"))
+  expect_equal(nrow(tbl_in), 3)
+})
+
+test_that("read/write compressed file successfully", {
+  skip_if_not_available("gzip")
+  tfgz <- tempfile(fileext = ".csv.gz")
+  tf <- tempfile(fileext = ".csv")
+
+  write_csv_arrow(tbl, tf)
+  write_csv_arrow(tbl, tfgz)
+  expect_lt(file.size(tfgz), file.size(tf))
+
+  expect_identical(
+    read_csv_arrow(tfgz),
+    tbl
+  )
+  skip_if_not_available("lz4")
+  tflz4 <- tempfile(fileext = ".csv.lz4")
+  write_csv_arrow(tbl, tflz4)
+  expect_false(file.size(tfgz) == file.size(tflz4))
+  expect_identical(
+    read_csv_arrow(tflz4),
+    tbl
+  )
+})
+
+test_that("read/write compressed filesystem path", {
+  skip_if_not_available("zstd")
+  tfzst <- tempfile(fileext = ".csv.zst")
+  fs <- LocalFileSystem$create()$path(tfzst)
+  write_csv_arrow(tbl, fs)
+
+  tf <- tempfile(fileext = ".csv")
+  write_csv_arrow(tbl, tf)
+  expect_lt(file.size(tfzst), file.size(tf))
+  expect_identical(
+    read_csv_arrow(fs),
+    tbl
+  )
+})
+
+test_that("read_csv_arrow() can read sub-second timestamps with col_types T setting (ARROW-15599)", {
+  tbl <- tibble::tibble(time = c("2018-10-07 19:04:05.000", "2018-10-07 19:04:05.001"))
+  tf <- tempfile()
+  on.exit(unlink(tf))
+  write.csv(tbl, tf, row.names = FALSE)
+
+  df <- read_csv_arrow(tf, col_types = "T", col_names = "time", skip = 1)
+  expected <- as.POSIXct(tbl$time, tz = "UTC")
+  expect_equal(df$time, expected, ignore_attr = "tzone")
+})
+
+test_that("Shows an error message when trying to read a timestamp with time zone with col_types = T (ARROW-17429)", {
+  tbl <- tibble::tibble(time = c("1970-01-01T12:00:00+12:00"))
+  csv_file <- tempfile()
+  on.exit(unlink(csv_file))
+  write.csv(tbl, csv_file, row.names = FALSE)
+
+  expect_error(
+    read_csv_arrow(csv_file, col_types = "T", col_names = "time", skip = 1),
+    "CSV conversion error to timestamp\\[ns\\]: expected no zone offset in"
+  )
+})
+
+test_that("CSV reading/parsing/convert options can be passed in as lists", {
+  tf <- tempfile()
+  on.exit(unlink(tf))
+
+  writeLines('"x"\nNA\nNA\n"NULL"\n\n"foo"\n', tf)
+
+  tab1 <- read_csv_arrow(
+    tf,
+    convert_options = list(null_values = c("NA", "NULL"), strings_can_be_null = TRUE),
+    parse_options = list(ignore_empty_lines = FALSE),
+    read_options = list(skip_rows = 1L)
+  )
+
+  tab2 <- read_csv_arrow(
+    tf,
+    convert_options = csv_convert_options(null_values = c(NA, "NA", "NULL"), strings_can_be_null = TRUE),
+    parse_options = csv_parse_options(ignore_empty_lines = FALSE),
+    read_options = csv_read_options(skip_rows = 1L)
+  )
+
+  expect_equal(tab1, tab2)
+})
+
+test_that("Read literal data directly", {
+  expected <- tibble::tibble(x = c(1L, 3L), y = c(2L, 4L))
+
+  expect_identical(read_csv_arrow(I("x,y\n1,2\n3,4")), expected)
+  expect_identical(read_csv_arrow(I("x,y\r1,2\r3,4")), expected)
+  expect_identical(read_csv_arrow(I("x,y\n\r1,2\n\r3,4")), expected)
+  expect_identical(read_csv_arrow(charToRaw("x,y\n1,2\n3,4")), expected)
+  expect_identical(read_csv_arrow(I(charToRaw("x,y\n1,2\n3,4"))), expected)
+  expect_identical(read_csv_arrow(I(c("x,y", "1,2", "3,4"))), expected)
+})
+
+test_that("skip_rows and skip_rows_after_names option", {
+  txt_raw <- charToRaw(paste0(c("a", 1:4), collapse = "\n"))
+
+  expect_identical(
+    read_csv_arrow(
+      txt_raw,
+      read_options = list(skip_rows_after_names = 1)
+    ),
+    tibble::tibble(a = 2:4)
+  )
+  expect_identical(
+    read_csv_arrow(
+      txt_raw,
+      read_options = list(skip_rows_after_names = 10)
+    ),
+    tibble::tibble(a = vctrs::unspecified())
+  )
+  expect_identical(
+    read_csv_arrow(
+      txt_raw,
+      read_options = list(skip = 1, skip_rows_after_names = 1)
+    ),
+    tibble::tibble(`1` = 3:4)
+  )
+})
+
+test_that("Can read CSV files from a URL", {
+  skip_if_offline()
+  skip_on_cran()
+  csv_url <- "https://raw.githubusercontent.com/apache/arrow-testing/master/data/csv/aggregate_test_100.csv"
+  cu <- read_csv_arrow(csv_url)
+  expect_true(tibble::is_tibble(cu))
+  expect_identical(dim(cu), c(100L, 13L))
+})
+
+test_that("read_csv2_arrow correctly parses comma decimals", {
+  tf <- tempfile()
+  writeLines("x;y\n1,2;c", con = tf)
+  expect_equal(read_csv2_arrow(tf), tibble(x = 1.2, y = "c"))
+
 })

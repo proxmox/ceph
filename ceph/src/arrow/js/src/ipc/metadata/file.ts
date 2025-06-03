@@ -17,21 +17,19 @@
 
 /* eslint-disable @typescript-eslint/naming-convention */
 
-import {
-    Block as _Block,
-    Footer as _Footer
-} from '../../fb/File';
+import { Block as _Block } from '../../fb/block.js';
+import { Footer as _Footer } from '../../fb/footer.js';
 
-import { flatbuffers } from 'flatbuffers';
+import * as flatbuffers from 'flatbuffers';
 
-import Long = flatbuffers.Long;
 import Builder = flatbuffers.Builder;
 import ByteBuffer = flatbuffers.ByteBuffer;
 
-import { Schema } from '../../schema';
-import { MetadataVersion } from '../../enum';
-import { toUint8Array } from '../../util/buffer';
-import { ArrayBufferViewInput } from '../../util/buffer';
+import { Schema } from '../../schema.js';
+import { MetadataVersion } from '../../enum.js';
+import { toUint8Array } from '../../util/buffer.js';
+import { ArrayBufferViewInput } from '../../util/buffer.js';
+import { bigIntToNumber } from '../../util/bigint.js';
 
 /** @ignore */
 class Footer_ {
@@ -40,7 +38,7 @@ class Footer_ {
     public static decode(buf: ArrayBufferViewInput) {
         buf = new ByteBuffer(toUint8Array(buf));
         const footer = _Footer.getRootAsFooter(buf);
-        const schema = Schema.decode(footer.schema()!);
+        const schema = Schema.decode(footer.schema()!, new Map(), footer.version());
         return new OffHeapFooter(schema, footer) as Footer_;
     }
 
@@ -51,17 +49,21 @@ class Footer_ {
         const schemaOffset = Schema.encode(b, footer.schema);
 
         _Footer.startRecordBatchesVector(b, footer.numRecordBatches);
-        [...footer.recordBatches()].slice().reverse().forEach((rb) => FileBlock.encode(b, rb));
+        for (const rb of [...footer.recordBatches()].slice().reverse()) {
+            FileBlock.encode(b, rb);
+        }
         const recordBatchesOffset = b.endVector();
 
         _Footer.startDictionariesVector(b, footer.numDictionaries);
-        [...footer.dictionaryBatches()].slice().reverse().forEach((db) => FileBlock.encode(b, db));
+        for (const db of [...footer.dictionaryBatches()].slice().reverse()) {
+            FileBlock.encode(b, db);
+        }
 
         const dictionaryBatchesOffset = b.endVector();
 
         _Footer.startFooter(b);
         _Footer.addSchema(b, schemaOffset);
-        _Footer.addVersion(b, MetadataVersion.V4);
+        _Footer.addVersion(b, MetadataVersion.V5);
         _Footer.addRecordBatches(b, recordBatchesOffset);
         _Footer.addDictionaries(b, dictionaryBatchesOffset);
         _Footer.finishFooterBuffer(b, _Footer.endFooter(b));
@@ -69,14 +71,14 @@ class Footer_ {
         return b.asUint8Array();
     }
 
-    protected _recordBatches!: FileBlock[];
-    protected _dictionaryBatches!: FileBlock[];
+    declare protected _recordBatches: FileBlock[];
+    declare protected _dictionaryBatches: FileBlock[];
     public get numRecordBatches() { return this._recordBatches.length; }
     public get numDictionaries() { return this._dictionaryBatches.length; }
 
     constructor(public schema: Schema,
-                public version: MetadataVersion = MetadataVersion.V4,
-                recordBatches?: FileBlock[], dictionaryBatches?: FileBlock[]) {
+        public version: MetadataVersion = MetadataVersion.V5,
+        recordBatches?: FileBlock[], dictionaryBatches?: FileBlock[]) {
         recordBatches && (this._recordBatches = recordBatches);
         dictionaryBatches && (this._dictionaryBatches = dictionaryBatches);
     }
@@ -146,8 +148,8 @@ export class FileBlock {
     /** @nocollapse */
     public static encode(b: Builder, fileBlock: FileBlock) {
         const { metaDataLength } = fileBlock;
-        const offset = new Long(fileBlock.offset, 0);
-        const bodyLength = new Long(fileBlock.bodyLength, 0);
+        const offset = BigInt(fileBlock.offset);
+        const bodyLength = BigInt(fileBlock.bodyLength);
         return _Block.createBlock(b, offset, metaDataLength, bodyLength);
     }
 
@@ -155,9 +157,9 @@ export class FileBlock {
     public bodyLength: number;
     public metaDataLength: number;
 
-    constructor(metaDataLength: number, bodyLength: Long | number, offset: Long | number) {
+    constructor(metaDataLength: number, bodyLength: bigint | number, offset: bigint | number) {
         this.metaDataLength = metaDataLength;
-        this.offset = typeof offset === 'number' ? offset : offset.low;
-        this.bodyLength = typeof bodyLength === 'number' ? bodyLength : bodyLength.low;
+        this.offset = bigIntToNumber(offset);
+        this.bodyLength = bigIntToNumber(bodyLength);
     }
 }

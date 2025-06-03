@@ -21,6 +21,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <utility>
 
 #include "arrow/buffer.h"
@@ -28,7 +29,6 @@
 #include "arrow/memory_pool.h"
 #include "arrow/status.h"
 #include "arrow/util/logging.h"
-#include "arrow/util/string_view.h"
 
 namespace arrow {
 namespace io {
@@ -144,6 +144,8 @@ class BufferedOutputStream::Impl : public BufferedBase {
       RETURN_NOT_OK(FlushUnlocked());
       DCHECK_EQ(buffer_pos_, 0);
       if (nbytes >= buffer_size_) {
+        // Invalidate cached raw pos
+        raw_pos_ = -1;
         // Direct write
         if (buffer) {
           return raw_->Write(buffer);
@@ -290,7 +292,7 @@ class BufferedInputStream::Impl : public BufferedBase {
     return ResizeBuffer(new_buffer_size);
   }
 
-  Result<util::string_view> Peek(int64_t nbytes) {
+  Result<std::string_view> Peek(int64_t nbytes) {
     if (raw_read_bound_ >= 0) {
       // Do not try to peek more than the total remaining number of bytes.
       nbytes = std::min(nbytes, bytes_buffered_ + (raw_read_bound_ - raw_read_total_));
@@ -322,8 +324,8 @@ class BufferedInputStream::Impl : public BufferedBase {
       nbytes = bytes_buffered_;
     }
     DCHECK(nbytes <= bytes_buffered_);  // Enough bytes available
-    return util::string_view(reinterpret_cast<const char*>(buffer_data_ + buffer_pos_),
-                             static_cast<size_t>(nbytes));
+    return std::string_view(reinterpret_cast<const char*>(buffer_data_ + buffer_pos_),
+                            static_cast<size_t>(nbytes));
   }
 
   int64_t bytes_buffered() const { return bytes_buffered_; }
@@ -340,23 +342,28 @@ class BufferedInputStream::Impl : public BufferedBase {
     buffer_pos_ = bytes_buffered_ = 0;
   }
 
+  Status DoBuffer() {
+    // Fill buffer
+    if (!buffer_) {
+      RETURN_NOT_OK(ResetBuffer());
+    }
+
+    int64_t bytes_to_buffer = buffer_size_;
+    if (raw_read_bound_ >= 0) {
+      bytes_to_buffer = std::min(buffer_size_, raw_read_bound_ - raw_read_total_);
+    }
+    ARROW_ASSIGN_OR_RAISE(bytes_buffered_, raw_->Read(bytes_to_buffer, buffer_data_));
+    buffer_pos_ = 0;
+    raw_read_total_ += bytes_buffered_;
+
+    // Do not make assumptions about the raw stream position
+    raw_pos_ = -1;
+    return Status::OK();
+  }
+
   Status BufferIfNeeded() {
     if (bytes_buffered_ == 0) {
-      // Fill buffer
-      if (!buffer_) {
-        RETURN_NOT_OK(ResetBuffer());
-      }
-
-      int64_t bytes_to_buffer = buffer_size_;
-      if (raw_read_bound_ >= 0) {
-        bytes_to_buffer = std::min(buffer_size_, raw_read_bound_ - raw_read_total_);
-      }
-      ARROW_ASSIGN_OR_RAISE(bytes_buffered_, raw_->Read(bytes_to_buffer, buffer_data_));
-      buffer_pos_ = 0;
-      raw_read_total_ += bytes_buffered_;
-
-      // Do not make assumptions about the raw stream position
-      raw_pos_ = -1;
+      return DoBuffer();
     }
     return Status::OK();
   }
@@ -371,33 +378,38 @@ class BufferedInputStream::Impl : public BufferedBase {
       return Status::Invalid("Bytes to read must be positive. Received:", nbytes);
     }
 
-    if (nbytes < buffer_size_) {
-      // Pre-buffer for small reads
-      RETURN_NOT_OK(BufferIfNeeded());
+    // 1. First consume pre-buffered data.
+    int64_t pre_buffer_copy_bytes = std::min(nbytes, bytes_buffered_);
+    if (pre_buffer_copy_bytes > 0) {
+      memcpy(out, buffer_data_ + buffer_pos_, pre_buffer_copy_bytes);
+      ConsumeBuffer(pre_buffer_copy_bytes);
     }
+    int64_t remaining_bytes = nbytes - pre_buffer_copy_bytes;
+    if (raw_read_bound_ >= 0) {
+      remaining_bytes = std::min(remaining_bytes, raw_read_bound_ - raw_read_total_);
+    }
+    if (remaining_bytes == 0) {
+      return pre_buffer_copy_bytes;
+    }
+    DCHECK_EQ(0, bytes_buffered_);
 
-    if (nbytes > bytes_buffered_) {
-      // Copy buffered bytes into out, then read rest
-      memcpy(out, buffer_data_ + buffer_pos_, bytes_buffered_);
-
-      int64_t bytes_to_read = nbytes - bytes_buffered_;
-      if (raw_read_bound_ >= 0) {
-        bytes_to_read = std::min(bytes_to_read, raw_read_bound_ - raw_read_total_);
-      }
-      ARROW_ASSIGN_OR_RAISE(
-          int64_t bytes_read,
-          raw_->Read(bytes_to_read, reinterpret_cast<uint8_t*>(out) + bytes_buffered_));
+    // 2. Read from storage.
+    if (remaining_bytes >= buffer_size_) {
+      // 2.1. If read is larger than buffer size, read directly from storage.
+      ARROW_ASSIGN_OR_RAISE(int64_t bytes_read,
+                            raw_->Read(remaining_bytes, reinterpret_cast<uint8_t*>(out) +
+                                                            pre_buffer_copy_bytes));
       raw_read_total_ += bytes_read;
-
-      // Do not make assumptions about the raw stream position
-      raw_pos_ = -1;
-      bytes_read += bytes_buffered_;
       RewindBuffer();
-      return bytes_read;
+      return pre_buffer_copy_bytes + bytes_read;
     } else {
-      memcpy(out, buffer_data_ + buffer_pos_, nbytes);
-      ConsumeBuffer(nbytes);
-      return nbytes;
+      // 2.2. If read is smaller than buffer size, fill buffer and copy from buffer.
+      RETURN_NOT_OK(DoBuffer());
+      int64_t bytes_copy_after_buffer = std::min(bytes_buffered_, remaining_bytes);
+      memcpy(reinterpret_cast<uint8_t*>(out) + pre_buffer_copy_bytes,
+             buffer_data_ + buffer_pos_, bytes_copy_after_buffer);
+      ConsumeBuffer(bytes_copy_after_buffer);
+      return pre_buffer_copy_bytes + bytes_copy_after_buffer;
     }
   }
 
@@ -430,7 +442,7 @@ class BufferedInputStream::Impl : public BufferedBase {
 BufferedInputStream::BufferedInputStream(std::shared_ptr<InputStream> raw,
                                          MemoryPool* pool,
                                          int64_t raw_total_bytes_bound) {
-  impl_.reset(new Impl(std::move(raw), pool, raw_total_bytes_bound));
+  impl_ = std::make_unique<Impl>(std::move(raw), pool, raw_total_bytes_bound);
 }
 
 BufferedInputStream::~BufferedInputStream() { internal::CloseFromDestructor(this); }
@@ -456,7 +468,7 @@ std::shared_ptr<InputStream> BufferedInputStream::raw() const { return impl_->ra
 
 Result<int64_t> BufferedInputStream::DoTell() const { return impl_->Tell(); }
 
-Result<util::string_view> BufferedInputStream::DoPeek(int64_t nbytes) {
+Result<std::string_view> BufferedInputStream::DoPeek(int64_t nbytes) {
   return impl_->Peek(nbytes);
 }
 

@@ -20,8 +20,11 @@ package org.apache.arrow.vector.types.pojo;
 
 import static org.apache.arrow.vector.types.pojo.Field.convertField;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.Channels;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,10 +34,14 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+import org.apache.arrow.flatbuf.Endianness;
 import org.apache.arrow.flatbuf.KeyValue;
 import org.apache.arrow.util.Collections2;
 import org.apache.arrow.util.Preconditions;
+import org.apache.arrow.vector.ipc.ReadChannel;
+import org.apache.arrow.vector.ipc.WriteChannel;
 import org.apache.arrow.vector.ipc.message.FBSerializables;
+import org.apache.arrow.vector.ipc.message.MessageSerializer;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
@@ -45,6 +52,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.databind.util.ByteBufferBackedInputStream;
 import com.google.flatbuffers.FlatBufferBuilder;
 
 /**
@@ -75,13 +83,34 @@ public class Schema {
   private static final ObjectMapper mapper = new ObjectMapper();
   private static final ObjectWriter writer = mapper.writerWithDefaultPrettyPrinter();
   private static final ObjectReader reader = mapper.readerFor(Schema.class);
+  private static final boolean LITTLE_ENDIAN = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN;
 
   public static Schema fromJSON(String json) throws IOException {
     return reader.readValue(Preconditions.checkNotNull(json));
   }
 
+  /**
+   * Deserialize a schema that has been serialized using {@link #toByteArray()}.
+   * @param buffer the bytes to deserialize.
+   * @return The deserialized schema.
+   */
+  @Deprecated
   public static Schema deserialize(ByteBuffer buffer) {
     return convertSchema(org.apache.arrow.flatbuf.Schema.getRootAsSchema(buffer));
+  }
+
+  /**
+   * Deserialize a schema that has been serialized as a message using {@link #serializeAsMessage()}.
+   * @param buffer the bytes to deserialize.
+   * @return The deserialized schema.
+   */
+  public static Schema deserializeMessage(ByteBuffer buffer) {
+    ByteBufferBackedInputStream stream = new ByteBufferBackedInputStream(buffer);
+    try (ReadChannel channel = new ReadChannel(Channels.newChannel(stream))) {
+      return MessageSerializer.deserializeSchema(channel);
+    } catch (IOException ex) {
+      throw new RuntimeException(ex);
+    }
   }
 
   /** Converts a flatbuffer schema to its POJO representation. */
@@ -207,14 +236,34 @@ public class Schema {
     int fieldsOffset = org.apache.arrow.flatbuf.Schema.createFieldsVector(builder, fieldOffsets);
     int metadataOffset = FBSerializables.writeKeyValues(builder, metadata);
     org.apache.arrow.flatbuf.Schema.startSchema(builder);
+    org.apache.arrow.flatbuf.Schema.addEndianness(builder,
+        (LITTLE_ENDIAN ? Endianness.Little : Endianness.Big));
     org.apache.arrow.flatbuf.Schema.addFields(builder, fieldsOffset);
     org.apache.arrow.flatbuf.Schema.addCustomMetadata(builder, metadataOffset);
     return org.apache.arrow.flatbuf.Schema.endSchema(builder);
   }
 
   /**
-   * Returns the serialized flatbuffer representation of this schema.
+   * Returns the serialized flatbuffer bytes of the schema wrapped in a message table.
+   * Use {@link #deserializeMessage() to rebuild the Schema.}
    */
+  public byte[] serializeAsMessage() {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    try (WriteChannel channel = new WriteChannel(Channels.newChannel(out))) {
+      long size = MessageSerializer.serialize(
+          new WriteChannel(Channels.newChannel(out)), this);
+      return out.toByteArray();
+    } catch (IOException ex) {
+      throw new RuntimeException(ex);
+    }
+  }
+
+  /**
+   * Returns the serialized flatbuffer representation of this schema.
+   * @deprecated This method does not encapsulate the schema in a Message payload which is incompatible with other
+   *     languages. Use {@link #serializeAsMessage()} instead.
+   */
+  @Deprecated
   public byte[] toByteArray() {
     FlatBufferBuilder builder = new FlatBufferBuilder();
     int schemaOffset = this.getSchema(builder);

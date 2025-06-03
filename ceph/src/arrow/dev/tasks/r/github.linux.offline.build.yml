@@ -15,14 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# NOTE: must set "Crossbow" as name to have the badge links working in the
-# github comment reports!
-name: Crossbow
+{% import 'macros.jinja' as macros with context %}
 
-on:
-  push:
-    branches:
-      - "*-github-*"
+{{ macros.github_header() }}
 
 jobs:
   grab-dependencies:
@@ -34,28 +29,13 @@ jobs:
       ARROW_R_DEV: "TRUE"
       RSPM: "https://packagemanager.rstudio.com/cran/__linux__/focal/latest"
     steps:
-      - name: Checkout Arrow
-        run: |
-          git clone --no-checkout {{ arrow.remote }} arrow
-          git -C arrow fetch -t {{ arrow.remote }} {{ arrow.branch }}
-          git -C arrow checkout FETCH_HEAD
-          git -C arrow submodule update --init --recursive
-      - name: Free Up Disk Space
-        shell: bash
-        run: arrow/ci/scripts/util_cleanup.sh
-      - name: Fetch Submodules and Tags
-        shell: bash
-        run: cd arrow && ci/scripts/util_checkout.sh
-      - uses: r-lib/actions/setup-r@v1
+      {{ macros.github_checkout_arrow()|indent }}
+
+      - uses: r-lib/actions/setup-r@v2
       - name: Pull Arrow dependencies
         run: |
           cd arrow/r
-          # This is `make build`, but with no vignettes and not running `make doc`
-          cp ../NOTICE.txt inst/NOTICE.txt
-          rsync --archive --delete ../cpp tools/
-          cp -p ../.env tools/
-          cp -p ../NOTICE.txt tools/
-          cp -p ../LICENSE.txt tools/
+          make sync-cpp
           R CMD build --no-build-vignettes --no-manual .
           built_tar=$(ls -1 arrow*.tar.gz | head -n 1)
           R -e "source('R/install-arrow.R'); create_package_with_all_dependencies(dest_file = 'arrow_with_deps.tar.gz', source_file = \"${built_tar}\")"
@@ -66,7 +46,7 @@ jobs:
           name: thirdparty_deps
           path: arrow/r/arrow_with_deps.tar.gz
 
-  intall-offline:
+  install-offline:
     name: "Install offline"
     needs: [grab-dependencies]
     runs-on: ubuntu-20.04
@@ -76,13 +56,9 @@ jobs:
       ARROW_R_DEV: TRUE
       RSPM: "https://packagemanager.rstudio.com/cran/__linux__/focal/latest"
     steps:
-      - name: Checkout Arrow
-        run: |
-          git clone --no-checkout {{ arrow.remote }} arrow
-          git -C arrow fetch -t {{ arrow.remote }} {{ arrow.branch }}
-          git -C arrow checkout FETCH_HEAD
-          git -C arrow submodule update --init --recursive
-      - uses: r-lib/actions/setup-r@v1
+      {{ macros.github_checkout_arrow()|indent }}
+
+      - uses: r-lib/actions/setup-r@v2
       - name: Download artifacts
         uses: actions/download-artifact@v2
         with:
@@ -90,8 +66,12 @@ jobs:
           path: arrow/r/
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt install libcurl4-openssl-dev libssl-dev
+          sudo arrow/ci/scripts/r_install_system_dependencies.sh
+          arrow/ci/scripts/install_sccache.sh unknown-linux-musl /usr/local/bin
+        env:
+          ARROW_GCS: "ON"
+          ARROW_S3: "ON"
+          ARROW_SOURCE_HOME: arrow
       - name: Install dependencies
         run: |
           install.packages(c("remotes", "glue", "sys"))
@@ -101,6 +81,7 @@ jobs:
         env:
           TEST_OFFLINE_BUILD: true
           LIBARROW_MINIMAL: false
+        {{ macros.github_set_sccache_envvars()|indent(8)}}
         run: |
           cd arrow/r
           R CMD INSTALL --install-tests --no-test-load --no-docs --no-help --no-byte-compile arrow_with_deps.tar.gz

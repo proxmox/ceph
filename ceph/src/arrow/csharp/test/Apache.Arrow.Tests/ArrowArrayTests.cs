@@ -14,6 +14,9 @@
 // limitations under the License.
 
 using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Numerics;
 using Xunit;
 
 namespace Apache.Arrow.Tests
@@ -93,39 +96,86 @@ namespace Apache.Arrow.Tests
         }
 
         [Fact]
+        public void EnumerateArray()
+        {
+            var array = new Int64Array.Builder().Append(1).Append(2).Build();
+
+            foreach(long? foo in (IEnumerable<long?>)array)
+            {
+                Assert.InRange(foo.Value, 1, 2);
+            }
+
+            foreach (object foo in (IEnumerable)array)
+            {
+                Assert.InRange((long)foo, 1, 2);
+            }
+        }
+
+        [Fact]
+        public void ArrayAsReadOnlyList()
+        {
+            Int64Array array = new Int64Array.Builder().Append(1).Append(2).Build();
+            var readOnlyList = (IReadOnlyList<long?>)array;
+
+            Assert.Equal(array.Length, readOnlyList.Count);
+            Assert.Equal(readOnlyList[0], 1);
+            Assert.Equal(readOnlyList[1], 2);
+        }
+
+#if NET5_0_OR_GREATER
+        [Fact]
         public void SliceArray()
         {
-            TestSlice<Int32Array, Int32Array.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<Int8Array, Int8Array.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<Int16Array, Int16Array.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<Int64Array, Int64Array.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<UInt8Array, UInt8Array.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<UInt16Array, UInt16Array.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<UInt32Array, UInt32Array.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<UInt64Array, UInt64Array.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<FloatArray, FloatArray.Builder>(x => x.Append(10).Append(20).Append(30));
-            TestSlice<DoubleArray, DoubleArray.Builder>(x => x.Append(10).Append(20).Append(30));
+            TestNumberSlice<int, Int32Array, Int32Array.Builder>();
+            TestNumberSlice<sbyte, Int8Array, Int8Array.Builder>();
+            TestNumberSlice<short, Int16Array, Int16Array.Builder>();
+            TestNumberSlice<long, Int64Array, Int64Array.Builder>();
+            TestNumberSlice<byte, UInt8Array, UInt8Array.Builder>();
+            TestNumberSlice<ushort, UInt16Array, UInt16Array.Builder>();
+            TestNumberSlice<uint, UInt32Array, UInt32Array.Builder>();
+            TestNumberSlice<ulong, UInt64Array, UInt64Array.Builder>();
+            TestNumberSlice<Half, HalfFloatArray, HalfFloatArray.Builder>();
+            TestNumberSlice<float, FloatArray, FloatArray.Builder>();
+            TestNumberSlice<double, DoubleArray, DoubleArray.Builder>();
             TestSlice<Date32Array, Date32Array.Builder>(x => x.Append(new DateTime(2019, 1, 1)).Append(new DateTime(2019, 1, 2)).Append(new DateTime(2019, 1, 3)));
             TestSlice<Date64Array, Date64Array.Builder>(x => x.Append(new DateTime(2019, 1, 1)).Append(new DateTime(2019, 1, 2)).Append(new DateTime(2019, 1, 3)));
+            TestSlice<Time32Array, Time32Array.Builder>(x => x.Append(10).Append(20).Append(30));
+            TestSlice<Time64Array, Time64Array.Builder>(x => x.Append(10).Append(20).Append(30));
             TestSlice<StringArray, StringArray.Builder>(x => x.Append("10").Append("20").Append("30"));
+
+            static void TestNumberSlice<T, TArray, TBuilder>()
+                where T : struct, INumber<T>
+                where TArray : PrimitiveArray<T>
+                where TBuilder : PrimitiveArrayBuilder<T, TArray, TBuilder>, new() =>
+                TestSlice<TArray, TBuilder>(x => x.Append(T.CreateChecked(10)).Append(T.CreateChecked(20)).Append(T.CreateChecked(30)));
         }
 
         [Fact]
         public void SlicePrimitiveArrayWithNulls()
         {
-            TestSlice<Int32Array, Int32Array.Builder>(x => x.Append(10).Append(20).AppendNull().Append(30));
-            TestSlice<Int8Array, Int8Array.Builder>(x => x.Append(10).AppendNull().Append(20).AppendNull().Append(30));
-            TestSlice<Int16Array, Int16Array.Builder>(x => x.Append(10).Append(20).AppendNull().Append(30));
-            TestSlice<Int64Array, Int64Array.Builder>(x => x.Append(10).Append(20).AppendNull().Append(30));
-            TestSlice<UInt8Array, UInt8Array.Builder>(x => x.Append(10).Append(20).Append(30).AppendNull());
-            TestSlice<UInt16Array, UInt16Array.Builder>(x => x.Append(10).Append(20).AppendNull().AppendNull().Append(30));
-            TestSlice<UInt32Array, UInt32Array.Builder>(x => x.Append(10).Append(20).AppendNull().Append(30));
-            TestSlice<UInt64Array, UInt64Array.Builder>(x => x.Append(10).Append(20).AppendNull().Append(30));
-            TestSlice<FloatArray, FloatArray.Builder>(x => x.AppendNull().Append(10).Append(20).AppendNull().Append(30));
-            TestSlice<DoubleArray, DoubleArray.Builder>(x => x.Append(10).Append(20).AppendNull().Append(30));
+            TestNumberSlice<int, Int32Array, Int32Array.Builder>();
+            TestNumberSlice<sbyte, Int8Array, Int8Array.Builder>();
+            TestNumberSlice<short, Int16Array, Int16Array.Builder>();
+            TestNumberSlice<long, Int64Array, Int64Array.Builder>();
+            TestNumberSlice<byte, UInt8Array, UInt8Array.Builder>();
+            TestNumberSlice<ushort, UInt16Array, UInt16Array.Builder>();
+            TestNumberSlice<uint, UInt32Array, UInt32Array.Builder>();
+            TestNumberSlice<ulong, UInt64Array, UInt64Array.Builder>();
+            TestNumberSlice<Half, HalfFloatArray, HalfFloatArray.Builder>();
+            TestNumberSlice<float, FloatArray, FloatArray.Builder>();
+            TestNumberSlice<double, DoubleArray, DoubleArray.Builder>();
             TestSlice<Date32Array, Date32Array.Builder>(x => x.Append(new DateTime(2019, 1, 1)).Append(new DateTime(2019, 1, 2)).AppendNull().Append(new DateTime(2019, 1, 3)));
             TestSlice<Date64Array, Date64Array.Builder>(x => x.Append(new DateTime(2019, 1, 1)).Append(new DateTime(2019, 1, 2)).AppendNull().Append(new DateTime(2019, 1, 3)));
+            TestSlice<Time32Array, Time32Array.Builder>(x => x.Append(10).Append(20).AppendNull().Append(30));
+            TestSlice<Time64Array, Time64Array.Builder>(x => x.Append(10).Append(20).AppendNull().Append(30));
+
+            static void TestNumberSlice<T, TArray, TBuilder>()
+                where T : struct, INumber<T>
+                where TArray : PrimitiveArray<T>
+                where TBuilder : PrimitiveArrayBuilder<T, TArray, TBuilder>, new() =>
+                TestSlice<TArray, TBuilder>(x => x.AppendNull().Append(T.CreateChecked(10)).Append(T.CreateChecked(20)).AppendNull().Append(T.CreateChecked(30)));
         }
+#endif
 
         [Fact]
         public void SliceBooleanArray()
@@ -177,6 +227,12 @@ namespace Apache.Arrow.Tests
             IArrowArrayVisitor<UInt64Array>,
             IArrowArrayVisitor<Date32Array>,
             IArrowArrayVisitor<Date64Array>,
+            IArrowArrayVisitor<Time32Array>,
+            IArrowArrayVisitor<Time64Array>,
+            IArrowArrayVisitor<DurationArray>,
+#if NET5_0_OR_GREATER
+            IArrowArrayVisitor<HalfFloatArray>,
+#endif
             IArrowArrayVisitor<FloatArray>,
             IArrowArrayVisitor<DoubleArray>,
             IArrowArrayVisitor<BooleanArray>,
@@ -215,7 +271,13 @@ namespace Apache.Arrow.Tests
 
                 Assert.Equal(baseArray.GetDateTimeOffset(array.Offset), array.GetDateTimeOffset(0));
             }
+            public void Visit(Time32Array array) => ValidateArrays(array);
+            public void Visit(Time64Array array) => ValidateArrays(array);
+            public void Visit(DurationArray array) => ValidateArrays(array);
 
+#if NET5_0_OR_GREATER
+            public void Visit(HalfFloatArray array) => ValidateArrays(array);
+#endif
             public void Visit(FloatArray array) => ValidateArrays(array);
             public void Visit(DoubleArray array) => ValidateArrays(array);
             public void Visit(StringArray array) => ValidateArrays(array);

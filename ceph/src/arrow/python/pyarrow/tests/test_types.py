@@ -21,12 +21,13 @@ from functools import partial
 import datetime
 import sys
 
-import pickle
 import pytest
-import pytz
 import hypothesis as h
 import hypothesis.strategies as st
-import hypothesis.extra.pytz as tzst
+try:
+    import hypothesis.extra.pytz as tzst
+except ImportError:
+    tzst = None
 import weakref
 
 import numpy as np
@@ -81,7 +82,10 @@ def get_many_types():
                   pa.field('b', pa.string())], mode=pa.lib.UnionMode_SPARSE),
         pa.union([pa.field('a', pa.binary(10), nullable=False),
                   pa.field('b', pa.string())], mode=pa.lib.UnionMode_SPARSE),
-        pa.dictionary(pa.int32(), pa.string())
+        pa.dictionary(pa.int32(), pa.string()),
+        pa.run_end_encoded(pa.int16(), pa.int32()),
+        pa.run_end_encoded(pa.int32(), pa.string()),
+        pa.run_end_encoded(pa.int64(), pa.uint8())
     )
 
 
@@ -207,6 +211,11 @@ def test_is_union():
     assert not types.is_union(pa.list_(pa.int32()))
 
 
+def test_is_run_end_encoded():
+    assert types.is_run_end_encoded(pa.run_end_encoded(pa.int32(), pa.int64()))
+    assert not types.is_run_end_encoded(pa.utf8())
+
+
 # TODO(wesm): is_map, once implemented
 
 
@@ -290,17 +299,48 @@ def test_is_primitive():
 
 
 @pytest.mark.parametrize(('tz', 'expected'), [
-    (pytz.utc, 'UTC'),
-    (pytz.timezone('Europe/Paris'), 'Europe/Paris'),
-    # StaticTzInfo.tzname returns with '-09' so we need to infer the timezone's
-    # name from the tzinfo.zone attribute
-    (pytz.timezone('Etc/GMT-9'), 'Etc/GMT-9'),
-    (pytz.FixedOffset(180), '+03:00'),
     (datetime.timezone.utc, 'UTC'),
     (datetime.timezone(datetime.timedelta(hours=1, minutes=30)), '+01:30')
 ])
 def test_tzinfo_to_string(tz, expected):
     assert pa.lib.tzinfo_to_string(tz) == expected
+
+
+def test_pytz_tzinfo_to_string():
+    pytz = pytest.importorskip("pytz")
+
+    tz = [pytz.utc, pytz.timezone('Europe/Paris')]
+    expected = ['UTC', 'Europe/Paris']
+    assert [pa.lib.tzinfo_to_string(i) for i in tz] == expected
+
+    # StaticTzInfo.tzname returns with '-09' so we need to infer the timezone's
+    # name from the tzinfo.zone attribute
+    tz = [pytz.timezone('Etc/GMT-9'), pytz.FixedOffset(180)]
+    expected = ['Etc/GMT-9', '+03:00']
+    assert [pa.lib.tzinfo_to_string(i) for i in tz] == expected
+
+
+def test_dateutil_tzinfo_to_string():
+    pytest.importorskip("dateutil")
+    import dateutil.tz
+
+    tz = dateutil.tz.UTC
+    assert pa.lib.tzinfo_to_string(tz) == 'UTC'
+    tz = dateutil.tz.gettz('Europe/Paris')
+    assert pa.lib.tzinfo_to_string(tz) == 'Europe/Paris'
+
+
+def test_zoneinfo_tzinfo_to_string():
+    zoneinfo = pytest.importorskip('zoneinfo')
+    if sys.platform == 'win32':
+        # zoneinfo requires an additional dependency On Windows
+        # tzdata provides IANA time zone data
+        pytest.importorskip('tzdata')
+
+    tz = zoneinfo.ZoneInfo('UTC')
+    assert pa.lib.tzinfo_to_string(tz) == 'UTC'
+    tz = zoneinfo.ZoneInfo('Europe/Paris')
+    assert pa.lib.tzinfo_to_string(tz) == 'Europe/Paris'
 
 
 def test_tzinfo_to_string_errors():
@@ -317,8 +357,16 @@ def test_tzinfo_to_string_errors():
             pa.lib.tzinfo_to_string(tz)
 
 
-@h.given(tzst.timezones())
+if tzst:
+    timezones = tzst.timezones()
+else:
+    timezones = st.none()
+
+
+@h.given(timezones)
 def test_pytz_timezone_roundtrip(tz):
+    if tz is None:
+        pytest.skip('requires timezone not None')
     timezone_string = pa.lib.tzinfo_to_string(tz)
     timezone_tzinfo = pa.lib.string_to_tzinfo(timezone_string)
     assert timezone_tzinfo == tz
@@ -390,27 +438,41 @@ def test_convert_custom_tzinfo_objects_to_string():
             pa.lib.tzinfo_to_string(wrong)
 
 
-@pytest.mark.parametrize(('string', 'expected'), [
-    ('UTC', pytz.utc),
-    ('Europe/Paris', pytz.timezone('Europe/Paris')),
-    ('+03:00', pytz.FixedOffset(180)),
-    ('+01:30', pytz.FixedOffset(90)),
-    ('-02:00', pytz.FixedOffset(-120))
-])
-def test_string_to_tzinfo(string, expected):
-    result = pa.lib.string_to_tzinfo(string)
-    assert result == expected
+def test_string_to_tzinfo():
+    string = ['UTC', 'Europe/Paris', '+03:00', '+01:30', '-02:00']
+    try:
+        import pytz
+        expected = [pytz.utc, pytz.timezone('Europe/Paris'),
+                    pytz.FixedOffset(180), pytz.FixedOffset(90),
+                    pytz.FixedOffset(-120)]
+        result = [pa.lib.string_to_tzinfo(i) for i in string]
+        assert result == expected
+
+    except ImportError:
+        try:
+            import zoneinfo
+            expected = [zoneinfo.ZoneInfo(key='UTC'),
+                        zoneinfo.ZoneInfo(key='Europe/Paris'),
+                        datetime.timezone(datetime.timedelta(hours=3)),
+                        datetime.timezone(
+                            datetime.timedelta(hours=1, minutes=30)),
+                        datetime.timezone(-datetime.timedelta(hours=2))]
+            result = [pa.lib.string_to_tzinfo(i) for i in string]
+            assert result == expected
+
+        except ImportError:
+            pytest.skip('requires pytz or zoneinfo to be installed')
 
 
-@pytest.mark.parametrize('tz,name', [
-    (pytz.FixedOffset(90), '+01:30'),
-    (pytz.FixedOffset(-90), '-01:30'),
-    (pytz.utc, 'UTC'),
-    (pytz.timezone('America/New_York'), 'America/New_York')
-])
-def test_timezone_string_roundtrip(tz, name):
-    assert pa.lib.tzinfo_to_string(tz) == name
-    assert pa.lib.string_to_tzinfo(name) == tz
+def test_timezone_string_roundtrip_pytz():
+    pytz = pytest.importorskip("pytz")
+
+    tz = [pytz.FixedOffset(90), pytz.FixedOffset(-90),
+          pytz.utc, pytz.timezone('America/New_York')]
+    name = ['+01:30', '-01:30', 'UTC', 'America/New_York']
+
+    assert [pa.lib.tzinfo_to_string(i) for i in tz] == name
+    assert [pa.lib.string_to_tzinfo(i)for i in name] == tz
 
 
 def test_timestamp():
@@ -423,6 +485,17 @@ def test_timestamp():
     for invalid_unit in ('m', 'arbit', 'rary'):
         with pytest.raises(ValueError, match='Invalid time unit'):
             pa.timestamp(invalid_unit)
+
+
+def test_timestamp_print():
+    for unit in ('s', 'ms', 'us', 'ns'):
+        for tz in ('UTC', 'Europe/Paris', 'Pacific/Marquesas',
+                   'Mars/Mariner_Valley', '-00:42', '+42:00'):
+            ty = pa.timestamp(unit, tz=tz)
+            arr = pa.array([0], ty)
+            assert "Z" in str(arr)
+        arr = pa.array([0], pa.timestamp(unit))
+        assert "Z" not in str(arr)
 
 
 def test_time32_units():
@@ -463,6 +536,21 @@ def test_list_type():
     assert ty.value_type == pa.int64()
     assert ty.value_field == pa.field("item", pa.int64(), nullable=True)
 
+    # nullability matters in comparison
+    ty_non_nullable = pa.list_(pa.field("item", pa.int64(), nullable=False))
+    assert ty != ty_non_nullable
+
+    # field names don't matter by default
+    ty_named = pa.list_(pa.field("element", pa.int64()))
+    assert ty == ty_named
+    assert not ty.equals(ty_named, check_metadata=True)
+
+    # metadata doesn't matter by default
+    ty_metadata = pa.list_(
+        pa.field("item", pa.int64(), metadata={"hello": "world"}))
+    assert ty == ty_metadata
+    assert not ty.equals(ty_metadata, check_metadata=True)
+
     with pytest.raises(TypeError):
         pa.list_(None)
 
@@ -484,6 +572,27 @@ def test_map_type():
     assert ty.key_field == pa.field("key", pa.utf8(), nullable=False)
     assert ty.item_type == pa.int32()
     assert ty.item_field == pa.field("value", pa.int32(), nullable=True)
+
+    # nullability matters in comparison
+    ty_non_nullable = pa.map_(pa.utf8(), pa.field(
+        "value", pa.int32(), nullable=False))
+    assert ty != ty_non_nullable
+
+    # field names don't matter by default
+    ty_named = pa.map_(pa.field("x", pa.utf8(), nullable=False),
+                       pa.field("y", pa.int32()))
+    assert ty == ty_named
+    assert not ty.equals(ty_named, check_metadata=True)
+
+    # metadata doesn't matter by default
+    ty_metadata = pa.map_(pa.utf8(), pa.field(
+        "value", pa.int32(), metadata={"hello": "world"}))
+    assert ty == ty_metadata
+    assert not ty.equals(ty_metadata, check_metadata=True)
+
+    for keys_sorted in [True, False]:
+        assert pa.map_(pa.utf8(), pa.int32(),
+                       keys_sorted=keys_sorted).keys_sorted == keys_sorted
 
     with pytest.raises(TypeError):
         pa.map_(None)
@@ -522,13 +631,23 @@ def test_struct_type():
 
     assert ty['b'] == ty[2]
 
+    assert ty['b'] == ty.field('b')
+
+    assert ty[2] == ty.field(2)
+
     # Not found
     with pytest.raises(KeyError):
         ty['c']
 
+    with pytest.raises(KeyError):
+        ty.field('c')
+
     # Neither integer nor string
     with pytest.raises(TypeError):
         ty[None]
+
+    with pytest.raises(TypeError):
+        ty.field(None)
 
     for a, b in zip(ty, fields):
         a == b
@@ -579,6 +698,7 @@ def test_union_type():
     def check_fields(ty, fields):
         assert ty.num_fields == len(fields)
         assert [ty[i] for i in range(ty.num_fields)] == fields
+        assert [ty.field(i) for i in range(ty.num_fields)] == fields
 
     fields = [pa.field('x', pa.list_(pa.int32())),
               pa.field('y', pa.binary())]
@@ -680,10 +800,10 @@ def test_types_hashable():
         assert in_dict[type_] == i
 
 
-def test_types_picklable():
+def test_types_picklable(pickle_module):
     for ty in get_many_types():
-        data = pickle.dumps(ty)
-        assert pickle.loads(data) == ty
+        data = pickle_module.dumps(ty)
+        assert pickle_module.loads(data) == ty
 
 
 def test_types_weakref():
@@ -718,6 +838,24 @@ def test_fields_weakrefable():
     assert wr() is not None
     del field
     assert wr() is None
+
+
+def test_run_end_encoded_type():
+    ty = pa.run_end_encoded(pa.int64(), pa.utf8())
+    assert isinstance(ty, pa.RunEndEncodedType)
+    assert ty.run_end_type == pa.int64()
+    assert ty.value_type == pa.utf8()
+    assert ty.num_buffers == 1  # buffers expected to be {NULLPTR}
+    assert ty.num_fields == 2
+
+    with pytest.raises(TypeError):
+        pa.run_end_encoded(pa.int64(), None)
+
+    with pytest.raises(TypeError):
+        pa.run_end_encoded(None, pa.utf8())
+
+    with pytest.raises(ValueError):
+        pa.run_end_encoded(pa.int8(), pa.utf8())
 
 
 @pytest.mark.parametrize('t,check_func', [
@@ -789,6 +927,31 @@ def test_decimal_overflow():
     for i in (0, -1, 77):
         with pytest.raises(ValueError):
             pa.decimal256(i, 0)
+
+
+def test_timedelta_overflow():
+    # microsecond resolution, overflow
+    d = datetime.timedelta(days=-106751992, seconds=71945, microseconds=224192)
+    with pytest.raises(pa.ArrowInvalid):
+        pa.scalar(d)
+
+    # microsecond resolution, overflow
+    d = datetime.timedelta(days=106751991, seconds=14454, microseconds=775808)
+    with pytest.raises(pa.ArrowInvalid):
+        pa.scalar(d)
+
+    # nanosecond resolution, overflow
+    d = datetime.timedelta(days=-106752, seconds=763, microseconds=145224)
+    with pytest.raises(pa.ArrowInvalid):
+        pa.scalar(d, type=pa.duration('ns'))
+
+    # microsecond resolution, not overflow
+    pa.scalar(d, type=pa.duration('us')).as_py() == d
+
+    # second/millisecond resolution, not overflow
+    for d in [datetime.timedelta.min, datetime.timedelta.max]:
+        pa.scalar(d, type=pa.duration('ms')).as_py() == d
+        pa.scalar(d, type=pa.duration('s')).as_py() == d
 
 
 def test_type_equality_operators():
@@ -867,7 +1030,7 @@ def test_key_value_metadata():
     assert md['b'] == b'beta'
     assert md.get_all('a') == [b'alpha', b'Alpha', b'ALPHA']
     assert md.get_all('b') == [b'beta']
-    assert md.get_all('unkown') == []
+    assert md.get_all('unknown') == []
 
     with pytest.raises(KeyError):
         md = pa.KeyValueMetadata([
@@ -1032,6 +1195,7 @@ def test_is_boolean_value():
     assert pa.types.is_boolean_value(np.bool_(False))
 
 
+@h.settings(suppress_health_check=(h.HealthCheck.too_slow,))
 @h.given(
     past.all_types |
     past.all_fields |
@@ -1040,9 +1204,9 @@ def test_is_boolean_value():
 @h.example(
     pa.field(name='', type=pa.null(), metadata={'0': '', '': ''})
 )
-def test_pickling(field):
-    data = pickle.dumps(field)
-    assert pickle.loads(data) == field
+def test_pickling(pickle_module, field):
+    data = pickle_module.dumps(field)
+    assert pickle_module.loads(data) == field
 
 
 @h.given(
@@ -1065,3 +1229,24 @@ def test_hashing(items):
 
     for i, item in enumerate(items):
         assert container[item] == i
+
+
+def test_types_come_back_with_specific_type():
+    for arrow_type in get_many_types():
+        schema = pa.schema([pa.field("field_name", arrow_type)])
+        type_back = schema.field("field_name").type
+        assert type(type_back) is type(arrow_type)
+
+
+def test_schema_import_c_schema_interface():
+    class Wrapper:
+        def __init__(self, schema):
+            self.schema = schema
+
+        def __arrow_c_schema__(self):
+            return self.schema.__arrow_c_schema__()
+
+    schema = pa.schema([pa.field("field_name", pa.int32())])
+    wrapped_schema = Wrapper(schema)
+
+    assert pa.schema(wrapped_schema) == schema

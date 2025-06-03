@@ -10,32 +10,31 @@
     OF ANY KIND, either express or implied. See the License for the specific
     language governing permissions and limitations under the License. -->
 
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <dependencies>
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-memory-core</artifactId>
-            <version>${project.version}</version>
             <scope>compile</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-memory-netty</artifactId>
-            <version>${project.version}</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>
-            <version>${project.version}</version>
             <scope>compile</scope>
             <classifier>${arrow.vector.classifier}</classifier>
         </dependency>
-	<dependency>
+        <dependency>
             <groupId>org.apache.orc</groupId>
             <artifactId>orc-core</artifactId>
-            <version>1.7.0</version>
+            <version>1.9.2</version>
             <scope>test</scope>
             <exclusions>
                 <exclusion>
@@ -54,8 +53,25 @@
         </dependency>
         <dependency>
             <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-runtime</artifactId>
+            <version>3.3.6</version>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-api</artifactId>
+            <version>3.3.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-common</artifactId>
-            <version>2.2.0</version>
+            <version>3.3.3</version>
             <scope>test</scope>
             <exclusions>
                 <exclusion>
@@ -74,6 +90,14 @@
                     <groupId>javax.servlet</groupId>
                     <artifactId>servlet-api</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-reload4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>ch.qos.reload4j</groupId>
+                    <artifactId>reload4j</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
         <dependency>
@@ -87,7 +111,7 @@
     <parent>
         <groupId>org.apache.arrow</groupId>
         <artifactId>arrow-java-root</artifactId>
-        <version>6.0.1</version>
+        <version>15.0.0</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -105,7 +129,7 @@
             <resource>
                 <directory>${arrow.cpp.build.dir}</directory>
                 <includes>
-                    <include>**/libarrow_orc_jni.*</include>
+                    <include>**/*arrow_orc_jni.*</include>
                 </includes>
             </resource>
         </resources>

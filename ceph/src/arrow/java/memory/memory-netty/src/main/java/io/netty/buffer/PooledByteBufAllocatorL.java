@@ -71,7 +71,7 @@ public class PooledByteBufAllocatorL {
   }
 
   public int getChunkSize() {
-    return allocator.chunkSize;
+    return allocator.chunkSize();
   }
 
   public long getHugeBufferSize() {
@@ -137,7 +137,6 @@ public class PooledByteBufAllocatorL {
 
     private final PoolArena<ByteBuffer>[] directArenas;
     private final MemoryStatusThread statusThread;
-    private final int chunkSize;
 
     public InnerAllocator() {
       super(true);
@@ -150,10 +149,8 @@ public class PooledByteBufAllocatorL {
         throw new RuntimeException("Failure while initializing allocator.  Unable to retrieve direct arenas field.", e);
       }
 
-      this.chunkSize = directArenas[0].chunkSize;
-
       if (memoryLogger.isTraceEnabled()) {
-        statusThread = new MemoryStatusThread();
+        statusThread = new MemoryStatusThread(this);
         statusThread.start();
       } else {
         statusThread = null;
@@ -166,7 +163,7 @@ public class PooledByteBufAllocatorL {
 
       if (directArena != null) {
 
-        if (initialCapacity > directArena.chunkSize) {
+        if (initialCapacity > chunkSize()) {
           // This is beyond chunk size so we'll allocate separately.
           ByteBuf buf = UnpooledByteBufAllocator.DEFAULT.directBuffer(initialCapacity, maxCapacity);
 
@@ -256,16 +253,18 @@ public class PooledByteBufAllocatorL {
     }
 
     private class MemoryStatusThread extends Thread {
+      private final InnerAllocator allocator;
 
-      public MemoryStatusThread() {
+      public MemoryStatusThread(InnerAllocator allocator) {
         super("allocation.logger");
         this.setDaemon(true);
+        this.allocator = allocator;
       }
 
       @Override
       public void run() {
         while (true) {
-          memoryLogger.trace("Memory Usage: \n{}", PooledByteBufAllocatorL.this.toString());
+          memoryLogger.trace("Memory Usage: \n{}", allocator);
           try {
             Thread.sleep(MEMORY_LOGGER_FREQUENCY_SECONDS * 1000);
           } catch (InterruptedException e) {

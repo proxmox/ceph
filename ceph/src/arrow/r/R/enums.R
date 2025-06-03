@@ -65,7 +65,7 @@ Type <- enum("Type::type",
   TIME64 = 20L,
   INTERVAL_MONTHS = 21L,
   INTERVAL_DAY_TIME = 22L,
-  DECIMAL = 23L,
+  DECIMAL128 = 23L,
   DECIMAL256 = 24L,
   LIST = 25L,
   STRUCT = 26L,
@@ -78,10 +78,19 @@ Type <- enum("Type::type",
   DURATION = 33L,
   LARGE_STRING = 34L,
   LARGE_BINARY = 35L,
-  LARGE_LIST = 36L
+  LARGE_LIST = 36L,
+  INTERVAL_MONTH_DAY_NANO = 37L,
+  RUN_END_ENCODED = 38L
 )
 
 TYPES_WITH_NAN <- Type[c("HALF_FLOAT", "FLOAT", "DOUBLE")]
+TYPES_NUMERIC <- Type[
+  c(
+    "INT8", "UINT8", "INT16", "UINT16", "INT32", "UINT32",
+    "INT64", "UINT64", "HALF_FLOAT", "FLOAT", "DOUBLE",
+    "DECIMAL128", "DECIMAL256"
+    )
+  ]
 
 #' @rdname enums
 #' @export
@@ -89,9 +98,7 @@ StatusCode <- enum("StatusCode",
   OK = 0L, OutOfMemory = 1L, KeyError = 2L, TypeError = 3L,
   Invalid = 4L, IOError = 5L, CapacityError = 6L, IndexError = 7L,
   UnknownError = 9L, NotImplemented = 10L, SerializationError = 11L,
-  PythonError = 12L, RError = 13L,
-  PlasmaObjectExists = 20L, PlasmaObjectNotFound = 21L,
-  PlasmaStoreFull = 22L, PlasmaObjectAlreadySealed = 23L
+  PythonError = 12L, RError = 13L
 )
 
 #' @rdname enums
@@ -122,7 +129,7 @@ FileType <- enum("FileType",
 #' @export
 #' @rdname enums
 ParquetVersionType <- enum("ParquetVersionType",
-  PARQUET_1_0 = 0L, PARQUET_2_0 = 1L
+  PARQUET_1_0 = 0L, PARQUET_2_0 = 1L, PARQUET_2_4 = 2L, PARQUET_2_6 = 3L
 )
 
 #' @export

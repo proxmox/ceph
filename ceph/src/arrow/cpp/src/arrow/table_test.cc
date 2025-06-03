@@ -15,28 +15,31 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <cstdint>
-#include <memory>
-#include <vector>
+#include "arrow/table.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <memory>
+#include <vector>
+
 #include "arrow/array/array_base.h"
+#include "arrow/array/builder_binary.h"
 #include "arrow/array/data.h"
 #include "arrow/array/util.h"
 #include "arrow/chunked_array.h"
+#include "arrow/compute/cast.h"
 #include "arrow/record_batch.h"
 #include "arrow/status.h"
-#include "arrow/table.h"
-#include "arrow/testing/gtest_common.h"
 #include "arrow/testing/gtest_util.h"
+#include "arrow/testing/random.h"
 #include "arrow/type.h"
 #include "arrow/util/key_value_metadata.h"
 
 namespace arrow {
 
-class TestTable : public TestBase {
+class TestTable : public ::testing::Test {
  public:
   void MakeExample1(int length) {
     auto f0 = field("f0", int32());
@@ -46,8 +49,8 @@ class TestTable : public TestBase {
     std::vector<std::shared_ptr<Field>> fields = {f0, f1, f2};
     schema_ = std::make_shared<Schema>(fields);
 
-    arrays_ = {MakeRandomArray<Int32Array>(length), MakeRandomArray<UInt8Array>(length),
-               MakeRandomArray<Int16Array>(length)};
+    arrays_ = {gen_.ArrayOf(int32(), length), gen_.ArrayOf(uint8(), length),
+               gen_.ArrayOf(int16(), length)};
 
     columns_ = {std::make_shared<ChunkedArray>(arrays_[0]),
                 std::make_shared<ChunkedArray>(arrays_[1]),
@@ -55,6 +58,7 @@ class TestTable : public TestBase {
   }
 
  protected:
+  random::RandomArrayGenerator gen_{42};
   std::shared_ptr<Table> table_;
   std::shared_ptr<Schema> schema_;
 
@@ -112,15 +116,14 @@ TEST_F(TestTable, InvalidColumns) {
   table_ = Table::Make(schema_, columns_, length - 1);
   ASSERT_RAISES(Invalid, table_->ValidateFull());
 
-  columns_.clear();
-
   // Wrong number of columns
+  columns_.clear();
   table_ = Table::Make(schema_, columns_, length);
   ASSERT_RAISES(Invalid, table_->ValidateFull());
 
-  columns_ = {std::make_shared<ChunkedArray>(MakeRandomArray<Int32Array>(length)),
-              std::make_shared<ChunkedArray>(MakeRandomArray<UInt8Array>(length)),
-              std::make_shared<ChunkedArray>(MakeRandomArray<Int16Array>(length - 1))};
+  columns_ = {std::make_shared<ChunkedArray>(gen_.ArrayOf(int32(), length)),
+              std::make_shared<ChunkedArray>(gen_.ArrayOf(uint8(), length)),
+              std::make_shared<ChunkedArray>(gen_.ArrayOf(int16(), length - 1))};
 
   table_ = Table::Make(schema_, columns_, length);
   ASSERT_RAISES(Invalid, table_->ValidateFull());
@@ -166,18 +169,35 @@ TEST_F(TestTable, Equals) {
   ASSERT_FALSE(table_->Equals(*other));
   // Differing columns
   std::vector<std::shared_ptr<ChunkedArray>> other_columns = {
-      std::make_shared<ChunkedArray>(MakeRandomArray<Int32Array>(length, 10)),
-      std::make_shared<ChunkedArray>(MakeRandomArray<UInt8Array>(length, 10)),
-      std::make_shared<ChunkedArray>(MakeRandomArray<Int16Array>(length, 10))};
+      std::make_shared<ChunkedArray>(
+          gen_.ArrayOf(int32(), length, /*null_probability=*/0.3)),
+      std::make_shared<ChunkedArray>(
+          gen_.ArrayOf(uint8(), length, /*null_probability=*/0.3)),
+      std::make_shared<ChunkedArray>(
+          gen_.ArrayOf(int16(), length, /*null_probability=*/0.3))};
 
   other = Table::Make(schema_, other_columns);
   ASSERT_FALSE(table_->Equals(*other));
 
-  // Differring schema metadata
+  // Differing schema metadata
   other_schema = schema_->WithMetadata(::arrow::key_value_metadata({"key"}, {"value"}));
   other = Table::Make(other_schema, columns_);
   ASSERT_TRUE(table_->Equals(*other));
   ASSERT_FALSE(table_->Equals(*other, /*check_metadata=*/true));
+}
+
+TEST_F(TestTable, MakeEmpty) {
+  auto f0 = field("f0", int32());
+  auto f1 = field("f1", uint8());
+  auto f2 = field("f2", int16());
+
+  std::vector<std::shared_ptr<Field>> fields = {f0, f1, f2};
+  auto schema = ::arrow::schema({f0, f1, f2});
+
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> empty, Table::MakeEmpty(schema));
+  AssertSchemaEqual(*schema, *empty->schema());
+  ASSERT_OK(empty->ValidateFull());
+  ASSERT_EQ(empty->num_rows(), 0);
 }
 
 TEST_F(TestTable, FromRecordBatches) {
@@ -245,8 +265,11 @@ TEST_F(TestTable, CombineChunksZeroRow) {
   ASSERT_EQ(0, table->num_rows());
 
   ASSERT_OK_AND_ASSIGN(auto compacted, table->CombineChunks());
+  ASSERT_TRUE(compacted->Equals(*table));
 
-  EXPECT_TRUE(compacted->Equals(*table));
+  ASSERT_OK_AND_ASSIGN(auto batch, table->CombineChunksToBatch());
+  ASSERT_OK_AND_ASSIGN(auto expected, RecordBatch::MakeEmpty(schema_));
+  ASSERT_NO_FATAL_FAILURE(AssertBatchesEqual(*expected, *batch, /*verbose=*/true));
 }
 
 TEST_F(TestTable, CombineChunks) {
@@ -335,8 +358,8 @@ using TestPromoteTableToSchema = TestTable;
 
 TEST_F(TestPromoteTableToSchema, IdenticalSchema) {
   const int length = 10;
-  auto metadata =
-      std::shared_ptr<KeyValueMetadata>(new KeyValueMetadata({"foo"}, {"bar"}));
+  auto metadata = std::make_shared<KeyValueMetadata>(std::vector<std::string>{"foo"},
+                                                     std::vector<std::string>{"bar"});
   MakeExample1(length);
   std::shared_ptr<Table> table = Table::Make(schema_, arrays_);
 
@@ -366,8 +389,8 @@ TEST_F(TestPromoteTableToSchema, FieldsReorderedAfterPromotion) {
 
 TEST_F(TestPromoteTableToSchema, PromoteNullTypeField) {
   const int length = 10;
-  auto metadata =
-      std::shared_ptr<KeyValueMetadata>(new KeyValueMetadata({"foo"}, {"bar"}));
+  auto metadata = std::make_shared<KeyValueMetadata>(std::vector<std::string>{"foo"},
+                                                     std::vector<std::string>{"bar"});
   auto table_with_null_column = MakeTableWithOneNullFilledColumn("field", null(), length)
                                     ->ReplaceSchemaMetadata(metadata);
   auto promoted_schema = schema({field("field", int32())});
@@ -396,16 +419,17 @@ TEST_F(TestPromoteTableToSchema, IncompatibleTypes) {
   auto table = MakeTableWithOneNullFilledColumn("field", int32(), length);
 
   // Invalid promotion: int32 to null.
-  ASSERT_RAISES(Invalid, PromoteTableToSchema(table, schema({field("field", null())})));
+  ASSERT_RAISES(TypeError, PromoteTableToSchema(table, schema({field("field", null())})));
 
-  // Invalid promotion: int32 to uint32.
-  ASSERT_RAISES(Invalid, PromoteTableToSchema(table, schema({field("field", uint32())})));
+  // Invalid promotion: int32 to list.
+  ASSERT_RAISES(TypeError,
+                PromoteTableToSchema(table, schema({field("field", list(int32()))})));
 }
 
 TEST_F(TestPromoteTableToSchema, IncompatibleNullity) {
   const int length = 10;
   auto table = MakeTableWithOneNullFilledColumn("field", int32(), length);
-  ASSERT_RAISES(Invalid,
+  ASSERT_RAISES(TypeError,
                 PromoteTableToSchema(
                     table, schema({field("field", uint32())->WithNullable(false)})));
 }
@@ -413,9 +437,8 @@ TEST_F(TestPromoteTableToSchema, IncompatibleNullity) {
 TEST_F(TestPromoteTableToSchema, DuplicateFieldNames) {
   const int length = 10;
 
-  auto table = Table::Make(
-      schema({field("field", int32()), field("field", null())}),
-      {MakeRandomArray<Int32Array>(length), MakeRandomArray<NullArray>(length)});
+  auto table = Table::Make(schema({field("field", int32()), field("field", null())}),
+                           {gen_.ArrayOf(int32(), length), gen_.ArrayOf(null(), length)});
 
   ASSERT_RAISES(Invalid, PromoteTableToSchema(table, schema({field("field", int32())})));
 }
@@ -424,7 +447,7 @@ TEST_F(TestPromoteTableToSchema, TableFieldAbsentFromSchema) {
   const int length = 10;
 
   auto table =
-      Table::Make(schema({field("f0", int32())}), {MakeRandomArray<Int32Array>(length)});
+      Table::Make(schema({field("f0", int32())}), {gen_.ArrayOf(int32(), length)});
 
   std::shared_ptr<Table> result;
   ASSERT_RAISES(Invalid, PromoteTableToSchema(table, schema({field("f1", int32())})));
@@ -445,7 +468,7 @@ class ConcatenateTablesWithPromotionTest : public TestTable {
     std::vector<std::shared_ptr<Field>> fields = {f0, f1};
     schema_ = std::make_shared<Schema>(fields);
 
-    arrays_ = {MakeRandomArray<Int32Array>(length), MakeRandomArray<NullArray>(length)};
+    arrays_ = {gen_.ArrayOf(int32(), length), gen_.ArrayOf(null(), length)};
 
     columns_ = {std::make_shared<ChunkedArray>(arrays_[0]),
                 std::make_shared<ChunkedArray>(arrays_[1])};
@@ -497,6 +520,36 @@ TEST_F(ConcatenateTablesWithPromotionTest, Simple) {
   ASSERT_OK_AND_ASSIGN(result, ConcatenateTables({t2, t1}, GetOptions()));
   ASSERT_OK_AND_ASSIGN(expected, ConcatenateTables({t3, t1}));
   AssertTablesEqualUnorderedFields(*expected, *result);
+}
+
+TEST_F(ConcatenateTablesWithPromotionTest, Unify) {
+  auto t_i32 = TableFromJSON(schema({field("f0", int32())}), {"[[0], [1]]"});
+  auto t_i64 = TableFromJSON(schema({field("f0", int64())}), {"[[2], [3]]"});
+  auto t_null = TableFromJSON(schema({field("f0", null())}), {"[[null], [null]]"});
+
+  auto expected_int64 =
+      TableFromJSON(schema({field("f0", int64())}), {"[[0], [1], [2], [3]]"});
+  auto expected_null =
+      TableFromJSON(schema({field("f0", int32())}), {"[[0], [1], [null], [null]]"});
+
+  ConcatenateTablesOptions options;
+  EXPECT_RAISES_WITH_MESSAGE_THAT(Invalid,
+                                  ::testing::HasSubstr("Schema at index 1 was different"),
+                                  ConcatenateTables({t_i32, t_i64}, options));
+  EXPECT_RAISES_WITH_MESSAGE_THAT(Invalid,
+                                  ::testing::HasSubstr("Schema at index 1 was different"),
+                                  ConcatenateTables({t_i32, t_null}, options));
+
+  options.unify_schemas = true;
+  EXPECT_RAISES_WITH_MESSAGE_THAT(TypeError,
+                                  ::testing::HasSubstr("Field f0 has incompatible types"),
+                                  ConcatenateTables({t_i64, t_i32}, options));
+  ASSERT_OK_AND_ASSIGN(auto actual, ConcatenateTables({t_i32, t_null}, options));
+  AssertTablesEqual(*expected_null, *actual, /*same_chunk_layout=*/false);
+
+  options.field_merge_options.promote_numeric_width = true;
+  ASSERT_OK_AND_ASSIGN(actual, ConcatenateTables({t_i32, t_i64}, options));
+  AssertTablesEqual(*expected_int64, *actual, /*same_chunk_layout=*/false);
 }
 
 TEST_F(TestTable, Slice) {
@@ -582,8 +635,8 @@ TEST_F(TestTable, SelectColumns) {
   ASSERT_OK_AND_ASSIGN(auto subset, table->SelectColumns({0, 2}));
   ASSERT_OK(subset->ValidateFull());
 
-  auto expexted_schema = ::arrow::schema({schema_->field(0), schema_->field(2)});
-  auto expected = Table::Make(expexted_schema, {table->column(0), table->column(2)});
+  auto expected_schema = ::arrow::schema({schema_->field(0), schema_->field(2)});
+  auto expected = Table::Make(expected_schema, {table->column(0), table->column(2)});
   ASSERT_TRUE(subset->Equals(*expected));
 
   // Out of bounds indices
@@ -597,7 +650,7 @@ TEST_F(TestTable, RemoveColumnEmpty) {
 
   auto f0 = field("f0", int32());
   auto schema = ::arrow::schema({f0});
-  auto a0 = MakeRandomArray<Int32Array>(length);
+  auto a0 = gen_.ArrayOf(int32(), length);
 
   auto table = Table::Make(schema, {std::make_shared<ChunkedArray>(a0)});
 
@@ -624,8 +677,7 @@ TEST_F(TestTable, AddColumn) {
   ASSERT_RAISES(Invalid, table.AddColumn(-1, f0, columns_[0]));
 
   // Add column with wrong length
-  auto longer_col =
-      std::make_shared<ChunkedArray>(MakeRandomArray<Int32Array>(length + 1));
+  auto longer_col = std::make_shared<ChunkedArray>(gen_.ArrayOf(int32(), length + 1));
   ASSERT_RAISES(Invalid, table.AddColumn(0, f0, longer_col));
 
   // Add column 0 in different places
@@ -660,15 +712,18 @@ TEST_F(TestTable, AddColumn) {
   ASSERT_TRUE(result->Equals(*expected));
 }
 
-class TestTableBatchReader : public TestBase {};
+class TestTableBatchReader : public ::testing::Test {
+ protected:
+  random::RandomArrayGenerator gen_{42};
+};
 
 TEST_F(TestTableBatchReader, ReadNext) {
   ArrayVector c1, c2;
 
-  auto a1 = MakeRandomArray<Int32Array>(10);
-  auto a2 = MakeRandomArray<Int32Array>(20);
-  auto a3 = MakeRandomArray<Int32Array>(30);
-  auto a4 = MakeRandomArray<Int32Array>(10);
+  auto a1 = gen_.ArrayOf(int32(), 10);
+  auto a2 = gen_.ArrayOf(int32(), 20);
+  auto a3 = gen_.ArrayOf(int32(), 30);
+  auto a4 = gen_.ArrayOf(int32(), 10);
 
   auto sch1 = arrow::schema({field("f1", int32()), field("f2", int32())});
 
@@ -716,9 +771,9 @@ TEST_F(TestTableBatchReader, ReadNext) {
 }
 
 TEST_F(TestTableBatchReader, Chunksize) {
-  auto a1 = MakeRandomArray<Int32Array>(10);
-  auto a2 = MakeRandomArray<Int32Array>(20);
-  auto a3 = MakeRandomArray<Int32Array>(10);
+  auto a1 = gen_.ArrayOf(int32(), 10);
+  auto a2 = gen_.ArrayOf(int32(), 20);
+  auto a3 = gen_.ArrayOf(int32(), 10);
 
   auto sch1 = arrow::schema({field("f1", int32())});
 
@@ -747,6 +802,45 @@ TEST_F(TestTableBatchReader, Chunksize) {
   ASSERT_EQ(10, batch->num_rows());
 
   ASSERT_OK(i1.ReadNext(&batch));
+  ASSERT_EQ(nullptr, batch);
+}
+
+TEST_F(TestTableBatchReader, NoColumns) {
+  std::shared_ptr<Table> table =
+      Table::Make(schema({}), std::vector<std::shared_ptr<Array>>{}, 100);
+  TableBatchReader reader(*table);
+  reader.set_chunksize(60);
+
+  std::shared_ptr<RecordBatch> batch;
+  ASSERT_OK(reader.ReadNext(&batch));
+  ASSERT_OK(batch->ValidateFull());
+  ASSERT_EQ(60, batch->num_rows());
+
+  ASSERT_OK(reader.ReadNext(&batch));
+  ASSERT_OK(batch->ValidateFull());
+  ASSERT_EQ(40, batch->num_rows());
+
+  ASSERT_OK(reader.ReadNext(&batch));
+  ASSERT_EQ(nullptr, batch);
+}
+
+TEST_F(TestTableBatchReader, OwnedTableNoColumns) {
+  std::shared_ptr<Table> table =
+      Table::Make(schema({}), std::vector<std::shared_ptr<Array>>{}, 100);
+  TableBatchReader reader(table);
+  table.reset();
+  reader.set_chunksize(80);
+
+  std::shared_ptr<RecordBatch> batch;
+  ASSERT_OK(reader.ReadNext(&batch));
+  ASSERT_OK(batch->ValidateFull());
+  ASSERT_EQ(80, batch->num_rows());
+
+  ASSERT_OK(reader.ReadNext(&batch));
+  ASSERT_OK(batch->ValidateFull());
+  ASSERT_EQ(20, batch->num_rows());
+
+  ASSERT_OK(reader.ReadNext(&batch));
   ASSERT_EQ(nullptr, batch);
 }
 

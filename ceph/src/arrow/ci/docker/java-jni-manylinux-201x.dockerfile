@@ -18,20 +18,38 @@
 ARG base
 FROM ${base}
 
-# Install the libaries required by the Gandiva to run
-RUN vcpkg install --clean-after-build \
-        llvm \
-        boost-system \
-        boost-date-time \
-        boost-regex \
-        boost-predef \
-        boost-algorithm \
-        boost-locale \
-        boost-format \
-        boost-variant \
-        boost-multiprecision
+# Install the libraries required by the Gandiva to run
+# Use enable llvm[enable-rtti] in the vcpkg.json to avoid link problems in Gandiva
+RUN vcpkg install \
+        --clean-after-build \
+        --x-install-root=${VCPKG_ROOT}/installed \
+        --x-manifest-root=/arrow/ci/vcpkg \
+        --x-feature=dev \
+        --x-feature=flight \
+        --x-feature=gcs \
+        --x-feature=json \
+        --x-feature=parquet \
+        --x-feature=gandiva \
+        --x-feature=s3
 
 # Install Java
 ARG java=1.8.0
-RUN yum install -y java-$java-openjdk-devel && yum clean all
-ENV JAVA_HOME=/usr/lib/jvm/java-$java-openjdk/
+ARG maven=3.9.3
+RUN yum install -y java-$java-openjdk-devel && \
+      yum clean all && \
+      curl \
+        --fail \
+        --location \
+        "https://www.apache.org/dyn/closer.lua?action=download&filename=maven/maven-3/${maven}/binaries/apache-maven-${maven}-bin.tar.gz" | \
+        tar xfz - -C /usr/local && \
+      ln -s /usr/local/apache-maven-${maven}/bin/mvn /usr/local/bin
+
+# Install the gcs testbench
+COPY ci/scripts/install_gcs_testbench.sh /arrow/ci/scripts/
+RUN PYTHON=python /arrow/ci/scripts/install_gcs_testbench.sh default
+
+# For ci/scripts/{cpp,java}_*.sh
+ENV ARROW_HOME=/tmp/local \
+    ARROW_JAVA_CDATA=ON \
+    ARROW_JAVA_JNI=ON \
+    ARROW_USE_CCACHE=ON

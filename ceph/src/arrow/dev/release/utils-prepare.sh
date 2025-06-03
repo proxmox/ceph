@@ -32,6 +32,7 @@ update_versions() {
       local r_version=${base_version}.9000
       ;;
   esac
+  local major_version=${version%%.*}
 
   pushd "${ARROW_DIR}/c_glib"
   sed -i.bak -E -e \
@@ -64,7 +65,7 @@ update_versions() {
   popd
 
   pushd "${ARROW_DIR}/java"
-  mvn versions:set -DnewVersion=${version}
+  mvn versions:set -DnewVersion=${version} -DprocessAllModules
   find . -type f -name pom.xml.versionsBackup -delete
   git add "pom.xml"
   git add "**/pom.xml"
@@ -80,15 +81,15 @@ update_versions() {
 
   pushd "${ARROW_DIR}/dev/tasks/homebrew-formulae"
   sed -i.bak -E -e \
-    "s/arrow-[0-9.]+[0-9]+/arrow-${r_version}/g" \
-    autobrew/apache-arrow.rb
-  rm -f autobrew/apache-arrow.rb.bak
-  git add autobrew/apache-arrow.rb
-  sed -i.bak -E -e \
     "s/arrow-[0-9.\-]+[0-9SNAPHOT]+/arrow-${version}/g" \
+    apache-arrow-glib.rb \
     apache-arrow.rb
-  rm -f apache-arrow.rb.bak
-  git add apache-arrow.rb
+  rm -f \
+    apache-arrow-glib.rb.bak \
+    apache-arrow.rb.bak
+  git add \
+    apache-arrow-glib.rb \
+    apache-arrow.rb
   popd
 
   pushd "${ARROW_DIR}/js"
@@ -113,6 +114,11 @@ update_versions() {
     setup.py
   rm -f setup.py.bak
   git add setup.py
+  sed -i.bak -E -e \
+    "s/^set\(PYARROW_VERSION \".+\"\)/set(PYARROW_VERSION \"${version}\")/" \
+    CMakeLists.txt
+  rm -f CMakeLists.txt.bak
+  git add CMakeLists.txt
   popd
 
   pushd "${ARROW_DIR}/r"
@@ -123,12 +129,12 @@ update_versions() {
   git add DESCRIPTION
   # Replace dev version with release version
   sed -i.bak -E -e \
-    "0,/^# arrow /s/^# arrow .+/# arrow ${base_version}/" \
+    "/^<!--/,/^# arrow /s/^# arrow .+/# arrow ${base_version}/" \
     NEWS.md
   if [ ${type} = "snapshot" ]; then
     # Add a news entry for the new dev version
     sed -i.bak -E -e \
-      "0,/^# arrow /s/^(# arrow .+)/# arrow ${r_version}\n\n\1/" \
+      "/^<!--/,/^# arrow /s/^(# arrow .+)/# arrow ${r_version}\n\n\1/" \
       NEWS.md
   fi
   rm -f NEWS.md.bak
@@ -141,5 +147,29 @@ update_versions() {
     */*/*/version.rb
   rm -f */*/*/version.rb.bak
   git add */*/*/version.rb
+  popd
+
+  pushd "${ARROW_DIR}/go"
+  find . "(" -name "*.go*" -o -name "go.mod" -o -name README.md ")" -exec sed -i.bak -E -e \
+    "s|(github\\.com/apache/arrow/go)/v[0-9]+|\1/v${major_version}|g" {} \;
+  # update parquet writer version
+  sed -i.bak -E -e \
+    "s/\"parquet-go version .+\"/\"parquet-go version ${version}\"/" \
+    parquet/writer_properties.go
+  sed -i.bak -E -e \
+    "s/const PkgVersion = \".*/const PkgVersion = \"${version}\"/" \
+    arrow/doc.go
+
+  find . -name "*.bak" -exec rm {} \;
+  git add .
+  popd
+
+  pushd "${ARROW_DIR}"
+  ${PYTHON:-python3} "dev/release/utils-update-docs-versions.py" \
+                     . \
+                     "${base_version}" \
+                     "${next_version}"
+  git add docs/source/_static/versions.json
+  git add r/pkgdown/assets/versions.json
   popd
 }

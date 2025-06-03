@@ -17,8 +17,8 @@
 package parquet
 
 import (
-	"github.com/apache/arrow/go/v6/arrow/memory"
-	"github.com/apache/arrow/go/v6/parquet/compress"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/parquet/compress"
 )
 
 // Constants for default property values used for the default reader, writer and column props.
@@ -46,7 +46,8 @@ const (
 	DefaultStatsEnabled = true
 	// If the stats are larger than 4K the writer will skip writing them out anyways.
 	DefaultMaxStatsSize int64 = 4096
-	DefaultCreatedBy          = "parquet-go version 1.0.0"
+	DefaultCreatedBy          = "parquet-go version 15.0.0"
+	DefaultRootName           = "schema"
 )
 
 // ColumnProperties defines the encoding, codec, and so on for a given column.
@@ -62,6 +63,7 @@ type ColumnProperties struct {
 // DefaultColumnProperties returns the default properties which get utilized for writing.
 //
 // The default column properties are the following constants:
+//
 //	Encoding:						Encodings.Plain
 //	Codec:							compress.Codecs.Uncompressed
 //	DictionaryEnabled:	DefaultDictionaryEnabled
@@ -108,7 +110,7 @@ func WithDictionaryDefault(dict bool) WriterProperty {
 // WithDictionaryFor allows enabling or disabling dictionary encoding for a given column path string
 func WithDictionaryFor(path string, dict bool) WriterProperty {
 	return func(cfg *writerPropConfig) {
-		cfg.dictEnabled[path] = true
+		cfg.dictEnabled[path] = dict
 	}
 }
 
@@ -164,6 +166,22 @@ func WithVersion(version Version) WriterProperty {
 func WithCreatedBy(createdby string) WriterProperty {
 	return func(cfg *writerPropConfig) {
 		cfg.wr.createdBy = createdby
+	}
+}
+
+// WithRootName enables customization of the name used for the root schema node. This is required
+// to maintain compatibility with other tools.
+func WithRootName(name string) WriterProperty {
+	return func(cfg *writerPropConfig) {
+		cfg.wr.rootName = name
+	}
+}
+
+// WithRootRepetition enables customization of the repetition used for the root schema node.
+// This is required to maintain compatibility with other tools.
+func WithRootRepetition(repetition Repetition) WriterProperty {
+	return func(cfg *writerPropConfig) {
+		cfg.wr.rootRepetition = repetition
 	}
 }
 
@@ -273,17 +291,28 @@ func WithEncryptionProperties(props *FileEncryptionProperties) WriterProperty {
 	}
 }
 
+// WithStoreDecimalAsInteger specifies whether to try using an int32/int64 for storing
+// decimal data rather than fixed len byte arrays if the precision is low enough.
+func WithStoreDecimalAsInteger(enabled bool) WriterProperty {
+	return func(cfg *writerPropConfig) {
+		cfg.wr.storeDecimalAsInt = enabled
+	}
+}
+
 // WriterProperties is the collection of properties to use for writing a parquet file. The values are
 // read only once it has been constructed.
 type WriterProperties struct {
-	mem             memory.Allocator
-	dictPagesize    int64
-	batchSize       int64
-	maxRowGroupLen  int64
-	pageSize        int64
-	parquetVersion  Version
-	createdBy       string
-	dataPageVersion DataPageVersion
+	mem               memory.Allocator
+	dictPagesize      int64
+	batchSize         int64
+	maxRowGroupLen    int64
+	pageSize          int64
+	parquetVersion    Version
+	createdBy         string
+	dataPageVersion   DataPageVersion
+	rootName          string
+	rootRepetition    Repetition
+	storeDecimalAsInt bool
 
 	defColumnProps  ColumnProperties
 	columnProps     map[string]*ColumnProperties
@@ -300,6 +329,8 @@ func defaultWriterProperties() *WriterProperties {
 		parquetVersion:  V2_LATEST,
 		dataPageVersion: DataPageV1,
 		createdBy:       DefaultCreatedBy,
+		rootName:        DefaultRootName,
+		rootRepetition:  Repetitions.Repeated,
 		defColumnProps:  DefaultColumnProperties(),
 	}
 }
@@ -309,8 +340,9 @@ func defaultWriterProperties() *WriterProperties {
 // properties will be utilized for writing.
 //
 // The Default properties use the following constants:
+//
 //	Allocator:					memory.DefaultAllocator
-// 	DictionaryPageSize: DefaultDictionaryPageSizeLimit
+//	DictionaryPageSize: DefaultDictionaryPageSizeLimit
 //	BatchSize:					DefaultWriteBatchSize
 //	MaxRowGroupLength:	DefaultMaxRowGroupLen
 //	PageSize:						DefaultDataPageSize
@@ -370,6 +402,8 @@ func (w *WriterProperties) FileEncryptionProperties() *FileEncryptionProperties 
 
 func (w *WriterProperties) Allocator() memory.Allocator      { return w.mem }
 func (w *WriterProperties) CreatedBy() string                { return w.createdBy }
+func (w *WriterProperties) RootName() string                 { return w.rootName }
+func (w *WriterProperties) RootRepetition() Repetition       { return w.rootRepetition }
 func (w *WriterProperties) WriteBatchSize() int64            { return w.batchSize }
 func (w *WriterProperties) DataPageSize() int64              { return w.pageSize }
 func (w *WriterProperties) DictionaryPageSizeLimit() int64   { return w.dictPagesize }
@@ -390,7 +424,7 @@ func (w *WriterProperties) CompressionFor(path string) compress.Compression {
 	return w.defColumnProps.Codec
 }
 
-//CompressionPath is the same as CompressionFor but takes a ColumnPath
+// CompressionPath is the same as CompressionFor but takes a ColumnPath
 func (w *WriterProperties) CompressionPath(path ColumnPath) compress.Compression {
 	return w.CompressionFor(path.String())
 }
@@ -507,4 +541,12 @@ func (w *WriterProperties) ColumnEncryptionProperties(path string) *ColumnEncryp
 		return w.encryptionProps.ColumnEncryptionProperties(path)
 	}
 	return nil
+}
+
+// StoreDecimalAsInteger returns the config option controlling whether or not
+// to try storing decimal data as an integer type if the precision is low enough
+// (1 <= prec <= 18 can be stored as an int), otherwise it will be stored as
+// a fixed len byte array.
+func (w *WriterProperties) StoreDecimalAsInteger() bool {
+	return w.storeDecimalAsInt
 }

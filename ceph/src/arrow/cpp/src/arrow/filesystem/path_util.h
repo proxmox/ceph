@@ -17,13 +17,13 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "arrow/type_fwd.h"
-#include "arrow/util/optional.h"
-#include "arrow/util/string_view.h"
 
 namespace arrow {
 namespace fs {
@@ -36,11 +36,27 @@ constexpr char kSep = '/';
 
 // Split an abstract path into its individual components.
 ARROW_EXPORT
-std::vector<std::string> SplitAbstractPath(const std::string& s);
+std::vector<std::string> SplitAbstractPath(const std::string& path, char sep = kSep);
+
+// Slice the individual components of an abstract path and combine them
+//
+// If offset or length are negative then an empty string is returned
+// If offset is >= the number of components then an empty string is returned
+// If offset + length is >= the number of components then length is truncated
+ARROW_EXPORT
+std::string SliceAbstractPath(const std::string& path, int offset, int length,
+                              char sep = kSep);
 
 // Return the extension of the file
-ARROW_EXPORT
-std::string GetAbstractPathExtension(const std::string& s);
+ARROW_EXPORT std::string GetAbstractPathExtension(const std::string& s);
+
+// Return the depth (number of components) of an abstract path
+//
+// Trailing slashes do not count towards depth
+// Leading slashes do not count towards depth
+//
+// The root path ("/") has depth 0
+ARROW_EXPORT int GetAbstractPathDepth(std::string_view path);
 
 // Return the parent directory and basename of an abstract path.  Both values may be
 // empty.
@@ -53,7 +69,7 @@ Status ValidateAbstractPathParts(const std::vector<std::string>& parts);
 
 // Append a non-empty stem to an abstract path.
 ARROW_EXPORT
-std::string ConcatAbstractPath(const std::string& base, const std::string& stem);
+std::string ConcatAbstractPath(std::string_view base, std::string_view stem);
 
 // Make path relative to base, if it starts with base.  Otherwise error out.
 ARROW_EXPORT
@@ -61,31 +77,45 @@ Result<std::string> MakeAbstractPathRelative(const std::string& base,
                                              const std::string& path);
 
 ARROW_EXPORT
-std::string EnsureLeadingSlash(util::string_view s);
+std::string EnsureLeadingSlash(std::string_view s);
 
 ARROW_EXPORT
-util::string_view RemoveLeadingSlash(util::string_view s);
+std::string_view RemoveLeadingSlash(std::string_view s);
 
 ARROW_EXPORT
-std::string EnsureTrailingSlash(util::string_view s);
+std::string EnsureTrailingSlash(std::string_view s);
+
+/// \brief remove the forward slash (if any) from the given path
+/// \param s the input path
+/// \param preserve_root if true, allow a path of just "/" to remain unchanged
+ARROW_EXPORT
+std::string_view RemoveTrailingSlash(std::string_view s, bool preserve_root = false);
 
 ARROW_EXPORT
-util::string_view RemoveTrailingSlash(util::string_view s);
+Status AssertNoTrailingSlash(std::string_view s);
+
+inline bool HasTrailingSlash(std::string_view s) {
+  return !s.empty() && s.back() == kSep;
+}
+
+inline bool HasLeadingSlash(std::string_view s) {
+  return !s.empty() && s.front() == kSep;
+}
 
 ARROW_EXPORT
-bool IsAncestorOf(util::string_view ancestor, util::string_view descendant);
+bool IsAncestorOf(std::string_view ancestor, std::string_view descendant);
 
 ARROW_EXPORT
-util::optional<util::string_view> RemoveAncestor(util::string_view ancestor,
-                                                 util::string_view descendant);
+std::optional<std::string_view> RemoveAncestor(std::string_view ancestor,
+                                               std::string_view descendant);
 
 /// Return a vector of ancestors between a base path and a descendant.
 /// For example,
 ///
 /// AncestorsFromBasePath("a/b", "a/b/c/d/e") -> ["a/b/c", "a/b/c/d"]
 ARROW_EXPORT
-std::vector<std::string> AncestorsFromBasePath(util::string_view base_path,
-                                               util::string_view descendant);
+std::vector<std::string> AncestorsFromBasePath(std::string_view base_path,
+                                               std::string_view descendant);
 
 /// Given a vector of paths of directories which must be created, produce a the minimal
 /// subset for passing to CreateDir(recursive=true) by removing redundant parent
@@ -95,13 +125,13 @@ std::vector<std::string> MinimalCreateDirSet(std::vector<std::string> dirs);
 
 // Join the components of an abstract path.
 template <class StringIt>
-std::string JoinAbstractPath(StringIt it, StringIt end) {
+std::string JoinAbstractPath(StringIt it, StringIt end, char sep = kSep) {
   std::string path;
   for (; it != end; ++it) {
     if (it->empty()) continue;
 
     if (!path.empty()) {
-      path += kSep;
+      path += sep;
     }
     path += *it;
   }
@@ -109,21 +139,35 @@ std::string JoinAbstractPath(StringIt it, StringIt end) {
 }
 
 template <class StringRange>
-std::string JoinAbstractPath(const StringRange& range) {
-  return JoinAbstractPath(range.begin(), range.end());
+std::string JoinAbstractPath(const StringRange& range, char sep = kSep) {
+  return JoinAbstractPath(range.begin(), range.end(), sep);
 }
 
 /// Convert slashes to backslashes, on all platforms.  Mostly useful for testing.
 ARROW_EXPORT
-std::string ToBackslashes(util::string_view s);
+std::string ToBackslashes(std::string_view s);
 
 /// Ensure a local path is abstract, by converting backslashes to regular slashes
 /// on Windows.  Return the path unchanged on other systems.
 ARROW_EXPORT
-std::string ToSlashes(util::string_view s);
+std::string ToSlashes(std::string_view s);
 
 ARROW_EXPORT
-bool IsEmptyPath(util::string_view s);
+bool IsEmptyPath(std::string_view s);
+
+ARROW_EXPORT
+bool IsLikelyUri(std::string_view s);
+
+class ARROW_EXPORT Globber {
+ public:
+  ~Globber();
+  explicit Globber(std::string pattern);
+  bool Matches(const std::string& path);
+
+ protected:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace internal
 }  // namespace fs

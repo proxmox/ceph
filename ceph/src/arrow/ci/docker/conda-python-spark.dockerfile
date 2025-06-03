@@ -17,17 +17,22 @@
 
 ARG repo
 ARG arch=amd64
-ARG python=3.6
+ARG python=3.8
 FROM ${repo}:${arch}-conda-python-${python}
 
 ARG jdk=8
 ARG maven=3.5
 
-RUN conda install -q \
+ARG numpy=latest
+COPY ci/scripts/install_numpy.sh /arrow/ci/scripts/
+
+RUN mamba install -q -y \
         openjdk=${jdk} \
         maven=${maven} \
         pandas && \
-    conda clean --all
+    mamba clean --all && \
+    mamba uninstall -q -y numpy && \
+    /arrow/ci/scripts/install_numpy.sh ${numpy}
 
 # installing specific version of spark
 ARG spark=master
@@ -37,7 +42,12 @@ RUN /arrow/ci/scripts/install_spark.sh ${spark} /spark
 # build cpp with tests
 ENV CC=gcc \
     CXX=g++ \
-    ARROW_PYTHON=ON \
-    ARROW_HDFS=ON \
+    ARROW_ACERO=ON \
     ARROW_BUILD_TESTS=OFF \
+    ARROW_COMPUTE=ON \
+    ARROW_CSV=ON \
+    ARROW_DATASET=ON \
+    ARROW_FILESYSTEM=ON \
+    ARROW_HDFS=ON \
+    ARROW_JSON=ON \
     SPARK_VERSION=${spark}

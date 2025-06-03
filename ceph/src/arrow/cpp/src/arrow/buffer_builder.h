@@ -43,23 +43,27 @@ namespace arrow {
 /// data
 class ARROW_EXPORT BufferBuilder {
  public:
-  explicit BufferBuilder(MemoryPool* pool = default_memory_pool())
+  explicit BufferBuilder(MemoryPool* pool = default_memory_pool(),
+                         int64_t alignment = kDefaultBufferAlignment)
       : pool_(pool),
         data_(/*ensure never null to make ubsan happy and avoid check penalties below*/
               util::MakeNonNull<uint8_t>()),
         capacity_(0),
-        size_(0) {}
+        size_(0),
+        alignment_(alignment) {}
 
   /// \brief Constructs new Builder that will start using
   /// the provided buffer until Finish/Reset are called.
   /// The buffer is not resized.
   explicit BufferBuilder(std::shared_ptr<ResizableBuffer> buffer,
-                         MemoryPool* pool = default_memory_pool())
+                         MemoryPool* pool = default_memory_pool(),
+                         int64_t alignment = kDefaultBufferAlignment)
       : buffer_(std::move(buffer)),
         pool_(pool),
         data_(buffer_->mutable_data()),
         capacity_(buffer_->capacity()),
-        size_(buffer_->size()) {}
+        size_(buffer_->size()),
+        alignment_(alignment) {}
 
   /// \brief Resize the buffer to the nearest multiple of 64 bytes
   ///
@@ -71,7 +75,8 @@ class ARROW_EXPORT BufferBuilder {
   /// \return Status
   Status Resize(const int64_t new_capacity, bool shrink_to_fit = true) {
     if (buffer_ == NULLPTR) {
-      ARROW_ASSIGN_OR_RAISE(buffer_, AllocateResizableBuffer(new_capacity, pool_));
+      ARROW_ASSIGN_OR_RAISE(buffer_,
+                            AllocateResizableBuffer(new_capacity, alignment_, pool_));
     } else {
       ARROW_RETURN_NOT_OK(buffer_->Resize(new_capacity, shrink_to_fit));
     }
@@ -113,6 +118,11 @@ class ARROW_EXPORT BufferBuilder {
     return Status::OK();
   }
 
+  /// \brief Append the given data to the buffer
+  ///
+  /// The buffer is automatically expanded if necessary.
+  Status Append(std::string_view v) { return Append(v.data(), v.size()); }
+
   /// \brief Append copies of a value to the buffer
   ///
   /// The buffer is automatically expanded if necessary.
@@ -134,6 +144,10 @@ class ARROW_EXPORT BufferBuilder {
     size_ += length;
   }
 
+  void UnsafeAppend(std::string_view v) {
+    UnsafeAppend(v.data(), static_cast<int64_t>(v.size()));
+  }
+
   void UnsafeAppend(const int64_t num_copies, uint8_t value) {
     memset(data_ + size_, value, static_cast<size_t>(num_copies));
     size_ += num_copies;
@@ -153,7 +167,7 @@ class ARROW_EXPORT BufferBuilder {
     if (size_ != 0) buffer_->ZeroPadding();
     *out = buffer_;
     if (*out == NULLPTR) {
-      ARROW_ASSIGN_OR_RAISE(*out, AllocateBuffer(0, pool_));
+      ARROW_ASSIGN_OR_RAISE(*out, AllocateBuffer(0, alignment_, pool_));
     }
     Reset();
     return Status::OK();
@@ -191,6 +205,14 @@ class ARROW_EXPORT BufferBuilder {
   int64_t length() const { return size_; }
   const uint8_t* data() const { return data_; }
   uint8_t* mutable_data() { return data_; }
+  template <typename T>
+  const T* data_as() const {
+    return reinterpret_cast<const T*>(data_);
+  }
+  template <typename T>
+  T* mutable_data_as() {
+    return reinterpret_cast<T*>(data_);
+  }
 
  private:
   std::shared_ptr<ResizableBuffer> buffer_;
@@ -198,6 +220,7 @@ class ARROW_EXPORT BufferBuilder {
   uint8_t* data_;
   int64_t capacity_;
   int64_t size_;
+  int64_t alignment_;
 };
 
 template <typename T, typename Enable = void>
@@ -209,8 +232,9 @@ class TypedBufferBuilder<
     T, typename std::enable_if<std::is_arithmetic<T>::value ||
                                std::is_standard_layout<T>::value>::type> {
  public:
-  explicit TypedBufferBuilder(MemoryPool* pool = default_memory_pool())
-      : bytes_builder_(pool) {}
+  explicit TypedBufferBuilder(MemoryPool* pool = default_memory_pool(),
+                              int64_t alignment = kDefaultBufferAlignment)
+      : bytes_builder_(pool, alignment) {}
 
   explicit TypedBufferBuilder(std::shared_ptr<ResizableBuffer> buffer,
                               MemoryPool* pool = default_memory_pool())
@@ -247,7 +271,7 @@ class TypedBufferBuilder<
 
   template <typename Iter>
   void UnsafeAppend(Iter values_begin, Iter values_end) {
-    int64_t num_elements = static_cast<int64_t>(std::distance(values_begin, values_end));
+    auto num_elements = static_cast<int64_t>(std::distance(values_begin, values_end));
     auto data = mutable_data() + length();
     bytes_builder_.UnsafeAdvance(num_elements * sizeof(T));
     std::copy(values_begin, values_end, data);
@@ -306,8 +330,9 @@ class TypedBufferBuilder<
 template <>
 class TypedBufferBuilder<bool> {
  public:
-  explicit TypedBufferBuilder(MemoryPool* pool = default_memory_pool())
-      : bytes_builder_(pool) {}
+  explicit TypedBufferBuilder(MemoryPool* pool = default_memory_pool(),
+                              int64_t alignment = kDefaultBufferAlignment)
+      : bytes_builder_(pool, alignment) {}
 
   explicit TypedBufferBuilder(BufferBuilder builder)
       : bytes_builder_(std::move(builder)) {}
@@ -333,7 +358,7 @@ class TypedBufferBuilder<bool> {
   }
 
   void UnsafeAppend(bool value) {
-    BitUtil::SetBitTo(mutable_data(), bit_length_, value);
+    bit_util::SetBitTo(mutable_data(), bit_length_, value);
     if (!value) {
       ++false_count_;
     }
@@ -361,7 +386,7 @@ class TypedBufferBuilder<bool> {
   }
 
   void UnsafeAppend(const int64_t num_copies, bool value) {
-    BitUtil::SetBitsTo(mutable_data(), bit_length_, num_copies, value);
+    bit_util::SetBitsTo(mutable_data(), bit_length_, num_copies, value);
     false_count_ += num_copies * !value;
     bit_length_ += num_copies;
   }
@@ -386,7 +411,7 @@ class TypedBufferBuilder<bool> {
   Status Resize(const int64_t new_capacity, bool shrink_to_fit = true) {
     const int64_t old_byte_capacity = bytes_builder_.capacity();
     ARROW_RETURN_NOT_OK(
-        bytes_builder_.Resize(BitUtil::BytesForBits(new_capacity), shrink_to_fit));
+        bytes_builder_.Resize(bit_util::BytesForBits(new_capacity), shrink_to_fit));
     // Resize() may have chosen a larger capacity (e.g. for padding),
     // so ask it again before calling memset().
     const int64_t new_byte_capacity = bytes_builder_.capacity();
@@ -414,7 +439,7 @@ class TypedBufferBuilder<bool> {
 
   Status Finish(std::shared_ptr<Buffer>* out, bool shrink_to_fit = true) {
     // set bytes_builder_.size_ == byte size of data
-    bytes_builder_.UnsafeAdvance(BitUtil::BytesForBits(bit_length_) -
+    bytes_builder_.UnsafeAdvance(bit_util::BytesForBits(bit_length_) -
                                  bytes_builder_.length());
     bit_length_ = false_count_ = 0;
     return bytes_builder_.Finish(out, shrink_to_fit);
@@ -433,7 +458,7 @@ class TypedBufferBuilder<bool> {
   /// only for memory allocation).
   Result<std::shared_ptr<Buffer>> FinishWithLength(int64_t final_length,
                                                    bool shrink_to_fit = true) {
-    const auto final_byte_length = BitUtil::BytesForBits(final_length);
+    const auto final_byte_length = bit_util::BytesForBits(final_length);
     bytes_builder_.UnsafeAdvance(final_byte_length - bytes_builder_.length());
     bit_length_ = false_count_ = 0;
     return bytes_builder_.FinishWithLength(final_byte_length, shrink_to_fit);

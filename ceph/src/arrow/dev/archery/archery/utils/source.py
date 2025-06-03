@@ -18,8 +18,23 @@
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 
+from .command import Command
 from .git import git
+
+
+ARROW_ROOT_DEFAULT = os.environ.get(
+    'ARROW_ROOT',
+    Path(__file__).resolve().parents[4]
+)
+
+
+def arrow_path(path):
+    """
+    Return full path to a file given its path inside the Arrow repo.
+    """
+    return os.path.join(ARROW_ROOT_DEFAULT, path)
 
 
 class InvalidArrowSource(Exception):
@@ -104,10 +119,20 @@ class ArrowSources:
             raise ValueError("{} is not backed by git".format(self))
 
         rev = revision if revision else "HEAD"
-        archive = git.archive("--prefix=apache-arrow/", rev,
+        archive = git.archive("--prefix=apache-arrow.tmp/", rev,
                               git_dir=self.path)
-
-        # TODO(fsaintjacques): fix dereference for
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            tar_path = tmp / "apache-arrow.tar"
+            with open(tar_path, "wb") as tar:
+                tar.write(archive)
+            Command("tar").run("xf", tar_path, "-C", tmp)
+            # Must use the same logic in dev/release/02-source.sh
+            Command("cp").run("-R", "-L", tmp /
+                              "apache-arrow.tmp", tmp / "apache-arrow")
+            Command("tar").run("cf", tar_path, "-C", tmp, "apache-arrow")
+            with open(tar_path, "rb") as tar:
+                archive = tar.read()
 
         if compressor:
             archive = compressor(archive)
@@ -208,4 +233,4 @@ class ArrowSources:
         )
 
     def __repr__(self):
-        return self.path
+        return os.fspath(self.path)

@@ -42,10 +42,11 @@ DEFAULT_REPETITIONS = 1
 
 class BenchmarkRunner:
     def __init__(self, suite_filter=None, benchmark_filter=None,
-                 repetitions=DEFAULT_REPETITIONS):
+                 repetitions=DEFAULT_REPETITIONS, repetition_min_time=None):
         self.suite_filter = suite_filter
         self.benchmark_filter = benchmark_filter
         self.repetitions = repetitions
+        self.repetition_min_time = repetition_min_time
 
     @property
     def suites(self):
@@ -107,9 +108,10 @@ class StaticBenchmarkRunner(BenchmarkRunner):
 class CppBenchmarkRunner(BenchmarkRunner):
     """ Run suites from a CMakeBuild. """
 
-    def __init__(self, build, **kwargs):
+    def __init__(self, build, benchmark_extras, **kwargs):
         """ Initialize a CppBenchmarkRunner. """
         self.build = build
+        self.benchmark_extras = benchmark_extras
         super().__init__(**kwargs)
 
     @staticmethod
@@ -142,14 +144,17 @@ class CppBenchmarkRunner(BenchmarkRunner):
 
     def suite(self, name, suite_bin):
         """ Returns the resulting benchmarks for a given suite. """
-        suite_cmd = GoogleBenchmarkCommand(suite_bin, self.benchmark_filter)
+        suite_cmd = GoogleBenchmarkCommand(suite_bin, self.benchmark_filter,
+                                           self.benchmark_extras)
 
         # Ensure there will be data
         benchmark_names = suite_cmd.list_benchmarks()
         if not benchmark_names:
             return None
 
-        results = suite_cmd.results(repetitions=self.repetitions)
+        results = suite_cmd.results(
+            repetitions=self.repetitions,
+            repetition_min_time=self.repetition_min_time)
         benchmarks = GoogleBenchmark.from_json(results.get("benchmarks"))
         return BenchmarkSuite(name, benchmarks)
 
@@ -165,6 +170,7 @@ class CppBenchmarkRunner(BenchmarkRunner):
         """ Returns all suite for a runner. """
         suite_matcher = regex_filter(self.suite_filter)
 
+        suite_found = False
         suite_and_binaries = self.suites_binaries
         for suite_name in suite_and_binaries:
             if not suite_matcher(suite_name):
@@ -180,7 +186,11 @@ class CppBenchmarkRunner(BenchmarkRunner):
                              .format(suite_name))
                 continue
 
+            suite_found = True
             yield suite
+
+        if not suite_found:
+            raise ValueError("No benchmark matches the suite/benchmark filter")
 
     @staticmethod
     def from_rev_or_path(src, root, rev_or_path, cmake_conf, **kwargs):
@@ -247,6 +257,7 @@ class JavaBenchmarkRunner(BenchmarkRunner):
         if not benchmark_names:
             return None
 
+        # TODO: support `repetition_min_time`
         results = suite_cmd.results(repetitions=self.repetitions)
         benchmarks = JavaMicrobenchmarkHarness.from_json(results)
         return BenchmarkSuite(name, benchmarks)

@@ -25,6 +25,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import java.nio.ByteBuffer;
@@ -56,6 +57,7 @@ import org.apache.arrow.vector.holders.NullableUInt4Holder;
 import org.apache.arrow.vector.holders.NullableVarBinaryHolder;
 import org.apache.arrow.vector.holders.NullableVarCharHolder;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
+import org.apache.arrow.vector.testing.ValueVectorDataPopulator;
 import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -63,6 +65,7 @@ import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.util.OversizedAllocationException;
+import org.apache.arrow.vector.util.ReusableByteArray;
 import org.apache.arrow.vector.util.Text;
 import org.apache.arrow.vector.util.TransferPair;
 import org.junit.After;
@@ -186,6 +189,41 @@ public class TestValueVector {
       for (int i = 0; i < capacityBeforeReset; i++) {
         // TODO: test vector.get(i) is 0 after unsafe get added
         assertEquals("non-zero data not expected at index: " + i, true, vector.isNull(i));
+      }
+    }
+  }
+
+  @Test
+  public void testNoOverFlowWithUINT() {
+    try (final UInt8Vector uInt8Vector = new UInt8Vector("uint8", allocator);
+         final UInt4Vector uInt4Vector = new UInt4Vector("uint4", allocator);
+         final UInt1Vector uInt1Vector = new UInt1Vector("uint1", allocator)) {
+
+      long[] longValues = new long[]{Long.MIN_VALUE, Long.MAX_VALUE, -1L};
+      uInt8Vector.allocateNew(3);
+      uInt8Vector.setValueCount(3);
+      for (int i = 0; i < longValues.length; i++) {
+        uInt8Vector.set(i, longValues[i]);
+        long readValue = uInt8Vector.getObjectNoOverflow(i).longValue();
+        assertEquals(readValue, longValues[i]);
+      }
+
+      int[] intValues = new int[]{Integer.MIN_VALUE, Integer.MAX_VALUE, -1};
+      uInt4Vector.allocateNew(3);
+      uInt4Vector.setValueCount(3);
+      for (int i = 0; i < intValues.length; i++) {
+        uInt4Vector.set(i, intValues[i]);
+        int actualValue = (int) UInt4Vector.getNoOverflow(uInt4Vector.getDataBuffer(), i);
+        assertEquals(intValues[i], actualValue);
+      }
+
+      byte[] byteValues = new byte[]{Byte.MIN_VALUE, Byte.MAX_VALUE, -1};
+      uInt1Vector.allocateNew(3);
+      uInt1Vector.setValueCount(3);
+      for (int i = 0; i < byteValues.length; i++) {
+        uInt1Vector.set(i, byteValues[i]);
+        byte actualValue = (byte) UInt1Vector.getNoOverflow(uInt1Vector.getDataBuffer(), i);
+        assertEquals(byteValues[i], actualValue);
       }
     }
   }
@@ -1072,6 +1110,22 @@ public class TestValueVector {
     }
   }
 
+  @Test
+  public void testGetTextRepeatedly() {
+    try (final VarCharVector vector = new VarCharVector("myvector", allocator)) {
+
+      ValueVectorDataPopulator.setVector(vector, STR1, STR2);
+      vector.setValueCount(2);
+
+      /* check the vector output */
+      Text text = new Text();
+      vector.read(0, text);
+      assertArrayEquals(STR1, text.getBytes());
+      vector.read(1, text);
+      assertArrayEquals(STR2, text.getBytes());
+    }
+  }
+
   @Test /* VarBinaryVector */
   public void testNullableVarType2() {
 
@@ -1102,6 +1156,50 @@ public class TestValueVector {
     }
   }
 
+  @Test(expected = OversizedAllocationException.class)
+  public void testReallocateCheckSuccess() {
+
+    // Create a new value vector for 1024 integers.
+    try (final VarBinaryVector vector = newVarBinaryVector(EMPTY_SCHEMA_PATH, allocator)) {
+      vector.allocateNew(1024 * 10, 1024);
+
+      vector.set(0, STR1);
+      // Check the sample strings.
+      assertArrayEquals(STR1, vector.get(0));
+
+      // update the index offset to a larger one
+      ArrowBuf offsetBuf = vector.getOffsetBuffer();
+      offsetBuf.setInt(VarBinaryVector.OFFSET_WIDTH, Integer.MAX_VALUE - 5);
+
+      vector.setValueLengthSafe(1, 6);
+    }
+  }
+
+  @Test
+  public void testGetBytesRepeatedly() {
+    try (VarBinaryVector vector = new VarBinaryVector("", allocator)) {
+      vector.allocateNew(5, 1);
+
+      final String str = "hello world";
+      final String str2 = "foo";
+      vector.setSafe(0, str.getBytes());
+      vector.setSafe(1, str2.getBytes());
+
+      // verify results
+      ReusableByteArray reusableByteArray = new ReusableByteArray();
+      vector.read(0, reusableByteArray);
+      assertArrayEquals(str.getBytes(), Arrays.copyOfRange(reusableByteArray.getBuffer(),
+          0, (int) reusableByteArray.getLength()));
+      byte[] oldBuffer = reusableByteArray.getBuffer();
+
+      vector.read(1, reusableByteArray);
+      assertArrayEquals(str2.getBytes(), Arrays.copyOfRange(reusableByteArray.getBuffer(),
+          0, (int) reusableByteArray.getLength()));
+
+      // There should not have been any reallocation since the newer value is smaller in length.
+      assertSame(oldBuffer, reusableByteArray.getBuffer());
+    }
+  }
 
   /*
    * generic tests
@@ -2394,6 +2492,23 @@ public class TestValueVector {
       VectorEqualsVisitor twoZeroVisitor = new VectorEqualsVisitor();
       // they are not equal because of distinct names
       assertFalse(twoZeroVisitor.vectorEquals(zeroVector, zeroVector1));
+    }
+  }
+
+  @Test
+  public void testBitVectorEquals() {
+    try (final BitVector vector1 = new BitVector("bit", allocator);
+        final BitVector vector2 = new BitVector("bit", allocator)) {
+
+      setVector(vector1, 0, 1, 0);
+      setVector(vector2, 1, 1, 0);
+
+      VectorEqualsVisitor visitor = new VectorEqualsVisitor();
+
+      assertFalse(visitor.vectorEquals(vector1, vector2));
+
+      vector1.set(0, 1);
+      assertTrue(visitor.vectorEquals(vector1, vector2));
     }
   }
 

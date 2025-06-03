@@ -36,6 +36,33 @@ namespace red_arrow {
   ID id_jd;
   ID id_new;
   ID id_to_datetime;
+
+  namespace symbols {
+    VALUE day;
+    VALUE millisecond;
+    VALUE month;
+    VALUE nanosecond;
+  }
+
+  void
+  record_batch_reader_mark(gpointer object)
+  {
+    auto reader = GARROW_RECORD_BATCH_READER(object);
+    auto sources = garrow_record_batch_reader_get_sources(reader);
+    for (auto source = sources; sources; sources = g_list_next(sources)) {
+      rbgobj_gc_mark_instance(source->data);
+    }
+  }
+
+  void
+  execute_plan_mark(gpointer object)
+  {
+    auto plan = GARROW_EXECUTE_PLAN(object);
+    auto nodes = garrow_execute_plan_get_nodes(plan);
+    for (auto node = nodes; nodes; nodes = g_list_next(nodes)) {
+      rbgobj_gc_mark_instance(node->data);
+    }
+  }
 }
 
 extern "C" void Init_arrow() {
@@ -55,10 +82,16 @@ extern "C" void Init_arrow() {
   rb_define_method(cArrowRecordBatch, "raw_records",
                    reinterpret_cast<rb::RawMethod>(red_arrow::record_batch_raw_records),
                    0);
+  rb_define_method(cArrowRecordBatch, "each_raw_record",
+                   reinterpret_cast<rb::RawMethod>(red_arrow::record_batch_each_raw_record),
+                   0);
 
   auto cArrowTable = rb_const_get_at(mArrow, rb_intern("Table"));
   rb_define_method(cArrowTable, "raw_records",
                    reinterpret_cast<rb::RawMethod>(red_arrow::table_raw_records),
+                   0);
+  rb_define_method(cArrowTable, "each_raw_record",
+                   reinterpret_cast<rb::RawMethod>(red_arrow::table_each_raw_record),
                    0);
 
   red_arrow::cDate = rb_const_get(rb_cObject, rb_intern("Date"));
@@ -81,4 +114,14 @@ extern "C" void Init_arrow() {
   red_arrow::id_to_datetime = rb_intern("to_datetime");
 
   red_arrow::memory_view::init(mArrow);
+
+  red_arrow::symbols::day = ID2SYM(rb_intern("day"));
+  red_arrow::symbols::millisecond = ID2SYM(rb_intern("millisecond"));
+  red_arrow::symbols::month = ID2SYM(rb_intern("month"));
+  red_arrow::symbols::nanosecond = ID2SYM(rb_intern("nanosecond"));
+
+  rbgobj_register_mark_func(GARROW_TYPE_RECORD_BATCH_READER,
+                            red_arrow::record_batch_reader_mark);
+  rbgobj_register_mark_func(GARROW_TYPE_EXECUTE_PLAN,
+                            red_arrow::execute_plan_mark);
 }

@@ -42,6 +42,11 @@ void CompareBatchColumnsDetailed(const RecordBatch& result, const RecordBatch& e
 
 ARROW_TESTING_EXPORT
 Status MakeRandomInt32Array(int64_t length, bool include_nulls, MemoryPool* pool,
+                            std::shared_ptr<Array>* out, uint32_t seed = 0,
+                            int32_t min = 0, int32_t max = 1000);
+
+ARROW_TESTING_EXPORT
+Status MakeRandomInt64Array(int64_t length, bool include_nulls, MemoryPool* pool,
                             std::shared_ptr<Array>* out, uint32_t seed = 0);
 
 ARROW_TESTING_EXPORT
@@ -91,7 +96,7 @@ Status MakeRandomStringArray(int64_t length, bool include_nulls, MemoryPool* poo
 
 ARROW_TESTING_EXPORT
 Status MakeStringTypesRecordBatch(std::shared_ptr<RecordBatch>* out,
-                                  bool with_nulls = true);
+                                  bool with_nulls = true, bool with_view_types = true);
 
 ARROW_TESTING_EXPORT
 Status MakeStringTypesRecordBatchWithNulls(std::shared_ptr<RecordBatch>* out);
@@ -101,6 +106,9 @@ Status MakeNullRecordBatch(std::shared_ptr<RecordBatch>* out);
 
 ARROW_TESTING_EXPORT
 Status MakeListRecordBatch(std::shared_ptr<RecordBatch>* out);
+
+ARROW_TESTING_EXPORT
+Status MakeListViewRecordBatch(std::shared_ptr<RecordBatch>* out);
 
 ARROW_TESTING_EXPORT
 Status MakeFixedSizeListRecordBatch(std::shared_ptr<RecordBatch>* out);
@@ -115,7 +123,13 @@ ARROW_TESTING_EXPORT
 Status MakeDeeplyNestedList(std::shared_ptr<RecordBatch>* out);
 
 ARROW_TESTING_EXPORT
+Status MakeDeeplyNestedListView(std::shared_ptr<RecordBatch>* out);
+
+ARROW_TESTING_EXPORT
 Status MakeStruct(std::shared_ptr<RecordBatch>* out);
+
+ARROW_TESTING_EXPORT
+Status MakeRunEndEncoded(std::shared_ptr<RecordBatch>* out);
 
 ARROW_TESTING_EXPORT
 Status MakeUnion(std::shared_ptr<RecordBatch>* out);

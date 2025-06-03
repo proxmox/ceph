@@ -29,6 +29,7 @@
 
 #include "arrow/array.h"
 #include "arrow/table.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/type.h"
 #include "arrow/util/key_value_metadata.h"
@@ -122,14 +123,22 @@ TEST_F(TestPrettyPrint, PrimitiveType) {
     null
   ])expected";
   CheckPrimitive<Int32Type, int32_t>({2, 10}, is_valid, values, ex_in2);
+
   static const char* ex_in2_w2 = R"expected(  [
     0,
     1,
-    ...
+    null,
     3,
     null
   ])expected";
   CheckPrimitive<Int32Type, int32_t>({2, 2}, is_valid, values, ex_in2_w2);
+
+  static const char* ex_in2_w1 = R"expected(  [
+    0,
+    ...
+    null
+  ])expected";
+  CheckPrimitive<Int32Type, int32_t>({2, 1}, is_valid, values, ex_in2_w1);
 
   std::vector<double> values2 = {0., 1., 2., 3., 4.};
   static const char* ex2 = R"expected([
@@ -188,6 +197,84 @@ TEST_F(TestPrettyPrint, PrimitiveTypeNoNewlines) {
   values.insert(values.end(), {44, 43, 42});
 
   expected = "[0,1,null,3,...,99,44,null,42]";
+  CheckPrimitive<Int32Type, int32_t>(options, is_valid, values, expected, false);
+}
+
+TEST_F(TestPrettyPrint, ArrayCustomElementDelimiter) {
+  PrettyPrintOptions options{};
+  // Use a custom array element delimiter of " | ",
+  // rather than the default delimiter (i.e. ",").
+  options.array_delimiters.element = " | ";
+
+  // Short array without ellipsis
+  {
+    std::vector<bool> is_valid = {true, true, false, true, false};
+    std::vector<int32_t> values = {1, 2, 3, 4, 5};
+    static const char* expected = R"expected([
+  1 | 
+  2 | 
+  null | 
+  4 | 
+  null
+])expected";
+    CheckPrimitive<Int32Type, int32_t>(options, is_valid, values, expected, false);
+  }
+
+  // Longer array with ellipsis
+  {
+    std::vector<bool> is_valid = {true, false, true};
+    std::vector<int32_t> values = {1, 2, 3};
+    // Append 20 copies of the value "10" to the end of the values vector.
+    values.insert(values.end(), 20, 10);
+    // Append 20 copies of the value "true" to the end of the validity bitmap vector.
+    is_valid.insert(is_valid.end(), 20, true);
+    // Append the values 4, 5, and 6 to the end of the values vector.
+    values.insert(values.end(), {4, 5, 6});
+    // Append the values true, false, and true to the end of the validity bitmap vector.
+    is_valid.insert(is_valid.end(), {true, false, true});
+    static const char* expected = R"expected([
+  1 | 
+  null | 
+  3 | 
+  10 | 
+  10 | 
+  10 | 
+  10 | 
+  10 | 
+  10 | 
+  10 | 
+  ...
+  10 | 
+  10 | 
+  10 | 
+  10 | 
+  10 | 
+  10 | 
+  10 | 
+  4 | 
+  null | 
+  6
+])expected";
+    CheckPrimitive<Int32Type, int32_t>(options, is_valid, values, expected, false);
+  }
+}
+
+TEST_F(TestPrettyPrint, ArrayCustomOpenCloseDelimiter) {
+  PrettyPrintOptions options{};
+  // Use a custom opening Array delimiter of "{", rather than the default "]".
+  options.array_delimiters.open = "{";
+  // Use a custom closing Array delimiter of "}", rather than the default "]".
+  options.array_delimiters.close = "}";
+
+  std::vector<bool> is_valid = {true, true, false, true, false};
+  std::vector<int32_t> values = {1, 2, 3, 4, 5};
+  static const char* expected = R"expected({
+  1,
+  2,
+  null,
+  4,
+  null
+})expected";
   CheckPrimitive<Int32Type, int32_t>(options, is_valid, values, expected, false);
 }
 
@@ -263,10 +350,10 @@ TEST_F(TestPrettyPrint, DateTimeTypes) {
     std::vector<int64_t> values = {
         0, 1, 2, 678 + 1000000 * (5 + 60 * (4 + 60 * (3 + 24 * int64_t(1)))), 4};
     static const char* expected = R"expected([
-  1970-01-01 00:00:00.000000,
-  1970-01-01 00:00:00.000001,
+  1970-01-01 00:00:00.000000Z,
+  1970-01-01 00:00:00.000001Z,
   null,
-  1970-01-02 03:04:05.000678,
+  1970-01-02 03:04:05.000678Z,
   null
 ])expected";
     CheckPrimitive<TimestampType, int64_t>(timestamp(TimeUnit::MICRO, "Transylvania"),
@@ -641,6 +728,24 @@ TEST_F(TestPrettyPrint, StructTypeAdvanced) {
   CheckStream(*array, {0, 10}, ex);
 }
 
+TEST_F(TestPrettyPrint, StructTypeNoNewLines) {
+  // Struct types will at least have new lines for arrays
+  auto simple_1 = field("one", int32());
+  auto simple_2 = field("two", int32());
+  auto simple_struct = struct_({simple_1, simple_2});
+
+  auto array = ArrayFromJSON(simple_struct, "[[11, 22], null, [null, 33]]");
+  auto options = PrettyPrintOptions();
+  options.skip_new_lines = true;
+
+  static const char* ex = R"expected(-- is_valid:[true,false,true]
+-- child 0 type: int32
+[11,0,null]
+-- child 1 type: int32
+[22,0,33])expected";
+  CheckStream(*array, options, ex);
+}
+
 TEST_F(TestPrettyPrint, BinaryType) {
   std::vector<bool> is_valid = {true, true, false, true, true, true};
   std::vector<std::string> values = {"foo", "bar", "", "baz", "", "\xff"};
@@ -669,8 +774,11 @@ TEST_F(TestPrettyPrint, BinaryNoNewlines) {
   CheckPrimitive<BinaryType, std::string>(options, is_valid, values, expected, false);
 }
 
-TEST_F(TestPrettyPrint, ListType) {
-  auto list_type = list(int64());
+template <typename TypeClass>
+void TestPrettyPrintVarLengthListLike() {
+  using LargeTypeClass = typename TypeTraits<TypeClass>::LargeType;
+  auto var_list_type = std::make_shared<TypeClass>(int64());
+  auto var_large_list_type = std::make_shared<LargeTypeClass>(int64());
 
   static const char* ex = R"expected([
   [
@@ -714,17 +822,132 @@ TEST_F(TestPrettyPrint, ListType) {
     3
   ]
 ])expected";
+  static const char* ex_4 = R"expected([
+  [
+    null
+  ],
+  [],
+  null,
+  [
+    4,
+    6,
+    7
+  ],
+  [
+    2,
+    3
+  ]
+])expected";
 
-  auto array = ArrayFromJSON(list_type, "[[null], [], null, [4, 6, 7], [2, 3]]");
-  CheckArray(*array, {0, 10}, ex);
-  CheckArray(*array, {2, 10}, ex_2);
-  CheckStream(*array, {0, 1}, ex_3);
+  auto array = ArrayFromJSON(var_list_type, "[[null], [], null, [4, 6, 7], [2, 3]]");
+  auto make_options = [](int indent, int window, int container_window) {
+    auto options = PrettyPrintOptions(indent, window);
+    options.container_window = container_window;
+    return options;
+  };
+  CheckStream(*array, make_options(/*indent=*/0, /*window=*/10, /*container_window=*/5),
+              ex);
+  CheckStream(*array, make_options(/*indent=*/2, /*window=*/10, /*container_window=*/5),
+              ex_2);
+  CheckStream(*array, make_options(/*indent=*/0, /*window=*/10, /*container_window=*/1),
+              ex_3);
+  CheckArray(*array, {0, 10}, ex_4);
 
-  list_type = large_list(int64());
-  array = ArrayFromJSON(list_type, "[[null], [], null, [4, 6, 7], [2, 3]]");
-  CheckArray(*array, {0, 10}, ex);
-  CheckArray(*array, {2, 10}, ex_2);
-  CheckStream(*array, {0, 1}, ex_3);
+  array = ArrayFromJSON(var_large_list_type, "[[null], [], null, [4, 6, 7], [2, 3]]");
+  CheckStream(*array, make_options(/*indent=*/0, /*window=*/10, /*container_window=*/5),
+              ex);
+  CheckStream(*array, make_options(/*indent=*/2, /*window=*/10, /*container_window=*/5),
+              ex_2);
+  CheckStream(*array, make_options(/*indent=*/0, /*window=*/10, /*container_window=*/1),
+              ex_3);
+  CheckArray(*array, {0, 10}, ex_4);
+}
+
+TEST_F(TestPrettyPrint, ListType) { TestPrettyPrintVarLengthListLike<arrow::ListType>(); }
+
+template <typename ListViewType>
+void TestListViewSpecificPrettyPrinting() {
+  using ArrayType = typename TypeTraits<ListViewType>::ArrayType;
+  using OffsetType = typename TypeTraits<ListViewType>::OffsetType;
+
+  auto string_values = ArrayFromJSON(utf8(), R"(["Hello", "World", null])");
+  auto int32_values = ArrayFromJSON(int32(), "[1, 20, 3]");
+  auto int16_values = ArrayFromJSON(int16(), "[10, 2, 30]");
+
+  auto Offsets = [](std::string_view json) {
+    return ArrayFromJSON(TypeTraits<OffsetType>::type_singleton(), json);
+  };
+  auto Sizes = Offsets;
+
+  ASSERT_OK_AND_ASSIGN(auto int_list_view_array,
+                       ArrayType::FromArrays(*Offsets("[0, 0, 1, 2]"),
+                                             *Sizes("[2, 1, 1, 1]"), *int32_values));
+  ASSERT_OK(int_list_view_array->ValidateFull());
+  static const char* ex1 =
+      "[\n"
+      "  [\n"
+      "    1,\n"
+      "    20\n"
+      "  ],\n"
+      "  [\n"
+      "    1\n"
+      "  ],\n"
+      "  [\n"
+      "    20\n"
+      "  ],\n"
+      "  [\n"
+      "    3\n"
+      "  ]\n"
+      "]";
+  CheckStream(*int_list_view_array, {}, ex1);
+
+  ASSERT_OK_AND_ASSIGN(auto string_list_view_array,
+                       ArrayType::FromArrays(*Offsets("[0, 0, 1, 2]"),
+                                             *Sizes("[2, 1, 1, 1]"), *string_values));
+  ASSERT_OK(string_list_view_array->ValidateFull());
+  static const char* ex2 =
+      "[\n"
+      "  [\n"
+      "    \"Hello\",\n"
+      "    \"World\"\n"
+      "  ],\n"
+      "  [\n"
+      "    \"Hello\"\n"
+      "  ],\n"
+      "  [\n"
+      "    \"World\"\n"
+      "  ],\n"
+      "  [\n"
+      "    null\n"
+      "  ]\n"
+      "]";
+  CheckStream(*string_list_view_array, {}, ex2);
+
+  auto sliced_array = string_list_view_array->Slice(1, 2);
+  static const char* ex3 =
+      "[\n"
+      "  [\n"
+      "    \"Hello\"\n"
+      "  ],\n"
+      "  [\n"
+      "    \"World\"\n"
+      "  ]\n"
+      "]";
+  CheckStream(*sliced_array, {}, ex3);
+
+  ASSERT_OK_AND_ASSIGN(
+      auto empty_array,
+      ArrayType::FromArrays(*Offsets("[]"), *Sizes("[]"), *int16_values));
+  ASSERT_OK(empty_array->ValidateFull());
+  static const char* ex4 = "[]";
+  CheckStream(*empty_array, {}, ex4);
+}
+
+TEST_F(TestPrettyPrint, ListViewType) {
+  TestPrettyPrintVarLengthListLike<arrow::ListViewType>();
+
+  TestListViewSpecificPrettyPrinting<arrow::ListViewType>();
+  TestListViewSpecificPrettyPrinting<arrow::LargeListViewType>();
 }
 
 TEST_F(TestPrettyPrint, ListTypeNoNewlines) {
@@ -735,12 +958,19 @@ TEST_F(TestPrettyPrint, ListTypeNoNewlines) {
   PrettyPrintOptions options{};
   options.skip_new_lines = true;
   options.null_rep = "NA";
+  options.container_window = 10;
   CheckArray(*empty_array, options, "[]", false);
   CheckArray(*array, options, "[[NA],[],NA,[4,5,6,7,8],[2,3]]", false);
 
   options.window = 2;
+  options.container_window = 2;
   CheckArray(*empty_array, options, "[]", false);
-  CheckArray(*array, options, "[[NA],[],...,[4,5,...,7,8],[2,3]]", false);
+  CheckArray(*array, options, "[[NA],[],NA,[4,5,6,7,8],[2,3]]", false);
+
+  options.window = 1;
+  options.container_window = 2;
+  CheckArray(*empty_array, options, "[]", false);
+  CheckArray(*array, options, "[[NA],[],NA,[4,...,8],[2,3]]", false);
 }
 
 TEST_F(TestPrettyPrint, MapType) {
@@ -778,6 +1008,14 @@ TEST_F(TestPrettyPrint, MapType) {
   []
 ])expected";
   CheckArray(*array, {0, 10}, ex);
+
+  PrettyPrintOptions options{};
+  options.skip_new_lines = true;
+
+  static const char* ex_flat =
+      R"expected([keys:["joe","mark"]values:[0,null],null,)expected"
+      R"expected(keys:["cap"]values:[8],keys:[]values:[]])expected";
+  CheckArray(*array, options, ex_flat, false);
 }
 
 TEST_F(TestPrettyPrint, FixedSizeListType) {
@@ -808,16 +1046,48 @@ TEST_F(TestPrettyPrint, FixedSizeListType) {
     5
   ]
 ])expected");
-  CheckStream(*array, {0, 1}, R"expected([
+
+  auto make_options = [](int indent, int window, int container_window) {
+    auto options = PrettyPrintOptions(indent, window);
+    options.container_window = container_window;
+    return options;
+  };
+  CheckStream(*array, make_options(/*indent=*/0, /*window=*/1, /*container_window=*/3),
+              R"expected([
   [
     null,
-    ...
+    0,
+    1
+  ],
+  [
+    2,
+    3,
+    null
+  ],
+  null,
+  [
+    4,
+    6,
+    7
+  ],
+  [
+    8,
+    9,
+    5
+  ]
+])expected");
+
+  CheckStream(*array, make_options(/*indent=*/0, /*window=*/1, /*container_window=*/1),
+              R"expected([
+  [
+    null,
+    0,
     1
   ],
   ...
   [
     8,
-    ...
+    9,
     5
   ]
 ])expected");
@@ -915,6 +1185,112 @@ TEST_F(TestPrettyPrint, ChunkedArrayPrimitiveType) {
 ])expected";
 
   CheckStream(chunked_array_2, {0}, expected_2);
+}
+
+TEST_F(TestPrettyPrint, ChunkedArrayCustomElementDelimiter) {
+  PrettyPrintOptions options{};
+  // Use a custom ChunkedArray element delimiter of ";",
+  // rather than the default delimiter (i.e. ",").
+  options.chunked_array_delimiters.element = ";";
+  // Use a custom Array element delimiter of " | ",
+  // rather than the default delimiter (i.e. ",").
+  options.array_delimiters.element = " | ";
+
+  const auto chunk = ArrayFromJSON(int32(), "[1, 2, null, 4, null]");
+
+  // ChunkedArray with 1 chunk
+  {
+    const ChunkedArray chunked_array(chunk);
+
+    static const char* expected = R"expected([
+  [
+    1 | 
+    2 | 
+    null | 
+    4 | 
+    null
+  ]
+])expected";
+    CheckStream(chunked_array, options, expected);
+  }
+
+  // ChunkedArray with 2 chunks
+  {
+    const ChunkedArray chunked_array({chunk, chunk});
+
+    static const char* expected = R"expected([
+  [
+    1 | 
+    2 | 
+    null | 
+    4 | 
+    null
+  ];
+  [
+    1 | 
+    2 | 
+    null | 
+    4 | 
+    null
+  ]
+])expected";
+
+    CheckStream(chunked_array, options, expected);
+  }
+}
+
+TEST_F(TestPrettyPrint, ChunkedArrayCustomOpenCloseDelimiter) {
+  PrettyPrintOptions options{};
+  // Use a custom opening Array delimiter of "{", rather than the default "]".
+  options.array_delimiters.open = "{";
+  // Use a custom closing Array delimiter of "}", rather than the default "]".
+  options.array_delimiters.close = "}";
+  // Use a custom opening ChunkedArray delimiter of "<", rather than the default "]".
+  options.chunked_array_delimiters.open = "<";
+  // Use a custom closing ChunkedArray delimiter of ">", rather than the default "]".
+  options.chunked_array_delimiters.close = ">";
+
+  const auto chunk = ArrayFromJSON(int32(), "[1, 2, null, 4, null]");
+
+  // ChunkedArray with 1 chunk
+  {
+    const ChunkedArray chunked_array(chunk);
+
+    static const char* expected = R"expected(<
+  {
+    1,
+    2,
+    null,
+    4,
+    null
+  }
+>)expected";
+    CheckStream(chunked_array, options, expected);
+  }
+
+  // ChunkedArray with 2 chunks
+  {
+    const ChunkedArray chunked_array({chunk, chunk});
+
+    static const char* expected = R"expected(<
+  {
+    1,
+    2,
+    null,
+    4,
+    null
+  },
+  {
+    1,
+    2,
+    null,
+    4,
+    null
+  }
+>)expected";
+
+    CheckStream(chunked_array, options, expected);
+  }
 }
 
 TEST_F(TestPrettyPrint, TablePrimitive) {

@@ -25,9 +25,11 @@
 
 #include "arrow/array.h"
 #include "arrow/array/builder_nested.h"
+#include "arrow/array/util.h"
+#include "arrow/array/validate.h"
 #include "arrow/buffer.h"
 #include "arrow/status.h"
-#include "arrow/testing/gtest_common.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/type.h"
 #include "arrow/util/bit_util.h"
@@ -39,13 +41,14 @@ namespace arrow {
 using internal::checked_cast;
 using internal::checked_pointer_cast;
 
-using ListTypes = ::testing::Types<ListType, LargeListType>;
+using ListAndListViewTypes =
+    ::testing::Types<ListType, LargeListType, ListViewType, LargeListViewType>;
 
 // ----------------------------------------------------------------------
-// List tests
+// List and ListView tests
 
 template <typename T>
-class TestListArray : public TestBuilder {
+class TestListArray : public ::testing::Test {
  public:
   using TypeClass = T;
   using offset_type = typename TypeClass::offset_type;
@@ -55,9 +58,9 @@ class TestListArray : public TestBuilder {
   using OffsetArrayType = typename TypeTraits<TypeClass>::OffsetArrayType;
   using OffsetBuilderType = typename TypeTraits<TypeClass>::OffsetBuilderType;
 
-  void SetUp() {
-    TestBuilder::SetUp();
+  static constexpr bool kTypeClassIsListView = is_list_view_type<TypeClass>::value;
 
+  void SetUp() override {
     value_type_ = int16();
     type_ = std::make_shared<T>(value_type_);
 
@@ -72,8 +75,10 @@ class TestListArray : public TestBuilder {
     result_ = std::dynamic_pointer_cast<ArrayType>(out);
   }
 
-  void ValidateBasicListArray(const ArrayType* result, const std::vector<int16_t>& values,
-                              const std::vector<uint8_t>& is_valid) {
+ private:
+  void DoValidateBasicListArray(const ArrayType* result,
+                                const std::vector<int16_t>& values,
+                                const std::vector<uint8_t>& is_valid) {
     ASSERT_OK(result->ValidateFull());
     ASSERT_EQ(1, result->null_count());
     ASSERT_EQ(0, result->values()->null_count());
@@ -108,6 +113,58 @@ class TestListArray : public TestBuilder {
               result_->raw_value_offsets()[result->length()]);
   }
 
+  void DoValidateBasicListViewArray(const ArrayType* result,
+                                    const std::vector<int16_t>& values,
+                                    const std::vector<uint8_t>& is_valid) {
+    ASSERT_OK(result->ValidateFull());
+    ASSERT_EQ(1, result->null_count());
+    ASSERT_EQ(0, result->values()->null_count());
+
+    ASSERT_EQ(3, result->length());
+    std::vector<offset_type> ex_offsets = {0, 3, 3};
+    std::vector<offset_type> ex_sizes = {3, 0};
+    for (size_t i = 0; i < ex_sizes.size(); ++i) {
+      ASSERT_EQ(ex_offsets[i], result->value_offset(i));
+      ASSERT_EQ(ex_sizes[i], result->value_length(i));
+    }
+    ASSERT_EQ(ex_offsets[ex_sizes.size()], result->value_offset(ex_sizes.size()));
+
+    for (int i = 0; i < result->length(); ++i) {
+      ASSERT_EQ(is_valid[i] == 0, result->IsNull(i));
+    }
+
+    ASSERT_EQ(7, result->values()->length());
+    auto varr = std::dynamic_pointer_cast<Int16Array>(result->values());
+
+    for (size_t i = 0; i < values.size(); ++i) {
+      ASSERT_EQ(values[i], varr->Value(i));
+    }
+
+    auto offsets = std::dynamic_pointer_cast<OffsetArrayType>(result->offsets());
+    auto sizes = std::dynamic_pointer_cast<OffsetArrayType>(result->sizes());
+    ASSERT_EQ(offsets->length(), result->length());
+    ASSERT_EQ(offsets->null_count(), 0);
+    AssertTypeEqual(*offsets->type(), OffsetType());
+    ASSERT_EQ(sizes->length(), result->length());
+    ASSERT_EQ(sizes->null_count(), 0);
+    AssertTypeEqual(*sizes->type(), OffsetType());
+
+    for (int64_t i = 0; i < result->length(); ++i) {
+      ASSERT_EQ(offsets->Value(i), result_->raw_value_offsets()[i]);
+      ASSERT_EQ(sizes->Value(i), result_->raw_value_sizes()[i]);
+    }
+  }
+
+  void ValidateBasicListArray(const ArrayType* result, const std::vector<int16_t>& values,
+                              const std::vector<uint8_t>& is_valid) {
+    if constexpr (kTypeClassIsListView) {
+      return DoValidateBasicListViewArray(result, values, is_valid);
+    } else {
+      return DoValidateBasicListArray(result, values, is_valid);
+    }
+  }
+
+ public:
   void TestBasics() {
     std::vector<int16_t> values = {0, 1, 2, 3, 4, 5, 6};
     std::vector<int> lengths = {3, 0, 4};
@@ -120,7 +177,7 @@ class TestListArray : public TestBuilder {
 
     int pos = 0;
     for (size_t i = 0; i < lengths.size(); ++i) {
-      ASSERT_OK(builder_->Append(is_valid[i] > 0));
+      ASSERT_OK(builder_->Append(is_valid[i] > 0, lengths[i]));
       for (int j = 0; j < lengths[i]; ++j) {
         ASSERT_OK(vb->Append(values[pos++]));
       }
@@ -133,25 +190,29 @@ class TestListArray : public TestBuilder {
   void TestEquality() {
     auto vb = checked_cast<Int16Builder*>(builder_->value_builder());
 
-    std::shared_ptr<Array> array, equal_array, unequal_array;
+    std::shared_ptr<Array> array, equal_array;
     std::vector<offset_type> equal_offsets = {0, 1, 2, 5, 6, 7, 8, 10};
+    std::vector<offset_type> equal_sizes = {1, 1, 3, 1, 1, 1, 2, 0};
     std::vector<int16_t> equal_values = {1, 2, 3, 4, 5, 2, 2, 2, 5, 6};
+
+    std::shared_ptr<Array> unequal_array;
     std::vector<offset_type> unequal_offsets = {0, 1, 4, 7};
+    std::vector<offset_type> unequal_sizes = {1, 3, 3, 0};
     std::vector<int16_t> unequal_values = {1, 2, 2, 2, 3, 4, 5};
 
-    // setup two equal arrays
-    ASSERT_OK(builder_->AppendValues(equal_offsets.data(), equal_offsets.size()));
+    ASSERT_OK(builder_->AppendValues(equal_offsets.data(), equal_sizes.data(),
+                                     equal_offsets.size()));
     ASSERT_OK(vb->AppendValues(equal_values.data(), equal_values.size()));
-
     ASSERT_OK(builder_->Finish(&array));
-    ASSERT_OK(builder_->AppendValues(equal_offsets.data(), equal_offsets.size()));
+
+    ASSERT_OK(builder_->AppendValues(equal_offsets.data(), equal_sizes.data(),
+                                     equal_offsets.size()));
     ASSERT_OK(vb->AppendValues(equal_values.data(), equal_values.size()));
-
     ASSERT_OK(builder_->Finish(&equal_array));
-    // now an unequal one
-    ASSERT_OK(builder_->AppendValues(unequal_offsets.data(), unequal_offsets.size()));
-    ASSERT_OK(vb->AppendValues(unequal_values.data(), unequal_values.size()));
 
+    ASSERT_OK(builder_->AppendValues(unequal_offsets.data(), unequal_sizes.data(),
+                                     unequal_offsets.size()));
+    ASSERT_OK(vb->AppendValues(unequal_values.data(), unequal_values.size()));
     ASSERT_OK(builder_->Finish(&unequal_array));
 
     // Test array equality
@@ -197,7 +258,142 @@ class TestListArray : public TestBuilder {
     EXPECT_FALSE(left->Slice(offset)->Equals(right->Slice(offset)));
   }
 
-  void TestFromArrays() {
+ private:
+  Result<std::shared_ptr<Array>> FromArrays(const Array& offsets, const Array& sizes,
+                                            const Array& values,
+                                            std::shared_ptr<Buffer> null_bitmap = NULLPTR,
+                                            int64_t null_count = kUnknownNullCount) {
+    if constexpr (kTypeClassIsListView) {
+      return ArrayType::FromArrays(offsets, sizes, values, pool_, null_bitmap,
+                                   null_count);
+    } else {
+      return ArrayType::FromArrays(offsets, values, pool_, null_bitmap, null_count);
+    }
+  }
+
+  void TestFromArraysWithNullBitmap() {
+    std::shared_ptr<Array> offsets_w_nulls, offsets_wo_nulls;
+    std::shared_ptr<Array> sizes_w_nulls, sizes_wo_nulls;
+    std::shared_ptr<Array> values;
+
+    std::vector<offset_type> offsets = {0, 1, 1, 3, 4};
+    std::vector<offset_type> sizes = {1, 0, 2, 1};
+    std::vector<bool> offsets_w_nulls_is_valid = {true, false, true, true, true};
+    std::vector<bool> sizes_w_nulls_is_valid = {true, false, true, true};
+
+    ArrayFromVector<OffsetType, offset_type>(offsets_w_nulls_is_valid, offsets,
+                                             &offsets_w_nulls);
+    ArrayFromVector<OffsetType, offset_type>(offsets, &offsets_wo_nulls);
+
+    ArrayFromVector<OffsetType, offset_type>(sizes_w_nulls_is_valid, sizes,
+                                             &sizes_w_nulls);
+    ArrayFromVector<OffsetType, offset_type>(sizes, &sizes_wo_nulls);
+
+    auto type = std::make_shared<T>(int32());
+    auto expected = std::dynamic_pointer_cast<ArrayType>(
+        ArrayFromJSON(type, "[[0], null, [0, null], [0]]"));
+    values = expected->values();
+
+    // Offsets with nulls will match.
+    ASSERT_OK_AND_ASSIGN(auto result,
+                         FromArrays(*offsets_w_nulls, *sizes_wo_nulls, *values));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*result, *expected);
+
+    // Offets without nulls, will replace null with empty list
+    ASSERT_OK_AND_ASSIGN(result, FromArrays(*offsets_wo_nulls, *sizes_wo_nulls, *values));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*result, *std::dynamic_pointer_cast<ArrayType>(
+                                   ArrayFromJSON(type, "[[0], [], [0, null], [0]]")));
+
+    // Specify non-null offsets with null_bitmap
+    ASSERT_OK_AND_ASSIGN(result, FromArrays(*offsets_wo_nulls, *sizes_wo_nulls, *values,
+                                            expected->null_bitmap()));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*result, *expected);
+
+    // Cannot specify both null offsets with null_bitmap
+    ASSERT_RAISES(Invalid, FromArrays(*offsets_w_nulls, *sizes_wo_nulls, *values,
+                                      expected->null_bitmap()));
+
+    if constexpr (kTypeClassIsListView) {
+      // Sizes with nulls will match.
+      ASSERT_OK_AND_ASSIGN(auto result,
+                           FromArrays(*offsets_wo_nulls, *sizes_w_nulls, *values));
+      ASSERT_OK(result->ValidateFull());
+      AssertArraysEqual(*result, *expected);
+
+      // Cannot specify both null sizes with null_bitmap
+      ASSERT_RAISES(Invalid, FromArrays(*offsets_wo_nulls, *sizes_w_nulls, *values,
+                                        expected->null_bitmap()));
+    }
+  }
+
+  template <bool IsList = !kTypeClassIsListView>
+  std::enable_if_t<IsList, void> TestFromArraysWithSlicedOffsets() {
+    std::vector<offset_type> offsets = {-1, -1, 0, 1, 2, 4};
+
+    std::shared_ptr<Array> offsets_wo_nulls;
+    ArrayFromVector<OffsetType, offset_type>(offsets, &offsets_wo_nulls);
+
+    auto type = std::make_shared<T>(int32());
+    auto expected = std::dynamic_pointer_cast<ArrayType>(
+        ArrayFromJSON(type, "[[0], [1], [0, null]]"));
+    auto values = expected->values();
+
+    // Apply an offset to the offsets array
+    auto sliced_offsets = offsets_wo_nulls->Slice(2, 4);
+    ASSERT_OK_AND_ASSIGN(auto result,
+                         ArrayType::FromArrays(*sliced_offsets, *values, pool_));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*result, *expected);
+
+    // Non-zero starter offset
+    sliced_offsets = offsets_wo_nulls->Slice(3, 3);
+    ASSERT_OK_AND_ASSIGN(result, ArrayType::FromArrays(*sliced_offsets, *values, pool_));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*result, *expected->Slice(1, 2));
+  }
+
+  template <bool IsList = !kTypeClassIsListView>
+  std::enable_if_t<IsList, void> TestFromArraysWithSlicedNullOffsets() {
+    std::vector<offset_type> offsets = {-1, -1, 0, 1, 1, 3};
+    std::vector<bool> offsets_w_nulls_is_valid = {true, true, true, false, true, true};
+
+    std::shared_ptr<Array> offsets_w_nulls;
+    ArrayFromVector<OffsetType, offset_type>(offsets_w_nulls_is_valid, offsets,
+                                             &offsets_w_nulls);
+
+    auto type = std::make_shared<T>(int32());
+    auto expected = std::dynamic_pointer_cast<ArrayType>(
+        ArrayFromJSON(type, "[[0], null, [0, null]]"));
+    auto values = expected->values();
+
+    // Apply an offset to the offsets array with nulls (GH-36776)
+    auto sliced_offsets = offsets_w_nulls->Slice(2, 4);
+    ASSERT_OK_AND_ASSIGN(auto result,
+                         ArrayType::FromArrays(*sliced_offsets, *values, pool_));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*result, *expected);
+
+    // Non-zero starter offset
+    sliced_offsets = offsets_w_nulls->Slice(3, 3);
+    ASSERT_OK_AND_ASSIGN(result, ArrayType::FromArrays(*sliced_offsets, *values, pool_));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*result, *expected->Slice(1, 2));
+  }
+
+ public:
+  void TestFromArraysNullHandling() {
+    this->TestFromArraysWithNullBitmap();
+    if constexpr (!kTypeClassIsListView) {
+      this->TestFromArraysWithSlicedOffsets();
+      this->TestFromArraysWithSlicedNullOffsets();
+    }
+  }
+
+ private:
+  void DoTestListFromArrays() {
     std::shared_ptr<Array> offsets1, offsets2, offsets3, offsets4, offsets5, values;
 
     std::vector<bool> offsets_is_valid3 = {true, false, true, true};
@@ -243,7 +439,7 @@ class TestListArray : public TestBuilder {
     AssertArraysEqual(expected3, *list3);
 
     // Check that the last offset bit is zero
-    ASSERT_FALSE(BitUtil::GetBit(list3->null_bitmap()->data(), length + 1));
+    ASSERT_FALSE(bit_util::GetBit(list3->null_bitmap()->data(), length + 1));
 
     ArrayType expected4(list_type, length, offsets2->data()->buffers[1], values,
                         offsets4->data()->buffers[0], 1);
@@ -279,6 +475,87 @@ class TestListArray : public TestBuilder {
       ArrayFromVector<OffsetType, offset_type>(offsets_is_valid, offset_values, &offsets);
       ArrayFromVector<Int8Type, int8_t>(values_values, &values);
       ASSERT_OK_AND_ASSIGN(auto list, ArrayType::FromArrays(*offsets, *values, pool_));
+    }
+  }
+
+  template <bool IsListView = kTypeClassIsListView>
+  std::enable_if_t<IsListView, void> DoTestListViewFromArrays() {
+    std::shared_ptr<Array> offsets1, offsets2;
+    std::shared_ptr<Array> sizes1, sizes2, sizes3, sizes4, sizes5;
+    std::shared_ptr<Array> values;
+
+    std::vector<bool> sizes_is_valid3 = {true, false, true, true};
+    std::vector<bool> sizes_is_valid4 = {true, true, false, true};
+    std::vector<bool> sizes_is_valid5 = {true, true, false, false};
+
+    std::vector<bool> values_is_valid = {true, false, true, true, true, true};
+
+    std::vector<offset_type> offset1_values = {2, 0, 2};
+    std::vector<offset_type> offset2_values = {2, 0, 6};
+    std::vector<offset_type> size1_values = {0, 2, 4};
+    std::vector<offset_type> size2_values = {4, 2, 0};
+
+    std::vector<int8_t> values_values = {0, 1, 2, 3, 4, 5};
+    const int length = 3;
+
+    ArrayFromVector<OffsetType, offset_type>(offset1_values, &offsets1);
+    ArrayFromVector<OffsetType, offset_type>(offset2_values, &offsets2);
+
+    ArrayFromVector<OffsetType, offset_type>(size1_values, &sizes1);
+    ArrayFromVector<OffsetType, offset_type>(size2_values, &sizes2);
+    ArrayFromVector<OffsetType, offset_type>(sizes_is_valid3, size1_values, &sizes3);
+    ArrayFromVector<OffsetType, offset_type>(sizes_is_valid4, size2_values, &sizes4);
+    ArrayFromVector<OffsetType, offset_type>(sizes_is_valid5, size2_values, &sizes5);
+
+    ArrayFromVector<Int8Type, int8_t>(values_is_valid, values_values, &values);
+
+    auto list_type = std::make_shared<T>(int8());
+
+    ASSERT_OK_AND_ASSIGN(auto list_view1,
+                         ArrayType::FromArrays(*offsets1, *sizes1, *values, pool_));
+    ASSERT_OK_AND_ASSIGN(auto list_view3,
+                         ArrayType::FromArrays(*offsets1, *sizes3, *values, pool_));
+    ASSERT_OK_AND_ASSIGN(auto list_view4,
+                         ArrayType::FromArrays(*offsets2, *sizes4, *values, pool_));
+    ASSERT_OK(list_view1->ValidateFull());
+    ASSERT_OK(list_view3->ValidateFull());
+    ASSERT_OK(list_view4->ValidateFull());
+
+    ArrayType expected1(list_type, length, offsets1->data()->buffers[1],
+                        sizes1->data()->buffers[1], values, offsets1->data()->buffers[0],
+                        0);
+    AssertArraysEqual(expected1, *list_view1);
+
+    // Use null bitmap from sizes3, but clean sizes from non-null version
+    ArrayType expected3(list_type, length, offsets1->data()->buffers[1],
+                        sizes1->data()->buffers[1], values, sizes3->data()->buffers[0],
+                        1);
+    AssertArraysEqual(expected3, *list_view3);
+
+    ArrayType expected4(list_type, length, offsets2->data()->buffers[1],
+                        sizes2->data()->buffers[1], values, sizes4->data()->buffers[0],
+                        1);
+    AssertArraysEqual(expected4, *list_view4);
+
+    // Test failure modes
+
+    std::shared_ptr<Array> tmp;
+
+    // Zero-length offsets (not a failure mode for ListViews)
+    ASSERT_OK(ArrayType::FromArrays(*offsets1->Slice(0, 0), *sizes1->Slice(0, 0), *values,
+                                    pool_));
+
+    // Offsets not the right type
+    ASSERT_RAISES(TypeError,
+                  ArrayType::FromArrays(/*offsets=*/*values, *sizes1, *values, pool_));
+  }
+
+ public:
+  void TestFromArrays() {
+    if constexpr (kTypeClassIsListView) {
+      DoTestListViewFromArrays();
+    } else {
+      DoTestListFromArrays();
     }
   }
 
@@ -329,11 +606,13 @@ class TestListArray : public TestBuilder {
     std::vector<int16_t> values = {0, 1, 2, 3, 4, 5, 6};
     std::vector<uint8_t> is_valid = {1, 0, 1};
     std::vector<offset_type> offsets = {0, 3, 3};
+    std::vector<offset_type> sizes = {3, 0, 1};
 
     Int16Builder* vb = checked_cast<Int16Builder*>(builder_->value_builder());
     ASSERT_OK(vb->Reserve(values.size()));
 
-    ASSERT_OK(builder_->AppendValues(offsets.data(), offsets.size(), is_valid.data()));
+    ASSERT_OK(builder_->AppendValues(offsets.data(), sizes.data(), offsets.size(),
+                                     is_valid.data()));
     for (int16_t value : values) {
       ASSERT_OK(vb->Append(value));
     }
@@ -343,16 +622,17 @@ class TestListArray : public TestBuilder {
 
   void TestBulkAppendInvalid() {
     std::vector<int16_t> values = {0, 1, 2, 3, 4, 5, 6};
-    std::vector<int> lengths = {3, 0, 4};
     std::vector<uint8_t> is_valid = {1, 0, 1};
-    // Should be {0, 3, 3} given the is_valid array
     std::vector<offset_type> offsets = {0, 2, 4};
+    std::vector<offset_type> sizes = {2, 2, 4};
 
     Int16Builder* vb = checked_cast<Int16Builder*>(builder_->value_builder());
     ASSERT_OK(vb->Reserve(values.size()));
 
-    ASSERT_OK(builder_->AppendValues(offsets.data(), offsets.size(), is_valid.data()));
-    ASSERT_OK(builder_->AppendValues(offsets.data(), offsets.size(), is_valid.data()));
+    ASSERT_OK(builder_->AppendValues(offsets.data(), sizes.data(), offsets.size(),
+                                     is_valid.data()));
+    ASSERT_OK(builder_->AppendValues(offsets.data(), sizes.data(), offsets.size(),
+                                     is_valid.data()));
     for (int16_t value : values) {
       ASSERT_OK(vb->Append(value));
     }
@@ -375,7 +655,12 @@ class TestListArray : public TestBuilder {
     builder_.reset(checked_cast<BuilderType*>(tmp.release()));
 
     std::vector<offset_type> offsets = {1, 2, 4, 8};
-    ASSERT_OK(builder_->AppendValues(offsets.data(), offsets.size()));
+    std::vector<offset_type> sizes = {1, 2, 4};
+    if constexpr (kTypeClassIsListView) {
+      ASSERT_OK(builder_->AppendValues(offsets.data(), sizes.data(), sizes.size()));
+    } else {
+      ASSERT_OK(builder_->AppendValues(offsets.data(), offsets.size()));
+    }
 
     std::shared_ptr<Array> list_array;
     ASSERT_OK(builder_->Finish(&list_array));
@@ -394,10 +679,54 @@ class TestListArray : public TestBuilder {
   void TestFlattenSimple() {
     auto type = std::make_shared<T>(int32());
     auto list_array = std::dynamic_pointer_cast<ArrayType>(
-        ArrayFromJSON(type, "[[1, 2], [3], [4], null, [5], [], [6]]"));
+        ArrayFromJSON(type, "[[], null, [1, 2], [3], [4], null, [5], [], [6]]"));
     ASSERT_OK_AND_ASSIGN(auto flattened, list_array->Flatten());
     ASSERT_OK(flattened->ValidateFull());
     EXPECT_TRUE(flattened->Equals(ArrayFromJSON(int32(), "[1, 2, 3, 4, 5, 6]")));
+
+    list_array = std::dynamic_pointer_cast<ArrayType>(
+        ArrayFromJSON(type, "[[], [], [1, 2], [3], [4], [], [5], [], [6]]"));
+    ASSERT_OK_AND_ASSIGN(flattened, list_array->Flatten());
+    ASSERT_OK(flattened->ValidateFull());
+    EXPECT_TRUE(flattened->Equals(ArrayFromJSON(int32(), "[1, 2, 3, 4, 5, 6]")));
+  }
+
+  void TestFlattenNulls() {
+    ASSERT_OK(builder_->AppendNulls(2));
+    Done();
+    ASSERT_OK_AND_ASSIGN(auto flattened, result_->Flatten());
+    ASSERT_OK(flattened->ValidateFull());
+    ASSERT_EQ(0, flattened->length());
+    AssertTypeEqual(*flattened->type(), *value_type_);
+  }
+
+  void TestFlattenAllEmpty() {
+    auto type = std::make_shared<T>(int32());
+    auto list_array = std::dynamic_pointer_cast<ArrayType>(
+        ArrayFromJSON(type, "[[], [], [], [], [], [], []]"));
+    ASSERT_OK_AND_ASSIGN(auto flattened, list_array->Flatten());
+    ASSERT_OK(flattened->ValidateFull());
+    EXPECT_TRUE(flattened->Equals(ArrayFromJSON(int32(), "[]")));
+
+    if constexpr (kTypeClassIsListView) {
+      auto list_array = std::dynamic_pointer_cast<ArrayType>(
+          ArrayFromJSON(type, "[[1, 2], [3], null, [5, 6], [7, 8], [], [9]]"));
+      auto array_data = list_array->data();
+
+      auto offsets = array_data->buffers[1]->template mutable_data_as<offset_type>();
+      auto sizes = array_data->buffers[2]->template mutable_data_as<offset_type>();
+
+      // Set all sizes to 0, except the one for the null entry
+      memset(sizes, 0, sizeof(offset_type) * array_data->length);
+      sizes[2] = 4;
+      // Make the offset of the null entry be non-zero and out of order
+      offsets[2] = 1;
+
+      ASSERT_OK(list_array->ValidateFull());
+      ASSERT_OK_AND_ASSIGN(auto flattened, list_array->Flatten());
+      EXPECT_TRUE(flattened->Equals(ArrayFromJSON(int32(), "[]")))
+          << flattened->ToString();
+    }
   }
 
   void TestFlattenSliced() {
@@ -420,12 +749,12 @@ class TestListArray : public TestBuilder {
         std::dynamic_pointer_cast<ArrayType>(
             ArrayFromJSON(type, "[[1, 2], [3], null, [5, 6], [7, 8], [], [9]]"))
             ->data();
-    ASSERT_EQ(2, array_data->buffers.size());
+    ASSERT_EQ(kTypeClassIsListView ? 3 : 2, array_data->buffers.size());
     auto null_bitmap_buffer = array_data->buffers[0];
     ASSERT_NE(nullptr, null_bitmap_buffer);
-    BitUtil::ClearBit(null_bitmap_buffer->mutable_data(), 1);
-    BitUtil::ClearBit(null_bitmap_buffer->mutable_data(), 3);
-    BitUtil::ClearBit(null_bitmap_buffer->mutable_data(), 4);
+    bit_util::ClearBit(null_bitmap_buffer->mutable_data(), 1);
+    bit_util::ClearBit(null_bitmap_buffer->mutable_data(), 3);
+    bit_util::ClearBit(null_bitmap_buffer->mutable_data(), 4);
     array_data->null_count += 3;
     auto list_array = std::dynamic_pointer_cast<ArrayType>(MakeArray(array_data));
     ASSERT_OK(list_array->ValidateFull());
@@ -434,20 +763,47 @@ class TestListArray : public TestBuilder {
         << flattened->ToString();
   }
 
-  Status ValidateOffsets(int64_t length, std::vector<offset_type> offsets,
-                         const std::shared_ptr<Array>& values, int64_t offset = 0) {
+  Status ValidateOffsetsAndSizes(int64_t length, std::vector<offset_type> offsets,
+                                 std::vector<offset_type> sizes,
+                                 std::shared_ptr<Array> values, int64_t offset = 0) {
     auto type = std::make_shared<TypeClass>(values->type());
-    ArrayType arr(type, length, Buffer::Wrap(offsets), values,
+    auto offsets_buffer = Buffer::Wrap(offsets.data(), sizes.size());
+    auto sizes_buffer = Buffer::Wrap(sizes);
+    ArrayType arr(type, length, std::move(offsets_buffer), std::move(sizes_buffer),
+                  std::move(values),
                   /*null_bitmap=*/nullptr, /*null_count=*/0, offset);
     return arr.ValidateFull();
   }
 
-  void TestValidateOffsets() {
+  Status ValidateOffsets(int64_t length, std::vector<offset_type> offsets,
+                         std::shared_ptr<Array> values, int64_t offset = 0) {
+    if constexpr (kTypeClassIsListView) {
+      std::vector<offset_type> sizes;
+      // Always reserve some space so Buffer::Wrap doesn't create a null buffer
+      // when length of the sizes buffer is 0.
+      sizes.reserve(
+          std::max(static_cast<size_t>(1), offsets.empty() ? 0 : offsets.size() - 1));
+      for (size_t i = 1; i < offsets.size(); ++i) {
+        sizes.push_back(offsets[i] - offsets[i - 1]);
+      }
+      return ValidateOffsetsAndSizes(length, std::move(offsets), std::move(sizes),
+                                     std::move(values), offset);
+    } else {
+      auto type = std::make_shared<TypeClass>(values->type());
+      ArrayType arr(type, length, Buffer::Wrap(offsets), std::move(values),
+                    /*null_bitmap=*/nullptr, /*null_count=*/0, offset);
+      return arr.ValidateFull();
+    }
+  }
+
+  void TestValidateDimensions() {
     auto empty_values = ArrayFromJSON(int16(), "[]");
     auto values = ArrayFromJSON(int16(), "[1, 2, 3, 4, 5, 6, 7]");
 
-    // An empty list array can have omitted or 0-length offsets
-    ASSERT_OK(ValidateOffsets(0, {}, empty_values));
+    if constexpr (!kTypeClassIsListView) {
+      // An empty list array can have omitted or 0-length offsets
+      ASSERT_OK(ValidateOffsets(0, {}, empty_values));
+    }
 
     ASSERT_OK(ValidateOffsets(0, {0}, empty_values));
     ASSERT_OK(ValidateOffsets(1, {0, 7}, values));
@@ -464,13 +820,24 @@ class TestListArray : public TestBuilder {
 
     // Offset out of bounds
     ASSERT_RAISES(Invalid, ValidateOffsets(1, {0, 8}, values));
-    ASSERT_RAISES(Invalid, ValidateOffsets(1, {0, 8, 8}, values, 1));
+    if constexpr (kTypeClassIsListView) {
+      ASSERT_RAISES(Invalid, ValidateOffsets(1, {0, 8, 8}, values, 2));
+    } else {
+      ASSERT_RAISES(Invalid, ValidateOffsets(1, {0, 8, 8}, values, 1));
+    }
     // Negative offset
     ASSERT_RAISES(Invalid, ValidateOffsets(1, {-1, 0}, values));
     ASSERT_RAISES(Invalid, ValidateOffsets(1, {0, -1}, values));
-    ASSERT_RAISES(Invalid, ValidateOffsets(2, {0, -1, -1}, values, 1));
     // Offsets non-monotonic
     ASSERT_RAISES(Invalid, ValidateOffsets(2, {0, 7, 4}, values));
+
+    if constexpr (kTypeClassIsListView) {
+      // Out of order offsets
+      ASSERT_OK(ValidateOffsetsAndSizes(2, {4, 1, 2}, {3, 6, 5}, values));
+
+      // Sizes out of bounds
+      ASSERT_RAISES(Invalid, ValidateOffsetsAndSizes(2, {4, 1, 2}, {3, 7, 5}, values));
+    }
   }
 
   void TestCornerCases() {
@@ -481,7 +848,7 @@ class TestListArray : public TestBuilder {
     AssertArraysEqual(*result_, *expected);
 
     SetUp();
-    ASSERT_OK(builder_->Append());
+    ASSERT_OK(builder_->Append(/*is_valid=*/true, 0));
     Done();
     expected = ArrayFromJSON(type_, "[[]]");
     AssertArraysEqual(*result_, *expected);
@@ -502,7 +869,7 @@ class TestListArray : public TestBuilder {
     ASSERT_OK(builder_->ValidateOverflow(max_elements));
     ASSERT_RAISES(CapacityError, builder_->ValidateOverflow(max_elements + 1));
 
-    ASSERT_OK(builder_->Append());
+    ASSERT_OK(builder_->Append(/*is_valid=*/true, 2));
     ASSERT_OK(vb->Append(1));
     ASSERT_OK(vb->Append(2));
     ASSERT_OK(builder_->ValidateOverflow(max_elements - 2));
@@ -512,7 +879,7 @@ class TestListArray : public TestBuilder {
     ASSERT_OK(builder_->ValidateOverflow(max_elements - 2));
     ASSERT_RAISES(CapacityError, builder_->ValidateOverflow(max_elements - 1));
 
-    ASSERT_OK(builder_->Append());
+    ASSERT_OK(builder_->Append(/*is_valid=*/true, 3));
     ASSERT_OK(vb->Append(1));
     ASSERT_OK(vb->Append(2));
     ASSERT_OK(vb->Append(3));
@@ -521,13 +888,15 @@ class TestListArray : public TestBuilder {
   }
 
  protected:
+  MemoryPool* pool_ = default_memory_pool();
+  std::shared_ptr<DataType> type_;
   std::shared_ptr<DataType> value_type_;
 
   std::shared_ptr<BuilderType> builder_;
   std::shared_ptr<ArrayType> result_;
 };
 
-TYPED_TEST_SUITE(TestListArray, ListTypes);
+TYPED_TEST_SUITE(TestListArray, ListAndListViewTypes);
 
 TYPED_TEST(TestListArray, Basics) { this->TestBasics(); }
 
@@ -536,6 +905,8 @@ TYPED_TEST(TestListArray, Equality) { this->TestEquality(); }
 TYPED_TEST(TestListArray, ValuesEquality) { this->TestValuesEquality(); }
 
 TYPED_TEST(TestListArray, FromArrays) { this->TestFromArrays(); }
+
+TYPED_TEST(TestListArray, FromArraysNullHandling) { this->TestFromArraysNullHandling(); }
 
 TYPED_TEST(TestListArray, AppendNull) { this->TestAppendNull(); }
 
@@ -552,12 +923,14 @@ TYPED_TEST(TestListArray, BuilderPreserveFieldName) {
 }
 
 TYPED_TEST(TestListArray, FlattenSimple) { this->TestFlattenSimple(); }
+TYPED_TEST(TestListArray, FlattenNulls) { this->TestFlattenNulls(); }
+TYPED_TEST(TestListArray, FlattenAllEmpty) { this->TestFlattenAllEmpty(); }
 TYPED_TEST(TestListArray, FlattenZeroLength) { this->TestFlattenZeroLength(); }
 TYPED_TEST(TestListArray, TestFlattenNonEmptyBackingNulls) {
   this->TestFlattenNonEmptyBackingNulls();
 }
 
-TYPED_TEST(TestListArray, ValidateOffsets) { this->TestValidateOffsets(); }
+TYPED_TEST(TestListArray, ValidateDimensions) { this->TestValidateDimensions(); }
 
 TYPED_TEST(TestListArray, CornerCases) { this->TestCornerCases(); }
 
@@ -567,17 +940,91 @@ TYPED_TEST(TestListArray, DISABLED_TestOverflowCheck) { this->TestOverflowCheck(
 TYPED_TEST(TestListArray, TestOverflowCheck) { this->TestOverflowCheck(); }
 #endif
 
+class TestListConversions : public ::testing::Test {
+ private:
+  MemoryPool* pool_;
+
+ public:
+  TestListConversions() : pool_(default_memory_pool()) {}
+
+  template <typename DestListViewType, typename SrcListType>
+  void DoTestListViewFromList() {
+    using DestListViewArrayClass = typename TypeTraits<DestListViewType>::ArrayType;
+    using SrcListArrayClass = typename TypeTraits<SrcListType>::ArrayType;
+    auto list_type = std::make_shared<SrcListType>(int32());
+    auto list_view_type = std::make_shared<DestListViewType>(int32());
+
+    auto expected_list_view_w_nulls =
+        ArrayFromJSON(list_view_type, "[[1, 2], [3], [], [4], null]");
+    auto expected_list_view_wo_nulls =
+        ArrayFromJSON(list_view_type, "[[1, 2], [], [100000]]");
+
+    std::shared_ptr<Array> list_w_nulls =
+        ArrayFromJSON(list_type, "[[1, 2], [3], [], [4], null]");
+    auto list_wo_nulls = ArrayFromJSON(list_type, "[[1, 2], [], [100000]]");
+
+    ASSERT_OK_AND_ASSIGN(
+        auto result, DestListViewArrayClass::FromList(
+                         *checked_pointer_cast<SrcListArrayClass>(list_w_nulls), pool_));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*expected_list_view_w_nulls, *result, /*verbose=*/true);
+
+    ASSERT_OK_AND_ASSIGN(
+        result, DestListViewArrayClass::FromList(
+                    *checked_pointer_cast<SrcListArrayClass>(list_wo_nulls), pool_));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*expected_list_view_wo_nulls, *result, /*verbose=*/true);
+  }
+
+  template <typename DestListType, typename SrcListViewType>
+  void DoTestListFromListView() {
+    using SrcListViewArrayClass = typename TypeTraits<SrcListViewType>::ArrayType;
+    using DestListArrayClass = typename TypeTraits<DestListType>::ArrayType;
+    auto list_view_type = std::make_shared<SrcListViewType>(int32());
+    auto list_type = std::make_shared<DestListType>(int32());
+
+    auto list_view_w_nulls =
+        ArrayFromJSON(list_view_type, "[[1, 2], [3], [], [4], null]");
+    auto list_view_wo_nulls = ArrayFromJSON(list_view_type, "[[1, 2], [], [100000]]");
+
+    auto expected_list_w_nulls = ArrayFromJSON(list_type, "[[1, 2], [3], [], [4], null]");
+    auto expected_list_wo_nulls = ArrayFromJSON(list_type, "[[1, 2], [], [100000]]");
+
+    ASSERT_OK_AND_ASSIGN(
+        auto result,
+        DestListArrayClass::FromListView(
+            *checked_pointer_cast<SrcListViewArrayClass>(list_view_w_nulls), pool_));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*expected_list_w_nulls, *result, /*verbose=*/true);
+
+    ASSERT_OK_AND_ASSIGN(
+        result,
+        DestListArrayClass::FromListView(
+            *checked_pointer_cast<SrcListViewArrayClass>(list_view_wo_nulls), pool_));
+    ASSERT_OK(result->ValidateFull());
+    AssertArraysEqual(*expected_list_wo_nulls, *result, /*verbose=*/true);
+  }
+};
+
+TEST_F(TestListConversions, ListViewFromList) {
+  this->DoTestListViewFromList<ListViewType, ListType>();
+  this->DoTestListViewFromList<LargeListViewType, LargeListType>();
+}
+
+TEST_F(TestListConversions, ListFromListView) {
+  this->DoTestListFromListView<ListType, ListViewType>();
+  this->DoTestListFromListView<LargeListType, LargeListViewType>();
+}
+
 // ----------------------------------------------------------------------
 // Map tests
 
-class TestMapArray : public TestBuilder {
+class TestMapArray : public ::testing::Test {
  public:
   using offset_type = typename MapType::offset_type;
   using OffsetType = typename TypeTraits<MapType>::OffsetType;
 
   void SetUp() {
-    TestBuilder::SetUp();
-
     key_type_ = utf8();
     value_type_ = int32();
     type_ = map(key_type_, value_type_);
@@ -594,7 +1041,8 @@ class TestMapArray : public TestBuilder {
   }
 
  protected:
-  std::shared_ptr<DataType> value_type_, key_type_;
+  MemoryPool* pool_ = default_memory_pool();
+  std::shared_ptr<DataType> type_, value_type_, key_type_;
 
   std::shared_ptr<MapBuilder> builder_;
   std::shared_ptr<MapArray> result_;
@@ -606,11 +1054,11 @@ TEST_F(TestMapArray, Equality) {
 
   std::shared_ptr<Array> array, equal_array, unequal_array;
   std::vector<int32_t> equal_offsets = {0, 1, 2, 5, 6, 7, 8, 10};
-  std::vector<util::string_view> equal_keys = {"a", "a", "a", "b", "c",
-                                               "a", "a", "a", "a", "b"};
+  std::vector<std::string_view> equal_keys = {"a", "a", "a", "b", "c",
+                                              "a", "a", "a", "a", "b"};
   std::vector<int32_t> equal_values = {1, 2, 3, 4, 5, 2, 2, 2, 5, 6};
   std::vector<int32_t> unequal_offsets = {0, 1, 4, 7};
-  std::vector<util::string_view> unequal_keys = {"a", "a", "b", "c", "a", "b", "c"};
+  std::vector<std::string_view> unequal_keys = {"a", "a", "b", "c", "a", "b", "c"};
   std::vector<int32_t> unequal_values = {1, 2, 2, 2, 3, 4, 5};
 
   // setup two equal arrays
@@ -621,6 +1069,7 @@ TEST_F(TestMapArray, Equality) {
     }
     ASSERT_OK(ib.AppendValues(equal_values.data(), equal_values.size()));
     ASSERT_OK(builder_->Finish(out));
+    ASSERT_OK((*out)->ValidateFull());
   }
 
   // now an unequal one
@@ -630,6 +1079,7 @@ TEST_F(TestMapArray, Equality) {
   }
   ASSERT_OK(ib.AppendValues(unequal_values.data(), unequal_values.size()));
   ASSERT_OK(builder_->Finish(&unequal_array));
+  ASSERT_OK(unequal_array->ValidateFull());
 
   // Test array equality
   EXPECT_TRUE(array->Equals(array));
@@ -713,6 +1163,81 @@ TEST_F(TestMapArray, BuildingStringToInt) {
   ASSERT_ARRAYS_EQUAL(*actual, expected);
 }
 
+TEST_F(TestMapArray, BuildingWithFieldNames) {
+  // Builder should preserve field names in output Array
+  ASSERT_OK_AND_ASSIGN(auto map_type,
+                       MapType::Make(field("some_entries",
+                                           struct_({field("some_key", int16(), false),
+                                                    field("some_value", int16())}),
+                                           false)));
+
+  auto key_builder = std::make_shared<Int16Builder>();
+  auto item_builder = std::make_shared<Int16Builder>();
+  MapBuilder map_builder(default_memory_pool(), key_builder, item_builder, map_type);
+
+  std::shared_ptr<Array> actual;
+  ASSERT_OK(map_builder.Append());
+  ASSERT_OK(key_builder->AppendValues({0, 1, 2, 3, 4, 5}));
+  ASSERT_OK(item_builder->AppendValues({1, 1, 2, 3, 5, 8}));
+  ASSERT_OK(map_builder.AppendNull());
+  ASSERT_OK(map_builder.Finish(&actual));
+  ASSERT_OK(actual->ValidateFull());
+
+  ASSERT_EQ(actual->type()->ToString(), map_type->ToString());
+  ASSERT_EQ(map_builder.type()->ToString(), map_type->ToString());
+}
+
+TEST_F(TestMapArray, ValidateErrorNullStruct) {
+  ASSERT_OK_AND_ASSIGN(
+      auto values,
+      MakeArrayOfNull(struct_({field("key", utf8()), field("value", int32())}), 1));
+
+  Int32Builder offset_builder;
+  ASSERT_OK(offset_builder.AppendNull());
+  ASSERT_OK(offset_builder.Append(0));
+  ASSERT_OK_AND_ASSIGN(auto offsets, offset_builder.Finish());
+
+  ASSERT_OK_AND_ASSIGN(auto lists, ListArray::FromArrays(*offsets, *values));
+  ASSERT_OK(lists->ValidateFull());
+  ASSERT_EQ(lists->length(), 1);
+  ASSERT_EQ(lists->null_count(), 1);
+
+  // Make a Map ArrayData from the list array
+  // Note we can't construct a MapArray as that would crash with an assertion.
+  auto map_data = lists->data()->Copy();
+  map_data->type = map(utf8(), int32());
+  ASSERT_RAISES(Invalid, internal::ValidateArray(*map_data));
+}
+
+TEST_F(TestMapArray, ValidateErrorNullKey) {
+  StringBuilder key_builder;
+  ASSERT_OK(key_builder.AppendNull());
+  ASSERT_OK_AND_ASSIGN(auto keys, key_builder.Finish());
+
+  Int32Builder item_builder;
+  ASSERT_OK(item_builder.Append(42));
+  ASSERT_OK_AND_ASSIGN(auto items, item_builder.Finish());
+
+  ASSERT_OK_AND_ASSIGN(
+      auto values,
+      StructArray::Make({keys, items}, std::vector<std::string>{"key", "value"}));
+
+  Int32Builder offset_builder;
+  ASSERT_OK(offset_builder.Append(0));
+  ASSERT_OK(offset_builder.Append(1));
+  ASSERT_OK_AND_ASSIGN(auto offsets, offset_builder.Finish());
+
+  // The list array contains: [[null, 42]]
+  ASSERT_OK_AND_ASSIGN(auto lists, ListArray::FromArrays(*offsets, *values));
+  ASSERT_OK(lists->ValidateFull());
+
+  // Make a Map ArrayData from the list array
+  // Note we can't construct a MapArray as that would crash with an assertion.
+  auto map_data = lists->data()->Copy();
+  map_data->type = map(keys->type(), items->type());
+  ASSERT_RAISES(Invalid, internal::ValidateArray(*map_data));
+}
+
 TEST_F(TestMapArray, FromArrays) {
   std::shared_ptr<Array> offsets1, offsets2, offsets3, offsets4, keys, items;
 
@@ -756,7 +1281,7 @@ TEST_F(TestMapArray, FromArrays) {
   AssertArraysEqual(expected3, *map3);
 
   // Check that the last offset bit is zero
-  ASSERT_FALSE(BitUtil::GetBit(map3->null_bitmap()->data(), length + 1));
+  ASSERT_FALSE(bit_util::GetBit(map3->null_bitmap()->data(), length + 1));
 
   MapArray expected4(map_type, length, offsets2->data()->buffers[1], keys, items,
                      offsets4->data()->buffers[0], 1);
@@ -922,11 +1447,9 @@ TEST_F(TestMapArray, ValueBuilder) {
 // ----------------------------------------------------------------------
 // FixedSizeList tests
 
-class TestFixedSizeListArray : public TestBuilder {
+class TestFixedSizeListArray : public ::testing::Test {
  public:
   void SetUp() {
-    TestBuilder::SetUp();
-
     value_type_ = int32();
     type_ = fixed_size_list(value_type_, list_size());
 
@@ -943,7 +1466,9 @@ class TestFixedSizeListArray : public TestBuilder {
 
  protected:
   static constexpr int32_t list_size() { return 2; }
-  std::shared_ptr<DataType> value_type_;
+
+  MemoryPool* pool_ = default_memory_pool();
+  std::shared_ptr<DataType> type_, value_type_;
 
   std::shared_ptr<FixedSizeListBuilder> builder_;
   std::shared_ptr<FixedSizeListArray> result_;
@@ -1147,6 +1672,16 @@ TEST_F(TestFixedSizeListArray, NotEnoughValues) {
 
 TEST_F(TestFixedSizeListArray, FlattenZeroLength) {
   Done();
+  ASSERT_OK_AND_ASSIGN(auto flattened, result_->Flatten());
+  ASSERT_OK(flattened->ValidateFull());
+  ASSERT_EQ(0, flattened->length());
+  AssertTypeEqual(*flattened->type(), *value_type_);
+}
+
+TEST_F(TestFixedSizeListArray, FlattenNulls) {
+  ASSERT_OK(builder_->AppendNulls(2));
+  Done();
+  ASSERT_EQ(result_->data()->GetNullCount(), 2);
   ASSERT_OK_AND_ASSIGN(auto flattened, result_->Flatten());
   ASSERT_OK(flattened->ValidateFull());
   ASSERT_EQ(0, flattened->length());

@@ -59,7 +59,7 @@
 #include "arrow/util/ubsan.h"
 
 namespace arrow {
-namespace BitUtil {
+namespace bit_util {
 
 //
 // Byte-swap 16-bit, 32-bit and 64-bit values
@@ -122,28 +122,28 @@ static inline void ByteSwap(void* dst, const void* src, int len) {
 #if ARROW_LITTLE_ENDIAN
 template <typename T, typename = internal::EnableIfIsOneOf<
                           T, int64_t, uint64_t, int32_t, uint32_t, int16_t, uint16_t,
-                          uint8_t, int8_t, float, double>>
+                          uint8_t, int8_t, float, double, bool>>
 static inline T ToBigEndian(T value) {
   return ByteSwap(value);
 }
 
 template <typename T, typename = internal::EnableIfIsOneOf<
                           T, int64_t, uint64_t, int32_t, uint32_t, int16_t, uint16_t,
-                          uint8_t, int8_t, float, double>>
+                          uint8_t, int8_t, float, double, bool>>
 static inline T ToLittleEndian(T value) {
   return value;
 }
 #else
 template <typename T, typename = internal::EnableIfIsOneOf<
                           T, int64_t, uint64_t, int32_t, uint32_t, int16_t, uint16_t,
-                          uint8_t, int8_t, float, double>>
+                          uint8_t, int8_t, float, double, bool>>
 static inline T ToBigEndian(T value) {
   return value;
 }
 
 template <typename T, typename = internal::EnableIfIsOneOf<
                           T, int64_t, uint64_t, int32_t, uint32_t, int16_t, uint16_t,
-                          uint8_t, int8_t, float, double>>
+                          uint8_t, int8_t, float, double, bool>>
 static inline T ToLittleEndian(T value) {
   return ByteSwap(value);
 }
@@ -153,35 +153,35 @@ static inline T ToLittleEndian(T value) {
 #if ARROW_LITTLE_ENDIAN
 template <typename T, typename = internal::EnableIfIsOneOf<
                           T, int64_t, uint64_t, int32_t, uint32_t, int16_t, uint16_t,
-                          uint8_t, int8_t, float, double>>
+                          uint8_t, int8_t, float, double, bool>>
 static inline T FromBigEndian(T value) {
   return ByteSwap(value);
 }
 
 template <typename T, typename = internal::EnableIfIsOneOf<
                           T, int64_t, uint64_t, int32_t, uint32_t, int16_t, uint16_t,
-                          uint8_t, int8_t, float, double>>
+                          uint8_t, int8_t, float, double, bool>>
 static inline T FromLittleEndian(T value) {
   return value;
 }
 #else
 template <typename T, typename = internal::EnableIfIsOneOf<
                           T, int64_t, uint64_t, int32_t, uint32_t, int16_t, uint16_t,
-                          uint8_t, int8_t, float, double>>
+                          uint8_t, int8_t, float, double, bool>>
 static inline T FromBigEndian(T value) {
   return value;
 }
 
 template <typename T, typename = internal::EnableIfIsOneOf<
                           T, int64_t, uint64_t, int32_t, uint32_t, int16_t, uint16_t,
-                          uint8_t, int8_t, float, double>>
+                          uint8_t, int8_t, float, double, bool>>
 static inline T FromLittleEndian(T value) {
   return ByteSwap(value);
 }
 #endif
 
-// Handle endianness in *word* granuality (keep individual array element untouched)
-namespace LittleEndianArray {
+// Handle endianness in *word* granularity (keep individual array element untouched)
+namespace little_endian {
 
 namespace detail {
 
@@ -239,7 +239,7 @@ static inline std::array<T, N> FromNative(std::array<T, N> array) {
   return ToNative(array);
 }
 
-}  // namespace LittleEndianArray
+}  // namespace little_endian
 
-}  // namespace BitUtil
+}  // namespace bit_util
 }  // namespace arrow

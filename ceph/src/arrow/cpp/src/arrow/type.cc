@@ -20,7 +20,9 @@
 #include <algorithm>
 #include <climits>
 #include <cstddef>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <ostream>
 #include <sstream>  // IWYU pragma: keep
@@ -35,17 +37,22 @@
 #include "arrow/record_batch.h"
 #include "arrow/result.h"
 #include "arrow/status.h"
+#include "arrow/table.h"
 #include "arrow/util/checked_cast.h"
+#include "arrow/util/decimal.h"
 #include "arrow/util/hash_util.h"
 #include "arrow/util/hashing.h"
 #include "arrow/util/key_value_metadata.h"
 #include "arrow/util/logging.h"
-#include "arrow/util/make_unique.h"
 #include "arrow/util/range.h"
+#include "arrow/util/string.h"
+#include "arrow/util/unreachable.h"
 #include "arrow/util/vector.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_type_inline.h"
 
 namespace arrow {
+
+using internal::checked_cast;
 
 constexpr Type::type NullType::type_id;
 constexpr Type::type ListType::type_id;
@@ -57,9 +64,13 @@ constexpr Type::type FixedSizeListType::type_id;
 
 constexpr Type::type BinaryType::type_id;
 
+constexpr Type::type BinaryViewType::type_id;
+
 constexpr Type::type LargeBinaryType::type_id;
 
 constexpr Type::type StringType::type_id;
+
+constexpr Type::type StringViewType::type_id;
 
 constexpr Type::type LargeStringType::type_id;
 
@@ -94,6 +105,52 @@ constexpr Type::type MonthDayNanoIntervalType::type_id;
 constexpr Type::type DurationType::type_id;
 
 constexpr Type::type DictionaryType::type_id;
+
+std::vector<Type::type> AllTypeIds() {
+  return {Type::NA,
+          Type::BOOL,
+          Type::INT8,
+          Type::INT16,
+          Type::INT32,
+          Type::INT64,
+          Type::UINT8,
+          Type::UINT16,
+          Type::UINT32,
+          Type::UINT64,
+          Type::HALF_FLOAT,
+          Type::FLOAT,
+          Type::DOUBLE,
+          Type::DECIMAL128,
+          Type::DECIMAL256,
+          Type::DATE32,
+          Type::DATE64,
+          Type::TIME32,
+          Type::TIME64,
+          Type::TIMESTAMP,
+          Type::INTERVAL_DAY_TIME,
+          Type::INTERVAL_MONTHS,
+          Type::DURATION,
+          Type::STRING,
+          Type::BINARY,
+          Type::LARGE_STRING,
+          Type::LARGE_BINARY,
+          Type::STRING_VIEW,
+          Type::BINARY_VIEW,
+          Type::FIXED_SIZE_BINARY,
+          Type::STRUCT,
+          Type::LIST,
+          Type::LARGE_LIST,
+          Type::LIST_VIEW,
+          Type::LARGE_LIST_VIEW,
+          Type::FIXED_SIZE_LIST,
+          Type::MAP,
+          Type::DENSE_UNION,
+          Type::SPARSE_UNION,
+          Type::DICTIONARY,
+          Type::EXTENSION,
+          Type::INTERVAL_MONTH_DAY_NANO,
+          Type::RUN_END_ENCODED};
+}
 
 namespace internal {
 
@@ -145,18 +202,23 @@ std::string ToString(Type::type id) {
     TO_STRING_CASE(INTERVAL_MONTHS)
     TO_STRING_CASE(DURATION)
     TO_STRING_CASE(STRING)
+    TO_STRING_CASE(STRING_VIEW)
     TO_STRING_CASE(BINARY)
+    TO_STRING_CASE(BINARY_VIEW)
     TO_STRING_CASE(LARGE_STRING)
     TO_STRING_CASE(LARGE_BINARY)
     TO_STRING_CASE(FIXED_SIZE_BINARY)
     TO_STRING_CASE(STRUCT)
     TO_STRING_CASE(LIST)
     TO_STRING_CASE(LARGE_LIST)
+    TO_STRING_CASE(LIST_VIEW)
+    TO_STRING_CASE(LARGE_LIST_VIEW)
     TO_STRING_CASE(FIXED_SIZE_LIST)
     TO_STRING_CASE(MAP)
     TO_STRING_CASE(DENSE_UNION)
     TO_STRING_CASE(SPARSE_UNION)
     TO_STRING_CASE(DICTIONARY)
+    TO_STRING_CASE(RUN_END_ENCODED)
     TO_STRING_CASE(EXTENSION)
 
 #undef TO_STRING_CASE
@@ -183,11 +245,6 @@ std::string ToString(TimeUnit::type unit) {
   }
 }
 
-int GetByteWidth(const DataType& type) {
-  const auto& fw_type = checked_cast<const FixedWidthType&>(type);
-  return fw_type.bit_width() / CHAR_BIT;
-}
-
 }  // namespace internal
 
 namespace {
@@ -202,7 +259,7 @@ struct PhysicalTypeVisitor {
   }
 
   template <typename Type, typename PhysicalType = typename Type::PhysicalType>
-  Status Visit(const Type&) {
+  Status Visit(const Type& type) {
     result = TypeTraits<PhysicalType>::type_singleton();
     return Status::OK();
   }
@@ -220,21 +277,16 @@ namespace {
 
 using internal::checked_cast;
 
-// Merges `existing` and `other` if one of them is of NullType, otherwise
-// returns nullptr.
-//   - if `other` if of NullType or is nullable, the unified field will be nullable.
-//   - if `existing` is of NullType but other is not, the unified field will
-//     have `other`'s type and will be nullable
-std::shared_ptr<Field> MaybePromoteNullTypes(const Field& existing, const Field& other) {
-  if (existing.type()->id() != Type::NA && other.type()->id() != Type::NA) {
-    return nullptr;
+FieldVector MakeFields(
+    std::initializer_list<std::pair<std::string, std::shared_ptr<DataType>>> init_list) {
+  FieldVector fields;
+  fields.reserve(init_list.size());
+  for (const auto& [name, type] : init_list) {
+    fields.push_back(field(name, type));
   }
-  if (existing.type()->id() == Type::NA) {
-    return other.WithNullable(true)->WithMetadata(existing.metadata());
-  }
-  // `other` must be null.
-  return existing.WithNullable(true);
+  return fields;
 }
+
 }  // namespace
 
 Field::~Field() {}
@@ -275,6 +327,459 @@ std::shared_ptr<Field> Field::WithNullable(const bool nullable) const {
   return std::make_shared<Field>(name_, type_, nullable, metadata_);
 }
 
+Field::MergeOptions Field::MergeOptions::Permissive() {
+  MergeOptions options = Defaults();
+  options.promote_nullability = true;
+  options.promote_decimal = true;
+  options.promote_decimal_to_float = true;
+  options.promote_integer_to_decimal = true;
+  options.promote_integer_to_float = true;
+  options.promote_integer_sign = true;
+  options.promote_numeric_width = true;
+  options.promote_binary = true;
+  options.promote_temporal_unit = true;
+  options.promote_list = true;
+  options.promote_dictionary = true;
+  options.promote_dictionary_ordered = false;
+  return options;
+}
+
+std::string Field::MergeOptions::ToString() const {
+  std::stringstream ss;
+  ss << "MergeOptions{";
+  ss << "promote_nullability=" << (promote_nullability ? "true" : "false");
+  ss << ", promote_decimal=" << (promote_decimal ? "true" : "false");
+  ss << ", promote_decimal_to_float=" << (promote_decimal_to_float ? "true" : "false");
+  ss << ", promote_integer_to_decimal="
+     << (promote_integer_to_decimal ? "true" : "false");
+  ss << ", promote_integer_to_float=" << (promote_integer_to_float ? "true" : "false");
+  ss << ", promote_integer_sign=" << (promote_integer_sign ? "true" : "false");
+  ss << ", promote_numeric_width=" << (promote_numeric_width ? "true" : "false");
+  ss << ", promote_binary=" << (promote_binary ? "true" : "false");
+  ss << ", promote_temporal_unit=" << (promote_temporal_unit ? "true" : "false");
+  ss << ", promote_list=" << (promote_list ? "true" : "false");
+  ss << ", promote_dictionary=" << (promote_dictionary ? "true" : "false");
+  ss << ", promote_dictionary_ordered="
+     << (promote_dictionary_ordered ? "true" : "false");
+  ss << '}';
+  return ss.str();
+}
+
+namespace {
+// Utilities for Field::MergeWith
+
+std::shared_ptr<DataType> MakeBinary(const DataType& type) {
+  switch (type.id()) {
+    case Type::BINARY:
+    case Type::STRING:
+      return binary();
+    case Type::LARGE_BINARY:
+    case Type::LARGE_STRING:
+      return large_binary();
+    default:
+      Unreachable("Hit an unknown type");
+  }
+  return nullptr;
+}
+
+Result<std::shared_ptr<DataType>> WidenDecimals(
+    const std::shared_ptr<DataType>& promoted_type,
+    const std::shared_ptr<DataType>& other_type, const Field::MergeOptions& options) {
+  const auto& left = checked_cast<const DecimalType&>(*promoted_type);
+  const auto& right = checked_cast<const DecimalType&>(*other_type);
+  if (!options.promote_numeric_width && left.bit_width() != right.bit_width()) {
+    return Status::TypeError(
+        "Cannot promote decimal128 to decimal256 without promote_numeric_width=true");
+  }
+  const int32_t max_scale = std::max<int32_t>(left.scale(), right.scale());
+  const int32_t common_precision =
+      std::max<int32_t>(left.precision() + max_scale - left.scale(),
+                        right.precision() + max_scale - right.scale());
+  if (left.id() == Type::DECIMAL256 || right.id() == Type::DECIMAL256 ||
+      common_precision > BasicDecimal128::kMaxPrecision) {
+    return DecimalType::Make(Type::DECIMAL256, common_precision, max_scale);
+  }
+  return DecimalType::Make(Type::DECIMAL128, common_precision, max_scale);
+}
+
+Result<std::shared_ptr<DataType>> MergeTypes(std::shared_ptr<DataType> promoted_type,
+                                             std::shared_ptr<DataType> other_type,
+                                             const Field::MergeOptions& options);
+
+// Merge temporal types based on options. Returns nullptr for non-temporal types.
+Result<std::shared_ptr<DataType>> MaybeMergeTemporalTypes(
+    const std::shared_ptr<DataType>& promoted_type,
+    const std::shared_ptr<DataType>& other_type, const Field::MergeOptions& options) {
+  if (options.promote_temporal_unit) {
+    if (promoted_type->id() == Type::DATE32 && other_type->id() == Type::DATE64) {
+      return date64();
+    }
+    if (promoted_type->id() == Type::DATE64 && other_type->id() == Type::DATE32) {
+      return date64();
+    }
+
+    if (promoted_type->id() == Type::DURATION && other_type->id() == Type::DURATION) {
+      const auto& left = checked_cast<const DurationType&>(*promoted_type);
+      const auto& right = checked_cast<const DurationType&>(*other_type);
+      return duration(std::max(left.unit(), right.unit()));
+    }
+
+    if (is_time(promoted_type->id()) && is_time(other_type->id())) {
+      const auto& left = checked_cast<const TimeType&>(*promoted_type);
+      const auto& right = checked_cast<const TimeType&>(*other_type);
+      const auto unit = std::max(left.unit(), right.unit());
+      if (unit == TimeUnit::MICRO || unit == TimeUnit::NANO) {
+        return time64(unit);
+      }
+      return time32(unit);
+    }
+  }
+
+  if (promoted_type->id() == Type::TIMESTAMP && other_type->id() == Type::TIMESTAMP) {
+    const auto& left = checked_cast<const TimestampType&>(*promoted_type);
+    const auto& right = checked_cast<const TimestampType&>(*other_type);
+    if (left.timezone().empty() ^ right.timezone().empty()) {
+      return Status::TypeError(
+          "Cannot merge timestamp with timezone and timestamp without timezone");
+    }
+    if (left.timezone() != right.timezone()) {
+      return Status::TypeError("Cannot merge timestamps with differing timezones");
+    }
+    if (options.promote_temporal_unit) {
+      return timestamp(std::max(left.unit(), right.unit()), left.timezone());
+    }
+  }
+
+  return nullptr;
+}
+
+// Merge numeric types based on options. Returns nullptr for non-numeric types.
+Result<std::shared_ptr<DataType>> MaybeMergeNumericTypes(
+    std::shared_ptr<DataType> promoted_type, std::shared_ptr<DataType> other_type,
+    const Field::MergeOptions& options) {
+  bool promoted = false;
+  if (options.promote_decimal_to_float) {
+    if (is_decimal(promoted_type->id()) && is_floating(other_type->id())) {
+      promoted_type = other_type;
+      promoted = true;
+    } else if (is_floating(promoted_type->id()) && is_decimal(other_type->id())) {
+      other_type = promoted_type;
+      promoted = true;
+    }
+  }
+
+  if (options.promote_integer_to_decimal &&
+      ((is_decimal(promoted_type->id()) && is_integer(other_type->id())) ||
+       (is_decimal(other_type->id()) && is_integer(promoted_type->id())))) {
+    if (is_integer(promoted_type->id()) && is_decimal(other_type->id())) {
+      // Other type is always the int
+      promoted_type.swap(other_type);
+    }
+    ARROW_ASSIGN_OR_RAISE(const int32_t precision,
+                          MaxDecimalDigitsForInteger(other_type->id()));
+    ARROW_ASSIGN_OR_RAISE(const auto promoted_decimal,
+                          DecimalType::Make(promoted_type->id(), precision, 0));
+    ARROW_ASSIGN_OR_RAISE(promoted_type,
+                          WidenDecimals(promoted_type, promoted_decimal, options));
+    return promoted_type;
+  }
+
+  if (options.promote_decimal && is_decimal(promoted_type->id()) &&
+      is_decimal(other_type->id())) {
+    ARROW_ASSIGN_OR_RAISE(promoted_type,
+                          WidenDecimals(promoted_type, other_type, options));
+    return promoted_type;
+  }
+
+  if (options.promote_integer_sign && ((is_unsigned_integer(promoted_type->id()) &&
+                                        is_signed_integer(other_type->id())) ||
+                                       (is_signed_integer(promoted_type->id()) &&
+                                        is_unsigned_integer(other_type->id())))) {
+    if (is_signed_integer(promoted_type->id()) && is_unsigned_integer(other_type->id())) {
+      // Other type is always the signed int
+      promoted_type.swap(other_type);
+    }
+
+    if (!options.promote_numeric_width &&
+        bit_width(promoted_type->id()) < bit_width(other_type->id())) {
+      return Status::TypeError(
+          "Cannot widen signed integers without promote_numeric_width=true");
+    }
+    int max_width =
+        std::max<int>(bit_width(promoted_type->id()), bit_width(other_type->id()));
+
+    // If the unsigned one is bigger or equal to the signed one, we need another bit
+    if (bit_width(promoted_type->id()) >= bit_width(other_type->id())) {
+      ++max_width;
+    }
+
+    if (max_width > 32) {
+      promoted_type = int64();
+    } else if (max_width > 16) {
+      promoted_type = int32();
+    } else if (max_width > 8) {
+      promoted_type = int16();
+    } else {
+      promoted_type = int8();
+    }
+    return promoted_type;
+  }
+
+  if (options.promote_integer_to_float &&
+      ((is_floating(promoted_type->id()) && is_integer(other_type->id())) ||
+       (is_integer(promoted_type->id()) && is_floating(other_type->id())))) {
+    if (is_integer(promoted_type->id()) && is_floating(other_type->id())) {
+      // Other type is always the int
+      promoted_type.swap(other_type);
+    }
+
+    const int int_width = bit_width(other_type->id());
+    promoted = true;
+    if (int_width <= 8) {
+      other_type = float16();
+    } else if (int_width <= 16) {
+      other_type = float32();
+    } else {
+      other_type = float64();
+    }
+
+    if (!options.promote_numeric_width &&
+        bit_width(promoted_type->id()) != bit_width(other_type->id())) {
+      return Status::TypeError("Cannot widen float without promote_numeric_width=true");
+    }
+  }
+
+  if (options.promote_numeric_width) {
+    const int max_width =
+        std::max<int>(bit_width(promoted_type->id()), bit_width(other_type->id()));
+    if (is_floating(promoted_type->id()) && is_floating(other_type->id())) {
+      promoted = true;
+      if (max_width >= 64) {
+        promoted_type = float64();
+      } else if (max_width >= 32) {
+        promoted_type = float32();
+      } else {
+        promoted_type = float16();
+      }
+    } else if (is_signed_integer(promoted_type->id()) &&
+               is_signed_integer(other_type->id())) {
+      promoted = true;
+      if (max_width >= 64) {
+        promoted_type = int64();
+      } else if (max_width >= 32) {
+        promoted_type = int32();
+      } else if (max_width >= 16) {
+        promoted_type = int16();
+      } else {
+        promoted_type = int8();
+      }
+    } else if (is_unsigned_integer(promoted_type->id()) &&
+               is_unsigned_integer(other_type->id())) {
+      promoted = true;
+      if (max_width >= 64) {
+        promoted_type = uint64();
+      } else if (max_width >= 32) {
+        promoted_type = uint32();
+      } else if (max_width >= 16) {
+        promoted_type = uint16();
+      } else {
+        promoted_type = uint8();
+      }
+    }
+  }
+
+  return promoted ? promoted_type : nullptr;
+}
+
+// Merge two dictionary types, or else give an error.
+Result<std::shared_ptr<DataType>> MergeDictionaryTypes(
+    const std::shared_ptr<DataType>& promoted_type,
+    const std::shared_ptr<DataType>& other_type, const Field::MergeOptions& options) {
+  const auto& left = checked_cast<const DictionaryType&>(*promoted_type);
+  const auto& right = checked_cast<const DictionaryType&>(*other_type);
+  if (!options.promote_dictionary_ordered && left.ordered() != right.ordered()) {
+    return Status::TypeError(
+        "Cannot merge ordered and unordered dictionary unless "
+        "promote_dictionary_ordered=true");
+  }
+  Field::MergeOptions index_options = options;
+  index_options.promote_integer_sign = true;
+  index_options.promote_numeric_width = true;
+  ARROW_ASSIGN_OR_RAISE(
+      auto indices,
+      MaybeMergeNumericTypes(left.index_type(), right.index_type(), index_options));
+  ARROW_ASSIGN_OR_RAISE(auto values,
+                        MergeTypes(left.value_type(), right.value_type(), options));
+  auto ordered = left.ordered() && right.ordered();
+  if (indices && values) {
+    return dictionary(indices, values, ordered);
+  } else if (values) {
+    return Status::TypeError("Could not merge dictionary index types");
+  }
+  return Status::TypeError("Could not merge dictionary value types");
+}
+
+// Merge temporal types based on options. Returns nullptr for non-binary types.
+Result<std::shared_ptr<DataType>> MaybeMergeBinaryTypes(
+    std::shared_ptr<DataType>& promoted_type, std::shared_ptr<DataType>& other_type,
+    const Field::MergeOptions& options) {
+  if (options.promote_binary) {
+    if (other_type->id() == Type::FIXED_SIZE_BINARY &&
+        is_base_binary_like(promoted_type->id())) {
+      return MakeBinary(*promoted_type);
+    } else if (promoted_type->id() == Type::FIXED_SIZE_BINARY &&
+               is_base_binary_like(other_type->id())) {
+      return MakeBinary(*other_type);
+    } else if (promoted_type->id() == Type::FIXED_SIZE_BINARY &&
+               other_type->id() == Type::FIXED_SIZE_BINARY) {
+      return binary();
+    }
+
+    if ((other_type->id() == Type::LARGE_STRING ||
+         other_type->id() == Type::LARGE_BINARY) &&
+        (promoted_type->id() == Type::STRING || promoted_type->id() == Type::BINARY)
+
+    ) {
+      // Promoted type is always large in case there are regular and large types
+      promoted_type.swap(other_type);
+    }
+
+    // When one field is binary and the other a string
+    if (is_string(promoted_type->id()) && is_binary(other_type->id())) {
+      return MakeBinary(*promoted_type);
+    } else if (is_binary(promoted_type->id()) && is_string(other_type->id())) {
+      return MakeBinary(*promoted_type);
+    }
+
+    // When the types are the same, but one is large
+    if ((promoted_type->id() == Type::STRING && other_type->id() == Type::LARGE_STRING) ||
+        (promoted_type->id() == Type::LARGE_STRING && other_type->id() == Type::STRING)) {
+      return large_utf8();
+    } else if ((promoted_type->id() == Type::BINARY &&
+                other_type->id() == Type::LARGE_BINARY) ||
+               (promoted_type->id() == Type::LARGE_BINARY &&
+                other_type->id() == Type::BINARY)) {
+      return large_binary();
+    }
+  }
+
+  return nullptr;
+}
+
+// Merge list types based on options. Returns nullptr for non-list types.
+Result<std::shared_ptr<DataType>> MergeStructs(
+    const std::shared_ptr<DataType>& promoted_type,
+    const std::shared_ptr<DataType>& other_type, const Field::MergeOptions& options) {
+  SchemaBuilder builder(SchemaBuilder::CONFLICT_APPEND, options);
+  // Add the LHS fields. Duplicates will be preserved.
+  RETURN_NOT_OK(builder.AddFields(promoted_type->fields()));
+
+  // Add the RHS fields. Duplicates will be merged, unless the field was
+  // already a duplicate, in which case we error (since we don't know which
+  // field to merge with).
+  builder.SetPolicy(SchemaBuilder::CONFLICT_MERGE);
+  RETURN_NOT_OK(builder.AddFields(other_type->fields()));
+
+  ARROW_ASSIGN_OR_RAISE(auto schema, builder.Finish());
+  return struct_(schema->fields());
+}
+
+// Merge list types based on options. Returns nullptr for non-list types.
+Result<std::shared_ptr<DataType>> MaybeMergeListTypes(
+    const std::shared_ptr<DataType>& promoted_type,
+    const std::shared_ptr<DataType>& other_type, const Field::MergeOptions& options) {
+  if (promoted_type->id() == Type::FIXED_SIZE_LIST &&
+      other_type->id() == Type::FIXED_SIZE_LIST) {
+    const auto& left = checked_cast<const FixedSizeListType&>(*promoted_type);
+    const auto& right = checked_cast<const FixedSizeListType&>(*other_type);
+    ARROW_ASSIGN_OR_RAISE(
+        auto value_field,
+        left.value_field()->MergeWith(
+            *right.value_field()->WithName(left.value_field()->name()), options));
+    if (left.list_size() == right.list_size()) {
+      return fixed_size_list(std::move(value_field), left.list_size());
+    } else {
+      return list(std::move(value_field));
+    }
+  } else if (is_list(promoted_type->id()) && is_list(other_type->id())) {
+    const auto& left = checked_cast<const BaseListType&>(*promoted_type);
+    const auto& right = checked_cast<const BaseListType&>(*other_type);
+    ARROW_ASSIGN_OR_RAISE(
+        auto value_field,
+        left.value_field()->MergeWith(
+            *right.value_field()->WithName(left.value_field()->name()), options));
+
+    if (!options.promote_list && promoted_type->id() != other_type->id()) {
+      return Status::TypeError("Cannot merge lists unless promote_list=true");
+    }
+
+    if (promoted_type->id() == Type::LARGE_LIST || other_type->id() == Type::LARGE_LIST) {
+      return large_list(std::move(value_field));
+    } else {
+      return list(std::move(value_field));
+    }
+  } else if (promoted_type->id() == Type::MAP && other_type->id() == Type::MAP) {
+    const auto& left = checked_cast<const MapType&>(*promoted_type);
+    const auto& right = checked_cast<const MapType&>(*other_type);
+    ARROW_ASSIGN_OR_RAISE(
+        auto key_field,
+        left.key_field()->MergeWith(
+            *right.key_field()->WithName(left.key_field()->name()), options));
+    ARROW_ASSIGN_OR_RAISE(
+        auto item_field,
+        left.item_field()->MergeWith(
+            *right.item_field()->WithName(left.item_field()->name()), options));
+    return map(std::move(key_field->type()), std::move(item_field),
+               /*keys_sorted=*/left.keys_sorted() && right.keys_sorted());
+  } else if (promoted_type->id() == Type::STRUCT && other_type->id() == Type::STRUCT) {
+    return MergeStructs(promoted_type, other_type, options);
+  }
+
+  return nullptr;
+}
+
+Result<std::shared_ptr<DataType>> MergeTypes(std::shared_ptr<DataType> promoted_type,
+                                             std::shared_ptr<DataType> other_type,
+                                             const Field::MergeOptions& options) {
+  if (promoted_type->Equals(*other_type)) return promoted_type;
+
+  bool promoted = false;
+  if (options.promote_nullability) {
+    if (promoted_type->id() == Type::NA) {
+      return other_type;
+    } else if (other_type->id() == Type::NA) {
+      return promoted_type;
+    }
+  } else if (promoted_type->id() == Type::NA || other_type->id() == Type::NA) {
+    return Status::TypeError(
+        "Cannot merge type with null unless promote_nullability=true");
+  }
+
+  if (options.promote_dictionary && is_dictionary(promoted_type->id()) &&
+      is_dictionary(other_type->id())) {
+    return MergeDictionaryTypes(promoted_type, other_type, options);
+  }
+
+  ARROW_ASSIGN_OR_RAISE(auto maybe_promoted,
+                        MaybeMergeTemporalTypes(promoted_type, other_type, options));
+  if (maybe_promoted) return maybe_promoted;
+
+  ARROW_ASSIGN_OR_RAISE(maybe_promoted,
+                        MaybeMergeNumericTypes(promoted_type, other_type, options));
+  if (maybe_promoted) return maybe_promoted;
+
+  ARROW_ASSIGN_OR_RAISE(maybe_promoted,
+                        MaybeMergeBinaryTypes(promoted_type, other_type, options));
+  if (maybe_promoted) return maybe_promoted;
+
+  ARROW_ASSIGN_OR_RAISE(maybe_promoted,
+                        MaybeMergeListTypes(promoted_type, other_type, options));
+  if (maybe_promoted) return maybe_promoted;
+
+  return promoted ? promoted_type : nullptr;
+}
+}  // namespace
+
 Result<std::shared_ptr<Field>> Field::MergeWith(const Field& other,
                                                 MergeOptions options) const {
   if (name() != other.name()) {
@@ -286,17 +791,30 @@ Result<std::shared_ptr<Field>> Field::MergeWith(const Field& other,
     return Copy();
   }
 
-  if (options.promote_nullability) {
-    if (type()->Equals(other.type())) {
-      return Copy()->WithNullable(nullable() || other.nullable());
-    }
-    std::shared_ptr<Field> promoted = MaybePromoteNullTypes(*this, other);
-    if (promoted) return promoted;
+  auto maybe_promoted_type = MergeTypes(type_, other.type(), options);
+  if (!maybe_promoted_type.ok()) {
+    return maybe_promoted_type.status().WithMessage(
+        "Unable to merge: Field ", name(),
+        " has incompatible types: ", type()->ToString(), " vs ", other.type()->ToString(),
+        ": ", maybe_promoted_type.status().message());
   }
+  auto promoted_type = *std::move(maybe_promoted_type);
+  if (promoted_type) {
+    bool nullable = nullable_;
+    if (options.promote_nullability) {
+      nullable = nullable || other.nullable() || type_->id() == Type::NA ||
+                 other.type()->id() == Type::NA;
+    } else if (nullable_ != other.nullable()) {
+      return Status::TypeError("Unable to merge: Field ", name(),
+                               " has incompatible nullability: ", nullable_, " vs ",
+                               other.nullable());
+    }
 
-  return Status::Invalid("Unable to merge: Field ", name(),
-                         " has incompatible types: ", type()->ToString(), " vs ",
-                         other.type()->ToString());
+    return std::make_shared<Field>(name_, promoted_type, nullable, metadata_);
+  }
+  return Status::TypeError("Unable to merge: Field ", name(),
+                           " has incompatible types: ", type()->ToString(), " vs ",
+                           other.type()->ToString());
 }
 
 Result<std::shared_ptr<Field>> Field::MergeWith(const std::shared_ptr<Field>& other,
@@ -305,8 +823,8 @@ Result<std::shared_ptr<Field>> Field::MergeWith(const std::shared_ptr<Field>& ot
   return MergeWith(*other, options);
 }
 
-std::vector<std::shared_ptr<Field>> Field::Flatten() const {
-  std::vector<std::shared_ptr<Field>> flattened;
+FieldVector Field::Flatten() const {
+  FieldVector flattened;
   if (type_->id() == Type::STRUCT) {
     for (const auto& child : type_->fields()) {
       auto flattened_child = child->Copy();
@@ -366,17 +884,19 @@ std::string Field::ToString(bool show_metadata) const {
   return ss.str();
 }
 
+void PrintTo(const Field& field, std::ostream* os) { *os << field.ToString(); }
+
 DataType::~DataType() {}
 
 bool DataType::Equals(const DataType& other, bool check_metadata) const {
   return TypeEquals(*this, other, check_metadata);
 }
 
-bool DataType::Equals(const std::shared_ptr<DataType>& other) const {
+bool DataType::Equals(const std::shared_ptr<DataType>& other, bool check_metadata) const {
   if (!other) {
     return false;
   }
-  return Equals(*other.get());
+  return Equals(*other.get(), check_metadata);
 }
 
 size_t DataType::Hash() const {
@@ -390,6 +910,49 @@ std::ostream& operator<<(std::ostream& os, const DataType& type) {
   os << type.ToString();
   return os;
 }
+
+std::ostream& operator<<(std::ostream& os, const TypeHolder& type) {
+  os << type.ToString();
+  return os;
+}
+
+// ----------------------------------------------------------------------
+// TypeHolder
+
+std::string TypeHolder::ToString(const std::vector<TypeHolder>& types) {
+  std::stringstream ss;
+  ss << "(";
+  for (size_t i = 0; i < types.size(); ++i) {
+    if (i > 0) {
+      ss << ", ";
+    }
+    ss << types[i].type->ToString();
+  }
+  ss << ")";
+  return ss.str();
+}
+
+std::vector<TypeHolder> TypeHolder::FromTypes(
+    const std::vector<std::shared_ptr<DataType>>& types) {
+  std::vector<TypeHolder> type_holders;
+  type_holders.reserve(types.size());
+  for (const auto& type : types) {
+    type_holders.emplace_back(type);
+  }
+  return type_holders;
+}
+
+// ----------------------------------------------------------------------
+
+FixedWidthType::~FixedWidthType() {}
+
+PrimitiveCType::~PrimitiveCType() {}
+
+NumberType::~NumberType() {}
+
+IntegerType::~IntegerType() {}
+
+FloatingPointType::~FloatingPointType() {}
 
 FloatingPointType::Precision HalfFloatType::precision() const {
   return FloatingPointType::HALF;
@@ -415,6 +978,12 @@ std::ostream& operator<<(std::ostream& os,
   return os;
 }
 
+NestedType::~NestedType() {}
+
+BaseBinaryType::~BaseBinaryType() {}
+
+BaseListType::~BaseListType() {}
+
 std::string ListType::ToString() const {
   std::stringstream s;
   s << "list<" << value_field()->ToString() << ">";
@@ -424,6 +993,18 @@ std::string ListType::ToString() const {
 std::string LargeListType::ToString() const {
   std::stringstream s;
   s << "large_list<" << value_field()->ToString() << ">";
+  return s.str();
+}
+
+std::string ListViewType::ToString() const {
+  std::stringstream s;
+  s << "list_view<" << value_field()->ToString() << ">";
+  return s.str();
+}
+
+std::string LargeListViewType::ToString() const {
+  std::stringstream s;
+  s << "large_list_view<" << value_field()->ToString() << ">";
   return s.str();
 }
 
@@ -501,9 +1082,13 @@ std::string FixedSizeListType::ToString() const {
 
 std::string BinaryType::ToString() const { return "binary"; }
 
+std::string BinaryViewType::ToString() const { return "binary_view"; }
+
 std::string LargeBinaryType::ToString() const { return "large_binary"; }
 
 std::string StringType::ToString() const { return "string"; }
+
+std::string StringViewType::ToString() const { return "string_view"; }
 
 std::string LargeStringType::ToString() const { return "large_string"; }
 
@@ -525,6 +1110,8 @@ std::string FixedSizeBinaryType::ToString() const {
   ss << "fixed_size_binary[" << byte_width_ << "]";
   return ss.str();
 }
+
+TemporalType::~TemporalType() {}
 
 // ----------------------------------------------------------------------
 // Date types
@@ -615,8 +1202,7 @@ UnionMode::type UnionType::mode() const {
   return id_ == Type::SPARSE_UNION ? UnionMode::SPARSE : UnionMode::DENSE;
 }
 
-UnionType::UnionType(std::vector<std::shared_ptr<Field>> fields,
-                     std::vector<int8_t> type_codes, Type::type id)
+UnionType::UnionType(FieldVector fields, std::vector<int8_t> type_codes, Type::type id)
     : NestedType(id),
       type_codes_(std::move(type_codes)),
       child_ids_(kMaxTypeCode + 1, kInvalidChildId) {
@@ -628,7 +1214,7 @@ UnionType::UnionType(std::vector<std::shared_ptr<Field>> fields,
   }
 }
 
-Status UnionType::ValidateParameters(const std::vector<std::shared_ptr<Field>>& fields,
+Status UnionType::ValidateParameters(const FieldVector& fields,
                                      const std::vector<int8_t>& type_codes,
                                      UnionMode::type mode) {
   if (fields.size() != type_codes.size()) {
@@ -674,24 +1260,46 @@ std::string UnionType::ToString() const {
   return s.str();
 }
 
-SparseUnionType::SparseUnionType(std::vector<std::shared_ptr<Field>> fields,
-                                 std::vector<int8_t> type_codes)
-    : UnionType(fields, type_codes, Type::SPARSE_UNION) {}
+SparseUnionType::SparseUnionType(FieldVector fields, std::vector<int8_t> type_codes)
+    : UnionType(std::move(fields), std::move(type_codes), Type::SPARSE_UNION) {}
 
-Result<std::shared_ptr<DataType>> SparseUnionType::Make(
-    std::vector<std::shared_ptr<Field>> fields, std::vector<int8_t> type_codes) {
+Result<std::shared_ptr<DataType>> SparseUnionType::Make(FieldVector fields,
+                                                        std::vector<int8_t> type_codes) {
   RETURN_NOT_OK(ValidateParameters(fields, type_codes, UnionMode::SPARSE));
-  return std::make_shared<SparseUnionType>(fields, type_codes);
+  return std::make_shared<SparseUnionType>(std::move(fields), std::move(type_codes));
 }
 
-DenseUnionType::DenseUnionType(std::vector<std::shared_ptr<Field>> fields,
-                               std::vector<int8_t> type_codes)
-    : UnionType(fields, type_codes, Type::DENSE_UNION) {}
+DenseUnionType::DenseUnionType(FieldVector fields, std::vector<int8_t> type_codes)
+    : UnionType(std::move(fields), std::move(type_codes), Type::DENSE_UNION) {}
 
-Result<std::shared_ptr<DataType>> DenseUnionType::Make(
-    std::vector<std::shared_ptr<Field>> fields, std::vector<int8_t> type_codes) {
+Result<std::shared_ptr<DataType>> DenseUnionType::Make(FieldVector fields,
+                                                       std::vector<int8_t> type_codes) {
   RETURN_NOT_OK(ValidateParameters(fields, type_codes, UnionMode::DENSE));
-  return std::make_shared<DenseUnionType>(fields, type_codes);
+  return std::make_shared<DenseUnionType>(std::move(fields), std::move(type_codes));
+}
+
+// ----------------------------------------------------------------------
+// Run-end encoded type
+
+RunEndEncodedType::RunEndEncodedType(std::shared_ptr<DataType> run_end_type,
+                                     std::shared_ptr<DataType> value_type)
+    : NestedType(Type::RUN_END_ENCODED) {
+  DCHECK(RunEndTypeValid(*run_end_type));
+  children_ = {std::make_shared<Field>("run_ends", std::move(run_end_type), false),
+               std::make_shared<Field>("values", std::move(value_type), true)};
+}
+
+RunEndEncodedType::~RunEndEncodedType() = default;
+
+std::string RunEndEncodedType::ToString() const {
+  std::stringstream s;
+  s << name() << "<run_ends: " << run_end_type()->ToString()
+    << ", values: " << value_type()->ToString() << ">";
+  return s.str();
+}
+
+bool RunEndEncodedType::RunEndTypeValid(const DataType& run_end_type) {
+  return is_run_end_type(run_end_type.id());
 }
 
 // ----------------------------------------------------------------------
@@ -700,7 +1308,7 @@ Result<std::shared_ptr<DataType>> DenseUnionType::Make(
 namespace {
 
 std::unordered_multimap<std::string, int> CreateNameToIndexMap(
-    const std::vector<std::shared_ptr<Field>>& fields) {
+    const FieldVector& fields) {
   std::unordered_multimap<std::string, int> name_to_index;
   for (size_t i = 0; i < fields.size(); ++i) {
     name_to_index.emplace(fields[i]->name(), static_cast<int>(i));
@@ -729,13 +1337,13 @@ int LookupNameIndex(const std::unordered_multimap<std::string, int>& name_to_ind
 
 class StructType::Impl {
  public:
-  explicit Impl(const std::vector<std::shared_ptr<Field>>& fields)
+  explicit Impl(const FieldVector& fields)
       : name_to_index_(CreateNameToIndexMap(fields)) {}
 
   const std::unordered_multimap<std::string, int> name_to_index_;
 };
 
-StructType::StructType(const std::vector<std::shared_ptr<Field>>& fields)
+StructType::StructType(const FieldVector& fields)
     : NestedType(Type::STRUCT), impl_(new Impl(fields)) {
   children_ = fields;
 }
@@ -777,14 +1385,37 @@ std::vector<int> StructType::GetAllFieldIndices(const std::string& name) const {
   return result;
 }
 
-std::vector<std::shared_ptr<Field>> StructType::GetAllFieldsByName(
-    const std::string& name) const {
-  std::vector<std::shared_ptr<Field>> result;
+FieldVector StructType::GetAllFieldsByName(const std::string& name) const {
+  FieldVector result;
   auto p = impl_->name_to_index_.equal_range(name);
   for (auto it = p.first; it != p.second; ++it) {
     result.push_back(children_[it->second]);
   }
   return result;
+}
+
+Result<std::shared_ptr<StructType>> StructType::AddField(
+    int i, const std::shared_ptr<Field>& field) const {
+  if (i < 0 || i > this->num_fields()) {
+    return Status::Invalid("Invalid column index to add field.");
+  }
+  return std::make_shared<StructType>(internal::AddVectorElement(children_, i, field));
+}
+
+Result<std::shared_ptr<StructType>> StructType::RemoveField(int i) const {
+  if (i < 0 || i >= this->num_fields()) {
+    return Status::Invalid("Invalid column index to remove field.");
+  }
+  return std::make_shared<StructType>(internal::DeleteVectorElement(children_, i));
+}
+
+Result<std::shared_ptr<StructType>> StructType::SetField(
+    int i, const std::shared_ptr<Field>& field) const {
+  if (i < 0 || i >= this->num_fields()) {
+    return Status::Invalid("Invalid column index to set field.");
+  }
+  return std::make_shared<StructType>(
+      internal::ReplaceVectorElement(children_, i, field));
 }
 
 Result<std::shared_ptr<DataType>> DecimalType::Make(Type::type type_id, int32_t precision,
@@ -831,7 +1462,8 @@ Decimal128Type::Decimal128Type(int32_t precision, int32_t scale)
 
 Result<std::shared_ptr<DataType>> Decimal128Type::Make(int32_t precision, int32_t scale) {
   if (precision < kMinPrecision || precision > kMaxPrecision) {
-    return Status::Invalid("Decimal precision out of range: ", precision);
+    return Status::Invalid("Decimal precision out of range [", int32_t(kMinPrecision),
+                           ", ", int32_t(kMaxPrecision), "]: ", precision);
   }
   return std::make_shared<Decimal128Type>(precision, scale);
 }
@@ -847,7 +1479,8 @@ Decimal256Type::Decimal256Type(int32_t precision, int32_t scale)
 
 Result<std::shared_ptr<DataType>> Decimal256Type::Make(int32_t precision, int32_t scale) {
   if (precision < kMinPrecision || precision > kMaxPrecision) {
-    return Status::Invalid("Decimal precision out of range: ", precision);
+    return Status::Invalid("Decimal precision out of range [", int32_t(kMinPrecision),
+                           ", ", int32_t(kMaxPrecision), "]: ", precision);
   }
   return std::make_shared<Decimal256Type>(precision, scale);
 }
@@ -903,7 +1536,7 @@ std::string DictionaryType::ToString() const {
 std::string NullType::ToString() const { return name(); }
 
 // ----------------------------------------------------------------------
-// FieldRef
+// FieldPath
 
 size_t FieldPath::hash() const {
   return internal::ComputeStringHash<0>(indices().data(), indices().size() * sizeof(int));
@@ -916,182 +1549,386 @@ std::string FieldPath::ToString() const {
 
   std::string repr = "FieldPath(";
   for (auto index : this->indices()) {
-    repr += std::to_string(index) + " ";
+    repr += internal::ToChars(index) + " ";
   }
   repr.back() = ')';
   return repr;
 }
 
+struct NestedSelectorUtil {
+  static Status NonStructError() {
+    return Status::NotImplemented("Get child data of non-struct array");
+  }
+
+  template <typename T>
+  static const DataType* GetType(const T& input) {
+    if constexpr (std::is_same_v<T, ArrayData>) {
+      return input.type.get();
+    } else {
+      return input.type().get();
+    }
+  }
+};
+
+// Utility class for retrieving a child field/column from a top-level Field, Array,
+// ArrayData, or ChunkedArray. The "root" value can either be a single parent or a vector
+// of its children.
+template <typename T, bool IsFlattening = false>
+class NestedSelector {
+ public:
+  using ArrowType = T;
+  using Util = NestedSelectorUtil;
+
+  explicit NestedSelector(const std::vector<std::shared_ptr<T>>& children)
+      : parent_or_children_(&children) {}
+  explicit NestedSelector(const T& parent) : parent_or_children_(&parent) {}
+  explicit NestedSelector(std::shared_ptr<T> parent)
+      : owned_parent_(std::move(parent)), parent_or_children_(owned_parent_.get()) {}
+  template <typename Arg>
+  NestedSelector(Arg&& arg, MemoryPool* pool) : NestedSelector(std::forward<Arg>(arg)) {
+    if (pool) {
+      pool_ = pool;
+    }
+  }
+
+  // If the index is out of bounds, this returns an invalid selector rather than an
+  // error.
+  Result<NestedSelector> GetChild(int i) const {
+    std::shared_ptr<T> child;
+    if (auto parent = get_parent()) {
+      const DataType* type = Util::GetType(*parent);
+      // We avoid this check for schema fields since it's inconsequential (plus there are
+      // tests elsewhere that rely on it not happening)
+      if constexpr (!std::is_same_v<T, Field>) {
+        if (ARROW_PREDICT_FALSE(type->id() != Type::STRUCT)) {
+          return Util::NonStructError();
+        }
+      }
+      // Bounds-check the index *once* using the parent's type
+      if (ARROW_PREDICT_TRUE(i >= 0 && i < type->num_fields())) {
+        ARROW_ASSIGN_OR_RAISE(child, GetChild(*parent, i, pool_));
+      }
+    } else if (auto children = get_children()) {
+      if (ARROW_PREDICT_TRUE(i >= 0 && static_cast<size_t>(i) < children->size())) {
+        child = (*children)[i];
+      }
+    }
+    return NestedSelector(std::move(child), pool_);
+  }
+
+  Result<std::shared_ptr<T>> Finish() const {
+    DCHECK(get_parent() && owned_parent_);
+    return owned_parent_;
+  }
+
+  template <typename OStream, typename U = T>
+  std::enable_if_t<std::is_same_v<U, Field>> Summarize(OStream* os) const {
+    const FieldVector* fields = get_children();
+    if (!fields && get_parent()) {
+      fields = &get_parent()->type()->fields();
+    }
+    *os << "fields: { ";
+    if (fields) {
+      for (const auto& field : *fields) {
+        *os << field->ToString() << ", ";
+      }
+    }
+    *os << "}";
+  }
+
+  template <typename OStream, typename U = T>
+  std::enable_if_t<!std::is_same_v<U, Field>> Summarize(OStream* os) const {
+    *os << "column types: { ";
+    if (auto children = get_children()) {
+      for (const auto& child : *children) {
+        *os << *Util::GetType(*child) << ", ";
+      }
+    } else if (auto parent = get_parent()) {
+      for (const auto& field : Util::GetType(*parent)->fields()) {
+        *os << *field->type() << ", ";
+      }
+    }
+    *os << "}";
+  }
+
+  bool is_valid() const { return get_parent() || get_children(); }
+  operator bool() const { return is_valid(); }
+
+ private:
+  // Accessors for the variant
+  auto get_parent() const { return get_value<const T*>(); }
+  auto get_children() const {
+    return get_value<const std::vector<std::shared_ptr<T>>*>();
+  }
+  template <typename U>
+  U get_value() const {
+    auto ptr = std::get_if<U>(&parent_or_children_);
+    return ptr ? *ptr : nullptr;
+  }
+
+  static Result<std::shared_ptr<Field>> GetChild(const Field& field, int i, MemoryPool*) {
+    return field.type()->field(i);
+  }
+
+  static Result<std::shared_ptr<ArrayData>> GetChild(const ArrayData& data, int i,
+                                                     MemoryPool* pool) {
+    std::shared_ptr<ArrayData> child_data;
+    if constexpr (IsFlattening) {
+      // First, convert to an Array so we can use StructArray::GetFlattenedField
+      auto array = MakeArray(data.Copy());
+      ARROW_ASSIGN_OR_RAISE(auto child_array, GetChild(*array, i, pool));
+      child_data = child_array->data();
+    } else {
+      // We could achieve the same result by converting to an Array (via MakeArray),
+      // calling StructArray::field(i), and pulling out the new ArrayData. However, this
+      // process can be very expensive when there are many columns - so we just
+      // reimplement the functionality that we need
+      child_data = data.child_data[i];
+      if (data.offset != 0 || data.child_data[i]->length != data.length) {
+        child_data = child_data->Slice(data.offset, data.length);
+      }
+    }
+
+    return std::move(child_data);
+  }
+
+  static Result<std::shared_ptr<Array>> GetChild(const Array& array, int i,
+                                                 MemoryPool* pool) {
+    const auto& struct_array = checked_cast<const StructArray&>(array);
+    if constexpr (IsFlattening) {
+      return struct_array.GetFlattenedField(i, pool);
+    } else {
+      return struct_array.field(i);
+    }
+  }
+
+  static Result<std::shared_ptr<ChunkedArray>> GetChild(const ChunkedArray& chunked_array,
+                                                        int i, MemoryPool* pool) {
+    const auto& type = *chunked_array.type();
+
+    ArrayVector chunks;
+    chunks.reserve(chunked_array.num_chunks());
+    for (const auto& parent_chunk : chunked_array.chunks()) {
+      ARROW_ASSIGN_OR_RAISE(auto chunk, GetChild(*parent_chunk, i, pool));
+      chunks.push_back(std::move(chunk));
+    }
+
+    return std::make_shared<ChunkedArray>(std::move(chunks), type.field(i)->type());
+  }
+
+  std::shared_ptr<T> owned_parent_;
+  std::variant<const T*, const std::vector<std::shared_ptr<T>>*> parent_or_children_;
+  MemoryPool* pool_ = default_memory_pool();
+};
+
+using FieldSelector = NestedSelector<Field>;
+template <typename T>
+using ZeroCopySelector = NestedSelector<T, false>;
+template <typename T>
+using FlatteningSelector = NestedSelector<T, true>;
+
 struct FieldPathGetImpl {
-  static const DataType& GetType(const ArrayData& data) { return *data.type; }
-
-  static void Summarize(const FieldVector& fields, std::stringstream* ss) {
-    *ss << "{ ";
-    for (const auto& field : fields) {
-      *ss << field->ToString() << ", ";
-    }
-    *ss << "}";
-  }
-
-  template <typename T>
-  static void Summarize(const std::vector<T>& columns, std::stringstream* ss) {
-    *ss << "{ ";
-    for (const auto& column : columns) {
-      *ss << GetType(*column) << ", ";
-    }
-    *ss << "}";
-  }
-
-  template <typename T>
+  template <typename Selector>
   static Status IndexError(const FieldPath* path, int out_of_range_depth,
-                           const std::vector<T>& children) {
+                           const Selector& selector) {
     std::stringstream ss;
     ss << "index out of range. ";
 
     ss << "indices=[ ";
     int depth = 0;
     for (int i : path->indices()) {
-      if (depth != out_of_range_depth) {
+      if (depth++ != out_of_range_depth) {
         ss << i << " ";
-        continue;
+      } else {
+        ss << ">" << i << "< ";
       }
-      ss << ">" << i << "< ";
-      ++depth;
     }
     ss << "] ";
 
-    if (std::is_same<T, std::shared_ptr<Field>>::value) {
-      ss << "fields were: ";
-    } else {
-      ss << "columns had types: ";
-    }
-    Summarize(children, &ss);
+    selector.Summarize(&ss);
 
     return Status::IndexError(ss.str());
   }
 
-  template <typename T, typename GetChildren>
-  static Result<T> Get(const FieldPath* path, const std::vector<T>* children,
-                       GetChildren&& get_children, int* out_of_range_depth) {
-    if (path->indices().empty()) {
+  template <typename Selector, typename T = typename Selector::ArrowType>
+  static Result<std::shared_ptr<T>> Get(const FieldPath* path, Selector selector,
+                                        int* out_of_range_depth = nullptr) {
+    if (path->empty()) {
       return Status::Invalid("empty indices cannot be traversed");
     }
 
     int depth = 0;
-    const T* out;
-    for (int index : path->indices()) {
-      if (children == nullptr) {
-        return Status::NotImplemented("Get child data of non-struct array");
+    for (auto index : *path) {
+      ARROW_ASSIGN_OR_RAISE(auto next_selector, selector.GetChild(index));
+
+      // Handle failed bounds check
+      if (!next_selector) {
+        if (out_of_range_depth) {
+          *out_of_range_depth = depth;
+          return nullptr;
+        }
+        return IndexError(path, depth, selector);
       }
 
-      if (index < 0 || static_cast<size_t>(index) >= children->size()) {
-        *out_of_range_depth = depth;
-        return nullptr;
-      }
-
-      out = &children->at(index);
-      children = get_children(*out);
+      selector = std::move(next_selector);
       ++depth;
     }
 
-    return *out;
-  }
-
-  template <typename T, typename GetChildren>
-  static Result<T> Get(const FieldPath* path, const std::vector<T>* children,
-                       GetChildren&& get_children) {
-    int out_of_range_depth = -1;
-    ARROW_ASSIGN_OR_RAISE(auto child,
-                          Get(path, children, std::forward<GetChildren>(get_children),
-                              &out_of_range_depth));
-    if (child != nullptr) {
-      return std::move(child);
-    }
-    return IndexError(path, out_of_range_depth, *children);
-  }
-
-  static Result<std::shared_ptr<Field>> Get(const FieldPath* path,
-                                            const FieldVector& fields) {
-    return FieldPathGetImpl::Get(path, &fields, [](const std::shared_ptr<Field>& field) {
-      return &field->type()->fields();
-    });
-  }
-
-  static Result<std::shared_ptr<ArrayData>> Get(const FieldPath* path,
-                                                const ArrayDataVector& child_data) {
-    return FieldPathGetImpl::Get(
-        path, &child_data,
-        [](const std::shared_ptr<ArrayData>& data) -> const ArrayDataVector* {
-          if (data->type->id() != Type::STRUCT) {
-            return nullptr;
-          }
-          return &data->child_data;
-        });
+    return selector.Finish();
   }
 };
 
 Result<std::shared_ptr<Field>> FieldPath::Get(const Schema& schema) const {
-  return FieldPathGetImpl::Get(this, schema.fields());
+  return Get(schema.fields());
 }
 
 Result<std::shared_ptr<Field>> FieldPath::Get(const Field& field) const {
-  return FieldPathGetImpl::Get(this, field.type()->fields());
+  return Get(field.type()->fields());
 }
 
 Result<std::shared_ptr<Field>> FieldPath::Get(const DataType& type) const {
-  return FieldPathGetImpl::Get(this, type.fields());
+  return Get(type.fields());
 }
 
 Result<std::shared_ptr<Field>> FieldPath::Get(const FieldVector& fields) const {
-  return FieldPathGetImpl::Get(this, fields);
+  return FieldPathGetImpl::Get(this, FieldSelector(fields));
+}
+
+Result<std::shared_ptr<Schema>> FieldPath::GetAll(const Schema& schm,
+                                                  const std::vector<FieldPath>& paths) {
+  FieldVector fields;
+  fields.reserve(paths.size());
+  for (const auto& path : paths) {
+    ARROW_ASSIGN_OR_RAISE(std::shared_ptr<Field> field, path.Get(schm));
+    fields.push_back(std::move(field));
+  }
+  return schema(std::move(fields));
 }
 
 Result<std::shared_ptr<Array>> FieldPath::Get(const RecordBatch& batch) const {
-  ARROW_ASSIGN_OR_RAISE(auto data, FieldPathGetImpl::Get(this, batch.column_data()));
-  return MakeArray(std::move(data));
+  // Deliberately calling `column_data` here because `RecordBatch::columns` is nontrivial
+  ARROW_ASSIGN_OR_RAISE(
+      auto data,
+      FieldPathGetImpl::Get(this, ZeroCopySelector<ArrayData>(batch.column_data())));
+  return MakeArray(data);
+}
+
+Result<std::shared_ptr<ChunkedArray>> FieldPath::Get(const Table& table) const {
+  return FieldPathGetImpl::Get(this, ZeroCopySelector<ChunkedArray>(table.columns()));
 }
 
 Result<std::shared_ptr<Array>> FieldPath::Get(const Array& array) const {
-  ARROW_ASSIGN_OR_RAISE(auto data, Get(*array.data()));
-  return MakeArray(std::move(data));
+  return FieldPathGetImpl::Get(this, ZeroCopySelector<Array>(array));
 }
 
 Result<std::shared_ptr<ArrayData>> FieldPath::Get(const ArrayData& data) const {
-  if (data.type->id() != Type::STRUCT) {
-    return Status::NotImplemented("Get child data of non-struct array");
-  }
-  return FieldPathGetImpl::Get(this, data.child_data);
+  return FieldPathGetImpl::Get(this, ZeroCopySelector<ArrayData>(data));
 }
 
-FieldRef::FieldRef(FieldPath indices) : impl_(std::move(indices)) {
-  DCHECK_GT(util::get<FieldPath>(impl_).indices().size(), 0);
+Result<std::shared_ptr<ChunkedArray>> FieldPath::Get(
+    const ChunkedArray& chunked_array) const {
+  return FieldPathGetImpl::Get(this, ZeroCopySelector<ChunkedArray>(chunked_array));
 }
+
+Result<std::shared_ptr<Array>> FieldPath::GetFlattened(const Array& array,
+                                                       MemoryPool* pool) const {
+  return FieldPathGetImpl::Get(this, FlatteningSelector<Array>(array, pool));
+}
+
+Result<std::shared_ptr<ArrayData>> FieldPath::GetFlattened(const ArrayData& data,
+                                                           MemoryPool* pool) const {
+  return FieldPathGetImpl::Get(this, FlatteningSelector<ArrayData>(data, pool));
+}
+
+Result<std::shared_ptr<ChunkedArray>> FieldPath::GetFlattened(
+    const ChunkedArray& chunked_array, MemoryPool* pool) const {
+  return FieldPathGetImpl::Get(this,
+                               FlatteningSelector<ChunkedArray>(chunked_array, pool));
+}
+
+Result<std::shared_ptr<Array>> FieldPath::GetFlattened(const RecordBatch& batch,
+                                                       MemoryPool* pool) const {
+  ARROW_ASSIGN_OR_RAISE(
+      auto data, FieldPathGetImpl::Get(
+                     this, FlatteningSelector<ArrayData>(batch.column_data(), pool)));
+  return MakeArray(data);
+}
+
+Result<std::shared_ptr<ChunkedArray>> FieldPath::GetFlattened(const Table& table,
+                                                              MemoryPool* pool) const {
+  return FieldPathGetImpl::Get(this,
+                               FlatteningSelector<ChunkedArray>(table.columns(), pool));
+}
+
+// ----------------------------------------------------------------------
+// FieldRef
+
+FieldRef::FieldRef(FieldPath indices) : impl_(std::move(indices)) {}
 
 void FieldRef::Flatten(std::vector<FieldRef> children) {
+  ARROW_CHECK(!children.empty());
+
   // flatten children
   struct Visitor {
-    void operator()(std::string* name) { *out++ = FieldRef(std::move(*name)); }
-
-    void operator()(FieldPath* indices) { *out++ = FieldRef(std::move(*indices)); }
-
-    void operator()(std::vector<FieldRef>* children) {
-      for (auto& child : *children) {
-        util::visit(*this, &child.impl_);
-      }
+    void operator()(std::string&& name, std::vector<FieldRef>* out) {
+      out->push_back(FieldRef(std::move(name)));
     }
 
-    std::back_insert_iterator<std::vector<FieldRef>> out;
+    void operator()(FieldPath&& path, std::vector<FieldRef>* out) {
+      if (path.indices().empty()) {
+        return;
+      }
+      out->push_back(FieldRef(std::move(path)));
+    }
+
+    void operator()(std::vector<FieldRef>&& children, std::vector<FieldRef>* out) {
+      if (children.empty()) {
+        return;
+      }
+      // First flatten children into temporary result
+      std::vector<FieldRef> flattened_children;
+      flattened_children.reserve(children.size());
+      for (auto&& child : children) {
+        std::visit(std::bind(*this, std::placeholders::_1, &flattened_children),
+                   std::move(child.impl_));
+      }
+      // If all children are FieldPaths, concatenate them into a single FieldPath
+      int64_t n_indices = 0;
+      for (const auto& child : flattened_children) {
+        const FieldPath* path = child.field_path();
+        if (!path) {
+          n_indices = -1;
+          break;
+        }
+        n_indices += static_cast<int64_t>(path->indices().size());
+      }
+      if (n_indices == 0) {
+        return;
+      } else if (n_indices > 0) {
+        std::vector<int> indices(n_indices);
+        auto out_indices = indices.begin();
+        for (const auto& child : flattened_children) {
+          for (int index : *child.field_path()) {
+            *out_indices++ = index;
+          }
+        }
+        DCHECK_EQ(out_indices, indices.end());
+        out->push_back(FieldRef(std::move(indices)));
+      } else {
+        // ... otherwise, just transfer them to the final result
+        out->insert(out->end(), std::move_iterator(flattened_children.begin()),
+                    std::move_iterator(flattened_children.end()));
+      }
+    }
   };
 
   std::vector<FieldRef> out;
-  Visitor visitor{std::back_inserter(out)};
-  visitor(&children);
+  Visitor visitor;
+  visitor(std::move(children), &out);
 
-  DCHECK(!out.empty());
-  DCHECK(std::none_of(out.begin(), out.end(),
-                      [](const FieldRef& ref) { return ref.IsNested(); }));
-
-  if (out.size() == 1) {
+  if (out.empty()) {
+    impl_ = std::vector<int>();
+  } else if (out.size() == 1) {
     impl_ = std::move(out[0].impl_);
   } else {
     impl_ = std::move(out);
@@ -1100,40 +1937,40 @@ void FieldRef::Flatten(std::vector<FieldRef> children) {
 
 Result<FieldRef> FieldRef::FromDotPath(const std::string& dot_path_arg) {
   if (dot_path_arg.empty()) {
-    return Status::Invalid("Dot path was empty");
+    return FieldRef();
   }
 
   std::vector<FieldRef> children;
 
-  util::string_view dot_path = dot_path_arg;
+  std::string_view dot_path = dot_path_arg;
 
   auto parse_name = [&] {
     std::string name;
     for (;;) {
       auto segment_end = dot_path.find_first_of("\\[.");
-      if (segment_end == util::string_view::npos) {
+      if (segment_end == std::string_view::npos) {
         // dot_path doesn't contain any other special characters; consume all
-        name.append(dot_path.begin(), dot_path.end());
+        name.append(dot_path.data(), dot_path.length());
         dot_path = "";
         break;
       }
 
       if (dot_path[segment_end] != '\\') {
         // segment_end points to a subscript for a new FieldRef
-        name.append(dot_path.begin(), segment_end);
+        name.append(dot_path.data(), segment_end);
         dot_path = dot_path.substr(segment_end);
         break;
       }
 
       if (dot_path.size() == segment_end + 1) {
         // dot_path ends with backslash; consume it all
-        name.append(dot_path.begin(), dot_path.end());
+        name.append(dot_path.data(), dot_path.length());
         dot_path = "";
         break;
       }
 
       // append all characters before backslash, then the character which follows it
-      name.append(dot_path.begin(), segment_end);
+      name.append(dot_path.data(), segment_end);
       name.push_back(dot_path[segment_end + 1]);
       dot_path = dot_path.substr(segment_end + 2);
     }
@@ -1151,7 +1988,7 @@ Result<FieldRef> FieldRef::FromDotPath(const std::string& dot_path_arg) {
       }
       case '[': {
         auto subscript_end = dot_path.find_first_not_of("0123456789");
-        if (subscript_end == util::string_view::npos || dot_path[subscript_end] != ']') {
+        if (subscript_end == std::string_view::npos || dot_path[subscript_end] != ']') {
           return Status::Invalid("Dot path '", dot_path_arg,
                                  "' contained an unterminated index");
         }
@@ -1168,6 +2005,30 @@ Result<FieldRef> FieldRef::FromDotPath(const std::string& dot_path_arg) {
   FieldRef out;
   out.Flatten(std::move(children));
   return out;
+}
+
+std::string FieldRef::ToDotPath() const {
+  struct Visitor {
+    std::string operator()(const FieldPath& path) {
+      std::string out;
+      for (int i : path.indices()) {
+        out += "[" + internal::ToChars(i) + "]";
+      }
+      return out;
+    }
+
+    std::string operator()(const std::string& name) { return "." + name; }
+
+    std::string operator()(const std::vector<FieldRef>& children) {
+      std::string out;
+      for (const auto& child : children) {
+        out += child.ToDotPath();
+      }
+      return out;
+    }
+  };
+
+  return std::visit(Visitor{}, impl_);
 }
 
 size_t FieldRef::hash() const {
@@ -1187,7 +2048,7 @@ size_t FieldRef::hash() const {
     }
   };
 
-  return util::visit(Visitor{}, impl_);
+  return std::visit(Visitor{}, impl_);
 }
 
 std::string FieldRef::ToString() const {
@@ -1207,7 +2068,7 @@ std::string FieldRef::ToString() const {
     }
   };
 
-  return "FieldRef." + util::visit(Visitor{}, impl_);
+  return "FieldRef." + std::visit(Visitor{}, impl_);
 }
 
 std::vector<FieldPath> FieldRef::FindAll(const Schema& schema) const {
@@ -1231,10 +2092,8 @@ std::vector<FieldPath> FieldRef::FindAll(const FieldVector& fields) const {
     std::vector<FieldPath> operator()(const FieldPath& path) {
       // skip long IndexError construction if path is out of range
       int out_of_range_depth;
-      auto maybe_field = FieldPathGetImpl::Get(
-          &path, &fields_,
-          [](const std::shared_ptr<Field>& field) { return &field->type()->fields(); },
-          &out_of_range_depth);
+      auto maybe_field =
+          FieldPathGetImpl::Get(&path, FieldSelector(fields_), &out_of_range_depth);
 
       DCHECK_OK(maybe_field.status());
 
@@ -1309,7 +2168,7 @@ std::vector<FieldPath> FieldRef::FindAll(const FieldVector& fields) const {
     const FieldVector& fields_;
   };
 
-  return util::visit(Visitor{fields}, impl_);
+  return std::visit(Visitor{fields}, impl_);
 }
 
 std::vector<FieldPath> FieldRef::FindAll(const ArrayData& array) const {
@@ -1320,11 +2179,24 @@ std::vector<FieldPath> FieldRef::FindAll(const Array& array) const {
   return FindAll(*array.type());
 }
 
+std::vector<FieldPath> FieldRef::FindAll(const ChunkedArray& chunked_array) const {
+  return FindAll(*chunked_array.type());
+}
+
 std::vector<FieldPath> FieldRef::FindAll(const RecordBatch& batch) const {
   return FindAll(*batch.schema());
 }
 
+std::vector<FieldPath> FieldRef::FindAll(const Table& table) const {
+  return FindAll(*table.schema());
+}
+
 void PrintTo(const FieldRef& ref, std::ostream* os) { *os << ref.ToString(); }
+
+std::ostream& operator<<(std::ostream& os, const FieldRef& ref) {
+  os << ref.ToString();
+  return os;
+}
 
 // ----------------------------------------------------------------------
 // Schema implementation
@@ -1343,26 +2215,25 @@ std::string EndiannessToString(Endianness endianness) {
 
 class Schema::Impl {
  public:
-  Impl(std::vector<std::shared_ptr<Field>> fields, Endianness endianness,
+  Impl(FieldVector fields, Endianness endianness,
        std::shared_ptr<const KeyValueMetadata> metadata)
       : fields_(std::move(fields)),
         endianness_(endianness),
         name_to_index_(CreateNameToIndexMap(fields_)),
         metadata_(std::move(metadata)) {}
 
-  std::vector<std::shared_ptr<Field>> fields_;
+  FieldVector fields_;
   Endianness endianness_;
   std::unordered_multimap<std::string, int> name_to_index_;
   std::shared_ptr<const KeyValueMetadata> metadata_;
 };
 
-Schema::Schema(std::vector<std::shared_ptr<Field>> fields, Endianness endianness,
+Schema::Schema(FieldVector fields, Endianness endianness,
                std::shared_ptr<const KeyValueMetadata> metadata)
     : detail::Fingerprintable(),
       impl_(new Impl(std::move(fields), endianness, std::move(metadata))) {}
 
-Schema::Schema(std::vector<std::shared_ptr<Field>> fields,
-               std::shared_ptr<const KeyValueMetadata> metadata)
+Schema::Schema(FieldVector fields, std::shared_ptr<const KeyValueMetadata> metadata)
     : detail::Fingerprintable(),
       impl_(new Impl(std::move(fields), Endianness::Native, std::move(metadata))) {}
 
@@ -1387,9 +2258,7 @@ const std::shared_ptr<Field>& Schema::field(int i) const {
   return impl_->fields_[i];
 }
 
-const std::vector<std::shared_ptr<Field>>& Schema::fields() const {
-  return impl_->fields_;
-}
+const FieldVector& Schema::fields() const { return impl_->fields_; }
 
 bool Schema::Equals(const Schema& other, bool check_metadata) const {
   if (this == &other) {
@@ -1460,20 +2329,23 @@ std::vector<int> Schema::GetAllFieldIndices(const std::string& name) const {
   return result;
 }
 
-Status Schema::CanReferenceFieldsByNames(const std::vector<std::string>& names) const {
-  for (const auto& name : names) {
-    if (GetFieldByName(name) == nullptr) {
-      return Status::Invalid("Field named '", name,
-                             "' not found or not unique in the schema.");
-    }
+Status Schema::CanReferenceFieldByName(const std::string& name) const {
+  if (GetFieldByName(name) == nullptr) {
+    return Status::Invalid("Field named '", name,
+                           "' not found or not unique in the schema.");
   }
-
   return Status::OK();
 }
 
-std::vector<std::shared_ptr<Field>> Schema::GetAllFieldsByName(
-    const std::string& name) const {
-  std::vector<std::shared_ptr<Field>> result;
+Status Schema::CanReferenceFieldsByNames(const std::vector<std::string>& names) const {
+  for (const auto& name : names) {
+    ARROW_RETURN_NOT_OK(CanReferenceFieldByName(name));
+  }
+  return Status::OK();
+}
+
+FieldVector Schema::GetAllFieldsByName(const std::string& name) const {
+  FieldVector result;
   auto p = impl_->name_to_index_.equal_range(name);
   for (auto it = p.first; it != p.second; ++it) {
     result.push_back(impl_->fields_[it->second]);
@@ -1494,7 +2366,7 @@ Result<std::shared_ptr<Schema>> Schema::AddField(
 Result<std::shared_ptr<Schema>> Schema::SetField(
     int i, const std::shared_ptr<Field>& field) const {
   if (i < 0 || i > this->num_fields()) {
-    return Status::Invalid("Invalid column index to add field.");
+    return Status::Invalid("Invalid column index to set field.");
   }
 
   return std::make_shared<Schema>(
@@ -1518,6 +2390,21 @@ bool Schema::HasDistinctFieldNames() const {
   auto fields = field_names();
   std::unordered_set<std::string> names{fields.cbegin(), fields.cend()};
   return names.size() == fields.size();
+}
+
+Result<std::shared_ptr<Schema>> Schema::WithNames(
+    const std::vector<std::string>& names) const {
+  if (names.size() != impl_->fields_.size()) {
+    return Status::Invalid("attempted to rename schema with ", impl_->fields_.size(),
+                           " fields but only ", names.size(), " new names were given");
+  }
+  FieldVector new_fields;
+  new_fields.reserve(names.size());
+  auto names_itr = names.begin();
+  for (const auto& field : impl_->fields_) {
+    new_fields.push_back(field->WithName(*names_itr++));
+  }
+  return schema(std::move(new_fields));
 }
 
 std::shared_ptr<Schema> Schema::WithMetadata(
@@ -1570,9 +2457,8 @@ class SchemaBuilder::Impl {
   Impl(ConflictPolicy policy, Field::MergeOptions field_merge_options)
       : policy_(policy), field_merge_options_(field_merge_options) {}
 
-  Impl(std::vector<std::shared_ptr<Field>> fields,
-       std::shared_ptr<const KeyValueMetadata> metadata, ConflictPolicy conflict_policy,
-       Field::MergeOptions field_merge_options)
+  Impl(FieldVector fields, std::shared_ptr<const KeyValueMetadata> metadata,
+       ConflictPolicy conflict_policy, Field::MergeOptions field_merge_options)
       : fields_(std::move(fields)),
         name_to_index_(CreateNameToIndexMap(fields_)),
         metadata_(std::move(metadata)),
@@ -1618,7 +2504,8 @@ class SchemaBuilder::Impl {
     if (policy_ == CONFLICT_REPLACE) {
       fields_[i] = field;
     } else if (policy_ == CONFLICT_MERGE) {
-      ARROW_ASSIGN_OR_RAISE(fields_[i], fields_[i]->MergeWith(field));
+      ARROW_ASSIGN_OR_RAISE(fields_[i],
+                            fields_[i]->MergeWith(field, field_merge_options_));
     }
 
     return Status::OK();
@@ -1637,7 +2524,7 @@ class SchemaBuilder::Impl {
   }
 
  private:
-  std::vector<std::shared_ptr<Field>> fields_;
+  FieldVector fields_;
   std::unordered_multimap<std::string, int> name_to_index_;
   std::shared_ptr<const KeyValueMetadata> metadata_;
   ConflictPolicy policy_;
@@ -1646,14 +2533,12 @@ class SchemaBuilder::Impl {
 
 SchemaBuilder::SchemaBuilder(ConflictPolicy policy,
                              Field::MergeOptions field_merge_options) {
-  impl_ = internal::make_unique<Impl>(policy, field_merge_options);
+  impl_ = std::make_unique<Impl>(policy, field_merge_options);
 }
 
-SchemaBuilder::SchemaBuilder(std::vector<std::shared_ptr<Field>> fields,
-                             ConflictPolicy policy,
+SchemaBuilder::SchemaBuilder(FieldVector fields, ConflictPolicy policy,
                              Field::MergeOptions field_merge_options) {
-  impl_ = internal::make_unique<Impl>(std::move(fields), nullptr, policy,
-                                      field_merge_options);
+  impl_ = std::make_unique<Impl>(std::move(fields), nullptr, policy, field_merge_options);
 }
 
 SchemaBuilder::SchemaBuilder(const std::shared_ptr<Schema>& schema, ConflictPolicy policy,
@@ -1663,8 +2548,8 @@ SchemaBuilder::SchemaBuilder(const std::shared_ptr<Schema>& schema, ConflictPoli
     metadata = schema->metadata()->Copy();
   }
 
-  impl_ = internal::make_unique<Impl>(schema->fields(), std::move(metadata), policy,
-                                      field_merge_options);
+  impl_ = std::make_unique<Impl>(schema->fields(), std::move(metadata), policy,
+                                 field_merge_options);
 }
 
 SchemaBuilder::~SchemaBuilder() {}
@@ -1679,7 +2564,7 @@ Status SchemaBuilder::AddField(const std::shared_ptr<Field>& field) {
   return impl_->AddField(field);
 }
 
-Status SchemaBuilder::AddFields(const std::vector<std::shared_ptr<Field>>& fields) {
+Status SchemaBuilder::AddFields(const FieldVector& fields) {
   for (const auto& field : fields) {
     RETURN_NOT_OK(AddField(field));
   }
@@ -1723,15 +2608,26 @@ Status SchemaBuilder::AreCompatible(const std::vector<std::shared_ptr<Schema>>& 
   return Merge(schemas, policy).status();
 }
 
-std::shared_ptr<Schema> schema(std::vector<std::shared_ptr<Field>> fields,
+std::shared_ptr<Schema> schema(FieldVector fields,
                                std::shared_ptr<const KeyValueMetadata> metadata) {
   return std::make_shared<Schema>(std::move(fields), std::move(metadata));
 }
 
-std::shared_ptr<Schema> schema(std::vector<std::shared_ptr<Field>> fields,
-                               Endianness endianness,
+std::shared_ptr<Schema> schema(
+    std::initializer_list<std::pair<std::string, std::shared_ptr<DataType>>> fields,
+    std::shared_ptr<const KeyValueMetadata> metadata) {
+  return std::make_shared<Schema>(MakeFields(fields), std::move(metadata));
+}
+
+std::shared_ptr<Schema> schema(FieldVector fields, Endianness endianness,
                                std::shared_ptr<const KeyValueMetadata> metadata) {
   return std::make_shared<Schema>(std::move(fields), endianness, std::move(metadata));
+}
+
+std::shared_ptr<Schema> schema(
+    std::initializer_list<std::pair<std::string, std::shared_ptr<DataType>>> fields,
+    Endianness endianness, std::shared_ptr<const KeyValueMetadata> metadata) {
+  return std::make_shared<Schema>(MakeFields(fields), endianness, std::move(metadata));
 }
 
 Result<std::shared_ptr<Schema>> UnifySchemas(
@@ -1925,6 +2821,10 @@ std::string DataType::ComputeMetadataFingerprint() const {
   // Whatever the data type, metadata can only be found on child fields
   std::string s;
   for (const auto& child : children_) {
+    // Add field name to metadata fingerprint so that the field names within
+    // list and map types are included as part of the metadata. They are
+    // excluded from the base fingerprint.
+    s += child->name() + "=";
     s += child->metadata_fingerprint() + ";";
   }
   return s;
@@ -1949,8 +2849,10 @@ PARAMETER_LESS_FINGERPRINT(HalfFloat)
 PARAMETER_LESS_FINGERPRINT(Float)
 PARAMETER_LESS_FINGERPRINT(Double)
 PARAMETER_LESS_FINGERPRINT(Binary)
+PARAMETER_LESS_FINGERPRINT(BinaryView)
 PARAMETER_LESS_FINGERPRINT(LargeBinary)
 PARAMETER_LESS_FINGERPRINT(String)
+PARAMETER_LESS_FINGERPRINT(StringView)
 PARAMETER_LESS_FINGERPRINT(LargeString)
 PARAMETER_LESS_FINGERPRINT(Date32)
 PARAMETER_LESS_FINGERPRINT(Date64)
@@ -1971,17 +2873,65 @@ std::string DictionaryType::ComputeFingerprint() const {
 }
 
 std::string ListType::ComputeFingerprint() const {
-  const auto& child_fingerprint = children_[0]->fingerprint();
+  const auto& child_fingerprint = value_type()->fingerprint();
   if (!child_fingerprint.empty()) {
-    return TypeIdFingerprint(*this) + "{" + child_fingerprint + "}";
+    std::stringstream ss;
+    ss << TypeIdFingerprint(*this);
+    if (value_field()->nullable()) {
+      ss << 'n';
+    } else {
+      ss << 'N';
+    }
+    ss << '{' << child_fingerprint << '}';
+    return ss.str();
   }
   return "";
 }
 
 std::string LargeListType::ComputeFingerprint() const {
-  const auto& child_fingerprint = children_[0]->fingerprint();
+  const auto& child_fingerprint = value_type()->fingerprint();
   if (!child_fingerprint.empty()) {
-    return TypeIdFingerprint(*this) + "{" + child_fingerprint + "}";
+    std::stringstream ss;
+    ss << TypeIdFingerprint(*this);
+    if (value_field()->nullable()) {
+      ss << 'n';
+    } else {
+      ss << 'N';
+    }
+    ss << '{' << child_fingerprint << '}';
+    return ss.str();
+  }
+  return "";
+}
+
+std::string ListViewType::ComputeFingerprint() const {
+  const auto& child_fingerprint = value_type()->fingerprint();
+  if (!child_fingerprint.empty()) {
+    std::stringstream ss;
+    ss << TypeIdFingerprint(*this);
+    if (value_field()->nullable()) {
+      ss << 'n';
+    } else {
+      ss << 'N';
+    }
+    ss << '{' << child_fingerprint << '}';
+    return ss.str();
+  }
+  return "";
+}
+
+std::string LargeListViewType::ComputeFingerprint() const {
+  const auto& child_fingerprint = value_type()->fingerprint();
+  if (!child_fingerprint.empty()) {
+    std::stringstream ss;
+    ss << TypeIdFingerprint(*this);
+    if (value_field()->nullable()) {
+      ss << 'n';
+    } else {
+      ss << 'N';
+    }
+    ss << '{' << child_fingerprint << '}';
+    return ss.str();
   }
   return "";
 }
@@ -1990,20 +2940,33 @@ std::string MapType::ComputeFingerprint() const {
   const auto& key_fingerprint = key_type()->fingerprint();
   const auto& item_fingerprint = item_type()->fingerprint();
   if (!key_fingerprint.empty() && !item_fingerprint.empty()) {
+    std::stringstream ss;
+    ss << TypeIdFingerprint(*this);
     if (keys_sorted_) {
-      return TypeIdFingerprint(*this) + "s{" + key_fingerprint + item_fingerprint + "}";
-    } else {
-      return TypeIdFingerprint(*this) + "{" + key_fingerprint + item_fingerprint + "}";
+      ss << 's';
     }
+    if (item_field()->nullable()) {
+      ss << 'n';
+    } else {
+      ss << 'N';
+    }
+    ss << '{' << key_fingerprint + item_fingerprint << '}';
+    return ss.str();
   }
   return "";
 }
 
 std::string FixedSizeListType::ComputeFingerprint() const {
-  const auto& child_fingerprint = children_[0]->fingerprint();
+  const auto& child_fingerprint = value_type()->fingerprint();
   if (!child_fingerprint.empty()) {
     std::stringstream ss;
-    ss << TypeIdFingerprint(*this) << "[" << list_size_ << "]"
+    ss << TypeIdFingerprint(*this);
+    if (value_field()->nullable()) {
+      ss << 'n';
+    } else {
+      ss << 'N';
+    }
+    ss << "[" << list_size_ << "]"
        << "{" << child_fingerprint << "}";
     return ss.str();
   }
@@ -2020,6 +2983,15 @@ std::string DecimalType::ComputeFingerprint() const {
   std::stringstream ss;
   ss << TypeIdFingerprint(*this) << "[" << byte_width_ << "," << precision_ << ","
      << scale_ << "]";
+  return ss.str();
+}
+
+std::string RunEndEncodedType::ComputeFingerprint() const {
+  std::stringstream ss;
+  ss << TypeIdFingerprint(*this) << "{";
+  ss << run_end_type()->fingerprint() << ";";
+  ss << value_type()->fingerprint() << ";";
+  ss << "}";
   return ss.str();
 }
 
@@ -2099,7 +3071,7 @@ Status DataType::Accept(TypeVisitor* visitor) const {
 }
 
 #define TYPE_FACTORY(NAME, KLASS)                                        \
-  std::shared_ptr<DataType> NAME() {                                     \
+  const std::shared_ptr<DataType>& NAME() {                              \
     static std::shared_ptr<DataType> result = std::make_shared<KLASS>(); \
     return result;                                                       \
   }
@@ -2123,6 +3095,16 @@ TYPE_FACTORY(binary, BinaryType)
 TYPE_FACTORY(large_binary, LargeBinaryType)
 TYPE_FACTORY(date64, Date64Type)
 TYPE_FACTORY(date32, Date32Type)
+
+const std::shared_ptr<DataType>& utf8_view() {
+  static std::shared_ptr<DataType> type = std::make_shared<StringViewType>();
+  return type;
+}
+
+const std::shared_ptr<DataType>& binary_view() {
+  static std::shared_ptr<DataType> type = std::make_shared<BinaryViewType>();
+  return type;
+}
 
 std::shared_ptr<DataType> fixed_size_binary(int32_t byte_width) {
   return std::make_shared<FixedSizeBinaryType>(byte_width);
@@ -2188,6 +3170,12 @@ std::shared_ptr<DataType> map(std::shared_ptr<DataType> key_type,
                                    keys_sorted);
 }
 
+std::shared_ptr<DataType> map(std::shared_ptr<Field> key_field,
+                              std::shared_ptr<Field> item_field, bool keys_sorted) {
+  return std::make_shared<MapType>(std::move(key_field), std::move(item_field),
+                                   keys_sorted);
+}
+
 std::shared_ptr<DataType> fixed_size_list(const std::shared_ptr<DataType>& value_type,
                                           int32_t list_size) {
   return std::make_shared<FixedSizeListType>(value_type, list_size);
@@ -2198,8 +3186,35 @@ std::shared_ptr<DataType> fixed_size_list(const std::shared_ptr<Field>& value_fi
   return std::make_shared<FixedSizeListType>(value_field, list_size);
 }
 
-std::shared_ptr<DataType> struct_(const std::vector<std::shared_ptr<Field>>& fields) {
+std::shared_ptr<DataType> list_view(std::shared_ptr<DataType> value_type) {
+  return std::make_shared<ListViewType>(std::move(value_type));
+}
+
+std::shared_ptr<DataType> list_view(std::shared_ptr<Field> value_field) {
+  return std::make_shared<ListViewType>(std::move(value_field));
+}
+
+std::shared_ptr<DataType> large_list_view(std::shared_ptr<DataType> value_type) {
+  return std::make_shared<LargeListViewType>(std::move(value_type));
+}
+
+std::shared_ptr<DataType> large_list_view(std::shared_ptr<Field> value_field) {
+  return std::make_shared<LargeListViewType>(std::move(value_field));
+}
+
+std::shared_ptr<DataType> struct_(const FieldVector& fields) {
   return std::make_shared<StructType>(fields);
+}
+
+std::shared_ptr<DataType> struct_(
+    std::initializer_list<std::pair<std::string, std::shared_ptr<DataType>>> fields) {
+  return std::make_shared<StructType>(MakeFields(fields));
+}
+
+std::shared_ptr<DataType> run_end_encoded(std::shared_ptr<DataType> run_end_type,
+                                          std::shared_ptr<DataType> value_type) {
+  return std::make_shared<RunEndEncodedType>(std::move(run_end_type),
+                                             std::move(value_type));
 }
 
 std::shared_ptr<DataType> sparse_union(FieldVector child_fields,
@@ -2224,7 +3239,7 @@ FieldVector FieldsFromArraysAndNames(std::vector<std::string> names,
   int i = 0;
   if (names.empty()) {
     for (const auto& array : arrays) {
-      fields[i] = field(std::to_string(i), array->type());
+      fields[i] = field(internal::ToChars(i), array->type());
       ++i;
     }
   } else {
@@ -2311,6 +3326,7 @@ std::vector<std::shared_ptr<DataType>> g_numeric_types;
 std::vector<std::shared_ptr<DataType>> g_base_binary_types;
 std::vector<std::shared_ptr<DataType>> g_temporal_types;
 std::vector<std::shared_ptr<DataType>> g_interval_types;
+std::vector<std::shared_ptr<DataType>> g_duration_types;
 std::vector<std::shared_ptr<DataType>> g_primitive_types;
 std::once_flag static_data_initialized;
 
@@ -2350,7 +3366,11 @@ void InitStaticData() {
                       timestamp(TimeUnit::NANO)};
 
   // Interval types
-  g_interval_types = {day_time_interval(), month_interval()};
+  g_interval_types = {day_time_interval(), month_interval(), month_day_nano_interval()};
+
+  // Duration types
+  g_duration_types = {duration(TimeUnit::SECOND), duration(TimeUnit::MILLI),
+                      duration(TimeUnit::MICRO), duration(TimeUnit::NANO)};
 
   // Base binary types (without FixedSizeBinary)
   g_base_binary_types = {binary(), utf8(), large_binary(), large_utf8()};
@@ -2362,7 +3382,7 @@ void InitStaticData() {
   // * Time32
   // * Time64
   // * Timestamp
-  g_primitive_types = {null(), boolean(), date32(), date64()};
+  g_primitive_types = {null(), boolean(), date32(), date64(), binary_view(), utf8_view()};
   Extend(g_numeric_types, &g_primitive_types);
   Extend(g_base_binary_types, &g_primitive_types);
 }
@@ -2372,6 +3392,11 @@ void InitStaticData() {
 const std::vector<std::shared_ptr<DataType>>& BaseBinaryTypes() {
   std::call_once(static_data_initialized, InitStaticData);
   return g_base_binary_types;
+}
+
+const std::vector<std::shared_ptr<DataType>>& BinaryTypes() {
+  static DataTypeVector types = {binary(), large_binary()};
+  return types;
 }
 
 const std::vector<std::shared_ptr<DataType>>& StringTypes() {
@@ -2412,6 +3437,11 @@ const std::vector<std::shared_ptr<DataType>>& TemporalTypes() {
 const std::vector<std::shared_ptr<DataType>>& IntervalTypes() {
   std::call_once(static_data_initialized, InitStaticData);
   return g_interval_types;
+}
+
+const std::vector<std::shared_ptr<DataType>>& DurationTypes() {
+  std::call_once(static_data_initialized, InitStaticData);
+  return g_duration_types;
 }
 
 const std::vector<std::shared_ptr<DataType>>& PrimitiveTypes() {

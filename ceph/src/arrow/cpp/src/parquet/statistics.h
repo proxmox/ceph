@@ -73,16 +73,16 @@ class TypedComparator : public Comparator {
 
   /// \brief Scalar comparison of two elements, return true if first
   /// is strictly less than the second
-  virtual bool Compare(const T& a, const T& b) = 0;
+  virtual bool Compare(const T& a, const T& b) const = 0;
 
   /// \brief Compute maximum and minimum elements in a batch of
   /// elements without any nulls
-  virtual std::pair<T, T> GetMinMax(const T* values, int64_t length) = 0;
+  virtual std::pair<T, T> GetMinMax(const T* values, int64_t length) const = 0;
 
   /// \brief Compute minimum and maximum elements from an Arrow array. Only
   /// valid for certain Parquet Type / Arrow Type combinations, like BYTE_ARRAY
   /// / arrow::BinaryArray
-  virtual std::pair<T, T> GetMinMax(const ::arrow::Array& values) = 0;
+  virtual std::pair<T, T> GetMinMax(const ::arrow::Array& values) const = 0;
 
   /// \brief Compute maximum and minimum elements in a batch of
   /// elements with accompanying bitmap indicating which elements are
@@ -96,7 +96,7 @@ class TypedComparator : public Comparator {
   /// the first element in the sequence
   virtual std::pair<T, T> GetMinMaxSpaced(const T* values, int64_t length,
                                           const uint8_t* valid_bits,
-                                          int64_t valid_bits_offset) = 0;
+                                          int64_t valid_bits_offset) const = 0;
 };
 
 /// \brief Typed version of Comparator::Make
@@ -117,17 +117,16 @@ std::shared_ptr<TypedComparator<DType>> MakeComparator(const ColumnDescriptor* d
 // ----------------------------------------------------------------------
 
 /// \brief Structure represented encoded statistics to be written to
-/// and from Parquet serialized metadata
+/// and read from Parquet serialized metadata.
 class PARQUET_EXPORT EncodedStatistics {
-  std::shared_ptr<std::string> max_, min_;
+  std::string max_, min_;
   bool is_signed_ = false;
 
  public:
-  EncodedStatistics()
-      : max_(std::make_shared<std::string>()), min_(std::make_shared<std::string>()) {}
+  EncodedStatistics() = default;
 
-  const std::string& max() const { return *max_; }
-  const std::string& min() const { return *min_; }
+  const std::string& max() const { return max_; }
+  const std::string& min() const { return min_; }
 
   int64_t null_count = 0;
   int64_t distinct_count = 0;
@@ -137,17 +136,25 @@ class PARQUET_EXPORT EncodedStatistics {
   bool has_null_count = false;
   bool has_distinct_count = false;
 
+  // When all values in the statistics are null, it is set to true.
+  // Otherwise, at least one value is not null, or we are not sure at all.
+  // Page index requires this information to decide whether a data page
+  // is a null page or not.
+  bool all_null_value = false;
+
   // From parquet-mr
   // Don't write stats larger than the max size rather than truncating. The
   // rationale is that some engines may use the minimum value in the page as
   // the true minimum for aggregations and there is no way to mark that a
   // value has been truncated and is a lower bound and not in the page.
   void ApplyStatSizeLimits(size_t length) {
-    if (max_->length() > length) {
+    if (max_.length() > length) {
       has_max = false;
+      max_.clear();
     }
-    if (min_->length() > length) {
+    if (min_.length() > length) {
       has_min = false;
+      min_.clear();
     }
   }
 
@@ -159,14 +166,14 @@ class PARQUET_EXPORT EncodedStatistics {
 
   void set_is_signed(bool is_signed) { is_signed_ = is_signed; }
 
-  EncodedStatistics& set_max(const std::string& value) {
-    *max_ = value;
+  EncodedStatistics& set_max(std::string value) {
+    max_ = std::move(value);
     has_max = true;
     return *this;
   }
 
-  EncodedStatistics& set_min(const std::string& value) {
-    *min_ = value;
+  EncodedStatistics& set_min(std::string value) {
+    min_ = std::move(value);
     has_min = true;
     return *this;
   }
@@ -198,7 +205,7 @@ class PARQUET_EXPORT Statistics {
       ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
 
   /// \brief Create a new statistics instance given a column schema
-  /// definition and pre-existing state
+  /// definition and preexisting state
   /// \param[in] descr the column schema
   /// \param[in] encoded_min the encoded minimum value
   /// \param[in] encoded_max the encoded maximum value
@@ -216,6 +223,14 @@ class PARQUET_EXPORT Statistics {
       bool has_distinct_count,
       ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
 
+  // Helper function to convert EncodedStatistics to Statistics.
+  // EncodedStatistics does not contain number of non-null values, and it can be
+  // passed using the num_values parameter.
+  static std::shared_ptr<Statistics> Make(
+      const ColumnDescriptor* descr, const EncodedStatistics* encoded_statistics,
+      int64_t num_values = -1,
+      ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
+
   /// \brief Return true if the count of null values is set
   virtual bool HasNullCount() const = 0;
 
@@ -228,7 +243,7 @@ class PARQUET_EXPORT Statistics {
   /// \brief The number of distinct values, may not be set
   virtual int64_t distinct_count() const = 0;
 
-  /// \brief The total number of values in the column
+  /// \brief The number of non-null values in the column
   virtual int64_t num_values() const = 0;
 
   /// \brief Return true if the min and max statistics are set. Obtain
@@ -278,7 +293,7 @@ class TypedStatistics : public Statistics {
   virtual void Merge(const TypedStatistics<DType>& other) = 0;
 
   /// \brief Batch statistics update
-  virtual void Update(const T* values, int64_t num_not_null, int64_t num_null) = 0;
+  virtual void Update(const T* values, int64_t num_values, int64_t null_count) = 0;
 
   /// \brief Batch statistics update with supplied validity bitmap
   /// \param[in] values pointer to column values
@@ -287,13 +302,13 @@ class TypedStatistics : public Statistics {
   ///                              data begins.
   /// \param[in] num_spaced_values The length of values in values/valid_bits to inspect
   ///                              when calculating statistics. This can be smaller than
-  ///                              num_not_null+num_null as num_null can include nulls
+  ///                              num_values+null_count as null_count can include nulls
   ///                              from parents while num_spaced_values does not.
-  /// \param[in] num_not_null Number of values that are not null.
-  /// \param[in] num_null Number of values that are null.
+  /// \param[in] num_values Number of values that are not null.
+  /// \param[in] null_count Number of values that are null.
   virtual void UpdateSpaced(const T* values, const uint8_t* valid_bits,
                             int64_t valid_bits_offset, int64_t num_spaced_values,
-                            int64_t num_not_null, int64_t num_null) = 0;
+                            int64_t num_values, int64_t null_count) = 0;
 
   /// \brief EXPERIMENTAL: Update statistics with an Arrow array without
   /// conversion to a primitive Parquet C type. Only implemented for certain
@@ -315,7 +330,7 @@ class TypedStatistics : public Statistics {
   /// null count is determined from the indices)
   virtual void IncrementNullCount(int64_t n) = 0;
 
-  /// \brief Increments the number ov values directly
+  /// \brief Increments the number of values directly
   /// The same note on IncrementNullCount applies here
   virtual void IncrementNumValues(int64_t n) = 0;
 };

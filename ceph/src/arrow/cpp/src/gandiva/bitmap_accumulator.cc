@@ -28,7 +28,7 @@ void BitMapAccumulator::ComputeResult(uint8_t* dst_bitmap) {
 
   if (all_invalid_) {
     // set all bits to 0.
-    memset(dst_bitmap, 0, arrow::BitUtil::BytesForBits(num_records));
+    memset(dst_bitmap, 0, arrow::bit_util::BytesForBits(num_records));
   } else {
     IntersectBitMaps(dst_bitmap, src_maps_, src_map_offsets_, num_records);
   }
@@ -36,7 +36,7 @@ void BitMapAccumulator::ComputeResult(uint8_t* dst_bitmap) {
 
 /// Compute the intersection of multiple bitmaps.
 void BitMapAccumulator::IntersectBitMaps(uint8_t* dst_map,
-                                         const std::vector<uint8_t*>& src_maps,
+                                         const std::vector<const uint8_t*>& src_maps,
                                          const std::vector<int64_t>& src_map_offsets,
                                          int64_t num_records) {
   int64_t num_words = (num_records + 63) / 64;  // aligned to 8-byte.

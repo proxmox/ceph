@@ -30,14 +30,14 @@ cdef extern from "gandiva/node.h" namespace "gandiva" nogil:
         c_string ToString()
         shared_ptr[CDataType] return_type()
 
-    cdef cppclass CExpression" gandiva::Expression":
+    cdef cppclass CGandivaExpression" gandiva::Expression":
         c_string ToString()
         shared_ptr[CNode] root()
         shared_ptr[CField] result()
 
     ctypedef vector[shared_ptr[CNode]] CNodeVector" gandiva::NodeVector"
 
-    ctypedef vector[shared_ptr[CExpression]] \
+    ctypedef vector[shared_ptr[CGandivaExpression]] \
         CExpressionVector" gandiva::ExpressionVector"
 
 cdef extern from "gandiva/selection_vector.h" namespace "gandiva" nogil:
@@ -148,7 +148,7 @@ cdef extern from "gandiva/tree_expr_builder.h" namespace "gandiva" nogil:
     cdef shared_ptr[CNode] TreeExprBuilder_MakeBinaryLiteral \
         "gandiva::TreeExprBuilder::MakeBinaryLiteral"(const c_string& value)
 
-    cdef shared_ptr[CExpression] TreeExprBuilder_MakeExpression\
+    cdef shared_ptr[CGandivaExpression] TreeExprBuilder_MakeExpression\
         "gandiva::TreeExprBuilder::MakeExpression"(
             shared_ptr[CNode] root_node, shared_ptr[CField] result_field)
 
@@ -252,6 +252,7 @@ cdef extern from "gandiva/filter.h" namespace "gandiva" nogil:
     cdef CStatus Filter_Make \
         "gandiva::Filter::Make"(
             shared_ptr[CSchema] schema, shared_ptr[CCondition] condition,
+            shared_ptr[CConfiguration] configuration,
             shared_ptr[CFilter]* filter)
 
 cdef extern from "gandiva/function_signature.h" namespace "gandiva" nogil:
@@ -278,9 +279,20 @@ cdef extern from "gandiva/expression_registry.h" namespace "gandiva" nogil:
 cdef extern from "gandiva/configuration.h" namespace "gandiva" nogil:
 
     cdef cppclass CConfiguration" gandiva::Configuration":
-        pass
+
+        CConfiguration()
+
+        CConfiguration(bint optimize, bint dump_ir)
+
+        void set_optimize(bint optimize)
+
+        void set_dump_ir(bint dump_ir)
 
     cdef cppclass CConfigurationBuilder \
             " gandiva::ConfigurationBuilder":
         @staticmethod
         shared_ptr[CConfiguration] DefaultConfiguration()
+
+        CConfigurationBuilder()
+
+        shared_ptr[CConfiguration] build()

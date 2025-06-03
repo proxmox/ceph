@@ -15,8 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import sys
-
 
 def encode_file_path(path):
     if isinstance(path, str):
@@ -31,27 +29,25 @@ def encode_file_path(path):
     return encoded_path
 
 
-if sys.version_info >= (3, 7):
-    # Starting with Python 3.7, dicts are guaranteed to be insertion-ordered.
-    ordered_dict = dict
-else:
-    import collections
-    ordered_dict = collections.OrderedDict
-
-
-try:
-    import pickle5 as builtin_pickle
-except ImportError:
-    import pickle as builtin_pickle
+# Starting with Python 3.7, dicts are guaranteed to be insertion-ordered.
+ordered_dict = dict
 
 
 try:
     import cloudpickle as pickle
 except ImportError:
-    pickle = builtin_pickle
+    import pickle
 
 
 def tobytes(o):
+    """
+    Encode a unicode or bytes string to bytes.
+
+    Parameters
+    ----------
+    o : str or bytes
+        Input string.
+    """
     if isinstance(o, str):
         return o.encode('utf8')
     else:
@@ -59,6 +55,16 @@ def tobytes(o):
 
 
 def frombytes(o, *, safe=False):
+    """
+    Decode the given bytestring to unicode.
+
+    Parameters
+    ----------
+    o : bytes-like
+        Input object.
+    safe : bool, default False
+        If true, raise on encoding errors.
+    """
     if safe:
         return o.decode('utf8', errors='replace')
     else:

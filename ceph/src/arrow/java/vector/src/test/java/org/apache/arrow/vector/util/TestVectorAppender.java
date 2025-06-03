@@ -21,12 +21,16 @@ import static junit.framework.TestCase.assertEquals;
 import static junit.framework.TestCase.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BaseValueVector;
 import org.apache.arrow.vector.BigIntVector;
+import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.Float4Vector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.LargeVarCharVector;
@@ -62,7 +66,8 @@ public class TestVectorAppender {
 
   @Before
   public void prepare() {
-    allocator = new RootAllocator(1024 * 1024);
+    // Permit allocating 4 vectors of max size.
+    allocator = new RootAllocator(4 * BaseValueVector.MAX_ALLOCATION_SIZE);
   }
 
   @After
@@ -91,6 +96,32 @@ public class TestVectorAppender {
       try (IntVector expected = new IntVector("expected", allocator)) {
         expected.allocateNew();
         ValueVectorDataPopulator.setVector(expected, 0, 1, 2, 3, 4, 5, 6, null, 8, 9, null, 11, 12, 13, 14);
+        assertVectorsEqual(expected, target);
+      }
+    }
+  }
+
+  @Test
+  public void testAppendBitVector() {
+    final int length1 = 10;
+    final int length2 = 5;
+    try (BitVector target = new BitVector("", allocator);
+         BitVector delta = new BitVector("", allocator)) {
+
+      target.allocateNew(length1);
+      delta.allocateNew(length2);
+
+      ValueVectorDataPopulator.setVector(target, 0, 1, 0, 1, 0, 1, 0, null, 0, 1);
+      ValueVectorDataPopulator.setVector(delta, null, 1, 1, 0, 0);
+
+      VectorAppender appender = new VectorAppender(target);
+      delta.accept(appender, null);
+
+      assertEquals(length1 + length2, target.getValueCount());
+
+      try (BitVector expected = new BitVector("expected", allocator)) {
+        expected.allocateNew();
+        ValueVectorDataPopulator.setVector(expected, 0, 1, 0, 1, 0, 1, 0, null, 0, 1, null, 1, 1, 0, 0);
         assertVectorsEqual(expected, target);
       }
     }
@@ -156,6 +187,27 @@ public class TestVectorAppender {
         assertVectorsEqual(expected, target);
       }
     }
+  }
+
+  @Test
+  public void testAppendLargeAndSmallVariableVectorsWithinLimit() {
+    int sixteenthOfMaxAllocation = Math.toIntExact(BaseValueVector.MAX_ALLOCATION_SIZE / 16);
+    try (VarCharVector target = makeVarCharVec(1, sixteenthOfMaxAllocation);
+        VarCharVector delta = makeVarCharVec(sixteenthOfMaxAllocation, 1)) {
+      new VectorAppender(delta).visit(target, null);
+      new VectorAppender(target).visit(delta, null);
+    }
+  }
+
+  private VarCharVector makeVarCharVec(int numElements, int bytesPerElement) {
+    VarCharVector v = new VarCharVector("text", allocator);
+    v.allocateNew((long) numElements * bytesPerElement, numElements);
+    for (int i = 0; i < numElements; i++) {
+      String s = String.join("", Collections.nCopies(bytesPerElement, "a"));
+      v.setSafe(i, s.getBytes(StandardCharsets.US_ASCII));
+    }
+    v.setValueCount(numElements);
+    return v;
   }
 
   @Test

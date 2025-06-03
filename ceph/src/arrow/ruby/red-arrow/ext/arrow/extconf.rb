@@ -28,7 +28,7 @@ end
 checking_for(checking_message("Homebrew")) do
   platform = NativePackageInstaller::Platform.detect
   if platform.is_a?(NativePackageInstaller::Platform::Homebrew)
-    openssl_prefix = `brew --prefix openssl@1.1`.chomp
+    openssl_prefix = `brew --prefix openssl`.chomp
     unless openssl_prefix.empty?
       PKGConfig.add_path("#{openssl_prefix}/lib/pkgconfig")
     end
@@ -41,13 +41,13 @@ end
 unless required_pkg_config_package([
                                      "arrow",
                                      Arrow::Version::MAJOR,
-                                     Arrow::Version::MINOR,
-                                     Arrow::Version::MICRO,
                                    ],
+                                   conda: "libarrow",
                                    debian: "libarrow-dev",
-                                   redhat: "arrow-devel",
+                                   fedora: "libarrow-devel",
                                    homebrew: "apache-arrow",
-                                   msys2: "arrow")
+                                   msys2: "arrow",
+                                   redhat: "arrow-devel")
   exit(false)
 end
 
@@ -57,10 +57,12 @@ unless required_pkg_config_package([
                                      Arrow::Version::MINOR,
                                      Arrow::Version::MICRO,
                                    ],
+                                   conda: "arrow-c-glib",
                                    debian: "libarrow-glib-dev",
-                                   redhat: "arrow-glib-devel",
+                                   fedora: "libarrow-glib-devel",
                                    homebrew: "apache-arrow-glib",
-                                   msys2: "arrow")
+                                   msys2: "arrow",
+                                   redhat: "arrow-glib-devel")
   exit(false)
 end
 
@@ -71,6 +73,20 @@ end
   source_dir = File.join(spec.full_gem_path, relative_source_dir)
   build_dir = source_dir
   add_depend_package_path(name, source_dir, build_dir)
+end
+
+case RUBY_PLATFORM
+when /darwin/
+  symbols_in_external_bundles = [
+    "_rbgerr_gerror2exception",
+    "_rbgobj_instance_from_ruby_object",
+  ]
+  symbols_in_external_bundles.each do |symbol|
+    $DLDFLAGS << " -Wl,-U,#{symbol}"
+  end
+  mmacosx_version_min = "-mmacosx-version-min=10.15"
+  $CFLAGS << " #{mmacosx_version_min}"
+  $CXXFLAGS << " #{mmacosx_version_min}"
 end
 
 create_makefile("arrow")

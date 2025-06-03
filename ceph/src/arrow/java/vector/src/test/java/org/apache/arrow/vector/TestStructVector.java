@@ -19,18 +19,26 @@ package org.apache.arrow.vector;
 
 import static org.junit.Assert.*;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.complex.AbstractStructVector;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.StructVector;
 import org.apache.arrow.vector.complex.UnionVector;
+import org.apache.arrow.vector.complex.impl.NullableStructWriter;
+import org.apache.arrow.vector.complex.writer.Float8Writer;
+import org.apache.arrow.vector.complex.writer.IntWriter;
 import org.apache.arrow.vector.holders.ComplexHolder;
+import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType.Struct;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.util.TransferPair;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -171,13 +179,171 @@ public class TestStructVector {
       vector.addOrGetStruct("struct");
       vector.addOrGetMap("map", true);
 
-      List<FieldVector> childrens = vector.getChildrenFromFields();
-      assertEquals(5, childrens.size());
-      assertEquals(MinorType.LIST, childrens.get(0).getMinorType());
-      assertEquals(MinorType.FIXED_SIZE_LIST, childrens.get(1).getMinorType());
-      assertEquals(MinorType.UNION, childrens.get(2).getMinorType());
-      assertEquals(MinorType.STRUCT, childrens.get(3).getMinorType());
-      assertEquals(MinorType.MAP, childrens.get(4).getMinorType());
+      List<FieldVector> children = vector.getChildrenFromFields();
+      assertEquals(5, children.size());
+      assertEquals(MinorType.LIST, children.get(0).getMinorType());
+      assertEquals(MinorType.FIXED_SIZE_LIST, children.get(1).getMinorType());
+      assertEquals(MinorType.UNION, children.get(2).getMinorType());
+      assertEquals(MinorType.STRUCT, children.get(3).getMinorType());
+      assertEquals(MinorType.MAP, children.get(4).getMinorType());
     }
+  }
+
+  @Test
+  public void testAddChildVectorsWithDuplicatedFieldNamesForConflictPolicyAppend() {
+    final FieldType type = new FieldType(true, Struct.INSTANCE, null, null);
+    try (StructVector vector = new StructVector("struct", allocator, type, null,
+        AbstractStructVector.ConflictPolicy.CONFLICT_APPEND, true)) {
+      final List<Field> initFields = new ArrayList<>();
+
+      // Add a bit more fields to test against stability of the internal field
+      // ordering mechanism of StructVector
+      initFields.add(Field.nullable("varchar1", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("int1", MinorType.INT.getType()));
+      initFields.add(Field.nullable("varchar2", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("int2", MinorType.INT.getType()));
+      initFields.add(Field.nullable("varchar3", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("int3", MinorType.INT.getType()));
+      initFields.add(Field.nullable("uncertain-type", MinorType.INT.getType()));
+
+      // To ensure duplicated field names don't mess up the original field order
+      // in the struct vector
+      initFields.add(Field.nullable("varchar1", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("varchar2", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("varchar3", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("uncertain-type", MinorType.VARCHAR.getType()));
+
+      vector.initializeChildrenFromFields(initFields);
+
+      List<FieldVector> children = vector.getChildrenFromFields();
+      assertEquals(11, children.size());
+      assertEquals("varchar1", children.get(0).getName());
+      assertEquals("int1", children.get(1).getName());
+      assertEquals("varchar2", children.get(2).getName());
+      assertEquals("int2", children.get(3).getName());
+      assertEquals("varchar3", children.get(4).getName());
+      assertEquals("int3", children.get(5).getName());
+      assertEquals("uncertain-type", children.get(6).getName());
+      assertEquals("varchar1", children.get(7).getName());
+      assertEquals("varchar2", children.get(8).getName());
+      assertEquals("varchar3", children.get(9).getName());
+      assertEquals("uncertain-type", children.get(10).getName());
+      assertEquals(MinorType.VARCHAR, children.get(0).getMinorType());
+      assertEquals(MinorType.INT, children.get(1).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(2).getMinorType());
+      assertEquals(MinorType.INT, children.get(3).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(4).getMinorType());
+      assertEquals(MinorType.INT, children.get(5).getMinorType());
+      assertEquals(MinorType.INT, children.get(6).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(7).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(8).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(9).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(10).getMinorType());
+    }
+  }
+
+  @Test
+  public void testAddChildVectorsWithDuplicatedFieldNamesForConflictPolicyReplace() {
+    final FieldType type = new FieldType(true, Struct.INSTANCE, null, null);
+    try (StructVector vector = new StructVector("struct", allocator, type, null,
+        AbstractStructVector.ConflictPolicy.CONFLICT_REPLACE, true)) {
+      final List<Field> initFields = new ArrayList<>();
+
+      // Add a bit more fields to test against stability of the internal field
+      // ordering mechanism of StructVector
+      initFields.add(Field.nullable("varchar1", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("int1", MinorType.INT.getType()));
+      initFields.add(Field.nullable("varchar2", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("int2", MinorType.INT.getType()));
+      initFields.add(Field.nullable("varchar3", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("int3", MinorType.INT.getType()));
+      initFields.add(Field.nullable("uncertain-type", MinorType.INT.getType()));
+
+      // To ensure duplicated field names don't mess up the original field order
+      // in the struct vector
+      initFields.add(Field.nullable("varchar1", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("varchar2", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("varchar3", MinorType.VARCHAR.getType()));
+      initFields.add(Field.nullable("uncertain-type", MinorType.VARCHAR.getType()));
+
+      vector.initializeChildrenFromFields(initFields);
+
+      List<FieldVector> children = vector.getChildrenFromFields();
+      assertEquals(7, children.size());
+      assertEquals("varchar1", children.get(0).getName());
+      assertEquals("int1", children.get(1).getName());
+      assertEquals("varchar2", children.get(2).getName());
+      assertEquals("int2", children.get(3).getName());
+      assertEquals("varchar3", children.get(4).getName());
+      assertEquals("int3", children.get(5).getName());
+      assertEquals("uncertain-type", children.get(6).getName());
+      assertEquals(MinorType.VARCHAR, children.get(0).getMinorType());
+      assertEquals(MinorType.INT, children.get(1).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(2).getMinorType());
+      assertEquals(MinorType.INT, children.get(3).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(4).getMinorType());
+      assertEquals(MinorType.INT, children.get(5).getMinorType());
+      assertEquals(MinorType.VARCHAR, children.get(6).getMinorType());
+    }
+  }
+
+  @Test
+  public void testTypedGetters() {
+    try (final StructVector s1 = StructVector.empty("s1", allocator)) {
+      s1.addOrGet("struct_child", FieldType.nullable(MinorType.INT.getType()), IntVector.class);
+      assertEquals(IntVector.class, s1.getChild("struct_child", IntVector.class).getClass());
+      assertEquals(IntVector.class, s1.getVectorById(0, IntVector.class).getClass());
+    }
+  }
+
+  @Test
+  public void testGetTransferPair() {
+    try (final StructVector fromVector = simpleStructVector("s1", allocator)) {
+      TransferPair tp = fromVector.getTransferPair(fromVector.getField(), allocator);
+      final StructVector toVector = (StructVector) tp.getTo();
+      // Field inside a new vector created by reusing a field should be the same in memory as the original field.
+      assertSame(toVector.getField(), fromVector.getField());
+      toVector.clear();
+    }
+  }
+
+  @Test
+  public void testGetTransferPairWithFieldAndCallBack() {
+    SchemaChangeCallBack callBack = new SchemaChangeCallBack();
+    try (final StructVector fromVector = simpleStructVector("s1", allocator)) {
+      TransferPair tp = fromVector.getTransferPair(fromVector.getField(), allocator, callBack);
+      final StructVector toVector = (StructVector) tp.getTo();
+      // Field inside a new vector created by reusing a field should be the same in memory as the original field.
+      assertSame(toVector.getField(), fromVector.getField());
+      toVector.clear();
+    }
+  }
+
+  private StructVector simpleStructVector(String name, BufferAllocator allocator) {
+    final String INT_COL = "struct_int_child";
+    final String FLT_COL = "struct_flt_child";
+    StructVector structVector = StructVector.empty(name, allocator);
+    final int size = 6; // number of structs
+
+    NullableStructWriter structWriter = structVector.getWriter();
+    structVector.addOrGet(
+        INT_COL, FieldType.nullable(Types.MinorType.INT.getType()), IntVector.class);
+    structVector.addOrGet(
+        FLT_COL, FieldType.nullable(Types.MinorType.INT.getType()), IntVector.class);
+    structVector.allocateNew();
+    IntWriter intWriter = structWriter.integer(INT_COL);
+    Float8Writer float8Writer = structWriter.float8(FLT_COL);
+
+    for (int i = 0; i < size; i++) {
+      structWriter.setPosition(i);
+      structWriter.start();
+      intWriter.writeInt(i);
+      float8Writer.writeFloat8(i * .1);
+      structWriter.end();
+    }
+
+    structWriter.setValueCount(size);
+
+    return structVector;
   }
 }

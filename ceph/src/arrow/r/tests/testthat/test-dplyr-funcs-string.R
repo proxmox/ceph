@@ -15,13 +15,23 @@
 # specific language governing permissions and limitations
 # under the License.
 
-skip_if_not_available("dataset")
 skip_if_not_available("utf8proc")
+skip_if_not_available("acero")
+# Skip these tests on CRAN due to build times > 10 mins
+skip_on_cran()
 
 library(dplyr, warn.conflicts = FALSE)
 library(lubridate)
 library(stringr)
 library(stringi)
+
+tbl <- example_data
+# Add some better string data
+tbl$verses <- verses[[1]]
+# c(" a ", "  b  ", "   c   ", ...) increasing padding
+# nchar =   3  5  7  9 11 13 15 17 19 21
+tbl$padded_strings <- stringr::str_pad(letters[1:10], width = 2 * (1:10) + 1, side = "both")
+tbl$some_grouping <- rep(c(1, 2), 5)
 
 test_that("paste, paste0, and str_c", {
   df <- tibble(
@@ -37,7 +47,10 @@ test_that("paste, paste0, and str_c", {
   # no NAs in data
   compare_dplyr_binding(
     .input %>%
-      transmute(paste(v, w)) %>%
+      transmute(
+        a = paste(v, w),
+        a2 = base::paste(v, w)
+      ) %>%
       collect(),
     df
   )
@@ -49,13 +62,19 @@ test_that("paste, paste0, and str_c", {
   )
   compare_dplyr_binding(
     .input %>%
-      transmute(paste0(v, w)) %>%
+      transmute(
+        a = paste0(v, w),
+        a2 = base::paste0(v, w)
+      ) %>%
       collect(),
     df
   )
   compare_dplyr_binding(
     .input %>%
-      transmute(str_c(v, w)) %>%
+      transmute(
+        a = str_c(v, w),
+        a2 = stringr::str_c(v, w)
+      ) %>%
       collect(),
     df
   )
@@ -121,15 +140,13 @@ test_that("paste, paste0, and str_c", {
   # sep is literal NA
   # errors in paste() (consistent with base::paste())
   expect_error(
-    nse_funcs$paste(x, y, sep = NA_character_),
+    call_binding("paste", x, y, sep = NA_character_),
     "Invalid separator"
   )
-  # emits null in str_c() (consistent with stringr::str_c())
-  compare_dplyr_binding(
-    .input %>%
-      transmute(str_c(x, y, sep = NA_character_)) %>%
-      collect(),
-    df
+  # In next release of stringr (late 2022), str_c also errors
+  expect_error(
+    call_binding("str_c", x, y, sep = NA_character_),
+    "`sep` must be a single string, not `NA`."
   )
 
   # sep passed in dots to paste0 (which doesn't take a sep argument)
@@ -156,34 +173,40 @@ test_that("paste, paste0, and str_c", {
 
   # collapse argument not supported
   expect_error(
-    nse_funcs$paste(x, y, collapse = ""),
+    call_binding("paste", x, y, collapse = ""),
     "collapse"
   )
   expect_error(
-    nse_funcs$paste0(x, y, collapse = ""),
+    call_binding("paste0", x, y, collapse = ""),
     "collapse"
   )
   expect_error(
-    nse_funcs$str_c(x, y, collapse = ""),
+    call_binding("str_c", x, y, collapse = ""),
     "collapse"
   )
 
   # literal vectors of length != 1 not supported
   expect_error(
-    nse_funcs$paste(x, character(0), y),
+    call_binding("paste", x, character(0), y),
     "Literal vectors of length != 1 not supported in string concatenation"
   )
   expect_error(
-    nse_funcs$paste(x, c(",", ";"), y),
+    call_binding("paste", x, c(",", ";"), y),
     "Literal vectors of length != 1 not supported in string concatenation"
   )
 })
 
 test_that("grepl with ignore.case = FALSE and fixed = TRUE", {
-  df <- tibble(x = c("Foo", "bar"))
+  df <- tibble(x = c("Foo", "bar", NA_character_))
   compare_dplyr_binding(
     .input %>%
       filter(grepl("o", x, fixed = TRUE)) %>%
+      collect(),
+    df
+  )
+  compare_dplyr_binding(
+    .input %>%
+      mutate(x = grepl("o", x, fixed = TRUE)) %>%
       collect(),
     df
   )
@@ -209,7 +232,7 @@ test_that("sub and gsub with ignore.case = FALSE and fixed = TRUE", {
 skip_if_not_available("re2")
 
 test_that("grepl", {
-  df <- tibble(x = c("Foo", "bar"))
+  df <- tibble(x = c("Foo", "bar", NA_character_))
 
   for (fixed in c(TRUE, FALSE)) {
     compare_dplyr_binding(
@@ -230,11 +253,18 @@ test_that("grepl", {
         collect(),
       df
     )
+    # with namespacing
+    compare_dplyr_binding(
+      .input %>%
+        filter(base::grepl("Foo", x, fixed = fixed)) %>%
+        collect(),
+      df
+    )
   }
 })
 
 test_that("grepl with ignore.case = TRUE and fixed = TRUE", {
-  df <- tibble(x = c("Foo", "bar"))
+  df <- tibble(x = c("Foo", "bar", NA_character_))
 
   # base::grepl() ignores ignore.case = TRUE with a warning when fixed = TRUE,
   # so we can't use compare_dplyr_binding() for these tests
@@ -248,14 +278,26 @@ test_that("grepl with ignore.case = TRUE and fixed = TRUE", {
   expect_equal(
     df %>%
       Table$create() %>%
-      filter(x = grepl("^B.+", x, ignore.case = TRUE, fixed = TRUE)) %>%
+      filter(grepl("^B.+", x, ignore.case = TRUE, fixed = TRUE)) %>%
       collect(),
     tibble(x = character(0))
+  )
+  expect_equal(
+    df %>%
+      Table$create() %>%
+      mutate(
+        a = grepl("O", x, ignore.case = TRUE, fixed = TRUE)
+      ) %>%
+      collect(),
+    tibble(
+      x = c("Foo", "bar", NA_character_),
+      a = c(TRUE, FALSE, FALSE)
+    )
   )
 })
 
 test_that("str_detect", {
-  df <- tibble(x = c("Foo", "bar"))
+  df <- tibble(x = c("Foo", "bar", NA_character_))
 
   compare_dplyr_binding(
     .input %>%
@@ -263,9 +305,21 @@ test_that("str_detect", {
       collect(),
     df
   )
+
+  string <- "^F"
   compare_dplyr_binding(
     .input %>%
-      transmute(x = str_detect(x, regex("^f[A-Z]{2}", ignore_case = TRUE))) %>%
+      filter(str_detect(x, regex(string))) %>%
+      collect(),
+    df
+  )
+
+  compare_dplyr_binding(
+    .input %>%
+      transmute(
+        a = str_detect(x, regex("^f[A-Z]{2}", ignore_case = TRUE)),
+        a2 = stringr::str_detect(x, regex("^f[A-Z]{2}", ignore_case = TRUE))
+      ) %>%
       collect(),
     df
   )
@@ -354,7 +408,40 @@ test_that("sub and gsub with ignore.case = TRUE and fixed = TRUE", {
   )
 })
 
+test_that("sub and gsub with namespacing", {
+  compare_dplyr_binding(
+    .input %>%
+      mutate(verses_new = base::gsub("o", "u", verses, fixed = TRUE)) %>%
+      collect(),
+    tbl
+  )
+
+  compare_dplyr_binding(
+    .input %>%
+      mutate(verses_new = base::sub("o", "u", verses, fixed = TRUE)) %>%
+      collect(),
+    tbl
+  )
+})
+
 test_that("str_replace and str_replace_all", {
+  x <- Expression$field_ref("x")
+
+  expect_error(
+    call_binding("str_replace_all", x, c("F" = "_", "b" = "")),
+    regexp = "`pattern` must be a length 1 character vector"
+  )
+
+  expect_error(
+    call_binding("str_replace_all", x, c("F", "b"), c("_", "")),
+    regexp = "`pattern` must be a length 1 character vector"
+  )
+
+  expect_error(
+    call_binding("str_replace_all", x, c("F"), c("_", "")),
+    regexp = "`replacement` must be a length 1 character vector"
+  )
+
   df <- tibble(x = c("Foo", "bar"))
 
   compare_dplyr_binding(
@@ -386,13 +473,19 @@ test_that("str_replace and str_replace_all", {
   )
   compare_dplyr_binding(
     .input %>%
-      transmute(x = str_replace_all(x, fixed("o"), "u")) %>%
+      transmute(
+        x = str_replace_all(x, fixed("o"), "u"),
+        x2 = stringr::str_replace_all(x, fixed("o"), "u")
+      ) %>%
       collect(),
     df
   )
   compare_dplyr_binding(
     .input %>%
-      transmute(x = str_replace(x, fixed("O"), "u")) %>%
+      transmute(
+        x = str_replace(x, fixed("O"), "u"),
+        x2 = stringr::str_replace(x, fixed("O"), "u")
+      ) %>%
       collect(),
     df
   )
@@ -425,14 +518,20 @@ test_that("strsplit and str_split", {
   )
   compare_dplyr_binding(
     .input %>%
-      mutate(x = strsplit(x, " +and +")) %>%
+      mutate(
+        a = strsplit(x, " +and +"),
+        a2 = base::strsplit(x, " +and +")
+      ) %>%
       collect(),
     df,
     ignore_attr = TRUE
   )
   compare_dplyr_binding(
     .input %>%
-      mutate(x = str_split(x, "and")) %>%
+      mutate(
+        a = str_split(x, "and"),
+        a2 = stringr::str_split(x, "and")
+      ) %>%
       collect(),
     df,
     ignore_attr = TRUE
@@ -467,6 +566,25 @@ test_that("strsplit and str_split", {
   )
 })
 
+test_that("strrep and str_dup", {
+  df <- tibble(x = c("foo1", " \tB a R\n", "!apACHe aRroW!"))
+  for (times in 0:8) {
+    compare_dplyr_binding(
+      .input %>%
+        mutate(x = strrep(x, times)) %>%
+        collect(),
+      df
+    )
+
+    compare_dplyr_binding(
+      .input %>%
+        mutate(x = str_dup(x, times)) %>%
+        collect(),
+      df
+    )
+  }
+})
+
 test_that("str_to_lower, str_to_upper, and str_to_title", {
   df <- tibble(x = c("foo1", " \tB a R\n", "!apACHe aRroW!"))
   compare_dplyr_binding(
@@ -474,7 +592,10 @@ test_that("str_to_lower, str_to_upper, and str_to_title", {
       transmute(
         x_lower = str_to_lower(x),
         x_upper = str_to_upper(x),
-        x_title = str_to_title(x)
+        x_title = str_to_title(x),
+        x_lower_nmspc = stringr::str_to_lower(x),
+        x_upper_nmspc = stringr::str_to_upper(x),
+        x_title_nmspc = stringr::str_to_title(x)
       ) %>%
       collect(),
     df
@@ -482,8 +603,8 @@ test_that("str_to_lower, str_to_upper, and str_to_title", {
 
   # Error checking a single function because they all use the same code path.
   expect_error(
-    nse_funcs$str_to_lower("Apache Arrow", locale = "sp"),
-    "Providing a value for 'locale' other than the default ('en') is not supported by Arrow",
+    call_binding("str_to_lower", "Apache Arrow", locale = "sp"),
+    "Providing a value for 'locale' other than the default ('en') is not supported in Arrow",
     fixed = TRUE
   )
 })
@@ -546,27 +667,27 @@ test_that("errors and warnings in string splitting", {
 
   x <- Expression$field_ref("x")
   expect_error(
-    nse_funcs$str_split(x, fixed("and", ignore_case = TRUE)),
-    "Case-insensitive string splitting not supported by Arrow"
+    call_binding("str_split", x, fixed("and", ignore_case = TRUE)),
+    "Case-insensitive string splitting not supported in Arrow"
   )
   expect_error(
-    nse_funcs$str_split(x, coll("and.?")),
-    "Pattern modifier `coll()` not supported by Arrow",
+    call_binding("str_split", x, coll("and.?")),
+    "Pattern modifier `coll()` not supported in Arrow",
     fixed = TRUE
   )
   expect_error(
-    nse_funcs$str_split(x, boundary(type = "word")),
-    "Pattern modifier `boundary()` not supported by Arrow",
+    call_binding("str_split", x, boundary(type = "word")),
+    "Pattern modifier `boundary()` not supported in Arrow",
     fixed = TRUE
   )
   expect_error(
-    nse_funcs$str_split(x, "and", n = 0),
-    "Splitting strings into zero parts not supported by Arrow"
+    call_binding("str_split", x, "and", n = 0),
+    "Splitting strings into zero parts not supported in Arrow"
   )
 
   # This condition generates a warning
   expect_warning(
-    nse_funcs$str_split(x, fixed("and"), simplify = TRUE),
+    call_binding("str_split", x, fixed("and"), simplify = TRUE),
     "Argument 'simplify = TRUE' will be ignored"
   )
 })
@@ -575,19 +696,19 @@ test_that("errors and warnings in string detection and replacement", {
   x <- Expression$field_ref("x")
 
   expect_error(
-    nse_funcs$str_detect(x, boundary(type = "character")),
-    "Pattern modifier `boundary()` not supported by Arrow",
+    call_binding("str_detect", x, boundary(type = "character")),
+    "Pattern modifier `boundary()` not supported in Arrow",
     fixed = TRUE
   )
   expect_error(
-    nse_funcs$str_replace_all(x, coll("o", locale = "en"), "ó"),
-    "Pattern modifier `coll()` not supported by Arrow",
+    call_binding("str_replace_all", x, coll("o", locale = "en"), "ó"),
+    "Pattern modifier `coll()` not supported in Arrow",
     fixed = TRUE
   )
 
   # This condition generates a warning
   expect_warning(
-    nse_funcs$str_replace_all(x, regex("o", multiline = TRUE), "u"),
+    call_binding("str_replace_all", x, regex("o", multiline = TRUE), "u"),
     "Ignoring pattern modifier argument not supported in Arrow: \"multiline\""
   )
 })
@@ -673,232 +794,6 @@ test_that("edge cases in string detection and replacement", {
   )
 })
 
-test_that("strptime", {
-  # base::strptime() defaults to local timezone
-  # but arrow's strptime defaults to UTC.
-  # So that tests are consistent, set the local timezone to UTC
-  # TODO: consider reevaluating this workaround after ARROW-12980
-  withr::local_timezone("UTC")
-
-  t_string <- tibble(x = c("2018-10-07 19:04:05", NA))
-  t_stamp <- tibble(x = c(lubridate::ymd_hms("2018-10-07 19:04:05"), NA))
-
-  expect_equal(
-    t_string %>%
-      Table$create() %>%
-      mutate(
-        x = strptime(x)
-      ) %>%
-      collect(),
-    t_stamp,
-    ignore_attr = "tzone"
-  )
-
-  expect_equal(
-    t_string %>%
-      Table$create() %>%
-      mutate(
-        x = strptime(x, format = "%Y-%m-%d %H:%M:%S")
-      ) %>%
-      collect(),
-    t_stamp,
-    ignore_attr = "tzone"
-  )
-
-  expect_equal(
-    t_string %>%
-      Table$create() %>%
-      mutate(
-        x = strptime(x, format = "%Y-%m-%d %H:%M:%S", unit = "ns")
-      ) %>%
-      collect(),
-    t_stamp,
-    ignore_attr = "tzone"
-  )
-
-  expect_equal(
-    t_string %>%
-      Table$create() %>%
-      mutate(
-        x = strptime(x, format = "%Y-%m-%d %H:%M:%S", unit = "s")
-      ) %>%
-      collect(),
-    t_stamp,
-    ignore_attr = "tzone"
-  )
-
-  tstring <- tibble(x = c("08-05-2008", NA))
-  tstamp <- strptime(c("08-05-2008", NA), format = "%m-%d-%Y")
-
-  expect_equal(
-    tstring %>%
-      Table$create() %>%
-      mutate(
-        x = strptime(x, format = "%m-%d-%Y")
-      ) %>%
-      pull(),
-    # R's strptime returns POSIXlt (list type)
-    as.POSIXct(tstamp),
-    ignore_attr = "tzone"
-  )
-})
-
-test_that("errors in strptime", {
-  # Error when tz is passed
-  x <- Expression$field_ref("x")
-  expect_error(
-    nse_funcs$strptime(x, tz = "PDT"),
-    "Time zone argument not supported by Arrow"
-  )
-})
-
-test_that("strftime", {
-  skip_on_os("windows") # https://issues.apache.org/jira/browse/ARROW-13168
-
-  times <- tibble(
-    datetime = c(lubridate::ymd_hms("2018-10-07 19:04:05", tz = "Etc/GMT+6"), NA),
-    date = c(as.Date("2021-01-01"), NA)
-  )
-  formats <- "%a %A %w %d %b %B %m %y %Y %H %I %p %M %z %Z %j %U %W %x %X %% %G %V %u"
-  formats_date <- "%a %A %w %d %b %B %m %y %Y %H %I %p %M %j %U %W %x %X %% %G %V %u"
-
-  compare_dplyr_binding(
-    .input %>%
-      mutate(x = strftime(datetime, format = formats)) %>%
-      collect(),
-    times
-  )
-
-  compare_dplyr_binding(
-    .input %>%
-      mutate(x = strftime(date, format = formats_date)) %>%
-      collect(),
-    times
-  )
-
-  compare_dplyr_binding(
-    .input %>%
-      mutate(x = strftime(datetime, format = formats, tz = "Pacific/Marquesas")) %>%
-      collect(),
-    times
-  )
-
-  compare_dplyr_binding(
-    .input %>%
-      mutate(x = strftime(datetime, format = formats, tz = "EST", usetz = TRUE)) %>%
-      collect(),
-    times
-  )
-
-  withr::with_timezone(
-    "Pacific/Marquesas",
-    {
-      compare_dplyr_binding(
-        .input %>%
-          mutate(
-            x = strftime(datetime, format = formats, tz = "EST"),
-            x_date = strftime(date, format = formats_date, tz = "EST")
-          ) %>%
-          collect(),
-        times
-      )
-
-      compare_dplyr_binding(
-        .input %>%
-          mutate(
-            x = strftime(datetime, format = formats),
-            x_date = strftime(date, format = formats_date)
-          ) %>%
-          collect(),
-        times
-      )
-    }
-  )
-
-  # This check is due to differences in the way %c currently works in Arrow and R's strftime.
-  # We can revisit after https://github.com/HowardHinnant/date/issues/704 is resolved.
-  expect_error(
-    times %>%
-      Table$create() %>%
-      mutate(x = strftime(datetime, format = "%c")) %>%
-      collect(),
-    "%c flag is not supported in non-C locales."
-  )
-
-  # Output precision of %S depends on the input timestamp precision.
-  # Timestamps with second precision are represented as integers while
-  # milliseconds, microsecond and nanoseconds are represented as fixed floating
-  # point numbers with 3, 6 and 9 decimal places respectively.
-  compare_dplyr_binding(
-    .input %>%
-      mutate(x = strftime(datetime, format = "%S")) %>%
-      transmute(as.double(substr(x, 1, 2))) %>%
-      collect(),
-    times,
-    tolerance = 1e-6
-  )
-})
-
-test_that("format_ISO8601", {
-  skip_on_os("windows") # https://issues.apache.org/jira/browse/ARROW-13168
-  times <- tibble(x = c(lubridate::ymd_hms("2018-10-07 19:04:05", tz = "Etc/GMT+6"), NA))
-
-  compare_dplyr_binding(
-    .input %>%
-      mutate(x = format_ISO8601(x, precision = "ymd", usetz = FALSE)) %>%
-      collect(),
-    times
-  )
-
-  if (getRversion() < "3.5") {
-    # before 3.5, times$x will have no timezone attribute, so Arrow faithfully
-    # errors that there is no timezone to format:
-    expect_error(
-      times %>%
-        Table$create() %>%
-        mutate(x = format_ISO8601(x, precision = "ymd", usetz = TRUE)) %>%
-        collect(),
-      "Timezone not present, cannot convert to string with timezone: %Y-%m-%d%z"
-    )
-
-    # See comment regarding %S flag in strftime tests
-    expect_error(
-      times %>%
-        Table$create() %>%
-        mutate(x = format_ISO8601(x, precision = "ymdhms", usetz = TRUE)) %>%
-        mutate(x = gsub("\\.0*", "", x)) %>%
-        collect(),
-      "Timezone not present, cannot convert to string with timezone: %Y-%m-%dT%H:%M:%S%z"
-    )
-  } else {
-    compare_dplyr_binding(
-      .input %>%
-        mutate(x = format_ISO8601(x, precision = "ymd", usetz = TRUE)) %>%
-        collect(),
-      times
-    )
-
-    # See comment regarding %S flag in strftime tests
-    compare_dplyr_binding(
-      .input %>%
-        mutate(x = format_ISO8601(x, precision = "ymdhms", usetz = TRUE)) %>%
-        mutate(x = gsub("\\.0*", "", x)) %>%
-        collect(),
-      times
-    )
-  }
-
-
-  # See comment regarding %S flag in strftime tests
-  compare_dplyr_binding(
-    .input %>%
-      mutate(x = format_ISO8601(x, precision = "ymdhms", usetz = FALSE)) %>%
-      mutate(x = gsub("\\.0*", "", x)) %>%
-      collect(),
-    times
-  )
-})
-
 test_that("arrow_find_substring and arrow_find_substring_regex", {
   df <- tibble(x = c("Foo and Bar", "baz and qux and quux"))
 
@@ -980,56 +875,53 @@ test_that("stri_reverse and arrow_ascii_reverse functions", {
 test_that("str_like", {
   df <- tibble(x = c("Foo and bar", "baz and qux and quux"))
 
-  # TODO: After new version of stringr with str_like has been released, update all
-  # these tests to use compare_dplyr_binding
-
   # No match - entire string
-  expect_equal(
-    df %>%
-      Table$create() %>%
+  compare_dplyr_binding(
+    .input %>%
       mutate(x = str_like(x, "baz")) %>%
       collect(),
-    tibble(x = c(FALSE, FALSE))
+    df
+  )
+  # with namespacing
+  compare_dplyr_binding(
+    .input %>%
+      mutate(x = stringr::str_like(x, "baz")) %>%
+      collect(),
+    df
   )
 
   # Match - entire string
-  expect_equal(
-    df %>%
-      Table$create() %>%
+  compare_dplyr_binding(
+    .input %>%
       mutate(x = str_like(x, "Foo and bar")) %>%
       collect(),
-    tibble(x = c(TRUE, FALSE))
+    df
   )
 
   # Wildcard
-  expect_equal(
-    df %>%
-      Table$create() %>%
+  compare_dplyr_binding(
+    .input %>%
       mutate(x = str_like(x, "f%", ignore_case = TRUE)) %>%
       collect(),
-    tibble(x = c(TRUE, FALSE))
+    df
   )
 
   # Ignore case
-  expect_equal(
-    df %>%
-      Table$create() %>%
+  compare_dplyr_binding(
+    .input %>%
       mutate(x = str_like(x, "f%", ignore_case = FALSE)) %>%
       collect(),
-    tibble(x = c(FALSE, FALSE))
+    df
   )
 
   # Single character
-  expect_equal(
-    df %>%
-      Table$create() %>%
+  compare_dplyr_binding(
+    .input %>%
       mutate(x = str_like(x, "_a%")) %>%
       collect(),
-    tibble(x = c(FALSE, TRUE))
+    df
   )
 
-  # This will give an error until a new version of stringr with str_like has been released
-  skip_if_not(packageVersion("stringr") > "1.4.0")
   compare_dplyr_binding(
     .input %>%
       mutate(x = str_like(x, "%baz%")) %>%
@@ -1071,13 +963,16 @@ test_that("str_pad", {
 
   compare_dplyr_binding(
     .input %>%
-      mutate(x = str_pad(x, width = 31, side = "both")) %>%
+      mutate(
+        a = str_pad(x, width = 31, side = "both"),
+        a2 = stringr::str_pad(x, width = 31, side = "both")
+      ) %>%
       collect(),
     df
   )
 })
 
-test_that("substr", {
+test_that("substr with string()", {
   df <- tibble(x = "Apache Arrow")
 
   compare_dplyr_binding(
@@ -1138,29 +1033,61 @@ test_that("substr", {
 
   compare_dplyr_binding(
     .input %>%
-      mutate(y = substr(x, -5, -1)) %>%
+      mutate(
+        y = substr(x, -5, -1),
+        y2 = base::substr(x, -5, -1)
+      ) %>%
       collect(),
     df
   )
 
   expect_error(
-    nse_funcs$substr("Apache Arrow", c(1, 2), 3),
+    call_binding("substr", "Apache Arrow", c(1, 2), 3),
     "`start` must be length 1 - other lengths are not supported in Arrow"
   )
 
   expect_error(
-    nse_funcs$substr("Apache Arrow", 1, c(2, 3)),
+    call_binding("substr", "Apache Arrow", 1, c(2, 3)),
     "`stop` must be length 1 - other lengths are not supported in Arrow"
   )
 })
 
+test_that("substr with binary()", {
+  batch <- record_batch(x = list(charToRaw("Apache Arrow")))
+
+  # Check a field reference input
+  expect_identical(
+    batch %>%
+      transmute(y = substr(x, 1, 3)) %>%
+      collect() %>%
+      # because of the arrow_binary class
+      mutate(y = unclass(y)),
+    tibble::tibble(y = list(charToRaw("Apa")))
+  )
+
+  # Check a Scalar input
+  scalar <- Scalar$create(batch$x)
+  expect_identical(
+    batch %>%
+      transmute(y = substr(scalar, 1, 3)) %>%
+      collect() %>%
+      # because of the arrow_binary class
+      mutate(y = unclass(y)),
+    tibble::tibble(y = list(charToRaw("Apa")))
+  )
+})
+
 test_that("substring", {
-  # nse_funcs$substring just calls nse_funcs$substr, tested extensively above
+  # binding for substring just calls call_binding("substr", ...),
+  # tested extensively above
   df <- tibble(x = "Apache Arrow")
 
   compare_dplyr_binding(
     .input %>%
-      mutate(y = substring(x, 1, 6)) %>%
+      mutate(
+        y = substring(x, 1, 6),
+        y2 = base::substring(x, 1, 6)
+      ) %>%
       collect(),
     df
   )
@@ -1234,24 +1161,27 @@ test_that("str_sub", {
 
   compare_dplyr_binding(
     .input %>%
-      mutate(y = str_sub(x, -5, -1)) %>%
+      mutate(
+        y = str_sub(x, -5, -1),
+        y2 = stringr::str_sub(x, -5, -1)
+      ) %>%
       collect(),
     df
   )
 
   expect_error(
-    nse_funcs$str_sub("Apache Arrow", c(1, 2), 3),
+    call_binding("str_sub", "Apache Arrow", c(1, 2), 3),
     "`start` must be length 1 - other lengths are not supported in Arrow"
   )
 
   expect_error(
-    nse_funcs$str_sub("Apache Arrow", 1, c(2, 3)),
+    call_binding("str_sub", "Apache Arrow", 1, c(2, 3)),
     "`end` must be length 1 - other lengths are not supported in Arrow"
   )
 })
 
 test_that("str_starts, str_ends, startsWith, endsWith", {
-  df <- tibble(x = c("Foo", "bar", "baz", "qux"))
+  df <- tibble(x = c("Foo", "bar", "baz", "qux", NA_character_))
 
   compare_dplyr_binding(
     .input %>%
@@ -1277,6 +1207,19 @@ test_that("str_starts, str_ends, startsWith, endsWith", {
   compare_dplyr_binding(
     .input %>%
       filter(str_starts(x, fixed("b"))) %>%
+      collect(),
+    df
+  )
+
+  compare_dplyr_binding(
+    .input %>%
+      transmute(
+        a = str_starts(x, "b.*"),
+        a2 = stringr::str_starts(x, "b.*"),
+        b = str_starts(x, "b.*", negate = TRUE),
+        c = str_starts(x, fixed("b")),
+        d = str_starts(x, fixed("b"), negate = TRUE)
+      ) %>%
       collect(),
     df
   )
@@ -1311,6 +1254,19 @@ test_that("str_starts, str_ends, startsWith, endsWith", {
 
   compare_dplyr_binding(
     .input %>%
+      transmute(
+        a = str_ends(x, "r"),
+        a2 = stringr::str_ends(x, "r"),
+        b = str_ends(x, "r", negate = TRUE),
+        c = str_ends(x, fixed("r")),
+        d = str_ends(x, fixed("r"), negate = TRUE)
+      ) %>%
+      collect(),
+    df
+  )
+
+  compare_dplyr_binding(
+    .input %>%
       filter(startsWith(x, "b")) %>%
       collect(),
     df
@@ -1336,6 +1292,18 @@ test_that("str_starts, str_ends, startsWith, endsWith", {
       collect(),
     df
   )
+
+  compare_dplyr_binding(
+    .input %>%
+      transmute(
+        a = startsWith(x, "b"),
+        b = endsWith(x, "r"),
+        a2 = base::startsWith(x, "b"),
+        b2 = base::endsWith(x, "r")
+      ) %>%
+      collect(),
+    df
+  )
 })
 
 test_that("str_count", {
@@ -1346,7 +1314,10 @@ test_that("str_count", {
 
   compare_dplyr_binding(
     .input %>%
-      mutate(a_count = str_count(cities, pattern = "a")) %>%
+      mutate(
+        a_count = str_count(cities, pattern = "a"),
+        a_count_nmspc = stringr::str_count(cities, pattern = "a")
+      ) %>%
       collect(),
     df
   )
@@ -1374,7 +1345,7 @@ test_that("str_count", {
     df
   )
 
-  # nse_funcs$str_count() is not vectorised over pattern
+  # call_binding("str_count", ) is not vectorised over pattern
   compare_dplyr_binding(
     .input %>%
       mutate(let_count = str_count(cities, pattern = c("a", "b", "e", "g", "p", "n", "s"))) %>%
@@ -1395,5 +1366,161 @@ test_that("str_count", {
       mutate(dots_count = str_count(dots, fixed("."))) %>%
       collect(),
     df
+  )
+})
+
+test_that("base::tolower and base::toupper", {
+  compare_dplyr_binding(
+    .input %>%
+      mutate(
+        verse_to_upper = toupper(verses),
+        verse_to_lower = tolower(verses),
+        verse_to_upper_nmspc = base::toupper(verses),
+        verse_to_lower_nmspc = base::tolower(verses)
+      ) %>%
+      collect(),
+    tbl
+  )
+})
+
+test_that("namespaced unary and binary string functions", {
+  # str_length and stringi::stri_reverse
+  compare_dplyr_binding(
+    .input %>%
+      mutate(
+        verse_length = stringr::str_length(verses),
+        reverses_verse = stringi::stri_reverse(verses)
+      ) %>%
+      collect(),
+    tbl
+  )
+
+  # stringr::str_dup and base::strrep
+  df <- tibble(x = c("foo1", " \tB a R\n", "!apACHe aRroW!"))
+  for (times in 0:8) {
+    compare_dplyr_binding(
+      .input %>%
+        mutate(x = base::strrep(x, times)) %>%
+        collect(),
+      df
+    )
+
+    compare_dplyr_binding(
+      .input %>%
+        mutate(x = stringr::str_dup(x, times)) %>%
+        collect(),
+      df
+    )
+  }
+})
+
+test_that("nchar with namespacing", {
+  compare_dplyr_binding(
+    .input %>%
+      mutate(verses_nchar = base::nchar(verses)) %>%
+      collect(),
+    tbl
+  )
+})
+
+test_that("str_trim()", {
+  compare_dplyr_binding(
+    .input %>%
+      mutate(
+        left_trim_padded_string = str_trim(padded_strings, "left"),
+        right_trim_padded_string = str_trim(padded_strings, "right"),
+        both_trim_padded_string = str_trim(padded_strings, "both"),
+        left_trim_padded_string_nmspc = stringr::str_trim(padded_strings, "left"),
+        right_trim_padded_string_nmspc = stringr::str_trim(padded_strings, "right"),
+        both_trim_padded_string_nmspc = stringr::str_trim(padded_strings, "both")
+      ) %>%
+      collect(),
+    tbl
+  )
+})
+
+test_that("str_remove and str_remove_all", {
+  df <- tibble(x = c("Foo", "bar"))
+
+  compare_dplyr_binding(
+    .input %>%
+      transmute(x = str_remove_all(x, "^F")) %>%
+      collect(),
+    df
+  )
+
+  compare_dplyr_binding(
+    .input %>%
+      transmute(x = str_remove_all(x, regex("^F"))) %>%
+      collect(),
+    df
+  )
+
+  compare_dplyr_binding(
+    .input %>%
+      mutate(x = str_remove(x, "^F[a-z]{2}")) %>%
+      collect(),
+    df
+  )
+
+  compare_dplyr_binding(
+    .input %>%
+      transmute(x = str_remove(x, regex("^f[A-Z]{2}", ignore_case = TRUE))) %>%
+      collect(),
+    df
+  )
+  compare_dplyr_binding(
+    .input %>%
+      transmute(
+        x = str_remove_all(x, fixed("o")),
+        x2 = stringr::str_remove_all(x, fixed("o"))
+      ) %>%
+      collect(),
+    df
+  )
+  compare_dplyr_binding(
+    .input %>%
+      transmute(
+        x = str_remove(x, fixed("O")),
+        x2 = stringr::str_remove(x, fixed("O"))
+      ) %>%
+      collect(),
+    df
+  )
+  compare_dplyr_binding(
+    .input %>%
+      transmute(x = str_remove(x, fixed("O", ignore_case = TRUE))) %>%
+      collect(),
+    df
+  )
+})
+
+test_that("GH-36720: stringr modifier functions can be called with namespace prefix", {
+  df <- tibble(x = c("Foo", "bar"))
+  compare_dplyr_binding(
+    .input %>%
+      transmute(x = str_replace_all(x, stringr::regex("^f", ignore_case = TRUE), "baz")) %>%
+      collect(),
+    df
+  )
+
+  compare_dplyr_binding(
+    .input %>%
+      filter(str_detect(x, stringr::fixed("f", ignore_case = TRUE), negate = TRUE)) %>%
+      collect(),
+    df
+  )
+
+  x <- Expression$field_ref("x")
+
+  expect_error(
+    call_binding("str_detect", x, stringr::boundary(type = "character")),
+    "Pattern modifier `boundary()` not supported in Arrow",
+    fixed = TRUE
+  )
+  expect_error(
+    call_binding("str_replace_all", x, stringr::coll("o", locale = "en"), "ó"),
+    "Pattern modifier `coll()` not supported in Arrow",
+    fixed = TRUE
   )
 })

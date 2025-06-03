@@ -30,36 +30,33 @@ jobs:
 
     steps:
       {{ macros.github_checkout_arrow()|indent }}
-
-      - uses: r-lib/actions/setup-r@v1
-      - uses: r-lib/actions/setup-pandoc@v1
-      - name: Install knitr, rmarkdown
-        run: |
-          install.packages(c("rmarkdown", "knitr", "sessioninfo"))
-        shell: Rscript {0}
+      - uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-pandoc@v2
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: "rmarkdown, knitr, sessioninfo"
       - name: Session info
         run: |
           options(width = 100)
           pkgs <- installed.packages()[, "Package"]
           sessioninfo::session_info(pkgs, include_base = TRUE)
         shell: Rscript {0}
-      - name: Remove system gfortran so that brew can install gcc successfully
-        run: rm -f /usr/local/bin/gfortran
       - name: Write the install script
         env:
           RUN_DEVDOCS: TRUE
           DEVDOCS_MACOS: {{ "${{contains(matrix.os, 'macOS')}}" }}
           DEVDOCS_UBUNTU: {{ "${{contains(matrix.os, 'ubuntu')}}" }}
         run: |
-          # This isn't actually rendering the docs, but will save arrow/r/vignettes/script.sh
+          # This isn't actually rendering the docs, but will save arrow/r/vignettes/developers/script.sh
           # which can be sourced to install arrow.
-          rmarkdown::render("arrow/r/vignettes/developing.Rmd")
+          rmarkdown::render("arrow/r/vignettes/developers/setup.Rmd")
         shell: Rscript {0}
       - name: Install from the devdocs
         env:
           LIBARROW_BINARY: FALSE
           ARROW_R_DEV: TRUE
-        run: bash arrow/r/vignettes/script.sh
+        run: |
+          bash arrow/r/vignettes/developers/script.sh
         shell: bash
       - name: Ensure that the Arrow package is loadable and we have the correct one
         run: |
@@ -74,5 +71,5 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: {{ "devdocs-script_os-${{ matrix.os }}_sysinstall-${{ matrix.system-install }}" }}
-          path: arrow/r/vignettes/script.sh
+          path: arrow/r/vignettes/developers/script.sh
         if: always()

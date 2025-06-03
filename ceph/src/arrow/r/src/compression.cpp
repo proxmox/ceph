@@ -17,13 +17,12 @@
 
 #include "./arrow_types.h"
 
-#if defined(ARROW_R_WITH_ARROW)
 #include <arrow/io/compressed.h>
 #include <arrow/util/compression.h>
 
 // [[arrow::export]]
 std::shared_ptr<arrow::util::Codec> util___Codec__Create(arrow::Compression::type codec,
-                                                         R_xlen_t compression_level) {
+                                                         int compression_level) {
   return ValueOrStop(arrow::util::Codec::Create(codec, compression_level));
 }
 
@@ -52,5 +51,3 @@ std::shared_ptr<arrow::io::CompressedInputStream> io___CompressedInputStream__Ma
   return ValueOrStop(
       arrow::io::CompressedInputStream::Make(codec.get(), raw, gc_memory_pool()));
 }
-
-#endif

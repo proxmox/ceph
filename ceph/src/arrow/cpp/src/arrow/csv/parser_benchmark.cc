@@ -20,12 +20,12 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 #include "arrow/csv/chunker.h"
 #include "arrow/csv/options.h"
 #include "arrow/csv/parser.h"
 #include "arrow/testing/gtest_util.h"
-#include "arrow/util/string_view.h"
 
 namespace arrow {
 namespace csv {
@@ -77,15 +77,22 @@ static std::string BuildCSVData(const Example& example) {
 static void BenchmarkCSVChunking(benchmark::State& state,  // NOLINT non-const reference
                                  const std::string& csv, ParseOptions options) {
   auto chunker = MakeChunker(options);
-  auto block = std::make_shared<Buffer>(util::string_view(csv));
+  auto block = std::make_shared<Buffer>(std::string_view(csv));
 
   while (state.KeepRunning()) {
     std::shared_ptr<Buffer> whole, partial;
     ABORT_NOT_OK(chunker->Process(block, &whole, &partial));
-    benchmark::DoNotOptimize(whole->size());
+    auto size = whole->size();
+    benchmark::DoNotOptimize(size);
   }
 
   state.SetBytesProcessed(state.iterations() * csv.length());
+}
+
+static void BenchmarkCSVChunking(benchmark::State& state,  // NOLINT non-const reference
+                                 const Example& example, ParseOptions options) {
+  auto csv = BuildCSVData(example);
+  BenchmarkCSVChunking(state, csv, options);
 }
 
 static void ChunkCSVQuotedBlock(benchmark::State& state) {  // NOLINT non-const reference
@@ -122,6 +129,32 @@ static void ChunkCSVNoNewlinesBlock(
   state.SetBytesProcessed(0);
 }
 
+static void ChunkCSVFlightsExample(
+    benchmark::State& state) {  // NOLINT non-const reference
+  auto options = ParseOptions::Defaults();
+  options.newlines_in_values = true;
+
+  BenchmarkCSVChunking(state, flights_example, options);
+}
+
+static void ChunkCSVVehiclesExample(
+    benchmark::State& state) {  // NOLINT non-const reference
+  auto options = ParseOptions::Defaults();
+  options.quoting = true;
+  options.escaping = false;
+  options.newlines_in_values = true;
+
+  BenchmarkCSVChunking(state, vehicles_example, options);
+}
+
+static void ChunkCSVStocksExample(
+    benchmark::State& state) {  // NOLINT non-const reference
+  auto options = ParseOptions::Defaults();
+  options.newlines_in_values = true;
+
+  BenchmarkCSVChunking(state, stocks_example, options);
+}
+
 static void BenchmarkCSVParsing(benchmark::State& state,  // NOLINT non-const reference
                                 const std::string& csv, int32_t num_rows,
                                 ParseOptions options) {
@@ -129,7 +162,7 @@ static void BenchmarkCSVParsing(benchmark::State& state,  // NOLINT non-const re
 
   while (state.KeepRunning()) {
     uint32_t parsed_size = 0;
-    ABORT_NOT_OK(parser.Parse(util::string_view(csv), &parsed_size));
+    ABORT_NOT_OK(parser.Parse(std::string_view(csv), &parsed_size));
 
     // Include performance of visiting the parsed values, as that might
     // vary depending on the parser's internal data structures.
@@ -194,6 +227,9 @@ static void ParseCSVStocksExample(
 BENCHMARK(ChunkCSVQuotedBlock);
 BENCHMARK(ChunkCSVEscapedBlock);
 BENCHMARK(ChunkCSVNoNewlinesBlock);
+BENCHMARK(ChunkCSVFlightsExample);
+BENCHMARK(ChunkCSVVehiclesExample);
+BENCHMARK(ChunkCSVStocksExample);
 
 BENCHMARK(ParseCSVQuotedBlock);
 BENCHMARK(ParseCSVEscapedBlock);

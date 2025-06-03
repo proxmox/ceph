@@ -33,7 +33,9 @@
 #include "arrow/type_fwd.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/decimal.h"
+#include "arrow/util/float16.h"
 #include "parquet/column_reader.h"
+#include "parquet/test_util.h"
 
 namespace parquet {
 
@@ -70,7 +72,14 @@ template <class ArrowType>
     size_t size, std::shared_ptr<Array>* out) {
   using c_type = typename ArrowType::c_type;
   std::vector<c_type> values;
-  ::arrow::random_real(size, 0, static_cast<c_type>(0), static_cast<c_type>(1), &values);
+  if constexpr (::arrow::is_half_float_type<ArrowType>::value) {
+    values.resize(size);
+    test::random_float16_numbers(static_cast<int>(size), 0, ::arrow::util::Float16(0.0f),
+                                 ::arrow::util::Float16(1.0f), values.data());
+  } else {
+    ::arrow::random_real(size, 0, static_cast<c_type>(0), static_cast<c_type>(1),
+                         &values);
+  }
   ::arrow::NumericBuilder<ArrowType> builder;
   RETURN_NOT_OK(builder.AppendValues(values.data(), values.size()));
   return builder.Finish(out);
@@ -129,23 +138,16 @@ template <typename ArrowType>
   return builder.Finish(out);
 }
 
+template <int32_t byte_width>
 static void random_decimals(int64_t n, uint32_t seed, int32_t precision, uint8_t* out) {
-  std::default_random_engine gen(seed);
-  std::uniform_int_distribution<uint32_t> d(0, std::numeric_limits<uint8_t>::max());
-  const int32_t required_bytes = ::arrow::DecimalType::DecimalSize(precision);
-  int32_t byte_width = precision <= 38 ? 16 : 32;
-  std::fill(out, out + byte_width * n, '\0');
-
-  for (int64_t i = 0; i < n; ++i, out += byte_width) {
-    std::generate(out, out + required_bytes,
-                  [&d, &gen] { return static_cast<uint8_t>(d(gen)); });
-
-    // sign extend if the sign bit is set for the last byte generated
-    // 0b10000000 == 0x80 == 128
-    if ((out[required_bytes - 1] & '\x80') != 0) {
-      std::fill(out + required_bytes, out + byte_width, '\xFF');
-    }
+  auto gen = ::arrow::random::RandomArrayGenerator(seed);
+  std::shared_ptr<Array> decimals;
+  if constexpr (byte_width == 16) {
+    decimals = gen.Decimal128(::arrow::decimal128(precision, 0), n);
+  } else {
+    decimals = gen.Decimal256(::arrow::decimal256(precision, 0), n);
   }
+  std::memcpy(out, decimals->data()->GetValues<uint8_t>(1, 0), byte_width * n);
 }
 
 template <typename ArrowType, int32_t precision = ArrowType::precision>
@@ -163,7 +165,8 @@ NonNullArray(size_t size, std::shared_ptr<Array>* out) {
   constexpr int32_t seed = 0;
 
   ARROW_ASSIGN_OR_RAISE(auto out_buf, ::arrow::AllocateBuffer(size * byte_width));
-  random_decimals(size, seed, kDecimalPrecision, out_buf->mutable_data());
+  random_decimals<::arrow::Decimal128Type::kByteWidth>(size, seed, kDecimalPrecision,
+                                                       out_buf->mutable_data());
 
   RETURN_NOT_OK(builder.AppendValues(out_buf->data(), size));
   return builder.Finish(out);
@@ -184,7 +187,8 @@ NonNullArray(size_t size, std::shared_ptr<Array>* out) {
   constexpr int32_t seed = 0;
 
   ARROW_ASSIGN_OR_RAISE(auto out_buf, ::arrow::AllocateBuffer(size * byte_width));
-  random_decimals(size, seed, kDecimalPrecision, out_buf->mutable_data());
+  random_decimals<::arrow::Decimal256Type::kByteWidth>(size, seed, kDecimalPrecision,
+                                                       out_buf->mutable_data());
 
   RETURN_NOT_OK(builder.AppendValues(out_buf->data(), size));
   return builder.Finish(out);
@@ -206,8 +210,14 @@ template <typename ArrowType>
     size_t size, size_t num_nulls, uint32_t seed, std::shared_ptr<Array>* out) {
   using c_type = typename ArrowType::c_type;
   std::vector<c_type> values;
-  ::arrow::random_real(size, seed, static_cast<c_type>(-1e10), static_cast<c_type>(1e10),
-                       &values);
+  if constexpr (::arrow::is_half_float_type<ArrowType>::value) {
+    values.resize(size);
+    test::random_float16_numbers(static_cast<int>(size), 0, ::arrow::util::Float16(-1e4f),
+                                 ::arrow::util::Float16(1e4f), values.data());
+  } else {
+    ::arrow::random_real(size, seed, static_cast<c_type>(-1e10),
+                         static_cast<c_type>(1e10), &values);
+  }
   std::vector<uint8_t> valid_bytes(size, 1);
 
   for (size_t i = 0; i < num_nulls; i++) {
@@ -346,7 +356,8 @@ NullableArray(size_t size, size_t num_nulls, uint32_t seed,
 
   ARROW_ASSIGN_OR_RAISE(auto out_buf, ::arrow::AllocateBuffer(size * byte_width));
 
-  random_decimals(size, seed, precision, out_buf->mutable_data());
+  random_decimals<::arrow::Decimal128Type::kByteWidth>(size, seed, precision,
+                                                       out_buf->mutable_data());
 
   ::arrow::Decimal128Builder builder(type);
   RETURN_NOT_OK(builder.AppendValues(out_buf->data(), size, valid_bytes.data()));
@@ -372,7 +383,8 @@ NullableArray(size_t size, size_t num_nulls, uint32_t seed,
 
   ARROW_ASSIGN_OR_RAISE(auto out_buf, ::arrow::AllocateBuffer(size * byte_width));
 
-  random_decimals(size, seed, precision, out_buf->mutable_data());
+  random_decimals<::arrow::Decimal256Type::kByteWidth>(size, seed, precision,
+                                                       out_buf->mutable_data());
 
   ::arrow::Decimal256Builder builder(type);
   RETURN_NOT_OK(builder.AppendValues(out_buf->data(), size, valid_bytes.data()));
@@ -416,7 +428,7 @@ Status MakeListArray(const std::shared_ptr<Array>& values, int64_t size,
   int32_t* offsets_ptr = reinterpret_cast<int32_t*>(offsets->mutable_data());
 
   auto null_bitmap = AllocateBuffer();
-  int64_t bitmap_size = ::arrow::BitUtil::BytesForBits(size);
+  int64_t bitmap_size = ::arrow::bit_util::BytesForBits(size);
   RETURN_NOT_OK(null_bitmap->Resize(bitmap_size));
   uint8_t* null_bitmap_ptr = null_bitmap->mutable_data();
   memset(null_bitmap_ptr, 0, bitmap_size);
@@ -426,7 +438,7 @@ Status MakeListArray(const std::shared_ptr<Array>& values, int64_t size,
     offsets_ptr[i] = current_offset;
     if (!(((i % 2) == 0) && ((i / 2) < null_count))) {
       // Non-null list (list with index 1 is always empty).
-      ::arrow::BitUtil::SetBit(null_bitmap_ptr, i);
+      ::arrow::bit_util::SetBit(null_bitmap_ptr, i);
       if (i != 1) {
         current_offset += static_cast<int32_t>(length_per_entry);
       }

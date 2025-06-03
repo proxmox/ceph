@@ -26,11 +26,13 @@ fi
 
 dask=$1
 
-if [ "${dask}" = "master" ]; then
+if [ "${dask}" = "upstream_devel" ]; then
   pip install https://github.com/dask/dask/archive/main.tar.gz#egg=dask[dataframe]
 elif [ "${dask}" = "latest" ]; then
-  conda install -q dask
+  pip install dask[dataframe]
 else
-  conda install -q dask=${dask}
+  pip install dask[dataframe]==${dask}
 fi
-conda clean --all
+
+# additional dependencies needed for dask's s3 tests
+pip install moto[server] flask requests

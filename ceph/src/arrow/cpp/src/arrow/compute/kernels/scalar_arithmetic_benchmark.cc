@@ -33,7 +33,7 @@ constexpr auto kSeed = 0x94378165;
 using BinaryOp = Result<Datum>(const Datum&, const Datum&, ArithmeticOptions,
                                ExecContext*);
 
-// Add explicit overflow-checked shortcuts, for easy benchmark parametering.
+// Add explicit overflow-checked shortcuts, for easy benchmark parameterizing.
 static Result<Datum> AddChecked(const Datum& left, const Datum& right,
                                 ArithmeticOptions options = ArithmeticOptions(),
                                 ExecContext* ctx = NULLPTR) {
@@ -107,6 +107,8 @@ static void ArrayArrayKernel(benchmark::State& state) {
 }
 
 void SetArgs(benchmark::internal::Benchmark* bench) {
+  bench->ArgNames({"size", "inverse_null_proportion"});
+
   for (const auto inverse_null_proportion : std::vector<ArgsType>({100, 0})) {
     bench->Args({static_cast<ArgsType>(kL2Size), inverse_null_proportion});
   }

@@ -60,7 +60,7 @@ Result<std::shared_ptr<RecordBatch>> MakeMapBatch() {
     []
   ]
 )";
-  RETURN_NOT_OK(ArrayFromJSON(map(int16(), int32()), json_input, &array));
+  ARROW_ASSIGN_OR_RAISE(array, ArrayFromJSON(map(int16(), int32()), json_input));
   auto schema = ::arrow::schema({field("f0", array->type())});
   return RecordBatch::Make(schema, array->length(), {array});
 }
@@ -73,6 +73,8 @@ Result<std::vector<std::shared_ptr<RecordBatch>>> Batches() {
   RETURN_NOT_OK(test::MakeNullRecordBatch(&batch));
   batches.push_back(batch);
   RETURN_NOT_OK(test::MakeListRecordBatch(&batch));
+  batches.push_back(batch);
+  RETURN_NOT_OK(test::MakeListViewRecordBatch(&batch));
   batches.push_back(batch);
   RETURN_NOT_OK(test::MakeDictionary(&batch));
   batches.push_back(batch);

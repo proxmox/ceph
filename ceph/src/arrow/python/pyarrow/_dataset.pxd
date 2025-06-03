@@ -22,6 +22,54 @@
 from pyarrow.includes.common cimport *
 from pyarrow.includes.libarrow_dataset cimport *
 from pyarrow.lib cimport *
+from pyarrow._fs cimport FileSystem, FileInfo
+
+
+cdef CFileSource _make_file_source(object file, FileSystem filesystem=*, object file_size=*)
+
+cdef class DatasetFactory(_Weakrefable):
+
+    cdef:
+        SharedPtrNoGIL[CDatasetFactory] wrapped
+        CDatasetFactory* factory
+
+    cdef init(self, const shared_ptr[CDatasetFactory]& sp)
+
+    @staticmethod
+    cdef wrap(const shared_ptr[CDatasetFactory]& sp)
+
+    cdef inline shared_ptr[CDatasetFactory] unwrap(self) nogil
+
+
+cdef class Dataset(_Weakrefable):
+
+    cdef:
+        SharedPtrNoGIL[CDataset] wrapped
+        CDataset* dataset
+        public dict _scan_options
+
+    cdef void init(self, const shared_ptr[CDataset]& sp)
+
+    @staticmethod
+    cdef wrap(const shared_ptr[CDataset]& sp)
+
+    cdef shared_ptr[CDataset] unwrap(self) nogil
+
+
+cdef class Scanner(_Weakrefable):
+    cdef:
+        SharedPtrNoGIL[CScanner] wrapped
+        CScanner* scanner
+
+    cdef void init(self, const shared_ptr[CScanner]& sp)
+
+    @staticmethod
+    cdef wrap(const shared_ptr[CScanner]& sp)
+
+    cdef shared_ptr[CScanner] unwrap(self)
+
+    @staticmethod
+    cdef shared_ptr[CScanOptions] _make_scan_options(Dataset dataset, dict py_scanoptions) except *
 
 
 cdef class FragmentScanOptions(_Weakrefable):
@@ -49,3 +97,87 @@ cdef class FileFormat(_Weakrefable):
     cdef inline shared_ptr[CFileFormat] unwrap(self)
 
     cdef _set_default_fragment_scan_options(self, FragmentScanOptions options)
+
+    # Return a WrittenFile after a file was written.
+    # May be overridden by subclasses, e.g. to add metadata.
+    cdef WrittenFile _finish_write(self, path, base_dir,
+                                   CFileWriter* file_writer)
+
+
+cdef class FileWriteOptions(_Weakrefable):
+
+    cdef:
+        shared_ptr[CFileWriteOptions] wrapped
+        CFileWriteOptions* c_options
+
+    cdef void init(self, const shared_ptr[CFileWriteOptions]& sp)
+
+    @staticmethod
+    cdef wrap(const shared_ptr[CFileWriteOptions]& sp)
+
+    cdef inline shared_ptr[CFileWriteOptions] unwrap(self)
+
+
+cdef class Fragment(_Weakrefable):
+
+    cdef:
+        SharedPtrNoGIL[CFragment] wrapped
+        CFragment* fragment
+
+    cdef void init(self, const shared_ptr[CFragment]& sp)
+
+    @staticmethod
+    cdef wrap(const shared_ptr[CFragment]& sp)
+
+    cdef inline shared_ptr[CFragment] unwrap(self)
+
+
+cdef class FileFragment(Fragment):
+
+    cdef:
+        CFileFragment* file_fragment
+
+    cdef void init(self, const shared_ptr[CFragment]& sp)
+
+
+cdef class Partitioning(_Weakrefable):
+
+    cdef:
+        shared_ptr[CPartitioning] wrapped
+        CPartitioning* partitioning
+
+    cdef init(self, const shared_ptr[CPartitioning]& sp)
+
+    @staticmethod
+    cdef wrap(const shared_ptr[CPartitioning]& sp)
+
+    cdef inline shared_ptr[CPartitioning] unwrap(self)
+
+
+cdef class PartitioningFactory(_Weakrefable):
+
+    cdef:
+        shared_ptr[CPartitioningFactory] wrapped
+        CPartitioningFactory* factory
+        object constructor
+        object options
+
+    cdef init(self, const shared_ptr[CPartitioningFactory]& sp)
+
+    @staticmethod
+    cdef wrap(const shared_ptr[CPartitioningFactory]& sp,
+              object constructor, object options)
+
+    cdef inline shared_ptr[CPartitioningFactory] unwrap(self)
+
+
+cdef class WrittenFile(_Weakrefable):
+
+    # The full path to the created file
+    cdef public str path
+    # Optional Parquet metadata
+    # This metadata will have the file path attribute set to the path of
+    # the written file.
+    cdef public object metadata
+    # The size of the file in bytes
+    cdef public int64_t size

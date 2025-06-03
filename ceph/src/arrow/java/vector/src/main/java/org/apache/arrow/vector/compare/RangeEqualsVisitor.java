@@ -27,6 +27,7 @@ import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.BaseFixedWidthVector;
 import org.apache.arrow.vector.BaseLargeVariableWidthVector;
 import org.apache.arrow.vector.BaseVariableWidthVector;
+import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.ExtensionTypeVector;
 import org.apache.arrow.vector.NullVector;
 import org.apache.arrow.vector.ValueVector;
@@ -120,9 +121,11 @@ public class RangeEqualsVisitor implements VectorVisitor<Boolean, Range> {
         "rightStart %s must be non negative.", range.getRightStart());
 
     Preconditions.checkArgument(range.getRightStart() + range.getLength() <= right.getValueCount(),
-        "(rightStart + length) %s out of range[0, %s].", 0, right.getValueCount());
+        "(rightStart + length) %s out of range[0, %s].",
+        range.getRightStart() + range.getLength(), right.getValueCount());
     Preconditions.checkArgument(range.getLeftStart() + range.getLength() <= left.getValueCount(),
-        "(leftStart + length) %s out of range[0, %s].", 0, left.getValueCount());
+        "(leftStart + length) %s out of range[0, %s].",
+        range.getLeftStart() + range.getLength(), left.getValueCount());
 
     return left.accept(this, range);
   }
@@ -351,17 +354,24 @@ public class RangeEqualsVisitor implements VectorVisitor<Boolean, Range> {
 
       int typeWidth = leftVector.getTypeWidth();
       if (!isNull) {
-        int startIndexLeft = typeWidth * leftIndex;
-        int endIndexLeft = typeWidth * (leftIndex + 1);
+        if (!(leftVector instanceof BitVector)) {
+          int startIndexLeft = typeWidth * leftIndex;
+          int endIndexLeft = typeWidth * (leftIndex + 1);
 
-        int startIndexRight = typeWidth * rightIndex;
-        int endIndexRight = typeWidth * (rightIndex + 1);
+          int startIndexRight = typeWidth * rightIndex;
+          int endIndexRight = typeWidth * (rightIndex + 1);
 
-        int ret = ByteFunctionHelpers.equal(leftVector.getDataBuffer(), startIndexLeft, endIndexLeft,
-            rightVector.getDataBuffer(), startIndexRight, endIndexRight);
+          int ret = ByteFunctionHelpers.equal(leftVector.getDataBuffer(), startIndexLeft, endIndexLeft,
+              rightVector.getDataBuffer(), startIndexRight, endIndexRight);
 
-        if (ret == 0) {
-          return false;
+          if (ret == 0) {
+            return false;
+          }
+        } else {
+          boolean ret = ((BitVector) leftVector).get(leftIndex) == ((BitVector) rightVector).get(rightIndex);
+          if (!ret) {
+            return false;
+          }
         }
       }
     }

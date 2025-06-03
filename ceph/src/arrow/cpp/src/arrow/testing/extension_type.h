@@ -54,6 +54,16 @@ class ARROW_TESTING_EXPORT SmallintArray : public ExtensionArray {
   using ExtensionArray::ExtensionArray;
 };
 
+class ARROW_TESTING_EXPORT TinyintArray : public ExtensionArray {
+ public:
+  using ExtensionArray::ExtensionArray;
+};
+
+class ARROW_TESTING_EXPORT ListExtensionArray : public ExtensionArray {
+ public:
+  using ExtensionArray::ExtensionArray;
+};
+
 class ARROW_TESTING_EXPORT SmallintType : public ExtensionType {
  public:
   SmallintType() : ExtensionType(int16()) {}
@@ -69,6 +79,40 @@ class ARROW_TESTING_EXPORT SmallintType : public ExtensionType {
       const std::string& serialized) const override;
 
   std::string Serialize() const override { return "smallint"; }
+};
+
+class ARROW_TESTING_EXPORT TinyintType : public ExtensionType {
+ public:
+  TinyintType() : ExtensionType(int8()) {}
+
+  std::string extension_name() const override { return "tinyint"; }
+
+  bool ExtensionEquals(const ExtensionType& other) const override;
+
+  std::shared_ptr<Array> MakeArray(std::shared_ptr<ArrayData> data) const override;
+
+  Result<std::shared_ptr<DataType>> Deserialize(
+      std::shared_ptr<DataType> storage_type,
+      const std::string& serialized) const override;
+
+  std::string Serialize() const override { return "tinyint"; }
+};
+
+class ARROW_TESTING_EXPORT ListExtensionType : public ExtensionType {
+ public:
+  ListExtensionType() : ExtensionType(list(int32())) {}
+
+  std::string extension_name() const override { return "list-ext"; }
+
+  bool ExtensionEquals(const ExtensionType& other) const override;
+
+  std::shared_ptr<Array> MakeArray(std::shared_ptr<ArrayData> data) const override;
+
+  Result<std::shared_ptr<DataType>> Deserialize(
+      std::shared_ptr<DataType> storage_type,
+      const std::string& serialized) const override;
+
+  std::string Serialize() const override { return "list-ext"; }
 };
 
 class ARROW_TESTING_EXPORT DictExtensionType : public ExtensionType {
@@ -119,6 +163,12 @@ ARROW_TESTING_EXPORT
 std::shared_ptr<DataType> smallint();
 
 ARROW_TESTING_EXPORT
+std::shared_ptr<DataType> tinyint();
+
+ARROW_TESTING_EXPORT
+std::shared_ptr<DataType> list_extension_type();
+
+ARROW_TESTING_EXPORT
 std::shared_ptr<DataType> dict_extension_type();
 
 ARROW_TESTING_EXPORT
@@ -129,6 +179,9 @@ std::shared_ptr<Array> ExampleUuid();
 
 ARROW_TESTING_EXPORT
 std::shared_ptr<Array> ExampleSmallint();
+
+ARROW_TESTING_EXPORT
+std::shared_ptr<Array> ExampleTinyint();
 
 ARROW_TESTING_EXPORT
 std::shared_ptr<Array> ExampleDictExtension();

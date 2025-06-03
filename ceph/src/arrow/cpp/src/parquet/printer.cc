@@ -39,6 +39,25 @@ namespace parquet {
 
 class ColumnReader;
 
+namespace {
+
+void PrintPageEncodingStats(std::ostream& stream,
+                            const std::vector<PageEncodingStats>& encoding_stats) {
+  for (size_t i = 0; i < encoding_stats.size(); ++i) {
+    const auto& encoding = encoding_stats.at(i);
+    stream << EncodingToString(encoding.encoding);
+    if (encoding.page_type == parquet::PageType::DICTIONARY_PAGE) {
+      // Explicitly tell if this encoding comes from a dictionary page
+      stream << "(DICT_PAGE)";
+    }
+    if (i + 1 != encoding_stats.size()) {
+      stream << " ";
+    }
+  }
+}
+
+}  // namespace
+
 // ----------------------------------------------------------------------
 // ParquetFilePrinter::DebugPrint
 
@@ -131,9 +150,13 @@ void ParquetFilePrinter::DebugPrint(std::ostream& stream, std::list<int> selecte
              << "  Compression: "
              << ::arrow::internal::AsciiToUpper(
                     Codec::GetCodecAsString(column_chunk->compression()))
-             << ", Encodings:";
-      for (auto encoding : column_chunk->encodings()) {
-        stream << " " << EncodingToString(encoding);
+             << ", Encodings: ";
+      if (column_chunk->encoding_stats().empty()) {
+        for (auto encoding : column_chunk->encodings()) {
+          stream << EncodingToString(encoding) << " ";
+        }
+      } else {
+        PrintPageEncodingStats(stream, column_chunk->encoding_stats());
       }
       stream << std::endl
              << "  Uncompressed Size: " << column_chunk->total_uncompressed_size()
@@ -258,12 +281,21 @@ void ParquetFilePrinter::JSONPrint(std::ostream& stream, std::list<int> selected
              << "\"StatsSet\": ";
       if (column_chunk->is_stats_set()) {
         stream << "\"True\", \"Stats\": {";
-        std::string min = stats->EncodeMin(), max = stats->EncodeMax();
-        stream << "\"NumNulls\": \"" << stats->null_count() << "\", "
-               << "\"DistinctValues\": \"" << stats->distinct_count() << "\", "
-               << "\"Max\": \"" << FormatStatValue(descr->physical_type(), max) << "\", "
-               << "\"Min\": \"" << FormatStatValue(descr->physical_type(), min)
-               << "\" },";
+        if (stats->HasNullCount()) {
+          stream << "\"NumNulls\": \"" << stats->null_count();
+        }
+        if (stats->HasDistinctCount()) {
+          stream << "\", "
+                 << "\"DistinctValues\": \"" << stats->distinct_count();
+        }
+        if (stats->HasMinMax()) {
+          std::string min = stats->EncodeMin(), max = stats->EncodeMax();
+          stream << "\", "
+                 << "\"Max\": \"" << FormatStatValue(descr->physical_type(), max)
+                 << "\", "
+                 << "\"Min\": \"" << FormatStatValue(descr->physical_type(), min);
+        }
+        stream << "\" },";
       } else {
         stream << "\"False\",";
       }
@@ -271,12 +303,44 @@ void ParquetFilePrinter::JSONPrint(std::ostream& stream, std::list<int> selected
              << ::arrow::internal::AsciiToUpper(
                     Codec::GetCodecAsString(column_chunk->compression()))
              << "\", \"Encodings\": \"";
-      for (auto encoding : column_chunk->encodings()) {
-        stream << EncodingToString(encoding) << " ";
+      if (column_chunk->encoding_stats().empty()) {
+        for (auto encoding : column_chunk->encodings()) {
+          stream << EncodingToString(encoding) << " ";
+        }
+      } else {
+        PrintPageEncodingStats(stream, column_chunk->encoding_stats());
       }
       stream << "\", "
              << "\"UncompressedSize\": \"" << column_chunk->total_uncompressed_size()
              << "\", \"CompressedSize\": \"" << column_chunk->total_compressed_size();
+
+      if (column_chunk->bloom_filter_offset()) {
+        // Output BloomFilter {offset, length}
+        stream << "\", BloomFilter {"
+               << "\"offset\": \"" << column_chunk->bloom_filter_offset().value();
+        if (column_chunk->bloom_filter_length()) {
+          stream << "\", \"length\": \"" << column_chunk->bloom_filter_length().value();
+        }
+        stream << "\"}";
+      }
+
+      if (column_chunk->GetColumnIndexLocation()) {
+        auto location = column_chunk->GetColumnIndexLocation().value();
+        // Output ColumnIndex {offset, length}
+        stream << "\", ColumnIndex {"
+               << "\"offset\": \"" << location.offset;
+        stream << "\", \"length\": \"" << location.length;
+        stream << "\"}";
+      }
+
+      if (column_chunk->GetOffsetIndexLocation()) {
+        auto location = column_chunk->GetOffsetIndexLocation().value();
+        // Output OffsetIndex {offset, length}
+        stream << "\", OffsetIndex {"
+               << "\"offset\": \"" << location.offset;
+        stream << "\", \"length\": \"" << location.length;
+        stream << "\"}";
+      }
 
       // end of a ColumnChunk
       stream << "\" }";

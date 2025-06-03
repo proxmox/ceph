@@ -18,7 +18,7 @@
 ARG base
 FROM ${base}
 
-ARG r=4.1
+ARG r=4.2
 ARG jdk=8
 
 # See R install instructions at https://cloud.r-project.org/bin/linux/ubuntu/
@@ -27,9 +27,8 @@ RUN apt-get update -y && \
         dirmngr \
         apt-transport-https \
         software-properties-common && \
-    apt-key adv \
-        --keyserver keyserver.ubuntu.com \
-        --recv-keys E298A3A825C0D65DFD57CBB651716619E084DAB9 && \
+    wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc | \
+        tee -a /etc/apt/trusted.gpg.d/cran_ubuntu_key.asc && \
     add-apt-repository 'deb https://cloud.r-project.org/bin/linux/ubuntu '$(lsb_release -cs)'-cran40/' && \
     apt-get install -y --no-install-recommends \
         autoconf-archive \
@@ -68,21 +67,17 @@ RUN /arrow/ci/scripts/util_download_apache.sh \
 ENV PATH=/opt/apache-maven-${maven}/bin:$PATH
 RUN mvn -version
 
-ARG node=14
-RUN wget -q -O - https://deb.nodesource.com/setup_${node}.x | bash - && \
+ARG node=16
+RUN apt-get purge -y npm && \
+    apt-get autoremove -y --purge && \
+    wget -q -O - https://deb.nodesource.com/setup_${node}.x | bash - && \
     apt-get install -y nodejs && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     npm install -g yarn
 
-# ARROW-13353: breathe >= 4.29.1 tries to parse template arguments,
-# but Sphinx can't parse constructs like `typename...`.
-RUN pip install \
-        meson \
-        breathe==4.29.0 \
-        ipython \
-        sphinx \
-        pydata-sphinx-theme
+COPY docs/requirements.txt /arrow/docs/
+RUN pip install -r arrow/docs/requirements.txt meson
 
 COPY c_glib/Gemfile /arrow/c_glib/
 RUN gem install --no-document bundler && \
@@ -100,11 +95,19 @@ COPY r/DESCRIPTION /arrow/r/
 RUN /arrow/ci/scripts/r_deps.sh /arrow && \
     R -e "install.packages('pkgdown')"
 
-ENV ARROW_FLIGHT=ON \
-    ARROW_PYTHON=ON \
-    ARROW_S3=ON \
+ENV ARROW_ACERO=ON \
     ARROW_BUILD_STATIC=OFF \
     ARROW_BUILD_TESTS=OFF \
     ARROW_BUILD_UTILITIES=OFF \
+    ARROW_COMPUTE=ON \
+    ARROW_CSV=ON \
+    ARROW_DATASET=ON \
+    ARROW_FILESYSTEM=ON \
+    ARROW_FLIGHT=ON \
+    ARROW_GCS=ON \
+    ARROW_GLIB_VAPI=false \
+    ARROW_HDFS=ON \
+    ARROW_JSON=ON \
+    ARROW_S3=ON \
     ARROW_USE_GLOG=OFF \
-    CMAKE_UNITY_BUILD=ON \
+    CMAKE_UNITY_BUILD=ON

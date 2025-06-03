@@ -16,6 +16,7 @@
 // under the License.
 
 #include <cstring>
+#include <memory>
 #include <mutex>
 
 #include "arrow/array/array_base.h"
@@ -25,16 +26,20 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/array/dict_internal.h"
 #include "arrow/array/util.h"
+#include "arrow/buffer.h"
 #include "arrow/compute/api_vector.h"
-#include "arrow/compute/kernels/common.h"
+#include "arrow/compute/cast.h"
+#include "arrow/compute/kernels/common_internal.h"
 #include "arrow/result.h"
 #include "arrow/util/hashing.h"
-#include "arrow/util/make_unique.h"
+#include "arrow/util/int_util.h"
+#include "arrow/util/unreachable.h"
 
 namespace arrow {
 
 using internal::DictionaryTraits;
 using internal::HashTraits;
+using internal::TransposeInts;
 
 namespace compute {
 namespace internal {
@@ -82,9 +87,9 @@ class UniqueAction final : public ActionBase {
 
   bool ShouldEncodeNulls() { return true; }
 
-  Status Flush(Datum* out) { return Status::OK(); }
+  Status Flush(ExecResult* out) { return Status::OK(); }
 
-  Status FlushFinal(Datum* out) { return Status::OK(); }
+  Status FlushFinal(ExecResult* out) { return Status::OK(); }
 };
 
 // ----------------------------------------------------------------------
@@ -112,10 +117,10 @@ class ValueCountsAction final : ActionBase {
 
   // Don't do anything on flush because we don't want to finalize the builder
   // or incur the cost of memory copies.
-  Status Flush(Datum* out) { return Status::OK(); }
+  Status Flush(ExecResult* out) { return Status::OK(); }
 
   // Return the counts corresponding the MemoTable keys.
-  Status FlushFinal(Datum* out) {
+  Status FlushFinal(ExecResult* out) {
     std::shared_ptr<ArrayData> result;
     RETURN_NOT_OK(count_builder_.FinishInternal(&result));
     out->value = std::move(result);
@@ -211,14 +216,14 @@ class DictEncodeAction final : public ActionBase {
     return encode_options_.null_encoding_behavior == DictionaryEncodeOptions::ENCODE;
   }
 
-  Status Flush(Datum* out) {
+  Status Flush(ExecResult* out) {
     std::shared_ptr<ArrayData> result;
     RETURN_NOT_OK(indices_builder_.FinishInternal(&result));
     out->value = std::move(result);
     return Status::OK();
   }
 
-  Status FlushFinal(Datum* out) { return Status::OK(); }
+  Status FlushFinal(ExecResult* out) { return Status::OK(); }
 
  private:
   Int32Builder indices_builder_;
@@ -234,23 +239,23 @@ class HashKernel : public KernelState {
   virtual Status Reset() = 0;
 
   // Flush out accumulated results from the last invocation of Call.
-  virtual Status Flush(Datum* out) = 0;
+  virtual Status Flush(ExecResult* out) = 0;
   // Flush out accumulated results across all invocations of Call. The kernel
   // should not be used until after Reset() is called.
-  virtual Status FlushFinal(Datum* out) = 0;
+  virtual Status FlushFinal(ExecResult* out) = 0;
   // Get the values (keys) accumulated in the dictionary so far.
   virtual Status GetDictionary(std::shared_ptr<ArrayData>* out) = 0;
 
   virtual std::shared_ptr<DataType> value_type() const = 0;
 
-  Status Append(KernelContext* ctx, const ArrayData& input) {
+  Status Append(KernelContext* ctx, const ArraySpan& input) {
     std::lock_guard<std::mutex> guard(lock_);
     return Append(input);
   }
 
   // Prepare the Action for the given input (e.g. reserve appropriately sized
   // data structures) and visit the given input with Action.
-  virtual Status Append(const ArrayData& arr) = 0;
+  virtual Status Append(const ArraySpan& arr) = 0;
 
  protected:
   const FunctionOptions* options_;
@@ -261,7 +266,7 @@ class HashKernel : public KernelState {
 // Base class for all "regular" hash kernel implementations
 // (NullType has a separate implementation)
 
-template <typename Type, typename Scalar, typename Action,
+template <typename Type, typename Action, typename Scalar = typename Type::c_type,
           bool with_error_status = Action::with_error_status>
 class RegularHashKernel : public HashKernel {
  public:
@@ -274,25 +279,26 @@ class RegularHashKernel : public HashKernel {
     return action_.Reset();
   }
 
-  Status Append(const ArrayData& arr) override {
+  Status Append(const ArraySpan& arr) override {
     RETURN_NOT_OK(action_.Reserve(arr.length));
     return DoAppend(arr);
   }
 
-  Status Flush(Datum* out) override { return action_.Flush(out); }
+  Status Flush(ExecResult* out) override { return action_.Flush(out); }
 
-  Status FlushFinal(Datum* out) override { return action_.FlushFinal(out); }
+  Status FlushFinal(ExecResult* out) override { return action_.FlushFinal(out); }
 
   Status GetDictionary(std::shared_ptr<ArrayData>* out) override {
-    return DictionaryTraits<Type>::GetDictionaryArrayData(pool_, type_, *memo_table_,
-                                                          0 /* start_offset */, out);
+    ARROW_ASSIGN_OR_RAISE(*out, DictionaryTraits<Type>::GetDictionaryArrayData(
+                                    pool_, type_, *memo_table_, 0 /* start_offset */));
+    return Status::OK();
   }
 
   std::shared_ptr<DataType> value_type() const override { return type_; }
 
   template <bool HasError = with_error_status>
-  enable_if_t<!HasError, Status> DoAppend(const ArrayData& arr) {
-    return VisitArrayDataInline<Type>(
+  enable_if_t<!HasError, Status> DoAppend(const ArraySpan& arr) {
+    return VisitArraySpanInline<Type>(
         arr,
         [this](Scalar v) {
           auto on_found = [this](int32_t memo_index) {
@@ -323,8 +329,8 @@ class RegularHashKernel : public HashKernel {
   }
 
   template <bool HasError = with_error_status>
-  enable_if_t<HasError, Status> DoAppend(const ArrayData& arr) {
-    return VisitArrayDataInline<Type>(
+  enable_if_t<HasError, Status> DoAppend(const ArraySpan& arr) {
+    return VisitArraySpanInline<Type>(
         arr,
         [this](Scalar v) {
           Status s = Status::OK();
@@ -377,10 +383,10 @@ class NullHashKernel : public HashKernel {
 
   Status Reset() override { return action_.Reset(); }
 
-  Status Append(const ArrayData& arr) override { return DoAppend(arr); }
+  Status Append(const ArraySpan& arr) override { return DoAppend(arr); }
 
   template <bool HasError = with_error_status>
-  enable_if_t<!HasError, Status> DoAppend(const ArrayData& arr) {
+  enable_if_t<!HasError, Status> DoAppend(const ArraySpan& arr) {
     RETURN_NOT_OK(action_.Reserve(arr.length));
     for (int64_t i = 0; i < arr.length; ++i) {
       if (i == 0) {
@@ -394,7 +400,7 @@ class NullHashKernel : public HashKernel {
   }
 
   template <bool HasError = with_error_status>
-  enable_if_t<HasError, Status> DoAppend(const ArrayData& arr) {
+  enable_if_t<HasError, Status> DoAppend(const ArraySpan& arr) {
     Status s = Status::OK();
     RETURN_NOT_OK(action_.Reserve(arr.length));
     for (int64_t i = 0; i < arr.length; ++i) {
@@ -408,8 +414,8 @@ class NullHashKernel : public HashKernel {
     return s;
   }
 
-  Status Flush(Datum* out) override { return action_.Flush(out); }
-  Status FlushFinal(Datum* out) override { return action_.FlushFinal(out); }
+  Status Flush(ExecResult* out) override { return action_.Flush(out); }
+  Status FlushFinal(ExecResult* out) override { return action_.FlushFinal(out); }
 
   Status GetDictionary(std::shared_ptr<ArrayData>* out) override {
     std::shared_ptr<NullArray> null_array;
@@ -443,10 +449,11 @@ class DictionaryHashKernel : public HashKernel {
 
   Status Reset() override { return indices_kernel_->Reset(); }
 
-  Status Append(const ArrayData& arr) override {
-    if (!dictionary_) {
-      dictionary_ = arr.dictionary;
-    } else if (!MakeArray(dictionary_)->Equals(*MakeArray(arr.dictionary))) {
+  Status Append(const ArraySpan& arr) override {
+    auto arr_dict = arr.dictionary().ToArray();
+    if (!first_dictionary_) {
+      first_dictionary_ = arr_dict;
+    } else if (!first_dictionary_->Equals(*arr_dict)) {
       // NOTE: This approach computes a new dictionary unification per chunk.
       // This is in effect O(n*k) where n is the total chunked array length and
       // k is the number of chunks (therefore O(n**2) if chunks have a fixed size).
@@ -454,30 +461,32 @@ class DictionaryHashKernel : public HashKernel {
       // A better approach may be to run the kernel over each individual chunk,
       // and then hash-aggregate all results (for example sum-group-by for
       // the "value_counts" kernel).
-      auto out_dict_type = dictionary_->type;
+      if (dictionary_unifier_ == nullptr) {
+        ARROW_ASSIGN_OR_RAISE(dictionary_unifier_,
+                              DictionaryUnifier::Make(first_dictionary_->type()));
+        RETURN_NOT_OK(dictionary_unifier_->Unify(*first_dictionary_));
+      }
+      auto out_dict_type = first_dictionary_->type();
       std::shared_ptr<Buffer> transpose_map;
-      std::shared_ptr<Array> out_dict;
-      ARROW_ASSIGN_OR_RAISE(auto unifier, DictionaryUnifier::Make(out_dict_type));
 
-      ARROW_CHECK_OK(unifier->Unify(*MakeArray(dictionary_)));
-      ARROW_CHECK_OK(unifier->Unify(*MakeArray(arr.dictionary), &transpose_map));
-      ARROW_CHECK_OK(unifier->GetResult(&out_dict_type, &out_dict));
+      RETURN_NOT_OK(dictionary_unifier_->Unify(*arr_dict, &transpose_map));
 
-      this->dictionary_ = out_dict->data();
       auto transpose = reinterpret_cast<const int32_t*>(transpose_map->data());
-      auto in_dict_array = MakeArray(std::make_shared<ArrayData>(arr));
+      auto in_array = arr.ToArray();
+      const auto& in_dict_array =
+          arrow::internal::checked_cast<const DictionaryArray&>(*in_array);
       ARROW_ASSIGN_OR_RAISE(
-          auto tmp, arrow::internal::checked_cast<const DictionaryArray&>(*in_dict_array)
-                        .Transpose(arr.type, out_dict, transpose));
+          auto tmp, in_dict_array.Transpose(arr.type->GetSharedPtr(),
+                                            in_dict_array.dictionary(), transpose));
       return indices_kernel_->Append(*tmp->data());
     }
 
     return indices_kernel_->Append(arr);
   }
 
-  Status Flush(Datum* out) override { return indices_kernel_->Flush(out); }
+  Status Flush(ExecResult* out) override { return indices_kernel_->Flush(out); }
 
-  Status FlushFinal(Datum* out) override { return indices_kernel_->FlushFinal(out); }
+  Status FlushFinal(ExecResult* out) override { return indices_kernel_->FlushFinal(out); }
 
   Status GetDictionary(std::shared_ptr<ArrayData>* out) override {
     return indices_kernel_->GetDictionary(out);
@@ -491,48 +500,37 @@ class DictionaryHashKernel : public HashKernel {
     return dictionary_value_type_;
   }
 
-  std::shared_ptr<ArrayData> dictionary() const { return dictionary_; }
+  /// This can't be called more than once because DictionaryUnifier::GetResult()
+  /// can't be called more than once and produce the same output.
+  Result<std::shared_ptr<Array>> dictionary() const {
+    if (!first_dictionary_) {  // Append was never called
+      return nullptr;
+    }
+    if (!dictionary_unifier_) {  // Append was called only once
+      return first_dictionary_;
+    }
+
+    auto out_dict_type = first_dictionary_->type();
+    std::shared_ptr<Array> out_dict;
+    RETURN_NOT_OK(dictionary_unifier_->GetResult(&out_dict_type, &out_dict));
+    return out_dict;
+  }
 
  private:
   std::unique_ptr<HashKernel> indices_kernel_;
-  std::shared_ptr<ArrayData> dictionary_;
+  std::shared_ptr<Array> first_dictionary_;
   std::shared_ptr<DataType> dictionary_value_type_;
+  std::unique_ptr<DictionaryUnifier> dictionary_unifier_;
 };
 
 // ----------------------------------------------------------------------
-
-template <typename Type, typename Action, typename Enable = void>
-struct HashKernelTraits {};
-
-template <typename Type, typename Action>
-struct HashKernelTraits<Type, Action, enable_if_null<Type>> {
-  using HashKernel = NullHashKernel<Action>;
-};
-
-template <typename Type, typename Action>
-struct HashKernelTraits<Type, Action, enable_if_has_c_type<Type>> {
-  using HashKernel = RegularHashKernel<Type, typename Type::c_type, Action>;
-};
-
-template <typename Type, typename Action>
-struct HashKernelTraits<Type, Action, enable_if_has_string_view<Type>> {
-  using HashKernel = RegularHashKernel<Type, util::string_view, Action>;
-};
-
-template <typename Type, typename Action>
-Result<std::unique_ptr<HashKernel>> HashInitImpl(KernelContext* ctx,
-                                                 const KernelInitArgs& args) {
-  using HashKernelType = typename HashKernelTraits<Type, Action>::HashKernel;
-  auto result = ::arrow::internal::make_unique<HashKernelType>(
-      args.inputs[0].type, args.options, ctx->memory_pool());
-  RETURN_NOT_OK(result->Reset());
-  return std::move(result);
-}
-
-template <typename Type, typename Action>
+template <typename HashKernel>
 Result<std::unique_ptr<KernelState>> HashInit(KernelContext* ctx,
                                               const KernelInitArgs& args) {
-  return HashInitImpl<Type, Action>(ctx, args);
+  auto result = std::make_unique<HashKernel>(args.inputs[0].GetSharedPtr(), args.options,
+                                             ctx->memory_pool());
+  RETURN_NOT_OK(result->Reset());
+  return std::move(result);
 }
 
 template <typename Action>
@@ -541,21 +539,22 @@ KernelInit GetHashInit(Type::type type_id) {
   // representation
   switch (type_id) {
     case Type::NA:
-      return HashInit<NullType, Action>;
+      return HashInit<NullHashKernel<Action>>;
     case Type::BOOL:
-      return HashInit<BooleanType, Action>;
+      return HashInit<RegularHashKernel<BooleanType, Action>>;
     case Type::INT8:
     case Type::UINT8:
-      return HashInit<UInt8Type, Action>;
+      return HashInit<RegularHashKernel<UInt8Type, Action>>;
     case Type::INT16:
     case Type::UINT16:
-      return HashInit<UInt16Type, Action>;
+      return HashInit<RegularHashKernel<UInt16Type, Action>>;
     case Type::INT32:
     case Type::UINT32:
     case Type::FLOAT:
     case Type::DATE32:
     case Type::TIME32:
-      return HashInit<UInt32Type, Action>;
+    case Type::INTERVAL_MONTHS:
+      return HashInit<RegularHashKernel<UInt32Type, Action>>;
     case Type::INT64:
     case Type::UINT64:
     case Type::DOUBLE:
@@ -563,20 +562,25 @@ KernelInit GetHashInit(Type::type type_id) {
     case Type::TIME64:
     case Type::TIMESTAMP:
     case Type::DURATION:
-      return HashInit<UInt64Type, Action>;
+    case Type::INTERVAL_DAY_TIME:
+      return HashInit<RegularHashKernel<UInt64Type, Action>>;
     case Type::BINARY:
     case Type::STRING:
-      return HashInit<BinaryType, Action>;
+      return HashInit<RegularHashKernel<BinaryType, Action, std::string_view>>;
     case Type::LARGE_BINARY:
     case Type::LARGE_STRING:
-      return HashInit<LargeBinaryType, Action>;
+      return HashInit<RegularHashKernel<LargeBinaryType, Action, std::string_view>>;
+    case Type::BINARY_VIEW:
+    case Type::STRING_VIEW:
+      return HashInit<RegularHashKernel<BinaryViewType, Action, std::string_view>>;
     case Type::FIXED_SIZE_BINARY:
     case Type::DECIMAL128:
     case Type::DECIMAL256:
-      return HashInit<FixedSizeBinaryType, Action>;
+      return HashInit<RegularHashKernel<FixedSizeBinaryType, Action, std::string_view>>;
+    case Type::INTERVAL_MONTH_DAY_NANO:
+      return HashInit<RegularHashKernel<MonthDayNanoIntervalType, Action>>;
     default:
-      DCHECK(false);
-      return nullptr;
+      Unreachable("non hashable type");
   }
 }
 
@@ -586,36 +590,16 @@ template <typename Action>
 Result<std::unique_ptr<KernelState>> DictionaryHashInit(KernelContext* ctx,
                                                         const KernelInitArgs& args) {
   const auto& dict_type = checked_cast<const DictionaryType&>(*args.inputs[0].type);
-  Result<std::unique_ptr<HashKernel>> indices_hasher;
-  switch (dict_type.index_type()->id()) {
-    case Type::INT8:
-    case Type::UINT8:
-      indices_hasher = HashInitImpl<UInt8Type, Action>(ctx, args);
-      break;
-    case Type::INT16:
-    case Type::UINT16:
-      indices_hasher = HashInitImpl<UInt16Type, Action>(ctx, args);
-      break;
-    case Type::INT32:
-    case Type::UINT32:
-      indices_hasher = HashInitImpl<UInt32Type, Action>(ctx, args);
-      break;
-    case Type::INT64:
-    case Type::UINT64:
-      indices_hasher = HashInitImpl<UInt64Type, Action>(ctx, args);
-      break;
-    default:
-      DCHECK(false) << "Unsupported dictionary index type";
-      break;
-  }
-  RETURN_NOT_OK(indices_hasher);
-  return ::arrow::internal::make_unique<DictionaryHashKernel>(
-      std::move(indices_hasher.ValueOrDie()), dict_type.value_type());
+  ARROW_ASSIGN_OR_RAISE(auto indices_hasher,
+                        GetHashInit<Action>(dict_type.index_type()->id())(ctx, args));
+  return std::make_unique<DictionaryHashKernel>(
+      checked_pointer_cast<HashKernel>(std::move(indices_hasher)),
+      dict_type.value_type());
 }
 
-Status HashExec(KernelContext* ctx, const ExecBatch& batch, Datum* out) {
+Status HashExec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out) {
   auto hash_impl = checked_cast<HashKernel*>(ctx->state());
-  RETURN_NOT_OK(hash_impl->Append(ctx, *batch[0].array()));
+  RETURN_NOT_OK(hash_impl->Append(ctx, batch[0].array));
   RETURN_NOT_OK(hash_impl->Flush(out));
   return Status::OK();
 }
@@ -652,11 +636,12 @@ std::shared_ptr<ArrayData> BoxValueCounts(const std::shared_ptr<ArrayData>& uniq
 Status ValueCountsFinalize(KernelContext* ctx, std::vector<Datum>* out) {
   auto hash_impl = checked_cast<HashKernel*>(ctx->state());
   std::shared_ptr<ArrayData> uniques;
-  Datum value_counts;
 
   RETURN_NOT_OK(hash_impl->GetDictionary(&uniques));
-  RETURN_NOT_OK(hash_impl->FlushFinal(&value_counts));
-  *out = {Datum(BoxValueCounts(uniques, value_counts.array()))};
+
+  ExecResult result;
+  RETURN_NOT_OK(hash_impl->FlushFinal(&result));
+  *out = {Datum(BoxValueCounts(uniques, result.array_data()))};
   return Status::OK();
 }
 
@@ -665,8 +650,9 @@ Status ValueCountsFinalize(KernelContext* ctx, std::vector<Datum>* out) {
 // hence have no dictionary.
 Result<std::shared_ptr<ArrayData>> EnsureHashDictionary(KernelContext* ctx,
                                                         DictionaryHashKernel* hash) {
-  if (hash->dictionary()) {
-    return hash->dictionary();
+  ARROW_ASSIGN_OR_RAISE(auto dict, hash->dictionary());
+  if (dict) {
+    return dict->data();
   }
   ARROW_ASSIGN_OR_RAISE(auto null, MakeArrayOfNull(hash->dictionary_value_type(),
                                                    /*length=*/0, ctx->memory_pool()));
@@ -684,65 +670,111 @@ Status UniqueFinalizeDictionary(KernelContext* ctx, std::vector<Datum>* out) {
 Status ValueCountsFinalizeDictionary(KernelContext* ctx, std::vector<Datum>* out) {
   auto hash = checked_cast<DictionaryHashKernel*>(ctx->state());
   std::shared_ptr<ArrayData> uniques;
-  Datum value_counts;
+  ExecResult result;
   RETURN_NOT_OK(hash->GetDictionary(&uniques));
-  RETURN_NOT_OK(hash->FlushFinal(&value_counts));
+  RETURN_NOT_OK(hash->FlushFinal(&result));
   ARROW_ASSIGN_OR_RAISE(uniques->dictionary, EnsureHashDictionary(ctx, hash));
-  *out = {Datum(BoxValueCounts(uniques, value_counts.array()))};
+  *out = {Datum(BoxValueCounts(uniques, result.array_data()))};
   return Status::OK();
 }
 
-ValueDescr DictEncodeOutput(KernelContext*, const std::vector<ValueDescr>& descrs) {
-  return ValueDescr::Array(dictionary(int32(), descrs[0].type));
+Result<TypeHolder> DictEncodeOutput(KernelContext*,
+                                    const std::vector<TypeHolder>& types) {
+  return dictionary(int32(), types[0].GetSharedPtr());
 }
 
-ValueDescr ValueCountsOutput(KernelContext*, const std::vector<ValueDescr>& descrs) {
-  return ValueDescr::Array(struct_(
-      {field(kValuesFieldName, descrs[0].type), field(kCountsFieldName, int64())}));
+Result<TypeHolder> ValueCountsOutput(KernelContext*,
+                                     const std::vector<TypeHolder>& types) {
+  return struct_({field(kValuesFieldName, types[0].GetSharedPtr()),
+                  field(kCountsFieldName, int64())});
 }
 
 template <typename Action>
 void AddHashKernels(VectorFunction* func, VectorKernel base, OutputType out_ty) {
   for (const auto& ty : PrimitiveTypes()) {
     base.init = GetHashInit<Action>(ty->id());
-    base.signature = KernelSignature::Make({InputType::Array(ty)}, out_ty);
+    base.signature = KernelSignature::Make({ty}, out_ty);
     DCHECK_OK(func->AddKernel(base));
   }
 
   // Example parametric types that we want to match only on Type::type
   auto parametric_types = {time32(TimeUnit::SECOND), time64(TimeUnit::MICRO),
-                           timestamp(TimeUnit::SECOND), fixed_size_binary(0)};
+                           timestamp(TimeUnit::SECOND), duration(TimeUnit::SECOND),
+                           fixed_size_binary(0)};
   for (const auto& ty : parametric_types) {
     base.init = GetHashInit<Action>(ty->id());
-    base.signature = KernelSignature::Make({InputType::Array(ty->id())}, out_ty);
+    base.signature = KernelSignature::Make({ty->id()}, out_ty);
     DCHECK_OK(func->AddKernel(base));
   }
 
   for (auto t : {Type::DECIMAL128, Type::DECIMAL256}) {
     base.init = GetHashInit<Action>(t);
-    base.signature = KernelSignature::Make({InputType::Array(t)}, out_ty);
+    base.signature = KernelSignature::Make({t}, out_ty);
+    DCHECK_OK(func->AddKernel(base));
+  }
+
+  for (const auto& ty : IntervalTypes()) {
+    base.init = GetHashInit<Action>(ty->id());
+    base.signature = KernelSignature::Make({ty}, out_ty);
     DCHECK_OK(func->AddKernel(base));
   }
 }
 
-const FunctionDoc unique_doc(
-    "Compute unique elements",
-    ("Return an array with distinct values.  Nulls in the input are ignored."),
-    {"array"});
+const FunctionDoc unique_doc("Compute unique elements",
+                             ("Return an array with distinct values.\n"
+                              "Nulls are considered as a distinct value as well."),
+                             {"array"});
 
 const FunctionDoc value_counts_doc(
     "Compute counts of unique elements",
     ("For each distinct value, compute the number of times it occurs in the array.\n"
      "The result is returned as an array of `struct<input type, int64>`.\n"
-     "Nulls in the input are ignored."),
+     "Nulls in the input are counted and included in the output as well."),
     {"array"});
 
-const auto kDefaultDictionaryEncodeOptions = DictionaryEncodeOptions::Defaults();
+const DictionaryEncodeOptions* GetDefaultDictionaryEncodeOptions() {
+  static const auto kDefaultDictionaryEncodeOptions = DictionaryEncodeOptions::Defaults();
+  return &kDefaultDictionaryEncodeOptions;
+}
+
 const FunctionDoc dictionary_encode_doc(
     "Dictionary-encode array",
-    ("Return a dictionary-encoded version of the input array."), {"array"},
-    "DictionaryEncodeOptions");
+    ("Return a dictionary-encoded version of the input array.\n"
+     "This function does nothing if the input is already a dictionary array."),
+    {"array"}, "DictionaryEncodeOptions");
 
+// ----------------------------------------------------------------------
+// This function does not use any hashing utilities
+// but is kept in this file to be near dictionary_encode
+// Dictionary decode implementation
+
+const FunctionDoc dictionary_decode_doc{
+    "Decodes a DictionaryArray to an Array",
+    ("Return a plain-encoded version of the array input\n"
+     "This function does nothing if the input is not a dictionary."),
+    {"dictionary_array"}};
+
+class DictionaryDecodeMetaFunction : public MetaFunction {
+ public:
+  DictionaryDecodeMetaFunction()
+      : MetaFunction("dictionary_decode", Arity::Unary(), dictionary_decode_doc) {}
+
+  Result<Datum> ExecuteImpl(const std::vector<Datum>& args,
+                            const FunctionOptions* options,
+                            ExecContext* ctx) const override {
+    if (args[0].type() == nullptr || args[0].type()->id() != Type::DICTIONARY) {
+      return args[0];
+    }
+
+    if (args[0].is_array() || args[0].is_chunked_array()) {
+      DictionaryType* dict_type = checked_cast<DictionaryType*>(args[0].type().get());
+      CastOptions cast_options = CastOptions::Safe(dict_type->value_type());
+      return CallFunction("cast", args, &cast_options, ctx);
+    } else {
+      return Status::TypeError("Expected an Array or a Chunked Array");
+    }
+  }
+};
 }  // namespace
 
 void RegisterVectorHash(FunctionRegistry* registry) {
@@ -754,14 +786,13 @@ void RegisterVectorHash(FunctionRegistry* registry) {
 
   base.finalize = UniqueFinalize;
   base.output_chunked = false;
-  auto unique = std::make_shared<VectorFunction>("unique", Arity::Unary(), &unique_doc);
-  AddHashKernels<UniqueAction>(unique.get(), base, OutputType(FirstType));
+  auto unique = std::make_shared<VectorFunction>("unique", Arity::Unary(), unique_doc);
+  AddHashKernels<UniqueAction>(unique.get(), base, FirstType);
 
   // Dictionary unique
   base.init = DictionaryHashInit<UniqueAction>;
   base.finalize = UniqueFinalizeDictionary;
-  base.signature =
-      KernelSignature::Make({InputType::Array(Type::DICTIONARY)}, OutputType(FirstType));
+  base.signature = KernelSignature::Make({Type::DICTIONARY}, FirstType);
   DCHECK_OK(unique->AddKernel(base));
 
   DCHECK_OK(registry->AddFunction(std::move(unique)));
@@ -771,15 +802,13 @@ void RegisterVectorHash(FunctionRegistry* registry) {
 
   base.finalize = ValueCountsFinalize;
   auto value_counts =
-      std::make_shared<VectorFunction>("value_counts", Arity::Unary(), &value_counts_doc);
-  AddHashKernels<ValueCountsAction>(value_counts.get(), base,
-                                    OutputType(ValueCountsOutput));
+      std::make_shared<VectorFunction>("value_counts", Arity::Unary(), value_counts_doc);
+  AddHashKernels<ValueCountsAction>(value_counts.get(), base, ValueCountsOutput);
 
   // Dictionary value counts
   base.init = DictionaryHashInit<ValueCountsAction>;
   base.finalize = ValueCountsFinalizeDictionary;
-  base.signature = KernelSignature::Make({InputType::Array(Type::DICTIONARY)},
-                                         OutputType(ValueCountsOutput));
+  base.signature = KernelSignature::Make({Type::DICTIONARY}, ValueCountsOutput);
   DCHECK_OK(value_counts->AddKernel(base));
 
   DCHECK_OK(registry->AddFunction(std::move(value_counts)));
@@ -790,16 +819,23 @@ void RegisterVectorHash(FunctionRegistry* registry) {
   base.finalize = DictEncodeFinalize;
   // Unique and ValueCounts output unchunked arrays
   base.output_chunked = true;
-  auto dict_encode = std::make_shared<VectorFunction>("dictionary_encode", Arity::Unary(),
-                                                      &dictionary_encode_doc,
-                                                      &kDefaultDictionaryEncodeOptions);
-  AddHashKernels<DictEncodeAction>(dict_encode.get(), base, OutputType(DictEncodeOutput));
 
-  // Calling dictionary_encode on dictionary input not supported, but if it
-  // ends up being needed (or convenience), a kernel could be added to make it
-  // a no-op
+  auto dict_encode = std::make_shared<VectorFunction>(
+      "dictionary_encode", Arity::Unary(), dictionary_encode_doc,
+      GetDefaultDictionaryEncodeOptions());
+  AddHashKernels<DictEncodeAction>(dict_encode.get(), base, DictEncodeOutput);
+
+  auto no_op = [](KernelContext*, const ExecSpan& span, ExecResult* out) {
+    out->value = span[0].array.ToArrayData();
+    return Status::OK();
+  };
+  DCHECK_OK(dict_encode->AddKernel({Type::DICTIONARY}, OutputType(FirstType), no_op));
 
   DCHECK_OK(registry->AddFunction(std::move(dict_encode)));
+}
+
+void RegisterDictionaryDecode(FunctionRegistry* registry) {
+  DCHECK_OK(registry->AddFunction(std::make_shared<DictionaryDecodeMetaFunction>()));
 }
 
 }  // namespace internal

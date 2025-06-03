@@ -46,15 +46,13 @@
 #include "arrow/util/bit_util.h"
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/logging.h"
-#include "arrow/util/make_unique.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_type_inline.h"
 
 #include "generated/feather_generated.h"
 
 namespace arrow {
 
 using internal::checked_cast;
-using internal::make_unique;
 
 class ExtensionType;
 
@@ -283,7 +281,7 @@ class ReaderV1 : public Reader {
 
     // If there are nulls, the null bitmask is first
     if (meta->null_count() > 0) {
-      int64_t null_bitmap_size = GetOutputLength(BitUtil::BytesForBits(meta->length()));
+      int64_t null_bitmap_size = GetOutputLength(bit_util::BytesForBits(meta->length()));
       buffers.push_back(SliceBuffer(buffer, offset, null_bitmap_size));
       offset += null_bitmap_size;
     } else {
@@ -538,8 +536,8 @@ struct ArrayWriterV1 {
       is_nested_type<T>::value || is_null_type<T>::value || is_decimal_type<T>::value ||
           std::is_same<DictionaryType, T>::value || is_duration_type<T>::value ||
           is_interval_type<T>::value || is_fixed_size_binary_type<T>::value ||
-          std::is_same<Date64Type, T>::value || std::is_same<Time64Type, T>::value ||
-          std::is_same<ExtensionType, T>::value,
+          is_binary_view_like_type<T>::value || std::is_same<Date64Type, T>::value ||
+          std::is_same<Time64Type, T>::value || std::is_same<ExtensionType, T>::value,
       Status>::type
   Visit(const T& type) {
     return Status::NotImplemented(type.ToString());
@@ -560,7 +558,7 @@ struct ArrayWriterV1 {
           prim_values.values()->data() + (prim_values.offset() * fw_type.bit_width() / 8);
       int64_t bit_offset = (prim_values.offset() * fw_type.bit_width()) % 8;
       return WriteBuffer(buffer,
-                         BitUtil::BytesForBits(values.length() * fw_type.bit_width()),
+                         bit_util::BytesForBits(values.length() * fw_type.bit_width()),
                          bit_offset);
     } else {
       return Status::OK();
@@ -608,7 +606,8 @@ struct ArrayWriterV1 {
     // Write the null bitmask
     if (values.null_count() > 0) {
       RETURN_NOT_OK(WriteBuffer(values.null_bitmap_data(),
-                                BitUtil::BytesForBits(values.length()), values.offset()));
+                                bit_util::BytesForBits(values.length()),
+                                values.offset()));
     }
     // Write data buffer(s)
     return VisitTypeInline(*values.type(), this);
@@ -705,11 +704,17 @@ Status WriteFeatherV1(const Table& table, io::OutputStream* dst) {
 
 class ReaderV2 : public Reader {
  public:
-  Status Open(const std::shared_ptr<io::RandomAccessFile>& source) {
+  Status Open(const std::shared_ptr<io::RandomAccessFile>& source,
+              const IpcReadOptions& options) {
     source_ = source;
-    ARROW_ASSIGN_OR_RAISE(auto reader, RecordBatchFileReader::Open(source_));
+    options_ = options;
+    ARROW_ASSIGN_OR_RAISE(auto reader, RecordBatchFileReader::Open(source_, options_));
     schema_ = reader->schema();
     return Status::OK();
+  }
+
+  Status Open(const std::shared_ptr<io::RandomAccessFile>& source) {
+    return Open(source, IpcReadOptions::Defaults());
   }
 
   int version() const override { return kFeatherV2Version; }
@@ -726,12 +731,10 @@ class ReaderV2 : public Reader {
     return Table::FromRecordBatches(reader->schema(), batches).Value(out);
   }
 
-  Status Read(std::shared_ptr<Table>* out) override {
-    return Read(IpcReadOptions::Defaults(), out);
-  }
+  Status Read(std::shared_ptr<Table>* out) override { return Read(options_, out); }
 
   Status Read(const std::vector<int>& indices, std::shared_ptr<Table>* out) override {
-    auto options = IpcReadOptions::Defaults();
+    auto options = options_;
     options.included_fields = indices;
     return Read(options, out);
   }
@@ -753,12 +756,18 @@ class ReaderV2 : public Reader {
  private:
   std::shared_ptr<io::RandomAccessFile> source_;
   std::shared_ptr<Schema> schema_;
+  IpcReadOptions options_;
 };
 
 }  // namespace
 
 Result<std::shared_ptr<Reader>> Reader::Open(
     const std::shared_ptr<io::RandomAccessFile>& source) {
+  return Reader::Open(source, IpcReadOptions::Defaults());
+}
+
+Result<std::shared_ptr<Reader>> Reader::Open(
+    const std::shared_ptr<io::RandomAccessFile>& source, const IpcReadOptions& options) {
   // Pathological issue where the file is smaller than header and footer
   // combined
   ARROW_ASSIGN_OR_RAISE(int64_t size, source->GetSize());
@@ -773,12 +782,13 @@ Result<std::shared_ptr<Reader>> Reader::Open(
 
   if (memcmp(buffer->data(), kFeatherV1MagicBytes, strlen(kFeatherV1MagicBytes)) == 0) {
     std::shared_ptr<ReaderV1> result = std::make_shared<ReaderV1>();
+    // IPC Read options are ignored for ReaderV1
     RETURN_NOT_OK(result->Open(source));
     return result;
   } else if (memcmp(buffer->data(), internal::kArrowMagicBytes,
                     strlen(internal::kArrowMagicBytes)) == 0) {
     std::shared_ptr<ReaderV2> result = std::make_shared<ReaderV2>();
-    RETURN_NOT_OK(result->Open(source));
+    RETURN_NOT_OK(result->Open(source, options));
     return result;
   } else {
     return Status::Invalid("Not a Feather V1 or Arrow IPC file");

@@ -15,16 +15,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import functools
 import os
 import pathlib
 import subprocess
-from tempfile import TemporaryDirectory
+import sys
+import time
+import urllib.request
 
 import pytest
+from pytest_lazyfixture import lazy_fixture
 import hypothesis as h
+from ..conftest import groups, defaults
 
+from pyarrow import set_timezone_db_path
 from pyarrow.util import find_free_port
-from pyarrow import Codec
 
 
 # setup hypothesis profiles
@@ -44,138 +49,17 @@ h.settings.load_profile(os.environ.get('HYPOTHESIS_PROFILE', 'dev'))
 os.environ['AWS_CONFIG_FILE'] = "/dev/null"
 
 
-groups = [
-    'brotli',
-    'bz2',
-    'cython',
-    'dataset',
-    'hypothesis',
-    'fastparquet',
-    'gandiva',
-    'gzip',
-    'hdfs',
-    'large_memory',
-    'lz4',
-    'memory_leak',
-    'nopandas',
-    'orc',
-    'pandas',
-    'parquet',
-    'plasma',
-    's3',
-    'snappy',
-    'tensorflow',
-    'flight',
-    'slow',
-    'requires_testing_data',
-    'zstd',
-]
-
-defaults = {
-    'brotli': Codec.is_available('brotli'),
-    'bz2': Codec.is_available('bz2'),
-    'cython': False,
-    'dataset': False,
-    'fastparquet': False,
-    'hypothesis': False,
-    'gandiva': False,
-    'gzip': Codec.is_available('gzip'),
-    'hdfs': False,
-    'large_memory': False,
-    'lz4': Codec.is_available('lz4'),
-    'memory_leak': False,
-    'orc': False,
-    'nopandas': False,
-    'pandas': False,
-    'parquet': False,
-    'plasma': False,
-    's3': False,
-    'snappy': Codec.is_available('snappy'),
-    'tensorflow': False,
-    'flight': False,
-    'slow': False,
-    'requires_testing_data': True,
-    'zstd': Codec.is_available('zstd'),
-}
-
-try:
-    import cython  # noqa
-    defaults['cython'] = True
-except ImportError:
-    pass
-
-try:
-    import fastparquet  # noqa
-    defaults['fastparquet'] = True
-except ImportError:
-    pass
-
-try:
-    import pyarrow.gandiva  # noqa
-    defaults['gandiva'] = True
-except ImportError:
-    pass
-
-try:
-    import pyarrow.dataset  # noqa
-    defaults['dataset'] = True
-except ImportError:
-    pass
-
-try:
-    import pyarrow.orc  # noqa
-    defaults['orc'] = True
-except ImportError:
-    pass
-
-try:
-    import pandas  # noqa
-    defaults['pandas'] = True
-except ImportError:
-    defaults['nopandas'] = True
-
-try:
-    import pyarrow.parquet  # noqa
-    defaults['parquet'] = True
-except ImportError:
-    pass
-
-try:
-    import pyarrow.plasma  # noqa
-    defaults['plasma'] = True
-except ImportError:
-    pass
-
-try:
-    import tensorflow  # noqa
-    defaults['tensorflow'] = True
-except ImportError:
-    pass
-
-try:
-    import pyarrow.flight  # noqa
-    defaults['flight'] = True
-except ImportError:
-    pass
-
-try:
-    from pyarrow.fs import S3FileSystem  # noqa
-    defaults['s3'] = True
-except ImportError:
-    pass
-
-try:
-    from pyarrow.fs import HadoopFileSystem  # noqa
-    defaults['hdfs'] = True
-except ImportError:
-    pass
+if sys.platform == 'win32':
+    tzdata_set_path = os.environ.get('PYARROW_TZDATA_PATH', None)
+    if tzdata_set_path:
+        set_timezone_db_path(tzdata_set_path)
 
 
 def pytest_addoption(parser):
     # Create options to selectively enable test groups
     def bool_env(name, default=None):
         value = os.environ.get(name.upper())
-        if value is None:
+        if not value:  # missing or empty
             return default
         value = value.lower()
         if value in {'1', 'true', 'on', 'yes', 'y'}:
@@ -272,8 +156,49 @@ def s3_connection():
     return host, port, access_key, secret_key
 
 
+def retry(attempts=3, delay=1.0, max_delay=None, backoff=1):
+    """
+    Retry decorator
+
+    Parameters
+    ----------
+    attempts : int, default 3
+        The number of attempts.
+    delay : float, default 1
+        Initial delay in seconds.
+    max_delay : float, optional
+        The max delay between attempts.
+    backoff : float, default 1
+        The multiplier to delay after each attempt.
+    """
+    def decorate(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            remaining_attempts = attempts
+            curr_delay = delay
+            while remaining_attempts > 0:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as err:
+                    remaining_attempts -= 1
+                    last_exception = err
+                    curr_delay *= backoff
+                    if max_delay:
+                        curr_delay = min(curr_delay, max_delay)
+                    time.sleep(curr_delay)
+            raise last_exception
+        return wrapper
+    return decorate
+
+
 @pytest.fixture(scope='session')
-def s3_server(s3_connection):
+def s3_server(s3_connection, tmpdir_factory):
+    @retry(attempts=5, delay=0.1, backoff=2)
+    def minio_server_health_check(address):
+        resp = urllib.request.urlopen(f"http://{address}/minio/health/cluster")
+        assert resp.getcode() == 200
+
+    tmpdir = tmpdir_factory.getbasetemp()
     host, port, access_key, secret_key = s3_connection
 
     address = '{}:{}'.format(host, port)
@@ -283,20 +208,75 @@ def s3_server(s3_connection):
         'MINIO_SECRET_KEY': secret_key
     })
 
-    with TemporaryDirectory() as tempdir:
-        args = ['minio', '--compat', 'server', '--quiet', '--address',
-                address, tempdir]
-        proc = None
-        try:
-            proc = subprocess.Popen(args, env=env)
-        except OSError:
-            pytest.skip('`minio` command cannot be located')
-        else:
-            yield {
-                'connection': s3_connection,
-                'process': proc,
-                'tempdir': tempdir
-            }
-        finally:
-            if proc is not None:
-                proc.kill()
+    args = ['minio', '--compat', 'server', '--quiet', '--address',
+            address, tmpdir]
+    proc = None
+    try:
+        proc = subprocess.Popen(args, env=env)
+    except OSError:
+        pytest.skip('`minio` command cannot be located')
+    else:
+        # Wait for the server to startup before yielding
+        minio_server_health_check(address)
+
+        yield {
+            'connection': s3_connection,
+            'process': proc,
+            'tempdir': tmpdir
+        }
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+
+
+@pytest.fixture(scope='session')
+def gcs_server():
+    port = find_free_port()
+    env = os.environ.copy()
+    args = [sys.executable, '-m', 'testbench', '--port', str(port)]
+    proc = None
+    try:
+        # check first if testbench module is available
+        import testbench  # noqa:F401
+        # start server
+        proc = subprocess.Popen(args, env=env)
+        # Make sure the server is alive.
+        if proc.poll() is not None:
+            pytest.skip(f"Command {args} did not start server successfully!")
+    except (ModuleNotFoundError, OSError) as e:
+        pytest.skip(f"Command {args} failed to execute: {e}")
+    else:
+        yield {
+            'connection': ('localhost', port),
+            'process': proc,
+        }
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+
+
+@pytest.fixture(
+    params=[
+        lazy_fixture('builtin_pickle'),
+        lazy_fixture('cloudpickle')
+    ],
+    scope='session'
+)
+def pickle_module(request):
+    return request.param
+
+
+@pytest.fixture(scope='session')
+def builtin_pickle():
+    import pickle
+    return pickle
+
+
+@pytest.fixture(scope='session')
+def cloudpickle():
+    cp = pytest.importorskip('cloudpickle')
+    if 'HIGHEST_PROTOCOL' not in cp.__dict__:
+        cp.HIGHEST_PROTOCOL = cp.DEFAULT_PROTOCOL
+    return cp

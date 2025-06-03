@@ -26,7 +26,7 @@
 #include "arrow/array/builder_nested.h"
 #include "arrow/chunked_array.h"
 #include "arrow/status.h"
-#include "arrow/testing/gtest_common.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/type.h"
 #include "arrow/util/checked_cast.h"
@@ -303,13 +303,63 @@ TEST(StructArray, FlattenOfSlice) {
   ASSERT_OK(arr->ValidateFull());
 }
 
+TEST(StructArray, CanReferenceFieldByName) {
+  auto a = ArrayFromJSON(int8(), "[4, 5]");
+  auto b = ArrayFromJSON(int16(), "[6, 7]");
+  auto c = ArrayFromJSON(int32(), "[8, 9]");
+  auto d = ArrayFromJSON(int64(), "[10, 11]");
+  auto children = std::vector<std::shared_ptr<Array>>{a, b, c, d};
+
+  auto f0 = field("f0", int8());
+  auto f1 = field("f1", int16());
+  auto f2 = field("f2", int32());
+  auto f3 = field("f1", int64());
+  auto type = struct_({f0, f1, f2, f3});
+
+  auto arr = std::make_shared<StructArray>(type, 2, children);
+
+  ASSERT_OK(arr->CanReferenceFieldByName("f0"));
+  ASSERT_OK(arr->CanReferenceFieldByName("f2"));
+  // Not found
+  ASSERT_RAISES(Invalid, arr->CanReferenceFieldByName("nope"));
+
+  // Duplicates
+  ASSERT_RAISES(Invalid, arr->CanReferenceFieldByName("f1"));
+}
+
+TEST(StructArray, CanReferenceFieldsByNames) {
+  auto a = ArrayFromJSON(int8(), "[4, 5]");
+  auto b = ArrayFromJSON(int16(), "[6, 7]");
+  auto c = ArrayFromJSON(int32(), "[8, 9]");
+  auto d = ArrayFromJSON(int64(), "[10, 11]");
+  auto children = std::vector<std::shared_ptr<Array>>{a, b, c, d};
+
+  auto f0 = field("f0", int8());
+  auto f1 = field("f1", int16());
+  auto f2 = field("f2", int32());
+  auto f3 = field("f1", int64());
+  auto type = struct_({f0, f1, f2, f3});
+
+  auto arr = std::make_shared<StructArray>(type, 2, children);
+
+  ASSERT_OK(arr->CanReferenceFieldsByNames({"f0", "f2"}));
+  ASSERT_OK(arr->CanReferenceFieldsByNames({"f2", "f0"}));
+
+  // Not found
+  ASSERT_RAISES(Invalid, arr->CanReferenceFieldsByNames({"nope"}));
+  ASSERT_RAISES(Invalid, arr->CanReferenceFieldsByNames({"f0", "nope"}));
+  // Duplicates
+  ASSERT_RAISES(Invalid, arr->CanReferenceFieldsByNames({"f1"}));
+  ASSERT_RAISES(Invalid, arr->CanReferenceFieldsByNames({"f0", "f1"}));
+  // Both
+  ASSERT_RAISES(Invalid, arr->CanReferenceFieldsByNames({"f0", "f1", "nope"}));
+}
+
 // ----------------------------------------------------------------------------------
 // Struct test
-class TestStructBuilder : public TestBuilder {
+class TestStructBuilder : public ::testing::Test {
  public:
   void SetUp() {
-    TestBuilder::SetUp();
-
     auto int32_type = int32();
     auto char_type = int8();
     auto list_type = list(char_type);
@@ -337,6 +387,8 @@ class TestStructBuilder : public TestBuilder {
  protected:
   std::vector<std::shared_ptr<Field>> value_fields_;
 
+  MemoryPool* pool_ = default_memory_pool();
+  std::shared_ptr<DataType> type_;
   std::shared_ptr<StructBuilder> builder_;
   std::shared_ptr<StructArray> result_;
 };

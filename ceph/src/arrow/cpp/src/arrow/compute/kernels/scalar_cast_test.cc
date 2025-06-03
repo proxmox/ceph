@@ -32,9 +32,9 @@
 #include "arrow/extension_type.h"
 #include "arrow/status.h"
 #include "arrow/testing/extension_type.h"
-#include "arrow/testing/gtest_common.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/random.h"
+#include "arrow/testing/util.h"
 #include "arrow/type.h"
 #include "arrow/type_fwd.h"
 #include "arrow/type_traits.h"
@@ -110,7 +110,7 @@ static void CheckCast(std::shared_ptr<Array> input, std::shared_ptr<Array> expec
 
 static void CheckCastFails(std::shared_ptr<Array> input, CastOptions options) {
   ASSERT_RAISES(Invalid, Cast(input, options))
-      << "\n  to_type:   " << options.to_type->ToString()
+      << "\n  to_type:   " << options.to_type.ToString()
       << "\n  from_type: " << input->type()->ToString()
       << "\n  input:     " << input->ToString();
 
@@ -211,8 +211,8 @@ TEST(Cast, CanCast) {
     ExpectCannotCast(from_base_binary, {null()});
   }
 
-  ExpectCanCast(utf8(), {timestamp(TimeUnit::MILLI)});
-  ExpectCanCast(large_utf8(), {timestamp(TimeUnit::NANO)});
+  ExpectCanCast(utf8(), {timestamp(TimeUnit::MILLI), date32(), date64()});
+  ExpectCanCast(large_utf8(), {timestamp(TimeUnit::NANO), date32(), date64()});
   ExpectCannotCast(timestamp(TimeUnit::MICRO),
                    {binary(), large_binary()});  // no formatting supported
 
@@ -225,7 +225,8 @@ TEST(Cast, CanCast) {
   ExpectCanCast(smallint(), {int16()});  // cast storage
   ExpectCanCast(smallint(),
                 kNumericTypes);  // any cast which is valid for storage is supported
-  ExpectCannotCast(null(), {smallint()});  // FIXME missing common cast from null
+  ExpectCanCast(null(), {smallint()});
+  ExpectCanCast(tinyint(), {smallint()});  // cast between compatible storage types
 
   ExpectCanCast(date32(), {utf8(), large_utf8()});
   ExpectCanCast(date64(), {utf8(), large_utf8()});
@@ -437,7 +438,7 @@ TEST(Cast, Decimal128ToInt) {
       options.allow_int_overflow = allow_int_overflow;
       options.allow_decimal_truncate = allow_decimal_truncate;
 
-      auto no_overflow_no_truncation = ArrayFromJSON(decimal(38, 10), R"([
+      auto no_overflow_no_truncation = ArrayFromJSON(decimal128(38, 10), R"([
           "02.0000000000",
          "-11.0000000000",
           "22.0000000000",
@@ -450,7 +451,7 @@ TEST(Cast, Decimal128ToInt) {
 
   for (bool allow_int_overflow : {false, true}) {
     options.allow_int_overflow = allow_int_overflow;
-    auto truncation_but_no_overflow = ArrayFromJSON(decimal(38, 10), R"([
+    auto truncation_but_no_overflow = ArrayFromJSON(decimal128(38, 10), R"([
           "02.1000000000",
          "-11.0000004500",
           "22.0000004500",
@@ -468,7 +469,7 @@ TEST(Cast, Decimal128ToInt) {
   for (bool allow_decimal_truncate : {false, true}) {
     options.allow_decimal_truncate = allow_decimal_truncate;
 
-    auto overflow_no_truncation = ArrayFromJSON(decimal(38, 10), R"([
+    auto overflow_no_truncation = ArrayFromJSON(decimal128(38, 10), R"([
         "12345678901234567890000.0000000000",
         "99999999999999999999999.0000000000",
         null])");
@@ -490,7 +491,7 @@ TEST(Cast, Decimal128ToInt) {
       options.allow_int_overflow = allow_int_overflow;
       options.allow_decimal_truncate = allow_decimal_truncate;
 
-      auto overflow_and_truncation = ArrayFromJSON(decimal(38, 10), R"([
+      auto overflow_and_truncation = ArrayFromJSON(decimal128(38, 10), R"([
         "12345678901234567890000.0045345000",
         "99999999999999999999999.0000344300",
         null])");
@@ -508,7 +509,7 @@ TEST(Cast, Decimal128ToInt) {
     }
   }
 
-  Decimal128Builder builder(decimal(38, -4));
+  Decimal128Builder builder(decimal128(38, -4));
   for (auto d : {Decimal128("1234567890000."), Decimal128("-120000.")}) {
     ASSERT_OK_AND_ASSIGN(d, d.Rescale(0, -4));
     ASSERT_OK(builder.Append(d));
@@ -611,7 +612,7 @@ TEST(Cast, Decimal256ToInt) {
 }
 
 TEST(Cast, IntegerToDecimal) {
-  for (auto decimal_type : {decimal128(21, 2), decimal256(21, 2)}) {
+  for (auto decimal_type : {decimal128(22, 2), decimal256(22, 2)}) {
     for (auto integer_type : kIntegerTypes) {
       CheckCast(
           ArrayFromJSON(integer_type, "[0, 7, null, 100, 99]"),
@@ -624,6 +625,8 @@ TEST(Cast, IntegerToDecimal) {
     CheckCast(ArrayFromJSON(int64(), "[-9223372036854775808, 9223372036854775807]"),
               ArrayFromJSON(decimal_type,
                             R"(["-9223372036854775808", "9223372036854775807"])"));
+  }
+  for (auto decimal_type : {decimal128(20, 0), decimal256(20, 0)}) {
     CheckCast(ArrayFromJSON(uint64(), "[0, 18446744073709551615]"),
               ArrayFromJSON(decimal_type, R"(["0", "18446744073709551615"])"));
   }
@@ -646,13 +649,13 @@ TEST(Cast, Decimal128ToDecimal128) {
   for (bool allow_decimal_truncate : {false, true}) {
     options.allow_decimal_truncate = allow_decimal_truncate;
 
-    auto no_truncation = ArrayFromJSON(decimal(38, 10), R"([
+    auto no_truncation = ArrayFromJSON(decimal128(38, 10), R"([
           "02.0000000000",
           "30.0000000000",
           "22.0000000000",
         "-121.0000000000",
         null])");
-    auto expected = ArrayFromJSON(decimal(28, 0), R"([
+    auto expected = ArrayFromJSON(decimal128(28, 0), R"([
           "02.",
           "30.",
           "22.",
@@ -667,10 +670,10 @@ TEST(Cast, Decimal128ToDecimal128) {
     options.allow_decimal_truncate = allow_decimal_truncate;
 
     // Same scale, different precision
-    auto d_5_2 = ArrayFromJSON(decimal(5, 2), R"([
+    auto d_5_2 = ArrayFromJSON(decimal128(5, 2), R"([
           "12.34",
            "0.56"])");
-    auto d_4_2 = ArrayFromJSON(decimal(4, 2), R"([
+    auto d_4_2 = ArrayFromJSON(decimal128(4, 2), R"([
           "12.34",
            "0.56"])");
 
@@ -678,17 +681,17 @@ TEST(Cast, Decimal128ToDecimal128) {
     CheckCast(d_4_2, d_5_2, options);
   }
 
-  auto d_38_10 = ArrayFromJSON(decimal(38, 10), R"([
+  auto d_38_10 = ArrayFromJSON(decimal128(38, 10), R"([
       "-02.1234567890",
        "30.1234567890",
       null])");
 
-  auto d_28_0 = ArrayFromJSON(decimal(28, 0), R"([
+  auto d_28_0 = ArrayFromJSON(decimal128(28, 0), R"([
       "-02.",
        "30.",
       null])");
 
-  auto d_38_10_roundtripped = ArrayFromJSON(decimal(38, 10), R"([
+  auto d_38_10_roundtripped = ArrayFromJSON(decimal128(38, 10), R"([
       "-02.0000000000",
        "30.0000000000",
       null])");
@@ -704,14 +707,15 @@ TEST(Cast, Decimal128ToDecimal128) {
   CheckCast(d_28_0, d_38_10_roundtripped, options);
 
   // Precision loss without rescale leads to truncation
-  auto d_4_2 = ArrayFromJSON(decimal(4, 2), R"(["12.34"])");
+  auto d_4_2 = ArrayFromJSON(decimal128(4, 2), R"(["12.34"])");
   for (auto expected : {
-           ArrayFromJSON(decimal(3, 2), R"(["12.34"])"),
-           ArrayFromJSON(decimal(4, 3), R"(["12.340"])"),
-           ArrayFromJSON(decimal(2, 1), R"(["12.3"])"),
+           ArrayFromJSON(decimal128(3, 2), R"(["12.34"])"),
+           ArrayFromJSON(decimal128(4, 3), R"(["12.340"])"),
+           ArrayFromJSON(decimal128(2, 1), R"(["12.3"])"),
        }) {
     options.allow_decimal_truncate = true;
-    CheckCast(d_4_2, expected, options);
+    ASSERT_OK_AND_ASSIGN(auto invalid, Cast(d_4_2, expected->type(), options));
+    ASSERT_RAISES(Invalid, invalid.make_array()->ValidateFull());
 
     options.allow_decimal_truncate = false;
     options.to_type = expected->type();
@@ -790,7 +794,8 @@ TEST(Cast, Decimal256ToDecimal256) {
            ArrayFromJSON(decimal256(2, 1), R"(["12.3"])"),
        }) {
     options.allow_decimal_truncate = true;
-    CheckCast(d_4_2, expected, options);
+    ASSERT_OK_AND_ASSIGN(auto invalid, Cast(d_4_2, expected->type(), options));
+    ASSERT_RAISES(Invalid, invalid.make_array()->ValidateFull());
 
     options.allow_decimal_truncate = false;
     options.to_type = expected->type();
@@ -804,7 +809,7 @@ TEST(Cast, Decimal128ToDecimal256) {
   for (bool allow_decimal_truncate : {false, true}) {
     options.allow_decimal_truncate = allow_decimal_truncate;
 
-    auto no_truncation = ArrayFromJSON(decimal(38, 10), R"([
+    auto no_truncation = ArrayFromJSON(decimal128(38, 10), R"([
           "02.0000000000",
           "30.0000000000",
           "22.0000000000",
@@ -824,7 +829,7 @@ TEST(Cast, Decimal128ToDecimal256) {
     options.allow_decimal_truncate = allow_decimal_truncate;
 
     // Same scale, different precision
-    auto d_5_2 = ArrayFromJSON(decimal(5, 2), R"([
+    auto d_5_2 = ArrayFromJSON(decimal128(5, 2), R"([
           "12.34",
            "0.56"])");
     auto d_4_2 = ArrayFromJSON(decimal256(4, 2), R"([
@@ -838,12 +843,12 @@ TEST(Cast, Decimal128ToDecimal256) {
     CheckCast(d_5_2, d_40_2, options);
   }
 
-  auto d128_38_10 = ArrayFromJSON(decimal(38, 10), R"([
+  auto d128_38_10 = ArrayFromJSON(decimal128(38, 10), R"([
       "-02.1234567890",
        "30.1234567890",
       null])");
 
-  auto d128_28_0 = ArrayFromJSON(decimal(28, 0), R"([
+  auto d128_28_0 = ArrayFromJSON(decimal128(28, 0), R"([
       "-02.",
        "30.",
       null])");
@@ -869,14 +874,15 @@ TEST(Cast, Decimal128ToDecimal256) {
   CheckCast(d128_28_0, d256_38_10_roundtripped, options);
 
   // Precision loss without rescale leads to truncation
-  auto d128_4_2 = ArrayFromJSON(decimal(4, 2), R"(["12.34"])");
+  auto d128_4_2 = ArrayFromJSON(decimal128(4, 2), R"(["12.34"])");
   for (auto expected : {
            ArrayFromJSON(decimal256(3, 2), R"(["12.34"])"),
            ArrayFromJSON(decimal256(4, 3), R"(["12.340"])"),
            ArrayFromJSON(decimal256(2, 1), R"(["12.3"])"),
        }) {
     options.allow_decimal_truncate = true;
-    CheckCast(d128_4_2, expected, options);
+    ASSERT_OK_AND_ASSIGN(auto invalid, Cast(d128_4_2, expected->type(), options));
+    ASSERT_RAISES(Invalid, invalid.make_array()->ValidateFull());
 
     options.allow_decimal_truncate = false;
     options.to_type = expected->type();
@@ -896,7 +902,7 @@ TEST(Cast, Decimal256ToDecimal128) {
           "22.0000000000",
         "-121.0000000000",
         null])");
-    auto expected = ArrayFromJSON(decimal(28, 0), R"([
+    auto expected = ArrayFromJSON(decimal128(28, 0), R"([
           "02.",
           "30.",
           "22.",
@@ -913,7 +919,7 @@ TEST(Cast, Decimal256ToDecimal128) {
     auto d_5_2 = ArrayFromJSON(decimal256(42, 2), R"([
           "12.34",
            "0.56"])");
-    auto d_4_2 = ArrayFromJSON(decimal(4, 2), R"([
+    auto d_4_2 = ArrayFromJSON(decimal128(4, 2), R"([
           "12.34",
            "0.56"])");
 
@@ -930,12 +936,12 @@ TEST(Cast, Decimal256ToDecimal128) {
        "30.",
       null])");
 
-  auto d128_28_0 = ArrayFromJSON(decimal(28, 0), R"([
+  auto d128_28_0 = ArrayFromJSON(decimal128(28, 0), R"([
       "-02.",
        "30.",
       null])");
 
-  auto d128_38_10_roundtripped = ArrayFromJSON(decimal(38, 10), R"([
+  auto d128_38_10_roundtripped = ArrayFromJSON(decimal128(38, 10), R"([
       "-02.0000000000",
        "30.0000000000",
       null])");
@@ -953,12 +959,13 @@ TEST(Cast, Decimal256ToDecimal128) {
   // Precision loss without rescale leads to truncation
   auto d256_4_2 = ArrayFromJSON(decimal256(4, 2), R"(["12.34"])");
   for (auto expected : {
-           ArrayFromJSON(decimal(3, 2), R"(["12.34"])"),
-           ArrayFromJSON(decimal(4, 3), R"(["12.340"])"),
-           ArrayFromJSON(decimal(2, 1), R"(["12.3"])"),
+           ArrayFromJSON(decimal128(3, 2), R"(["12.34"])"),
+           ArrayFromJSON(decimal128(4, 3), R"(["12.340"])"),
+           ArrayFromJSON(decimal128(2, 1), R"(["12.3"])"),
        }) {
     options.allow_decimal_truncate = true;
-    CheckCast(d256_4_2, expected, options);
+    ASSERT_OK_AND_ASSIGN(auto invalid, Cast(d256_4_2, expected->type(), options));
+    ASSERT_RAISES(Invalid, invalid.make_array()->ValidateFull());
 
     options.allow_decimal_truncate = false;
     options.to_type = expected->type();
@@ -968,7 +975,7 @@ TEST(Cast, Decimal256ToDecimal128) {
 
 TEST(Cast, FloatingToDecimal) {
   for (auto float_type : {float32(), float64()}) {
-    for (auto decimal_type : {decimal(5, 2), decimal256(5, 2)}) {
+    for (auto decimal_type : {decimal128(5, 2), decimal256(5, 2)}) {
       CheckCast(
           ArrayFromJSON(float_type, "[0.0, null, 123.45, 123.456, 999.994]"),
           ArrayFromJSON(decimal_type, R"(["0.00", null, "123.45", "123.46", "999.99"])"));
@@ -999,12 +1006,12 @@ TEST(Cast, FloatingToDecimal) {
 
     CheckCast(ArrayFromJSON(float32(), "[1.8446746e+15, -1.8446746e+15]"),
               ArrayFromJSON(decimal_type(20, 4),
-                            R"(["1844674627273280.7168", "-1844674627273280.7168"])"));
+                            R"(["1844674629206016.0000", "-1844674629206016.0000"])"));
 
     CheckCast(
         ArrayFromJSON(float64(), "[1.8446744073709556e+15, -1.8446744073709556e+15]"),
         ArrayFromJSON(decimal_type(20, 4),
-                      R"(["1844674407370955.5712", "-1844674407370955.5712"])"));
+                      R"(["1844674407370955.5000", "-1844674407370955.5000"])"));
 
     // Edge cases are tested for Decimal128::FromReal() and Decimal256::FromReal
   }
@@ -1012,13 +1019,23 @@ TEST(Cast, FloatingToDecimal) {
 
 TEST(Cast, DecimalToFloating) {
   for (auto float_type : {float32(), float64()}) {
-    for (auto decimal_type : {decimal(5, 2), decimal256(5, 2)}) {
+    for (auto decimal_type : {decimal128(5, 2), decimal256(5, 2)}) {
       CheckCast(ArrayFromJSON(decimal_type, R"(["0.00", null, "123.45", "999.99"])"),
                 ArrayFromJSON(float_type, "[0.0, null, 123.45, 999.99]"));
     }
   }
 
-  // Edge cases are tested for Decimal128::ToReal() and Decimal256::ToReal()
+  // Edge cases are tested for Decimal128::ToReal() and Decimal256::ToReal() in
+  // decimal_test.cc
+}
+
+TEST(Cast, DecimalToString) {
+  for (auto string_type : {utf8(), large_utf8()}) {
+    for (auto decimal_type : {decimal128(5, 2), decimal256(5, 2)}) {
+      CheckCast(ArrayFromJSON(decimal_type, R"(["0.00", null, "123.45", "999.99"])"),
+                ArrayFromJSON(string_type, R"(["0.00", null, "123.45", "999.99"])"));
+    }
+  }
 }
 
 TEST(Cast, TimestampToTimestamp) {
@@ -1050,6 +1067,10 @@ TEST(Cast, TimestampToTimestamp) {
     options.allow_time_truncate = true;
     CheckCast(will_be_truncated, coarse, options);
   }
+
+  options.to_type = timestamp(TimeUnit::SECOND);
+  CheckCast(ArrayFromJSON(timestamp(TimeUnit::SECOND, "UTC"), "[0, null, 200, 1, 2]"),
+            ArrayFromJSON(timestamp(TimeUnit::SECOND), "[0, null, 200, 1, 2]"), options);
 
   for (auto types : {
            TimestampTypePair{timestamp(TimeUnit::SECOND), timestamp(TimeUnit::MICRO)},
@@ -1109,6 +1130,10 @@ TEST(Cast, TimestampZeroCopy) {
   }
   CheckCastZeroCopy(ArrayFromJSON(int64(), "[0, null, 2000, 1000, 0]"),
                     timestamp(TimeUnit::SECOND));
+
+  CheckCastZeroCopy(
+      ArrayFromJSON(timestamp(TimeUnit::SECOND, "UTC"), "[0, null, 2000, 1000, 0]"),
+      timestamp(TimeUnit::SECOND));
 }
 
 TEST(Cast, TimestampToTimestampMultiplyOverflow) {
@@ -1140,6 +1165,16 @@ constexpr char kTimestampSecondsJson[] =
           "2012-01-01 01:02:03", null])";
 constexpr char kTimestampExtremeJson[] =
     R"(["1677-09-20T00:00:59.123456", "2262-04-13T23:23:23.999999"])";
+
+class CastTimezone : public ::testing::Test {
+ protected:
+  void SetUp() override {
+#ifdef _WIN32
+    // Initialize timezone database on Windows
+    ASSERT_OK(InitTestTimezoneDatabase());
+#endif
+  }
+};
 
 TEST(Cast, TimestampToDate) {
   // See scalar_temporal_test.cc
@@ -1176,12 +1211,7 @@ TEST(Cast, TimestampToDate) {
   }
 }
 
-TEST(Cast, ZonedTimestampToDate) {
-#ifdef _WIN32
-  // TODO(ARROW-13168): we lack tzdb on Windows
-  GTEST_SKIP() << "ARROW-13168: no access to timezone database on Windows";
-#endif
-
+TEST_F(CastTimezone, ZonedTimestampToDate) {
   {
     // See TestZoned in scalar_temporal_test.cc
     auto timestamps =
@@ -1372,12 +1402,7 @@ TEST(Cast, TimestampToTime) {
   }
 }
 
-TEST(Cast, ZonedTimestampToTime) {
-#ifdef _WIN32
-  // TODO(ARROW-13168): we lack tzdb on Windows
-  GTEST_SKIP() << "ARROW-13168: no access to timezone database on Windows";
-#endif
-
+TEST_F(CastTimezone, ZonedTimestampToTime) {
   CheckCast(ArrayFromJSON(timestamp(TimeUnit::NANO, "Pacific/Marquesas"), kTimestampJson),
             ArrayFromJSON(time64(TimeUnit::NANO), R"([
           52259123456789, 50003999999999, 56480001001001, 65000000000000,
@@ -1547,6 +1572,59 @@ TEST(Cast, TimestampToString) {
     CheckCast(
         ArrayFromJSON(timestamp(TimeUnit::SECOND), "[-30610224000, -5364662400]"),
         ArrayFromJSON(string_type, R"(["1000-01-01 00:00:00", "1800-01-01 00:00:00"])"));
+
+    CheckCast(
+        ArrayFromJSON(timestamp(TimeUnit::MILLI), "[-30610224000000, -5364662400000]"),
+        ArrayFromJSON(string_type,
+                      R"(["1000-01-01 00:00:00.000", "1800-01-01 00:00:00.000"])"));
+
+    CheckCast(
+        ArrayFromJSON(timestamp(TimeUnit::MICRO),
+                      "[-30610224000000000, -5364662400000000]"),
+        ArrayFromJSON(string_type,
+                      R"(["1000-01-01 00:00:00.000000", "1800-01-01 00:00:00.000000"])"));
+
+    CheckCast(
+        ArrayFromJSON(timestamp(TimeUnit::NANO),
+                      "[-596933876543210988, 349837323456789012]"),
+        ArrayFromJSON(
+            string_type,
+            R"(["1951-02-01 01:02:03.456789012", "1981-02-01 01:02:03.456789012"])"));
+  }
+}
+
+TEST_F(CastTimezone, TimestampWithZoneToString) {
+  for (auto string_type : {utf8(), large_utf8()}) {
+    CheckCast(
+        ArrayFromJSON(timestamp(TimeUnit::SECOND, "UTC"), "[-30610224000, -5364662400]"),
+        ArrayFromJSON(string_type,
+                      R"(["1000-01-01 00:00:00Z", "1800-01-01 00:00:00Z"])"));
+
+    CheckCast(
+        ArrayFromJSON(timestamp(TimeUnit::SECOND, "America/Phoenix"),
+                      "[-34226955, 1456767743]"),
+        ArrayFromJSON(string_type,
+                      R"(["1968-11-30 13:30:45-0700", "2016-02-29 10:42:23-0700"])"));
+
+    CheckCast(ArrayFromJSON(timestamp(TimeUnit::MILLI, "America/Phoenix"),
+                            "[-34226955877, 1456767743456]"),
+              ArrayFromJSON(
+                  string_type,
+                  R"(["1968-11-30 13:30:44.123-0700", "2016-02-29 10:42:23.456-0700"])"));
+
+    CheckCast(
+        ArrayFromJSON(timestamp(TimeUnit::MICRO, "America/Phoenix"),
+                      "[-34226955877000, 1456767743456789]"),
+        ArrayFromJSON(
+            string_type,
+            R"(["1968-11-30 13:30:44.123000-0700", "2016-02-29 10:42:23.456789-0700"])"));
+
+    CheckCast(
+        ArrayFromJSON(timestamp(TimeUnit::NANO, "America/Phoenix"),
+                      "[-34226955876543211, 1456767743456789246]"),
+        ArrayFromJSON(
+            string_type,
+            R"(["1968-11-30 13:30:44.123456789-0700", "2016-02-29 10:42:23.456789246-0700"])"));
   }
 }
 
@@ -1596,10 +1674,11 @@ TEST(Cast, DateZeroCopy) {
            date64(),
            int64(),  // ARROW-1773: cast to int64
        }) {
-    CheckCastZeroCopy(ArrayFromJSON(date64(), "[0, null, 2000, 1000, 0]"),
+    CheckCastZeroCopy(ArrayFromJSON(date64(), "[0, null, 172800000, 86400000, 0]"),
                       zero_copy_to_type);
   }
-  CheckCastZeroCopy(ArrayFromJSON(int64(), "[0, null, 2000, 1000, 0]"), date64());
+  CheckCastZeroCopy(ArrayFromJSON(int64(), "[0, null, 172800000, 86400000, 0]"),
+                    date64());
 }
 
 TEST(Cast, DurationToDuration) {
@@ -1700,6 +1779,15 @@ TEST(Cast, DurationToDurationMultiplyOverflow) {
       options);
 }
 
+TEST(Cast, DurationToString) {
+  for (auto string_type : {utf8(), large_utf8()}) {
+    for (auto unit : TimeUnit::values()) {
+      CheckCast(ArrayFromJSON(duration(unit), "[0, null, 1234567, 2000]"),
+                ArrayFromJSON(string_type, R"(["0", null, "1234567", "2000"])"));
+    }
+  }
+}
+
 TEST(Cast, MiscToFloating) {
   for (auto to_type : {float32(), float64()}) {
     CheckCast(ArrayFromJSON(int16(), "[0, null, 200, 1, 2]"),
@@ -1738,7 +1826,7 @@ TEST(Cast, UnsupportedTargetType) {
   const auto to_type = dense_union({field("a", int32())});
 
   // Try through concrete API
-  const char* expected_message = "Unsupported cast from int32 to dense_union";
+  const char* expected_message = "Unsupported cast to dense_union<a: int32=0> from int32";
   EXPECT_RAISES_WITH_MESSAGE_THAT(NotImplemented, ::testing::HasSubstr(expected_message),
                                   Cast(*arr, to_type));
 
@@ -1849,6 +1937,30 @@ TEST(Cast, StringToFloating) {
   }
 }
 
+TEST(Cast, StringToDecimal) {
+  for (auto string_type : {utf8(), large_utf8()}) {
+    for (auto decimal_type : {decimal128(5, 2), decimal256(5, 2)}) {
+      auto strings =
+          ArrayFromJSON(string_type, R"(["0.01", null, "127.32", "200.43", "0.54"])");
+      auto decimals =
+          ArrayFromJSON(decimal_type, R"(["0.01", null, "127.32", "200.43", "0.54"])");
+      CheckCast(strings, decimals);
+
+      for (const auto& not_decimal : std::vector<std::string>{"z"}) {
+        auto options = CastOptions::Safe(decimal128(5, 2));
+        CheckCastFails(ArrayFromJSON(string_type, "[\"" + not_decimal + "\"]"), options);
+      }
+
+#if !defined(_WIN32) || defined(NDEBUG)
+      // Test that casting is locale-independent
+      // French locale uses the comma as decimal point
+      LocaleGuard locale_guard("fr_FR.UTF-8");
+      CheckCast(strings, decimals);
+#endif
+    }
+  }
+}
+
 TEST(Cast, StringToTimestamp) {
   for (auto string_type : {utf8(), large_utf8()}) {
     auto strings = ArrayFromJSON(string_type, R"(["1970-01-01", null, "2000-02-29"])");
@@ -1870,7 +1982,54 @@ TEST(Cast, StringToTimestamp) {
       }
     }
 
-    // NOTE: timestamp parsing is tested comprehensively in parsing-util-test.cc
+    auto zoned = ArrayFromJSON(string_type,
+                               R"(["2020-02-29T00:00:00Z", "2020-03-02T10:11:12+0102"])");
+    auto mixed = ArrayFromJSON(string_type,
+                               R"(["2020-03-02T10:11:12+0102", "2020-02-29T00:00:00"])");
+
+    // Timestamp with zone offset should not parse as naive
+    CheckCastFails(zoned, CastOptions::Safe(timestamp(TimeUnit::SECOND)));
+
+    // Mixed zoned/unzoned should not parse as naive
+    CheckCastFails(mixed, CastOptions::Safe(timestamp(TimeUnit::SECOND)));
+    EXPECT_RAISES_WITH_MESSAGE_THAT(
+        Invalid, ::testing::HasSubstr("expected no zone offset"),
+        Cast(mixed, CastOptions::Safe(timestamp(TimeUnit::SECOND))));
+
+    // ...or as timestamp with timezone
+    EXPECT_RAISES_WITH_MESSAGE_THAT(
+        Invalid, ::testing::HasSubstr("expected a zone offset"),
+        Cast(mixed, CastOptions::Safe(timestamp(TimeUnit::SECOND, "UTC"))));
+
+    // Unzoned should not parse as timestamp with timezone
+    EXPECT_RAISES_WITH_MESSAGE_THAT(
+        Invalid, ::testing::HasSubstr("expected a zone offset"),
+        Cast(strings, CastOptions::Safe(timestamp(TimeUnit::SECOND, "UTC"))));
+
+    // Timestamp with zone offset can parse as any time zone (since they're unambiguous)
+    CheckCast(zoned, ArrayFromJSON(timestamp(TimeUnit::SECOND, "UTC"),
+                                   "[1582934400, 1583140152]"));
+    CheckCast(zoned, ArrayFromJSON(timestamp(TimeUnit::SECOND, "America/Phoenix"),
+                                   "[1582934400, 1583140152]"));
+
+    // NOTE: timestamp parsing is tested comprehensively in value_parsing_test.cc
+  }
+}
+
+TEST(Cast, StringToDate) {
+  for (auto string_type : {utf8(), large_utf8()}) {
+    auto strings = ArrayFromJSON(string_type, R"(["1970-01-01", null, "2000-02-29"])");
+
+    CheckCast(strings, ArrayFromJSON(date32(), "[0, null, 11016]"));
+    CheckCast(strings, ArrayFromJSON(date64(), "[0, null, 951782400000]"));
+
+    for (auto date_type : {date32(), date64()}) {
+      for (std::string not_ts : {"", "2012-01-xx", "2012-01-01 09:00:00"}) {
+        auto options = CastOptions::Safe(date_type);
+        CheckCastFails(ArrayFromJSON(string_type, "[\"" + not_ts + "\"]"), options);
+      }
+    }
+    // NOTE: YYYY-MM-DD parsing is tested comprehensively in value_parsing_test.cc
   }
 }
 
@@ -1941,7 +2100,10 @@ TEST(Cast, BinaryToString) {
 
     // N.B. null buffer is not always the same if input sliced
     AssertBufferSame(*invalid_utf8, *strings, 0);
-    ASSERT_EQ(invalid_utf8->data()->buffers[1].get(), strings->data()->buffers[2].get());
+
+    // ARROW-16757: we no longer zero copy, but the contents are equal
+    ASSERT_NE(invalid_utf8->data()->buffers[1].get(), strings->data()->buffers[2].get());
+    ASSERT_TRUE(invalid_utf8->data()->buffers[1]->Equals(*strings->data()->buffers[2]));
   }
 }
 
@@ -1975,7 +2137,10 @@ TEST(Cast, BinaryOrStringToBinary) {
 
     // N.B. null buffer is not always the same if input sliced
     AssertBufferSame(*invalid_utf8, *strings, 0);
-    ASSERT_EQ(invalid_utf8->data()->buffers[1].get(), strings->data()->buffers[2].get());
+
+    // ARROW-16757: we no longer zero copy, but the contents are equal
+    ASSERT_NE(invalid_utf8->data()->buffers[1].get(), strings->data()->buffers[2].get());
+    ASSERT_TRUE(invalid_utf8->data()->buffers[1]->Equals(*strings->data()->buffers[2]));
 
     // invalid utf-8 masked by a null bit is not an error
     CheckCast(MaskArrayWithNullsAt(invalid_utf8, {4}),
@@ -2003,6 +2168,22 @@ TEST(Cast, StringToString) {
       ASSERT_RAISES(Invalid, strings->ValidateFull());
       AssertBinaryZeroCopy(invalid_utf8, strings);
     }
+  }
+}
+
+TEST(Cast, BinaryOrStringToFixedSizeBinary) {
+  for (auto in_type : {utf8(), large_utf8(), binary(), large_binary()}) {
+    auto valid_input = ArrayFromJSON(in_type, R"(["foo", null, "bar", "baz", "quu"])");
+    auto invalid_input = ArrayFromJSON(in_type, R"(["foo", null, "bar", "baz", "quux"])");
+
+    CheckCast(valid_input, ArrayFromJSON(fixed_size_binary(3), R"(["foo", null, "bar",
+          "baz", "quu"])"));
+    CheckCastFails(invalid_input, CastOptions::Safe(fixed_size_binary(3)));
+    CheckCastFails(valid_input, CastOptions::Safe(fixed_size_binary(5)));
+
+    auto empty_input = ArrayFromJSON(in_type, "[]");
+    CheckCast(empty_input, ArrayFromJSON(fixed_size_binary(3), "[]"));
+    CheckCast(empty_input, ArrayFromJSON(fixed_size_binary(5), "[]"));
   }
 }
 
@@ -2110,6 +2291,575 @@ TEST(Cast, ListToListOptionsPassthru) {
       options.allow_int_overflow = true;
       CheckCast(list_int32, ArrayFromJSON(make_dest_list(int16()), "[[32689]]"), options);
     }
+  }
+}
+
+static void CheckFSLToFSL(const std::vector<std::shared_ptr<DataType>>& value_types,
+                          const std::string& json_data,
+                          const std::string& tweaked_val_bit_string,
+                          bool children_nulls = true) {
+  for (const auto& src_value_type : value_types) {
+    for (const auto& dest_value_type : value_types) {
+      const auto src_type = fixed_size_list(src_value_type, 2);
+      const auto dest_type = fixed_size_list(dest_value_type, 2);
+      ARROW_SCOPED_TRACE("src_type = ", src_type->ToString(),
+                         ", dest_type = ", dest_type->ToString());
+      auto src_array = ArrayFromJSON(src_type, json_data);
+      CheckCast(src_array, ArrayFromJSON(dest_type, json_data));
+      {
+        auto tweaked_array = TweakValidityBit(src_array, 1, false);
+        CheckCast(tweaked_array, ArrayFromJSON(dest_type, tweaked_val_bit_string));
+      }
+
+      // Sliced Children
+      const auto child_data =
+          children_nulls ? "[1, 2, null, 4, 5, null]" : "[1, 2, 3, 4, 5, 6]";
+      auto children_src = ArrayFromJSON(src_value_type, child_data);
+      children_src = children_src->Slice(2);
+      auto fsl = std::make_shared<FixedSizeListArray>(src_type, 2, children_src);
+      {
+        const auto expected_data = children_nulls ? "[null, 4, 5, null]" : "[3, 4, 5, 6]";
+        auto children_dst = ArrayFromJSON(dest_value_type, expected_data);
+        auto expected = std::make_shared<FixedSizeListArray>(dest_type, 2, children_dst);
+        CheckCast(fsl, expected);
+      }
+      {
+        const auto expected_data =
+            children_nulls ? "[[null, 4], null]" : "[[3, 4], null]";
+        auto tweaked_array = TweakValidityBit(fsl, 1, false);
+        auto expected = ArrayFromJSON(dest_type, expected_data);
+        CheckCast(tweaked_array, expected);
+      }
+
+      // Invalid fixed_size_list cast.
+      const auto incorrect_dest_type = fixed_size_list(dest_value_type, 3);
+      ASSERT_RAISES(TypeError, Cast(src_array, CastOptions::Safe(incorrect_dest_type)))
+          << "Size of FixedList is not the same.";
+    }
+  }
+}
+
+TEST(Cast, FSLToFSL) {
+  CheckFSLToFSL({int32(), float32(), int64()}, "[[0, 1], [2, 3], [null, 5], null]",
+                /*tweaked_val_bit_string=*/"[[0, 1], null, [null, 5], null]");
+}
+
+TEST(Cast, FSLToFSLNoNulls) {
+  CheckFSLToFSL({int32(), float32(), int64()}, "[[0, 1], [2, 3], [4, 5]]",
+                /*tweaked_val_bit_string=*/"[[0, 1], null, [4, 5]]",
+                /*children_null=*/false);
+}
+
+TEST(Cast, FSLToFSLOptionsPassThru) {
+  auto fsl_int32 = ArrayFromJSON(fixed_size_list(int32(), 1), "[[87654321]]");
+
+  auto options = CastOptions::Safe(fixed_size_list(int16(), 1));
+  CheckCastFails(fsl_int32, options);
+
+  options.allow_int_overflow = true;
+  CheckCast(fsl_int32, ArrayFromJSON(fixed_size_list(int16(), 1), "[[32689]]"), options);
+}
+
+void CheckCastList(const std::shared_ptr<DataType>& from_type,
+                   const std::shared_ptr<DataType>& to_type,
+                   const std::string& json_data) {
+  CheckCast(ArrayFromJSON(from_type, json_data), ArrayFromJSON(to_type, json_data));
+}
+
+TEST(Cast, FSLToList) {
+  CheckCastList(fixed_size_list(int16(), 2), list(int16()),
+                "[[0, 1], [2, 3], [null, 5], null]");
+  // Large variant
+  CheckCastList(fixed_size_list(int16(), 2), large_list(int16()),
+                "[[0, 1], [2, 3], [null, 5], null]");
+  // Different child types
+  CheckCastList(fixed_size_list(int16(), 2), list(int32()),
+                "[[0, 1], [2, 3], [null, 5], null]");
+  // No nulls
+  CheckCastList(fixed_size_list(int16(), 2), list(int32()), "[[0, 1], [2, 3], [4, 5]]");
+  // Nested lists
+  CheckCastList(fixed_size_list(list(int16()), 2), list(list(int32())),
+                "[[[0, 1], [2, 3]], [[4, 5], null]]");
+  // Sliced children (top-level slicing handled in CheckCast)
+  auto children_src = ArrayFromJSON(int32(), "[1, 2, null, 4, 5, null]");
+  children_src = children_src->Slice(2);
+  auto from =
+      std::make_shared<FixedSizeListArray>(fixed_size_list(int32(), 2), 2, children_src);
+  auto to = ArrayFromJSON(list(int32()), "[[null, 4], [5, null]]");
+  CheckCast(from, to);
+  // Options pass through
+  auto fsl_int32 = ArrayFromJSON(fixed_size_list(int32(), 1), "[[87654321]]");
+  auto options = CastOptions::Safe(list(int16()));
+  CheckCastFails(fsl_int32, options);
+  options.allow_int_overflow = true;
+  CheckCast(fsl_int32, ArrayFromJSON(fixed_size_list(int16(), 1), "[[32689]]"), options);
+}
+
+TEST(Cast, ListToFSL) {
+  CheckCastList(list(int16()), fixed_size_list(int16(), 2),
+                "[[0, 1], [2, 3], null, [null, 5], null]");
+  // Large variant
+  CheckCastList(large_list(int16()), fixed_size_list(int16(), 2),
+                "[[0, 1], [2, 3], null, [null, 5], null]");
+  // Different child types
+  CheckCastList(list(int32()), fixed_size_list(int16(), 2),
+                "[[0, 1], [2, 3], null, [null, 5], null]");
+  // No nulls
+  CheckCastList(list(int32()), fixed_size_list(int16(), 2), "[[0, 1], [2, 3], [4, 5]]");
+  // Nested lists
+  CheckCastList(list(list(int32())), fixed_size_list(list(int16()), 2),
+                "[[[0, 1], [2, 3]], [[4, 5], null]]");
+  // Sliced children (top-level slicing handled in CheckCast)
+  {
+    auto children_src = ArrayFromJSON(int32(), "[1, 2, null, 4, 5, null]");
+    children_src = children_src->Slice(2);
+    ASSERT_OK_AND_ASSIGN(
+        auto from,
+        ListArray::FromArrays(*ArrayFromJSON(int32(), "[0, 2, 4]"), *children_src));
+    auto to = ArrayFromJSON(fixed_size_list(int32(), 2), "[[null, 4], [5, null]]");
+    CheckCast(from, to);
+  }
+
+  // Null slots with non-zero size
+  {
+    auto from = MaskArrayWithNullsAt(
+        ArrayFromJSON(list(int32()), "[[0, 1], [2, 3], [4, 5], [6, 7], [8, 9]]"),
+        {1, 2, 4});
+    auto to =
+        ArrayFromJSON(fixed_size_list(int32(), 2), "[[0, 1], null, null, [6, 7], null]");
+    CheckCast(from, to);
+  }
+
+  // Options pass through
+  auto fsl_int32 = ArrayFromJSON(fixed_size_list(int32(), 1), "[[87654321]]");
+  auto options = CastOptions::Safe(list(int16()));
+  CheckCastFails(fsl_int32, options);
+  options.allow_int_overflow = true;
+  CheckCast(fsl_int32, ArrayFromJSON(fixed_size_list(int16(), 1), "[[32689]]"), options);
+
+  // Invalid fixed_size_list cast if inconsistent size
+  ASSERT_RAISES(Invalid, Cast(ArrayFromJSON(list(int32()), "[[0, 1, 2], null, [3, 4]]"),
+                              CastOptions::Safe(fixed_size_list(int32(), 3))));
+}
+
+TEST(Cast, CastMap) {
+  const std::string map_json =
+      "[[[\"x\", 1], [\"y\", 8], [\"z\", 9]], [[\"x\", 6]], [[\"y\", 36]]]";
+  const std::string map_json_nullable =
+      "[[[\"x\", 1], [\"y\", null], [\"z\", 9]], null, [[\"y\", 36]]]";
+
+  auto CheckMapCast = [map_json,
+                       map_json_nullable](const std::shared_ptr<DataType>& dst_type) {
+    std::shared_ptr<DataType> src_type =
+        std::make_shared<MapType>(field("x", utf8(), false), field("y", int64()));
+    std::shared_ptr<Array> src = ArrayFromJSON(src_type, map_json);
+    std::shared_ptr<Array> dst = ArrayFromJSON(dst_type, map_json);
+    CheckCast(src, dst);
+
+    src = ArrayFromJSON(src_type, map_json_nullable);
+    dst = ArrayFromJSON(dst_type, map_json_nullable);
+    CheckCast(src, dst);
+  };
+
+  // Can rename fields
+  CheckMapCast(std::make_shared<MapType>(field("a", utf8(), false), field("b", int64())));
+  // Can map keys and values
+  CheckMapCast(map(large_utf8(), field("y", int32())));
+  // Can cast a map to a to a list<struct<keys=.., values=..>>
+  CheckMapCast(list(struct_({field("a", utf8()), field("b", int64())})));
+  // Can cast a map to a large_list<struct<keys=.., values=..>>
+  CheckMapCast(large_list(struct_({field("a", utf8()), field("b", int64())})));
+
+  // Can rename nested field names
+  std::shared_ptr<DataType> src_type = map(utf8(), field("x", list(field("a", int64()))));
+  std::shared_ptr<DataType> dst_type = map(utf8(), field("y", list(field("b", int64()))));
+
+  std::shared_ptr<Array> src =
+      ArrayFromJSON(src_type, "[[[\"1\", [1,2,3]]], [[\"2\", [4,5,6]]]]");
+  std::shared_ptr<Array> dst =
+      ArrayFromJSON(dst_type, "[[[\"1\", [1,2,3]]], [[\"2\", [4,5,6]]]]");
+
+  CheckCast(src, dst);
+
+  // Cannot cast to a list<struct<[fields]>> if there are not exactly 2 fields
+  dst_type = list(
+      struct_({field("key", int32()), field("value", int64()), field("extra", int64())}));
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      TypeError,
+      ::testing::HasSubstr("must be cast to a list<struct> with exactly two fields"),
+      Cast(src, dst_type));
+}
+
+static void CheckStructToStruct(
+    const std::vector<std::shared_ptr<DataType>>& value_types) {
+  for (const auto& src_value_type : value_types) {
+    for (const auto& dest_value_type : value_types) {
+      std::vector<std::string> field_names = {"a", "b"};
+      std::shared_ptr<Array> a1, b1, a2, b2;
+      a1 = ArrayFromJSON(src_value_type, "[1, 2, 3, 4, null]");
+      b1 = ArrayFromJSON(src_value_type, "[null, 7, 8, 9, 0]");
+      a2 = ArrayFromJSON(dest_value_type, "[1, 2, 3, 4, null]");
+      b2 = ArrayFromJSON(dest_value_type, "[null, 7, 8, 9, 0]");
+      ASSERT_OK_AND_ASSIGN(auto src, StructArray::Make({a1, b1}, field_names));
+      ASSERT_OK_AND_ASSIGN(auto dest, StructArray::Make({a2, b2}, field_names));
+
+      CheckCast(src, dest);
+
+      std::shared_ptr<Buffer> null_bitmap;
+      BitmapFromVector<int>({0, 1, 0, 1, 0}, &null_bitmap);
+
+      ASSERT_OK_AND_ASSIGN(auto src_nulls,
+                           StructArray::Make({a1, b1}, field_names, null_bitmap));
+      ASSERT_OK_AND_ASSIGN(auto dest_nulls,
+                           StructArray::Make({a2, b2}, field_names, null_bitmap));
+      CheckCast(src_nulls, dest_nulls);
+    }
+  }
+}
+
+static void CheckStructToStructSubset(
+    const std::vector<std::shared_ptr<DataType>>& value_types) {
+  for (const auto& src_value_type : value_types) {
+    ARROW_SCOPED_TRACE("From type: ", src_value_type->ToString());
+    for (const auto& dest_value_type : value_types) {
+      ARROW_SCOPED_TRACE("To type: ", dest_value_type->ToString());
+
+      std::vector<std::string> field_names = {"a", "b", "c", "d", "e"};
+
+      std::shared_ptr<Array> a1, b1, c1, d1, e1;
+      a1 = ArrayFromJSON(src_value_type, "[1, 2, 5]");
+      b1 = ArrayFromJSON(src_value_type, "[3, 4, 7]");
+      c1 = ArrayFromJSON(src_value_type, "[9, 11, 44]");
+      d1 = ArrayFromJSON(src_value_type, "[6, 51, 49]");
+      e1 = ArrayFromJSON(src_value_type, "[19, 17, 74]");
+
+      std::shared_ptr<Array> a2, b2, c2, d2, e2;
+      a2 = ArrayFromJSON(dest_value_type, "[1, 2, 5]");
+      b2 = ArrayFromJSON(dest_value_type, "[3, 4, 7]");
+      c2 = ArrayFromJSON(dest_value_type, "[9, 11, 44]");
+      d2 = ArrayFromJSON(dest_value_type, "[6, 51, 49]");
+      e2 = ArrayFromJSON(dest_value_type, "[19, 17, 74]");
+
+      ASSERT_OK_AND_ASSIGN(auto src,
+                           StructArray::Make({a1, b1, c1, d1, e1}, field_names));
+      ASSERT_OK_AND_ASSIGN(auto dest1,
+                           StructArray::Make({a2}, std::vector<std::string>{"a"}));
+      CheckCast(src, dest1);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest2, StructArray::Make({b2, c2}, std::vector<std::string>{"b", "c"}));
+      CheckCast(src, dest2);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest3,
+          StructArray::Make({c2, d2, e2}, std::vector<std::string>{"c", "d", "e"}));
+      CheckCast(src, dest3);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest4, StructArray::Make({a2, b2, c2, e2},
+                                        std::vector<std::string>{"a", "b", "c", "e"}));
+      CheckCast(src, dest4);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest5, StructArray::Make({a2, b2, c2, d2, e2}, {"a", "b", "c", "d", "e"}));
+      CheckCast(src, dest5);
+
+      // field does not exist
+      const auto dest6 = arrow::struct_({std::make_shared<Field>("a", int8()),
+                                         std::make_shared<Field>("d", int16()),
+                                         std::make_shared<Field>("f", int64())});
+      const auto options6 = CastOptions::Safe(dest6);
+      EXPECT_RAISES_WITH_MESSAGE_THAT(
+          TypeError,
+          ::testing::HasSubstr("struct fields don't match or are in the wrong order"),
+          Cast(src, options6));
+
+      // fields in wrong order
+      const auto dest7 = arrow::struct_({std::make_shared<Field>("a", int8()),
+                                         std::make_shared<Field>("c", int16()),
+                                         std::make_shared<Field>("b", int64())});
+      const auto options7 = CastOptions::Safe(dest7);
+      EXPECT_RAISES_WITH_MESSAGE_THAT(
+          TypeError,
+          ::testing::HasSubstr("struct fields don't match or are in the wrong order"),
+          Cast(src, options7));
+
+      // duplicate missing field names
+      const auto dest8 = arrow::struct_(
+          {std::make_shared<Field>("a", int8()), std::make_shared<Field>("c", int16()),
+           std::make_shared<Field>("d", int32()), std::make_shared<Field>("a", int64())});
+      const auto options8 = CastOptions::Safe(dest8);
+      EXPECT_RAISES_WITH_MESSAGE_THAT(
+          TypeError,
+          ::testing::HasSubstr("struct fields don't match or are in the wrong order"),
+          Cast(src, options8));
+
+      // duplicate present field names
+      ASSERT_OK_AND_ASSIGN(
+          auto src_duplicate_field_names,
+          StructArray::Make({a1, b1, c1}, std::vector<std::string>{"a", "a", "a"}));
+
+      ASSERT_OK_AND_ASSIGN(auto dest1_duplicate_field_names,
+                           StructArray::Make({a2}, std::vector<std::string>{"a"}));
+      CheckCast(src_duplicate_field_names, dest1_duplicate_field_names);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest2_duplicate_field_names,
+          StructArray::Make({a2, b2}, std::vector<std::string>{"a", "a"}));
+      CheckCast(src_duplicate_field_names, dest2_duplicate_field_names);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest3_duplicate_field_names,
+          StructArray::Make({a2, b2, c2}, std::vector<std::string>{"a", "a", "a"}));
+      CheckCast(src_duplicate_field_names, dest3_duplicate_field_names);
+    }
+  }
+}
+
+static void CheckStructToStructSubsetWithNulls(
+    const std::vector<std::shared_ptr<DataType>>& value_types) {
+  for (const auto& src_value_type : value_types) {
+    ARROW_SCOPED_TRACE("From type: ", src_value_type->ToString());
+    for (const auto& dest_value_type : value_types) {
+      ARROW_SCOPED_TRACE("To type: ", dest_value_type->ToString());
+
+      std::vector<std::string> field_names = {"a", "b", "c", "d", "e"};
+
+      std::shared_ptr<Array> a1, b1, c1, d1, e1;
+      a1 = ArrayFromJSON(src_value_type, "[1, 2, 5]");
+      b1 = ArrayFromJSON(src_value_type, "[3, null, 7]");
+      c1 = ArrayFromJSON(src_value_type, "[9, 11, 44]");
+      d1 = ArrayFromJSON(src_value_type, "[6, 51, null]");
+      e1 = ArrayFromJSON(src_value_type, "[null, 17, 74]");
+
+      std::shared_ptr<Array> a2, b2, c2, d2, e2;
+      a2 = ArrayFromJSON(dest_value_type, "[1, 2, 5]");
+      b2 = ArrayFromJSON(dest_value_type, "[3, null, 7]");
+      c2 = ArrayFromJSON(dest_value_type, "[9, 11, 44]");
+      d2 = ArrayFromJSON(dest_value_type, "[6, 51, null]");
+      e2 = ArrayFromJSON(dest_value_type, "[null, 17, 74]");
+
+      std::shared_ptr<Buffer> null_bitmap;
+      BitmapFromVector<int>({0, 1, 0}, &null_bitmap);
+
+      ASSERT_OK_AND_ASSIGN(auto src_null, StructArray::Make({a1, b1, c1, d1, e1},
+                                                            field_names, null_bitmap));
+      ASSERT_OK_AND_ASSIGN(
+          auto dest1_null,
+          StructArray::Make({a2}, std::vector<std::string>{"a"}, null_bitmap));
+      CheckCast(src_null, dest1_null);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest2_null,
+          StructArray::Make({b2, c2}, std::vector<std::string>{"b", "c"}, null_bitmap));
+      CheckCast(src_null, dest2_null);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest3_null,
+          StructArray::Make({a2, d2, e2}, std::vector<std::string>{"a", "d", "e"},
+                            null_bitmap));
+      CheckCast(src_null, dest3_null);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest4_null,
+          StructArray::Make({a2, b2, c2, e2},
+                            std::vector<std::string>{"a", "b", "c", "e"}, null_bitmap));
+      CheckCast(src_null, dest4_null);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest5_null,
+          StructArray::Make({a2, b2, c2, d2, e2},
+                            std::vector<std::string>{"a", "b", "c", "d", "e"},
+                            null_bitmap));
+      CheckCast(src_null, dest5_null);
+
+      // field does not exist
+      const auto dest6_null = arrow::struct_({std::make_shared<Field>("a", int8()),
+                                              std::make_shared<Field>("d", int16()),
+                                              std::make_shared<Field>("f", int64())});
+      const auto options6_null = CastOptions::Safe(dest6_null);
+      EXPECT_RAISES_WITH_MESSAGE_THAT(
+          TypeError,
+          ::testing::HasSubstr("struct fields don't match or are in the wrong order"),
+          Cast(src_null, options6_null));
+
+      // fields in wrong order
+      const auto dest7_null = arrow::struct_({std::make_shared<Field>("a", int8()),
+                                              std::make_shared<Field>("c", int16()),
+                                              std::make_shared<Field>("b", int64())});
+      const auto options7_null = CastOptions::Safe(dest7_null);
+      EXPECT_RAISES_WITH_MESSAGE_THAT(
+          TypeError,
+          ::testing::HasSubstr("struct fields don't match or are in the wrong order"),
+          Cast(src_null, options7_null));
+
+      // duplicate missing field names
+      const auto dest8_null = arrow::struct_(
+          {std::make_shared<Field>("a", int8()), std::make_shared<Field>("c", int16()),
+           std::make_shared<Field>("d", int32()), std::make_shared<Field>("a", int64())});
+      const auto options8_null = CastOptions::Safe(dest8_null);
+      EXPECT_RAISES_WITH_MESSAGE_THAT(
+          TypeError,
+          ::testing::HasSubstr("struct fields don't match or are in the wrong order"),
+          Cast(src_null, options8_null));
+
+      // duplicate present field values
+      ASSERT_OK_AND_ASSIGN(
+          auto src_duplicate_field_names_null,
+          StructArray::Make({a1, b1, c1}, std::vector<std::string>{"a", "a", "a"},
+                            null_bitmap));
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest1_duplicate_field_names_null,
+          StructArray::Make({a2}, std::vector<std::string>{"a"}, null_bitmap));
+      CheckCast(src_duplicate_field_names_null, dest1_duplicate_field_names_null);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest2_duplicate_field_names_null,
+          StructArray::Make({a2, b2}, std::vector<std::string>{"a", "a"}, null_bitmap));
+      CheckCast(src_duplicate_field_names_null, dest2_duplicate_field_names_null);
+
+      ASSERT_OK_AND_ASSIGN(
+          auto dest3_duplicate_field_names_null,
+          StructArray::Make({a2, b2, c2}, std::vector<std::string>{"a", "a", "a"},
+                            null_bitmap));
+      CheckCast(src_duplicate_field_names_null, dest3_duplicate_field_names_null);
+    }
+  }
+}
+
+TEST(Cast, StructToSameSizedAndNamedStruct) { CheckStructToStruct(NumericTypes()); }
+
+TEST(Cast, StructToStructSubset) { CheckStructToStructSubset(NumericTypes()); }
+
+TEST(Cast, StructToStructSubsetWithNulls) {
+  CheckStructToStructSubsetWithNulls(NumericTypes());
+}
+
+TEST(Cast, StructToSameSizedButDifferentNamedStruct) {
+  std::vector<std::string> field_names = {"a", "b"};
+  std::shared_ptr<Array> a, b;
+  a = ArrayFromJSON(int8(), "[1, 2]");
+  b = ArrayFromJSON(int8(), "[3, 4]");
+  ASSERT_OK_AND_ASSIGN(auto src, StructArray::Make({a, b}, field_names));
+
+  const auto dest = arrow::struct_(
+      {std::make_shared<Field>("c", int8()), std::make_shared<Field>("d", int8())});
+  const auto options = CastOptions::Safe(dest);
+
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      TypeError,
+      ::testing::HasSubstr("struct fields don't match or are in the wrong order"),
+      Cast(src, options));
+}
+
+TEST(Cast, StructToBiggerStruct) {
+  std::vector<std::string> field_names = {"a", "b"};
+  std::shared_ptr<Array> a, b;
+  a = ArrayFromJSON(int8(), "[1, 2]");
+  b = ArrayFromJSON(int8(), "[3, 4]");
+  ASSERT_OK_AND_ASSIGN(auto src, StructArray::Make({a, b}, field_names));
+
+  const auto dest = arrow::struct_({std::make_shared<Field>("a", int8()),
+                                    std::make_shared<Field>("b", int8()),
+                                    std::make_shared<Field>("c", int8())});
+  const auto options = CastOptions::Safe(dest);
+
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      TypeError,
+      ::testing::HasSubstr("struct fields don't match or are in the wrong order"),
+      Cast(src, options));
+}
+
+TEST(Cast, StructToDifferentNullabilityStruct) {
+  {
+    // OK to go from non-nullable to nullable...
+    std::vector<std::shared_ptr<Field>> fields_src_non_nullable = {
+        std::make_shared<Field>("a", int8(), false),
+        std::make_shared<Field>("b", int8(), false),
+        std::make_shared<Field>("c", int8(), false)};
+    std::shared_ptr<Array> a_src_non_nullable, b_src_non_nullable, c_src_non_nullable;
+    a_src_non_nullable = ArrayFromJSON(int8(), "[11, 23, 56]");
+    b_src_non_nullable = ArrayFromJSON(int8(), "[32, 46, 37]");
+    c_src_non_nullable = ArrayFromJSON(int8(), "[95, 11, 44]");
+    ASSERT_OK_AND_ASSIGN(
+        auto src_non_nullable,
+        StructArray::Make({a_src_non_nullable, b_src_non_nullable, c_src_non_nullable},
+                          fields_src_non_nullable));
+
+    std::shared_ptr<Array> a_dest_nullable, b_dest_nullable, c_dest_nullable;
+    a_dest_nullable = ArrayFromJSON(int64(), "[11, 23, 56]");
+    b_dest_nullable = ArrayFromJSON(int64(), "[32, 46, 37]");
+    c_dest_nullable = ArrayFromJSON(int64(), "[95, 11, 44]");
+
+    std::vector<std::shared_ptr<Field>> fields_dest1_nullable = {
+        std::make_shared<Field>("a", int64(), true),
+        std::make_shared<Field>("b", int64(), true),
+        std::make_shared<Field>("c", int64(), true)};
+    ASSERT_OK_AND_ASSIGN(
+        auto dest1_nullable,
+        StructArray::Make({a_dest_nullable, b_dest_nullable, c_dest_nullable},
+                          fields_dest1_nullable));
+    CheckCast(src_non_nullable, dest1_nullable);
+
+    std::vector<std::shared_ptr<Field>> fields_dest2_nullable = {
+        std::make_shared<Field>("a", int64(), true),
+        std::make_shared<Field>("c", int64(), true)};
+    ASSERT_OK_AND_ASSIGN(
+        auto dest2_nullable,
+        StructArray::Make({a_dest_nullable, c_dest_nullable}, fields_dest2_nullable));
+    CheckCast(src_non_nullable, dest2_nullable);
+
+    std::vector<std::shared_ptr<Field>> fields_dest3_nullable = {
+        std::make_shared<Field>("b", int64(), true)};
+    ASSERT_OK_AND_ASSIGN(auto dest3_nullable,
+                         StructArray::Make({b_dest_nullable}, fields_dest3_nullable));
+    CheckCast(src_non_nullable, dest3_nullable);
+  }
+  {
+    // But NOT OK to go from nullable to non-nullable...
+    std::vector<std::shared_ptr<Field>> fields_src_nullable = {
+        std::make_shared<Field>("a", int8(), true),
+        std::make_shared<Field>("b", int8(), true),
+        std::make_shared<Field>("c", int8(), true)};
+    std::shared_ptr<Array> a_src_nullable, b_src_nullable, c_src_nullable;
+    a_src_nullable = ArrayFromJSON(int8(), "[1, null, 5]");
+    b_src_nullable = ArrayFromJSON(int8(), "[3, 4, null]");
+    c_src_nullable = ArrayFromJSON(int8(), "[9, 11, 44]");
+    ASSERT_OK_AND_ASSIGN(
+        auto src_nullable,
+        StructArray::Make({a_src_nullable, b_src_nullable, c_src_nullable},
+                          fields_src_nullable));
+
+    std::vector<std::shared_ptr<Field>> fields_dest1_non_nullable = {
+        std::make_shared<Field>("a", int64(), false),
+        std::make_shared<Field>("b", int64(), false),
+        std::make_shared<Field>("c", int64(), false)};
+    const auto dest1_non_nullable = arrow::struct_(fields_dest1_non_nullable);
+    const auto options1_non_nullable = CastOptions::Safe(dest1_non_nullable);
+    EXPECT_RAISES_WITH_MESSAGE_THAT(
+        TypeError,
+        ::testing::HasSubstr("cannot cast nullable field to non-nullable field"),
+        Cast(src_nullable, options1_non_nullable));
+
+    std::vector<std::shared_ptr<Field>> fields_dest2_non_nullable = {
+        std::make_shared<Field>("a", int64(), false),
+        std::make_shared<Field>("c", int64(), false)};
+    const auto dest2_non_nullable = arrow::struct_(fields_dest2_non_nullable);
+    const auto options2_non_nullable = CastOptions::Safe(dest2_non_nullable);
+    EXPECT_RAISES_WITH_MESSAGE_THAT(
+        TypeError,
+        ::testing::HasSubstr("cannot cast nullable field to non-nullable field"),
+        Cast(src_nullable, options2_non_nullable));
+
+    std::vector<std::shared_ptr<Field>> fields_dest3_non_nullable = {
+        std::make_shared<Field>("c", int64(), false)};
+    const auto dest3_non_nullable = arrow::struct_(fields_dest3_non_nullable);
+    const auto options3_non_nullable = CastOptions::Safe(dest3_non_nullable);
+    EXPECT_RAISES_WITH_MESSAGE_THAT(
+        TypeError,
+        ::testing::HasSubstr("cannot cast nullable field to non-nullable field"),
+        Cast(src_nullable, options3_non_nullable));
   }
 }
 
@@ -2259,6 +3009,13 @@ std::shared_ptr<Array> SmallintArrayFromJSON(const std::string& json_data) {
   return MakeArray(ext_data);
 }
 
+std::shared_ptr<Array> TinyintArrayFromJSON(const std::string& json_data) {
+  auto arr = ArrayFromJSON(int8(), json_data);
+  auto ext_data = arr->data()->Copy();
+  ext_data->type = tinyint();
+  return MakeArray(ext_data);
+}
+
 TEST(Cast, ExtensionTypeToIntDowncast) {
   auto smallint = std::make_shared<SmallintType>();
   ExtensionTypeGuard smallint_guard(smallint);
@@ -2296,6 +3053,68 @@ TEST(Cast, ExtensionTypeToIntDowncast) {
   }
 }
 
+TEST(Cast, PrimitiveToExtension) {
+  {
+    auto primitive_array = ArrayFromJSON(uint8(), "[0, 1, 3]");
+    auto extension_array = SmallintArrayFromJSON("[0, 1, 3]");
+    CastOptions options;
+    options.to_type = smallint();
+    CheckCast(primitive_array, extension_array, options);
+  }
+  {
+    CastOptions options;
+    options.to_type = smallint();
+    CheckCastFails(ArrayFromJSON(utf8(), "[\"hello\"]"), options);
+  }
+}
+
+TEST(Cast, ExtensionDictToExtension) {
+  auto extension_array = SmallintArrayFromJSON("[1, 2, 1]");
+  auto indices_array = ArrayFromJSON(int32(), "[0, 1, 0]");
+
+  ASSERT_OK_AND_ASSIGN(auto dict_array,
+                       DictionaryArray::FromArrays(indices_array, extension_array));
+
+  CastOptions options;
+  options.to_type = smallint();
+  CheckCast(dict_array, extension_array, options);
+}
+
+TEST(Cast, IntToExtensionTypeDowncast) {
+  CheckCast(ArrayFromJSON(uint8(), "[0, 100, 200, 1, 2]"),
+            SmallintArrayFromJSON("[0, 100, 200, 1, 2]"));
+
+  // int32 to Smallint(int16), with overflow
+  {
+    CastOptions options;
+    options.to_type = smallint();
+    CheckCastFails(ArrayFromJSON(int32(), "[0, null, 32768, 1, 3]"), options);
+
+    options.allow_int_overflow = true;
+    CheckCast(ArrayFromJSON(int32(), "[0, null, 32768, 1, 3]"),
+              SmallintArrayFromJSON("[0, null, -32768, 1, 3]"), options);
+  }
+
+  // int32 to Smallint(int16), with underflow
+  {
+    CastOptions options;
+    options.to_type = smallint();
+    CheckCastFails(ArrayFromJSON(int32(), "[0, null, -32769, 1, 3]"), options);
+
+    options.allow_int_overflow = true;
+    CheckCast(ArrayFromJSON(int32(), "[0, null, -32769, 1, 3]"),
+              SmallintArrayFromJSON("[0, null, 32767, 1, 3]"), options);
+  }
+
+  // Cannot cast between extension types when storage types differ
+  {
+    CastOptions options;
+    options.to_type = smallint();
+    auto tiny_array = TinyintArrayFromJSON("[0, 1, 3]");
+    ASSERT_NOT_OK(Cast(tiny_array, smallint(), options));
+  }
+}
+
 TEST(Cast, DictTypeToAnotherDict) {
   auto check_cast = [&](const std::shared_ptr<DataType>& in_type,
                         const std::shared_ptr<DataType>& out_type,
@@ -2328,6 +3147,16 @@ TEST(Cast, DictTypeToAnotherDict) {
   EXPECT_RAISES_WITH_MESSAGE_THAT(
       Invalid, testing::HasSubstr("Integer value 1000 not in range"),
       Cast(arr, dictionary(int8(), int8()), CastOptions::Safe()));
+}
+
+TEST(Cast, NoOutBitmapIfInIsAllValid) {
+  auto a = ArrayFromJSON(int8(), "[1]");
+  CastOptions options;
+  options.to_type = int32();
+  ASSERT_OK_AND_ASSIGN(auto result, CallFunction("cast", {a}, &options));
+  auto res = result.make_array();
+  ASSERT_EQ(a->data()->buffers[0], nullptr);
+  ASSERT_EQ(res->data()->buffers[0], nullptr);
 }
 
 }  // namespace compute

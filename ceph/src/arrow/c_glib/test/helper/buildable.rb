@@ -19,6 +19,16 @@ module Helper
   module Buildable
     def build_schema(fields)
       fields = fields.collect do |name, data_type|
+        if data_type.is_a?(Symbol)
+          data_type_class_name =
+            data_type.
+              to_s.
+              split("_").
+              collect(&:capitalize).
+              join.
+              gsub(/\AUint/, "UInt") + "DataType"
+          data_type = Arrow.const_get(data_type_class_name).new
+        end
         Arrow::Field.new(name, data_type)
       end
       Arrow::Schema.new(fields)
@@ -70,6 +80,10 @@ module Helper
 
     def build_uint64_array(values)
       build_array(Arrow::UInt64ArrayBuilder.new, values)
+    end
+
+    def build_half_float_array(values)
+      build_array(Arrow::HalfFloatArrayBuilder.new, values)
     end
 
     def build_float_array(values)

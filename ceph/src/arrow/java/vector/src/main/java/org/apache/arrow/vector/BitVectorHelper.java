@@ -17,18 +17,15 @@
 
 package org.apache.arrow.vector;
 
-import static io.netty.util.internal.PlatformDependent.getByte;
-import static io.netty.util.internal.PlatformDependent.getInt;
-import static io.netty.util.internal.PlatformDependent.getLong;
 import static org.apache.arrow.memory.util.LargeMemoryUtil.checkedCastToInt;
 
 import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BoundsChecking;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.util.MemoryUtil;
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode;
 import org.apache.arrow.vector.util.DataSizeRoundingUtil;
 
-import io.netty.util.internal.PlatformDependent;
 
 /**
  * Helper class for performing generic operations on a bit vector buffer.
@@ -260,7 +257,7 @@ public class BitVectorHelper {
 
     int index = 0;
     while (index + 8 <= fullBytesCount) {
-      long longValue = getLong(validityBuffer.memoryAddress() + index);
+      long longValue = MemoryUtil.UNSAFE.getLong(validityBuffer.memoryAddress() + index);
       if (longValue != (long) intToCompare) {
         return false;
       }
@@ -268,7 +265,7 @@ public class BitVectorHelper {
     }
 
     if (index + 4 <= fullBytesCount) {
-      int intValue = getInt(validityBuffer.memoryAddress() + index);
+      int intValue = MemoryUtil.UNSAFE.getInt(validityBuffer.memoryAddress() + index);
       if (intValue != intToCompare) {
         return false;
       }
@@ -276,7 +273,7 @@ public class BitVectorHelper {
     }
 
     while (index < fullBytesCount) {
-      byte byteValue = getByte(validityBuffer.memoryAddress() + index);
+      byte byteValue = MemoryUtil.UNSAFE.getByte(validityBuffer.memoryAddress() + index);
       if (byteValue != (byte) intToCompare) {
         return false;
       }
@@ -285,7 +282,7 @@ public class BitVectorHelper {
 
     // handling with the last bits
     if (remainder != 0) {
-      byte byteValue = getByte(validityBuffer.memoryAddress() + sizeInBytes - 1);
+      byte byteValue = MemoryUtil.UNSAFE.getByte(validityBuffer.memoryAddress() + sizeInBytes - 1);
       byte mask = (byte) ((1 << remainder) - 1);
       byteValue = (byte) (byteValue & mask);
       if (checkOneBits) {
@@ -328,8 +325,15 @@ public class BitVectorHelper {
                                             final BufferAllocator allocator) {
     final int valueCount = fieldNode.getLength();
     ArrowBuf newBuffer = null;
-    /* either all NULLs or all non-NULLs */
-    if (fieldNode.getNullCount() == 0 || fieldNode.getNullCount() == valueCount) {
+
+    // Create a new validity buffer iff both of the following are true:
+    //   - validity buffer is not present, that is, it is either null or empty (in the case of
+    //     IPC for instance).
+    //   - values are either all NULLs or all non-NULLs
+    boolean isValidityBufferNull = sourceValidityBuffer == null ||
+        sourceValidityBuffer.capacity() == 0;
+    if (isValidityBufferNull &&
+        (fieldNode.getNullCount() == 0 || fieldNode.getNullCount() == valueCount)) {
       newBuffer = allocator.buffer(getValidityBufferSize(valueCount));
       newBuffer.setZero(0, newBuffer.capacity());
       if (fieldNode.getNullCount() != 0) {
@@ -388,13 +392,13 @@ public class BitVectorHelper {
 
     // copy the first bit set
     if (input1 != output) {
-      PlatformDependent.copyMemory(input1.memoryAddress(), output.memoryAddress(), numBytes1);
+      MemoryUtil.UNSAFE.copyMemory(input1.memoryAddress(), output.memoryAddress(), numBytes1);
     }
 
     if (bitIndex(numBits1) == 0) {
       // The number of bits for the first bit set is a multiple of 8, so the boundary is at byte boundary.
       // For this case, we have a shortcut to copy all bytes from the second set after the byte boundary.
-      PlatformDependent.copyMemory(input2.memoryAddress(), output.memoryAddress() + numBytes1, numBytes2);
+      MemoryUtil.UNSAFE.copyMemory(input2.memoryAddress(), output.memoryAddress() + numBytes1, numBytes2);
       return;
     }
 

@@ -16,15 +16,14 @@
 // under the License.
 
 #include "./arrow_types.h"
-#include "./arrow_vctrs.h"
 
-#if defined(ARROW_R_WITH_ARROW)
 #include <arrow/array/builder_base.h>
 #include <arrow/array/builder_binary.h>
 #include <arrow/array/builder_decimal.h>
 #include <arrow/array/builder_dict.h>
 #include <arrow/array/builder_nested.h>
 #include <arrow/array/builder_primitive.h>
+#include <arrow/array/concatenate.h>
 #include <arrow/table.h>
 #include <arrow/type_traits.h>
 #include <arrow/util/bitmap_writer.h>
@@ -70,6 +69,7 @@ enum RVectorType {
   DATE_INT,
   DATE_DBL,
   TIME,
+  DURATION,
   POSIXCT,
   POSIXLT,
   BINARY,
@@ -106,8 +106,10 @@ RVectorType GetVectorType(SEXP x) {
         return INT64;
       } else if (Rf_inherits(x, "POSIXct")) {
         return POSIXCT;
-      } else if (Rf_inherits(x, "difftime")) {
+      } else if (Rf_inherits(x, "hms")) {
         return TIME;
+      } else if (Rf_inherits(x, "difftime")) {
+        return DURATION;
       } else {
         return FLOAT64;
       }
@@ -256,6 +258,55 @@ class RConverter : public Converter<SEXP, RConversionOptions> {
   virtual Status ExtendMasked(SEXP values, SEXP mask, int64_t size, int64_t offset = 0) {
     return Status::NotImplemented("ExtendMasked");
   }
+
+  virtual Result<std::shared_ptr<ChunkedArray>> ToChunkedArray() {
+    ARROW_ASSIGN_OR_RAISE(auto array, this->ToArray())
+    return std::make_shared<ChunkedArray>(array);
+  }
+};
+
+// A Converter that calls as_arrow_array(x, type = options.type)
+class AsArrowArrayConverter : public RConverter {
+ public:
+  // This is not run in parallel by default, so it's safe to call into R here;
+  // however, it is not safe to throw an exception here because the caller
+  // might be waiting for other conversions to finish in the background. To
+  // avoid this, use StatusUnwindProtect() to communicate the error back to
+  // ValueOrStop() (which reconstructs the exception and re-throws it).
+  Status Extend(SEXP values, int64_t size, int64_t offset = 0) {
+    try {
+      cpp11::sexp as_array_result = cpp11::package("arrow")["as_arrow_array"](
+          values, cpp11::named_arg("type") = cpp11::as_sexp(options().type),
+          cpp11::named_arg("from_vec_to_array") = cpp11::as_sexp<bool>(true));
+
+      // Check that the R method returned an Array
+      if (!Rf_inherits(as_array_result, "Array")) {
+        return Status::Invalid("as_arrow_array() did not return object of type Array");
+      }
+
+      auto array = cpp11::as_cpp<std::shared_ptr<arrow::Array>>(as_array_result);
+
+      // We need the type to be equal because the schema has already been finalized
+      if (!array->type()->Equals(options().type)) {
+        return Status::Invalid(
+            "as_arrow_array() returned an Array with an incorrect type");
+      }
+
+      arrays_.push_back(std::move(array));
+      return Status::OK();
+    } catch (cpp11::unwind_exception& e) {
+      return StatusUnwindProtect(e.token, "calling as_arrow_array()");
+    }
+  }
+
+  // This is sometimes run in parallel so we can't call into R
+  Result<std::shared_ptr<ChunkedArray>> ToChunkedArray() {
+    return std::make_shared<ChunkedArray>(std::move(arrays_));
+  }
+
+ private:
+  cpp11::writable::list objects_;
+  std::vector<std::shared_ptr<Array>> arrays_;
 };
 
 template <typename T, typename Enable = void>
@@ -284,7 +335,7 @@ struct RConvert {
   template <typename Type, typename From>
   static enable_if_integer<Type, Result<typename Type::c_type>> Convert(Type*,
                                                                         From from) {
-    return CIntFromRScalarImpl<typename Type::c_type>(from);
+    return CIntFromRScalarImpl<typename Type::c_type>(static_cast<int64_t>(from));
   }
 
   // ---- convert R integer types to double
@@ -410,7 +461,7 @@ class RPrimitiveConverter<
 
     if (std::is_same<typename T::c_type, r_value_type>::value) {
       auto append_value = [this](r_value_type value) {
-        this->primitive_builder_->UnsafeAppend(value);
+        this->primitive_builder_->UnsafeAppend(static_cast<typename T::c_type>(value));
         return Status::OK();
       };
       return VisitVector(it, size, append_null, append_value);
@@ -544,19 +595,21 @@ class RPrimitiveConverter<T, enable_if_t<is_date_type<T>::value>>
     return VisitVector(it, size, append_null, append_value);
   }
 
-  static int FromRDate(const Date32Type*, int from) { return from; }
+  static int FromRDate(const Date32Type*, double from) { return static_cast<int>(from); }
 
-  static int64_t FromRDate(const Date64Type*, int from) {
+  static int64_t FromRDate(const Date64Type*, double from) {
     constexpr int64_t kMilliSecondsPerDay = 86400000;
-    return from * kMilliSecondsPerDay;
+    return static_cast<int64_t>(from * kMilliSecondsPerDay);
   }
 
   static int FromPosixct(const Date32Type*, double from) {
     constexpr int64_t kSecondsPerDay = 86400;
-    return from / kSecondsPerDay;
+    return static_cast<int>(from / kSecondsPerDay);
   }
 
-  static int64_t FromPosixct(const Date64Type*, double from) { return from * 1000; }
+  static int64_t FromPosixct(const Date64Type*, double from) {
+    return static_cast<int64_t>(from * 1000);
+  }
 };
 
 int64_t get_TimeUnit_multiplier(TimeUnit::type unit) {
@@ -574,6 +627,23 @@ int64_t get_TimeUnit_multiplier(TimeUnit::type unit) {
   }
 }
 
+Result<int> get_difftime_unit_multiplier(SEXP x) {
+  std::string unit(CHAR(STRING_ELT(Rf_getAttrib(x, symbols::units), 0)));
+  if (unit == "secs") {
+    return 1;
+  } else if (unit == "mins") {
+    return 60;
+  } else if (unit == "hours") {
+    return 3600;
+  } else if (unit == "days") {
+    return 86400;
+  } else if (unit == "weeks") {
+    return 604800;
+  } else {
+    return Status::Invalid("unknown difftime unit");
+  }
+}
+
 template <typename T>
 class RPrimitiveConverter<T, enable_if_t<is_time_type<T>::value>>
     : public PrimitiveConverter<T, RConverter> {
@@ -586,21 +656,7 @@ class RPrimitiveConverter<T, enable_if_t<is_time_type<T>::value>>
     }
 
     // multiplier to get the number of seconds from the value stored in the R vector
-    int difftime_multiplier;
-    std::string unit(CHAR(STRING_ELT(Rf_getAttrib(x, symbols::units), 0)));
-    if (unit == "secs") {
-      difftime_multiplier = 1;
-    } else if (unit == "mins") {
-      difftime_multiplier = 60;
-    } else if (unit == "hours") {
-      difftime_multiplier = 3600;
-    } else if (unit == "days") {
-      difftime_multiplier = 86400;
-    } else if (unit == "weeks") {
-      difftime_multiplier = 604800;
-    } else {
-      return Status::Invalid("unknown difftime unit");
-    }
+    ARROW_ASSIGN_OR_RAISE(int difftime_multiplier, get_difftime_unit_multiplier(x));
 
     // then multiply the seconds by this to match the time unit
     auto multiplier =
@@ -673,9 +729,48 @@ class RPrimitiveConverter<T, enable_if_t<is_timestamp_type<T>::value>>
 template <typename T>
 class RPrimitiveConverter<T, enable_if_t<is_decimal_type<T>::value>>
     : public PrimitiveConverter<T, RConverter> {
+  using ValueType = typename arrow::TypeTraits<T>::CType;
+
  public:
   Status Extend(SEXP x, int64_t size, int64_t offset = 0) override {
-    return Status::NotImplemented("Extend");
+    RETURN_NOT_OK(this->Reserve(size - offset));
+    int32_t precision = this->primitive_type_->precision();
+    int32_t scale = this->primitive_type_->scale();
+
+    auto append_value = [this, precision, scale](double value) {
+      ARROW_ASSIGN_OR_RAISE(ValueType converted,
+                            ValueType::FromReal(value, precision, scale));
+      this->primitive_builder_->UnsafeAppend(converted);
+      return Status::OK();
+    };
+
+    auto append_null = [this]() {
+      this->primitive_builder_->UnsafeAppendNull();
+      return Status::OK();
+    };
+
+    switch (TYPEOF(x)) {
+      case REALSXP:
+        if (ALTREP(x)) {
+          return VisitVector(RVectorIterator_ALTREP<double>(x, offset), size, append_null,
+                             append_value);
+        } else {
+          return VisitVector(RVectorIterator<double>(x, offset), size, append_null,
+                             append_value);
+        }
+        break;
+      case INTSXP:
+        if (ALTREP(x)) {
+          return VisitVector(RVectorIterator_ALTREP<int>(x, offset), size, append_null,
+                             append_value);
+        } else {
+          return VisitVector(RVectorIterator<int>(x, offset), size, append_null,
+                             append_value);
+        }
+        break;
+      default:
+        return Status::NotImplemented("Conversion to decimal from non-integer/double");
+    }
   }
 };
 
@@ -688,7 +783,7 @@ Status check_binary(SEXP x, int64_t size) {
       // check this is a list of raw vectors
       const SEXP* p_x = VECTOR_PTR_RO(x);
       for (R_xlen_t i = 0; i < size; i++, ++p_x) {
-        if (TYPEOF(*p_x) != RAWSXP) {
+        if (TYPEOF(*p_x) != RAWSXP && (*p_x != R_NilValue)) {
           return Status::Invalid("invalid R type to convert to binary");
         }
       }
@@ -816,7 +911,38 @@ class RPrimitiveConverter<T, enable_if_t<is_duration_type<T>::value>>
     : public PrimitiveConverter<T, RConverter> {
  public:
   Status Extend(SEXP x, int64_t size, int64_t offset = 0) override {
-    // TODO: look in lubridate
+    auto rtype = GetVectorType(x);
+
+    // only handle <difftime> R objects
+    if (rtype == DURATION) {
+      RETURN_NOT_OK(this->Reserve(size - offset));
+
+      ARROW_ASSIGN_OR_RAISE(int difftime_multiplier, get_difftime_unit_multiplier(x));
+
+      int64_t multiplier =
+          get_TimeUnit_multiplier(this->primitive_type_->unit()) * difftime_multiplier;
+
+      auto append_value = [this, multiplier](double value) {
+        auto converted = static_cast<typename T::c_type>(value * multiplier);
+        this->primitive_builder_->UnsafeAppend(converted);
+        return Status::OK();
+      };
+      auto append_null = [this]() {
+        this->primitive_builder_->UnsafeAppendNull();
+        return Status::OK();
+      };
+
+      if (ALTREP(x)) {
+        return VisitVector(RVectorIterator_ALTREP<double>(x, offset), size, append_null,
+                           append_value);
+      } else {
+        return VisitVector(RVectorIterator<double>(x, offset), size, append_null,
+                           append_value);
+      }
+
+      return Status::OK();
+    }
+
     return Status::NotImplemented("Extend");
   }
 };
@@ -863,7 +989,7 @@ class RDictionaryConverter<ValueType, enable_if_has_string_view<ValueType>>
     }
   }
 
-  Result<std::shared_ptr<Array>> ToArray() override {
+  Result<std::shared_ptr<ChunkedArray>> ToChunkedArray() override {
     ARROW_ASSIGN_OR_RAISE(auto result, this->builder_->Finish());
 
     auto result_type = checked_cast<DictionaryType*>(result->type().get());
@@ -874,7 +1000,8 @@ class RDictionaryConverter<ValueType, enable_if_has_string_view<ValueType>>
           arrow::dictionary(result_type->index_type(), result_type->value_type(), true);
     }
 
-    return std::make_shared<DictionaryArray>(result->data());
+    return std::make_shared<ChunkedArray>(
+        std::make_shared<DictionaryArray>(result->data()));
   }
 
  private:
@@ -898,8 +1025,11 @@ class RDictionaryConverter<ValueType, enable_if_has_string_view<ValueType>>
 
     // first we need to handle the levels
     SEXP levels = Rf_getAttrib(x, R_LevelsSymbol);
-    auto memo_array = arrow::r::vec_to_arrow(levels, utf8(), false);
-    RETURN_NOT_OK(this->value_builder_->InsertMemoValues(*memo_array));
+    auto memo_chunked_chunked_array =
+        arrow::r::vec_to_arrow_ChunkedArray(levels, utf8(), false);
+    for (const auto& chunk : memo_chunked_chunked_array->chunks()) {
+      RETURN_NOT_OK(this->value_builder_->InsertMemoValues(*chunk));
+    }
 
     // then we can proceed
     return this->Reserve(size - offset);
@@ -923,8 +1053,13 @@ struct RConverterTrait;
 template <typename T>
 struct RConverterTrait<
     T, enable_if_t<!is_nested_type<T>::value && !is_interval_type<T>::value &&
-                   !is_extension_type<T>::value>> {
+                   !is_extension_type<T>::value && !is_binary_view_like_type<T>::value>> {
   using type = RPrimitiveConverter<T>;
+};
+
+template <typename T>
+struct RConverterTrait<T, enable_if_binary_view_like<T>> {
+  // not implemented
 };
 
 template <typename T>
@@ -948,7 +1083,7 @@ class RListConverter : public ListConverter<T, RConverter, RConverterTrait> {
     auto append_value = [this](SEXP value) {
       // TODO: if we decide that this can be run concurrently
       //       we'll have to do vec_size() upfront
-      int n = vctrs::vec_size(value);
+      R_xlen_t n = arrow::r::vec_size(value);
 
       RETURN_NOT_OK(this->list_builder_->ValidateOverflow(n));
       RETURN_NOT_OK(this->list_builder_->Append());
@@ -1049,7 +1184,7 @@ class RStructConverter : public StructConverter<RConverter, RConverterTrait> {
 
     for (R_xlen_t i = 0; i < n_columns; i++) {
       SEXP x_i = VECTOR_ELT(x, i);
-      if (vctrs::vec_size(x_i) < size) {
+      if (arrow::r::vec_size(x_i) < size) {
         return Status::RError("Degenerated data frame");
       }
     }
@@ -1109,7 +1244,7 @@ std::shared_ptr<Array> MakeSimpleArray(SEXP x) {
   auto first_na = std::find_if(p_vec_start, p_vec_end, is_NA<value_type>);
   if (first_na < p_vec_end) {
     auto null_bitmap =
-        ValueOrStop(AllocateBuffer(BitUtil::BytesForBits(n), gc_memory_pool()));
+        ValueOrStop(AllocateBuffer(bit_util::BytesForBits(n), gc_memory_pool()));
     internal::FirstTimeBitmapWriter bitmap_writer(null_bitmap->mutable_data(), 0, n);
 
     // first loop to clear all the bits before the first NA
@@ -1157,41 +1292,59 @@ std::shared_ptr<arrow::Array> vec_to_arrow__reuse_memory(SEXP x) {
   cpp11::stop("Unreachable: you might need to fix can_reuse_memory()");
 }
 
-namespace altrep {
-std::shared_ptr<Array> vec_to_arrow_altrep_bypass(SEXP);  // in altrep.cpp
-}
-
-std::shared_ptr<arrow::Array> vec_to_arrow(SEXP x,
-                                           const std::shared_ptr<arrow::DataType>& type,
-                                           bool type_inferred) {
-  // short circuit if `x` is already an Array
-  if (Rf_inherits(x, "Array")) {
-    return cpp11::as_cpp<std::shared_ptr<arrow::Array>>(x);
+std::shared_ptr<arrow::ChunkedArray> vec_to_arrow_ChunkedArray(
+    SEXP x, const std::shared_ptr<arrow::DataType>& type, bool type_inferred) {
+  // short circuit if `x` is already a chunked array
+  if (Rf_inherits(x, "ChunkedArray")) {
+    return cpp11::as_cpp<std::shared_ptr<arrow::ChunkedArray>>(x);
   }
 
-  // short circuit if `x` is an altrep vector that shells an Array
-  auto maybe = altrep::vec_to_arrow_altrep_bypass(x);
-  if (maybe.get()) {
-    return maybe;
+  // short circuit if `x` is an Array
+  if (Rf_inherits(x, "Array")) {
+    return std::make_shared<arrow::ChunkedArray>(
+        cpp11::as_cpp<std::shared_ptr<arrow::Array>>(x));
   }
 
   RConversionOptions options;
   options.strict = !type_inferred;
   options.type = type;
-  options.size = vctrs::vec_size(x);
+  options.size = arrow::r::vec_size(x);
 
-  // maybe short circuit when zero-copy is possible
-  if (can_reuse_memory(x, options.type)) {
-    return vec_to_arrow__reuse_memory(x);
+  // If we can handle this in C++ we do so; otherwise we use the
+  // AsArrowArrayConverter, which calls as_arrow_array().
+  std::unique_ptr<RConverter> converter;
+  if (can_convert_native(x) && type->id() != Type::EXTENSION) {
+    // short circuit if `x` is an altrep vector that shells a chunked Array
+    auto maybe = altrep::vec_to_arrow_altrep_bypass(x);
+    if (maybe.get() && maybe->type()->Equals(type)) {
+      return maybe;
+    }
+
+    // maybe short circuit when zero-copy is possible
+    if (can_reuse_memory(x, type)) {
+      return std::make_shared<arrow::ChunkedArray>(vec_to_arrow__reuse_memory(x));
+    }
+
+    // Otherwise go through the converter API.
+    converter = ValueOrStop(MakeConverter<RConverter, RConverterTrait>(
+        options.type, options, gc_memory_pool()));
+  } else {
+    converter = std::unique_ptr<RConverter>(new AsArrowArrayConverter());
+    StopIfNotOk(converter->Construct(type, options, gc_memory_pool()));
   }
 
-  // otherwise go through the converter api
-  auto converter = ValueOrStop(MakeConverter<RConverter, RConverterTrait>(
-      options.type, options, gc_memory_pool()));
-
   StopIfNotOk(converter->Extend(x, options.size));
+  return ValueOrStop(converter->ToChunkedArray());
+}
 
-  return ValueOrStop(converter->ToArray());
+std::shared_ptr<arrow::Array> vec_to_arrow_Array(
+    SEXP x, const std::shared_ptr<arrow::DataType>& type, bool type_inferred) {
+  auto chunked_array = vec_to_arrow_ChunkedArray(x, type, type_inferred);
+  if (chunked_array->num_chunks() == 1) {
+    return chunked_array->chunk(0);
+  }
+
+  return ValueOrStop(arrow::Concatenate(chunked_array->chunks()));
 }
 
 // TODO: most of this is very similar to MakeSimpleArray, just adapted to
@@ -1216,7 +1369,7 @@ bool vector_from_r_memory_impl(SEXP x, const std::shared_ptr<DataType>& type,
 
     if (first_na < p_x_end) {
       auto null_bitmap =
-          ValueOrStop(AllocateBuffer(BitUtil::BytesForBits(n), gc_memory_pool()));
+          ValueOrStop(AllocateBuffer(bit_util::BytesForBits(n), gc_memory_pool()));
       internal::FirstTimeBitmapWriter bitmap_writer(null_bitmap->mutable_data(), 0, n);
 
       // first loop to clear all the bits before the first NA
@@ -1352,26 +1505,44 @@ std::shared_ptr<arrow::Table> Table__from_dots(SEXP lst, SEXP schema_sxp,
     } else if (Rf_inherits(x, "Array")) {
       columns[j] = std::make_shared<arrow::ChunkedArray>(
           cpp11::as_cpp<std::shared_ptr<arrow::Array>>(x));
+    } else if (arrow::r::altrep::is_unmaterialized_arrow_altrep(x)) {
+      columns[j] = arrow::r::altrep::vec_to_arrow_altrep_bypass(x);
     } else {
       arrow::r::RConversionOptions options;
       options.strict = !infer_schema;
       options.type = schema->field(j)->type();
-      options.size = vctrs::vec_size(x);
+      options.size = arrow::r::vec_size(x);
 
-      // first try to add a task to do a zero copy in parallel
-      if (arrow::r::vector_from_r_memory(x, options.type, columns, j, tasks)) {
-        continue;
+      // If we can handle this in C++  we do so; otherwise we use the
+      // AsArrowArrayConverter, which calls as_arrow_array().
+      std::unique_ptr<arrow::r::RConverter> converter;
+      if (arrow::r::can_convert_native(x) &&
+          options.type->id() != arrow::Type::EXTENSION) {
+        // first try to add a task to do a zero copy in parallel
+        if (arrow::r::vector_from_r_memory(x, options.type, columns, j, tasks)) {
+          continue;
+        }
+
+        // otherwise go through the Converter API
+        auto converter_result =
+            arrow::MakeConverter<arrow::r::RConverter, arrow::r::RConverterTrait>(
+                options.type, options, gc_memory_pool());
+        if (converter_result.ok()) {
+          converter = std::move(converter_result.ValueUnsafe());
+        } else {
+          status = converter_result.status();
+          break;
+        }
+      } else {
+        converter =
+            std::unique_ptr<arrow::r::RConverter>(new arrow::r::AsArrowArrayConverter());
+        status = converter->Construct(options.type, options, gc_memory_pool());
+        if (!status.ok()) {
+          break;
+        }
       }
 
-      // if unsuccessful: use RConverter api
-      auto converter_result =
-          arrow::MakeConverter<arrow::r::RConverter, arrow::r::RConverterTrait>(
-              options.type, options, gc_memory_pool());
-      if (!converter_result.ok()) {
-        status = converter_result.status();
-        break;
-      }
-      converters[j] = std::move(converter_result.ValueUnsafe());
+      converters[j] = std::move(converter);
     }
   }
 
@@ -1399,8 +1570,7 @@ std::shared_ptr<arrow::Table> Table__from_dots(SEXP lst, SEXP schema_sxp,
     tasks.Append(true, [&columns, j, &converters]() {
       auto& converter = converters[j];
       if (converter != nullptr) {
-        ARROW_ASSIGN_OR_RAISE(auto array, converter->ToArray());
-        columns[j] = std::make_shared<arrow::ChunkedArray>(array);
+        ARROW_ASSIGN_OR_RAISE(columns[j], converter->ToChunkedArray());
       }
       return arrow::Status::OK();
     });
@@ -1415,8 +1585,9 @@ std::shared_ptr<arrow::Table> Table__from_dots(SEXP lst, SEXP schema_sxp,
 }
 
 // [[arrow::export]]
-SEXP vec_to_arrow(SEXP x, SEXP s_type) {
+SEXP vec_to_Array(SEXP x, SEXP s_type) {
   if (Rf_inherits(x, "Array")) return x;
+
   bool type_inferred = Rf_isNull(s_type);
   std::shared_ptr<arrow::DataType> type;
 
@@ -1425,7 +1596,8 @@ SEXP vec_to_arrow(SEXP x, SEXP s_type) {
   } else {
     type = cpp11::as_cpp<std::shared_ptr<arrow::DataType>>(s_type);
   }
-  return cpp11::to_r6(arrow::r::vec_to_arrow(x, type, type_inferred));
+
+  return cpp11::to_r6(arrow::r::vec_to_arrow_Array(x, type, type_inferred));
 }
 
 // [[arrow::export]]
@@ -1435,5 +1607,3 @@ std::shared_ptr<arrow::Array> DictionaryArray__FromArrays(
     const std::shared_ptr<arrow::Array>& dict) {
   return ValueOrStop(arrow::DictionaryArray::FromArrays(type, indices, dict));
 }
-
-#endif

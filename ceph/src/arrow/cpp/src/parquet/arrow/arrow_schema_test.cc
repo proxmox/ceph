@@ -35,7 +35,6 @@
 #include "arrow/type.h"
 #include "arrow/util/key_value_metadata.h"
 
-using arrow::ArrayFromVector;
 using arrow::Field;
 using arrow::TimeUnit;
 
@@ -51,9 +50,7 @@ using parquet::schema::PrimitiveNode;
 
 using ::testing::ElementsAre;
 
-namespace parquet {
-
-namespace arrow {
+namespace parquet::arrow {
 
 const auto BOOL = ::arrow::boolean();
 const auto UINT8 = ::arrow::uint8();
@@ -239,6 +236,8 @@ TEST_F(TestConvertParquetSchema, ParquetAnnotatedFields) {
        ::arrow::fixed_size_binary(12)},
       {"uuid", LogicalType::UUID(), ParquetType::FIXED_LEN_BYTE_ARRAY, 16,
        ::arrow::fixed_size_binary(16)},
+      {"float16", LogicalType::Float16(), ParquetType::FIXED_LEN_BYTE_ARRAY, 2,
+       ::arrow::float16()},
       {"none", LogicalType::None(), ParquetType::BOOLEAN, -1, ::arrow::boolean()},
       {"none", LogicalType::None(), ParquetType::INT32, -1, ::arrow::int32()},
       {"none", LogicalType::None(), ParquetType::INT64, -1, ::arrow::int64()},
@@ -367,9 +366,14 @@ TEST_F(TestConvertParquetSchema, ParquetMaps) {
     auto list = GroupNode::Make("key_value", Repetition::REPEATED, {key, value});
     parquet_fields.push_back(
         GroupNode::Make("my_map", Repetition::REQUIRED, {list}, LogicalType::Map()));
-    auto arrow_value = ::arrow::field("string", UTF8, /*nullable=*/true);
-    auto arrow_map = ::arrow::map(/*key=*/UTF8, arrow_value);
-    arrow_fields.push_back(::arrow::field("my_map", arrow_map, false));
+    auto arrow_key = ::arrow::field("key", UTF8, /*nullable=*/false);
+    auto arrow_value = ::arrow::field("value", UTF8, /*nullable=*/true);
+    auto arrow_map = std::make_shared<::arrow::MapType>(
+        ::arrow::field("my_map", ::arrow::struct_({arrow_key, arrow_value}),
+                       /*nullable=*/false),
+        /*nullable=*/false);
+
+    arrow_fields.push_back(::arrow::field("my_map", arrow_map, /*nullable=*/false));
   }
   // Single column map (i.e. set) gets converted to list of struct.
   {
@@ -382,11 +386,40 @@ TEST_F(TestConvertParquetSchema, ParquetMaps) {
     auto arrow_list = ::arrow::list({::arrow::field("key", UTF8, /*nullable=*/false)});
     arrow_fields.push_back(::arrow::field("my_set", arrow_list, false));
   }
+  // Two column map with non-standard field names.
+  {
+    auto key = PrimitiveNode::Make("int_key", Repetition::REQUIRED, ParquetType::INT32,
+                                   ConvertedType::INT_32);
+    auto value = PrimitiveNode::Make("str_value", Repetition::OPTIONAL,
+                                     ParquetType::BYTE_ARRAY, ConvertedType::UTF8);
+
+    auto list = GroupNode::Make("items", Repetition::REPEATED, {key, value});
+    parquet_fields.push_back(
+        GroupNode::Make("items", Repetition::REQUIRED, {list}, LogicalType::Map()));
+    auto arrow_value = ::arrow::field("str_value", UTF8, /*nullable=*/true);
+    auto arrow_key = ::arrow::field("int_key", INT32, /*nullable=*/false);
+    auto arrow_map = std::make_shared<::arrow::MapType>(
+        ::arrow::field("items", ::arrow::struct_({arrow_key, arrow_value}), false),
+        false);
+
+    arrow_fields.push_back(::arrow::field("items", arrow_map, false));
+  }
 
   auto arrow_schema = ::arrow::schema(arrow_fields);
   ASSERT_OK(ConvertSchema(parquet_fields));
 
   ASSERT_NO_FATAL_FAILURE(CheckFlatSchema(arrow_schema));
+  for (int i = 0; i < arrow_schema->num_fields(); ++i) {
+    auto result_field = result_schema_->field(i);
+    auto expected_field = arrow_schema->field(i);
+    if (expected_field->type()->id() == ::arrow::Type::MAP) {
+      EXPECT_TRUE(
+          expected_field->type()->field(0)->Equals(result_field->type()->field(0)))
+          << "Map's struct in field " << i
+          << "\n result: " << result_field->type()->field(0)->ToString() << " "
+          << "\n expected: " << expected_field->type()->field(0)->ToString() << "\n";
+    }
+  }
 }
 
 TEST_F(TestConvertParquetSchema, ParquetLists) {
@@ -803,8 +836,7 @@ TEST_F(TestConvertArrowSchema, ArrowFields) {
       {"int8", ::arrow::int8(), LogicalType::Int(8, true), ParquetType::INT32, -1},
       {"uint16", ::arrow::uint16(), LogicalType::Int(16, false), ParquetType::INT32, -1},
       {"int16", ::arrow::int16(), LogicalType::Int(16, true), ParquetType::INT32, -1},
-      {"uint32", ::arrow::uint32(), LogicalType::None(), ParquetType::INT64,
-       -1},  // Parquet 1.0
+      {"uint32", ::arrow::uint32(), LogicalType::Int(32, false), ParquetType::INT32, -1},
       {"int32", ::arrow::int32(), LogicalType::None(), ParquetType::INT32, -1},
       {"uint64", ::arrow::uint64(), LogicalType::Int(64, false), ParquetType::INT64, -1},
       {"int64", ::arrow::int64(), LogicalType::None(), ParquetType::INT64, -1},
@@ -821,6 +853,8 @@ TEST_F(TestConvertArrowSchema, ArrowFields) {
        ParquetType::FIXED_LEN_BYTE_ARRAY, 7},
       {"decimal(32, 8)", ::arrow::decimal(32, 8), LogicalType::Decimal(32, 8),
        ParquetType::FIXED_LEN_BYTE_ARRAY, 14},
+      {"float16", ::arrow::float16(), LogicalType::Float16(),
+       ParquetType::FIXED_LEN_BYTE_ARRAY, 2},
       {"time32", ::arrow::time32(::arrow::TimeUnit::MILLI),
        LogicalType::Time(true, LogicalType::TimeUnit::MILLIS), ParquetType::INT32, -1},
       {"time64(microsecond)", ::arrow::time64(::arrow::TimeUnit::MICRO),
@@ -837,9 +871,8 @@ TEST_F(TestConvertArrowSchema, ArrowFields) {
                               /*is_from_converted_type=*/false,
                               /*force_set_converted_type=*/true),
        ParquetType::INT64, -1},
-      // Parquet v1, values converted to microseconds
       {"timestamp(nanosecond)", ::arrow::timestamp(::arrow::TimeUnit::NANO),
-       LogicalType::Timestamp(false, LogicalType::TimeUnit::MICROS,
+       LogicalType::Timestamp(false, LogicalType::TimeUnit::NANOS,
                               /*is_from_converted_type=*/false,
                               /*force_set_converted_type=*/true),
        ParquetType::INT64, -1},
@@ -850,7 +883,7 @@ TEST_F(TestConvertArrowSchema, ArrowFields) {
        LogicalType::Timestamp(true, LogicalType::TimeUnit::MICROS), ParquetType::INT64,
        -1},
       {"timestamp(nanosecond, UTC)", ::arrow::timestamp(::arrow::TimeUnit::NANO, "UTC"),
-       LogicalType::Timestamp(true, LogicalType::TimeUnit::MICROS), ParquetType::INT64,
+       LogicalType::Timestamp(true, LogicalType::TimeUnit::NANOS), ParquetType::INT64,
        -1},
       {"timestamp(millisecond, CET)", ::arrow::timestamp(::arrow::TimeUnit::MILLI, "CET"),
        LogicalType::Timestamp(true, LogicalType::TimeUnit::MILLIS), ParquetType::INT64,
@@ -859,7 +892,7 @@ TEST_F(TestConvertArrowSchema, ArrowFields) {
        LogicalType::Timestamp(true, LogicalType::TimeUnit::MICROS), ParquetType::INT64,
        -1},
       {"timestamp(nanosecond, CET)", ::arrow::timestamp(::arrow::TimeUnit::NANO, "CET"),
-       LogicalType::Timestamp(true, LogicalType::TimeUnit::MICROS), ParquetType::INT64,
+       LogicalType::Timestamp(true, LogicalType::TimeUnit::NANOS), ParquetType::INT64,
        -1}};
 
   std::vector<std::shared_ptr<Field>> arrow_fields;
@@ -884,7 +917,8 @@ TEST_F(TestConvertArrowSchema, ArrowNonconvertibleFields) {
   };
 
   std::vector<FieldConstructionArguments> cases = {
-      {"float16", ::arrow::float16()},
+      {"run_end_encoded",
+       ::arrow::run_end_encoded(::arrow::int32(), ::arrow::list(::arrow::int8()))},
   };
 
   for (const FieldConstructionArguments& c : cases) {
@@ -956,7 +990,7 @@ TEST_F(TestConvertArrowSchema, ParquetLists) {
   //   }
   // }
   {
-    auto element = PrimitiveNode::Make("string", Repetition::OPTIONAL,
+    auto element = PrimitiveNode::Make("element", Repetition::OPTIONAL,
                                        ParquetType::BYTE_ARRAY, ConvertedType::UTF8);
     auto list = GroupNode::Make("list", Repetition::REPEATED, {element});
     parquet_fields.push_back(
@@ -973,7 +1007,7 @@ TEST_F(TestConvertArrowSchema, ParquetLists) {
   //   }
   // }
   {
-    auto element = PrimitiveNode::Make("string", Repetition::REQUIRED,
+    auto element = PrimitiveNode::Make("element", Repetition::REQUIRED,
                                        ParquetType::BYTE_ARRAY, ConvertedType::UTF8);
     auto list = GroupNode::Make("list", Repetition::REPEATED, {element});
     parquet_fields.push_back(
@@ -1054,7 +1088,7 @@ TEST_F(TestConvertArrowSchema, ParquetOtherLists) {
   //   }
   // }
   {
-    auto element = PrimitiveNode::Make("string", Repetition::OPTIONAL,
+    auto element = PrimitiveNode::Make("element", Repetition::OPTIONAL,
                                        ParquetType::BYTE_ARRAY, ConvertedType::UTF8);
     auto list = GroupNode::Make("list", Repetition::REPEATED, {element});
     parquet_fields.push_back(
@@ -1070,7 +1104,7 @@ TEST_F(TestConvertArrowSchema, ParquetOtherLists) {
   //   }
   // }
   {
-    auto element = PrimitiveNode::Make("string", Repetition::OPTIONAL,
+    auto element = PrimitiveNode::Make("element", Repetition::OPTIONAL,
                                        ParquetType::BYTE_ARRAY, ConvertedType::UTF8);
     auto list = GroupNode::Make("list", Repetition::REPEATED, {element});
     parquet_fields.push_back(
@@ -1291,6 +1325,54 @@ TEST_F(TestConvertRoundTrip, FieldIdPreserveExisting) {
 
   // In our unit test a "not set" thrift field has a value of 0
   expected_field_ids = std::vector<int>{0, 2, 0, 0, 0, 17};
+  auto thrift_field_ids = GetThriftFieldIds(parquet_format_schema_);
+  ASSERT_EQ(thrift_field_ids, expected_field_ids);
+}
+
+TEST_F(TestConvertRoundTrip, FieldIdPreserveAllColumnTypes) {
+  std::vector<std::shared_ptr<Field>> arrow_fields;
+  arrow_fields.push_back(::arrow::field("c1", INT32, true, FieldIdMetadata(2)));
+  arrow_fields.push_back(::arrow::field("c2", DOUBLE, true, FieldIdMetadata(4)));
+  arrow_fields.push_back(::arrow::field("c3", DECIMAL_8_4, true, FieldIdMetadata(6)));
+  arrow_fields.push_back(::arrow::field("c4", UTF8, true, FieldIdMetadata(8)));
+
+  auto inner_struct =
+      ::arrow::struct_({::arrow::field("c5_1_1", UTF8, true, FieldIdMetadata(14))});
+  arrow_fields.push_back(::arrow::field(
+      "c5",
+      ::arrow::struct_({::arrow::field("c5_1", inner_struct, true, FieldIdMetadata(12)),
+                        ::arrow::field("c5_2", INT64, true, FieldIdMetadata(16))}),
+      true, FieldIdMetadata(10)));
+
+  auto list_element = ::arrow::field("c6_1", UTF8, true, FieldIdMetadata(20));
+  arrow_fields.push_back(::arrow::field("c6", ::arrow::list(std::move(list_element)),
+                                        true, FieldIdMetadata(18)));
+
+  auto map_key = ::arrow::field("c7_1", UTF8, false, FieldIdMetadata(24));
+  auto map_value = ::arrow::field("c7_2", UTF8, true, FieldIdMetadata(26));
+  arrow_fields.push_back(::arrow::field(
+      "c7", std::make_shared<::arrow::MapType>(std::move(map_key), std::move(map_value)),
+      true, FieldIdMetadata(22)));
+
+  ASSERT_OK(RoundTripSchema(arrow_fields));
+  auto field_ids = GetFieldIdsDfs(result_schema_->fields());
+  // c7 field is an arrow map type which is in fact list<struct<key_field, value_field>>
+  // and the middle struct type does not have field-id.
+  auto expected_field_ids =
+      std::vector<int>{2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, -1, 24, 26};
+  ASSERT_EQ(field_ids, expected_field_ids);
+
+  // Parquet has a field id for the schema itself.
+  // c6 field is a three-level list type where the middle level does not have field-id
+  // c7 field is a map type which in turn is a three-level list type, too.
+  expected_field_ids =
+      std::vector<int>{-1, 2, 4, 6, 8, 10, 12, 14, 16, 18, -1, 20, 22, -1, 24, 26};
+  auto parquet_ids = GetParquetFieldIds(parquet_schema_);
+  ASSERT_EQ(parquet_ids, expected_field_ids);
+
+  // In our unit test a "not set" thrift field has a value of 0
+  expected_field_ids =
+      std::vector<int>{0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 0, 20, 22, 0, 24, 26};
   auto thrift_field_ids = GetThriftFieldIds(parquet_format_schema_);
   ASSERT_EQ(thrift_field_ids, expected_field_ids);
 }
@@ -1697,5 +1779,4 @@ TEST_F(TestLevels, ListErrors) {
   }
 }
 
-}  // namespace arrow
-}  // namespace parquet
+}  // namespace parquet::arrow

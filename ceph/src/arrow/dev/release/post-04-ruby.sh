@@ -39,7 +39,7 @@ homebrew_version=$(
   curl \
     --fail \
     --no-progress-meter \
-    https://raw.githubusercontent.com/Homebrew/homebrew-core/master/Formula/apache-arrow-glib.rb | \
+    https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Formula/a/apache-arrow-glib.rb | \
     grep url | \
     grep -o "[0-9]*\.[0-9]*\.[0-9]*" | \
     head -n 1)
@@ -76,6 +76,10 @@ curl \
   https://downloads.apache.org/arrow/arrow-${version}/${tar_gz}
 rm -rf ${archive_name}
 tar xf ${tar_gz}
+
+read -p "Please enter your RubyGems MFA one-time password (or leave empty if you don't have MFA enabled): " GEM_HOST_OTP_CODE </dev/tty
+export GEM_HOST_OTP_CODE
+
 modules=()
 for module in ${archive_name}/ruby/red-*; do
   pushd ${module}

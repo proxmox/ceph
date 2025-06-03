@@ -27,7 +27,7 @@
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/hashing.h"
 #include "arrow/util/logging.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_type_inline.h"
 
 namespace arrow {
 
@@ -106,8 +106,9 @@ class DictionaryMemoTable::DictionaryMemoTableImpl {
     enable_if_memoize<T, Status> Visit(const T&) {
       using ConcreteMemoTable = typename DictionaryTraits<T>::MemoTableType;
       auto memo_table = checked_cast<ConcreteMemoTable*>(memo_table_);
-      return DictionaryTraits<T>::GetDictionaryArrayData(pool_, value_type_, *memo_table,
-                                                         start_offset_, out_);
+      ARROW_ASSIGN_OR_RAISE(*out_, DictionaryTraits<T>::GetDictionaryArrayData(
+                                       pool_, value_type_, *memo_table, start_offset_));
+      return Status::OK();
     }
   };
 
@@ -188,12 +189,18 @@ GET_OR_INSERT(MonthIntervalType);
 
 #undef GET_OR_INSERT
 
-Status DictionaryMemoTable::GetOrInsert(const BinaryType*, util::string_view value,
+Status DictionaryMemoTable::GetOrInsert(const BinaryType*, std::string_view value,
                                         int32_t* out) {
   return impl_->GetOrInsert<BinaryType>(value, out);
 }
 
-Status DictionaryMemoTable::GetOrInsert(const LargeBinaryType*, util::string_view value,
+Status DictionaryMemoTable::GetOrInsert(const BinaryViewType*, std::string_view value,
+                                        int32_t* out) {
+  // Create BinaryArray dictionary for now
+  return impl_->GetOrInsert<BinaryType>(value, out);
+}
+
+Status DictionaryMemoTable::GetOrInsert(const LargeBinaryType*, std::string_view value,
                                         int32_t* out) {
   return impl_->GetOrInsert<LargeBinaryType>(value, out);
 }

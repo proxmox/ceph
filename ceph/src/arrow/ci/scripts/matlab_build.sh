@@ -23,7 +23,12 @@ set -ex
 base_dir=${1}
 source_dir=${base_dir}/matlab
 build_dir=${base_dir}/matlab/build
+install_dir=${base_dir}/matlab/install
 
-cmake -S ${source_dir} -B ${build_dir} -G Ninja -D MATLAB_BUILD_TESTS=ON
-cmake --build ${build_dir} --config Release
-ctest --test-dir ${build_dir}
+cmake \
+  -S ${source_dir} \
+  -B ${build_dir} \
+  -G Ninja \
+  -D CMAKE_INSTALL_PREFIX=${install_dir} \
+  -D MATLAB_ADD_INSTALL_DIR_TO_SEARCH_PATH=OFF
+cmake --build ${build_dir} --config Release --target install

@@ -14,30 +14,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package array // import "github.com/apache/arrow/go/v6/arrow/array"
+package array
 
 import (
+	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v6/arrow"
-	"github.com/apache/arrow/go/v6/arrow/bitutil"
-	"github.com/apache/arrow/go/v6/arrow/internal/debug"
-	"github.com/apache/arrow/go/v6/arrow/memory"
-	"golang.org/x/xerrors"
+	"github.com/apache/arrow/go/v15/arrow"
+	"github.com/apache/arrow/go/v15/arrow/bitutil"
+	"github.com/apache/arrow/go/v15/arrow/internal/debug"
+	"github.com/apache/arrow/go/v15/arrow/memory"
+	"github.com/apache/arrow/go/v15/internal/json"
 )
 
-func NewIntervalData(data *Data) Interface {
-	switch data.dtype.(type) {
+func NewIntervalData(data arrow.ArrayData) arrow.Array {
+	switch data.DataType().(type) {
 	case *arrow.MonthIntervalType:
-		return NewMonthIntervalData(data)
+		return NewMonthIntervalData(data.(*Data))
 	case *arrow.DayTimeIntervalType:
-		return NewDayTimeIntervalData(data)
+		return NewDayTimeIntervalData(data.(*Data))
 	case *arrow.MonthDayNanoIntervalType:
-		return NewMonthDayNanoIntervalData(data)
+		return NewMonthDayNanoIntervalData(data.(*Data))
 	default:
-		panic(xerrors.Errorf("arrow/array: unknown interval data type %T", data.dtype))
+		panic(fmt.Errorf("arrow/array: unknown interval data type %T", data.DataType()))
 	}
 }
 
@@ -47,14 +49,20 @@ type MonthInterval struct {
 	values []arrow.MonthInterval
 }
 
-func NewMonthIntervalData(data *Data) *MonthInterval {
+func NewMonthIntervalData(data arrow.ArrayData) *MonthInterval {
 	a := &MonthInterval{}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
-func (a *MonthInterval) Value(i int) arrow.MonthInterval            { return a.values[i] }
+func (a *MonthInterval) Value(i int) arrow.MonthInterval { return a.values[i] }
+func (a *MonthInterval) ValueStr(i int) string {
+	if a.IsNull(i) {
+		return NullValueStr
+	}
+	return fmt.Sprintf("%v", a.Value(i))
+}
 func (a *MonthInterval) MonthIntervalValues() []arrow.MonthInterval { return a.values }
 
 func (a *MonthInterval) String() string {
@@ -66,7 +74,7 @@ func (a *MonthInterval) String() string {
 		}
 		switch {
 		case a.IsNull(i):
-			o.WriteString("(null)")
+			o.WriteString(NullValueStr)
 		default:
 			fmt.Fprintf(o, "%v", v)
 		}
@@ -84,6 +92,32 @@ func (a *MonthInterval) setData(data *Data) {
 		end := beg + a.array.data.length
 		a.values = a.values[beg:end]
 	}
+}
+
+func (a *MonthInterval) GetOneForMarshal(i int) interface{} {
+	if a.IsValid(i) {
+		return a.values[i]
+	}
+	return nil
+}
+
+// MarshalJSON will create a json array out of a MonthInterval array,
+// each value will be an object of the form {"months": #} where
+// # is the numeric value of that index
+func (a *MonthInterval) MarshalJSON() ([]byte, error) {
+	if a.NullN() == 0 {
+		return json.Marshal(a.values)
+	}
+	vals := make([]interface{}, a.Len())
+	for i := 0; i < a.Len(); i++ {
+		if a.IsValid(i) {
+			vals[i] = a.values[i]
+		} else {
+			vals[i] = nil
+		}
+	}
+
+	return json.Marshal(vals)
 }
 
 func arrayEqualMonthInterval(left, right *MonthInterval) bool {
@@ -108,6 +142,8 @@ type MonthIntervalBuilder struct {
 func NewMonthIntervalBuilder(mem memory.Allocator) *MonthIntervalBuilder {
 	return &MonthIntervalBuilder{builder: builder{refCount: 1, mem: mem}}
 }
+
+func (b *MonthIntervalBuilder) Type() arrow.DataType { return arrow.FixedWidthTypes.MonthInterval }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
@@ -135,6 +171,22 @@ func (b *MonthIntervalBuilder) Append(v arrow.MonthInterval) {
 func (b *MonthIntervalBuilder) AppendNull() {
 	b.Reserve(1)
 	b.UnsafeAppendBoolToBitmap(false)
+}
+
+func (b *MonthIntervalBuilder) AppendNulls(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendNull()
+	}
+}
+
+func (b *MonthIntervalBuilder) AppendEmptyValue() {
+	b.Append(arrow.MonthInterval(0))
+}
+
+func (b *MonthIntervalBuilder) AppendEmptyValues(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendEmptyValue()
+	}
 }
 
 func (b *MonthIntervalBuilder) UnsafeAppend(v arrow.MonthInterval) {
@@ -203,7 +255,7 @@ func (b *MonthIntervalBuilder) Resize(n int) {
 
 // NewArray creates a MonthInterval array from the memory buffers used by the builder and resets the MonthIntervalBuilder
 // so it can be used to build a new array.
-func (b *MonthIntervalBuilder) NewArray() Interface {
+func (b *MonthIntervalBuilder) NewArray() arrow.Array {
 	return b.NewMonthIntervalArray()
 }
 
@@ -234,20 +286,85 @@ func (b *MonthIntervalBuilder) newData() (data *Data) {
 	return
 }
 
+func (b *MonthIntervalBuilder) AppendValueFromString(s string) error {
+	if s == NullValueStr {
+		b.AppendNull()
+		return nil
+	}
+	v, err := strconv.ParseInt(s, 10, 32)
+	if err != nil {
+		b.AppendNull()
+		return err
+	}
+	b.Append(arrow.MonthInterval(v))
+	return nil
+}
+
+func (b *MonthIntervalBuilder) UnmarshalOne(dec *json.Decoder) error {
+	var v *arrow.MonthInterval
+	if err := dec.Decode(&v); err != nil {
+		return err
+	}
+
+	if v == nil {
+		b.AppendNull()
+	} else {
+		b.Append(*v)
+	}
+	return nil
+}
+
+func (b *MonthIntervalBuilder) Unmarshal(dec *json.Decoder) error {
+	for dec.More() {
+		if err := b.UnmarshalOne(dec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON will add the unmarshalled values of an array to the builder,
+// values are expected to be strings of the form "#months" where # is the int32
+// value that will be added to the builder.
+func (b *MonthIntervalBuilder) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	if delim, ok := t.(json.Delim); !ok || delim != '[' {
+		return fmt.Errorf("month interval builder must unpack from json array, found %s", delim)
+	}
+
+	return b.Unmarshal(dec)
+}
+
 // A type which represents an immutable sequence of arrow.DayTimeInterval values.
 type DayTimeInterval struct {
 	array
 	values []arrow.DayTimeInterval
 }
 
-func NewDayTimeIntervalData(data *Data) *DayTimeInterval {
+func NewDayTimeIntervalData(data arrow.ArrayData) *DayTimeInterval {
 	a := &DayTimeInterval{}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
-func (a *DayTimeInterval) Value(i int) arrow.DayTimeInterval              { return a.values[i] }
+func (a *DayTimeInterval) Value(i int) arrow.DayTimeInterval { return a.values[i] }
+func (a *DayTimeInterval) ValueStr(i int) string {
+	if a.IsNull(i) {
+		return NullValueStr
+	}
+	data, err := json.Marshal(a.GetOneForMarshal(i))
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
 func (a *DayTimeInterval) DayTimeIntervalValues() []arrow.DayTimeInterval { return a.values }
 
 func (a *DayTimeInterval) String() string {
@@ -259,7 +376,7 @@ func (a *DayTimeInterval) String() string {
 		}
 		switch {
 		case a.IsNull(i):
-			o.WriteString("(null)")
+			o.WriteString(NullValueStr)
 		default:
 			fmt.Fprintf(o, "%v", v)
 		}
@@ -277,6 +394,30 @@ func (a *DayTimeInterval) setData(data *Data) {
 		end := beg + a.array.data.length
 		a.values = a.values[beg:end]
 	}
+}
+
+func (a *DayTimeInterval) GetOneForMarshal(i int) interface{} {
+	if a.IsValid(i) {
+		return a.values[i]
+	}
+	return nil
+}
+
+// MarshalJSON will marshal this array to JSON as an array of objects,
+// consisting of the form {"days": #, "milliseconds": #} for each element.
+func (a *DayTimeInterval) MarshalJSON() ([]byte, error) {
+	if a.NullN() == 0 {
+		return json.Marshal(a.values)
+	}
+	vals := make([]interface{}, a.Len())
+	for i, v := range a.values {
+		if a.IsValid(i) {
+			vals[i] = v
+		} else {
+			vals[i] = nil
+		}
+	}
+	return json.Marshal(vals)
 }
 
 func arrayEqualDayTimeInterval(left, right *DayTimeInterval) bool {
@@ -301,6 +442,8 @@ type DayTimeIntervalBuilder struct {
 func NewDayTimeIntervalBuilder(mem memory.Allocator) *DayTimeIntervalBuilder {
 	return &DayTimeIntervalBuilder{builder: builder{refCount: 1, mem: mem}}
 }
+
+func (b *DayTimeIntervalBuilder) Type() arrow.DataType { return arrow.FixedWidthTypes.DayTimeInterval }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
@@ -328,6 +471,22 @@ func (b *DayTimeIntervalBuilder) Append(v arrow.DayTimeInterval) {
 func (b *DayTimeIntervalBuilder) AppendNull() {
 	b.Reserve(1)
 	b.UnsafeAppendBoolToBitmap(false)
+}
+
+func (b *DayTimeIntervalBuilder) AppendNulls(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendNull()
+	}
+}
+
+func (b *DayTimeIntervalBuilder) AppendEmptyValue() {
+	b.Append(arrow.DayTimeInterval{})
+}
+
+func (b *DayTimeIntervalBuilder) AppendEmptyValues(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendEmptyValue()
+	}
 }
 
 func (b *DayTimeIntervalBuilder) UnsafeAppend(v arrow.DayTimeInterval) {
@@ -396,7 +555,7 @@ func (b *DayTimeIntervalBuilder) Resize(n int) {
 
 // NewArray creates a DayTimeInterval array from the memory buffers used by the builder and resets the DayTimeIntervalBuilder
 // so it can be used to build a new array.
-func (b *DayTimeIntervalBuilder) NewArray() Interface {
+func (b *DayTimeIntervalBuilder) NewArray() arrow.Array {
 	return b.NewDayTimeIntervalArray()
 }
 
@@ -427,20 +586,84 @@ func (b *DayTimeIntervalBuilder) newData() (data *Data) {
 	return
 }
 
+func (b *DayTimeIntervalBuilder) AppendValueFromString(s string) error {
+	if s == NullValueStr {
+		b.AppendNull()
+		return nil
+	}
+	var v arrow.DayTimeInterval
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		b.AppendNull()
+		return err
+	}
+	b.Append(v)
+	return nil
+}
+
+func (b *DayTimeIntervalBuilder) UnmarshalOne(dec *json.Decoder) error {
+	var v *arrow.DayTimeInterval
+	if err := dec.Decode(&v); err != nil {
+		return err
+	}
+
+	if v == nil {
+		b.AppendNull()
+	} else {
+		b.Append(*v)
+	}
+	return nil
+}
+
+func (b *DayTimeIntervalBuilder) Unmarshal(dec *json.Decoder) error {
+	for dec.More() {
+		if err := b.UnmarshalOne(dec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON will add the values unmarshalled from an array to the builder,
+// with the values expected to be objects of the form {"days": #, "milliseconds": #}
+func (b *DayTimeIntervalBuilder) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	if delim, ok := t.(json.Delim); !ok || delim != '[' {
+		return fmt.Errorf("day_time interval builder must unpack from json array, found %s", delim)
+	}
+
+	return b.Unmarshal(dec)
+}
+
 // A type which represents an immutable sequence of arrow.DayTimeInterval values.
 type MonthDayNanoInterval struct {
 	array
 	values []arrow.MonthDayNanoInterval
 }
 
-func NewMonthDayNanoIntervalData(data *Data) *MonthDayNanoInterval {
+func NewMonthDayNanoIntervalData(data arrow.ArrayData) *MonthDayNanoInterval {
 	a := &MonthDayNanoInterval{}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
 func (a *MonthDayNanoInterval) Value(i int) arrow.MonthDayNanoInterval { return a.values[i] }
+func (a *MonthDayNanoInterval) ValueStr(i int) string {
+	if a.IsNull(i) {
+		return NullValueStr
+	}
+	data, err := json.Marshal(a.GetOneForMarshal(i))
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
 func (a *MonthDayNanoInterval) MonthDayNanoIntervalValues() []arrow.MonthDayNanoInterval {
 	return a.values
 }
@@ -454,7 +677,7 @@ func (a *MonthDayNanoInterval) String() string {
 		}
 		switch {
 		case a.IsNull(i):
-			o.WriteString("(null)")
+			o.WriteString(NullValueStr)
 		default:
 			fmt.Fprintf(o, "%v", v)
 		}
@@ -472,6 +695,30 @@ func (a *MonthDayNanoInterval) setData(data *Data) {
 		end := beg + a.array.data.length
 		a.values = a.values[beg:end]
 	}
+}
+
+func (a *MonthDayNanoInterval) GetOneForMarshal(i int) interface{} {
+	if a.IsValid(i) {
+		return a.values[i]
+	}
+	return nil
+}
+
+// MarshalJSON will marshal this array to a JSON array with elements
+// marshalled to the form {"months": #, "days": #, "nanoseconds": #}
+func (a *MonthDayNanoInterval) MarshalJSON() ([]byte, error) {
+	if a.NullN() == 0 {
+		return json.Marshal(a.values)
+	}
+	vals := make([]interface{}, a.Len())
+	for i, v := range a.values {
+		if a.IsValid(i) {
+			vals[i] = v
+		} else {
+			vals[i] = nil
+		}
+	}
+	return json.Marshal(vals)
 }
 
 func arrayEqualMonthDayNanoInterval(left, right *MonthDayNanoInterval) bool {
@@ -495,6 +742,10 @@ type MonthDayNanoIntervalBuilder struct {
 
 func NewMonthDayNanoIntervalBuilder(mem memory.Allocator) *MonthDayNanoIntervalBuilder {
 	return &MonthDayNanoIntervalBuilder{builder: builder{refCount: 1, mem: mem}}
+}
+
+func (b *MonthDayNanoIntervalBuilder) Type() arrow.DataType {
+	return arrow.FixedWidthTypes.MonthDayNanoInterval
 }
 
 // Release decreases the reference count by 1.
@@ -523,6 +774,22 @@ func (b *MonthDayNanoIntervalBuilder) Append(v arrow.MonthDayNanoInterval) {
 func (b *MonthDayNanoIntervalBuilder) AppendNull() {
 	b.Reserve(1)
 	b.UnsafeAppendBoolToBitmap(false)
+}
+
+func (b *MonthDayNanoIntervalBuilder) AppendNulls(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendNull()
+	}
+}
+
+func (b *MonthDayNanoIntervalBuilder) AppendEmptyValue() {
+	b.Append(arrow.MonthDayNanoInterval{})
+}
+
+func (b *MonthDayNanoIntervalBuilder) AppendEmptyValues(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendEmptyValue()
+	}
 }
 
 func (b *MonthDayNanoIntervalBuilder) UnsafeAppend(v arrow.MonthDayNanoInterval) {
@@ -591,7 +858,7 @@ func (b *MonthDayNanoIntervalBuilder) Resize(n int) {
 
 // NewArray creates a MonthDayNanoInterval array from the memory buffers used by the builder and resets the MonthDayNanoIntervalBuilder
 // so it can be used to build a new array.
-func (b *MonthDayNanoIntervalBuilder) NewArray() Interface {
+func (b *MonthDayNanoIntervalBuilder) NewArray() arrow.Array {
 	return b.NewMonthDayNanoIntervalArray()
 }
 
@@ -622,10 +889,63 @@ func (b *MonthDayNanoIntervalBuilder) newData() (data *Data) {
 	return
 }
 
+func (b *MonthDayNanoIntervalBuilder) AppendValueFromString(s string) error {
+	if s == NullValueStr {
+		b.AppendNull()
+		return nil
+	}
+	var v arrow.MonthDayNanoInterval
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return err
+	}
+	b.Append(v)
+	return nil
+}
+
+func (b *MonthDayNanoIntervalBuilder) UnmarshalOne(dec *json.Decoder) error {
+	var v *arrow.MonthDayNanoInterval
+	if err := dec.Decode(&v); err != nil {
+		return err
+	}
+
+	if v == nil {
+		b.AppendNull()
+	} else {
+		b.Append(*v)
+	}
+	return nil
+}
+
+func (b *MonthDayNanoIntervalBuilder) Unmarshal(dec *json.Decoder) error {
+	for dec.More() {
+		if err := b.UnmarshalOne(dec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON unmarshals a JSON array of objects and adds them to this builder,
+// each element of the array is expected to be an object of the form
+// {"months": #, "days": #, "nanoseconds": #}
+func (b *MonthDayNanoIntervalBuilder) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	if delim, ok := t.(json.Delim); !ok || delim != '[' {
+		return fmt.Errorf("month_day_nano interval builder must unpack from json array, found %s", delim)
+	}
+
+	return b.Unmarshal(dec)
+}
+
 var (
-	_ Interface = (*MonthInterval)(nil)
-	_ Interface = (*DayTimeInterval)(nil)
-	_ Interface = (*MonthDayNanoInterval)(nil)
+	_ arrow.Array = (*MonthInterval)(nil)
+	_ arrow.Array = (*DayTimeInterval)(nil)
+	_ arrow.Array = (*MonthDayNanoInterval)(nil)
 
 	_ Builder = (*MonthIntervalBuilder)(nil)
 	_ Builder = (*DayTimeIntervalBuilder)(nil)

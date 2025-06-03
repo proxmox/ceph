@@ -5,15 +5,20 @@
     "indentSize": 2
   },
   "compilerOptions": {
-    "target": "esnext",
-    "module": "commonjs",
+    "target": "ESNext",
+    "module": "ESNext",
+    "isolatedModules": true,
     "noEmit": true,
-    "esModuleInterop": true,
     "baseUrl": "./",
+    "rootDir": "./",
     "paths": {
       "apache-arrow": ["src/Arrow.node"],
       "apache-arrow/*": ["src/*"]
-    }
+    },
+    "allowImportingTsExtensions": true,
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "perf/**/*.ts"]
+  "include": ["bin/**/*.ts", "src/**/*.ts", "test/**/*.ts", "perf/**/*.ts"],
+  "ts-node": {
+    "swc": true
+  }
 }

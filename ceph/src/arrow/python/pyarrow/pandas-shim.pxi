@@ -37,6 +37,7 @@ cdef class _PandasAPIShim(object):
         object _array_like_types, _is_extension_array_dtype
         bint has_sparse
         bint _pd024
+        bint _is_v1, _is_ge_v21
 
     def __init__(self):
         self._tried_importing_pandas = False
@@ -58,20 +59,24 @@ cdef class _PandasAPIShim(object):
         self._pd = pd
         self._version = pd.__version__
         self._loose_version = Version(pd.__version__)
+        self._is_v1 = False
 
-        if self._loose_version < Version('0.23.0'):
+        if self._loose_version < Version('1.0.0'):
             self._have_pandas = False
             if raise_:
                 raise ImportError(
-                    "pyarrow requires pandas 0.23.0 or above, pandas {} is "
+                    "pyarrow requires pandas 1.0.0 or above, pandas {} is "
                     "installed".format(self._version)
                 )
             else:
                 warnings.warn(
-                    "pyarrow requires pandas 0.23.0 or above, pandas {} is "
+                    "pyarrow requires pandas 1.0.0 or above, pandas {} is "
                     "installed. Therefore, pandas-specific integration is not "
                     "used.".format(self._version), stacklevel=2)
                 return
+
+        self._is_v1 = self._loose_version < Version('2.0.0')
+        self._is_ge_v21 = self._loose_version >= Version('2.1.0')
 
         self._compat_module = pdcompat
         self._data_frame = pd.DataFrame
@@ -83,22 +88,12 @@ cdef class _PandasAPIShim(object):
             self._series, self._index, self._categorical_type,
             self._extension_array)
         self._extension_dtype = pd.api.extensions.ExtensionDtype
-        if self._loose_version >= Version('0.24.0'):
-            self._is_extension_array_dtype = \
-                pd.api.types.is_extension_array_dtype
-        else:
-            self._is_extension_array_dtype = None
-
+        self._is_extension_array_dtype = (
+            pd.api.types.is_extension_array_dtype)
         self._types_api = pd.api.types
         self._datetimetz_type = pd.api.types.DatetimeTZDtype
         self._have_pandas = True
-
-        if self._loose_version > Version('0.25'):
-            self.has_sparse = False
-        else:
-            self.has_sparse = True
-
-        self._pd024 = self._loose_version >= Version('0.24')
+        self.has_sparse = False
 
     cdef inline _check_import(self, bint raise_=True):
         if self._tried_importing_pandas:
@@ -160,6 +155,14 @@ cdef class _PandasAPIShim(object):
         self._check_import()
         return self._version
 
+    def is_v1(self):
+        self._check_import()
+        return self._is_v1
+
+    def is_ge_v21(self):
+        self._check_import()
+        return self._is_ge_v21
+
     @property
     def categorical_type(self):
         self._check_import()
@@ -200,7 +203,7 @@ cdef class _PandasAPIShim(object):
 
     cpdef is_sparse(self, obj):
         if self._have_pandas_internal():
-            return self._types_api.is_sparse(obj)
+            return isinstance(obj.dtype, self.pd.SparseDtype)
         else:
             return False
 
@@ -232,15 +235,8 @@ cdef class _PandasAPIShim(object):
         self._check_import()
         if isinstance(obj.dtype, (self.pd.api.types.IntervalDtype,
                                   self.pd.api.types.PeriodDtype)):
-            if self._pd024:
-                # only since pandas 0.24, interval and period are stored as
-                # such in Series
-                return obj.array
+            return obj.array
         return obj.values
-
-    def assert_frame_equal(self, *args, **kwargs):
-        self._check_import()
-        return self._pd.util.testing.assert_frame_equal
 
     def get_rangeindex_attribute(self, level, name):
         # public start/stop/step attributes added in pandas 0.25.0

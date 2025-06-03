@@ -42,22 +42,42 @@ namespace Apache.Arrow
                     return new UInt64Array.Builder();
                 case ArrowTypeId.Int64:
                     return new Int64Array.Builder();
+                case ArrowTypeId.HalfFloat:
+#if NET5_0_OR_GREATER
+                    return new HalfFloatArray.Builder();
+#else
+                    throw new NotSupportedException("Half-float arrays are not supported by this target framework.");
+#endif
                 case ArrowTypeId.Float:
                     return new FloatArray.Builder();
                 case ArrowTypeId.Double:
                     return new DoubleArray.Builder();
                 case ArrowTypeId.String:
                     return new StringArray.Builder();
+                case ArrowTypeId.StringView:
+                    return new StringViewArray.Builder();
                 case ArrowTypeId.Binary:
                     return new BinaryArray.Builder();
+                case ArrowTypeId.BinaryView:
+                    return new BinaryViewArray.Builder();
                 case ArrowTypeId.Timestamp:
                     return new TimestampArray.Builder();
                 case ArrowTypeId.Date64:
                     return new Date64Array.Builder();
                 case ArrowTypeId.Date32:
                     return new Date32Array.Builder();
+                case ArrowTypeId.Time32:
+                    return new Time32Array.Builder(dataType as Time32Type);
+                case ArrowTypeId.Time64:
+                    return new Time64Array.Builder(dataType as Time64Type);
+                case ArrowTypeId.Duration:
+                    return new DurationArray.Builder(dataType as DurationType);
                 case ArrowTypeId.List:
                     return new ListArray.Builder(dataType as ListType);
+                case ArrowTypeId.ListView:
+                    return new ListViewArray.Builder(dataType as ListViewType);
+                case ArrowTypeId.FixedSizeList:
+                    return new FixedSizeListArray.Builder(dataType as FixedSizeListType);
                 case ArrowTypeId.Decimal128:
                     return new Decimal128Array.Builder(dataType as Decimal128Type);
                 case ArrowTypeId.Decimal256:
@@ -66,11 +86,8 @@ namespace Apache.Arrow
                 case ArrowTypeId.Union:
                 case ArrowTypeId.Dictionary:
                 case ArrowTypeId.FixedSizedBinary:
-                case ArrowTypeId.HalfFloat:
                 case ArrowTypeId.Interval:
                 case ArrowTypeId.Map:
-                case ArrowTypeId.Time32:
-                case ArrowTypeId.Time64:
                 default:
                     throw new NotSupportedException($"An ArrowArrayBuilder cannot be built for type {dataType.TypeId}.");
             }
