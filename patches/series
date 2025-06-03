@@ -21,3 +21,6 @@
 0024-Update-RGW-Arrow-Flight-code-to-adjust-to-API-change.patch
 0025-s3select-fix-compilation-with-Arrow-15.patch
 0026-d-install-systemd-unit-files-are-now-in-usr-lib.patch
+0027-d-py3dist-drop-python3-distutils-not-available-in-De.patch
+0028-python-common-add-a-utils-function-to-replace-distut.patch
+0029-pybind-mgr-replace-imports-of-distutils.util.patch

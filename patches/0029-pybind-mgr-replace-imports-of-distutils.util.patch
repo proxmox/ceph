@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Mulligan <jmulligan@redhat.com>
+Date: Wed, 18 Sep 2024 17:45:58 -0700
+Subject: [PATCH] pybind/mgr: replace imports of distutils.util
+
+In python 3.12 distutils is removed. Replace uses of
+distutils.util.strtobool with our own utility function.
+
+Signed-off-by: John Mulligan <jmulligan@redhat.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/pybind/mgr/dashboard/tools.py                | 2 +-
+ src/pybind/mgr/volumes/fs/operations/pin_util.py | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/pybind/mgr/dashboard/tools.py b/src/pybind/mgr/dashboard/tools.py
+index 51ed9c471aa..14de970cceb 100644
+--- a/src/pybind/mgr/dashboard/tools.py
++++ b/src/pybind/mgr/dashboard/tools.py
+@@ -9,9 +9,9 @@ import threading
+ import time
+ import urllib
+ from datetime import datetime, timedelta
+-from distutils.util import strtobool
+ 
+ import cherrypy
++from ceph.utils import strtobool
+ from mgr_util import build_url
+ 
+ from . import mgr
+diff --git a/src/pybind/mgr/volumes/fs/operations/pin_util.py b/src/pybind/mgr/volumes/fs/operations/pin_util.py
+index a12ab5b4d4b..631fdd8fcaa 100644
+--- a/src/pybind/mgr/volumes/fs/operations/pin_util.py
++++ b/src/pybind/mgr/volumes/fs/operations/pin_util.py
+@@ -3,7 +3,7 @@ import errno
+ import cephfs
+ 
+ from ..exception import VolumeException
+-from distutils.util import strtobool
++from ceph.utils import strtobool
+ 
+ _pin_value = {
+     "export": lambda x: int(x),

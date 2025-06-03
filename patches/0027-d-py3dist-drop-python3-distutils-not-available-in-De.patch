@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Tue, 3 Jun 2025 21:33:31 +0200
+Subject: [PATCH] d/py3dist: drop python3-distutils, not available in Debian
+ Trixie anymore
+
+It was simply removed [0] without any comment or rationale at all
+(always really great ... -.-), anyhow, just drop it here for now,
+we're not even in a beta state so we can always reverse/adapt this if
+it becomes clear that wasn't the correct choice.
+
+[0]: https://salsa.debian.org/cpython-team/python3-stdlib/-/commit/974943cee10b348c971084f5ef3c78e9b8d293b6
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/ceph-mgr.requires | 1 -
+ debian/py3dist-overrides | 1 -
+ 2 files changed, 2 deletions(-)
+
+diff --git a/debian/ceph-mgr.requires b/debian/ceph-mgr.requires
+index 39336330c93..02596f3e125 100644
+--- a/debian/ceph-mgr.requires
++++ b/debian/ceph-mgr.requires
+@@ -3,4 +3,3 @@ pyOpenSSL
+ cephfs
+ ceph-argparse
+ pyyaml
+-distutils
+diff --git a/debian/py3dist-overrides b/debian/py3dist-overrides
+index b6358cf123e..73c20633a7d 100644
+--- a/debian/py3dist-overrides
++++ b/debian/py3dist-overrides
+@@ -1,4 +1,3 @@
+ cephfs python3-cephfs; PEP386
+ ceph_argparse python3-ceph-argparse
+ ceph_common python3-ceph-common
+-distutils python3-distutils
