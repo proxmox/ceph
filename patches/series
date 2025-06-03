@@ -1,8 +1,5 @@
 0001-cmake-disable-version-from-git.patch
-0002-debian-control-add-break-libpvestorage-perl.patch
 0003-d-rules-fix-instaldoc-override-and-ship-upstream-cha.patch
-0004-remove-legacy-pve-ceph-osd-activation-script-in-post.patch
-0005-remove-legacy-init.d-ceph-script.patch
 0006-ceph-mgr-only-suggest-mgr-plugins.patch
 0007-Remove-failing-actions-from-prerm.patch
 0008-fix-service-ordering-avoid-Before-remote-fs-pre.targ.patch
