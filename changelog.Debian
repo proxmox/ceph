@@ -1,3 +1,9 @@
+ceph (19.2.2-pve1~bpo12+1) bookworm; urgency=medium
+
+  * Build for Debian 12 Bookworm based Proxmox VE 8 release.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 10 Jun 2025 09:46:10 +0200
+
 ceph (19.2.2-pve1) trixie; urgency=medium
 
   * update Ceph to Squid 19.2.2 stable release
