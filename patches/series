@@ -25,3 +25,4 @@
 0028-python-common-add-a-utils-function-to-replace-distut.patch
 0029-pybind-mgr-replace-imports-of-distutils.util.patch
 0030-debian-radosgw-add-media-types-packages-as-alternati.patch
+0031-ceph-volume-fix-importlib.metadata-compat.patch
