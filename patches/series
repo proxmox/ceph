@@ -18,3 +18,4 @@
 0021-mgr-add-site-package-paths-in-PyModuleRegistry.patch
 0030-debian-radosgw-add-media-types-packages-as-alternati.patch
 0031-ceph-volume-fix-importlib.metadata-compat.patch
+0032-client-disallow-unprivileged-users-to-escalate-root-.patch
