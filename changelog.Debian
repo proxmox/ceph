@@ -1,3 +1,11 @@
+ceph (19.2.2-pve3) trixie; urgency=medium
+
+  * cherry-pick fix for ceph-volume and Python 3.13+.
+
+  * client: cherry-pick fix to improve privilege handling of setattr.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 02 Jul 2025 14:45:50 +0200
+
 ceph (19.2.2-pve2) trixie; urgency=medium
 
   * build for upcoming Debian 13 "Trixie" based Proxmox VE 9 release.
