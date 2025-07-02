@@ -1,3 +1,11 @@
+ceph (19.2.2-pve1~bpo12+2) bookworm-backports; urgency=medium
+
+  * cherry-pick fix for ceph-volume and Python 3.13+.
+
+  * client: cherry-pick fix to improve privilege handling of setattr.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 02 Jul 2025 16:07:30 +0200
+
 ceph (19.2.2-pve1~bpo12+1) bookworm; urgency=medium
 
   * Build for Debian 12 Bookworm based Proxmox VE 8 release.
