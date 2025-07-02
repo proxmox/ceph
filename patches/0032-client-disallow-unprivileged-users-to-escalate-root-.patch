@@ -18,10 +18,10 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  2 files changed, 24 insertions(+), 10 deletions(-)
 
 diff --git a/src/client/Client.cc b/src/client/Client.cc
-index 674a2a60636..d5d0fbc1041 100644
+index 67a1f65b4f8..896f0cc7bfd 100644
 --- a/src/client/Client.cc
 +++ b/src/client/Client.cc
-@@ -6193,18 +6193,22 @@ int Client::may_setattr(const InodeRef& in, struct ceph_statx *stx, int mask,
+@@ -6049,18 +6049,22 @@ int Client::may_setattr(Inode *in, struct ceph_statx *stx, int mask,
    }
  
    if (mask & CEPH_SETATTR_MODE) {
@@ -55,7 +55,7 @@ index 674a2a60636..d5d0fbc1041 100644
  
      gid_t i_gid = (mask & CEPH_SETATTR_GID) ? stx->stx_gid : in->gid;
 diff --git a/src/test/libcephfs/suidsgid.cc b/src/test/libcephfs/suidsgid.cc
-index 0802e8cb2b4..2ca38349a72 100644
+index d750613ebd8..31ffaef6668 100644
 --- a/src/test/libcephfs/suidsgid.cc
 +++ b/src/test/libcephfs/suidsgid.cc
 @@ -134,6 +134,14 @@ void run_truncate_test_case(int mode, int result, size_t size, bool with_admin=f
