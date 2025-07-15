@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Mulligan <jmulligan@redhat.com>
+Date: Thu, 17 Apr 2025 13:23:09 -0400
+Subject: [PATCH 37/57] python-common/cryptotools: use one single dir for
+ cryptotools
+
+Signed-off-by: John Mulligan <jmulligan@redhat.com>
+---
+ .../ceph/{pybind/mgr => cryptotools}/cryptotools.py             | 0
+ src/python-common/ceph/cryptotools/remote.py                    | 2 +-
+ 2 files changed, 1 insertion(+), 1 deletion(-)
+ rename src/python-common/ceph/{pybind/mgr => cryptotools}/cryptotools.py (100%)
+
+diff --git a/src/python-common/ceph/pybind/mgr/cryptotools.py b/src/python-common/ceph/cryptotools/cryptotools.py
+similarity index 100%
+rename from src/python-common/ceph/pybind/mgr/cryptotools.py
+rename to src/python-common/ceph/cryptotools/cryptotools.py
+diff --git a/src/python-common/ceph/cryptotools/remote.py b/src/python-common/ceph/cryptotools/remote.py
+index 2edc9fa43f1..9a00a310627 100644
+--- a/src/python-common/ceph/cryptotools/remote.py
++++ b/src/python-common/ceph/cryptotools/remote.py
+@@ -24,7 +24,7 @@ import logging
+ import subprocess
+ 
+ 
+-_ctmodule = 'ceph.pybind.mgr.cryptotools'
++_ctmodule = 'ceph.cryptotools.cryptotools'
+ 
+ logger = logging.getLogger('ceph.cryptotools.remote')
+ 

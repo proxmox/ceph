@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Paulo E. Castro" <pecastro@wormholenet.com>
+Date: Wed, 23 Apr 2025 00:07:01 +0100
+Subject: [PATCH 41/57] python-common/cryptotools: Always encode, Err via
+ stderr and signal the exit.
+
+Signed-off-by: Paulo E. Castro <pecastro@wormholenet.com>
+---
+ src/pybind/mgr/tests/test_tls.py                  | 1 -
+ src/python-common/ceph/cryptotools/cryptotools.py | 3 ++-
+ src/python-common/ceph/cryptotools/remote.py      | 6 ++----
+ 3 files changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/src/pybind/mgr/tests/test_tls.py b/src/pybind/mgr/tests/test_tls.py
+index 39ba5ae0a03..7cba929fe43 100644
+--- a/src/pybind/mgr/tests/test_tls.py
++++ b/src/pybind/mgr/tests/test_tls.py
+@@ -41,7 +41,6 @@ class TLSchecks(unittest.TestCase):
+         new_key = crypto.PKey()
+         new_key.generate_key(crypto.TYPE_RSA, 2048)
+         new_key = crypto.dump_privatekey(crypto.FILETYPE_PEM, new_key).decode('utf-8')
+-
+         self.assertRaises(ServerConfigException, verify_tls, crt, new_key)
+ 
+     def test_get_cert_issuer_info(self):
+diff --git a/src/python-common/ceph/cryptotools/cryptotools.py b/src/python-common/ceph/cryptotools/cryptotools.py
+index dd9f5367b6a..e021cf82ad6 100644
+--- a/src/python-common/ceph/cryptotools/cryptotools.py
++++ b/src/python-common/ceph/cryptotools/cryptotools.py
+@@ -129,7 +129,8 @@ def get_cert_issuer_info(args: Namespace) -> None:
+ 
+ 
+ def _fail_message(msg: str) -> None:
+-    json.dump({'error': msg}, sys.stdout)
++    json.dump({'error': msg}, sys.stderr)
++    sys.exit(1)
+ 
+ 
+ def verify_tls(args: Namespace) -> None:
+diff --git a/src/python-common/ceph/cryptotools/remote.py b/src/python-common/ceph/cryptotools/remote.py
+index 1ad41081445..a83399828e1 100644
+--- a/src/python-common/ceph/cryptotools/remote.py
++++ b/src/python-common/ceph/cryptotools/remote.py
+@@ -55,16 +55,14 @@ class CryptoCaller:
+     def _run(
+         self,
+         args: List[str],
+-        input_data: Union[str, bytes, None] = None,
++        input_data: Union[str, None] = None,
+         capture_output: bool = False,
+         check: bool = False,
+     ) -> subprocess.CompletedProcess:
+         if input_data is None:
+             _input = None
+-        elif isinstance(input_data, str):
+-            _input = input_data.encode('utf-8')
+         else:
+-            _input = input_data
++            _input = input_data.encode('utf-8')
+         cmd = ['python3', '-m', _ctmodule] + list(args)
+         logger.warning('CryptoCaller will run: %r', cmd)
+         try:
