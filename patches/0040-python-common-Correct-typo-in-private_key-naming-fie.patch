@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Paulo E. Castro" <pecastro@wormholenet.com>
+Date: Mon, 21 Apr 2025 22:13:28 +0100
+Subject: [PATCH 40/57] python-common: Correct typo in private_key naming
+ field.
+
+Signed-off-by: Paulo E. Castro <pecastro@wormholenet.com>
+---
+ src/python-common/ceph/cryptotools/remote.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/python-common/ceph/cryptotools/remote.py b/src/python-common/ceph/cryptotools/remote.py
+index 9a00a310627..1ad41081445 100644
+--- a/src/python-common/ceph/cryptotools/remote.py
++++ b/src/python-common/ceph/cryptotools/remote.py
+@@ -113,7 +113,7 @@ class CryptoCaller:
+         """
+         result = self._run(
+             ['create_self_signed_cert'],
+-            input_data=json.dumps({'dname': dname, 'pkey': pkey}),
++            input_data=json.dumps({'dname': dname, 'private_key': pkey}),
+             capture_output=True,
+             check=True,
+         )
