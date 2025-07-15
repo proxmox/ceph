@@ -1,3 +1,13 @@
+ceph (19.2.2-pve4) trixie; urgency=medium
+
+  * ceph-base: do not install legacy ceph sysvinit script, it was replaced
+    with systemd units since a while.
+
+  * mgr modules: backport workaround for PyO3 sub-interpreter ImportError
+    regarding sub-interpreters for the Ceph Dashboard.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 15 Jul 2025 12:46:41 +0200
+
 ceph (19.2.2-pve3) trixie; urgency=medium
 
   * cherry-pick fix for ceph-volume and Python 3.13+.
