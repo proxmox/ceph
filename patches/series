@@ -5,7 +5,6 @@
 0008-fix-service-ordering-avoid-Before-remote-fs-pre.targ.patch
 0009-fix-4759-run-ceph-crash-daemon-with-www-data-group-f.patch
 0010-fix-compatibility-with-CPUs-not-supporting-SSE-4.1-i.patch
-0011-mgr-dashboard-remove-ability-to-create-and-check-TLS.patch
 0012-ceph-osd-postinst-do-not-always-reload-all-sysctl-se.patch
 0013-debian-recursively-adjust-permissions-of-var-lib-cep.patch
 0014-ceph-crash-change-order-of-client-names.patch
