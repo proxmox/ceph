@@ -51,3 +51,4 @@
 0055-python-common-cryptotools-catch-all-failures-to-read.patch
 0056-mgr-cephadm-always-use-the-internal-cryptocaller.patch
 0057-mgr-dashboard-add-an-option-to-control-the-dashboard.patch
+0058-pybind-mgr-restful-provide-workaround-for-PyO3-Impor.patch
