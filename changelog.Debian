@@ -1,3 +1,12 @@
+ceph (19.2.2-pve5) trixie; urgency=medium
+
+  * mgr: fix errors regarding module imports and NOTIFY_TYPES attributes.
+
+  * common python: add another workaround for PyO3 ImportError by moving the
+    self-signed cert generation into a separate module.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 16 Jul 2025 20:17:58 +0200
+
 ceph (19.2.2-pve4) trixie; urgency=medium
 
   * ceph-base: do not install legacy ceph sysvinit script, it was replaced
