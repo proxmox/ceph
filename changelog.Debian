@@ -1,3 +1,12 @@
+ceph (19.2.2-pve6) trixie; urgency=medium
+
+  * actually remove existing init.d script via dpkg maintscript helper.
+
+  * cherry-pick fixes for regexes that silences some more invalid escape
+    sequence warnings.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 28 Jul 2025 16:49:41 +0200
+
 ceph (19.2.2-pve5) trixie; urgency=medium
 
   * mgr: fix errors regarding module imports and NOTIFY_TYPES attributes.
