@@ -11,7 +11,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  1 file changed, 7 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index da3102f9e5a..a5795ec764a 100644
+index cbc5f55edf1..1cafac64320 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -35,17 +35,10 @@ configure_file(ceph-crash.in

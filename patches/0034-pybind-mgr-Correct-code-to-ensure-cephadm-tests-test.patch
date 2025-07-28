@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Paulo E. Castro" <pecastro@wormholenet.com>
+Date: Wed, 23 Apr 2025 22:16:12 +0100
+Subject: [PATCH] pybind/mgr: Correct code to ensure
+ cephadm/tests/test_certmgr.py passes.
+
+Signed-off-by: Paulo E. Castro <pecastro@wormholenet.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/pybind/mgr/mgr_util.py                   | 2 +-
+ src/python-common/ceph/cryptotools/remote.py | 1 +
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/pybind/mgr/mgr_util.py b/src/pybind/mgr/mgr_util.py
+index 050e6844abf..2cd4398ea03 100644
+--- a/src/pybind/mgr/mgr_util.py
++++ b/src/pybind/mgr/mgr_util.py
+@@ -582,8 +582,8 @@ def get_cert_issuer_info(crt: str) -> Tuple[Optional[str],Optional[str]]:
+ def verify_tls(crt, key):
+     # type: (str, str) -> int
+     cc = ceph.cryptotools.remote.CryptoCaller()
+-    days_to_expiration = cc.verify_cacrt_content(crt)
+     try:
++        days_to_expiration = cc.verify_cacrt_content(crt)
+         cc.verify_tls(crt, key)
+     except ValueError as err:
+         raise ServerConfigException(str(err))
+diff --git a/src/python-common/ceph/cryptotools/remote.py b/src/python-common/ceph/cryptotools/remote.py
+index a83399828e1..9a668ca4bfa 100644
+--- a/src/python-common/ceph/cryptotools/remote.py
++++ b/src/python-common/ceph/cryptotools/remote.py
+@@ -124,6 +124,7 @@ class CryptoCaller:
+         self._run(
+             ['verify_tls'],
+             input_data=json.dumps({'crt': crt, 'key': key}),
++            capture_output=True,
+             check=True,
+         )
+ 

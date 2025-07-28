@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Friedrich Weber <f.weber@proxmox.com>
+Date: Thu, 8 Feb 2024 16:20:08 +0100
+Subject: [PATCH] ceph-osd postinst: do not always reload all sysctl settings
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ceph-osd installs a /etc/sysctl.d/30-ceph-osd.conf with custom sysctl
+settings. Currently, in order to apply them, ceph-osd postinst always
+restarts procps. However, this triggers a reload of *all* sysctl
+settings when installing or upgrading the ceph-osd package. This may
+needlessly reset unrelated settings manually changed by the user.
+
+To avoid this, invoke /lib/systemd/systemd-sysctl manually to apply
+the custom sysctl settings only, and only do so on fresh installs of
+the package.
+
+If 30-ceph-osd.conf is changed in the future, the ceph-osd postinst
+will need to be adjusted to apply the sysctl settings on upgrade too.
+
+Suggested-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+Signed-off-by: Friedrich Weber <f.weber@proxmox.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/ceph-osd.postinst | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/debian/ceph-osd.postinst b/debian/ceph-osd.postinst
+index 04e33b8601f..2bcd8d4dcb4 100644
+--- a/debian/ceph-osd.postinst
++++ b/debian/ceph-osd.postinst
+@@ -24,7 +24,11 @@ set -e
+ 
+ case "$1" in
+     configure)
+-	[ -x /etc/init.d/procps ] && invoke-rc.d procps restart || :
++	# apply (only) new parameters, but only on fresh install
++	if [ -z "$2" ]; then
++	    /lib/systemd/systemd-sysctl /etc/sysctl.d/30-ceph-osd.conf \
++		    >/dev/null || :
++	fi
+ 	[ -x /sbin/start ] && start ceph-osd-all || :
+     ;;
+     abort-upgrade|abort-remove|abort-deconfigure)

@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Mulligan <jmulligan@redhat.com>
+Date: Tue, 22 Apr 2025 16:31:15 -0400
+Subject: [PATCH] mgr/dashboard: replace direct use of bcrypt in dashboard
+
+Replace a direct usage of bycrypt with our cryptocaller wrapper.
+
+Signed-off-by: John Mulligan <jmulligan@redhat.com>
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ .../mgr/dashboard/services/access_control.py      |  8 ++++++--
+ src/python-common/ceph/cryptotools/cryptotools.py | 15 +++++++++++++++
+ src/python-common/ceph/cryptotools/remote.py      | 15 +++++++++++++++
+ 3 files changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/src/pybind/mgr/dashboard/services/access_control.py b/src/pybind/mgr/dashboard/services/access_control.py
+index 01d0557740b..b427190203d 100644
+--- a/src/pybind/mgr/dashboard/services/access_control.py
++++ b/src/pybind/mgr/dashboard/services/access_control.py
+@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
+ from string import ascii_lowercase, ascii_uppercase, digits, punctuation
+ from typing import List, Optional, Sequence
+ 
+-import bcrypt
+ from mgr_module import CLICheckNonemptyFileInput, CLIReadCommand, CLIWriteCommand
+ from mgr_util import password_hash
+ 
+@@ -24,6 +23,8 @@ from ..exceptions import PasswordPolicyException, PermissionNotValid, \
+ from ..security import Permission, Scope
+ from ..settings import Settings
+ 
++import ceph.cryptotools.remote
++
+ logger = logging.getLogger('access_control')
+ DEFAULT_FILE_DESC = 'password/secret'
+ 
+@@ -890,7 +891,10 @@ def ac_user_set_password_hash(_, username: str, inbuf: str):
+     hashed_password = inbuf
+     try:
+         # make sure the hashed_password is actually a bcrypt hash
+-        bcrypt.checkpw(b'', hashed_password.encode('utf-8'))
++        # catch a ValueError if hashed_password is not valid.
++        cc = ceph.cryptotools.remote.CryptoCaller()
++        cc.verify_password('', hashed_password)
++
+         user = mgr.ACCESS_CTRL_DB.get_user(username)
+         user.set_password_hash(hashed_password)
+ 
+diff --git a/src/python-common/ceph/cryptotools/cryptotools.py b/src/python-common/ceph/cryptotools/cryptotools.py
+index 0b2dc828b79..26102135250 100644
+--- a/src/python-common/ceph/cryptotools/cryptotools.py
++++ b/src/python-common/ceph/cryptotools/cryptotools.py
+@@ -33,6 +33,17 @@ def password_hash(args: Namespace) -> None:
+     json.dump({'hash': hash_str}, sys.stdout)
+ 
+ 
++def verify_password(args: Namespace) -> None:
++    data = json.loads(sys.stdin.read())
++    password = data.encode('utf-8')
++    hashed_password = data.encode('utf-8')
++    try:
++        ok = bcrypt.checkpw(password, hashed_password)
++    except ValueError as err:
++        _fail_message(str(err))
++    json.dump({'ok': ok}, sys.stdout)
++
++
+ def create_self_signed_cert(args: Namespace) -> None:
+ 
+     # Generate private key
+@@ -192,6 +203,10 @@ if __name__ == "__main__":
+     parser_verify_tls = subparsers.add_parser('verify_tls')
+     parser_verify_tls.set_defaults(func=verify_tls)
+ 
++    # password verification
++    parser_verify_password = subparsers.add_parser('verify_password')
++    parser_verify_password.set_defaults(func=verify_password)
++
+     # parse the args and call whatever function was selected
+     args = parser.parse_args()
+     args.func(args)
+diff --git a/src/python-common/ceph/cryptotools/remote.py b/src/python-common/ceph/cryptotools/remote.py
+index 6271288e4f8..40e01d19912 100644
+--- a/src/python-common/ceph/cryptotools/remote.py
++++ b/src/python-common/ceph/cryptotools/remote.py
+@@ -167,3 +167,18 @@ class CryptoCaller:
+         if not pw_hash:
+             raise CryptoCallError('no password hash')
+         return pw_hash
++
++    def verify_password(self, password: str, hashed_password: str) -> bool:
++        """Verify a password matches the hashed password. Returns true if
++        password and hashed_password match.
++        """
++        pwdata = {"password": password, "hashed_password": hashed_password}
++        result = self._run(
++            ["verify_password"],
++            input_data=json.dumps(pwdata),
++            capture_output=True,
++            check=True,
++        )
++        result_obj = self._result_json(result)
++        ok = result_obj.get("ok", False)
++        return ok

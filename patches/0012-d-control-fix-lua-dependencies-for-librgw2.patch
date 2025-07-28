@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Wed, 6 Nov 2024 15:06:09 +0100
+Subject: [PATCH] d/control: fix lua dependencies for librgw2
+
+One can attach lua scripts as sort of hooks to implement dynamic
+checks or transformations of RGW requests since Ceph Pacific. A lua
+library is now required for base support and optionally one can use
+the luarocks deployment and management system for Lua modules to use
+more advanced scripts/modules.
+
+With commit 46500cace6c ("rgw/test/lua: add lua integration tests
+suite") the dependency relations where cleaned up, as the respective
+entries where missing from debian/control.
+
+But that commit is pulling in much more than required due to adding
+the devel package `liblua5.3-dev` instead of the library-only
+`liblua5.3-0` one, and having `luarocks` as hard dependency compared
+to an optional Suggests. Fixing that avoids pulling in a whole
+build/compiler/autotools/... stack just when one wants to use librgw2
+or python3-rgw for simple RGW requests.
+
+This is a result of some discussion on the original PR [0].
+
+[0]: https://github.com/ceph/ceph/pull/52931#issuecomment-2441253989
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ debian/control | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/debian/control b/debian/control
+index 9a40b598e11..6de32680daf 100644
+--- a/debian/control
++++ b/debian/control
+@@ -948,10 +948,10 @@ Package: librgw2
+ Architecture: linux-any
+ Section: libs
+ Depends: librados2 (= ${binary:Version}),
++         liblua5.3-0,
+          ${misc:Depends},
+          ${shlibs:Depends},
+-         liblua5.3-dev,
+-         luarocks,
++Suggests: luarocks,
+ Description: RADOS Gateway client library
+  RADOS is a distributed object store used by the Ceph distributed
+  storage system.  This package provides a REST gateway to the
