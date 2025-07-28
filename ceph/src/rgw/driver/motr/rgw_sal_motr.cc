@@ -557,12 +557,15 @@ int MotrBucket::remove(const DoutPrefixProvider *dpp, bool delete_children, opti
   params.list_versions = true;
   params.allow_unordered = true;
 
+  const bool own_bucket = store->get_zone()->get_zonegroup().get_id() == info.zonegroup;
+
   ListResults results;
+  results.is_truncated = own_bucket; // if we don't have the index, we're done
 
   // 1. Check if Bucket has objects.
   // If bucket contains objects and delete_children is true, delete all objects.
   // Else throw error that bucket is not empty.
-  do {
+  while (results.is_truncated) {
     results.objs.clear();
 
     // Check if bucket has objects.
@@ -591,12 +594,14 @@ int MotrBucket::remove(const DoutPrefixProvider *dpp, bool delete_children, opti
 	      return ret;
       }
     }
-  } while(results.is_truncated);
+  }
 
   // 2. Abort Mp uploads on the bucket.
-  ret = abort_multiparts(dpp, store->ctx());
-  if (ret < 0) {
-    return ret;
+  if (own_bucket) {
+    ret = abort_multiparts(dpp, store->ctx());
+    if (ret < 0) {
+      return ret;
+    }
   }
 
   // 3. Remove mp index??
@@ -608,9 +613,11 @@ int MotrBucket::remove(const DoutPrefixProvider *dpp, bool delete_children, opti
   }
 
   // 4. Sync user stats.
-  ret = this->sync_owner_stats(dpp, y);
-  if (ret < 0) {
-     ldout(store->ctx(), 1) << "WARNING: failed sync user stats before bucket delete. ret=" <<  ret << dendl;
+  if (own_bucket) {
+    ret = this->sync_owner_stats(dpp, y);
+    if (ret < 0) {
+      ldout(store->ctx(), 1) << "WARNING: failed sync user stats before bucket delete. ret=" <<  ret << dendl;
+    }
   }
 
   // 5. Remove the bucket from user info index. (unlink user)
@@ -1111,11 +1118,6 @@ bool MotrZone::get_redirect_endpoint(std::string* endpoint)
   return false;
 }
 
-bool MotrZone::has_zonegroup_api(const std::string& api) const
-{
-  return (zonegroup.group.api_name == api);
-}
-
 const std::string& MotrZone::get_current_period_id()
 {
   return current_period->get_id();
@@ -1182,7 +1184,7 @@ MotrObject::~MotrObject() {
 //    return read_op.prepare(dpp);
 //  }
 
-int MotrObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y)
+int MotrObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y, uint32_t flags)
 {
   // TODO: implement
   ldpp_dout(dpp, 20) <<__func__<< ": MotrObject::set_obj_attrs()" << dendl;
@@ -1236,9 +1238,9 @@ int MotrObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val, op
   if (r < 0) {
     return r;
   }
-  set_atomic();
+  set_atomic(true);
   state.attrset[attr_name] = attr_val;
-  return set_obj_attrs(dpp, &state.attrset, nullptr, y);
+  return set_obj_attrs(dpp, &state.attrset, nullptr, y, rgw::sal::FLAG_LOG_OP);
 }
 
 int MotrObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name, optional_yield y)
@@ -1247,9 +1249,9 @@ int MotrObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr
   Attrs rmattr;
   bufferlist bl;
 
-  set_atomic();
+  set_atomic(true);
   rmattr[attr_name] = bl;
-  return set_obj_attrs(dpp, nullptr, &rmattr, y);
+  return set_obj_attrs(dpp, nullptr, &rmattr, y, rgw::sal::FLAG_LOG_OP);
 }
 
 bool MotrObject::is_expired() {

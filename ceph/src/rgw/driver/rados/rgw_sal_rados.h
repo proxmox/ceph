@@ -107,7 +107,6 @@ class RadosZone : public StoreZone {
     virtual const std::string& get_name() const override;
     virtual bool is_writeable() override;
     virtual bool get_redirect_endpoint(std::string* endpoint) override;
-    virtual bool has_zonegroup_api(const std::string& api) const override;
     virtual const std::string& get_current_period_id() override;
     virtual const RGWAccessKey& get_system_key() override;
     virtual const std::string& get_realm_name() override;
@@ -580,9 +579,9 @@ class RadosObject : public StoreObject {
                const DoutPrefixProvider* dpp, optional_yield y) override;
     virtual RGWAccessControlPolicy& get_acl(void) override { return acls; }
     virtual int set_acl(const RGWAccessControlPolicy& acl) override { acls = acl; return 0; }
-    virtual void set_atomic() override {
-      rados_ctx->set_atomic(state.obj);
-      StoreObject::set_atomic();
+    virtual void set_atomic(bool atomic) override {
+      rados_ctx->set_atomic(state.obj, atomic);
+      StoreObject::set_atomic(atomic);
     }
     virtual void set_prefetch_data() override {
       rados_ctx->set_prefetch_data(state.obj);
@@ -593,8 +592,10 @@ class RadosObject : public StoreObject {
       StoreObject::set_compressed();
     }
 
+    virtual bool is_sync_completed(const DoutPrefixProvider* dpp,
+      const ceph::real_time& obj_mtime) override;
     virtual int get_obj_state(const DoutPrefixProvider* dpp, RGWObjState **state, optional_yield y, bool follow_olh = true) override;
-    virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y) override;
+    virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y, uint32_t flags) override;
     virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj = NULL) override;
     virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp) override;
     virtual int delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name, optional_yield y) override;

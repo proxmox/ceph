@@ -2,6 +2,7 @@
 import logging
 from typing import Any, Dict, Optional
 
+import cherrypy
 from orchestrator import OrchestratorError
 
 from .. import mgr
@@ -50,6 +51,76 @@ else:
                 logger.error('Failed to fetch the gateway groups: %s', e)
                 return None
 
+        @ReadPermission
+        @Endpoint('GET', '/version')
+        @map_model(model.GatewayVersion)
+        @handle_nvmeof_error
+        def version(self, gw_group: Optional[str] = None):
+            gw_info = NVMeoFClient(gw_group=gw_group).stub.get_gateway_info(
+                NVMeoFClient.pb2.get_gateway_info_req()
+            )
+            return NVMeoFClient.pb2.gw_version(status=gw_info.status,
+                                               error_message=gw_info.error_message,
+                                               version=gw_info.version)
+
+        @ReadPermission
+        @Endpoint('GET', '/log_level')
+        @map_model(model.GatewayLogLevelInfo)
+        @handle_nvmeof_error
+        def get_log_level(self, gw_group: Optional[str] = None):
+            gw_log_level = NVMeoFClient(gw_group=gw_group).stub.get_gateway_log_level(
+                NVMeoFClient.pb2.get_gateway_log_level_req()
+            )
+            return gw_log_level
+
+        @ReadPermission
+        @Endpoint('PUT', '/log_level')
+        @map_model(model.RequestStatus)
+        @handle_nvmeof_error
+        def set_log_level(self, log_level: str, gw_group: Optional[str] = None):
+            log_level = log_level.lower()
+            gw_log_level = NVMeoFClient(gw_group=gw_group).stub.set_gateway_log_level(
+                NVMeoFClient.pb2.set_gateway_log_level_req(log_level=log_level)
+            )
+            return gw_log_level
+
+    @APIRouter("/nvmeof/spdk", Scope.NVME_OF)
+    @APIDoc("NVMe-oF SPDK Management API", "NVMe-oF SPDK")
+    class NVMeoFSpdk(RESTController):
+        @ReadPermission
+        @Endpoint('GET', '/log_level')
+        @map_model(model.SpdkNvmfLogFlagsAndLevelInfo)
+        @handle_nvmeof_error
+        def get_spdk_log_level(self, gw_group: Optional[str] = None):
+            spdk_log_level = NVMeoFClient(gw_group=gw_group).stub.get_spdk_nvmf_log_flags_and_level(
+                NVMeoFClient.pb2.get_spdk_nvmf_log_flags_and_level_req()
+            )
+            return spdk_log_level
+
+        @ReadPermission
+        @Endpoint('PUT', '/log_level')
+        @map_model(model.RequestStatus)
+        @handle_nvmeof_error
+        def set_spdk_log_level(self, log_level: Optional[str] = None,
+                               print_level: Optional[str] = None, gw_group: Optional[str] = None):
+            log_level = log_level.upper() if log_level else None
+            print_level = print_level.upper() if print_level else None
+            spdk_log_level = NVMeoFClient(gw_group=gw_group).stub.set_gateway_log_level(
+                NVMeoFClient.pb2.set_spdk_nvmf_logs_req(log_level=log_level,
+                                                        print_level=print_level)
+            )
+            return spdk_log_level
+
+        @ReadPermission
+        @Endpoint('PUT', '/log_level/disable')
+        @map_model(model.RequestStatus)
+        @handle_nvmeof_error
+        def disable_spdk_log_level(self, gw_group: Optional[str] = None):
+            spdk_log_level = NVMeoFClient(gw_group=gw_group).stub.disable_spdk_nvmf_logs(
+                NVMeoFClient.pb2.disable_spdk_nvmf_logs_req()
+            )
+            return spdk_log_level
+
     @APIRouter("/nvmeof/subsystem", Scope.NVME_OF)
     @APIDoc("NVMe-oF Subsystem Management API", "NVMe-oF Subsystem")
     class NVMeoFSubsystem(RESTController):
@@ -86,7 +157,7 @@ else:
         )
         @empty_response
         @handle_nvmeof_error
-        def create(self, nqn: str, enable_ha: bool, max_namespaces: int = 1024,
+        def create(self, nqn: str, enable_ha: bool = True, max_namespaces: int = 1024,
                    gw_group: Optional[str] = None):
             return NVMeoFClient(gw_group=gw_group).stub.create_subsystem(
                 NVMeoFClient.pb2.create_subsystem_req(
@@ -252,6 +323,7 @@ else:
                 "rbd_image_name": Param(str, "RBD image name"),
                 "create_image": Param(bool, "Create RBD image"),
                 "size": Param(int, "RBD image size"),
+                "rbd_image_size": Param(int, "RBD image size"),
                 "block_size": Param(int, "NVMeoF namespace block size"),
                 "load_balancing_group": Param(int, "Load balancing group"),
                 "gw_group": Param(str, "NVMeoF gateway group", True, None),
@@ -266,6 +338,7 @@ else:
             rbd_pool: str = "rbd",
             create_image: Optional[bool] = True,
             size: Optional[int] = 1024,
+            rbd_image_size: Optional[int] = None,
             block_size: int = 512,
             load_balancing_group: Optional[int] = None,
             gw_group: Optional[str] = None,
@@ -277,7 +350,7 @@ else:
                     rbd_pool_name=rbd_pool,
                     block_size=block_size,
                     create_image=create_image,
-                    size=size,
+                    size=rbd_image_size or size,
                     anagrpid=load_balancing_group,
                 )
             )
@@ -296,7 +369,7 @@ else:
                 "gw_group": Param(str, "NVMeoF gateway group", True, None),
             },
         )
-        @empty_response
+        @map_model(model.Namespace, first="namespaces")
         @handle_nvmeof_error
         def update(
             self,
@@ -310,34 +383,32 @@ else:
             w_mbytes_per_second: Optional[int] = None,
             gw_group: Optional[str] = None
         ):
+            contains_failure = False
+
             if rbd_image_size:
                 mib = 1024 * 1024
                 new_size_mib = int((rbd_image_size + mib - 1) / mib)
 
-                response = NVMeoFClient(gw_group=gw_group).stub.namespace_resize(
+                resp = NVMeoFClient(gw_group=gw_group).stub.namespace_resize(
                     NVMeoFClient.pb2.namespace_resize_req(
                         subsystem_nqn=nqn, nsid=int(nsid), new_size=new_size_mib
                     )
                 )
-                if response.status != 0:
-                    return response
+                if resp.status != 0:
+                    contains_failure = True
 
             if load_balancing_group:
-                response = NVMeoFClient().stub.namespace_change_load_balancing_group(
+                resp = NVMeoFClient().stub.namespace_change_load_balancing_group(
                     NVMeoFClient.pb2.namespace_change_load_balancing_group_req(
                         subsystem_nqn=nqn, nsid=int(nsid), anagrpid=load_balancing_group
                     )
                 )
-                if response.status != 0:
-                    return response
+                if resp.status != 0:
+                    contains_failure = True
 
-            if (
-                rw_ios_per_second
-                or rw_mbytes_per_second
-                or r_mbytes_per_second
-                or w_mbytes_per_second
-            ):
-                response = NVMeoFClient().stub.namespace_set_qos_limits(
+            if rw_ios_per_second or rw_mbytes_per_second or r_mbytes_per_second \
+               or w_mbytes_per_second:
+                resp = NVMeoFClient().stub.namespace_set_qos_limits(
                     NVMeoFClient.pb2.namespace_set_qos_req(
                         subsystem_nqn=nqn,
                         nsid=int(nsid),
@@ -347,9 +418,13 @@ else:
                         w_mbytes_per_second=w_mbytes_per_second,
                     )
                 )
-                if response.status != 0:
-                    return response
-
+                if resp.status != 0:
+                    contains_failure = True
+            response = NVMeoFClient(gw_group=gw_group).stub.list_namespaces(
+                NVMeoFClient.pb2.list_namespaces_req(subsystem=nqn, nsid=int(nsid))
+            )
+            if contains_failure:
+                cherrypy.response.status = 202
             return response
 
         @EndpointDoc(

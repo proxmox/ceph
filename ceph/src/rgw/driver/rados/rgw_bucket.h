@@ -207,7 +207,12 @@ public:
   static RGWBucketInstanceMetadataHandlerBase *alloc(rgw::sal::Driver* driver);
 };
 
-extern int rgw_remove_object(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver, rgw::sal::Bucket* bucket, rgw_obj_key& key, optional_yield y);
+extern int rgw_remove_object(const DoutPrefixProvider* dpp,
+			     rgw::sal::Driver* driver,
+			     rgw::sal::Bucket* bucket,
+			     rgw_obj_key& key,
+			     optional_yield y,
+			     const bool force = false);
 
 extern int rgw_object_get_attr(rgw::sal::Driver* driver, rgw::sal::Object* obj,
 			       const char* attr_name, bufferlist& out_bl,
@@ -369,6 +374,7 @@ public:
   void clear_failure() { failure = false; }
 
   const RGWBucketInfo& get_bucket_info() const { return bucket->get_info(); }
+  rgw::sal::User* get_user() { return user.get(); }
 };
 
 class RGWBucketAdminOp {
@@ -391,8 +397,8 @@ public:
   static int check_index_unlinked(rgw::sal::RadosStore* driver, RGWBucketAdminOpState& op_state,
                                   RGWFormatterFlusher& flusher, const DoutPrefixProvider *dpp);
 
-  static int remove_bucket(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state, optional_yield y,
-			   const DoutPrefixProvider *dpp, bool bypass_gc = false, bool keep_index_consistent = true);
+  static int remove_bucket(rgw::sal::Driver* driver, const rgw::SiteConfig& site, RGWBucketAdminOpState& op_state, optional_yield y,
+			   const DoutPrefixProvider *dpp, bool bypass_gc = false, bool keep_index_consistent = true, bool forwarded_request = false);
   static int remove_object(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state, const DoutPrefixProvider *dpp, optional_yield y);
   static int info(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state, RGWFormatterFlusher& flusher, optional_yield y, const DoutPrefixProvider *dpp);
   static int limit_check(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state,

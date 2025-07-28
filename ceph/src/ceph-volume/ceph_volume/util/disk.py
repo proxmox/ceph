@@ -7,7 +7,7 @@ import json
 from ceph_volume import process, allow_loop_devices
 from ceph_volume.api import lvm
 from ceph_volume.util.system import get_file_contents
-from typing import Dict, List, Any, Union
+from typing import Dict, List, Any, Union, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -251,7 +251,9 @@ def lsblk(device, columns=None, abspath=False):
 
     return result[0]
 
-def lsblk_all(device='', columns=None, abspath=False):
+def lsblk_all(device: str = '',
+              columns: Optional[List[str]] = None,
+              abspath: bool = False) -> List[Dict[str, str]]:
     """
     Create a dictionary of identifying values for a device using ``lsblk``.
     Each supported column is a key, in its *raw* format (all uppercase
@@ -332,7 +334,6 @@ def lsblk_all(device='', columns=None, abspath=False):
     if device:
         base_command.append('--nodeps')
         base_command.append(device)
-
     out, err, rc = process.call(base_command)
 
     if rc != 0:
@@ -346,12 +347,21 @@ def lsblk_all(device='', columns=None, abspath=False):
     return result
 
 
-def is_device(dev):
+def is_device(dev: str) -> bool:
     """
-    Boolean to determine if a given device is a block device (**not**
-    a partition!)
+    Determines whether the given path corresponds to a block device (not a partition).
 
-    For example: /dev/sda would return True, but not /dev/sdc1
+    This function checks whether the provided device path represents a valid block device,
+    such as a physical disk (/dev/sda) or an allowed loop device, but excludes partitions
+    (/dev/sdc1). It performs several validation steps, including file existence, path format,
+    device type, and additional checks for loop devices if allowed.
+
+    Args:
+        dev (str): The path to the device (e.g., "/dev/sda").
+
+    Returns:
+        bool: True if the path corresponds to a valid block device (not a partition),
+              otherwise False.
     """
     if not os.path.exists(dev):
         return False
@@ -363,7 +373,7 @@ def is_device(dev):
 
     TYPE = lsblk(dev).get('TYPE')
     if TYPE:
-        return TYPE in ['disk', 'mpath']
+        return TYPE in ['disk', 'mpath', 'loop']
 
     # fallback to stat
     return _stat_is_device(os.lstat(dev).st_mode) and not is_partition(dev)
@@ -1177,8 +1187,56 @@ class BlockSysFs:
         """
         self.path: str = path
         self.name: str = os.path.basename(os.path.realpath(self.path))
-        self.sys_dev_block: str = sys_dev_block
+        self.sys_dev_block_dir: str = sys_dev_block
         self.sys_block: str = sys_block
+
+    def _get_sysfs_file_content(self, path: str) -> str:
+        """
+        Reads the content of a sysfs file.
+
+        Args:
+            path (str): The relative path to the sysfs file.
+
+        Returns:
+            str: The content of the file as a string, stripped of leading/trailing whitespace.
+        """
+        content: str = ''
+        _path: str = os.path.join(self.sys_dev_block_path, path)
+        with open(_path, 'r') as f:
+            content = f.read().strip()
+        return content
+
+    @property
+    def blocks(self) -> int:
+        """
+        Retrieves the number of blocks of the block device.
+
+        Returns:
+            int: The total number of blocks.
+        """
+        result: str = self._get_sysfs_file_content('size')
+        return int(result)
+
+    @property
+    def logical_block_size(self) -> int:
+        """
+        Retrieves the logical block size of the block device.
+
+        Returns:
+            int: The logical block size in bytes.
+        """
+        result: str = self._get_sysfs_file_content('queue/logical_block_size')
+        return int(result)
+
+    @property
+    def size(self) -> int:
+        """
+        Calculates the total size of the block device in bytes.
+
+        Returns:
+            int: The total size of the block device in bytes.
+        """
+        return self.blocks * self.logical_block_size
 
     @property
     def is_partition(self) -> bool:
@@ -1188,7 +1246,7 @@ class BlockSysFs:
         Returns:
             bool: True if it is a partition, False otherwise.
         """
-        path: str = os.path.join(self.get_sys_dev_block_path, 'partition')
+        path: str = os.path.join(self.sys_dev_block_path, 'partition')
         return os.path.exists(path)
 
     @property
@@ -1200,13 +1258,13 @@ class BlockSysFs:
             List[str]: A list of holders (other devices) associated with this block device.
         """
         result: List[str] = []
-        path: str = os.path.join(self.get_sys_dev_block_path, 'holders')
+        path: str = os.path.join(self.sys_dev_block_path, 'holders')
         if os.path.exists(path):
             result = os.listdir(path)
         return result
 
     @property
-    def get_sys_dev_block_path(self) -> str:
+    def sys_dev_block_path(self) -> str:
         """
         Gets the sysfs path for the current block device.
 
@@ -1214,9 +1272,9 @@ class BlockSysFs:
             str: The sysfs path corresponding to this block device.
         """
         sys_dev_block_path: str = ''
-        devices: List[str] = os.listdir(self.sys_dev_block)
+        devices: List[str] = os.listdir(self.sys_dev_block_dir)
         for device in devices:
-            path = os.path.join(self.sys_dev_block, device)
+            path = os.path.join(self.sys_dev_block_dir, device)
             if os.path.realpath(path).split('/')[-1:][0] == self.name:
                 sys_dev_block_path = path
         return sys_dev_block_path
@@ -1339,7 +1397,7 @@ class UdevData:
             if data_type == 'I':
                 self.id = data
             if data_type == 'E':
-                key, value = data.split('=')
+                key, value = data.split('=', maxsplit=1)
                 self.environment[key] = value
             if data_type == 'G':
                 self.group = data

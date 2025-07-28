@@ -140,6 +140,51 @@ options:
   - osd_recovery_sleep
   flags:
   - runtime
+- name: osd_recovery_sleep_degraded
+  type: float
+  level: advanced
+  desc: Time in seconds to sleep before next recovery or backfill op when PGs are degraded.
+    This setting overrides _ssd, _hdd, and _hybrid if non-zero.
+  fmt_desc: Time in seconds to sleep before the next recovery or backfill op when PGs
+    are degraded. Increasing this value will slow down recovery ops while client
+    ops will be less impacted.
+  default: 0
+  flags:
+  - runtime
+- name: osd_recovery_sleep_degraded_hdd
+  type: float
+  level: advanced
+  desc: Time in seconds to sleep before next recovery or backfill op for HDDs
+    when PGs is degraded.
+  fmt_desc: Time in seconds to sleep before next recovery or backfill op
+    for HDDs when PGs are degraded.
+  default: 0.1
+  flags:
+  - runtime
+- name: osd_recovery_sleep_degraded_ssd
+  type: float
+  level: advanced
+  desc: Time in seconds to sleep before next recovery or backfill op for SSDs
+    when PGs are degraded.
+  fmt_desc: Time in seconds to sleep before the next recovery or backfill op
+    for SSDs when PGs are degraded.
+  default: 0
+  see_also:
+  - osd_recovery_sleep_degraded
+  flags:
+  - runtime
+- name: osd_recovery_sleep_degraded_hybrid
+  type: float
+  level: advanced
+  desc: Time in seconds to sleep before next recovery or backfill op when PGs
+    are degraded and data is on HDD and journal is on SSD
+  fmt_desc: Time in seconds to sleep before the next recovery or backfill op when
+    PGs are degraded and OSD data is on HDD and OSD journal / WAL+DB is on SSD.
+  default: 0.025
+  see_also:
+  - osd_recovery_sleep_degraded
+  flags:
+  - runtime
 - name: osd_snap_trim_sleep
   type: float
   level: advanced
@@ -193,7 +238,6 @@ options:
   desc: Maximum concurrent scrubs on a single OSD
   fmt_desc: The maximum number of simultaneous scrub operations for
     a Ceph OSD Daemon.
-  note: This setting is ignored when the mClock scheduler is used.
   default: 3
   with_legacy: true
 - name: osd_scrub_during_recovery
@@ -429,15 +473,17 @@ options:
   desc: Automatically repair damaged objects detected during scrub
   fmt_desc: Setting this to ``true`` will enable automatic PG repair when errors
     are found by scrubs or deep-scrubs.  However, if more than
-    ``osd_scrub_auto_repair_num_errors`` errors are found a repair is NOT performed.
+    ``osd_scrub_auto_repair_num_errors`` damaged objects are found
+    a repair is NOT performed.
   default: false
   with_legacy: true
 # only auto-repair when number of errors is below this threshold
 - name: osd_scrub_auto_repair_num_errors
   type: uint
   level: advanced
-  desc: Maximum number of detected errors to automatically repair
-  fmt_desc: Auto repair will not occur if more than this many errors are found.
+  desc: Maximum number of damaged objects to automatically repair
+  fmt_desc: Scrub will not perform automatic repair if more than this many
+    damaged objects are found.
   default: 5
   see_also:
   - osd_scrub_auto_repair
@@ -458,6 +504,25 @@ options:
     ``osd_scrub_load_threshold`` does not affect this setting.
   default: 7_day
   with_legacy: true
+- name: osd_deep_scrub_interval_cv
+  type: float
+  level: advanced
+  desc: Determines the amount of variation in the deep scrub interval
+  long_desc: Deep scrub intervals are varied by a random amount to prevent
+    stampedes. This parameter determines the amount of variation.
+    Technically ``osd_deep_scrub_interval_cv`` is the coefficient of variation for
+    the deep scrub interval.
+  fmt_desc: The coefficient of variation for the deep scrub interval, specified as a
+    ratio. On average, the next deep scrub for a PG is scheduled osd_deep_scrub_interval
+    after the last deep scrub . The actual time is randomized to a normal distribution
+    with a standard deviation of osd_deep_scrub_interval * osd_deep_scrub_interval_cv
+    (clamped to within 2 standard deviations).
+    The default value guarantees that 95% of deep scrubs will be scheduled in the range
+    [0.8 * osd_deep_scrub_interval, 1.2 * osd_deep_scrub_interval].
+  min: 0
+  max: 0.4
+  default: 0.2
+  with_legacy: false
 - name: osd_deep_scrub_randomize_ratio
   type: float
   level: advanced

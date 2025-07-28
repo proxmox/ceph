@@ -516,6 +516,15 @@ void OSDService::shutdown()
   next_osdmap = OSDMapRef();
 }
 
+void OSDService::fast_shutdown()
+{
+  mono_timer.suspend();
+  {
+    std::lock_guard l(watch_lock);
+    watch_timer.shutdown();
+  }
+}
+
 void OSDService::init()
 {
   reserver_finisher.start();
@@ -3656,6 +3665,21 @@ float OSD::get_osd_recovery_sleep()
     return cct->_conf->osd_recovery_sleep_hdd;
 }
 
+float OSD::get_osd_recovery_sleep_degraded() {
+  float osd_recovery_sleep_degraded =
+    cct->_conf.get_val<double>("osd_recovery_sleep_degraded");
+  if (osd_recovery_sleep_degraded > 0) {
+    return osd_recovery_sleep_degraded;
+  }
+  if (!store_is_rotational && !journal_is_rotational) {
+    return cct->_conf.get_val<double>("osd_recovery_sleep_degraded_ssd");
+  } else if (store_is_rotational && !journal_is_rotational) {
+    return cct->_conf.get_val<double>("osd_recovery_sleep_degraded_hybrid");
+  } else {
+    return cct->_conf.get_val<double>("osd_recovery_sleep_degraded_hdd");
+  }
+}
+
 float OSD::get_osd_delete_sleep()
 {
   float osd_delete_sleep = cct->_conf.get_val<double>("osd_delete_sleep");
@@ -4620,6 +4644,7 @@ int OSD::shutdown()
 
     utime_t  start_time_umount = ceph_clock_now();
     store->prepare_for_fast_shutdown();
+    service.fast_shutdown();
     std::lock_guard lock(osd_lock);
     // TBD: assert in allocator that nothing is being add
     store->umount();
@@ -9531,9 +9556,12 @@ void OSD::do_recovery(
    * ops are scheduled after osd_recovery_sleep amount of time from the previous
    * recovery event's schedule time. This is done by adding a
    * recovery_requeue_callback event, which re-queues the recovery op using
-   * queue_recovery_after_sleep.
+   * queue_recovery_after_sleep. (osd_recovery_sleep_degraded will be
+   * used instead of osd_recovery_sleep when pg is degraded)
    */
-  float recovery_sleep = get_osd_recovery_sleep();
+  float recovery_sleep = pg->is_degraded() 
+                        ? get_osd_recovery_sleep_degraded() 
+                        : get_osd_recovery_sleep();
   {
     std::lock_guard l(service.sleep_lock);
     if (recovery_sleep > 0 && service.recovery_needs_sleep) {
@@ -9842,6 +9870,10 @@ const char** OSD::get_tracked_conf_keys() const
     "osd_recovery_sleep_hdd",
     "osd_recovery_sleep_ssd",
     "osd_recovery_sleep_hybrid",
+    "osd_recovery_sleep_degraded",
+    "osd_recovery_sleep_degraded_hdd",
+    "osd_recovery_sleep_degraded_ssd",
+    "osd_recovery_sleep_degraded_hybrid",
     "osd_delete_sleep",
     "osd_delete_sleep_hdd",
     "osd_delete_sleep_ssd",
@@ -9873,9 +9905,12 @@ const char** OSD::get_tracked_conf_keys() const
     "osd_object_clean_region_max_num_intervals",
     "osd_scrub_min_interval",
     "osd_scrub_max_interval",
+    "osd_deep_scrub_interval",
+    "osd_scrub_interval_randomize_ratio",
     "osd_op_thread_timeout",
     "osd_op_thread_suicide_timeout",
-    NULL
+    "osd_max_scrubs",
+    nullptr
   };
   return KEYS;
 }
@@ -9908,7 +9943,11 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
       changed.count("osd_recovery_sleep") ||
       changed.count("osd_recovery_sleep_hdd") ||
       changed.count("osd_recovery_sleep_ssd") ||
-      changed.count("osd_recovery_sleep_hybrid")) {
+      changed.count("osd_recovery_sleep_hybrid") ||
+      changed.count("osd_recovery_sleep_degraded") ||
+      changed.count("osd_recovery_sleep_degraded_hdd") ||
+      changed.count("osd_recovery_sleep_degraded_ssd") ||
+      changed.count("osd_recovery_sleep_degraded_hybrid")) {
     maybe_override_sleep_options_for_qos();
   }
   if (changed.count("osd_min_recovery_priority")) {
@@ -9919,6 +9958,10 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
     service.snap_reserver.set_max(cct->_conf->osd_max_trimming_pgs);
   }
   if (changed.count("osd_max_scrubs")) {
+    dout(0) << fmt::format(
+                   "{}: scrub concurrency max changed to {}",
+                   __func__, cct->_conf->osd_max_scrubs)
+            << dendl;
     service.scrub_reserver.set_max(cct->_conf->osd_max_scrubs);
   }
   if (changed.count("osd_op_complaint_time") ||
@@ -9993,13 +10036,15 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
 
   if (changed.count("osd_scrub_min_interval") ||
       changed.count("osd_scrub_max_interval") ||
-      changed.count("osd_deep_scrub_interval")) {
+      changed.count("osd_deep_scrub_interval") ||
+      changed.count("osd_scrub_interval_randomize_ratio")) {
     service.get_scrub_services().on_config_change();
     dout(0) << fmt::format(
-		   "{}: scrub interval change (min:{} deep:{} max:{})",
+		   "{}: scrub interval change (min:{} deep:{} max:{} ratio:{})",
 		   __func__, cct->_conf->osd_scrub_min_interval,
 		   cct->_conf->osd_deep_scrub_interval,
-		   cct->_conf->osd_scrub_max_interval)
+		   cct->_conf->osd_scrub_max_interval,
+		   cct->_conf->osd_scrub_interval_randomize_ratio)
 	    << dendl;
   }
 
@@ -10235,6 +10280,12 @@ void OSD::maybe_override_sleep_options_for_qos()
     cct->_conf.set_val("osd_recovery_sleep_hdd", std::to_string(0));
     cct->_conf.set_val("osd_recovery_sleep_ssd", std::to_string(0));
     cct->_conf.set_val("osd_recovery_sleep_hybrid", std::to_string(0));
+
+    // Disable recovery sleep for pg degraded
+    cct->_conf.set_val("osd_recovery_sleep_degraded", std::to_string(0));
+    cct->_conf.set_val("osd_recovery_sleep_degraded_hdd", std::to_string(0));
+    cct->_conf.set_val("osd_recovery_sleep_degraded_ssd", std::to_string(0));
+    cct->_conf.set_val("osd_recovery_sleep_degraded_hybrid", std::to_string(0));
 
     // Disable delete sleep
     cct->_conf.set_val("osd_delete_sleep", std::to_string(0));

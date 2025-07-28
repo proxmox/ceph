@@ -10,7 +10,8 @@ from ceph_volume.api import lvm as api
 from ceph_volume.util import system, encryption, disk, arg_validators, str_to_int, merge_dict
 from ceph_volume.util.device import Device
 from ceph_volume.systemd import systemctl
-from typing import Any, Dict, List
+from ceph_volume.devices.raw.list import direct_report
+from typing import Any, Dict, List, Set
 
 logger = logging.getLogger(__name__)
 mlogger = terminal.MultiLogger(__name__)
@@ -41,7 +42,7 @@ def zap_bluestore(path: str) -> None:
         '--yes-i-really-really-mean-it'
     ])
 
-def wipefs(path):
+def wipefs(path: str) -> None:
     """
     Removes the filesystem from an lv or partition.
 
@@ -51,34 +52,29 @@ def wipefs(path):
     * ``CEPH_VOLUME_WIPEFS_INTERVAL``: Defaults to 5
 
     """
-    tries = str_to_int(
-        os.environ.get('CEPH_VOLUME_WIPEFS_TRIES', 8)
-    )
-    interval = str_to_int(
-        os.environ.get('CEPH_VOLUME_WIPEFS_INTERVAL', 5)
-    )
+    tries = str_to_int(os.environ.get('CEPH_VOLUME_WIPEFS_TRIES', 8)) + 1
+    interval = str_to_int(os.environ.get('CEPH_VOLUME_WIPEFS_INTERVAL', 5))
 
-    for trying in range(tries):
-        stdout, stderr, exit_code = process.call([
+    for attempt in range(1, tries):
+        _, _, exit_code = process.call([
             'wipefs',
             '--all',
             path
         ])
-        if exit_code != 0:
-            # this could narrow the retry by poking in the stderr of the output
-            # to verify that 'probing initialization failed' appears, but
-            # better to be broad in this retry to prevent missing on
-            # a different message that needs to be retried as well
-            terminal.warning(
-                'failed to wipefs device, will try again to workaround probable race condition'
-            )
-            time.sleep(interval)
-        else:
+        if not exit_code:
             return
+        # this could narrow the retry by poking in the stderr of the output
+        # to verify that 'probing initialization failed' appears, but
+        # better to be broad in this retry to prevent missing on
+        # a different message that needs to be retried as well
+        terminal.warning(
+            f'failed to wipefs device, will try again ({attempt}/{tries}) to workaround probable race condition'
+        )
+        time.sleep(interval)
     raise RuntimeError("could not complete wipefs on device: %s" % path)
 
 
-def zap_data(path):
+def zap_data(path: str) -> None:
     """
     Clears all data from the given path. Path should be
     an absolute path to an lv or partition.
@@ -95,76 +91,6 @@ def zap_data(path):
         'conv=fsync'
     ])
 
-def find_associated_devices(osd_id: str = '', osd_fsid: str = '') -> List[api.Volume]:
-    """
-    From an ``osd_id`` and/or an ``osd_fsid``, filter out all the LVs in the
-    system that match those tag values, further detect if any partitions are
-    part of the OSD, and then return the set of LVs and partitions (if any).
-    """
-    lv_tags = {}
-    lv_tags = {key: value for key, value in {
-        'ceph.osd_id': osd_id,
-        'ceph.osd_fsid': osd_fsid
-    }.items() if value}
-
-    lvs = api.get_lvs(tags=lv_tags)
-
-    if not lvs:
-        raise RuntimeError('Unable to find any LV for zapping OSD: '
-                            f'{osd_id or osd_fsid}')
-    devices_to_zap = ensure_associated_lvs(lvs, lv_tags)
-
-    return [Device(path) for path in set(devices_to_zap) if path]
-
-def ensure_associated_lvs(lvs: List[api.Volume],
-                          lv_tags: Dict[str, Any] = {}) -> List[str]:
-    """
-    Go through each LV and ensure if backing devices (journal, wal, block)
-    are LVs or partitions, so that they can be accurately reported.
-    """
-    # look for many LVs for each backing type, because it is possible to
-    # receive a filtering for osd.1, and have multiple failed deployments
-    # leaving many journals with osd.1 - usually, only a single LV will be
-    # returned
-
-    db_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'db'}))
-    wal_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'wal'}))
-    backing_devices = [(db_lvs, 'db'),
-                       (wal_lvs, 'wal')]
-
-    verified_devices = []
-
-    for lv in lvs:
-        # go through each lv and append it, otherwise query `blkid` to find
-        # a physical device. Do this for each type (journal,db,wal) regardless
-        # if they have been processed in the previous LV, so that bad devices
-        # with the same ID can be caught
-        for ceph_lvs, _type in backing_devices:
-            if ceph_lvs:
-                verified_devices.extend([l.lv_path for l in ceph_lvs])
-                continue
-
-            # must be a disk partition, by querying blkid by the uuid we are
-            # ensuring that the device path is always correct
-            try:
-                device_uuid = lv.tags['ceph.%s_uuid' % _type]
-            except KeyError:
-                # Bluestore will not have ceph.journal_uuid, and Filestore
-                # will not not have ceph.db_uuid
-                continue
-
-            osd_device = disk.get_device_from_partuuid(device_uuid)
-            if not osd_device:
-                # if the osd_device is not found by the partuuid, then it is
-                # not possible to ensure this device exists anymore, so skip it
-                continue
-            verified_devices.append(osd_device)
-
-        verified_devices.append(lv.lv_path)
-
-    # reduce the list from all the duplicates that were added
-    return list(set(verified_devices))
-
 
 class Zap:
     help = 'Removes all data and filesystems from a logical volume or partition.'
@@ -172,6 +98,118 @@ class Zap:
     def __init__(self, argv: List[str]) -> None:
         self.argv = argv
         self.osd_ids_to_zap: List[str] = []
+
+    def ensure_associated_raw(self, raw_report: Dict[str, Any]) -> List[str]:
+        osd_id: str = self.args.osd_id
+        osd_uuid: str = self.args.osd_fsid
+        raw_devices: Set[str] = set()
+
+        if len([details.get('osd_id') for _, details in raw_report.items() if details.get('osd_id') == osd_id]) > 1:
+            if not osd_uuid:
+                raise RuntimeError(f'Multiple OSDs found with id {osd_id}, pass --osd-fsid')
+
+        if not osd_uuid:
+            for _, details in raw_report.items():
+                if details.get('osd_id') == int(osd_id):
+                    osd_uuid = details.get('osd_uuid')
+                    break
+
+        for _, details in raw_report.items():
+            device: str = details.get('device')
+            if details.get('osd_uuid') == osd_uuid:
+                raw_devices.add(device)
+
+        return list(raw_devices)
+
+    def find_associated_devices(self) -> List[Device]:
+        """From an ``osd_id`` and/or an ``osd_fsid``, filter out all the Logical Volumes (LVs) in the
+        system that match those tag values, further detect if any partitions are
+        part of the OSD, and then return the set of LVs and partitions (if any).
+
+        The function first queries the LVM-based OSDs using the provided `osd_id` or `osd_fsid`.
+        If no matches are found, it then searches the system for RAW-based OSDs.
+
+        Raises:
+            SystemExit: If no OSDs are found, the function raises a `SystemExit` with an appropriate message.
+
+        Returns:
+            List[api.Volume]: A list of `api.Volume` objects corresponding to the OSD's Logical Volumes (LVs)
+            or partitions that are associated with the given `osd_id` or `osd_fsid`.
+
+        Notes:
+            - If neither `osd_id` nor `osd_fsid` are provided, the function will not be able to find OSDs.
+            - The search proceeds from LVM-based OSDs to RAW-based OSDs if no Logical Volumes are found.
+        """
+        lv_tags = {}
+        lv_tags = {key: value for key, value in {
+            'ceph.osd_id': self.args.osd_id,
+            'ceph.osd_fsid': self.args.osd_fsid
+        }.items() if value}
+        devices_to_zap: List[str] = []
+        lvs = api.get_lvs(tags=lv_tags)
+
+        if lvs:
+            devices_to_zap = self.ensure_associated_lvs(lvs, lv_tags)
+        else:
+            mlogger.debug(f'No OSD identified by "{self.args.osd_id or self.args.osd_fsid}" was found among LVM-based OSDs.')
+            mlogger.debug('Proceeding to check RAW-based OSDs.')
+            raw_osds: Dict[str, Any] = direct_report()
+            if raw_osds:
+                devices_to_zap = self.ensure_associated_raw(raw_osds)
+        if not devices_to_zap:
+            raise SystemExit('No OSD were found.')
+
+        return [Device(path) for path in set(devices_to_zap) if path]
+
+    def ensure_associated_lvs(self,
+                              lvs: List[api.Volume],
+                              lv_tags: Dict[str, Any] = {}) -> List[str]:
+        """
+        Go through each LV and ensure if backing devices (journal, wal, block)
+        are LVs or partitions, so that they can be accurately reported.
+        """
+        # look for many LVs for each backing type, because it is possible to
+        # receive a filtering for osd.1, and have multiple failed deployments
+        # leaving many journals with osd.1 - usually, only a single LV will be
+        # returned
+
+        db_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'db'}))
+        wal_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'wal'}))
+        backing_devices = [(db_lvs, 'db'),
+                        (wal_lvs, 'wal')]
+
+        verified_devices = []
+
+        for lv in lvs:
+            # go through each lv and append it, otherwise query `blkid` to find
+            # a physical device. Do this for each type (journal,db,wal) regardless
+            # if they have been processed in the previous LV, so that bad devices
+            # with the same ID can be caught
+            for ceph_lvs, _type in backing_devices:
+                if ceph_lvs:
+                    verified_devices.extend([l.lv_path for l in ceph_lvs])
+                    continue
+
+                # must be a disk partition, by querying blkid by the uuid we are
+                # ensuring that the device path is always correct
+                try:
+                    device_uuid = lv.tags['ceph.%s_uuid' % _type]
+                except KeyError:
+                    # Bluestore will not have ceph.journal_uuid, and Filestore
+                    # will not not have ceph.db_uuid
+                    continue
+
+                osd_device = disk.get_device_from_partuuid(device_uuid)
+                if not osd_device:
+                    # if the osd_device is not found by the partuuid, then it is
+                    # not possible to ensure this device exists anymore, so skip it
+                    continue
+                verified_devices.append(osd_device)
+
+            verified_devices.append(lv.lv_path)
+
+        # reduce the list from all the duplicates that were added
+        return list(set(verified_devices))
 
     def unmount_lv(self, lv: api.Volume) -> None:
         if lv.tags.get('ceph.cluster_name') and lv.tags.get('ceph.osd_id'):
@@ -240,7 +278,10 @@ class Zap:
         Device examples: vg-name/lv-name, /dev/vg-name/lv-name
         Requirements: Must be a logical volume (LV)
         """
-        lv: api.Volume = device.lv_api
+        if device.lv_api is not None:
+            lv: api.Volume = device.lv_api
+        else:
+            raise RuntimeError(f"Unexpected error while attempting to zap LV device {device}.")
         self.unmount_lv(lv)
         self.parent_device: str = disk.get_parent_device_from_mapper(lv.lv_path)
         zap_device(device.path)
@@ -259,7 +300,7 @@ class Zap:
                     'db': self.args.replace_db,
                     'wal': self.args.replace_wal
                 }
-                if replacement_args.get(lv.tags.get('ceph.type'), False):
+                if replacement_args.get(lv.tags.get('ceph.type', ''), False):
                     mlogger.info(f'Marking {self.parent_device} as being replaced')
                     self._write_replacement_header(self.parent_device)
             else:
@@ -355,10 +396,9 @@ class Zap:
             SystemExit: When the device is a mapper and not a mpath device.
         """
         devices = self.args.devices
-
         for device in devices:
             mlogger.info("Zapping: %s", device.path)
-            if device.is_mapper and not device.is_mpath:
+            if device.is_mapper and not device.is_mpath and not device.is_partition:
                 terminal.error("Refusing to zap the mapper device: {}".format(device))
                 raise SystemExit(1)
             if device.is_lvm_member:
@@ -388,7 +428,7 @@ class Zap:
                 mlogger.error("OSD ID %s is running, stop it with:" % self.args.osd_id)
                 mlogger.error("systemctl stop ceph-osd@%s" % self.args.osd_id)
                 raise SystemExit("Unable to zap devices associated with OSD ID: %s" % self.args.osd_id)
-        self.args.devices = find_associated_devices(self.args.osd_id, self.args.osd_fsid)
+        self.args.devices = self.find_associated_devices()
         self.zap()
 
     def dmcrypt_close(self, dmcrypt_uuid: str) -> None:

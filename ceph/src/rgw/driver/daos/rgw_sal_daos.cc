@@ -858,8 +858,6 @@ bool DaosZone::is_writeable() { return true; }
 
 bool DaosZone::get_redirect_endpoint(std::string* endpoint) { return false; }
 
-bool DaosZone::has_zonegroup_api(const std::string& api) const { return false; }
-
 const std::string& DaosZone::get_current_period_id() {
   return current_period->get_id();
 }
@@ -900,7 +898,7 @@ int DaosObject::get_obj_state(const DoutPrefixProvider* dpp,
 DaosObject::~DaosObject() { close(nullptr); }
 
 int DaosObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
-                              Attrs* delattrs, optional_yield y) {
+                              Attrs* delattrs, optional_yield y, uint32_t flags) {
   ldpp_dout(dpp, 20) << "DEBUG: DaosObject::set_obj_attrs()" << dendl;
   // TODO handle target_obj
   // Get object's metadata (those stored in rgw_bucket_dir_entry)
@@ -944,7 +942,7 @@ int DaosObject::modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
   }
 
   // Update object attrs
-  set_atomic();
+  set_atomic(true);
   attrs[attr_name] = attr_val;
 
   ret = set_dir_entry_attrs(dpp, &ent, &attrs);
@@ -959,7 +957,7 @@ int DaosObject::delete_obj_attrs(const DoutPrefixProvider* dpp,
   bufferlist bl;
 
   rmattr[attr_name] = bl;
-  return set_obj_attrs(dpp, nullptr, &rmattr, y);
+  return set_obj_attrs(dpp, nullptr, &rmattr, y, rgw::sal::FLAG_LOG_OP);
 }
 
 bool DaosObject::is_expired() {

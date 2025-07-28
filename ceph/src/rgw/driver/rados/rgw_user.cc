@@ -184,6 +184,11 @@ static void dump_user_info(Formatter *f, RGWUserInfo &info,
   }
   encode_json("type", user_source_type, f);
   encode_json("mfa_ids", info.mfa_ids, f);
+  encode_json("account_id", info.account_id, f);
+  encode_json("path", info.path, f);
+  encode_json("create_date", info.create_date, f);
+  encode_json("tags", info.tags, f);
+  encode_json("group_ids", info.group_ids, f);
   if (stats) {
     encode_json("stats", *stats, f);
   }
@@ -1749,7 +1754,11 @@ int RGWUser::execute_add(const DoutPrefixProvider *dpp, RGWUserAdminOpState& op_
   user_info.display_name = display_name;
   user_info.type = TYPE_RGW;
 
-  // tenant must not look like a valid account id
+  // user/tenant must not look like a valid account id
+  if (rgw::account::validate_id(uid.id)) {
+    set_err_msg(err_msg, "uid must not be formatted as an account id");
+    return -EINVAL;
+  }
   if (rgw::account::validate_id(uid.tenant)) {
     set_err_msg(err_msg, "tenant must not be formatted as an account id");
     return -EINVAL;

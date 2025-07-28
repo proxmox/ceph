@@ -2461,6 +2461,10 @@ int RGWCreateBucket_ObjStore_S3::get_params(optional_yield y)
   if ((op_ret < 0) && (op_ret != -ERR_LENGTH_REQUIRED))
     return op_ret;
 
+  if (!driver->is_meta_master()) {
+    in_data.append(data);
+  }
+
   if (data.length()) {
     RGWCreateBucketParser parser;
 
@@ -2589,8 +2593,7 @@ int RGWPutObj_ObjStore_S3::get_params(optional_yield y)
   /* handle object tagging */
   auto tag_str = s->info.env->get("HTTP_X_AMZ_TAGGING");
   if (tag_str){
-    obj_tags = std::make_unique<RGWObjTags>();
-    ret = obj_tags->set_from_string(tag_str);
+    ret = obj_tags.set_from_string(tag_str);
     if (ret < 0){
       ldpp_dout(this,0) << "setting obj tags failed with " << ret << dendl;
       if (ret == -ERR_INVALID_TAG){
@@ -2730,7 +2733,7 @@ void RGWPutObj_ObjStore_S3::send_response()
       if (strftime(buf, sizeof(buf), "%Y-%m-%dT%T.000Z", &tmp) > 0) {
         s->formatter->dump_string("LastModified", buf);
       }
-      s->formatter->dump_string("ETag", etag);
+      s->formatter->dump_format("ETag", "\"%s\"", etag.c_str());
       s->formatter->close_section();
       rgw_flush_formatter_and_reset(s, s->formatter);
       return;
@@ -3357,7 +3360,7 @@ done:
     }
     s->formatter->dump_string("Bucket", s->bucket_name);
     s->formatter->dump_string("Key", s->object->get_name());
-    s->formatter->dump_string("ETag", etag);
+    s->formatter->dump_format("ETag", "\"%s\"", etag.c_str());
     s->formatter->close_section();
   }
   s->err.message = err_msg;
@@ -4054,7 +4057,7 @@ void RGWCompleteMultipart_ObjStore_S3::send_response()
     }
     s->formatter->dump_string("Bucket", s->bucket_name);
     s->formatter->dump_string("Key", s->object->get_name());
-    s->formatter->dump_string("ETag", etag);
+    s->formatter->dump_format("ETag", "\"%s\"", etag.c_str());
     s->formatter->close_section();
     rgw_flush_formatter_and_reset(s, s->formatter);
   }
@@ -5174,8 +5177,6 @@ void update_attribute_map(const std::string& input, AttributeMap& map) {
 void parse_post_action(const std::string& post_body, req_state* s)
 {
   if (post_body.size() > 0) {
-    ldpp_dout(s, 10) << "Content of POST: " << post_body << dendl;
-
     if (post_body.find("Action") != string::npos) {
       const boost::char_separator<char> sep("&");
       const boost::tokenizer<boost::char_separator<char>> tokens(post_body, sep);
@@ -5282,7 +5283,7 @@ bool RGWHandler_REST_S3Website::web_dir() const {
 
   std::unique_ptr<rgw::sal::Object> obj = s->bucket->get_object(rgw_obj_key(subdir_name));
 
-  obj->set_atomic();
+  obj->set_atomic(true);
 
   RGWObjState* state = nullptr;
   if (obj->get_obj_state(s, &state, s->yield) < 0) {
@@ -5348,7 +5349,7 @@ int RGWHandler_REST_S3Website::retarget(RGWOp* op, RGWOp** new_op, optional_yiel
   if (should_redirect) {
     const string& hostname = s->info.env->get("HTTP_HOST", "");
     const string& protocol =
-      (s->info.env->get("SERVER_PORT_SECURE") ? "https" : "http");
+      (rgw_transport_is_secure(s->cct, *s->info.env) ? "https" : "http");
     int redirect_code = 0;
     rrule.apply_rule(protocol, hostname, key_name, &s->redirect,
 		    &redirect_code);
@@ -5479,7 +5480,7 @@ int RGWHandler_REST_S3Website::error_handler(int err_no,
   if (should_redirect) {
     const string& hostname = s->info.env->get("HTTP_HOST", "");
     const string& protocol =
-      (s->info.env->get("SERVER_PORT_SECURE") ? "https" : "http");
+      (rgw_transport_is_secure(s->cct, *s->info.env) ? "https" : "http");
     int redirect_code = 0;
     rrule.apply_rule(protocol, hostname, original_object_name,
                      &s->redirect, &redirect_code);
@@ -6280,7 +6281,7 @@ rgw::auth::s3::LocalEngine::authenticate(
   if (driver->get_user_by_access_key(dpp, access_key_id, y, &user) < 0) {
       ldpp_dout(dpp, 5) << "error reading user info, uid=" << access_key_id
               << " can't authenticate" << dendl;
-      return result_t::reject(-ERR_INVALID_ACCESS_KEY);
+      return result_t::deny(-ERR_INVALID_ACCESS_KEY);
   }
   //TODO: Uncomment, when we have a migration plan in place.
   /*else {
@@ -6302,7 +6303,7 @@ rgw::auth::s3::LocalEngine::authenticate(
   const auto iter = user->get_info().access_keys.find(access_key_id);
   if (iter == std::end(user->get_info().access_keys)) {
     ldpp_dout(dpp, 0) << "ERROR: access key not encoded in user info" << dendl;
-    return result_t::reject(-EPERM);
+    return result_t::deny(-EPERM);
   }
   const RGWAccessKey& k = iter->second;
 
@@ -6326,7 +6327,7 @@ rgw::auth::s3::LocalEngine::authenticate(
   ldpp_dout(dpp, 15) << "compare=" << compare << dendl;
 
   if (compare != 0) {
-    return result_t::reject(-ERR_SIGNATURE_NO_MATCH);
+    return result_t::deny(-ERR_SIGNATURE_NO_MATCH);
   }
 
   auto apl = apl_factory->create_apl_local(
@@ -6415,6 +6416,7 @@ rgw::auth::s3::STSEngine::authenticate(
   const req_state* const s,
   optional_yield y) const
 {
+  bool is_system_request{false};
   if (! s->info.args.exists("x-amz-security-token") &&
       ! s->info.env->exists("HTTP_X_AMZ_SECURITY_TOKEN") &&
       s->auth.s3_postobj_creds.x_amz_security_token.empty()) {
@@ -6426,10 +6428,36 @@ rgw::auth::s3::STSEngine::authenticate(
     return result_t::reject(ret);
   }
   //Authentication
+  std::string secret_access_key;
   //Check if access key is not the same passed in by client
   if (token.access_key_id != _access_key_id) {
-    ldpp_dout(dpp, 0) << "Invalid access key" << dendl;
-    return result_t::reject(-EPERM);
+    /* In case the request is forwarded from secondary in case of multi-site,
+      we by-pass authentication using the session token credentials,
+      instead we use the system user's credentials that was used to sign
+      this request */
+    std::unique_ptr<rgw::sal::User> user;
+    const std::string access_key_id(_access_key_id);
+    if (driver->get_user_by_access_key(dpp, access_key_id, y, &user) < 0) {
+        ldpp_dout(dpp, 5) << "error reading user info, uid=" << access_key_id
+                << " can't authenticate" << dendl;
+        return result_t::reject(-ERR_INVALID_ACCESS_KEY);
+    }
+    // only allow system users as this could be a forwarded request from secondary
+    if (user->get_info().system && driver->is_meta_master()) {
+      const auto iter = user->get_info().access_keys.find(access_key_id);
+      if (iter == std::end(user->get_info().access_keys)) {
+        ldpp_dout(dpp, 0) << "ERROR: access key not encoded in user info" << dendl;
+        return result_t::reject(-EPERM);
+      }
+      const RGWAccessKey& k = iter->second;
+      secret_access_key = k.key;
+      is_system_request = true;
+    } else {
+      ldpp_dout(dpp, 0) << "Invalid access key" << dendl;
+      return result_t::reject(-EPERM);
+    }
+  } else {
+    secret_access_key = token.secret_access_key;
   }
   //Check if the token has expired
   if (! token.expiration.empty()) {
@@ -6450,7 +6478,7 @@ rgw::auth::s3::STSEngine::authenticate(
   }
   //Check for signature mismatch
   const VersionAbstractor::server_signature_t server_signature = \
-    signature_factory(cct, token.secret_access_key, string_to_sign);
+    signature_factory(cct, secret_access_key, string_to_sign);
   auto compare = signature.compare(server_signature);
 
   ldpp_dout(dpp, 15) << "string_to_sign="
@@ -6514,7 +6542,7 @@ rgw::auth::s3::STSEngine::authenticate(
     t_attrs.token_issued_at = std::move(token.issued_at);
     t_attrs.principal_tags = std::move(token.principal_tags);
     auto apl = role_apl_factory->create_apl_role(cct, s, std::move(r),
-                                                 std::move(t_attrs));
+                                                 std::move(t_attrs), is_system_request);
     return result_t::grant(std::move(apl), completer_factory(token.secret_access_key));
   } else { // This is for all local users of type TYPE_RGW|ROOT|NONE
     if (token.user.empty()) {
