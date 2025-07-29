@@ -7,6 +7,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  debian/ceph-base.install                   | 2 +-
  debian/ceph-common.install                 | 4 ++--
+ debian/ceph-exporter.install               | 2 +-
  debian/ceph-fuse.install                   | 2 +-
  debian/ceph-immutable-object-cache.install | 2 +-
  debian/ceph-mds.install                    | 2 +-
@@ -17,7 +18,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  debian/cephfs-mirror.install               | 2 +-
  debian/radosgw.install                     | 2 +-
  debian/rbd-mirror.install                  | 2 +-
- 12 files changed, 13 insertions(+), 13 deletions(-)
+ 13 files changed, 14 insertions(+), 14 deletions(-)
 
 diff --git a/debian/ceph-base.install b/debian/ceph-base.install
 index a3d7757a585..db28aaa1fa1 100644
@@ -45,6 +46,14 @@ index fc4da0a179c..fbfb1befa00 100755
  usr/bin/ceph
  usr/bin/ceph-authtool
  usr/bin/ceph-conf
+diff --git a/debian/ceph-exporter.install b/debian/ceph-exporter.install
+index 1ac0edcd2..0f1ac860c 100644
+--- a/debian/ceph-exporter.install
++++ b/debian/ceph-exporter.install
+@@ -1,2 +1,2 @@
+-lib/systemd/system/ceph-exporter*
++usr/lib/systemd/system/ceph-exporter*
+ usr/bin/ceph-exporter
 diff --git a/debian/ceph-fuse.install b/debian/ceph-fuse.install
 index 565ef25dda4..80f82ede353 100644
 --- a/debian/ceph-fuse.install
