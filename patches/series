@@ -51,3 +51,4 @@
 0051-mgr-fix-module-import-by-making-NOTIFY_TYPES-in-py-m.patch
 0052-mgr-osd_perf_query-fix-ivalid-escape-sequence.patch
 0053-mgr-zabbix-fix-invalid-escape-sequences.patch
+0054-client-prohibit-unprivileged-users-from-setting-sgid.patch
