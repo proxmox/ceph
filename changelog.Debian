@@ -1,9 +1,3 @@
-ceph (19.2.3-pve2) trixie; urgency=medium
-
-  * actually remove existing init.d script via dpkg maintscript helper.
-
- -- Proxmox Support Team <support@proxmox.com>  Fri, 01 Aug 2025 12:13:07 +0200
-
 ceph (19.2.3-pve1) trixie; urgency=medium
 
   * update Ceph to Squid 19.2.3 stable release.
@@ -11,6 +5,8 @@ ceph (19.2.3-pve1) trixie; urgency=medium
  -- Proxmox Support Team <support@proxmox.com>  Tue, 29 Jul 2025 05:46:18 +0200
 
 ceph (19.2.2-pve6) trixie; urgency=medium
+
+  * actually remove existing init.d script via dpkg maintscript helper.
 
   * cherry-pick fixes for regexes that silences some more invalid escape
     sequence warnings.
