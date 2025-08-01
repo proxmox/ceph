@@ -2,7 +2,7 @@ ceph (19.2.3-pve2) trixie; urgency=medium
 
   * actually remove existing init.d script via dpkg maintscript helper.
 
- -- Proxmox Support Team <support@proxmox.com>  Fri, 01 Aug 2025 10:44:01 +0200
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 01 Aug 2025 12:13:07 +0200
 
 ceph (19.2.3-pve1) trixie; urgency=medium
 
