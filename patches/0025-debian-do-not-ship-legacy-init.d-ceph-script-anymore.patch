@@ -11,20 +11,35 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  debian/ceph-base.maintscript | 1 +
  2 files changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/debian/ceph-base.install b/debian/ceph-base.install
-index db28aaa1fa1..425933ee157 100644
---- a/debian/ceph-base.install
-+++ b/debian/ceph-base.install
+Index: ceph-19.2.3.tmp/debian/ceph-base.install
+===================================================================
+--- ceph-19.2.3.tmp.orig/debian/ceph-base.install
++++ ceph-19.2.3.tmp/debian/ceph-base.install
 @@ -1,4 +1,3 @@
 -etc/init.d/ceph
  usr/lib/systemd/system/ceph-crash.service
  usr/bin/ceph-crash
  usr/bin/ceph-debugpack
-diff --git a/debian/ceph-base.maintscript b/debian/ceph-base.maintscript
-index 196dc084135..aa257a14632 100644
---- a/debian/ceph-base.maintscript
-+++ b/debian/ceph-base.maintscript
+Index: ceph-19.2.3.tmp/debian/ceph-base.maintscript
+===================================================================
+--- ceph-19.2.3.tmp.orig/debian/ceph-base.maintscript
++++ ceph-19.2.3.tmp/debian/ceph-base.maintscript
 @@ -1,2 +1,3 @@
  rm_conffile /etc/logrotate.d/ceph
  rm_conffile /etc/logrotate.d/ceph.logrotate
 +rm_conffile /etc/init.d/ceph 19.2.2-pve6~ ceph-base
+Index: ceph-19.2.3.tmp/debian/rules
+===================================================================
+--- ceph-19.2.3.tmp.orig/debian/rules
++++ ceph-19.2.3.tmp/debian/rules
+@@ -94,8 +94,6 @@ override_dh_installinit:
+ 	install -m0644 etc/default/ceph debian/ceph-common/etc/default/
+ 	install -d -m0755 debian/ceph-common/usr/lib/tmpfiles.d
+ 	install -m 0644 -D systemd/ceph.tmpfiles.d debian/ceph-common/usr/lib/tmpfiles.d/ceph.conf
+-
+-	dh_installinit -p ceph-base --name ceph --no-start
+ 	dh_installinit -p radosgw --no-start
+ 
+ override_dh_installsystemd:
+ 	# Only enable and start systemd targets
+ 	dh_installsystemd --no-stop-on-upgrade --no-restart-after-upgrade -Xceph-mon.service -Xceph-osd.service -X ceph-mds.service
