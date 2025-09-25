@@ -3,6 +3,8 @@
 
 #include <sstream>  // std::stringstream
 
+#include <unistd.h>
+
 #include "TUDPTransport.h"
 #include "opentelemetry/sdk_config.h"
 

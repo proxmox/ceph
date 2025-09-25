@@ -45,6 +45,43 @@ public:
 
 static s3select_reserved_word g_s3select_reserve_word;//read-only
 
+struct expr_queue {
+  //purpose: a warpper for std::vector for monitoring the expression queue actions.
+  //upon an SQL expression is resolved by the engine it is pushed into the queue for later operations
+  std::vector<base_statement*> m_expr_queue;
+
+  base_statement* back()
+  {
+    //expression queue must contain an element upon accessing it. upon an empty expression queue to throw an exception.
+    if(m_expr_queue.empty())
+    {
+      throw base_s3select_exception("expression queue is empty, abort parsing.", base_s3select_exception::s3select_exp_en_t::FATAL);
+    }
+    return m_expr_queue.back();
+  }
+
+  void push_back(base_statement* bs)
+  {
+    m_expr_queue.push_back(bs);
+  }
+  
+  void pop_back()
+  {
+    return m_expr_queue.pop_back();
+  }
+
+  bool empty()
+  {
+    return m_expr_queue.empty();
+  }
+
+  void clear()
+  {
+    return m_expr_queue.clear();
+  }
+
+};
+
 struct actionQ
 {
 // upon parser is accepting a token (lets say some number),
@@ -55,7 +92,7 @@ struct actionQ
   std::vector<addsub_operation::addsub_op_t> addsubQ;
   std::vector<arithmetic_operand::cmp_t> arithmetic_compareQ;
   std::vector<logical_operand::oplog_t> logical_compareQ;
-  std::vector<base_statement*> exprQ;
+  expr_queue exprQ;
   std::vector<base_statement*> funcQ;
   std::vector<base_statement*> whenThenQ;
   std::vector<base_statement*> inPredicateQ;
@@ -143,6 +180,12 @@ struct push_json_from_clause : public base_ast_builder
   void builder(s3select* self, const char* a, const char* b) const;
 };
 static push_json_from_clause g_push_json_from_clause;
+
+struct push_json_from_clause_key_path : public base_ast_builder
+{
+  void builder(s3select* self, const char* a, const char* b) const;
+};
+static push_json_from_clause_key_path g_push_json_from_clause_key_path;
 
 struct push_limit_clause : public base_ast_builder
 {
@@ -513,6 +556,12 @@ public:
 
   int semantic()
   {
+    if(get_projections_list().empty())
+    {
+        error_description = "projections list is empty, AST is wrong,";
+        throw base_s3select_exception(error_description, base_s3select_exception::s3select_exp_en_t::FATAL);
+    }
+
     for (const auto &e : get_projections_list())
     {
       e->resolve_node();
@@ -746,7 +795,7 @@ public:
 
       json_s3_object = ((S3SELECT_KW(JSON_ROOT_OBJECT)) >> *(bsc::str_p(".") >> json_path_element))[BOOST_BIND_ACTION(push_json_from_clause)];
 
-      json_path_element = bsc::lexeme_d[+( bsc::alnum_p | bsc::str_p("_")) ];
+      json_path_element = (bsc::lexeme_d[+( bsc::alnum_p | bsc::str_p("_") ) ] | bsc::str_p("*") | (string))[BOOST_BIND_ACTION(push_json_from_clause_key_path)];
 
       object_path = "/" >> *( fs_type >> "/") >> fs_type;
 
@@ -872,11 +921,12 @@ public:
 
       variable = (variable_name >> "." >> variable_name) | variable_name;
 
+      // json_variable_name is the JSON projection, i.e. _1.a.b[10] 
       json_variable_name = bsc::str_p("_1") >> +("." >> (json_array | json_object) );
 
-      json_object = (variable_name)[BOOST_BIND_ACTION(push_json_object)]; 
+      json_object = (variable_name | string)[BOOST_BIND_ACTION(push_json_object)]; 
 
-      json_array = (variable_name >> +(bsc::str_p("[") >> number[BOOST_BIND_ACTION(push_array_number)] >> bsc::str_p("]")) )[BOOST_BIND_ACTION(push_json_array_name)];
+      json_array = ((variable_name | string) >> +(bsc::str_p("[") >> number[BOOST_BIND_ACTION(push_array_number)] >> bsc::str_p("]")) )[BOOST_BIND_ACTION(push_json_array_name)];
     }
 
 
@@ -936,35 +986,33 @@ void push_from_clause::builder(s3select* self, const char* a, const char* b) con
   self->getAction()->exprQ.clear();
 }
 
+std::string json_path_remove_double_quote(const char* a, const char* b) 
+{	
+  //upon query accessing key which contains meta-char, it must use string-construct(double quotes), 
+  //the engine should remove double quotes for later processing.
+  std::string token(a, b);
+  if(*a == '"') //TODO single quote ? 
+  {
+    std::string tmp = token.substr(1,token.find('"',1)-1);
+    token = tmp;
+  }
+  return token;
+}
+
+void push_json_from_clause_key_path::builder(s3select* self, const char* a, const char* b) const
+{
+
+  std::string token = json_path_remove_double_quote(a,b);
+  self->getAction()->json_from_clause.push_back(token);
+   
+}
+
 void push_json_from_clause::builder(s3select* self, const char* a, const char* b) const
 {
-  std::string token(a, b),table_name,alias_name;
-
-  //TODO handle the star-operation ('*') in from-clause. build the parameters for json-reader search-api's.
-  std::vector<std::string> variable_key_path;
-  const char* delimiter = ".";
-  auto pos = token.find(delimiter);
-
-  if(pos != std::string::npos)
+  if(self->getAction()->json_from_clause.size() == 0)
   {
-    token = token.substr(strlen(JSON_ROOT_OBJECT)+1,token.size());
-    pos = token.find(delimiter);
-    do
-    {
-      variable_key_path.push_back(token.substr(0,pos));
-      if(pos != std::string::npos)
-	token = token.substr(pos+1,token.size());
-      else 
-	token = "";
-      pos = token.find(delimiter);
-    }while(token.size());
+    self->getAction()->json_from_clause.push_back(JSON_ROOT_OBJECT);
   }
-  else
-  {
-    variable_key_path.push_back(JSON_ROOT_OBJECT);
-  }
-
-  self->getAction()->json_from_clause = variable_key_path;
 }
 
 void push_limit_clause::builder(s3select* self, const char* a, const char* b) const
@@ -1086,7 +1134,6 @@ void push_json_variable::builder(s3select* self, const char* a, const char* b) c
 {//purpose: handle the use case of json-variable structure (_1.a.b.c)
 
   std::string token(a, b);
-  std::vector<std::string> variable_key_path;
 
   //the following flow determine the index per json variable reside on statement.
   //per each discovered json_variable, it search the json-variables-vector whether it already exists.
@@ -1116,7 +1163,8 @@ void push_array_number::builder(s3select* self, const char* a, const char* b) co
 
 void push_json_array_name::builder(s3select* self, const char* a, const char* b) const
 {
-  std::string token(a, b);
+  std::string token = json_path_remove_double_quote(a,b);
+  
   size_t found = token.find("[");
   std::string array_name = token.substr(0,found);
 
@@ -1143,7 +1191,7 @@ void push_json_array_name::builder(s3select* self, const char* a, const char* b)
 
 void push_json_object::builder(s3select* self, const char* a, const char* b) const
 {
-  std::string token(a, b);
+  std::string token = json_path_remove_double_quote(a,b);
 
   //DEBUG - TEMP std::cout << "push_json_object " << token << std::endl;
 
@@ -1385,7 +1433,7 @@ void push_negation::builder(s3select* self, const char* a, const char* b) const
   }
   else
   {
-    throw base_s3select_exception(std::string("failed to create AST for NOT operator"), base_s3select_exception::s3select_exp_en_t::FATAL);
+    throw base_s3select_exception(std::string("failed to create AST for NOT operator, expression is missing."), base_s3select_exception::s3select_exp_en_t::FATAL);
   }
   
   //upon NOT operator, the logical and arithmetical operators are "tagged" to negate result.
@@ -1394,7 +1442,8 @@ void push_negation::builder(s3select* self, const char* a, const char* b) const
     logical_operand* f = S3SELECT_NEW(self, logical_operand, pred);
     self->getAction()->exprQ.push_back(f);
   }
-  else if (dynamic_cast<__function*>(pred) || dynamic_cast<negate_function_operation*>(pred) || dynamic_cast<variable*>(pred))
+  else if (dynamic_cast<__function*>(pred) || dynamic_cast<negate_function_operation*>(pred) || dynamic_cast<variable*>(pred)
+	  || dynamic_cast<addsub_operation*>(pred) || dynamic_cast<mulldiv_operation*>(pred))
   {
     negate_function_operation* nf = S3SELECT_NEW(self, negate_function_operation, pred);
     self->getAction()->exprQ.push_back(nf);
@@ -1406,7 +1455,7 @@ void push_negation::builder(s3select* self, const char* a, const char* b) const
   }
   else
   {
-    throw base_s3select_exception(std::string("failed to create AST for NOT operator"), base_s3select_exception::s3select_exp_en_t::FATAL);
+    throw base_s3select_exception(std::string("failed to create AST for NOT operator, appropiate operator is missing"), base_s3select_exception::s3select_exp_en_t::FATAL);
   }
 }
 
@@ -2409,6 +2458,7 @@ public:
       }
 
       result.append(res->to_string());
+      //TODO the strlen should replace with the size of the string(performance perspective)
       m_returned_bytes_size += strlen(res->to_string());
       ++j;
       }
@@ -2425,6 +2475,8 @@ public:
     if(m_csv_defintion.output_json_format && projections_resuls.values.size())  {
       json_result_format(projections_resuls, result, output_delimiter);
       result.append(output_row_delimiter);
+      //TODO to add asneeded
+      //TODO "flush" the result string
       return;
     } 
 
@@ -2444,10 +2496,6 @@ public:
 		set_processing_time_error();
 	    }
 	    
-      
-	    if(m_fp_ext_debug_mesg)
-		      m_fp_ext_debug_mesg(column_result.data());
-
             if (m_csv_defintion.quote_fields_always) {
               std::ostringstream quoted_result;
               quoted_result << std::quoted(column_result,m_csv_defintion.output_quot_char, m_csv_defintion.escape_char);
@@ -2475,8 +2523,29 @@ public:
     if(!m_aggr_flow)  {
       result.append(output_row_delimiter);
       m_returned_bytes_size += output_delimiter.size();
-    } 
+    }
+
+
+//TODO config / default-value
+#define CSV_INPUT_TYPE_RESPONSE_SIZE_LIMIT (64 * 1024)
+   if(m_fp_s3select_result_format && m_fp_s3select_header_format)
+   {
+    if (result.size() > CSV_INPUT_TYPE_RESPONSE_SIZE_LIMIT)
+    {//there are systems that might resject the response due to its size.
+      m_fp_s3select_result_format(result);
+      m_fp_s3select_header_format(result);
+    }
+   }
 }
+
+  void flush_sql_result(std::string& result)
+  {//purpose: flush remaining data reside in the buffer
+    if(m_fp_s3select_result_format && m_fp_s3select_header_format)
+    {
+      m_fp_s3select_result_format(result);
+      m_fp_s3select_header_format(result);
+    }	
+  }
 
   Status getMatchRow( std::string& result)
   {
@@ -2621,8 +2690,6 @@ public:
 
 }; //base_s3object
 
-//TODO config / default-value
-#define CSV_INPUT_TYPE_RESPONSE_SIZE_LIMIT (64 * 1024)
 class csv_object : public base_s3object
 {
 
@@ -2935,16 +3002,6 @@ public:
           return -1;
         }
       }
-
-      if(m_fp_s3select_result_format && m_fp_s3select_header_format)
-      {
-      	if (result.size() > CSV_INPUT_TYPE_RESPONSE_SIZE_LIMIT)
-      	{//there are systems that might resject the response due to its size.
-	  m_fp_s3select_result_format(result);
-	  m_fp_s3select_header_format(result);
-      	}
-      }
-
       if (m_sql_processing_status == Status::END_OF_STREAM)
       {
         break;
@@ -2960,12 +3017,7 @@ public:
 
     } while (true);
 
-    if(m_fp_s3select_result_format && m_fp_s3select_header_format)
-    {	//note: it may produce empty response(more the once)
-	//upon empty result, it should return *only* upon last call.
-	m_fp_s3select_result_format(result);
-	m_fp_s3select_header_format(result);
-    }
+    flush_sql_result(result);
 
     return 0;
   }
@@ -2976,7 +3028,7 @@ class parquet_object : public base_s3object
 {
 
 private:
-  parquet_file_parser* object_reader;
+  std::unique_ptr<parquet_file_parser> object_reader;
   parquet_file_parser::column_pos_t m_where_clause_columns;
   parquet_file_parser::column_pos_t m_projections_columns;
   std::vector<parquet_file_parser::parquet_value_t> m_predicate_values;
@@ -2985,11 +3037,14 @@ private:
 
 public:
 
-  parquet_object(std::string parquet_file_name, s3select *s3_query,s3selectEngine::rgw_s3select_api* rgw) : base_s3object(s3_query),object_reader(nullptr)
+  class csv_definitions : public s3select_csv_definitions
+  {};
+
+  parquet_object(std::string parquet_file_name, s3select *s3_query,s3selectEngine::rgw_s3select_api* rgw) : base_s3object(s3_query)
   {
     try{
     
-      object_reader = new parquet_file_parser(parquet_file_name,rgw); //TODO uniq ptr
+      object_reader = std::make_unique<parquet_file_parser>(parquet_file_name,rgw);
     } catch(std::exception &e)
     { 
       throw base_s3select_exception(std::string("failure while processing parquet meta-data ") + std::string(e.what()) ,base_s3select_exception::s3select_exp_en_t::FATAL);
@@ -2998,7 +3053,7 @@ public:
     parquet_query_setting(nullptr);
   }
 
-  parquet_object() : base_s3object(nullptr),object_reader(nullptr)
+  parquet_object() : base_s3object(nullptr), not_to_increase_first_time(true)
   {}
 
   void parquet_query_setting(s3select *s3_query)
@@ -3020,13 +3075,7 @@ public:
   }
 
   ~parquet_object()
-  {
-    if(object_reader != nullptr)
-    {
-      delete object_reader;
-    }
-
-  }
+  {}
 
   std::string get_error_description()
   {
@@ -3038,11 +3087,11 @@ public:
     return m_s3_select != nullptr; 
   }
 
-  void set_parquet_object(std::string parquet_file_name, s3select *s3_query,s3selectEngine::rgw_s3select_api* rgw) //TODO duplicate code
+  void set_parquet_object(std::string parquet_file_name, s3select *s3_query,s3selectEngine::rgw_s3select_api* rgw,csv_definitions parquet) //TODO duplicate code
   {
     try{
-    
-      object_reader = new parquet_file_parser(parquet_file_name,rgw); //TODO uniq ptr
+      m_csv_defintion = parquet;
+      object_reader = std::make_unique<parquet_file_parser>(parquet_file_name,rgw);
     } catch(std::exception &e)
     { 
       throw base_s3select_exception(std::string("failure while processing parquet meta-data ") + std::string(e.what()) ,base_s3select_exception::s3select_exp_en_t::FATAL);
@@ -3081,26 +3130,6 @@ public:
         }
       }
 
-#define S3SELECT_RESPONSE_SIZE_LIMIT (4 * 1024 * 1024)
-      if (result.size() > S3SELECT_RESPONSE_SIZE_LIMIT)
-      {//AWS-cli limits response size the following callbacks send response upon some threshold
-        if(m_fp_s3select_result_format)
-	  m_fp_s3select_result_format(result);
-
-        if (!is_end_of_stream() && (get_sql_processing_status() != Status::LIMIT_REACHED))
-        {
-          if(m_fp_s3select_header_format)
-	    m_fp_s3select_header_format(result);
-        }
-      }
-      else
-      {
-        if (is_end_of_stream() || (get_sql_processing_status() == Status::LIMIT_REACHED))
-        {
-	  if(m_fp_s3select_result_format)
-	    m_fp_s3select_result_format(result);
-        }
-      }
 
       //TODO is_end_of_stream() required?
       if (get_sql_processing_status() == Status::END_OF_STREAM || is_end_of_stream() || get_sql_processing_status() == Status::LIMIT_REACHED)
@@ -3110,6 +3139,7 @@ public:
 
     } while (1);
 
+    flush_sql_result(result);
     return 0;
   }
 
@@ -3181,10 +3211,6 @@ public:
       f_push_key_value_into_scratch_area_per_star_operation = [this](s3selectEngine::scratch_area::json_key_value_t& key_value)
                 {return push_key_value_into_scratch_area_per_star_operation(key_value);};
 
-    //setting the container for all json-variables, to be extracted by the json reader    
-    JsonHandler.set_statement_json_variables(query->get_json_variables_access());
-
-
     //calling to getMatchRow. processing a single row per each call.
     JsonHandler.set_s3select_processing_callback(f_sql);
     //upon excat match between input-json-key-path and sql-statement-variable-path the callback pushes to scratch area 
@@ -3226,6 +3252,9 @@ public:
     }
 
     m_sa->set_parquet_type();//TODO json type
+
+    //setting the container for all json-variables, to be extracted by the json reader    
+    JsonHandler.set_statement_json_variables(query->get_json_variables_access());
   }
     
   json_object(s3select* query):base_s3object(query),m_processed_bytes(0),m_end_of_stream(false),m_row_count(0),star_operation_ind(false),m_init_json_processor_ind(false)
@@ -3293,7 +3322,10 @@ private:
 
   int push_key_value_into_scratch_area_per_star_operation(s3selectEngine::scratch_area::json_key_value_t& key_value)
   {
-    m_sa->get_star_operation_cont()->push_back( key_value );
+    //upon star-operation on nested JSON, there could be many keys in a single row (actually, there is no limitation).
+    //for many cases these keys are duplicated in the scope of a single-row (row is defined according to SQL statement).
+    //the following routine saves only unique keys.
+    m_sa->json_push_key_value_per_star_operation(key_value);
     return 0;
   }
 

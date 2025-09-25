@@ -29,6 +29,13 @@
 
 #define RW_IO_MAX (INT_MAX & CEPH_PAGE_MASK)
 
+enum {
+  l_blk_kernel_device_first = 1000,
+  l_blk_kernel_device_discard_op,
+  l_blk_kernel_discard_threads,
+  l_blk_kernel_device_last,
+};
+
 class KernelDevice : public BlockDevice,
                      public md_config_obs_t {
 protected:
@@ -52,6 +59,8 @@ private:
   aio_callback_t discard_callback;
   void *discard_callback_priv;
   bool aio_stop;
+  bool need_notify = false;
+  std::unique_ptr<PerfCounters> logger;
 
   ceph::mutex discard_lock = ceph::make_mutex("KernelDevice::discard_lock");
   ceph::condition_variable discard_cond;
@@ -86,7 +95,7 @@ private:
 
   void _aio_thread();
   void _discard_thread(uint64_t tid);
-  void _queue_discard(interval_set<uint64_t> &to_release);
+  bool _queue_discard(interval_set<uint64_t> &to_release);
   bool try_discard(interval_set<uint64_t> &to_release, bool async = true) override;
 
   int _aio_start();
@@ -118,7 +127,8 @@ private:
   ceph::unique_leakable_ptr<buffer::raw> create_custom_aligned(size_t len, IOContext* ioc) const;
 
 public:
-  KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, aio_callback_t d_cb, void *d_cbpriv);
+  KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, aio_callback_t d_cb,
+    void *d_cbpriv, const char* dev_name = "");
   ~KernelDevice();
 
   void aio_submit(IOContext *ioc) override;

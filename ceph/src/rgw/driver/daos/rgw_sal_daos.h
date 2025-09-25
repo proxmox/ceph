@@ -484,7 +484,6 @@ class DaosZone : public StoreZone {
   virtual const std::string& get_name() const override;
   virtual bool is_writeable() override;
   virtual bool get_redirect_endpoint(std::string* endpoint) override;
-  virtual bool has_zonegroup_api(const std::string& api) const override;
   virtual const std::string& get_current_period_id() override;
   virtual const RGWAccessKey& get_system_key() {
     return zone_params->system_key;
@@ -621,7 +620,7 @@ class DaosObject : public StoreObject {
   virtual int get_obj_state(const DoutPrefixProvider* dpp, RGWObjState** state,
                             optional_yield y, bool follow_olh = true) override;
   virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
-                            Attrs* delattrs, optional_yield y) override;
+                            Attrs* delattrs, optional_yield y, uint32_t flags) override;
   virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
                             rgw_obj* target_obj = NULL) override;
   virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val,

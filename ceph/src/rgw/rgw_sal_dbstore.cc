@@ -240,7 +240,7 @@ namespace rgw::sal {
   {
     int ret;
 
-    ret = store->getDB()->update_bucket(dpp, "info", info, exclusive, nullptr, nullptr, &_mtime, &info.objv_tracker);
+    ret = store->getDB()->update_bucket(dpp, "info", info, exclusive, nullptr, &attrs, &_mtime, &info.objv_tracker);
 
     return ret;
 
@@ -269,7 +269,7 @@ namespace rgw::sal {
 
     /* XXX: handle has_instance_obj like in set_bucket_instance_attrs() */
 
-    ret = store->getDB()->update_bucket(dpp, "attrs", info, false, nullptr, &new_attrs, nullptr, &get_info().objv_tracker);
+    ret = store->getDB()->update_bucket(dpp, "attrs", info, false, nullptr, &attrs, nullptr, &get_info().objv_tracker);
 
     return ret;
   }
@@ -456,14 +456,6 @@ namespace rgw::sal {
     return false;
   }
 
-  bool DBZone::has_zonegroup_api(const std::string& api) const
-  {
-    if (api == "default")
-      return true;
-
-    return false;
-  }
-
   const std::string& DBZone::get_current_period_id()
   {
     return current_period->get_id();
@@ -527,7 +519,7 @@ namespace rgw::sal {
     return read_op.prepare(dpp);
   }
 
-  int DBObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y)
+  int DBObject::set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs, Attrs* delattrs, optional_yield y, uint32_t flags)
   {
     Attrs empty;
     DB::Object op_target(store->getDB(),
@@ -550,9 +542,9 @@ namespace rgw::sal {
     if (r < 0) {
       return r;
     }
-    set_atomic();
+    set_atomic(true);
     state.attrset[attr_name] = attr_val;
-    return set_obj_attrs(dpp, &state.attrset, nullptr, y);
+    return set_obj_attrs(dpp, &state.attrset, nullptr, y, 0);
   }
 
   int DBObject::delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name, optional_yield y)
@@ -560,9 +552,9 @@ namespace rgw::sal {
     Attrs rmattr;
     bufferlist bl;
 
-    set_atomic();
+    set_atomic(true);
     rmattr[attr_name] = bl;
-    return set_obj_attrs(dpp, nullptr, &rmattr, y);
+    return set_obj_attrs(dpp, nullptr, &rmattr, y, 0);
   }
 
   bool DBObject::is_expired() {

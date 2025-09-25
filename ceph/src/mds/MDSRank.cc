@@ -76,7 +76,7 @@ public:
 
     if (mdcache->is_readonly()) {
       dout(5) << __func__ << ": read-only FS" << dendl;
-      complete(-CEPHFS_EROFS);
+      complete(-EROFS);
       return;
     }
 
@@ -280,7 +280,7 @@ public:
   }
 
 private:
-  // context which completes itself (with -CEPHFS_ETIMEDOUT) after a specified
+  // context which completes itself (with -ETIMEDOUT) after a specified
   // timeout or when explicitly completed, whichever comes first. Note
   // that the context does not detroy itself after completion -- it
   // needs to be explicitly freed.
@@ -302,7 +302,7 @@ private:
 
       timer_task = new LambdaContext([this](int) {
           timer_task = nullptr;
-          complete(-CEPHFS_ETIMEDOUT);
+          complete(-ETIMEDOUT);
         });
       mds->timer.add_event_after(timeout, timer_task);
     }
@@ -369,7 +369,7 @@ private:
       } else if (recall_timeout > 0 && duration > recall_timeout) {
         gather.set_finisher(new C_MDSInternalNoop);
         gather.activate();
-        return handle_recall_client_state(-CEPHFS_ETIMEDOUT);
+        return handle_recall_client_state(-ETIMEDOUT);
       } else {
         uint64_t remaining = (recall_timeout == 0 ? 0 : recall_timeout-duration);
         C_ContextTimeout *ctx = new C_ContextTimeout(
@@ -537,7 +537,7 @@ MDSRank::MDSRank(
 
   objecter->unset_honor_pool_full();
 
-  finisher = new Finisher(cct, "MDSRank", "MR_Finisher");
+  finisher = new Finisher(cct, "MDSRank", "mds-rank-fin");
 
   mdcache = new MDCache(this, purge_queue);
   mdlog = new MDLog(this);
@@ -622,7 +622,7 @@ void MDSRankDispatcher::init()
   // who is interested in it.
   handle_osd_map();
 
-  progress_thread.create("mds_rank_progr");
+  progress_thread.create("mds-rank-progr");
 
   purge_queue.init();
 
@@ -977,7 +977,7 @@ void MDSRank::damaged_unlocked()
 
 void MDSRank::handle_write_error(int err)
 {
-  if (err == -CEPHFS_EBLOCKLISTED) {
+  if (err == -EBLOCKLISTED) {
     derr << "we have been blocklisted (fenced), respawning..." << dendl;
     respawn();
     return;
@@ -1624,17 +1624,17 @@ void MDSRank::boot_start(BootStep step, int r)
 {
   // Handle errors from previous step
   if (r < 0) {
-    if (is_standby_replay() && (r == -CEPHFS_EAGAIN)) {
-      dout(0) << "boot_start encountered an error CEPHFS_EAGAIN"
+    if (is_standby_replay() && (r == -EAGAIN)) {
+      dout(0) << "boot_start encountered an error EAGAIN"
               << ", respawning since we fell behind journal" << dendl;
       respawn();
-    } else if (r == -CEPHFS_EINVAL || r == -CEPHFS_ENOENT) {
+    } else if (r == -EINVAL || r == -ENOENT) {
       // Invalid or absent data, indicates damaged on-disk structures
       clog->error() << "Error loading MDS rank " << whoami << ": "
         << cpp_strerror(r);
       damaged();
       ceph_assert(r == 0);  // Unreachable, damaged() calls respawn()
-    } else if (r == -CEPHFS_EROFS) {
+    } else if (r == -EROFS) {
       dout(0) << "boot error forcing transition to read-only; MDS will try to continue" << dendl;
     } else {
       // Completely unexpected error, give up and die
@@ -2129,6 +2129,8 @@ void MDSRank::clientreplay_done()
 void MDSRank::active_start()
 {
   dout(1) << "active_start" << dendl;
+
+  m_is_active = true;
 
   if (last_state == MDSMap::STATE_CREATING ||
       last_state == MDSMap::STATE_STARTING) {
@@ -2721,7 +2723,7 @@ void MDSRankDispatcher::handle_asok_command(
     std::string id;
     if(!cmd_getval(cmdmap, "id", id)) {
       *css << "malformed id";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     metareqid_t mrid;
@@ -2729,7 +2731,7 @@ void MDSRankDispatcher::handle_asok_command(
       mrid = metareqid_t(id);
     } catch (const std::exception& e) {
       *css << "malformed id: " << e.what();
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
 
@@ -2751,7 +2753,7 @@ void MDSRankDispatcher::handle_asok_command(
     std::lock_guard l(mds_lock);
     if (!mdcache->have_request(mrid)) {
       *css << "request does not exist";
-      r = -CEPHFS_ENOENT;
+      r = -ENOENT;
       goto out;
     }
     auto mdr = mdcache->request_get(mrid);
@@ -2764,7 +2766,7 @@ void MDSRankDispatcher::handle_asok_command(
     std::string id;
     if(!cmd_getval(cmdmap, "id", id)) {
       *css << "malformed id";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     metareqid_t mrid;
@@ -2772,13 +2774,13 @@ void MDSRankDispatcher::handle_asok_command(
       mrid = metareqid_t(id);
     } catch (const std::exception& e) {
       *css << "malformed id: " << e.what();
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     std::lock_guard l(mds_lock);
     if (!mdcache->have_request(mrid)) {
       *css << "request does not exist";
-      r = -CEPHFS_ENOENT;
+      r = -ENOENT;
       goto out;
     }
     auto mdr = mdcache->request_get(mrid);
@@ -2806,13 +2808,16 @@ void MDSRankDispatcher::handle_asok_command(
     if (!op_tracker.dump_historic_ops(f, true)) {
       *css << "op_tracker disabled; set mds_enable_op_tracker=true to enable";
     }
+  } else if (command == "dump_export_states") {
+    std::lock_guard l(mds_lock);
+    mdcache->migrator->dump_export_states(f);
   } else if (command == "osdmap barrier") {
     int64_t target_epoch = 0;
     bool got_val = cmd_getval(cmdmap, "target_epoch", target_epoch);
 
     if (!got_val) {
       *css << "no target epoch given";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     {
@@ -2845,7 +2850,7 @@ void MDSRankDispatcher::handle_asok_command(
     SessionFilter filter;
     r = filter.parse(filter_args, css.get());
     if (r != 0) {
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     evict_clients(filter, on_finish);
@@ -2854,7 +2859,7 @@ void MDSRankDispatcher::handle_asok_command(
     std::string client_id;
     if (!cmd_getval(cmdmap, "client_id", client_id)) {
       *css << "Invalid client_id specified";
-      r = -CEPHFS_ENOENT;
+      r = -ENOENT;
       goto out;
     }
     std::lock_guard l(mds_lock);
@@ -2862,7 +2867,7 @@ void MDSRankDispatcher::handle_asok_command(
         g_conf()->mds_session_blocklist_on_evict, *css);
     if (!evicted) {
       dout(15) << css->strv() << dendl;
-      r = -CEPHFS_ENOENT;
+      r = -ENOENT;
     }
   } else if (command == "session config" ||
 	     command == "client config") {
@@ -2880,12 +2885,12 @@ void MDSRankDispatcher::handle_asok_command(
 	     command == "scrub_start") {
     if (!is_active()) {
       *css << "MDS is not active";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     else if (whoami != 0) {
       *css << "Not rank 0";
-      r = -CEPHFS_EXDEV;
+      r = -EXDEV;
       goto out;
     }
 
@@ -2911,12 +2916,12 @@ void MDSRankDispatcher::handle_asok_command(
   } else if (command == "scrub abort") {
     if (!is_active()) {
       *css << "MDS is not active";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     else if (whoami != 0) {
       *css << "Not rank 0";
-      r = -CEPHFS_EXDEV;
+      r = -EXDEV;
       goto out;
     }
 
@@ -2931,12 +2936,12 @@ void MDSRankDispatcher::handle_asok_command(
   } else if (command == "scrub pause") {
     if (!is_active()) {
       *css << "MDS is not active";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     else if (whoami != 0) {
       *css << "Not rank 0";
-      r = -CEPHFS_EXDEV;
+      r = -EXDEV;
       goto out;
     }
 
@@ -2951,12 +2956,12 @@ void MDSRankDispatcher::handle_asok_command(
   } else if (command == "scrub resume") {
     if (!is_active()) {
       *css << "MDS is not active";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     else if (whoami != 0) {
       *css << "Not rank 0";
-      r = -CEPHFS_EXDEV;
+      r = -EXDEV;
       goto out;
     }
     command_scrub_resume(f);
@@ -2965,7 +2970,7 @@ void MDSRankDispatcher::handle_asok_command(
   } else if (command == "tag path") {
     if (whoami != 0) {
       *css << "Not rank 0";
-      r = -CEPHFS_EXDEV;
+      r = -EXDEV;
       goto out;
     }
     string path;
@@ -2993,13 +2998,13 @@ void MDSRankDispatcher::handle_asok_command(
     string path;
     if(!cmd_getval(cmdmap, "path", path)) {
       *css << "malformed path";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     int64_t rank;
     if(!cmd_getval(cmdmap, "rank", rank)) {
       *css << "malformed rank";
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     command_export_dir(f, path, (mds_rank_t)rank);
@@ -3060,7 +3065,7 @@ void MDSRankDispatcher::handle_asok_command(
       if (mdsmap->get_tableserver() == whoami) {
 	snapserver->dump(f);
       } else {
-	r = -CEPHFS_EXDEV;
+	r = -EXDEV;
 	*css << "Not snapserver";
       }
     } else {
@@ -3088,7 +3093,7 @@ void MDSRankDispatcher::handle_asok_command(
     std::lock_guard l(mds_lock);
     damage_entry_id_t id = 0;
     if (!cmd_getval(cmdmap, "damage_id", (int64_t&)id)) {
-      r = -CEPHFS_EINVAL;
+      r = -EINVAL;
       goto out;
     }
     damage_table.erase(id);
@@ -3096,7 +3101,7 @@ void MDSRankDispatcher::handle_asok_command(
     command_quiesce_db(cmdmap, on_finish);
     return;
   } else {
-    r = -CEPHFS_ENOSYS;
+    r = -ENOSYS;
   }
 out:
   on_finish(r, css->str(), outbl);
@@ -3113,7 +3118,7 @@ void MDSRankDispatcher::evict_clients(
 {
   bufferlist outbl;
   if (is_any_replay()) {
-    on_finish(-CEPHFS_EAGAIN, "MDS is replaying log", outbl);
+    on_finish(-EAGAIN, "MDS is replaying log", outbl);
     return;
   }
 
@@ -3135,7 +3140,7 @@ void MDSRankDispatcher::evict_clients(
   dout(20) << __func__ << " matched " << victims.size() << " sessions" << dendl;
 
   if (victims.empty()) {
-    on_finish(-ESRCH, "no hosts match", outbl);
+    on_finish(0, "no hosts match", outbl);
     return;
   }
 
@@ -3272,18 +3277,18 @@ int MDSRank::_command_export_dir(
 
   if (target == whoami || !mdsmap->is_up(target) || !mdsmap->is_in(target)) {
     derr << "bad MDS target " << target << dendl;
-    return -CEPHFS_ENOENT;
+    return -ENOENT;
   }
 
   CInode *in = mdcache->cache_traverse(fp);
   if (!in) {
     derr << "bad path '" << path << "'" << dendl;
-    return -CEPHFS_ENOENT;
+    return -ENOENT;
   }
   CDir *dir = in->get_dirfrag(frag_t());
   if (!dir || !(dir->is_auth())) {
     derr << "bad export_dir path dirfrag frag_t() or dir not auth" << dendl;
-    return -CEPHFS_EINVAL;
+    return -EINVAL;
   }
 
   mdcache->migrator->export_dir(dir, target);
@@ -3868,7 +3873,7 @@ int MDSRank::config_client(int64_t session_id, bool remove,
   Session *session = sessionmap.get_session(entity_name_t(CEPH_ENTITY_TYPE_CLIENT, session_id));
   if (!session) {
     ss << "session " << session_id << " not in sessionmap!";
-    return -CEPHFS_ENOENT;
+    return -ENOENT;
   }
 
   if (option == "timeout") {
@@ -3876,7 +3881,7 @@ int MDSRank::config_client(int64_t session_id, bool remove,
       auto it = session->info.client_metadata.find("timeout");
       if (it == session->info.client_metadata.end()) {
 	ss << "Nonexistent config: " << option;
-	return -CEPHFS_ENODATA;
+	return -ENODATA;
       }
       session->info.client_metadata.erase(it);
     } else {
@@ -3884,14 +3889,14 @@ int MDSRank::config_client(int64_t session_id, bool remove,
       strtoul(value.c_str(), &end, 0);
       if (*end) {
 	ss << "Invalid config for timeout: " << value;
-	return -CEPHFS_EINVAL;
+	return -EINVAL;
       }
       session->info.client_metadata[option] = value;
     }
     //sessionmap._mark_dirty(session, true);
   } else {
     ss << "Invalid config option: " << option;
-    return -CEPHFS_EINVAL;
+    return -EINVAL;
   }
 
   return 0;
@@ -4120,6 +4125,7 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "mds_session_metadata_threshold",
     "mds_log_trim_threshold",
     "mds_log_trim_decay_rate",
+    "mds_allow_async_dirops",
     NULL
   };
   return KEYS;

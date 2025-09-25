@@ -320,8 +320,10 @@ int run_query_on_parquet_file(const char* input_query, const char* input_file)
 	  std::cout << "DEBUG: {" <<  msg << "}" << std::endl;
   };
 
+  std::function<void(const char*)> fp_nop = [](const char* msg){};
+  std::function<int(std::string&)> fp_continue_nop = [](std::string& result){return 0;};
   parquet_object parquet_processor(input_file,&s3select_syntax,&rgw);
-  //parquet_processor.set_external_debug_system(fp_debug);
+  parquet_processor.set_external_system_functions(fp_continue_nop, fp_s3select_result_format, fp_s3select_header_format,fp_nop);
 
   std::string result;
 
@@ -402,12 +404,16 @@ int process_json_query(const char* input_query,const char* fname)
 
 
   size_t read_sz = input_file_stream.read(buff.data(),BUFFER_SIZE).gcount();
+#ifdef DEBUG_CHUNK_READ
   int chunk_count=0;
+#endif
   size_t bytes_read=0;
   while(read_sz)
   {
     bytes_read += read_sz;
+#ifdef DEBUG_CHUNK_READ
     std::cout << "read next chunk " << chunk_count++ << ":" << read_sz << ":" << bytes_read << "\r";
+#endif
 
     result.clear();
 

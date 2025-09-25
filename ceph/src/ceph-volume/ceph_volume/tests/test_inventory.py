@@ -3,7 +3,7 @@
 import pytest
 from ceph_volume.util.device import Devices
 from ceph_volume.util.lsmdisk import LSMDisk
-from mock.mock import patch
+from unittest.mock import patch
 import ceph_volume.util.lsmdisk as lsmdisk
 
 
@@ -118,7 +118,7 @@ def device_data(device_info):
 class TestInventory(object):
 
     expected_keys = [
-        'ceph_device',
+        'ceph_device_lvm',
         'path',
         'rejected_reasons',
         'sys_api',

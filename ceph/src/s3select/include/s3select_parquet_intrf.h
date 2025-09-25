@@ -434,7 +434,7 @@ public:
       #if ARROW_VERSION_MAJOR < 9
       fd_ = -1;
       #else
-      fd_.Close();
+      return fd_.Close();
       #endif
       //RETURN_NOT_OK(::arrow::internal::FileClose(fd));
     }
@@ -589,17 +589,12 @@ class ReadableFile::ReadableFileImpl : public ObjectInterface {
  public:
  
   ~ReadableFileImpl()
-  {
-    if(IMPL != nullptr)
-    {
-      delete IMPL;
-    }
-  }
+  {}
 
 #ifdef CEPH_USE_FS
-  explicit ReadableFileImpl(MemoryPool* pool) :  pool_(pool) {IMPL=new OSFile();}
+  explicit ReadableFileImpl(MemoryPool* pool) :  pool_(pool) {IMPL=std::make_unique<OSFile>();}
 #endif
-  explicit ReadableFileImpl(MemoryPool* pool,s3selectEngine::rgw_s3select_api* rgw) :  pool_(pool) {IMPL=new RGWimpl(rgw);}
+  explicit ReadableFileImpl(MemoryPool* pool,s3selectEngine::rgw_s3select_api* rgw) :  pool_(pool) {IMPL=std::make_unique<RGWimpl>(rgw);}
 
   Status Open(const std::string& path) { return IMPL->OpenReadable(path); }
 
@@ -649,7 +644,7 @@ class ReadableFile::ReadableFileImpl : public ObjectInterface {
     return Status::OK();
   }
 
-  ObjectInterface *IMPL;//TODO to declare in ObjectInterface 
+  std::unique_ptr<ObjectInterface> IMPL;
 
  private:
  
@@ -752,6 +747,30 @@ class PARQUET_EXPORT RowGroupReader {
   std::unique_ptr<Contents> contents_;
 };
 
+#define RGW_default_buffer_size 1024*1024*1024
+class S3select_Config {
+public:
+    static S3select_Config& getInstance() {
+        static S3select_Config instance;
+        return instance;
+    }
+
+    void set_s3select_reader_properties(uint64_t value) { this->m_reader_properties = value; }
+    uint64_t get_s3select_reader_properties() const { return m_reader_properties; }
+
+private:
+    uint64_t m_reader_properties;
+    S3select_Config() : m_reader_properties(RGW_default_buffer_size) {} // Private constructor
+};
+
+ReaderProperties s3select_reader_properties() {
+
+  static ReaderProperties default_reader_properties;
+  default_reader_properties.enable_buffered_stream();
+  default_reader_properties.set_buffer_size(S3select_Config::getInstance().get_s3select_reader_properties());
+  return default_reader_properties;
+}
+
 class PARQUET_EXPORT ParquetFileReader {
  public:
   // Declare a virtual class 'Contents' to aid dependency injection and more
@@ -760,7 +779,7 @@ class PARQUET_EXPORT ParquetFileReader {
   struct PARQUET_EXPORT Contents {
     static std::unique_ptr<Contents> Open(
         std::shared_ptr<::arrow::io::RandomAccessFile> source,
-        const ReaderProperties& props = default_reader_properties(),
+        const ReaderProperties& props = s3select_reader_properties(),
         std::shared_ptr<FileMetaData> metadata = NULLPTR);
 
     virtual ~Contents() = default;
@@ -781,21 +800,21 @@ class PARQUET_EXPORT ParquetFileReader {
   ARROW_DEPRECATED("Use arrow::io::RandomAccessFile version")
   static std::unique_ptr<ParquetFileReader> Open(
       std::unique_ptr<RandomAccessSource> source,
-      const ReaderProperties& props = default_reader_properties(),
+      const ReaderProperties& props = s3select_reader_properties(),
       std::shared_ptr<FileMetaData> metadata = NULLPTR);
 
   // Create a file reader instance from an Arrow file object. Thread-safety is
   // the responsibility of the file implementation
   static std::unique_ptr<ParquetFileReader> Open(
       std::shared_ptr<::arrow::io::RandomAccessFile> source,
-      const ReaderProperties& props = default_reader_properties(),
+      const ReaderProperties& props = s3select_reader_properties(),
       std::shared_ptr<FileMetaData> metadata = NULLPTR);
 
   // API Convenience to open a serialized Parquet file on disk, using Arrow IO
   // interfaces.
   static std::unique_ptr<ParquetFileReader> OpenFile(
       const std::string& path,s3selectEngine::rgw_s3select_api* rgw, bool memory_map = true,
-      const ReaderProperties& props = default_reader_properties(),
+      const ReaderProperties& props = s3select_reader_properties(),
       std::shared_ptr<FileMetaData> metadata = NULLPTR
       );
 
@@ -1039,7 +1058,7 @@ class SerializedRowGroup : public RowGroupReader::Contents {
 class SerializedFile : public ParquetFileReader::Contents {
  public:
   SerializedFile(std::shared_ptr<ArrowInputFile> source,
-                 const ReaderProperties& props = default_reader_properties())
+                 const ReaderProperties& props = s3select_reader_properties())
       : source_(std::move(source)), properties_(props) {
     PARQUET_ASSIGN_OR_THROW(source_size_, source_->GetSize());
   }
@@ -1244,9 +1263,13 @@ void SerializedFile::ParseMetaDataOfEncryptedFileWithEncryptedFooter(
                            std::to_string(metadata_buffer->size()) + " bytes)");
   }
 
+#if ARROW_VERSION_MAJOR > 9
+  file_metadata_ =
+      FileMetaData::Make(metadata_buffer->data(), &metadata_len, s3select_reader_properties(), file_decryptor_);
+#else
   file_metadata_ =
 	FileMetaData::Make(metadata_buffer->data(), &metadata_len, file_decryptor_);
-      	//FileMetaData::Make(metadata_buffer->data(), &metadata_len, default_reader_properties(), file_decryptor_); //version>9
+#endif
 }
 
 void SerializedFile::ParseMetaDataOfEncryptedFileWithPlaintextFooter(
@@ -1584,7 +1607,7 @@ private:
   int m_num_row_groups;
   std::shared_ptr<parquet::FileMetaData> m_file_metadata;
   std::unique_ptr<parquet::ceph::ParquetFileReader> m_parquet_reader;
-  std::vector<column_reader_wrap*> m_column_readers;
+  std::vector<std::shared_ptr<column_reader_wrap>> m_column_readers;
   s3selectEngine::rgw_s3select_api* m_rgw_s3select_api;
 
   public:
@@ -1603,12 +1626,7 @@ private:
   }
 
   ~parquet_file_parser()
-  {
-    for(auto r : m_column_readers)
-    {
-      delete r;
-    }
-  }
+  {}
 
   int load_meta_data()
   {
@@ -1658,7 +1676,7 @@ private:
         }
       }
 
-      m_column_readers.push_back(new column_reader_wrap(m_parquet_reader,i));
+      m_column_readers.push_back(std::make_shared<column_reader_wrap>(m_parquet_reader,i));
     }
 
     return 0;
