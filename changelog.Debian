@@ -1,3 +1,9 @@
+ceph (19.2.3-1~bpo12+1) bookworm-backports; urgency=medium
+
+  * update Ceph to Squid 19.2.3 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 29 Sep 2025 11:56:21 +0200
+
 ceph (19.2.2-pve1~bpo12+2) bookworm-backports; urgency=medium
 
   * cherry-pick fix for ceph-volume and Python 3.13+.
