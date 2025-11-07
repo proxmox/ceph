@@ -646,7 +646,7 @@ TEST(ECUtil, slice_iterator)
   out_set.insert_range(shard_id_t(0), 3);
   shard_extent_map_t sem(&sinfo);
   {
-    auto iter = sem.begin_slice_iterator(out_set);
+    auto iter = sem.begin_slice_iterator(out_set, nullptr);
     ASSERT_TRUE(iter.get_out_bufferptrs().empty());
   }
 
@@ -660,7 +660,7 @@ TEST(ECUtil, slice_iterator)
   sem.insert_in_shard(shard_id_t(0), 0, a);
   sem.insert_in_shard(shard_id_t(1), 0, b);
   {
-    auto iter = sem.begin_slice_iterator(out_set);
+    auto iter = sem.begin_slice_iterator(out_set, nullptr);
 
     {
       auto out = iter.get_out_bufferptrs();
@@ -699,7 +699,7 @@ TEST(ECUtil, slice_iterator)
   sem.insert_in_shard(shard_id_t(1), 4096*4, e);
 
   {
-    auto iter = sem.begin_slice_iterator(out_set);
+    auto iter = sem.begin_slice_iterator(out_set, nullptr);
 
     {
       auto out = iter.get_out_bufferptrs();
@@ -755,7 +755,7 @@ TEST(ECUtil, slice_iterator)
   sem.insert_in_shard(shard_id_t(1), 4096*2, d);
 
   {
-    auto iter = sem.begin_slice_iterator(out_set);
+    auto iter = sem.begin_slice_iterator(out_set, nullptr);
 
     {
       auto out = iter.get_out_bufferptrs();
@@ -794,7 +794,7 @@ TEST(ECUtil, slice_iterator_subset_out)
   out_set.insert(shard_id_t(1));
   shard_extent_map_t sem(&sinfo);
   {
-    auto iter = sem.begin_slice_iterator(out_set);
+    auto iter = sem.begin_slice_iterator(out_set, nullptr);
     ASSERT_TRUE(iter.get_in_bufferptrs().empty());
     ASSERT_TRUE(iter.get_out_bufferptrs().empty());
   }
@@ -809,7 +809,7 @@ TEST(ECUtil, slice_iterator_subset_out)
   sem.insert_in_shard(shard_id_t(0), 0, a);
   sem.insert_in_shard(shard_id_t(1), 0, b);
   {
-    auto iter = sem.begin_slice_iterator(out_set);
+    auto iter = sem.begin_slice_iterator(out_set, nullptr);
 
     {
       auto in = iter.get_in_bufferptrs();
@@ -841,7 +841,7 @@ TEST(ECUtil, slice_iterator_subset_out)
   sem.insert_in_shard(shard_id_t(1), 4096*4, e);
 
   {
-    auto iter = sem.begin_slice_iterator(out_set);
+    auto iter = sem.begin_slice_iterator(out_set, nullptr);
 
     {
       auto in = iter.get_in_bufferptrs();
@@ -896,7 +896,7 @@ TEST(ECUtil, slice_iterator_subset_out)
   sem.insert_in_shard(shard_id_t(1), 4096*2, d);
 
   {
-    auto iter = sem.begin_slice_iterator(out_set);
+    auto iter = sem.begin_slice_iterator(out_set, nullptr);
 
     {
       auto in = iter.get_in_bufferptrs();
@@ -1080,4 +1080,24 @@ TEST(ECUtil, insert_parity_buffer_into_sem) {
     ASSERT_EQ(4096, sem.ro_start);
     ASSERT_EQ(8192, sem.ro_end);
   }
+}
+
+// Debug String test, to track down seg-fault found by teuthology.
+TEST(ECUtil, debug_string)
+{
+  int k=3;
+  int m=2;
+  int chunk_size = 4096;
+
+  stripe_info_t sinfo(k, m, chunk_size*k, vector<shard_id_t>(0));
+  shard_extent_map_t semap(&sinfo);
+
+  bufferlist bl0, bl1;
+  bl0.append_zero(750);
+  bl1.append_zero(3516);
+
+  semap.insert_in_shard(shard_id_t(0), 352256, bl0);
+  semap.insert_in_shard(shard_id_t(0), 348740, bl1);
+
+  semap.debug_string(2048, 0);
 }

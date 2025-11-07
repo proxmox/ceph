@@ -49,6 +49,7 @@
 #include "common/Formatter.h"
 #include "common/hobject.h"
 #include "common/snap_types.h"
+#include "common/ceph_mutex.h"
 #include "common/strtol.h" // for ritoa()
 #include "HitSet.h"
 #include "librados/ListObjectImpl.h"
@@ -3059,6 +3060,7 @@ struct pg_info_t {
 
   std::map<shard_id_t,std::pair<eversion_t, eversion_t>>
     partial_writes_last_complete; ///< last_complete for shards not modified by a partial write
+  epoch_t partial_writes_last_complete_epoch; ///< epoch when pwlc was last updated
 
   pg_stat_t stats;
 
@@ -3077,6 +3079,7 @@ struct pg_info_t {
       l.last_backfill == r.last_backfill &&
       l.purged_snaps == r.purged_snaps &&
       l.partial_writes_last_complete == r.partial_writes_last_complete &&
+      l.partial_writes_last_complete_epoch == r.partial_writes_last_complete_epoch &&
       l.stats == r.stats &&
       l.history == r.history &&
       l.hit_set == r.hit_set;
@@ -3086,7 +3089,8 @@ struct pg_info_t {
     : last_epoch_started(0),
       last_interval_started(0),
       last_user_version(0),
-      last_backfill(hobject_t::get_max())
+      last_backfill(hobject_t::get_max()),
+      partial_writes_last_complete_epoch(0)
   { }
   // cppcheck-suppress noExplicitConstructor
   pg_info_t(spg_t p)
@@ -3094,7 +3098,8 @@ struct pg_info_t {
       last_epoch_started(0),
       last_interval_started(0),
       last_user_version(0),
-      last_backfill(hobject_t::get_max())
+      last_backfill(hobject_t::get_max()),
+      partial_writes_last_complete_epoch(0)
   { }
   
   void set_last_backfill(hobject_t pos) {
@@ -3154,6 +3159,7 @@ struct pg_fast_info_t {
   eversion_t last_complete;
   version_t last_user_version;
   std::map<shard_id_t,std::pair<eversion_t,eversion_t>> partial_writes_last_complete;
+  epoch_t partial_writes_last_complete_epoch;
   struct { // pg_stat_t stats
     eversion_t version;
     version_t reported_seq;
@@ -3184,6 +3190,7 @@ struct pg_fast_info_t {
     last_complete = info.last_complete;
     last_user_version = info.last_user_version;
     partial_writes_last_complete = info.partial_writes_last_complete;
+    partial_writes_last_complete_epoch = info.partial_writes_last_complete_epoch;
     stats.version = info.stats.version;
     stats.reported_seq = info.stats.reported_seq;
     stats.last_fresh = info.stats.last_fresh;
@@ -3211,6 +3218,7 @@ struct pg_fast_info_t {
     info->last_complete = last_complete;
     info->last_user_version = last_user_version;
     info->partial_writes_last_complete = partial_writes_last_complete;
+    info->partial_writes_last_complete_epoch = partial_writes_last_complete_epoch;
     info->stats.version = stats.version;
     info->stats.reported_seq = stats.reported_seq;
     info->stats.last_fresh = stats.last_fresh;
@@ -3234,7 +3242,7 @@ struct pg_fast_info_t {
   }
 
   void encode(ceph::buffer::list& bl) const {
-    ENCODE_START(2, 1, bl);
+    ENCODE_START(3, 1, bl);
     encode(last_update, bl);
     encode(last_complete, bl);
     encode(last_user_version, bl);
@@ -3257,10 +3265,11 @@ struct pg_fast_info_t {
     encode(stats.stats.sum.num_wr_kb, bl);
     encode(stats.stats.sum.num_objects_dirty, bl);
     encode(partial_writes_last_complete, bl);
+    encode(partial_writes_last_complete_epoch, bl);
     ENCODE_FINISH(bl);
   }
   void decode(ceph::buffer::list::const_iterator& p) {
-    DECODE_START(2, p);
+    DECODE_START(3, p);
     decode(last_update, p);
     decode(last_complete, p);
     decode(last_user_version, p);
@@ -3284,6 +3293,8 @@ struct pg_fast_info_t {
     decode(stats.stats.sum.num_objects_dirty, p);
     if (struct_v >= 2)
       decode(partial_writes_last_complete, p);
+    if (struct_v >= 3)
+      decode(partial_writes_last_complete_epoch, p);
     DECODE_FINISH(p);
   }
   void dump(ceph::Formatter *f) const {
@@ -3300,6 +3311,7 @@ struct pg_fast_info_t {
       f->close_section();
     }
     f->close_section();
+    f->dump_stream("partial_writes_last_complete_epoch") << partial_writes_last_complete_epoch;
     f->open_object_section("stats");
     f->dump_stream("version") << stats.version;
     f->dump_unsigned("reported_seq", stats.reported_seq);
@@ -4496,7 +4508,6 @@ struct pg_log_entry_t {
   ObjectCleanRegions clean_regions;
 
   shard_id_set written_shards; // EC partial writes do not update every shard
-  shard_id_set present_shards; // EC partial writes need to know set of present shards
 
   pg_log_entry_t()
    : user_version(0), return_code(0), op(0),
@@ -4570,9 +4581,6 @@ struct pg_log_entry_t {
   /// EC partial writes: test if a shard was written
   bool is_written_shard(const shard_id_t shard) const {
     return written_shards.empty() || written_shards.contains(shard);
-  }
-  bool is_present_shard(const shard_id_t shard) const {
-    return present_shards.empty() || present_shards.contains(shard);
   }
 
   void encode_with_checksum(ceph::buffer::list& bl) const;
@@ -4737,7 +4745,7 @@ public:
       std::move(childdups));
     }
 
-  mempool::osd_pglog::list<pg_log_entry_t> rewind_from_head(eversion_t newhead) {
+  mempool::osd_pglog::list<pg_log_entry_t> rewind_from_head(eversion_t newhead, bool *dirty_log = nullptr) {
     ceph_assert(newhead >= tail);
 
     mempool::osd_pglog::list<pg_log_entry_t>::iterator p = log.end();
@@ -4767,11 +4775,19 @@ public:
     }
     head = newhead;
 
-    if (can_rollback_to > newhead)
+    if (can_rollback_to > newhead) {
       can_rollback_to = newhead;
+      if (dirty_log) {
+	*dirty_log = true;
+      }
+    }
 
-    if (rollback_info_trimmed_to > newhead)
+    if (rollback_info_trimmed_to > newhead) {
       rollback_info_trimmed_to = newhead;
+      if (dirty_log) {
+	*dirty_log = true;
+      }
+    }
 
     return divergent;
   }
@@ -5673,33 +5689,133 @@ inline std::ostream& operator<<(std::ostream& out, const ObjectExtent &ex)
 // ---------------------------------------
 
 class OSDSuperblock {
-public:
-  uuid_d cluster_fsid, osd_fsid;
-  int32_t whoami = -1;    // my role in this fs.
-  epoch_t current_epoch = 0;             // most recent epoch
-  interval_set<epoch_t> maps; // oldest/newest maps we have.
+private:
+  class GuardedMap {
+private:
+  mutable ceph::mutex map_lock = ceph::make_mutex("map_lock");
+  interval_set<epoch_t> maps;
 
-  epoch_t get_oldest_map() const {
-    if (!maps.empty()) {
-      return maps.range_start();
-    }
-    return 0;
-  }
-
-  epoch_t get_newest_map() const {
+  epoch_t calc_newest_map() const {
     if (!maps.empty()) {
       // maps stores [oldest_map, newest_map) (exclusive)
       return maps.range_end() - 1;
     }
     return 0;
   }
+  epoch_t calc_oldest_map() const {
+    if (!maps.empty()) {
+      return maps.range_start();
+    }
+    return 0;
+  }
+public:
+  GuardedMap() = default;
+  GuardedMap(const GuardedMap& other)
+    : map_lock(ceph::make_mutex("map_lock"))
+  {
+    std::lock_guard l(other.map_lock);  // Lock before copying shared state
+    maps = other.maps;
+  }
+
+  GuardedMap& operator=(const GuardedMap& other) {
+    if (this != &other) {
+      std::scoped_lock l(map_lock, other.map_lock);
+      maps = other.maps;
+    }
+    return *this;
+  }
+
+  GuardedMap(GuardedMap&& other)
+    :map_lock(ceph::make_mutex("map_lock"))
+  {
+    std::lock_guard l(other.map_lock);
+    maps = std::move(other.maps);
+  }
+
+  GuardedMap& operator=(GuardedMap&& other) noexcept {
+    if (this != &other) {
+      std::scoped_lock l(map_lock, other.map_lock);
+      maps = std::move(other.maps);
+    }
+    return *this;
+  }
+
+  bool is_maps_empty() const {
+    std::lock_guard lock(map_lock);
+    return maps.empty();
+  }
+
+  void erase_oldest_maps() {
+    std::lock_guard lock(map_lock);
+    maps.erase(calc_oldest_map());
+  }
+
+  interval_set<epoch_t>::size_type get_maps_num_intervals() const {
+    std::lock_guard lock(map_lock);
+    return maps.num_intervals();
+  }
+
+  interval_set<epoch_t> get_maps() const {
+    std::lock_guard lock(map_lock);
+    return maps;
+  }
+
+  epoch_t get_oldest_map() const {
+    std::lock_guard lock(map_lock);
+    return calc_oldest_map();
+  }
+
+  epoch_t get_newest_map() const {
+    std::lock_guard lock(map_lock);
+    return calc_newest_map();
+  }
 
   void insert_osdmap_epochs(epoch_t first, epoch_t last) {
     ceph_assert(std::cmp_less_equal(first, last));
     interval_set<epoch_t> message_epochs;
     message_epochs.insert(first, last - first + 1);
+    std::lock_guard lock(map_lock);
     maps.union_of(message_epochs);
-    ceph_assert(last == get_newest_map());
+    ceph_assert(last == calc_newest_map());
+  }
+
+  void encode(ceph::buffer::list &bl) const;
+  void decode(ceph::buffer::list::const_iterator &bl);
+
+};
+  WRITE_CLASS_ENCODER(GuardedMap);
+  GuardedMap mapc;
+public:
+  uuid_d cluster_fsid, osd_fsid;
+  int32_t whoami = -1;    // my role in this fs.
+  epoch_t current_epoch = 0;             // most recent epoch
+
+  bool is_maps_empty() const {
+    return mapc.is_maps_empty();
+  }
+
+  void erase_oldest_maps() {
+    mapc.erase_oldest_maps();
+  }
+
+  interval_set<epoch_t>::size_type get_maps_num_intervals() const {
+    return mapc.get_maps_num_intervals();
+  }
+
+  interval_set<epoch_t> get_maps() const {
+    return mapc.get_maps();
+  }
+
+  epoch_t get_oldest_map() const {
+    return mapc.get_oldest_map();
+  }
+
+  epoch_t get_newest_map() const {
+    return mapc.get_newest_map();
+  }
+
+  void insert_osdmap_epochs(epoch_t first, epoch_t last) {
+    mapc.insert_osdmap_epochs(first, last);
   }
 
   double weight = 0.0;
@@ -5719,6 +5835,13 @@ public:
   void decode(ceph::buffer::list::const_iterator &bl);
   void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<OSDSuperblock*>& o);
+
+  // Allow default operators to avoid crimson related errors
+  OSDSuperblock(OSDSuperblock&&) noexcept = default;
+  OSDSuperblock& operator=(OSDSuperblock&&) noexcept = default;
+  OSDSuperblock(const OSDSuperblock&) = default;
+  OSDSuperblock& operator=(const OSDSuperblock&) = default;
+  OSDSuperblock() = default;
 };
 WRITE_CLASS_ENCODER(OSDSuperblock)
 
@@ -5728,7 +5851,7 @@ inline std::ostream& operator<<(std::ostream& out, const OSDSuperblock& sb)
              << " osd." << sb.whoami
 	     << " " << sb.osd_fsid
              << " e" << sb.current_epoch
-             << " maps " << sb.maps
+             << " maps " << sb.get_maps()
 	     << " lci=[" << sb.mounted << "," << sb.clean_thru << "]"
              << " tlb=" << sb.cluster_osdmap_trim_lower_bound
              << ")";

@@ -325,6 +325,12 @@ export class TaskMessageService {
     'rgw/bucket/delete': this.newTaskMessage(this.commonOperations.delete, (metadata) => {
       return $localize`${metadata.bucket_names[0]}`;
     }),
+    'rgw/bucket/notification/delete': this.newTaskMessage(
+      this.commonOperations.delete,
+      (metadata) => {
+        return $localize`${metadata.notification_id[0]}`;
+      }
+    ),
     'rgw/accounts': this.newTaskMessage(this.commonOperations.delete, (metadata) => {
       return $localize`${`account '${metadata.account_names[0]}'`}`;
     }),
@@ -403,6 +409,9 @@ export class TaskMessageService {
     'nfs/edit': this.newTaskMessage(this.commonOperations.update, (metadata) => this.nfs(metadata)),
     'nfs/delete': this.newTaskMessage(this.commonOperations.delete, (metadata) =>
       this.nfs(metadata)
+    ),
+    'rgw/topic/delete': this.newTaskMessage(this.commonOperations.delete, (metadata) =>
+      this.topic(metadata)
     ),
     // Grafana tasks
     'grafana/dashboards/update': this.newTaskMessage(
@@ -615,6 +624,12 @@ export class TaskMessageService {
     return $localize`SMB users and groups access resource '${metadata.usersGroupsId}'`;
   }
 
+  topic(metadata: any) {
+    return $localize`Topic  '${metadata.name}'`;
+  }
+  notification(metadata: any) {
+    return $localize`Notification  '${metadata.name}'`;
+  }
   service(metadata: any) {
     return $localize`service '${metadata.service_name}'`;
   }

@@ -13,6 +13,7 @@
 #include "include/utime_fmt.h"
 #include "messages/MOSDRepScrubMap.h"
 #include "osd/ECUtil.h"
+#include "osd/ECUtilL.h"
 #include "osd/OSD.h"
 #include "osd/PG.h"
 #include "osd/PrimaryLogPG.h"
@@ -664,7 +665,7 @@ shard_as_auth_t ScrubBackend::possible_auth_shard(const hobject_t& obj,
   }
 
   if (m_pg.get_is_hinfo_required()) {
-    auto k = smap_obj.attrs.find(ECUtil::get_hinfo_key());
+    auto k = smap_obj.attrs.find(ECLegacy::ECUtilL::get_hinfo_key());
     if (dup_error_cond(err,
                        false,
                        (k == smap_obj.attrs.end()),
@@ -673,7 +674,7 @@ shard_as_auth_t ScrubBackend::possible_auth_shard(const hobject_t& obj,
                        "candidate had a missing hinfo key"sv,
                        errstream)) {
       const bufferlist& hk_bl = k->second;
-      ECUtil::HashInfo hi;
+      ECLegacy::ECUtilL::HashInfo hi;
       try {
         auto bliter = hk_bl.cbegin();
         decode(hi, bliter);
@@ -905,18 +906,15 @@ void ScrubBackend::inconsistents(const hobject_t& ho,
                                  auth_and_obj_errs_t&& auth_n_errs,
                                  stringstream& errstream)
 {
-  auto& object_errors = auth_n_errs.object_errors;
-  auto& auth_list = auth_n_errs.auth_list;
-
-  this_chunk->cur_inconsistent.insert(object_errors.begin(),
-                                      object_errors.end());  // merge?
+  this_chunk->cur_inconsistent.insert(auth_n_errs.object_errors.begin(),
+                                      auth_n_errs.object_errors.end());
 
   dout(15) << fmt::format(
                 "{}: object errors #: {}  auth list #: {}  cur_missing #: {}  "
                 "cur_incon #: {}",
                 __func__,
-                object_errors.size(),
-                auth_list.size(),
+                auth_n_errs.object_errors.size(),
+                auth_n_errs.auth_list.size(),
                 this_chunk->cur_missing.size(),
                 this_chunk->cur_inconsistent.size())
            << dendl;
@@ -944,8 +942,7 @@ void ScrubBackend::inconsistents(const hobject_t& ho,
 
   if (!this_chunk->cur_inconsistent.empty() ||
       !this_chunk->cur_missing.empty()) {
-
-    this_chunk->authoritative[ho] = auth_list;
+    this_chunk->authoritative[ho] = std::move(auth_n_errs.auth_list);
 
   } else if (!this_chunk->fix_digest && m_is_replicated) {
 
@@ -1310,11 +1307,11 @@ bool ScrubBackend::compare_obj_details(pg_shard_t auth_shard,
     if (!shard_result.has_hinfo_missing() &&
         !shard_result.has_hinfo_corrupted()) {
 
-      auto can_hi = candidate.attrs.find(ECUtil::get_hinfo_key());
+      auto can_hi = candidate.attrs.find(ECLegacy::ECUtilL::get_hinfo_key());
       ceph_assert(can_hi != candidate.attrs.end());
       const bufferlist& can_bl = can_hi->second;
 
-      auto auth_hi = auth.attrs.find(ECUtil::get_hinfo_key());
+      auto auth_hi = auth.attrs.find(ECLegacy::ECUtilL::get_hinfo_key());
       ceph_assert(auth_hi != auth.attrs.end());
       const bufferlist& auth_bl = auth_hi->second;
 

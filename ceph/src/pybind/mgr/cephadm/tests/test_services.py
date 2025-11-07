@@ -389,10 +389,11 @@ max_hosts_per_namespace = 8
 max_namespaces_with_netmask = 1000
 max_subsystems = 128
 max_hosts = 2048
-max_namespaces = 2048
-max_namespaces_per_subsystem = 256
+max_namespaces = 4096
+max_namespaces_per_subsystem = 512
 max_hosts_per_subsystem = 128
 subsystem_cache_expiration = 5
+force_tls = False
 
 [gateway-logs]
 log_level = INFO
@@ -3895,8 +3896,13 @@ class TestSMB:
                 'config': '',
                 'keyring': '[client.smb.config.tango.briskly]\nkey = None\n',
                 'config_auth_entity': 'client.smb.config.tango.briskly',
-                'metrics_image': 'quay.io/samba.org/samba-metrics:latest',
-                'service_ports': {'smb': 445, 'smbmetrics': 9922, 'ctdb': 4379},
+                'metrics_image': 'quay.io/samba.org/samba-metrics:ceph20-centos-amd64',
+                'service_ports': {
+                    'smb': 445,
+                    'smbmetrics': 9922,
+                    'ctdb': 4379,
+                    'remote-control': 54445,
+                },
             },
         }
         with with_host(cephadm_module, 'hostx'):
@@ -3970,8 +3976,13 @@ class TestSMB:
                     '[client.smb.fs.fs2.share3]\nkey = None\n'
                 ),
                 'config_auth_entity': 'client.smb.config.tango.briskly',
-                'metrics_image': 'quay.io/samba.org/samba-metrics:latest',
-                'service_ports': {'smb': 445, 'smbmetrics': 9922, 'ctdb': 4379},
+                'metrics_image': 'quay.io/samba.org/samba-metrics:ceph20-centos-amd64',
+                'service_ports': {
+                    'smb': 445,
+                    'smbmetrics': 9922,
+                    'ctdb': 4379,
+                    'remote-control': 54445,
+                },
             },
         }
         with with_host(cephadm_module, 'hostx'):

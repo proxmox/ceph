@@ -29,11 +29,21 @@ void NVMeofGwMon::init()
   dout(10) <<  "called " << dendl;
 }
 
+void NVMeofGwMon::cleanup_pending_map()
+{
+  dout(10) << "cleanup pending :" << pending_map  << dendl;
+  pending_map.created_gws.clear();
+  pending_map.fsm_timers.clear();
+  pending_map.gw_epoch.clear();
+  pending_map.epoch = 0;
+}
+
 void NVMeofGwMon::on_restart()
 {
   dout(10) <<  "called " << dendl;
   last_beacon.clear();
   last_tick = ceph::coarse_mono_clock::now();
+  cleanup_pending_map();
   synchronize_last_beacon();
 }
 
@@ -168,6 +178,11 @@ void NVMeofGwMon::restore_pending_map_info(NVMeofGwMap & tmp_map) {
     NvmeGwMonStates& gw_created_map = created_map_pair.second;
     for (auto& gw_created_pair: gw_created_map) {
       auto gw_id = gw_created_pair.first;
+      auto& pending_gws_states = pending_map.created_gws[group_key];
+      auto  gw_state = pending_gws_states.find(gw_id);
+      if (gw_state == pending_gws_states.end()) {
+        continue;
+      }
       if (gw_created_pair.second.allow_failovers_ts > now) {
         // restore not persistent information upon new epochs
         dout(10) << " restore skip-failovers timeout for gw  " << gw_id  << dendl;
@@ -426,8 +441,10 @@ bool NVMeofGwMon::preprocess_command(MonOpRequestRef op)
       if (map.created_gws[group_key].size()) {
         time_t seconds_since_1970 = time(NULL);
         uint32_t index = ((seconds_since_1970/60) %
-             map.created_gws[group_key].size()) + 1;
-        f->dump_unsigned("rebalance_ana_group", index);
+             map.created_gws[group_key].size());
+        auto it = map.created_gws[group_key].begin();
+        std::advance(it, index);
+        f->dump_unsigned("rebalance_ana_group", it->second.ana_grp_id + 1);
       }
     }
     f->dump_unsigned("num gws", map.created_gws[group_key].size());

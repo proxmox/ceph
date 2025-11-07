@@ -5,7 +5,13 @@ import enum
 from collections import OrderedDict
 from contextlib import contextmanager
 from functools import wraps
-from ipaddress import ip_network, ip_address, ip_interface
+from ipaddress import (
+    IPv4Network,
+    IPv6Network,
+    ip_address,
+    ip_interface,
+    ip_network,
+)
 from typing import (
     Any,
     Callable,
@@ -29,6 +35,7 @@ from ceph.deployment.utils import unwrap_ipv6, valid_addr, verify_non_negative_i
 from ceph.deployment.utils import verify_positive_int, verify_non_negative_number
 from ceph.deployment.utils import verify_boolean, verify_enum
 from ceph.utils import is_hex
+from ceph.smb import constants as smbconst
 
 ServiceSpecT = TypeVar('ServiceSpecT', bound='ServiceSpec')
 FuncT = TypeVar('FuncT', bound=Callable)
@@ -1409,10 +1416,11 @@ class NvmeofServiceSpec(ServiceSpec):
                  max_namespaces_with_netmask: Optional[int] = 1000,
                  max_subsystems: Optional[int] = 128,
                  max_hosts: Optional[int] = 2048,
-                 max_namespaces: Optional[int] = 2048,
-                 max_namespaces_per_subsystem: Optional[int] = 256,
+                 max_namespaces: Optional[int] = 4096,
+                 max_namespaces_per_subsystem: Optional[int] = 512,
                  max_hosts_per_subsystem: Optional[int] = 128,
                  subsystem_cache_expiration: Optional[int] = 5,
+                 force_tls: Optional[bool] = False,
                  server_key: Optional[str] = None,
                  server_cert: Optional[str] = None,
                  client_key: Optional[str] = None,
@@ -1548,6 +1556,8 @@ class NvmeofServiceSpec(ServiceSpec):
         self.max_hosts_per_subsystem = max_hosts_per_subsystem
         #: ``subsystem_cache_expiration`` number of seconds before subsystems cache expires
         self.subsystem_cache_expiration = subsystem_cache_expiration
+        #: ``force_tls`` force using TLS when adding hosts and listeners
+        self.force_tls = force_tls
         #: ``allowed_consecutive_spdk_ping_failures`` # of ping failures before aborting gateway
         self.allowed_consecutive_spdk_ping_failures = allowed_consecutive_spdk_ping_failures
         #: ``spdk_ping_interval_in_seconds`` sleep interval in seconds between SPDK pings
@@ -1754,6 +1764,7 @@ class NvmeofServiceSpec(ServiceSpec):
         verify_positive_int(self.max_hosts_per_subsystem, "Max hosts per subsystem")
         verify_non_negative_number(self.subsystem_cache_expiration,
                                    "Subsystem cache expiration period")
+        verify_boolean(self.force_tls, "Force TLS")
         verify_non_negative_number(self.monitor_timeout, "Monitor timeout")
         verify_non_negative_int(self.port, "Port")
         verify_non_negative_int(self.discovery_port, "Discovery port")
@@ -3168,10 +3179,121 @@ class SMBClusterPublicIPSpec:
         return out
 
 
+class SMBClusterBindIPSpec:
+    """Control what IPs the SMB services will listen on, not including
+    dynamic IPs that are managed by CTDB.
+    """
+    def __init__(
+        self,
+        # single address
+        address: Optional[str] = None,
+        # >1 address specified as a network
+        network: Optional[str] = None,
+    ) -> None:
+        self.address = address
+        self.network = network
+        self._networks: List[Union[IPv4Network, IPv6Network]] = []
+        self.validate()
+
+    def validate(self) -> None:
+        if self.address and self.network:
+            raise SpecValidationError('only one of address or network may be given')
+        if not (self.address or self.network):
+            raise SpecValidationError('one of address or network is required')
+        if self.address:
+            # verify that address is an address
+            try:
+                ip_address(self.address)
+            except ValueError as err:
+                raise SpecValidationError(
+                    f'Cannot parse address {self.address}'
+                ) from err
+        # but we internallly store a list of networks
+        # this is slight bit of YAGNI violation, but I actually plan on
+        # adding IP ranges soon.
+        addr = self.network if self.network else self.address
+        try:
+            assert addr
+            self._networks = [ip_network(addr)]
+        except ValueError as err:
+            raise SpecValidationError(
+                f'Cannot parse network address {addr}'
+            ) from err
+
+    def as_networks(self) -> List[Union[IPv4Network, IPv6Network]]:
+        """Return a list of one or more IPv4 or IPv6 network objects."""
+        if not self._networks:
+            self.validate()
+        return self._networks
+
+    def as_network_strs(self) -> List[str]:
+        """Return a list of strings containing one or more network (<ip>/<mask>
+        style) values.
+        """
+        return [str(n) for n in self.as_networks()]
+
+    def __eq__(self, other: Any) -> bool:
+        try:
+            return (
+                other.address == self.address
+                and other.network == self.network
+            )
+        except AttributeError:
+            return NotImplemented
+
+    def __repr__(self) -> str:
+        if self.address:
+            return f'SMBClusterBindIPSpec(address={self.address!r})'
+        if self.network:
+            return f'SMBClusterBindIPSpec(network={self.network!r})'
+        raise ValueError('SMBClusterBindIPSpec missing address or network value')
+
+    def to_simplified(self) -> Dict[str, Any]:
+        """Return a serializable representation of SMBClusterBindIPSpec."""
+        if self.address:
+            return {'address': self.address}
+        if self.network:
+            return {'network': self.network}
+        raise ValueError('SMBClusterBindIPSpec missing address or network value')
+
+    def to_json(self) -> Dict[str, Any]:
+        """Return a JSON-compatible dict."""
+        return self.to_simplified()
+
+    @classmethod
+    def from_json(cls, spec: Dict[str, Any]) -> 'SMBClusterBindIPSpec':
+        """Convert value from a JSON-compatible dict."""
+        return cls(**spec)
+
+    @classmethod
+    def convert_list(
+        cls, arg: Optional[List[Any]]
+    ) -> Optional[List['SMBClusterBindIPSpec']]:
+        """Convert a list of values into a list of SMBClusterBindIPSpec objects.
+        Ignores None inputs returning None.
+        """
+        if arg is None:
+            return None
+        assert isinstance(arg, list)
+        out = []
+        for value in arg:
+            if isinstance(value, cls):
+                out.append(value)
+            elif hasattr(value, 'to_json'):
+                out.append(cls.from_json(value.to_json()))
+            elif isinstance(value, dict):
+                out.append(cls.from_json(value))
+            else:
+                raise SpecValidationError(
+                    f"Unknown type for SMBClusterBindIPSpec: {type(value)}"
+                )
+        return out
+
+
 class SMBSpec(ServiceSpec):
     service_type = 'smb'
-    _valid_features = {'domain', 'clustered', 'cephfs-proxy'}
-    _valid_service_names = {'smb', 'smbmetrics', 'ctdb'}
+    _valid_features = smbconst.FEATURES
+    _valid_service_names = smbconst.SERVICES
     _default_cluster_meta_obj = 'cluster.meta.json'
     _default_cluster_lock_obj = 'cluster.meta.lock'
 
@@ -3230,6 +3352,11 @@ class SMBSpec(ServiceSpec):
         # custom_ports - A mapping of services to ports. If a service is
         # not listed the default port will be used.
         custom_ports: Optional[Dict[str, int]] = None,
+        bind_addrs: Optional[List[SMBClusterBindIPSpec]] = None,
+        # === remote control server ===
+        remote_control_ssl_cert: Optional[str] = None,
+        remote_control_ssl_key: Optional[str] = None,
+        remote_control_ca_cert: Optional[str] = None,
         # --- genearal tweaks ---
         extra_container_args: Optional[GeneralArgList] = None,
         extra_entrypoint_args: Optional[GeneralArgList] = None,
@@ -3263,6 +3390,10 @@ class SMBSpec(ServiceSpec):
             cluster_public_addrs
         )
         self.custom_ports = custom_ports
+        self.bind_addrs = SMBClusterBindIPSpec.convert_list(bind_addrs)
+        self.remote_control_ssl_cert = remote_control_ssl_cert
+        self.remote_control_ssl_key = remote_control_ssl_key
+        self.remote_control_ca_cert = remote_control_ca_cert
         self.validate()
 
     def validate(self) -> None:
@@ -3276,23 +3407,24 @@ class SMBSpec(ServiceSpec):
                 raise ValueError(
                     f'invalid feature flags: {", ".join(invalid)}'
                 )
-        if 'clustered' in self.features and not self.cluster_meta_uri:
+        _clustered = smbconst.CLUSTERED
+        if _clustered in self.features and not self.cluster_meta_uri:
             # derive a cluster meta uri from config uri by default (if possible)
             self.cluster_meta_uri = self._derive_cluster_uri(
                 self.config_uri,
                 self._default_cluster_meta_obj,
             )
-        if 'clustered' not in self.features and self.cluster_meta_uri:
+        if _clustered not in self.features and self.cluster_meta_uri:
             raise ValueError(
                 'cluster meta uri unsupported when "clustered" feature not set'
             )
-        if 'clustered' in self.features and not self.cluster_lock_uri:
+        if _clustered in self.features and not self.cluster_lock_uri:
             # derive a cluster meta uri from config uri by default (if possible)
             self.cluster_lock_uri = self._derive_cluster_uri(
                 self.config_uri,
                 self._default_cluster_lock_obj,
             )
-        if 'clustered' not in self.features and self.cluster_lock_uri:
+        if _clustered not in self.features and self.cluster_lock_uri:
             raise ValueError(
                 'cluster lock uri unsupported when "clustered" feature not set'
             )
@@ -3311,11 +3443,7 @@ class SMBSpec(ServiceSpec):
         return uri
 
     def _default_ports(self) -> Dict[str, int]:
-        return {
-            'smb': 445,
-            'smbmetrics': 9922,
-            'ctdb': 4379,
-        }
+        return dict(smbconst.DEFAULT_PORTS)
 
     def service_ports(self) -> Dict[str, int]:
         ports = self._default_ports()
@@ -3324,17 +3452,26 @@ class SMBSpec(ServiceSpec):
         return ports
 
     def metrics_exporter_port(self) -> int:
-        return self.service_ports()['smbmetrics']
+        return self.service_ports()[smbconst.SMBMETRICS]
 
     def get_port_start(self) -> List[int]:
         _ports = self.service_ports()
-        ports = [_ports['smb'], _ports['smbmetrics']]
-        if 'clustered' in self.features:
-            ports.append(_ports['ctdb'])
+        ports = [_ports[smbconst.SMB], _ports[smbconst.SMBMETRICS]]
+        if smbconst.CLUSTERED in self.features:
+            ports.append(_ports[smbconst.CTDB])
         return ports
 
     def strict_cluster_ip_specs(self) -> List[Dict[str, Any]]:
         return [s.to_strict() for s in (self.cluster_public_addrs or [])]
+
+    def bind_networks(self) -> List[str]:
+        """Return a list of all networks (as an addr/mask) that this service is
+        permitted to bind to.
+        """
+        out = []
+        for ba in self.bind_addrs or []:
+            out.extend(ba.as_network_strs())
+        return out
 
     def to_json(self) -> "OrderedDict[str, Any]":
         obj = super().to_json()
@@ -3343,6 +3480,8 @@ class SMBSpec(ServiceSpec):
             spec['cluster_public_addrs'] = [
                 a.to_json() for a in spec['cluster_public_addrs']
             ]
+        if spec and spec.get('bind_addrs'):
+            spec['bind_addrs'] = [a.to_json() for a in spec['bind_addrs']]
         return obj
 
 

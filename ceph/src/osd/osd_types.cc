@@ -3627,7 +3627,7 @@ void pg_history_t::generate_test_instances(list<pg_history_t*>& o)
 
 void pg_info_t::encode(ceph::buffer::list &bl) const
 {
-  ENCODE_START(33, 26, bl);
+  ENCODE_START(34, 26, bl);
   encode(pgid.pgid, bl);
   encode(last_update, bl);
   encode(last_complete, bl);
@@ -3644,12 +3644,13 @@ void pg_info_t::encode(ceph::buffer::list &bl) const
   encode(true, bl); // was last_backfill_bitwise
   encode(last_interval_started, bl);
   encode(partial_writes_last_complete, bl);
+  encode(partial_writes_last_complete_epoch, bl);
   ENCODE_FINISH(bl);
 }
 
 void pg_info_t::decode(ceph::buffer::list::const_iterator &bl)
 {
-  DECODE_START(33, bl);
+  DECODE_START(34, bl);
   decode(pgid.pgid, bl);
   decode(last_update, bl);
   decode(last_complete, bl);
@@ -3681,6 +3682,9 @@ void pg_info_t::decode(ceph::buffer::list::const_iterator &bl)
   if (struct_v >= 33) {
     decode(partial_writes_last_complete, bl);
   }
+  if (struct_v >= 34) {
+    decode(partial_writes_last_complete_epoch, bl);
+  }
   DECODE_FINISH(bl);
 }
 
@@ -3705,6 +3709,7 @@ void pg_info_t::dump(Formatter *f) const
     f->close_section();
   }
   f->close_section();
+  f->dump_stream("partial_writes_last_complete_epoch") << partial_writes_last_complete_epoch;
   f->open_array_section("purged_snaps");
   for (interval_set<snapid_t>::const_iterator i=purged_snaps.begin();
        i != purged_snaps.end();
@@ -5007,7 +5012,8 @@ void pg_log_entry_t::encode(ceph::buffer::list &bl) const
     encode(return_code, bl);
   encode(op_returns, bl);
   encode(written_shards, bl);
-  encode(present_shards, bl);
+  shard_id_set unused;
+  encode(unused, bl);
   ENCODE_FINISH(bl);
 }
 
@@ -5081,7 +5087,8 @@ void pg_log_entry_t::decode(ceph::buffer::list::const_iterator &bl)
   }
   if (struct_v >= 15) {
     decode(written_shards, bl);
-    decode(present_shards, bl);
+    shard_id_set unused;
+    decode(unused, bl);
   }
   DECODE_FINISH(bl);
 }
@@ -5133,7 +5140,6 @@ void pg_log_entry_t::dump(Formatter *f) const
     f->close_section();
   }
   f->dump_stream("written_shards") << written_shards;
-  f->dump_stream("present_shards") << present_shards;
   {
     f->open_object_section("mod_desc");
     mod_desc.dump(f);
@@ -5822,6 +5828,19 @@ void pg_hit_set_history_t::generate_test_instances(list<pg_hit_set_history_t*>& 
   ls.back()->history.push_back(pg_hit_set_info_t());
 }
 
+// -- GuardedMap --
+void OSDSuperblock::GuardedMap::encode(ceph::buffer::list &bl) const
+{
+  std::lock_guard lock(map_lock);
+  ::encode(maps, bl);
+}
+
+void OSDSuperblock::GuardedMap::decode(ceph::buffer::list::const_iterator &bl)
+{
+  std::lock_guard lock(map_lock);
+  ::decode(maps, bl);
+}
+
 // -- OSDSuperblock --
 
 void OSDSuperblock::encode(ceph::buffer::list &bl) const
@@ -5842,7 +5861,7 @@ void OSDSuperblock::encode(ceph::buffer::list &bl) const
   encode(purged_snaps_last, bl);
   encode(last_purged_snaps_scrub, bl);
   encode(cluster_osdmap_trim_lower_bound, bl);
-  encode(maps, bl);
+  mapc.encode(bl);
   ENCODE_FINISH(bl);
 }
 
@@ -5889,7 +5908,7 @@ void OSDSuperblock::decode(ceph::buffer::list::const_iterator &bl)
     cluster_osdmap_trim_lower_bound = 0;
   }
   if (struct_v >= 11) {
-    decode(maps, bl);
+    mapc.decode(bl);
   } else {
     insert_osdmap_epochs(oldest_map, newest_map);
   }
@@ -5912,7 +5931,7 @@ void OSDSuperblock::dump(Formatter *f) const
   f->dump_stream("last_purged_snaps_scrub") << last_purged_snaps_scrub;
   f->dump_int("cluster_osdmap_trim_lower_bound",
               cluster_osdmap_trim_lower_bound);
-  f->dump_stream("maps") << maps;
+  f->dump_stream("maps") << get_maps();
 }
 
 void OSDSuperblock::generate_test_instances(list<OSDSuperblock*>& o)

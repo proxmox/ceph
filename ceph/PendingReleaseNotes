@@ -23,6 +23,9 @@
 * RGW: Added support for S3 GetObjectAttributes.
 * RGW: Added BEAST frontend option 'so_reuseport' which facilitates running multiple
         RGW instances on the same host by sharing a single TCP port.
+* RGW: Bucket resharding now does most of its processing before it starts to block
+  write operations. This should significantly reduce the client-visible impact
+  of resharding on large buckets.
 
 * RBD: All Python APIs that produce timestamps now return "aware" `datetime`
   objects instead of "naive" ones (i.e. those including time zone information
@@ -158,9 +161,11 @@
   users to view the availability score for each pool in a cluster. A pool is considered 
   unavailable if any PG in the pool is not in active state or if there are unfound 
   objects. Otherwise the pool is considered available. The score is updated every 
-  5 seconds. The feature is on by default. A new config option ``enable_availability_tracking``
-  can be used to turn off the feature if required. Another command is added to clear the 
-  availability status for a specific pool, ``ceph osd pool clear-availability-status <pool-name>``. 
+  one second by default. This interval can be changed using the new config option
+  ``pool_availability_update_interval.``. The feature is off by default. A new config option 
+  ``enable_availability_tracking`` can be used to turn on the feature if required. 
+  Another command is added to clear the availability status for a specific pool, 
+  ``ceph osd pool clear-availability-status <pool-name>``. 
   This feature is in tech preview. 
   Related trackers:
    - https://tracker.ceph.com/issues/67777
