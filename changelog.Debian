@@ -1,8 +1,8 @@
-ceph (20.1.0-pve1) UNRELEASED; urgency=medium
+ceph (20.1.1-pve1) UNRELEASED; urgency=medium
 
-  * WIP build of first Ceph 20 Tentacle release candidate.
+  * WIP build of Ceph 20 Tentacle release candidate.
 
- -- Proxmox Support Team <support@proxmox.com>  Fri, 12 Sep 2025 19:00:16 +0200
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 07 Nov 2025 08:53:07 +0100
 
 ceph (19.2.3-pve2) trixie; urgency=medium
 
