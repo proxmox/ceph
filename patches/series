@@ -53,3 +53,4 @@
 0053-mgr-zabbix-fix-invalid-escape-sequences.patch
 0054-client-prohibit-unprivileged-users-from-setting-sgid.patch
 0055-pybind-rbd-disable-on_progress-callbacks-to-prevent-.patch
+0056-mgr-avoid-explicitly-dropping-ref-of-MgrOpRequest.re.patch
