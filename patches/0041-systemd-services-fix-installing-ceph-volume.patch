@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Wed, 17 Dec 2025 17:28:11 +0100
+Subject: [PATCH] systemd services: fix installing ceph-volume@
+
+The ceph-volume@ service uses the @CMAKE_INSTALL_PREFIX@, so we cannot
+just install it directly like the target units, but need to process it
+like all other units that are referring to actual executables that
+reside in build-target dependent paths.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ systemd/CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/systemd/CMakeLists.txt b/systemd/CMakeLists.txt
+index 366bab4195d..072730142be 100644
+--- a/systemd/CMakeLists.txt
++++ b/systemd/CMakeLists.txt
+@@ -22,6 +22,7 @@ foreach(service
+     ceph-osd@
+     ceph-radosgw@
+     ceph-rbd-mirror@
++    ceph-volume@
+     ceph-immutable-object-cache@
+     cephfs-mirror@
+     rbdmap)
+@@ -44,6 +45,5 @@ install(FILES
+   ceph-radosgw.target
+   ceph-rbd-mirror.target
+   ceph-immutable-object-cache.target
+-  ceph-volume@.service
+   cephfs-mirror.target
+   DESTINATION ${SYSTEMD_SYSTEM_UNIT_DIR})
