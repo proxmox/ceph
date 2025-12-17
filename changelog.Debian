@@ -1,3 +1,9 @@
+ceph (19.2.3-pve3) trixie; urgency=medium
+
+  * mgr: backport use-after-free fix to avoid potential crash.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 17 Dec 2025 09:08:27 +0100
+
 ceph (19.2.3-pve2) trixie; urgency=medium
 
   * pybind/rbd: disable on_progress callbacks to prevent MGR segfaults related
