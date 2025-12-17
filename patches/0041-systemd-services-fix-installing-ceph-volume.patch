@@ -8,10 +8,15 @@ just install it directly like the target units, but need to process it
 like all other units that are referring to actual executables that
 reside in build-target dependent paths.
 
+Fixes: 68c72c5dff5 ("systemd: use CMake install prefix in templates")
+Reported-by: Daniel Herzig <d.herzig@proxmox.com>
+Reported-by: Aaron Lauterer <a.lauterer@proxmox.com>
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
- systemd/CMakeLists.txt | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ systemd/CMakeLists.txt                                    | 2 +-
+ systemd/{ceph-volume@.service => ceph-volume@.service.in} | 0
+ 2 files changed, 1 insertion(+), 1 deletion(-)
+ rename systemd/{ceph-volume@.service => ceph-volume@.service.in} (100%)
 
 diff --git a/systemd/CMakeLists.txt b/systemd/CMakeLists.txt
 index 366bab4195d..072730142be 100644
@@ -32,3 +37,7 @@ index 366bab4195d..072730142be 100644
 -  ceph-volume@.service
    cephfs-mirror.target
    DESTINATION ${SYSTEMD_SYSTEM_UNIT_DIR})
+diff --git a/systemd/ceph-volume@.service b/systemd/ceph-volume@.service.in
+similarity index 100%
+rename from systemd/ceph-volume@.service
+rename to systemd/ceph-volume@.service.in
