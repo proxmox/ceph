@@ -54,3 +54,4 @@
 0054-client-prohibit-unprivileged-users-from-setting-sgid.patch
 0055-pybind-rbd-disable-on_progress-callbacks-to-prevent-.patch
 0056-mgr-avoid-explicitly-dropping-ref-of-MgrOpRequest.re.patch
+0057-os-bluestore-In-BlueFS-truncate-accept-wierd-alloc_u.patch
