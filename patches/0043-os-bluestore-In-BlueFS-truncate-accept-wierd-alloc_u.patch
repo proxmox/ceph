@@ -1,0 +1,41 @@
+From 9832d7666439903edd11a20b1c6ae20de66dd9e4 Mon Sep 17 00:00:00 2001
+From: Adam Kupczyk <akupczyk@ibm.com>
+Date: Tue, 11 Mar 2025 10:52:15 +0000
+Subject: [PATCH] os/bluestore: In BlueFS::truncate accept wierd alloc_unit
+
+The alignment of extents might not reflect current alloc_unit[bdev].
+It might be caused be either fallback to alternate AU size for SLOW,
+or change of allocation unit in DB or WAL.
+In such cases, truncation just leaves extent untouched.
+
+Fixes: https://tracker.ceph.com/issues/71534
+
+Signed-off-by: Adam Kupczyk <akupczyk@ibm.com>
+(cherry picked from commit 0da7a2a58c207b97c9bcf4a1dfcd9d09f0e9b954)
+---
+ src/os/bluestore/BlueFS.cc | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/os/bluestore/BlueFS.cc b/src/os/bluestore/BlueFS.cc
+index c4557501935..59cae8dcfc7 100644
+--- a/src/os/bluestore/BlueFS.cc
++++ b/src/os/bluestore/BlueFS.cc
+@@ -3867,10 +3867,12 @@ int BlueFS::truncate(FileWriter *h, uint64_t offset)/*_WF_L*/
+         changed_extents = true;
+         ++p;
+       } else {
+-        // cut_off > p->length means that we misaligned the extent
+-        ceph_assert(cut_off == p->length);
++        // Usually cut_off == p->length.
++        // Case cut_off > p->length means that we misaligned the extent
++        // or alloc size changed in the meantime.
++        // In both cases just leave extent untouched.
+         fnode.allocated = (offset - x_off) + p->length;
+-        ++p; // leave extent untouched
++        ++p;
+       }
+       while (p != fnode.extents.end()) {
+         dirty.pending_release[p->bdev].insert(p->offset, p->length);
+-- 
+2.47.3
+

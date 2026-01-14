@@ -40,3 +40,4 @@
 0040-python-common-cryptotools-catch-all-failures-to-read.patch
 0041-mgr-cephadm-always-use-the-internal-cryptocaller.patch
 0042-mgr-dashboard-add-an-option-to-control-the-dashboard.patch
+0043-os-bluestore-In-BlueFS-truncate-accept-wierd-alloc_u.patch
