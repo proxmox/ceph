@@ -1,10 +1,17 @@
-ceph (19.2.3-1~bpo12+1) bookworm-backports; urgency=medium
+ceph (19.2.3-1~bpo12+2) bookworm; urgency=medium
+
+  * bluefs: fix OSD crash caused by incorrect allocation unit size alignment
+    assertion.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 15 Jan 2026 20:05:05 +0100
+
+ceph (19.2.3-1~bpo12+1) bookworm; urgency=medium
 
   * update Ceph to Squid 19.2.3 stable release
 
  -- Proxmox Support Team <support@proxmox.com>  Mon, 29 Sep 2025 11:56:21 +0200
 
-ceph (19.2.2-pve1~bpo12+2) bookworm-backports; urgency=medium
+ceph (19.2.2-pve1~bpo12+2) bookworm; urgency=medium
 
   * cherry-pick fix for ceph-volume and Python 3.13+.
 
