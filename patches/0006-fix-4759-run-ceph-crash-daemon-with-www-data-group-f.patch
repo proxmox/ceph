@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Tue, 6 Jun 2023 13:36:13 +0200
+Subject: [PATCH] fix #4759: run ceph-crash daemon with www-data group for
+ access to conf
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ src/ceph-crash.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/ceph-crash.in b/src/ceph-crash.in
+index 0e02837fa..010d6ea2e 100755
+--- a/src/ceph-crash.in
++++ b/src/ceph-crash.in
+@@ -97,7 +97,7 @@ def drop_privs():
+     if os.getuid() == 0:
+         try:
+             ceph_uid = pwd.getpwnam("ceph").pw_uid
+-            ceph_gid = grp.getgrnam("ceph").gr_gid
++            ceph_gid = grp.getgrnam("www-data").gr_gid # ensure access to config in pmxcfs
+             os.setgroups([])
+             os.setgid(ceph_gid)
+             os.setuid(ceph_uid)
