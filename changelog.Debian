@@ -1,3 +1,10 @@
+ceph (19.2.3-pve4) trixie; urgency=medium
+
+  * bluefs: fix OSD crash caused by incorrect allocation unit size alignment
+    assertion.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 15 Jan 2026 09:21:49 +0100
+
 ceph (19.2.3-pve3) trixie; urgency=medium
 
   * mgr: backport use-after-free fix to avoid potential crash.
