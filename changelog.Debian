@@ -1,8 +1,8 @@
 ceph (18.2.8-pve1) bookworm; urgency=medium
 
-  * update Ceph to Reef 18.2.8 stable release. This is the last planned
-    release and Ceph Reef is to be treaded as end-of-support.
-    You must upgrade any production setup to Ceph Squid:
+  * Update Ceph to the Reef 18.2.8 stable release. This is the final planned
+    release for this series, and Ceph Reef should be treated as
+    end-of-support. You must upgrade any production deployment to Ceph Squid:
     https://pve.proxmox.com/wiki/Ceph_Reef_to_Squid
 
  -- Proxmox Support Team <support@proxmox.com>  Tue, 24 Mar 2026 14:31:46 +0100
