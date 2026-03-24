@@ -127,8 +127,9 @@ public:
   version_t prepare_force_open_sessions(std::map<client_t,entity_inst_t> &cm,
 					std::map<client_t,client_metadata_t>& cmm,
 					std::map<client_t,std::pair<Session*,uint64_t> >& smap);
-  void finish_force_open_sessions(const std::map<client_t,std::pair<Session*,uint64_t> >& smap,
+  void finish_force_open_sessions(std::map<client_t,std::pair<Session*,uint64_t> >& smap,
 				  bool dec_import=true);
+  void close_forced_opened_sessions(const std::map<client_t,std::pair<Session*,uint64_t> >& smap);
   void flush_client_sessions(std::set<client_t>& client_set, MDSGatherBuilder& gather);
   void finish_flush_session(Session *session, version_t seq);
   void terminate_sessions();
@@ -540,6 +541,7 @@ private:
   feature_bitset_t supported_metric_spec;
   feature_bitset_t required_client_features;
 
+  bool mds_allow_async_dirops = true;
   bool forward_all_requests_to_auth = false;
   bool replay_unsafe_with_closed_session = false;
   double cap_revoke_eviction_timeout = 0;
@@ -549,6 +551,7 @@ private:
   unsigned delegate_inos_pct = 0;
   uint64_t dir_max_entries = 0;
   int64_t bal_fragment_size_max = 0;
+  bool allow_batched_ops = true;
 
   double inject_rename_corrupt_dentry_first = 0.0;
 

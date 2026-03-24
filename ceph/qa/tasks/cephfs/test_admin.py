@@ -802,7 +802,15 @@ class TestRenameCommand(TestAdminCommands):
         new_fs_name = 'new_cephfs'
         client_id = 'test_new_cephfs'
 
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session true')
+        sleep(5)
+
         self.run_ceph_cmd(f'fs rename {orig_fs_name} {new_fs_name} --yes-i-really-mean-it')
+
+        self.run_ceph_cmd(f'fs set {new_fs_name} joinable true')
+        self.run_ceph_cmd(f'fs set {new_fs_name} refuse_client_session false')
+        self.fs.wait_for_daemons()
 
         # authorize a cephx ID access to the renamed file system.
         # use the ID to write to the file system.
@@ -835,8 +843,16 @@ class TestRenameCommand(TestAdminCommands):
         orig_fs_name = self.fs.name
         new_fs_name = 'new_cephfs'
 
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session true')
+        sleep(5)
+
         self.run_ceph_cmd(f'fs rename {orig_fs_name} {new_fs_name} --yes-i-really-mean-it')
         self.run_ceph_cmd(f'fs rename {orig_fs_name} {new_fs_name} --yes-i-really-mean-it')
+
+        self.run_ceph_cmd(f'fs set {new_fs_name} joinable true')
+        self.run_ceph_cmd(f'fs set {new_fs_name} refuse_client_session false')
+        self.fs.wait_for_daemons()
 
         # original file system name does not appear in `fs ls` command
         self.assertFalse(self.fs.exists())
@@ -855,7 +871,16 @@ class TestRenameCommand(TestAdminCommands):
         new_fs_name = 'new_cephfs'
         data_pool = self.fs.get_data_pool_name()
         metadata_pool = self.fs.get_metadata_pool_name()
+
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session true')
+        sleep(5)
+
         self.run_ceph_cmd(f'fs rename {orig_fs_name} {new_fs_name} --yes-i-really-mean-it')
+
+        self.run_ceph_cmd(f'fs set {new_fs_name} joinable true')
+        self.run_ceph_cmd(f'fs set {new_fs_name} refuse_client_session false')
+        self.fs.wait_for_daemons()
 
         try:
             self.run_ceph_cmd(f"fs new {orig_fs_name} {metadata_pool} {data_pool}")
@@ -892,6 +917,10 @@ class TestRenameCommand(TestAdminCommands):
         """
         That renaming a file system without '--yes-i-really-mean-it' flag fails.
         """
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session true')
+        sleep(5)
+
         try:
             self.run_ceph_cmd(f"fs rename {self.fs.name} new_fs")
         except CommandFailedError as ce:
@@ -902,22 +931,37 @@ class TestRenameCommand(TestAdminCommands):
             self.fail("expected renaming of file system without the "
                       "'--yes-i-really-mean-it' flag to fail ")
 
+        self.run_ceph_cmd(f'fs set {self.fs.name} joinable true')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session false')
+        self.fs.wait_for_daemons()
+
     def test_fs_rename_fails_for_non_existent_fs(self):
         """
         That renaming a non-existent file system fails.
         """
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session true')
+        sleep(5)
+
         try:
             self.run_ceph_cmd("fs rename non_existent_fs new_fs --yes-i-really-mean-it")
         except CommandFailedError as ce:
             self.assertEqual(ce.exitstatus, errno.ENOENT, "invalid error code on renaming a non-existent fs")
         else:
             self.fail("expected renaming of a non-existent file system to fail")
+        self.run_ceph_cmd(f'fs set {self.fs.name} joinable true')
+        self.fs.wait_for_daemons()
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session false')
 
     def test_fs_rename_fails_new_name_already_in_use(self):
         """
         That renaming a file system fails if the new name refers to an existing file system.
         """
         self.fs2 = self.mds_cluster.newfs(name='cephfs2', create=True)
+
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session true')
+        sleep(5)
 
         try:
             self.run_ceph_cmd(f"fs rename {self.fs.name} {self.fs2.name} --yes-i-really-mean-it")
@@ -927,6 +971,10 @@ class TestRenameCommand(TestAdminCommands):
         else:
             self.fail("expected renaming to a new file system name that is already in use to fail.")
 
+        self.run_ceph_cmd(f'fs set {self.fs.name} joinable true')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session false')
+        self.fs.wait_for_daemons()
+
     def test_fs_rename_fails_with_mirroring_enabled(self):
         """
         That renaming a file system fails if mirroring is enabled on it.
@@ -935,13 +983,74 @@ class TestRenameCommand(TestAdminCommands):
         new_fs_name = 'new_cephfs'
 
         self.run_ceph_cmd(f'fs mirror enable {orig_fs_name}')
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session true')
+        sleep(5)
+
         try:
             self.run_ceph_cmd(f'fs rename {orig_fs_name} {new_fs_name} --yes-i-really-mean-it')
         except CommandFailedError as ce:
             self.assertEqual(ce.exitstatus, errno.EPERM, "invalid error code on renaming a mirrored file system")
         else:
             self.fail("expected renaming of a mirrored file system to fail")
+
         self.run_ceph_cmd(f'fs mirror disable {orig_fs_name}')
+        self.run_ceph_cmd(f'fs set {self.fs.name} joinable true')
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session false')
+        self.fs.wait_for_daemons()
+
+    def test_rename_when_fs_is_online(self):
+        '''
+        Test that the command "ceph fs swap" command fails when first of the
+        two of FSs isn't failed/down.
+        '''
+        client_id = 'test_new_cephfs'
+        new_fs_name = 'new_cephfs'
+
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session true')
+
+        self.negtest_ceph_cmd(
+            args=(f'fs rename {self.fs.name} {new_fs_name} '
+                   '--yes-i-really-mean-it'),
+            errmsgs=(f"CephFS '{self.fs.name}' is not offline. Before "
+                      "renaming a CephFS, it must be marked as down. See "
+                      "`ceph fs fail`."),
+            retval=errno.EPERM)
+
+        self.run_ceph_cmd(f'fs set {self.fs.name} refuse_client_session false')
+
+        self.fs.getinfo()
+        keyring = self.fs.authorize(client_id, ('/', 'rw'))
+        keyring_path = self.mount_a.client_remote.mktemp(data=keyring)
+        self.mount_a.remount(client_id=client_id,
+                             client_keyring_path=keyring_path,
+                             cephfs_mntpt='/',
+                             cephfs_name=self.fs.name)
+
+        self.check_pool_application_metadata_key_value(
+            self.fs.get_data_pool_name(), 'cephfs', 'data', self.fs.name)
+        self.check_pool_application_metadata_key_value(
+            self.fs.get_metadata_pool_name(), 'cephfs', 'metadata',
+            self.fs.name)
+
+    def test_rename_when_clients_not_refused(self):
+        '''
+        Test that "ceph fs rename" fails when client_refuse_session is not
+        set.
+        '''
+        self.mount_a.umount_wait(require_clean=True)
+
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
+
+        self.negtest_ceph_cmd(
+            args=f"fs rename {self.fs.name} new_fs --yes-i-really-mean-it",
+            errmsgs=(f"CephFS '{self.fs.name}' doesn't refuse clients. "
+                      "Before renaming a CephFS, flag "
+                      "'refuse_client_session' must be set. See "
+                      "`ceph fs set`."),
+            retval=errno.EPERM)
+
+        self.run_ceph_cmd(f'fs fail {self.fs.name}')
 
 
 class TestDump(CephFSTestCase):
@@ -2056,3 +2165,184 @@ class TestMDSFail(TestAdminCommands):
                               errmsgs=health_warn)
         self.run_ceph_cmd(f'mds fail {mds1_id} --yes-i-really-mean-it')
         self.run_ceph_cmd(f'mds fail {mds2_id} --yes-i-really-mean-it')
+
+
+class TestToggleVolumes(CephFSTestCase):
+    '''
+    Contains code for enabling/disabling mgr/volumes plugin.
+    '''
+
+    VOL_MOD_NAME = 'volumes'
+    CONFIRM = '--yes-i-really-mean-it'
+
+    def tearDown(self):
+        '''
+        Ensure that the volumes plugin is enabled after the test has finished
+        running since not doing so might affect tearDown() of CephFSTestCase or
+        other superclasses.
+        '''
+        json_output = self.get_ceph_cmd_stdout('mgr module ls --format json')
+        json_output = json.loads(json_output)
+
+        if 'volumes' in json_output['force_disabled_modules']:
+            self.run_ceph_cmd(f'mgr module enable {self.VOL_MOD_NAME}')
+
+        super(TestToggleVolumes, self).tearDown()
+
+    def test_force_disable_with_confirmation(self):
+        '''
+        Test that running "ceph mgr module force disable volumes
+        --yes-i-really-mean-it" successfully disables volumes plugin.
+
+        Also test "ceph mgr module ls" output after this.
+        '''
+        self.run_ceph_cmd(f'mgr module force disable {self.VOL_MOD_NAME} '
+                          f'{self.CONFIRM}')
+
+        json_output = self.get_ceph_cmd_stdout('mgr module ls --format json')
+        json_output = json.loads(json_output)
+
+        self.assertIn(self.VOL_MOD_NAME, json_output['always_on_modules'])
+        self.assertIn(self.VOL_MOD_NAME, json_output['force_disabled_modules'])
+
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['enabled_modules'])
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['disabled_modules'])
+
+    def test_force_disable_fails_without_confirmation(self):
+        '''
+        Test that running "ceph mgr module force disable volumes" fails with
+        EPERM when confirmation flag is not passed along.
+
+        Also test that output of this command suggests user to pass
+        --yes-i-really-mean-it.
+        '''
+        proc = self.run_ceph_cmd(
+            f'mgr module force disable {self.VOL_MOD_NAME}',
+            stderr=StringIO(), check_status=False)
+
+        self.assertEqual(proc.returncode, errno.EPERM)
+
+        proc_stderr = proc.stderr.getvalue()
+        self.assertIn('EPERM', proc_stderr)
+        # ensure that the confirmation flag was recommended
+        self.assertIn(self.CONFIRM, proc_stderr)
+
+    def test_force_disable_idempotency(self):
+        '''
+        Test that running "ceph mgr module force disable volumes" passes when
+        volumes plugin was already force disabled.
+        '''
+        self.run_ceph_cmd(f'mgr module force disable {self.VOL_MOD_NAME} '
+                          f'{self.CONFIRM}')
+        sleep(5)
+
+        json_output = self.get_ceph_cmd_stdout('mgr module ls --format '
+                                              'json-pretty')
+        json_output = json.loads(json_output)
+
+        self.assertIn(self.VOL_MOD_NAME, json_output['always_on_modules'])
+        self.assertIn(self.VOL_MOD_NAME, json_output['force_disabled_modules'])
+
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['enabled_modules'])
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['disabled_modules'])
+
+        # XXX: this this test, running this command 2nd time should pass.
+        self.run_ceph_cmd(f'mgr module force disable {self.VOL_MOD_NAME}')
+
+    def test_force_disable_nonexistent_mod(self):
+        '''
+        Test that passing non-existent name to "ceph mgr module force disable"
+        command leads to an error.
+        '''
+        proc = self.run_ceph_cmd(
+            f'mgr module force disable abcd {self.CONFIRM}',
+            check_status=False, stderr=StringIO())
+        self.assertEqual(proc.returncode, errno.EINVAL)
+        self.assertIn('EINVAL', proc.stderr.getvalue())
+
+    def test_force_disable_non_alwayson_mod(self):
+        '''
+        Test that passing non-existent name to "ceph mgr module force disable"
+        command leads to an error.
+        '''
+        json_output = self.get_ceph_cmd_stdout(
+            'mgr module ls --format json-pretty', check_status=False,
+            stderr=StringIO())
+        output_dict = json.loads(json_output)
+        some_non_alwayson_mod = output_dict['enabled_modules'][0]
+
+        proc = self.run_ceph_cmd(
+            f'mgr module force disable {some_non_alwayson_mod} {self.CONFIRM}',
+            check_status=False, stderr=StringIO())
+        self.assertEqual(proc.returncode, errno.EINVAL)
+        self.assertIn('EINVAL', proc.stderr.getvalue())
+
+    def test_enabled_by_default(self):
+        '''
+        Test that volumes plugin is enabled by default and is also reported as
+        "always on".
+        '''
+        json_output = self.get_ceph_cmd_stdout('mgr module ls --format json')
+        json_output = json.loads(json_output)
+
+        self.assertIn(self.VOL_MOD_NAME, json_output['always_on_modules'])
+
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['enabled_modules'])
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['disabled_modules'])
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['force_disabled_modules'])
+
+    def test_disable_fails(self):
+        '''
+        Test that running "ceph mgr module disable volumes" fails with EPERM.
+
+        This is expected since volumes is an always-on module and therefore
+        it can only be disabled using command "ceph mgr module force disable
+        volumes".
+        '''
+        proc = self.run_ceph_cmd(f'mgr module disable {self.VOL_MOD_NAME}',
+                                 stderr=StringIO(), check_status=False)
+        self.assertEqual(proc.returncode, errno.EPERM)
+
+        proc_stderr = proc.stderr.getvalue()
+        self.assertIn('EPERM', proc_stderr)
+
+    def test_enable_idempotency(self):
+        '''
+        Test that enabling volumes plugin when it is already enabled doesn't
+        exit with non-zero return value.
+
+        Also test that it reports plugin as already enabled.
+        '''
+        proc = self.run_ceph_cmd(f'mgr module enable {self.VOL_MOD_NAME}',
+                                 stderr=StringIO())
+        self.assertEqual(proc.returncode, 0)
+
+        proc_stderr = proc.stderr.getvalue()
+        self.assertIn('already enabled', proc_stderr)
+        self.assertIn('always-on', proc_stderr)
+
+    def test_enable_post_disabling(self):
+        '''
+        Test that enabling volumes plugin after (force-)disabling it works
+        successfully.
+
+        Alo test "ceph mgr module ls" output for volumes plugin afterwards.
+        '''
+        self.run_ceph_cmd(f'mgr module force disable {self.VOL_MOD_NAME} '
+                          f'{self.CONFIRM}')
+        # give bit of time for plugin to be disabled.
+        sleep(5)
+
+        self.run_ceph_cmd(f'mgr module enable {self.VOL_MOD_NAME}')
+        # give bit of time for plugin to be functional again
+        sleep(5)
+        json_output = self.get_ceph_cmd_stdout('mgr module ls --format json')
+        json_output = json.loads(json_output)
+        self.assertIn(self.VOL_MOD_NAME, json_output['always_on_modules'])
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['enabled_modules'])
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['disabled_modules'])
+        self.assertNotIn(self.VOL_MOD_NAME, json_output['force_disabled_modules'])
+
+        # plugin is reported properly by "ceph mgr module ls" command, check if
+        # it is also working fine.
+        self.run_ceph_cmd('fs volume ls')

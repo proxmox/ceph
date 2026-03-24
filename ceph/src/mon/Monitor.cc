@@ -366,28 +366,45 @@ int Monitor::do_admin_command(
     start_election();
     elector.stop_participating();
     out << "stopped responding to quorum, initiated new election";
-  } else if (command == "ops") {
-    (void)op_tracker.dump_ops_in_flight(f);
   } else if (command == "sessions") {
     f->open_array_section("sessions");
     for (auto p : session_map.sessions) {
       f->dump_object("session", *p);
     }
     f->close_section();
-  } else if (command == "dump_historic_ops") {
-    if (!op_tracker.dump_historic_ops(f)) {
-      err << "op_tracker tracking is not enabled now, so no ops are tracked currently, even those get stuck. \
-        please enable \"mon_enable_op_tracker\", and the tracker will start to track new ops received afterwards.";
-    }
-  } else if (command == "dump_historic_ops_by_duration" ) {
-    if (op_tracker.dump_historic_ops(f, true)) {
-      err << "op_tracker tracking is not enabled now, so no ops are tracked currently, even those get stuck. \
-        please enable \"mon_enable_op_tracker\", and the tracker will start to track new ops received afterwards.";
-    }
-  } else if (command == "dump_historic_slow_ops") {
-    if (op_tracker.dump_historic_slow_ops(f, {})) {
-      err << "op_tracker tracking is not enabled now, so no ops are tracked currently, even those get stuck. \
-        please enable \"mon_enable_op_tracker\", and the tracker will start to track new ops received afterwards.";
+  } else if (command == "dump_ops_in_flight" ||
+             command == "ops" ||
+             command == "dump_historic_ops" ||
+             command == "dump_historic_ops_by_duration" ||
+             command == "dump_historic_slow_ops") {
+    const string error_str = "op_tracker tracking is not enabled now, so no ops are tracked currently, \
+even those get stuck. Please enable \"mon_enable_op_tracker\", and the tracker \
+will start to track new ops received afterwards.";
+    if (command == "dump_historic_ops") {
+      if (!op_tracker.dump_historic_ops(f)) {
+        err << error_str;
+        r = -EINVAL;
+        goto abort;
+      }
+    } else if (command == "dump_historic_ops_by_duration" ) {
+      if (!op_tracker.dump_historic_ops(f, true)) {
+        err << error_str;
+        r = -EINVAL;
+        goto abort;
+      }
+    } else if (command == "dump_historic_slow_ops") {
+      if (!op_tracker.dump_historic_slow_ops(f, {})) {
+        err << error_str;
+        r = -EINVAL;
+        goto abort;
+      }
+    } else if (command == "ops" ||
+               command == "dump_ops_in_flight") {
+      if (!op_tracker.dump_ops_in_flight(f)) {
+        err << error_str;
+        r = -EINVAL;
+        goto abort;
+      }
     }
   } else if (command == "quorum") {
     string quorumcmd;
@@ -637,6 +654,7 @@ const char** Monitor::get_tracked_conf_keys() const
     // debug options - observed, not handled
     "mon_debug_extra_checks",
     "mon_debug_block_osdmap_trim",
+    "mon_enable_op_tracker",
     NULL
   };
   return KEYS;
@@ -677,6 +695,10 @@ void Monitor::handle_conf_change(const ConfigProxy& conf,
       std::lock_guard l{lock};
       scrub_update_interval(scrub_interval);
     }});
+  }
+  
+  if (changed.count("mon_enable_op_tracker")) {
+    op_tracker.set_tracking(conf.get_val<bool>("mon_enable_op_tracker"));
   }
 }
 
@@ -2290,7 +2312,7 @@ void Monitor::win_election(epoch_t epoch, const set<int>& active, uint64_t featu
     encode(m, bl);
     t->put(MONITOR_STORE_PREFIX, "last_metadata", bl);
   }
-
+  elector.process_pending_pings();
   finish_election();
   if (monmap->size() > 1 &&
       monmap->get_epoch() > 0) {
@@ -2343,7 +2365,7 @@ void Monitor::lose_election(epoch_t epoch, set<int> &q, int l,
   _finish_svc_election();
 
   logger->inc(l_mon_election_lose);
-
+  elector.process_pending_pings();
   finish_election();
 }
 
@@ -6662,6 +6684,8 @@ void Monitor::notify_new_monmap(bool can_change_external_state, bool remove_rank
 
   if (monmap->stretch_mode_enabled) {
     try_engage_stretch_mode();
+  } else {
+    try_disable_stretch_mode();
   }
 
   if (is_stretch_mode()) {
@@ -6720,6 +6744,32 @@ void Monitor::try_engage_stretch_mode()
     disconnect_disallowed_stretch_sessions();
   }
 }
+struct CMonDisableStretchMode : public Context {
+  Monitor *m;
+  CMonDisableStretchMode(Monitor *mon) : m(mon) {}
+  void finish(int r) {
+    m->try_disable_stretch_mode();
+  }
+};
+void Monitor::try_disable_stretch_mode()
+{
+  dout(20) << __func__ << dendl;
+  if (!stretch_mode_engaged) return;
+  if (!osdmon()->is_readable()) {
+    dout(20) << "osdmon is not readable" << dendl;
+    osdmon()->wait_for_readable_ctx(new CMonDisableStretchMode(this));
+    return;
+  }
+  if (!osdmon()->osdmap.stretch_mode_enabled &&
+      !monmap->stretch_mode_enabled) {
+    dout(10) << "Disabling stretch mode!" << dendl;
+    stretch_mode_engaged = false;
+    stretch_bucket_divider.clear();
+    degraded_stretch_mode = false;
+    recovering_stretch_mode = false;
+  }
+
+}
 
 void Monitor::do_stretch_mode_election_work()
 {
@@ -6776,6 +6826,7 @@ struct CMonGoRecovery : public Context {
 void Monitor::go_recovery_stretch_mode()
 {
   dout(20) << __func__ << dendl;
+  if (!is_stretch_mode()) return;
   dout(20) << "is_leader(): " << is_leader() << dendl;
   if (!is_leader()) return;
   dout(20) << "is_degraded_stretch_mode(): " << is_degraded_stretch_mode() << dendl;
@@ -6806,6 +6857,7 @@ void Monitor::go_recovery_stretch_mode()
 
 void Monitor::set_recovery_stretch_mode()
 {
+  if (!is_stretch_mode()) return;
   degraded_stretch_mode = true;
   recovering_stretch_mode = true;
   osdmon()->set_recovery_stretch_mode();
@@ -6814,6 +6866,7 @@ void Monitor::set_recovery_stretch_mode()
 void Monitor::maybe_go_degraded_stretch_mode()
 {
   dout(20) << __func__ << dendl;
+  if (!is_stretch_mode()) return;
   if (is_degraded_stretch_mode()) return;
   if (!is_leader()) return;
   if (dead_mon_buckets.empty()) return;
@@ -6852,6 +6905,7 @@ void Monitor::trigger_degraded_stretch_mode(const set<string>& dead_mons,
 					    const set<int>& dead_buckets)
 {
   dout(20) << __func__ << dendl;
+  if (!is_stretch_mode()) return;
   ceph_assert(osdmon()->is_writeable());
   ceph_assert(monmon()->is_writeable());
 
@@ -6872,6 +6926,7 @@ void Monitor::trigger_degraded_stretch_mode(const set<string>& dead_mons,
 void Monitor::set_degraded_stretch_mode()
 {
   dout(20) << __func__ << dendl;
+  if (!is_stretch_mode()) return;
   degraded_stretch_mode = true;
   recovering_stretch_mode = false;
   osdmon()->set_degraded_stretch_mode();
@@ -6889,6 +6944,7 @@ struct CMonGoHealthy : public Context {
 void Monitor::trigger_healthy_stretch_mode()
 {
   dout(20) << __func__ << dendl;
+  if (!is_stretch_mode()) return;
   if (!is_degraded_stretch_mode()) return;
   if (!is_leader()) return;
   if (!osdmon()->is_writeable()) {
@@ -6909,6 +6965,7 @@ void Monitor::trigger_healthy_stretch_mode()
 
 void Monitor::set_healthy_stretch_mode()
 {
+  if (!is_stretch_mode()) return;
   degraded_stretch_mode = false;
   recovering_stretch_mode = false;
   osdmon()->set_healthy_stretch_mode();

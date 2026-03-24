@@ -8281,7 +8281,8 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
 
   if (mds->logger) mds->logger->inc(l_mds_traverse);
 
-  dout(7) << "traverse: opening base ino " << path.get_ino() << " snap " << snapid << dendl;
+  dout(7) << "traverse: opening base ino " << path.get_ino() << " snap " << snapid
+          << " path depth " << path.depth() << dendl;
   CInode *cur = get_inode(path.get_ino());
   if (!cur) {
     if (MDS_INO_IS_MDSDIR(path.get_ino())) {
@@ -8447,8 +8448,11 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
 	  lov.add_xlock(&dn->lock);
 	} else {
 	  // force client to flush async dir operation if necessary
-	  if (cur->filelock.is_cached())
+	  if (cur->filelock.is_cached() &&
+	      !(mdr->lock_cache &&
+		static_cast<const MutationImpl*>(mdr->lock_cache)->is_wrlocked(&cur->filelock))) {
 	    lov.add_wrlock(&cur->filelock);
+	  }
 	  lov.add_rdlock(&dn->lock);
 	}
 	if (!mds->locker->acquire_locks(mdr, lov)) {
@@ -8568,8 +8572,11 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
 		lov.add_xlock(&dn->lock);
 	      } else {
 		// force client to flush async dir operation if necessary
-		if (cur->filelock.is_cached())
+		if (cur->filelock.is_cached() &&
+		    !(mdr->lock_cache &&
+		      static_cast<const MutationImpl*>(mdr->lock_cache)->is_wrlocked(&cur->filelock))) {
 		  lov.add_wrlock(&cur->filelock);
+		}
 		lov.add_rdlock(&dn->lock);
 	      }
 	      if (!mds->locker->acquire_locks(mdr, lov)) {

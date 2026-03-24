@@ -1258,10 +1258,10 @@ void RGWDeleteBucketTags::execute(optional_yield y)
     return;
   }
 
-  op_ret = retry_raced_bucket_write(this, s->bucket.get(), [this, y] {
-    rgw::sal::Attrs attrs = s->bucket->get_attrs();
+  op_ret = retry_raced_bucket_write(this, s->bucket.get(), [this] {
+    rgw::sal::Attrs& attrs = s->bucket->get_attrs();
     attrs.erase(RGW_ATTR_TAGS);
-    op_ret = s->bucket->merge_and_store_attrs(this, attrs, y);
+    op_ret = s->bucket->put_info(this, false, real_time());
     if (op_ret < 0) {
       ldpp_dout(this, 0) << "RGWDeleteBucketTags() failed to remove RGW_ATTR_TAGS on bucket="
 			 << s->bucket->get_name()
@@ -2238,11 +2238,15 @@ void RGWGetObj::execute(optional_yield y)
   read_op->params.if_match = if_match;
   read_op->params.if_nomatch = if_nomatch;
   read_op->params.lastmod = &lastmod;
+  if (multipart_part_num) {
+    read_op->params.part_num = &*multipart_part_num;
+  }
 
   op_ret = read_op->prepare(s->yield, this);
   version_id = s->object->get_instance();
   s->obj_size = s->object->get_obj_size();
   attrs = s->object->get_attrs();
+  multipart_parts_count = read_op->params.parts_count;
   if (op_ret < 0)
     goto done_err;
 
@@ -3487,7 +3491,10 @@ void RGWCreateBucket::execute(optional_yield y)
       s->bucket->get_info().has_website = !s->bucket->get_info().website_conf.is_empty();
 
       /* This will also set the quota on the bucket. */
-      op_ret = s->bucket->merge_and_store_attrs(this, attrs, y);
+      s->bucket->set_attrs(std::move(attrs));
+      constexpr bool exclusive = false; // overwrite
+      constexpr ceph::real_time no_set_mtime{};
+      op_ret = s->bucket->put_info(this, exclusive, no_set_mtime);
     } while (op_ret == -ECANCELED && tries++ < 20);
 
     /* Restore the proper return code. */
@@ -3606,13 +3613,17 @@ int RGWPutObj::init_processing(optional_yield y) {
     copy_source_bucket_name = copy_source_bucket_name.substr(0, pos);
 #define VERSION_ID_STR "?versionId="
     pos = copy_source_object_name.find(VERSION_ID_STR);
-    if (pos == std::string::npos) {
-      copy_source_object_name = url_decode(copy_source_object_name);
-    } else {
+    if (pos != std::string::npos) {
       copy_source_version_id =
         copy_source_object_name.substr(pos + sizeof(VERSION_ID_STR) - 1);
       copy_source_object_name =
-        url_decode(copy_source_object_name.substr(0, pos));
+        copy_source_object_name.substr(0, pos);
+    }
+    if (copy_source_object_name.empty()) {
+      //means copy_source_object_name is empty string so the url is formatted badly
+      ret = -EINVAL;
+      ldpp_dout(this, 5) << "x-amz-copy-source bad format" << dendl;
+      return ret;
     }
     pos = copy_source_bucket_name.find(":");
     if (pos == std::string::npos) {
@@ -4869,7 +4880,10 @@ void RGWPutMetadataBucket::execute(optional_yield y)
       /* Setting attributes also stores the provided bucket info. Due
        * to this fact, the new quota settings can be serialized with
        * the same call. */
-      op_ret = s->bucket->merge_and_store_attrs(this, attrs, s->yield);
+      s->bucket->set_attrs(attrs);
+      constexpr bool exclusive = false; // overwrite
+      constexpr ceph::real_time no_set_mtime{};
+      op_ret = s->bucket->put_info(this, exclusive, no_set_mtime);
       return op_ret;
     });
 }
@@ -6142,9 +6156,9 @@ void RGWDeleteCORS::execute(optional_yield y)
 	return op_ret;
       }
 
-      rgw::sal::Attrs attrs(s->bucket_attrs);
+      rgw::sal::Attrs& attrs = s->bucket->get_attrs();
       attrs.erase(RGW_ATTR_CORS);
-      op_ret = s->bucket->merge_and_store_attrs(this, attrs, s->yield);
+      op_ret = s->bucket->put_info(this, false, real_time());
       if (op_ret < 0) {
 	ldpp_dout(this, 0) << "RGWLC::RGWDeleteCORS() failed to set attrs on bucket=" << s->bucket->get_name()
 			 << " returned err=" << op_ret << dendl;
@@ -8358,9 +8372,9 @@ void RGWDeleteBucketPolicy::execute(optional_yield y)
   }
 
   op_ret = retry_raced_bucket_write(this, s->bucket.get(), [this] {
-      rgw::sal::Attrs attrs(s->bucket_attrs);
+      rgw::sal::Attrs& attrs = s->bucket->get_attrs();
       attrs.erase(RGW_ATTR_IAM_POLICY);
-      op_ret = s->bucket->merge_and_store_attrs(this, attrs, s->yield);
+      op_ret = s->bucket->put_info(this, false, real_time());
       return op_ret;
     });
 }
@@ -8381,8 +8395,9 @@ int RGWPutBucketObjectLock::verify_permission(optional_yield y)
 
 void RGWPutBucketObjectLock::execute(optional_yield y)
 {
-  if (!s->bucket->get_info().obj_lock_enabled()) {
-    s->err.message = "object lock configuration can't be set if bucket object lock not enabled";
+  if (!s->bucket->get_info().versioning_enabled()) {
+    s->err.message = "Object lock cannot be enabled unless the "
+        "bucket has versioning enabled";
     ldpp_dout(this, 4) << "ERROR: " << s->err.message << dendl;
     op_ret = -ERR_INVALID_BUCKET_STATE;
     return;
@@ -8424,6 +8439,17 @@ void RGWPutBucketObjectLock::execute(optional_yield y)
   }
 
   op_ret = retry_raced_bucket_write(this, s->bucket.get(), [this] {
+    if (!s->bucket->get_info().obj_lock_enabled()) {
+      // automatically enable object lock if the bucket is versioning-enabled
+      if (!s->bucket->get_info().versioning_enabled()) {
+        s->err.message = "Object lock cannot be enabled unless the "
+            "bucket has versioning enabled";
+        ldpp_dout(this, 4) << "ERROR: " << s->err.message << dendl;
+        return -ERR_INVALID_BUCKET_STATE;
+      }
+      s->bucket->get_info().flags |= BUCKET_OBJ_LOCK_ENABLED;
+    }
+
     s->bucket->get_info().obj_lock = obj_lock;
     op_ret = s->bucket->put_info(this, false, real_time());
     return op_ret;
@@ -8868,9 +8894,9 @@ void RGWDeleteBucketPublicAccessBlock::execute(optional_yield y)
   }
 
   op_ret = retry_raced_bucket_write(this, s->bucket.get(), [this] {
-      rgw::sal::Attrs attrs(s->bucket_attrs);
+      rgw::sal::Attrs& attrs = s->bucket->get_attrs();
       attrs.erase(RGW_ATTR_PUBLIC_ACCESS);
-      op_ret = s->bucket->merge_and_store_attrs(this, attrs, s->yield);
+      op_ret = s->bucket->put_info(this, false, real_time());
       return op_ret;
     });
 }
@@ -8977,11 +9003,11 @@ void RGWDeleteBucketEncryption::execute(optional_yield y)
     return;
   }
 
-  op_ret = retry_raced_bucket_write(this, s->bucket.get(), [this, y] {
-    rgw::sal::Attrs attrs = s->bucket->get_attrs();
+  op_ret = retry_raced_bucket_write(this, s->bucket.get(), [this] {
+    rgw::sal::Attrs& attrs = s->bucket->get_attrs();
     attrs.erase(RGW_ATTR_BUCKET_ENCRYPTION_POLICY);
     attrs.erase(RGW_ATTR_BUCKET_ENCRYPTION_KEY_ID);
-    op_ret = s->bucket->merge_and_store_attrs(this, attrs, y);
+    op_ret = s->bucket->put_info(this, false, real_time());
     return op_ret;
   });
 }

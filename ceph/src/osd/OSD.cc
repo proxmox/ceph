@@ -1070,7 +1070,12 @@ void OSDService::inc_osd_stat_repaired()
 {
   std::lock_guard l(stat_lock);
   osd_stat.num_shards_repaired++;
-  return;
+}
+
+void OSDService::set_osd_stat_repaired(int64_t count)
+{
+  std::lock_guard l(stat_lock);
+  osd_stat.num_shards_repaired = count;
 }
 
 float OSDService::compute_adjusted_ratio(osd_stat_t new_stat, float *pratio,
@@ -3231,6 +3236,11 @@ will start to track new ops received afterwards.";
     scrub_purged_snaps();
   }
 
+  else if (prefix == "clear_shards_repaired") {
+    int64_t count = cmd_getval_or<int64_t>(cmdmap, "count", 0);
+    service.set_osd_stat_repaired(count);
+  }
+
   else if (prefix == "reset_purged_snaps_last") {
     lock_guard l(osd_lock);
     superblock.purged_snaps_last = 0;
@@ -3670,6 +3680,21 @@ float OSD::get_osd_recovery_sleep()
     return cct->_conf.get_val<double>("osd_recovery_sleep_hybrid");
   else
     return cct->_conf->osd_recovery_sleep_hdd;
+}
+
+float OSD::get_osd_recovery_sleep_degraded() {
+  float osd_recovery_sleep_degraded =
+    cct->_conf.get_val<double>("osd_recovery_sleep_degraded");
+  if (osd_recovery_sleep_degraded > 0) {
+    return osd_recovery_sleep_degraded;
+  }
+  if (!store_is_rotational && !journal_is_rotational) {
+    return cct->_conf.get_val<double>("osd_recovery_sleep_degraded_ssd");
+  } else if (store_is_rotational && !journal_is_rotational) {
+    return cct->_conf.get_val<double>("osd_recovery_sleep_degraded_hybrid");
+  } else {
+    return cct->_conf.get_val<double>("osd_recovery_sleep_degraded_hdd");
+  }
 }
 
 float OSD::get_osd_delete_sleep()
@@ -4433,6 +4458,12 @@ void OSD::final_init()
     "name=value,type=CephString,req=false",
     asok_hook,
     "debug the scrubber");
+  ceph_assert(r == 0);
+  r = admin_socket->register_command(
+    "clear_shards_repaired "
+    "name=count,type=CephInt,req=false,range=0",
+    asok_hook,
+    "clear num_shards_repaired to clear health warning");
   ceph_assert(r == 0);
 
   // -- pg commands --
@@ -6958,13 +6989,11 @@ void OSD::_send_boot()
     cluster_messenger->get_loopback_connection().get();
   entity_addrvec_t client_addrs = client_messenger->get_myaddrs();
   entity_addrvec_t cluster_addrs = cluster_messenger->get_myaddrs();
-  entity_addrvec_t hb_back_addrs = hb_back_server_messenger->get_myaddrs();
-  entity_addrvec_t hb_front_addrs = hb_front_server_messenger->get_myaddrs();
 
   dout(20) << " initial client_addrs " << client_addrs
 	   << ", cluster_addrs " << cluster_addrs
-	   << ", hb_back_addrs " << hb_back_addrs
-	   << ", hb_front_addrs " << hb_front_addrs
+	   << ", hb_back_addrs " << hb_back_server_messenger->get_myaddrs()
+	   << ", hb_front_addrs " << hb_front_server_messenger->get_myaddrs()
 	   << dendl;
   if (cluster_messenger->set_addr_unknowns(client_addrs)) {
     dout(10) << " assuming cluster_addrs match client_addrs "
@@ -6979,7 +7008,6 @@ void OSD::_send_boot()
   if (hb_back_server_messenger->set_addr_unknowns(cluster_addrs)) {
     dout(10) << " assuming hb_back_addrs match cluster_addrs "
 	     << cluster_addrs << dendl;
-    hb_back_addrs = hb_back_server_messenger->get_myaddrs();
   }
   if (auto session = local_connection->get_priv(); !session) {
     hb_back_server_messenger->ms_deliver_handle_fast_connect(local_connection);
@@ -6989,7 +7017,6 @@ void OSD::_send_boot()
   if (hb_front_server_messenger->set_addr_unknowns(client_addrs)) {
     dout(10) << " assuming hb_front_addrs match client_addrs "
 	     << client_addrs << dendl;
-    hb_front_addrs = hb_front_server_messenger->get_myaddrs();
   }
   if (auto session = local_connection->get_priv(); !session) {
     hb_front_server_messenger->ms_deliver_handle_fast_connect(local_connection);
@@ -7000,6 +7027,8 @@ void OSD::_send_boot()
   // are, so now is a good time!
   set_numa_affinity();
 
+  entity_addrvec_t hb_back_addrs = hb_back_server_messenger->get_myaddrs();
+  entity_addrvec_t hb_front_addrs = hb_front_server_messenger->get_myaddrs();
   MOSDBoot *mboot = new MOSDBoot(
     superblock, get_osdmap_epoch(), service.get_boot_epoch(),
     hb_back_addrs, hb_front_addrs, cluster_addrs,
@@ -9604,9 +9633,12 @@ void OSD::do_recovery(
    * ops are scheduled after osd_recovery_sleep amount of time from the previous
    * recovery event's schedule time. This is done by adding a
    * recovery_requeue_callback event, which re-queues the recovery op using
-   * queue_recovery_after_sleep.
+   * queue_recovery_after_sleep. (osd_recovery_sleep_degraded will be
+   * used instead of osd_recovery_sleep when pg is degraded)
    */
-  float recovery_sleep = get_osd_recovery_sleep();
+  float recovery_sleep = pg->is_degraded() 
+                        ? get_osd_recovery_sleep_degraded() 
+                        : get_osd_recovery_sleep();
   {
     std::lock_guard l(service.sleep_lock);
     if (recovery_sleep > 0 && service.recovery_needs_sleep) {
@@ -9919,6 +9951,10 @@ const char** OSD::get_tracked_conf_keys() const
     "osd_delete_sleep_hdd",
     "osd_delete_sleep_ssd",
     "osd_delete_sleep_hybrid",
+    "osd_recovery_sleep_degraded",
+    "osd_recovery_sleep_degraded_hdd",
+    "osd_recovery_sleep_degraded_ssd",
+    "osd_recovery_sleep_degraded_hybrid",
     "osd_snap_trim_sleep",
     "osd_snap_trim_sleep_hdd",
     "osd_snap_trim_sleep_ssd",
@@ -9979,7 +10015,11 @@ void OSD::handle_conf_change(const ConfigProxy& conf,
       changed.count("osd_recovery_sleep") ||
       changed.count("osd_recovery_sleep_hdd") ||
       changed.count("osd_recovery_sleep_ssd") ||
-      changed.count("osd_recovery_sleep_hybrid")) {
+      changed.count("osd_recovery_sleep_hybrid") ||
+      changed.count("osd_recovery_sleep_degraded") ||
+      changed.count("osd_recovery_sleep_degraded_hdd") ||
+      changed.count("osd_recovery_sleep_degraded_ssd") ||
+      changed.count("osd_recovery_sleep_degraded_hybrid")) {
     maybe_override_sleep_options_for_qos();
   }
   if (changed.count("osd_min_recovery_priority")) {
@@ -10290,6 +10330,12 @@ void OSD::maybe_override_sleep_options_for_qos()
     cct->_conf.set_val("osd_recovery_sleep_hdd", std::to_string(0));
     cct->_conf.set_val("osd_recovery_sleep_ssd", std::to_string(0));
     cct->_conf.set_val("osd_recovery_sleep_hybrid", std::to_string(0));
+
+    // Disable recovery sleep for pg degraded
+    cct->_conf.set_val("osd_recovery_sleep_degraded", std::to_string(0));
+    cct->_conf.set_val("osd_recovery_sleep_degraded_hdd", std::to_string(0));
+    cct->_conf.set_val("osd_recovery_sleep_degraded_ssd", std::to_string(0));
+    cct->_conf.set_val("osd_recovery_sleep_degraded_hybrid", std::to_string(0));
 
     // Disable delete sleep
     cct->_conf.set_val("osd_delete_sleep", std::to_string(0));

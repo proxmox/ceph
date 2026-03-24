@@ -205,10 +205,10 @@ int group_snap_remove_by_record(librados::IoCtx& group_ioctx,
 				const std::string& group_header_oid) {
 
   CephContext *cct = (CephContext *)group_ioctx.cct();
+  std::vector<librados::IoCtx> ioctxs;
+  std::vector<librbd::ImageCtx*> ictxs;
   std::vector<C_SaferCond*> on_finishes;
   int r, ret_code;
-
-  std::vector<librbd::ImageCtx*> ictxs;
 
   cls::rbd::GroupSnapshotNamespace ne{group_ioctx.get_id(), group_id,
 				      group_snap.id};
@@ -217,15 +217,18 @@ int group_snap_remove_by_record(librados::IoCtx& group_ioctx,
   int snap_count = group_snap.snaps.size();
 
   for (int i = 0; i < snap_count; ++i) {
-    librbd::IoCtx image_io_ctx;
+    librados::IoCtx image_io_ctx;
     r = util::create_ioctx(group_ioctx, "image", group_snap.snaps[i].pool, {},
                            &image_io_ctx);
     if (r < 0) {
       return r;
     }
+    ioctxs.push_back(std::move(image_io_ctx));
+  }
 
+  for (int i = 0; i < snap_count; ++i) {
     librbd::ImageCtx* image_ctx = new ImageCtx("", group_snap.snaps[i].image_id,
-					       nullptr, image_io_ctx, false);
+					       nullptr, ioctxs[i], false);
 
     C_SaferCond* on_finish = new C_SaferCond;
 
@@ -311,10 +314,10 @@ int group_snap_rollback_by_record(librados::IoCtx& group_ioctx,
                                   const std::string& group_id,
                                   ProgressContext& pctx) {
   CephContext *cct = (CephContext *)group_ioctx.cct();
+  std::vector<librados::IoCtx> ioctxs;
+  std::vector<librbd::ImageCtx*> ictxs;
   std::vector<C_SaferCond*> on_finishes;
   int r, ret_code;
-
-  std::vector<librbd::ImageCtx*> ictxs;
 
   cls::rbd::GroupSnapshotNamespace ne{group_ioctx.get_id(), group_id,
                                       group_snap.id};
@@ -329,9 +332,12 @@ int group_snap_rollback_by_record(librados::IoCtx& group_ioctx,
     if (r < 0) {
       return r;
     }
+    ioctxs.push_back(std::move(image_io_ctx));
+  }
 
+  for (int i = 0; i < snap_count; ++i) {
     librbd::ImageCtx* image_ctx = new ImageCtx("", group_snap.snaps[i].image_id,
-                                               nullptr, image_io_ctx, false);
+                                               nullptr, ioctxs[i], false);
 
     C_SaferCond* on_finish = new C_SaferCond;
 
@@ -885,8 +891,6 @@ int Group<I>::snap_create(librados::IoCtx& group_ioctx,
   if (r < 0) {
     return r;
   }
-  internal_flags &= ~(SNAP_CREATE_FLAG_SKIP_NOTIFY_QUIESCE |
-                      SNAP_CREATE_FLAG_IGNORE_NOTIFY_QUIESCE_ERROR);
 
   r = cls_client::dir_get_id(&group_ioctx, RBD_GROUP_DIRECTORY, group_name,
                              &group_id);
@@ -937,7 +941,7 @@ int Group<I>::snap_create(librados::IoCtx& group_ioctx,
   }
 
   for (auto image: images) {
-    librbd::IoCtx image_io_ctx;
+    librados::IoCtx image_io_ctx;
     r = util::create_ioctx(group_ioctx, "image", image.spec.pool_id, {},
                            &image_io_ctx);
     if (r < 0) {
@@ -975,10 +979,11 @@ int Group<I>::snap_create(librados::IoCtx& group_ioctx,
     goto remove_record;
   }
 
-  if ((flags & RBD_SNAP_CREATE_SKIP_QUIESCE) == 0) {
+  if ((internal_flags & SNAP_CREATE_FLAG_SKIP_NOTIFY_QUIESCE) == 0) {
     ldout(cct, 20) << "Sending quiesce notification" << dendl;
     ret_code = notify_quiesce(ictxs, prog_ctx, &quiesce_requests);
-    if (ret_code != 0 && (flags & RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR) == 0) {
+    if (ret_code != 0 &&
+        (internal_flags & SNAP_CREATE_FLAG_IGNORE_NOTIFY_QUIESCE_ERROR) == 0) {
       goto remove_record;
     }
   }

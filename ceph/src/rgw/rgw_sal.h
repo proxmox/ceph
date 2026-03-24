@@ -212,6 +212,10 @@ enum AttrsMod {
 static constexpr uint32_t FLAG_LOG_OP = 0x0001;
 static constexpr uint32_t FLAG_PREVENT_VERSIONING = 0x0002;
 
+// if cannot do all elements of op, do as much as possible (e.g.,
+// delete object where head object is missing)
+static constexpr uint32_t FLAG_FORCE_OP = 0x0004;
+
 // a simple streaming data processing abstraction
 /**
  * @brief A simple streaming data processing abstraction
@@ -897,6 +901,12 @@ class Object {
         const char* if_nomatch{nullptr};
         ceph::real_time* lastmod{nullptr};
         rgw_obj* target_obj{nullptr}; // XXX dang remove?
+
+        /// If non-null, read data/attributes from the given multipart part.
+        int* part_num{nullptr};
+        /// If part_num is specified and the object is multipart, the total
+        /// number of multipart parts is assigned to this output parameter.
+        std::optional<int> parts_count;
       } params;
 
       virtual ~ReadOp() = default;

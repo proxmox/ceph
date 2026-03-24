@@ -2103,6 +2103,8 @@ void MDSRank::active_start()
 {
   dout(1) << "active_start" << dendl;
 
+  m_is_active = true;
+
   if (last_state == MDSMap::STATE_CREATING ||
       last_state == MDSMap::STATE_STARTING) {
     mdcache->open_root();
@@ -2685,6 +2687,9 @@ void MDSRankDispatcher::handle_asok_command(
     if (!op_tracker.dump_historic_ops(f, true)) {
       *css << "op_tracker disabled; set mds_enable_op_tracker=true to enable";
     }
+  } else if (command == "dump_export_states") {
+    std::lock_guard l(mds_lock);
+    mdcache->migrator->dump_export_states(f);
   } else if (command == "osdmap barrier") {
     int64_t target_epoch = 0;
     bool got_val = cmd_getval(cmdmap, "target_epoch", target_epoch);
@@ -3840,6 +3845,7 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "clog_to_syslog_level",
     "fsid",
     "host",
+    "mds_allow_batched_ops",
     "mds_bal_fragment_dirs",
     "mds_bal_fragment_interval",
     "mds_bal_fragment_size_max",
@@ -3885,6 +3891,7 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "mds_inject_rename_corrupt_dentry_first",
     "mds_inject_journal_corrupt_dentry_first",
     "mds_session_metadata_threshold",
+    "mds_allow_async_dirops",
     NULL
   };
   return KEYS;

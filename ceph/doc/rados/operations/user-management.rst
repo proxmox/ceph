@@ -336,6 +336,17 @@ The following entries describe valid capability profiles:
               with the manager ``crash`` module to upload daemon crash
               dumps into monitor storage for later analysis.
 
+.. important:: If you run the command ``ceph auth caps client.admin mgr
+   'allow*'``, you will remove necessary capabilities from ``client.admin``. To
+   repair this, run a command of the following form from within the
+   ``/var/lib/ceph/mon/<monitor_name>`` directory:
+
+      .. prompt:: bash #
+
+         ceph -n mon. --keyring keyring auth caps client.admin mds 'allow *' osd 'allow *' mon 'allow *'
+
+
+
 Pool
 ----
 
@@ -747,6 +758,20 @@ keyring, see `Importing a User`_
 You may also :ref:`Modify user capabilities<modify-user-capabilities>` directly in the cluster, store the
 results to a keyring file, and then import the keyring into your main
 ``ceph.keyring`` file.
+
+
+Key rotation
+------------
+
+To rotate the secret for an entity, run a command of the following form:
+
+.. prompt:: bash #
+
+   ceph auth rotate <entity>
+
+This avoids the need to delete and recreate the entity when its key is
+compromised, lost, or scheduled for rotation.
+
 
 Command Line Usage
 ==================

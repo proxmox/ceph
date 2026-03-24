@@ -264,6 +264,7 @@ Server::Server(MDSRank *m, MetricsHandler *metrics_handler) :
 {
   forward_all_requests_to_auth = g_conf().get_val<bool>("mds_forward_all_requests_to_auth");
   replay_unsafe_with_closed_session = g_conf().get_val<bool>("mds_replay_unsafe_with_closed_session");
+  allow_batched_ops = g_conf().get_val<bool>("mds_allow_batched_ops");
   cap_revoke_eviction_timeout = g_conf().get_val<double>("mds_cap_revoke_eviction_timeout");
   max_snaps_per_dir = g_conf().get_val<uint64_t>("mds_max_snaps_per_dir");
   delegate_inos_pct = g_conf().get_val<uint64_t>("mds_client_delegate_inos_pct");
@@ -609,6 +610,9 @@ void Server::handle_client_session(const cref_t<MClientSession> &m)
                                         " <fs_name> refuse_client_session false`";
       mds->send_message(reply, m->get_connection());
       return;
+    }
+    if (!session->client_opened) {
+      session->client_opened = true;
     }
     if (session->is_opening() ||
 	session->is_open() ||
@@ -1049,7 +1053,7 @@ version_t Server::prepare_force_open_sessions(map<client_t,entity_inst_t>& cm,
   return pv;
 }
 
-void Server::finish_force_open_sessions(const map<client_t,pair<Session*,uint64_t> >& smap,
+void Server::finish_force_open_sessions(map<client_t,pair<Session*,uint64_t> >& smap,
 					bool dec_import)
 {
   /*
@@ -1068,7 +1072,7 @@ void Server::finish_force_open_sessions(const map<client_t,pair<Session*,uint64_
 	dout(10) << "force_open_sessions skipping changed " << session->info.inst << dendl;
       } else {
 	dout(10) << "force_open_sessions opened " << session->info.inst << dendl;
-	mds->sessionmap.set_state(session, Session::STATE_OPEN);
+	it.second.second = mds->sessionmap.set_state(session, Session::STATE_OPEN);
 	mds->sessionmap.touch_session(session);
         metrics_handler->add_session(session);
 
@@ -1096,6 +1100,29 @@ void Server::finish_force_open_sessions(const map<client_t,pair<Session*,uint64_
   }
 
   dout(10) << __func__ << ": final v " << mds->sessionmap.get_version() << dendl;
+}
+
+void Server::close_forced_opened_sessions(const map<client_t,pair<Session*,uint64_t> >& smap)
+{
+  dout(10) << __func__ << " on " << smap.size() << " clients" << dendl;
+
+  for (auto &it : smap) {
+    Session *session = it.second.first;
+    uint64_t sseq = it.second.second;
+    if (sseq == 0)
+      continue;
+    if (session->get_state_seq() != sseq) {
+      dout(10) << "skipping changed session (" << session->get_state_name() << ") "
+	       << session->info.inst << dendl;
+      continue;
+    }
+    if (session->client_opened)
+      continue;
+    dout(10) << "closing forced opened session (" << session->get_state_name() << ") "
+	     << session->info.inst << dendl;
+    ceph_assert(!session->is_importing());
+    journal_close_session(session, Session::STATE_CLOSING, NULL);
+  }
 }
 
 class C_MDS_TerminatedSessions : public ServerContext {
@@ -1319,8 +1346,14 @@ void Server::evict_cap_revoke_non_responders() {
 }
 
 void Server::handle_conf_change(const std::set<std::string>& changed) {
+  if (changed.count("mds_allow_async_dirops")){
+    mds_allow_async_dirops = g_conf().get_val<bool>("mds_allow_async_dirops");
+  }
   if (changed.count("mds_forward_all_requests_to_auth")){
     forward_all_requests_to_auth = g_conf().get_val<bool>("mds_forward_all_requests_to_auth");
+  }
+  if (changed.count("mds_allow_batched_ops")) {
+    allow_batched_ops = g_conf().get_val<bool>("mds_allow_batched_ops");
   }
   if (changed.count("mds_cap_revoke_eviction_timeout")) {
     cap_revoke_eviction_timeout = g_conf().get_val<double>("mds_cap_revoke_eviction_timeout");
@@ -2045,7 +2078,7 @@ void Server::journal_and_reply(MDRequestRef& mdr, CInode *in, CDentry *dn, LogEv
     mdr->set_queued_next_replay_op();
     mds->queue_one_replay();
   } else if (mdr->did_early_reply)
-    mds->locker->drop_rdlocks_for_early_reply(mdr.get());
+    mds->locker->handle_locks_for_early_reply(mdr.get());
   else
     mdlog->flush();
 }
@@ -2479,7 +2512,7 @@ void Server::set_reply_extra_bl(const cref_t<MClientRequest> &req, inodeno_t ino
 {
   Session *session = mds->get_session(req);
 
-  if (session->info.has_feature(CEPHFS_FEATURE_DELEG_INO)) {
+  if (mds_allow_async_dirops && session->info.has_feature(CEPHFS_FEATURE_DELEG_INO)) {
     openc_response_t ocresp;
 
     dout(10) << "adding created_ino and delegated_inos" << dendl;
@@ -2682,11 +2715,6 @@ void Server::dispatch_client_request(MDRequestRef& mdr)
   }
   
   if (is_full) {
-    CInode *cur = try_get_auth_inode(mdr, req->get_filepath().get_ino());
-    if (!cur) {
-      // the request is already responded to
-      return;
-    }
     if (req->get_op() == CEPH_MDS_OP_SETLAYOUT ||
         req->get_op() == CEPH_MDS_OP_SETDIRLAYOUT ||
         req->get_op() == CEPH_MDS_OP_SETLAYOUT ||
@@ -2699,7 +2727,18 @@ void Server::dispatch_client_request(MDRequestRef& mdr)
 	  req->get_op() == CEPH_MDS_OP_RENAME) &&
 	 (!mdr->has_more() || mdr->more()->witnessed.empty())) // haven't started peer request
 	) {
-
+      /*
+       * The inode fetch below is specific to the operations above and the inode is
+       * expected to be in memory as these operations are likely preceded by lookup.
+       * Doing this generically outside the condition was incorrect as the ops like
+       * getattr might not have the inode in memory as this could be a non-auth mds
+       * and fails with ESTALE confusing the client without forwarding to the auth mds.
+       */
+      CInode *cur = try_get_auth_inode(mdr, req->get_filepath().get_ino());
+      if (!cur) {
+        // the request is already responded to
+        return;
+      }
       if (check_access(mdr, cur, MAY_FULL)) {
         dout(20) << __func__ << ": full, has FULL caps, permitting op " << ceph_mds_op_name(req->get_op()) << dendl;
       } else {
@@ -4085,7 +4124,7 @@ void Server::handle_client_getattr(MDRequestRef& mdr, bool is_lookup)
   if (mask & CEPH_STAT_RSTAT)
     want_auth = true; // set want_auth for CEPH_STAT_RSTAT mask
 
-  if (!mdr->is_batch_head() && mdr->can_batch()) {
+  if (!mdr->is_batch_head() && allow_batched_ops && mdr->can_batch()) {
     CF_MDS_RetryRequestFactory cf(mdcache, mdr, false);
     int r = mdcache->path_traverse(mdr, cf, mdr->get_filepath(),
 				   (want_auth ? MDS_TRAVERSE_WANT_AUTH : 0),
@@ -4106,12 +4145,13 @@ void Server::handle_client_getattr(MDRequestRef& mdr, bool is_lookup)
 
     if (r < 0) {
       // fall-thru. let rdlock_path_pin_ref() check again.
-    } else if (is_lookup) {
+    } else if (is_lookup && mdr->dn[0].size()) {
       CDentry* dn = mdr->dn[0].back();
       mdr->pin(dn);
       auto em = dn->batch_ops.emplace(std::piecewise_construct, std::forward_as_tuple(mask), std::forward_as_tuple());
       if (em.second) {
 	em.first->second = std::make_unique<Batch_Getattr_Lookup>(this, mdr);
+        mdr->mark_event("creating lookup batch head");
       } else {
 	dout(20) << __func__ << ": LOOKUP op, wait for previous same getattr ops to respond. " << *mdr << dendl;
 	em.first->second->add_request(mdr);
@@ -4124,6 +4164,7 @@ void Server::handle_client_getattr(MDRequestRef& mdr, bool is_lookup)
       auto em = in->batch_ops.emplace(std::piecewise_construct, std::forward_as_tuple(mask), std::forward_as_tuple());
       if (em.second) {
 	em.first->second = std::make_unique<Batch_Getattr_Lookup>(this, mdr);
+        mdr->mark_event("creating getattr batch head");
       } else {
 	dout(20) << __func__ << ": GETATTR op, wait for previous same getattr ops to respond. " << *mdr << dendl;
 	em.first->second->add_request(mdr);
@@ -4211,7 +4252,7 @@ void Server::handle_client_getattr(MDRequestRef& mdr, bool is_lookup)
   // reply
   dout(10) << "reply to stat on " << *req << dendl;
   mdr->tracei = ref;
-  if (is_lookup)
+  if (is_lookup && mdr->dn[0].size())
     mdr->tracedn = mdr->dn[0].back();
   respond_to_request(mdr, 0);
 }
@@ -4755,7 +4796,7 @@ void Server::handle_client_openc(MDRequestRef& mdr)
   if (!check_dir_max_entries(mdr, dir))
     return;
 
-  if (mdr->dn[0].size() == 1)
+  if (mds_allow_async_dirops && mdr->dn[0].size() == 1)
     mds->locker->create_lock_cache(mdr, diri, &mdr->dir_layout);
 
   // create inode.
@@ -8101,7 +8142,7 @@ void Server::handle_client_unlink(MDRequestRef& mdr)
       return;  // we're waiting for a witness.
   }
 
-  if (!rmdir && dnl->is_primary() && mdr->dn[0].size() == 1)
+  if (mds_allow_async_dirops && !rmdir && dnl->is_primary() && mdr->dn[0].size() == 1)
     mds->locker->create_lock_cache(mdr, diri);
 
   // ok!
@@ -11466,7 +11507,7 @@ void Server::handle_client_readdir_snapdiff(MDRequestRef& mdr)
     offset_hash = (__u32)req->head.args.snapdiff.offset_hash;
   }
 
-  dout(10) << " frag " << fg << " offset '" << offset_str << "'"
+  dout(10) << __func__ << " frag " << fg << " offset '" << offset_str << "'"
     << " offset_hash " << offset_hash << " flags " << req_flags << dendl;
 
   // does the frag exist?
@@ -11623,8 +11664,18 @@ void Server::_readdir_diff(
     std::swap(snapid, snapid_prev);
   }
   bool from_the_beginning = !offset_hash && offset_str.empty();
-  // skip all dns < dentry_key_t(snapid, offset_str, offset_hash)
-  dentry_key_t skip_key(snapid_prev, offset_str.c_str(), offset_hash);
+  // skip all dns <= dentry_key_t(*, offset_str, offset_hash)
+  dentry_key_t skip_key(CEPH_NOSNAP, offset_str.c_str(), offset_hash);
+
+  // We need to rollback all the entries with the same name
+  // when some entries with this name don't fit into the same fragment.
+  // This is caused by the limited ability for offset provisioning between
+  // fragments - there is no way to identify specific snapshot for the last entry.
+  // The following vars denote the potential rollback position for such a case.
+  // Fixes: https://tracker.ceph.com/issues/72518
+  string last_name;
+  size_t rollback_pos = 0;
+  size_t rollback_num = 0;
 
   bool end = build_snap_diff(
     mdr,
@@ -11643,7 +11694,16 @@ void Server::_readdir_diff(
       effective_snapid = exists ? snapid : snapid_prev;
       name.append(dn_name);
       if ((int)(dnbl.length() + name.length() + sizeof(__u32) + sizeof(LeaseStat)) > bytes_left) {
-	dout(10) << " ran out of room, stopping at " << dnbl.length() << " < " << bytes_left << dendl;
+	dout(10) << " ran out of room for name, stopping at " << dnbl.length() << " < " << bytes_left << dendl;
+        if (name == last_name) {
+	  bufferlist keep;
+	  keep.substr_of(dnbl, 0, rollback_pos);
+	  dnbl.swap(keep);
+          last_name.clear();
+          rollback_pos = 0;
+          numfiles = rollback_num;
+          rollback_num = 0;
+        }
 	return false;
       }
 
@@ -11652,6 +11712,7 @@ void Server::_readdir_diff(
       unsigned start_len = dnbl.length();
       dout(10) << "inc dn " << *dn << " as " << name
                << std::hex << " hash 0x" << hash << std::dec
+               << " " << effective_snapid
                << dendl;
       encode(name, dnbl);
       mds->locker->issue_client_lease(dn, in, mdr, now, dnbl);
@@ -11664,11 +11725,24 @@ void Server::_readdir_diff(
 	dout(10) << " ran out of room, stopping at "
 	         << start_len << " < " << bytes_left << dendl;
 	bufferlist keep;
-	keep.substr_of(dnbl, 0, start_len);
+
+	keep.substr_of(dnbl, 0,
+          name == last_name ? rollback_pos : start_len);
 	dnbl.swap(keep);
+
+        last_name.clear();
+        rollback_pos = 0;
+        numfiles = rollback_num;
+        rollback_num = 0;
 	return false;
       }
 
+      // set rollback position
+      if (name != last_name) {
+        last_name = name;
+        rollback_pos = start_len;
+        rollback_num = numfiles;
+      }
       // touch dn
       mdcache->lru.lru_touch(dn);
       ++numfiles;
@@ -11716,7 +11790,7 @@ bool Server::build_snap_diff(
     return r;
   };
 
-  auto it = !skip_key ? dir->begin() : dir->lower_bound(*skip_key);
+  auto it = !skip_key ? dir->begin() : dir->upper_bound(*skip_key);
 
   while(it != dir->end()) {
     CDentry* dn = it->second;
@@ -11736,11 +11810,6 @@ bool Server::build_snap_diff(
     if (dn->last < snapid_prev || dn->first > snapid) {
       dout(20) << __func__ << " not in range, skipping" << dendl;
       continue;
-    }
-    if (skip_key) {
-      skip_key->snapid = dn->last;
-      if (!(*skip_key < dn->key()))
-	continue;
     }
 
     CInode* in = dnl->get_inode();
@@ -11780,7 +11849,6 @@ bool Server::build_snap_diff(
     ceph_assert(in);
 
     utime_t mtime = in->get_inode()->mtime;
-
     if (in->is_dir()) {
 
       // we need to maintain the order of entries (determined by their name hashes)

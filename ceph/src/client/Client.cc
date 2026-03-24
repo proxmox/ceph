@@ -14,6 +14,7 @@
 
 
 // unix-ey fs stuff
+#include <algorithm>
 #include <unistd.h>
 #include <sys/types.h>
 #include <time.h>
@@ -3627,6 +3628,9 @@ void Client::put_cap_ref(Inode *in, int cap)
     if (last & CEPH_CAP_FILE_CACHE) {
       ldout(cct, 5) << __func__ << " dropped last FILE_CACHE ref on " << *in << dendl;
       ++put_nref;
+
+      ldout(cct, 10) << __func__ << " calling signal_caps_inode" << dendl;
+      signal_cond_list(in->waitfor_caps);
     }
     if (drop)
       check_caps(in, 0);
@@ -6031,22 +6035,23 @@ int Client::may_setattr(Inode *in, struct ceph_statx *stx, int mask,
   }
 
   if (mask & CEPH_SETATTR_MODE) {
-    bool allowed = false;
     /*
      * Currently the kernel fuse and libfuse code is buggy and
      * won't pass the ATTR_KILL_SUID/ATTR_KILL_SGID to ceph-fuse.
      * But will just set the ATTR_MODE and at the same time by
      * clearing the suid/sgid bits.
      *
-     * Only allow unprivileged users to clear S_ISUID and S_ISUID.
+     * Only allow unprivileged users to clear S_ISUID and S_ISGID.
      */
-    if ((in->mode & (S_ISUID | S_ISGID)) != (stx->stx_mode & (S_ISUID | S_ISGID)) &&
-        (in->mode & ~(S_ISUID | S_ISGID)) == (stx->stx_mode & ~(S_ISUID | S_ISGID))) {
-      allowed = true;
-    }
-    uint32_t m = ~stx->stx_mode & in->mode; // mode bits removed
-    ldout(cct, 20) << __func__ << " " << *in << " = " << hex << m << dec <<  dendl;
-    if (perms.uid() != 0 && perms.uid() != in->uid && !allowed)
+    uint32_t removed_bits = ~stx->stx_mode & in->mode;
+    uint32_t added_bits = ~in->mode & stx->stx_mode;
+    bool clearing_suid_sgid = (
+      // no new bits added
+      added_bits == 0 &&
+      // only suid/suid bits removed
+      (removed_bits & ~(S_ISUID | S_ISGID)) == 0);
+    ldout(cct, 20) << __func__ << " " << *in << " = " << hex << removed_bits << dec <<  dendl;
+    if (perms.uid() != 0 && perms.uid() != in->uid && !clearing_suid_sgid)
       goto out;
 
     gid_t i_gid = (mask & CEPH_SETATTR_GID) ? stx->stx_gid : in->gid;
@@ -8861,7 +8866,6 @@ int Client::chownat(int dirfd, const char *relpath, uid_t new_uid, gid_t new_gid
   tout(cct) << new_gid << std::endl;
   tout(cct) << flags << std::endl;
 
-  filepath path(relpath);
   InodeRef in;
   InodeRef dirinode;
 
@@ -8871,10 +8875,24 @@ int Client::chownat(int dirfd, const char *relpath, uid_t new_uid, gid_t new_gid
     return r;
   }
 
-  r = path_walk(path, &in, perms, !(flags & AT_SYMLINK_NOFOLLOW), 0, dirinode);
-  if (r < 0) {
-    return r;
+  if (!strcmp(relpath, "")) {
+#if defined(__linux__) && defined(AT_EMPTY_PATH)
+    if (flags & AT_EMPTY_PATH) {
+      in = dirinode;
+      goto out;
+    }
+#endif
+    return -CEPHFS_ENOENT;
+  } else {
+    filepath path(relpath);
+    r = path_walk(path, &in, perms, !(flags & AT_SYMLINK_NOFOLLOW), 0, dirinode);
+    if (r < 0) {
+      return r;
+    }
   }
+
+out:
+
   struct stat attr;
   attr.st_uid = new_uid;
   attr.st_gid = new_gid;
@@ -9253,14 +9271,19 @@ void Client::seekdir(dir_result_t *dirp, loff_t offset)
 //};
 void Client::fill_dirent(struct dirent *de, const char *name, int type, uint64_t ino, loff_t next_off)
 {
-  strncpy(de->d_name, name, 255);
-  de->d_name[255] = '\0';
+  size_t len = strlen(name);
+  len = std::min(len, (size_t)255);
+  memcpy(de->d_name, name, len);
+  de->d_name[len] = '\0';
 #if !defined(__CYGWIN__) && !(defined(_WIN32))
   de->d_ino = ino;
 #if !defined(__APPLE__) && !defined(__FreeBSD__)
   de->d_off = next_off;
 #endif
-  de->d_reclen = 1;
+  // Calculate the real used size of the record
+  len = (uintptr_t)&de->d_name[len] - (uintptr_t)de + 1;
+  // The record size must be a multiple of the alignment of 'struct dirent'
+  de->d_reclen = (len + alignof(struct dirent) - 1) & ~(alignof(struct dirent) - 1);
   de->d_type = IFTODT(type);
   ldout(cct, 10) << __func__ << " '" << de->d_name << "' -> " << inodeno_t(de->d_ino)
 	   << " type " << (int)de->d_type << " w/ next_off " << hex << next_off << dec << dendl;
@@ -11529,6 +11552,7 @@ int Client::statxat(int dirfd, const char *relpath,
 
   unsigned mask = statx_to_mask(flags, want);
 
+  InodeRef in;
   InodeRef dirinode;
   std::scoped_lock lock(client_lock);
   int r = get_fd_inode(dirfd, &dirinode);
@@ -11536,12 +11560,24 @@ int Client::statxat(int dirfd, const char *relpath,
     return r;
   }
 
-  InodeRef in;
-  filepath path(relpath);
-  r = path_walk(path, &in, perms, !(flags & AT_SYMLINK_NOFOLLOW), mask, dirinode);
-  if (r < 0) {
-    return r;
+  if (!strcmp(relpath, "")) {
+#if defined(__linux__) && defined(AT_EMPTY_PATH)
+    if (flags & AT_EMPTY_PATH) {
+      in = dirinode;
+      goto out;
+    }
+#endif
+    return -CEPHFS_ENOENT;
+  } else {
+    filepath path(relpath);
+    r = path_walk(path, &in, perms, !(flags & AT_SYMLINK_NOFOLLOW), mask, dirinode);
+    if (r < 0) {
+      return r;
+    }
   }
+
+out:
+
   r = _getattr(in, mask, perms);
   if (r < 0) {
     ldout(cct, 3) << __func__ << " exit on error!" << dendl;
@@ -12587,9 +12623,7 @@ int Client::ll_walk(const char* name, Inode **out, struct ceph_statx *stx,
   if (!mref_reader.is_state_satisfied())
     return -CEPHFS_ENOTCONN;
 
-  filepath fp(name, 0);
   InodeRef in;
-  int rc;
   unsigned mask = statx_to_mask(flags, want);
 
   ldout(cct, 3) << __func__ << " " << name << dendl;
@@ -12597,7 +12631,7 @@ int Client::ll_walk(const char* name, Inode **out, struct ceph_statx *stx,
   tout(cct) << name << std::endl;
 
   std::scoped_lock lock(client_lock);
-  rc = path_walk(fp, &in, perms, !(flags & AT_SYMLINK_NOFOLLOW), mask);
+  int rc = path_walk(filepath(name), &in, perms, !(flags & AT_SYMLINK_NOFOLLOW), mask);
   if (rc < 0) {
     /* zero out mask, just in case... */
     stx->stx_mask = 0;
@@ -15463,7 +15497,7 @@ int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
   if (offset < 0 || length <= 0)
     return -CEPHFS_EINVAL;
 
-  if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE))
+  if (mode == 0 || (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE)))
     return -CEPHFS_EOPNOTSUPP;
 
   if ((mode & FALLOC_FL_PUNCH_HOLE) && !(mode & FALLOC_FL_KEEP_SIZE))

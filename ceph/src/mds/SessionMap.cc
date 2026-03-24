@@ -615,6 +615,7 @@ void Session::dump(Formatter *f, bool cap_dump) const
   f->dump_unsigned("num_completed_requests", get_num_completed_requests());
   f->dump_unsigned("num_completed_flushes", get_num_completed_flushes());
   f->dump_bool("reconnecting", reconnecting);
+  f->dump_int("importing_count", importing_count);
   f->dump_object("recall_caps", recall_caps);
   f->dump_object("release_caps", release_caps);
   f->dump_object("recall_caps_throttle", recall_caps_throttle);
@@ -1097,9 +1098,11 @@ int Session::check_access(CInode *in, unsigned mask,
 
 // track total and per session load
 void SessionMap::hit_session(Session *session) {
-  uint64_t sessions = get_session_count_in_state(Session::STATE_OPEN) +
+  uint64_t sessions = get_session_count_in_state(Session::STATE_OPENING) +
+                      get_session_count_in_state(Session::STATE_OPEN) +
                       get_session_count_in_state(Session::STATE_STALE) +
-                      get_session_count_in_state(Session::STATE_CLOSING);
+                      get_session_count_in_state(Session::STATE_CLOSING) +
+                      get_session_count_in_state(Session::STATE_KILLING);
   ceph_assert(sessions != 0);
 
   double total_load = total_load_avg.hit();

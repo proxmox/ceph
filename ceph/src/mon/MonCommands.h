@@ -163,6 +163,10 @@ COMMAND("auth add "
 	"add auth info for <entity> from input file, or random key if no "
         "input is given, and/or any caps specified in the command",
 	"auth", "rwx")
+COMMAND("auth rotate "
+	"name=entity,type=CephString",
+	"rotate entity key",
+	"auth", "rwx")
 COMMAND("auth get-or-create-key "
 	"name=entity,type=CephString "
 	"name=caps,type=CephString,n=N,req=false",
@@ -545,6 +549,11 @@ COMMAND("mon enable_stretch_mode " \
 	"failure handling on all pools with <tiebreaker_mon> "
 	"as the tiebreaker and setting <dividing_bucket> locations "
 	"as the units for stretching across",
+	"mon", "rw")
+COMMAND("mon disable_stretch_mode " \
+	"name=crush_rule,type=CephString,req=false, "
+	"name=yes_i_really_mean_it,type=CephBool,req=false, ",
+	"disable stretch mode, reverting to normal peering rules",
 	"mon", "rw")
 COMMAND("mon set_new_tiebreaker " \
 	"name=name,type=CephString "
@@ -1329,6 +1338,10 @@ COMMAND("mgr module enable "
 COMMAND("mgr module disable "
 	"name=module,type=CephString",
 	"disable mgr module", "mgr", "rw")
+COMMAND("mgr module force disable "
+	"name=module,type=CephString "
+	"name=yes_i_really_mean_it,type=CephBool,req=false",
+	"force disable a always-on mgr module", "mgr", "rw")
 COMMAND("mgr metadata name=who,type=CephString,req=false",
 	"dump metadata for all daemons or a specific daemon",
 	"mgr", "r")
@@ -1456,7 +1469,15 @@ COMMAND_WITH_FLAG("dump_historic_ops",
             "show recent ops",
             "mon", "r",
             FLAG(TELL))
+COMMAND_WITH_FLAG("dump_historic_ops_by_duration",
+            "show recent ops sorted by duration",
+            "mon", "r",
+            FLAG(TELL))
 COMMAND_WITH_FLAG("dump_historic_slow_ops",
             "show recent slow ops",
+            "mon", "r",
+            FLAG(TELL))
+COMMAND_WITH_FLAG("dump_ops_in_flight",
+            "show the ops currently in flight",
             "mon", "r",
             FLAG(TELL))

@@ -333,7 +333,7 @@ namespace rgw::sal {
   {
     int ret;
 
-    ret = store->getDB()->update_bucket(dpp, "info", info, exclusive, nullptr, nullptr, &_mtime, &info.objv_tracker);
+    ret = store->getDB()->update_bucket(dpp, "info", info, exclusive, nullptr, &attrs, &_mtime, &info.objv_tracker);
 
     return ret;
 
@@ -368,7 +368,7 @@ namespace rgw::sal {
 
     /* XXX: handle has_instance_obj like in set_bucket_instance_attrs() */
 
-    ret = store->getDB()->update_bucket(dpp, "attrs", info, false, nullptr, &new_attrs, nullptr, &get_info().objv_tracker);
+    ret = store->getDB()->update_bucket(dpp, "attrs", info, false, nullptr, &attrs, nullptr, &get_info().objv_tracker);
 
     return ret;
   }

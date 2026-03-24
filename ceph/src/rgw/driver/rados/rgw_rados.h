@@ -405,10 +405,12 @@ class RGWRados
 
   int get_olh_target_state(const DoutPrefixProvider *dpp, RGWObjectCtx& rctx,
 			   RGWBucketInfo& bucket_info, const rgw_obj& obj,
-			   RGWObjState *olh_state, RGWObjState **target_state,
-			   RGWObjManifest **target_manifest, optional_yield y);
-  int get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state, RGWObjManifest** manifest,
-                         bool follow_olh, optional_yield y, bool assume_noent = false);
+			   RGWObjState *olh_state, RGWObjStateManifest **psm,
+			   optional_yield y);
+  int get_obj_state_impl(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx,
+                         RGWBucketInfo& bucket_info, const rgw_obj& obj,
+                         RGWObjStateManifest** psm, bool follow_olh,
+                         optional_yield y, bool assume_noent = false);
   int append_atomic_test(const DoutPrefixProvider *dpp, RGWObjectCtx* rctx, RGWBucketInfo& bucket_info, const rgw_obj& obj,
                          librados::ObjectOperation& op, RGWObjState **state,
 			 RGWObjManifest** pmanifest, optional_yield y);
@@ -761,6 +763,8 @@ public:
         uint64_t *obj_size;
         std::map<std::string, bufferlist> *attrs;
         rgw_obj *target_obj;
+        int* part_num = nullptr;
+        std::optional<int> parts_count;
 
         Params() : lastmod(nullptr), obj_size(nullptr), attrs(nullptr),
 		 target_obj(nullptr) {}
@@ -853,8 +857,11 @@ public:
 
       explicit Delete(RGWRados::Object *_target) : target(_target) {}
 
-      int delete_obj(optional_yield y, const DoutPrefixProvider *dpp, bool log_op = true);
-    };
+      int delete_obj(optional_yield y,
+		     const DoutPrefixProvider* dpp,
+		     bool log_op,
+		     const bool force); // if head object missing, do a best effort
+    }; // struct RGWRados::Object::Delete
 
     struct Stat {
       RGWRados::Object *source;
@@ -1207,7 +1214,7 @@ public:
 
   int transition_obj(RGWObjectCtx& obj_ctx,
                      RGWBucketInfo& bucket_info,
-                     const rgw_obj& obj,
+                     rgw_obj obj,
                      const rgw_placement_rule& placement_rule,
                      const real_time& mtime,
                      uint64_t olh_epoch,
@@ -1244,7 +1251,8 @@ public:
 		 uint16_t bilog_flags = 0,
 		 const ceph::real_time& expiration_time = ceph::real_time(),
 		 rgw_zone_set *zones_trace = nullptr,
-                 bool log_op = true);
+                 bool log_op = true,
+                 const bool force = false); // if head object missing, do a best effort
 
   int delete_raw_obj(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj);
 
@@ -1268,11 +1276,16 @@ public:
                         optional_yield y,
                         ceph::real_time set_mtime = ceph::real_clock::zero());
 
-  int get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state, RGWObjManifest** manifest,
-                    bool follow_olh, optional_yield y, bool assume_noent = false);
-  int get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx, RGWBucketInfo& bucket_info, const rgw_obj& obj, RGWObjState **state, RGWObjManifest** manifest, optional_yield y) {
-    return get_obj_state(dpp, rctx, bucket_info, obj, state, manifest, true, y);
-  }
+  int get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx,
+                    RGWBucketInfo& bucket_info, const rgw_obj& obj,
+                    RGWObjStateManifest** psm, bool follow_olh,
+                    optional_yield y, bool assume_noent = false);
+
+  int get_obj_state(const DoutPrefixProvider *dpp, RGWObjectCtx *rctx,
+                    RGWBucketInfo& bucket_info, const rgw_obj& obj,
+                    RGWObjState** pstate, RGWObjManifest** pmanifest,
+                    bool follow_olh, optional_yield y,
+                    bool assume_noent = false);
 
   using iterate_obj_cb = int (*)(const DoutPrefixProvider*, const rgw_raw_obj&, off_t, off_t,
                                  off_t, bool, RGWObjState*, void*);
@@ -1339,8 +1352,10 @@ public:
   int bucket_index_clear_olh(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_info, const std::string& olh_tag, const rgw_obj& obj_instance);
   int apply_olh_log(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx, RGWObjState& obj_state, RGWBucketInfo& bucket_info, const rgw_obj& obj,
                     bufferlist& obj_tag, std::map<uint64_t, std::vector<rgw_bucket_olh_log_entry> >& log,
-                    uint64_t *plast_ver, rgw_zone_set *zones_trace = nullptr, bool log_op = true);
-  int update_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx, RGWObjState *state, RGWBucketInfo& bucket_info, const rgw_obj& obj, rgw_zone_set *zones_trace = nullptr, bool log_op = true);
+                    uint64_t *plast_ver, rgw_zone_set *zones_trace = nullptr, bool log_op = true,
+		    const bool force = false);
+  int update_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx, RGWObjState *state, RGWBucketInfo& bucket_info, const rgw_obj& obj, rgw_zone_set *zones_trace = nullptr,
+		 bool log_op = true, const bool force = false);
   int clear_olh(const DoutPrefixProvider *dpp,
                 RGWObjectCtx& obj_ctx,
                 const rgw_obj& obj,
@@ -1354,7 +1369,8 @@ public:
   int repair_olh(const DoutPrefixProvider *dpp, RGWObjState* state, const RGWBucketInfo& bucket_info,
                  const rgw_obj& obj);
   int unlink_obj_instance(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx, RGWBucketInfo& bucket_info, const rgw_obj& target_obj,
-                          uint64_t olh_epoch, optional_yield y, rgw_zone_set *zones_trace = nullptr, bool log_op = true);
+                          uint64_t olh_epoch, optional_yield y, rgw_zone_set *zones_trace = nullptr,
+			  bool log_op = true, const bool force = false);
 
   void check_pending_olh_entries(const DoutPrefixProvider *dpp, std::map<std::string, bufferlist>& pending_entries, std::map<std::string, bufferlist> *rm_pending_entries);
   int remove_olh_pending_entries(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info, RGWObjState& state, const rgw_obj& olh_obj, std::map<std::string, bufferlist>& pending_attrs);
@@ -1559,7 +1575,8 @@ public:
 
   librados::Rados* get_rados_handle();
 
-  int delete_raw_obj_aio(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj, std::list<librados::AioCompletion *>& handles);
+  int delete_tail_obj_aio(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj,
+                          const std::string& tag, std::list<librados::AioCompletion *>& handles);
   int delete_obj_aio(const DoutPrefixProvider *dpp, const rgw_obj& obj, RGWBucketInfo& info, RGWObjState *astate,
                      std::list<librados::AioCompletion *>& handles, bool keep_index_consistent,
                      optional_yield y);

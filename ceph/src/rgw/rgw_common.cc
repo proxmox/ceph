@@ -132,6 +132,8 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_NO_SUCH_TAG_SET, {404, "NoSuchTagSet"}},
     { ERR_NO_SUCH_BUCKET_ENCRYPTION_CONFIGURATION, {404, "ServerSideEncryptionConfigurationNotFoundError"}},
     { ERR_NO_SUCH_PUBLIC_ACCESS_BLOCK_CONFIGURATION, {404, "NoSuchPublicAccessBlockConfiguration"}},
+    { EDQUOT, {507, "InsufficientCapacity"}},
+    { ENOSPC, {507, "InsufficientCapacity"}},
 });
 
 rgw_http_errors rgw_http_swift_errors({
@@ -1739,7 +1741,7 @@ std::string url_decode(const std::string_view& src_str, bool in_query)
       }
     }
   }
-
+ 
   return dest_str;
 }
 
@@ -2156,17 +2158,13 @@ int rgw_parse_op_type_list(const string& str, uint32_t *perm)
 bool match_policy(const std::string& pattern, const std::string& input,
                   uint32_t flag)
 {
-  const uint32_t flag2 = flag & (MATCH_POLICY_ACTION|MATCH_POLICY_ARN) ?
+  const uint32_t flag2 = (flag & MATCH_POLICY_ACTION) ?
       MATCH_CASE_INSENSITIVE : 0;
-  const bool colonblocks = !(flag & (MATCH_POLICY_RESOURCE |
-				     MATCH_POLICY_STRING));
 
-  const auto npos = std::string_view::npos;
   std::string_view::size_type last_pos_input = 0, last_pos_pattern = 0;
   while (true) {
-    auto cur_pos_input = colonblocks ? input.find(":", last_pos_input) : npos;
-    auto cur_pos_pattern =
-      colonblocks ? pattern.find(":", last_pos_pattern) : npos;
+    auto cur_pos_input = input.find(":", last_pos_input);
+    auto cur_pos_pattern = pattern.find(":", last_pos_pattern);
 
     auto substr_input = input.substr(last_pos_input, cur_pos_input);
     auto substr_pattern = pattern.substr(last_pos_pattern, cur_pos_pattern);
@@ -2174,9 +2172,9 @@ bool match_policy(const std::string& pattern, const std::string& input,
     if (!match_wildcards(substr_pattern, substr_input, flag2))
       return false;
 
-    if (cur_pos_pattern == npos)
-      return cur_pos_input == npos;
-    if (cur_pos_input == npos)
+    if (cur_pos_pattern == pattern.npos)
+      return cur_pos_input == input.npos;
+    if (cur_pos_input == input.npos)
       return false;
 
     last_pos_pattern = cur_pos_pattern + 1;

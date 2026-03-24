@@ -572,6 +572,10 @@ int RadosBucket::remove_bucket_bypass_gc(int concurrent_max, bool
         rgw_raw_obj raw_head_obj;
         store->get_raw_obj(manifest.get_head_placement_rule(), head_obj, &raw_head_obj);
 
+        // tag for cls_refcount
+        const std::string tag = (astate->tail_tag.length() > 0
+                               ? astate->tail_tag.to_str()
+                               : astate->obj_tag.to_str());
         for (; miter != manifest.obj_end(dpp) && max_aio--; ++miter) {
           if (!max_aio) {
             ret = drain_aio(handles);
@@ -588,7 +592,7 @@ int RadosBucket::remove_bucket_bypass_gc(int concurrent_max, bool
             continue;
           }
 
-          ret = store->getRados()->delete_raw_obj_aio(dpp, last_obj, handles);
+          ret = store->getRados()->delete_tail_obj_aio(dpp, last_obj, tag, handles);
           if (ret < 0) {
             ldpp_dout(dpp, -1) << "ERROR: delete obj aio failed with " << ret << dendl;
             return ret;
@@ -802,7 +806,7 @@ int RadosBucket::merge_and_store_attrs(const DoutPrefixProvider* dpp, Attrs& new
 	  attrs[it.first] = it.second;
   }
   return store->ctl()->bucket->set_bucket_instance_attrs(get_info(),
-				new_attrs, &get_info().objv_tracker, y, dpp);
+				attrs, &get_info().objv_tracker, y, dpp);
 }
 
 int RadosBucket::try_refresh_info(const DoutPrefixProvider* dpp, ceph::real_time* pmtime)
@@ -1390,13 +1394,6 @@ int RadosStore::remove_topics(const std::string& tenant, RGWObjVersionTracker* o
 int RadosStore::delete_raw_obj(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj)
 {
   return rados->delete_raw_obj(dpp, obj);
-}
-
-int RadosStore::delete_raw_obj_aio(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj, Completions* aio)
-{
-  RadosCompletions* raio = static_cast<RadosCompletions*>(aio);
-
-  return rados->delete_raw_obj_aio(dpp, obj, raio->handles);
 }
 
 void RadosStore::get_raw_obj(const rgw_placement_rule& placement_rule, const rgw_obj& obj, rgw_raw_obj* raw_obj)
@@ -2069,6 +2066,13 @@ int RadosObject::write_cloud_tier(const DoutPrefixProvider* dpp,
 {
   rgw::sal::RadosPlacementTier* rtier = static_cast<rgw::sal::RadosPlacementTier*>(tier);
   map<string, bufferlist> attrs = get_attrs();
+  rgw_obj_key& obj_key = get_key();
+  // bi expects empty instance for the entries created when bucket versioning
+  // is not enabled or suspended.
+  if (obj_key.instance == "null") {
+      obj_key.instance.clear();
+  }
+
   RGWRados::Object op_target(store->getRados(), bucket->get_info(), *rados_ctx, get_obj());
   RGWRados::Object::Write obj_op(&op_target);
 
@@ -2221,6 +2225,7 @@ int RadosObject::RadosReadOp::prepare(optional_yield y, const DoutPrefixProvider
   parent_op.conds.if_nomatch = params.if_nomatch;
   parent_op.params.lastmod = params.lastmod;
   parent_op.params.target_obj = params.target_obj;
+  parent_op.params.part_num = params.part_num;
   parent_op.params.obj_size = &obj_size;
   parent_op.params.attrs = &source->get_attrs();
 
@@ -2228,8 +2233,9 @@ int RadosObject::RadosReadOp::prepare(optional_yield y, const DoutPrefixProvider
   if (ret < 0)
     return ret;
 
-  source->set_key(parent_op.state.obj.key);
+  source->set_instance(parent_op.state.obj.key.instance);
   source->set_obj_size(obj_size);
+  params.parts_count = parent_op.params.parts_count;
 
   return ret;
 }
@@ -2258,6 +2264,7 @@ RadosObject::RadosDeleteOp::RadosDeleteOp(RadosObject *_source) :
 	parent_op(&op_target)
 { }
 
+
 int RadosObject::RadosDeleteOp::delete_obj(const DoutPrefixProvider* dpp, optional_yield y, uint32_t flags)
 {
   parent_op.params.bucket_owner = params.bucket_owner.get_id();
@@ -2275,15 +2282,16 @@ int RadosObject::RadosDeleteOp::delete_obj(const DoutPrefixProvider* dpp, option
   parent_op.params.abortmp = params.abortmp;
   parent_op.params.parts_accounted_size = params.parts_accounted_size;
 
-  int ret = parent_op.delete_obj(y, dpp, flags & FLAG_LOG_OP);
-  if (ret < 0)
+  int ret = parent_op.delete_obj(y, dpp, flags & FLAG_LOG_OP, flags & FLAG_FORCE_OP);
+  if (ret < 0) {
     return ret;
+  }
 
   result.delete_marker = parent_op.result.delete_marker;
   result.version_id = parent_op.result.version_id;
 
   return ret;
-}
+} // RadosObject::RadosDeleteOp::delete_obj
 
 int RadosObject::delete_object(const DoutPrefixProvider* dpp,
 			       optional_yield y,
@@ -2296,8 +2304,9 @@ int RadosObject::delete_object(const DoutPrefixProvider* dpp,
   del_op.params.versioning_status = (flags & FLAG_PREVENT_VERSIONING)
                                     ? 0 : bucket->get_info().versioning_status();
 
-  return del_op.delete_obj(y, dpp, flags & FLAG_LOG_OP);
-}
+  // convert flags to bool params
+  return del_op.delete_obj(y, dpp, flags & FLAG_LOG_OP, flags & FLAG_FORCE_OP);
+} // RadosObject::delete_object
 
 int RadosObject::delete_obj_aio(const DoutPrefixProvider* dpp, RGWObjState* astate,
 				   Completions* aio, bool keep_index_consistent,

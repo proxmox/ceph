@@ -44,11 +44,14 @@ Create a volume by running the following command:
 
 .. prompt:: bash #
 
-   ceph fs volume create <vol_name> [placement]
+   ceph fs volume create <vol_name> [placement] [--data-pool <data-pool-name>] [--meta-pool <metadata-pool-name>]
 
-This creates a CephFS file system and its data and metadata pools. This command
-can also deploy MDS daemons for the filesystem using a Ceph Manager orchestrator
-module (for example Rook). See :doc:`/mgr/orchestrator`.
+This creates a CephFS file system and its data and metadata pools. Alternately,
+if the data pool and/or metadata pool needed for creating a CephFS volume
+already exist, these pool names can be passed to this command so that the
+volume is created using these existing pools. This command can also deploy MDS
+daemons for the filesystem using a Ceph Manager orchestrator module (for
+example Rook). See :doc:`/mgr/orchestrator`.
 
 ``<vol_name>`` is the volume name (an arbitrary string). ``[placement]`` is an
 optional string that specifies the :ref:`orchestrator-cli-placement-spec` for
@@ -527,6 +530,15 @@ otherwise fail (if the snapshot did not exist).
 
 .. note:: if the last snapshot within a snapshot retained subvolume is removed, the subvolume is also removed
 
+Fetching Path of a Snapshot of a Subvolume
+------------------------------------------
+Use a command of the following form to fetch the absolute path of a snapshot of
+a subvolume:
+
+.. prompt:: base #
+
+    ceph fs subvolume snapshot getpath <volname> <subvol_name> <snap_name> [<group_name>]
+
 Listing the Snapshots of a Subvolume
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -829,6 +841,32 @@ Configure the maximum number of concurrent clone operations. The default is 4:
 
    ceph config set mgr mgr/volumes/max_concurrent_clones <value>
 
+Pause the threads that asynchronously purge trashed subvolumes. This option is
+useful during cluster recovery scenarios:
+
+.. prompt:: bash #
+
+    ceph config set mgr/volumes/pause_purging true
+
+To resume purging threads:
+
+.. prompt:: bash #
+
+    ceph config set mgr/volumes/pause_purging false
+
+Pause the threads that asynchronously clone subvolume snapshots. This option is
+useful during cluster recovery scenarios:
+
+.. prompt:: bash #
+
+    ceph config set mgr/volumes/pause_cloning true
+
+To resume cloning threads:
+
+.. prompt:: bash #
+
+    ceph config set mgr/volumes/pause_cloning false
+
 Configure the ``snapshot_clone_no_wait`` option:
 
 The ``snapshot_clone_no_wait`` config option is used to reject clone-creation
@@ -906,7 +944,8 @@ services on the Ceph cluster accessed through this plugin.
 Before resorting to a measure as drastic as this, it is a good idea to try less
 drastic measures and then assess if the file system experience has improved due
 to it. One example of such less drastic measure is to disable asynchronous
-threads launched by volumes plugins for cloning and purging trash.
+threads launched by volumes plugins for cloning and purging trash. For details
+on these see: :ref:`Pause Purge threads<pause-purge-threads>` and :ref:`Pause Clone Threads<pause-clone-threads>`.
 
 
 .. _manila: https://github.com/openstack/manila

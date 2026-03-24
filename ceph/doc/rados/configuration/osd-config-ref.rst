@@ -50,7 +50,9 @@ automatically.
 When using Filestore, the journal size should be at least twice the product of the expected drive
 speed multiplied by ``filestore_max_sync_interval``. However, the most common
 practice is to partition the journal drive (often an SSD), and mount it such
-that Ceph uses the entire partition for the journal.
+that Ceph uses the entire partition for the journal. Note that Filestore has been
+deprecated for several releases and any legacy Filestore OSDs should be migrated
+to BlueStore.
 
 .. confval:: osd_uuid
 .. confval:: osd_data
@@ -429,6 +431,10 @@ perform well in a degraded state.
 .. confval:: osd_recovery_sleep_hdd
 .. confval:: osd_recovery_sleep_ssd
 .. confval:: osd_recovery_sleep_hybrid
+.. confval:: osd_recovery_sleep_degraded
+.. confval:: osd_recovery_sleep_degraded_hdd
+.. confval:: osd_recovery_sleep_degraded_ssd
+.. confval:: osd_recovery_sleep_degraded_hybrid
 .. confval:: osd_recovery_priority
 
 Tiering
@@ -455,8 +461,8 @@ Miscellaneous
 .. _pool: ../../operations/pools
 .. _Configuring Monitor/OSD Interaction: ../mon-osd-interaction
 .. _Monitoring OSDs and PGs: ../../operations/monitoring-osd-pg#peering
-.. _mClock: ../mclock-config-ref.rst
-.. _mClock backfill: ../mclock-config-ref.rst#recovery-backfill-options
+.. _mClock: ../mclock-config-ref
+.. _mClock backfill: ../mclock-config-ref#recovery-backfill-options
 .. _Pool & PG Config Reference: ../pool-pg-config-ref
 .. _Journal Config Reference: ../journal-ref
 .. _cache target dirty high ratio: ../../operations/pools#cache-target-dirty-high-ratio

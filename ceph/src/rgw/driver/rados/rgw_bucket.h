@@ -207,7 +207,8 @@ public:
   static RGWBucketInstanceMetadataHandlerBase *alloc(rgw::sal::Driver* driver);
 };
 
-extern int rgw_remove_object(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver, rgw::sal::Bucket* bucket, rgw_obj_key& key);
+extern int rgw_remove_object(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver, rgw::sal::Bucket* bucket, rgw_obj_key& key,
+			     const bool force = false);
 
 extern int rgw_object_get_attr(rgw::sal::Driver* driver, rgw::sal::Object* obj,
 			       const char* attr_name, bufferlist& out_bl,
@@ -330,9 +331,11 @@ public:
   int init(rgw::sal::Driver* storage, RGWBucketAdminOpState& op_state, optional_yield y,
              const DoutPrefixProvider *dpp, std::string *err_msg = NULL);
 
-  int check_bad_index_multipart(RGWBucketAdminOpState& op_state,
-              RGWFormatterFlusher& flusher,
-              const DoutPrefixProvider *dpp, std::string *err_msg = NULL);
+  int check_bad_index_multipart(rgw::sal::RadosStore* const rados_store,
+				RGWBucketAdminOpState& op_state,
+				RGWFormatterFlusher& flusher,
+				const DoutPrefixProvider *dpp,
+				std::string *err_msg = NULL);
 
   int check_object_index(const DoutPrefixProvider *dpp, 
                          RGWBucketAdminOpState& op_state,

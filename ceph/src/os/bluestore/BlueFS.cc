@@ -436,6 +436,7 @@ void BlueFS::_shutdown_logger()
 {
   cct->get_perfcounters_collection()->remove(logger);
   delete logger;
+  logger = nullptr;
 }
 
 void BlueFS::_update_logger_stats()
@@ -455,15 +456,34 @@ void BlueFS::_update_logger_stats()
 }
 
 int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
-                             uint64_t reserved,
                              bluefs_shared_alloc_context_t* _shared_alloc)
 {
+  uint64_t reserved;
+  string dev_name;
+  switch(id) {
+    case BDEV_WAL:
+    case BDEV_NEWWAL:
+      reserved = BDEV_LABEL_BLOCK_SIZE;
+      dev_name = "wal";
+      break;
+    case BDEV_DB:
+    case BDEV_NEWDB:
+      reserved = DB_SUPER_RESERVED;
+      dev_name = "db";
+      break;
+    case BDEV_SLOW:
+      reserved = 0;
+      dev_name = "slow";
+      break;
+    default:
+      ceph_assert(false);
+  }
   dout(10) << __func__ << " bdev " << id << " path " << path << " "
-           << reserved << dendl;
+           << " reserved " << reserved << dendl;
   ceph_assert(id < bdev.size());
   ceph_assert(bdev[id] == NULL);
   BlockDevice *b = BlockDevice::create(cct, path, NULL, NULL,
-				       discard_cb[id], static_cast<void*>(this));
+				       discard_cb[id], static_cast<void*>(this), dev_name.c_str());
   block_reserved[id] = reserved;
   if (_shared_alloc) {
     b->set_no_exclusive_lock();
@@ -574,16 +594,17 @@ void BlueFS::dump_perf_counters(Formatter *f)
 void BlueFS::dump_block_extents(ostream& out)
 {
   for (unsigned i = 0; i < MAX_BDEV; ++i) {
-    if (!bdev[i]) {
+    if (!bdev[i] || !alloc[i]) {
       continue;
     }
-    auto total = get_total(i);
+    auto total = get_total(i) + block_reserved[i];
     auto free = get_free(i);
 
     out << i << " : device size 0x" << std::hex << total
+        << "(" << byte_u_t(total) << ")"
         << " : using 0x" << total - free
-	<< std::dec << "(" << byte_u_t(total - free) << ")";
-    out << "\n";
+        << "(" << byte_u_t(total - free) << ")"
+        << std::dec << std::endl;
   }
 }
 
@@ -727,6 +748,7 @@ void BlueFS::_init_alloc()
               << ", allocator name " << name
               << ", allocator type " << cct->_conf->bluefs_allocator
               << ", capacity 0x" << bdev[id]->get_size()
+              << ", reserved 0x" << block_reserved[id]
               << ", block size 0x" << alloc_size[id]
               << std::dec << dendl;
       alloc[id] = Allocator::create(cct, cct->_conf->bluefs_allocator,
@@ -3510,7 +3532,7 @@ int BlueFS::_flush_data(FileWriter *h, uint64_t offset, uint64_t length, bool bu
     }
     h->dirty_devs[p->bdev] = true;
     if (p->bdev == BDEV_SLOW) {
-      bytes_written_slow += t.length();
+      bytes_written_slow += x_len;
     }
 
     bloff += x_len;
@@ -3714,10 +3736,12 @@ int BlueFS::truncate(FileWriter *h, uint64_t offset)/*_WF_L*/
         changed_extents = true;
         ++p;
       } else {
-        // cut_off > p->length means that we misaligned the extent
-        ceph_assert(cut_off == p->length);
+        // Usually cut_off == p->length.
+        // Case cut_off > p->length means that we misaligned the extent
+        // or alloc size changed in the meantime.
+        // In both cases just leave extent untouched.
         fnode.allocated = (offset - x_off) + p->length;
-        ++p; // leave extent untouched
+        ++p;
       }
       while (p != fnode.extents.end()) {
         dirty.pending_release[p->bdev].insert(p->offset, p->length);
@@ -3906,8 +3930,9 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
   }
   if (alloc_len < 0 || alloc_len < need) {
     if (alloc[id]) {
-      if (alloc_len > 0) {
+      if (extents.size()) {
         alloc[id]->release(extents);
+	extents.clear();
       }
       if (!was_cooldown && shared) {
         auto delay_s = cct->_conf->bluefs_failed_shared_alloc_cooldown;

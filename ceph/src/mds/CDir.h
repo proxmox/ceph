@@ -346,6 +346,7 @@ public:
   dentry_key_map::iterator begin() { return items.begin(); }
   dentry_key_map::iterator end() { return items.end(); }
   dentry_key_map::iterator lower_bound(dentry_key_t key) { return items.lower_bound(key); }
+  dentry_key_map::iterator upper_bound(dentry_key_t key) { return items.upper_bound(key); }
 
   unsigned get_num_head_items() const { return num_head_items; }
   unsigned get_num_head_null() const { return num_head_null; }
@@ -547,6 +548,16 @@ public:
   void unfreeze_dir();
 
   void maybe_finish_freeze();
+
+  size_t count_unfreeze_tree_waiters() {
+    size_t n = count_unfreeze_dir_waiters();
+    _walk_tree([&n](CDir *dir) {
+        n += dir->count_unfreeze_dir_waiters();
+        return true;
+      });
+    return n;
+  }
+  inline size_t count_unfreeze_dir_waiters() const { return count_waiters(WAIT_UNFREEZE); }
 
   std::pair<bool,bool> is_freezing_or_frozen_tree() const {
     if (freeze_tree_state) {
