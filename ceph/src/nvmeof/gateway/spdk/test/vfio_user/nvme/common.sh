@@ -3,13 +3,8 @@
 #  All rights reserved.
 
 function clean_vfio_user() {
-	trap - ERR
-	print_backtrace
-	set +e
-	error "Error on $1 $2"
-	vm_kill_all
-	vhost_kill 0
-	exit 1
+	vm_kill_all || true
+	vhost_kill 0 || true
 }
 
 function vfio_user_run() {
@@ -23,7 +18,7 @@ function vfio_user_run() {
 	mkdir -p $vfio_user_dir
 
 	timing_enter vfio_user_start
-	$rootdir/build/bin/nvmf_tgt -r $vfio_user_dir/rpc.sock -m 0xf &
+	$rootdir/build/bin/nvmf_tgt -r $vfio_user_dir/rpc.sock -m 0xf -s 512 &
 	nvmfpid=$!
 	echo $nvmfpid > $nvmf_pid_file
 

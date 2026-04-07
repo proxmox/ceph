@@ -1,5 +1,5 @@
 /*******************************************************************************
- Copyright (c) 2019-2022, Intel Corporation
+ Copyright (c) 2019-2023, Intel Corporation
 
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
@@ -30,7 +30,8 @@
 
 #define CLEAR_SCRATCH_GPS clear_scratch_gps
 
-void force_memset_zero(void *mem, const size_t size);
+void
+force_memset_zero(void *mem, const size_t size);
 
 static inline void
 clear_mem(void *mem, const size_t size)
@@ -38,16 +39,24 @@ clear_mem(void *mem, const size_t size)
         force_memset_zero(mem, size);
 }
 
+void
+force_memset_zero_vol(volatile void *mem, const size_t size);
+
 static inline void
 clear_var(void *var, const size_t size)
 {
         force_memset_zero(var, size);
 }
 
-void clear_scratch_gps(void);
-void clear_scratch_xmms_sse(void);
-void clear_scratch_xmms_avx(void);
-void clear_scratch_ymms(void);
-void clear_scratch_zmms(void);
+void
+clear_scratch_gps(void);
+void
+clear_scratch_xmms_sse(void);
+void
+clear_scratch_xmms_avx(void);
+void
+clear_scratch_ymms(void);
+void
+clear_scratch_zmms(void);
 
 #endif /* CLEAR_REGS_H */

@@ -1,18 +1,15 @@
 /**
- * Utilities to tedious tasks with LBAs, such as generating and validating ranges of them
+ * SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
  *
- * Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @file libxnvme_lba.h
+ * @headerfile libxnvme_lba.h
  */
-#ifndef __LIBXNVME_LBA_H
-#define __LIBXNVME_LBA_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-#include <libxnvme.h>
+struct xnvme_lba_range_attr {
+	bool is_zoned; ///< Whether the range covers a zone [zslba, zslba + cap]
+	bool is_valid; ///< Whether the range is valid
+};
 
 /**
  * Representation of a range of logical-block-addresses aka LBAs
@@ -24,12 +21,7 @@ struct xnvme_lba_range {
 	uint64_t elba;   ///< Range end-LBA; ends at and includes this address
 	uint32_t naddrs; ///< Number of addresses in range [slba, elba]
 	uint64_t nbytes; ///< Number of bytes covered by [slba, elba]
-
-	struct {
-		uint32_t is_zoned : 1; ///< Whether the range covers a zone [zslba, zslba + cap]
-		uint32_t is_valid : 1; ///< Whether the range is valid
-		uint32_t rsvd     : 30;
-	} attr;
+	struct xnvme_lba_range_attr attr;
 };
 
 /**
@@ -105,9 +97,3 @@ xnvme_lba_range_from_slba_naddrs(struct xnvme_dev *dev, uint64_t slba, uint64_t 
  */
 struct xnvme_lba_range
 xnvme_lba_range_from_zdescr(struct xnvme_dev *dev, struct xnvme_spec_znd_descr *zdescr);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __LIBXNVME_H */

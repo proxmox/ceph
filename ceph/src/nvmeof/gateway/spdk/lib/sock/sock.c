@@ -7,14 +7,22 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/sock.h"
-#include "spdk_internal/sock.h"
+#include "spdk_internal/sock_module.h"
 #include "spdk/log.h"
 #include "spdk/env.h"
 #include "spdk/util.h"
+#include "spdk/trace.h"
+#include "spdk/thread.h"
+#include "spdk/string.h"
+#include "spdk_internal/trace_defs.h"
 
 #define SPDK_SOCK_DEFAULT_PRIORITY 0
 #define SPDK_SOCK_DEFAULT_ZCOPY true
 #define SPDK_SOCK_DEFAULT_ACK_TIMEOUT 0
+#define SPDK_SOCK_DEFAULT_CONNECT_TIMEOUT 0
+
+#define PORTNUMLEN 32
+#define MAX_TMPBUF 1024
 
 #define SPDK_SOCK_OPTS_FIELD_OK(opts, field) (offsetof(struct spdk_sock_opts, field) + sizeof(opts->field) <= (opts->opts_size))
 
@@ -229,6 +237,32 @@ spdk_sock_getaddr(struct spdk_sock *sock, char *saddr, int slen, uint16_t *sport
 	return sock->net_impl->getaddr(sock, saddr, slen, sport, caddr, clen, cport);
 }
 
+const char *
+spdk_sock_get_interface_name(struct spdk_sock *sock)
+{
+	if (sock->net_impl->get_interface_name) {
+		return sock->net_impl->get_interface_name(sock);
+	} else {
+		return NULL;
+	}
+}
+
+int32_t
+spdk_sock_get_numa_id(struct spdk_sock *sock)
+{
+	if (sock->net_impl->get_numa_id) {
+		return sock->net_impl->get_numa_id(sock);
+	} else {
+		return SPDK_ENV_NUMA_ID_ANY;
+	}
+}
+
+const char *
+spdk_sock_get_impl_name(struct spdk_sock *sock)
+{
+	return sock->net_impl->name;
+}
+
 void
 spdk_sock_get_default_opts(struct spdk_sock_opts *opts)
 {
@@ -252,6 +286,18 @@ spdk_sock_get_default_opts(struct spdk_sock_opts *opts)
 
 	if (SPDK_SOCK_OPTS_FIELD_OK(opts, impl_opts_size)) {
 		opts->impl_opts_size = 0;
+	}
+
+	if (SPDK_SOCK_OPTS_FIELD_OK(opts, src_addr)) {
+		opts->src_addr = NULL;
+	}
+
+	if (SPDK_SOCK_OPTS_FIELD_OK(opts, src_port)) {
+		opts->src_port = 0;
+	}
+
+	if (SPDK_SOCK_OPTS_FIELD_OK(opts, connect_timeout)) {
+		opts->connect_timeout = SPDK_SOCK_DEFAULT_CONNECT_TIMEOUT;
 	}
 }
 
@@ -286,9 +332,220 @@ sock_init_opts(struct spdk_sock_opts *opts, struct spdk_sock_opts *opts_user)
 		opts->impl_opts = opts_user->impl_opts;
 	}
 
-	if (SPDK_SOCK_OPTS_FIELD_OK(opts, impl_opts)) {
+	if (SPDK_SOCK_OPTS_FIELD_OK(opts, impl_opts_size)) {
 		opts->impl_opts_size = opts_user->impl_opts_size;
 	}
+
+	if (SPDK_SOCK_OPTS_FIELD_OK(opts, src_addr)) {
+		opts->src_addr = opts_user->src_addr;
+	}
+
+	if (SPDK_SOCK_OPTS_FIELD_OK(opts, src_port)) {
+		opts->src_port = opts_user->src_port;
+	}
+
+	if (SPDK_SOCK_OPTS_FIELD_OK(opts, connect_timeout)) {
+		opts->connect_timeout = opts_user->connect_timeout;
+	}
+}
+
+struct addrinfo *
+spdk_sock_posix_getaddrinfo(const char *ip, int port)
+{
+	struct addrinfo *res, hints = {};
+	char portnum[PORTNUMLEN];
+	char buf[MAX_TMPBUF];
+	char *p;
+	int rc;
+
+	if (ip == NULL) {
+		return NULL;
+	}
+
+	if (ip[0] == '[') {
+		snprintf(buf, sizeof(buf), "%s", ip + 1);
+		p = strchr(buf, ']');
+		if (p != NULL) {
+			*p = '\0';
+		}
+
+		ip = (const char *) &buf[0];
+	}
+
+	snprintf(portnum, sizeof portnum, "%d", port);
+	hints.ai_family = PF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_NUMERICSERV;
+	hints.ai_flags |= AI_PASSIVE;
+	hints.ai_flags |= AI_NUMERICHOST;
+	rc = getaddrinfo(ip, portnum, &hints, &res);
+	if (rc != 0) {
+		SPDK_ERRLOG("getaddrinfo() failed %s (%d)\n", gai_strerror(rc), rc);
+		return NULL;
+	}
+
+	return res;
+}
+
+int
+spdk_sock_posix_fd_create(struct addrinfo *res, struct spdk_sock_opts *opts,
+			  struct spdk_sock_impl_opts *impl_opts)
+{
+	int fd;
+	int val = 1;
+	int rc, sz;
+#if defined(__linux__)
+	int to;
+#endif
+
+	fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+	if (fd < 0) {
+		return -1;
+	}
+
+	sz = impl_opts->recv_buf_size;
+	rc = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof(sz));
+	if (rc) {
+		/* Not fatal */
+	}
+
+	sz = impl_opts->send_buf_size;
+	rc = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));
+	if (rc) {
+		/* Not fatal */
+	}
+
+	rc = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof val);
+	if (rc != 0) {
+		close(fd);
+		return -1;
+	}
+	rc = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof val);
+	if (rc != 0) {
+		close(fd);
+		return -1;
+	}
+
+#if defined(SO_PRIORITY)
+	if (opts->priority) {
+		rc = setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &opts->priority, sizeof val);
+		if (rc != 0) {
+			close(fd);
+			return -1;
+		}
+	}
+#endif
+
+	if (res->ai_family == AF_INET6) {
+		rc = setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &val, sizeof val);
+		if (rc != 0) {
+			close(fd);
+			return -1;
+		}
+	}
+
+	if (opts->ack_timeout) {
+#if defined(__linux__)
+		to = opts->ack_timeout;
+		rc = setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &to, sizeof(to));
+		if (rc != 0) {
+			close(fd);
+			return -1;
+		}
+#else
+		SPDK_WARNLOG("TCP_USER_TIMEOUT is not supported.\n");
+#endif
+	}
+
+	return fd;
+}
+
+int
+spdk_sock_posix_fd_connect(int fd, struct addrinfo *res, struct spdk_sock_opts *opts)
+{
+	char portnum[PORTNUMLEN];
+	const char *src_addr;
+	uint16_t src_port;
+	struct addrinfo hints, *src_ai;
+	int rc, err;
+	struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+	socklen_t len = sizeof(err);
+
+	/* Socket address may be not assigned immediately during bind() and
+	 * can return EINPROGRESS if function is invoked with O_NONBLOCK set. */
+	if (spdk_fd_clear_nonblock(fd)) {
+		return -1;
+	}
+
+	src_addr = SPDK_GET_FIELD(opts, src_addr, NULL, opts->opts_size);
+	src_port = SPDK_GET_FIELD(opts, src_port, 0, opts->opts_size);
+	if (src_addr != NULL || src_port != 0) {
+		snprintf(portnum, sizeof(portnum), "%"PRIu16, src_port);
+		memset(&hints, 0, sizeof hints);
+		hints.ai_family = AF_UNSPEC;
+		hints.ai_socktype = SOCK_STREAM;
+		hints.ai_flags = AI_NUMERICSERV | AI_NUMERICHOST | AI_PASSIVE;
+		rc = getaddrinfo(src_addr, src_port > 0 ? portnum : NULL, &hints, &src_ai);
+		if (rc != 0 || src_ai == NULL) {
+			SPDK_ERRLOG("getaddrinfo() failed %s (%d)\n", rc != 0 ? gai_strerror(rc) : "", rc);
+			return -1;
+		}
+
+		rc = bind(fd, src_ai->ai_addr, src_ai->ai_addrlen);
+		if (rc != 0) {
+			SPDK_ERRLOG("bind() failed errno %d (%s:%s)\n", errno, src_addr ? src_addr : "", portnum);
+			freeaddrinfo(src_ai);
+			return -1;
+		}
+
+		freeaddrinfo(src_ai);
+	}
+
+	if (spdk_fd_set_nonblock(fd)) {
+		return -1;
+	}
+
+	rc = connect(fd, res->ai_addr, res->ai_addrlen);
+	if (rc != 0 && errno != EINPROGRESS) {
+		SPDK_ERRLOG("connect() failed, errno = %d\n", errno);
+		return 1;
+	}
+
+	assert(opts->connect_timeout <= INT_MAX);
+	rc = poll(&pfd, 1, opts->connect_timeout ? (int)opts->connect_timeout : -1);
+	if (rc < 0) {
+		SPDK_ERRLOG("poll() failed, errno = %d\n", errno);
+		return -1;
+	}
+
+	if (rc == 0) {
+		SPDK_ERRLOG("poll() timeout after %d ms\n", opts->connect_timeout);
+		return -1;
+	}
+
+	rc = getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+	if (rc != 0) {
+		SPDK_ERRLOG("getsockopt() failed, errno = %d\n", errno);
+		return -1;
+	}
+
+	if (err) {
+		SPDK_ERRLOG("connect() failed, err = %d\n", err);
+		return 1;
+	}
+
+	if (!(pfd.revents & POLLOUT)) {
+		SPDK_ERRLOG("poll() returned %d event(s) %s%s%sbut not POLLOUT\n", rc,
+			    pfd.revents & POLLERR ? "POLLERR, " : "", pfd.revents & POLLHUP ? "POLLHUP, " : "",
+			    pfd.revents & POLLNVAL ? "POLLNVAL, " : "");
+		return -1;
+	}
+
+	if (spdk_fd_clear_nonblock(fd)) {
+		return -1;
+	}
+
+	return 0;
 }
 
 struct spdk_sock *
@@ -327,6 +584,11 @@ spdk_sock_connect_ext(const char *ip, int port, const char *_impl_name, struct s
 
 		SPDK_DEBUGLOG(sock, "Creating a client socket using impl %s\n", impl->name);
 		sock_init_opts(&opts_local, opts);
+		if (opts_local.connect_timeout > INT_MAX) {
+			SPDK_ERRLOG("connect_timeout opt cannot exceed INT_MAX\n");
+			return NULL;
+		}
+
 		sock = impl->connect(ip, port, &opts_local);
 		if (sock != NULL) {
 			/* Copy the contents, both the two structures are the same ABI version */
@@ -469,25 +731,6 @@ spdk_sock_readv(struct spdk_sock *sock, struct iovec *iov, int iovcnt)
 	return sock->net_impl->readv(sock, iov, iovcnt);
 }
 
-void
-spdk_sock_readv_async(struct spdk_sock *sock, struct spdk_sock_request *req)
-{
-	assert(req->cb_fn != NULL);
-
-	if (spdk_unlikely(sock == NULL || sock->flags.closed)) {
-		req->cb_fn(req->cb_arg, -EBADF);
-		return;
-	}
-
-	/* The socket needs to be part of a poll group */
-	if (spdk_unlikely(sock->group_impl == NULL)) {
-		req->cb_fn(req->cb_arg, -EPERM);
-		return;
-	}
-
-	sock->net_impl->readv_async(sock, req);
-}
-
 ssize_t
 spdk_sock_writev(struct spdk_sock *sock, struct iovec *iov, int iovcnt)
 {
@@ -510,6 +753,22 @@ spdk_sock_writev_async(struct spdk_sock *sock, struct spdk_sock_request *req)
 	}
 
 	sock->net_impl->writev_async(sock, req);
+}
+
+int
+spdk_sock_recv_next(struct spdk_sock *sock, void **buf, void **ctx)
+{
+	if (sock == NULL || sock->flags.closed) {
+		errno = EBADF;
+		return -1;
+	}
+
+	if (sock->group_impl == NULL) {
+		errno = ENOTSUP;
+		return -1;
+	}
+
+	return sock->net_impl->recv_next(sock, buf, ctx);
 }
 
 int
@@ -572,6 +831,7 @@ spdk_sock_group_create(void *ctx)
 	}
 
 	STAILQ_INIT(&group->group_impls);
+	STAILQ_INIT(&group->pool);
 
 	STAILQ_FOREACH_FROM(impl, &g_net_impls, link) {
 		group_impl = impl->group_impl_create();
@@ -660,6 +920,37 @@ spdk_sock_group_remove_sock(struct spdk_sock_group *group, struct spdk_sock *soc
 	}
 
 	return rc;
+}
+
+int
+spdk_sock_group_provide_buf(struct spdk_sock_group *group, void *buf, size_t len, void *ctx)
+{
+	struct spdk_sock_group_provided_buf *provided;
+
+	provided = (struct spdk_sock_group_provided_buf *)buf;
+
+	provided->len = len;
+	provided->ctx = ctx;
+	STAILQ_INSERT_HEAD(&group->pool, provided, link);
+
+	return 0;
+}
+
+size_t
+spdk_sock_group_get_buf(struct spdk_sock_group *group, void **buf, void **ctx)
+{
+	struct spdk_sock_group_provided_buf *provided;
+
+	provided = STAILQ_FIRST(&group->pool);
+	if (provided == NULL) {
+		*buf = NULL;
+		return 0;
+	}
+	STAILQ_REMOVE_HEAD(&group->pool, link);
+
+	*buf = provided;
+	*ctx = provided->ctx;
+	return provided->len;
 }
 
 int
@@ -862,12 +1153,6 @@ spdk_sock_write_config_json(struct spdk_json_write_ctx *w)
 			spdk_json_write_named_uint32(w, "zerocopy_threshold", opts.zerocopy_threshold);
 			spdk_json_write_named_uint32(w, "tls_version", opts.tls_version);
 			spdk_json_write_named_bool(w, "enable_ktls", opts.enable_ktls);
-			if (opts.psk_key) {
-				spdk_json_write_named_string(w, "psk_key", opts.psk_key);
-			}
-			if (opts.psk_identity) {
-				spdk_json_write_named_string(w, "psk_identity", opts.psk_identity);
-			}
 			spdk_json_write_object_end(w);
 			spdk_json_write_object_end(w);
 		} else {
@@ -879,24 +1164,9 @@ spdk_sock_write_config_json(struct spdk_json_write_ctx *w)
 }
 
 void
-spdk_net_impl_register(struct spdk_net_impl *impl, int priority)
+spdk_net_impl_register(struct spdk_net_impl *impl)
 {
-	struct spdk_net_impl *cur, *prev;
-
-	impl->priority = priority;
-	prev = NULL;
-	STAILQ_FOREACH(cur, &g_net_impls, link) {
-		if (impl->priority > cur->priority) {
-			break;
-		}
-		prev = cur;
-	}
-
-	if (prev) {
-		STAILQ_INSERT_AFTER(&g_net_impls, prev, impl, link);
-	} else {
-		STAILQ_INSERT_HEAD(&g_net_impls, impl, link);
-	}
+	STAILQ_INSERT_HEAD(&g_net_impls, impl, link);
 }
 
 int
@@ -931,4 +1201,80 @@ spdk_sock_set_default_impl(const char *impl_name)
 	return 0;
 }
 
+const char *
+spdk_sock_get_default_impl(void)
+{
+	if (g_default_impl) {
+		return g_default_impl->name;
+	}
+
+	return NULL;
+}
+
+int
+spdk_sock_group_register_interrupt(struct spdk_sock_group *group, uint32_t events,
+				   spdk_interrupt_fn fn,
+				   void *arg, const char *name)
+{
+	struct spdk_sock_group_impl *group_impl = NULL;
+	int rc;
+
+	assert(group != NULL);
+	assert(fn != NULL);
+
+	STAILQ_FOREACH_FROM(group_impl, &group->group_impls, link) {
+		rc = group_impl->net_impl->group_impl_register_interrupt(group_impl, events, fn, arg, name);
+		if (rc != 0) {
+			return rc;
+		}
+	}
+
+	return 0;
+}
+
+void
+spdk_sock_group_unregister_interrupt(struct spdk_sock_group *group)
+{
+	struct spdk_sock_group_impl *group_impl = NULL;
+
+	assert(group != NULL);
+
+	STAILQ_FOREACH_FROM(group_impl, &group->group_impls, link) {
+		group_impl->net_impl->group_impl_unregister_interrupt(group_impl);
+	}
+}
+
 SPDK_LOG_REGISTER_COMPONENT(sock)
+
+static void
+sock_trace(void)
+{
+	struct spdk_trace_tpoint_opts opts[] = {
+		{
+			"SOCK_REQ_QUEUE", TRACE_SOCK_REQ_QUEUE,
+			OWNER_TYPE_SOCK, OBJECT_SOCK_REQ, 1,
+			{
+				{ "ctx", SPDK_TRACE_ARG_TYPE_PTR, 8 },
+			}
+		},
+		{
+			"SOCK_REQ_PEND", TRACE_SOCK_REQ_PEND,
+			OWNER_TYPE_SOCK, OBJECT_SOCK_REQ, 0,
+			{
+				{ "ctx", SPDK_TRACE_ARG_TYPE_PTR, 8 },
+			}
+		},
+		{
+			"SOCK_REQ_COMPLETE", TRACE_SOCK_REQ_COMPLETE,
+			OWNER_TYPE_SOCK, OBJECT_SOCK_REQ, 0,
+			{
+				{ "ctx", SPDK_TRACE_ARG_TYPE_PTR, 8 },
+			}
+		},
+	};
+
+	spdk_trace_register_owner_type(OWNER_TYPE_SOCK, 's');
+	spdk_trace_register_object(OBJECT_SOCK_REQ, 's');
+	spdk_trace_register_description_ext(opts, SPDK_COUNTOF(opts));
+}
+SPDK_TRACE_REGISTER_FN(sock_trace, "sock", TRACE_GROUP_SOCK)

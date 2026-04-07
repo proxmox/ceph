@@ -70,21 +70,13 @@ if [ -z "$device" ]; then
 	exit 1
 fi
 
-if [[ -z $SPDK_TEST_FTL_NIGHTLY ]]; then
-	run_test "ftl_fio_basic" $testdir/fio.sh $device $nv_cache basic
-	run_test "ftl_bdevperf" $testdir/bdevperf.sh $device $nv_cache
-	run_test "ftl_trim" $testdir/trim.sh $device $nv_cache
-	run_test "ftl_restore" $testdir/restore.sh -c $nv_cache $device
-	run_test "ftl_dirty_shutdown" $testdir/dirty_shutdown.sh -c $nv_cache $device
-fi
+run_test "ftl_fio_basic" $testdir/fio.sh $device $nv_cache basic
+run_test "ftl_bdevperf" $testdir/bdevperf.sh $device $nv_cache
+run_test "ftl_trim" $testdir/trim.sh $device $nv_cache
+run_test "ftl_restore" $testdir/restore.sh -c $nv_cache $device
+run_test "ftl_dirty_shutdown" $testdir/dirty_shutdown.sh -c $nv_cache $device
+run_test "ftl_upgrade_shutdown" $testdir/upgrade_shutdown.sh $device $nv_cache
 
-if [ $SPDK_TEST_FTL_EXTENDED -eq 1 ]; then
+if [[ $RUN_NIGHTLY -eq 1 ]]; then
 	run_test "ftl_restore_fast" $testdir/restore.sh -f -c $nv_cache $device
-	run_test "ftl_dirty_shutdown" $testdir/dirty_shutdown.sh -c $nv_cache $device
-	run_test "ftl_write_after_write" $testdir/write_after_write.sh $device $nv_cache
-	run_test "ftl_fio_extended" $testdir/fio.sh $device $nv_cache extended
-fi
-
-if [ $SPDK_TEST_FTL_NIGHTLY -eq 1 ]; then
-	run_test "ftl_fio_nightly" $testdir/fio.sh $device $nv_cache nightly
 fi

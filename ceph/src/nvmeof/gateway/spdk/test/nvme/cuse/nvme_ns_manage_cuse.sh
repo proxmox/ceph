@@ -11,12 +11,7 @@ $rootdir/scripts/setup.sh reset
 scan_nvme_ctrls
 
 # Find bdf that supports Namespace Management
-for ctrl in "${!ctrls[@]}"; do
-	# Check Optional Admin Command Support for Namespace Management
-	(($(get_nvme_ctrl_feature "$ctrl" oacs) & 0x8)) && nvme_name=$ctrl && break
-done
-
-if [[ -z $nvme_name ]]; then
+if ! nvme_name=$(get_nvme_with_ns_management); then
 	echo "No NVMe device supporting Namespace management found"
 	$rootdir/scripts/setup.sh
 	exit 1
@@ -40,7 +35,7 @@ function reset_nvme_if_aer_unsupported() {
 
 function remove_all_namespaces() {
 	info_print "delete all namespaces"
-	# Cant globally detach all namespaces ... must do so one by one
+	# Can't globally detach all namespaces ... must do so one by one
 	for nsid in "${nsids[@]}"; do
 		info_print "removing nsid=${nsid}"
 		$NVME_CMD detach-ns ${nvme_dev} -n ${nsid} -c ${cntlid} || true

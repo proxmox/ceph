@@ -85,10 +85,10 @@ STACK_SPACE     equ _GPR_SAVE + _GPR_SAVE_SIZE + _ALIGN_SIZE
 
 %define APPEND(a,b) a %+ b
 
-; JOB* md5_mb_mgr_flush_avx(MB_MGR_HMAC_OOO *state)
+; JOB* _md5_mb_mgr_flush_avx(MB_MGR_HMAC_OOO *state)
 ; arg 1 : rcx : state
-mk_global md5_mb_mgr_flush_avx, function
-md5_mb_mgr_flush_avx:
+mk_global _md5_mb_mgr_flush_avx, function, internal
+_md5_mb_mgr_flush_avx:
 	endbranch
         sub     rsp, STACK_SPACE
         mov     [rsp + _GPR_SAVE + 8*0], rbx
@@ -186,7 +186,7 @@ len_is_0:
 
 	mov	job_rax, [lane_data + _job_in_lane]
 	mov	qword [lane_data + _job_in_lane], 0
-	mov	dword [job_rax + _status], STS_COMPLETED
+	mov	dword [job_rax + _status], ISAL_STS_COMPLETED
 	mov	unused_lanes, [state + _unused_lanes]
 	shl	unused_lanes, 4
 	or	unused_lanes, idx

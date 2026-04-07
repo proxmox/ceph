@@ -7,7 +7,7 @@
 /* NVMF FC LS Command Processor Unit Test */
 
 #include "spdk/env.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "spdk/nvmf.h"
 #include "spdk/endian.h"
 #include "spdk/trace.h"
@@ -34,6 +34,7 @@ DEFINE_STUB(spdk_nvmf_subsystem_host_allowed, bool,
 	    (struct spdk_nvmf_subsystem *subsystem, const char *hostnqn), true);
 DEFINE_STUB_V(spdk_nvme_trid_populate_transport, (struct spdk_nvme_transport_id *trid,
 		enum spdk_nvme_transport_type trtype));
+DEFINE_STUB(spdk_nvmf_qpair_disconnect, int, (struct spdk_nvmf_qpair *qpair), 0);
 DEFINE_STUB(rte_hash_del_key, int32_t, (const struct rte_hash *h, const void *key), 0);
 DEFINE_STUB(rte_hash_lookup_data, int, (const struct rte_hash *h, const void *key, void **data),
 	    -ENOENT);
@@ -76,7 +77,7 @@ int
 spdk_nvmf_poll_group_add(struct spdk_nvmf_poll_group *group,
 			 struct spdk_nvmf_qpair *qpair)
 {
-	qpair->state = SPDK_NVMF_QPAIR_ACTIVE;
+	qpair->state = SPDK_NVMF_QPAIR_ENABLED;
 	return 0;
 }
 
@@ -110,13 +111,6 @@ struct spdk_nvmf_transport *
 spdk_nvmf_tgt_get_transport(struct spdk_nvmf_tgt *tgt, const char *transport_name)
 {
 	return &g_nvmf_transport;
-}
-
-int
-spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_cb cb_fn, void *ctx)
-{
-	cb_fn(ctx);
-	return 0;
 }
 
 void
@@ -886,7 +880,6 @@ main(int argc, char **argv)
 		}
 	}
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("FC-NVMe LS", ls_tests_init, ls_tests_fini);
@@ -928,9 +921,7 @@ main(int argc, char **argv)
 		}
 	}
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

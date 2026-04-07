@@ -1,20 +1,13 @@
 #
-# Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2019-2023 Intel Corporation
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 import random
 import string
 import enum
 from functools import reduce
-from ctypes import (
-    c_uint64,
-    c_uint32,
-    c_uint16,
-    c_uint8,
-    c_int,
-    c_uint
-)
+from ctypes import c_uint64, c_uint32, c_uint16, c_uint8, c_int, c_uint
 
 
 class Range:
@@ -75,17 +68,20 @@ class RandomStringGenerator:
 
     def __string_generator(self, len_range, extra_chars):
         while True:
-            for t in [string.digits,
-                      string.ascii_letters + string.digits,
-                      string.ascii_lowercase,
-                      string.ascii_uppercase,
-                      string.printable,
-                      string.punctuation,
-                      string.hexdigits,
-                      *extra_chars]:
-                yield ''.join(random.choice(t) for _ in range(
-                    self.random.randint(len_range.min, len_range.max)
-                ))
+            for t in [
+                string.digits,
+                string.ascii_letters + string.digits,
+                string.ascii_lowercase,
+                string.ascii_uppercase,
+                string.printable,
+                string.punctuation,
+                string.hexdigits,
+                *extra_chars,
+            ]:
+                yield "".join(
+                    self.random.choice(t)
+                    for _ in range(self.random.randint(len_range.min, len_range.max))
+                )
 
     def __iter__(self):
         return self

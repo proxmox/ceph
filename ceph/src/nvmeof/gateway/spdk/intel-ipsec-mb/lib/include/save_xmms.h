@@ -1,5 +1,5 @@
 /*******************************************************************************
- Copyright (c) 2012-2022, Intel Corporation
+ Copyright (c) 2012-2023, Intel Corporation
 
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
@@ -30,10 +30,14 @@
 
 #include "intel-ipsec-mb.h"
 
-void save_xmms(imb_uint128_t array[10]);
-void restore_xmms(imb_uint128_t array[10]);
+void
+save_xmms(imb_uint128_t array[10]);
+void
+restore_xmms(imb_uint128_t array[10]);
 
-void save_xmms_avx(imb_uint128_t array[10]);
-void restore_xmms_avx(imb_uint128_t array[10]);
+void
+save_xmms_avx(imb_uint128_t array[10]);
+void
+restore_xmms_avx(imb_uint128_t array[10]);
 
 #endif /* SAVE_XMMS_H */

@@ -1,6 +1,6 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __METADATA_RAW_H__
@@ -63,12 +63,15 @@ struct ocf_metadata_raw {
 	enum ocf_metadata_segment_id metadata_segment; /*!< Metadata segment */
 	enum ocf_metadata_raw_type raw_type; /*!< RAW implementation type */
 
+	bool disabled; /*!< True if this raw container is disabled */
+
 	/**
 	 * @name Metdata elements description
 	 */
 	uint32_t entry_size; /*!< Size of particular entry */
 	uint32_t entries_in_page; /*!< Numbers of entries in one page*/
 	uint64_t entries; /*!< Numbers of entries */
+	bool flapping; /* !< Supports flapping */
 
 	/**
 	 * @name Location on cache device description
@@ -125,11 +128,19 @@ struct raw_iface {
 	void* (*access)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
 			uint32_t entry);
 
-	void (*load_all)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
+	int (*update)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
+			ctx_data_t *data, uint64_t page, uint64_t count);
+
+	void (*zero)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
 			ocf_metadata_end_t cmpl, void *priv);
 
+	void (*load_all)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
+			ocf_metadata_end_t cmpl, void *priv,
+			unsigned flapping_idx);
+
 	void (*flush_all)(ocf_cache_t cache, struct ocf_metadata_raw *raw,
-			ocf_metadata_end_t cmpl, void *priv);
+			ocf_metadata_end_t cmpl, void *priv,
+			unsigned flapping_idx);
 
 	void (*flush_mark)(ocf_cache_t cache, struct ocf_request *req,
 			uint32_t map_idx, int to_state, uint8_t start,
@@ -234,7 +245,6 @@ static inline void *ocf_metadata_raw_wr_access(ocf_cache_t cache,
  * @param cache - Cache instance
  * @param raw - RAW descriptor
  * @param entry - Entry to be get
- * @param data - Data where metadata entry will be copied into
  * @return 0 - Point to accessed data, in case of error NULL
  */
 static inline const void *ocf_metadata_raw_rd_access( ocf_cache_t cache,
@@ -244,18 +254,53 @@ static inline const void *ocf_metadata_raw_rd_access( ocf_cache_t cache,
 }
 
 /**
+ * @brief Update metadata based on cache device I/O
+ *
+ * @param cache - Cache instance
+ * @param raw - RAW descriptor
+ * @param data - Data buffer containing metadata pages
+ * @param page - First metadata page
+ * @param count - Number of metadata pages
+ * @return 0 - Operation success, otherwise error
+ */
+static inline int ocf_metadata_raw_update(ocf_cache_t cache,
+		struct ocf_metadata_raw *raw, ctx_data_t *data,
+		uint64_t page, uint64_t count)
+{
+	return raw->iface->update(cache, raw, data, page, count);
+}
+
+/**
+ * @brief Zero metadata
+ * @details NOTE: this is fo management purposes only, no synchronization with
+ * 		I/O is guarangeed
+ *
+ * @param cache - Cache instance
+ * @param raw - RAW descriptor
+ * @param cmpl - completion callback
+ * @param priv - completion callback private context
+ */
+static inline void ocf_metadata_raw_zero(ocf_cache_t cache,
+		struct ocf_metadata_raw *raw, ocf_metadata_end_t cmpl,
+		void *priv)
+{
+	raw->iface->zero(cache, raw, cmpl, priv);
+}
+
+/**
  * @brief Load all entries from SSD cache (cahce cache)
  *
  * @param cache - Cache instance
  * @param raw - RAW descriptor
  * @param cmpl - Completion callback
  * @param priv - Completion callback context
+ * @param flapping_idx - Index of flapping segment version
  */
 static inline void ocf_metadata_raw_load_all(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw,
-		ocf_metadata_end_t cmpl, void *priv)
+		struct ocf_metadata_raw *raw, ocf_metadata_end_t cmpl,
+		void *priv, unsigned flapping_idx)
 {
-	raw->iface->load_all(cache, raw, cmpl, priv);
+	raw->iface->load_all(cache, raw, cmpl, priv, flapping_idx);
 }
 
 /**
@@ -265,12 +310,13 @@ static inline void ocf_metadata_raw_load_all(ocf_cache_t cache,
  * @param raw - RAW descriptor
  * @param cmpl - Completion callback
  * @param priv - Completion callback context
+ * @param flapping_idx - Index of flapping segment version
  */
 static inline void ocf_metadata_raw_flush_all(ocf_cache_t cache,
-		struct ocf_metadata_raw *raw,
-		ocf_metadata_end_t cmpl, void *priv)
+		struct ocf_metadata_raw *raw, ocf_metadata_end_t cmpl,
+		void *priv, unsigned flapping_idx)
 {
-	raw->iface->flush_all(cache, raw, cmpl, priv);
+	raw->iface->flush_all(cache, raw, cmpl, priv, flapping_idx);
 }
 
 

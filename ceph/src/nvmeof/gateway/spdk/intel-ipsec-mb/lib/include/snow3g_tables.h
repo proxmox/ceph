@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2009-2022, Intel Corporation
+  Copyright (c) 2009-2023, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -31,7 +31,7 @@
 #include <stdint.h>
 #include "constant_lookup.h"
 
-#if defined (AVX) || defined (AVX2)
+#if defined(AVX) || defined(AVX2)
 #define SNOW3G_SAFE_LUT8(table, idx, size) LOOKUP8_AVX(table, idx, size)
 #else /* SSE */
 #define SNOW3G_SAFE_LUT8(table, idx, size) LOOKUP8_SSE(table, idx, size)

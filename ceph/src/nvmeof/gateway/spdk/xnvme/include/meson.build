@@ -1,21 +1,32 @@
+# SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 xnvme_inc = include_directories('.')
 
 install_headers('libxnvme.h')
 install_headers('libxnvme_adm.h')
 install_headers('libxnvme_be.h')
 install_headers('libxnvme_buf.h')
+install_headers('libxnvme_cli.h')
+install_headers('libxnvme_cmd.h')
 install_headers('libxnvme_dev.h')
 install_headers('libxnvme_file.h')
 install_headers('libxnvme_geo.h')
 install_headers('libxnvme_ident.h')
+install_headers('libxnvme_kvs.h')
 install_headers('libxnvme_lba.h')
 install_headers('libxnvme_libconf.h')
+install_headers('libxnvme_mem.h')
 install_headers('libxnvme_nvm.h')
+install_headers('libxnvme_opts.h')
+install_headers('libxnvme_pi.h')
 install_headers('libxnvme_pp.h')
+install_headers('libxnvme_queue.h')
 install_headers('libxnvme_spec.h')
 install_headers('libxnvme_spec_fs.h')
 install_headers('libxnvme_spec_pp.h')
+install_headers('libxnvme_topology.h')
 install_headers('libxnvme_util.h')
 install_headers('libxnvme_ver.h')
 install_headers('libxnvme_znd.h')
-install_headers('libxnvmec.h')

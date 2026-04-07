@@ -43,7 +43,14 @@ import struct
 import syslog
 import copy
 import tempfile
+import sys
+from resource import getpagesize
+from math import log2
 
+PAGE_SIZE = getpagesize()
+PAGE_SHIFT = int(log2(PAGE_SIZE))
+
+UINT32_MAX = 0xffffffff
 UINT64_MAX = 18446744073709551615
 
 # from linux/pci_regs.h and linux/pci_defs.h
@@ -140,8 +147,14 @@ VFIO_USER_DEFAULT_MAX_DATA_XFER_SIZE = (1024 * 1024)
 SERVER_MAX_DATA_XFER_SIZE = VFIO_USER_DEFAULT_MAX_DATA_XFER_SIZE
 SERVER_MAX_MSG_SIZE = SERVER_MAX_DATA_XFER_SIZE + 16 + 16
 
-MAX_DMA_REGIONS = 16
-MAX_DMA_SIZE = (8 * ONE_TB)
+
+def is_32bit():
+    return (1 << 31) - 1 == sys.maxsize
+
+
+MAX_DMA_REGIONS = 64
+# FIXME get from libvfio-user.h
+MAX_DMA_SIZE = sys.maxsize << 1 if is_32bit() else (8 * ONE_TB)
 
 # enum vfio_user_command
 VFIO_USER_VERSION = 1
@@ -398,13 +411,14 @@ class vfio_user_region_io_fds_request(Structure):
 class vfio_user_sub_region_ioeventfd(Structure):
     _pack_ = 1
     _fields_ = [
-        ("offset", c.c_uint64),
+        ("gpa_offset", c.c_uint64),
         ("size", c.c_uint64),
         ("fd_index", c.c_uint32),
         ("type", c.c_uint32),
         ("flags", c.c_uint32),
-        ("padding", c.c_uint32),
-        ("datamatch", c.c_uint64)
+        ("shadow_mem_fd_index", c.c_uint32),
+        ("shadow_offset", c.c_uint64),
+        ("datamatch", c.c_uint64),
     ]
 
 
@@ -584,7 +598,7 @@ vfu_region_access_cb_t = c.CFUNCTYPE(c.c_int, c.c_void_p, c.POINTER(c.c_char),
                                      c.c_ulong, c.c_long, c.c_bool)
 lib.vfu_setup_region.argtypes = (c.c_void_p, c.c_int, c.c_ulong,
                                  vfu_region_access_cb_t, c.c_int, c.c_void_p,
-                                 c.c_uint32, c.c_int, c.c_ulong)
+                                 c.c_uint32, c.c_int, c.c_uint64)
 vfu_reset_cb_t = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_int)
 lib.vfu_setup_device_reset_cb.argtypes = (c.c_void_p, vfu_reset_cb_t)
 lib.vfu_pci_get_config_space.argtypes = (c.c_void_p,)
@@ -621,7 +635,7 @@ lib.vfu_sgl_put.argtypes = (c.c_void_p, c.POINTER(dma_sg_t),
 
 lib.vfu_create_ioeventfd.argtypes = (c.c_void_p, c.c_uint32, c.c_int,
                                      c.c_size_t, c.c_uint32, c.c_uint32,
-                                     c.c_uint64, c.c_int32)
+                                     c.c_uint64, c.c_int32, c.c_uint64)
 
 lib.vfu_device_quiesced.argtypes = (c.c_void_p, c.c_int)
 
@@ -777,7 +791,6 @@ def get_pci_ext_cfg_space(ctx):
 
 def read_pci_cfg_space(ctx, buf, count, offset, extended=False):
     space = get_pci_ext_cfg_space(ctx) if extended else get_pci_cfg_space(ctx)
-
     for i in range(count):
         buf[i] = space[offset+i]
     return count
@@ -791,6 +804,8 @@ def write_pci_cfg_space(ctx, buf, count, offset, extended=False):
     space = c.cast(lib.vfu_pci_get_config_space(ctx), c.POINTER(c.c_char))
 
     for i in range(count):
+        # FIXME this assignment doesn't update the actual config space, it
+        # works fine on x86_64
         space[offset+i] = buf[i]
     return count
 
@@ -855,6 +870,16 @@ def __dma_unregister(ctx, info):
     dma_unregister(ctx, copy.copy(info.contents))
 
 
+def setup_flrc(ctx):
+    # flrc
+    cap = struct.pack("ccHHcc52c", to_byte(PCI_CAP_ID_EXP), b'\0', 0, 0, b'\0',
+                      b'\x10', *[b'\0' for _ in range(52)])
+    # FIXME adding capability after we've realized the device only works
+    # because of bug #618.
+    pos = vfu_pci_add_capability(ctx, pos=0, flags=0, data=cap)
+    assert pos == PCI_STD_HEADER_SIZEOF
+
+
 def quiesce_cb(ctx):
     return 0
 
@@ -905,11 +930,13 @@ def prepare_ctx_for_dma(dma_register=__dma_register,
         assert ret == 0
 
     f = tempfile.TemporaryFile()
-    f.truncate(0x2000)
+    migr_region_size = 2 << PAGE_SHIFT
+    f.truncate(migr_region_size)
 
-    mmap_areas = [(0x1000, 0x1000)]
+    mmap_areas = [(PAGE_SIZE, PAGE_SIZE)]
 
-    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX, size=0x2000,
+    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX,
+                           size=migr_region_size,
                            flags=VFU_REGION_FLAG_RW, mmap_areas=mmap_areas,
                            fd=f.fileno())
     assert ret == 0
@@ -1154,7 +1181,7 @@ def __migr_data_written_cb(ctx, count):
     return migr_data_written_cb(ctx, count)
 
 
-def vfu_setup_device_migration_callbacks(ctx, cbs=None, offset=0x4000):
+def vfu_setup_device_migration_callbacks(ctx, cbs=None, offset=PAGE_SIZE):
     assert ctx is not None
 
     if not cbs:
@@ -1192,12 +1219,12 @@ def vfu_sgl_put(ctx, sg, iovec, cnt=1):
     return lib.vfu_sgl_put(ctx, sg, iovec, cnt)
 
 
-def vfu_create_ioeventfd(ctx, region_idx, fd, offset, size, flags, datamatch,
-                         shadow_fd=-1):
+def vfu_create_ioeventfd(ctx, region_idx, fd, gpa_offset, size, flags,
+                         datamatch, shadow_fd=-1, shadow_offset=0):
     assert ctx is not None
 
-    return lib.vfu_create_ioeventfd(ctx, region_idx, fd, offset, size,
-                                    flags, datamatch, shadow_fd)
+    return lib.vfu_create_ioeventfd(ctx, region_idx, fd, gpa_offset, size,
+                                    flags, datamatch, shadow_fd, shadow_offset)
 
 
 def vfu_device_quiesced(ctx, err):
@@ -1209,6 +1236,12 @@ def fail_with_errno(err):
         c.set_errno(err)
         return -1
     return side_effect
+
+
+def fds_are_same(fd1: int, fd2: int) -> bool:
+    s1 = os.stat(fd1)
+    s2 = os.stat(fd2)
+    return s1.st_dev == s2.st_dev and s1.st_ino == s2.st_ino
 
 
 # ex: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: #

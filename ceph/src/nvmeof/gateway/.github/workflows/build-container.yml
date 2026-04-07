@@ -1,6 +1,8 @@
 ---
 # yamllint disable rule:line-length
 name: "CI"
+permissions:
+  contents: read
 on:  # yamllint disable rule:truthy
   push:
     tags:
@@ -11,7 +13,7 @@ on:  # yamllint disable rule:truthy
     branches:
       - devel
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 21 * * *'
   workflow_dispatch:
   release:
     types:
@@ -31,6 +33,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install Flake8
+        run: pip install flake8
+            
+      - name: Verify Python source files
+        run: make verify
+
       - name: Build container images - spdk
         run: make build SVC="spdk" SPDK_TARGET_ARCH=x86-64-v2
 
@@ -43,24 +51,35 @@ jobs:
       - name: Build container images - nvmeof-cli
         run: make build SVC="nvmeof-cli" SPDK_TARGET_ARCH=x86-64-v2
 
-      - name: Build container images - discovery
-        run: make build SVC="discovery" SPDK_TARGET_ARCH=x86-64-v2
-
       - name: Save container images
         run: |
           . .env
           docker save $QUAY_NVMEOF:$NVMEOF_VERSION > nvmeof.tar
           docker save $QUAY_NVMEOFCLI:$NVMEOF_VERSION > nvmeof-cli.tar
           docker save bdevperf > bdevperf.tar
+          docker save $QUAY_SPDK:$SPDK_VERSION > spdk.tar
 
-      - name: Upload container images
+      - name: Upload bdevperf container image
         uses: actions/upload-artifact@v4
         with:
-          name: container_images
+          name: container_images_bdevperf
+          path: |
+            bdevperf.tar
+
+      - name: Upload nvmeof container images
+        uses: actions/upload-artifact@v4
+        with:
+          name: container_images_nvmeof
           path: |
             nvmeof.tar
             nvmeof-cli.tar
-            bdevperf.tar
+
+      - name: Upload spdk container image
+        uses: actions/upload-artifact@v4
+        with:
+          name: container_image_spdk
+          path: |
+            spdk.tar
 
   build-ceph:
     runs-on: ubuntu-latest
@@ -76,7 +95,7 @@ jobs:
           . .env
           docker save $QUAY_CEPH:$CEPH_VERSION > ceph.tar
 
-      - name: Upload container images
+      - name: Upload ceph container image
         uses: actions/upload-artifact@v4
         with:
           name: container_images_ceph
@@ -88,7 +107,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test: ["cli", "state", "multi_gateway", "server", "grpc", "omap_lock", "old_omap", "log_files", "nsid", "namespaces"]
+        test: ["cli", "cli_change_lb", "cli_change_keys", "cli_change_ns_visibility", "cli_trash_rbd", "state", "multi_gateway", "server", "grpc", "omap_lock", "log_files", "nsid", "psk", "dhchap", "subsys_grp_name_append", "max_subsystems", "omap_no_read_lock", "omap_read_lock", "omap_read_lock_ignore_errors", "big_omap", "ns_limit", "cli_force_tls"]
     runs-on: ubuntu-latest
     env:
       HUGEPAGES: 512  # for multi gateway test, approx 256 per gateway instance
@@ -134,7 +153,8 @@ jobs:
 
       - name: Start ceph cluster
         run: |
-          make up SVC=ceph OPTS="--detach"
+          docker compose version
+          docker compose up -d ceph
 
       - name: Wait for the ceph cluster container to become healthy
         timeout-minutes: 3
@@ -175,19 +195,16 @@ jobs:
           # Managing pytest’s output: https://docs.pytest.org/en/7.1.x/how-to/output.html
           make run SVC="nvmeof" OPTS="--volume=$(pwd)/tests:/src/tests --entrypoint=python3" CMD="-m pytest --show-capture=all -s --full-trace -vv -rA tests/test_${{ matrix.test }}.py"
 
-      - name: Check coredump existence
+      - name: Copy ceph logs
         if: success() || failure()
-        id: check_coredumps
-        uses: andstor/file-existence-action@20b4d2e596410855db8f9ca21e96fbe18e12930b  # v2, pinned to SHA for security reasons
-        with:
-          files: "/tmp/coredump/core.*"
+        run: docker cp  ceph:/ceph/out /tmp/out
 
-      - name: Upload ${{ matrix.test }} test core dumps
-        if: steps.check_coredumps.outputs.files_exists == 'true'
+      - name: Upload ceph logs
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
-          name: core_pytest_${{ matrix.test }}
-          path: /tmp/coredump/core.*
+          name: ceph_out_pytest_${{ matrix.test }}
+          path: /tmp/out/*.log
 
       - name: Display logs
         if: success() || failure()
@@ -202,6 +219,10 @@ jobs:
 
   demo:
     needs: [build, build-ceph]
+    strategy:
+      fail-fast: false
+      matrix:
+        security_protocol: ["unsecured", "psk", "dhchap"]
     runs-on: ubuntu-latest
     env:
       HUGEPAGES: 512
@@ -226,8 +247,9 @@ jobs:
           docker load < bdevperf.tar
 
       - name: Start containers
+        timeout-minutes: 3
         run: |
-          make up OPTS=--detach
+          make up
 
       - name: Wait for the Gateway to be listening
         timeout-minutes: 3
@@ -248,9 +270,9 @@ jobs:
         if: success() || failure()
         run: make top
 
-      - name: Test
+      - name: Test ${{ matrix.security_protocol }}
         run: |
-          make demo OPTS=-T NVMEOF_CONTAINER_NAME="ceph-nvmeof_nvmeof_1"
+          ./tests/ha/demo_test.sh test_${{ matrix.security_protocol }}
 
       - name: List resources
         run: |
@@ -258,124 +280,35 @@ jobs:
           shopt -s expand_aliases
           eval $(make alias)
           cephnvmf subsystem list
-          subs=$(cephnvmf --output stdio --format json subsystem list | grep nqn | sed 's/"nqn": "//' | sed 's/",$//')
+          subs=$(cephnvmf --output stdio --format json subsystem list | jq -r '.subsystems[].nqn')
           for sub in $subs
           do
               cephnvmf namespace list --subsystem $sub
               cephnvmf listener list --subsystem $sub
               cephnvmf host list --subsystem $sub
           done
-
-      - name: Verify no HA
-        run: |
-          shopt -s expand_aliases
-          eval $(make alias)
-          ha_status=$(cephnvmf --output stdio --format json subsystem list | grep "enable_ha" | grep "true" | tr -d '\n\r')
-          if [ -n "$ha_status" ]; then
-              echo "Found a subsystem with HA enabled, failing"
-              exit 1
-          fi
+          cephnvmf namespace list
 
       - name: Run bdevperf
         run: |
-          # see https://spdk.io/doc/nvmf_multipath_howto.html
-          shopt -s expand_aliases
-          eval $(make alias)
-          . .env
-          echo -n "ℹ️  Starting bdevperf container"
-          make up  SVC=bdevperf OPTS="--detach"
-          sleep 10
-          echo "ℹ️  bdevperf start up logs"
-          make logs SVC=bdevperf
-          eval $(make run SVC=bdevperf OPTS="--entrypoint=env" | grep BDEVPERF_SOCKET | tr -d '\n\r' )
-
-          rpc="/usr/libexec/spdk/scripts/rpc.py"
-          echo "ℹ️  bdevperf bdev_nvme_set_options"
-          make exec SVC=bdevperf OPTS=-T CMD="$rpc -v -s $BDEVPERF_SOCKET bdev_nvme_set_options -r -1"
-          echo "ℹ️  bdevperf tcp connect ip: $NVMEOF_IP_ADDRESS port: $NVMEOF_IO_PORT nqn: $NQN"
-          make exec SVC=bdevperf OPTS=-T CMD="$rpc -v -s $BDEVPERF_SOCKET bdev_nvme_attach_controller -b Nvme0 -t tcp -a $NVMEOF_IP_ADDRESS -s $NVMEOF_IO_PORT -f ipv4 -n $NQN -q ${NQN}host -l -1 -o 10"
-          echo "ℹ️  verify connection list"
-          set +e
-          conns=$(cephnvmf --output stdio --format json connection list --subsystem $NQN)
-          if [ $? -ne 0 ]; then
-              echo "Failed to list connections"
-              exit 1
-          fi
-          echo $conns | grep -q '"status": 0'
-          if [ $? -ne 0 ]; then
-              echo "Failed to list connections, non-zero status in connection list: ${conns}"
-              exit 1
-          fi
-          echo $conns | grep -q "\"nqn\": \"${NQN}host\""
-          if [ $? -ne 0 ]; then
-              echo "Can't find host NQN ${NQN}host in connection list: ${conns}"
-              exit 1
-          fi
-          echo $conns | grep -q "\"trsvcid\": ${NVMEOF_IO_PORT}"
-          if [ $? -ne 0 ]; then
-              echo "Can't find port ${NVMEOF_IO_PORT} in connection list: ${conns}"
-              exit 1
-          fi
-          echo $conns | grep -q "\"traddr\": \"${NVMEOF_IP_ADDRESS}\""
-          if [ $? -ne 0 ]; then
-              echo "Can't find IP address ${NVMEOF_IP_ADDRESS} in connection list: ${conns}"
-              exit 1
-          fi
-          echo $conns | grep -q "\"adrfam\": \"ipv4\""
-          if [ $? -ne 0 ]; then
-              echo "Can't find address family ipv4 in connection list: ${conns}"
-              exit 1
-          fi
-          echo $conns | grep -q "\"trtype\": \"TCP\""
-          if [ $? -ne 0 ]; then
-              echo "Can't find transport type TCP in connection list: ${conns}"
-              exit 1
-          fi
-          con_cnt=$(echo $conns | xargs -n 1 | grep traddr | wc -l)
-          if [ $con_cnt -gt 1 ]; then
-              echo "Found more than one connection in list: ${conns}"
-              exit 1
-          fi
-          if [ $con_cnt -lt 1 ]; then
-              echo "No connections in list: ${conns}"
-              exit 1
-          fi
-          echo $conns | grep -q "\"qpairs_count\": 1"
-          if [ $? -ne 0 ]; then
-              echo "Qpairs count should be 1 in connection list: ${conns}"
-              exit 1
-          fi
-          echo $conns | grep -q "\"connected\": true"
-          if [ $? -ne 0 ]; then
-              echo "${NVMEOF_IP_ADDRESS}:${NVMEOF_IO_PORT} not connected in connection list: ${conns}"
-              exit 1
-          fi
-          set -e
-          echo "ℹ️  bdevperf perform_tests"
-          eval $(make run SVC=bdevperf OPTS="--entrypoint=env" | grep BDEVPERF_TEST_DURATION | tr -d '\n\r' )
-          timeout=$(expr $BDEVPERF_TEST_DURATION \* 2)
-          bdevperf="/usr/libexec/spdk/scripts/bdevperf.py"
-          make exec SVC=bdevperf OPTS=-T CMD="$bdevperf -v -t $timeout -s $BDEVPERF_SOCKET perform_tests"
-
-      - name: Check coredump existence
-        if: success() || failure()
-        id: check_coredumps
-        uses: andstor/file-existence-action@20b4d2e596410855db8f9ca21e96fbe18e12930b  # v2, pinned to SHA for security reasons
-        with:
-          files: "/tmp/coredump/core.*"
-
-      - name: Upload demo core dumps
-        if: steps.check_coredumps.outputs.files_exists == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: core_demo
-          path: /tmp/coredump/core.*
+          ./tests/ha/demo_test.sh bdevperf_${{ matrix.security_protocol }}
 
       # For debugging purposes (provides an SSH connection to the runner)
       # - name: Setup tmate session
       #   uses: mxschmitt/action-tmate@v3
       #   with:
       #     limit-access-to-actor: true
+
+      - name: Copy ceph logs
+        if: success() || failure()
+        run: docker cp  ceph:/ceph/out /tmp/out
+
+      - name: Upload ceph logs
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ceph_out_demo_${{ matrix.security_protocol }}
+          path: /tmp/out/*.log
 
       - name: Display logs
         if: success() || failure()
@@ -420,7 +353,8 @@ jobs:
       - name: Start discovery controller
         if: matrix.integration == 'container'
         run: |
-          docker-compose up --detach discovery
+          docker compose version
+          docker compose up --detach discovery
 
       - name: Wait for discovery controller to be listening
         if: matrix.integration == 'container'
@@ -440,7 +374,7 @@ jobs:
 
       - name: Start gateway with scale=2
         run: |
-          docker-compose up --detach --scale nvmeof=2 nvmeof
+          ./tests/ha/start_up.sh
 
       - name: Wait for gateways to be listening
         timeout-minutes: 3
@@ -463,12 +397,12 @@ jobs:
       - name: List containers
         if: success() || failure()
         run: |
-          docker-compose ps
+          docker compose ps
 
       - name: List processes
         if: success() || failure()
         run: |
-          docker-compose top
+          docker compose top
 
       - name: Set up target
         run: |
@@ -485,7 +419,7 @@ jobs:
           cli_gw() {
             gw=$1
             shift
-            docker-compose run --rm nvmeof-cli --server-address $gw --server-port $NVMEOF_GW_PORT "$@"
+            docker compose run --rm nvmeof-cli --server-address $gw --server-port $NVMEOF_GW_PORT "$@"
           }
 
           gw1=$(container_ip $GW1)
@@ -497,9 +431,9 @@ jobs:
             ip=$(container_ip $gw)
             name=$(container_id $gw) # default hostname - container id
             echo ℹ️ Create listener address $ip gateway $name
-            cli_gw $ip listener add --subsystem $NQN --gateway-name $name --traddr $ip --trsvcid $NVMEOF_IO_PORT
+            cli_gw $ip listener add --subsystem $NQN --host-name $name --traddr $ip --trsvcid $NVMEOF_IO_PORT
           done
-          cli_gw $gw1 host add --subsystem $NQN --host "*"
+          cli_gw $gw1 host add --subsystem $NQN --host-nqn "*"
           for gw in $GW1 $GW2; do
             ip=$(container_ip $gw)
             echo ℹ️ Subsystems for name $gw ip $ip
@@ -517,7 +451,7 @@ jobs:
           }
 
           echo -n "ℹ️  Starting bdevperf container"
-          make up  SVC=bdevperf OPTS="--detach"
+          docker compose up -d bdevperf
           sleep 10
           echo "ℹ️  bdevperf start up logs"
           make logs SVC=bdevperf
@@ -544,20 +478,6 @@ jobs:
           bdevperf="/usr/libexec/spdk/scripts/bdevperf.py"
           make exec SVC=bdevperf OPTS=-T CMD="$bdevperf -v -t $timeout -s $BDEVPERF_SOCKET perform_tests"
 
-      - name: Check coredump existence
-        if: success() || failure()
-        id: check_coredumps
-        uses: andstor/file-existence-action@20b4d2e596410855db8f9ca21e96fbe18e12930b  # v2, pinned to SHA for security reasons
-        with:
-          files: "/tmp/coredump/core.*"
-
-      - name: Upload demo core dumps
-        if: steps.check_coredumps.outputs.files_exists == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: core_demo
-          path: /tmp/coredump/core.*
-
       - name: Display logs
         if: success() || failure()
         run: make logs OPTS=''
@@ -573,10 +493,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test: ["sanity", "state_transitions", "state_transitions_both_gws", "state_transitions_loop", "state_transitions_rand_loop"]
+        test: ["sanity", "no_huge", "ns_lb_change", "no_subsystems", "auto_load_balance", "state_transitions", "state_transitions_both_gws", "state_transitions_loop", "state_transitions_rand_loop", "late_registration", "late_registration_loop", "4gws", "4gws_loop", "4gws_create_delete", "4gws_create_delete_loop", "namespaces", "namespaces_loop", "mtls", "notify", "ceph_status", "blocklist", "main_exit", "listener_hostname", "cluster_pool", "flat_bdev_per_cluster", "set_qos", "set_qos_2ms", "rbd_qos", "auto_resize", "ns_read_only", "reuse_image", "image_shrink"]
     runs-on: ubuntu-latest
     env:
-      HUGEPAGES: 768  # 3 spdk instances
+      HUGEPAGES: 1024  # 4 spdk instances
 
     steps:
       - name: Checkout code
@@ -599,47 +519,61 @@ jobs:
           docker load < bdevperf.tar
 
       - name: Start HA with two gateways
+        timeout-minutes: 3
         run: |
-          docker-compose up -d --scale nvmeof=2 nvmeof
+          docker compose version
+          test_specific_start_up="./tests/ha/start_up_${{ matrix.test }}.sh"
+          if [ -x "$test_specific_start_up" ] || [ -L "$test_specific_start_up" ] && [ -x "$(readlink -f "$test_specific_start_up")" ]; then
+            $test_specific_start_up
+          else
+            ./tests/ha/start_up.sh
+          fi
 
       - name: Wait for gateways to be listening
         timeout-minutes: 3
         run: |
-          source tests/ha/wait_gateways.sh
+          test_specific_wait="./tests/ha/wait_gateways_${{ matrix.test }}.sh"
+          if [ -x "$test_specific_wait" ] || [ -L "$test_specific_wait" ] && [ -x "$(readlink -f "$test_specific_wait")" ]; then
+            $test_specific_wait
+          else
+            ./tests/ha/wait_gateways.sh
+          fi
 
       - name: List containers
         if: success() || failure()
         run: |
-          docker-compose ps
+          docker compose ps
 
       - name: List processes
         if: success() || failure()
         run: |
-          docker-compose top
+          docker compose top
 
       - name: Set up target
         run: |
-          source tests/ha/setup.sh
+          test_specific_setup="./tests/ha/setup_${{ matrix.test }}.sh"
+          if [ -x "$test_specific_setup" ] || [ -L "$test_specific_setup" ] && [ -x "$(readlink -f "$test_specific_setup")" ]; then
+            $test_specific_setup
+          else
+            ./tests/ha/setup.sh
+          fi
 
       - name: Run HA ${{ matrix.test }} test
-        timeout-minutes: 30
+        timeout-minutes: 45
         run: |
           . .env
           source "tests/ha/${{ matrix.test }}.sh"
 
-      - name: Check coredump existence
+      - name: Copy ceph logs
         if: success() || failure()
-        id: check_coredumps
-        uses: andstor/file-existence-action@20b4d2e596410855db8f9ca21e96fbe18e12930b  # v2, pinned to SHA for security reasons
-        with:
-          files: "/tmp/coredump/core.*"
+        run: docker cp  ceph:/ceph/out /tmp/out
 
-      - name: Upload ha core dumps
-        if: steps.check_coredumps.outputs.files_exists == 'true'
+      - name: Upload ceph logs
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
-          name: core_demo
-          path: /tmp/coredump/core.*
+          name: ceph_out_ha_${{ matrix.test }}
+          path: /tmp/out/*.log
 
       - name: Display logs
         if: success() || failure()
@@ -651,9 +585,131 @@ jobs:
           make down
           make clean
 
-  push-to-registry:
+  atom:
+    needs: [build, build-ceph]
+    if: github.repository == 'ceph/ceph-nvmeof' && github.event_name != 'schedule'
+    runs-on: dailyAtomRunner
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Container_images_nvmeof folder (tar files) download
+        run: |
+          for i in {1..5}; do
+            echo "Attempt $i to download artifacts..."
+            gh run download --pattern "container_images_nvmeof" && break
+            echo "Download failed. Retrying in $((i * 5))s..."
+            sleep $((i * 5))
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cluster build and Atom tests run
+        if: always()
+        run: |
+          . .env
+          ACTION_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          ./tests/atom/clusterBuildTestsRun.sh $NVMEOF_VERSION $CEPH_BRANCH $CEPH_SHA $ATOM_SHA $ACTION_URL 2>&1 | tee atom_nvmeof_console.log
+
+      - name: Atom artifact build
+        if: always()
+        run: ./tests/atom/cpArtifactAndCleanup.sh
+
+      # TODO: investigating upluad to artifact issue
+      # - name: Upload artifact for non-schedule events
+      #   uses: actions/upload-artifact@v4
+      #   if: always()
+      #   with:
+      #     name: atom-artifact
+      #     path: /home/cephnvme/artifact_m7.tar.gz
+
+  # atom-nightly:
+  #   needs: [build, build-ceph]
+  #   if: github.repository == 'ceph/ceph-nvmeof' && github.event_name == 'schedule'
+  #   runs-on: nightlyAtomRunner
+  #   timeout-minutes: 1440
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+
+  #     - name: Container_images_nvmeof folder (tar files) download
+  #       run: |
+  #         for i in {1..5}; do
+  #           echo "Attempt $i to download artifacts..."
+  #           gh run download --pattern "container_images_nvmeof" && break
+  #           echo "Download failed. Retrying in $((i * 5))s..."
+  #           sleep $((i * 5))
+  #         done
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            
+  #     - name: Cluster build and Atom nightly tests run
+  #       if: always()
+  #       run: |
+  #         . .env
+  #         ACTION_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+  #         stdbuf -oL -eL ./tests/atom/clusterBuildTestsRun.sh $NVMEOF_VERSION $CEPH_BRANCH $CEPH_SHA $ATOM_SHA $ACTION_URL 'nightly' 2>&1 | tee atom_nightly_nvmeof_console.log
+  #         exit ${PIPESTATUS[0]}
+
+  #     - name: Atom artifact build nightly
+  #       if: always()
+  #       run: ./tests/atom/cpArtifactAndCleanup.sh 'nightly'
+
+  #     - name: Upload nightly nvmeof console as artifact
+  #       if: always()
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: atom-nightly-nvmeof-full-console
+  #         path: atom_nightly_nvmeof_console.log
+
+  #     - name: Upload artifact for schedule events
+  #       uses: actions/upload-artifact@v4
+  #       if: always()
+  #       with:
+  #         name: atom-artifact
+  #         path: /home/cephnvme/artifact_m8.tar.gz
+
+  push-images-to-ceph-registry:
     if: github.event_name == 'release'
-    needs: [pytest, demo, discovery, ha]
+    needs: [pytest, demo, discovery, ha, atom]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download container images (nvmeof)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: container_images_nvmeof*
+          merge-multiple: true
+
+      - name: Download container image (spdk)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: container_image_spdk
+          merge-multiple: true
+
+      - name: Load container images
+        run: |
+          docker load < nvmeof.tar
+          docker load < nvmeof-cli.tar
+          docker load < spdk.tar
+
+      - name: Login to quay.io
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+        with:
+          registry: ${{ vars.CONTAINER_REGISTRY }}
+          username: '${{ vars.CONTAINER_REGISTRY_USERNAME }}'
+          password: '${{ secrets.CONTAINER_REGISTRY_PASSWORD }}'
+
+      - name: Publish nvmeof containers and spdk when release/tag is created
+        run: |
+          make push
+
+  push-devel-image-to-ceph-registry:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/devel'
+    needs: [pytest, demo, discovery, ha, atom]
     runs-on: ubuntu-latest
 
     steps:
@@ -663,7 +719,8 @@ jobs:
       - name: Download container images
         uses: actions/download-artifact@v4
         with:
-          name: container_images
+          pattern: container_images_nvmeof*
+          merge-multiple: true
 
       - name: Load container images
         run: |
@@ -671,12 +728,79 @@ jobs:
           docker load < nvmeof-cli.tar
 
       - name: Login to quay.io
-        uses: docker/login-action@v2
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
         with:
           registry: ${{ vars.CONTAINER_REGISTRY }}
           username: '${{ vars.CONTAINER_REGISTRY_USERNAME }}'
           password: '${{ secrets.CONTAINER_REGISTRY_PASSWORD }}'
 
-      - name: Publish nvmeof containers when release/tag is created
+      - name: Publish nvmeof containers when merged to devel
         run: |
-          make push
+          . .env
+          for image in nvmeof nvmeof-cli; do
+            docker tag $CONTAINER_REGISTRY/$image:$NVMEOF_VERSION $CONTAINER_REGISTRY/$image:devel
+            docker push $CONTAINER_REGISTRY/$image:devel
+          done
+
+  pull-and-run-images:
+    needs: [push-images-to-ceph-registry]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: setup
+        run: make setup
+
+      - name: Pull Docker images from Quay.io
+        run: |
+          make pull || true  # Continue even if some images fail to pull
+
+      - name: List pulled images
+        run: docker images
+
+      - name: Verify downloaded images
+        run: |
+          . .env
+          REQUIRED_IMAGES=(
+            $QUAY_SPDK:$SPDK_VERSION
+            $QUAY_NVMEOFCLI:$NVMEOF_CLI_VERSION
+            $QUAY_NVMEOF:$NVMEOF_VERSION
+            $QUAY_CEPH:$CEPH_VERSION
+          )
+            
+          echo "Checking which required images are available:"
+          for image in "${REQUIRED_IMAGES[@]}"; do
+            if docker image inspect "$image" > /dev/null 2>&1; then
+              echo "✅ $image is available."
+            else
+              echo "❌ $image is missing."
+              exit 1  # Fail the job
+            fi
+          done
+
+      - name: Run Docker containers
+        run: make up
+
+      - name: Wait for the Gateway to be listening
+        timeout-minutes: 3
+        run: |
+          . .env
+
+          echo using gateway $NVMEOF_IP_ADDRESS port $NVMEOF_GW_PORT
+          until nc -z $NVMEOF_IP_ADDRESS $NVMEOF_GW_PORT; do
+            echo -n .
+            sleep ${{ env.WAIT_INTERVAL_SECS }}
+          done
+        
+      - name: check health
+        run: make ps
+
+      - name: Run demo
+        run: make demo
+      
+      - name: Tear down
+        if: success() || failure()
+        run: |
+          make down
+          make clean

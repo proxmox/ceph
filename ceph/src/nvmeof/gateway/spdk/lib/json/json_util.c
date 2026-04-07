@@ -401,7 +401,6 @@ spdk_json_decode_array(const struct spdk_json_val *values, spdk_json_decode_fn d
 {
 	uint32_t i;
 	char *field;
-	char *out_end;
 
 	if (values == NULL || values->type != SPDK_JSON_VAL_ARRAY_BEGIN) {
 		return -1;
@@ -409,11 +408,10 @@ spdk_json_decode_array(const struct spdk_json_val *values, spdk_json_decode_fn d
 
 	*out_size = 0;
 	field = out;
-	out_end = field + max_size * stride;
 	for (i = 0; i < values->len;) {
 		const struct spdk_json_val *v = &values[i + 1];
 
-		if (field == out_end) {
+		if (*out_size == max_size) {
 			return -1;
 		}
 
@@ -496,6 +494,24 @@ spdk_json_decode_string(const struct spdk_json_val *val, void *out)
 	} else {
 		return -1;
 	}
+}
+
+int
+spdk_json_decode_uuid(const struct spdk_json_val *val, void *out)
+{
+	struct spdk_uuid *uuid = out;
+	char *str = NULL;
+	int rc;
+
+	rc = spdk_json_decode_string(val, &str);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = spdk_uuid_parse(uuid, str);
+	free(str);
+
+	return rc == 0 ? 0 : -1;
 }
 
 static struct spdk_json_val *

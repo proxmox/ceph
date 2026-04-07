@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2019-2022, Intel Corporation
+;; Copyright (c) 2019-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -32,4 +32,7 @@
 %define AES_ECB_DEC_128 aes_ecb_dec_128_sse_no_aesni
 %define AES_ECB_DEC_192 aes_ecb_dec_192_sse_no_aesni
 %define AES_ECB_DEC_256 aes_ecb_dec_256_sse_no_aesni
+%define AES_ECB_QUIC_ENC_128 aes_ecb_quic_enc_128_sse_no_aesni
+%define AES_ECB_QUIC_ENC_256 aes_ecb_quic_enc_256_sse_no_aesni
 %include "sse_t1/aes128_ecb_by4_sse.asm"
+%include "sse_t1/aes_ecb_quic_x8_sse.asm"

@@ -35,7 +35,34 @@
 #define NIX_TX_VTAGACT_VTAG1_OP_MASK	 GENMASK(45, 44)
 #define NIX_TX_VTAGACT_VTAG1_DEF_MASK	 GENMASK(57, 48)
 
-struct npc_rx_parse_nibble_s {
+union npc_rx_parse_nibble_cn20k_u {
+	struct __plt_packed_begin {
+		uint64_t chan : 3;
+		uint64_t errlev : 1;
+		uint64_t errcode : 2;
+		uint64_t l2l3bm : 1;
+		uint64_t laflags : 1;
+		uint64_t latype : 1;
+		uint64_t lbflags : 1;
+		uint64_t lbtype : 1;
+		uint64_t lcflags : 1;
+		uint64_t lctype : 1;
+		uint64_t ldflags : 1;
+		uint64_t ldtype : 1;
+		uint64_t leflags : 1;
+		uint64_t letype : 1;
+		uint64_t lfflags : 1;
+		uint64_t lftype : 1;
+		uint64_t lgflags : 1;
+		uint64_t lgtype : 1;
+		uint64_t lhflags : 1;
+		uint64_t lhtype : 1;
+		uint64_t reserved : 41;
+	} s __plt_packed_end;
+	uint64_t u;
+};
+
+struct __plt_packed_begin npc_rx_parse_nibble_s {
 	uint16_t chan : 3;
 	uint16_t errlev : 1;
 	uint16_t errcode : 2;
@@ -56,7 +83,7 @@ struct npc_rx_parse_nibble_s {
 	uint16_t lgtype : 1;
 	uint16_t lhflags : 2;
 	uint16_t lhtype : 1;
-} __plt_packed;
+} __plt_packed_end;
 
 static const char *const intf_str[] = {
 	"NIX-RX",
@@ -69,45 +96,97 @@ static const char *const ltype_str[NPC_MAX_LID][NPC_MAX_LT] = {
 	[NPC_LID_LA][NPC_LT_LA_IH_NIX_ETHER] = "LA_IH_NIX_ETHER",
 	[NPC_LID_LA][NPC_LT_LA_HIGIG2_ETHER] = "LA_HIGIG2_ETHER",
 	[NPC_LID_LA][NPC_LT_LA_IH_NIX_HIGIG2_ETHER] = "LA_IH_NIX_HIGIG2_ETHER",
-	[NPC_LID_LA][NPC_LT_LA_CUSTOM_PRE_L2_ETHER] =
-		"NPC_LT_LA_CUSTOM_PRE_L2_ETHER",
+	[NPC_LID_LA][NPC_LT_LA_CUSTOM_L2_90B_ETHER] = "LA_CUSTOM_L2_90B_ETHER",
+	[NPC_LID_LA][NPC_LT_LA_CPT_HDR] = "LA_CPT_HDR",
+	[NPC_LID_LA][NPC_LT_LA_CUSTOM_L2_24B_ETHER] = "LA_CUSTOM_L2_24B_ETHER",
+	[NPC_LID_LA][NPC_LT_LA_CUSTOM_PRE_L2_ETHER] = "NPC_LT_LA_CUSTOM_PRE_L2_ETHER",
+	[NPC_LID_LA][NPC_LT_LA_CUSTOM0] = "NPC_LT_LA_CUSTOM0",
+	[NPC_LID_LA][NPC_LT_LA_CUSTOM1] = "NPC_LT_LA_CUSTOM1",
 	[NPC_LID_LB][0] = "NONE",
+	[NPC_LID_LB][NPC_LT_LB_ETAG] = "LB_ETAG",
 	[NPC_LID_LB][NPC_LT_LB_CTAG] = "LB_CTAG",
 	[NPC_LID_LB][NPC_LT_LB_STAG_QINQ] = "LB_STAG_QINQ",
-	[NPC_LID_LB][NPC_LT_LB_ETAG] = "LB_ETAG",
+	[NPC_LID_LB][NPC_LT_LB_BTAG] = "LB_BTAG",
+	[NPC_LID_LB][NPC_LT_LB_PPPOE] = "LB_PPPOE",
+	[NPC_LID_LB][NPC_LT_LB_DSA] = "LB_DSA",
+	[NPC_LID_LB][NPC_LT_LB_DSA_VLAN] = "LB_DSA_VLAN",
+	[NPC_LID_LB][NPC_LT_LB_EDSA] = "LB_EDSA",
+	[NPC_LID_LB][NPC_LT_LB_EDSA_VLAN] = "LB_EDSA_VLAN",
 	[NPC_LID_LB][NPC_LT_LB_EXDSA] = "LB_EXDSA",
+	[NPC_LID_LB][NPC_LT_LB_EXDSA_VLAN] = "LB_EXDSA_VLAN",
+	[NPC_LID_LB][NPC_LT_LB_FDSA] = "LB_FDSA",
 	[NPC_LID_LB][NPC_LT_LB_VLAN_EXDSA] = "LB_VLAN_EXDSA",
+	[NPC_LID_LB][NPC_LT_LB_CUSTOM0] = "LB_CUSTOM0",
+	[NPC_LID_LB][NPC_LT_LB_CUSTOM1] = "LB_CUSTOM1",
 	[NPC_LID_LC][0] = "NONE",
+	[NPC_LID_LC][NPC_LT_LC_PTP] = "LC_PTP",
 	[NPC_LID_LC][NPC_LT_LC_IP] = "LC_IP",
+	[NPC_LID_LC][NPC_LT_LC_IP_OPT] = "LC_IP_OPT",
 	[NPC_LID_LC][NPC_LT_LC_IP6] = "LC_IP6",
-	[NPC_LID_LC][NPC_LT_LC_ARP] = "LC_ARP",
 	[NPC_LID_LC][NPC_LT_LC_IP6_EXT] = "LC_IP6_EXT",
+	[NPC_LID_LC][NPC_LT_LC_ARP] = "LC_ARP",
+	[NPC_LID_LC][NPC_LT_LC_RARP] = "LC_RARP",
+	[NPC_LID_LC][NPC_LT_LC_MPLS] = "LC_MPLS",
+	[NPC_LID_LC][NPC_LT_LC_NSH] = "LC_NSH",
+	[NPC_LID_LC][NPC_LT_LC_FCOE] = "LC_FCOE",
 	[NPC_LID_LC][NPC_LT_LC_NGIO] = "LC_NGIO",
+	[NPC_LID_LC][NPC_LT_LC_CUSTOM0] = "LC_CUSTOM0",
+	[NPC_LID_LC][NPC_LT_LC_CUSTOM1] = "LC_CUSTOM1",
 	[NPC_LID_LD][0] = "NONE",
-	[NPC_LID_LD][NPC_LT_LD_ICMP] = "LD_ICMP",
-	[NPC_LID_LD][NPC_LT_LD_ICMP6] = "LD_ICMP6",
-	[NPC_LID_LD][NPC_LT_LD_UDP] = "LD_UDP",
 	[NPC_LID_LD][NPC_LT_LD_TCP] = "LD_TCP",
+	[NPC_LID_LD][NPC_LT_LD_UDP] = "LD_UDP",
 	[NPC_LID_LD][NPC_LT_LD_SCTP] = "LD_SCTP",
+	[NPC_LID_LD][NPC_LT_LD_ICMP6] = "LD_ICMP6",
+	[NPC_LID_LD][NPC_LT_LD_CUSTOM0] = "LD_CUSTOM0",
+	[NPC_LID_LD][NPC_LT_LD_CUSTOM1] = "LD_CUSTOM1",
+	[NPC_LID_LD][NPC_LT_LD_IGMP] = "LD_IGMP",
+	[NPC_LID_LD][NPC_LT_LD_AH] = "LD_AH",
 	[NPC_LID_LD][NPC_LT_LD_GRE] = "LD_GRE",
 	[NPC_LID_LD][NPC_LT_LD_NVGRE] = "LD_NVGRE",
+	[NPC_LID_LD][NPC_LT_LD_NSH] = "LD_NSH",
+	[NPC_LID_LD][NPC_LT_LD_TU_MPLS_IN_NSH] = "LD_TU_MPLS_IN_NSH",
+	[NPC_LID_LD][NPC_LT_LD_TU_MPLS_IN_IP] = "LD_TU_MPLS_IN_IP",
+	[NPC_LID_LD][NPC_LT_LD_ICMP] = "LD_ICMP",
 	[NPC_LID_LE][0] = "NONE",
 	[NPC_LID_LE][NPC_LT_LE_VXLAN] = "LE_VXLAN",
-	[NPC_LID_LE][NPC_LT_LE_ESP] = "LE_ESP",
-	[NPC_LID_LE][NPC_LT_LE_GTPC] = "LE_GTPC",
-	[NPC_LID_LE][NPC_LT_LE_GTPU] = "LE_GTPU",
 	[NPC_LID_LE][NPC_LT_LE_GENEVE] = "LE_GENEVE",
+	[NPC_LID_LE][NPC_LT_LE_ESP] = "LE_ESP",
+	[NPC_LID_LE][NPC_LT_LE_GTPU] = "LE_GTPU",
 	[NPC_LID_LE][NPC_LT_LE_VXLANGPE] = "LE_VXLANGPE",
+	[NPC_LID_LE][NPC_LT_LE_GTPC] = "LE_GTPC",
+	[NPC_LID_LE][NPC_LT_LE_NSH] = "LE_NSH",
+	[NPC_LID_LE][NPC_LT_LE_TU_MPLS_IN_GRE] = "LE_TU_MPLS_IN_GRE",
+	[NPC_LID_LE][NPC_LT_LE_TU_NSH_IN_GRE] = "LE_TU_NSH_IN_GRE",
+	[NPC_LID_LE][NPC_LT_LE_TU_MPLS_IN_UDP] = "LE_TU_MPLS_IN_UDP",
+	[NPC_LID_LE][NPC_LT_LE_CUSTOM0] = "LE_CUSTOM0",
+	[NPC_LID_LE][NPC_LT_LE_CUSTOM1] = "LE_CUSTOM1",
 	[NPC_LID_LF][0] = "NONE",
 	[NPC_LID_LF][NPC_LT_LF_TU_ETHER] = "LF_TU_ETHER",
+	[NPC_LID_LF][NPC_LT_LF_TU_PPP] = "LF_TU_PPP",
+	[NPC_LID_LF][NPC_LT_LF_TU_MPLS_IN_VXLANGPE] = "LF_TU_MPLS_IN_VXLANGPE",
+	[NPC_LID_LF][NPC_LT_LF_TU_NSH_IN_VXLANGPE] = "LF_TU_NSH_IN_VXLANGPE",
+	[NPC_LID_LF][NPC_LT_LF_TU_MPLS_IN_NSH] = "LF_TU_MPLS_IN_NSH",
+	[NPC_LID_LF][NPC_LT_LF_TU_3RD_NSH] = "LF_TU_3RD_NSH",
+	[NPC_LID_LF][NPC_LT_LF_CUSTOM0] = "LF_CUSTOM0",
+	[NPC_LID_LF][NPC_LT_LF_CUSTOM1] = "LF_CUSTOM1",
 	[NPC_LID_LG][0] = "NONE",
 	[NPC_LID_LG][NPC_LT_LG_TU_IP] = "LG_TU_IP",
 	[NPC_LID_LG][NPC_LT_LG_TU_IP6] = "LG_TU_IP6",
+	[NPC_LID_LG][NPC_LT_LG_TU_ARP] = "LG_TU_ARP",
+	[NPC_LID_LG][NPC_LT_LG_TU_ETHER_IN_NSH] = "LG_TU_ETHER_IN_NSH",
+	[NPC_LID_LG][NPC_LT_LG_CUSTOM0] = "LG_CUSTOM0",
+	[NPC_LID_LG][NPC_LT_LG_CUSTOM1] = "LG_CUSTOM1",
 	[NPC_LID_LH][0] = "NONE",
-	[NPC_LID_LH][NPC_LT_LH_TU_UDP] = "LH_TU_UDP",
 	[NPC_LID_LH][NPC_LT_LH_TU_TCP] = "LH_TU_TCP",
+	[NPC_LID_LH][NPC_LT_LH_TU_UDP] = "LH_TU_UDP",
 	[NPC_LID_LH][NPC_LT_LH_TU_SCTP] = "LH_TU_SCTP",
+	[NPC_LID_LH][NPC_LT_LH_TU_ICMP6] = "LH_TU_ICMP6",
+	[NPC_LID_LH][NPC_LT_LH_CUSTOM0] = "LH_CUSTOM0",
+	[NPC_LID_LH][NPC_LT_LH_CUSTOM1] = "LH_CUSTOM1",
+	[NPC_LID_LH][NPC_LT_LH_TU_IGMP] = "LH_TU_IGMP",
 	[NPC_LID_LH][NPC_LT_LH_TU_ESP] = "LH_TU_ESP",
+	[NPC_LID_LH][NPC_LT_LH_TU_AH] = "LH_TU_AH",
+	[NPC_LID_LH][NPC_LT_LH_TU_ICMP] = "LH_TU_ICMP",
 };
 
 static uint16_t
@@ -129,8 +208,135 @@ npc_get_nibbles(struct roc_npc_flow *flow, uint16_t size, uint32_t bit_offset)
 }
 
 static void
-npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
-			     uint64_t parse_nibbles)
+npc_flow_print_parse_nibbles_cn20k(FILE *file, struct roc_npc_flow *flow, uint64_t parse_nibbles)
+{
+	union npc_rx_parse_nibble_cn20k_u rx_parse;
+	uint32_t data, offset = 0;
+
+	rx_parse.u = parse_nibbles;
+
+	if (rx_parse.s.chan) {
+		data = npc_get_nibbles(flow, 3, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_CHAN:%#03X\n", data);
+		offset += 12;
+	}
+
+	if (rx_parse.s.errlev) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_ERRLEV:%#X\n", data);
+		offset += 4;
+	}
+
+	if (rx_parse.s.errcode) {
+		data = npc_get_nibbles(flow, 2, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_ERRCODE:%#02X\n", data);
+		offset += 8;
+	}
+
+	if (rx_parse.s.l2l3bm) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_L2L3_BCAST:%#X\n", data);
+		offset += 4;
+	}
+
+	if (rx_parse.s.laflags) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LA_FLAGS:%#02X\n", data);
+		offset += 8;
+	}
+
+	if (rx_parse.s.latype) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LA_LTYPE:%s\n", ltype_str[NPC_LID_LA][data]);
+		offset += 4;
+	}
+
+	if (rx_parse.s.lbflags) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LB_FLAGS:%#02X\n", data);
+		offset += 8;
+	}
+
+	if (rx_parse.s.lbtype) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LB_LTYPE:%s\n", ltype_str[NPC_LID_LB][data]);
+		offset += 4;
+	}
+
+	if (rx_parse.s.lcflags) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LC_FLAGS:%#02X\n", data);
+		offset += 8;
+	}
+
+	if (rx_parse.s.lctype) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LC_LTYPE:%s\n", ltype_str[NPC_LID_LC][data]);
+		offset += 4;
+	}
+
+	if (rx_parse.s.ldflags) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LD_FLAGS:%#02X\n", data);
+		offset += 8;
+	}
+
+	if (rx_parse.s.ldtype) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LD_LTYPE:%s\n", ltype_str[NPC_LID_LD][data]);
+		offset += 4;
+	}
+
+	if (rx_parse.s.leflags) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LE_FLAGS:%#02X\n", data);
+		offset += 8;
+	}
+
+	if (rx_parse.s.letype) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LE_LTYPE:%s\n", ltype_str[NPC_LID_LE][data]);
+		offset += 4;
+	}
+
+	if (rx_parse.s.lfflags) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LF_FLAGS:%#02X\n", data);
+		offset += 8;
+	}
+
+	if (rx_parse.s.lftype) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LF_LTYPE:%s\n", ltype_str[NPC_LID_LF][data]);
+		offset += 4;
+	}
+
+	if (rx_parse.s.lgflags) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LG_FLAGS:%#02X\n", data);
+		offset += 8;
+	}
+
+	if (rx_parse.s.lgtype) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LG_LTYPE:%s\n", ltype_str[NPC_LID_LG][data]);
+		offset += 4;
+	}
+
+	if (rx_parse.s.lhflags) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LH_FLAGS:%#02X\n", data);
+	}
+
+	if (rx_parse.s.lhtype) {
+		data = npc_get_nibbles(flow, 1, offset);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LH_LTYPE:%s\n", ltype_str[NPC_LID_LH][data]);
+		offset += 4;
+	}
+}
+
+static void
+npc_flow_print_parse_nibbles_legacy(FILE *file, struct roc_npc_flow *flow, uint64_t parse_nibbles)
 {
 	struct npc_rx_parse_nibble_s *rx_parse;
 	uint32_t data, offset = 0;
@@ -169,8 +375,7 @@ npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
 
 	if (rx_parse->latype) {
 		data = npc_get_nibbles(flow, 1, offset);
-		fprintf(file, "\tNPC_PARSE_NIBBLE_LA_LTYPE:%s\n",
-			ltype_str[NPC_LID_LA][data]);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LA_LTYPE:%s\n", ltype_str[NPC_LID_LA][data]);
 		offset += 4;
 	}
 
@@ -182,8 +387,7 @@ npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
 
 	if (rx_parse->lbtype) {
 		data = npc_get_nibbles(flow, 1, offset);
-		fprintf(file, "\tNPC_PARSE_NIBBLE_LB_LTYPE:%s\n",
-			ltype_str[NPC_LID_LB][data]);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LB_LTYPE:%s\n", ltype_str[NPC_LID_LB][data]);
 		offset += 4;
 	}
 
@@ -195,8 +399,7 @@ npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
 
 	if (rx_parse->lctype) {
 		data = npc_get_nibbles(flow, 1, offset);
-		fprintf(file, "\tNPC_PARSE_NIBBLE_LC_LTYPE:%s\n",
-			ltype_str[NPC_LID_LC][data]);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LC_LTYPE:%s\n", ltype_str[NPC_LID_LC][data]);
 		offset += 4;
 	}
 
@@ -208,8 +411,7 @@ npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
 
 	if (rx_parse->ldtype) {
 		data = npc_get_nibbles(flow, 1, offset);
-		fprintf(file, "\tNPC_PARSE_NIBBLE_LD_LTYPE:%s\n",
-			ltype_str[NPC_LID_LD][data]);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LD_LTYPE:%s\n", ltype_str[NPC_LID_LD][data]);
 		offset += 4;
 	}
 
@@ -221,8 +423,7 @@ npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
 
 	if (rx_parse->letype) {
 		data = npc_get_nibbles(flow, 1, offset);
-		fprintf(file, "\tNPC_PARSE_NIBBLE_LE_LTYPE:%s\n",
-			ltype_str[NPC_LID_LE][data]);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LE_LTYPE:%s\n", ltype_str[NPC_LID_LE][data]);
 		offset += 4;
 	}
 
@@ -234,8 +435,7 @@ npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
 
 	if (rx_parse->lftype) {
 		data = npc_get_nibbles(flow, 1, offset);
-		fprintf(file, "\tNPC_PARSE_NIBBLE_LF_LTYPE:%s\n",
-			ltype_str[NPC_LID_LF][data]);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LF_LTYPE:%s\n", ltype_str[NPC_LID_LF][data]);
 		offset += 4;
 	}
 
@@ -247,8 +447,7 @@ npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
 
 	if (rx_parse->lgtype) {
 		data = npc_get_nibbles(flow, 1, offset);
-		fprintf(file, "\tNPC_PARSE_NIBBLE_LG_LTYPE:%s\n",
-			ltype_str[NPC_LID_LG][data]);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LG_LTYPE:%s\n", ltype_str[NPC_LID_LG][data]);
 		offset += 4;
 	}
 
@@ -259,15 +458,14 @@ npc_flow_print_parse_nibbles(FILE *file, struct roc_npc_flow *flow,
 
 	if (rx_parse->lhtype) {
 		data = npc_get_nibbles(flow, 1, offset);
-		fprintf(file, "\tNPC_PARSE_NIBBLE_LH_LTYPE:%s\n",
-			ltype_str[NPC_LID_LH][data]);
+		fprintf(file, "\tNPC_PARSE_NIBBLE_LH_LTYPE:%s\n", ltype_str[NPC_LID_LH][data]);
 		offset += 4;
 	}
 }
 
 static void
-npc_flow_print_xtractinfo(FILE *file, struct npc_xtract_info *lfinfo,
-			  struct roc_npc_flow *flow, int lid, int lt)
+npc_flow_print_xtractinfo(FILE *file, struct npc_xtract_info *lfinfo, struct roc_npc_flow *flow,
+			  int lid, int lt)
 {
 	uint8_t *datastart, *maskstart;
 	int i;
@@ -322,6 +520,7 @@ static void
 npc_flow_dump_patterns(FILE *file, struct npc *npc, struct roc_npc_flow *flow)
 {
 	struct npc_lid_lt_xtract_info *lt_xinfo;
+	struct npc_lid_lt_xtract_info_cn20k *lt_xinfo_cn20k;
 	struct npc_xtract_info *xinfo;
 	uint32_t intf, lid, ld, i;
 	uint64_t parse_nibbles;
@@ -329,19 +528,37 @@ npc_flow_dump_patterns(FILE *file, struct npc *npc, struct roc_npc_flow *flow)
 
 	intf = flow->nix_intf;
 	parse_nibbles = npc->keyx_supp_nmask[intf];
-	npc_flow_print_parse_nibbles(file, flow, parse_nibbles);
+	if (roc_model_is_cn20k()) {
+		npc_flow_print_parse_nibbles_cn20k(file, flow, parse_nibbles);
+		for (i = 0; i < flow->num_patterns; i++) {
+			lid = flow->dump_data[i].lid;
+			ltype = flow->dump_data[i].ltype;
+			for (int j = 0; j < NPC_MAX_EXTRACTOR; j++) {
+				union npc_kex_ldata_flags_cfg *lid_info =
+					&npc->lid_cfg[NIX_INTF_RX][j];
+				if (lid_info->s.lid != lid)
+					continue;
+				lt_xinfo_cn20k = &npc->prx_dxcfg_cn20k[intf][j][ltype];
+				xinfo = &lt_xinfo_cn20k->xtract;
+				if (!xinfo->enable)
+					continue;
+				npc_flow_print_item(file, npc, xinfo, flow, intf, lid, ltype, j);
+			}
+		}
+	} else {
+		npc_flow_print_parse_nibbles_legacy(file, flow, parse_nibbles);
 
-	for (i = 0; i < flow->num_patterns; i++) {
-		lid = flow->dump_data[i].lid;
-		ltype = flow->dump_data[i].ltype;
-		lt_xinfo = &npc->prx_dxcfg[intf][lid][ltype];
+		for (i = 0; i < flow->num_patterns; i++) {
+			lid = flow->dump_data[i].lid;
+			ltype = flow->dump_data[i].ltype;
+			lt_xinfo = &npc->prx_dxcfg[intf][lid][ltype];
 
-		for (ld = 0; ld < NPC_MAX_LD; ld++) {
-			xinfo = &lt_xinfo->xtract[ld];
-			if (!xinfo->enable)
-				continue;
-			npc_flow_print_item(file, npc, xinfo, flow, intf, lid,
-					    ltype, ld);
+			for (ld = 0; ld < NPC_MAX_LD; ld++) {
+				xinfo = &lt_xinfo->xtract[ld];
+				if (!xinfo->enable)
+					continue;
+				npc_flow_print_item(file, npc, xinfo, flow, intf, lid, ltype, ld);
+			}
 		}
 	}
 }
@@ -422,6 +639,11 @@ npc_flow_dump_rx_action(FILE *file, uint64_t npc_action)
 			(uint64_t)NIX_RX_ACTIONOP_UCAST_IPSEC);
 		plt_strlcpy(index_name, "RQ Index:", NPC_MAX_FIELD_NAME_SIZE);
 		break;
+	case NIX_RX_ACTIONOP_UCAST_CPT:
+		fprintf(file, "NIX_RX_ACTIONOP_UCAST_CPT (%" PRIu64 ")\n",
+			(uint64_t)NIX_RX_ACTIONOP_UCAST_CPT);
+		plt_strlcpy(index_name, "RQ Index:", NPC_MAX_FIELD_NAME_SIZE);
+		break;
 	case NIX_RX_ACTIONOP_MCAST:
 		fprintf(file, "NIX_RX_ACTIONOP_MCAST (%" PRIu64 ")\n",
 			(uint64_t)NIX_RX_ACTIONOP_MCAST);
@@ -443,6 +665,10 @@ npc_flow_dump_rx_action(FILE *file, uint64_t npc_action)
 			(uint64_t)NIX_RX_ACTIONOP_MIRROR);
 		plt_strlcpy(index_name, "Multicast/mirror table index",
 			    NPC_MAX_FIELD_NAME_SIZE);
+		break;
+	case NIX_RX_ACTIONOP_DEFAULT:
+		fprintf(file, "NIX_RX_ACTIONOP_DEFAULT (%" PRIu64 ")\n",
+			(uint64_t)NIX_RX_ACTIONOP_DEFAULT);
 		break;
 	default:
 		plt_err("Unknown NIX_RX_ACTIONOP found");
@@ -583,23 +809,97 @@ npc_flow_dump_vtag_action(FILE *file, uint64_t vtag_action, bool is_rx)
 	}
 }
 
+static void
+npc_flow_hw_mcam_entry_dump(FILE *file, struct npc *npc, struct roc_npc_flow *flow)
+{
+	uint64_t mcam_data[ROC_NPC_MAX_MCAM_WIDTH_DWORDS];
+	uint64_t mcam_mask[ROC_NPC_MAX_MCAM_WIDTH_DWORDS];
+	struct npc_mcam_read_entry_req *mcam_read_req;
+	struct nix_inl_dev *inl_dev = NULL;
+	struct idev_cfg *idev;
+	struct mbox *mbox;
+	uint8_t enabled;
+	int rc = 0, i;
+
+	idev = idev_get_cfg();
+	if (idev)
+		inl_dev = idev->nix_inl_dev;
+
+	if (inl_dev && flow->use_pre_alloc)
+		mbox = inl_dev->dev.mbox;
+	else
+		mbox = npc->mbox;
+
+	mcam_read_req = mbox_alloc_msg_npc_mcam_read_entry(mbox_get(mbox));
+	if (mcam_read_req == NULL) {
+		plt_err("Failed to alloc msg");
+		mbox_put(mbox);
+		return;
+	}
+
+	mcam_read_req->entry = flow->mcam_id;
+
+	if (roc_model_is_cn20k()) {
+		struct npc_cn20k_mcam_read_entry_rsp *mcam_read_rsp;
+
+		rc = mbox_process_msg(mbox, (void *)&mcam_read_rsp);
+		if (rc) {
+			mbox_put(mbox);
+			plt_err("Failed to fetch MCAM entry:%d", flow->mcam_id);
+			return;
+		}
+
+		mbox_memcpy(mcam_data, mcam_read_rsp->entry_data.kw, sizeof(mcam_data));
+		mbox_memcpy(mcam_mask, mcam_read_rsp->entry_data.kw_mask, sizeof(mcam_data));
+		enabled = mcam_read_rsp->enable;
+	} else {
+		struct npc_mcam_read_entry_rsp *mcam_read_rsp;
+
+		rc = mbox_process_msg(mbox, (void *)&mcam_read_rsp);
+		if (rc) {
+			mbox_put(mbox);
+			plt_err("Failed to fetch MCAM entry:%d", flow->mcam_id);
+			return;
+		}
+
+		mbox_memcpy(mcam_data, mcam_read_rsp->entry_data.kw, sizeof(mcam_data));
+		mbox_memcpy(mcam_mask, mcam_read_rsp->entry_data.kw_mask, sizeof(mcam_data));
+		enabled = mcam_read_rsp->enable;
+	}
+	fprintf(file, "HW MCAM Data :\n");
+
+	for (i = 0; i < ROC_NPC_MAX_MCAM_WIDTH_DWORDS; i++) {
+		fprintf(file, "\tDW%d     :%016lX\n", i, mcam_data[i]);
+		fprintf(file, "\tDW%d_Mask:%016lX\n", i, mcam_mask[i]);
+	}
+	fprintf(file, "\tEnabled = 0x%x\n", enabled);
+
+	fprintf(file, "\n");
+	mbox_put(mbox);
+}
+
 void
-roc_npc_flow_mcam_dump(FILE *file, struct roc_npc *roc_npc,
-		       struct roc_npc_flow *flow)
+roc_npc_flow_mcam_dump(FILE *file, struct roc_npc *roc_npc, struct roc_npc_flow *flow)
 {
 	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
-	struct npc_mcam_read_entry_req *mcam_read_req;
-	struct npc_mcam_read_entry_rsp *mcam_read_rsp;
 	uint64_t count = 0;
 	bool is_rx = 0;
 	int i, rc = 0;
 
 	fprintf(file, "MCAM Index:%d\n", flow->mcam_id);
 	if (flow->ctr_id != NPC_COUNTER_NONE && flow->use_ctr) {
-		rc = roc_npc_mcam_read_counter(roc_npc, flow->ctr_id, &count);
+		if (flow->use_pre_alloc) {
+			rc = roc_npc_inl_mcam_read_counter(flow->ctr_id, &count);
+		} else {
+			if (roc_model_is_cn20k())
+				rc = roc_npc_mcam_get_stats(roc_npc, flow, &count);
+			else
+				rc = roc_npc_mcam_read_counter(roc_npc, flow->ctr_id, &count);
+		}
+
 		if (rc)
 			return;
-		fprintf(file, "Hit count: %" PRIu64 "\n", count);
+		fprintf(file, "Counter_id = 0x%x, Hit count: %" PRIu64 "\n", flow->ctr_id, count);
 	}
 
 	fprintf(file, "Interface :%s (%d)\n", intf_str[flow->nix_intf], flow->nix_intf);
@@ -620,27 +920,5 @@ roc_npc_flow_mcam_dump(FILE *file, struct roc_npc *roc_npc,
 		fprintf(file, "\tDW%d_Mask:%016lX\n", i, flow->mcam_mask[i]);
 	}
 
-	mcam_read_req = mbox_alloc_msg_npc_mcam_read_entry(npc->mbox);
-	if (mcam_read_req == NULL) {
-		plt_err("Failed to alloc msg");
-		return;
-	}
-
-	mcam_read_req->entry = flow->mcam_id;
-	rc = mbox_process_msg(npc->mbox, (void *)&mcam_read_rsp);
-	if (rc) {
-		plt_err("Failed to fetch MCAM entry:%d", flow->mcam_id);
-		return;
-	}
-
-	fprintf(file, "HW MCAM Data :\n");
-
-	for (i = 0; i < ROC_NPC_MAX_MCAM_WIDTH_DWORDS; i++) {
-		fprintf(file, "\tDW%d     :%016lX\n", i,
-			mcam_read_rsp->entry_data.kw[i]);
-		fprintf(file, "\tDW%d_Mask:%016lX\n", i,
-			mcam_read_rsp->entry_data.kw_mask[i]);
-	}
-
-	fprintf(file, "\n");
+	npc_flow_hw_mcam_entry_dump(file, npc, flow);
 }

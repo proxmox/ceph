@@ -14,6 +14,8 @@
 #include "spdk/util.h"
 #include "spdk/string.h"
 #include "spdk/log.h"
+#include "spdk/base64.h"
+#include "spdk/histogram_data.h"
 
 static void
 rpc_iscsi_get_initiator_groups(struct spdk_jsonrpc_request *request,
@@ -587,7 +589,11 @@ rpc_iscsi_delete_target_node_done(void *cb_arg, int rc)
 	struct rpc_iscsi_delete_target_node_ctx *ctx = cb_arg;
 
 	free_rpc_iscsi_delete_target_node(&ctx->req);
-	spdk_jsonrpc_send_bool_response(ctx->request, rc == 0);
+	if (rc == 0) {
+		spdk_jsonrpc_send_bool_response(ctx->request, true);
+	} else {
+		spdk_jsonrpc_send_error_response(ctx->request, rc, spdk_strerror(-rc));
+	}
 	free(ctx);
 }
 
@@ -988,6 +994,100 @@ struct rpc_target_lun {
 	char *bdev_name;
 	int32_t lun_id;
 };
+
+struct rpc_iscsi_get_stats_ctx {
+	struct spdk_jsonrpc_request *request;
+	uint32_t invalid;
+	uint32_t running;
+	uint32_t exiting;
+	uint32_t exited;
+};
+
+static void
+_rpc_iscsi_get_stats_done(struct spdk_io_channel_iter *i, int status)
+{
+	struct spdk_json_write_ctx *w;
+	struct rpc_iscsi_get_stats_ctx *ctx = spdk_io_channel_iter_get_ctx(i);
+
+	w = spdk_jsonrpc_begin_result(ctx->request);
+	spdk_json_write_object_begin(w);
+
+	spdk_json_write_named_uint32(w, "invalid", ctx->invalid);
+	spdk_json_write_named_uint32(w, "running", ctx->running);
+	spdk_json_write_named_uint32(w, "exiting", ctx->exiting);
+	spdk_json_write_named_uint32(w, "exited", ctx->exited);
+
+	spdk_json_write_object_end(w);
+	spdk_jsonrpc_end_result(ctx->request, w);
+
+	free(ctx);
+}
+
+static void
+_iscsi_get_stats(struct rpc_iscsi_get_stats_ctx *ctx,
+		 struct spdk_iscsi_conn *conn)
+{
+	switch (conn->state) {
+	case ISCSI_CONN_STATE_INVALID:
+		ctx->invalid += 1;
+		break;
+	case ISCSI_CONN_STATE_RUNNING:
+		ctx->running += 1;
+		break;
+	case ISCSI_CONN_STATE_EXITING:
+		ctx->exiting += 1;
+		break;
+	case ISCSI_CONN_STATE_EXITED:
+		ctx->exited += 1;
+		break;
+	}
+}
+
+static void
+_rpc_iscsi_get_stats(struct spdk_io_channel_iter *i)
+{
+	struct rpc_iscsi_get_stats_ctx *ctx = spdk_io_channel_iter_get_ctx(i);
+	struct spdk_io_channel *ch = spdk_io_channel_iter_get_channel(i);
+	struct spdk_iscsi_poll_group *pg = spdk_io_channel_get_ctx(ch);
+	struct spdk_iscsi_conn *conn;
+
+	STAILQ_FOREACH(conn, &pg->connections, pg_link) {
+		_iscsi_get_stats(ctx, conn);
+	}
+
+	spdk_for_each_channel_continue(i, 0);
+}
+
+
+
+static void
+rpc_iscsi_get_stats(struct spdk_jsonrpc_request *request,
+		    const struct spdk_json_val *params)
+{
+	struct rpc_iscsi_get_stats_ctx *ctx;
+
+	if (params != NULL) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "iscsi_get_stats requires no parameters");
+		return;
+	}
+
+	ctx = calloc(1, sizeof(struct rpc_iscsi_get_stats_ctx));
+	if (ctx == NULL) {
+		SPDK_ERRLOG("Failed to allocate rpc_iscsi_get_stats_ctx struct\n");
+		spdk_jsonrpc_send_error_response(request, -ENOMEM, spdk_strerror(ENOMEM));
+		return;
+	}
+
+	ctx->request = request;
+
+	spdk_for_each_channel(&g_iscsi,
+			      _rpc_iscsi_get_stats,
+			      ctx,
+			      _rpc_iscsi_get_stats_done);
+
+}
+SPDK_RPC_REGISTER("iscsi_get_stats", rpc_iscsi_get_stats, SPDK_RPC_RUNTIME)
 
 static void
 free_rpc_target_lun(struct rpc_target_lun *req)
@@ -1696,3 +1796,209 @@ rpc_iscsi_set_options(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_send_bool_response(request, true);
 }
 SPDK_RPC_REGISTER("iscsi_set_options", rpc_iscsi_set_options, SPDK_RPC_STARTUP)
+
+struct rpc_iscsi_enable_histogram_request {
+	char *name;
+	bool enable;
+};
+
+static const struct spdk_json_object_decoder rpc_iscsi_enable_histogram_request_decoders[] = {
+	{"name", offsetof(struct rpc_iscsi_enable_histogram_request, name), spdk_json_decode_string},
+	{"enable", offsetof(struct rpc_iscsi_enable_histogram_request, enable), spdk_json_decode_bool},
+};
+
+struct iscsi_enable_histogram_ctx {
+	struct spdk_jsonrpc_request *request;
+	struct spdk_iscsi_tgt_node *target;
+	bool enable;
+	int status;
+	struct spdk_thread *orig_thread;
+};
+
+static void
+rpc_iscsi_enable_histogram_done(void *_ctx)
+{
+	struct iscsi_enable_histogram_ctx *ctx = _ctx;
+
+	if (ctx->status == 0) {
+		spdk_jsonrpc_send_bool_response(ctx->request, true);
+	} else {
+		spdk_jsonrpc_send_error_response(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 spdk_strerror(-ctx->status));
+	}
+
+	free(ctx);
+}
+
+static void
+_iscsi_enable_histogram(void *_ctx)
+{
+	struct iscsi_enable_histogram_ctx *ctx = _ctx;
+
+	ctx->status = iscsi_tgt_node_enable_histogram(ctx->target, ctx->enable);
+}
+
+static void
+_rpc_iscsi_enable_histogram(void *_ctx)
+{
+	struct iscsi_enable_histogram_ctx *ctx = _ctx;
+
+	pthread_mutex_lock(&ctx->target->mutex);
+	_iscsi_enable_histogram(ctx);
+	ctx->target->num_active_conns--;
+	pthread_mutex_unlock(&ctx->target->mutex);
+
+	spdk_thread_send_msg(ctx->orig_thread, rpc_iscsi_enable_histogram_done, ctx);
+}
+
+static void
+rpc_iscsi_enable_histogram(struct spdk_jsonrpc_request *request,
+			   const struct spdk_json_val *params)
+{
+	struct rpc_iscsi_enable_histogram_request req = {NULL};
+	struct iscsi_enable_histogram_ctx *ctx;
+	struct spdk_iscsi_tgt_node *target;
+	struct spdk_thread *thread;
+	spdk_msg_fn fn;
+
+	if (spdk_json_decode_object(params, rpc_iscsi_enable_histogram_request_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_enable_histogram_request_decoders),
+				    &req)) {
+		SPDK_ERRLOG("spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		return;
+	}
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (ctx == NULL) {
+		SPDK_ERRLOG("Memory allocation failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "Memory allocation failed");
+		return;
+	}
+
+	target = iscsi_find_tgt_node(req.name);
+
+	free(req.name);
+
+	if (target == NULL) {
+		SPDK_ERRLOG("target is not found\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "Invalid parameters");
+		free(ctx);
+		return;
+	}
+
+	ctx->request = request;
+	ctx->target = target;
+	ctx->enable = req.enable;
+	ctx->orig_thread = spdk_get_thread();
+
+	pthread_mutex_lock(&ctx->target->mutex);
+	if (target->pg == NULL) {
+		_iscsi_enable_histogram(ctx);
+		thread = ctx->orig_thread;
+		fn = rpc_iscsi_enable_histogram_done;
+	} else {
+		/**
+		 * We get spdk thread of the target by using target->pg.
+		 * If target->num_active_conns >= 1, target->pg will not change.
+		 * So, It is safer to increase and decrease target->num_active_conns
+		 * while updating target->histogram.
+		 */
+		target->num_active_conns++;
+		thread = spdk_io_channel_get_thread(spdk_io_channel_from_ctx(target->pg));
+		fn = _rpc_iscsi_enable_histogram;
+	}
+	pthread_mutex_unlock(&ctx->target->mutex);
+
+	spdk_thread_send_msg(thread, fn, ctx);
+}
+
+SPDK_RPC_REGISTER("iscsi_enable_histogram", rpc_iscsi_enable_histogram, SPDK_RPC_RUNTIME)
+
+struct rpc_iscsi_get_histogram_request {
+	char *name;
+};
+
+static const struct spdk_json_object_decoder rpc_iscsi_get_histogram_request_decoders[] = {
+	{"name", offsetof(struct rpc_iscsi_get_histogram_request, name), spdk_json_decode_string}
+};
+
+static void
+free_rpc_iscsi_get_histogram_request(struct rpc_iscsi_get_histogram_request *r)
+{
+	free(r->name);
+}
+
+static void
+rpc_iscsi_get_histogram(struct spdk_jsonrpc_request *request,
+			const struct spdk_json_val *params)
+{
+	struct rpc_iscsi_get_histogram_request req = {NULL};
+	struct spdk_iscsi_tgt_node *target;
+	struct spdk_json_write_ctx *w;
+	char *encoded_histogram;
+	size_t src_len, dst_len;
+	int rc;
+
+	if (spdk_json_decode_object(params, rpc_iscsi_get_histogram_request_decoders,
+				    SPDK_COUNTOF(rpc_iscsi_get_histogram_request_decoders),
+				    &req)) {
+		SPDK_ERRLOG("spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto free_req;
+	}
+
+	target = iscsi_find_tgt_node(req.name);
+	if (target == NULL) {
+		SPDK_ERRLOG("target is not found\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "target not found");
+		goto free_req;
+	}
+
+	if (!target->histogram) {
+		SPDK_ERRLOG("target's histogram function is not enabled\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "target's histogram function is not enabled");
+		goto free_req;
+	}
+
+	src_len = SPDK_HISTOGRAM_NUM_BUCKETS(target->histogram) * sizeof(uint64_t);
+	dst_len = spdk_base64_get_encoded_strlen(src_len) + 1;
+	encoded_histogram = malloc(dst_len);
+	if (encoded_histogram == NULL) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 spdk_strerror(ENOMEM));
+		goto free_req;
+	}
+
+	rc = spdk_base64_encode(encoded_histogram, target->histogram->bucket, src_len);
+	if (rc != 0) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 spdk_strerror(-rc));
+		goto free_encoded_histogram;
+	}
+
+	w = spdk_jsonrpc_begin_result(request);
+
+	spdk_json_write_object_begin(w);
+	spdk_json_write_named_string(w, "histogram", encoded_histogram);
+	spdk_json_write_named_int64(w, "granularity", target->histogram->granularity);
+	spdk_json_write_named_uint32(w, "min_range", target->histogram->min_range);
+	spdk_json_write_named_uint32(w, "max_range", target->histogram->max_range);
+	spdk_json_write_named_int64(w, "tsc_rate", spdk_get_ticks_hz());
+
+	spdk_json_write_object_end(w);
+	spdk_jsonrpc_end_result(request, w);
+
+free_encoded_histogram:
+	free(encoded_histogram);
+free_req:
+	free_rpc_iscsi_get_histogram_request(&req);
+}
+
+SPDK_RPC_REGISTER("iscsi_get_histogram", rpc_iscsi_get_histogram, SPDK_RPC_RUNTIME)

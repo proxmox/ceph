@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2012-2022, Intel Corporation
+# Copyright (c) 2012-2023, Intel Corporation
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -25,189 +25,77 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-TEST_APP := ipsec_MB_testapp
-XVALID_APP := ipsec_xvalid_test
-FUZZ_APP := job_api_fuzz_test
-ACVP_APP := acvp_app
-INSTPATH ?= /usr/include/intel-ipsec-mb.h
-LIB_DIR ?= ../lib
-
-USE_YASM ?= n
-YASM ?= yasm
-NASM ?= nasm
-
-MINGW ?= $(shell $(CC) -dM -E - < /dev/null | grep -i mingw | wc -l | sed 's/^ *//')
-
-CFLAGS = -MMD -D_GNU_SOURCE -DNO_COMPAT_IMB_API_053 \
-	-W -Wall -Wextra -Wmissing-declarations -Wpointer-arith \
-	-Wcast-qual -Wundef -Wwrite-strings  \
-	-Wformat -Wformat-security \
-	-Wunreachable-code -Wmissing-noreturn -Wsign-compare -Wno-endif-labels \
-	-Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition \
-	-fno-delete-null-pointer-checks -fwrapv
-
-# -fno-strict-overflow is not supported by clang
-ifneq ($(CC),clang)
-CFLAGS += -fno-strict-overflow
-endif
-
-# if "-z ibt" is supported then assume "-z shstk, -z cet-report=error" are also supported
-# "-fcf-protection" needs to be checked separately
-ifeq ($(MINGW),0)
-CC_HAS_CET = $(and $(shell $(CC) --target-help 2> /dev/null | grep -m1 -e "-z ibt" | wc -l), \
-	$(shell $(CC) --help=common 2> /dev/null | grep -m1 -e "-fcf-protection" | wc -l))
-CET_LDFLAGS=-r -z ibt -z shstk
-endif
-
-ifeq ($(CC_HAS_CET),1)
-CFLAGS += -fcf-protection=full
-endif
-
-YASM_FLAGS := -f x64 -f elf64 -X gnu -g dwarf2 -DLINUX -D__linux__
-ifeq ($(MINGW),0)
-CFLAGS += -DLINUX
-NASM_FLAGS := -Werror -felf64 -Xgnu -gdwarf -DLINUX -D__linux__
-else
-NASM_FLAGS := -Werror -fwin64 -Xvc -gcv8 -DWIN_ABI
-endif
-
-ifeq ($(MINGW),0)
-LDFLAGS = -fPIE -z noexecstack -z relro -z now
-else
-LDFLAGS = -fPIE
-endif
-
-ifeq ($(CC_HAS_CET),1)
-LDFLAGS += -fcf-protection=full -Wl,-z,ibt -Wl,-z,shstk -Wl,-z,cet-report=error
-endif
-LDLIBS = -lIPSec_MB
-
-ifeq ("$(shell test -r $(INSTPATH) && echo -n yes)","yes")
-# library installed
-CFLAGS +=
-else
-# library not installed
-CFLAGS +=  -I../lib/include -I../lib
-LDFLAGS += -L$(LIB_DIR)
-endif
-
-FUZZ_CFLAGS = -I../lib -L../lib $(CFLAGS) -g -fsanitize=fuzzer,address,leak
-
-DEBUG_OPT ?= -O0
-ifeq ($(DEBUG),y)
-CFLAGS += $(DEBUG_OPT) -DDEBUG -g
-LDFLAGS += -g
-else
-ifeq ($(MINGW),0)
-CFLAGS += -O3
-else
-CFLAGS += -O2
-endif
-endif
-
-ACVP_LOC ?= /usr/local/acvp
-ACVP_HDR ?= $(ACVP_LOC)/include
-ACVP_LIB ?= $(ACVP_LOC)/lib
-ACVP_CFLAGS = -I$(ACVP_HDR) $(CFLAGS)
-ACVP_LDFLAGS = -L$(ACVP_LIB) $(LDFLAGS)
-ACVP_LDLIBS = -lacvp $(LDLIBS)
-
-# ipsec_MB_testapp modules
-SOURCES := main.c gcm_test.c ctr_test.c customop_test.c des_test.c ccm_test.c \
-	cmac_test.c utils.c hmac_sha1_test.c hmac_sha256_sha512_test.c \
-	hmac_md5_test.c aes_test.c sha_test.c chained_test.c api_test.c pon_test.c \
-	ecb_test.c zuc_test.c kasumi_test.c snow3g_test.c direct_api_test.c clear_mem_test.c \
-	hec_test.c xcbc_test.c aes_cbcs_test.c crc_test.c chacha_test.c poly1305_test.c \
-	chacha20_poly1305_test.c null_test.c snow_v_test.c direct_api_param_test.c
-OBJECTS := $(SOURCES:%.c=%.o)
-
-ifneq ($(PIN_CEC_ROOT),)
-CFLAGS += -I$(PIN_CEC_ROOT)/include -DPIN_BASED_CEC
-endif
-
-# ipsec_xvalid_test modules
-XVALID_ASM := misc.asm
-XVALID_SOURCES := ipsec_xvalid.c utils.c
-XVALID_OBJECTS := $(XVALID_SOURCES:%.c=%.o) $(XVALID_ASM:%.asm=%.o)
-
-# fuzz modules
-FUZZ_SOURCES := job_api_fuzz_test.c
-
-# acvp_app modules
-ACVP_SOURCES := acvp_app_main.c utils.c
-
-# list of present dependency files
-DEP_FILES = $(wildcard ./*.d)
-
-# rule for compiling assembly code with producing dependencies
-%.o:%.asm
-ifeq ($(USE_YASM),y)
-	$(YASM) $(YASM_FLAGS) $< -o $@
-else
-	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
-endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
-endif
+KAT_APP := kat-app
+XVALID_APP := xvalid-app
+FUZZ_APP := fuzz-app
+ACVP_APP := acvp-app
+WYCHEPROOF_APP := wycheproof-app
 
 # targets come here
-all: $(TEST_APP) $(XVALID_APP) $(FUZZ_APP) $(ACVP_APP)
+all: $(KAT_APP) $(XVALID_APP) $(FUZZ_APP) $(ACVP_APP) $(WYCHEPROOF_APP)
 
-$(TEST_APP): $(OBJECTS)
-	$(CC) $(LDFLAGS) $^ $(LDLIBS) -o $@
+.PHONY: $(KAT_APP) $(XVALID_APP) $(FUZZ_APP) $(ACVP_APP) $(WYCHEPROOF_APP)
 
-$(XVALID_APP): $(XVALID_OBJECTS)
-	$(CC) $(LDFLAGS) $^ $(LDLIBS) -o $@
+$(KAT_APP):
+	$(MAKE) -C kat-app
 
-$(ACVP_APP): $(ACVP_SOURCES)
-ifneq ("$(wildcard $(ACVP_HDR))","")
-	$(CC) $(ACVP_CFLAGS) $(ACVP_LDFLAGS) $^ $(ACVP_LDLIBS) -o $@
-else
-	@echo "No libacvp header found at $(ACVP_HDR), $(ACVP_APP) is not built"
-endif
+$(XVALID_APP):
+	$(MAKE) -C xvalid-app
 
-$(FUZZ_APP): $(FUZZ_SOURCES)
-ifeq ($(MINGW),0)
-ifneq (, $(shell which clang))
-	clang $(FUZZ_CFLAGS) $(FUZZ_SOURCES) $(LDLIBS) -o $@
-else
-	@echo "Clang is not installed. $(FUZZ_APP) is not built"
-endif
-else
-	@echo "Fuzzing not supported on MinGW build. $(FUZZ_APP) is not built"
-endif
+$(FUZZ_APP):
+	$(MAKE) -C fuzz-app
 
+$(ACVP_APP):
+	$(MAKE) -C acvp-app
+
+$(WYCHEPROOF_APP):
+	$(MAKE) -C wycheproof-app
 
 .PHONY: clean
 clean:
-	-rm -f $(OBJECTS) $(TEST_APP) $(DEP_FILES) $(XVALID_OBJECTS) $(XVALID_APP) $(ASM_OBJECTS) $(FUZZ_APP) $(ACVP_APP)
+	$(MAKE) -C kat-app clean
+	$(MAKE) -C xvalid-app clean
+	$(MAKE) -C fuzz-app clean
+	$(MAKE) -C acvp-app clean
+	$(MAKE) -C wycheproof-app clean
+
+.PHONY: style
+style: clang-format checkpatch
 
 # style check section
 CHECKPATCH?=checkpatch.pl
-CHECKPATCH_FLAGS = --no-tree --no-signoff --emacs --no-color --ignore CODE_INDENT,INITIALISED_STATIC,LEADING_SPACE,SPLIT_STRING,UNSPECIFIED_INT,ARRAY_SIZE,BLOCK_COMMENT_STYLE,GLOBAL_INITIALISERS,AVOID_EXTERNS,COMPLEX_MACRO,USE_FUNC,CONSTANT_COMPARISON,MISSING_SPACE,NEW_TYPEDEFS
+CHECKPATCH_FLAGS = --no-tree --no-signoff --emacs --no-color --max-line-length=100 --ignore CODE_INDENT,INITIALISED_STATIC,LEADING_SPACE,SPLIT_STRING,UNSPECIFIED_INT,ARRAY_SIZE,BLOCK_COMMENT_STYLE,GLOBAL_INITIALISERS,AVOID_EXTERNS,COMPLEX_MACRO,USE_FUNC,CONSTANT_COMPARISON,MISSING_SPACE,NEW_TYPEDEFS
 
-%.c_style_check : %.c
-	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+ASM_SOURCES := $(wildcard ./**/*.asm) $(wildcard ./**/*.inc)
 
-%.h_style_check : %.h
-	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+.PHONY: checkpatch
+checkpatch:
+	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $(ASM_SOURCES)
 
-%.asm_style_check : %.asm
-	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+CLANGFORMAT?=clang-format
+.PHONY: clang-format
+clang-format:
+	@for file in $(wildcard ./*.[ch]) $(wildcard ./**/*.[ch]); do \
+		echo "Checking style $$file"; \
+		$(CLANGFORMAT) -style=file "$$file" | diff "$$file" - | tee /dev/stderr | [ $$(wc -c) -eq 0 ] || \
+		{ echo "ERROR: $$file has style problems"; exit 1; } \
+	done
 
-%.inc_style_check : %.inc
-	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+# cppcheck analysis check
+CPPCHECK ?= cppcheck
+CPPCHECK_OPTS ?= -I./ -I../lib
+CPPCHECK_FLAGS ?= -j $(shell getconf _NPROCESSORS_ONLN)
+CPPCHECK_FLAGS1 ?= --cppcheck-build-dir=.cppcheck $(CPPCHECK_FLAGS)
+CPPCHECK_FLAGS2 ?= --cppcheck-build-dir=.bughunt $(CPPCHECK_FLAGS)
+.PHONY: cppcheck
+cppcheck:
+	mkdir -p .cppcheck
+	$(CPPCHECK) --force --enable=all $(CPPCHECK_FLAGS1) $(CPPCHECK_OPTS) \
+		./kat-app ./xvalid-app ./fuzz-app ./acvp-app ./wycheproof-app
 
-SOURCES_ALL := $(wildcard *.[ch]) $(wildcard *.asm) $(wildcard *.inc)
-SOURCES_STYLE := $(foreach infile,$(SOURCES_ALL),$(infile)_style_check)
+.PHONY: bughunt
+bughunt:
+	mkdir -p .bughunt
+	$(CPPCHECK) --bug-hunting --inconclusive $(CPPCHECK_FLAGS2) $(CPPCHECK_OPTS) \
+		./kat-app ./xvalid-app ./fuzz-app ./acvp-app ./wycheproof-app
 
-.PHONY: style
-style: $(SOURCES_STYLE)
-
-# if target not clean or rinse then make dependencies
-ifneq ($(MAKECMDGOALS),clean)
-ifneq ($(MAKECMDGOALS),style)
--include $(wildcard *.d)
-endif
-endif

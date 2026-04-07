@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #  SPDX-License-Identifier: BSD-3-Clause
 #  Copyright (C) 2016 Intel Corporation
-#  Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.
+#  Copyright (c) 2022, 2023 NVIDIA CORPORATION & AFFILIATES.
 #  All rights reserved.
 #
 testdir=$(readlink -f $(dirname $0))
@@ -9,23 +9,18 @@ rootdir=$(readlink -f $testdir/../..)
 source $rootdir/test/common/autotest_common.sh
 source $testdir/nbd_common.sh
 
-# nullglob will remove unmatched words containing '*', '?', '[' characters during word splitting.
-# This means that empty alias arrays will be removed instead of printing "[]", which breaks
-# consecutive "jq" calls, as the "aliases" key will have no value and the whole JSON will be
-# invalid. Hence do not enable this option for the duration of the tests in this script.
-shopt -s extglob
-
 rpc_py=rpc_cmd
 conf_file="$testdir/bdev.json"
 nonenclosed_conf_file="$testdir/nonenclosed.json"
 nonarray_conf_file="$testdir/nonarray.json"
+
+export RPC_PIPE_TIMEOUT=30
 
 # Make sure the configuration is clean
 : > "$conf_file"
 
 function cleanup() {
 	rm -f "$SPDK_TEST_STORAGE/aiofile"
-	rm -f "$SPDK_TEST_STORAGE/spdk-pmem-pool"
 	rm -f "$conf_file"
 
 	if [[ $test_type == rbd ]]; then
@@ -56,6 +51,8 @@ function start_spdk_tgt() {
 
 function setup_bdev_conf() {
 	"$rpc_py" <<- RPC
+		iobuf_set_options --small-pool-count 10000 --large-pool-count 1100
+		framework_start_init
 		bdev_split_create Malloc1 2
 		bdev_split_create -s 4 Malloc2 8
 		bdev_malloc_create -b Malloc0 32 512
@@ -66,16 +63,18 @@ function setup_bdev_conf() {
 		bdev_malloc_create -b Malloc5 32 512
 		bdev_malloc_create -b Malloc6 32 512
 		bdev_malloc_create -b Malloc7 32 512
+		bdev_malloc_create -b Malloc8 32 512
+		bdev_malloc_create -b Malloc9 32 512
 		bdev_passthru_create -p TestPT -b Malloc3
 		bdev_raid_create -n raid0 -z 64 -r 0 -b "Malloc4 Malloc5"
 		bdev_raid_create -n concat0 -z 64 -r concat -b "Malloc6 Malloc7"
+		bdev_raid_create -n raid1 -r 1 -b "Malloc8 Malloc9"
 		bdev_set_qos_limit --rw_mbytes_per_sec 100 Malloc3
 		bdev_set_qos_limit --rw_ios_per_sec 20000 Malloc0
 	RPC
-	if [[ $(uname -s) != "FreeBSD" ]]; then
-		dd if=/dev/zero of="$SPDK_TEST_STORAGE/aiofile" bs=2048 count=5000
-		"$rpc_py" bdev_aio_create "$SPDK_TEST_STORAGE/aiofile" AIO0 2048
-	fi
+
+	dd if=/dev/zero of="$SPDK_TEST_STORAGE/aiofile" bs=2048 count=5000
+	"$rpc_py" bdev_aio_create "$SPDK_TEST_STORAGE/aiofile" AIO0 2048
 }
 
 function setup_nvme_conf() {
@@ -94,7 +93,7 @@ function setup_xnvme_conf() {
 
 	for nvme in /dev/nvme*n*; do
 		[[ -b $nvme && -z ${zoned_devs["${nvme##*/}"]} ]] || continue
-		nvmes+=("bdev_xnvme_create $nvme ${nvme##*/} $io_mechanism")
+		nvmes+=("bdev_xnvme_create $nvme ${nvme##*/} $io_mechanism -c")
 	done
 
 	((${#nvmes[@]} > 0))
@@ -104,8 +103,7 @@ function setup_xnvme_conf() {
 function setup_gpt_conf() {
 	$rootdir/scripts/setup.sh reset
 	get_zoned_devs
-	# Get nvme devices by following drivers' links towards nvme class
-	local nvme_devs=(/sys/bus/pci/drivers/nvme/*/nvme/nvme*/nvme*n*) nvme_dev
+	local nvme_devs=(/sys/block/nvme!(*c*)) nvme_dev
 	gpt_nvme=""
 	# Pick first device which doesn't have any valid partition table
 	for nvme_dev in "${nvme_devs[@]}"; do
@@ -118,13 +116,20 @@ function setup_gpt_conf() {
 		fi
 	done
 	if [[ -n $gpt_nvme ]]; then
+		# These Unique Partition GUIDs were randomly generated for testing and are distinct
+		# from the Partition Type GUIDs (SPDK_GPT_OLD_GUID and SPDK_GPT_GUID) which have
+		# special meaning to SPDK. See section 5.3.3 of UEFI Spec 2.3 for the distinction
+		# between Unique Partition GUID and Partition Type GUID.
+		typeset -g g_unique_partguid=6f89f330-603b-4116-ac73-2ca8eae53030
+		typeset -g g_unique_partguid_old=abf1734f-66e5-4c0f-aa29-4021d4d307df
+
 		# Create gpt partition table
 		parted -s "$gpt_nvme" mklabel gpt mkpart SPDK_TEST_first '0%' '50%' mkpart SPDK_TEST_second '50%' '100%'
-		# change the GUID to SPDK GUID value
+		# Change the partition type GUIDs to SPDK partition type values
 		SPDK_GPT_OLD_GUID=$(get_spdk_gpt_old)
 		SPDK_GPT_GUID=$(get_spdk_gpt)
-		sgdisk -t "1:$SPDK_GPT_GUID" "$gpt_nvme"
-		sgdisk -t "2:$SPDK_GPT_OLD_GUID" "$gpt_nvme"
+		sgdisk -t "1:$SPDK_GPT_GUID" -u "1:$g_unique_partguid" "$gpt_nvme"
+		sgdisk -t "2:$SPDK_GPT_OLD_GUID" -u "2:$g_unique_partguid_old" "$gpt_nvme"
 		"$rootdir/scripts/setup.sh"
 		"$rpc_py" bdev_get_bdevs
 		setup_nvme_conf
@@ -190,8 +195,10 @@ function setup_crypto_sw_conf() {
 		bdev_malloc_create -b Malloc1 16 4096
 		accel_crypto_key_create -c AES_XTS -k 00112233445566778899001122334455 -e 11223344556677889900112233445500 -n test_dek_sw
 		accel_crypto_key_create -c AES_XTS -k 22334455667788990011223344550011 -e 33445566778899001122334455001122 -n test_dek_sw2
+		accel_crypto_key_create -c AES_XTS -k 33445566778899001122334455001122 -e 44556677889900112233445500112233 -n test_dek_sw3
 		bdev_crypto_create Malloc0 crypto_ram -n test_dek_sw
 		bdev_crypto_create Malloc1 crypto_ram2 -n test_dek_sw2
+		bdev_crypto_create crypto_ram2 crypto_ram3 -n test_dek_sw3
 		bdev_get_bdevs -b Malloc1
 	RPC
 }
@@ -222,28 +229,22 @@ function setup_crypto_mlx5_conf() {
 	local key=$1
 	local block_key
 	local tweak_key
-	if [ ${#key} == 96 ]; then
-		# 96 bytes is 64 + 32 - AES_XTS_256 in hexlified format
-		# Copy first 64 chars into the 'key'. This gives 32 in the
-		# binary or 256 bit.
+	if [ ${#key} == 64 ]; then
+		# 64 bytes is 32 + 32 - AES_XTS_128 in hexlified format
+		block_key=${key:0:32}
+		tweak_key=${key:32:32}
+	elif [ ${#key} == 128 ]; then
+		# 128 bytes is 64 + 64 - AES_XTS_256 in hexlified format
 		block_key=${key:0:64}
-		# Copy the the rest of the key and pass it as the 'key2'.
-		tweak_key=${key:64:32}
-	elif [ ${#key} == 160 ]; then
-		# 160 bytes is 128 + 32 - AES_XTS_512 in hexlified format
-		# Copy first 128 chars into the 'key'. This gives 64 in the
-		# binary or 512 bit.
-		block_key=${key:0:128}
-		# Copy the the rest of the key and pass it as the 'key2'.
-		tweak_key=${key:128:32}
+		tweak_key=${key:64:64}
 	else
 		echo "ERROR: Invalid DEK size for MLX5 crypto setup: ${#key}"
-		echo "ERROR: Supported key sizes for MLX5: 96 bytes (AES_XTS_256) and 160 bytes (AES_XTS_512)."
+		echo "ERROR: Supported key sizes for MLX5: 64 bytes (AES_XTS_128) and 128 bytes (AES_XTS_256)."
 		return 1
 	fi
 
 	# Malloc0 will use MLX5 AES_XTS
-	"$rpc_py" <<- RPC
+	"$rootdir/scripts/rpc.py" <<- RPC
 		dpdk_cryptodev_scan_accel_module
 		dpdk_cryptodev_set_driver -d mlx5_pci
 		accel_assign_opc -o encrypt -m dpdk_cryptodev
@@ -253,16 +254,6 @@ function setup_crypto_mlx5_conf() {
 		bdev_crypto_create Malloc0 crypto_ram4 -k $block_key -c AES_XTS -k2 $tweak_key
 		bdev_get_bdevs -b Malloc0
 	RPC
-}
-
-function setup_pmem_conf() {
-	if hash pmempool; then
-		rm -f "$SPDK_TEST_STORAGE/spdk-pmem-pool"
-		pmempool create blk --size=32M 512 "$SPDK_TEST_STORAGE/spdk-pmem-pool"
-		"$rpc_py" bdev_pmem_create -n Pmem0 "$SPDK_TEST_STORAGE/spdk-pmem-pool"
-	else
-		return 1
-	fi
 }
 
 function setup_rbd_conf() {
@@ -329,7 +320,7 @@ function nbd_function_test() {
 
 	nbd_rpc_start_stop_verify $rpc_server "${bdev_list[*]}"
 	nbd_rpc_data_verify $rpc_server "${bdev_list[*]}" "${nbd_list[*]}"
-	nbd_with_lvol_verify $rpc_server "${nbd_list[*]}"
+	nbd_with_lvol_verify $rpc_server "${nbd_list[0]}"
 
 	killprocess $nbd_pid
 	trap - SIGINT SIGTERM EXIT
@@ -346,7 +337,7 @@ function fio_test_suite() {
 	# Generate the fio config file given the list of all unclaimed bdevs
 	env_context=$(echo "$env_ctx" | sed 's/--env-context=//')
 	fio_config_gen $testdir/bdev.fio verify AIO "$env_context"
-	for b in $(echo $bdevs | jq -r '.name'); do
+	for b in "${bdevs_name[@]}"; do
 		echo "[job_$b]" >> $testdir/bdev.fio
 		echo "filename=$b" >> $testdir/bdev.fio
 	done
@@ -360,8 +351,8 @@ function fio_test_suite() {
 
 	# Generate the fio config file given the list of all unclaimed bdevs that support unmap
 	fio_config_gen $testdir/bdev.fio trim "" "$env_context"
-	if [ "$(echo $bdevs | jq -r 'select(.supported_io_types.unmap == true) | .name')" != "" ]; then
-		for b in $(echo $bdevs | jq -r 'select(.supported_io_types.unmap == true) | .name'); do
+	if [[ -n $(printf '%s\n' "${bdevs[@]}" | jq -r 'select(.supported_io_types.unmap == true) | .name') ]]; then
+		for b in $(printf '%s\n' "${bdevs[@]}" | jq -r 'select(.supported_io_types.unmap == true) | .name'); do
 			echo "[job_$b]" >> $testdir/bdev.fio
 			echo "filename=$b" >> $testdir/bdev.fio
 		done
@@ -535,7 +526,7 @@ function qd_sampling_function_test() {
 	qd_sampling_period=$(jq -r '.bdevs[0].queue_depth_polling_period' <<< "$iostats")
 
 	if [ $qd_sampling_period == null ] || [ $qd_sampling_period -ne $sampling_period ]; then
-		echo "Qeueue depth polling period is not right"
+		echo "Queue depth polling period is not right"
 		$rpc_py bdev_malloc_delete $QD_DEV
 		killprocess $QD_PID
 		exit 1
@@ -618,6 +609,99 @@ function stat_test_suite() {
 	trap - SIGINT SIGTERM EXIT
 }
 
+# Create three types of DIF configuration, 512 + 8, 512 + 16 (DIF is first 8bytes), and
+# 512 + 16 (DIF is last 8 bytes)
+function dif_insert_strip_test_suite() {
+	DIF_DEV_1="Malloc_DIF_1"
+	DIF_DEV_2="Malloc_DIF_2"
+	DIF_DEV_3="Malloc_DIF_3"
+
+	"$rootdir/build/examples/bdevperf" -z -m 0xf -q 32 -o 4096 -w randrw -M 50 -t 5 -C -N "$env_ctx" &
+	DIF_PID=$!
+	echo "Process bdev DIF insert/strip testing pid: $DIF_PID"
+	trap 'cleanup; killprocess $DIF_PID; exit 1' SIGINT SIGTERM EXIT
+	waitforlisten $DIF_PID
+
+	$rpc_py bdev_malloc_create -b $DIF_DEV_1 1 512 -m 8 -t 1 -f 0 -i
+	waitforbdev $DIF_DEV_1
+	$rpc_py bdev_malloc_create -b $DIF_DEV_2 1 512 -m 16 -t 1 -f 0 -i
+	waitforbdev $DIF_DEV_2
+	$rpc_py bdev_malloc_create -b $DIF_DEV_3 1 512 -m 16 -t 1 -f 0 -i -d
+	waitforbdev $DIF_DEV_3
+
+	$rootdir/examples/bdev/bdevperf/bdevperf.py perform_tests &
+	sleep 10
+
+	# Bdevperf is expected to be there because DIF error should not happen.
+	if kill -0 $DIF_PID; then
+		echo "Process is existed. Pid: $DIF_PID"
+	else
+		echo "Process exited unexpectedly. Pid: $DIF_PID"
+		exit 1
+	fi
+
+	$rpc_py bdev_malloc_delete $DIF_DEV_1
+	$rpc_py bdev_malloc_delete $DIF_DEV_2
+	$rpc_py bdev_malloc_delete $DIF_DEV_3
+	killprocess $DIF_PID
+	trap - SIGINT SIGTERM EXIT
+}
+
+function bdev_gpt_uuid() {
+	local bdev
+
+	start_spdk_tgt
+
+	"$rpc_py" load_config -j "$conf_file"
+	"$rpc_py" bdev_wait_for_examine
+
+	bdev=$("$rpc_py" bdev_get_bdevs -b "$g_unique_partguid")
+	[[ "$(jq -r 'length' <<< "$bdev")" == "1" ]]
+	[[ "$(jq -r '.[0].aliases[0]' <<< "$bdev")" == "$g_unique_partguid" ]]
+	[[ "$(jq -r '.[0].driver_specific.gpt.unique_partition_guid' <<< "$bdev")" == "$g_unique_partguid" ]]
+
+	bdev=$("$rpc_py" bdev_get_bdevs -b "$g_unique_partguid_old")
+	[[ "$(jq -r 'length' <<< "$bdev")" == "1" ]]
+	[[ "$(jq -r '.[0].aliases[0]' <<< "$bdev")" == "$g_unique_partguid_old" ]]
+	[[ "$(jq -r '.[0].driver_specific.gpt.unique_partition_guid' <<< "$bdev")" == "$g_unique_partguid_old" ]]
+
+	killprocess "$spdk_tgt_pid"
+}
+
+function bdev_crypto_enomem() {
+	local base_dev="base0"
+	local test_dev="crypt0"
+	local err_dev="EE_$base_dev"
+	local qd=32
+
+	"$rootdir/build/examples/bdevperf" -z -m 0x2 -q $qd -o 4096 -w randwrite -t 5 -f "$env_ctx" &
+	ERR_PID=$!
+	trap 'cleanup; killprocess $ERR_PID; exit 1' SIGINT SIGTERM EXIT
+	waitforlisten $ERR_PID
+
+	$rpc_py <<- RPC
+		accel_crypto_key_create -c AES_XTS -k 00112233445566778899001122334455 -e 11223344556677889900112233445500 -n test_dek_sw
+		bdev_null_create $base_dev 1024 512
+		bdev_error_create $base_dev
+		bdev_crypto_create $err_dev $test_dev -n test_dek_sw
+	RPC
+
+	waitforbdev $test_dev
+
+	$rootdir/examples/bdev/bdevperf/bdevperf.py perform_tests &
+	rpcpid=$!
+
+	sleep 1
+	$rpc_py bdev_error_inject_error $err_dev -n 5 -q $((qd - 1)) write nomem
+
+	wait $rpcpid
+
+	$rpc_py bdev_crypto_delete $test_dev
+
+	killprocess $ERR_PID
+	trap - SIGINT SIGTERM EXIT
+}
+
 # Initial bdev creation and configuration
 #-----------------------------------------------------
 QOS_DEV_1="Malloc_0"
@@ -634,22 +718,13 @@ fi
 
 test_type=${1:-bdev}
 crypto_device=$2
-wcs_file=$3
-dek=$4
+dek=$3
 env_ctx=""
 wait_for_rpc=""
-if [ -n "$crypto_device" ] && [ -n "$wcs_file" ]; then
-	# We need full path here since fio perf test does 'pushd' to the test dir
-	# and crypto login of fio plugin test can fail.
-	wcs_file=$(readlink -f $wcs_file)
-	if [ -f $wcs_file ]; then
-		env_ctx="--env-context=--allow=$crypto_device,class=crypto,wcs_file=$wcs_file"
-	else
-		echo "ERROR: Credentials file $3 is not found!"
-		exit 1
-	fi
+if [ -n "$crypto_device" ]; then
+	env_ctx="--env-context=--allow=$crypto_device,class=crypto"
 fi
-if [[ $test_type == crypto_* ]]; then
+if [[ $test_type == bdev || $test_type == crypto_* ]]; then
 	wait_for_rpc="--wait-for-rpc"
 fi
 start_spdk_tgt
@@ -678,9 +753,6 @@ case "$test_type" in
 	crypto_accel_mlx5)
 		setup_crypto_accel_mlx5_conf
 		;;
-	pmem)
-		setup_pmem_conf
-		;;
 	rbd)
 		setup_rbd_conf
 		;;
@@ -705,13 +777,14 @@ esac
 cat <<- CONF > "$conf_file"
 	        {"subsystems":[
 	        $("$rpc_py" save_subsystem_config -n accel),
-	        $("$rpc_py" save_subsystem_config -n bdev)
+	        $("$rpc_py" save_subsystem_config -n bdev),
+	        $("$rpc_py" save_subsystem_config -n iobuf)
 	        ]}
 CONF
 
-bdevs=$("$rpc_py" bdev_get_bdevs | jq -r '.[] | select(.claimed == false)')
-bdevs_name=$(echo $bdevs | jq -r '.name')
-bdev_list=($bdevs_name)
+mapfile -t bdevs < <("$rpc_py" bdev_get_bdevs | jq -r '.[] | select(.claimed == false)')
+mapfile -t bdevs_name < <(printf '%s\n' "${bdevs[@]}" | jq -r '.name')
+bdev_list=("${bdevs_name[@]}")
 
 hello_world_bdev=${bdev_list[0]}
 trap - SIGINT SIGTERM EXIT
@@ -723,7 +796,7 @@ trap "cleanup" SIGINT SIGTERM EXIT
 
 run_test "bdev_hello_world" $SPDK_EXAMPLE_DIR/hello_bdev --json "$conf_file" -b "$hello_world_bdev" "$env_ctx"
 run_test "bdev_bounds" bdev_bounds "$env_ctx"
-run_test "bdev_nbd" nbd_function_test $conf_file "$bdevs_name" "$env_ctx"
+run_test "bdev_nbd" nbd_function_test "$conf_file" "${bdevs_name[*]}" "$env_ctx"
 if [[ $CONFIG_FIO_PLUGIN == y ]]; then
 	if [ "$test_type" = "nvme" ] || [ "$test_type" = "gpt" ]; then
 		# TODO: once we get real multi-ns drives, re-enable this test for NVMe.
@@ -739,8 +812,7 @@ fi
 trap "cleanup" SIGINT SIGTERM EXIT
 
 run_test "bdev_verify" $rootdir/build/examples/bdevperf --json "$conf_file" -q 128 -o 4096 -w verify -t 5 -C -m 0x3 "$env_ctx"
-# TODO: increase queue depth to 128 once issue #2824 is fixed
-run_test "bdev_verify_big_io" $rootdir/build/examples/bdevperf --json "$conf_file" -q 16 -o 65536 -w verify -t 5 -C -m 0x3 "$env_ctx"
+run_test "bdev_verify_big_io" $rootdir/build/examples/bdevperf --json "$conf_file" -q 128 -o 65536 -w verify -t 5 -C -m 0x3 "$env_ctx"
 run_test "bdev_write_zeroes" $rootdir/build/examples/bdevperf --json "$conf_file" -q 128 -o 4096 -w write_zeroes -t 1 "$env_ctx"
 
 # test json config not enclosed with {}
@@ -754,6 +826,15 @@ if [[ $test_type == bdev ]]; then
 	run_test "bdev_qd_sampling" qd_sampling_test_suite "$env_ctx"
 	run_test "bdev_error" error_test_suite "$env_ctx"
 	run_test "bdev_stat" stat_test_suite "$env_ctx"
+	run_test "bdev_dif_insert_strip" dif_insert_strip_test_suite "$env_ctx"
+fi
+
+if [[ $test_type == gpt ]]; then
+	run_test "bdev_gpt_uuid" bdev_gpt_uuid
+fi
+
+if [[ $test_type == crypto_sw ]]; then
+	run_test "bdev_crypto_enomem" bdev_crypto_enomem
 fi
 
 # Temporarily disabled - infinite loop

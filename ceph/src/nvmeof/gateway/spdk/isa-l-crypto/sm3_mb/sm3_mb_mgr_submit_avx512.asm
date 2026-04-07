@@ -33,12 +33,9 @@
 %include "reg_sizes.asm"
 
 ;
-; SM3_JOB* sm3_mb_mgr_submit_avx512 (SM3_MB_JOB_MGR *state, SM3_JOB* job);
+; ISAL_SM3_JOB* _sm3_mb_mgr_submit_avx512 (ISAL_SM3_MB_JOB_MGR *state, ISAL_SM3_JOB* job);
 ;
 
-%ifdef HAVE_AS_KNOWS_AVX512
-
-;todo sm3_mb_x16_avx512
 extern sm3_mb_x16_avx512
 
 [bits 64]
@@ -90,8 +87,8 @@ section .text
 ; STACK_SPACE needs to be an odd multiple of 8
 %define STACK_SPACE	8*8 + 16*10 + 8
 
-mk_global sm3_mb_mgr_submit_avx512, function
-sm3_mb_mgr_submit_avx512:
+mk_global _sm3_mb_mgr_submit_avx512, function, internal
+_sm3_mb_mgr_submit_avx512:
 	endbranch
 
 	; save these registers
@@ -127,7 +124,7 @@ sm3_mb_mgr_submit_avx512:
 
 	shr	unused_lanes, 4
 	imul	lane_data, lane, _LANE_DATA_size
-	mov	dword [job + _status], STS_BEING_PROCESSED
+	mov	dword [job + _status], ISAL_STS_BEING_PROCESSED
 	lea	lane_data, [state + _ldata + lane_data]
 	mov	[state + _unused_lanes], unused_lanes
 	mov	DWORD(len), [job + _len]
@@ -205,7 +202,7 @@ len_is_0:
 	mov	job_rax, [lane_data + _job_in_lane]
 	mov	unused_lanes, [state + _unused_lanes]
 	mov	qword [lane_data + _job_in_lane], 0
-	mov	dword [job_rax + _status], STS_COMPLETED
+	mov	dword [job_rax + _status], ISAL_STS_COMPLETED
 	shl	unused_lanes, 4
 	or	unused_lanes, idx
 	mov	[state + _unused_lanes], unused_lanes
@@ -262,12 +259,3 @@ align 32
 clear_low_nibble:
 	dq 0x00000000FFFFFFF0, 0x0000000000000000
 	dq 0x00000000FFFFFFF0, 0x0000000000000000
-
-
-
-%else
-%ifidn __OUTPUT_FORMAT__, win64
-global no_sm3_mb_mgr_submit_avx512
-no_sm3_mb_mgr_submit_avx512:
-%endif
-%endif ; HAVE_AS_KNOWS_AVX512

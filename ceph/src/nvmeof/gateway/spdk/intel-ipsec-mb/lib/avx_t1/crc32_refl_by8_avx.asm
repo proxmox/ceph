@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2020-2022, Intel Corporation
+;; Copyright (c) 2020-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -35,11 +35,11 @@
 ;;     "Fast CRC Computation for Generic Polynomials Using PCLMULQDQ Instruction"
 ;;     URL: http://download.intel.com/design/intarch/papers/323102.pdf
 
-%include "include/os.asm"
-%include "include/memcpy.asm"
-%include "include/reg_sizes.asm"
+%include "include/os.inc"
+%include "include/memcpy.inc"
+%include "include/reg_sizes.inc"
 %include "include/crc32_refl.inc"
-%include "include/clear_regs.asm"
+%include "include/clear_regs.inc"
 
 [bits 64]
 default rel

@@ -1,10 +1,12 @@
 #  SPDX-License-Identifier: BSD-3-Clause
 #  Copyright (C) 2017 Intel Corporation.
 #  All rights reserved.
+#  Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 
 def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, cluster_sz=None,
-                             clear_method=None, num_md_pages_per_cluster_ratio=None):
+                             clear_method=None, num_md_pages_per_cluster_ratio=None,
+                             md_page_size=None):
     """Construct a logical volume store.
 
     Args:
@@ -13,6 +15,7 @@ def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, cluster_sz=None,
         cluster_sz: cluster size of the logical volume store in bytes (optional)
         clear_method: Change clear method for data region. Available: none, unmap, write_zeroes (optional)
         num_md_pages_per_cluster_ratio: metadata pages per cluster (optional)
+        md_page_size: metadata page size (optional)
 
     Returns:
         UUID of created logical volume store.
@@ -24,6 +27,8 @@ def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, cluster_sz=None,
         params['clear_method'] = clear_method
     if num_md_pages_per_cluster_ratio:
         params['num_md_pages_per_cluster_ratio'] = num_md_pages_per_cluster_ratio
+    if md_page_size:
+        params['md_page_size'] = md_page_size
     return client.call('bdev_lvol_create_lvstore', params)
 
 
@@ -58,12 +63,12 @@ def bdev_lvol_grow_lvstore(client, uuid=None, lvs_name=None):
     return client.call('bdev_lvol_grow_lvstore', params)
 
 
-def bdev_lvol_create(client, lvol_name, size, thin_provision=False, uuid=None, lvs_name=None, clear_method=None):
+def bdev_lvol_create(client, lvol_name, size_in_mib, thin_provision=False, uuid=None, lvs_name=None, clear_method=None):
     """Create a logical volume on a logical volume store.
 
     Args:
         lvol_name: name of logical volume to create
-        size: desired size of logical volume in bytes (will be rounded up to a multiple of cluster size)
+        size_in_mib: desired size of logical volume in MiB (will be rounded up to a multiple of cluster size)
         thin_provision: True to enable thin provisioning
         uuid: UUID of logical volume store to create logical volume on (optional)
         lvs_name: name of logical volume store to create logical volume on (optional)
@@ -76,7 +81,7 @@ def bdev_lvol_create(client, lvol_name, size, thin_provision=False, uuid=None, l
     if (uuid and lvs_name) or (not uuid and not lvs_name):
         raise ValueError("Either uuid or lvs_name must be specified, but not both")
 
-    params = {'lvol_name': lvol_name, 'size': size}
+    params = {'lvol_name': lvol_name, 'size_in_mib': size_in_mib}
     if thin_provision:
         params['thin_provision'] = thin_provision
     if uuid:
@@ -122,6 +127,30 @@ def bdev_lvol_clone(client, snapshot_name, clone_name):
     return client.call('bdev_lvol_clone', params)
 
 
+def bdev_lvol_clone_bdev(client, bdev, lvs_name, clone_name):
+    """Create a logical volume based on a snapshot.
+
+    Regardless of whether the bdev is specified by name or UUID, the bdev UUID
+    will be stored in the logical volume's metadata for use while the lvolstore
+    is loading. For this reason, it is important that the bdev chosen has a
+    static UUID.
+
+    Args:
+        bdev: bdev to clone; must not be an lvol in same lvstore as clone
+        lvs_name: name of logical volume store to use
+        clone_name: name of logical volume to create
+
+    Returns:
+        Name of created logical volume clone.
+    """
+    params = {
+        'bdev': bdev,
+        'lvs_name': lvs_name,
+        'clone_name': clone_name
+    }
+    return client.call('bdev_lvol_clone_bdev', params)
+
+
 def bdev_lvol_rename(client, old_name, new_name):
     """Rename a logical volume.
 
@@ -136,16 +165,16 @@ def bdev_lvol_rename(client, old_name, new_name):
     return client.call('bdev_lvol_rename', params)
 
 
-def bdev_lvol_resize(client, name, size):
+def bdev_lvol_resize(client, name, size_in_mib):
     """Resize a logical volume.
 
     Args:
         name: name of logical volume to resize
-        size: desired size of logical volume in bytes (will be rounded up to a multiple of cluster size)
+        size_in_mib: desired size of logical volume in MiB (will be rounded up to a multiple of cluster size)
     """
     params = {
         'name': name,
-        'size': size,
+        'size_in_mib': size_in_mib,
     }
     return client.call('bdev_lvol_resize', params)
 
@@ -198,6 +227,61 @@ def bdev_lvol_decouple_parent(client, name):
     return client.call('bdev_lvol_decouple_parent', params)
 
 
+def bdev_lvol_start_shallow_copy(client, src_lvol_name, dst_bdev_name):
+    """Start a shallow copy of an lvol over a given bdev. The status of the operation
+    can be obtained with bdev_lvol_check_shallow_copy
+
+    Args:
+        src_lvol_name: name of lvol to create a copy from
+        bdev_name: name of the bdev that acts as destination for the copy
+    """
+    params = {
+        'src_lvol_name': src_lvol_name,
+        'dst_bdev_name': dst_bdev_name
+    }
+    return client.call('bdev_lvol_start_shallow_copy', params)
+
+
+def bdev_lvol_check_shallow_copy(client, operation_id):
+    """Get shallow copy status
+
+    Args:
+        operation_id: operation identifier
+    """
+    params = {
+        'operation_id': operation_id
+    }
+    return client.call('bdev_lvol_check_shallow_copy', params)
+
+
+def bdev_lvol_set_parent(client, lvol_name, parent_name):
+    """Set the parent snapshot of a lvol
+
+    Args:
+        lvol_name: name of the lvol to set parent of
+        parent_name: name of the snapshot to become parent of lvol
+    """
+    params = {
+        'lvol_name': lvol_name,
+        'parent_name': parent_name
+    }
+    return client.call('bdev_lvol_set_parent', params)
+
+
+def bdev_lvol_set_parent_bdev(client, lvol_name, parent_name):
+    """Set the parent external snapshot of a lvol
+
+    Args:
+        lvol_name: name of the lvol to set parent of
+        parent_name: name of the external snapshot to become parent of lvol
+    """
+    params = {
+        'lvol_name': lvol_name,
+        'parent_name': parent_name
+    }
+    return client.call('bdev_lvol_set_parent_bdev', params)
+
+
 def bdev_lvol_delete_lvstore(client, uuid=None, lvs_name=None):
     """Destroy a logical volume store.
 
@@ -236,3 +320,24 @@ def bdev_lvol_get_lvstores(client, uuid=None, lvs_name=None):
     if lvs_name:
         params['lvs_name'] = lvs_name
     return client.call('bdev_lvol_get_lvstores', params)
+
+
+def bdev_lvol_get_lvols(client, lvs_uuid=None, lvs_name=None):
+    """List logical volumes
+
+    Args:
+        lvs_uuid: Only show volumes in the logical volume store with this UUID (optional)
+        lvs_name: Only show volumes in the logical volume store with this name (optional)
+
+    Either lvs_uuid or lvs_name may be specified, but not both.
+    If both lvs_uuid and lvs_name are omitted, information about volumes in all
+    logical volume stores is returned.
+    """
+    if (lvs_uuid and lvs_name):
+        raise ValueError("Exactly one of uuid or lvs_name may be specified")
+    params = {}
+    if lvs_uuid:
+        params['lvs_uuid'] = lvs_uuid
+    if lvs_name:
+        params['lvs_name'] = lvs_name
+    return client.call('bdev_lvol_get_lvols', params)

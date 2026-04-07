@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2020-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "utils_rbtree.h"
@@ -276,7 +277,7 @@ static struct ocf_rb_node *ocf_rb_tree_sibling(struct ocf_rb_node *node)
 }
 
 
-void ocf_rb_tree_fix_double_black(struct ocf_rb_tree *tree,
+static void ocf_rb_tree_fix_double_black(struct ocf_rb_tree *tree,
 		struct ocf_rb_node *node)
 {
 	struct ocf_rb_node *sibling;

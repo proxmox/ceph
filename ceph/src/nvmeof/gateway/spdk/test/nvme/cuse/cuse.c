@@ -4,16 +4,13 @@
  *   All rights reserved.
  */
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "common/lib/test_env.c"
 #include "nvme/nvme_cuse.c"
 
 DEFINE_STUB(nvme_io_msg_send, int, (struct spdk_nvme_ctrlr *ctrlr, uint32_t nsid,
 				    spdk_nvme_io_msg_fn fn, void *arg), 0);
-
-DEFINE_STUB(spdk_nvme_ctrlr_alloc_cmb_io_buffer, void *, (struct spdk_nvme_ctrlr *ctrlr,
-		size_t size), NULL);
 
 DEFINE_STUB(spdk_nvme_ctrlr_cmd_admin_raw, int, (struct spdk_nvme_ctrlr *ctrlr,
 		struct spdk_nvme_cmd *cmd, void *buf, uint32_t len,
@@ -31,13 +28,20 @@ static uint32_t g_active_nsid_min = 1;
 bool
 spdk_nvme_ctrlr_is_active_ns(struct spdk_nvme_ctrlr *ctrlr, uint32_t nsid)
 {
-	return nsid >= g_active_nsid_min && nsid < g_active_num_ns + g_active_nsid_min;
+	if (g_active_num_ns == 0) {
+		return false;
+	}
+	return nsid && nsid >= g_active_nsid_min && nsid < g_active_num_ns + g_active_nsid_min;
 }
 
 uint32_t
 spdk_nvme_ctrlr_get_first_active_ns(struct spdk_nvme_ctrlr *ctrlr)
 {
-	return g_active_nsid_min;
+	if (g_active_num_ns > 0) {
+		return g_active_nsid_min;
+	} else {
+		return 0;
+	}
 }
 
 uint32_t
@@ -92,7 +96,7 @@ wait_for_file(char *filename, bool exists)
 {
 	int i;
 
-	for (i = 0; i < 1000; i++) {
+	for (i = 0; i < 10000; i++) {
 		if ((access(filename, F_OK) != -1) ^ (!exists)) {
 			return true;
 		}
@@ -101,7 +105,7 @@ wait_for_file(char *filename, bool exists)
 	return false;
 }
 
-static void
+static bool
 verify_devices(struct spdk_nvme_ctrlr *ctrlr)
 {
 	char ctrlr_name[256];
@@ -116,23 +120,36 @@ verify_devices(struct spdk_nvme_ctrlr *ctrlr)
 	SPDK_CU_ASSERT_FATAL(rv == 0);
 
 	rv = snprintf(ctrlr_dev, sizeof(ctrlr_dev), "/dev/%s", ctrlr_name);
-	CU_ASSERT(rv > 0);
-	CU_ASSERT(wait_for_file(ctrlr_dev, true));
+	SPDK_CU_ASSERT_FATAL(rv > 0);
+	if (!wait_for_file(ctrlr_dev, true)) {
+		SPDK_ERRLOG("Couldn't find controller device: %s\n", ctrlr_dev);
+		return false;
+	}
 
 	num_ns = spdk_nvme_ctrlr_get_num_ns(ctrlr);
 
 	for (nsid = 1; nsid <= num_ns; nsid++) {
 		snprintf(ns_dev, sizeof(ns_dev), "%sn%" PRIu32, ctrlr_dev, nsid);
 		if (spdk_nvme_ctrlr_is_active_ns(ctrlr, nsid)) {
-			CU_ASSERT(wait_for_file(ns_dev, true));
+			if (!wait_for_file(ns_dev, true)) {
+				SPDK_ERRLOG("Couldn't find namespace device: %s\n", ns_dev);
+				return false;
+			}
 		} else {
-			CU_ASSERT(wait_for_file(ns_dev, false));
+			if (!wait_for_file(ns_dev, false)) {
+				SPDK_ERRLOG("Found unexpected namespace device: %s\n", ns_dev);
+				return false;
+			}
 		}
 	}
 
 	/* Next one should never exist */
 	snprintf(ns_dev, sizeof(ns_dev), "%sn%" PRIu32, ctrlr_dev, nsid);
-	CU_ASSERT(wait_for_file(ns_dev, false));
+	if (!wait_for_file(ns_dev, false)) {
+		SPDK_ERRLOG("Found unexpected namespace device beyond max NSID value: %s\n", ns_dev);
+		return false;
+	}
+	return true;
 }
 
 static void
@@ -141,40 +158,56 @@ test_cuse_update(void)
 	int rc;
 	struct spdk_nvme_ctrlr	ctrlr = {};
 
-	rc = nvme_cuse_start(&ctrlr);
+	rc = spdk_nvme_cuse_register(&ctrlr);
 	CU_ASSERT(rc == 0);
 
 	g_active_num_ns = 4;
 	g_active_nsid_min = 1;
 	nvme_cuse_update(&ctrlr);
-	verify_devices(&ctrlr);
+	CU_ASSERT(verify_devices(&ctrlr));
 
 	g_active_num_ns = 0;
+	g_active_nsid_min = 1;
 	nvme_cuse_update(&ctrlr);
-	verify_devices(&ctrlr);
+	CU_ASSERT(verify_devices(&ctrlr));
 
 	g_active_num_ns = 4;
 	g_active_nsid_min = spdk_nvme_ctrlr_get_num_ns(&ctrlr) - g_active_num_ns;
 	nvme_cuse_update(&ctrlr);
-	verify_devices(&ctrlr);
+	CU_ASSERT(verify_devices(&ctrlr));
 
 	g_active_num_ns = 2;
 	g_active_nsid_min = 2;
 	nvme_cuse_update(&ctrlr);
-	verify_devices(&ctrlr);
+	CU_ASSERT(verify_devices(&ctrlr));
 
 	g_active_num_ns = 10;
 	g_active_nsid_min = 5;
 	nvme_cuse_update(&ctrlr);
-	verify_devices(&ctrlr);
+	CU_ASSERT(verify_devices(&ctrlr));
 
 	g_active_num_ns = 5;
 	g_active_nsid_min = 3;
 	nvme_cuse_update(&ctrlr);
-	verify_devices(&ctrlr);
+	CU_ASSERT(verify_devices(&ctrlr));
 
 	g_active_num_ns = 6;
 	g_active_nsid_min = 1;
+	nvme_cuse_update(&ctrlr);
+	CU_ASSERT(verify_devices(&ctrlr));
+
+	g_active_num_ns = 10;
+	g_active_nsid_min = 10;
+	nvme_cuse_update(&ctrlr);
+	verify_devices(&ctrlr);
+
+	g_active_num_ns = 3;
+	g_active_nsid_min = 13;
+	nvme_cuse_update(&ctrlr);
+	verify_devices(&ctrlr);
+
+	g_active_num_ns = 10;
+	g_active_nsid_min = 10;
 	nvme_cuse_update(&ctrlr);
 	verify_devices(&ctrlr);
 
@@ -187,13 +220,11 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 	suite = CU_add_suite("nvme_cuse", NULL, NULL);
 	CU_ADD_TEST(suite, test_cuse_update);
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

@@ -3,31 +3,22 @@ name: verify
 
 on:
   push:
-    branches:
-    - '*'
-    tags:
-    - '*'
+    branches: [main, next, docs]
+    tags: ['v*']
   pull_request:
-    types: [labeled, opened, reopened, synchronize]
-    branches:
-    - '*'
+    types: [opened, reopened, synchronize, labeled]
+    branches: [next]
   workflow_dispatch:
     inputs:
       job:
         description: 'Job'
         required: true
-        default: all
+        default: docgen
         type: choice
         options:
-        - all
         - analyze
-        - analyze-codeql
-        - analyze-coverity
-        - build
-        - build-linux
-        - build-windows
-        - build-macos
-        - build-and-test
+        - verify
+        - bench
         - docgen
 
 defaults:
@@ -47,14 +38,13 @@ jobs:
   # the xNVMe CI pipeline itself, thus users will know that the archive should be and run on the
   # systems tested in the GitHUB CI workflow
   #
-  source-archive:
+  source-archive-with-subprojects:
     runs-on: ubuntu-20.04
-    container: refenv/alpine-bash
-    if: ((github.event.action != 'labeled') || (github.event.action == 'labeled') && (github.event.label.name == 'pr-ready-for-test'))
+    container: ghcr.io/xnvme/xnvme-deps-alpine-latest:next
 
     steps:
     - name: Grab source
-      uses: actions/checkout@v3.0.1
+      uses: actions/checkout@v4
     - name: Add repos to git-config safe.directory
       run: |
         git config --global --add safe.directory $(pwd)
@@ -64,54 +54,1074 @@ jobs:
         ls -lha
         git status
 
-    - name: Generate Full Source Archive
+    - name: Generate Source Archive with subprojects
       run: |
-        ./toolbox/pkgs/alpine-latest.sh
-        make clean gen-src-archive
+        make clean gen-src-archive-with-subprojects
+
+    - name: Rename to un-versioned xnvme-src.tar.gz
+      run: |
+        mv builddir/meson-dist/xnvme-0.7.5.tar.gz builddir/meson-dist/xnvme-src.tar.gz
+        mv builddir/meson-dist/xnvme-0.7.5.tar.gz.sha256sum builddir/meson-dist/xnvme-src.tar.gz.sha256sum
 
     - name: Upload source archive
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4.3.0
       with:
-        name: archive-src
-        path: builddir/meson-dist/*.tar.gz
+        name: xnvme-src-archive-with-subprojects
+        path: |
+          builddir/meson-dist/xnvme-src.tar.gz.sha256sum
+          builddir/meson-dist/xnvme-src.tar.gz
+        if-no-files-found: error
+
+  source-archive:
+    runs-on: ubuntu-20.04
+    container: ghcr.io/xnvme/xnvme-deps-alpine-latest:next
+
+    steps:
+    - name: Grab source
+      uses: actions/checkout@v4
+    - name: Add repos to git-config safe.directory
+      run: |
+        git config --global --add safe.directory $(pwd)
+
+    - name: Check repository...
+      run: |
+        ls -lha
+        git status
+
+    - name: Generate Source Archive with subprojects
+      run: |
+        make clean gen-src-archive
+
+    - name: Rename to un-versioned xnvme-src.tar.gz
+      run: |
+        mv builddir/meson-dist/xnvme-0.7.5.tar.gz builddir/meson-dist/xnvme-src.tar.gz
+        mv builddir/meson-dist/xnvme-0.7.5.tar.gz.sha256sum builddir/meson-dist/xnvme-src.tar.gz.sha256sum
+
+    - name: Upload source archive
+      uses: actions/upload-artifact@v4.3.0
+      with:
+        name: xnvme-src-archive
+        path: |
+          builddir/meson-dist/xnvme-src.tar.gz.sha256sum
+          builddir/meson-dist/xnvme-src.tar.gz
         if-no-files-found: error
 
   #
   # Check source-format using pre-commit
   #
   source-format-check:
-    runs-on: ubuntu-latest
-    container: refenv/xnvme-devtools-ci:latest
+    runs-on: ubuntu-24.04
+    container: ghcr.io/xnvme/xnvme-deps-fedora-citools:next
 
     steps:
     - name: Grab source
-      uses: actions/checkout@v3.0.1
+      uses: actions/checkout@v4
     - name: Add repos to git-config safe.directory
       run: |
         git config --global --add safe.directory $(pwd)
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: clippy, rustfmt
 
     - name: Run pre-commit
       run: pre-commit run --all-files
 
   #
+  # Ensure that bash completions and man pages can be generated without error
+  #
+  test-gen-targets:
+    needs: source-archive-with-subprojects
+    runs-on: ubuntu-latest
+    container: ghcr.io/xnvme/xnvme-deps-citools-latest:next
+
+    steps:
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
+
+    - name: Build xNVMe
+      run: make common
+
+    - name: Install xNVMe
+      run: make install
+
+    - name: ldconfig
+      run: ldconfig
+
+    - name: Execute 'xnvme library-info'
+      run: xnvme library-info
+
+    - name: Run make gen-bash-completions
+      run: make gen-bash-completions
+
+    - name: Run make gen-man-pages
+      run: make gen-man-pages
+
+  build-rust:
+    needs: source-archive-with-subprojects
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/xnvme/xnvme-deps-debian-bookworm:next
+
+    steps:
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
+
+    - name: Install dependencies
+      run: apt-get install -qy curl libclang-dev
+
+    - name: Build xNVMe
+      run: make common
+
+    - name: Install xNVMe
+      run: make install
+
+    - name: ldconfig
+      run: ldconfig
+
+    - name: Execute 'xnvme library-info'
+      run: xnvme library-info
+
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Rust, generate and build bindings
+      run: cargo build --release --manifest-path rust/Cargo.toml
+
+    - name: Rust, run example
+      run: cargo run --manifest-path rust/Cargo.toml
+
+  #
+  # Build xNVMe Python packages
+  #
+  build-python:
+    needs: source-archive-with-subprojects
+    runs-on: ubuntu-latest
+    container: ghcr.io/xnvme/xnvme-deps-debian-bullseye:next
+    strategy:
+      fail-fast: false
+
+    steps:
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
+
+    - name: Python sdist-packages, system-package deps.
+      run: |
+        apt-get install -qy libclang-13-dev
+
+    - name: Python sdist-packages, build bindings
+      run: |
+        pushd python/bindings
+        make clean build
+        popd
+
+    - name: Python sdist-packages, find(...)
+      run: |
+        find python/ -name *tar.gz
+
+    - name: Rename
+      run: |
+        mv python/bindings/dist/xnvme-*.*.*.tar.gz python/bindings/dist/xnvme-py-sdist.tar.gz
+
+    - name: Python sdist-packages, upload bindings
+      uses: actions/upload-artifact@v4.3.0
+      with:
+        name: xnvme-py-sdist
+        path: |
+          python/bindings/dist/xnvme-py-sdist.tar.gz
+        if-no-files-found: error
+
+  #
+  # Build on Linux using different Linux distributions
+  #
+  build-linux:
+    needs: [source-archive-with-subprojects, source-format-check, build-python]
+    runs-on: ubuntu-latest
+    if: contains('push pull_request', github.event_name)
+
+    strategy:
+      fail-fast: false
+      matrix:
+        container:
+        # Using an alpine container which is the same as upstream but with bash
+        # alpine: SPDK not supported, --with-spdk=disabled
+        - {os: 'alpine', dh: 'refenv/alpine-bash', ver: 'latest'}
+        - {os: 'archlinux', dh: 'archlinux', ver: 'latest'}
+        - {os: 'centos', dh: 'tgagor/centos', ver: 'stream9'}
+        - {os: 'debian', dh: 'debian', ver: 'bookworm'}
+        - {os: 'debian', dh: 'debian', ver: 'bullseye'}
+        - {os: 'debian', dh: 'debian', ver: 'trixie'}
+        - {os: 'fedora', dh: 'fedora', ver: '39'}
+        - {os: 'fedora', dh: 'fedora', ver: '40'}
+        # Skipping fedora-41 due to broken libffi
+        #- {os: 'fedora', dh: 'fedora', ver: '41'}
+        - {os: 'gentoo', dh: 'gentoo/stage3', ver: 'latest'}
+        - {os: 'opensuse-tumbleweed', dh: 'opensuse/tumbleweed', ver: 'latest'}
+        - {os: 'oraclelinux', dh: 'oraclelinux', ver: '9'}
+        - {os: 'rockylinux', dh: 'rockylinux', ver: '9.2'}
+        - {os: 'ubuntu', dh: 'ubuntu', ver: 'focal'}
+        - {os: 'ubuntu', dh: 'ubuntu', ver: 'jammy'}
+        - {os: 'ubuntu', dh: 'ubuntu', ver: 'lunar'}
+
+    container:
+      image: ghcr.io/xnvme/xnvme-deps-${{ matrix.container.os }}-${{ matrix.container.ver }}:next
+
+    steps:
+    - name: Container-preparation, openSUSE does not have tar and gzip...
+      if: contains(matrix.container.os, 'opensuse')
+      run: zypper --non-interactive install -y tar gzip
+
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
+
+    - name: Configure with and build with debug enabled (without spdk)
+      if: ${{ contains(matrix.container.os, 'alpine') }}
+      run: |
+        meson setup builddir --buildtype=debug -Dwith-spdk=disabled
+        meson compile -C builddir
+        make clean # prepare for building without debug
+
+    - name: Configure with debug enabled
+      if: ${{ ! contains(matrix.container.os, 'alpine') }}
+      run: |
+        meson setup builddir --buildtype=debug
+        meson compile -C builddir
+        make clean # prepare for building without debug
+
+    - name: Configure, Build, and Install
+      env:
+        BSCRIPT_DEF: toolbox/pkgs/default-build.sh
+        BSCRIPT: toolbox/pkgs/${{ matrix.container.os }}-${{ matrix.container.ver }}-build.sh
+      run: |
+        if [[ -f "${BSCRIPT}" ]]; then source ${BSCRIPT}; else source ${BSCRIPT_DEF}; fi
+
+    - name: Execute 'ldconfig'
+      # ldconfig doesn't work on alpine
+      # centos7 needs "ldconfig /usr/lib/local" for python3 to work
+      if: ${{!contains(matrix.container.os, 'alpine') && !contains(matrix.container.ver, 'centos7') && !contains(matrix.container.ver,
+        'stream8')}}
+      run: ldconfig
+
+    - name: meson-log-dump
+      if: always()
+      run: |
+        cat builddir/meson-logs/meson-log.txt || true
+
+    - name: isal-log-dump
+      if: always()
+      run: |
+        cat subprojects/spdk/isa-l/spdk-isal.log || true
+
+    - name: Execute 'xnvme enum'
+      run: xnvme enum
+
+    - name: Execute 'xnvme library-info'
+      run: xnvme library-info
+
+    - name: Check pkg-config
+      run: |
+        pkg-config xnvme --libs
+        pkg-config xnvme --variable=datadir
+        pkg-config xnvme --variable=includedir
+        pkg-config xnvme --variable=libdir
+        pkg-config xnvme --variable=pcfiledir
+        pkg-config xnvme --variable=prefix
+        ls -lh $(pkg-config xnvme --variable=libdir) | grep xnvme
+
+    - name: Check Python, pip, pipx, platform, sysconfig and setup PATH for pipx
+      run: |
+        python3 --version
+        python3 -m pip --version
+        python3 -c 'import setuptools; print("setuptools version:", setuptools.__version__)'
+        python3 -c "import platform; print(platform.system()); print(platform.uname())"
+        python3 -c 'import sysconfig; print(sysconfig.get_config_var("SHLIB_SUFFIX"))'
+        python3 -m pipx --version
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: Retrieve, the xNVMe Python sdist package
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-py-sdist
+    - name: Move, the xNVMe Python sdist package
+      run: |
+        mkdir -p /tmp/artifacts
+        mv xnvme-py-sdist.tar.gz /tmp/artifacts/.
+
+    # Setup Python virtual-environment for cijoe and Python xNVMe bindings to run ramdisk testing
+    - name: CIJOE, setup pipx environment
+      if: (!contains('focal', matrix.container.ver))
+      run: |
+        make cijoe
+
+    - name: CIJOE, check that it is available
+      if: (!contains('focal', matrix.container.ver))
+      run: |
+        cijoe -r
+
+    - name: Python-bindings (ctypes), install and test
+      if: (!contains('focal', matrix.container.ver))
+      run: |
+        python3 -m pipx inject cijoe /tmp/artifacts/xnvme-py-sdist.tar.gz
+        pytest --pyargs xnvme.ctypes_bindings
+
+    #
+    # Ramdisk testing
+    #
+    # Skipping on distros with too old gcc/clang to build fio, and too old a Python to run cijoe (requires 3.9)
+    #
+    - name: CIJOE, install fio
+      if: (!contains('focal', matrix.container.ver))
+      run: |
+        cd cijoe && cijoe \
+        --config "configs/ramdisk.toml" \
+        --workflow "workflows/provision-using-tgz.yaml" \
+        --output "prep-fio-${{ matrix.container.os }}-${{ matrix.container.ver }}" \
+        fio_prep
+
+    - name: CIJOE, upload prep-fio
+      if: always() && (!contains('focal', matrix.container.ver))
+      uses: actions/upload-artifact@v4.3.0
+      with:
+        name: prep-fio-${{ matrix.container.os }}-${{ matrix.container.ver }}
+        path: cijoe/prep-fio-${{ matrix.container.os }}-${{ matrix.container.ver }}/*
+        if-no-files-found: error
+
+    - name: CIJOE, run test-ramdisk.yaml
+      if: (!contains('focal', matrix.container.ver))
+      run: |
+        cd cijoe && cijoe \
+        --config "configs/ramdisk.toml" \
+        --workflow "workflows/test-ramdisk.yaml" \
+        --output "test-${{ matrix.container.os }}-${{ matrix.container.ver }}"
+
+    - name: CIJOE, upload test-ramdisk-report
+      if: always() && (!contains('focal', matrix.container.ver))
+      uses: actions/upload-artifact@v4.3.0
+      with:
+        name: test-ramdisk-${{ matrix.container.os }}-${{ matrix.container.ver }}
+        path: cijoe/test-${{ matrix.container.os }}-${{ matrix.container.ver }}/*
+        if-no-files-found: error
+
+  #
+  # Build on macOS
+  #
+  build-macos:
+    needs: [source-archive-with-subprojects, source-format-check, build-python]
+    runs-on: ${{ matrix.runner.os }}-${{ matrix.runner.ver }}
+    if: contains('push pull_request', github.event_name)
+
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - {os: 'macos', ver: '12'}
+        - {os: 'macos', ver: '13'}
+        - {os: 'macos', ver: '14'}
+
+    steps:
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
+
+    - name: Install build-requirements
+      run: |
+        source toolbox/pkgs/${{ matrix.runner.os }}-${{ matrix.runner.ver }}.sh || true
+
+    - name: Prep, environment GITHUB_PATH
+      run: |
+        echo "/opt/homebrew/opt/make/libexec/gnubin" >> $GITHUB_PATH
+
+    - name: Configure and build with debug enabled
+      run: |
+        meson setup builddir --buildtype=debug
+        meson compile -C builddir
+        make clean # prepare for building without debug
+
+    - name: Configure, Build, and Install
+      env:
+        BSCRIPT_DEF: toolbox/pkgs/default-build.sh
+        BSCRIPT: toolbox/pkgs/${{ matrix.runner.os }}-${{ matrix.runner.ver }}-build.sh
+      run: |
+        if [[ -f "${BSCRIPT}" ]]; then source ${BSCRIPT}; else source ${BSCRIPT_DEF}; fi
+
+    - name: meson-log-dump
+      if: always()
+      run: |
+        cat builddir/meson-logs/meson-log.txt || true
+
+    - name: Execute 'xnvme enum'
+      run: xnvme enum
+
+    - name: Execute 'xnvme library-info'
+      run: xnvme library-info
+
+    - name: Check pkg-config
+      run: |
+        pkg-config xnvme --libs
+        pkg-config xnvme --variable=datadir
+        pkg-config xnvme --variable=includedir
+        pkg-config xnvme --variable=libdir
+        pkg-config xnvme --variable=pcfiledir
+        pkg-config xnvme --variable=prefix
+        ls -lh $(pkg-config xnvme --variable=libdir) | grep xnvme
+
+    - name: Check Python, pip, platform, and sysconfig
+      run: |
+        python3 --version
+        python3 -m pip --version
+        python3 -c "import platform; print(platform.system()); print(platform.uname())"
+        python3 -c 'import sysconfig; print(sysconfig.get_config_var("SHLIB_SUFFIX"))'
+
+    - name: Retrieve, the xNVMe Python sdist package
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-py-sdist
+    - name: Move, the xNVMe Python sdist package
+      run: |
+        mkdir -p /tmp/artifacts
+        mv xnvme-py-sdist.tar.gz /tmp/artifacts/.
+
+    # Setup Python virtual-environment for cijoe and Python xNVMe bindings to run ramdisk testing
+    - name: CIJOE, setup pipx environment
+      run: |
+        make cijoe
+
+    - name: CIJOE, check that it is available
+      run: |
+        cijoe -r
+
+    - name: Python-bindings (ctypes), install and test
+      run: |
+        pipx inject cijoe /tmp/artifacts/xnvme-py-sdist.tar.gz
+        pytest --pyargs xnvme.ctypes_bindings
+
+    #
+    # Ramdisk testing
+    #
+    - name: Install fio
+      run: |
+        git clone https://github.com/axboe/fio.git /tmp/fio
+        cd /tmp/fio
+        git checkout fio-3.36
+        git rev-parse --short HEAD
+        gmake
+
+    - name: CIJOE, run test-ramdisk.yaml
+      run: |
+        cd cijoe && cijoe \
+        --config "configs/ramdisk-macos.toml" \
+        --workflow "workflows/test-ramdisk-macos.yaml" \
+        --output "test-${{ matrix.runner.os }}-${{ matrix.runner.ver }}"
+
+    - name: CIJOE, upload test-ramdisk-report
+      if: always()
+      uses: actions/upload-artifact@v4.3.0
+      with:
+        name: test-ramdisk-${{ matrix.runner.os }}-${{ matrix.runner.ver }}
+        path: cijoe/test-${{ matrix.runner.os }}-${{ matrix.runner.ver }}/*
+        if-no-files-found: error
+
+  #
+  # Build on Windows
+  #
+  build-windows:
+    needs: [source-archive-with-subprojects, source-format-check]
+    runs-on: ${{ matrix.runner.os }}-${{ matrix.runner.ver }}
+    if: contains('push pull_request', github.event_name)
+    defaults:
+      run:
+        shell: powershell
+
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - {os: 'windows', ver: '2022'}
+
+    steps:
+    - name: Setup paths
+      shell: cmd
+      run: |
+        echo %ALLUSERSPROFILE%\chocolatey\bin>> %GITHUB_PATH%
+        echo %SystemDrive%\tools\msys64\mingw64\bin>> %GITHUB_PATH%
+        echo %SystemDrive%\tools\msys64>> %GITHUB_PATH%
+        echo %SystemDrive%\tools\msys64\usr\lib>> %GITHUB_PATH%
+        echo %SystemDrive%\tools\msys64\usr\bin>> %GITHUB_PATH%
+
+    - name: Show paths
+      run: |
+        echo $env:Path
+
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
+      shell: bash
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
+
+    - name: Install build-requirements
+      run: |
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        .\toolbox\pkgs\windows-2022.ps1
+
+    - name: Configure and build with debug enabled
+      run: |
+        meson setup builddir --buildtype=debug
+        meson compile -C builddir
+        make clean # prepare for building without debug
+
+    - name: Build!
+      run: |
+        meson setup builddir --prefix "$env:SystemDrive\tools\msys64\usr"
+        meson compile -C builddir
+
+    - name: meson-log-dump
+      shell: bash
+      if: always()
+      run: |
+        cat builddir/meson-logs/meson-log.txt || true
+
+    - name: Dump the compile-commands and machine
+      shell: bash
+      run: |
+        cat /proc/cpuinfo || true
+        cat builddir/compile_commands.json || true
+
+    - name: Install
+      run: |
+        meson install -C builddir
+
+    - name: Execute xnvme commands
+      run: |
+        xnvme.exe library-info
+        xnvme.exe enum
+
+    - name: Check Python, pip, platform, and sysconfig
+      shell: bash
+      run: |
+        python3 --version
+        python3 -m pip --version
+        python3 -c "import platform; print(platform.system()); print(platform.uname())"
+        python3 -c 'import sysconfig; print(sysconfig.get_config_var("SHLIB_SUFFIX"))'
+
+  #
+  # Build and test xNVMe
+  #
+  verify:
+    needs: [source-archive-with-subprojects, source-format-check, build-python]
+    runs-on: [self-hosted, linux, x64, verify]
+
+    if: (contains('push pull_request', github.event_name) || ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job
+      == 'verify')))
+
+    strategy:
+      fail-fast: false
+      matrix:
+        guest:
+        - {os: 'freebsd', ver: '13'}
+        - {os: 'freebsd', ver: '14'}
+        - {os: 'debian', ver: 'bullseye'}
+
+    container:
+      image: ghcr.io/xnvme/xnvme-qemu:latest
+      options: --privileged
+
+    steps:
+    - name: Runnner-prep, clean up self-hosted left-overs
+      run: |
+        pkill -f qemu || true
+        rm -rf $HOME/guests 
+        rm -rf $HOME/images 
+        rm -r /tmp/artifacts || true
+        mkdir -p /tmp/artifacts || true
+        rm -rf *
+        ls -lh
+
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then move, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        mv xnvme-src.tar.gz /tmp/artifacts/.
+
+    - name: Retrieve, the xNVMe Python sdist package
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-py-sdist
+    - name: Move, the xNVMe Python sdist package
+      run: |
+        find .
+        mv xnvme-py-sdist.tar.gz /tmp/artifacts/.
+
+    - name: Prep, environment GITHUB_PATH
+      run: |
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        find /tmp/artifacts -name "*.tar.gz"
+
+    - name: Install python-venv on Bullseye
+      run: |
+        apt-get install -qy python3-venv
+
+    - name: pipx, Install
+      run: |
+        python3 -m pip uninstall pytest cijoe cijoe-pkg-xnvme cijoe-pkg-linux cijoe-pkg-qemu cijoe-pkg-example -y
+        python3 -m pip list
+        python3 -m pip install pipx
+        python3 -m pipx ensurepath
+
+    - name: CIJOE, setup pipx environment
+      run: |
+        make cijoe
+
+    - name: CIJOE, check that it is available
+      run: |
+        cijoe -r
+
+    # cd'ing into 'cijoe' to auto-collect the non-packaged github-specific configs and
+    # workflows.
+    - name: CIJOE, run provision-using-tgz.yaml
+      run: |
+        cd cijoe && cijoe \
+        --config "configs/${{ matrix.guest.os }}-${{ matrix.guest.ver }}.toml" \
+        --workflow "workflows/provision-using-tgz.yaml" \
+        --output "provision-${{ matrix.guest.os }}-${{ matrix.guest.ver }}"
+
+    - name: CIJOE, run test.yaml
+      run: |
+        cd cijoe && cijoe \
+        --config "configs/${{ matrix.guest.os }}-${{ matrix.guest.ver }}.toml" \
+        --workflow "workflows/test-${{ matrix.guest.os }}-${{ matrix.guest.ver }}.yaml" \
+        --output "test-${{ matrix.guest.os }}-${{ matrix.guest.ver }}"
+
+    - name: CIJOE, result-log-dump on error
+      if: failure()
+      run: find cijoe -name "*.output" | xargs cat
+
+    - name: CIJOE, upload workflow-report-provision
+      uses: actions/upload-artifact@v4.3.0
+      if: always()
+      with:
+        name: provision-results-${{ matrix.guest.os }}-${{ matrix.guest.ver }}
+        path: cijoe/provision-${{ matrix.guest.os }}-${{ matrix.guest.ver }}/*
+        if-no-files-found: error
+
+    - name: CIJOE, compress workflow-report-test
+      if: always()
+      run: |
+        tar czf test-results-${{ matrix.guest.os }}-${{ matrix.guest.ver }}.tar.gz cijoe/test-${{ matrix.guest.os }}-${{ matrix.guest.ver }}/* 
+
+    - name: CIJOE, upload workflow-report-test
+      uses: actions/upload-artifact@v4.3.0
+      if: always()
+      with:
+        name: test-results-${{ matrix.guest.os }}-${{ matrix.guest.ver }}
+        path: test-results-${{ matrix.guest.os }}-${{ matrix.guest.ver }}.tar.gz
+        if-no-files-found: error
+
+  #
+  # Build and run performance test of xNVMe
+  #
+  bench:
+    needs: [source-archive-with-subprojects, source-format-check, build-python]
+    runs-on: [self-hosted, linux, ARM64, bench, intel]
+
+    if: (contains('push', github.event_name) || ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job ==
+      'bench')) || ((github.event_name == 'pull_request') && contains(github.event.pull_request.labels.*.name, 'bench')))
+
+    strategy:
+      fail-fast: false
+
+    container:
+      image: debian:bookworm
+      options: --privileged
+
+    steps:
+    - name: Runnner-prep, clean up self-hosted left-overs
+      run: |
+        pkill -f qemu || true
+        rm -r $HOME/guests || true
+        rm -r /tmp/artifacts || true
+        mkdir -p /tmp/artifacts || true
+        rm -rf *
+        ls -lh
+
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then move, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+
+    - name: Prep, environment GITHUB_PATH
+      run: |
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: Packages, Debian Bookworm
+      run: |
+        apt-get -qy update
+        apt-get -qy upgrade
+        apt-get -qy install python3 python3-dev python3-venv pipx git make gcc fontconfig
+        pipx ensurepath
+
+    - name: CIJOE, setup pipx environment
+      run: |
+        make cijoe
+
+    - name: CIJOE, run provisioning
+      run: |
+        cd cijoe && cijoe \
+        --config "configs/bench-intel.toml" \
+        --workflow "workflows/benchmark-provisioning-linux.yaml"
+
+    - name: CIJOE, run bench
+      run: |
+        rm -rf cijoe/bench-results
+        cd cijoe && cijoe \
+        --config "configs/bench-intel.toml" \
+        --workflow "workflows/bench.yaml" \
+        --output "bench-results"
+
+    - name: CIJOE, compress workflow-report-bench
+      if: always()
+      run: |
+        tar czf bench-results.tar.gz cijoe/bench-results/* 
+
+    - name: CIJOE, upload workflow-report-test
+      uses: actions/upload-artifact@v4.3.0
+      if: always()
+      with:
+        name: bench-results
+        path: bench-results.tar.gz
+        if-no-files-found: error
+
+  #
+  # Build and run fio latency test of xNVMe
+  #
+  fio-latency:
+    needs: [source-archive-with-subprojects, source-format-check, build-python]
+    if: (contains('push', github.event_name) || ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job ==
+      'bench')) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'bench')))
+
+    strategy:
+      fail-fast: false
+      matrix:
+        guest:
+        - {os: 'freebsd', labels: [self-hosted, X64, perf-lat, perf-lat-fbsd]}
+        - {os: 'linux', labels: [self-hosted, X64, perf-lat, perf-lat-linux]}
+        - {os: 'windows', labels: [self-hosted, X64, perf-lat, perf-lat-win]}
+    runs-on: ${{ matrix.guest.labels }}
+
+    container:
+      image: debian:bookworm
+      options: --privileged
+
+    steps:
+    - name: Runner-prep, clean up self-hosted left-overs
+      run: |
+        pkill -f qemu || true
+        rm -r $HOME/guests || true
+        rm -r /tmp/artifacts || true
+        mkdir -p /tmp/artifacts || true
+        rm -rf *
+        ls -lh
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then move, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+    - name: Prep, environment GITHUB_PATH
+      run: |
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+    - name: Packages, Debian Bookworm
+      run: |
+        apt-get -qy update
+        apt-get -qy upgrade
+        apt-get -qy install python3 python3-dev python3-venv pipx git make gcc fontconfig
+        pipx ensurepath
+    - name: CIJOE, setup pipx environment
+      run: |
+        make cijoe
+    - name: CIJOE, run provisioning
+      run: |
+        rm -rf cijoe/latency-${{ matrix.guest.os }}-provisioning
+        cd cijoe && cijoe \
+        --config "configs/perf-lat-${{ matrix.guest.os }}.toml" \
+        --workflow "workflows/benchmark-provisioning-${{ matrix.guest.os }}.yaml" \
+        --output "latency-${{ matrix.guest.os }}-provisioning"
+    - name: CIJOE, run benchmark latency
+      run: |
+        rm -rf cijoe/latency-${{ matrix.guest.os }}-results
+        cd cijoe && cijoe \
+        --config "configs/perf-lat-${{ matrix.guest.os }}.toml" \
+        --workflow "workflows/benchmark-latency.yaml" \
+        --output "latency-${{ matrix.guest.os }}-results"
+    - name: CIJOE, compress workflow-report-latency-${{ matrix.guest.os }}-provisioning
+      if: always()
+      run: |
+        tar czf latency-${{ matrix.guest.os }}-provisioning.tar.gz cijoe/latency-${{ matrix.guest.os }}-provisioning/* 
+    - name: CIJOE, upload workflow-report-latency-${{ matrix.guest.os }}-provisioning
+      uses: actions/upload-artifact@v4.3.0
+      if: always()
+      with:
+        name: latency-${{ matrix.guest.os }}-provisioning
+        path: latency-${{ matrix.guest.os }}-provisioning.tar.gz
+        if-no-files-found: error
+    - name: CIJOE, compress workflow-report-latency-${{ matrix.guest.os }}-results
+      if: always()
+      run: |
+        tar czf latency-${{ matrix.guest.os }}-results.tar.gz cijoe/latency-${{ matrix.guest.os }}-results/* 
+    - name: CIJOE, upload workflow-report-latency-${{ matrix.guest.os }}-results
+      uses: actions/upload-artifact@v4.3.0
+      if: always()
+      with:
+        name: latency-${{ matrix.guest.os }}-results
+        path: latency-${{ matrix.guest.os }}-results.tar.gz
+        if-no-files-found: error
+
+  #
+  # Documentation: generate documentation and deploy it to githubpages (xnvme.io)
+  #
+  # This is triggered upon:
+  #
+  # * push of branches and tags
+  # * manual 'workflow_dispatch'
+  # * pull-request changes, thus, we can catch whether a PR breaks documentation
+  #
+  # When triggered by 'push' or 'workflow_dispatch', then the documentation is
+  # deployed to:
+  #
+  #   githubpages/docs/<github.ref>
+  #
+  # A couple of examples:
+  #
+  # * githubpages/docs/next
+  # * githubpages/docs/current
+  # * githubpages/docs/foo
+  # * githubpages/docs/v1.2.3
+  # * githubpages/docs/v1.2.4
+  #
+  # Thus, upon push/dispatch then the archive/history is updated
+  # The root of the site is always synced with githubpages/docs/current in case
+  # there are no changes to "docs/current", then there is nothing to commit
+  #
+  docgen:
+    needs: [source-archive-with-subprojects, source-format-check, build-python]
+    runs-on: [self-hosted, linux, verify]
+    if: ((github.event_name == 'push') || (github.event_name == 'pull_request') || ((github.event_name == 'workflow_dispatch')
+      && (github.event.inputs.job == 'docgen')))
+
+    strategy:
+      fail-fast: false
+      matrix:
+        guest:
+        - {os: 'debian', ver: 'bullseye'}
+
+    container:
+      image: ghcr.io/xnvme/xnvme-qemu:latest
+      options: --privileged
+
+    steps:
+    - name: Runnner-prep, clean up self-hosted left-overs
+      run: |
+        rm -rf $HOME/guests 
+        rm -rf $HOME/images 
+        rm -rf *
+        ls -lh
+
+    - name: Container-prep, get the full-source-archive-with-subprojects
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Container-prep, extract the full-source-archive-with-subprojects
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: Retrieve, the xNVMe Python sdist package
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-py-sdist
+    - name: Move, the xNVMe Python sdist package
+      run: |
+        find .
+
+    - name: Move source-archives to /tmp/artifacts
+      run: |
+        ls -lh
+        find . -name "*.tar.gz"
+        find /tmp -name "*.tar.gz"
+        rm -r /tmp/artifacts || true
+        mkdir /tmp/artifacts
+        mv xnvme-*.tar.gz /tmp/artifacts/.
+        find /tmp/artifacts -name "*.tar.gz"
+
+    - name: Install python-venv on Bullseye
+      run: |
+        apt-get install -qy python3-venv
+
+    - name: pipx, Install
+      run: |
+        python3 -m pip uninstall pytest cijoe cijoe-pkg-xnvme cijoe-pkg-linux cijoe-pkg-qemu cijoe-pkg-example -y
+        python3 -m pip list
+        python3 -m pip install pipx
+        python3 -m pipx ensurepath
+
+    - name: CIJOE, setup pipx environment
+      run: |
+        make cijoe
+
+    - name: CIJOE, check that it is available
+      run: |
+        cijoe -r
+
+    # cd'ing into 'cijoe' to auto-collect the non-packaged github-specific configs and
+    # workflows.
+    - name: CIJOE, run provision-using-tgz.yaml
+      run: |
+        cd cijoe && cijoe \
+        --config "configs/${{ matrix.guest.os }}-${{ matrix.guest.ver }}.toml" \
+        --workflow "workflows/provision-using-tgz.yaml" \
+        --output "provision-${{ matrix.guest.os }}-${{ matrix.guest.ver }}"
+
+    - name: CIJOE, generate documentation
+      run: |
+        cd cijoe && cijoe \
+        --config "configs/${{ matrix.guest.os }}-${{ matrix.guest.ver }}.toml" \
+        --workflow "workflows/docgen.yaml" \
+        --output "docgen-${{ matrix.guest.os }}-${{ matrix.guest.ver }}"
+
+    - name: Checkout site
+      if: ((github.event_name == 'push') || ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job == 'docgen')))
+      uses: actions/checkout@v4
+      with:
+        repository: "xnvme/xnvme.github.io"
+        token: ${{ secrets.DOCS_PAT }}
+        path: site
+    - name: Add repos to git-config safe.directory
+      run: |
+        git config --global --add safe.directory $(pwd)/site
+
+    - name: Extract the website
+      if: ((github.event_name == 'push') || ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job == 'docgen')))
+      run: |
+        cp cijoe/docgen-${{ matrix.guest.os }}-${{ matrix.guest.ver }}/artifacts/docs.tar.gz .
+        tar xzf docs.tar.gz
+
+    - name: Update site repository
+      if: ((github.event_name == 'push') || ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job == 'docgen')))
+      run: |
+        ./docs/autogen/dest.py --docs html --site site --ref "${{ github.ref }}"
+
+    - name: Push site-changes
+      if: ((github.event_name == 'push') || ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job == 'docgen')))
+      run: |
+        cd site
+        git config --global user.name 'GitHUB Service'
+        git config --global user.email 'ghs@safl.dk'
+        git add .
+        git commit -a -m "Auto-deployed update of 'docs/' for '${{ github.ref }}'"
+        git push
+
+    - name: CIJOE, upload report-docgen
+      uses: actions/upload-artifact@v4.3.0
+      if: always()
+      with:
+        name: docgen-results-${{ matrix.guest.os }}-${{ matrix.guest.ver }}
+        path: cijoe/docgen-${{ matrix.guest.os }}-${{ matrix.guest.ver }}/*
+        if-no-files-found: error
+
+  #
+  # All of the following "analysis" jobs only trigger on 'workflow_dispatch'
+  #
+
+  #
+  # Code-analysis using scan-build
+  #
+  analyze-scan-build:
+    needs: source-archive-with-subprojects
+    runs-on: ubuntu-latest
+    container: ghcr.io/xnvme/xnvme-deps-citools-latest:next
+    if: ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job == 'analyze'))
+
+    steps:
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
+      run: |
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
+
+    - name: Run config-debug
+      run: scan-build make config-debug
+
+    - name: Run scan-build
+      run: scan-build --exclude subprojects -o /tmp/scan-build-report make
+
+    - name: Upload scan-build report
+      uses: actions/upload-artifact@v4.3.0
+      if: always()
+      with:
+        name: scan-build-report
+        path: /tmp/scan-build-report/*
+        if-no-files-found: error
+
+  #
   # Code-analysis using GitHUB CodeQL
   #
   analyze-codeql:
-    needs: source-archive
+    needs: source-archive-with-subprojects
     runs-on: ubuntu-latest
-    if: ((github.event_name == 'workflow_dispatch') && ((github.event.inputs.job == 'all') || contains('analyze-codeql', github.event.inputs.job)))
-
     container: debian:bullseye
+    if: ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job == 'analyze'))
 
     steps:
-    - name: Retrieve the source-archive
-      uses: actions/download-artifact@v2
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
       with:
-        name: archive-src
-    - name: Extract the full-source-archive
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
       run: |
-        tar xzf xnvme*.tar.gz --strip 1
-        rm xnvme*.tar.gz
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
 
     - name: Install build-requirements
       run: source toolbox/pkgs/debian-bullseye.sh
@@ -135,10 +1145,9 @@ jobs:
   # Code-analysis using Coverity
   #
   analyze-coverity:
-    needs: source-archive
+    needs: source-archive-with-subprojects
     runs-on: ubuntu-latest
-    if: ((github.event_name == 'workflow_dispatch') && ((github.event.inputs.job == 'all') || contains('analyze-coverity',
-      github.event.inputs.job)))
+    if: ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job == 'analyze'))
 
     container: debian:buster
     env:
@@ -147,14 +1156,14 @@ jobs:
       PROJECT_NAME: "xNVMe"
 
     steps:
-    - name: Retrieve the source-archive
-      uses: actions/download-artifact@v2
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
       with:
-        name: archive-src
-    - name: Extract the full-source-archive
+        name: xnvme-src-archive-with-subprojects
+    - name: Extract, and then remove, the xNVMe source archive
       run: |
-        tar xzf xnvme*.tar.gz --strip 1
-        rm xnvme*.tar.gz
+        tar xzf xnvme-src.tar.gz --strip 1
+        rm xnvme-src.tar.gz
 
     - name: xNVMe, install build-requirements
       run: |
@@ -210,592 +1219,44 @@ jobs:
         --form description="xNVMe libraries and tools for NVMe" \
         "https://scan.coverity.com/builds?project=${PROJECT_NAME}"
 
-  #
-  # dockerize the xNVMe source archive, that is, produce a docker-image which is:
-  #
-  # * Based on 'refenv/qemu-nvme' (from DockerHub)
-  # * Contains the content of the xNVMe source-archive
-  # * Published on DockerHub
-  #
-  dockerize-source:
+  packaging-debian:
     needs: source-archive
     runs-on: ubuntu-latest
-    if: ((github.event_name == 'workflow_dispatch') && ((github.event.inputs.job == 'all') || (github.event.inputs.job ==
-      'dockerize-source')))
+    container: ghcr.io/xnvme/xnvme-deps-debian-packaging:main
+    if: github.event_name == 'pull_request'
 
     steps:
-    - name: Retrieve the source-archive
-      uses: actions/download-artifact@v2
+    - name: Info
+      run: |
+        echo "Current branch is ${{ github.base_ref }}"
+        echo "Current tag is ${{ github.ref }}"
+
+    - name: Retrieve the xNVMe source archive
+      uses: actions/download-artifact@v4.1.7
       with:
-        name: archive-src
+        name: xnvme-src-archive
 
-    - name: Create a docker context
+    - name: Retrieve the xNVMe Debian package repository by branch
       run: |
-        mkdir -p /tmp/dockerize/xnvme
-        tar xzf xnvme*.tar.gz --strip 1 -C /tmp/dockerize/xnvme
-        tar xzf xnvme*.tar.gz --strip 1
-        rm xnvme*.tar.gz
+        git clone https://salsa.debian.org/safl/xnvme.git debpkg
+        git -C debpkg checkout ${{ github.base_ref }}
 
-    - name: Log into docker registry
-      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-
-    - name: Dockerize bin
+    - name: Prep
       run: |
-        TAG=${GITHUB_SHA::8}
-        docker build \
-          -t refenv/xnvme:latest \
-          -t refenv/xnvme:${TAG} \
-          -f toolbox/Dockerfile /tmp/dockerize
+        mv xnvme-src.tar.gz debpkg/input/xnvme-0.7.5.tar.gz
 
-    - name: Push Docker image
-      run: docker push refenv/xnvme
+    - name: Build
+      run: |
+        cd debpkg && make || true
 
-  #
-  # Build xNVMe Python packages
-  #
-  build-python:
-    needs: source-archive
-    runs-on: ubuntu-latest
-    if: ((github.event_name == 'pull_request') || ((github.event_name == 'workflow_dispatch') && ((github.event.inputs.job
-      == 'all') || contains('build-linux', github.event.inputs.job) || contains('docgen', github.event.inputs.job))))
-    container: refenv/alpine-bash
-    strategy:
-      fail-fast: false
-
-    steps:
-    - name: Retrieve the source-archive
-      uses: actions/download-artifact@v2
+    - name: Upload debian packages
+      uses: actions/upload-artifact@v4.3.0
       with:
-        name: archive-src
-    - name: Extract the full-source-archive
-      run: |
-        tar xzf xnvme*.tar.gz --strip 1
-        rm xnvme*.tar.gz
-
-    - name: Install build-requirements
-      run: |
-        ./toolbox/pkgs/alpine-latest.sh
-
-    - name: Python sdist-packages, system-package deps.
-      run: |
-        apk add clang-libs
-
-    - name: Python sdist-packages, build(xnvme-core, xnvme-cy-header, and xnvme-cy-bindings)
-      run: |
-        cd python/xnvme-cy-bindings
-        make clean build-py-env build-sdist
-
-    - name: Python sdist-packages, find(...)
-      run: |
-        find python/ -name *tar.gz
-
-    - name: Python sdist-packages, upload(xnvme-core, xnvme-cy-header, xnvme-cy-bindings)
-      uses: actions/upload-artifact@v2
-      with:
-        name: python-xnvme-pkg
+        name: packages-debian
         path: |
-          python/xnvme-core/dist/xnvme-core-*.tar.gz
-          python/xnvme-cy-bindings/dist/xnvme-cy-bindings-*.tar.gz
-          python/xnvme-cy-header/dist/xnvme-cy-header-*.tar.gz
-        if-no-files-found: error
-
-  #
-  # Build on Linux using different Linux distributions
-  #
-  build-linux:
-    needs: [source-archive, source-format-check, build-python]
-    runs-on: ubuntu-latest
-    if: ((github.event_name == 'pull_request') || ((github.event_name == 'workflow_dispatch') && ((github.event.inputs.job
-      == 'all') || contains('build-linux', github.event.inputs.job))))
-
-    strategy:
-      fail-fast: false
-      matrix:
-        container:
-        # Using an alpine container which is the same as upstream but with bash
-        # alpine: SPDK not supported, --with-spdk=false
-        # centos7: liburing 2.1 not supported, --with-liburing=false
-        - {os: 'alpine', dh: 'refenv/alpine-bash', ver: 'latest'}
-        - {os: 'archlinux', dh: 'archlinux', ver: 'latest'}
-        - {os: 'centos', dh: 'tgagor/centos', ver: 'stream9'}
-        - {os: 'centos', dh: 'tgagor/centos', ver: 'stream8'}
-        - {os: 'centos', dh: 'centos', ver: 'centos7'}
-        - {os: 'debian', dh: 'debian', ver: 'bookworm'}
-        - {os: 'debian', dh: 'debian', ver: 'bullseye'}
-        - {os: 'debian', dh: 'debian', ver: 'buster'}
-        - {os: 'fedora', dh: 'fedora', ver: '36'}
-        - {os: 'fedora', dh: 'fedora', ver: '35'}
-        - {os: 'fedora', dh: 'fedora', ver: '34'}
-        - {os: 'gentoo', dh: 'gentoo/stage3', ver: 'latest'}
-        - {os: 'opensuse-tumbleweed', dh: 'opensuse/tumbleweed', ver: 'latest'}
-        - {os: 'opensuse-leap', dh: 'opensuse/leap', ver: '15.4'}
-        - {os: 'opensuse-leap', dh: 'opensuse/leap', ver: '15.3'}
-        - {os: 'ubuntu', dh: 'ubuntu', ver: 'jammy'}
-        - {os: 'ubuntu', dh: 'ubuntu', ver: 'focal'}
-        - {os: 'ubuntu', dh: 'ubuntu', ver: 'bionic'}
-
-    container:
-      image: ${{ matrix.container.dh }}:${{ matrix.container.ver }}
-
-    steps:
-    - name: Container-preparation, openSUSE does not have tar and gzip...
-      if: contains(matrix.container.os, 'opensuse')
-      run: zypper --non-interactive install -y tar gzip
-
-    - name: Retrieve the source-archive
-      uses: actions/download-artifact@v2
-      with:
-        name: archive-src
-    - name: Extract the full-source-archive
-      run: |
-        tar xzf xnvme*.tar.gz --strip 1
-        rm xnvme*.tar.gz
-
-    - name: Install build-requirements
-      run: |
-        source toolbox/pkgs/${{ matrix.container.os }}-${{ matrix.container.ver }}.sh || true
-
-    - name: Configure, Build, and Install
-      env:
-        BSCRIPT_DEF: toolbox/pkgs/default-build.sh
-        BSCRIPT: toolbox/pkgs/${{ matrix.container.os }}-${{ matrix.container.ver }}-build.sh
-      run: |
-        if [[ -f "${BSCRIPT}" ]]; then source ${BSCRIPT}; else source ${BSCRIPT_DEF}; fi
-
-    - name: meson-log-dump
-      if: always()
-      run: |
-        cat builddir/meson-logs/meson-log.txt || true
-
-    - name: isal-log-dump
-      if: always()
-      run: |
-        cat subprojects/spdk/isa-l/spdk-isal.log || true
-
-    - name: Execute 'xnvme enum'
-      run: xnvme enum
-
-    - name: Execute 'xnvme library-info'
-      run: xnvme library-info
-
-    - name: Check pkg-config
-      run: |
-        pkg-config xnvme --libs
-        pkg-config xnvme --variable=datadir
-        pkg-config xnvme --variable=includedir
-        pkg-config xnvme --variable=libdir
-        pkg-config xnvme --variable=pcfiledir
-        pkg-config xnvme --variable=prefix
-        ls -lh $(pkg-config xnvme --variable=libdir) | grep xnvme
-
-    - name: Check Python, pip, platform, and sysconfig
-      run: |
-        python3 --version
-        python3 -m pip --version
-        python3 -c "import platform; print(platform.system()); print(platform.uname())"
-        python3 -c 'import sysconfig; print(sysconfig.get_config_var("SHLIB_SUFFIX"))'
-
-    - name: Retrieve the xNVMe Python sdist-packages
-      uses: actions/download-artifact@v2
-      with:
-        name: python-xnvme-pkg
-
-    - name: Install and test xNVMe Python bindings (ctypes)
-      run: |
-        python3 -m pip install xnvme-core/dist/xnvme-core-*.tar.gz --user
-        python3 -m pytest --pyargs xnvme.ctypes_bindings
-
-    # This also requires installing 'xnvme/cython_header/tests' from the tarball/repository
-    # The tests that are run here only tests "dummy", which means without an NVMe device.
-    #
-    # A PKG_CONFIG_PATH is set, as it is needed on Arch, CentOS 7/8 and Gentoo
-    # Didn't this get fixes previously? Why is this a problem again?
-    - name: Install and test xNVMe Cython header (libxnvme.pxd)
-      run: |
-        python3 -m pip install xnvme-cy-header/dist/xnvme-cy-header-*.tar.gz --user
-        cd python/xnvme-cy-header/xnvme/cython_header/tests/ && python3 -m pip install -r requirements.txt --user
-        PKG_CONFIG_PATH="/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig" python3 setup.py build_ext --inplace
-        python3 -m pytest --cython-collect test_cython.pyx::test_dummy -v -s
-
-    # Why is this needed: "python/xnvme-cy-bindings/requirements.txt --user" ?
-    # Should't build-requirements take care of this?
-    #
-    # --no-build-isolation, normally packages a build in a venv without access to other installed
-    # packages, in to build the xnvme-cy-bindings the 'xnvme-core' and 'xnvme-cy-header' packages
-    # are needed.
-    # Perhaps no longer the 'xnvme-core'?
-    - name: Install and test xNVMe Python bindings (Cython)
-      run: |
-        python3 -m pip install -r python/xnvme-cy-bindings/requirements.txt --user
-        python3 -m pip install xnvme-cy-bindings/dist/xnvme-cy-bindings-*.tar.gz --user -vvv --no-build-isolation
-        python3 -m pip install -r python/xnvme-cy-bindings/xnvme/cython_bindings/tests/requirements.txt --user
-        python3 -m pytest --pyargs xnvme.cython_bindings -k 'test_version' -s
-
-  #
-  # Build on macOS
-  #
-  build-macos:
-    needs: [source-archive, source-format-check, build-python]
-    runs-on: ${{ matrix.runner.os }}-${{ matrix.runner.ver }}
-    if: ((github.event_name == 'pull_request') || ((github.event_name == 'workflow_dispatch') && ((github.event.inputs.job
-      == 'all') || contains('build-macos', github.event.inputs.job))))
-
-    strategy:
-      fail-fast: false
-      matrix:
-        runner:
-        - {os: 'macos', ver: '11'}
-
-    steps:
-    - name: Retrieve the source-archive
-      uses: actions/download-artifact@v2
-      with:
-        name: archive-src
-    - name: Extract the full-source-archive
-      run: |
-        tar xzf xnvme*.tar.gz --strip 1
-        rm xnvme*.tar.gz
-
-    - name: Install build-requirements
-      run: |
-        source toolbox/pkgs/${{ matrix.runner.os }}-${{ matrix.runner.ver }}.sh || true
-
-    - name: Configure, Build, and Install
-      env:
-        BSCRIPT_DEF: toolbox/pkgs/default-build.sh
-        BSCRIPT: toolbox/pkgs/${{ matrix.runner.os }}-${{ matrix.runner.ver }}-build.sh
-      run: |
-        if [[ -f "${BSCRIPT}" ]]; then source ${BSCRIPT}; else source ${BSCRIPT_DEF}; fi
-
-    - name: meson-log-dump
-      if: always()
-      run: |
-        cat builddir/meson-logs/meson-log.txt || true
-
-    - name: Execute 'xnvme enum'
-      run: xnvme enum
-
-    - name: Execute 'xnvme library-info'
-      run: xnvme library-info
-
-    - name: Check pkg-config
-      run: |
-        pkg-config xnvme --libs
-        pkg-config xnvme --variable=datadir
-        pkg-config xnvme --variable=includedir
-        pkg-config xnvme --variable=libdir
-        pkg-config xnvme --variable=pcfiledir
-        pkg-config xnvme --variable=prefix
-        ls -lh $(pkg-config xnvme --variable=libdir) | grep xnvme
-
-    - name: Check Python, pip, platform, and sysconfig
-      run: |
-        python3 --version
-        python3 -m pip --version
-        python3 -c "import platform; print(platform.system()); print(platform.uname())"
-        python3 -c 'import sysconfig; print(sysconfig.get_config_var("SHLIB_SUFFIX"))'
-
-    - name: Retrieve the xNVMe Python sdist-packages
-      uses: actions/download-artifact@v2
-      with:
-        name: python-xnvme-pkg
-
-    - name: Install and test xNVMe Python bindings
-      run: |
-        python3 -m pip install xnvme-core/dist/xnvme-core-*.tar.gz --user
-        python3 -m pytest --pyargs xnvme.ctypes_bindings
-
-    # This also requires installing 'xnvme/cython_header/tests' from the tarball/repository
-    # The tests that are run here only tests "dummy", which means without an NVMe device.
-    - name: Install and test xNVMe Cython header (libxnvme.pxd)
-      run: |
-        python3 -m pip install xnvme-cy-header/dist/xnvme-cy-header-*.tar.gz --user
-        cd python/xnvme-cy-header/xnvme/cython_header/tests/ && python3 -m pip install -r requirements.txt --user
-        python3 setup.py build_ext --inplace
-        python3 -m pytest --cython-collect test_cython.pyx::test_dummy -v -s
-
-    # Why is this needed: "python/xnvme-cy-bindings/requirements.txt --user" ?
-    # Should't build-requirements take care of this?
-    #
-    # --no-build-isolation, normally packages a build in a venv without access to other installed
-    # packages, in to build the xnvme-cy-bindings the 'xnvme-core' and 'xnvme-cy-header' packages
-    # are needed.
-    # Perhaps no longer the 'xnvme-core'?
-    - name: Install and test xNVMe Python bindings (Cython)
-      run: |
-        python3 -m pip install -r python/xnvme-cy-bindings/requirements.txt --user
-        python3 -m pip install xnvme-cy-bindings/dist/xnvme-cy-bindings-*.tar.gz --user -vvv --no-build-isolation
-        python3 -m pip install -r python/xnvme-cy-bindings/xnvme/cython_bindings/tests/requirements.txt --user
-        python3 -m pytest --pyargs xnvme.cython_bindings -k 'test_version' -s
-
-  #
-  # Build on Windows
-  #
-  build-windows:
-    needs: [source-archive, source-format-check]
-    runs-on: ${{ matrix.runner.os }}-${{ matrix.runner.ver }}
-    if: ((github.event_name == 'pull_request') || ((github.event_name == 'workflow_dispatch') && ((github.event.inputs.job
-      == 'all') || contains('build-windows', github.event.inputs.job))))
-
-    strategy:
-      fail-fast: false
-      matrix:
-        runner:
-        - {os: 'windows', ver: '2019'}
-        - {os: 'windows', ver: '2022'}
-
-    steps:
-    - name: Retrieve the source-archive
-      uses: actions/download-artifact@v2
-      with:
-        name: archive-src
-    - name: Extract the full-source-archive
-      run: |
-        tar xzf xnvme*.tar.gz --strip 1
-        rm xnvme*.tar.gz
-
-    - name: Install build-requirements
-      run: |
-        cmd.exe /c "echo %cd%"
-        cmd.exe /c "toolbox\pkgs\${{ matrix.runner.os }}-${{ matrix.runner.ver }}.bat"
-
-    - name: Build!
-      run: |
-        cmd.exe /c "build.bat"
-
-    - name: meson-log-dump
-      if: always()
-      run: |
-        cat builddir/meson-logs/meson-log.txt || true
-
-    - name: Dump the compile-commands and machine
-      run: |
-        cat /proc/cpuinfo || true
-        cat builddir/compile_commands.json || true
-
-    - name: Install
-      shell: cmd
-      run: |
-        cmd.exe /c "build.bat install"
-
-    - name: Execute xnvme commands
-      shell: cmd
-      run: |
-        set "PATH=%SystemDrive%\tools\msys64;!PATH!"
-        set "PATH=%SystemDrive%\tools\msys64\mingw64\bin;!PATH!"
-
-        xnvme.exe enum
-        xnvme.exe library-info
-
-    - name: Check Python, pip, platform, and sysconfig
-      run: |
-        python3 --version
-        python3 -m pip --version
-        python3 -c "import platform; print(platform.system()); print(platform.uname())"
-        python3 -c 'import sysconfig; print(sysconfig.get_config_var("SHLIB_SUFFIX"))'
-
-  #
-  # Build and test xNVMe
-  #
-  build-and-test:
-    needs: [source-archive, source-format-check, build-python]
-    runs-on: self-hosted
-    if: (((github.event_name == 'workflow_dispatch') && ((github.event.inputs.job == 'all') || (github.event.inputs.job ==
-      'build-and-test'))) || contains(github.event.pull_request.labels.*.name, 'pr-ready-for-test'))
-
-    strategy:
-      fail-fast: false
-      matrix:
-        guest:
-        - {os: 'freebsd', ver: '13'}
-        - {os: 'debian', ver: 'bullseye'}
-
-    container:
-      image: refenv/qemu-nvme:latest
-      options: --privileged
-
-    steps:
-    - name: Runnner-prep, clean up self-hosted left-overs
-      run: |
-        rm -rf *
-        ls -lh
-
-    - name: Container-prep, get the full-source-archive
-      uses: actions/download-artifact@v2
-      with:
-        name: archive-src
-    - name: Container-prep, extract the full-source-archive
-      run: |
-        tar xzf xnvme*.tar.gz --strip 1
-
-    - name: Retrieve the xNVMe Python Packages (prebuilt sdist)
-      uses: actions/download-artifact@v2
-      with:
-        name: python-xnvme-pkg
-
-    - name: Move source-archives to /tmp/artifacts
-      run: |
-        ls -lh
-        find . -name "*.tar.gz"
-        find /tmp -name "*.tar.gz"
-        rm -r /tmp/artifacts || true
-        mkdir /tmp/artifacts
-        mv xnvme-core/dist/xnvme-core-*.tar.gz /tmp/artifacts/xnvme-core.tar.gz
-        mv xnvme-cy-header/dist/xnvme-cy-header-*.tar.gz /tmp/artifacts/xnvme-cy-header.tar.gz
-        mv xnvme-cy-bindings/dist/xnvme-cy-bindings-*.tar.gz /tmp/artifacts/xnvme-cy-bindings.tar.gz
-        mv xnvme-*.*.*.tar.gz /tmp/artifacts/xnvme.tar.gz
-        find /tmp/artifacts -name "*.tar.gz"
-
-    - name: Remove any existing cijoe installation and install from toolbox
-      run: |
-        python3 -m pip uninstall cijoe cijoe-pkg-xnvme cijoe-pkg-linux cijoe-pkg-qemu cijoe-pkg-example -y
-        python3 -m pip list
-        python3 -m pip install cijoe --upgrade
-        pushd toolbox/cijoe-pkg-xnvme && make all && popd
-        cijoe -r
-
-    # cd'ing into 'toolbox/workflow' to auto-collect the non-packaged github-specific configs and
-    # workflows.
-    #
-    # In case non-cijoe commands needs to be run in guest, then the following could be used
-    # eval "$(ssh-agent -s)"
-    # chmod 600 toolbox/workflow/keys/guest_key
-    # ssh-add toolbox/workflow/keys/guest_key
-    - name: CIJOE, run provision.workflow
-      run: |
-        cd toolbox/workflow && cijoe \
-        --config "configs/${{ matrix.guest.os }}-${{ matrix.guest.ver }}.config" \
-        --workflow "provision.workflow" \
-        --output "provision-${{ matrix.guest.os }}-${{ matrix.guest.ver }}"
-
-    - name: CIJOE, run test.workflow
-      run: |
-        cd toolbox/workflow && cijoe \
-        --config "configs/${{ matrix.guest.os }}-${{ matrix.guest.ver }}.config" \
-        --workflow "test-${{ matrix.guest.os }}-${{ matrix.guest.ver }}.workflow" \
-        --output "test-${{ matrix.guest.os }}-${{ matrix.guest.ver }}"
-
-    - name: CIJOE, result-log-dump on error
-      if: failure()
-      run: find toolbox/workflow/ -name "*.output" | xargs cat
-
-    - name: CIJOE, upload workflow-report-provision
-      uses: actions/upload-artifact@v2
-      if: always()
-      with:
-        name: provision-results-${{ matrix.guest.os }}-${{ matrix.guest.ver }}
-        path: toolbox/workflow/provision-${{ matrix.guest.os }}-${{ matrix.guest.ver }}/*
-        if-no-files-found: error
-
-    - name: CIJOE, upload workflow-report-test
-      uses: actions/upload-artifact@v2
-      if: always()
-      with:
-        name: test-results-${{ matrix.guest.os }}-${{ matrix.guest.ver }}
-        path: toolbox/workflow/test-${{ matrix.guest.os }}-${{ matrix.guest.ver }}/*
-        if-no-files-found: error
-
-
-  # This is a lot of effort to generate documentation, however, it ensures that command-line
-  # utilities, build-examples, commands-output of various kinds are up-to-date.
-  # It pushes branches to: docs/<branch>
-  # It pushes tags to: docs/<tag>
-  # and to: docs/latest
-  # The event only triggers on manual request via 'workflow_dispatch'
-  docgen:
-    needs: [source-archive, source-format-check, build-python]
-    runs-on: self-hosted
-    if: ((github.event_name == 'workflow_dispatch') && (github.event.inputs.job == 'docgen'))
-
-    strategy:
-      fail-fast: false
-      matrix:
-        guest:
-        - {os: 'debian', ver: 'bullseye'}
-
-    container:
-      image: refenv/qemu-nvme:latest
-      options: --privileged
-
-    steps:
-    - name: Runnner-prep, clean up self-hosted left-overs
-      run: |
-        rm -rf *
-        ls -lh
-
-    - name: Container-prep, get the full-source-archive
-      uses: actions/download-artifact@v2
-      with:
-        name: archive-src
-    - name: Container-prep, extract the full-source-archive
-      run: |
-        tar xzf xnvme*.tar.gz --strip 1
-
-    - name: Retrieve the xNVMe Python Packages (prebuilt sdist)
-      uses: actions/download-artifact@v2
-      with:
-        name: python-xnvme-pkg
-
-    - name: Move source-archives to /tmp/artifacts
-      run: |
-        ls -lh
-        find . -name "*.tar.gz"
-        find /tmp -name "*.tar.gz"
-        rm -r /tmp/artifacts || true
-        mkdir /tmp/artifacts
-        mv xnvme-core/dist/xnvme-core-*.tar.gz /tmp/artifacts/xnvme-core.tar.gz
-        mv xnvme-cy-header/dist/xnvme-cy-header-*.tar.gz /tmp/artifacts/xnvme-cy-header.tar.gz
-        mv xnvme-cy-bindings/dist/xnvme-cy-bindings-*.tar.gz /tmp/artifacts/xnvme-cy-bindings.tar.gz
-        mv xnvme-*.*.*.tar.gz /tmp/artifacts/xnvme.tar.gz
-        find /tmp/artifacts -name "*.tar.gz"
-
-    - name: Remove any existing cijoe installation and install from toolbox
-      run: |
-        python3 -m pip uninstall cijoe cijoe-pkg-xnvme cijoe-pkg-linux cijoe-pkg-qemu cijoe-pkg-example -y
-        python3 -m pip list
-        python3 -m pip install cijoe --upgrade
-        pushd toolbox/cijoe-pkg-xnvme && make all && popd
-        cijoe -r
-
-    # cd'ing into 'toolbox/workflow' to auto-collect the non-packaged github-specific configs and
-    # workflows.
-    - name: Provision and generate documentation
-      run: |
-        cd toolbox/workflow && cijoe \
-        --config "configs/${{ matrix.guest.os }}-${{ matrix.guest.ver }}.config" \
-        --workflow "docgen.workflow" \
-        --output "docgen-${{ matrix.guest.os }}-${{ matrix.guest.ver }}"
-
-    - name: Checkout site
-      uses: actions/checkout@v3.0.1
-      with:
-        repository: "xnvme/xnvme.github.io"
-        token: ${{ secrets.DOCS_PAT }}
-        path: site
-    - name: Add repos to git-config safe.directory
-      run: |
-        git config --global --add safe.directory $(pwd)/site
-
-    - name: Add docgen to site
-      run: |
-        cp toolbox/workflow/docgen-${{ matrix.guest.os }}-${{ matrix.guest.ver }}/artifacts/docs.tar.gz .
-        tar xzf docs.tar.gz
-        ./docs/autogen/dest.py --docs html --site site --ref "${{ github.ref }}"
-
-    - name: Push site-changes
-      run: |
-        cd site
-        git config --global user.name 'GitHUB Service'
-        git config --global user.email 'ghs@safl.dk'
-        git add .
-        git commit -a -m "Auto-deployed update of 'docs/' for '${{ github.ref }}'"
-        git push
-
-    - name: CIJOE, upload report-docgen
-      uses: actions/upload-artifact@v2
-      if: always()
-      with:
-        name: docgen-results-${{ matrix.guest.os }}-${{ matrix.guest.ver }}
-        path: toolbox/workflow/docgen-${{ matrix.guest.os }}-${{ matrix.guest.ver }}/*
-        if-no-files-found: error
-
+          debpkg/builddir/libxnvme*.deb
+          debpkg/builddir/xnvme-cli*.deb
+          debpkg/builddir/xnvme-full*.deb
+          debpkg/builddir/*.dsc
+          debpkg/builddir/*.buildinfo
+          debpkg/builddir/*.changes

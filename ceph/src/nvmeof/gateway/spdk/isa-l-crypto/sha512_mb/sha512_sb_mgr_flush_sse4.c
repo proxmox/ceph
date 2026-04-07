@@ -33,14 +33,15 @@
 #include "sha512_mb.h"
 
 /*
- * Function: sha512_sb_mgr_flush_sse4.
+ * Function: _sha512_sb_mgr_flush_sse4.
  *
  * Description: This is a dummy API. Nothing done here.
  *
  * Return: always NULL.
  *
  * */
-SHA512_JOB *sha512_sb_mgr_flush_sse4(SHA512_MB_JOB_MGR * state)
+ISAL_SHA512_JOB *
+_sha512_sb_mgr_flush_sse4(ISAL_SHA512_MB_JOB_MGR *state)
 {
-	return NULL;
+        return NULL;
 }

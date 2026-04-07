@@ -33,8 +33,7 @@
 ; first key is required only once, no need for storage of this key
 
 %include "reg_sizes.asm"
-
-%if (AS_FEATURE_LEVEL) >= 10
+%include "clear_regs.inc"
 
 default rel
 %define TW              rsp     ; store 8 tweak values
@@ -55,9 +54,9 @@ default rel
 %define GHASH_POLY 0x87
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void XTS_AES_256_dec_expanded_key_vaes(
+;void _XTS_AES_256_dec_expanded_key_vaes(
 ;               UINT8 *k2,      // key used for tweaking, 16*15 bytes
-;               UINT8 *k1,      // key used for "ECB" encryption, 16*15 bytes
+;               UINT8 *k1,      // key used for "ECB" decryption, 16*15 bytes
 ;               UINT8 *TW_initial,      // initial tweak value, 16 bytes
 ;               UINT64 N,       // sector size, in bytes
 ;               const UINT8 *ct,        // ciphertext sector input data
@@ -1079,8 +1078,8 @@ default rel
 
 section .text
 
-mk_global XTS_AES_256_dec_expanded_key_vaes, function
-XTS_AES_256_dec_expanded_key_vaes:
+mk_global _XTS_AES_256_dec_expanded_key_vaes, function, internal
+_XTS_AES_256_dec_expanded_key_vaes:
 	endbranch
 
 %define ALIGN_STACK
@@ -1129,15 +1128,14 @@ XTS_AES_256_dec_expanded_key_vaes:
 %endif
 
 	cmp		N_val, 128
-	jl              _less_than_128_bytes
+	jb              _less_than_128_bytes
 
 	vpbroadcastq	zpoly, ghash_poly_8b
 
 	cmp		N_val, 256
 	jge		_start_by16
 
-	cmp		N_val, 128
-	jge		_start_by8
+	jmp		_start_by8
 
 _do_n_blocks:
 	cmp		N_val, 0
@@ -1165,7 +1163,7 @@ _do_n_blocks:
 	jge		_remaining_num_blocks_is_1
 
 ;; _remaining_num_blocks_is_0:
-	vmovdqu		xmm1, [ptr_plaintext - 16] ; Re-due last block with next tweak
+	vmovdqu		xmm1, xmm5 ; xmm5 contains last full block to decrypt with next teawk
 	decrypt_initial xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7, xmm8, xmm9, na, na, na, na, na, na, xmm0, 1, 1
 	vmovdqu		[ptr_ciphertext - 16], xmm1
 	vmovdqa		xmm8, xmm1
@@ -1375,6 +1373,7 @@ _main_loop_run_16:
 	vmovdqu8	zmm2, [ptr_plaintext+16*4]
 	vmovdqu8	zmm3, [ptr_plaintext+16*8]
 	vmovdqu8	zmm4, [ptr_plaintext+16*12]
+	vmovdqu8	xmm5, [ptr_plaintext+16*15] 	; Save last full block in case this is the last iteration
 	add		ptr_plaintext, 256
 
 	decrypt_by_16_zmm  zmm1, zmm2, zmm3, zmm4, zmm9, zmm10, zmm11, zmm12, zmm0, 0
@@ -1418,6 +1417,7 @@ _start_by8:
 _main_loop_run_8:
 	vmovdqu8	zmm1, [ptr_plaintext+16*0]
 	vmovdqu8	zmm2, [ptr_plaintext+16*4]
+	vmovdqu8	xmm5, [ptr_plaintext+16*7] 	; Save last full block in case this is the last iteration
 	add		ptr_plaintext, 128
 
 	decrypt_by_eight_zmm  zmm1, zmm2, zmm9, zmm10, zmm0, 0
@@ -1480,6 +1480,17 @@ _done:
 	vmovdqu		[ptr_ciphertext - 16], xmm8
 
 _ret_:
+%ifdef SAFE_DATA
+        clear_all_zmms_asm
+        ; Clear expanded keys (16*15 bytes)
+        vmovdqa64       [keys], zmm0
+        vmovdqa64       [keys + 4*16], zmm0
+        vmovdqa64       [keys + 8*16], zmm0
+        vmovdqa64       [keys + 12*16], ymm0
+        vmovdqa64       [keys + 14*16], xmm0
+%else
+        vzeroupper
+%endif
 	mov		rbx, [_gpr + 8*0]
 
 %ifidn __OUTPUT_FORMAT__, win64
@@ -1804,10 +1815,3 @@ const_dq7654: dq 4, 4, 5, 5, 6, 6, 7, 7
 const_dq1234: dq 4, 4, 3, 3, 2, 2, 1, 1
 
 shufb_15_7: db 15, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 7, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-
-%else  ; Assembler doesn't understand these opcodes. Add empty symbol for windows.
-%ifidn __OUTPUT_FORMAT__, win64
-global no_XTS_AES_256_dec_expanded_key_vaes
-no_XTS_AES_256_dec_expanded_key_vaes:
-%endif
-%endif ; (AS_FEATURE_LEVEL) >= 10

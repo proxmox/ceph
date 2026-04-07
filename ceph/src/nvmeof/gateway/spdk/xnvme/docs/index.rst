@@ -2,6 +2,15 @@
  Cross-platform libraries and tools for NVMe devices
 =====================================================
 
+.. _devenv:
+.. figure:: _static/usage.gif
+   :align: right
+   :figwidth: 60%
+
+   A single unified API across platforms, systems, and APIs. Reduce your
+   code-complexity from  ``n * m`` (where ``n`` is the number of platforms and
+   ``m`` are the number of I/O interfaces on the platform.) to ``1``.
+
 **xNVMe** provides the means to program and interact with NVMe devices from
 user space.
 
@@ -36,8 +45,8 @@ To evaluate the performance of abstractions introduced by ``xNVMe`` a Fio IO
 engine is provided, supporting **conventional** NVMe devices, as well as
 **Zoned** devices.
 
-Jump right into the :ref:`sec-getting-started` and with the basics in place you
-can explore the :ref:`sec-tools` and the :ref:`sec-c-api`.
+Jump right into the :ref:`sec-gs` and with the basics in place you can explore
+the :ref:`sec-tools` and the :ref:`sec-api`.
 
 Contents:
 
@@ -46,11 +55,12 @@ Contents:
    :includehidden:
 
    getting_started/index.rst
+   toolchain/index.rst
+   backends/index.rst
    tools/index.rst
-   capis/index.rst
-   examples/index.rst
+   api/index.rst
    tutorial/index.rst
-   python/index.rst
+   material/index.rst
    contributing/index.rst
 
 Indices and tables

@@ -32,7 +32,6 @@
 
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_SHANI
 extern sha1_mb_x4_sse
 extern sha1_ni_x2
 
@@ -96,31 +95,31 @@ section .text
 ; STACK_SPACE needs to be an odd multiple of 8
 %define STACK_SPACE     8*6 + 16*10 + 8
 
-; SHA1_JOB* sha1_mb_mgr_submit_sse_ni(SHA1_MB_JOB_MGR *state, SHA1_JOB *job)
+; SHA1_JOB* _sha1_mb_mgr_submit_sse_ni(SHA1_MB_JOB_MGR *state, SHA1_JOB *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-mk_global sha1_mb_mgr_submit_sse_ni, function
-sha1_mb_mgr_submit_sse_ni:
+mk_global _sha1_mb_mgr_submit_sse_ni, function, internal
+_sha1_mb_mgr_submit_sse_ni:
 	endbranch
 
 	sub     rsp, STACK_SPACE
 	mov     [rsp + 8*0], rbx
 	mov     [rsp + 8*3], rbp
-	mov     [rsp + 8*4], r12
-	mov     [rsp + 8*5], r13
+	mov     [rsp + 8*4], r12 ; Clobbered by sha1_ni_x2
+	mov     [rsp + 8*5], r13 ; Clobbered by sha1_ni_x2
 %ifidn __OUTPUT_FORMAT__, win64
 	mov     [rsp + 8*1], rsi
 	mov     [rsp + 8*2], rdi
-	movdqa  [rsp + 8*4 + 16*0], xmm6
-	movdqa  [rsp + 8*4 + 16*1], xmm7
-	movdqa  [rsp + 8*4 + 16*2], xmm8
-	movdqa  [rsp + 8*4 + 16*3], xmm9
-	movdqa  [rsp + 8*4 + 16*4], xmm10
-	movdqa  [rsp + 8*4 + 16*5], xmm11
-	movdqa  [rsp + 8*4 + 16*6], xmm12
-	movdqa  [rsp + 8*4 + 16*7], xmm13
-	movdqa  [rsp + 8*4 + 16*8], xmm14
-	movdqa  [rsp + 8*4 + 16*9], xmm15
+	movdqa  [rsp + 8*6 + 16*0], xmm6
+	movdqa  [rsp + 8*6 + 16*1], xmm7
+	movdqa  [rsp + 8*6 + 16*2], xmm8
+	movdqa  [rsp + 8*6 + 16*3], xmm9
+	movdqa  [rsp + 8*6 + 16*4], xmm10
+	movdqa  [rsp + 8*6 + 16*5], xmm11
+	movdqa  [rsp + 8*6 + 16*6], xmm12
+	movdqa  [rsp + 8*6 + 16*7], xmm13
+	movdqa  [rsp + 8*6 + 16*8], xmm14
+	movdqa  [rsp + 8*6 + 16*9], xmm15
 %endif
 
 	mov     unused_lanes, [state + _unused_lanes]
@@ -128,7 +127,7 @@ sha1_mb_mgr_submit_sse_ni:
 	and     lane, 0xF
 	shr     unused_lanes, 4
 	imul    lane_data, lane, _LANE_DATA_size
-	mov     dword [job + _status], STS_BEING_PROCESSED
+	mov     dword [job + _status], ISAL_STS_BEING_PROCESSED
 	lea     lane_data, [state + _ldata + lane_data]
 	mov     [state + _unused_lanes], unused_lanes
 	mov     DWORD(len), [job + _len]
@@ -229,7 +228,7 @@ len_is_0:
 	mov     job_rax, [lane_data + _job_in_lane]
 	mov     unused_lanes, [state + _unused_lanes]
 	mov     qword [lane_data + _job_in_lane], 0
-	mov     dword [job_rax + _status], STS_COMPLETED
+	mov     dword [job_rax + _status], ISAL_STS_COMPLETED
 	shl     unused_lanes, 4
 	or      unused_lanes, idx
 	mov     [state + _unused_lanes], unused_lanes
@@ -248,16 +247,16 @@ len_is_0:
 return:
 
 %ifidn __OUTPUT_FORMAT__, win64
-	movdqa  xmm6, [rsp + 8*4 + 16*0]
-	movdqa  xmm7, [rsp + 8*4 + 16*1]
-	movdqa  xmm8, [rsp + 8*4 + 16*2]
-	movdqa  xmm9, [rsp + 8*4 + 16*3]
-	movdqa  xmm10, [rsp + 8*4 + 16*4]
-	movdqa  xmm11, [rsp + 8*4 + 16*5]
-	movdqa  xmm12, [rsp + 8*4 + 16*6]
-	movdqa  xmm13, [rsp + 8*4 + 16*7]
-	movdqa  xmm14, [rsp + 8*4 + 16*8]
-	movdqa  xmm15, [rsp + 8*4 + 16*9]
+	movdqa  xmm6, [rsp + 8*6 + 16*0]
+	movdqa  xmm7, [rsp + 8*6 + 16*1]
+	movdqa  xmm8, [rsp + 8*6 + 16*2]
+	movdqa  xmm9, [rsp + 8*6 + 16*3]
+	movdqa  xmm10, [rsp + 8*6 + 16*4]
+	movdqa  xmm11, [rsp + 8*6 + 16*5]
+	movdqa  xmm12, [rsp + 8*6 + 16*6]
+	movdqa  xmm13, [rsp + 8*6 + 16*7]
+	movdqa  xmm14, [rsp + 8*6 + 16*8]
+	movdqa  xmm15, [rsp + 8*6 + 16*9]
 	mov     rsi, [rsp + 8*1]
 	mov     rdi, [rsp + 8*2]
 %endif
@@ -281,10 +280,3 @@ H1:     dd  0xefcdab89
 H2:     dd  0x98badcfe
 H3:     dd  0x10325476
 H4:     dd  0xc3d2e1f0
-
-%else
- %ifidn __OUTPUT_FORMAT__, win64
-  global no_sha1_mb_mgr_submit_sse_ni
-  no_sha1_mb_mgr_submit_sse_ni:
- %endif
-%endif ; HAVE_AS_KNOWS_SHANI

@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2020-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "metadata_internal.h"
 #include "metadata_superblock.h"
@@ -71,8 +71,8 @@ static void ocf_metadata_generic_complete(void *priv, int error)
 	OCF_PL_NEXT_ON_SUCCESS_RET(context->pipeline, error);
 }
 
-static void ocf_metadata_check_crc_skip(ocf_pipeline_t pipeline,
-		void *priv, ocf_pipeline_arg_t arg, bool skip_on_dirty_shutdown)
+void ocf_metadata_check_crc(ocf_pipeline_t pipeline,
+		void *priv, ocf_pipeline_arg_t arg)
 {
 	struct ocf_metadata_context *context = priv;
 	int segment_id = ocf_pipeline_arg_get_int(arg);
@@ -80,46 +80,19 @@ static void ocf_metadata_check_crc_skip(ocf_pipeline_t pipeline,
 	ocf_cache_t cache = context->cache;
 	uint32_t crc;
 	uint32_t superblock_crc;
-	bool clean_shutdown;
-
-	clean_shutdown = ocf_metadata_superblock_get_clean_shutdown(
-			segment->superblock);
-	if (!clean_shutdown && skip_on_dirty_shutdown)
-		OCF_PL_NEXT_RET(pipeline);
 
 	crc = ocf_metadata_raw_checksum(cache, segment->raw);
 	superblock_crc = ocf_metadata_superblock_get_checksum(segment->superblock,
 			segment_id);
-
 	if (crc != superblock_crc) {
-		/* Checksum does not match */
-		if (!clean_shutdown) {
-			ocf_cache_log(cache, log_warn,
-					"Loading %s WARNING, invalid checksum\n",
-					ocf_metadata_segment_names[segment_id]);
-		} else {
-			ocf_cache_log(cache, log_err,
-					"Loading %s ERROR, invalid checksum\n",
-					ocf_metadata_segment_names[segment_id]);
-			OCF_PL_FINISH_RET(pipeline, -OCF_ERR_INVAL);
-		}
+		ocf_cache_log(cache, log_err,
+				"Loading %s ERROR, invalid checksum\n",
+				ocf_metadata_segment_names[segment_id]);
+		OCF_PL_FINISH_RET(pipeline, -OCF_ERR_CRC_MISMATCH);
 	}
 
 	ocf_pipeline_next(pipeline);
 }
-
-void ocf_metadata_check_crc(ocf_pipeline_t pipeline,
-		void *priv, ocf_pipeline_arg_t arg)
-{
-	ocf_metadata_check_crc_skip(pipeline, priv, arg, false);
-}
-
-void ocf_metadata_check_crc_if_clean(ocf_pipeline_t pipeline,
-		void *priv, ocf_pipeline_arg_t arg)
-{
-	ocf_metadata_check_crc_skip(pipeline, priv, arg, true);
-}
-
 
 void ocf_metadata_calculate_crc(ocf_pipeline_t pipeline,
 		void *priv, ocf_pipeline_arg_t arg)
@@ -138,22 +111,32 @@ void ocf_metadata_flush_segment(ocf_pipeline_t pipeline,
 		void *priv, ocf_pipeline_arg_t arg)
 {
 	struct ocf_metadata_context *context = priv;
-	int segment = ocf_pipeline_arg_get_int(arg);
-	struct ocf_metadata_ctrl *ctrl = context->ctrl;
+	int segment_id = ocf_pipeline_arg_get_int(arg);
+	struct ocf_metadata_segment *segment = context->ctrl->segment[segment_id];
 	ocf_cache_t cache = context->cache;
+	unsigned next_flapping_idx =
+			ocf_metadata_superblock_get_next_flapping_idx(
+					segment->superblock);
 
-	ocf_metadata_raw_flush_all(cache, &ctrl->raw_desc[segment],
-			ocf_metadata_generic_complete, context);
+	next_flapping_idx = segment->raw->flapping ? next_flapping_idx : 0;
+
+	ocf_metadata_raw_flush_all(cache, segment->raw,
+			ocf_metadata_generic_complete, context,
+			next_flapping_idx);
 }
 
 void ocf_metadata_load_segment(ocf_pipeline_t pipeline,
 		void *priv, ocf_pipeline_arg_t arg)
 {
 	struct ocf_metadata_context *context = priv;
-	int segment = ocf_pipeline_arg_get_int(arg);
-	struct ocf_metadata_ctrl *ctrl = context->ctrl;
+	int segment_id = ocf_pipeline_arg_get_int(arg);
+	struct ocf_metadata_segment *segment = context->ctrl->segment[segment_id];
 	ocf_cache_t cache = context->cache;
+	unsigned flapping_idx = ocf_metadata_superblock_get_flapping_idx(
+			segment->superblock);
 
-	ocf_metadata_raw_load_all(cache, &ctrl->raw_desc[segment],
-			ocf_metadata_generic_complete, context);
+	flapping_idx = segment->raw->flapping ? flapping_idx : 0;
+
+	ocf_metadata_raw_load_all(cache, segment->raw,
+			ocf_metadata_generic_complete, context, flapping_idx);
 }

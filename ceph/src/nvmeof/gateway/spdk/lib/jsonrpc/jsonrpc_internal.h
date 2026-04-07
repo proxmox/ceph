@@ -55,6 +55,10 @@ struct spdk_jsonrpc_server_conn {
 
 	pthread_spinlock_t queue_lock;
 	STAILQ_HEAD(, spdk_jsonrpc_request) send_queue;
+	/* List of incomplete requests that are not yet ready to be sent.
+	 * This is a safety net for cases, where server shutdown is called
+	 * before all requests are placed into send_queue. */
+	STAILQ_HEAD(, spdk_jsonrpc_request) outstanding_queue;
 
 	struct spdk_jsonrpc_request *send_request;
 
@@ -122,6 +126,9 @@ int jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *jso
 
 /* Must be called only from server poll thread */
 void jsonrpc_free_request(struct spdk_jsonrpc_request *request);
+
+/* Must be called only from server poll thread */
+void jsonrpc_complete_request(struct spdk_jsonrpc_request *request);
 
 /*
  * Parse JSON data as RPC command response.

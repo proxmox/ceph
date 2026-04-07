@@ -866,7 +866,7 @@ vmd_dev_init(struct vmd_pci_device *dev)
 	dev->pci.addr.bus = dev->bus->bus_number;
 	dev->pci.addr.dev = dev->devfn;
 	dev->pci.addr.func = 0;
-	dev->pci.socket_id = spdk_pci_device_get_socket_id(dev->bus->vmd->pci);
+	dev->pci.numa_id = spdk_pci_device_get_numa_id(dev->bus->vmd->pci);
 	dev->pci.id.vendor_id = dev->header->common.vendor_id;
 	dev->pci.id.device_id = dev->header->common.device_id;
 	dev->pci.type = "vmd";
@@ -1108,10 +1108,10 @@ vmd_reset_root_ports(struct vmd_pci_bus *bus)
 
 	/*
 	 * The root ports might have been configured by some other driver (e.g.  Linux kernel) prior
-	 * to loading the SPDK one, so we need to clear it.  We need to before the scanning process,
-	 * as it's depth-first, so when scanning the initial root ports, the latter ones might still
-	 * be using stale configuration.  This can lead to two bridges having the same
-	 * secondary/subordinate bus configuration, which, of course, isn't correct.
+	 * to loading the SPDK one, so we need to clear it.  We need to do it before starting the
+	 * scanning process, as it's depth-first, so when initial root ports are scanned, the
+	 * latter ones might still be using stale configuration.  This can lead to two bridges
+	 * having the same secondary/subordinate bus configuration, which, of course, isn't correct.
 	 * (Note: this fixed issue #2413.)
 	 */
 	for (devfn = 0; devfn < 32; ++devfn) {
@@ -1163,27 +1163,56 @@ vmd_scan_pcibus(struct vmd_pci_bus *bus)
 }
 
 static int
-vmd_map_bars(struct vmd_adapter *vmd, struct spdk_pci_device *dev)
+vmd_domain_map_bar(struct vmd_adapter *vmd, uint32_t bar,
+		   void **vaddr, uint64_t *paddr, uint64_t *size)
+{
+	uint64_t unused;
+	int rc;
+
+	rc = spdk_pci_device_map_bar(vmd->pci, bar, vaddr, &unused, size);
+	if (rc != 0) {
+		return rc;
+	}
+
+	/* Depending on the IOVA configuration, the physical address of the BAR returned by
+	 * spdk_pci_device_map_bar() can be either an actual physical address or a virtual one (if
+	 * IOMMU is enabled).  Since we do need an actual physical address to fill out the
+	 * base/limit registers and the BARs of the devices behind the VMD, read the config space to
+	 * get the correct address, regardless of IOVA configuration. */
+	rc = spdk_pci_device_cfg_read(vmd->pci, paddr, sizeof(*paddr),
+				      PCI_BAR0_OFFSET + bar * PCI_BAR_SIZE);
+	if (rc != 0) {
+		return rc;
+	}
+
+	*paddr &= PCI_BAR_MEMORY_ADDR_OFFSET;
+
+	return 0;
+}
+
+static int
+vmd_domain_map_bars(struct vmd_adapter *vmd)
 {
 	int rc;
 
-	rc = spdk_pci_device_map_bar(dev, 0, (void **)&vmd->cfg_vaddr,
-				     &vmd->cfgbar, &vmd->cfgbar_size);
-	if (rc == 0) {
-		rc = spdk_pci_device_map_bar(dev, 2, (void **)&vmd->mem_vaddr,
-					     &vmd->membar, &vmd->membar_size);
+	rc = vmd_domain_map_bar(vmd, 0, (void **)&vmd->cfg_vaddr,
+				&vmd->cfgbar, &vmd->cfgbar_size);
+	if (rc != 0) {
+		SPDK_ERRLOG("Failed to map config bar: %s\n", spdk_strerror(-rc));
+		return rc;
 	}
 
-	if (rc == 0) {
-		rc = spdk_pci_device_map_bar(dev, 4, (void **)&vmd->msix_vaddr,
-					     &vmd->msixbar, &vmd->msixbar_size);
+	rc = vmd_domain_map_bar(vmd, 2, (void **)&vmd->mem_vaddr,
+				&vmd->membar, &vmd->membar_size);
+	if (rc != 0) {
+		SPDK_ERRLOG("Failed to map memory bar: %s\n", spdk_strerror(-rc));
+		return rc;
 	}
 
-	if (rc == 0) {
-		vmd->physical_addr = vmd->membar;
-		vmd->current_addr_size = vmd->membar_size;
-	}
-	return rc;
+	vmd->physical_addr = vmd->membar;
+	vmd->current_addr_size = vmd->membar_size;
+
+	return 0;
 }
 
 static void
@@ -1263,7 +1292,7 @@ vmd_enum_cb(void *ctx, struct spdk_pci_device *pci_dev)
 	uint32_t cmd_reg = 0;
 	char bdf[32] = {0};
 	struct vmd_container *vmd_c = ctx;
-	size_t i;
+	struct vmd_adapter *vmd = &vmd_c->vmd[vmd_c->count];
 
 	spdk_pci_device_cfg_read32(pci_dev, &cmd_reg, 4);
 	cmd_reg |= 0x6;                      /* PCI bus master/memory enable. */
@@ -1273,30 +1302,24 @@ vmd_enum_cb(void *ctx, struct spdk_pci_device *pci_dev)
 	SPDK_INFOLOG(vmd, "Found a VMD[ %d ] at %s\n", vmd_c->count, bdf);
 
 	/* map vmd bars */
-	i = vmd_c->count;
-	vmd_c->vmd[i].pci = pci_dev;
-	vmd_c->vmd[i].vmd_index = i;
-	vmd_c->vmd[i].domain =
-		(pci_dev->addr.bus << 16) | (pci_dev->addr.dev << 8) | pci_dev->addr.func;
-	TAILQ_INIT(&vmd_c->vmd[i].bus_list);
+	vmd->pci = pci_dev;
+	vmd->vmd_index = vmd_c->count;
+	vmd->domain = (pci_dev->addr.bus << 16) | (pci_dev->addr.dev << 8) | pci_dev->addr.func;
+	TAILQ_INIT(&vmd->bus_list);
 
-	if (vmd_map_bars(&vmd_c->vmd[i], pci_dev) == -1) {
+	if (vmd_domain_map_bars(vmd) != 0) {
 		return -1;
 	}
 
 	SPDK_INFOLOG(vmd, "vmd config bar(%p) vaddr(%p) size(%x)\n",
-		     (void *)vmd_c->vmd[i].cfgbar, (void *)vmd_c->vmd[i].cfg_vaddr,
-		     (uint32_t)vmd_c->vmd[i].cfgbar_size);
+		     (void *)vmd->cfgbar, (void *)vmd->cfg_vaddr,
+		     (uint32_t)vmd->cfgbar_size);
 	SPDK_INFOLOG(vmd, "vmd mem bar(%p) vaddr(%p) size(%x)\n",
-		     (void *)vmd_c->vmd[i].membar, (void *)vmd_c->vmd[i].mem_vaddr,
-		     (uint32_t)vmd_c->vmd[i].membar_size);
-	SPDK_INFOLOG(vmd, "vmd msix bar(%p) vaddr(%p) size(%x)\n\n",
-		     (void *)vmd_c->vmd[i].msixbar, (void *)vmd_c->vmd[i].msix_vaddr,
-		     (uint32_t)vmd_c->vmd[i].msixbar_size);
+		     (void *)vmd->membar, (void *)vmd->mem_vaddr,
+		     (uint32_t)vmd->membar_size);
 
-	vmd_c->count = i + 1;
-
-	vmd_enumerate_devices(&vmd_c->vmd[i]);
+	vmd_c->count++;
+	vmd_enumerate_devices(vmd);
 
 	return 0;
 }

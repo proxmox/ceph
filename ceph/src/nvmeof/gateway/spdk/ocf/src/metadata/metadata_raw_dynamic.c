@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "metadata.h"
@@ -15,7 +16,7 @@
 #include "../ocf_def_priv.h"
 #include "../ocf_priv.h"
 
-#define OCF_METADATA_RAW_DEBUG  0
+#define OCF_METADATA_RAW_DEBUG 0
 
 #if 1 == OCF_METADATA_RAW_DEBUG
 #define OCF_DEBUG_TRACE(cache) \
@@ -36,10 +37,21 @@
 /*
  * Check if page is valid for specified RAW descriptor
  */
+
+static uint32_t raw_dynamic_segment_size_on_ssd(struct ocf_metadata_raw *raw)
+{
+	const size_t alignment = 128 * KiB / PAGE_SIZE;
+
+	return OCF_DIV_ROUND_UP(raw->ssd_pages, alignment) * alignment;
+}
+
 static bool _raw_ssd_page_is_valid(struct ocf_metadata_raw *raw, uint32_t page)
 {
+	uint32_t size = raw_dynamic_segment_size_on_ssd(raw) *
+			(raw->flapping ? 2 : 1);
+
 	ENV_BUG_ON(page < raw->ssd_pages_offset);
-	ENV_BUG_ON(page >= (raw->ssd_pages_offset + raw->ssd_pages));
+	ENV_BUG_ON(page >= (raw->ssd_pages_offset + size));
 
 	return true;
 }
@@ -212,9 +224,9 @@ size_t raw_dynamic_size_of(ocf_cache_t cache,
  */
 uint32_t raw_dynamic_size_on_ssd(struct ocf_metadata_raw *raw)
 {
-	const size_t alignment = 128 * KiB / PAGE_SIZE;
+	size_t flapping_factor = raw->flapping ? 2 : 1;
 
-	return OCF_DIV_ROUND_UP(raw->ssd_pages, alignment) * alignment;
+	return raw_dynamic_segment_size_on_ssd(raw) * flapping_factor;
 }
 
 /*
@@ -257,6 +269,78 @@ void *raw_dynamic_access(ocf_cache_t cache,
 }
 
 /*
+ * RAM DYNAMIC Implementation - update
+ */
+static int raw_dynamic_update_pages(ocf_cache_t cache,
+		struct ocf_metadata_raw *raw, ctx_data_t *data, uint64_t page,
+		uint64_t count, uint8_t **buffer, uint8_t *zpage)
+{
+	struct _raw_ctrl *ctrl = (struct _raw_ctrl *)raw->priv;
+	int result = 0;
+	uint64_t i;
+	int cmp;
+
+	for (i = 0; i < count; i++) {
+		if (!*buffer) {
+			*buffer = env_secure_alloc(PAGE_SIZE);
+			if (!*buffer)
+				return -OCF_ERR_NO_MEM;
+		}
+
+		ctx_data_rd_check(cache->owner, *buffer, data, PAGE_SIZE);
+
+		result = env_memcmp(zpage, PAGE_SIZE, *buffer, PAGE_SIZE, &cmp);
+		if (result < 0)
+			return result;
+
+		/* When page is zero set, no need to allocate space for it */
+		if (cmp == 0) {
+			OCF_DEBUG_PARAM(cache, "Zero loaded %llu", i);
+			if (ctrl->pages[page + i]) {
+				env_secure_free(ctrl->pages[page + i],
+						PAGE_SIZE);
+				ctrl->pages[page + i] = NULL;
+				env_atomic_dec(&ctrl->count);
+			}
+			continue;
+		}
+
+		OCF_DEBUG_PARAM(cache, "Non-zero loaded %llu", i);
+
+		if (ctrl->pages[page + i])
+			env_secure_free(ctrl->pages[page + i], PAGE_SIZE);
+		ctrl->pages[page + i] = *buffer;
+		*buffer = NULL;
+
+		env_atomic_inc(&ctrl->count);
+	}
+
+	return 0;
+}
+
+int raw_dynamic_update(ocf_cache_t cache,
+		struct ocf_metadata_raw *raw, ctx_data_t *data,
+		uint64_t page, uint64_t count)
+{
+	uint8_t *buffer = NULL, *zpage;
+	int result;
+
+	zpage = env_vzalloc(PAGE_SIZE);
+	if (!zpage)
+		return -OCF_ERR_NO_MEM;
+
+	result = raw_dynamic_update_pages(cache, raw, data, page,
+			count, &buffer, zpage);
+
+	if (buffer)
+		env_secure_free(buffer, PAGE_SIZE);
+
+	env_vfree(zpage);
+
+	return result;
+}
+
+/*
 * RAM DYNAMIC Implementation - Load all
 */
 #define RAW_DYNAMIC_LOAD_PAGES 128
@@ -265,13 +349,12 @@ void *raw_dynamic_access(ocf_cache_t cache,
 
 struct raw_dynamic_load_all_context {
 	struct ocf_metadata_raw *raw;
+	unsigned flapping_idx;
 	struct ocf_request *req;
 	ocf_cache_t cache;
-	struct ocf_io *io;
-	ctx_data_t *data;
 	uint8_t *zpage;
 	uint8_t *page;
-	uint64_t i;
+	uint64_t i_page;
 	int error;
 
 	ocf_metadata_end_t cmpl;
@@ -286,139 +369,85 @@ static void raw_dynamic_load_all_complete(
 	ocf_req_put(context->req);
 	env_secure_free(context->page, PAGE_SIZE);
 	env_free(context->zpage);
-	ctx_data_free(context->cache->owner, context->data);
+	ctx_data_free(context->cache->owner, context->req->data);
 	env_vfree(context);
 }
 
 static int raw_dynamic_load_all_update(struct ocf_request *req);
 
-static const struct ocf_io_if _io_if_raw_dynamic_load_all_update = {
-	.read = raw_dynamic_load_all_update,
-	.write = raw_dynamic_load_all_update,
-};
-
-static void raw_dynamic_load_all_read_end(struct ocf_io *io, int error)
+static void raw_dynamic_load_all_read_end(struct ocf_request *req, int error)
 {
-	struct raw_dynamic_load_all_context *context = io->priv1;
-
-	ocf_io_put(io);
+	struct raw_dynamic_load_all_context *context = req->priv;
 
 	if (error) {
 		raw_dynamic_load_all_complete(context, error);
 		return;
 	}
 
-	context->req->io_if = &_io_if_raw_dynamic_load_all_update;
-	ocf_engine_push_req_front(context->req, true);
+	context->req->engine_handler = raw_dynamic_load_all_update;
+	ocf_queue_push_req(req,
+			OCF_QUEUE_ALLOW_SYNC | OCF_QUEUE_PRIO_HIGH);
 }
 
 static int raw_dynamic_load_all_read(struct ocf_request *req)
 {
 	struct raw_dynamic_load_all_context *context = req->priv;
 	struct ocf_metadata_raw *raw = context->raw;
+	uint64_t ssd_pages_offset;
 	uint64_t count;
-	int result;
 
-	count = metadata_io_size(context->i, raw->ssd_pages);
+	ssd_pages_offset = raw->ssd_pages_offset +
+			raw_dynamic_segment_size_on_ssd(raw) *
+					context->flapping_idx;
 
-	/* Allocate IO */
-	context->io = ocf_new_cache_io(context->cache, req->io_queue,
-		PAGES_TO_BYTES(raw->ssd_pages_offset + context->i),
-		PAGES_TO_BYTES(count), OCF_READ, 0, 0);
+	count = metadata_io_size(context->i_page, raw->ssd_pages);
 
-	if (!context->io) {
-		raw_dynamic_load_all_complete(context, -OCF_ERR_NO_MEM);
-		return 0;
-	}
+	req->cache_forward_end = raw_dynamic_load_all_read_end;
 
-	/* Setup IO */
-	result = ocf_io_set_data(context->io, context->data, 0);
-	if (result) {
-		ocf_io_put(context->io);
-		raw_dynamic_load_all_complete(context, result);
-		return 0;
-	}
-	ocf_io_set_cmpl(context->io, context, NULL,
-			raw_dynamic_load_all_read_end);
-
-	/* Submit IO */
-	ocf_volume_submit_io(context->io);
+	ocf_req_forward_cache_io(req, OCF_READ,
+			PAGES_TO_BYTES(ssd_pages_offset + context->i_page),
+			PAGES_TO_BYTES(count), 0);
 
 	return 0;
 }
-
-static const struct ocf_io_if _io_if_raw_dynamic_load_all_read = {
-	.read = raw_dynamic_load_all_read,
-	.write = raw_dynamic_load_all_read,
-};
 
 static int raw_dynamic_load_all_update(struct ocf_request *req)
 {
 	struct raw_dynamic_load_all_context *context = req->priv;
 	struct ocf_metadata_raw *raw = context->raw;
-	struct _raw_ctrl *ctrl = (struct _raw_ctrl *)raw->priv;
 	ocf_cache_t cache = context->cache;
-	uint64_t i_page;
-	uint64_t count = metadata_io_size(context->i, raw->ssd_pages);
+	uint64_t count = metadata_io_size(context->i_page, raw->ssd_pages);
 	int result = 0;
-	int cmp;
 
 	/* Reset head of data buffer */
-	ctx_data_seek_check(context->cache->owner, context->data,
+	ctx_data_seek_check(context->cache->owner, req->data,
 			ctx_data_seek_begin, 0);
 
-	for (i_page = 0; i_page < count; i_page++, context->i++) {
-		if (!context->page) {
-			context->page = env_secure_alloc(PAGE_SIZE);
-			if (!context->page) {
-				/* Allocation error */
-				result = -OCF_ERR_NO_MEM;
-				break;
-			}
-		}
+	result = raw_dynamic_update_pages(cache, raw, req->data,
+			context->i_page, count, &context->page, context->zpage);
 
-		ctx_data_rd_check(cache->owner, context->page,
-				context->data, PAGE_SIZE);
+	context->i_page += count;
 
-		result = env_memcmp(context->zpage, PAGE_SIZE, context->page,
-				PAGE_SIZE, &cmp);
-		if (result)
-			break;
-
-		/* When page is zero set, no need to allocate space for it */
-		if (cmp == 0) {
-			OCF_DEBUG_PARAM(cache, "Zero loaded %llu", i);
-			continue;
-		}
-
-		OCF_DEBUG_PARAM(cache, "Non-zero loaded %llu", i);
-
-		if (ctrl->pages[context->i])
-			env_vfree(ctrl->pages[context->i]);
-
-		ctrl->pages[context->i] = context->page;
-		context->page = NULL;
-
-		env_atomic_inc(&ctrl->count);
-	}
-
-	if (result || context->i >= raw->ssd_pages) {
+	if (result || context->i_page >= raw->ssd_pages) {
 		raw_dynamic_load_all_complete(context, result);
 		return 0;
 	}
 
-	context->req->io_if = &_io_if_raw_dynamic_load_all_read;
-	ocf_engine_push_req_front(context->req, true);
+	context->req->engine_handler = raw_dynamic_load_all_read;
+	ocf_queue_push_req(context->req,
+			OCF_QUEUE_ALLOW_SYNC | OCF_QUEUE_PRIO_HIGH);
 
 	return 0;
 }
 
 void raw_dynamic_load_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
-		ocf_metadata_end_t cmpl, void *priv)
+		ocf_metadata_end_t cmpl, void *priv, unsigned flapping_idx)
 {
 	struct raw_dynamic_load_all_context *context;
+	struct ocf_request *req;
 	int result;
 
+	ENV_BUG_ON(raw->flapping ? flapping_idx > 1 : flapping_idx != 0);
 	OCF_DEBUG_TRACE(cache);
 
 	context = env_vzalloc(sizeof(*context));
@@ -426,15 +455,10 @@ void raw_dynamic_load_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
 		OCF_CMPL_RET(priv, -OCF_ERR_NO_MEM);
 
 	context->raw = raw;
+	context->flapping_idx = flapping_idx;
 	context->cache = cache;
 	context->cmpl = cmpl;
 	context->priv = priv;
-
-	context->data = ctx_data_alloc(cache->owner, RAW_DYNAMIC_LOAD_PAGES);
-	if (!context->data) {
-		result = -OCF_ERR_NO_MEM;
-		goto err_data;
-	}
 
 	context->zpage = env_zalloc(PAGE_SIZE, ENV_MEM_NORMAL);
 	if (!context->zpage) {
@@ -442,24 +466,33 @@ void raw_dynamic_load_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
 		goto err_zpage;
 	}
 
-	context->req = ocf_req_new(cache->mngt_queue, NULL, 0, 0, 0);
-	if (!context->req) {
+	req = ocf_req_new_mngt(cache, cache->mngt_queue);
+	if (!req) {
 		result = -OCF_ERR_NO_MEM;
 		goto err_req;
 	}
 
-	context->req->info.internal = true;
-	context->req->priv = context;
-	context->req->io_if = &_io_if_raw_dynamic_load_all_read;
+	req->data = ctx_data_alloc(cache->owner, RAW_DYNAMIC_LOAD_PAGES);
+	if (!req->data) {
+		result = -OCF_ERR_NO_MEM;
+		goto err_data;
+	}
 
-	ocf_engine_push_req_front(context->req, true);
+	req->info.internal = true;
+	req->priv = context;
+	req->engine_handler = raw_dynamic_load_all_read;
+
+	context->req = req;
+
+	ocf_queue_push_req(context->req,
+			OCF_QUEUE_ALLOW_SYNC | OCF_QUEUE_PRIO_HIGH);
 	return;
 
+err_data:
+	ocf_req_put(req);
 err_req:
 	env_free(context->zpage);
 err_zpage:
-	ctx_data_free(cache->owner, context->data);
-err_data:
 	env_vfree(context);
 	OCF_CMPL_RET(priv, result);
 }
@@ -470,6 +503,7 @@ err_data:
 
 struct raw_dynamic_flush_all_context {
 	struct ocf_metadata_raw *raw;
+	uint64_t ssd_pages_offset;
 	ocf_metadata_end_t cmpl;
 	void *priv;
 };
@@ -487,7 +521,7 @@ static int raw_dynamic_flush_all_fill(ocf_cache_t cache,
 
 	ENV_BUG_ON(!_raw_ssd_page_is_valid(raw, page));
 
-	raw_page = page - raw->ssd_pages_offset;
+	raw_page = page - context->ssd_pages_offset;
 
 	if (ctrl->pages[raw_page]) {
 		OCF_DEBUG_PARAM(cache, "Page = %u", raw_page);
@@ -516,11 +550,12 @@ static void raw_dynamic_flush_all_complete(ocf_cache_t cache,
 }
 
 void raw_dynamic_flush_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
-		ocf_metadata_end_t cmpl, void *priv)
+		ocf_metadata_end_t cmpl, void *priv, unsigned flapping_idx)
 {
 	struct raw_dynamic_flush_all_context *context;
 	int result;
 
+	ENV_BUG_ON(raw->flapping ? flapping_idx > 1 : flapping_idx != 0);
 	OCF_DEBUG_TRACE(cache);
 
 	context = env_vmalloc(sizeof(*context));
@@ -530,9 +565,11 @@ void raw_dynamic_flush_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
 	context->raw = raw;
 	context->cmpl = cmpl;
 	context->priv = priv;
+	context->ssd_pages_offset = raw->ssd_pages_offset +
+			raw_dynamic_segment_size_on_ssd(raw) * flapping_idx;
 
 	result = metadata_io_write_i_asynch(cache, cache->mngt_queue, context,
-			raw->ssd_pages_offset, raw->ssd_pages, 0,
+			context->ssd_pages_offset, raw->ssd_pages, 0,
 			raw_dynamic_flush_all_fill,
 			raw_dynamic_flush_all_complete,
 			raw->mio_conc);

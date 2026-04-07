@@ -13,15 +13,14 @@ VM_DIR=$VHOST_DIR/vms
 TARGET_DIR=$VHOST_DIR/vhost
 VM_PASSWORD="root"
 
-VM_IMAGE=${VM_IMAGE:-"$DEPENDENCY_DIR/spdk_test_image.qcow2"}
-DEFAULT_FIO_BIN=${DEFAULT_FIO_BIN:-"$DEPENDENCY_DIR/fio"}
-FIO_BIN=${FIO_BIN:-"$DEFAULT_FIO_BIN"}
+VM_IMAGE=${VM_IMAGE:-"$DEPENDENCY_DIR/vhost/spdk_test_image.qcow2"}
+FIO_BIN=${FIO_BIN:-}
 
 WORKDIR=$(readlink -f "$(dirname "$0")")
 
 if ! hash $QEMU_IMG_BIN $QEMU_BIN; then
 	echo 'ERROR: QEMU is not installed on this system. Unable to run vhost tests.' >&2
-	exit 1
+	return 1
 fi
 
 mkdir -p $VHOST_DIR
@@ -32,6 +31,7 @@ mkdir -p $TARGET_DIR
 # Source config describing QEMU and VHOST cores and NUMA
 #
 source $rootdir/test/vhost/common/autotest.config
+source "$rootdir/test/scheduler/common.sh"
 
 function vhosttestinit() {
 	if [ "$TEST_MODE" == "iso" ]; then
@@ -117,11 +117,12 @@ function vhost_run() {
 	local vhost_name
 	local run_gen_nvme=true
 	local vhost_bin="vhost"
+	local vhost_args=()
+	local cmd=()
 
-	while getopts "n:a:b:g" optchar; do
+	while getopts "n:b:g" optchar; do
 		case "$optchar" in
 			n) vhost_name="$OPTARG" ;;
-			a) vhost_args="$OPTARG" ;;
 			b) vhost_bin="$OPTARG" ;;
 			g)
 				run_gen_nvme=false
@@ -133,6 +134,9 @@ function vhost_run() {
 				;;
 		esac
 	done
+	shift $((OPTIND - 1))
+
+	vhost_args=("$@")
 
 	if [[ -z "$vhost_name" ]]; then
 		error "vhost name must be provided to vhost_run"
@@ -155,21 +159,21 @@ function vhost_run() {
 		return 1
 	fi
 
-	local cmd="$vhost_app -r $vhost_dir/rpc.sock $vhost_args"
+	cmd=("$vhost_app" "-r" "$vhost_dir/rpc.sock" "${vhost_args[@]}")
 	if [[ "$vhost_bin" =~ vhost ]]; then
-		cmd+=" -S $vhost_dir"
+		cmd+=(-S "$vhost_dir")
 	fi
 
-	notice "Loging to:   $vhost_log_file"
+	notice "Logging to:   $vhost_log_file"
 	notice "Socket:      $vhost_socket"
-	notice "Command:     $cmd"
+	notice "Command:     ${cmd[*]}"
 
 	timing_enter vhost_start
 
 	iobuf_small_count=${iobuf_small_count:-16383}
 	iobuf_large_count=${iobuf_large_count:-2047}
 
-	$cmd --wait-for-rpc &
+	"${cmd[@]}" --wait-for-rpc &
 	vhost_pid=$!
 	echo $vhost_pid > $vhost_pid_file
 
@@ -185,7 +189,7 @@ function vhost_run() {
 		framework_start_init
 
 	#do not generate nvmes if pci access is disabled
-	if [[ "$cmd" != *"--no-pci"* ]] && [[ "$cmd" != *"-u"* ]] && $run_gen_nvme; then
+	if [[ "${cmd[*]}" != *"--no-pci"* ]] && [[ "${cmd[*]}" != *"-u"* ]] && $run_gen_nvme; then
 		$rootdir/scripts/gen_nvme.sh | $rootdir/scripts/rpc.py -s $vhost_dir/rpc.sock load_subsystem_config
 	fi
 
@@ -236,6 +240,13 @@ function vhost_kill() {
 				echo "."
 			done
 		fi
+		# If this PID is our child, we should attempt to verify its status
+		# to catch any "silent" crashes that may happen upon termination.
+		if is_pid_child "$vhost_pid"; then
+			notice "Checking status of $vhost_pid"
+			wait "$vhost_pid" || rc=1
+		fi
+
 	elif kill -0 $vhost_pid; then
 		error "vhost NOT killed - you need to kill it manually"
 		rc=1
@@ -452,13 +463,10 @@ function vm_kill() {
 # List all VM numbers in VM_DIR
 #
 function vm_list_all() {
-	local vms
-	vms="$(
-		shopt -s nullglob
-		echo $VM_DIR/[0-9]*
-	)"
-	if [[ -n "$vms" ]]; then
-		basename --multiple $vms
+	local vms=()
+	vms=("$VM_DIR"/+([0-9]))
+	if ((${#vms[@]} > 0)); then
+		basename --multiple "${vms[@]}"
 	fi
 }
 
@@ -476,41 +484,34 @@ function vm_kill_all() {
 # Shutdown all VM in $VM_DIR
 #
 function vm_shutdown_all() {
-	# XXX: temporarily disable to debug shutdown issue
-	# xtrace_disable
+	local timeo=${1:-90} vms vm
 
-	local vms
-	vms=$(vm_list_all)
-	local vm
+	vms=($(vm_list_all))
 
-	for vm in $vms; do
-		vm_shutdown $vm
+	for vm in "${vms[@]}"; do
+		vm_shutdown "$vm"
 	done
 
 	notice "Waiting for VMs to shutdown..."
-	local timeo=30
-	while [[ $timeo -gt 0 ]]; do
-		local all_vms_down=1
-		for vm in $vms; do
-			if vm_is_running $vm; then
-				all_vms_down=0
-				break
-			fi
+	while ((timeo-- > 0 && ${#vms[@]} > 0)); do
+		for vm in "${!vms[@]}"; do
+			vm_is_running "${vms[vm]}" || unset -v "vms[vm]"
 		done
-
-		if [[ $all_vms_down == 1 ]]; then
-			notice "All VMs successfully shut down"
-			xtrace_restore
-			return 0
-		fi
-
-		((timeo -= 1))
 		sleep 1
 	done
 
-	rm -rf $VM_DIR
+	if ((${#vms[@]} == 0)); then
+		notice "All VMs successfully shut down"
+		return 0
+	fi
 
-	xtrace_restore
+	warning "Not all VMs were shut down. Leftovers: ${vms[*]}"
+
+	for vm in "${vms[@]}"; do
+		vm_print_logs "$vm"
+	done
+
+	return 1
 }
 
 function vm_setup() {
@@ -529,7 +530,6 @@ function vm_setup() {
 	local vm_migrate_to=""
 	local force_vm=""
 	local guest_memory=1024
-	local queue_number=""
 	local vhost_dir
 	local packed=false
 	vhost_dir="$(get_vhost_dir 0)"
@@ -546,7 +546,6 @@ function vm_setup() {
 					raw-cache=*) raw_cache=",cache${OPTARG#*=}" ;;
 					force=*) force_vm=${OPTARG#*=} ;;
 					memory=*) guest_memory=${OPTARG#*=} ;;
-					queue_num=*) queue_number=${OPTARG#*=} ;;
 					incoming=*) vm_incoming="${OPTARG#*=}" ;;
 					migrate-to=*) vm_migrate_to="${OPTARG#*=}" ;;
 					vhost-name=*) vhost_dir="$(get_vhost_dir ${OPTARG#*=})" ;;
@@ -650,28 +649,22 @@ function vm_setup() {
 	local gdbserver_socket=$((vm_socket_offset + 4))
 	local vnc_socket=$((100 + vm_num))
 	local qemu_pid_file="$vm_dir/qemu.pid"
-	local cpu_num=0
+	local cpu_list
+	local cpu_num=0 queue_number=0
 
-	set +x
-	# cpu list for taskset can be comma separated or range
-	# or both at the same time, so first split on commas
-	cpu_list=$(echo $task_mask | tr "," "\n")
-	queue_number=0
-	for c in $cpu_list; do
-		# if range is detected - count how many cpus
-		if [[ $c =~ [0-9]+-[0-9]+ ]]; then
-			val=$((c - 1))
-			val=${val#-}
-		else
-			val=1
-		fi
-		cpu_num=$((cpu_num + val))
-		queue_number=$((queue_number + val))
-	done
+	cpu_list=($(parse_cpu_list <(echo "$task_mask")))
+	cpu_num=${#cpu_list[@]} queue_number=$cpu_num
 
-	if [ -z $queue_number ]; then
-		queue_number=$cpu_num
-	fi
+	# Let's be paranoid about it
+	((cpu_num > 0 && queue_number > 0)) || return 1
+
+	# Normalize tcp ports to make sure they are available
+	ssh_socket=$(get_free_tcp_port "$ssh_socket")
+	fio_socket=$(get_free_tcp_port "$fio_socket")
+	monitor_port=$(get_free_tcp_port "$monitor_port")
+	migration_port=$(get_free_tcp_port "$migration_port")
+	gdbserver_socket=$(get_free_tcp_port "$gdbserver_socket")
+	vnc_socket=$(get_free_tcp_port "$vnc_socket")
 
 	xtrace_restore
 
@@ -793,6 +786,7 @@ function vm_setup() {
 	notice "Saving to $vm_dir/run.sh"
 	cat <<- RUN > "$vm_dir/run.sh"
 		#!/bin/bash
+		shopt -s nullglob extglob
 		rootdir=$rootdir
 		source "\$rootdir/test/scheduler/common.sh"
 		qemu_log () {
@@ -1121,7 +1115,8 @@ function run_fio() {
 		local vm_num=${vm%%:*}
 		local vmdisks=${vm#*:}
 
-		sed "s@filename=@filename=$vmdisks@" $job_file | vm_exec $vm_num "cat > /root/$job_fname"
+		sed "s@filename=@filename=$vmdisks@;s@description=\(.*\)@description=\1 (VM=$vm_num)@" "$job_file" \
+			| vm_exec $vm_num "cat > /root/$job_fname"
 
 		if $fio_gtod_reduce; then
 			vm_exec $vm_num "echo 'gtod_reduce=1' >> /root/$job_fname"
@@ -1135,11 +1130,11 @@ function run_fio() {
 
 		if ! $run_server_mode; then
 			if [[ -n "$fio_bin" ]]; then
-				if ! $run_plugin_mode; then
+				if ! $run_plugin_mode && [[ -e $fio_bin ]]; then
 					vm_exec $vm_num 'cat > /root/fio; chmod +x /root/fio' < $fio_bin
 					vm_fio_bin="/root/fio"
 				else
-					vm_fio_bin="/usr/src/fio/fio"
+					vm_fio_bin=$fio_bin
 				fi
 			fi
 
@@ -1289,3 +1284,140 @@ function error_exit() {
 	at_app_exit
 	exit 1
 }
+
+function lookup_dev_irqs() {
+	local vm=$1 irqs=() cpus=()
+	local script_get_irqs script_get_cpus
+
+	mkdir -p "$VHOST_DIR/irqs"
+
+	# All vhost tests depend either on virtio_blk or virtio_scsi drivers on the VM side.
+	# Considering that, simply iterate over virtio bus and pick pci device corresponding
+	# to each virtio device.
+	# For vfio-user setup, look for bare nvme devices.
+
+	script_get_irqs=$(
+		cat <<- 'SCRIPT'
+			shopt -s nullglob
+			for virtio in /sys/bus/virtio/devices/virtio*; do
+			  irqs+=("$(readlink -f "$virtio")/../msi_irqs/"*)
+			done
+			irqs+=(/sys/class/nvme/nvme*/device/msi_irqs/*)
+			printf '%u\n' "${irqs[@]##*/}"
+		SCRIPT
+	)
+
+	script_get_cpus=$(
+		cat <<- 'SCRIPT'
+			cpus=(/sys/devices/system/cpu/cpu[0-9]*)
+			printf '%u\n' "${cpus[@]##*cpu}"
+		SCRIPT
+	)
+
+	irqs=($(vm_exec "$vm" "$script_get_irqs"))
+	cpus=($(vm_exec "$vm" "$script_get_cpus"))
+	((${#irqs[@]} > 0 && ${#cpus[@]} > 0))
+
+	printf '%u\n' "${irqs[@]}" > "$VHOST_DIR/irqs/$vm.irqs"
+	printf '%u\n' "${cpus[@]}" > "$VHOST_DIR/irqs/$vm.cpus"
+}
+
+function irqs() {
+	local vm
+	for vm; do
+		vm_exec "$vm" "while :; do cat /proc/interrupts; sleep 1s; done" > "$VHOST_DIR/irqs/$vm.interrupts" &
+		irqs_pids+=($!)
+	done
+}
+
+function parse_irqs() {
+	local iter=${1:-1}
+	"$rootdir/test/vhost/parse_irqs.sh" "$VHOST_DIR/irqs/"*.interrupts
+	rm "$VHOST_DIR/irqs/"*.interrupts
+
+	mkdir -p "$VHOST_DIR/irqs/$iter"
+	mv "$VHOST_DIR/irqs/"*.parsed "$VHOST_DIR/irqs/$iter/"
+}
+
+function collect_perf() {
+	local cpus=$1 outf=$2 runtime=$3 delay=$4
+
+	mkdir -p "$VHOST_DIR/perf"
+
+	perf record -g \
+		${cpus:+-C "$cpus"} \
+		${outf:+-o "$outf"} \
+		${delay:+-D $((delay * 1000))} \
+		-z \
+		${runtime:+ -- sleep $((runtime + delay))}
+}
+
+function parse_perf() {
+	local iter=${1:-1}
+	local report out
+
+	mkdir -p "$VHOST_DIR/perf/$iter"
+	shift
+
+	for report in "$@" "$VHOST_DIR/perf/"*.perf; do
+		[[ -f $report ]] || continue
+		perf report \
+			-n \
+			-i "$report" \
+			--header \
+			--stdio > "$VHOST_DIR/perf/$iter/${report##*/}.parsed"
+		cp "$report" "$VHOST_DIR/perf/$iter/"
+	done
+	rm "$VHOST_DIR/perf/"*.perf
+}
+
+function get_from_fio() {
+	local opt=$1 conf=$2
+
+	[[ -n $opt && -f $conf ]] || return 1
+
+	awk -F= "/^$opt/{print \$2}" "$conf"
+}
+
+function get_free_tcp_port() {
+	local port=$1 to=${2:-1} sockets=()
+
+	mapfile -t sockets < /proc/net/tcp
+
+	# If there's a TCP socket in a listening state keep incrementing $port until
+	# we find one that's not used. $to determines how long should we look for:
+	#  0: don't increment, just check if given $port is in use
+	# >0: increment $to times
+	# <0: no increment limit
+
+	while [[ ${sockets[*]} == *":$(printf '%04X' "$port") 00000000:0000 0A"* ]]; do
+		((to-- && ++port <= 65535)) || return 1
+	done
+
+	echo "$port"
+}
+
+function gen_cpu_vm_spdk_config() (
+	local vm_count=$1 vm_cpu_num=$2 vm
+	local spdk_cpu_num=${3:-1} spdk_cpu_list=${4:-} spdk_cpus
+	local nodes=("${@:5}") node
+	local env
+
+	spdk_cpus=spdk_cpu_num
+	[[ -n $spdk_cpu_list ]] && spdk_cpus=spdk_cpu_list
+
+	if ((${#nodes[@]} > 0)); then
+		((${#nodes[@]} == 1)) && node=${nodes[0]}
+		for ((vm = 0; vm < vm_count; vm++)); do
+			env+=("VM${vm}_NODE=${nodes[vm]:-$node}")
+		done
+	fi
+
+	env+=("$spdk_cpus=${!spdk_cpus}")
+	env+=("vm_count=$vm_count")
+	env+=("vm_cpu_num=$vm_cpu_num")
+
+	export "${env[@]}"
+
+	"$rootdir/scripts/perf/vhost/conf-generator" -p cpu
+)

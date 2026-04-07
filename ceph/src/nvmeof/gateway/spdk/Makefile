@@ -23,6 +23,8 @@ DIRS-$(CONFIG_ISAL_CRYPTO) += isalcryptobuild
 DIRS-$(CONFIG_VFIO_USER) += vfiouserbuild
 DIRS-$(CONFIG_SMA) += proto
 DIRS-$(CONFIG_XNVME) += xnvmebuild
+DIRS-$(CONFIG_GOLANG) += go/rpc
+DIRS-y += python
 
 .PHONY: all clean $(DIRS-y) include/spdk/config.h mk/config.mk \
 	cc_version cxx_version .libs_only_other .ldflags ldflags install \
@@ -83,6 +85,7 @@ endif
 all: mk/cc.mk $(DIRS-y)
 clean: $(DIRS-y)
 	$(Q)rm -f include/spdk/config.h
+	$(Q)rm -f include/spdk/version.h
 	$(Q)rm -rf build
 
 install: all
@@ -105,7 +108,7 @@ examples: $(LIB)
 pkgdep:
 	sh ./scripts/pkgdep.sh
 
-$(DIRS-y): mk/cc.mk build_dir include/spdk/config.h
+$(DIRS-y): mk/cc.mk build_dir include/spdk/config.h include/spdk/version.h
 
 mk/cc.mk:
 	$(Q)echo "Please run configure prior to make"
@@ -125,6 +128,14 @@ include/spdk/config.h: mk/config.mk scripts/genconfig.py
 	echo "#endif /* SPDK_CONFIG_H */" >> $@.tmp; \
 	cmp -s $@.tmp $@ || mv $@.tmp $@ ; \
 	rm -f $@.tmp
+
+include/spdk/version.h: include/spdk/version.h.in VERSION
+	$(Q)sed " \
+		s/\$$SPDK_VERSION_MAJOR/$(version_major)/g; \
+		s/\$$SPDK_VERSION_MINOR/$(version_minor)/g; \
+		s/\$$SPDK_VERSION_PATCH/$(version_patch)/g; \
+		s/\$$SPDK_VERSION_SUFFIX/$(version_suffix)/g;" \
+		$@.in > $@
 
 cc_version: mk/cc.mk
 	$(Q)echo "SPDK using CC=$(CC)"; $(CC) -v

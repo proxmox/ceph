@@ -15,11 +15,8 @@
 #include "vhost_internal.h"
 #include "spdk/queue.h"
 
-
 static struct spdk_cpuset g_vhost_core_mask;
 
-static TAILQ_HEAD(, spdk_vhost_dev) g_vhost_devices = TAILQ_HEAD_INITIALIZER(
-			g_vhost_devices);
 static pthread_mutex_t g_vhost_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static TAILQ_HEAD(, spdk_virtio_blk_transport) g_virtio_blk_transports = TAILQ_HEAD_INITIALIZER(
@@ -27,28 +24,35 @@ static TAILQ_HEAD(, spdk_virtio_blk_transport) g_virtio_blk_transports = TAILQ_H
 
 static spdk_vhost_fini_cb g_fini_cb;
 
+static RB_HEAD(vhost_dev_name_tree,
+	       spdk_vhost_dev) g_vhost_devices = RB_INITIALIZER(g_vhost_devices);
+
+static int
+vhost_dev_name_cmp(struct spdk_vhost_dev *vdev1, struct spdk_vhost_dev *vdev2)
+{
+	return strcmp(vdev1->name, vdev2->name);
+}
+
+RB_GENERATE_STATIC(vhost_dev_name_tree, spdk_vhost_dev, node, vhost_dev_name_cmp);
+
 struct spdk_vhost_dev *
 spdk_vhost_dev_next(struct spdk_vhost_dev *vdev)
 {
 	if (vdev == NULL) {
-		return TAILQ_FIRST(&g_vhost_devices);
+		return RB_MIN(vhost_dev_name_tree, &g_vhost_devices);
 	}
 
-	return TAILQ_NEXT(vdev, tailq);
+	return RB_NEXT(vhost_dev_name_tree, &g_vhost_devices, vdev);
 }
 
 struct spdk_vhost_dev *
 spdk_vhost_dev_find(const char *ctrlr_name)
 {
-	struct spdk_vhost_dev *vdev;
+	struct spdk_vhost_dev find = {};
 
-	TAILQ_FOREACH(vdev, &g_vhost_devices, tailq) {
-		if (strcmp(vdev->name, ctrlr_name) == 0) {
-			return vdev;
-		}
-	}
+	find.name = (char *)ctrlr_name;
 
-	return NULL;
+	return RB_FIND(vhost_dev_name_tree, &g_vhost_devices, &find);
 }
 
 static int
@@ -110,9 +114,8 @@ virtio_blk_get_transport_ops(const char *transport_name)
 
 int
 vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *mask_str,
-		   const struct spdk_json_val *params,
-		   const struct spdk_vhost_dev_backend *backend,
-		   const struct spdk_vhost_user_dev_backend *user_backend)
+		   const struct spdk_json_val *params, const struct spdk_vhost_dev_backend *backend,
+		   const struct spdk_vhost_user_dev_backend *user_backend, bool delay)
 {
 	struct spdk_cpuset cpumask = {};
 	int rc;
@@ -127,6 +130,10 @@ vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *ma
 		SPDK_ERRLOG("cpumask %s is invalid (core mask is 0x%s)\n",
 			    mask_str, spdk_cpuset_fmt(&g_vhost_core_mask));
 		return -EINVAL;
+	}
+	vdev->use_default_cpumask = false;
+	if (!mask_str) {
+		vdev->use_default_cpumask = true;
 	}
 
 	spdk_vhost_lock();
@@ -144,8 +151,10 @@ vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *ma
 
 	vdev->backend = backend;
 	if (vdev->backend->type == VHOST_BACKEND_SCSI) {
-		rc = vhost_user_dev_register(vdev, name, &cpumask, user_backend);
+		rc = vhost_user_dev_create(vdev, name, &cpumask, user_backend, delay);
 	} else {
+		/* When VHOST_BACKEND_BLK, delay should not be true. */
+		assert(delay == false);
 		rc = virtio_blk_construct_ctrlr(vdev, name, &cpumask, params, user_backend);
 	}
 	if (rc != 0) {
@@ -154,7 +163,7 @@ vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *ma
 		return rc;
 	}
 
-	TAILQ_INSERT_TAIL(&g_vhost_devices, vdev, tailq);
+	RB_INSERT(vhost_dev_name_tree, &g_vhost_devices, vdev);
 	spdk_vhost_unlock();
 
 	SPDK_INFOLOG(vhost, "Controller %s: new controller added\n", vdev->name);
@@ -166,12 +175,14 @@ vhost_dev_unregister(struct spdk_vhost_dev *vdev)
 {
 	int rc;
 
+	spdk_vhost_lock();
 	if (vdev->backend->type == VHOST_BACKEND_SCSI) {
 		rc = vhost_user_dev_unregister(vdev);
 	} else {
 		rc = virtio_blk_destroy_ctrlr(vdev);
 	}
 	if (rc != 0) {
+		spdk_vhost_unlock();
 		return rc;
 	}
 
@@ -179,9 +190,8 @@ vhost_dev_unregister(struct spdk_vhost_dev *vdev)
 
 	free(vdev->name);
 
-	spdk_vhost_lock();
-	TAILQ_REMOVE(&g_vhost_devices, vdev, tailq);
-	if (TAILQ_EMPTY(&g_vhost_devices) && g_fini_cb != NULL) {
+	RB_REMOVE(vhost_dev_name_tree, &g_vhost_devices, vdev);
+	if (RB_EMPTY(&g_vhost_devices) && g_fini_cb != NULL) {
 		g_fini_cb();
 	}
 	spdk_vhost_unlock();

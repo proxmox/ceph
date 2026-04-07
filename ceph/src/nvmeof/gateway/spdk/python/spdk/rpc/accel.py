@@ -34,13 +34,14 @@ def accel_assign_opc(client, opname, module):
     return client.call('accel_assign_opc', params)
 
 
-def accel_crypto_key_create(client, cipher, key, key2, name):
+def accel_crypto_key_create(client, cipher, key, key2, tweak_mode, name):
     """Create Data Encryption Key Identifier.
 
     Args:
         cipher: cipher
         key: key
         key2: key2
+        tweak_mode: tweak mode
         name: key name
     """
     params = {
@@ -50,18 +51,20 @@ def accel_crypto_key_create(client, cipher, key, key2, name):
     }
     if key2 is not None:
         params['key2'] = key2
+    if tweak_mode is not None:
+        params['tweak_mode'] = tweak_mode
 
     return client.call('accel_crypto_key_create', params)
 
 
-def accel_crypto_key_destroy(client, name):
+def accel_crypto_key_destroy(client, key_name):
     """Destroy Data Encryption Key.
 
     Args:
-        name: key name
+        key_name: key name
     """
     params = {
-        'name': name
+        'key_name': key_name
     }
 
     return client.call('accel_crypto_key_destroy', params)
@@ -79,3 +82,51 @@ def accel_crypto_keys_get(client, key_name):
         params['key_name'] = key_name
 
     return client.call('accel_crypto_keys_get', params)
+
+
+def accel_set_driver(client, name):
+    """Select accel platform driver to execute operation chains.
+
+    Args:
+        name: name of the driver
+    """
+    return client.call('accel_set_driver', {'name': name})
+
+
+def accel_set_options(client, small_cache_size, large_cache_size,
+                      task_count, sequence_count, buf_count):
+    """Set accel framework's options."""
+    params = {}
+
+    if small_cache_size is not None:
+        params['small_cache_size'] = small_cache_size
+    if large_cache_size is not None:
+        params['large_cache_size'] = large_cache_size
+    if task_count is not None:
+        params['task_count'] = task_count
+    if sequence_count is not None:
+        params['sequence_count'] = sequence_count
+    if buf_count is not None:
+        params['buf_count'] = buf_count
+
+    return client.call('accel_set_options', params)
+
+
+def accel_get_stats(client):
+    """Get accel framework's statistics"""
+
+    return client.call('accel_get_stats')
+
+
+def accel_error_inject_error(client, opcode, type, count=None, interval=None, errcode=None):
+    """Inject an error to processing accel operation"""
+    params = {}
+    if count is not None:
+        params['count'] = count
+    if interval is not None:
+        params['interval'] = interval
+    if errcode is not None:
+        params['errcode'] = errcode
+
+    return client.call('accel_error_inject_error',
+                       {'opcode': opcode, 'type': type, **params})

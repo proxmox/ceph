@@ -21,7 +21,7 @@
 #include "spdk/log.h"
 
 void
-nvmf_update_discovery_log(struct spdk_nvmf_tgt *tgt, const char *hostnqn)
+spdk_nvmf_send_discovery_log_notice(struct spdk_nvmf_tgt *tgt, const char *hostnqn)
 {
 	struct spdk_nvmf_subsystem *discovery_subsystem;
 	struct spdk_nvmf_ctrlr *ctrlr;
@@ -64,6 +64,35 @@ nvmf_discovery_compare_tr_svcid(const struct spdk_nvme_transport_id *trid1,
 	return strcasecmp(trid1->trsvcid, trid2->trsvcid) == 0;
 }
 
+static bool
+nvmf_discovery_compare_trid(uint32_t filter,
+			    const struct spdk_nvme_transport_id *trid1,
+			    const struct spdk_nvme_transport_id *trid2)
+{
+	if ((filter & SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_TYPE) != 0 &&
+	    !nvmf_discovery_compare_trtype(trid1, trid2)) {
+		SPDK_DEBUGLOG(nvmf, "transport type mismatch between %d (%s) and %d (%s)\n",
+			      trid1->trtype, trid1->trstring, trid2->trtype, trid2->trstring);
+		return false;
+	}
+
+	if ((filter & SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_ADDRESS) != 0 &&
+	    !nvmf_discovery_compare_tr_addr(trid1, trid2)) {
+		SPDK_DEBUGLOG(nvmf, "transport addr mismatch between %s and %s\n",
+			      trid1->traddr, trid2->traddr);
+		return false;
+	}
+
+	if ((filter & SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_SVCID) != 0 &&
+	    !nvmf_discovery_compare_tr_svcid(trid1, trid2)) {
+		SPDK_DEBUGLOG(nvmf, "transport svcid mismatch between %s and %s\n",
+			      trid1->trsvcid, trid2->trsvcid);
+		return false;
+	}
+
+	return true;
+}
+
 static struct spdk_nvmf_discovery_log_page *
 nvmf_generate_discovery_log(struct spdk_nvmf_tgt *tgt, const char *hostnqn, size_t *log_page_size,
 			    struct spdk_nvme_transport_id *cmd_source_trid)
@@ -74,7 +103,7 @@ nvmf_generate_discovery_log(struct spdk_nvmf_tgt *tgt, const char *hostnqn, size
 	struct spdk_nvmf_discovery_log_page_entry *entry;
 	struct spdk_nvmf_discovery_log_page *disc_log;
 	size_t cur_size;
-	uint32_t sid;
+	struct spdk_nvmf_referral *referral;
 
 	SPDK_DEBUGLOG(nvmf, "Generating log page for genctr %" PRIu64 "\n",
 		      tgt->discovery_genctr);
@@ -86,10 +115,10 @@ nvmf_generate_discovery_log(struct spdk_nvmf_tgt *tgt, const char *hostnqn, size
 		return NULL;
 	}
 
-	for (sid = 0; sid < tgt->max_subsystems; sid++) {
-		subsystem = tgt->subsystems[sid];
-		if ((subsystem == NULL) ||
-		    (subsystem->state == SPDK_NVMF_SUBSYSTEM_INACTIVE) ||
+	for (subsystem = spdk_nvmf_subsystem_get_first(tgt);
+	     subsystem != NULL;
+	     subsystem = spdk_nvmf_subsystem_get_next(subsystem)) {
+		if ((subsystem->state == SPDK_NVMF_SUBSYSTEM_INACTIVE) ||
 		    (subsystem->state == SPDK_NVMF_SUBSYSTEM_DEACTIVATING)) {
 			continue;
 		}
@@ -100,39 +129,8 @@ nvmf_generate_discovery_log(struct spdk_nvmf_tgt *tgt, const char *hostnqn, size
 
 		for (listener = spdk_nvmf_subsystem_get_first_listener(subsystem); listener != NULL;
 		     listener = spdk_nvmf_subsystem_get_next_listener(subsystem, listener)) {
-			if (subsystem->subtype == SPDK_NVMF_SUBTYPE_DISCOVERY) {
-				struct spdk_nvme_transport_id source_trid = *cmd_source_trid;
-				struct spdk_nvme_transport_id listener_trid = *listener->trid;
 
-				/* Do not generate an entry for the transport ID for the listener
-				 * entry associated with the discovery controller that generated
-				 * this command.  We compare a copy of the trids, since the trids
-				 * here don't contain the subnqn, and the transport_id_compare()
-				 * function will compare the subnqns.
-				 */
-				source_trid.subnqn[0] = '\0';
-				listener_trid.subnqn[0] = '\0';
-				if (!spdk_nvme_transport_id_compare(&listener_trid, &source_trid)) {
-					continue;
-				}
-			}
-
-			if ((tgt->discovery_filter & SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_TYPE) != 0 &&
-			    !nvmf_discovery_compare_trtype(listener->trid, cmd_source_trid)) {
-				SPDK_DEBUGLOG(nvmf, "ignore listener type %d (%s) due to type mismatch\n",
-					      listener->trid->trtype, listener->trid->trstring);
-				continue;
-			}
-			if ((tgt->discovery_filter & SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_ADDRESS) != 0 &&
-			    !nvmf_discovery_compare_tr_addr(listener->trid, cmd_source_trid)) {
-				SPDK_DEBUGLOG(nvmf, "ignore listener addr %s due to addr mismatch\n",
-					      listener->trid->traddr);
-				continue;
-			}
-			if ((tgt->discovery_filter & SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_SVCID) != 0 &&
-			    !nvmf_discovery_compare_tr_svcid(listener->trid, cmd_source_trid)) {
-				SPDK_DEBUGLOG(nvmf, "ignore listener svcid %s due to svcid mismatch\n",
-					      listener->trid->trsvcid);
+			if (!nvmf_discovery_compare_trid(tgt->discovery_filter, listener->trid, cmd_source_trid)) {
 				continue;
 			}
 
@@ -158,11 +156,44 @@ nvmf_generate_discovery_log(struct spdk_nvmf_tgt *tgt, const char *hostnqn, size
 			entry->subtype = subsystem->subtype;
 			snprintf(entry->subnqn, sizeof(entry->subnqn), "%s", subsystem->subnqn);
 
+			if (subsystem->subtype == SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT) {
+				/* Each listener in the Current Discovery Subsystem provides access
+				 * to the same Discovery Log Pages, so set the Duplicate Returned
+				 * Information flag. */
+				entry->eflags |= SPDK_NVMF_DISCOVERY_LOG_EFLAGS_DUPRETINFO;
+				/* Since the SPDK NVMeoF target supports Asynchronous Event Request
+				 * and Keep Alive commands, set the Explicit Persistent Connection
+				 * Support for Discovery flag. */
+				entry->eflags |= SPDK_NVMF_DISCOVERY_LOG_EFLAGS_EPCSD;
+			}
+
 			nvmf_transport_listener_discover(listener->transport, listener->trid, entry);
 
 			numrec++;
 		}
 	}
+
+	TAILQ_FOREACH(referral, &tgt->referrals, link) {
+		SPDK_DEBUGLOG(nvmf, "referral %s:%s trtype %s\n", referral->trid.traddr, referral->trid.trsvcid,
+			      referral->trid.trstring);
+
+		size_t new_size = cur_size + sizeof(*entry);
+		void *new_log_page = realloc(disc_log, new_size);
+
+		if (new_log_page == NULL) {
+			SPDK_ERRLOG("Discovery log page memory allocation error\n");
+			break;
+		}
+
+		disc_log = new_log_page;
+		cur_size = new_size;
+
+		entry = &disc_log->entries[numrec];
+		memcpy(entry, &referral->entry, sizeof(*entry));
+
+		numrec++;
+	}
+
 
 	disc_log->numrec = numrec;
 	disc_log->genctr = tgt->discovery_genctr;

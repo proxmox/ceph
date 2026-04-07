@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2022, Intel Corporation
+;; Copyright (c) 2012-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -33,13 +33,13 @@
 ;; Linux/Windows clobbers: xmm0 - xmm15
 ;;
 
-%include "include/os.asm"
-%include "include/imb_job.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/reg_sizes.asm"
+%include "include/os.inc"
+%include "include/imb_job.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/reg_sizes.inc"
 
 ;%define DO_DBGPRINT
-%include "include/dbgprint.asm"
+%include "include/dbgprint.inc"
 
 extern sha256_ni_x1
 

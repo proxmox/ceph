@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2022, Intel Corporation
+;; Copyright (c) 2012-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,13 +25,13 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/os.asm"
-%include "include/imb_job.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/reg_sizes.asm"
-%include "include/memcpy.asm"
+%include "include/os.inc"
+%include "include/imb_job.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/reg_sizes.inc"
+%include "include/memcpy.inc"
 ;%define DO_DBGPRINT
-%include "include/dbgprint.asm"
+%include "include/dbgprint.inc"
 %include "include/const.inc"
 extern sha1_x8_avx2
 

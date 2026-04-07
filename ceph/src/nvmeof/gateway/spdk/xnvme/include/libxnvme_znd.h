@@ -1,20 +1,22 @@
 /**
- * The User space library for Zoned Namespaces based on xNVMe, the
- * Cross-platform libraries and tools for NVMe devices
+ * SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
  *
- * Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * @headerfile libxnvme_znd.h
  */
+
 #ifndef __LIBXNVME_ZND_H
+/**
+ * This include-guard is here despite header-guards being removed on all other
+ * public API headers. This is because fio is using it and we do not wish to
+ * break fio.
+ */
 #define __LIBXNVME_ZND_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <libxnvme.h>
 
 /**
  * @todo Document this
@@ -51,8 +53,8 @@ xnvme_znd_dev_get_lbafe(struct xnvme_dev *dev);
  * @param ctx Pointer to command context (::xnvme_cmd_ctx)
  * @param nsid Namespace Identifier
  * @param slba Start LBA of the Zone to receive for
- * @param action the ::xnvme_spec_znd_cmd_mgmt_send_action
- * @param sf the ::xnvme_spec_znd_cmd_mgmt_recv_action_sf
+ * @param zra Zone Receive Action, the ::xnvme_spec_znd_cmd_mgmt_recv_action
+ * @param zrasf the ::xnvme_spec_znd_cmd_mgmt_recv_action_sf
  * @param partial partial request
  * @param dbuf pointer to data payload
  * @param dbuf_nbytes pointer to meta payload
@@ -61,8 +63,8 @@ xnvme_znd_dev_get_lbafe(struct xnvme_dev *dev);
  */
 int
 xnvme_znd_mgmt_recv(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint64_t slba,
-		    enum xnvme_spec_znd_cmd_mgmt_recv_action action,
-		    enum xnvme_spec_znd_cmd_mgmt_recv_action_sf sf, uint8_t partial, void *dbuf,
+		    enum xnvme_spec_znd_cmd_mgmt_recv_action zra,
+		    enum xnvme_spec_znd_cmd_mgmt_recv_action_sf zrasf, uint8_t partial, void *dbuf,
 		    uint32_t dbuf_nbytes);
 
 /**
@@ -134,17 +136,17 @@ xnvme_znd_log_changes_from_dev(struct xnvme_dev *dev);
  * @param nsid Namespace Identifier
  * @param zslba Start LBA of the Zone to manage
  * @param select_all Ignore zslba, command affects all LBAs
- * @param action Management the ::xnvme_spec_znd_cmd_mgmt_send_action to perform with zone at zslba
- * or all LBAs when select_all is true
- * @param action_so the ::xnvme_spec_znd_mgmt_send_action_so option
+ * @param zsa Zone Send Action, the ::xnvme_spec_znd_cmd_mgmt_send_action to perform with zone at
+ * zslba or all LBAs when select_all is true
+ * @param zsa_so the ::xnvme_spec_znd_mgmt_send_action_so option
  * @param dbuf For action=ZND_SEND_DESCRIPTOR provide buffer
  *
  * @return On success, 0 is returned. On error, negative `errno` is returned.
  */
 int
 xnvme_znd_mgmt_send(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint64_t zslba, bool select_all,
-		    enum xnvme_spec_znd_cmd_mgmt_send_action action,
-		    enum xnvme_spec_znd_mgmt_send_action_so action_so, void *dbuf);
+		    enum xnvme_spec_znd_cmd_mgmt_send_action zsa,
+		    enum xnvme_spec_znd_mgmt_send_action_so zsa_so, void *dbuf);
 
 /**
  * Submit, and optionally wait for completion of, a Zone Append

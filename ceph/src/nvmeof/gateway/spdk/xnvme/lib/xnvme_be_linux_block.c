@@ -1,24 +1,25 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// Copyright (C) Gurmeet Singh <gur.singh@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <libxnvme.h>
 #include <xnvme_be_linux.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_LINUX_BLOCK_ENABLED
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
-#include <libxnvme_znd.h>
-#include <libxnvme_spec_fs.h>
+#include <xnvme_be_cbi.h>
 #include <xnvme_be_linux.h>
 
 #ifdef XNVME_BE_LINUX_BLOCK_ZONED_ENABLED
 #include <linux/blkzoned.h>
 #endif
 
-int
+static int
 _sysfs_path_to_buf(const char *path, char *buf, int buf_len)
 {
 	FILE *fp;
@@ -74,7 +75,7 @@ int
 xnvme_be_linux_sysfs_dev_attr_to_num(struct xnvme_dev *dev, const char *attr, uint64_t *num)
 {
 	const int buf_len = 0x1000;
-	char buf[buf_len];
+	char buf[0x1000] = {'\0'};
 	int base = 10;
 	int err;
 
@@ -115,11 +116,16 @@ _lzbd_zone_capacity(struct blk_zone_report *XNVME_UNUSED(hdr), struct blk_zone *
 static int
 _lzbd_zone_mgmt_send(struct xnvme_cmd_ctx *ctx)
 {
-	struct xnvme_be_linux_state *state = (void *)ctx->dev->be.state;
 	const struct xnvme_geo *geo = xnvme_dev_get_geo(ctx->dev);
+	struct xnvme_be_linux_state *state = (void *)ctx->dev->be.state;
 	const uint64_t zone_nbytes = geo->nsect * geo->nbytes;
 	struct blk_zone_range zr = {0};
 	int err;
+
+	if (geo->type != XNVME_GEO_ZONED) {
+		XNVME_DEBUG("FAILED: device is not zoned, got; %d", geo->type);
+		return -EINVAL;
+	}
 
 	zr.sector = ctx->cmd.znd.mgmt_send.slba << (ctx->dev->geo.ssw - LINUX_BLOCK_SSW);
 	zr.nr_sectors = zone_nbytes >> LINUX_BLOCK_SSW;
@@ -307,6 +313,10 @@ _lzbd_zone_mgmt_recv(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes)
 	uint32_t dbuf_nzones;
 	int err;
 
+	if (geo->type != XNVME_GEO_ZONED) {
+		XNVME_DEBUG("FAILED: device is not zoned, got; %d", geo->type);
+		return -EINVAL;
+	}
 	if (dbuf_nbytes < sizeof(*nvme_rprt)) {
 		XNVME_DEBUG("FAILED: dbuf_nbytes: %zu < hdr", dbuf_nbytes);
 		return -EINVAL;
@@ -386,57 +396,17 @@ exit:
 }
 
 int
-xnvme_be_linux_block_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes,
-			    void *XNVME_UNUSED(mbuf), size_t XNVME_UNUSED(mbuf_nbytes))
+xnvme_be_linux_block_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, void *mbuf,
+			    size_t mbuf_nbytes)
 {
-	struct xnvme_be_linux_state *state = (void *)ctx->dev->be.state;
-	const uint64_t ssw = ctx->dev->geo.ssw;
-	ssize_t res;
-
-	// NOTE: opcode-dispatch (io)
 	switch (ctx->cmd.common.opcode) {
 	case XNVME_SPEC_NVM_OPC_WRITE:
-		res = pwrite(state->fd, dbuf, dbuf_nbytes, ctx->cmd.nvm.slba << ssw);
-		if (res != (ssize_t)dbuf_nbytes) {
-			XNVME_DEBUG("FAILED: W res: %ld != dbuf_nbytes: %zu, errno: %d", res,
-				    dbuf_nbytes, errno);
-			return -errno;
-		}
-		return 0;
-
 	case XNVME_SPEC_NVM_OPC_READ:
-		res = pread(state->fd, dbuf, dbuf_nbytes, ctx->cmd.nvm.slba << ssw);
-		if (res != (ssize_t)dbuf_nbytes) {
-			XNVME_DEBUG("FAILED: R res: %ld != dbuf_nbytes: %zu, errno: %d", res,
-				    dbuf_nbytes, errno);
-			return -errno;
-		}
-		return 0;
-
 	case XNVME_SPEC_FS_OPC_WRITE:
-		res = pwrite(state->fd, dbuf, dbuf_nbytes, ctx->cmd.nvm.slba);
-		if (res != (ssize_t)dbuf_nbytes) {
-			XNVME_DEBUG("FAILED: W res: %ld != dbuf_nbytes: %zu, errno: %d", res,
-				    dbuf_nbytes, errno);
-			return -errno;
-		}
-		return 0;
-
 	case XNVME_SPEC_FS_OPC_READ:
-		res = pread(state->fd, dbuf, dbuf_nbytes, ctx->cmd.nvm.slba);
-		if (res != (ssize_t)dbuf_nbytes) {
-			XNVME_DEBUG("FAILED: R res: %ld != dbuf_nbytes: %zu, errno: %d", res,
-				    dbuf_nbytes, errno);
-			return -errno;
-		}
-		return 0;
-
 	case XNVME_SPEC_NVM_OPC_FLUSH:
 	case XNVME_SPEC_FS_OPC_FLUSH:
-		if (fsync(state->fd)) {
-			return -errno;
-		}
-		return 0;
+		return xnvme_be_cbi_sync_psync_cmd_io(ctx, dbuf, dbuf_nbytes, mbuf, mbuf_nbytes);
 
 	case XNVME_SPEC_ZND_OPC_MGMT_SEND:
 		return _lzbd_zone_mgmt_send(ctx);
@@ -450,74 +420,7 @@ xnvme_be_linux_block_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_n
 	}
 }
 
-int
-xnvme_be_linux_block_cmd_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec_cnt,
-			     size_t dvec_nbytes, struct iovec *XNVME_UNUSED(mvec),
-			     size_t XNVME_UNUSED(mvec_cnt), size_t XNVME_UNUSED(mvec_nbytes))
-{
-	struct xnvme_be_linux_state *state = (void *)ctx->dev->be.state;
-	const uint64_t ssw = ctx->dev->geo.ssw;
-	ssize_t res;
-
-	switch (ctx->cmd.common.opcode) {
-	case XNVME_SPEC_NVM_OPC_WRITE:
-
-		res = pwritev(state->fd, dvec, dvec_cnt, ctx->cmd.nvm.slba << ssw);
-		if (res != (ssize_t)dvec_nbytes) {
-			XNVME_DEBUG("FAILED: W res: %ld != dvec_nbytes: %zu, errno: %d", res,
-				    dvec_nbytes, errno);
-			return -errno;
-		}
-		return 0;
-
-	case XNVME_SPEC_NVM_OPC_READ:
-		res = preadv(state->fd, dvec, dvec_cnt, ctx->cmd.nvm.slba << ssw);
-		if (res != (ssize_t)dvec_nbytes) {
-			XNVME_DEBUG("FAILED: R res: %ld != dvec_nbytes: %zu, errno: %d", res,
-				    dvec_nbytes, errno);
-			return -errno;
-		}
-		return 0;
-
-	case XNVME_SPEC_FS_OPC_WRITE:
-		res = pwritev(state->fd, dvec, dvec_cnt, ctx->cmd.nvm.slba);
-		if (res != (ssize_t)dvec_nbytes) {
-			XNVME_DEBUG("FAILED: W res: %ld != dvec_nbytes: %zu, errno: %d", res,
-				    dvec_nbytes, errno);
-			return -errno;
-		}
-		return 0;
-
-	case XNVME_SPEC_FS_OPC_READ:
-		res = preadv(state->fd, dvec, dvec_cnt, ctx->cmd.nvm.slba);
-		if (res != (ssize_t)dvec_nbytes) {
-			XNVME_DEBUG("FAILED: R res: %ld != dvec_nbytes: %zu, errno: %d", res,
-				    dvec_nbytes, errno);
-			return -errno;
-		}
-		return 0;
-
-	case XNVME_SPEC_NVM_OPC_FLUSH:
-	case XNVME_SPEC_FS_OPC_FLUSH:
-		if (fsync(state->fd)) {
-			return -errno;
-		}
-		return 0;
-
-		// TODO: how should these be handled?
-		// case XNVME_SPEC_ZND_OPC_MGMT_SEND:
-		// 	return _lzbd_zone_mgmt_send(ctx);
-
-		// case XNVME_SPEC_ZND_OPC_MGMT_RECV:
-		// 	return _lzbd_zone_mgmt_recv(ctx, dbuf, dbuf_nbytes);
-
-	default:
-		XNVME_DEBUG("FAILED: nosys opcode: %d", ctx->cmd.common.opcode);
-		return -ENOSYS;
-	}
-}
-
-int
+static int
 _idfy_ctrlr(struct xnvme_dev *dev, void *dbuf)
 {
 	struct xnvme_spec_idfy_ctrlr *ctrlr = dbuf;
@@ -537,7 +440,7 @@ _idfy_ctrlr(struct xnvme_dev *dev, void *dbuf)
 	return 0;
 }
 
-int
+static int
 _idfy_ns_iocs(struct xnvme_dev *dev, void *dbuf)
 {
 	struct xnvme_spec_znd_idfy_ns *zns = dbuf;
@@ -574,7 +477,7 @@ _idfy_ns_iocs(struct xnvme_dev *dev, void *dbuf)
 	return 0;
 }
 
-int
+static int
 _idfy_ns(struct xnvme_dev *dev, void *dbuf)
 {
 	struct xnvme_spec_idfy_ns *ns = dbuf;
@@ -607,7 +510,7 @@ _idfy_ns(struct xnvme_dev *dev, void *dbuf)
 	return 0;
 }
 
-int
+static int
 _idfy(struct xnvme_cmd_ctx *ctx, void *dbuf)
 {
 	struct xnvme_spec_znd_idfy_ctrlr *zctrlr = dbuf;
@@ -661,7 +564,7 @@ failed:
 	return 1;
 }
 
-int
+static int
 _gfeat(struct xnvme_cmd_ctx *ctx, void *XNVME_UNUSED(dbuf))
 {
 	struct xnvme_spec_feat feat = {0};
@@ -724,7 +627,7 @@ struct xnvme_be_sync g_xnvme_be_linux_sync_block = {
 	.id = "block",
 #ifdef XNVME_BE_LINUX_BLOCK_ENABLED
 	.cmd_io = xnvme_be_linux_block_cmd_io,
-	.cmd_iov = xnvme_be_linux_block_cmd_iov,
+	.cmd_iov = xnvme_be_cbi_sync_psync_cmd_iov,
 #else
 	.cmd_io = xnvme_be_nosys_sync_cmd_io,
 	.cmd_iov = xnvme_be_nosys_sync_cmd_iov,
@@ -735,7 +638,9 @@ struct xnvme_be_admin g_xnvme_be_linux_admin_block = {
 	.id = "block",
 #ifdef XNVME_BE_LINUX_BLOCK_ENABLED
 	.cmd_admin = xnvme_be_linux_block_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #else
 	.cmd_admin = xnvme_be_nosys_sync_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #endif
 };

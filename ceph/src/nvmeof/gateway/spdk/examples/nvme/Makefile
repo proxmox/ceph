@@ -1,15 +1,14 @@
 #  SPDX-License-Identifier: BSD-3-Clause
 #  Copyright (C) 2015 Intel Corporation.
+#  Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES
 #  All rights reserved.
 #
 
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-DIRS-y += hello_world identify perf reconnect nvme_manage arbitration \
-	hotplug cmb_copy abort pmr_persistence discovery_aer
-
-DIRS-$(CONFIG_FIO_PLUGIN) += fio_plugin
+DIRS-y += hello_world reconnect nvme_manage arbitration \
+	hotplug cmb_copy abort pmr_persistence
 
 .PHONY: all clean $(DIRS-y)
 

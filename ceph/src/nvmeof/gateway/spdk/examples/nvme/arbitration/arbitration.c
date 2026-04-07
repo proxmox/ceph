@@ -7,10 +7,10 @@
 
 #include "spdk/log.h"
 #include "spdk/nvme.h"
+#include "spdk_internal/nvme_util.h"
 #include "spdk/env.h"
 #include "spdk/string.h"
 #include "spdk/nvme_intel.h"
-#include "spdk/string.h"
 
 struct ctrlr_entry {
 	struct spdk_nvme_ctrlr			*ctrlr;
@@ -483,7 +483,7 @@ usage(char *program_name)
 	printf("\t\t(0 - disabled; 1 - enabled)\n");
 	printf("\t[-n subjected IOs for performance comparison]\n");
 	printf("\t[-i shared memory group ID]\n");
-	printf("\t[-r remote NVMe over Fabrics target address]\n");
+	spdk_nvme_transport_id_usage(stdout, 0);
 	printf("\t[-g use single file descriptor for DPDK memory segments]\n");
 }
 
@@ -1073,6 +1073,7 @@ main(int argc, char **argv)
 		return rc;
 	}
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "arb";
 	opts.mem_size = g_dpdk_mem;
@@ -1112,7 +1113,7 @@ main(int argc, char **argv)
 	task_count *= g_arbitration.queue_depth;
 
 	task_pool = spdk_mempool_create(task_pool_name, task_count,
-					sizeof(struct arb_task), 0, SPDK_ENV_SOCKET_ID_ANY);
+					sizeof(struct arb_task), 0, SPDK_ENV_NUMA_ID_ANY);
 	if (task_pool == NULL) {
 		fprintf(stderr, "could not initialize task pool\n");
 		rc = 1;

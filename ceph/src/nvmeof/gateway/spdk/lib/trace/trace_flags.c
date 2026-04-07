@@ -9,9 +9,17 @@
 #include "spdk/trace.h"
 #include "spdk/log.h"
 #include "spdk/util.h"
+#include "trace_internal.h"
+#include "spdk/bit_array.h"
 
-struct spdk_trace_flags *g_trace_flags = NULL;
 static struct spdk_trace_register_fn *g_reg_fn_head = NULL;
+static struct {
+	uint16_t *ring;
+	uint32_t head;
+	uint32_t tail;
+	uint32_t size;
+	pthread_spinlock_t lock;
+} g_owner_ids;
 
 SPDK_LOG_REGISTER_COMPONENT(trace)
 
@@ -23,17 +31,17 @@ spdk_trace_get_tpoint_mask(uint32_t group_id)
 		return 0ULL;
 	}
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		return 0ULL;
 	}
 
-	return g_trace_flags->tpoint_mask[group_id];
+	return g_trace_file->tpoint_mask[group_id];
 }
 
 void
 spdk_trace_set_tpoints(uint32_t group_id, uint64_t tpoint_mask)
 {
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		SPDK_ERRLOG("trace is not initialized\n");
 		return;
 	}
@@ -43,13 +51,13 @@ spdk_trace_set_tpoints(uint32_t group_id, uint64_t tpoint_mask)
 		return;
 	}
 
-	g_trace_flags->tpoint_mask[group_id] |= tpoint_mask;
+	g_trace_file->tpoint_mask[group_id] |= tpoint_mask;
 }
 
 void
 spdk_trace_clear_tpoints(uint32_t group_id, uint64_t tpoint_mask)
 {
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		SPDK_ERRLOG("trace is not initialized\n");
 		return;
 	}
@@ -59,7 +67,7 @@ spdk_trace_clear_tpoints(uint32_t group_id, uint64_t tpoint_mask)
 		return;
 	}
 
-	g_trace_flags->tpoint_mask[group_id] &= ~tpoint_mask;
+	g_trace_file->tpoint_mask[group_id] &= ~tpoint_mask;
 }
 
 uint64_t
@@ -82,7 +90,7 @@ spdk_trace_set_tpoint_group_mask(uint64_t tpoint_group_mask)
 {
 	int i;
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		SPDK_ERRLOG("trace is not initialized\n");
 		return;
 	}
@@ -99,7 +107,7 @@ spdk_trace_clear_tpoint_group_mask(uint64_t tpoint_group_mask)
 {
 	int i;
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		SPDK_ERRLOG("trace is not initialized\n");
 		return;
 	}
@@ -158,7 +166,7 @@ spdk_trace_enable_tpoint_group(const char *group_name)
 {
 	uint64_t tpoint_group_mask = 0;
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		return -1;
 	}
 
@@ -176,7 +184,7 @@ spdk_trace_disable_tpoint_group(const char *group_name)
 {
 	uint64_t tpoint_group_mask = 0;
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		return -1;
 	}
 
@@ -192,55 +200,187 @@ spdk_trace_disable_tpoint_group(const char *group_name)
 void
 spdk_trace_mask_usage(FILE *f, const char *tmask_arg)
 {
+#define LINE_PREFIX			"                           "
+#define ENTRY_SEPARATOR			", "
+#define MAX_LINE_LENGTH			100
+	uint64_t prefix_len = strlen(LINE_PREFIX);
+	uint64_t separator_len = strlen(ENTRY_SEPARATOR);
+	const char *first_entry = "group_name - tracepoint group name for spdk trace buffers (";
+	const char *last_entry = "all).";
+	uint64_t curr_line_len;
+	uint64_t curr_entry_len;
 	struct spdk_trace_register_fn *register_fn;
-	bool first_group_name = true;
 
 	fprintf(f, " %s, --tpoint-group <group-name>[:<tpoint_mask>]\n", tmask_arg);
-	fprintf(f, "                           group_name - tracepoint group name ");
-	fprintf(f, "for spdk trace buffers (");
+	fprintf(f, "%s%s", LINE_PREFIX, first_entry);
+	curr_line_len = prefix_len + strlen(first_entry);
 
 	register_fn = g_reg_fn_head;
 	while (register_fn) {
-		if (first_group_name) {
-			fprintf(f, "%s", register_fn->name);
-			first_group_name = false;
-		} else {
-			fprintf(f, ", %s", register_fn->name);
+		curr_entry_len = strlen(register_fn->name);
+		if ((curr_line_len + curr_entry_len + separator_len > MAX_LINE_LENGTH)) {
+			fprintf(f, "\n%s", LINE_PREFIX);
+			curr_line_len = prefix_len;
 		}
+
+		fprintf(f, "%s%s", register_fn->name, ENTRY_SEPARATOR);
+		curr_line_len += curr_entry_len + separator_len;
+
+		if (register_fn->next == NULL) {
+			if (curr_line_len + strlen(last_entry) > MAX_LINE_LENGTH) {
+				fprintf(f, " ");
+			}
+			fprintf(f, "%s\n", last_entry);
+			break;
+		}
+
 		register_fn = register_fn->next;
 	}
 
-	fprintf(f, ", all)\n");
-	fprintf(f, "                           tpoint_mask - tracepoint mask for enabling individual");
-	fprintf(f, " tpoints inside a tracepoint group.");
-	fprintf(f, " First tpoint inside a group can be");
-	fprintf(f, " enabled by setting tpoint_mask to 1 (e.g. bdev:0x1).\n");
-	fprintf(f, "                            Groups and masks can be combined (e.g.");
-	fprintf(f, " thread,bdev:0x1).\n");
-	fprintf(f, "                            All available tpoints can be found in");
-	fprintf(f, " /include/spdk_internal/trace_defs.h\n");
+	fprintf(f, "%stpoint_mask - tracepoint mask for enabling individual tpoints inside\n",
+		LINE_PREFIX);
+	fprintf(f, "%sa tracepoint group. First tpoint inside a group can be enabled by\n",
+		LINE_PREFIX);
+	fprintf(f, "%ssetting tpoint_mask to 1 (e.g. bdev:0x1). Groups and masks can be\n",
+		LINE_PREFIX);
+	fprintf(f, "%scombined (e.g. thread,bdev:0x1). All available tpoints can be found\n",
+		LINE_PREFIX);
+	fprintf(f, "%sin /include/spdk_internal/trace_defs.h\n", LINE_PREFIX);
 }
 
 void
-spdk_trace_register_owner(uint8_t type, char id_prefix)
+spdk_trace_register_owner_type(uint8_t type, char id_prefix)
 {
-	struct spdk_trace_owner *owner;
+	struct spdk_trace_owner_type *owner_type;
 
-	assert(type != OWNER_NONE);
+	assert(type != OWNER_TYPE_NONE);
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		SPDK_ERRLOG("trace is not initialized\n");
 		return;
 	}
 
-	/* 'owner' has 256 entries and since 'type' is a uint8_t, it
+	/* 'owner_type' has 256 entries and since 'type' is a uint8_t, it
 	 * can't overrun the array.
 	 */
-	owner = &g_trace_flags->owner[type];
-	assert(owner->type == 0);
+	owner_type = &g_trace_file->owner_type[type];
+	assert(owner_type->type == 0);
 
-	owner->type = type;
-	owner->id_prefix = id_prefix;
+	owner_type->type = type;
+	owner_type->id_prefix = id_prefix;
+}
+
+static void
+_owner_set_description(uint16_t owner_id, const char *description, bool append)
+{
+	struct spdk_trace_owner *owner;
+	char old[256] = {};
+
+	assert(sizeof(old) >= g_trace_file->owner_description_size);
+	owner = spdk_get_trace_owner(g_trace_file, owner_id);
+	assert(owner != NULL);
+	if (append) {
+		memcpy(old, owner->description, g_trace_file->owner_description_size);
+	}
+
+	snprintf(owner->description, g_trace_file->owner_description_size,
+		 "%s%s%s", old, append ? " " : "", description);
+}
+
+uint16_t
+spdk_trace_register_owner(uint8_t owner_type, const char *description)
+{
+	struct spdk_trace_owner *owner;
+	uint32_t owner_id;
+
+	if (g_owner_ids.ring == NULL) {
+		/* Help the unit test environment by simply returning instead
+		 * of requiring it to initialize the trace library.
+		 */
+		return 0;
+	}
+
+	pthread_spin_lock(&g_owner_ids.lock);
+
+	if (g_owner_ids.head == g_owner_ids.tail) {
+		/* No owner ids available. Return 0 which means no owner. */
+		pthread_spin_unlock(&g_owner_ids.lock);
+		return 0;
+	}
+
+	owner_id = g_owner_ids.ring[g_owner_ids.head];
+	if (++g_owner_ids.head == g_owner_ids.size) {
+		g_owner_ids.head = 0;
+	}
+
+	owner = spdk_get_trace_owner(g_trace_file, owner_id);
+	owner->tsc = spdk_get_ticks();
+	owner->type = owner_type;
+	_owner_set_description(owner_id, description, false);
+	pthread_spin_unlock(&g_owner_ids.lock);
+	return owner_id;
+}
+
+void
+spdk_trace_unregister_owner(uint16_t owner_id)
+{
+	if (g_owner_ids.ring == NULL) {
+		/* Help the unit test environment by simply returning instead
+		 * of requiring it to initialize the trace library.
+		 */
+		return;
+	}
+
+	if (owner_id == 0) {
+		/* owner_id 0 means no owner. Allow this to be passed here, it
+		 * avoids caller having to do extra checking.
+		 */
+		return;
+	}
+
+	pthread_spin_lock(&g_owner_ids.lock);
+	g_owner_ids.ring[g_owner_ids.tail] = owner_id;
+	if (++g_owner_ids.tail == g_owner_ids.size) {
+		g_owner_ids.tail = 0;
+	}
+	pthread_spin_unlock(&g_owner_ids.lock);
+}
+
+void
+spdk_trace_owner_set_description(uint16_t owner_id, const char *description)
+{
+	if (g_owner_ids.ring == NULL) {
+		/* Help the unit test environment by simply returning instead
+		 * of requiring it to initialize the trace library.
+		 */
+		return;
+	}
+
+	pthread_spin_lock(&g_owner_ids.lock);
+	_owner_set_description(owner_id, description, false);
+	pthread_spin_unlock(&g_owner_ids.lock);
+}
+
+void
+spdk_trace_owner_append_description(uint16_t owner_id, const char *description)
+{
+	if (g_owner_ids.ring == NULL) {
+		/* Help the unit test environment by simply returning instead
+		 * of requiring it to initialize the trace library.
+		 */
+		return;
+	}
+
+	if (owner_id == 0) {
+		/* owner_id 0 means no owner. Allow this to be passed here, it
+		 * avoids caller having to do extra checking.
+		 */
+		return;
+	}
+
+	pthread_spin_lock(&g_owner_ids.lock);
+	_owner_set_description(owner_id, description, true);
+	pthread_spin_unlock(&g_owner_ids.lock);
 }
 
 void
@@ -250,7 +390,7 @@ spdk_trace_register_object(uint8_t type, char id_prefix)
 
 	assert(type != OBJECT_NONE);
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		SPDK_ERRLOG("trace is not initialized\n");
 		return;
 	}
@@ -258,7 +398,7 @@ spdk_trace_register_object(uint8_t type, char id_prefix)
 	/* 'object' has 256 entries and since 'type' is a uint8_t, it
 	 * can't overrun the array.
 	 */
-	object = &g_trace_flags->object[type];
+	object = &g_trace_file->object[type];
 	assert(object->type == 0);
 
 	object->type = type;
@@ -271,14 +411,13 @@ trace_register_description(const struct spdk_trace_tpoint_opts *opts)
 	struct spdk_trace_tpoint *tpoint;
 	size_t i, max_name_length;
 
-	assert(opts->tpoint_id != 0);
 	assert(opts->tpoint_id < SPDK_TRACE_MAX_TPOINT_ID);
 
 	if (strnlen(opts->name, sizeof(tpoint->name)) == sizeof(tpoint->name)) {
 		SPDK_ERRLOG("name (%s) too long\n", opts->name);
 	}
 
-	tpoint = &g_trace_flags->tpoint[opts->tpoint_id];
+	tpoint = &g_trace_file->tpoint[opts->tpoint_id];
 	assert(tpoint->tpoint_id == 0);
 
 	snprintf(tpoint->name, sizeof(tpoint->name), "%s", opts->name);
@@ -326,7 +465,7 @@ spdk_trace_register_description_ext(const struct spdk_trace_tpoint_opts *opts, s
 {
 	size_t i;
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		SPDK_ERRLOG("trace is not initialized\n");
 		return;
 	}
@@ -367,7 +506,7 @@ spdk_trace_tpoint_register_relation(uint16_t tpoint_id, uint8_t object_type, uin
 	assert(object_type != OBJECT_NONE);
 	assert(tpoint_id != OBJECT_NONE);
 
-	if (g_trace_flags == NULL) {
+	if (g_trace_file == NULL) {
 		SPDK_ERRLOG("trace is not initialized\n");
 		return;
 	}
@@ -376,7 +515,7 @@ spdk_trace_tpoint_register_relation(uint16_t tpoint_id, uint8_t object_type, uin
 	 * there is no order in which trace definitions are registered.
 	 * This way we can create relations between tpoint and objects
 	 * that will be declared later. */
-	tpoint = &g_trace_flags->tpoint[tpoint_id];
+	tpoint = &g_trace_file->tpoint[tpoint_id];
 	for (i = 0; i < SPDK_COUNTOF(tpoint->related_objects); ++i) {
 		if (tpoint->related_objects[i].object_type == OBJECT_NONE) {
 			tpoint->related_objects[i].object_type = object_type;
@@ -438,14 +577,56 @@ spdk_trace_add_register_fn(struct spdk_trace_register_fn *reg_fn)
 	}
 }
 
-void
-spdk_trace_flags_init(void)
+int
+trace_flags_init(void)
 {
 	struct spdk_trace_register_fn *reg_fn;
+	uint16_t i;
+	uint16_t owner_id_start;
+	int rc;
 
 	reg_fn = g_reg_fn_head;
 	while (reg_fn) {
 		reg_fn->reg_fn();
 		reg_fn = reg_fn->next;
 	}
+
+	/* We will not use owner_id 0, it will be reserved to mean "no owner".
+	 * But for now, we will start with owner_id 256 instead of owner_id 1.
+	 * This will account for some libraries and modules which pass a
+	 * "poller_id" to spdk_trace_record() which is now an owner_id. Until
+	 * all of those libraries and modules are converted, we will start
+	 * owner_ids at 256 to avoid collisions.
+	 */
+	owner_id_start = 256;
+	g_owner_ids.ring = calloc(g_trace_file->num_owners, sizeof(uint16_t));
+	if (g_owner_ids.ring == NULL) {
+		SPDK_ERRLOG("could not allocate g_owner_ids.ring\n");
+		return -ENOMEM;
+	}
+	g_owner_ids.head = 0;
+	g_owner_ids.tail = g_trace_file->num_owners - owner_id_start;
+	g_owner_ids.size = g_trace_file->num_owners;
+	for (i = 0; i < g_owner_ids.tail; i++) {
+		g_owner_ids.ring[i] = i + owner_id_start;
+	}
+
+	rc = pthread_spin_init(&g_owner_ids.lock, PTHREAD_PROCESS_PRIVATE);
+	if (rc != 0) {
+		free(g_owner_ids.ring);
+		g_owner_ids.ring = NULL;
+	}
+
+	return rc;
+}
+
+void
+trace_flags_fini(void)
+{
+	if (g_owner_ids.ring == NULL) {
+		return;
+	}
+	pthread_spin_destroy(&g_owner_ids.lock);
+	free(g_owner_ids.ring);
+	g_owner_ids.ring = NULL;
 }

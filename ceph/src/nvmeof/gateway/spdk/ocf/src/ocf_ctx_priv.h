@@ -1,6 +1,6 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_CTX_PRIV_H__
@@ -8,10 +8,23 @@
 
 #include "ocf_env.h"
 #include "ocf/ocf_ctx.h"
+#include "ocf/ocf_composite_volume.h"
 #include "ocf_logger_priv.h"
 #include "ocf_volume_priv.h"
 
-#define OCF_VOLUME_TYPE_MAX 8
+#define OCF_VOLUME_TYPE_CNT_USER 8
+#define OCF_VOLUME_TYPE_CNT_PRIV 3
+#define OCF_VOLUME_TYPE_MAX_USER OCF_VOLUME_TYPE_CNT_USER
+#define OCF_VOLUME_TYPE_MAX \
+		(OCF_VOLUME_TYPE_CNT_USER + OCF_VOLUME_TYPE_CNT_PRIV)
+
+#define OCF_VOLUME_TYPE_CORE (OCF_VOLUME_TYPE_MAX_USER + 0)
+#define OCF_VOLUME_TYPE_CACHE (OCF_VOLUME_TYPE_MAX_USER + 1)
+#define OCF_VOLUME_TYPE_COMPOSITE_PLACEHOLDER (OCF_VOLUME_TYPE_MAX_USER + 2)
+
+#if OCF_VOLUME_TYPE_COMPOSITE_PLACEHOLDER != OCF_VOLUME_TYPE_COMPOSITE
+#error "composite volume id mismatch"
+#endif
 
 /**
  * @brief OCF main control structure
@@ -50,9 +63,14 @@ struct ocf_ctx {
 #define ocf_log_stack_trace(ctx) \
 	ocf_log_stack_trace_raw(&ctx->logger)
 
-int ocf_ctx_register_volume_type_extended(ocf_ctx_t ctx, uint8_t type_id,
+int ocf_ctx_register_volume_type_internal(ocf_ctx_t ctx, uint8_t type_id,
 		const struct ocf_volume_properties *properties,
 		const struct ocf_volume_extended *extended);
+
+void ocf_ctx_unregister_volume_type_internal(ocf_ctx_t ctx, uint8_t type_id);
+
+ocf_volume_type_t ocf_ctx_get_volume_type_internal(ocf_ctx_t ctx,
+		uint8_t type_id);
 
 /**
  * @name Environment data buffer operations wrappers

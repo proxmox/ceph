@@ -1,5 +1,7 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_FBSD_ENABLED
@@ -14,7 +16,6 @@ __FBSDID("$FreeBSD$");
 #include <unistd.h>
 #include <dev/nvme/nvme.h>
 #include <errno.h>
-#include <libxnvme_spec_fs.h>
 #include <xnvme_dev.h>
 #include <xnvme_be_fbsd.h>
 
@@ -50,12 +51,17 @@ xnvme_be_fbsd_nvme_get_nsid_and_ctrlr_fd(int fd, uint32_t *nsid, int *ctrlr_fd)
 }
 
 int
-xnvme_be_fbsd_nvme_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes,
-		      void *XNVME_UNUSED(mbuf), size_t XNVME_UNUSED(mbuf_nbytes))
+xnvme_be_fbsd_nvme_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, void *mbuf,
+		      size_t mbuf_nbytes)
 {
 	struct xnvme_be_fbsd_state *state = (void *)ctx->dev->be.state;
 	struct nvme_pt_command ptc = {0};
 	int err;
+
+	if (mbuf || mbuf_nbytes) {
+		XNVME_DEBUG("FAILED: mbuf or mbuf_nbytes provided");
+		return -ENOTSUP;
+	}
 
 	switch (ctx->cmd.common.opcode) {
 	case XNVME_SPEC_FS_OPC_READ:
@@ -125,7 +131,9 @@ struct xnvme_be_admin g_xnvme_be_fbsd_admin_nvme = {
 	.id = "nvme",
 #ifdef XNVME_BE_FBSD_ENABLED
 	.cmd_admin = xnvme_be_fbsd_nvme_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #else
 	.cmd_admin = xnvme_be_nosys_sync_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #endif
 };

@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2020-2022, Intel Corporation
+;; Copyright (c) 2020-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -26,12 +26,12 @@
 ;;
 %use smartalign
 
-%include "include/imb_job.asm"
-%include "include/reg_sizes.asm"
-%include "include/os.asm"
-%include "include/clear_regs.asm"
-%include "include/aes_common.asm"
-%include "include/mb_mgr_datastruct.asm"
+%include "include/imb_job.inc"
+%include "include/reg_sizes.inc"
+%include "include/os.inc"
+%include "include/clear_regs.inc"
+%include "include/aes_common.inc"
+%include "include/mb_mgr_datastruct.inc"
 
 default rel
 

@@ -9,6 +9,9 @@
 # ENV_CXXFLAGS
 # ENV_LIBS
 # ENV_LINKER_ARGS
+# ENV_DEPLIBS
+
+include $(SPDK_ROOT_DIR)/mk/spdk.lib_deps.mk
 
 DPDK_DIR = $(CONFIG_DPDK_DIR)
 
@@ -33,7 +36,7 @@ endif
 DPDK_INC := -I$(DPDK_INC_DIR)
 
 DPDK_LIB_LIST = rte_eal rte_mempool rte_ring rte_mbuf rte_bus_pci rte_pci rte_mempool_ring
-DPDK_LIB_LIST += rte_telemetry rte_kvargs
+DPDK_LIB_LIST += rte_telemetry rte_kvargs rte_rcu
 
 DPDK_POWER=n
 
@@ -45,6 +48,11 @@ DPDK_POWER=y
 # Since DPDK 21.02 rte_power depends on rte_ethdev that
 # in turn depends on rte_net.
 DPDK_LIB_LIST += rte_power rte_ethdev rte_net
+# rte_power drivers, available since 24.11.0
+ifneq ($(wildcard $(DPDK_LIB_DIR)/librte_power_*),)
+DPDK_LIB_LIST += rte_power_acpi rte_power_amd_pstate rte_power_cppc rte_power_intel_pstate \
+		 rte_power_intel_uncore rte_power_kvm_vm
+endif
 endif
 endif
 
@@ -78,6 +86,12 @@ ifneq (, $(wildcard $(DPDK_LIB_DIR)/librte_crypto_mlx5.*))
 DPDK_LIB_LIST += rte_crypto_mlx5
 endif
 endif
+
+ifeq ($(CONFIG_DPDK_UADK),y)
+ifneq (, $(wildcard $(DPDK_LIB_DIR)/librte_crypto_uadk.*))
+DPDK_LIB_LIST += rte_crypto_uadk
+endif
+endif
 endif
 
 ifeq ($(findstring y,$(CONFIG_DPDK_COMPRESSDEV)$(CONFIG_VBDEV_COMPRESS)),y)
@@ -87,6 +101,11 @@ DPDK_LIB_LIST += rte_compress_isal
 endif
 ifeq ($(CONFIG_VBDEV_COMPRESS_MLX5),y)
 DPDK_LIB_LIST += rte_compress_mlx5
+endif
+ifeq ($(CONFIG_DPDK_UADK),y)
+ifneq (, $(wildcard $(DPDK_LIB_DIR)/librte_compress_uadk.*))
+DPDK_LIB_LIST += rte_compress_uadk
+endif
 endif
 endif
 
@@ -116,17 +135,18 @@ endif
 
 ifeq ($(LINK_HASH),y)
 DPDK_LIB_LIST += rte_hash
-ifneq (, $(wildcard $(DPDK_LIB_DIR)/librte_rcu.*))
-DPDK_LIB_LIST += rte_rcu
-endif
 endif
 
+ifneq (, $(wildcard $(DPDK_LIB_DIR)/librte_log.*))
+# Since DPDK 23.11.0-rc0 logging functions are in a separate library
+DPDK_LIB_LIST += rte_log
+endif
 
 DPDK_LIB_LIST_SORTED = $(sort $(DPDK_LIB_LIST))
 
 DPDK_SHARED_LIB = $(DPDK_LIB_LIST_SORTED:%=$(DPDK_LIB_DIR)/lib%.so)
 DPDK_STATIC_LIB = $(DPDK_LIB_LIST_SORTED:%=$(DPDK_LIB_DIR)/lib%.a)
-DPDK_SHARED_LIB_LINKER_ARGS = $(call add_no_as_needed,$(DPDK_SHARED_LIB))
+DPDK_SHARED_LIB_LINKER_ARGS = $(call add_no_as_needed,$(DPDK_SHARED_LIB)) -Wl,-rpath=$(DPDK_LIB_DIR)
 DPDK_STATIC_LIB_LINKER_ARGS = $(call add_whole_archive,$(DPDK_STATIC_LIB))
 
 ENV_CFLAGS = $(DPDK_INC) -DALLOW_EXPERIMENTAL_API
@@ -182,15 +202,44 @@ ifeq ($(OS),FreeBSD)
 DPDK_PRIVATE_LINKER_ARGS += -lexecinfo
 endif
 
+ifeq ($(CC_TYPE),gcc)
+GCC_MAJOR = $(shell echo __GNUC__ | $(CC) -E -x c - | tail -n 1)
+ifeq ($(shell test $(GCC_MAJOR) -ge 10 && echo 1), 1)
+#1. gcc 10 complains on operations with zero size arrays in rte_cryptodev.c, so
+#disable this warning
+#2. gcc 10 disables fcommon by default and complains on multiple definition of
+#aesni_mb_logtype_driver symbol which is defined in header file and presented in several
+#translation units
+DPDK_CFLAGS += -Wno-stringop-overflow -fcommon
+ifeq ($(CONFIG_LTO),y)
+DPDK_LDFLAGS += -Wno-stringop-overflow -fcommon
+endif
+
+ifeq ($(shell test $(GCC_MAJOR) -ge 12 && echo 1), 1)
+# 3. gcc 12 reports reading incorrect size from a region. Seems like false positive,
+# see issue #2460
+DPDK_CFLAGS += -Wno-stringop-overread
+# 4. gcc 12 reports array subscript * is outside array bounds. Seems like false positive,
+# see issue #2668
+DPDK_CFLAGS += -Wno-array-bounds
+ifeq ($(CONFIG_LTO),y)
+DPDK_LDFLAGS += -Wno-stringop-overread -Wno-array-bounds
+endif
+
+endif
+endif
+endif
+
 ifeq ($(CONFIG_SHARED),y)
 ENV_DPDK_FILE = $(call spdk_lib_list_to_shared_libs,env_dpdk)
 ENV_LIBS = $(ENV_DPDK_FILE) $(DPDK_SHARED_LIB)
-DPDK_LINKER_ARGS = $(DPDK_SHARED_LIB_LINKER_ARGS)
+DPDK_LINKER_ARGS = $(DPDK_SHARED_LIB_LINKER_ARGS) $(DPDK_LDFLAGS)
 ENV_LINKER_ARGS = $(ENV_DPDK_FILE) $(DPDK_LINKER_ARGS)
 else
 ENV_DPDK_FILE = $(call spdk_lib_list_to_static_libs,env_dpdk)
 ENV_LIBS = $(ENV_DPDK_FILE) $(DPDK_STATIC_LIB)
-DPDK_LINKER_ARGS = $(DPDK_STATIC_LIB_LINKER_ARGS)
+DPDK_LINKER_ARGS = $(DPDK_STATIC_LIB_LINKER_ARGS) $(DPDK_LDFLAGS)
 ENV_LINKER_ARGS = $(ENV_DPDK_FILE) $(DPDK_LINKER_ARGS)
 ENV_LINKER_ARGS += $(DPDK_PRIVATE_LINKER_ARGS)
 endif
+ENV_DEPLIBS += $(DEPDIRS-env_dpdk)

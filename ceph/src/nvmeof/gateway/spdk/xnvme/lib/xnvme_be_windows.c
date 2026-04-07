@@ -1,15 +1,17 @@
-// Copyright (C) Rishabh Shukla <rishabh.sh@samsung.com>
-// Copyright (C) Pranjal Dave <pranjal.58@partner.samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_WINDOWS_ENABLED
+#include <xnvme_be_cbi.h>
 #include <windows.h>
 #include <xnvme_be_windows.h>
-#include <libxnvme_file.h>
 
 #define STATUS_SUCCESS (0x00000000)
 
@@ -51,7 +53,8 @@ xnvme_be_windows_uapi_ver_fpr(FILE *stream, enum xnvme_pr opts)
 	}
 
 	RTL_OSVERSIONINFOW info = _be_windows_get_os_version();
-	wrtn += fprintf(stream, "WINDOWS;WINDOWS_VERSION_CODE-UAPI/%lu.%lu (%lu) ",
+	wrtn += fprintf(stream,
+			"WINDOWS;WINDOWS_VERSION_CODE-UAPI/%" PRIu64 "." PRIu64 " (%" PRIu64 ") ",
 			info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber);
 
 	return wrtn;
@@ -111,7 +114,7 @@ static struct xnvme_be_mixin g_xnvme_be_mixin_windows[] = {
 		.mtype = XNVME_BE_ASYNC,
 		.name = "emu",
 		.descr = "Use emulated asynchronous I/O",
-		.async = &g_xnvme_be_posix_async_emu,
+		.async = &g_xnvme_be_cbi_async_emu,
 		.check_support = xnvme_be_supported,
 	},
 
@@ -119,7 +122,7 @@ static struct xnvme_be_mixin g_xnvme_be_mixin_windows[] = {
 		.mtype = XNVME_BE_ASYNC,
 		.name = "thrpool",
 		.descr = "Use thread pool for Asynchronous I/O",
-		.async = &g_xnvme_be_posix_async_thrpool,
+		.async = &g_xnvme_be_cbi_async_thrpool,
 		.check_support = xnvme_be_supported,
 	},
 
@@ -142,6 +145,22 @@ static struct xnvme_be_mixin g_xnvme_be_mixin_windows[] = {
 	},
 
 	{
+		.mtype = XNVME_BE_ASYNC,
+		.name = "io_ring",
+		.descr = "Use Windows io_ring for Asynchronous I/O",
+		.async = &g_xnvme_be_windows_async_ioring,
+		.check_support = xnvme_be_supported,
+	},
+
+	{
+		.mtype = XNVME_BE_ASYNC,
+		.name = "nil",
+		.descr = "Use nil-io; For introspective perf. evaluation",
+		.async = &g_xnvme_be_cbi_async_nil,
+		.check_support = xnvme_be_supported,
+	},
+
+	{
 		.mtype = XNVME_BE_SYNC,
 		.name = "nvme",
 		.descr = "Use Windows NVMe Driver ioctl() for synchronous I/O",
@@ -154,6 +173,14 @@ static struct xnvme_be_mixin g_xnvme_be_mixin_windows[] = {
 		.name = "nvme",
 		.descr = "Use Windows NVMe Driver ioctl() for admin commands",
 		.admin = &g_xnvme_be_windows_admin_nvme,
+		.check_support = xnvme_be_supported,
+	},
+
+	{
+		.mtype = XNVME_BE_ADMIN,
+		.name = "block",
+		.descr = "Use Windows NVMe Driver ioctl() for admin commands",
+		.admin = &g_xnvme_be_windows_admin_block,
 		.check_support = xnvme_be_supported,
 	},
 

@@ -9,6 +9,8 @@ source $rootdir/test/common/autotest_common.sh
 source $rootdir/scripts/common.sh
 source $rootdir/test/nvmf/common.sh
 
+rpc_py="$rootdir/scripts/rpc.py"
+
 nvmftestinit
 
 if [[ $CONFIG_FIO_PLUGIN != y ]]; then
@@ -33,7 +35,7 @@ $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc1
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 $rpc_py nvmf_subsystem_add_listener discovery -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
-PLUGIN_DIR=$rootdir/examples/nvme/fio_plugin
+PLUGIN_DIR=$rootdir/app/fio/nvme
 
 # Test fio_plugin as host with malloc backend
 fio_nvme $PLUGIN_DIR/example_config.fio --filename="trtype=$TEST_TRANSPORT adrfam=IPv4 \
@@ -46,8 +48,8 @@ $rpc_py nvmf_delete_subsystem nqn.2016-06.io.spdk:cnode1
 
 if [ $RUN_NIGHTLY -eq 1 ]; then
 	# Test fio_plugin as host with nvme lvol backend
-	bdfs=$(get_nvme_bdfs)
-	$rpc_py bdev_nvme_attach_controller -b Nvme0 -t PCIe -a $(echo $bdfs | awk '{ print $1 }') -i $NVMF_FIRST_TARGET_IP
+	bdfs=($(get_nvme_bdfs))
+	$rpc_py bdev_nvme_attach_controller -b Nvme0 -t PCIe -a "${bdfs[0]}" -i $NVMF_FIRST_TARGET_IP
 	ls_guid=$($rpc_py bdev_lvol_create_lvstore -c 1073741824 Nvme0n1 lvs_0)
 	get_lvs_free_mb $ls_guid
 	$rpc_py bdev_lvol_create -l lvs_0 lbd_0 $free_mb
@@ -71,7 +73,7 @@ if [ $RUN_NIGHTLY -eq 1 ]; then
 
 	sync
 	# Delete lvol_bdev and destroy lvol_store.
-	$rpc_py bdev_lvol_delete lvs_n_0/lbd_nest_0
+	$rpc_py -t 120 bdev_lvol_delete lvs_n_0/lbd_nest_0
 	$rpc_py bdev_lvol_delete_lvstore -l lvs_n_0
 	$rpc_py bdev_lvol_delete lvs_0/lbd_0
 	$rpc_py bdev_lvol_delete_lvstore -l lvs_0

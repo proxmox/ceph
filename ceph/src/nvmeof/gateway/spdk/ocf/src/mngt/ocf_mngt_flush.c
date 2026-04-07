@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
@@ -110,6 +111,12 @@ static void _ocf_mngt_begin_flush(ocf_pipeline_t pipeline, void *priv,
 
 bool ocf_mngt_core_is_dirty(ocf_core_t core)
 {
+	ocf_cache_t cache;
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return false;
+
 	return !!env_atomic_read(&core->runtime_meta->dirty_clines);
 }
 
@@ -119,6 +126,9 @@ bool ocf_mngt_cache_is_dirty(ocf_cache_t cache)
 	ocf_core_id_t core_id;
 
 	OCF_CHECK_NULL(cache);
+
+	if (ocf_cache_is_standby(cache))
+		return false;
 
 	for_each_core(cache, core, core_id) {
 		if (ocf_mngt_core_is_dirty(core))
@@ -392,7 +402,7 @@ static void _ocf_mngt_flush_portion_end(void *private_data, int error)
 		return;
 	}
 
-	ocf_engine_push_req_back(fc->req, false);
+	ocf_queue_push_req(fc->req, 0);
 }
 
 
@@ -408,11 +418,6 @@ static int _ofc_flush_container_step(struct ocf_request *req)
 	return 0;
 }
 
-static const struct ocf_io_if _io_if_flush_portion = {
-	.read = _ofc_flush_container_step,
-	.write = _ofc_flush_container_step,
-};
-
 static void _ocf_mngt_flush_container(
 		struct ocf_mngt_cache_flush_context *context,
 		struct flush_container *fc, ocf_flush_containter_coplete_t end)
@@ -427,19 +432,18 @@ static void _ocf_mngt_flush_container(
 	fc->end = end;
 	fc->context = context;
 
-	req = ocf_req_new(cache->mngt_queue, NULL, 0, 0, 0);
+	req = ocf_req_new_mngt(cache, cache->mngt_queue);
 	if (!req) {
 		error = OCF_ERR_NO_MEM;
 		goto finish;
 	}
 
 	req->info.internal = true;
-	req->io_if = &_io_if_flush_portion;
+	req->engine_handler = _ofc_flush_container_step;
 	req->priv = fc;
 
 	fc->req = req;
 	fc->attribs.lock_cacheline = true;
-	fc->attribs.lock_metadata = false;
 	fc->attribs.cmpl_context = fc;
 	fc->attribs.cmpl_fn = _ocf_mngt_flush_portion_end;
 	fc->attribs.io_queue = cache->mngt_queue;
@@ -448,7 +452,7 @@ static void _ocf_mngt_flush_container(
 	fc->ticks1 = 0;
 	fc->ticks2 = UINT_MAX;
 
-	ocf_engine_push_req_back(fc->req, true);
+	ocf_queue_push_req(fc->req, OCF_QUEUE_ALLOW_SYNC);
 	return;
 
 finish:
@@ -456,7 +460,7 @@ finish:
 	end(context);
 }
 
-void _ocf_flush_container_complete(void *ctx)
+static void _ocf_flush_container_complete(void *ctx)
 {
 	struct ocf_mngt_cache_flush_context *context = ctx;
 
@@ -655,6 +659,11 @@ void ocf_mngt_cache_flush(ocf_cache_t cache,
 
 	OCF_CHECK_NULL(cache);
 
+	if (ocf_cache_is_standby(cache)) {
+		ocf_cache_log(cache, log_err, "Cannot flush cache - cache is standby\n");
+		OCF_CMPL_RET(cache, priv, -OCF_ERR_CACHE_STANDBY);
+	}
+
 	if (!ocf_cache_is_device_attached(cache)) {
 		ocf_cache_log(cache, log_err, "Cannot flush cache - "
 				"cache device is detached\n");
@@ -744,6 +753,9 @@ void ocf_mngt_core_flush(ocf_core_t core,
 
 	cache = ocf_core_get_cache(core);
 
+	if (ocf_cache_is_standby(cache))
+		OCF_CMPL_RET(core, priv, -OCF_ERR_CACHE_STANDBY);
+
 	if (!ocf_cache_is_device_attached(cache)) {
 		ocf_cache_log(cache, log_err, "Cannot flush core - "
 				"cache device is detached\n");
@@ -815,6 +827,9 @@ void ocf_mngt_cache_purge(ocf_cache_t cache,
 
 	OCF_CHECK_NULL(cache);
 
+	if (ocf_cache_is_standby(cache))
+		OCF_CMPL_RET(cache, priv, -OCF_ERR_CACHE_STANDBY);
+
 	if (!cache->mngt_queue) {
 		ocf_cache_log(cache, log_err,
 				"Cannot purge cache - no flush queue set\n");
@@ -866,6 +881,9 @@ void ocf_mngt_core_purge(ocf_core_t core,
 	cache = ocf_core_get_cache(core);
 	core_id = ocf_core_get_id(core);
 
+	if (ocf_cache_is_standby(cache))
+		OCF_CMPL_RET(core, priv, -OCF_ERR_CACHE_STANDBY);
+
 	if (!cache->mngt_queue) {
 		ocf_core_log(core, log_err,
 				"Cannot purge core - no flush queue set\n");
@@ -896,6 +914,9 @@ void ocf_mngt_core_purge(ocf_core_t core,
 void ocf_mngt_cache_flush_interrupt(ocf_cache_t cache)
 {
 	OCF_CHECK_NULL(cache);
+
+	if (ocf_cache_is_standby(cache))
+		return;
 
 	ocf_cache_log(cache, log_alert, "Flushing interrupt\n");
 	cache->flushing_interrupted = 1;
@@ -940,18 +961,16 @@ static void _ocf_mngt_deinit_clean_policy(ocf_pipeline_t pipeline, void *priv,
 			_ocf_mngt_cleaning_deinit_complete, context);
 }
 
-static void _ocf_mngt_init_clean_policy(ocf_pipeline_t pipeline, void *priv,
-		ocf_pipeline_arg_t arg)
+static void _ocf_mngt_cleaning_init_complete(void *priv, int error)
 {
-	int result;
 	struct ocf_mngt_cache_set_cleaning_context *context = priv;
+	ocf_pipeline_t pipeline = context->pipeline;
 	ocf_cache_t cache = context->cache;
 	ocf_cleaning_t old_policy = context->old_policy;
 	ocf_cleaning_t new_policy = context->new_policy;
 	ocf_cleaning_t emergency_policy = ocf_cleaning_nop;
 
-	result = ocf_cleaning_initialize(cache, new_policy, 1);
-	if (result) {
+	if (error) {
 		ocf_cache_log(cache, log_info, "Failed to initialize %s cleaning "
 				"policy. Setting %s instead\n",
 				ocf_cleaning_get_name(new_policy),
@@ -963,18 +982,37 @@ static void _ocf_mngt_init_clean_policy(ocf_pipeline_t pipeline, void *priv,
 				ocf_cleaning_get_name(new_policy));
 	}
 
-	cache->conf_meta->cleaning_policy_type = new_policy;
+	__set_cleaning_policy(cache, new_policy);
 
-	ocf_refcnt_unfreeze(&cache->cleaner.refcnt);
-	ocf_metadata_end_exclusive_access(&cache->metadata.lock);
+	OCF_PL_NEXT_ON_SUCCESS_RET(pipeline, error);
 
-	OCF_PL_NEXT_ON_SUCCESS_RET(pipeline, result);
+}
+
+static void _ocf_mngt_init_clean_policy(ocf_pipeline_t pipeline, void *priv,
+		ocf_pipeline_arg_t arg)
+{
+	int result;
+	struct ocf_mngt_cache_set_cleaning_context *context = priv;
+	ocf_cache_t cache = context->cache;
+	ocf_cleaning_t new_policy = context->new_policy;
+
+	result = ocf_cleaning_initialize(cache, new_policy, false);
+	if (result) {
+		_ocf_mngt_cleaning_init_complete(context, result);
+	} else {
+		ocf_cleaning_populate(cache, new_policy,
+				_ocf_mngt_cleaning_init_complete, context);
+	}
 }
 
 static void _ocf_mngt_set_cleaning_finish(ocf_pipeline_t pipeline, void *priv,
 		int error)
 {
 	struct ocf_mngt_cache_set_cleaning_context *context = priv;
+	ocf_cache_t cache = context->cache;
+
+	ocf_refcnt_unfreeze(&cache->cleaner.refcnt);
+	ocf_metadata_end_exclusive_access(&cache->metadata.lock);
 
 	context->cmpl(context->priv, error);
 
@@ -1006,13 +1044,19 @@ void ocf_mngt_cache_cleaning_set_policy(ocf_cache_t cache,
 	if (new_policy < 0 || new_policy >= ocf_cleaning_max)
 		OCF_CMPL_RET(priv, -OCF_ERR_INVAL);
 
-	old_policy = cache->conf_meta->cleaning_policy_type;
+	if (ocf_cache_is_standby(cache))
+		OCF_CMPL_RET(priv, -OCF_ERR_CACHE_STANDBY);
+
+	old_policy = cache->cleaner.policy;
 
 	if (new_policy == old_policy) {
 		ocf_cache_log(cache, log_info, "Cleaning policy %s is already "
 				"set\n", ocf_cleaning_get_name(old_policy));
 		OCF_CMPL_RET(priv, 0);
 	}
+
+	if (cache->conf_meta->cleaner_disabled)
+		OCF_CMPL_RET(priv, -OCF_ERR_CLEANER_DISABLED);
 
 	ret = ocf_pipeline_create(&pipeline, cache,
 			&_ocf_mngt_cache_set_cleaning_policy);
@@ -1036,7 +1080,10 @@ int ocf_mngt_cache_cleaning_get_policy(ocf_cache_t cache, ocf_cleaning_t *type)
 	OCF_CHECK_NULL(cache);
 	OCF_CHECK_NULL(type);
 
-	*type = cache->conf_meta->cleaning_policy_type;
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	*type = cache->cleaner.policy;
 
 	return 0;
 }
@@ -1050,6 +1097,12 @@ int ocf_mngt_cache_cleaning_set_param(ocf_cache_t cache, ocf_cleaning_t type,
 
 	if (type < 0 || type >= ocf_cleaning_max)
 		return -OCF_ERR_INVAL;
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	if (!ocf_cache_is_device_attached(cache))
+		return -OCF_ERR_CACHE_DETACHED;
 
 	ocf_metadata_start_exclusive_access(&cache->metadata.lock);
 
@@ -1068,6 +1121,9 @@ int ocf_mngt_cache_cleaning_get_param(ocf_cache_t cache, ocf_cleaning_t type,
 
 	if (type < 0 || type >= ocf_cleaning_max)
 		return -OCF_ERR_INVAL;
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	return ocf_cleaning_get_param(cache, type, param_id, param_value);
 }

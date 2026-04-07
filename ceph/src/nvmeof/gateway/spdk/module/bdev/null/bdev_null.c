@@ -17,6 +17,10 @@
 
 #include "bdev_null.h"
 
+struct null_bdev_io {
+	TAILQ_ENTRY(null_bdev_io) link;
+};
+
 struct null_bdev {
 	struct spdk_bdev	bdev;
 	TAILQ_ENTRY(null_bdev)	tailq;
@@ -24,7 +28,7 @@ struct null_bdev {
 
 struct null_io_channel {
 	struct spdk_poller		*poller;
-	TAILQ_HEAD(, spdk_bdev_io)	io;
+	TAILQ_HEAD(, null_bdev_io)	io;
 };
 
 static TAILQ_HEAD(, null_bdev) g_null_bdev_head = TAILQ_HEAD_INITIALIZER(g_null_bdev_head);
@@ -33,11 +37,18 @@ static void *g_null_read_buf;
 static int bdev_null_initialize(void);
 static void bdev_null_finish(void);
 
+static int
+bdev_null_get_ctx_size(void)
+{
+	return sizeof(struct null_bdev_io);
+}
+
 static struct spdk_bdev_module null_if = {
 	.name = "null",
 	.module_init = bdev_null_initialize,
 	.module_fini = bdev_null_finish,
 	.async_fini = true,
+	.get_ctx_size = bdev_null_get_ctx_size,
 };
 
 SPDK_BDEV_MODULE_REGISTER(null, &null_if)
@@ -57,11 +68,14 @@ bdev_null_destruct(void *ctx)
 static bool
 bdev_null_abort_io(struct null_io_channel *ch, struct spdk_bdev_io *bio_to_abort)
 {
+	struct null_bdev_io *null_io;
 	struct spdk_bdev_io *bdev_io;
 
-	TAILQ_FOREACH(bdev_io, &ch->io, module_link) {
+	TAILQ_FOREACH(null_io, &ch->io, link) {
+		bdev_io = spdk_bdev_io_from_ctx(null_io);
+
 		if (bdev_io == bio_to_abort) {
-			TAILQ_REMOVE(&ch->io, bio_to_abort, module_link);
+			TAILQ_REMOVE(&ch->io, null_io, link);
 			spdk_bdev_io_complete(bio_to_abort, SPDK_BDEV_IO_STATUS_ABORTED);
 			return true;
 		}
@@ -73,24 +87,28 @@ bdev_null_abort_io(struct null_io_channel *ch, struct spdk_bdev_io *bio_to_abort
 static void
 bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
 {
+	struct null_bdev_io *null_io = (struct null_bdev_io *)bdev_io->driver_ctx;
 	struct null_io_channel *ch = spdk_io_channel_get_ctx(_ch);
 	struct spdk_bdev *bdev = bdev_io->bdev;
 	struct spdk_dif_ctx dif_ctx;
 	struct spdk_dif_error err_blk;
 	int rc;
+	struct spdk_dif_ctx_init_ext_opts dif_opts;
 
 	if (SPDK_DIF_DISABLE != bdev->dif_type &&
 	    (SPDK_BDEV_IO_TYPE_READ == bdev_io->type ||
 	     SPDK_BDEV_IO_TYPE_WRITE == bdev_io->type)) {
+		dif_opts.size = SPDK_SIZEOF(&dif_opts, dif_pi_format);
+		dif_opts.dif_pi_format = bdev->dif_pi_format;
 		rc = spdk_dif_ctx_init(&dif_ctx,
 				       bdev->blocklen,
 				       bdev->md_len,
 				       bdev->md_interleave,
 				       bdev->dif_is_head_of_md,
 				       bdev->dif_type,
-				       bdev->dif_check_flags,
+				       bdev_io->u.bdev.dif_check_flags,
 				       bdev_io->u.bdev.offset_blocks & 0xFFFFFFFF,
-				       0xFFFF, 0, 0, 0);
+				       0xFFFF, 0, 0, 0, &dif_opts);
 		if (0 != rc) {
 			SPDK_ERRLOG("Failed to initialize DIF context, error %d\n", rc);
 			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
@@ -125,7 +143,7 @@ bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 				return;
 			}
 		}
-		TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
+		TAILQ_INSERT_TAIL(&ch->io, null_io, link);
 		break;
 	case SPDK_BDEV_IO_TYPE_WRITE:
 		if (SPDK_DIF_DISABLE != bdev->dif_type) {
@@ -133,7 +151,7 @@ bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 					     bdev_io->u.bdev.num_blocks, &dif_ctx, &err_blk);
 			if (0 != rc) {
 				SPDK_ERRLOG("IO DIF verification failed: lba %" PRIu64 ", num_blocks %" PRIu64 ", "
-					    "err_type %u, expected %u, actual %u, err_offset %u\n",
+					    "err_type %u, expected %lu, actual %lu, err_offset %u\n",
 					    bdev_io->u.bdev.offset_blocks,
 					    bdev_io->u.bdev.num_blocks,
 					    err_blk.err_type,
@@ -144,11 +162,11 @@ bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 				return;
 			}
 		}
-		TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
+		TAILQ_INSERT_TAIL(&ch->io, null_io, link);
 		break;
 	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
 	case SPDK_BDEV_IO_TYPE_RESET:
-		TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
+		TAILQ_INSERT_TAIL(&ch->io, null_io, link);
 		break;
 	case SPDK_BDEV_IO_TYPE_ABORT:
 		if (bdev_null_abort_io(ch, bdev_io->u.abort.bio_to_abort)) {
@@ -191,8 +209,6 @@ bdev_null_get_io_channel(void *ctx)
 static void
 bdev_null_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 {
-	char uuid_str[SPDK_UUID_STRING_LEN];
-
 	spdk_json_write_object_begin(w);
 
 	spdk_json_write_named_string(w, "method", "bdev_null_create");
@@ -201,11 +217,12 @@ bdev_null_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *
 	spdk_json_write_named_string(w, "name", bdev->name);
 	spdk_json_write_named_uint64(w, "num_blocks", bdev->blockcnt);
 	spdk_json_write_named_uint32(w, "block_size", bdev->blocklen);
+	spdk_json_write_named_uint32(w, "physical_block_size", bdev->phys_blocklen);
 	spdk_json_write_named_uint32(w, "md_size", bdev->md_len);
 	spdk_json_write_named_uint32(w, "dif_type", bdev->dif_type);
 	spdk_json_write_named_bool(w, "dif_is_head_of_md", bdev->dif_is_head_of_md);
-	spdk_uuid_fmt_lower(uuid_str, sizeof(uuid_str), &bdev->uuid);
-	spdk_json_write_named_string(w, "uuid", uuid_str);
+	spdk_json_write_named_uint32(w, "dif_pi_format", bdev->dif_pi_format);
+	spdk_json_write_named_uuid(w, "uuid", &bdev->uuid);
 	spdk_json_write_object_end(w);
 
 	spdk_json_write_object_end(w);
@@ -219,11 +236,35 @@ static const struct spdk_bdev_fn_table null_fn_table = {
 	.write_config_json	= bdev_null_write_config_json,
 };
 
+/* Use a dummy DIF context to validate DIF configuration of the
+ * craeted bdev.
+ */
+static int
+_bdev_validate_dif_config(struct spdk_bdev *bdev)
+{
+	struct spdk_dif_ctx dif_ctx;
+	struct spdk_dif_ctx_init_ext_opts dif_opts;
+
+	dif_opts.size = SPDK_SIZEOF(&dif_opts, dif_pi_format);
+	dif_opts.dif_pi_format = bdev->dif_pi_format;
+
+	return spdk_dif_ctx_init(&dif_ctx,
+				 bdev->blocklen,
+				 bdev->md_len,
+				 true,
+				 bdev->dif_is_head_of_md,
+				 bdev->dif_type,
+				 bdev->dif_check_flags,
+				 SPDK_DIF_REFTAG_IGNORE,
+				 0xFFFF, SPDK_DIF_APPTAG_IGNORE,
+				 0, 0, &dif_opts);
+}
+
 int
-bdev_null_create(struct spdk_bdev **bdev, const struct spdk_null_bdev_opts *opts)
+bdev_null_create(struct spdk_bdev **bdev, const struct null_bdev_opts *opts)
 {
 	struct null_bdev *null_disk;
-	uint32_t data_block_size;
+	uint32_t block_size;
 	int rc;
 
 	if (!opts) {
@@ -231,24 +272,30 @@ bdev_null_create(struct spdk_bdev **bdev, const struct spdk_null_bdev_opts *opts
 		return -EINVAL;
 	}
 
-	if (opts->md_interleave) {
-		if (opts->block_size < opts->md_size) {
-			SPDK_ERRLOG("Interleaved metadata size can not be greater than block size.\n");
-			return -EINVAL;
-		}
-		data_block_size = opts->block_size - opts->md_size;
-	} else {
-		if (opts->md_size != 0) {
-			SPDK_ERRLOG("Metadata in separate buffer is not supported\n");
-			return -ENOTSUP;
-		}
-		data_block_size = opts->block_size;
+	switch (opts->md_size) {
+	case 0:
+	case 8:
+	case 16:
+	case 32:
+	case 64:
+	case 128:
+		break;
+	default:
+		SPDK_ERRLOG("metadata size %u is not supported\n", opts->md_size);
+		return -EINVAL;
 	}
 
-	if (data_block_size % 512 != 0) {
+	if (opts->block_size % 512 != 0) {
 		SPDK_ERRLOG("Data block size %u is not a multiple of 512.\n", opts->block_size);
 		return -EINVAL;
 	}
+
+	if (opts->physical_block_size % 512 != 0) {
+		SPDK_ERRLOG("Physical block must be 512 bytes aligned\n");
+		return -EINVAL;
+	}
+
+	block_size = opts->block_size + opts->md_size;
 
 	if (opts->num_blocks == 0) {
 		SPDK_ERRLOG("Disk must be more than 0 blocks\n");
@@ -269,10 +316,11 @@ bdev_null_create(struct spdk_bdev **bdev, const struct spdk_null_bdev_opts *opts
 	null_disk->bdev.product_name = "Null disk";
 
 	null_disk->bdev.write_cache = 0;
-	null_disk->bdev.blocklen = opts->block_size;
+	null_disk->bdev.blocklen = block_size;
+	null_disk->bdev.phys_blocklen = opts->physical_block_size;
 	null_disk->bdev.blockcnt = opts->num_blocks;
 	null_disk->bdev.md_len = opts->md_size;
-	null_disk->bdev.md_interleave = opts->md_interleave;
+	null_disk->bdev.md_interleave = true;
 	null_disk->bdev.dif_type = opts->dif_type;
 	null_disk->bdev.dif_is_head_of_md = opts->dif_is_head_of_md;
 	/* Current block device layer API does not propagate
@@ -291,10 +339,19 @@ bdev_null_create(struct spdk_bdev **bdev, const struct spdk_null_bdev_opts *opts
 	case SPDK_DIF_DISABLE:
 		break;
 	}
-	if (opts->uuid) {
-		null_disk->bdev.uuid = *opts->uuid;
-	} else {
-		spdk_uuid_generate(&null_disk->bdev.uuid);
+	null_disk->bdev.dif_pi_format = opts->dif_pi_format;
+
+	if (opts->dif_type != SPDK_DIF_DISABLE) {
+		rc = _bdev_validate_dif_config(&null_disk->bdev);
+		if (rc != 0) {
+			SPDK_ERRLOG("DIF configuration was wrong\n");
+			free(null_disk);
+			return -EINVAL;
+		}
+	}
+
+	if (!spdk_uuid_is_null(&opts->uuid)) {
+		spdk_uuid_copy(&null_disk->bdev.uuid, &opts->uuid);
 	}
 
 	null_disk->bdev.ctxt = null_disk;
@@ -330,20 +387,20 @@ static int
 null_io_poll(void *arg)
 {
 	struct null_io_channel		*ch = arg;
-	TAILQ_HEAD(, spdk_bdev_io)	io;
-	struct spdk_bdev_io		*bdev_io;
+	TAILQ_HEAD(, null_bdev_io)	io;
+	struct null_bdev_io		*null_io;
 
 	TAILQ_INIT(&io);
-	TAILQ_SWAP(&ch->io, &io, spdk_bdev_io, module_link);
+	TAILQ_SWAP(&ch->io, &io, null_bdev_io, link);
 
 	if (TAILQ_EMPTY(&io)) {
 		return SPDK_POLLER_IDLE;
 	}
 
 	while (!TAILQ_EMPTY(&io)) {
-		bdev_io = TAILQ_FIRST(&io);
-		TAILQ_REMOVE(&io, bdev_io, module_link);
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+		null_io = TAILQ_FIRST(&io);
+		TAILQ_REMOVE(&io, null_io, link);
+		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(null_io), SPDK_BDEV_IO_STATUS_SUCCESS);
 	}
 
 	return SPDK_POLLER_BUSY;
@@ -377,7 +434,7 @@ bdev_null_initialize(void)
 	 *  this same zeroed buffer.
 	 */
 	g_null_read_buf = spdk_zmalloc(SPDK_BDEV_LARGE_BUF_MAX_SIZE, 0, NULL,
-				       SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
+				       SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
 	if (g_null_read_buf == NULL) {
 		return -1;
 	}

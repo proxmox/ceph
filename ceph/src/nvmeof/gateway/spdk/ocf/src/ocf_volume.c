@@ -1,11 +1,14 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
 #include "ocf_priv.h"
 #include "ocf_volume_priv.h"
+#include "ocf_core_priv.h"
+#include "ocf_request.h"
 #include "ocf_io_priv.h"
 #include "ocf_env.h"
 
@@ -37,8 +40,8 @@ int ocf_volume_type_init(struct ocf_volume_type **type,
 	struct ocf_volume_type *new_type;
 	int ret;
 
-	if (!ops->submit_io || !ops->open || !ops->close ||
-			!ops->get_max_io_size || !ops->get_length) {
+	if (!ops->open || !ops->close || !ops->get_max_io_size ||
+			!ops->get_length) {
 		return -OCF_ERR_INVAL;
 	}
 
@@ -55,7 +58,7 @@ int ocf_volume_type_init(struct ocf_volume_type **type,
 		allocator_type = ocf_io_allocator_get_type_default();
 
 	ret = ocf_io_allocator_init(&new_type->allocator, allocator_type,
-			properties->io_priv_size, properties->name);
+			properties->name);
 	if (ret)
 		goto err;
 
@@ -93,58 +96,78 @@ int ocf_volume_init(ocf_volume_t volume, ocf_volume_type_t type,
 	if (!volume || !type)
 		return -OCF_ERR_INVAL;
 
+	if (uuid && uuid->size > OCF_VOLUME_UUID_MAX_SIZE)
+		return -OCF_ERR_INVAL;
+
 	priv_size = type->properties->volume_priv_size;
-
-	volume->opened = false;
-	volume->type = type;
-
 	volume->priv = env_zalloc(priv_size, ENV_MEM_NORMAL);
 	if (!volume->priv)
 		return -OCF_ERR_NO_MEM;
 
+	volume->opened = false;
+	volume->type = type;
+
+	volume->uuid.size = 0;
+	volume->uuid.data = NULL;
+	volume->uuid_copy = false;
+
 	ocf_refcnt_init(&volume->refcnt);
 	ocf_refcnt_freeze(&volume->refcnt);
 
-	if (!uuid) {
-		volume->uuid.size = 0;
-		volume->uuid.data = NULL;
-		volume->uuid_copy = false;
+	if (!uuid)
 		return 0;
-	}
 
 	volume->uuid_copy = uuid_copy;
 
 	if (uuid_copy) {
 		data = env_vmalloc(uuid->size);
-		if (!data)
-			goto err;
-
-		ret = env_memcpy(data, uuid->size, uuid->data, uuid->size);
-		if (ret) {
-			env_vfree(data);
+		if (!data) {
+			ret = -OCF_ERR_NO_MEM;
 			goto err;
 		}
 
 		volume->uuid.data = data;
+
+		ret = env_memcpy(data, uuid->size, uuid->data, uuid->size);
+		if (ret) {
+			ret = -OCF_ERR_INVAL;
+			goto err;
+		}
 	} else {
 		volume->uuid.data = uuid->data;
 	}
 
 	volume->uuid.size = uuid->size;
 
+	if (volume->type->properties->ops.on_init) {
+		ret = volume->type->properties->ops.on_init(volume);
+		if (ret)
+			goto err;
+	}
+
 	return 0;
 
 err:
 	ocf_refcnt_unfreeze(&volume->refcnt);
 	env_free(volume->priv);
-	return -OCF_ERR_NO_MEM;
+	volume->priv = NULL;
+	if (volume->uuid_copy && volume->uuid.data)
+		env_vfree(volume->uuid.data);
+	volume->uuid.data = NULL;
+	volume->uuid.size = 0;
+	return ret;
 }
 
 void ocf_volume_deinit(ocf_volume_t volume)
 {
 	OCF_CHECK_NULL(volume);
 
+	if (volume->type && volume->type->properties->ops.on_deinit)
+		volume->type->properties->ops.on_deinit(volume);
+
 	env_free(volume->priv);
+	volume->priv = NULL;
+	volume->type = NULL;
 
 	if (volume->uuid_copy && volume->uuid.data) {
 		env_vfree(volume->uuid.data);
@@ -175,6 +198,7 @@ void ocf_volume_move(ocf_volume_t volume, ocf_volume_t from)
 	from->opened = false;
 	from->priv = NULL;
 	from->uuid.data = NULL;
+	from->type = NULL;
 }
 
 int ocf_volume_create(ocf_volume_t *volume, ocf_volume_type_t type,
@@ -250,63 +274,169 @@ int ocf_volume_is_atomic(ocf_volume_t volume)
 	return volume->type->properties->caps.atomic_writes;
 }
 
-struct ocf_io *ocf_volume_new_io(ocf_volume_t volume, ocf_queue_t queue,
+ocf_io_t ocf_volume_new_io(ocf_volume_t volume, ocf_queue_t queue,
 		uint64_t addr, uint32_t bytes, uint32_t dir,
 		uint32_t io_class, uint64_t flags)
 {
 	return ocf_io_new(volume, queue, addr, bytes, dir, io_class, flags);
 }
 
-void ocf_volume_submit_io(struct ocf_io *io)
+static void ocf_volume_req_forward_complete(struct ocf_request *req, int error)
 {
-	ocf_volume_t volume = ocf_io_get_volume(io);
-
-	ENV_BUG_ON(!volume->type->properties->ops.submit_io);
-
-	if (!volume->opened)
-		io->end(io, -OCF_ERR_IO);
-
-	volume->type->properties->ops.submit_io(io);
+	ocf_io_end_func(req, error);
 }
 
-void ocf_volume_submit_flush(struct ocf_io *io)
+void ocf_volume_submit_io(ocf_io_t io)
 {
+	struct ocf_request *req = ocf_io_to_req(io);
 	ocf_volume_t volume = ocf_io_get_volume(io);
 
-	ENV_BUG_ON(!volume->type->properties->ops.submit_flush);
-
-	if (!volume->opened)
-		io->end(io, -OCF_ERR_IO);
-
-	if (!volume->type->properties->ops.submit_flush) {
-		ocf_io_end(io, 0);
+	if (!volume->opened) {
+		ocf_io_end_func(io, -OCF_ERR_IO);
 		return;
 	}
 
-	volume->type->properties->ops.submit_flush(io);
+	if (likely(volume->type->properties->ops.submit_io)) {
+		volume->type->properties->ops.submit_io(io);
+	} else {
+		req->volume_forward_end = ocf_volume_req_forward_complete;
+		ocf_req_forward_volume_io(req, volume, req->rw, req->addr,
+				req->bytes, req->offset);
+	}
 }
 
-void ocf_volume_submit_discard(struct ocf_io *io)
+void ocf_volume_submit_flush(ocf_io_t io)
 {
+	struct ocf_request *req = ocf_io_to_req(io);
 	ocf_volume_t volume = ocf_io_get_volume(io);
 
-	if (!volume->opened)
-		io->end(io, -OCF_ERR_IO);
-
-	if (!volume->type->properties->ops.submit_discard) {
-		ocf_io_end(io, 0);
+	if (!volume->opened) {
+		ocf_io_end_func(io, -OCF_ERR_IO);
 		return;
 	}
 
-	volume->type->properties->ops.submit_discard(io);
+	if (likely(volume->type->properties->ops.submit_flush)) {
+		volume->type->properties->ops.submit_flush(io);
+	} else {
+		req->volume_forward_end = ocf_volume_req_forward_complete;
+		ocf_req_forward_volume_flush(req, volume);
+	}
+}
+
+void ocf_volume_submit_discard(ocf_io_t io)
+{
+	struct ocf_request *req = ocf_io_to_req(io);
+	ocf_volume_t volume = ocf_io_get_volume(io);
+
+	if (!volume->opened) {
+		ocf_io_end_func(io, -OCF_ERR_IO);
+		return;
+	}
+
+	if (likely(volume->type->properties->ops.submit_discard)) {
+		volume->type->properties->ops.submit_discard(io);
+	} else {
+		req->volume_forward_end = ocf_volume_req_forward_complete;
+		ocf_req_forward_volume_discard(req, volume,
+				req->addr, req->bytes);
+	}
+}
+
+void ocf_volume_forward_io(ocf_volume_t volume, ocf_forward_token_t token,
+		int dir, uint64_t addr, uint64_t bytes, uint64_t offset)
+{
+	ENV_BUG_ON(!volume->type->properties->ops.forward_io);
+
+	if (!volume->opened) {
+		ocf_forward_end(token, -OCF_ERR_IO);
+		return;
+	}
+
+	volume->type->properties->ops.forward_io(volume, token,
+			dir, addr, bytes, offset);
+}
+
+void ocf_volume_forward_flush(ocf_volume_t volume, ocf_forward_token_t token)
+{
+	ENV_BUG_ON(!volume->type->properties->ops.forward_flush);
+
+	if (!volume->opened) {
+		ocf_forward_end(token, -OCF_ERR_IO);
+		return;
+	}
+
+	volume->type->properties->ops.forward_flush(volume, token);
+}
+
+void ocf_volume_forward_discard(ocf_volume_t volume, ocf_forward_token_t token,
+		uint64_t addr, uint64_t bytes)
+{
+	ENV_BUG_ON(!volume->type->properties->ops.forward_discard);
+
+	if (!volume->opened) {
+		ocf_forward_end(token, -OCF_ERR_IO);
+		return;
+	}
+
+	volume->type->properties->ops.forward_discard(volume, token,
+			addr, bytes);
+}
+
+void ocf_volume_forward_write_zeros(ocf_volume_t volume,
+		ocf_forward_token_t token, uint64_t addr, uint64_t bytes)
+{
+	ENV_BUG_ON(!volume->type->properties->ops.forward_write_zeros);
+
+	if (!volume->opened) {
+		ocf_forward_end(token, -OCF_ERR_IO);
+		return;
+	}
+
+	volume->type->properties->ops.forward_write_zeros(volume, token,
+			addr, bytes);
+}
+
+void ocf_volume_forward_metadata(ocf_volume_t volume, ocf_forward_token_t token,
+		int dir, uint64_t addr, uint64_t bytes, uint64_t offset)
+{
+	ENV_BUG_ON(!volume->type->properties->ops.forward_metadata);
+
+	if (!volume->opened) {
+		ocf_forward_end(token, -OCF_ERR_IO);
+		return;
+	}
+
+	volume->type->properties->ops.forward_metadata(volume, token,
+			dir, addr, bytes, offset);
+}
+
+void ocf_volume_forward_io_simple(ocf_volume_t volume,
+		ocf_forward_token_t token, int dir,
+		uint64_t addr, uint64_t bytes)
+{
+
+	if (!volume->type->properties->ops.forward_io_simple) {
+		ocf_volume_forward_io(volume, token, dir, addr, bytes, 0);
+		return;
+	}
+
+	if (!volume->opened) {
+		ocf_forward_end(token, -OCF_ERR_IO);
+		return;
+	}
+
+	volume->type->properties->ops.forward_io_simple(volume, token,
+			dir, addr, bytes);
 }
 
 int ocf_volume_open(ocf_volume_t volume, void *volume_params)
 {
 	int ret;
 
+	if (volume->opened)
+		return -OCF_ERR_NOT_OPEN_EXC;
+
 	ENV_BUG_ON(!volume->type->properties->ops.open);
-	ENV_BUG_ON(volume->opened);
 
 	ret = volume->type->properties->ops.open(volume, volume_params);
 	if (ret)
@@ -330,7 +460,9 @@ void ocf_volume_close(ocf_volume_t volume)
 	env_completion cmpl;
 
 	ENV_BUG_ON(!volume->type->properties->ops.close);
-	ENV_BUG_ON(!volume->opened);
+
+	if (!volume->opened)
+		return;
 
 	env_completion_init(&cmpl);
 	ocf_refcnt_freeze(&volume->refcnt);

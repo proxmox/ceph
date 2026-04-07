@@ -1,40 +1,53 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __METADATA_STATUS_H__
 #define __METADATA_STATUS_H__
 
 #include "../concurrency/ocf_metadata_concurrency.h"
+#include "metadata_cache_line.h"
 
 /*******************************************************************************
  * Dirty
  ******************************************************************************/
 
-bool ocf_metadata_test_dirty(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
-bool ocf_metadata_test_out_dirty(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop);
-bool ocf_metadata_clear_dirty(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop);
-bool ocf_metadata_set_dirty(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop);
-bool ocf_metadata_test_and_set_dirty(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
-bool ocf_metadata_test_and_clear_dirty(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
+bool ocf_metadata_test_dirty(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
+bool ocf_metadata_test_out_dirty(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop);
+bool ocf_metadata_clear_dirty(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop);
+bool ocf_metadata_set_dirty(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop);
+bool ocf_metadata_test_and_set_dirty(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
+bool ocf_metadata_test_and_clear_dirty(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
 
-bool ocf_metadata_test_valid(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
-bool ocf_metadata_test_out_valid(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop);
-bool ocf_metadata_clear_valid(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop);
-bool ocf_metadata_set_valid(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop);
-bool ocf_metadata_test_and_set_valid(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
-bool ocf_metadata_test_and_clear_valid(struct ocf_cache *cache, ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
+bool ocf_metadata_test_valid(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
+bool ocf_metadata_test_out_valid(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop);
+bool ocf_metadata_clear_valid(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop);
+bool ocf_metadata_set_valid(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop);
+bool ocf_metadata_test_and_set_valid(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
+bool ocf_metadata_test_and_clear_valid(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop, bool all);
+bool ocf_metadata_clear_valid_if_clean(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop);
+void ocf_metadata_clear_dirty_if_invalid(struct ocf_cache *cache,
+		ocf_cache_line_t line, uint8_t start, uint8_t stop);
 
 static inline void metadata_init_status_bits(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	ocf_metadata_clear_dirty(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end);
-	ocf_metadata_clear_valid(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end);
+	ocf_metadata_clear_dirty(cache, line, 0, ocf_line_end_sector(cache));
+	ocf_metadata_clear_valid(cache, line, 0, ocf_line_end_sector(cache));
 }
 
 static inline bool metadata_test_dirty_all(struct ocf_cache *cache,
@@ -42,9 +55,8 @@ static inline bool metadata_test_dirty_all(struct ocf_cache *cache,
 {
 	bool test;
 
-	test = ocf_metadata_test_dirty(cache, line,
-		cache->metadata.settings.sector_start,
-		cache->metadata.settings.sector_end, true);
+	test = ocf_metadata_test_dirty(cache, line, 0,
+			ocf_line_end_sector(cache), true);
 
 	return test;
 }
@@ -54,9 +66,8 @@ static inline bool metadata_test_dirty(struct ocf_cache *cache,
 {
 	bool test;
 
-	test = ocf_metadata_test_dirty(cache, line,
-		cache->metadata.settings.sector_start,
-		cache->metadata.settings.sector_end, false);
+	test = ocf_metadata_test_dirty(cache, line, 0,
+			ocf_line_end_sector(cache), false);
 
 	return test;
 }
@@ -64,33 +75,27 @@ static inline bool metadata_test_dirty(struct ocf_cache *cache,
 static inline void metadata_set_dirty(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	ocf_metadata_set_dirty(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end);
+	ocf_metadata_set_dirty(cache, line, 0, ocf_line_end_sector(cache));
 }
 
 static inline void metadata_clear_dirty(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	ocf_metadata_clear_dirty(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end);
+	ocf_metadata_clear_dirty(cache, line, 0, ocf_line_end_sector(cache));
 }
 
 static inline bool metadata_test_and_clear_dirty(
 		struct ocf_cache *cache, ocf_cache_line_t line)
 {
-	return ocf_metadata_test_and_clear_dirty(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end, false);
+	return ocf_metadata_test_and_clear_dirty(cache, line, 0,
+			ocf_line_end_sector(cache), false);
 }
 
 static inline bool metadata_test_and_set_dirty(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	return ocf_metadata_test_and_set_dirty(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end, false);
+	return ocf_metadata_test_and_set_dirty(cache, line, 0,
+			ocf_line_end_sector(cache), false);
 }
 
 /*******************************************************************************
@@ -202,49 +207,55 @@ static inline bool metadata_set_dirty_sec_changed(
 static inline bool metadata_test_valid_any(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	return ocf_metadata_test_valid(cache, line,
-		cache->metadata.settings.sector_start,
-		cache->metadata.settings.sector_end, false);
+	return ocf_metadata_test_valid(cache, line, 0,
+			ocf_line_end_sector(cache), false);
 }
 
 static inline bool metadata_test_valid(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	return ocf_metadata_test_valid(cache, line,
-		cache->metadata.settings.sector_start,
-		cache->metadata.settings.sector_end, true);
+	return ocf_metadata_test_valid(cache, line, 0,
+			ocf_line_end_sector(cache), true);
 }
 
 static inline void metadata_set_valid(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	ocf_metadata_set_valid(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end);
+	ocf_metadata_set_valid(cache, line, 0, ocf_line_end_sector(cache));
 }
 
 static inline void metadata_clear_valid(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	ocf_metadata_clear_valid(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end);
+	ocf_metadata_clear_valid(cache, line, 0, ocf_line_end_sector(cache));
+}
+
+static inline bool metadata_clear_valid_if_clean(struct ocf_cache *cache,
+		ocf_cache_line_t line)
+{
+	return ocf_metadata_clear_valid_if_clean(cache, line, 0,
+			ocf_line_end_sector(cache));
 }
 
 static inline bool metadata_test_and_clear_valid(
 		struct ocf_cache *cache, ocf_cache_line_t line)
 {
-	return ocf_metadata_test_and_clear_valid(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end, true);
+	return ocf_metadata_test_and_clear_valid(cache, line, 0,
+			ocf_line_end_sector(cache), true);
 }
 
 static inline bool metadata_test_and_set_valid(struct ocf_cache *cache,
 		ocf_cache_line_t line)
 {
-	return ocf_metadata_test_and_set_valid(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end, true);
+	return ocf_metadata_test_and_set_valid(cache, line, 0,
+			ocf_line_end_sector(cache), true);
+}
+
+static inline void metadata_clear_dirty_if_invalid(struct ocf_cache *cache,
+		ocf_cache_line_t line)
+{
+	ocf_metadata_clear_dirty_if_invalid(cache, line, 0,
+			ocf_line_end_sector(cache));
 }
 
 /*******************************************************************************
@@ -317,9 +328,8 @@ static inline bool metadata_clear_valid_sec_changed(
 {
 	bool was_any_valid;
 
-	was_any_valid = ocf_metadata_test_valid(cache, line,
-			cache->metadata.settings.sector_start,
-			cache->metadata.settings.sector_end, false);
+	was_any_valid = ocf_metadata_test_valid(cache, line, 0,
+			ocf_line_end_sector(cache), false);
 
 	*is_valid = ocf_metadata_clear_valid(cache, line,
 			start, stop);

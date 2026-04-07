@@ -41,17 +41,19 @@ MAIN_CORE=""
 TMP_BPF_FILE=$testdir/bpftraces.txt
 PLUGIN="nvme"
 DISKCFG=""
+USE_LVOL_BDEVS=false
 BDEV_CACHE=""
 BDEV_POOL=""
 DISKNO="ALL"
 CPUS_ALLOWED=1
 NOIOSCALING=false
-PRECONDITIONING=true
 CPUFREQ=""
 PERFTOP=false
 DPDKMEM=false
 BPFTRACES=()
+LVOL_BDEVS=()
 DATE="$(date +'%m_%d_%Y_%H%M%S')"
+OUTPUT_DIR=$testdir/results
 
 function usage() {
 	set +x
@@ -61,7 +63,7 @@ function usage() {
 	)
 	echo "Run NVMe PMD/BDEV performance test. Change options for easier debug and setup configuration"
 	echo "Usage: $(basename $1) [options]"
-	echo "-h, --help                Print help and exit"
+	echo "-h, --help                   Print help and exit"
 	echo
 	echo "Workload parameters:"
 	echo "    --rw=STR                 Type of I/O pattern. Accepted values are randrw,rw. [default=$RW]"
@@ -101,13 +103,14 @@ function usage() {
 	echo "                            It consists a single column of PCI addresses. SPDK Bdev names will be assigned"
 	echo "                            and Kernel block device names detected."
 	echo "                            Lines starting with # are ignored as comments."
+	echo "    --use-lvol-bdevs        Create Logical Volume Store and Bdev on top of each NVMe drive"
+	echo "                            To be used only with spdk-*-bdev driver options."
 	echo "    --bdev-io-cache-size    Set IO cache size for for SPDK bdev subsystem."
 	echo "    --bdev-io-pool-size     Set IO pool size for for SPDK bdev subsystem."
 	echo "    --max-disk=INT,ALL      Number of disks to test on, this will run multiple workloads with increasing number of disk each run."
 	echo "                            If =ALL then test on all found disk. [default=$DISKNO]"
 	echo "    --cpu-allowed=INT/PATH  Comma-separated list of CPU cores used to run the workload. Ranges allowed."
 	echo "                            Can also point to a file containing list of CPUs. [default=$CPUS_ALLOWED]"
-	echo "    --no-preconditioning    Skip preconditioning"
 	echo "    --no-io-scaling         Do not scale iodepth for each device in SPDK fio plugin. [default=$NOIOSCALING]"
 	echo "    --cpu-frequency=INT     Run tests with CPUs set to a desired frequency. 'intel_pstate=disable' must be set in"
 	echo "                            GRUB options. You can use 'cpupower frequency-info' and 'cpupower frequency-set' to"
@@ -115,8 +118,9 @@ function usage() {
 	echo "    --main-core             main (primary) core for DPDK (for bdevperf only)."
 	echo
 	echo "Other options:"
-	echo "    --perftop           Run perftop measurements on the same CPU cores as specified in --cpu-allowed option."
-	echo "    --dpdk-mem-stats    Dump DPDK memory stats during the test."
+	echo "    --output-dir=PATH       Path to directory where results will be stored. [default=$OUTPUT_DIR]"
+	echo "    --perftop               Run perftop measurements on the same CPU cores as specified in --cpu-allowed option."
+	echo "    --dpdk-mem-stats        Dump DPDK memory stats during the test."
 	echo "    --bpf-traces=LIST       Comma delimited list of .bt scripts for enabling BPF traces."
 	echo "                            List of .bt scripts available in spdk/scripts/bpf."
 	echo "                            Only for spdk-perf-bdev"
@@ -158,6 +162,7 @@ while getopts 'h-:' optchar; do
 						exit 1
 					fi
 					;;
+				use-lvol-bdevs) USE_LVOL_BDEVS=true ;;
 				bdev-io-cache-size=*) BDEV_CACHE="${OPTARG#*=}" ;;
 				bdev-io-pool-size=*) BDEV_POOL="${OPTARG#*=}" ;;
 				max-disk=*) DISKNO="${OPTARG#*=}" ;;
@@ -167,7 +172,6 @@ while getopts 'h-:' optchar; do
 						CPUS_ALLOWED=$(cat "$CPUS_ALLOWED")
 					fi
 					;;
-				no-preconditioning) PRECONDITIONING=false ;;
 				no-io-scaling) NOIOSCALING=true ;;
 				cpu-frequency=*) CPUFREQ="${OPTARG#*=}" ;;
 				perftop) PERFTOP=true ;;
@@ -175,6 +179,7 @@ while getopts 'h-:' optchar; do
 				bpf-traces=*) IFS="," read -r -a BPFTRACES <<< "${OPTARG#*=}" ;;
 				latency-log) LATENCY_LOG=true ;;
 				main-core=*) MAIN_CORE="${OPTARG#*=}" ;;
+				output-dir=*) OUTPUT_DIR="${OPTARG#*=}" ;;
 				*)
 					usage $0 echo "Invalid argument '$OPTARG'"
 					exit 1
@@ -192,19 +197,23 @@ while getopts 'h-:' optchar; do
 	esac
 done
 
-result_dir=$testdir/results/perf_results_${BLK_SIZE}BS_${IODEPTH}QD_${RW}_${MIX}MIX_${PLUGIN}_${DATE}
+result_dir=$OUTPUT_DIR/perf_results_${BLK_SIZE}BS_${IODEPTH}QD_${RW}_${MIX}MIX_${PLUGIN}_${DATE}
 result_file=$result_dir/perf_results_${BLK_SIZE}BS_${IODEPTH}QD_${RW}_${MIX}MIX_${PLUGIN}_${DATE}.csv
 mkdir -p $result_dir
-unset iops_disks bw mean_lat_disks_usec p90_lat_disks_usec p99_lat_disks_usec p99_99_lat_disks_usec stdev_disks_usec
-echo "run-time,ramp-time,fio-plugin,QD,block-size,num-cpu-cores,workload,workload-mix" > $result_file
-printf "%s,%s,%s,%s,%s,%s,%s,%s\n" $RUNTIME $RAMP_TIME $PLUGIN $IODEPTH $BLK_SIZE $NO_CORES $RW $MIX >> $result_file
-echo "num_of_disks,iops,avg_lat[usec],p90[usec],p99[usec],p99.99[usec],stdev[usec],avg_slat[usec],avg_clat[usec],bw[Kib/s]" >> $result_file
 
 trap 'rm -f *.state $testdir/bdev.conf; kill $perf_pid; wait $dpdk_mem_pid; print_backtrace' ERR SIGTERM SIGABRT
+
+if $USE_LVOL_BDEVS && ! [[ "$PLUGIN" =~ 'bdev' ]]; then
+	echo 'ERROR: lvol bdevs are supported only with bdev plugin'
+	exit 1
+fi
 
 if [[ "$PLUGIN" =~ "xnvme" ]]; then
 	create_spdk_xnvme_bdev_conf "$BDEV_CACHE" "$BDEV_POOL"
 elif [[ "$PLUGIN" =~ "bdev" ]]; then
+	if $USE_LVOL_BDEVS; then
+		create_lvols
+	fi
 	create_spdk_bdev_conf "$BDEV_CACHE" "$BDEV_POOL"
 fi
 
@@ -225,9 +234,10 @@ CORES=$(get_cores "$CPUS_ALLOWED")
 NO_CORES_ARRAY=($CORES)
 NO_CORES=${#NO_CORES_ARRAY[@]}
 
-if $PRECONDITIONING; then
-	preconditioning
-fi
+unset iops_disks bw mean_lat_disks_usec p90_lat_disks_usec p99_lat_disks_usec p99_99_lat_disks_usec stdev_disks_usec
+echo "run-time,ramp-time,fio-plugin,QD,block-size,num-cpu-cores,workload,workload-mix" > $result_file
+printf "%s,%s,%s,%s,%s,%s,%s,%s\n" $RUNTIME $RAMP_TIME $PLUGIN $IODEPTH $BLK_SIZE $NO_CORES $RW $MIX >> $result_file
+echo "num_of_disks,iops,avg_lat[usec],p90[usec],p99[usec],p99.99[usec],stdev[usec],avg_slat[usec],avg_clat[usec],bw[Kib/s]" >> $result_file
 
 if [[ "$PLUGIN" =~ "kernel" || "$PLUGIN" =~ "xnvme" ]]; then
 	$rootdir/scripts/setup.sh reset
@@ -338,7 +348,11 @@ for ((j = 0; j < REPEAT_NO; j++)); do
 
 		cp $TMP_RESULT_FILE $result_dir/perf_results_${MIX}_${PLUGIN}_${NO_CORES}cpus_${DATE}_${k}_disks_${j}.output
 	else
-		create_fio_config $DISKNO $PLUGIN "$DISK_NAMES" "$DISKS_NUMA" "$CORES"
+		if $USE_LVOL_BDEVS; then
+			create_fio_config $DISKNO $PLUGIN "$LVOL_BDEVS" "$DISKS_NUMA" "$CORES"
+		else
+			create_fio_config $DISKNO $PLUGIN "$DISK_NAMES" "$DISKS_NUMA" "$CORES"
+		fi
 
 		if $LATENCY_LOG; then
 			write_log_opt="--write_lat_log=$result_dir/perf_lat_${BLK_SIZE}BS_${IODEPTH}QD_${RW}_${MIX}MIX_${PLUGIN}_${DATE}_${k}disks_${j}"
@@ -427,4 +441,9 @@ if [[ $PLUGIN = "kernel-io-uring" || $PLUGIN =~ "xnvme" ]]; then
 		cat $backup_dir/$disk/io_poll_delay > $sysfs/io_poll_delay
 	done
 fi
+
+if $USE_LVOL_BDEVS; then
+	cleanup_lvols
+fi
+
 rm -f $testdir/bdev.conf $testdir/config.fio

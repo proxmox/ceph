@@ -33,9 +33,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Updates In and Out pointers at end
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;void aes_cbc_enc_256_x8(void      *in,
+;;void _aes_cbc_enc_256_x8(void      *in,
 ;;                        uint8_t   *IV,
-;;                        uint8_t    keys,
+;;                        uint8_t   *keys,
 ;;                        void      *out,
 ;;                        uint64_t   len_bytes);
 ; arg 1: IN:   pointer to input (cipher text)
@@ -46,6 +46,7 @@
 ;; clobbers all registers except for ARG1 and rbp
 
 %include "reg_sizes.asm"
+%include "clear_regs.inc"
 
 %ifidn __OUTPUT_FORMAT__, elf64
 %define IN0		rdi
@@ -129,8 +130,8 @@
 %include "cbc_common.asm"
 
 
-mk_global aes_cbc_enc_128_x8, function
-func(aes_cbc_enc_128_x8)
+mk_global _aes_cbc_enc_128_x8, function, internal
+func(_aes_cbc_enc_128_x8)
 	endbranch
 	FUNC_SAVE
 
@@ -144,6 +145,9 @@ main_loop:
 	jne	main_loop
 
 done:
+%ifdef SAFE_DATA
+        clear_all_xmms_avx_asm
+%endif ;; SAFE_DATA
 
 	FUNC_RESTORE
 	ret

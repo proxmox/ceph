@@ -43,9 +43,13 @@ def filter_methods(do_remove_global_rpcs):
         'framework_set_scheduler',
         'accel_crypto_key_create',
         'accel_assign_opc',
+        'accel_set_options',
         'dpdk_cryptodev_scan_accel_module',
         'dpdk_cryptodev_set_driver',
         'virtio_blk_create_transport',
+        'iobuf_set_options',
+        'bdev_raid_set_options',
+        'fsdev_set_opts',
     ]
 
     data = json.loads(sys.stdin.read())
@@ -71,7 +75,7 @@ def filter_methods(do_remove_global_rpcs):
 def check_empty():
     data = json.loads(sys.stdin.read())
     if not data:
-        raise EOFError("Cant read config!")
+        raise EOFError("Can't read config!")
 
     for s in data['subsystems']:
         if s['config']:

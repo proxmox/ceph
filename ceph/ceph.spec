@@ -35,7 +35,7 @@
 %bcond_with rbd_rwl_cache
 %endif
 %if 0%{?fedora} || 0%{?rhel} || 0%{?openEuler}
-%if 0%{?rhel} < 9 || 0%{?openEuler}
+%if (0%{?rhel} && 0%{?rhel} < 9) || 0%{?openEuler}
 %bcond_with system_pmdk
 %else
 %ifarch s390x aarch64
@@ -150,7 +150,7 @@
 %{!?python3_pkgversion: %global python3_pkgversion 3}
 %{!?python3_version_nodots: %global python3_version_nodots 3}
 %{!?python3_version: %global python3_version 3}
-%if 0%{?rhel} < 10
+%if 0%{?rhel} && 0%{?rhel} < 10
 %{!?gts_version: %global gts_version 13}
 %endif
 
@@ -196,7 +196,7 @@
 # main package definition
 #################################################################################
 Name:		ceph
-Version:	20.2.0
+Version:	20.2.1
 Release:	0%{?dist}
 %if 0%{?fedora} || 0%{?rhel}
 Epoch:		2
@@ -212,7 +212,7 @@ License:	LGPL-2.1 and LGPL-3.0 and CC-BY-SA-3.0 and GPL-2.0 and BSL-1.0 and BSD-
 Group:		System/Filesystems
 %endif
 URL:		http://ceph.com/
-Source0:	%{?_remote_tarball_prefix}ceph-20.2.0.tar.bz2
+Source0:	%{?_remote_tarball_prefix}ceph-20.2.1.tar.bz2
 %if 0%{?suse_version}
 # _insert_obs_source_lines_here
 ExclusiveArch:  x86_64 aarch64 ppc64le s390x riscv64
@@ -674,7 +674,7 @@ Requires:       python%{python3_pkgversion}-cherrypy
 Requires:       python%{python3_pkgversion}-routes
 %if 0%{?weak_deps}
 Recommends:     python%{python3_pkgversion}-saml
-%if 0%{?fedora} || 0%{?rhel} <= 8
+%if 0%{?fedora} || (0%{?rhel} && 0%{?rhel} <= 8)
 Recommends:     python%{python3_pkgversion}-grpcio
 Recommends:     python%{python3_pkgversion}-grpcio-tools
 %endif
@@ -729,7 +729,7 @@ Requires:       python%{python3_pkgversion}-PyYAML
 %endif
 # RHEL8 has python 3.6 and that lacks dataclasses in the stdlib, so pull in the
 # backport dataclasses module instead.
-%if 0%{?rhel} <= 8
+%if 0%{?rhel} && 0%{?rhel} <= 8
 Requires:       python%{python3_pkgversion}-dataclasses
 %endif
 %if 0%{?weak_deps}
@@ -1382,7 +1382,7 @@ This package provides a Ceph hardware monitoring agent.
 # common
 #################################################################################
 %prep
-%autosetup -p1 -n ceph-20.2.0
+%autosetup -p1 -n ceph-20.2.1
 
 %build
 

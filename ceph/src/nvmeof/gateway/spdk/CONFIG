@@ -34,6 +34,9 @@ CONFIG_PGO_CAPTURE=n
 # Use profile guided optimization data.
 CONFIG_PGO_USE=n
 
+# Place profile data in this directory
+CONFIG_PGO_DIR=
+
 # Build with code coverage instrumentation.
 CONFIG_COVERAGE=n
 
@@ -97,7 +100,7 @@ CONFIG_RDMA_SET_TOS=n
 CONFIG_RDMA_PROV=verbs
 
 # Enable NVMe Character Devices.
-CONFIG_NVME_CUSE=n
+CONFIG_NVME_CUSE=y
 
 # Enable FC support for the NVMf target.
 # Requires FC low level driver (from FC vendor)
@@ -126,10 +129,6 @@ CONFIG_VIRTIO=y
 CONFIG_VFIO_USER=n
 CONFIG_VFIO_USER_DIR=
 
-# Build with PMDK backends
-CONFIG_PMDK=n
-CONFIG_PMDK_DIR=
-
 # Build with xNVMe
 CONFIG_XNVME=n
 
@@ -144,6 +143,9 @@ CONFIG_VBDEV_COMPRESS_MLX5=n
 
 # Enable mlx5_pci dpdk crypto PMD, enabled automatically if CONFIG_CRYPTO=y and libmlx5 exists
 CONFIG_CRYPTO_MLX5=n
+
+# Enable UADK dpdk crypto PMD
+CONFIG_DPDK_UADK=n
 
 # Requires libiscsi development libraries.
 CONFIG_ISCSI_INITIATOR=n
@@ -204,11 +206,23 @@ CONFIG_IDXD_KERNEL=n
 # arc4random is available in stdlib.h
 CONFIG_HAVE_ARC4RANDOM=n
 
+# uuid_generate_sha1 is available in uuid/uuid.h
+CONFIG_HAVE_UUID_GENERATE_SHA1=n
+
 # Is DPDK using libbsd?
 CONFIG_HAVE_LIBBSD=n
 
 # Is DPDK using libarchive?
 CONFIG_HAVE_LIBARCHIVE=n
+
+# execinfo.h is available
+CONFIG_HAVE_EXECINFO_H=n
+
+# libkeytuils is available
+CONFIG_HAVE_KEYUTILS=n
+
+# OpenSSL has EVP_MAC definitions
+CONFIG_HAVE_EVP_MAC=n
 
 # Path to IPSEC_MB used by DPDK
 CONFIG_IPSEC_MB_DIR=
@@ -218,3 +232,30 @@ CONFIG_SMA=n
 
 # Build with Avahi support
 CONFIG_AVAHI=n
+
+# Setup DPDK's RTE_MAX_LCORES
+CONFIG_MAX_LCORES=128
+
+# Maximum number of iobuf NUMA nodes supported
+CONFIG_MAX_NUMA_NODES=1
+
+# Build all Go components
+CONFIG_GOLANG=n
+
+# Build fsdev
+CONFIG_FSDEV=y
+
+# Build with aio fsdev
+CONFIG_AIO_FSDEV=y
+
+# struct stat has st_atime field
+CONFIG_HAVE_STRUCT_STAT_ST_ATIM=n
+
+# struct stat has st_atimespec field
+CONFIG_HAVE_STRUCT_STAT_ST_ATIMESPEC=n
+
+# libc contains the copy_file_range
+CONFIG_COPY_FILE_RANGE=n
+
+# liblz4 is available
+CONFIG_HAVE_LZ4=n

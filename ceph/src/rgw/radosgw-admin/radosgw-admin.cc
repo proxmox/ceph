@@ -7521,6 +7521,10 @@ int main(int argc, const char **argv)
         }
       }
       bucket_op.marker = marker;
+      if (max_entries_specified)
+        bucket_op.max_entries = max_entries;
+      else
+        bucket_op.max_entries = 0; /* for backward compatibility */
       RGWBucketAdminOp::info(driver, bucket_op, stream_flusher, null_yield, dpp());
     } else {
       int ret = init_bucket(tenant, bucket_name, bucket_id, &bucket);
@@ -7638,6 +7642,10 @@ int main(int argc, const char **argv)
       bucket_op.set_bucket_name(bucket.name);
     }
     bucket_op.set_fetch_stats(true);
+    if (max_entries_specified)
+      bucket_op.max_entries = max_entries;
+    else
+      bucket_op.max_entries = 0; /* for backward compatibility */
 
     int r = RGWBucketAdminOp::info(driver, bucket_op, stream_flusher, null_yield, dpp());
     if (r < 0) {
@@ -9492,7 +9500,8 @@ next:
   }
 
   if (opt_cmd == OPT::USER_CHECK) {
-    check_bad_owner_bucket_mapping(driver, user->get_id(), user->get_tenant(),
+    check_bad_owner_bucket_mapping(driver, user->get_id(),
+                                   user->get_display_name(), user->get_tenant(),
                                    fix, null_yield, dpp());
   }
 

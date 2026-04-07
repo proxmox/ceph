@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2022, Intel Corporation
+;; Copyright (c) 2012-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -42,8 +42,8 @@
 ; arg 5: sp:  length in bytes (multiple of 16)
 ;
 
-%include "include/os.asm"
-%include "include/clear_regs.asm"
+%include "include/os.inc"
+%include "include/clear_regs.inc"
 
 %ifndef AES_CBC_DEC_256
 %define AES_CBC_DEC_256 aes_cbc_dec_256_sse

@@ -1,4 +1,5 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   Copyright (C) 2022 Intel Corporation.
  *   All rights reserved.
  */
@@ -9,9 +10,9 @@
 #include "ftl_nv_cache.h"
 #include "ftl_internal.h"
 #include "ftl_mngt_steps.h"
-#include "ftl_internal.h"
 #include "ftl_core.h"
 #include "utils/ftl_defs.h"
+#include "utils/ftl_layout_tracker_bdev.h"
 
 #define MINIMUM_CACHE_SIZE_GIB 5
 #define MINIMUM_BASE_SIZE_GIB 20
@@ -89,13 +90,25 @@ ftl_mngt_open_base_bdev(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 	}
 
 	dev->xfer_size = ftl_get_write_unit_size(bdev);
-	if (dev->xfer_size != FTL_NUM_LBA_IN_BLOCK) {
-		FTL_ERRLOG(dev, "Unsupported xfer_size (%"PRIu64")\n", dev->xfer_size);
+	if (!spdk_u32_is_pow2(dev->xfer_size)) {
+		FTL_ERRLOG(dev,
+			   "Unsupported xfer_size (%"PRIu64") - only power of 2 blocks xfer_size is supported\n",
+			   dev->xfer_size);
 		goto error;
 	}
 
+	dev->base_type = ftl_base_device_get_type_by_bdev(dev, bdev);
+	if (!dev->base_type) {
+		FTL_ERRLOG(dev, "Failed to get base device type\n");
+		goto error;
+	}
 	/* TODO: validate size when base device VSS usage gets added */
 	dev->md_size = spdk_bdev_get_md_size(bdev);
+
+	if (!dev->base_type->ops.md_layout_ops.region_create) {
+		FTL_ERRLOG(dev, "Base device doesn't implement md_layout_ops\n");
+		goto error;
+	}
 
 	/* Cache frequently used values */
 	dev->num_blocks_in_band = ftl_calculate_num_blocks_in_band(dev->base_bdev_desc);
@@ -104,6 +117,12 @@ ftl_mngt_open_base_bdev(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 	if (dev->is_zoned) {
 		/* TODO - current FTL code isn't fully compatible with ZNS drives */
 		FTL_ERRLOG(dev, "Creating FTL on Zoned devices is not supported\n");
+		goto error;
+	}
+
+	dev->base_layout_tracker = ftl_layout_tracker_bdev_init(spdk_bdev_get_num_blocks(bdev));
+	if (!dev->base_layout_tracker) {
+		FTL_ERRLOG(dev, "Failed to instantiate layout tracker for base device\n");
 		goto error;
 	}
 
@@ -130,6 +149,11 @@ ftl_mngt_close_base_bdev(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt
 		dev->base_bdev_desc = NULL;
 	}
 
+	if (dev->base_layout_tracker) {
+		ftl_layout_tracker_bdev_fini(dev->base_layout_tracker);
+		dev->base_layout_tracker = NULL;
+	}
+
 	ftl_mngt_next_step(mngt);
 }
 
@@ -151,6 +175,7 @@ ftl_mngt_open_cache_bdev(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt
 	struct spdk_bdev *bdev;
 	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
 	const char *bdev_name = dev->conf.cache_bdev;
+	const struct ftl_md_layout_ops *md_ops;
 
 	if (spdk_bdev_open_ext(bdev_name, true, nv_cache_bdev_event_cb, dev,
 			       &nv_cache->bdev_desc)) {
@@ -182,47 +207,33 @@ ftl_mngt_open_cache_bdev(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt
 		goto error;
 	}
 
-#ifndef SPDK_FTL_VSS_EMU
-	if (!spdk_bdev_is_md_separate(bdev)) {
-		FTL_ERRLOG(dev, "Bdev %s doesn't support separate metadata buffer IO\n",
-			   spdk_bdev_get_name(bdev));
-		goto error;
-	}
-
-	nv_cache->md_size = spdk_bdev_get_md_size(bdev);
-	if (nv_cache->md_size != sizeof(union ftl_md_vss)) {
-		FTL_ERRLOG(dev, "Bdev's %s metadata is invalid size (%"PRIu32")\n",
-			   spdk_bdev_get_name(bdev), spdk_bdev_get_md_size(bdev));
-		goto error;
-	}
-
-	if (spdk_bdev_get_dif_type(bdev) != SPDK_DIF_DISABLE) {
-		FTL_ERRLOG(dev, "Unsupported DIF type used by bdev %s\n",
-			   spdk_bdev_get_name(bdev));
-		goto error;
-	}
-
 	if (bdev->blockcnt * bdev->blocklen < MINIMUM_CACHE_SIZE_GIB * GiB) {
 		FTL_ERRLOG(dev, "Bdev %s is too small, requires, at least %uGiB capacity\n",
 			   spdk_bdev_get_name(bdev), MINIMUM_CACHE_SIZE_GIB);
 		goto error;
 	}
+	nv_cache->md_size = spdk_bdev_get_md_size(bdev);
 
-	if (ftl_md_xfer_blocks(dev) * nv_cache->md_size > FTL_ZERO_BUFFER_SIZE) {
-		FTL_ERRLOG(dev, "Zero buffer too small for bdev %s metadata transfer\n",
-			   spdk_bdev_get_name(bdev));
+	nv_cache->nvc_type = ftl_nv_cache_device_get_type_by_bdev(dev, bdev);
+	if (!nv_cache->nvc_type) {
+		FTL_ERRLOG(dev, "Failed to get NV Cache device type\n");
 		goto error;
 	}
-#else
-	if (spdk_bdev_is_md_separate(bdev)) {
-		FTL_ERRLOG(dev, "FTL VSS emulation but NV cache supports VSS\n");
+	nv_cache->md_size = sizeof(union ftl_md_vss);
+
+	md_ops = &nv_cache->nvc_type->ops.md_layout_ops;
+	if (!md_ops->region_create) {
+		FTL_ERRLOG(dev, "NV Cache device doesn't implement md_layout_ops\n");
 		goto error;
 	}
 
-	nv_cache->md_size = 64;
-	FTL_NOTICELOG(dev, "FTL uses VSS emulation\n");
-#endif
+	dev->nvc_layout_tracker = ftl_layout_tracker_bdev_init(spdk_bdev_get_num_blocks(bdev));
+	if (!dev->nvc_layout_tracker) {
+		FTL_ERRLOG(dev, "Failed to instantiate layout tracker for nvc device\n");
+		goto error;
+	}
 
+	FTL_NOTICELOG(dev, "Using %s as NV Cache device\n", nv_cache->nvc_type->name);
 	ftl_mngt_next_step(mngt);
 	return;
 error:
@@ -244,6 +255,11 @@ ftl_mngt_close_cache_bdev(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mng
 		spdk_bdev_close(dev->nv_cache.bdev_desc);
 
 		dev->nv_cache.bdev_desc = NULL;
+	}
+
+	if (dev->nvc_layout_tracker) {
+		ftl_layout_tracker_bdev_fini(dev->nvc_layout_tracker);
+		dev->nvc_layout_tracker = NULL;
 	}
 
 	ftl_mngt_next_step(mngt);

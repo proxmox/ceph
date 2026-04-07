@@ -1,10 +1,12 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   Copyright (C) 2022 Intel Corporation.
  *   All rights reserved.
  */
 
 #include "spdk/thread.h"
 #include "spdk/crc32.h"
+#include "spdk/string.h"
 
 #include "ftl_core.h"
 #include "ftl_mngt.h"
@@ -13,6 +15,8 @@
 #include "ftl_band.h"
 #include "ftl_internal.h"
 #include "ftl_sb.h"
+#include "base/ftl_base_dev.h"
+#include "nvc/ftl_nvc_dev.h"
 #include "upgrade/ftl_layout_upgrade.h"
 #include "upgrade/ftl_sb_upgrade.h"
 
@@ -30,9 +34,6 @@ static bool
 is_buffer_needed(enum ftl_layout_region_type type)
 {
 	switch (type) {
-#ifdef SPDK_FTL_VSS_EMU
-	case FTL_LAYOUT_REGION_TYPE_VSS:
-#endif
 	case FTL_LAYOUT_REGION_TYPE_SB:
 	case FTL_LAYOUT_REGION_TYPE_SB_BASE:
 	case FTL_LAYOUT_REGION_TYPE_DATA_NVC:
@@ -43,6 +44,9 @@ is_buffer_needed(enum ftl_layout_region_type type)
 	case FTL_LAYOUT_REGION_TYPE_L2P:
 #endif
 	case FTL_LAYOUT_REGION_TYPE_TRIM_MD_MIRROR:
+	case FTL_LAYOUT_REGION_TYPE_TRIM_LOG_MIRROR:
+	case FTL_LAYOUT_REGION_TYPE_P2L_LOG_IO_MIN:
+	case FTL_LAYOUT_REGION_TYPE_P2L_LOG_IO_MAX:
 		return false;
 
 	default:
@@ -54,11 +58,17 @@ void
 ftl_mngt_init_md(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
 	struct ftl_layout *layout = &dev->layout;
-	struct ftl_layout_region *region = layout->region;
-	uint64_t i;
+	struct ftl_layout_region *region;
+	struct ftl_md *md, *md_mirror;
+	enum ftl_layout_region_type i;
 	int md_flags;
 
-	for (i = 0; i < FTL_LAYOUT_REGION_TYPE_MAX; i++, region++) {
+	for (i = 0; i < FTL_LAYOUT_REGION_TYPE_MAX; i++) {
+		region = ftl_layout_region_get(dev, i);
+		if (!region) {
+			continue;
+		}
+		assert(i == region->type);
 		if (layout->md[i]) {
 			/*
 			 * Some metadata objects are initialized by other FTL
@@ -78,6 +88,30 @@ ftl_mngt_init_md(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 		}
 	}
 
+	/* Initialize mirror regions */
+	for (i = 0; i < FTL_LAYOUT_REGION_TYPE_MAX; i++) {
+		region = ftl_layout_region_get(dev, i);
+		if (!region) {
+			continue;
+		}
+		assert(i == region->type);
+		if (region->mirror_type != FTL_LAYOUT_REGION_TYPE_INVALID &&
+		    !is_buffer_needed(region->mirror_type)) {
+			md = layout->md[i];
+			md_mirror = layout->md[region->mirror_type];
+
+			md_mirror->dev = md->dev;
+			md_mirror->data_blocks = md->data_blocks;
+			md_mirror->data = md->data;
+			if (md_mirror->region->vss_blksz == md->region->vss_blksz) {
+				md_mirror->vss_data = md->vss_data;
+			}
+			md_mirror->region = ftl_layout_region_get(dev, region->mirror_type);
+			ftl_bug(md_mirror->region == NULL);
+			md_mirror->is_mirror = true;
+		}
+	}
+
 	ftl_mngt_next_step(mngt);
 }
 
@@ -85,12 +119,16 @@ void
 ftl_mngt_deinit_md(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
 	struct ftl_layout *layout = &dev->layout;
-	struct ftl_layout_region *region = layout->region;
-	uint64_t i;
+	struct ftl_layout_region *region;
+	enum ftl_layout_region_type i;
 
-	for (i = 0; i < FTL_LAYOUT_REGION_TYPE_MAX; i++, region++) {
+	for (i = 0; i < FTL_LAYOUT_REGION_TYPE_MAX; i++) {
+		region = ftl_layout_region_get(dev, i);
+		if (!region) {
+			continue;
+		}
 		if (layout->md[i]) {
-			ftl_md_destroy(layout->md[i], ftl_md_destroy_region_flags(dev, layout->region[i].type));
+			ftl_md_destroy(layout->md[i], ftl_md_destroy_region_flags(dev, region->type));
 			layout->md[i] = NULL;
 		}
 	}
@@ -142,7 +180,7 @@ ftl_md_restore_region(struct spdk_ftl_dev *dev, int region_type)
 		ftl_valid_map_load_state(dev);
 		break;
 	case FTL_LAYOUT_REGION_TYPE_BAND_MD:
-		ftl_bands_load_state(dev);
+		status = ftl_bands_load_state(dev);
 		break;
 	default:
 		break;
@@ -278,14 +316,6 @@ ftl_mngt_persist_super_block(struct spdk_ftl_dev *dev, struct ftl_mngt_process *
 	persist(dev, mngt, FTL_LAYOUT_REGION_TYPE_SB);
 }
 
-#ifdef SPDK_FTL_VSS_EMU
-static void
-ftl_mngt_persist_vss(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
-{
-	persist(dev, mngt, FTL_LAYOUT_REGION_TYPE_VSS);
-}
-#endif
-
 /*
  * Persists all necessary metadata (band state, P2L, etc) during FTL's clean shutdown.
  */
@@ -306,23 +336,17 @@ static const struct ftl_mngt_process_desc desc_persist = {
 			.ctx_size = sizeof(struct ftl_p2l_sync_ctx),
 		},
 		{
-			.name = "persist band info metadata",
+			.name = "Persist band info metadata",
 			.action = ftl_mngt_persist_band_info_metadata,
 		},
 		{
-			.name = "persist trim metadata",
+			.name = "Persist trim metadata",
 			.action = ftl_mngt_persist_trim_metadata,
 		},
 		{
 			.name = "Persist superblock",
 			.action = ftl_mngt_persist_super_block,
 		},
-#ifdef SPDK_FTL_VSS_EMU
-		{
-			.name = "Persist VSS metadata",
-			.action = ftl_mngt_persist_vss,
-		},
-#endif
 		{}
 	}
 };
@@ -330,7 +354,7 @@ static const struct ftl_mngt_process_desc desc_persist = {
 void
 ftl_mngt_persist_md(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
-	ftl_mngt_call_process(mngt, &desc_persist);
+	ftl_mngt_call_process(mngt, &desc_persist, NULL);
 }
 
 /*
@@ -344,12 +368,6 @@ static const struct ftl_mngt_process_desc desc_fast_persist = {
 			.name = "Fast persist NV cache metadata",
 			.action = ftl_mngt_fast_persist_nv_cache_metadata,
 		},
-#ifdef SPDK_FTL_VSS_EMU
-		{
-			.name = "Persist VSS metadata",
-			.action = ftl_mngt_persist_vss,
-		},
-#endif
 		{}
 	}
 };
@@ -357,7 +375,7 @@ static const struct ftl_mngt_process_desc desc_fast_persist = {
 void
 ftl_mngt_fast_persist_md(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
-	ftl_mngt_call_process(mngt, &desc_fast_persist);
+	ftl_mngt_call_process(mngt, &desc_fast_persist, NULL);
 }
 
 void
@@ -381,8 +399,13 @@ ftl_mngt_init_default_sb(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt
 
 	/* md layout isn't initialized yet.
 	 * empty region list => all regions in the default location */
-	sb->md_layout_head.type = FTL_LAYOUT_REGION_TYPE_INVALID;
-	sb->md_layout_head.df_next = FTL_DF_OBJ_ID_INVALID;
+	spdk_strcpy_pad(sb->base_dev_name, dev->base_type->name,
+			SPDK_COUNTOF(sb->base_dev_name), '\0');
+	sb->md_layout_base.df_id = FTL_DF_OBJ_ID_INVALID;
+
+	spdk_strcpy_pad(sb->nvc_dev_name, dev->nv_cache.nvc_type->name,
+			SPDK_COUNTOF(sb->nvc_dev_name), '\0');
+	sb->md_layout_nvc.df_id = FTL_DF_OBJ_ID_INVALID;
 
 	sb->header.crc = get_sb_crc(sb);
 
@@ -395,6 +418,7 @@ ftl_mngt_set_dirty(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 	struct ftl_superblock *sb = dev->sb;
 
 	sb->clean = 0;
+	sb->upgrade_ready = false;
 	dev->sb_shm->shm_clean = false;
 	sb->header.crc = get_sb_crc(sb);
 	persist(dev, mngt, FTL_LAYOUT_REGION_TYPE_SB);
@@ -406,6 +430,7 @@ ftl_mngt_set_clean(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 	struct ftl_superblock *sb = dev->sb;
 
 	sb->clean = 1;
+	sb->upgrade_ready = dev->conf.prep_upgrade_on_shutdown;
 	dev->sb_shm->shm_clean = false;
 	sb->header.crc = get_sb_crc(sb);
 	persist(dev, mngt, FTL_LAYOUT_REGION_TYPE_SB);
@@ -486,6 +511,12 @@ ftl_mngt_validate_sb(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 	}
 	dev->conf.overprovisioning = sb->overprovisioning;
 
+	if (!ftl_superblock_validate_blob_area(dev)) {
+		FTL_ERRLOG(dev, "Corrupted FTL superblock blob area\n");
+		ftl_mngt_fail_step(mngt);
+		return;
+	}
+
 	ftl_mngt_next_step(mngt);
 }
 
@@ -522,43 +553,11 @@ static const struct ftl_mngt_process_desc desc_init_sb = {
 	}
 };
 
-#ifdef SPDK_FTL_VSS_EMU
-void
-ftl_mngt_md_init_vss_emu(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
-{
-	struct ftl_layout *layout = &dev->layout;
-	struct ftl_layout_region *region = &layout->region[FTL_LAYOUT_REGION_TYPE_VSS];
-
-	/* Initialize VSS layout */
-	ftl_layout_setup_vss_emu(dev);
-
-	/* Allocate md buf */
-	layout->md[FTL_LAYOUT_REGION_TYPE_VSS] = ftl_md_create(dev, region->current.blocks,
-			region->vss_blksz, NULL, FTL_MD_CREATE_HEAP, region);
-	if (NULL == layout->md[FTL_LAYOUT_REGION_TYPE_VSS]) {
-		ftl_mngt_fail_step(mngt);
-		return;
-	}
-	ftl_mngt_next_step(mngt);
-}
-
-void
-ftl_mngt_md_deinit_vss_emu(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
-{
-	struct ftl_layout *layout = &dev->layout;
-
-	if (layout->md[FTL_LAYOUT_REGION_TYPE_VSS]) {
-		ftl_md_destroy(layout->md[FTL_LAYOUT_REGION_TYPE_VSS], 0);
-		layout->md[FTL_LAYOUT_REGION_TYPE_VSS] = NULL;
-	}
-
-	ftl_mngt_next_step(mngt);
-}
-#endif
-
 void
 ftl_mngt_superblock_init(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
+	struct ftl_md *md;
+	struct ftl_md *md_mirror;
 	struct ftl_layout *layout = &dev->layout;
 	struct ftl_layout_region *region = &layout->region[FTL_LAYOUT_REGION_TYPE_SB];
 	char uuid[SPDK_UUID_STRING_LEN];
@@ -607,6 +606,10 @@ shm_retry:
 			md_create_flags |= FTL_MD_CREATE_SHM_NEW;
 			ftl_md_destroy(dev->sb_shm_md, 0);
 			dev->sb_shm_md = NULL;
+			if (ftl_layout_clear_superblock(dev)) {
+				ftl_mngt_fail_step(mngt);
+				return;
+			}
 			goto shm_retry;
 		}
 		ftl_mngt_fail_step(mngt);
@@ -619,17 +622,26 @@ shm_retry:
 	/* Setup superblock mirror to QLC */
 	region = &layout->region[FTL_LAYOUT_REGION_TYPE_SB_BASE];
 	layout->md[FTL_LAYOUT_REGION_TYPE_SB_BASE] = ftl_md_create(dev, region->current.blocks,
-			region->vss_blksz, NULL, FTL_MD_CREATE_HEAP, region);
+			region->vss_blksz, NULL, FTL_MD_CREATE_NO_MEM, region);
 	if (NULL == layout->md[FTL_LAYOUT_REGION_TYPE_SB_BASE]) {
 		ftl_mngt_fail_step(mngt);
 		return;
 	}
 
+	/* Initialize mirror region buffer */
+	md = layout->md[FTL_LAYOUT_REGION_TYPE_SB];
+	md_mirror = layout->md[FTL_LAYOUT_REGION_TYPE_SB_BASE];
+
+	md_mirror->dev = md->dev;
+	md_mirror->data_blocks = md->data_blocks;
+	md_mirror->data = md->data;
+	md_mirror->is_mirror = true;
+
 	/* Initialize the superblock */
 	if (dev->conf.mode & SPDK_FTL_MODE_CREATE) {
-		ftl_mngt_call_process(mngt, &desc_init_sb);
+		ftl_mngt_call_process(mngt, &desc_init_sb, NULL);
 	} else {
-		ftl_mngt_call_process(mngt, &desc_restore_sb);
+		ftl_mngt_call_process(mngt, &desc_restore_sb, NULL);
 	}
 }
 
@@ -716,28 +728,12 @@ ftl_mngt_restore_trim_metadata(struct spdk_ftl_dev *dev, struct ftl_mngt_process
 	restore(dev, mngt, FTL_LAYOUT_REGION_TYPE_TRIM_MD);
 }
 
-
-
-#ifdef SPDK_FTL_VSS_EMU
-static void
-ftl_mngt_restore_vss_metadata(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
-{
-	restore(dev, mngt, FTL_LAYOUT_REGION_TYPE_VSS);
-}
-#endif
-
 /*
  * Loads metadata after a clean shutdown.
  */
 static const struct ftl_mngt_process_desc desc_restore = {
 	.name = "Restore metadata",
 	.steps = {
-#ifdef SPDK_FTL_VSS_EMU
-		{
-			.name = "Restore VSS metadata",
-			.action = ftl_mngt_restore_vss_metadata,
-		},
-#endif
 		{
 			.name = "Restore NV cache metadata",
 			.action = ftl_mngt_restore_nv_cache_metadata,
@@ -761,7 +757,7 @@ static const struct ftl_mngt_process_desc desc_restore = {
 void
 ftl_mngt_restore_md(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
-	ftl_mngt_call_process(mngt, &desc_restore);
+	ftl_mngt_call_process(mngt, &desc_restore, NULL);
 }
 
 void

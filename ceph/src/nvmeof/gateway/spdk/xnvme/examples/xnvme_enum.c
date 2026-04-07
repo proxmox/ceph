@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 /**
  * Usage Examples
  * --------------
@@ -10,7 +14,6 @@
  * example_enum 192.168.1.1:4472
  */
 #include <libxnvme.h>
-#include <libxnvme_pp.h>
 
 int
 enum_cb(struct xnvme_dev *dev, void *XNVME_UNUSED(cb_args))

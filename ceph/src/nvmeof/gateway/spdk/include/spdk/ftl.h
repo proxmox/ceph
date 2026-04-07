@@ -17,6 +17,7 @@ extern "C" {
 
 struct spdk_ftl_dev;
 struct ftl_io;
+struct spdk_jsonrpc_request;
 
 /* Limit thresholds */
 enum {
@@ -111,8 +112,22 @@ struct spdk_ftl_conf {
 		uint32_t			chunk_free_target;
 	} nv_cache;
 
-	/* Hole at bytes 0x60 - 0x67. */
-	uint8_t					reserved[4];
+	/*
+	 * This flags indicates that FTL during shutdown should execute all
+	 * actions which are needed for upgrade to a new version
+	 */
+	bool					prep_upgrade_on_shutdown;
+
+	/* In verbose mode, user is able to get access to additional advanced FTL properties.
+	 *
+	 * Advanced properties currently include entries, which will result in printing large amount of data
+	 * (e.g. state of all bands, or chunks); or allow for receiving internal state of FTL (e.g. bands currently
+	 * used for garbage collection) - live data which may be useful for profiling, or debugging.
+	 */
+	bool					verbose_mode;
+
+	/* Hole at bytes 0x66 - 0x67. */
+	uint8_t					reserved[2];
 
 	/* Name of base block device (zoned or non-zoned) */
 	char					*base_bdev;
@@ -325,6 +340,34 @@ void spdk_ftl_dev_set_fast_shutdown(struct spdk_ftl_dev *dev, bool fast_shutdown
  */
 int spdk_ftl_get_stats(struct spdk_ftl_dev *dev, struct ftl_stats *stats, spdk_ftl_stats_fn cb_fn,
 		       void *cb_arg);
+
+/**
+ * Gets properties of the specified device.
+ *
+ * \param dev FTL device
+ * \param request JSON RPC request where the properties will be stored
+ * \param cb_fn Callback function to invoke when the operation is completed
+ * \param cb_arg Argument to pass to the callback function
+ *
+ * \return 0 if successfully submitted, negative errno otherwise.
+ */
+int spdk_ftl_get_properties(struct spdk_ftl_dev *dev, struct spdk_jsonrpc_request *request,
+			    spdk_ftl_fn cb_fn, void *cb_arg);
+
+/**
+ * Sets the property of the specified device.
+ *
+ * \param dev FTL device
+ * \param property The property name to be modified
+ * \param value The new value to property
+ * \param value_size The size of the value buffer
+ * \param cb_fn Callback function to invoke when the operation is completed
+ * \param cb_arg Argument to pass to the callback function
+ *
+ * \return 0 if successfully submitted, negative errno otherwise.
+ */
+int spdk_ftl_set_property(struct spdk_ftl_dev *dev, const char *property, const char *value,
+			  size_t value_size, spdk_ftl_fn cb_fn, void *cb_arg);
 
 #ifdef __cplusplus
 }

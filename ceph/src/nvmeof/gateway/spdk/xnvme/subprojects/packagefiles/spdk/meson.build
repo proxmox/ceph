@@ -1,15 +1,74 @@
 project(
   'spdk',
   'c',
-  version: '22.05',
+  version: '24.05',
 )
 fs = import('fs')
+
+system_support = ['freebsd', 'linux', 'windows', 'darwin']
+system = host_machine.system()
+message('host_machine.system:', system)
+if not system_support.contains(system)
+    error('Unsupported system type "@0@"'.format(exec_env))
+endif
+foreach sys : system_support
+    set_variable('is_' + sys, system == sys)
+endforeach
+
+is_centos7 = is_linux ? run_command('cat', '/etc/os-release', check: false).stdout().contains('CentOS Linux 7') : false
+
+cc = meson.get_compiler('c')
+
+math_dep = cc.find_library(
+  'm',
+  has_headers: ['math.h'],
+)
+
+ssl_dep = dependency(
+  is_centos7 ? 'openssl11' : 'openssl', version: '>=1.1.1',
+)
+
+dlfcn_dep = cc.find_library(
+  'dl',
+  has_headers: ['dlfcn.h'],
+)
+
+uuid_dep = cc.find_library(
+  'uuid',
+  dirs: is_freebsd ? [ '/usr/local/lib' ] : [],
+  header_include_directories: is_freebsd ? [ include_directories('/usr/local/include') ] : [],
+  has_headers: ['uuid/uuid.h'],
+)
+numa_dep = cc.find_library(
+  'numa',
+  has_headers: ['numaif.h'],
+  required: is_linux,
+)
+execinfo_dep = cc.find_library(
+  'execinfo',
+  has_headers: ['execinfo.h'],
+  required: is_freebsd,
+)
+elf_dep = cc.find_library(
+  'elf',
+  has_headers: ['sys/elf_common.h'],
+  required: is_freebsd,
+)
+
+archive_dep = cc.find_library(
+  'archive',
+  has_headers: ['archive.h'],
+)
 
 if get_option('build_subprojects') and not fs.exists('build')
   message('Patching ..')
   run_command('spdk_patches.sh', capture: true, check: true)
   message('Configuring ..')
-  run_command('spdk_configure.sh', capture: true, check: true)
+  if get_option('buildtype') == 'debug'
+     run_command('spdk_configure_debug.sh', capture: true, check: true)
+  else
+    run_command('spdk_configure.sh', capture: true, check: true)
+  endif
 endif
 if get_option('build_subprojects') and not fs.exists('build' / 'lib' / 'src' / 'spdk_nvme.a')
   cpu_count = run_command([
@@ -24,7 +83,7 @@ if get_option('build_subprojects') and not fs.exists('build' / 'lib' / 'src' / '
   is_platform_generic = target_machine.cpu_family() == 'aarch64' and run_command([
     import('python').find_installation('python3'),
     '-c',
-    'print(open("/sys/devices/system/cpu/cpu0/regs/identification/midr_el1").read() == "")'
+    'print(open("/sys/devices/system/cpu/cpu0/regs/identification/midr_el1").read().strip() in ["", "0x00000000610f0000"])'
     ],
     check: true,
   ).stdout().strip() == 'True'
@@ -53,11 +112,18 @@ spdk_libnames = get_option('build_subprojects') ? [
   'spdk_jsonrpc',
   'spdk_json',
   'spdk_util',
-  'spdk_log'
+  'spdk_log',
+  'spdk_dma',
+  'spdk_keyring'
 ] : []
+
+if get_option('build_subprojects') and host_machine.system() != 'freebsd'
+   spdk_libnames += 'spdk_vfio_user'
+endif
 
 dpdk_libnames = get_option('build_subprojects') ? [
   'rte_eal',
+  'rte_log',
   'rte_telemetry',
   'rte_bus_pci',
   'rte_pci',
@@ -70,9 +136,9 @@ isal_libnames = get_option('build_subprojects') ? [
   'isal',
 ] : []
 
-cc = meson.get_compiler('c')
+spdk_deps = [dlfcn_dep, math_dep, numa_dep, uuid_dep, ssl_dep, ssl_dep, execinfo_dep, elf_dep, archive_dep,]
+
 spdk_paths = []
-spdk_libs = []
 foreach libname : spdk_libnames + dpdk_libnames + isal_libnames
   lib_dep = cc.find_library(
     libname,
@@ -83,7 +149,6 @@ foreach libname : spdk_libnames + dpdk_libnames + isal_libnames
     ],
     static: true
   )
-  spdk_libs += lib_dep
 
   # Create a bunch of paths
   paths = [
@@ -102,14 +167,11 @@ spdk_inc = get_option('build_subprojects') ? include_directories(
   'dpdk' / 'build' / 'include',
   'build' / 'include'
 ) : include_directories('.')
-spdk_link_args = ['-Wl,--whole-archive', '-Wl,--no-as-needed'] + spdk_paths + ['-Wl,--no-whole-archive', '-Wl,--as-needed']
+spdk_link_args = ['-Wl,--whole-archive'] + spdk_paths + ['-Wl,--no-whole-archive']
 
 # Construct link_args based on the above
 spdk_dep = declare_dependency(
-  dependencies: spdk_libs,
+  dependencies: spdk_deps,
   link_args: spdk_link_args,
   include_directories: spdk_inc,
-  variables: {'lib_paths': get_option('build_subprojects') ? ' '.join(spdk_paths) : '.'}
 )
-
-meson.override_dependency('spdk', spdk_dep)

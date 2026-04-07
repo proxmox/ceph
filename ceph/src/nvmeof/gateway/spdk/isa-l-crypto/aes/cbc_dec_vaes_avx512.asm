@@ -29,8 +29,7 @@
 
 %include "aes_common.asm"
 %include "reg_sizes.asm"
-
-%if (AS_FEATURE_LEVEL) >= 10
+%include "clear_regs.inc"
 
 [bits 64]
 default rel
@@ -67,22 +66,33 @@ default rel
 %define p_keys     rdx
 %define p_out      rcx
 %define num_bytes  r8
-%else
+%define FUNC_SAVE
+%define FUNC_RESTORE
+%else ; Win64
 %define p_in       rcx
 %define p_IV       rdx
 %define p_keys     r8
 %define p_out      r9
 %define num_bytes  rax
+%define stack_size	3*16 + 1*8	; must be an odd multiple of 8
+
+%macro FUNC_SAVE 0
+	alloc_stack     stack_size
+	vmovdqa64	[rsp + 0*16], xmm6
+	vmovdqa64	[rsp + 1*16], xmm7
+	vmovdqa64	[rsp + 2*16], xmm8
+%endmacro
+
+%macro FUNC_RESTORE 0
+	vmovdqa64       xmm6, [rsp + 0*16]
+	vmovdqa64       xmm7, [rsp + 1*16]
+	vmovdqa64       xmm8, [rsp + 2*16]
+	add	        rsp, stack_size
+%endmacro
 %endif
 
 %define tmp        r10
 %define tmp2       r11
-
-%ifdef CBCS
-%define OFFSET 160
-%else
-%define OFFSET 16
-%endif
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; macro to preload keys
@@ -123,15 +133,10 @@ default rel
 %define %%NROUNDS               %14     ; [in] number of rounds; numerical value
 
         ;; load plain/cipher text
-%ifdef CBCS
-        ZMM_LOAD_BLOCKS_0_16_OFFSET %%num_final_blocks, %%CIPH_IN, \
-                OFFSET, %%CIPHER_PLAIN_0_3, %%CIPHER_PLAIN_4_7, \
-                %%CIPHER_PLAIN_8_11, %%CIPHER_PLAIN_12_15
-%else
         ZMM_LOAD_BLOCKS_0_16 %%num_final_blocks, %%CIPH_IN, 0, \
                 %%CIPHER_PLAIN_0_3, %%CIPHER_PLAIN_4_7, \
                 %%CIPHER_PLAIN_8_11, %%CIPHER_PLAIN_12_15
-%endif
+
         ;; Prepare final cipher text blocks to
         ;; be XOR'd later after AESDEC
         valignq         %%ZT1, %%CIPHER_PLAIN_0_3, %%LAST_CIPH_BLK, 6
@@ -202,15 +207,9 @@ default rel
 %endif
 
         ;; write plain text back to output
-%ifdef CBCS
-        ZMM_STORE_BLOCKS_0_16_OFFSET %%num_final_blocks, %%PLAIN_OUT, \
-                OFFSET, %%CIPHER_PLAIN_0_3, %%CIPHER_PLAIN_4_7, \
-                %%CIPHER_PLAIN_8_11, %%CIPHER_PLAIN_12_15
-%else
         ZMM_STORE_BLOCKS_0_16 %%num_final_blocks, %%PLAIN_OUT, 0, \
                 %%CIPHER_PLAIN_0_3, %%CIPHER_PLAIN_4_7, \
                 %%CIPHER_PLAIN_8_11, %%CIPHER_PLAIN_12_15
-%endif
 
 %endmacro       ; FINAL_BLOCKS
 
@@ -234,16 +233,11 @@ default rel
 %define %%NROUNDS               %13     ; [in] number of rounds; numerical value
 %define %%IA0                   %14     ; [clobbered] GP temporary
 
-%ifdef CBCS
-       ZMM_LOAD_BLOCKS_0_16_OFFSET 16, %%CIPH_IN, OFFSET, \
-                %%CIPHER_PLAIN_0_3, %%CIPHER_PLAIN_4_7, \
-                %%CIPHER_PLAIN_8_11, %%CIPHER_PLAIN_12_15
-%else
         vmovdqu8        %%CIPHER_PLAIN_0_3, [%%CIPH_IN]
         vmovdqu8        %%CIPHER_PLAIN_4_7, [%%CIPH_IN + 64]
         vmovdqu8        %%CIPHER_PLAIN_8_11, [%%CIPH_IN + 128]
         vmovdqu8        %%CIPHER_PLAIN_12_15, [%%CIPH_IN + 192]
-%endif
+
         ;; prepare first set of cipher blocks for later XOR'ing
         valignq         %%ZT1, %%CIPHER_PLAIN_0_3, %%LAST_CIPH_BLK, 6
         valignq         %%ZT2, %%CIPHER_PLAIN_4_7, %%CIPHER_PLAIN_0_3, 6
@@ -270,20 +264,15 @@ default rel
         vpxorq          %%CIPHER_PLAIN_12_15, %%CIPHER_PLAIN_12_15, %%ZT4
 
         ;; write plain text back to output
-%ifdef CBCS
-       ZMM_STORE_BLOCKS_0_16_OFFSET 16, %%PLAIN_OUT, OFFSET, \
-                %%CIPHER_PLAIN_0_3, %%CIPHER_PLAIN_4_7, \
-                %%CIPHER_PLAIN_8_11, %%CIPHER_PLAIN_12_15
-%else
         vmovdqu8        [%%PLAIN_OUT], %%CIPHER_PLAIN_0_3
         vmovdqu8        [%%PLAIN_OUT + 64], %%CIPHER_PLAIN_4_7
         vmovdqu8        [%%PLAIN_OUT + 128], %%CIPHER_PLAIN_8_11
         vmovdqu8        [%%PLAIN_OUT + 192], %%CIPHER_PLAIN_12_15
-%endif
+
         ;; adjust input pointer and length
         sub             %%LENGTH, (16 * 16)
-        add             %%CIPH_IN, (16 * OFFSET)
-        add             %%PLAIN_OUT, (16 * OFFSET)
+        add             %%CIPH_IN, (16 * 16)
+        add             %%PLAIN_OUT, (16 * 16)
 
 %endmacro       ; DECRYPT_16_PARALLEL
 
@@ -461,6 +450,7 @@ default rel
                      %%TMP, %%NROUNDS
 
 %%cbc_dec_done:
+
 %endmacro
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -469,51 +459,68 @@ default rel
 
 section .text
 
-%ifndef CBCS
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; aes_cbc_dec_128_vaes_avx512(void *in, void *IV, void *keys, void *out, UINT64 num_bytes)
+;; _aes_cbc_dec_128_vaes_avx512(void *in, void *IV, void *keys, void *out, UINT64 num_bytes)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-mk_global aes_cbc_dec_128_vaes_avx512,function,internal
-aes_cbc_dec_128_vaes_avx512:
+mk_global _aes_cbc_dec_128_vaes_avx512,function,internal
+_aes_cbc_dec_128_vaes_avx512:
         endbranch
 %ifidn __OUTPUT_FORMAT__, win64
         mov     num_bytes, [rsp + 8*5]
 %endif
+        FUNC_SAVE
+
         AES_CBC_DEC p_in, p_out, p_keys, p_IV, num_bytes, 9, tmp
 
+%ifdef SAFE_DATA
+        clear_all_zmms_asm
+%else
+        vzeroupper
+%endif ;; SAFE_DATA
+
+        FUNC_RESTORE
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; aes_cbc_dec_192_vaes_avx512(void *in, void *IV, void *keys, void *out, UINT64 num_bytes)
+;; _aes_cbc_dec_192_vaes_avx512(void *in, void *IV, void *keys, void *out, UINT64 num_bytes)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-mk_global aes_cbc_dec_192_vaes_avx512,function,internal
-aes_cbc_dec_192_vaes_avx512:
+mk_global _aes_cbc_dec_192_vaes_avx512,function,internal
+_aes_cbc_dec_192_vaes_avx512:
         endbranch
 %ifidn __OUTPUT_FORMAT__, win64
         mov     num_bytes, [rsp + 8*5]
 %endif
+        FUNC_SAVE
+
         AES_CBC_DEC p_in, p_out, p_keys, p_IV, num_bytes, 11, tmp
 
+%ifdef SAFE_DATA
+        clear_all_zmms_asm
+%else
+        vzeroupper
+%endif ;; SAFE_DATA
+
+        FUNC_RESTORE
         ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; aes_cbc_dec_256_vaes_avx512(void *in, void *IV, void *keys, void *out, UINT64 num_bytes)
+;; _aes_cbc_dec_256_vaes_avx512(void *in, void *IV, void *keys, void *out, UINT64 num_bytes)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-mk_global aes_cbc_dec_256_vaes_avx512,function,internal
-aes_cbc_dec_256_vaes_avx512:
+mk_global _aes_cbc_dec_256_vaes_avx512,function,internal
+_aes_cbc_dec_256_vaes_avx512:
         endbranch
 %ifidn __OUTPUT_FORMAT__, win64
         mov     num_bytes, [rsp + 8*5]
 %endif
+        FUNC_SAVE
+
         AES_CBC_DEC p_in, p_out, p_keys, p_IV, num_bytes, 13, tmp
 
+%ifdef SAFE_DATA
+        clear_all_zmms_asm
+%else
+        vzeroupper
+%endif ;; SAFE_DATA
+
+        FUNC_RESTORE
         ret
-
-%endif ;; CBCS
-
-%else  ; Assembler doesn't understand these opcodes. Add empty symbol for windows.
-%ifidn __OUTPUT_FORMAT__, win64
-global no_aes_cbc_dec_256_vaes_avx512
-no_aes_cbc_dec_256_vaes_avx512:
-%endif
-%endif ; (AS_FEATURE_LEVEL) >= 10

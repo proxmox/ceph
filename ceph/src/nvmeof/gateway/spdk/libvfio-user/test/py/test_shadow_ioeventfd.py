@@ -33,6 +33,34 @@ import mmap
 import errno
 
 
+def test_shadow_ioeventfd_none():
+    """Test VFIO_USER_DEVICE_GET_REGION_IO_FDS when none are set up."""
+
+    # server setup
+    ctx = vfu_create_ctx(flags=LIBVFIO_USER_FLAG_ATTACH_NB)
+    assert ctx is not None
+    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_BAR0_REGION_IDX, size=0x1000,
+                           flags=VFU_REGION_FLAG_RW)
+    assert ret == 0
+
+    ret = vfu_realize_ctx(ctx)
+    assert ret == 0
+
+    # client
+    client = connect_client(ctx)
+    payload = vfio_user_region_io_fds_request(
+                argsz=len(vfio_user_region_io_fds_reply()) +
+                len(vfio_user_sub_region_ioeventfd()), flags=0,
+                index=VFU_PCI_DEV_BAR0_REGION_IDX, count=0)
+    newfds, ret = msg_fds(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_IO_FDS,
+                          payload, expect=0)
+    assert len(newfds) == 0
+    reply, ret = vfio_user_region_io_fds_reply.pop_from_buffer(ret)
+    assert reply.count == 0
+
+    vfu_destroy_ctx(ctx)
+
+
 def test_shadow_ioeventfd():
     """Configure a shadow ioeventfd, have the client trigger it, confirm that
     the server receives the notification and can see the value."""
@@ -54,7 +82,7 @@ def test_shadow_ioeventfd():
 
     efd = eventfd(flags=EFD_NONBLOCK)
     ret = vfu_create_ioeventfd(ctx, VFU_PCI_DEV_BAR0_REGION_IDX, efd, 0x8,
-                               0x16, 0, 0, shadow_fd=fo.fileno())
+                               0x16, 0, 0, fo.fileno(), 0x10)
     assert ret == 0
     ret = vfu_realize_ctx(ctx)
     assert ret == 0
@@ -70,12 +98,13 @@ def test_shadow_ioeventfd():
     reply, ret = vfio_user_region_io_fds_reply.pop_from_buffer(ret)
     assert reply.count == 1  # 1 eventfd
     ioevent, _ = vfio_user_sub_region_ioeventfd.pop_from_buffer(ret)
-    assert ioevent.offset == 0x8
+    assert ioevent.gpa_offset == 0x8
     assert ioevent.size == 0x16
     assert ioevent.fd_index == 0
     assert ioevent.type == VFIO_USER_IO_FD_TYPE_IOEVENTFD_SHADOW
     assert ioevent.flags == 0
     assert ioevent.datamatch == 0
+    assert ioevent.shadow_offset == 0x10
 
     assert len(newfds) == 2  # 2 FDs: eventfd plus shadow FD
     cefd = newfds[0]
@@ -93,13 +122,13 @@ def test_shadow_ioeventfd():
 
     # Client writes to the I/O region. The write to the eventfd would be done
     # by KVM and the value would be the same in both cases.
-    cmem.seek(0x8)
+    cmem.seek(ioevent.shadow_offset)
     cmem.write(c.c_ulonglong(0xdeadbeef))
     os.write(cefd, c.c_ulonglong(0xcafebabe))
 
     # vfio-user app reads eventfd
     assert os.read(efd, IOEVENT_SIZE) == to_bytes_le(0xcafebabe, 8)
-    fo.seek(0x8)
+    fo.seek(ioevent.shadow_offset)
     assert fo.read(0x8) == to_bytes_le(0xdeadbeef, 8)
 
     vfu_destroy_ctx(ctx)

@@ -11,7 +11,6 @@ sources += files(
         'eal_hugepage_info.c',
         'eal_interrupts.c',
         'eal_lcore.c',
-        'eal_log.c',
         'eal_memalloc.c',
         'eal_memory.c',
         'eal_thread.c',
@@ -21,6 +20,10 @@ sources += files(
 )
 
 deps += ['kvargs', 'telemetry']
-if has_libnuma == 1
+if has_libnuma
     dpdk_conf.set10('RTE_EAL_NUMA_AWARE_HUGEPAGES', true)
+endif
+
+if dpdk_conf.has('RTE_MALLOC_ASAN')
+    ext_deps += cc.find_library('rt')
 endif

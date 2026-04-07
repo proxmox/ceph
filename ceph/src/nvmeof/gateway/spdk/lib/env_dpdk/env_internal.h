@@ -14,8 +14,8 @@
 #include <rte_version.h>
 #include <rte_eal.h>
 
-#if RTE_VERSION < RTE_VERSION_NUM(19, 11, 0, 0)
-#error RTE_VERSION is too old! Minimum 19.11 is required.
+#if RTE_VERSION < RTE_VERSION_NUM(21, 11, 0, 0)
+#error RTE_VERSION is too old! Minimum 21.11 is required.
 #endif
 
 /* x86-64 and ARM userspace virtual addresses use only the low 48 bits [0..47],
@@ -31,7 +31,9 @@ int pci_env_init(void);
 void pci_env_reinit(void);
 void pci_env_fini(void);
 int mem_map_init(bool legacy_mem);
+void mem_map_fini(void);
 int vtophys_init(void);
+void vtophys_fini(void);
 
 int vtophys_iommu_map_dma_bar(uint64_t vaddr, uint64_t iova, uint64_t size);
 int vtophys_iommu_unmap_dma_bar(uint64_t vaddr);
@@ -51,5 +53,15 @@ void vtophys_pci_device_added(struct rte_pci_device *pci_device);
  * This must be called before a `rte_pci_device` is destroyed.
  */
 void vtophys_pci_device_removed(struct rte_pci_device *pci_device);
+
+/**
+ * Disable huge page usage based on SPDK command line option --no-huge.
+ */
+void mem_disable_huge_pages(void);
+
+/**
+ * Enforce socket ID allocations.
+ */
+void mem_enforce_numa(void);
 
 #endif

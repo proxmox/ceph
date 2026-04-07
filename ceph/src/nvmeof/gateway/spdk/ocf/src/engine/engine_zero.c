@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
@@ -18,44 +19,36 @@
 
 static int ocf_zero_purge(struct ocf_request *req)
 {
-	if (req->error) {
-		ocf_engine_error(req, true, "Failed to discard data on cache");
-	} else {
-		/* There are mapped cache line, need to remove them */
+	/* There are mapped cache line, need to remove them */
 
-		ocf_hb_req_prot_lock_wr(req); /*- Metadata WR access ---------------*/
+	ocf_hb_req_prot_lock_wr(req); /*- Metadata WR access ---------------*/
 
-		/* Remove mapped cache lines from metadata */
-		ocf_purge_map_info(req);
+	/* Remove mapped cache lines from metadata */
+	ocf_purge_map_info(req);
 
-		ocf_hb_req_prot_unlock_wr(req); /*- END Metadata WR access ---------*/
-	}
+	ocf_hb_req_prot_unlock_wr(req); /*- END Metadata WR access ---------*/
 
 	ocf_req_unlock_wr(ocf_cache_line_concurrency(req->cache), req);
-
-	req->complete(req, req->error);
-
+	req->complete(req, 0);
 	ocf_req_put(req);
 
 	return 0;
 }
 
-static const struct ocf_io_if _io_if_zero_purge = {
-	.read = ocf_zero_purge,
-	.write = ocf_zero_purge,
-};
-
 static void _ocf_zero_io_flush_metadata(struct ocf_request *req, int error)
 {
 	if (error) {
 		ocf_core_stats_cache_error_update(req->core, OCF_WRITE);
-		req->error = error;
+		ocf_engine_error(req, true, "Failed to discard data on cache");
+
+		ocf_req_unlock_wr(ocf_cache_line_concurrency(req->cache), req);
+		req->complete(req, error);
+		ocf_req_put(req);
+		return;
 	}
 
-	if (env_atomic_dec_return(&req->req_remaining))
-		return;
-
-	ocf_engine_push_req_front_if(req, &_io_if_zero_purge, true);
+	ocf_queue_push_req_cb(req, ocf_zero_purge,
+			OCF_QUEUE_ALLOW_SYNC | OCF_QUEUE_PRIO_HIGH);
 }
 
 static inline void ocf_zero_map_info(struct ocf_request *req)
@@ -83,15 +76,15 @@ static inline void ocf_zero_map_info(struct ocf_request *req)
 
 		if (map_idx == 0) {
 			/* First */
-			start_bit = BYTES_TO_SECTORS(req->byte_position)
-					% ocf_line_sectors(cache);
+			start_bit = (BYTES_TO_SECTORS(req->addr)
+					% ocf_line_sectors(cache));
 		}
 
 		if (map_idx == (count - 1)) {
 			/* Last */
-			end_bit = BYTES_TO_SECTORS(req->byte_position +
-					req->byte_length - 1) %
-					ocf_line_sectors(cache);
+			end_bit = (BYTES_TO_SECTORS(req->addr +
+						req->bytes - 1) %
+					ocf_line_sectors(cache));
 		}
 
 		ocf_metadata_flush_mark(cache, req, map_idx, INVALID,
@@ -110,7 +103,6 @@ static int _ocf_zero_do(struct ocf_request *req)
 	ocf_zero_map_info(req);
 
 	/* Discard marked cache lines */
-	env_atomic_set(&req->req_remaining, 1);
 	if (req->info.flush_metadata) {
 		/* Request was dirty and need to flush metadata */
 		ocf_metadata_flush_do_asynch(cache, req,
@@ -123,11 +115,6 @@ static int _ocf_zero_do(struct ocf_request *req)
 
 	return 0;
 }
-
-static const struct ocf_io_if _io_if_ocf_zero_do = {
-	.read = _ocf_zero_do,
-	.write = _ocf_zero_do,
-};
 
 /**
  * @note
@@ -149,7 +136,7 @@ void ocf_engine_zero_line(struct ocf_request *req)
 
 	ENV_BUG_ON(!ocf_engine_is_mapped(req));
 
-	req->io_if = &_io_if_ocf_zero_do;
+	req->engine_handler = _ocf_zero_do;
 
 	/* Some cache line are mapped, lock request for WRITE access */
 	lock = ocf_req_async_lock_wr(
@@ -158,7 +145,8 @@ void ocf_engine_zero_line(struct ocf_request *req)
 
 	if (lock >= 0) {
 		ENV_BUG_ON(lock != OCF_LOCK_ACQUIRED);
-		ocf_engine_push_req_front_if(req, &_io_if_ocf_zero_do, true);
+		ocf_queue_push_req_cb(req, _ocf_zero_do,
+				OCF_QUEUE_ALLOW_SYNC | OCF_QUEUE_PRIO_HIGH);
 	} else {
 		OCF_DEBUG_RQ(req, "LOCK ERROR %d", lock);
 		req->complete(req, lock);

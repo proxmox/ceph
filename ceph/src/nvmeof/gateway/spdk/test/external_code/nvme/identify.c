@@ -71,7 +71,7 @@ print_controller(struct nvme_ctrlr *ctrlr, const struct spdk_pci_addr *addr)
 	printf("  Firmware Activation Notices:         %s\n",
 	       cdata->oaes.fw_activation_notices ? "Supported" : "Not Supported");
 	printf("128-bit Host Identifier:               %s\n",
-	       cdata->ctratt.host_id_exhid_supported ? "Supported" : "Not Supported");
+	       cdata->ctratt.bits.host_id_exhid_supported ? "Supported" : "Not Supported");
 }
 
 static void
@@ -92,6 +92,7 @@ main(int argc, const char **argv)
 	struct nvme_ctrlr *ctrlr;
 	int rc;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "identify";
 

@@ -17,8 +17,13 @@ extern "C" {
 #include "spdk/util.h"
 }
 
+enum print_format_type {
+	PRINT_FMT_JSON,
+	PRINT_FMT_DEFAULT,
+};
+
 static struct spdk_trace_parser *g_parser;
-static const struct spdk_trace_flags *g_flags;
+static const struct spdk_trace_file *g_file;
 static struct spdk_json_write_ctx *g_json;
 static bool g_print_tsc = false;
 
@@ -109,11 +114,11 @@ print_object_id(const struct spdk_trace_tpoint *d, struct spdk_trace_parser_entr
 
 	if (entry->related_type != OBJECT_NONE) {
 		snprintf(related_id, sizeof(related_id), " (%c%jd)",
-			 g_flags->object[entry->related_type].id_prefix,
+			 g_file->object[entry->related_type].id_prefix,
 			 entry->related_index);
 	}
 
-	snprintf(ids, sizeof(ids), "%c%jd%s", g_flags->object[d->object_type].id_prefix,
+	snprintf(ids, sizeof(ids), "%c%jd%s", g_file->object[d->object_type].id_prefix,
 		 entry->object_index, related_id);
 	printf("id:    %-17s", ids);
 }
@@ -128,21 +133,25 @@ static void
 print_event(struct spdk_trace_parser_entry *entry, uint64_t tsc_rate, uint64_t tsc_offset)
 {
 	struct spdk_trace_entry		*e = entry->entry;
+	struct spdk_trace_owner		*owner;
 	const struct spdk_trace_tpoint	*d;
 	float				us;
 	size_t				i;
 
-	d = &g_flags->tpoint[e->tpoint_id];
+	d = &g_file->tpoint[e->tpoint_id];
 	us = get_us_from_tsc(e->tsc - tsc_offset, tsc_rate);
 
+	printf("%-*s ", (int)sizeof(g_file->tname[entry->lcore]), g_file->tname[entry->lcore]);
 	printf("%2d: %10.3f ", entry->lcore, us);
 	if (g_print_tsc) {
 		printf("(%9ju) ", e->tsc - tsc_offset);
 	}
-	if (g_flags->owner[d->owner_type].id_prefix) {
-		printf("%c%02d ", g_flags->owner[d->owner_type].id_prefix, e->poller_id);
+	owner = spdk_get_trace_owner(g_file, e->owner_id);
+	/* For now, only try to print first 64 bytes of description. */
+	if (e->owner_id > 0 && owner->tsc < e->tsc) {
+		printf("%-*s ", 64, owner->description);
 	} else {
-		printf("%4s", " ");
+		printf("%-*s ", 64, "");
 	}
 
 	printf("%-*s ", (int)sizeof(d->name), d->name);
@@ -156,22 +165,28 @@ print_event(struct spdk_trace_parser_entry *entry, uint64_t tsc_rate, uint64_t t
 			print_object_id(d, entry);
 			print_float("time", us);
 		} else {
-			printf("id:    N/A");
+			printf("id:    %-17s", "N/A");
 		}
 	} else if (e->object_id != 0) {
 		print_ptr("object", e->object_id);
 	}
 
 	for (i = 0; i < d->num_args; ++i) {
+		if (entry->args[i].is_related) {
+			/* This argument was already implicitly shown by its
+			 * associated related object ID.
+			 */
+			continue;
+		}
 		switch (d->args[i].type) {
 		case SPDK_TRACE_ARG_TYPE_PTR:
-			print_ptr(d->args[i].name, (uint64_t)entry->args[i].pointer);
+			print_ptr(d->args[i].name, (uint64_t)entry->args[i].u.pointer);
 			break;
 		case SPDK_TRACE_ARG_TYPE_INT:
-			print_uint64(d->args[i].name, entry->args[i].integer);
+			print_uint64(d->args[i].name, entry->args[i].u.integer);
 			break;
 		case SPDK_TRACE_ARG_TYPE_STR:
-			print_string(d->args[i].name, entry->args[i].string);
+			print_string(d->args[i].name, entry->args[i].u.string);
 			break;
 		}
 	}
@@ -185,17 +200,17 @@ print_event_json(struct spdk_trace_parser_entry *entry, uint64_t tsc_rate, uint6
 	const struct spdk_trace_tpoint *d;
 	size_t i;
 
-	d = &g_flags->tpoint[e->tpoint_id];
+	d = &g_file->tpoint[e->tpoint_id];
 
 	spdk_json_write_object_begin(g_json);
 	spdk_json_write_named_uint64(g_json, "lcore", entry->lcore);
 	spdk_json_write_named_uint64(g_json, "tpoint", e->tpoint_id);
 	spdk_json_write_named_uint64(g_json, "tsc", e->tsc);
 
-	if (g_flags->owner[d->owner_type].id_prefix) {
+	if (g_file->owner_type[d->owner_type].id_prefix) {
 		spdk_json_write_named_string_fmt(g_json, "poller", "%c%02d",
-						 g_flags->owner[d->owner_type].id_prefix,
-						 e->poller_id);
+						 g_file->owner_type[d->owner_type].id_prefix,
+						 e->owner_id);
 	}
 	if (e->size != 0) {
 		spdk_json_write_named_uint32(g_json, "size", e->size);
@@ -205,11 +220,11 @@ print_event_json(struct spdk_trace_parser_entry *entry, uint64_t tsc_rate, uint6
 
 		spdk_json_write_named_object_begin(g_json, "object");
 		if (d->new_object) {
-			object_type =  g_flags->object[d->object_type].id_prefix;
+			object_type =  g_file->object[d->object_type].id_prefix;
 			spdk_json_write_named_string_fmt(g_json, "id", "%c%" PRIu64, object_type,
 							 entry->object_index);
 		} else if (d->object_type != OBJECT_NONE) {
-			object_type =  g_flags->object[d->object_type].id_prefix;
+			object_type =  g_file->object[d->object_type].id_prefix;
 			if (entry->object_index != UINT64_MAX) {
 				spdk_json_write_named_string_fmt(g_json, "id", "%c%" PRIu64,
 								 object_type,
@@ -225,7 +240,7 @@ print_event_json(struct spdk_trace_parser_entry *entry, uint64_t tsc_rate, uint6
 	/* Print related objects array */
 	if (entry->related_index != UINT64_MAX) {
 		spdk_json_write_named_string_fmt(g_json, "related", "%c%" PRIu64,
-						 g_flags->object[entry->related_type].id_prefix,
+						 g_file->object[entry->related_type].id_prefix,
 						 entry->related_index);
 	}
 
@@ -234,13 +249,13 @@ print_event_json(struct spdk_trace_parser_entry *entry, uint64_t tsc_rate, uint6
 		for (i = 0; i < d->num_args; ++i) {
 			switch (d->args[i].type) {
 			case SPDK_TRACE_ARG_TYPE_PTR:
-				spdk_json_write_uint64(g_json, (uint64_t)entry->args[i].pointer);
+				spdk_json_write_uint64(g_json, (uint64_t)entry->args[i].u.pointer);
 				break;
 			case SPDK_TRACE_ARG_TYPE_INT:
-				spdk_json_write_uint64(g_json, entry->args[i].integer);
+				spdk_json_write_uint64(g_json, entry->args[i].u.integer);
 				break;
 			case SPDK_TRACE_ARG_TYPE_STR:
-				spdk_json_write_string(g_json, entry->args[i].string);
+				spdk_json_write_string(g_json, entry->args[i].u.string);
 				break;
 			}
 		}
@@ -248,16 +263,6 @@ print_event_json(struct spdk_trace_parser_entry *entry, uint64_t tsc_rate, uint6
 	}
 
 	spdk_json_write_object_end(g_json);
-}
-
-static void
-process_event(struct spdk_trace_parser_entry *e, uint64_t tsc_rate, uint64_t tsc_offset)
-{
-	if (g_json == NULL) {
-		print_event(e, tsc_rate, tsc_offset);
-	} else {
-		print_event_json(e, tsc_rate, tsc_offset);
-	}
 }
 
 static void
@@ -271,11 +276,11 @@ print_tpoint_definitions(void)
 		return;
 	}
 
-	spdk_json_write_named_uint64(g_json, "tsc_rate", g_flags->tsc_rate);
+	spdk_json_write_named_uint64(g_json, "tsc_rate", g_file->tsc_rate);
 	spdk_json_write_named_array_begin(g_json, "tpoints");
 
-	for (i = 0; i < SPDK_COUNTOF(g_flags->tpoint); ++i) {
-		tpoint = &g_flags->tpoint[i];
+	for (i = 0; i < SPDK_COUNTOF(g_file->tpoint); ++i) {
+		tpoint = &g_file->tpoint[i];
 		if (tpoint->tpoint_id == 0) {
 			continue;
 		}
@@ -318,6 +323,67 @@ print_json(void *cb_ctx, const void *data, size_t size)
 	return 0;
 }
 
+static int
+trace_print(int lcore)
+{
+	struct spdk_trace_parser_entry	entry;
+	int		i;
+	uint64_t	tsc_offset, entry_count;
+	uint64_t	tsc_rate = g_file->tsc_rate;
+
+	printf("TSC Rate: %ju\n", tsc_rate);
+	for (i = 0; i < SPDK_TRACE_MAX_LCORE; ++i) {
+		if (lcore == SPDK_TRACE_MAX_LCORE || i == lcore) {
+			entry_count = spdk_trace_parser_get_entry_count(g_parser, i);
+			if (entry_count > 0) {
+				printf("Trace Size of lcore (%d): %ju\n", i, entry_count);
+			}
+		}
+	}
+
+	tsc_offset = spdk_trace_parser_get_tsc_offset(g_parser);
+	while (spdk_trace_parser_next_entry(g_parser, &entry)) {
+		if (entry.entry->tsc < tsc_offset) {
+			continue;
+		}
+		print_event(&entry, tsc_rate, tsc_offset);
+	}
+
+	return 0;
+}
+
+static int
+trace_print_json(void)
+{
+	struct spdk_trace_parser_entry	entry;
+	uint64_t	tsc_offset;
+	uint64_t	tsc_rate = g_file->tsc_rate;
+
+	g_json = spdk_json_write_begin(print_json, NULL, 0);
+	if (g_json == NULL) {
+		fprintf(stderr, "Failed to allocate JSON write context\n");
+		return -1;
+	}
+
+	spdk_json_write_object_begin(g_json);
+	print_tpoint_definitions();
+	spdk_json_write_named_array_begin(g_json, "entries");
+
+	tsc_offset = spdk_trace_parser_get_tsc_offset(g_parser);
+	while (spdk_trace_parser_next_entry(g_parser, &entry)) {
+		if (entry.entry->tsc < tsc_offset) {
+			continue;
+		}
+		print_event_json(&entry, tsc_rate, tsc_offset);
+	}
+
+	spdk_json_write_array_end(g_json);
+	spdk_json_write_object_end(g_json);
+	spdk_json_write_end(g_json);
+
+	return 0;
+}
+
 static void
 usage(void)
 {
@@ -333,22 +399,41 @@ usage(void)
 	fprintf(stderr, "                       -i or -p must be specified)\n");
 	fprintf(stderr, "                 '-f' to specify a tracepoint file name\n");
 	fprintf(stderr, "                      (-s and -f are mutually exclusive)\n");
+#if defined(__linux__)
+	fprintf(stderr, "                 Without -s or -f, %s will look for\n", g_exe_name);
+	fprintf(stderr, "                      newest trace file in /dev/shm\n");
+#endif
 	fprintf(stderr, "                 '-j' to use JSON to format the output\n");
 }
+
+#if defined(__linux__)
+static time_t g_mtime = 0;
+static char g_newest_file[PATH_MAX] = {};
+
+static int
+get_newest(const char *path, const struct stat *sb, int tflag, struct FTW *ftw)
+{
+	if (tflag == FTW_F && sb->st_mtime > g_mtime &&
+	    strstr(path, SPDK_TRACE_SHM_NAME_BASE) != NULL) {
+		g_mtime = sb->st_mtime;
+		strncpy(g_newest_file, path, PATH_MAX - 1);
+	}
+	return 0;
+}
+#endif
 
 int
 main(int argc, char **argv)
 {
 	struct spdk_trace_parser_opts	opts;
-	struct spdk_trace_parser_entry	entry;
+	enum print_format_type	print_format = PRINT_FMT_DEFAULT;
 	int				lcore = SPDK_TRACE_MAX_LCORE;
-	uint64_t			tsc_offset, entry_count;
 	const char			*app_name = NULL;
 	const char			*file_name = NULL;
-	int				op, i;
+	int				op;
+	int				rc = 0;
 	char				shm_name[64];
 	int				shm_id = -1, shm_pid = -1;
-	bool				json = false;
 
 	g_exe_name = argv[0];
 	while ((op = getopt(argc, argv, "c:f:i:jp:s:t")) != -1) {
@@ -378,7 +463,7 @@ main(int argc, char **argv)
 			g_print_tsc = true;
 			break;
 		case 'j':
-			json = true;
+			print_format = PRINT_FMT_JSON;
 			break;
 		default:
 			usage();
@@ -393,17 +478,21 @@ main(int argc, char **argv)
 	}
 
 	if (file_name == NULL && app_name == NULL) {
+#if defined(__linux__)
+		nftw("/dev/shm", get_newest, 1, 0);
+		if (strlen(g_newest_file) > 0) {
+			file_name = g_newest_file;
+			printf("Using newest trace file found: %s\n", file_name);
+		} else {
+			fprintf(stderr, "No shm file found and -f not specified\n");
+			usage();
+			exit(1);
+		}
+#else
 		fprintf(stderr, "One of -f and -s must be specified\n");
 		usage();
 		exit(1);
-	}
-
-	if (json) {
-		g_json = spdk_json_write_begin(print_json, NULL, 0);
-		if (g_json == NULL) {
-			fprintf(stderr, "Failed to allocate JSON write context\n");
-			exit(1);
-		}
+#endif
 	}
 
 	if (!file_name) {
@@ -424,39 +513,18 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	g_flags = spdk_trace_parser_get_flags(g_parser);
-	if (!g_json) {
-		printf("TSC Rate: %ju\n", g_flags->tsc_rate);
-	} else {
-		spdk_json_write_object_begin(g_json);
-		print_tpoint_definitions();
-		spdk_json_write_named_array_begin(g_json, "entries");
-	}
-
-	for (i = 0; i < SPDK_TRACE_MAX_LCORE; ++i) {
-		if (lcore == SPDK_TRACE_MAX_LCORE || i == lcore) {
-			entry_count = spdk_trace_parser_get_entry_count(g_parser, i);
-			if (entry_count > 0) {
-				printf("Trace Size of lcore (%d): %ju\n", i, entry_count);
-			}
-		}
-	}
-
-	tsc_offset = spdk_trace_parser_get_tsc_offset(g_parser);
-	while (spdk_trace_parser_next_entry(g_parser, &entry)) {
-		if (entry.entry->tsc < tsc_offset) {
-			continue;
-		}
-		process_event(&entry, g_flags->tsc_rate, tsc_offset);
-	}
-
-	if (g_json != NULL) {
-		spdk_json_write_array_end(g_json);
-		spdk_json_write_object_end(g_json);
-		spdk_json_write_end(g_json);
+	g_file = spdk_trace_parser_get_file(g_parser);
+	switch (print_format) {
+	case PRINT_FMT_JSON:
+		rc = trace_print_json();
+		break;
+	case PRINT_FMT_DEFAULT:
+	default:
+		rc = trace_print(lcore);
+		break;
 	}
 
 	spdk_trace_parser_cleanup(g_parser);
 
-	return (0);
+	return rc;
 }

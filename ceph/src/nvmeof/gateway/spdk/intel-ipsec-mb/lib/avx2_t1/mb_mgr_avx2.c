@@ -1,5 +1,5 @@
 /*******************************************************************************
- Copyright (c) 2012-2022, Intel Corporation
+ Copyright (c) 2012-2023, Intel Corporation
 
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
@@ -50,14 +50,20 @@ init_mb_mgr_avx2_internal(IMB_MGR *state, const int reset_mgrs)
         /* reset error status */
         imb_set_errno(state, 0);
 
-        state->features = cpu_feature_adjust(state->flags,
-                                             cpu_feature_detect());
+        state->features = cpu_feature_adjust(state->flags, cpu_feature_detect());
 
-        if ((state->features & IMB_CPUFLAGS_AVX2_T2) ==
-            IMB_CPUFLAGS_AVX2_T2)
+#ifdef AVX_IFMA
+        if ((state->features & IMB_CPUFLAGS_AVX2_T3) == IMB_CPUFLAGS_AVX2_T3) {
+                init_mb_mgr_avx2_t3_internal(state, reset_mgrs);
+                return;
+        }
+#endif
+        if ((state->features & IMB_CPUFLAGS_AVX2_T2) == IMB_CPUFLAGS_AVX2_T2) {
                 init_mb_mgr_avx2_t2_internal(state, reset_mgrs);
-        else
-                init_mb_mgr_avx2_t1_internal(state, reset_mgrs);
+                return;
+        }
+
+        init_mb_mgr_avx2_t1_internal(state, reset_mgrs);
 }
 
 void
@@ -69,32 +75,38 @@ init_mb_mgr_avx2(IMB_MGR *state)
                 imb_set_errno(state, IMB_ERR_SELFTEST);
 }
 
-IMB_JOB *submit_job_avx2(IMB_MGR *state)
+IMB_JOB *
+submit_job_avx2(IMB_MGR *state)
 {
         return IMB_SUBMIT_JOB(state);
 }
 
-IMB_JOB *flush_job_avx2(IMB_MGR *state)
+IMB_JOB *
+flush_job_avx2(IMB_MGR *state)
 {
         return IMB_FLUSH_JOB(state);
 }
 
-uint32_t queue_size_avx2(IMB_MGR *state)
+uint32_t
+queue_size_avx2(IMB_MGR *state)
 {
         return IMB_QUEUE_SIZE(state);
 }
 
-IMB_JOB *submit_job_nocheck_avx2(IMB_MGR *state)
+IMB_JOB *
+submit_job_nocheck_avx2(IMB_MGR *state)
 {
         return IMB_SUBMIT_JOB_NOCHECK(state);
 }
 
-IMB_JOB *get_next_job_avx2(IMB_MGR *state)
+IMB_JOB *
+get_next_job_avx2(IMB_MGR *state)
 {
         return IMB_GET_NEXT_JOB(state);
 }
 
-IMB_JOB *get_completed_job_avx2(IMB_MGR *state)
+IMB_JOB *
+get_completed_job_avx2(IMB_MGR *state)
 {
         return IMB_GET_COMPLETED_JOB(state);
 }

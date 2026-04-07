@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2022, Intel Corporation
+;; Copyright (c) 2012-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -27,8 +27,8 @@
 
 ; SHA1 code, hybrid, rolled, interleaved
 ; Uses AVX instructions
-%include "include/os.asm"
-%include "include/clear_regs.asm"
+%include "include/os.inc"
+%include "include/clear_regs.inc"
 
 mksection .rodata
 default rel

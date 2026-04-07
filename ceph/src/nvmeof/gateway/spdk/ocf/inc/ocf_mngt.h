@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_MNGT_H__
@@ -33,6 +34,12 @@ struct ocf_mngt_core_config {
 	 */
 	uint8_t volume_type;
 
+        /**
+         * @brief Optional opaque volume parameters, passed down to core volume
+         * open callback
+         */
+        void *volume_params;
+
 	/**
 	 * @brief Add core to pool if cache isn't present or add core to
 	 *	earlier loaded cache
@@ -44,6 +51,9 @@ struct ocf_mngt_core_config {
 
 	uint32_t seq_cutoff_promotion_count;
 		/*!< Sequential cutoff promotion request count */
+
+	bool seq_cutoff_promote_on_threshold;
+		/*!< Sequential cutoff promote on threshold */
 
 	struct {
 		void *data;
@@ -65,6 +75,7 @@ static inline void ocf_mngt_core_config_set_default(
 	cfg->try_add = false;
 	cfg->seq_cutoff_threshold = 1024;
 	cfg->seq_cutoff_promotion_count = 8;
+	cfg->seq_cutoff_promote_on_threshold = false;
 	cfg->user_metadata.data = NULL;
 	cfg->user_metadata.size = 0;
 }
@@ -256,11 +267,6 @@ struct ocf_mngt_cache_config {
 	 */
 	ocf_cache_line_size_t cache_line_size;
 
-	/**
-	 * @brief Metadata layout (stripping/sequential)
-	 */
-	ocf_metadata_layout_t metadata_layout;
-
 	bool metadata_volatile;
 
 	/**
@@ -304,7 +310,6 @@ static inline void ocf_mngt_cache_config_set_default(
 	cfg->cache_mode = ocf_cache_mode_default;
 	cfg->promotion_policy = ocf_promotion_default;
 	cfg->cache_line_size = ocf_cache_line_size_4;
-	cfg->metadata_layout = ocf_metadata_layout_default;
 	cfg->metadata_volatile = false;
 	cfg->backfill.max_queue_size = 65536;
 	cfg->backfill.queue_unblock_size = 60000;
@@ -328,17 +333,6 @@ int ocf_mngt_cache_start(ocf_ctx_t ctx, ocf_cache_t *cache,
 		struct ocf_mngt_cache_config *cfg, void *priv);
 
 /**
- * @brief Set queue to be used during management operations
- *
- * @param[in] cache Cache object
- * @param[in] queue Queue object
- *
- * @retval 0 Success
- * @retval Non-zero Error occurred
- */
-int ocf_mngt_cache_set_mngt_queue(ocf_cache_t cache, ocf_queue_t queue);
-
-/**
  * @brief Completion callback of cache stop operation
  *
  * @param[in] cache Cache handle
@@ -359,23 +353,48 @@ void ocf_mngt_cache_stop(ocf_cache_t cache,
 		ocf_mngt_cache_stop_end_t cmpl, void *priv);
 
 /**
- * @brief Cache attach configuration
+ * @brief Caching device configuration
  */
 struct ocf_mngt_cache_device_config {
 	/**
-	 * @brief Cache volume UUID
+	 * @brief Cache volume
+	 *
+	 * The volume ownership is moved to the context of operation that takes
+	 * this config. Thus the volume is being effectively moved using
+	 * ocf_volume_move(), leaving the original volume uninitialized.
+	 *
+	 * Note that if the original volume was instantiated using *_create
+	 * function, it still needs to be destroyed using ocf_volume_destroy()
+	 * to deallocate the memory.
 	 */
-	struct ocf_volume_uuid uuid;
+	ocf_volume_t volume;
+
+	/**
+	 * @brief If set, cache features (like discard) are tested
+	 *		before starting cache
+	 */
+	bool perform_test;
+
+	/**
+	 * @brief Optional opaque volume parameters, passed down to cache volume
+	 * open callback
+	 */
+	void *volume_params;
+};
+
+/**
+ * @brief Cache attach configuration
+ */
+struct ocf_mngt_cache_attach_config {
+	/**
+	 * @brief Cache device configuration - must be the first field
+	 */
+	struct ocf_mngt_cache_device_config device;
 
 	/**
 	 * @brief Cache line size
 	 */
 	ocf_cache_line_size_t cache_line_size;
-
-	/**
-	 * @brief Cache volume type
-	 */
-	uint8_t volume_type;
 
 	/**
 	 * @brief Automatically open core volumes when loading cache
@@ -401,54 +420,56 @@ struct ocf_mngt_cache_device_config {
 	bool force;
 
 	/**
-	 * @brief If set, cache features (like discard) are tested
-	 *		before starting cache
-	 */
-	bool perform_test;
-
-	/**
 	 * @brief If set, cache device will be discarded on cache start
 	 */
 	bool discard_on_start;
 
 	/**
-	 * @brief Optional opaque volume parameters, passed down to cache volume
-	 * open callback
+	 * @brief If set, asynchronous cleaning will be disabled
+	 *
+	 * Has similar effect to setting cleaning policy to NOP, but
+	 * additionally prevents allocating "cleaning" metadata section,
+	 * which can reduce memory footprint by up to 20%.
+	 *
+	 * When this option is selected, any attempt to change the cleaning
+	 * policy will fail.
+	 *
+	 * @note This option is meaningful only with ocf_mngt_cache_attach().
+	 *       When used with ocf_mngt_cache_load() it's ignored.
 	 */
-	void *volume_params;
+	bool disable_cleaner;
 };
 
 /**
- * @brief Initialize core config to default values
+ * @brief Initialize attach config to default values
  *
- * @note This function doesn't initiialize uuid and volume_type fields
+ * @note This function doesn't initialize uuid and volume_type fields
  *       which have no default values and are required to be set by user.
  *
  * @param[in] cfg Cache device config stucture
  */
-static inline void ocf_mngt_cache_device_config_set_default(
-		struct ocf_mngt_cache_device_config *cfg)
+static inline void ocf_mngt_cache_attach_config_set_default(
+		struct ocf_mngt_cache_attach_config *cfg)
 {
 	cfg->cache_line_size = ocf_cache_line_size_none;
 	cfg->open_cores = true;
 	cfg->force = false;
-	cfg->perform_test = true;
 	cfg->discard_on_start = true;
-	cfg->volume_params = NULL;
+	cfg->disable_cleaner = false;
+	cfg->device.perform_test = true;
+	cfg->device.volume_params = NULL;
 }
 
 /**
  * @brief Get amount of free RAM needed to attach cache volume
  *
  * @param[in] cache Cache handle
- * @param[in] cfg Caching device configuration
- * @param[out] ram_needed Amount of RAM needed in bytes
+ * @param[in] volume_size Volume size in bytes
  *
- * @retval 0 Success
- * @retval Non-zero Error occurred
+ * @retval Amount of RAM needed in bytes
  */
-int ocf_mngt_get_ram_needed(ocf_cache_t cache,
-		struct ocf_mngt_cache_device_config *cfg, uint64_t *ram_needed);
+uint64_t ocf_mngt_get_ram_needed(ocf_cache_t cache,
+		uint64_t volume_size);
 
 /**
  * @brief Completion callback of cache attach operation
@@ -469,7 +490,7 @@ typedef void (*ocf_mngt_cache_attach_end_t)(ocf_cache_t cache,
  * @param[in] priv Completion callback context
  */
 void ocf_mngt_cache_attach(ocf_cache_t cache,
-		struct ocf_mngt_cache_device_config *cfg,
+		struct ocf_mngt_cache_attach_config *cfg,
 		ocf_mngt_cache_attach_end_t cmpl, void *priv);
 
 /**
@@ -511,8 +532,112 @@ typedef void (*ocf_mngt_cache_load_end_t)(ocf_cache_t cache,
  * @param[in] priv Completion callback context
  */
 void ocf_mngt_cache_load(ocf_cache_t cache,
-		struct ocf_mngt_cache_device_config *cfg,
+		struct ocf_mngt_cache_attach_config *cfg,
 		ocf_mngt_cache_load_end_t cmpl, void *priv);
+
+/**
+ * @brief Completion callback of cache standby attach operation
+ *
+ * @param[in] cache Cache handle
+ * @param[in] priv Callback context
+ * @param[in] error Error code (zero on success)
+ */
+typedef void (*ocf_mngt_cache_standby_attach_end_t)(ocf_cache_t cache,
+		void *priv, int error);
+
+/**
+ * @brief Attach caching device to cache instance in failover standby mode
+ *
+ * @param[in] cache Cache handle
+ * @param[in] cfg Caching device configuration
+ * @param[in] cmpl Completion callback
+ * @param[in] priv Completion callback context
+ */
+void ocf_mngt_cache_standby_attach(ocf_cache_t cache,
+		struct ocf_mngt_cache_attach_config *cfg,
+		ocf_mngt_cache_standby_attach_end_t cmpl, void *priv);
+
+/**
+ * @brief Completion callback of cache standby load operation
+ *
+ * @param[in] cache Cache handle
+ * @param[in] priv Callback context
+ * @param[in] error Error code (zero on success)
+ */
+typedef void (*ocf_mngt_cache_standby_load_end_t)(ocf_cache_t cache,
+		void *priv, int error);
+/**
+ * @brief Load cache instance in failover standby mode
+ *
+ * @param[in] cache Cache handle
+ * @param[in] cfg Caching device configuration
+ * @param[in] cmpl Completion callback
+ * @param[in] priv Completion callback context
+ */
+void ocf_mngt_cache_standby_load(ocf_cache_t cache,
+		struct ocf_mngt_cache_attach_config *cfg,
+		ocf_mngt_cache_standby_load_end_t cmpl, void *priv);
+
+/**
+ * @brief Completion callback of cache standby detach operation
+ *
+ * @param[in] cache Cache handle
+ * @param[in] priv Callback context
+ * @param[in] error Error code (zero on success)
+ */
+typedef void (*ocf_mngt_cache_standby_detach_end_t)(void *priv, int error);
+
+/**
+ * @brief Detach cache volume from cache in standby mode
+ *
+ * @param[in] cache Cache handle
+ * @param[in] cmpl Completion callback
+ * @param[in] priv Completion callback context
+ */
+void ocf_mngt_cache_standby_detach(ocf_cache_t cache,
+		ocf_mngt_cache_standby_detach_end_t cmpl, void *priv);
+
+/**
+ * @brief Cache standby activate configuration
+ */
+struct ocf_mngt_cache_standby_activate_config {
+	/**
+	 * @brief Cache device configuration - must be the first field
+	 */
+	struct ocf_mngt_cache_device_config device;
+
+	/**
+	 * @brief Automatically open core volumes when activating cache
+	 *
+	 * If set to false, cache load will not attempt to open core volumes,
+	 * and so cores will be marked "inactive" unless their volumes were
+	 * earlier added to the core pool. In such case user will be expected
+	 * to add cores later using function ocf_mngt_cache_add_core().
+	 */
+	bool open_cores;
+};
+
+/**
+ * @brief Completion callback of standby cache activate operation
+ *
+ * @param[in] cache Cache handle
+ * @param[in] priv Callback context
+ * @param[in] error Error code (zero on success)
+ */
+typedef void (*ocf_mngt_cache_standby_activate_end_t)(ocf_cache_t cache,
+		void *priv, int error);
+
+/**
+ * @brief Activate standby cache instance
+ *
+ * @param[in] cache Cache handle
+ * @param[in] cfg Caching device configuration
+ * @param[in] cmpl Completion callback
+ * @param[in] priv Completion callback context
+ */
+void ocf_mngt_cache_standby_activate(ocf_cache_t cache,
+		struct ocf_mngt_cache_standby_activate_config *cfg,
+		ocf_mngt_cache_standby_activate_end_t cmpl, void *priv);
 
 /* Adding and removing cores */
 
@@ -815,10 +940,12 @@ int ocf_mngt_cache_promotion_set_policy(ocf_cache_t cache, ocf_promotion_t type)
  * @brief Get promotion policy in given cache
  *
  * @param[in] cache Cache handle
+ * @param[out] type Policy type
  *
- * @retval Currently set promotion policy type
+ * @retval 0 success
+ * @retval Non-zero Error occurred and policy type could not be retrieved
  */
-ocf_promotion_t ocf_mngt_cache_promotion_get_policy(ocf_cache_t cache);
+int ocf_mngt_cache_promotion_get_policy(ocf_cache_t cache, ocf_promotion_t *type);
 
 /**
  * @brief Set promotion policy parameter for given cache
@@ -1049,6 +1176,7 @@ int ocf_mngt_core_set_seq_cutoff_promotion_count(ocf_core_t core,
  */
 int ocf_mngt_core_set_seq_cutoff_promotion_count_all(ocf_cache_t cache,
 		uint32_t count);
+
 /**
  * @brief Get core sequential cutoff promotion threshold
  *
@@ -1060,6 +1188,50 @@ int ocf_mngt_core_set_seq_cutoff_promotion_count_all(ocf_cache_t cache,
  */
 int ocf_mngt_core_get_seq_cutoff_promotion_count(ocf_core_t core,
 		uint32_t *count);
+
+/**
+ * @brief Set whether to promote core sequential cutoff stream
+ * to global structures when threshold is reached
+ *
+ * @attention This changes only runtime state. To make changes persistent
+ *            use function ocf_mngt_cache_save().
+ *
+ * @param[in] core Core handle
+ * @param[in] promote Whether to promote or not
+ *
+ * @retval 0 Sequential cutoff promote on threshold has been set successfully
+ * @retval Non-zero Error occured and promote on threshold hasn't been updated
+ */
+int ocf_mngt_core_set_seq_cutoff_promote_on_threshold(ocf_core_t core,
+		bool promote);
+
+/**
+ * @brief Set whether to promote sequential cutoff stream
+ * to global structures when threshold is reached for all cores in cache
+ *
+ * @attention This changes only runtime state. To make changes persistent
+ *            use function ocf_mngt_cache_save().
+ *
+ * @param[in] cache Cache handle
+ * @param[in] promote Whether to promote or not
+ *
+ * @retval 0 Sequential cutoff promote on threshold has been set successfully
+ * @retval Non-zero Error occured and promote on threshold hasn't been updated
+ */
+int ocf_mngt_core_set_seq_cutoff_promote_on_threshold_all(ocf_cache_t cache,
+		bool promote);
+
+/**
+ * @brief Get core sequential cutoff promote on threshold switch value
+ *
+ * @param[in] core Core handle
+ * @param[out] promote Promote on threshold
+ *
+ * @retval 0 Sequential cutoff promote on threshold retrieved successfully
+ * @retval Non-zero Error occured and value could not be retrieved
+ */
+int ocf_mngt_core_get_seq_cutoff_promote_on_threshold(ocf_core_t core,
+		bool *promote);
 
 /**
  * @brief Set cache fallback Pass Through error threshold
@@ -1091,6 +1263,7 @@ int ocf_mngt_cache_get_fallback_pt_error_threshold(ocf_cache_t cache,
  * @param[in] cache Cache handle
  *
  * @retval 0 Threshold have been reset successfully
+ * @retval Non-zero Error occured
  */
 int ocf_mngt_cache_reset_fallback_pt_error_counter(ocf_cache_t cache);
 

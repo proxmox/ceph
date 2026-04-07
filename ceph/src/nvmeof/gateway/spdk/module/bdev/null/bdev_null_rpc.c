@@ -11,44 +11,31 @@
 
 #include "bdev_null.h"
 
-struct rpc_construct_null {
-	char *name;
-	char *uuid;
-	uint64_t num_blocks;
-	uint32_t block_size;
-	uint32_t md_size;
-	int32_t dif_type;
-	bool dif_is_head_of_md;
-};
-
 static void
-free_rpc_construct_null(struct rpc_construct_null *req)
+free_rpc_construct_null(struct null_bdev_opts *req)
 {
 	free(req->name);
-	free(req->uuid);
 }
 
 static const struct spdk_json_object_decoder rpc_construct_null_decoders[] = {
-	{"name", offsetof(struct rpc_construct_null, name), spdk_json_decode_string},
-	{"uuid", offsetof(struct rpc_construct_null, uuid), spdk_json_decode_string, true},
-	{"num_blocks", offsetof(struct rpc_construct_null, num_blocks), spdk_json_decode_uint64},
-	{"block_size", offsetof(struct rpc_construct_null, block_size), spdk_json_decode_uint32},
-	{"md_size", offsetof(struct rpc_construct_null, md_size), spdk_json_decode_uint32, true},
-	{"dif_type", offsetof(struct rpc_construct_null, dif_type), spdk_json_decode_int32, true},
-	{"dif_is_head_of_md", offsetof(struct rpc_construct_null, dif_is_head_of_md), spdk_json_decode_bool, true},
+	{"name", offsetof(struct null_bdev_opts, name), spdk_json_decode_string},
+	{"uuid", offsetof(struct null_bdev_opts, uuid), spdk_json_decode_uuid, true},
+	{"num_blocks", offsetof(struct null_bdev_opts, num_blocks), spdk_json_decode_uint64},
+	{"block_size", offsetof(struct null_bdev_opts, block_size), spdk_json_decode_uint32},
+	{"physical_block_size", offsetof(struct null_bdev_opts, physical_block_size), spdk_json_decode_uint32, true},
+	{"md_size", offsetof(struct null_bdev_opts, md_size), spdk_json_decode_uint32, true},
+	{"dif_type", offsetof(struct null_bdev_opts, dif_type), spdk_json_decode_int32, true},
+	{"dif_is_head_of_md", offsetof(struct null_bdev_opts, dif_is_head_of_md), spdk_json_decode_bool, true},
+	{"dif_pi_format", offsetof(struct null_bdev_opts, dif_pi_format), spdk_json_decode_uint32, true},
 };
 
 static void
 rpc_bdev_null_create(struct spdk_jsonrpc_request *request,
 		     const struct spdk_json_val *params)
 {
-	struct rpc_construct_null req = {};
+	struct null_bdev_opts req = {};
 	struct spdk_json_write_ctx *w;
-	struct spdk_uuid *uuid = NULL;
-	struct spdk_uuid decoded_uuid;
 	struct spdk_bdev *bdev;
-	struct spdk_null_bdev_opts opts = {};
-	uint32_t data_block_size;
 	int rc = 0;
 
 	if (spdk_json_decode_object(params, rpc_construct_null_decoders,
@@ -60,53 +47,7 @@ rpc_bdev_null_create(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	if (req.block_size < req.md_size) {
-		spdk_jsonrpc_send_error_response_fmt(request, -EINVAL,
-						     "Interleaved metadata size can not be greater than block size");
-		goto cleanup;
-	}
-	data_block_size = req.block_size - req.md_size;
-	if (data_block_size % 512 != 0) {
-		spdk_jsonrpc_send_error_response_fmt(request, -EINVAL,
-						     "Data block size %u is not a multiple of 512", req.block_size);
-		goto cleanup;
-	}
-
-	if (req.num_blocks == 0) {
-		spdk_jsonrpc_send_error_response(request, -EINVAL,
-						 "Disk num_blocks must be greater than 0");
-		goto cleanup;
-	}
-
-	if (req.uuid) {
-		if (spdk_uuid_parse(&decoded_uuid, req.uuid)) {
-			spdk_jsonrpc_send_error_response(request, -EINVAL,
-							 "Failed to parse bdev UUID");
-			goto cleanup;
-		}
-		uuid = &decoded_uuid;
-	}
-
-	if (req.dif_type < SPDK_DIF_DISABLE || req.dif_type > SPDK_DIF_TYPE3) {
-		spdk_jsonrpc_send_error_response(request, -EINVAL, "Invalid protection information type");
-		goto cleanup;
-	}
-
-	if (req.dif_type != SPDK_DIF_DISABLE && !req.md_size) {
-		spdk_jsonrpc_send_error_response(request, -EINVAL,
-						 "Interleaved metadata size should be set for DIF");
-		goto cleanup;
-	}
-
-	opts.name = req.name;
-	opts.uuid = uuid;
-	opts.num_blocks = req.num_blocks;
-	opts.block_size = req.block_size;
-	opts.md_size = req.md_size;
-	opts.md_interleave = true;
-	opts.dif_type = req.dif_type;
-	opts.dif_is_head_of_md = req.dif_is_head_of_md;
-	rc = bdev_null_create(&bdev, &opts);
+	rc = bdev_null_create(&bdev, &req);
 	if (rc) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
 		goto cleanup;

@@ -74,6 +74,18 @@ A snapshot can be removed only if there is a single clone on top of it. The rela
 The cluster map of clone and snapshot will be merged and entries for unallocated clusters in the clone will be updated with
 addresses from the snapshot cluster map. The entire operation modifies metadata only - no data is copied during this process.
 
+### External Snapshots
+
+With the external snapshots feature, clones can be made of any bdev. These clones are commonly called *esnap clones*.
+Esnap clones work very similarly to thin provisioning. Rather than the back device being an zeroes device, the external snapshot
+bdev is used as the back device.
+
+![Clone of External Snapshot](lvol_esnap_clone.svg)
+
+A bdev that is used as an external snapshot cannot be opened for writing by anything else so long as an esnap clone exists.
+
+A bdev may have multiple esnap clones and esnap clones can themselves be snapshotted and cloned.
+
 ### Inflation {#lvol_inflation}
 
 Blobs can be inflated to copy data from backing devices (e.g. snapshots) and allocate all remaining clusters. As a result of this
@@ -90,7 +102,7 @@ on each other, multiple calls need to be issued.
 
 ## Configuring Logical Volumes
 
-There is no static configuration available for logical volumes. All configuration is done trough RPC. Information about
+There is no static configuration available for logical volumes. All configuration is done through RPC. Information about
 logical volumes is kept on block devices.
 
 ## RPC overview {#lvol_rpc}
@@ -138,6 +150,12 @@ bdev_lvol_create [-h] [-u UUID] [-l LVS_NAME] [-t] [-c CLEAR_METHOD] lvol_name s
     optional arguments:
     -h, --help  show help
     -c, --clear-method specify data clusters clear method "none", "unmap" (default), "write_zeroes"
+bdev_lvol_get_lvols [-h] [-u LVS_UUID] [-l LVS_NAME]
+    Display logical volume list, including those that do not have associated bdevs.
+    optional arguments:
+    -h, --help  show help
+    -u LVS_UUID, --lvs_uuid UUID  show volumes only in the specified lvol store
+    -l LVS_NAME, --lvs_name LVS_NAME  show volumes only in the specified lvol store
 bdev_get_bdevs [-h] [-b NAME]
     User can view created bdevs using this call including those created on top of lvols.
     optional arguments:
@@ -153,6 +171,10 @@ bdev_lvol_snapshot [-h] lvol_name snapshot_name
     -h, --help  show help
 bdev_lvol_clone [-h] snapshot_name clone_name
     Create a clone with clone_name of a given lvol snapshot.
+    optional arguments:
+    -h, --help  show help
+bdev_lvol_clone_bdev [-h] bdev_name_or_uuid lvs_name clone_name
+    Create a clone with clone_name of a bdev. The bdev must not be an lvol in the lvs_name lvstore.
     optional arguments:
     -h, --help  show help
 bdev_lvol_rename [-h] old_name new_name
@@ -173,6 +195,24 @@ bdev_lvol_inflate [-h] name
     -h, --help  show help
 bdev_lvol_decouple_parent [-h] name
     Decouple parent of a logical volume
+    optional arguments:
+    -h, --help  show help
+bdev_lvol_start_shallow_copy [-h] src_lvol_name dst_bdev_name
+    Make a shallow copy of lvol over a given bdev
+    This RPC starts the operation and returns an identifier that can be used to query the status
+    of the operation with the RPC bdev_lvol_check_shallow_copy.
+    optional arguments:
+    -h, --help  show help
+bdev_lvol_check_shallow_copy [-h] operation_id
+    Get shallow copy status
+    optional arguments:
+    -h, --help  show help
+bdev_lvol_set_parent [-h] lvol_name snapshot_name
+    Set the parent snapshot of a lvol
+    optional arguments:
+    -h, --help  show help
+bdev_lvol_set_parent_bdev lvol_name esnap_name
+    Set the parent external snapshot of a lvol
     optional arguments:
     -h, --help  show help
 ```

@@ -1,6 +1,9 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
-#include <libxnvme_pp.h>
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include <libxnvme.h>
+#include <xnvme_geo.h>
 
 static inline const char *
 xnvme_geo_type_str(int type)
@@ -35,21 +38,27 @@ xnvme_geo_yaml(FILE *stream, const struct xnvme_geo *geo, int indent, const char
 	}
 
 	wrtn += fprintf(stream, "%*stype: %s%s", indent, "", xnvme_geo_type_str(geo->type), sep);
-	wrtn += fprintf(stream, "%*snpugrp: %u%s", indent, "", geo->npugrp, sep);
-	wrtn += fprintf(stream, "%*snpunit: %u%s", indent, "", geo->npunit, sep);
-	wrtn += fprintf(stream, "%*snzone: %u%s", indent, "", geo->nzone, sep);
-	wrtn += fprintf(stream, "%*snsect: %zu%s", indent, "", geo->nsect, sep);
-	wrtn += fprintf(stream, "%*snbytes: %u%s", indent, "", geo->nbytes, sep);
-	wrtn += fprintf(stream, "%*snbytes_oob: %u%s", indent, "", geo->nbytes_oob, sep);
+	wrtn += fprintf(stream, "%*snpugrp: %" PRIu32 "%s", indent, "", geo->npugrp, sep);
+	wrtn += fprintf(stream, "%*snpunit: %" PRIu32 "%s", indent, "", geo->npunit, sep);
+	wrtn += fprintf(stream, "%*snzone: %" PRIu32 "%s", indent, "", geo->nzone, sep);
+	wrtn += fprintf(stream, "%*snsect: %" PRIu64 "%s", indent, "", geo->nsect, sep);
+	wrtn += fprintf(stream, "%*snbytes: %" PRIu32 "%s", indent, "", geo->nbytes, sep);
+	wrtn += fprintf(stream, "%*snbytes_oob: %" PRIu32 "%s", indent, "", geo->nbytes_oob, sep);
 
-	wrtn += fprintf(stream, "%*stbytes: %zu%s", indent, "", geo->tbytes, sep);
+	wrtn += fprintf(stream, "%*stbytes: %" PRIu64 "%s", indent, "", geo->tbytes, sep);
 
-	wrtn += fprintf(stream, "%*smdts_nbytes: %u%s", indent, "", geo->mdts_nbytes, sep);
+	wrtn += fprintf(stream, "%*smdts_nbytes: %" PRIu32 "%s", indent, "", geo->mdts_nbytes,
+			sep);
 
-	wrtn += fprintf(stream, "%*slba_nbytes: %u%s", indent, "", geo->lba_nbytes, sep);
-	wrtn += fprintf(stream, "%*slba_extended: %u%s", indent, "", geo->lba_extended, sep);
+	wrtn += fprintf(stream, "%*slba_nbytes: %" PRIu32 "%s", indent, "", geo->lba_nbytes, sep);
+	wrtn += fprintf(stream, "%*slba_extended: %" PRIu8 "%s", indent, "", geo->lba_extended,
+			sep);
 
-	wrtn += fprintf(stream, "%*sssw: %" PRIu64, indent, "", geo->ssw);
+	wrtn += fprintf(stream, "%*sssw: %" PRIu64 "%s", indent, "", geo->ssw, sep);
+
+	wrtn += fprintf(stream, "%*spi_type: %u%s", indent, "", geo->pi_type, sep);
+	wrtn += fprintf(stream, "%*spi_loc: %u%s", indent, "", geo->pi_loc, sep);
+	wrtn += fprintf(stream, "%*spi_format: %u", indent, "", geo->pi_format);
 
 	return wrtn;
 }

@@ -492,13 +492,14 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	if (trid->trtype == SPDK_NVME_TRANSPORT_PCIE) {
 		struct spdk_pci_device *dev = spdk_nvme_ctrlr_get_pci_device(ctrlr);
 
-		/* QEMU emulated SSDs can't handle this test, so we will skip
-		 *  them.  QEMU NVMe SSDs report themselves as VID == Intel.  So we need
-		 *  to check this specific 0x5845 device ID to know whether it's QEMU
-		 *  or not.
+		/* QEMU emulated SSDs can't handle this test, so we will skip them.  QEMU NVMe SSDs
+		 * report themselves as VID == (Intel|Red Hat).  So we need to check this specific
+		 * (0x5845|0x0010) device ID to know whether it's QEMU or not.
 		 */
-		if (spdk_pci_device_get_vendor_id(dev) == SPDK_PCI_VID_INTEL &&
-		    spdk_pci_device_get_device_id(dev) == 0x5845) {
+		if ((spdk_pci_device_get_vendor_id(dev) == SPDK_PCI_VID_INTEL &&
+		     spdk_pci_device_get_device_id(dev) == 0x5845) ||
+		    (spdk_pci_device_get_vendor_id(dev) == SPDK_PCI_VID_REDHAT &&
+		     spdk_pci_device_get_device_id(dev) == 0x0010)) {
 			g_qemu_ssd_found = true;
 			printf("Skipping QEMU NVMe SSD at %s\n", trid->traddr);
 			return;
@@ -634,6 +635,7 @@ main(int argc, char **argv)
 		return rc;
 	}
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "reset";
 	opts.core_mask = "0x1";
@@ -654,7 +656,7 @@ main(int argc, char **argv)
 
 	task_pool = spdk_mempool_create("task_pool", TASK_POOL_NUM,
 					sizeof(struct reset_task),
-					64, SPDK_ENV_SOCKET_ID_ANY);
+					64, SPDK_ENV_NUMA_ID_ANY);
 	if (!task_pool) {
 		fprintf(stderr, "Cannot create task pool\n");
 		return 1;

@@ -20,6 +20,7 @@
 #define IFCVF_SUBSYS_DEVICE_ID              0x001A
 #define IFCVF_SUBSYS_NET_DEVICE_ID          0x0001
 #define IFCVF_SUBSYS_BLK_DEVICE_ID          0x0002
+#define IFCVF_SUBSYS_DEFAULT_DEVICE_ID      0x0000
 
 #define IFCVF_MAX_QUEUES		32
 
@@ -114,11 +115,11 @@ struct ifcvf_pci_common_cfg {
 	u32 queue_used_hi;
 };
 
-struct ifcvf_net_config {
+struct __rte_packed_begin ifcvf_net_config {
 	u8    mac[6];
 	u16   status;
 	u16   max_virtqueue_pairs;
-} __rte_packed;
+} __rte_packed_end;
 
 struct ifcvf_pci_mem_resource {
 	u64      phys_addr; /**< Physical address, 0 if not resource. */

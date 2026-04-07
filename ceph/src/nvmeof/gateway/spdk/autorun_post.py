@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 #  SPDX-License-Identifier: BSD-3-Clause
 #  Copyright (C) 2017 Intel Corporation.
 #  All rights reserved.
@@ -7,6 +7,7 @@
 import shutil
 import subprocess
 import argparse
+import itertools
 import os
 import sys
 import glob
@@ -24,7 +25,7 @@ def generateTestCompletionTableByTest(output_dir, data_table):
     executed_tests = len(data_table_with_agent.groupby('Test'))
     tests_executions = len(data_table_with_agent.groupby(columns_to_group))
 
-    pivot_by_test = pd.pivot_table(data_table, index=columns_to_group)
+    pivot_by_test = pd.pivot_table(data_table, index=columns_to_group, aggfunc=any)
 
     output_file = os.path.join(output_dir, 'post_process', 'completions_table_by_test.html')
     with open(output_file, 'w') as f:
@@ -42,7 +43,7 @@ def generateTestCompletionTables(output_dir, completion_table):
     data_table.to_html(os.path.join(output_dir, 'completions_table.html'))
     os.makedirs(os.path.join(output_dir, "post_process"), exist_ok=True)
 
-    pivot_by_agent = pd.pivot_table(data_table, index=["Agent", "Domain", "Test"])
+    pivot_by_agent = pd.pivot_table(data_table, index=["Agent", "Domain", "Test"], aggfunc=any)
     pivot_by_agent.to_html(os.path.join(output_dir, "post_process", 'completions_table_by_agent.html'))
 
     generateTestCompletionTableByTest(output_dir, data_table)
@@ -58,43 +59,55 @@ def generateCoverageReport(output_dir, repo_dir):
     covfiles = [os.path.abspath(p) for p in glob.glob(coveragePath, recursive=True)]
     for f in covfiles:
         print(f)
+        normalizePaths(f, repo_dir)
     if len(covfiles) == 0:
         return
     lcov_opts = [
-        '--rc lcov_branch_coverage=1',
-        '--rc lcov_function_coverage=1',
-        '--rc genhtml_branch_coverage=1',
-        '--rc genhtml_function_coverage=1',
-        '--rc genhtml_legend=1',
-        '--rc geninfo_all_blocks=1',
+        '--rc', 'lcov_branch_coverage=1',
+        '--rc', 'lcov_function_coverage=1',
+        '--rc', 'genhtml_branch_coverage=1',
+        '--rc', 'genhtml_function_coverage=1',
+        '--rc', 'genhtml_legend=1',
+        '--rc', 'geninfo_all_blocks=1'
     ]
+
+    # HACK: This is a workaround for some odd CI assumptions
+    details = '--show-details'
+
     cov_total = os.path.abspath(os.path.join(output_dir, 'cov_total.info'))
     coverage = os.path.join(output_dir, 'coverage')
-    lcov = 'lcov' + ' ' + ' '.join(lcov_opts) + ' -q -a ' + ' -a '.join(covfiles) + ' -o ' + cov_total
-    genhtml = 'genhtml' + ' ' + ' '.join(lcov_opts) + ' -q ' + cov_total + ' --legend' + ' -t "Combined" --show-details -o ' + coverage
+    lcov = ['lcov', *lcov_opts, '-q', *itertools.chain(*[('-a', f) for f in covfiles]), '-o', cov_total]
+    genhtml = ['genhtml', *lcov_opts, '-q', cov_total, '--legend', '-t', 'Combined', *details.split(), '-o', coverage]
     try:
-        subprocess.check_call([lcov], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.check_call(lcov)
     except subprocess.CalledProcessError as e:
         print("lcov failed")
         print(e)
-        return
+        sys.exit(1)
 
-    with open(cov_total, 'r') as cov_total_file:
-        file_contents = cov_total_file.readlines()
-
-    replacement = "SF:" + repo_dir
-    os.remove(cov_total)
-    with open(cov_total, 'w+') as file:
-        for Line in file_contents:
-            Line = re.sub("^SF:.*/repo", replacement, Line)
-            file.write(Line + '\n')
     try:
-        subprocess.check_call([genhtml], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.check_call(genhtml)
     except subprocess.CalledProcessError as e:
         print("genhtml failed")
         print(e)
+        sys.exit(1)
     for f in covfiles:
         os.remove(f)
+    if os.path.exists(cov_total):
+        os.remove(cov_total)
+
+
+def normalizePaths(cov_file, repo_dir):
+    with open(cov_file, 'r') as fh:
+        replaced = None
+        file_contents = fh.read()
+        replacement = "SF:" + os.path.abspath(repo_dir) + "/"
+        if not re.search(rf'{replacement}', file_contents):
+            replaced = re.sub(r'SF:/[^/]+/spdk/', replacement, file_contents)
+
+    if replaced:
+        with open(cov_file, 'w') as fh:
+            fh.write(replaced)
 
 
 def collectOne(output_dir, dir_name):
@@ -117,8 +130,8 @@ def getCompletions(completionFile, test_list, test_completion_table):
     with open(completionFile, 'r') as completionList:
         completions = completionList.read()
 
-    asan_enabled = "asan" in completions
-    ubsan_enabled = "ubsan" in completions
+    asan_enabled = "using asan" in completions
+    ubsan_enabled = "using ubsan" in completions
 
     for line in completions.splitlines():
         try:

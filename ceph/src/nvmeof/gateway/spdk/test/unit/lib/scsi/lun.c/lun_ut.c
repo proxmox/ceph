@@ -5,7 +5,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "scsi/task.c"
 #include "scsi/lun.c"
@@ -242,6 +242,31 @@ lun_task_mgmt_execute_lun_reset(void)
 }
 
 static void
+lun_task_mgmt_execute_target_reset(void)
+{
+	struct spdk_scsi_lun *lun;
+	struct spdk_scsi_task mgmt_task = { 0 };
+	struct spdk_scsi_dev dev = { 0 };
+
+	lun = lun_construct();
+	lun->dev = &dev;
+
+	ut_init_task(&mgmt_task);
+	mgmt_task.lun = lun;
+	mgmt_task.function = SPDK_SCSI_TASK_FUNC_TARGET_RESET;
+
+	scsi_lun_execute_mgmt_task(lun, &mgmt_task);
+
+	/* Returns success */
+	CU_ASSERT_EQUAL(mgmt_task.status, SPDK_SCSI_STATUS_GOOD);
+	CU_ASSERT_EQUAL(mgmt_task.response, SPDK_SCSI_TASK_MGMT_RESP_SUCCESS);
+
+	lun_destruct(lun);
+
+	CU_ASSERT_EQUAL(g_task_count, 0);
+}
+
+static void
 lun_task_mgmt_execute_invalid_case(void)
 {
 	struct spdk_scsi_lun *lun;
@@ -252,7 +277,7 @@ lun_task_mgmt_execute_invalid_case(void)
 	lun->dev = &dev;
 
 	ut_init_task(&mgmt_task);
-	mgmt_task.function = 5;
+	mgmt_task.function = 6;
 
 	/* Pass an invalid value to the switch statement */
 	scsi_lun_execute_mgmt_task(lun, &mgmt_task);
@@ -724,7 +749,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("lun_suite", NULL, NULL);
@@ -732,6 +756,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, lun_task_mgmt_execute_abort_task_not_supported);
 	CU_ADD_TEST(suite, lun_task_mgmt_execute_abort_task_all_not_supported);
 	CU_ADD_TEST(suite, lun_task_mgmt_execute_lun_reset);
+	CU_ADD_TEST(suite, lun_task_mgmt_execute_target_reset);
 	CU_ADD_TEST(suite, lun_task_mgmt_execute_invalid_case);
 	CU_ADD_TEST(suite, lun_append_task_null_lun_task_cdb_spc_inquiry);
 	CU_ADD_TEST(suite, lun_append_task_null_lun_alloc_len_lt_4096);
@@ -747,12 +772,10 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, lun_check_pending_tasks_only_for_specific_initiator);
 	CU_ADD_TEST(suite, abort_pending_mgmt_tasks_when_lun_is_removed);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 	allocate_threads(1);
 	set_thread(0);
-	CU_basic_run_tests();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	free_threads();
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 	return num_failures;
 }

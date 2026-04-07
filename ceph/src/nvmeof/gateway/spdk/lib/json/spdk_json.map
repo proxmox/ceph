@@ -13,6 +13,7 @@
 	spdk_json_decode_uint32;
 	spdk_json_decode_uint64;
 	spdk_json_decode_string;
+	spdk_json_decode_uuid;
 
 	spdk_json_free_object;
 
@@ -28,6 +29,7 @@
 
 	spdk_json_write_begin;
 	spdk_json_write_end;
+	spdk_json_write_reset;
 	spdk_json_write_null;
 	spdk_json_write_bool;
 	spdk_json_write_uint8;
@@ -45,6 +47,7 @@
 	spdk_json_write_string_fmt;
 	spdk_json_write_string_fmt_v;
 	spdk_json_write_bytearray;
+	spdk_json_write_uuid;
 	spdk_json_write_array_begin;
 	spdk_json_write_array_end;
 	spdk_json_write_object_begin;
@@ -68,6 +71,7 @@
 	spdk_json_write_named_string_fmt;
 	spdk_json_write_named_string_fmt_v;
 	spdk_json_write_named_bytearray;
+	spdk_json_write_named_uuid;
 	spdk_json_write_named_array_begin;
 	spdk_json_write_named_object_begin;
 

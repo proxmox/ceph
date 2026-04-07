@@ -1,6 +1,7 @@
 #
-# Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2019-2022 Intel Corporation
+# Copyright(c) 2024 Huawei Technologies
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 import pytest
@@ -8,14 +9,15 @@ from ctypes import c_int
 
 from pyocf.types.cache import Cache, CacheMode
 from pyocf.types.core import Core
-from pyocf.types.volume import Volume
+from pyocf.types.volume import Volume, RamVolume
+from pyocf.types.volume_core import CoreVolume
 from pyocf.utils import Size as S
 from pyocf.types.data import Data, DataOps
 from pyocf.types.ctx import OcfCtx
 from pyocf.types.logger import DefaultLogger, LogLevel
 from pyocf.ocf import OcfLib
 from pyocf.types.cleaner import Cleaner
-from pyocf.types.io import IoDir
+from pyocf.types.io import IoDir, Sync
 from pyocf.types.shared import OcfCompletion
 
 
@@ -58,9 +60,7 @@ class DataCopyTracer(Data):
 
 
 @pytest.mark.security
-@pytest.mark.parametrize(
-    "cache_mode", [CacheMode.WT, CacheMode.WB, CacheMode.WA, CacheMode.WI]
-)
+@pytest.mark.parametrize("cache_mode", [CacheMode.WT, CacheMode.WB, CacheMode.WA, CacheMode.WI])
 def test_secure_erase_simple_io_read_misses(cache_mode):
     """
         Perform simple IO which will trigger read misses, which in turn should
@@ -75,42 +75,28 @@ def test_secure_erase_simple_io_read_misses(cache_mode):
         Cleaner,
     )
 
-    ctx.register_volume_type(Volume)
+    ctx.register_volume_type(RamVolume)
 
-    cache_device = Volume(S.from_MiB(30))
+    cache_device = RamVolume(S.from_MiB(50))
     cache = Cache.start_on_device(cache_device, cache_mode=cache_mode)
 
-    core_device = Volume(S.from_MiB(50))
+    core_device = RamVolume(S.from_MiB(50))
     core = Core.using_device(core_device)
     cache.add_core(core)
+    vol = CoreVolume(core)
+    queue = cache.get_default_queue()
 
     write_data = DataCopyTracer(S.from_sector(1))
-    io = core.new_io(
-        cache.get_default_queue(),
-        S.from_sector(1).B,
-        write_data.size,
-        IoDir.WRITE,
-        0,
-        0,
-    )
+    vol.open()
+    io = vol.new_io(queue, S.from_sector(1).B, write_data.size, IoDir.WRITE, 0, 0,)
     io.set_data(write_data)
 
-    cmpl = OcfCompletion([("err", c_int)])
-    io.callback = cmpl.callback
-    io.submit()
-    cmpl.wait()
+    Sync(io).submit()
 
     cmpls = []
     for i in range(100):
         read_data = DataCopyTracer(S.from_sector(1))
-        io = core.new_io(
-            cache.get_default_queue(),
-            i * S.from_sector(1).B,
-            read_data.size,
-            IoDir.READ,
-            0,
-            0,
-        )
+        io = vol.new_io(queue, i * S.from_sector(1).B, read_data.size, IoDir.READ, 0, 0,)
         io.set_data(read_data)
 
         cmpl = OcfCompletion([("err", c_int)])
@@ -122,29 +108,20 @@ def test_secure_erase_simple_io_read_misses(cache_mode):
         c.wait()
 
     write_data = DataCopyTracer.from_string("TEST DATA" * 100)
-    io = core.new_io(
-        cache.get_default_queue(), S.from_sector(1), write_data.size, IoDir.WRITE, 0, 0
-    )
+    io = vol.new_io(queue, S.from_sector(1), write_data.size, IoDir.WRITE, 0, 0)
     io.set_data(write_data)
 
-    cmpl = OcfCompletion([("err", c_int)])
-    io.callback = cmpl.callback
-    io.submit()
-    cmpl.wait()
+    Sync(io).submit()
 
+    vol.close()
     stats = cache.get_stats()
 
     ctx.exit()
 
+    assert len(DataCopyTracer.needs_erase) == 0, "Not all locked Data instances were secure erased!"
+    assert len(DataCopyTracer.locked_instances) == 0, "Not all locked Data instances were unlocked!"
     assert (
-        len(DataCopyTracer.needs_erase) == 0
-    ), "Not all locked Data instances were secure erased!"
-    assert (
-        len(DataCopyTracer.locked_instances) == 0
-    ), "Not all locked Data instances were unlocked!"
-    assert (
-        stats["req"]["rd_partial_misses"]["value"]
-        + stats["req"]["rd_full_misses"]["value"]
+        stats["req"]["rd_partial_misses"]["value"] + stats["req"]["rd_full_misses"]["value"]
     ) > 0
 
 
@@ -168,45 +145,36 @@ def test_secure_erase_simple_io_cleaning():
         Cleaner,
     )
 
-    ctx.register_volume_type(Volume)
+    ctx.register_volume_type(RamVolume)
 
-    cache_device = Volume(S.from_MiB(30))
+    cache_device = RamVolume(S.from_MiB(50))
     cache = Cache.start_on_device(cache_device, cache_mode=CacheMode.WB)
 
-    core_device = Volume(S.from_MiB(100))
+    core_device = RamVolume(S.from_MiB(100))
     core = Core.using_device(core_device)
     cache.add_core(core)
+    vol = CoreVolume(core)
+    queue = cache.get_default_queue()
 
     read_data = Data(S.from_sector(1).B)
-    io = core.new_io(
-        cache.get_default_queue(), S.from_sector(1).B, read_data.size, IoDir.WRITE, 0, 0
-    )
+
+    vol.open()
+    io = vol.new_io(queue, S.from_sector(1).B, read_data.size, IoDir.WRITE, 0, 0)
     io.set_data(read_data)
 
-    cmpl = OcfCompletion([("err", c_int)])
-    io.callback = cmpl.callback
-    io.submit()
-    cmpl.wait()
+    Sync(io).submit()
 
     read_data = Data(S.from_sector(8).B)
-    io = core.new_io(
-        cache.get_default_queue(), S.from_sector(1).B, read_data.size, IoDir.READ, 0, 0
-    )
+    io = vol.new_io(queue, S.from_sector(1).B, read_data.size, IoDir.READ, 0, 0)
     io.set_data(read_data)
 
-    cmpl = OcfCompletion([("err", c_int)])
-    io.callback = cmpl.callback
-    io.submit()
-    cmpl.wait()
+    Sync(io).submit()
 
+    vol.close()
     stats = cache.get_stats()
 
     ctx.exit()
 
-    assert (
-        len(DataCopyTracer.needs_erase) == 0
-    ), "Not all locked Data instances were secure erased!"
-    assert (
-        len(DataCopyTracer.locked_instances) == 0
-    ), "Not all locked Data instances were unlocked!"
+    assert len(DataCopyTracer.needs_erase) == 0, "Not all locked Data instances were secure erased!"
+    assert len(DataCopyTracer.locked_instances) == 0, "Not all locked Data instances were unlocked!"
     assert (stats["usage"]["clean"]["value"]) > 0, "Cleaner didn't run!"

@@ -12,6 +12,7 @@
 
 #include "spdk/stdinc.h"
 #include "spdk/idxd_spec.h"
+#include "spdk/dif.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,11 +36,6 @@ extern "C" {
  */
 #define SPDK_IDXD_FLAG_NONTEMPORAL IDXD_FLAG_CACHE_CONTROL
 
-/* The following flag is optional and specifies that the destination is persistent memory. The
- * low level library will not set this flag.
- */
-#define SPDK_IDXD_FLAG_PERSISTENT IDXD_FLAG_DEST_STEERING_TAG
-
 /**
  * Opaque handle for a single IDXD channel.
  */
@@ -51,7 +47,7 @@ struct spdk_idxd_io_channel;
 struct spdk_idxd_device;
 
 /**
- * Get the socket that this device is on
+ * Get the socket that this device is on.
  *
  * \param idxd device to query
  * \return socket number.
@@ -62,7 +58,7 @@ uint32_t spdk_idxd_get_socket(struct spdk_idxd_device *idxd);
  * Signature for callback function invoked when a request is completed.
  *
  * \param arg User-specified opaque value corresponding to cb_arg from the
- * request submission.
+ *            request submission.
  * \param status 0 on success, negative errno on failure.
  */
 typedef void (*spdk_idxd_req_cb)(void *arg, int status);
@@ -96,10 +92,10 @@ typedef bool (*spdk_idxd_probe_cb)(void *cb_ctx, struct spdk_pci_device *dev);
  * spdk_idxd_detach() with the idxd_channel instance returned by this function.
  *
  * \param cb_ctx Opaque value which will be passed back in cb_ctx parameter of
- * the callbacks.
+ *               the callbacks.
  * \param probe_cb callback to determine if the device being probe should be attached.
- * \param attach_cb will be called for devices for which probe_cb returned true
- * once the IDXD controller has been attached to the userspace driver.
+ * \param attach_cb will be called for devices for which probe_cb returned true.
+ *                  once the IDXD controller has been attached to the userspace driver.
  *
  * \return 0 on success, -1 on failure.
  */
@@ -117,8 +113,10 @@ void spdk_idxd_detach(struct spdk_idxd_device *idxd);
  * Sets the IDXD configuration.
  *
  * \param kernel_mode true if using kernel driver.
-  */
-void spdk_idxd_set_config(bool kernel_mode);
+ *
+ * \return 0 on success, negative errno on failure.
+ */
+int spdk_idxd_set_config(bool kernel_mode);
 
 /**
  * Build and submit an idxd memory copy request.
@@ -127,14 +125,14 @@ void spdk_idxd_set_config(bool kernel_mode);
  * by writing to the proper device portal.
  *
  * \param chan IDXD channel to submit request.
- * \param diov Destination iovec
- * \param diovcnt Number of elements in diov
- * \param siov Source iovec
- * \param siovcnt Number of elements in siov
+ * \param diov Destination iovec.
+ * \param diovcnt Number of elements in diov.
+ * \param siov Source iovec.
+ * \param siovcnt Number of elements in siov.
  * \param flags Flags, optional flags that can vary per operation.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the arg parameter in
- * the completion callback.
+ *               the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */
@@ -157,7 +155,7 @@ int spdk_idxd_submit_copy(struct spdk_idxd_io_channel *chan,
  * \param flags Flags, optional flags that can vary per operation.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the arg parameter in
- * the completion callback.
+ *               the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */
@@ -172,14 +170,14 @@ int spdk_idxd_submit_dualcast(struct spdk_idxd_io_channel *chan,
  * by writing to the proper device portal.
  *
  * \param chan IDXD channel to submit request.
- * \param siov1 First source iovec
- * \param siov1cnt Number of elements in siov1
- * \param siov2 Second source iovec
- * \param siov2cnt Number of elements in siov2
+ * \param siov1 First source iovec.
+ * \param siov1cnt Number of elements in siov1.
+ * \param siov2 Second source iovec.
+ * \param siov2cnt Number of elements in siov2.
  * \param flags Flags, optional flags that can vary per operation.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the arg parameter in
- * the completion callback.
+ *               the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */
@@ -195,13 +193,13 @@ int spdk_idxd_submit_compare(struct spdk_idxd_io_channel *chan,
  * by writing to the proper device portal.
  *
  * \param chan IDXD channel to submit request.
- * \param diov Destination iovec
- * \param diovcnt Number of elements in diov
+ * \param diov Destination iovec.
+ * \param diovcnt Number of elements in diov.
  * \param fill_pattern Repeating eight-byte pattern to use for memory fill.
  * \param flags Flags, optional flags that can vary per operation.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the cb_arg parameter
- * in the completion callback.
+ *               in the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */
@@ -216,14 +214,14 @@ int spdk_idxd_submit_fill(struct spdk_idxd_io_channel *chan,
  * by writing to the proper device portal.
  *
  * \param chan IDXD channel to submit request.
- * \param siov Source iovec
- * \param siovcnt Number of elements in siov
+ * \param siov Source iovec.
+ * \param siovcnt Number of elements in siov.
  * \param seed Four byte CRC-32C seed value.
  * \param crc_dst Resulting calculation.
  * \param flags Flags, optional flags that can vary per operation.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the cb_arg parameter
- * in the completion callback.
+ *               in the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */
@@ -239,16 +237,16 @@ int spdk_idxd_submit_crc32c(struct spdk_idxd_io_channel *chan,
  * submit by writing to the proper device portal.
  *
  * \param chan IDXD channel to submit request.
- * \param diov Destination iovec
- * \param diovcnt Number of elements in diov
- * \param siov Source iovec
- * \param siovcnt Number of elements in siov
+ * \param diov Destination iovec.
+ * \param diovcnt Number of elements in diov.
+ * \param siov Source iovec.
+ * \param siovcnt Number of elements in siov.
  * \param seed Four byte CRC-32C seed value.
  * \param crc_dst Resulting calculation.
  * \param flags Flags, optional flags that can vary per operation.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the cb_arg parameter
- * in the completion callback.
+ *               in the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */
@@ -267,13 +265,13 @@ int spdk_idxd_submit_copy_crc32c(struct spdk_idxd_io_channel *chan,
  * \param chan IDXD channel to submit request.
  * \param dst Destination to write the compressed data to.
  * \param nbytes Length in bytes. The dst buffer should be large enough to hold the compressed data.
- * \param siov Source iovec
- * \param siovcnt Number of elements in siov
- * \param output_size The size of the compressed data
+ * \param siov Source iovec.
+ * \param siovcnt Number of elements in siov.
+ * \param output_size The size of the compressed data.
  * \param flags Flags, optional flags that can vary per operation.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the arg parameter in
- * the completion callback.
+ *               the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */
@@ -291,12 +289,12 @@ int spdk_idxd_submit_compress(struct spdk_idxd_io_channel *chan,
  * \param chan IDXD channel to submit request.
  * \param diov Destination iovec. diov with diovcnt must be large enough to hold decompressed data.
  * \param diovcnt Number of elements in diov for decompress buffer.
- * \param siov Source iovec
- * \param siovcnt Number of elements in siov
+ * \param siov Source iovec.
+ * \param siovcnt Number of elements in siov.
  * \param flags Flags, optional flags that can vary per operation.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the arg parameter in
- * the completion callback.
+ *               the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */
@@ -306,17 +304,127 @@ int spdk_idxd_submit_decompress(struct spdk_idxd_io_channel *chan,
 				int flags, spdk_idxd_req_cb cb_fn, void *cb_arg);
 
 /**
+ * Build and submit a DIF check request.
+ *
+ * This function will build the DIF check descriptor and then immediately submit
+ * by writing to the proper device portal.
+ *
+ * \param chan IDXD channel to submit request.
+ * \param siov Source iovec.
+ * \param siovcnt Number of elements in siov.
+ * \param num_blocks Total number of blocks to process.
+ * \param ctx DIF context. Contains the DIF configuration values, including the reference
+ *            Application Tag value and initial value of the Reference Tag to check.
+ * \param flags Flags, optional flags that can vary per operation.
+ * \param cb_fn Callback function which will be called when the request is complete.
+ * \param cb_arg Opaque value which will be passed back as the cb_arg parameter
+ *               in the completion callback.
+ *
+ * \return 0 on success, negative errno on failure.
+ */
+int spdk_idxd_submit_dif_check(struct spdk_idxd_io_channel *chan,
+			       struct iovec *siov, size_t siovcnt,
+			       uint32_t num_blocks, const struct spdk_dif_ctx *ctx, int flags,
+			       spdk_idxd_req_cb cb_fn, void *cb_arg);
+
+/**
+ * Build and submit a DIF insert request.
+ *
+ * This function will build the DIF insert descriptor and then immediately submit
+ * by writing to the proper device portal.
+ *
+ * \param chan IDXD channel to submit request.
+ * \param diov Destination iovec.
+ * \param diovcnt Number of elements in diov.
+ * \param siov Source iovec.
+ * \param siovcnt Number of elements in siov.
+ * \param num_blocks Total number of blocks to process.
+ * \param ctx DIF context. Contains the DIF configuration values, including the reference
+ *            Application Tag value and initial value of the Reference Tag to insert.
+ * \param flags Flags, optional flags that can vary per operation.
+ * \param cb_fn Callback function which will be called when the request is complete.
+ * \param cb_arg Opaque value which will be passed back as the cb_arg parameter
+ *               in the completion callback.
+ *
+ * \return 0 on success, negative errno on failure.
+ */
+int spdk_idxd_submit_dif_insert(struct spdk_idxd_io_channel *chan,
+				struct iovec *diov, size_t diovcnt,
+				struct iovec *siov, size_t siovcnt,
+				uint32_t num_blocks, const struct spdk_dif_ctx *ctx, int flags,
+				spdk_idxd_req_cb cb_fn, void *cb_arg);
+
+/**
+ * Build and submit a DIF strip request.
+ *
+ * This function will build the DIF strip descriptor and then immediately submit
+ * by writing to the proper device portal. The transfer size must be a multiple
+ * of the source block size plus metadata for each source block. The number
+ * of bytes written to the destination is the transfer size minus metadata
+ * for each source block. The source and destination data can be scattered across
+ * several different buffers, but each source buffer has to be a multiple of
+ * a block size and each destination buffer has to be a multiple of a data block size
+ * excluding metadata. Moreover, the length of each element in the source array (siov)
+ * must be exactly the same as the corresponding element in the destination array (diov)
+ * excluding metadata size.
+ *
+ * \param chan IDXD channel to submit request.
+ * \param diov Destination iovec.
+ * \param diovcnt Number of elements in diov.
+ * \param siov Source iovec.
+ * \param siovcnt Number of elements in siov.
+ * \param num_blocks Total number of blocks to process.
+ * \param ctx DIF context. Contains the DIF configuration values, including the reference
+ *            Application Tag value and initial value of the Reference Tag.
+ * \param flags Flags, optional flags that can vary per operation.
+ * \param cb_fn Callback function which will be called when the request is complete.
+ * \param cb_arg Opaque value which will be passed back as the cb_arg parameter
+ *               in the completion callback.
+ *
+ * \return 0 on success, negative errno on failure.
+ */
+int spdk_idxd_submit_dif_strip(struct spdk_idxd_io_channel *chan,
+			       struct iovec *diov, size_t diovcnt,
+			       struct iovec *siov, size_t siovcnt,
+			       uint32_t num_blocks, const struct spdk_dif_ctx *ctx, int flags,
+			       spdk_idxd_req_cb cb_fn, void *cb_arg);
+
+/**
+ * Build and submit DIX Generate request.
+ *
+ * This function will build DIX Generate descriptor and then immediately submit
+ * by writing to the proper device portal.
+ *
+ * \param chan IDXD channel to submit the request.
+ * \param siov Source iovecs.
+ * \param siovcnt Number of elements in siov.
+ * \param mdiov Metadata iovec for generated protection information.
+ * \param num_blocks Number of data blocks to process.
+ * \param ctx DIX context. Contains the DIX configuration values, including the reference
+ *	Application Tag and initial value of the Reference Tag to insert.
+ * \param flags Flags, optional flags that can vary per operation.
+ * \param cb_fn Callback function which will be called upon request completion.
+ * \param cb_arg Opaque value which will be passed as a parameter to the cb_fn.
+ *
+ * \return 0 on success, negative errno on failure.
+ */
+int spdk_idxd_submit_dix_generate(struct spdk_idxd_io_channel *chan, struct iovec *siov,
+				  size_t siovcnt, struct iovec *mdiov, uint32_t num_blocks,
+				  const struct spdk_dif_ctx *ctx, int flags,
+				  spdk_idxd_req_cb cb_fn, void *cb_arg);
+
+/**
  * Build and submit an IDXD raw request.
  *
  * This function will process the supplied descriptor and then immediately submit
  * by writing to the proper device portal.
  *
  * \param chan IDXD channel to submit request.
- * \param desc proprely formatted IDXD descriptor.  Memory addresses should be physical.
- * The completion address will be filled in by the lower level library.
+ * \param desc properly formatted IDXD descriptor.  Memory addresses should be physical.
+ *             The completion address will be filled in by the lower level library.
  * \param cb_fn Callback function which will be called when the request is complete.
  * \param cb_arg Opaque value which will be passed back as the arg parameter in
- * the completion callback.
+ *               the completion callback.
  *
  * \return 0 on success, negative errno on failure.
  */

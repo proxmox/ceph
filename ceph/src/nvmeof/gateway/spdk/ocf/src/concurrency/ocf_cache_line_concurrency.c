@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2022-2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf_concurrency.h"
@@ -135,15 +136,23 @@ err:
 			continue;
 
 		entry = ocf_cl_lock_line_get_entry(alock, req, i);
-		ocf_alock_waitlist_remove_entry(alock, req, i, entry, rw);
+		ocf_alock_waitlist_remove_entry(alock, req, entry, i, rw);
 	}
 
 	return ret;
 }
 
+static uint32_t ocf_cl_lock_get_entries_count(struct ocf_alock *alock,
+		struct ocf_request *req)
+{
+	return req->core_line_count;
+}
+
 static struct ocf_alock_lock_cbs ocf_cline_conc_cbs = {
 		.lock_entries_fast = ocf_cl_lock_line_fast,
-		.lock_entries_slow = ocf_cl_lock_line_slow
+		.lock_entries_slow = ocf_cl_lock_line_slow,
+		.get_entries_count = ocf_cl_lock_get_entries_count
+
 };
 
 bool ocf_cache_line_try_lock_rd(struct ocf_alock *alock,

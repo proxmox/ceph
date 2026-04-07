@@ -264,8 +264,8 @@ pci_hdr_write(vfu_ctx_t *vfu_ctx, const char *buf, loff_t offset)
         ret = handle_erom_write(vfu_ctx, cfg_space, buf);
         break;
     default:
-        vfu_log(vfu_ctx, LOG_ERR, "PCI config write %#lx not handled",
-                offset);
+        vfu_log(vfu_ctx, LOG_ERR, "PCI config write %#llx not handled",
+                (ull_t)offset);
         ret = ERROR_INT(EINVAL);
     }
 
@@ -315,7 +315,7 @@ pci_nonstd_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
     if (is_write) {
         vfu_log(vfu_ctx, LOG_ERR, "no callback for write to config space "
-                "offset %lu size %zu", offset, count);
+                "offset %#llx size %zu", (ull_t)offset, count);
         return ERROR_INT(EINVAL);
     }
 
@@ -429,8 +429,10 @@ pci_config_space_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         size = pci_config_space_next_segment(vfu_ctx, count, offset, is_write,
                                              &cb);
         if (cb == NULL) {
-            vfu_log(vfu_ctx, LOG_ERR, "bad write to PCI config space %#lx-%#lx",
-                    offset, offset + count - 1);
+            vfu_log(vfu_ctx, LOG_ERR,
+                    "bad write to PCI config space %#llx-%#llx",
+                    (ull_t)offset,
+                    (ull_t)(offset + count - 1));
             return size;
         }
 
@@ -496,6 +498,7 @@ vfu_pci_init(vfu_ctx_t *vfu_ctx, vfu_pci_type_t pci_type,
     vfu_ctx->pci.type = pci_type;
     vfu_ctx->pci.config_space = cfg_space;
     vfu_ctx->reg_info[VFU_PCI_DEV_CFG_REGION_IDX].size = size;
+    vfu_ctx->reg_info[VFU_PCI_DEV_CFG_REGION_IDX].flags = VFU_REGION_FLAG_RW;
 
     return 0;
 }

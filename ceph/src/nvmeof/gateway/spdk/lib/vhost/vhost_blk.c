@@ -57,8 +57,6 @@ struct spdk_vhost_blk_dev {
 	struct spdk_bdev_desc *bdev_desc;
 	const struct spdk_virtio_blk_transport_ops *ops;
 
-	/* dummy_io_channel is used to hold a bdev reference */
-	struct spdk_io_channel *dummy_io_channel;
 	bool readonly;
 };
 
@@ -119,11 +117,23 @@ to_blk_session(struct spdk_vhost_session *vsession)
 	return (struct spdk_vhost_blk_session *)vsession;
 }
 
-static void
-blk_task_finish(struct spdk_vhost_user_blk_task *task)
+static inline void
+blk_task_inc_task_cnt(struct spdk_vhost_user_blk_task *task)
+{
+	task->bvsession->vsession.task_cnt++;
+}
+
+static inline void
+blk_task_dec_task_cnt(struct spdk_vhost_user_blk_task *task)
 {
 	assert(task->bvsession->vsession.task_cnt > 0);
 	task->bvsession->vsession.task_cnt--;
+}
+
+static void
+blk_task_finish(struct spdk_vhost_user_blk_task *task)
+{
+	blk_task_dec_task_cnt(task);
 	task->used = false;
 }
 
@@ -464,6 +474,8 @@ virtio_blk_process_request(struct spdk_vhost_dev *vdev, struct spdk_io_channel *
 	uint16_t iovcnt;
 	int rc;
 
+	assert(bvdev != NULL);
+
 	task->cb = cb;
 	task->cb_arg = cb_arg;
 
@@ -608,6 +620,9 @@ virtio_blk_process_request(struct spdk_vhost_dev *vdev, struct spdk_io_channel *
 			if (rc == -ENOMEM) {
 				SPDK_DEBUGLOG(vhost_blk, "No memory, start to queue io.\n");
 				blk_request_queue_io(vdev, ch, task);
+			} else if (rc == -ENOTSUP) {
+				blk_request_finish(VIRTIO_BLK_S_UNSUPP, task);
+				return -1;
 			} else {
 				blk_request_finish(VIRTIO_BLK_S_IOERR, task);
 				return -1;
@@ -652,7 +667,7 @@ process_blk_task(struct spdk_vhost_virtqueue *vq, uint16_t req_idx)
 		return;
 	}
 
-	task->bvsession->vsession.task_cnt++;
+	blk_task_inc_task_cnt(task);
 
 	blk_task_init(task);
 
@@ -717,7 +732,7 @@ process_packed_blk_task(struct spdk_vhost_virtqueue *vq, uint16_t req_idx)
 					   req_idx, (req_idx + num_descs - 1) % vq->vring.size,
 					   &task->inflight_head);
 
-	task->bvsession->vsession.task_cnt++;
+	blk_task_inc_task_cnt(task);
 
 	blk_task_init(task);
 
@@ -778,7 +793,7 @@ process_packed_inflight_blk_task(struct spdk_vhost_virtqueue *vq,
 	/* It's for cleaning inflight entries */
 	task->inflight_head = req_idx;
 
-	task->bvsession->vsession.task_cnt++;
+	blk_task_inc_task_cnt(task);
 
 	blk_task_init(task);
 
@@ -1070,9 +1085,40 @@ vhost_blk_session_unregister_interrupts(struct spdk_vhost_blk_session *bvsession
 	}
 }
 
+static void
+_vhost_blk_vq_register_interrupt(void *arg)
+{
+	struct spdk_vhost_virtqueue *vq = arg;
+	struct spdk_vhost_session *vsession = vq->vsession;
+	struct spdk_vhost_blk_dev *bvdev =  to_blk_dev(vsession->vdev);
+
+	assert(bvdev != NULL);
+
+	if (bvdev->bdev) {
+		vq->intr = spdk_interrupt_register(vq->vring.kickfd, vdev_vq_worker, vq, "vdev_vq_worker");
+	} else {
+		vq->intr = spdk_interrupt_register(vq->vring.kickfd, no_bdev_vdev_vq_worker, vq,
+						   "no_bdev_vdev_vq_worker");
+	}
+
+	if (vq->intr == NULL) {
+		SPDK_ERRLOG("Fail to register req notifier handler.\n");
+		assert(false);
+	}
+}
+
 static int
-vhost_blk_session_register_interrupts(struct spdk_vhost_blk_session *bvsession,
-				      spdk_interrupt_fn fn, const char *name)
+vhost_blk_vq_enable(struct spdk_vhost_session *vsession, struct spdk_vhost_virtqueue *vq)
+{
+	if (spdk_interrupt_mode_is_enabled()) {
+		spdk_thread_send_msg(vsession->vdev->thread, _vhost_blk_vq_register_interrupt, vq);
+	}
+
+	return 0;
+}
+
+static int
+vhost_blk_session_register_no_bdev_interrupts(struct spdk_vhost_blk_session *bvsession)
 {
 	struct spdk_vhost_session *vsession = &bvsession->vsession;
 	struct spdk_vhost_virtqueue *vq = NULL;
@@ -1083,19 +1129,18 @@ vhost_blk_session_register_interrupts(struct spdk_vhost_blk_session *bvsession,
 		vq = &vsession->virtqueue[i];
 		SPDK_DEBUGLOG(vhost_blk, "Register vq[%d]'s kickfd is %d\n",
 			      i, vq->vring.kickfd);
-
-		vq->intr = spdk_interrupt_register(vq->vring.kickfd, fn, vq, name);
+		vq->intr = spdk_interrupt_register(vq->vring.kickfd, no_bdev_vdev_vq_worker, vq,
+						   "no_bdev_vdev_vq_worker");
 		if (vq->intr == NULL) {
-			SPDK_ERRLOG("Fail to register req notifier handler.\n");
 			goto err;
 		}
+
 	}
 
 	return 0;
 
 err:
 	vhost_blk_session_unregister_interrupts(bvsession);
-
 	return -1;
 }
 
@@ -1117,7 +1162,6 @@ bdev_event_cpl_cb(struct spdk_vhost_dev *vdev, void *ctx)
 		/* All sessions have been notified, time to close the bdev */
 		bvdev = to_blk_dev(vdev);
 		assert(bvdev != NULL);
-		spdk_put_io_channel(bvdev->dummy_io_channel);
 		spdk_bdev_close(bvdev->bdev_desc);
 		bvdev->bdev_desc = NULL;
 		bvdev->bdev = NULL;
@@ -1157,10 +1201,9 @@ vhost_user_session_bdev_remove_cb(struct spdk_vhost_dev *vdev,
 	bvsession = to_blk_session(vsession);
 	if (bvsession->requestq_poller) {
 		spdk_poller_unregister(&bvsession->requestq_poller);
-		if (vsession->virtqueue[0].intr) {
+		if (spdk_interrupt_mode_is_enabled()) {
 			vhost_blk_session_unregister_interrupts(bvsession);
-			rc = vhost_blk_session_register_interrupts(bvsession, no_bdev_vdev_vq_worker,
-					"no_bdev_vdev_vq_worker");
+			rc = vhost_blk_session_register_no_bdev_interrupts(bvsession);
 			if (rc) {
 				SPDK_ERRLOG("%s: Interrupt register failed\n", vsession->name);
 				return rc;
@@ -1208,6 +1251,8 @@ bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
 {
 	struct spdk_vhost_dev *vdev = (struct spdk_vhost_dev *)event_ctx;
 	struct spdk_vhost_blk_dev *bvdev = to_blk_dev(vdev);
+
+	assert(bvdev != NULL);
 
 	SPDK_DEBUGLOG(vhost_blk, "Bdev event: type %d, name %s\n",
 		      type,
@@ -1292,7 +1337,7 @@ vhost_blk_start(struct spdk_vhost_dev *vdev,
 {
 	struct spdk_vhost_blk_session *bvsession = to_blk_session(vsession);
 	struct spdk_vhost_blk_dev *bvdev;
-	int i, rc = 0;
+	int i;
 
 	/* return if start is already in progress */
 	if (bvsession->requestq_poller) {
@@ -1321,23 +1366,6 @@ vhost_blk_start(struct spdk_vhost_dev *vdev,
 			free_task_pool(bvsession);
 			SPDK_ERRLOG("%s: I/O channel allocation failed\n", vsession->name);
 			return -1;
-		}
-	}
-
-	if (spdk_interrupt_mode_is_enabled()) {
-		if (bvdev->bdev) {
-			rc = vhost_blk_session_register_interrupts(bvsession,
-					vdev_vq_worker,
-					"vdev_vq_worker");
-		} else {
-			rc = vhost_blk_session_register_interrupts(bvsession,
-					no_bdev_vdev_vq_worker,
-					"no_bdev_vdev_vq_worker");
-		}
-
-		if (rc) {
-			SPDK_ERRLOG("%s: Interrupt register failed\n", vsession->name);
-			return rc;
 		}
 	}
 
@@ -1409,15 +1437,12 @@ vhost_blk_stop(struct spdk_vhost_dev *vdev,
 	}
 
 	spdk_poller_unregister(&bvsession->requestq_poller);
+	vhost_blk_session_unregister_interrupts(bvsession);
 
-	if (vsession->virtqueue[0].intr) {
-		vhost_blk_session_unregister_interrupts(bvsession);
-	}
-
-	/* vhost_user_session_send_event timeout is 3 seconds, here set retry within 4 seconds */
-	bvsession->vsession.stop_retry_count = 4000;
+	bvsession->vsession.stop_retry_count = (SPDK_VHOST_SESSION_STOP_RETRY_TIMEOUT_IN_SEC * 1000 *
+						1000) / SPDK_VHOST_SESSION_STOP_RETRY_PERIOD_IN_US;
 	bvsession->stop_poller = SPDK_POLLER_REGISTER(destroy_session_poller_cb,
-				 bvsession, 1000);
+				 bvsession, SPDK_VHOST_SESSION_STOP_RETRY_PERIOD_IN_US);
 	return 0;
 }
 
@@ -1541,6 +1566,8 @@ vhost_blk_set_coalescing(struct spdk_vhost_dev *vdev, uint32_t delay_base_us,
 {
 	struct spdk_vhost_blk_dev *bvdev = to_blk_dev(vdev);
 
+	assert(bvdev != NULL);
+
 	return bvdev->ops->set_coalescing(vdev, delay_base_us, iops_threshold);
 }
 
@@ -1550,6 +1577,8 @@ vhost_blk_get_coalescing(struct spdk_vhost_dev *vdev, uint32_t *delay_base_us,
 {
 	struct spdk_vhost_blk_dev *bvdev = to_blk_dev(vdev);
 
+	assert(bvdev != NULL);
+
 	bvdev->ops->get_coalescing(vdev, delay_base_us, iops_threshold);
 }
 
@@ -1558,6 +1587,7 @@ static const struct spdk_vhost_user_dev_backend vhost_blk_user_device_backend = 
 	.start_session =  vhost_blk_start,
 	.stop_session = vhost_blk_stop,
 	.alloc_vq_tasks = alloc_vq_task_pool,
+	.enable_vq = vhost_blk_vq_enable,
 };
 
 static const struct spdk_vhost_dev_backend vhost_blk_device_backend = {
@@ -1576,6 +1606,8 @@ virtio_blk_construct_ctrlr(struct spdk_vhost_dev *vdev, const char *address,
 			   const struct spdk_vhost_user_dev_backend *user_backend)
 {
 	struct spdk_vhost_blk_dev *bvdev = to_blk_dev(vdev);
+
+	assert(bvdev != NULL);
 
 	return bvdev->ops->create_ctrlr(vdev, cpumask, address, params, (void *)user_backend);
 }
@@ -1631,24 +1663,11 @@ spdk_vhost_blk_construct(const char *name, const char *cpumask, const char *dev_
 		vdev->virtio_features |= (1ULL << VIRTIO_BLK_F_FLUSH);
 	}
 
-	/*
-	 * When starting qemu with multiqueue enable, the vhost device will
-	 * be started/stopped many times, related to the queues num, as the
-	 * exact number of queues used for this device is not known at the time.
-	 * The target has to stop and start the device once got a valid IO queue.
-	 * When stopping and starting the vhost device, the backend bdev io device
-	 * will be deleted and created repeatedly.
-	 * Hold a bdev reference so that in the struct spdk_vhost_blk_dev, so that
-	 * the io device will not be deleted.
-	 */
-	bvdev->dummy_io_channel = spdk_bdev_get_io_channel(bvdev->bdev_desc);
-
 	bvdev->bdev = bdev;
 	bvdev->readonly = false;
 	ret = vhost_dev_register(vdev, name, cpumask, params, &vhost_blk_device_backend,
-				 &vhost_blk_user_device_backend);
+				 &vhost_blk_user_device_backend, false);
 	if (ret != 0) {
-		spdk_put_io_channel(bvdev->dummy_io_channel);
 		spdk_bdev_close(bvdev->bdev_desc);
 		goto out;
 	}
@@ -1666,6 +1685,8 @@ virtio_blk_destroy_ctrlr(struct spdk_vhost_dev *vdev)
 {
 	struct spdk_vhost_blk_dev *bvdev = to_blk_dev(vdev);
 
+	assert(bvdev != NULL);
+
 	return bvdev->ops->destroy_ctrlr(vdev);
 }
 
@@ -1682,11 +1703,6 @@ vhost_blk_destroy(struct spdk_vhost_dev *vdev)
 		return rc;
 	}
 
-	/* if the bdev is removed, don't need call spdk_put_io_channel. */
-	if (bvdev->bdev) {
-		spdk_put_io_channel(bvdev->dummy_io_channel);
-	}
-
 	if (bvdev->bdev_desc) {
 		spdk_bdev_close(bvdev->bdev_desc);
 		bvdev->bdev_desc = NULL;
@@ -1701,6 +1717,8 @@ struct spdk_io_channel *
 vhost_blk_get_io_channel(struct spdk_vhost_dev *vdev)
 {
 	struct spdk_vhost_blk_dev *bvdev = to_blk_dev(vdev);
+
+	assert(bvdev != NULL);
 
 	return spdk_bdev_get_io_channel(bvdev->bdev_desc);
 }
@@ -1743,13 +1761,11 @@ vhost_user_blk_destroy(struct spdk_virtio_blk_transport *transport,
 struct rpc_vhost_blk {
 	bool readonly;
 	bool packed_ring;
-	bool packed_ring_recovery;
 };
 
 static const struct spdk_json_object_decoder rpc_construct_vhost_blk[] = {
 	{"readonly", offsetof(struct rpc_vhost_blk, readonly), spdk_json_decode_bool, true},
 	{"packed_ring", offsetof(struct rpc_vhost_blk, packed_ring), spdk_json_decode_bool, true},
-	{"packed_ring_recovery", offsetof(struct rpc_vhost_blk, packed_ring_recovery), spdk_json_decode_bool, true},
 };
 
 static int
@@ -1759,6 +1775,8 @@ vhost_user_blk_create_ctrlr(struct spdk_vhost_dev *vdev, struct spdk_cpuset *cpu
 	struct rpc_vhost_blk req = {0};
 	struct spdk_vhost_blk_dev *bvdev = to_blk_dev(vdev);
 
+	assert(bvdev != NULL);
+
 	if (spdk_json_decode_object_relaxed(params, rpc_construct_vhost_blk,
 					    SPDK_COUNTOF(rpc_construct_vhost_blk),
 					    &req)) {
@@ -1766,18 +1784,15 @@ vhost_user_blk_create_ctrlr(struct spdk_vhost_dev *vdev, struct spdk_cpuset *cpu
 		return -EINVAL;
 	}
 
-	vdev->packed_ring_recovery = false;
-
 	if (req.packed_ring) {
 		vdev->virtio_features |= (uint64_t)req.packed_ring << VIRTIO_F_RING_PACKED;
-		vdev->packed_ring_recovery = req.packed_ring_recovery;
 	}
 	if (req.readonly) {
 		vdev->virtio_features |= (1ULL << VIRTIO_BLK_F_RO);
 		bvdev->readonly = req.readonly;
 	}
 
-	return vhost_user_dev_register(vdev, address, cpumask, custom_opts);
+	return vhost_user_dev_create(vdev, address, cpumask, custom_opts, false);
 }
 
 static int

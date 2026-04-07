@@ -20,6 +20,7 @@ class UIRoot(UINode):
         self.current_vhost_ctrls = []
         self.current_nvmf_transports = []
         self.current_nvmf_subsystems = []
+        self.current_nvmf_referrals = []
         self.set_rpc_target(client)
         self.verbose = False
         self.is_init = self.check_init()
@@ -209,30 +210,6 @@ class UIRoot(UINode):
         rpc.lvol.bdev_lvol_delete_lvstore(self.client, **kwargs)
 
     @verbose
-    def bdev_pmem_create_pool(self, **kwargs):
-        response = rpc.pmem.bdev_pmem_create_pool(self.client, **kwargs)
-        return response
-
-    @verbose
-    def bdev_pmem_delete_pool(self, **kwargs):
-        rpc.pmem.bdev_pmem_delete_pool(self.client, **kwargs)
-
-    @verbose
-    def bdev_pmem_get_pool_info(self, **kwargs):
-        response = rpc.pmem.bdev_pmem_get_pool_info(self.client, **kwargs)
-        return response
-
-    @verbose
-    def bdev_pmem_create(self, **kwargs):
-        response = rpc.bdev.bdev_pmem_create(self.client, **kwargs)
-        return response
-
-    @verbose
-    def bdev_pmem_delete(self, **kwargs):
-        response = rpc.bdev.bdev_pmem_delete(self.client, **kwargs)
-        return response
-
-    @verbose
     def create_rbd_bdev(self, **kwargs):
         response = rpc.bdev.bdev_rbd_create(self.client, **kwargs)
         return response
@@ -298,6 +275,10 @@ class UIRoot(UINode):
         rpc.vhost.vhost_create_scsi_controller(self.client, **kwargs)
 
     @verbose
+    def vhost_start_scsi_controller(self, **kwargs):
+        rpc.vhost.vhost_start_scsi_controller(self.client, **kwargs)
+
+    @verbose
     def vhost_create_blk_controller(self, **kwargs):
         rpc.vhost.vhost_create_blk_controller(self.client, **kwargs)
 
@@ -339,6 +320,26 @@ class UIRoot(UINode):
             self.list_nvmf_subsystems()
             for subsystem in self.current_nvmf_subsystems:
                 yield NvmfSubsystem(subsystem)
+
+    def list_nvmf_referrals(self):
+        if self.is_init:
+            self.current_nvmf_referrals = rpc.nvmf.nvmf_discovery_get_referrals(self.client)
+
+    @verbose
+    @is_method_available
+    def nvmf_discovery_get_referrals(self):
+        if self.is_init:
+            self.list_nvmf_referrals()
+            for referral in self.current_nvmf_referrals:
+                yield NvmfReferral(referral)
+
+    @verbose
+    def nvmf_discovery_add_referral(self, **kwargs):
+        rpc.nvmf.nvmf_discovery_add_referral(self.client, **kwargs)
+
+    @verbose
+    def nvmf_discovery_remove_referral(self, **kwargs):
+        rpc.nvmf.nvmf_discovery_remove_referral(self.client, **kwargs)
 
     @verbose
     def create_nvmf_subsystem(self, **kwargs):
@@ -499,6 +500,15 @@ class UIRoot(UINode):
                 return True
         return False
 
+    @verbose
+    def create_compress_bdev(self, **kwargs):
+        response = rpc.bdev.bdev_compress_create(self.client, **kwargs)
+        return response
+
+    @verbose
+    def bdev_compress_delete(self, **kwargs):
+        rpc.bdev.bdev_compress_delete(self.client, **kwargs)
+
 
 class Bdev(object):
     def __init__(self, bdev_info):
@@ -558,6 +568,16 @@ class NvmfSubsystem(object):
         """
         for i in subsystem_info.keys():
             setattr(self, i, subsystem_info[i])
+
+
+class NvmfReferral(object):
+    def __init__(self, referral_info):
+        """
+        All class attributes are set based on what information is received
+        from get_nvmf_referrals RPC call.
+        """
+        for i in referral_info.keys():
+            setattr(self, i, referral_info[i])
 
 
 class ScsiObj(object):

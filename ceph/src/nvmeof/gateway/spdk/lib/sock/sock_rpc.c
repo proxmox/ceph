@@ -55,12 +55,6 @@ rpc_sock_impl_get_options(struct spdk_jsonrpc_request *request,
 	spdk_json_write_named_uint32(w, "zerocopy_threshold", sock_opts.zerocopy_threshold);
 	spdk_json_write_named_uint32(w, "tls_version", sock_opts.tls_version);
 	spdk_json_write_named_bool(w, "enable_ktls", sock_opts.enable_ktls);
-	if (sock_opts.psk_key) {
-		spdk_json_write_named_string(w, "psk_key", sock_opts.psk_key);
-	}
-	if (sock_opts.psk_identity) {
-		spdk_json_write_named_string(w, "psk_identity", sock_opts.psk_identity);
-	}
 	spdk_json_write_object_end(w);
 	spdk_jsonrpc_end_result(request, w);
 	free(impl_name);
@@ -117,14 +111,6 @@ static const struct spdk_json_object_decoder rpc_sock_impl_set_opts_decoders[] =
 	{
 		"enable_ktls", offsetof(struct spdk_rpc_sock_impl_set_opts, sock_opts.enable_ktls),
 		spdk_json_decode_bool, true
-	},
-	{
-		"psk_key", offsetof(struct spdk_rpc_sock_impl_set_opts, sock_opts.psk_key),
-		spdk_json_decode_string, true
-	},
-	{
-		"psk_identity", offsetof(struct spdk_rpc_sock_impl_set_opts, sock_opts.psk_identity),
-		spdk_json_decode_string, true
 	}
 };
 
@@ -205,3 +191,31 @@ rpc_sock_set_default_impl(struct spdk_jsonrpc_request *request,
 	free(impl_name);
 }
 SPDK_RPC_REGISTER("sock_set_default_impl", rpc_sock_set_default_impl, SPDK_RPC_STARTUP)
+
+static void
+rpc_sock_get_default_impl(struct spdk_jsonrpc_request *request,
+			  const struct spdk_json_val *params)
+{
+	const char *impl_name = spdk_sock_get_default_impl();
+	struct spdk_json_write_ctx *w;
+
+	if (params) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "sock_get_default_impl requires no parameters");
+		return;
+	}
+
+	if (!impl_name) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "No registered socket implementations found");
+		return;
+	}
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_object_begin(w);
+	spdk_json_write_named_string(w, "impl_name", impl_name);
+	spdk_json_write_object_end(w);
+	spdk_jsonrpc_end_result(request, w);
+}
+SPDK_RPC_REGISTER("sock_get_default_impl", rpc_sock_get_default_impl,
+		  SPDK_RPC_STARTUP | SPDK_RPC_RUNTIME)

@@ -379,8 +379,8 @@ int vfu_virtio_quiesce_cb(struct spdk_vfu_endpoint *endpoint);
 void vfu_virtio_dev_put_req(struct vfu_virtio_req *req);
 void vfu_virtio_finish_req(struct vfu_virtio_req *req);
 void vfu_virtio_vq_flush_irq(struct vfu_virtio_dev *dev, struct vfu_virtio_vq *vq);
-int vfu_virito_dev_process_packed_ring(struct vfu_virtio_dev *dev, struct vfu_virtio_vq *vq);
-int vfu_virito_dev_process_split_ring(struct vfu_virtio_dev *dev, struct vfu_virtio_vq *vq);
+int vfu_virtio_dev_process_packed_ring(struct vfu_virtio_dev *dev, struct vfu_virtio_vq *vq);
+int vfu_virtio_dev_process_split_ring(struct vfu_virtio_dev *dev, struct vfu_virtio_vq *vq);
 void vfu_virtio_notify_config(struct vfu_virtio_endpoint *virtio_endpoint);
 int vfu_virtio_endpoint_setup(struct vfu_virtio_endpoint *virtio_endpoint,
 			      struct spdk_vfu_endpoint *endpoint,
@@ -405,4 +405,10 @@ int vfu_virtio_scsi_add_target(const char *name, uint8_t scsi_target_num,
 int vfu_virtio_scsi_remove_target(const char *name, uint8_t scsi_target_num);
 int vfu_virtio_scsi_set_options(const char *name, uint16_t num_io_queues, uint16_t qsize,
 				bool packed_ring);
+
+typedef void (*vfu_virtio_fs_add_fsdev_cpl_cb)(void *cb_arg, int status);
+
+int vfu_virtio_fs_add_fsdev(const char *name, const char *bdev_name, const char *tag,
+			    uint16_t num_queues, uint16_t qsize, bool packed_ring,
+			    vfu_virtio_fs_add_fsdev_cpl_cb cb, void *cb_arg);
 #endif

@@ -1,13 +1,15 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// Copyright (C) Michael Bang <mi.bang@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_LINUX_VFIO_ENABLED
-#include <libxnvme_spec_fs.h>
 #include <xnvme_dev.h>
 #include <xnvme_queue.h>
 #include <xnvme_be_vfio.h>
+#include <sys/eventfd.h>
 
 struct xnvme_queue_vfio {
 	struct xnvme_queue_base base;
@@ -45,6 +47,10 @@ xnvme_be_vfio_queue_term(struct xnvme_queue *q)
 {
 	struct xnvme_queue_vfio *queue = (struct xnvme_queue_vfio *)q;
 	struct xnvme_be_vfio_state *state = (void *)queue->base.dev->be.state;
+	if (state->efds[queue->id] != -1) {
+		close(state->efds[queue->id]);
+		state->efds[queue->id] = -1;
+	}
 	return _xnvme_be_vfio_delete_ioqpair(state, queue->id);
 }
 
@@ -58,7 +64,7 @@ xnvme_be_vfio_queue_poke(struct xnvme_queue *queue, uint32_t max)
 		max = queue->base.outstanding;
 	}
 
-	nvme_sq_run(q->sq);
+	nvme_sq_update_tail(q->sq);
 
 	do {
 		struct xnvme_cmd_ctx *ctx;
@@ -93,10 +99,11 @@ xnvme_be_vfio_queue_poke(struct xnvme_queue *queue, uint32_t max)
 
 int
 xnvme_be_vfio_async_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, void *mbuf,
-			   size_t XNVME_UNUSED(mbuf_nbytes))
+			   size_t mbuf_nbytes)
 {
 	struct xnvme_queue_vfio *q = (struct xnvme_queue_vfio *)ctx->async.queue;
 	struct xnvme_be_vfio_state *state = (void *)q->base.dev->be.state;
+	struct nvme_ctrl *ctrl = state->ctrl;
 	struct nvme_rq *rq;
 	uint64_t iova;
 
@@ -121,17 +128,17 @@ xnvme_be_vfio_async_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nb
 	rq->opaque = ctx;
 
 	if (dbuf) {
-		if (!vfio_iommu_vaddr_to_iova(&state->ctrl->pci.vfio.iommu, dbuf, &iova)) {
-			XNVME_DEBUG("FAILED: vfio_iommu_vaddr_to_iova()");
+		if (iommu_map_vaddr(ctrl->pci.dev.ctx, dbuf, dbuf_nbytes, &iova, 0)) {
+			XNVME_DEBUG("FAILED: iommu_map_vaddr()");
 			goto err;
 		}
 
-		nvme_rq_map_prp(rq, (union nvme_cmd *)&ctx->cmd, iova, dbuf_nbytes);
+		nvme_rq_map_prp(ctrl, rq, (union nvme_cmd *)&ctx->cmd, iova, dbuf_nbytes);
 	}
 
 	if (mbuf) {
-		if (!vfio_iommu_vaddr_to_iova(&state->ctrl->pci.vfio.iommu, mbuf, &iova)) {
-			XNVME_DEBUG("FAILED: vfio_iommu_vaddr_to_iova()");
+		if (iommu_map_vaddr(ctrl->pci.dev.ctx, mbuf, mbuf_nbytes, &iova, 0)) {
+			XNVME_DEBUG("FAILED: iommu_map_vaddr()");
 			goto err;
 		}
 
@@ -149,17 +156,100 @@ err:
 	return -EINVAL;
 }
 
+int
+xnvme_be_vfio_async_cmd_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec_cnt,
+			    size_t XNVME_UNUSED(dvec_nbytes), void *mbuf, size_t mbuf_nbytes)
+{
+	struct xnvme_queue_vfio *q = (struct xnvme_queue_vfio *)ctx->async.queue;
+	struct xnvme_be_vfio_state *state = (void *)q->base.dev->be.state;
+	struct nvme_ctrl *ctrl = state->ctrl;
+	struct nvme_rq *rq;
+	uint64_t iova;
+
+	if (q->base.outstanding == q->base.capacity) {
+		XNVME_DEBUG("FAILED: queue is full");
+		return -EBUSY;
+	}
+
+	switch (ctx->cmd.common.opcode) {
+	case XNVME_SPEC_FS_OPC_READ:
+		ctx->cmd.nvm.slba = ctx->cmd.nvm.slba >> ctx->dev->geo.ssw;
+		ctx->cmd.common.opcode = XNVME_SPEC_NVM_OPC_READ;
+		break;
+
+	case XNVME_SPEC_FS_OPC_WRITE:
+		ctx->cmd.nvm.slba = ctx->cmd.nvm.slba >> ctx->dev->geo.ssw;
+		ctx->cmd.common.opcode = XNVME_SPEC_NVM_OPC_WRITE;
+		break;
+	}
+
+	rq = nvme_rq_acquire(q->sq);
+	rq->opaque = ctx;
+
+	if (dvec) {
+		nvme_rq_mapv(ctrl, rq, (union nvme_cmd *)&ctx->cmd, dvec, dvec_cnt);
+	}
+
+	if (mbuf) {
+		if (iommu_map_vaddr(ctrl->pci.dev.ctx, mbuf, mbuf_nbytes, &iova, 0)) {
+			XNVME_DEBUG("FAILED: iommu_map_vaddr()");
+			goto err;
+		}
+
+		ctx->cmd.common.mptr = iova;
+	}
+
+	nvme_rq_exec(rq, (union nvme_cmd *)&ctx->cmd);
+
+	q->base.outstanding += 1;
+
+	return 0;
+
+err:
+	nvme_rq_release(rq);
+	return -EINVAL;
+}
+
+int
+xnvme_be_vfio_queue_get_completion_fd(struct xnvme_queue *queue)
+{
+	struct xnvme_queue_vfio *q = (struct xnvme_queue_vfio *)queue;
+	struct xnvme_be_vfio_state *state = (void *)q->base.dev->be.state;
+	int efd;
+
+	if (state->efds[q->id] != -1) {
+		return state->efds[q->id];
+	}
+
+	efd = eventfd(0, EFD_CLOEXEC);
+	if (efd < 0) {
+		XNVME_DEBUG("FAILED: failed to create eventfd");
+		return -errno;
+	}
+
+	state->efds[q->id] = efd;
+
+	if (vfio_set_irq(&state->ctrl->pci.dev, state->efds, state->nefds)) {
+		XNVME_DEBUG("FAILED: failed to set irqs");
+		close(efd);
+		return -errno;
+	}
+
+	return efd;
+}
+
 #endif
 
 struct xnvme_be_async g_xnvme_be_vfio_async = {
 	.id = "nvme",
 #ifdef XNVME_BE_LINUX_VFIO_ENABLED
 	.cmd_io = xnvme_be_vfio_async_cmd_io,
-	.cmd_iov = xnvme_be_nosys_queue_cmd_iov,
+	.cmd_iov = xnvme_be_vfio_async_cmd_iov,
 	.poke = xnvme_be_vfio_queue_poke,
 	.wait = xnvme_be_nosys_queue_wait,
 	.init = xnvme_be_vfio_queue_init,
 	.term = xnvme_be_vfio_queue_term,
+	.get_completion_fd = xnvme_be_vfio_queue_get_completion_fd,
 #else
 	.cmd_io = xnvme_be_nosys_queue_cmd_io,
 	.cmd_iov = xnvme_be_nosys_queue_cmd_iov,
@@ -167,5 +257,6 @@ struct xnvme_be_async g_xnvme_be_vfio_async = {
 	.wait = xnvme_be_nosys_queue_wait,
 	.init = xnvme_be_nosys_queue_init,
 	.term = xnvme_be_nosys_queue_term,
+	.get_completion_fd = xnvme_be_nosys_queue_get_completion_fd,
 #endif
 };

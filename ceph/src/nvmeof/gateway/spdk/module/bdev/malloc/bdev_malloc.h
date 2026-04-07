@@ -18,11 +18,13 @@ struct malloc_bdev_opts {
 	struct spdk_uuid uuid;
 	uint64_t num_blocks;
 	uint32_t block_size;
+	uint32_t physical_block_size;
 	uint32_t optimal_io_boundary;
 	uint32_t md_size;
 	bool md_interleave;
 	enum spdk_dif_type dif_type;
 	bool dif_is_head_of_md;
+	enum spdk_dif_pi_format dif_pi_format;
 };
 
 int create_malloc_disk(struct spdk_bdev **bdev, const struct malloc_bdev_opts *opts);

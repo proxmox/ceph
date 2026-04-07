@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /**
@@ -22,14 +23,11 @@ struct ocf_core_info {
 	/** Core size in bytes unit */
 	uint64_t core_size_bytes;
 
-	/** Fields refers ongoing flush operation */
-	struct {
-		/** Number of blocks flushed in ongoing flush operation */
-		uint32_t flushed;
+	/** Number of blocks flushed in ongoing flush operation */
+	uint32_t flushed;
 
-		/** Number of blocks left to flush in ongoing flush operation */
-		uint32_t dirty;
-	};
+	/** Number of blocks left to flush in ongoing flush operation */
+	uint32_t dirty;
 
 	/** How long core is dirty in seconds unit */
 	uint64_t dirty_for;
@@ -122,6 +120,16 @@ ocf_seq_cutoff_policy ocf_core_get_seq_cutoff_policy(ocf_core_t core);
 uint32_t ocf_core_get_seq_cutoff_promotion_count(ocf_core_t core);
 
 /**
+ * @brief Whether to promote sequential cutoff stream
+ * to global structures when threshold is reached
+ *
+ * @param[in] core Core object
+ *
+ * @retval Sequential cutoff stream promote_on_threshold switch value
+ */
+bool ocf_core_get_seq_cutoff_promote_on_threshold(ocf_core_t core);
+
+/**
  * @brief Get name of given core object
  *
  * @param[in] core Core object
@@ -140,34 +148,11 @@ const char *ocf_core_get_name(ocf_core_t core);
 ocf_core_state_t ocf_core_get_state(ocf_core_t core);
 
 /**
- * @brief Allocate new ocf_io
- *
- * @param[in] core Core object
- * @param[in] queue IO queue handle
- * @param[in] addr OCF IO destination address
- * @param[in] bytes OCF IO size in bytes
- * @param[in] dir OCF IO direction
- * @param[in] io_class OCF IO destination class
- * @param[in] flags OCF IO flags
- *
- * @retval ocf_io object
- */
-static inline struct ocf_io *ocf_core_new_io(ocf_core_t core, ocf_queue_t queue,
-		uint64_t addr, uint32_t bytes, uint32_t dir,
-		uint32_t io_class, uint64_t flags)
-{
-	ocf_volume_t volume = ocf_core_get_front_volume(core);
-
-	return ocf_volume_new_io(volume, queue, addr, bytes, dir,
-			io_class, flags);
-}
-
-/**
  * @brief Submit ocf_io
  *
  * @param[in] io IO to be submitted
  */
-static inline void ocf_core_submit_io(struct ocf_io *io)
+static inline void ocf_core_submit_io(ocf_io_t io)
 {
 	ocf_volume_submit_io(io);
 }
@@ -177,7 +162,7 @@ static inline void ocf_core_submit_io(struct ocf_io *io)
  *
  * @param[in] io IO to be submitted
  */
-static inline void ocf_core_submit_flush(struct ocf_io *io)
+static inline void ocf_core_submit_flush(ocf_io_t io)
 {
 	ocf_volume_submit_flush(io);
 }
@@ -187,7 +172,7 @@ static inline void ocf_core_submit_flush(struct ocf_io *io)
  *
  * @param[in] io IO to be submitted
  */
-static inline void ocf_core_submit_discard(struct ocf_io *io)
+static inline void ocf_core_submit_discard(ocf_io_t io)
 {
 	ocf_volume_submit_discard(io);
 }

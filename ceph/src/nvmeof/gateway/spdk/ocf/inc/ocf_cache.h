@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2023-2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 
@@ -92,6 +93,9 @@ struct ocf_cache_info {
 
 	uint32_t metadata_end_offset;
 		/*!< LBA offset where metadata ends (in 4KiB blocks) */
+
+	bool standby_detached;
+		/*!< true if cache volume detached in standby mode */
 };
 
 /**
@@ -102,6 +106,15 @@ struct ocf_cache_info {
  * @retval Volume, NULL if dettached.
  */
 ocf_volume_t ocf_cache_get_volume(ocf_cache_t cache);
+
+/**
+ * @brief Obtain front volume from cache
+ *
+ * @param[in] cache Cache object
+ *
+ * @retval Volume, NULL if dettached.
+ */
+ocf_volume_t ocf_cache_get_front_volume(ocf_cache_t cache);
 
 /**
  * @brief Get name of given cache object
@@ -137,10 +150,30 @@ bool ocf_cache_is_device_attached(ocf_cache_t cache);
  *
  * @param[in] cache Cache object
  *
- * @retval 1 Caching device is being stopped
- * @retval 0 Caching device is being stopped
+ * @retval 1 Caching device is running
+ * @retval 0 Caching device is not running
  */
 bool ocf_cache_is_running(ocf_cache_t cache);
+
+/**
+ * @brief Check if cache is detached
+ *
+ * @param[in] cache Cache
+ *
+ * @retval 1 Caching device is detached
+ * @retval 0 Caching device is not detached
+ */
+bool ocf_cache_is_detached(ocf_cache_t cache);
+
+/**
+ * @brief Check if cache object is standby
+ *
+ * @param[in] cache Cache object
+ *
+ * @retval 1 Caching device is in standby state
+ * @retval 0 Caching device is not in standby state
+ */
+bool ocf_cache_is_standby(ocf_cache_t cache);
 
 /**
  * @brief Get cache mode of given cache object

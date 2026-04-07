@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2022, Intel Corporation
+;; Copyright (c) 2022-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -27,9 +27,9 @@
 
 ; routine to do AES ECB 128 encrypt/decrypt on 16n bytes doing AES by 8
 
-%include "include/os.asm"
-%include "include/clear_regs.asm"
-%include "include/aes_common.asm"
+%include "include/os.inc"
+%include "include/clear_regs.inc"
+%include "include/aes_common.inc"
 
 %ifdef LINUX
 %define IN              rdi

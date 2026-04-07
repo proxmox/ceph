@@ -401,6 +401,14 @@ PerfCounters *build_osd_logger(CephContext *cct) {
       l_osd_scrub_rppool_failed_elapsed,
       "failed_scrubs_replicated_elapsed",
       "time to scrub failure replicated");
+  osd_plb.add_u64_counter(
+      l_osd_scrub_rppool_write_intersects,
+      "scrub_replicated_io_intersects",
+      "client write op intersects chunk range");
+  osd_plb.add_u64_counter(
+      l_osd_scrub_rppool_write_blocked,
+      "scrub_replicated_io_blocked",
+      "write op did not preempt the scrub");
 
   // the replica reservation process - replicated pool
   osd_plb.add_u64_counter(
@@ -450,6 +458,14 @@ PerfCounters *build_osd_logger(CephContext *cct) {
   osd_plb.add_time_avg(
       l_osd_scrub_ec_failed_elapsed, "failed_scrubs_ec_elapsed",
       "time to scrub failure ec");
+  osd_plb.add_u64_counter(
+      l_osd_scrub_ec_write_intersects,
+      "scrub_ec_io_intersects",
+      "client write op intersects chunk range");
+  osd_plb.add_u64_counter(
+      l_osd_scrub_ec_write_blocked,
+      "scrub_ec_io_blocked",
+      "write op did not preempt the scrub");
 
   // the secondaries reservation process - EC
   osd_plb.add_u64_counter(
@@ -514,6 +530,7 @@ PerfCounters *build_recoverystate_perf(CephContext *cct) {
   rs_perf.add_time_avg(rs_getmissing_latency, "getmissing_latency", "Getmissing recovery state latency");
   rs_perf.add_time_avg(rs_waitupthru_latency, "waitupthru_latency", "Waitupthru recovery state latency");
   rs_perf.add_time_avg(rs_notrecovering_latency, "notrecovering_latency", "Notrecovering recovery state latency");
+  rs_perf.add_u64_counter(rs_stats_invalidated, "stats_invalidated", "Number of times pg stats received invalidations");
 
   return rs_perf.create_perf_counters();
 }

@@ -36,7 +36,12 @@ import {
   SelectModule,
   ComboBoxModule,
   ProgressIndicatorModule,
-  InlineLoadingModule
+  InlineLoadingModule,
+  PanelModule,
+  TagModule,
+  LinkModule,
+  LayerModule,
+  TilesModule
 } from 'carbon-components-angular';
 
 import { MotdComponent } from '~/app/shared/components/motd/motd.component';
@@ -81,11 +86,15 @@ import { HelpTextComponent } from './help-text/help-text.component';
 import { FormAdvancedFieldsetComponent } from './form-advanced-fieldset/form-advanced-fieldset.component';
 import { UpgradableComponent } from './upgradable/upgradable.component';
 import { ProgressComponent } from './progress/progress.component';
-
+import { TearsheetComponent } from './tearsheet/tearsheet.component';
+import { TearsheetStepComponent } from './tearsheet-step/tearsheet-step.component';
 // Icons
 import InfoIcon from '@carbon/icons/es/information/16';
 import CopyIcon from '@carbon/icons/es/copy/32';
 import { IconComponent } from './icon/icon.component';
+import downloadIcon from '@carbon/icons/es/download/16';
+import { ChartsModule } from '@carbon/charts-angular';
+import { ProductiveCardComponent } from './productive-card/productive-card.component';
 
 @NgModule({
   imports: [
@@ -125,7 +134,13 @@ import { IconComponent } from './icon/icon.component';
     ComboBoxModule,
     ProgressIndicatorModule,
     BaseChartDirective,
-    InlineLoadingModule
+    InlineLoadingModule,
+    PanelModule,
+    ChartsModule,
+    TagModule,
+    LinkModule,
+    LayerModule,
+    TilesModule
   ],
   declarations: [
     SparklineComponent,
@@ -168,7 +183,10 @@ import { IconComponent } from './icon/icon.component';
     FormAdvancedFieldsetComponent,
     UpgradableComponent,
     ProgressComponent,
-    IconComponent
+    IconComponent,
+    TearsheetComponent,
+    TearsheetStepComponent,
+    ProductiveCardComponent
   ],
   providers: [provideCharts(withDefaultRegisterables())],
   exports: [
@@ -208,11 +226,14 @@ import { IconComponent } from './icon/icon.component';
     FormAdvancedFieldsetComponent,
     UpgradableComponent,
     ProgressComponent,
-    IconComponent
+    IconComponent,
+    TearsheetComponent,
+    TearsheetStepComponent,
+    ProductiveCardComponent
   ]
 })
 export class ComponentsModule {
   constructor(private iconService: IconService) {
-    this.iconService.registerAll([InfoIcon, CopyIcon]);
+    this.iconService.registerAll([InfoIcon, CopyIcon, downloadIcon]);
   }
 }

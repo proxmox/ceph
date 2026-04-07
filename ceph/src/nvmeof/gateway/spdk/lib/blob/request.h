@@ -1,7 +1,7 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *   Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #ifndef SPDK_BS_REQUEST_H
@@ -65,6 +65,7 @@ struct spdk_bs_cpl {
 			spdk_blob_op_with_handle_complete       cb_fn;
 			void                                    *cb_arg;
 			struct spdk_blob                        *blob;
+			void					*esnap_ctx;
 		} blob_handle;
 
 		struct {
@@ -84,7 +85,16 @@ struct spdk_bs_request_set {
 
 	int                     bserrno;
 
+	/*
+	 * The blobstore's channel, obtained by blobstore consumers via
+	 * spdk_bs_alloc_io_channel(). Used for IO to the blobstore.
+	 */
 	struct spdk_bs_channel		*channel;
+	/*
+	 * The channel used by the blobstore to perform IO on back_bs_dev. Unless the blob
+	 * is an esnap clone, back_channel == spdk_io_channel_get_ctx(set->channel).
+	 */
+	struct spdk_io_channel		*back_channel;
 
 	struct spdk_bs_dev_cb_args	cb_args;
 
@@ -119,8 +129,14 @@ struct spdk_bs_request_set {
 
 void bs_call_cpl(struct spdk_bs_cpl *cpl, int bserrno);
 
-spdk_bs_sequence_t *bs_sequence_start(struct spdk_io_channel *channel,
-				      struct spdk_bs_cpl *cpl);
+spdk_bs_sequence_t *bs_sequence_start_bs(struct spdk_io_channel *channel,
+		struct spdk_bs_cpl *cpl);
+
+spdk_bs_sequence_t *bs_sequence_start_blob(struct spdk_io_channel *channel,
+		struct spdk_bs_cpl *cpl, struct spdk_blob *blob);
+
+spdk_bs_sequence_t *bs_sequence_start_esnap(struct spdk_io_channel *channel,
+		struct spdk_bs_cpl *cpl, struct spdk_blob *blob);
 
 void bs_sequence_read_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
 			     void *payload, uint64_t lba, uint32_t lba_count,
@@ -159,7 +175,7 @@ void bs_sequence_finish(spdk_bs_sequence_t *seq, int bserrno);
 void bs_user_op_sequence_finish(void *cb_arg, int bserrno);
 
 spdk_bs_batch_t *bs_batch_open(struct spdk_io_channel *channel,
-			       struct spdk_bs_cpl *cpl);
+			       struct spdk_bs_cpl *cpl, struct spdk_blob *blob);
 
 void bs_batch_read_bs_dev(spdk_bs_batch_t *batch, struct spdk_bs_dev *bs_dev,
 			  void *payload, uint64_t lba, uint32_t lba_count);

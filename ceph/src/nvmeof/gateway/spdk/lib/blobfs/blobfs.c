@@ -38,43 +38,45 @@ static struct spdk_thread *g_cache_pool_thread;
 static int g_fs_count = 0;
 static pthread_mutex_t g_cache_init_lock = PTHREAD_MUTEX_INITIALIZER;
 
-SPDK_TRACE_REGISTER_FN(blobfs_trace, "blobfs", TRACE_GROUP_BLOBFS)
+static void
+blobfs_trace(void)
 {
 	struct spdk_trace_tpoint_opts opts[] = {
 		{
 			"BLOBFS_XATTR_START", TRACE_BLOBFS_XATTR_START,
-			OWNER_NONE, OBJECT_NONE, 0,
+			OWNER_TYPE_NONE, OBJECT_NONE, 0,
 			{{ "file", SPDK_TRACE_ARG_TYPE_STR, 40 }},
 		},
 		{
 			"BLOBFS_XATTR_END", TRACE_BLOBFS_XATTR_END,
-			OWNER_NONE, OBJECT_NONE, 0,
+			OWNER_TYPE_NONE, OBJECT_NONE, 0,
 			{{ "file", SPDK_TRACE_ARG_TYPE_STR, 40 }},
 		},
 		{
 			"BLOBFS_OPEN", TRACE_BLOBFS_OPEN,
-			OWNER_NONE, OBJECT_NONE, 0,
+			OWNER_TYPE_NONE, OBJECT_NONE, 0,
 			{{ "file", SPDK_TRACE_ARG_TYPE_STR, 40 }},
 		},
 		{
 			"BLOBFS_CLOSE", TRACE_BLOBFS_CLOSE,
-			OWNER_NONE, OBJECT_NONE, 0,
+			OWNER_TYPE_NONE, OBJECT_NONE, 0,
 			{{ "file", SPDK_TRACE_ARG_TYPE_STR, 40 }},
 		},
 		{
 			"BLOBFS_DELETE_START", TRACE_BLOBFS_DELETE_START,
-			OWNER_NONE, OBJECT_NONE, 0,
+			OWNER_TYPE_NONE, OBJECT_NONE, 0,
 			{{ "file", SPDK_TRACE_ARG_TYPE_STR, 40 }},
 		},
 		{
 			"BLOBFS_DELETE_DONE", TRACE_BLOBFS_DELETE_DONE,
-			OWNER_NONE, OBJECT_NONE, 0,
+			OWNER_TYPE_NONE, OBJECT_NONE, 0,
 			{{ "file", SPDK_TRACE_ARG_TYPE_STR, 40 }},
 		}
 	};
 
 	spdk_trace_register_description_ext(opts, SPDK_COUNTOF(opts));
 }
+SPDK_TRACE_REGISTER_FN(blobfs_trace, "blobfs", TRACE_GROUP_BLOBFS)
 
 void
 cache_buffer_free(struct cache_buffer *cache_buffer)
@@ -249,25 +251,6 @@ blobfs_cache_pool_need_reclaim(void)
 static void
 __start_cache_pool_mgmt(void *ctx)
 {
-	assert(g_cache_pool == NULL);
-
-	g_cache_pool = spdk_mempool_create("spdk_fs_cache",
-					   g_fs_cache_size / CACHE_BUFFER_SIZE,
-					   CACHE_BUFFER_SIZE,
-					   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-					   SPDK_ENV_SOCKET_ID_ANY);
-	if (!g_cache_pool) {
-		if (spdk_mempool_lookup("spdk_fs_cache") != NULL) {
-			SPDK_ERRLOG("Unable to allocate mempool: already exists\n");
-			SPDK_ERRLOG("Probably running in multiprocess environment, which is "
-				    "unsupported by the blobfs library\n");
-		} else {
-			SPDK_ERRLOG("Create mempool failed, you may "
-				    "increase the memory and try again\n");
-		}
-		assert(false);
-	}
-
 	assert(g_cache_pool_mgmt_poller == NULL);
 	g_cache_pool_mgmt_poller = SPDK_POLLER_REGISTER(_blobfs_cache_pool_reclaim, NULL,
 				   BLOBFS_CACHE_POOL_POLL_PERIOD_IN_US);
@@ -287,10 +270,33 @@ __stop_cache_pool_mgmt(void *ctx)
 }
 
 static void
+allocate_cache_pool(void)
+{
+	assert(g_cache_pool == NULL);
+	g_cache_pool = spdk_mempool_create("spdk_fs_cache",
+					   g_fs_cache_size / CACHE_BUFFER_SIZE,
+					   CACHE_BUFFER_SIZE,
+					   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
+					   SPDK_ENV_NUMA_ID_ANY);
+	if (!g_cache_pool) {
+		if (spdk_mempool_lookup("spdk_fs_cache") != NULL) {
+			SPDK_ERRLOG("Unable to allocate mempool: already exists\n");
+			SPDK_ERRLOG("Probably running in multiprocess environment, which is "
+				    "unsupported by the blobfs library\n");
+		} else {
+			SPDK_ERRLOG("Create mempool failed, you may "
+				    "increase the memory and try again\n");
+		}
+		assert(false);
+	}
+}
+
+static void
 initialize_global_cache(void)
 {
 	pthread_mutex_lock(&g_cache_init_lock);
 	if (g_fs_count == 0) {
+		allocate_cache_pool();
 		g_cache_pool_thread = spdk_thread_create("cache_pool_mgmt", NULL);
 		assert(g_cache_pool_thread != NULL);
 		spdk_thread_send_msg(g_cache_pool_thread, __start_cache_pool_mgmt, NULL);
@@ -569,6 +575,8 @@ __wake_caller(void *arg, int fserrno)
 	sem_post(args->sem);
 }
 
+SPDK_LOG_DEPRECATION_REGISTER(blobfs_library, "blobfs library", "v25.09", 0)
+
 void
 spdk_fs_init(struct spdk_bs_dev *dev, struct spdk_blobfs_opts *opt,
 	     fs_send_request_fn send_request_fn,
@@ -579,6 +587,7 @@ spdk_fs_init(struct spdk_bs_dev *dev, struct spdk_blobfs_opts *opt,
 	struct spdk_fs_cb_args *args;
 	struct spdk_bs_opts opts = {};
 
+	SPDK_LOG_DEPRECATED(blobfs_library);
 	fs = fs_alloc(dev, send_request_fn);
 	if (fs == NULL) {
 		cb_fn(cb_arg, NULL, -ENOMEM);
@@ -820,6 +829,7 @@ spdk_fs_load(struct spdk_bs_dev *dev, fs_send_request_fn send_request_fn,
 	struct spdk_fs_request *req;
 	struct spdk_bs_opts	bs_opts;
 
+	SPDK_LOG_DEPRECATED(blobfs_library);
 	fs = fs_alloc(dev, send_request_fn);
 	if (fs == NULL) {
 		cb_fn(cb_arg, NULL, -ENOMEM);
@@ -1103,8 +1113,8 @@ __fs_create_file_done(void *arg, int fserrno)
 	struct spdk_fs_request *req = arg;
 	struct spdk_fs_cb_args *args = &req->args;
 
-	__wake_caller(args, fserrno);
 	SPDK_DEBUGLOG(blobfs, "file=%s\n", args->op.create.name);
+	__wake_caller(args, fserrno);
 }
 
 static void
@@ -1250,8 +1260,8 @@ __fs_open_file_done(void *arg, struct spdk_file *file, int bserrno)
 	struct spdk_fs_cb_args *args = &req->args;
 
 	args->file = file;
-	__wake_caller(args, bserrno);
 	SPDK_DEBUGLOG(blobfs, "file=%s\n", args->op.open.name);
+	__wake_caller(args, bserrno);
 }
 
 static void
@@ -1720,6 +1730,11 @@ __read_done(void *ctx, int bserrno)
 	struct spdk_fs_cb_args *args = &req->args;
 	void *buf;
 
+	if (bserrno) {
+		__rw_done(req, bserrno);
+		return;
+	}
+
 	assert(req != NULL);
 	buf = (void *)((uintptr_t)args->op.rw.pin_buf + (args->op.rw.offset & (args->op.rw.blocklen - 1)));
 	if (args->op.rw.is_read) {
@@ -1822,7 +1837,7 @@ __readvwritev(struct spdk_file *file, struct spdk_io_channel *_channel,
 	pin_buf_length = num_lba * lba_size;
 	args->op.rw.length = pin_buf_length;
 	args->op.rw.pin_buf = spdk_malloc(pin_buf_length, lba_size, NULL,
-					  SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
+					  SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
 	if (args->op.rw.pin_buf == NULL) {
 		SPDK_DEBUGLOG(blobfs, "Failed to allocate buf for: file=%s offset=%jx length=%jx\n",
 			      file->name, offset, length);
@@ -1886,6 +1901,7 @@ spdk_file_read_async(struct spdk_file *file, struct spdk_io_channel *channel,
 {
 	SPDK_DEBUGLOG(blobfs, "file=%s offset=%jx length=%jx\n",
 		      file->name, offset, length);
+
 	__readwrite(file, channel, payload, offset, length, cb_fn, cb_arg, 1);
 }
 
@@ -2014,9 +2030,16 @@ reclaim_cache_buffers(struct spdk_file *file)
 	/* If not freed, put it in the end of the queue */
 	if (file->tree->present_mask != 0) {
 		TAILQ_INSERT_TAIL(&g_caches, file, cache_tailq);
-	} else {
+	}
+
+	/* tree_free_buffers() may have freed the buffer pointed to by file->last.
+	 * So check if current append_pos is still in the cache, and if not, clear
+	 * file->last.
+	 */
+	if (tree_find_buffer(file->tree, file->append_pos) == NULL) {
 		file->last = NULL;
 	}
+
 	pthread_spin_unlock(&file->lock);
 
 	return 0;
@@ -2421,44 +2444,46 @@ spdk_file_write(struct spdk_file *file, struct spdk_fs_thread_ctx *ctx,
 	pthread_spin_lock(&file->lock);
 	file->open_for_writing = true;
 
-	if ((file->last == NULL) && (file->append_pos % CACHE_BUFFER_SIZE == 0)) {
-		cache_append_buffer(file);
-	}
-
-	if (file->last == NULL) {
-		struct rw_from_file_arg arg = {};
-		int rc;
-
-		arg.channel = channel;
-		arg.rwerrno = 0;
-		file->append_pos += length;
-		pthread_spin_unlock(&file->lock);
-		rc = __send_rw_from_file(file, payload, offset, length, false, &arg);
-		if (rc != 0) {
-			return rc;
+	do {
+		if ((file->last == NULL) && (file->append_pos % CACHE_BUFFER_SIZE == 0)) {
+			cache_append_buffer(file);
 		}
-		sem_wait(&channel->sem);
-		return arg.rwerrno;
-	}
 
-	blob_size = __file_get_blob_size(file);
+		if (file->last == NULL) {
+			struct rw_from_file_arg arg = {};
+			int rc;
 
-	if ((offset + length) > blob_size) {
-		struct spdk_fs_cb_args extend_args = {};
-
-		cluster_sz = file->fs->bs_opts.cluster_sz;
-		extend_args.sem = &channel->sem;
-		extend_args.op.resize.num_clusters = __bytes_to_clusters((offset + length), cluster_sz);
-		extend_args.file = file;
-		BLOBFS_TRACE(file, "start resize to %u clusters\n", extend_args.op.resize.num_clusters);
-		pthread_spin_unlock(&file->lock);
-		file->fs->send_request(__file_extend_blob, &extend_args);
-		sem_wait(&channel->sem);
-		if (extend_args.rc) {
-			return extend_args.rc;
+			arg.channel = channel;
+			arg.rwerrno = 0;
+			file->append_pos += length;
+			pthread_spin_unlock(&file->lock);
+			rc = __send_rw_from_file(file, payload, offset, length, false, &arg);
+			if (rc != 0) {
+				return rc;
+			}
+			sem_wait(&channel->sem);
+			return arg.rwerrno;
 		}
-		pthread_spin_lock(&file->lock);
-	}
+
+		blob_size = __file_get_blob_size(file);
+
+		if ((offset + length) > blob_size) {
+			struct spdk_fs_cb_args extend_args = {};
+
+			cluster_sz = file->fs->bs_opts.cluster_sz;
+			extend_args.sem = &channel->sem;
+			extend_args.op.resize.num_clusters = __bytes_to_clusters((offset + length), cluster_sz);
+			extend_args.file = file;
+			BLOBFS_TRACE(file, "start resize to %u clusters\n", extend_args.op.resize.num_clusters);
+			pthread_spin_unlock(&file->lock);
+			file->fs->send_request(__file_extend_blob, &extend_args);
+			sem_wait(&channel->sem);
+			if (extend_args.rc) {
+				return extend_args.rc;
+			}
+			pthread_spin_lock(&file->lock);
+		}
+	} while (file->last == NULL);
 
 	flush_req = alloc_fs_request(channel);
 	if (flush_req == NULL) {

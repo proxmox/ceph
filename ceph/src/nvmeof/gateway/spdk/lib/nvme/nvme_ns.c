@@ -21,15 +21,19 @@ void
 nvme_ns_set_identify_data(struct spdk_nvme_ns *ns)
 {
 	struct spdk_nvme_ns_data	*nsdata;
+	struct spdk_nvme_nvm_ns_data	*nsdata_nvm;
+	uint32_t			format_index;
 
 	nsdata = _nvme_ns_get_data(ns);
+	nsdata_nvm = ns->nsdata_nvm;
 
 	ns->flags = 0x0000;
+	format_index = spdk_nvme_ns_get_format_index(nsdata);
 
-	ns->sector_size = 1 << nsdata->lbaf[nsdata->flbas.format].lbads;
+	ns->sector_size = 1 << nsdata->lbaf[format_index].lbads;
 	ns->extended_lba_size = ns->sector_size;
 
-	ns->md_size = nsdata->lbaf[nsdata->flbas.format].ms;
+	ns->md_size = nsdata->lbaf[format_index].ms;
 	if (nsdata->flbas.extended) {
 		ns->flags |= SPDK_NVME_NS_EXTENDED_LBA_SUPPORTED;
 		ns->extended_lba_size += ns->md_size;
@@ -80,9 +84,17 @@ nvme_ns_set_identify_data(struct spdk_nvme_ns *ns)
 	}
 
 	ns->pi_type = SPDK_NVME_FMT_NVM_PROTECTION_DISABLE;
-	if (nsdata->lbaf[nsdata->flbas.format].ms && nsdata->dps.pit) {
+	if (nsdata->lbaf[format_index].ms && nsdata->dps.pit) {
 		ns->flags |= SPDK_NVME_NS_DPS_PI_SUPPORTED;
 		ns->pi_type = nsdata->dps.pit;
+		if (nsdata_nvm != NULL && ns->ctrlr->cdata.ctratt.bits.elbas) {
+			/* We may have nsdata_nvm for other purposes but
+			 * the elbaf array is only valid when elbas is 1.
+			 */
+			ns->pi_format = nsdata_nvm->elbaf[format_index].pif;
+		} else {
+			ns->pi_format = SPDK_NVME_16B_GUARD_PI;
+		}
 	}
 }
 
@@ -126,15 +138,108 @@ nvme_ctrlr_identify_ns(struct spdk_nvme_ns *ns)
 }
 
 static int
-nvme_ctrlr_identify_ns_iocs_specific(struct spdk_nvme_ns *ns)
+nvme_ctrlr_identify_ns_zns_specific(struct spdk_nvme_ns *ns)
 {
 	struct nvme_completion_poll_status *status;
 	struct spdk_nvme_ctrlr *ctrlr = ns->ctrlr;
+	struct spdk_nvme_zns_ns_data *nsdata_zns;
 	int rc;
 
+	nvme_ns_free_zns_specific_data(ns);
+
+	nsdata_zns = spdk_zmalloc(sizeof(*nsdata_zns), 64, NULL, SPDK_ENV_NUMA_ID_ANY,
+				  SPDK_MALLOC_SHARE);
+	if (!nsdata_zns) {
+		return -ENOMEM;
+	}
+
+	status = calloc(1, sizeof(*status));
+	if (!status) {
+		SPDK_ERRLOG("Failed to allocate status tracker\n");
+		spdk_free(nsdata_zns);
+		return -ENOMEM;
+	}
+
+	rc = nvme_ctrlr_cmd_identify(ctrlr, SPDK_NVME_IDENTIFY_NS_IOCS, 0, ns->id, ns->csi,
+				     nsdata_zns, sizeof(*nsdata_zns),
+				     nvme_completion_poll_cb, status);
+	if (rc != 0) {
+		spdk_free(nsdata_zns);
+		free(status);
+		return rc;
+	}
+
+	if (nvme_wait_for_completion_robust_lock(ctrlr->adminq, status, &ctrlr->ctrlr_lock)) {
+		SPDK_ERRLOG("Failed to retrieve Identify IOCS Specific Namespace Data Structure\n");
+		spdk_free(nsdata_zns);
+		if (!status->timed_out) {
+			free(status);
+		}
+		return -ENXIO;
+	}
+	free(status);
+	ns->nsdata_zns = nsdata_zns;
+
+	return 0;
+}
+
+static int
+nvme_ctrlr_identify_ns_nvm_specific(struct spdk_nvme_ns *ns)
+{
+	struct nvme_completion_poll_status *status;
+	struct spdk_nvme_ctrlr *ctrlr = ns->ctrlr;
+	struct spdk_nvme_nvm_ns_data *nsdata_nvm;
+	int rc;
+
+	nvme_ns_free_zns_specific_data(ns);
+
+	nsdata_nvm = spdk_zmalloc(sizeof(*nsdata_nvm), 64, NULL, SPDK_ENV_NUMA_ID_ANY,
+				  SPDK_MALLOC_SHARE);
+	if (!nsdata_nvm) {
+		return -ENOMEM;
+	}
+
+	status = calloc(1, sizeof(*status));
+	if (!status) {
+		SPDK_ERRLOG("Failed to allocate status tracker\n");
+		spdk_free(nsdata_nvm);
+		return -ENOMEM;
+	}
+
+	rc = nvme_ctrlr_cmd_identify(ctrlr, SPDK_NVME_IDENTIFY_NS_IOCS, 0, ns->id, ns->csi,
+				     nsdata_nvm, sizeof(*nsdata_nvm),
+				     nvme_completion_poll_cb, status);
+	if (rc != 0) {
+		spdk_free(nsdata_nvm);
+		free(status);
+		return rc;
+	}
+
+	if (nvme_wait_for_completion_robust_lock(ctrlr->adminq, status, &ctrlr->ctrlr_lock)) {
+		SPDK_ERRLOG("Failed to retrieve Identify IOCS Specific Namespace Data Structure\n");
+		spdk_free(nsdata_nvm);
+		if (!status->timed_out) {
+			free(status);
+		}
+		return -ENXIO;
+	}
+	free(status);
+	ns->nsdata_nvm = nsdata_nvm;
+
+	return 0;
+}
+
+static int
+nvme_ctrlr_identify_ns_iocs_specific(struct spdk_nvme_ns *ns)
+{
 	switch (ns->csi) {
 	case SPDK_NVME_CSI_ZNS:
-		break;
+		return nvme_ctrlr_identify_ns_zns_specific(ns);
+	case SPDK_NVME_CSI_NVM:
+		if (ns->ctrlr->cdata.ctratt.bits.elbas) {
+			return nvme_ctrlr_identify_ns_nvm_specific(ns);
+		}
+	/* fallthrough */
 	default:
 		/*
 		 * This switch must handle all cases for which
@@ -144,40 +249,7 @@ nvme_ctrlr_identify_ns_iocs_specific(struct spdk_nvme_ns *ns)
 		assert(0);
 	}
 
-	assert(!ns->nsdata_zns);
-	ns->nsdata_zns = spdk_zmalloc(sizeof(*ns->nsdata_zns), 64, NULL, SPDK_ENV_SOCKET_ID_ANY,
-				      SPDK_MALLOC_SHARE);
-	if (!ns->nsdata_zns) {
-		return -ENOMEM;
-	}
-
-	status = calloc(1, sizeof(*status));
-	if (!status) {
-		SPDK_ERRLOG("Failed to allocate status tracker\n");
-		nvme_ns_free_zns_specific_data(ns);
-		return -ENOMEM;
-	}
-
-	rc = nvme_ctrlr_cmd_identify(ctrlr, SPDK_NVME_IDENTIFY_NS_IOCS, 0, ns->id, ns->csi,
-				     ns->nsdata_zns, sizeof(*ns->nsdata_zns),
-				     nvme_completion_poll_cb, status);
-	if (rc != 0) {
-		nvme_ns_free_zns_specific_data(ns);
-		free(status);
-		return rc;
-	}
-
-	if (nvme_wait_for_completion_robust_lock(ctrlr->adminq, status, &ctrlr->ctrlr_lock)) {
-		SPDK_ERRLOG("Failed to retrieve Identify IOCS Specific Namespace Data Structure\n");
-		nvme_ns_free_zns_specific_data(ns);
-		if (!status->timed_out) {
-			free(status);
-		}
-		return -ENXIO;
-	}
-	free(status);
-
-	return 0;
+	return -EINVAL;
 }
 
 static int
@@ -300,6 +372,11 @@ spdk_nvme_ns_get_pi_type(struct spdk_nvme_ns *ns) {
 	return ns->pi_type;
 }
 
+enum spdk_nvme_pi_format
+spdk_nvme_ns_get_pi_format(struct spdk_nvme_ns *ns) {
+	return ns->pi_format;
+}
+
 bool
 spdk_nvme_ns_supports_extended_lba(struct spdk_nvme_ns *ns)
 {
@@ -318,10 +395,26 @@ spdk_nvme_ns_get_md_size(struct spdk_nvme_ns *ns)
 	return ns->md_size;
 }
 
+uint32_t
+spdk_nvme_ns_get_format_index(const struct spdk_nvme_ns_data *nsdata)
+{
+	if (nsdata->nlbaf < 16) {
+		return nsdata->flbas.format;
+	} else {
+		return ((nsdata->flbas.msb_format << 4) + nsdata->flbas.format);
+	}
+}
+
 const struct spdk_nvme_ns_data *
 spdk_nvme_ns_get_data(struct spdk_nvme_ns *ns)
 {
 	return _nvme_ns_get_data(ns);
+}
+
+const struct spdk_nvme_nvm_ns_data *
+spdk_nvme_nvm_ns_get_data(struct spdk_nvme_ns *ns)
+{
+	return ns->nsdata_nvm;
 }
 
 /* We have to use the typedef in the function declaration to appease astyle. */
@@ -463,9 +556,23 @@ nvme_ns_free_zns_specific_data(struct spdk_nvme_ns *ns)
 }
 
 void
+nvme_ns_free_nvm_specific_data(struct spdk_nvme_ns *ns)
+{
+	if (!ns->id) {
+		return;
+	}
+
+	if (ns->nsdata_nvm) {
+		spdk_free(ns->nsdata_nvm);
+		ns->nsdata_nvm = NULL;
+	}
+}
+
+void
 nvme_ns_free_iocs_specific_data(struct spdk_nvme_ns *ns)
 {
 	nvme_ns_free_zns_specific_data(ns);
+	nvme_ns_free_nvm_specific_data(ns);
 }
 
 bool
@@ -473,10 +580,10 @@ nvme_ns_has_supported_iocs_specific_data(struct spdk_nvme_ns *ns)
 {
 	switch (ns->csi) {
 	case SPDK_NVME_CSI_NVM:
-		/*
-		 * NVM Command Set Specific Identify Namespace data structure
-		 * is currently all-zeroes, reserved for future use.
-		 */
+		if (ns->ctrlr->cdata.ctratt.bits.elbas) {
+			return true;
+		}
+
 		return false;
 	case SPDK_NVME_CSI_ZNS:
 		return true;

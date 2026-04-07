@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_METADATA_H__
@@ -61,7 +61,13 @@ struct ocf_metadata_probe_status {
 	/** Cache contains dirty data */
 	bool cache_dirty;
 
-	/** Loaded name of cache instance */
+	/** Probed cache line size */
+	ocf_cache_line_size_t cache_line_size;
+
+	/** probed cache mode */
+	ocf_cache_mode_t cache_mode;
+
+	/** Probed name of cache instance */
 	char cache_name[OCF_CACHE_NAME_SIZE];
 };
 
@@ -85,30 +91,6 @@ typedef void (*ocf_metadata_probe_end_t)(void *priv, int error,
  */
 void ocf_metadata_probe(ocf_ctx_t ctx, ocf_volume_t volume,
 		ocf_metadata_probe_end_t cmpl, void *priv);
-
-/**
- * @brief Metadata probe for cores completion callback
- *
- * @param[in] priv Completion context
- * @param[in] error Error code (zero on success)
- * @param[in] num_cores Number of cores in cache metadata
- */
-typedef void (*ocf_metadata_probe_cores_end_t)(void *priv, int error,
-		unsigned int num_cores);
-
-/**
- * @brief Probe cache device for associated cores
- *
- * @param[in] ctx handle to object designating ocf context
- * @param[in] volume Cache volume
- * @param[in,out] uuids Array of uuids
- * @param[in] uuid_count Size of @uuid array
- * @param[in] cmpl Completion callback
- * @param[in] priv Completion context
- */
-void ocf_metadata_probe_cores(ocf_ctx_t ctx, ocf_volume_t volume,
-		struct ocf_volume_uuid *uuids, uint32_t uuid_count,
-		ocf_metadata_probe_cores_end_t cmpl, void *priv);
 
 /**
  * @brief Check if sectors in cache line before given address are invalid

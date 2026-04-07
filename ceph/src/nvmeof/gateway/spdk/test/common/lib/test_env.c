@@ -11,6 +11,7 @@
 #include "spdk/env.h"
 #include "spdk/queue.h"
 #include "spdk/util.h"
+#include "spdk/string.h"
 
 static uint32_t g_ut_num_cores;
 static bool *g_ut_cores;
@@ -30,6 +31,9 @@ DEFINE_STUB_V(spdk_env_thread_wait_all, (void));
 DEFINE_STUB_V(spdk_env_opts_init, (struct spdk_env_opts *opts));
 DEFINE_STUB(spdk_env_init, int, (const struct spdk_env_opts *opts), 0);
 DEFINE_STUB_V(spdk_env_fini, (void));
+DEFINE_STUB(spdk_env_get_first_numa_id, int32_t, (void), 0);
+DEFINE_STUB(spdk_env_get_next_numa_id, int32_t, (int32_t prev_numa_id), INT32_MAX);
+DEFINE_STUB(spdk_env_get_last_numa_id, int32_t, (void), 0);
 
 void
 allocate_cores(uint32_t num_cores)
@@ -114,13 +118,13 @@ spdk_env_get_current_core(void)
 	return UINT32_MAX;
 }
 
-DEFINE_RETURN_MOCK(spdk_env_get_socket_id, uint32_t);
-uint32_t
-spdk_env_get_socket_id(uint32_t core)
+DEFINE_RETURN_MOCK(spdk_env_get_numa_id, int32_t);
+int32_t
+spdk_env_get_numa_id(uint32_t core)
 {
-	HANDLE_RETURN_MOCK(spdk_env_get_socket_id);
+	HANDLE_RETURN_MOCK(spdk_env_get_numa_id);
 
-	return SPDK_ENV_SOCKET_ID_ANY;
+	return SPDK_ENV_NUMA_ID_ANY;
 }
 
 /*
@@ -130,7 +134,7 @@ spdk_env_get_socket_id(uint32_t core)
 
 DEFINE_RETURN_MOCK(spdk_memzone_reserve, void *);
 void *
-spdk_memzone_reserve(const char *name, size_t len, int socket_id, unsigned flags)
+spdk_memzone_reserve(const char *name, size_t len, int numa_id, unsigned flags)
 {
 	HANDLE_RETURN_MOCK(spdk_memzone_reserve);
 
@@ -139,7 +143,7 @@ spdk_memzone_reserve(const char *name, size_t len, int socket_id, unsigned flags
 
 DEFINE_RETURN_MOCK(spdk_memzone_reserve_aligned, void *);
 void *
-spdk_memzone_reserve_aligned(const char *name, size_t len, int socket_id,
+spdk_memzone_reserve_aligned(const char *name, size_t len, int numa_id,
 			     unsigned flags, unsigned align)
 {
 	HANDLE_RETURN_MOCK(spdk_memzone_reserve_aligned);
@@ -149,7 +153,7 @@ spdk_memzone_reserve_aligned(const char *name, size_t len, int socket_id,
 
 DEFINE_RETURN_MOCK(spdk_malloc, void *);
 void *
-spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags)
+spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int numa_id, uint32_t flags)
 {
 	HANDLE_RETURN_MOCK(spdk_malloc);
 
@@ -178,7 +182,7 @@ spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint3
 
 DEFINE_RETURN_MOCK(spdk_zmalloc, void *);
 void *
-spdk_zmalloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags)
+spdk_zmalloc(size_t size, size_t align, uint64_t *phys_addr, int numa_id, uint32_t flags)
 {
 	HANDLE_RETURN_MOCK(spdk_zmalloc);
 
@@ -219,7 +223,7 @@ spdk_dma_zmalloc(size_t size, size_t align, uint64_t *phys_addr)
 
 DEFINE_RETURN_MOCK(spdk_dma_malloc_socket, void *);
 void *
-spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socket_id)
+spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int numa_id)
 {
 	HANDLE_RETURN_MOCK(spdk_dma_malloc_socket);
 
@@ -228,7 +232,7 @@ spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socke
 
 DEFINE_RETURN_MOCK(spdk_dma_zmalloc_socket, void *);
 void *
-spdk_dma_zmalloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socket_id)
+spdk_dma_zmalloc_socket(size_t size, size_t align, uint64_t *phys_addr, int numa_id)
 {
 	HANDLE_RETURN_MOCK(spdk_dma_zmalloc_socket);
 
@@ -269,6 +273,10 @@ spdk_vtophys(const void *buf, uint64_t *size)
 }
 #endif
 
+#ifndef UNIT_TEST_NO_ENV_MEMORY
+DEFINE_STUB(spdk_mem_get_numa_id, int32_t, (const void *buf, uint64_t *size), 0);
+#endif
+
 void
 spdk_memzone_dump(FILE *f)
 {
@@ -292,7 +300,7 @@ struct test_mempool {
 DEFINE_RETURN_MOCK(spdk_mempool_create, struct spdk_mempool *);
 struct spdk_mempool *
 spdk_mempool_create(const char *name, size_t count,
-		    size_t ele_size, size_t cache_size, int socket_id)
+		    size_t ele_size, size_t cache_size, int numa_id)
 {
 	struct test_mempool *mp;
 
@@ -410,7 +418,7 @@ struct spdk_ring {
 
 DEFINE_RETURN_MOCK(spdk_ring_create, struct spdk_ring *);
 struct spdk_ring *
-spdk_ring_create(enum spdk_ring_type type, size_t count, int socket_id)
+spdk_ring_create(enum spdk_ring_type type, size_t count, int numa_id)
 {
 	struct spdk_ring *ring;
 
@@ -539,7 +547,6 @@ spdk_delay_us(unsigned int us)
 	ut_spdk_get_ticks += us;
 }
 
-#ifndef UNIT_TEST_NO_PCI_ADDR
 DEFINE_RETURN_MOCK(spdk_pci_addr_parse, int);
 int
 spdk_pci_addr_parse(struct spdk_pci_addr *addr, const char *bdf)
@@ -625,4 +632,3 @@ spdk_pci_addr_compare(const struct spdk_pci_addr *a1, const struct spdk_pci_addr
 
 	return 0;
 }
-#endif

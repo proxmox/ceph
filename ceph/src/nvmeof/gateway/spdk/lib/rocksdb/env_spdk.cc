@@ -24,7 +24,7 @@ namespace rocksdb
 
 struct spdk_filesystem *g_fs = NULL;
 struct spdk_bs_dev *g_bs_dev;
-uint32_t g_lcore = 0;
+struct spdk_thread *g_app_thread;
 std::string g_bdev_name;
 volatile bool g_spdk_ready = false;
 volatile bool g_spdk_start_failure = false;
@@ -65,21 +65,9 @@ set_channel()
 }
 
 static void
-__call_fn(void *arg1, void *arg2)
-{
-	fs_request_fn fn;
-
-	fn = (fs_request_fn)arg1;
-	fn(arg2);
-}
-
-static void
 __send_request(fs_request_fn fn, void *arg)
 {
-	struct spdk_event *event;
-
-	event = spdk_event_allocate(g_lcore, __call_fn, (void *)fn, arg);
-	spdk_event_call(event);
+	spdk_thread_send_msg(g_app_thread, fn, arg);
 }
 
 static std::string
@@ -189,7 +177,7 @@ SpdkRandomAccessFile::Read(uint64_t offset, size_t n, Slice *result, char *scrat
 	set_channel();
 	rc = spdk_file_read(mFile, g_sync_args.channel, scratch, offset, n);
 	if (rc >= 0) {
-		*result = Slice(scratch, n);
+		*result = Slice(scratch, rc);
 		return Status::OK();
 	} else {
 		errno = -rc;
@@ -246,6 +234,7 @@ public:
 		mFile = NULL;
 		return Status::OK();
 	}
+	using WritableFile::Append;
 	virtual Status Append(const Slice &data) override;
 	virtual Status Flush() override
 	{
@@ -644,7 +633,7 @@ rocksdb_run(__attribute__((unused)) void *arg1)
 		exit(1);
 	}
 
-	g_lcore = spdk_env_get_first_core();
+	g_app_thread = spdk_get_thread();
 
 	printf("using bdev %s\n", g_bdev_name.c_str());
 	spdk_fs_load(g_bs_dev, __send_request, fs_load_cb, NULL);
@@ -694,11 +683,15 @@ initialize_spdk(void *arg)
 
 }
 
+SPDK_LOG_DEPRECATION_REGISTER(rocksdb_plugin, "rocksdb plugin", "v25.09", 0)
+
 SpdkEnv::SpdkEnv(Env *base_env, const std::string &dir, const std::string &conf,
 		 const std::string &bdev, uint64_t cache_size_in_mb)
 	: EnvWrapper(base_env), mDirectory(dir), mConfig(conf), mBdev(bdev)
 {
 	struct spdk_app_opts *opts = new struct spdk_app_opts;
+
+	SPDK_LOG_DEPRECATED(rocksdb_plugin);
 
 	spdk_app_opts_init(opts, sizeof(*opts));
 	opts->name = "rocksdb";

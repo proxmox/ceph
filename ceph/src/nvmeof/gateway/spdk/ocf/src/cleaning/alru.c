@@ -1,6 +1,8 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2022      David Lee <live4thee@gmail.com>
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
@@ -10,6 +12,7 @@
 #include "../metadata/metadata.h"
 #include "../utils/utils_cleaner.h"
 #include "../utils/utils_user_part.h"
+#include "../utils/utils_parallelize.h"
 #include "../utils/utils_realloc.h"
 #include "../concurrency/ocf_cache_line_concurrency.h"
 #include "../ocf_def_priv.h"
@@ -46,6 +49,7 @@
 struct alru_flush_ctx {
 	struct ocf_cleaner_attribs attribs;
 	bool flush_perfomed;
+	bool dirty_ratio_exceeded;
 	uint32_t clines_no;
 	ocf_cache_t cache;
 	ocf_cleaner_end_t cmpl;
@@ -61,54 +65,63 @@ struct alru_context {
 
 /* -- Start of ALRU functions -- */
 
-/* Adds the given collision_index to the _head_ of the ALRU list */
-static void add_alru_head(struct ocf_cache *cache, int partition_id,
-		unsigned int collision_index)
+/* Appends given sublist to the _head_ of the ALRU list */
+static void append_alru_head(ocf_cache_t cache, ocf_part_id_t part_id,
+		ocf_cache_line_t head, ocf_cache_line_t tail)
 {
-	unsigned int curr_head_index;
-	unsigned int collision_table_entries = cache->device->collision_table_entries;
-	struct alru_cleaning_policy *part_alru = &cache->user_parts[partition_id]
-			.clean_pol->policy.alru;
-	struct alru_cleaning_policy_meta *alru;
+	ocf_cache_line_t terminator = cache->device->collision_table_entries;
+	struct alru_cleaning_policy *part_alru;
+	struct cleaning_policy_meta *meta;
+	struct alru_cleaning_policy_meta *old_head;
+	struct alru_cleaning_policy_meta *entry;
 
-	ENV_BUG_ON(!(collision_index < collision_table_entries));
+	part_alru = &cache->user_parts[part_id].clean_pol->policy.alru;
 
-	ENV_BUG_ON(env_atomic_read(&part_alru->size) < 0);
+	if (head == terminator && tail == terminator)
+		return;
 
-	ENV_WARN_ON(!metadata_test_dirty(cache, collision_index));
-	ENV_WARN_ON(!metadata_test_valid_any(cache, collision_index));
+	ENV_BUG_ON(head == terminator);
+	ENV_BUG_ON(tail == terminator);
 
-	/* First node to be added/ */
-	if (env_atomic_read(&part_alru->size) == 0) {
-		part_alru->lru_head = collision_index;
-		part_alru->lru_tail = collision_index;
-
-		alru = &ocf_metadata_get_cleaning_policy(cache,
-				collision_index)->meta.alru;
-		alru->lru_next = collision_table_entries;
-		alru->lru_prev = collision_table_entries;
-		alru->timestamp = env_ticks_to_secs(
-			env_get_tick_count());
+	if (part_alru->lru_head == terminator) {
+		part_alru->lru_head = head;
+		part_alru->lru_tail = tail;
 	} else {
-		/* Not the first node to be added. */
+		meta = ocf_metadata_get_cleaning_policy(cache, part_alru->lru_head);
+		old_head = &meta->meta.alru;
+		old_head->lru_prev = tail;
 
-		curr_head_index = part_alru->lru_head;
+		meta = ocf_metadata_get_cleaning_policy(cache, tail);
+		entry = &meta->meta.alru;
+		entry->lru_next = part_alru->lru_head;
 
-		ENV_BUG_ON(!(curr_head_index < collision_table_entries));
-
-		alru = &ocf_metadata_get_cleaning_policy(cache,
-				collision_index)->meta.alru;
-		alru->lru_next = curr_head_index;
-		alru->lru_prev = collision_table_entries;
-		alru->timestamp = env_ticks_to_secs(
-			env_get_tick_count());
-
-		alru = &ocf_metadata_get_cleaning_policy(cache,
-				curr_head_index)->meta.alru;
-		alru->lru_prev = collision_index;
-
-		part_alru->lru_head = collision_index;
+		part_alru->lru_head = head;
 	}
+}
+
+/* Adds the given collision_index to the _head_ of the ALRU list */
+static void add_alru_head(ocf_cache_t cache, ocf_part_id_t part_id,
+		ocf_cache_line_t cline)
+{
+	ocf_cache_line_t terminator = cache->device->collision_table_entries;
+	struct alru_cleaning_policy *part_alru;
+	struct cleaning_policy_meta *meta;
+	struct alru_cleaning_policy_meta *entry;
+
+	ENV_BUG_ON(!(cline < terminator));
+
+	ENV_WARN_ON(!metadata_test_dirty(cache, cline));
+	ENV_WARN_ON(!metadata_test_valid_any(cache, cline));
+
+	part_alru = &cache->user_parts[part_id].clean_pol->policy.alru;
+
+	meta = ocf_metadata_get_cleaning_policy(cache, cline);
+	entry = &meta->meta.alru;
+	entry->lru_next = terminator;
+	entry->lru_prev = terminator;
+	entry->timestamp = env_ticks_to_secs(env_get_tick_count());
+
+	append_alru_head(cache, part_id, cline, cline);
 
 	env_atomic_inc(&part_alru->size);
 }
@@ -339,60 +352,6 @@ void cleaning_policy_alru_set_hot_cache_line(struct ocf_cache *cache,
 	env_spinlock_unlock(&ctx->list_lock[part_id]);
 }
 
-static void _alru_rebuild(struct ocf_cache *cache)
-{
-	struct ocf_user_part *user_part;
-	struct alru_cleaning_policy *part_alru;
-	ocf_part_id_t part_id;
-	ocf_core_id_t core_id;
-	ocf_cache_line_t cline;
-	uint32_t step = 0;
-
-	for_each_user_part(cache, user_part, part_id) {
-		/* ALRU initialization */
-		part_alru = &user_part->clean_pol->policy.alru;
-		env_atomic_set(&part_alru->size, 0);
-		part_alru->lru_head = cache->device->collision_table_entries;
-		part_alru->lru_tail = cache->device->collision_table_entries;
-		cache->device->runtime_meta->cleaning_thread_access = 0;
-	}
-
-	for (cline = 0; cline < cache->device->collision_table_entries; cline++) {
-		ocf_metadata_get_core_and_part_id(cache, cline, &core_id,
-				NULL);
-
-		OCF_COND_RESCHED_DEFAULT(step);
-
-		if (core_id == OCF_CORE_MAX)
-			continue;
-
-		cleaning_policy_alru_init_cache_block(cache, cline);
-
-		if (!metadata_test_dirty(cache, cline))
-			continue;
-
-		cleaning_policy_alru_set_hot_cache_line(cache, cline);
-	}
-}
-
-static int cleaning_policy_alru_initialize_part(struct ocf_cache *cache,
-		struct ocf_user_part *user_part, int init_metadata)
-{
-	struct alru_cleaning_policy *part_alru =
-		&user_part->clean_pol->policy.alru;
-
-	if (init_metadata) {
-		/* ALRU initialization */
-		env_atomic_set(&part_alru->size, 0);
-		part_alru->lru_head = cache->device->collision_table_entries;
-		part_alru->lru_tail = cache->device->collision_table_entries;
-	}
-
-	cache->device->runtime_meta->cleaning_thread_access = 0;
-
-	return 0;
-}
-
 void cleaning_policy_alru_setup(struct ocf_cache *cache)
 {
 	struct alru_cleaning_policy_config *config;
@@ -403,12 +362,11 @@ void cleaning_policy_alru_setup(struct ocf_cache *cache)
 	config->stale_buffer_time = OCF_ALRU_DEFAULT_STALENESS_TIME;
 	config->flush_max_buffers = OCF_ALRU_DEFAULT_FLUSH_MAX_BUFFERS;
 	config->activity_threshold = OCF_ALRU_DEFAULT_ACTIVITY_THRESHOLD;
+	config->max_dirty_ratio = OCF_ALRU_DEFAULT_MAX_DIRTY_RATIO;
 }
 
-int cleaning_policy_alru_initialize(ocf_cache_t cache, int init_metadata)
+int cleaning_policy_alru_initialize(ocf_cache_t cache, int kick_cleaner)
 {
-	struct ocf_user_part *user_part;
-	ocf_part_id_t part_id;
 	struct alru_context *ctx;
 	int error = 0;
 	unsigned i;
@@ -432,20 +390,185 @@ int cleaning_policy_alru_initialize(ocf_cache_t cache, int init_metadata)
 		return error;
 	}
 
+	cache->device->runtime_meta->cleaning_thread_access = 0;
 
 	cache->cleaner.cleaning_policy_context = ctx;
 
-	for_each_user_part(cache, user_part, part_id) {
-		cleaning_policy_alru_initialize_part(cache,
-				user_part, init_metadata);
+	if (kick_cleaner)
+		ocf_kick_cleaner(cache);
+
+	return 0;
+}
+
+#define OCF_ALRU_POPULATE_SHARDS_CNT 32
+
+struct ocf_alru_populate_context {
+	ocf_cache_t cache;
+	struct {
+		struct {
+			ocf_cache_line_t head;
+			ocf_cache_line_t tail;
+		} part[OCF_USER_IO_CLASS_MAX];
+	} shard[OCF_ALRU_POPULATE_SHARDS_CNT] __attribute__((aligned(64)));
+
+	ocf_cleaning_populate_end_t cmpl;
+	void *priv;
+};
+
+static void add_alru_head_populate(struct ocf_alru_populate_context *context,
+		unsigned shard_id, ocf_core_id_t part_id,
+		ocf_cache_line_t cline)
+{
+	ocf_cache_t cache = context->cache;
+	ocf_cache_line_t curr_head, terminator;
+	struct cleaning_policy_meta *meta;
+	struct alru_cleaning_policy_meta *entry;
+	struct alru_cleaning_policy_meta *next;
+
+	terminator = ocf_metadata_collision_table_entries(cache);
+	curr_head = context->shard[shard_id].part[part_id].head;
+
+	meta = ocf_metadata_get_cleaning_policy(cache, cline);
+	entry = &meta->meta.alru;
+
+	if (curr_head == terminator) {
+		/* First node to be added/ */
+		entry->lru_next = terminator;
+		entry->lru_prev = terminator;
+		entry->timestamp = env_ticks_to_secs(env_get_tick_count());
+
+		context->shard[shard_id].part[part_id].head = cline;
+		context->shard[shard_id].part[part_id].tail = cline;
+	} else {
+		/* Not the first node to be added. */
+		entry->lru_next = curr_head;
+		entry->lru_prev = terminator;
+		entry->timestamp = env_ticks_to_secs(env_get_tick_count());
+
+		meta = ocf_metadata_get_cleaning_policy(cache, curr_head);
+		next = &meta->meta.alru;
+
+		next->lru_prev = cline;
+
+		context->shard[shard_id].part[part_id].head = cline;
+	}
+}
+
+static int ocf_alru_populate_handle(ocf_parallelize_t parallelize,
+		void *priv, unsigned shard_id, unsigned shards_cnt)
+{
+	struct ocf_alru_populate_context *context = priv;
+	ocf_cache_t cache = context->cache;
+	ocf_cache_line_t entries = cache->device->collision_table_entries;
+	ocf_cache_line_t terminator = entries;
+	unsigned part_size[OCF_USER_IO_CLASS_MAX] = {};
+	struct ocf_user_part *user_part;
+	struct alru_cleaning_policy *part_alru;
+	ocf_part_id_t part_id;
+	ocf_core_id_t core_id;
+	ocf_cache_line_t cline, portion;
+	uint32_t begin, end;
+	uint32_t step = 0;
+	int i;
+
+	portion = OCF_DIV_ROUND_UP((uint64_t)entries, shards_cnt);
+	begin = portion*shard_id;
+	end = OCF_MIN((uint64_t)portion*(shard_id + 1), entries);
+
+	for (i = 0; i < OCF_USER_IO_CLASS_MAX; i++) {
+		context->shard[shard_id].part[i].head = terminator;
+		context->shard[shard_id].part[i].tail = terminator;
 	}
 
-	if (init_metadata)
-		_alru_rebuild(cache);
+	for (cline = begin; cline < end; cline++) {
+		ocf_metadata_get_core_and_part_id(cache, cline,
+				&core_id, &part_id);
+
+		OCF_COND_RESCHED_DEFAULT(step);
+
+		if (core_id == OCF_CORE_MAX)
+			continue;
+
+		if (!metadata_test_dirty(cache, cline)) {
+			cleaning_policy_alru_init_cache_block(cache, cline);
+		} else {
+			add_alru_head_populate(context, shard_id,
+					part_id, cline);
+			++part_size[part_id];
+		}
+	}
+
+	for_each_user_part(cache, user_part, part_id) {
+		part_alru = &user_part->clean_pol->policy.alru;
+		env_atomic_add(part_size[part_id], &part_alru->size);
+	}
+
+	return 0;
+}
+
+static void ocf_alru_populate_finish(ocf_parallelize_t parallelize,
+		void *priv, int error)
+{
+	struct ocf_alru_populate_context *context = priv;
+	ocf_cache_t cache = context->cache;
+	ocf_part_id_t part_id;
+	ocf_cache_line_t head, tail;
+	unsigned shard;
+
+	if (error)
+		goto end;
+
+	for (part_id = 0; part_id < OCF_USER_IO_CLASS_MAX; part_id++) {
+		for (shard = 0; shard < OCF_ALRU_POPULATE_SHARDS_CNT; shard++) {
+			head = context->shard[shard].part[part_id].head;
+			tail = context->shard[shard].part[part_id].tail;
+
+			append_alru_head(cache, part_id, head, tail);
+		}
+	}
 
 	ocf_kick_cleaner(cache);
 
-	return 0;
+end:
+	context->cmpl(context->priv, error);
+
+	ocf_parallelize_destroy(parallelize);
+}
+
+void cleaning_policy_alru_populate(ocf_cache_t cache,
+		ocf_cleaning_populate_end_t cmpl, void *priv)
+{
+	struct ocf_alru_populate_context *context;
+	ocf_parallelize_t parallelize;
+	struct alru_cleaning_policy *part_alru;
+	struct ocf_user_part *user_part;
+	ocf_part_id_t part_id;
+	int result;
+
+	result = ocf_parallelize_create(&parallelize, cache,
+			OCF_ALRU_POPULATE_SHARDS_CNT, sizeof(*context),
+			ocf_alru_populate_handle, ocf_alru_populate_finish,
+			true);
+	if (result) {
+		cmpl(priv, result);
+		return;
+	}
+
+	for_each_user_part(cache, user_part, part_id) {
+		/* ALRU initialization */
+		part_alru = &user_part->clean_pol->policy.alru;
+		env_atomic_set(&part_alru->size, 0);
+		part_alru->lru_head = cache->device->collision_table_entries;
+		part_alru->lru_tail = cache->device->collision_table_entries;
+		cache->device->runtime_meta->cleaning_thread_access = 0;
+	}
+
+	context = ocf_parallelize_get_priv(parallelize);
+	context->cache = cache;
+	context->cmpl = cmpl;
+	context->priv = priv;
+
+	ocf_parallelize_run(parallelize);
 }
 
 void cleaning_policy_alru_deinitialize(struct ocf_cache *cache)
@@ -507,6 +630,16 @@ int cleaning_policy_alru_set_cleaning_param(ocf_cache_t cache,
 				"activity time threshold: %d\n",
 				config->activity_threshold);
 		break;
+	case ocf_alru_max_dirty_ratio:
+		OCF_CLEANING_CHECK_PARAM(cache, param_value,
+				OCF_ALRU_MIN_MAX_DIRTY_RATIO,
+				OCF_ALRU_MAX_MAX_DIRTY_RATIO,
+				"max_dirty_ratio");
+		config->max_dirty_ratio = param_value;
+		ocf_cache_log(cache, log_info, "Write-back flush thread "
+				"max dirty ratio: %d\n",
+				config->max_dirty_ratio);
+		break;
 	default:
 		return -OCF_ERR_INVAL;
 	}
@@ -533,6 +666,9 @@ int cleaning_policy_alru_get_cleaning_param(ocf_cache_t cache,
 		break;
 	case ocf_alru_activity_threshold:
 		*param_value = config->activity_threshold;
+		break;
+	case ocf_alru_max_dirty_ratio:
+		*param_value = config->max_dirty_ratio;
 		break;
 	default:
 		return -OCF_ERR_INVAL;
@@ -580,12 +716,33 @@ static bool clean_later(ocf_cache_t cache, uint32_t *delta)
 	return false;
 }
 
-static bool is_cleanup_possible(ocf_cache_t cache)
+static bool check_for_dirty_ratio(ocf_cache_t cache,
+		struct alru_cleaning_policy_config *config)
+{
+	struct ocf_cache_info info;
+
+	if (config->max_dirty_ratio == OCF_ALRU_MAX_MAX_DIRTY_RATIO)
+		return false;
+
+	if (ocf_cache_get_info(cache, &info))
+		return false;
+
+	return info.dirty * 100 / info.size >= config->max_dirty_ratio;
+}
+
+static bool is_cleanup_possible(ocf_cache_t cache, struct alru_flush_ctx *fctx)
 {
 	struct alru_cleaning_policy_config *config;
 	uint32_t delta;
 
 	config = (void *)&cache->conf_meta->cleaning[ocf_cleaning_alru].data;
+
+	if (check_for_dirty_ratio(cache, config)) {
+		fctx->dirty_ratio_exceeded = true;
+		OCF_DEBUG_PARAM(cache, "Dirty ratio exceeds: %u%%",
+				config->max_dirty_ratio);
+		return true;
+	}
 
 	if (check_for_io_activity(cache, config)) {
 		OCF_DEBUG_PARAM(cache, "IO activity detected");
@@ -676,7 +833,7 @@ static int get_data_to_flush(struct alru_context *ctx)
 
 		cache_line = user_part->clean_pol->policy.alru.lru_tail;
 
-		last_access = compute_timestamp(config);
+		last_access = fctx->dirty_ratio_exceeded ? (uint32_t)(~0UL) : compute_timestamp(config);
 
 		#if OCF_CLEANING_DEBUG == 1
 		alru = &ocf_metadata_get_cleaning_policy(cache, cache_line)
@@ -734,7 +891,7 @@ static void alru_clean(struct alru_context *ctx)
 	ocf_cache_t cache = fctx->cache;
 	int to_clean;
 
-	if (!is_cleanup_possible(cache)) {
+	if (!is_cleanup_possible(cache, fctx)) {
 		alru_clean_complete(fctx, 0);
 		return;
 	}
@@ -755,8 +912,9 @@ static void alru_clean(struct alru_context *ctx)
 	to_clean = get_data_to_flush(ctx);
 	if (to_clean > 0) {
 		fctx->flush_perfomed = true;
-		ocf_cleaner_do_flush_data_async(cache, fctx->flush_data, to_clean,
-				&fctx->attribs);
+		ocf_cleaner_sort_flush_data(fctx->flush_data, to_clean);
+		ocf_cleaner_do_flush_data_async(cache, fctx->flush_data,
+				to_clean, &fctx->attribs);
 		ocf_metadata_end_exclusive_access(&cache->metadata.lock);
 		return;
 	}
@@ -783,14 +941,14 @@ void cleaning_alru_perform_cleaning(ocf_cache_t cache, ocf_cleaner_end_t cmpl)
 	fctx->attribs.cmpl_context = fctx;
 	fctx->attribs.cmpl_fn = alru_clean_complete;
 	fctx->attribs.lock_cacheline = true;
-	fctx->attribs.lock_metadata = false;
-	fctx->attribs.do_sort = true;
 	fctx->attribs.io_queue = cache->cleaner.io_queue;
+	fctx->attribs.cmpl_queue = true;
 
 	fctx->clines_no = config->flush_max_buffers;
 	fctx->cache = cache;
 	fctx->cmpl = cmpl;
 	fctx->flush_perfomed = false;
+	fctx->dirty_ratio_exceeded = false;
 
 	alru_clean(ctx);
 }

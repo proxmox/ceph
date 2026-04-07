@@ -1,5 +1,7 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <errno.h>
 #include <libxnvme.h>
 #include <xnvme_be.h>
@@ -17,8 +19,8 @@ xnvme_cmd_ctx_pr(const struct xnvme_cmd_ctx *ctx, int XNVME_UNUSED(opts))
 		return;
 	}
 
-	printf("{cdw0: 0x%x, sc: 0x%x, sct: 0x%x}\n", ctx->cpl.cdw0, ctx->cpl.status.sc,
-	       ctx->cpl.status.sct);
+	printf("{cdw0: 0x%" PRIx32 ", sc: 0x%" PRIx16 ", sct: 0x%" PRIx16 "}\n", ctx->cpl.cdw0,
+	       ctx->cpl.status.sc, ctx->cpl.status.sct);
 }
 
 void
@@ -68,6 +70,26 @@ int
 xnvme_cmd_passv(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec_cnt, size_t dvec_nbytes,
 		struct iovec *mvec, size_t mvec_cnt, size_t mvec_nbytes)
 {
+	void *mbuf = NULL;
+
+	if (mvec_cnt > 1) {
+		XNVME_DEBUG("FAILED: mvec_cnt must be at most 1");
+		return -EINVAL;
+	}
+
+	if (mvec) {
+		mbuf = mvec[0].iov_base;
+	}
+
+	XNVME_DEBUG("NOTE: This function will be deprecated in the future - use "
+		    "xnvme_cmd_pass_iov() instead");
+	return xnvme_cmd_pass_iov(ctx, dvec, dvec_cnt, dvec_nbytes, mbuf, mvec_nbytes);
+}
+
+int
+xnvme_cmd_pass_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec_cnt,
+		   size_t dvec_nbytes, void *mbuf, size_t mbuf_nbytes)
+{
 	const int cmd_opts = ctx->opts & XNVME_CMD_MASK;
 
 	switch (cmd_opts & XNVME_CMD_MASK_IOMD) {
@@ -76,11 +98,11 @@ xnvme_cmd_passv(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec_cnt, 
 			XNVME_DEBUG("FAILED: queue is full; returning -EBUSY");
 			return -EBUSY;
 		}
-		return ctx->dev->be.async.cmd_iov(ctx, dvec, dvec_cnt, dvec_nbytes, mvec, mvec_cnt,
-						  mvec_nbytes);
+		return ctx->dev->be.async.cmd_iov(ctx, dvec, dvec_cnt, dvec_nbytes, mbuf,
+						  mbuf_nbytes);
 	case XNVME_CMD_SYNC:
-		return ctx->dev->be.sync.cmd_iov(ctx, dvec, dvec_cnt, dvec_nbytes, mvec, mvec_cnt,
-						 mvec_nbytes);
+		return ctx->dev->be.sync.cmd_iov(ctx, dvec, dvec_cnt, dvec_nbytes, mbuf,
+						 mbuf_nbytes);
 	default:
 		XNVME_DEBUG("FAILED: command-mode not provided");
 		return -EINVAL;
@@ -97,4 +119,16 @@ xnvme_cmd_pass_admin(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, 
 	}
 
 	return ctx->dev->be.admin.cmd_admin(ctx, dbuf, dbuf_nbytes, mbuf, mbuf_nbytes);
+}
+
+int
+xnvme_cmd_pass_pseudo(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, void *mbuf,
+		      size_t mbuf_nbytes)
+{
+	if (ctx->opts & XNVME_CMD_ASYNC) {
+		XNVME_DEBUG("FAILED: PSEUDO-Commands are always sync.");
+		return -EINVAL;
+	}
+
+	return ctx->dev->be.admin.cmd_pseudo(ctx, dbuf, dbuf_nbytes, mbuf, mbuf_nbytes);
 }

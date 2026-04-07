@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2022, Intel Corporation
+;; Copyright (c) 2012-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -32,10 +32,10 @@
 ;void
 ; aes128_ecbenc_x3_avx(void *in, void *keys, void *out1, void *out2, void *out3);
 
-%include "include/os.asm"
+%include "include/os.inc"
 %define NO_AESNI_RENAME
 %include "include/aesni_emu.inc"
-%include "include/clear_regs.asm"
+%include "include/clear_regs.inc"
 
 %ifdef LINUX
 %define IN	rdi	; arg 1

@@ -1,0 +1,55 @@
+---
+doc: |
+  Benchmark latency run, result plotting, and report gen.
+  =================================================================
+
+  The comparison and plots consists of
+
+    * bandwidth in KiB / seconds
+    * latency is mean and in nano-seconds
+
+  The above in a bar-plot at iodepth=1 and iosize=4096, and bar-plots as a 
+  function of iodepth and iosize.
+
+  See Artifacts for the generated plots and report.
+
+steps:
+- name: sysinfo_report
+  uses: sysinfo_report
+
+- name: benchmark
+  uses: fio_latency
+  with:
+    runs:
+    - iosizes: [4096]
+      iodepths: &iodepths [1, 2, 4, 8, 16]
+    - iosizes: &iosizes [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+      iodepths: [1]
+
+- name: normalize
+  uses: benchmark_normalize
+
+- name: plot
+  uses: latency_plotter
+  with:
+    tool: fio
+    legends: auxiliary/plot-latency-legends.yaml
+    limits: auxiliary/plot-latency-limits.yaml
+    styles: auxiliary/plot-styles.yaml
+    iosizes: *iosizes
+    iodepths: *iodepths
+
+- name: report_templates
+  uses: reporter_templates
+  with:
+    report_title: "xNVMe on {{ config.os.prettyname }}"
+    report_subtitle: "Latency Report"
+
+- name: report
+  uses: latency_reporter
+  with:
+    report_title: "xNVMe on {{ config.os.prettyname }}"
+    report_subtitle: "Latency Report"
+    iosizes: *iosizes
+    iodepths: *iodepths
+

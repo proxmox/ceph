@@ -1,13 +1,14 @@
-// Copyright (C) Rishabh Shukla <rishabh.sh@samsung.com>
-// Copyright (C) Pranjal Dave <pranjal.58@partner.samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
+#include <libxnvme.h>
 #include <xnvme_dev.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_WINDOWS_ENABLED
-#include <libxnvme_spec.h>
 #include <errno.h>
 #include <windows.h>
 #include <winioctl.h>
@@ -50,7 +51,7 @@ _be_windows_nvme_storage_property(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t 
 	PVOID buffer = NULL;
 	ULONG buff_len;
 	ULONG ret_len;
-	DWORD ioctl;
+	DWORD ioctl = 0;
 	PSTORAGE_PROPERTY_QUERY query = NULL;
 	PSTORAGE_PROTOCOL_SPECIFIC_DATA protocol_data = NULL;
 	PSTORAGE_PROTOCOL_DATA_DESCRIPTOR protocol_data_descr = NULL;
@@ -326,7 +327,9 @@ struct xnvme_be_admin g_xnvme_be_windows_admin_nvme = {
 	.id = "nvme",
 #ifdef XNVME_BE_WINDOWS_ENABLED
 	.cmd_admin = xnvme_be_windows_nvme_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #else
 	.cmd_admin = xnvme_be_nosys_sync_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #endif
 };

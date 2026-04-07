@@ -1,0 +1,462 @@
+SPDK Component Maintainers
+==========================
+
+This file lists the component maintainers for supported components in SPDK.
+It also provides status for orphaned and/or obsolete components which may
+be removed from SPDK in future releases. Please see deprecation.md for
+the schedule of such removals.
+
+Component maintainer does not equal core maintainer. All core maintainers
+will likely maintain several components, but not all component maintainers
+are necessarily core maintainers.
+
+Core maintainers should wait for votes from component maintainers before
+merging patches affecting that component. -1 votes from component maintainers
+are effectively blocking votes. Core maintainers remain as final arbiter on
+patch merges, and will only override component maintainers under
+exceptional circumstances. Core maintainers may also merge patches without
+component maintainer votes if the component maintainers have not
+reviewed and voted on patches within a reasonable amount of time.
+
+Component maintainers are responsible for the overall design, support
+and maintenance for the component. This includes resolving GitHub issues,
+responding to questions on Slack and e-mail, and maintaining tests and
+CI infrastructure for running those tests. This infrastructure may just
+be public GitHub runners but may also require self-hosted runners depending
+on the hardware requirements.
+
+Do not use this list for purposes of sending private messages to
+component maintainers via Slack or e-mail. Keep discussion on public
+communication channels and tag component maintainers in those messages as
+necessary.
+
+Descriptions of section entries:
+
+M: Maintainer's Full Name <address@domain>
+   Multiple maintainers per component are acceptable.
+S: Status of the component. Valid values are "Supported", "Orphaned", and
+   "Obsolete".
+F: Files and directories with wildcard patterns.
+   A trailing slash includes all files and subdirectory files.
+   Wildcards may be used to specify multiple files or multiple directories.
+   One pattern per line. Multiple F: lines acceptable.
+X: Files and directories exclusion, same rules as F:
+
+ACCELERATION (ACCEL) LAYER
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+M:	Konrad Sztyber <ksztyber@nvidia.com>
+F:	examples/accel/
+F:	include/spdk/accel*.h
+F:	lib/accel/
+F:	module/event/subsystems/accel/
+F:	test/accel/
+X:	test/accel/mlx5/
+F:	test/external_code/accel/
+F:	test/unit/lib/accel/
+X:	test/unit/lib/accel/dpdk_*dev.c/
+S:	Supported
+
+BDEV (BLOCK DEVICE) LAYER
+M:	Jim Harris <jim.harris@nvidia.com>
+M:	Konrad Sztyber <ksztyber@nvidia.com>
+F:	lib/bdev/
+F:	module/event/subsystems/bdev/
+S:	Supported
+
+BDEV FIO PLUGIN
+F:	app/fio/bdev/
+
+BLOB FILESYSTEM
+F:	lib/blobfs/
+F:	lib/rocksdb/
+F:	module/blobfs/
+S:	Obsolete
+
+BLOBSTORE LIBRARY
+M:	Tomasz Zawadzki <tomasz.zawadzki@nutanix.com>
+F:	lib/blob/
+F:	module/blob/
+F:	examples/blob/
+F:	include/spdk/blob.h
+F:	include/spdk/blob_bdev.h
+F:	test/blobstore/
+F:	test/unit/lib/blob/
+S:	Supported
+
+CEPH RBD BDEV MODULE
+F:	module/bdev/rbd/
+
+CONF FILE LIBRARY
+F:	lib/conf/
+
+CRYPTO BDEV MODULE
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+F:	module/bdev/crypto/
+S:	Supported
+
+CSAL FLASH TRANSLATION LAYER
+M:	Mateusz Kozlowski <mateusz.kozlowski@solidigm.com>
+M:	Wojciech Malikowski <wojciech.malikowski@solidigm.com>
+F:	lib/ftl/
+F:	module/bdev/ftl/
+S:	Supported
+
+DAOS BDEV MODULE
+F:	module/bdev/daos/
+
+DD APPLICATION
+F:	app/spdk_dd/
+
+DELAY BDEV MODULE
+F:	module/bdev/delay/
+
+DMA LIBRARY
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+F:	include/spdk/dma.h
+F:	lib/dma/
+F:	test/dma/
+F:	test/unit/lib/dma/
+S:	Supported
+
+DPDK ACCEL MODULES
+F:	module/accel/dpdk_cryptodev/
+F:	module/accel/dpdk_compressdev/
+S:	Orphaned
+
+DPDK ENVIRONMENT LIBRARY
+F:	lib/env_dpdk/
+F:	module/env_dpdk/
+F:	dpdkbuild/
+
+ERROR INJECTION ACCEL MODULE
+F:	module/accel/error/
+
+ERROR INJECTION BDEV MODULE
+F:	module/bdev/error/
+
+EVENT FRAMEWORK
+M:	Ben Walker <ben@nvidia.com>
+F:	lib/event/
+
+FILESYSTEM DEVICE (FSDEV) LAYER
+M:	Jim Harris <jim.harris@nvidia.com>
+M:	Ben Walker <ben@nvidia.com>
+F:	lib/fsdev/
+F:	lib/fuse_dispatcher/
+F:	module/fsdev/
+F:	module/event/subsystems/fsdev/
+S:	Supported
+
+INTEL ACCEL MODULES
+F:	module/accel/iaa/
+F:	module/accel/ioat/
+F:	module/accel/dsa/
+S:	Orphaned
+
+INTEL IDXD DRIVER
+F:	lib/idxd/
+S:	Orphaned
+
+INTEL IOAT DRIVER
+F:	lib/ioat/
+S:	Orphaned
+
+INTEL VMD SUPPORT
+F:	lib/vmd/
+F:	module/event/subsystems/vmd/
+F:	app/spdk_lspci
+S:	Orphaned
+
+IO_URING BDEV MODULE
+F:	module/bdev/uring/
+
+IO_URING SOCK MODULE
+F:	module/sock/uring/
+
+IOBUF SUPPORT
+F:	lib/thread/iobuf.c
+F:	module/event/subsystems/iobuf/
+
+ISCSI INITIATOR BDEV MODULE
+F:	module/bdev/iscsi/
+
+ISCSI LIBRARY
+F:	lib/iscsi/
+F:	app/iscsi_tgt/
+F:	module/event/subsystems/iscsi/
+
+JSON AND RPC LIBRARIES
+F:	lib/json/
+F:	lib/jsonrpc/
+F:	lib/rpc/
+
+KEYRING LIBRARIES
+M:	Konrad Sztyber <ksztyber@nvidia.com>
+F:	lib/keyring/
+F:	module/keyring/
+F:	module/event/subsystems/keyring/
+S:	Supported
+
+LINUX AIO BDEV MODULE
+M:	Jacek Kalwas <jacek.kalwas@nutanix.com>
+F:	module/bdev/aio/
+S:	Supported
+
+LOGGING LIBRARY
+F:	lib/log/
+
+LOGICAL VOLUMES
+M:	Tomasz Zawadzki <tomasz.zawadzki@nutanix.com>
+F:	lib/lvol/
+F:	module/bdev/lvol/
+F:	include/spdk/lvol.h
+F:	include/spdk_internal/lvolstore.h
+F:	test/iscsi_tgt/lvol/
+F:	test/lvol/
+F:	test/nvmf/target/nvmf_lvol.sh
+F:	test/unit/lib/bdev/vbdev_lvol.c/
+F:	test/unit/lib/lvol/
+S:	Supported
+
+MISCELLANEOUS BDEV MODULES
+F:	module/bdev/null/
+F:	module/bdev/passthru/
+F:	module/bdev/gpt/
+F:	module/bdev/split/
+F:	module/bdev/malloc/
+
+MLX5 ACCEL MODULE
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+F:	module/accel/mlx5/
+S:	Supported
+
+MLX5 DRIVERS
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+F:	lib/mlx5/
+S:	Supported
+
+NETWORK BLOCK DEVICE (NBD) TARGET
+F:	lib/nbd/
+F:	module/event/subsystems/nbd/
+
+NOTIFICATION LIBRARY
+F:	lib/notify/
+
+NVME BDEV MODULE
+M:	Shuhei Matsumoto <smatsumoto@nvidia.com>
+M:	Ben Walker <ben@nvidia.com>
+F:	module/bdev/nvme/
+S:	Supported
+
+NVME DRIVER (CORE)
+M:	Jim Harris <jim.harris@nvidia.com>
+M:	Konrad Sztyber <ksztyber@nvidia.com>
+F:	lib/nvme/
+S:	Supported
+
+NVME DRIVER (PCIE)
+M:	Ankit Kumar <ankit.kumar@samsung.com>
+F:	lib/nvme/*pcie*
+F:	include/spdk/nvme_*
+F:	test/unit/lib/nvme/nvme_pcie*
+S:	Supported
+
+NVME DRIVER (RDMA)
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+M:	Shuhei Matsumoto <smatsumoto@nvidia.com>
+F:	lib/nvme/nvme_rdma.c
+S:	Supported
+
+NVME DRIVER (TCP)
+M:	Konrad Sztyber <ksztyber@nvidia.com>
+M:	Ben Walker <ben@nvidia.com>
+F:	lib/nvme/nvme_tcp.c
+S:	Supported
+
+NVME DRIVER (VFIO USER)
+M:	John Levon <john.levon@nutanix.com>
+M:	Thanos Makatos <thanos.makatos@nutanix.com>
+M:	Tomasz Zawadzki <tomasz.zawadzki@nutanix.com>
+F:	lib/nvme/nvme_vfio_user.c
+F:	include/spdk/vfio_user_*.h
+S:	Supported
+
+NVME DISCOVERY APPLICATION
+F:	app/spdk_nvme_discover/
+
+NVME FIO PLUGIN
+M:	Ankit Kumar <ankit.kumar@samsung.com>
+F:	app/fio/nvme/
+S:	Supported
+
+NVME IDENTIFY APPLICATION
+M:	Ankit Kumar <ankit.kumar@samsung.com>
+F:	app/spdk_nvme_identify/
+S:	Supported
+
+NVME PERF APPLICATION
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+M:	Ankit Kumar <ankit.kumar@samsung.com>
+F:	app/spdk_nvme_perf/
+S:	Supported
+
+NVMF TARGET (CORE)
+M:	Jim Harris <jim.harris@nvidia.com>
+M:	Konrad Sztyber <ksztyber@nvidia.com>
+M:	Jacek Kalwas <jacek.kalwas@nutanix.com>
+F:	lib/nvmf/
+F:	app/nvmf_tgt/
+F:	module/event/subsystems/nvmf/
+S:	Supported
+
+NVMF TARGET (FC)
+F:	lib/nvmf/fc*.c
+
+NVMF TARGET (RDMA)
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+F:	lib/nvmf/rdma.c
+S:	Supported
+
+NVMF TARGET (TCP)
+M:	Ben Walker <ben@nvidia.com>
+M:	Konrad Sztyber <ksztyber@nvidia.com>
+F:	lib/nvmf/tcp.c
+S:	Supported
+
+NVMF TARGET (VFIO USER)
+M:	John Levon <john.levon@nutanix.com>
+M:	Thanos Makatos <thanos.makatos@nutanix.com>
+M:	Tomasz Zawadzki <tomasz.zawadzki@nutanix.com>
+F:	lib/nvmf/vfio_user.c
+F:	test/nvmf/target/nvmf_vfio_user.sh
+F:	test/vfio_user/
+X:	test/vfio_user/virtio/
+F:	test/unit/lib/nvmf/vfio_user.c/
+S:	Supported
+
+OPEN CAS FRAMEWORK
+F:	lib/env_ocf/
+F:	module/bdev/ocf/
+
+POSIX SOCK MODULE
+M:	Jacek Kalwas <jacek.kalwas@nutanix.com>
+F:	module/sock/posix/
+S:	Supported
+
+RAID BDEV MODULE
+M:	Artur Paszkiewicz <artur.paszkiewicz@solidigm.com>
+S:	Supported
+F:	module/bdev/raid/
+
+RDMA SUPPORT LIBRARIES
+M:	Alexey Marchuk <alexeymar@nvidia.com>
+F:	lib/rdma*/
+S:	Supported
+
+REDUCE COMPRESSION LIBRARY
+F:	lib/reduce/
+F:	module/bdev/compress/
+S:	Obsolete
+
+SCHEDULERS
+M:	Jim Harris <jim.harris@nvidia.com>
+F:	module/scheduler/
+F:	module/event/subsystems/scheduler/
+
+SCSI LIBRARY
+F:	lib/scsi/
+F:	module/event/subsystems/scsi/
+
+SOCKET LAYER
+M:	Ben Walker <ben@nvidia.com>
+M:	Jacek Kalwas <jacek.kalwas@nutanix.com>
+F:	lib/sock/
+F:	module/event/subsystems/sock/
+F:	include/spdk/sock.h
+F:	include/spdk_internal/sock.h
+F:	examples/sock/
+F:	test/iscsi_tgt/sock/
+F:	test/unit/lib/sock/
+S:	Supported
+
+SPDK COMBINED TARGET APPLICATION
+F:	app/spdk_tgt/
+
+SPDK TOP APPLICATION
+F:	app/spdk_top/
+
+SUBSYSTEM INIITALIZATION LIBRARY
+M:	Jim Harris <jim.harris@nvidia.com>
+F:	lib/init/
+S:	Supported
+
+THREAD LIBRARY
+M:	Ben Walker <ben@nvidia.com>
+M:	Shuhei Matsumoto <smatsumoto@nvidia.com>
+F:	lib/thread/
+S:	Supported
+
+TRACING SUPPORT
+M:	Jim Harris <jim.harris@nvidia.com>
+M:	Konrad Sztyber <ksztyber@nvidia.com>
+F:	lib/trace*/
+F:	app/trace*/
+S:	Supported
+
+UBLK TARGET
+M:	Changpeng Liu <changpeliu@tencent.com>
+F:	lib/ublk/
+F:	module/event/subsystems/ublk/
+S:	Supported
+
+UNIT TEST SUPPORT LIBRARIES
+F:	lib/ut/
+F:	lib/ut_mock/
+
+UTIL LIBRARY
+M:	Shuhei Matsumoto <smatsumoto@nvidia.com>
+M:	Ben Walker <ben@nvidia.com>
+F:	lib/util/
+S:	Supported
+
+VFIO USER HOST LIBRARY
+M:	John Levon <john.levon@nutanix.com>
+M:	Thanos Makatos <thanos.makatos@nutanix.com>
+M:	Tomasz Zawadzki <tomasz.zawadzki@nutanix.com>
+F:	lib/vfio_user/
+F:	libvfio-user
+F:	vfiouserbuild/
+S:	Supported
+
+VHOST TARGET LIBRARY
+M:	Changpeng Liu <changpeliu@tencent.com>
+F:	lib/vhost/
+F:	app/vhost/
+F:	module/event/subsystems/vhost_blk/
+F:	module/event/subsystems/vhost_scsi/
+S:	Supported
+
+VIRTIO BDEV MODULES
+M:	Changpeng Liu <changpeliu@tencent.com>
+F:	module/bdev/virtio/
+S:	Supported
+
+VIRTIO DRIVERS
+M:	Changpeng Liu <changpeliu@tencent.com>
+F:	lib/virtio/
+S:	Supported
+
+VIRTIO VFIO USER TARGET LIBRARY
+M:	Changpeng Liu <changpeliu@tencent.com>
+F:	lib/vfu_tgt/
+F:	module/vfu_device/
+F:	module/event/subsystems/vfu_tgt/
+S:	Supported
+
+XNVME BDEV MODULE
+M:	Simon A. F. Lund <simon.lund@samsung.com>
+F:	module/bdev/xnvme/
+S:	Supported
+
+ZONE BLOCK BDEV MODULE
+F:	module/bdev/zone_block/

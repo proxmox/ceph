@@ -10,6 +10,7 @@ source "$rootdir/scripts/common.sh"
 
 set -e
 shopt -s extglob
+shopt -s nullglob
 
 mode=${1:-check} # check or fix
 
@@ -41,9 +42,19 @@ done
 
 for header in "${target_headers[@]}"; do
 	dpdk_file="$dpdk_dir/$(git -C "$dpdk_dir" ls-files "*/$header")"
+	patch_dir="$scriptdir/$target_ver"
+	patch_versions=("$patch_dir/"+([0-9]).+([0-9])-$header.patch)
+	patch_versions=("${patch_versions[@]#"$patch_dir/"}")
+	patch_versions=("${patch_versions[@]%-$header.patch*}")
+
+	# Patch file version matches to versions equal or greater than
+	# their creation.
+	while read -r ver; do
+		ge "$dpdk_ver" "$ver" && patch_version=$ver && break
+	done < <(printf "%s\n" "${patch_versions[@]}" | sort -Vru)
 
 	# Patch DPDK header with any workarounds necessary
-	patch_file="$scriptdir/$target_ver/$header.patch"
+	patch_file="$patch_dir/$patch_version-$header.patch"
 	if [[ -s $patch_file ]]; then
 		dpdk_header=$(patch -s "$dpdk_file" "$patch_file" -o - | sed "$use_local_includes")
 	else
@@ -67,9 +78,10 @@ if [[ "$mode" == "check" ]]; then
 
 		Differences in DPDK and internal SPDK headers found.
 		For changes that do not affect the API, please use 'fix' as \$1 to this script.
-		If API was changed, please create "$env_path/$dpdk_ver/" with appropriate headers.
+		If API was changed, please create "$env_path/${dpdk_ver%.*}/" with appropriate headers.
 
 	CHECK
+	exit 1
 elif [[ "$mode" == "fix" ]]; then
 	echo -e "$header_diff" | patch -d "$env_path/$target_ver/"
 	echo "Fixed differences between DPDK and internal SPDK headers."

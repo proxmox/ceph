@@ -3,11 +3,13 @@
 # Copyright(c) 2010-2014 Intel Corporation
 #
 
-import sys
-import os
-import subprocess
 import argparse
+import grp
+import os
 import platform
+import pwd
+import subprocess
+import sys
 
 from glob import glob
 from os.path import exists, basename
@@ -48,6 +50,8 @@ cnxk_inl_dev = {'Class': '08', 'Vendor': '177d', 'Device': 'a0f0,a0f1',
 
 hisilicon_dma = {'Class': '08', 'Vendor': '19e5', 'Device': 'a122',
                  'SVendor': None, 'SDevice': None}
+odm_dma = {'Class': '08', 'Vendor': '177d', 'Device': 'a08c',
+           'SVendor': None, 'SDevice': None}
 
 intel_dlb = {'Class': '0b', 'Vendor': '8086', 'Device': '270b,2710,2714',
              'SVendor': None, 'SDevice': None}
@@ -60,30 +64,40 @@ intel_ioat_icx = {'Class': '08', 'Vendor': '8086', 'Device': '0b00',
                   'SVendor': None, 'SDevice': None}
 intel_idxd_spr = {'Class': '08', 'Vendor': '8086', 'Device': '0b25',
                   'SVendor': None, 'SDevice': None}
+intel_idxd_gnrd = {'Class': '08', 'Vendor': '8086', 'Device': '11fb',
+                  'SVendor': None, 'SDevice': None}
+intel_idxd_dmr = {'Class': '08', 'Vendor': '8086', 'Device': '1212',
+                  'SVendor': None, 'SDevice': None}
 intel_ntb_skx = {'Class': '06', 'Vendor': '8086', 'Device': '201c',
                  'SVendor': None, 'SDevice': None}
 intel_ntb_icx = {'Class': '06', 'Vendor': '8086', 'Device': '347e',
                  'SVendor': None, 'SDevice': None}
 
 cnxk_sso = {'Class': '08', 'Vendor': '177d', 'Device': 'a0f9,a0fa',
-                 'SVendor': None, 'SDevice': None}
+            'SVendor': None, 'SDevice': None}
 cnxk_npa = {'Class': '08', 'Vendor': '177d', 'Device': 'a0fb,a0fc',
-                 'SVendor': None, 'SDevice': None}
+            'SVendor': None, 'SDevice': None}
 cn9k_ree = {'Class': '08', 'Vendor': '177d', 'Device': 'a0f4',
-                 'SVendor': None, 'SDevice': None}
+            'SVendor': None, 'SDevice': None}
 
 virtio_blk = {'Class': '01', 'Vendor': "1af4", 'Device': '1001,1042',
-                    'SVendor': None, 'SDevice': None}
+              'SVendor': None, 'SDevice': None}
+
+cnxk_ml = {'Class': '08', 'Vendor': '177d', 'Device': 'a092',
+           'SVendor': None, 'SDevice': None}
 
 network_devices = [network_class, cavium_pkx, avp_vnic, ifpga_class]
 baseband_devices = [acceleration_class]
 crypto_devices = [encryption_class, intel_processor_class]
 dma_devices = [cnxk_dma, hisilicon_dma,
-               intel_idxd_spr, intel_ioat_bdw, intel_ioat_icx, intel_ioat_skx]
+               intel_idxd_gnrd, intel_idxd_dmr, intel_idxd_spr,
+               intel_ioat_bdw, intel_ioat_icx, intel_ioat_skx,
+               odm_dma]
 eventdev_devices = [cavium_sso, cavium_tim, intel_dlb, cnxk_sso]
 mempool_devices = [cavium_fpa, cnxk_npa]
 compress_devices = [cavium_zip]
 regex_devices = [cn9k_ree]
+ml_devices = [cnxk_ml]
 misc_devices = [cnxk_bphy, cnxk_bphy_cgx, cnxk_inl_dev,
                 intel_ntb_skx, intel_ntb_icx,
                 virtio_blk]
@@ -100,6 +114,9 @@ loaded_modules = None
 b_flag = None
 status_flag = False
 force_flag = False
+noiommu_flag = False
+vfio_uid = -1
+vfio_gid = -1
 args = []
 
 
@@ -470,6 +487,35 @@ def unbind_all(dev_list, force=False):
         unbind_one(d, force)
 
 
+def has_iommu():
+    """Check if IOMMU is enabled on system"""
+    return len(os.listdir("/sys/class/iommu")) > 0
+
+
+def check_noiommu_mode():
+    """Check and enable the noiommu mode for VFIO drivers"""
+    global noiommu_flag
+    filename = "/sys/module/vfio/parameters/enable_unsafe_noiommu_mode"
+
+    try:
+        with open(filename, "r") as f:
+            value = f.read(1)
+            if value in ("1", "y" ,"Y"):
+                return
+    except OSError as err:
+        sys.exit(f"Error: failed to check unsafe noiommu mode - Cannot open {filename}: {err}")
+
+    if not noiommu_flag:
+        sys.exit("Error: IOMMU support is disabled, use --noiommu-mode for binding in noiommu mode")
+
+    try:
+        with open(filename, "w") as f:
+            f.write("1")
+    except OSError as err:
+        sys.exit(f"Error: failed to enable unsafe noiommu mode - Cannot open {filename}: {err}")
+    print("Warning: enabling unsafe no IOMMU mode for VFIO drivers")
+
+
 def bind_all(dev_list, driver, force=False):
     """Bind method, takes a list of device locations"""
     global devices
@@ -496,8 +542,25 @@ def bind_all(dev_list, driver, force=False):
     except ValueError as ex:
         sys.exit(ex)
 
+    # check for IOMMU support
+    if driver == "vfio-pci" and not has_iommu():
+        check_noiommu_mode()
+
     for d in dev_list:
         bind_one(d, driver, force)
+        # if we're binding to vfio-pci, set the IOMMU user/group ownership if one was specified
+        if driver == "vfio-pci" and (vfio_uid != -1 or vfio_gid != -1):
+            # find IOMMU group for a particular PCI device
+            iommu_grp_base_path = os.path.join("/sys/bus/pci/devices", d, "iommu_group")
+            # extract the IOMMU group number
+            iommu_grp = os.path.basename(os.readlink(iommu_grp_base_path))
+            # find VFIO device correspondiong to this IOMMU group
+            dev_path = os.path.join("/dev/vfio", iommu_grp)
+            # set ownership
+            try:
+                os.chown(dev_path, vfio_uid, vfio_gid)
+            except OSError as err:
+                sys.exit(f"Error: failed to set IOMMU group ownership for {d}: {err}")
 
     # For kernels < 3.15 when binding devices to a generic driver
     # (i.e. one that doesn't have a PCI ID table) using new_id, some devices
@@ -549,9 +612,12 @@ def show_device_status(devices_type, device_name, if_field=False):
     dpdk_drv = []
     no_drv = []
 
+    print_numa = True  # by default, assume we can print NUMA information
+
     # split our list of network devices into the three categories above
     for d in devices.keys():
         if device_type_match(devices[d], devices_type):
+            print_numa &= "NUMANode" in devices[d]
             if not has_driver(d):
                 no_drv.append(devices[d])
                 continue
@@ -572,18 +638,25 @@ def show_device_status(devices_type, device_name, if_field=False):
 
     # print each category separately, so we can clearly see what's used by DPDK
     if dpdk_drv:
+        extra_param = "drv=%(Driver_str)s unused=%(Module_str)s"
+        if print_numa:
+            extra_param = "numa_node=%(NUMANode)s " + extra_param
         display_devices("%s devices using DPDK-compatible driver" % device_name,
-                        dpdk_drv, "drv=%(Driver_str)s unused=%(Module_str)s")
+                        dpdk_drv, extra_param)
     if kernel_drv:
-        if_text = ""
+        extra_param = "drv=%(Driver_str)s unused=%(Module_str)s"
         if if_field:
-            if_text = "if=%(Interface)s "
-        display_devices("%s devices using kernel driver" % device_name, kernel_drv,
-                        if_text + "drv=%(Driver_str)s "
-                        "unused=%(Module_str)s %(Active)s")
+            extra_param = "if=%(Interface)s " + extra_param
+        if print_numa:
+            extra_param = "numa_node=%(NUMANode)s " + extra_param
+        extra_param += " %(Active)s"
+        display_devices("%s devices using kernel driver" % device_name,
+                        kernel_drv, extra_param)
     if no_drv:
-        display_devices("Other %s devices" % device_name, no_drv,
-                        "unused=%(Module_str)s")
+        extra_param = "unused=%(Module_str)s"
+        if print_numa:
+            extra_param = "numa_node=%(NUMANode)s " + extra_param
+        display_devices("Other %s devices" % device_name, no_drv, extra_param)
 
 
 def show_status():
@@ -618,6 +691,9 @@ def show_status():
     if status_dev in ["regex", "all"]:
         show_device_status(regex_devices, "Regex")
 
+    if status_dev in ["ml", "all"]:
+        show_device_status(ml_devices, "ML")
+
 
 def pci_glob(arg):
     '''Returns a list containing either:
@@ -638,7 +714,10 @@ def parse_args():
     global status_flag
     global status_dev
     global force_flag
+    global noiommu_flag
     global args
+    global vfio_uid
+    global vfio_gid
 
     parser = argparse.ArgumentParser(
         description='Utility to bind and unbind devices from Linux kernel',
@@ -672,7 +751,7 @@ To bind 0000:02:00.0 and 0000:02:00.1 to the ixgbe kernel driver
         '--status-dev',
         help="Print the status of given device group.",
         choices=['baseband', 'compress', 'crypto', 'dma', 'event',
-                 'mempool', 'misc', 'net', 'regex'])
+                 'mempool', 'misc', 'net', 'regex', 'ml'])
     bind_group = parser.add_mutually_exclusive_group()
     bind_group.add_argument(
         '-b',
@@ -684,6 +763,24 @@ To bind 0000:02:00.0 and 0000:02:00.1 to the ixgbe kernel driver
         '--unbind',
         action='store_true',
         help="Unbind a device (equivalent to \"-b none\")")
+    parser.add_argument(
+        '--noiommu-mode',
+        action='store_true',
+        help="If IOMMU is not available, enable no IOMMU mode for VFIO drivers")
+    parser.add_argument(
+        "-U",
+        "--uid",
+        help="For VFIO, specify the UID to set IOMMU group ownership",
+        type=lambda u: pwd.getpwnam(u).pw_uid,
+        default=-1,
+    )
+    parser.add_argument(
+        "-G",
+        "--gid",
+        help="For VFIO, specify the GID to set IOMMU group ownership",
+        type=lambda g: grp.getgrnam(g).gr_gid,
+        default=-1,
+    )
     parser.add_argument(
         '--force',
         action='store_true',
@@ -710,10 +807,14 @@ For devices bound to Linux kernel drivers, they may be referred to by interface 
         status_dev = "all"
     if opt.force:
         force_flag = True
+    if opt.noiommu_mode:
+        noiommu_flag = True
     if opt.bind:
         b_flag = opt.bind
     elif opt.unbind:
         b_flag = "none"
+    vfio_uid = opt.uid
+    vfio_gid = opt.gid
     args = opt.devices
 
     if not b_flag and not status_flag:
@@ -758,6 +859,7 @@ def do_arg_actions():
             get_device_details(mempool_devices)
             get_device_details(compress_devices)
             get_device_details(regex_devices)
+            get_device_details(ml_devices)
             get_device_details(misc_devices)
         show_status()
 
@@ -781,6 +883,7 @@ def main():
     get_device_details(mempool_devices)
     get_device_details(compress_devices)
     get_device_details(regex_devices)
+    get_device_details(ml_devices)
     get_device_details(misc_devices)
     do_arg_actions()
 

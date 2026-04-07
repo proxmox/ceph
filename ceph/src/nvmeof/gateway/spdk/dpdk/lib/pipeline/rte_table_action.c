@@ -60,9 +60,9 @@ lb_cfg_check(struct rte_table_action_lb_config *cfg)
 	return 0;
 }
 
-struct lb_data {
+struct __rte_packed_begin lb_data {
 	uint32_t out[RTE_TABLE_ACTION_LB_TABLE_SIZE];
-} __rte_packed;
+} __rte_packed_end;
 
 static int
 lb_apply(struct lb_data *data,
@@ -109,7 +109,7 @@ mtr_cfg_check(struct rte_table_action_mtr_config *mtr)
 struct mtr_trtcm_data {
 	struct rte_meter_trtcm trtcm;
 	uint64_t stats[RTE_COLORS];
-} __rte_packed;
+};
 
 #define MTR_TRTCM_DATA_METER_PROFILE_ID_GET(data)          \
 	(((data)->stats[RTE_COLOR_GREEN] & 0xF8LLU) >> 3)
@@ -356,10 +356,10 @@ tm_cfg_check(struct rte_table_action_tm_config *tm)
 	return 0;
 }
 
-struct tm_data {
+struct __rte_packed_begin tm_data {
 	uint32_t queue_id;
 	uint32_t reserved;
-} __rte_packed;
+} __rte_packed_end;
 
 static int
 tm_apply_check(struct rte_table_action_tm_params *p,
@@ -386,7 +386,7 @@ tm_apply(struct tm_data *data,
 
 	/* Apply */
 	data->queue_id = p->subport_id <<
-				(__builtin_ctz(cfg->n_pipes_per_subport) + 4) |
+				(rte_ctz32(cfg->n_pipes_per_subport) + 4) |
 				p->pipe_id << 4;
 
 	return 0;
@@ -429,7 +429,7 @@ static int
 encap_cfg_check(struct rte_table_action_encap_config *encap)
 {
 	if ((encap->encap_mask == 0) ||
-		(__builtin_popcountll(encap->encap_mask) != 1))
+		(rte_popcount64(encap->encap_mask) != 1))
 		return -ENOTSUP;
 
 	return 0;
@@ -465,11 +465,11 @@ struct encap_qinq_data {
 	((((uint64_t)(s)) & 0x1LLU) << 8) |                \
 	(((uint64_t)(ttl)) & 0xFFLLU)))
 
-struct encap_mpls_data {
+struct __rte_aligned(2) __rte_packed_begin encap_mpls_data {
 	struct rte_ether_hdr ether;
 	uint32_t mpls[RTE_TABLE_ACTION_MPLS_LABELS_MAX];
 	uint32_t mpls_count;
-} __rte_packed __rte_aligned(2);
+} __rte_packed_end;
 
 #define PPP_PROTOCOL_IP                                    0x0021
 
@@ -487,42 +487,42 @@ struct encap_pppoe_data {
 
 #define IP_PROTO_UDP                                       17
 
-struct encap_vxlan_ipv4_data {
+struct __rte_aligned(2) __rte_packed_begin encap_vxlan_ipv4_data {
 	struct rte_ether_hdr ether;
 	struct rte_ipv4_hdr ipv4;
 	struct rte_udp_hdr udp;
 	struct rte_vxlan_hdr vxlan;
-} __rte_packed __rte_aligned(2);
+} __rte_packed_end;
 
-struct encap_vxlan_ipv4_vlan_data {
+struct __rte_aligned(2) __rte_packed_begin encap_vxlan_ipv4_vlan_data {
 	struct rte_ether_hdr ether;
 	struct rte_vlan_hdr vlan;
 	struct rte_ipv4_hdr ipv4;
 	struct rte_udp_hdr udp;
 	struct rte_vxlan_hdr vxlan;
-} __rte_packed __rte_aligned(2);
+} __rte_packed_end;
 
-struct encap_vxlan_ipv6_data {
+struct __rte_aligned(2) __rte_packed_begin encap_vxlan_ipv6_data {
 	struct rte_ether_hdr ether;
 	struct rte_ipv6_hdr ipv6;
 	struct rte_udp_hdr udp;
 	struct rte_vxlan_hdr vxlan;
-} __rte_packed __rte_aligned(2);
+} __rte_packed_end;
 
-struct encap_vxlan_ipv6_vlan_data {
+struct __rte_aligned(2) __rte_packed_begin encap_vxlan_ipv6_vlan_data {
 	struct rte_ether_hdr ether;
 	struct rte_vlan_hdr vlan;
 	struct rte_ipv6_hdr ipv6;
 	struct rte_udp_hdr udp;
 	struct rte_vxlan_hdr vxlan;
-} __rte_packed __rte_aligned(2);
+} __rte_packed_end;
 
-struct encap_qinq_pppoe_data {
+struct __rte_aligned(2) __rte_packed_begin encap_qinq_pppoe_data {
 	struct rte_ether_hdr ether;
 	struct rte_vlan_hdr svlan;
 	struct rte_vlan_hdr cvlan;
 	struct pppoe_ppp_hdr pppoe_ppp;
-} __rte_packed __rte_aligned(2);
+} __rte_packed_end;
 
 static size_t
 encap_data_size(struct rte_table_action_encap_config *encap)
@@ -871,12 +871,8 @@ encap_vxlan_apply(void *data,
 			d->ipv6.payload_len = 0; /* not pre-computed */
 			d->ipv6.proto = IP_PROTO_UDP;
 			d->ipv6.hop_limits = p->vxlan.ipv6.hop_limit;
-			memcpy(d->ipv6.src_addr,
-				p->vxlan.ipv6.sa,
-				sizeof(p->vxlan.ipv6.sa));
-			memcpy(d->ipv6.dst_addr,
-				p->vxlan.ipv6.da,
-				sizeof(p->vxlan.ipv6.da));
+			d->ipv6.src_addr = p->vxlan.ipv6.sa;
+			d->ipv6.dst_addr = p->vxlan.ipv6.da;
 
 			/* UDP */
 			d->udp.src_port = rte_htons(p->vxlan.udp.sp);
@@ -906,12 +902,8 @@ encap_vxlan_apply(void *data,
 			d->ipv6.payload_len = 0; /* not pre-computed */
 			d->ipv6.proto = IP_PROTO_UDP;
 			d->ipv6.hop_limits = p->vxlan.ipv6.hop_limit;
-			memcpy(d->ipv6.src_addr,
-				p->vxlan.ipv6.sa,
-				sizeof(p->vxlan.ipv6.sa));
-			memcpy(d->ipv6.dst_addr,
-				p->vxlan.ipv6.da,
-				sizeof(p->vxlan.ipv6.da));
+			d->ipv6.src_addr = p->vxlan.ipv6.sa;
+			d->ipv6.dst_addr = p->vxlan.ipv6.da;
 
 			/* UDP */
 			d->udp.src_port = rte_htons(p->vxlan.udp.sp);
@@ -1204,15 +1196,15 @@ nat_cfg_check(struct rte_table_action_nat_config *nat)
 	return 0;
 }
 
-struct nat_ipv4_data {
+struct __rte_packed_begin nat_ipv4_data {
 	uint32_t addr;
 	uint16_t port;
-} __rte_packed;
+} __rte_packed_end;
 
-struct nat_ipv6_data {
-	uint8_t addr[16];
+struct __rte_packed_begin nat_ipv6_data {
+	struct rte_ipv6_addr addr;
 	uint16_t port;
-} __rte_packed;
+} __rte_packed_end;
 
 static size_t
 nat_data_size(struct rte_table_action_nat_config *nat __rte_unused,
@@ -1257,7 +1249,7 @@ nat_apply(void *data,
 	} else {
 		struct nat_ipv6_data *d = data;
 
-		memcpy(d->addr, p->addr.ipv6, sizeof(d->addr));
+		d->addr = p->addr.ipv6;
 		d->port = rte_htons(p->port);
 	}
 
@@ -1436,12 +1428,12 @@ pkt_ipv6_work_nat(struct rte_ipv6_hdr *ip,
 			uint16_t tcp_cksum;
 
 			tcp_cksum = nat_ipv6_tcp_udp_checksum_update(tcp->cksum,
-				(uint16_t *)ip->src_addr,
-				(uint16_t *)data->addr,
+				(uint16_t *)&ip->src_addr,
+				(uint16_t *)&data->addr,
 				tcp->src_port,
 				data->port);
 
-			rte_memcpy(ip->src_addr, data->addr, 16);
+			ip->src_addr = data->addr;
 			tcp->src_port = data->port;
 			tcp->cksum = tcp_cksum;
 		} else {
@@ -1449,12 +1441,12 @@ pkt_ipv6_work_nat(struct rte_ipv6_hdr *ip,
 			uint16_t udp_cksum;
 
 			udp_cksum = nat_ipv6_tcp_udp_checksum_update(udp->dgram_cksum,
-				(uint16_t *)ip->src_addr,
-				(uint16_t *)data->addr,
+				(uint16_t *)&ip->src_addr,
+				(uint16_t *)&data->addr,
 				udp->src_port,
 				data->port);
 
-			rte_memcpy(ip->src_addr, data->addr, 16);
+			ip->src_addr = data->addr;
 			udp->src_port = data->port;
 			udp->dgram_cksum = udp_cksum;
 		}
@@ -1464,12 +1456,12 @@ pkt_ipv6_work_nat(struct rte_ipv6_hdr *ip,
 			uint16_t tcp_cksum;
 
 			tcp_cksum = nat_ipv6_tcp_udp_checksum_update(tcp->cksum,
-				(uint16_t *)ip->dst_addr,
-				(uint16_t *)data->addr,
+				(uint16_t *)&ip->dst_addr,
+				(uint16_t *)&data->addr,
 				tcp->dst_port,
 				data->port);
 
-			rte_memcpy(ip->dst_addr, data->addr, 16);
+			ip->dst_addr = data->addr;
 			tcp->dst_port = data->port;
 			tcp->cksum = tcp_cksum;
 		} else {
@@ -1477,12 +1469,12 @@ pkt_ipv6_work_nat(struct rte_ipv6_hdr *ip,
 			uint16_t udp_cksum;
 
 			udp_cksum = nat_ipv6_tcp_udp_checksum_update(udp->dgram_cksum,
-				(uint16_t *)ip->dst_addr,
-				(uint16_t *)data->addr,
+				(uint16_t *)&ip->dst_addr,
+				(uint16_t *)&data->addr,
 				udp->dst_port,
 				data->port);
 
-			rte_memcpy(ip->dst_addr, data->addr, 16);
+			ip->dst_addr = data->addr;
 			udp->dst_port = data->port;
 			udp->dgram_cksum = udp_cksum;
 		}
@@ -1501,9 +1493,9 @@ ttl_cfg_check(struct rte_table_action_ttl_config *ttl)
 	return 0;
 }
 
-struct ttl_data {
+struct __rte_packed_begin ttl_data {
 	uint32_t n_packets;
-} __rte_packed;
+} __rte_packed_end;
 
 #define TTL_INIT(data, decrement)                         \
 	((data)->n_packets = (decrement) ? 1 : 0)
@@ -1584,10 +1576,10 @@ stats_cfg_check(struct rte_table_action_stats_config *stats)
 	return 0;
 }
 
-struct stats_data {
+struct __rte_packed_begin stats_data {
 	uint64_t n_packets;
 	uint64_t n_bytes;
-} __rte_packed;
+} __rte_packed_end;
 
 static int
 stats_apply(struct stats_data *data,
@@ -1610,9 +1602,9 @@ pkt_work_stats(struct stats_data *data,
 /**
  * RTE_TABLE_ACTION_TIME
  */
-struct time_data {
+struct __rte_packed_begin time_data {
 	uint64_t time;
-} __rte_packed;
+} __rte_packed_end;
 
 static int
 time_apply(struct time_data *data,
@@ -1657,7 +1649,7 @@ struct crypto_op_sym_iv_aad {
 	} iv_aad;
 };
 
-struct sym_crypto_data {
+struct __rte_packed_begin sym_crypto_data {
 
 	union {
 		struct {
@@ -1725,7 +1717,7 @@ struct sym_crypto_data {
 	/** Private data size to store cipher iv / aad. */
 	uint8_t iv_aad_data[32];
 
-} __rte_packed;
+} __rte_packed_end;
 
 static int
 sym_crypto_cfg_check(struct rte_table_action_sym_crypto_config *cfg)
@@ -1956,7 +1948,7 @@ pkt_work_sym_crypto(struct rte_mbuf *mbuf, struct sym_crypto_data *data,
 
 			/** For encryption, update the pkt iv field, otherwise
 			 *  update the iv_aad_field
-			 **/
+			 */
 			if (data->direction == RTE_CRYPTO_CIPHER_OP_ENCRYPT)
 				rte_memcpy(pkt_iv, data->iv_aad_data,
 					data->cipher_auth.cipher_iv_update_len);
@@ -2060,9 +2052,9 @@ pkt_work_sym_crypto(struct rte_mbuf *mbuf, struct sym_crypto_data *data,
 /**
  * RTE_TABLE_ACTION_TAG
  */
-struct tag_data {
+struct __rte_packed_begin tag_data {
 	uint32_t tag;
-} __rte_packed;
+} __rte_packed_end;
 
 static int
 tag_apply(struct tag_data *data,
@@ -2104,9 +2096,9 @@ pkt4_work_tag(struct rte_mbuf *mbuf0,
 /**
  * RTE_TABLE_ACTION_DECAP
  */
-struct decap_data {
+struct __rte_packed_begin decap_data {
 	uint16_t n;
-} __rte_packed;
+} __rte_packed_end;
 
 static int
 decap_apply(struct decap_data *data,
@@ -3364,7 +3356,7 @@ ah(struct rte_pipeline *p,
 		time = rte_rdtsc();
 
 	if ((pkts_mask & (pkts_mask + 1)) == 0) {
-		uint64_t n_pkts = __builtin_popcountll(pkts_mask);
+		uint64_t n_pkts = rte_popcount64(pkts_mask);
 		uint32_t i;
 
 		for (i = 0; i < (n_pkts & (~0x3LLU)); i += 4) {
@@ -3392,7 +3384,7 @@ ah(struct rte_pipeline *p,
 		}
 	} else
 		for ( ; pkts_mask; ) {
-			uint32_t pos = __builtin_ctzll(pkts_mask);
+			uint32_t pos = rte_ctz64(pkts_mask);
 			uint64_t pkt_mask = 1LLU << pos;
 			uint64_t drop_mask;
 

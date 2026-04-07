@@ -9,31 +9,33 @@ source $rootdir/scripts/common.sh
 source $rootdir/test/common/autotest_common.sh
 
 function nvme_identify() {
-	$SPDK_EXAMPLE_DIR/identify -i 0
-	for bdf in $(get_nvme_bdfs); do
-		$SPDK_EXAMPLE_DIR/identify -r "trtype:PCIe traddr:${bdf}" -i 0
+	local bdfs=() bdf
+	bdfs=($(get_nvme_bdfs))
+	$SPDK_BIN_DIR/spdk_nvme_identify -i 0
+	for bdf in "${bdfs[@]}"; do
+		$SPDK_BIN_DIR/spdk_nvme_identify -r "trtype:PCIe traddr:${bdf}" -i 0
 	done
-	timing_exit identify
 }
 
 function nvme_perf() {
 	# enable no shutdown notification option
-	$SPDK_EXAMPLE_DIR/perf -q 128 -w read -o 12288 -t 1 -LL -i 0 -N
-	$SPDK_EXAMPLE_DIR/perf -q 128 -w write -o 12288 -t 1 -LL -i 0
+	$SPDK_BIN_DIR/spdk_nvme_perf -q 128 -w read -o 12288 -t 1 -LL -i 0 -N
+	$SPDK_BIN_DIR/spdk_nvme_perf -q 128 -w write -o 12288 -t 1 -LL -i 0
 	if [ -b /dev/ram0 ]; then
 		# Test perf with AIO device
-		$SPDK_EXAMPLE_DIR/perf /dev/ram0 -q 128 -w read -o 12288 -t 1 -LL -i 0
+		$SPDK_BIN_DIR/spdk_nvme_perf /dev/ram0 -q 128 -w read -o 12288 -t 1 -LL -i 0
 	fi
 }
 
 function nvme_fio_test() {
-	PLUGIN_DIR=$rootdir/examples/nvme/fio_plugin
+	PLUGIN_DIR=$rootdir/app/fio/nvme
 	ran_fio=false
-	for bdf in $(get_nvme_bdfs); do
-		if ! "$SPDK_EXAMPLE_DIR/identify" -r "trtype:PCIe traddr:${bdf}" | grep -qE "^Namespace ID:[0-9]+"; then
+	local bdfs=($(get_nvme_bdfs)) bdf
+	for bdf in "${bdfs[@]}"; do
+		if ! "$SPDK_BIN_DIR/spdk_nvme_identify" -r "trtype:PCIe traddr:${bdf}" | grep -qE "^Namespace ID:[0-9]+"; then
 			continue
 		fi
-		if $SPDK_EXAMPLE_DIR/identify -r "trtype:PCIe traddr:${bdf}" | grep -q "Extended Data LBA"; then
+		if $SPDK_BIN_DIR/spdk_nvme_identify -r "trtype:PCIe traddr:${bdf}" | grep -q "Extended Data LBA"; then
 			bs=4160
 		else
 			bs=4096
@@ -46,80 +48,33 @@ function nvme_fio_test() {
 
 function nvme_multi_secondary() {
 	# Primary process exits last
-	$SPDK_EXAMPLE_DIR/perf -i 0 -q 16 -w read -o 4096 -t 5 -c 0x1 &
+	$SPDK_BIN_DIR/spdk_nvme_perf -i 0 -q 16 -w read -o 4096 -t 5 -c 0x1 &
 	pid0=$!
-	$SPDK_EXAMPLE_DIR/perf -i 0 -q 16 -w read -o 4096 -t 3 -c 0x2 &
+	$SPDK_BIN_DIR/spdk_nvme_perf -i 0 -q 16 -w read -o 4096 -t 3 -c 0x2 &
 	pid1=$!
-	$SPDK_EXAMPLE_DIR/perf -i 0 -q 16 -w read -o 4096 -t 3 -c 0x4
+	$SPDK_BIN_DIR/spdk_nvme_perf -i 0 -q 16 -w read -o 4096 -t 3 -c 0x4
 	wait $pid0
 	wait $pid1
 
 	# Secondary process exits last
-	$SPDK_EXAMPLE_DIR/perf -i 0 -q 16 -w read -o 4096 -t 3 -c 0x1 &
+	$SPDK_BIN_DIR/spdk_nvme_perf -i 0 -q 16 -w read -o 4096 -t 3 -c 0x1 &
 	pid0=$!
-	$SPDK_EXAMPLE_DIR/perf -i 0 -q 16 -w read -o 4096 -t 3 -c 0x2 &
+	$SPDK_BIN_DIR/spdk_nvme_perf -i 0 -q 16 -w read -o 4096 -t 3 -c 0x2 &
 	pid1=$!
-	$SPDK_EXAMPLE_DIR/perf -i 0 -q 16 -w read -o 4096 -t 5 -c 0x4
+	$SPDK_BIN_DIR/spdk_nvme_perf -i 0 -q 16 -w read -o 4096 -t 5 -c 0x4
 	wait $pid0
 	wait $pid1
 }
 
-if [ $(uname) = Linux ]; then
-	# check that our setup.sh script does not bind NVMe devices to uio/vfio if they
-	# have an active mountpoint
-	$rootdir/scripts/setup.sh reset
-	blkname=''
-	# first, find an NVMe device that does not have an active mountpoint already;
-	# this covers rare case where someone is running this test script on a system
-	# that has a mounted NVMe filesystem
-	#
-	# note: more work probably needs to be done to properly handle devices with multiple
-	# namespaces
-	for bdf in $(get_nvme_bdfs); do
-		for name in $(get_nvme_name_from_bdf $bdf); do
-			if [ "$name" != "" ]; then
-				mountpoints=$(lsblk /dev/$name --output MOUNTPOINT -n | wc -w)
-				if [ "$mountpoints" = "0" ]; then
-					blkname=$name
-					break 2
-				fi
-			fi
-		done
+function nvme_doorbell_aers() {
+	local bdfs=() bdf
+	bdfs=($(get_nvme_bdfs))
+	for bdf in "${bdfs[@]}"; do
+		timeout --preserve-status 10 $testdir/doorbell_aers/doorbell_aers -r "trtype:PCIe traddr:${bdf}"
 	done
+}
 
-	# if we found an NVMe block device without an active mountpoint, create and mount
-	# a filesystem on it for purposes of testing the setup.sh script
-	if [ "$blkname" != "" ]; then
-		parted -s /dev/$blkname mklabel gpt
-		# just create a 100MB partition - this tests our ability to detect mountpoints
-		# on partitions of the device, not just the device itself;  it also is faster
-		# since we don't trim and initialize the whole namespace
-		parted -s /dev/$blkname mkpart SPDK_TEST 1 100
-		sleep 1
-		mkfs.ext4 -F /dev/${blkname}p1
-		mkdir -p /tmp/nvmetest
-		mount /dev/${blkname}p1 /tmp/nvmetest
-		sleep 1
-		$rootdir/scripts/setup.sh
-		driver=$(basename $(readlink /sys/bus/pci/devices/$bdf/driver))
-		# check that the nvme driver is still loaded against the device
-		if [ "$driver" != "nvme" ]; then
-			exit 1
-		fi
-		umount /tmp/nvmetest
-		rmdir /tmp/nvmetest
-		# write zeroes to the device to blow away the partition table and filesystem
-		dd if=/dev/zero of=/dev/$blkname oflag=direct bs=1M count=1
-		$rootdir/scripts/setup.sh
-		driver=$(basename $(readlink /sys/bus/pci/devices/$bdf/driver))
-		# check that the nvme driver is not loaded against the device
-		if [ "$driver" = "nvme" ]; then
-			exit 1
-		fi
-	else
-		$rootdir/scripts/setup.sh
-	fi
-fi
+"$rootdir/scripts/setup.sh"
 
 if [ $(uname) = Linux ]; then
 	trap "kill_stub -9; exit 1" SIGINT SIGTERM EXIT
@@ -136,15 +91,18 @@ run_test "nvme_reserve" $testdir/reserve/reserve
 run_test "nvme_err_injection" $testdir/err_injection/err_injection
 run_test "nvme_overhead" $testdir/overhead/overhead -o 4096 -t 1 -H -i 0
 run_test "nvme_arbitration" $SPDK_EXAMPLE_DIR/arbitration -t 3 -i 0
-run_test "nvme_single_aen" $testdir/aer/aer -T -i 0 -L log
+run_test "nvme_single_aen" $testdir/aer/aer -T -i 0
+run_test "nvme_doorbell_aers" nvme_doorbell_aers
 
 if [ $(uname) != "FreeBSD" ]; then
-	run_test "nvme_multi_aen" $testdir/aer/aer -m -T -i 0 -L log
+	run_test "nvme_multi_aen" $testdir/aer/aer -m -T -i 0
 	run_test "nvme_startup" $testdir/startup/startup -t 1000000
 	run_test "nvme_multi_secondary" nvme_multi_secondary
 	trap - SIGINT SIGTERM EXIT
 	kill_stub
 fi
+
+run_test "bdev_nvme_reset_stuck_adm_cmd" $rootdir/test/nvme/nvme_reset_stuck_adm_cmd.sh
 
 if [[ $CONFIG_FIO_PLUGIN == y ]]; then
 	run_test "nvme_fio" nvme_fio_test

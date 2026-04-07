@@ -16,10 +16,6 @@
  * @b EXPERIMENTAL: this API may change without prior notice
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -28,11 +24,19 @@ extern "C" {
 #include <rte_compat.h>
 #include <rte_cycles.h>
 #include <rte_per_lcore.h>
+#include <rte_stdatomic.h>
 #include <rte_string_fns.h>
+#include <rte_trace.h>
 #include <rte_uuid.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /** The tracepoint object. */
-typedef uint64_t rte_trace_point_t;
+typedef RTE_ATOMIC(uint64_t) rte_trace_point_t;
+
+#ifndef _RTE_TRACE_POINT_REGISTER_H_
 
 /**
  * Macro to define the tracepoint arguments in RTE_TRACE_POINT macro.
@@ -50,6 +54,8 @@ _tp _args \
 	__rte_trace_point_emit_header_##_mode(&__##_tp); \
 	__VA_ARGS__ \
 }
+
+#endif /* _RTE_TRACE_POINT_REGISTER_H_ */
 
 /**
  * Create a tracepoint.
@@ -144,6 +150,16 @@ _tp _args \
 #define rte_trace_point_emit_ptr(val)
 /** Tracepoint function payload for string datatype */
 #define rte_trace_point_emit_string(val)
+/**
+ * Tracepoint function to capture a blob.
+ *
+ * @param val
+ *   Pointer to the array to be captured.
+ * @param len
+ *   Length to be captured. The maximum supported length is
+ *   RTE_TRACE_BLOB_LEN_MAX bytes.
+ */
+#define rte_trace_point_emit_blob(val, len)
 
 #endif /* __DOXYGEN__ */
 
@@ -151,6 +167,9 @@ _tp _args \
 #define __RTE_TRACE_EMIT_STRING_LEN_MAX 32
 /** @internal Macro to define event header size. */
 #define __RTE_TRACE_EVENT_HEADER_SZ sizeof(uint64_t)
+
+/** Macro to define maximum emit length of blob. */
+#define RTE_TRACE_BLOB_LEN_MAX 64
 
 /**
  * Enable recording events of the given tracepoint in the trace buffer.
@@ -221,7 +240,6 @@ __rte_trace_point_fp_is_enabled(void)
  * @internal
  *
  * Allocate trace memory buffer per thread.
- *
  */
 __rte_experimental
 void __rte_trace_mem_per_thread_alloc(void);
@@ -284,7 +302,7 @@ struct __rte_trace_stream_header {
 	rte_uuid_t uuid;
 	uint32_t lcore_id;
 	char thread_name[__RTE_TRACE_EMIT_STRING_LEN_MAX];
-} __rte_packed;
+};
 
 struct __rte_trace_header {
 	uint32_t offset;
@@ -346,7 +364,9 @@ __rte_trace_point_emit_ev_header(void *mem, uint64_t in)
 #define __rte_trace_point_emit_header_generic(t) \
 void *mem; \
 do { \
-	const uint64_t val = __atomic_load_n(t, __ATOMIC_ACQUIRE); \
+	if (!rte_trace_feature_is_enabled()) \
+		return; \
+	const uint64_t val = rte_atomic_load_explicit(t, rte_memory_order_acquire); \
 	if (likely(!(val & __RTE_TRACE_FIELD_ENABLE_MASK))) \
 		return; \
 	mem = __rte_trace_mem_get(val); \
@@ -360,10 +380,11 @@ do { \
 		return; \
 	__rte_trace_point_emit_header_generic(t)
 
-#define __rte_trace_point_emit(in, type) \
+#define __rte_trace_point_emit(name, in, type) \
 do { \
-	memcpy(mem, &(in), sizeof(in)); \
-	mem = RTE_PTR_ADD(mem, sizeof(in)); \
+	RTE_BUILD_BUG_ON(sizeof(type) != sizeof(typeof(*in))); \
+	memcpy(mem, in, sizeof(*in)); \
+	mem = RTE_PTR_ADD(mem, sizeof(*in)); \
 } while (0)
 
 #define rte_trace_point_emit_string(in) \
@@ -374,30 +395,63 @@ do { \
 	mem = RTE_PTR_ADD(mem, __RTE_TRACE_EMIT_STRING_LEN_MAX); \
 } while (0)
 
+#define rte_trace_point_emit_blob(in, len) \
+do { \
+	uint8_t size = len; \
+	if (unlikely(in == NULL)) \
+		return; \
+	if (size > RTE_TRACE_BLOB_LEN_MAX) \
+		size = RTE_TRACE_BLOB_LEN_MAX; \
+	__rte_trace_point_emit("size", &size, uint8_t); \
+	memcpy(mem, in, size); \
+	memset(RTE_PTR_ADD(mem, size), 0, RTE_TRACE_BLOB_LEN_MAX - size); \
+	mem = RTE_PTR_ADD(mem, RTE_TRACE_BLOB_LEN_MAX); \
+} while (0)
+
 #else
 
 #define __rte_trace_point_emit_header_generic(t) RTE_SET_USED(t)
 #define __rte_trace_point_emit_header_fp(t) RTE_SET_USED(t)
-#define __rte_trace_point_emit(in, type) RTE_SET_USED(in)
+#define __rte_trace_point_emit(name, in, type) RTE_SET_USED(in)
 #define rte_trace_point_emit_string(in) RTE_SET_USED(in)
+#define rte_trace_point_emit_blob(in, len) \
+do { \
+	RTE_SET_USED(in); \
+	RTE_SET_USED(len); \
+} while (0)
+
 
 #endif /* ALLOW_EXPERIMENTAL_API */
 #endif /* _RTE_TRACE_POINT_REGISTER_H_ */
 
-#define rte_trace_point_emit_u64(in) __rte_trace_point_emit(in, uint64_t)
-#define rte_trace_point_emit_i64(in) __rte_trace_point_emit(in, int64_t)
-#define rte_trace_point_emit_u32(in) __rte_trace_point_emit(in, uint32_t)
-#define rte_trace_point_emit_i32(in) __rte_trace_point_emit(in, int32_t)
-#define rte_trace_point_emit_u16(in) __rte_trace_point_emit(in, uint16_t)
-#define rte_trace_point_emit_i16(in) __rte_trace_point_emit(in, int16_t)
-#define rte_trace_point_emit_u8(in) __rte_trace_point_emit(in, uint8_t)
-#define rte_trace_point_emit_i8(in) __rte_trace_point_emit(in, int8_t)
-#define rte_trace_point_emit_int(in) __rte_trace_point_emit(in, int32_t)
-#define rte_trace_point_emit_long(in) __rte_trace_point_emit(in, long)
-#define rte_trace_point_emit_size_t(in) __rte_trace_point_emit(in, size_t)
-#define rte_trace_point_emit_float(in) __rte_trace_point_emit(in, float)
-#define rte_trace_point_emit_double(in) __rte_trace_point_emit(in, double)
-#define rte_trace_point_emit_ptr(in) __rte_trace_point_emit(in, uintptr_t)
+#define rte_trace_point_emit_u64(in) __rte_trace_point_emit(RTE_STR(in), &in, uint64_t)
+#define rte_trace_point_emit_i64(in) __rte_trace_point_emit(RTE_STR(in), &in, int64_t)
+#define rte_trace_point_emit_u32(in) __rte_trace_point_emit(RTE_STR(in), &in, uint32_t)
+#define rte_trace_point_emit_i32(in) __rte_trace_point_emit(RTE_STR(in), &in, int32_t)
+#define rte_trace_point_emit_u16(in) __rte_trace_point_emit(RTE_STR(in), &in, uint16_t)
+#define rte_trace_point_emit_i16(in) __rte_trace_point_emit(RTE_STR(in), &in, int16_t)
+#define rte_trace_point_emit_u8(in) __rte_trace_point_emit(RTE_STR(in), &in, uint8_t)
+#define rte_trace_point_emit_i8(in) __rte_trace_point_emit(RTE_STR(in), &in, int8_t)
+#define rte_trace_point_emit_int(in) __rte_trace_point_emit(RTE_STR(in), &in, int32_t)
+#define rte_trace_point_emit_long(in) __rte_trace_point_emit(RTE_STR(in), &in, long)
+#define rte_trace_point_emit_size_t(in) __rte_trace_point_emit(RTE_STR(in), &in, size_t)
+#define rte_trace_point_emit_float(in) __rte_trace_point_emit(RTE_STR(in), &in, float)
+#define rte_trace_point_emit_double(in) __rte_trace_point_emit(RTE_STR(in), &in, double)
+#define rte_trace_point_emit_ptr(in) __rte_trace_point_emit(RTE_STR(in), &in, uintptr_t)
+
+#define rte_trace_point_emit_u64_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, uint64_t)
+#define rte_trace_point_emit_i64_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, int64_t)
+#define rte_trace_point_emit_u32_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, uint32_t)
+#define rte_trace_point_emit_i32_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, int32_t)
+#define rte_trace_point_emit_u16_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, uint16_t)
+#define rte_trace_point_emit_i16_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, int16_t)
+#define rte_trace_point_emit_u8_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, uint8_t)
+#define rte_trace_point_emit_i8_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, int8_t)
+#define rte_trace_point_emit_int_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, int32_t)
+#define rte_trace_point_emit_long_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, long)
+#define rte_trace_point_emit_size_t_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, size_t)
+#define rte_trace_point_emit_float_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, float)
+#define rte_trace_point_emit_double_ptr(in) __rte_trace_point_emit(RTE_STR(in)"_val", in, double)
 
 #endif /* __DOXYGEN__ */
 

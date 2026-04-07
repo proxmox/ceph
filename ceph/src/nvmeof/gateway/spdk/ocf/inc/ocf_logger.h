@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_LOGGER_H__
@@ -11,8 +11,8 @@
  * @brief Logger API
  */
 
+#include <ocf_env.h>
 #include <ocf/ocf_types.h>
-#include <stdarg.h>
 
 /**
  * @brief Verbosity levels of context log

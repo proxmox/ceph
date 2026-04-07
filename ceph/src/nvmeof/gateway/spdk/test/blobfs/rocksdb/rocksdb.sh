@@ -80,7 +80,7 @@ popd
 
 timing_exit db_bench_build
 
-$rootdir/scripts/gen_nvme.sh --json-with-subsystems > $ROCKSDB_CONF
+$rootdir/scripts/gen_nvme.sh --json-with-subsystems -n 1 > $ROCKSDB_CONF
 
 trap 'dump_db_bench_on_err; run_bsdump || :; rm -f $ROCKSDB_CONF; sanitize_results; exit 1' SIGINT SIGTERM EXIT
 
@@ -107,7 +107,7 @@ fi
 # with the right amount not allowing setup.sh to split it by using the global
 # nr_hugepages setting. Instead of bypassing it completely, we use it to also
 # get the right size of hugepages.
-HUGEMEM=$((CACHE_SIZE + 1024)) HUGENODE=0 \
+HUGEMEM=$((CACHE_SIZE + 2048)) HUGENODE=0 \
 	"$rootdir/scripts/setup.sh"
 
 cd $RESULTS_DIR
@@ -171,4 +171,7 @@ trap - SIGINT SIGTERM EXIT
 
 run_bsdump
 rm -f $ROCKSDB_CONF
+
+[[ -z "$SKIP_GIT_CLEAN" ]] && git -C "$DB_BENCH_DIR" clean -xfd
+
 sanitize_results

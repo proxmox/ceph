@@ -15,8 +15,15 @@ sources = files(
         'ngbe_ptypes.c',
         'ngbe_pf.c',
         'ngbe_rxtx.c',
+        'ngbe_ethdev_vf.c',
 )
 
 deps += ['hash']
+
+if arch_subdir == 'x86'
+    sources += files('ngbe_rxtx_vec_sse.c')
+elif arch_subdir == 'arm'
+    sources += files('ngbe_rxtx_vec_neon.c')
+endif
 
 includes += include_directories('base')

@@ -1,10 +1,10 @@
 # Deprecation
 
-## ABI and API Deprecation {#deprecation}
+## ABI and API Deprecation
 
 This document details the policy for maintaining stability of SPDK ABI and API.
 
-Major ABI version can change at most once for each quarterly SPDK release.
+Major ABI version can change at most once for each SPDK release.
 ABI versions are managed separately for each library and follow [Semantic Versioning](https://semver.org/).
 
 API and ABI deprecation notices shall be posted in the next section.
@@ -12,72 +12,19 @@ Each entry must describe what will be removed and can suggest the future use or 
 Specific future SPDK release for the removal must be provided.
 ABI cannot be removed without providing deprecation notice for at least single SPDK release.
 
-Deprecated code paths must be registered with `SPDK_DEPRECATION_REGISTER()` and logged with
+Deprecated code paths must be registered with `SPDK_LOG_DEPRECATION_REGISTER()` and logged with
 `SPDK_LOG_DEPRECATED()`. The tag used with these macros will appear in the SPDK
 log at the warn level when `SPDK_LOG_DEPRECATED()` is called, subject to rate limits.
 The tags can be matched with the level 4 headers below.
 
-## Deprecation Notices {#deprecation-notices}
+## Deprecation Notices
 
-### PMDK
+### sock
 
-PMDK is no longer supported and integrations with it in SPDK are now deprecated, and will be removed in SPDK 23.05.
-Please see: [UPDATE ON PMDK AND OUR LONG TERM SUPPORT STRATEGY](https://pmem.io/blog/2022/11/update-on-pmdk-and-our-long-term-support-strategy/).
+#### `spdk_sock_flush`
 
-#### `accel_flag_persistent`
-
-Deprecated `ACCEL_FLAG_PERSISTENT` flag in `accel_sw` accel framework module, it will be removed in SPDK 23.05.
-
-#### `bdev_pmem`
-
-Deprecated `bdev_pmem` based on libpmemblk, it will be removed in SPDK 23.05.
-
-#### `libreduce_pm_file`
-
-Reduce library will no longer depend on libpmem. `pm_file_dir` parameter in `spdk_reduce_vol_init()`
-will no longer point to pmem device or pmem file. Instead it will be possible to operate on a file,
-without the benefits of persistency.
-
-### VTune
-
-#### `vtune_support`
-
-VTune integration is in now deprecated and will be removed in SPDK 23.05.
-
-### OCF
-
-#### `bdev_ocf`
-
-The Open CAS Framework (OCF) integration via bdev module and env_ocf is now deprecated
-and will be removed in SPDK 23.05.
-
-### nvme
-
-#### `nvme_ctrlr_prepare_for_reset`
-
-Deprecated `spdk_nvme_ctrlr_prepare_for_reset` API, which will be removed in SPDK 22.01.
-For PCIe transport, `spdk_nvme_ctrlr_disconnect` should be used before freeing I/O qpairs.
-
-### nvmf
-
-#### `spdk_nvmf_qpair_disconnect`
-
-Parameters `cb_fn` and `ctx` of `spdk_nvmf_qpair_disconnect` API are deprecated. These parameters
-will be removed in 23.09 release.
-
-### bdev
-
-#### `bdev_register_examine_thread`
-
-Deprecated calling `spdk_bdev_register()` and `spdk_bdev_examine()` from a thread other than the
-app thread. See `spdk_thread_get_app_thread()`. Starting in SPDK 23.05, calling
-`spdk_bdev_register()` or `spdk_bdev_examine()` from a thread other than the app thread will return
-an error.
-
-With the removal of this deprecation, calls to vbdev modules' `examine_disk()` and
-`examine_config()` callbacks will happen only on the app thread. This means that vbdev module
-maintainers will not need to make any changes to examine callbacks that call `spdk_bdev_register()`
-on the same thread as the examine callback uses.
+This function returnes number of bytes sent on success, whereas this behavior is deprecated and
+will be changed in 25.09 release in the way it will return 0 on success.
 
 ### gpt
 
@@ -93,3 +40,40 @@ See GitHub issue [2801](https://github.com/spdk/spdk/issues/2801) for additional
 
 New SPDK partition types should use GUID `6527994e-2c5a-4eec-9613-8f5944074e8b` which will create
 a bdev of the correct size.
+
+### env
+
+#### `spdk_env_get_socket_id`, `spdk_pci_device_get_socket_id`
+
+These functions are deprecated and will be removed in 25.09 release. Please use
+`spdk_env_get_numa_id` and `spdk_pci_device_get_numa_id` instead.
+
+### reduce
+
+#### 'spdk_reduce_vol_init', 'spdk_reduce_vol_load'
+
+The entire reduce library is deprecated and will be removed in 25.09 release.
+All functions in this library are effectively deprecated, but only these two
+are officially marked as such to ensure the library's deprecation is noticed.
+
+### bdev_compress
+
+#### 'bdev_compress_create', 'bdev_compress_delete', 'bdev_compress_get_orphans' RPCs
+
+The entire bdev compress module is deprecated and will be removed in 25.09
+release. The C module exports no public APIs, so none are listed here, but
+the module will emit deprecation warnings when usage is detected.
+
+### blobfs
+
+#### 'spdk_fs_init', 'spdk_fs_load', 'blobfs_\*' RPCs
+
+This entire blobfs library is deprecated and will be removed in 25.09 release.
+All functions in this library are effectively deprecated, but only these two
+are officially marked as such to ensure the library's deprecation is noticed.
+
+### rocksdb
+
+The SPDK rocksdb plugin is deprecated and will be removed in 25.09 release.
+This C++ plugin exports no public APIs, so none are listed here, but
+the pluging will emit deprecation warnings when usage is detected.

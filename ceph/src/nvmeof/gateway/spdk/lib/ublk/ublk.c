@@ -3,7 +3,6 @@
  *   All rights reserved.
  */
 
-#include <linux/ublk_cmd.h>
 #include <liburing.h>
 
 #include "spdk/stdinc.h"
@@ -18,60 +17,82 @@
 #include "spdk/json.h"
 #include "spdk/ublk.h"
 #include "spdk/thread.h"
+#include "spdk/file.h"
 
 #include "ublk_internal.h"
 
-#define UBLK_CTRL_DEV			"/dev/ublk-control"
-#define UBLK_BLK_CDEV			"/dev/ublkc"
+#define UBLK_CTRL_DEV					"/dev/ublk-control"
+#define UBLK_BLK_CDEV					"/dev/ublkc"
 
-#define LINUX_SECTOR_SHIFT		9
-#define UBLK_CTRL_RING_DEPTH		32
-#define UBLK_THREAD_MAX			128
-#define UBLK_IO_MAX_BYTES		SPDK_BDEV_LARGE_BUF_MAX_SIZE
-#define UBLK_DEV_MAX_QUEUES		32
-#define UBLK_DEV_MAX_QUEUE_DEPTH	1024
-#define UBLK_QUEUE_REQUEST		32
-#define UBLK_STOP_BUSY_WAITING_MS	10000
-#define UBLK_BUSY_POLLING_INTERVAL_US	20000
+#define LINUX_SECTOR_SHIFT				9
+#define UBLK_IO_MAX_BYTES				SPDK_BDEV_LARGE_BUF_MAX_SIZE
+#define UBLK_DEV_MAX_QUEUES				32
+#define UBLK_DEV_MAX_QUEUE_DEPTH			1024
+#define UBLK_QUEUE_REQUEST				32
+#define UBLK_STOP_BUSY_WAITING_MS			10000
+#define UBLK_BUSY_POLLING_INTERVAL_US			20000
+#define UBLK_DEFAULT_CTRL_URING_POLLING_INTERVAL_US	1000
+/* By default, kernel ublk_drv driver can support up to 64 block devices */
+#define UBLK_DEFAULT_MAX_SUPPORTED_DEVS			64
+
+#define UBLK_IOBUF_SMALL_CACHE_SIZE			128
+#define UBLK_IOBUF_LARGE_CACHE_SIZE			32
 
 #define UBLK_DEBUGLOG(ublk, format, ...) \
 	SPDK_DEBUGLOG(ublk, "ublk%d: " format, ublk->ublk_id, ##__VA_ARGS__);
 
-static uint32_t g_num_ublk_threads = 0;
-static uint32_t g_queue_thread_id = 0;
+static uint32_t g_num_ublk_poll_groups = 0;
+static uint32_t g_next_ublk_poll_group = 0;
+static uint32_t g_ublks_max = UBLK_DEFAULT_MAX_SUPPORTED_DEVS;
 static struct spdk_cpuset g_core_mask;
+static bool g_disable_user_copy = false;
 
 struct ublk_queue;
-struct ublk_thread_ctx;
-static void ublk_submit_bdev_io(struct ublk_queue *q, uint16_t tag);
+struct ublk_poll_group;
+struct ublk_io;
+static void _ublk_submit_bdev_io(struct ublk_queue *q, struct ublk_io *io);
 static void ublk_dev_queue_fini(struct ublk_queue *q);
 static int ublk_poll(void *arg);
-static int ublk_ctrl_cmd(struct spdk_ublk_dev *ublk, uint32_t cmd_op);
-static void ublk_ios_fini(struct spdk_ublk_dev *ublk);
 
-typedef void (*ublk_next_state_fn)(struct spdk_ublk_dev *ublk);
-static void ublk_set_params(struct spdk_ublk_dev *ublk);
-static void ublk_finish_start(struct spdk_ublk_dev *ublk);
+static int ublk_set_params(struct spdk_ublk_dev *ublk);
+static int ublk_start_dev(struct spdk_ublk_dev *ublk, bool is_recovering);
 static void ublk_free_dev(struct spdk_ublk_dev *ublk);
+static void ublk_delete_dev(void *arg);
+static int ublk_close_dev(struct spdk_ublk_dev *ublk);
+static int ublk_ctrl_start_recovery(struct spdk_ublk_dev *ublk);
 
-static const char *ublk_op_name[64]
-__attribute__((unused)) = {
+static int ublk_ctrl_cmd_submit(struct spdk_ublk_dev *ublk, uint32_t cmd_op);
+
+static const char *ublk_op_name[64] = {
+	[UBLK_CMD_GET_DEV_INFO] = "UBLK_CMD_GET_DEV_INFO",
 	[UBLK_CMD_ADD_DEV] =	"UBLK_CMD_ADD_DEV",
 	[UBLK_CMD_DEL_DEV] =	"UBLK_CMD_DEL_DEV",
 	[UBLK_CMD_START_DEV] =	"UBLK_CMD_START_DEV",
 	[UBLK_CMD_STOP_DEV] =	"UBLK_CMD_STOP_DEV",
 	[UBLK_CMD_SET_PARAMS] =	"UBLK_CMD_SET_PARAMS",
+	[UBLK_CMD_START_USER_RECOVERY] = "UBLK_CMD_START_USER_RECOVERY",
+	[UBLK_CMD_END_USER_RECOVERY] = "UBLK_CMD_END_USER_RECOVERY",
 };
+
+typedef void (*ublk_get_buf_cb)(struct ublk_io *io);
 
 struct ublk_io {
 	void			*payload;
-	uint32_t		payload_size;
+	void			*mpool_entry;
+	bool			need_data;
+	bool			user_copy;
+	uint16_t		tag;
+	uint64_t		payload_size;
 	uint32_t		cmd_op;
 	int32_t			result;
-	bool			io_free;
+	struct spdk_bdev_desc	*bdev_desc;
+	struct spdk_io_channel	*bdev_ch;
+	const struct ublksrv_io_desc	*iod;
+	ublk_get_buf_cb		get_buf_cb;
 	struct ublk_queue	*q;
 	/* for bdev io_wait */
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
+	struct spdk_iobuf_entry	iobuf;
 
 	TAILQ_ENTRY(ublk_io)	tailq;
 };
@@ -83,11 +104,13 @@ struct ublk_queue {
 	TAILQ_HEAD(, ublk_io)	completed_io_list;
 	TAILQ_HEAD(, ublk_io)	inflight_io_list;
 	uint32_t		cmd_inflight;
+	bool			is_stopping;
 	struct ublksrv_io_desc	*io_cmd_buf;
 	/* ring depth == dev_info->queue_depth. */
 	struct io_uring		ring;
 	struct spdk_ublk_dev	*dev;
-	struct ublk_thread_ctx	*thread_ctx;
+	struct ublk_poll_group	*poll_group;
+	struct spdk_io_channel	*bdev_ch;
 
 	TAILQ_ENTRY(ublk_queue)	tailq;
 };
@@ -95,8 +118,6 @@ struct ublk_queue {
 struct spdk_ublk_dev {
 	struct spdk_bdev	*bdev;
 	struct spdk_bdev_desc	*bdev_desc;
-	struct spdk_io_channel	*ch[UBLK_DEV_MAX_QUEUES];
-	struct spdk_thread	*app_thread;
 
 	int			cdev_fd;
 	struct ublk_params	dev_params;
@@ -105,28 +126,28 @@ struct spdk_ublk_dev {
 	uint32_t		ublk_id;
 	uint32_t		num_queues;
 	uint32_t		queue_depth;
-
-	struct spdk_mempool	*io_buf_pool;
+	uint32_t		online_num_queues;
+	uint32_t		sector_per_block_shift;
 	struct ublk_queue	queues[UBLK_DEV_MAX_QUEUES];
 
 	struct spdk_poller	*retry_poller;
 	int			retry_count;
 	uint32_t		queues_closed;
-	volatile bool		is_closing;
-	ublk_start_cb		start_cb;
-	ublk_del_cb		del_cb;
+	ublk_ctrl_cb		ctrl_cb;
 	void			*cb_arg;
-	uint32_t		ctrl_cmd_op;
-	ublk_next_state_fn	next_state_fn;
+	uint32_t		current_cmd_op;
 	uint32_t		ctrl_ops_in_progress;
+	bool			is_closing;
+	bool			is_recovering;
 
 	TAILQ_ENTRY(spdk_ublk_dev) tailq;
 	TAILQ_ENTRY(spdk_ublk_dev) wait_tailq;
 };
 
-struct ublk_thread_ctx {
+struct ublk_poll_group {
 	struct spdk_thread		*ublk_thread;
 	struct spdk_poller		*ublk_poller;
+	struct spdk_iobuf_channel	iobuf_ch;
 	TAILQ_HEAD(, ublk_queue)	queue_list;
 };
 
@@ -139,11 +160,18 @@ struct ublk_tgt {
 	struct io_uring		ctrl_ring;
 	struct spdk_poller	*ctrl_poller;
 	uint32_t		ctrl_ops_in_progress;
-	struct ublk_thread_ctx	thread_ctx[UBLK_THREAD_MAX];
-	TAILQ_HEAD(, spdk_ublk_dev)	ctrl_wait_tailq;
+	struct ublk_poll_group	*poll_groups;
+	uint32_t		num_ublk_devs;
+	uint64_t		features;
+	/* `ublk_drv` supports UBLK_F_CMD_IOCTL_ENCODE */
+	bool			ioctl_encode;
+	/* `ublk_drv` supports UBLK_F_USER_COPY */
+	bool			user_copy;
+	/* `ublk_drv` supports UBLK_F_USER_RECOVERY */
+	bool			user_recovery;
 };
 
-static TAILQ_HEAD(, spdk_ublk_dev) g_ublk_bdevs = TAILQ_HEAD_INITIALIZER(g_ublk_bdevs);
+static TAILQ_HEAD(, spdk_ublk_dev) g_ublk_devs = TAILQ_HEAD_INITIALIZER(g_ublk_devs);
 static struct ublk_tgt g_ublk_tgt;
 
 /* helpers for using io_uring */
@@ -174,7 +202,52 @@ ublk_get_sqe_cmd(struct io_uring_sqe *sqe)
 static inline void
 ublk_set_sqe_cmd_op(struct io_uring_sqe *sqe, uint32_t cmd_op)
 {
-	sqe->off = cmd_op;
+	uint32_t opc = cmd_op;
+
+	if (g_ublk_tgt.ioctl_encode) {
+		switch (cmd_op) {
+		/* ctrl uring */
+		case UBLK_CMD_GET_DEV_INFO:
+			opc = _IOR('u', UBLK_CMD_GET_DEV_INFO, struct ublksrv_ctrl_cmd);
+			break;
+		case UBLK_CMD_ADD_DEV:
+			opc = _IOWR('u', UBLK_CMD_ADD_DEV, struct ublksrv_ctrl_cmd);
+			break;
+		case UBLK_CMD_DEL_DEV:
+			opc = _IOWR('u', UBLK_CMD_DEL_DEV, struct ublksrv_ctrl_cmd);
+			break;
+		case UBLK_CMD_START_DEV:
+			opc = _IOWR('u', UBLK_CMD_START_DEV, struct ublksrv_ctrl_cmd);
+			break;
+		case UBLK_CMD_STOP_DEV:
+			opc = _IOWR('u', UBLK_CMD_STOP_DEV, struct ublksrv_ctrl_cmd);
+			break;
+		case UBLK_CMD_SET_PARAMS:
+			opc = _IOWR('u', UBLK_CMD_SET_PARAMS, struct ublksrv_ctrl_cmd);
+			break;
+		case UBLK_CMD_START_USER_RECOVERY:
+			opc = _IOWR('u', UBLK_CMD_START_USER_RECOVERY, struct ublksrv_ctrl_cmd);
+			break;
+		case UBLK_CMD_END_USER_RECOVERY:
+			opc = _IOWR('u', UBLK_CMD_END_USER_RECOVERY, struct ublksrv_ctrl_cmd);
+			break;
+
+		/* io uring */
+		case UBLK_IO_FETCH_REQ:
+			opc = _IOWR('u', UBLK_IO_FETCH_REQ, struct ublksrv_io_cmd);
+			break;
+		case UBLK_IO_COMMIT_AND_FETCH_REQ:
+			opc = _IOWR('u', UBLK_IO_COMMIT_AND_FETCH_REQ, struct ublksrv_io_cmd);
+			break;
+		case UBLK_IO_NEED_GET_DATA:
+			opc = _IOWR('u', UBLK_IO_NEED_GET_DATA, struct ublksrv_io_cmd);
+			break;
+		default:
+			break;
+		}
+	}
+
+	sqe->off = opc;
 }
 
 static inline uint64_t
@@ -197,29 +270,175 @@ user_data_to_op(uint64_t user_data)
 	return (user_data >> 16) & 0xff;
 }
 
+static inline uint64_t
+ublk_user_copy_pos(uint16_t q_id, uint16_t tag)
+{
+	return (uint64_t)UBLKSRV_IO_BUF_OFFSET + ((((uint64_t)q_id) << UBLK_QID_OFF) | (((
+				uint64_t)tag) << UBLK_TAG_OFF));
+}
+
 void
 spdk_ublk_init(void)
 {
-	uint32_t i;
+	assert(spdk_thread_is_app_thread(NULL));
 
-	assert(spdk_get_thread() == spdk_thread_get_app_thread());
-
-	spdk_cpuset_zero(&g_core_mask);
-	SPDK_ENV_FOREACH_CORE(i) {
-		spdk_cpuset_set_cpu(&g_core_mask, i, true);
-	}
 	g_ublk_tgt.ctrl_fd = -1;
 	g_ublk_tgt.ctrl_ring.ring_fd = -1;
+}
+
+static void
+ublk_ctrl_cmd_error(struct spdk_ublk_dev *ublk, int32_t res)
+{
+	assert(res != 0);
+
+	SPDK_ERRLOG("ctrlr cmd %s failed, %s\n", ublk_op_name[ublk->current_cmd_op], spdk_strerror(-res));
+	if (ublk->ctrl_cb) {
+		ublk->ctrl_cb(ublk->cb_arg, res);
+		ublk->ctrl_cb = NULL;
+	}
+
+	switch (ublk->current_cmd_op) {
+	case UBLK_CMD_ADD_DEV:
+	case UBLK_CMD_SET_PARAMS:
+	case UBLK_CMD_START_USER_RECOVERY:
+	case UBLK_CMD_END_USER_RECOVERY:
+		ublk_delete_dev(ublk);
+		break;
+	case UBLK_CMD_START_DEV:
+		ublk_close_dev(ublk);
+		break;
+	case UBLK_CMD_GET_DEV_INFO:
+		ublk_free_dev(ublk);
+		break;
+	case UBLK_CMD_STOP_DEV:
+	case UBLK_CMD_DEL_DEV:
+		break;
+	default:
+		SPDK_ERRLOG("No match cmd operation,cmd_op = %d\n", ublk->current_cmd_op);
+		break;
+	}
+}
+
+static int
+_ublk_get_device_state_retry(void *arg)
+{
+	struct spdk_ublk_dev *ublk = arg;
+	int rc;
+
+	spdk_poller_unregister(&ublk->retry_poller);
+
+	rc = ublk_ctrl_cmd_submit(ublk, UBLK_CMD_GET_DEV_INFO);
+	if (rc < 0) {
+		ublk_delete_dev(ublk);
+		if (ublk->ctrl_cb) {
+			ublk->ctrl_cb(ublk->cb_arg, rc);
+			ublk->ctrl_cb = NULL;
+		}
+	}
+
+	return SPDK_POLLER_BUSY;
+}
+
+static void
+ublk_ctrl_process_cqe(struct io_uring_cqe *cqe)
+{
+	struct spdk_ublk_dev *ublk;
+	int rc = 0;
+
+	ublk = (struct spdk_ublk_dev *)cqe->user_data;
+	UBLK_DEBUGLOG(ublk, "ctrl cmd %s completed\n", ublk_op_name[ublk->current_cmd_op]);
+	ublk->ctrl_ops_in_progress--;
+
+	if (spdk_unlikely(cqe->res != 0)) {
+		ublk_ctrl_cmd_error(ublk, cqe->res);
+		return;
+	}
+
+	switch (ublk->current_cmd_op) {
+	case UBLK_CMD_ADD_DEV:
+		rc = ublk_set_params(ublk);
+		if (rc < 0) {
+			ublk_delete_dev(ublk);
+			goto cb_done;
+		}
+		break;
+	case UBLK_CMD_SET_PARAMS:
+		rc = ublk_start_dev(ublk, false);
+		if (rc < 0) {
+			ublk_delete_dev(ublk);
+			goto cb_done;
+		}
+		break;
+	case UBLK_CMD_START_DEV:
+		goto cb_done;
+		break;
+	case UBLK_CMD_STOP_DEV:
+		break;
+	case UBLK_CMD_DEL_DEV:
+		if (ublk->ctrl_cb) {
+			ublk->ctrl_cb(ublk->cb_arg, 0);
+			ublk->ctrl_cb = NULL;
+		}
+		ublk_free_dev(ublk);
+		break;
+	case UBLK_CMD_GET_DEV_INFO:
+		if (ublk->ublk_id != ublk->dev_info.dev_id) {
+			SPDK_ERRLOG("Invalid ublk ID\n");
+			rc = -EINVAL;
+			goto cb_done;
+		}
+
+		UBLK_DEBUGLOG(ublk, "Ublk %u device state %u\n", ublk->ublk_id, ublk->dev_info.state);
+		/* kernel ublk_drv driver returns -EBUSY if device state isn't UBLK_S_DEV_QUIESCED */
+		if ((ublk->dev_info.state != UBLK_S_DEV_QUIESCED) && (ublk->retry_count < 3)) {
+			ublk->retry_count++;
+			ublk->retry_poller = SPDK_POLLER_REGISTER(_ublk_get_device_state_retry, ublk, 1000000);
+			return;
+		}
+
+		rc = ublk_ctrl_start_recovery(ublk);
+		if (rc < 0) {
+			ublk_delete_dev(ublk);
+			goto cb_done;
+		}
+		break;
+	case UBLK_CMD_START_USER_RECOVERY:
+		rc = ublk_start_dev(ublk, true);
+		if (rc < 0) {
+			ublk_delete_dev(ublk);
+			goto cb_done;
+		}
+		break;
+	case UBLK_CMD_END_USER_RECOVERY:
+		SPDK_NOTICELOG("Ublk %u recover done successfully\n", ublk->ublk_id);
+		ublk->is_recovering = false;
+		goto cb_done;
+		break;
+	default:
+		SPDK_ERRLOG("No match cmd operation,cmd_op = %d\n", ublk->current_cmd_op);
+		break;
+	}
+
+	return;
+
+cb_done:
+	if (ublk->ctrl_cb) {
+		ublk->ctrl_cb(ublk->cb_arg, rc);
+		ublk->ctrl_cb = NULL;
+	}
 }
 
 static int
 ublk_ctrl_poller(void *arg)
 {
 	struct io_uring *ring = &g_ublk_tgt.ctrl_ring;
-	struct spdk_ublk_dev *ublk;
 	struct io_uring_cqe *cqe;
 	const int max = 8;
 	int i, count = 0, rc;
+
+	if (!g_ublk_tgt.ctrl_ops_in_progress) {
+		return SPDK_POLLER_IDLE;
+	}
 
 	for (i = 0; i < max; i++) {
 		rc = io_uring_peek_cqe(ring, &cqe);
@@ -229,23 +448,10 @@ ublk_ctrl_poller(void *arg)
 
 		assert(cqe != NULL);
 		g_ublk_tgt.ctrl_ops_in_progress--;
-		if (g_ublk_tgt.ctrl_ops_in_progress == 0) {
-			spdk_poller_unregister(&g_ublk_tgt.ctrl_poller);
-		}
-		ublk = (struct spdk_ublk_dev *)cqe->user_data;
-		UBLK_DEBUGLOG(ublk, "ctrl cmd completed\n");
-		ublk->ctrl_ops_in_progress--;
-		if (ublk->next_state_fn) {
-			ublk->next_state_fn(ublk);
-		}
+
+		ublk_ctrl_process_cqe(cqe);
+
 		io_uring_cqe_seen(ring, cqe);
-		ublk = TAILQ_FIRST(&g_ublk_tgt.ctrl_wait_tailq);
-		if (ublk != NULL) {
-			TAILQ_REMOVE(&g_ublk_tgt.ctrl_wait_tailq, ublk, wait_tailq);
-			UBLK_DEBUGLOG(ublk, "resubmit ctrl cmd\n");
-			rc = ublk_ctrl_cmd(ublk, ublk->ctrl_cmd_op);
-			assert(rc == 0);
-		}
 		count++;
 	}
 
@@ -253,7 +459,7 @@ ublk_ctrl_poller(void *arg)
 }
 
 static int
-ublk_ctrl_cmd(struct spdk_ublk_dev *ublk, uint32_t cmd_op)
+ublk_ctrl_cmd_submit(struct spdk_ublk_dev *ublk, uint32_t cmd_op)
 {
 	uint32_t dev_id = ublk->ublk_id;
 	int rc = -EINVAL;
@@ -262,43 +468,42 @@ ublk_ctrl_cmd(struct spdk_ublk_dev *ublk, uint32_t cmd_op)
 
 	UBLK_DEBUGLOG(ublk, "ctrl cmd %s\n", ublk_op_name[cmd_op]);
 
-	ublk->ctrl_cmd_op = cmd_op;
 	sqe = io_uring_get_sqe(&g_ublk_tgt.ctrl_ring);
 	if (!sqe) {
-		/* The cmd_op was saved in the ublk, to ensure we use the
-		 * correct cmd_op when it later gets resubmitted.
-		 */
-		UBLK_DEBUGLOG(ublk, "queue ctrl cmd\n");
-		TAILQ_INSERT_TAIL(&g_ublk_tgt.ctrl_wait_tailq, ublk, wait_tailq);
-		return 0;
+		SPDK_ERRLOG("No available sqe in ctrl ring\n");
+		assert(false);
+		return -ENOENT;
 	}
+
 	cmd = (struct ublksrv_ctrl_cmd *)ublk_get_sqe_cmd(sqe);
 	sqe->fd = g_ublk_tgt.ctrl_fd;
 	sqe->opcode = IORING_OP_URING_CMD;
 	sqe->ioprio = 0;
 	cmd->dev_id = dev_id;
 	cmd->queue_id = -1;
-	ublk->next_state_fn = NULL;
+	ublk->current_cmd_op = cmd_op;
 
 	switch (cmd_op) {
 	case UBLK_CMD_ADD_DEV:
-		ublk->next_state_fn = ublk_set_params;
+	case UBLK_CMD_GET_DEV_INFO:
 		cmd->addr = (__u64)(uintptr_t)&ublk->dev_info;
 		cmd->len = sizeof(ublk->dev_info);
 		break;
 	case UBLK_CMD_SET_PARAMS:
-		ublk->next_state_fn = ublk_finish_start;
 		cmd->addr = (__u64)(uintptr_t)&ublk->dev_params;
 		cmd->len = sizeof(ublk->dev_params);
 		break;
 	case UBLK_CMD_START_DEV:
 		cmd->data[0] = getpid();
-		cmd->data[1] = 0;
 		break;
 	case UBLK_CMD_STOP_DEV:
 		break;
 	case UBLK_CMD_DEL_DEV:
-		ublk->next_state_fn = ublk_free_dev;
+		break;
+	case UBLK_CMD_START_USER_RECOVERY:
+		break;
+	case UBLK_CMD_END_USER_RECOVERY:
+		cmd->data[0] = getpid();
 		break;
 	default:
 		SPDK_ERRLOG("No match cmd operation,cmd_op = %d\n", cmd_op);
@@ -307,17 +512,66 @@ ublk_ctrl_cmd(struct spdk_ublk_dev *ublk, uint32_t cmd_op)
 	ublk_set_sqe_cmd_op(sqe, cmd_op);
 	io_uring_sqe_set_data(sqe, ublk);
 
-	if (g_ublk_tgt.ctrl_ops_in_progress == 0) {
-		g_ublk_tgt.ctrl_poller = SPDK_POLLER_REGISTER(ublk_ctrl_poller, NULL, 10);
+	rc = io_uring_submit(&g_ublk_tgt.ctrl_ring);
+	if (rc < 0) {
+		SPDK_ERRLOG("uring submit rc %d\n", rc);
+		assert(false);
+		return rc;
 	}
+	g_ublk_tgt.ctrl_ops_in_progress++;
+	ublk->ctrl_ops_in_progress++;
+
+	return 0;
+}
+
+static int
+ublk_ctrl_cmd_get_features(void)
+{
+	int rc;
+	struct io_uring_sqe *sqe;
+	struct io_uring_cqe *cqe;
+	struct ublksrv_ctrl_cmd *cmd;
+	uint32_t cmd_op;
+
+	sqe = io_uring_get_sqe(&g_ublk_tgt.ctrl_ring);
+	if (!sqe) {
+		SPDK_ERRLOG("No available sqe in ctrl ring\n");
+		assert(false);
+		return -ENOENT;
+	}
+
+	cmd = (struct ublksrv_ctrl_cmd *)ublk_get_sqe_cmd(sqe);
+	sqe->fd = g_ublk_tgt.ctrl_fd;
+	sqe->opcode = IORING_OP_URING_CMD;
+	sqe->ioprio = 0;
+	cmd->dev_id = -1;
+	cmd->queue_id = -1;
+	cmd->addr = (__u64)(uintptr_t)&g_ublk_tgt.features;
+	cmd->len = sizeof(g_ublk_tgt.features);
+
+	cmd_op = UBLK_U_CMD_GET_FEATURES;
+	ublk_set_sqe_cmd_op(sqe, cmd_op);
 
 	rc = io_uring_submit(&g_ublk_tgt.ctrl_ring);
 	if (rc < 0) {
 		SPDK_ERRLOG("uring submit rc %d\n", rc);
 		return rc;
 	}
-	g_ublk_tgt.ctrl_ops_in_progress++;
-	ublk->ctrl_ops_in_progress++;
+
+	rc = io_uring_wait_cqe(&g_ublk_tgt.ctrl_ring, &cqe);
+	if (rc < 0) {
+		SPDK_ERRLOG("wait cqe rc %d\n", rc);
+		return rc;
+	}
+
+	if (cqe->res == 0) {
+		g_ublk_tgt.ioctl_encode = !!(g_ublk_tgt.features & UBLK_F_CMD_IOCTL_ENCODE);
+		g_ublk_tgt.user_copy = !!(g_ublk_tgt.features & UBLK_F_USER_COPY);
+		g_ublk_tgt.user_copy &= !g_disable_user_copy;
+		g_ublk_tgt.user_recovery = !!(g_ublk_tgt.features & UBLK_F_USER_RECOVERY);
+		SPDK_NOTICELOG("User Copy %s\n", g_ublk_tgt.user_copy ? "enabled" : "disabled");
+	}
+	io_uring_cqe_seen(&g_ublk_tgt.ctrl_ring, cqe);
 
 	return 0;
 }
@@ -335,57 +589,73 @@ ublk_queue_cmd_buf_sz(uint32_t q_depth)
 static int
 ublk_open(void)
 {
+	uint32_t ublks_max;
 	int rc;
 
 	g_ublk_tgt.ctrl_fd = open(UBLK_CTRL_DEV, O_RDWR);
 	if (g_ublk_tgt.ctrl_fd < 0) {
 		rc = errno;
-		SPDK_ERRLOG("UBLK conrol dev %s can't be opened, error=%s\n", UBLK_CTRL_DEV, spdk_strerror(errno));
+		SPDK_ERRLOG("UBLK control dev %s can't be opened, error=%s\n", UBLK_CTRL_DEV, spdk_strerror(errno));
 		return -rc;
 	}
 
-	rc = ublk_setup_ring(UBLK_CTRL_RING_DEPTH, &g_ublk_tgt.ctrl_ring,
+	rc = spdk_read_sysfs_attribute_uint32(&ublks_max, "%s",
+					      "/sys/module/ublk_drv/parameters/ublks_max");
+	if (rc == 0 && ublks_max > 0) {
+		g_ublks_max = ublks_max;
+	}
+
+	/* We need to set SQPOLL for kernels 6.1 and earlier, since they would not defer ublk ctrl
+	 * ring processing to a workqueue.  Ctrl ring processing is minimal, so SQPOLL is fine.
+	 * All the commands sent via control uring for a ublk device is executed one by one, so use
+	 * ublks_max * 2 as the number of uring entries is enough.
+	 */
+	rc = ublk_setup_ring(g_ublks_max * 2, &g_ublk_tgt.ctrl_ring,
 			     IORING_SETUP_SQE128 | IORING_SETUP_SQPOLL);
 	if (rc < 0) {
 		SPDK_ERRLOG("UBLK ctrl queue_init: %s\n", spdk_strerror(-rc));
-		close(g_ublk_tgt.ctrl_fd);
-		g_ublk_tgt.ctrl_fd = -1;
-		return rc;
+		goto err;
+	}
+
+	rc = ublk_ctrl_cmd_get_features();
+	if (rc) {
+		goto err;
 	}
 
 	return 0;
+
+err:
+	close(g_ublk_tgt.ctrl_fd);
+	g_ublk_tgt.ctrl_fd = -1;
+	return rc;
 }
 
 static int
-ublk_parse_core_mask(const char *mask, struct spdk_cpuset *cpumask)
+ublk_parse_core_mask(const char *mask)
 {
-	int rc;
 	struct spdk_cpuset tmp_mask;
-
-	if (cpumask == NULL) {
-		return -EPERM;
-	}
+	int rc;
 
 	if (mask == NULL) {
-		spdk_cpuset_copy(cpumask, &g_core_mask);
+		spdk_env_get_cpuset(&g_core_mask);
 		return 0;
 	}
 
-	rc = spdk_cpuset_parse(cpumask, mask);
+	rc = spdk_cpuset_parse(&g_core_mask, mask);
 	if (rc < 0) {
 		SPDK_ERRLOG("invalid cpumask %s\n", mask);
-		return -rc;
+		return -EINVAL;
 	}
 
-	if (spdk_cpuset_count(cpumask) == 0) {
+	if (spdk_cpuset_count(&g_core_mask) == 0) {
 		SPDK_ERRLOG("no cpus specified\n");
 		return -EINVAL;
 	}
 
-	spdk_cpuset_copy(&tmp_mask, cpumask);
+	spdk_env_get_cpuset(&tmp_mask);
 	spdk_cpuset_and(&tmp_mask, &g_core_mask);
 
-	if (!spdk_cpuset_equal(&tmp_mask, cpumask)) {
+	if (!spdk_cpuset_equal(&tmp_mask, &g_core_mask)) {
 		SPDK_ERRLOG("one of selected cpu is outside of core mask(=%s)\n",
 			    spdk_cpuset_fmt(&g_core_mask));
 		return -EINVAL;
@@ -397,53 +667,94 @@ ublk_parse_core_mask(const char *mask, struct spdk_cpuset *cpumask)
 static void
 ublk_poller_register(void *args)
 {
-	struct ublk_thread_ctx *thread_ctx = args;
+	struct ublk_poll_group *poll_group = args;
+	int rc;
 
-	assert(spdk_get_thread() == thread_ctx->ublk_thread);
-	TAILQ_INIT(&thread_ctx->queue_list);
-	thread_ctx->ublk_poller = SPDK_POLLER_REGISTER(ublk_poll, thread_ctx, 0);
+	assert(spdk_get_thread() == poll_group->ublk_thread);
+	/* Bind ublk spdk_thread to current CPU core in order to avoid thread context switch
+	 * during uring processing as required by ublk kernel.
+	 */
+	spdk_thread_bind(spdk_get_thread(), true);
+
+	TAILQ_INIT(&poll_group->queue_list);
+	poll_group->ublk_poller = SPDK_POLLER_REGISTER(ublk_poll, poll_group, 0);
+	rc = spdk_iobuf_channel_init(&poll_group->iobuf_ch, "ublk",
+				     UBLK_IOBUF_SMALL_CACHE_SIZE, UBLK_IOBUF_LARGE_CACHE_SIZE);
+	if (rc != 0) {
+		assert(false);
+	}
 }
 
+struct rpc_create_target {
+	bool disable_user_copy;
+};
+
+static const struct spdk_json_object_decoder rpc_ublk_create_target[] = {
+	{"disable_user_copy", offsetof(struct rpc_create_target, disable_user_copy), spdk_json_decode_bool, true},
+};
+
 int
-ublk_create_target(const char *cpumask_str)
+ublk_create_target(const char *cpumask_str, const struct spdk_json_val *params)
 {
 	int rc;
 	uint32_t i;
 	char thread_name[32];
-	struct spdk_cpuset cpuset = {};
-	struct spdk_cpuset thd_cpuset = {};
-	struct ublk_thread_ctx *thread_ctx;
+	struct rpc_create_target req = {};
+	struct ublk_poll_group *poll_group;
 
 	if (g_ublk_tgt.active == true) {
 		SPDK_ERRLOG("UBLK target has been created\n");
 		return -EBUSY;
 	}
 
-	TAILQ_INIT(&g_ublk_tgt.ctrl_wait_tailq);
-
-	rc = ublk_parse_core_mask(cpumask_str, &cpuset);
+	rc = ublk_parse_core_mask(cpumask_str);
 	if (rc != 0) {
 		return rc;
+	}
+
+	if (params) {
+		if (spdk_json_decode_object_relaxed(params, rpc_ublk_create_target,
+						    SPDK_COUNTOF(rpc_ublk_create_target),
+						    &req)) {
+			SPDK_ERRLOG("spdk_json_decode_object failed\n");
+			return -EINVAL;
+		}
+		g_disable_user_copy = req.disable_user_copy;
+	}
+
+	assert(g_ublk_tgt.poll_groups == NULL);
+	g_ublk_tgt.poll_groups = calloc(spdk_env_get_core_count(), sizeof(*poll_group));
+	if (!g_ublk_tgt.poll_groups) {
+		return -ENOMEM;
 	}
 
 	rc = ublk_open();
 	if (rc != 0) {
 		SPDK_ERRLOG("Fail to open UBLK, error=%s\n", spdk_strerror(-rc));
+		free(g_ublk_tgt.poll_groups);
+		g_ublk_tgt.poll_groups = NULL;
 		return rc;
 	}
 
+	spdk_iobuf_register_module("ublk");
+
 	SPDK_ENV_FOREACH_CORE(i) {
-		if (spdk_cpuset_get_cpu(&cpuset, i)) {
-			spdk_cpuset_zero(&thd_cpuset);
-			spdk_cpuset_set_cpu(&thd_cpuset, i, true);
-			snprintf(thread_name, sizeof(thread_name), "ublk_thread%u", i);
-			thread_ctx = &g_ublk_tgt.thread_ctx[g_num_ublk_threads];
-			thread_ctx->ublk_thread = spdk_thread_create(thread_name, &thd_cpuset);
-			spdk_thread_send_msg(thread_ctx->ublk_thread, ublk_poller_register, thread_ctx);
-			g_num_ublk_threads++;
+		if (!spdk_cpuset_get_cpu(&g_core_mask, i)) {
+			continue;
 		}
+		snprintf(thread_name, sizeof(thread_name), "ublk_thread%u", i);
+		poll_group = &g_ublk_tgt.poll_groups[g_num_ublk_poll_groups];
+		poll_group->ublk_thread = spdk_thread_create(thread_name, &g_core_mask);
+		spdk_thread_send_msg(poll_group->ublk_thread, ublk_poller_register, poll_group);
+		g_num_ublk_poll_groups++;
 	}
+
+	assert(spdk_thread_is_app_thread(NULL));
 	g_ublk_tgt.active = true;
+	g_ublk_tgt.ctrl_ops_in_progress = 0;
+	g_ublk_tgt.ctrl_poller = SPDK_POLLER_REGISTER(ublk_ctrl_poller, NULL,
+				 UBLK_DEFAULT_CTRL_URING_POLLING_INTERVAL_US);
+
 	SPDK_NOTICELOG("UBLK target created successfully\n");
 
 	return 0;
@@ -453,15 +764,27 @@ static void
 _ublk_fini_done(void *args)
 {
 	SPDK_DEBUGLOG(ublk, "\n");
-	g_num_ublk_threads = 0;
-	g_queue_thread_id = 0;
+
+	g_num_ublk_poll_groups = 0;
+	g_next_ublk_poll_group = 0;
 	g_ublk_tgt.is_destroying = false;
 	g_ublk_tgt.active = false;
+	g_ublk_tgt.features = 0;
+	g_ublk_tgt.ioctl_encode = false;
+	g_ublk_tgt.user_copy = false;
+	g_ublk_tgt.user_recovery = false;
+
 	if (g_ublk_tgt.cb_fn) {
 		g_ublk_tgt.cb_fn(g_ublk_tgt.cb_arg);
 		g_ublk_tgt.cb_fn = NULL;
 		g_ublk_tgt.cb_arg = NULL;
 	}
+
+	if (g_ublk_tgt.poll_groups) {
+		free(g_ublk_tgt.poll_groups);
+		g_ublk_tgt.poll_groups = NULL;
+	}
+
 }
 
 static void
@@ -470,9 +793,11 @@ ublk_thread_exit(void *args)
 	struct spdk_thread *ublk_thread = spdk_get_thread();
 	uint32_t i;
 
-	for (i = 0; i < g_num_ublk_threads; i++) {
-		if (g_ublk_tgt.thread_ctx[i].ublk_thread == ublk_thread) {
-			spdk_poller_unregister(&g_ublk_tgt.thread_ctx[i].ublk_poller);
+	for (i = 0; i < g_num_ublk_poll_groups; i++) {
+		if (g_ublk_tgt.poll_groups[i].ublk_thread == ublk_thread) {
+			spdk_poller_unregister(&g_ublk_tgt.poll_groups[i].ublk_poller);
+			spdk_iobuf_channel_fini(&g_ublk_tgt.poll_groups[i].iobuf_ch);
+			spdk_thread_bind(ublk_thread, false);
 			spdk_thread_exit(ublk_thread);
 		}
 	}
@@ -489,7 +814,7 @@ ublk_close_dev(struct spdk_ublk_dev *ublk)
 	}
 	ublk->is_closing = true;
 
-	rc = ublk_ctrl_cmd(ublk, UBLK_CMD_STOP_DEV);
+	rc = ublk_ctrl_cmd_submit(ublk, UBLK_CMD_STOP_DEV);
 	if (rc < 0) {
 		SPDK_ERRLOG("stop dev %d failed\n", ublk->ublk_id);
 	}
@@ -501,12 +826,12 @@ _ublk_fini(void *args)
 {
 	struct spdk_ublk_dev	*ublk, *ublk_tmp;
 
-	TAILQ_FOREACH_SAFE(ublk, &g_ublk_bdevs, tailq, ublk_tmp) {
+	TAILQ_FOREACH_SAFE(ublk, &g_ublk_devs, tailq, ublk_tmp) {
 		ublk_close_dev(ublk);
 	}
 
 	/* Check if all ublks closed */
-	if (TAILQ_EMPTY(&g_ublk_bdevs)) {
+	if (TAILQ_EMPTY(&g_ublk_devs)) {
 		SPDK_DEBUGLOG(ublk, "finish shutdown\n");
 		spdk_poller_unregister(&g_ublk_tgt.ctrl_poller);
 		if (g_ublk_tgt.ctrl_ring.ring_fd >= 0) {
@@ -526,7 +851,7 @@ _ublk_fini(void *args)
 int
 spdk_ublk_fini(spdk_ublk_fini_cb cb_fn, void *cb_arg)
 {
-	assert(spdk_get_thread() == spdk_thread_get_app_thread());
+	assert(spdk_thread_is_app_thread(NULL));
 
 	if (g_ublk_tgt.is_destroying == true) {
 		/* UBLK target is being destroying */
@@ -561,7 +886,7 @@ ublk_dev_find_by_id(uint32_t ublk_id)
 	struct spdk_ublk_dev *ublk;
 
 	/* check whether ublk has already been registered by ublk path. */
-	TAILQ_FOREACH(ublk, &g_ublk_bdevs, tailq) {
+	TAILQ_FOREACH(ublk, &g_ublk_devs, tailq) {
 		if (ublk->ublk_id == ublk_id) {
 			return ublk;
 		}
@@ -578,7 +903,7 @@ ublk_dev_get_id(struct spdk_ublk_dev *ublk)
 
 struct spdk_ublk_dev *ublk_dev_first(void)
 {
-	return TAILQ_FIRST(&g_ublk_bdevs);
+	return TAILQ_FIRST(&g_ublk_devs);
 }
 
 struct spdk_ublk_dev *ublk_dev_next(struct spdk_ublk_dev *prev)
@@ -611,7 +936,18 @@ spdk_ublk_write_config_json(struct spdk_json_write_ctx *w)
 
 	spdk_json_write_array_begin(w);
 
-	TAILQ_FOREACH(ublk, &g_ublk_bdevs, tailq) {
+	if (g_ublk_tgt.active) {
+		spdk_json_write_object_begin(w);
+
+		spdk_json_write_named_string(w, "method", "ublk_create_target");
+		spdk_json_write_named_object_begin(w, "params");
+		spdk_json_write_named_string(w, "cpumask", spdk_cpuset_fmt(&g_core_mask));
+		spdk_json_write_object_end(w);
+
+		spdk_json_write_object_end(w);
+	}
+
+	TAILQ_FOREACH(ublk, &g_ublk_devs, tailq) {
 		spdk_json_write_object_begin(w);
 
 		spdk_json_write_named_string(w, "method", "ublk_start_disk");
@@ -629,20 +965,12 @@ spdk_ublk_write_config_json(struct spdk_json_write_ctx *w)
 	spdk_json_write_array_end(w);
 }
 
-static int
+static void
 ublk_dev_list_register(struct spdk_ublk_dev *ublk)
 {
-	/* Make sure ublk_id is not used in this SPDK app */
-	if (ublk_dev_find_by_id(ublk->ublk_id)) {
-		SPDK_NOTICELOG("%d is already exported with bdev %s\n",
-			       ublk->ublk_id, ublk_dev_get_bdev_name(ublk));
-		return -EBUSY;
-	}
-
 	UBLK_DEBUGLOG(ublk, "add to tailq\n");
-	TAILQ_INSERT_TAIL(&g_ublk_bdevs, ublk, tailq);
-
-	return 0;
+	TAILQ_INSERT_TAIL(&g_ublk_devs, ublk, tailq);
+	g_ublk_tgt.num_ublk_devs++;
 }
 
 static void
@@ -655,7 +983,9 @@ ublk_dev_list_unregister(struct spdk_ublk_dev *ublk)
 
 	if (ublk_dev_find_by_id(ublk->ublk_id)) {
 		UBLK_DEBUGLOG(ublk, "remove from tailq\n");
-		TAILQ_REMOVE(&g_ublk_bdevs, ublk, tailq);
+		TAILQ_REMOVE(&g_ublk_devs, ublk, tailq);
+		assert(g_ublk_tgt.num_ublk_devs);
+		g_ublk_tgt.num_ublk_devs--;
 		return;
 	}
 
@@ -670,7 +1000,7 @@ ublk_delete_dev(void *arg)
 	int rc = 0;
 	uint32_t q_idx;
 
-	assert(spdk_get_thread() == ublk->app_thread);
+	assert(spdk_thread_is_app_thread(NULL));
 	for (q_idx = 0; q_idx < ublk->num_queues; q_idx++) {
 		ublk_dev_queue_fini(&ublk->queues[q_idx]);
 	}
@@ -679,28 +1009,10 @@ ublk_delete_dev(void *arg)
 		close(ublk->cdev_fd);
 	}
 
-	rc = ublk_ctrl_cmd(ublk, UBLK_CMD_DEL_DEV);
+	rc = ublk_ctrl_cmd_submit(ublk, UBLK_CMD_DEL_DEV);
 	if (rc < 0) {
 		SPDK_ERRLOG("delete dev %d failed\n", ublk->ublk_id);
 	}
-}
-
-static void
-ublk_free_dev(struct spdk_ublk_dev *ublk)
-{
-	if (ublk->bdev_desc) {
-		spdk_bdev_close(ublk->bdev_desc);
-		ublk->bdev_desc = NULL;
-	}
-
-	ublk_ios_fini(ublk);
-	ublk_dev_list_unregister(ublk);
-
-	if (ublk->del_cb) {
-		ublk->del_cb(ublk->cb_arg);
-	}
-	SPDK_NOTICELOG("ublk dev %d stopped\n", ublk->ublk_id);
-	free(ublk);
 }
 
 static int
@@ -719,15 +1031,18 @@ _ublk_close_dev_retry(void *arg)
 	return SPDK_POLLER_BUSY;
 }
 
-static int
-_ublk_try_close_dev(void *arg)
+static void
+ublk_try_close_dev(void *arg)
 {
 	struct spdk_ublk_dev *ublk = arg;
 
-	assert(spdk_get_thread() == ublk->app_thread);
+	assert(spdk_thread_is_app_thread(NULL));
+
 	ublk->queues_closed += 1;
+	SPDK_DEBUGLOG(ublk_io, "ublkb%u closed queues %u\n", ublk->ublk_id, ublk->queues_closed);
+
 	if (ublk->queues_closed < ublk->num_queues) {
-		return SPDK_POLLER_BUSY;
+		return;
 	}
 
 	if (ublk->ctrl_ops_in_progress > 0) {
@@ -735,18 +1050,9 @@ _ublk_try_close_dev(void *arg)
 		ublk->retry_count = UBLK_STOP_BUSY_WAITING_MS * 1000ULL / UBLK_BUSY_POLLING_INTERVAL_US;
 		ublk->retry_poller = SPDK_POLLER_REGISTER(_ublk_close_dev_retry, ublk,
 				     UBLK_BUSY_POLLING_INTERVAL_US);
-		return SPDK_POLLER_BUSY;
 	} else {
 		ublk_delete_dev(ublk);
 	}
-
-	return SPDK_POLLER_BUSY;
-}
-
-static void
-ublk_try_close_dev(void *arg)
-{
-	_ublk_try_close_dev(arg);
 }
 
 static void
@@ -762,17 +1068,19 @@ ublk_try_close_queue(struct ublk_queue *q)
 		return;
 	}
 
-	TAILQ_REMOVE(&q->thread_ctx->queue_list, q, tailq);
-	spdk_put_io_channel(ublk->ch[q->q_id]);
-	ublk->ch[q->q_id] = NULL;
+	TAILQ_REMOVE(&q->poll_group->queue_list, q, tailq);
+	spdk_put_io_channel(q->bdev_ch);
+	q->bdev_ch = NULL;
 
-	spdk_thread_send_msg(ublk->app_thread, ublk_try_close_dev, ublk);
+	spdk_thread_send_msg(spdk_thread_get_app_thread(), ublk_try_close_dev, ublk);
 }
 
 int
-ublk_stop_disk(uint32_t ublk_id, ublk_del_cb del_cb, void *cb_arg)
+ublk_stop_disk(uint32_t ublk_id, ublk_ctrl_cb ctrl_cb, void *cb_arg)
 {
 	struct spdk_ublk_dev *ublk;
+
+	assert(spdk_thread_is_app_thread(NULL));
 
 	ublk = ublk_dev_find_by_id(ublk_id);
 	if (ublk == NULL) {
@@ -783,17 +1091,14 @@ ublk_stop_disk(uint32_t ublk_id, ublk_del_cb del_cb, void *cb_arg)
 		SPDK_WARNLOG("ublk %d is closing\n", ublk->ublk_id);
 		return -EBUSY;
 	}
+	if (ublk->ctrl_cb) {
+		SPDK_WARNLOG("ublk %d is busy with RPC call\n", ublk->ublk_id);
+		return -EBUSY;
+	}
 
-	ublk->del_cb = del_cb;
+	ublk->ctrl_cb = ctrl_cb;
 	ublk->cb_arg = cb_arg;
 	return ublk_close_dev(ublk);
-}
-
-static inline void
-ublk_mark_io_get_data(struct ublk_io *io)
-{
-	io->cmd_op = UBLK_IO_NEED_GET_DATA;
-	io->result = 0;
 }
 
 static inline void
@@ -804,8 +1109,8 @@ ublk_mark_io_done(struct ublk_io *io, int res)
 	 * result and fetch new request via io_uring command.
 	 */
 	io->cmd_op = UBLK_IO_COMMIT_AND_FETCH_REQ;
-	io->io_free = true;
 	io->result = res;
+	io->need_data = false;
 }
 
 static void
@@ -824,7 +1129,7 @@ ublk_io_done(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	ublk_mark_io_done(io, res);
 
 	SPDK_DEBUGLOG(ublk_io, "(qid %d tag %d res %d)\n",
-		      q->q_id, (int)(io - q->ios), res);
+		      q->q_id, io->tag, res);
 	TAILQ_REMOVE(&q->inflight_io_list, io, tailq);
 	TAILQ_INSERT_TAIL(&q->completed_io_list, io, tailq);
 
@@ -834,12 +1139,53 @@ ublk_io_done(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 }
 
 static void
+ublk_queue_user_copy(struct ublk_io *io, bool is_write)
+{
+	struct ublk_queue *q = io->q;
+	const struct ublksrv_io_desc *iod = io->iod;
+	struct io_uring_sqe *sqe;
+	uint64_t pos;
+	uint32_t nbytes;
+
+	nbytes = iod->nr_sectors * (1ULL << LINUX_SECTOR_SHIFT);
+	pos = ublk_user_copy_pos(q->q_id, io->tag);
+	sqe = io_uring_get_sqe(&q->ring);
+	assert(sqe);
+
+	if (is_write) {
+		io_uring_prep_read(sqe, 0, io->payload, nbytes, pos);
+	} else {
+		io_uring_prep_write(sqe, 0, io->payload, nbytes, pos);
+	}
+	io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+	io_uring_sqe_set_data64(sqe, build_user_data(io->tag, 0));
+
+	io->user_copy = true;
+	TAILQ_REMOVE(&q->inflight_io_list, io, tailq);
+	TAILQ_INSERT_TAIL(&q->completed_io_list, io, tailq);
+}
+
+static void
+ublk_user_copy_read_done(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct ublk_io	*io = cb_arg;
+
+	spdk_bdev_free_io(bdev_io);
+
+	if (success) {
+		ublk_queue_user_copy(io, false);
+		return;
+	}
+	/* READ IO Error */
+	ublk_io_done(NULL, false, cb_arg);
+}
+
+static void
 ublk_resubmit_io(void *arg)
 {
 	struct ublk_io *io = (struct ublk_io *)arg;
-	uint16_t tag = (io - io->q->ios);
 
-	ublk_submit_bdev_io(io->q, tag);
+	_ublk_submit_bdev_io(io->q, io);
 }
 
 static void
@@ -853,7 +1199,7 @@ ublk_queue_io(struct ublk_io *io)
 	io->bdev_io_wait.cb_fn = ublk_resubmit_io;
 	io->bdev_io_wait.cb_arg = io;
 
-	rc = spdk_bdev_queue_io_wait(bdev, q->dev->ch[q->q_id], &io->bdev_io_wait);
+	rc = spdk_bdev_queue_io_wait(bdev, q->bdev_ch, &io->bdev_io_wait);
 	if (rc != 0) {
 		SPDK_ERRLOG("Queue io failed in ublk_queue_io, rc=%d.\n", rc);
 		ublk_io_done(NULL, false, io);
@@ -861,36 +1207,71 @@ ublk_queue_io(struct ublk_io *io)
 }
 
 static void
-ublk_submit_bdev_io(struct ublk_queue *q, uint16_t tag)
+ublk_io_get_buffer_cb(struct spdk_iobuf_entry *iobuf, void *buf)
+{
+	struct ublk_io *io = SPDK_CONTAINEROF(iobuf, struct ublk_io, iobuf);
+
+	io->mpool_entry = buf;
+	assert(io->payload == NULL);
+	io->payload = (void *)(uintptr_t)SPDK_ALIGN_CEIL((uintptr_t)buf, 4096ULL);
+	io->get_buf_cb(io);
+}
+
+static void
+ublk_io_get_buffer(struct ublk_io *io, struct spdk_iobuf_channel *iobuf_ch,
+		   ublk_get_buf_cb get_buf_cb)
+{
+	void *buf;
+
+	io->payload_size = io->iod->nr_sectors * (1ULL << LINUX_SECTOR_SHIFT);
+	io->get_buf_cb = get_buf_cb;
+	buf = spdk_iobuf_get(iobuf_ch, io->payload_size, &io->iobuf, ublk_io_get_buffer_cb);
+
+	if (buf != NULL) {
+		ublk_io_get_buffer_cb(&io->iobuf, buf);
+	}
+}
+
+static void
+ublk_io_put_buffer(struct ublk_io *io, struct spdk_iobuf_channel *iobuf_ch)
+{
+	if (io->payload) {
+		spdk_iobuf_put(iobuf_ch, io->mpool_entry, io->payload_size);
+		io->mpool_entry = NULL;
+		io->payload = NULL;
+	}
+}
+
+static void
+_ublk_submit_bdev_io(struct ublk_queue *q, struct ublk_io *io)
 {
 	struct spdk_ublk_dev *ublk = q->dev;
-	struct ublk_io *io = &q->ios[tag];
-	struct spdk_bdev_desc *desc = ublk->bdev_desc;
-	struct spdk_io_channel *ch = ublk->ch[q->q_id];
+	struct spdk_bdev_desc *desc = io->bdev_desc;
+	struct spdk_io_channel *ch = io->bdev_ch;
 	uint64_t offset_blocks, num_blocks;
+	spdk_bdev_io_completion_cb read_cb;
 	uint8_t ublk_op;
-	uint32_t sector_per_block, sector_per_block_shift;
-	void *payload;
 	int rc = 0;
-	const struct ublksrv_io_desc *iod = &q->io_cmd_buf[tag];
+	const struct ublksrv_io_desc *iod = io->iod;
 
 	ublk_op = ublksrv_get_op(iod);
-	sector_per_block = spdk_bdev_get_data_block_size(ublk->bdev) >> LINUX_SECTOR_SHIFT;
-	sector_per_block_shift = spdk_u32log2(sector_per_block);
-	offset_blocks = iod->start_sector >> sector_per_block_shift;
-	num_blocks = iod->nr_sectors >> sector_per_block_shift;
-	payload = (void *)iod->addr;
+	offset_blocks = iod->start_sector >> ublk->sector_per_block_shift;
+	num_blocks = iod->nr_sectors >> ublk->sector_per_block_shift;
 
-	io->result = num_blocks * spdk_bdev_get_data_block_size(ublk->bdev);
 	switch (ublk_op) {
 	case UBLK_IO_OP_READ:
-		rc = spdk_bdev_read_blocks(desc, ch, payload, offset_blocks, num_blocks, ublk_io_done, io);
+		if (g_ublk_tgt.user_copy) {
+			read_cb = ublk_user_copy_read_done;
+		} else {
+			read_cb = ublk_io_done;
+		}
+		rc = spdk_bdev_read_blocks(desc, ch, io->payload, offset_blocks, num_blocks, read_cb, io);
 		break;
 	case UBLK_IO_OP_WRITE:
-		rc = spdk_bdev_write_blocks(desc, ch, payload, offset_blocks, num_blocks, ublk_io_done, io);
+		rc = spdk_bdev_write_blocks(desc, ch, io->payload, offset_blocks, num_blocks, ublk_io_done, io);
 		break;
 	case UBLK_IO_OP_FLUSH:
-		rc = spdk_bdev_flush_blocks(desc, ch, offset_blocks, num_blocks, ublk_io_done, io);
+		rc = spdk_bdev_flush_blocks(desc, ch, 0, spdk_bdev_get_num_blocks(ublk->bdev), ublk_io_done, io);
 		break;
 	case UBLK_IO_OP_DISCARD:
 		rc = spdk_bdev_unmap_blocks(desc, ch, offset_blocks, num_blocks, ublk_io_done, io);
@@ -907,9 +1288,47 @@ ublk_submit_bdev_io(struct ublk_queue *q, uint16_t tag)
 			SPDK_INFOLOG(ublk, "No memory, start to queue io.\n");
 			ublk_queue_io(io);
 		} else {
-			SPDK_ERRLOG("ublk io failed in ublk_queue_io, rc=%d.\n", rc);
+			SPDK_ERRLOG("ublk io failed in ublk_queue_io, rc=%d, ublk_op=%u\n", rc, ublk_op);
 			ublk_io_done(NULL, false, io);
 		}
+	}
+}
+
+static void
+read_get_buffer_done(struct ublk_io *io)
+{
+	_ublk_submit_bdev_io(io->q, io);
+}
+
+static void
+user_copy_write_get_buffer_done(struct ublk_io *io)
+{
+	ublk_queue_user_copy(io, true);
+}
+
+static void
+ublk_submit_bdev_io(struct ublk_queue *q, struct ublk_io *io)
+{
+	struct spdk_iobuf_channel *iobuf_ch = &q->poll_group->iobuf_ch;
+	const struct ublksrv_io_desc *iod = io->iod;
+	uint8_t ublk_op;
+
+	io->result = iod->nr_sectors * (1ULL << LINUX_SECTOR_SHIFT);
+	ublk_op = ublksrv_get_op(iod);
+	switch (ublk_op) {
+	case UBLK_IO_OP_READ:
+		ublk_io_get_buffer(io, iobuf_ch, read_get_buffer_done);
+		break;
+	case UBLK_IO_OP_WRITE:
+		if (g_ublk_tgt.user_copy) {
+			ublk_io_get_buffer(io, iobuf_ch, user_copy_write_get_buffer_done);
+		} else {
+			_ublk_submit_bdev_io(q, io);
+		}
+		break;
+	default:
+		_ublk_submit_bdev_io(q, io);
+		break;
 	}
 }
 
@@ -922,8 +1341,7 @@ ublksrv_queue_io_cmd(struct ublk_queue *q,
 	unsigned int cmd_op = 0;;
 	uint64_t user_data;
 
-	/* check io status is free and each io should have operation of fetching or committing */
-	assert(io->io_free);
+	/* each io should have operation of fetching or committing */
 	assert((io->cmd_op == UBLK_IO_FETCH_REQ) || (io->cmd_op == UBLK_IO_NEED_GET_DATA) ||
 	       (io->cmd_op == UBLK_IO_COMMIT_AND_FETCH_REQ));
 	cmd_op = io->cmd_op;
@@ -944,33 +1362,34 @@ ublksrv_queue_io_cmd(struct ublk_queue *q,
 	sqe->flags	= IOSQE_FIXED_FILE;
 	sqe->rw_flags	= 0;
 	cmd->tag	= tag;
-	cmd->addr	= (__u64)(uintptr_t)(io->payload);
+	cmd->addr	= g_ublk_tgt.user_copy ? 0 : (__u64)(uintptr_t)(io->payload);
 	cmd->q_id	= q->q_id;
 
 	user_data = build_user_data(tag, cmd_op);
 	io_uring_sqe_set_data64(sqe, user_data);
 
 	io->cmd_op = 0;
-	q->cmd_inflight += 1;
 
 	SPDK_DEBUGLOG(ublk_io, "(qid %d tag %u cmd_op %u) iof %x stopping %d\n",
 		      q->q_id, tag, cmd_op,
-		      io->cmd_op, q->dev->is_closing);
+		      io->cmd_op, q->is_stopping);
 }
 
 static int
 ublk_io_xmit(struct ublk_queue *q)
 {
-	int rc = 0, count = 0, tag;
+	TAILQ_HEAD(, ublk_io) buffer_free_list;
+	struct spdk_iobuf_channel *iobuf_ch;
+	int rc = 0, count = 0;
 	struct ublk_io *io;
 
 	if (TAILQ_EMPTY(&q->completed_io_list)) {
 		return 0;
 	}
 
+	TAILQ_INIT(&buffer_free_list);
 	while (!TAILQ_EMPTY(&q->completed_io_list)) {
 		io = TAILQ_FIRST(&q->completed_io_list);
-		tag = io - io->q->ios;
 		assert(io != NULL);
 		/*
 		 * Remove IO from list now assuming it will be completed. It will be inserted
@@ -978,17 +1397,49 @@ ublk_io_xmit(struct ublk_queue *q)
 		 * taken to work around a scan-build use-after-free mischaracterization.
 		 */
 		TAILQ_REMOVE(&q->completed_io_list, io, tailq);
-		ublksrv_queue_io_cmd(q, io, tag);
+		if (!io->user_copy) {
+			if (!io->need_data) {
+				TAILQ_INSERT_TAIL(&buffer_free_list, io, tailq);
+			}
+			ublksrv_queue_io_cmd(q, io, io->tag);
+		}
 		count++;
 	}
 
+	q->cmd_inflight += count;
 	rc = io_uring_submit(&q->ring);
 	if (rc != count) {
 		SPDK_ERRLOG("could not submit all commands\n");
 		assert(false);
 	}
 
+	/* Note: for READ io, ublk will always copy the data out of
+	 * the buffers in the io_uring_submit context.  Since we
+	 * are not using SQPOLL for IO rings, we can safely free
+	 * those IO buffers here.  This design doesn't seem ideal,
+	 * but it's what's possible since there is no discrete
+	 * COMMIT_REQ operation.  That will need to change in the
+	 * future should we ever want to support async copy
+	 * operations.
+	 */
+	iobuf_ch = &q->poll_group->iobuf_ch;
+	while (!TAILQ_EMPTY(&buffer_free_list)) {
+		io = TAILQ_FIRST(&buffer_free_list);
+		TAILQ_REMOVE(&buffer_free_list, io, tailq);
+		ublk_io_put_buffer(io, iobuf_ch);
+	}
 	return rc;
+}
+
+static void
+write_get_buffer_done(struct ublk_io *io)
+{
+	io->need_data = true;
+	io->cmd_op = UBLK_IO_NEED_GET_DATA;
+	io->result = 0;
+
+	TAILQ_REMOVE(&io->q->inflight_io_list, io, tailq);
+	TAILQ_INSERT_TAIL(&io->q->completed_io_list, io, tailq);
 }
 
 static int
@@ -998,46 +1449,61 @@ ublk_io_recv(struct ublk_queue *q)
 	unsigned head, tag;
 	int fetch, count = 0;
 	struct ublk_io *io;
-	struct spdk_ublk_dev *dev = q->dev;
-	unsigned __attribute__((unused)) cmd_op;
+	struct spdk_iobuf_channel *iobuf_ch;
 
 	if (q->cmd_inflight == 0) {
 		return 0;
 	}
 
+	iobuf_ch = &q->poll_group->iobuf_ch;
 	io_uring_for_each_cqe(&q->ring, head, cqe) {
 		tag = user_data_to_tag(cqe->user_data);
-		cmd_op = user_data_to_op(cqe->user_data);
-		fetch = (cqe->res != UBLK_IO_RES_ABORT) && !dev->is_closing;
-
-		SPDK_DEBUGLOG(ublk_io, "res %d qid %d tag %u cmd_op %u\n",
-			      cqe->res, q->q_id, tag, cmd_op);
-
-		q->cmd_inflight--;
 		io = &q->ios[tag];
 
-		if (!fetch) {
-			dev->is_closing = true;
-			if (io->cmd_op == UBLK_IO_FETCH_REQ) {
-				io->cmd_op = 0;
-			}
-		}
+		SPDK_DEBUGLOG(ublk_io, "res %d qid %d tag %u, user copy %u, cmd_op %u\n",
+			      cqe->res, q->q_id, tag, io->user_copy, user_data_to_op(cqe->user_data));
 
+		q->cmd_inflight--;
 		TAILQ_INSERT_TAIL(&q->inflight_io_list, io, tailq);
-		if (cqe->res == UBLK_IO_RES_OK) {
-			ublk_submit_bdev_io(q, tag);
-		} else if (cqe->res == UBLK_IO_RES_NEED_GET_DATA) {
-			ublk_mark_io_get_data(io);
-			TAILQ_REMOVE(&q->inflight_io_list, io, tailq);
-			TAILQ_INSERT_TAIL(&q->completed_io_list, io, tailq);
 
-		} else {
-			if (cqe->res != UBLK_IO_RES_ABORT) {
-				SPDK_ERRLOG("ublk received error io: res %d qid %d tag %u cmd_op %u\n",
-					    cqe->res, q->q_id, tag, cmd_op);
+		if (!io->user_copy) {
+			fetch = (cqe->res != UBLK_IO_RES_ABORT) && !q->is_stopping;
+			if (!fetch) {
+				q->is_stopping = true;
+				if (io->cmd_op == UBLK_IO_FETCH_REQ) {
+					io->cmd_op = 0;
+				}
 			}
-			io->io_free = true;
-			TAILQ_REMOVE(&q->inflight_io_list, io, tailq);
+
+			if (cqe->res == UBLK_IO_RES_OK) {
+				ublk_submit_bdev_io(q, io);
+			} else if (cqe->res == UBLK_IO_RES_NEED_GET_DATA) {
+				ublk_io_get_buffer(io, iobuf_ch, write_get_buffer_done);
+			} else {
+				if (cqe->res != UBLK_IO_RES_ABORT) {
+					SPDK_ERRLOG("ublk received error io: res %d qid %d tag %u cmd_op %u\n",
+						    cqe->res, q->q_id, tag, user_data_to_op(cqe->user_data));
+				}
+				TAILQ_REMOVE(&q->inflight_io_list, io, tailq);
+			}
+		} else {
+
+			/* clear `user_copy` for next use of this IO structure */
+			io->user_copy = false;
+
+			assert((ublksrv_get_op(io->iod) == UBLK_IO_OP_READ) ||
+			       (ublksrv_get_op(io->iod) == UBLK_IO_OP_WRITE));
+			if (cqe->res != io->result) {
+				/* EIO */
+				ublk_io_done(NULL, false, io);
+			} else {
+				if (ublksrv_get_op(io->iod) == UBLK_IO_OP_READ) {
+					/* bdev_io is already freed in first READ cycle */
+					ublk_io_done(NULL, true, io);
+				} else {
+					_ublk_submit_bdev_io(q, io);
+				}
+			}
 		}
 		count += 1;
 		if (count == UBLK_QUEUE_REQUEST) {
@@ -1052,16 +1518,14 @@ ublk_io_recv(struct ublk_queue *q)
 static int
 ublk_poll(void *arg)
 {
-	struct ublk_thread_ctx *thread_ctx = arg;
+	struct ublk_poll_group *poll_group = arg;
 	struct ublk_queue *q, *q_tmp;
-	struct spdk_ublk_dev *ublk;
 	int sent, received, count = 0;
 
-	TAILQ_FOREACH_SAFE(q, &thread_ctx->queue_list, tailq, q_tmp) {
+	TAILQ_FOREACH_SAFE(q, &poll_group->queue_list, tailq, q_tmp) {
 		sent = ublk_io_xmit(q);
 		received = ublk_io_recv(q);
-		ublk = q->dev;
-		if (spdk_unlikely(ublk->is_closing)) {
+		if (spdk_unlikely(q->is_stopping)) {
 			ublk_try_close_queue(q);
 		}
 		count += sent + received;
@@ -1127,12 +1591,12 @@ ublk_dev_queue_init(struct ublk_queue *q)
 		q->io_cmd_buf = NULL;
 		rc = -errno;
 		SPDK_ERRLOG("Failed at mmap: %s\n", spdk_strerror(-rc));
-		goto err;
+		return rc;
 	}
 
 	for (j = 0; j < q->q_depth; j++) {
 		q->ios[j].cmd_op = UBLK_IO_FETCH_REQ;
-		q->ios[j].io_free = true;
+		q->ios[j].iod = &q->io_cmd_buf[j];
 	}
 
 	rc = ublk_setup_ring(q->q_depth, &q->ring, IORING_SETUP_SQE128);
@@ -1140,7 +1604,7 @@ ublk_dev_queue_init(struct ublk_queue *q)
 		SPDK_ERRLOG("Failed at setup uring: %s\n", spdk_strerror(-rc));
 		munmap(q->io_cmd_buf, ublk_queue_cmd_buf_sz(q->q_depth));
 		q->io_cmd_buf = NULL;
-		goto err;
+		return rc;
 	}
 
 	rc = io_uring_register_files(&q->ring, &ublk->cdev_fd, 1);
@@ -1150,14 +1614,12 @@ ublk_dev_queue_init(struct ublk_queue *q)
 		q->ring.ring_fd = -1;
 		munmap(q->io_cmd_buf, ublk_queue_cmd_buf_sz(q->q_depth));
 		q->io_cmd_buf = NULL;
-		goto err;
+		return rc;
 	}
 
 	ublk_dev_init_io_cmds(&q->ring, q->q_depth);
 
 	return 0;
-err:
-	return rc;
 }
 
 static void
@@ -1176,32 +1638,78 @@ ublk_dev_queue_fini(struct ublk_queue *q)
 static void
 ublk_dev_queue_io_init(struct ublk_queue *q)
 {
+	struct ublk_io *io;
 	uint32_t i;
 	int rc __attribute__((unused));
+	void *buf;
 
-	/* submit all io commands to ublk driver */
+	/* Some older kernels require a buffer to get posted, even
+	 * when NEED_GET_DATA has been specified.  So allocate a
+	 * temporary buffer, only for purposes of this workaround.
+	 * It never actually gets used, so we will free it immediately
+	 * after all of the commands are posted.
+	 */
+	buf = malloc(64);
+
+	assert(q->bdev_ch != NULL);
+
+	/* Initialize and submit all io commands to ublk driver */
 	for (i = 0; i < q->q_depth; i++) {
-		ublksrv_queue_io_cmd(q, &q->ios[i], i);
+		io = &q->ios[i];
+		io->tag = (uint16_t)i;
+		io->payload = buf;
+		io->bdev_ch = q->bdev_ch;
+		io->bdev_desc = q->dev->bdev_desc;
+		ublksrv_queue_io_cmd(q, io, i);
 	}
 
+	q->cmd_inflight += q->q_depth;
 	rc = io_uring_submit(&q->ring);
 	assert(rc == (int)q->q_depth);
+	for (i = 0; i < q->q_depth; i++) {
+		io = &q->ios[i];
+		io->payload = NULL;
+	}
+	free(buf);
 }
 
-static void
+static int
 ublk_set_params(struct spdk_ublk_dev *ublk)
 {
 	int rc;
 
-	ublk->dev_params.len = sizeof(struct ublk_params);
-	rc = ublk_ctrl_cmd(ublk, UBLK_CMD_SET_PARAMS);
+	rc = ublk_ctrl_cmd_submit(ublk, UBLK_CMD_SET_PARAMS);
 	if (rc < 0) {
 		SPDK_ERRLOG("UBLK can't set params for dev %d, rc %s\n", ublk->ublk_id, spdk_strerror(-rc));
-		ublk_delete_dev(ublk);
-		if (ublk->start_cb) {
-			ublk->start_cb(ublk->cb_arg, rc);
-		}
 	}
+
+	return rc;
+}
+
+static void
+ublk_dev_info_init(struct spdk_ublk_dev *ublk)
+{
+	struct ublksrv_ctrl_dev_info uinfo = {
+		.queue_depth = ublk->queue_depth,
+		.nr_hw_queues = ublk->num_queues,
+		.dev_id = ublk->ublk_id,
+		.max_io_buf_bytes = UBLK_IO_MAX_BYTES,
+		.ublksrv_pid = getpid(),
+		.flags = UBLK_F_URING_CMD_COMP_IN_TASK,
+	};
+
+	if (g_ublk_tgt.user_copy) {
+		uinfo.flags |= UBLK_F_USER_COPY;
+	} else {
+		uinfo.flags |= UBLK_F_NEED_GET_DATA;
+	}
+
+	if (g_ublk_tgt.user_recovery) {
+		uinfo.flags |= UBLK_F_USER_RECOVERY;
+		uinfo.flags |= UBLK_F_USER_RECOVERY_REISSUE;
+	}
+
+	ublk->dev_info = uinfo;
 }
 
 /* Set ublk device parameters based on bdev */
@@ -1217,16 +1725,9 @@ ublk_info_param_init(struct spdk_ublk_dev *ublk)
 	uint32_t io_min_size = blk_size;
 	uint32_t io_opt_size = spdk_max(io_opt_blocks * blk_size, io_min_size);
 
-	struct ublksrv_ctrl_dev_info uinfo = {
-		.queue_depth = ublk->queue_depth,
-		.nr_hw_queues = ublk->num_queues,
-		.dev_id = ublk->ublk_id,
-		.max_io_buf_bytes = UBLK_IO_MAX_BYTES,
-		.ublksrv_pid = getpid(),
-		.flags = UBLK_F_URING_CMD_COMP_IN_TASK,
-	};
 	struct ublk_params uparams = {
 		.types = UBLK_PARAM_TYPE_BASIC,
+		.len = sizeof(struct ublk_params),
 		.basic = {
 			.logical_bs_shift = spdk_u32log2(blk_size),
 			.physical_bs_shift = spdk_u32log2(pblk_size),
@@ -1237,26 +1738,53 @@ ublk_info_param_init(struct spdk_ublk_dev *ublk)
 		}
 	};
 
+	if (spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_FLUSH)) {
+		uparams.basic.attrs = UBLK_ATTR_VOLATILE_CACHE;
+	}
+
 	if (spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_UNMAP)) {
 		uparams.types |= UBLK_PARAM_TYPE_DISCARD;
 		uparams.discard.discard_alignment = sectors_per_block;
-		uparams.discard.max_discard_sectors = num_blocks * sectors_per_block;
+		/* 32768 sectors for 16MiB */
+		uparams.discard.max_discard_sectors = 32768;
 		uparams.discard.max_discard_segments = 1;
 		uparams.discard.discard_granularity = blk_size;
 		if (spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_WRITE_ZEROES)) {
-			uparams.discard.max_write_zeroes_sectors = num_blocks * sectors_per_block;
+			/* 32768 sectors for 16MiB */
+			uparams.discard.max_write_zeroes_sectors = 32768;
 		}
 	}
 
-	ublk->dev_info = uinfo;
 	ublk->dev_params = uparams;
 }
 
 static void
-ublk_ios_fini(struct spdk_ublk_dev *ublk)
+_ublk_free_dev(void *arg)
+{
+	struct spdk_ublk_dev *ublk = arg;
+
+	ublk_free_dev(ublk);
+}
+
+static void
+free_buffers(void *arg)
+{
+	struct ublk_queue *q = arg;
+	uint32_t i;
+
+	for (i = 0; i < q->q_depth; i++) {
+		ublk_io_put_buffer(&q->ios[i], &q->poll_group->iobuf_ch);
+	}
+	free(q->ios);
+	q->ios = NULL;
+	spdk_thread_send_msg(spdk_thread_get_app_thread(), _ublk_free_dev, q->dev);
+}
+
+static void
+ublk_free_dev(struct spdk_ublk_dev *ublk)
 {
 	struct ublk_queue *q;
-	uint32_t i, q_idx;
+	uint32_t q_idx;
 
 	for (q_idx = 0; q_idx < ublk->num_queues; q_idx++) {
 		q = &ublk->queues[q_idx];
@@ -1266,40 +1794,41 @@ ublk_ios_fini(struct spdk_ublk_dev *ublk)
 			continue;
 		}
 
-		for (i = 0; i < q->q_depth; i++) {
-			if (q->ios[i].payload) {
-				spdk_mempool_put(ublk->io_buf_pool, q->ios[i].payload);
-				q->ios[i].payload = NULL;
-			}
+		/* We found a queue that has an ios array that may have buffers
+		 * that need to be freed.  Send a message to the queue's thread
+		 * so it can free the buffers back to that thread's iobuf channel.
+		 * When it's done, it will set q->ios to NULL and send a message
+		 * back to this function to continue.
+		 */
+		if (q->poll_group) {
+			spdk_thread_send_msg(q->poll_group->ublk_thread, free_buffers, q);
+			return;
+		} else {
+			free(q->ios);
+			q->ios = NULL;
 		}
-		free(q->ios);
-		q->ios = NULL;
 	}
 
-	spdk_mempool_free(ublk->io_buf_pool);
+	/* All of the buffers associated with the queues have been freed, so now
+	 * continue with releasing resources for the rest of the ublk device.
+	 */
+	if (ublk->bdev_desc) {
+		spdk_bdev_close(ublk->bdev_desc);
+		ublk->bdev_desc = NULL;
+	}
+
+	ublk_dev_list_unregister(ublk);
+	SPDK_NOTICELOG("ublk dev %d stopped\n", ublk->ublk_id);
+
+	free(ublk);
 }
 
 static int
 ublk_ios_init(struct spdk_ublk_dev *ublk)
 {
-	char mempool_name[32];
 	int rc;
 	uint32_t i, j;
 	struct ublk_queue *q;
-
-	snprintf(mempool_name, sizeof(mempool_name), "ublk_io_buf_pool_%d", ublk->ublk_id);
-
-	/* Create a mempool to allocate buf for each io */
-	ublk->io_buf_pool = spdk_mempool_create(mempool_name,
-						ublk->num_queues * ublk->queue_depth,
-						UBLK_IO_MAX_BYTES,
-						0,
-						SPDK_ENV_SOCKET_ID_ANY);
-	if (ublk->io_buf_pool == NULL) {
-		rc = -ENOMEM;
-		SPDK_ERRLOG("could not allocate ublk_io_buf pool\n");
-		return rc;
-	}
 
 	for (i = 0; i < ublk->num_queues; i++) {
 		q = &ublk->queues[i];
@@ -1317,15 +1846,28 @@ ublk_ios_init(struct spdk_ublk_dev *ublk)
 		}
 		for (j = 0; j < q->q_depth; j++) {
 			q->ios[j].q = q;
-			q->ios[j].payload = spdk_mempool_get(ublk->io_buf_pool);
 		}
 	}
 
 	return 0;
 
 err:
-	ublk_ios_fini(ublk);
+	for (i = 0; i < ublk->num_queues; i++) {
+		free(q->ios);
+		q->ios = NULL;
+	}
 	return rc;
+}
+
+static void
+ublk_queue_recovery_done(void *arg)
+{
+	struct spdk_ublk_dev *ublk = arg;
+
+	ublk->online_num_queues++;
+	if (ublk->is_recovering && (ublk->online_num_queues == ublk->num_queues)) {
+		ublk_ctrl_cmd_submit(ublk, UBLK_CMD_END_USER_RECOVERY);
+	}
 }
 
 static void
@@ -1333,25 +1875,29 @@ ublk_queue_run(void *arg1)
 {
 	struct ublk_queue	*q = arg1;
 	struct spdk_ublk_dev *ublk = q->dev;
-	struct ublk_thread_ctx *thread_ctx = q->thread_ctx;
+	struct ublk_poll_group *poll_group = q->poll_group;
 
-	assert(spdk_get_thread() == thread_ctx->ublk_thread);
+	assert(spdk_get_thread() == poll_group->ublk_thread);
+	q->bdev_ch = spdk_bdev_get_io_channel(ublk->bdev_desc);
 	/* Queues must be filled with IO in the io pthread */
 	ublk_dev_queue_io_init(q);
 
-	ublk->ch[q->q_id] = spdk_bdev_get_io_channel(ublk->bdev_desc);
-	TAILQ_INSERT_TAIL(&thread_ctx->queue_list, q, tailq);
+	TAILQ_INSERT_TAIL(&poll_group->queue_list, q, tailq);
+	spdk_thread_send_msg(spdk_thread_get_app_thread(), ublk_queue_recovery_done, ublk);
 }
 
 int
 ublk_start_disk(const char *bdev_name, uint32_t ublk_id,
 		uint32_t num_queues, uint32_t queue_depth,
-		ublk_start_cb start_cb, void *cb_arg)
+		ublk_ctrl_cb ctrl_cb, void *cb_arg)
 {
 	int			rc;
 	uint32_t		i;
 	struct spdk_bdev	*bdev;
 	struct spdk_ublk_dev	*ublk = NULL;
+	uint32_t		sector_per_block;
+
+	assert(spdk_thread_is_app_thread(NULL));
 
 	if (g_ublk_tgt.active == false) {
 		SPDK_ERRLOG("NO ublk target exist\n");
@@ -1363,11 +1909,17 @@ ublk_start_disk(const char *bdev_name, uint32_t ublk_id,
 		SPDK_DEBUGLOG(ublk, "ublk id %d is in use.\n", ublk_id);
 		return -EBUSY;
 	}
+
+	if (g_ublk_tgt.num_ublk_devs >= g_ublks_max) {
+		SPDK_DEBUGLOG(ublk, "Reached maximum number of supported devices: %u\n", g_ublks_max);
+		return -ENOTSUP;
+	}
+
 	ublk = calloc(1, sizeof(*ublk));
 	if (ublk == NULL) {
 		return -ENOMEM;
 	}
-	ublk->start_cb = start_cb;
+	ublk->ctrl_cb = ctrl_cb;
 	ublk->cb_arg = cb_arg;
 	ublk->cdev_fd = -1;
 	ublk->ublk_id = ublk_id;
@@ -1383,9 +1935,10 @@ ublk_start_disk(const char *bdev_name, uint32_t ublk_id,
 
 	bdev = spdk_bdev_desc_get_bdev(ublk->bdev_desc);
 	ublk->bdev = bdev;
+	sector_per_block = spdk_bdev_get_data_block_size(ublk->bdev) >> LINUX_SECTOR_SHIFT;
+	ublk->sector_per_block_shift = spdk_u32log2(sector_per_block);
 
 	ublk->queues_closed = 0;
-	ublk->app_thread = spdk_get_thread();
 	ublk->num_queues = num_queues;
 	ublk->queue_depth = queue_depth;
 	if (ublk->queue_depth > UBLK_DEV_MAX_QUEUE_DEPTH) {
@@ -1402,24 +1955,21 @@ ublk_start_disk(const char *bdev_name, uint32_t ublk_id,
 		ublk->queues[i].ring.ring_fd = -1;
 	}
 
-	/* Add ublk_dev to the end of disk list */
-	rc = ublk_dev_list_register(ublk);
+	ublk_dev_info_init(ublk);
+	ublk_info_param_init(ublk);
+	rc = ublk_ios_init(ublk);
 	if (rc != 0) {
 		spdk_bdev_close(ublk->bdev_desc);
 		free(ublk);
 		return rc;
 	}
 
-	ublk_info_param_init(ublk);
-	rc = ublk_ios_init(ublk);
-	if (rc != 0) {
-		ublk_free_dev(ublk);
-		return rc;
-	}
-
 	SPDK_INFOLOG(ublk, "Enabling kernel access to bdev %s via ublk %d\n",
 		     bdev_name, ublk_id);
-	rc = ublk_ctrl_cmd(ublk, UBLK_CMD_ADD_DEV);
+
+	/* Add ublk_dev to the end of disk list */
+	ublk_dev_list_register(ublk);
+	rc = ublk_ctrl_cmd_submit(ublk, UBLK_CMD_ADD_DEV);
 	if (rc < 0) {
 		SPDK_ERRLOG("UBLK can't add dev %d, rc %s\n", ublk->ublk_id, spdk_strerror(-rc));
 		ublk_free_dev(ublk);
@@ -1428,8 +1978,8 @@ ublk_start_disk(const char *bdev_name, uint32_t ublk_id,
 	return rc;
 }
 
-static void
-ublk_finish_start(struct spdk_ublk_dev *ublk)
+static int
+ublk_start_dev(struct spdk_ublk_dev *ublk, bool is_recovering)
 {
 	int			rc;
 	uint32_t		q_id;
@@ -1441,42 +1991,129 @@ ublk_finish_start(struct spdk_ublk_dev *ublk)
 	if (ublk->cdev_fd < 0) {
 		rc = ublk->cdev_fd;
 		SPDK_ERRLOG("can't open %s, rc %d\n", buf, rc);
-		goto err;
+		return rc;
 	}
 
 	for (q_id = 0; q_id < ublk->num_queues; q_id++) {
 		rc = ublk_dev_queue_init(&ublk->queues[q_id]);
 		if (rc) {
-			goto err;
+			return rc;
 		}
 	}
 
-	rc = ublk_ctrl_cmd(ublk, UBLK_CMD_START_DEV);
-	if (rc < 0) {
-		SPDK_ERRLOG("start dev %d failed, rc %s\n", ublk->ublk_id,
-			    spdk_strerror(-rc));
-		goto err;
+	if (!is_recovering) {
+		rc = ublk_ctrl_cmd_submit(ublk, UBLK_CMD_START_DEV);
+		if (rc < 0) {
+			SPDK_ERRLOG("start dev %d failed, rc %s\n", ublk->ublk_id,
+				    spdk_strerror(-rc));
+			return rc;
+		}
 	}
 
 	/* Send queue to different spdk_threads for load balance */
 	for (q_id = 0; q_id < ublk->num_queues; q_id++) {
-		ublk->queues[q_id].thread_ctx = &g_ublk_tgt.thread_ctx[g_queue_thread_id];
-		ublk_thread = g_ublk_tgt.thread_ctx[g_queue_thread_id].ublk_thread;
+		ublk->queues[q_id].poll_group = &g_ublk_tgt.poll_groups[g_next_ublk_poll_group];
+		ublk_thread = g_ublk_tgt.poll_groups[g_next_ublk_poll_group].ublk_thread;
 		spdk_thread_send_msg(ublk_thread, ublk_queue_run, &ublk->queues[q_id]);
-		g_queue_thread_id++;
-		if (g_queue_thread_id == g_num_ublk_threads) {
-			g_queue_thread_id = 0;
+		g_next_ublk_poll_group++;
+		if (g_next_ublk_poll_group == g_num_ublk_poll_groups) {
+			g_next_ublk_poll_group = 0;
 		}
 	}
 
-	goto out;
+	return 0;
+}
 
-err:
-	ublk_delete_dev(ublk);
-out:
-	if (ublk->start_cb) {
-		ublk->start_cb(ublk->cb_arg, rc);
+static int
+ublk_ctrl_start_recovery(struct spdk_ublk_dev *ublk)
+{
+	int                     rc;
+	uint32_t                i;
+
+	ublk->num_queues = ublk->dev_info.nr_hw_queues;
+	ublk->queue_depth = ublk->dev_info.queue_depth;
+	ublk->dev_info.ublksrv_pid = getpid();
+
+	SPDK_DEBUGLOG(ublk, "Recovering ublk %d, num queues %u, queue depth %u, flags 0x%llx\n",
+		      ublk->ublk_id,
+		      ublk->num_queues, ublk->queue_depth, ublk->dev_info.flags);
+
+	for (i = 0; i < ublk->num_queues; i++) {
+		ublk->queues[i].ring.ring_fd = -1;
 	}
+
+	ublk_info_param_init(ublk);
+	rc = ublk_ios_init(ublk);
+	if (rc != 0) {
+		return rc;
+	}
+
+	ublk->is_recovering = true;
+	return ublk_ctrl_cmd_submit(ublk, UBLK_CMD_START_USER_RECOVERY);
+}
+
+int
+ublk_start_disk_recovery(const char *bdev_name, uint32_t ublk_id, ublk_ctrl_cb ctrl_cb,
+			 void *cb_arg)
+{
+	int			rc;
+	struct spdk_bdev	*bdev;
+	struct spdk_ublk_dev	*ublk = NULL;
+	uint32_t		sector_per_block;
+
+	assert(spdk_thread_is_app_thread(NULL));
+
+	if (g_ublk_tgt.active == false) {
+		SPDK_ERRLOG("NO ublk target exist\n");
+		return -ENODEV;
+	}
+
+	if (!g_ublk_tgt.user_recovery) {
+		SPDK_ERRLOG("User recovery is enabled with kernel version >= 6.4\n");
+		return -ENOTSUP;
+	}
+
+	ublk = ublk_dev_find_by_id(ublk_id);
+	if (ublk != NULL) {
+		SPDK_DEBUGLOG(ublk, "ublk id %d is in use.\n", ublk_id);
+		return -EBUSY;
+	}
+
+	if (g_ublk_tgt.num_ublk_devs >= g_ublks_max) {
+		SPDK_DEBUGLOG(ublk, "Reached maximum number of supported devices: %u\n", g_ublks_max);
+		return -ENOTSUP;
+	}
+
+	ublk = calloc(1, sizeof(*ublk));
+	if (ublk == NULL) {
+		return -ENOMEM;
+	}
+	ublk->ctrl_cb = ctrl_cb;
+	ublk->cb_arg = cb_arg;
+	ublk->cdev_fd = -1;
+	ublk->ublk_id = ublk_id;
+
+	rc = spdk_bdev_open_ext(bdev_name, true, ublk_bdev_event_cb, ublk, &ublk->bdev_desc);
+	if (rc != 0) {
+		SPDK_ERRLOG("could not open bdev %s, error=%d\n", bdev_name, rc);
+		free(ublk);
+		return rc;
+	}
+
+	bdev = spdk_bdev_desc_get_bdev(ublk->bdev_desc);
+	ublk->bdev = bdev;
+	sector_per_block = spdk_bdev_get_data_block_size(ublk->bdev) >> LINUX_SECTOR_SHIFT;
+	ublk->sector_per_block_shift = spdk_u32log2(sector_per_block);
+
+	SPDK_NOTICELOG("Recovering ublk %d with bdev %s\n", ublk->ublk_id, bdev_name);
+
+	ublk_dev_list_register(ublk);
+	rc = ublk_ctrl_cmd_submit(ublk, UBLK_CMD_GET_DEV_INFO);
+	if (rc < 0) {
+		ublk_free_dev(ublk);
+	}
+
+	return rc;
 }
 
 SPDK_LOG_REGISTER_COMPONENT(ublk)

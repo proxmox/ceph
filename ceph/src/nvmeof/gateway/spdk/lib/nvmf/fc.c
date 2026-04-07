@@ -67,74 +67,76 @@ static char *fc_req_state_strs[] = {
 #define HWQP_CONN_TABLE_SIZE			8192
 #define HWQP_RPI_TABLE_SIZE			4096
 
-SPDK_TRACE_REGISTER_FN(nvmf_fc_trace, "nvmf_fc", TRACE_GROUP_NVMF_FC)
+static void
+nvmf_fc_trace(void)
 {
 	spdk_trace_register_object(OBJECT_NVMF_FC_IO, 'r');
 	spdk_trace_register_description("FC_NEW",
 					TRACE_FC_REQ_INIT,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 1,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 1,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_READ_SBMT_TO_BDEV",
 					TRACE_FC_REQ_READ_BDEV,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_READ_XFER_DATA",
 					TRACE_FC_REQ_READ_XFER,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_READ_RSP",
 					TRACE_FC_REQ_READ_RSP,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_WRITE_NEED_BUFFER",
 					TRACE_FC_REQ_WRITE_BUFFS,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_WRITE_XFER_DATA",
 					TRACE_FC_REQ_WRITE_XFER,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_WRITE_SBMT_TO_BDEV",
 					TRACE_FC_REQ_WRITE_BDEV,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_WRITE_RSP",
 					TRACE_FC_REQ_WRITE_RSP,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_NONE_SBMT_TO_BDEV",
 					TRACE_FC_REQ_NONE_BDEV,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_NONE_RSP",
 					TRACE_FC_REQ_NONE_RSP,
-					OWNER_NONE, OBJECT_NVMF_FC_IO, 0,
+					OWNER_TYPE_NONE, OBJECT_NVMF_FC_IO, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_SUCCESS",
 					TRACE_FC_REQ_SUCCESS,
-					OWNER_NONE, OBJECT_NONE, 0,
+					OWNER_TYPE_NONE, OBJECT_NONE, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_FAILED",
 					TRACE_FC_REQ_FAILED,
-					OWNER_NONE, OBJECT_NONE, 0,
+					OWNER_TYPE_NONE, OBJECT_NONE, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_ABRT",
 					TRACE_FC_REQ_ABORTED,
-					OWNER_NONE, OBJECT_NONE, 0,
+					OWNER_TYPE_NONE, OBJECT_NONE, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_ABRT_SBMT_TO_BDEV",
 					TRACE_FC_REQ_BDEV_ABORTED,
-					OWNER_NONE, OBJECT_NONE, 0,
+					OWNER_TYPE_NONE, OBJECT_NONE, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_PENDING",
 					TRACE_FC_REQ_PENDING,
-					OWNER_NONE, OBJECT_NONE, 0,
+					OWNER_TYPE_NONE, OBJECT_NONE, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("FC_FUSED_WAITING",
 					TRACE_FC_REQ_FUSED_WAITING,
-					OWNER_NONE, OBJECT_NONE, 0,
+					OWNER_TYPE_NONE, OBJECT_NONE, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "");
 }
+SPDK_TRACE_REGISTER_FN(nvmf_fc_trace, "nvmf_fc", TRACE_GROUP_NVMF_FC)
 
 /**
  * The structure used by all fc adm functions
@@ -1215,10 +1217,12 @@ nvmf_fc_req_bdev_abort(void *arg1)
 	 * Connect -> Special case (async. handling). Not sure how to
 	 * handle at this point. Let it run to completion.
 	 */
-	for (i = 0; i < SPDK_NVMF_MAX_ASYNC_EVENTS; i++) {
-		if (ctrlr->aer_req[i] == &fc_req->req) {
-			SPDK_NOTICELOG("Abort AER request\n");
-			nvmf_qpair_free_aer(fc_req->req.qpair);
+	if (ctrlr) {
+		for (i = 0; i < SPDK_NVMF_MAX_ASYNC_EVENTS; i++) {
+			if (ctrlr->aer_req[i] == &fc_req->req) {
+				SPDK_NOTICELOG("Abort AER request\n");
+				nvmf_qpair_free_aer(fc_req->req.qpair);
+			}
 		}
 	}
 }
@@ -1301,7 +1305,8 @@ nvmf_fc_request_abort(struct spdk_nvmf_fc_request *fc_req, bool send_abts,
 	switch (fc_req->state) {
 	case SPDK_NVMF_FC_REQ_BDEV_ABORTED:
 		/* Aborted by backend */
-		goto complete;
+		_nvmf_fc_request_free(fc_req);
+		break;
 
 	case SPDK_NVMF_FC_REQ_READ_BDEV:
 	case SPDK_NVMF_FC_REQ_WRITE_BDEV:
@@ -1375,7 +1380,6 @@ nvmf_fc_request_execute(struct spdk_nvmf_fc_request *fc_req)
 			}
 			return -EAGAIN;
 		}
-		fc_req->req.data = fc_req->req.iov[0].iov_base;
 	}
 
 	if (fc_req->req.xfer == SPDK_NVME_DATA_HOST_TO_CONTROLLER) {
@@ -1505,7 +1509,7 @@ nvmf_fc_hwqp_handle_request(struct spdk_nvmf_fc_hwqp *hwqp, struct spdk_nvmf_fc_
 		return -EACCES;
 	}
 
-	if (fc_conn->qpair.state != SPDK_NVMF_QPAIR_ACTIVE) {
+	if (!spdk_nvmf_qpair_is_active(&fc_conn->qpair)) {
 		SPDK_ERRLOG("Connection %ld qpair state = %d not valid\n",
 			    rqst_conn_id, fc_conn->qpair.state);
 		return -EACCES;
@@ -1578,8 +1582,7 @@ _nvmf_fc_request_free(struct spdk_nvmf_fc_request *fc_req)
 		spdk_nvmf_request_free_buffers(&fc_req->req, group,
 					       group->transport);
 	}
-	fc_req->req.data = NULL;
-	fc_req->req.iovcnt  = 0;
+	fc_req->req.iovcnt = 0;
 
 	/* Free Fc request */
 	nvmf_fc_conn_free_fc_request(fc_req->fc_conn, fc_req);
@@ -2087,6 +2090,11 @@ nvmf_fc_poll_group_create(struct spdk_nvmf_transport *transport,
 	struct spdk_nvmf_fc_transport *ftransport =
 		SPDK_CONTAINEROF(transport, struct spdk_nvmf_fc_transport, transport);
 
+	if (spdk_interrupt_mode_is_enabled()) {
+		SPDK_ERRLOG("FC transport does not support interrupt mode\n");
+		return NULL;
+	}
+
 	fgroup = calloc(1, sizeof(struct spdk_nvmf_fc_poll_group));
 	if (!fgroup) {
 		SPDK_ERRLOG("Unable to alloc FC poll group\n");
@@ -2218,6 +2226,9 @@ _nvmf_fc_close_qpair(void *arg)
 	int rc;
 
 	fc_conn = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_fc_conn, qpair);
+
+	SPDK_NOTICELOG("Close qpair %p, fc_conn %p conn_state %d conn_id 0x%lx\n",
+		       qpair, fc_conn, fc_conn->conn_state, fc_conn->conn_id);
 	if (fc_conn->conn_id == NVMF_FC_INVALID_CONN_ID) {
 		struct spdk_nvmf_fc_ls_add_conn_api_data *api_data = NULL;
 
@@ -2235,7 +2246,7 @@ _nvmf_fc_close_qpair(void *arg)
 			return;
 		}
 
-		SPDK_ERRLOG("%s: Delete FC connection failed.\n", __func__);
+		SPDK_ERRLOG("Delete fc_conn %p failed.\n", fc_conn);
 	}
 
 	nvmf_fc_connection_delete_done_cb(fc_ctx);
@@ -2246,6 +2257,25 @@ nvmf_fc_close_qpair(struct spdk_nvmf_qpair *qpair,
 		    spdk_nvmf_transport_qpair_fini_cb cb_fn, void *cb_arg)
 {
 	struct spdk_nvmf_fc_qpair_remove_ctx *fc_ctx;
+	struct spdk_nvmf_fc_conn *fc_conn;
+
+	fc_conn = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_fc_conn, qpair);
+	fc_conn->qpair_fini_done = true;
+
+	if (fc_conn->conn_state == SPDK_NVMF_FC_OBJECT_TO_BE_DELETED) {
+		if (fc_conn->qpair_fini_done_cb) {
+			SPDK_NOTICELOG("Invoke qpair_fini_done_cb, fc_conn %p conn_id 0x%lx qpair %p conn_state %d\n",
+				       fc_conn, fc_conn->conn_id, qpair, fc_conn->conn_state);
+
+			fc_conn->qpair_fini_done_cb(fc_conn->hwqp, 0, fc_conn->qpair_fini_done_cb_args);
+		}
+
+		if (cb_fn) {
+			cb_fn(cb_arg);
+		}
+
+		return;
+	}
 
 	fc_ctx = calloc(1, sizeof(struct spdk_nvmf_fc_qpair_remove_ctx));
 	if (!fc_ctx) {
@@ -2253,8 +2283,10 @@ nvmf_fc_close_qpair(struct spdk_nvmf_qpair *qpair,
 		if (cb_fn) {
 			cb_fn(cb_arg);
 		}
+
 		return;
 	}
+
 	fc_ctx->qpair = qpair;
 	fc_ctx->cb_fn = cb_fn;
 	fc_ctx->cb_ctx = cb_arg;
@@ -3126,7 +3158,7 @@ nvmf_fc_adm_add_rem_nport_listener(struct spdk_nvmf_fc_nport *nport, bool add)
 	while (subsystem) {
 		struct nvmf_fc_add_rem_listener_ctx *ctx;
 
-		if (spdk_nvmf_subsytem_any_listener_allowed(subsystem) == true) {
+		if (spdk_nvmf_subsystem_any_listener_allowed(subsystem) == true) {
 			ctx = calloc(1, sizeof(struct nvmf_fc_add_rem_listener_ctx));
 			if (ctx) {
 				ctx->add_listener = add;
@@ -3408,8 +3440,11 @@ nvmf_fc_adm_evnt_nport_delete(void *arg)
 		it_del_args->rpi = rport_iter->rpi;
 		it_del_args->s_id = rport_iter->s_id;
 
-		nvmf_fc_main_enqueue_event(SPDK_FC_IT_DELETE, (void *)it_del_args,
-					   nvmf_fc_adm_delete_nport_cb);
+		err = nvmf_fc_main_enqueue_event(SPDK_FC_IT_DELETE, (void *)it_del_args,
+						 nvmf_fc_adm_delete_nport_cb);
+		if (err) {
+			free(it_del_args);
+		}
 	}
 
 out:

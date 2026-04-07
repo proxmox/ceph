@@ -20,6 +20,7 @@
 #include "spdk/rpc.h"
 #include "spdk/util.h"
 #include "spdk/nvme.h"
+#include "spdk/module/bdev/nvme.h"
 #include "bdev_nvme.h"
 
 #ifdef SPDK_CONFIG_AVAHI
@@ -47,7 +48,7 @@ struct mdns_discovery_ctx {
 	AvahiServiceBrowser                     *sb;
 	struct spdk_poller                      *poller;
 	struct spdk_nvme_ctrlr_opts             drv_opts;
-	struct nvme_ctrlr_opts                  bdev_opts;
+	struct spdk_bdev_nvme_ctrlr_opts        bdev_opts;
 	uint32_t                                seqno;
 	bool                                    stop;
 	struct spdk_thread                      *calling_thread;
@@ -102,13 +103,14 @@ mdns_bdev_nvme_start_discovery(void *_entry_ctx)
 static void
 free_mdns_discovery_entry_ctx(struct mdns_discovery_ctx *ctx)
 {
-	struct mdns_discovery_entry_ctx *entry_ctx = NULL;
+	struct mdns_discovery_entry_ctx *entry_ctx, *tmp;
 
 	if (!ctx) {
 		return;
 	}
 
-	TAILQ_FOREACH(entry_ctx, &ctx->mdns_discovery_entry_ctxs, tailq) {
+	TAILQ_FOREACH_SAFE(entry_ctx, &ctx->mdns_discovery_entry_ctxs, tailq, tmp) {
+		TAILQ_REMOVE(&ctx->mdns_discovery_entry_ctxs, entry_ctx, tailq);
 		free(entry_ctx);
 	}
 }
@@ -221,31 +223,27 @@ get_mdns_discovery_ctx_by_svcname(const char *svcname)
 }
 
 static void
-mdns_resolve_callback(
-	AvahiServiceResolver *r,
-	AVAHI_GCC_UNUSED AvahiIfIndex interface,
-	AVAHI_GCC_UNUSED AvahiProtocol protocol,
-	AvahiResolverEvent event,
-	const char *name,
-	const char *type,
-	const char *domain,
+mdns_resolve_handler(
+	AvahiServiceResolver *resolver,
+	AVAHI_GCC_UNUSED AvahiIfIndex intf,
+	AVAHI_GCC_UNUSED AvahiProtocol avahi_protocol,
+	AvahiResolverEvent resolve_event,
+	const char *svc_name,
+	const char *svc_type,
+	const char *svc_domain,
 	const char *host_name,
-	const AvahiAddress *address,
+	const AvahiAddress *host_address,
 	uint16_t port,
 	AvahiStringList *txt,
-	AvahiLookupResultFlags flags,
-	AVAHI_GCC_UNUSED void *userdata)
+	AvahiLookupResultFlags result_flags,
+	AVAHI_GCC_UNUSED void *user_data)
 {
-	assert(r);
-	/* Called whenever a service has been resolved successfully or timed out */
-	switch (event) {
-	case AVAHI_RESOLVER_FAILURE:
-		SPDK_ERRLOG("(Resolver) Failed to resolve service '%s' of type '%s' in domain '%s': %s\n",
-			    name, type, domain,
-			    avahi_strerror(avahi_client_errno(avahi_service_resolver_get_client(r))));
-		break;
+	assert(resolver);
+	/* The handler gets called whenever a service has been resolved
+	   successfully or timed out */
+	switch (resolve_event) {
 	case AVAHI_RESOLVER_FOUND: {
-		char ipaddr[SPDK_NVMF_TRADDR_MAX_LEN + 1], port_str[SPDK_NVMF_TRSVCID_MAX_LEN + 1], *t;
+		char ipaddr[SPDK_NVMF_TRADDR_MAX_LEN + 1], port_str[SPDK_NVMF_TRSVCID_MAX_LEN + 1], *str;
 		struct spdk_nvme_transport_id *trid = NULL;
 		char *subnqn = NULL, *proto = NULL;
 		struct mdns_discovery_ctx *ctx = NULL;
@@ -254,10 +252,11 @@ mdns_resolve_callback(
 
 		memset(ipaddr, 0, sizeof(ipaddr));
 		memset(port_str, 0, sizeof(port_str));
-		SPDK_INFOLOG(bdev_nvme, "Service '%s' of type '%s' in domain '%s'\n", name, type, domain);
-		avahi_address_snprint(ipaddr, sizeof(ipaddr), address);
+		SPDK_INFOLOG(bdev_nvme, "Service '%s' of type '%s' in domain '%s'\n", svc_name, svc_type,
+			     svc_domain);
+		avahi_address_snprint(ipaddr, sizeof(ipaddr), host_address);
 		snprintf(port_str, sizeof(port_str), "%d", port);
-		t = avahi_string_list_to_string(txt);
+		str = avahi_string_list_to_string(txt);
 		SPDK_INFOLOG(bdev_nvme,
 			     "\t%s:%u (%s)\n"
 			     "\tTXT=%s\n"
@@ -268,17 +267,18 @@ mdns_resolve_callback(
 			     "\tmulticast: %i\n"
 			     "\tcached: %i\n",
 			     host_name, port, ipaddr,
-			     t,
+			     str,
 			     avahi_string_list_get_service_cookie(txt),
-			     !!(flags & AVAHI_LOOKUP_RESULT_LOCAL),
-			     !!(flags & AVAHI_LOOKUP_RESULT_OUR_OWN),
-			     !!(flags & AVAHI_LOOKUP_RESULT_WIDE_AREA),
-			     !!(flags & AVAHI_LOOKUP_RESULT_MULTICAST),
-			     !!(flags & AVAHI_LOOKUP_RESULT_CACHED));
+			     !!(result_flags & AVAHI_LOOKUP_RESULT_LOCAL),
+			     !!(result_flags & AVAHI_LOOKUP_RESULT_OUR_OWN),
+			     !!(result_flags & AVAHI_LOOKUP_RESULT_WIDE_AREA),
+			     !!(result_flags & AVAHI_LOOKUP_RESULT_MULTICAST),
+			     !!(result_flags & AVAHI_LOOKUP_RESULT_CACHED));
+		avahi_free(str);
 
-		ctx = get_mdns_discovery_ctx_by_svcname(type);
+		ctx = get_mdns_discovery_ctx_by_svcname(svc_type);
 		if (!ctx) {
-			SPDK_ERRLOG("Unknown Service '%s'\n", type);
+			SPDK_ERRLOG("Unknown Service '%s'\n", svc_type);
 			break;
 		}
 
@@ -287,7 +287,7 @@ mdns_resolve_callback(
 			SPDK_ERRLOG(" Error allocating memory for trid\n");
 			break;
 		}
-		trid->adrfam = get_spdk_nvme_adrfam_from_avahi_addr(address);
+		trid->adrfam = get_spdk_nvme_adrfam_from_avahi_addr(host_address);
 		if (trid->adrfam != SPDK_NVMF_ADRFAM_IPV4) {
 			/* TODO: For now process only ipv4 addresses */
 			SPDK_INFOLOG(bdev_nvme, "trid family is not IPV4 %d\n", trid->adrfam);
@@ -315,7 +315,6 @@ mdns_resolve_callback(
 			SPDK_ERRLOG("Unable to derive nvme transport type  for service %s\n", ctx->svcname);
 			break;
 		}
-		trid->adrfam = get_spdk_nvme_adrfam_from_avahi_addr(address);
 		snprintf(trid->traddr, sizeof(trid->traddr), "%s", ipaddr);
 		snprintf(trid->trsvcid, sizeof(trid->trsvcid), "%s", port_str);
 		snprintf(trid->subnqn, sizeof(trid->subnqn), "%s", subnqn);
@@ -326,7 +325,8 @@ mdns_resolve_callback(
 				free(trid);
 				avahi_free(subnqn);
 				avahi_free(proto);
-				break;
+				avahi_service_resolver_free(resolver);
+				return;
 			}
 		}
 		entry_ctx = create_mdns_discovery_entry_ctx(ctx, trid);
@@ -337,47 +337,53 @@ mdns_resolve_callback(
 		avahi_free(proto);
 		break;
 	}
+	case AVAHI_RESOLVER_FAILURE:
+		SPDK_ERRLOG("(Resolver) Failed to resolve service '%s' of type '%s' in domain '%s': %s\n",
+			    svc_name, svc_type, svc_domain,
+			    avahi_strerror(avahi_client_errno(avahi_service_resolver_get_client(resolver))));
+		break;
 	default:
-		SPDK_ERRLOG("Unknown Avahi resolver event: %d", event);
+		SPDK_ERRLOG("Unknown Avahi resolver event: %d", resolve_event);
 	}
-	avahi_service_resolver_free(r);
+	avahi_service_resolver_free(resolver);
 }
 
 static void
-mdns_browse_callback(
-	AvahiServiceBrowser *b,
-	AvahiIfIndex interface,
-	AvahiProtocol protocol,
-	AvahiBrowserEvent event,
-	const char *name,
-	const char *type,
-	const char *domain,
-	AVAHI_GCC_UNUSED AvahiLookupResultFlags flags,
-	void *userdata)
+mdns_browse_handler(
+	AvahiServiceBrowser *browser,
+	AvahiIfIndex intf,
+	AvahiProtocol avahi_protocol,
+	AvahiBrowserEvent browser_event,
+	const char *svc_name,
+	const char *svc_type,
+	const char *svc_domain,
+	AVAHI_GCC_UNUSED AvahiLookupResultFlags result_flags,
+	void *user_data)
 {
-	AvahiClient *c = userdata;
+	AvahiClient *client = user_data;
 
-	assert(b);
-	/* Called whenever a new services becomes available on the LAN or is removed from the LAN */
-	switch (event) {
-	case AVAHI_BROWSER_FAILURE:
-		SPDK_ERRLOG("(Browser) Failure: %s\n",
-			    avahi_strerror(avahi_client_errno(avahi_service_browser_get_client(b))));
-		return;
+	assert(browser);
+	/* The handler gets called whenever a new service becomes available
+	   or removed from the LAN */
+	switch (browser_event) {
 	case AVAHI_BROWSER_NEW:
-		SPDK_DEBUGLOG(bdev_nvme, "(Browser) NEW: service '%s' of type '%s' in domain '%s'\n", name, type,
-			      domain);
+		SPDK_DEBUGLOG(bdev_nvme, "(Browser) NEW: service '%s' of type '%s' in domain '%s'\n", svc_name,
+			      svc_type,
+			      svc_domain);
 		/* We ignore the returned resolver object. In the callback
 		   function we free it. If the server is terminated before
 		   the callback function is called the server will free
 		   the resolver for us. */
-		if (!(avahi_service_resolver_new(c, interface, protocol, name, type, domain, AVAHI_PROTO_UNSPEC, 0,
-						 mdns_resolve_callback, c))) {
-			SPDK_ERRLOG("Failed to resolve service '%s': %s\n", name, avahi_strerror(avahi_client_errno(c)));
+		if (!(avahi_service_resolver_new(client, intf, avahi_protocol, svc_name, svc_type, svc_domain,
+						 AVAHI_PROTO_UNSPEC, 0,
+						 mdns_resolve_handler, client))) {
+			SPDK_ERRLOG("Failed to resolve service '%s': %s\n", svc_name,
+				    avahi_strerror(avahi_client_errno(client)));
 		}
 		break;
 	case AVAHI_BROWSER_REMOVE:
-		SPDK_ERRLOG("(Browser) REMOVE: service '%s' of type '%s' in domain '%s'\n", name, type, domain);
+		SPDK_ERRLOG("(Browser) REMOVE: service '%s' of type '%s' in domain '%s'\n", svc_name, svc_type,
+			    svc_domain);
 		/* On remove, we are not doing the automatic cleanup of connections
 		 * to the targets that were learnt from the CDC, for which remove event has
 		 * been received. If required, user can clear the connections manually by
@@ -388,20 +394,24 @@ mdns_browse_callback(
 	case AVAHI_BROWSER_ALL_FOR_NOW:
 	case AVAHI_BROWSER_CACHE_EXHAUSTED:
 		SPDK_INFOLOG(bdev_nvme, "(Browser) %s\n",
-			     event == AVAHI_BROWSER_CACHE_EXHAUSTED ? "CACHE_EXHAUSTED" : "ALL_FOR_NOW");
+			     browser_event == AVAHI_BROWSER_CACHE_EXHAUSTED ? "CACHE_EXHAUSTED" : "ALL_FOR_NOW");
 		break;
+	case AVAHI_BROWSER_FAILURE:
+		SPDK_ERRLOG("(Browser) Failure: %s\n",
+			    avahi_strerror(avahi_client_errno(avahi_service_browser_get_client(browser))));
+		return;
 	default:
-		SPDK_ERRLOG("Unknown Avahi browser event: %d", event);
+		SPDK_ERRLOG("Unknown Avahi browser event: %d", browser_event);
 	}
 }
 
 static void
-client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UNUSED void *userdata)
+client_handler(AvahiClient *client, AvahiClientState avahi_state, AVAHI_GCC_UNUSED void *user_data)
 {
-	assert(c);
-	/* Called whenever the client or server state changes */
-	if (state == AVAHI_CLIENT_FAILURE) {
-		SPDK_ERRLOG("Server connection failure: %s\n", avahi_strerror(avahi_client_errno(c)));
+	assert(client);
+	/* The handler gets called whenever the client or server state changes */
+	if (avahi_state == AVAHI_CLIENT_FAILURE) {
+		SPDK_ERRLOG("Server connection failure: %s\n", avahi_strerror(avahi_client_errno(client)));
 	}
 }
 
@@ -447,7 +457,7 @@ int
 bdev_nvme_start_mdns_discovery(const char *base_name,
 			       const char *svcname,
 			       struct spdk_nvme_ctrlr_opts *drv_opts,
-			       struct nvme_ctrlr_opts *bdev_opts)
+			       struct spdk_bdev_nvme_ctrlr_opts *bdev_opts)
 {
 	AvahiServiceBrowser *sb = NULL;
 	int error;
@@ -480,7 +490,7 @@ bdev_nvme_start_mdns_discovery(const char *base_name,
 	if (g_avahi_client == NULL) {
 
 		/* Allocate a new client */
-		g_avahi_client = avahi_client_new(avahi_simple_poll_get(g_avahi_simple_poll), 0, client_callback,
+		g_avahi_client = avahi_client_new(avahi_simple_poll_get(g_avahi_simple_poll), 0, client_handler,
 						  NULL, &error);
 		/* Check whether creating the client object succeeded */
 		if (!g_avahi_client) {
@@ -492,7 +502,7 @@ bdev_nvme_start_mdns_discovery(const char *base_name,
 
 	/* Create the service browser */
 	if (!(sb = avahi_service_browser_new(g_avahi_client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, svcname,
-					     NULL, 0, mdns_browse_callback, g_avahi_client))) {
+					     NULL, 0, mdns_browse_handler, g_avahi_client))) {
 		SPDK_ERRLOG("Failed to create service browser for service: %s Error: %s\n", svcname,
 			    avahi_strerror(avahi_client_errno(g_avahi_client)));
 		return -ENOMEM;
@@ -626,7 +636,7 @@ int
 bdev_nvme_start_mdns_discovery(const char *base_name,
 			       const char *svcname,
 			       struct spdk_nvme_ctrlr_opts *drv_opts,
-			       struct nvme_ctrlr_opts *bdev_opts)
+			       struct spdk_bdev_nvme_ctrlr_opts *bdev_opts)
 {
 	SPDK_ERRLOG("spdk not built with --with-avahi option\n");
 	return -ENOTSUP;

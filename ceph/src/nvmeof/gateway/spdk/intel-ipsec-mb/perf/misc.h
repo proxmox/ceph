@@ -1,5 +1,5 @@
 /*****************************************************************************
- Copyright (c) 2021-2022, Intel Corporation
+ Copyright (c) 2021-2023, Intel Corporation
 
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
@@ -33,4 +33,5 @@
  *
  * @return Number of TSC cycles measured while in fixed cost loop
  */
-uint64_t measure_tsc(const uint64_t cycles);
+uint64_t
+measure_tsc(const uint64_t cycles);

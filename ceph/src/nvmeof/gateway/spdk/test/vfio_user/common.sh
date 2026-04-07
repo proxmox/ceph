@@ -3,10 +3,12 @@
 #  All rights reserved.
 #
 
-: ${MALLOC_BDEV_SIZE=256}
+: ${MALLOC_BDEV_SIZE=128}
 : ${MALLOC_BLOCK_SIZE=512}
 
 source "$rootdir/test/vhost/common.sh"
+
+VFIO_QEMU_BIN=${VFIO_QEMU_BIN:-/usr/local/qemu/vfio-user-latest/bin/qemu-system-x86_64}
 
 # Verify vfio-user support of qemu.
 if [[ ! -e $VFIO_QEMU_BIN ]]; then

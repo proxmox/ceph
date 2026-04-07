@@ -49,69 +49,93 @@
  *
  * Example
  * \code
- * uint32_t mh_sha256_digest[SHA256_DIGEST_WORDS];
- * struct mh_sha256_ctx *ctx;
+ * uint32_t mh_sha256_digest[ISAL_SHA256_DIGEST_WORDS];
+ * struct isal_mh_sha256_ctx *ctx;
  *
- * ctx = malloc(sizeof(struct mh_sha256_ctx));
- * mh_sha256_init(ctx);
- * mh_sha256_update(ctx, buff, block_len);
- * mh_sha256_finalize(ctx, mh_sha256_digest);
+ * ctx = malloc(sizeof(struct isal_mh_sha256_ctx));
+ * isal_mh_sha256_init(ctx);
+ * isal_mh_sha256_update(ctx, buff, block_len);
+ * isal_mh_sha256_finalize(ctx, mh_sha256_digest);
  * \endcode
  */
 
 #include <stdint.h>
+#include "types.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/*
+ * Define enums from API v2.24, so applications that were using this version
+ * will still be compiled successfully.
+ * This list does not need to be extended for new definitions.
+ */
+#ifndef NO_COMPAT_ISAL_CRYPTO_API_2_24
+/***** Previous hash constants and typedefs *****/
+#define HASH_SEGS            ISAL_HASH_SEGS
+#define SHA256_BLOCK_SIZE    ISAL_SHA256_BLOCK_SIZE
+#define MH_SHA256_BLOCK_SIZE ISAL_MH_SHA256_BLOCK_SIZE
+#define SHA256_DIGEST_WORDS  ISAL_SHA256_DIGEST_WORDS
+#define AVX512_ALIGNED       ISAL_AVX512_ALIGNED
+
+#define MH_SHA256_CTX_ERROR_NONE ISAL_MH_SHA256_CTX_ERROR_NONE
+#define MH_SHA256_CTX_ERROR_NULL ISAL_MH_SHA256_CTX_ERROR_NULL
+
+#define mh_sha256_ctx isal_mh_sha256_ctx
+#endif /* !NO_COMPAT_ISAL_CRYPTO_API_2_24 */
 
 // External Interface Definition
-#define HASH_SEGS					16
-#define SHA256_BLOCK_SIZE				64
-#define MH_SHA256_BLOCK_SIZE   (HASH_SEGS * SHA256_BLOCK_SIZE)
-#define SHA256_DIGEST_WORDS				 8
-#define AVX512_ALIGNED					64
+#define ISAL_HASH_SEGS            16
+#define ISAL_SHA256_BLOCK_SIZE    64
+#define ISAL_MH_SHA256_BLOCK_SIZE (ISAL_HASH_SEGS * ISAL_SHA256_BLOCK_SIZE)
+#define ISAL_SHA256_DIGEST_WORDS  8
+#define ISAL_AVX512_ALIGNED       64
 
 /** @brief Holds info describing a single mh_sha256
  *
  * It is better to use heap to allocate this data structure to avoid stack overflow.
  *
-*/
-struct mh_sha256_ctx {
-	uint32_t  mh_sha256_digest[SHA256_DIGEST_WORDS]; //!< the digest of multi-hash SHA256
+ */
+struct isal_mh_sha256_ctx {
+        uint32_t mh_sha256_digest[ISAL_SHA256_DIGEST_WORDS]; //!< the digest of multi-hash SHA256
 
-	uint64_t  total_length;
-	//!<  Parameters for update feature, describe the lengths of input buffers in bytes
-	uint8_t   partial_block_buffer [MH_SHA256_BLOCK_SIZE * 2];
-	//!<  Padding the tail of input data for SHA256
-	uint8_t   mh_sha256_interim_digests[sizeof(uint32_t) * SHA256_DIGEST_WORDS * HASH_SEGS];
-	//!<  Storing the SHA256 interim digests of  all 16 segments. Each time, it will be copied to stack for 64-byte alignment purpose.
-	uint8_t   frame_buffer[MH_SHA256_BLOCK_SIZE + AVX512_ALIGNED];
-	//!<  Re-structure sha256 block data from different segments to fit big endian. Use AVX512_ALIGNED for 64-byte alignment purpose.
+        uint64_t total_length;
+        //!<  Parameters for update feature, describe the lengths of input buffers in bytes
+        uint8_t partial_block_buffer[ISAL_MH_SHA256_BLOCK_SIZE * 2];
+        //!<  Padding the tail of input data for SHA256
+        uint8_t mh_sha256_interim_digests[sizeof(uint32_t) * ISAL_SHA256_DIGEST_WORDS *
+                                          ISAL_HASH_SEGS];
+        //!<  Storing the SHA256 interim digests of  all 16 segments. Each time, it will be copied
+        //!<  to stack for 64-byte alignment purpose.
+        uint8_t frame_buffer[ISAL_MH_SHA256_BLOCK_SIZE + ISAL_AVX512_ALIGNED];
+        //!<  Re-structure sha256 block data from different segments to fit big endian. Use
+        //!<  ISAL_AVX512_ALIGNED for 64-byte alignment purpose.
 };
 
 /**
- *  @enum mh_sha256_ctx_error
+ *  @enum isal_mh_sha256_ctx_error
  *  @brief CTX error flags
  */
-enum mh_sha256_ctx_error{
-	MH_SHA256_CTX_ERROR_NONE			=  0, //!< MH_SHA256_CTX_ERROR_NONE
-	MH_SHA256_CTX_ERROR_NULL			= -1, //!< MH_SHA256_CTX_ERROR_NULL
+enum isal_mh_sha256_ctx_error {
+        ISAL_MH_SHA256_CTX_ERROR_NONE = 0,  //!< ISAL_MH_SHA256_CTX_ERROR_NONE
+        ISAL_MH_SHA256_CTX_ERROR_NULL = -1, //!< ISAL_MH_SHA256_CTX_ERROR_NULL
 };
-
 
 /*******************************************************************
  * mh_sha256 API function prototypes
  ******************************************************************/
 
 /**
- * @brief Initialize the mh_sha256_ctx structure.
+ * @brief Initialize the isal_mh_sha256_ctx structure.
  *
  * @param  ctx Structure holding mh_sha256 info
  * @returns int Return 0 if the function runs without errors
+ * @deprecated Please use isal_mh_sha256_init() instead.
  */
-int mh_sha256_init (struct mh_sha256_ctx* ctx);
+ISAL_DEPRECATED("Please use isal_mh_sha256_init() instead")
+int
+mh_sha256_init(struct isal_mh_sha256_ctx *ctx);
 
 /**
  * @brief Multi-hash sha256 update.
@@ -124,8 +148,11 @@ int mh_sha256_init (struct mh_sha256_ctx* ctx);
  * @param  buffer Pointer to buffer to be processed
  * @param  len Length of buffer (in bytes) to be processed
  * @returns int Return 0 if the function runs without errors
+ * @deprecated Please use isal_mh_sha256_update() instead.
  */
-int mh_sha256_update (struct mh_sha256_ctx * ctx, const void* buffer, uint32_t len);
+ISAL_DEPRECATED("Please use isal_mh_sha256_update() instead")
+int
+mh_sha256_update(struct isal_mh_sha256_ctx *ctx, const void *buffer, uint32_t len);
 
 /**
  * @brief Finalize the message digests for multi-hash sha256.
@@ -138,20 +165,11 @@ int mh_sha256_update (struct mh_sha256_ctx * ctx, const void* buffer, uint32_t l
  * @param   ctx Structure holding mh_sha256 info
  * @param   mh_sha256_digest The digest of mh_sha256
  * @returns int Return 0 if the function runs without errors
+ * @deprecated Please use isal_mh_sha256_finalize() instead.
  */
-int mh_sha256_finalize (struct mh_sha256_ctx* ctx, void* mh_sha256_digest);
-
-/*******************************************************************
- * multi-types of mh_sha256 internal API
- *
- * XXXX		The multi-binary version
- * XXXX_base	The C code version which used to display the algorithm
- * XXXX_sse	The version uses a ASM function optimized for SSE
- * XXXX_avx	The version uses a ASM function optimized for AVX
- * XXXX_avx2	The version uses a ASM function optimized for AVX2
- * XXXX_avx512	The version uses a ASM function optimized for AVX512
- *
- ******************************************************************/
+ISAL_DEPRECATED("Please use isal_mh_sha256_finalize() instead")
+int
+mh_sha256_finalize(struct isal_mh_sha256_ctx *ctx, void *mh_sha256_digest);
 
 /**
  * @brief Multi-hash sha256 update.
@@ -163,73 +181,13 @@ int mh_sha256_finalize (struct mh_sha256_ctx* ctx, void* mh_sha256_digest);
  * @param   buffer Pointer to buffer to be processed
  * @param   len Length of buffer (in bytes) to be processed
  * @returns int Return 0 if the function runs without errors
- *
+ * @deprecated Please use isal_mh_sha256_update() instead.
  */
-int mh_sha256_update_base (struct mh_sha256_ctx* ctx, const void* buffer, uint32_t len);
+int
+mh_sha256_update_base(struct isal_mh_sha256_ctx *ctx, const void *buffer, uint32_t len);
 
 /**
- * @brief Multi-hash sha256 update.
- *
- * Can be called repeatedly to update hashes with new input data.
- * @requires SSE
- *
- * @param   ctx Structure holding mh_sha256 info
- * @param   buffer Pointer to buffer to be processed
- * @param   len Length of buffer (in bytes) to be processed
- * @returns int Return 0 if the function runs without errors
- *
- */
-int mh_sha256_update_sse (struct mh_sha256_ctx * ctx,
-						const void* buffer, uint32_t len);
-
-/**
- * @brief Multi-hash sha256 update.
- *
- * Can be called repeatedly to update hashes with new input data.
- * @requires AVX
- *
- * @param   ctx Structure holding mh_sha256 info
- * @param   buffer Pointer to buffer to be processed
- * @param   len Length of buffer (in bytes) to be processed
- * @returns int Return 0 if the function runs without errors
- *
- */
-int mh_sha256_update_avx (struct mh_sha256_ctx * ctx,
-						const void* buffer, uint32_t len);
-
-/**
- * @brief Multi-hash sha256 update.
- *
- * Can be called repeatedly to update hashes with new input data.
- * @requires AVX2
- *
- * @param   ctx Structure holding mh_sha256 info
- * @param   buffer Pointer to buffer to be processed
- * @param   len Length of buffer (in bytes) to be processed
- * @returns int Return 0 if the function runs without errors
- *
- */
-int mh_sha256_update_avx2 (struct mh_sha256_ctx * ctx,
-						const void* buffer, uint32_t len);
-
-/**
- * @brief Multi-hash sha256 update.
- *
- * Can be called repeatedly to update hashes with new input data.
- * @requires AVX512
- *
- * @param   ctx Structure holding mh_sha256 info
- * @param   buffer Pointer to buffer to be processed
- * @param   len Length of buffer (in bytes) to be processed
- * @returns int Return 0 if the function runs without errors
- *
- */
-int mh_sha256_update_avx512 (struct mh_sha256_ctx * ctx,
-						const void* buffer, uint32_t len);
-
-
-/**
-  * @brief Finalize the message digests for multi-hash sha256.
+ * @brief Finalize the message digests for multi-hash sha256.
  *
  * Place the message digests in mh_sha256_digest,
  * which must have enough space for the outputs.
@@ -238,78 +196,58 @@ int mh_sha256_update_avx512 (struct mh_sha256_ctx * ctx,
  * @param   ctx Structure holding mh_sha256 info
  * @param   mh_sha256_digest The digest of mh_sha256
  * @returns int Return 0 if the function runs without errors
- *
+ * @deprecated Please use isal_mh_sha256_finalize() instead.
  */
-int mh_sha256_finalize_base (struct mh_sha256_ctx* ctx,
-						void* mh_sha256_digest);
+int
+mh_sha256_finalize_base(struct isal_mh_sha256_ctx *ctx, void *mh_sha256_digest);
 
 /**
- * @brief Finalize the message digests for combined multi-hash and murmur.
+ * @brief Initialize the isal_mh_sha256_ctx structure.
+ *
+ * @param  ctx Structure holding mh_sha256 info
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
+ */
+int
+isal_mh_sha256_init(struct isal_mh_sha256_ctx *ctx);
+
+/**
+ * @brief Multi-hash sha256 update.
+ *
+ * Can be called repeatedly to update hashes with new input data.
+ * This function determines what instruction sets are enabled and selects the
+ * appropriate version at runtime.
+ *
+ * @param  ctx Structure holding mh_sha256 info
+ * @param  buffer Pointer to buffer to be processed
+ * @param  len Length of buffer (in bytes) to be processed
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
+ */
+int
+isal_mh_sha256_update(struct isal_mh_sha256_ctx *ctx, const void *buffer, uint32_t len);
+
+/**
+ * @brief Finalize the message digests for multi-hash sha256.
  *
  * Place the message digest in mh_sha256_digest which must have enough space
  * for the outputs.
- *
- * @requires SSE
- *
- * @param   ctx Structure holding mh_sha256 info
- * @param   mh_sha256_digest The digest of mh_sha256
- * @returns int Return 0 if the function runs without errors
- *
- */
-int mh_sha256_finalize_sse (struct mh_sha256_ctx* ctx,
-						void* mh_sha256_digest);
-
-/**
- * @brief Finalize the message digests for combined multi-hash and murmur.
- *
- * Place the message digest in mh_sha256_digest which must have enough space
- * for the outputs.
- *
- * @requires AVX
+ * This function determines what instruction sets are enabled and selects the
+ * appropriate version at runtime.
  *
  * @param   ctx Structure holding mh_sha256 info
  * @param   mh_sha256_digest The digest of mh_sha256
- * @returns int Return 0 if the function runs without errors
- *
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
  */
-int mh_sha256_finalize_avx (struct mh_sha256_ctx* ctx,
-						void* mh_sha256_digest);
-
-/**
- * @brief Finalize the message digests for combined multi-hash and murmur.
- *
- * Place the message digest in mh_sha256_digest which must have enough space
- * for the outputs.
- *
- * @requires AVX2
- *
- * @param   ctx Structure holding mh_sha256 info
- * @param   mh_sha256_digest The digest of mh_sha256
- * @returns int Return 0 if the function runs without errors
- *
- */
-int mh_sha256_finalize_avx2 (struct mh_sha256_ctx* ctx,
-						void* mh_sha256_digest);
-
-/**
- * @brief Finalize the message digests for combined multi-hash and murmur.
- *
- * Place the message digest in mh_sha256_digest which must have enough space
- * for the outputs.
- *
- * @requires AVX512
- *
- * @param   ctx Structure holding mh_sha256 info
- * @param   mh_sha256_digest The digest of mh_sha256
- * @returns int Return 0 if the function runs without errors
- *
- */
-int mh_sha256_finalize_avx512 (struct mh_sha256_ctx* ctx,
-						void* mh_sha256_digest);
+int
+isal_mh_sha256_finalize(struct isal_mh_sha256_ctx *ctx, void *mh_sha256_digest);
 
 #ifdef __cplusplus
 }
 #endif
 
 #endif
-

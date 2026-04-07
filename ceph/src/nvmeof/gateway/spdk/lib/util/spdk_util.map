@@ -50,6 +50,7 @@
 	spdk_cpuset_zero;
 	spdk_cpuset_set_cpu;
 	spdk_cpuset_get_cpu;
+	spdk_cpuset_for_each_cpu;
 	spdk_cpuset_count;
 	spdk_cpuset_fmt;
 	spdk_cpuset_parse;
@@ -62,6 +63,10 @@
 	spdk_crc32_ieee_update;
 	spdk_crc32c_update;
 	spdk_crc32c_iov_update;
+	spdk_crc32c_nvme;
+
+	# public functions in crc64.h
+	spdk_crc64_nvme;
 
 	# public functions in dif.h
 	spdk_dif_ctx_init;
@@ -84,17 +89,29 @@
 	spdk_dif_get_length_with_md;
 	spdk_dif_remap_ref_tag;
 	spdk_dix_remap_ref_tag;
+	spdk_dif_pi_format_get_size;
 
 	# public functions in fd.h
 	spdk_fd_get_size;
 	spdk_fd_get_blocklen;
+	spdk_fd_set_nonblock;
+	spdk_fd_clear_nonblock;
 
 	# public functions in file.h
 	spdk_posix_file_load;
+	spdk_posix_file_load_from_name;
+	spdk_read_sysfs_attribute;
+	spdk_read_sysfs_attribute_uint32;
 
 	# public functions in hexlify.h
 	spdk_hexlify;
 	spdk_unhexlify;
+
+	# public functions in net.h
+	spdk_net_get_interface_name;
+	spdk_net_get_address_string;
+	spdk_net_is_loopback;
+	spdk_net_getaddr;
 
 	# public functions in pipe.h
 	spdk_pipe_create;
@@ -104,6 +121,10 @@
 	spdk_pipe_reader_bytes_available;
 	spdk_pipe_reader_get_buffer;
 	spdk_pipe_reader_advance;
+	spdk_pipe_group_create;
+	spdk_pipe_group_destroy;
+	spdk_pipe_group_add;
+	spdk_pipe_group_remove;
 
 	# public functions in string.h
 	spdk_sprintf_alloc;
@@ -135,8 +156,12 @@
 	spdk_iovmove;
 	spdk_ioviter_first;
 	spdk_ioviter_next;
+	spdk_ioviter_firstv;
+	spdk_ioviter_nextv;
 	spdk_iov_memset;
-	spdk_iov_one;
+	spdk_iov_xfer_init;
+	spdk_iov_xfer_from_buf;
+	spdk_iov_xfer_to_buf;
 	spdk_copy_iovs_to_buf;
 	spdk_copy_buf_to_iovs;
 	spdk_memset_s;
@@ -150,7 +175,10 @@
 	spdk_uuid_fmt_lower;
 	spdk_uuid_compare;
 	spdk_uuid_generate;
+	spdk_uuid_generate_sha1;
 	spdk_uuid_copy;
+	spdk_uuid_is_null;
+	spdk_uuid_set_null;
 
 	# public functions in fd_group.h
 	spdk_fd_group_create;
@@ -158,9 +186,15 @@
 	spdk_fd_group_get_epoll_event;
 	spdk_fd_group_wait;
 	spdk_fd_group_add;
+	spdk_fd_group_add_for_events;
+	spdk_fd_group_add_ext;
+	spdk_fd_group_get_default_event_handler_opts;
 	spdk_fd_group_remove;
 	spdk_fd_group_event_modify;
 	spdk_fd_group_get_fd;
+	spdk_fd_group_nest;
+	spdk_fd_group_unnest;
+	spdk_fd_group_set_wrapper;
 
 	# public functions in xor.h
 	spdk_xor_gen;
@@ -170,6 +204,11 @@
 	spdk_zipf_create;
 	spdk_zipf_free;
 	spdk_zipf_generate;
+
+	# public functions in md5.h
+	spdk_md5init;
+	spdk_md5final;
+	spdk_md5update;
 
 	local: *;
 };

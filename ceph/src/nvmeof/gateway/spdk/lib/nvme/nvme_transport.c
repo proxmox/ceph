@@ -2,7 +2,7 @@
  *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
  *   Copyright (c) 2021 Mellanox Technologies LTD. All rights reserved.
- *   Copyright (c) 2021, 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 /*
@@ -22,11 +22,15 @@ struct spdk_nvme_transport {
 TAILQ_HEAD(nvme_transport_list, spdk_nvme_transport) g_spdk_nvme_transports =
 	TAILQ_HEAD_INITIALIZER(g_spdk_nvme_transports);
 
-struct spdk_nvme_transport g_spdk_transports[SPDK_MAX_NUM_OF_TRANSPORTS] = {};
-int g_current_transport_index = 0;
+static struct spdk_nvme_transport g_transports[SPDK_MAX_NUM_OF_TRANSPORTS] = {};
+static int g_current_transport_index = 0;
 
 struct spdk_nvme_transport_opts g_spdk_nvme_transport_opts = {
 	.rdma_srq_size = 0,
+	.rdma_max_cq_size = 0,
+	.rdma_cm_event_timeout_ms = 1000,
+	.rdma_umr_per_io = false,
+	.tcp_connect_timeout_ms = 0,
 };
 
 const struct spdk_nvme_transport *
@@ -43,7 +47,7 @@ nvme_get_next_transport(const struct spdk_nvme_transport *transport)
 
 /*
  * Unfortunately, due to NVMe PCIe multiprocess support, we cannot store the
- * transport object in either the controller struct or the admin qpair. THis means
+ * transport object in either the controller struct or the admin qpair. This means
  * that a lot of admin related transport calls will have to call nvme_get_transport
  * in order to know which functions to call.
  * In the I/O path, we have the ability to store the transport struct in the I/O
@@ -90,7 +94,7 @@ spdk_nvme_transport_register(const struct spdk_nvme_transport_ops *ops)
 		assert(false);
 		return;
 	}
-	new_transport = &g_spdk_transports[g_current_transport_index++];
+	new_transport = &g_transports[g_current_transport_index++];
 
 	new_transport->ops = *ops;
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, new_transport, link);
@@ -128,6 +132,24 @@ nvme_transport_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 }
 
 int
+nvme_transport_ctrlr_scan_attached(struct spdk_nvme_probe_ctx *probe_ctx)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(probe_ctx->trid.trstring);
+
+	if (transport == NULL) {
+		SPDK_ERRLOG("Transport %s doesn't exist.", probe_ctx->trid.trstring);
+		return -ENOENT;
+	}
+
+	if (transport->ops.ctrlr_scan_attached != NULL) {
+		return transport->ops.ctrlr_scan_attached(probe_ctx);
+	}
+	SPDK_ERRLOG("Transport %s does not support ctrlr_scan_attached callback\n",
+		    probe_ctx->trid.trstring);
+	return -ENOTSUP;
+}
+
+int
 nvme_transport_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr)
 {
 	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
@@ -143,6 +165,19 @@ nvme_transport_ctrlr_enable(struct spdk_nvme_ctrlr *ctrlr)
 
 	assert(transport != NULL);
 	return transport->ops.ctrlr_enable(ctrlr);
+}
+
+int
+nvme_transport_ctrlr_enable_interrupts(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_enable_interrupts != NULL) {
+		return transport->ops.ctrlr_enable_interrupts(ctrlr);
+	}
+
+	return -ENOTSUP;
 }
 
 int
@@ -200,7 +235,7 @@ nvme_queue_register_operation_completion(struct spdk_nvme_ctrlr *ctrlr, uint64_t
 {
 	struct nvme_register_completion *ctx;
 
-	ctx = spdk_zmalloc(sizeof(*ctx), 0, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
+	ctx = spdk_zmalloc(sizeof(*ctx), 0, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
 	if (ctx == NULL) {
 		return -ENOMEM;
 	}
@@ -212,9 +247,9 @@ nvme_queue_register_operation_completion(struct spdk_nvme_ctrlr *ctrlr, uint64_t
 	ctx->value = value;
 	ctx->pid = getpid();
 
-	nvme_robust_mutex_lock(&ctrlr->ctrlr_lock);
+	nvme_ctrlr_lock(ctrlr);
 	STAILQ_INSERT_TAIL(&ctrlr->register_operations, ctx, stailq);
-	nvme_robust_mutex_unlock(&ctrlr->ctrlr_lock);
+	nvme_ctrlr_unlock(ctrlr);
 
 	return 0;
 }
@@ -465,7 +500,7 @@ nvme_transport_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nv
 	int rc;
 
 	assert(transport != NULL);
-	if (!nvme_qpair_is_admin_queue(qpair)) {
+	if (!nvme_qpair_is_admin_queue(qpair) && qpair->transport == NULL) {
 		qpair->transport = transport;
 	}
 
@@ -534,14 +569,35 @@ nvme_transport_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk
 	transport->ops.ctrlr_disconnect_qpair(ctrlr, qpair);
 }
 
+int
+nvme_transport_qpair_get_fd(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair,
+			    struct spdk_event_handler_opts *opts)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.qpair_get_fd != NULL) {
+		return transport->ops.qpair_get_fd(qpair, opts);
+	}
+
+	return -ENOTSUP;
+}
+
 void
 nvme_transport_ctrlr_disconnect_qpair_done(struct spdk_nvme_qpair *qpair)
 {
 	if (qpair->active_proc == nvme_ctrlr_get_current_process(qpair->ctrlr) ||
 	    nvme_qpair_is_admin_queue(qpair)) {
-		nvme_qpair_abort_all_queued_reqs(qpair, 0);
+		nvme_qpair_abort_all_queued_reqs(qpair);
 	}
 	nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTED);
+
+	/* In interrupt mode qpairs that are added to poll group need an event for the
+	 * disconnected qpairs handling to kick in.
+	 */
+	if (qpair->poll_group) {
+		nvme_poll_group_write_disconnect_qpair_fd(qpair->poll_group->group);
+	}
 }
 
 int
@@ -558,18 +614,33 @@ nvme_transport_ctrlr_get_memory_domains(const struct spdk_nvme_ctrlr *ctrlr,
 	return 0;
 }
 
+int
+nvme_transport_ctrlr_process_transport_events(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+	int rc = 0;
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_process_transport_events) {
+		nvme_ctrlr_lock(ctrlr);
+		rc = transport->ops.ctrlr_process_transport_events(ctrlr);
+		nvme_ctrlr_unlock(ctrlr);
+	}
+
+	return rc;
+}
+
 void
-nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair, uint32_t dnr)
+nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair)
 {
 	const struct spdk_nvme_transport *transport;
 
-	assert(dnr <= 1);
 	if (spdk_likely(!nvme_qpair_is_admin_queue(qpair))) {
-		qpair->transport->ops.qpair_abort_reqs(qpair, dnr);
+		qpair->transport->ops.qpair_abort_reqs(qpair, qpair->abort_dnr);
 	} else {
 		transport = nvme_get_transport(qpair->ctrlr->trid.trstring);
 		assert(transport != NULL);
-		transport->ops.qpair_abort_reqs(qpair, dnr);
+		transport->ops.qpair_abort_reqs(qpair, qpair->abort_dnr);
 	}
 }
 
@@ -631,6 +702,19 @@ nvme_transport_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 	return transport->ops.qpair_iterate_requests(qpair, iter_fn, arg);
 }
 
+int
+nvme_transport_qpair_authenticate(struct spdk_nvme_qpair *qpair)
+{
+	const struct spdk_nvme_transport *transport;
+
+	transport = nvme_get_transport(qpair->ctrlr->trid.trstring);
+	if (transport->ops.qpair_authenticate == NULL) {
+		return -ENOTSUP;
+	}
+
+	return transport->ops.qpair_authenticate(qpair);
+}
+
 void
 nvme_transport_admin_qpair_abort_aers(struct spdk_nvme_qpair *qpair)
 {
@@ -650,6 +734,7 @@ nvme_transport_poll_group_create(const struct spdk_nvme_transport *transport)
 		group->transport = transport;
 		STAILQ_INIT(&group->connected_qpairs);
 		STAILQ_INIT(&group->disconnected_qpairs);
+		group->num_connected_qpairs = 0;
 	}
 
 	return group;
@@ -714,6 +799,14 @@ nvme_transport_poll_group_process_completions(struct spdk_nvme_transport_poll_gr
 			disconnected_qpair_cb);
 }
 
+void
+nvme_transport_poll_group_check_disconnected_qpairs(struct spdk_nvme_transport_poll_group *tgroup,
+		spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb)
+{
+	return tgroup->transport->ops.poll_group_check_disconnected_qpairs(tgroup,
+			disconnected_qpair_cb);
+}
+
 int
 nvme_transport_poll_group_destroy(struct spdk_nvme_transport_poll_group *tgroup)
 {
@@ -738,6 +831,8 @@ nvme_transport_poll_group_disconnect_qpair(struct spdk_nvme_qpair *qpair)
 
 		qpair->poll_group_tailq_head = &tgroup->disconnected_qpairs;
 		STAILQ_REMOVE(&tgroup->connected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
+		assert(tgroup->num_connected_qpairs > 0);
+		tgroup->num_connected_qpairs--;
 		STAILQ_INSERT_TAIL(&tgroup->disconnected_qpairs, qpair, poll_group_stailq);
 
 		return 0;
@@ -764,6 +859,7 @@ nvme_transport_poll_group_connect_qpair(struct spdk_nvme_qpair *qpair)
 			qpair->poll_group_tailq_head = &tgroup->connected_qpairs;
 			STAILQ_REMOVE(&tgroup->disconnected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
 			STAILQ_INSERT_TAIL(&tgroup->connected_qpairs, qpair, poll_group_stailq);
+			tgroup->num_connected_qpairs++;
 		}
 
 		return rc == -EINPROGRESS ? 0 : rc;
@@ -819,10 +915,14 @@ spdk_nvme_transport_get_opts(struct spdk_nvme_transport_opts *opts, size_t opts_
 	} \
 
 	SET_FIELD(rdma_srq_size);
+	SET_FIELD(rdma_max_cq_size);
+	SET_FIELD(rdma_cm_event_timeout_ms);
+	SET_FIELD(rdma_umr_per_io);
+	SET_FIELD(tcp_connect_timeout_ms);
 
 	/* Do not remove this statement, you should always update this statement when you adding a new field,
 	 * and do not forget to add the SET_FIELD statement for your added field. */
-	SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_transport_opts) == 12, "Incorrect size");
+	SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_transport_opts) == 32, "Incorrect size");
 
 #undef SET_FIELD
 }
@@ -846,10 +946,36 @@ spdk_nvme_transport_set_opts(const struct spdk_nvme_transport_opts *opts, size_t
 	} \
 
 	SET_FIELD(rdma_srq_size);
+	SET_FIELD(rdma_max_cq_size);
+	SET_FIELD(rdma_cm_event_timeout_ms);
+	SET_FIELD(rdma_umr_per_io);
+	SET_FIELD(tcp_connect_timeout_ms);
+
+	if (g_spdk_nvme_transport_opts.tcp_connect_timeout_ms > INT_MAX) {
+		SPDK_ERRLOG("tcp_connect_timeout_ms opt cannot exceed INT_MAX\n");
+		return -EINVAL;
+	}
 
 	g_spdk_nvme_transport_opts.opts_size = opts->opts_size;
 
 #undef SET_FIELD
 
 	return 0;
+}
+
+volatile struct spdk_nvme_registers *
+spdk_nvme_ctrlr_get_registers(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	if (transport == NULL) {
+		/* Transport does not exist. */
+		return NULL;
+	}
+
+	if (transport->ops.ctrlr_get_registers) {
+		return transport->ops.ctrlr_get_registers(ctrlr);
+	}
+
+	return NULL;
 }

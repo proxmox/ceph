@@ -1,8 +1,9 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
-#include <stdio.h>
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <errno.h>
-#include <libxnvmec.h>
+#include <libxnvme.h>
 
 #define QDEPTH_MAX 16
 #define QDEPTH_DEF 4
@@ -51,6 +52,7 @@ struct iowork {
 	struct xnvme_queue *queue;
 	uint32_t qdepth; ///< Intended queue-pressure / out-standing I/O
 	uint32_t nsid;
+	uint32_t opc;
 
 	struct iowork_range range; ///< Range to confine I/O inside of
 
@@ -94,12 +96,12 @@ iowork_pp(struct iowork *work)
 	printf("  io.nbytes: %zu\n", work->io.nbytes);
 	printf("  io.naddr: %zu\n", work->io.naddr);
 	printf("  vectored: %d\n", work->vectored);
-	printf("  nworkers: %d\n", work->nworkers);
-	printf("  range.nbytes: %zu\n", work->range.nbytes);
-	printf("  range.naddr: %zu\n", work->range.naddr);
-	printf("  range.slba: %u\n", work->range.slba);
-	printf("  range.elba: %u\n", work->range.elba);
-	printf("  nio: %zu\n", work->nio);
+	printf("  nworkers: %" PRIu32 "\n", work->nworkers);
+	printf("  range.nbytes: %" PRIu64 "\n", work->range.nbytes);
+	printf("  range.naddr: %" PRIu64 "\n", work->range.naddr);
+	printf("  range.slba: %" PRIu32 "\n", work->range.slba);
+	printf("  range.elba: %" PRIu32 "\n", work->range.elba);
+	printf("  nio: %" PRIu64 "\n", work->nio);
 
 	return 0;
 }
@@ -117,8 +119,8 @@ _submit(struct iowork *work, struct ioworker *worker, struct xnvme_cmd_ctx *ctx)
 		}
 
 submitv:
-		err = xnvme_cmd_passv(ctx, worker->vec, worker->vec_cnt, work->io.nbytes, NULL, 0,
-				      0);
+		err = xnvme_cmd_pass_iov(ctx, worker->vec, worker->vec_cnt, work->io.nbytes, NULL,
+					 0);
 		switch (err) {
 		case 0:
 			work->stats.nsubmissions += 1;
@@ -130,7 +132,7 @@ submitv:
 			goto submitv;
 
 		default:
-			XNVME_DEBUG("FAILED: xnvme_cmd_passv(), err: %d", err);
+			XNVME_DEBUG("FAILED: xnvme_cmd_pass_iov(), err: %d", err);
 			work->stats.nerrors += 1;
 			xnvme_queue_put_cmd_ctx(work->queue, ctx);
 			return err;
@@ -162,13 +164,13 @@ submit:
 }
 
 static int
-_submit_sync(struct iowork *work, int opcode)
+_submit_sync(struct iowork *work)
 {
 	struct xnvme_cmd_ctx ctx = xnvme_cmd_ctx_from_dev(work->dev);
 	struct ioworker *worker = &work->workers[0];
 	int err;
 	ctx.cmd.common.nsid = work->nsid;
-	ctx.cmd.common.opcode = opcode;
+	ctx.cmd.common.opcode = work->opc;
 	ctx.cmd.nvm.nlb = work->io.nlb;
 
 	if (work->vectored) {
@@ -181,10 +183,10 @@ _submit_sync(struct iowork *work, int opcode)
 			}
 
 			ctx.cmd.nvm.slba = work->range.slba + i * work->vec_cnt;
-			err = xnvme_cmd_passv(&ctx, worker->vec, worker->vec_cnt, work->io.nbytes,
-					      NULL, 0, 0);
+			err = xnvme_cmd_pass_iov(&ctx, worker->vec, worker->vec_cnt,
+						 work->io.nbytes, NULL, 0);
 			if (err) {
-				XNVME_DEBUG("FAILED: xnvme_cmd_passv(), err: %d", err);
+				XNVME_DEBUG("FAILED: xnvme_cmd_pass_iov(), err: %d", err);
 				return err;
 			} else {
 				work->stats.nsubmissions += 1;
@@ -225,7 +227,7 @@ on_completion(struct xnvme_cmd_ctx *ctx, void *cb_arg)
 	work->stats.ncompletions += 1;
 
 	if (xnvme_cmd_ctx_cpl_status(ctx)) {
-		xnvmec_perr("on_completion()", errno);
+		xnvme_cli_perr("on_completion()", errno);
 		xnvme_cmd_ctx_pr(ctx, XNVME_PR_DEF);
 		goto error;
 	}
@@ -235,6 +237,10 @@ on_completion(struct xnvme_cmd_ctx *ctx, void *cb_arg)
 		return;
 	}
 
+	// Recreate context
+	ctx->cmd.common.nsid = work->nsid;
+	ctx->cmd.common.opcode = work->opc;
+	ctx->cmd.nvm.nlb = work->io.nlb;
 	ctx->cmd.nvm.slba = ++(work->cur.slba);
 
 	_submit(work, worker, ctx);
@@ -263,24 +269,24 @@ iowork_teardown(struct iowork *work)
 
 	err = xnvme_queue_term(work->queue);
 	if (err) {
-		xnvmec_perr("xnvme_queue_term()", err);
+		xnvme_cli_perr("xnvme_queue_term()", err);
 	}
 
 	return 0;
 }
 
 static int
-iowork_from_cli(struct xnvmec *cli, struct iowork *work)
+iowork_from_cli(struct xnvme_cli *cli, struct iowork *work)
 {
 	int err;
 
-	xnvmec_buf_fill(work, sizeof(*work), "zero");
+	xnvme_buf_fill(work, sizeof(*work), "zero");
 
 	work->dev = cli->args.dev;
 	work->nsid = xnvme_dev_get_nsid(work->dev);
 	work->geo = xnvme_dev_get_geo(work->dev);
-	work->qdepth = cli->given[XNVMEC_OPT_QDEPTH] ? cli->args.qdepth : QDEPTH_DEF;
-	work->vectored = cli->given[XNVMEC_OPT_VEC_CNT] && cli->args.vec_cnt;
+	work->qdepth = cli->given[XNVME_CLI_OPT_QDEPTH] ? cli->args.qdepth : QDEPTH_DEF;
+	work->vectored = cli->given[XNVME_CLI_OPT_VEC_CNT] && cli->args.vec_cnt;
 	work->vec_cnt = work->vectored ? cli->args.vec_cnt : 1;
 
 	if (((work->qdepth) < 1) || (work->qdepth > QDEPTH_MAX)) {
@@ -307,7 +313,7 @@ iowork_from_cli(struct xnvmec *cli, struct iowork *work)
 		XNVME_DEBUG("FAILED: xnvme_buf_alloc(data), err: %d", errno);
 		goto failed;
 	}
-	xnvmec_buf_fill(work->wbuf, work->range.nbytes, "rand-t");
+	xnvme_buf_fill(work->wbuf, work->range.nbytes, "rand-t");
 
 	work->rbuf = xnvme_buf_alloc(cli->args.dev, work->range.nbytes);
 	if (!work->rbuf) {
@@ -315,7 +321,7 @@ iowork_from_cli(struct xnvmec *cli, struct iowork *work)
 		XNVME_DEBUG("FAILED: xnvme_buf_alloc(buf), err: %d", errno);
 		goto failed;
 	}
-	xnvmec_buf_fill(work->rbuf, work->io.nbytes, "zero");
+	xnvme_buf_fill(work->rbuf, work->io.nbytes, "zero");
 
 	err = xnvme_queue_init(work->dev, work->qdepth * 2, 0, &work->queue);
 	if (err) {
@@ -341,7 +347,7 @@ iowork_from_cli(struct xnvmec *cli, struct iowork *work)
 			XNVME_DEBUG("FAILED: xnvme_buf_alloc(vec), err: %d", errno);
 			goto failed;
 		}
-		xnvmec_buf_fill(worker->vec, sizeof(*worker->vec) * worker->vec_cnt, "zero");
+		xnvme_buf_fill(worker->vec, sizeof(*worker->vec) * worker->vec_cnt, "zero");
 	}
 
 	return 0;
@@ -352,14 +358,14 @@ failed:
 }
 
 static int
-start_workers(struct iowork *work, int opcode)
+start_workers(struct iowork *work)
 {
 	for (uint32_t i = 0; i < work->nworkers; ++i) {
 		int err;
 		struct xnvme_cmd_ctx *ctx = xnvme_queue_get_cmd_ctx(work->queue);
 		struct ioworker *worker = &work->workers[i];
 		ctx->cmd.common.nsid = work->nsid;
-		ctx->cmd.common.opcode = opcode;
+		ctx->cmd.common.opcode = work->opc;
 		ctx->cmd.nvm.nlb = work->io.nlb;
 		ctx->cmd.nvm.slba = work->range.slba + i * work->vec_cnt;
 		ctx->async.cb_arg = worker;
@@ -375,15 +381,15 @@ static int
 final(struct iowork work, int err)
 {
 	size_t diff;
-	xnvmec_pinf("exit-stats: {submitted: %u, completed: %u, ecount: %u}",
-		    work.stats.nsubmissions, work.stats.ncompletions, work.stats.nerrors);
+	xnvme_cli_pinf("exit-stats: {submitted: %u, completed: %u, ecount: %u}",
+		       work.stats.nsubmissions, work.stats.ncompletions, work.stats.nerrors);
 
-	diff = xnvmec_buf_diff(work.wbuf, work.rbuf, work.range.nbytes);
+	diff = xnvme_buf_diff(work.wbuf, work.rbuf, work.range.nbytes);
 	iowork_teardown(&work);
 
 	if (err || (work.stats.nerrors) || diff) {
-		xnvmec_pinf("ERR: {err: %d, nerrs: %zu, diff: %zu}", err, work.stats.nerrors,
-			    diff);
+		xnvme_cli_pinf("ERR: {err: %d, nerrs: %" PRIu64 ", diff: %" PRIu64 "}", err,
+			       work.stats.nerrors, diff);
 		return EIO;
 	}
 
@@ -391,7 +397,7 @@ final(struct iowork work, int err)
 }
 
 static int
-test_verify(struct xnvmec *cli)
+test_verify(struct xnvme_cli *cli)
 {
 	struct iowork work;
 	int err;
@@ -406,16 +412,15 @@ test_verify(struct xnvmec *cli)
 	xnvme_dev_pr(work.dev, XNVME_PR_DEF);
 
 	for (int i = 0; i < 2; i++) {
-		int opc;
 
 		iowork_stats_reset(&work.stats);
 		work.cur.data = i ? work.rbuf : work.wbuf;
-		opc = i ? XNVME_SPEC_NVM_OPC_READ : XNVME_SPEC_NVM_OPC_WRITE;
+		work.opc = i ? XNVME_SPEC_NVM_OPC_READ : XNVME_SPEC_NVM_OPC_WRITE;
 
 		// Fill queue with commands
-		err = start_workers(&work, opc);
+		err = start_workers(&work);
 		if (err) {
-			xnvmec_perr("_submit()", err);
+			xnvme_cli_perr("_submit()", err);
 			return final(work, err);
 		}
 
@@ -424,15 +429,16 @@ test_verify(struct xnvmec *cli)
 			int res = xnvme_queue_poke(work.queue, 0);
 			if (res < 0) {
 				err = res;
-				xnvmec_perr("xnvme_queue_poke()", err);
+				xnvme_cli_perr("xnvme_queue_poke()", err);
 				return final(work, err);
 			}
 		}
-		xnvmec_pinf("opc: %d, stats: {submitted: %u, completed: %u, ecount: %u}", opc,
-			    work.stats.nsubmissions, work.stats.ncompletions, work.stats.nerrors);
+		xnvme_cli_pinf("opc: %d, stats: {submitted: %u, completed: %u, ecount: %u}",
+			       work.opc, work.stats.nsubmissions, work.stats.ncompletions,
+			       work.stats.nerrors);
 
 		if (work.stats.ncompletions != work.nio) {
-			xnvmec_pinf("FAILED: logic-error; completions != submissions");
+			xnvme_cli_pinf("FAILED: logic-error; completions != submissions");
 			err = EIO;
 			return final(work, err);
 		}
@@ -442,7 +448,7 @@ test_verify(struct xnvmec *cli)
 }
 
 static int
-test_verify_sync(struct xnvmec *cli)
+test_verify_sync(struct xnvme_cli *cli)
 {
 	struct iowork work;
 	int err;
@@ -457,26 +463,25 @@ test_verify_sync(struct xnvmec *cli)
 	xnvme_dev_pr(work.dev, XNVME_PR_DEF);
 
 	for (int i = 0; i < 2; i++) {
-		int opc;
 
 		iowork_stats_reset(&work.stats);
 		work.cur.data = i ? work.rbuf : work.wbuf;
-		opc = i ? XNVME_SPEC_NVM_OPC_READ : XNVME_SPEC_NVM_OPC_WRITE;
+		work.opc = i ? XNVME_SPEC_NVM_OPC_READ : XNVME_SPEC_NVM_OPC_WRITE;
 
-		err = _submit_sync(&work, opc);
+		err = _submit_sync(&work);
 		if (err) {
-			xnvmec_perr("_submit()", err);
+			xnvme_cli_perr("_submit()", err);
 
 			return final(work, err);
 		}
 
-		xnvmec_pinf("opc: %d, stats: {submitted: %u, completed: %u, "
-			    "ecount: %u}",
-			    opc, work.stats.nsubmissions, work.stats.ncompletions,
-			    work.stats.nerrors);
+		xnvme_cli_pinf("opc: %d, stats: {submitted: %u, completed: %u, "
+			       "ecount: %u}",
+			       work.opc, work.stats.nsubmissions, work.stats.ncompletions,
+			       work.stats.nerrors);
 
 		if (work.stats.ncompletions != work.nio) {
-			xnvmec_pinf("FAILED: logic-error; completions != submissions");
+			xnvme_cli_pinf("FAILED: logic-error; completions != submissions");
 			err = EIO;
 			return final(work, err);
 		}
@@ -485,22 +490,20 @@ test_verify_sync(struct xnvmec *cli)
 	return final(work, err);
 }
 
-static struct xnvmec_sub g_subs[] = {
+static struct xnvme_cli_sub g_subs[] = {
 	{
 		"verify",
 		"Write, then read and compare",
 		"Write, then read and compare",
 		test_verify,
 		{
-			{XNVMEC_OPT_URI, XNVMEC_POSA},
+			{XNVME_CLI_OPT_POSA_TITLE, XNVME_CLI_SKIP},
+			{XNVME_CLI_OPT_URI, XNVME_CLI_POSA},
 
-			{XNVMEC_OPT_DEV_NSID, XNVMEC_LOPT},
-			{XNVMEC_OPT_BE, XNVMEC_LOPT},
-			{XNVMEC_OPT_SYNC, XNVMEC_LOPT},
-			{XNVMEC_OPT_ASYNC, XNVMEC_LOPT},
-			{XNVMEC_OPT_ADMIN, XNVMEC_LOPT},
-			{XNVMEC_OPT_DIRECT, XNVMEC_LOPT},
-			{XNVMEC_OPT_VEC_CNT, XNVMEC_LOPT},
+			{XNVME_CLI_OPT_NON_POSA_TITLE, XNVME_CLI_SKIP},
+			{XNVME_CLI_OPT_VEC_CNT, XNVME_CLI_LOPT},
+
+			XNVME_CLI_ASYNC_OPTS,
 		},
 	},
 	{
@@ -509,20 +512,18 @@ static struct xnvmec_sub g_subs[] = {
 		"Write, then read and compare",
 		test_verify_sync,
 		{
-			{XNVMEC_OPT_URI, XNVMEC_POSA},
+			{XNVME_CLI_OPT_POSA_TITLE, XNVME_CLI_SKIP},
+			{XNVME_CLI_OPT_URI, XNVME_CLI_POSA},
 
-			{XNVMEC_OPT_DEV_NSID, XNVMEC_LOPT},
-			{XNVMEC_OPT_BE, XNVMEC_LOPT},
-			{XNVMEC_OPT_SYNC, XNVMEC_LOPT},
-			{XNVMEC_OPT_ASYNC, XNVMEC_LOPT},
-			{XNVMEC_OPT_ADMIN, XNVMEC_LOPT},
-			{XNVMEC_OPT_DIRECT, XNVMEC_LOPT},
-			{XNVMEC_OPT_VEC_CNT, XNVMEC_LOPT},
+			{XNVME_CLI_OPT_NON_POSA_TITLE, XNVME_CLI_SKIP},
+			{XNVME_CLI_OPT_VEC_CNT, XNVME_CLI_LOPT},
+
+			XNVME_CLI_SYNC_OPTS,
 		},
 	},
 };
 
-static struct xnvmec g_cli = {
+static struct xnvme_cli g_cli = {
 	.title = "Test xNVMe basic buffer alloc/free",
 	.descr_short = "Test xNVMe basic buffer alloc/free",
 	.subs = g_subs,
@@ -532,5 +533,5 @@ static struct xnvmec g_cli = {
 int
 main(int argc, char **argv)
 {
-	return xnvmec(&g_cli, argc, argv, XNVMEC_INIT_DEV_OPEN);
+	return xnvme_cli_run(&g_cli, argc, argv, XNVME_CLI_INIT_DEV_OPEN);
 }

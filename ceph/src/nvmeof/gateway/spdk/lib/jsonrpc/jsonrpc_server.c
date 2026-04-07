@@ -1,11 +1,14 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
- *   Copyright (C) 2016 Intel Corporation.
- *   All rights reserved.
+ *   Copyright (C) 2016 Intel Corporation. All rights reserved.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "jsonrpc_internal.h"
 
 #include "spdk/util.h"
+
+static enum spdk_log_level g_rpc_log_level = SPDK_LOG_DISABLED;
+static FILE *g_rpc_log_file = NULL;
 
 struct jsonrpc_request {
 	const struct spdk_json_val *version;
@@ -13,6 +16,54 @@ struct jsonrpc_request {
 	const struct spdk_json_val *params;
 	const struct spdk_json_val *id;
 };
+
+void
+spdk_jsonrpc_set_log_level(enum spdk_log_level level)
+{
+	assert(level >= SPDK_LOG_DISABLED);
+	assert(level <= SPDK_LOG_DEBUG);
+	g_rpc_log_level = level;
+}
+
+void
+spdk_jsonrpc_set_log_file(FILE *file)
+{
+	g_rpc_log_file = file;
+}
+
+static void
+remove_newlines(char *text)
+{
+	int i = 0, j = 0;
+
+	while (text[i] != '\0') {
+		if (text[i] != '\n') {
+			text[j++] = text[i];
+		}
+		i++;
+	}
+	text[j] = '\0';
+}
+
+static void
+jsonrpc_log(char *buf, const char *prefix)
+{
+	/* Some custom applications have enabled SPDK_JSON_PARSE_FLAG_ALLOW_COMMENTS
+	 * to allow comments in JSON RPC objects. To keep backward compatibility of
+	 * these applications, remove newlines only if JSON RPC logging is enabled.
+	 */
+	if (g_rpc_log_level != SPDK_LOG_DISABLED || g_rpc_log_file != NULL) {
+		remove_newlines(buf);
+	}
+
+	if (g_rpc_log_level != SPDK_LOG_DISABLED) {
+		spdk_log(g_rpc_log_level, NULL, 0, NULL, "%s%s\n", prefix, buf);
+	}
+
+	if (g_rpc_log_file != NULL) {
+		spdk_flog(g_rpc_log_file, NULL, 0, NULL, "%s%s\n", prefix, buf);
+	}
+}
 
 static int
 capture_val(const struct spdk_json_val *val, void *out)
@@ -98,7 +149,8 @@ jsonrpc_server_write_cb(void *cb_ctx, const void *data, size_t size)
 	if (new_size != request->send_buf_size) {
 		uint8_t *new_buf;
 
-		new_buf = realloc(request->send_buf, new_size);
+		/* Add extra byte for the null terminator. */
+		new_buf = realloc(request->send_buf, new_size + 1);
 		if (new_buf == NULL) {
 			SPDK_ERRLOG("Resizing send_buf failed (current size %zu, new size %zu)\n",
 				    request->send_buf_size, new_size);
@@ -136,7 +188,10 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 		return -1;
 	}
 
+	pthread_spin_lock(&conn->queue_lock);
 	conn->outstanding_requests++;
+	STAILQ_INSERT_TAIL(&conn->outstanding_queue, request, link);
+	pthread_spin_unlock(&conn->queue_lock);
 
 	request->conn = conn;
 
@@ -150,6 +205,8 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 
 	memcpy(request->recv_buffer, json, len);
 	request->recv_buffer[len] = '\0';
+
+	jsonrpc_log(request->recv_buffer, "request: ");
 
 	if (rc > 0 && rc <= SPDK_JSONRPC_MAX_VALUES) {
 		request->values_cnt = rc;
@@ -165,7 +222,8 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 	request->send_offset = 0;
 	request->send_len = 0;
 	request->send_buf_size = SPDK_JSONRPC_SEND_BUF_SIZE_INIT;
-	request->send_buf = malloc(request->send_buf_size);
+	/* Add extra byte for the null terminator. */
+	request->send_buf = malloc(request->send_buf_size + 1);
 	if (request->send_buf == NULL) {
 		SPDK_ERRLOG("Failed to allocate send_buf (%zu bytes)\n", request->send_buf_size);
 		jsonrpc_free_request(request);
@@ -226,6 +284,11 @@ begin_response(struct spdk_jsonrpc_request *request)
 {
 	struct spdk_json_write_ctx *w = request->response;
 
+	/* The assertion below ensures that no response data has been written yet.
+	 * Otherwise, it would result in malformed JSON.
+	 */
+	assert(request->send_len == 0);
+
 	spdk_json_write_object_begin(w);
 	spdk_json_write_named_string(w, "jsonrpc", "2.0");
 
@@ -262,6 +325,9 @@ end_response(struct spdk_jsonrpc_request *request)
 void
 jsonrpc_free_request(struct spdk_jsonrpc_request *request)
 {
+	struct spdk_jsonrpc_request *req;
+	struct spdk_jsonrpc_server_conn *conn;
+
 	if (!request) {
 		return;
 	}
@@ -269,11 +335,31 @@ jsonrpc_free_request(struct spdk_jsonrpc_request *request)
 	/* We must send or skip response explicitly */
 	assert(request->response == NULL);
 
-	request->conn->outstanding_requests--;
+	conn = request->conn;
+	if (conn != NULL) {
+		pthread_spin_lock(&conn->queue_lock);
+		conn->outstanding_requests--;
+		STAILQ_FOREACH(req, &conn->outstanding_queue, link) {
+			if (req == request) {
+				STAILQ_REMOVE(&conn->outstanding_queue,
+					      req, spdk_jsonrpc_request, link);
+				break;
+			}
+		}
+		pthread_spin_unlock(&conn->queue_lock);
+	}
 	free(request->recv_buffer);
 	free(request->values);
 	free(request->send_buf);
 	free(request);
+}
+
+void
+jsonrpc_complete_request(struct spdk_jsonrpc_request *request)
+{
+	jsonrpc_log(request->send_buf, "response: ");
+
+	jsonrpc_free_request(request);
 }
 
 struct spdk_json_write_ctx *
@@ -310,11 +396,22 @@ spdk_jsonrpc_send_bool_response(struct spdk_jsonrpc_request *request, bool value
 	spdk_jsonrpc_end_result(request, w);
 }
 
+static void
+jsonrpc_reset_response(struct spdk_jsonrpc_request *request)
+{
+	spdk_json_write_reset(request->response);
+	request->send_len = 0; /* to skip all previous data previously written by jsonrpc_server_write_cb */
+}
+
 void
 spdk_jsonrpc_send_error_response(struct spdk_jsonrpc_request *request,
 				 int error_code, const char *msg)
 {
-	struct spdk_json_write_ctx *w = begin_response(request);
+	struct spdk_json_write_ctx *w;
+
+	jsonrpc_reset_response(request);
+
+	w = begin_response(request);
 
 	spdk_json_write_named_object_begin(w, "error");
 	spdk_json_write_named_int32(w, "code", error_code);
@@ -328,8 +425,12 @@ void
 spdk_jsonrpc_send_error_response_fmt(struct spdk_jsonrpc_request *request,
 				     int error_code, const char *fmt, ...)
 {
-	struct spdk_json_write_ctx *w = begin_response(request);
+	struct spdk_json_write_ctx *w;
 	va_list args;
+
+	jsonrpc_reset_response(request);
+
+	w = begin_response(request);
 
 	spdk_json_write_named_object_begin(w, "error");
 	spdk_json_write_named_int32(w, "code", error_code);

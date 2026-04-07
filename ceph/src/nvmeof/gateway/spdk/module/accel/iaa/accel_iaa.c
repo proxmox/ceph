@@ -1,5 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2022 Intel Corporation.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES.
  *   All rights reserved.
  */
 
@@ -7,7 +8,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_internal/accel_module.h"
+#include "spdk/accel_module.h"
 #include "spdk/log.h"
 #include "spdk_internal/idxd.h"
 
@@ -50,7 +51,7 @@ struct idxd_io_channel {
 	enum channel_state		state;
 	struct spdk_poller		*poller;
 	uint32_t			num_outstanding;
-	TAILQ_HEAD(, spdk_accel_task)	queued_tasks;
+	STAILQ_HEAD(, spdk_accel_task)	queued_tasks;
 };
 
 static struct spdk_io_channel *iaa_get_io_channel(void);
@@ -60,7 +61,7 @@ idxd_select_device(struct idxd_io_channel *chan)
 {
 	uint32_t count = 0;
 	struct idxd_device *dev;
-	uint32_t socket_id = spdk_env_get_socket_id(spdk_env_get_current_core());
+	uint32_t numa_id = spdk_env_get_numa_id(spdk_env_get_current_core());
 
 	/*
 	 * We allow channels to share underlying devices,
@@ -77,7 +78,7 @@ idxd_select_device(struct idxd_io_channel *chan)
 		dev = g_next_dev;
 		pthread_mutex_unlock(&g_dev_lock);
 
-		if (socket_id != spdk_idxd_get_socket(dev->iaa)) {
+		if (numa_id != spdk_idxd_get_socket(dev->iaa)) {
 			continue;
 		}
 
@@ -88,11 +89,11 @@ idxd_select_device(struct idxd_io_channel *chan)
 		 */
 		chan->chan = spdk_idxd_get_channel(dev->iaa);
 		if (chan->chan != NULL) {
-			SPDK_DEBUGLOG(accel_iaa, "On socket %d using device on socket %d\n",
-				      socket_id, spdk_idxd_get_socket(dev->iaa));
+			SPDK_DEBUGLOG(accel_iaa, "On socket %d using device on numa %d\n",
+				      numa_id, spdk_idxd_get_socket(dev->iaa));
 			return dev;
 		}
-	} while (count++ < g_num_devices);
+	} while (++count < g_num_devices);
 
 	/* We are out of available channels and/or devices for the local socket. We fix the number
 	 * of channels that we allocate per device and only allocate devices on the same socket
@@ -129,19 +130,19 @@ _process_single_task(struct spdk_io_channel *ch, struct spdk_accel_task *task)
 	idxd_task = SPDK_CONTAINEROF(task, struct idxd_task, task);
 	idxd_task->chan = chan;
 
-	/* TODO: iovec supprot */
+	/* TODO: iovec support */
 	if (task->d.iovcnt > 1 || task->s.iovcnt > 1) {
 		SPDK_ERRLOG("fatal: IAA does not support > 1 iovec\n");
 		assert(0);
 	}
 
 	switch (task->op_code) {
-	case ACCEL_OPC_COMPRESS:
+	case SPDK_ACCEL_OPC_COMPRESS:
 		rc = spdk_idxd_submit_compress(chan->chan, task->d.iovs[0].iov_base, task->d.iovs[0].iov_len,
 					       task->s.iovs, task->s.iovcnt, task->output_size, flags,
 					       iaa_done, idxd_task);
 		break;
-	case ACCEL_OPC_DECOMPRESS:
+	case SPDK_ACCEL_OPC_DECOMPRESS:
 		rc = spdk_idxd_submit_decompress(chan->chan, task->d.iovs, task->d.iovcnt, task->s.iovs,
 						 task->s.iovcnt, flags, iaa_done, idxd_task);
 		break;
@@ -170,14 +171,14 @@ iaa_submit_tasks(struct spdk_io_channel *ch, struct spdk_accel_task *first_task)
 
 	if (chan->state == IDXD_CHANNEL_ERROR) {
 		while (task) {
-			tmp = TAILQ_NEXT(task, link);
+			tmp = STAILQ_NEXT(task, link);
 			spdk_accel_task_complete(task, -EINVAL);
 			task = tmp;
 		}
 		return 0;
 	}
 
-	if (!TAILQ_EMPTY(&chan->queued_tasks)) {
+	if (!STAILQ_EMPTY(&chan->queued_tasks)) {
 		goto queue_tasks;
 	}
 
@@ -188,7 +189,7 @@ iaa_submit_tasks(struct spdk_io_channel *ch, struct spdk_accel_task *first_task)
 	 * passed in here.  Similar thing is done in the accel framework.
 	 */
 	while (task) {
-		tmp = TAILQ_NEXT(task, link);
+		tmp = STAILQ_NEXT(task, link);
 		rc = _process_single_task(ch, task);
 
 		if (rc == -EBUSY) {
@@ -203,8 +204,8 @@ iaa_submit_tasks(struct spdk_io_channel *ch, struct spdk_accel_task *first_task)
 
 queue_tasks:
 	while (task != NULL) {
-		tmp = TAILQ_NEXT(task, link);
-		TAILQ_INSERT_TAIL(&chan->queued_tasks, task, link);
+		tmp = STAILQ_NEXT(task, link);
+		STAILQ_INSERT_TAIL(&chan->queued_tasks, task, link);
 		task = tmp;
 	}
 	return 0;
@@ -223,11 +224,11 @@ idxd_poll(void *arg)
 	/* Check if there are any pending ops to process if the channel is active */
 	if (chan->state == IDXD_CHANNEL_ACTIVE) {
 		/* Submit queued tasks */
-		if (!TAILQ_EMPTY(&chan->queued_tasks)) {
-			task = TAILQ_FIRST(&chan->queued_tasks);
+		if (!STAILQ_EMPTY(&chan->queued_tasks)) {
+			task = STAILQ_FIRST(&chan->queued_tasks);
 			idxd_task = SPDK_CONTAINEROF(task, struct idxd_task, task);
 
-			TAILQ_INIT(&chan->queued_tasks);
+			STAILQ_INIT(&chan->queued_tasks);
 
 			iaa_submit_tasks(spdk_io_channel_from_ctx(idxd_task->chan), task);
 		}
@@ -243,18 +244,42 @@ accel_iaa_get_ctx_size(void)
 }
 
 static bool
-iaa_supports_opcode(enum accel_opcode opc)
+iaa_supports_opcode(enum spdk_accel_opcode opc)
 {
 	if (!g_iaa_initialized) {
 		return false;
 	}
 
 	switch (opc) {
-	case ACCEL_OPC_COMPRESS:
-	case ACCEL_OPC_DECOMPRESS:
+	case SPDK_ACCEL_OPC_COMPRESS:
+	case SPDK_ACCEL_OPC_DECOMPRESS:
 		return true;
 	default:
 		return false;
+	}
+}
+
+static bool
+iaa_compress_supports_algo(enum spdk_accel_comp_algo algo)
+{
+	if (algo == SPDK_ACCEL_COMP_ALGO_DEFLATE) {
+		return true;
+	}
+
+	return false;
+}
+
+static int
+iaa_get_compress_level_range(enum spdk_accel_comp_algo algo,
+			     uint32_t *min_level, uint32_t *max_level)
+{
+	switch (algo) {
+	case SPDK_ACCEL_COMP_ALGO_DEFLATE:
+		*min_level = 0;
+		*max_level = 0;
+		return 0;
+	default:
+		return -EINVAL;
 	}
 }
 
@@ -263,17 +288,17 @@ static void accel_iaa_exit(void *ctx);
 static void accel_iaa_write_config_json(struct spdk_json_write_ctx *w);
 
 static struct spdk_accel_module_if g_iaa_module = {
-	.module_init = accel_iaa_init,
-	.module_fini = accel_iaa_exit,
-	.write_config_json = accel_iaa_write_config_json,
-	.get_ctx_size = accel_iaa_get_ctx_size,
-	.name			= "iaa",
-	.supports_opcode	= iaa_supports_opcode,
-	.get_io_channel		= iaa_get_io_channel,
-	.submit_tasks		= iaa_submit_tasks
+	.module_init                 = accel_iaa_init,
+	.module_fini                 = accel_iaa_exit,
+	.write_config_json           = accel_iaa_write_config_json,
+	.get_ctx_size                = accel_iaa_get_ctx_size,
+	.name                        = "iaa",
+	.supports_opcode             = iaa_supports_opcode,
+	.get_io_channel	             = iaa_get_io_channel,
+	.submit_tasks                = iaa_submit_tasks,
+	.compress_supports_algo      = iaa_compress_supports_algo,
+	.get_compress_level_range    = iaa_get_compress_level_range,
 };
-
-SPDK_ACCEL_MODULE_REGISTER(iaa, &g_iaa_module)
 
 static int
 idxd_create_cb(void *io_device, void *ctx_buf)
@@ -289,7 +314,7 @@ idxd_create_cb(void *io_device, void *ctx_buf)
 
 	chan->dev = iaa;
 	chan->poller = SPDK_POLLER_REGISTER(idxd_poll, chan, 0);
-	TAILQ_INIT(&chan->queued_tasks);
+	STAILQ_INIT(&chan->queued_tasks);
 	chan->num_outstanding = 0;
 	chan->state = IDXD_CHANNEL_ACTIVE;
 
@@ -331,12 +356,25 @@ attach_cb(void *cb_ctx, struct spdk_idxd_device *iaa)
 	g_num_devices++;
 }
 
-void
+int
 accel_iaa_enable_probe(void)
 {
-	g_iaa_enable = true;
+	int rc;
+
+	if (g_iaa_enable) {
+		return -EALREADY;
+	}
+
 	/* TODO initially only support user mode w/IAA */
-	spdk_idxd_set_config(false);
+	rc = spdk_idxd_set_config(false);
+	if (rc != 0) {
+		return rc;
+	}
+
+	spdk_accel_module_list_add(&g_iaa_module);
+	g_iaa_enable = true;
+
+	return 0;
 }
 
 static bool
@@ -353,6 +391,7 @@ static int
 accel_iaa_init(void)
 {
 	if (!g_iaa_enable) {
+		assert(0);
 		return -EINVAL;
 	}
 
@@ -362,12 +401,10 @@ accel_iaa_init(void)
 	}
 
 	if (TAILQ_EMPTY(&g_iaa_devices)) {
-		SPDK_NOTICELOG("no available idxd devices\n");
-		return -EINVAL;
+		return -ENODEV;
 	}
 
 	g_iaa_initialized = true;
-	SPDK_NOTICELOG("Accel framework IAA module initialized.\n");
 	spdk_io_device_register(&g_iaa_module, idxd_create_cb, idxd_destroy_cb,
 				sizeof(struct idxd_io_channel), "iaa_accel_module");
 	return 0;
@@ -400,16 +437,17 @@ accel_iaa_write_config_json(struct spdk_json_write_ctx *w)
 		spdk_json_write_object_begin(w);
 		spdk_json_write_named_string(w, "method", "iaa_scan_accel_module");
 		spdk_json_write_object_end(w);
-		spdk_json_write_object_end(w);
 	}
 }
 
-SPDK_TRACE_REGISTER_FN(iaa_trace, "iaa", TRACE_GROUP_ACCEL_IAA)
+static void
+iaa_trace(void)
 {
-	spdk_trace_register_description("IAA_OP_SUBMIT", TRACE_ACCEL_IAA_OP_SUBMIT, OWNER_NONE, OBJECT_NONE,
-					0, SPDK_TRACE_ARG_TYPE_INT, "count");
-	spdk_trace_register_description("IAA_OP_COMPLETE", TRACE_ACCEL_IAA_OP_COMPLETE, OWNER_NONE,
+	spdk_trace_register_description("IAA_OP_SUBMIT", TRACE_ACCEL_IAA_OP_SUBMIT, OWNER_TYPE_NONE,
+					OBJECT_NONE, 0, SPDK_TRACE_ARG_TYPE_INT, "count");
+	spdk_trace_register_description("IAA_OP_COMPLETE", TRACE_ACCEL_IAA_OP_COMPLETE, OWNER_TYPE_NONE,
 					OBJECT_NONE, 0, SPDK_TRACE_ARG_TYPE_INT, "count");
 }
+SPDK_TRACE_REGISTER_FN(iaa_trace, "iaa", TRACE_GROUP_ACCEL_IAA)
 
 SPDK_LOG_REGISTER_COMPONENT(accel_iaa)

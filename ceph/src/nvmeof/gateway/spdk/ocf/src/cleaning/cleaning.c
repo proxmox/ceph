@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "cleaning.h"
@@ -93,6 +93,11 @@ void ocf_cleaner_run(ocf_cleaner_t cleaner, ocf_queue_t queue)
 	 */
 	if (!env_bit_test(ocf_cache_state_running, &cache->cache_state) ||
 			ocf_mngt_cache_is_locked(cache)) {
+		cleaner->end(cleaner, SLEEP_TIME_MS);
+		return;
+	}
+
+	if (ocf_cache_is_standby(cache)) {
 		cleaner->end(cleaner, SLEEP_TIME_MS);
 		return;
 	}

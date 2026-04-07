@@ -34,7 +34,7 @@ enum ftl_io_flags {
 enum ftl_io_type {
 	FTL_IO_READ,
 	FTL_IO_WRITE,
-	FTL_IO_UNMAP,
+	FTL_IO_TRIM,
 };
 
 #define FTL_IO_MAX_IOVEC 4
@@ -193,12 +193,6 @@ struct ftl_rq {
 	/* Size of extended metadata size for one entry */
 	uint64_t io_md_size;
 
-	/* Size of IO vector array */
-	uint64_t io_vec_size;
-
-	/* Array of IO vectors, its size equals to num_blocks */
-	struct iovec *io_vec;
-
 	/* Payload for IO */
 	void *io_payload;
 
@@ -291,6 +285,23 @@ struct ftl_basic_rq {
 	} io;
 };
 
+static inline bool
+ftl_rq_entry_loop_assert(struct ftl_rq *rq, struct ftl_rq_entry *entry, uint32_t count)
+{
+	assert(entry >= rq->entries);
+	assert(((uintptr_t)entry - (uintptr_t)rq->entries) % sizeof(*entry) == 0);
+	assert(count <= rq->num_blocks);
+
+	return true;
+}
+
+#define FTL_RQ_ENTRY_LOOP_FROM(rq, from, entry, count) \
+	for ((entry) = (from); \
+		(entry) < (&(rq)->entries[count]) && ftl_rq_entry_loop_assert(rq, entry, count); (entry)++)
+
+#define FTL_RQ_ENTRY_LOOP(rq, entry, count) \
+	FTL_RQ_ENTRY_LOOP_FROM(rq, (rq)->entries, entry, count)
+
 void ftl_io_fail(struct ftl_io *io, int status);
 void ftl_io_clear(struct ftl_io *io);
 void ftl_io_inc_req(struct ftl_io *io);
@@ -325,23 +336,6 @@ ftl_basic_rq_set_owner(struct ftl_basic_rq *brq, void (*cb)(struct ftl_basic_rq 
 {
 	brq->owner.cb = cb;
 	brq->owner.priv = priv;
-}
-
-static inline void
-ftl_rq_swap_payload(struct ftl_rq *a, uint32_t aidx,
-		    struct ftl_rq *b, uint32_t bidx)
-{
-	assert(aidx < a->num_blocks);
-	assert(bidx < b->num_blocks);
-
-	void *a_payload = a->io_vec[aidx].iov_base;
-	void *b_payload = b->io_vec[bidx].iov_base;
-
-	a->io_vec[aidx].iov_base = b_payload;
-	a->entries[aidx].io_payload = b_payload;
-
-	b->io_vec[bidx].iov_base = a_payload;
-	b->entries[bidx].io_payload = a_payload;
 }
 
 static inline struct ftl_rq *

@@ -1,21 +1,20 @@
-// Copyright (C) Mads Ynddal <m.ynddal@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_RAMDISK_ENABLED
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/stat.h>
-#include <libxnvme_adm.h>
-#include <libxnvme_file.h>
-#include <libxnvme_spec_fs.h>
 #include <xnvme_be_ramdisk.h>
 #include <xnvme_dev.h>
-#include <xnvme_be_posix.h>
+#include <xnvme_be_cbi.h>
 
 void
 xnvme_be_ramdisk_dev_close(struct xnvme_dev *dev)
@@ -35,7 +34,7 @@ xnvme_be_ramdisk_dev_close(struct xnvme_dev *dev)
 }
 
 size_t
-_xnvme_be_ramdisk_dev_get_size(struct xnvme_dev *dev)
+xnvme_be_ramdisk_dev_get_size(struct xnvme_dev *dev)
 {
 	const struct xnvme_ident *ident = &dev->ident;
 	char *gb_marker;
@@ -54,9 +53,8 @@ xnvme_be_ramdisk_dev_open(struct xnvme_dev *dev)
 {
 	struct xnvme_be_ramdisk_state *state = (void *)dev->be.state;
 	struct xnvme_opts *opts = &dev->opts;
-	int err;
 
-	size_t ramdisk_size = _xnvme_be_ramdisk_dev_get_size(dev);
+	size_t ramdisk_size = xnvme_be_ramdisk_dev_get_size(dev);
 	if (!ramdisk_size) {
 		return -EINVAL;
 	}
@@ -75,25 +73,12 @@ xnvme_be_ramdisk_dev_open(struct xnvme_dev *dev)
 		dev->be.sync = g_xnvme_be_ramdisk_sync;
 	}
 	if (!opts->async) {
-		dev->be.async = g_xnvme_be_posix_async_thrpool;
+		dev->be.async = g_xnvme_be_cbi_async_thrpool;
 	}
 
 	dev->ident.dtype = XNVME_DEV_TYPE_RAMDISK;
 	dev->ident.csi = XNVME_SPEC_CSI_NVM;
 	dev->ident.nsid = 1;
-
-	err = xnvme_be_dev_idfy(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_idfy()");
-		xnvme_be_ramdisk_dev_close(dev);
-		return -EINVAL;
-	}
-	err = xnvme_be_dev_derive_geometry(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_derive_geometry()");
-		xnvme_be_ramdisk_dev_close(dev);
-		return err;
-	}
 
 	return 0;
 }

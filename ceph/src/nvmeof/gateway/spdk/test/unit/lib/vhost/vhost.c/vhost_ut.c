@@ -7,7 +7,7 @@
 #include "spdk/stdinc.h"
 
 #include "CUnit/Basic.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "spdk/thread.h"
 #include "spdk_internal/mock.h"
 #include "common/lib/ut_multithread.c"
@@ -24,7 +24,11 @@ DEFINE_STUB(rte_vhost_get_vring_base, int, (int vid, uint16_t queue_id,
 		uint16_t *last_avail_idx, uint16_t *last_used_idx), 0);
 DEFINE_STUB(spdk_mem_register, int, (void *vaddr, size_t len), 0);
 DEFINE_STUB(spdk_mem_unregister, int, (void *vaddr, size_t len), 0);
+#if RTE_VERSION < RTE_VERSION_NUM(22, 11, 0, 0)
 DEFINE_STUB(rte_vhost_vring_call, int, (int vid, uint16_t vring_idx), 0);
+#else
+DEFINE_STUB(rte_vhost_vring_call_nonblock, int, (int vid, uint16_t vring_idx), 0);
+#endif
 DEFINE_STUB_V(rte_vhost_log_used_vring, (int vid, uint16_t vring_idx,
 		uint64_t offset, uint64_t len));
 
@@ -36,13 +40,8 @@ DEFINE_STUB(rte_vhost_enable_guest_notification, int,
 	    (int vid, uint16_t queue_id, int enable), 0);
 DEFINE_STUB(rte_vhost_get_ifname, int, (int vid, char *buf, size_t len), 0);
 DEFINE_STUB(rte_vhost_driver_start, int, (const char *name), 0);
-#if RTE_VERSION >= RTE_VERSION_NUM(21, 11, 0, 0)
 DEFINE_STUB(rte_vhost_driver_callback_register, int,
 	    (const char *path, struct rte_vhost_device_ops const *const ops), 0);
-#else
-DEFINE_STUB(rte_vhost_driver_callback_register, int,
-	    (const char *path, struct vhost_device_ops const *const ops), 0);
-#endif
 DEFINE_STUB(rte_vhost_driver_disable_features, int, (const char *path, uint64_t features), 0);
 DEFINE_STUB(rte_vhost_driver_set_features, int, (const char *path, uint64_t features), 0);
 DEFINE_STUB(rte_vhost_driver_register, int, (const char *path, uint64_t flags), 0);
@@ -67,6 +66,7 @@ DEFINE_STUB(rte_vhost_get_vring_base_from_inflight, int,
 	    (int vid, uint16_t queue_id, uint16_t *last_avail_idx, uint16_t *last_used_idx), 0);
 DEFINE_STUB(rte_vhost_extern_callback_register, int,
 	    (int vid, struct rte_vhost_user_extern_ops const *const ops, void *ctx), 0);
+DEFINE_STUB(spdk_iommu_is_enabled, bool, (void), 0);
 
 /* rte_vhost_user.c shutdowns vhost_user sessions in a separate pthread */
 DECLARE_WRAPPER(pthread_create, int, (pthread_t *thread, const pthread_attr_t *attr,
@@ -75,6 +75,7 @@ int
 pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void *),
 	       void *arg)
 {
+	*thread = 0;
 	start_routine(arg);
 	return 0;
 }
@@ -209,7 +210,7 @@ alloc_vdev(struct spdk_vhost_dev **vdev_p, const char *name, const char *cpumask
 	CU_ASSERT(rc == 0);
 	SPDK_CU_ASSERT_FATAL(vdev != NULL);
 	memset(vdev, 0, sizeof(*vdev));
-	rc = vhost_dev_register(vdev, name, cpumask, NULL, &g_vdev_backend, &g_vdev_user_backend);
+	rc = vhost_dev_register(vdev, name, cpumask, NULL, &g_vdev_backend, &g_vdev_user_backend, false);
 	if (rc == 0) {
 		*vdev_p = vdev;
 	} else {
@@ -568,57 +569,69 @@ vq_desc_guest_handle_completed_desc(struct spdk_vhost_virtqueue *vq, int16_t *gu
 static void
 vq_packed_ring_test(void)
 {
-	struct spdk_vhost_session vs = {};
-	struct spdk_vhost_virtqueue vq = {};
+
+	struct spdk_vhost_session *vs;
+	struct spdk_vhost_virtqueue *vq;
 	struct vring_packed_desc descs[4];
 	uint16_t guest_last_avail_idx = 0, guest_last_used_idx = 0;
 	uint16_t guest_avail_phase = 1, guest_used_phase = 1;
 	int i;
+	int rc;
 	int16_t chain_num;
 
-	vq.vring.desc_packed = descs;
-	vq.vring.size = 4;
+	/* See SPDK issue #3004 and #3310 Seems like a bug with gcc + asan on
+	 * Fedora 38, so we need to explicitly align the variable here.
+	 */
+	rc = posix_memalign((void **)&vs, SPDK_CACHE_LINE_SIZE, sizeof(*vs));
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	rc = posix_memalign((void **)&vq, SPDK_CACHE_LINE_SIZE, sizeof(*vq));
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	memset(vs, 0, sizeof(*vs));
+	memset(vq, 0, sizeof(*vq));
+
+	vq->vring.desc_packed = descs;
+	vq->vring.size = 4;
 
 	/* avail and used wrap counter are initialized to 1 */
-	vq.packed.avail_phase = 1;
-	vq.packed.used_phase = 1;
-	vq.packed.packed_ring = true;
+	vq->packed.avail_phase = 1;
+	vq->packed.used_phase = 1;
+	vq->packed.packed_ring = true;
 	memset(descs, 0, sizeof(descs));
 
-	CU_ASSERT(vhost_vq_packed_ring_is_avail(&vq) == false);
+	CU_ASSERT(vhost_vq_packed_ring_is_avail(vq) == false);
 
 	/* Guest send requests */
-	for (i = 0; i < vq.vring.size; i++) {
+	for (i = 0; i < vq->vring.size; i++) {
 		descs[guest_last_avail_idx].id = i;
 		/* Set the desc available */
-		vq_desc_guest_set_avail(&vq, &guest_last_avail_idx, &guest_avail_phase);
+		vq_desc_guest_set_avail(vq, &guest_last_avail_idx, &guest_avail_phase);
 	}
 	CU_ASSERT(guest_last_avail_idx == 0);
 	CU_ASSERT(guest_avail_phase == 0);
 
 	/* Host handle available descs */
-	CU_ASSERT(vhost_vq_packed_ring_is_avail(&vq) == true);
+	CU_ASSERT(vhost_vq_packed_ring_is_avail(vq) == true);
 	i = 0;
-	while (vhost_vq_packed_ring_is_avail(&vq)) {
-		CU_ASSERT(vhost_vring_packed_desc_get_buffer_id(&vq, vq.last_avail_idx, &chain_num) == i++);
+	while (vhost_vq_packed_ring_is_avail(vq)) {
+		CU_ASSERT(vhost_vring_packed_desc_get_buffer_id(vq, vq->last_avail_idx, &chain_num) == i++);
 		CU_ASSERT(chain_num == 1);
 	}
 
 	/* Host complete them out of order: 1, 0, 2. */
-	vhost_vq_packed_ring_enqueue(&vs, &vq, 1, 1, 1, 0);
-	vhost_vq_packed_ring_enqueue(&vs, &vq, 1, 0, 1, 0);
-	vhost_vq_packed_ring_enqueue(&vs, &vq, 1, 2, 1, 0);
+	vhost_vq_packed_ring_enqueue(vs, vq, 1, 1, 1, 0);
+	vhost_vq_packed_ring_enqueue(vs, vq, 1, 0, 1, 0);
+	vhost_vq_packed_ring_enqueue(vs, vq, 1, 2, 1, 0);
 
 	/* Host has got all the available request but only complete three requests */
-	CU_ASSERT(vq.last_avail_idx == 0);
-	CU_ASSERT(vq.packed.avail_phase == 0);
-	CU_ASSERT(vq.last_used_idx == 3);
-	CU_ASSERT(vq.packed.used_phase == 1);
+	CU_ASSERT(vq->last_avail_idx == 0);
+	CU_ASSERT(vq->packed.avail_phase == 0);
+	CU_ASSERT(vq->last_used_idx == 3);
+	CU_ASSERT(vq->packed.used_phase == 1);
 
 	/* Guest handle completed requests */
-	CU_ASSERT(vq_desc_guest_handle_completed_desc(&vq, &guest_last_used_idx, &guest_used_phase) == 1);
-	CU_ASSERT(vq_desc_guest_handle_completed_desc(&vq, &guest_last_used_idx, &guest_used_phase) == 0);
-	CU_ASSERT(vq_desc_guest_handle_completed_desc(&vq, &guest_last_used_idx, &guest_used_phase) == 2);
+	CU_ASSERT(vq_desc_guest_handle_completed_desc(vq, &guest_last_used_idx, &guest_used_phase) == 1);
+	CU_ASSERT(vq_desc_guest_handle_completed_desc(vq, &guest_last_used_idx, &guest_used_phase) == 0);
+	CU_ASSERT(vq_desc_guest_handle_completed_desc(vq, &guest_last_used_idx, &guest_used_phase) == 2);
 	CU_ASSERT(guest_last_used_idx == 3);
 	CU_ASSERT(guest_used_phase == 1);
 
@@ -626,39 +639,58 @@ vq_packed_ring_test(void)
 	for (i = 0; i < 3; i++) {
 		descs[guest_last_avail_idx].id = 2 - i;
 		/* Set the desc available */
-		vq_desc_guest_set_avail(&vq, &guest_last_avail_idx, &guest_avail_phase);
+		vq_desc_guest_set_avail(vq, &guest_last_avail_idx, &guest_avail_phase);
 	}
 
 	/* Host handle available descs */
-	CU_ASSERT(vhost_vq_packed_ring_is_avail(&vq) == true);
+	CU_ASSERT(vhost_vq_packed_ring_is_avail(vq) == true);
 	i = 2;
-	while (vhost_vq_packed_ring_is_avail(&vq)) {
-		CU_ASSERT(vhost_vring_packed_desc_get_buffer_id(&vq, vq.last_avail_idx, &chain_num) == i--);
+	while (vhost_vq_packed_ring_is_avail(vq)) {
+		CU_ASSERT(vhost_vring_packed_desc_get_buffer_id(vq, vq->last_avail_idx, &chain_num) == i--);
 		CU_ASSERT(chain_num == 1);
 	}
 
 	/* There are four requests in Host, the new three ones and left one */
-	CU_ASSERT(vq.last_avail_idx == 3);
-	/* Available wrap conter should overturn */
-	CU_ASSERT(vq.packed.avail_phase == 0);
+	CU_ASSERT(vq->last_avail_idx == 3);
+	/* Available wrap counter should overturn */
+	CU_ASSERT(vq->packed.avail_phase == 0);
 
 	/* Host complete all the requests */
-	vhost_vq_packed_ring_enqueue(&vs, &vq, 1, 1, 1, 0);
-	vhost_vq_packed_ring_enqueue(&vs, &vq, 1, 0, 1, 0);
-	vhost_vq_packed_ring_enqueue(&vs, &vq, 1, 3, 1, 0);
-	vhost_vq_packed_ring_enqueue(&vs, &vq, 1, 2, 1, 0);
+	vhost_vq_packed_ring_enqueue(vs, vq, 1, 1, 1, 0);
+	vhost_vq_packed_ring_enqueue(vs, vq, 1, 0, 1, 0);
+	vhost_vq_packed_ring_enqueue(vs, vq, 1, 3, 1, 0);
+	vhost_vq_packed_ring_enqueue(vs, vq, 1, 2, 1, 0);
 
-	CU_ASSERT(vq.last_used_idx == vq.last_avail_idx);
-	CU_ASSERT(vq.packed.used_phase == vq.packed.avail_phase);
+	CU_ASSERT(vq->last_used_idx == vq->last_avail_idx);
+	CU_ASSERT(vq->packed.used_phase == vq->packed.avail_phase);
 
 	/* Guest handle completed requests */
-	CU_ASSERT(vq_desc_guest_handle_completed_desc(&vq, &guest_last_used_idx, &guest_used_phase) == 1);
-	CU_ASSERT(vq_desc_guest_handle_completed_desc(&vq, &guest_last_used_idx, &guest_used_phase) == 0);
-	CU_ASSERT(vq_desc_guest_handle_completed_desc(&vq, &guest_last_used_idx, &guest_used_phase) == 3);
-	CU_ASSERT(vq_desc_guest_handle_completed_desc(&vq, &guest_last_used_idx, &guest_used_phase) == 2);
+	CU_ASSERT(vq_desc_guest_handle_completed_desc(vq, &guest_last_used_idx, &guest_used_phase) == 1);
+	CU_ASSERT(vq_desc_guest_handle_completed_desc(vq, &guest_last_used_idx, &guest_used_phase) == 0);
+	CU_ASSERT(vq_desc_guest_handle_completed_desc(vq, &guest_last_used_idx, &guest_used_phase) == 3);
+	CU_ASSERT(vq_desc_guest_handle_completed_desc(vq, &guest_last_used_idx, &guest_used_phase) == 2);
 
 	CU_ASSERT(guest_last_avail_idx == guest_last_used_idx);
 	CU_ASSERT(guest_avail_phase == guest_used_phase);
+	free(vq);
+	free(vs);
+}
+
+static void
+vhost_blk_construct_test(void)
+{
+	int ret;
+	struct spdk_vhost_dev *vdev = NULL;
+
+	ret = spdk_vhost_blk_construct("Malloc0", "0x1", "vhost.blk.0", NULL, NULL);
+	CU_ASSERT(ret == 0);
+
+	vdev = spdk_vhost_dev_find("Malloc0");
+	CU_ASSERT(vdev != NULL);
+	CU_ASSERT(strcmp("Malloc0", spdk_vhost_dev_get_name(vdev)) == 0);
+
+	ret = spdk_vhost_dev_remove(vdev);
+	CU_ASSERT(ret == 0);
 }
 
 int
@@ -667,7 +699,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("vhost_suite", test_setup, test_cleanup);
@@ -678,10 +709,9 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, remove_controller_test);
 	CU_ADD_TEST(suite, vq_avail_ring_get_test);
 	CU_ADD_TEST(suite, vq_packed_ring_test);
+	CU_ADD_TEST(suite, vhost_blk_construct_test);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

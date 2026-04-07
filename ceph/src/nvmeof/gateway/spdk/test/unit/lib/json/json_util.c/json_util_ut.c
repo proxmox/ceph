@@ -5,7 +5,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "json/json_util.c"
 
@@ -456,7 +456,7 @@ test_decode_uint16(void)
 
 	/* incorrect type */
 	v.type = SPDK_JSON_VAL_STRING;
-	v.start = "Strin";
+	v.start = "String";
 	v.len = 5;
 	CU_ASSERT(spdk_json_decode_uint16(&v, &i) != 0);
 
@@ -769,6 +769,48 @@ test_decode_string(void)
 	free(value);
 }
 
+static void
+test_decode_uuid(void)
+{
+	struct spdk_json_val v;
+	struct spdk_uuid expected, uuid = {};
+	const char *uuidstr = "e524acae-8c26-43e4-882a-461b8690583b";
+	const char *invalid = "e524acae-8c26";
+	int rc;
+
+	rc = spdk_uuid_parse(&expected, uuidstr);
+	CU_ASSERT_EQUAL(rc, 0);
+
+	/* Check a valid UUID */
+	v.type = SPDK_JSON_VAL_STRING;
+	v.start = (void *)uuidstr;
+	v.len = strlen(uuidstr);
+	rc = spdk_json_decode_uuid(&v, &uuid);
+	CU_ASSERT_EQUAL(rc, 0);
+	CU_ASSERT_EQUAL(spdk_uuid_compare(&uuid, &expected), 0);
+
+	/* Check empty string as UUID */
+	v.type = SPDK_JSON_VAL_STRING;
+	v.start = "";
+	v.len = 0;
+	rc = spdk_json_decode_uuid(&v, &uuid);
+	CU_ASSERT_EQUAL(rc, -1);
+
+	/* Check non-empty string that's not a UUID */
+	v.type = SPDK_JSON_VAL_STRING;
+	v.start = (void *)invalid;
+	v.len = strlen(invalid);
+	rc = spdk_json_decode_uuid(&v, &uuid);
+	CU_ASSERT_EQUAL(rc, -1);
+
+	/* Check decoding UUID on a non-string value */
+	v.type = SPDK_JSON_VAL_TRUE;
+	v.start = NULL;
+	v.len = 0;
+	rc = spdk_json_decode_uuid(&v, &uuid);
+	CU_ASSERT_EQUAL(rc, -1);
+}
+
 char ut_json_text[] =
 	"{"
 	"	\"string\": \"Some string data\","
@@ -955,7 +997,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("json", NULL, NULL);
@@ -972,16 +1013,15 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_decode_uint32);
 	CU_ADD_TEST(suite, test_decode_uint64);
 	CU_ADD_TEST(suite, test_decode_string);
+	CU_ADD_TEST(suite, test_decode_uuid);
 	CU_ADD_TEST(suite, test_find);
 	CU_ADD_TEST(suite, test_find_array);
 	CU_ADD_TEST(suite, test_iterating);
 	CU_ADD_TEST(suite, test_free_object);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 
-	CU_basic_run_tests();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 
 	return num_failures;

@@ -53,18 +53,12 @@ gen_conf() {
 	for ref_name in "${methods[@]}"; do
 		method=${ref_name#*method_} method=${method%_*} params=()
 
-		# FIXME: centos7's Bash got trapped in 2011:
-		# local -n ref=$ref_name -> local: -n: invalid option
-		# HACK: it with eval and partial refs instead.
-		eval "local refs=(\${!${ref_name}[@]})"
-		local param_ref
-
-		for param in "${refs[@]}"; do
-			param_ref="${ref_name}[$param]"
-			if [[ ${!param_ref} =~ ^([0-9]+|true|false|\{.*\})$ ]]; then
-				params+=("\"$param\": ${!param_ref}")
+		local -n refs=$ref_name
+		for param in "${!refs[@]}"; do
+			if [[ ${refs["$param"]} =~ ^([0-9]+|true|false|\{.*\})$ ]]; then
+				params+=("\"$param\": ${refs["$param"]}")
 			else
-				params+=("\"$param\": \"${!param_ref}\"")
+				params+=("\"$param\": \"${refs["$param"]}\"")
 			fi
 		done
 
@@ -129,7 +123,7 @@ get_native_nvme_bs() {
 	# between user space and the kernel back and forth.
 	local pci=$1 lbaf id
 
-	mapfile -t id < <("$rootdir/build/examples/identify" -r trtype:pcie "traddr:$pci")
+	mapfile -t id < <("$rootdir/build/bin/spdk_nvme_identify" -r "trtype:pcie traddr:$pci")
 
 	# Get size of the current LBAF
 	[[ ${id[*]} =~ "Current LBA Format:"\ *"LBA Format #"([0-9]+) ]]
@@ -142,10 +136,10 @@ get_native_nvme_bs() {
 
 check_liburing() {
 	# Simply check if spdk_dd links to liburing. If yes, log that information.
-	local lib so
+	local lib
 	local -g liburing_in_use=0
 
-	while read -r lib _ so _; do
+	while read -r _ lib _; do
 		if [[ $lib == liburing.so.* ]]; then
 			printf '* spdk_dd linked to liburing\n'
 			# For sanity, check build config to see if liburing was requested.
@@ -155,14 +149,10 @@ check_liburing() {
 			if [[ $CONFIG_URING != y ]]; then
 				printf '* spdk_dd built with liburing, but no liburing support requested?\n'
 			fi
-			if [[ ! -e $so ]]; then
-				printf '* %s is missing, aborting\n' "$lib"
-				return 1
-			fi
 			export liburing_in_use=1
 			return 0
 		fi
-	done < <(LD_TRACE_LOADED_OBJECTS=1 "${DD_APP[@]}") >&2
+	done < <(objdump -p "${DD_APP[@]}" | grep "NEEDED") >&2
 }
 
 init_zram() {

@@ -5,7 +5,7 @@
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "spdk/jsonrpc.h"
 #include "spdk_internal/mock.h"
 #include "common/lib/test_env.c"
@@ -214,6 +214,7 @@ test_rpc_spdk_get_version(void)
 static void
 test_spdk_rpc_listen_close(void)
 {
+	struct spdk_rpc_server *server;
 	const char listen_addr[128] = "/var/tmp/spdk-rpc-ut.sock";
 	char rpc_lock_path[128] = {};
 
@@ -221,21 +222,46 @@ test_spdk_rpc_listen_close(void)
 	MOCK_SET(close, 0);
 	MOCK_SET(flock, 0);
 
-	spdk_rpc_listen(listen_addr);
-	snprintf(rpc_lock_path, sizeof(g_rpc_lock_path), "%s.lock",
-		 g_rpc_listen_addr_unix.sun_path);
+	server = spdk_rpc_server_listen(listen_addr);
+	SPDK_CU_ASSERT_FATAL(server != NULL);
 
-	CU_ASSERT(g_rpc_listen_addr_unix.sun_family == AF_UNIX);
-	CU_ASSERT(strcmp(g_rpc_listen_addr_unix.sun_path, listen_addr) == 0);
-	CU_ASSERT(strcmp(g_rpc_lock_path, rpc_lock_path) == 0);
-	CU_ASSERT(g_jsonrpc_server == (struct spdk_jsonrpc_server *)0Xdeaddead);
+	snprintf(rpc_lock_path, sizeof(server->lock_path), "%s.lock",
+		 server->listen_addr_unix.sun_path);
 
-	spdk_rpc_close();
+	CU_ASSERT(server->listen_addr_unix.sun_family == AF_UNIX);
+	CU_ASSERT(strcmp(server->listen_addr_unix.sun_path, listen_addr) == 0);
+	CU_ASSERT(strcmp(server->lock_path, rpc_lock_path) == 0);
+	CU_ASSERT(server->jsonrpc_server == (struct spdk_jsonrpc_server *)0Xdeaddead);
 
-	CU_ASSERT(g_rpc_listen_addr_unix.sun_path[0] == '\0');
-	CU_ASSERT(g_jsonrpc_server == NULL);
-	CU_ASSERT(g_rpc_lock_fd == -1);
-	CU_ASSERT(g_rpc_lock_path[0] == '\0');
+	spdk_rpc_server_close(server);
+
+	MOCK_CLEAR(open);
+	MOCK_CLEAR(close);
+	MOCK_CLEAR(flock);
+}
+
+static void
+test_rpc_run_multiple_servers(void)
+{
+	const char listen_addr1[128] = "/var/tmp/spdk-rpc-ut.sock1";
+	const char listen_addr2[128] = "/var/tmp/spdk-rpc-ut.sock2";
+	const char listen_addr3[128] = "/var/tmp/spdk-rpc-ut.sock3";
+	struct spdk_rpc_server *rpc_server1, *rpc_server2, *rpc_server3;
+
+	MOCK_SET(open, 1);
+	MOCK_SET(close, 0);
+	MOCK_SET(flock, 0);
+
+	rpc_server1 = spdk_rpc_server_listen(listen_addr1);
+	CU_ASSERT(rpc_server1 != NULL);
+	rpc_server2 = spdk_rpc_server_listen(listen_addr2);
+	CU_ASSERT(rpc_server2 != NULL);
+	rpc_server3 = spdk_rpc_server_listen(listen_addr3);
+	CU_ASSERT(rpc_server3 != NULL);
+
+	spdk_rpc_server_close(rpc_server1);
+	spdk_rpc_server_close(rpc_server2);
+	spdk_rpc_server_close(rpc_server3);
 
 	MOCK_CLEAR(open);
 	MOCK_CLEAR(close);
@@ -248,7 +274,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("rpc", NULL, NULL);
@@ -258,10 +283,9 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_rpc_get_methods);
 	CU_ADD_TEST(suite, test_rpc_spdk_get_version);
 	CU_ADD_TEST(suite, test_spdk_rpc_listen_close);
+	CU_ADD_TEST(suite, test_rpc_run_multiple_servers);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

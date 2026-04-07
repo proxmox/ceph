@@ -1,0 +1,516 @@
+---
+deps:
+  bash:
+    notes: This is needed by the GitHUB Action CI
+    ver: 0.0
+    when: [building]
+    names:
+      default: [bash]
+
+  clang-format:
+    notes: Used during development to format the xNVMe C codebase
+    ver: 14
+    when: [building]
+    names:
+      default: [clang-format] # apt
+      apk: [clang15-extra-tools]
+      dnf: [clang-tools-extra]
+      emerge: [clang] # Gentoo/emerge does not provide a "smaller" package
+      pacman: [clang] # Arch/pacman does not provide a "smaller" package
+      zypper: [clang-tools]
+
+  find:
+    notes: Required by the xNVMe build-system to apply patches to subprojects
+    ver: 0.0
+    when: [building]
+    names:
+      default: [findutils] # dnf, zypper
+
+  git:
+    notes: For retrieving the xNVMe source and revision-control when developing
+    ver: 2.20
+    when: [building]
+    names:
+      default: [git]
+      emerge: [dev-vcs/git]
+
+  make:
+    notes: Build-system assistant, providing the well-known Makefile interface to building xNVMe, also, other dependencies
+      use
+    ver: 4.1
+    when: [building]
+    names:
+      default: [make]
+      pkg: [gmake]
+
+  meson:
+    notes: Meson is required to build xNVMe from source
+    ver: 0.58
+    when: [building]
+    names:
+      default: [meson] # apt, apk, pacman, dnf, zypper
+      emerge: [dev-build/meson]
+      pip: [meson, ninja]
+      pipx: [meson, ninja]
+
+  patch:
+    notes: Required by the xNVMe build-system to apply patches to subprojects
+    ver: 0.0
+    when: [building]
+    names:
+      default: [patch] # dnf, yum, zypper
+
+  pkg-config:
+    notes: Find libraries which xNVMe depends upon and provide a simple means for other projects to find xNVMe
+    ver: 0.0
+    when: [building, running]
+    names:
+      default: [pkg-config] # apt, zypper
+      apk: [pkgconf]
+      dnf: [pkgconfig]
+      emerge: [dev-util/pkgconf]
+      pkg: [pkgconf]
+      yum: [pkgconfig]
+
+  python3:
+    notes: Required by Meson, xNVMe toolbox-scripts, and xNVMe Python bindings
+    ver: 3.8
+    when: [building, running]
+    names:
+      default: [python3]
+      apt: [python3, python3-pip, python3-venv]
+      apk: [python3, python3-dev, py3-pip]
+      emerge: [dev-python/pip]
+      pacman: [python3, python-pip, python-setuptools]
+      dnf: [python3-devel, python3-pip]
+      src: [python3]
+      zypper: [python3, python3-devel, python3-pip, python3-setuptools]
+
+  pipx:
+    notes: Required to install tools utilized for testing, such as CIJOE
+    ver: 0.0
+    when: [building]
+    names:
+      default: [pipx] # apt, pip, dnf
+      pacman: [python-pipx]
+      pip: [pipx]
+      pkg: [devel/py-pipx]
+      zypper: [python3-pipx]
+
+  archive:
+    notes: Required by DPDK 23.03 and thereby for SPDK 23.05
+    ver: 0.0
+    when: [building, running]
+    purpose: {be: [spdk]}
+    names:
+      default: [libarchive-dev]
+      pacman: [libarchive]
+      emerge: [app-arch/libarchive]
+      dnf: [libarchive-devel]
+      yum: [libarchive-devel]
+      zypper: [libarchive-devel]
+      pkg: [archivers/libarchive]
+
+  cunit:
+    notes: Required by SPDK
+    ver: 0.0
+    when: [building]
+    purpose: {be: [spdk]}
+    names:
+      default: [cunit]
+      apt: [libcunit1-dev]
+      emerge: [dev-util/cunit]
+      dnf: [CUnit-devel]
+      yum: [CUnit-devel]
+      zypper: [cunit-devel]
+
+  elftools:
+    notes: Required by DPDK and thereby for SPDK.
+    ver: 0.22
+    when: [building]
+    purpose: {be: [spdk, vfio]}
+    names:
+      apt: [python3-pyelftools]
+      apk: [py3-elftools]
+      default: [pyelftools]
+      dnf: [python3-pyelftools]
+      emerge: [dev-python/pyelftools]
+      pacman: [python-pyelftools]
+      pip: [pyelftools]
+      pipx: [pyelftools]
+      pkg: [devel/py-pyelftools]
+      yum: [python-pyelftools]
+      zypper: [python3-pyelftools]
+
+  libaio:
+    notes: When available, enables the use of the Linux async I/O interface
+    ver: 0.3
+    when: [building, running]
+    purpose: {be: [linux], async: [libaio]}
+    names:
+      default: [libaio-dev] # apt
+      dnf: [libaio-devel]
+      emerge: [dev-libs/libaio]
+      pacman: [libaio]
+      yum: [libaio-devel]
+      zypper: [libaio-devel]
+
+  libffi:
+    notes: libffi is required to build Python on Linux distributions with Python < 3.7
+    ver: 0.0
+    when: [building]
+    names:
+      default: [libffi]
+      yum: [libffi-devel]
+      dnf: [libffi-devel]
+
+  libisal:
+    notes: libisal is required for PI support
+    ver: 0.0
+    when: [building, running]
+    names:
+      default: [isa-l]
+      apt: [libisal-dev]
+      emerge: [dev-libs/isa-l]
+
+  liburing:
+    notes: When available; enables the use of the Linux io_uring and io_uring_cmd interfaces
+    ver: 2.2
+    when: [building, running]
+    purpose: {be: [linux], async: [io_uring, io_uring_cmd]}
+    names:
+      default: [liburing]
+      apt: [liburing-dev]
+      apk: [liburing-dev]
+      dnf: [liburing, liburing-devel]
+      emerge: [sys-libs/liburing]
+      zypper: [liburing-devel]
+
+  libvfn:
+    notes: When available; enable the use of the xNVMe libvfn backend
+    ver: 3.0.1
+    when: [building, running]
+    purpose: {be: [libvfn]}
+    names:
+      src: [libvfn]
+
+  libuuid:
+    notes: Required by SPDK
+    ver: 0.0
+    when: [building]
+    purpose: {be: [spdk]}
+    names:
+      apt: [uuid-dev]
+      default: [libuuid]
+      dnf: [libuuid-devel]
+      emerge: [sys-libs/libuuid]
+      pacman: [util-linux-libs]
+      pkg: [e2fsprogs-libuuid]
+      yum: [libuuid-devel]
+      zypper: [libuuid-devel]
+
+  nasm:
+    notes: Required by SPDK
+    ver: 2.15
+    when: [building]
+    purpose: {be: [spdk]}
+    names:
+      default: [nasm]
+      emerge: [dev-lang/nasm]
+
+  numactl:
+    notes: Required by SPDK
+    ver: 0.0
+    when: [building]
+    purpose: {be: [spdk]}
+    names:
+      default: [numactl]
+      apt: [libnuma-dev]
+      apk: [numactl-dev]
+      emerge: [sys-process/numactl]
+      yum: [numactl-devel]
+      dnf: [numactl-devel]
+      zypper: [libnuma-devel]
+
+  ncurses:
+    notes: Required by SPDK
+    ver: 0.0
+    when: [building, running]
+    purpose: {be: [spdk]}
+    names:
+      default: [ncurses]
+      apt: [libncurses5-dev]
+      emerge: [sys-libs/ncurses]
+      yum: [ncurses-devel]
+
+  openssl:
+    notes: Required by SPDK and to build Python on Linux distributions with Python < 3.7
+    ver: 0.0
+    when: [building]
+    purpose: {be: [spdk]}
+    names:
+      default: [openssl]
+      apk: [openssl-dev]
+      apt: [libssl-dev, openssl]
+      dnf: [openssl-devel]
+      emerge: [dev-libs/openssl]
+      yum: [openssl-devel, openssl11-devel]
+      zypper: [libopenssl-devel]
+
+apps:
+  fio:
+    notes: The flexible I/O tester (fio), supports xNVMe when fio is built from source
+    ver: 3.36
+    when: [running]
+    names:
+      src: [fio]
+
+#
+# default behavior is to install the tools and libs below via system
+# package-manager and the apps from source, the platforms listed further down
+# describes exceptions to what is installed and from where by a tuple:
+# (alias, origin) Where "alias" is the name of the software, and "origin" is
+# the place to retrieve it from, e.g. source-archive, system-package amanger
+# (sys), or an explicit package-manager (pip)
+defaults:
+  freebsd:
+    deps:
+    - [sys, [bash, clang-format, cunit, elftools, find, git, libisal, libuuid, make, meson, nasm, ncurses, openssl, patch,
+        pipx, pkg-config, python3]]
+    apps:
+    - [src, [fio]]
+
+  linux:
+    deps:
+    - [sys, [archive, bash, cunit, clang-format, elftools, find, git, libaio, libisal, liburing, libuuid, make, meson, nasm,
+        ncurses, numactl, openssl, patch, pipx, pkg-config, python3]]
+    - [src, [libvfn]]
+    apps:
+    - [src, [fio]]
+
+  macos:
+    deps:
+    - [sys, [clang-format, git, libisal, meson, pipx, pkg-config, python3, make]]
+    apps:
+    - [src, [fio]]
+
+  windows:
+    deps:
+    - [sys, [bash, find, git, make, meson, pkg-config, python3]]
+    apps:
+    - [src, [fio]]
+
+platforms:
+- alias: Alpine Linux
+  notes: |
+    There are issues with SPDK/DPDK due to incompatibilities with the standard
+    library provided by ``musl libc``. Additionally, the ``libexecinfo-dev``
+    package is no longer available on Alpine.
+    Additionally, libvfn also relies on ``libexecinfo-dev`` which is currently
+    not available for Alpine Linux. Thus, it is also disabled.
+    Pull-request fixing these issues are most welcome, until then, disable
+    libvfn and spdk on Alpine.
+  name: alpine
+  ver: [latest]
+  os: linux
+  mng: apk
+  drop: [elftools, libisal]
+  alt:
+  - [pip, [pipx]]
+  aux:
+  - [sys, [bsd-compat-headers, build-base, coreutils, gawk, linux-headers, musl-dev, perl, util-linux-dev]]
+
+- alias: Arch Linux
+  notes: |
+    The build is configured to install with ``--prefix=/usr`` this is
+    intentional such the the ``pkg-config`` files end up in the default search
+    path on the system. If you do not want this, then remove ``--prefix=/usr``
+    and adjust your ``$PKG_CONFIG_PATH`` accordingly.
+  name: archlinux
+  ver: [latest]
+  os: linux
+  mng: pacman
+  drop: []
+  alt:
+  - [src, [libisal]]
+  aux:
+  - [sys, [base-devel, libutil-linux]]
+
+- alias: Oracle Linux
+  notes: ''
+  name: oraclelinux
+  ver: ['9']
+  os: linux
+  mng: dnf
+  drop: []
+  alt:
+  - [pip, [pipx]]
+  - [src, [libisal, liburing, libvfn]]
+  aux:
+  - [sys, [autoconf, diffutils, gcc, gcc-c++, libtool, procps, unzip, wget, zlib-devel]]
+
+
+- alias: Rocky Linux
+  notes: ''
+  name: rockylinux
+  ver: ['9.2']
+  os: linux
+  mng: dnf
+  drop: []
+  alt:
+  - [pip, [pipx]]
+  - [src, [libisal, liburing, libvfn]]
+  aux:
+  - [sys, [autoconf, diffutils, gcc, gcc-c++, libtool, procps, unzip, wget, zlib-devel]]
+
+- alias: CentOS Stream 9
+  notes: ''
+  name: centos
+  ver: [stream9]
+  os: linux
+  mng: dnf
+  drop: [clang-format]
+  alt:
+  - [pip, [elftools, meson, pipx]]
+  - [src, [libisal, liburing, libvfn]]
+  aux:
+  - [sys, [autoconf, diffutils, gcc, gcc-c++, libtool, procps, unzip, wget, zlib-devel]]
+
+- alias: Debian Testing
+  notes: ''
+  name: debian
+  ver: [trixie]
+  os: linux
+  mng: apt
+  drop: []
+  alt: []
+  aux:
+  - [sys, [autoconf, build-essential, libtool]]
+
+
+- alias: Debian Stable
+  notes: ''
+  name: debian
+  ver: [bookworm]
+  os: linux
+  mng: apt
+  drop: []
+  alt: []
+  aux:
+  - [sys, [autoconf, build-essential, libtool]]
+
+
+- alias: Debian Oldstable
+  notes: ''
+  name: debian
+  ver: [bullseye]
+  os: linux
+  mng: apt
+  drop: []
+  alt:
+  - [pip, [meson, pipx]]
+  - [src, [liburing, libvfn]]
+  aux:
+  - [sys, [autoconf, build-essential, libtool]]
+
+- alias: Fedora
+  notes: ''
+  name: fedora
+  ver: [41, 40, 39]
+  os: linux
+  mng: dnf
+  drop: []
+  alt: []
+  aux:
+  - [sys, [autoconf, diffutils, g++, gcc, libtool, procps, zlib-devel]]
+
+- alias: Ubuntu Latest
+  notes: All tools and libraries are available via system package-manager.
+  os: linux
+  name: ubuntu
+  ver: [lunar]
+  mng: apt
+  drop: []
+  alt: []
+  aux:
+  - [sys, [autoconf, build-essential, libtool]]
+
+- alias: Ubuntu LTS
+  notes: Installing liburing from source and meson + ninja via pip
+  name: ubuntu
+  ver: [jammy, focal]
+  os: linux
+  mng: apt
+  drop: []
+  alt:
+  - [pip, [meson]]
+  - [src, [liburing, libvfn]]
+  aux:
+  - [sys, [autoconf, build-essential, libtool]]
+
+- alias: Gentoo
+  notes: |
+    In case you get ``error adding symbols: DSO missing from command line``,
+    during compilation, then add ``-ltinfo -lnurces`` to ``LDFLAGS`` as it is
+    done in the commands above.
+    The build is configured to install with ``--prefix=/usr`` this is
+    intentional such the the ``pkg-config`` files end up in the default search
+    path on the system. If you do not want this, then remove ``--prefix=/usr``
+    and adjust your ``$PKG_CONFIG_PATH`` accordingly.
+
+  name: gentoo
+  ver: [latest]
+  os: linux
+  mng: emerge
+  # dropping clang-format as it is only available via 'clang' which takes 4hours to build.
+  drop: [libuuid, clang-format]
+  alt:
+  - [pip, [pipx]]
+  aux: []
+
+- alias: openSUSE
+  notes: All tools and libraries are available via system package-manager.
+  name: opensuse
+  ver: [tumbleweed-latest]
+  os: linux
+  mng: zypper
+  drop: []
+  alt:
+  - [src, [libisal]]
+  aux:
+  - [sys, [autoconf, gcc, gcc-c++, gzip, libtool, tar, awk]]
+
+- alias: FreeBSD
+  notes: Interfaces; libaio, liburing, and libvfn are not supported on FreeBSD.
+  name: freebsd
+  ver: [13, 14]
+  os: freebsd
+  mng: pkg
+  drop: [clang-format]
+  alt: []
+  aux:
+  - [sys, [autoconf, automake, libtool, wget]]
+
+- alias: macOS
+  notes: Interfaces; libaio, liburing, libvfn, and SPDK are not supported on macOS.
+  name: macos
+  ver: [14, 13, 12]
+  os: macos
+  mng: brew
+  drop: []
+  alt: []
+  aux: []
+
+- alias: Windows
+  notes: |
+    In case you see ``.dll`` loader-errors, then check that the environment
+    variable ``PATH`` contains the various library locations of the toolchain.
+    Interfaces; libaio, liburing, libvfn, and SPDK are not supported on
+    Windows.
+  name: windows
+  ver: [2022]
+  os: windows
+  mng: choco
+  drop: []
+  alt: []
+  aux: []

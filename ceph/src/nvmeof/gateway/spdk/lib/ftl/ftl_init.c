@@ -9,8 +9,6 @@
 #include "spdk/string.h"
 #include "spdk/likely.h"
 #include "spdk/ftl.h"
-#include "spdk/likely.h"
-#include "spdk/string.h"
 #include "spdk/bdev_module.h"
 #include "spdk/config.h"
 
@@ -88,6 +86,7 @@ free_dev(struct spdk_ftl_dev *dev)
 
 	deinit_core_thread(dev);
 	spdk_ftl_conf_deinit(&dev->conf);
+	ftl_properties_deinit(dev);
 	free(dev);
 }
 
@@ -101,6 +100,12 @@ allocate_dev(const struct spdk_ftl_conf *conf, int *error)
 		FTL_ERRLOG(dev, "Cannot allocate FTL device\n");
 		*error = -ENOMEM;
 		return NULL;
+	}
+
+	rc = ftl_properties_init(dev);
+	if (rc) {
+		*error = rc;
+		goto error;
 	}
 
 	rc = ftl_conf_init_dev(dev, conf);
@@ -117,7 +122,7 @@ allocate_dev(const struct spdk_ftl_conf *conf, int *error)
 
 	TAILQ_INIT(&dev->rd_sq);
 	TAILQ_INIT(&dev->wr_sq);
-	TAILQ_INIT(&dev->unmap_sq);
+	TAILQ_INIT(&dev->trim_sq);
 	TAILQ_INIT(&dev->ioch_queue);
 
 	ftl_writer_init(dev, &dev->writer_user, SPDK_FTL_LIMIT_HIGH, FTL_BAND_TYPE_COMPACTION);

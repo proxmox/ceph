@@ -87,6 +87,20 @@ spdk_json_write_end(struct spdk_json_write_ctx *w)
 	return failed ? -1 : 0;
 }
 
+void
+spdk_json_write_reset(struct spdk_json_write_ctx *w)
+{
+	if (w == NULL) {
+		return;
+	}
+
+	w->buf_filled = 0;
+	w->failed = false;
+	w->first_value = true;
+	w->new_indent = false;
+	w->indent = 0;
+}
+
 static inline int
 emit(struct spdk_json_write_ctx *w, const void *data, size_t size)
 {
@@ -542,6 +556,16 @@ spdk_json_write_bytearray(struct spdk_json_write_ctx *w, const void *val, size_t
 }
 
 int
+spdk_json_write_uuid(struct spdk_json_write_ctx *w, const struct spdk_uuid *uuid)
+{
+	char str[SPDK_UUID_STRING_LEN];
+
+	spdk_uuid_fmt_lower(str, sizeof(str), uuid);
+
+	return spdk_json_write_string(w, str);
+}
+
+int
 spdk_json_write_array_begin(struct spdk_json_write_ctx *w)
 {
 	if (begin_value(w)) { return fail(w); }
@@ -581,6 +605,7 @@ int
 spdk_json_write_object_end(struct spdk_json_write_ctx *w)
 {
 	w->first_value = false;
+	if (w->indent == 0) { return fail(w); }
 	w->indent--;
 	if (!w->new_indent) {
 		if (emit_fmt(w, "\n", 1)) { return fail(w); }
@@ -812,4 +837,13 @@ spdk_json_write_named_object_begin(struct spdk_json_write_ctx *w, const char *na
 	int rc = spdk_json_write_name(w, name);
 
 	return rc ? rc : spdk_json_write_object_begin(w);
+}
+
+int
+spdk_json_write_named_uuid(struct spdk_json_write_ctx *w, const char *name,
+			   const struct spdk_uuid *uuid)
+{
+	int rc = spdk_json_write_name(w, name);
+
+	return rc ? rc : spdk_json_write_uuid(w, uuid);
 }

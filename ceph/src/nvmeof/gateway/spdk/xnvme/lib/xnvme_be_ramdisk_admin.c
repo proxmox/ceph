@@ -1,15 +1,16 @@
-// Copyright (C) Mads Ynddal <m.ynddal@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_RAMDISK_ENABLED
 #include <errno.h>
-#include <sys/stat.h>
 #include <unistd.h>
-#include <libxnvme_spec_fs.h>
 #include <xnvme_be_ramdisk.h>
 #include <xnvme_dev.h>
 
@@ -37,7 +38,7 @@ _idfy_ns_iocs_fs(struct xnvme_dev *dev, void *dbuf)
 {
 	struct xnvme_spec_fs_idfy_ns *ns = dbuf;
 
-	size_t ramdisk_size = _xnvme_be_ramdisk_dev_get_size(dev);
+	size_t ramdisk_size = xnvme_be_ramdisk_dev_get_size(dev);
 	if (!ramdisk_size) {
 		return -1;
 	}
@@ -56,9 +57,11 @@ static int
 _idfy_ctrlr(struct xnvme_dev *XNVME_UNUSED(dev), void *dbuf)
 {
 	struct xnvme_spec_idfy_ctrlr *ctrlr = dbuf;
+	ctrlr->mdts = 0;
+	ctrlr->oncs.copy = 1;
+	ctrlr->oncs.write_zeroes = 1;
 
-	ctrlr->mdts = XNVME_ILOG2(1024 * 1024);
-
+	ctrlr->cdfs.format0 = 1;
 	return 0;
 }
 
@@ -69,7 +72,7 @@ _idfy_ns(struct xnvme_dev *dev, void *dbuf)
 	size_t ramdisk_size;
 	const size_t lba_size = 512;
 
-	ramdisk_size = _xnvme_be_ramdisk_dev_get_size(dev);
+	ramdisk_size = xnvme_be_ramdisk_dev_get_size(dev);
 	if (!ramdisk_size) {
 		return -1;
 	}
@@ -84,6 +87,10 @@ _idfy_ns(struct xnvme_dev *dev, void *dbuf)
 	ns->lbaf[0].ms = 0;
 	ns->lbaf[0].ds = XNVME_ILOG2(lba_size);
 	ns->lbaf[0].rp = 0;
+
+	ns->mcl = 128;
+	ns->mssrl = 128;
+	ns->msrc = 127;
 
 	return 0;
 }
@@ -128,7 +135,7 @@ _idfy(struct xnvme_cmd_ctx *ctx, void *dbuf)
 	return 1;
 }
 
-int
+static int
 _ramdisk_gfeat(struct xnvme_cmd_ctx *ctx, void *XNVME_UNUSED(dbuf))
 {
 	struct xnvme_spec_feat feat = {0};
@@ -148,7 +155,7 @@ _ramdisk_gfeat(struct xnvme_cmd_ctx *ctx, void *XNVME_UNUSED(dbuf))
 	return 0;
 }
 
-int
+static int
 _xnvme_be_ramdisk_admin_cmd_admin(struct xnvme_cmd_ctx *ctx, void *dbuf,
 				  size_t XNVME_UNUSED(dbuf_nbytes), void *XNVME_UNUSED(mbuf),
 				  size_t XNVME_UNUSED(mbuf_nbytes))
@@ -171,7 +178,9 @@ struct xnvme_be_admin g_xnvme_be_ramdisk_admin = {
 	.id = "ramdisk_as_ns",
 #ifdef XNVME_BE_RAMDISK_ENABLED
 	.cmd_admin = _xnvme_be_ramdisk_admin_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #else
 	.cmd_admin = xnvme_be_nosys_sync_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #endif
 };

@@ -4,10 +4,10 @@ build-backend = "pdm.backend"
 
 [project]
 name = "ceph-nvmeof"
-version = "1.0.0"
+version = "1.6.0"
 description = "Service to provide Ceph storage over NVMe-oF protocol"
 readme = "README.md"
-requires-python = "~=3.9"
+requires-python = ">3.9.1"
 license = {file = "LICENSE"}
 authors = [
   {name = "Ilya Dryomov",   email = "idryomov@gmail.com"},
@@ -27,7 +27,9 @@ dependencies = [
     "grpcio_tools ~= 1.53.0",
     "tabulate>=0.9.0",
     "pyyaml>=6.0.1",
-    "prometheus_client ~= v0.19.0"
+    "prometheus_client ~= 0.19.0",
+    "netifaces ~= 0.11.0",
+    "cryptography>=43.0.3"
 ]
 
 [tool.pdm.scripts]
@@ -50,3 +52,6 @@ test = [
 # documentation = ""
 repository = "https://github.com/ceph/ceph-nvmeof.git"
 # changelog = ""
+
+[project.scripts]
+ceph-nvmeof = "control.cli:main"

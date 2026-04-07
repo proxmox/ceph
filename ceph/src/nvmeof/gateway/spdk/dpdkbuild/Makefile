@@ -11,7 +11,17 @@ include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
 DPDK_OPTS = -Denable_docs=false
 DPDK_OPTS += -Dtests=false
-DPDK_CFLAGS =
+
+ifeq ($(shell uname -m),aarch64)
+ifeq ($(shell uname -p),unknown)
+# Unknown ARM platform. ARM doesn't do platform=native which is DPDK's default. So change it.
+DPDK_OPTS += -Dplatform=generic
+else
+ifeq ($(shell $(SPDK_ROOT_DIR)/dpdk/config/arm/armv8_machine.py | cut -d' ' -f4),0x0)
+DPDK_OPTS += -Dplatform=generic
+endif
+endif
+endif
 
 DPDK_KMODS = false
 ifeq ($(OS),FreeBSD)
@@ -23,6 +33,12 @@ ifeq ($(CONFIG_DEBUG),y)
 DPDK_OPTS += --buildtype=debug
 endif
 
+ifeq ($(CONFIG_SHARED),y)
+DPDK_OPTS += --default-library=shared
+else
+DPDK_OPTS += --default-library=static
+endif
+
 ifeq ($(CONFIG_LTO),y)
 # dpdk complains about compiler not supporting fat LTO objects when clang is in use so don't enable it in such a instance
 ifneq ($(CC_TYPE),clang)
@@ -30,15 +46,31 @@ DPDK_OPTS += -Db_lto=true
 endif
 endif
 
+ifeq ($(CONFIG_PGO_CAPTURE),y)
+DPDK_OPTS += -Db_pgo=generate
+endif
+
+ifeq ($(CONFIG_PGO_USE),y)
+DPDK_OPTS += -Db_pgo=use
+DPDK_CFLAGS += -Wno-missing-profile
+endif
+
+ifneq ($(CONFIG_PGO_DIR),)
+DPDK_CFLAGS += -fprofile-dir=$(CONFIG_PGO_DIR)
+DPDK_LDFLAGS += -fprofile-dir=$(CONFIG_PGO_DIR)
+endif
+
 # the drivers we use
 DPDK_DRIVERS = bus bus/pci bus/vdev mempool/ring
 
 # Core DPDK libs
 DPDK_LIBS = eal ring mempool pci
-DPDK_LIBS += kvargs telemetry
+DPDK_LIBS += log kvargs telemetry
 # Governor required libs
 DPDK_LIBS += power timer ethdev net
-
+# rte_power drivers
+DPDK_DRIVERS += power/acpi power/amd_pstate power/cppc power/intel_pstate power/intel_uncore \
+		power/kvm_vm
 # common crypto/compress drivers
 ifeq ($(findstring y,$(CONFIG_DPDK_COMPRESSDEV)$(CONFIG_CRYPTO)$(CONFIG_VBDEV_COMPRESS)),y)
 DPDK_DRIVERS += crypto/qat compress/qat common/qat
@@ -49,6 +81,11 @@ ifeq ($(findstring y,$(CONFIG_CRYPTO_MLX5)$(CONFIG_VBDEV_COMPRESS_MLX5)),y)
 DPDK_DRIVERS += common/mlx5 bus/auxiliary
 endif
 
+# uadk drivers
+ifeq ($(findstring y,$(CONFIG_DPDK_UADK)),y)
+DPDK_DRIVERS += crypto/uadk
+DPDK_DRIVERS += compress/uadk
+endif
 ifeq ($(CONFIG_CRYPTO),y)
 DPDK_DRIVERS += crypto
 # aesni_mb is name of the PMD in DPDK 21.08 and earlier
@@ -73,7 +110,7 @@ DPDK_DRIVERS += compress compress/isal
 ifeq ($(CONFIG_VBDEV_COMPRESS_MLX5),y)
 DPDK_DRIVERS += compress/mlx5
 endif
-DPDK_CFLAGS += -I$(ISAL_DIR)
+DPDK_CFLAGS += -I$(ISAL_DIR) -I$(ISAL_BUILD_DIR)
 DPDK_LDFLAGS += -L$(ISAL_DIR)/.libs -lisal
 endif
 
@@ -101,7 +138,21 @@ with e.g. `meson build --cross-file config/arm/arm64_armv8_linux_gcc`)
 endif
 endif
 
+# DPDK supports ASAN since version 21.11
+ifeq ($(CONFIG_ASAN),y)
+ifneq ($(OS),Windows)
+DPDK_OPTS += -Db_sanitize=address
+ifeq ($(CC_TYPE),clang)
+DPDK_OPTS += -Db_lundef=false
+endif
+endif
+endif
+
 DPDK_CFLAGS += -fPIC
+
+ifneq ($(CONFIG_MAX_LCORES),)
+DPDK_OPTS += -Dmax_lcores=$(CONFIG_MAX_LCORES)
+endif
 
 ifeq ($(CONFIG_WERROR),y)
 DPDK_CFLAGS += -Werror
@@ -121,26 +172,6 @@ endif
 
 # Allow users to specify EXTRA_DPDK_CFLAGS if they want to build DPDK using unsupported compiler versions
 DPDK_CFLAGS += $(EXTRA_DPDK_CFLAGS)
-
-ifeq ($(CC_TYPE),gcc)
-GCC_MAJOR = $(shell echo __GNUC__ | $(CC) -E -x c - | tail -n 1)
-ifeq ($(shell test $(GCC_MAJOR) -ge 10 && echo 1), 1)
-#1. gcc 10 complains on operations with zero size arrays in rte_cryptodev.c, so
-#disable this warning
-#2. gcc 10 disables fcommon by default and complains on multiple definition of
-#aesni_mb_logtype_driver symbol which is defined in header file and presented in several
-#translation units
-DPDK_CFLAGS += -Wno-stringop-overflow -fcommon
-ifeq ($(shell test $(GCC_MAJOR) -ge 12 && echo 1), 1)
-# 3. gcc 12 reports reading incorect size from a region. Seems like false positive,
-# see issue #2460
-DPDK_CFLAGS += -Wno-stringop-overread
-# 4. gcc 12 reports array subscript * is outside array bounds. Seems like false positive,
-# see issue #2668
-DPDK_CFLAGS += -Wno-array-bounds
-endif
-endif
-endif
 
 # Force-disable scan-build
 SUB_CC = $(patsubst %ccc-analyzer,$(DEFAULT_CC),$(CC))
@@ -175,7 +206,7 @@ MAKE_NUMJOBS := $(shell ps T | sed -nE 's/[[:space:]]*$(MAKE_PID)[[:space:]].* (
 
 all: $(SPDK_ROOT_DIR)/dpdk/build-tmp
 	$(Q)# DPDK doesn't handle nested make calls, so unset MAKEFLAGS
-	$(Q)env -u MAKEFLAGS ninja -C $(SPDK_ROOT_DIR)/dpdk/build-tmp $(MAKE_NUMJOBS)
+	$(Q)env -u MAKEFLAGS meson compile -C $(SPDK_ROOT_DIR)/dpdk/build-tmp $(MAKE_NUMJOBS)
 	$(Q) \
 	# Meson on FreeBSD sometimes appends --prefix value to the default DESTDIR (which is e.g. \
 	# /usr/local) instead of replacing it. --prefix needs to be an absolute path, so we set \
@@ -202,7 +233,31 @@ clean:
 	$(Q)rm -rf $(SPDK_ROOT_DIR)/dpdk/build $(SPDK_ROOT_DIR)/dpdk/build-tmp
 
 install:
-	@:
+	$(Q)cd "$(SPDK_ROOT_DIR)/dpdk"; CC="$(SUB_CC)" meson setup --prefix="$(CONFIG_PREFIX)" --reconfigure build-tmp
+	$(Q)env -u MAKEFLAGS meson install -C $(SPDK_ROOT_DIR)/dpdk/build-tmp --no-rebuild
+	$(Q)cd "$(SPDK_ROOT_DIR)/dpdk"; CC="$(SUB_CC)" meson setup --prefix="$(MESON_PREFIX)" --reconfigure build-tmp
 
+
+# meson has no uninstall target. We'll just do our best.
 uninstall:
-	@:
+	$(Q)rm -rf $(DESTDIR)$(CONFIG_PREFIX)/share/dpdk
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/bin/dpdk-*.py
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/rte_*.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/generic/rte_*.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/lib/librte_*
+	$(Q)rm -rf $(DESTDIR)$(CONFIG_PREFIX)/lib/dpdk
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/lib/pkgconfig/libdpdk*
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_parse_portlist.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_cirbuf.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_socket.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_vt100.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_rdline.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_parse_bool.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_parse_string.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_parse_etheraddr.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_parse_ipaddr.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_parse_num.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline_parse.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/cmdline.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/power_cpufreq.h
+	$(Q)rm -f $(DESTDIR)$(CONFIG_PREFIX)/include/power_uncore_ops.h

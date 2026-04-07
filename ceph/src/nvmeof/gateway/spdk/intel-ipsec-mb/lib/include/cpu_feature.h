@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2018-2022, Intel Corporation
+  Copyright (c) 2018-2023, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -36,7 +36,8 @@
  * @return Bitmask representing presence of CPU features/extensions,
  *         see intel-ipsec-mb.h IMB_FEATURE_xyz definitions for details.
  */
-IMB_DLL_LOCAL uint64_t cpu_feature_detect(void);
+IMB_DLL_LOCAL uint64_t
+cpu_feature_detect(void);
 
 /**
  * @brief Modifies CPU \a features mask based on requested \a flags

@@ -5,6 +5,8 @@
 #ifndef __ROC_IE_OT_H__
 #define __ROC_IE_OT_H__
 
+#include "roc_platform.h"
+
 /* CN10K IPSEC opcodes */
 #define ROC_IE_OT_MAJOR_OP_PROCESS_OUTBOUND_IPSEC 0x28UL
 #define ROC_IE_OT_MAJOR_OP_PROCESS_INBOUND_IPSEC  0x29UL
@@ -48,14 +50,14 @@ enum roc_ie_ot_ucc_ipsec {
 	ROC_IE_OT_UCC_ERR_SA_BAD_IP = 0xc7,
 	ROC_IE_OT_UCC_ERR_PKT_IP_FRAG = 0xc8,
 	ROC_IE_OT_UCC_ERR_PKT_REPLAY_WINDOW = 0xc9,
+	ROC_IE_OT_UCC_SUCCESS_PKT_IP_BADCSUM = 0xed,
+	ROC_IE_OT_UCC_SUCCESS_PKT_L4_GOODCSUM = 0xee,
+	ROC_IE_OT_UCC_SUCCESS_PKT_L4_BADCSUM = 0xef,
 	ROC_IE_OT_UCC_SUCCESS_SA_SOFTEXP_FIRST = 0xf0,
-	ROC_IE_OT_UCC_SUCCESS_PKT_IP_BADCSUM = 0xf1,
+	ROC_IE_OT_UCC_SUCCESS_PKT_UDPESP_NZCSUM = 0xf1,
 	ROC_IE_OT_UCC_SUCCESS_SA_SOFTEXP_AGAIN = 0xf2,
-	ROC_IE_OT_UCC_SUCCESS_PKT_L4_GOODCSUM = 0xf3,
-	ROC_IE_OT_UCC_SUCCESS_PKT_L4_BADCSUM = 0xf4,
-	ROC_IE_OT_UCC_SUCCESS_PKT_UDPESP_NZCSUM = 0xf5,
-	ROC_IE_OT_UCC_SUCCESS_PKT_UDP_ZEROCSUM = 0xf6,
-	ROC_IE_OT_UCC_SUCCESS_PKT_IP_GOODCSUM = 0xf7,
+	ROC_IE_OT_UCC_SUCCESS_PKT_UDP_ZEROCSUM = 0xf3,
+	ROC_IE_OT_UCC_SUCCESS_PKT_IP_GOODCSUM = 0x0,
 };
 
 enum {
@@ -109,25 +111,6 @@ enum {
 };
 
 enum {
-	ROC_IE_OT_SA_ENC_NULL = 0,
-	ROC_IE_OT_SA_ENC_3DES_CBC = 2,
-	ROC_IE_OT_SA_ENC_AES_CBC = 3,
-	ROC_IE_OT_SA_ENC_AES_CTR = 4,
-	ROC_IE_OT_SA_ENC_AES_GCM = 5,
-	ROC_IE_OT_SA_ENC_AES_CCM = 6,
-};
-
-enum {
-	ROC_IE_OT_SA_AUTH_NULL = 0,
-	ROC_IE_OT_SA_AUTH_SHA1 = 2,
-	ROC_IE_OT_SA_AUTH_SHA2_256 = 4,
-	ROC_IE_OT_SA_AUTH_SHA2_384 = 5,
-	ROC_IE_OT_SA_AUTH_SHA2_512 = 6,
-	ROC_IE_OT_SA_AUTH_AES_GMAC = 7,
-	ROC_IE_OT_SA_AUTH_AES_XCBC_128 = 8,
-};
-
-enum {
 	ROC_IE_OT_SA_ENCAP_NONE = 0,
 	ROC_IE_OT_SA_ENCAP_UDP = 1,
 	ROC_IE_OT_SA_ENCAP_TCP = 2,
@@ -163,21 +146,14 @@ enum {
 	ROC_IE_OT_ERR_CTL_MODE_RING = 2,
 };
 
-/* Context units in bytes */
-#define ROC_CTX_UNIT_8B		  8
-#define ROC_CTX_UNIT_128B	  128
-#define ROC_CTX_MAX_CKEY_LEN	  32
-#define ROC_CTX_MAX_OPAD_IPAD_LEN 128
+static __plt_always_inline bool
+roc_ie_ot_ucc_is_success(uint8_t ucc)
+{
+	uint8_t uc_base = (uint8_t)ROC_IE_OT_UCC_SUCCESS_PKT_IP_BADCSUM - 1u;
 
-/* Anti reply window size supported */
-#define ROC_AR_WIN_SIZE_MIN	   64
-#define ROC_AR_WIN_SIZE_MAX	   4096
-#define ROC_LOG_MIN_AR_WIN_SIZE_M1 5
-
-/* u64 array size to fit anti replay window bits */
-#define ROC_AR_WINBITS_SZ                                                      \
-	(PLT_ALIGN_CEIL(ROC_AR_WIN_SIZE_MAX, BITS_PER_LONG_LONG) /             \
-	 BITS_PER_LONG_LONG)
+	ucc--;
+	return (ucc >= uc_base);
+}
 
 #define ROC_IPSEC_ERR_RING_MAX_ENTRY 65536
 
@@ -559,7 +535,9 @@ PLT_STATIC_ASSERT(offsetof(struct roc_ot_ipsec_outb_sa, hmac_opad_ipad) ==
 PLT_STATIC_ASSERT(offsetof(struct roc_ot_ipsec_outb_sa, ctx) ==
 		  31 * sizeof(uint64_t));
 
-void __roc_api roc_ot_ipsec_inb_sa_init(struct roc_ot_ipsec_inb_sa *sa,
-					bool is_inline);
+#define ROC_OT_IPSEC_SA_SZ_MAX \
+	(PLT_MAX(sizeof(struct roc_ot_ipsec_inb_sa), sizeof(struct roc_ot_ipsec_outb_sa)))
+
+void __roc_api roc_ot_ipsec_inb_sa_init(struct roc_ot_ipsec_inb_sa *sa);
 void __roc_api roc_ot_ipsec_outb_sa_init(struct roc_ot_ipsec_outb_sa *sa);
 #endif /* __ROC_IE_OT_H__ */

@@ -17,7 +17,8 @@ struct rpc_create_rbd {
 	uint32_t block_size;
 	char **config;
 	char *cluster_name;
-	char *uuid;
+	struct spdk_uuid uuid;
+	bool read_only;
 };
 
 static void
@@ -29,7 +30,6 @@ free_rpc_create_rbd(struct rpc_create_rbd *req)
 	free(req->rbd_name);
 	bdev_rbd_free_config(req->config);
 	free(req->cluster_name);
-	free(req->uuid);
 }
 
 static int
@@ -82,7 +82,8 @@ static const struct spdk_json_object_decoder rpc_create_rbd_decoders[] = {
 	{"block_size", offsetof(struct rpc_create_rbd, block_size), spdk_json_decode_uint32},
 	{"config", offsetof(struct rpc_create_rbd, config), bdev_rbd_decode_config, true},
 	{"cluster_name", offsetof(struct rpc_create_rbd, cluster_name), spdk_json_decode_string, true},
-	{"uuid", offsetof(struct rpc_create_rbd, uuid), spdk_json_decode_string, true}
+	{"uuid", offsetof(struct rpc_create_rbd, uuid), spdk_json_decode_uuid, true},
+	{"read_only", offsetof(struct rpc_create_rbd, read_only), spdk_json_decode_bool, true}
 };
 
 static void
@@ -93,8 +94,6 @@ rpc_bdev_rbd_create(struct spdk_jsonrpc_request *request,
 	struct spdk_json_write_ctx *w;
 	struct spdk_bdev *bdev;
 	int rc = 0;
-	struct spdk_uuid *uuid = NULL;
-	struct spdk_uuid decoded_uuid;
 
 	if (spdk_json_decode_object(params, rpc_create_rbd_decoders,
 				    SPDK_COUNTOF(rpc_create_rbd_decoders),
@@ -105,19 +104,10 @@ rpc_bdev_rbd_create(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	if (req.uuid) {
-		if (spdk_uuid_parse(&decoded_uuid, req.uuid)) {
-			spdk_jsonrpc_send_error_response(request, -EINVAL,
-							 "Failed to parse bdev UUID");
-			goto cleanup;
-		}
-		uuid = &decoded_uuid;
-	}
-
 	rc = bdev_rbd_create(&bdev, req.name, req.user_id, req.pool_name,
 			     (const char *const *)req.config,
 			     req.rbd_name,
-			     req.block_size, req.cluster_name, uuid);
+			     req.block_size, req.cluster_name, &req.uuid, req.read_only);
 	if (rc) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
 		goto cleanup;
@@ -353,3 +343,45 @@ cleanup:
 	free_rpc_bdev_rbd_get_cluster_info(&req);
 }
 SPDK_RPC_REGISTER("bdev_rbd_get_clusters_info", rpc_bdev_rbd_get_clusters_info, SPDK_RPC_RUNTIME)
+
+struct rpc_bdev_rbd_wait_for_latest_osdmap_cluster {
+	char *name;
+};
+
+static void
+free_rpc_bdev_rbd_wait_for_latest_osdmap_cluster(struct rpc_bdev_rbd_wait_for_latest_osdmap_cluster *req)
+{
+	free(req->name);
+}
+
+static const struct spdk_json_object_decoder rpc_bdev_rbd_wait_for_latest_osdmap_cluster_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_rbd_wait_for_latest_osdmap_cluster, name), spdk_json_decode_string, true},
+};
+
+static void
+rpc_bdev_rbd_wait_for_latest_osdmap(struct spdk_jsonrpc_request *request,
+				const struct spdk_json_val *params)
+{
+	struct rpc_bdev_rbd_wait_for_latest_osdmap_cluster req = {NULL};
+	int rc;
+
+	if (spdk_json_decode_object(params, rpc_bdev_rbd_wait_for_latest_osdmap_cluster_decoders,
+				    SPDK_COUNTOF(rpc_bdev_rbd_wait_for_latest_osdmap_cluster_decoders),
+				    &req)) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto cleanup;
+	}
+
+	rc = bdev_rbd_wait_for_latest_osdmap(req.name);
+	if (rc) {
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+		goto cleanup;
+	}
+
+	spdk_jsonrpc_send_bool_response(request, true);
+
+cleanup:
+	free_rpc_bdev_rbd_wait_for_latest_osdmap_cluster(&req);
+}
+SPDK_RPC_REGISTER("bdev_rbd_wait_for_latest_osdmap", rpc_bdev_rbd_wait_for_latest_osdmap, SPDK_RPC_RUNTIME)

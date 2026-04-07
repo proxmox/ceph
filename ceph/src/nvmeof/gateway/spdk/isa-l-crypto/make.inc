@@ -39,20 +39,19 @@
 #	trace - get simulator trace
 #	clean - remove object files
 
-version ?= 2.24.0
+version ?= 2.25.0
 
 
 
-CC  = gcc
+CC  ?= gcc
 AS  = nasm
 AWK = awk
 
 DEBUG      = -g
-DEBUG_yasm = -g dwarf2
 DEBUG_nasm = -g
 
 # Default arch= build options
-CFLAGS_    = -Wall
+CFLAGS_    = -Wall -Wchar-subscripts -Wformat-security -Wnested-externs -Wpointer-arith -Wshadow -Wstrict-prototypes -Wtype-limits -fstack-protector -D_FORTIFY_SOURCE=2 -DNO_COMPAT_ISAL_CRYPTO_API_2_24
 ASFLAGS_   = -f elf64
 ARFLAGS_   = cr $@
 STRIP_gcc  = strip -d -R .comment $@
@@ -71,7 +70,15 @@ ARFLAGS_win64 = -out:$@
 ASFLAGS_mingw = -f win64
 ARFLAGS_mingw = cr $@
 
-LDFLAGS_so = -Wl,-soname,$(soname)
+LDFLAGS_so = -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now -Wl,-soname,$(soname)
+
+ifeq ($(shell uname),Linux)
+ifeq ($(host_cpu),x86_64)
+  CFLAGS_ += -fcf-protection=full
+  ASFLAGS_ += -DINTEL_CET_ENABLED
+  LDFLAGS += -Wl,-z,ibt -Wl,-z,shstk -Wl,-z,cet-report=error
+endif
+endif
 
 ifeq ($(arch),mingw)
   CC=x86_64-w64-mingw32-gcc
@@ -113,6 +120,21 @@ ASFLAGS  = $(ASFLAGS_$(arch)) $(ASFLAGS_$(CC)) $(DEBUG_$(AS)) $(DEFINES) $(INCLU
 ARFLAGS  = $(ARFLAGS_$(arch))
 DEFINES += $(addprefix -D , $D)
 CLEANFILES += $(O) *.o *.a $(all_tests) $(lib_name) $(so_lib_name)
+
+ifneq ($(SAFE_DATA),n)
+CFLAGS += -DSAFE_DATA
+ASFLAGS += -DSAFE_DATA
+endif
+
+ifneq ($(SAFE_PARAM),n)
+CFLAGS += -DSAFE_PARAM
+ASFLAGS += -DSAFE_PARAM
+endif
+
+ifeq ($(FIPS_MODE),y)
+CFLAGS += -DFIPS_MODE
+ASFLAGS += -DFIPS_MODE
+endif
 
 ifeq ($(filter aarch64 x86_%,$(host_cpu)),)
   host_cpu=base_aliases
@@ -163,12 +185,8 @@ as_feature_level := $(call test-as, 6,  $(tmpf), $(as_6),  $(as_feature_level))
 as_feature_level := $(call test-as, 10, $(tmpf), $(as_10), $(as_feature_level))
 tmpf := $(shell rm ${tmpf})
 
-ifneq ($(findstring $(as_feature_level),6 10),)
-  D_HAVE_AS_KNOWS_AVX512_y := -DHAVE_AS_KNOWS_AVX512
-endif
-
-CFLAGS  += -DAS_FEATURE_LEVEL=$(as_feature_level) $(D_HAVE_AS_KNOWS_AVX512_y)
-ASFLAGS += -DAS_FEATURE_LEVEL=$(as_feature_level) $(D_HAVE_AS_KNOWS_AVX512_y)
+CFLAGS  += -DAS_FEATURE_LEVEL=$(as_feature_level)
+ASFLAGS += -DAS_FEATURE_LEVEL=$(as_feature_level)
 
 sim test trace: $(addsuffix .run,$(all_unit_tests))
 perf: $(addsuffix .run,$(all_perf_tests))
@@ -203,13 +221,13 @@ $(O)/%.o: $(host_cpu)/%.S
 $(O)/%.o   : $(host_cpu)/%.c
 	@echo "  ---> Building $< $(msg)"
 	@$(COMPILE.c) $(OUTPUT_OPTION) $<
-# yasm/nasm assembly files
+# nasm assembly files
 $(O)/%.o: %.asm
 	@echo "  ---> Building $< $(msg)"
 	@$(AS) $(ASFLAGS) -o $@ $<
 
 
-$(O)/%.o %.o: %.c
+$(O)/%.o: %.c
 	@echo "  ---> Building $< $(msg)"
 	@$(COMPILE.c) $(OUTPUT_OPTION) $<
 
@@ -281,12 +299,6 @@ isa-l_crypto.h:
 	@echo '#ifndef _ISAL_CRYPTO_H_'	>> $@
 	@echo '#define _ISAL_CRYPTO_H_'	>> $@
 	@echo ''			>> $@
-	@echo '#define.ISAL_CRYPTO_MAJOR_VERSION.${version}' |  ${AWK} -F . '{print $$1, $$2, $$3}' >> $@
-	@echo '#define.ISAL_CRYPTO_MINOR_VERSION.${version}' |  ${AWK} -F . '{print $$1, $$2, $$4}' >> $@
-	@echo '#define.ISAL_CRYPTO_PATCH_VERSION.${version}' |  ${AWK} -F . '{print $$1, $$2, $$5}' >> $@
-	@echo '#define ISAL_CRYPTO_MAKE_VERSION(maj, min, patch)  ((maj) * 0x10000 + (min) * 0x100 + (patch))' >> $@
-	@echo '#define ISAL_CRYPTO_VERSION ISAL_CRYPTO_MAKE_VERSION(ISAL_CRYPTO_MAJOR_VERSION, ISAL_CRYPTO_MINOR_VERSION, ISAL_CRYPTO_PATCH_VERSION)' >> $@
-	@echo ''			>> $@
 	@for unit in $(sort $(extern_hdrs)); do echo "#include <isa-l_crypto/$$unit>" | sed -e 's;include/;;' >> $@; done
 	@echo '#endif //_ISAL_CRYPTO_H_'	>> $@
 
@@ -338,3 +350,21 @@ doc: isa-l_crypto.h
 	(cat Doxyfile; echo 'PROJECT_NUMBER=$(version)') | doxygen -
 	$(MAKE) -C generated_doc/latex &> generated_doc/latex_build_api.log
 	cp generated_doc/latex/refman.pdf isa-l_crypto_api_$(version).pdf
+
+# Check spelling in the code with codespell.
+# See https://github.com/codespell-project/codespell for more details.
+# Codespell options explained:
+# -d        -- disable colours (emacs colours it anyway)
+# -L        -- List of words to be ignored
+# -S <skip> -- skip file types
+# -I FILE   -- File containing words to be ignored
+#
+CODESPELL ?= codespell
+CS_IGNORE_WORDS ?= iinclude,struc,fo,ue,od,ba,padd,hist,unx,sav,datas
+
+.PHONY: spellcheck
+spellcheck:
+	$(CODESPELL) -d -L $(CS_IGNORE_WORDS) \
+	-S "*.obj,*.o,*.a,*.so,*.lib,*~,*.so,*.so.*,*.d" \
+	./aes ./examples/saturation_test ./include ./md5_mb ./mh_sha1 ./mh_sha1_murmur3_x86_128 ./mh_sha256 ./rolling_hash ./sha1_mb ./sha256_mb ./sha512_mb ./sm3_mb ./tests ./fips ./misc README.md SECURITY.md CONTRIBUTING.md FIPS.md \
+	Makefile.unx Makefile.nmake Release_notes.txt LICENSE $(CS_EXTRA_OPTS)

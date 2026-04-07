@@ -2,7 +2,7 @@
 
 """
 **********************************************************************
-  Copyright(c) 2017-2022, Intel Corporation All rights reserved.
+  Copyright(c) 2017-2023, Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions
@@ -35,7 +35,7 @@ import sys
 
 # Number of parameters (ARCH, CIPHER_MODE, DIR, HASH_ALG, KEY_SIZE)
 PAR_NUM = 5
-COL_WIDTH = 14
+COL_WIDTH = 19
 CYCLE_COST = False
 PACKET_SIZE = 0
 SLOPE = False
@@ -153,16 +153,16 @@ class VarList(list):
         #commandline flags and prints the appropriate values
         if CYCLE_COST:
             headings = ["NO", "ARCH", "CIPHER", "DIR", "HASH",
-                        "KEYSZ", "CYCLE COST A", "CYCLE COST B"]
+                        "KEYSZ", "CYCLE_COST_A", "CYCLE_COST_B"]
             print("Buffer size: {} bytes".format(PACKET_SIZE))
         elif THROUGHPUT:
             headings = ["NO", "ARCH", "CIPHER", "DIR", "HASH",
-                        "KEYSZ", "THROUGHPUT A", "THROUGHPUT B"]
+                        "KEYSZ", "THROUGHPUT_A", "THROUGHPUT_B"]
             print("Buffer size: {} bytes".format(PACKET_SIZE))
             print("Clock speed: {} MHz\nThroughput unit: Mbps".format(CLOCK_SPEED))
         else:
             headings = ["NO", "ARCH", "CIPHER", "DIR", "HASH",
-                        "KEYSZ", "SLOPE A", "INTERCEPT A", "SLOPE B", "INTERCEPT B"]
+                        "KEYSZ", "SLOPE_A", "INTERCEPT_A", "SLOPE_B", "INTERCEPT_B"]
 
         print("".join(j.ljust(COL_WIDTH) for j in headings))
 
@@ -206,16 +206,16 @@ class VarList(list):
         """
         if CYCLE_COST:
             headings = ["NO", "ARCH", "CIPHER", "DIR", "HASH",
-                        "KEYSZ", "CYCLE COST A"]
+                        "KEYSZ", "CYCLE_COST_A"]
             print("Buffer size: {} bytes".format(PACKET_SIZE))
         elif THROUGHPUT:
             headings = ["NO", "ARCH", "CIPHER", "DIR", "HASH",
-                        "KEYSZ", "THROUGHPUT A"]
+                        "KEYSZ", "THROUGHPUT_A"]
             print("Buffer size: {} bytes".format(PACKET_SIZE))
             print("Clock speed: {} MHz\nThroughput unit: Mbps".format(CLOCK_SPEED))
         else:
             headings = ["NO", "ARCH", "CIPHER", "DIR", "HASH",
-                        "KEYSZ", "SLOPE A", "INTERCEPT A"]
+                        "KEYSZ", "SLOPE_A", "INTERCEPT_A"]
         print("".join(j.ljust(COL_WIDTH) for j in headings))
         for i, obj in enumerate(self):
             number = i+1
@@ -327,7 +327,7 @@ class DiffTool(object):
         print("\t-c - takes packet size as argument and then it will calculate cycle cost")
         print("\t-t - takes packet size and clock speed as arguments and then it will calculate throughput in Mbps")
         print("\t-s - calculates the slope and intercept")
-        print("\tfile_a, file_b - text files containing output from ipsec_perf tool")
+        print("\tfile_a, file_b - text files containing output from imb-perf tool")
         print("\ttol - tolerance [%], must be >= 0, default 5\n")
         print("Examples:")
         print("\tdefault no arguments prints slope and intercept")

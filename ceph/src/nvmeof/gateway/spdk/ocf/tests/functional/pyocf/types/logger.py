@@ -1,6 +1,6 @@
 #
-# Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2019-2022 Intel Corporation
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 from ctypes import (
@@ -20,8 +20,7 @@ import weakref
 
 from ..ocf import OcfLib
 
-logger = logging.getLogger("pyocf")
-logger.setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG, handlers=[logging.NullHandler()])
 
 
 class LogLevel(IntEnum):
@@ -69,9 +68,9 @@ class LoggerPriv(Structure):
 
 
 class Logger(Structure):
-    _instances_ = {}
+    _instances_ = weakref.WeakValueDictionary()
 
-    _fields_ = [("logger", c_void_p)]
+    _fields_ = [("_logger", c_void_p)]
 
     def __init__(self):
         self.ops = LoggerOps(
@@ -81,7 +80,7 @@ class Logger(Structure):
         )
         self.priv = LoggerPriv(_log=self._log)
         self._as_parameter_ = cast(pointer(self.priv), c_void_p).value
-        self._instances_[self._as_parameter_] = weakref.ref(self)
+        self._instances_[self._as_parameter_] = self
 
     def get_ops(self):
         return self.ops
@@ -92,7 +91,7 @@ class Logger(Structure):
     @classmethod
     def get_instance(cls, ctx: int):
         priv = OcfLib.getInstance().ocf_logger_get_priv(ctx)
-        return cls._instances_[priv]()
+        return cls._instances_[priv]
 
     @staticmethod
     @LoggerOps.LOG
@@ -118,31 +117,29 @@ class Logger(Structure):
 
 
 class DefaultLogger(Logger):
-    def __init__(self, level: LogLevel = LogLevel.WARN):
+    def __init__(self, level: LogLevel = LogLevel.WARN, name: str = ""):
         super().__init__()
         self.level = level
+        self.name = name
 
+        self.logger = logging.getLogger(name)
         ch = logging.StreamHandler()
-        fmt = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         ch.setFormatter(fmt)
         ch.setLevel(LevelMapping[level])
-        logger.addHandler(ch)
+        self.logger.addHandler(ch)
 
     def log(self, lvl: int, msg: str):
-        logger.log(LevelMapping[lvl], msg)
+        self.logger.log(LevelMapping[lvl], msg)
 
     def close(self):
-        logger.handlers = []
+        self.logger.handlers = []
 
 
 class FileLogger(Logger):
     def __init__(self, f, console_level=None):
         super().__init__()
-        fmt = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
         fh = logging.FileHandler(f)
         fh.setLevel(logging.DEBUG)
@@ -163,13 +160,19 @@ class FileLogger(Logger):
         logger.handlers = []
 
 
-class BufferLogger(Logger):
-    def __init__(self, level: LogLevel):
-        super().__init__()
-        self.level = level
+class BufferLogger(DefaultLogger):
+    def __init__(
+        self,
+        console_level: LogLevel = LogLevel.WARN,
+        buffer_level: LogLevel = LogLevel.DEBUG,
+        name: str = ""
+    ):
+        super().__init__(console_level, name)
+        self.level = buffer_level
         self.buffer = StringIO()
 
     def log(self, lvl, msg):
+        super().log(lvl, msg)
         if lvl < self.level:
             self.buffer.write(msg + "\n")
 

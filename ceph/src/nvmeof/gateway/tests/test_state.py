@@ -1,6 +1,7 @@
 import pytest
 import time
 import rados
+import threading
 from control.state import LocalGatewayState, OmapGatewayState, GatewayStateHandler
 
 
@@ -21,7 +22,7 @@ def local_state():
 @pytest.fixture
 def omap_state(config):
     """Sets up and tears down OMAP state object."""
-    omap = OmapGatewayState(config)
+    omap = OmapGatewayState(config, None, "test")
     omap.delete_state()
     yield omap
     omap.delete_state()
@@ -48,7 +49,7 @@ def test_state_polling_update(config, ioctx, local_state, omap_state):
 
     update_counter = 0
 
-    def _state_polling_update(update, is_add_req):
+    def _state_polling_update(update, is_add_req, break_interval):
         nonlocal update_counter
         update_counter += 1
         for k, v in update.items():
@@ -75,7 +76,7 @@ def test_state_polling_update(config, ioctx, local_state, omap_state):
     version = 1
     update_interval_sec = 1
     state = GatewayStateHandler(config, local_state, omap_state,
-                                _state_polling_update)
+                                _state_polling_update, "test")
     state.update_interval = update_interval_sec
     state.use_notify = False
     key = "namespace_test"
@@ -106,8 +107,9 @@ def test_state_notify_update(config, ioctx, local_state, omap_state):
     """Confirms use of OMAP watch/notify for updates."""
 
     update_counter = 0
+    notify_event = threading.Event()      # Event to signal when notify is called
 
-    def _state_notify_update(update, is_add_req):
+    def _state_notify_update(update, is_add_req, break_interval):
         nonlocal update_counter
         update_counter += 1
         elapsed = time.time() - start
@@ -132,11 +134,12 @@ def test_state_notify_update(config, ioctx, local_state, omap_state):
                 assert is_add_req is False
                 assert k == key
             assert update_counter < 5
+        notify_event.set()  # Signal that notify was called
 
     version = 1
     update_interval_sec = 10
     state = GatewayStateHandler(config, local_state, omap_state,
-                                _state_notify_update)
+                                _state_notify_update, None, "test")
     key = "namespace_test"
     state.update_interval = update_interval_sec
     state.use_notify = True
@@ -148,25 +151,37 @@ def test_state_notify_update(config, ioctx, local_state, omap_state):
     add_key(ioctx, key, "add", version, omap_state.omap_name,
             omap_state.OMAP_VERSION_KEY)
     assert (ioctx.notify(omap_state.omap_name))  # Send notify signal
+    # Wait for the notify to be triggered
+    assert notify_event.wait(update_interval_sec - 0.5)
+    notify_event.clear()  # Reset the event for the next notification
+    assert update_counter == 1
 
     # Change namespace key and update version number
     version += 1
     add_key(ioctx, key, "changed", version, omap_state.omap_name,
             omap_state.OMAP_VERSION_KEY)
     assert (ioctx.notify(omap_state.omap_name))  # Send notify signal
+    # Wait for the notify to be triggered
+    assert notify_event.wait(update_interval_sec - 0.5)
+    notify_event.clear()  # Reset the event for the next notification
+    assert update_counter == 3
 
     # Remove namespace key and update version number
     version += 1
     remove_key(ioctx, key, version, omap_state.omap_name,
                omap_state.OMAP_VERSION_KEY)
     assert (ioctx.notify(omap_state.omap_name))  # Send notify signal
+    # Wait for the notify to be triggered
+    assert notify_event.wait(update_interval_sec - 0.5)
+    notify_event.clear()  # Reset the event for the next notification
+    assert update_counter == 4
 
     # any wait interval smaller than update_interval_sec = 10 should be good
     # to test notify capability
     elapsed = time.time() - start
     wait_interval = update_interval_sec - elapsed - 0.5
-    assert(wait_interval > 0)
-    assert(wait_interval < update_interval_sec)
+    assert wait_interval > 0
+    assert wait_interval < update_interval_sec
     time.sleep(wait_interval)
 
     # expect 4 updates: addition, two-step change and removal

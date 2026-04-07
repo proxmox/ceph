@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2018-2022, Intel Corporation
+;; Copyright (c) 2018-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -29,7 +29,7 @@
 %ifndef _AESNI_EMU_INC_
 %define _AESNI_EMU_INC_
 
-%include "include/reg_sizes.asm"
+%include "include/reg_sizes.inc"
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Utility macros and defines to assist AESNI translation macros

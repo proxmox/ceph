@@ -13,7 +13,20 @@
 
 #include "spdk/uuid.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define REDUCE_MAX_IOVECS	33
+
+/**
+ * Describes the information of spdk_reduce_vol.
+ */
+struct spdk_reduce_vol_info {
+	/* Statistics on the number of allocated io units */
+	uint64_t		allocated_io_units;
+	/* TODO: Migrate other vol properties to this structure */
+};
 
 /**
  * Describes the parameters of an spdk_reduce_vol.
@@ -54,6 +67,19 @@ struct spdk_reduce_vol_params {
 	 *  of the chunk size.
 	 */
 	uint64_t		vol_size;
+
+	/**
+	 * Compression algorithm, when creating initialization, it is
+	 * specified by the user
+	 */
+	uint32_t		comp_level;
+
+	/**
+	 * Compression algorithm, when creating initialization, it is
+	 * specified by the user
+	 */
+	uint8_t                 comp_algo;
+	uint8_t                 reserved[3];
 };
 
 struct spdk_reduce_vol;
@@ -83,15 +109,25 @@ struct spdk_reduce_vol_cb_args {
 	void			*cb_arg;
 };
 
+enum spdk_reduce_backing_io_type {
+	SPDK_REDUCE_BACKING_IO_WRITE,
+	SPDK_REDUCE_BACKING_IO_READ,
+	SPDK_REDUCE_BACKING_IO_UNMAP,
+};
+
+struct spdk_reduce_backing_io {
+	struct spdk_reduce_backing_dev    *dev;
+	struct iovec                      *iov;
+	uint32_t                          iovcnt;
+	uint64_t                          lba;
+	uint32_t                          lba_count;
+	struct spdk_reduce_vol_cb_args    *backing_cb_args;
+	enum spdk_reduce_backing_io_type  backing_io_type;
+	char                              user_ctx[0];
+};
+
 struct spdk_reduce_backing_dev {
-	void (*readv)(struct spdk_reduce_backing_dev *dev, struct iovec *iov, int iovcnt,
-		      uint64_t lba, uint32_t lba_count, struct spdk_reduce_vol_cb_args *args);
-
-	void (*writev)(struct spdk_reduce_backing_dev *dev, struct iovec *iov, int iovcnt,
-		       uint64_t lba, uint32_t lba_count, struct spdk_reduce_vol_cb_args *args);
-
-	void (*unmap)(struct spdk_reduce_backing_dev *dev,
-		      uint64_t lba, uint32_t lba_count, struct spdk_reduce_vol_cb_args *args);
+	void (*submit_backing_io)(struct spdk_reduce_backing_io *backing_io);
 
 	void (*compress)(struct spdk_reduce_backing_dev *dev,
 			 struct iovec *src_iov, int src_iovcnt,
@@ -107,6 +143,7 @@ struct spdk_reduce_backing_dev {
 	uint32_t	blocklen;
 	bool		sgl_in;
 	bool		sgl_out;
+	uint32_t        user_ctx_size;
 };
 
 /**
@@ -209,6 +246,21 @@ void spdk_reduce_vol_writev(struct spdk_reduce_vol *vol,
 			    spdk_reduce_vol_op_complete cb_fn, void *cb_arg);
 
 /**
+ * Unmap extent to a libreduce compressed volume.
+ *
+ * This function will clear the mapping info by full chunk or write zero to nonfull chunk.
+ *
+ * \param vol Volume to unmap.
+ * \param offset Offset (in logical blocks) of the extent to unmap on the compressed volume
+ * \param length Length (in logical blocks) of the extent to unmap on the compressed volume
+ * \param cb_fn Callback function to signal completion of the unmap operation.
+ * \param cb_arg Argument to pass to the callback function.
+ */
+void spdk_reduce_vol_unmap(struct spdk_reduce_vol *vol,
+			   uint64_t offset, uint64_t length,
+			   spdk_reduce_vol_op_complete cb_fn, void *cb_arg);
+
+/**
  * Get the params structure for a libreduce compressed volume.
  *
  * This function will populate the given params structure for a given volume.
@@ -226,4 +278,25 @@ const struct spdk_reduce_vol_params *spdk_reduce_vol_get_params(struct spdk_redu
  * \param vol Previously loaded or initialized compressed volume.
  */
 void spdk_reduce_vol_print_info(struct spdk_reduce_vol *vol);
+
+/**
+ * Get the pm path for a libreduce compressed volume.
+ *
+ * \param vol Previously loaded or initialized compressed volume.
+ * \return pm path for the compressed volume.
+ */
+const char *spdk_reduce_vol_get_pm_path(const struct spdk_reduce_vol *vol);
+
+/**
+ * Get the information for a libreduce compressed volume.
+ *
+ * \param vol Previously loaded or initialized compressed volume.
+ * \return spdk_reduce_vol_info structure for the compressed volume.
+ */
+const struct spdk_reduce_vol_info *spdk_reduce_vol_get_info(const struct spdk_reduce_vol *vol);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* SPDK_REDUCE_H_ */

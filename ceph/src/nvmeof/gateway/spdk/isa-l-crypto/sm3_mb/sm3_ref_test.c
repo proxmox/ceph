@@ -30,12 +30,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef FIPS_MODE
 #include "sm3_mb.h"
 #include "endian_helper.h"
 
-typedef uint32_t digest_sm3[SM3_DIGEST_NWORDS];
+typedef uint32_t digest_sm3[ISAL_SM3_DIGEST_NWORDS];
 
-#define MSGS 2
+#define MSGS     2
 #define NUM_JOBS 1000
 
 #define PSEUDO_RANDOM_NUM(seed) ((seed) * 5 + ((seed) * (seed)) / 64) % MSGS
@@ -45,163 +47,171 @@ static uint8_t msg2[] = "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabc
 
 /* small endian */
 static digest_sm3 exp_result_digest1 = { 0x66c7f0f4, 0x62eeedd9, 0xd1f2d46b, 0xdc10e4e2,
-	0x4167c487, 0x5cf2f7a2, 0x297da02b, 0x8f4ba8e0
-};
+                                         0x4167c487, 0x5cf2f7a2, 0x297da02b, 0x8f4ba8e0 };
 
 /* small endian */
 static digest_sm3 exp_result_digest2 = { 0xdebe9ff9, 0x2275b8a1, 0x38604889, 0xc18e5a4d,
-	0x6fdb70e5, 0x387e5765, 0x293dcba3, 0x9c0c5732
-};
+                                         0x6fdb70e5, 0x387e5765, 0x293dcba3, 0x9c0c5732 };
 
 static uint8_t *msgs[MSGS] = { msg1, msg2 };
 
-static uint32_t *exp_result_digest[MSGS] = {
-	exp_result_digest1, exp_result_digest2
-};
+static uint32_t *exp_result_digest[MSGS] = { exp_result_digest1, exp_result_digest2 };
+#endif /* !FIPS_MODE */
 
-int main(void)
+int
+main(void)
 {
-	SM3_HASH_CTX_MGR *mgr = NULL;
-	SM3_HASH_CTX ctxpool[NUM_JOBS], *ctx = NULL;
-	uint32_t i, j, k, t, checked = 0;
-	uint32_t *good;
-	int ret;
+#ifndef FIPS_MODE
+        ISAL_SM3_HASH_CTX_MGR *mgr = NULL;
+        ISAL_SM3_HASH_CTX ctxpool[NUM_JOBS], *ctx = NULL;
+        uint32_t i, j, k, t, checked = 0;
+        uint32_t *good;
+        int rc, ret = -1;
 
-	ret = posix_memalign((void *)&mgr, 16, sizeof(SM3_HASH_CTX_MGR));
-	if ((ret != 0) || (mgr == NULL)) {
-		printf("posix_memalign failed test aborted\n");
-		return 1;
-	}
+        rc = posix_memalign((void *) &mgr, 16, sizeof(ISAL_SM3_HASH_CTX_MGR));
+        if ((rc != 0) || (mgr == NULL)) {
+                printf("posix_memalign failed test aborted\n");
+                return 1;
+        }
 
-	sm3_ctx_mgr_init(mgr);
+        isal_sm3_ctx_mgr_init(mgr);
 
-	// Init contexts before first use
-	for (i = 0; i < MSGS; i++) {
-		hash_ctx_init(&ctxpool[i]);
-		ctxpool[i].user_data = (void *)((uint64_t) i);
-	}
+        // Init contexts before first use
+        for (i = 0; i < MSGS; i++) {
+                isal_hash_ctx_init(&ctxpool[i]);
+                ctxpool[i].user_data = (void *) ((uint64_t) i);
+        }
 
-	for (i = 0; i < MSGS; i++) {
-		ctx = sm3_ctx_mgr_submit(mgr,
-					 &ctxpool[i],
-					 msgs[i], strlen((char *)msgs[i]), HASH_ENTIRE);
+        for (i = 0; i < MSGS; i++) {
+                const int res = isal_sm3_ctx_mgr_submit(mgr, &ctxpool[i], &ctx, msgs[i],
+                                                        (uint32_t) strlen((char *) msgs[i]),
+                                                        ISAL_HASH_ENTIRE);
 
-		if (ctx) {
-			t = (unsigned long)(ctx->user_data);
-			good = exp_result_digest[t];
-			checked++;
-			for (j = 0; j < SM3_DIGEST_NWORDS; j++) {
-				if (byteswap32(good[j]) != ctxpool[t].job.result_digest[j]) {
-					printf("Test %d, digest %d is %08X, should be %08X\n",
-					       t, j, ctxpool[t].job.result_digest[j],
-					       byteswap32(good[j]));
-					return -1;
-				}
-			}
+                if (res == 0 && ctx != NULL) {
+                        t = (uint32_t) ((uintptr_t) ctx->user_data);
+                        good = exp_result_digest[t];
+                        checked++;
+                        for (j = 0; j < ISAL_SM3_DIGEST_NWORDS; j++) {
+                                if (byteswap32(good[j]) != ctxpool[t].job.result_digest[j]) {
+                                        printf("Test %d, digest %d is %08X, should be %08X\n", t, j,
+                                               ctxpool[t].job.result_digest[j],
+                                               byteswap32(good[j]));
+                                        goto end;
+                                }
+                        }
 
-			if (ctx->error) {
-				printf("Something bad happened during the submit."
-				       " Error code: %d", ctx->error);
-				return -1;
-			}
+                        if (ctx->error) {
+                                printf("Something bad happened during the submit."
+                                       " Error code: %d",
+                                       ctx->error);
+                                goto end;
+                        }
+                }
+        }
 
-		}
-	}
+        while (1) {
+                const int res = isal_sm3_ctx_mgr_flush(mgr, &ctx);
 
-	while (1) {
-		ctx = sm3_ctx_mgr_flush(mgr);
+                if (res == 0 && ctx != NULL) {
+                        t = (unsigned long) (uintptr_t) (ctx->user_data);
+                        good = exp_result_digest[t];
+                        checked++;
+                        for (j = 0; j < ISAL_SM3_DIGEST_NWORDS; j++) {
+                                if (byteswap32(good[j]) != ctxpool[t].job.result_digest[j]) {
+                                        printf("Test %d, digest %d is %08X, should be %08X\n", t, j,
+                                               ctxpool[t].job.result_digest[j],
+                                               byteswap32(good[j]));
+                                        goto end;
+                                }
+                        }
 
-		if (ctx) {
-			t = (unsigned long)(ctx->user_data);
-			good = exp_result_digest[t];
-			checked++;
-			for (j = 0; j < SM3_DIGEST_NWORDS; j++) {
-				if (byteswap32(good[j]) != ctxpool[t].job.result_digest[j]) {
-					printf("Test %d, digest %d is %08X, should be %08X\n",
-					       t, j, ctxpool[t].job.result_digest[j],
-					       byteswap32(good[j]));
-					return -1;
-				}
-			}
+                        if (ctx->error) {
+                                printf("Something bad happened during the submit."
+                                       " Error code: %d",
+                                       ctx->error);
+                                goto end;
+                        }
+                } else {
+                        break;
+                }
+        }
 
-			if (ctx->error) {
-				printf("Something bad happened during the submit."
-				       " Error code: %d", ctx->error);
-				return -1;
-			}
-		} else {
-			break;
-		}
-	}
+        // do larger test in pseudo-random order
 
-	// do larger test in pseudo-random order
+        // Init contexts before first use
+        for (i = 0; i < NUM_JOBS; i++) {
+                isal_hash_ctx_init(&ctxpool[i]);
+                ctxpool[i].user_data = (void *) ((uint64_t) i);
+        }
 
-	// Init contexts before first use
-	for (i = 0; i < NUM_JOBS; i++) {
-		hash_ctx_init(&ctxpool[i]);
-		ctxpool[i].user_data = (void *)((uint64_t) i);
-	}
+        checked = 0;
+        for (i = 0; i < NUM_JOBS; i++) {
+                j = PSEUDO_RANDOM_NUM(i);
+                const int res = isal_sm3_ctx_mgr_submit(mgr, &ctxpool[i], &ctx, msgs[j],
+                                                        (uint32_t) strlen((char *) msgs[j]),
+                                                        ISAL_HASH_ENTIRE);
+                if (res == 0 && ctx != NULL) {
+                        t = (unsigned long) (uintptr_t) (ctx->user_data);
+                        k = PSEUDO_RANDOM_NUM(t);
+                        good = exp_result_digest[k];
+                        checked++;
+                        for (j = 0; j < ISAL_SM3_DIGEST_NWORDS; j++) {
+                                if (byteswap32(good[j]) != ctxpool[t].job.result_digest[j]) {
+                                        printf("Test %d, digest %d is %08X, should be %08X\n", t, j,
+                                               ctxpool[t].job.result_digest[j],
+                                               byteswap32(good[j]));
+                                        goto end;
+                                }
+                        }
 
-	checked = 0;
-	for (i = 0; i < NUM_JOBS; i++) {
-		j = PSEUDO_RANDOM_NUM(i);
-		ctx = sm3_ctx_mgr_submit(mgr,
-					 &ctxpool[i],
-					 msgs[j], strlen((char *)msgs[j]), HASH_ENTIRE);
-		if (ctx) {
-			t = (unsigned long)(ctx->user_data);
-			k = PSEUDO_RANDOM_NUM(t);
-			good = exp_result_digest[k];
-			checked++;
-			for (j = 0; j < SM3_DIGEST_NWORDS; j++) {
-				if (byteswap32(good[j]) != ctxpool[t].job.result_digest[j]) {
-					printf("Test %d, digest %d is %08X, should be %08X\n",
-					       t, j, ctxpool[t].job.result_digest[j],
-					       byteswap32(good[j]));
-					return -1;
-				}
-			}
+                        if (ctx->error) {
+                                printf("Something bad happened during the"
+                                       " submit. Error code: %d",
+                                       ctx->error);
+                                goto end;
+                        }
+                }
+        }
+        while (1) {
+                const int res = isal_sm3_ctx_mgr_flush(mgr, &ctx);
 
-			if (ctx->error) {
-				printf("Something bad happened during the"
-				       " submit. Error code: %d", ctx->error);
-				return -1;
-			}
-		}
-	}
-	while (1) {
-		ctx = sm3_ctx_mgr_flush(mgr);
+                if (res == 0 && ctx != NULL) {
+                        t = (unsigned long) (uintptr_t) (ctx->user_data);
+                        k = PSEUDO_RANDOM_NUM(t);
+                        good = exp_result_digest[k];
+                        checked++;
+                        for (j = 0; j < ISAL_SM3_DIGEST_NWORDS; j++) {
+                                if (byteswap32(good[j]) != ctxpool[t].job.result_digest[j]) {
+                                        printf("Test %d, digest %d is %08X, should be %08X\n", t, j,
+                                               ctxpool[t].job.result_digest[j],
+                                               byteswap32(good[j]));
+                                        goto end;
+                                }
+                        }
 
-		if (ctx) {
-			t = (unsigned long)(ctx->user_data);
-			k = PSEUDO_RANDOM_NUM(t);
-			good = exp_result_digest[k];
-			checked++;
-			for (j = 0; j < SM3_DIGEST_NWORDS; j++) {
-				if (byteswap32(good[j]) != ctxpool[t].job.result_digest[j]) {
-					printf("Test %d, digest %d is %08X, should be %08X\n",
-					       t, j, ctxpool[t].job.result_digest[j],
-					       byteswap32(good[j]));
-					return -1;
-				}
-			}
+                        if (ctx->error) {
+                                printf("Something bad happened during the submit."
+                                       " Error code: %d",
+                                       ctx->error);
+                                goto end;
+                        }
+                } else {
+                        break;
+                }
+        }
 
-			if (ctx->error) {
-				printf("Something bad happened during the submit."
-				       " Error code: %d", ctx->error);
-				return -1;
-			}
-		} else {
-			break;
-		}
-	}
+        if (checked != NUM_JOBS) {
+                printf("only tested %d rather than %d\n", checked, NUM_JOBS);
+                goto end;
+        }
+        ret = 0;
 
-	if (checked != NUM_JOBS) {
-		printf("only tested %d rather than %d\n", checked, NUM_JOBS);
-		return -1;
-	}
-
-	printf(" multibinary_sm3 test: Pass\n");
-
-	return 0;
+        printf(" multibinary_sm3 test: Pass\n");
+end:
+        aligned_free(mgr);
+        return ret;
+#else
+        printf("Not Executed\n");
+        return 0;
+#endif /* FIPS_MODE */
 }

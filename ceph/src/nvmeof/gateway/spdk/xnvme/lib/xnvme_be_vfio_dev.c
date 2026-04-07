@@ -1,11 +1,12 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// Copyright (C) Michael Bang <mi.bang@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_LINUX_VFIO_ENABLED
 #include <xnvme_dev.h>
-#include <libxnvme_spec_fs.h>
 #include <xnvme_be_vfio.h>
 
 /*
@@ -132,7 +133,7 @@ _xnvme_be_vfio_create_ioqpair(struct xnvme_be_vfio_state *state, int qd, int fla
 	unsigned int qid = __builtin_ffsll(state->qidmap);
 	int err;
 
-	if (qid == 0) {
+	if (qid < 2) {
 		XNVME_DEBUG("no free queue identifiers\n");
 		return -EBUSY;
 	}
@@ -143,7 +144,7 @@ _xnvme_be_vfio_create_ioqpair(struct xnvme_be_vfio_state *state, int qd, int fla
 
 	// nvme queue capacity must be one larger than the requested capacity
 	// since only n-1 slots in an NVMe queue may be used
-	err = nvme_create_ioqpair(state->ctrl, qid, qd + 1, flags);
+	err = nvme_create_ioqpair(state->ctrl, qid, qd + 1, qid, flags);
 	if (err) {
 		return -errno;
 	}
@@ -168,8 +169,6 @@ _xnvme_be_vfio_delete_ioqpair(struct xnvme_be_vfio_state *state, unsigned int qi
 int
 xnvme_be_vfio_dev_open(struct xnvme_dev *dev)
 {
-	static const uint16_t nqueues = 63;
-
 	struct xnvme_be_vfio_state *state = (void *)dev->be.state;
 	struct nvme_ctrl *ctrl;
 	int qpid;
@@ -178,8 +177,8 @@ xnvme_be_vfio_dev_open(struct xnvme_dev *dev)
 	ctrl = _vfio_cref_lookup(&dev->ident);
 	if (!ctrl) {
 		struct nvme_ctrl_opts ctrl_opts = {
-			.nsqr = nqueues,
-			.ncqr = nqueues,
+			.nsqr = XNVME_BE_VFIO_NQUEUES_MAX - 1,
+			.ncqr = XNVME_BE_VFIO_NQUEUES_MAX - 1,
 		};
 
 		ctrl = calloc(1, sizeof(struct nvme_ctrl));
@@ -196,21 +195,43 @@ xnvme_be_vfio_dev_open(struct xnvme_dev *dev)
 		state->ctrl = ctrl;
 		state->qidmap = -1 & ~0x1;
 
+		if (state->ctrl->pci.dev.irq_info.count < 2) {
+			XNVME_DEBUG("FAILED: no interrupt vector");
+			return -ENOSYS;
+		}
+
+		state->nefds =
+			XNVME_MIN(XNVME_BE_VFIO_NQUEUES_MAX, state->ctrl->pci.dev.irq_info.count);
+
+		state->efds = calloc(state->nefds, sizeof(int));
+		if (!state->efds) {
+			XNVME_DEBUG("FAILED: calloc()");
+			return -ENOMEM;
+		}
+
+		for (int i = 0; i < state->nefds; i++) {
+			state->efds[i] = -1;
+		}
+
+		if (vfio_set_irq(&state->ctrl->pci.dev, state->efds, state->nefds)) {
+			XNVME_DEBUG("FAILED: vfio set irqs");
+		}
+
 		// create queues for sync backend requests
 		qpid = _xnvme_be_vfio_create_ioqpair(state, 31, 0x0);
+
 		if (qpid < 0) {
 			XNVME_DEBUG("FAILED: initializing qpairs for sync IO: %d", err);
+			free(state->efds);
 			return -errno;
 		}
 		state->sq_sync = &state->ctrl->sq[qpid];
 		state->cq_sync = &state->ctrl->cq[qpid];
 
-		// TODO: ctrl->config will contain the actual number of queues
-		// created (zero-based)
-
 		err = _vfio_cref_insert(&dev->ident, ctrl);
 		if (err) {
 			XNVME_DEBUG("FAILED: _cref_insert()");
+			free(state->efds);
 			return err;
 		}
 	}
@@ -219,18 +240,6 @@ xnvme_be_vfio_dev_open(struct xnvme_dev *dev)
 	dev->ident.csi = XNVME_SPEC_CSI_NVM;
 	dev->ident.nsid = dev->opts.nsid;
 
-	err = xnvme_be_dev_idfy(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_idfy()");
-		// _be_linux_state_term((void *)dev->be.state);
-		return err;
-	}
-	err = xnvme_be_dev_derive_geometry(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_derive_geometry()");
-		return err;
-	}
-
 	return 0;
 }
 
@@ -238,11 +247,12 @@ void
 xnvme_be_vfio_dev_close(struct xnvme_dev *dev)
 {
 	struct xnvme_be_vfio_state *state = (void *)dev->be.state;
-	// TODO: this should work, but I'm getting errors from libvfio's
-	// nvme_init when attempting to initialize the device again. Not sure
-	// if the error is in my or libvfio's code.
+
 	if (_vfio_cref_deref(state->ctrl)) {
 		XNVME_DEBUG("FAILED: _vfio_cref_deref()");
+	}
+	if (state->efds) {
+		free(state->efds);
 	}
 }
 

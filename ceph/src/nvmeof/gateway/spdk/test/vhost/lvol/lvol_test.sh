@@ -44,12 +44,12 @@ function usage() {
 function clean_lvol_cfg() {
 	notice "Removing lvol bdevs"
 	for lvol_bdev in "${lvol_bdevs[@]}"; do
-		$rpc_py bdev_lvol_delete $lvol_bdev
+		$rpc_py -t 120 bdev_lvol_delete $lvol_bdev
 		notice "lvol bdev $lvol_bdev removed"
 	done
 
 	notice "Removing lvol stores"
-	$rpc_py bdev_lvol_delete_lvstore -u "$ls_guid"
+	$rpc_py -t 120 bdev_lvol_delete_lvstore -u "$ls_guid"
 	notice "lvol store $ls_guid removed"
 }
 
@@ -77,27 +77,16 @@ done
 
 vhosttestinit
 
+# $vm_count VMs, 2CPUs per VM, 4CPUs for SPDK, all pinned to node0
+source <(gen_cpu_vm_spdk_config "$vm_count" 2 4 "" 0)
 spdk_mask=$vhost_0_reactor_mask
-if $distribute_cores; then
-	source $testdir/autotest.config
-	# Adjust the mask so vhost runs on separate cpus than qemu instances.
-	# We know that .config sets qemus to run on single cpu so simply take
-	# the next cpu and add some extra.
-	# FIXME: Rewrite this so the config is more aware of what cpu topology
-	# is actually available on the host system.
-	spdk_mask=$((1 << vm_count))
-	((spdk_mask |= 1 << (vm_count + 1)))
-	((spdk_mask |= 1 << (vm_count + 2)))
-	((spdk_mask |= 1 << (vm_count + 3)))
-	spdk_mask=$(printf '0x%x' "$spdk_mask")
-fi
 
 trap 'error_exit "${FUNCNAME}" "${LINENO}"' SIGTERM SIGABRT ERR
 
 vm_kill_all
 
 notice "running SPDK vhost"
-vhost_run -n "0" -a "--cpumask $spdk_mask"
+vhost_run -n "0" -- --cpumask "$spdk_mask"
 notice "..."
 
 trap 'clean_lvol_cfg; error_exit "${FUNCNAME}" "${LINENO}"' SIGTERM SIGABRT ERR
@@ -136,10 +125,10 @@ for ((i = 0; i < vm_count; i++)); do
 	setup_cmd+=" --os=$VM_IMAGE"
 
 	# Create single SCSI controller or multiple BLK controllers for this VM
-	mask_arg="--cpumask $spdk_mask"
+	mask_arg=("--cpumask" "$spdk_mask")
 
 	if [[ "$ctrl_type" == "spdk_vhost_scsi" ]]; then
-		$rpc_py vhost_create_scsi_controller naa.0.$i $mask_arg
+		$rpc_py vhost_create_scsi_controller naa.0.$i "${mask_arg[@]}"
 		for ((j = 0; j < ${#bdevs[@]}; j++)); do
 			$rpc_py vhost_scsi_controller_add_target naa.0.$i $j ${bdevs[$j]}
 		done
@@ -147,7 +136,7 @@ for ((i = 0; i < vm_count; i++)); do
 	elif [[ "$ctrl_type" == "spdk_vhost_blk" ]]; then
 		disk=""
 		for ((j = 0; j < ${#bdevs[@]}; j++)); do
-			$rpc_py vhost_create_blk_controller naa.$j.$i ${bdevs[$j]} $mask_arg
+			$rpc_py vhost_create_blk_controller naa.$j.$i ${bdevs[$j]} "${mask_arg[@]}"
 			disk+="${j}:"
 		done
 		disk="${disk::-1}"
@@ -171,6 +160,8 @@ for vm_num in $used_vms; do
 	qemu_mask_param="VM_${vm_num}_qemu_mask"
 
 	host_name="VM-$vm_num-${!qemu_mask_param}"
+	# In case VM uses > 1 cpus, make sure the hostname is valid
+	host_name=${host_name//,/-}
 	vm_exec $vm_num "hostname $host_name"
 	vm_start_fio_server $fio_bin $vm_num
 

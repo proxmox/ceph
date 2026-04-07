@@ -1590,6 +1590,709 @@ paths:
       - jwt: []
       tags:
       - RbdMirroringSummary
+  /api/block/pool/{pool_name}/group:
+    get:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: namespace
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              schema:
+                items:
+                  properties:
+                    group:
+                      description: group name
+                      type: string
+                    num_images:
+                      description: ''
+                      type: integer
+                  type: object
+                required:
+                - group
+                - num_images
+                type: array
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: List groups by pool name
+      tags:
+      - RbdGroup
+    post:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                name:
+                  description: Name of the group
+                  type: string
+                namespace:
+                  type: string
+              required:
+              - name
+              type: object
+      responses:
+        '201':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource created.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Create a group
+      tags:
+      - RbdGroup
+  /api/block/pool/{pool_name}/group/{group_name}:
+    delete:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: namespace
+        schema:
+          type: string
+      responses:
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '204':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource deleted.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Delete a group
+      tags:
+      - RbdGroup
+    get:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: namespace
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              schema:
+                items:
+                  properties:
+                    group:
+                      description: group name
+                      type: string
+                    images:
+                      description: ''
+                      items:
+                        type: string
+                      type: array
+                  type: object
+                required:
+                - group
+                - images
+                type: array
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Get the list of images in a group
+      tags:
+      - RbdGroup
+    put:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                namespace:
+                  type: string
+                new_name:
+                  description: New name for the group
+                  type: string
+              required:
+              - new_name
+              type: object
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              schema:
+                properties: {}
+                type: object
+          description: Resource updated.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Update a group (rename)
+      tags:
+      - RbdGroup
+  /api/block/pool/{pool_name}/group/{group_name}/image:
+    delete:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the image
+        in: query
+        name: image_name
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: namespace
+        schema:
+          type: string
+      responses:
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '204':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource deleted.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Remove image from a group
+      tags:
+      - RbdGroup
+    post:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                image_name:
+                  description: Name of the image
+                  type: string
+                namespace:
+                  type: string
+              required:
+              - image_name
+              type: object
+      responses:
+        '201':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource created.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Add image to a group
+      tags:
+      - RbdGroup
+  /api/block/pool/{pool_name}/group/{group_name}/snap:
+    get:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: namespace
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              schema:
+                items:
+                  properties:
+                    id:
+                      description: snapshot id
+                      type: string
+                    name:
+                      description: snapshot name
+                      type: string
+                    namespace_type:
+                      description: namespace type
+                      type: integer
+                    state:
+                      description: snapshot state
+                      type: integer
+                  type: object
+                required:
+                - id
+                - name
+                - state
+                - namespace_type
+                type: array
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: List group snapshots
+      tags:
+      - RbdGroupSnapshot
+    post:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                flags:
+                  default: 0
+                  description: Snapshot creation flags
+                  type: integer
+                namespace:
+                  type: string
+                snapshot_name:
+                  description: Name of the snapshot
+                  type: string
+              required:
+              - snapshot_name
+              type: object
+      responses:
+        '201':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource created.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Create a group snapshot
+      tags:
+      - RbdGroupSnapshot
+  /api/block/pool/{pool_name}/group/{group_name}/snap/{snapshot_name}:
+    delete:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the snapshot
+        in: path
+        name: snapshot_name
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: namespace
+        schema:
+          type: string
+      responses:
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '204':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource deleted.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Delete a group snapshot
+      tags:
+      - RbdGroupSnapshot
+    get:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the snapshot
+        in: path
+        name: snapshot_name
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: namespace
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              schema:
+                properties:
+                  id:
+                    description: snapshot id
+                    type: string
+                  image_snap_name:
+                    description: image snapshot name
+                    type: string
+                  image_snaps:
+                    description: image snapshots
+                    items:
+                      type: object
+                    type: array
+                  name:
+                    description: snapshot name
+                    type: string
+                  namespace_type:
+                    description: namespace type
+                    type: integer
+                  state:
+                    description: snapshot state
+                    type: integer
+                required:
+                - id
+                - name
+                - state
+                - namespace_type
+                - image_snap_name
+                - image_snaps
+                type: object
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Get group snapshot information
+      tags:
+      - RbdGroupSnapshot
+    put:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      - description: Current name of the snapshot
+        in: path
+        name: snapshot_name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                namespace:
+                  type: string
+                new_snap_name:
+                  description: New name for the snapshot
+                  type: string
+              type: object
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              schema:
+                properties: {}
+                type: object
+          description: Resource updated.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Update a group snapshot
+      tags:
+      - RbdGroupSnapshot
+  /api/block/pool/{pool_name}/group/{group_name}/snap/{snapshot_name}/rollback:
+    post:
+      parameters:
+      - description: Name of the pool
+        in: path
+        name: pool_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the group
+        in: path
+        name: group_name
+        required: true
+        schema:
+          type: string
+      - description: Name of the snapshot
+        in: path
+        name: snapshot_name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                namespace:
+                  type: string
+              type: object
+      responses:
+        '201':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource created.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Rollback group to snapshot
+      tags:
+      - RbdGroupSnapshot
   /api/block/pool/{pool_name}/namespace:
     get:
       parameters:
@@ -3951,14 +4654,14 @@ paths:
       summary: Export Ceph Users
       tags:
       - Cluster
-  /api/cluster/user/{user_entity}:
+  /api/cluster/user/{user_entities}:
     delete:
-      description: "\n        Delete a ceph user and it's defined capabilities.\n\
-        \        "
+      description: "\n        Delete one or more ceph users and their defined capabilities.\n\
+        \        user_entities: comma-separated string of users to delete\n      \
+        \  "
       parameters:
-      - description: Entity to delete
-        in: path
-        name: user_entity
+      - in: path
+        name: user_entities
         required: true
         schema:
           type: string
@@ -3984,7 +4687,7 @@ paths:
             trace.
       security:
       - jwt: []
-      summary: Delete Ceph User
+      summary: Delete one or more Ceph Users
       tags:
       - Cluster
   /api/cluster_conf:
@@ -8521,6 +9224,44 @@ paths:
       - jwt: []
       tags:
       - NVMe-oF Gateway
+  /api/nvmeof/gateway/listener_info/{nqn}:
+    get:
+      parameters:
+      - in: path
+        name: nqn
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: gw_group
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: traddr
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Get NVMeoF gateway's listeners info
+      tags:
+      - NVMe-oF Gateway
   /api/nvmeof/gateway/log_level:
     get:
       parameters:
@@ -8595,6 +9336,39 @@ paths:
       summary: Set NVMeoF gateway log levels
       tags:
       - NVMe-oF Gateway
+  /api/nvmeof/gateway/stats:
+    get:
+      parameters:
+      - allowEmptyValue: true
+        in: query
+        name: gw_group
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: traddr
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: Get NVMeoF statistics for the gateway
+      tags:
+      - NVMe-oF Gateway
   /api/nvmeof/gateway/version:
     get:
       parameters:
@@ -8626,6 +9400,76 @@ paths:
       security:
       - jwt: []
       summary: Get the version of the NVMeoF gateway
+      tags:
+      - NVMe-oF Gateway
+  /api/nvmeof/gateway_group/{gw_group}/namespace:
+    get:
+      parameters:
+      - description: NVMeoF gateway group
+        in: path
+        name: gw_group
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        description: NVMeoF gateway address
+        in: query
+        name: traddr
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: List all NVMeoF namespaces in a gateway group
+      tags:
+      - NVMe-oF Gateway
+  /api/nvmeof/gateway_group/{gw_group}/namespace/list:
+    get:
+      parameters:
+      - description: NVMeoF gateway group
+        in: path
+        name: gw_group
+        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        description: NVMeoF gateway address
+        in: query
+        name: traddr
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: OK
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      summary: List all NVMeoF namespaces in a gateway group
       tags:
       - NVMe-oF Gateway
   /api/nvmeof/spdk/log_level:
@@ -8790,7 +9634,8 @@ paths:
             schema:
               properties:
                 dhchap_key:
-                  type: string
+                  description: Subsystem DH-HMAC-CHAP key
+                  type: integer
                 enable_ha:
                   default: true
                   description: Enable high availability
@@ -8799,18 +9644,20 @@ paths:
                   description: NVMeoF gateway group
                   type: string
                 max_namespaces:
-                  default: 4096
                   description: Maximum number of namespaces
                   type: integer
                 no_group_append:
-                  default: true
-                  type: boolean
+                  default: false
+                  description: Do not append gateway group name to the NQN
+                  type: integer
                 nqn:
                   description: NVMeoF subsystem NQN
                   type: string
                 serial_number:
+                  description: Subsystem serial number
                   type: integer
                 traddr:
+                  description: NVMeoF gateway address
                   type: string
               required:
               - nqn
@@ -9291,10 +10138,16 @@ paths:
   /api/nvmeof/subsystem/{nqn}/namespace:
     get:
       parameters:
-      - description: NVMeoF subsystem NQN
+      - allowEmptyValue: true
+        description: NVMeoF subsystem NQN
         in: path
         name: nqn
-        required: true
+        schema:
+          type: string
+      - allowEmptyValue: true
+        description: NVMeoF Namespace ID to filter by
+        in: query
+        name: nsid
         schema:
           type: string
       - allowEmptyValue: true
@@ -9351,7 +10204,8 @@ paths:
                   type: boolean
                 disable_auto_resize:
                   default: false
-                  type: integer
+                  description: Disable auto resize
+                  type: string
                 force:
                   default: false
                   description: Force create namespace even it image is used by other
@@ -9367,6 +10221,8 @@ paths:
                   default: false
                   description: Namespace will be visible only for the allowed hosts
                   type: boolean
+                nsid:
+                  type: string
                 rbd_image_name:
                   description: RBD image name
                   type: string
@@ -9379,12 +10235,13 @@ paths:
                   type: string
                 read_only:
                   default: false
-                  type: boolean
+                  description: Read only namespace
+                  type: string
                 size:
-                  default: 1024
-                  description: RBD image size
+                  description: Deprecated. Use `rbd_image_size` instead
                   type: integer
                 traddr:
+                  description: Target gateway address
                   type: string
                 trash_image:
                   default: false
@@ -9415,7 +10272,7 @@ paths:
             trace.
       security:
       - jwt: []
-      summary: Create a new NVMeoF namespace
+      summary: Create a new NVMeoF namespace.
       tags:
       - NVMe-oF Subsystem Namespace
   /api/nvmeof/subsystem/{nqn}/namespace/{nsid}:
@@ -11734,7 +12591,12 @@ paths:
       - Prometheus
   /api/prometheus/alertgroup:
     get:
-      parameters: []
+      parameters:
+      - default: false
+        in: query
+        name: cluster_filter
+        schema:
+          type: boolean
       responses:
         '200':
           content:
@@ -14980,6 +15842,9 @@ paths:
                   type: boolean
                 secret_key:
                   type: string
+                tier_type:
+                  default: ''
+                  type: string
                 zone_endpoints:
                   type: string
                 zone_name:
@@ -15129,6 +15994,103 @@ paths:
       - jwt: []
       tags:
       - RgwZone
+  /api/rgw/zone/storage-class:
+    post:
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                compression:
+                  default: ''
+                  type: string
+                data_pool:
+                  type: string
+                placement_target:
+                  type: string
+                storage_class:
+                  type: string
+                zone_name:
+                  type: string
+              required:
+              - zone_name
+              - placement_target
+              - storage_class
+              - data_pool
+              type: object
+      responses:
+        '201':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource created.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      tags:
+      - RgwZone
+    put:
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                compression:
+                  default: ''
+                  type: string
+                data_pool:
+                  type: string
+                placement_target:
+                  type: string
+                storage_class:
+                  type: string
+                zone_name:
+                  type: string
+              required:
+              - zone_name
+              - placement_target
+              - storage_class
+              - data_pool
+              type: object
+      responses:
+        '200':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Resource updated.
+        '202':
+          content:
+            application/vnd.ceph.api.v1.0+json:
+              type: object
+          description: Operation is still executing. Please check the task queue.
+        '400':
+          description: Operation exception. Please check the response body for details.
+        '401':
+          description: Unauthenticated access. Please login first.
+        '403':
+          description: Unauthorized access. Please check your permissions.
+        '500':
+          description: Unexpected error. Please check the response body for the stack
+            trace.
+      security:
+      - jwt: []
+      tags:
+      - RgwZone
   /api/rgw/zone/{zone_name}:
     delete:
       parameters:
@@ -15150,6 +16112,11 @@ paths:
       - allowEmptyValue: true
         in: query
         name: zonegroup_name
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: realm_name
         schema:
           type: string
       responses:
@@ -15247,6 +16214,9 @@ paths:
                   default: ''
                   type: string
                 storage_class:
+                  default: ''
+                  type: string
+                tier_type:
                   default: ''
                   type: string
                 zone_endpoints:
@@ -15530,6 +16500,11 @@ paths:
       - allowEmptyValue: true
         in: query
         name: pools
+        schema:
+          type: string
+      - allowEmptyValue: true
+        in: query
+        name: realm_name
         schema:
           type: string
       responses:
@@ -19109,6 +20084,10 @@ tags:
   name: RGW Topic Management
 - description: RBD Management API
   name: Rbd
+- description: RBD Group Management API
+  name: RbdGroup
+- description: RBD Group Snapshot Management API
+  name: RbdGroupSnapshot
 - description: RBD Mirroring Management API
   name: RbdMirroring
 - description: RBD Mirroring Pool Bootstrap Management API

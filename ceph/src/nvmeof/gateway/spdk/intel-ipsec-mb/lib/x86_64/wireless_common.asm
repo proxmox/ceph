@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2019-2022, Intel Corporation
+;; Copyright (c) 2019-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,7 +25,7 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/os.asm"
+%include "include/os.inc"
 
 mksection .rodata
 default rel

@@ -1,18 +1,19 @@
-// Copyright (C) Rishabh Shukla <rishabh.sh@samsung.com>
-// Copyright (C) Vikash Kumar <vikash.k5@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_WINDOWS_ASYNC_ENABLED
 #include <errno.h>
+#include <windows.h>
 #include <xnvme_queue.h>
 #include <xnvme_dev.h>
 #include <xnvme_be_windows.h>
-#include <libxnvme_spec_fs.h>
-#include <windows.h>
 
 enum io_state { NONE, IN_PROGRESS, SUCCESS, FAILED };
 
@@ -236,7 +237,7 @@ _windows_async_iocp_th_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf
 
 	if (mbuf || mbuf_nbytes) {
 		XNVME_DEBUG("FAILED: mbuf or mbuf_nbytes provided");
-		return -ENOSYS;
+		return -ENOTSUP;
 	}
 
 	req = TAILQ_FIRST(&queue->reqs_ready);
@@ -332,11 +333,13 @@ struct xnvme_be_async g_xnvme_be_windows_async_iocp_th = {
 	.wait = xnvme_be_nosys_queue_wait,
 	.init = _windows_async_iocp_th_init,
 	.term = _windows_async_iocp_th_term,
+	.get_completion_fd = xnvme_be_nosys_queue_get_completion_fd,
 #else
 	.cmd_io = xnvme_be_nosys_queue_cmd_io,
 	.poke = xnvme_be_nosys_queue_poke,
 	.wait = xnvme_be_nosys_queue_wait,
 	.init = xnvme_be_nosys_queue_init,
 	.term = xnvme_be_nosys_queue_term,
+	.get_completion_fd = xnvme_be_nosys_queue_get_completion_fd,
 #endif
 };

@@ -1,14 +1,15 @@
-// Copyright (C) Rishabh Shukla <rishabh.sh@samsung.com>
-// Copyright (C) Pranjal Dave <pranjal.58@partner.samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_WINDOWS_FS_ENABLED
 #include <errno.h>
-#include <libxnvme_spec_fs.h>
 #include <xnvme_dev.h>
 #include <xnvme_be_windows.h>
 #include <windows.h>
@@ -102,7 +103,7 @@ xnvme_be_windows_sync_fs_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t db
 	}
 
 	ctx->cpl.result = res;
-	if (res < 0) {
+	if (res <= 0) {
 		XNVME_DEBUG("FAILED: {ReadFile,WriteFile,FlushFileBuffers}(), err: %d", err);
 		ctx->cpl.result = 0;
 		ctx->cpl.status.sc = err;
@@ -295,7 +296,9 @@ struct xnvme_be_admin g_xnvme_be_windows_admin_fs = {
 	.id = "file",
 #ifdef XNVME_BE_WINDOWS_FS_ENABLED
 	.cmd_admin = xnvme_be_windows_fs_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #else
 	.cmd_admin = xnvme_be_nosys_sync_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #endif
 };

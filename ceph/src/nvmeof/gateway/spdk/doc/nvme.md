@@ -10,6 +10,7 @@
 - @ref nvme_multi_process
 - @ref nvme_hotplug
 - @ref nvme_cuse
+- @ref nvme_led
 
 ## Introduction {#nvme_intro}
 
@@ -26,7 +27,7 @@ entirely dissimilar from Linux's
 
 More recently, the library has been improved to also connect to remote NVMe
 devices via NVMe over Fabrics. Users may now call spdk_nvme_probe() on both
-local PCI busses and on remote NVMe over Fabrics discovery services. The API is
+local PCI buses and on remote NVMe over Fabrics discovery services. The API is
 otherwise unchanged.
 
 ## Examples {#nvme_examples}
@@ -42,12 +43,12 @@ directory in the repository. The best place to start is
 
 SPDK provides a plugin to the very popular [fio](https://github.com/axboe/fio)
 tool for running some basic benchmarks. See the fio start up
-[guide](https://github.com/spdk/spdk/blob/master/examples/nvme/fio_plugin/)
+[guide](https://github.com/spdk/spdk/blob/master/app/fio/nvme/)
 for more details.
 
 ### Running Benchmarks with Perf Tool {#nvme_perf}
 
-NVMe perf utility in the [examples/nvme/perf](https://github.com/spdk/spdk/tree/master/examples/nvme/perf)
+NVMe perf utility in the [app/spdk_nvme_perf](https://github.com/spdk/spdk/tree/master/app/spdk_nvme_perf)
 is one of the examples which also can be used for performance tests. The fio
 tool is widely used because it is very flexible. However, that flexibility adds
 overhead and reduces the efficiency of SPDK. Therefore, SPDK provides a perf
@@ -261,12 +262,12 @@ ID will be considered the primary and all others secondary.
 
 Example: identical shm_id and non-overlapping core masks
 ~~~{.sh}
-./perf options [AIO device(s)]...
+spdk_nvme_perf options [AIO device(s)]...
 	[-c core mask for I/O submission/completion]
 	[-i shared memory group ID]
 
-./perf -q 1 -o 4096 -w randread -c 0x1 -t 60 -i 1
-./perf -q 8 -o 131072 -w write -c 0x10 -t 60 -i 1
+spdk_nvme_perf -q 1 -o 4096 -w randread -c 0x1 -t 60 -i 1
+spdk_nvme_perf -q 8 -o 131072 -w write -c 0x10 -t 60 -i 1
 ~~~
 
 ### Limitations {#nvme_multi_process_limitations}
@@ -302,8 +303,6 @@ At the NVMe driver level, we provide the following support for Hotplug:
 
 ## NVMe Character Devices {#nvme_cuse}
 
-This feature is considered as experimental.
-
 ### Design
 
 ![NVMe character devices processing diagram](nvme_cuse.svg)
@@ -330,12 +329,10 @@ This interface reserves one additional qpair for sending down the I/O for each c
 
 #### Enabling cuse support for NVMe
 
-Cuse support is disabled by default. To enable support for NVMe-CUSE devices first
-install required dependencies
+Cuse support is enabled by default on Linux. Make sure to install required dependencies:
 ~~~{.sh}
-sudo scripts/pkgdep.sh --fuse
+sudo scripts/pkgdep.sh
 ~~~
-Then compile SPDK with "./configure --with-nvme-cuse".
 
 #### Creating NVMe-CUSE device
 
@@ -408,3 +405,29 @@ with SPDK NVMe CUSE.
 
 SCSI to NVMe Translation Layer is not implemented. Tools that are using this layer to
 identify, manage or operate device might not work properly or their use may be limited.
+
+### SPDK_CUSE_GET_TRANSPORT ioctl command
+
+nvme-cli mostly uses IOCTLs to obtain information, but transport information is
+obtained through sysfs. Since SPDK does not populate sysfs, the SPDK plugin leverages
+an SPDK/CUSE specific ioctl to get the information.
+
+~~~{.c}
+#define SPDK_CUSE_GET_TRANSPORT _IOWR('n', 0x1, struct cuse_transport)
+~~~
+
+~~~{.c}
+struct cuse_transport {
+	char trstring[SPDK_NVMF_TRSTRING_MAX_LEN + 1];
+	char traddr[SPDK_NVMF_TRADDR_MAX_LEN + 1];
+} tr;
+~~~
+
+## NVMe LED management {#nvme_led}
+
+It is possible to use the ledctl(8) utility to control the state of LEDs in systems supporting
+NPEM (Native PCIe Enclosure Management), even when the NVMe devices are controlled by SPDK.
+However, in this case it is necessary to determine the slot device number because the block device
+is unavailable. The [ledctl.sh](https://github.com/spdk/spdk/tree/master/scripts/ledctl.sh) script
+can be used to help with this. It takes the name of the nvme bdev and invokes ledctl with
+appropriate options.

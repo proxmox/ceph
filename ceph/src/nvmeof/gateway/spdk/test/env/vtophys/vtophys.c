@@ -8,6 +8,7 @@
 #include "spdk/config.h"
 #include "spdk/env.h"
 #include "spdk/util.h"
+#include "spdk_internal/cunit.h"
 
 #include "CUnit/Basic.h"
 
@@ -130,6 +131,7 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned num_failures;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "vtophys";
 	opts.core_mask = "0x1";
@@ -160,9 +162,7 @@ main(int argc, char **argv)
 		return CU_get_error();
 	}
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

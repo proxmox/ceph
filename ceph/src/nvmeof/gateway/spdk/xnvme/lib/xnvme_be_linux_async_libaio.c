@@ -1,21 +1,39 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// Copyright (C) Gurmeet Singh <gur.singh@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_LINUX_LIBAIO_ENABLED
 #include <errno.h>
 #include <libaio.h>
+#include <stdatomic.h>
 #include <xnvme_queue.h>
 #include <xnvme_be_linux.h>
 #include <xnvme_be_linux_libaio.h>
 #include <xnvme_dev.h>
-#include <libxnvme_spec_fs.h>
 
-int
+struct xnvme_aio_ring {
+	uint32_t id;
+	uint32_t nr;
+	uint32_t head;
+	uint32_t tail;
+
+	uint32_t magic;
+	uint32_t compat_features;
+	uint32_t incompat_features;
+	uint32_t header_length;
+
+	struct io_event events[0];
+};
+
+#define XNVME_AIO_RING_MAGIC 0xa10a10a1
+
+static int
 _linux_libaio_term(struct xnvme_queue *q)
 {
 	struct xnvme_queue_libaio *queue = (void *)q;
@@ -31,7 +49,7 @@ _linux_libaio_term(struct xnvme_queue *q)
 	return 0;
 }
 
-int
+static int
 _linux_libaio_init(struct xnvme_queue *q, int opts)
 {
 	struct xnvme_queue_libaio *queue = (void *)q;
@@ -52,21 +70,47 @@ _linux_libaio_init(struct xnvme_queue *q, int opts)
 	return 0;
 }
 
-int
+static int
 _linux_libaio_poke(struct xnvme_queue *q, uint32_t max)
 {
 	struct xnvme_queue_libaio *queue = (void *)q;
-	struct timespec timeout = {.tv_sec = 0, .tv_nsec = 100000};
-	int min = queue->poll_io ? 0 : 1;
-	int completed = 0;
-
+	struct timespec timeout;
+	int min, completed;
 	max = max ? max : queue->base.outstanding;
 	max = max > queue->base.outstanding ? queue->base.outstanding : max;
 
-	completed = io_getevents(queue->aio_ctx, min, max, queue->aio_events, &timeout);
-	if (completed < 0) {
-		XNVME_DEBUG("FAILED: completed: %d, errno: %d", completed, errno);
-		return completed;
+	struct xnvme_aio_ring *ring = (struct xnvme_aio_ring *)queue->aio_ctx;
+
+	/* If ring is incompatible use io_getevents */
+	if (ring->magic != XNVME_AIO_RING_MAGIC || ring->incompat_features != 0) {
+		timeout.tv_sec = 0;
+		timeout.tv_nsec = 100000;
+		min = queue->poll_io ? 0 : 1;
+		completed = io_getevents(queue->aio_ctx, min, max, queue->aio_events, &timeout);
+		if (completed < 0) {
+			XNVME_DEBUG("FAILED: completed: %d, errno: %d", completed, errno);
+			return completed;
+		}
+
+		/* Otherwise copy events from memory */
+	} else {
+		uint32_t current = ring->head;
+
+		// Casting max to int is safe here because
+		// max <= queue->base.outstanding < 4096
+		for (completed = 0; completed < (int)max; completed++) {
+			if (current == ring->tail) {
+				break;
+			}
+
+			queue->aio_events[completed] = ring->events[current];
+
+			current = (current + 1) % ring->nr;
+		}
+
+		/* update head */
+		atomic_store_explicit((_Atomic typeof(*(&ring->head)) *)(&ring->head), current,
+				      memory_order_release);
 	}
 
 	for (int event = 0; event < completed; event++) {
@@ -99,7 +143,7 @@ _linux_libaio_poke(struct xnvme_queue *q, uint32_t max)
 	return completed;
 }
 
-int
+static int
 _linux_libaio_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, void *mbuf,
 		     size_t mbuf_nbytes)
 {
@@ -112,7 +156,7 @@ _linux_libaio_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, 
 
 	if (mbuf || mbuf_nbytes) {
 		XNVME_DEBUG("FAILED: mbuf or mbuf_nbytes provided");
-		return -ENOSYS;
+		return -ENOTSUP;
 	}
 
 	///< Convert the NVMe command/sqe to an Linux aio io-control-block
@@ -154,10 +198,9 @@ _linux_libaio_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, 
 	return err;
 }
 
-int
+static int
 _linux_libaio_cmd_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec_cnt,
-		      size_t XNVME_UNUSED(dvec_nbytes), struct iovec *mvec, size_t mvec_cnt,
-		      size_t mvec_nbytes)
+		      size_t XNVME_UNUSED(dvec_nbytes), void *mbuf, size_t mbuf_nbytes)
 {
 	struct xnvme_queue_libaio *queue = (void *)ctx->async.queue;
 	struct xnvme_be_linux_state *state = (void *)queue->base.dev->be.state;
@@ -170,9 +213,9 @@ _linux_libaio_cmd_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec
 		XNVME_DEBUG("FAILED: queue is full");
 		return -EBUSY;
 	}
-	if (mvec || mvec_cnt || mvec_nbytes) {
+	if (mbuf || mbuf_nbytes) {
 		XNVME_DEBUG("FAILED: mbuf or mbuf_nbytes provided");
-		return -ENOSYS;
+		return -ENOTSUP;
 	}
 
 	///< Convert the NVMe command/sqe to an Linux aio io-control-block
@@ -224,6 +267,7 @@ struct xnvme_be_async g_xnvme_be_linux_async_libaio = {
 	.wait = xnvme_be_nosys_queue_wait,
 	.init = _linux_libaio_init,
 	.term = _linux_libaio_term,
+	.get_completion_fd = xnvme_be_nosys_queue_get_completion_fd,
 #else
 	.cmd_io = xnvme_be_nosys_queue_cmd_io,
 	.cmd_iov = xnvme_be_nosys_queue_cmd_iov,
@@ -231,5 +275,6 @@ struct xnvme_be_async g_xnvme_be_linux_async_libaio = {
 	.wait = xnvme_be_nosys_queue_wait,
 	.init = xnvme_be_nosys_queue_init,
 	.term = xnvme_be_nosys_queue_term,
+	.get_completion_fd = xnvme_be_nosys_queue_get_completion_fd,
 #endif
 };

@@ -30,8 +30,6 @@
 %include "sha256_mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_SHANI
-
 [bits 64]
 default rel
 section .text
@@ -88,8 +86,8 @@ align 32
 ; void sha256_ni_x2(SHA256_MB_ARGS_Xn *args, uint32_t size_in_blocks);
 ; arg 0 : MGR : pointer to args (only 4 of the 16 lanes used)
 ; arg 1 : NBLK : size (in blocks) ;; assumed to be >= 1
-; invisibile arg 2 : IDX : hash on which lane
-; invisibile arg 3 : NLANX4 : max lanes*4 for this arch (digest is placed by it)
+; invisible arg 2 : IDX : hash on which lane
+; invisible arg 3 : NLANX4 : max lanes*4 for this arch (digest is placed by it)
 ; 		 (sse/avx is 4, avx2 is 8, avx512 is 16)
 ;
 ; Clobbers registers: rax, r9~r14, xmm0-xmm15
@@ -566,9 +564,3 @@ TABLE:	dd	0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5
 	dd      0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3
 	dd      0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208
 	dd      0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-%else
-%ifidn __OUTPUT_FORMAT__, win64
-global no_sha256_ni_x2
-no_sha256_ni_x2:
-%endif
-%endif ; HAVE_AS_KNOWS_SHANI

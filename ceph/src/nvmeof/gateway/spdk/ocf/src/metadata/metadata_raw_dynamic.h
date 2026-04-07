@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __METADATA_RAW_DYNAMIC_H__
@@ -54,18 +54,25 @@ void *raw_dynamic_access(ocf_cache_t cache,
 		struct ocf_metadata_raw *raw, uint32_t entry);
 
 /*
+ * RAW DYNAMIC - Update metadata based on cache volume io
+ */
+int raw_dynamic_update(ocf_cache_t cache,
+		struct ocf_metadata_raw *raw, ctx_data_t *data,
+		uint64_t page, uint64_t count);
+
+/*
  * RAW DYNAMIC - Load all metadata of this RAW metadata container
  * from cache device
  */
 void raw_dynamic_load_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
-		ocf_metadata_end_t cmpl, void *priv);
+		ocf_metadata_end_t cmpl, void *priv, unsigned flapping_idx);
 
 /*
  * RAW DYNAMIC - Flush all metadata of this RAW metadata container
  * to cache device
  */
 void raw_dynamic_flush_all(ocf_cache_t cache, struct ocf_metadata_raw *raw,
-		ocf_metadata_end_t cmpl, void *priv);
+		ocf_metadata_end_t cmpl, void *priv, unsigned flapping_idx);
 
 /*
  * RAW DYNAMIC - Mark specified entry to be flushed

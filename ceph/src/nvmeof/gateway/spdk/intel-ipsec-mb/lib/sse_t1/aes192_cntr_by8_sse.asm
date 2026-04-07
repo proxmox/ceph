@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2022, Intel Corporation
+;; Copyright (c) 2012-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,11 +25,11 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/os.asm"
-%include "include/memcpy.asm"
+%include "include/os.inc"
+%include "include/memcpy.inc"
 %include "include/const.inc"
-%include "include/reg_sizes.asm"
-%include "include/clear_regs.asm"
+%include "include/reg_sizes.inc"
+%include "include/clear_regs.inc"
 
 ; routine to do AES192 CNTR enc/decrypt "by8"
 ; XMM registers are clobbered. Saving/restoring must be done at a higher level

@@ -2,10 +2,13 @@
 #  Copyright (C) 2022 Intel Corporation.
 #  All rights reserved.
 
-def ublk_create_target(client, cpumask=None):
+
+def ublk_create_target(client, cpumask=None, disable_user_copy=None):
     params = {}
     if cpumask:
         params['cpumask'] = cpumask
+    if disable_user_copy:
+        params['disable_user_copy'] = True
     return client.call('ublk_create_target', params)
 
 
@@ -30,8 +33,16 @@ def ublk_stop_disk(client, ublk_id=1):
     return client.call('ublk_stop_disk', params)
 
 
+def ublk_recover_disk(client, bdev_name, ublk_id):
+    params = {
+        'bdev_name': bdev_name,
+        'ublk_id': ublk_id
+    }
+    return client.call('ublk_recover_disk', params)
+
+
 def ublk_get_disks(client, ublk_id=1):
     params = {}
-    if ublk_id:
+    if ublk_id is not None:
         params['ublk_id'] = ublk_id
     return client.call('ublk_get_disks', params)

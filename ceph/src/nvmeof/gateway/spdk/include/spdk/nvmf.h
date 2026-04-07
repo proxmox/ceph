@@ -25,6 +25,8 @@ extern "C" {
 
 #define NVMF_TGT_NAME_MAX_LENGTH	256
 
+#define SPDK_TLS_PSK_MAX_LEN		200
+
 struct spdk_nvmf_tgt;
 struct spdk_nvmf_subsystem;
 struct spdk_nvmf_ctrlr;
@@ -54,10 +56,13 @@ enum spdk_nvmf_tgt_discovery_filter {
 };
 
 struct spdk_nvmf_target_opts {
+	size_t		size;
 	char		name[NVMF_TGT_NAME_MAX_LENGTH];
 	uint32_t	max_subsystems;
 	uint16_t	crdt[3];
-	enum spdk_nvmf_tgt_discovery_filter discovery_filter;
+	uint32_t	discovery_filter;
+	uint32_t	dhchap_digests;
+	uint32_t	dhchap_dhgroups;
 };
 
 struct spdk_nvmf_transport_opts {
@@ -71,14 +76,21 @@ struct spdk_nvmf_transport_opts {
 	uint32_t	num_shared_buffers;
 	uint32_t	buf_cache_size;
 	bool		dif_insert_or_strip;
+	bool		disable_command_passthru;
 
-	/* Hole at bytes 29-31. */
-	uint8_t		reserved29[3];
+	/* Hole at bytes 30-31. */
+	uint8_t		reserved30[2];
 
 	uint32_t	abort_timeout_sec;
 	/* ms */
 	uint32_t	association_timeout;
 
+	/* Transport specific json values.
+	 *
+	 * If transport specific values provided then json object is valid only at the time
+	 * transport is being created. It is transport layer responsibility to maintain
+	 * the copy of it or its decoding if required.
+	 */
 	const struct spdk_json_val *transport_specific;
 
 	/**
@@ -94,8 +106,16 @@ struct spdk_nvmf_transport_opts {
 
 	/* Hole at bytes 61-63. */
 	uint8_t reserved61[3];
+	/* ACK timeout in milliseconds */
+	uint32_t ack_timeout;
+	/* Size of RDMA data WR pool */
+	uint32_t data_wr_pool_size;
+	/* The minimum Keep Alive Timeout value in milliseconds */
+	uint32_t min_kato;
+	/* kas indicates the granularity of the Keep Alive Timer in 100ms units. */
+	uint16_t kas;
 } __attribute__((packed));
-SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_transport_opts) == 64, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_transport_opts) == 78, "Incorrect size");
 
 struct spdk_nvmf_listen_opts {
 	/**
@@ -106,9 +126,35 @@ struct spdk_nvmf_listen_opts {
 	 */
 	size_t opts_size;
 
+	/* Transport specific json values.
+	 *
+	 * If transport specific values provided then json object is valid only at the time
+	 * listener is being added. It is transport layer responsibility to maintain
+	 * the copy of it or its decoding if required.
+	 */
 	const struct spdk_json_val *transport_specific;
+
+	/**
+	 * Indicates that all newly established connections shall immediately
+	 * establish a secure channel, prior to any authentication.
+	 */
+	bool secure_channel;
+
+	/* Hole at bytes 17-19. */
+	uint8_t reserved1[3];
+
+	/**
+	 * Asymmetric Namespace Access state
+	 * Optional parameter, which defines ANA_STATE that will be set for
+	 * all ANA groups in this listener, when the listener is added to the subsystem.
+	 * If not specified, SPDK_NVME_ANA_OPTIMIZED_STATE will be set by default.
+	 */
+	enum spdk_nvme_ana_state ana_state;
+
+	/* The socket implementation to use for the listener. */
+	char *sock_impl;
 } __attribute__((packed));
-SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_listen_opts) == 16, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_listen_opts) == 32, "Incorrect size");
 
 /**
  * Initialize listen options
@@ -141,6 +187,38 @@ struct spdk_nvmf_poll_group_stat {
  * \param status 0 if it completed successfully, or negative errno if it failed.
  */
 typedef void (*spdk_nvmf_tgt_subsystem_listen_done_fn)(void *ctx, int status);
+
+struct spdk_nvmf_referral_opts {
+	/** Size of this structure */
+	size_t size;
+	/** Transport ID of the referral */
+	struct spdk_nvme_transport_id trid;
+	/** The referral describes a referral to a subsystem which requires a secure channel */
+	bool secure_channel;
+};
+
+/**
+ * Add a discovery service referral to an NVMe-oF target
+ *
+ * \param tgt The target to which the referral will be added
+ * \param opts Options describing the referral referral.
+ *
+ * \return 0 on success or a negated errno on failure
+ */
+int spdk_nvmf_tgt_add_referral(struct spdk_nvmf_tgt *tgt,
+			       const struct spdk_nvmf_referral_opts *opts);
+
+/**
+ * Remove a discovery service referral from an NVMeoF target
+ *
+ * \param tgt The target from which the referral will be removed
+ * \param opts Options describing the referral referral.
+ *
+ * \return 0 on success or a negated errno on failure.
+ */
+int spdk_nvmf_tgt_remove_referral(struct spdk_nvmf_tgt *tgt,
+				  const struct spdk_nvmf_referral_opts *opts);
+
 
 /**
  * Construct an NVMe-oF target.
@@ -291,15 +369,12 @@ typedef void (*nvmf_qpair_disconnect_cb)(void *ctx);
  * Disconnect an NVMe-oF qpair
  *
  * \param qpair The NVMe-oF qpair to disconnect.
- * \param cb_fn Deprecated, will be removed in v23.09. The function to call upon completion of the disconnect.
- * \param ctx Deprecated, will be removed in v23.09. The context to pass to the callback function.
  *
  * \return 0 upon success.
  * \return -ENOMEM if the function specific context could not be allocated.
  * \return -EINPROGRESS if the qpair is already in the process of disconnect.
  */
-int spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_cb cb_fn,
-			       void *ctx);
+int spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair);
 
 /**
  * Get the peer's transport ID for this queue pair.
@@ -500,15 +575,74 @@ struct spdk_nvmf_subsystem *spdk_nvmf_subsystem_get_first(struct spdk_nvmf_tgt *
 struct spdk_nvmf_subsystem *spdk_nvmf_subsystem_get_next(struct spdk_nvmf_subsystem *subsystem);
 
 /**
- * Allow the given host NQN to connect to the given subsystem.
+ * Make the specified namespace visible to the specified host.
+ *
+ * May only be performed on subsystems in the PAUSED or INACTIVE states.
+ *
+ * \param subsystem Subsystem the namespace belong to.
+ * \param nsid Namespace ID to be made visible.
+ * \param hostnqn The NQN for the host.
+ * \param flags Must be zero (reserved for future use).
+ *
+ * \return 0 on success, or negated errno value on failure.
+ */
+int spdk_nvmf_ns_add_host(struct spdk_nvmf_subsystem *subsystem,
+			  uint32_t nsid,
+			  const char *hostnqn,
+			  uint32_t flags);
+
+/**
+ * Make the specified namespace not visible to the specified host.
+ *
+ * May only be performed on subsystems in the PAUSED or INACTIVE states.
+ *
+ * \param subsystem Subsystem the namespace belong to.
+ * \param nsid Namespace ID to be made not visible.
+ * \param hostnqn The NQN for the host.
+ * \param flags Must be zero (reserved for future use).
+ *
+ * \return 0 on success, or negated errno value on failure.
+ */
+int spdk_nvmf_ns_remove_host(struct spdk_nvmf_subsystem *subsystem,
+			     uint32_t nsid,
+			     const char *hostnqn,
+			     uint32_t flags);
+
+/**
+ * Allow the given host NQN to connect to the given subsystem.  Adding a host that's already allowed
+ * results in an error.
  *
  * \param subsystem Subsystem to add host to.
  * \param hostnqn The NQN for the host.
+ * \param params Transport specific parameters.
  *
  * \return 0 on success, or negated errno value on failure.
  */
 int spdk_nvmf_subsystem_add_host(struct spdk_nvmf_subsystem *subsystem,
-				 const char *hostnqn);
+				 const char *hostnqn, const struct spdk_json_val *params);
+
+struct spdk_nvmf_host_opts {
+	/** Size of this structure */
+	size_t				size;
+	/** Transport specific parameters */
+	const struct spdk_json_val	*params;
+	/** DH-HMAC-CHAP key */
+	struct spdk_key			*dhchap_key;
+	/** DH-HMAC-CHAP controller key */
+	struct spdk_key			*dhchap_ctrlr_key;
+};
+
+/**
+ * Allow the given host to connect to the given subsystem.
+ *
+ * \param subsystem Subsystem to add host to.
+ * \param hostnqn Host's NQN.
+ * \param opts Host's options.
+ *
+ * \return 0 on success, or negated errno value on failure.
+ */
+int spdk_nvmf_subsystem_add_host_ext(struct spdk_nvmf_subsystem *subsystem,
+				     const char *hostnqn, struct spdk_nvmf_host_opts *opts);
 
 /**
  * Remove the given host NQN from the list of allowed hosts.
@@ -523,6 +657,23 @@ int spdk_nvmf_subsystem_add_host(struct spdk_nvmf_subsystem *subsystem,
  * \return 0 on success, or negated errno value on failure.
  */
 int spdk_nvmf_subsystem_remove_host(struct spdk_nvmf_subsystem *subsystem, const char *hostnqn);
+
+struct spdk_nvmf_subsystem_key_opts {
+	/** Size of this structure */
+	size_t				size;
+	/** DH-HMAC-CHAP key */
+	struct spdk_key			*dhchap_key;
+	/** DH-HMAC-CHAP controller key */
+	struct spdk_key			*dhchap_ctrlr_key;
+};
+
+/**
+ * Set keys required for a host to connect to a given subsystem.  This will override the keys set
+ * by `spdk_nvmf_subsystem_add_host_ext()`.
+ */
+int spdk_nvmf_subsystem_set_keys(struct spdk_nvmf_subsystem *subsystem, const char *hostnqn,
+				 struct spdk_nvmf_subsystem_key_opts *opts);
+
 
 /**
  * Disconnect all connections originating from the provided hostnqn
@@ -622,6 +773,58 @@ void spdk_nvmf_subsystem_add_listener(struct spdk_nvmf_subsystem *subsystem,
 				      spdk_nvmf_tgt_subsystem_listen_done_fn cb_fn,
 				      void *cb_arg);
 
+/* Additional options for listener creation. */
+struct spdk_nvmf_listener_opts {
+	/**
+	 * The size of spdk_nvmf_listener_opts according to the caller of this library is used for
+	 * ABI compatibility. The library uses this field to know how many fields in this structure
+	 * are valid. And the library will populate any remaining fields with default values.
+	 * New added fields should be put at the end of the struct.
+	 */
+	size_t opts_size;
+
+	/* Secure channel parameter used in TCP TLS. */
+	bool secure_channel;
+
+	/* Hole at bytes 9-11. */
+	uint8_t reserved1[3];
+
+	/* Asymmetric namespace access state */
+	enum spdk_nvme_ana_state ana_state;
+
+	/* The socket implementation to use for the listener. */
+	char *sock_impl;
+
+} __attribute__((packed));
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_listener_opts) == 24, "Incorrect size");
+
+/**
+ * Initialize options structure for listener creation.
+ *
+ * \param opts Options structure to initialize.
+ * \param size Size of the structure.
+ */
+void spdk_nvmf_subsystem_listener_opts_init(struct spdk_nvmf_listener_opts *opts, size_t size);
+
+/**
+ * Accept new connections on the address provided.
+ *
+ * This does not start the listener. Use spdk_nvmf_tgt_listen_ext() for that.
+ *
+ * May only be performed on subsystems in the PAUSED or INACTIVE states.
+ * No namespaces are required to be paused.
+ *
+ * \param subsystem Subsystem to add listener to.
+ * \param trid The address to accept connections from.
+ * \param cb_fn A callback that will be called once the association is complete.
+ * \param cb_arg Argument passed to cb_fn.
+ * \param opts NULL or options requested for listener creation.
+ */
+void spdk_nvmf_subsystem_add_listener_ext(struct spdk_nvmf_subsystem *subsystem,
+		struct spdk_nvme_transport_id *trid,
+		spdk_nvmf_tgt_subsystem_listen_done_fn cb_fn,
+		void *cb_arg, struct spdk_nvmf_listener_opts *opts);
+
 /**
  * Remove the listener from subsystem.
  *
@@ -705,7 +908,7 @@ void spdk_nvmf_subsystem_allow_any_listener(
  * \return true if this subsystem allows dynamic management of listen address list,
  *  or false if only allows addresses in the list configured during subsystem setup.
  */
-bool spdk_nvmf_subsytem_any_listener_allowed(
+bool spdk_nvmf_subsystem_any_listener_allowed(
 	struct spdk_nvmf_subsystem *subsystem);
 
 /**
@@ -721,6 +924,93 @@ bool spdk_nvmf_subsytem_any_listener_allowed(
  */
 int spdk_nvmf_subsystem_set_ana_reporting(struct spdk_nvmf_subsystem *subsystem,
 		bool ana_reporting);
+
+/**
+ * Get whether a subsystem supports Asymmetric Namespace Access (ANA)
+ * reporting.
+ *
+ * \param subsystem Subsystem to check
+ *
+ * \return true if subsystem supports ANA reporting, false otherwise.
+ */
+bool spdk_nvmf_subsystem_get_ana_reporting(struct spdk_nvmf_subsystem *subsystem);
+
+/**
+ * Set Asymmetric Namespace Access (ANA) state for the specified ANA group id.
+ *
+ * May only be performed on subsystems in the INACTIVE or PAUSED state.
+ *
+ * \param subsystem Subsystem to operate on
+ * \param trid Address for which the new state will apply
+ * \param ana_state The ANA state which is to be set
+ * \param anagrpid The ANA group ID to operate on
+ * \param cb_fn The function to call on completion
+ * \param cb_arg The argument to pass to the cb_fn
+ *
+ */
+void spdk_nvmf_subsystem_set_ana_state(struct spdk_nvmf_subsystem *subsystem,
+				       const struct spdk_nvme_transport_id *trid,
+				       enum spdk_nvme_ana_state ana_state, uint32_t anagrpid,
+				       spdk_nvmf_tgt_subsystem_listen_done_fn cb_fn, void *cb_arg);
+
+/**
+ * Get Asymmetric Namespace Access (ANA) state for the specified ANA group id.
+ *
+ * \param subsystem Subsystem to operate on
+ * \param trid Address for which the ANA is to be looked up
+ * \param anagrpid The ANA group ID to check for
+ * \param ana_state Output parameter that will contain the ANA state
+ *
+ * \return 0 on success, or negated errno value on failure.
+ *
+ */
+int spdk_nvmf_subsystem_get_ana_state(struct spdk_nvmf_subsystem *subsystem,
+				      const struct spdk_nvme_transport_id *trid,
+				      uint32_t anagrpid,
+				      enum spdk_nvme_ana_state *ana_state);
+
+/**
+ * Change ANA group ID of a namespace of a subsystem.
+ *
+ * May only be performed on subsystems in the INACTIVE or PAUSED state.
+ *
+ * \param subsystem Subsystem the namespace belongs to.
+ * \param nsid Namespace ID to change.
+ * \param anagrpid A new ANA group ID to set.
+ *
+ * \return 0 on success, negated errno on failure.
+ */
+int spdk_nvmf_subsystem_set_ns_ana_group(struct spdk_nvmf_subsystem *subsystem,
+		uint32_t nsid, uint32_t anagrpid);
+
+/**
+ * Change visibility of a namespace of a subsystem.
+ *
+ * May only be performed on subsystems in the INACTIVE or PAUSED state.
+ *
+ * \param subsystem Subsystem the namespace belongs to.
+ * \param nsid Namespace ID to change.
+ * \param visibility A new visibility to set.
+ *
+ * \return 0 on success, negated errno on failure.
+ */
+int spdk_nvmf_subsystem_set_ns_visibility(struct spdk_nvmf_subsystem *subsystem,
+		uint32_t nsid, bool auto_visible);
+
+/**
+ * Sets the controller ID range for a subsystem.
+ *
+ * Valid range is [1, 0xFFEF].
+ * May only be performed on subsystems in the INACTIVE state.
+ *
+ * \param subsystem Subsystem to modify.
+ * \param min_cntlid Minimum controller ID.
+ * \param max_cntlid Maximum controller ID.
+ *
+ * \return 0 on success, or negated errno value on failure.
+ */
+int spdk_nvmf_subsystem_set_cntlid_range(struct spdk_nvmf_subsystem *subsystem,
+		uint16_t min_cntlid, uint16_t max_cntlid);
 
 /** NVMe-oF target namespace creation options */
 struct spdk_nvmf_ns_opts {
@@ -770,10 +1060,31 @@ struct spdk_nvmf_ns_opts {
 	 */
 	uint32_t anagrpid;
 
-	/* Hole at bytes 60-63. */
-	uint8_t reserved60[4];
+	/**
+	 * Do not automatically make namespace visible to controllers
+	 *
+	 * False if not specified
+	 */
+	bool no_auto_visible;
+
+	/* Hole at bytes 61-63. */
+	uint8_t reserved61[3];
+
+	/* Transport specific json values.
+	 *
+	 * If transport specific values provided then json object is valid only at the time
+	 * namespace is being added. It is transport layer responsibility to maintain
+	 * the copy of it or its decoding if required. When \ref spdk_nvmf_ns_get_opts used
+	 * after namespace has been added object becomes invalid.
+	 */
+	const struct spdk_json_val *transport_specific;
+
+	/**
+	 * Enable hide_metadata option to the bdev.
+	 */
+	bool hide_metadata;
 } __attribute__((packed));
-SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_ns_opts) == 64, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_ns_opts) == 73, "Incorrect size");
 
 /**
  * Get default namespace creation options.
@@ -970,6 +1281,17 @@ enum spdk_nvmf_subtype spdk_nvmf_subsystem_get_type(struct spdk_nvmf_subsystem *
 uint32_t spdk_nvmf_subsystem_get_max_nsid(struct spdk_nvmf_subsystem *subsystem);
 
 /**
+ * Checks whether a given subsystem is a discovery subsystem
+ *
+ * \param subsystem Subsystem to check.
+ *
+ * \return true if a given subsystem is a discovery subsystem, false
+ *	   if the subsystem is an nvm subsystem
+ */
+bool spdk_nvmf_subsystem_is_discovery(struct spdk_nvmf_subsystem *subsystem);
+
+
+/**
  * Initialize transport options
  *
  * \param transport_name The transport type to create
@@ -984,7 +1306,7 @@ spdk_nvmf_transport_opts_init(const char *transport_name,
 			      struct spdk_nvmf_transport_opts *opts, size_t opts_size);
 
 /**
- * Create a protocol transport
+ * Create a protocol transport - deprecated, please use \ref spdk_nvmf_transport_create_async.
  *
  * \param transport_name The transport type to create
  * \param opts The transport options (e.g. max_io_size). It should not be NULL, and opts_size
@@ -994,6 +1316,27 @@ spdk_nvmf_transport_opts_init(const char *transport_name,
  */
 struct spdk_nvmf_transport *spdk_nvmf_transport_create(const char *transport_name,
 		struct spdk_nvmf_transport_opts *opts);
+
+typedef void (*spdk_nvmf_transport_create_done_cb)(void *cb_arg,
+		struct spdk_nvmf_transport *transport);
+
+/**
+ * Create a protocol transport
+ *
+ * The callback will be executed asynchronously - i.e. spdk_nvmf_transport_create_async will always return
+ * prior to `cb_fn` being called.
+ *
+ * \param transport_name The transport type to create
+ * \param opts The transport options (e.g. max_io_size). It should not be NULL, and opts_size
+ *        pointed in this structure should not be zero value.
+ * \param cb_fn A callback that will be called once the transport is created
+ * \param cb_arg A context argument passed to cb_fn.
+ *
+ * \return 0 on success, or negative errno on failure (`cb_fn` will not be executed then).
+ */
+int spdk_nvmf_transport_create_async(const char *transport_name,
+				     struct spdk_nvmf_transport_opts *opts,
+				     spdk_nvmf_transport_create_done_cb cb_fn, void *cb_arg);
 
 typedef void (*spdk_nvmf_transport_destroy_done_cb)(void *cb_arg);
 
@@ -1202,6 +1545,64 @@ void spdk_nvmf_poll_group_dump_stat(struct spdk_nvmf_poll_group *group,
  * \param hooks for initializing global hooks
  */
 void spdk_nvmf_rdma_init_hooks(struct spdk_nvme_rdma_hooks *hooks);
+
+/* Maximum number of registrants supported per namespace */
+#define SPDK_NVMF_MAX_NUM_REGISTRANTS		16
+
+struct spdk_nvmf_registrant_info {
+	uint64_t		rkey;
+	char			host_uuid[SPDK_UUID_STRING_LEN];
+};
+
+struct spdk_nvmf_reservation_info {
+	uint64_t				crkey;
+	uint8_t					rtype;
+	uint8_t					ptpl_activated;
+	char					bdev_uuid[SPDK_UUID_STRING_LEN];
+	char					holder_uuid[SPDK_UUID_STRING_LEN];
+	uint8_t					reserved[3];
+	uint8_t					num_regs;
+	struct spdk_nvmf_registrant_info	registrants[SPDK_NVMF_MAX_NUM_REGISTRANTS];
+};
+
+struct spdk_nvmf_ns_reservation_ops {
+	/* Checks if the namespace supports the Persist Through Power Loss capability. */
+	bool (*is_ptpl_capable)(const struct spdk_nvmf_ns *ns);
+
+	/* Called when namespace reservation information needs to be updated.
+	 * The new reservation information is provided via the info parameter.
+	 * Returns 0 on success, negated errno on failure. */
+	int (*update)(const struct spdk_nvmf_ns *ns, const struct spdk_nvmf_reservation_info *info);
+
+	/* Called when restoring the namespace reservation information.
+	 * The new reservation information is returned via the info parameter.
+	 * Returns 0 on success, negated errno on failure. */
+	int (*load)(const struct spdk_nvmf_ns *ns, struct spdk_nvmf_reservation_info *info);
+};
+
+/**
+ * Set custom handlers for namespace reservation operations.
+ *
+ * This call allows to override the default namespace reservation operations with custom handlers.
+ * This function may only be called before any namespace has been added.
+ *
+ * @param ops The reservation ops handers
+ */
+void spdk_nvmf_set_custom_ns_reservation_ops(const struct spdk_nvmf_ns_reservation_ops *ops);
+
+/**
+ * Send discovery log page change AEN.
+ *
+ * This sends discovery log page change notice to all the controllers in the
+ * target's discovery subsystem associated with host 'hostnqn'.
+ *
+ * \param tgt The target for which discovery log page change notice is to be
+ *            sent.
+ * \param hostnqn The hostnqn to which the notice will be sent. If NULL, all
+ *                the controllers associated with discovery subsystem will have
+ *                the discovery log page change notice.
+ */
+void spdk_nvmf_send_discovery_log_notice(struct spdk_nvmf_tgt *tgt, const char *hostnqn);
 
 #ifdef __cplusplus
 }

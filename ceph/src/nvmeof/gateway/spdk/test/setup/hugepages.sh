@@ -7,8 +7,6 @@ testdir=$(readlink -f "$(dirname "$0")")
 rootdir=$(readlink -f "$testdir/../../")
 source "$testdir/common.sh"
 
-shopt -s extglob nullglob
-
 declare -a nodes_sys=()
 
 declare -i default_hugepages=0
@@ -20,7 +18,6 @@ default_huge_nr=/sys/kernel/mm/hugepages/hugepages-${default_hugepages}kB/nr_hug
 global_huge_nr=/proc/sys/vm/nr_hugepages
 
 # Make sure environment doesn't affect the tests
-unset -v HUGE_EVEN_ALLOC
 unset -v HUGEMEM
 unset -v HUGENODE
 unset -v NRHUGE
@@ -133,33 +130,24 @@ verify_nr_hugepages() {
 }
 
 # Test cases
-default_setup() {
-	# Default HUGEMEM (2G) alloc on node0
+single_node_setup() {
+	# HUGEMEM (2G) alloc on node0
 	get_test_nr_hugepages $((2048 * 1024)) 0
-	setup
+	NRHUGE=$nr_hugepages HUGENODE=0 setup output
 	verify_nr_hugepages
-}
-
-per_node_2G_alloc() {
-	# 2G alloc per node, total N*2G pages
-	local IFS=","
-
-	get_test_nr_hugepages $((2048 * 1024)) "${!nodes_sys[@]}"
-	NRHUGE=$nr_hugepages HUGENODE="${!nodes_sys[*]}" setup
-	nr_hugepages=$((nr_hugepages * ${#nodes_sys[@]})) verify_nr_hugepages
 }
 
 even_2G_alloc() {
 	# 2G alloc spread across N nodes
 	get_test_nr_hugepages $((2048 * 1024))
-	NRHUGE=$nr_hugepages HUGE_EVEN_ALLOC=yes setup
+	NRHUGE=$nr_hugepages setup output
 	verify_nr_hugepages
 }
 
 odd_alloc() {
 	# Odd 2049MB alloc across N nodes
 	get_test_nr_hugepages $((2049 * 1024))
-	HUGEMEM=2049 HUGE_EVEN_ALLOC=yes setup
+	HUGEMEM=2049 setup output
 	verify_nr_hugepages
 }
 
@@ -186,22 +174,22 @@ custom_alloc() {
 	done
 
 	get_test_nr_hugepages_per_node
-	HUGENODE="${HUGENODE[*]}" setup
+	HUGENODE="${HUGENODE[*]}" setup output
 	nr_hugepages=$_nr_hugepages verify_nr_hugepages
 }
 
 no_shrink_alloc() {
-	# Defalut HUGEMEM (2G) alloc on node0
+	# HUGEMEM (2G) alloc on node0
 	# attempt to shrink by half: 2G should remain
 
 	get_test_nr_hugepages $((2048 * 1024)) 0
 
 	# Verify the default first
-	setup
+	NRHUGE=$nr_hugepages HUGENODE=0 setup output
 	verify_nr_hugepages
 
 	# Now attempt to shrink the hp number
-	CLEAR_HUGE=no NRHUGE=$((nr_hugepages / 2)) setup
+	CLEAR_HUGE=no NRHUGE=$((nr_hugepages / 2)) HUGENODE=0 setup output
 	# 2G should remain
 	verify_nr_hugepages
 }
@@ -209,8 +197,7 @@ no_shrink_alloc() {
 get_nodes
 clear_hp
 
-run_test "default_setup" default_setup
-run_test "per_node_2G_alloc" per_node_2G_alloc
+run_test "single_node_setup" single_node_setup
 run_test "even_2G_alloc" even_2G_alloc
 run_test "odd_alloc" odd_alloc
 run_test "custom_alloc" custom_alloc

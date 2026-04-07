@@ -3,15 +3,16 @@
 #  All rights reserved.
 #
 
-SPDK_ROOT_DIR := $(abspath $(CURDIR)/..)
-include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
-
 all: doc
 	@:
 
 .PHONY: all doc clean
 
 doc: output
+
+deprecation.md: ../deprecation.md
+	$(Q)sed -e 's/^# Deprecation/# Deprecation {#deprecation}/' \
+	    < $< > $@
 
 changelog.md: ../CHANGELOG.md
 	$(Q)sed -e 's/^# Changelog/# Changelog {#changelog}/' \
@@ -20,9 +21,9 @@ changelog.md: ../CHANGELOG.md
 	    -e '/# v..\...:/s/\./-/2' \
 	    < $< > $@
 
-output: Doxyfile changelog.md $(wildcard *.md) $(wildcard ../include/spdk/*.h)
+output: Doxyfile changelog.md deprecation.md $(wildcard *.md) $(wildcard ../include/spdk/*.h)
 	$(Q)rm -rf $@
 	$(Q)doxygen Doxyfile
 
 clean:
-	$(Q)rm -rf output changelog.md
+	$(Q)rm -rf output changelog.md deprecation.md

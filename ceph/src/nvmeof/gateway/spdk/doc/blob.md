@@ -129,6 +129,11 @@ Channels are an SPDK-wide abstraction and with Blobstore the best way to think a
 required in order to do IO.  The application will perform IO to the channel and channels are best thought of as being
 associated 1:1 with a thread.
 
+With external snapshots (see @ref blob_pg_esnap_and_esnap_clone), a read from a blob may lead to
+reading from the device containing the blobstore or an external snapshot device. To support this,
+each blobstore IO channel maintains a tree of channels to be used when reading from external
+snapshot devices.
+
 ### Blob Identifiers
 
 When an application creates a blob, it does not provide a name as is the case with many other similar
@@ -159,6 +164,9 @@ options and their defaults are:
   Blobstore found here is appropriate to claim or not. The default is NULL and unless the application is being deployed in
   an environment where multiple applications using the same disks are at risk of inadvertently using the wrong Blobstore, there
   is no need to set this value. It can, however, be set to any valid set of characters.
+* **External Snapshot Device Creation Callback**: If the blobstore supports external snapshots this function will be called
+  as a blob that clones an external snapshot (an "esnap clone") is opened so that the blobstore consumer can load the external
+  snapshot and register a blobstore device that will satisfy read requests. See @ref blob_pg_esnap_and_esnap_clone.
 
 ### Sub-page Sized Operations
 
@@ -302,6 +310,171 @@ when creating a blob.
   Extents pointing to contiguous LBA are run-length encoded, including unallocated extents represented by 0.
   Every new cluster allocation incurs serializing whole linked list of pages for the blob.
 
+### Thin Blobs, Snapshots, and Clones
+
+Each in-use cluster is allocated to blobstore metadata or to a particular blob. Once a cluster is
+allocated to a blob it is considered owned by that blob and that particular blob's metadata
+maintains a reference to the cluster as a record of ownership. Cluster ownership is transferred
+during snapshot operations described later in @ref blob_pg_snapshots.
+
+Through the use of thin provisioning, snapshots, and/or clones, a blob may be backed by clusters it
+owns, clusters owned by another blob, or by a zeroes device. The behavior of reads and writes depend
+on whether the operation targets blocks that are backed by a cluster owned by the blob or not.
+
+* **read from blocks on an owned cluster**: The read is serviced by reading directly from the
+  appropriate cluster.
+* **read from other blocks**: The read is passed on to the blob's *back device* and the back
+  device services the read. The back device may be another blob or it may be a zeroes device.
+* **write to blocks on an owned cluster**: The write is serviced by writing directly to the
+  appropriate cluster.
+* **write to thin provisioned cluster**: If the back device is the zeroes device and no cluster
+  is allocated to the blob the process described in @ref blob_pg_thin_provisioning is followed.
+* **write to other blocks**: A copy-on-write operation is triggered. See @ref blob_pg_copy_on_write
+  for details.
+
+External snapshots allow some external data source to act as a snapshot. This allows clones to be
+created of data that resides outside of the blobstore containing the clone.
+
+#### Thin Provisioning {#blob_pg_thin_provisioning}
+
+As mentioned in @ref blob_pg_cluster_layout, a blob may be thin provisioned. A thin provisioned blob
+starts out with no allocated clusters. Clusters are allocated as writes occur. A thin provisioned
+blob's back device is a *zeroes device*. A read from a zeroes device fills the read buffer with
+zeroes.
+
+When a thin provisioned volume writes to a block that does not have an allocated cluster, the
+following steps are performed:
+
+1. Allocate a cluster.
+2. Update blob metadata.
+3. Perform the write.
+
+#### Snapshots and Clones {#blob_pg_snapshots}
+
+A snapshot is a read-only blob that may have clones. A snapshot may itself be a clone of one other
+blob. While the interface gives the illusion of being able to create many snapshots of a blob, under
+the covers this results in a chain of snapshots that are clones of the previous snapshot.
+
+When blob1 is snapshotted, a new read-only blob is created and blob1 becomes a clone of this new
+blob. That is:
+
+| Step | Action                         | State                                             |
+| ---- | ------------------------------ | ------------------------------------------------- |
+| 1    | Create blob1                   | `blob1 (rw)`                                      |
+| 2    | Create snapshot blob2 of blob1 | `blob1 (rw) --> blob2 (ro)`                       |
+| 2a   | Write to blob1                 | `blob1 (rw) --> blob2 (ro)`                       |
+| 3    | Create snapshot blob3 of blob1 | `blob1 (rw) --> blob3 (ro) ---> blob2 (ro)`       |
+
+Supposing blob1 was not thin provisioned, step 1 would have allocated clusters needed to perform a
+full write of blob1. As blob2 is created in step 2, the ownership of all of blob1's clusters is
+transferred to blob2 and blob2 becomes blob1's back device. During step2a, the writes to blob1 cause
+one or more clusters to be allocated to blob1. When blob3 is created in step 3, the clusters
+allocated in step 2a are given to blob3, blob3's back device becomes blob2, and blob1's back device
+becomes blob3.
+
+It is important to understand the chain above when considering strategies to use a golden image from
+which many clones are made. The IO path is more efficient if one snapshot is cloned many times than
+it is to create a new snapshot for every clone. The following illustrates the difference.
+
+Using a single snapshot means the data originally referenced by the golden image is always one hop
+away.
+
+```text
+create golden                           golden --> golden-snap
+snapshot golden as golden-snap                     ^ ^ ^
+clone golden-snap as clone1              clone1 ---+ | |
+clone golden-snap as clone2              clone2 -----+ |
+clone golden-snap as clone3              clone3 -------+
+```
+
+Using a snapshot per clone means that the chain of back devices grows with every new snapshot and
+clone pair. Reading a block from clone3 may result in a read from clone3's back device (snap3), from
+clone2's back device (snap2), then finally clone1's back device (snap1, the current owner of the
+blocks originally allocated to golden).
+
+```text
+create golden
+snapshot golden as snap1                golden --> snap3 -----> snap2 ----> snap1
+clone snap1 as clone1                   clone3----/   clone2 --/  clone1 --/
+snapshot golden as snap2
+clone snap2 as clone2
+snapshot golden as snap3
+clone snap3 as clone3
+```
+
+A snapshot with no more than one clone can be deleted. When a snapshot with one clone is deleted,
+the clone becomes a regular blob. The clusters owned by the snapshot are transferred to the clone or
+freed, depending on whether the clone already owns a cluster for a particular block range.
+
+Removal of the last clone leaves the snapshot in place. This snapshot continues to be read-only and
+can serve as the snapshot for future clones.
+
+#### Inflating and Decoupling Clones
+
+A clone can remove its dependence on a snapshot with the following operations:
+
+1. Inflate the clone. Clusters backed by any snapshot or a zeroes device are copied into newly
+   allocated clusters. The blob becomes a thick provisioned blob.
+2. Decouple the clone. Clusters backed by the first back device snapshot are copied into newly
+   allocated clusters. If the clone's back device snapshot was itself a clone of another
+   snapshot, the clone remains a clone but is now a clone of a different snapshot.
+3. Remove the snapshot. This is only possible if the snapshot has one clone. The end result is
+   usually the same as decoupling but ownership of clusters is transferred from the snapshot rather
+   than being copied. If the snapshot that was deleted was itself a clone of another snapshot, the
+   clone remains a clone, but is now a clone of a different snapshot.
+
+#### External Snapshots and Esnap Clones {#blob_pg_esnap_and_esnap_clone}
+
+A blobstore that is loaded with the `esnap_bs_dev_create` callback defined will support external
+snapshots (esnaps). An external snapshot is not useful on its own: it needs to be cloned by a blob.
+A clone of an external snapshot is referred to as an *esnap clone*. An esnap clone supports IO and
+other operations just like any other clone.
+
+An esnap clone can be recognized in various ways:
+
+* **On disk**: the blob metadata has the `SPDK_BLOB_EXTERNAL_SNAPSHOT` (0x8) bit is set in
+  `invalid_flags` and an internal XATTR with name `BLOB_EXTERNAL_SNAPSHOT_ID` ("EXTSNAP") exists.
+* **In memory**: The `spdk_blob` structure contains the metadata read from disk, `blob->parent_id`
+  is set to `SPDK_BLOBID_EXTERNAL_SNAPSHOT`, and `blob->back_bs_dev` references a blobstore device
+  which is not a blob in the same blobstore nor a zeroes device.
+
+#### Shallow Copy {#blob_shallow_copy}
+
+A read only blob can be copied over a blob store device in a way that only clusters
+allocated to the blob will be written on the device. This device must have a size equal or greater
+than blob's size and blob store's block size must be an integer multiple of device's block size.
+This functionality can be used to recreate the entire snapshot stack of a blob into a different blob
+store.
+
+#### Change the parent of a blob {#blob_reparent}
+
+We can change the parent of a thin provisioned blob, making the blob a clone of a snapshot of the
+same blobstore or a clone of an external snapshot. The previous parent of the blob can be a snapshot,
+an external snapshot or none.
+
+If the new parent of the blob is a snapshot of the same blobstore, blob and snapshot must have the same number of clusters.
+
+If the new parent of the blob is an external snapshot, the size of the esnap must be an integer multiple of
+blob's cluster size.
+
+#### Copy-on-write {#blob_pg_copy_on_write}
+
+A copy-on-write operation is somewhat expensive, with the cost being proportional to the cluster
+size. Typical copy-on-write involves the following steps:
+
+1. Allocate a cluster.
+2. Allocate a cluster-sized buffer into which data can be read.
+3. Trigger a full-cluster read from the back device into the cluster-sized buffer.
+4. Write from the cluster-sized buffer into the newly allocated cluster.
+5. Update the blob's on-disk metadata to record ownership of the newly allocated cluster. This
+   involves at least one page-sized write.
+6. Write the new data to the just allocated and copied cluster.
+
+If the source cluster is backed by a zeroes device, steps 2 through 4 are skipped. Alternatively, if
+the blobstore resides on a device that can perform the copy on its own, steps 2 through 4 are
+offloaded to the device. Neither of these optimizations are available when the back device is an
+external snapshot.
+
 ### Sequences and Batches
 
 Internally Blobstore uses the concepts of sequences and batches to submit IO to the underlying device in either
@@ -315,6 +488,13 @@ These requests sets are basically bookkeeping mechanisms to help Blobstore effic
 of IO. They are an internal construct only and are pre-allocated on a per channel basis (channels were discussed
 earlier). They are removed from a channel associated linked list when the set (sequence or batch) is started and
 then returned to the list when completed.
+
+Each request set maintains a reference to a `channel` and a `back_channel`. The `channel` is used
+for performing IO on the blobstore device. The `back_channel` is used for performing IO on the
+blob's back device, `blob->back_bs_dev`. For blobs that are not esnap clones, `channel` and
+`back_channel` reference an IO channel used with the device that contains the blobstore.  For blobs
+that are esnap clones, `channel` is the same as with any other blob and `back_channel` is an IO
+channel for the external snapshot device.
 
 ### Key Internal Structures
 

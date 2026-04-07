@@ -369,6 +369,7 @@ init(void)
 {
 	struct spdk_env_opts opts;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "ioat_perf";
 	opts.core_mask = g_user_config.core_mask;
@@ -458,12 +459,12 @@ associate_workers_with_chan(void)
 						   g_user_config.queue_depth * 2, /* src + dst */
 						   g_user_config.xfer_size_bytes,
 						   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-						   SPDK_ENV_SOCKET_ID_ANY);
+						   SPDK_ENV_NUMA_ID_ANY);
 		t->task_pool = spdk_mempool_create(task_pool_name,
 						   g_user_config.queue_depth,
 						   sizeof(struct ioat_task),
 						   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-						   SPDK_ENV_SOCKET_ID_ANY);
+						   SPDK_ENV_NUMA_ID_ANY);
 		if (!t->data_pool || !t->task_pool) {
 			fprintf(stderr, "Could not allocate buffer pool.\n");
 			spdk_mempool_free(t->data_pool);

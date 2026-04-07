@@ -1,0 +1,10 @@
+---
+doc: |
+  Generate documentation with example-commands executed
+
+steps:
+- name: docgen
+  uses: xnvme_docgen
+  with:
+    xnvme_source: '{{ config.xnvme.repository.sync.remote_path }}'
+

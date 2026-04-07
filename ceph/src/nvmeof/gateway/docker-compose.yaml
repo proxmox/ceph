@@ -1,4 +1,3 @@
-version: "3.8"
 services:
   spdk:
     image: $QUAY_SPDK:$SPDK_VERSION
@@ -8,6 +7,7 @@ services:
       context: spdk/
       dockerfile: ../Dockerfile.spdk
       target: spdk
+      platforms: [$TARGET_PLATFORM]
       args:
         SPDK_VERSION:
         SPDK_CEPH_VERSION:
@@ -57,6 +57,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ceph
+      platforms: [$TARGET_PLATFORM]
       args:
         CEPH_CLUSTER_VERSION:
         CEPH_CLUSTER_CEPH_REPO_BASEURL:
@@ -66,11 +67,22 @@ services:
       TOUCHFILE: /tmp/ceph.touch
     entrypoint: >-
       sh -c './vstart.sh --new $$CEPH_VSTART_ARGS &&
-      ceph osd pool create rbd &&
       echo ceph dashboard nvmeof-gateway-add -i <(echo nvmeof-devel:5500) nvmeof.1 &&
+      pushd /etc/ceph &&
+      openssl req -x509 -newkey rsa:4096 -noenc -keyout server.key -out server.crt -days 3650 -subj /CN=my.server -addext "subjectAltName = IP:192.168.13.3, IP:0.0.0.0" &&
+      openssl req -x509 -newkey rsa:4096 -noenc -keyout client.key -out client.crt -days 3650 -subj /CN=client1 &&
+      if [[ ! -f /etc/ceph/encryption.key ]]; then openssl req -newkey rsa:512 -noenc -noout -keyout encryption.key -batch 2> /dev/null; fi &&
+      popd &&
+      ceph osd pool create rbd &&
       sleep infinity'
     healthcheck:
-      test: ceph osd pool stats rbd
+      test: >
+        [ -f /etc/ceph/server.crt ] &&
+        [ -f /etc/ceph/server.key ] &&
+        [ -f /etc/ceph/client.crt ] &&
+        [ -f /etc/ceph/client.key ] &&
+        [ -f /etc/ceph/encryption.key ] &&
+        ceph osd pool stats rbd
       start_period: 6s
       interval: 3s
       retries: 10
@@ -97,6 +109,7 @@ services:
   nvmeof-base:
     build:
       context: .
+      platforms: [$TARGET_PLATFORM]
       args:
         NVMEOF_TARGET: gateway
         NVMEOF_SPDK_VERSION:
@@ -120,14 +133,20 @@ services:
         SPDK_GIT_COMMIT:
         HUGEPAGES:
         HUGEPAGES_DIR:
+        CONTAINER_REGISTRY:
       labels:
         io.ceph.nvmeof:
+    privileged: true # accel-config
     volumes:
       # sudo bash -c 'echo 2048 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages'
       # https://spdk.io/doc/containers.html
       # TODO: Pending of https://github.com/spdk/spdk/issues/2973
       - /dev/hugepages:/dev/hugepages
       - /dev/vfio/vfio:/dev/vfio/vfio
+      # accel-config
+      - /dev/dsa:/dev/dsa
+      - /dev/char:/dev/char
+      # accel-config
       - $NVMEOF_CONFIG:/src/ceph-nvmeof.conf
       - /tmp/coredump:/tmp/coredump # core dump
       - /var/log/ceph:/var/log/ceph
@@ -136,6 +155,7 @@ services:
       - SYS_ADMIN # huge-pages
       - CAP_SYS_NICE # RTE
       - SYS_PTRACE # gdb
+      - SYS_RAWIO # idxd/dsa
     ulimits:
       nofile: $NVMEOF_NOFILE
       memlock: -1
@@ -218,6 +238,7 @@ services:
     image: $QUAY_NVMEOFCLI:$NVMEOF_VERSION
     build:
       context: .
+      platforms: [$TARGET_PLATFORM]
       args:
         NVMEOF_TARGET: cli
         NVMEOF_NAME: $NVMEOF_CLI_NAME
@@ -240,6 +261,8 @@ services:
         HUGEPAGES_DIR:
       labels:
         io.ceph.nvmeof:
+    volumes:
+      - ceph-conf:/etc/ceph
 volumes:
   ceph-conf:
 networks:

@@ -24,6 +24,14 @@ sources = files(
 
 deps += ['hash', 'security']
 
+cflags += no_wvla_cflag
+
+if arch_subdir == 'x86'
+    sources += files('txgbe_rxtx_vec_sse.c')
+elif arch_subdir == 'arm'
+    sources += files('txgbe_rxtx_vec_neon.c')
+endif
+
 includes += include_directories('base')
 
 install_headers('rte_pmd_txgbe.h')

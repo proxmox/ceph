@@ -1,12 +1,14 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_SPDK_ENABLED
-#include <xnvme_dev.h>
-#include <spdk/env.h>
 #include <errno.h>
-#include <libxnvme_spec_fs.h>
+#include <spdk/env.h>
+#include <xnvme_dev.h>
 #include <xnvme_queue.h>
 #include <xnvme_be_spdk.h>
 
@@ -42,6 +44,12 @@ xnvme_be_spdk_queue_init(struct xnvme_queue *q, int XNVME_UNUSED(opts))
 		return -ENOMEM;
 	}
 
+	queue->iov_payloads = malloc(sizeof(*queue->iov_payloads) * qopts.io_queue_size);
+	if (!queue->iov_payloads) {
+		XNVME_DEBUG("FAILED: malloc()");
+		return -ENOMEM;
+	}
+
 	return 0;
 }
 
@@ -49,11 +57,18 @@ int
 xnvme_be_spdk_queue_term(struct xnvme_queue *q)
 {
 	struct xnvme_queue_spdk *queue = (void *)q;
+	spdk_nvme_qp_failure_reason reason;
 	int err;
 
 	if (!queue->qpair) {
 		XNVME_DEBUG("FAILED: !queue->qpair");
 		return -EINVAL;
+	}
+	reason = spdk_nvme_qpair_get_failure_reason(queue->qpair);
+	if (reason) {
+		// the qpair has already disconnected
+		XNVME_DEBUG("WARNING: qpair in failed state, reason: %d", reason);
+		return 0;
 	}
 
 	err = spdk_nvme_ctrlr_free_io_qpair(queue->qpair);
@@ -62,6 +77,8 @@ xnvme_be_spdk_queue_term(struct xnvme_queue *q)
 			    (void *)queue->qpair, strerror(errno));
 		return err;
 	}
+
+	free(queue->iov_payloads);
 
 	return err;
 }
@@ -115,8 +132,6 @@ submit_ioc(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair, struct 
 						  dbuf, dbuf_nbytes, mbuf, cb_fn, cb_arg);
 }
 
-// TODO: consider whether 'mbuf_nbytes' is needed here
-// TODO: consider whether 'opts' is needed here
 int
 xnvme_be_spdk_async_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, void *mbuf,
 			   size_t XNVME_UNUSED(mbuf_nbytes))
@@ -125,7 +140,6 @@ xnvme_be_spdk_async_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nb
 	struct xnvme_be_spdk_state *state = (void *)queue->base.dev->be.state;
 	int err;
 
-	// TODO: do something with mbuf?
 	queue->base.outstanding += 1;
 	err = submit_ioc(state->ctrlr, queue->qpair, ctx, dbuf, dbuf_nbytes, mbuf, cmd_async_cb,
 			 ctx);
@@ -137,17 +151,95 @@ xnvme_be_spdk_async_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nb
 
 	return 0;
 }
+
+static void
+reset_sgl_offset(void *cb_arg, uint32_t offset)
+{
+	struct xnvme_cmd_ctx_entry *ctx = cb_arg;
+	struct xnvme_queue_spdk *queue = (void *)ctx->async.queue;
+	struct xnvme_be_spdk_iov_payload *payload = &queue->iov_payloads[ctx->id];
+	struct iovec *iov;
+
+	payload->iov_offset = offset;
+
+	for (payload->iov_offset = 0; payload->iov_pos < payload->iov_cnt; payload->iov_pos++) {
+		iov = &payload->iov[payload->iov_pos];
+		if (payload->iov_offset < iov->iov_len) {
+			break;
+		}
+
+		payload->iov_offset -= iov->iov_len;
+	}
+}
+
+static int
+next_sgl_entry(void *cb_arg, void **address, uint32_t *length)
+{
+	struct xnvme_cmd_ctx_entry *ctx = cb_arg;
+	struct xnvme_queue_spdk *queue = (void *)ctx->async.queue;
+	struct xnvme_be_spdk_iov_payload *payload = &queue->iov_payloads[ctx->id];
+	struct iovec *iov;
+
+	iov = &payload->iov[payload->iov_pos];
+
+	*address = iov->iov_base;
+	*length = iov->iov_len;
+
+	if (payload->iov_offset) {
+		*address += payload->iov_offset;
+		*length -= payload->iov_offset;
+	}
+
+	payload->iov_offset += *length;
+	if (payload->iov_offset == iov->iov_len) {
+		payload->iov_pos++;
+		payload->iov_offset = 0;
+	}
+
+	return 0;
+}
+
+int
+xnvme_be_spdk_async_cmd_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec_cnt,
+			    size_t dvec_nbytes, void *mbuf, size_t XNVME_UNUSED(mbuf_nbytes))
+{
+	struct xnvme_queue_spdk *queue = (void *)ctx->async.queue;
+	struct xnvme_be_spdk_state *state = (void *)queue->base.dev->be.state;
+	struct xnvme_cmd_ctx_entry *ctx_entry = (void *)ctx;
+	struct xnvme_be_spdk_iov_payload *payload = &queue->iov_payloads[ctx_entry->id];
+
+	int err;
+
+	payload->iov = dvec;
+	payload->iov_cnt = dvec_cnt;
+	payload->iov_pos = 0;
+	payload->iov_offset = 0;
+
+	queue->base.outstanding += 1;
+
+	err = spdk_nvme_ctrlr_cmd_iov_raw_with_md(
+		state->ctrlr, queue->qpair, (struct spdk_nvme_cmd *)&ctx->cmd,
+		(uint32_t)dvec_nbytes, mbuf, cmd_async_cb, ctx, reset_sgl_offset, next_sgl_entry);
+
+	if (err) {
+		queue->base.outstanding -= 1;
+		XNVME_DEBUG("FAILED: spdk_nvme_ctrlr_cmd_iov_raw_with_md(), err: %d", err);
+	}
+
+	return err;
+}
 #endif
 
 struct xnvme_be_async g_xnvme_be_spdk_async = {
 	.id = "nvme",
 #ifdef XNVME_BE_SPDK_ENABLED
 	.cmd_io = xnvme_be_spdk_async_cmd_io,
-	.cmd_iov = xnvme_be_nosys_queue_cmd_iov,
+	.cmd_iov = xnvme_be_spdk_async_cmd_iov,
 	.poke = xnvme_be_spdk_queue_poke,
 	.wait = xnvme_be_nosys_queue_wait,
 	.init = xnvme_be_spdk_queue_init,
 	.term = xnvme_be_spdk_queue_term,
+	.get_completion_fd = xnvme_be_nosys_queue_get_completion_fd,
 #else
 	.cmd_io = xnvme_be_nosys_queue_cmd_io,
 	.cmd_iov = xnvme_be_nosys_queue_cmd_iov,
@@ -155,5 +247,6 @@ struct xnvme_be_async g_xnvme_be_spdk_async = {
 	.wait = xnvme_be_nosys_queue_wait,
 	.init = xnvme_be_nosys_queue_init,
 	.term = xnvme_be_nosys_queue_term,
+	.get_completion_fd = xnvme_be_nosys_queue_get_completion_fd,
 #endif
 };

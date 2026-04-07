@@ -220,6 +220,29 @@ vbdev_gpt_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 }
 
 static void
+gpt_guid_to_uuid(const struct spdk_gpt_guid *guid, struct spdk_uuid *uuid)
+{
+#pragma pack(push, 1)
+	struct tmp_uuid {
+		uint32_t b0;
+		uint16_t b4;
+		uint16_t b6;
+		uint16_t b8;
+		uint16_t b10;
+		uint32_t b12;
+	} *ret = (struct tmp_uuid *)uuid;
+#pragma pack(pop)
+	SPDK_STATIC_ASSERT(sizeof(*ret) == sizeof(*uuid), "wrong size");
+
+	ret->b0 = from_be32(&guid->raw[0]);
+	ret->b4 = from_be16(&guid->raw[4]);
+	ret->b6 = from_be16(&guid->raw[6]);
+	ret->b8 = from_le16(&guid->raw[8]);
+	ret->b10 = from_le16(&guid->raw[10]);
+	ret->b12 = from_le32(&guid->raw[12]);
+}
+
+static void
 write_guid(struct spdk_json_write_ctx *w, const struct spdk_gpt_guid *guid)
 {
 	spdk_json_write_string_fmt(w, "%08x-%04x-%04x-%04x-%04x%08x",
@@ -315,6 +338,7 @@ vbdev_gpt_create_bdevs(struct gpt_base *gpt_base)
 		uint64_t lba_start = from_le64(&p->starting_lba);
 		uint64_t lba_end = from_le64(&p->ending_lba);
 		uint64_t partition_size = lba_end - lba_start + 1;
+		struct spdk_bdev_part_construct_opts opts;
 
 		if (lba_start == 0) {
 			continue;
@@ -329,7 +353,7 @@ vbdev_gpt_create_bdevs(struct gpt_base *gpt_base)
 		} else if (!SPDK_GPT_GUID_EQUAL(&gpt->partitions[i].part_type_guid,
 						&SPDK_GPT_PART_TYPE_GUID)) {
 			/* Partition type isn't TYPE_GUID or TYPE_GUID_OLD, so this isn't
-			 * an SPDK parition.  Continue to the next partition.
+			 * an SPDK partition.  Continue to the next partition.
 			 */
 			continue;
 		}
@@ -353,8 +377,10 @@ vbdev_gpt_create_bdevs(struct gpt_base *gpt_base)
 			return -1;
 		}
 
-		rc = spdk_bdev_part_construct(&d->part, gpt_base->part_base, name,
-					      lba_start, partition_size, "GPT Disk");
+		spdk_bdev_part_construct_opts_init(&opts, sizeof(opts));
+		gpt_guid_to_uuid(&p->unique_partition_guid, &opts.uuid);
+		rc = spdk_bdev_part_construct_ext(&d->part, gpt_base->part_base, name, lba_start,
+						  partition_size, "GPT Disk", &opts);
 		free(name);
 		if (rc) {
 			SPDK_ERRLOG("could not construct bdev part\n");
@@ -370,7 +396,7 @@ vbdev_gpt_create_bdevs(struct gpt_base *gpt_base)
 }
 
 static void
-gpt_read_secondary_table_complete(struct spdk_bdev_io *bdev_io, bool status, void *arg)
+gpt_read_secondary_table_complete(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 {
 	struct gpt_base *gpt_base = (struct gpt_base *)arg;
 	struct spdk_bdev *bdev = spdk_bdev_part_base_get_bdev(gpt_base->part_base);
@@ -380,9 +406,8 @@ gpt_read_secondary_table_complete(struct spdk_bdev_io *bdev_io, bool status, voi
 	spdk_put_io_channel(gpt_base->ch);
 	gpt_base->ch = NULL;
 
-	if (status != SPDK_BDEV_IO_STATUS_SUCCESS) {
-		SPDK_ERRLOG("Gpt: bdev=%s io error status=%d\n",
-			    spdk_bdev_get_name(bdev), status);
+	if (!success) {
+		SPDK_ERRLOG("Gpt: bdev=%s io error\n", spdk_bdev_get_name(bdev));
 		goto end;
 	}
 
@@ -430,7 +455,7 @@ vbdev_gpt_read_secondary_table(struct gpt_base *gpt_base)
 }
 
 static void
-gpt_bdev_complete(struct spdk_bdev_io *bdev_io, bool status, void *arg)
+gpt_bdev_complete(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 {
 	struct gpt_base *gpt_base = (struct gpt_base *)arg;
 	struct spdk_bdev *bdev = spdk_bdev_part_base_get_bdev(gpt_base->part_base);
@@ -438,9 +463,8 @@ gpt_bdev_complete(struct spdk_bdev_io *bdev_io, bool status, void *arg)
 
 	spdk_bdev_free_io(bdev_io);
 
-	if (status != SPDK_BDEV_IO_STATUS_SUCCESS) {
-		SPDK_ERRLOG("Gpt: bdev=%s io error status=%d\n",
-			    spdk_bdev_get_name(bdev), status);
+	if (!success) {
+		SPDK_ERRLOG("Gpt: bdev=%s io error\n", spdk_bdev_get_name(bdev));
 		goto end;
 	}
 

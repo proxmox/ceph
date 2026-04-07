@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2020-2022, Intel Corporation
+# Copyright (c) 2020-2023, Intel Corporation
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -28,13 +28,11 @@
 all:
 	cd lib & $(MAKE) /f win_x64.mak
 	cd test & $(MAKE) /f win_x64.mak
-	cd test\wycheproof & $(MAKE) /f win_x64.mak
 	cd perf & $(MAKE) /f win_x64.mak
 
 clean:
 	cd lib & $(MAKE) /f win_x64.mak clean
 	cd test & $(MAKE) /f win_x64.mak clean
-	cd test\wycheproof & $(MAKE) /f win_x64.mak clean
 	cd perf & $(MAKE) /f win_x64.mak clean
 
 install:

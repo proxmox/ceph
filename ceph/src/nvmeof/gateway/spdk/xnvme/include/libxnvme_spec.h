@@ -1,43 +1,40 @@
 /**
  * libxnvme_spec - NVMe structs, enum, values and helper function declarations
  *
- * If an entity is defined in the NVMe specification, then an enum or struct should exist in this
- * header file. The purpose of this is to provide a single point of entry for spec. definitions for
- * the purpose of providing structs with accessors, possibly bit-fields, and enums for values such
- * as command opcodes.
+ * If an entity is defined in the NVMe specification, then an enum or struct
+ * should exist in this header file. The purpose of this is to provide a single
+ * point of entry for spec. definitions for the purpose of providing structs
+ * with accessors, possibly bit-fields, and enums for values such as command
+ * opcodes.
  *
- * Auxilary header files are provided for the different IO command-sets, e.g. ``libxnvme_nvm.h``,
- * providing utility functions such as ``xnvme_nvm_read``, ``xnvme_nvm_write``, and similarly
- * ``libxnvme_znd.h`` with utilities such as ``xnvme_znd_append``, ``xnvme_znd_mgmt_send``.
- * These can also contain enums and structs, however, these are not based on definitions in the
- * NVMe specification, rather, these build on the spec. definition in order to provide something
- * sligthly more convenient to the user.
+ * Auxilary header files are provided for the different IO command-sets, e.g.
+ * ``libxnvme_nvm.h``, providing utility functions such as ``xnvme_nvm_read``,
+ * ``xnvme_nvm_write``, and similarly ``libxnvme_znd.h`` with utilities such as
+ * ``xnvme_znd_append``, ``xnvme_znd_mgmt_send``.  These can also contain enums
+ * and structs, however, these are not based on definitions in the NVMe
+ * specification, rather, these build on the spec. definition in order to
+ * provide something sligthly more convenient to the user.
  *
- * A special class of utility functions are pretty-printers, all spec. defintions have two
- * associated pretty-printers named by the type, suffixed by ``_fpr`` and ``_pr``, for example:
+ * A special class of utility functions are pretty-printers, all spec.
+ * defintions have two associated pretty-printers named by the type, suffixed
+ * by ``_fpr`` and ``_pr``, for example:
  *
  * - xnvme_spec_cpl_fpr(), prints the given ``struct xnvme_spec_cpl`` struct to the given fstream
  * - xnvme_spec_cpl_pr(),  prints the given ``struct xnvme_spec_cpl`` struct to stdout
  *
- * These functions are auto-generated and available by importing ``libxnvme_spec_pp.h``. Thus, when
- * you see a definition in ``libxnvme_spec.h`` then you can count on always having a textual
- * representation available for that definition by importing ``libxnvme_spec_pp.h``.
- * You can also choose to add the ``libxnvme_pp.h`` which includes pretty-printers for all enums
- * and struct known by xNVMe.
+ * These functions are auto-generated and available by importing
+ * ``libxnvme_spec_pp.h``. Thus, when you see a definition in
+ * ``libxnvme_spec.h`` then you can count on always having a textual
+ * representation available for that definition by importing
+ * ``libxnvme_spec_pp.h``.  You can also choose to add the ``libxnvme_pp.h``
+ * which includes pretty-printers for all enums and struct known by xNVMe.
  *
- * Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
- * Copyright (C) Klaus B. A. Jensen <k.jensen@samsung.com>
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * @headerfile libxnvme_spec.h
  */
-#ifndef __LIBXNVME_SPEC_H
-#define __LIBXNVME_SPEC_H
-
-#include <assert.h>
-#include <stdint.h>
-#include <sys/types.h>
-#include <libxnvme_util.h>
 
 /**
  * NVMe PCIe BAR0 as-a-struct.
@@ -85,6 +82,16 @@ enum xnvme_spec_status_code_type {
 	XNVME_STATUS_CODE_TYPE_MEDIA   = 0x2, ///< Media and data integrity error
 	XNVME_STATUS_CODE_TYPE_PATH    = 0x3, ///< Path related status
 	XNVME_STATUS_CODE_TYPE_VENDOR  = 0x7, ///< Vendor specific
+};
+
+/**
+ * NVMe Command Status Code
+ *
+ * @enum xnvme_spec_status_code
+ */
+enum xnvme_spec_status_code {
+	// TODO: Add remaining status codes from spec
+	XNVME_STATUS_CODE_INVALID_FIELD = 0x02, ///< Invalid Field
 };
 
 /**
@@ -203,6 +210,182 @@ struct xnvme_spec_log_erri_entry {
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_log_erri_entry) == 64, "Incorrect size")
 
 /**
+ * NVMe Reclaim unit handle descriptor
+ *
+ * @struct xnvme_spec_ruh_desc
+ */
+struct xnvme_spec_ruh_desc {
+	uint8_t ruht; ///< Reclaim unit handle type
+	uint8_t rsvd[3];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_ruh_desc) == 4, "Incorrect size")
+
+/**
+ * NVMe FDP configuration descriptor
+ *
+ * @struct xnvme_spec_fdp_conf_desc
+ */
+struct xnvme_spec_fdp_conf_desc {
+	uint16_t ds;
+
+	/** FDP attributes */
+	union {
+		struct {
+			uint8_t rgif   : 4; ///< Reclaim group identifier format
+			uint8_t fdpvwc : 1; ///< FDP volatile write cache
+			uint8_t rsvd1  : 2;
+			uint8_t fdpcv  : 1; ///< FDP configuration valid
+		};
+		uint8_t val;
+	} fdpa;
+
+	uint8_t vss;      ///< Vendor specific size
+	uint32_t nrg;     ///< Number of reclaim groups
+	uint16_t nruh;    ///< Number of reclaim unit handles
+	uint16_t maxpids; ///< Max placement identifiers
+	uint32_t nns;     ///< Number of namespaces supported
+	uint64_t runs;    ///< Reclaim unit nominal size
+	uint32_t erutl;   ///< Estimated reclaim unit time limit
+	uint8_t rsvd28[36];
+	struct xnvme_spec_ruh_desc ruh_desc[];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_fdp_conf_desc) == 64, "Incorrect size")
+
+/**
+ * NVMe FDP configurations log page
+ *
+ * @struct xnvme_spec_log_fdp_conf
+ */
+struct xnvme_spec_log_fdp_conf {
+	uint16_t ncfg; ///< Number of FDP configurations
+	uint8_t version;
+	uint8_t rsvd1;
+	uint32_t size;
+	uint8_t rsvd2[8];
+	struct xnvme_spec_fdp_conf_desc conf_desc[];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_log_fdp_conf) == 16, "Incorrect size")
+
+/**
+ * NVMe Reclaim unit handle usage descriptor
+ *
+ * @struct xnvme_spec_ruhu_desc
+ */
+struct xnvme_spec_ruhu_desc {
+	uint8_t ruha; ///< Reclaim unit handle attributes
+	uint8_t rsvd[7];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_ruhu_desc) == 8, "Incorrect size")
+
+/**
+ * NVMe Reclaim unit handle usage log page
+ *
+ * @struct xnvme_spec_log_ruhu
+ */
+struct xnvme_spec_log_ruhu {
+	uint16_t nruh; ///< Number of Reclaim Unit Handles
+	uint8_t rsvd[6];
+	struct xnvme_spec_ruhu_desc ruhu_desc[];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_log_ruhu) == 8, "Incorrect size")
+
+/**
+ * NVMe FDP statistics log page
+ *
+ * @struct xnvme_spec_log_fdp_stats
+ */
+struct xnvme_spec_log_fdp_stats {
+	uint64_t hbmw[2]; ///< Host bytes with metadata written
+	uint64_t mbmw[2]; ///< Media bytes with metadata written
+	uint64_t mbe[2];  ///< Media bytes erased
+	uint8_t rsvd48[16];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_log_fdp_stats) == 64, "Incorrect size")
+
+/**
+ * Media reallocated
+ *
+ * @struct xnvme_spec_fdp_event_media_reallocated
+ */
+struct __attribute__((packed)) xnvme_spec_fdp_event_media_reallocated {
+	/** Specific event flags */
+	union {
+		struct {
+			uint8_t lbav : 1; ///< LLBA valid
+			uint8_t rsvd : 7;
+		};
+		uint8_t val;
+	} sef;
+
+	uint8_t rsvd1;
+	uint16_t nlbam; ///< Number of LBAs moved
+	uint64_t lba;   ///< Logical block address
+	uint8_t rsvd2[4];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_fdp_event_media_reallocated) == 16, "Incorrect size")
+
+/**
+ * NVMe FDP event
+ *
+ * @struct xnvme_spec_fdp_event
+ */
+struct __attribute__((packed)) xnvme_spec_fdp_event {
+	uint8_t type; ///< Event type
+
+	/** FDP event flags */
+	union {
+		struct {
+			uint8_t piv   : 1; ///< Placement identifier valid
+			uint8_t nsidv : 1; ///< NSID valid
+			uint8_t lv    : 1; ///< Location valid
+			uint8_t rsvd1 : 5;
+		};
+		uint8_t val;
+	} fdpef;
+
+	uint16_t pid;              ///< Placement identifier
+	uint64_t timestamp;        ///< Event timestamp
+	uint32_t nsid;             ///< Namespace identifier
+	uint8_t type_specific[16]; ///< Event type specific
+	uint16_t rgid;             ///< Reclaim group identifier
+	uint16_t ruhid;            ///< Reclaim unit handle identifier
+	uint8_t rsvd1[4];
+	uint8_t vs[24];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_fdp_event) == 64, "Incorrect size")
+
+/**
+ * NVMe FDP events log page
+ *
+ * @struct xnvme_spec_log_fdp_events
+ */
+struct xnvme_spec_log_fdp_events {
+	uint32_t nevents; ///< Number of FDP events
+	uint8_t rsvd[60];
+	struct xnvme_spec_fdp_event event[];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_log_fdp_events) == 64, "Incorrect size")
+
+/**
+ * NVMe FDP event descriptor
+ *
+ * @struct xnvme_spec_fdp_event_desc
+ */
+struct xnvme_spec_fdp_event_desc {
+	uint8_t type; ///< Event type
+
+	/** FDP event type attributes */
+	union {
+		struct {
+			uint8_t ee   : 1; ///< FDP event enabled
+			uint8_t rsvd : 7;
+		};
+		uint8_t val;
+	} fdpeta;
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_fdp_event_desc) == 2, "Incorrect size")
+
+/**
  * Identifiers (lpi) for NVMe get-log-page
  *
  * NVMe 1.4 - Figure ?
@@ -210,15 +393,61 @@ XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_log_erri_entry) == 64, "Incorrect s
  * @enum xnvme_spec_log_lpi
  */
 enum xnvme_spec_log_lpi {
-	XNVME_SPEC_LOG_RSVD      = 0x0, ///< XNVME_SPEC_LOG_RSVD
-	XNVME_SPEC_LOG_ERRI      = 0x1, ///< XNVME_SPEC_LOG_ERRI
-	XNVME_SPEC_LOG_HEALTH    = 0x2, ///< XNVME_SPEC_LOG_HEALTH
-	XNVME_SPEC_LOG_FW        = 0x3, ///< XNVME_SPEC_LOG_FW
-	XNVME_SPEC_LOG_CHNS      = 0x4, ///< XNVME_SPEC_LOG_CHNS
-	XNVME_SPEC_LOG_CSAE      = 0x5, ///< XNVME_SPEC_LOG_CSAE
-	XNVME_SPEC_LOG_SELFTEST  = 0x6, ///< XNVME_SPEC_LOG_SELFTEST
-	XNVME_SPEC_LOG_TELEHOST  = 0x7, ///< XNVME_SPEC_LOG_TELEHOST
-	XNVME_SPEC_LOG_TELECTRLR = 0x8, ///< XNVME_SPEC_LOG_TELECTRLR
+	XNVME_SPEC_LOG_RSVD      = 0x0,  ///< XNVME_SPEC_LOG_RSVD
+	XNVME_SPEC_LOG_ERRI      = 0x1,  ///< XNVME_SPEC_LOG_ERRI
+	XNVME_SPEC_LOG_HEALTH    = 0x2,  ///< XNVME_SPEC_LOG_HEALTH
+	XNVME_SPEC_LOG_FW        = 0x3,  ///< XNVME_SPEC_LOG_FW
+	XNVME_SPEC_LOG_CHNS      = 0x4,  ///< XNVME_SPEC_LOG_CHNS
+	XNVME_SPEC_LOG_CSAE      = 0x5,  ///< XNVME_SPEC_LOG_CSAE
+	XNVME_SPEC_LOG_SELFTEST  = 0x6,  ///< XNVME_SPEC_LOG_SELFTEST
+	XNVME_SPEC_LOG_TELEHOST  = 0x7,  ///< XNVME_SPEC_LOG_TELEHOST
+	XNVME_SPEC_LOG_TELECTRLR = 0x8,  ///< XNVME_SPEC_LOG_TELECTRLR
+	XNVME_SPEC_LOG_FDPCONF   = 0x20, ///< XNVME_SPEC_LOG_FDPCONF
+	XNVME_SPEC_LOG_FDPRUHU   = 0x21, ///< XNVME_SPEC_LOG_FDPRUHU
+	XNVME_SPEC_LOG_FDPSTATS  = 0x22, ///< XNVME_SPEC_LOG_FDPSTATS
+	XNVME_SPEC_LOG_FDPEVENTS = 0x23, ///< XNVME_SPEC_LOG_FDPEVENTS
+};
+
+/**
+ * @enum xnvme_spec_io_mgmt_recv_mo
+ */
+enum xnvme_spec_io_mgmt_recv_mo {
+	// Reclaim Unit Handle Status
+	XNVME_SPEC_IO_MGMT_RECV_RUHS = 0x1,
+};
+
+/**
+ * NVMe Reclaim unit handle status descriptor
+ *
+ * @struct xnvme_spec_ruhs_desc
+ */
+struct xnvme_spec_ruhs_desc {
+	uint16_t pi;     ///< Placement Identifier
+	uint16_t ruhi;   ///< Reclaim Unit Handle Identifier
+	uint32_t earutr; ///< Estimated Active Reclaim Unit Time Remaining
+	uint64_t ruamw;  ///< Reclaim Unit Available Media Writes
+	uint8_t rsvd[16];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_ruhs_desc) == 32, "Incorrect size")
+
+/**
+ * NVMe Reclaim Unit Handle Status
+ *
+ * @struct xnvme_spec_ruhs
+ */
+struct xnvme_spec_ruhs {
+	uint8_t rsvd[14];
+	uint16_t nruhsd; ///< Number of Reclaim Unit Handle Status Descriptors
+	struct xnvme_spec_ruhs_desc desc[];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_ruhs) == 16, "Incorrect size")
+
+/**
+ * @enum xnvme_spec_io_mgmt_send_mo
+ */
+enum xnvme_spec_io_mgmt_send_mo {
+	// Reclaim Unit Handle Update
+	XNVME_SPEC_IO_MGMT_SEND_RUHU = 0x1,
 };
 
 /**
@@ -269,6 +498,7 @@ XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_lbaf) == 4, "Incorrect size")
  */
 enum xnvme_spec_csi {
 	XNVME_SPEC_CSI_NVM   = 0x0, ///< XNVME_SPEC_CSI_NVM
+	XNVME_SPEC_CSI_KV    = 0x1, ///< XNVME_SPEC_CSI_KV
 	XNVME_SPEC_CSI_ZONED = 0x2, ///< XNVME_SPEC_CSI_ZONED
 };
 
@@ -504,6 +734,46 @@ struct xnvme_spec_idfy_ns {
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_idfy_ns) == 4096, "Incorrect size")
 
+struct xnvme_pif {
+	union {
+		struct {
+			uint16_t guard;
+			uint16_t app_tag;
+			uint32_t stor_ref_space;
+		} g16;
+		struct {
+			uint64_t guard;
+			uint16_t app_tag;
+			uint16_t stor_ref_space_p1;
+			uint32_t stor_ref_space_p2;
+		} g64;
+	};
+};
+XNVME_STATIC_ASSERT(XNVME_SIZEOF_MEMBER(struct xnvme_pif, g16) == 8, "Incorrect size");
+XNVME_STATIC_ASSERT(XNVME_SIZEOF_MEMBER(struct xnvme_pif, g64) == 16, "Incorrect size");
+
+/**
+ * @enum xnvme_spec_nvm_ns_pif
+ */
+enum xnvme_spec_nvm_ns_pif {
+	// 16 bit guard protection information
+	XNVME_SPEC_NVM_NS_16B_GUARD = 0x0,
+	// 32 bit guard protection information
+	XNVME_SPEC_NVM_NS_32B_GUARD = 0x1,
+	// 64 bit guard protection information
+	XNVME_SPEC_NVM_NS_64B_GUARD = 0x2,
+};
+
+/**
+ * @struct xnvme_spec_elbaf
+ */
+struct xnvme_spec_elbaf {
+	uint32_t sts  : 7; ///< storage tag size
+	uint32_t pif  : 2; ///< protection information format
+	uint32_t rsvd : 23;
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_elbaf) == 4, "Incorrect size")
+
 #define XNVME_SPEC_CTRLR_SN_LEN 20
 #define XNVME_SPEC_CTRLR_MN_LEN 40
 #define XNVME_SPEC_CTRLR_FR_LEN 8
@@ -691,7 +961,12 @@ struct xnvme_spec_idfy_ctrlr {
 			/** Supports Extended lba formats */
 			uint32_t extended_lba_formats                        : 1;
 
-			uint32_t reserved                                    : 16;
+			uint32_t reserved1                                   : 3;
+
+			/** Supports flexible data placement */
+			uint32_t flexible_data_placement                     : 1;
+
+			uint32_t reserved2                                   : 12;
 		};
 		uint32_t val;
 	} ctratt;
@@ -1144,10 +1419,10 @@ XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_idfy_ctrlr) == 4096, "Incorrect siz
 struct xnvme_spec_cs_vector {
 	union {
 		struct {
-			uint64_t nvm   : 1;
-			uint64_t rsvd1 : 1;
-			uint64_t zns   : 1;
-			uint64_t rsvd  : 61;
+			uint64_t nvm  : 1;
+			uint64_t kv   : 1;
+			uint64_t zns  : 1;
+			uint64_t rsvd : 61;
 		};
 		uint64_t val;
 	};
@@ -1218,8 +1493,11 @@ enum xnvme_spec_nvm_opc {
 	XNVME_SPEC_NVM_OPC_WRITE_UNCORRECTABLE = 0x04, ///< XNVME_SPEC_NVM_OPC_WRITE_UNCORRECTABLE
 	XNVME_SPEC_NVM_OPC_COMPARE             = 0x05, ///< XNVME_SPEC_NVM_OPC_COMPARE
 	XNVME_SPEC_NVM_OPC_WRITE_ZEROES        = 0x08, ///< XNVME_SPEC_NVM_OPC_WRITE_ZEROES
+	XNVME_SPEC_NVM_OPC_DATASET_MANAGEMENT  = 0x09, ///< XNVME_SPEC_NVM_OPC_DATASET_MANAGEMENT
 
-	XNVME_SPEC_NVM_OPC_SCOPY = 0x19, ///< XNVME_SPEC_NVM_OPC_SCOPY
+	XNVME_SPEC_NVM_OPC_SCOPY        = 0x19, ///< XNVME_SPEC_NVM_OPC_SCOPY
+	XNVME_SPEC_NVM_OPC_IO_MGMT_RECV = 0x12, ///< XNVME_SPEC_NVM_OPC_IO_MGMT
+	XNVME_SPEC_NVM_OPC_IO_MGMT_SEND = 0x1D, ///< XNVME_SPEC_NVM_OPC_IO_MGMT_SEND
 
 	XNVME_SPEC_NVM_OPC_FMT      = 0x80, ///< XNVME_SPEC_NVM_OPC_FMT
 	XNVME_SPEC_NVM_OPC_SANITIZE = 0x84, ///< XNVME_SPEC_NVM_OPC_SANITIZE
@@ -1233,13 +1511,15 @@ enum xnvme_spec_nvm_opc {
  * @enum xnvme_spec_feat_id
  */
 enum xnvme_spec_feat_id {
-	XNVME_SPEC_FEAT_ARBITRATION    = 0x1, ///< XNVME_SPEC_FEAT_ARBITRATION
-	XNVME_SPEC_FEAT_PWR_MGMT       = 0x2, ///< XNVME_SPEC_FEAT_PWR_MGMT
-	XNVME_SPEC_FEAT_LBA_RANGETYPE  = 0x3, ///< XNVME_SPEC_FEAT_LBA_RANGETYPE
-	XNVME_SPEC_FEAT_TEMP_THRESHOLD = 0x4, ///< XNVME_SPEC_FEAT_TEMP_THRESHOLD
-	XNVME_SPEC_FEAT_ERROR_RECOVERY = 0x5, ///< XNVME_SPEC_FEAT_ERROR_RECOVERY
-	XNVME_SPEC_FEAT_VWCACHE        = 0x6, ///< XNVME_SPEC_FEAT_VWCACHE
-	XNVME_SPEC_FEAT_NQUEUES        = 0x7, ///< XNVME_SPEC_FEAT_NQUEUES
+	XNVME_SPEC_FEAT_ARBITRATION    = 0x1,  ///< XNVME_SPEC_FEAT_ARBITRATION
+	XNVME_SPEC_FEAT_PWR_MGMT       = 0x2,  ///< XNVME_SPEC_FEAT_PWR_MGMT
+	XNVME_SPEC_FEAT_LBA_RANGETYPE  = 0x3,  ///< XNVME_SPEC_FEAT_LBA_RANGETYPE
+	XNVME_SPEC_FEAT_TEMP_THRESHOLD = 0x4,  ///< XNVME_SPEC_FEAT_TEMP_THRESHOLD
+	XNVME_SPEC_FEAT_ERROR_RECOVERY = 0x5,  ///< XNVME_SPEC_FEAT_ERROR_RECOVERY
+	XNVME_SPEC_FEAT_VWCACHE        = 0x6,  ///< XNVME_SPEC_FEAT_VWCACHE
+	XNVME_SPEC_FEAT_NQUEUES        = 0x7,  ///< XNVME_SPEC_FEAT_NQUEUES
+	XNVME_SPEC_FEAT_FDP_MODE       = 0x1D, ///< XNVME_SPEC_FEAT_FDP_MODE
+	XNVME_SPEC_FEAT_FDP_EVENTS     = 0x1E, ///< XNVME_SPEC_FEAT_FDP_EVENTS
 };
 
 /**
@@ -1306,23 +1586,35 @@ enum xnvme_spec_drecv_streams_doper {
 struct xnvme_spec_idfy_dir_rp {
 	/* Directives Supported */
 	struct {
-		uint8_t identify : 1; ///< Identify
-		uint8_t streams  : 1; ///< Streams
-		uint8_t rsvd1    : 6;
+		uint8_t identify       : 1; ///< Identify
+		uint8_t streams        : 1; ///< Streams
+		uint8_t data_placement : 1; ///< Data placement
+		uint8_t rsvd1          : 5;
 
 		uint8_t rsvd2[31];
 	} directives_supported;
 
 	/* Directives Enabled */
 	struct {
-		uint8_t identify : 1; ///< Identify
-		uint8_t streams  : 1; ///< Streams
-		uint8_t rsvd1    : 6;
+		uint8_t identify       : 1; ///< Identify
+		uint8_t streams        : 1; ///< Streams
+		uint8_t data_placement : 1; ///< Data placement
+		uint8_t rsvd1          : 5;
 
 		uint8_t rsvd2[31];
 	} directives_enabled;
 
-	uint8_t rsvd4[4032];
+	/* Directives Persistence */
+	struct {
+		uint8_t identify       : 1; ///< Identify
+		uint8_t streams        : 1; ///< Streams
+		uint8_t data_placement : 1; ///< Data placement
+		uint8_t rsvd1          : 5;
+
+		uint8_t rsvd2[31];
+	} directives_persistence;
+
+	uint8_t rsvd4[4000];
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_idfy_dir_rp) == 4096, "Incorrect size")
 
@@ -1397,6 +1689,7 @@ struct xnvme_spec_feat {
 			uint32_t tmpth  : 16; ///< Temperature threshold
 			uint32_t tmpsel : 4;  ///< Threshold Temp. Select
 			uint32_t thsel  : 3;  ///< Threshold Type Select
+			uint32_t rsvd   : 9;
 		} temp_threshold;
 
 		struct {
@@ -1409,6 +1702,13 @@ struct xnvme_spec_feat {
 			uint32_t nsqa : 16;
 			uint32_t ncqa : 16;
 		} nqueues;
+
+		struct {
+			uint32_t fdpe  : 1; ///< Flexible data placement enable
+			uint32_t rsvd1 : 7;
+			uint32_t fdpci : 8; ///< Flexible data placement configuration index
+			uint32_t rsvd2 : 16;
+		} fdp_mode;
 
 		uint32_t val; ///< For constructing feature without accessors
 	};
@@ -1429,9 +1729,10 @@ XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_feat) == 4, "Incorrect size")
  */
 struct xnvme_spec_dsm_range {
 	uint32_t cattr; ///< Context attributes
-	uint32_t nlb;   ///< Length in logical blocks
+	uint32_t llb;   ///< Length in logical blocks (this is a 1-based value)
 	uint64_t slba;  ///< Starting LBA
 };
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_dsm_range) == 16, "Incorrect size")
 
 /**
  * Enumeration of NVMe flags
@@ -1579,10 +1880,10 @@ struct xnvme_spec_cmd_sanitize {
 	uint32_t cdw00_09[10]; ///< Command dword 0 to 9
 
 	uint32_t sanact : 3; ///< Sanitize Action
-	uint32_t ause   : 1; ///< Allow unrestr. San. Exit
+	uint32_t ause   : 1; ///< Allow Unrestricted Sanatize Exit
 	uint32_t owpass : 4; ///< Overwrite Pass Count
-	uint32_t oipbp  : 1; ///< Overwrite Invert
-	uint32_t nodas  : 1; ///< NoDeallocate after Sanitize
+	uint32_t oipbp  : 1; ///< Overwrite Invert Pattern Between Passes
+	uint32_t nodas  : 1; ///< No-Deallocate After Sanitize
 	uint32_t rsvd   : 22;
 
 	uint32_t ovrpat; ///< Overwrite Pattern
@@ -1599,13 +1900,13 @@ XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_cmd_sanitize) == 64, "Incorrect siz
 struct xnvme_spec_cmd_format {
 	uint32_t cdw00_09[10]; ///< Command dword 0 to 9
 
-	uint32_t lbaf : 4; ///< The format to use
-	uint32_t mset : 1; ///< Meta-data settings
-	uint32_t pi   : 3; ///< Protection Information
-	uint32_t pil  : 1; ///< Protection Information Loc.
-	uint32_t ses  : 3; ///< Secure Erase Settings
-	uint32_t zf   : 2; ///< TBD: Zone Format
-	uint32_t rsvd : 18;
+	uint32_t lbafl : 4; ///< Least significant 4 bits of LBA Format Index
+	uint32_t mset  : 1; ///< Meta-data settings
+	uint32_t pi    : 3; ///< Protection Information
+	uint32_t pil   : 1; ///< Protection Information Loc.
+	uint32_t ses   : 3; ///< Secure Erase Settings
+	uint32_t lbafu : 2; ///< Most significant 2 bits of LBA Format Index
+	uint32_t rsvd  : 18;
 
 	uint32_t cdw11_15[5]; ///< Command dword 11 to 15
 };
@@ -1628,7 +1929,8 @@ struct xnvme_spec_cmd_gfeat {
 		uint32_t val;
 	} cdw10;
 
-	uint32_t cdw11_15[5]; ///< Command dword 11 to 15
+	uint32_t cdw11;       ///< Command dword 11
+	uint32_t cdw12_15[4]; ///< Command dword 12 to 15
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_cmd_gfeat) == 64, "Incorrect size")
 
@@ -1651,7 +1953,8 @@ struct xnvme_spec_cmd_sfeat {
 
 	struct xnvme_spec_feat feat; ///< Feature
 
-	uint32_t cdw12_15[4]; ///< Command dword 12 to 15
+	uint32_t cdw12;       ///< Command dword 12
+	uint32_t cdw13_15[3]; ///< Command dword 13 to 15
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_cmd_sfeat) == 64, "Incorrect size")
 
@@ -1806,6 +2109,29 @@ struct xnvme_spec_cmd_nvm {
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_cmd_nvm) == 64, "Incorrect size")
 
+/**
+ * The Dataset Management command is used by the host to indicate attributes for ranges of logical
+ * blocks
+ *
+ * @struct xnvme_spec_cmd_dsm
+ */
+struct xnvme_spec_cmd_dsm {
+	uint32_t cdw00_09[10]; ///< Command dword 0 to 9
+
+	// dword 10
+	uint32_t nr    : 8; ///< NR: Number of Ranges
+	uint32_t rsvd1 : 24;
+
+	// dword 11
+	uint32_t idr   : 1; ///< IDR: Integral Dataset for Read
+	uint32_t idw   : 1; ///< IDW: Integral Dataset for Write
+	uint32_t ad    : 1; ///< AD: Deallocate
+	uint32_t rsvd2 : 29;
+
+	uint32_t cdw12_15[4]; ///< Command dword 12 to 15
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_cmd_dsm) == 64, "Incorrect size")
+
 struct xnvme_spec_nvm_write_zeroes {
 	uint32_t cdw00_09[10]; ///< Command dword 0 to 9
 
@@ -1815,6 +2141,7 @@ struct xnvme_spec_nvm_write_zeroes {
 	/* cdw 12 */
 	uint32_t nlb    : 16; ///< Number of logical blocks, zero-based
 	uint32_t rsvd1  : 8;
+	uint32_t stc    : 1; ///< Storage Tag Check
 	uint32_t deac   : 1; ///< Dealocate
 	uint32_t prinfo : 4; ///< Protection Info.
 	uint32_t fua    : 1; ///< Force Unit Access
@@ -1944,51 +2271,59 @@ struct xnvme_spec_nvm_cmd {
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_nvm_cmd) == 64, "Incorrect size")
 
+/**
+ * Representation of NVMe completion result for NVM command set I/O command set
+ * specific Identify Controller
+ *
+ * That is, for opcode XNVME_SPEC_OPC_IDFY(0x06) with XNVME_SPEC_IDFY_CTLR_IOCS(0x6)
+ *
+ * @struct xnvme_spec_nvm_idfy_ctrlr
+ */
 struct xnvme_spec_nvm_idfy_ctrlr {
-	uint8_t byte0_519[520];
+	uint8_t vsl;    ///< Verify Size Limit
+	uint8_t wzsl;   ///< Write Zeroes Size Limit
+	uint8_t wusl;   ///< Write Uncorrectable Size Limit
+	uint8_t dmrl;   ///< Dataset Management Ranges Limit
+	uint32_t dmrsl; ///< Dataset Management Range Size Limit
+	uint64_t dmsl;  ///< Dataset Management Size Limit
 
-	/** optional nvm command support */
-	union {
-		struct {
-			uint16_t compare           : 1;
-			uint16_t write_unc         : 1;
-			uint16_t dsm               : 1;
-			uint16_t write_zeroes      : 1;
-			uint16_t set_features_save : 1;
-			uint16_t reservations      : 1;
-			uint16_t timestamp         : 1;
-			uint16_t verify            : 1;
-			uint16_t copy              : 1;
-			uint16_t reserved          : 7;
-		};
-		uint16_t val;
-	} oncs;
-
-	uint8_t byte522_533[12];
-
-	union {
-		struct {
-			uint16_t copy_fmt0 : 1;
-			uint16_t rsvd      : 15;
-		};
-		uint16_t val;
-	} ocfs; ///< Optional Copy Format Supported
-
-	uint8_t byte536_4095[3559];
+	uint8_t reserved16[4080];
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_nvm_idfy_ctrlr) == 4096, "Incorrect size")
 
 /**
- * @todo Document this
+ * Representation of NVMe completion result for NVM command set I/O command set
+ * specific Identify Namespace
+ *
+ * That is, for opcode XNVME_SPEC_OPC_IDFY(0x06) with XNVME_SPEC_IDFY_NS_IOCS(0x05)
+ *
+ * @struct xnvme_spec_nvm_idfy_ns
  */
 struct xnvme_spec_nvm_idfy_ns {
-	uint8_t byte0_73[74];
+	uint64_t lbstm; ///< Logical block storage tag mask
 
-	uint16_t mssrl; ///< Maximum Single Source Range Length
-	uint32_t mcl;   ///< Maximum Copy Length
-	uint8_t msrc;   ///< Maximum Source Range Count
+	/** Protection information capabilities */
+	union {
+		struct {
+			/** 16b guard protection information storage tag support */
+			uint8_t gpists    : 1;
 
-	uint8_t byte81_4095[4014];
+			/** 16b guard protection information storage tag mask */
+			uint8_t gpistm    : 1;
+
+			/** storage tag check read support */
+			uint8_t stcrs     : 1;
+
+			uint8_t reserved3 : 5;
+		};
+		uint8_t val;
+	} pic;
+
+	uint8_t reserved9[3];
+
+	struct xnvme_spec_elbaf elbaf[64];
+
+	uint8_t reserved268[3828];
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_nvm_idfy_ns) == 4096, "Incorrect size")
 
@@ -2118,6 +2453,147 @@ struct xnvme_spec_znd_cmd {
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_znd_cmd) == 64, "Incorrect size")
 
 /**
+ * NVMe Command Accessor for io management receive command
+ *
+ * @struct xnvme_spec_io_mgmt_recv_cmd
+ */
+struct xnvme_spec_io_mgmt_recv_cmd {
+	uint32_t cdw00_09[10]; ///< Command dword 0 to 9
+
+	uint32_t mo   : 8; ///< Management Operation
+	uint32_t rsvd : 8;
+	uint32_t mos  : 16; ///< Management Operation Specific
+
+	uint32_t numd; ///< cdw11
+
+	uint32_t cdw12_15[4]; ///< Command dword 12 to 15
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_io_mgmt_recv_cmd) == 64, "Incorrect size")
+
+/**
+ * NVMe Command Accessor for I/O management send
+ *
+ * @struct xnvme_spec_io_mgmt_send_cmd
+ */
+struct xnvme_spec_io_mgmt_send_cmd {
+	uint32_t cdw00_09[10]; ///< Command dword 0 to 9
+
+	uint32_t mo   : 8; ///< Management Operation
+	uint32_t rsvd : 8;
+	uint32_t mos  : 16; ///< Management Operation Specific
+
+	uint32_t cdw11_15[5]; ///< Command dword 11 to 15
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_io_mgmt_send_cmd) == 64, "Incorrect size")
+
+/**
+ * NVMe Command Accessors for I/O management
+ *
+ * @struct xnvme_spec_io_mgmt_cmd
+ */
+struct xnvme_spec_io_mgmt_cmd {
+	union {
+		struct xnvme_spec_io_mgmt_recv_cmd mgmt_recv;
+		struct xnvme_spec_io_mgmt_send_cmd mgmt_send;
+	};
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_io_mgmt_cmd) == 64, "Incorrect size")
+
+/**
+ * KV Command Set opcodes
+ *
+ * @see Key Value Command Set Specification Revision 1.0c, Figure 5
+ *
+ * @struct xnvme_spec_kv_opc
+ */
+enum xnvme_spec_kv_opc {
+	XNVME_SPEC_KV_OPC_STORE    = 0x01, ///< XNVME_SPEC_KV_OPC_STORE
+	XNVME_SPEC_KV_OPC_RETRIEVE = 0x02, ///< XNVME_SPEC_KV_OPC_RETRIEVE
+	XNVME_SPEC_KV_OPC_DELETE   = 0x10, ///< XNVME_SPEC_KV_OPC_DELETE
+	XNVME_SPEC_KV_OPC_EXIST    = 0x14, ///< XNVME_SPEC_KV_OPC_EXIST
+	XNVME_SPEC_KV_OPC_LIST     = 0x06, ///< XNVME_SPEC_KV_OPC_LIST
+};
+
+/**
+ * Command-set specific status codes related to key-value Namespaces
+ *
+ * @see Key Value Command Set Specification Revision 1.0c, Figure 4
+ *
+ * @enum xnvme_spec_kv_status_code
+ */
+enum xnvme_spec_kv_status_code {
+	XNVME_SPEC_KV_SC_CAPACITY_EXCEEDED    = 0x81, ///<  XNVME_SPEC_KV_SC_CAPACITY_EXCEEDED
+	XNVME_SPEC_KV_SC_NS_NOT_READY         = 0x82, ///< XNVME_SPEC_KV_SC_NS_NOT_READY
+	XNVME_SPEC_KV_SC_RESERVATION_CONFLICT = 0x83, ///< XNVME_SPEC_KV_SC_RESERVATION_CONFLICT
+	XNVME_SPEC_KV_SC_FORMAT_IN_PROGRESS   = 0x84, ///< XNVME_SPEC_KV_SC_FORMAT_IN_PROGRESS
+	XNVME_SPEC_KV_SC_INVALID_VAL_SIZE     = 0x85, ///< XNVME_SPEC_KV_SC_INVALID_VAL_SIZE
+	XNVME_SPEC_KV_SC_INVALID_KEY_SIZE     = 0x86, ///< XNVME_SPEC_KV_SC_INVALID_KEY_SIZE
+	XNVME_SPEC_KV_SC_KEY_NOT_EXISTS       = 0x87, ///< XNVME_SPEC_KV_SC_KEY_NOT_EXISTS
+	XNVME_SPEC_KV_SC_UNRECOVERED_ERR      = 0x88, ///< XNVME_SPEC_KV_SC_UNRECOVERED_ERR
+	XNVME_SPEC_KV_SC_KEY_EXISTS           = 0x89, ///< XNVME_SPEC_KV_SC_KEY_EXISTS
+};
+
+/**
+ * NVMe Command Accessors for the KV Command Set
+ *
+ * @see Key Value Command Set Specification Revision 1.0c, Section 3
+ *
+ * @struct xnvme_spec_kvs_cmd
+ */
+struct xnvme_spec_kvs_cmd {
+	uint32_t cdw0;
+	uint32_t nsid;
+	/* cdw 02-03 */
+	uint64_t key;    ///< KV key bits 0:63
+	uint64_t mptr;   ///< Reserverd for MPTR
+	/* cdw 06-09: */ ///< DPTR -- data pointer
+	uint32_t cdw06;
+	uint32_t cdw07;
+	uint32_t cdw08;
+	uint32_t cdw09;
+	uint32_t cdw10; ///< Host Buffer Size or Value Size
+
+	/* cdw 11 */
+	struct {
+		uint8_t kl;
+		uint8_t ro;
+		uint16_t rsvd;
+	} cdw11;
+	uint32_t cdw12;
+	uint32_t cdw13;
+	/* cdw 14-15 */
+	uint64_t key_hi; ///< KV key bits 64:127
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_kvs_cmd) == 64, "Incorrect size")
+
+struct xnvme_spec_nvm_compare {
+	uint32_t cdw00_09[10]; ///< Command dword 0 to 9
+
+	/* cdw 10-11 */
+	uint64_t slba; ///< Start LBA
+
+	/* cdw 12 */
+	uint32_t nlb    : 16; ///< Number of logical blocks, zero-based
+	uint32_t rsvd1  : 8;
+	uint32_t stc    : 1; ///< Storage Tag Check
+	uint32_t rsvd2  : 1;
+	uint32_t prinfo : 4; ///< Protection Information
+	uint32_t fua    : 1; ///< Force Unit Access
+	uint32_t lr     : 1; ///< Limited Retry
+
+	/* cdw 13 */
+	uint32_t cdw_13; ///< Command dword 13
+
+	/* cdw 14 */
+	uint32_t ilbrt : 32; ///< Initial Logical Block Reference Tag
+
+	/* cdw 15 */
+	uint32_t lbat  : 16; ///< Logical Block Application Tag
+	uint32_t lbatm : 16; ///< logical Block Application Tag Mask
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_nvm_compare) == 64, "Incorrect size")
+
+/**
  * NVMe Command Accessors
  *
  * @struct xnvme_spec_cmd
@@ -2134,9 +2610,13 @@ struct xnvme_spec_cmd {
 		struct xnvme_spec_cmd_dsend dsend;
 		struct xnvme_spec_cmd_drecv drecv;
 		struct xnvme_spec_cmd_nvm nvm;
+		struct xnvme_spec_cmd_dsm dsm;
 		struct xnvme_spec_nvm_cmd_scopy scopy;
 		struct xnvme_spec_nvm_write_zeroes write_zeroes;
 		struct xnvme_spec_znd_cmd znd;
+		struct xnvme_spec_io_mgmt_cmd mgmt;
+		struct xnvme_spec_kvs_cmd kvs;
+		struct xnvme_spec_nvm_compare compare;
 	};
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_cmd) == 64, "Incorrect size")
@@ -2427,6 +2907,61 @@ struct xnvme_spec_znd_report_hdr {
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_znd_report_hdr) == 64, "Incorrect size")
 
 /**
+ * Key Value Command Set KV Format data structure
+ *
+ * @see Key Value Command Set Specification Revision 1.0c, Figure 40
+ *
+ * @struct xnvme_spec_kvs_idfy_ns_format
+ */
+struct xnvme_spec_kvs_idfy_ns_format {
+	uint16_t kml; ///< KV Key Max Length
+	uint8_t rsvd2;
+	uint8_t fopt; ///< Additional format options
+	uint32_t vml; ///< KV Value Max Length
+	uint32_t mnk; ///< Max Num Keys
+	uint8_t rsvd12[4];
+};
+
+/**
+ * Key Value Command Set identify namespace data structure
+ *
+ * @see Key Value Command Set Specification Revision 1.0c, Figure 39
+ *
+ * @struct xnvme_spec_kvs_idfy_ns
+ */
+struct xnvme_spec_kvs_idfy_ns {
+	uint64_t nsze; ///< Namespace Size
+	uint8_t rsvd8[8];
+	uint64_t nuse;  ///< Namespace Utilization
+	uint8_t nsfeat; ///< Namespace Features
+	uint8_t nkvf;   ///< Number of KV Formats
+	uint8_t nmic;   ///< Namespace Multi-path I/O and Namespace Sharing Capabilities
+	uint8_t rescap; ///< Reservation Capabilities
+	uint8_t fpi;    ///< Format Progress Indicator
+	uint8_t rsvd29[3];
+	uint32_t novg;     ///< Namespace Optimal Value Granularity
+	uint32_t anagrpid; ///< ANA Group Identifier
+	uint8_t rsvd40[3];
+	uint8_t nsattr;                               ///< Namespace Attributes
+	uint16_t nvmsetid;                            ///< NVM Set Identifier
+	uint16_t endgid;                              ///< Endurance Group Identifier
+	uint64_t nguid[2];                            ///< Namespace Globally Unique Identifier
+	uint64_t eui64;                               ///< IEEE Extended Unique Identifier
+	struct xnvme_spec_kvs_idfy_ns_format kvf[16]; ///< KV Format 0 to 15
+	uint8_t rsvd328[3512];                        // 3839:328
+	uint8_t vs[256];
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_kvs_idfy_ns) == 4096, "Incorrect size")
+
+struct xnvme_spec_kvs_idfy {
+	union {
+		struct xnvme_spec_idfy base;
+		struct xnvme_spec_kvs_idfy_ns ns;
+	};
+};
+XNVME_STATIC_ASSERT(sizeof(struct xnvme_spec_kvs_idfy) == 4096, "Incorrect size")
+
+/**
  * Prints the given :;xnvme_spec_log_health_entry to the given output stream
  *
  * @param stream output stream used for printing
@@ -2472,11 +3007,65 @@ int
 xnvme_spec_log_erri_pr(const struct xnvme_spec_log_erri_entry *log, int limit, int opts);
 
 /**
+ * Prints the given :;xnvme_spec_log_fdp_conf to stdout
+ *
+ * @param log
+ * @param opts
+ * @return On success, the number of characters printed is returned.
+ */
+int
+xnvme_spec_log_fdp_conf_pr(const struct xnvme_spec_log_fdp_conf *log, int opts);
+
+/**
+ * Prints the given :;xnvme_spec_log_fdp_stats to stdout
+ *
+ * @param log
+ * @param opts
+ * @return On success, the number of characters printed is returned.
+ */
+int
+xnvme_spec_log_fdp_stats_pr(const struct xnvme_spec_log_fdp_stats *log, int opts);
+
+/**
+ * Prints the given :;xnvme_spec_log_fdp_events_entry to stdout
+ *
+ * @param log
+ * @param limit
+ * @param opts printer options, see ::xnvme_pr
+ * @return On success, the number of characters printed is returned.
+ */
+int
+xnvme_spec_log_fdp_events_pr(const struct xnvme_spec_log_fdp_events *log, int limit, int opts);
+
+/**
+ * Prints the given :;xnvme_spec_log_ruhu to stdout
+ *
+ * @param log
+ * @param limit
+ * @param opts printer options, see ::xnvme_pr
+ * @return On success, the number of characters printed is returned.
+ */
+int
+xnvme_spec_log_ruhu_pr(const struct xnvme_spec_log_ruhu *log, int limit, int opts);
+
+/**
+ * Prints the given :;xnvme_spec_ruhs to stdout
+ *
+ * @param ruhs
+ * @param limit
+ * @param opts printer options, see ::xnvme_pr
+ * @return On success, the number of characters printed is returned.
+ */
+int
+xnvme_spec_ruhs_pr(const struct xnvme_spec_ruhs *ruhs, int limit, int opts);
+
+/**
  * Prints the given :;xnvme_spec_idfy_ns to the given output stream
  *
  * @param stream output stream used for printing
  * @param idfy pointer to structure to print
  * @param opts printer options, see ::xnvme_pr
+ *
  * @return On success, the number of characters printed is returned.
  */
 int
@@ -2501,7 +3090,7 @@ xnvme_spec_idfy_ns_pr(const struct xnvme_spec_idfy_ns *idfy, int opts);
  * @return On success, the number of characters printed is returned.
  */
 int
-xnvme_spec_idfy_ctrl_fpr(FILE *stream, const struct xnvme_spec_idfy_ctrlr *idfy, int opts);
+xnvme_spec_idfy_ctrlr_fpr(FILE *stream, const struct xnvme_spec_idfy_ctrlr *idfy, int opts);
 
 /**
  * Prints the given :;xnvme_spec_idfy_ctrlr to stdout
@@ -2511,7 +3100,7 @@ xnvme_spec_idfy_ctrl_fpr(FILE *stream, const struct xnvme_spec_idfy_ctrlr *idfy,
  * @return On success, the number of characters printed is returned.
  */
 int
-xnvme_spec_idfy_ctrl_pr(const struct xnvme_spec_idfy_ctrlr *idfy, int opts);
+xnvme_spec_idfy_ctrlr_pr(const struct xnvme_spec_idfy_ctrlr *idfy, int opts);
 
 int
 xnvme_spec_idfy_cs_fpr(FILE *stream, const struct xnvme_spec_idfy_cs *idfy, int opts);
@@ -2541,6 +3130,17 @@ xnvme_spec_feat_fpr(FILE *stream, uint8_t fid, struct xnvme_spec_feat feat, int 
  */
 int
 xnvme_spec_feat_pr(uint8_t fid, struct xnvme_spec_feat feat, int opts);
+
+/**
+ * Prints the :;xnvme_spec_fdp_event_desc to the given output stream
+ *
+ * @param buf Buffer which contains xnvme_spec_fdp_event_desc
+ * @param feat to get number of events
+ * @param opts printer options, see ::xnvme_pr
+ * @return On success, the number of characters printed is returned.
+ */
+int
+xnvme_spec_feat_fdp_events_pr(void *buf, struct xnvme_spec_feat feat, int opts);
 
 /**
  * Prints the given :;xnvme_spec_cmd to the given output stream
@@ -2650,8 +3250,6 @@ xnvme_spec_nvm_scopy_source_range_pr(const struct xnvme_spec_nvm_scopy_source_ra
 /**
  * Prints the given ::xnvme_spec_nvm_idfy_ctrlr to the given output stream
  *
- * Only fields specific to Logical Block Namespaces are printed by this function
- *
  * @param stream output stream used for printing
  * @param idfy pointer to the structure to print
  * @param opts printer options, see ::xnvme_pr
@@ -2659,7 +3257,7 @@ xnvme_spec_nvm_scopy_source_range_pr(const struct xnvme_spec_nvm_scopy_source_ra
  * @return On success, the number of characters printed is returned
  */
 int
-xnvme_spec_idfy_ctrlr_fpr(FILE *stream, struct xnvme_spec_nvm_idfy_ctrlr *idfy, int opts);
+xnvme_spec_nvm_idfy_ctrlr_fpr(FILE *stream, struct xnvme_spec_nvm_idfy_ctrlr *idfy, int opts);
 
 /**
  * Prints the given ::xnvme_spec_nvm_idfy_ctrlr to stdout
@@ -2835,4 +3433,23 @@ int
 xnvme_spec_znd_descr_fpr_yaml(FILE *stream, const struct xnvme_spec_znd_descr *descr, int indent,
 			      const char *sep);
 
-#endif /* __LIBXNVME_SPEC_H */
+/**
+ * Prints the given xnvme_spec_kvs_idfy to the given output stream
+ *
+ * @param stream output stream used for printing
+ * @param idfy pointer to structure to print
+ * @param opts printer options, see ::xnvme_pr
+ * @return On success, the number of characters printed is returned.
+ */
+int
+xnvme_spec_kvs_idfy_ns_fpr(FILE *stream, const struct xnvme_spec_kvs_idfy_ns *idfy, int opts);
+
+/**
+ * Prints the given :;xnvme_spec_kvs_idfy to stdout
+ *
+ * @param idfy pointer to structure to print
+ * @param opts printer options, see ::xnvme_pr
+ * @return On success, the number of characters printed is returned.
+ */
+int
+xnvme_spec_kvs_idfy_ns_pr(const struct xnvme_spec_kvs_idfy_ns *idfy, int opts);

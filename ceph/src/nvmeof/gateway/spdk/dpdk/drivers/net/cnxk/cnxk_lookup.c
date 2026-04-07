@@ -7,14 +7,16 @@
 
 #include "cnxk_ethdev.h"
 
-#define SA_BASE_TBL_SZ	(RTE_MAX_ETHPORTS * sizeof(uintptr_t))
-#define LOOKUP_ARRAY_SZ (PTYPE_ARRAY_SZ + ERR_ARRAY_SZ + SA_BASE_TBL_SZ)
+#define LOOKUP_ARRAY_SZ (PTYPE_ARRAY_SZ + ERR_ARRAY_SZ + LOOKUP_MEM_PORTDATA_TOTAL_SZ)
+
 const uint32_t *
-cnxk_nix_supported_ptypes_get(struct rte_eth_dev *eth_dev)
+cnxk_nix_supported_ptypes_get(struct rte_eth_dev *eth_dev,
+			      size_t *no_of_elements)
 {
 	RTE_SET_USED(eth_dev);
 
 	static const uint32_t ptypes[] = {
+		RTE_PTYPE_L2_ETHER,	      /* LA */
 		RTE_PTYPE_L2_ETHER_QINQ,      /* LB */
 		RTE_PTYPE_L2_ETHER_VLAN,      /* LB */
 		RTE_PTYPE_L2_ETHER_TIMESYNC,  /* LB */
@@ -47,10 +49,10 @@ cnxk_nix_supported_ptypes_get(struct rte_eth_dev *eth_dev)
 		RTE_PTYPE_INNER_L4_TCP,	      /* LH */
 		RTE_PTYPE_INNER_L4_UDP,	      /* LH */
 		RTE_PTYPE_INNER_L4_SCTP,      /* LH */
-		RTE_PTYPE_INNER_L4_ICMP,      /* LH */
-		RTE_PTYPE_UNKNOWN,
+		RTE_PTYPE_INNER_L4_ICMP,       /* LH */
 	};
 
+	*no_of_elements = RTE_DIM(ptypes);
 	return ptypes;
 }
 
@@ -88,19 +90,25 @@ nix_create_non_tunnel_ptype_array(uint16_t *ptype)
 		case NPC_LT_LB_CTAG:
 			val |= RTE_PTYPE_L2_ETHER_VLAN;
 			break;
+		default:
+			val |= RTE_PTYPE_L2_ETHER;
 		}
 
 		switch (lc) {
 		case NPC_LT_LC_ARP:
+			val = (val & ~RTE_PTYPE_L2_MASK);
 			val |= RTE_PTYPE_L2_ETHER_ARP;
 			break;
 		case NPC_LT_LC_NSH:
+			val = (val & ~RTE_PTYPE_L2_MASK);
 			val |= RTE_PTYPE_L2_ETHER_NSH;
 			break;
 		case NPC_LT_LC_FCOE:
+			val = (val & ~RTE_PTYPE_L2_MASK);
 			val |= RTE_PTYPE_L2_ETHER_FCOE;
 			break;
 		case NPC_LT_LC_MPLS:
+			val = (val & ~RTE_PTYPE_L2_MASK);
 			val |= RTE_PTYPE_L2_ETHER_MPLS;
 			break;
 		case NPC_LT_LC_IP:
@@ -116,6 +124,7 @@ nix_create_non_tunnel_ptype_array(uint16_t *ptype)
 			val |= RTE_PTYPE_L3_IPV6_EXT;
 			break;
 		case NPC_LT_LC_PTP:
+			val = (val & ~RTE_PTYPE_L2_MASK);
 			val |= RTE_PTYPE_L2_ETHER_TIMESYNC;
 			break;
 		}
@@ -286,8 +295,8 @@ nix_create_rx_ol_flags_array(void *mem)
 				   errcode == NIX_RX_PERRCODE_OL3_LEN) {
 				val |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 			} else {
-				val |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
-				val |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+				val |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
+				val |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			}
 			break;
 		}
@@ -328,6 +337,7 @@ cnxk_nix_lookup_mem_sa_base_set(struct cnxk_eth_dev *dev)
 	uint16_t port = dev->eth_dev->data->port_id;
 	uintptr_t sa_base_tbl;
 	uintptr_t sa_base;
+	uint32_t offset;
 	uint8_t sa_w;
 
 	if (!lookup_mem)
@@ -343,7 +353,8 @@ cnxk_nix_lookup_mem_sa_base_set(struct cnxk_eth_dev *dev)
 	/* Set SA Base in lookup mem */
 	sa_base_tbl = (uintptr_t)lookup_mem;
 	sa_base_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
-	*((uintptr_t *)sa_base_tbl + port) = sa_base | sa_w;
+	offset = port * LOOKUP_MEM_PORTDATA_SZ;
+	*((uintptr_t *)sa_base_tbl + offset / 8) = sa_base | sa_w;
 	return 0;
 }
 
@@ -353,6 +364,7 @@ cnxk_nix_lookup_mem_sa_base_clear(struct cnxk_eth_dev *dev)
 	void *lookup_mem = cnxk_nix_fastpath_lookup_mem_get();
 	uint16_t port = dev->eth_dev->data->port_id;
 	uintptr_t sa_base_tbl;
+	uint32_t offset;
 
 	if (!lookup_mem)
 		return -EIO;
@@ -360,6 +372,83 @@ cnxk_nix_lookup_mem_sa_base_clear(struct cnxk_eth_dev *dev)
 	/* Set SA Base in lookup mem */
 	sa_base_tbl = (uintptr_t)lookup_mem;
 	sa_base_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
-	*((uintptr_t *)sa_base_tbl + port) = 0;
+	offset = port * LOOKUP_MEM_PORTDATA_SZ;
+	*((uintptr_t *)sa_base_tbl + offset / 8) = 0;
+	return 0;
+}
+
+int
+cnxk_nix_lookup_mem_metapool_set(struct cnxk_eth_dev *dev)
+{
+	void *lookup_mem = cnxk_nix_fastpath_lookup_mem_get();
+	uint16_t port = dev->eth_dev->data->port_id;
+	uintptr_t mp_tbl;
+	uint32_t offset;
+
+	if (!lookup_mem)
+		return -EIO;
+
+	/* Set Mempool in lookup mem */
+	mp_tbl = (uintptr_t)lookup_mem;
+	mp_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
+	offset = (port * LOOKUP_MEM_PORTDATA_SZ) + SA_BASE_OFFSET;
+	*((uintptr_t *)mp_tbl + offset / 8) = dev->nix.meta_mempool;
+	return 0;
+}
+
+int
+cnxk_nix_lookup_mem_metapool_clear(struct cnxk_eth_dev *dev)
+{
+	void *lookup_mem = cnxk_nix_fastpath_lookup_mem_get();
+	uint16_t port = dev->eth_dev->data->port_id;
+	uintptr_t mp_tbl;
+	uint32_t offset;
+
+	if (!lookup_mem)
+		return -EIO;
+
+	/* Clear Mempool in lookup mem */
+	mp_tbl = (uintptr_t)lookup_mem;
+	mp_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
+	offset = (port * LOOKUP_MEM_PORTDATA_SZ) + SA_BASE_OFFSET;
+	*((uintptr_t *)mp_tbl + offset / 8) = dev->nix.meta_mempool;
+	return 0;
+}
+
+int
+cnxk_nix_lookup_mem_bufsize_set(struct cnxk_eth_dev *dev, uint64_t size)
+{
+	void *lookup_mem = cnxk_nix_fastpath_lookup_mem_get();
+	uint16_t port = dev->eth_dev->data->port_id;
+	uintptr_t mp_tbl;
+	uint32_t offset;
+
+	if (!lookup_mem)
+		return -EIO;
+
+	/* Set bufsize in lookup mem */
+	mp_tbl = (uintptr_t)lookup_mem;
+	mp_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
+	offset = (port * LOOKUP_MEM_PORTDATA_SZ) + SA_BASE_OFFSET + MEMPOOL_OFFSET;
+	*((uintptr_t *)mp_tbl + offset / 8) = size;
+	return 0;
+}
+
+int
+cnxk_nix_lookup_mem_bufsize_clear(struct cnxk_eth_dev *dev)
+{
+	void *lookup_mem = cnxk_nix_fastpath_lookup_mem_get();
+	uint16_t port = dev->eth_dev->data->port_id;
+	uintptr_t mp_tbl;
+	uint32_t offset;
+
+	if (!lookup_mem)
+		return -EIO;
+
+	/* Clear bufsize in lookup mem */
+	mp_tbl = (uintptr_t)lookup_mem;
+	mp_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
+	offset = (port * LOOKUP_MEM_PORTDATA_SZ) + SA_BASE_OFFSET + MEMPOOL_OFFSET;
+	*((uintptr_t *)mp_tbl + offset / 8) = 0;
 	return 0;
 }

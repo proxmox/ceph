@@ -1,9 +1,12 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef __INTERNAL_XNVME_DEV_H
 #define __INTERNAL_XNVME_DEV_H
 
 #include <libxnvme.h>
+#include <stdbool.h>
 #include <xnvme_be.h>
 
 enum xnvme_dev_type {
@@ -20,7 +23,9 @@ struct xnvme_dev {
 	struct xnvme_be be;       ///< Backend interface
 	struct xnvme_ident ident; ///< Device identifier
 
-	uint8_t _pad[4];
+	uint8_t _pad[2];
+	bool attempted_dev_idfy;
+	bool attempted_derive_geo;
 
 	struct {
 		struct xnvme_spec_idfy_ctrlr ctrlr; ///< NVMe id-ctrlr

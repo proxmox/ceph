@@ -11,7 +11,9 @@ source "$testdir/isolate_cores.sh"
 
 "$rootdir/scripts/setup.sh"
 
+run_test "scheduler_rpc" "$testdir/rpc.sh"
 run_test "idle" "$testdir/idle.sh"
 #run_test "load_balancing" "$testdir/load_balancing.sh"
 run_test "dpdk_governor" "$testdir/governor.sh"
 run_test "interrupt_mode" "$testdir/interrupt.sh"
+run_test "core_isolating" "$testdir/core_isolating.sh"

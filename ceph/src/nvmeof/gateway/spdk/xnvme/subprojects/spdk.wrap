@@ -1,9 +1,9 @@
+# SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 [wrap-git]
 url = https://github.com/spdk/spdk.git
-revision = v22.05
+revision = v24.05
 patch_directory = spdk
 clone-recursive = true
-
-[provide]
-spdk = spdk
-dependency_names = spdk

@@ -1,6 +1,9 @@
 # Storage Performance Development Kit
 
-[![Build Status](https://travis-ci.org/spdk/spdk.svg?branch=master)](https://travis-ci.org/spdk/spdk)
+[![Go Doc](https://img.shields.io/badge/godoc-reference-blue.svg)](http://godoc.org/github.com/spdk/spdk/go/rpc)
+[![Go Report Card](https://goreportcard.com/badge/github.com/spdk/spdk/go/rpc)](https://goreportcard.com/report/github.com/spdk/spdk/go/rpc)
+[![PyPI Latest Release](https://img.shields.io/pypi/v/spdk.svg)](https://pypi.org/project/spdk/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/spdk.svg?label=PyPI%20downloads)](https://pypi.org/project/spdk/)
 
 NOTE: The SPDK mailing list has moved to a new location. Please visit
 [this URL](https://lists.linuxfoundation.org/mailman/listinfo/spdk) to subscribe
@@ -235,6 +238,27 @@ setup.sh for advanced users. To see the full list, run:
 scripts/setup.sh --help
 ~~~
 
+<a id="targets"></a>
+## Target applications
+
+After completing the build process, SPDK target applications can be found in
+`spdk/build/bin` directory:
+
+* [nvmf_tgt](https://spdk.io/doc/nvmf.html) - SPDK NVMe over Fabrics target
+  presents block devices over a fabrics,
+* [iscsi_tgt](https://spdk.io/doc/iscsi.html) - SPDK iSCSI target runs I/O
+  operations remotely with TCP/IP protocol,
+* [vhost](https://spdk.io/doc/vhost.html) - A vhost target provides a local
+  storage service as a process running on a local machine,
+* spdk_tgt - combines capabilities of all three applications.
+
+SPDK runs in a polled mode, which means it continuously checks for operation completions.
+This approach assures faster response than interrupt mode, but also lessens usefulness
+of tools like `top`, which only shows 100% CPU usage for SPDK assigned cores.
+[spdk_top](https://spdk.io/doc/spdk_top.html) is a program which simulates `top` application
+and uses SPDK's [JSON RPC](https://spdk.io/doc/jsonrpc.html) interface to present statistics
+about SPDK threads, pollers and CPU cores as an interactive list.
+
 <a id="examples"></a>
 ## Example Code
 
@@ -244,6 +268,14 @@ with no arguments to see the help output. You'll likely need to run the examples
 as a privileged user (root) unless you've done additional configuration
 to grant your user permission to allocate huge pages and map devices through
 vfio.
+
+<a id="python"></a>
+## Python bindings
+
+SPDK python bindings and scripts are located in [python](./python) folder. Python code is
+automatically built as part of the build process. Python package is also published
+to <https://pypi.org/project/spdk/> every release for ease of consumption. For more
+details, check the [README](./python/README.md).
 
 <a id="contributing"></a>
 ## Contributing

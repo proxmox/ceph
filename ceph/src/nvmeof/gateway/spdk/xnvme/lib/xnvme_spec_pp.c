@@ -1,4 +1,8 @@
-#include <libxnvme_spec_pp.h>
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include <libxnvme.h>
 
 const char *
 xnvme_spec_adm_opc_str(enum xnvme_spec_adm_opc eval)
@@ -29,6 +33,8 @@ xnvme_spec_csi_str(enum xnvme_spec_csi eval)
 		return "CSI_NVM";
 	case XNVME_SPEC_CSI_ZONED:
 		return "CSI_ZONED";
+	case XNVME_SPEC_CSI_KV:
+		return "CSI_KV";
 	}
 
 	return "ENOSYS";
@@ -52,6 +58,10 @@ xnvme_spec_feat_id_str(enum xnvme_spec_feat_id eval)
 		return "FEAT_TEMP_THRESHOLD";
 	case XNVME_SPEC_FEAT_VWCACHE:
 		return "FEAT_VWCACHE";
+	case XNVME_SPEC_FEAT_FDP_MODE:
+		return "FEAT_FDP_MODE";
+	case XNVME_SPEC_FEAT_FDP_EVENTS:
+		return "FEAT_FDP_EVENTS";
 	}
 
 	return "ENOSYS";
@@ -164,6 +174,14 @@ xnvme_spec_log_lpi_str(enum xnvme_spec_log_lpi eval)
 		return "LOG_TELECTRLR";
 	case XNVME_SPEC_LOG_TELEHOST:
 		return "LOG_TELEHOST";
+	case XNVME_SPEC_LOG_FDPCONF:
+		return "LOG_FDPCONF";
+	case XNVME_SPEC_LOG_FDPRUHU:
+		return "LOG_FDPRUHU";
+	case XNVME_SPEC_LOG_FDPSTATS:
+		return "LOG_FDPSTATS";
+	case XNVME_SPEC_LOG_FDPEVENTS:
+		return "LOG_FDPEVENTS";
 	}
 
 	return "ENOSYS";
@@ -211,8 +229,14 @@ xnvme_spec_nvm_opc_str(enum xnvme_spec_nvm_opc eval)
 		return "NVM_OPC_COMPARE";
 	case XNVME_SPEC_NVM_OPC_WRITE_ZEROES:
 		return "NVM_OPC_WRITE_ZEROES";
+	case XNVME_SPEC_NVM_OPC_DATASET_MANAGEMENT:
+		return "XNVME_SPEC_NVM_OPC_DATASET_MANAGEMENT";
 	case XNVME_SPEC_NVM_OPC_FLUSH:
 		return "NVM_OPC_FLUSH";
+	case XNVME_SPEC_NVM_OPC_IO_MGMT_RECV:
+		return "XNVME_SPEC_NVM_OPC_IO_MGMT_RECV";
+	case XNVME_SPEC_NVM_OPC_IO_MGMT_SEND:
+		return "XNVME_SPEC_NVM_OPC_IO_MGMT_SEND";
 	}
 
 	return "ENOSYS";
@@ -396,4 +420,63 @@ xnvme_spec_znd_type_str(enum xnvme_spec_znd_type eval)
 	}
 
 	return "ENOSYS";
+}
+
+int
+xnvme_spec_ctrlr_bar_fpr(FILE *stream, struct xnvme_spec_ctrlr_bar *bar, int opts)
+{
+	int wrtn = 0;
+
+	switch (opts) {
+	case XNVME_PR_TERSE:
+		wrtn += fprintf(stream, "# ENOSYS: opts(%x)", opts);
+		return wrtn;
+
+	case XNVME_PR_DEF:
+	case XNVME_PR_YAML:
+		break;
+	}
+
+	wrtn += fprintf(stream, "xnvme_spec_ctrlr_bar:");
+	if (!bar) {
+		wrtn += fprintf(stream, "~\n");
+		return wrtn;
+	}
+
+	wrtn += fprintf(stream, "\n");
+
+	wrtn += fprintf(stream, "  cap: 0x%016" PRIx64 "\n", bar->cap);
+	wrtn += fprintf(stream, "  vs: %" PRIu32 "\n", bar->vs);
+	wrtn += fprintf(stream, "  intms: %" PRIu32 "\n", bar->intms);
+	wrtn += fprintf(stream, "  intmc: %" PRIu32 "\n", bar->intmc);
+	wrtn += fprintf(stream, "  cc: %" PRIu32 "\n", bar->cc);
+	wrtn += fprintf(stream, "  csts: %" PRIu32 "\n", bar->csts);
+	wrtn += fprintf(stream, "  nssr: %" PRIu32 "\n", bar->nssr);
+	wrtn += fprintf(stream, "  aqa: %" PRIu32 "\n", bar->aqa);
+
+	wrtn += fprintf(stream, "  asq: %" PRIu64 "\n", bar->asq);
+	wrtn += fprintf(stream, "  acq: %" PRIu64 "\n", bar->acq);
+
+	wrtn += fprintf(stream, "  cmbloc: %" PRIu32 "\n", bar->cmbloc);
+	wrtn += fprintf(stream, "  cmbsz: %" PRIu32 "\n", bar->cmbsz);
+	wrtn += fprintf(stream, "  bpinfo: %" PRIu32 "\n", bar->bpinfo);
+	wrtn += fprintf(stream, "  bprsel: %" PRIu32 "\n", bar->bprsel);
+	wrtn += fprintf(stream, "  bpmbl: %" PRIu64 "\n", bar->bpmbl);
+	wrtn += fprintf(stream, "  cmbmsc: %" PRIu64 "\n", bar->cmbmsc);
+	wrtn += fprintf(stream, "  cmbsts: %" PRIu32 "\n", bar->cmbsts);
+	wrtn += fprintf(stream, "  pmrcap: %" PRIu32 "\n", bar->pmrcap);
+	wrtn += fprintf(stream, "  pmrctl: %" PRIu32 "\n", bar->pmrctl);
+	wrtn += fprintf(stream, "  pmrsts: %" PRIu32 "\n", bar->pmrsts);
+	wrtn += fprintf(stream, "  pmrebs: %" PRIu32 "\n", bar->pmrebs);
+	wrtn += fprintf(stream, "  pmrswtp: %" PRIu32 "\n", bar->pmrswtp);
+	wrtn += fprintf(stream, "  pmrmscl: %" PRIu32 "\n", bar->pmrmscl);
+	wrtn += fprintf(stream, "  pmrmscu: %" PRIu32 "\n", bar->pmrmscu);
+
+	return wrtn;
+}
+
+int
+xnvme_spec_ctrlr_bar_pp(struct xnvme_spec_ctrlr_bar *bar, int opts)
+{
+	return xnvme_spec_ctrlr_bar_fpr(stdout, bar, opts);
 }

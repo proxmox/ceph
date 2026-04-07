@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2012-2022, Intel Corporation
+  Copyright (c) 2012-2023, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -33,16 +33,16 @@
 #include "intel-ipsec-mb.h"
 #include "include/error.h"
 
-__forceinline
-IMB_JOB *JOBS(IMB_MGR *state, const int offset)
+__forceinline IMB_JOB *
+JOBS(IMB_MGR *state, const int offset)
 {
-        char *cp = (char *)state->jobs;
+        char *cp = (char *) state->jobs;
 
-        return (IMB_JOB *)(cp + offset);
+        return (IMB_JOB *) (cp + offset);
 }
 
-__forceinline
-void ADV_JOBS(int *ptr)
+__forceinline void
+ADV_JOBS(int *ptr)
 {
         *ptr += sizeof(IMB_JOB);
         if (*ptr >= (int) (IMB_MAX_JOBS * sizeof(IMB_JOB)))
@@ -52,9 +52,9 @@ void ADV_JOBS(int *ptr)
 __forceinline uint32_t
 get_queue_sz(IMB_MGR *state)
 {
-        const int a = (state->next_job - state->earliest_job) / sizeof(IMB_JOB);
+        const int a = (state->next_job - state->earliest_job) / (int) sizeof(IMB_JOB);
 
-        return a & (IMB_MAX_JOBS-1);
+        return a & (IMB_MAX_JOBS - 1);
 }
 
 __forceinline uint32_t
@@ -63,7 +63,10 @@ queue_sz(IMB_MGR *state)
         if (state->earliest_job < 0)
                 return 0;
 
-        return get_queue_sz(state);
+        const uint32_t queue_size = get_queue_sz(state);
+
+        /* zero here means queue is full */
+        return queue_size ? queue_size : IMB_MAX_JOBS;
 }
 
 /* ========================================================================= */

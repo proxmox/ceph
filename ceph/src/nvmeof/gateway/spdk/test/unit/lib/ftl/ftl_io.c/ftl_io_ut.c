@@ -5,7 +5,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "common/lib/ut_multithread.c"
 
 #include "ftl/ftl_io.c"
@@ -54,18 +54,10 @@ DEFINE_STUB(spdk_bdev_write_zeroes_blocks, int,
 	    (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     uint64_t offset_blocks, uint64_t num_blocks,
 	     spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
-DEFINE_STUB(spdk_mempool_create_ctor, struct spdk_mempool *,
-	    (const char *name, size_t count, size_t ele_size, size_t cache_size,
-	     int socket_id, spdk_mempool_obj_cb_t *obj_init, void *obj_init_arg), NULL);
-DEFINE_STUB(spdk_mempool_obj_iter, uint32_t,
-	    (struct spdk_mempool *mp, spdk_mempool_obj_cb_t obj_cb, void *obj_cb_arg), 0);
 DEFINE_STUB_V(ftl_reloc, (struct ftl_reloc *reloc));
-DEFINE_STUB_V(ftl_reloc_add, (struct ftl_reloc *reloc, struct ftl_band *band, size_t offset,
-			      size_t num_blocks, int prio, bool defrag));
 DEFINE_STUB_V(ftl_reloc_free, (struct ftl_reloc *reloc));
 DEFINE_STUB_V(ftl_reloc_halt, (struct ftl_reloc *reloc));
 DEFINE_STUB(ftl_reloc_init, struct ftl_reloc *, (struct spdk_ftl_dev *dev), NULL);
-DEFINE_STUB(ftl_reloc_is_defrag_active, bool, (const struct ftl_reloc *reloc), false);
 DEFINE_STUB(ftl_reloc_is_halted, bool, (const struct ftl_reloc *reloc), false);
 DEFINE_STUB_V(ftl_reloc_resume, (struct ftl_reloc *reloc));
 DEFINE_STUB_V(ftl_l2p_unpin, (struct spdk_ftl_dev *dev, uint64_t lba, uint64_t count));
@@ -73,9 +65,22 @@ DEFINE_STUB(ftl_p2l_ckpt_acquire, struct ftl_p2l_ckpt *, (struct spdk_ftl_dev *d
 DEFINE_STUB_V(ftl_p2l_ckpt_release, (struct spdk_ftl_dev *dev, struct ftl_p2l_ckpt *ckpt));
 DEFINE_STUB(ftl_l2p_get, ftl_addr, (struct spdk_ftl_dev *dev, uint64_t lba), 0);
 DEFINE_STUB_V(ftl_mempool_put, (struct ftl_mempool *mpool, void *element));
+DEFINE_STUB_V(ftl_property_dump_bool, (struct spdk_ftl_dev *dev,
+				       const struct ftl_property *property,
+				       struct spdk_json_write_ctx *w));
+DEFINE_STUB(ftl_property_decode_bool, int, (struct spdk_ftl_dev *dev, struct ftl_property *property,
+		const char *value, size_t value_size, void *output, size_t output_size), 0);
+DEFINE_STUB_V(ftl_property_set_generic, (struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt,
+		const struct ftl_property *property, void *new_value, size_t new_value_size));
+DEFINE_STUB_V(ftl_property_register, (struct spdk_ftl_dev *dev,
+				      const char *name, void *value, size_t size,
+				      const char *unit, const char *desc,
+				      ftl_property_dump_fn dump,
+				      ftl_property_decode_fn decode,
+				      ftl_property_set_fn set,
+				      bool verbose_mode));
 
 #if defined(DEBUG)
-DEFINE_STUB_V(ftl_trace_defrag_band, (struct spdk_ftl_dev *dev, const struct ftl_band *band));
 DEFINE_STUB_V(ftl_trace_submission, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
 				     ftl_addr addr, size_t addr_cnt));
 DEFINE_STUB_V(ftl_trace_lba_io_init, (struct spdk_ftl_dev *dev, const struct ftl_io *io));
@@ -83,8 +88,6 @@ DEFINE_STUB_V(ftl_trace_limits, (struct spdk_ftl_dev *dev, int limit, size_t num
 DEFINE_STUB(ftl_trace_alloc_id, uint64_t, (struct spdk_ftl_dev *dev), 0);
 DEFINE_STUB_V(ftl_trace_completion, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
 				     enum ftl_trace_completion type));
-DEFINE_STUB_V(ftl_trace_wbuf_fill, (struct spdk_ftl_dev *dev, const struct ftl_io *io));
-DEFINE_STUB_V(ftl_trace_wbuf_pop, (struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry));
 DEFINE_STUB_V(ftl_trace_write_band, (struct spdk_ftl_dev *dev, const struct ftl_band *band));
 #endif
 
@@ -288,7 +291,6 @@ main(int argc, char **argv)
 	CU_pSuite suite;
 	unsigned int num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("ftl_io_suite", NULL, NULL);
@@ -297,9 +299,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_completion);
 	CU_ADD_TEST(suite, test_multiple_ios);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

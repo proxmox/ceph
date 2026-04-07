@@ -14,6 +14,8 @@ struct rpc_construct_aio {
 	char *filename;
 	uint32_t block_size;
 	bool readonly;
+	bool fallocate;
+	struct spdk_uuid uuid;
 };
 
 struct rpc_construct_aio_ctx {
@@ -34,6 +36,8 @@ static const struct spdk_json_object_decoder rpc_construct_aio_decoders[] = {
 	{"filename", offsetof(struct rpc_construct_aio, filename), spdk_json_decode_string},
 	{"block_size", offsetof(struct rpc_construct_aio, block_size), spdk_json_decode_uint32, true},
 	{"readonly", offsetof(struct rpc_construct_aio, readonly), spdk_json_decode_bool, true},
+	{"fallocate", offsetof(struct rpc_construct_aio, fallocate), spdk_json_decode_bool, true},
+	{"uuid", offsetof(struct rpc_construct_aio, uuid), spdk_json_decode_uuid, true},
 };
 
 static void
@@ -73,7 +77,8 @@ rpc_bdev_aio_create(struct spdk_jsonrpc_request *request,
 	}
 
 	ctx->request = request;
-	rc = create_aio_bdev(ctx->req.name, ctx->req.filename, ctx->req.block_size, ctx->req.readonly);
+	rc = create_aio_bdev(ctx->req.name, ctx->req.filename, ctx->req.block_size,
+			     ctx->req.readonly, ctx->req.fallocate, &ctx->req.uuid);
 	if (rc) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
 		free_rpc_construct_aio(ctx);

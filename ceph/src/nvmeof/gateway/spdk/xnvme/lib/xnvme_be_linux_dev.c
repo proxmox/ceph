@@ -1,8 +1,11 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_LINUX_ENABLED
@@ -16,12 +19,8 @@
 #include <sys/stat.h>
 #include <linux/fs.h>
 #include <linux/version.h>
-#include <libxnvme_file.h>
-#include <libxnvme_spec_fs.h>
-#include <libxnvme_adm.h>
-#include <libxnvme_znd.h>
 #include <xnvme_dev.h>
-#include <xnvme_be_posix.h>
+#include <xnvme_be_cbi.h>
 #include <xnvme_be_linux.h>
 #include <xnvme_be_linux_nvme.h>
 
@@ -48,8 +47,8 @@ xnvme_be_linux_dev_open(struct xnvme_dev *dev)
 
 	flags = xnvme_file_opts_to_linux(opts);
 
-	XNVME_DEBUG("INFO: open() : opts->oflags: 0x%x, flags: 0x%x, opts->create_mode: 0x%x",
-		    opts->oflags, flags, opts->create_mode);
+	XNVME_DEBUG("INFO: open() : flags: 0x%x, opts->create_mode: 0x%x", flags,
+		    opts->create_mode);
 
 	state->fd = open(ident->uri, flags, opts->create_mode);
 	if (state->fd < 0) {
@@ -80,22 +79,20 @@ xnvme_be_linux_dev_open(struct xnvme_dev *dev)
 		dev->ident.csi = XNVME_SPEC_CSI_FS;
 		dev->ident.nsid = 1;
 		if (!opts->admin) {
-			dev->be.admin = g_xnvme_be_posix_admin_shim;
+			dev->be.admin = g_xnvme_be_cbi_admin_shim;
 		}
 		if (!opts->sync) {
-			dev->be.sync = g_xnvme_be_posix_sync_psync;
+			dev->be.sync = g_xnvme_be_cbi_sync_psync;
 		}
 		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
+			dev->be.async = g_xnvme_be_cbi_async_emu;
 		}
 		break;
 
 	case S_IFBLK:
-		XNVME_DEBUG("INFO: open() : block-device file");
 		dev->ident.dtype = XNVME_DEV_TYPE_BLOCK_DEVICE;
 		dev->ident.csi = XNVME_SPEC_CSI_FS;
 		dev->ident.nsid = 1;
-
 		if (!opts->admin) {
 			dev->be.admin = g_xnvme_be_linux_admin_block;
 		}
@@ -103,8 +100,9 @@ xnvme_be_linux_dev_open(struct xnvme_dev *dev)
 			dev->be.sync = g_xnvme_be_linux_sync_block;
 		}
 		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
+			dev->be.async = g_xnvme_be_cbi_async_emu;
 		}
+		XNVME_DEBUG("INFO: open() : block-device file");
 
 		err = xnvme_be_linux_nvme_dev_nsid(dev);
 		if (err < 1) {
@@ -112,8 +110,6 @@ xnvme_be_linux_dev_open(struct xnvme_dev *dev)
 				    err, err);
 			break;
 		}
-
-		XNVME_DEBUG("INFO: open() : block-device file (is a NVMe namespace)");
 		dev->ident.dtype = XNVME_DEV_TYPE_NVME_NAMESPACE;
 		dev->ident.csi = XNVME_SPEC_CSI_NVM;
 		dev->ident.nsid = err;
@@ -124,35 +120,29 @@ xnvme_be_linux_dev_open(struct xnvme_dev *dev)
 			dev->be.sync = g_xnvme_be_linux_sync_nvme;
 		}
 		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
+			dev->be.async = g_xnvme_be_cbi_async_emu;
 		}
+		XNVME_DEBUG("INFO: open() : block-device file (is a NVMe namespace)");
+
 		break;
 
 	case S_IFCHR:
 		XNVME_DEBUG("INFO: open() : char-device-file");
-		dev->ident.dtype = XNVME_DEV_TYPE_FS_FILE;
-		dev->ident.csi = XNVME_SPEC_CSI_FS;
-		dev->ident.nsid = 1;
-		if (!opts->admin) {
-			dev->be.admin = g_xnvme_be_posix_admin_shim;
-		}
-		if (!opts->sync) {
-			dev->be.sync = g_xnvme_be_posix_sync_psync;
-		}
-		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
-		}
 
 		err = xnvme_be_linux_nvme_dev_nsid(dev);
-		if (err < 1) {
-			XNVME_DEBUG("INFO: open() : retrieving nsid, got: %x", err);
-			break;
+		XNVME_DEBUG("INFO: open() : retrieving nsid, got: %x", err);
+		if ((uint32_t)err ==
+		    0xFFFFFFFF) { ///< Assuming a /dev/nvme0 -- nvme-controller handle
+			dev->ident.dtype = XNVME_DEV_TYPE_NVME_CONTROLLER;
+			dev->ident.csi = 0x0;
+			dev->ident.nsid = err;
+		} else if (err < 1) { ///< Assuming not a NVMe device
+			return -EINVAL;
+		} else { ///< Assuming a /dev/ngXnY -- nvme-namespace handle
+			dev->ident.dtype = XNVME_DEV_TYPE_NVME_NAMESPACE;
+			dev->ident.csi = XNVME_SPEC_CSI_NVM;
+			dev->ident.nsid = err;
 		}
-
-		XNVME_DEBUG("INFO: open() : char-device-file: NVMe ioctl() with async. emulation");
-		dev->ident.dtype = XNVME_DEV_TYPE_NVME_NAMESPACE;
-		dev->ident.csi = XNVME_SPEC_CSI_NVM;
-		dev->ident.nsid = err;
 
 		if (!opts->admin) {
 			dev->be.admin = g_xnvme_be_linux_admin_nvme;
@@ -161,31 +151,16 @@ xnvme_be_linux_dev_open(struct xnvme_dev *dev)
 			dev->be.sync = g_xnvme_be_linux_sync_nvme;
 		}
 		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
+			dev->be.async = g_xnvme_be_cbi_async_emu;
 		}
+
+		XNVME_DEBUG("INFO: open() : char-device-file: NVMe ioctl() with async. emulation");
+
 		break;
 
 	default:
 		XNVME_DEBUG("FAILED: open() : unsupported S_IFMT: %d", dev_stat.st_mode & S_IFMT);
 		return -EINVAL;
-	}
-
-	err = xnvme_be_dev_idfy(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_idfy()");
-		_be_linux_state_term((void *)dev->be.state);
-		return err;
-	}
-	err = xnvme_be_dev_derive_geometry(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_derive_geometry()");
-		_be_linux_state_term((void *)dev->be.state);
-		return err;
-	}
-
-	// TODO: consider this. Due to Kernel-segment constraint force mdts down
-	if ((dev->geo.mdts_nbytes / dev->geo.lba_nbytes) > 127) {
-		dev->geo.mdts_nbytes = dev->geo.lba_nbytes * 127;
 	}
 
 	state->poll_io = opts->poll_io;
@@ -225,6 +200,10 @@ xnvme_path_nvme_filter(const struct dirent *d)
 		snprintf(path, sizeof(path), "%s%s", "/dev/", d->d_name);
 		if (stat(path, &bd)) {
 			return 0;
+		}
+		if (sscanf(d->d_name, "nvme%d", &ctrl) == 1 && S_ISCHR(bd.st_mode)) {
+			// accept ctrlr handles like nvme0
+			return 1;
 		}
 		if (!S_ISBLK(bd.st_mode)) {
 			return 0;
@@ -273,8 +252,6 @@ xnvme_path_ng_filter(const struct dirent *d)
  * that dir, then instead /sys/block/ is scanned under the assumption that
  * block-devices with "nvme" in them are NVMe devices with namespaces attached
  *
- * TODO: add enumeration of NS vs CTRLR, actually, replace this with the libnvme
- * topology functions
  */
 int
 xnvme_be_linux_enumerate(const char *sys_uri, struct xnvme_opts *opts, xnvme_enumerate_cb cb_func,
@@ -288,14 +265,17 @@ xnvme_be_linux_enumerate(const char *sys_uri, struct xnvme_opts *opts, xnvme_enu
 		return -ENOSYS;
 	}
 
-	nns = scandir("/sys/block", &ns, xnvme_path_nvme_filter, alphasort);
+	struct xnvme_opts tmp_opts = *opts;
+	tmp_opts.be = xnvme_be_linux.attr.name;
+
+	nns = scandir("/dev", &ns, xnvme_path_nvme_filter, alphasort);
 	for (int ni = 0; ni < nns; ++ni) {
 		char uri[XNVME_IDENT_URI_LEN] = {0};
 		struct xnvme_dev *dev = NULL;
 
 		snprintf(uri, XNVME_IDENT_URI_LEN - 1, _PATH_DEV "%s", ns[ni]->d_name);
 
-		dev = xnvme_dev_open(uri, opts);
+		dev = xnvme_dev_open(uri, &tmp_opts);
 		if (!dev) {
 			XNVME_DEBUG("xnvme_dev_open(): %d", errno);
 			return -errno;
@@ -311,7 +291,7 @@ xnvme_be_linux_enumerate(const char *sys_uri, struct xnvme_opts *opts, xnvme_enu
 
 		snprintf(uri, XNVME_IDENT_URI_LEN - 1, _PATH_DEV "%s", ns[ni]->d_name);
 
-		dev = xnvme_dev_open(uri, opts);
+		dev = xnvme_dev_open(uri, &tmp_opts);
 		if (!dev) {
 			XNVME_DEBUG("xnvme_dev_open(): %d", errno);
 			return -errno;

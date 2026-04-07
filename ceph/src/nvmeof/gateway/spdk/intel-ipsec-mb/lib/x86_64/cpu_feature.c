@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2018-2022, Intel Corporation
+  Copyright (c) 2018-2023, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -26,9 +26,6 @@
 *******************************************************************************/
 
 #include <stdint.h>
-#ifdef __WIN32
-#include <intrin.h>
-#endif
 
 #include "cpu_feature.h"
 
@@ -41,6 +38,7 @@ struct cpuid_regs {
 
 static struct cpuid_regs cpuid_1_0;
 static struct cpuid_regs cpuid_7_0;
+static struct cpuid_regs cpuid_7_1;
 
 /*
  * A C wrapper for CPUID opcode
@@ -50,137 +48,148 @@ static struct cpuid_regs cpuid_7_0;
  *    [in] subleaf - CPUID sub-leaf number (ECX)
  *    [out] out    - registers structure to store results of CPUID into
  */
-static void
-__mbcpuid(const unsigned leaf, const unsigned subleaf, struct cpuid_regs *out)
-{
-#ifdef _WIN32
-        /* Windows */
-        int regs[4];
+void
+mbcpuid(const unsigned leaf, const unsigned subleaf, struct cpuid_regs *out);
 
-        __cpuidex(regs, leaf, subleaf);
-        out->eax = regs[0];
-        out->ebx = regs[1];
-        out->ecx = regs[2];
-        out->edx = regs[3];
-#else
-        /* Linux */
-        asm volatile("mov %4, %%eax\n\t"
-                     "mov %5, %%ecx\n\t"
-                     "cpuid\n\t"
-                     "mov %%eax, %0\n\t"
-                     "mov %%ebx, %1\n\t"
-                     "mov %%ecx, %2\n\t"
-                     "mov %%edx, %3\n\t"
-                     : "=g" (out->eax), "=g" (out->ebx), "=g" (out->ecx),
-                       "=g" (out->edx)
-                     : "g" (leaf), "g" (subleaf)
-                     : "%eax", "%ebx", "%ecx", "%edx");
-#endif /* Linux */
-}
-
-static uint32_t detect_shani(void)
+static uint32_t
+detect_shani(void)
 {
         /* Check presence of SHANI - bit 29 of EBX */
         return (cpuid_7_0.ebx & (1UL << 29));
 }
 
-static uint32_t detect_aesni(void)
+static uint32_t
+detect_aesni(void)
 {
         /* Check presence of AESNI - bit 25 of ECX */
         return (cpuid_1_0.ecx & (1UL << 25));
 }
 
-static uint32_t detect_pclmulqdq(void)
+static uint32_t
+detect_pclmulqdq(void)
 {
         /* Check presence of PCLMULQDQ - bit 1 of ECX */
         return (cpuid_1_0.ecx & (1UL << 1));
 }
 
-static uint32_t detect_cmov(void)
+static uint32_t
+detect_cmov(void)
 {
         /* Check presence of CMOV - bit 15 of EDX */
         return (cpuid_1_0.edx & (1UL << 15));
 }
 
-static uint32_t detect_sse42(void)
+static uint32_t
+detect_sse42(void)
 {
         /* Check presence of SSE4.2 - bit 20 of ECX */
         return (cpuid_1_0.ecx & (1UL << 20));
 }
 
-static uint32_t detect_avx(void)
+static uint32_t
+detect_avx(void)
 {
         /* Check presence of AVX - bit 28 of ECX */
         return (cpuid_1_0.ecx & (1UL << 28));
 }
 
-static uint32_t detect_avx2(void)
+static uint32_t
+detect_avx2(void)
 {
         /* Check presence of AVX2 - bit 5 of EBX */
         return (cpuid_7_0.ebx & (1UL << 5));
 }
 
-static uint32_t detect_avx512f(void)
+static uint32_t
+detect_avx512f(void)
 {
         /* Check presence of AVX512F - bit 16 of EBX */
         return (cpuid_7_0.ebx & (1UL << 16));
 }
 
-static uint32_t detect_avx512dq(void)
+static uint32_t
+detect_avx512dq(void)
 {
         /* Check presence of AVX512DQ - bit 17 of EBX */
         return (cpuid_7_0.ebx & (1UL << 17));
 }
 
-static uint32_t detect_avx512cd(void)
+static uint32_t
+detect_avx512cd(void)
 {
         /* Check presence of AVX512CD - bit 28 of EBX */
         return (cpuid_7_0.ebx & (1UL << 28));
 }
 
-static uint32_t detect_avx512bw(void)
+static uint32_t
+detect_avx512bw(void)
 {
         /* Check presence of AVX512BW - bit 30 of EBX */
         return (cpuid_7_0.ebx & (1UL << 30));
 }
 
-static uint32_t detect_avx512vl(void)
+static uint32_t
+detect_avx512vl(void)
 {
         /* Check presence of AVX512VL - bit 31 of EBX */
         return (cpuid_7_0.ebx & (1UL << 31));
 }
 
-static uint32_t detect_vaes(void)
+static uint32_t
+detect_vaes(void)
 {
         /* Check presence of VAES - bit 9 of ECX */
         return (cpuid_7_0.ecx & (1UL << 9));
 }
 
-static uint32_t detect_vpclmulqdq(void)
+static uint32_t
+detect_vpclmulqdq(void)
 {
         /* Check presence of VAES - bit 10 of ECX */
         return (cpuid_7_0.ecx & (1UL << 10));
 }
 
-static uint32_t detect_gfni(void)
+static uint32_t
+detect_gfni(void)
 {
         /* Check presence of GFNI - bit 8 of ECX */
         return (cpuid_7_0.ecx & (1UL << 8));
 }
 
-static uint32_t detect_avx512_ifma(void)
+static uint32_t
+detect_avx512_ifma(void)
 {
         /* Check presence of AVX512-IFMA - bit 21 of EBX */
         return (cpuid_7_0.ebx & (1UL << 21));
 }
 
-static uint32_t detect_bmi2(void)
+static uint32_t
+detect_avx_ifma(void)
+{
+        /* Check presence of AVX-IFMA - bit 23 of EAX */
+#ifdef AVX_IFMA
+        return (cpuid_7_1.eax & (1UL << 23));
+#else
+        return 0;
+#endif
+}
+
+static uint32_t
+detect_bmi2(void)
 {
         /* Check presence of BMI2 - bit 8 of EBX */
         return (cpuid_7_0.ebx & (1UL << 8));
 }
 
-uint64_t cpu_feature_detect(void)
+static uint32_t
+detect_hybrid(void)
+{
+        /* Check presence of Hybrid core - bit 15 of EDX */
+        return (cpuid_7_0.edx & (1UL << 15));
+}
+
+uint64_t
+cpu_feature_detect(void)
 {
         static const struct {
                 unsigned req_leaf_number;
@@ -204,6 +213,8 @@ uint64_t cpu_feature_detect(void)
                 { 7, IMB_FEATURE_GFNI, detect_gfni },
                 { 7, IMB_FEATURE_AVX512_IFMA, detect_avx512_ifma },
                 { 7, IMB_FEATURE_BMI2, detect_bmi2 },
+                { 7, IMB_FEATURE_AVX_IFMA, detect_avx_ifma },
+                { 7, IMB_FEATURE_HYBRID, detect_hybrid },
         };
         struct cpuid_regs r;
         unsigned hi_leaf_number = 0;
@@ -211,15 +222,17 @@ uint64_t cpu_feature_detect(void)
         unsigned i;
 
         /* Get highest supported CPUID leaf number */
-        __mbcpuid(0x0, 0x0, &r);
+        mbcpuid(0x0, 0x0, &r);
         hi_leaf_number = r.eax;
 
         /* Get the most common CPUID leafs to speed up the detection */
         if (hi_leaf_number >= 1)
-                __mbcpuid(0x1, 0x0, &cpuid_1_0);
+                mbcpuid(0x1, 0x0, &cpuid_1_0);
 
-        if (hi_leaf_number >= 7)
-                __mbcpuid(0x7, 0x0, &cpuid_7_0);
+        if (hi_leaf_number >= 7) {
+                mbcpuid(0x7, 0x0, &cpuid_7_0);
+                mbcpuid(0x7, 0x1, &cpuid_7_1);
+        }
 
         for (i = 0; i < IMB_DIM(feat_tab); i++) {
                 if (hi_leaf_number < feat_tab[i].req_leaf_number)
@@ -242,7 +255,8 @@ uint64_t cpu_feature_detect(void)
         return features;
 }
 
-uint64_t cpu_feature_adjust(const uint64_t flags, uint64_t features)
+uint64_t
+cpu_feature_adjust(const uint64_t flags, uint64_t features)
 {
         if (flags & IMB_FLAG_SHANI_OFF)
                 features &= ~IMB_FEATURE_SHANI;
@@ -257,7 +271,8 @@ uint64_t cpu_feature_adjust(const uint64_t flags, uint64_t features)
 }
 
 /* External function to retrieve feature flags */
-uint64_t imb_get_feature_flags(void)
+uint64_t
+imb_get_feature_flags(void)
 {
         return cpu_feature_detect();
 }

@@ -7,7 +7,7 @@
 #include "spdk/stdinc.h"
 
 #include "common/lib/test_env.c"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "iscsi/conn.c"
 
@@ -189,8 +189,6 @@ DEFINE_STUB_V(iscsi_task_response,
 DEFINE_STUB_V(iscsi_task_mgmt_response,
 	      (struct spdk_iscsi_conn *conn, struct spdk_iscsi_task *task));
 
-DEFINE_STUB_V(iscsi_send_nopin, (struct spdk_iscsi_conn *conn));
-
 bool
 iscsi_del_transfer_task(struct spdk_iscsi_conn *conn, uint32_t task_tag)
 {
@@ -217,9 +215,6 @@ DEFINE_STUB(iscsi_tgt_node_cleanup_luns, int,
 	    0);
 
 DEFINE_STUB(iscsi_pdu_calc_header_digest, uint32_t,
-	    (struct spdk_iscsi_pdu *pdu), 0);
-
-DEFINE_STUB(spdk_iscsi_pdu_calc_data_digest, uint32_t,
 	    (struct spdk_iscsi_pdu *pdu), 0);
 
 DEFINE_STUB_V(shutdown_iscsi_conns_done, (void));
@@ -897,7 +892,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("conn_suite", NULL, NULL);
@@ -911,9 +905,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, abort_queued_datain_task_test);
 	CU_ADD_TEST(suite, abort_queued_datain_tasks_test);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

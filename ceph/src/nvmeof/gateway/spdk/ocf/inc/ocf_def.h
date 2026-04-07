@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 
@@ -31,7 +32,7 @@
 /**
  * Minimum cache size in bytes
  */
-#define OCF_CACHE_SIZE_MIN	(20 * MiB)
+#define OCF_CACHE_SIZE_MIN	(40 * MiB)
 /**
  * Size of cache name
  */
@@ -83,7 +84,7 @@
 /**
  * Maximum value of a valid core sequence number
  */
-#define OCF_SEQ_NO_MAX (65535UL)
+#define OCF_SEQ_NO_MAX ((1ULL << (sizeof(ocf_core_id_t) * 8)) - 1)
 /*
  * Invalid value of core sequence number
  */
@@ -118,11 +119,14 @@ typedef enum {
 	ocf_cache_state_stopping = 1,    //!< ocf_cache_state_stopping
 		/*!< OCF cache instance is stopping */
 
-	ocf_cache_state_initializing = 2, //!< ocf_cache_state_initializing
-		/*!< OCF cache instance during initialization */
+	ocf_cache_state_detached = 2, //!< ocf_cache_state_detached
+		/*!< OCF cache instance without caching device attached */
 
 	ocf_cache_state_incomplete = 3, //!< ocf_cache_state_incomplete
 		/*!< OCF cache has at least one inactive core */
+
+	ocf_cache_state_standby = 4,     //!< ocf_cache_state_standby
+		/*!< OCF cache is currently in standby mode */
 
 	ocf_cache_state_max              //!< ocf_cache_state_max
 		/*!< Stopper of cache state enumerator */
@@ -277,16 +281,6 @@ typedef enum {
 	ocf_cache_line_size_inf = ~0ULL,
 		/*!< Force enum to be 64-bit */
 } ocf_cache_line_size_t;
-
-/**
- * Metadata layout
- */
-typedef enum {
-	ocf_metadata_layout_striping = 0,
-	ocf_metadata_layout_seq = 1,
-	ocf_metadata_layout_max,
-	ocf_metadata_layout_default = ocf_metadata_layout_striping
-} ocf_metadata_layout_t;
 
 /**
  * @name OCF IO class definitions

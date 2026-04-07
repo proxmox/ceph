@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2017-2022, Intel Corporation
+;; Copyright (c) 2017-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -39,12 +39,12 @@
 
 ;; code to compute quad SHA512 using AVX512
 
-%include "include/os.asm"
+%include "include/os.inc"
 ;%define DO_DBGPRINT
-%include "include/dbgprint.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/transpose_avx512.asm"
-%include "include/clear_regs.asm"
+%include "include/dbgprint.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/transpose_avx512.inc"
+%include "include/clear_regs.inc"
 %define APPEND(a,b) a %+ b
 
 %ifdef LINUX

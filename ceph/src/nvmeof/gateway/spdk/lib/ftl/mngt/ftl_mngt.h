@@ -21,6 +21,20 @@ struct ftl_mngt_process;
 typedef void (*ftl_mngt_fn)(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
 /**
+ * The FTL management init function
+ *
+ * @param dev FTL device
+ * @param mngt FTL management handle
+ * @param init_ctx The initialization context
+ *
+ * @return Initialization status
+ * @retval 0 initialization successful, the process can be executed
+ * @retval non-zero an error occurred during initialization, fail the process
+ */
+typedef int (*ftl_mngt_init_fn)(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt,
+				void *init_ctx);
+
+/**
  * The FTL management process completion callback function
  *
  * @param dev FTL device
@@ -96,6 +110,18 @@ struct ftl_mngt_process_desc {
 	 * Pointer to the additional error handler when the process fails
 	 */
 	ftl_mngt_fn error_handler;
+
+	/**
+	 * The initialization handler is invoked when the management process is
+	 * being created before the execution of the process
+	 */
+	ftl_mngt_init_fn init_handler;
+
+	/**
+	 * When the process wants to cleanup, for example free resources which
+	 * were allocated in init_handler, the deinit_handler can be provided
+	 */
+	ftl_mngt_fn deinit_handler;
 
 	/**
 	 * The FTL process steps
@@ -271,9 +297,14 @@ void ftl_mngt_fail_step(struct ftl_mngt_process *mngt);
  *
  * @param mngt The management handle
  * @param process The management process to be called
+ * @param init_ctx Process initialization context
+ *
+ * @note If the initialization procedure is required then both init_ctx and
+ * init_handler in the process descriptor must be provided.
  */
 void ftl_mngt_call_process(struct ftl_mngt_process *mngt,
-			   const struct ftl_mngt_process_desc *process);
+			   const struct ftl_mngt_process_desc *process,
+			   void *init_ctx);
 
 /**
  * @brief Calls rollback steps of another management process
@@ -307,7 +338,7 @@ int ftl_mngt_call_dev_startup(struct spdk_ftl_dev *dev, ftl_mngt_completion cb, 
  * The specific management functions
  */
 /**
- * @brief Issue unmap on FTL instance
+ * @brief Issue trim on FTL instance
  *
  * @param dev FTL device
  * @param cb Caller callback
@@ -317,8 +348,8 @@ int ftl_mngt_call_dev_startup(struct spdk_ftl_dev *dev, ftl_mngt_completion cb, 
  * @retval 0 The operation successful has started
  * @retval Non-zero Startup failure
  */
-int ftl_mngt_unmap(struct spdk_ftl_dev *dev, uint64_t lba, uint64_t num_blocks, spdk_ftl_fn cb,
-		   void *cb_cntx);
+int ftl_mngt_trim(struct spdk_ftl_dev *dev, uint64_t lba, uint64_t num_blocks, spdk_ftl_fn cb,
+		  void *cb_cntx);
 
 /**
  * @brief Shuts down a FTL instance

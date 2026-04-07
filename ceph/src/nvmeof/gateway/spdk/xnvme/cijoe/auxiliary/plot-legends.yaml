@@ -1,0 +1,47 @@
+---
+# Reference implementations
+libaio-reference:
+  legend: 'libaio ($\bf{reference}$)'
+
+io_uring-reference:
+  legend: 'io_uring ($\bf{reference}$)'
+
+io_uring_cmd-reference:
+  legend: 'io_uring_cmd ($\bf{reference}$)'
+
+# xNVMe implementations
+libaio-xnvme:
+  legend: 'libaio ($\bf{xnvme}$)'
+
+libaio-bdev_xnvme:
+  legend: 'libaio ($\bf{bdev\_xnvme}$)'
+
+libaio-bdev_xnvme_conserve_cpu:
+  legend: 'libaio ($\bf{bdev\_xnvme}$) +conserve'
+
+io_uring-xnvme:
+  legend: 'io_uring ($\bf{xnvme}$)'
+
+io_uring-bdev_xnvme:
+  legend: 'uring $\bf{bdev\_xnvme}$'
+
+io_uring-bdev_xnvme_conserve_cpu:
+  legend: 'uring $\bf{bdev\_xnvme}$ +conserve'
+
+io_uring_cmd-xnvme:
+  legend: 'io_uring_cmd ($\bf{xnvme}$)'
+
+io_uring_cmd-bdev_xnvme:
+  legend: 'ucmd $\bf{bdev\_xnvme}$'
+io_uring_cmd-bdev_xnvme_conserve_cpu:
+  legend: 'ucmd $\bf{bdev\_xnvme}$ +conserve'
+
+# SPDK bdev implementations
+libaio-bdev_aio:
+  legend: 'libaio ($\bf{bdev\_aio}$)'
+
+io_uring-bdev_uring:
+  legend: 'uring $\bf{bdev\_uring}$'
+
+ioctl-xnvme:
+  legend: 'ioctl ($\bf{xnvme}$)'

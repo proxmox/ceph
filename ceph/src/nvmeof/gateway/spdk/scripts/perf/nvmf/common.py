@@ -14,7 +14,7 @@ from json.decoder import JSONDecodeError
 def read_json_stats(file):
     with open(file, "r") as json_data:
         data = json.load(json_data)
-        job_pos = 0  # job_post = 0 because using aggregated results
+        job_data = data["jobs"][0]  # 0 because using aggregated results, fio group reporting
 
         # Check if latency is in nano or microseconds to choose correct dict key
         def get_lat_unit(key_prefix, dict_section):
@@ -38,15 +38,15 @@ def read_json_stats(file):
                 # measurements were done, so just return zeroes
                 return [0, 0, 0, 0]
 
-        read_iops = float(data["jobs"][job_pos]["read"]["iops"])
-        read_bw = float(data["jobs"][job_pos]["read"]["bw"])
-        lat_key, lat_unit = get_lat_unit("lat", data["jobs"][job_pos]["read"])
-        read_avg_lat = float(data["jobs"][job_pos]["read"][lat_key]["mean"])
-        read_min_lat = float(data["jobs"][job_pos]["read"][lat_key]["min"])
-        read_max_lat = float(data["jobs"][job_pos]["read"][lat_key]["max"])
-        clat_key, clat_unit = get_lat_unit("clat", data["jobs"][job_pos]["read"])
+        read_iops = float(job_data["read"]["iops"])
+        read_bw = float(job_data["read"]["bw"])
+        lat_key, lat_unit = get_lat_unit("lat", job_data["read"])
+        read_avg_lat = float(job_data["read"][lat_key]["mean"])
+        read_min_lat = float(job_data["read"][lat_key]["min"])
+        read_max_lat = float(job_data["read"][lat_key]["max"])
+        clat_key, clat_unit = get_lat_unit("clat", job_data["read"])
         read_p99_lat, read_p99_9_lat, read_p99_99_lat, read_p99_999_lat = get_clat_percentiles(
-            data["jobs"][job_pos]["read"][clat_key])
+            job_data["read"][clat_key])
 
         if "ns" in lat_unit:
             read_avg_lat, read_min_lat, read_max_lat = [x / 1000 for x in [read_avg_lat, read_min_lat, read_max_lat]]
@@ -56,15 +56,15 @@ def read_json_stats(file):
             read_p99_99_lat = read_p99_99_lat / 1000
             read_p99_999_lat = read_p99_999_lat / 1000
 
-        write_iops = float(data["jobs"][job_pos]["write"]["iops"])
-        write_bw = float(data["jobs"][job_pos]["write"]["bw"])
-        lat_key, lat_unit = get_lat_unit("lat", data["jobs"][job_pos]["write"])
-        write_avg_lat = float(data["jobs"][job_pos]["write"][lat_key]["mean"])
-        write_min_lat = float(data["jobs"][job_pos]["write"][lat_key]["min"])
-        write_max_lat = float(data["jobs"][job_pos]["write"][lat_key]["max"])
-        clat_key, clat_unit = get_lat_unit("clat", data["jobs"][job_pos]["write"])
+        write_iops = float(job_data["write"]["iops"])
+        write_bw = float(job_data["write"]["bw"])
+        lat_key, lat_unit = get_lat_unit("lat", job_data["write"])
+        write_avg_lat = float(job_data["write"][lat_key]["mean"])
+        write_min_lat = float(job_data["write"][lat_key]["min"])
+        write_max_lat = float(job_data["write"][lat_key]["max"])
+        clat_key, clat_unit = get_lat_unit("clat", job_data["write"])
         write_p99_lat, write_p99_9_lat, write_p99_99_lat, write_p99_999_lat = get_clat_percentiles(
-            data["jobs"][job_pos]["write"][clat_key])
+            job_data["write"][clat_key])
 
         if "ns" in lat_unit:
             write_avg_lat, write_min_lat, write_max_lat = [x / 1000 for x in [write_avg_lat, write_min_lat, write_max_lat]]
@@ -132,7 +132,22 @@ def parse_results(results_dir, csv_file):
         job_name = re.sub(r"_\d+CPU", "", job_name)
         job_result_files = [x for x in json_files if x.startswith(job_name)]
         sar_result_files = [x for x in sar_files if x.startswith(job_name)]
-        pm_result_files = [x for x in pm_files if x.startswith(job_name)]
+
+        # Collect all pm files for the current job
+        job_pm_files = [x for x in pm_files if x.startswith(job_name)]
+
+        # Filter out data from DCMI sensors and socket/dram sensors
+        dcmi_sensors = [x for x in job_pm_files if "DCMI" in x]
+        socket_dram_sensors = [x for x in job_pm_files if "DCMI" not in x and ("socket" in x or "dram" in x)]
+        sdr_sensors = list(set(job_pm_files) - set(dcmi_sensors) - set(socket_dram_sensors))
+
+        # Determine the final list of pm_result_files, if DCMI file is present, use it as a primary source
+        # of power consumption data. If not, use SDR sensors data if available. If SDR sensors are not available,
+        # use socket and dram sensors as a fallback.
+        pm_result_files = dcmi_sensors or sdr_sensors
+        if not pm_result_files and socket_dram_sensors:
+            logging.warning("No DCMI or SDR data found for %s, using socket and dram data sensors as a fallback" % job_name)
+            pm_result_files = socket_dram_sensors
 
         logging.info("Matching result files for current fio config %s:" % job_name)
         for j in job_result_files:
@@ -153,12 +168,13 @@ def parse_results(results_dir, csv_file):
                 try:
                     stats = read_json_stats(os.path.join(results_dir, r))
                     separate_stats.append(stats)
-                    logging.info(stats)
+                    logging.info([float("{0:.3f}".format(x)) for x in stats])
                 except JSONDecodeError:
                     logging.error("ERROR: Failed to parse %s results! Results might be incomplete!" % r)
 
             init_results = [sum(x) for x in zip(*separate_stats)]
             init_results = [x / len(separate_stats) for x in init_results]
+            init_results = [round(x, 3) for x in init_results]
             inits_avg_results.append(init_results)
 
             logging.info("\tAverage results for initiator %s" % i)
@@ -168,7 +184,7 @@ def parse_results(results_dir, csv_file):
                 fh.write(",".join([job_name, *["{0:.3f}".format(x) for x in init_results]]) + "\n")
 
         # Sum results of all initiators running this FIO job.
-        # Latency results are an average of latencies from accros all initiators.
+        # Latency results are an average of latencies from across all initiators.
         inits_avg_results = [sum(x) for x in zip(*inits_avg_results)]
         inits_avg_results = OrderedDict(zip(headers, inits_avg_results))
         for key in inits_avg_results:

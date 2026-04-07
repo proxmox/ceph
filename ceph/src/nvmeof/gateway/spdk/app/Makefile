@@ -1,5 +1,6 @@
 #  SPDX-License-Identifier: BSD-3-Clause
 #  Copyright (C) 2015 Intel Corporation.
+#  Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES
 #  All rights reserved.
 #
 
@@ -12,6 +13,9 @@ DIRS-y += nvmf_tgt
 DIRS-y += iscsi_tgt
 DIRS-y += spdk_tgt
 DIRS-y += spdk_lspci
+DIRS-y += spdk_nvme_perf
+DIRS-y += spdk_nvme_identify
+DIRS-y += spdk_nvme_discover
 ifneq ($(OS),Windows)
 # TODO - currently disabled on Windows due to lack of support for curses
 DIRS-y += spdk_top
@@ -20,6 +24,7 @@ ifeq ($(OS),Linux)
 DIRS-$(CONFIG_VHOST) += vhost
 DIRS-y += spdk_dd
 endif
+DIRS-$(CONFIG_FIO_PLUGIN) += fio
 
 .PHONY: all clean $(DIRS-y)
 

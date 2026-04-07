@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_FBSD_ENABLED
@@ -5,12 +9,9 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <unistd.h>
-#include <libxnvme_ident.h>
-#include <libxnvme_file.h>
-#include <libxnvme_spec_fs.h>
 #include <xnvme_dev.h>
+#include <xnvme_be_cbi.h>
 #include <xnvme_be_fbsd.h>
-#include <xnvme_be_posix.h>
 
 int
 xnvme_be_fbsd_enumerate(const char *sys_uri, struct xnvme_opts *opts, xnvme_enumerate_cb cb_func,
@@ -20,6 +21,8 @@ xnvme_be_fbsd_enumerate(const char *sys_uri, struct xnvme_opts *opts, xnvme_enum
 		XNVME_DEBUG("FAILED: sys_uri: %s is not supported", sys_uri);
 		return -ENOSYS;
 	}
+	struct xnvme_opts tmp_opts = *opts;
+	tmp_opts.be = xnvme_be_fbsd.attr.name;
 
 	for (int cid = 0; cid < 256; cid++) {
 		for (int nid = 0; nid < 256; nid++) {
@@ -34,7 +37,7 @@ xnvme_be_fbsd_enumerate(const char *sys_uri, struct xnvme_opts *opts, xnvme_enum
 			}
 			snprintf(uri, XNVME_IDENT_URI_LEN - 1, "%s", path);
 
-			dev = xnvme_dev_open(uri, opts);
+			dev = xnvme_dev_open(uri, &tmp_opts);
 			if (!dev) {
 				XNVME_DEBUG("xnvme_dev_open(): %d", errno);
 				return -errno;
@@ -99,8 +102,8 @@ xnvme_be_fbsd_dev_open(struct xnvme_dev *dev)
 	struct stat dev_stat = {0};
 	int err;
 
-	XNVME_DEBUG("INFO: open() : opts->oflags: 0x%x, flags: 0x%x, opts->create_mode: 0x%x",
-		    opts->oflags, flags, opts->create_mode);
+	XNVME_DEBUG("INFO: open() : flags: 0x%x, opts->create_mode: 0x%x", flags,
+		    opts->create_mode);
 
 	state->fd.ns = -1;
 	state->fd.ctrlr = -1;
@@ -124,13 +127,13 @@ xnvme_be_fbsd_dev_open(struct xnvme_dev *dev)
 		dev->ident.csi = XNVME_SPEC_CSI_FS;
 		dev->ident.nsid = 1;
 		if (!opts->admin) {
-			dev->be.admin = g_xnvme_be_posix_admin_shim;
+			dev->be.admin = g_xnvme_be_cbi_admin_shim;
 		}
 		if (!opts->sync) {
-			dev->be.sync = g_xnvme_be_posix_sync_psync;
+			dev->be.sync = g_xnvme_be_cbi_sync_psync;
 		}
 		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
+			dev->be.async = g_xnvme_be_cbi_async_emu;
 		}
 		state->fd.ctrlr = state->fd.ns;
 		break;
@@ -141,13 +144,13 @@ xnvme_be_fbsd_dev_open(struct xnvme_dev *dev)
 		dev->ident.csi = XNVME_SPEC_CSI_FS;
 		dev->ident.nsid = 1;
 		if (!opts->admin) {
-			dev->be.admin = g_xnvme_be_posix_admin_shim;
+			dev->be.admin = g_xnvme_be_cbi_admin_shim;
 		}
 		if (!opts->sync) {
-			dev->be.sync = g_xnvme_be_posix_sync_psync;
+			dev->be.sync = g_xnvme_be_cbi_sync_psync;
 		}
 		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
+			dev->be.async = g_xnvme_be_cbi_async_emu;
 		}
 		state->fd.ctrlr = state->fd.ns;
 		break;
@@ -162,7 +165,7 @@ xnvme_be_fbsd_dev_open(struct xnvme_dev *dev)
 			dev->be.sync = g_xnvme_be_fbsd_sync_nvme;
 		}
 		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
+			dev->be.async = g_xnvme_be_cbi_async_emu;
 		}
 
 		if (xnvme_be_fbsd_nvme_get_nsid_and_ctrlr_fd(state->fd.ns, &dev->ident.nsid,
@@ -184,17 +187,9 @@ xnvme_be_fbsd_dev_open(struct xnvme_dev *dev)
 		return -EINVAL;
 	}
 
-	err = xnvme_be_dev_idfy(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_idfy");
-		return -EINVAL;
-	}
-	err = xnvme_be_dev_derive_geometry(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_derive_geometry()");
-		return err;
-	}
+	state->poll_io = opts->poll_io;
 
+	XNVME_DEBUG("INFO: open() : dev->state.poll_io: %d", state->poll_io);
 	XNVME_DEBUG("INFO: --- open() : OK ---");
 
 	return 0;

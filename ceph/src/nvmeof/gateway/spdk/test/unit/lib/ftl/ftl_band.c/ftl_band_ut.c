@@ -5,11 +5,12 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "common/lib/test_env.c"
 
 #include "ftl/ftl_core.c"
 #include "ftl/ftl_band.c"
+#include "ftl/ftl_layout.c"
 #include "../common/utils.c"
 
 #define TEST_BAND_IDX		42
@@ -34,9 +35,6 @@ DEFINE_STUB_V(ftl_p2l_validate_ckpt, (struct ftl_band *band));
 DEFINE_STUB_V(ftl_trace_limits, (struct spdk_ftl_dev *dev, int limit, size_t num_free));
 DEFINE_STUB_V(ftl_trace_completion, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
 				     enum ftl_trace_completion completion));
-DEFINE_STUB_V(ftl_trace_defrag_band, (struct spdk_ftl_dev *dev, const struct ftl_band *band));
-DEFINE_STUB_V(ftl_trace_wbuf_fill, (struct spdk_ftl_dev *dev, const struct ftl_io *io));
-DEFINE_STUB_V(ftl_trace_wbuf_pop, (struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry));
 DEFINE_STUB_V(ftl_trace_write_band, (struct spdk_ftl_dev *dev, const struct ftl_band *band));
 DEFINE_STUB_V(ftl_trace_submission, (struct spdk_ftl_dev *dev, const struct ftl_io *io,
 				     ftl_addr addr, size_t addr_cnt));
@@ -69,7 +67,6 @@ DEFINE_STUB_V(ftl_io_complete, (struct ftl_io *io));
 DEFINE_STUB(ftl_io_current_lba, uint64_t, (const struct ftl_io *io), 0);
 DEFINE_STUB_V(ftl_io_dec_req, (struct ftl_io *io));
 DEFINE_STUB_V(ftl_io_fail, (struct ftl_io *io, int status));
-DEFINE_STUB_V(ftl_io_free, (struct ftl_io *io));
 DEFINE_STUB(ftl_io_get_lba, uint64_t,
 	    (const struct ftl_io *io, size_t offset), 0);
 DEFINE_STUB_V(ftl_io_inc_req, (struct ftl_io *io));
@@ -80,15 +77,12 @@ DEFINE_STUB(ftl_iovec_num_blocks, size_t,
 	    (struct iovec *iov, size_t iov_cnt), 0);
 DEFINE_STUB_V(ftl_reloc, (struct ftl_reloc *reloc));
 
-DEFINE_STUB_V(ftl_reloc_add, (struct ftl_reloc *reloc, struct ftl_band *band, size_t offset,
-			      size_t num_blocks, int prio, bool defrag));
-DEFINE_STUB(ftl_reloc_is_defrag_active, bool, (const struct ftl_reloc *reloc), false);
 DEFINE_STUB(ftl_reloc_is_halted, bool, (const struct ftl_reloc *reloc), false);
 DEFINE_STUB_V(ftl_reloc_halt, (struct ftl_reloc *reloc));
 DEFINE_STUB(spdk_bdev_is_zoned, bool, (const struct spdk_bdev *bdev), true);
 DEFINE_STUB(ftl_p2l_ckpt_acquire, struct ftl_p2l_ckpt *, (struct spdk_ftl_dev *dev), NULL);
-DEFINE_STUB(ftl_mngt_unmap, int, (struct spdk_ftl_dev *dev, uint64_t lba, uint64_t num_blocks,
-				  spdk_ftl_fn cb, void *cb_cntx), 0);
+DEFINE_STUB(ftl_mngt_trim, int, (struct spdk_ftl_dev *dev, uint64_t lba, uint64_t num_blocks,
+				 spdk_ftl_fn cb, void *cb_cntx), 0);
 DEFINE_STUB_V(ftl_p2l_ckpt_release, (struct spdk_ftl_dev *dev, struct ftl_p2l_ckpt *ckpt));
 
 DEFINE_STUB_V(ftl_l2p_process, (struct spdk_ftl_dev *dev));
@@ -145,6 +139,27 @@ DEFINE_STUB_V(ftl_md_persist, (struct ftl_md *md));
 DEFINE_STUB_V(spdk_bdev_io_get_nvme_status, (const struct spdk_bdev_io *bdev_io, uint32_t *cdw0,
 		int *sct, int *sc));
 DEFINE_STUB(ftl_nv_cache_throttle, bool, (struct spdk_ftl_dev *dev), true);
+DEFINE_STUB(ftl_base_device_get_type_by_bdev, const struct ftl_base_device_type *,
+	    (struct spdk_ftl_dev *dev, struct spdk_bdev *bdev), NULL);
+DEFINE_STUB(ftl_layout_tracker_bdev_init, struct ftl_layout_tracker_bdev *,
+	    (uint64_t bdev_blks), NULL);
+DEFINE_STUB_V(ftl_layout_tracker_bdev_fini, (struct ftl_layout_tracker_bdev *tracker));
+DEFINE_STUB(ftl_nv_cache_chunk_tail_md_num_blocks, size_t, (const struct ftl_nv_cache *nv_cache),
+	    0);
+DEFINE_STUB_V(ftl_layout_tracker_bdev_find_next_region, (struct ftl_layout_tracker_bdev *tracker,
+		enum ftl_layout_region_type reg_type,
+		const struct ftl_layout_tracker_bdev_region_props **search_ctx));
+DEFINE_STUB(ftl_superblock_is_blob_area_empty, bool, (struct ftl_superblock *sb), true);
+DEFINE_STUB(ftl_superblock_store_blob_area, int, (struct spdk_ftl_dev *dev), 0);
+DEFINE_STUB(ftl_superblock_load_blob_area, int, (struct spdk_ftl_dev *dev), 0);
+DEFINE_STUB(ftl_superblock_md_layout_apply, int, (struct spdk_ftl_dev *dev), 0);
+DEFINE_STUB(ftl_layout_tracker_bdev_rm_region, int, (struct ftl_layout_tracker_bdev *tracker,
+		enum ftl_layout_region_type reg_type, uint32_t reg_ver), 0);
+DEFINE_STUB(ftl_layout_upgrade_drop_regions, int, (struct spdk_ftl_dev *dev), 0);
+DEFINE_STUB_V(ftl_md_persist_entries, (struct ftl_md *md, uint64_t start_entry,
+				       uint64_t num_entries,
+				       void *buffer, void *vss_buffer, ftl_md_io_entry_cb cb, void *cb_arg,
+				       struct ftl_md_io_entry_ctx *ctx));
 
 static void
 adjust_bitmap(struct ftl_bitmap **bitmap, uint64_t *bit)
@@ -376,7 +391,6 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("ftl_band_suite", NULL, NULL);
@@ -389,9 +403,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_invalidate_addr);
 	CU_ADD_TEST(suite, test_next_xfer_addr);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

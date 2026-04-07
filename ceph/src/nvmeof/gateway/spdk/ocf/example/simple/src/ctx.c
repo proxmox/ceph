@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2019-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include <execinfo.h>
@@ -64,6 +64,7 @@ static uint32_t ctx_data_read(void *dst, ctx_data_t *src, uint32_t size)
 	struct volume_data *data = src;
 
 	memcpy(dst, data->ptr + data->offset, size);
+	data->offset += size;
 
 	return size;
 }
@@ -76,6 +77,7 @@ static uint32_t ctx_data_write(ctx_data_t *dst, const void *src, uint32_t size)
 	struct volume_data *data = dst;
 
 	memcpy(data->ptr + data->offset, src, size);
+	data->offset += size;
 
 	return size;
 }
@@ -88,6 +90,7 @@ static uint32_t ctx_data_zero(ctx_data_t *dst, uint32_t size)
 	struct volume_data *data = dst;
 
 	memset(data->ptr + data->offset, 0, size);
+	data->offset += size;
 
 	return size;
 }

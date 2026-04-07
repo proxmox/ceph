@@ -1,22 +1,22 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef __INTERNAL_XNVME_BE_H
 #define __INTERNAL_XNVME_BE_H
 #ifndef WIN32
 #include <paths.h>
 #endif
-#include <libxnvme_pp.h>
-#include <xnvme.h>
+#include <libxnvme.h>
 #include <xnvme_be_registry.h>
-#include <stdbool.h>
 
 #define XNVME_BE_QUEUE_STATE_NBYTES 256
 
-#define XNVME_BE_ASYNC_NBYTES  56
+#define XNVME_BE_ASYNC_NBYTES  64
 #define XNVME_BE_SYNC_NBYTES   24
-#define XNVME_BE_ADMIN_NBYTES  16
+#define XNVME_BE_ADMIN_NBYTES  24
 #define XNVME_BE_DEV_NBYTES    24
-#define XNVME_BE_MEM_NBYTES    32
+#define XNVME_BE_MEM_NBYTES    56
 #define XNVME_BE_ATTR_NBYTES   24
 #define XNVME_BE_STATE_NBYTES  128
 #define XNVME_BE_MIXINS_NBYTES 16
@@ -32,8 +32,7 @@ struct xnvme_be_async {
 	int (*cmd_io)(struct xnvme_cmd_ctx *, void *, size_t, void *, size_t);
 
 	// Submit a vectored async io command to be processed on the backend's io path
-	int (*cmd_iov)(struct xnvme_cmd_ctx *, struct iovec *, size_t, size_t, struct iovec *,
-		       size_t, size_t);
+	int (*cmd_iov)(struct xnvme_cmd_ctx *, struct iovec *, size_t, size_t, void *, size_t);
 
 	// Non-blocking reaping of up to `max` io completions
 	int (*poke)(struct xnvme_queue *, uint32_t);
@@ -46,6 +45,9 @@ struct xnvme_be_async {
 
 	// Close resources allocated for the underlying backend's io path
 	int (*term)(struct xnvme_queue *);
+
+	// Provide the completion event FD for the queue
+	int (*get_completion_fd)(struct xnvme_queue *);
 
 	// Check if the backend is supported in the current environment
 	const char *id;
@@ -63,8 +65,7 @@ struct xnvme_be_sync {
 	 * Pass a vectored NVMe I/O Command Through to the device with minimal
 	 * driver intervention
 	 */
-	int (*cmd_iov)(struct xnvme_cmd_ctx *, struct iovec *, size_t, size_t, struct iovec *,
-		       size_t, size_t);
+	int (*cmd_iov)(struct xnvme_cmd_ctx *, struct iovec *, size_t, size_t, void *, size_t);
 
 	const char *id;
 };
@@ -75,6 +76,14 @@ struct xnvme_be_admin {
 	 * Pass a NVMe Admin Command Through to the device with minimal driver intervention
 	 */
 	int (*cmd_admin)(struct xnvme_cmd_ctx *, void *, size_t, void *, size_t);
+
+	/**
+	 * Pass pseudo admin-commands
+	 *
+	 * That is representation of various operations in NVMe commands, that look
+	 * like but are not actual NVMe commands.
+	 */
+	int (*cmd_pseudo)(struct xnvme_cmd_ctx *, void *, size_t, void *, size_t);
 
 	const char *id;
 };
@@ -118,6 +127,17 @@ struct xnvme_be_mem {
 	 * Free a buffer usable for NVMe commands
 	 */
 	void (*buf_free)(const struct xnvme_dev *, void *);
+
+	/**
+	 * Map a buffer usable for NVMe commands
+	 */
+	int (*mem_map)(const struct xnvme_dev *, void *, size_t, uint64_t *);
+
+	/**
+	 * Unmap a buffer usable for NVMe commands
+	 */
+	int (*mem_unmap)(const struct xnvme_dev *, void *);
+	const char *id;
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_be_mem) == XNVME_BE_MEM_NBYTES, "Incorrect size")
 
@@ -226,12 +246,6 @@ xnvme_be_fpr(FILE *stream, const struct xnvme_be *be, enum xnvme_pr opts);
 
 int
 xnvme_be_pr(const struct xnvme_be *be, enum xnvme_pr opts);
-
-int
-xnvme_be_dev_derive_geometry(struct xnvme_dev *dev);
-
-int
-xnvme_be_dev_idfy(struct xnvme_dev *dev);
 
 int
 xnvme_ident_yaml(FILE *stream, const struct xnvme_ident *ident, int indent, const char *sep,

@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2019-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2019-2022 Intel Corporation
+ * Copyright(c) 2023-2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_ENV_H__
@@ -67,11 +68,13 @@ typedef uint64_t sector_t;
 #define ENV_MEM_ATOMIC	0
 
 /* DEBUGING */
+void env_stack_trace(void);
+
 #define ENV_WARN(cond, fmt...)		printf(fmt)
 #define ENV_WARN_ON(cond)		;
 #define ENV_WARN_ONCE(cond, fmt...)	ENV_WARN(cond, fmt)
 
-#define ENV_BUG()			assert(0)
+#define ENV_BUG()			do {env_stack_trace(); assert(0);} while(0)
 #define ENV_BUG_ON(cond)		do { if (cond) ENV_BUG(); } while (0)
 #define ENV_BUILD_BUG_ON(cond)		_Static_assert(!(cond), "static "\
 					"assertion failure")
@@ -184,7 +187,7 @@ static inline void env_secure_free(const void *ptr, size_t size)
 {
 	if (ptr) {
 #if SECURE_MEMORY_HANDLING
-		memset(ptr, size, 0);
+		memset(ptr, 0, size);
 		/* TODO: flush CPU caches ? */
 		ENV_BUG_ON(munlock(ptr));
 #endif
@@ -304,7 +307,7 @@ static inline int env_rwsem_init(env_rwsem *s)
 
 static inline void env_rwsem_up_read(env_rwsem *s)
 {
-	pthread_rwlock_unlock(&s->lock);
+	ENV_BUG_ON(pthread_rwlock_unlock(&s->lock));
 }
 
 static inline void env_rwsem_down_read(env_rwsem *s)
@@ -584,6 +587,7 @@ static inline bool env_bit_test(int nr, const volatile unsigned long *addr)
 	const char *byte = (char *)addr + (nr >> 3);
 	char mask = 1 << (nr & 7);
 
+	__sync_synchronize();
 	return !!(*byte & mask);
 }
 

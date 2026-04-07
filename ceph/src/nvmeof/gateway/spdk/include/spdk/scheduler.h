@@ -17,6 +17,11 @@ extern "C" {
 #include "spdk/thread.h"
 #include "spdk/util.h"
 
+/**
+ * This matches the DPDK macro RTE_MAX_LCORE_FREQS
+ */
+#define	SPDK_MAX_LCORE_FREQS	64
+
 struct spdk_governor_capabilities {
 	bool priority; /* Core with higher base frequency */
 };
@@ -28,6 +33,19 @@ struct spdk_governor_capabilities {
  */
 struct spdk_governor {
 	const char *name;
+
+	/**
+	 * Get available frequencies of a given core.
+	 *
+	 * \param lcore_id Core ID.
+	 * \param freqs The buffer array to save the frequencies.
+	 * \param num Number of frequencies to get.
+	 *
+	 * \return The number of frequencies returned in freqs. 0 on error.
+	 *         0 is returned if it could not get the frequencies or
+	 *         if the freqs array is too small to fit the returned frequencies.
+	 */
+	uint32_t (*get_core_avail_freqs)(uint32_t lcore_id, uint32_t *freqs, uint32_t num);
 
 	/**
 	 * Get current frequency of a given core.
@@ -83,6 +101,14 @@ struct spdk_governor {
 	 * \return 0 on success, negative on error.
 	 */
 	int (*get_core_capabilities)(uint32_t lcore_id, struct spdk_governor_capabilities *capabilities);
+
+	/**
+	 * Output governor-specific information to a JSON stream.
+	 *
+	 * The JSON write context will be initialized with an open object, so the governor
+	 * should write a name followed by a JSON value (most likely another nested object).
+	 */
+	int (*dump_info_json)(struct spdk_json_write_ctx *w);
 
 	/**
 	 * Initialize a governor.
@@ -166,6 +192,7 @@ struct spdk_scheduler_core_info {
 	uint32_t threads_count;
 	bool interrupt_mode;
 	struct spdk_scheduler_thread_info *thread_infos;
+	bool isolated;
 };
 
 /**
@@ -256,6 +283,25 @@ uint64_t spdk_scheduler_get_period(void);
  * \param scheduler Scheduler to be added.
  */
 void spdk_scheduler_register(struct spdk_scheduler *scheduler);
+
+/**
+ * Get lcore of scheduling reactor.
+ *
+ * All scheduler operations are performed from the scheduling reactor.
+ *
+ * \return lcore of scheduling reactor
+ */
+uint32_t spdk_scheduler_get_scheduling_lcore(void);
+
+/**
+ * Set scheduling reactor.
+ *
+ * All scheduler operations are performed from the scheduling reactor.
+ *
+ * \param lcore lcore of scheduling reactor
+ */
+bool spdk_scheduler_set_scheduling_lcore(uint32_t lcore);
+
 
 /*
  * Macro used to register new scheduler.

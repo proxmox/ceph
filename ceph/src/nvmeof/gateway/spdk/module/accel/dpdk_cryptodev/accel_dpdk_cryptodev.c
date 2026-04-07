@@ -7,7 +7,7 @@
 #include "accel_dpdk_cryptodev.h"
 
 #include "spdk/accel.h"
-#include "spdk_internal/accel_module.h"
+#include "spdk/accel_module.h"
 #include "spdk/env.h"
 #include "spdk/likely.h"
 #include "spdk/thread.h"
@@ -59,32 +59,28 @@
 
 #define ACCEL_DPDK_CRYPTODEV_AESNI_MB_NUM_QP		64
 
-/* Common for suported devices. */
+/* Common for supported devices. */
 #define ACCEL_DPDK_CRYPTODEV_DEFAULT_NUM_XFORMS		2
 #define ACCEL_DPDK_CRYPTODEV_IV_OFFSET (sizeof(struct rte_crypto_op) + \
                 sizeof(struct rte_crypto_sym_op) + \
                 (ACCEL_DPDK_CRYPTODEV_DEFAULT_NUM_XFORMS * \
                  sizeof(struct rte_crypto_sym_xform)))
 #define ACCEL_DPDK_CRYPTODEV_IV_LENGTH			16
-#define ACCEL_DPDK_CRYPTODEV_QUEUED_OP_OFFSET (ACCEL_DPDK_CRYPTODEV_IV_OFFSET + ACCEL_DPDK_CRYPTODEV_IV_LENGTH)
 
 /* Driver names */
 #define ACCEL_DPDK_CRYPTODEV_AESNI_MB	"crypto_aesni_mb"
 #define ACCEL_DPDK_CRYPTODEV_QAT	"crypto_qat"
 #define ACCEL_DPDK_CRYPTODEV_QAT_ASYM	"crypto_qat_asym"
 #define ACCEL_DPDK_CRYPTODEV_MLX5	"mlx5_pci"
+#define ACCEL_DPDK_CRYPTODEV_UADK	"crypto_uadk"
 
 /* Supported ciphers */
 #define ACCEL_DPDK_CRYPTODEV_AES_CBC	"AES_CBC" /* QAT and ACCEL_DPDK_CRYPTODEV_AESNI_MB */
 #define ACCEL_DPDK_CRYPTODEV_AES_XTS	"AES_XTS" /* QAT and MLX5 */
 
 /* Specific to AES_CBC. */
-#define ACCEL_DPDK_CRYPTODEV_AES_CBC_KEY_LENGTH			16
-#define ACCEL_DPDK_CRYPTODEV_AES_XTS_128_BLOCK_KEY_LENGTH	16 /* AES-XTS-128 block key size. */
-#define ACCEL_DPDK_CRYPTODEV_AES_XTS_256_BLOCK_KEY_LENGTH	32 /* AES-XTS-256 block key size. */
-#define ACCEL_DPDK_CRYPTODEV_AES_XTS_512_BLOCK_KEY_LENGTH	64 /* AES-XTS-512 block key size. */
-
-#define ACCEL_DPDK_CRYPTODEV_AES_XTS_TWEAK_KEY_LENGTH		16 /* XTS part key size is always 128 bit. */
+#define ACCEL_DPDK_CRYPTODEV_AES_CBC_128_KEY_SIZE			16
+#define ACCEL_DPDK_CRYPTODEV_AES_CBC_256_KEY_SIZE			32
 
 /* Limit of the max memory len attached to mbuf - rte_pktmbuf_attach_extbuf has uint16_t `buf_len`
  * parameter, we use closes aligned value 32768 for better performance */
@@ -104,12 +100,8 @@ enum accel_dpdk_cryptodev_driver_type {
 	ACCEL_DPDK_CRYPTODEV_DRIVER_AESNI_MB = 0,
 	ACCEL_DPDK_CRYPTODEV_DRIVER_QAT,
 	ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI,
+	ACCEL_DPDK_CRYPTODEV_DRIVER_UADK,
 	ACCEL_DPDK_CRYPTODEV_DRIVER_LAST
-};
-
-enum accel_dpdk_crypto_dev_cipher_type {
-	ACCEL_DPDK_CRYPTODEV_CIPHER_AES_CBC,
-	ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS
 };
 
 struct accel_dpdk_cryptodev_qp {
@@ -140,19 +132,10 @@ struct accel_dpdk_cryptodev_key_handle {
 
 struct accel_dpdk_cryptodev_key_priv {
 	enum accel_dpdk_cryptodev_driver_type driver;
-	enum accel_dpdk_crypto_dev_cipher_type cipher;
+	enum spdk_accel_cipher cipher;
 	char *xts_key;
 	TAILQ_HEAD(, accel_dpdk_cryptodev_key_handle) dev_keys;
 };
-
-/* For queueing up crypto operations that we can't submit for some reason */
-struct accel_dpdk_cryptodev_queued_op {
-	struct accel_dpdk_cryptodev_qp *qp;
-	struct rte_crypto_op *crypto_op;
-	struct accel_dpdk_cryptodev_task *task;
-	TAILQ_ENTRY(accel_dpdk_cryptodev_queued_op) link;
-};
-#define ACCEL_DPDK_CRYPTODEV_QUEUED_OP_LENGTH (sizeof(struct accel_dpdk_cryptodev_queued_op))
 
 /* The crypto channel struct. It is allocated and freed on my behalf by the io channel code.
  * We store things in here that are needed on per thread basis like the base_channel for this thread,
@@ -163,10 +146,11 @@ struct accel_dpdk_cryptodev_io_channel {
 	struct spdk_poller *poller;
 	/* Array of qpairs for each available device. The specific device will be selected depending on the crypto key */
 	struct accel_dpdk_cryptodev_qp *device_qp[ACCEL_DPDK_CRYPTODEV_DRIVER_LAST];
-	/* queued for re-submission to CryptoDev. Used when for some reason crypto op was not processed by the driver */
-	TAILQ_HEAD(, accel_dpdk_cryptodev_queued_op) queued_cry_ops;
-	/* Used to queue tasks when qpair is full. No crypto operation was submitted to the driver by the task */
+	/* Used to queue tasks when qpair is full or only part of crypto ops was submitted to the PMD */
 	TAILQ_HEAD(, accel_dpdk_cryptodev_task) queued_tasks;
+	/* Used to queue tasks that were completed in submission path - to avoid calling cpl_cb and possibly overflow
+	 * call stack */
+	TAILQ_HEAD(, accel_dpdk_cryptodev_task) completed_tasks;
 };
 
 struct accel_dpdk_cryptodev_task {
@@ -194,11 +178,12 @@ static uint8_t g_next_qat_index;
 static const char *g_driver_names[] = {
 	[ACCEL_DPDK_CRYPTODEV_DRIVER_AESNI_MB]	= ACCEL_DPDK_CRYPTODEV_AESNI_MB,
 	[ACCEL_DPDK_CRYPTODEV_DRIVER_QAT]	= ACCEL_DPDK_CRYPTODEV_QAT,
-	[ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI]	= ACCEL_DPDK_CRYPTODEV_MLX5
+	[ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI]	= ACCEL_DPDK_CRYPTODEV_MLX5,
+	[ACCEL_DPDK_CRYPTODEV_DRIVER_UADK]	= ACCEL_DPDK_CRYPTODEV_UADK
 };
 static const char *g_cipher_names[] = {
-	[ACCEL_DPDK_CRYPTODEV_CIPHER_AES_CBC]	= ACCEL_DPDK_CRYPTODEV_AES_CBC,
-	[ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS]	= ACCEL_DPDK_CRYPTODEV_AES_XTS,
+	[SPDK_ACCEL_CIPHER_AES_CBC]	= ACCEL_DPDK_CRYPTODEV_AES_CBC,
+	[SPDK_ACCEL_CIPHER_AES_XTS]	= ACCEL_DPDK_CRYPTODEV_AES_XTS,
 };
 
 static enum accel_dpdk_cryptodev_driver_type g_dpdk_cryptodev_driver =
@@ -229,6 +214,8 @@ accel_dpdk_cryptodev_set_driver(const char *driver_name)
 		g_dpdk_cryptodev_driver = ACCEL_DPDK_CRYPTODEV_DRIVER_AESNI_MB;
 	} else if (strcmp(driver_name, ACCEL_DPDK_CRYPTODEV_MLX5) == 0) {
 		g_dpdk_cryptodev_driver = ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI;
+	} else if (strcmp(driver_name, ACCEL_DPDK_CRYPTODEV_UADK) == 0) {
+		g_dpdk_cryptodev_driver = ACCEL_DPDK_CRYPTODEV_DRIVER_UADK;
 	} else {
 		SPDK_ERRLOG("Unsupported driver %s\n", driver_name);
 		return -EINVAL;
@@ -243,43 +230,6 @@ const char *
 accel_dpdk_cryptodev_get_driver(void)
 {
 	return g_driver_names[g_dpdk_cryptodev_driver];
-}
-
-static void
-cancel_queued_crypto_ops(struct accel_dpdk_cryptodev_io_channel *crypto_ch,
-			 struct accel_dpdk_cryptodev_task *task)
-{
-	struct rte_mbuf *mbufs_to_free[2 * ACCEL_DPDK_CRYPTODEV_MAX_DEQUEUE_BURST_SIZE];
-	struct rte_crypto_op *cancelled_ops[ACCEL_DPDK_CRYPTODEV_MAX_DEQUEUE_BURST_SIZE];
-	struct accel_dpdk_cryptodev_queued_op *op_to_cancel, *tmp_op;
-	struct rte_crypto_op *crypto_op;
-	int num_mbufs = 0, num_dequeued_ops = 0;
-
-	/* Remove all ops from the failed IO. Since we don't know the
-	 * order we have to check them all. */
-	TAILQ_FOREACH_SAFE(op_to_cancel, &crypto_ch->queued_cry_ops, link, tmp_op) {
-		/* Checking if this is our op. One IO contains multiple ops. */
-		if (task == op_to_cancel->task) {
-			crypto_op = op_to_cancel->crypto_op;
-			TAILQ_REMOVE(&crypto_ch->queued_cry_ops, op_to_cancel, link);
-
-			/* Populating lists for freeing mbufs and ops. */
-			mbufs_to_free[num_mbufs++] = (void *)crypto_op->sym->m_src;
-			if (crypto_op->sym->m_dst) {
-				mbufs_to_free[num_mbufs++] = (void *)crypto_op->sym->m_dst;
-			}
-			cancelled_ops[num_dequeued_ops++] = crypto_op;
-		}
-	}
-
-	/* Now bulk free both mbufs and crypto operations. */
-	if (num_dequeued_ops > 0) {
-		rte_mempool_put_bulk(g_crypto_op_mp, (void **)cancelled_ops,
-				     num_dequeued_ops);
-		assert(num_mbufs > 0);
-		/* This also releases chained mbufs if any. */
-		rte_pktmbuf_free_bulk(mbufs_to_free, num_mbufs);
-	}
 }
 
 static inline uint16_t
@@ -340,6 +290,11 @@ accel_dpdk_cryptodev_poll_qp(struct accel_dpdk_cryptodev_qp *qp,
 				if (rc == -ENOMEM) {
 					TAILQ_INSERT_TAIL(&crypto_ch->queued_tasks, task, link);
 					continue;
+				} else if (rc == -EALREADY) {
+					/* -EALREADY means that a task is completed, but it might be unsafe to complete
+					 * it if we are in the submission path. Since we are in the poller context, we can
+					 * complete th task immediately */
+					rc = 0;
 				}
 				spdk_accel_task_complete(&task->base, rc);
 			}
@@ -369,10 +324,8 @@ accel_dpdk_cryptodev_poller(void *args)
 	struct accel_dpdk_cryptodev_io_channel *crypto_ch = args;
 	struct accel_dpdk_cryptodev_qp *qp;
 	struct accel_dpdk_cryptodev_task *task, *task_tmp;
-	struct accel_dpdk_cryptodev_queued_op *op_to_resubmit, *op_to_resubmit_tmp;
 	TAILQ_HEAD(, accel_dpdk_cryptodev_task) queued_tasks_tmp;
-	uint32_t num_dequeued_ops = 0, num_enqueued_ops = 0;
-	uint16_t enqueued;
+	uint32_t num_dequeued_ops = 0, num_enqueued_ops = 0, num_completed_tasks = 0;
 	int i, rc;
 
 	for (i = 0; i < ACCEL_DPDK_CRYPTODEV_DRIVER_LAST; i++) {
@@ -380,42 +333,6 @@ accel_dpdk_cryptodev_poller(void *args)
 		/* Avoid polling "idle" qps since it may affect performance */
 		if (qp && qp->num_enqueued_ops) {
 			num_dequeued_ops += accel_dpdk_cryptodev_poll_qp(qp, crypto_ch);
-		}
-	}
-
-	/* Check if there are any queued crypto ops to process */
-	TAILQ_FOREACH_SAFE(op_to_resubmit, &crypto_ch->queued_cry_ops, link, op_to_resubmit_tmp) {
-		task = op_to_resubmit->task;
-		qp = op_to_resubmit->qp;
-		if (qp->num_enqueued_ops == qp->device->qp_desc_nr) {
-			continue;
-		}
-		enqueued = rte_cryptodev_enqueue_burst(qp->device->cdev_id,
-						       qp->qp,
-						       &op_to_resubmit->crypto_op,
-						       1);
-		if (enqueued == 1) {
-			TAILQ_REMOVE(&crypto_ch->queued_cry_ops, op_to_resubmit, link);
-			qp->num_enqueued_ops++;
-			num_enqueued_ops++;
-		} else {
-			if (op_to_resubmit->crypto_op->status == RTE_CRYPTO_OP_STATUS_NOT_PROCESSED) {
-				/* If we couldn't get one, just break and try again later. */
-				break;
-			} else {
-				/* Something is really wrong with the op. Most probably the
-				 * mbuf is broken or the HW is not able to process the request.
-				 * Fail the IO and remove its ops from the queued ops list. */
-				task->is_failed = true;
-
-				cancel_queued_crypto_ops(crypto_ch, task);
-
-				task->cryop_completed++;
-				/* Fail the IO if there is nothing left on device. */
-				if (task->cryop_completed == task->cryop_submitted) {
-					spdk_accel_task_complete(&task->base, -EFAULT);
-				}
-			}
 		}
 	}
 
@@ -431,8 +348,14 @@ accel_dpdk_cryptodev_poller(void *args)
 					/* Other queued tasks may belong to other qpairs,
 					 * so process the whole list */
 					continue;
+				} else if (rc == -EALREADY) {
+					/* -EALREADY means that a task is completed, but it might be unsafe to complete
+					 * it if we are in the submission path. Since we are in the poller context, we can
+					 * complete th task immediately */
+					rc = 0;
 				}
 				spdk_accel_task_complete(&task->base, rc);
+				num_completed_tasks++;
 			} else {
 				num_enqueued_ops++;
 			}
@@ -441,7 +364,13 @@ accel_dpdk_cryptodev_poller(void *args)
 		TAILQ_SWAP(&crypto_ch->queued_tasks, &queued_tasks_tmp, accel_dpdk_cryptodev_task, link);
 	}
 
-	return !!(num_dequeued_ops + num_enqueued_ops);
+	TAILQ_FOREACH_SAFE(task, &crypto_ch->completed_tasks, link, task_tmp) {
+		TAILQ_REMOVE(&crypto_ch->completed_tasks, task, link);
+		spdk_accel_task_complete(&task->base, 0);
+		num_completed_tasks++;
+	}
+
+	return !!(num_dequeued_ops + num_enqueued_ops + num_completed_tasks);
 }
 
 /* Allocate the new mbuf of @remainder size with data pointed by @addr and attach
@@ -470,7 +399,7 @@ accel_dpdk_cryptodev_mbuf_chain_remainder(struct accel_dpdk_cryptodev_task *task
 	rte_pktmbuf_attach_extbuf(chain_mbuf, addr, phys_addr, remainder, &g_shinfo);
 	rte_pktmbuf_append(chain_mbuf, remainder);
 
-	/* Chained buffer is released by rte_pktbuf_free_bulk() automagicaly. */
+	/* Chained buffer is released by rte_pktbuf_free_bulk() automagically. */
 	rte_pktmbuf_chain(orig_mbuf, chain_mbuf);
 	*_remainder = remainder;
 
@@ -628,6 +557,18 @@ accel_dpdk_cryptodev_op_set_iv(struct rte_crypto_op *crypto_op, uint64_t iv)
 	rte_memcpy(iv_ptr, &iv, sizeof(uint64_t));
 }
 
+static inline void
+accel_dpdk_cryptodev_update_resources_from_pools(struct rte_crypto_op **crypto_ops,
+		struct rte_mbuf **src_mbufs, struct rte_mbuf **dst_mbufs,
+		uint32_t num_enqueued_ops, uint32_t cryop_cnt)
+{
+	memmove(crypto_ops, &crypto_ops[num_enqueued_ops], sizeof(crypto_ops[0]) * cryop_cnt);
+	memmove(src_mbufs, &src_mbufs[num_enqueued_ops], sizeof(src_mbufs[0]) * cryop_cnt);
+	if (dst_mbufs) {
+		memmove(dst_mbufs, &dst_mbufs[num_enqueued_ops], sizeof(dst_mbufs[0]) * cryop_cnt);
+	}
+}
+
 static int
 accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto_ch,
 				  struct accel_dpdk_cryptodev_task *task)
@@ -639,7 +580,6 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 	uint32_t sgl_offset;
 	uint32_t qp_capacity;
 	uint64_t iv_start;
-	struct accel_dpdk_cryptodev_queued_op *op_to_queue;
 	uint32_t i, crypto_index;
 	struct rte_crypto_op *crypto_ops[ACCEL_DPDK_CRYPTODEV_MAX_ENQUEUE_ARRAY_SIZE];
 	struct rte_mbuf *src_mbufs[ACCEL_DPDK_CRYPTODEV_MAX_ENQUEUE_ARRAY_SIZE];
@@ -651,6 +591,7 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 	struct accel_dpdk_cryptodev_device *dev;
 	struct spdk_iov_sgl src, dst = {};
 	int rc;
+	bool inplace = task->inplace;
 
 	if (spdk_unlikely(!task->base.crypto_key ||
 			  task->base.crypto_key->module_if != &g_accel_dpdk_cryptodev_module)) {
@@ -716,21 +657,19 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 	/* mlx5_pci binds keys to a specific device, we can't use a key with any device */
 	assert(dev == key_handle->device || priv->driver != ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI);
 
-	if (task->base.op_code == ACCEL_OPC_ENCRYPT) {
+	if (task->base.op_code == SPDK_ACCEL_OPC_ENCRYPT) {
 		session = key_handle->session_encrypt;
-	} else if (task->base.op_code == ACCEL_OPC_DECRYPT) {
+	} else if (task->base.op_code == SPDK_ACCEL_OPC_DECRYPT) {
 		session = key_handle->session_decrypt;
 	} else {
 		return -EINVAL;
 	}
 
-	rc = accel_dpdk_cryptodev_task_alloc_resources(src_mbufs, task->inplace ? NULL : dst_mbufs,
+	rc = accel_dpdk_cryptodev_task_alloc_resources(src_mbufs, inplace ? NULL : dst_mbufs,
 			crypto_ops, cryop_cnt);
 	if (rc) {
 		return rc;
 	}
-	/* This value is used in the completion callback to determine when the accel task is complete. */
-	task->cryop_submitted += cryop_cnt;
 
 	/* As we don't support chaining because of a decision to use LBA as IV, construction
 	 * of crypto operations is straightforward. We build both the op, the mbuf and the
@@ -741,7 +680,7 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 	 */
 	spdk_iov_sgl_init(&src, task->base.s.iovs, task->base.s.iovcnt, 0);
 	spdk_iov_sgl_advance(&src, sgl_offset);
-	if (!task->inplace) {
+	if (!inplace) {
 		spdk_iov_sgl_init(&dst, task->base.d.iovs, task->base.d.iovcnt, 0);
 		spdk_iov_sgl_advance(&dst, sgl_offset);
 	}
@@ -749,7 +688,7 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 	for (crypto_index = 0; crypto_index < cryop_cnt; crypto_index++) {
 		rc = accel_dpdk_cryptodev_mbuf_add_single_block(&src, src_mbufs[crypto_index], task);
 		if (spdk_unlikely(rc)) {
-			goto err_free_ops;
+			goto free_ops;
 		}
 		accel_dpdk_cryptodev_op_set_iv(crypto_ops[crypto_index], iv_start);
 		iv_start++;
@@ -762,14 +701,14 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 		/* link the mbuf to the crypto op. */
 		crypto_ops[crypto_index]->sym->m_src = src_mbufs[crypto_index];
 
-		if (task->inplace) {
+		if (inplace) {
 			crypto_ops[crypto_index]->sym->m_dst = NULL;
 		} else {
 #ifndef __clang_analyzer__
 			/* scan-build thinks that dst_mbufs is not initialized */
 			rc = accel_dpdk_cryptodev_mbuf_add_single_block(&dst, dst_mbufs[crypto_index], task);
 			if (spdk_unlikely(rc)) {
-				goto err_free_ops;
+				goto free_ops;
 			}
 			crypto_ops[crypto_index]->sym->m_dst = dst_mbufs[crypto_index];
 #endif
@@ -780,25 +719,50 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 	 * configured the crypto device for.
 	 */
 	num_enqueued_ops = rte_cryptodev_enqueue_burst(dev->cdev_id, qp->qp, crypto_ops, cryop_cnt);
-
+	/* This value is used in the completion callback to determine when the accel task is complete. */
+	task->cryop_submitted += num_enqueued_ops;
 	qp->num_enqueued_ops += num_enqueued_ops;
 	/* We were unable to enqueue everything but did get some, so need to decide what
 	 * to do based on the status of the last op.
 	 */
 	if (num_enqueued_ops < cryop_cnt) {
 		switch (crypto_ops[num_enqueued_ops]->status) {
-		case RTE_CRYPTO_OP_STATUS_NOT_PROCESSED:
-			/* Queue them up on a linked list to be resubmitted via the poller. */
-			for (crypto_index = num_enqueued_ops; crypto_index < cryop_cnt; crypto_index++) {
-				op_to_queue = (struct accel_dpdk_cryptodev_queued_op *)rte_crypto_op_ctod_offset(
-						      crypto_ops[crypto_index],
-						      uint8_t *, ACCEL_DPDK_CRYPTODEV_QUEUED_OP_OFFSET);
-				op_to_queue->qp = qp;
-				op_to_queue->crypto_op = crypto_ops[crypto_index];
-				op_to_queue->task = task;
-				TAILQ_INSERT_TAIL(&crypto_ch->queued_cry_ops, op_to_queue, link);
+		case RTE_CRYPTO_OP_STATUS_SUCCESS:
+			/* Crypto operation might be completed successfully but enqueuing to a completion ring might fail.
+			 * That might happen with SW PMDs like openssl
+			 * We can't retry such operation on next turn since if crypto operation was inplace, we can encrypt/
+			 * decrypt already processed buffer. See github issue #2907 for more details.
+			 * Handle this case as the crypto op was completed successfully - increment cryop_submitted and
+			 * cryop_completed.
+			 * We won't receive a completion for such operation, so we need to cleanup mbufs and crypto_ops */
+			assert(task->cryop_total > task->cryop_completed);
+			task->cryop_completed++;
+			task->cryop_submitted++;
+			if (task->cryop_completed == task->cryop_total) {
+				assert(num_enqueued_ops == 0);
+				/* All crypto ops are completed. We can't complete the task immediately since this function might be
+				 * called in scope of spdk_accel_submit_* function and user's logic in the completion callback
+				 * might lead to stack overflow */
+				cryop_cnt -= num_enqueued_ops;
+				accel_dpdk_cryptodev_update_resources_from_pools(crypto_ops, src_mbufs, inplace ? NULL : dst_mbufs,
+						num_enqueued_ops, cryop_cnt);
+				rc = -EALREADY;
+				goto free_ops;
 			}
-			break;
+		/* fallthrough */
+		case RTE_CRYPTO_OP_STATUS_NOT_PROCESSED:
+			if (num_enqueued_ops == 0) {
+				/* Nothing was submitted. Free crypto ops and mbufs, treat this case as NOMEM */
+				rc = -ENOMEM;
+				goto free_ops;
+			}
+			/* Part of the crypto operations were not submitted, release mbufs and crypto ops.
+			 * The rest crypto ops will be submitted again once current batch is completed */
+			cryop_cnt -= num_enqueued_ops;
+			accel_dpdk_cryptodev_update_resources_from_pools(crypto_ops, src_mbufs, inplace ? NULL : dst_mbufs,
+					num_enqueued_ops, cryop_cnt);
+			rc = 0;
+			goto free_ops;
 		default:
 			/* For all other statuses, mark task as failed so that the poller will pick
 			 * the failure up for the overall task status.
@@ -809,7 +773,7 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 				 * busy, fail it now as the poller won't know anything about it.
 				 */
 				rc = -EINVAL;
-				goto err_free_ops;
+				goto free_ops;
 			}
 			break;
 		}
@@ -818,8 +782,8 @@ accel_dpdk_cryptodev_process_task(struct accel_dpdk_cryptodev_io_channel *crypto
 	return 0;
 
 	/* Error cleanup paths. */
-err_free_ops:
-	if (!task->inplace) {
+free_ops:
+	if (!inplace) {
 		/* This also releases chained mbufs if any. */
 		rte_pktmbuf_free_bulk(dst_mbufs, cryop_cnt);
 	}
@@ -903,6 +867,12 @@ accel_dpdk_cryptodev_assign_device_qps(struct accel_dpdk_cryptodev_io_channel *c
 		num_drivers++;
 	}
 
+	device_qp = accel_dpdk_cryptodev_get_next_device_qpair(ACCEL_DPDK_CRYPTODEV_DRIVER_UADK);
+	if (device_qp) {
+		assert(crypto_ch->device_qp[ACCEL_DPDK_CRYPTODEV_DRIVER_UADK] == NULL);
+		crypto_ch->device_qp[ACCEL_DPDK_CRYPTODEV_DRIVER_UADK] = device_qp;
+		num_drivers++;
+	}
 	pthread_mutex_unlock(&g_device_lock);
 
 	return num_drivers;
@@ -939,10 +909,9 @@ _accel_dpdk_cryptodev_create_cb(void *io_device, void *ctx_buf)
 		return -EINVAL;
 	}
 
-	/* We use this to queue up crypto ops when the device is busy. */
-	TAILQ_INIT(&crypto_ch->queued_cry_ops);
 	/* We use this to queue tasks when qpair is full or no resources in pools */
 	TAILQ_INIT(&crypto_ch->queued_tasks);
+	TAILQ_INIT(&crypto_ch->completed_tasks);
 
 	return 0;
 }
@@ -960,11 +929,11 @@ accel_dpdk_cryptodev_ctx_size(void)
 }
 
 static bool
-accel_dpdk_cryptodev_supports_opcode(enum accel_opcode opc)
+accel_dpdk_cryptodev_supports_opcode(enum spdk_accel_opcode opc)
 {
 	switch (opc) {
-	case ACCEL_OPC_ENCRYPT:
-	case ACCEL_OPC_DECRYPT:
+	case SPDK_ACCEL_OPC_ENCRYPT:
+	case SPDK_ACCEL_OPC_DECRYPT:
 		return true;
 	default:
 		return false;
@@ -995,9 +964,17 @@ accel_dpdk_cryptodev_submit_tasks(struct spdk_io_channel *_ch, struct spdk_accel
 	}
 
 	rc = accel_dpdk_cryptodev_process_task(ch, task);
-	if (spdk_unlikely(rc == -ENOMEM)) {
-		TAILQ_INSERT_TAIL(&ch->queued_tasks, task, link);
-		rc = 0;
+	if (spdk_unlikely(rc)) {
+		if (rc == -ENOMEM) {
+			TAILQ_INSERT_TAIL(&ch->queued_tasks, task, link);
+			rc = 0;
+		} else if (rc == -EALREADY) {
+			/* -EALREADY means that a task is completed, but it might be unsafe to complete
+			 * it if we are in the submission path. Hence put it into a dedicated queue to and
+			 * process it during polling */
+			TAILQ_INSERT_TAIL(&ch->completed_tasks, task, link);
+			rc = 0;
+		}
 	}
 
 	return rc;
@@ -1020,7 +997,7 @@ accel_dpdk_cryptodev_create(uint8_t index, uint16_t num_lcores)
 #endif
 	};
 	/* Setup queue pairs. */
-	struct rte_cryptodev_config conf = { .socket_id = SPDK_ENV_SOCKET_ID_ANY };
+	struct rte_cryptodev_config conf = { .socket_id = SPDK_ENV_NUMA_ID_ANY };
 	struct accel_dpdk_cryptodev_device *device;
 	uint8_t j, cdev_id, cdrv_id;
 	struct accel_dpdk_cryptodev_qp *dev_qp;
@@ -1049,6 +1026,9 @@ accel_dpdk_cryptodev_create(uint8_t index, uint16_t num_lcores)
 		/* ACCEL_DPDK_CRYPTODEV_QAT_ASYM devices are not supported at this time. */
 		rc = 0;
 		goto err;
+	} else if (strcmp(device->cdev_info.driver_name, ACCEL_DPDK_CRYPTODEV_UADK) == 0) {
+		device->qp_desc_nr = ACCEL_DPDK_CRYPTODEV_QP_DESCRIPTORS;
+		device->type = ACCEL_DPDK_CRYPTODEV_DRIVER_UADK;
 	} else {
 		SPDK_ERRLOG("Failed to start device %u. Invalid driver name \"%s\"\n",
 			    cdev_id, device->cdev_info.driver_name);
@@ -1057,7 +1037,7 @@ accel_dpdk_cryptodev_create(uint8_t index, uint16_t num_lcores)
 	}
 
 	/* Before going any further, make sure we have enough resources for this
-	 * device type to function.  We need a unique queue pair per core accross each
+	 * device type to function.  We need a unique queue pair per core across each
 	 * device type to remain lockless....
 	 */
 	if ((rte_cryptodev_device_count_by_driver(cdrv_id) *
@@ -1168,32 +1148,35 @@ accel_dpdk_cryptodev_init(void)
 	uint8_t cdev_count;
 	uint8_t cdev_id;
 	int i, rc;
+	const char *driver_name = g_driver_names[g_dpdk_cryptodev_driver];
 	struct accel_dpdk_cryptodev_device *device, *tmp_dev;
 	unsigned int max_sess_size = 0, sess_size;
 	uint16_t num_lcores = rte_lcore_count();
-	char aesni_args[32];
+	char init_args[32];
 
 	/* Only the first call via module init should init the crypto drivers. */
 	if (g_session_mp != NULL) {
 		return 0;
 	}
 
-	/* We always init ACCEL_DPDK_CRYPTODEV_AESNI_MB */
-	snprintf(aesni_args, sizeof(aesni_args), "max_nb_queue_pairs=%d",
-		 ACCEL_DPDK_CRYPTODEV_AESNI_MB_NUM_QP);
-	rc = rte_vdev_init(ACCEL_DPDK_CRYPTODEV_AESNI_MB, aesni_args);
-	if (rc) {
-		SPDK_NOTICELOG("Failed to create virtual PMD %s: error %d. "
-			       "Possibly %s is not supported by DPDK library. "
-			       "Keep going...\n", ACCEL_DPDK_CRYPTODEV_AESNI_MB, rc, ACCEL_DPDK_CRYPTODEV_AESNI_MB);
+	if (g_dpdk_cryptodev_driver == ACCEL_DPDK_CRYPTODEV_DRIVER_AESNI_MB ||
+	    g_dpdk_cryptodev_driver == ACCEL_DPDK_CRYPTODEV_DRIVER_UADK) {
+		snprintf(init_args, sizeof(init_args), "max_nb_queue_pairs=%d",
+			 ACCEL_DPDK_CRYPTODEV_AESNI_MB_NUM_QP);
+		rc = rte_vdev_init(driver_name, init_args);
+		if (rc) {
+			SPDK_NOTICELOG("Failed to create virtual PMD %s: error %d. "
+				       "Possibly %s is not supported by DPDK library. "
+				       "Keep going...\n", driver_name, rc, driver_name);
+		}
 	}
 
-	/* If we have no crypto devices, there's no reason to continue. */
+	/* If we have no crypto devices, report error to fallback on other modules. */
 	cdev_count = rte_cryptodev_count();
-	SPDK_NOTICELOG("Found crypto devices: %d\n", (int)cdev_count);
 	if (cdev_count == 0) {
-		return 0;
+		return -ENODEV;
 	}
+	SPDK_NOTICELOG("Found crypto devices: %d\n", (int)cdev_count);
 
 	g_mbuf_offset = rte_mbuf_dynfield_register(&rte_mbuf_dynfield_io_context);
 	if (g_mbuf_offset < 0) {
@@ -1236,7 +1219,7 @@ accel_dpdk_cryptodev_init(void)
 
 	g_mbuf_mp = rte_pktmbuf_pool_create("dpdk_crypto_mbuf_mp", ACCEL_DPDK_CRYPTODEV_NUM_MBUFS,
 					    ACCEL_DPDK_CRYPTODEV_POOL_CACHE_SIZE,
-					    0, 0, SPDK_ENV_SOCKET_ID_ANY);
+					    0, 0, SPDK_ENV_NUMA_ID_ANY);
 	if (g_mbuf_mp == NULL) {
 		SPDK_ERRLOG("Cannot create mbuf pool\n");
 		rc = -ENOMEM;
@@ -1248,7 +1231,7 @@ accel_dpdk_cryptodev_init(void)
 	g_crypto_op_mp = rte_crypto_op_pool_create("dpdk_crypto_op_mp",
 			 RTE_CRYPTO_OP_TYPE_SYMMETRIC, ACCEL_DPDK_CRYPTODEV_NUM_MBUFS, ACCEL_DPDK_CRYPTODEV_POOL_CACHE_SIZE,
 			 (ACCEL_DPDK_CRYPTODEV_DEFAULT_NUM_XFORMS * sizeof(struct rte_crypto_sym_xform)) +
-			 ACCEL_DPDK_CRYPTODEV_IV_LENGTH + ACCEL_DPDK_CRYPTODEV_QUEUED_OP_LENGTH, rte_socket_id());
+			 ACCEL_DPDK_CRYPTODEV_IV_LENGTH, rte_socket_id());
 	if (g_crypto_op_mp == NULL) {
 		SPDK_ERRLOG("Cannot create op pool\n");
 		rc = -ENOMEM;
@@ -1302,7 +1285,11 @@ accel_dpdk_cryptodev_fini_cb(void *io_device)
 		TAILQ_REMOVE(&g_crypto_devices, device, link);
 		accel_dpdk_cryptodev_release(device);
 	}
-	rte_vdev_uninit(ACCEL_DPDK_CRYPTODEV_AESNI_MB);
+
+	if (g_dpdk_cryptodev_driver == ACCEL_DPDK_CRYPTODEV_DRIVER_AESNI_MB ||
+	    g_dpdk_cryptodev_driver == ACCEL_DPDK_CRYPTODEV_DRIVER_UADK) {
+		rte_vdev_uninit(g_driver_names[g_dpdk_cryptodev_driver]);
+	}
 
 	rte_mempool_free(g_crypto_op_mp);
 	rte_mempool_free(g_mbuf_mp);
@@ -1370,12 +1357,12 @@ accel_dpdk_cryptodev_key_handle_configure(struct spdk_accel_crypto_key *key,
 	key_handle->cipher_xform.cipher.iv.length = ACCEL_DPDK_CRYPTODEV_IV_LENGTH;
 
 	switch (priv->cipher) {
-	case ACCEL_DPDK_CRYPTODEV_CIPHER_AES_CBC:
+	case SPDK_ACCEL_CIPHER_AES_CBC:
 		key_handle->cipher_xform.cipher.key.data = key->key;
 		key_handle->cipher_xform.cipher.key.length = key->key_size;
 		key_handle->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_CBC;
 		break;
-	case ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS:
+	case SPDK_ACCEL_CIPHER_AES_XTS:
 		key_handle->cipher_xform.cipher.key.data = priv->xts_key;
 		key_handle->cipher_xform.cipher.key.length = key->key_size + key->key2_size;
 		key_handle->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_XTS;
@@ -1405,84 +1392,6 @@ accel_dpdk_cryptodev_key_handle_configure(struct spdk_accel_crypto_key *key,
 	return 0;
 }
 
-static int
-accel_dpdk_cryptodev_validate_parameters(enum accel_dpdk_cryptodev_driver_type driver,
-		enum accel_dpdk_crypto_dev_cipher_type cipher, struct spdk_accel_crypto_key *key)
-{
-	/* Check that all required parameters exist */
-	switch (cipher) {
-	case ACCEL_DPDK_CRYPTODEV_CIPHER_AES_CBC:
-		if (!key->key || !key->key_size) {
-			SPDK_ERRLOG("ACCEL_DPDK_CRYPTODEV_AES_CBC requires a key\n");
-			return -1;
-		}
-		if (key->key2 || key->key2_size) {
-			SPDK_ERRLOG("ACCEL_DPDK_CRYPTODEV_AES_CBC doesn't use key2\n");
-			return -1;
-		}
-		break;
-	case ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS:
-		if (!key->key || !key->key_size || !key->key2 || !key->key2_size) {
-			SPDK_ERRLOG("ACCEL_DPDK_CRYPTODEV_AES_XTS requires both key and key2\n");
-			return -1;
-		}
-		break;
-	default:
-		return -1;
-	}
-
-	/* Check driver/cipher combinations and key lengths */
-	switch (cipher) {
-	case ACCEL_DPDK_CRYPTODEV_CIPHER_AES_CBC:
-		if (driver == ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI) {
-			SPDK_ERRLOG("Driver %s only supports cipher %s\n",
-				    g_driver_names[ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI],
-				    g_cipher_names[ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS]);
-			return -1;
-		}
-		if (key->key_size != ACCEL_DPDK_CRYPTODEV_AES_CBC_KEY_LENGTH) {
-			SPDK_ERRLOG("Invalid key size %zu for cipher %s, should be %d\n", key->key_size,
-				    g_cipher_names[ACCEL_DPDK_CRYPTODEV_CIPHER_AES_CBC], ACCEL_DPDK_CRYPTODEV_AES_CBC_KEY_LENGTH);
-			return -1;
-		}
-		break;
-	case ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS:
-		switch (driver) {
-		case ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI:
-			if (key->key_size != ACCEL_DPDK_CRYPTODEV_AES_XTS_256_BLOCK_KEY_LENGTH &&
-			    key->key_size != ACCEL_DPDK_CRYPTODEV_AES_XTS_512_BLOCK_KEY_LENGTH) {
-				SPDK_ERRLOG("Invalid key size %zu for driver %s, cipher %s, supported %d or %d\n",
-					    key->key_size, g_driver_names[ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI],
-					    g_cipher_names[ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS],
-					    ACCEL_DPDK_CRYPTODEV_AES_XTS_256_BLOCK_KEY_LENGTH,
-					    ACCEL_DPDK_CRYPTODEV_AES_XTS_512_BLOCK_KEY_LENGTH);
-				return -1;
-			}
-			break;
-		case ACCEL_DPDK_CRYPTODEV_DRIVER_QAT:
-		case ACCEL_DPDK_CRYPTODEV_DRIVER_AESNI_MB:
-			if (key->key_size != ACCEL_DPDK_CRYPTODEV_AES_XTS_128_BLOCK_KEY_LENGTH) {
-				SPDK_ERRLOG("Invalid key size %zu, supported %d\n", key->key_size,
-					    ACCEL_DPDK_CRYPTODEV_AES_XTS_128_BLOCK_KEY_LENGTH);
-				return -1;
-			}
-			break;
-		default:
-			SPDK_ERRLOG("Incorrect driver type %d\n", driver);
-			assert(0);
-			return -1;
-		}
-		if (key->key2_size != ACCEL_DPDK_CRYPTODEV_AES_XTS_TWEAK_KEY_LENGTH) {
-			SPDK_ERRLOG("Cipher %s requires key2 size %d\n",
-				    g_cipher_names[ACCEL_DPDK_CRYPTODEV_CIPHER_AES_CBC], ACCEL_DPDK_CRYPTODEV_AES_XTS_TWEAK_KEY_LENGTH);
-			return -1;
-		}
-		break;
-	}
-
-	return 0;
-}
-
 static void
 accel_dpdk_cryptodev_key_deinit(struct spdk_accel_crypto_key *key)
 {
@@ -1504,6 +1413,34 @@ accel_dpdk_cryptodev_key_deinit(struct spdk_accel_crypto_key *key)
 	free(priv);
 }
 
+static bool
+accel_dpdk_cryptodev_supports_cipher(enum spdk_accel_cipher cipher, size_t key_size)
+{
+	switch (g_dpdk_cryptodev_driver) {
+	case ACCEL_DPDK_CRYPTODEV_DRIVER_QAT:
+	case ACCEL_DPDK_CRYPTODEV_DRIVER_UADK:
+	case ACCEL_DPDK_CRYPTODEV_DRIVER_AESNI_MB:
+		switch (cipher) {
+		case SPDK_ACCEL_CIPHER_AES_XTS:
+			return key_size == SPDK_ACCEL_AES_XTS_128_KEY_SIZE;
+		case SPDK_ACCEL_CIPHER_AES_CBC:
+			return key_size == ACCEL_DPDK_CRYPTODEV_AES_CBC_128_KEY_SIZE ||
+			       key_size == ACCEL_DPDK_CRYPTODEV_AES_CBC_256_KEY_SIZE;
+		default:
+			return false;
+		}
+	case ACCEL_DPDK_CRYPTODEV_DRIVER_MLX5_PCI:
+		switch (cipher) {
+		case SPDK_ACCEL_CIPHER_AES_XTS:
+			return key_size == SPDK_ACCEL_AES_XTS_128_KEY_SIZE || key_size == SPDK_ACCEL_AES_XTS_256_KEY_SIZE;
+		default:
+			return false;
+		}
+	default:
+		return false;
+	}
+}
+
 static int
 accel_dpdk_cryptodev_key_init(struct spdk_accel_crypto_key *key)
 {
@@ -1511,28 +1448,9 @@ accel_dpdk_cryptodev_key_init(struct spdk_accel_crypto_key *key)
 	struct accel_dpdk_cryptodev_key_priv *priv;
 	struct accel_dpdk_cryptodev_key_handle *key_handle;
 	enum accel_dpdk_cryptodev_driver_type driver;
-	enum accel_dpdk_crypto_dev_cipher_type cipher;
 	int rc;
 
-	if (!key->param.cipher) {
-		SPDK_ERRLOG("Cipher is missing\n");
-		return -EINVAL;
-	}
-
-	if (strcmp(key->param.cipher, ACCEL_DPDK_CRYPTODEV_AES_CBC) == 0) {
-		cipher = ACCEL_DPDK_CRYPTODEV_CIPHER_AES_CBC;
-	} else if (strcmp(key->param.cipher, ACCEL_DPDK_CRYPTODEV_AES_XTS) == 0) {
-		cipher = ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS;
-	} else {
-		SPDK_ERRLOG("Unsupported cipher name %s.\n", key->param.cipher);
-		return -EINVAL;
-	}
-
 	driver = g_dpdk_cryptodev_driver;
-
-	if (accel_dpdk_cryptodev_validate_parameters(driver, cipher, key)) {
-		return -EINVAL;
-	}
 
 	priv = calloc(1, sizeof(*priv));
 	if (!priv) {
@@ -1541,10 +1459,10 @@ accel_dpdk_cryptodev_key_init(struct spdk_accel_crypto_key *key)
 	}
 	key->priv = priv;
 	priv->driver = driver;
-	priv->cipher = cipher;
+	priv->cipher = key->cipher;
 	TAILQ_INIT(&priv->dev_keys);
 
-	if (cipher == ACCEL_DPDK_CRYPTODEV_CIPHER_AES_XTS) {
+	if (key->cipher == SPDK_ACCEL_CIPHER_AES_XTS) {
 		/* DPDK expects the keys to be concatenated together. */
 		priv->xts_key = calloc(key->key_size + key->key2_size + 1, sizeof(char));
 		if (!priv->xts_key) {
@@ -1607,6 +1525,29 @@ accel_dpdk_cryptodev_write_config_json(struct spdk_json_write_ctx *w)
 	spdk_json_write_object_end(w);
 }
 
+static int
+accel_dpdk_cryptodev_get_operation_info(enum spdk_accel_opcode opcode,
+					const struct spdk_accel_operation_exec_ctx *ctx,
+					struct spdk_accel_opcode_info *info)
+{
+	if (!accel_dpdk_cryptodev_supports_opcode(opcode)) {
+		SPDK_ERRLOG("Received unexpected opcode: %d", opcode);
+		assert(false);
+		return -EINVAL;
+	}
+
+	switch (g_dpdk_cryptodev_driver) {
+	case ACCEL_DPDK_CRYPTODEV_DRIVER_QAT:
+		info->required_alignment = spdk_u32log2(ctx->block_size);
+		break;
+	default:
+		info->required_alignment = 0;
+		break;
+	}
+
+	return 0;
+}
+
 static struct spdk_accel_module_if g_accel_dpdk_cryptodev_module = {
 	.module_init		= accel_dpdk_cryptodev_init,
 	.module_fini		= accel_dpdk_cryptodev_fini,
@@ -1618,4 +1559,6 @@ static struct spdk_accel_module_if g_accel_dpdk_cryptodev_module = {
 	.submit_tasks		= accel_dpdk_cryptodev_submit_tasks,
 	.crypto_key_init	= accel_dpdk_cryptodev_key_init,
 	.crypto_key_deinit	= accel_dpdk_cryptodev_key_deinit,
+	.crypto_supports_cipher	= accel_dpdk_cryptodev_supports_cipher,
+	.get_operation_info	= accel_dpdk_cryptodev_get_operation_info,
 };

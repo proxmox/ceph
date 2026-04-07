@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /**
@@ -118,6 +119,9 @@ struct ocf_stats_blocks {
 	struct ocf_stat volume_rd;
 	struct ocf_stat volume_wr;
 	struct ocf_stat volume_total;
+	struct ocf_stat pass_through_rd;
+	struct ocf_stat pass_through_wr;
+	struct ocf_stat pass_through_total;
 };
 
 /**
@@ -233,7 +237,10 @@ void ocf_core_stats_initialize(ocf_core_t core);
  * Initialize or reset counters used for statistics.
  *
  * @param[in] cache Cache handle
+ *
+ * @retval 0 Success
+ * @retval Non-zero Error
  */
-void ocf_core_stats_initialize_all(ocf_cache_t cache);
+int ocf_core_stats_initialize_all(ocf_cache_t cache);
 
 #endif /* __OCF_STATS_H__ */

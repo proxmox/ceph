@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef ENGINE_COMMON_H_
@@ -234,6 +235,15 @@ struct ocf_engine_callbacks
 int ocf_engine_prepare_clines(struct ocf_request *req);
 
 /**
+* @brief Check if the OCF request is mapped to cache (lookup cache)
+*
+* @note This function checks if there is a HIT without updating hotness info
+*
+* @param req OCF request
+*/
+void ocf_engine_lookup(struct ocf_request *req);
+
+/**
  * @brief Traverse OCF request (lookup cache)
  *
  * @note This function does not evict cachelines. Only lookup in metadata is
@@ -280,40 +290,10 @@ void ocf_engine_update_block_stats(struct ocf_request *req);
  */
 void ocf_engine_update_request_stats(struct ocf_request *req);
 
-/**
- * @brief Push front OCF request to the OCF thread worker queue
- *
- * @param req OCF request
- * @param allow_sync caller allows for request from queue to be ran immediately
-		from push function in caller context
- */
-void ocf_engine_push_req_back(struct ocf_request *req,
-		bool allow_sync);
-
-/**
- * @brief Push back OCF request to the OCF thread worker queue
- *
- * @param req OCF request
- * @param allow_sync caller allows for request from queue to be ran immediately
-		from push function in caller context
- */
-void ocf_engine_push_req_front(struct ocf_request *req,
-		bool allow_sync);
-
-/**
- * @brief Set interface and push from request to the OCF thread worker queue
- *
- * @param req OCF request
- * @param io_if IO interface
- * @param allow_sync caller allows for request from queue to be ran immediately
-		from push function in caller context
- */
-void ocf_engine_push_req_front_if(struct ocf_request *req,
-		const struct ocf_io_if *io_if,
-		bool allow_sync);
-
 void inc_fallback_pt_error_counter(ocf_cache_t cache);
 
 void ocf_engine_on_resume(struct ocf_request *req);
+
+void ocf_engine_set_hot(struct ocf_request *req);
 
 #endif /* ENGINE_COMMON_H_ */

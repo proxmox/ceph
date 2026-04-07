@@ -1,11 +1,11 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
- *   Copyright (C) 2018 Intel Corporation.
- *   All rights reserved.
+ *   Copyright (C) 2018 Intel Corporation. All rights reserved.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "common/lib/test_env.c"
 #include "event/app.c"
 
@@ -21,18 +21,22 @@ DEFINE_STUB_V(spdk_rpc_register_method, (const char *method, spdk_rpc_method_han
 DEFINE_STUB_V(spdk_rpc_register_alias_deprecated, (const char *method, const char *alias));
 DEFINE_STUB_V(spdk_rpc_set_state, (uint32_t state));
 DEFINE_STUB(spdk_rpc_get_state, uint32_t, (void), SPDK_RPC_RUNTIME);
-DEFINE_STUB(spdk_rpc_initialize, int, (const char *listen_addr), 0);
+DEFINE_STUB(spdk_rpc_initialize, int, (const char *listen_addr,
+				       const struct spdk_rpc_opts *opts), 0);
 DEFINE_STUB_V(spdk_rpc_set_allowlist, (const char **rpc_allowlist));
 DEFINE_STUB_V(spdk_rpc_finish, (void));
-DEFINE_STUB_V(spdk_subsystem_init_from_json_config, (const char *json_config_file,
-		const char *rpc_addr,
+DEFINE_STUB_V(spdk_rpc_server_finish, (const char *listen_addr));
+DEFINE_STUB_V(spdk_rpc_server_pause, (const char *listen_addr));
+DEFINE_STUB_V(spdk_rpc_server_resume, (const char *listen_addr));
+DEFINE_STUB_V(spdk_subsystem_load_config, (void *json, ssize_t json_size,
 		spdk_subsystem_init_fn cb_fn, void *cb_arg, bool stop_on_error));
 DEFINE_STUB_V(spdk_reactors_start, (void));
 DEFINE_STUB_V(spdk_reactors_stop, (void *arg1));
 DEFINE_STUB(spdk_reactors_init, int, (size_t msg_mempool_size), 0);
 DEFINE_STUB_V(spdk_reactors_fini, (void));
-DEFINE_STUB_V(_spdk_scheduler_set_period, (uint64_t period));
 bool g_scheduling_in_progress;
+
+SPDK_LOG_REGISTER_COMPONENT(app_rpc);
 
 static void
 unittest_usage(void)
@@ -68,10 +72,10 @@ test_spdk_app_parse_args(void)
 				       "-B",
 				       "0000:81:00.0"
 				      };
-	char *invalid_argv_BW[test_argc] = {"app_ut",
+	char *invalid_argv_BA[test_argc] = {"app_ut",
 					    "-B",
 					    "0000:81:00.0",
-					    "-W",
+					    "-A",
 					    "0000:82:00.0",
 					    "-cspdk.conf"
 					   };
@@ -140,8 +144,8 @@ test_spdk_app_parse_args(void)
 	optind = 1;
 	clean_opts(&opts);
 
-	/* Specify -B and -W options at the same time. Expected result: FAIL */
-	rc = spdk_app_parse_args(test_argc, invalid_argv_BW, &opts, "", NULL, unittest_parse_args, NULL);
+	/* Specify -B and -A options at the same time. Expected result: FAIL */
+	rc = spdk_app_parse_args(test_argc, invalid_argv_BA, &opts, "", NULL, unittest_parse_args, NULL);
 	SPDK_CU_ASSERT_FATAL(rc == SPDK_APP_PARSE_ARGS_FAIL);
 	optind = 1;
 	clean_opts(&opts);
@@ -160,16 +164,13 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("app_suite", NULL, NULL);
 
 	CU_ADD_TEST(suite, test_spdk_app_parse_args);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

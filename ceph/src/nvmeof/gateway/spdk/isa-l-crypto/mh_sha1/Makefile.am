@@ -49,6 +49,9 @@ lsrc_aarch64 += \
 		$(lsrc_mh_sha1_base) \
 		mh_sha1/aarch64/mh_sha1_multibinary.S \
 		mh_sha1/aarch64/mh_sha1_aarch64_dispatcher.c \
+		mh_sha1/aarch64/mh_sha1_block_sve.S \
+		mh_sha1/aarch64/mh_sha1_sve.c \
+		mh_sha1/aarch64/mh_sha1_sve2.c \
 		mh_sha1/aarch64/mh_sha1_block_asimd.S \
 		mh_sha1/aarch64/mh_sha1_asimd.c \
 		mh_sha1/aarch64/mh_sha1_block_ce.S \
@@ -69,6 +72,8 @@ src_include += -I $(srcdir)/mh_sha1
 extern_hdrs +=	include/mh_sha1.h
 
 check_tests += 	mh_sha1/mh_sha1_test
+check_tests += 	mh_sha1/mh_sha1_param_test
+
 unit_tests  += 	mh_sha1/mh_sha1_update_test
 
 perf_tests  += 	mh_sha1/mh_sha1_perf

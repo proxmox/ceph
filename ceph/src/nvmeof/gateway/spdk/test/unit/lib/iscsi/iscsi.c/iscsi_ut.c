@@ -7,7 +7,7 @@
 
 #include "spdk/endian.h"
 #include "spdk/scsi.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "CUnit/Basic.h"
 
@@ -385,6 +385,7 @@ underflow_for_read_transfer_test(void)
 	iscsi_task_set_pdu(&task, pdu);
 	task.parent = NULL;
 
+	task.scsi.iov.iov_base = (void *)0xF0000000;
 	task.scsi.iovs = &task.scsi.iov;
 	task.scsi.iovcnt = 1;
 	task.scsi.length = 512;
@@ -515,6 +516,7 @@ underflow_for_request_sense_test(void)
 	iscsi_task_set_pdu(&task, pdu1);
 	task.parent = NULL;
 
+	task.scsi.iov.iov_base = (void *)0xF000000;
 	task.scsi.iovs = &task.scsi.iov;
 	task.scsi.iovcnt = 1;
 	task.scsi.length = 512;
@@ -606,6 +608,7 @@ underflow_for_check_condition_test(void)
 	iscsi_task_set_pdu(&task, pdu);
 	task.parent = NULL;
 
+	task.scsi.iov.iov_base = (void *)0xF0000000;
 	task.scsi.iovs = &task.scsi.iov;
 	task.scsi.iovcnt = 1;
 	task.scsi.length = 512;
@@ -1232,6 +1235,7 @@ build_iovs_with_md_test(void)
 	uint8_t *data;
 	uint32_t mapped_length = 0;
 	int rc;
+	struct spdk_dif_ctx_init_ext_opts dif_opts;
 
 	conn.header_digest = true;
 	conn.data_digest = true;
@@ -1245,8 +1249,10 @@ build_iovs_with_md_test(void)
 	pdu.bhs.total_ahs_len = 0;
 	pdu.bhs.opcode = ISCSI_OP_SCSI;
 
+	dif_opts.size = SPDK_SIZEOF(&dif_opts, dif_pi_format);
+	dif_opts.dif_pi_format = SPDK_DIF_PI_FORMAT_16;
 	rc = spdk_dif_ctx_init(&pdu.dif_ctx, 4096 + 128, 128, true, false, SPDK_DIF_TYPE1,
-			       0, 0, 0, 0, 0, 0);
+			       0, 0, 0, 0, 0, 0, &dif_opts);
 	CU_ASSERT(rc == 0);
 
 	pdu.dif_insert_or_strip = true;
@@ -2590,7 +2596,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("iscsi_suite", NULL, NULL);
@@ -2620,9 +2625,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, data_out_pdu_sequence_test);
 	CU_ADD_TEST(suite, immediate_data_and_data_out_pdu_sequence_test);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

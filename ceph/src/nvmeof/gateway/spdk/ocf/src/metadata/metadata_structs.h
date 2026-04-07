@@ -1,6 +1,6 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __METADATA_STRUCTS_H__
@@ -36,14 +36,6 @@ enum ocf_metadata_shutdown_status {
 typedef void (*ocf_metadata_query_cores_end_t)(void *priv, int error,
 		unsigned int num_cores);
 
-struct ocf_cache_line_settings {
-	ocf_cache_line_size_t size;
-	uint64_t sector_count;
-	uint64_t sector_start;
-	uint64_t sector_end;
-};
-
-
 #define OCF_METADATA_GLOBAL_LOCK_IDX_BITS 2
 #define OCF_NUM_GLOBAL_META_LOCKS (1 << (OCF_METADATA_GLOBAL_LOCK_IDX_BITS))
 
@@ -68,14 +60,11 @@ struct ocf_metadata_lock
  * @brief Metadata control structure
  */
 struct ocf_metadata {
-	ocf_metadata_layout_t layout;
-		/*!< Per-cacheline metadata layout */
-
 	void *priv;
 		/*!< Private data of metadata service interface */
 
-	const struct ocf_cache_line_settings settings;
-		/*!< Cache line configuration */
+	ocf_cache_line_size_t line_size;
+		/*!< Cache line size */
 
 	bool is_volatile;
 		/*!< true if metadata used in volatile mode (RAM only) */

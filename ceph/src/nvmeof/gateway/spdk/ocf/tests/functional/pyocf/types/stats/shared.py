@@ -1,6 +1,7 @@
 #
 # Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2024 Huawei Technologies
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 from ctypes import c_uint64, c_uint32, Structure
@@ -73,6 +74,9 @@ class BlocksStats(Structure):
         ("volume_rd", _Stat),
         ("volume_wr", _Stat),
         ("volume_total", _Stat),
+        ("pt_rd", _Stat),
+        ("pt_wr", _Stat),
+        ("pt_total", _Stat),
     ]
 
 

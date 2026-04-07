@@ -1,6 +1,6 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __METADATA_H__
@@ -18,11 +18,22 @@
 #include "metadata_collision.h"
 #include "metadata_core.h"
 #include "metadata_misc.h"
+#include "metadata_passive_update.h"
 
 #define INVALID 0
 #define VALID 1
 #define CLEAN 2
 #define DIRTY 3
+
+typedef void (*ocf_mngt_init_metadata_end_t)(void *priv, int error);
+
+struct ocf_init_metadata_context {
+	ocf_mngt_init_metadata_end_t cmpl;
+	ocf_pipeline_t pipeline;
+	ocf_cache_t cache;
+	uint8_t skip_collision;
+	void *priv;
+};
 
 /**
  * @brief Initialize metadata
@@ -40,11 +51,12 @@ int ocf_metadata_init(struct ocf_cache *cache,
  * @param cache - Cache instance
  * @param device_size - Device size in bytes
  * @param cache_line_size Cache line size
+ * @param cleaner_disabled Cleaner is disabled
  * @return 0 - Operation success otherwise failure
  */
 int ocf_metadata_init_variable_size(struct ocf_cache *cache,
-		uint64_t device_size, ocf_cache_line_size_t cache_line_size,
-		ocf_metadata_layout_t layout);
+		uint64_t device_size, ocf_cache_line_size_t line_size,
+		bool cleaner_disabled);
 
 /**
  * @brief Initialize collision table
@@ -58,14 +70,16 @@ void ocf_metadata_init_freelist_partition(struct ocf_cache *cache);
  *
  * @param cache - Cache instance
  */
-void ocf_metadata_init_hash_table(struct ocf_cache *cache);
+void ocf_metadata_init_hash_table(ocf_pipeline_t pipeline, void *priv,
+		ocf_pipeline_arg_t arg);
 
 /**
  * @brief Initialize collision table
  *
  * @param cache - Cache instance
  */
-void ocf_metadata_init_collision(struct ocf_cache *cache);
+void ocf_metadata_init_collision(ocf_pipeline_t pipeline, void *priv,
+		ocf_pipeline_arg_t arg);
 
 /**
  * @brief De-Initialize metadata
@@ -198,10 +212,10 @@ void ocf_metadata_set_hash(struct ocf_cache *cache,
 struct ocf_metadata_load_properties {
 	enum ocf_metadata_shutdown_status shutdown_status;
 	uint8_t dirty_flushed;
-	ocf_metadata_layout_t layout;
 	ocf_cache_mode_t cache_mode;
 	ocf_cache_line_size_t line_size;
 	char *cache_name;
+	bool cleaner_disabled;
 };
 
 typedef void (*ocf_metadata_load_properties_end_t)(void *priv, int error,
@@ -215,5 +229,18 @@ static inline ocf_cache_line_t ocf_metadata_collision_table_entries(
 {
 	return cache->device->collision_table_entries;
 }
+
+void ocf_metadata_zero_superblock(ocf_cache_t cache,
+		ocf_metadata_end_t cmpl, void *context);
+
+/**
+ * @brief Check for incorrect status bits combinations
+ *
+ * @param cache Cache instance
+ * @param line Cache line
+ * @return true - status bits are correct
+ * @return false - status bits have illegal value
+ */
+bool ocf_metadata_check(struct ocf_cache *cache, ocf_cache_line_t line);
 
 #endif /* METADATA_H_ */

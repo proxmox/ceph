@@ -39,7 +39,7 @@ SPDK's identify example application displays whether a device has a controller
 memory buffer and which operations it supports. Run it as follows:
 
 ~~~{.sh}
-./build/examples/identify -r traddr:<pci id of ssd>
+spdk_nvme_identify -r traddr:<pci id of ssd>
 ~~~
 
 ## cmb_copy: An example P2P Application {#p2p_cmb_copy}
@@ -57,7 +57,7 @@ DMA buffer.
 
 * In some systems when performing peer-2-peer DMAs between PCIe EPs
   that are directly connected to the Root Complex (RC) the DMA may
-  fail or the performance may not be great. Basically your milage may
+  fail or the performance may not be great. Basically your mileage may
   vary. It is recommended that you use a PCIe switch (such as those
   provided by Broadcom or Microsemi) as that is know to provide good
   performance.

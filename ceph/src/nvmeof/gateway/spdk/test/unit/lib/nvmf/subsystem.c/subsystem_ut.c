@@ -6,12 +6,13 @@
 #include "spdk/stdinc.h"
 
 #include "common/lib/ut_multithread.c"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
+#include "spdk/nvmf.h"
 #include "spdk_internal/mock.h"
 
 #include "spdk/bdev_module.h"
 #include "nvmf/subsystem.c"
-#include <uuid/uuid.h>
+#include "nvmf/transport.c"
 
 SPDK_LOG_REGISTER_COMPONENT(nvmf)
 
@@ -23,44 +24,22 @@ DEFINE_STUB(spdk_bdev_module_claim_bdev,
 DEFINE_STUB_V(spdk_bdev_module_release_bdev,
 	      (struct spdk_bdev *bdev));
 
-DEFINE_STUB(spdk_bdev_get_block_size, uint32_t,
-	    (const struct spdk_bdev *bdev), 512);
+DEFINE_STUB(spdk_bdev_desc_get_block_size, uint32_t,
+	    (struct spdk_bdev_desc *desc), 512);
 
-DEFINE_STUB(spdk_bdev_get_md_size, uint32_t,
-	    (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_desc_get_md_size, uint32_t,
+	    (struct spdk_bdev_desc *desc), 0);
 
-DEFINE_STUB(spdk_bdev_is_md_interleaved, bool,
-	    (const struct spdk_bdev *bdev), false);
+DEFINE_STUB(spdk_bdev_desc_is_md_interleaved, bool,
+	    (struct spdk_bdev_desc *desc), false);
 
 DEFINE_STUB(spdk_bdev_io_type_supported, bool,
 	    (struct spdk_bdev *bdev,
 	     enum spdk_bdev_io_type io_type), false);
 
-DEFINE_STUB(spdk_nvmf_transport_stop_listen,
-	    int,
-	    (struct spdk_nvmf_transport *transport,
-	     const struct spdk_nvme_transport_id *trid), 0);
-
-DEFINE_STUB_V(nvmf_update_discovery_log,
+DEFINE_STUB_V(spdk_nvmf_send_discovery_log_notice,
 	      (struct spdk_nvmf_tgt *tgt, const char *hostnqn));
-
-DEFINE_STUB(spdk_nvmf_qpair_disconnect,
-	    int,
-	    (struct spdk_nvmf_qpair *qpair,
-	     nvmf_qpair_disconnect_cb cb_fn, void *ctx), 0);
-
-DEFINE_STUB(nvmf_transport_find_listener,
-	    struct spdk_nvmf_listener *,
-	    (struct spdk_nvmf_transport *transport,
-	     const struct spdk_nvme_transport_id *trid), NULL);
-
-DEFINE_STUB(spdk_nvmf_transport_get_first,
-	    struct spdk_nvmf_transport *,
-	    (struct spdk_nvmf_tgt *tgt), NULL);
-
-DEFINE_STUB(spdk_nvmf_transport_get_next,
-	    struct spdk_nvmf_transport *,
-	    (struct spdk_nvmf_transport *transport), NULL);
+DEFINE_STUB(spdk_nvmf_qpair_disconnect, int, (struct spdk_nvmf_qpair *qpair), 0);
 
 DEFINE_STUB(spdk_nvmf_request_complete,
 	    int,
@@ -80,33 +59,26 @@ DEFINE_STUB(spdk_bdev_is_zoned, bool,
 DEFINE_STUB(spdk_bdev_get_max_zone_append_size, uint32_t,
 	    (const struct spdk_bdev *bdev), 0);
 
-int
-spdk_nvmf_transport_listen(struct spdk_nvmf_transport *transport,
-			   const struct spdk_nvme_transport_id *trid, struct spdk_nvmf_listen_opts *opts)
-{
-	return 0;
-}
+DEFINE_STUB(spdk_mempool_lookup, struct spdk_mempool *,
+	    (const char *name), NULL);
 
-void
-nvmf_transport_listener_discover(struct spdk_nvmf_transport *transport,
-				 struct spdk_nvme_transport_id *trid,
-				 struct spdk_nvmf_discovery_log_page_entry *entry)
-{
-	entry->trtype = 42;
-}
+DEFINE_STUB(spdk_nvme_transport_id_adrfam_str, const char *,
+	    (enum spdk_nvmf_adrfam adrfam), NULL);
+
+DEFINE_STUB(spdk_nvmf_qpair_get_listen_trid, int,
+	    (struct spdk_nvmf_qpair *qpair,
+	     struct spdk_nvme_transport_id *trid), 0);
+DEFINE_STUB(spdk_key_dup, struct spdk_key *, (struct spdk_key *k), NULL);
+DEFINE_STUB(spdk_key_get_name, const char *, (struct spdk_key *k), NULL);
+DEFINE_STUB_V(spdk_keyring_put_key, (struct spdk_key *k));
+DEFINE_STUB(nvmf_auth_is_supported, bool, (void), false);
+DEFINE_STUB(nvmf_tgt_update_mdns_prr, int, (struct spdk_nvmf_tgt *tgt), 0);
+
+DEFINE_STUB(spdk_bdev_get_module_name, const char *, (const struct spdk_bdev *bdev), "nvme");
+DEFINE_STUB(spdk_bdev_get_module_ctx, void *, (struct spdk_bdev_desc *desc), NULL);
+DEFINE_STUB(spdk_bdev_get_nvme_nsid, uint32_t, (struct spdk_bdev *bdev), 0);
 
 static struct spdk_nvmf_transport g_transport = {};
-
-struct spdk_nvmf_transport *
-spdk_nvmf_transport_create(const char *transport_name,
-			   struct spdk_nvmf_transport_opts *tprt_opts)
-{
-	if (strcasecmp(transport_name, spdk_nvme_transport_id_trtype_str(SPDK_NVME_TRANSPORT_RDMA))) {
-		return &g_transport;
-	}
-
-	return NULL;
-}
 
 struct spdk_nvmf_subsystem *
 spdk_nvmf_tgt_find_subsystem(struct spdk_nvmf_tgt *tgt, const char *subnqn)
@@ -217,9 +189,19 @@ nvmf_ctrlr_ns_changed(struct spdk_nvmf_ctrlr *ctrlr, uint32_t nsid)
 	g_ns_changed_nsid = nsid;
 }
 
+
+static struct spdk_nvmf_ctrlr *g_async_event_ctrlr = NULL;
+int
+nvmf_ctrlr_async_event_ns_notice(struct spdk_nvmf_ctrlr *ctrlr)
+{
+	g_async_event_ctrlr = ctrlr;
+	return 0;
+}
+
 static struct spdk_bdev g_bdevs[] = {
 	{ .name = "bdev1" },
 	{ .name = "bdev2" },
+	{ .name = "bdev3", .ctratt.raw = 0x80000 },
 };
 
 struct spdk_bdev_desc {
@@ -227,8 +209,9 @@ struct spdk_bdev_desc {
 };
 
 int
-spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
-		   void *event_ctx, struct spdk_bdev_desc **_desc)
+spdk_bdev_open_ext_v2(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
+		      void *event_ctx, struct spdk_bdev_open_opts *opts,
+		      struct spdk_bdev_desc **_desc)
 {
 	struct spdk_bdev_desc *desc;
 	size_t i;
@@ -246,6 +229,12 @@ spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event
 	}
 
 	return -EINVAL;
+}
+
+void
+spdk_bdev_open_opts_init(struct spdk_bdev_open_opts *opts, size_t opts_size)
+{
+	memset(opts, 0, opts_size);
 }
 
 void
@@ -272,6 +261,11 @@ spdk_bdev_get_uuid(const struct spdk_bdev *bdev)
 	return &bdev->uuid;
 }
 
+union spdk_bdev_nvme_ctratt spdk_bdev_get_nvme_ctratt(struct spdk_bdev *bdev)
+{
+	return bdev->ctratt;
+}
+
 static void
 test_spdk_nvmf_subsystem_add_ns(void)
 {
@@ -291,8 +285,7 @@ test_spdk_nvmf_subsystem_add_ns(void)
 	SPDK_CU_ASSERT_FATAL(subsystem.ana_group != NULL);
 
 	tgt.max_subsystems = 1024;
-	tgt.subsystems = calloc(tgt.max_subsystems, sizeof(struct spdk_nvmf_subsystem *));
-	SPDK_CU_ASSERT_FATAL(tgt.subsystems != NULL);
+	RB_INIT(&tgt.subsystems);
 
 	/* Request a specific NSID */
 	spdk_nvmf_ns_opts_get_defaults(&ns_opts, sizeof(ns_opts));
@@ -322,7 +315,56 @@ test_spdk_nvmf_subsystem_add_ns(void)
 
 	free(subsystem.ns);
 	free(subsystem.ana_group);
-	free(tgt.subsystems);
+}
+
+static void
+test_spdk_nvmf_subsystem_add_fdp_ns(void)
+{
+	struct spdk_nvmf_tgt tgt = {};
+	struct spdk_nvmf_subsystem subsystem = {
+		.max_nsid = 1024,
+		.ns = NULL,
+		.tgt = &tgt,
+	};
+	struct spdk_nvmf_ns_opts ns_opts;
+	uint32_t nsid;
+	int rc;
+
+	subsystem.ns = calloc(subsystem.max_nsid, sizeof(struct spdk_nvmf_subsystem_ns *));
+	SPDK_CU_ASSERT_FATAL(subsystem.ns != NULL);
+	subsystem.ana_group = calloc(subsystem.max_nsid, sizeof(uint32_t));
+	SPDK_CU_ASSERT_FATAL(subsystem.ana_group != NULL);
+
+	tgt.max_subsystems = 1024;
+	RB_INIT(&tgt.subsystems);
+
+	CU_ASSERT(subsystem.fdp_supported == false);
+
+	/* Add a FDP supported namespace to the subsystem */
+	spdk_nvmf_ns_opts_get_defaults(&ns_opts, sizeof(ns_opts));
+	ns_opts.nsid = 3;
+	nsid = spdk_nvmf_subsystem_add_ns_ext(&subsystem, "bdev3", &ns_opts, sizeof(ns_opts), NULL);
+	CU_ASSERT(nsid == 3);
+	CU_ASSERT(subsystem.max_nsid == 1024);
+	SPDK_CU_ASSERT_FATAL(subsystem.ns[nsid - 1] != NULL);
+	CU_ASSERT(subsystem.ns[nsid - 1]->bdev == &g_bdevs[2]);
+	CU_ASSERT(subsystem.fdp_supported == true);
+
+	/* Try to add a non FDP supported namespace to the subsystem */
+	spdk_nvmf_ns_opts_get_defaults(&ns_opts, sizeof(ns_opts));
+	ns_opts.nsid = 5;
+	nsid = spdk_nvmf_subsystem_add_ns_ext(&subsystem, "bdev2", &ns_opts, sizeof(ns_opts), NULL);
+	CU_ASSERT(nsid == 0);
+	CU_ASSERT(subsystem.max_nsid == 1024);
+	CU_ASSERT(subsystem.fdp_supported == true);
+
+	/* Remove last FDP namespace from the subsystem */
+	rc = spdk_nvmf_subsystem_remove_ns(&subsystem, 3);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(subsystem.fdp_supported == false);
+
+	free(subsystem.ns);
+	free(subsystem.ana_group);
 }
 
 static void
@@ -334,8 +376,8 @@ nvmf_test_create_subsystem(void)
 	int rc;
 
 	tgt.max_subsystems = 1024;
-	tgt.subsystems = calloc(tgt.max_subsystems, sizeof(struct spdk_nvmf_subsystem *));
-	SPDK_CU_ASSERT_FATAL(tgt.subsystems != NULL);
+	tgt.subsystem_ids = spdk_bit_array_create(tgt.max_subsystems);
+	RB_INIT(&tgt.subsystems);
 
 	snprintf(nqn, sizeof(nqn), "nqn.2016-06.io.spdk:subsystem1");
 	subsystem = spdk_nvmf_subsystem_create(&tgt, nqn, SPDK_NVMF_SUBTYPE_NVME, 0);
@@ -419,7 +461,7 @@ nvmf_test_create_subsystem(void)
 	CU_ASSERT(subsystem == NULL);
 
 	/* Valid name using uuid format */
-	snprintf(nqn, sizeof(nqn), "nqn.2014-08.org.nvmexpress:uuid:11111111-aaaa-bbdd-FFEE-123456789abc");
+	snprintf(nqn, sizeof(nqn), "nqn.2014-08.org.nvmexpress:uuid:ff9b6406-0fc8-4779-80ca-4dca14bda0d2");
 	subsystem = spdk_nvmf_subsystem_create(&tgt, nqn, SPDK_NVMF_SUBTYPE_NVME, 0);
 	SPDK_CU_ASSERT_FATAL(subsystem != NULL);
 	CU_ASSERT_STRING_EQUAL(subsystem->subnqn, nqn);
@@ -441,21 +483,21 @@ nvmf_test_create_subsystem(void)
 
 	/* Invalid uuid (too long) */
 	snprintf(nqn, sizeof(nqn),
-		 "nqn.2014-08.org.nvmexpress:uuid:11111111-aaaa-bbdd-FFEE-123456789abcdef");
+		 "nqn.2014-08.org.nvmexpress:uuid:ff9b6406-0fc8-4779-80ca-4dca14bda0d2aaaa");
 	subsystem = spdk_nvmf_subsystem_create(&tgt, nqn, SPDK_NVMF_SUBTYPE_NVME, 0);
 	SPDK_CU_ASSERT_FATAL(subsystem == NULL);
 
 	/* Invalid uuid (dashes placed incorrectly) */
-	snprintf(nqn, sizeof(nqn), "nqn.2014-08.org.nvmexpress:uuid:111111-11aaaa-bbdd-FFEE-123456789abc");
+	snprintf(nqn, sizeof(nqn), "nqn.2014-08.org.nvmexpress:uuid:ff9b64-060fc8-4779-80ca-4dca14bda0d2");
 	subsystem = spdk_nvmf_subsystem_create(&tgt, nqn, SPDK_NVMF_SUBTYPE_NVME, 0);
 	SPDK_CU_ASSERT_FATAL(subsystem == NULL);
 
 	/* Invalid uuid (invalid characters in uuid) */
-	snprintf(nqn, sizeof(nqn), "nqn.2014-08.org.nvmexpress:uuid:111hg111-aaaa-bbdd-FFEE-123456789abc");
+	snprintf(nqn, sizeof(nqn), "nqn.2014-08.org.nvmexpress:uuid:ff9hg406-0fc8-4779-80ca-4dca14bda0d2");
 	subsystem = spdk_nvmf_subsystem_create(&tgt, nqn, SPDK_NVMF_SUBTYPE_NVME, 0);
 	SPDK_CU_ASSERT_FATAL(subsystem == NULL);
 
-	free(tgt.subsystems);
+	spdk_bit_array_free(&tgt.subsystem_ids);
 }
 
 static void
@@ -478,6 +520,218 @@ test_spdk_nvmf_subsystem_set_sn(void)
 	CU_ASSERT(spdk_nvmf_subsystem_set_sn(&subsystem, "abcd\txyz") < 0);
 }
 
+static void
+test_spdk_nvmf_ns_visible(void)
+{
+	struct spdk_nvmf_subsystem subsystem = {};
+	struct spdk_nvmf_ns ns1 = {
+		.nsid = 1,
+		.anagrpid = 1,
+		.always_visible = false
+	};
+	struct spdk_nvmf_ns ns2 = {
+		.nsid = 2,
+		.anagrpid = 2,
+		.always_visible = false
+	};
+	struct spdk_nvmf_ns *ns3;
+	struct spdk_nvmf_ctrlr ctrlrA = {
+		.subsys = &subsystem
+	};
+	struct spdk_nvmf_ctrlr ctrlrB = {
+		.subsys = &subsystem
+	};
+	struct spdk_thread *thread;
+	struct spdk_nvmf_tgt tgt = {};
+	uint32_t nsid;
+	int rc;
+
+	thread = spdk_get_thread();
+	SPDK_CU_ASSERT_FATAL(thread != NULL);
+	ctrlrA.thread = thread;
+	ctrlrB.thread = thread;
+
+	subsystem.max_nsid = 1024;
+	subsystem.ns = calloc(subsystem.max_nsid, sizeof(subsystem.ns));
+	SPDK_CU_ASSERT_FATAL(subsystem.ns != NULL);
+	subsystem.ana_group = calloc(subsystem.max_nsid, sizeof(uint32_t));
+	SPDK_CU_ASSERT_FATAL(subsystem.ana_group != NULL);
+	TAILQ_INIT(&tgt.transports);
+	subsystem.tgt = &tgt;
+
+	subsystem.ns[1] = &ns1;
+	subsystem.ns[2] = &ns2;
+	ns3 = calloc(1, sizeof(*ns3));
+	SPDK_CU_ASSERT_FATAL(ns3 != NULL);
+	ns3->nsid = 3;
+	ns3->anagrpid = 3;
+	subsystem.ana_group[ns3->anagrpid - 1] = 1;
+	subsystem.ns[3] = ns3;
+
+	snprintf(ctrlrA.hostnqn, sizeof(ctrlrA.hostnqn), "nqn.2016-06.io.spdk:host1");
+	ctrlrA.visible_ns = spdk_bit_array_create(subsystem.max_nsid);
+	SPDK_CU_ASSERT_FATAL(ctrlrA.visible_ns != NULL);
+	snprintf(ctrlrB.hostnqn, sizeof(ctrlrB.hostnqn), "nqn.2016-06.io.spdk:host2");
+	ctrlrB.visible_ns = spdk_bit_array_create(subsystem.max_nsid);
+	SPDK_CU_ASSERT_FATAL(ctrlrB.visible_ns != NULL);
+
+	/* Add two controllers ctrlrA and ctrlrB */
+	TAILQ_INIT(&subsystem.ctrlrs);
+	TAILQ_INSERT_TAIL(&subsystem.ctrlrs, &ctrlrA, link);
+	TAILQ_INSERT_TAIL(&subsystem.ctrlrs, &ctrlrB, link);
+
+	/* Invalid host nqn */
+	nsid = 1;
+	rc = spdk_nvmf_ns_add_host(&subsystem, nsid, "", 0);
+	CU_ASSERT(rc == -EINVAL);
+	rc = spdk_nvmf_ns_add_host(&subsystem, nsid, NULL, 0);
+	CU_ASSERT(rc == -EINVAL);
+	rc = spdk_nvmf_ns_remove_host(&subsystem, nsid, NULL, 0);
+	CU_ASSERT(rc == -EINVAL);
+
+	/* Invalid nsid */
+	nsid = 0;
+	rc = spdk_nvmf_ns_add_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == -EINVAL);
+	rc = spdk_nvmf_ns_remove_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == -EINVAL);
+
+	/* Unallocated ns */
+	nsid = 1;
+	rc = spdk_nvmf_ns_add_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == -ENOENT);
+	rc = spdk_nvmf_ns_remove_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == -ENOENT);
+
+	/* Attach any is active => do not allow individual host control */
+	ns1.always_visible = true;
+	nsid = 2;
+	rc = spdk_nvmf_ns_add_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == -EPERM);
+	rc = spdk_nvmf_ns_remove_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == -EPERM);
+	ns1.always_visible = false;
+
+	/* Attach ctrlrA to namespace 2 hot + cold */
+	nsid = 2;
+	g_async_event_ctrlr = NULL;
+	g_ns_changed_ctrlr = NULL;
+	g_ns_changed_nsid = 0;
+	rc = spdk_nvmf_ns_add_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(nvmf_ns_find_host(&ns1, ctrlrA.hostnqn) != NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns1, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns2, ctrlrA.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns2, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid + 1));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid + 1));
+	/* check last ns_changed */
+	CU_ASSERT(g_ns_changed_ctrlr == &ctrlrA);
+	CU_ASSERT(g_ns_changed_nsid == nsid);
+	/* check async_event */
+	poll_threads();
+	CU_ASSERT(g_async_event_ctrlr == &ctrlrA);
+
+	/* Attach ctrlrA to namespace 2 again => should not create any ns change/async event */
+	g_async_event_ctrlr = NULL;
+	g_ns_changed_ctrlr = NULL;
+	g_ns_changed_nsid = 0;
+	rc = spdk_nvmf_ns_add_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(nvmf_ns_find_host(&ns1, ctrlrA.hostnqn) != NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns1, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns2, ctrlrA.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns2, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid + 1));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid + 1));
+	/* check last ns_changed */
+	CU_ASSERT(g_ns_changed_ctrlr == NULL);
+	CU_ASSERT(g_ns_changed_nsid == 0);
+	/* check async_event */
+	poll_threads();
+	CU_ASSERT(g_async_event_ctrlr == NULL);
+
+	/* Detach ctrlrA from namespace 2 hot + cold */
+	g_async_event_ctrlr = NULL;
+	g_ns_changed_ctrlr = NULL;
+	g_ns_changed_nsid = 0;
+	rc = spdk_nvmf_ns_remove_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(nvmf_ns_find_host(&ns1, ctrlrA.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns1, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns2, ctrlrA.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns2, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid + 1));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid + 1));
+	/* check last ns_changed */
+	CU_ASSERT(g_ns_changed_ctrlr == &ctrlrA);
+	CU_ASSERT(g_ns_changed_nsid == nsid);
+	/* check async_event */
+	poll_threads();
+	CU_ASSERT(g_async_event_ctrlr == &ctrlrA);
+
+	/* Detach ctrlrA from namespace 2 again hot + cold */
+	g_async_event_ctrlr = NULL;
+	g_ns_changed_ctrlr = NULL;
+	g_ns_changed_nsid = 0;
+	rc = spdk_nvmf_ns_remove_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(nvmf_ns_find_host(&ns1, ctrlrA.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns1, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns2, ctrlrA.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ns_find_host(&ns2, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid + 1));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid + 1));
+	/* check last ns_changed */
+	CU_ASSERT(g_ns_changed_ctrlr == NULL);
+	CU_ASSERT(g_ns_changed_nsid == 0);
+	/* check async_event */
+	poll_threads();
+	CU_ASSERT(g_async_event_ctrlr == NULL);
+
+	/* Attach ctrlrA to namespace 4 hot + cold => remove ns */
+	nsid = 4;
+	g_async_event_ctrlr = NULL;
+	g_ns_changed_ctrlr = NULL;
+	g_ns_changed_nsid = 0;
+	rc = spdk_nvmf_ns_add_host(&subsystem, nsid, ctrlrA.hostnqn, 0);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(nvmf_ns_find_host(ns3, ctrlrA.hostnqn) != NULL);
+	CU_ASSERT(nvmf_ns_find_host(ns3, ctrlrB.hostnqn) == NULL);
+	CU_ASSERT(nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid));
+	/* check last ns_changed */
+	CU_ASSERT(g_ns_changed_ctrlr == &ctrlrA);
+	CU_ASSERT(g_ns_changed_nsid == nsid);
+	/* check async_event */
+	poll_threads();
+	CU_ASSERT(g_async_event_ctrlr == &ctrlrA);
+
+	g_async_event_ctrlr = NULL;
+	g_ns_changed_ctrlr = NULL;
+	g_ns_changed_nsid = 0;
+	rc = spdk_nvmf_subsystem_remove_ns(&subsystem, nsid);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrA, nsid));
+	CU_ASSERT(!nvmf_ctrlr_ns_is_visible(&ctrlrB, nsid));
+	/* check last ns_changed */
+	CU_ASSERT(g_ns_changed_ctrlr == &ctrlrA);
+	CU_ASSERT(g_ns_changed_nsid == nsid);
+
+	free(ctrlrA.visible_ns);
+	free(ctrlrB.visible_ns);
+	free(subsystem.ana_group);
+	free(subsystem.ns);
+}
+
 /*
  * Reservation Unit Test Configuration
  *       --------             --------    --------
@@ -497,7 +751,6 @@ test_spdk_nvmf_subsystem_set_sn(void)
 static struct spdk_nvmf_subsystem g_subsystem;
 static struct spdk_nvmf_ctrlr g_ctrlr1_A, g_ctrlr2_A, g_ctrlr_B, g_ctrlr_C;
 static struct spdk_nvmf_ns g_ns;
-static struct spdk_bdev g_bdev;
 struct spdk_nvmf_subsystem_pg_ns_info g_ns_info;
 
 void
@@ -516,8 +769,8 @@ ut_reservation_init(void)
 	g_ns.subsystem = &g_subsystem;
 	g_ns.ptpl_file = NULL;
 	g_ns.ptpl_activated = false;
-	spdk_uuid_generate(&g_bdev.uuid);
-	g_ns.bdev = &g_bdev;
+	spdk_uuid_generate(&g_bdevs[0].uuid);
+	g_ns.bdev = &g_bdevs[0];
 
 	/* Host A has two controllers */
 	spdk_uuid_generate(&g_ctrlr1_A.hostid);
@@ -591,9 +844,8 @@ ut_reservation_build_req(uint32_t length)
 	req = calloc(1, sizeof(*req));
 	assert(req != NULL);
 
-	spdk_iov_one(req->iov, &req->iovcnt, calloc(1, length), length);
+	SPDK_IOV_ONE(req->iov, &req->iovcnt, calloc(1, length), length);
 	assert(req->iov[0].iov_base != NULL);
-	req->data = req->iov[0].iov_base;
 	req->length = length;
 
 	req->cmd = (union nvmf_h2c_msg *)calloc(1, sizeof(union nvmf_h2c_msg));
@@ -610,7 +862,7 @@ ut_reservation_free_req(struct spdk_nvmf_request *req)
 {
 	free(req->cmd);
 	free(req->rsp);
-	free(req->data);
+	free(req->iov[0].iov_base);
 	free(req);
 }
 
@@ -629,7 +881,7 @@ ut_reservation_build_register_request(struct spdk_nvmf_request *req,
 	cmd->cdw10_bits.resv_register.rrega = rrega;
 	cmd->cdw10_bits.resv_register.iekey = iekey;
 	cmd->cdw10_bits.resv_register.cptpl = cptpl;
-	memcpy(req->data, &key, sizeof(key));
+	memcpy(req->iov[0].iov_base, &key, sizeof(key));
 }
 
 static void
@@ -647,7 +899,7 @@ ut_reservation_build_acquire_request(struct spdk_nvmf_request *req,
 	cmd->cdw10_bits.resv_acquire.racqa = racqa;
 	cmd->cdw10_bits.resv_acquire.iekey = iekey;
 	cmd->cdw10_bits.resv_acquire.rtype = rtype;
-	memcpy(req->data, &key, sizeof(key));
+	memcpy(req->iov[0].iov_base, &key, sizeof(key));
 }
 
 static void
@@ -661,7 +913,7 @@ ut_reservation_build_release_request(struct spdk_nvmf_request *req,
 	cmd->cdw10_bits.resv_release.rrela = rrela;
 	cmd->cdw10_bits.resv_release.iekey = iekey;
 	cmd->cdw10_bits.resv_release.rtype = rtype;
-	memcpy(req->data, &crkey, sizeof(crkey));
+	memcpy(req->iov[0].iov_base, &crkey, sizeof(crkey));
 }
 
 /*
@@ -852,12 +1104,14 @@ test_reservation_register_with_ptpl(void)
 	SPDK_CU_ASSERT_FATAL(update_sgroup == true);
 	SPDK_CU_ASSERT_FATAL(rsp->status.sc == SPDK_NVME_SC_SUCCESS);
 	SPDK_CU_ASSERT_FATAL(g_ns.ptpl_activated == true);
+	rc = nvmf_ns_update_reservation_info(&g_ns);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
 	reg = nvmf_ns_reservation_get_registrant(&g_ns, &g_ctrlr1_A.hostid);
 	SPDK_CU_ASSERT_FATAL(reg != NULL);
 	SPDK_CU_ASSERT_FATAL(!spdk_uuid_compare(&g_ctrlr1_A.hostid, &reg->hostid));
 	/* Load reservation information from configuration file */
 	memset(&info, 0, sizeof(info));
-	rc = nvmf_ns_load_reservation(g_ns.ptpl_file, &info);
+	rc = nvmf_ns_reservation_load(&g_ns, &info);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(info.ptpl_activated == true);
 
@@ -869,7 +1123,9 @@ test_reservation_register_with_ptpl(void)
 	SPDK_CU_ASSERT_FATAL(update_sgroup == true);
 	SPDK_CU_ASSERT_FATAL(rsp->status.sc == SPDK_NVME_SC_SUCCESS);
 	SPDK_CU_ASSERT_FATAL(g_ns.ptpl_activated == false);
-	rc = nvmf_ns_load_reservation(g_ns.ptpl_file, &info);
+	rc = nvmf_ns_update_reservation_info(&g_ns);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	rc = nvmf_ns_reservation_load(&g_ns, &info);
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	unlink(g_ns.ptpl_file);
 
@@ -973,12 +1229,14 @@ test_reservation_acquire_release_with_ptpl(void)
 	SPDK_CU_ASSERT_FATAL(update_sgroup == true);
 	SPDK_CU_ASSERT_FATAL(rsp->status.sc == SPDK_NVME_SC_SUCCESS);
 	SPDK_CU_ASSERT_FATAL(g_ns.ptpl_activated == true);
+	rc = nvmf_ns_update_reservation_info(&g_ns);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
 	reg = nvmf_ns_reservation_get_registrant(&g_ns, &g_ctrlr1_A.hostid);
 	SPDK_CU_ASSERT_FATAL(reg != NULL);
 	SPDK_CU_ASSERT_FATAL(!spdk_uuid_compare(&g_ctrlr1_A.hostid, &reg->hostid));
 	/* Load reservation information from configuration file */
 	memset(&info, 0, sizeof(info));
-	rc = nvmf_ns_load_reservation(g_ns.ptpl_file, &info);
+	rc = nvmf_ns_reservation_load(&g_ns, &info);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(info.ptpl_activated == true);
 
@@ -989,8 +1247,10 @@ test_reservation_acquire_release_with_ptpl(void)
 	update_sgroup = nvmf_ns_reservation_acquire(&g_ns, &g_ctrlr1_A, req);
 	SPDK_CU_ASSERT_FATAL(update_sgroup == true);
 	SPDK_CU_ASSERT_FATAL(rsp->status.sc == SPDK_NVME_SC_SUCCESS);
+	rc = nvmf_ns_update_reservation_info(&g_ns);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
 	memset(&info, 0, sizeof(info));
-	rc = nvmf_ns_load_reservation(g_ns.ptpl_file, &info);
+	rc = nvmf_ns_reservation_load(&g_ns, &info);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(info.ptpl_activated == true);
 	SPDK_CU_ASSERT_FATAL(info.rtype == SPDK_NVME_RESERVE_WRITE_EXCLUSIVE_REG_ONLY);
@@ -1005,8 +1265,10 @@ test_reservation_acquire_release_with_ptpl(void)
 	update_sgroup = nvmf_ns_reservation_release(&g_ns, &g_ctrlr1_A, req);
 	SPDK_CU_ASSERT_FATAL(update_sgroup == true);
 	SPDK_CU_ASSERT_FATAL(rsp->status.sc == SPDK_NVME_SC_SUCCESS);
+	rc = nvmf_ns_update_reservation_info(&g_ns);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
 	memset(&info, 0, sizeof(info));
-	rc = nvmf_ns_load_reservation(g_ns.ptpl_file, &info);
+	rc = nvmf_ns_reservation_load(&g_ns, &info);
 	SPDK_CU_ASSERT_FATAL(rc == 0);
 	SPDK_CU_ASSERT_FATAL(info.rtype == 0);
 	SPDK_CU_ASSERT_FATAL(info.crkey == 0);
@@ -1332,6 +1594,7 @@ test_spdk_nvmf_ns_event(void)
 		.max_nsid = 1024,
 		.ns = NULL,
 		.tgt = &tgt,
+		.state_changes = TAILQ_HEAD_INITIALIZER(subsystem.state_changes),
 	};
 	struct spdk_nvmf_ctrlr ctrlr = {
 		.subsys = &subsystem
@@ -1339,6 +1602,13 @@ test_spdk_nvmf_ns_event(void)
 	struct spdk_nvmf_ns_opts ns_opts;
 	uint32_t nsid;
 	struct spdk_bdev *bdev;
+	struct spdk_thread *thread;
+
+	ctrlr.visible_ns = spdk_bit_array_create(1);
+	spdk_bit_array_set(ctrlr.visible_ns, 0);
+
+	thread = spdk_get_thread();
+	SPDK_CU_ASSERT_FATAL(thread != NULL);
 
 	subsystem.ns = calloc(subsystem.max_nsid, sizeof(struct spdk_nvmf_subsystem_ns *));
 	SPDK_CU_ASSERT_FATAL(subsystem.ns != NULL);
@@ -1346,8 +1616,8 @@ test_spdk_nvmf_ns_event(void)
 	SPDK_CU_ASSERT_FATAL(subsystem.ana_group != NULL);
 
 	tgt.max_subsystems = 1024;
-	tgt.subsystems = calloc(tgt.max_subsystems, sizeof(struct spdk_nvmf_subsystem *));
-	SPDK_CU_ASSERT_FATAL(tgt.subsystems != NULL);
+	tgt.subsystem_ids = spdk_bit_array_create(tgt.max_subsystems);
+	RB_INIT(&tgt.subsystems);
 
 	spdk_io_device_register(&tgt,
 				nvmf_tgt_create_poll_group,
@@ -1401,7 +1671,8 @@ test_spdk_nvmf_ns_event(void)
 
 	free(subsystem.ns);
 	free(subsystem.ana_group);
-	free(tgt.subsystems);
+	spdk_bit_array_free(&ctrlr.visible_ns);
+	spdk_bit_array_free(&tgt.subsystem_ids);
 }
 
 static void
@@ -1443,8 +1714,8 @@ test_nvmf_subsystem_add_ctrlr(void)
 	struct spdk_nvmf_subsystem *subsystem = NULL;
 
 	tgt.max_subsystems = 1024;
-	tgt.subsystems = calloc(tgt.max_subsystems, sizeof(struct spdk_nvmf_subsystem *));
-	SPDK_CU_ASSERT_FATAL(tgt.subsystems != NULL);
+	tgt.subsystem_ids = spdk_bit_array_create(tgt.max_subsystems);
+	RB_INIT(&tgt.subsystems);
 
 	subsystem = spdk_nvmf_subsystem_create(&tgt, nqn, SPDK_NVMF_SUBTYPE_NVME, 0);
 	SPDK_CU_ASSERT_FATAL(subsystem != NULL);
@@ -1461,7 +1732,37 @@ test_nvmf_subsystem_add_ctrlr(void)
 	CU_ASSERT(TAILQ_EMPTY(&subsystem->ctrlrs));
 	rc = spdk_nvmf_subsystem_destroy(subsystem, test_nvmf_subsystem_destroy_cb, NULL);
 	CU_ASSERT(rc == 0);
-	free(tgt.subsystems);
+	spdk_bit_array_free(&tgt.subsystem_ids);
+}
+
+static void
+_add_transport_cb(void *arg, int status)
+{
+	CU_ASSERT(status == 0);
+}
+
+static int
+transport_subsystem_add_host_err(struct spdk_nvmf_transport *transport,
+				 const struct spdk_nvmf_subsystem *subsystem,
+				 const char *hostnqn,
+				 const struct spdk_json_val *transport_specific)
+{
+	return -1;
+}
+
+void
+spdk_nvmf_tgt_add_transport(struct spdk_nvmf_tgt *tgt,
+			    struct spdk_nvmf_transport *transport,
+			    spdk_nvmf_tgt_add_transport_done_fn cb_fn,
+			    void *cb_arg)
+{
+	TAILQ_INSERT_TAIL(&tgt->transports, transport, link);
+}
+
+static struct spdk_nvmf_transport *
+transport_create(struct spdk_nvmf_transport_opts *opts)
+{
+	return &g_transport;
 }
 
 static void
@@ -1472,22 +1773,34 @@ test_spdk_nvmf_subsystem_add_host(void)
 	int rc;
 	const char hostnqn[] = "nqn.2016-06.io.spdk:host1";
 	const char subsystemnqn[] = "nqn.2016-06.io.spdk:subsystem1";
+	struct spdk_nvmf_transport_opts opts = {
+		.opts_size = sizeof(struct spdk_nvmf_transport_opts),
+		.io_unit_size = 8192,
+		.kas = NVMF_DEFAULT_KAS,
+		.min_kato = NVMF_DEFAULT_MIN_KATO,
+	};
+	const struct spdk_nvmf_transport_ops test_ops = {
+		.name = "transport_ut",
+		.create = transport_create,
+		.subsystem_add_host = transport_subsystem_add_host_err,
+	};
+	struct spdk_nvmf_transport *transport;
 
 	tgt.max_subsystems = 1024;
-	tgt.subsystems = calloc(tgt.max_subsystems, sizeof(struct spdk_nvmf_subsystem *));
-	SPDK_CU_ASSERT_FATAL(tgt.subsystems != NULL);
+	tgt.subsystem_ids = spdk_bit_array_create(tgt.max_subsystems);
+	RB_INIT(&tgt.subsystems);
 
 	subsystem = spdk_nvmf_subsystem_create(&tgt, subsystemnqn, SPDK_NVMF_SUBTYPE_NVME, 0);
 	SPDK_CU_ASSERT_FATAL(subsystem != NULL);
 	CU_ASSERT_STRING_EQUAL(subsystem->subnqn, subsystemnqn);
 
-	rc = spdk_nvmf_subsystem_add_host(subsystem, hostnqn);
+	rc = spdk_nvmf_subsystem_add_host(subsystem, hostnqn, NULL);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(!TAILQ_EMPTY(&subsystem->hosts));
 
-	/* Add existing nqn, this function is allowed to be called if the nqn was previously added. */
-	rc = spdk_nvmf_subsystem_add_host(subsystem, hostnqn);
-	CU_ASSERT(rc == 0);
+	/* Add existing nqn, this function isn't allowed to be called if the nqn was previously added. */
+	rc = spdk_nvmf_subsystem_add_host(subsystem, hostnqn, NULL);
+	CU_ASSERT(rc == -EINVAL);
 
 	rc = spdk_nvmf_subsystem_remove_host(subsystem, hostnqn);
 	CU_ASSERT(rc == 0);
@@ -1497,8 +1810,20 @@ test_spdk_nvmf_subsystem_add_host(void)
 	rc = spdk_nvmf_subsystem_remove_host(subsystem, hostnqn);
 	CU_ASSERT(rc == -ENOENT);
 
+	/* Ensure hostnqn list remains empty after transport callback fails */
+	spdk_nvmf_transport_register(&test_ops);
+	transport = spdk_nvmf_transport_create("transport_ut", &opts);
+	SPDK_CU_ASSERT_FATAL(transport != NULL);
+
+	TAILQ_INIT(&tgt.transports);
+	spdk_nvmf_tgt_add_transport(&tgt, transport, _add_transport_cb, 0);
+
+	rc = spdk_nvmf_subsystem_add_host(subsystem, hostnqn, NULL);
+	CU_ASSERT(rc != 0);
+	CU_ASSERT(TAILQ_EMPTY(&subsystem->hosts));
+
 	spdk_nvmf_subsystem_destroy(subsystem, NULL, NULL);
-	free(tgt.subsystems);
+	spdk_bit_array_free(&tgt.subsystem_ids);
 }
 
 static void
@@ -1512,13 +1837,14 @@ test_nvmf_ns_reservation_report(void)
 	struct spdk_nvme_registered_ctrlr_extended_data *ctrlr_data;
 	struct spdk_nvme_reservation_status_extended_data *status_data;
 	struct spdk_nvmf_registrant *reg;
+	void *data;
+
+	data = calloc(1, sizeof(*status_data) + sizeof(*ctrlr_data) * 2);
+	reg = calloc(2, sizeof(struct spdk_nvmf_registrant));
+	SPDK_CU_ASSERT_FATAL(data != NULL && reg != NULL);
 
 	req.length = sizeof(*status_data) + sizeof(*ctrlr_data) * 2;
-	req.data = calloc(1, req.length);
-	reg = calloc(2, sizeof(struct spdk_nvmf_registrant));
-	SPDK_CU_ASSERT_FATAL(req.data != NULL && reg != NULL);
-
-	spdk_iov_one(req.iov, &req.iovcnt, req.data, req.length);
+	SPDK_IOV_ONE(req.iov, &req.iovcnt, data, req.length);
 
 	req.cmd = &cmd;
 	req.rsp = &rsp;
@@ -1539,8 +1865,8 @@ test_nvmf_ns_reservation_report(void)
 	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_SUCCESS);
 	/* Get ctrlr data and status data pointers */
-	ctrlr_data = (void *)((uint64_t)req.data + sizeof(*status_data));
-	status_data = (void *)req.data;
+	ctrlr_data = (void *)((char *)req.iov[0].iov_base + sizeof(*status_data));
+	status_data = (void *)req.iov[0].iov_base;
 	SPDK_CU_ASSERT_FATAL(status_data != NULL && ctrlr_data != NULL);
 	CU_ASSERT(status_data->data.gen == 1);
 	CU_ASSERT(status_data->data.rtype == SPDK_NVME_RESERVE_WRITE_EXCLUSIVE);
@@ -1576,12 +1902,12 @@ test_nvmf_ns_reservation_report(void)
 	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_INTERNAL_DEVICE_ERROR);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 
-	free(req.data);
+	free(req.iov[0].iov_base);
 	free(reg);
 }
 
 static void
-test_nvmf_valid_nqn(void)
+test_nvmf_nqn_is_valid(void)
 {
 	bool rc;
 	char uuid[SPDK_NVMF_UUID_STRING_LEN + 1] = {};
@@ -1589,33 +1915,33 @@ test_nvmf_valid_nqn(void)
 	struct spdk_uuid s_uuid = {};
 
 	spdk_uuid_generate(&s_uuid);
-	uuid_unparse((void *)&s_uuid, uuid);
+	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &s_uuid);
 
 	/* discovery nqn */
 	snprintf(nqn, sizeof(nqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
 
-	rc = nvmf_valid_nqn(nqn);
+	rc = nvmf_nqn_is_valid(nqn);
 	CU_ASSERT(rc == true);
 
 	/* nqn with uuid */
 	memset(nqn, 0xff, sizeof(nqn));
 	snprintf(nqn, sizeof(nqn), "%s%s", SPDK_NVMF_NQN_UUID_PRE, uuid);
 
-	rc = nvmf_valid_nqn(nqn);
+	rc = nvmf_nqn_is_valid(nqn);
 	CU_ASSERT(rc == true);
 
 	/* Check nqn valid reverse domain */
 	memset(nqn, 0xff, sizeof(nqn));
 	snprintf(nqn, sizeof(nqn), "%s", "nqn.2016-06.io.spdk:cnode1");
 
-	rc = nvmf_valid_nqn(nqn);
+	rc = nvmf_nqn_is_valid(nqn);
 	CU_ASSERT(rc == true);
 
 	/* Invalid nqn length */
 	memset(nqn, 0xff, sizeof(nqn));
 	snprintf(nqn, sizeof(nqn), "%s", "nqn.");
 
-	rc = nvmf_valid_nqn(nqn);
+	rc = nvmf_nqn_is_valid(nqn);
 	CU_ASSERT(rc == false);
 
 	/* Copy uuid to the nqn string, but omit the last character to make it invalid */
@@ -1623,14 +1949,14 @@ test_nvmf_valid_nqn(void)
 	snprintf(nqn, sizeof(nqn), "%s", SPDK_NVMF_NQN_UUID_PRE);
 	memcpy(&nqn[SPDK_NVMF_NQN_UUID_PRE_LEN], uuid, SPDK_NVMF_UUID_STRING_LEN - 1);
 
-	rc = nvmf_valid_nqn(nqn);
+	rc = nvmf_nqn_is_valid(nqn);
 	CU_ASSERT(rc == false);
 
 	/* Invalid domain */
 	memset(nqn, 0xff, SPDK_NVMF_NQN_MAX_LEN + 1);
 	snprintf(nqn, sizeof(nqn), "%s", "nqn.2016-06.io...spdk:cnode1");
 
-	rc = nvmf_valid_nqn(nqn);
+	rc = nvmf_nqn_is_valid(nqn);
 	CU_ASSERT(rc == false);
 }
 
@@ -1655,13 +1981,13 @@ test_nvmf_ns_reservation_restore(void)
 
 	/* Generate and prepare uuids, make sure bdev and info uuid are the same */
 	spdk_uuid_generate(&s_uuid);
-	uuid_unparse((void *)&s_uuid, uuid);
+	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &s_uuid);
 	snprintf(info.holder_uuid, SPDK_UUID_STRING_LEN, "%s", uuid);
 	snprintf(info.bdev_uuid, SPDK_UUID_STRING_LEN, "%s", uuid);
 	snprintf(info.registrants[0].host_uuid, SPDK_UUID_STRING_LEN, "%s", uuid);
 	spdk_uuid_copy(&bdev.uuid, &s_uuid);
 	spdk_uuid_generate(&s_uuid);
-	uuid_unparse((void *)&s_uuid, uuid);
+	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &s_uuid);
 	snprintf(info.registrants[1].host_uuid, SPDK_UUID_STRING_LEN, "%s", uuid);
 
 	/* info->rkey not exist in registrants */
@@ -1682,8 +2008,8 @@ test_nvmf_ns_reservation_restore(void)
 	reg0 = TAILQ_FIRST(&ns.registrants);
 	reg1 = TAILQ_NEXT(reg0, link);
 	CU_ASSERT(ns.holder == reg0);
-	CU_ASSERT(reg0->rkey = 0xb);
-	CU_ASSERT(reg1->rkey = 0xc);
+	CU_ASSERT(reg0->rkey == 0xb);
+	CU_ASSERT(reg1->rkey == 0xc);
 
 	rc = nvmf_ns_reservation_clear_all_registrants(&ns);
 	CU_ASSERT(rc == 2);
@@ -1691,13 +2017,41 @@ test_nvmf_ns_reservation_restore(void)
 
 	/* Existing bdev UUID is different with configuration */
 	spdk_uuid_generate(&s_uuid);
-	uuid_unparse((void *)&s_uuid, uuid);
+	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &s_uuid);
 	snprintf(info.bdev_uuid, SPDK_UUID_STRING_LEN, "%s", uuid);
 	spdk_uuid_generate(&s_uuid);
 	spdk_uuid_copy(&bdev.uuid, &s_uuid);
 
 	rc = nvmf_ns_reservation_restore(&ns, &info);
 	CU_ASSERT(rc == -EINVAL);
+
+	/* Check restore without reservation */
+	spdk_uuid_fmt_lower(info.bdev_uuid, sizeof(info.bdev_uuid), &bdev.uuid);
+	info.rtype = 0;
+	info.crkey = 0;
+	memset(info.holder_uuid, 0, SPDK_UUID_STRING_LEN);
+
+	rc = nvmf_ns_reservation_restore(&ns, &info);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(ns.crkey == 0);
+	CU_ASSERT(ns.rtype == 0);
+	CU_ASSERT(ns.ptpl_activated == true);
+	CU_ASSERT(ns.holder == NULL);
+	reg0 = TAILQ_FIRST(&ns.registrants);
+	reg1 = TAILQ_NEXT(reg0, link);
+	CU_ASSERT(reg0->rkey == 0xb);
+	CU_ASSERT(reg1->rkey == 0xc);
+
+	rc = nvmf_ns_reservation_clear_all_registrants(&ns);
+	CU_ASSERT(rc == 2);
+	CU_ASSERT(TAILQ_EMPTY(&ns.registrants));
+}
+
+static void
+ut_nvmf_subsystem_paused(struct spdk_nvmf_subsystem *subsystem, void *ctx, int status)
+{
+	CU_ASSERT_EQUAL(status, 0);
+	CU_ASSERT_EQUAL(subsystem->state, SPDK_NVMF_SUBSYSTEM_PAUSED);
 }
 
 static void
@@ -1708,11 +2062,11 @@ test_nvmf_subsystem_state_change(void)
 	int rc;
 
 	tgt.max_subsystems = 1024;
-	tgt.subsystems = calloc(tgt.max_subsystems, sizeof(struct spdk_nvmf_subsystem *));
-	SPDK_CU_ASSERT_FATAL(tgt.subsystems != NULL);
+	tgt.subsystem_ids = spdk_bit_array_create(tgt.max_subsystems);
+	RB_INIT(&tgt.subsystems);
 
 	discovery_subsystem = spdk_nvmf_subsystem_create(&tgt, SPDK_NVMF_DISCOVERY_NQN,
-			      SPDK_NVMF_SUBTYPE_DISCOVERY, 0);
+			      SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT, 0);
 	SPDK_CU_ASSERT_FATAL(discovery_subsystem != NULL);
 	subsystem = spdk_nvmf_subsystem_create(&tgt, "nqn.2016-06.io.spdk:subsystem1",
 					       SPDK_NVMF_SUBTYPE_NVME, 0);
@@ -1733,12 +2087,13 @@ test_nvmf_subsystem_state_change(void)
 	poll_threads();
 	CU_ASSERT(subsystem->state == SPDK_NVMF_SUBSYSTEM_ACTIVE);
 
-	rc = spdk_nvmf_subsystem_pause(subsystem, SPDK_NVME_GLOBAL_NS_TAG, NULL, NULL);
+	rc = spdk_nvmf_subsystem_pause(subsystem, SPDK_NVME_GLOBAL_NS_TAG,
+				       ut_nvmf_subsystem_paused, NULL);
 	CU_ASSERT(rc == 0);
 	rc = spdk_nvmf_subsystem_stop(subsystem, NULL, NULL);
-	CU_ASSERT(rc == -EBUSY);
+	CU_ASSERT(rc == 0);
 	poll_threads();
-	CU_ASSERT(subsystem->state == SPDK_NVMF_SUBSYSTEM_PAUSED);
+	CU_ASSERT(subsystem->state == SPDK_NVMF_SUBSYSTEM_INACTIVE);
 
 	rc = spdk_nvmf_subsystem_stop(discovery_subsystem, NULL, NULL);
 	CU_ASSERT(rc == 0);
@@ -1757,7 +2112,110 @@ test_nvmf_subsystem_state_change(void)
 	spdk_io_device_unregister(&tgt, NULL);
 	poll_threads();
 
-	free(tgt.subsystems);
+	spdk_bit_array_free(&tgt.subsystem_ids);
+}
+
+static bool
+ut_is_ptpl_capable(const struct spdk_nvmf_ns *ns)
+{
+	return true;
+}
+
+static struct spdk_nvmf_reservation_info g_resv_info;
+
+static int
+ut_update_reservation(const struct spdk_nvmf_ns *ns, const struct spdk_nvmf_reservation_info *info)
+{
+	g_resv_info = *info;
+
+	return 0;
+}
+
+static int
+ut_load_reservation(const struct spdk_nvmf_ns *ns, struct spdk_nvmf_reservation_info *info)
+{
+	*info = g_resv_info;
+
+	return 0;
+}
+
+static void
+test_nvmf_reservation_custom_ops(void)
+{
+	struct spdk_nvmf_ns_reservation_ops ops = {
+		.is_ptpl_capable = ut_is_ptpl_capable,
+		.update = ut_update_reservation,
+		.load = ut_load_reservation,
+	};
+	struct spdk_nvmf_request *req;
+	struct spdk_nvme_cpl *rsp;
+	struct spdk_nvmf_registrant *reg;
+	bool update_sgroup = false;
+	struct spdk_nvmf_tgt tgt = {};
+	struct spdk_nvmf_subsystem subsystem = {
+		.max_nsid = 4,
+		.tgt = &tgt,
+	};
+	uint32_t nsid;
+	struct spdk_nvmf_ns *ns;
+	int rc;
+
+	subsystem.ns = calloc(subsystem.max_nsid, sizeof(struct spdk_nvmf_subsystem_ns *));
+	SPDK_CU_ASSERT_FATAL(subsystem.ns != NULL);
+	subsystem.ana_group = calloc(subsystem.max_nsid, sizeof(uint32_t));
+	SPDK_CU_ASSERT_FATAL(subsystem.ana_group != NULL);
+
+	spdk_nvmf_set_custom_ns_reservation_ops(&ops);
+
+	ut_reservation_init();
+
+	req = ut_reservation_build_req(16);
+	rsp = &req->rsp->nvme_cpl;
+	SPDK_CU_ASSERT_FATAL(req != NULL);
+
+	/* Add a registrant and activate ptpl */
+	ut_reservation_build_register_request(req, SPDK_NVME_RESERVE_REGISTER_KEY, 0,
+					      SPDK_NVME_RESERVE_PTPL_PERSIST_POWER_LOSS, 0, 0xa1);
+	update_sgroup = nvmf_ns_reservation_register(&g_ns, &g_ctrlr1_A, req);
+	SPDK_CU_ASSERT_FATAL(update_sgroup == true);
+	SPDK_CU_ASSERT_FATAL(rsp->status.sc == SPDK_NVME_SC_SUCCESS);
+	SPDK_CU_ASSERT_FATAL(g_ns.ptpl_activated == true);
+	rc = nvmf_ns_update_reservation_info(&g_ns);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Acquire a reservation */
+	rsp->status.sc = SPDK_NVME_SC_INVALID_FIELD;
+	ut_reservation_build_acquire_request(req, SPDK_NVME_RESERVE_ACQUIRE, 0,
+					     SPDK_NVME_RESERVE_WRITE_EXCLUSIVE_REG_ONLY, 0xa1, 0x0);
+	update_sgroup = nvmf_ns_reservation_acquire(&g_ns, &g_ctrlr1_A, req);
+	SPDK_CU_ASSERT_FATAL(update_sgroup == true);
+	SPDK_CU_ASSERT_FATAL(rsp->status.sc == SPDK_NVME_SC_SUCCESS);
+	rc = nvmf_ns_update_reservation_info(&g_ns);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Add the namespace using a different subsystem.
+	 * Reservation information should be restored. */
+	nsid = spdk_nvmf_subsystem_add_ns_ext(&subsystem, g_ns.bdev->name, NULL, 0, NULL);
+	CU_ASSERT(nsid == 1);
+
+	ns = _nvmf_subsystem_get_ns(&subsystem, nsid);
+	SPDK_CU_ASSERT_FATAL(ns != NULL);
+	CU_ASSERT(ns->crkey == 0xa1);
+	CU_ASSERT(ns->rtype == SPDK_NVME_RESERVE_WRITE_EXCLUSIVE_REG_ONLY);
+	CU_ASSERT(ns->ptpl_activated == true);
+
+	reg = nvmf_ns_reservation_get_registrant(ns, &g_ctrlr1_A.hostid);
+	SPDK_CU_ASSERT_FATAL(reg != NULL);
+	SPDK_CU_ASSERT_FATAL(!spdk_uuid_compare(&g_ctrlr1_A.hostid, &reg->hostid));
+	CU_ASSERT(reg == ns->holder);
+
+	rc = spdk_nvmf_subsystem_remove_ns(&subsystem, nsid);
+	CU_ASSERT(rc == 0);
+
+	free(subsystem.ns);
+	free(subsystem.ana_group);
+	ut_reservation_free_req(req);
+	ut_reservation_deinit();
 }
 
 int
@@ -1766,14 +2224,15 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvmf", NULL, NULL);
 
 	CU_ADD_TEST(suite, nvmf_test_create_subsystem);
 	CU_ADD_TEST(suite, test_spdk_nvmf_subsystem_add_ns);
+	CU_ADD_TEST(suite, test_spdk_nvmf_subsystem_add_fdp_ns);
 	CU_ADD_TEST(suite, test_spdk_nvmf_subsystem_set_sn);
+	CU_ADD_TEST(suite, test_spdk_nvmf_ns_visible);
 	CU_ADD_TEST(suite, test_reservation_register);
 	CU_ADD_TEST(suite, test_reservation_register_with_ptpl);
 	CU_ADD_TEST(suite, test_reservation_acquire_preempt_1);
@@ -1789,16 +2248,15 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvmf_subsystem_add_ctrlr);
 	CU_ADD_TEST(suite, test_spdk_nvmf_subsystem_add_host);
 	CU_ADD_TEST(suite, test_nvmf_ns_reservation_report);
-	CU_ADD_TEST(suite, test_nvmf_valid_nqn);
+	CU_ADD_TEST(suite, test_nvmf_nqn_is_valid);
 	CU_ADD_TEST(suite, test_nvmf_ns_reservation_restore);
 	CU_ADD_TEST(suite, test_nvmf_subsystem_state_change);
+	CU_ADD_TEST(suite, test_nvmf_reservation_custom_ops);
 
 	allocate_threads(1);
 	set_thread(0);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	free_threads();

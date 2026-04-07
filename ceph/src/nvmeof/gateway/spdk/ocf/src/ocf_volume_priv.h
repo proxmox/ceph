@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_VOLUME_PRIV_H__
@@ -28,7 +29,10 @@ struct ocf_volume {
 			/* true if reading discarded pages returns 0 */
 	} features;
 	bool opened;
+
 	bool uuid_copy;
+	/* @brief True if OCF shall free UUID on volume deinit */
+
 	void *priv;
 	ocf_cache_t cache;
 	struct list_head core_pool_item;
@@ -46,7 +50,25 @@ void ocf_volume_move(ocf_volume_t volume, ocf_volume_t from);
 void ocf_volume_set_uuid(ocf_volume_t volume,
 		const struct ocf_volume_uuid *uuid);
 
-static inline void ocf_volume_submit_metadata(struct ocf_io *io)
+void ocf_volume_forward_io(ocf_volume_t volume, ocf_forward_token_t token,
+		int dir, uint64_t addr, uint64_t bytes, uint64_t offset);
+
+void ocf_volume_forward_flush(ocf_volume_t volume, ocf_forward_token_t token);
+
+void ocf_volume_forward_discard(ocf_volume_t volume, ocf_forward_token_t token,
+		uint64_t addr, uint64_t bytes);
+
+void ocf_volume_forward_write_zeros(ocf_volume_t volume,
+		ocf_forward_token_t token, uint64_t addr, uint64_t bytes);
+
+void ocf_volume_forward_metadata(ocf_volume_t volume, ocf_forward_token_t token,
+		int dir, uint64_t addr, uint64_t bytes, uint64_t offset);
+
+void ocf_volume_forward_io_simple(ocf_volume_t volume,
+		ocf_forward_token_t token, int dir,
+		uint64_t addr, uint64_t bytes);
+
+static inline void ocf_volume_submit_metadata(ocf_io_t io)
 {
 	ocf_volume_t volume = ocf_io_get_volume(io);
 
@@ -55,7 +77,7 @@ static inline void ocf_volume_submit_metadata(struct ocf_io *io)
 	volume->type->properties->ops.submit_metadata(io);
 }
 
-static inline void ocf_volume_submit_write_zeroes(struct ocf_io *io)
+static inline void ocf_volume_submit_write_zeroes(ocf_io_t io)
 {
 	ocf_volume_t volume = ocf_io_get_volume(io);
 

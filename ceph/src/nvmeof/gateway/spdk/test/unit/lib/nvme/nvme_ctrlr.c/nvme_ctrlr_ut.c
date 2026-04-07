@@ -6,7 +6,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "spdk/log.h"
 
@@ -35,13 +35,15 @@ uint32_t set_size = 1;
 
 int set_status_cpl = -1;
 
+#define UT_HOSTID "e53e9258-c93b-48b5-be1a-f025af6d232a"
+
 DEFINE_STUB(nvme_ctrlr_cmd_set_host_id, int,
 	    (struct spdk_nvme_ctrlr *ctrlr, void *host_id, uint32_t host_id_size,
 	     spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
 DEFINE_STUB_V(nvme_ns_set_identify_data, (struct spdk_nvme_ns *ns));
 DEFINE_STUB_V(nvme_ns_set_id_desc_list_data, (struct spdk_nvme_ns *ns));
 DEFINE_STUB_V(nvme_ns_free_iocs_specific_data, (struct spdk_nvme_ns *ns));
-DEFINE_STUB_V(nvme_qpair_abort_all_queued_reqs, (struct spdk_nvme_qpair *qpair, uint32_t dnr));
+DEFINE_STUB_V(nvme_qpair_abort_all_queued_reqs, (struct spdk_nvme_qpair *qpair));
 DEFINE_STUB(spdk_nvme_poll_group_remove, int, (struct spdk_nvme_poll_group *group,
 		struct spdk_nvme_qpair *qpair), 0);
 DEFINE_STUB_V(nvme_io_msg_ctrlr_update, (struct spdk_nvme_ctrlr *ctrlr));
@@ -53,7 +55,21 @@ DEFINE_STUB(spdk_nvme_ctrlr_cmd_security_receive, int, (struct spdk_nvme_ctrlr *
 DEFINE_STUB(spdk_nvme_ctrlr_cmd_security_send, int, (struct spdk_nvme_ctrlr *ctrlr,
 		uint8_t secp, uint16_t spsp, uint8_t nssf, void *payload,
 		uint32_t payload_size, spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
-DEFINE_STUB_V(nvme_qpair_abort_queued_reqs, (struct spdk_nvme_qpair *qpair, uint32_t dnr));
+DEFINE_STUB_V(nvme_qpair_abort_queued_reqs, (struct spdk_nvme_qpair *qpair));
+DEFINE_STUB(spdk_nvme_qpair_authenticate, int, (struct spdk_nvme_qpair *qpair,
+		spdk_nvme_authenticate_cb cb_fn, void *cb_ctx), 0);
+DEFINE_STUB(nvme_transport_ctrlr_enable_interrupts, int, (struct spdk_nvme_ctrlr *ctrlr), 0);
+
+int
+nvme_get_default_hostnqn(char *buf, int len)
+{
+	const char *nqn = "nqn.2014-08.org.nvmexpress:uuid:" UT_HOSTID;
+
+	SPDK_CU_ASSERT_FATAL(len >= (int)strlen(nqn));
+	memcpy(buf, nqn, strlen(nqn));
+
+	return 0;
+}
 
 DEFINE_RETURN_MOCK(nvme_transport_ctrlr_get_memory_domains, int);
 int
@@ -277,7 +293,7 @@ nvme_transport_admin_qpair_abort_aers(struct spdk_nvme_qpair *qpair)
 }
 
 void
-nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair, uint32_t dnr)
+nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair)
 {
 }
 
@@ -319,6 +335,7 @@ spdk_nvme_ctrlr_cmd_set_feature(struct spdk_nvme_ctrlr *ctrlr, uint8_t feature,
 				spdk_nvme_cmd_cb cb_fn, void *cb_arg)
 {
 	g_ut_cdw11 = cdw11;
+	fake_cpl_sc(cb_fn, cb_arg);
 	return 0;
 }
 
@@ -652,6 +669,19 @@ nvme_ns_free_zns_specific_data(struct spdk_nvme_ns *ns)
 	if (ns->nsdata_zns) {
 		spdk_free(ns->nsdata_zns);
 		ns->nsdata_zns = NULL;
+	}
+}
+
+void
+nvme_ns_free_nvm_specific_data(struct spdk_nvme_ns *ns)
+{
+	if (!ns->id) {
+		return;
+	}
+
+	if (ns->nsdata_nvm) {
+		spdk_free(ns->nsdata_nvm);
+		ns->nsdata_nvm = NULL;
 	}
 }
 
@@ -1900,12 +1930,37 @@ test_nvme_ctrlr_set_supported_features(void)
 }
 
 static void
+test_nvme_ctrlr_set_host_feature(void)
+{
+	DECLARE_AND_CONSTRUCT_CTRLR();
+
+	SPDK_CU_ASSERT_FATAL(nvme_ctrlr_construct(&ctrlr) == 0);
+
+	ctrlr.cdata.ctratt.bits.elbas = 0;
+	ctrlr.state = NVME_CTRLR_STATE_SET_HOST_FEATURE;
+
+	CU_ASSERT(nvme_ctrlr_process_init(&ctrlr) == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_SET_DB_BUF_CFG);
+
+	ctrlr.cdata.ctratt.bits.elbas = 1;
+	ctrlr.state = NVME_CTRLR_STATE_SET_HOST_FEATURE;
+
+	while (ctrlr.state != NVME_CTRLR_STATE_SET_DB_BUF_CFG) {
+		CU_ASSERT(nvme_ctrlr_process_init(&ctrlr) == 0);
+	}
+
+	CU_ASSERT(ctrlr.tmp_ptr == NULL);
+	CU_ASSERT(ctrlr.feature_supported[SPDK_NVME_FEAT_HOST_BEHAVIOR_SUPPORT] == true);
+
+	nvme_ctrlr_destruct(&ctrlr);
+}
+
+static void
 test_ctrlr_get_default_ctrlr_opts(void)
 {
 	struct spdk_nvme_ctrlr_opts opts = {};
 
-	CU_ASSERT(spdk_uuid_parse(&g_spdk_nvme_driver->default_extended_host_id,
-				  "e53e9258-c93b-48b5-be1a-f025af6d232a") == 0);
+	CU_ASSERT(spdk_uuid_parse(&g_spdk_nvme_driver->default_extended_host_id, UT_HOSTID) == 0);
 
 	memset(&opts, 0, sizeof(opts));
 
@@ -1974,6 +2029,17 @@ test_ctrlr_get_default_io_qpair_opts(void)
 	CU_ASSERT_EQUAL(opts.qprio, SPDK_NVME_QPRIO_URGENT);
 	CU_ASSERT_EQUAL(opts.io_queue_size, DEFAULT_IO_QUEUE_SIZE);
 	CU_ASSERT_EQUAL(opts.io_queue_requests, DEFAULT_IO_QUEUE_REQUESTS);
+	CU_ASSERT_EQUAL(opts.delay_cmd_submit, false);
+	CU_ASSERT_EQUAL(opts.sq.vaddr, NULL);
+	CU_ASSERT_EQUAL(opts.sq.paddr, 0);
+	CU_ASSERT_EQUAL(opts.sq.buffer_size, 0);
+	CU_ASSERT_EQUAL(opts.cq.vaddr, NULL);
+	CU_ASSERT_EQUAL(opts.cq.paddr, 0);
+	CU_ASSERT_EQUAL(opts.cq.buffer_size, 0);
+	CU_ASSERT_EQUAL(opts.create_only, false);
+	CU_ASSERT_EQUAL(opts.async_mode, false);
+	CU_ASSERT_EQUAL(opts.disable_pcie_sgl_merge, false);
+	CU_ASSERT_EQUAL(opts.opts_size, sizeof(opts));
 }
 
 #if 0 /* TODO: move to PCIe-specific unit test */
@@ -2314,7 +2380,7 @@ test_spdk_nvme_ctrlr_set_trid(void)
 	ctrlr.is_failed = true;
 	new_trid.trtype = SPDK_NVME_TRANSPORT_TCP;
 	CU_ASSERT(spdk_nvme_ctrlr_set_trid(&ctrlr, &new_trid) == -EINVAL);
-	CU_ASSERT(ctrlr.trid.trtype = SPDK_NVME_TRANSPORT_RDMA);
+	CU_ASSERT(ctrlr.trid.trtype == SPDK_NVME_TRANSPORT_RDMA);
 
 	new_trid.trtype = SPDK_NVME_TRANSPORT_RDMA;
 	snprintf(new_trid.subnqn, SPDK_NVMF_NQN_MAX_LEN, "%s", "nqn.2016-06.io.spdk:cnode2");
@@ -3328,13 +3394,60 @@ test_nvme_transport_ctrlr_ready(void)
 	MOCK_CLEAR(nvme_transport_ctrlr_ready);
 }
 
+static void
+test_nvme_ctrlr_disable(void)
+{
+	DECLARE_AND_CONSTRUCT_CTRLR();
+	int rc;
+
+	SPDK_CU_ASSERT_FATAL(nvme_ctrlr_construct(&ctrlr) == 0);
+
+	ctrlr.state = NVME_CTRLR_STATE_TRANSPORT_READY;
+	SPDK_CU_ASSERT_FATAL(nvme_ctrlr_process_init(&ctrlr) == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_READY);
+
+	/* Start a Controller Level Reset. */
+	ctrlr.is_disconnecting = true;
+	nvme_ctrlr_disable(&ctrlr);
+
+	g_ut_nvme_regs.cc.bits.en = 0;
+
+	rc = nvme_ctrlr_disable_poll(&ctrlr);
+	CU_ASSERT(rc == -EAGAIN);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_DISABLE_WAIT_FOR_READY_0);
+
+	g_ut_nvme_regs.csts.bits.rdy = 0;
+
+	rc = nvme_ctrlr_disable_poll(&ctrlr);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(ctrlr.state == NVME_CTRLR_STATE_DISABLED);
+
+	g_ut_nvme_regs.csts.bits.shst = SPDK_NVME_SHST_COMPLETE;
+	nvme_ctrlr_destruct(&ctrlr);
+}
+
+static void
+test_nvme_numa_id(void)
+{
+	struct spdk_nvme_ctrlr ctrlr = {};
+
+	ctrlr.numa.id = 3;
+	ctrlr.numa.id_valid = 0;
+	CU_ASSERT(spdk_nvme_ctrlr_get_numa_id(&ctrlr) == SPDK_ENV_NUMA_ID_ANY);
+
+	ctrlr.numa.id_valid = 1;
+	CU_ASSERT(spdk_nvme_ctrlr_get_numa_id(&ctrlr) == 3);
+
+	ctrlr.numa.id = SPDK_ENV_NUMA_ID_ANY;
+	CU_ASSERT(spdk_nvme_ctrlr_get_numa_id(&ctrlr) == SPDK_ENV_NUMA_ID_ANY);
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_ctrlr", NULL, NULL);
@@ -3356,6 +3469,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_ctrlr_fail);
 	CU_ADD_TEST(suite, test_nvme_ctrlr_construct_intel_support_log_page_list);
 	CU_ADD_TEST(suite, test_nvme_ctrlr_set_supported_features);
+	CU_ADD_TEST(suite, test_nvme_ctrlr_set_host_feature);
 	CU_ADD_TEST(suite, test_spdk_nvme_ctrlr_doorbell_buffer_config);
 #if 0 /* TODO: move to PCIe-specific unit test */
 	CU_ADD_TEST(suite, test_nvme_ctrlr_alloc_cmb);
@@ -3384,10 +3498,10 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_ctrlr_ana_resize);
 	CU_ADD_TEST(suite, test_nvme_ctrlr_get_memory_domains);
 	CU_ADD_TEST(suite, test_nvme_transport_ctrlr_ready);
+	CU_ADD_TEST(suite, test_nvme_ctrlr_disable);
+	CU_ADD_TEST(suite, test_nvme_numa_id);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

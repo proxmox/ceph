@@ -1,6 +1,6 @@
 #  SPDX-License-Identifier: BSD-3-Clause
 #  Copyright (C) 2016 Intel Corporation.
-#  Copyright (c) 2021, 2022 NVIDIA CORPORATION & AFFILIATES.
+#  Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES.
 #  All rights reserved.
 #
 
@@ -16,6 +16,13 @@ INTR_BLOCKDEV_MODULES_LIST += bdev_lvol blobfs blobfs_bdev blob_bdev blob lvol
 
 ifeq ($(CONFIG_XNVME),y)
 BLOCKDEV_MODULES_LIST += bdev_xnvme
+XNVME_LIB_DIR=$(SPDK_ROOT_DIR)/xnvme/builddir/lib
+
+ifeq ($(CONFIG_SHARED),y)
+BLOCKDEV_MODULES_PRIVATE_LIBS += $(XNVME_LIB_DIR)/libxnvme.so -Wl,-rpath=$(XNVME_LIB_DIR)
+else
+BLOCKDEV_MODULES_PRIVATE_LIBS +=  $(XNVME_LIB_DIR)/libxnvme.a -luring -laio -pthread -lrt
+endif
 endif
 
 ifeq ($(CONFIG_VFIO_USER),y)
@@ -43,7 +50,7 @@ endif
 endif
 
 ifeq ($(CONFIG_RDMA),y)
-BLOCKDEV_MODULES_LIST += rdma
+BLOCKDEV_MODULES_LIST += rdma_provider rdma_utils
 BLOCKDEV_MODULES_PRIVATE_LIBS += -libverbs -lrdmacm
 ifeq ($(CONFIG_RDMA_PROV),mlx5_dv)
 BLOCKDEV_MODULES_PRIVATE_LIBS += -lmlx5
@@ -65,6 +72,10 @@ BLOCKDEV_MODULES_PRIVATE_LIBS += -L/usr/lib64/iscsi -liscsi
 endif
 endif
 
+ifeq ($(OS),FreeBSD)
+BLOCKDEV_MODULES_LIST += bdev_aio
+endif
+
 ifeq ($(CONFIG_URING),y)
 BLOCKDEV_MODULES_LIST += bdev_uring
 BLOCKDEV_MODULES_PRIVATE_LIBS += -luring
@@ -77,11 +88,6 @@ endif
 ifeq ($(CONFIG_RBD),y)
 BLOCKDEV_MODULES_LIST += bdev_rbd
 BLOCKDEV_MODULES_PRIVATE_LIBS += -lrados -lrbd
-endif
-
-ifeq ($(CONFIG_PMDK),y)
-BLOCKDEV_MODULES_LIST += bdev_pmem
-BLOCKDEV_MODULES_PRIVATE_LIBS += -lpmemblk -lpmem
 endif
 
 ifeq ($(CONFIG_DAOS),y)
@@ -97,7 +103,7 @@ SOCK_MODULES_LIST += sock_uring
 endif
 endif
 
-ACCEL_MODULES_LIST = accel_ioat ioat
+ACCEL_MODULES_LIST = accel_error accel_ioat ioat
 ifeq ($(CONFIG_IDXD),y)
 ACCEL_MODULES_LIST += accel_dsa accel_iaa idxd
 endif
@@ -108,7 +114,7 @@ ifeq ($(CONFIG_DPDK_COMPRESSDEV),y)
 ACCEL_MODULES_LIST += accel_dpdk_compressdev
 endif
 
-ifeq ($(CONFIG_RDMA_PROV)|$(CONFIG_CRYPTO),mlx5_dv|y)
+ifeq ($(CONFIG_RDMA_PROV),mlx5_dv)
 ACCEL_MODULES_LIST += accel_mlx5
 endif
 
@@ -121,8 +127,17 @@ ifeq ($(CONFIG_VFIO_USER),y)
 VFU_DEVICE_MODULES_LIST = vfu_device
 endif
 
+KEYRING_MODULES_LIST = event_keyring keyring_file
+ifeq ($(CONFIG_HAVE_KEYUTILS),y)
+KEYRING_MODULES_LIST += keyring_linux
+endif
+
 EVENT_BDEV_SUBSYSTEM = event_bdev event_accel event_vmd event_sock event_iobuf
 
+ifeq ($(CONFIG_AIO_FSDEV), y)
+FSDEV_MODULES_LIST = fsdev_aio
+endif
+
 ALL_MODULES_LIST = $(BLOCKDEV_MODULES_LIST) $(ACCEL_MODULES_LIST) $(SCHEDULER_MODULES_LIST) $(SOCK_MODULES_LIST)
-ALL_MODULES_LIST += $(VFU_DEVICE_MODULES_LIST)
+ALL_MODULES_LIST += $(VFU_DEVICE_MODULES_LIST) $(KEYRING_MODULES_LIST) $(FSDEV_MODULES_LIST)
 SYS_LIBS += $(BLOCKDEV_MODULES_PRIVATE_LIBS)

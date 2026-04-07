@@ -6,7 +6,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #define UNIT_TEST_NO_VTOPHYS
 
@@ -27,9 +27,12 @@ DEFINE_STUB_V(nvme_completion_poll_cb, (void *arg, const struct spdk_nvme_cpl *c
 
 DEFINE_STUB(nvme_ctrlr_submit_admin_request, int, (struct spdk_nvme_ctrlr *ctrlr,
 		struct nvme_request *req), 0);
-DEFINE_STUB_V(nvme_ctrlr_free_processes, (struct spdk_nvme_ctrlr *ctrlr));
+
 DEFINE_STUB(nvme_ctrlr_proc_get_devhandle, struct spdk_pci_device *,
 	    (struct spdk_nvme_ctrlr *ctrlr), NULL);
+DEFINE_STUB(spdk_nvme_ctrlr_get_numa_id, int32_t, (struct spdk_nvme_ctrlr *ctrlr),
+	    SPDK_ENV_NUMA_ID_ANY);
+
 DEFINE_STUB(spdk_pci_device_unmap_bar, int, (struct spdk_pci_device *dev, uint32_t bar, void *addr),
 	    0);
 DEFINE_STUB(spdk_pci_device_attach, int, (struct spdk_pci_driver *driver, spdk_pci_enum_cb enum_cb,
@@ -49,9 +52,11 @@ DEFINE_STUB_V(spdk_pci_unregister_error_handler, (spdk_pci_error_handler sighand
 DEFINE_STUB(spdk_pci_enumerate, int,
 	    (struct spdk_pci_driver *driver, spdk_pci_enum_cb enum_cb, void *enum_ctx),
 	    -1);
-
-DEFINE_STUB(nvme_transport_get_name, const char *, (const struct spdk_nvme_transport *transport),
-	    NULL);
+DEFINE_STUB(spdk_pci_device_enable_interrupts, int, (struct spdk_pci_device *dev,
+		uint32_t efd_count), 0);
+DEFINE_STUB(spdk_pci_device_disable_interrupts, int, (struct spdk_pci_device *dev), 0);
+DEFINE_STUB(spdk_pci_device_get_interrupt_efd_by_index, int, (struct spdk_pci_device *dev,
+		uint32_t index), 0);
 
 SPDK_LOG_REGISTER_COMPONENT(nvme)
 
@@ -112,14 +117,12 @@ DEFINE_STUB(nvme_ctrlr_probe, int, (const struct spdk_nvme_transport_id *trid,
 				    struct spdk_nvme_probe_ctx *probe_ctx, void *devhandle), 0);
 DEFINE_STUB(spdk_pci_device_is_removed, bool, (struct spdk_pci_device *dev), false);
 DEFINE_STUB(nvme_get_ctrlr_by_trid_unsafe, struct spdk_nvme_ctrlr *,
-	    (const struct spdk_nvme_transport_id *trid), NULL);
+	    (const struct spdk_nvme_transport_id *trid, const char *hostnqn), NULL);
 DEFINE_STUB(spdk_nvme_ctrlr_get_regs_csts, union spdk_nvme_csts_register,
 	    (struct spdk_nvme_ctrlr *ctrlr), {});
 DEFINE_STUB(nvme_ctrlr_get_process, struct spdk_nvme_ctrlr_process *,
 	    (struct spdk_nvme_ctrlr *ctrlr, pid_t pid), NULL);
 DEFINE_STUB(nvme_completion_is_retry, bool, (const struct spdk_nvme_cpl *cpl), false);
-DEFINE_STUB_V(nvme_ctrlr_process_async_event, (struct spdk_nvme_ctrlr *ctrlr,
-		const struct spdk_nvme_cpl *cpl));
 DEFINE_STUB_V(spdk_nvme_qpair_print_command, (struct spdk_nvme_qpair *qpair,
 		struct spdk_nvme_cmd *cmd));
 DEFINE_STUB_V(spdk_nvme_qpair_print_completion, (struct spdk_nvme_qpair *qpair,
@@ -425,7 +428,7 @@ test_build_contig_hw_sgl_request(void)
 	qpair.ctrlr = &ctrlr;
 	/* Test 1: Payload covered by a single mapping */
 	req.payload_size = 100;
-	req.payload = NVME_PAYLOAD_CONTIG(0, 0);
+	req.payload = NVME_PAYLOAD_CONTIG((void *)0xbeef0, NULL);
 	g_vtophys_size = 100;
 	MOCK_SET(spdk_vtophys, 0xDEADBEEF);
 
@@ -445,7 +448,7 @@ test_build_contig_hw_sgl_request(void)
 	qpair.ctrlr = &ctrlr;
 	req.payload_size = 100;
 	req.payload_offset = 50;
-	req.payload = NVME_PAYLOAD_CONTIG(0, 0);
+	req.payload = NVME_PAYLOAD_CONTIG((void *)0xbeef0, NULL);
 	g_vtophys_size = 1000;
 	MOCK_SET(spdk_vtophys, 0xDEADBEEF);
 
@@ -464,7 +467,7 @@ test_build_contig_hw_sgl_request(void)
 	/* Test 3: Payload spans two mappings */
 	qpair.ctrlr = &ctrlr;
 	req.payload_size = 100;
-	req.payload = NVME_PAYLOAD_CONTIG(0, 0);
+	req.payload = NVME_PAYLOAD_CONTIG((void *)0xbeef0, NULL);
 	g_vtophys_size = 60;
 	tr.prp_sgl_bus_addr = 0xFF0FF;
 	MOCK_SET(spdk_vtophys, 0xDEADBEEF);
@@ -502,16 +505,21 @@ test_nvme_pcie_qpair_build_metadata(void)
 	tr.req = &req;
 	qpair->ctrlr = &ctrlr;
 
-	req.payload.md = (void *)0xDEADBEE0;
+	req.payload = NVME_PAYLOAD_CONTIG(NULL, (void *)0xDEADBEE0);
 	req.md_offset = 0;
 	req.md_size = 4096;
+	/* The nvme_pcie_qpair_build_metadata() function expects the cmd.psdt
+	 * is set to SPDK_NVME_PSDT_SGL_MPTR_CONTIG, and then if metadata is
+	 * built using SGL, cmd.psdt is changed to SPDK_NVME_PSDT_SGL_MPTR_SGL
+	 * by this function. We need to verify if this indeed is the case.
+	 */
 	req.cmd.psdt = SPDK_NVME_PSDT_SGL_MPTR_CONTIG;
 	tr.prp_sgl_bus_addr = 0xDBADBEEF;
 	MOCK_SET(spdk_vtophys, 0xDCADBEE0);
 
-	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, true, true);
+	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, true, true, true);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(req.cmd.psdt = SPDK_NVME_PSDT_SGL_MPTR_SGL);
+	CU_ASSERT(req.cmd.psdt == SPDK_NVME_PSDT_SGL_MPTR_SGL);
 	CU_ASSERT(tr.meta_sgl.address == 0xDCADBEE0);
 	CU_ASSERT(tr.meta_sgl.unkeyed.type == SPDK_NVME_SGL_TYPE_DATA_BLOCK);
 	CU_ASSERT(tr.meta_sgl.unkeyed.length == 4096);
@@ -521,7 +529,7 @@ test_nvme_pcie_qpair_build_metadata(void)
 	/* Non-IOVA contiguous metadata buffers should fail. */
 	g_vtophys_size = 1024;
 	req.cmd.psdt = SPDK_NVME_PSDT_SGL_MPTR_CONTIG;
-	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, true, true);
+	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, true, true, true);
 	CU_ASSERT(rc == -EINVAL);
 	g_vtophys_size = 0;
 
@@ -530,13 +538,26 @@ test_nvme_pcie_qpair_build_metadata(void)
 	/* Build non sgl metadata */
 	MOCK_SET(spdk_vtophys, 0xDDADBEE0);
 
-	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, false, true);
+	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, false, false, true);
 	CU_ASSERT(rc == 0);
+	CU_ASSERT(req.cmd.mptr == 0xDDADBEE0);
+
+	/* Build non sgl metadata while sgls are supported */
+	memset(&tr.meta_sgl, 0, sizeof(tr.meta_sgl));
+	/* If SGLs are supported, but not in metadata, the cmd.psdt
+	 * shall not be changed to SPDK_NVME_PSDT_SGL_MPTR_SGL
+	 */
+	req.cmd.psdt = SPDK_NVME_PSDT_SGL_MPTR_CONTIG;
+	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, true, false, true);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(tr.meta_sgl.address == 0);
+	CU_ASSERT(tr.meta_sgl.unkeyed.length == 0);
+	CU_ASSERT(req.cmd.psdt == SPDK_NVME_PSDT_SGL_MPTR_CONTIG);
 	CU_ASSERT(req.cmd.mptr == 0xDDADBEE0);
 
 	/* Non-IOVA contiguous metadata buffers should fail. */
 	g_vtophys_size = 1024;
-	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, false, true);
+	rc = nvme_pcie_qpair_build_metadata(qpair, &tr, false, false, true);
 	CU_ASSERT(rc == -EINVAL);
 	g_vtophys_size = 0;
 
@@ -593,10 +614,7 @@ test_nvme_pcie_qpair_build_prps_sgl_request(void)
 
 	tr.req = &req;
 	qpair.ctrlr = &ctrlr;
-	req.payload.contig_or_cb_arg = &bio;
-
-	req.payload.reset_sgl_fn = nvme_pcie_ut_reset_sgl;
-	req.payload.next_sge_fn = nvme_pcie_ut_next_sge;
+	req.payload = NVME_PAYLOAD_SGL(nvme_pcie_ut_reset_sgl, nvme_pcie_ut_next_sge, &bio, NULL);
 	req.payload_size = 4096;
 	ctrlr.page_size = 4096;
 	bio.iovs[0].iov_base = (void *)0x100000;
@@ -610,7 +628,8 @@ test_nvme_pcie_qpair_build_prps_sgl_request(void)
 static void
 test_nvme_pcie_qpair_build_hw_sgl_request(void)
 {
-	struct spdk_nvme_qpair qpair = {};
+	struct nvme_pcie_qpair pqpair = {};
+	struct spdk_nvme_qpair *qpair = &pqpair.qpair;
 	struct nvme_request req = {};
 	struct nvme_tracker tr = {};
 	struct nvme_pcie_ut_bdev_io bio = {};
@@ -618,10 +637,8 @@ test_nvme_pcie_qpair_build_hw_sgl_request(void)
 	int rc;
 
 	ctrlr.trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
-	qpair.ctrlr = &ctrlr;
-	req.payload.contig_or_cb_arg = &bio;
-	req.payload.reset_sgl_fn = nvme_pcie_ut_reset_sgl;
-	req.payload.next_sge_fn = nvme_pcie_ut_next_sge;
+	qpair->ctrlr = &ctrlr;
+	req.payload = NVME_PAYLOAD_SGL(nvme_pcie_ut_reset_sgl, nvme_pcie_ut_next_sge, &bio, NULL);
 	req.cmd.opc = SPDK_NVME_OPC_WRITE;
 	tr.prp_sgl_bus_addr =  0xDAADBEE0;
 	g_vtophys_size = 4096;
@@ -636,7 +653,7 @@ test_nvme_pcie_qpair_build_hw_sgl_request(void)
 	bio.iovs[2].iov_base = (void *)0xDDADBEE0;
 	bio.iovs[2].iov_len = 2048;
 
-	rc = nvme_pcie_qpair_build_hw_sgl_request(&qpair, &req, &tr, true);
+	rc = nvme_pcie_qpair_build_hw_sgl_request(qpair, &req, &tr, true);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(tr.u.sgl[0].unkeyed.type == SPDK_NVME_SGL_TYPE_DATA_BLOCK);
 	CU_ASSERT(tr.u.sgl[0].unkeyed.length == 2048);
@@ -659,16 +676,14 @@ test_nvme_pcie_qpair_build_hw_sgl_request(void)
 	memset(&tr, 0, sizeof(tr));
 	memset(&bio, 0, sizeof(bio));
 	memset(&req, 0, sizeof(req));
-	req.payload.contig_or_cb_arg = &bio;
-	req.payload.reset_sgl_fn = nvme_pcie_ut_reset_sgl;
-	req.payload.next_sge_fn = nvme_pcie_ut_next_sge;
+	req.payload = NVME_PAYLOAD_SGL(nvme_pcie_ut_reset_sgl, nvme_pcie_ut_next_sge, &bio, NULL);
 	req.cmd.opc = SPDK_NVME_OPC_WRITE;
 	req.payload_size = 4096;
 	bio.iovpos = 1;
 	bio.iovs[0].iov_base = (void *)0xDBADBEE0;
 	bio.iovs[0].iov_len = 4096;
 
-	rc = nvme_pcie_qpair_build_hw_sgl_request(&qpair, &req, &tr, true);
+	rc = nvme_pcie_qpair_build_hw_sgl_request(qpair, &req, &tr, true);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(tr.u.sgl[0].unkeyed.type == SPDK_NVME_SGL_TYPE_DATA_BLOCK);
 	CU_ASSERT(tr.u.sgl[0].unkeyed.length == 4096);
@@ -695,8 +710,8 @@ test_nvme_pcie_qpair_build_contig_request(void)
 
 	/* 1 prp, 4k-aligned */
 	prp_list_prep(&tr, &req, NULL);
+	req.payload = NVME_PAYLOAD_CONTIG((void *)0x100000, NULL);
 	req.payload_size = 0x1000;
-	req.payload.contig_or_cb_arg = (void *)0x100000;
 
 	rc = nvme_pcie_qpair_build_contig_request(&pqpair.qpair, &req, &tr, true);
 	CU_ASSERT(rc == 0);
@@ -704,9 +719,9 @@ test_nvme_pcie_qpair_build_contig_request(void)
 
 	/* 2 prps, non-4K-aligned */
 	prp_list_prep(&tr, &req, NULL);
+	req.payload = NVME_PAYLOAD_CONTIG((void *)0x100000, NULL);
 	req.payload_size = 0x1000;
 	req.payload_offset = 0x800;
-	req.payload.contig_or_cb_arg = (void *)0x100000;
 
 	rc = nvme_pcie_qpair_build_contig_request(&pqpair.qpair, &req, &tr, true);
 	CU_ASSERT(rc == 0);
@@ -715,8 +730,8 @@ test_nvme_pcie_qpair_build_contig_request(void)
 
 	/* 3 prps, 4k-aligned */
 	prp_list_prep(&tr, &req, NULL);
+	req.payload = NVME_PAYLOAD_CONTIG((void *)0x100000, NULL);
 	req.payload_size = 0x3000;
-	req.payload.contig_or_cb_arg = (void *)0x100000;
 
 	rc = nvme_pcie_qpair_build_contig_request(&pqpair.qpair, &req, &tr, true);
 	CU_ASSERT(rc == 0);
@@ -727,8 +742,8 @@ test_nvme_pcie_qpair_build_contig_request(void)
 
 	/* address not dword aligned */
 	prp_list_prep(&tr, &req, NULL);
+	req.payload = NVME_PAYLOAD_CONTIG((void *)0x100001, NULL);
 	req.payload_size = 0x3000;
-	req.payload.contig_or_cb_arg = (void *)0x100001;
 	req.qpair = &pqpair.qpair;
 	TAILQ_INIT(&pqpair.outstanding_tr);
 	TAILQ_INSERT_TAIL(&pqpair.outstanding_tr, &tr, tq_list);
@@ -1106,7 +1121,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_pcie", NULL, NULL);
@@ -1125,9 +1139,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_pcie_ctrlr_config_pmr);
 	CU_ADD_TEST(suite, test_nvme_pcie_ctrlr_map_io_pmr);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

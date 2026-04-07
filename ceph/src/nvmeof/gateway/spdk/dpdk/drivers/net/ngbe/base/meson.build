@@ -10,10 +10,12 @@ sources = [
         'ngbe_phy_rtl.c',
         'ngbe_phy_mvl.c',
         'ngbe_phy_yt.c',
+        'ngbe_vf.c',
 ]
 
 error_cflags = []
 
+cflags += no_wvla_cflag
 c_args = cflags
 
 base_lib = static_library('ngbe_base', sources,

@@ -7,8 +7,6 @@ testdir=$(readlink -f "$(dirname "$0")")
 rootdir=$(readlink -f "$testdir/../../")
 source "$testdir/common.sh"
 
-shopt -s nullglob
-
 cleanup() {
 	cleanup_nvme
 	cleanup_dm
@@ -60,7 +58,7 @@ verify() {
 
 	local pci status
 	while read -r pci _ _ status; do
-		if [[ $pci == "$dev" && \
+		if [[ $pci == "$dev" &&
 			$status == *"Active devices: "*"$mounts"* ]]; then
 			found=1
 		fi
@@ -159,6 +157,10 @@ dm_mount() {
 		1048576 1048576 linear /dev/$pv1 0
 	DM_TABLE
 
+	for t in {1..5}; do
+		if [[ -e /dev/mapper/$dm_name ]]; then break; fi
+		sleep 1
+	done
 	[[ -e /dev/mapper/$dm_name ]]
 	dm=$(readlink -f "/dev/mapper/$dm_name")
 	dm=${dm##*/}
@@ -193,11 +195,11 @@ get_zoned_devs
 
 declare -a blocks=()
 declare -A blocks_to_pci=()
-min_disk_size=$((1024 ** 3 * 2)) # 2GB
+min_disk_size=$((1024 ** 3 * 3)) # 3GB
 
-for block in "/sys/block/nvme"*; do
-	pci=$(readlink -f "$block/device/device")
-	pci=${pci##*/}
+for block in "/sys/block/nvme"!(*c*); do
+	ctrl=${block##*/} ctrl=${ctrl%n*}
+	pci=$(< "/sys/class/nvme/$ctrl/address")
 	[[ ${zoned_devs[*]} == *"$pci"* ]] && continue
 	if ! block_in_use "${block##*/}" && (($(sec_size_to_bytes "${block##*/}") >= min_disk_size)); then
 		blocks+=("${block##*/}")

@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_VOLUME_H__
@@ -14,8 +15,7 @@
 #include "ocf_types.h"
 #include "ocf_env_headers.h"
 #include "ocf/ocf_err.h"
-
-struct ocf_io;
+#include "ocf/ocf_io.h"
 
 /**
  * @brief OCF volume UUID maximum allowed size
@@ -50,28 +50,28 @@ struct ocf_volume_ops {
 	 *
 	 * @param[in] io IO to be submitted
 	 */
-	void (*submit_io)(struct ocf_io *io);
+	void (*submit_io)(ocf_io_t io);
 
 	/**
 	 * @brief Submit IO with flush command
 	 *
 	 * @param[in] io IO to be submitted
 	 */
-	void (*submit_flush)(struct ocf_io *io);
+	void (*submit_flush)(ocf_io_t io);
 
 	/**
 	 * @brief Submit IO with metadata
 	 *
 	 * @param[in] io IO to be submitted
 	 */
-	void (*submit_metadata)(struct ocf_io *io);
+	void (*submit_metadata)(ocf_io_t io);
 
 	/**
 	 * @brief Submit IO with discard command
 	 *
 	 * @param[in] io IO to be submitted
 	 */
-	void (*submit_discard)(struct ocf_io *io);
+	void (*submit_discard)(ocf_io_t io);
 
 	/**
 	 * @brief Submit operation to write zeroes to target address (including
@@ -79,7 +79,99 @@ struct ocf_volume_ops {
 	 *
 	 * @param[in] io IO description (addr, size)
 	 */
-	void (*submit_write_zeroes)(struct ocf_io *io);
+	void (*submit_write_zeroes)(ocf_io_t io);
+
+	/**
+	 * @brief Forward the original io directly to the volume
+	 *
+	 * @param[in] volume Volume to which IO is being submitted
+	 * @param[in] token Token representing IO to be forwarded
+	 * @param[in] dir Direction OCF_READ/OCF_WRITE
+	 * @param[in] addr Address to which IO is being submitted
+	 * @param[in] bytes Length of the IO
+	 * @param[in] offset Offset within the IO data
+	 */
+	void (*forward_io)(ocf_volume_t volume, ocf_forward_token_t token,
+			int dir, uint64_t addr, uint64_t bytes,
+			uint64_t offset);
+
+	/**
+	 * @brief Forward the original flush io directly to the volume
+	 *
+	 * @param[in] volume Volume to which IO is being submitted
+	 * @param[in] token Token representing IO to be forwarded
+	 */
+	void (*forward_flush)(ocf_volume_t volume, ocf_forward_token_t token);
+
+	/**
+	 * @brief Forward the original discard io directly to the volume
+	 *
+	 * @param[in] volume Volume to which IO is being submitted
+	 * @param[in] token Token representing IO to be forwarded
+	 * @param[in] addr Address to which IO is being submitted
+	 * @param[in] bytes Length of the IO
+	 */
+	void (*forward_discard)(ocf_volume_t volume, ocf_forward_token_t token,
+			uint64_t addr, uint64_t bytes);
+
+	/**
+	 * @brief Froward operation to write zeros to target address (including
+	 *        metadata extended LBAs in atomic mode)
+	 *
+	 * @param[in] volume Volume to which IO is being submitted
+	 * @param[in] token Token representing IO to be forwarded
+	 * @param[in] addr Address to which IO is being submitted
+	 * @param[in] bytes Length of the IO
+	 */
+	void (*forward_write_zeros)(ocf_volume_t volume,
+			ocf_forward_token_t token, uint64_t addr,
+			uint64_t bytes);
+
+	/**
+	 * @brief Forward the metadata io directly to the volume
+	 *
+	 * @param[in] volume Volume to which IO is being submitted
+	 * @param[in] token Token representing IO to be forwarded
+	 * @param[in] dir Direction OCF_READ/OCF_WRITE
+	 * @param[in] addr Address to which IO is being submitted
+	 * @param[in] bytes Length of the IO
+	 * @param[in] offset Offset within the IO data
+	 */
+	void (*forward_metadata)(ocf_volume_t volume, ocf_forward_token_t token,
+			int dir, uint64_t addr, uint64_t bytes,
+			uint64_t offset);
+
+	/**
+	 * @brief Forward the io directly to the volume in context
+	 *	  where cache is not initialized yet
+	 *
+	 * @param[in] volume Volume to which IO is being submitted
+	 * @param[in] token Token representing IO to be forwarded
+	 * @param[in] dir Direction OCF_READ/OCF_WRITE
+	 * @param[in] addr Address to which IO is being submitted
+	 * @param[in] bytes Length of the IO
+	 */
+	void (*forward_io_simple)(ocf_volume_t volume,
+			ocf_forward_token_t token, int dir,
+			uint64_t addr, uint64_t bytes);
+
+	/**
+	 * @brief Volume initialization callback, called when volume object
+	 *        is being initialized
+	 *
+	 * @param[in] volume Volume
+	 *
+	 * @return Zero on success, otherwise error code
+	 */
+	int (*on_init)(ocf_volume_t volume);
+
+	/**
+	 * @brief Volume deinitialization callback, called when volume object
+	 *        is being deinitialized
+	 *
+	 * @param[in] volume Volume
+	 */
+	void (*on_deinit)(ocf_volume_t volume);
 
 	/**
 	 * @brief Open volume
@@ -127,17 +219,11 @@ struct ocf_volume_properties {
 	const char *name;
 		/*!< The name of volume operations */
 
-	uint32_t io_priv_size;
-		/*!< Size of io private context structure */
-
 	uint32_t volume_priv_size;
 		/*!< Size of volume private context structure */
 
 	struct ocf_volume_caps caps;
 		/*!< Volume capabilities */
-
-	struct ocf_io_ops io_ops;
-		/*!< IO operations */
 
 	void (*deinit)(void);
 		/*!< Deinitialize volume type */
@@ -263,7 +349,7 @@ int ocf_volume_is_atomic(ocf_volume_t volume);
  *
  * @return ocf_io on success atomic, otherwise NULL
  */
-struct ocf_io *ocf_volume_new_io(ocf_volume_t volume, ocf_queue_t queue,
+ocf_io_t ocf_volume_new_io(ocf_volume_t volume, ocf_queue_t queue,
 		uint64_t addr, uint32_t bytes, uint32_t dir,
 		uint32_t io_class, uint64_t flags);
 
@@ -273,21 +359,21 @@ struct ocf_io *ocf_volume_new_io(ocf_volume_t volume, ocf_queue_t queue,
  *
  * @param[in] io IO
  */
-void ocf_volume_submit_io(struct ocf_io *io);
+void ocf_volume_submit_io(ocf_io_t io);
 
 /**
  * @brief Submit flush to volume
  *
  * @param[in] io IO
  */
-void ocf_volume_submit_flush(struct ocf_io *io);
+void ocf_volume_submit_flush(ocf_io_t io);
 
 /**
  * @brief Submit discard to volume
  *
  * @param[in] io IO
  */
-void ocf_volume_submit_discard(struct ocf_io *io);
+void ocf_volume_submit_discard(ocf_io_t io);
 
 /**
  * @brief Open volume

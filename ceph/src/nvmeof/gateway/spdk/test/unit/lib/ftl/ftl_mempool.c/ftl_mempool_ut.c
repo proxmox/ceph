@@ -5,7 +5,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "common/lib/test_env.c"
 
 #include "ftl/utils/ftl_mempool.c"
@@ -85,16 +85,13 @@ main(int argc, char **argv)
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("ftl_mempool", test_setup, test_cleanup);
 	CU_ADD_TEST(suite, test_ftl_mempool_create);
 	CU_ADD_TEST(suite, test_ftl_mempool_get_put);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

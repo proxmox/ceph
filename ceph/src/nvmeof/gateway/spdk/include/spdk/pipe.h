@@ -17,14 +17,16 @@
 
 #include "spdk/stdinc.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct spdk_pipe;
+struct spdk_pipe_group;
 
 /**
  * Construct a pipe around the given memory buffer. The pipe treats the memory
  * buffer as a circular ring of bytes.
- *
- * The available size for writing will be one less byte than provided. A single
- * byte must be reserved to distinguish queue full from queue empty conditions.
  *
  * \param buf The data buffer that backs this pipe.
  * \param sz The size of the data buffer.
@@ -38,8 +40,11 @@ struct spdk_pipe *spdk_pipe_create(void *buf, uint32_t sz);
  * make it safe for the user to release the buffer.
  *
  * \param pipe The pipe to operate on.
+ * \return Pipe buffer associated with the pipe when destroyed.  The
+ *         caller should free this buffer.  It may not be the same
+ *         buffer that was passed to spdk_pipe_create.
  */
-void spdk_pipe_destroy(struct spdk_pipe *pipe);
+void *spdk_pipe_destroy(struct spdk_pipe *pipe);
 
 /**
  * Acquire memory from the pipe for writing.
@@ -117,5 +122,48 @@ int spdk_pipe_reader_get_buffer(struct spdk_pipe *pipe, uint32_t sz, struct iove
  * \return On error, a negated errno. On success, 0.
  */
 int spdk_pipe_reader_advance(struct spdk_pipe *pipe, uint32_t count);
+
+/**
+ * Constructs a pipe group.
+ *
+ * \return spdk_pipe_group. The new pipe group.
+ */
+struct spdk_pipe_group *spdk_pipe_group_create(void);
+
+/**
+ * Destroys the pipe group.
+ *
+ * \param group The pipe group to operate on.
+ */
+void spdk_pipe_group_destroy(struct spdk_pipe_group *group);
+
+/**
+ * Adds the pipe to the group.
+ *
+ * When a pipe reaches empty state, it puts the data buffer into
+ * the group's pool. If a pipe needs a data buffer, it takes one
+ * from the pool. Since the pool is a stack, a small number of
+ * data buffers tend to be re-used very frequently.
+ *
+ * \param group The pipe group to operate on.
+ * \param pipe The pipe to be added.
+ *
+ * \return On error, a negated errno. On success, 0.
+ */
+int spdk_pipe_group_add(struct spdk_pipe_group *group, struct spdk_pipe *pipe);
+
+/**
+ * Removes the pipe to the group.
+ *
+ * \param group The pipe group to operate on.
+ * \param pipe The pipe to be removed.
+ *
+ * \return On error, a negated errno. On success, 0.
+ */
+int spdk_pipe_group_remove(struct spdk_pipe_group *group, struct spdk_pipe *pipe);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

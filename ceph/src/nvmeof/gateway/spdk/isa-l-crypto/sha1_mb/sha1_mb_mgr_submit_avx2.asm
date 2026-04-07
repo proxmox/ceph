@@ -93,11 +93,11 @@ section .text
 ; STACK_SPACE needs to be an odd multiple of 8
 %define STACK_SPACE	8*8 + 16*10 + 8
 
-; JOB* sha1_mb_mgr_submit_avx2(MB_MGR *state, JOB_SHA1 *job)
+; JOB* _sha1_mb_mgr_submit_avx2(MB_MGR *state, JOB_SHA1 *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-mk_global sha1_mb_mgr_submit_avx2, function
-sha1_mb_mgr_submit_avx2:
+mk_global _sha1_mb_mgr_submit_avx2, function, internal
+_sha1_mb_mgr_submit_avx2:
 	endbranch
 
 	sub     rsp, STACK_SPACE
@@ -127,7 +127,7 @@ sha1_mb_mgr_submit_avx2:
 	and	lane, 0xF
 	shr	unused_lanes, 4
 	imul	lane_data, lane, _LANE_DATA_size
-	mov	dword [job + _status], STS_BEING_PROCESSED
+	mov	dword [job + _status], ISAL_STS_BEING_PROCESSED
 	lea	lane_data, [state + _ldata + lane_data]
 	mov	[state + _unused_lanes], unused_lanes
 	mov	DWORD(len), [job + _len]
@@ -195,7 +195,7 @@ len_is_0:
 	mov	job_rax, [lane_data + _job_in_lane]
 	mov	unused_lanes, [state + _unused_lanes]
 	mov	qword [lane_data + _job_in_lane], 0
-	mov	dword [job_rax + _status], STS_COMPLETED
+	mov	dword [job_rax + _status], ISAL_STS_COMPLETED
 	shl	unused_lanes, 4
 	or	unused_lanes, idx
 	mov	[state + _unused_lanes], unused_lanes

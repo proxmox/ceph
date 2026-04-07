@@ -33,23 +33,24 @@
 /**
  *  @file sha1_mb.h
  *  @brief Multi-buffer CTX API SHA1 function prototypes and structures
+ *  @warning: SHA1 is considered unsafe, so it is recommended to use SHA256 instead.
  *
  * Interface for multi-buffer SHA1 functions
  *
  * <b> Multi-buffer SHA1  Entire or First-Update..Update-Last </b>
  *
  * The interface to this multi-buffer hashing code is carried out through the
- * context-level (CTX) init, submit and flush functions and the SHA1_HASH_CTX_MGR and
- * SHA1_HASH_CTX objects. Numerous SHA1_HASH_CTX objects may be instantiated by the
- * application for use with a single SHA1_HASH_CTX_MGR.
+ * context-level (CTX) init, submit and flush functions and the ISAL_SHA1_HASH_CTX_MGR and
+ * ISAL_SHA1_HASH_CTX objects. Numerous ISAL_SHA1_HASH_CTX objects may be instantiated by the
+ * application for use with a single ISAL_SHA1_HASH_CTX_MGR.
  *
  * The CTX interface functions carry out the initialization and padding of the jobs
  * entered by the user and add them to the multi-buffer manager. The lower level "scheduler"
  * layer then processes the jobs in an out-of-order manner. The scheduler layer functions
  * are internal and are not intended to be invoked directly. Jobs can be submitted
- * to a CTX as a complete buffer to be hashed, using the HASH_ENTIRE flag, or as partial
- * jobs which can be started using the HASH_FIRST flag, and later resumed or finished
- * using the HASH_UPDATE and HASH_LAST flags respectively.
+ * to a CTX as a complete buffer to be hashed, using the ISAL_HASH_ENTIRE flag, or as partial
+ * jobs which can be started using the ISAL_HASH_FIRST flag, and later resumed or finished
+ * using the ISAL_HASH_UPDATE and ISAL_HASH_LAST flags respectively.
  *
  * <b>Note:</b> The submit function does not require data buffers to be block sized.
  *
@@ -57,54 +58,55 @@
  * AVX512. In addition, a multibinary interface is provided, which selects the appropriate
  * architecture-specific function at runtime.
  *
- * <b>Usage:</b> The application creates a SHA1_HASH_CTX_MGR object and initializes it
+ * <b>Usage:</b> The application creates a ISAL_SHA1_HASH_CTX_MGR object and initializes it
  * with a call to sha1_ctx_mgr_init*() function, where henceforth "*" stands for the
  * relevant suffix for each architecture; _sse, _avx, _avx2, _avx512(or no suffix for the
- * multibinary version). The SHA1_HASH_CTX_MGR object will be used to schedule processor
- * resources, with up to 4 SHA1_HASH_CTX objects (or 8 in the AVX2 case, 16 in the AVX512)
+ * multibinary version). The ISAL_SHA1_HASH_CTX_MGR object will be used to schedule processor
+ * resources, with up to 4 ISAL_SHA1_HASH_CTX objects (or 8 in the AVX2 case, 16 in the AVX512)
  * being processed at a time.
  *
- * Each SHA1_HASH_CTX must be initialized before first use by the hash_ctx_init macro
+ * Each ISAL_SHA1_HASH_CTX must be initialized before first use by the isal_hash_ctx_init macro
  * defined in multi_buffer.h. After initialization, the application may begin computing
- * a hash by giving the SHA1_HASH_CTX to a SHA1_HASH_CTX_MGR using the submit functions
- * sha1_ctx_mgr_submit*() with the HASH_FIRST flag set. When the SHA1_HASH_CTX is
+ * a hash by giving the ISAL_SHA1_HASH_CTX to a ISAL_SHA1_HASH_CTX_MGR using the submit functions
+ * sha1_ctx_mgr_submit*() with the ISAL_HASH_FIRST flag set. When the ISAL_SHA1_HASH_CTX is
  * returned to the application (via this or a later call to sha1_ctx_mgr_submit*() or
  * sha1_ctx_mgr_flush*()), the application can then re-submit it with another call to
- * sha1_ctx_mgr_submit*(), but without the HASH_FIRST flag set.
+ * sha1_ctx_mgr_submit*(), but without the ISAL_HASH_FIRST flag set.
  *
  * Ideally, on the last buffer for that hash, sha1_ctx_mgr_submit_sse is called with
- * HASH_LAST, although it is also possible to submit the hash with HASH_LAST and a zero
- * length if necessary. When a SHA1_HASH_CTX is returned after having been submitted with
- * HASH_LAST, it will contain a valid hash. The SHA1_HASH_CTX can be reused immediately
- * by submitting with HASH_FIRST.
+ * ISAL_HASH_LAST, although it is also possible to submit the hash with ISAL_HASH_LAST and a zero
+ * length if necessary. When a ISAL_SHA1_HASH_CTX is returned after having been submitted with
+ * ISAL_HASH_LAST, it will contain a valid hash. The ISAL_SHA1_HASH_CTX can be reused immediately
+ * by submitting with ISAL_HASH_FIRST.
  *
  * For example, you would submit hashes with the following flags for the following numbers
  * of buffers:
  * <ul>
- *  <li> one buffer: HASH_FIRST | HASH_LAST  (or, equivalently, HASH_ENTIRE)
- *  <li> two buffers: HASH_FIRST, HASH_LAST
- *  <li> three buffers: HASH_FIRST, HASH_UPDATE, HASH_LAST
+ *  <li> one buffer: ISAL_HASH_FIRST | ISAL_HASH_LAST  (or, equivalently, ISAL_HASH_ENTIRE)
+ *  <li> two buffers: ISAL_HASH_FIRST, ISAL_HASH_LAST
+ *  <li> three buffers: ISAL_HASH_FIRST, ISAL_HASH_UPDATE, ISAL_HASH_LAST
  * etc.
  * </ul>
  *
- * The order in which SHA1_CTX objects are returned is in general different from the order
+ * The order in which ISAL_SHA1_CTX objects are returned is in general different from the order
  * in which they are submitted.
  *
  * A few possible error conditions exist:
  * <ul>
  *  <li> Submitting flags other than the allowed entire/first/update/last values
- *  <li> Submitting a context that is currently being managed by a SHA1_HASH_CTX_MGR.
- *  <li> Submitting a context after HASH_LAST is used but before HASH_FIRST is set.
+ *  <li> Submitting a context that is currently being managed by a ISAL_SHA1_HASH_CTX_MGR.
+ *  <li> Submitting a context after ISAL_HASH_LAST is used but before ISAL_HASH_FIRST is set.
  * </ul>
  *
- *  These error conditions are reported by returning the SHA1_HASH_CTX immediately after
+ *  These error conditions are reported by returning the ISAL_SHA1_HASH_CTX immediately after
  *  a submit with its error member set to a non-zero error code (defined in
- *  multi_buffer.h). No changes are made to the SHA1_HASH_CTX_MGR in the case of an
+ *  multi_buffer.h). No changes are made to the ISAL_SHA1_HASH_CTX_MGR in the case of an
  *  error; no processing is done for other hashes.
  *
  */
 
 #include <stdint.h>
+#include <string.h>
 #include "multi_buffer.h"
 #include "types.h"
 
@@ -116,87 +118,112 @@
 extern "C" {
 #endif
 
-// Hash Constants and Typedefs
-#define SHA1_DIGEST_NWORDS		5
-#define SHA1_MAX_LANES			16
-#define SHA1_X8_LANES			8
-#define SHA1_MIN_LANES			4
-#define SHA1_BLOCK_SIZE			64
-#define SHA1_LOG2_BLOCK_SIZE		6
-#define SHA1_PADLENGTHFIELD_SIZE	8
-#define SHA1_INITIAL_DIGEST		\
-	0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0
+/*
+ * Define enums from API v2.24, so applications that were using this version
+ * will still be compiled successfully.
+ * This list does not need to be extended for new enums.
+ */
+#ifndef NO_COMPAT_ISAL_CRYPTO_API_2_24
+/***** Previous hash constants and typedefs *****/
+#define SHA1_DIGEST_NWORDS       ISAL_SHA1_DIGEST_NWORDS
+#define SHA1_PADLENGTHFIELD_SIZE ISAL_SHA1_PADLENGTHFIELD_SIZE
+#define SHA1_MAX_LANES           ISAL_SHA1_MAX_LANES
+#define SHA1_MIN_LANES           ISAL_SHA1_MIN_LANES
+#define SHA1_BLOCK_SIZE          ISAL_SHA1_BLOCK_SIZE
+#define SHA1_WORD_T              ISAL_SHA1_WORD_T
 
-typedef uint32_t sha1_digest_array[SHA1_DIGEST_NWORDS][SHA1_MAX_LANES];
-typedef uint32_t SHA1_WORD_T;
+/***** Previous structure definitions *****/
+#define SHA1_JOB          ISAL_SHA1_JOB
+#define SHA1_MB_ARGS_X16  ISAL_SHA1_MB_ARGS_X16
+#define SHA1_LANE_DATA    ISAL_SHA1_LANE_DATA
+#define SHA1_MB_JOB_MGR   ISAL_SHA1_MB_JOB_MGR
+#define SHA1_HASH_CTX_MGR ISAL_SHA1_HASH_CTX_MGR
+#define SHA1_HASH_CTX     ISAL_SHA1_HASH_CTX
+#endif /* !NO_COMPAT_ISAL_CRYPTO_API_2_24 */
+
+// Hash Constants and Typedefs
+#define ISAL_SHA1_DIGEST_NWORDS       5
+#define ISAL_SHA1_MAX_LANES           16
+#define ISAL_SHA1_MIN_LANES           4
+#define ISAL_SHA1_BLOCK_SIZE          64
+#define ISAL_SHA1_PADLENGTHFIELD_SIZE 8
+
+typedef uint32_t sha1_digest_array[ISAL_SHA1_DIGEST_NWORDS][ISAL_SHA1_MAX_LANES];
+typedef uint32_t ISAL_SHA1_WORD_T;
 
 /** @brief Scheduler layer - Holds info describing a single SHA1 job for the multi-buffer manager */
 
 typedef struct {
-	uint8_t*  buffer;	//!< pointer to data buffer for this job
-	uint32_t  len;		//!< length of buffer for this job in blocks.
-	DECLARE_ALIGNED(uint32_t result_digest[SHA1_DIGEST_NWORDS],64);
-	JOB_STS status;		//!< output job status
-	void*   user_data;	//!< pointer for user's job-related data
-} SHA1_JOB;
+        uint8_t *buffer; //!< pointer to data buffer for this job
+        uint32_t len;    //!< length of buffer for this job in blocks.
+        DECLARE_ALIGNED(uint32_t result_digest[ISAL_SHA1_DIGEST_NWORDS], 64);
+        ISAL_JOB_STS status; //!< output job status
+        void *user_data;     //!< pointer for user's job-related data
+} ISAL_SHA1_JOB;
 
 /** @brief Scheduler layer -  Holds arguments for submitted SHA1 job */
 
 typedef struct {
-	sha1_digest_array digest;
-	uint8_t*	data_ptr[SHA1_MAX_LANES];
-} SHA1_MB_ARGS_X16;
+        sha1_digest_array digest;
+        uint8_t *data_ptr[ISAL_SHA1_MAX_LANES];
+} ISAL_SHA1_MB_ARGS_X16;
 
 /** @brief Scheduler layer - Lane data */
 
 typedef struct {
-	SHA1_JOB *job_in_lane;
-} SHA1_LANE_DATA;
+        ISAL_SHA1_JOB *job_in_lane;
+} ISAL_SHA1_LANE_DATA;
 
 /** @brief Scheduler layer - Holds state for multi-buffer SHA1 jobs */
 
 typedef struct {
-	SHA1_MB_ARGS_X16 args;
-	uint32_t lens[SHA1_MAX_LANES];
-	uint64_t unused_lanes; //!< each nibble is index (0...3 or 0...7 or 0...15) of unused lanes, nibble 4 or 8 is set to F as a flag
-	SHA1_LANE_DATA ldata[SHA1_MAX_LANES];
-	uint32_t num_lanes_inuse;
-} SHA1_MB_JOB_MGR;
+        ISAL_SHA1_MB_ARGS_X16 args;
+        DECLARE_ALIGNED(uint32_t lens[ISAL_SHA1_MAX_LANES], 16);
+        uint64_t unused_lanes; //!< each nibble is index (0...3 or 0...7 or 0...15) of unused lanes,
+                               //!< nibble 4 or 8 is set to F as a flag
+        ISAL_SHA1_LANE_DATA ldata[ISAL_SHA1_MAX_LANES];
+        uint32_t num_lanes_inuse;
+} ISAL_SHA1_MB_JOB_MGR;
 
 /** @brief Context layer - Holds state for multi-buffer SHA1 jobs */
 
 typedef struct {
-	SHA1_MB_JOB_MGR mgr;
-} SHA1_HASH_CTX_MGR;
+        ISAL_SHA1_MB_JOB_MGR mgr;
+} ISAL_SHA1_HASH_CTX_MGR;
 
-/** @brief Context layer - Holds info describing a single SHA1 job for the multi-buffer CTX manager */
+/** @brief Context layer - Holds info describing a single SHA1 job for the multi-buffer CTX manager.
+ * This structure must be allocated to 16-byte aligned memory */
 
 typedef struct {
-	SHA1_JOB       job;		// Must be at struct offset 0.
-	HASH_CTX_STS   status;		//!< Context status flag
-	HASH_CTX_ERROR error;		//!< Context error flag
-	uint64_t       total_length;	//!< Running counter of length processed for this CTX's job
-	const void*    incoming_buffer; //!< pointer to data input buffer for this CTX's job
-	uint32_t       incoming_buffer_length; //!< length of buffer for this job in bytes.
-	uint8_t        partial_block_buffer[SHA1_BLOCK_SIZE * 2]; //!< CTX partial blocks
-	uint32_t       partial_block_buffer_length;
-	void*          user_data;	//!< pointer for user to keep any job-related data
-} SHA1_HASH_CTX;
+        ISAL_SHA1_JOB job;               // Must be at struct offset 0.
+        ISAL_HASH_CTX_STS status;        //!< Context status flag
+        ISAL_HASH_CTX_ERROR error;       //!< Context error flag
+        uint64_t total_length;           //!< Running counter of length processed for this CTX's job
+        const void *incoming_buffer;     //!< pointer to data input buffer for this CTX's job
+        uint32_t incoming_buffer_length; //!< length of buffer for this job in bytes.
+        uint8_t partial_block_buffer[ISAL_SHA1_BLOCK_SIZE * 2]; //!< CTX partial blocks
+        uint32_t partial_block_buffer_length;
+        void *user_data; //!< pointer for user to keep any job-related data
+} ISAL_SHA1_HASH_CTX;
 
 /******************** multibinary function prototypes **********************/
 
 /**
  * @brief Initialize the SHA1 multi-buffer manager structure.
  * @requires SSE4.1 or AVX or AVX2 or AVX512
+ * @deprecated Please use isal_sha1_ctx_mgr_init() instead.
  *
  * @param mgr Structure holding context level state info
  * @returns void
  */
-void      sha1_ctx_mgr_init (SHA1_HASH_CTX_MGR* mgr);
+ISAL_DEPRECATED("Please use isal_sha1_ctx_mgr_init() instead")
+void
+sha1_ctx_mgr_init(ISAL_SHA1_HASH_CTX_MGR *mgr);
 
 /**
  * @brief  Submit a new SHA1 job to the multi-buffer manager.
  * @requires SSE4.1 or AVX or AVX2 or AVX512
+ * @deprecated Please use isal_sha1_ctx_mgr_submit() instead.
  *
  * @param  mgr Structure holding context level state info
  * @param  ctx Structure holding ctx job info
@@ -205,243 +232,69 @@ void      sha1_ctx_mgr_init (SHA1_HASH_CTX_MGR* mgr);
  * @param  flags Input flag specifying job type (first, update, last or entire)
  * @returns NULL if no jobs complete or pointer to jobs structure.
  */
-SHA1_HASH_CTX* sha1_ctx_mgr_submit (SHA1_HASH_CTX_MGR* mgr, SHA1_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
+ISAL_DEPRECATED("Please use isal_sha1_ctx_mgr_submit() instead")
+ISAL_SHA1_HASH_CTX *
+sha1_ctx_mgr_submit(ISAL_SHA1_HASH_CTX_MGR *mgr, ISAL_SHA1_HASH_CTX *ctx, const void *buffer,
+                    uint32_t len, ISAL_HASH_CTX_FLAG flags);
 
 /**
  * @brief Finish all submitted SHA1 jobs and return when complete.
  * @requires SSE4.1 or AVX or AVX2 or AVX512
+ * @deprecated Please use isal_sha1_ctx_mgr_flush() instead.
  *
  * @param mgr	Structure holding context level state info
  * @returns NULL if no jobs to complete or pointer to jobs structure.
  */
-SHA1_HASH_CTX* sha1_ctx_mgr_flush (SHA1_HASH_CTX_MGR* mgr);
-
-
-/*******************************************************************
- * Context level API function prototypes
- ******************************************************************/
-
-/**
- * @brief Initialize the context level SHA1 multi-buffer manager structure.
- * @requires SSE4.1
- *
- * @param mgr Structure holding context level state info
- * @returns void
- */
-void      sha1_ctx_mgr_init_sse (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA1 job to the context level multi-buffer manager.
- * @requires SSE4.1
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_submit_sse (SHA1_HASH_CTX_MGR* mgr, SHA1_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA1 jobs and return when complete.
- * @requires SSE4.1
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_flush_sse (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief Initialize the context level SHA1 multi-buffer manager structure.
- * @requires SSE4.1 and SHANI
- *
- * @param mgr Structure holding context level state info
- * @returns void
- */
-void      sha1_ctx_mgr_init_sse_ni (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA1 job to the context level multi-buffer manager.
- * @requires SSE4.1 and SHANI
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_submit_sse_ni (SHA1_HASH_CTX_MGR* mgr, SHA1_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA1 jobs and return when complete.
- * @requires SSE4.1 and SHANI
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_flush_sse_ni (SHA1_HASH_CTX_MGR* mgr);
+ISAL_DEPRECATED("Please use isal_sha1_ctx_mgr_flush() instead")
+ISAL_SHA1_HASH_CTX *
+sha1_ctx_mgr_flush(ISAL_SHA1_HASH_CTX_MGR *mgr);
 
 /**
  * @brief Initialize the SHA1 multi-buffer manager structure.
- * @requires AVX
+ * @requires SSE4.1 for x86 or ASIMD for ARM
  *
- * @param mgr Structure holding context level state info
- * @returns void
+ * @param[in] mgr Structure holding context level state info
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
  */
-void      sha1_ctx_mgr_init_avx (SHA1_HASH_CTX_MGR* mgr);
+int
+isal_sha1_ctx_mgr_init(ISAL_SHA1_HASH_CTX_MGR *mgr);
 
 /**
  * @brief  Submit a new SHA1 job to the multi-buffer manager.
- * @requires AVX
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
+ * @requires SSE4.1 for x86 or ASIMD for ARM
+ * @param[in] mgr Structure holding context level state info
+ * @param[in] ctx_in Structure holding ctx job info
+ * @param[out] ctx_out	Pointer address to output job ctx info.
+ *			Modified to point to completed job structure or
+ *			NULL if no jobs completed.
+ * @param[in] buffer Pointer to buffer to be processed
+ * @param[in] len Length of buffer (in bytes) to be processed
+ * @param[in] flags Input flag specifying job type (first, update, last or entire)
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
  */
-SHA1_HASH_CTX* sha1_ctx_mgr_submit_avx (SHA1_HASH_CTX_MGR* mgr, SHA1_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
+int
+isal_sha1_ctx_mgr_submit(ISAL_SHA1_HASH_CTX_MGR *mgr, ISAL_SHA1_HASH_CTX *ctx_in,
+                         ISAL_SHA1_HASH_CTX **ctx_out, const void *buffer, const uint32_t len,
+                         const ISAL_HASH_CTX_FLAG flags);
 
 /**
  * @brief Finish all submitted SHA1 jobs and return when complete.
- * @requires AVX
+ * @requires SSE4.1 for x86 or ASIMD for ARM
  *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
+ * @param[in] mgr Structure holding context level state info
+ * @param[out] ctx_out	Pointer address to output job ctx info.
+ *			Modified to point to completed job structure or
+ *			NULL if no jobs completed.
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
  */
-SHA1_HASH_CTX* sha1_ctx_mgr_flush_avx (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief Initialize the SHA1 multi-buffer manager structure.
- * @requires AVX2
- *
- * @param mgr	Structure holding context level state info
- * @returns void
- */
-void      sha1_ctx_mgr_init_avx2 (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA1 job to the multi-buffer manager.
- * @requires AVX2
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_submit_avx2 (SHA1_HASH_CTX_MGR* mgr, SHA1_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA1 jobs and return when complete.
- * @requires AVX2
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_flush_avx2 (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief Initialize the SHA1 multi-buffer manager structure.
- * @requires AVX512
- *
- * @param mgr	Structure holding context level state info
- * @returns void
- */
-void      sha1_ctx_mgr_init_avx512 (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA1 job to the multi-buffer manager.
- * @requires AVX512
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_submit_avx512 (SHA1_HASH_CTX_MGR* mgr, SHA1_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA1 jobs and return when complete.
- * @requires AVX512
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_flush_avx512 (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief Initialize the SHA1 multi-buffer manager structure.
- * @requires AVX512 and SHANI
- *
- * @param mgr	Structure holding context level state info
- * @returns void
- */
-void      sha1_ctx_mgr_init_avx512_ni (SHA1_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA1 job to the multi-buffer manager.
- * @requires AVX512 and SHANI
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_submit_avx512_ni (SHA1_HASH_CTX_MGR* mgr, SHA1_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA1 jobs and return when complete.
- * @requires AVX512 and SHANI
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA1_HASH_CTX* sha1_ctx_mgr_flush_avx512_ni (SHA1_HASH_CTX_MGR* mgr);
-
-
-/*******************************************************************
- * Scheduler (internal) level out-of-order function prototypes
- ******************************************************************/
-
-void      sha1_mb_mgr_init_sse    (SHA1_MB_JOB_MGR *state);
-SHA1_JOB* sha1_mb_mgr_submit_sse  (SHA1_MB_JOB_MGR *state, SHA1_JOB* job);
-SHA1_JOB* sha1_mb_mgr_flush_sse   (SHA1_MB_JOB_MGR *state);
-
-#define   sha1_mb_mgr_init_avx    sha1_mb_mgr_init_sse
-SHA1_JOB* sha1_mb_mgr_submit_avx  (SHA1_MB_JOB_MGR *state, SHA1_JOB* job);
-SHA1_JOB* sha1_mb_mgr_flush_avx   (SHA1_MB_JOB_MGR *state);
-
-void      sha1_mb_mgr_init_avx2   (SHA1_MB_JOB_MGR *state);
-SHA1_JOB* sha1_mb_mgr_submit_avx2 (SHA1_MB_JOB_MGR *state, SHA1_JOB* job);
-SHA1_JOB* sha1_mb_mgr_flush_avx2  (SHA1_MB_JOB_MGR *state);
-
-void      sha1_mb_mgr_init_avx512   (SHA1_MB_JOB_MGR *state);
-SHA1_JOB* sha1_mb_mgr_submit_avx512 (SHA1_MB_JOB_MGR *state, SHA1_JOB* job);
-SHA1_JOB* sha1_mb_mgr_flush_avx512  (SHA1_MB_JOB_MGR *state);
-
-void      sha1_mb_mgr_init_sse_ni    (SHA1_MB_JOB_MGR *state);
-SHA1_JOB* sha1_mb_mgr_submit_sse_ni  (SHA1_MB_JOB_MGR *state, SHA1_JOB* job);
-SHA1_JOB* sha1_mb_mgr_flush_sse_ni   (SHA1_MB_JOB_MGR *state);
-
-void      sha1_mb_mgr_init_avx512_ni    (SHA1_MB_JOB_MGR *state);
-SHA1_JOB* sha1_mb_mgr_submit_avx512_ni  (SHA1_MB_JOB_MGR *state, SHA1_JOB* job);
-SHA1_JOB* sha1_mb_mgr_flush_avx512_ni   (SHA1_MB_JOB_MGR *state);
+int
+isal_sha1_ctx_mgr_flush(ISAL_SHA1_HASH_CTX_MGR *mgr, ISAL_SHA1_HASH_CTX **ctx_out);
 
 #ifdef __cplusplus
 }

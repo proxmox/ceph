@@ -5,7 +5,7 @@
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "nvme/nvme_pcie_common.c"
 #include "common/lib/test_env.c"
 
@@ -25,9 +25,6 @@ DEFINE_STUB(nvme_wait_for_completion, int,
 	     struct nvme_completion_poll_status *status), 0);
 
 DEFINE_STUB(nvme_completion_is_retry, bool, (const struct spdk_nvme_cpl *cpl), false);
-
-DEFINE_STUB_V(nvme_ctrlr_process_async_event, (struct spdk_nvme_ctrlr *ctrlr,
-		const struct spdk_nvme_cpl *cpl));
 
 DEFINE_STUB_V(spdk_nvme_qpair_print_command, (struct spdk_nvme_qpair *qpair,
 		struct spdk_nvme_cmd *cmd));
@@ -52,6 +49,8 @@ DEFINE_STUB_V(nvme_ctrlr_disable, (struct spdk_nvme_ctrlr *ctrlr));
 DEFINE_STUB(nvme_ctrlr_disable_poll, int, (struct spdk_nvme_ctrlr *ctrlr), 0);
 
 DEFINE_STUB_V(nvme_transport_ctrlr_disconnect_qpair_done, (struct spdk_nvme_qpair *qpair));
+DEFINE_STUB(spdk_nvme_ctrlr_get_numa_id, int32_t, (struct spdk_nvme_ctrlr *ctrlr),
+	    SPDK_ENV_NUMA_ID_ANY);
 
 int
 nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
@@ -134,7 +133,7 @@ test_nvme_pcie_qpair_construct_destroy(void)
 
 	/* Allocate memory for destroying. */
 	pqpair = spdk_zmalloc(sizeof(*pqpair), 64, NULL,
-			      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
+			      SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
 	SPDK_CU_ASSERT_FATAL(pqpair != NULL);
 	pqpair->qpair.ctrlr = &pctrlr.ctrlr;
 	pqpair->num_entries = 2;
@@ -156,7 +155,7 @@ test_nvme_pcie_qpair_construct_destroy(void)
 					   (page_align - 1)));
 	CU_ASSERT(pqpair->sq_tdbl == (void *)0xF7000008);
 	CU_ASSERT(pqpair->cq_hdbl == (void *)0xF700000C);
-	CU_ASSERT(pqpair->flags.phase = 1);
+	CU_ASSERT(pqpair->flags.phase == 1);
 	CU_ASSERT(pqpair->tr != NULL);
 	CU_ASSERT(pqpair->tr == TAILQ_FIRST(&pqpair->free_tr));
 	CU_ASSERT(pctrlr.cmb.current_offset == (uintptr_t)pqpair->cmd + (pqpair->num_entries * sizeof(
@@ -167,7 +166,7 @@ test_nvme_pcie_qpair_construct_destroy(void)
 	/* Disable submission queue in controller memory buffer. */
 	pctrlr.ctrlr.opts.use_cmb_sqs = false;
 	pqpair = spdk_zmalloc(sizeof(*pqpair), 64, NULL,
-			      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
+			      SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
 	SPDK_CU_ASSERT_FATAL(pqpair != NULL);
 	pqpair->qpair.ctrlr = &pctrlr.ctrlr;
 	pqpair->num_entries = 2;
@@ -185,7 +184,7 @@ test_nvme_pcie_qpair_construct_destroy(void)
 	CU_ASSERT(pqpair->cmd_bus_addr == 0xDEADBEEF);
 	CU_ASSERT(pqpair->sq_tdbl == (void *)0xF7000008);
 	CU_ASSERT(pqpair->cq_hdbl == (void *)0xF700000C);
-	CU_ASSERT(pqpair->flags.phase = 1);
+	CU_ASSERT(pqpair->flags.phase == 1);
 	CU_ASSERT(pqpair->tr != NULL);
 	CU_ASSERT(pqpair->tr == TAILQ_FIRST(&pqpair->free_tr));
 	nvme_pcie_qpair_destroy(&pqpair->qpair);
@@ -193,7 +192,7 @@ test_nvme_pcie_qpair_construct_destroy(void)
 	/* Disable submission queue in controller memory buffer, sq_vaddr and cq_vaddr invalid. */
 	pctrlr.ctrlr.opts.use_cmb_sqs = false;
 	pqpair = spdk_zmalloc(sizeof(*pqpair), 64, NULL,
-			      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
+			      SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
 	SPDK_CU_ASSERT_FATAL(pqpair != NULL);
 	pqpair->qpair.ctrlr = &pctrlr.ctrlr;
 	pqpair->num_entries = 2;
@@ -210,7 +209,7 @@ test_nvme_pcie_qpair_construct_destroy(void)
 	CU_ASSERT(pqpair->cmd_bus_addr == 0xDAADBEEF);
 	CU_ASSERT(pqpair->sq_tdbl == (void *)0xF7000008);
 	CU_ASSERT(pqpair->cq_hdbl == (void *)0xF700000c);
-	CU_ASSERT(pqpair->flags.phase = 1);
+	CU_ASSERT(pqpair->flags.phase == 1);
 	CU_ASSERT(pqpair->tr != NULL);
 	CU_ASSERT(pqpair->tr == TAILQ_FIRST(&pqpair->free_tr));
 	nvme_pcie_qpair_destroy(&pqpair->qpair);
@@ -254,7 +253,7 @@ test_nvme_pcie_ctrlr_cmd_create_delete_io_queue(void)
 	CU_ASSERT(req.cmd.cdw10_bits.create_io_q.qsize == 0);
 	CU_ASSERT(req.cmd.cdw11_bits.create_io_sq.pc == 1);
 	CU_ASSERT(req.cmd.cdw11_bits.create_io_sq.qprio == SPDK_NVME_QPRIO_HIGH);
-	CU_ASSERT(req.cmd.cdw11_bits.create_io_sq.cqid = 1);
+	CU_ASSERT(req.cmd.cdw11_bits.create_io_sq.cqid == 1);
 	CU_ASSERT(req.cmd.dptr.prp.prp1 == 0xDDADBEEF);
 	CU_ASSERT(STAILQ_EMPTY(&ctrlr.adminq->free_req));
 
@@ -344,7 +343,7 @@ test_nvme_pcie_ctrlr_connect_qpair(void)
 	CU_ASSERT(req[1].cmd.cdw10_bits.create_io_q.qsize == 0);
 	CU_ASSERT(req[1].cmd.cdw11_bits.create_io_sq.pc == 1);
 	CU_ASSERT(req[1].cmd.cdw11_bits.create_io_sq.qprio == SPDK_NVME_QPRIO_HIGH);
-	CU_ASSERT(req[1].cmd.cdw11_bits.create_io_sq.cqid = 1);
+	CU_ASSERT(req[1].cmd.cdw11_bits.create_io_sq.cqid == 1);
 	CU_ASSERT(req[1].cmd.dptr.prp.prp1 == 0xDDADBEEF);
 
 	pqpair.qpair.state = NVME_QPAIR_CONNECTING;
@@ -398,7 +397,7 @@ test_nvme_pcie_ctrlr_connect_qpair(void)
 	CU_ASSERT(req[1].cmd.cdw10_bits.create_io_q.qsize == 0);
 	CU_ASSERT(req[1].cmd.cdw11_bits.create_io_sq.pc == 1);
 	CU_ASSERT(req[1].cmd.cdw11_bits.create_io_sq.qprio == SPDK_NVME_QPRIO_HIGH);
-	CU_ASSERT(req[1].cmd.cdw11_bits.create_io_sq.cqid = 1);
+	CU_ASSERT(req[1].cmd.cdw11_bits.create_io_sq.cqid == 1);
 	CU_ASSERT(req[1].cmd.dptr.prp.prp1 == 0xDDADBEEF);
 
 	pqpair.qpair.state = NVME_QPAIR_CONNECTING;
@@ -569,7 +568,7 @@ test_nvme_pcie_poll_group_get_stats(void)
 
 	/* Get state success */
 	rc = nvme_pcie_poll_group_get_stats(tgroup, &tgroup_stat);
-	CU_ASSERT(rc == 0);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
 	CU_ASSERT(tgroup_stat != NULL);
 	CU_ASSERT(tgroup_stat->trtype == SPDK_NVME_TRANSPORT_PCIE);
 	CU_ASSERT(memcmp(&tgroup_stat->pcie, &pgroup->stats, sizeof(struct spdk_nvme_pcie_stat)) == 0);
@@ -585,7 +584,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_pcie_common", NULL, NULL);
@@ -596,9 +594,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_pcie_ctrlr_construct_admin_qpair);
 	CU_ADD_TEST(suite, test_nvme_pcie_poll_group_get_stats);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

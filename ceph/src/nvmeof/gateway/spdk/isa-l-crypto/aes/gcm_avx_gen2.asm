@@ -113,6 +113,7 @@
 
 %include "reg_sizes.asm"
 %include "gcm_defines.asm"
+%include "include/clear_regs.inc"
 
 %ifndef GCM128_MODE
 %ifndef GCM192_MODE
@@ -127,17 +128,17 @@
 %endif
 
 %ifdef GCM128_MODE
-%define FN_NAME(x,y) aes_gcm_ %+ x %+ _128 %+ y %+ avx_gen2 %+ FUNCT_EXTENSION
+%define FN_NAME(x,y) _aes_gcm_ %+ x %+ _128 %+ y %+ avx_gen2 %+ FUNCT_EXTENSION
 %define NROUNDS 9
 %endif
 
 %ifdef GCM192_MODE
-%define FN_NAME(x,y) aes_gcm_ %+ x %+ _192 %+ y %+ avx_gen2 %+ FUNCT_EXTENSION
+%define FN_NAME(x,y) _aes_gcm_ %+ x %+ _192 %+ y %+ avx_gen2 %+ FUNCT_EXTENSION
 %define NROUNDS 11
 %endif
 
 %ifdef GCM256_MODE
-%define FN_NAME(x,y) aes_gcm_ %+ x %+ _256 %+ y %+ avx_gen2 %+ FUNCT_EXTENSION
+%define FN_NAME(x,y) _aes_gcm_ %+ x %+ _256 %+ y %+ avx_gen2 %+ FUNCT_EXTENSION
 %define NROUNDS 13
 %endif
 
@@ -404,8 +405,8 @@ default rel
 ; PARTIAL_BLOCK: Handles encryption/decryption and the tag partial blocks between update calls.
 ; Requires the input data be at least 1 byte long.
 ; Input:
-;  GDATA_KEY - struct gcm_key_data *
-;  GDATA_CTX - struct gcm_context_data *
+;  GDATA_KEY - struct isal_gcm_key_data *
+;  GDATA_CTX - struct isal_gcm_context_data *
 ;  PLAIN_CYPH_IN - input text
 ;  PLAIN_CYPH_LEN - input text length
 ;  DATA_OFFSET - the current data offset
@@ -450,7 +451,7 @@ default rel
 
 %ifidn	%%ENC_DEC, DEC
 	vmovdqa	xmm3, xmm1
-	vpxor	xmm9, xmm1			; Cyphertext XOR E(K, Yn)
+	vpxor	xmm9, xmm1			; Ciphertext XOR E(K, Yn)
 
 	mov	r15, %%PLAIN_CYPH_LEN
 	add	r15, r13
@@ -1493,8 +1494,8 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; GCM_INIT initializes a gcm_context_data struct to prepare for encoding/decoding.
-; Input: struct gcm_key_data *(GDATA_KEY), struct gcm_context_data *(GDATA_CTX),
+; GCM_INIT initializes a isal_gcm_context_data struct to prepare for encoding/decoding.
+; Input: struct isal_gcm_key_data *(GDATA_KEY), struct isal_gcm_context_data *(GDATA_CTX),
 ;        IV, Additional Authentication data (A_IN), Additional
 ; Data length (A_LEN)
 ; Output: Updated GDATA with the hash of A_IN (AadHash) and initialized other parts of GDATA.
@@ -1535,10 +1536,10 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; GCM_ENC_DEC Encodes/Decodes given data. Assumes that the passed gcm_context_data struct
+; GCM_ENC_DEC Encodes/Decodes given data. Assumes that the passed isal_gcm_context_data struct
 ; has been initialized by GCM_INIT
 ; Requires the input data be at least 1 byte long because of READ_SMALL_INPUT_DATA.
-; Input: struct gcm_key_data* (GDATA_KEY), struct gcm_context_data * (GDATA_CTX),
+; Input: struct isal_gcm_key_data* (GDATA_KEY), struct isal_gcm_context_data * (GDATA_CTX),
 ;        input text (PLAIN_CYPH_IN), input text length (PLAIN_CYPH_LEN),
 ; and whether encoding or decoding (ENC_DEC)
 ; Output: A cypher of the given plain text (CYPH_PLAIN_OUT), and updated GDATA_CTX
@@ -1557,7 +1558,7 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 ; calculate the number of 16byte blocks in the message
 ; process (number of 16byte blocks) mod 8 '%%_initial_num_blocks_is_# .. %%_initial_blocks_encrypted'
 ; process 8 16 byte blocks at a time until all are done '%%_encrypt_by_8_new .. %%_eight_cipher_left'
-; if there is a block of less tahn 16 bytes process it '%%_zero_cipher_left .. %%_multiple_of_16_bytes'
+; if there is a block of less than 16 bytes process it '%%_zero_cipher_left .. %%_multiple_of_16_bytes'
 	cmp	%%PLAIN_CYPH_LEN, 0
 	je	%%_multiple_of_16_bytes
 
@@ -1693,7 +1694,7 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
         je      %%_multiple_of_16_bytes
 
 	mov	[%%GDATA_CTX + PBlockLen], r13		; ctx_data.partial_blck_length = r13
-        ; handle the last <16 Byte block seperately
+        ; handle the last <16 Byte block separately
 
         vpaddd   xmm9, [ONE]                            ; INCR CNT to get Yn
         vmovdqu [%%GDATA_CTX + CurCount], xmm9          ; my_ctx_data.current_counter = xmm9
@@ -1776,7 +1777,7 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; GCM_COMPLETE Finishes Encyrption/Decryption of last partial block after GCM_UPDATE finishes.
-; Input: struct gcm_key_data* (GDATA_KEY), struct gcm_context_data *(GDATA_CTX) and
+; Input: struct isal_gcm_key_data* (GDATA_KEY), struct isal_gcm_context_data *(GDATA_CTX) and
 ;        whether encoding or decoding (ENC_DEC).
 ; Output: Authorization Tag (AUTH_TAG) and Authorization Tag length (AUTH_TAG_LEN)
 ; Clobbers rax, r10-r12, and xmm0, xmm1, xmm5, xmm6, xmm9, xmm11, xmm14, xmm15
@@ -1854,8 +1855,8 @@ vmovdqu  %%T_key, [%%GDATA_KEY+16*j]
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_precomp_128_avx_gen2
-;        (struct gcm_key_data *key_data);
+;void   _aes_gcm_precomp_128_avx_gen2
+;        (struct isal_gcm_key_data *key_data);
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 %ifnidn FUNCT_EXTENSION, _nt
 global FN_NAME(precomp,_)
@@ -1902,6 +1903,10 @@ FN_NAME(precomp,_):
 
         PRECOMPUTE arg1, xmm6, xmm0, xmm1, xmm2, xmm3, xmm4, xmm5
 
+%ifdef SAFE_DATA
+        clear_scratch_xmms_avx_asm
+%endif ;; SAFE_DATA
+
 %ifidn __OUTPUT_FORMAT__, win64
         vmovdqu xmm6, [rsp + LOCAL_STORAGE + 0*16]
 %endif
@@ -1915,9 +1920,9 @@ FN_NAME(precomp,_):
 %endif	; _nt
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_init_128_avx_gen2(
-;        const struct gcm_key_data *key_data,
-;        struct gcm_context_data *context_data,
+;void   _aes_gcm_init_128_avx_gen2(
+;        const struct isal_gcm_key_data *key_data,
+;        struct isal_gcm_context_data *context_data,
 ;        u8      *iv,
 ;        const   u8 *aad,
 ;        u64     aad_len);
@@ -1952,9 +1957,9 @@ ret
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_enc_128_update_avx_gen2(
-;        const struct gcm_key_data *key_data,
-;        struct gcm_context_data *context_data,
+;void   _aes_gcm_enc_128_update_avx_gen2(
+;        const struct isal_gcm_key_data *key_data,
+;        struct isal_gcm_context_data *context_data,
 ;        u8      *out,
 ;        const   u8 *in,
 ;        u64     plaintext_len);
@@ -1967,15 +1972,18 @@ FN_NAME(enc,_update_):
 
 	GCM_ENC_DEC arg1, arg2, arg3, arg4, arg5, ENC
 
+%ifdef SAFE_DATA
+        clear_scratch_xmms_avx_asm
+%endif ;; SAFE_DATA
 	FUNC_RESTORE
 
 	ret
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_dec_128_update_avx_gen2(
-;        const struct gcm_key_data *key_data,
-;        struct gcm_context_data *context_data,
+;void   _aes_gcm_dec_128_update_avx_gen2(
+;        const struct isal_gcm_key_data *key_data,
+;        struct isal_gcm_context_data *context_data,
 ;        u8      *out,
 ;        const   u8 *in,
 ;        u64     plaintext_len);
@@ -1988,15 +1996,18 @@ FN_NAME(dec,_update_):
 
 	GCM_ENC_DEC arg1, arg2, arg3, arg4, arg5, DEC
 
+%ifdef SAFE_DATA
+        clear_scratch_xmms_avx_asm
+%endif ;; SAFE_DATA
 	FUNC_RESTORE
 
 	ret
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_enc_128_finalize_avx_gen2(
-;        const struct gcm_key_data *key_data,
-;        struct gcm_context_data *context_data,
+;void   _aes_gcm_enc_128_finalize_avx_gen2(
+;        const struct isal_gcm_key_data *key_data,
+;        struct isal_gcm_context_data *context_data,
 ;        u8      *auth_tag,
 ;        u64     auth_tag_len);
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2018,6 +2029,10 @@ FN_NAME(enc,_finalize_):
 %endif
 	GCM_COMPLETE	arg1, arg2, arg3, arg4, ENC
 
+%ifdef SAFE_DATA
+        clear_scratch_xmms_avx_asm
+%endif ;; SAFE_DATA
+
 %ifidn __OUTPUT_FORMAT__, win64
 	vmovdqu	xmm15  , [rsp + 4*16]
 	vmovdqu	xmm14  , [rsp + 3*16]
@@ -2033,9 +2048,9 @@ FN_NAME(enc,_finalize_):
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_dec_128_finalize_avx_gen2(
-;        const struct gcm_key_data *key_data,
-;        struct gcm_context_data *context_data,
+;void   _aes_gcm_dec_128_finalize_avx_gen2(
+;        const struct isal_gcm_key_data *key_data,
+;        struct isal_gcm_context_data *context_data,
 ;        u8      *auth_tag,
 ;        u64     auth_tag_len);
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2072,9 +2087,9 @@ ret
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_enc_128_avx_gen2(
-;        const struct gcm_key_data *key_data,
-;        struct gcm_context_data *context_data,
+;void   _aes_gcm_enc_128_avx_gen2(
+;        const struct isal_gcm_key_data *key_data,
+;        struct isal_gcm_context_data *context_data,
 ;        u8      *out,
 ;        const   u8 *in,
 ;        u64     plaintext_len,
@@ -2096,14 +2111,17 @@ FN_NAME(enc,_):
 
 	GCM_COMPLETE arg1, arg2, arg9, arg10, ENC
 
+%ifdef SAFE_DATA
+        clear_scratch_xmms_avx_asm
+%endif ;; SAFE_DATA
 	FUNC_RESTORE
 
 	ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_dec_128_avx_gen2(
-;        const struct gcm_key_data *key_data,
-;        struct gcm_context_data *context_data,
+;void   _aes_gcm_dec_128_avx_gen2(
+;        const struct isal_gcm_key_data *key_data,
+;        struct isal_gcm_context_data *context_data,
 ;        u8      *out,
 ;        const   u8 *in,
 ;        u64     plaintext_len,
@@ -2125,6 +2143,9 @@ FN_NAME(dec,_):
 
 	GCM_COMPLETE arg1, arg2, arg9, arg10, DEC
 
+%ifdef SAFE_DATA
+        clear_scratch_xmms_avx_asm
+%endif ;; SAFE_DATA
 	FUNC_RESTORE
 
 	ret

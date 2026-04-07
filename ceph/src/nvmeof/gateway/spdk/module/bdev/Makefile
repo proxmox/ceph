@@ -22,7 +22,10 @@ ifeq ($(OS),Linux)
 DIRS-y += aio ftl
 DIRS-$(CONFIG_ISCSI_INITIATOR) += iscsi
 DIRS-$(CONFIG_VIRTIO) += virtio
-DIRS-$(CONFIG_PMDK) += pmem
+endif
+
+ifeq ($(OS),FreeBSD)
+DIRS-y += aio
 endif
 
 DIRS-$(CONFIG_RBD) += rbd

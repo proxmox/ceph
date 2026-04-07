@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
     Produce a binary Debian package from meson builddir
 
@@ -146,7 +151,6 @@ def main(args):
         args.output,
     ]
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
-
         out, err = proc.communicate()
         ret = proc.returncode
 

@@ -1,24 +1,25 @@
 # syntax = docker/dockerfile:1.4
 
 ARG NVMEOF_SPDK_VERSION \
+    CONTAINER_REGISTRY \
     NVMEOF_TARGET  # either 'gateway' or 'cli'
 
 #------------------------------------------------------------------------------
 # Base image for NVMEOF_TARGET=cli (nvmeof-cli)
-FROM registry.access.redhat.com/ubi9/ubi AS base-cli
+FROM registry.access.redhat.com/ubi9/ubi@sha256:66233eebd72bb5baa25190d4f55e1dc3fff3a9b77186c1f91a0abdb274452072 AS base-cli
 ENV GRPC_DNS_RESOLVER=native
 ENTRYPOINT ["python3", "-m", "control.cli"]
 CMD []
 
 #------------------------------------------------------------------------------
 # Base image for NVMEOF_TARGET=gateway (nvmeof-gateway)
-FROM quay.io/ceph/spdk:${NVMEOF_SPDK_VERSION:-NULL} AS base-gateway
-RUN rpm -vih https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+FROM ${CONTAINER_REGISTRY:-quay.io/ceph}/spdk:${NVMEOF_SPDK_VERSION:-NULL} AS base-gateway
 RUN \
     --mount=type=cache,target=/var/cache/dnf \
     --mount=type=cache,target=/var/lib/dnf \
     dnf install -y python3-rados && \
     dnf install -y python3-rbd && \
+    dnf install -y gdb && \
     dnf config-manager --set-enabled crb && \
     dnf install -y ceph-mon-client-nvmeof
 ENTRYPOINT ["python3", "-m", "control"]
@@ -40,7 +41,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=off \
     PYTHON_MAJOR=3 \
     PYTHON_MINOR=9 \
-    PDM_ONLY_BINARY=:all:
+    PDM_PREFER_BINARY=:all:
 
 ARG APPDIR=/src
 
@@ -117,7 +118,7 @@ WORKDIR $APPDIR
 
 #------------------------------------------------------------------------------
 FROM python-intermediate AS builder-base
-ARG PDM_VERSION=2.7.4 \
+ARG PDM_VERSION=2.17.3 \
     PDM_INSTALL_CMD=sync \
     PDM_INSTALL_FLAGS="-v --no-isolation --no-self --no-editable" \
     PDM_INSTALL_DEV=""
@@ -129,10 +130,11 @@ ENV PDM_CHECK_UPDATE=0
 RUN \
     --mount=type=cache,target=/var/cache/dnf \
     --mount=type=cache,target=/var/lib/dnf \
-    dnf install -y python3-pip
+    dnf install -y python3-pip && \
+    dnf install -y gcc python3-devel
 RUN \
     --mount=type=cache,target=/root/.cache/pip \
-    pip install -U pip setuptools
+    pip install -U pip setuptools wheel
 
 RUN \
     --mount=type=cache,target=/root/.cache/pip \

@@ -10,6 +10,7 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/nvme.h"
+#include "spdk_internal/nvme_util.h"
 #include "spdk/env.h"
 #include "spdk/crc16.h"
 #include "spdk/endian.h"
@@ -26,6 +27,7 @@ struct dev {
 
 static struct dev devs[MAX_DEVS];
 static int num_devs = 0;
+static struct spdk_nvme_transport_id g_trid = {};
 
 #define foreach_dev(iter) \
 	for (iter = devs; iter - devs < num_devs; iter++)
@@ -569,8 +571,7 @@ probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 }
 
 static void
-attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
-	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
+add_ctrlr(struct spdk_nvme_ctrlr *ctrlr)
 {
 	struct dev *dev;
 
@@ -580,9 +581,42 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	dev->ctrlr = ctrlr;
 
 	snprintf(dev->name, sizeof(dev->name), "%s",
-		 trid->traddr);
+		 spdk_nvme_ctrlr_get_transport_id(ctrlr)->traddr);
 
 	printf("Attached to %s\n", dev->name);
+}
+
+static void
+attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
+	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
+{
+	add_ctrlr(ctrlr);
+}
+
+static int
+parse_args(int argc, char **argv)
+{
+	int op;
+
+	spdk_nvme_trid_populate_transport(&g_trid, SPDK_NVME_TRANSPORT_PCIE);
+	snprintf(g_trid.subnqn, sizeof(g_trid.subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
+
+	while ((op = getopt(argc, argv, "r:")) != -1) {
+		switch (op) {
+		case 'r':
+			if (spdk_nvme_transport_id_parse(&g_trid, optarg) != 0) {
+				fprintf(stderr, "Error parsing transport address\n");
+				return -EINVAL;
+			}
+			break;
+		default:
+			fprintf(stderr, "Usage: %s\n", argv[0]);
+			spdk_nvme_transport_id_usage(stdout, 0);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
 }
 
 int
@@ -592,7 +626,9 @@ main(int argc, char **argv)
 	int			rc;
 	struct spdk_env_opts	opts;
 	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
+	struct spdk_nvme_ctrlr	*ctrlr;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "nvme_dp";
 	opts.core_mask = "0x1";
@@ -602,11 +638,28 @@ main(int argc, char **argv)
 		return 1;
 	}
 
+	if (parse_args(argc, argv) != 0) {
+		return 1;
+	}
+
 	printf("NVMe Write/Read with End-to-End data protection test\n");
 
-	if (spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, NULL) != 0) {
+	if (g_trid.traddr[0] != '\0') {
+		ctrlr = spdk_nvme_connect(&g_trid, NULL, 0);
+		if (ctrlr == NULL) {
+			fprintf(stderr, "nvme_connect() failed\n");
+			return 1;
+		}
+
+		add_ctrlr(ctrlr);
+	} else if (spdk_nvme_probe(&g_trid, NULL, probe_cb, attach_cb, NULL) != 0) {
 		fprintf(stderr, "nvme_probe() failed\n");
 		exit(1);
+	}
+
+	if (num_devs == 0) {
+		fprintf(stderr, "No valid NVMe controllers found\n");
+		return 1;
 	}
 
 	rc = 0;

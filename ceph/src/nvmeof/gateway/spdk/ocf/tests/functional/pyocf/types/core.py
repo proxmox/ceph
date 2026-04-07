@@ -1,6 +1,7 @@
 #
-# Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2019-2022 Intel Corporation
+# Copyright(c) 2024 Huawei Technologies
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 import logging
@@ -19,6 +20,7 @@ from ctypes import (
     cast,
     byref,
     create_string_buffer,
+    POINTER,
 )
 from datetime import timedelta
 
@@ -43,6 +45,7 @@ class CoreConfig(Structure):
         ("_name", c_char * MAX_CORE_NAME_SIZE),
         ("_uuid", Uuid),
         ("_volume_type", c_uint8),
+        ("_volume_params", c_void_p),
         ("_try_add", c_bool),
         ("_seq_cutoff_threshold", c_uint32),
         ("_seq_cutoff_promotion_count", c_uint32),
@@ -58,67 +61,57 @@ class Core:
     def __init__(
         self,
         device: Volume,
-        try_add: bool,
         name: str = "core",
         seq_cutoff_threshold: int = DEFAULT_SEQ_CUTOFF_THRESHOLD,
         seq_cutoff_promotion_count: int = DEFAULT_SEQ_CUTOFF_PROMOTION_COUNT,
     ):
         self.cache = None
         self.device = device
-        self.device_name = device.uuid
+        self.name = name
+        self.seq_cutoff_threshold = seq_cutoff_threshold
+        self.seq_cutoff_promotion_count = seq_cutoff_promotion_count
+
         self.handle = c_void_p()
-        self.cfg = CoreConfig(
-            _uuid=Uuid(
-                _data=cast(
-                    create_string_buffer(self.device_name.encode("ascii")),
-                    c_char_p,
-                ),
-                _size=len(self.device_name) + 1,
-            ),
-            _name=name.encode("ascii"),
-            _volume_type=self.device.type_id,
-            _try_add=try_add,
-            _seq_cutoff_threshold=seq_cutoff_threshold,
-            _seq_cutoff_promotion_count=seq_cutoff_promotion_count,
-            _user_metadata=UserMetadata(_data=None, _size=0),
-        )
 
     @classmethod
     def using_device(cls, device, **kwargs):
-        c = cls(device=device, try_add=False, **kwargs)
+        c = cls(device=device, **kwargs)
 
         return c
 
-    def get_cfg(self):
-        return self.cfg
+    def get_config(self):
+        cfg = CoreConfig(
+            _uuid=Uuid(
+                _data=cast(create_string_buffer(self.device.uuid.encode("ascii")), c_char_p,),
+                _size=len(self.device.uuid) + 1,
+            ),
+            _name=self.name.encode("ascii"),
+            _volume_type=self.device.type_id,
+            _try_add=False,
+            _seq_cutoff_threshold=self.seq_cutoff_threshold,
+            _seq_cutoff_promotion_count=self.seq_cutoff_promotion_count,
+            _user_metadata=UserMetadata(_data=None, _size=0),
+        )
+
+        return cfg
 
     def get_handle(self):
         return self.handle
 
-    def new_io(
-        self, queue: Queue, addr: int, length: int, direction: IoDir,
-        io_class: int, flags: int
-    ):
-        if not self.cache:
-            raise Exception("Core isn't attached to any cache")
+    def get_front_volume(self):
+        return Volume.get_instance(self.get_c_front_volume())
 
-        io = OcfLib.getInstance().ocf_core_new_io_wrapper(
-            self.handle, queue.handle, addr, length, direction, io_class, flags)
+    def get_c_front_volume(self):
+        return lib.ocf_core_get_front_volume(self.handle)
 
-        if io is None:
-            raise Exception("Failed to create io!")
+    def get_volume(self):
+        return Volume.get_instance(self.get_c_volume())
 
-        return Io.from_pointer(io)
+    def get_c_volume(self):
+        return lib.ocf_core_get_volume(self.handle)
 
-    def new_core_io(
-        self, queue: Queue, addr: int, length: int, direction: IoDir,
-        io_class: int, flags: int
-    ):
-        lib = OcfLib.getInstance()
-        volume = lib.ocf_core_get_volume(self.handle)
-        io = lib.ocf_volume_new_io(
-            volume, queue.handle, addr, length, direction, io_class, flags)
-        return Io.from_pointer(io)
+    def get_default_queue(self):
+        return self.cache.get_default_queue()
 
     def get_stats(self):
         core_info = CoreInfo()
@@ -135,9 +128,7 @@ class Core:
             self.cache.read_unlock()
             raise OcfError("Failed collecting core stats", status)
 
-        status = self.cache.owner.lib.ocf_core_get_info(
-            self.handle, byref(core_info)
-        )
+        status = self.cache.owner.lib.ocf_core_get_info(self.handle, byref(core_info))
         if status:
             self.cache.read_unlock()
             raise OcfError("Failed getting core stats", status)
@@ -157,9 +148,7 @@ class Core:
     def set_seq_cut_off_policy(self, policy: SeqCutOffPolicy):
         self.cache.write_lock()
 
-        status = self.cache.owner.lib.ocf_mngt_core_set_seq_cutoff_policy(
-            self.handle, policy
-        )
+        status = self.cache.owner.lib.ocf_mngt_core_set_seq_cutoff_policy(self.handle, policy)
         self.cache.write_unlock()
         if status:
             raise OcfError("Error setting core seq cut off policy", status)
@@ -167,9 +156,7 @@ class Core:
     def set_seq_cut_off_threshold(self, threshold):
         self.cache.write_lock()
 
-        status = self.cache.owner.lib.ocf_mngt_core_set_seq_cutoff_threshold(
-            self.handle, threshold
-        )
+        status = self.cache.owner.lib.ocf_mngt_core_set_seq_cutoff_threshold(self.handle, threshold)
         self.cache.write_unlock()
         if status:
             raise OcfError("Error setting core seq cut off policy threshold", status)
@@ -184,53 +171,28 @@ class Core:
         if status:
             raise OcfError("Error setting core seq cut off policy promotion count", status)
 
+    def flush(self):
+        self.cache.write_lock()
+
+        c = OcfCompletion([("core", c_void_p), ("priv", c_void_p), ("error", c_int)])
+        self.cache.owner.lib.ocf_mngt_core_flush(self.handle, c, None)
+        c.wait()
+        self.cache.write_unlock()
+
+        if c.results["error"]:
+            raise OcfError("Couldn't flush cache", c.results["error"])
+
     def reset_stats(self):
-        self.cache.owner.lib.ocf_core_stats_initialize(self.handle)
-
-    def exp_obj_md5(self):
-        logging.getLogger("pyocf").warning(
-            "Reading whole exported object! This disturbs statistics values"
-        )
-
-        cache_line_size = int(self.cache.get_stats()['conf']['cache_line_size'])
-        read_buffer_all = Data(self.device.size)
-
-        read_buffer = Data(cache_line_size)
-
-        position = 0
-        while position < read_buffer_all.size:
-            io = self.new_io(self.cache.get_default_queue(), position,
-                             cache_line_size, IoDir.READ, 0, 0)
-            io.set_data(read_buffer)
-
-            cmpl = OcfCompletion([("err", c_int)])
-            io.callback = cmpl.callback
-            io.submit()
-            cmpl.wait()
-
-            if cmpl.results["err"]:
-                raise Exception("Error reading whole exported object")
-
-            read_buffer_all.copy(read_buffer, position, 0, cache_line_size)
-            position += cache_line_size
-
-        return read_buffer_all.md5()
+        lib.ocf_core_stats_initialize(self.handle)
 
 
 lib = OcfLib.getInstance()
-lib.ocf_core_get_volume.restype = c_void_p
-lib.ocf_volume_new_io.argtypes = [
-    c_void_p,
-    c_void_p,
-    c_uint64,
-    c_uint32,
-    c_uint32,
-    c_uint32,
-    c_uint64,
-]
-lib.ocf_volume_new_io.restype = c_void_p
+lib.ocf_core_get_uuid_wrapper.restype = POINTER(Uuid)
+lib.ocf_core_get_uuid_wrapper.argtypes = [c_void_p]
 lib.ocf_core_get_volume.argtypes = [c_void_p]
 lib.ocf_core_get_volume.restype = c_void_p
+lib.ocf_core_get_front_volume.argtypes = [c_void_p]
+lib.ocf_core_get_front_volume.restype = c_void_p
 lib.ocf_mngt_core_set_seq_cutoff_policy.argtypes = [c_void_p, c_uint32]
 lib.ocf_mngt_core_set_seq_cutoff_policy.restype = c_int
 lib.ocf_mngt_core_set_seq_cutoff_threshold.argtypes = [c_void_p, c_uint32]
@@ -241,13 +203,7 @@ lib.ocf_stats_collect_core.argtypes = [c_void_p, c_void_p, c_void_p, c_void_p, c
 lib.ocf_stats_collect_core.restype = c_int
 lib.ocf_core_get_info.argtypes = [c_void_p, c_void_p]
 lib.ocf_core_get_info.restype = c_int
-lib.ocf_core_new_io_wrapper.argtypes = [
-    c_void_p,
-    c_void_p,
-    c_uint64,
-    c_uint32,
-    c_uint32,
-    c_uint32,
-    c_uint64,
-]
-lib.ocf_core_new_io_wrapper.restype = c_void_p
+lib.ocf_core_stats_initialize.argtypes = [c_void_p]
+lib.ocf_core_stats_initialize.restype = c_void_p
+lib.ocf_mngt_core_flush.argtypes = [c_void_p, c_void_p, c_void_p]
+lib.ocf_mngt_core_flush.restype = c_void_p

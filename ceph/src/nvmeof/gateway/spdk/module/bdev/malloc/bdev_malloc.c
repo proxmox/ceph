@@ -10,6 +10,8 @@
 #include "spdk/endian.h"
 #include "spdk/env.h"
 #include "spdk/accel.h"
+#include "spdk/dma.h"
+#include "spdk/likely.h"
 #include "spdk/string.h"
 
 #include "spdk/log.h"
@@ -22,6 +24,7 @@ struct malloc_disk {
 };
 
 struct malloc_task {
+	struct iovec			iov;
 	int				num_outstanding;
 	enum spdk_bdev_io_status	status;
 	TAILQ_ENTRY(malloc_task)	tailq;
@@ -34,41 +37,50 @@ struct malloc_channel {
 };
 
 static int
-malloc_verify_pi(struct spdk_bdev_io *bdev_io)
+_malloc_verify_pi(struct spdk_bdev_io *bdev_io, struct iovec *iovs, int iovcnt,
+		  void *md_buf)
 {
 	struct spdk_bdev *bdev = bdev_io->bdev;
 	struct spdk_dif_ctx dif_ctx;
 	struct spdk_dif_error err_blk;
 	int rc;
+	struct spdk_dif_ctx_init_ext_opts dif_opts;
 
+	assert(bdev_io->u.bdev.memory_domain == NULL);
+	dif_opts.size = SPDK_SIZEOF(&dif_opts, dif_pi_format);
+	dif_opts.dif_pi_format = bdev->dif_pi_format;
 	rc = spdk_dif_ctx_init(&dif_ctx,
 			       bdev->blocklen,
 			       bdev->md_len,
 			       bdev->md_interleave,
 			       bdev->dif_is_head_of_md,
 			       bdev->dif_type,
-			       bdev->dif_check_flags,
+			       bdev_io->u.bdev.dif_check_flags,
 			       bdev_io->u.bdev.offset_blocks & 0xFFFFFFFF,
-			       0xFFFF, 0, 0, 0);
+			       0xFFFF, 0, 0, 0, &dif_opts);
 	if (rc != 0) {
 		SPDK_ERRLOG("Failed to initialize DIF/DIX context\n");
 		return rc;
 	}
 
 	if (spdk_bdev_is_md_interleaved(bdev)) {
-		rc = spdk_dif_verify(bdev_io->u.bdev.iovs,
-				     bdev_io->u.bdev.iovcnt,
+		rc = spdk_dif_verify(iovs,
+				     iovcnt,
 				     bdev_io->u.bdev.num_blocks,
 				     &dif_ctx,
 				     &err_blk);
 	} else {
 		struct iovec md_iov = {
-			.iov_base	= bdev_io->u.bdev.md_buf,
+			.iov_base	= md_buf,
 			.iov_len	= bdev_io->u.bdev.num_blocks * bdev->md_len,
 		};
 
-		rc = spdk_dix_verify(bdev_io->u.bdev.iovs,
-				     bdev_io->u.bdev.iovcnt,
+		if (bdev_io->u.bdev.md_buf == NULL) {
+			return 0;
+		}
+
+		rc = spdk_dix_verify(iovs,
+				     iovcnt,
 				     &md_iov,
 				     bdev_io->u.bdev.num_blocks,
 				     &dif_ctx,
@@ -77,7 +89,7 @@ malloc_verify_pi(struct spdk_bdev_io *bdev_io)
 
 	if (rc != 0) {
 		SPDK_ERRLOG("DIF/DIX verify failed: lba %" PRIu64 ", num_blocks %" PRIu64 ", "
-			    "err_type %u, expected %u, actual %u, err_offset %u\n",
+			    "err_type %u, expected %lu, actual %lu, err_offset %u\n",
 			    bdev_io->u.bdev.offset_blocks,
 			    bdev_io->u.bdev.num_blocks,
 			    err_blk.err_type,
@@ -85,6 +97,91 @@ malloc_verify_pi(struct spdk_bdev_io *bdev_io)
 			    err_blk.actual,
 			    err_blk.err_offset);
 	}
+
+	return rc;
+}
+
+static int
+malloc_verify_pi_io_buf(struct spdk_bdev_io *bdev_io)
+{
+	return _malloc_verify_pi(bdev_io,
+				 bdev_io->u.bdev.iovs,
+				 bdev_io->u.bdev.iovcnt,
+				 bdev_io->u.bdev.md_buf);
+}
+
+static int
+malloc_verify_pi_malloc_buf(struct spdk_bdev_io *bdev_io)
+{
+	struct iovec iov;
+	struct spdk_bdev *bdev = bdev_io->bdev;
+	struct malloc_disk *mdisk = bdev->ctxt;
+	uint64_t len, offset;
+
+	len = bdev_io->u.bdev.num_blocks * bdev->blocklen;
+	offset = bdev_io->u.bdev.offset_blocks * bdev->blocklen;
+
+	iov.iov_base = mdisk->malloc_buf + offset;
+	iov.iov_len = len;
+
+	return _malloc_verify_pi(bdev_io, &iov, 1, NULL);
+}
+
+static int
+malloc_unmap_write_zeroes_generate_pi(struct spdk_bdev_io *bdev_io)
+{
+	struct spdk_bdev *bdev = bdev_io->bdev;
+	struct malloc_disk *mdisk = bdev_io->bdev->ctxt;
+	uint32_t block_size = bdev_io->bdev->blocklen;
+	uint32_t dif_check_flags;
+	struct spdk_dif_ctx dif_ctx;
+	struct spdk_dif_ctx_init_ext_opts dif_opts;
+	int rc;
+
+	dif_opts.size = SPDK_SIZEOF(&dif_opts, dif_pi_format);
+	dif_opts.dif_pi_format = bdev->dif_pi_format;
+	dif_check_flags = bdev->dif_check_flags | SPDK_DIF_CHECK_TYPE_REFTAG |
+			  SPDK_DIF_FLAGS_APPTAG_CHECK;
+	rc = spdk_dif_ctx_init(&dif_ctx,
+			       bdev->blocklen,
+			       bdev->md_len,
+			       bdev->md_interleave,
+			       bdev->dif_is_head_of_md,
+			       bdev->dif_type,
+			       dif_check_flags,
+			       SPDK_DIF_REFTAG_IGNORE,
+			       0xFFFF, SPDK_DIF_APPTAG_IGNORE,
+			       0, 0, &dif_opts);
+	if (rc != 0) {
+		SPDK_ERRLOG("Initialization of DIF/DIX context failed\n");
+		return rc;
+	}
+
+	if (bdev->md_interleave) {
+		struct iovec iov = {
+			.iov_base	= mdisk->malloc_buf + bdev_io->u.bdev.offset_blocks * block_size,
+			.iov_len	= bdev_io->u.bdev.num_blocks * block_size,
+		};
+
+		rc = spdk_dif_generate(&iov, 1, bdev_io->u.bdev.num_blocks, &dif_ctx);
+	} else {
+		struct iovec iov = {
+			.iov_base	= mdisk->malloc_buf + bdev_io->u.bdev.offset_blocks * block_size,
+			.iov_len	= bdev_io->u.bdev.num_blocks * block_size,
+		};
+
+		struct iovec md_iov = {
+			.iov_base	= mdisk->malloc_md_buf + bdev_io->u.bdev.offset_blocks * bdev->md_len,
+			.iov_len	= bdev_io->u.bdev.num_blocks * bdev->md_len,
+		};
+
+		rc = spdk_dix_generate(&iov, 1, &md_iov, bdev_io->u.bdev.num_blocks, &dif_ctx);
+	}
+
+	if (rc != 0) {
+		SPDK_ERRLOG("Formatting by DIF/DIX failed\n");
+	}
+
 
 	return rc;
 }
@@ -98,7 +195,9 @@ malloc_done(void *ref, int status)
 
 	if (status != 0) {
 		if (status == -ENOMEM) {
-			task->status = SPDK_BDEV_IO_STATUS_NOMEM;
+			if (task->status == SPDK_BDEV_IO_STATUS_SUCCESS) {
+				task->status = SPDK_BDEV_IO_STATUS_NOMEM;
+			}
 		} else {
 			task->status = SPDK_BDEV_IO_STATUS_FAILED;
 		}
@@ -109,14 +208,37 @@ malloc_done(void *ref, int status)
 	}
 
 	if (bdev_io->bdev->dif_type != SPDK_DIF_DISABLE &&
-	    bdev_io->type == SPDK_BDEV_IO_TYPE_READ &&
 	    task->status == SPDK_BDEV_IO_STATUS_SUCCESS) {
-		rc = malloc_verify_pi(bdev_io);
+		switch (bdev_io->type) {
+		case SPDK_BDEV_IO_TYPE_READ:
+			if (!spdk_bdev_io_hide_metadata(bdev_io)) {
+				rc = malloc_verify_pi_io_buf(bdev_io);
+			} else {
+				rc = 0;
+			}
+			break;
+		case SPDK_BDEV_IO_TYPE_WRITE:
+			if (!spdk_bdev_io_hide_metadata(bdev_io)) {
+				rc = 0;
+			} else {
+				rc = malloc_verify_pi_malloc_buf(bdev_io);
+			}
+			break;
+		case SPDK_BDEV_IO_TYPE_UNMAP:
+		case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+			rc = malloc_unmap_write_zeroes_generate_pi(bdev_io);
+			break;
+		default:
+			rc = 0;
+			break;
+		}
+
 		if (rc != 0) {
 			task->status = SPDK_BDEV_IO_STATUS_FAILED;
 		}
 	}
 
+	assert(!bdev_io->u.bdev.accel_sequence || task->status == SPDK_BDEV_IO_STATUS_NOMEM);
 	spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task), task->status);
 }
 
@@ -190,18 +312,64 @@ bdev_malloc_check_iov_len(struct iovec *iovs, int iovcnt, size_t nbytes)
 	return nbytes != 0;
 }
 
+static size_t
+malloc_get_md_len(struct spdk_bdev_io *bdev_io)
+{
+	return bdev_io->u.bdev.num_blocks * bdev_io->bdev->md_len;
+}
+
+static uint64_t
+malloc_get_md_offset(struct spdk_bdev_io *bdev_io)
+{
+	return bdev_io->u.bdev.offset_blocks * bdev_io->bdev->md_len;
+}
+
+static void *
+malloc_get_md_buf(struct spdk_bdev_io *bdev_io)
+{
+	struct malloc_disk *mdisk = SPDK_CONTAINEROF(bdev_io->bdev, struct malloc_disk, disk);
+
+	assert(spdk_bdev_is_md_separate(bdev_io->bdev));
+
+	return (char *)mdisk->malloc_md_buf + malloc_get_md_offset(bdev_io);
+}
+
+static void
+malloc_sequence_fail(struct malloc_task *task, int status)
+{
+	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(task);
+
+	/* For ENOMEM, the IO will be retried by the bdev layer, so we don't abort the sequence */
+	if (status != -ENOMEM) {
+		spdk_accel_sequence_abort(bdev_io->u.bdev.accel_sequence);
+		bdev_io->u.bdev.accel_sequence = NULL;
+	}
+
+	malloc_done(task, status);
+}
+
+static void
+malloc_sequence_done(void *ctx, int status)
+{
+	struct malloc_task *task = ctx;
+	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(task);
+
+	bdev_io->u.bdev.accel_sequence = NULL;
+	/* Prevent bdev layer from retrying the request if the sequence failed with ENOMEM */
+	malloc_done(task, status != -ENOMEM ? status : -EFAULT);
+}
+
 static void
 bdev_malloc_readv(struct malloc_disk *mdisk, struct spdk_io_channel *ch,
-		  struct malloc_task *task,
-		  struct iovec *iov, int iovcnt, size_t len, uint64_t offset,
-		  void *md_buf, size_t md_len, uint64_t md_offset)
+		  struct malloc_task *task, struct spdk_bdev_io *bdev_io)
 {
-	int64_t res = 0;
-	void *src;
-	void *md_src;
-	int i;
+	uint64_t len, offset;
+	int res = 0;
 
-	if (bdev_malloc_check_iov_len(iov, iovcnt, len)) {
+	len = bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen;
+	offset = bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen;
+
+	if (bdev_malloc_check_iov_len(bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt, len)) {
 		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task),
 				      SPDK_BDEV_IO_STATUS_FAILED);
 		return;
@@ -209,38 +377,36 @@ bdev_malloc_readv(struct malloc_disk *mdisk, struct spdk_io_channel *ch,
 
 	task->status = SPDK_BDEV_IO_STATUS_SUCCESS;
 	task->num_outstanding = 0;
+	task->iov.iov_base = mdisk->malloc_buf + offset;
+	task->iov.iov_len = len;
 
 	SPDK_DEBUGLOG(bdev_malloc, "read %zu bytes from offset %#" PRIx64 ", iovcnt=%d\n",
-		      len, offset, iovcnt);
+		      len, offset, bdev_io->u.bdev.iovcnt);
 
-	src = mdisk->malloc_buf + offset;
-
-	for (i = 0; i < iovcnt; i++) {
-		task->num_outstanding++;
-		res = spdk_accel_submit_copy(ch, iov[i].iov_base,
-					     src, iov[i].iov_len, 0, malloc_done, task);
-
-		if (res != 0) {
-			malloc_done(task, res);
-			break;
-		}
-
-		src += iov[i].iov_len;
-		len -= iov[i].iov_len;
+	task->num_outstanding++;
+	res = spdk_accel_append_copy(&bdev_io->u.bdev.accel_sequence, ch,
+				     bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt,
+				     bdev_io->u.bdev.memory_domain,
+				     bdev_io->u.bdev.memory_domain_ctx,
+				     &task->iov, 1, NULL, NULL, NULL, NULL);
+	if (spdk_unlikely(res != 0)) {
+		malloc_sequence_fail(task, res);
+		return;
 	}
 
-	if (md_buf == NULL) {
+	spdk_accel_sequence_reverse(bdev_io->u.bdev.accel_sequence);
+	spdk_accel_sequence_finish(bdev_io->u.bdev.accel_sequence, malloc_sequence_done, task);
+
+	if (bdev_io->u.bdev.md_buf == NULL) {
 		return;
 	}
 
 	SPDK_DEBUGLOG(bdev_malloc, "read metadata %zu bytes from offset%#" PRIx64 "\n",
-		      md_len, md_offset);
-
-	md_src = mdisk->malloc_md_buf + md_offset;
+		      malloc_get_md_len(bdev_io), malloc_get_md_offset(bdev_io));
 
 	task->num_outstanding++;
-	res = spdk_accel_submit_copy(ch, md_buf, md_src, md_len, 0, malloc_done, task);
-
+	res = spdk_accel_submit_copy(ch, bdev_io->u.bdev.md_buf, malloc_get_md_buf(bdev_io),
+				     malloc_get_md_len(bdev_io), malloc_done, task);
 	if (res != 0) {
 		malloc_done(task, res);
 	}
@@ -248,58 +414,53 @@ bdev_malloc_readv(struct malloc_disk *mdisk, struct spdk_io_channel *ch,
 
 static void
 bdev_malloc_writev(struct malloc_disk *mdisk, struct spdk_io_channel *ch,
-		   struct malloc_task *task,
-		   struct iovec *iov, int iovcnt, size_t len, uint64_t offset,
-		   void *md_buf, size_t md_len, uint64_t md_offset)
+		   struct malloc_task *task, struct spdk_bdev_io *bdev_io)
 {
+	uint64_t len, offset;
+	int res = 0;
 
-	int64_t res = 0;
-	void *dst;
-	void *md_dst;
-	int i;
+	len = bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen;
+	offset = bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen;
 
-	if (bdev_malloc_check_iov_len(iov, iovcnt, len)) {
+	if (bdev_malloc_check_iov_len(bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt, len)) {
 		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task),
 				      SPDK_BDEV_IO_STATUS_FAILED);
 		return;
 	}
 
-	SPDK_DEBUGLOG(bdev_malloc, "wrote %zu bytes to offset %#" PRIx64 ", iovcnt=%d\n",
-		      len, offset, iovcnt);
-
-	dst = mdisk->malloc_buf + offset;
-
 	task->status = SPDK_BDEV_IO_STATUS_SUCCESS;
 	task->num_outstanding = 0;
+	task->iov.iov_base = mdisk->malloc_buf + offset;
+	task->iov.iov_len = len;
 
-	for (i = 0; i < iovcnt; i++) {
-		task->num_outstanding++;
-		res = spdk_accel_submit_copy(ch, dst, iov[i].iov_base,
-					     iov[i].iov_len, 0, malloc_done, task);
-
-		if (res != 0) {
-			malloc_done(task, res);
-			break;
-		}
-
-		dst += iov[i].iov_len;
-	}
-
-	if (md_buf == NULL) {
-		return;
-	}
-	SPDK_DEBUGLOG(bdev_malloc, "wrote metadata %zu bytes to offset %#" PRIx64 "\n",
-		      md_len, md_offset);
-
-	md_dst = mdisk->malloc_md_buf + md_offset;
+	SPDK_DEBUGLOG(bdev_malloc, "write %zu bytes to offset %#" PRIx64 ", iovcnt=%d\n",
+		      len, offset, bdev_io->u.bdev.iovcnt);
 
 	task->num_outstanding++;
-	res = spdk_accel_submit_copy(ch, md_dst, md_buf, md_len, 0, malloc_done, task);
+	res = spdk_accel_append_copy(&bdev_io->u.bdev.accel_sequence, ch, &task->iov, 1, NULL, NULL,
+				     bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt,
+				     bdev_io->u.bdev.memory_domain,
+				     bdev_io->u.bdev.memory_domain_ctx, NULL, NULL);
+	if (spdk_unlikely(res != 0)) {
+		malloc_sequence_fail(task, res);
+		return;
+	}
 
+	spdk_accel_sequence_finish(bdev_io->u.bdev.accel_sequence, malloc_sequence_done, task);
+
+	if (bdev_io->u.bdev.md_buf == NULL) {
+		return;
+	}
+
+	SPDK_DEBUGLOG(bdev_malloc, "write metadata %zu bytes to offset %#" PRIx64 "\n",
+		      malloc_get_md_len(bdev_io), malloc_get_md_offset(bdev_io));
+
+	task->num_outstanding++;
+	res = spdk_accel_submit_copy(ch, malloc_get_md_buf(bdev_io), bdev_io->u.bdev.md_buf,
+				     malloc_get_md_len(bdev_io), malloc_done, task);
 	if (res != 0) {
 		malloc_done(task, res);
 	}
-
 }
 
 static int
@@ -313,7 +474,7 @@ bdev_malloc_unmap(struct malloc_disk *mdisk,
 	task->num_outstanding = 1;
 
 	return spdk_accel_submit_fill(ch, mdisk->malloc_buf + offset, 0,
-				      byte_count, 0, malloc_done, task);
+				      byte_count, malloc_done, task);
 }
 
 static void
@@ -331,7 +492,7 @@ bdev_malloc_copy(struct malloc_disk *mdisk, struct spdk_io_channel *ch,
 	task->status = SPDK_BDEV_IO_STATUS_SUCCESS;
 	task->num_outstanding = 1;
 
-	res = spdk_accel_submit_copy(ch, dst, src, len, 0, malloc_done, task);
+	res = spdk_accel_submit_copy(ch, dst, src, len, malloc_done, task);
 	if (res != 0) {
 		malloc_done(task, res);
 	}
@@ -340,79 +501,68 @@ bdev_malloc_copy(struct malloc_disk *mdisk, struct spdk_io_channel *ch,
 static int
 _bdev_malloc_submit_request(struct malloc_channel *mch, struct spdk_bdev_io *bdev_io)
 {
+	struct malloc_task *task = (struct malloc_task *)bdev_io->driver_ctx;
+	struct malloc_disk *disk = bdev_io->bdev->ctxt;
 	uint32_t block_size = bdev_io->bdev->blocklen;
-	uint32_t md_size = bdev_io->bdev->md_len;
 	int rc;
 
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
 		if (bdev_io->u.bdev.iovs[0].iov_base == NULL) {
 			assert(bdev_io->u.bdev.iovcnt == 1);
+			assert(bdev_io->u.bdev.memory_domain == NULL);
 			bdev_io->u.bdev.iovs[0].iov_base =
-				((struct malloc_disk *)bdev_io->bdev->ctxt)->malloc_buf +
-				bdev_io->u.bdev.offset_blocks * block_size;
+				disk->malloc_buf + bdev_io->u.bdev.offset_blocks * block_size;
 			bdev_io->u.bdev.iovs[0].iov_len = bdev_io->u.bdev.num_blocks * block_size;
-			malloc_complete_task((struct malloc_task *)bdev_io->driver_ctx, mch,
-					     SPDK_BDEV_IO_STATUS_SUCCESS);
+			if (spdk_bdev_is_md_separate(bdev_io->bdev)) {
+				spdk_bdev_io_set_md_buf(bdev_io, malloc_get_md_buf(bdev_io),
+							malloc_get_md_len(bdev_io));
+			}
+			malloc_complete_task(task, mch, SPDK_BDEV_IO_STATUS_SUCCESS);
 			return 0;
 		}
 
-		bdev_malloc_readv((struct malloc_disk *)bdev_io->bdev->ctxt,
-				  mch->accel_channel,
-				  (struct malloc_task *)bdev_io->driver_ctx,
-				  bdev_io->u.bdev.iovs,
-				  bdev_io->u.bdev.iovcnt,
-				  bdev_io->u.bdev.num_blocks * block_size,
-				  bdev_io->u.bdev.offset_blocks * block_size,
-				  bdev_io->u.bdev.md_buf,
-				  bdev_io->u.bdev.num_blocks * md_size,
-				  bdev_io->u.bdev.offset_blocks * md_size);
-		return 0;
-
-	case SPDK_BDEV_IO_TYPE_WRITE:
-		if (bdev_io->bdev->dif_type != SPDK_DIF_DISABLE) {
-			rc = malloc_verify_pi(bdev_io);
+		if (bdev_io->bdev->dif_type != SPDK_DIF_DISABLE &&
+		    spdk_bdev_io_hide_metadata(bdev_io)) {
+			rc = malloc_verify_pi_malloc_buf(bdev_io);
 			if (rc != 0) {
-				malloc_complete_task((struct malloc_task *)bdev_io->driver_ctx, mch,
-						     SPDK_BDEV_IO_STATUS_FAILED);
+				malloc_complete_task(task, mch, SPDK_BDEV_IO_STATUS_FAILED);
 				return 0;
 			}
 		}
 
-		bdev_malloc_writev((struct malloc_disk *)bdev_io->bdev->ctxt,
-				   mch->accel_channel,
-				   (struct malloc_task *)bdev_io->driver_ctx,
-				   bdev_io->u.bdev.iovs,
-				   bdev_io->u.bdev.iovcnt,
-				   bdev_io->u.bdev.num_blocks * block_size,
-				   bdev_io->u.bdev.offset_blocks * block_size,
-				   bdev_io->u.bdev.md_buf,
-				   bdev_io->u.bdev.num_blocks * md_size,
-				   bdev_io->u.bdev.offset_blocks * md_size);
+		bdev_malloc_readv(disk, mch->accel_channel, task, bdev_io);
+		return 0;
+
+	case SPDK_BDEV_IO_TYPE_WRITE:
+		if (bdev_io->bdev->dif_type != SPDK_DIF_DISABLE &&
+		    !spdk_bdev_io_hide_metadata(bdev_io)) {
+			rc = malloc_verify_pi_io_buf(bdev_io);
+			if (rc != 0) {
+				malloc_complete_task(task, mch, SPDK_BDEV_IO_STATUS_FAILED);
+				return 0;
+			}
+		}
+
+		bdev_malloc_writev(disk, mch->accel_channel, task, bdev_io);
 		return 0;
 
 	case SPDK_BDEV_IO_TYPE_RESET:
-		malloc_complete_task((struct malloc_task *)bdev_io->driver_ctx, mch,
-				     SPDK_BDEV_IO_STATUS_SUCCESS);
+		malloc_complete_task(task, mch, SPDK_BDEV_IO_STATUS_SUCCESS);
 		return 0;
 
 	case SPDK_BDEV_IO_TYPE_FLUSH:
-		malloc_complete_task((struct malloc_task *)bdev_io->driver_ctx, mch,
-				     SPDK_BDEV_IO_STATUS_SUCCESS);
+		malloc_complete_task(task, mch, SPDK_BDEV_IO_STATUS_SUCCESS);
 		return 0;
 
 	case SPDK_BDEV_IO_TYPE_UNMAP:
-		return bdev_malloc_unmap((struct malloc_disk *)bdev_io->bdev->ctxt,
-					 mch->accel_channel,
-					 (struct malloc_task *)bdev_io->driver_ctx,
+		return bdev_malloc_unmap(disk, mch->accel_channel, task,
 					 bdev_io->u.bdev.offset_blocks * block_size,
 					 bdev_io->u.bdev.num_blocks * block_size);
 
 	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
 		/* bdev_malloc_unmap is implemented with a call to mem_cpy_fill which zeroes out all of the requested bytes. */
-		return bdev_malloc_unmap((struct malloc_disk *)bdev_io->bdev->ctxt,
-					 mch->accel_channel,
-					 (struct malloc_task *)bdev_io->driver_ctx,
+		return bdev_malloc_unmap(disk, mch->accel_channel, task,
 					 bdev_io->u.bdev.offset_blocks * block_size,
 					 bdev_io->u.bdev.num_blocks * block_size);
 
@@ -421,23 +571,21 @@ _bdev_malloc_submit_request(struct malloc_channel *mch, struct spdk_bdev_io *bde
 			void *buf;
 			size_t len;
 
-			buf = ((struct malloc_disk *)bdev_io->bdev->ctxt)->malloc_buf +
-			      bdev_io->u.bdev.offset_blocks * block_size;
+			buf = disk->malloc_buf + bdev_io->u.bdev.offset_blocks * block_size;
 			len = bdev_io->u.bdev.num_blocks * block_size;
 			spdk_bdev_io_set_buf(bdev_io, buf, len);
-
+			if (spdk_bdev_is_md_separate(bdev_io->bdev)) {
+				spdk_bdev_io_set_md_buf(bdev_io, malloc_get_md_buf(bdev_io),
+							malloc_get_md_len(bdev_io));
+			}
 		}
-		malloc_complete_task((struct malloc_task *)bdev_io->driver_ctx, mch,
-				     SPDK_BDEV_IO_STATUS_SUCCESS);
+		malloc_complete_task(task, mch, SPDK_BDEV_IO_STATUS_SUCCESS);
 		return 0;
 	case SPDK_BDEV_IO_TYPE_ABORT:
-		malloc_complete_task((struct malloc_task *)bdev_io->driver_ctx, mch,
-				     SPDK_BDEV_IO_STATUS_FAILED);
+		malloc_complete_task(task, mch, SPDK_BDEV_IO_STATUS_FAILED);
 		return 0;
 	case SPDK_BDEV_IO_TYPE_COPY:
-		bdev_malloc_copy((struct malloc_disk *)bdev_io->bdev->ctxt,
-				 mch->accel_channel,
-				 (struct malloc_task *)bdev_io->driver_ctx,
+		bdev_malloc_copy(disk, mch->accel_channel, task,
 				 bdev_io->u.bdev.offset_blocks * block_size,
 				 bdev_io->u.bdev.copy.src_offset_blocks * block_size,
 				 bdev_io->u.bdev.num_blocks * block_size);
@@ -489,8 +637,6 @@ bdev_malloc_get_io_channel(void *ctx)
 static void
 bdev_malloc_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 {
-	char uuid_str[SPDK_UUID_STRING_LEN];
-
 	spdk_json_write_object_begin(w);
 
 	spdk_json_write_named_string(w, "method", "bdev_malloc_create");
@@ -499,21 +645,62 @@ bdev_malloc_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx
 	spdk_json_write_named_string(w, "name", bdev->name);
 	spdk_json_write_named_uint64(w, "num_blocks", bdev->blockcnt);
 	spdk_json_write_named_uint32(w, "block_size", bdev->blocklen);
-	spdk_uuid_fmt_lower(uuid_str, sizeof(uuid_str), &bdev->uuid);
-	spdk_json_write_named_string(w, "uuid", uuid_str);
+	spdk_json_write_named_uint32(w, "physical_block_size", bdev->phys_blocklen);
+	spdk_json_write_named_uuid(w, "uuid", &bdev->uuid);
 	spdk_json_write_named_uint32(w, "optimal_io_boundary", bdev->optimal_io_boundary);
+	spdk_json_write_named_uint32(w, "md_size", bdev->md_len);
+	spdk_json_write_named_uint32(w, "dif_type", bdev->dif_type);
+	spdk_json_write_named_bool(w, "dif_is_head_of_md", bdev->dif_is_head_of_md);
+	spdk_json_write_named_uint32(w, "dif_pi_format", bdev->dif_pi_format);
 
 	spdk_json_write_object_end(w);
 
 	spdk_json_write_object_end(w);
 }
 
+static int
+bdev_malloc_get_memory_domains(void *ctx, struct spdk_memory_domain **domains, int array_size)
+{
+	struct malloc_disk *malloc_disk = ctx;
+	struct spdk_memory_domain *domain;
+	int num_domains = 0;
+
+	if (malloc_disk->disk.dif_type != SPDK_DIF_DISABLE) {
+		return 0;
+	}
+
+	/* Report support for every memory domain */
+	for (domain = spdk_memory_domain_get_first(NULL); domain != NULL;
+	     domain = spdk_memory_domain_get_next(domain, NULL)) {
+		if (domains != NULL && num_domains < array_size) {
+			domains[num_domains] = domain;
+		}
+		num_domains++;
+	}
+
+	return num_domains;
+}
+
+static bool
+bdev_malloc_accel_sequence_supported(void *ctx, enum spdk_bdev_io_type type)
+{
+	switch (type) {
+	case SPDK_BDEV_IO_TYPE_READ:
+	case SPDK_BDEV_IO_TYPE_WRITE:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static const struct spdk_bdev_fn_table malloc_fn_table = {
-	.destruct		= bdev_malloc_destruct,
-	.submit_request		= bdev_malloc_submit_request,
-	.io_type_supported	= bdev_malloc_io_type_supported,
-	.get_io_channel		= bdev_malloc_get_io_channel,
-	.write_config_json	= bdev_malloc_write_json_config,
+	.destruct			= bdev_malloc_destruct,
+	.submit_request			= bdev_malloc_submit_request,
+	.io_type_supported		= bdev_malloc_io_type_supported,
+	.get_io_channel			= bdev_malloc_get_io_channel,
+	.write_config_json		= bdev_malloc_write_json_config,
+	.get_memory_domains		= bdev_malloc_get_memory_domains,
+	.accel_sequence_supported	= bdev_malloc_accel_sequence_supported,
 };
 
 static int
@@ -522,17 +709,25 @@ malloc_disk_setup_pi(struct malloc_disk *mdisk)
 	struct spdk_bdev *bdev = &mdisk->disk;
 	struct spdk_dif_ctx dif_ctx;
 	struct iovec iov, md_iov;
+	uint32_t dif_check_flags;
 	int rc;
+	struct spdk_dif_ctx_init_ext_opts dif_opts;
 
+	dif_opts.size = SPDK_SIZEOF(&dif_opts, dif_pi_format);
+	dif_opts.dif_pi_format = bdev->dif_pi_format;
+	/* Set APPTAG|REFTAG_IGNORE to PI fields after creation of malloc bdev */
+	dif_check_flags = bdev->dif_check_flags | SPDK_DIF_CHECK_TYPE_REFTAG |
+			  SPDK_DIF_FLAGS_APPTAG_CHECK;
 	rc = spdk_dif_ctx_init(&dif_ctx,
 			       bdev->blocklen,
 			       bdev->md_len,
 			       bdev->md_interleave,
 			       bdev->dif_is_head_of_md,
 			       bdev->dif_type,
-			       bdev->dif_check_flags,
-			       0,	/* configure the whole buffers */
-			       0, 0, 0, 0);
+			       dif_check_flags,
+			       SPDK_DIF_REFTAG_IGNORE,
+			       0xFFFF, SPDK_DIF_APPTAG_IGNORE,
+			       0, 0, &dif_opts);
 	if (rc != 0) {
 		SPDK_ERRLOG("Initialization of DIF/DIX context failed\n");
 		return rc;
@@ -576,6 +771,11 @@ create_malloc_disk(struct spdk_bdev **bdev, const struct malloc_bdev_opts *opts)
 		return -EINVAL;
 	}
 
+	if (opts->physical_block_size % 512) {
+		SPDK_ERRLOG("Physical block must be 512 bytes aligned\n");
+		return -EINVAL;
+	}
+
 	switch (opts->md_size) {
 	case 0:
 	case 8:
@@ -593,16 +793,6 @@ create_malloc_disk(struct spdk_bdev **bdev, const struct malloc_bdev_opts *opts)
 		block_size = opts->block_size + opts->md_size;
 	} else {
 		block_size = opts->block_size;
-	}
-
-	if (opts->dif_type < SPDK_DIF_DISABLE || opts->dif_type > SPDK_DIF_TYPE3) {
-		SPDK_ERRLOG("DIF type is invalid\n");
-		return -EINVAL;
-	}
-
-	if (opts->dif_type != SPDK_DIF_DISABLE && opts->md_size == 0) {
-		SPDK_ERRLOG("Metadata size should not be zero if DIF is enabled\n");
-		return -EINVAL;
 	}
 
 	mdisk = calloc(1, sizeof(*mdisk));
@@ -650,6 +840,7 @@ create_malloc_disk(struct spdk_bdev **bdev, const struct malloc_bdev_opts *opts)
 
 	mdisk->disk.write_cache = 1;
 	mdisk->disk.blocklen = block_size;
+	mdisk->disk.phys_blocklen = opts->physical_block_size;
 	mdisk->disk.blockcnt = opts->num_blocks;
 	mdisk->disk.md_len = opts->md_size;
 	mdisk->disk.md_interleave = opts->md_interleave;
@@ -671,6 +862,7 @@ create_malloc_disk(struct spdk_bdev **bdev, const struct malloc_bdev_opts *opts)
 	case SPDK_DIF_DISABLE:
 		break;
 	}
+	mdisk->disk.dif_pi_format = opts->dif_pi_format;
 
 	if (opts->dif_type != SPDK_DIF_DISABLE) {
 		rc = malloc_disk_setup_pi(mdisk);
@@ -685,10 +877,8 @@ create_malloc_disk(struct spdk_bdev **bdev, const struct malloc_bdev_opts *opts)
 		mdisk->disk.optimal_io_boundary = opts->optimal_io_boundary;
 		mdisk->disk.split_on_optimal_io_boundary = true;
 	}
-	if (!spdk_mem_all_zero(&opts->uuid, sizeof(opts->uuid))) {
+	if (!spdk_uuid_is_null(&opts->uuid)) {
 		spdk_uuid_copy(&mdisk->disk.uuid, &opts->uuid);
-	} else {
-		spdk_uuid_generate(&mdisk->disk.uuid);
 	}
 
 	mdisk->disk.max_copy = 0;

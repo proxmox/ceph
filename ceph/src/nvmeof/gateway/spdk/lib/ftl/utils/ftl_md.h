@@ -1,5 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2022 Intel Corporation.
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   All rights reserved.
  */
 
@@ -7,6 +8,7 @@
 #define FTL_MD_H
 
 #include "spdk/stdinc.h"
+#include "spdk/bdev.h"
 
 #include "ftl_layout.h"
 
@@ -89,11 +91,11 @@ struct ftl_md {
 	/* Memory was registered to SPDK */
 	bool mem_reg;
 
-	/* Metadata primary object */
-	struct ftl_md *mirror;
-
 	/* This flag is used by the primary to disable mirror temporarily */
 	bool mirror_enabled;
+
+	/* This MD descriptor is used for a mirror region */
+	bool is_mirror;
 };
 
 typedef void (*ftl_md_io_entry_cb)(int status, void *cb_arg);
@@ -105,6 +107,7 @@ struct ftl_md_io_entry_ctx {
 	void *cb_arg;
 	struct ftl_md *md;
 	uint64_t start_entry;
+	uint64_t num_entries;
 	void *buffer;
 	void *vss_buffer;
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
@@ -121,11 +124,13 @@ union ftl_md_vss {
 		uint64_t	start_lba;
 		uint64_t	num_blocks;
 		uint64_t	seq_id;
-	} unmap;
+	} trim;
 
 	struct {
 		uint64_t	seq_id;
 		uint32_t	p2l_checksum;
+		uint32_t	idx;
+		uint64_t	count;
 	} p2l_ckpt;
 
 	struct {
@@ -151,6 +156,9 @@ enum ftl_md_create_flags {
 
 	/** FTL metadata will be created on heap */
 	FTL_MD_CREATE_HEAP =		0x4,
+
+	/** FTL metadata will be created using spdk_zmalloc */
+	FTL_MD_CREATE_SPDK_BUF =	0x8,
 };
 
 /**
@@ -189,6 +197,8 @@ int ftl_md_unlink(struct spdk_ftl_dev *dev, const char *name, int flags);
 enum ftl_md_destroy_flags {
 	/** FTL metadata data buf will be kept in SHM */
 	FTL_MD_DESTROY_SHM_KEEP = 0x1,
+	/** FTL metadata data buf, freeing buffer allocated with FTL_MD_CREATE_SPDK_BUF */
+	FTL_MD_DESTROY_SPDK_BUF = 0x2,
 };
 
 /**
@@ -213,11 +223,9 @@ void ftl_md_free_buf(struct ftl_md *md, int flags);
  *
  * @param md The FTL metadata
  * @param region The device region to be set
- *
- * @return Operation status
  */
-int ftl_md_set_region(struct ftl_md *md,
-		      const struct ftl_layout_region *region);
+void ftl_md_set_region(struct ftl_md *md,
+		       const struct ftl_layout_region *region);
 
 /**
  * @brief Gets layout region on which ongoing an IO procedure is executed
@@ -288,15 +296,17 @@ void ftl_md_persist(struct ftl_md *md);
  *
  * @param md Metadata to be persisted
  * @param start_entry Starting index of entry to be persisted
+ * @param num_entries Number of entries to be persisted
  * @param buffer DMA buffer for writing the entry to the device
  * @param vss_buffer DMA buffer for writing the entry VSS to the device
  * @param cb Completion called on persist entry end
  * @param cb_arg Context returned on completion
  * @param ctx Operation context structure
  */
-void ftl_md_persist_entry(struct ftl_md *md, uint64_t start_entry, void *buffer, void *vss_buffer,
-			  ftl_md_io_entry_cb cb, void *cb_arg,
-			  struct ftl_md_io_entry_ctx *ctx);
+void ftl_md_persist_entries(struct ftl_md *md, uint64_t start_entry, uint64_t num_entries,
+			    void *buffer,
+			    void *vss_buffer, ftl_md_io_entry_cb cb, void *cb_arg,
+			    struct ftl_md_io_entry_ctx *ctx);
 
 /**
  * Retries a persist operation performed by ftl_md_persist_entry.

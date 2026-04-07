@@ -5,14 +5,14 @@
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "nvme/nvme_transport.c"
 #include "common/lib/test_env.c"
 
 SPDK_LOG_REGISTER_COMPONENT(nvme)
 
 DEFINE_STUB(nvme_poll_group_connect_qpair, int, (struct spdk_nvme_qpair *qpair), 0);
-DEFINE_STUB_V(nvme_qpair_abort_all_queued_reqs, (struct spdk_nvme_qpair *qpair, uint32_t dnr));
+DEFINE_STUB_V(nvme_qpair_abort_all_queued_reqs, (struct spdk_nvme_qpair *qpair));
 DEFINE_STUB(nvme_poll_group_disconnect_qpair, int, (struct spdk_nvme_qpair *qpair), 0);
 DEFINE_STUB(spdk_nvme_ctrlr_free_io_qpair, int, (struct spdk_nvme_qpair *qpair), 0);
 DEFINE_STUB(spdk_nvme_transport_id_trtype_str, const char *,
@@ -125,10 +125,12 @@ test_nvme_transport_poll_group_disconnect_qpair(void)
 	/* Connected qpairs */
 	qpair.poll_group_tailq_head = &tgroup.connected_qpairs;
 	STAILQ_INSERT_TAIL(&tgroup.connected_qpairs, &qpair, poll_group_stailq);
+	tgroup.num_connected_qpairs++;
 
 	rc = nvme_transport_poll_group_disconnect_qpair(&qpair);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(STAILQ_EMPTY(&tgroup.connected_qpairs));
+	CU_ASSERT(tgroup.num_connected_qpairs == 0);
 	CU_ASSERT(!STAILQ_EMPTY(&tgroup.disconnected_qpairs));
 	STAILQ_REMOVE(&tgroup.disconnected_qpairs, &qpair, spdk_nvme_qpair, poll_group_stailq);
 	CU_ASSERT(STAILQ_EMPTY(&tgroup.disconnected_qpairs));
@@ -232,7 +234,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_transport", NULL, NULL);
@@ -242,9 +243,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_transport_poll_group_add_remove);
 	CU_ADD_TEST(suite, test_ctrlr_get_memory_domains);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

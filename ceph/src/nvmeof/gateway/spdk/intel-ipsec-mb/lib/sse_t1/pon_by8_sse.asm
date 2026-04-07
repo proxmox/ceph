@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2019-2022, Intel Corporation
+;; Copyright (c) 2019-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,10 +25,10 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/imb_job.asm"
-%include "include/os.asm"
-%include "include/memcpy.asm"
-%include "include/clear_regs.asm"
+%include "include/imb_job.inc"
+%include "include/os.inc"
+%include "include/memcpy.inc"
+%include "include/clear_regs.inc"
 %include "include/cet.inc"
 %include "include/error.inc"
 
@@ -937,7 +937,7 @@ DEC_NO_CTR_FN_NAME:
         ret
 
 ;; uint32_t hec_32_sse(const uint8_t *in)
-align 64
+align 32
 MKGLOBAL(HEC_32,function,)
 HEC_32:
         endbranch64
@@ -973,7 +973,7 @@ error_hec32:
 %endif
 
 ;; uint32_t hec_64_sse(const uint8_t *in)
-align 64
+align 32
 MKGLOBAL(HEC_64,function,)
 HEC_64:
         endbranch64

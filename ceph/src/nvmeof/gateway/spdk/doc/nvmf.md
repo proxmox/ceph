@@ -1,7 +1,7 @@
 # NVMe over Fabrics Target {#nvmf}
 
 @sa @ref nvme_fabrics_host
-@sa @ref nvmf_tgt_tracepoints
+@sa @ref tracepoints
 
 ## NVMe-oF Target Getting Started Guide {#nvmf_getting_started}
 
@@ -267,9 +267,137 @@ nvme disconnect -n "nqn.2016-06.io.spdk:cnode1"
 ## Enabling NVMe-oF target tracepoints for offline analysis and debug {#nvmf_trace}
 
 SPDK has a tracing framework for capturing low-level event information at runtime.
-@ref nvmf_tgt_tracepoints enable analysis of both performance and application crashes.
+@ref tracepoints enable analysis of both performance and application crashes.
 
 ## Enabling NVMe-oF Multipath
 
 The SPDK NVMe-oF target and initiator support multiple independent paths to the same NVMe-oF subsystem.
 For step-by-step instructions for configuring and switching between paths, see @ref nvmf_multipath_howto .
+
+## Enabling NVMe-oF TLS
+
+The SPDK NVMe-oF target and initiator support establishing a secure TCP connection using Transport
+Layer Security (TLS) protocol in compliance with NVMe TCP transport specification. Only version 1.3
+of the TLS protocol is supported. This feature is considered experimental.
+
+Currently, it is only possible to establish a fabric secure channel using TLS. The channel is
+protected by a symmetric pre-shared key (PSK) using either `TLS_AES_256_GCM_SHA384` (recommended) or
+`TLS_AES_128_GCM_SHA256` cipher suite. The cipher suite is selected based on the hash function
+associated with a key. During configuration, the keys are expected to be in the PSK interchange
+format (see NVMe TCP transport specification 1.0c, section 3.6.1.5).
+
+The target supports assigning different keys for each host connecting to a given subsystem. It is
+also possible for a single host to use different keys for different subsystems. The keys are
+expected to be placed in separate files (with permissions configured only to allow read/write
+access to the owner) and can be configured using the `--psk` option in the `nvmf_subsystem_add_host`
+RPC. Additionally, to allow establishing TLS connections on a given listener, it must be created
+with `--secure-channel` option enabled. It's also worth noting that this option is mutually
+exclusive with `--allow-any-host` subsystem option and trying to add a listener to such a subsystem
+will result in an error.
+
+On the initiator side, the key can be specified using `--psk` option in the
+`bdev_nvme_attach_controller` RPC.
+
+Recommendations on the pre-shared keys:
+
+* It is strongly recommended to change the keys at least once a year.
+* Use a strong cryptographic random number generator that provides sufficient entropy
+  to generate the keys (e.g. HSM).
+* Use a single key to secure transmission between two systems only.
+* Delete files containing PSKs as soon as they are not needed.
+
+Additionally, it is recommended to follow:
+[RFC 9257 'Guidance for External Pre-Shared Key (PSK) Usage in TLS'](https://www.rfc-editor.org/rfc/rfc9257.html)
+
+### Target setup
+
+~~~{.sh}
+cat key.txt
+NVMeTLSkey-1:01:MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmZwJEiQ:
+
+build/bin/nvmf_tgt &
+scripts/rpc.py nvmf_create_transport -t TCP
+scripts/rpc.py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -s SPDK00000000000001 -m 10
+scripts/rpc.py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t tcp -a 127.0.0.1 -s 4420 \
+               --secure-channel
+scripts/rpc.py nvmf_subsystem_add_host nqn.2016-06.io.spdk:cnode1 nqn.2016-06.io.spdk:host1 \
+               --psk key.txt
+~~~
+
+### Initiator setup
+
+For SPDK initiator example, bdevperf application may be used, because it depends on SPDK's
+NVMe TCP driver.
+
+~~~{.sh}
+cat key.txt
+NVMeTLSkey-1:01:MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmZwJEiQ:
+
+build/examples/bdevperf -m 0x2 -z -r /var/tmp/bdevperf.sock -q 128 -o 4096 -w verify -t 10 &
+scripts/rpc.py -s /var/tmp/bdevperf.sock bdev_nvme_attach_controller -b TLSTEST -t tcp -a 127.0.0.1 \
+               -s 4420 -f ipv4 -n nqn.2016-06.io.spdk:cnode1 -q nqn.2016-06.io.spdk:host1 \
+               --psk key.txt
+~~~
+
+First of the two commands will launch bdevperf, the second one will attempt to construct NVMe bdev
+and establish TLS connection. Of course, the same PSK must be used on both the target and the
+initiator side.
+
+## NVMe-oF in-band authentication
+
+The NVMe-oF driver and NVMe-oF target both support in-band authentication using the DH-HMAC-CHAP
+protocol.  It allows the target to authenticate the host and the host to authenticate the target
+(the latter part is optional).
+
+The authentication will be performed if a subsystem is configured to allow a host with a set of
+DH-HMAC-CHAP keys.  Each host is allowed to use different keys to connect to different subsystems
+and each subsystem might use different keys for different hosts.  For instance, the following
+configures three hosts, two of which can request bidirectional authentication:
+
+```{.sh}
+$ scripts/rpc.py nvmf_subsystem_add_host nqn.2024-05.io.spdk:cnode0 nqn.2024-05.io.spdk:host0 \
+    --dhchap-key key0 --dhchap-ctrlr-key ctrlr-key0
+$ scripts/rpc.py nvmf_subsystem_add_host nqn.2024-05.io.spdk:cnode0 nqn.2024-05.io.spdk:host1 \
+    --dhchap-key key1 --dhchap-ctrlr-key ctrlr-key1
+$ scripts/rpc.py nvmf_subsystem_add_host nqn.2024-05.io.spdk:cnode0 nqn.2024-05.io.spdk:host2 \
+    --dhchap-key key2
+```
+
+Additionally, it's possible to change the keys while preserving existing connections to a subsystem
+via `nvmf_subsystem_set_keys`.  After that's done, new connections and reauthentication requests
+will be required to use the new keys.
+
+```{.sh}
+$ scripts/rpc.py nvmf_subsystem_add_host nqn.2024-05.io.spdk:cnode0 nqn.2024-05.io.spdk:host0 \
+    --dhchap-key key0 --dhchap-ctrlr-key ctrlr-key0
+# Host nqn.2024-05.io.spdk:host0 connects to subsystem nqn.2024-05.io.spdk:cnode0
+$ scripts/rpc.py nvmf_subsystem_set_keys nqn.2024-05.io.spdk:cnode0 nqn.2024-05.io.spdk:host0 \
+    --dhchap-key key1 --dhchap-ctrlr-key ctrlr-key1
+```
+
+On the host side, the keys are specified when attaching controllers, e.g.:
+
+```{.sh}
+$ scripts/rpc.py bdev_nvme_attach_controller -b nvme0 -t tcp -f ipv4 -a 127.0.0.1 -s 4420 \
+    -n nqn.2024-05.io.spdk:cnode0 -q nqn.2024-05.io.spdk:host0 --dhchap-key key0 \
+    --dhchap-ctrlr-key ctrlr-key0
+```
+
+All hash functions/Diffie-Hellman groups defined in the NVMe Base Specification 2.0d are supported
+and the algorithms used for a given DH-HMAC-CHAP transaction are negotiated at the beginning.  The
+SPDK NVMe-oF target selects the strongest available hash/group depending on its configuration and
+the capabilities of a peer.  Users can limit the allowed hash functions and/or Diffie-Hellman groups
+via RPCs.  For example, the following limits the target (`nvmf_set_config`) and the driver
+(`bdev_nvme_set_options`) to use sha384, sha512 and ffdhe6114, ffdhe8192:
+
+```{.sh}
+$ scripts/rpc.py nvmf_set_config --dhchap-digests sha384,sha512 \
+    --dhchap-dhgroups ffdhe6114,ffdhe8192
+$ scripts/rpc.py bdev_nvme_set_options --dhchap-digests sha384,sha512 \
+    --dhchap-dhgroups ffdhe6114,ffdhe8192
+```
+
+The NVMe specification describes the method for using in-band authentication in conjunction with
+establishing a secure channel (e.g. TLS).  However, that isn't supported currently, so in order to
+perform in-band authentication, hosts must connect over regular listeners (i.e. those that weren't
+created with the `--secure-channel` option).

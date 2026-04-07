@@ -4,6 +4,7 @@
  */
 
 #include "spdk/stdinc.h"
+#include "spdk/config.h"
 
 #include "spdk/bdev.h"
 #include "spdk/event.h"
@@ -218,7 +219,7 @@ dd_show_progress(bool finish)
 	char *speed_type_str[2] = {"", "average "};
 	char *size_unit_str = "";
 	char *speed_unit_str = "";
-	char *speed_type = "";
+	char *speed_type;
 	uint64_t size_unit = 1;
 	uint64_t speed_unit = 1;
 	uint64_t speed, tmp_speed;
@@ -809,26 +810,24 @@ dd_uring_poll(void *ctx)
 
 	for (i = 0; i < (int)g_opts.queue_depth; i++) {
 		rc = io_uring_peek_cqe(&g_job.u.uring.ring, &cqe);
-		if (rc == 0) {
-			if (cqe->res == -EAGAIN) {
-				continue;
-			} else if (cqe->res < 0) {
-				SPDK_ERRLOG("%s\n", strerror(-cqe->res));
-				g_error = cqe->res;
-			}
-
-			io = io_uring_cqe_get_data(cqe);
-			io_uring_cqe_seen(&g_job.u.uring.ring, cqe);
-
-			dd_complete_poll(io);
-		} else if (rc != - EAGAIN) {
-			SPDK_ERRLOG("%s\n", strerror(-rc));
-			g_error = rc;
+		if (rc == -EAGAIN) {
+			break;
 		}
+		assert(cqe != NULL);
+
+		io = io_uring_cqe_get_data(cqe);
+		if (cqe->res < 0) {
+			SPDK_ERRLOG("%s\n", strerror(-cqe->res));
+			dd_exit(cqe->res);
+		}
+
+		io_uring_cqe_seen(&g_job.u.uring.ring, cqe);
+		dd_complete_poll(io);
 	}
 
-	return rc;
+	return (i ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE);
 }
+
 #endif
 
 static int
@@ -853,13 +852,13 @@ dd_aio_poll(void *ctx)
 	for (i = 0; i < rc; i++) {
 		io = events[i].data;
 		if (events[i].res != io->length) {
-			g_error = rc = -ENOSPC;
+			g_error = -ENOSPC;
 		}
 
 		dd_complete_poll(io);
 	}
 
-	return rc;
+	return (i ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE);
 }
 
 static int
@@ -983,7 +982,8 @@ parse_flags(char *file_flags)
 
 		if (found == false) {
 			SPDK_ERRLOG("Unknown file flag: %s\n", input_flag);
-			return -EINVAL;
+			dd_exit(-EINVAL);
+			return 0;
 		}
 
 		found = false;
@@ -1003,6 +1003,20 @@ dd_is_blk(int fd)
 	}
 
 	return S_ISBLK(st.st_mode);
+}
+
+struct dd_uring_init_ctx {
+	unsigned int io_uring_flags;
+	int rc;
+};
+
+static void *
+dd_uring_init(void *arg)
+{
+	struct dd_uring_init_ctx *ctx = arg;
+
+	ctx->rc = io_uring_queue_init(g_opts.queue_depth * 2, &g_job.u.uring.ring, ctx->io_uring_flags);
+	return ctx;
 }
 
 static int
@@ -1175,20 +1189,23 @@ dd_run(void *arg1)
 	if (g_opts.input_file || g_opts.output_file) {
 #ifdef SPDK_CONFIG_URING
 		if (g_opts.aio == false) {
-			unsigned int io_uring_flags = IORING_SETUP_SQPOLL;
+			struct dd_uring_init_ctx ctx;
 			int flags = parse_flags(g_opts.input_file_flags) & parse_flags(g_opts.output_file_flags);
 
+			ctx.io_uring_flags = IORING_SETUP_SQPOLL;
 			if ((flags & O_DIRECT) != 0 &&
 			    dd_is_blk(g_job.input.u.uring.fd) &&
 			    dd_is_blk(g_job.output.u.uring.fd)) {
-				io_uring_flags = IORING_SETUP_IOPOLL;
+				ctx.io_uring_flags = IORING_SETUP_IOPOLL;
 			}
 
 			g_job.u.uring.poller = SPDK_POLLER_REGISTER(dd_uring_poll, NULL, 0);
-			rc = io_uring_queue_init(g_opts.queue_depth * 2, &g_job.u.uring.ring, io_uring_flags);
-			if (rc) {
-				SPDK_ERRLOG("Failed to create io_uring: %d (%s)\n", rc, spdk_strerror(-rc));
-				dd_exit(rc);
+
+			/* Initialized uring kernel threads inherit parent process CPU mask, to avoid conflicting
+			 * with SPDK cores initialize uring without any affinity. */
+			if (spdk_call_unaffinitized(dd_uring_init, &ctx) == NULL || ctx.rc) {
+				SPDK_ERRLOG("Failed to create io_uring: %d (%s)\n", ctx.rc, spdk_strerror(-ctx.rc));
+				dd_exit(ctx.rc);
 				return;
 			}
 			g_job.u.uring.active = true;
@@ -1455,6 +1472,7 @@ main(int argc, char **argv)
 	opts.name = "spdk_dd";
 	opts.reactor_mask = "0x1";
 	opts.shutdown_cb = dd_finish;
+	opts.rpc_addr = NULL;
 	rc = spdk_app_parse_args(argc, argv, &opts, "", g_cmdline_opts, parse_args, usage);
 	if (rc == SPDK_APP_PARSE_ARGS_FAIL) {
 		SPDK_ERRLOG("Invalid arguments\n");

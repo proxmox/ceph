@@ -1,7 +1,5 @@
 import pytest
-import rados
 from control.config import GatewayConfig
-from control.state import OmapGatewayState
 
 
 def pytest_addoption(parser):

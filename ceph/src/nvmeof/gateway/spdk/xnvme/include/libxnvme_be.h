@@ -1,18 +1,10 @@
 /**
- * Cross-platform I/O library for NVMe based devices
+ * SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
  *
- * Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @file libxnvme_be.h
+ * @headerfile libxnvme_be.h
  */
-#ifndef __LIBXNVME_BE_H
-#define __LIBXNVME_BE_H
-#include <libxnvme.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * Representation of xNVMe library backend attributes
@@ -45,9 +37,3 @@ struct xnvme_be_attr_list {
  */
 int
 xnvme_be_attr_list_bundled(struct xnvme_be_attr_list **list);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __LIBXNVME_BE_H */

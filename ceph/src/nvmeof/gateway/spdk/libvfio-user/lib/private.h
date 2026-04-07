@@ -45,8 +45,12 @@
  * is to limit the size of the dirty bitmaps: this corresponds to 256MB at a 4K
  * page size.
  */
+#if defined(__x86_64__) || defined(__ppc64__)
 #define MAX_DMA_SIZE (8 * ONE_TB)
-#define MAX_DMA_REGIONS 16
+#else
+#define MAX_DMA_SIZE UINT32_MAX /* FIXME check for __i386__ etc? */
+#endif
+#define MAX_DMA_REGIONS 64
 
 #define SERVER_MAX_DATA_XFER_SIZE (VFIO_USER_DEFAULT_MAX_DATA_XFER_SIZE)
 
@@ -181,12 +185,13 @@ struct vfu_ctx {
 };
 
 typedef struct ioeventfd {
-    uint64_t offset;
+    uint64_t gpa_offset;
     uint64_t size;
     int32_t fd;
     uint32_t flags;
     uint64_t datamatch;
     int32_t shadow_fd;
+    size_t shadow_offset;
     LIST_ENTRY(ioeventfd) entry;
 } ioeventfd_t;
 
@@ -216,10 +221,10 @@ handle_dma_unmap(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg,
                  struct vfio_user_dma_unmap *dma_unmap);
 
 int
-handle_device_get_region_info(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg);
+call_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t reason);
 
 int
-handle_device_reset(vfu_ctx_t *vfu_ctx, vfu_reset_type_t reason);
+handle_device_get_region_info(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg);
 
 MOCK_DECLARE(bool, cmd_allowed_when_stopped_and_copying, uint16_t cmd);
 

@@ -13,6 +13,7 @@
 #include "spdk/rpc.h"
 
 static const char *g_rpc_addr = "/var/tmp/spdk.sock";
+static struct spdk_rpc_server *g_rpc_server;
 
 struct dev_ctx {
 	TAILQ_ENTRY(dev_ctx)	tailq;
@@ -320,7 +321,16 @@ io_loop(void)
 	uint64_t next_stats_tsc;
 	int rc;
 
-	tsc_end = spdk_get_ticks() + g_time_in_sec * g_tsc_rate;
+	if (g_time_in_sec > 0) {
+		tsc_end = spdk_get_ticks() + g_time_in_sec * g_tsc_rate;
+	} else {
+		/* User specified 0 seconds for timeout, which means no timeout.
+		 * So just set tsc_end to UINT64_MAX which ensures the loop
+		 * will never time out.
+		 */
+		tsc_end = UINT64_MAX;
+	}
+
 	next_stats_tsc = spdk_get_ticks();
 
 	while (1) {
@@ -404,7 +414,7 @@ usage(char *program_name)
 	printf("\t[-i shm id (optional)]\n");
 	printf("\t[-n expected hot insert times]\n");
 	printf("\t[-r expected hot removal times]\n");
-	printf("\t[-t time in seconds]\n");
+	printf("\t[-t time in seconds to wait for all events (default: forever)]\n");
 	printf("\t[-m iova mode: pa or va (optional)\n");
 	printf("\t[-l log level]\n");
 	printf("\t Available log levels:\n");
@@ -492,11 +502,6 @@ parse_args(int argc, char **argv)
 		}
 	}
 
-	if (!g_time_in_sec) {
-		usage(argv[0]);
-		return 1;
-	}
-
 	return 0;
 }
 
@@ -537,15 +542,15 @@ wait_for_rpc_call(void)
 {
 	fprintf(stderr,
 		"Listening for perform_tests to start the application...\n");
-	spdk_rpc_listen(g_rpc_addr);
+	g_rpc_server = spdk_rpc_server_listen(g_rpc_addr);
 	spdk_rpc_set_state(SPDK_RPC_RUNTIME);
 
 	while (!g_rpc_received) {
-		spdk_rpc_accept();
+		spdk_rpc_server_accept(g_rpc_server);
 	}
-	/* Run spdk_rpc_accept() one more time to trigger
-	 * spdk_jsonrpv_server_poll() and send the RPC response. */
-	spdk_rpc_accept();
+	/* Run spdk_rpc_server_accept() one more time to trigger
+	 * spdk_jsonrpc_server_poll() and send the RPC response. */
+	spdk_rpc_server_accept(g_rpc_server);
 }
 
 int
@@ -559,6 +564,7 @@ main(int argc, char **argv)
 		return rc;
 	}
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "hotplug";
 	opts.core_mask = "0x1";
@@ -602,6 +608,9 @@ main(int argc, char **argv)
 	}
 
 cleanup:
+	if (g_rpc_server != NULL) {
+		spdk_rpc_server_close(g_rpc_server);
+	}
 	spdk_env_fini();
 	return rc;
 }

@@ -1,12 +1,14 @@
-// Copyright (C) Rishabh Shukla <rishabh.sh@samsung.com>
-// Copyright (C) Pranjal Dave <pranjal.58@partner.samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
 #ifndef __INTERNAL_XNVME_BE_WINDOWS_H
 #define __INTERNAL_XNVME_BE_WINDOWS_H
 #include <xnvme_dev.h>
+#include <xnvme_be_cbi.h>
 
 /**
  * Internal representation of options for Windows backends
@@ -48,6 +50,7 @@ xnvme_file_attributes_opts_to_windows(struct xnvme_opts *opts);
  */
 extern struct xnvme_be_admin g_xnvme_be_windows_admin_fs;
 extern struct xnvme_be_admin g_xnvme_be_windows_admin_nvme;
+extern struct xnvme_be_admin g_xnvme_be_windows_admin_block;
 
 /**
  * Implementations of the synchronous command interface
@@ -58,10 +61,11 @@ extern struct xnvme_be_sync g_xnvme_be_windows_sync_nvme;
 /**
  * Implementations of the asynchronous command interface
  */
-extern struct xnvme_be_async g_xnvme_be_posix_async_emu;
-extern struct xnvme_be_async g_xnvme_be_posix_async_thrpool;
+extern struct xnvme_be_async g_xnvme_be_cbi_async_emu;
+extern struct xnvme_be_async g_xnvme_be_cbi_async_thrpool;
 extern struct xnvme_be_async g_xnvme_be_windows_async_iocp;
 extern struct xnvme_be_async g_xnvme_be_windows_async_iocp_th;
+extern struct xnvme_be_async g_xnvme_be_windows_async_ioring;
 
 /**
  * Implementations of the memory management interface

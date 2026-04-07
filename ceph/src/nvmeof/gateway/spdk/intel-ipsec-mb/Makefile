@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2020-2022, Intel Corporation
+# Copyright (c) 2020-2023, Intel Corporation
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -48,9 +48,6 @@ help:
 doxy:
 	$(MAKE) -C lib doxy
 
-README: README.md
-	pandoc -f markdown -t plain $< -o $@
-
 .PHONY: TAGS
 TAGS:
 	find ./ -name "*.[ch]" -print | etags -
@@ -71,13 +68,22 @@ CS_IGNORE_WORDS ?= iinclude,struc,fo,ue,od,ba,padd
 .PHONY: spellcheck
 spellcheck:
 	$(CODESPELL) -d -L $(CS_IGNORE_WORDS) \
-	-S "*.obj,*.o,*.a,*.so,*.lib,*~,*.so,*.so.*,*.d,ipsec_perf" \
-	-S "ipsec_MB_testapp,ipsec_xvalid_test" \
-	./lib ./perf ./test README README.md SECURITY.md CONTRIBUTING \
+	-S "*.obj,*.o,*.a,*.so,*.lib,*~,*.so,*.so.*,*.d,imb-perf" \
+	-S "imb-kat,imb-xvalid,imb-acvp,imb-fuzz-api,imb-fuzz-direct-api" \
+	-S "imb-wycheproof" \
+	./lib ./perf ./test README.md SECURITY.md CONTRIBUTING \
 	Makefile win_x64.mak ReleaseNotes.txt LICENSE $(CS_EXTRA_OPTS)
 
 # cppcheck analysis check
-CPPCHECK ?= cppcheck
-.PHONY: cppcheck
 cppcheck:
-	$(CPPCHECK) ./ --force --enable=all
+	$(MAKE) -C lib cppcheck
+	$(MAKE) -C test cppcheck
+	$(MAKE) -C perf cppcheck
+	$(MAKE) -C examples cppcheck
+
+# cppcheck bughunt analysis check
+bughunt:
+	$(MAKE) -C lib bughunt
+	$(MAKE) -C test bughunt
+	$(MAKE) -C perf bughunt
+	$(MAKE) -C examples bughunt

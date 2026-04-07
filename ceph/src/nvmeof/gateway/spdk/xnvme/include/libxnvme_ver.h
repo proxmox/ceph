@@ -1,6 +1,10 @@
-#ifndef __LIBXNVME_VER_H
-#define __LIBXNVME_VER_H
-#include <libxnvme.h>
+/**
+ * SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * @headerfile libxnvme_ver.h
+ */
 
 /**
  * Produces the "major" version of the library
@@ -46,5 +50,3 @@ xnvme_ver_fpr(FILE *stream, int opts);
  */
 int
 xnvme_ver_pr(int opts);
-
-#endif

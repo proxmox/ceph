@@ -2,6 +2,7 @@
 #  SPDX-License-Identifier: BSD-3-Clause
 #  Copyright (C) 2017 Intel Corporation
 #  All rights reserved.
+#  Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
@@ -66,7 +67,7 @@ notice "==============="
 notice ""
 notice "running SPDK"
 notice ""
-vhost_run -n 0 -a "-m 0xf"
+vhost_run -n 0 -- -m 0xf
 notice ""
 rpc_py="$rootdir/scripts/rpc.py -s $(get_vhost_dir 0)/rpc.sock"
 $rpc_py bdev_malloc_create -b Malloc0 128 4096
@@ -171,9 +172,6 @@ if $rpc_py vhost_scsi_controller_remove_target naa.0 8 > /dev/null; then
 	error "Removing device 8 from controller naa.0 succeeded, but it shouldn't"
 fi
 
-notice "Re-adding device 0 to naa.0"
-$rpc_py vhost_scsi_controller_add_target naa.0 0 Malloc0
-
 # BLK
 notice "Trying to create block controller with incorrect cpumask outside of application cpumask"
 if $rpc_py vhost_create_blk_controller vhost.invalid.cpumask Malloc0 --cpumask 0xf0; then
@@ -206,6 +204,13 @@ if $rpc_py vhost_create_blk_controller blk_ctrl Malloc0; then
 	error "Creating block controller with claimed bdev succeeded, but shouldn't"
 fi
 $rpc_py bdev_lvol_delete_lvstore -l lvs
+
+notice "Trying to create already existing block transport layer"
+# vhost_user_blk transport is created by default on application start,
+# so first rpc call to create the transport should fail with EEXIST.
+if $rpc_py virtio_blk_create_transport vhost_user_blk; then
+	error "Creating already existing virtio blk transport succeeded, but shouldn't"
+fi
 
 notice "Testing done -> shutting down"
 notice "killing vhost app"

@@ -1,4 +1,9 @@
 /*
+ * Copyright(c) 2019-2022 Intel Corporation
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
+/*
  *<tested_file_path>src/mngt/ocf_mngt_cache.c</tested_file_path>
  *	<tested_function>ocf_mngt_cache_set_fallback_pt_error_threshold</tested_function>
  *	<functions_to_leave>
@@ -50,6 +55,11 @@ ocf_ctx_t __wrap_ocf_cache_get_ctx(ocf_cache_t cache)
 int __wrap_ocf_mngt_cache_set_fallback_pt(ocf_cache_t cache)
 {
 	function_called();
+}
+
+bool __wrap_ocf_cache_is_standby(struct ocf_cache_t *cache)
+{
+	return false;
 }
 
 static void ocf_mngt_cache_set_fallback_pt_error_threshold_test01(void **state)

@@ -15,10 +15,58 @@ import jinja2
 
 DECLARATIONS = {
     "func": [],
-    "macro": [],
     "struct": [],
     "enum": [],
 }  # type: dict
+
+
+NAMESPACES = {
+    "core": set(
+        [
+            "xnvme_buf",
+            "xnvme_cmd",
+            "xnvme_dev",
+            "xnvme_geo",
+            "xnvme_ident",
+            "xnvme_mem",
+            "xnvme_opts",
+            "xnvme_queue",
+        ]
+    ),
+    "nvme": set(
+        [
+            "xnvme_adm",
+            "xnvme_kvs",
+            "xnvme_nvm",
+            "xnvme_pi",
+            "xnvme_spec",
+            "xnvme_spec_fs",
+            "xnvme_spec_pp",
+            "xnvme_topology",
+            "xnvme_znd",
+        ]
+    ),
+    "file": set(
+        [
+            "xnvme_file",
+        ]
+    ),
+    "cli": set(
+        [
+            "xnvme_cli",
+        ]
+    ),
+    "util": set(
+        [
+            "xnvme_be",
+            "xnvme_lba",
+            "xnvme_libconf",
+            "xnvme_pp",
+            "xnvme_util",
+            "xnvme_ver",
+        ]
+    ),
+}
 
 
 def expand_path(path):
@@ -75,39 +123,35 @@ def setup():
     return args
 
 
-def symbols(args, namespaces):
-    """Returns symbols for, and grouped by, the given namespaces"""
+def symbols(args):
+    """Returns symbols grouped by namespaces"""
 
     syms = {}
 
     with open(args.tags) as cfd:
         for line in cfd.readlines():
-            if line[-3] != "\t":
+            if not line.startswith("xnvme_"):
+                # Skip macros etc.
                 continue
 
-            symtype = line[-2]
-            symb = line.split("\t")[0]
+            symb = line.split("\t")[0].strip()
+            file = line.split("\t")[1].strip()
+            symtype = line.split("\t")[3].strip()
 
-            ns_current = None
-            for namespace in namespaces:
-                if symb.lower().startswith(namespace):
-                    ns_current = namespace
-                    break
+            namespace = file.removeprefix("include/lib").removesuffix(".h")
 
-            if not ns_current:
-                continue
-
-            if ns_current not in syms:
-                syms[ns_current] = copy.deepcopy(DECLARATIONS)
+            if namespace not in syms:
+                syms[namespace] = copy.deepcopy(DECLARATIONS)
 
             if symtype in ["p", "f"]:
-                syms[ns_current]["func"].append(symb)
+                syms[namespace]["func"].append(symb)
             elif symtype in ["s"]:
-                syms[ns_current]["struct"].append(symb)
+                syms[namespace]["struct"].append(symb)
             elif symtype in ["g"]:
-                syms[ns_current]["enum"].append(symb)
+                syms[namespace]["enum"].append(symb)
             elif symtype in ["d"]:
-                syms[ns_current]["macro"].append(symb)
+                # We don't document our macros
+                pass
             else:
                 logging.error("Unhandld symtype: %r", symtype)
 
@@ -144,8 +188,11 @@ def emit(namespace, api):
             "ns": namespace,
             "api": api,
             "show_header": os.path.exists(
-                os.path.join("..", "..", "include", f"lib{namespace}.h")
+                os.path.join("..", "..", "..", "include", f"lib{namespace}.h")
             ),
+            "show_enums": api["enum"],
+            "show_structs": api["struct"],
+            "show_funcs": api["func"],
         }
     )
 
@@ -155,33 +202,30 @@ def main(args):
 
     logging.info("Output: %r", args.output)
 
-    namespaces = [
-        "xnvme_adm",
-        "xnvme_dev",
-        "xnvme_file",
-        "xnvme_geo",
-        "xnvme_ident",
-        "xnvme_libconf",
-        "xnvme_nvm",
-        "xnvme_opts",
-        "xnvme_spec",
-        "xnvme_util",
-        "xnvme_ver",
-        "xnvme_znd",
-        "xnvmec",
-        "xnvme",
-    ]
+    syms = symbols(args)
 
-    syms = symbols(args, namespaces)
+    def namespace_to_section(namespace):
+        for section, namespaces in NAMESPACES.items():
+            if namespace in namespaces:
+                return section
+        return None
 
     pps = {}
-    for nsprefix, val in syms.items():
-        pps[nsprefix] = find_pp(val)
+    for namespace, val in syms.items():
+        pps[namespace] = find_pp(val)
 
-    for nsprefix, val in syms.items():
-        logging.info("nsprefix: %r", nsprefix)
-        rst_fpath = os.path.join(args.output, "%s.rst" % nsprefix)
-        rst = emit(nsprefix, val)
+    for namespace, val in syms.items():
+        logging.info("namespace: %r", namespace)
+
+        section = namespace_to_section(namespace)
+        if section is None:
+            logging.error(
+                f"no section for namespace({namespace}); add it to apigen.NAMESPACES"
+            )
+            return 1
+
+        rst_fpath = os.path.join(args.output, "c", section, "%s.rst" % namespace)
+        rst = emit(namespace, val)
 
         with open(rst_fpath, "w") as rfd:
             rfd.write(rst)

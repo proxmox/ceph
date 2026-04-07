@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2021-2022, Intel Corporation
+;; Copyright (c) 2021-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -28,7 +28,7 @@
 %ifndef ERROR_ASM_INCLUDED
 %define ERROR_ASM_INCLUDED
 
-%include "include/reg_sizes.asm"
+%include "include/reg_sizes.inc"
 
 extern imb_errno
 extern imb_errno_types
@@ -98,12 +98,17 @@ SET_ERRNO_TYPES \
     IMB_ERR_NULL_BURST, \
     IMB_ERR_BURST_SIZE, \
     IMB_ERR_BURST_OOO, \
-    IMB_ERR_SELFTEST
+    IMB_ERR_SELFTEST, \
+    IMB_ERR_BURST_SUITE_ID, \
+    IMB_ERR_JOB_SGL_STATE
 
 ;; Reset global imb_errno to 0
 %macro IMB_ERR_CHECK_RESET 0
 
+        cmp     dword [rel imb_errno], 0
+        jz      %%do_not_reset
         mov     dword [rel imb_errno], 0
+%%do_not_reset:
 %endmacro
 
 ;; Set GP reg and global imb_errno to 0

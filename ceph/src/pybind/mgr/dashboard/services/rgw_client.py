@@ -47,6 +47,15 @@ logger = logging.getLogger('rgw_client')
 _SYNC_GROUP_ID = 'dashboard_admin_group'
 _SYNC_FLOW_ID = 'dashboard_admin_flow'
 _SYNC_PIPE_ID = 'dashboard_admin_pipe'
+DEFAULT_USER_RATELIMIT = {
+    "user_ratelimit": {
+        "max_read_ops": 0,
+        "max_write_ops": 0,
+        "max_read_bytes": 0,
+        "max_write_bytes": 0,
+        "enabled": False
+    }
+}
 
 
 class NoRgwDaemonsException(Exception):
@@ -1323,8 +1332,8 @@ class RgwMultisiteAutomation:
 
     def setup_multisite_replication(self, realm_name: str, zonegroup_name: str,
                                     zonegroup_endpoints: str, zone_name: str,
-                                    zone_endpoints: str, username: str,
-                                    cluster_fsid: Optional[str] = None,
+                                    tier_type: str, zone_endpoints: str,
+                                    username: str, cluster_fsid: Optional[str] = None,
                                     replication_zone_name: Optional[str] = None,
                                     cluster_details: Optional[str] = None,
                                     selectedRealmName: Optional[str] = None):
@@ -1346,7 +1355,8 @@ class RgwMultisiteAutomation:
         if not selectedRealmName:
             self.create_realm_and_zonegroup(
                 realm_name, zonegroup_name, zone_name, zonegroup_ip_url, username)
-            self.create_zone_and_user(zone_name, zonegroup_name, username, zone_ip_url)
+            self.create_zone_and_user(zone_name, tier_type, zonegroup_name, username,
+                                      zone_ip_url)
             self.restart_daemons()
 
         return self.export_and_import_realm(
@@ -1381,12 +1391,14 @@ class RgwMultisiteAutomation:
             self.update_progress("Failed to create realm or zonegroup", 'fail', str(e))
             raise
 
-    def create_zone_and_user(self, zone: str, zg: str, username: str, zone_url: str):
+    def create_zone_and_user(self, zone: str, tier_type: str, zg: str, username: str,
+                             zone_url: str):
         try:
             rgw_multisite_instance = RgwMultisite()
             if rgw_multisite_instance.create_zone(zone_name=zone, zonegroup_name=zg, default=True,
                                                   master=True, endpoints=zone_url,
-                                                  access_key=None, secret_key=None):
+                                                  access_key=None, secret_key=None,
+                                                  tier_type=tier_type):
                 self.progress_done += 1
                 user_details = rgw_multisite_instance.create_system_user(username, zone)
                 keys = user_details.get('keys', [{}])[0]
@@ -1396,7 +1408,7 @@ class RgwMultisiteAutomation:
                     rgw_multisite_instance.modify_zone(
                         zone_name=zone, zonegroup_name=zg, default='true',
                         master='true', endpoints=zone_url, access_key=access_key,
-                        secret_key=secret_key)
+                        secret_key=secret_key, tier_type=tier_type)
                 else:
                     raise DashboardException("Access key or secret key is missing",
                                              component='rgw', http_status_code=500)
@@ -1717,6 +1729,8 @@ class RgwRateLimit:
         try:
             exit_code, out, err = mgr.send_rgwadmin_command(rate_limit_cmd)
             if exit_code > 0:
+                if "No such file or directory" in str(err):
+                    return DEFAULT_USER_RATELIMIT
                 raise DashboardException(f'Unable to get rate limit: {err}',
                                          http_status_code=500, component='rgw')
             return out
@@ -1758,7 +1772,8 @@ class RgwRateLimit:
 
 class RgwMultisite:
     def migrate_to_multisite(self, realm_name: str, zonegroup_name: str, zone_name: str,
-                             zonegroup_endpoints: str, zone_endpoints: str, username: str):
+                             zonegroup_endpoints: str, zone_endpoints: str, username: str,
+                             tier_type: str):
         rgw_realm_create_cmd = ['realm', 'create', '--rgw-realm', realm_name, '--default']
         try:
             exit_code, _, err = mgr.send_rgwadmin_command(rgw_realm_create_cmd, False)
@@ -1834,7 +1849,8 @@ class RgwMultisite:
                                      default='true', master='true',
                                      endpoints=zone_endpoints,
                                      access_key=keys['access_key'],
-                                     secret_key=keys['secret_key'])
+                                     secret_key=keys['secret_key'],
+                                     tier_type=tier_type)
                 else:
                     raise DashboardException(msg='Access key or secret key is missing',
                                              http_status_code=500, component='rgw')
@@ -2024,7 +2040,9 @@ class RgwMultisite:
             all_zonegroups_info['default_zonegroup'] = ''  # type: ignore
         return all_zonegroups_info
 
-    def delete_zonegroup(self, zonegroup_name: str, delete_pools: str, pools: List[str]):
+    def delete_zonegroup(self, zonegroup_name: str,
+                         delete_pools: str, pools: List[str],
+                         realm_name: Optional[str] = None):
         if delete_pools == 'true':
             zonegroup_info = self.get_zonegroup(zonegroup_name)
         rgw_delete_zonegroup_cmd = ['zonegroup', 'delete', '--rgw-zonegroup', zonegroup_name]
@@ -2035,7 +2053,7 @@ class RgwMultisite:
                                          http_status_code=500, component='rgw')
         except SubprocessError as error:
             raise DashboardException(error, http_status_code=500, component='rgw')
-        self.update_period()
+        self.update_period(realm_name=realm_name)
         if delete_pools == 'true':
             for zone in zonegroup_info['zones']:
                 self.delete_zone(zone['name'], 'true', pools)
@@ -2335,8 +2353,14 @@ class RgwMultisite:
                 else:
                     self.add_placement_targets(new_zonegroup_name, placement_targets)
 
-    def update_period(self):
+    def update_period(self, realm_name=None, realm_id=None):
         rgw_update_period_cmd = ['period', 'update', '--commit']
+        if realm_name:
+            rgw_update_period_cmd.append('--rgw-realm')
+            rgw_update_period_cmd.append(realm_name)
+        if realm_id:
+            rgw_update_period_cmd.append('--realm-id')
+            rgw_update_period_cmd.append(realm_id)
         try:
             exit_code, _, err = mgr.send_rgwadmin_command(rgw_update_period_cmd)
             if exit_code > 0:
@@ -2346,7 +2370,7 @@ class RgwMultisite:
             raise DashboardException(error, http_status_code=500, component='rgw')
 
     def create_zone(self, zone_name, zonegroup_name, default, master, endpoints, access_key,
-                    secret_key):
+                    secret_key, tier_type):
         rgw_zone_create_cmd = ['zone', 'create']
         cmd_create_zone_options = ['--rgw-zone', zone_name]
         if zonegroup_name != 'null':
@@ -2365,6 +2389,9 @@ class RgwMultisite:
         if secret_key is not None:
             cmd_create_zone_options.append('--secret')
             cmd_create_zone_options.append(secret_key)
+        if tier_type:
+            cmd_create_zone_options.append('--tier-type')
+            cmd_create_zone_options.append(tier_type)
         rgw_zone_create_cmd += cmd_create_zone_options
         try:
             exit_code, out, err = mgr.send_rgwadmin_command(rgw_zone_create_cmd)
@@ -2386,7 +2413,7 @@ class RgwMultisite:
         return '', ''
 
     def modify_zone(self, zone_name: str, zonegroup_name: str, default: str, master: str,
-                    endpoints: str, access_key: str, secret_key: str):
+                    endpoints: str, access_key: str, secret_key: str, tier_type: str):
         rgw_zone_modify_cmd = ['zone', 'modify', '--rgw-zonegroup',
                                zonegroup_name, '--rgw-zone', zone_name]
         if endpoints:
@@ -2402,6 +2429,9 @@ class RgwMultisite:
         if secret_key is not None:
             rgw_zone_modify_cmd.append('--secret')
             rgw_zone_modify_cmd.append(secret_key)
+        if tier_type is not None:
+            rgw_zone_modify_cmd.append('--tier-type')
+            rgw_zone_modify_cmd.append(tier_type)
         try:
             exit_code, _, err = mgr.send_rgwadmin_command(rgw_zone_modify_cmd)
             if exit_code > 0:
@@ -2411,17 +2441,31 @@ class RgwMultisite:
             raise DashboardException(error, http_status_code=500, component='rgw')
         self.update_period()
 
-    def add_placement_targets_zone(self, zone_name: str, placement_target: str, data_pool: str,
-                                   index_pool: str, data_extra_pool: str):
+    def add_placement_targets_storage_class_zone(self, zone_name: str, placement_target: str,
+                                                 data_pool: str, index_pool: str,
+                                                 data_extra_pool: str, storage_class: str,
+                                                 data_pool_class: str, compression: str):
         rgw_zone_add_placement_cmd = ['zone', 'placement', 'add', '--rgw-zone', zone_name,
-                                      '--placement-id', placement_target, '--data-pool', data_pool,
+                                      '--placement-id', placement_target,
+                                      '--data-pool', data_pool,
                                       '--index-pool', index_pool,
-                                      '--data-extra-pool', data_extra_pool]
+                                      '--data-extra-pool', data_extra_pool,
+                                      '--storage-class', storage_class,
+                                      '--data-pool', data_pool_class]
+
+        if compression:
+            rgw_zone_add_placement_cmd.extend(['--compression', compression])
+
         try:
             exit_code, _, err = mgr.send_rgwadmin_command(rgw_zone_add_placement_cmd)
             if exit_code > 0:
-                raise DashboardException(e=err, msg='Unable to add placement target {} to zone {}'.format(placement_target, zone_name),  # noqa E501 #pylint: disable=line-too-long
-                                         http_status_code=500, component='rgw')
+                raise DashboardException(
+                    e=err,
+                    msg='Unable to add placement target {} to \
+                        zone {}'.format(placement_target, zone_name),
+                    http_status_code=500,
+                    component='rgw'
+                )
         except SubprocessError as error:
             raise DashboardException(error, http_status_code=500, component='rgw')
         self.update_period()
@@ -2441,30 +2485,50 @@ class RgwMultisite:
                                          http_status_code=500, component='rgw')
         except SubprocessError as error:
             raise DashboardException(error, http_status_code=500, component='rgw')
-        self.update_period()
+
+    def edit_storage_class_zone(self, zone_name: str, placement_target: str, storage_class: str,
+                                data_pool: str, compression: str):
+        edit_placement_target_cmd = ['zone', 'placement', 'modify', '--rgw-zone', zone_name,
+                                     '--placement-id', placement_target,
+                                     '--storage-class', storage_class,
+                                     '--data-pool', data_pool]
+        if compression:
+            edit_placement_target_cmd.extend(['--compression', compression])
+        try:
+            exit_code, _, err = mgr.send_rgwadmin_command(edit_placement_target_cmd)
+            if exit_code > 0:
+                raise DashboardException(e=err, msg=f'Unable to modify storage class \
+                                         {storage_class} to zone {zone_name}',
+                                         http_status_code=500, component='rgw')
+        except SubprocessError as error:
+            raise DashboardException(error, http_status_code=500, component='rgw')
 
     def edit_zone(self, zone_name: str, new_zone_name: str, zonegroup_name: str, default: str = '',
                   master: str = '', endpoints: str = '', access_key: str = '', secret_key: str = '',
                   placement_target: str = '', data_pool: str = '', index_pool: str = '',
                   data_extra_pool: str = '', storage_class: str = '', data_pool_class: str = '',
-                  compression: str = ''):
+                  compression: str = '', tier_type: str = ''):
         if new_zone_name != zone_name:
             rgw_zone_rename_cmd = ['zone', 'rename', '--rgw-zone',
                                    zone_name, '--zone-new-name', new_zone_name]
             try:
                 exit_code, _, err = mgr.send_rgwadmin_command(rgw_zone_rename_cmd, False)
                 if exit_code > 0:
-                    raise DashboardException(e=err, msg='Unable to rename zone to {}'.format(new_zone_name),  # noqa E501 #pylint: disable=line-too-long
-                                             http_status_code=500, component='rgw')
+                    raise DashboardException(
+                        e=err, msg='Unable to rename zone to {}'.format(new_zone_name),
+                        http_status_code=500, component='rgw')
             except SubprocessError as error:
                 raise DashboardException(error, http_status_code=500, component='rgw')
             self.update_period()
         self.modify_zone(new_zone_name, zonegroup_name, default, master, endpoints, access_key,
-                         secret_key)
-        self.add_placement_targets_zone(new_zone_name, placement_target,
-                                        data_pool, index_pool, data_extra_pool)
-        self.add_storage_class_zone(new_zone_name, placement_target, storage_class,
-                                    data_pool_class, compression)
+                         secret_key, tier_type)
+
+        if placement_target:
+            self.add_placement_targets_storage_class_zone(
+                new_zone_name, placement_target,
+                data_pool, index_pool,
+                data_extra_pool, storage_class,
+                data_pool_class, compression)
 
     def list_zones(self):
         rgw_zone_list = {}
@@ -2511,7 +2575,7 @@ class RgwMultisite:
         return all_zones_info
 
     def delete_zone(self, zone_name: str, delete_pools: str, pools: List[str],
-                    zonegroup_name: str = '',):
+                    zonegroup_name: str = '', realm_name: Optional[str] = None):
         rgw_remove_zone_from_zonegroup_cmd = ['zonegroup', 'remove', '--rgw-zonegroup',
                                               zonegroup_name, '--rgw-zone', zone_name]
         rgw_delete_zone_cmd = ['zone', 'delete', '--rgw-zone', zone_name]
@@ -2523,7 +2587,7 @@ class RgwMultisite:
                                              http_status_code=500, component='rgw')
             except SubprocessError as error:
                 raise DashboardException(error, http_status_code=500, component='rgw')
-            self.update_period()
+            self.update_period(realm_name=realm_name)
         try:
             exit_code, _, _ = mgr.send_rgwadmin_command(rgw_delete_zone_cmd)
             if exit_code > 0:
@@ -2531,7 +2595,7 @@ class RgwMultisite:
                                          http_status_code=500, component='rgw')
         except SubprocessError as error:
             raise DashboardException(error, http_status_code=500, component='rgw')
-        self.update_period()
+        self.update_period(realm_name=realm_name)
         if delete_pools == 'true':
             self.delete_pools(pools)
 

@@ -31,75 +31,85 @@
 #include <stdio.h>
 #include "xts_256_vect.h"
 
-int main(void)
+int
+main(void)
 {
 
-	// Temporary array for the calculated vectors
-	uint8_t *ct_test;
-	uint8_t *pt_test;
+        // Temporary array for the calculated vectors
+        uint8_t *ct_test = NULL;
+        uint8_t *pt_test = NULL;
 
-	int i, j;
+        int i, j, ret = -1;
 
-	// --- Encryption test ---
+        // --- Encryption test ---
 
-	// Loop over the vectors
-	for (i = 0; i < NVEC; i++) {
+        // Loop over the vectors
+        for (i = 0; i < NVEC; i++) {
 
-		// Allocate space for the calculated ciphertext
-		ct_test = malloc(vlist[i].ptlen);
-		if (ct_test == NULL) {
-			fprintf(stderr, "Can't allocate ciphertext memory\n");
-			return -1;
-		}
+                // Allocate space for the calculated ciphertext
+                ct_test = malloc(vlist[i].ptlen);
+                if (ct_test == NULL) {
+                        fprintf(stderr, "Can't allocate ciphertext memory\n");
+                        goto end;
+                }
 
-		XTS_AES_256_enc(vlist[i].key2, vlist[i].key1, vlist[i].TW,
-				vlist[i].ptlen, vlist[i].PTX, ct_test);
+                isal_aes_xts_enc_256(vlist[i].key2, vlist[i].key1, vlist[i].TW, vlist[i].ptlen,
+                                     vlist[i].PTX, ct_test);
 
-		// Carry out comparison of the calculated ciphertext with
-		// the reference
-		for (j = 0; j < vlist[i].ptlen; j++) {
+                // Carry out comparison of the calculated ciphertext with
+                // the reference
+                for (j = 0; j < vlist[i].ptlen; j++) {
 
-			if (ct_test[j] != vlist[i].CTX[j]) {
-				printf("\nXTS_AES_256_enc: Vector %d: ", i + 10);
-				printf("failed at byte %d! \n", j);
-				return -1;
-			}
-		}
-		printf(".");
+                        if (ct_test[j] != vlist[i].CTX[j]) {
+                                printf("\nXTS_AES_256_enc: Vector %d: ", i + 10);
+                                printf("failed at byte %d! \n", j);
+                                goto end;
+                        }
+                }
+                printf(".");
 
-		ct_test = NULL;
-	}
+                free(ct_test);
+                ct_test = NULL;
+        }
 
-	// --- Decryption test ---
+        // --- Decryption test ---
 
-	// Loop over the vectors
-	for (i = 0; i < NVEC; i++) {
+        // Loop over the vectors
+        for (i = 0; i < NVEC; i++) {
 
-		// Allocate space for the calculated ciphertext
-		pt_test = malloc(vlist[i].ptlen);
-		if (pt_test == NULL) {
-			fprintf(stderr, "Can't allocate plaintext memory\n");
-			return -1;
-		}
+                // Allocate space for the calculated ciphertext
+                pt_test = malloc(vlist[i].ptlen);
+                if (pt_test == NULL) {
+                        fprintf(stderr, "Can't allocate plaintext memory\n");
+                        goto end;
+                }
 
-		XTS_AES_256_dec(vlist[i].key2, vlist[i].key1, vlist[i].TW,
-				vlist[i].ptlen, vlist[i].CTX, pt_test);
+                isal_aes_xts_dec_256(vlist[i].key2, vlist[i].key1, vlist[i].TW, vlist[i].ptlen,
+                                     vlist[i].CTX, pt_test);
 
-		// Carry out comparison of the calculated ciphertext with
-		// the reference
-		for (j = 0; j < vlist[i].ptlen; j++) {
+                // Carry out comparison of the calculated ciphertext with
+                // the reference
+                for (j = 0; j < vlist[i].ptlen; j++) {
 
-			if (pt_test[j] != vlist[i].PTX[j]) {
-				printf("\nXTS_AES_256_dec: Vector %d: ", i + 10);
-				printf("failed at byte %d! \n", j);
-				return -1;
-			}
-		}
-		printf(".");
+                        if (pt_test[j] != vlist[i].PTX[j]) {
+                                printf("\nXTS_AES_256_dec: Vector %d: ", i + 10);
+                                printf("failed at byte %d! \n", j);
+                                goto end;
+                        }
+                }
+                printf(".");
 
-		pt_test = NULL;
-	}
-	printf("Pass\n");
+                free(pt_test);
+                pt_test = NULL;
+        }
+        ret = 0;
+        printf("Pass\n");
 
-	return 0;
+end:
+        if (ct_test != NULL)
+                free(ct_test);
+        if (pt_test != NULL)
+                free(pt_test);
+
+        return ret;
 }

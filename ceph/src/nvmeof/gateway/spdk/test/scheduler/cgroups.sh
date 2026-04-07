@@ -23,23 +23,6 @@ init_cpuset_cgroup() {
 		set_cgroup_attr / cgroup.subtree_control "+cpuset"
 		create_cgroup /cpuset
 		set_cgroup_attr /cpuset cgroup.subtree_control "+cpuset"
-		# On distros which use cgroup-v2 under systemd, each process is
-		# maintained under separate, pre-configured subtree. With the rule of
-		# "internal processes are not permitted" this means that we won't find
-		# ourselves under subsystem's root, rather on the bottom of the cgroup
-		# maintaining user's session. To recreate the simple /cpuset setup from
-		# v1, move all the threads from all the existing cgroups to the top
-		# cgroup / and then migrate it to the /cpuset we created above.
-		for pid in /proc/+([0-9]); do
-			cgroup=$(get_cgroup "${pid##*/}") || continue
-			[[ $cgroup != / ]] || continue
-			cgroups["$cgroup"]=$cgroup
-		done 2> /dev/null
-		for cgroup in "${!cgroups[@]}"; do
-			move_cgroup_procs "$cgroup" /
-		done
-		# Now, move all the threads to the cpuset
-		move_cgroup_procs / /cpuset
 	elif ((cgroup_version == 1)); then
 		set_cgroup_attr /cpuset cgroup.procs "$$"
 	fi
@@ -72,13 +55,27 @@ move_cgroup_procs() {
 
 	fold_list_onto_array procs $(< "$sysfs_cgroup/$old_cgroup/$old_proc_interface")
 
+	local moved=0
 	for proc in "${!procs[@]}"; do
 		# We can't move every kernel thread around and every process can
 		# exit at any point so ignore any failures upon writing the
-		# processes out. FIXME: Check PF_KTHREAD instead?
-		[[ -n $(readlink -f "/proc/$proc/exe") ]] || continue
-		echo "$proc" > "$sysfs_cgroup/$new_cgroup/$new_proc_interface" 2> /dev/null || :
+		# processes out but keep count of any failed attempts for debugging
+		# purposes.
+		if move_proc "$proc" "$new_cgroup" "$old_cgroup" "$new_proc_interface"; then
+			((++moved))
+		fi
 	done
+	echo "Moved $moved processes, failed $((${#procs[@]} - moved))" >&2
+}
+
+move_proc() {
+	local proc=$1 new_cgroup=$2 old_cgroup=${3:-"$(get_cgroup "$1")"} attr=$4 write_fail
+
+	echo "Moving $proc ($(id_proc "$proc" 2>&1)) to $new_cgroup from $old_cgroup" >&2
+	if ! write_fail=$(set_cgroup_attr "$new_cgroup" "$attr" "$proc" 2>&1); then
+		echo "Moving $proc failed: ${write_fail##*: }" >&2
+		return 1
+	fi
 }
 
 set_cgroup_attr() {
@@ -102,12 +99,18 @@ create_cgroup() {
 }
 
 remove_cgroup() {
-	local root_cgroup
-	root_cgroup=$(dirname "$1")
+	local cgroup=${1#"$sysfs_cgroup"} root_cgroup leaf_cgroup
+	root_cgroup=$(dirname "$cgroup")
 
-	[[ -e $sysfs_cgroup/$1 ]] || return 0
-	move_cgroup_procs "$1" "$root_cgroup"
-	rmdir "$sysfs_cgroup/$1"
+	[[ -e $sysfs_cgroup/$cgroup ]] || return 0
+	# Remove all lingering leaf cgroups if any
+	for leaf_cgroup in "$sysfs_cgroup/$cgroup/"*/; do
+		remove_cgroup "$leaf_cgroup"
+	done
+	# Instead of killing all the potential processes, we play it nice
+	# and move them to the parent cgroup.
+	move_cgroup_procs "$cgroup" "$root_cgroup"
+	rmdir "$sysfs_cgroup/$cgroup"
 }
 
 exec_in_cgroup() {
@@ -185,6 +188,56 @@ _set_cgroup_attr_top_bottom() {
 
 set_cgroup_attr_top_bottom() {
 	_set_cgroup_attr_top_bottom "$(get_cgroup_path "$1")" "$2" "$3"
+}
+
+id_proc() {
+	local pid=$1 flag_to_check=${2:-all}
+	local flags flags_map=() comm stats tflags
+
+	[[ -e /proc/$pid/stat ]] || return 1
+	# Comm is wrapped in () but the name of the thread itself may include "()", giving in result
+	# something similar to: ((sd-pam))
+	comm=$(< "/proc/$pid/stat") || return 1
+
+	stats=(${comm/*) /}) tflags=${stats[6]}
+
+	# include/linux/sched.h
+	flags_map[0x1]=PF_VCPU
+	flags_map[0x2]=PF_IDLE
+	flags_map[0x4]=PF_EXITING
+	flags_map[0x8]=PF_POSTCOREDUMP
+	flags_map[0x10]=PF_IO_WORKER
+	flags_map[0x20]=PF_WQ_WORKER
+	flags_map[0x40]=PF_FORK_NO_EXEC
+	flags_map[0x80]=PF_MCE_PROCESS
+	flags_map[0x100]=PF_SUPERPRIV
+	flags_map[0x200]=PF_DUMPCORE
+	flags_map[0x400]=PF_SIGNALED
+	flags_map[0x800]=PF_MEMALLOC
+	flags_map[0x1000]=PF_NPROC_EXCEEDED
+	flags_map[0x2000]=PF_USED_MATH
+	flags_map[0x4000]=PF_USER_WORKER
+	flags_map[0x8000]=PF_NOFREEZE
+	flags_map[0x20000]=PF_KSWAPD
+	flags_map[0x40000]=PF_MEMALLOC_NOFS
+	flags_map[0x80000]=PF_MEMALLOC_NOIO
+	flags_map[0x100000]=PF_LOCAL_THROTTLE
+	flags_map[0x00200000]=PF_KTHREAD
+	flags_map[0x00400000]=PF_RANDOMIZE
+	flags_map[0x04000000]=PF_NO_SETAFFINITY
+	flags_map[0x08000000]=PF_MCE_EARLY
+	flags_map[0x10000000]=PF_MEMALLOC_PIN
+	flags_map[0x80000000]=PF_SUSPEND_TASK
+
+	for flag in "${!flags_map[@]}"; do
+		[[ $flag_to_check == "${flags_map[flag]}" || $flag_to_check == all ]] || continue
+		((tflags & flag)) && flags=${flags:+$flags,}"${flags_map[flag]}"
+	done
+	if [[ -n $flags ]]; then
+		echo "$flags" >&2
+		return 0
+	fi
+	return 1
 }
 
 declare -r sysfs_cgroup=/sys/fs/cgroup

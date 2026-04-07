@@ -31,7 +31,7 @@ _get_default_rpc_methods() {
 		# Each method name seems to be prefixed with 20h x 4. Then it can
 		# be followed with list of aliases enclosed inside (). Example:
 		#    ioat_scan_accel_module
-		[[ $REPLY =~ ^\ {4}([a-z]+(_[a-z]+)*)(\ *\((.+)\))? ]] || continue
+		[[ $REPLY =~ ^\ {4}([a-z0-9]+(_[a-z0-9]+)*)(\ *\((.+)\))? ]] || continue
 
 		names=("${BASH_REMATCH[1]}")
 		if [[ $SPDK_RPC_ALIASES == yes ]] && [[ -n ${BASH_REMATCH[4]} ]]; then
@@ -45,13 +45,11 @@ _get_default_rpc_methods() {
 	done < <(_get_help "$1" 2> /dev/null)
 }
 
-_get_supported_methods() {
+_get_rpc_methods() {
 	local method methods
 
-	if ! methods=($("$1" -s "$rpc_sock" rpc_get_methods 2> /dev/null)); then
-		_get_default_rpc_methods "$1"
-		return 0
-	fi
+	_get_default_rpc_methods "$1"
+	methods=($("$1" -s "$rpc_sock" rpc_get_methods 2> /dev/null)) || return 0
 	((${#methods[@]} > 0)) || return 0
 
 	# Kill the json flavor
@@ -77,7 +75,7 @@ _get_help_rpc_method() {
 _is_rpc_method() {
 	local word=$1
 
-	[[ -v rpc_methods["$word"] ]]
+	[[ -n $word && -n ${rpc_methods["$word"]} ]]
 }
 
 _method_in_words() {
@@ -150,7 +148,7 @@ _spdk_opt_to_complete() {
 			fi
 			;;
 		*) return 1 ;;
-	esac
+	esac 2> /dev/null
 	return 0
 }
 
@@ -203,28 +201,45 @@ _rpc() {
 	_init_completion || return
 	_is_app "$1" || return
 
-	local rpc=$1 rpc_sock="" method=""
-	local -A rpc_methods=()
+	local rpc=$1 method=""
+	local -g rpc_sock="" rpc_sock_ts old_rpc_sock_ts
+	local -gA rpc_methods
+	local -gA __comps
 
 	_set_rpc_sock
-	if [[ -S $rpc_sock ]]; then
-		_get_supported_methods "$rpc"
-	else
-		_get_default_rpc_methods "$rpc"
+	# Verify sock against the creation time - this is meant to cover cases of different
+	# applications re-creating the socket file at the same location.
+	rpc_sock_ts=$(stat --print="%W" "$rpc_sock" 2> /dev/null)
+	# Always try to refresh list of methods when sock changed or when the list
+	# is empty.
+	if [[ $old_rpc_sock_ts != "$rpc_sock_ts" ]] || ((${#rpc_methods[@]} == 0)); then
+		rpc_methods=()
+		_get_rpc_methods "$rpc"
 	fi
+	old_rpc_sock_ts=$rpc_sock_ts
 
 	if method=$(_method_in_words); then
-		COMPREPLY=($(compgen -W '$(_get_help_rpc_method "$rpc" "$method")' -- "$cur"))
+		if [[ -n ${__comps["$rpc:$method:$cur"]} ]]; then
+			COMPREPLY=(${__comps["$rpc:$method:$cur"]})
+		else
+			COMPREPLY=($(compgen -W '$(_get_help_rpc_method "$rpc" "$method")' -- "$cur"))
+			__comps["$rpc:$method:$cur"]=${COMPREPLY[*]}
+		fi
 		compopt -o nosort
 	elif [[ $cur == -* ]]; then
-		COMPREPLY=($(compgen -W '$(_parse_help "$rpc")' -- "$cur"))
+		if [[ -n ${__comps["$rpc:$cur"]} ]]; then
+			COMPREPLY=(${__comps["$rpc:$cur"]})
+		else
+			COMPREPLY=($(compgen -W '$(_parse_help "$rpc")' -- "$cur"))
+			__comps["$rpc:$cur"]=${COMPREPLY[*]}
+		fi
 	elif [[ $prev == --verbose ]]; then
 		COMPREPLY=($(compgen -W 'DEBUG INFO ERROR' -- "$cur"))
 	elif [[ $prev == -s ]]; then
 		_filedir
 	else
 		COMPREPLY=($(compgen -W '${!rpc_methods[*]}' -- "$cur"))
-	fi
+	fi 2> /dev/null
 }
 
 _spdk_app() {
@@ -244,6 +259,15 @@ _spdk_app() {
 	fi
 }
 
+_setup() {
+	local cur prev
+
+	_init_completion || return
+	_is_app "$1" || return
+
+	COMPREPLY=($(compgen -W 'cleanup config help interactive reset status' -- "$cur"))
+}
+
 # Build simple completion for some common spdk apps|tools
 _spdk_apps() {
 	local apps
@@ -259,11 +283,12 @@ _spdk_apps() {
 		create_vbox.sh
 		pkgdep.sh
 		run-autorun.sh
-		vm_setup.sh
+		autotest_setup.sh
 	) # TODO: Add more?
 
 	complete -o default -F _spdk_app "${apps[@]}"
 	complete -o default -F _rpc rpc.py
+	complete -o default -F _setup setup.sh
 }
 
 _spdk_apps

@@ -20,6 +20,7 @@ struct core_stats {
 	uint64_t busy;
 	uint64_t idle;
 	uint32_t thread_count;
+	bool isolated;
 };
 
 static struct core_stats *g_cores;
@@ -60,9 +61,45 @@ _foreach_thread(struct spdk_scheduler_core_info *cores_info, _foreach_fn fn)
 
 	SPDK_ENV_FOREACH_CORE(i) {
 		core = &cores_info[i];
+		/* Skip cores that are isolated */
+		if (core->isolated) {
+			continue;
+		}
 		for (j = 0; j < core->threads_count; j++) {
 			fn(&core->thread_infos[j]);
 		}
+	}
+}
+
+static void
+prepare_to_sleep(uint32_t core)
+{
+	struct spdk_governor *governor = spdk_governor_get();
+	int rc;
+
+	if (governor == NULL) {
+		return;
+	}
+
+	rc = governor->set_core_freq_min(core);
+	if (rc < 0) {
+		SPDK_ERRLOG("could not set_core_freq_min(%d)\n", core);
+	}
+}
+
+static void
+prepare_to_wake(uint32_t core)
+{
+	struct spdk_governor *governor = spdk_governor_get();
+	int rc;
+
+	if (governor == NULL) {
+		return;
+	}
+
+	rc = governor->set_core_freq_max(core);
+	if (rc < 0) {
+		SPDK_ERRLOG("could not set_core_freq_max(%d)\n", core);
 	}
 }
 
@@ -198,6 +235,11 @@ _find_optimal_core(struct spdk_scheduler_thread_info *thread_info)
 			continue;
 		}
 
+		/* Skip cores that are isolated */
+		if (g_cores[i].isolated) {
+			continue;
+		}
+
 		/* Search for least busy core. */
 		if (g_cores[i].busy < g_cores[least_busy_lcore].busy) {
 			least_busy_lcore = i;
@@ -232,7 +274,7 @@ _find_optimal_core(struct spdk_scheduler_thread_info *thread_info)
 static int
 init(void)
 {
-	g_main_lcore = spdk_env_get_current_core();
+	g_main_lcore = spdk_scheduler_get_scheduling_lcore();
 
 	if (spdk_governor_set("dpdk_governor") != 0) {
 		SPDK_NOTICELOG("Unable to initialize dpdk governor\n");
@@ -242,11 +284,6 @@ init(void)
 	if (g_cores == NULL) {
 		SPDK_ERRLOG("Failed to allocate memory for dynamic scheduler core stats.\n");
 		return -ENOMEM;
-	}
-
-	if (spdk_scheduler_get_period() == 0) {
-		/* set default scheduling period to one second */
-		spdk_scheduler_set_period(SPDK_SEC_TO_USEC);
 	}
 
 	return 0;
@@ -301,6 +338,7 @@ balance(struct spdk_scheduler_core_info *cores_info, uint32_t cores_count)
 		g_cores[i].thread_count = cores_info[i].threads_count;
 		g_cores[i].busy = cores_info[i].current_busy_tsc;
 		g_cores[i].idle = cores_info[i].current_idle_tsc;
+		g_cores[i].isolated = cores_info[i].isolated;
 		SPDK_DTRACE_PROBE2(dynsched_core_info, i, &cores_info[i]);
 	}
 	main_core = &g_cores[g_main_lcore];
@@ -315,16 +353,20 @@ balance(struct spdk_scheduler_core_info *cores_info, uint32_t cores_count)
 	 * if they will be used after rebalancing */
 	SPDK_ENV_FOREACH_CORE(i) {
 		reactor = spdk_reactor_get(i);
+		assert(reactor != NULL);
+
 		core = &cores_info[i];
 		/* We can switch mode only if reactor already does not have any threads */
 		if (g_cores[i].thread_count == 0 && TAILQ_EMPTY(&reactor->threads)) {
 			core->interrupt_mode = true;
+			prepare_to_sleep(i);
 		} else if (g_cores[i].thread_count != 0) {
 			core->interrupt_mode = false;
 			if (i != g_main_lcore) {
 				/* If a thread is present on non g_main_lcore,
 				 * it has to be busy. */
 				busy_threads_present = true;
+				prepare_to_wake(i);
 			}
 		}
 	}

@@ -97,11 +97,11 @@ section .text
 %define _GPR_SAVE       8*5
 %define STACK_SPACE     _GPR_SAVE + _XMM_SAVE
 
-; SHA256_JOB* sha256_mb_mgr_submit_avx(SHA256_MB_JOB_MGR *state, SHA256_JOB *job)
+; ISAL_SHA256_JOB* _sha256_mb_mgr_submit_avx(ISAL_SHA256_MB_JOB_MGR *state, ISAL_SHA256_JOB *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-mk_global sha256_mb_mgr_submit_avx, function
-sha256_mb_mgr_submit_avx:
+mk_global _sha256_mb_mgr_submit_avx, function, internal
+_sha256_mb_mgr_submit_avx:
 	endbranch
 
 	sub     rsp, STACK_SPACE
@@ -128,7 +128,7 @@ sha256_mb_mgr_submit_avx:
 	and     lane, 0xF
 	shr     unused_lanes, 4
 	imul    lane_data, lane, _LANE_DATA_size
-	mov     dword [job + _status], STS_BEING_PROCESSED
+	mov     dword [job + _status], ISAL_STS_BEING_PROCESSED
 	lea     lane_data, [state + _ldata + lane_data]
 	mov     [state + _unused_lanes], unused_lanes
 	mov     DWORD(len), [job + _len]
@@ -200,7 +200,7 @@ len_is_0:
 	mov     job_rax, [lane_data + _job_in_lane]
 	mov     unused_lanes, [state + _unused_lanes]
 	mov     qword [lane_data + _job_in_lane], 0
-	mov     dword [job_rax + _status], STS_COMPLETED
+	mov     dword [job_rax + _status], ISAL_STS_COMPLETED
 	shl     unused_lanes, 4
 	or      unused_lanes, idx
 	mov     [state + _unused_lanes], unused_lanes

@@ -3,11 +3,12 @@
 #   All rights reserved.
 #
 
+
 def compressdev_scan_accel_module(client, pmd):
     """Scan and enable compressdev module and set pmd option.
 
     Args:
-        pmd: 0 = auto-select, 1 = QAT, 2 = mlx5_pci
+        pmd: 0 = auto-select, 1 = QAT, 2 = mlx5_pci, 3 = uadk
     """
     params = {'pmd': pmd}
 

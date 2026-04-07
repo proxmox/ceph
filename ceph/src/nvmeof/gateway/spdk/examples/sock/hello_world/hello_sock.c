@@ -11,6 +11,8 @@
 #include "spdk/string.h"
 
 #include "spdk/sock.h"
+#include "spdk/hexlify.h"
+#include "spdk/nvmf.h"
 
 #define ACCEPT_TIMEOUT_US 1000
 #define CLOSE_TIMEOUT_US 1000000
@@ -27,7 +29,8 @@ static int g_zcopy;
 static int g_ktls;
 static int g_tls_version;
 static bool g_verbose;
-static char *g_psk_key;
+static uint8_t g_psk_key[SPDK_TLS_PSK_MAX_LEN];
+static uint32_t g_psk_key_size;
 static char *g_psk_identity;
 
 /*
@@ -37,12 +40,13 @@ static char *g_psk_identity;
 struct hello_context_t {
 	bool is_server;
 	char *host;
-	char *sock_impl_name;
+	const char *sock_impl_name;
 	int port;
 	int zcopy;
 	int ktls;
 	int tls_version;
-	char *psk_key;
+	uint8_t *psk_key;
+	uint32_t psk_key_size;
 	char *psk_identity;
 
 	bool verbose;
@@ -52,11 +56,13 @@ struct hello_context_t {
 	struct spdk_sock *sock;
 
 	struct spdk_sock_group *group;
+	void *buf;
 	struct spdk_poller *poller_in;
 	struct spdk_poller *poller_out;
 	struct spdk_poller *time_out;
 
 	int rc;
+	ssize_t n;
 };
 
 /*
@@ -85,9 +91,22 @@ hello_sock_usage(void)
 static int
 hello_sock_parse_arg(int ch, char *arg)
 {
+	char *unhexlified;
+
 	switch (ch) {
 	case 'E':
-		g_psk_key = arg;
+		g_psk_key_size = strlen(arg) / 2;
+		if (g_psk_key_size > SPDK_TLS_PSK_MAX_LEN) {
+			fprintf(stderr, "Invalid PSK: too long (%"PRIu32")\n", g_psk_key_size);
+			return -EINVAL;
+		}
+		unhexlified = spdk_unhexlify(arg);
+		if (unhexlified == NULL) {
+			fprintf(stderr, "Invalid PSK: not in a hex format\n");
+			return -EINVAL;
+		}
+		memcpy(g_psk_key, unhexlified, g_psk_key_size);
+		free(unhexlified);
 		break;
 	case 'H':
 		g_host = arg;
@@ -180,8 +199,14 @@ hello_sock_recv_poll(void *arg)
 			return SPDK_POLLER_IDLE;
 		}
 
-		SPDK_ERRLOG("spdk_sock_recv() failed, errno %d: %s\n",
-			    errno, spdk_strerror(errno));
+		/* This poller drains recv buffer until hello_sock_close_timeout_poll()
+		 * runs out. Which starts when hello_sock_quit() is called.
+		 * Quit the application just once, then patiently await the unregister. */
+		if (ctx->rc == 0) {
+			hello_sock_quit(ctx, -1);
+		}
+		SPDK_ERRLOG_RATELIMIT("spdk_sock_recv() failed, errno %d: %s\n",
+				      errno, spdk_strerror(errno));
 		return SPDK_POLLER_BUSY;
 	}
 
@@ -199,11 +224,28 @@ hello_sock_writev_poll(void *arg)
 {
 	struct hello_context_t *ctx = arg;
 	int rc = 0;
-	char buf_out[BUFFER_SIZE];
 	struct iovec iov;
 	ssize_t n;
 
-	n = read(STDIN_FILENO, buf_out, sizeof(buf_out));
+	/* If previously we could not send any bytes, we should try again with the same buffer. */
+	if (ctx->n != 0) {
+		iov.iov_base = ctx->buf;
+		iov.iov_len = ctx->n;
+		errno = 0;
+		rc = spdk_sock_writev(ctx->sock, &iov, 1);
+		if (rc < 0) {
+			if (errno == EAGAIN) {
+				return SPDK_POLLER_BUSY;
+			}
+			SPDK_ERRLOG("Write to socket failed. Closing connection...\n");
+			hello_sock_quit(ctx, -1);
+			return SPDK_POLLER_IDLE;
+		}
+		ctx->bytes_out += rc;
+		ctx->n = 0;
+	}
+
+	n = read(STDIN_FILENO, ctx->buf, BUFFER_SIZE);
 	if (n == 0 || !g_is_running) {
 		/* EOF */
 		SPDK_NOTICELOG("Closing connection...\n");
@@ -214,13 +256,24 @@ hello_sock_writev_poll(void *arg)
 		/*
 		 * Send message to the server
 		 */
-		iov.iov_base = buf_out;
+		iov.iov_base = ctx->buf;
 		iov.iov_len = n;
+		errno = 0;
 		rc = spdk_sock_writev(ctx->sock, &iov, 1);
+		if (rc < 0) {
+			if (errno == EAGAIN) {
+				ctx->n = n;
+			} else {
+				SPDK_ERRLOG("Write to socket failed. Closing connection...\n");
+				hello_sock_quit(ctx, -1);
+				return SPDK_POLLER_IDLE;
+			}
+		}
 		if (rc > 0) {
 			ctx->bytes_out += rc;
 		}
 	}
+
 	return rc > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE;
 }
 
@@ -237,8 +290,10 @@ hello_sock_connect(struct hello_context_t *ctx)
 	spdk_sock_impl_get_opts(ctx->sock_impl_name, &impl_opts, &impl_opts_size);
 	impl_opts.enable_ktls = ctx->ktls;
 	impl_opts.tls_version = ctx->tls_version;
-	impl_opts.psk_key = ctx->psk_key;
 	impl_opts.psk_identity = ctx->psk_identity;
+	impl_opts.tls_cipher_suites = "TLS_AES_128_GCM_SHA256";
+	impl_opts.psk_key = ctx->psk_key;
+	impl_opts.psk_key_size = ctx->psk_key_size;
 
 	opts.opts_size = sizeof(opts);
 	spdk_sock_get_default_opts(&opts);
@@ -258,49 +313,56 @@ hello_sock_connect(struct hello_context_t *ctx)
 	rc = spdk_sock_getaddr(ctx->sock, saddr, sizeof(saddr), &sport, caddr, sizeof(caddr), &cport);
 	if (rc < 0) {
 		SPDK_ERRLOG("Cannot get connection addresses\n");
-		spdk_sock_close(&ctx->sock);
-		return -1;
+		goto err;
 	}
 
 	SPDK_NOTICELOG("Connection accepted from (%s, %hu) to (%s, %hu)\n", caddr, cport, saddr, sport);
 
-	fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
+	if (spdk_fd_set_nonblock(STDIN_FILENO) < 0) {
+		goto err;
+	}
 
 	g_is_running = true;
 	ctx->poller_in = SPDK_POLLER_REGISTER(hello_sock_recv_poll, ctx, 0);
 	ctx->poller_out = SPDK_POLLER_REGISTER(hello_sock_writev_poll, ctx, 0);
 
 	return 0;
+err:
+	spdk_sock_close(&ctx->sock);
+	return -1;
 }
 
 static void
 hello_sock_cb(void *arg, struct spdk_sock_group *group, struct spdk_sock *sock)
 {
-	ssize_t n;
-	char buf[BUFFER_SIZE];
-	struct iovec iov;
+	int rc;
 	struct hello_context_t *ctx = arg;
+	struct iovec iov = {};
+	ssize_t n;
+	void *user_ctx;
 
-	n = spdk_sock_recv(sock, buf, sizeof(buf));
-	if (n < 0) {
+	rc = spdk_sock_recv_next(sock, &iov.iov_base, &user_ctx);
+	if (rc < 0) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			SPDK_ERRLOG("spdk_sock_recv() failed, errno %d: %s\n",
-				    errno, spdk_strerror(errno));
 			return;
 		}
 
-		SPDK_ERRLOG("spdk_sock_recv() failed, errno %d: %s\n",
-			    errno, spdk_strerror(errno));
+		if (errno != ENOTCONN && errno != ECONNRESET) {
+			SPDK_ERRLOG("spdk_sock_recv_zcopy() failed, errno %d: %s\n",
+				    errno, spdk_strerror(errno));
+		}
 	}
 
-	if (n > 0) {
-		ctx->bytes_in += n;
-		iov.iov_base = buf;
-		iov.iov_len = n;
+	if (rc > 0) {
+		iov.iov_len = rc;
+		ctx->bytes_in += iov.iov_len;
 		n = spdk_sock_writev(sock, &iov, 1);
 		if (n > 0) {
+			assert(n == rc);
 			ctx->bytes_out += n;
 		}
+
+		spdk_sock_group_provide_buf(ctx->group, iov.iov_base, BUFFER_SIZE, NULL);
 		return;
 	}
 
@@ -383,8 +445,10 @@ hello_sock_listen(struct hello_context_t *ctx)
 	spdk_sock_impl_get_opts(ctx->sock_impl_name, &impl_opts, &impl_opts_size);
 	impl_opts.enable_ktls = ctx->ktls;
 	impl_opts.tls_version = ctx->tls_version;
-	impl_opts.psk_key = ctx->psk_key;
 	impl_opts.psk_identity = ctx->psk_identity;
+	impl_opts.tls_cipher_suites = "TLS_AES_128_GCM_SHA256";
+	impl_opts.psk_key = ctx->psk_key;
+	impl_opts.psk_key_size = ctx->psk_key_size;
 
 	opts.opts_size = sizeof(opts);
 	spdk_sock_get_default_opts(&opts);
@@ -405,6 +469,13 @@ hello_sock_listen(struct hello_context_t *ctx)
 	 * Create sock group for server socket
 	 */
 	ctx->group = spdk_sock_group_create(NULL);
+	if (ctx->group == NULL) {
+		SPDK_ERRLOG("Cannot create sock group\n");
+		spdk_sock_close(&ctx->sock);
+		return -1;
+	}
+
+	spdk_sock_group_provide_buf(ctx->group, ctx->buf, BUFFER_SIZE, NULL);
 
 	g_is_running = true;
 
@@ -458,6 +529,7 @@ main(int argc, char **argv)
 	spdk_app_opts_init(&opts, sizeof(opts));
 	opts.name = "hello_sock";
 	opts.shutdown_cb = hello_sock_shutdown_cb;
+	opts.rpc_addr = NULL;
 
 	if ((rc = spdk_app_parse_args(argc, argv, &opts, "E:H:I:kKN:P:ST:VzZ", NULL, hello_sock_parse_arg,
 				      hello_sock_usage)) != SPDK_APP_PARSE_ARGS_SUCCESS) {
@@ -471,8 +543,41 @@ main(int argc, char **argv)
 	hello_context.ktls = g_ktls;
 	hello_context.tls_version = g_tls_version;
 	hello_context.psk_key = g_psk_key;
+	hello_context.psk_key_size = g_psk_key_size;
 	hello_context.psk_identity = g_psk_identity;
 	hello_context.verbose = g_verbose;
+
+	if (hello_context.sock_impl_name == NULL) {
+		hello_context.sock_impl_name = spdk_sock_get_default_impl();
+
+		if (hello_context.sock_impl_name == NULL) {
+			SPDK_ERRLOG("No sock implementations available!\n");
+			exit(-1);
+		}
+	}
+
+	hello_context.buf = calloc(1, BUFFER_SIZE);
+	if (hello_context.buf == NULL) {
+		SPDK_ERRLOG("Cannot allocate memory for hello_context buffer\n");
+		exit(-1);
+	}
+	hello_context.n = 0;
+
+	if (hello_context.is_server) {
+		struct spdk_sock_impl_opts impl_opts = {};
+		size_t len = sizeof(impl_opts);
+
+		rc = spdk_sock_impl_get_opts(hello_context.sock_impl_name, &impl_opts, &len);
+		if (rc < 0) {
+			free(hello_context.buf);
+			exit(rc);
+		}
+
+		/* Our applications will post buffers to be used for receiving. That feature
+		 * is mutually exclusive with the recv pipe, so we need to disable it. */
+		impl_opts.enable_recv_pipe = false;
+		spdk_sock_impl_set_opts(hello_context.sock_impl_name, &impl_opts, len);
+	}
 
 	rc = spdk_app_start(&opts, hello_start, &hello_context);
 	if (rc) {
@@ -488,5 +593,6 @@ main(int argc, char **argv)
 
 	/* Gracefully close out all of the SPDK subsystems. */
 	spdk_app_fini();
+	free(hello_context.buf);
 	return rc;
 }

@@ -17,11 +17,22 @@
 #include "spdk/string.h"
 #include "spdk/util.h"
 #include "spdk/likely.h"
-
 #include "spdk/bdev_module.h"
 #include "spdk/log.h"
+SPDK_LOG_REGISTER_COMPONENT(reservation)
 
 static int bdev_rbd_count = 0;
+
+struct bdev_rbd_pool_ctx {
+	rados_t *cluster_p;
+	char *name;
+	rados_ioctx_t io_ctx;
+	uint32_t ref;
+	STAILQ_ENTRY(bdev_rbd_pool_ctx) link;
+};
+
+static STAILQ_HEAD(, bdev_rbd_pool_ctx) g_map_bdev_rbd_pool_ctx = STAILQ_HEAD_INITIALIZER(
+			g_map_bdev_rbd_pool_ctx);
 
 struct bdev_rbd {
 	struct spdk_bdev disk;
@@ -34,16 +45,26 @@ struct bdev_rbd {
 	rados_t *cluster_p;
 	char *cluster_name;
 
-	rados_ioctx_t io_ctx;
+	union rbd_ctx {
+		rados_ioctx_t io_ctx;
+		struct bdev_rbd_pool_ctx *ctx;
+	} rados_ctx;
+
 	rbd_image_t image;
 
 	rbd_image_info_t info;
-	struct spdk_thread *main_td;
 	struct spdk_thread *destruct_td;
 
 	TAILQ_ENTRY(bdev_rbd) tailq;
 	struct spdk_poller *reset_timer;
 	struct spdk_bdev_io *reset_bdev_io;
+
+	uint64_t rbd_watch_handle;
+	bool rbd_read_only;
+	uint64_t reservation_version;
+	uint64_t reservation_epoch;
+	void *reservation_ns_context;
+	int (*reservation_fn_cbk)(void *ns);
 };
 
 struct bdev_rbd_io_channel {
@@ -74,6 +95,47 @@ struct bdev_rbd_cluster {
 static STAILQ_HEAD(, bdev_rbd_cluster) g_map_bdev_rbd_cluster = STAILQ_HEAD_INITIALIZER(
 			g_map_bdev_rbd_cluster);
 static pthread_mutex_t g_map_bdev_rbd_cluster_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static struct spdk_io_channel *bdev_rbd_get_io_channel(void *ctx);
+
+static int rbd_bdev_notify_ns_reservation_changed(struct bdev_rbd *rbd);
+
+static void
+_rbd_update_callback(void *arg)
+{
+	struct bdev_rbd *rbd = arg;
+	uint64_t current_size_in_bytes = 0;
+	int rc;
+	char value[100];
+	size_t value_len = sizeof(value);
+
+	memset(value, 0, value_len);
+	rc = rbd_metadata_get(rbd->image, "NVME_GATEWAY_AUTO_RESIZE", value, &value_len);
+	if (rc == 0 && strncasecmp(value, "no", 2) == 0) {
+		SPDK_NOTICELOG("Wll not notify about size change as NVME_GATEWAY_AUTO_RESIZE is set to \"no\"\n");
+		goto check_reservation;
+	}
+	rc = rbd_get_size(rbd->image, &current_size_in_bytes);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed getting size\n");
+	} else {
+		rc = spdk_bdev_notify_blockcnt_change(&rbd->disk, current_size_in_bytes / rbd->disk.blocklen);
+		if (rc != 0) {
+			SPDK_ERRLOG("failed to notify block cnt change.\n");
+		}
+	}
+  check_reservation:
+	rc = rbd_bdev_notify_ns_reservation_changed(rbd);
+	if (rc != 0) {
+		SPDK_ERRLOG("failed to notify reservation change.\n");
+	}
+}
+
+static void
+rbd_update_callback(void *arg)
+{
+	spdk_thread_send_msg(spdk_thread_get_app_thread(), _rbd_update_callback, arg);
+}
 
 static void
 bdev_rbd_cluster_free(struct bdev_rbd_cluster *entry)
@@ -121,6 +183,22 @@ bdev_rbd_put_cluster(rados_t **cluster)
 }
 
 static void
+bdev_rbd_put_pool_ctx(struct bdev_rbd_pool_ctx *entry)
+{
+	assert(spdk_get_thread() == spdk_thread_get_app_thread());
+
+	assert(entry != NULL);
+	assert(entry->ref > 0);
+	entry->ref--;
+	if (entry->ref == 0) {
+		STAILQ_REMOVE(&g_map_bdev_rbd_pool_ctx, entry, bdev_rbd_pool_ctx, link);
+		rados_ioctx_destroy(entry->io_ctx);
+		free(entry->name);
+		free(entry);
+	}
+}
+
+static void
 bdev_rbd_free(struct bdev_rbd *rbd)
 {
 	if (!rbd) {
@@ -128,6 +206,7 @@ bdev_rbd_free(struct bdev_rbd *rbd)
 	}
 
 	if (rbd->image) {
+		rbd_update_unwatch(rbd->image, rbd->rbd_watch_handle);
 		rbd_flush(rbd->image);
 		rbd_close(rbd->image);
 	}
@@ -138,14 +217,21 @@ bdev_rbd_free(struct bdev_rbd *rbd)
 	free(rbd->pool_name);
 	bdev_rbd_free_config(rbd->config);
 
-	if (rbd->io_ctx) {
-		rados_ioctx_destroy(rbd->io_ctx);
-	}
-
 	if (rbd->cluster_name) {
+		/* When rbd is destructed by bdev_rbd_destruct, it will not enter here
+		 * because the ctx will already freed by bdev_rbd_free_cb in async manner.
+		 * This path only happens during the rbd initialization procedure of rbd */
+		if (rbd->rados_ctx.ctx) {
+			bdev_rbd_put_pool_ctx(rbd->rados_ctx.ctx);
+			rbd->rados_ctx.ctx = NULL;
+		}
+
 		bdev_rbd_put_cluster(&rbd->cluster_p);
 		free(rbd->cluster_name);
 	} else if (rbd->cluster) {
+		if (rbd->rados_ctx.io_ctx) {
+			rados_ioctx_destroy(rbd->rados_ctx.io_ctx);
+		}
 		rados_shutdown(rbd->cluster);
 	}
 
@@ -207,6 +293,7 @@ bdev_rados_cluster_init(const char *user_id, const char *const *config,
 			if (ret < 0) {
 				SPDK_ERRLOG("Failed to set %s = %s\n", entry[0], entry[1]);
 				rados_shutdown(*cluster);
+				*cluster = NULL;
 				return -1;
 			}
 			entry += 2;
@@ -216,6 +303,7 @@ bdev_rados_cluster_init(const char *user_id, const char *const *config,
 		if (ret < 0) {
 			SPDK_ERRLOG("Failed to read conf file\n");
 			rados_shutdown(*cluster);
+			*cluster = NULL;
 			return -1;
 		}
 	}
@@ -224,6 +312,7 @@ bdev_rados_cluster_init(const char *user_id, const char *const *config,
 	if (ret < 0) {
 		SPDK_ERRLOG("Failed to connect to rbd_pool\n");
 		rados_shutdown(*cluster);
+		*cluster = NULL;
 		return -1;
 	}
 
@@ -286,21 +375,93 @@ bdev_rbd_cluster_handle(void *arg)
 	return ret;
 }
 
+static int
+bdev_rbd_get_pool_ctx(rados_t *cluster_p, const char *name,  struct bdev_rbd_pool_ctx **ctx)
+{
+	struct bdev_rbd_pool_ctx *entry;
+
+	assert(spdk_get_thread() == spdk_thread_get_app_thread());
+
+	if (name == NULL || ctx == NULL) {
+		return -1;
+	}
+
+	STAILQ_FOREACH(entry, &g_map_bdev_rbd_pool_ctx, link) {
+		if (strcmp(name, entry->name) == 0 && cluster_p == entry->cluster_p) {
+			entry->ref++;
+			*ctx = entry;
+			return 0;
+		}
+	}
+
+	entry = calloc(1, sizeof(*entry));
+	if (!entry) {
+		SPDK_ERRLOG("Cannot allocate an entry for name=%s\n", name);
+		return -1;
+	}
+
+	entry->name = strdup(name);
+	if (entry->name == NULL) {
+		SPDK_ERRLOG("Failed to allocate the name =%s space on entry =%p\n", name, entry);
+		goto err_handle;
+	}
+
+	if (rados_ioctx_create(*cluster_p, name, &entry->io_ctx) < 0) {
+		goto err_handle1;
+	}
+
+	entry->cluster_p = cluster_p;
+	entry->ref = 1;
+	*ctx = entry;
+	STAILQ_INSERT_TAIL(&g_map_bdev_rbd_pool_ctx, entry, link);
+
+	return 0;
+
+err_handle1:
+	free(entry->name);
+err_handle:
+	free(entry);
+
+	return -1;
+}
+
 static void *
 bdev_rbd_init_context(void *arg)
 {
 	struct bdev_rbd *rbd = arg;
 	int rc;
+	rados_ioctx_t *io_ctx = NULL;
 
-	if (rados_ioctx_create(*(rbd->cluster_p), rbd->pool_name, &rbd->io_ctx) < 0) {
-		SPDK_ERRLOG("Failed to create ioctx on rbd=%p\n", rbd);
-		return NULL;
+	if (rbd->cluster_name) {
+		if (bdev_rbd_get_pool_ctx(rbd->cluster_p, rbd->pool_name, &rbd->rados_ctx.ctx) < 0) {
+			SPDK_ERRLOG("Failed to create ioctx on rbd=%p with cluster_name=%s\n",
+				    rbd, rbd->cluster_name);
+			return NULL;
+		}
+		io_ctx = &rbd->rados_ctx.ctx->io_ctx;
+	} else {
+		if (rados_ioctx_create(*(rbd->cluster_p), rbd->pool_name, &rbd->rados_ctx.io_ctx) < 0) {
+			SPDK_ERRLOG("Failed to create ioctx on rbd=%p\n", rbd);
+			return NULL;
+		}
+		io_ctx = &rbd->rados_ctx.io_ctx;
 	}
 
-	rc = rbd_open(rbd->io_ctx, rbd->rbd_name, &rbd->image, NULL);
+	assert(io_ctx != NULL);
+	if (rbd->rbd_read_only) {
+                SPDK_DEBUGLOG(bdev_rbd, "Will open RBD image %s/%s as read-only\n", rbd->pool_name, rbd->rbd_name);
+		rc = rbd_open_read_only(*io_ctx, rbd->rbd_name, &rbd->image, NULL);
+	} else {
+		rc = rbd_open(*io_ctx, rbd->rbd_name, &rbd->image, NULL);
+	}
 	if (rc < 0) {
 		SPDK_ERRLOG("Failed to open specified rbd device\n");
 		return NULL;
+	}
+
+	rc = rbd_update_watch(rbd->image, &rbd->rbd_watch_handle, rbd_update_callback, (void *)rbd);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed to set up watch %d\n", rc);
 	}
 
 	rc = rbd_stat(rbd->image, &rbd->info, sizeof(rbd->info));
@@ -338,8 +499,6 @@ bdev_rbd_init(struct bdev_rbd *rbd)
 		SPDK_ERRLOG("Cannot init rbd context for rbd=%p\n", rbd);
 		return -1;
 	}
-
-	rbd->main_td = spdk_get_thread();
 
 	return ret;
 }
@@ -384,11 +543,12 @@ bdev_rbd_finish_aiocb(rbd_completion_t cb, void *arg)
 		if ((int)rbd_io->total_len != io_status) {
 			bio_status = SPDK_BDEV_IO_STATUS_FAILED;
 		}
-	} else {
-		/* For others, 0 means success */
-		if (io_status != 0) {
-			bio_status = SPDK_BDEV_IO_STATUS_FAILED;
-		}
+#ifdef LIBRBD_SUPPORTS_COMPARE_AND_WRITE_IOVEC
+	} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_COMPARE_AND_WRITE && io_status == -EILSEQ) {
+		bio_status = SPDK_BDEV_IO_STATUS_MISCOMPARE;
+#endif
+	} else if (io_status != 0) { /* For others, 0 means success */
+		bio_status = SPDK_BDEV_IO_STATUS_FAILED;
 	}
 
 	rbd_aio_release(cb);
@@ -411,25 +571,50 @@ _bdev_rbd_start_aio(struct bdev_rbd *disk, struct spdk_bdev_io *bdev_io,
 		goto err;
 	}
 
-	if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ) {
+	switch (bdev_io->type) {
+	case SPDK_BDEV_IO_TYPE_READ:
 		rbd_io->total_len = len;
 		if (spdk_likely(iovcnt == 1)) {
-			ret = rbd_aio_read(image, offset, iov[0].iov_len, iov[0].iov_base, rbd_io->comp);
+			ret = rbd_aio_read(image, offset, iov[0].iov_len, iov[0].iov_base,
+					   rbd_io->comp);
 		} else {
 			ret = rbd_aio_readv(image, iov, iovcnt, offset, rbd_io->comp);
 		}
-	} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
+		break;
+	case SPDK_BDEV_IO_TYPE_WRITE:
 		if (spdk_likely(iovcnt == 1)) {
-			ret = rbd_aio_write(image, offset, iov[0].iov_len, iov[0].iov_base, rbd_io->comp);
+			ret = rbd_aio_write(image, offset, iov[0].iov_len, iov[0].iov_base,
+					    rbd_io->comp);
 		} else {
 			ret = rbd_aio_writev(image, iov, iovcnt, offset, rbd_io->comp);
 		}
-	} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_UNMAP) {
+		break;
+	case SPDK_BDEV_IO_TYPE_UNMAP:
 		ret = rbd_aio_discard(image, offset, len, rbd_io->comp);
-	} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_FLUSH) {
+		break;
+	case SPDK_BDEV_IO_TYPE_FLUSH:
 		ret = rbd_aio_flush(image, rbd_io->comp);
-	} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE_ZEROES) {
-		ret = rbd_aio_write_zeroes(image, offset, len, rbd_io->comp, /* zero_flags */ 0, /* op_flags */ 0);
+		break;
+	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+		ret = rbd_aio_write_zeroes(image, offset, len, rbd_io->comp, /* zero_flags */ 0,
+					   /* op_flags */ 0);
+		break;
+#ifdef LIBRBD_SUPPORTS_COMPARE_AND_WRITE_IOVEC
+	case SPDK_BDEV_IO_TYPE_COMPARE_AND_WRITE:
+		ret = rbd_aio_compare_and_writev(image, offset, iov /* cmp */, iovcnt,
+						 bdev_io->u.bdev.fused_iovs /* write */,
+						 bdev_io->u.bdev.fused_iovcnt,
+						 rbd_io->comp, NULL,
+						 /* op_flags */ 0);
+		break;
+#endif
+	default:
+		/* This should not happen.
+		 * Function should only be called with supported io types in bdev_rbd_submit_request
+		 */
+		SPDK_ERRLOG("Unsupported IO type =%d\n", bdev_io->type);
+		ret = -ENOTSUP;
+		break;
 	}
 
 	if (ret < 0) {
@@ -543,6 +728,14 @@ bdev_rbd_free_cb(void *io_device)
 {
 	struct bdev_rbd *rbd = io_device;
 
+	assert(spdk_get_thread() == spdk_thread_get_app_thread());
+
+	/* free the ctx */
+	if (rbd->cluster_name && rbd->rados_ctx.ctx) {
+		bdev_rbd_put_pool_ctx(rbd->rados_ctx.ctx);
+		rbd->rados_ctx.ctx = NULL;
+	}
+
 	/* The io device has been unregistered.  Send a message back to the
 	 * original thread that started the destruct operation, so that the
 	 * bdev unregister callback is invoked on the same thread that started
@@ -559,17 +752,16 @@ _bdev_rbd_destruct(void *ctx)
 	spdk_io_device_unregister(rbd, bdev_rbd_free_cb);
 }
 
+enum spdk_bdev_type
+bdev_rbd_get_module_type(void *)
+{
+	return SPDK_BDEV_RDB;
+}
+
 static int
 bdev_rbd_destruct(void *ctx)
 {
 	struct bdev_rbd *rbd = ctx;
-	struct spdk_thread *td;
-
-	if (rbd->main_td == NULL) {
-		td = spdk_get_thread();
-	} else {
-		td = rbd->main_td;
-	}
 
 	/* Start the destruct operation on the rbd bdev's
 	 * main thread.  This guarantees it will only start
@@ -580,8 +772,8 @@ bdev_rbd_destruct(void *ctx)
 	 * channel delete messages in flight to this thread.
 	 */
 	assert(rbd->destruct_td == NULL);
-	rbd->destruct_td = td;
-	spdk_thread_send_msg(td, _bdev_rbd_destruct, rbd);
+	rbd->destruct_td = spdk_get_thread();
+	spdk_thread_send_msg(spdk_thread_get_app_thread(), _bdev_rbd_destruct, rbd);
 
 	/* Return 1 to indicate the destruct path is asynchronous. */
 	return 1;
@@ -604,7 +796,6 @@ bdev_rbd_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io
 {
 	struct spdk_thread *submit_td = spdk_io_channel_get_thread(ch);
 	struct bdev_rbd_io *rbd_io = (struct bdev_rbd_io *)bdev_io->driver_ctx;
-	struct bdev_rbd *disk = (struct bdev_rbd *)bdev_io->bdev->ctxt;
 
 	rbd_io->submit_td = submit_td;
 	switch (bdev_io->type) {
@@ -617,11 +808,14 @@ bdev_rbd_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io
 	case SPDK_BDEV_IO_TYPE_UNMAP:
 	case SPDK_BDEV_IO_TYPE_FLUSH:
 	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+#ifdef LIBRBD_SUPPORTS_COMPARE_AND_WRITE_IOVEC
+	case SPDK_BDEV_IO_TYPE_COMPARE_AND_WRITE:
+#endif
 		bdev_rbd_start_aio(bdev_io);
 		break;
 
 	case SPDK_BDEV_IO_TYPE_RESET:
-		spdk_thread_exec_msg(disk->main_td, bdev_rbd_reset, bdev_io);
+		spdk_thread_exec_msg(spdk_thread_get_app_thread(), bdev_rbd_reset, bdev_io);
 		break;
 
 	default:
@@ -634,15 +828,21 @@ bdev_rbd_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io
 static bool
 bdev_rbd_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 {
+	struct bdev_rbd *rbd = (struct bdev_rbd *)ctx;
+
 	switch (io_type) {
 	case SPDK_BDEV_IO_TYPE_READ:
-	case SPDK_BDEV_IO_TYPE_WRITE:
 	case SPDK_BDEV_IO_TYPE_UNMAP:
 	case SPDK_BDEV_IO_TYPE_FLUSH:
 	case SPDK_BDEV_IO_TYPE_RESET:
-	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
 		return true;
-
+	case SPDK_BDEV_IO_TYPE_WRITE:
+	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+	case SPDK_BDEV_IO_TYPE_IO_CANCEL:
+#ifdef LIBRBD_SUPPORTS_COMPARE_AND_WRITE_IOVEC
+	case SPDK_BDEV_IO_TYPE_COMPARE_AND_WRITE:
+#endif
+		return !rbd->rbd_read_only;
 	default:
 		return false;
 	}
@@ -758,7 +958,6 @@ static void
 bdev_rbd_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 {
 	struct bdev_rbd *rbd = bdev->ctxt;
-	char uuid_str[SPDK_UUID_STRING_LEN];
 
 	spdk_json_write_object_begin(w);
 
@@ -784,8 +983,7 @@ bdev_rbd_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w
 		spdk_json_write_object_end(w);
 	}
 
-	spdk_uuid_fmt_lower(uuid_str, sizeof(uuid_str), &bdev->uuid);
-	spdk_json_write_named_string(w, "uuid", uuid_str);
+	spdk_json_write_named_uuid(w, "uuid", &bdev->uuid);
 
 	spdk_json_write_object_end(w);
 
@@ -804,6 +1002,7 @@ dump_cluster_nonce(struct spdk_json_write_ctx *w, const char *name)
 			if (entry->nonce) {
 				spdk_json_write_string(w, entry->nonce);
 			}
+			break;
 		}
 	}
 	pthread_mutex_unlock(&g_map_bdev_rbd_cluster_mutex);
@@ -848,6 +1047,57 @@ dump_single_cluster_entry(struct bdev_rbd_cluster *entry, struct spdk_json_write
 	spdk_json_write_object_end(w);
 }
 
+static void *
+_bdev_rbd_wait_for_latest_osdmap(void *arg)
+{
+	struct bdev_rbd_cluster *entry;
+	const char *name = arg;
+	assert(name != NULL);
+	void *ret = NULL; // failure by default
+
+	pthread_mutex_lock(&g_map_bdev_rbd_cluster_mutex);
+
+	STAILQ_FOREACH(entry, &g_map_bdev_rbd_cluster, link) {
+		if (strcmp(name, entry->name) == 0) {
+			struct timeval start, end;
+			double elapsed_time;
+
+			// Get the start time
+			gettimeofday(&start, NULL);
+			int rc = rados_wait_for_latest_osdmap(entry->cluster);
+			// Get the end time
+			gettimeofday(&end, NULL);
+
+			// Calculate the elapsed time in seconds
+			elapsed_time = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1.0e6;
+			SPDK_NOTICELOG("rados_wait_for_latest_osdmap cluster: %s elapsed time: %f seconds\n",
+					name, elapsed_time);
+			if (rc) {
+				SPDK_ERRLOG("Failed to wait for latest osd map, rados cluster=%s, rc=%d\n",
+			    name, rc);
+			} else {
+				ret = arg; // non-NULL is returned on success
+			}
+			break;
+		}
+	}
+
+	pthread_mutex_unlock(&g_map_bdev_rbd_cluster_mutex);
+	return ret;
+}
+
+int
+bdev_rbd_wait_for_latest_osdmap(const char *name)
+{
+	/* Wait for osd map on cluster name need to be performed in non SPDK-thread to avoid CPU
+	 * resource contention */
+	if (spdk_call_unaffinitized(_bdev_rbd_wait_for_latest_osdmap, (void *)name) == NULL) {
+		return -1;
+	}
+
+	return 0;
+}
+
 int
 bdev_rbd_get_clusters_info(struct spdk_jsonrpc_request *request, const char *name)
 {
@@ -890,6 +1140,11 @@ bdev_rbd_get_clusters_info(struct spdk_jsonrpc_request *request, const char *nam
 	return 0;
 }
 
+int  bdev_rbd_ns_reservation_update_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx **ctx);
+int  bdev_rbd_ns_reservation_load_json(struct spdk_bdev *bdev, void **json, int *json_size);
+bool bdev_rbd_ns_is_ptpl_enabled(struct spdk_bdev *bdev, void *ns, int (*cbk)(void *ns));
+void bdev_rbd_ns_increment_epoch(struct spdk_bdev *bdev);
+
 static const struct spdk_bdev_fn_table rbd_fn_table = {
 	.destruct		= bdev_rbd_destruct,
 	.submit_request		= bdev_rbd_submit_request,
@@ -897,6 +1152,11 @@ static const struct spdk_bdev_fn_table rbd_fn_table = {
 	.get_io_channel		= bdev_rbd_get_io_channel,
 	.dump_info_json		= bdev_rbd_dump_info_json,
 	.write_config_json	= bdev_rbd_write_config_json,
+	.get_module_type	= bdev_rbd_get_module_type,
+	.ns_reservation_update_json = bdev_rbd_ns_reservation_update_json,
+	.ns_reservation_load_json  = bdev_rbd_ns_reservation_load_json,
+	.ns_reservation_is_ptpl_enabled = bdev_rbd_ns_is_ptpl_enabled,
+	.ns_reservation_increment_epoch = bdev_rbd_ns_increment_epoch
 };
 
 static int
@@ -1145,12 +1405,13 @@ bdev_rbd_create(struct spdk_bdev **bdev, const char *name, const char *user_id,
 		const char *rbd_name,
 		uint32_t block_size,
 		const char *cluster_name,
-		const struct spdk_uuid *uuid)
+		const struct spdk_uuid *uuid,
+		bool read_only)
 {
 	struct bdev_rbd *rbd;
 	int ret;
 
-	if ((pool_name == NULL) || (rbd_name == NULL)) {
+	if ((pool_name == NULL) || (rbd_name == NULL) || (block_size == 0)) {
 		return -EINVAL;
 	}
 
@@ -1192,6 +1453,7 @@ bdev_rbd_create(struct spdk_bdev **bdev, const char *name, const char *user_id,
 		return -ENOMEM;
 	}
 
+	rbd->rbd_read_only = read_only;
 	ret = bdev_rbd_init(rbd);
 	if (ret < 0) {
 		bdev_rbd_free(rbd);
@@ -1199,12 +1461,7 @@ bdev_rbd_create(struct spdk_bdev **bdev, const char *name, const char *user_id,
 		return ret;
 	}
 
-	if (uuid) {
-		rbd->disk.uuid = *uuid;
-	} else {
-		spdk_uuid_generate(&rbd->disk.uuid);
-	}
-
+	rbd->disk.uuid = *uuid;
 	if (name) {
 		rbd->disk.name = strdup(name);
 	} else {
@@ -1223,7 +1480,10 @@ bdev_rbd_create(struct spdk_bdev **bdev, const char *name, const char *user_id,
 	rbd->disk.ctxt = rbd;
 	rbd->disk.fn_table = &rbd_fn_table;
 	rbd->disk.module = &rbd_if;
-
+	rbd->reservation_version = 1;
+	rbd->reservation_epoch = 0;
+	rbd->reservation_ns_context = NULL;
+	rbd->reservation_fn_cbk = NULL;
 	SPDK_NOTICELOG("Add %s rbd disk to lun\n", rbd->disk.name);
 
 	spdk_io_device_register(rbd, bdev_rbd_create_cb,
@@ -1263,11 +1523,11 @@ bdev_rbd_resize(const char *name, const uint64_t new_size_in_mb)
 {
 	struct spdk_bdev_desc *desc;
 	struct spdk_bdev *bdev;
-	struct spdk_io_channel *ch;
-	struct bdev_rbd_io_channel *rbd_io_ch;
+	struct bdev_rbd *rbd;
 	int rc = 0;
 	uint64_t new_size_in_byte;
 	uint64_t current_size_in_mb;
+	uint64_t current_size_in_bytes = 0;
 
 	rc = spdk_bdev_open_ext(name, false, dummy_bdev_event_cb, NULL, &desc);
 	if (rc != 0) {
@@ -1281,22 +1541,30 @@ bdev_rbd_resize(const char *name, const uint64_t new_size_in_mb)
 		goto exit;
 	}
 
-	current_size_in_mb = bdev->blocklen * bdev->blockcnt / (1024 * 1024);
-	if (current_size_in_mb > new_size_in_mb) {
+	rbd = SPDK_CONTAINEROF(bdev, struct bdev_rbd, disk);
+	rc = rbd_get_size(rbd->image, &current_size_in_bytes);
+	if (rc < 0) {
+		/* might not be accurate if we disabled auto resize, but it's the best we can do */
+		SPDK_ERRLOG("Failed getting size %d, will use bdev settings\n", rc);
+		current_size_in_bytes = bdev->blocklen * bdev->blockcnt;
+	}
+	current_size_in_mb = current_size_in_bytes / (1024 * 1024);
+	if (current_size_in_mb > new_size_in_mb && new_size_in_mb > 0) {
 		SPDK_ERRLOG("The new bdev size must be larger than current bdev size.\n");
 		rc = -EINVAL;
 		goto exit;
 	}
 
-	ch = bdev_rbd_get_io_channel(bdev);
-	rbd_io_ch = spdk_io_channel_get_ctx(ch);
 	new_size_in_byte = new_size_in_mb * 1024 * 1024;
-
-	rc = rbd_resize(rbd_io_ch->disk->image, new_size_in_byte);
-	spdk_put_io_channel(ch);
-	if (rc != 0) {
-		SPDK_ERRLOG("failed to resize the ceph bdev.\n");
-		goto exit;
+	if (new_size_in_byte > 0) {
+		rc = rbd_resize(rbd->image, new_size_in_byte);
+		if (rc != 0) {
+			SPDK_ERRLOG("failed to resize the ceph bdev.\n");
+			goto exit;
+		}
+	}
+	else {
+		new_size_in_byte = current_size_in_bytes;
 	}
 
 	rc = spdk_bdev_notify_blockcnt_change(bdev, new_size_in_byte / bdev->blocklen);
@@ -1319,6 +1587,173 @@ static void
 bdev_rbd_group_destroy_cb(void *io_device, void *ctx_buf)
 {
 }
+#define RESERVATION_KEY   "reservation_key"
+#define MAX_RESERV_FILE_SIZE  4096
+
+bool
+bdev_rbd_ns_is_ptpl_enabled(struct spdk_bdev *bdev, void *ns, int (*cbk)(void *ns))
+{
+	struct bdev_rbd *rbd = (struct bdev_rbd *)bdev;
+	if (rbd->reservation_ns_context == NULL) {
+		rbd->reservation_ns_context = (void *)ns;
+		rbd->reservation_fn_cbk = cbk;
+	}
+	return true;
+}
+
+void
+bdev_rbd_ns_increment_epoch(struct spdk_bdev *bdev)
+{
+	struct bdev_rbd *rbd = (struct bdev_rbd *)bdev;
+	rbd->reservation_epoch ++;
+}
+
+static int
+metadata_json_write_cbk(void *cb_ctx, const void *data, size_t size)
+{
+	struct bdev_rbd *rbd = (struct bdev_rbd *)cb_ctx;
+	if (size == 0) {
+		SPDK_ERRLOG("Failed to set metadata  size = 0\n");
+		return -ENOENT;
+	}
+	int rc = rbd_metadata_set(rbd->image, RESERVATION_KEY, (const char *)data);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed to set metadata  key = reservation_key\n");
+		return -ENOENT;
+	}
+	SPDK_INFOLOG(reservation, "updated metadata by reservation_key %s\n", (const char *)data);
+	return rc;
+}
+
+int
+bdev_rbd_ns_reservation_update_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx **ctx)
+{
+	struct bdev_rbd *rbd = (struct bdev_rbd *)bdev;
+	*ctx = spdk_json_write_begin(metadata_json_write_cbk, (void *)rbd, 0);
+	if (*ctx == NULL) {
+		return -ENOMEM;
+	}
+	rbd->reservation_epoch ++;
+	spdk_json_write_object_begin(*ctx);
+	spdk_json_write_named_uint64(*ctx, "version", rbd->reservation_version);
+	spdk_json_write_named_uint64(*ctx, "epoch", rbd->reservation_epoch);
+	SPDK_INFOLOG(reservation, "updated metadata epoch %lu  for bdev %s\n", rbd->reservation_epoch,
+		     bdev->name);
+	return 0;
+}
+
+int
+bdev_rbd_ns_reservation_load_json(struct spdk_bdev *bdev, void **json, int *json_size)
+{
+	ssize_t  rc = 0;
+	struct bdev_rbd *rbd = (struct bdev_rbd *)bdev;
+
+	*json = calloc(MAX_RESERV_FILE_SIZE, 1);
+	if (*json == NULL) {
+		return -ENOMEM;
+	}
+	*json_size = MAX_RESERV_FILE_SIZE;
+	rc = rbd_metadata_get(rbd->image, RESERVATION_KEY, *json, json_size);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed to get metadata  key = %s rbd-name %s\n", RESERVATION_KEY, rbd->rbd_name);
+		return rc;
+	}
+	SPDK_INFOLOG(reservation,
+		     "loaded from the image metadata: current epoch %lu for rbd-name %s, bdev %s\n",
+		     rbd->reservation_epoch, rbd->rbd_name, bdev->name);
+	return 0;
+}
+
+static int
+rbd_bdev_check_epoch(struct bdev_rbd *rbd)
+{
+	size_t json_size;
+	ssize_t values_cnt, rc;
+	void *json = NULL, *end;
+	struct spdk_json_val *values = NULL;
+
+	json = calloc(MAX_RESERV_FILE_SIZE, 1);
+	if (json == NULL) {
+		rc = -ENOMEM;
+		goto exit;
+	}
+	size_t size = MAX_RESERV_FILE_SIZE;
+	rc = rbd_metadata_get(rbd->image, RESERVATION_KEY, json, &size);
+	if (rc < 0) {
+		SPDK_ERRLOG("Failed to get metadata  key = %s\n", RESERVATION_KEY);
+		rc = -ENOKEY;
+		goto exit;
+	}
+
+	rc = spdk_json_parse(json, json_size, NULL, 0, &end, 0);
+	if (rc < 0) {
+		SPDK_ERRLOG("Parsing JSON configuration failed (%zd)\n", rc);
+		goto exit;
+	}
+
+	values_cnt = rc;
+	values = calloc(values_cnt, sizeof(struct spdk_json_val));
+	if (values == NULL) {
+		goto exit;
+	}
+
+	rc = spdk_json_parse(json, json_size, values, values_cnt, &end, 0);
+	if (rc != values_cnt) {
+		SPDK_ERRLOG("Parsing JSON configuration failed (%zd)\n", rc);
+		goto exit;
+	}
+	struct spdk_json_val *key = NULL, *val = NULL;
+	uint64_t parsed_val;
+
+	rc = spdk_json_find(values, "epoch", &key, &val, SPDK_JSON_VAL_NUMBER);
+	if (rc != 0 || val == NULL) {
+		SPDK_ERRLOG("Key not found or not a number.\n");
+		goto exit;
+	}
+
+	rc = spdk_json_number_to_uint64(val, &parsed_val);
+	if (rc == 0) {
+		SPDK_INFOLOG(reservation, "Found uint64_t value: %lu, rbd->epoch %lu\n", parsed_val,
+			     rbd->reservation_epoch);
+		rc = rbd->reservation_epoch == parsed_val ? 0 : -EFAULT;
+	} else {
+		SPDK_ERRLOG("Failed to parse number as integer\n");
+	}
+exit:
+	free(json);
+	free(values);
+	return rc;
+}
+
+static int
+rbd_bdev_notify_ns_reservation_changed(struct bdev_rbd *rbd)
+{
+	int rc = 0;
+	if (rbd->reservation_ns_context == NULL) {
+		SPDK_ERRLOG("Ns context  not set\n");
+		rc = -1;
+		goto err;
+	} else {
+		/* first need to check whether  rbd->version < metadata version  and only in this case */
+		rc = rbd_bdev_check_epoch(rbd);
+		if (rc == 0) {
+			SPDK_INFOLOG(reservation, "reservation epoch %ld is already loaded\n", rbd->reservation_epoch);
+			goto err;
+		} else if (rc == -ENOKEY || rc == -ENOMEM) {
+			SPDK_INFOLOG(reservation, "no metadata found \n");
+			goto err;
+		}
+		if (rbd->reservation_fn_cbk) {
+			rc = rbd->reservation_fn_cbk(rbd->reservation_ns_context);
+		}
+		if (rc != 0) {
+			SPDK_ERRLOG("reservation metadata update was not loaded\n");
+		}
+	}
+err:
+	return rc;
+}
+
 
 static int
 bdev_rbd_library_init(void)

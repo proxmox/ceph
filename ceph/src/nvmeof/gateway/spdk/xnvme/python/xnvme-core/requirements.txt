@@ -1,5 +1,0 @@
-# For ctypes-bindings
-black
-ctypeslib2
-# All
-pytest

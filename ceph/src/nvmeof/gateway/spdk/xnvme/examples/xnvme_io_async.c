@@ -1,14 +1,9 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
-#include <stdio.h>
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <errno.h>
 #include <libxnvme.h>
-#include <libxnvme_pp.h>
-#include <libxnvme_nvm.h>
-#include <libxnvme_lba.h>
-#include <libxnvmec.h>
-#include <libxnvme_util.h>
-#include <time.h>
 
 #define DEFAULT_QD 8
 
@@ -47,10 +42,10 @@ cb_pool(struct xnvme_cmd_ctx *ctx, void *cb_arg)
  * - Teardown
  */
 static int
-sub_async_read(struct xnvmec *cli)
+sub_async_read(struct xnvme_cli *cli)
 {
 	struct xnvme_dev *dev = cli->args.dev;
-	const struct xnvme_geo *geo = cli->args.geo;
+	const struct xnvme_geo *geo = xnvme_dev_get_geo(dev);
 	struct xnvme_lba_range rng = {0};
 	uint32_t nsid, qd;
 
@@ -60,42 +55,47 @@ sub_async_read(struct xnvmec *cli)
 	char *buf = NULL, *payload = NULL;
 	int err;
 
-	qd = cli->given[XNVMEC_OPT_QDEPTH] ? cli->args.qdepth : DEFAULT_QD;
-	nsid = cli->given[XNVMEC_OPT_NSID] ? cli->args.nsid : xnvme_dev_get_nsid(dev);
+	if (geo->type != XNVME_GEO_CONVENTIONAL) {
+		XNVME_DEBUG("FAILED: not nvm, got; %d", geo->type);
+		return EINVAL;
+	}
+
+	qd = cli->given[XNVME_CLI_OPT_QDEPTH] ? cli->args.qdepth : DEFAULT_QD;
+	nsid = cli->given[XNVME_CLI_OPT_NSID] ? cli->args.nsid : xnvme_dev_get_nsid(dev);
 
 	rng = xnvme_lba_range_from_slba_elba(dev, cli->args.slba, cli->args.elba);
 	if (!rng.attr.is_valid) {
 		err = -EINVAL;
-		xnvmec_perr("invalid range", err);
+		xnvme_cli_perr("invalid range", err);
 		xnvme_lba_range_pr(&rng, XNVME_PR_DEF);
 		return err;
 	}
 
-	xnvmec_pinf("Allocating and filling buf of nbytes: %zu", rng.nbytes);
+	xnvme_cli_pinf("Allocating and filling buf of nbytes: %zu", rng.nbytes);
 	buf = xnvme_buf_alloc(dev, rng.nbytes);
 	if (!buf) {
 		err = -errno;
-		xnvmec_perr("xnvme_buf_alloc()", err);
+		xnvme_cli_perr("xnvme_buf_alloc()", err);
 		goto exit;
 	}
-	err = xnvmec_buf_fill(buf, rng.nbytes, "zero");
+	err = xnvme_buf_fill(buf, rng.nbytes, "zero");
 	if (err) {
-		xnvmec_perr("xnvmec_buf_fill()", err);
+		xnvme_cli_perr("xnvme_buf_fill()", err);
 		goto exit;
 	}
 
-	xnvmec_pinf("Initializing queue and setting default callback function and arguments");
+	xnvme_cli_pinf("Initializing queue and setting default callback function and arguments");
 	err = xnvme_queue_init(dev, qd, 0, &queue);
 	if (err) {
-		xnvmec_perr("xnvme_queue_init()", err);
+		xnvme_cli_perr("xnvme_queue_init()", err);
 		goto exit;
 	}
 	xnvme_queue_set_cb(queue, cb_pool, &cb_args);
 
-	xnvmec_pinf("Read uri: '%s', qd: %d", cli->args.uri, qd);
+	xnvme_cli_pinf("Read uri: '%s', qd: %d", cli->args.uri, qd);
 	xnvme_lba_range_pr(&rng, XNVME_PR_DEF);
 
-	xnvmec_timer_start(cli);
+	xnvme_cli_timer_start(cli);
 
 	payload = buf;
 	for (uint64_t curs = 0; (curs < rng.naddrs) && !cb_args.ecount;) {
@@ -114,7 +114,7 @@ submit:
 			goto submit;
 
 		default:
-			xnvmec_perr("submission-error", err);
+			xnvme_cli_perr("submission-error", err);
 			xnvme_queue_put_cmd_ctx(queue, ctx);
 			goto exit;
 		}
@@ -126,37 +126,37 @@ next:
 
 	err = xnvme_queue_drain(queue);
 	if (err < 0) {
-		xnvmec_perr("xnvme_queue_drain()", err);
+		xnvme_cli_perr("xnvme_queue_drain()", err);
 		goto exit;
 	}
 
-	xnvmec_timer_stop(cli);
+	xnvme_cli_timer_stop(cli);
 
 	if (cb_args.ecount) {
 		err = -EIO;
-		xnvmec_perr("got completion errors", err);
+		xnvme_cli_perr("got completion errors", err);
 		goto exit;
 	}
 
-	xnvmec_timer_bw_pr(cli, "wall-clock", rng.naddrs * geo->nbytes);
+	xnvme_cli_timer_bw_pr(cli, "wall-clock", rng.naddrs * geo->nbytes);
 
 	if (cli->args.data_output) {
-		xnvmec_pinf("Dumping nbytes: %zu, to: '%s'", rng.nbytes, cli->args.data_output);
+		xnvme_cli_pinf("Dumping nbytes: %zu, to: '%s'", rng.nbytes, cli->args.data_output);
 
-		err = xnvmec_buf_to_file(buf, rng.nbytes, cli->args.data_output);
+		err = xnvme_buf_to_file(buf, rng.nbytes, cli->args.data_output);
 		if (err) {
-			xnvmec_perr("xnvmec_buf_to_file()", err);
+			xnvme_cli_perr("xnvme_buf_to_file()", err);
 		}
 	}
 
 exit:
-	xnvmec_pinf("cb_args: {submitted: %u, completed: %u, ecount: %u}", cb_args.submitted,
-		    cb_args.completed, cb_args.ecount);
+	xnvme_cli_pinf("cb_args: {submitted: %u, completed: %u, ecount: %u}", cb_args.submitted,
+		       cb_args.completed, cb_args.ecount);
 
 	if (queue) {
 		int err_exit = xnvme_queue_term(queue);
 		if (err_exit) {
-			xnvmec_perr("xnvme_queue_term()", err_exit);
+			xnvme_cli_perr("xnvme_queue_term()", err_exit);
 		}
 	}
 	xnvme_buf_free(dev, buf);
@@ -175,10 +175,10 @@ exit:
  * - Teardown
  */
 static int
-sub_async_write(struct xnvmec *cli)
+sub_async_write(struct xnvme_cli *cli)
 {
 	struct xnvme_dev *dev = cli->args.dev;
-	const struct xnvme_geo *geo = cli->args.geo;
+	const struct xnvme_geo *geo = xnvme_dev_get_geo(dev);
 	struct xnvme_lba_range rng = {0};
 	uint32_t nsid, qd;
 
@@ -188,43 +188,48 @@ sub_async_write(struct xnvmec *cli)
 	char *buf = NULL, *payload = NULL;
 	int err;
 
-	qd = cli->given[XNVMEC_OPT_QDEPTH] ? cli->args.qdepth : DEFAULT_QD;
-	nsid = cli->given[XNVMEC_OPT_NSID] ? cli->args.nsid : xnvme_dev_get_nsid(cli->args.dev);
+	if (geo->type != XNVME_GEO_CONVENTIONAL) {
+		XNVME_DEBUG("FAILED: not nvm, got; %d", geo->type);
+		return EINVAL;
+	}
+
+	qd = cli->given[XNVME_CLI_OPT_QDEPTH] ? cli->args.qdepth : DEFAULT_QD;
+	nsid = cli->given[XNVME_CLI_OPT_NSID] ? cli->args.nsid : xnvme_dev_get_nsid(cli->args.dev);
 
 	rng = xnvme_lba_range_from_slba_elba(dev, cli->args.slba, cli->args.elba);
 	if (!rng.attr.is_valid) {
 		err = -EINVAL;
-		xnvmec_perr("invalid range", err);
+		xnvme_cli_perr("invalid range", err);
 		xnvme_lba_range_pr(&rng, XNVME_PR_DEF);
 		return err;
 	}
 
-	xnvmec_pinf("Allocating and filling buf of nbytes: %zu", rng.nbytes);
+	xnvme_cli_pinf("Allocating and filling buf of nbytes: %zu", rng.nbytes);
 	buf = xnvme_buf_alloc(dev, rng.nbytes);
 	if (!buf) {
 		err = -errno;
-		xnvmec_perr("xnvme_buf_alloc()", err);
+		xnvme_cli_perr("xnvme_buf_alloc()", err);
 		goto exit;
 	}
-	err = xnvmec_buf_fill(buf, rng.nbytes,
-			      cli->args.data_input ? cli->args.data_input : "anum");
+	err = xnvme_buf_fill(buf, rng.nbytes,
+			     cli->args.data_input ? cli->args.data_input : "anum");
 	if (err) {
-		xnvmec_perr("xnvmec_buf_fill()", err);
+		xnvme_cli_perr("xnvme_buf_fill()", err);
 		goto exit;
 	}
 
-	xnvmec_pinf("Initializing queue and setting default callback function and arguments");
+	xnvme_cli_pinf("Initializing queue and setting default callback function and arguments");
 	err = xnvme_queue_init(dev, qd, 0, &queue);
 	if (err) {
-		xnvmec_perr("xnvme_queue_init()", err);
+		xnvme_cli_perr("xnvme_queue_init()", err);
 		goto exit;
 	}
 	xnvme_queue_set_cb(queue, cb_pool, &cb_args);
 
-	xnvmec_pinf("Write uri: '%s', qd: %d", cli->args.uri, qd);
+	xnvme_cli_pinf("Write uri: '%s', qd: %d", cli->args.uri, qd);
 	xnvme_lba_range_pr(&rng, XNVME_PR_DEF);
 
-	xnvmec_timer_start(cli);
+	xnvme_cli_timer_start(cli);
 
 	payload = buf;
 	for (uint64_t sect = 0; (sect < rng.naddrs) && !cb_args.ecount;) {
@@ -243,7 +248,7 @@ submit:
 			goto submit;
 
 		default:
-			xnvmec_perr("submission-error", err);
+			xnvme_cli_perr("submission-error", err);
 			xnvme_queue_put_cmd_ctx(queue, ctx);
 			goto exit;
 		}
@@ -255,28 +260,28 @@ next:
 
 	err = xnvme_queue_drain(queue);
 	if (err < 0) {
-		xnvmec_perr("xnvme_queue_drain()", err);
+		xnvme_cli_perr("xnvme_queue_drain()", err);
 		goto exit;
 	}
 
-	xnvmec_timer_stop(cli);
+	xnvme_cli_timer_stop(cli);
 
 	if (cb_args.ecount) {
 		err = -EIO;
-		xnvmec_perr("got completion errors", err);
+		xnvme_cli_perr("got completion errors", err);
 		goto exit;
 	}
 
-	xnvmec_timer_bw_pr(cli, "wall-clock", rng.nbytes);
+	xnvme_cli_timer_bw_pr(cli, "wall-clock", rng.nbytes);
 
 exit:
-	xnvmec_pinf("cb_args: {submitted: %u, completed: %u, ecount: %u}", cb_args.submitted,
-		    cb_args.completed, cb_args.ecount);
+	xnvme_cli_pinf("cb_args: {submitted: %u, completed: %u, ecount: %u}", cb_args.submitted,
+		       cb_args.completed, cb_args.ecount);
 
 	if (queue) {
 		int err_exit = xnvme_queue_term(queue);
 		if (err_exit) {
-			xnvmec_perr("xnvme_queue_term()", err_exit);
+			xnvme_cli_perr("xnvme_queue_term()", err_exit);
 		}
 	}
 	xnvme_buf_free(dev, buf);
@@ -288,25 +293,24 @@ exit:
 // Command-Line Interface (CLI) definition
 //
 
-static struct xnvmec_sub g_subs[] = {
+static struct xnvme_cli_sub g_subs[] = {
 	{
 		"read",
 		"Read the LBAs [SLBA,ELBA]",
 		"Read the LBAs [SLBA,ELBA]",
 		sub_async_read,
 		{
-			{XNVMEC_OPT_URI, XNVMEC_POSA},
-			{XNVMEC_OPT_QDEPTH, XNVMEC_LOPT},
-			{XNVMEC_OPT_SLBA, XNVMEC_LOPT},
-			{XNVMEC_OPT_ELBA, XNVMEC_LOPT},
-			{XNVMEC_OPT_DATA_OUTPUT, XNVMEC_LOPT},
-			{XNVMEC_OPT_SEED, XNVMEC_LOPT},
+			{XNVME_CLI_OPT_POSA_TITLE, XNVME_CLI_SKIP},
+			{XNVME_CLI_OPT_URI, XNVME_CLI_POSA},
 
-			{XNVMEC_OPT_DEV_NSID, XNVMEC_LOPT},
-			{XNVMEC_OPT_BE, XNVMEC_LOPT},
-			{XNVMEC_OPT_ADMIN, XNVMEC_LOPT},
-			{XNVMEC_OPT_ASYNC, XNVMEC_LOPT},
-			{XNVMEC_OPT_DIRECT, XNVMEC_LFLG},
+			{XNVME_CLI_OPT_NON_POSA_TITLE, XNVME_CLI_SKIP},
+			{XNVME_CLI_OPT_QDEPTH, XNVME_CLI_LOPT},
+			{XNVME_CLI_OPT_SLBA, XNVME_CLI_LOPT},
+			{XNVME_CLI_OPT_ELBA, XNVME_CLI_LOPT},
+			{XNVME_CLI_OPT_DATA_OUTPUT, XNVME_CLI_LOPT},
+			{XNVME_CLI_OPT_SEED, XNVME_CLI_LOPT},
+
+			XNVME_CLI_ASYNC_OPTS,
 		},
 	},
 
@@ -316,22 +320,21 @@ static struct xnvmec_sub g_subs[] = {
 		"Write the LBAs [SLBA,ELBA]",
 		sub_async_write,
 		{
-			{XNVMEC_OPT_URI, XNVMEC_POSA},
-			{XNVMEC_OPT_QDEPTH, XNVMEC_LOPT},
-			{XNVMEC_OPT_SLBA, XNVMEC_LOPT},
-			{XNVMEC_OPT_ELBA, XNVMEC_LOPT},
-			{XNVMEC_OPT_DATA_INPUT, XNVMEC_LOPT},
+			{XNVME_CLI_OPT_POSA_TITLE, XNVME_CLI_SKIP},
+			{XNVME_CLI_OPT_URI, XNVME_CLI_POSA},
 
-			{XNVMEC_OPT_DEV_NSID, XNVMEC_LOPT},
-			{XNVMEC_OPT_BE, XNVMEC_LOPT},
-			{XNVMEC_OPT_ADMIN, XNVMEC_LOPT},
-			{XNVMEC_OPT_ASYNC, XNVMEC_LOPT},
-			{XNVMEC_OPT_DIRECT, XNVMEC_LFLG},
+			{XNVME_CLI_OPT_NON_POSA_TITLE, XNVME_CLI_SKIP},
+			{XNVME_CLI_OPT_QDEPTH, XNVME_CLI_LOPT},
+			{XNVME_CLI_OPT_SLBA, XNVME_CLI_LOPT},
+			{XNVME_CLI_OPT_ELBA, XNVME_CLI_LOPT},
+			{XNVME_CLI_OPT_DATA_INPUT, XNVME_CLI_LOPT},
+
+			XNVME_CLI_ASYNC_OPTS,
 		},
 	},
 };
 
-static struct xnvmec g_cli = {
+static struct xnvme_cli g_cli = {
 	.title = "xNVMe: Asynchronous IO Example",
 	.descr_short = "xNVMe: Asynchronous IO Example: write, read",
 	.subs = g_subs,
@@ -341,5 +344,5 @@ static struct xnvmec g_cli = {
 int
 main(int argc, char **argv)
 {
-	return xnvmec(&g_cli, argc, argv, XNVMEC_INIT_DEV_OPEN);
+	return xnvme_cli_run(&g_cli, argc, argv, XNVME_CLI_INIT_DEV_OPEN);
 }

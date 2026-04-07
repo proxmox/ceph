@@ -902,7 +902,7 @@ virtio_user_setup_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 	vq->vq_ring_virt_mem = queue_mem;
 
 	state.index = vq->vq_queue_index;
-	state.num = vq->vq_nentries;
+	state.num = 1;
 
 	if (virtio_dev_has_feature(vdev, VHOST_USER_F_PROTOCOL_FEATURES)) {
 		rc = vhost_user_sock(dev, VHOST_USER_SET_VRING_ENABLE, &state);
@@ -1021,7 +1021,7 @@ virtio_user_dev_init(struct virtio_dev *vdev, const char *name, const char *path
 	int rc;
 
 	if (name == NULL) {
-		SPDK_ERRLOG("No name gived for controller: %s\n", path);
+		SPDK_ERRLOG("No name given for controller: %s\n", path);
 		return -EINVAL;
 	}
 

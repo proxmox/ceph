@@ -85,6 +85,12 @@ struct spdk_scsi_lun {
 	/** LUN id for this logical unit. */
 	int id;
 
+	/** The LUN is removed */
+	bool removed;
+
+	/** The LUN is resizing */
+	bool resizing;
+
 	/** Pointer to the SCSI device containing this LUN. */
 	struct spdk_scsi_dev *dev;
 
@@ -100,14 +106,8 @@ struct spdk_scsi_lun {
 	/** I/O channel for the bdev associated with this LUN. */
 	struct spdk_io_channel *io_channel;
 
-	/**  The reference number for this LUN, thus we can correctly free the io_channel */
-	uint32_t ref;
-
 	/** Poller to release the resource of the lun when it is hot removed */
 	struct spdk_poller *hotremove_poller;
-
-	/** The LUN is removed */
-	bool removed;
 
 	/** Callback to be fired when LUN removal is first triggered. */
 	void (*hotremove_cb)(const struct spdk_scsi_lun *lun, void *arg);
@@ -120,15 +120,6 @@ struct spdk_scsi_lun {
 
 	/** Argument for resize_cb */
 	void *resize_ctx;
-
-	/** Registrant head for I_T nexus */
-	TAILQ_HEAD(, spdk_scsi_pr_registrant) reg_head;
-	/** Persistent Reservation Generation */
-	uint32_t pr_generation;
-	/** Reservation for the LUN */
-	struct spdk_scsi_pr_reservation reservation;
-	/** Reservation holder for SPC2 RESERVE(6) and RESERVE(10) */
-	struct spdk_scsi_pr_registrant scsi2_holder;
 
 	/** List of open descriptors for this LUN. */
 	TAILQ_HEAD(, spdk_scsi_lun_desc) open_descs;
@@ -151,8 +142,17 @@ struct spdk_scsi_lun {
 	/** A structure to connect LUNs in a list. */
 	TAILQ_ENTRY(spdk_scsi_lun) tailq;
 
-	/** The LUN is resizing */
-	bool resizing;
+	/**  The reference number for this LUN, thus we can correctly free the io_channel */
+	uint32_t ref;
+
+	/** Persistent Reservation Generation */
+	uint32_t pr_generation;
+	/** Registrant head for I_T nexus */
+	TAILQ_HEAD(, spdk_scsi_pr_registrant) reg_head;
+	/** Reservation for the LUN */
+	struct spdk_scsi_pr_reservation reservation;
+	/** Reservation holder for SPC2 RESERVE(6) and RESERVE(10) */
+	struct spdk_scsi_pr_registrant scsi2_holder;
 };
 
 struct spdk_scsi_lun *scsi_lun_construct(const char *bdev_name,

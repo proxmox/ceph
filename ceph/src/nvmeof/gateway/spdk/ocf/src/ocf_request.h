@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_REQUEST_H__
@@ -8,8 +9,27 @@
 
 #include "ocf_env.h"
 #include "ocf_io_priv.h"
-#include "engine/cache_engine.h"
+#include "ocf_def_priv.h"
 #include "metadata/metadata_structs.h"
+
+typedef enum {
+	/* modes inherited from user API */
+	ocf_req_cache_mode_wt = ocf_cache_mode_wt,
+	ocf_req_cache_mode_wb = ocf_cache_mode_wb,
+	ocf_req_cache_mode_wa = ocf_cache_mode_wa,
+	ocf_req_cache_mode_pt = ocf_cache_mode_pt,
+	ocf_req_cache_mode_wi = ocf_cache_mode_wi,
+	ocf_req_cache_mode_wo = ocf_cache_mode_wo,
+
+	/* internal modes */
+	ocf_req_cache_mode_fast,
+		/*!< Fast path */
+	ocf_req_cache_mode_d2c,
+		/*!< Direct to Core - pass through to core without
+				touching cacheline metadata */
+
+	ocf_req_cache_mode_max,
+} ocf_req_cache_mode_t;
 
 struct ocf_req_allocator;
 
@@ -36,8 +56,11 @@ struct ocf_req_info {
 	uint32_t cleaning_required : 1;
 	/*!< Eviction failed, need to request cleaning */
 
+	uint32_t cache_error : 1;
+	/*!< Error occurred during I/O on cache device */
+
 	uint32_t core_error : 1;
-	/*!< Error occured during I/O on core device */
+	/*!< Error occurred during I/O on core device */
 
 	uint32_t cleaner_cache_line_lock : 1;
 	/*!< Cleaner flag - acquire cache line lock */
@@ -94,11 +117,68 @@ struct ocf_req_discard_info {
 };
 
 /**
+ * @brief OCF IO engine handler callback
+ */
+struct ocf_request;
+typedef int (*ocf_req_cb)(struct ocf_request *req);
+
+struct ocf_request_io {
+
+	/**
+	 * @brief OCF IO destination class
+	 */
+	uint8_t io_class;
+
+	/**
+	 * @brief OCF IO reference count
+	 */
+	env_atomic ref_count;
+
+	/**
+	 * @brief Front volume handle
+	 */
+	ocf_volume_t volume;
+
+	/**
+	 * @brief OCF IO start function
+	 */
+	ocf_start_io_t start;
+
+	/**
+	 * @brief OCF IO private 1
+	 */
+	void *priv1;
+
+	/**
+	 * @brief OCF IO private 2
+	 */
+	void *priv2;
+
+	/**
+	 * @brief OCF IO handle function
+	 */
+	ocf_handle_io_t handle;
+
+	/**
+	 * @brief OCF IO completion function
+	 */
+	ocf_end_io_t end;
+};
+
+/**
  * @brief OCF IO request
  */
 struct ocf_request {
-	struct ocf_io_internal ioi;
-	/*!< OCF IO associated with request */
+	/* This struct is temporary. It will be consolidated with ocf_request */
+	struct ocf_request_io io;
+
+	union {
+		ocf_req_end_t cache_forward_end;
+		ocf_req_end_t volume_forward_end;
+	};
+	ocf_req_end_t core_forward_end;
+	env_atomic cache_remaining;
+	env_atomic core_remaining;
 
 	env_atomic ref_count;
 	/*!< Reference usage count, once OCF request reaches zero it
@@ -128,8 +208,8 @@ struct ocf_request {
 	ocf_core_t core;
 	/*!< Handle to core instance */
 
-	const struct ocf_io_if *io_if;
-	/*!< IO interface */
+	ocf_req_cb engine_handler;
+	/*!< IO engine handler */
 
 	void *priv;
 	/*!< Filed for private data, context */
@@ -143,17 +223,11 @@ struct ocf_request {
 	ctx_data_t *cp_data;
 	/*!< Copy of request data */
 
-	uint64_t byte_position;
-	/*!< LBA byte position of request in core domain */
-
 	uint64_t core_line_first;
 	/*! First core line */
 
 	uint64_t core_line_last;
 	/*! Last core line */
-
-	uint32_t byte_length;
-	/*!< Byte length of OCF request */
 
 	uint32_t core_line_count;
 	/*! Core line count */
@@ -161,8 +235,26 @@ struct ocf_request {
 	uint32_t alloc_core_line_count;
 	/*! Number of core lines at time of request allocation */
 
+	uint64_t addr;
+	/*!< LBA byte position of request in core domain */
+
+	uint32_t bytes;
+	/*!< Byte length of OCF request */
+
+	uint32_t offset;
+	/*!< Offset into request data*/
+
+	uint64_t flags;
+	/*!< IO flags */
+
 	int error;
 	/*!< This filed indicates an error for OCF request */
+
+	int cache_error;
+	/*!< Indicator of forward IO cache device error */
+
+	int core_error;
+	/*!< Indicator of forward IO core device error */
 
 	ocf_part_id_t part_id;
 	/*!< Targeted partition of requests */
@@ -172,6 +264,9 @@ struct ocf_request {
 
 	uint8_t d2c : 1;
 	/**!< request affects metadata cachelines (is not direct-to-core) */
+
+	uint8_t cleaner : 1;
+	/**!< request allocated by cleaner */
 
 	uint8_t dirty : 1;
 	/**!< indicates that request produces dirty data */
@@ -194,13 +289,19 @@ struct ocf_request {
 	uint8_t part_evict : 1;
 	/* !< Some cachelines from request's partition must be evicted */
 
+	uint8_t complete_queue : 1;
+	/* !< Request needs to be completed from the queue context */
+
 	uint8_t lock_idx : OCF_METADATA_GLOBAL_LOCK_IDX_BITS;
 	/* !< Selected global metadata read lock */
 
-	ocf_req_cache_mode_t cache_mode;
+	uint8_t is_deferred : 1;
+	/* !< request handling was deferred and eventually resumed */
 
-	log_sid_t sid;
-	/*!< Tracing sequence ID */
+	uint8_t is_mngt : 1;
+	/* !< It's a management path request */
+
+	ocf_req_cache_mode_t cache_mode;
 
 	uint64_t timestamp;
 	/*!< Tracing timestamp */
@@ -214,7 +315,7 @@ struct ocf_request {
 	struct ocf_req_info info;
 	/*!< Detailed request info */
 
-	void (*complete)(struct ocf_request *ocf_req, int error);
+	ocf_req_end_t complete;
 	/*!< Request completion function */
 
 	struct ocf_req_discard_info discard;
@@ -229,8 +330,6 @@ struct ocf_request {
 
 	struct ocf_map_info __map[0];
 };
-
-typedef void (*ocf_req_end_t)(struct ocf_request *req, int error);
 
 /**
  * @brief Initialize OCF request allocation utility
@@ -248,6 +347,26 @@ int ocf_req_allocator_init(struct ocf_ctx *ocf_ctx);
 void ocf_req_allocator_deinit(struct ocf_ctx *ocf_ctx);
 
 /**
+ * @brief Allocate new OCF request for the management path
+ *
+ * @param queue - I/O queue handle
+ *
+ * @return new OCF request
+ */
+struct ocf_request *ocf_req_new_mngt(ocf_cache_t cache, ocf_queue_t queue);
+
+/**
+ * @brief Allocate new OCF request for cleaner
+ *
+ * @param queue - I/O queue handle
+ * @param count - Number of map entries
+ *
+ * @return new OCF request
+ */
+struct ocf_request *ocf_req_new_cleaner(ocf_cache_t cache, ocf_queue_t queue,
+		uint32_t count);
+
+/**
  * @brief Allocate new OCF request
  *
  * @param queue - I/O queue handle
@@ -259,6 +378,20 @@ void ocf_req_allocator_deinit(struct ocf_ctx *ocf_ctx);
  * @return new OCF request
  */
 struct ocf_request *ocf_req_new(ocf_queue_t queue, ocf_core_t core,
+		uint64_t addr, uint32_t bytes, int rw);
+
+/**
+ * @brief Allocate new OCF request for cache IO
+ *
+ * @param cache - OCF cache instance
+ * @param queue - I/O queue handle
+ * @param addr - LBA of request
+ * @param bytes - number of bytes of request
+ * @param rw - Read or Write
+ *
+ * @return new OCF request
+ */
+struct ocf_request *ocf_req_new_cache(ocf_cache_t cache, ocf_queue_t queue,
 		uint64_t addr, uint32_t bytes, int rw);
 
 /**
@@ -431,5 +564,75 @@ static inline bool ocf_req_is_4k(uint64_t addr, uint32_t bytes)
 {
 	return !((addr % PAGE_SIZE) || (bytes % PAGE_SIZE));
 }
+
+static inline void ocf_req_forward_cache_get(struct ocf_request *req)
+{
+	env_atomic_inc(&req->cache_remaining);
+}
+
+static inline void ocf_req_forward_cache_put(struct ocf_request *req)
+{
+	if (env_atomic_dec_return(&req->cache_remaining) == 0)
+		req->cache_forward_end(req, req->cache_error);
+}
+
+static inline void ocf_req_forward_core_get(struct ocf_request *req)
+{
+	env_atomic_inc(&req->core_remaining);
+}
+
+static inline void ocf_req_forward_core_put(struct ocf_request *req)
+{
+	if (env_atomic_dec_return(&req->core_remaining) == 0)
+		req->core_forward_end(req, req->core_error);
+}
+
+static inline ocf_forward_token_t ocf_req_to_cache_forward_token(struct ocf_request *req)
+{
+	return (ocf_forward_token_t)req | 1;
+}
+
+static inline ocf_forward_token_t ocf_req_to_core_forward_token(struct ocf_request *req)
+{
+	return (ocf_forward_token_t)req;
+}
+
+static inline struct ocf_request *ocf_req_forward_token_to_req(ocf_forward_token_t token)
+{
+	return (struct ocf_request *)(token & ~1);
+}
+
+void ocf_req_forward_volume_io(struct ocf_request *req, ocf_volume_t volume,
+		int dir, uint64_t addr, uint64_t bytes, uint64_t offset);
+
+void ocf_req_forward_volume_flush(struct ocf_request *req, ocf_volume_t volume);
+
+void ocf_req_forward_volume_discard(struct ocf_request *req,
+		ocf_volume_t volume, uint64_t addr, uint64_t bytes);
+
+void ocf_req_forward_volume_io_simple(struct ocf_request *req,
+		ocf_volume_t volume, int dir, uint64_t addr, uint64_t bytes);
+
+void ocf_req_forward_cache_io(struct ocf_request *req, int dir, uint64_t addr,
+		uint64_t bytes, uint64_t offset);
+
+void ocf_req_forward_cache_flush(struct ocf_request *req);
+
+void ocf_req_forward_cache_discard(struct ocf_request *req, uint64_t addr,
+		uint64_t bytes);
+
+void ocf_req_forward_cache_write_zeros(struct ocf_request *req, uint64_t addr,
+		uint64_t bytes);
+
+void ocf_req_forward_cache_metadata(struct ocf_request *req, int dir,
+		uint64_t addr, uint64_t bytes, uint64_t offset);
+
+void ocf_req_forward_core_io(struct ocf_request *req, int dir, uint64_t addr,
+		uint64_t bytes, uint64_t offset);
+
+void ocf_req_forward_core_flush(struct ocf_request *req);
+
+void ocf_req_forward_core_discard(struct ocf_request *req, uint64_t addr,
+		uint64_t bytes);
 
 #endif /* __OCF_REQUEST_H__ */

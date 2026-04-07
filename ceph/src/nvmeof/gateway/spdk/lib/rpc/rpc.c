@@ -16,14 +16,16 @@
 #include "spdk/util.h"
 #include "spdk/version.h"
 
-static struct sockaddr_un g_rpc_listen_addr_unix = {};
-static char g_rpc_lock_path[sizeof(g_rpc_listen_addr_unix.sun_path) + sizeof(".lock")];
-static int g_rpc_lock_fd = -1;
-
-static struct spdk_jsonrpc_server *g_jsonrpc_server = NULL;
-static uint32_t g_rpc_state;
+static uint32_t g_rpc_state = SPDK_RPC_STARTUP;
 static bool g_rpcs_correct = true;
 static char **g_rpcs_allowlist = NULL;
+
+struct spdk_rpc_server {
+	struct sockaddr_un listen_addr_unix;
+	char lock_path[sizeof(((struct sockaddr_un *)0)->sun_path) + sizeof(".lock")];
+	int lock_fd;
+	struct spdk_jsonrpc_server *jsonrpc_server;
+};
 
 struct spdk_rpc_method {
 	const char *name;
@@ -141,76 +143,80 @@ jsonrpc_handler(struct spdk_jsonrpc_request *request,
 	}
 }
 
-int
-spdk_rpc_listen(const char *listen_addr)
+struct spdk_rpc_server *
+spdk_rpc_server_listen(const char *listen_addr)
 {
+	struct spdk_rpc_server *server;
 	int rc;
 
-	memset(&g_rpc_listen_addr_unix, 0, sizeof(g_rpc_listen_addr_unix));
+	server = calloc(1, sizeof(struct spdk_rpc_server));
+	if (!server) {
+		SPDK_ERRLOG("Could not allocate new RPC server\n");
+		return NULL;
+	}
 
-	g_rpc_listen_addr_unix.sun_family = AF_UNIX;
-	rc = snprintf(g_rpc_listen_addr_unix.sun_path,
-		      sizeof(g_rpc_listen_addr_unix.sun_path),
+
+	assert(listen_addr != NULL);
+
+	server->listen_addr_unix.sun_family = AF_UNIX;
+	rc = snprintf(server->listen_addr_unix.sun_path,
+		      sizeof(server->listen_addr_unix.sun_path),
 		      "%s", listen_addr);
-	if (rc < 0 || (size_t)rc >= sizeof(g_rpc_listen_addr_unix.sun_path)) {
+	if (rc < 0 || (size_t)rc >= sizeof(server->listen_addr_unix.sun_path)) {
 		SPDK_ERRLOG("RPC Listen address Unix socket path too long\n");
-		g_rpc_listen_addr_unix.sun_path[0] = '\0';
-		return -1;
+		goto ret;
 	}
 
-	rc = snprintf(g_rpc_lock_path, sizeof(g_rpc_lock_path), "%s.lock",
-		      g_rpc_listen_addr_unix.sun_path);
-	if (rc < 0 || (size_t)rc >= sizeof(g_rpc_lock_path)) {
+	rc = snprintf(server->lock_path, sizeof(server->lock_path), "%s.lock",
+		      server->listen_addr_unix.sun_path);
+	if (rc < 0 || (size_t)rc >= sizeof(server->lock_path)) {
 		SPDK_ERRLOG("RPC lock path too long\n");
-		g_rpc_listen_addr_unix.sun_path[0] = '\0';
-		g_rpc_lock_path[0] = '\0';
-		return -1;
+		goto ret;
 	}
 
-	g_rpc_lock_fd = open(g_rpc_lock_path, O_RDWR | O_CREAT, 0600);
-	if (g_rpc_lock_fd == -1) {
+	server->lock_fd = open(server->lock_path, O_RDWR | O_CREAT, 0600);
+	if (server->lock_fd == -1) {
 		SPDK_ERRLOG("Cannot open lock file %s: %s\n",
-			    g_rpc_lock_path, spdk_strerror(errno));
-		g_rpc_listen_addr_unix.sun_path[0] = '\0';
-		g_rpc_lock_path[0] = '\0';
-		return -1;
+			    server->lock_path, spdk_strerror(errno));
+		goto ret;
 	}
 
-	rc = flock(g_rpc_lock_fd, LOCK_EX | LOCK_NB);
+	rc = flock(server->lock_fd, LOCK_EX | LOCK_NB);
 	if (rc != 0) {
 		SPDK_ERRLOG("RPC Unix domain socket path %s in use. Specify another.\n",
-			    g_rpc_listen_addr_unix.sun_path);
-		g_rpc_listen_addr_unix.sun_path[0] = '\0';
-		g_rpc_lock_path[0] = '\0';
-		return -1;
+			    server->listen_addr_unix.sun_path);
+		goto ret;
 	}
 
 	/*
 	 * Since we acquired the lock, it is safe to delete the Unix socket file
 	 * if it still exists from a previous process.
 	 */
-	unlink(g_rpc_listen_addr_unix.sun_path);
+	unlink(server->listen_addr_unix.sun_path);
 
-	g_jsonrpc_server = spdk_jsonrpc_server_listen(AF_UNIX, 0,
-			   (struct sockaddr *)&g_rpc_listen_addr_unix,
-			   sizeof(g_rpc_listen_addr_unix),
-			   jsonrpc_handler);
-	if (g_jsonrpc_server == NULL) {
+	server->jsonrpc_server = spdk_jsonrpc_server_listen(AF_UNIX, 0,
+				 (struct sockaddr *) & server->listen_addr_unix,
+				 sizeof(server->listen_addr_unix),
+				 jsonrpc_handler);
+	if (server->jsonrpc_server == NULL) {
 		SPDK_ERRLOG("spdk_jsonrpc_server_listen() failed\n");
-		close(g_rpc_lock_fd);
-		g_rpc_lock_fd = -1;
-		unlink(g_rpc_lock_path);
-		g_rpc_lock_path[0] = '\0';
-		return -1;
+		close(server->lock_fd);
+		unlink(server->lock_path);
+		goto ret;
 	}
 
-	return 0;
+	return server;
+
+ret:
+	free(server);
+	return NULL;
 }
 
 void
-spdk_rpc_accept(void)
+spdk_rpc_server_accept(struct spdk_rpc_server *server)
 {
-	spdk_jsonrpc_server_poll(g_jsonrpc_server);
+	assert(server != NULL);
+	spdk_jsonrpc_server_poll(server->jsonrpc_server);
 }
 
 void
@@ -331,28 +337,31 @@ spdk_rpc_set_allowlist(const char **rpc_allowlist)
 }
 
 void
-spdk_rpc_close(void)
+spdk_rpc_server_close(struct spdk_rpc_server *server)
 {
-	if (g_jsonrpc_server) {
-		if (g_rpc_listen_addr_unix.sun_path[0]) {
-			/* Delete the Unix socket file */
-			unlink(g_rpc_listen_addr_unix.sun_path);
-			g_rpc_listen_addr_unix.sun_path[0] = '\0';
-		}
+	assert(server != NULL);
+	assert(server->jsonrpc_server != NULL);
 
-		spdk_jsonrpc_server_shutdown(g_jsonrpc_server);
-		g_jsonrpc_server = NULL;
-
-		if (g_rpc_lock_fd != -1) {
-			close(g_rpc_lock_fd);
-			g_rpc_lock_fd = -1;
-		}
-
-		if (g_rpc_lock_path[0]) {
-			unlink(g_rpc_lock_path);
-			g_rpc_lock_path[0] = '\0';
-		}
+	if (server->listen_addr_unix.sun_path[0]) {
+		/* Delete the Unix socket file */
+		unlink(server->listen_addr_unix.sun_path);
+		server->listen_addr_unix.sun_path[0] = '\0';
 	}
+
+	spdk_jsonrpc_server_shutdown(server->jsonrpc_server);
+	server->jsonrpc_server = NULL;
+
+	if (server->lock_fd != -1) {
+		close(server->lock_fd);
+		server->lock_fd = -1;
+	}
+
+	if (server->lock_path[0]) {
+		unlink(server->lock_path);
+		server->lock_path[0] = '\0';
+	}
+
+	free(server);
 }
 
 struct rpc_get_methods {

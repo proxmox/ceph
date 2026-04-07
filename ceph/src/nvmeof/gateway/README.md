@@ -22,20 +22,55 @@ The [creation and management of RBD images](https://docs.ceph.com/en/latest/rbd/
 
 ### Dependencies
 
-* `moby-engine` (`docker-engine`) (v20.10) and `docker-compose` (v1.29). These versions are just indicative
+* `moby-engine` (`docker-engine`) (v20.10) and `docker-compose` (v2.11.0+). These versions are just indicative
 *  `make` (only needed to launch `docker-compose` commands).
 
-To install these dependencies in Fedora:
+##### To install these dependencies in Fedora:
 
 ```bash
-sudo dnf install -y make moby-engine docker-compose
+sudo dnf install -y make moby-engine docker-compose-plugin
 ```
 
-Some [post-installation steps](https://docs.docker.com/engine/install/linux-postinstall/) are required to use `docker` with regular users:
+##### To install these dependencies in CentOS:
+ Following [Install Docker Engine on CentOS](https://docs.docker.com/engine/install/centos/#install-using-the-repository).
+
+After installing the docker-engine, several [post-installation steps](https://docs.docker.com/engine/install/linux-postinstall/) are required to use `docker` with regular users:
 
 ```bash
 sudo groupadd docker
 sudo usermod -aG docker $USER
+```
+
+In order to use the "make verify" option to validate the Python source files you need to have flake8 installed on the build machine:
+
+```bash
+pip install flake8
+```
+
+If you don't have pip installed you can [install pip](https://phoenixnap.com/kb/how-to-install-pip-centos-7): 
+
+```
+curl -O https://bootstrap.pypa.io/get-pip.py
+sudo python get-pip.py
+```
+
+Notice that you can disable a specific flake8 error by adding a comment of "noqa:" followed by the error code to the line.
+For example:
+
+```
+    unused_variable = 5     # noqa: F841
+```
+
+if you want to ignore a specific error in all files, you can add the error code to the "ignore" field in `tox.ini`.
+For example:
+```
+ignore = E501,E251,E225
+```
+
+If you dont have make installed and encounter the error "make: command not found", you can install it by running the following:
+
+```
+yum groupinstall "Development Tools"
 ```
 
 ### Steps
@@ -92,18 +127,24 @@ The following command executes all the steps required to set up the NVMe-oF envi
 
 ```bash
 $ make demo
-docker-compose  exec  ceph bash -c "rbd -p rbd info demo_image || rbd -p rbd create demo_image --size 10M"
-rbd: error opening image demo_image: (2) No such file or directory
-docker-compose  run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 subsystem add --subsystem "nqn.2016-06.io.spdk:cnode1" --enable-ha
+Attempt (1): Fetching URL for arch=x86_64, branch=main, sha=latest...
+Success: Retrieved URL for arch=x86_64, branch=main, sha=latest: https://4.chacra.ceph.com/r/ceph/main/97c8c56a3d2cc7a294b0d2931f856324b5330b7c/centos/9/flavors/default/
+/usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 subsystem add --subsystem "nqn.2016-06.io.spdk:cnode1" --no-group-append
 Adding subsystem nqn.2016-06.io.spdk:cnode1: Successful
-docker-compose  run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 namespace add --subsystem "nqn.2016-06.io.spdk:cnode1" --rbd-pool rbd --rbd-image demo_image
-Adding namespace 1 to nqn.2016-06.io.spdk:cnode1, load balancing group 1: Successful
-docker-compose  run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 listener add --subsystem "nqn.2016-06.io.spdk:cnode1" --gateway-name fbca1a3d3ed8 --traddr 192.168.13.3 --trsvcid 4420
-Adding listener 192.168.13.3:4420 to nqn.2016-06.io.spdk:cnode1: Successful
-docker-compose  run --rm nvmeof-cli --server-address 2001:db8::3 --server-port 5500 listener add --subsystem "nqn.2016-06.io.spdk:cnode1" --gateway-name fbca1a3d3ed8 --traddr 2001:db8::3 --trsvcid 4420 --adrfam IPV6
-Adding listener [2001:db8::3]:4420 to nqn.2016-06.io.spdk:cnode1: Successful
-docker-compose  run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 host add --subsystem "nqn.2016-06.io.spdk:cnode1" --host "*"
-Allowing any host for nqn.2016-06.io.spdk:cnode1: Successful
+/usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 namespace add --subsystem "nqn.2016-06.io.spdk:cnode1" --rbd-pool rbd --rbd-image demo_image --size 10MB --rbd-create-image
+Adding namespace 1 to nqn.2016-06.io.spdk:cnode1: Successful
+/usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 namespace add --subsystem "nqn.2016-06.io.spdk:cnode1" --rbd-pool rbd --rbd-image demo_image2 --size 10MB --rbd-create-image --no-auto-visible
+Adding namespace 2 to nqn.2016-06.io.spdk:cnode1: Successful
+/usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 listener add --subsystem "nqn.2016-06.io.spdk:cnode1" --host-name ` /usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 --output stdio gw info | grep "Gateway's host name:" | cut -d: -f2 | sed 's/ //g'` --traddr 192.168.13.3 --trsvcid 4420 --verify-host-name
+Adding nqn.2016-06.io.spdk:cnode1 listener at 192.168.13.3:4420: Successful
+/usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 listener add --subsystem "nqn.2016-06.io.spdk:cnode1" --host-name ` /usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 --output stdio gw info | grep "Gateway's host name:" | cut -d: -f2 | sed 's/ //g'` --traddr 0.0.0.0 --trsvcid `expr 4420 + 1` --verify-host-name
+Adding nqn.2016-06.io.spdk:cnode1 listener at 0.0.0.0:4421: Successful
+/usr/bin/docker compose run --rm nvmeof-cli --server-address 2001:db8::3 --server-port 5500 listener add --subsystem "nqn.2016-06.io.spdk:cnode1" --host-name ` /usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 --output stdio gw info | grep "Gateway's host name:" | cut -d: -f2 | sed 's/ //g'` --traddr 2001:db8::3 --trsvcid 4420 --adrfam IPV6 --verify-host-name
+Adding nqn.2016-06.io.spdk:cnode1 listener at [2001:db8::3]:4420: Successful
+/usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 host add --subsystem "nqn.2016-06.io.spdk:cnode1" --host-nqn "*"
+Allowing open host access to nqn.2016-06.io.spdk:cnode1: Successful
+/usr/bin/docker compose run --rm nvmeof-cli --server-address 192.168.13.3 --server-port 5500 namespace add_host --subsystem "nqn.2016-06.io.spdk:cnode1" --nsid 2 --host-nqn `cat /etc/nvme/hostnqn`
+Adding host nqn.2014-08.org.nvmexpress:uuid:893a6752-fe9b-ca48-aa93-e4565f32881c to namespace 2 on nqn.2016-06.io.spdk:cnode1: Successful
 ```
 
 #### Manual Steps
@@ -116,36 +157,50 @@ The same configuration can also be manually run:
     eval $(make alias)
     ```
 
-1.  In order to start working with the NVMe-oF gateway, we need to create an RBD image first (`demo_image` in the `rbd` pool):
-
-    ```bash
-    make rbd
-    ```
-
 1. Create a subsystem:
 
     ```bash
-    cephnvmf subsystem add --subsystem nqn.2016-06.io.spdk:cnode1
+    cephnvmf subsystem add --subsystem nqn.2016-06.io.spdk:cnode1 --no-group-append
     ```
 
 1. Add a namespace:
 
     ```bash
-    cephnvmf namespace add --subsystem nqn.2016-06.io.spdk:cnode1 --rbd-pool rbd --rbd-image demo_image
+    cephnvmf namespace add --subsystem nqn.2016-06.io.spdk:cnode1 --rbd-pool rbd --rbd-image demo_image --size 10MB --rbd-create-image
+    ```
+
+1. Find the gateway's host name:
+
+    ```bash
+    cephnvmf --output stdio gw info | grep "Gateway's host name:"
     ```
 
 1. Create a listener so that NVMe initiators can connect to:
 
     ```bash
-    cephnvmf listener add ---subsystem nqn.2016-06.io.spdk:cnode1 -g gateway_name -a gateway_addr -s 4420
+    cephnvmf listener add --subsystem nqn.2016-06.io.spdk:cnode1 --host-name host_name_found_above -a gateway_addr -s 4420 --verify-host-name
     ```
 
 1. Define which hosts can connect:
 
     ```bash
-    cephnvmf host add --subsystem nqn.2016-06.io.spdk:cnode1 --host "*"
+    cephnvmf host add --subsystem nqn.2016-06.io.spdk:cnode1 --host-nqn "*"
     ```
 
+These can also be run by setting environment variables `CEPH_NVMEOF_SERVER_ADDRESS` and `CEPH_NVMEOF_SERVER_PORT` before running nvmeof-cli commands, example:
+```
+cat <<EOF > /etc/ceph/nvmeof-cli.env
+CEPH_NVMEOF_SERVER_ADDRESS=x.x.x.x 
+CEPH_NVMEOF_SERVER_PORT=5500
+EOF
+
+
+// using containers
+docker compose run --env-file /etc/ceph/nvmeof-cli.env -it <container_image> subsystem add --subsystem nqn.2016-06.io.spdk:cnode1
+// using pypi package
+source /etc/ceph/nvmeof-cli.env
+ceph-nvmeof subsystem add --subsystem nqn.2016-06.io.spdk:cnode1 
+```
 
 ### Mounting the NVMe-oF volume
 
@@ -161,7 +216,7 @@ Once the NVMe-oF target is
 1. Ensure that the listener is reachable from the NVMe-oF initiator:
 
     ```bash
-    $ sudo nvme discover -t tcp -a 192.168.13.3 -s 4420
+    $ sudo nvme discover -t tcp -a gateway_addr -s 8009
 
     Discovery Log Number of Records 1, Generation counter 2
     =====Discovery Log Entry 0======
@@ -180,7 +235,7 @@ Once the NVMe-oF target is
 1. Connect to desired subsystem:
 
     ```bash
-    sudo nvme connect -t tcp --traddr 192.168.13.3 -s 4420 -n nqn.2016-06.io.spdk:cnode1
+    sudo nvme connect -t tcp --traddr gateway_addr -s 4420 -n nqn.2016-06.io.spdk:cnode1
     ```
 
 1. List the available NVMe targets:
@@ -189,7 +244,7 @@ Once the NVMe-oF target is
     $ sudo nvme list
     Node                  Generic               SN                   Model                                    Namespace Usage                      Format           FW Rev
     --------------------- --------------------- -------------------- ---------------------------------------- --------- -------------------------- ---------------- --------
-    /dev/nvme1n1          /dev/ng1n1            SPDK00000000000001   SPDK bdev Controller                     1          10,49  MB /  10,49  MB      4 KiB +  0 B   23.01
+    /dev/nvme1n1          /dev/ng1n1            Ceph00000000000001   Ceph bdev Controller                     1          10,49  MB /  10,49  MB      4 KiB +  0 B   23.01
     ...
     ```
 
@@ -232,7 +287,7 @@ The discovery service can provide all the targets that the current user can acce
 
 2. To start discovery service container in docker-compose environment
    ```bash
-   $ docker-compose up --detach discovery
+   $ docker compose up --detach discovery
    ```
 
 3. Discover targets from discovery service. The default port is 8009.
@@ -255,10 +310,10 @@ echo $NVMEOF_VERSION...
 
 For testing purposes, self signed certificates and keys can be generated locally using OpenSSL.
 
-For the server, generate credentials for server name 'my.server' in files called server.key and server.crt:
+For the server, generate credentials for the server named 'my.server' and save them in files called server.key and server.crt. Additionally, specify subject alternative names using the gateway group nodes' IPs in the openssl command.
 
 ```bash
-$ openssl req -x509 -newkey rsa:4096 -nodes -keyout server.key -out server.crt -days 3650 -subj '/CN=my.server'
+$ openssl req -x509 -newkey rsa:4096 -nodes -keyout server.key -out server.crt -days 3650 -subj '/CN=my.server' -addext "subjectAltName=IP:192.168.13.3,IP:192.168.13.4,IP:192.168.13.5,IP:192.168.13.6"
 ```
 
 For client:
@@ -280,13 +335,66 @@ client_cert = ./client.crt
 
 ### Huge-Pages
 
-[DPDK requires hugepages](https://doc.dpdk.org/guides/linux_gsg/sys_reqs.html#linux-gsg-hugepages) to be set up:
+[DPDK uses by default hugepages](https://doc.dpdk.org/guides/linux_gsg/sys_reqs.html#linux-gsg-hugepages) to be set up:
 
 ```bash
 sh -c 'echo 4096 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages'
 ```
 
 This is automatically done in the `make setup` step. The amount of hugepages can be configured with `make setup HUGEPAGES=512`.
+
+ℹ️ **Info:** To eliminate the dependency on huge pages, set [mem_size=4096](https://github.com/ceph/ceph-nvmeof/blob/bf83ae504e77358944c8a0150d390cf66086fa2b/tests/ceph-nvmeof.no-huge.conf#L68) (memory size in megabytes) in the spdk section of the ceph-nvmeof.conf file. See the [example](https://github.com/ceph/ceph-nvmeof/blob/devel/tests/ceph-nvmeof.no-huge.conf) configuration file for reference.
+
+```ini
+[spdk]
+mem_size=4096
+```
+
+### Mapping SPDK BDEVs into a CEPH RADOS Cluster Context
+
+NVMEoF namespaces utilize SPDK BDEVs which map into CEPH RADOS client cluster contexts, and the mapping strategy impacts both performance and resource allocation. Multiple BDEVs can be allocated to a single CEPH cluster context, influencing I/O efficiency, cluster scalability, and system overhead. The choice of mapping strategy affects:
+
+- _Cluster context allocation cost_: Creating and maintaining CEPH cluster contexts incurs resource overhead.
+- _I/O bottlenecks_: If too many BDEVs share the same context, contention may degrade performance.
+- _Scalability_: The approach must balance between efficient resource usage and avoiding excessive cluster context creation.
+
+#### Mapping Strategies
+
+##### 1. Legacy ANA Group-Based Mapping
+
+A CEPH cluster context is allocated per ANA group.
+
+The number of BDEVs assigned to each cluster context is controlled by the bdevs_per_cluster configuration parameter. This strategy ensures alignment with ANA group allocation but may lead to uneven distribution across cluster contexts.
+
+```ini
+[spdk]
+bdevs_per_cluster = 32
+```
+
+##### 2. Flat BDEVs per Cluster Mapping
+
+Ignores ANA groups and directly assigns BDEVs to cluster contexts. The number of BDEVs per cluster context is determined by the flat_bdevs_per_cluster parameter. Offers a more uniform distribution but might not align well with underlying ANA group optimizations.
+
+```ini
+[spdk]
+flat_bdevs_per_cluster = 32
+```
+- [Example configuration](https://github.com/baum/ceph-nvmeof/blob/cluster-allocation/tests/ceph-nvmeof.flat_bdevs_per_cluster.conf)
+
+##### 3. Cluster Pool-Based Mapping
+
+The maximum number of cluster contexts is pre-defined by the cluster_connections configuration parameter.
+
+When a new BDEV is created, it is assigned to the cluster context with the fewest BDEVs. This dynamic approach balances workload distribution but may introduce overhead in tracking and rebalancing BDEV allocations.
+
+```ini
+[spdk]
+cluster_connections = 32
+```
+- [Example configuration](https://github.com/baum/ceph-nvmeof/blob/cluster-allocation/tests/ceph-nvmeof.cluster_pool.conf)
+
+Choosing the appropriate strategy depends on workload characteristics, expected BDEV-to-cluster context ratios, and system performance goals.
+
 
 ## Development
 
@@ -319,6 +427,14 @@ To build the container images from the local sources:
 
 ```bash
 make build
+```
+
+**NOTE:**
+For Arm64 build, the default SPDK building SoC is `generic`. To build SPDK for other SoC you need to override the default values of `SPDK_TARGET_ARCH` and `SPDK_MAKEFLAGS`. To know which values to set for all the supported Arm64 SoCs see [the socs and implementer_xxx parts](https://github.com/DPDK/dpdk/blob/main/config/arm/meson.build#L674).
+E.g. for kunpeng920 SoC:
+```bash
+make build SPDK_TARGET_ARCH="armv8.2-a+crypto" \
+    SPDK_MAKEFLAGS="DPDKBUILD_FLAGS=-Dplatform=kunpeng920"
 ```
 
 The resulting images should be like these:
@@ -357,12 +473,21 @@ Python wheel exported to:
 /tmp/ceph_nvmeof-0.0.1-py3-none-any.whl
 ```
 
+To install nvmeof-cli as a CLI tool from the above Python wheel package, (or alternatively only build the cli package):
+```
+make export-python
+pip install /tmp/ceph_nvmeof-0.0.1-py3-none-any.whl
+ceph-nvmeof // use nvmeof-cli tool!
+```
+
+This can also be installed from https://pypi.org/project/ceph-nvmeof/, by running `pip3 install ceph-nvmeof`.
+
 ### Development containers
 
 To avoid having to re-build container on every code change, developer friendly containers are provided:
 
 ```bash
-make up SVC="nvmeof-devel"
+docker compose up nvmeof-devel
 ```
 
 Devel containers provide the same base layer as the production containers but with the source code mounted at run-time.
@@ -435,9 +560,22 @@ Targets:
 
   Miscellaneous:
       alias           Print bash alias command for the nvmeof-cli. Usage: "eval $(make alias)"
+      verify          Run flake8 on the Python source files
 ```
 
 Targets may accept options: `make run SVC=nvme OPTS=--entrypoint=bash`.
+
+## Monitoring and Observability
+Each gateway daemon implements a prometheus exporter endpoint, which can expose performance and relevant metadata over port 10008/tcp. The endpoint is enabled by default, but if you don't see port 10008 listening, check the `ceph-nvmeof.conf` file.
+```
+enable_prometheus_exporter = True
+```
+
+The image below shows a sample Grafana dashboard that provides a good starting point for monitoring the performance and configuration of an NVMe-oF gateway group.
+![dashboard](monitoring/Ceph-NVMe-oF-Gateways-Dashboard.png)
+
+The JSON for the dashboard can be found [here](monitoring/Ceph-NVMe-oF-Gateways-Dashboard.json), and can simply be imported into your Grafana instance. *Note: Although Grafana v11 was used to develop the dashboard, it should work in v10.x as well.*
+  
 
 ## Troubleshooting
 

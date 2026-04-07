@@ -1,5 +1,7 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef __INTERNAL_XNVME_BE_LINUX_H
 #define __INTERNAL_XNVME_BE_LINUX_H
 #include <xnvme_dev.h>
@@ -16,6 +18,8 @@
 
 /**
  * Internal representation of XNVME_BE_LINUX state
+ *
+ * NOTE: When changing this struct, ensure compatibility with 'struct xnvme_be_cbi_state'
  */
 struct xnvme_be_linux_state {
 	int fd;
@@ -54,9 +58,9 @@ int
 xnvme_be_linux_uapi_ver_fpr(FILE *stream, enum xnvme_pr opts);
 
 /**
- * Implementations of the memory management interface
+ * Implementations of the memory management interface using hugepages
  */
-extern struct xnvme_be_mem g_xnvme_be_posix_mem;
+extern struct xnvme_be_mem g_xnvme_be_linux_mem_hugepage;
 
 /**
  * Implementations of the admin command interface
@@ -67,7 +71,6 @@ extern struct xnvme_be_admin g_xnvme_be_linux_admin_block;
 /**
  * Implementations of the synchronous command interface
  */
-extern struct xnvme_be_sync g_xnvme_be_posix_sync_psync;
 extern struct xnvme_be_sync g_xnvme_be_linux_sync_nvme;
 extern struct xnvme_be_sync g_xnvme_be_linux_sync_block;
 

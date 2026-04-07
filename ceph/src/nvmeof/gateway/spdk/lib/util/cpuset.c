@@ -9,7 +9,7 @@
 struct spdk_cpuset *
 spdk_cpuset_alloc(void)
 {
-	return (struct spdk_cpuset *)calloc(sizeof(struct spdk_cpuset), 1);
+	return (struct spdk_cpuset *)calloc(1, sizeof(struct spdk_cpuset));
 }
 
 void
@@ -104,19 +104,36 @@ spdk_cpuset_get_cpu(const struct spdk_cpuset *set, uint32_t cpu)
 	return (set->cpus[cpu / 8] >> (cpu % 8)) & 1U;
 }
 
+void
+spdk_cpuset_for_each_cpu(const struct spdk_cpuset *set,
+			 void (*fn)(void *ctx, uint32_t cpu), void *ctx)
+{
+	uint8_t n;
+	unsigned int i, j;
+	for (i = 0; i < sizeof(set->cpus); i++) {
+		n = set->cpus[i];
+		for (j = 0; j < 8; j++) {
+			if (n & (1 << j)) {
+				fn(ctx, i * 8 + j);
+			}
+		}
+	}
+}
+
+static void
+count_fn(void *ctx, uint32_t cpu)
+{
+	uint32_t *count = ctx;
+
+	(*count)++;
+}
+
 uint32_t
 spdk_cpuset_count(const struct spdk_cpuset *set)
 {
 	uint32_t count = 0;
-	uint8_t n;
-	unsigned int i;
-	for (i = 0; i < sizeof(set->cpus); i++) {
-		n = set->cpus[i];
-		while (n) {
-			n &= (n - 1);
-			count++;
-		}
-	}
+
+	spdk_cpuset_for_each_cpu(set, count_fn, &count);
 	return count;
 }
 
@@ -259,6 +276,10 @@ parse_mask(const char *mask, struct spdk_cpuset *set, size_t len)
 	spdk_cpuset_zero(set);
 	for (i = len - 1; i >= 0; i--) {
 		c = mask[i];
+		if (c == ',') {
+			/* Linux puts comma delimiters in its cpumasks, just skip them. */
+			continue;
+		}
 		val = hex_value(c);
 		if (val < 0) {
 			/* Invalid character */

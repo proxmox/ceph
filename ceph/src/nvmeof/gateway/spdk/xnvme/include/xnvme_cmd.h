@@ -1,5 +1,7 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef __INTERNAL_XNVME_CMD_H
 #define __INTERNAL_XNVME_CMD_H
 
@@ -22,5 +24,20 @@ enum xnvme_cmd_opts {
 
 #define XNVME_CMD_DEF_IOMD XNVME_CMD_SYNC
 #define XNVME_CMD_DEF_UPLD (0x0)
+
+/**
+ * Pass a PSEUDO-NVMe Command through to the device
+ *
+ * @param ctx Pointer to command context (::xnvme_cmd_ctx)
+ * @param dbuf pointer to data-payload
+ * @param dbuf_nbytes size of data-payload in bytes
+ * @param mbuf pointer to meta-payload
+ * @param mbuf_nbytes size of the meta-payload in bytes
+ *
+ * @return On success, 0 is returned. On error, negative `errno` is returned.
+ */
+int
+xnvme_cmd_pass_pseudo(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes, void *mbuf,
+		      size_t mbuf_nbytes);
 
 #endif /* __INTERNAL_XNVME_CMD_H */

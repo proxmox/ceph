@@ -15,7 +15,7 @@ if ((${#TCP_INTERFACE_LIST[@]} == 0)); then
 	exit 1
 fi
 
-perf="$SPDK_EXAMPLE_DIR/perf"
+perf="$SPDK_BIN_DIR/spdk_nvme_perf"
 
 function adq_configure_driver() {
 	# Enable adding flows to hardware
@@ -39,7 +39,8 @@ function adq_configure_driver() {
 }
 
 function adq_configure_nvmf_target() {
-	$rpc_py sock_impl_set_options --enable-placement-id $1 --enable-zerocopy-send-server -i posix
+	socket_impl=$("$rpc_py" sock_get_default_impl | jq -r '.impl_name')
+	$rpc_py sock_impl_set_options --enable-placement-id $1 --enable-zerocopy-send-server -i $socket_impl
 	$rpc_py framework_start_init
 	$rpc_py nvmf_create_transport $NVMF_TRANSPORT_OPTS --io-unit-size 8192 --sock-priority $1
 	$rpc_py bdev_malloc_create 64 512 -b Malloc1
@@ -49,6 +50,14 @@ function adq_configure_nvmf_target() {
 }
 
 function adq_reload_driver() {
+	# Load sch_ modules by their canonical names in case they are blacklisted.
+	# >= 6.9 kernels call request_module() pointing at their alias now, hence
+	# when the request is passed down to modprobe it simply won't load it in
+	# blacklist is in place. So add whatever other NET_* modules are needed
+	# below.
+	modprobe -a \
+		sch_mqprio
+
 	rmmod ice
 	modprobe ice
 	sleep 5
@@ -73,7 +82,8 @@ $perf -q 64 -o 4096 -w randread -t 10 -c 0xF0 \
 perfpid=$!
 sleep 2
 
-count=$("$rpc_py" nvmf_get_stats | jq -r '.poll_groups[] | select(.current_io_qpairs == 1) | length' | wc -l)
+nvmf_stats=$("$rpc_py" nvmf_get_stats)
+count=$(jq -r '.poll_groups[] | select(.current_io_qpairs == 1) | length' <<< $nvmf_stats | wc -l)
 if [[ "$count" -ne 4 ]]; then
 	echo "ERROR: With ADQ disabled, connections were not evenly distributed amongst poll groups!"
 	exit 1
@@ -94,7 +104,8 @@ $perf -q 64 -o 4096 -w randread -t 10 -c 0xF0 \
 perfpid=$!
 sleep 2
 
-count=$("$rpc_py" nvmf_get_stats | jq -r '.poll_groups[] | select(.current_io_qpairs == 0) | length' | wc -l)
+nvmf_stats=$("$rpc_py" nvmf_get_stats)
+count=$(jq -r '.poll_groups[] | select(.current_io_qpairs == 0) | length' <<< $nvmf_stats | wc -l)
 if [[ "$count" -lt 2 ]]; then
 	echo "ERROR: With ADQ enabled, did not find 0 connections on 2 of the poll groups!"
 	exit 1

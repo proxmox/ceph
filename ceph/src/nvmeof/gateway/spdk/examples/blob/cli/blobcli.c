@@ -375,7 +375,7 @@ show_bs_cb(void *arg1, spdk_blob_id blobid, int bserrno)
 		printf("\tsuper blob ID: none assigned\n");
 	}
 
-	printf("\tpage size: %" PRIu64 "\n", cli_context->page_size);
+	printf("\tmd page size: %" PRIu64 "\n", cli_context->page_size);
 	printf("\tio unit size: %" PRIu64 "\n", cli_context->io_unit_size);
 
 	val = spdk_bs_get_cluster_size(cli_context->bs);
@@ -422,8 +422,8 @@ show_blob(struct cli_context_t *cli_context)
 	printf("# of bytes: %" PRIu64 "\n",
 	       val * spdk_bs_get_cluster_size(cli_context->bs));
 
-	val = spdk_blob_get_num_pages(cli_context->blob);
-	printf("# of pages: %" PRIu64 "\n", val);
+	val = spdk_blob_get_num_io_units(cli_context->blob);
+	printf("# of io units: %" PRIu64 "\n", val);
 
 	spdk_blob_get_xattr_names(cli_context->blob, &names);
 
@@ -1273,12 +1273,13 @@ line_parser(struct cli_context_t *cli_context)
 {
 	bool cmd_chosen;
 	char *tok = NULL;
+	char *sp = NULL;
 	int blob_num = 0;
 	int start_idx = cli_context->argc;
 	int i;
 
 	printf("\nSCRIPT NOW PROCESSING: %s\n", g_script.cmdline[g_script.cmdline_idx]);
-	tok = strtok(g_script.cmdline[g_script.cmdline_idx], " ");
+	tok = strtok_r(g_script.cmdline[g_script.cmdline_idx], " ", &sp);
 	while (tok != NULL) {
 		/*
 		 * We support one replaceable token right now, a $Bn
@@ -1308,7 +1309,7 @@ line_parser(struct cli_context_t *cli_context)
 			}
 		}
 		cli_context->argc++;
-		tok = strtok(NULL, " ");
+		tok = strtok_r(NULL, " ", &sp);
 	}
 
 	/* call parse cmd line with user input as args */
@@ -1411,6 +1412,7 @@ cli_shell(void *arg1, void *arg2)
 	ssize_t bytes_in = 0;
 	ssize_t tok_len = 0;
 	char *tok = NULL;
+	char *sp = NULL;
 	bool cmd_chosen = false;
 	int start_idx = cli_context->argc;
 	int i;
@@ -1427,13 +1429,13 @@ cli_shell(void *arg1, void *arg2)
 
 	/* parse input and update cli_context so we can use common option parser */
 	if (bytes_in > 0) {
-		tok = strtok(line, " ");
+		tok = strtok_r(line, " ", &sp);
 	}
 	while ((tok != NULL) && (cli_context->argc < MAX_ARGS)) {
 		cli_context->argv[cli_context->argc] = strdup(tok);
 		tok_len = strlen(tok);
 		cli_context->argc++;
-		tok = strtok(NULL, " ");
+		tok = strtok_r(NULL, " ", &sp);
 	}
 
 	/* replace newline on last arg with null */
@@ -1598,6 +1600,7 @@ main(int argc, char **argv)
 	spdk_app_opts_init(&opts, sizeof(opts));
 	opts.name = "blobcli";
 	opts.json_config_file = cli_context->config_file;
+	opts.rpc_addr = NULL;
 
 	cli_context->app_started = true;
 	rc = spdk_app_start(&opts, cli_start, cli_context);

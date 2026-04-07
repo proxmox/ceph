@@ -4,6 +4,11 @@
 #  All rights reserved.
 #
 source "$rootdir/test/dd/common.sh"
+source "$rootdir/test/scheduler/common.sh"
+
+xtrace_disable
+map_cpus
+xtrace_restore
 
 function discover_bdevs() {
 	local rootdir=$1
@@ -36,15 +41,20 @@ function discover_bdevs() {
 	rm -f /var/run/spdk_bdev0
 }
 
+function get_disk_cfg() {
+	grep -vP "^\s*#" "$DISKCFG"
+}
+
 function create_spdk_bdev_conf() {
 	local output
 	local disk_cfg
 	local bdev_io_cache_size=$1
 	local bdev_io_pool_size=$2
 	local bdev_json_cfg=()
-	local bdev_opts=()
+	local dev_opts=()
+	local i
 
-	disk_cfg=($(grep -vP "^\s*#" "$DISKCFG"))
+	disk_cfg=($(get_disk_cfg))
 
 	if [[ -n "$bdev_io_cache_size" ]]; then
 		bdev_opts+=("\"bdev_io_cache_size\": $bdev_io_cache_size")
@@ -111,10 +121,7 @@ function is_bdf_not_mounted() {
 }
 
 function get_cores() {
-	local cpu_list="$1"
-	for cpu in ${cpu_list//,/ }; do
-		echo $cpu
-	done
+	parse_cpu_list <(echo "$1")
 }
 
 function get_cores_numa_node() {
@@ -153,9 +160,8 @@ function get_numa_node() {
 
 function get_disks() {
 	local plugin=$1
-	local disk_cfg
+	local disk_cfg=($(get_disk_cfg))
 
-	disk_cfg=($(grep -vP "^\s*#" "$DISKCFG"))
 	if [[ "$plugin" =~ "nvme" ]]; then
 		# PCI BDF address is enough for nvme-perf and nvme-fio-plugin,
 		# so just print them from configuration file
@@ -193,6 +199,47 @@ function get_disks_on_numa() {
 		fi
 	done
 	echo $disks_on_numa
+}
+
+function set_potential_poll_threads() {
+	local _cpus=("$@") all_fio_cpus=() cpu _cpu poll_thread
+	local -g sqpoll_cpu_threads
+	local node
+
+	# Collect all siblings in case smt is enabled.
+	for cpu in "${_cpus[@]}"; do
+		for _cpu in "${!cpu_siblings[cpu]}"; do
+			all_fio_cpus[_cpu]=$cpu
+		done
+	done
+
+	# Move fio's polling thread to a different cpu. In case smt is enabled, we  try to move it to a completely
+	# different core under the same numa node. Note that we can set sgthread_poll_cpu only to a single cpu -
+	# in case NUMJOBS is > 1 we will have multiple poll threads using that particular cpu. FIXME: what would be
+	# the potential impact here of spamming poll threads like that? In case of higher numjobs, does it make
+	# sense to still use sqthread_poll?
+	#
+	# Here we build list of all potential candidates to hold sqpoll thread. Lists are per node and should hold
+	# all cpus outside of the fio cpus that were requested. So each get_sqthread_poll_cpu() should return a cpu
+	# thread which is guaranteed to be outside of the physical core of each of fio cpus (but still bound to
+	# the same numa node as the fio cpu selected for given job).
+	for cpu in "${cpus[@]}"; do
+		[[ -n ${all_fio_cpus[cpu]} ]] && continue
+		node=${cpu_node_map[cpu]}
+		local -n sqpoll_node=sqpoll_threads_node_$node
+		sqpoll_node+=("$cpu")
+		sqpoll_cpu_threads[node]=sqpoll_threads_node_$node
+	done
+}
+
+function get_sqthread_poll_cpu() {
+	((${#sqpoll_cpu_threads[@]} > 0)) || return 0
+
+	local node=$1 idx=$2
+	local -n node=${sqpoll_cpu_threads[node]}
+
+	# Default to the highest cpu
+	echo "sqthread_poll_cpu=${node[idx]:-${cpus[-1]}}"
 }
 
 function create_fio_config() {
@@ -248,6 +295,11 @@ function create_fio_config() {
 		echo "iodepth_batch_complete=$IO_BATCH_COMPLETE" >> $testdir/config.fio
 	fi
 
+	# shellcheck disable=SC2068
+	if [[ $PLUGIN =~ "uring" || $PLUGIN =~ "xnvme" ]]; then
+		set_potential_poll_threads ${cores[@]//,/ }
+	fi
+
 	for i in "${!cores[@]}"; do
 		local m=0 #Counter of disks per NUMA node
 		local n=0 #Counter of all disks in test
@@ -272,7 +324,8 @@ function create_fio_config() {
 			fio_job_section+=("")
 			fio_job_section+=("[filename${i}]")
 			fio_job_section+=("iodepth=$QD")
-			fio_job_section+=("cpus_allowed=${cores[$i]} #CPU NUMA Node ${cores_numa[$i]}")
+			fio_job_section+=("cpus_allowed=${cores[$i]} #CPU NUMA Node ${cores_numa[$i]} ($FIO_FNAME_STRATEGY)")
+			fio_job_section+=("$(get_sqthread_poll_cpu "${cores_numa[i]}" "$i")")
 		fi
 
 		while [[ "$m" -lt "$total_disks_per_core" ]]; do
@@ -284,6 +337,7 @@ function create_fio_config() {
 					fio_job_section+=("[filename${m}-${cores[$i]}]")
 					fio_job_section+=("iodepth=$QD")
 					fio_job_section+=("cpus_allowed=${cores[$i]} #CPU NUMA Node ${cores_numa[$i]}")
+					fio_job_section+=("$(get_sqthread_poll_cpu "${cores_numa[i]}" "$i")")
 				fi
 
 				if [[ "$plugin" == "spdk-plugin-nvme" ]]; then
@@ -291,7 +345,7 @@ function create_fio_config() {
 				elif [[ "$plugin" == "spdk-plugin-bdev" || "$plugin" == "spdk-plugin-bdev-xnvme" ]]; then
 					fio_job_section+=("filename=${disks[$n]} #NVMe NUMA Node ${disks_numa[$n]}")
 				elif [[ "$plugin" =~ "kernel" ]]; then
-					fio_job_section+=("filename=/dev/${disks[$n]} #NVMe NUMA Node ${disks_numa[$n]}")
+					fio_job_section+=("filename=/dev/${disks[$n]} #NVMe NUMA Node ${disks_numa[$n]} ($FIO_FNAME_STRATEGY)")
 				fi
 				m=$((m + 1))
 
@@ -318,30 +372,6 @@ function create_fio_config() {
 	printf "%s\n" "${fio_job_section[@]}" >> $testdir/config.fio
 	echo "INFO: Generated fio configuration file:"
 	cat $testdir/config.fio
-}
-
-function preconditioning() {
-	local dev_name=""
-	local filename=""
-	local nvme_list
-
-	HUGEMEM=8192 $rootdir/scripts/setup.sh
-	cp $testdir/config.fio.tmp $testdir/config.fio
-	echo "[Preconditioning]" >> $testdir/config.fio
-
-	# Generate filename argument for FIO.
-	# We only want to target NVMes not bound to nvme driver.
-	# If they're still bound to nvme that means they were skipped by
-	# setup.sh on purpose.
-	nvme_list=$(get_disks nvme)
-	for nvme in $nvme_list; do
-		dev_name='trtype=PCIe traddr='${nvme//:/.}' ns=1'
-		filename+=$(printf %s":" "$dev_name")
-	done
-	echo "** Preconditioning disks, this can take a while, depending on the size of disks."
-	run_spdk_nvme_fio "spdk-plugin-nvme" --filename="$filename" --size=100% --loops=2 --bs=1M \
-		--rw=write --iodepth=32 --output-format=normal
-	rm -f $testdir/config.fio
 }
 
 function bc() {
@@ -426,7 +456,7 @@ function run_bdevperf() {
 	echo "** Running bdevperf test, this can take a while, depending on the run-time setting."
 	$_examples_dir/bdevperf --json $testdir/bdev.conf -q $IODEPTH -o $BLK_SIZE -w $RW -M $MIX -t $RUNTIME -m "[$CPUS_ALLOWED]" -r "$rpc_socket" $main_core_param -z &
 	bdevperf_pid=$!
-	waitforlisten $bdevperf_pid
+	waitforlisten $bdevperf_pid "$rpc_socket" 500
 
 	if [[ ${#BPFTRACES[@]} -gt 0 ]]; then
 		echo "INFO: Enabling BPF Traces ${BPFTRACES[*]}"
@@ -467,14 +497,13 @@ function run_nvmeperf() {
 	echo "** Running nvme perf test, this can take a while, depending on the run-time setting."
 
 	# Run command in separate shell as this solves quoting issues related to r_opt var
-	$SHELL -c "$_examples_dir/perf $r_opt -q $IODEPTH -o $BLK_SIZE -w $RW -M $MIX -t $RUNTIME -c [$CPUS_ALLOWED]"
+	$SHELL -c "$_app_dir/spdk_nvme_perf $r_opt -q $IODEPTH -o $BLK_SIZE -w $RW -M $MIX -t $RUNTIME -c [$CPUS_ALLOWED]"
 	sleep 1
 }
 
 function wait_for_nvme_reload() {
 	local nvmes=$1
 
-	shopt -s extglob
 	for disk in $nvmes; do
 		cmd="ls /sys/block/$disk/queue/*@(iostats|rq_affinity|nomerges|io_poll_delay)*"
 		until $cmd 2> /dev/null; do
@@ -482,7 +511,6 @@ function wait_for_nvme_reload() {
 			sleep 0.5
 		done
 	done
-	shopt -q extglob
 }
 
 function verify_disk_number() {
@@ -519,4 +547,70 @@ function create_spdk_xnvme_bdev_conf() {
 		rpc_ref["name"]=${blocks[block_idx]}
 	done
 	gen_conf > "$testdir/bdev.conf"
+}
+
+# LVOL support functions
+function start_spdk_tgt() {
+	$SPDK_BIN_DIR/spdk_tgt -g &
+	spdk_tgt_pid=$!
+
+	waitforlisten $spdk_tgt_pid
+}
+
+function stop_spdk_tgt() {
+	killprocess $spdk_tgt_pid
+}
+
+function attach_bdevs() {
+	local disk_cfg=($(get_disk_cfg))
+	local i
+	for i in "${!disk_cfg[@]}"; do
+		$rpc_py bdev_nvme_attach_controller -b "Nvme${i}" -t pcie -a "${disk_cfg[i]}"
+		echo "Attached NVMe Bdev $nvme_bdev with BDF"
+	done
+}
+
+function cleanup_lvol_cfg() {
+	local -a lvol_stores
+	local -a lvol_bdevs
+	local lvol_store lvol_bdev
+
+	echo "Cleanup lvols"
+	lvol_stores=($($rpc_py bdev_lvol_get_lvstores | jq -r '.[].uuid'))
+	for lvol_store in "${lvol_stores[@]}"; do
+		lvol_bdevs=($($rpc_py bdev_lvol_get_lvols -u $lvol_store | jq -r '.[].uuid'))
+		for lvol_bdev in "${lvol_bdevs[@]}"; do
+			$rpc_py bdev_lvol_delete $lvol_bdev
+			echo "lvol bdev $lvol_bdev removed"
+		done
+
+		$rpc_py bdev_lvol_delete_lvstore -u $lvol_store
+		echo "lvol store $lvol_store removed"
+	done
+}
+
+function cleanup_lvols() {
+	start_spdk_tgt
+	attach_bdevs
+	cleanup_lvol_cfg
+	stop_spdk_tgt
+}
+
+function create_lvols() {
+	start_spdk_tgt
+	attach_bdevs
+	cleanup_lvol_cfg
+
+	nvme_bdevs=($($rpc_py bdev_get_bdevs | jq -r '.[].name'))
+	for nvme_bdev in "${nvme_bdevs[@]}"; do
+		ls_guid=$($rpc_py bdev_lvol_create_lvstore $nvme_bdev lvs_0 --clear-method none)
+		echo "Created LVOL Store $ls_guid on Bdev $nvme_bdev"
+
+		free_mb=$(get_lvs_free_mb "$ls_guid")
+		lb_name=$($rpc_py bdev_lvol_create -u $ls_guid lbd_0 $free_mb --clear-method none)
+		LVOL_BDEVS+=("$lb_name")
+		echo "Created LVOL Bdev $lb_name ($free_mb MB) on Lvol Store $ls_guid on Bdev $nvme_bdev"
+	done
+
+	stop_spdk_tgt
 }

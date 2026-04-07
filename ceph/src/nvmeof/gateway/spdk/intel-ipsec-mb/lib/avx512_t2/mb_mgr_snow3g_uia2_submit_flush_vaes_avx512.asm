@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2021-2022, Intel Corporation
+;; Copyright (c) 2021-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,14 +25,14 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/os.asm"
-%include "include/imb_job.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/constants.asm"
-%include "include/reg_sizes.asm"
+%include "include/os.inc"
+%include "include/imb_job.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/constants.inc"
+%include "include/reg_sizes.inc"
 %include "include/const.inc"
-%include "include/clear_regs.asm"
-%include "avx512_t2/snow3g_uea2_by16_vaes_avx512.asm"
+%include "include/clear_regs.inc"
+%include "include/snow3g_uea2_by16_vaes_avx512.inc"
 
 %ifndef SUBMIT_JOB_SNOW3G_UIA2
 %define SUBMIT_JOB_SNOW3G_UIA2_GEN2     submit_job_snow3g_uia2_vaes_avx512

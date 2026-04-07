@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2022, Intel Corporation
+;; Copyright (c) 2012-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -29,9 +29,9 @@
 ;;; processes 4 buffers at a time, single data structure as input
 ;;; Updates In and Out pointers at end
 
-%include "include/os.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/clear_regs.asm"
+%include "include/os.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/clear_regs.inc"
 
 %define	MOVDQ movdqu ;; assume buffers not aligned
 %macro pxor2 2

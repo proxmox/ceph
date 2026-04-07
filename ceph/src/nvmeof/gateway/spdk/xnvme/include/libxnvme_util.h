@@ -1,19 +1,10 @@
 /**
- * libxnvme_util: timers, string-formats, debug-printers and other utilities
+ * SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
  *
- * Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
- * Copyright (C) Klaus B. A. Jensen <k.jensen@samsung.com>
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * @file libxnvme_util.h
+ * @headerfile libxnvme_util.h
  */
-#ifndef __LIBXNVME_UTIL_H
-#define __LIBXNVME_UTIL_H
-#include <string.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <time.h>
-#include <assert.h>
 
 #define XNVME_UNIVERSAL_SECT_SH 9
 
@@ -117,6 +108,8 @@
 		(val & (1ULL << 5) ? '1' : '0'), (val & (1ULL << 4) ? '1' : '0'), \
 		(val & (1ULL << 3) ? '1' : '0'), (val & (1ULL << 2) ? '1' : '0'), \
 		(val & (1ULL << 1) ? '1' : '0'), (val & (1ULL << 0) ? '1' : '0')
+
+#define XNVME_SIZEOF_MEMBER(type, member) (sizeof(((type *)0)->member))
 
 static inline uint64_t
 XNVME_ILOG2(uint64_t x)
@@ -350,5 +343,3 @@ xnvme_is_pow2(uint32_t val)
 #define XNVME_DEBUG(...)
 #define XNVME_DEBUG_FCALL(x)
 #endif
-
-#endif /* __LIBXNVME_UTIL_H */

@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2017-2022, Intel Corporation
+;; Copyright (c) 2017-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -41,13 +41,13 @@
 ;;			-----------------------------------------------------------
 ;; Clobbers ZMM0-31, K1-7 (K1-2 and K4-6 here but DES underneath clobbers K1-7).
 
-%include "include/os.asm"
-%include "include/reg_sizes.asm"
-%include "include/imb_job.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/constants.asm"
+%include "include/os.inc"
+%include "include/reg_sizes.inc"
+%include "include/imb_job.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/constants.inc"
 ;%define DO_DBGPRINT
-%include "include/dbgprint.asm"
+%include "include/dbgprint.inc"
 %include "include/const.inc"
 
 extern docsis_des_x16_enc_avx512

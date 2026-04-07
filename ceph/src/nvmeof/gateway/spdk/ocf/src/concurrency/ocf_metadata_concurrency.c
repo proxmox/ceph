@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2019-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf_metadata_concurrency.h"
@@ -296,6 +296,18 @@ void ocf_hb_cline_naked_unlock_wr(struct ocf_metadata_lock *metadata_lock,
 	ocf_cache_line_t hash = ocf_metadata_hash_func(metadata_lock->cache,
 			core_line, core_id);
 
+	ocf_hb_id_naked_unlock(metadata_lock, hash, OCF_METADATA_WR);
+}
+
+void ocf_hb_id_naked_lock_wr(struct ocf_metadata_lock *metadata_lock,
+                ocf_cache_line_t hash)
+{
+	ocf_hb_id_naked_lock(metadata_lock, hash, OCF_METADATA_WR);
+}
+
+void ocf_hb_id_naked_unlock_wr(struct ocf_metadata_lock *metadata_lock,
+                ocf_cache_line_t hash)
+{
 	ocf_hb_id_naked_unlock(metadata_lock, hash, OCF_METADATA_WR);
 }
 

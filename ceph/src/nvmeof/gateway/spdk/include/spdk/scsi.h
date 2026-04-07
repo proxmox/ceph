@@ -41,6 +41,7 @@ enum spdk_scsi_task_func {
 	SPDK_SCSI_TASK_FUNC_ABORT_TASK_SET,
 	SPDK_SCSI_TASK_FUNC_CLEAR_TASK_SET,
 	SPDK_SCSI_TASK_FUNC_LUN_RESET,
+	SPDK_SCSI_TASK_FUNC_TARGET_RESET,
 };
 
 /*
@@ -98,6 +99,7 @@ struct spdk_scsi_task {
 	 * iov is internal buffer. Use iovs to access elements of IO.
 	 */
 	struct iovec iov;
+	struct iovec caw_iov; /* used for compare and write */
 	struct iovec *iovs;
 	uint16_t iovcnt;
 
@@ -596,6 +598,17 @@ uint64_t spdk_scsi_lun_id_int_to_fmt(int lun_id);
  * \return integer LUN ID
  */
 int spdk_scsi_lun_id_fmt_to_int(uint64_t fmt_lun);
+
+/**
+ * Translate SCSI operation code and service action into string
+ *
+ * \param opcode SCSI operation code
+ *
+ * \param sa SCSI service action code
+ *
+ * \return SCSI operation string
+ */
+const char *spdk_scsi_sbc_opcode_string(uint8_t opcode, uint16_t sa);
 #ifdef __cplusplus
 }
 #endif

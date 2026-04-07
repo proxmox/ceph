@@ -1,10 +1,10 @@
-#ifndef __LIBXNVME_ADM_H
-#define __LIBXNVME_ADM_H
-#include <libxnvme.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+/**
+ * SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * @headerfile libxnvme_adm.h
+ */
 
 /**
  * Submit and wait for completion of an NVMe Identify command
@@ -83,6 +83,20 @@ xnvme_adm_idfy_ns_csi(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint8_t csi,
 		      struct xnvme_spec_idfy *dbuf);
 
 /**
+ * Prepare NVMe Get Log Page command
+ *
+ * @param ctx Pointer to ::xnvme_cmd_ctx
+ * @param lid Log Page Identifier for the log to retrieve entries for
+ * @param lsp Log Specific Field for the log to retrieve entries for
+ * @param lpo_nbytes Log page Offset in BYTES
+ * @param nsid Namespace Identifier
+ * @param rae Retain Asynchronous Event, 0=Clear, 1=Retain
+ * @param dbuf_nbytes Number of BYTES to write from log-page to buf
+ */
+void
+xnvme_prep_adm_log(struct xnvme_cmd_ctx *ctx, uint8_t lid, uint8_t lsp, uint64_t lpo_nbytes,
+		   uint32_t nsid, uint8_t rae, uint32_t dbuf_nbytes);
+/**
  * Submit and wait for completion of an NVMe Get Log Page command
  *
  * @param ctx Pointer to ::xnvme_cmd_ctx
@@ -99,6 +113,31 @@ xnvme_adm_idfy_ns_csi(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint8_t csi,
 int
 xnvme_adm_log(struct xnvme_cmd_ctx *ctx, uint8_t lid, uint8_t lsp, uint64_t lpo_nbytes,
 	      uint32_t nsid, uint8_t rae, void *dbuf, uint32_t dbuf_nbytes);
+
+/**
+ * Prepare NVMe Get Features (gfeat) command
+ *
+ * @param ctx Pointer to ::xnvme_cmd_ctx
+ * @param nsid Namespace identifier
+ * @param fid Feature identifier
+ * @param sel Select which value of the feature to select, that is, one of
+ * current/default/saved/supported
+ */
+void
+xnvme_prep_adm_gfeat(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint8_t fid, uint8_t sel);
+
+/**
+ * Prepare NVMe Set Feature (sfeat) command
+ *
+ * @param ctx Pointer to ::xnvme_cmd_ctx
+ * @param nsid Namespace identifier
+ * @param fid Feature identifier (see NVMe 1.3; Figure 84)
+ * @param feat Structure defining feature attributes
+ * @param save Specify that controller shall save the attribute
+ */
+void
+xnvme_prep_adm_sfeat(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint8_t fid, uint32_t feat,
+		     uint8_t save);
 
 /**
  * Submit and wait for completion of an NVMe Get Features (gfeat) command
@@ -181,8 +220,8 @@ xnvme_adm_format(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint8_t lbaf, uint8_t
  * @return On success, 0 is returned. On error, negative `errno` is returned.
  */
 int
-xnvme_nvm_sanitize(struct xnvme_cmd_ctx *ctx, uint8_t sanact, uint8_t ause, uint32_t ovrpat,
-		   uint8_t owpass, uint8_t oipbp, uint8_t nodas);
+xnvme_nvm_sanitize(struct xnvme_cmd_ctx *ctx, uint8_t sanact, bool ause, uint32_t ovrpat,
+		   uint8_t owpass, bool oipbp, bool nodas);
 
 /**
  * Submit and wait for completion of directive send command
@@ -216,8 +255,3 @@ xnvme_adm_dir_send(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint8_t doper, uint
 int
 xnvme_adm_dir_recv(struct xnvme_cmd_ctx *ctx, uint32_t nsid, uint8_t doper, uint32_t dtype,
 		   uint32_t val, void *dbuf, size_t dbuf_nbytes);
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __LIBXNVME_ADM_H */

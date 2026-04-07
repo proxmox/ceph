@@ -5,7 +5,7 @@
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "nvme/nvme_fabric.c"
 #include "common/lib/test_env.c"
 
@@ -51,6 +51,8 @@ DEFINE_STUB(spdk_nvme_transport_id_adrfam_str, const char *,
 	    (enum spdk_nvmf_adrfam adrfam), NULL);
 
 DEFINE_STUB(nvme_ctrlr_process_init, int, (struct spdk_nvme_ctrlr *ctrlr), 0);
+DEFINE_STUB(nvme_fabric_qpair_authenticate_async, int, (struct spdk_nvme_qpair *qpair), 0);
+DEFINE_STUB(nvme_fabric_qpair_authenticate_poll, int, (struct spdk_nvme_qpair *qpair), 0);
 
 static struct spdk_nvmf_fabric_connect_data g_nvmf_data;
 static struct nvme_request *g_request;
@@ -325,7 +327,7 @@ test_nvme_fabric_discover_probe(void)
 	memset(&g_ut_trid, 0, sizeof(g_ut_trid));
 
 	/* Entry type unsupported */
-	entry.subtype = SPDK_NVMF_SUBTYPE_DISCOVERY;
+	entry.subtype = SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT;
 
 	nvme_fabric_discover_probe(&entry, &probe_ctx, 1);
 	CU_ASSERT(g_ut_ctrlr_is_probed == false);
@@ -425,7 +427,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_fabric", NULL, NULL);
@@ -435,9 +436,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_fabric_discover_probe);
 	CU_ADD_TEST(suite, test_nvme_fabric_qpair_connect);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

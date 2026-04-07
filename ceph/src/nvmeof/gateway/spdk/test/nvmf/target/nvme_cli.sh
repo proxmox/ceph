@@ -8,11 +8,6 @@ rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/nvmf/common.sh
 
-if [ -z "${DEPENDENCY_DIR}" ]; then
-	echo DEPENDENCY_DIR not defined!
-	exit 1
-fi
-
 MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 
@@ -32,9 +27,9 @@ $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc1
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 $rpc_py nvmf_subsystem_add_listener discovery -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
-nvme discover -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s "$NVMF_PORT"
+nvme discover "${NVME_HOST[@]}" -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s "$NVMF_PORT"
 devs=($(get_nvme_devs)) nvme_num_before_connection=${#devs[@]}
-$NVME_CONNECT -t $TEST_TRANSPORT -n "nqn.2016-06.io.spdk:cnode1" -a "$NVMF_FIRST_TARGET_IP" -s "$NVMF_PORT"
+$NVME_CONNECT "${NVME_HOST[@]}" -t $TEST_TRANSPORT -n "nqn.2016-06.io.spdk:cnode1" -a "$NVMF_FIRST_TARGET_IP" -s "$NVMF_PORT"
 
 waitforserial $NVMF_SERIAL 2
 if [[ -z $(get_nvme_devs) ]]; then

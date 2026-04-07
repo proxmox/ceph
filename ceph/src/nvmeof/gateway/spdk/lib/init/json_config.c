@@ -1,7 +1,7 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2018 Intel Corporation.
  *   All rights reserved.
- *   Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2022, 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
@@ -31,7 +31,7 @@
  *           "method": "<< METHOD NAME >>",   <<== *method
  *           "params": { << PARAMS >> }       <<== *params
  *         },
- *         << MORE "config" ARRY ENTRIES >>
+ *         << MORE "config" ARRAY ENTRIES >>
  *      ]
  *    },
  *    << MORE "subsystems" ARRAY ENTRIES >>
@@ -69,6 +69,7 @@ struct load_json_config_ctx {
 	struct spdk_json_val *subsystems_it; /* current subsystem array position in "subsystems" array */
 
 	struct spdk_json_val *subsystem_name; /* current subsystem name */
+	char subsystem_name_str[128];
 
 	/* Current "config" entry we are processing */
 	struct spdk_json_val *config; /* "config" array */
@@ -93,6 +94,9 @@ struct load_json_config_ctx {
 
 	/* Timeout for current RPC client action. */
 	uint64_t timeout;
+
+	/* Signals that the code should follow deprecated path of execution. */
+	bool initalize_subsystems;
 };
 
 static void app_json_config_load_subsystem(void *_ctx);
@@ -105,7 +109,7 @@ app_json_config_load_done(struct load_json_config_ctx *ctx, int rc)
 		spdk_jsonrpc_client_close(ctx->client_conn);
 	}
 
-	spdk_rpc_finish();
+	spdk_rpc_server_finish(ctx->rpc_socket_path_temp);
 
 	SPDK_DEBUG_APP_CFG("Config load finished with rc %d\n", rc);
 	ctx->cb_fn(rc, ctx->cb_arg);
@@ -335,7 +339,7 @@ app_json_config_load_subsystem_config_entry(void *_ctx)
 		SPDK_DEBUG_APP_CFG("Subsystem '%.*s': configuration done.\n", ctx->subsystem_name->len,
 				   (char *)ctx->subsystem_name->start);
 		ctx->subsystems_it = spdk_json_next(ctx->subsystems_it);
-		/* Invoke later to avoid recurrence */
+		/* Invoke later to avoid recursion */
 		spdk_thread_send_msg(ctx->thread, app_json_config_load_subsystem, ctx);
 		return;
 	}
@@ -349,14 +353,37 @@ app_json_config_load_subsystem_config_entry(void *_ctx)
 
 	rc = spdk_rpc_get_method_state_mask(cfg.method, &state_mask);
 	if (rc == -ENOENT) {
-		SPDK_ERRLOG("Method '%s' was not found\n", cfg.method);
-		app_json_config_load_done(ctx, rc);
+		if (!ctx->stop_on_error) {
+			/* Invoke later to avoid recursion */
+			ctx->config_it = spdk_json_next(ctx->config_it);
+			spdk_thread_send_msg(ctx->thread, app_json_config_load_subsystem_config_entry, ctx);
+		} else if (!spdk_subsystem_exists(ctx->subsystem_name_str)) {
+			/* If the subsystem does not exist, just skip it, even
+			 * if we are supposed to stop_on_error. Users may generate
+			 * a JSON config from one application, and want to use parts
+			 * of it in another application that may not have all of the
+			 * same subsystems linked - for example, nvmf_tgt => bdevperf.
+			 * That's OK, we don't need to throw an error, since any nvmf
+			 * configuration wouldn't be used by bdevperf anyways. That is
+			 * different than if some subsystem does exist in bdevperf and
+			 * one of its RPCs fails.
+			 */
+			SPDK_NOTICELOG("Skipping method '%s' because its subsystem '%s' "
+				       "is not linked into this application.\n",
+				       cfg.method, ctx->subsystem_name_str);
+			/* Invoke later to avoid recursion */
+			ctx->config_it = spdk_json_next(ctx->config_it);
+			spdk_thread_send_msg(ctx->thread, app_json_config_load_subsystem_config_entry, ctx);
+		} else {
+			SPDK_ERRLOG("Method '%s' was not found\n", cfg.method);
+			app_json_config_load_done(ctx, rc);
+		}
 		goto out;
 	}
 	cur_state_mask = spdk_rpc_get_state();
 	if ((state_mask & cur_state_mask) != cur_state_mask) {
 		SPDK_DEBUG_APP_CFG("Method '%s' not allowed -> skipping\n", cfg.method);
-		/* Invoke later to avoid recurrence */
+		/* Invoke later to avoid recursion */
 		ctx->config_it = spdk_json_next(ctx->config_it);
 		spdk_thread_send_msg(ctx->thread, app_json_config_load_subsystem_config_entry, ctx);
 		goto out;
@@ -365,7 +392,7 @@ app_json_config_load_subsystem_config_entry(void *_ctx)
 		/* Some methods are allowed to be run in both STARTUP and RUNTIME states.
 		 * We should not call such methods twice, so ignore the second attempt in RUNTIME state */
 		SPDK_DEBUG_APP_CFG("Method '%s' has already been run in STARTUP state\n", cfg.method);
-		/* Invoke later to avoid recurrence */
+		/* Invoke later to avoid recursion */
 		ctx->config_it = spdk_json_next(ctx->config_it);
 		spdk_thread_send_msg(ctx->thread, app_json_config_load_subsystem_config_entry, ctx);
 		goto out;
@@ -448,7 +475,10 @@ static struct spdk_json_object_decoder subsystem_decoders[] = {
  * beginning of the "subsystem" object in "subsystems" array or be NULL. If it is
  * NULL then no more subsystems to load.
  *
- * There are two iterations:
+ * If "initalize_subsystems" is unset, then the function performs one iteration
+ * and does not call subsystem initialization.
+ *
+ * There are two iterations, when "initalize_subsystems" context flag is set:
  *
  * In first iteration only STARTUP RPC methods are used, other methods are ignored. When
  * allsubsystems are walked the ctx->subsystems_it became NULL and "framework_start_init"
@@ -466,10 +496,11 @@ app_json_config_load_subsystem(void *_ctx)
 	struct load_json_config_ctx *ctx = _ctx;
 
 	if (ctx->subsystems_it == NULL) {
-		if (spdk_rpc_get_state() == SPDK_RPC_STARTUP) {
+		if (ctx->initalize_subsystems && spdk_rpc_get_state() == SPDK_RPC_STARTUP) {
 			SPDK_DEBUG_APP_CFG("No more entries for current state, calling 'framework_start_init'\n");
 			spdk_subsystem_init(subsystem_init_done, ctx);
 		} else {
+			SPDK_DEBUG_APP_CFG("No more entries for current state\n");
 			app_json_config_load_done(ctx, 0);
 		}
 
@@ -484,88 +515,69 @@ app_json_config_load_subsystem(void *_ctx)
 		return;
 	}
 
-	SPDK_DEBUG_APP_CFG("Loading subsystem '%.*s' configuration\n", ctx->subsystem_name->len,
-			   (char *)ctx->subsystem_name->start);
+	snprintf(ctx->subsystem_name_str, sizeof(ctx->subsystem_name_str),
+		 "%.*s", ctx->subsystem_name->len, (char *)ctx->subsystem_name->start);
+
+	SPDK_DEBUG_APP_CFG("Loading subsystem '%s' configuration\n", ctx->subsystem_name_str);
 
 	/* Get 'config' array first configuration entry */
 	ctx->config_it = spdk_json_array_first(ctx->config);
 	app_json_config_load_subsystem_config_entry(ctx);
 }
 
-static void *
-read_file(const char *filename, size_t *size)
-{
-	FILE *file = fopen(filename, "r");
-	void *data;
-
-	if (file == NULL) {
-		/* errno is set by fopen */
-		return NULL;
-	}
-
-	data = spdk_posix_file_load(file, size);
-	fclose(file);
-	return data;
-}
-
 static int
-app_json_config_read(const char *config_file, struct load_json_config_ctx *ctx)
+parse_json(void *json, ssize_t json_size, struct load_json_config_ctx *ctx)
 {
-	struct spdk_json_val *values = NULL;
-	void *json = NULL, *end;
-	ssize_t values_cnt, rc;
-	size_t json_size;
+	void *end;
+	ssize_t rc;
 
-	json = read_file(config_file, &json_size);
-	if (!json) {
-		SPDK_ERRLOG("Read JSON configuration file %s failed: %s\n",
-			    config_file, spdk_strerror(errno));
-		return -errno;
+	if (!json || json_size <= 0) {
+		SPDK_ERRLOG("JSON data cannot be empty\n");
+		goto err;
 	}
 
-	rc = spdk_json_parse(json, json_size, NULL, 0, &end,
+	ctx->json_data = calloc(1, json_size);
+	if (!ctx->json_data) {
+		goto err;
+	}
+	memcpy(ctx->json_data, json, json_size);
+	ctx->json_data_size = json_size;
+
+	rc = spdk_json_parse(ctx->json_data, ctx->json_data_size, NULL, 0, &end,
 			     SPDK_JSON_PARSE_FLAG_ALLOW_COMMENTS);
 	if (rc < 0) {
 		SPDK_ERRLOG("Parsing JSON configuration failed (%zd)\n", rc);
 		goto err;
 	}
 
-	values_cnt = rc;
-	values = calloc(values_cnt, sizeof(struct spdk_json_val));
-	if (values == NULL) {
+	ctx->values_cnt = rc;
+	ctx->values = calloc(ctx->values_cnt, sizeof(struct spdk_json_val));
+	if (ctx->values == NULL) {
 		SPDK_ERRLOG("Out of memory\n");
 		goto err;
 	}
 
-	rc = spdk_json_parse(json, json_size, values, values_cnt, &end,
+	rc = spdk_json_parse(ctx->json_data, ctx->json_data_size, ctx->values,
+			     ctx->values_cnt, &end,
 			     SPDK_JSON_PARSE_FLAG_ALLOW_COMMENTS);
-	if (rc != values_cnt) {
+	if ((size_t)rc != ctx->values_cnt) {
 		SPDK_ERRLOG("Parsing JSON configuration failed (%zd)\n", rc);
 		goto err;
 	}
 
-	ctx->json_data = json;
-	ctx->json_data_size = json_size;
-
-	ctx->values = values;
-	ctx->values_cnt = values_cnt;
-
 	return 0;
 err:
-	free(json);
-	free(values);
-	return rc;
+	free(ctx->values);
+	return -EINVAL;
 }
 
-void
-spdk_subsystem_init_from_json_config(const char *json_config_file, const char *rpc_addr,
-				     spdk_subsystem_init_fn cb_fn, void *cb_arg,
-				     bool stop_on_error)
+static void
+json_config_prepare_ctx(spdk_subsystem_init_fn cb_fn, void *cb_arg, bool stop_on_error, void *json,
+			ssize_t json_size, bool initalize_subsystems)
 {
 	struct load_json_config_ctx *ctx = calloc(1, sizeof(*ctx));
 	int rc;
 
-	assert(cb_fn);
 	if (!ctx) {
 		cb_fn(-ENOMEM, cb_arg);
 		return;
@@ -575,9 +587,10 @@ spdk_subsystem_init_from_json_config(const char *json_config_file, const char *r
 	ctx->cb_arg = cb_arg;
 	ctx->stop_on_error = stop_on_error;
 	ctx->thread = spdk_get_thread();
+	ctx->initalize_subsystems = initalize_subsystems;
 
-	rc = app_json_config_read(json_config_file, ctx);
-	if (rc) {
+	rc = parse_json(json, json_size, ctx);
+	if (rc < 0) {
 		goto fail;
 	}
 
@@ -605,20 +618,15 @@ spdk_subsystem_init_from_json_config(const char *json_config_file, const char *r
 		goto fail;
 	}
 
-	/* If rpc_addr is not an Unix socket use default address as prefix. */
-	if (rpc_addr == NULL || rpc_addr[0] != '/') {
-		rpc_addr = SPDK_DEFAULT_RPC_ADDR;
-	}
-
 	/* FIXME: rpc client should use socketpair() instead of this temporary socket nonsense */
-	rc = snprintf(ctx->rpc_socket_path_temp, sizeof(ctx->rpc_socket_path_temp), "%s.%d_config",
-		      rpc_addr, getpid());
+	rc = snprintf(ctx->rpc_socket_path_temp, sizeof(ctx->rpc_socket_path_temp),
+		      "%s.%d_%"PRIu64"_config", SPDK_DEFAULT_RPC_ADDR, getpid(), spdk_get_ticks());
 	if (rc >= (int)sizeof(ctx->rpc_socket_path_temp)) {
 		SPDK_ERRLOG("Socket name create failed\n");
 		goto fail;
 	}
 
-	rc = spdk_rpc_initialize(ctx->rpc_socket_path_temp);
+	rc = spdk_rpc_initialize(ctx->rpc_socket_path_temp, NULL);
 	if (rc) {
 		goto fail;
 	}
@@ -635,6 +643,14 @@ spdk_subsystem_init_from_json_config(const char *json_config_file, const char *r
 
 fail:
 	app_json_config_load_done(ctx, -EINVAL);
+}
+
+void
+spdk_subsystem_load_config(void *json, ssize_t json_size, spdk_subsystem_init_fn cb_fn,
+			   void *cb_arg, bool stop_on_error)
+{
+	assert(cb_fn);
+	json_config_prepare_ctx(cb_fn, cb_arg, stop_on_error, json, json_size, false);
 }
 
 SPDK_LOG_REGISTER_COMPONENT(app_config)

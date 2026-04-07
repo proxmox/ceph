@@ -94,10 +94,10 @@ endstruc
 
 %define APPEND(a,b) a %+ b
 
-; SHA512_JOB* sha512_mb_mgr_flush_avx2(SHA512_MB_JOB_MGR *state)
+; ISAL_SHA512_JOB* _sha512_mb_mgr_flush_avx2(ISAL_SHA512_MB_JOB_MGR *state)
 ; arg 1 : rcx : state
-mk_global sha512_mb_mgr_flush_avx2, function
-sha512_mb_mgr_flush_avx2:
+mk_global _sha512_mb_mgr_flush_avx2, function, internal
+_sha512_mb_mgr_flush_avx2:
 	endbranch
 
 	mov     rax, rsp
@@ -189,7 +189,7 @@ len_is_0:
 
 	mov     job_rax, [lane_data + _job_in_lane]
 	mov     qword [lane_data + _job_in_lane], 0
-	mov     dword [job_rax + _status], STS_COMPLETED
+	mov     dword [job_rax + _status], ISAL_STS_COMPLETED
 	mov     unused_lanes, [state + _unused_lanes]
 	shl     unused_lanes, 8
 	or      unused_lanes, idx

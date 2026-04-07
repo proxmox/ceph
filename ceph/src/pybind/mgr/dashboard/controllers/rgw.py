@@ -119,25 +119,26 @@ class RgwMultisiteStatus(RESTController):
     @allow_empty_body
     # pylint: disable=W0102,W0613
     def migrate(self, daemon_name=None, realm_name=None, zonegroup_name=None, zone_name=None,
-                zonegroup_endpoints=None, zone_endpoints=None, username=None):
+                zonegroup_endpoints=None, zone_endpoints=None, username=None, tier_type=None):
         multisite_instance = RgwMultisite()
         result = multisite_instance.migrate_to_multisite(realm_name, zonegroup_name,
                                                          zone_name, zonegroup_endpoints,
-                                                         zone_endpoints, username)
+                                                         zone_endpoints, username, tier_type)
         return result
 
     @RESTController.Collection(method='POST', path='/multisite-replications')
     @allow_empty_body
     # pylint: disable=W0102,W0613
     def setup_multisite_replication(self, daemon_name=None, realm_name=None, zonegroup_name=None,
-                                    zonegroup_endpoints=None, zone_name=None, zone_endpoints=None,
-                                    username=None, cluster_fsid=None, replication_zone_name=None,
-                                    cluster_details=None, selectedRealmName=None):
+                                    zonegroup_endpoints=None, zone_name=None, tier_type=None,
+                                    zone_endpoints=None, username=None, cluster_fsid=None,
+                                    replication_zone_name=None, cluster_details=None,
+                                    selectedRealmName=None):
         multisite_instance = RgwMultisiteAutomation()
         result = multisite_instance.setup_multisite_replication(realm_name, zonegroup_name,
                                                                 zonegroup_endpoints, zone_name,
-                                                                zone_endpoints, username,
-                                                                cluster_fsid,
+                                                                tier_type, zone_endpoints,
+                                                                username, cluster_fsid,
                                                                 replication_zone_name,
                                                                 cluster_details,
                                                                 selectedRealmName)
@@ -1459,12 +1460,14 @@ class RgwZonegroup(RESTController):
         result = multisite_instance.get_all_zonegroups_info()
         return result
 
-    def delete(self, zonegroup_name, delete_pools, pools: Optional[List[str]] = None):
+    def delete(self, zonegroup_name, delete_pools, pools: Optional[List[str]] = None,
+               realm_name: Optional[str] = None):
         if pools is None:
             pools = []
         try:
             multisite_instance = RgwMultisite()
-            result = multisite_instance.delete_zonegroup(zonegroup_name, delete_pools, pools)
+            result = multisite_instance.delete_zonegroup(zonegroup_name, delete_pools,
+                                                         pools, realm_name)
             return result
         except NoRgwDaemonsException as e:
             raise DashboardException(e, http_status_code=404, component='rgw')
@@ -1487,11 +1490,11 @@ class RgwZone(RESTController):
     @allow_empty_body
     # pylint: disable=W0613
     def create(self, zone_name, zonegroup_name=None, default=False, master=False,
-               zone_endpoints=None, access_key=None, secret_key=None):
+               zone_endpoints=None, access_key=None, secret_key=None, tier_type=''):
         multisite_instance = RgwMultisite()
         result = multisite_instance.create_zone(zone_name, zonegroup_name, default,
                                                 master, zone_endpoints, access_key,
-                                                secret_key)
+                                                secret_key, tier_type)
         return result
 
     @allow_empty_body
@@ -1516,14 +1519,16 @@ class RgwZone(RESTController):
         return result
 
     def delete(self, zone_name, delete_pools, pools: Optional[List[str]] = None,
-               zonegroup_name=None):
+               zonegroup_name=None, realm_name: Optional[str] = None):
         if pools is None:
             pools = []
         if zonegroup_name is None:
             zonegroup_name = ''
         try:
             multisite_instance = RgwMultisite()
-            result = multisite_instance.delete_zone(zone_name, delete_pools, pools, zonegroup_name)
+            result = multisite_instance.delete_zone(zone_name, delete_pools,
+                                                    pools, zonegroup_name,
+                                                    realm_name)
             return result
         except NoRgwDaemonsException as e:
             raise DashboardException(e, http_status_code=404, component='rgw')
@@ -1534,13 +1539,13 @@ class RgwZone(RESTController):
             master: str = '', zone_endpoints: str = '', access_key: str = '', secret_key: str = '',
             placement_target: str = '', data_pool: str = '', index_pool: str = '',
             data_extra_pool: str = '', storage_class: str = '', data_pool_class: str = '',
-            compression: str = ''):
+            compression: str = '', tier_type: str = ''):
         multisite_instance = RgwMultisite()
         result = multisite_instance.edit_zone(zone_name, new_zone_name, zonegroup_name, default,
                                               master, zone_endpoints, access_key, secret_key,
                                               placement_target, data_pool, index_pool,
                                               data_extra_pool, storage_class, data_pool_class,
-                                              compression)
+                                              compression, tier_type)
         return result
 
     @Endpoint()
@@ -1568,6 +1573,57 @@ class RgwZone(RESTController):
         multisite_instance = RgwMultisite()
         result = multisite_instance.get_user_list(zoneName, realmName)
         return result
+
+    @Endpoint('POST', path='storage-class')
+    @CreatePermission
+    def create_storage_class(self, zone_name: str, placement_target: str, storage_class: str,
+                             data_pool: str, compression=''):
+        return self.handle_storage_class(zone_name, placement_target, storage_class, data_pool,
+                                         operation='create', compression=compression)
+
+    @Endpoint('PUT', path='storage-class')
+    @CreatePermission
+    def edit_storage_class(self, zone_name: str, placement_target: str, storage_class: str,
+                           data_pool: str, compression=''):
+        return self.handle_storage_class(zone_name, placement_target, storage_class, data_pool,
+                                         operation='edit', compression=compression)
+
+    def handle_storage_class(self, zone_name: str, placement_target: str, storage_class: str,
+                             data_pool: str, operation: str, compression=''):
+        if not (placement_target and storage_class and data_pool):
+            raise DashboardException(
+                msg='Failed to get placement target',
+                http_status_code=404,
+                component='rgw'
+            )
+        multisite_instance = RgwMultisite()
+
+        try:
+            if operation == 'create':
+                multisite_instance.add_storage_class_zone(
+                    zone_name=zone_name,
+                    placement_target=placement_target,
+                    storage_class=storage_class,
+                    data_pool=data_pool,
+                    compression=compression
+                )
+            elif operation == 'edit':
+                multisite_instance.edit_storage_class_zone(
+                    zone_name=zone_name,
+                    placement_target=placement_target,
+                    storage_class=storage_class,
+                    data_pool=data_pool,
+                    compression=compression
+                )
+        except DashboardException as e:
+            raise DashboardException(e, http_status_code=404, component='rgw')
+
+        return {
+            'placement_target': placement_target,
+            'storage_class': storage_class,
+            'data_pool': data_pool,
+            'status': 'success'
+        }
 
 
 @APIRouter('/rgw/topic', Scope.RGW)

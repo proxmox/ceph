@@ -1,6 +1,6 @@
 /*
- * copyright(c) 2020 intel corporation
- * spdx-license-identifier: bsd-3-clause-clear
+ * Copyright(c) 2020-2021 Intel Corporation
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
@@ -17,6 +17,8 @@ ocf_metadata_get_cleaning_policy(struct ocf_cache *cache,
 {
 	struct ocf_metadata_ctrl *ctrl
 		= (struct ocf_metadata_ctrl *) cache->metadata.priv;
+
+	ENV_BUG_ON(cache->conf_meta->cleaner_disabled);
 
 	return ocf_metadata_raw_wr_access(cache,
 			&(ctrl->raw_desc[metadata_segment_cleaning]), line);

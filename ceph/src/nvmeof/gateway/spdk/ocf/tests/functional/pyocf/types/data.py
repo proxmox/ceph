@@ -1,6 +1,6 @@
 #
 # Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 from ctypes import (
@@ -59,7 +59,7 @@ class Data:
     DATA_POISON = 0xA5
     PAGE_SIZE = 4096
 
-    _instances_ = {}
+    _instances_ = weakref.WeakValueDictionary()
     _ocf_instances_ = []
 
     def __init__(self, byte_count: int):
@@ -69,12 +69,12 @@ class Data:
         self.handle = cast(byref(self.buffer), c_void_p)
 
         memset(self.handle, self.DATA_POISON, self.size)
-        type(self)._instances_[self.handle.value] = weakref.ref(self)
+        type(self)._instances_[self.handle.value] = self
         self._as_parameter_ = self.handle
 
     @classmethod
     def get_instance(cls, ref):
-        return cls._instances_[ref]()
+        return cls._instances_[ref]
 
     @classmethod
     def get_ops(cls):
@@ -161,9 +161,7 @@ class Data:
     @staticmethod
     @DataOps.COPY
     def _copy(dst, src, skip, seek, size):
-        return Data.get_instance(dst).copy(
-            Data.get_instance(src), skip, seek, size
-        )
+        return Data.get_instance(dst).copy(Data.get_instance(src), skip, seek, size)
 
     @staticmethod
     @DataOps.SECURE_ERASE
@@ -223,3 +221,6 @@ class Data:
         m = md5()
         m.update(string_at(self.handle, self.size))
         return m.hexdigest()
+
+    def get_bytes(self):
+        return string_at(self.handle, self.size)

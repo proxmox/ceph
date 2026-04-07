@@ -1,16 +1,11 @@
 #
-# Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2019-2022 Intel Corporation
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 import os
 import sys
-from ctypes import (
-    c_uint64,
-    c_uint32,
-    c_uint16,
-    c_int
-)
+from ctypes import c_uint64, c_uint32, c_uint16, c_int
 from tests.utils.random import RandomStringGenerator, RandomGenerator, DefaultRanges, Range
 
 from pyocf.types.cache import CacheMode, MetadataLayout, PromotionPolicy
@@ -63,9 +58,7 @@ def string_randomize(request):
     return request.param
 
 
-@pytest.fixture(
-    params=RandomGenerator(DefaultRanges.UINT32).exclude_range(enum_range(CacheMode))
-)
+@pytest.fixture(params=RandomGenerator(DefaultRanges.UINT32).exclude_range(enum_range(CacheMode)))
 def not_cache_mode_randomize(request):
     return request.param
 
@@ -81,11 +74,4 @@ def not_cache_line_size_randomize(request):
     params=RandomGenerator(DefaultRanges.UINT32).exclude_range(enum_range(PromotionPolicy))
 )
 def not_promotion_policy_randomize(request):
-    return request.param
-
-
-@pytest.fixture(
-    params=RandomGenerator(DefaultRanges.UINT32).exclude_range(enum_range(MetadataLayout))
-)
-def not_metadata_layout_randomize(request):
     return request.param

@@ -1,13 +1,9 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <unistd.h>
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <errno.h>
-#include <libxnvme_file.h>
-#include <libxnvme_spec.h>
-#include <libxnvme_spec_fs.h>
+#include <libxnvme.h>
 #include <xnvme_be_linux.h>
 
 int

@@ -5,7 +5,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "util/pipe.c"
 #include "common/lib/test_env.c"
@@ -58,22 +58,10 @@ test_write_get_buffer(void)
 	memset(iovs, 0, sizeof(iovs));
 
 	/* Get all available memory */
-	rc = spdk_pipe_writer_get_buffer(pipe, 9, iovs);
-	CU_ASSERT(rc == 9);
-	CU_ASSERT(iovs[0].iov_base == mem);
-	CU_ASSERT(iovs[0].iov_len == 9);
-	CU_ASSERT(iovs[1].iov_base == NULL);
-	CU_ASSERT(iovs[1].iov_len == 0);
-	CU_ASSERT(pipe->write == 0);
-	CU_ASSERT(pipe->read == 0);
-
-	memset(iovs, 0, sizeof(iovs));
-
-	/* Get the full size of the data buffer backing the pipe, which isn't allowed */
 	rc = spdk_pipe_writer_get_buffer(pipe, 10, iovs);
-	CU_ASSERT(rc == 9);
+	CU_ASSERT(rc == 10);
 	CU_ASSERT(iovs[0].iov_base == mem);
-	CU_ASSERT(iovs[0].iov_len == 9);
+	CU_ASSERT(iovs[0].iov_len == 10);
 	CU_ASSERT(iovs[1].iov_base == NULL);
 	CU_ASSERT(iovs[1].iov_len == 0);
 	CU_ASSERT(pipe->write == 0);
@@ -85,10 +73,10 @@ test_write_get_buffer(void)
 	pipe->write = 7;
 
 	/* Get all of the available memory. */
-	rc = spdk_pipe_writer_get_buffer(pipe, 2, iovs);
-	CU_ASSERT(rc == 2);
+	rc = spdk_pipe_writer_get_buffer(pipe, 3, iovs);
+	CU_ASSERT(rc == 3);
 	CU_ASSERT(iovs[0].iov_base == (mem + 7));
-	CU_ASSERT(iovs[0].iov_len == 2);
+	CU_ASSERT(iovs[0].iov_len == 3);
 	CU_ASSERT(iovs[1].iov_base == NULL);
 	CU_ASSERT(iovs[1].iov_len == 0);
 	CU_ASSERT(pipe->write == 7);
@@ -97,10 +85,10 @@ test_write_get_buffer(void)
 	memset(iovs, 0, sizeof(iovs));
 
 	/* Get more than the available memory */
-	rc = spdk_pipe_writer_get_buffer(pipe, 3, iovs);
-	CU_ASSERT(rc == 2);
+	rc = spdk_pipe_writer_get_buffer(pipe, 4, iovs);
+	CU_ASSERT(rc == 3);
 	CU_ASSERT(iovs[0].iov_base == (mem + 7));
-	CU_ASSERT(iovs[0].iov_len == 2);
+	CU_ASSERT(iovs[0].iov_len == 3);
 	CU_ASSERT(iovs[1].iov_base == NULL);
 	CU_ASSERT(iovs[1].iov_len == 0);
 	CU_ASSERT(pipe->write == 7);
@@ -112,24 +100,24 @@ test_write_get_buffer(void)
 	pipe->read = 3;
 
 	/* Get all of the available memory. */
-	rc = spdk_pipe_writer_get_buffer(pipe, 5, iovs);
-	CU_ASSERT(rc == 5);
+	rc = spdk_pipe_writer_get_buffer(pipe, 6, iovs);
+	CU_ASSERT(rc == 6);
 	CU_ASSERT(iovs[0].iov_base == (mem + 7));
 	CU_ASSERT(iovs[0].iov_len == 3);
 	CU_ASSERT(iovs[1].iov_base == mem);
-	CU_ASSERT(iovs[1].iov_len == 2);
+	CU_ASSERT(iovs[1].iov_len == 3);
 	CU_ASSERT(pipe->write == 7);
 	CU_ASSERT(pipe->read == 3);
 
 	memset(iovs, 0, sizeof(iovs));
 
 	/* Get more than the available memory */
-	rc = spdk_pipe_writer_get_buffer(pipe, 6, iovs);
-	CU_ASSERT(rc == 5);
+	rc = spdk_pipe_writer_get_buffer(pipe, 7, iovs);
+	CU_ASSERT(rc == 6);
 	CU_ASSERT(iovs[0].iov_base == (mem + 7));
 	CU_ASSERT(iovs[0].iov_len == 3);
 	CU_ASSERT(iovs[1].iov_base == mem);
-	CU_ASSERT(iovs[1].iov_len == 2);
+	CU_ASSERT(iovs[1].iov_len == 3);
 	CU_ASSERT(pipe->write == 7);
 	CU_ASSERT(pipe->read == 3);
 
@@ -139,10 +127,10 @@ test_write_get_buffer(void)
 	pipe->read = 9;
 
 	/* Get all of the available memory. */
-	rc = spdk_pipe_writer_get_buffer(pipe, 1, iovs);
-	CU_ASSERT(rc == 1);
+	rc = spdk_pipe_writer_get_buffer(pipe, 2, iovs);
+	CU_ASSERT(rc == 2);
 	CU_ASSERT(iovs[0].iov_base == (mem + 7));
-	CU_ASSERT(iovs[0].iov_len == 1);
+	CU_ASSERT(iovs[0].iov_len == 2);
 	CU_ASSERT(iovs[1].iov_base == NULL);
 	CU_ASSERT(iovs[1].iov_len == 0);
 	CU_ASSERT(pipe->write == 7);
@@ -151,10 +139,10 @@ test_write_get_buffer(void)
 	memset(iovs, 0, sizeof(iovs));
 
 	/* Get more than the available memory */
-	rc = spdk_pipe_writer_get_buffer(pipe, 2, iovs);
-	CU_ASSERT(rc == 1);
+	rc = spdk_pipe_writer_get_buffer(pipe, 3, iovs);
+	CU_ASSERT(rc == 2);
 	CU_ASSERT(iovs[0].iov_base == (mem + 7));
-	CU_ASSERT(iovs[0].iov_len == 1);
+	CU_ASSERT(iovs[0].iov_len == 2);
 	CU_ASSERT(iovs[1].iov_base == NULL);
 	CU_ASSERT(iovs[1].iov_len == 0);
 	CU_ASSERT(pipe->write == 7);
@@ -163,7 +151,8 @@ test_write_get_buffer(void)
 	memset(iovs, 0, sizeof(iovs));
 
 	/* Fill the pipe */
-	pipe->write = 8;
+	pipe->write = 9;
+	pipe->full = true;
 
 	/* Get data while the pipe is full */
 	rc = spdk_pipe_writer_get_buffer(pipe, 1, iovs);
@@ -172,7 +161,7 @@ test_write_get_buffer(void)
 	CU_ASSERT(iovs[0].iov_len == 0);
 	CU_ASSERT(iovs[1].iov_base == NULL);
 	CU_ASSERT(iovs[1].iov_len == 0);
-	CU_ASSERT(pipe->write == 8);
+	CU_ASSERT(pipe->write == 9);
 	CU_ASSERT(pipe->read == 9);
 
 	spdk_pipe_destroy(pipe);
@@ -193,60 +182,73 @@ test_write_advance(void)
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(pipe->write == 5);
 	CU_ASSERT(pipe->read == 0);
+	CU_ASSERT(!pipe->full);
 
 	pipe->write = 0;
+	pipe->full = false;
 
 	/* Advance to the end of the pipe */
-	rc = spdk_pipe_writer_advance(pipe, 9);
+	rc = spdk_pipe_writer_advance(pipe, 10);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(pipe->write == 9);
+	CU_ASSERT(pipe->write == 0);
 	CU_ASSERT(pipe->read == 0);
+	CU_ASSERT(pipe->full);
 
 	pipe->write = 0;
+	pipe->full = false;
 
 	/* Advance beyond the end */
-	rc = spdk_pipe_writer_advance(pipe, 10);
+	rc = spdk_pipe_writer_advance(pipe, 11);
 	CU_ASSERT(rc == -EINVAL);
 	CU_ASSERT(pipe->write == 0);
 	CU_ASSERT(pipe->read == 0);
+	CU_ASSERT(!pipe->full);
 
 	/* Move the read pointer forward */
 	pipe->write = 0;
 	pipe->read = 5;
+	pipe->full = false;
 
 	/* Advance to the end of the pipe */
-	rc = spdk_pipe_writer_advance(pipe, 4);
+	rc = spdk_pipe_writer_advance(pipe, 5);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(pipe->write == 4);
+	CU_ASSERT(pipe->write == 5);
 	CU_ASSERT(pipe->read == 5);
+	CU_ASSERT(pipe->full);
 
 	pipe->write = 0;
 	pipe->read = 5;
-
-	/* Advance beyond the end */
-	rc = spdk_pipe_writer_advance(pipe, 5);
-	CU_ASSERT(rc == -EINVAL);
-	CU_ASSERT(pipe->write == 0);
-	CU_ASSERT(pipe->read == 5);
-
-	/* Test wrap around */
-	pipe->write = 7;
-	pipe->read = 3;
-
-	/* Advance to the end of the pipe */
-	rc = spdk_pipe_writer_advance(pipe, 5);
-	CU_ASSERT(rc == 0);
-	CU_ASSERT(pipe->write == 2);
-	CU_ASSERT(pipe->read == 3);
-
-	pipe->write = 7;
-	pipe->read = 3;
+	pipe->full = false;
 
 	/* Advance beyond the end */
 	rc = spdk_pipe_writer_advance(pipe, 6);
 	CU_ASSERT(rc == -EINVAL);
+	CU_ASSERT(pipe->write == 0);
+	CU_ASSERT(pipe->read == 5);
+	CU_ASSERT(!pipe->full);
+
+	/* Test wrap around */
+	pipe->write = 7;
+	pipe->read = 3;
+	pipe->full = false;
+
+	/* Advance to the end of the pipe */
+	rc = spdk_pipe_writer_advance(pipe, 6);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(pipe->write == 3);
+	CU_ASSERT(pipe->read == 3);
+	CU_ASSERT(pipe->full);
+
+	pipe->write = 7;
+	pipe->read = 3;
+	pipe->full = false;
+
+	/* Advance beyond the end */
+	rc = spdk_pipe_writer_advance(pipe, 7);
+	CU_ASSERT(rc == -EINVAL);
 	CU_ASSERT(pipe->write == 7);
 	CU_ASSERT(pipe->read == 3);
+	CU_ASSERT(!pipe->full);
 
 	spdk_pipe_destroy(pipe);
 }
@@ -408,11 +410,12 @@ test_read_advance(void)
 	pipe->read = 0;
 	pipe->write = 9;
 
-	/* Advance to the end of the pipe */
+	/* Advance to the end of the pipe, which resets
+	 * it back to the beginning */
 	rc = spdk_pipe_reader_advance(pipe, 9);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(pipe->read == 9);
-	CU_ASSERT(pipe->write == 9);
+	CU_ASSERT(pipe->read == 0);
+	CU_ASSERT(pipe->write == 0);
 
 	pipe->read = 0;
 	pipe->write = 9;
@@ -427,11 +430,12 @@ test_read_advance(void)
 	pipe->read = 0;
 	pipe->write = 5;
 
-	/* Advance to the end of the pipe */
+	/* Advance to the end of the pipe, which resets
+	 * it back to the beginning */
 	rc = spdk_pipe_reader_advance(pipe, 5);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(pipe->write == 5);
-	CU_ASSERT(pipe->read == 5);
+	CU_ASSERT(pipe->write == 0);
+	CU_ASSERT(pipe->read == 0);
 
 	pipe->read = 0;
 	pipe->write = 5;
@@ -446,11 +450,12 @@ test_read_advance(void)
 	pipe->read = 7;
 	pipe->write = 3;
 
-	/* Advance to the end of the pipe */
+	/* Advance to the end of the pipe, which resets
+	 * it back to the beginning */
 	rc = spdk_pipe_reader_advance(pipe, 6);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(pipe->read == 3);
-	CU_ASSERT(pipe->write == 3);
+	CU_ASSERT(pipe->read == 0);
+	CU_ASSERT(pipe->write == 0);
 
 	pipe->read = 7;
 	pipe->write = 3;
@@ -483,7 +488,7 @@ test_data(void)
 	/* Place 1 byte in the pipe */
 	rc = spdk_pipe_writer_get_buffer(pipe, 1, iovs);
 	CU_ASSERT(rc == 1);
-	CU_ASSERT(iovs[0].iov_base != NULL);
+	CU_ASSERT(iovs[0].iov_base == mem);
 	CU_ASSERT(iovs[0].iov_len == 1);
 
 	memset(iovs[0].iov_base, 'A', 1);
@@ -510,12 +515,12 @@ test_data(void)
 	CU_ASSERT(rc == 1);
 
 	data = iovs[0].iov_base;
-	CU_ASSERT(*data = 'A');
+	CU_ASSERT(*data == 'A');
 
 	spdk_pipe_reader_advance(pipe, 1);
 
-	/* Put 9 more bytes in the pipe, so every byte has
-	 * been written */
+	/* Put 9 more bytes in the pipe. The previous advance
+	 * should have reset the pipe to the beginning. */
 	rc = spdk_pipe_writer_get_buffer(pipe, 9, iovs);
 	CU_ASSERT(rc == 9);
 	CU_ASSERT(iovs[0].iov_len == 9);
@@ -526,7 +531,7 @@ test_data(void)
 	rc = spdk_pipe_writer_advance(pipe, 9);
 	CU_ASSERT(rc == 0);
 
-	CU_ASSERT(mem[0] == 'A');
+	CU_ASSERT(mem[0] == 'B');
 	CU_ASSERT(mem[1] == 'B');
 	CU_ASSERT(mem[2] == 'B');
 	CU_ASSERT(mem[3] == 'B');
@@ -535,7 +540,7 @@ test_data(void)
 	CU_ASSERT(mem[6] == 'B');
 	CU_ASSERT(mem[7] == 'B');
 	CU_ASSERT(mem[8] == 'B');
-	CU_ASSERT(mem[9] == 'B');
+	CU_ASSERT(mem[9] == 0);
 
 	memset(iovs, 0, sizeof(iovs));
 
@@ -554,7 +559,7 @@ test_data(void)
 
 	memset(iovs, 0, sizeof(iovs));
 
-	/* Put 1 more byte in the pipe, overwriting the original 'A' */
+	/* Put 1 more byte in the pipe */
 	rc = spdk_pipe_writer_get_buffer(pipe, 1, iovs);
 	CU_ASSERT(rc == 1);
 	CU_ASSERT(iovs[0].iov_len == 1);
@@ -565,7 +570,7 @@ test_data(void)
 	rc = spdk_pipe_writer_advance(pipe, 1);
 	CU_ASSERT(rc == 0);
 
-	CU_ASSERT(mem[0] == 'C');
+	CU_ASSERT(mem[0] == 'B');
 	CU_ASSERT(mem[1] == 'B');
 	CU_ASSERT(mem[2] == 'B');
 	CU_ASSERT(mem[3] == 'B');
@@ -574,7 +579,7 @@ test_data(void)
 	CU_ASSERT(mem[6] == 'B');
 	CU_ASSERT(mem[7] == 'B');
 	CU_ASSERT(mem[8] == 'B');
-	CU_ASSERT(mem[9] == 'B');
+	CU_ASSERT(mem[9] == 'C');
 
 	memset(iovs, 0, sizeof(iovs));
 
@@ -582,14 +587,14 @@ test_data(void)
 	CU_ASSERT(spdk_pipe_reader_bytes_available(pipe) == 3);
 	rc = spdk_pipe_reader_get_buffer(pipe, 3, iovs);
 	CU_ASSERT(rc == 3);
-	CU_ASSERT(iovs[0].iov_len == 2);
-	CU_ASSERT(iovs[1].iov_len == 1);
+	CU_ASSERT(iovs[0].iov_len == 3);
+	CU_ASSERT(iovs[1].iov_len == 0);
 
 	data = iovs[0].iov_base;
 	CU_ASSERT(data[0] == 'B');
 	CU_ASSERT(data[1] == 'B');
-	data = iovs[1].iov_base;
-	CU_ASSERT(data[0] == 'C');
+	CU_ASSERT(data[2] == 'C');
+	CU_ASSERT(iovs[1].iov_base == NULL);
 
 	spdk_pipe_reader_advance(pipe, 3);
 
@@ -602,7 +607,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("pipe", NULL, NULL);
@@ -614,11 +618,9 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_read_advance);
 	CU_ADD_TEST(suite, test_data);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 
-	CU_basic_run_tests();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 
 	return num_failures;

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """
     Produce information about third-party libraries and compilation flags
 
@@ -41,7 +46,6 @@ def run(cmd):
     with subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="UTF-8"
     ) as proc:
-
         out, err = proc.communicate()
 
         return out, err, proc.returncode
@@ -184,10 +188,8 @@ def main(args):
     """Entry point"""
 
     args.guards = {
-        "fio": None,
         "spdk": "XNVME_BE_SPDK_ENABLED",
         "libnvme": "XNVME_BE_LINUX_ENABLED",
-        "libvfn": "XNVME_BE_LINUX_VFIO_ENABLED",
     }
 
     try:

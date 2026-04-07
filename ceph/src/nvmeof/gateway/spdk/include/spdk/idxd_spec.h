@@ -38,6 +38,24 @@ extern "C" {
 #define IDXD_FLAG_DEST_STEERING_TAG	(1 << 15)
 #define IDXD_FLAG_CRC_READ_CRC_SEED	(1 << 16)
 
+#define IDXD_DSA_STATUS_DIF_ERROR	0x9
+
+#define IDXD_DIF_FLAG_INVERT_CRC_RESULT		(1 << 3)
+#define IDXD_DIF_FLAG_INVERT_CRC_SEED		(1 << 2)
+#define IDXD_DIF_FLAG_DIF_BLOCK_SIZE_512	0x0
+#define IDXD_DIF_FLAG_DIF_BLOCK_SIZE_520	0x1
+#define IDXD_DIF_FLAG_DIF_BLOCK_SIZE_4096	0x2
+#define IDXD_DIF_FLAG_DIF_BLOCK_SIZE_4104	0x3
+
+#define IDXD_DIF_SOURCE_FLAG_SOURCE_REF_TAG_TYPE	(1 << 7)
+#define IDXD_DIF_SOURCE_FLAG_REF_TAG_CHECK_DISABLE	(1 << 6)
+#define IDXD_DIF_SOURCE_FLAG_GUARD_CHECK_DISABLE	(1 << 5)
+#define IDXD_DIF_SOURCE_FLAG_SOURCE_APP_TAG_TYPE	(1 << 4)
+#define IDXD_DIF_SOURCE_FLAG_APP_AND_REF_TAG_F_DETECT	(1 << 3)
+#define IDXD_DIF_SOURCE_FLAG_APP_TAG_F_DETECT		(1 << 2)
+#define IDXD_DIF_SOURCE_FLAG_ALL_F_DETECT		(1 << 1)
+#define IDXD_DIF_SOURCE_FLAG_ENABLE_ALL_F_DETECT_ERR	(1)
+
 #define IAA_FLAG_RD_SRC2_AECS		(1 << 16)
 #define IAA_COMP_FLUSH_OUTPUT		(1 << 1)
 #define IAA_COMP_APPEND_EOB		(1 << 2)
@@ -272,6 +290,24 @@ struct idxd_hw_desc {
 			uint16_t	dest_app_tag_mask;
 			uint16_t	dest_app_tag_seed;
 		} dif_upd;
+		struct {
+			uint8_t		src_flags;
+			uint8_t		rsvd1;
+			uint8_t		flags;
+			uint8_t		rsvd2[5];
+			uint32_t	ref_tag_seed;
+			uint16_t	app_tag_mask;
+			uint16_t	app_tag_seed;
+		} dif_strip;
+		struct {
+			uint8_t		rsvd1;
+			uint8_t		dest_flags;
+			uint8_t		flags;
+			uint8_t		rsvd2[13];
+			uint32_t	ref_tag_seed;
+			uint16_t	app_tag_mask;
+			uint16_t	app_tag_seed;
+		} dix_gen;
 		uint8_t		op_specific[24];
 	};
 } __attribute((aligned(64)));
@@ -308,6 +344,12 @@ struct dsa_hw_comp_record {
 			uint16_t	dest_app_tag_mask;
 			uint16_t	dest_app_tag;
 		} dif_upd_comp;
+		struct {
+			uint64_t	rsvd;
+			uint32_t	dix_gen_ref_tag;
+			uint16_t	dix_gen_app_tag_mask;
+			uint16_t	dix_gen_app_tag;
+		} dix_gen_comp;
 		uint8_t		op_specific[16];
 	};
 };

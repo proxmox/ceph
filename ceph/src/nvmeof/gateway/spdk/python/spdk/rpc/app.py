@@ -38,7 +38,7 @@ def framework_get_reactors(client):
 
 
 def framework_set_scheduler(client, name, period=None, load_limit=None, core_limit=None,
-                            core_busy=None):
+                            core_busy=None, mappings=None):
     """Select threads scheduler that will be activated and its period.
 
     Args:
@@ -56,6 +56,8 @@ def framework_set_scheduler(client, name, period=None, load_limit=None, core_lim
         params['core_limit'] = core_limit
     if core_busy is not None:
         params['core_busy'] = core_busy
+    if mappings is not None:
+        params['mappings'] = mappings
     return client.call('framework_set_scheduler', params)
 
 
@@ -66,6 +68,24 @@ def framework_get_scheduler(client):
         Name, period (in microseconds) of currently set scheduler and name of currently set governor.
     """
     return client.call('framework_get_scheduler')
+
+
+def framework_get_governor(client):
+    """Query current governor data.
+
+    Returns:
+        Name of currently set governor, available frequencies and currently set frequency of the CPU cores.
+    """
+    return client.call('framework_get_governor')
+
+
+def scheduler_set_options(client, scheduling_core=None, isolated_core_mask=None):
+    params = {}
+    if isolated_core_mask is not None:
+        params['isolated_core_mask'] = isolated_core_mask
+    if scheduling_core is not None:
+        params['scheduling_core'] = scheduling_core
+    return client.call('scheduler_set_options', params)
 
 
 def thread_get_stats(client):

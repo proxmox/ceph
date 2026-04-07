@@ -1,6 +1,7 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// Copyright (C) Klaus B. A. Jensen <k.jensen@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <stdio.h>
 #include <errno.h>
 #include <libxnvme.h>
@@ -27,6 +28,12 @@ xnvme_queue_term(struct xnvme_queue *queue)
 	free(queue);
 
 	return err;
+}
+
+static void
+callback_noop(struct xnvme_cmd_ctx *XNVME_UNUSED(ctx), void *XNVME_UNUSED(cb_arg))
+{
+	return;
 }
 
 int
@@ -59,9 +66,10 @@ xnvme_queue_init(struct xnvme_dev *dev, uint16_t capacity, int opts, struct xnvm
 	for (uint32_t i = 0; i <= (*queue)->base.capacity; ++i) {
 		(*queue)->pool_storage[i].dev = dev;
 		(*queue)->pool_storage[i].async.queue = *queue;
-		(*queue)->pool_storage[i].async.cb = NULL;
+		(*queue)->pool_storage[i].async.cb = callback_noop;
 		(*queue)->pool_storage[i].async.cb_arg = NULL;
 		(*queue)->pool_storage[i].opts = XNVME_CMD_ASYNC;
+		(*queue)->pool_storage[i].id = i;
 
 		SLIST_INSERT_HEAD(&(*queue)->base.pool, &((*queue)->pool_storage[i]), link);
 	}
@@ -141,7 +149,7 @@ xnvme_queue_get_outstanding(struct xnvme_queue *queue)
 struct xnvme_cmd_ctx *
 xnvme_queue_get_cmd_ctx(struct xnvme_queue *queue)
 {
-	struct xnvme_cmd_ctx *ctx = SLIST_FIRST(&queue->base.pool);
+	struct xnvme_cmd_ctx *ctx = (struct xnvme_cmd_ctx *)SLIST_FIRST(&queue->base.pool);
 
 	if (!ctx) {
 		errno = ENOMEM;
@@ -156,7 +164,13 @@ xnvme_queue_get_cmd_ctx(struct xnvme_queue *queue)
 int
 xnvme_queue_put_cmd_ctx(struct xnvme_queue *queue, struct xnvme_cmd_ctx *ctx)
 {
-	SLIST_INSERT_HEAD(&queue->base.pool, ctx, link);
+	SLIST_INSERT_HEAD(&queue->base.pool, (struct xnvme_cmd_ctx_entry *)ctx, link);
 
 	return 0;
+}
+
+int
+xnvme_queue_get_completion_fd(struct xnvme_queue *queue)
+{
+	return queue->base.dev->be.async.get_completion_fd(queue);
 }

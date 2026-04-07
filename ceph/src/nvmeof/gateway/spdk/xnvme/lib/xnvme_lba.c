@@ -1,8 +1,8 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #include <libxnvme.h>
-#include <libxnvme_lba.h>
-#include <libxnvme_pp.h>
 
 int
 xnvme_lba_range_fpr(FILE *stream, struct xnvme_lba_range *range, int opts)
@@ -27,12 +27,12 @@ xnvme_lba_range_fpr(FILE *stream, struct xnvme_lba_range *range, int opts)
 
 	wrtn += fprintf(stream, "\n");
 
-	wrtn += fprintf(stream, "  slba: 0x%016lx\n", range->slba);
-	wrtn += fprintf(stream, "  elba: 0x%016lx\n", range->elba);
-	wrtn += fprintf(stream, "  naddrs: %u\n", range->naddrs);
-	wrtn += fprintf(stream, "  nbytes: %zu\n", range->nbytes);
-	wrtn += fprintf(stream, "  attr: { is_zones: %d, is_valid: %d}\n", range->attr.is_zoned,
-			range->attr.is_valid);
+	wrtn += fprintf(stream, "  slba: 0x%016" PRIx64 "\n", range->slba);
+	wrtn += fprintf(stream, "  elba: 0x%016" PRIx64 "\n", range->elba);
+	wrtn += fprintf(stream, "  naddrs: %" PRIu32 "\n", range->naddrs);
+	wrtn += fprintf(stream, "  nbytes: %" PRIu64 "\n", range->nbytes);
+	wrtn += fprintf(stream, "  attr: { is_zones: %" PRIu32 ", is_valid: %" PRIu32 "}\n",
+			range->attr.is_zoned, range->attr.is_valid);
 
 	return wrtn;
 }
@@ -48,6 +48,15 @@ xnvme_lba_range_from_slba_naddrs(struct xnvme_dev *dev, uint64_t slba, uint64_t 
 {
 	const struct xnvme_geo *geo = xnvme_dev_get_geo(dev);
 	struct xnvme_lba_range rng = {0};
+
+	switch (geo->type) {
+	case XNVME_GEO_ZONED:
+	case XNVME_GEO_CONVENTIONAL:
+		break;
+	default:
+		XNVME_DEBUG("FAILED: not nvm / zns, got; %d", geo->type);
+		return rng;
+	}
 
 	if (!naddrs) {
 		XNVME_DEBUG("FAILED: !naddrs => the range must be non-empty");
@@ -82,13 +91,22 @@ xnvme_lba_range_from_offset_nbytes(struct xnvme_dev *dev, uint64_t offset, uint6
 	const struct xnvme_geo *geo = xnvme_dev_get_geo(dev);
 	struct xnvme_lba_range rng = {0};
 
+	switch (geo->type) {
+	case XNVME_GEO_ZONED:
+	case XNVME_GEO_CONVENTIONAL:
+		break;
+	default:
+		XNVME_DEBUG("FAILED: not nvm / zns, got; %d", geo->type);
+		return rng;
+	}
+
 	if (offset % geo->nbytes) {
-		XNVME_DEBUG("FAILED: offset: %zu, does not align to lba-width: %u", offset,
+		XNVME_DEBUG("FAILED: offset: %" PRIu64 ", does not align to lba-width: %u", offset,
 			    geo->nbytes);
 		return rng;
 	}
 	if (nbytes % geo->nbytes) {
-		XNVME_DEBUG("FAILED: nbytes: %zu, does not align to lba-width: %u", nbytes,
+		XNVME_DEBUG("FAILED: nbytes: %" PRIu64 ", does not align to lba-width: %u", nbytes,
 			    geo->nbytes);
 		return rng;
 	}

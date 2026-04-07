@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2022, Intel Corporation
+;; Copyright (c) 2022-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -42,9 +42,9 @@
 ; arg 4: LEN:  length in bytes (multiple of 16)
 ;
 
-%include "include/os.asm"
-%include "include/clear_regs.asm"
-%include "include/aes_common.asm"
+%include "include/os.inc"
+%include "include/clear_regs.inc"
+%include "include/aes_common.inc"
 
 %ifdef LINUX
 %define IN      rdi

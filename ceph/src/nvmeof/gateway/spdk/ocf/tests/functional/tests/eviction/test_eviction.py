@@ -1,6 +1,7 @@
 #
-# Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2019-2022 Intel Corporation
+# Copyright(c) 2024 Huawei Technologies
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 import logging
@@ -12,9 +13,10 @@ import pytest
 from pyocf.types.cache import Cache, CacheMode
 from pyocf.types.core import Core
 from pyocf.types.data import Data
-from pyocf.types.io import IoDir
+from pyocf.types.io import IoDir, Sync
 from pyocf.types.shared import OcfCompletion, CacheLineSize, SeqCutOffPolicy, CacheLines
-from pyocf.types.volume import Volume
+from pyocf.types.volume import RamVolume
+from pyocf.types.volume_core import CoreVolume
 from pyocf.utils import Size
 
 logger = logging.getLogger(__name__)
@@ -24,25 +26,27 @@ logger = logging.getLogger(__name__)
 @pytest.mark.parametrize("mode", [CacheMode.WT])
 def test_eviction_two_cores(pyocf_ctx, mode: CacheMode, cls: CacheLineSize):
     """Test if eviction works correctly when remapping cachelines between distinct cores."""
-    cache_device = Volume(Size.from_MiB(20))
+    cache_device = RamVolume(Size.from_MiB(50))
 
-    core_device1 = Volume(Size.from_MiB(40))
-    core_device2 = Volume(Size.from_MiB(40))
+    core_device1 = RamVolume(Size.from_MiB(40))
+    core_device2 = RamVolume(Size.from_MiB(40))
     cache = Cache.start_on_device(cache_device, cache_mode=mode, cache_line_size=cls)
     cache.set_seq_cut_off_policy(SeqCutOffPolicy.NEVER)
     cache_size = cache.get_stats()["conf"]["size"]
-    core_exported1 = Core.using_device(core_device1, name="core1")
-    core_exported2 = Core.using_device(core_device2, name="core2")
-    cache.add_core(core_exported1)
-    cache.add_core(core_exported2)
+    core1 = Core.using_device(core_device1, name="core1")
+    core2 = Core.using_device(core_device2, name="core2")
+    cache.add_core(core1)
+    vol1 = CoreVolume(core1)
+    cache.add_core(core2)
+    vol2 = CoreVolume(core2)
 
     valid_io_size = Size.from_B(cache_size.B)
     test_data = Data(valid_io_size)
-    send_io(core_exported1, test_data)
-    send_io(core_exported2, test_data)
+    send_io(vol1, test_data)
+    send_io(vol2, test_data)
 
-    stats1 = core_exported1.get_stats()
-    stats2 = core_exported2.get_stats()
+    stats1 = core1.get_stats()
+    stats2 = core2.get_stats()
     # IO to the second core should evict all the data from the first core
     assert stats1["usage"]["occupancy"]["value"] == 0
     assert stats2["usage"]["occupancy"]["value"] == valid_io_size.blocks_4k
@@ -52,20 +56,21 @@ def test_eviction_two_cores(pyocf_ctx, mode: CacheMode, cls: CacheLineSize):
 @pytest.mark.parametrize("mode", [CacheMode.WT, CacheMode.WB, CacheMode.WO])
 def test_write_size_greater_than_cache(pyocf_ctx, mode: CacheMode, cls: CacheLineSize):
     """Test if eviction does not occur when IO greater than cache size is submitted."""
-    cache_device = Volume(Size.from_MiB(20))
+    cache_device = RamVolume(Size.from_MiB(50))
 
-    core_device = Volume(Size.from_MiB(5))
+    core_device = RamVolume(Size.from_MiB(200))
     cache = Cache.start_on_device(cache_device, cache_mode=mode, cache_line_size=cls)
     cache_size = cache.get_stats()["conf"]["size"]
-    core_exported = Core.using_device(core_device)
-    cache.add_core(core_exported)
+    core = Core.using_device(core_device)
+    cache.add_core(core)
+    vol = CoreVolume(core)
     cache.set_seq_cut_off_policy(SeqCutOffPolicy.NEVER)
 
     valid_io_size = Size.from_B(cache_size.B // 2)
     test_data = Data(valid_io_size)
-    send_io(core_exported, test_data)
+    send_io(vol, test_data)
 
-    stats = core_exported.cache.get_stats()
+    stats = core.cache.get_stats()
     first_block_sts = stats["block"]
     first_usage_sts = stats["usage"]
     pt_writes_first = stats["req"]["wr_pt"]
@@ -74,18 +79,18 @@ def test_write_size_greater_than_cache(pyocf_ctx, mode: CacheMode, cls: CacheLin
     ), "Occupancy after first IO"
     prev_writes_to_core = stats["block"]["core_volume_wr"]["value"]
 
-    # Anything below 5 MiB is a valid size (less than core device size)
+    # Anything below 200 MiB is a valid size (less than core device size)
     # Writing over cache size (to the offset above first io) in this case should go
     # directly to core and shouldn't trigger eviction
-    io_size_bigger_than_cache = Size.from_MiB(2)
+    io_size_bigger_than_cache = Size.from_MiB(100)
     io_offset = valid_io_size
     test_data = Data(io_size_bigger_than_cache)
-    send_io(core_exported, test_data, io_offset)
+    send_io(vol, test_data, io_offset)
 
     if mode is not CacheMode.WT:
         # Flush first write
         cache.flush()
-    stats = core_exported.cache.get_stats()
+    stats = core.cache.get_stats()
     second_block_sts = stats["block"]
     second_usage_sts = stats["usage"]
     pt_writes_second = stats["req"]["wr_pt"]
@@ -106,23 +111,19 @@ def test_write_size_greater_than_cache(pyocf_ctx, mode: CacheMode, cls: CacheLin
 @pytest.mark.parametrize("cls", CacheLineSize)
 def test_evict_overflown_pinned(pyocf_ctx, cls: CacheLineSize):
     """ Verify if overflown pinned ioclass is evicted """
-    cache_device = Volume(Size.from_MiB(35))
-    core_device = Volume(Size.from_MiB(100))
-    cache = Cache.start_on_device(
-        cache_device, cache_mode=CacheMode.WT, cache_line_size=cls
-    )
+    cache_device = RamVolume(Size.from_MiB(50))
+    core_device = RamVolume(Size.from_MiB(100))
+    cache = Cache.start_on_device(cache_device, cache_mode=CacheMode.WT, cache_line_size=cls)
     core = Core.using_device(core_device)
     cache.add_core(core)
+    vol = CoreVolume(core)
 
     test_ioclass_id = 1
     pinned_ioclass_id = 2
     pinned_ioclass_max_occupancy = 10
 
     cache.configure_partition(
-        part_id=test_ioclass_id,
-        name="default_ioclass",
-        max_size=100,
-        priority=1,
+        part_id=test_ioclass_id, name="default_ioclass", max_size=100, priority=1,
     )
     cache.configure_partition(
         part_id=pinned_ioclass_id,
@@ -139,7 +140,7 @@ def test_evict_overflown_pinned(pyocf_ctx, cls: CacheLineSize):
 
     # Populate cache with data
     for i in range(cache_size.blocks_4k):
-        send_io(core, data, i * 4096, test_ioclass_id)
+        send_io(vol, data, i * 4096, test_ioclass_id)
 
     part_current_size = CacheLines(
         cache.get_partition_info(part_id=test_ioclass_id)["_curr_size"], cls
@@ -149,11 +150,9 @@ def test_evict_overflown_pinned(pyocf_ctx, cls: CacheLineSize):
     ), "Failed to populate the default partition"
 
     # Repart - force overflow of second partition occupancy limit
-    pinned_double_size = ceil(
-        (cache_size.blocks_4k * pinned_ioclass_max_occupancy * 2) / 100
-    )
+    pinned_double_size = ceil((cache_size.blocks_4k * pinned_ioclass_max_occupancy * 2) / 100)
     for i in range(pinned_double_size):
-        send_io(core, data, i * 4096, pinned_ioclass_id)
+        send_io(vol, data, i * 4096, pinned_ioclass_id)
 
     part_current_size = CacheLines(
         cache.get_partition_info(part_id=pinned_ioclass_id)["_curr_size"], cls
@@ -164,33 +163,25 @@ def test_evict_overflown_pinned(pyocf_ctx, cls: CacheLineSize):
 
     # Trigger IO to the default ioclass - force eviction from overlown ioclass
     for i in range(cache_size.blocks_4k):
-        send_io(core, data, (cache_size.blocks_4k + i) * 4096, test_ioclass_id)
+        send_io(vol, data, (cache_size.blocks_4k + i) * 4096, test_ioclass_id)
 
     part_current_size = CacheLines(
         cache.get_partition_info(part_id=pinned_ioclass_id)["_curr_size"], cls
     )
     assert isclose(
-        part_current_size.blocks_4k,
-        ceil(cache_size.blocks_4k * 0.1),
-        abs_tol=Size(cls).blocks_4k,
+        part_current_size.blocks_4k, ceil(cache_size.blocks_4k * 0.1), abs_tol=Size(cls).blocks_4k,
     ), "Overflown part has not been evicted"
 
 
-def send_io(exported_obj: Core, data: Data, addr: int = 0, target_ioclass: int = 0):
-    io = exported_obj.new_io(
-        exported_obj.cache.get_default_queue(),
-        addr,
-        data.size,
-        IoDir.WRITE,
-        target_ioclass,
-        0,
+def send_io(vol: CoreVolume, data: Data, addr: int = 0, target_ioclass: int = 0):
+    vol.open()
+    io = vol.new_io(
+        vol.parent.get_default_queue(), addr, data.size, IoDir.WRITE, target_ioclass, 0,
     )
 
     io.set_data(data)
 
-    completion = OcfCompletion([("err", c_int)])
-    io.callback = completion.callback
-    io.submit()
-    completion.wait()
+    completion = Sync(io).submit()
+    vol.close()
 
     assert completion.results["err"] == 0, "IO to exported object completion"

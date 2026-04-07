@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2020-2022, Intel Corporation
+  Copyright (c) 2020-2023, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -82,7 +82,7 @@ init_mb_mgr_auto(IMB_MGR *state, IMB_ARCH *arch)
 #endif
         imb_set_errno(state, ENODEV);
 
- init_mb_mgr_auto_ret:
+init_mb_mgr_auto_ret:
         if (arch != NULL)
                 *arch = arch_detected;
 }

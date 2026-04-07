@@ -31,7 +31,6 @@
 %include "sha512_mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_AVX512
 extern sha512_mb_x8_avx512
 
 [bits 64]
@@ -96,10 +95,10 @@ endstruc
 
 %define APPEND(a,b) a %+ b
 
-; SHA512_JOB* sha512_mb_mgr_flush_avx512(SHA512_MB_JOB_MGR *state)
+; ISAL_SHA512_JOB* _sha512_mb_mgr_flush_avx512(ISAL_SHA512_MB_JOB_MGR *state)
 ; arg 1 : rcx : state
-mk_global sha512_mb_mgr_flush_avx512, function
-sha512_mb_mgr_flush_avx512:
+mk_global _sha512_mb_mgr_flush_avx512, function, internal
+_sha512_mb_mgr_flush_avx512:
 	endbranch
 
 	mov     rax, rsp
@@ -194,7 +193,7 @@ len_is_0:
 
 	mov     job_rax, [lane_data + _job_in_lane]
 	mov     qword [lane_data + _job_in_lane], 0
-	mov     dword [job_rax + _status], STS_COMPLETED
+	mov     dword [job_rax + _status], ISAL_STS_COMPLETED
 	mov     unused_lanes, [state + _unused_lanes]
 	shl     unused_lanes, 8
 	or      unused_lanes, idx
@@ -261,10 +260,3 @@ lane_4:     dq  4
 lane_5:     dq  5
 lane_6:     dq  6
 lane_7:     dq  7
-
-%else
-%ifidn __OUTPUT_FORMAT__, win64
-global no_sha512_mb_mgr_flush_avx512
-no_sha512_mb_mgr_flush_avx512:
-%endif
-%endif ; HAVE_AS_KNOWS_AVX512

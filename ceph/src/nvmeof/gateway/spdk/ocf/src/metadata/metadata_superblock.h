@@ -1,6 +1,6 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __METADATA_SUPERBLOCK_H__
@@ -29,6 +29,8 @@ struct ocf_superblock_config {
 
 	uint32_t metadata_version;
 
+	unsigned flapping_idx;
+
 	/* Currently set cache mode */
 	ocf_cache_mode_t cache_mode;
 
@@ -38,12 +40,12 @@ struct ocf_superblock_config {
 	uint32_t valid_parts_no;
 
 	ocf_cache_line_size_t line_size;
-	ocf_metadata_layout_t metadata_layout;
 	uint32_t core_count;
 
 	unsigned long valid_core_bitmap[(OCF_CORE_MAX /
 			(sizeof(unsigned long) * 8)) + 1];
 
+	bool cleaner_disabled;
 	ocf_cleaning_t cleaning_policy_type;
 	struct cleaning_policy_config cleaning[CLEANING_POLICY_TYPE_MAX];
 
@@ -73,6 +75,9 @@ void ocf_metadata_set_shutdown_status(ocf_cache_t cache,
 void ocf_metadata_load_superblock(ocf_cache_t cache,
 		ocf_metadata_end_t cmpl, void *priv);
 
+void ocf_metadata_load_superblock_recovery(ocf_cache_t cache,
+		ocf_metadata_end_t cmpl, void *priv);
+
 void ocf_metadata_flush_superblock(ocf_cache_t cache,
 		ocf_metadata_end_t cmpl, void *priv);
 
@@ -96,5 +101,37 @@ void ocf_metadata_superblock_set_checksum(
 
 bool ocf_metadata_superblock_get_clean_shutdown(
 		struct ocf_metadata_segment *self);
+
+unsigned ocf_metadata_superblock_get_flapping_idx(
+		struct ocf_metadata_segment *self);
+
+unsigned ocf_metadata_superblock_get_next_flapping_idx(
+		struct ocf_metadata_segment *self);
+
+int ocf_metadata_validate_superblock(ocf_ctx_t ctx,
+		struct ocf_superblock_config *superblock);
+
+struct ocf_metadata_read_sb_ctx;
+
+typedef void (*ocf_metadata_read_sb_end_t)(
+                struct ocf_metadata_read_sb_ctx *context);
+
+struct ocf_metadata_read_sb_ctx {
+        struct ocf_superblock_config superblock;
+        ocf_metadata_read_sb_end_t cmpl;
+        ocf_ctx_t ctx;
+        void *priv1;
+        void *priv2;
+        int error;
+};
+
+int ocf_metadata_read_sb(ocf_ctx_t ctx, ocf_volume_t volume,
+		ocf_metadata_read_sb_end_t cmpl, void *priv1, void *priv2);
+
+void ocf_metadata_sb_crc_recovery(ocf_cache_t cache,
+		ocf_metadata_end_t cmpl, void *priv);
+
+void ocf_metadata_sb_zero(struct ocf_metadata_segment *self,
+		ocf_metadata_end_t cmpl, void *priv);
 
 #endif /* METADATA_SUPERBLOCK_H_ */

@@ -1,5 +1,5 @@
 /**********************************************************************
-  Copyright(c) 2018-2022 Intel Corporation All rights reserved.
+  Copyright(c) 2018-2023 Intel Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions
@@ -35,6 +35,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+/* disable C5105 warning produced by standard headers C11 C standard */
+#pragma warning(disable : 5105)
+#endif
+
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/types.h>
@@ -51,9 +56,9 @@
 
 #include "msr.h"
 
-static int *m_msr_fd = NULL;           /**< MSR driver file descriptors table */
-static unsigned m_maxcores = 0;        /**< max number of cores (size of the
-                                          table above too) */
+static int *m_msr_fd = NULL;    /**< MSR driver file descriptors table */
+static unsigned m_maxcores = 0; /**< max number of cores (size of the
+                                   table above too) */
 #ifdef _WIN32
 #ifdef WIN_MSR
 union msr_data {
@@ -126,7 +131,7 @@ machine_init(const unsigned max_core_id)
          * Each file descriptor is for a different core.
          * Core id is an index to the table.
          */
-        m_msr_fd = (int *)malloc(m_maxcores * sizeof(m_msr_fd[0]));
+        m_msr_fd = (int *) malloc(m_maxcores * sizeof(m_msr_fd[0]));
         if (m_msr_fd == NULL) {
                 m_maxcores = 0;
                 return MACHINE_RETVAL_ERROR;
@@ -190,8 +195,7 @@ msr_file_open(const unsigned lcore)
                 char fname[32];
 
                 memset(fname, 0, sizeof(fname));
-                snprintf(fname, sizeof(fname)-1,
-                         "/dev/cpu/%u/msr", lcore);
+                snprintf(fname, sizeof(fname) - 1, "/dev/cpu/%u/msr", lcore);
                 fd = open(fname, O_RDWR);
                 if (fd < 0)
                         fprintf(stderr, "Error opening file '%s'!\n", fname);
@@ -204,9 +208,7 @@ msr_file_open(const unsigned lcore)
 #endif /* _WIN32 */
 
 int
-msr_read(const unsigned lcore,
-         const uint32_t reg,
-         uint64_t *value)
+msr_read(const unsigned lcore, const uint32_t reg, uint64_t *const value)
 {
         int ret = MACHINE_RETVAL_OK;
 #ifdef _WIN32
@@ -229,8 +231,7 @@ msr_read(const unsigned lcore,
 #ifdef _WIN32
 #ifdef WIN_MSR
         msr.ui64 = 0;
-        status = RdmsrTx((DWORD)reg, &(msr.ui32.low),
-                         &(msr.ui32.high), (1ULL << lcore));
+        status = RdmsrTx((DWORD) reg, &(msr.ui32.low), &(msr.ui32.high), (1ULL << lcore));
         if (status)
                 *value = msr.ui64;
         else
@@ -244,22 +245,19 @@ msr_read(const unsigned lcore,
         if (fd < 0)
                 return MACHINE_RETVAL_ERROR;
 
-        read_ret = pread(fd, value, sizeof(value[0]), (off_t)reg);
+        read_ret = pread(fd, value, sizeof(value[0]), (off_t) reg);
 
         if (read_ret != sizeof(value[0]))
                 ret = MACHINE_RETVAL_ERROR;
 #endif /* _WIN32 */
         if (ret != MACHINE_RETVAL_OK)
-                fprintf(stderr, "RDMSR failed for reg[0x%x] on lcore %u\n",
-                        (unsigned)reg, lcore);
+                fprintf(stderr, "RDMSR failed for reg[0x%x] on lcore %u\n", (unsigned) reg, lcore);
 
         return ret;
 }
 
 int
-msr_write(const unsigned lcore,
-          const uint32_t reg,
-          const uint64_t value)
+msr_write(const unsigned lcore, const uint32_t reg, const uint64_t value)
 {
         int ret = MACHINE_RETVAL_OK;
 #ifdef _WIN32
@@ -279,8 +277,7 @@ msr_write(const unsigned lcore,
 #ifdef _WIN32
 #ifdef WIN_MSR
         msr.ui64 = value;
-        status = WrmsrTx((DWORD)reg, msr.ui32.low,
-                         msr.ui32.high, (1ULL << lcore));
+        status = WrmsrTx((DWORD) reg, msr.ui32.low, msr.ui32.high, (1ULL << lcore));
         if (!status)
                 ret = MACHINE_RETVAL_ERROR;
 #endif /* WIN_MSR */
@@ -292,15 +289,16 @@ msr_write(const unsigned lcore,
         if (fd < 0)
                 return MACHINE_RETVAL_ERROR;
 
-        write_ret = pwrite(fd, &value, sizeof(value), (off_t)reg);
+        write_ret = pwrite(fd, &value, sizeof(value), (off_t) reg);
 
         if (write_ret != sizeof(value))
                 ret = MACHINE_RETVAL_ERROR;
 #endif /* _WIN32 */
         if (ret != MACHINE_RETVAL_OK)
-                fprintf(stderr, "WRMSR failed for reg[0x%x] "
+                fprintf(stderr,
+                        "WRMSR failed for reg[0x%x] "
                         "<- value[0x%llx] on lcore %u\n",
-                        (unsigned)reg, (unsigned long long)value, lcore);
+                        (unsigned) reg, (unsigned long long) value, lcore);
 
         return ret;
 }

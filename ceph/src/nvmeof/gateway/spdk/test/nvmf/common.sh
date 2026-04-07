@@ -1,7 +1,10 @@
 #  SPDX-License-Identifier: BSD-3-Clause
 #  Copyright (C) 2016 Intel Corporation
+#  Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES
 #  All rights reserved.
 #
+
+[[ $(uname -s) == FreeBSD ]] && return 0
 
 NVMF_PORT=4420
 NVMF_SECOND_PORT=4421
@@ -10,9 +13,13 @@ NVMF_IP_PREFIX="192.168.100"
 NVMF_IP_LEAST_ADDR=8
 NVMF_TCP_IP_ADDRESS="127.0.0.1"
 NVMF_TRANSPORT_OPTS=""
-NVMF_SERIAL=SPDK00000000000001
+NVMF_SERIAL=SPDKISFASTANDAWESOME
+NVME_HOSTNQN=$(nvme gen-hostnqn)
+NVME_HOSTID=${NVME_HOSTNQN##*:}
+NVME_HOST=("--hostnqn=$NVME_HOSTNQN" "--hostid=$NVME_HOSTID")
 NVME_CONNECT="nvme connect"
 NET_TYPE=${NET_TYPE:-phy-fallback}
+NVME_SUBNQN=nqn.2016-06.io.spdk:testnqn
 
 function build_nvmf_app_args() {
 	if [ $SPDK_RUN_NON_ROOT -eq 1 ]; then
@@ -20,6 +27,12 @@ function build_nvmf_app_args() {
 		NVMF_APP=(sudo -E -u $SUDO_USER "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "${NVMF_APP[@]}")
 	fi
 	NVMF_APP+=(-i "$NVMF_APP_SHM_ID" -e 0xFFFF)
+
+	NVMF_APP+=("${NO_HUGE[@]}")
+
+	if [ "$TEST_INTERRUPT_MODE" -eq 1 ]; then
+		NVMF_APP+=(--interrupt-mode)
+	fi
 
 	if [ -n "$SPDK_HUGE_DIR" ]; then
 		NVMF_APP+=(--huge-dir "$SPDK_HUGE_DIR")
@@ -52,8 +65,6 @@ function load_ib_rdma_modules() {
 
 	modprobe ib_cm
 	modprobe ib_core
-	# Newer kernels do not have the ib_ucm module
-	modprobe ib_ucm || true
 	modprobe ib_umad
 	modprobe ib_uverbs
 	modprobe iw_cm
@@ -131,12 +142,16 @@ function nvmfcleanup() {
 }
 
 function nvmf_veth_init() {
-	NVMF_INITIATOR_IP=10.0.0.1
-	NVMF_FIRST_TARGET_IP=10.0.0.2
-	NVMF_SECOND_TARGET_IP=10.0.0.3
+	NVMF_FIRST_INITIATOR_IP=10.0.0.1
+	NVMF_SECOND_INITIATOR_IP=10.0.0.2
+	NVMF_FIRST_TARGET_IP=10.0.0.3
+	NVMF_SECOND_TARGET_IP=10.0.0.4
+	NVMF_INITIATOR_IP=$NVMF_FIRST_INITIATOR_IP
 	NVMF_BRIDGE="nvmf_br"
 	NVMF_INITIATOR_INTERFACE="nvmf_init_if"
+	NVMF_INITIATOR_INTERFACE2="nvmf_init_if2"
 	NVMF_INITIATOR_BRIDGE="nvmf_init_br"
+	NVMF_INITIATOR_BRIDGE2="nvmf_init_br2"
 	NVMF_TARGET_NAMESPACE="nvmf_tgt_ns_spdk"
 	NVMF_TARGET_NS_CMD=(ip netns exec "$NVMF_TARGET_NAMESPACE")
 	NVMF_TARGET_INTERFACE="nvmf_tgt_if"
@@ -145,13 +160,16 @@ function nvmf_veth_init() {
 	NVMF_TARGET_BRIDGE2="nvmf_tgt_br2"
 
 	ip link set $NVMF_INITIATOR_BRIDGE nomaster || true
+	ip link set $NVMF_INITIATOR_BRIDGE2 nomaster || true
 	ip link set $NVMF_TARGET_BRIDGE nomaster || true
 	ip link set $NVMF_TARGET_BRIDGE2 nomaster || true
 	ip link set $NVMF_INITIATOR_BRIDGE down || true
+	ip link set $NVMF_INITIATOR_BRIDGE2 down || true
 	ip link set $NVMF_TARGET_BRIDGE down || true
 	ip link set $NVMF_TARGET_BRIDGE2 down || true
 	ip link delete $NVMF_BRIDGE type bridge || true
 	ip link delete $NVMF_INITIATOR_INTERFACE || true
+	ip link delete $NVMF_INITIATOR_INTERFACE2 || true
 	"${NVMF_TARGET_NS_CMD[@]}" ip link delete $NVMF_TARGET_INTERFACE || true
 	"${NVMF_TARGET_NS_CMD[@]}" ip link delete $NVMF_TARGET_INTERFACE2 || true
 
@@ -160,6 +178,7 @@ function nvmf_veth_init() {
 
 	# Create veth (Virtual ethernet) interface pairs
 	ip link add $NVMF_INITIATOR_INTERFACE type veth peer name $NVMF_INITIATOR_BRIDGE
+	ip link add $NVMF_INITIATOR_INTERFACE2 type veth peer name $NVMF_INITIATOR_BRIDGE2
 	ip link add $NVMF_TARGET_INTERFACE type veth peer name $NVMF_TARGET_BRIDGE
 	ip link add $NVMF_TARGET_INTERFACE2 type veth peer name $NVMF_TARGET_BRIDGE2
 
@@ -168,13 +187,16 @@ function nvmf_veth_init() {
 	ip link set $NVMF_TARGET_INTERFACE2 netns $NVMF_TARGET_NAMESPACE
 
 	# Allocate IP addresses
-	ip addr add $NVMF_INITIATOR_IP/24 dev $NVMF_INITIATOR_INTERFACE
+	ip addr add $NVMF_FIRST_INITIATOR_IP/24 dev $NVMF_INITIATOR_INTERFACE
+	ip addr add $NVMF_SECOND_INITIATOR_IP/24 dev $NVMF_INITIATOR_INTERFACE2
 	"${NVMF_TARGET_NS_CMD[@]}" ip addr add $NVMF_FIRST_TARGET_IP/24 dev $NVMF_TARGET_INTERFACE
 	"${NVMF_TARGET_NS_CMD[@]}" ip addr add $NVMF_SECOND_TARGET_IP/24 dev $NVMF_TARGET_INTERFACE2
 
 	# Link up veth interfaces
 	ip link set $NVMF_INITIATOR_INTERFACE up
+	ip link set $NVMF_INITIATOR_INTERFACE2 up
 	ip link set $NVMF_INITIATOR_BRIDGE up
+	ip link set $NVMF_INITIATOR_BRIDGE2 up
 	ip link set $NVMF_TARGET_BRIDGE up
 	ip link set $NVMF_TARGET_BRIDGE2 up
 	"${NVMF_TARGET_NS_CMD[@]}" ip link set $NVMF_TARGET_INTERFACE up
@@ -187,17 +209,20 @@ function nvmf_veth_init() {
 
 	# Add veth interfaces to the bridge
 	ip link set $NVMF_INITIATOR_BRIDGE master $NVMF_BRIDGE
+	ip link set $NVMF_INITIATOR_BRIDGE2 master $NVMF_BRIDGE
 	ip link set $NVMF_TARGET_BRIDGE master $NVMF_BRIDGE
 	ip link set $NVMF_TARGET_BRIDGE2 master $NVMF_BRIDGE
 
 	# Accept connections from veth interface
-	iptables -I INPUT 1 -i $NVMF_INITIATOR_INTERFACE -p tcp --dport $NVMF_PORT -j ACCEPT
-	iptables -A FORWARD -i $NVMF_BRIDGE -o $NVMF_BRIDGE -j ACCEPT
+	ipts -I INPUT 1 -i $NVMF_INITIATOR_INTERFACE -p tcp --dport $NVMF_PORT -j ACCEPT
+	ipts -I INPUT 1 -i $NVMF_INITIATOR_INTERFACE2 -p tcp --dport $NVMF_PORT -j ACCEPT
+	ipts -A FORWARD -i $NVMF_BRIDGE -o $NVMF_BRIDGE -j ACCEPT
 
 	# Verify connectivity
 	ping -c 1 $NVMF_FIRST_TARGET_IP
 	ping -c 1 $NVMF_SECOND_TARGET_IP
-	"${NVMF_TARGET_NS_CMD[@]}" ping -c 1 $NVMF_INITIATOR_IP
+	"${NVMF_TARGET_NS_CMD[@]}" ping -c 1 $NVMF_FIRST_INITIATOR_IP
+	"${NVMF_TARGET_NS_CMD[@]}" ping -c 1 $NVMF_SECOND_INITIATOR_IP
 
 	NVMF_APP=("${NVMF_TARGET_NS_CMD[@]}" "${NVMF_APP[@]}")
 }
@@ -206,21 +231,25 @@ function nvmf_veth_fini() {
 	# Cleanup bridge, veth interfaces, and network namespace
 	# Note: removing one veth removes the pair
 	ip link set $NVMF_INITIATOR_BRIDGE nomaster
+	ip link set $NVMF_INITIATOR_BRIDGE2 nomaster
 	ip link set $NVMF_TARGET_BRIDGE nomaster
 	ip link set $NVMF_TARGET_BRIDGE2 nomaster
 	ip link set $NVMF_INITIATOR_BRIDGE down
+	ip link set $NVMF_INITIATOR_BRIDGE2 down
 	ip link set $NVMF_TARGET_BRIDGE down
 	ip link set $NVMF_TARGET_BRIDGE2 down
 	ip link delete $NVMF_BRIDGE type bridge
 	ip link delete $NVMF_INITIATOR_INTERFACE
+	ip link delete $NVMF_INITIATOR_INTERFACE2
 	"${NVMF_TARGET_NS_CMD[@]}" ip link delete $NVMF_TARGET_INTERFACE
 	"${NVMF_TARGET_NS_CMD[@]}" ip link delete $NVMF_TARGET_INTERFACE2
 	remove_spdk_ns
 }
 
 function nvmf_tcp_init() {
-	NVMF_INITIATOR_IP=10.0.0.1
+	NVMF_FIRST_INITIATOR_IP=10.0.0.1
 	NVMF_FIRST_TARGET_IP=10.0.0.2
+	NVMF_INITIATOR_IP=$NVMF_FIRST_INITIATOR_IP
 	TCP_INTERFACE_LIST=("${net_devs[@]}")
 
 	# We need two net devs at minimum
@@ -231,6 +260,7 @@ function nvmf_tcp_init() {
 
 	# Skip case nvmf_multipath in nvmf_tcp_init(), it will be covered by nvmf_veth_init().
 	NVMF_SECOND_TARGET_IP=""
+	NVMF_SECOND_INITIATOR_IP=""
 
 	NVMF_TARGET_NAMESPACE="${NVMF_TARGET_INTERFACE}_ns_spdk"
 	NVMF_TARGET_NS_CMD=(ip netns exec "$NVMF_TARGET_NAMESPACE")
@@ -254,7 +284,7 @@ function nvmf_tcp_init() {
 	"${NVMF_TARGET_NS_CMD[@]}" ip link set lo up
 
 	# Accept connections from phy interface
-	iptables -I INPUT 1 -i $NVMF_INITIATOR_INTERFACE -p tcp --dport $NVMF_PORT -j ACCEPT
+	ipts -I INPUT 1 -i $NVMF_INITIATOR_INTERFACE -p tcp --dport $NVMF_PORT -j ACCEPT
 
 	# Verify connectivity
 	ping -c 1 $NVMF_FIRST_TARGET_IP
@@ -264,7 +294,8 @@ function nvmf_tcp_init() {
 }
 
 function nvmf_tcp_fini() {
-	if [[ "$NVMF_TARGET_NAMESPACE" == "nvmf_tgt_ns" ]]; then
+	iptr
+	if [[ "$NVMF_TARGET_NAMESPACE" == "nvmf_tgt_ns_spdk" ]]; then
 		nvmf_veth_fini
 		return 0
 	fi
@@ -279,7 +310,7 @@ function gather_supported_nvmf_pci_devs() {
 	cache_pci_bus_sysfs
 	xtrace_restore
 
-	local intel=0x8086 mellanox=0x15b3 pci
+	local intel=0x8086 mellanox=0x15b3 pci net_dev
 
 	local -a pci_devs=()
 	local -a pci_net_devs=()
@@ -295,6 +326,21 @@ function gather_supported_nvmf_pci_devs() {
 	e810+=(${pci_bus_cache["$intel:0x159b"]})
 	# X722 10G
 	x722+=(${pci_bus_cache["$intel:0x37d2"]})
+	# BlueField 3
+	mlx+=(${pci_bus_cache["$mellanox:0xa2dc"]})
+	mlx+=(${pci_bus_cache["$mellanox:0xa2dd"]})
+	# ConnectX-7
+	mlx+=(${pci_bus_cache["$mellanox:0x1021"]})
+	mlx+=(${pci_bus_cache["$mellanox:0x1022"]})
+	# BlueField 2
+	mlx+=(${pci_bus_cache["$mellanox:0xa2d6"]})
+	mlx+=(${pci_bus_cache["$mellanox:0xa2d7"]})
+	# ConnectX-6 Dx
+	mlx+=(${pci_bus_cache["$mellanox:0x101d"]})
+	mlx+=(${pci_bus_cache["$mellanox:0x101e"]})
+	# ConnectX-6
+	mlx+=(${pci_bus_cache["$mellanox:0x101b"]})
+	mlx+=(${pci_bus_cache["$mellanox:0x101c"]})
 	# ConnectX-5
 	mlx+=(${pci_bus_cache["$mellanox:0x1017"]})
 	mlx+=(${pci_bus_cache["$mellanox:0x1019"]})
@@ -354,9 +400,11 @@ function gather_supported_nvmf_pci_devs() {
 	fi
 
 	# E810 cards also need irdma driver to be around.
-	if ((${#e810[@]} > 0)) && [[ $TEST_TRANSPORT == rdma ]]; then
+	if [[ $SPDK_TEST_NVMF_NICS == e810 && $TEST_TRANSPORT == rdma ]]; then
 		if [[ -e /sys/module/irdma/parameters/roce_ena ]]; then
-			# Our tests don't play well with iWARP protocol. Make sure we use RoCEv2 instead.
+			# Our tests don't play well with iWARP protocol since CQ resize is not supported.
+			# This may affect some tests, especially those which target multiconnection setups.
+			# Considering all that, make sure we use RoCEv2 instead.
 			(($(< /sys/module/irdma/parameters/roce_ena) != 1)) && modprobe -r irdma
 		fi
 		modinfo irdma && modprobe irdma roce_ena=1
@@ -365,11 +413,22 @@ function gather_supported_nvmf_pci_devs() {
 	# All devices detected, kernel modules loaded. Now look under net class to see if there
 	# are any net devices bound to the controllers.
 	for pci in "${pci_devs[@]}"; do
-		if [[ ! -e /sys/bus/pci/devices/$pci/net ]]; then
-			echo "No net devices associated with $pci"
+		pci_net_devs=("/sys/bus/pci/devices/$pci/net/"*)
+
+		# Check if available devices are in proper operational state. If not, remove them from the main list.
+		# This check is valid for TCP only since for RDMA we use infiniband which don't rely on actual UP
+		# state of the device.
+		if [[ $TEST_TRANSPORT == tcp ]]; then
+			for net_dev in "${!pci_net_devs[@]}"; do
+				[[ $(< "${pci_net_devs[net_dev]}/operstate") == up ]] || unset -v "pci_net_devs[net_dev]"
+			done
+		fi
+
+		if ((${#pci_net_devs[@]} == 0)); then
+			echo "No operational net devices associated with $pci"
 			continue
 		fi
-		pci_net_devs=("/sys/bus/pci/devices/$pci/net/"*)
+
 		pci_net_devs=("${pci_net_devs[@]##*/}")
 		echo "Found net devices under $pci: ${pci_net_devs[*]}"
 		net_devs+=("${pci_net_devs[@]}")
@@ -434,6 +493,7 @@ function nvmftestinit() {
 			echo "no RDMA NIC for nvmf test"
 			exit 1
 		fi
+		NVMF_TRANSPORT_OPTS="$NVMF_TRANSPORT_OPTS --num-shared-buffers 1024"
 	elif [[ "$TEST_TRANSPORT" == "tcp" ]]; then
 		NVMF_TRANSPORT_OPTS="$NVMF_TRANSPORT_OPTS -o"
 	fi
@@ -537,7 +597,7 @@ function gen_nvmf_target_json() {
 			  "params": {
 				"action_on_timeout": "none",
 				"timeout_us": 0,
-				"retry_count": 4,
+				"transport_retry_count": 4,
 				"arbitration_burst": 0,
 				"low_priority_weight": 0,
 				"medium_priority_weight": 0,
@@ -550,8 +610,8 @@ function gen_nvmf_target_json() {
 			  }
 			},
 		        $(
-		IFS=","
-		printf '%s\n' "${config[*]}"
+			IFS=","
+			printf '%s\n' "${config[*]}"
 		),
 			{
 			  "method": "bdev_wait_for_examine"
@@ -563,19 +623,47 @@ function gen_nvmf_target_json() {
 	JSON
 }
 
-function remove_spdk_ns() {
-	local ns
+function _remove_spdk_ns() {
+	local ns {ns,mn,an}_net_devs
 	while read -r ns _; do
 		[[ $ns == *_spdk ]] || continue
+		# Gather all devs from the target $ns namespace. We want to differentiate
+		# between veth and physical links and gather just the latter. To do so,
+		# we simply compare ifindex to iflink - as per kernel docs, these should
+		# be always equal for the physical links. For veth devices, since they are
+		# paired, iflink should point at an actual bridge, hence being different
+		# from its own ifindex.
+		ns_net_devs=($(
+			ip netns exec "$ns" bash <<- 'IN_NS'
+				shopt -s extglob nullglob
+				for dev in /sys/class/net/!(lo|bond*); do
+					(($(< "$dev/ifindex") == $(< "$dev/iflink"))) || continue
+					echo "${dev##*/}"
+				done
+			IN_NS
+		))
+		# Gather all the net devs from the main ns
+		mn_net_devs=($(basename -a /sys/class/net/!(lo|bond*)))
+		# Merge these two to have a list for comparison
+		an_net_devs=($(printf '%s\n' "${ns_net_devs[@]}" "${mn_net_devs[@]}" | sort))
+
 		ip netns delete "$ns"
+
+		# Check if our list matches against the main ns after $ns got deleted
+		while [[ ${an_net_devs[*]} != "${mn_net_devs[*]}" ]]; do
+			mn_net_devs=($(basename -a /sys/class/net/!(lo|bond*)))
+			sleep 1s
+		done
 	done < <(ip netns list)
-	# Let it settle
-	sleep 1
+}
+
+remove_spdk_ns() {
+	xtrace_disable_per_cmd _remove_spdk_ns
 }
 
 configure_kernel_target() {
+	local kernel_name=$1 kernel_target_ip=$2
 	# Keep it global in scope for easier cleanup
-	kernel_name=${1:-kernel_target}
 	nvmet=/sys/kernel/config/nvmet
 	kernel_subsystem=$nvmet/subsystems/$kernel_name
 	kernel_namespace=$kernel_subsystem/namespaces/1
@@ -594,6 +682,7 @@ configure_kernel_target() {
 	# Find nvme with an active ns device
 	for block in /sys/block/nvme*; do
 		[[ -e $block ]] || continue
+		is_block_zoned "${block##*/}" && continue
 		block_in_use "${block##*/}" || nvme="/dev/${block##*/}"
 	done
 
@@ -612,11 +701,7 @@ configure_kernel_target() {
 	echo "$nvme" > "$kernel_namespace/device_path"
 	echo 1 > "$kernel_namespace/enable"
 
-	# By default use initiator ip which was set by nvmftestinit(). This is the
-	# interface which resides in the main net namespace and which is visible
-	# to nvmet.
-
-	echo "$NVMF_INITIATOR_IP" > "$kernel_port/addr_traddr"
+	echo "$kernel_target_ip" > "$kernel_port/addr_traddr"
 	echo "$TEST_TRANSPORT" > "$kernel_port/addr_trtype"
 	echo "$NVMF_PORT" > "$kernel_port/addr_trsvcid"
 	echo ipv4 > "$kernel_port/addr_adrfam"
@@ -625,7 +710,7 @@ configure_kernel_target() {
 	ln -s "$kernel_subsystem" "$kernel_port/subsystems/"
 
 	# Check if target is available
-	nvme discover -a "$NVMF_INITIATOR_IP" -t "$TEST_TRANSPORT" -s "$NVMF_PORT"
+	nvme discover "${NVME_HOST[@]}" -a "$kernel_target_ip" -t "$TEST_TRANSPORT" -s "$NVMF_PORT"
 }
 
 clean_kernel_target() {
@@ -633,7 +718,7 @@ clean_kernel_target() {
 
 	echo 0 > "$kernel_namespace/enable"
 
-	rm -f "$kernel_port/subsystems/$kernel_name"
+	rm -f "$kernel_port/subsystems/${kernel_subsystem##*/}"
 	rmdir "$kernel_namespace"
 	rmdir "$kernel_port"
 	rmdir "$kernel_subsystem"
@@ -641,4 +726,71 @@ clean_kernel_target() {
 	modules=(/sys/module/nvmet/holders/*)
 
 	modprobe -r "${modules[@]##*/}" nvmet
+
+	# Get back all nvmes to userspace
+	"$rootdir/scripts/setup.sh"
 }
+
+format_key() {
+	local prefix key digest
+
+	prefix="$1" key="$2" digest="$3"
+	python - <<- EOF
+		import base64, zlib
+
+		crc = zlib.crc32(b"$key").to_bytes(4, byteorder="little")
+		b64 = base64.b64encode(b"$key" + crc).decode("utf-8")
+		print("$prefix:{:02x}:{}:".format($digest, b64), end="")
+	EOF
+}
+
+format_interchange_psk() {
+	format_key "NVMeTLSkey-1" "$1" "$2"
+}
+
+format_dhchap_key() {
+	format_key "DHHC-1" "$1" "$2"
+}
+
+gen_dhchap_key() {
+	local digest len file key
+	local -A digests=([null]=0 [sha256]=1 [sha384]=2 [sha512]=3)
+
+	digest="$1" len=$2
+	key=$(xxd -p -c0 -l $((len / 2)) /dev/urandom)
+	file=$(mktemp -t "spdk.key-$1.XXX")
+	format_dhchap_key "$key" "${digests[$1]}" > "$file"
+	chmod 0600 "$file"
+
+	echo "$file"
+}
+
+get_main_ns_ip() {
+	# Determine which ip to use based on nvmftestinit() setup. For tcp we pick
+	# interface which resides in the main net namespace and which is visible
+	# to nvmet under tcp setup. $NVMF_FIRST_TARGET_IP is solely for rdma use.
+	# FIXME: This requires proper unification of the networking setup across
+	# different transports.
+	local ip
+	local -A ip_candidates=()
+
+	ip_candidates["rdma"]=NVMF_FIRST_TARGET_IP
+	ip_candidates["tcp"]=NVMF_INITIATOR_IP
+
+	[[ -z $TEST_TRANSPORT || -z ${ip_candidates["$TEST_TRANSPORT"]} ]] && return 1
+	ip=${ip_candidates["$TEST_TRANSPORT"]}
+
+	if [[ -z ${!ip} ]]; then
+		echo "$ip not set, call nvmftestinit() first" >&2
+		return 1
+	fi
+
+	echo "${!ip}"
+}
+
+uuid2nguid() {
+	tr -d - <<< "${1^^}"
+}
+
+ipts() { iptables "$@" -m comment --comment "SPDK_NVMF:$*"; }
+iptr() { iptables-save | grep -v SPDK_NVMF | iptables-restore; }

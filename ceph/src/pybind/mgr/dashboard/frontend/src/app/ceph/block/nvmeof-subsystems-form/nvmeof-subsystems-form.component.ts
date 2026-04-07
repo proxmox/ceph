@@ -1,5 +1,6 @@
-import { Component, OnInit } from '@angular/core';
-import { UntypedFormControl, Validators } from '@angular/forms';
+import { Component, DestroyRef, OnInit } from '@angular/core';
+import { FormControlStatus, UntypedFormControl, Validators } from '@angular/forms';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 
 import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
@@ -10,7 +11,12 @@ import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { FinishedTask } from '~/app/shared/models/finished-task';
 import { ActivatedRoute, Router } from '@angular/router';
-import { MAX_NAMESPACE, NvmeofService } from '~/app/shared/api/nvmeof.service';
+import {
+  DEFAULT_MAX_NAMESPACE_PER_SUBSYSTEM,
+  NvmeofService
+} from '~/app/shared/api/nvmeof.service';
+import { Step } from 'carbon-components-angular';
+import { startWith } from 'rxjs/operators';
 
 @Component({
   selector: 'cd-nvmeof-subsystems-form',
@@ -23,8 +29,30 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
   action: string;
   resource: string;
   pageURL: string;
-  defaultMaxNamespace: number = MAX_NAMESPACE;
+  defaultMaxNamespace: number = DEFAULT_MAX_NAMESPACE_PER_SUBSYSTEM;
   group: string;
+  steps: Step[] = [
+    {
+      label: $localize`Subsystem Details`,
+      complete: false,
+      invalid: false
+    },
+    {
+      label: $localize`Host access control`,
+      complete: false
+    },
+    {
+      label: $localize`Authentication`,
+      complete: false
+    },
+    {
+      label: $localize`Advanced Options`,
+      complete: false,
+      secondaryLabel: $localize`Advanced`
+    }
+  ];
+  title: string = $localize`Create Subsystem`;
+  description: string = $localize`Subsytems define how hosts connect to NVMe namespaces and ensure secure access to storage.`;
 
   constructor(
     private authStorageService: AuthStorageService,
@@ -33,7 +61,8 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
     private nvmeofService: NvmeofService,
     private taskWrapperService: TaskWrapperService,
     private router: Router,
-    private route: ActivatedRoute
+    private route: ActivatedRoute,
+    private destroyRef: DestroyRef
   ) {
     this.permission = this.authStorageService.getPermissions().nvmeof;
     this.resource = $localize`Subsystem`;
@@ -51,11 +80,19 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
   );
 
   ngOnInit() {
-    this.route.queryParams.subscribe((params) => {
+    this.route.queryParams.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       this.group = params?.['group'];
     });
+
     this.createForm();
     this.action = this.actionLabels.CREATE;
+
+    this.subsystemForm.statusChanges
+      .pipe(startWith(this.subsystemForm.status), takeUntilDestroyed(this.destroyRef))
+      .subscribe((status: FormControlStatus) => {
+        const step = this.steps[0];
+        step.invalid = status === 'INVALID';
+      });
   }
 
   createForm() {
@@ -81,11 +118,7 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
         ]
       }),
       max_namespaces: new UntypedFormControl(this.defaultMaxNamespace, {
-        validators: [
-          CdValidators.number(false),
-          Validators.max(this.defaultMaxNamespace),
-          Validators.min(1)
-        ]
+        validators: [CdValidators.number(false), Validators.min(1)]
       })
     });
   }
@@ -115,6 +148,8 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
       })
       .subscribe({
         error() {
+          // instead have error message set, not setting form status INVALID
+          // which will show input as false
           component.subsystemForm.setErrors({ cdSubmitButton: true });
         },
         complete: () => {

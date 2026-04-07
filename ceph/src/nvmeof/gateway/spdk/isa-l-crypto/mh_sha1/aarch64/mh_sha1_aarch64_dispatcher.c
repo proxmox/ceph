@@ -1,5 +1,5 @@
 /**********************************************************************
-  Copyright(c) 2020 Arm Corporation All rights reserved.
+  Copyright(c) 2020-2022 Arm Corporation All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions
@@ -28,28 +28,66 @@
 **********************************************************************/
 #include <aarch64_multibinary.h>
 
-DEFINE_INTERFACE_DISPATCHER(mh_sha1_update)
+#ifndef HWCAP2_SVE2
+#define HWCAP2_SVE2 (1 << 1)
+#endif
+
+#define CAP_SVE   1
+#define CAP_SVE2  2
+#define CAP_NOSVE 0
+
+static inline int
+sve_capable(unsigned long auxval)
 {
-	unsigned long auxval = getauxval(AT_HWCAP);
-	if (auxval & HWCAP_SHA1)
-		return PROVIDER_INFO(mh_sha1_update_ce);
-
-	if (auxval & HWCAP_ASIMD)
-		return PROVIDER_INFO(mh_sha1_update_asimd);
-
-	return PROVIDER_BASIC(mh_sha1_update);
-
+        if (auxval & HWCAP_SVE) {
+                if (getauxval(AT_HWCAP2) & HWCAP2_SVE2) {
+                        return CAP_SVE2;
+                }
+                return CAP_SVE;
+        }
+        return CAP_NOSVE;
 }
 
-DEFINE_INTERFACE_DISPATCHER(mh_sha1_finalize)
+DEFINE_INTERFACE_DISPATCHER(_mh_sha1_update)
 {
-	unsigned long auxval = getauxval(AT_HWCAP);
-	if (auxval & HWCAP_SHA1)
-		return PROVIDER_INFO(mh_sha1_finalize_ce);
+        unsigned long auxval = getauxval(AT_HWCAP);
 
-	if (auxval & HWCAP_ASIMD)
-		return PROVIDER_INFO(mh_sha1_finalize_asimd);
+        if (auxval & HWCAP_SHA1)
+                return PROVIDER_INFO(mh_sha1_update_ce);
 
-	return PROVIDER_BASIC(mh_sha1_finalize);
+        switch (sve_capable(auxval)) {
+        case CAP_SVE:
+                return PROVIDER_INFO(mh_sha1_update_sve);
+        case CAP_SVE2:
+                return PROVIDER_INFO(mh_sha1_update_sve2);
+        default:
+                break;
+        }
 
+        if (auxval & HWCAP_ASIMD)
+                return PROVIDER_INFO(mh_sha1_update_asimd);
+
+        return PROVIDER_BASIC(_mh_sha1_update);
+}
+
+DEFINE_INTERFACE_DISPATCHER(_mh_sha1_finalize)
+{
+        unsigned long auxval = getauxval(AT_HWCAP);
+
+        if (auxval & HWCAP_SHA1)
+                return PROVIDER_INFO(mh_sha1_finalize_ce);
+
+        switch (sve_capable(auxval)) {
+        case CAP_SVE:
+                return PROVIDER_INFO(mh_sha1_finalize_sve);
+        case CAP_SVE2:
+                return PROVIDER_INFO(mh_sha1_finalize_sve2);
+        default:
+                break;
+        }
+
+        if (auxval & HWCAP_ASIMD)
+                return PROVIDER_INFO(mh_sha1_finalize_asimd);
+
+        return PROVIDER_BASIC(_mh_sha1_finalize);
 }

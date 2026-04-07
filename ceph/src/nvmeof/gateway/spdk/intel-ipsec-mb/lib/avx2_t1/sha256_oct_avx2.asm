@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2012-2022, Intel Corporation
+;; Copyright (c) 2012-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -39,12 +39,12 @@
 ;;
 ;; clobbers ymm0-15
 
-%include "include/os.asm"
+%include "include/os.inc"
 ;%define DO_DBGPRINT
-%include "include/dbgprint.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/transpose_avx2.asm"
-%include "include/clear_regs.asm"
+%include "include/dbgprint.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/transpose_avx2.inc"
+%include "include/clear_regs.inc"
 
 mksection .rodata
 default rel

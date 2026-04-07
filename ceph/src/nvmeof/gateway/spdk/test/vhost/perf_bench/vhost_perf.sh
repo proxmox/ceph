@@ -19,7 +19,6 @@ vm_throttle=""
 bpf_traces=()
 ctrl_type="spdk_vhost_scsi"
 use_split=false
-kernel_cpus=""
 run_precondition=false
 lvol_stores=()
 lvol_bdevs=()
@@ -32,6 +31,10 @@ fio_iterations=1
 fio_gtod=""
 precond_fio_bin=$CONFIG_FIO_SOURCE_DIR/fio
 disk_map=""
+enable_irq=0
+irqs_pids=()
+enable_perf=0
+perf_cpus=""
 
 disk_cfg_bdfs=()
 disk_cfg_spdk_names=()
@@ -74,7 +77,6 @@ function usage() {
 	echo "                            Default: spdk_vhost_scsi"
 	echo "    --packed-ring           Use packed ring support. Requires Qemu 4.2.0 or greater. Default: disabled."
 	echo "    --use-split             Use split vbdevs instead of Logical Volumes"
-	echo "    --limit-kernel-vhost=INT  Limit kernel vhost to run only on a number of CPU cores."
 	echo "    --run-precondition      Precondition lvols after creating. Default: true."
 	echo "    --precond-fio-bin       FIO binary used for SPDK fio plugin precondition. Default: $CONFIG_FIO_SOURCE_DIR/fio."
 	echo "    --custom-cpu-cfg=PATH   Custom CPU config for test."
@@ -88,6 +90,8 @@ function usage() {
 	echo "    --iobuf-small-pool-count=INT   number of small buffers in the global pool"
 	echo "    --iobuf-large-pool-count=INT   number of large buffers in the global pool"
 	echo "-x                          set -x for script debug"
+	echo "-i                          Collect IRQ stats from each VM"
+	echo "-p                          Enable perf report collection hooked to vhost CPUs"
 	exit 0
 }
 
@@ -115,7 +119,7 @@ function cleanup_split_cfg() {
 function cleanup_parted_config() {
 	notice "Removing parted disk configuration"
 	for disk in "${disk_cfg_kernel_names[@]}"; do
-		parted -s /dev/${disk}n1 rm 1
+		wipefs --all "/dev/${disk}n1"
 	done
 }
 
@@ -174,7 +178,7 @@ function create_spdk_controller() {
 	fi
 }
 
-while getopts 'xh-:' optchar; do
+while getopts 'xhip-:' optchar; do
 	case "$optchar" in
 		-)
 			case "$OPTARG" in
@@ -197,7 +201,6 @@ while getopts 'xh-:' optchar; do
 				use-split) use_split=true ;;
 				run-precondition) run_precondition=true ;;
 				precond-fio-bin=*) precond_fio_bin="${OPTARG#*=}" ;;
-				limit-kernel-vhost=*) kernel_cpus="${OPTARG#*=}" ;;
 				custom-cpu-cfg=*) custom_cpu_cfg="${OPTARG#*=}" ;;
 				disk-map=*) disk_map="${OPTARG#*=}" ;;
 				iobuf-small-pool-count=*) iobuf_small_count="${OPTARG#*=}" ;;
@@ -210,6 +213,8 @@ while getopts 'xh-:' optchar; do
 			set -x
 			x="-x"
 			;;
+		i) enable_irq=1 ;;
+		p) enable_perf=1 ;;
 		*) usage $0 "Invalid argument '$OPTARG'" ;;
 	esac
 done
@@ -234,7 +239,7 @@ fi
 
 trap 'error_exit "${FUNCNAME}" "${LINENO}"' INT ERR
 
-if [[ -z $disk_map ]]; then
+if [[ ! -f $disk_map ]]; then
 	fail "No disk map provided for test. Exiting."
 fi
 
@@ -263,27 +268,19 @@ if [[ $run_precondition == true ]]; then
 		--iodepth=32 --filename="${fio_filename}" || true
 fi
 
-set +x
-readarray disk_cfg < $disk_map
-for line in "${disk_cfg[@]}"; do
-	echo $line
-	[[ $line == "#"* ]] && continue
-	IFS=","
-	s=($line)
-	disk_cfg_bdfs+=(${s[0]})
-	disk_cfg_spdk_names+=(${s[1]})
-	disk_cfg_splits+=(${s[2]})
-	disk_cfg_vms+=("${s[3]}")
-
+while IFS="," read -r bdf spdk_name split vms; do
+	[[ $bdf == "#"* ]] && continue
+	disk_cfg_bdfs+=("$bdf")
+	disk_cfg_spdk_names+=("$spdk_name")
+	disk_cfg_splits+=("$split")
+	disk_cfg_vms+=("$vms")
 	# Find kernel nvme names
 	if [[ "$ctrl_type" == "kernel_vhost" ]]; then
-		tmp=$(find /sys/devices/pci* -name ${s[0]} -print0 | xargs sh -c 'ls $0/nvme')
-		disk_cfg_kernel_names+=($tmp)
-		IFS=" "
+		disk_cfg_kernel_names+=("/sys/bus/pci/devices/$bdf/nvme/nvme"*)
 	fi
-done
-unset IFS
-set -x
+done < "$disk_map"
+
+disk_cfg_kernel_names=("${disk_cfg_kernel_names[@]##*/}")
 
 if [[ "$ctrl_type" == "kernel_vhost" ]]; then
 	notice "Configuring kernel vhost..."
@@ -295,30 +292,27 @@ if [[ "$ctrl_type" == "kernel_vhost" ]]; then
 	for ((i = 0; i < ${#disk_cfg_kernel_names[@]}; i++)); do
 		nvme=${disk_cfg_kernel_names[$i]}
 		splits=${disk_cfg_splits[$i]}
-		notice "  Creating extended partition on disk /dev/${nvme}n1"
-		parted -s /dev/${nvme}n1 mklabel msdos
-		parted -s /dev/${nvme}n1 mkpart extended 2048s 100%
+		notice "  Creating partition table (GPT) on /dev/${nvme}n1"
+		parted -s /dev/${nvme}n1 mklabel gpt
 
 		part_size=$((100 / ${disk_cfg_splits[$i]})) # Split 100% of disk into roughly even parts
 		echo "  Creating  ${splits} partitions of relative disk size ${part_size}"
 		for p in $(seq 0 $((splits - 1))); do
 			p_start=$((p * part_size))
 			p_end=$((p_start + part_size))
-			parted -s /dev/${nvme}n1 mkpart logical ${p_start}% ${p_end}%
-			sleep 3
+			parted -s "/dev/${nvme}n1" mkpart "part$p" ${p_start}% ${p_end}%
 		done
 
+		sleep 3
+
 		# Prepare kernel vhost configuration
-		# Below grep: match only NVMe partitions which are not "Extended" type.
-		# For example: will match nvme0n1p15 but not nvme0n1p1
-		partitions=$(find /dev -name "${nvme}n1*" | sort --version-sort | grep -P 'p(?!1$)\d+')
+		partitions=("/dev/${nvme}n1p"*)
 		# Create block backstores for vhost kernel process
-		for p in $partitions; do
+		for p in "${partitions[@]}"; do
 			backstore_name=$(basename $p)
 			backstores+=("$backstore_name")
 			targetcli backstores/block create $backstore_name $p
 		done
-		partitions=($partitions)
 
 		# Create kernel vhost controllers and add LUNs
 		# Setup VM configurations
@@ -337,7 +331,7 @@ if [[ "$ctrl_type" == "kernel_vhost" ]]; then
 	targetcli ls
 else
 	notice "Configuring SPDK vhost..."
-	vhost_run -n "${vhost_num}" -g ${vhost_bin_opt} -a "-p ${vhost_main_core} -m ${vhost_reactor_mask}"
+	vhost_run -n "${vhost_num}" -g ${vhost_bin_opt} -- -p "${vhost_main_core}" -m "${vhost_reactor_mask}"
 	notice "..."
 	if [[ ${#bpf_traces[@]} -gt 0 ]]; then
 		notice "Enabling BPF traces: ${bpf_traces[*]}"
@@ -426,26 +420,9 @@ fi
 vm_run $used_vms
 vm_wait_for_boot 300 $used_vms
 
-if [[ -n "$kernel_cpus" ]]; then
-	echo "+cpuset" > /sys/fs/cgroup/cgroup.subtree_control
-	mkdir -p /sys/fs/cgroup/spdk
-	kernel_mask=$vhost_0_reactor_mask
-	kernel_mask=${kernel_mask#"["}
-	kernel_mask=${kernel_mask%"]"}
-
-	echo "threaded" > /sys/fs/cgroup/spdk/cgroup.type
-	echo "$kernel_mask" > /sys/fs/cgroup/spdk/cpuset.cpus
-	echo "0-1" > /sys/fs/cgroup/spdk/cpuset.mems
-
-	kernel_vhost_pids=$(pgrep "vhost" -U root)
-	for kpid in $kernel_vhost_pids; do
-		echo "Limiting kernel vhost pid ${kpid}"
-		echo "${kpid}" > /sys/fs/cgroup/spdk/cgroup.threads
-	done
-fi
-
 # Run FIO
 fio_disks=""
+
 for vm_num in $used_vms; do
 	host_name="VM-$vm_num"
 	vm_exec $vm_num "hostname $host_name"
@@ -484,16 +461,27 @@ for vm_num in $used_vms; do
 	fi
 
 	fio_disks+=" --vm=${vm_num}$(printf ':/dev/%s' $SCSI_DISK)"
+	((enable_irq == 1)) && lookup_dev_irqs "$vm_num"
 done
+
+# Gather perf stats only from the vhost cpus
+perf_cpus=${vhost_reactor_mask//[\[\]]/}
 
 # Run FIO traffic
 for fio_job in ${fio_jobs//,/ }; do
+	((enable_irq == 1)) && irqs $used_vms
+	runtime=$(get_from_fio "runtime" "$fio_job")
+	ramptime=$(get_from_fio "ramp_time" "$fio_job")
 	fio_job_fname=$(basename $fio_job)
 	fio_log_fname="${fio_job_fname%%.*}.log"
 	for i in $(seq 1 $fio_iterations); do
 		echo "Running FIO iteration $i for $fio_job_fname"
 		run_fio $fio_bin --hide-results --job-file="$fio_job" --out="$VHOST_DIR/fio_results" --json $fio_disks $fio_gtod &
 		fio_pid=$!
+		if ((enable_perf == 1)); then
+			collect_perf "$perf_cpus" "$VHOST_DIR/perf/report.perf" "$runtime" "$ramptime" &
+			perf_pid=$!
+		fi
 
 		if $host_sar_enable || $vm_sar_enable; then
 			pids=""
@@ -523,12 +511,16 @@ for fio_job in ${fio_jobs//,/ }; do
 			done
 		fi
 
-		wait $fio_pid
+		wait $fio_pid $perf_pid
 		mv $VHOST_DIR/fio_results/$fio_log_fname $VHOST_DIR/fio_results/$fio_log_fname.$i
 		sleep 1
 	done
 
+	((enable_irq == 1)) && kill "${irqs_pids[@]}"
+
 	parse_fio_results "$VHOST_DIR/fio_results" "$fio_log_fname"
+	((enable_irq == 1)) && parse_irqs $((++iter))
+	((enable_perf == 1)) && parse_perf $iter
 done
 
 notice "Shutting down virtual machines..."

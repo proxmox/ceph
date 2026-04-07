@@ -1,6 +1,8 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (c) croit GmbH.
  *   All rights reserved.
+ *   Copyright (c) 2023 Enakta Labs
+ *   All rights reserved.
  */
 
 #include <sys/queue.h>
@@ -26,20 +28,17 @@
 
 #include "bdev_daos.h"
 
-#define BDEV_DAOS_IOVECS_MAX 32
-
 struct bdev_daos_task {
 	daos_event_t ev;
 	struct spdk_thread *submit_td;
 	struct spdk_bdev_io *bdev_io;
 
-	enum spdk_bdev_io_status status;
-
+	int io_status;
 	uint64_t offset;
 
 	/* DAOS version of iovec and scatter/gather */
 	daos_size_t read_size;
-	d_iov_t diovs[BDEV_DAOS_IOVECS_MAX];
+	d_iov_t diovs[SPDK_BDEV_IO_NUM_CHILD_IOV];
 	d_sg_list_t sgl;
 };
 
@@ -71,7 +70,7 @@ static pthread_mutex_t g_bdev_daos_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int bdev_daos_initialize(void);
 
-static int bdev_get_daos_engine(void);
+static int bdev_daos_get_engine(void);
 static int bdev_daos_put_engine(void);
 
 static int
@@ -87,6 +86,77 @@ static struct spdk_bdev_module daos_if = {
 };
 
 SPDK_BDEV_MODULE_REGISTER(daos, &daos_if)
+
+
+/* Convert DAOS errors to closest POSIX errno
+ * This is pretty much copy of daos_der2errno()
+ * from https://github.com/daos-stack/daos/blob/master/src/include/daos/common.h
+ * but unfortunately it's not exported in DAOS packages
+ */
+static inline int
+daos2posix_errno(int err)
+{
+	if (err > 0) {
+		return EINVAL;
+	}
+
+	switch (err) {
+	case -DER_SUCCESS:
+		return 0;
+	case -DER_NO_PERM:
+	case -DER_EP_RO:
+	case -DER_EP_OLD:
+		return EPERM;
+	case -DER_ENOENT:
+	case -DER_NONEXIST:
+		return ENOENT;
+	case -DER_INVAL:
+	case -DER_NOTYPE:
+	case -DER_NOSCHEMA:
+	case -DER_NOLOCAL:
+	case -DER_NO_HDL:
+	case -DER_IO_INVAL:
+		return EINVAL;
+	case -DER_KEY2BIG:
+	case -DER_REC2BIG:
+		return E2BIG;
+	case -DER_EXIST:
+		return EEXIST;
+	case -DER_UNREACH:
+		return EHOSTUNREACH;
+	case -DER_NOSPACE:
+		return ENOSPC;
+	case -DER_ALREADY:
+		return EALREADY;
+	case -DER_NOMEM:
+		return ENOMEM;
+	case -DER_TIMEDOUT:
+		return ETIMEDOUT;
+	case -DER_BUSY:
+	case -DER_EQ_BUSY:
+		return EBUSY;
+	case -DER_AGAIN:
+		return EAGAIN;
+	case -DER_PROTO:
+		return EPROTO;
+	case -DER_IO:
+		return EIO;
+	case -DER_CANCELED:
+	case DER_OP_CANCELED:
+		return ECANCELED;
+	case -DER_OVERFLOW:
+		return EOVERFLOW;
+	case -DER_BADPATH:
+	case -DER_NOTDIR:
+		return ENOTDIR;
+	case -DER_STALE:
+		return ESTALE;
+	case -DER_TX_RESTART:
+		return ERESTART;
+	default:
+		return EIO;
+	}
+};
 
 static void
 bdev_daos_free(struct bdev_daos *bdev_daos)
@@ -132,21 +202,25 @@ _bdev_daos_io_complete(void *bdev_daos_task)
 {
 	struct bdev_daos_task *task = bdev_daos_task;
 
-	SPDK_DEBUGLOG(bdev_daos, "completed IO at %#lx with status %s\n", task->offset,
-		      task->status == SPDK_BDEV_IO_STATUS_SUCCESS ? "SUCCESS" : "FAILURE");
+	SPDK_DEBUGLOG(bdev_daos, "completed IO at %#lx with status %s (errno=%d)\n",
+		      task->offset, task->io_status ? "FAILURE" : "SUCCESS", task->io_status);
 
-	spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task), task->status);
+	if (task->io_status == 0) {
+		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task), SPDK_BDEV_IO_STATUS_SUCCESS);
+	} else {
+		spdk_bdev_io_complete_aio_status(spdk_bdev_io_from_ctx(task), task->io_status);
+	}
 }
 
 static void
-bdev_daos_io_complete(struct spdk_bdev_io *bdev_io, enum spdk_bdev_io_status status)
+bdev_daos_io_complete(struct spdk_bdev_io *bdev_io, int io_status)
 {
 	struct bdev_daos_task *task = (struct bdev_daos_task *)bdev_io->driver_ctx;
 	struct spdk_thread *current_thread = spdk_get_thread();
 
 	assert(task->submit_td != NULL);
 
-	task->status = status;
+	task->io_status = io_status;
 	if (task->submit_td != current_thread) {
 		spdk_thread_send_msg(task->submit_td, _bdev_daos_io_complete, task);
 	} else {
@@ -169,16 +243,16 @@ bdev_daos_writev(struct bdev_daos *daos, struct bdev_daos_io_channel *ch,
 	assert(task != NULL);
 	assert(iov != NULL);
 
-	if (iovcnt > BDEV_DAOS_IOVECS_MAX) {
+	if (iovcnt > SPDK_BDEV_IO_NUM_CHILD_IOV) {
 		SPDK_ERRLOG("iovs number [%d] exceeds max allowed limit [%d]\n", iovcnt,
-			    BDEV_DAOS_IOVECS_MAX);
+			    SPDK_BDEV_IO_NUM_CHILD_IOV);
 		return -E2BIG;
 	}
 
 	if ((rc = daos_event_init(&task->ev, ch->queue, NULL))) {
 		SPDK_ERRLOG("%s: could not initialize async event: " DF_RC "\n",
 			    daos->disk.name, DP_RC(rc));
-		return -EINVAL;
+		return -daos2posix_errno(rc);
 	}
 
 	for (int i = 0; i < iovcnt; i++, iov++) {
@@ -191,10 +265,10 @@ bdev_daos_writev(struct bdev_daos *daos, struct bdev_daos_io_channel *ch,
 	task->offset = offset;
 
 	if ((rc = dfs_write(ch->dfs, ch->obj, &task->sgl, offset, &task->ev))) {
-		SPDK_ERRLOG("%s: could not start async write: " DF_RC "\n",
-			    daos->disk.name, DP_RC(rc));
+		SPDK_ERRLOG("%s: could not start async write: %s\n",
+			    daos->disk.name, strerror(rc));
 		daos_event_fini(&task->ev);
-		return -EINVAL;
+		return -rc;
 	}
 
 	return nbytes;
@@ -215,16 +289,16 @@ bdev_daos_readv(struct bdev_daos *daos, struct bdev_daos_io_channel *ch,
 	assert(task != NULL);
 	assert(iov != NULL);
 
-	if (iovcnt > BDEV_DAOS_IOVECS_MAX) {
+	if (iovcnt > SPDK_BDEV_IO_NUM_CHILD_IOV) {
 		SPDK_ERRLOG("iovs number [%d] exceeds max allowed limit [%d]\n", iovcnt,
-			    BDEV_DAOS_IOVECS_MAX);
+			    SPDK_BDEV_IO_NUM_CHILD_IOV);
 		return -E2BIG;
 	}
 
 	if ((rc = daos_event_init(&task->ev, ch->queue, NULL))) {
 		SPDK_ERRLOG("%s: could not initialize async event: " DF_RC "\n",
 			    daos->disk.name, DP_RC(rc));
-		return -EINVAL;
+		return -daos2posix_errno(rc);
 	}
 
 	for (int i = 0; i < iovcnt; i++, iov++) {
@@ -237,10 +311,10 @@ bdev_daos_readv(struct bdev_daos *daos, struct bdev_daos_io_channel *ch,
 	task->offset = offset;
 
 	if ((rc = dfs_read(ch->dfs, ch->obj, &task->sgl, offset, &task->read_size, &task->ev))) {
-		SPDK_ERRLOG("%s: could not start async read: " DF_RC "\n",
-			    daos->disk.name, DP_RC(rc));
+		SPDK_ERRLOG("%s: could not start async read: %s\n",
+			    daos->disk.name, strerror(rc));
 		daos_event_fini(&task->ev);
-		return -EINVAL;
+		return -rc;
 	}
 
 	return nbytes;
@@ -254,7 +328,7 @@ bdev_daos_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
 	struct bdev_daos_io_channel *dch = spdk_io_channel_get_ctx(ch);
 
 	if (!success) {
-		bdev_daos_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 		return;
 	}
 
@@ -267,7 +341,7 @@ bdev_daos_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
 			     bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen);
 
 	if (rc < 0) {
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		spdk_bdev_io_complete_aio_status(bdev_io, rc);
 		return;
 	}
 }
@@ -334,8 +408,13 @@ static int64_t
 bdev_daos_unmap(struct bdev_daos_io_channel *ch, uint64_t nbytes,
 		uint64_t offset)
 {
+	int rc = 0;
+
 	SPDK_DEBUGLOG(bdev_daos, "unmap at %#lx with size %#lx\n", offset, nbytes);
-	return dfs_punch(ch->dfs, ch->obj, offset, nbytes);
+	if ((rc = dfs_punch(ch->dfs, ch->obj, offset, nbytes))) {
+		return -rc;
+	}
+	return 0;
 }
 
 static void
@@ -359,7 +438,7 @@ _bdev_daos_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_
 				      bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen,
 				      bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen);
 		if (rc < 0) {
-			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+			spdk_bdev_io_complete_aio_status(bdev_io, rc);
 			return;
 		}
 		break;
@@ -382,9 +461,9 @@ _bdev_daos_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_
 		if (!rc) {
 			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
 		} else {
-			SPDK_DEBUGLOG(bdev_daos, "%s: could not unmap: " DF_RC "\n",
-				      dch->disk->disk.name, DP_RC((int)rc));
-			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+			SPDK_DEBUGLOG(bdev_daos, "%s: could not unmap: %s",
+				      dch->disk->disk.name, strerror(-rc));
+			spdk_bdev_io_complete_aio_status(bdev_io, rc);
 		}
 
 		break;
@@ -437,13 +516,13 @@ bdev_daos_channel_poll(void *arg)
 	}
 
 	for (int i = 0; i < rc; ++i) {
-		struct bdev_daos_task *task = container_of(evp[i], struct bdev_daos_task, ev);
-		enum spdk_bdev_io_status status = SPDK_BDEV_IO_STATUS_SUCCESS;
+		int status = 0;
+		struct bdev_daos_task *task = SPDK_CONTAINEROF(evp[i], struct bdev_daos_task, ev);
 
 		assert(task != NULL);
 
 		if (task->ev.ev_error != DER_SUCCESS) {
-			status = SPDK_BDEV_IO_STATUS_FAILED;
+			status = -task->ev.ev_error;
 		}
 
 		daos_event_fini(&task->ev);
@@ -478,7 +557,6 @@ bdev_daos_get_io_channel(void *ctx)
 static void
 bdev_daos_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 {
-	char uuid_str[SPDK_UUID_STRING_LEN];
 	struct bdev_daos *daos = bdev->ctxt;
 
 	spdk_json_write_object_begin(w);
@@ -491,8 +569,7 @@ bdev_daos_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *
 	spdk_json_write_named_string(w, "cont", daos->cont_name);
 	spdk_json_write_named_uint64(w, "num_blocks", bdev->blockcnt);
 	spdk_json_write_named_uint32(w, "block_size", bdev->blocklen);
-	spdk_uuid_fmt_lower(uuid_str, sizeof(uuid_str), &bdev->uuid);
-	spdk_json_write_named_string(w, "uuid", uuid_str);
+	spdk_json_write_named_uuid(w, "uuid", &bdev->uuid);
 
 	spdk_json_write_object_end(w);
 
@@ -507,57 +584,55 @@ static const struct spdk_bdev_fn_table daos_fn_table = {
 	.write_config_json	= bdev_daos_write_json_config,
 };
 
-static void *
-_bdev_daos_io_channel_create_cb(void *ctx)
+static int
+bdev_daos_io_channel_setup_daos(struct bdev_daos_io_channel *ch)
 {
-	int rc = 0 ;
-	struct bdev_daos_io_channel *ch = ctx;
+	int rc = 0;
 	struct bdev_daos *daos = ch->disk;
-
 	daos_pool_info_t pinfo;
 	daos_cont_info_t cinfo;
 
 	int fd_oflag = O_CREAT | O_RDWR;
 	mode_t mode = S_IFREG | S_IRWXU | S_IRWXG | S_IRWXO;
 
-	rc = bdev_get_daos_engine();
+	rc = bdev_daos_get_engine();
 	if (rc) {
 		SPDK_ERRLOG("could not initialize DAOS engine: " DF_RC "\n", DP_RC(rc));
-		return NULL;
+		return -daos2posix_errno(rc);
 	}
 
 	SPDK_DEBUGLOG(bdev_daos, "connecting to daos pool '%s'\n", daos->pool_name);
 	if ((rc = daos_pool_connect(daos->pool_name, NULL, DAOS_PC_RW, &ch->pool, &pinfo, NULL))) {
 		SPDK_ERRLOG("%s: could not connect to daos pool: " DF_RC "\n",
 			    daos->disk.name, DP_RC(rc));
-		return NULL;
+		return -daos2posix_errno(rc);
 	}
 	SPDK_DEBUGLOG(bdev_daos, "connecting to daos container '%s'\n", daos->cont_name);
 	if ((rc = daos_cont_open(ch->pool, daos->cont_name, DAOS_COO_RW, &ch->cont, &cinfo, NULL))) {
 		SPDK_ERRLOG("%s: could not open daos container: " DF_RC "\n",
 			    daos->disk.name, DP_RC(rc));
+		rc = daos2posix_errno(rc);
 		goto cleanup_pool;
 	}
 	SPDK_DEBUGLOG(bdev_daos, "mounting daos dfs\n");
 	if ((rc = dfs_mount(ch->pool, ch->cont, O_RDWR, &ch->dfs))) {
-		SPDK_ERRLOG("%s: could not mount daos dfs: " DF_RC "\n",
-			    daos->disk.name, DP_RC(rc));
+		SPDK_ERRLOG("%s: could not mount daos dfs: %s\n", daos->disk.name, strerror(rc));
 		goto cleanup_cont;
 	}
 	SPDK_DEBUGLOG(bdev_daos, "opening dfs object\n");
 	if ((rc = dfs_open(ch->dfs, NULL, daos->disk.name, mode, fd_oflag, daos->oclass,
 			   0, NULL, &ch->obj))) {
-		SPDK_ERRLOG("%s: could not open dfs object: " DF_RC "\n",
-			    daos->disk.name, DP_RC(rc));
+		SPDK_ERRLOG("%s: could not open dfs object: %s\n", daos->disk.name, strerror(rc));
 		goto cleanup_mount;
 	}
 	if ((rc = daos_eq_create(&ch->queue))) {
 		SPDK_ERRLOG("%s: could not create daos event queue: " DF_RC "\n",
 			    daos->disk.name, DP_RC(rc));
+		rc = daos2posix_errno(rc);
 		goto cleanup_obj;
 	}
 
-	return ctx;
+	return 0;
 
 cleanup_obj:
 	dfs_release(ch->obj);
@@ -568,18 +643,19 @@ cleanup_cont:
 cleanup_pool:
 	daos_pool_disconnect(ch->pool, NULL);
 
-	return NULL;
+	return -rc;
 }
 
 static int
 bdev_daos_io_channel_create_cb(void *io_device, void *ctx_buf)
 {
+	int rc;
 	struct bdev_daos_io_channel *ch = ctx_buf;
 
 	ch->disk = io_device;
 
-	if (spdk_call_unaffinitized(_bdev_daos_io_channel_create_cb, ch) == NULL) {
-		return -EINVAL;
+	if ((rc = bdev_daos_io_channel_setup_daos(ch))) {
+		return rc;
 	}
 
 	SPDK_DEBUGLOG(bdev_daos, "%s: starting daos event queue poller\n",
@@ -604,10 +680,10 @@ bdev_daos_io_channel_destroy_cb(void *io_device, void *ctx_buf)
 		SPDK_ERRLOG("could not destroy daos event queue: " DF_RC "\n", DP_RC(rc));
 	}
 	if ((rc = dfs_release(ch->obj))) {
-		SPDK_ERRLOG("could not release dfs object: " DF_RC "\n", DP_RC(rc));
+		SPDK_ERRLOG("could not release dfs object: %s\n", strerror(rc));
 	}
 	if ((rc = dfs_umount(ch->dfs))) {
-		SPDK_ERRLOG("could not unmount dfs: " DF_RC "\n", DP_RC(rc));
+		SPDK_ERRLOG("could not unmount dfs: %s\n", strerror(rc));
 	}
 	if ((rc = daos_cont_close(ch->cont, NULL))) {
 		SPDK_ERRLOG("could not close container: " DF_RC "\n", DP_RC(rc));
@@ -696,22 +772,18 @@ create_bdev_daos(struct spdk_bdev **bdev,
 	daos->disk.write_cache = 0;
 	daos->disk.blocklen = block_size;
 	daos->disk.blockcnt = num_blocks;
-
-	if (uuid) {
-		daos->disk.uuid = *uuid;
-	} else {
-		spdk_uuid_generate(&daos->disk.uuid);
-	}
+	daos->disk.uuid = *uuid;
+	daos->disk.max_num_segments = SPDK_BDEV_IO_NUM_CHILD_IOV;
 
 	daos->disk.ctxt = daos;
 	daos->disk.fn_table = &daos_fn_table;
 	daos->disk.module = &daos_if;
 
-	rc = bdev_get_daos_engine();
+	rc = bdev_daos_get_engine();
 	if (rc) {
 		SPDK_ERRLOG("could not initialize DAOS engine: " DF_RC "\n", DP_RC(rc));
 		bdev_daos_free(daos);
-		return rc;
+		return -daos2posix_errno(rc);
 	}
 
 	/* We try to connect to the DAOS container during channel creation, so simulate
@@ -721,7 +793,7 @@ create_bdev_daos(struct spdk_bdev **bdev,
 	 */
 	rc = bdev_daos_io_channel_create_cb(daos, &ch);
 	if (rc) {
-		SPDK_ERRLOG("'%s' could not initialize io-channel: %s", name, strerror(-rc));
+		SPDK_ERRLOG("'%s' could not initialize io-channel: %s\n", name, strerror(-rc));
 		bdev_daos_free(daos);
 		return rc;
 	}
@@ -786,8 +858,8 @@ bdev_daos_resize(const char *name, const uint64_t new_size_in_mb)
 	rc = dfs_punch(dch->dfs, dch->obj, new_size_in_byte, DFS_MAX_FSIZE);
 	spdk_put_io_channel(ch);
 	if (rc != 0) {
-		SPDK_ERRLOG("failed to resize daos bdev: " DF_RC "\n", DP_RC(rc));
-		rc = -EINTR;
+		SPDK_ERRLOG("failed to resize daos bdev: %s", strerror(rc));
+		rc = -rc;
 		goto exit;
 	}
 
@@ -808,18 +880,18 @@ exit:
 }
 
 void
-delete_bdev_daos(struct spdk_bdev *bdev, spdk_delete_daos_complete cb_fn, void *cb_arg)
+delete_bdev_daos(const char *bdev_name, spdk_bdev_unregister_cb cb_fn, void *cb_arg)
 {
-	if (!bdev || bdev->module != &daos_if) {
-		cb_fn(cb_arg, -ENODEV);
-		return;
-	}
+	int rc;
 
-	spdk_bdev_unregister(bdev, cb_fn, cb_arg);
+	rc = spdk_bdev_unregister_by_name(bdev_name, &daos_if, cb_fn, cb_arg);
+	if (rc != 0) {
+		cb_fn(cb_arg, rc);
+	}
 }
 
 static int
-bdev_get_daos_engine(void)
+bdev_daos_get_engine(void)
 {
 	int rc = 0;
 

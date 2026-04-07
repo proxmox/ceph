@@ -6,8 +6,8 @@
 #
 # Minimal install
 zypper install -y gcc gcc-c++ make cunit-devel libaio-devel libopenssl-devel \
-	libuuid-devel python-base ncurses-devel libjson-c-devel libcmocka-devel \
-	ninja meson python3-pyelftools
+	libuuid-devel python3-base ncurses-devel libjson-c-devel libcmocka-devel \
+	ninja meson python3-pyelftools fuse3-devel
 # Additional dependencies for DPDK
 zypper install -y libnuma-devel nasm
 # Additional dependencies for ISA-L used in compression
@@ -19,12 +19,7 @@ if [[ $INSTALL_DEV_TOOLS == "true" ]]; then
 fi
 if [[ $INSTALL_PMEM == "true" ]]; then
 	# Additional dependencies for building pmem based backends
-	zypper install -y libpmemblk-devel
 	zypper install -y libpmemobj-devel
-fi
-if [[ $INSTALL_FUSE == "true" ]]; then
-	# Additional dependencies for FUSE and NVMe-CUSE
-	zypper install -y fuse3-devel
 fi
 if [[ $INSTALL_RBD == "true" ]]; then
 	# Additional dependencies for RBD bdev in NVMe over Fabrics
@@ -47,4 +42,7 @@ fi
 if [[ $INSTALL_AVAHI == "true" ]]; then
 	# Additional dependencies for Avahi
 	zypper install -y avahi-devel
+fi
+if [[ $INSTALL_LZ4 == "true" ]]; then
+	zypper install -y liblz4-devel
 fi

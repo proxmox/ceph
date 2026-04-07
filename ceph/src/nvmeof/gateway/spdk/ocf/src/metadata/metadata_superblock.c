@@ -1,15 +1,18 @@
 /*
- * Copyright(c) 2020-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2020-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "metadata.h"
 #include "metadata_core.h"
 #include "metadata_internal.h"
+#include "metadata_segment.h"
 #include "metadata_segment_id.h"
 #include "metadata_superblock.h"
 #include "../ocf_priv.h"
 #include "../utils/utils_io.h"
+#include "../utils/utils_cache_line.h"
 
 #define OCF_METADATA_SUPERBLOCK_DEBUG 0
 
@@ -24,14 +27,6 @@
 #define OCF_DEBUG_TRACE(cache)
 #define OCF_DEBUG_PARAM(cache, format, ...)
 #endif
-
-int ocf_metadata_segment_init_in_place(
-		struct ocf_metadata_segment *segment,
-		struct ocf_cache *cache,
-		struct ocf_metadata_raw *raw,
-		ocf_flush_page_synch_t lock_page_pfn,
-		ocf_flush_page_synch_t unlock_page_pfn,
-		struct ocf_metadata_segment *superblock);
 
 /**
  * @brief Super Block - Set Shutdown Status
@@ -97,74 +92,155 @@ static void ocf_metadata_store_segment(ocf_pipeline_t pipeline,
 	ocf_pipeline_next(pipeline);
 }
 
-static void ocf_metadata_check_crc_sb_config(ocf_pipeline_t pipeline,
+
+#define ocf_log_invalid_superblock(param) \
+	ocf_log(ctx, log_err, \
+			"Loading %s: invalid %s\n", \
+			ocf_metadata_segment_names[ \
+					metadata_segment_sb_config], \
+			param);
+
+
+int ocf_metadata_validate_superblock(ocf_ctx_t ctx,
+		struct ocf_superblock_config *superblock)
+{
+	const char *segment_name;
+	uint32_t crc;
+
+	segment_name = ocf_metadata_segment_names[metadata_segment_sb_config];
+
+	if (superblock->magic_number != CACHE_MAGIC_NUMBER) {
+		ocf_log(ctx, log_info, "Cannot detect pre-existing metadata\n");
+		return -OCF_ERR_NO_METADATA;
+	}
+
+	if (METADATA_VERSION() != superblock->metadata_version) {
+		ocf_log(ctx, log_err, "Metadata version mismatch!\n");
+		return -OCF_ERR_METADATA_VER;
+	}
+
+	crc = env_crc32(0, (void *)superblock,
+			offsetof(struct ocf_superblock_config, checksum));
+
+	if (crc != superblock->checksum[metadata_segment_sb_config]) {
+		ocf_log_invalid_superblock("checksum");
+		return -OCF_ERR_CRC_MISMATCH;
+	}
+
+	if (superblock->clean_shutdown > ocf_metadata_clean_shutdown) {
+		ocf_log_invalid_superblock("shutdown status");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (superblock->dirty_flushed > DIRTY_FLUSHED) {
+		ocf_log_invalid_superblock("flush status");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (superblock->flapping_idx > 1) {
+		ocf_log_invalid_superblock("flapping index");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (superblock->cache_mode < 0 ||
+			superblock->cache_mode >= ocf_cache_mode_max) {
+		ocf_log_invalid_superblock("cache mode");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (env_strnlen(superblock->name, sizeof(superblock->name)) >=
+			OCF_CACHE_NAME_SIZE) {
+		ocf_log_invalid_superblock("name");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (superblock->valid_parts_no > OCF_USER_IO_CLASS_MAX) {
+		ocf_log_invalid_superblock("partition count");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (!ocf_cache_line_size_is_valid(superblock->line_size)) {
+		ocf_log_invalid_superblock("cache line size");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (superblock->core_count > OCF_CORE_MAX) {
+		ocf_log_invalid_superblock("core count");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (superblock->cleaning_policy_type < 0 ||
+			superblock->cleaning_policy_type >= ocf_cleaning_max) {
+		ocf_log_invalid_superblock("cleaning policy");
+		return -OCF_ERR_INVAL;
+	}
+
+	if (superblock->cleaner_disabled &&
+			superblock->cleaning_policy_type != ocf_cleaning_nop) {
+		ocf_log(ctx, log_err, "Loading %s: cleaner is disabled, but "
+				"cleaning policy is not set to nop!\n",
+				segment_name);
+		return -OCF_ERR_INVAL;
+	}
+
+	if (superblock->promotion_policy_type < 0 ||
+			superblock->promotion_policy_type >=
+					ocf_promotion_max) {
+		ocf_log_invalid_superblock("promotion policy");
+		return -OCF_ERR_INVAL;
+	}
+
+	return 0;
+}
+
+static void _ocf_metadata_validate_superblock(ocf_pipeline_t pipeline,
 		void *priv, ocf_pipeline_arg_t arg)
 {
 	struct ocf_metadata_context *context = priv;
 	struct ocf_metadata_ctrl *ctrl;
-	struct ocf_superblock_config *sb_config;
-	ocf_cache_t cache = context->cache;
-	int segment = metadata_segment_sb_config;
-	uint32_t crc;
+	struct ocf_superblock_config *superblock;
+	int ret;
 
-	ctrl = (struct ocf_metadata_ctrl *)cache->metadata.priv;
-	sb_config = METADATA_MEM_POOL(ctrl, metadata_segment_sb_config);
+	ctrl = (struct ocf_metadata_ctrl *)context->ctrl;
+	superblock = METADATA_MEM_POOL(ctrl, metadata_segment_sb_config);
 
-	crc = env_crc32(0, (void *)sb_config,
-			offsetof(struct ocf_superblock_config, checksum));
-
-	if (crc != sb_config->checksum[segment]) {
-		/* Checksum does not match */
-		ocf_cache_log(cache, log_err,
-				"Loading %s ERROR, invalid checksum\n",
-				ocf_metadata_segment_names[segment]);
-		OCF_PL_FINISH_RET(pipeline, -OCF_ERR_INVAL);
-	}
+	ret = ocf_metadata_validate_superblock(context->cache->owner, superblock);
+	if (ret)
+		OCF_PL_FINISH_RET(pipeline, ret);
 
 	ocf_pipeline_next(pipeline);
 }
 
-static void ocf_metadata_load_superblock_post(ocf_pipeline_t pipeline,
+static void _ocf_metadata_validate_core_config(ocf_pipeline_t pipeline,
 		void *priv, ocf_pipeline_arg_t arg)
 {
 	struct ocf_metadata_context *context = priv;
+	ocf_ctx_t ctx = context->cache->owner;
 	struct ocf_metadata_ctrl *ctrl;
-	struct ocf_superblock_config *sb_config;
-	ocf_cache_t cache = context->cache;
-	struct ocf_metadata_uuid *muuid;
-	struct ocf_volume_uuid uuid;
-	ocf_volume_type_t volume_type;
-	ocf_core_t core;
+	struct ocf_superblock_config *superblock;
+	struct ocf_core_meta_config *core_config;
 	ocf_core_id_t core_id;
+	bool valid_in_bitmap;
 
-	ctrl = (struct ocf_metadata_ctrl *)cache->metadata.priv;
-	sb_config = METADATA_MEM_POOL(ctrl, metadata_segment_sb_config);
+	ctrl = (struct ocf_metadata_ctrl *)context->ctrl;
+	superblock = METADATA_MEM_POOL(ctrl, metadata_segment_sb_config);
+	core_config = METADATA_MEM_POOL(ctrl, metadata_segment_core_config);
 
-	for_each_core_metadata(cache, core, core_id) {
-		muuid = ocf_metadata_get_core_uuid(cache, core_id);
-		uuid.data = muuid->data;
-		uuid.size = muuid->size;
+	for (core_id = 0; core_id < OCF_CORE_MAX; core_id++) {
+		valid_in_bitmap = env_bit_test(core_id,
+				superblock->valid_core_bitmap);
 
-		volume_type = ocf_ctx_get_volume_type(cache->owner,
-				core->conf_meta->type);
+		if (valid_in_bitmap && !core_config[core_id].valid) {
+			ocf_log(ctx, log_err, "Core is marked as valid in "
+					"bitmap but not in core metadata!\n");
+			OCF_PL_FINISH_RET(pipeline, -OCF_ERR_INVAL);
+		}
 
-		/* Initialize core volume */
-		ocf_volume_init(&core->volume, volume_type, &uuid, false);
-		core->has_volume = true;
-	}
-
-	/* Restore all dynamics items */
-
-	if (sb_config->core_count > OCF_CORE_MAX) {
-		ocf_cache_log(cache, log_err,
-			"Loading cache state ERROR, invalid cores count\n");
-		OCF_PL_FINISH_RET(pipeline, -OCF_ERR_INVAL);
-	}
-
-	if (sb_config->valid_parts_no > OCF_USER_IO_CLASS_MAX) {
-		ocf_cache_log(cache, log_err,
-			"Loading cache state ERROR, invalid partition count\n");
-		OCF_PL_FINISH_RET(pipeline, -OCF_ERR_INVAL);
+		if (core_config[core_id].valid && !valid_in_bitmap) {
+			ocf_log(ctx, log_err, "Core is marked as valid in "
+					"core metadata but not in bitmap!\n");
+			OCF_PL_FINISH_RET(pipeline, -OCF_ERR_INVAL);
+		}
 	}
 
 	ocf_pipeline_next(pipeline);
@@ -225,25 +301,11 @@ struct ocf_pipeline_arg ocf_metadata_load_sb_store_segment_args[] = {
 };
 
 struct ocf_pipeline_arg ocf_metadata_load_sb_load_segment_args[] = {
-	OCF_PL_ARG_INT(metadata_segment_sb_config),
 	OCF_PL_ARG_INT(metadata_segment_sb_runtime),
 	OCF_PL_ARG_INT(metadata_segment_part_config),
 	OCF_PL_ARG_INT(metadata_segment_part_runtime),
 	OCF_PL_ARG_INT(metadata_segment_core_config),
 	OCF_PL_ARG_INT(metadata_segment_core_uuid),
-	OCF_PL_ARG_TERMINATOR(),
-};
-
-struct ocf_pipeline_arg ocf_metadata_load_sb_check_crc_args[] = {
-	OCF_PL_ARG_INT(metadata_segment_part_config),
-	OCF_PL_ARG_INT(metadata_segment_core_config),
-	OCF_PL_ARG_INT(metadata_segment_core_uuid),
-	OCF_PL_ARG_TERMINATOR(),
-};
-
-struct ocf_pipeline_arg ocf_metadata_load_sb_check_crc_args_clean[] = {
-	OCF_PL_ARG_INT(metadata_segment_sb_runtime),
-	OCF_PL_ARG_INT(metadata_segment_part_runtime),
 	OCF_PL_ARG_TERMINATOR(),
 };
 
@@ -253,14 +315,14 @@ struct ocf_pipeline_properties ocf_metadata_load_sb_pipeline_props = {
 	.steps = {
 		OCF_PL_STEP_FOREACH(ocf_metadata_store_segment,
 				ocf_metadata_load_sb_store_segment_args),
+		OCF_PL_STEP_ARG_INT(ocf_metadata_load_segment,
+				metadata_segment_sb_config),
+		OCF_PL_STEP(_ocf_metadata_validate_superblock),
 		OCF_PL_STEP_FOREACH(ocf_metadata_load_segment,
 				ocf_metadata_load_sb_load_segment_args),
-		OCF_PL_STEP(ocf_metadata_check_crc_sb_config),
 		OCF_PL_STEP_FOREACH(ocf_metadata_check_crc,
-				ocf_metadata_load_sb_check_crc_args),
-		OCF_PL_STEP_FOREACH(ocf_metadata_check_crc_if_clean,
-				ocf_metadata_load_sb_check_crc_args_clean),
-		OCF_PL_STEP(ocf_metadata_load_superblock_post),
+				ocf_metadata_load_sb_load_segment_args),
+		OCF_PL_STEP(_ocf_metadata_validate_core_config),
 		OCF_PL_STEP_TERMINATOR(),
 	},
 };
@@ -306,19 +368,83 @@ void ocf_metadata_load_superblock(ocf_cache_t cache, ocf_metadata_end_t cmpl,
 	ocf_pipeline_next(pipeline);
 }
 
-static void ocf_metadata_flush_superblock_prepare(ocf_pipeline_t pipeline,
+struct ocf_pipeline_arg ocf_metadata_load_sb_recov_load_segment_args[] = {
+	OCF_PL_ARG_INT(metadata_segment_part_config),
+	OCF_PL_ARG_INT(metadata_segment_core_config),
+	OCF_PL_ARG_INT(metadata_segment_core_uuid),
+	OCF_PL_ARG_TERMINATOR(),
+};
+
+struct ocf_pipeline_properties ocf_metadata_load_sb_recov_pipeline_props = {
+	.priv_size = sizeof(struct ocf_metadata_context),
+	.finish = ocf_metadata_load_superblock_finish,
+	.steps = {
+		OCF_PL_STEP_FOREACH(ocf_metadata_store_segment,
+				ocf_metadata_load_sb_store_segment_args),
+		OCF_PL_STEP_ARG_INT(ocf_metadata_load_segment,
+				metadata_segment_sb_config),
+		OCF_PL_STEP(_ocf_metadata_validate_superblock),
+		OCF_PL_STEP_FOREACH(ocf_metadata_load_segment,
+				ocf_metadata_load_sb_recov_load_segment_args),
+		OCF_PL_STEP_FOREACH(ocf_metadata_check_crc,
+				ocf_metadata_load_sb_recov_load_segment_args),
+		OCF_PL_STEP(_ocf_metadata_validate_core_config),
+		OCF_PL_STEP_TERMINATOR(),
+	},
+};
+
+/*
+ * Super Block - Recovery load
+ */
+void ocf_metadata_load_superblock_recovery(ocf_cache_t cache,
+		ocf_metadata_end_t cmpl, void *priv)
+{
+	struct ocf_metadata_context *context;
+	ocf_pipeline_t pipeline;
+	struct ocf_metadata_ctrl *ctrl;
+	struct ocf_superblock_config *sb_config;
+	struct ocf_superblock_runtime *sb_runtime;
+	int result;
+
+	OCF_DEBUG_TRACE(cache);
+
+	/* TODO: get ctrl from args rather than from cache */
+	ctrl = cache->metadata.priv;
+	ENV_BUG_ON(!ctrl);
+
+	sb_config = METADATA_MEM_POOL(ctrl, metadata_segment_sb_config);
+	ENV_BUG_ON(!sb_config);
+
+	sb_runtime = METADATA_MEM_POOL(ctrl, metadata_segment_sb_runtime);
+	ENV_BUG_ON(!sb_runtime);
+
+	result = ocf_pipeline_create(&pipeline, cache,
+			&ocf_metadata_load_sb_recov_pipeline_props);
+	if (result)
+		OCF_CMPL_RET(priv, result);
+
+	context = ocf_pipeline_get_priv(pipeline);
+
+	context->cmpl = cmpl;
+	context->priv = priv;
+	context->pipeline = pipeline;
+	context->cache = cache;
+	context->ctrl = cache->metadata.priv;
+
+	ocf_pipeline_next(pipeline);
+}
+
+static void ocf_metadata_flush_superblock_flap(ocf_pipeline_t pipeline,
 		void *priv, ocf_pipeline_arg_t arg)
 {
 	struct ocf_metadata_context *context = priv;
-	ocf_cache_t cache = context->cache;
-	ocf_core_t core;
-	ocf_core_id_t core_id;
+	struct ocf_metadata_ctrl *ctrl;
+	struct ocf_superblock_config *sb_config;
 
-	/* Synchronize core objects types */
-	for_each_core_metadata(cache, core, core_id) {
-		core->conf_meta->type = ocf_ctx_get_volume_type_id(
-				cache->owner, core->volume.type);
-	}
+	ctrl = context->ctrl;
+	sb_config = METADATA_MEM_POOL(ctrl, metadata_segment_sb_config);
+
+	sb_config->flapping_idx = (sb_config->flapping_idx + 1) % 2;
 
 	ocf_pipeline_next(pipeline);
 }
@@ -344,10 +470,18 @@ static void ocf_metadata_flush_superblock_finish(ocf_pipeline_t pipeline,
 		void *priv, int error)
 {
 	struct ocf_metadata_context *context = priv;
+	struct ocf_metadata_ctrl *ctrl;
+	struct ocf_superblock_config *sb_config;
 	ocf_cache_t cache = context->cache;
 
-	if (error)
+	if (error) {
 		ocf_metadata_error(cache);
+
+		ctrl = context->ctrl;
+		sb_config = METADATA_MEM_POOL(ctrl, metadata_segment_sb_config);
+
+		sb_config->flapping_idx = (sb_config->flapping_idx - 1) % 2;
+	}
 
 	context->cmpl(context->priv, error);
 	ocf_pipeline_destroy(pipeline);
@@ -372,19 +506,10 @@ static void ocf_metadata_flush_disk(ocf_pipeline_t pipeline,
 	struct ocf_metadata_context *context = priv;
 	ocf_cache_t cache = context->cache;
 
-	ocf_submit_volume_flush(ocf_cache_get_volume(cache),
-		ocf_metadata_flush_disk_end, context);
+	ocf_submit_cache_flush(cache, ocf_metadata_flush_disk_end, context);
 }
 
-struct ocf_pipeline_arg ocf_metadata_flush_sb_calculate_crc_args[] = {
-	OCF_PL_ARG_INT(metadata_segment_part_config),
-	OCF_PL_ARG_INT(metadata_segment_core_config),
-	OCF_PL_ARG_INT(metadata_segment_core_uuid),
-	OCF_PL_ARG_TERMINATOR(),
-};
-
-struct ocf_pipeline_arg ocf_metadata_flush_sb_flush_segment_args[] = {
-	OCF_PL_ARG_INT(metadata_segment_sb_config),
+struct ocf_pipeline_arg ocf_metadata_flush_sb_args[] = {
 	OCF_PL_ARG_INT(metadata_segment_part_config),
 	OCF_PL_ARG_INT(metadata_segment_core_config),
 	OCF_PL_ARG_INT(metadata_segment_core_uuid),
@@ -395,12 +520,15 @@ struct ocf_pipeline_properties ocf_metadata_flush_sb_pipeline_props = {
 	.priv_size = sizeof(struct ocf_metadata_context),
 	.finish = ocf_metadata_flush_superblock_finish,
 	.steps = {
-		OCF_PL_STEP(ocf_metadata_flush_superblock_prepare),
-		OCF_PL_STEP(ocf_metadata_calculate_crc_sb_config),
 		OCF_PL_STEP_FOREACH(ocf_metadata_calculate_crc,
-				ocf_metadata_flush_sb_calculate_crc_args),
+				ocf_metadata_flush_sb_args),
 		OCF_PL_STEP_FOREACH(ocf_metadata_flush_segment,
-				ocf_metadata_flush_sb_flush_segment_args),
+				ocf_metadata_flush_sb_args),
+		OCF_PL_STEP(ocf_metadata_flush_disk),
+		OCF_PL_STEP(ocf_metadata_flush_superblock_flap),
+		OCF_PL_STEP(ocf_metadata_calculate_crc_sb_config),
+		OCF_PL_STEP_ARG_INT(ocf_metadata_flush_segment,
+				metadata_segment_sb_config),
 		OCF_PL_STEP(ocf_metadata_flush_disk),
 		OCF_PL_STEP_TERMINATOR(),
 	},
@@ -417,6 +545,8 @@ void ocf_metadata_flush_superblock(ocf_cache_t cache,
 	int result;
 
 	OCF_DEBUG_TRACE(cache);
+
+	ENV_BUG_ON(!ocf_cache_is_device_attached(cache));
 
 	result = ocf_pipeline_create(&pipeline, cache,
 			&ocf_metadata_flush_sb_pipeline_props);
@@ -438,6 +568,7 @@ struct ocf_metadata_superblock
 {
 	struct ocf_metadata_segment segment;
 	struct ocf_superblock_config *config;
+	ocf_cache_t cache;
 };
 
 #define _ocf_segment_to_sb(_segment) \
@@ -463,6 +594,7 @@ int ocf_metadata_superblock_init(
 	}
 
 	sb->config = ocf_metadata_raw_get_mem(sb->segment.raw);
+	sb->cache = cache;
 
 	*self = &sb->segment;
 	return 0;
@@ -503,3 +635,95 @@ bool ocf_metadata_superblock_get_clean_shutdown(
 	return sb->config->clean_shutdown;
 }
 
+unsigned ocf_metadata_superblock_get_flapping_idx(
+		struct ocf_metadata_segment *self)
+{
+	struct ocf_metadata_superblock *sb = _ocf_segment_to_sb(self);
+
+	return sb->config->flapping_idx;
+}
+
+unsigned ocf_metadata_superblock_get_next_flapping_idx(
+		struct ocf_metadata_segment *self)
+{
+	struct ocf_metadata_superblock *sb = _ocf_segment_to_sb(self);
+
+	return (sb->config->flapping_idx + 1) % 2;
+}
+
+static void ocf_metadata_read_sb_complete(struct ocf_request *req, int error)
+{
+	struct ocf_metadata_read_sb_ctx *context = req->priv;
+	ctx_data_t *data = req->data;
+
+	if (!error) {
+		/* Read data from data into super block buffer */
+		ctx_data_rd_check(context->ctx, &context->superblock, data,
+				sizeof(context->superblock));
+	}
+
+	ctx_data_free(context->ctx, data);
+
+	context->error = error;
+	context->cmpl(context);
+
+	env_free(context);
+	env_free(req);
+}
+
+int ocf_metadata_read_sb(ocf_ctx_t ctx, ocf_volume_t volume,
+		ocf_metadata_read_sb_end_t cmpl, void *priv1, void *priv2)
+{
+	struct ocf_metadata_read_sb_ctx *context;
+	size_t sb_pages = BYTES_TO_PAGES(sizeof(context->superblock));
+	struct ocf_request *req;
+	int result = 0;
+
+	/* Allocate memory for first page of super block */
+	context = env_zalloc(sizeof(*context), ENV_MEM_NORMAL);
+	if (!context) {
+		ocf_log(ctx, log_err, "Memory allocation error");
+		return -OCF_ERR_NO_MEM;
+	}
+
+	context->cmpl = cmpl;
+	context->ctx = ctx;
+	context->priv1 = priv1;
+	context->priv2 = priv2;
+
+	req = env_zalloc(sizeof(*req), ENV_MEM_NORMAL);
+	if (!req) {
+		ocf_log(ctx, log_err, "Memory allocation error");
+		result = -OCF_ERR_NO_MEM;
+		goto err_req;
+	}
+
+	req->data = ctx_data_alloc(ctx, sb_pages);
+	if (!req->data) {
+		ocf_log(ctx, log_err, "Memory allocation error");
+		result = -OCF_ERR_NO_MEM;
+		goto err_data;
+	}
+
+	req->volume_forward_end = ocf_metadata_read_sb_complete;
+	req->priv = context;
+
+	ocf_req_forward_volume_io_simple(req, volume, OCF_READ, 0,
+			sb_pages * PAGE_SIZE);
+
+	return 0;
+
+err_data:
+	env_free(req);
+err_req:
+	env_free(context);
+	return result;
+}
+
+void ocf_metadata_sb_zero(struct ocf_metadata_segment *self,
+		ocf_metadata_end_t cmpl, void *priv)
+{
+	struct ocf_metadata_superblock *sb = _ocf_segment_to_sb(self);
+
+	ocf_metadata_raw_zero(sb->cache, sb->segment.raw, cmpl, priv);
+}

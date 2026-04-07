@@ -20,7 +20,7 @@ struct spdk_notify_type {
 	TAILQ_ENTRY(spdk_notify_type) tailq;
 };
 
-pthread_mutex_t g_events_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_events_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct spdk_notify_event g_events[SPDK_NOTIFY_MAX_EVENTS];
 static uint64_t g_events_head;
 
@@ -58,6 +58,33 @@ spdk_notify_type_register(const char *type)
 out:
 	pthread_mutex_unlock(&g_events_lock);
 	return it;
+}
+
+struct spdk_notify_type *
+spdk_notify_type_register_once(const char *type)
+{
+	struct spdk_notify_type *it = NULL;
+	struct spdk_notify_type *ret = NULL;
+
+	if (!type) {
+		SPDK_ERRLOG("Invalid notification type %p\n", type);
+		return NULL;
+	}
+
+	pthread_mutex_lock(&g_events_lock);
+	TAILQ_FOREACH(it, &g_notify_types, tailq) {
+		if (strcmp(type, it->name) == 0) {
+			ret = it;
+			goto out;
+		}
+	}
+
+out:
+	pthread_mutex_unlock(&g_events_lock);
+	if (ret) {
+		return ret;
+	}
+	return spdk_notify_type_register(type);
 }
 
 const char *

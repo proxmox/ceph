@@ -5,8 +5,7 @@
 #
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
-source $rootdir/scripts/common.sh
-source $rootdir/test/common/autotest_common.sh
+source "$testdir/common.sh"
 
 rm -Rf $testdir/match_files
 mkdir $testdir/match_files
@@ -17,17 +16,23 @@ CUSE_OUT=$testdir/match_files/cuse.out
 NVME_CMD=/usr/local/src/nvme-cli/nvme
 rpc_py=$rootdir/scripts/rpc.py
 
-bdf=$(get_first_nvme_bdf)
+"$rootdir/scripts/setup.sh" reset
+scan_nvme_ctrls
 
-PCI_ALLOWED="${bdf}" $rootdir/scripts/setup.sh reset
-nvme_name=$(get_nvme_ctrlr_from_bdf ${bdf})
-if [[ -z "$nvme_name" ]]; then
-	echo "setup.sh failed bind kernel driver to ${bdf}"
-	return 1
+if ! nvme_name=$(get_nvme_with_ns_management); then
+	echo "Failed to find suitable nvme for the test" >&2
+	exit 1
+fi
+
+sel_cmd=()
+# sel depends on ONCS.4 so make sure it's set
+if (($(get_oncs "$nvme_name") & 1 << 4)); then
+	sel_cmd=(-s 1) # return default attribute value
 fi
 
 ctrlr="/dev/${nvme_name}"
 ns="/dev/${nvme_name}n1"
+bdf=${bdfs["$nvme_name"]}
 
 waitforblk "${nvme_name}n1"
 
@@ -45,7 +50,7 @@ if [ "$oacs_firmware" -ne "0" ]; then
 fi
 ${NVME_CMD} smart-log $ctrlr
 ${NVME_CMD} error-log $ctrlr > ${KERNEL_OUT}.7
-${NVME_CMD} get-feature $ctrlr -f 1 -s 1 -l 100 > ${KERNEL_OUT}.8
+${NVME_CMD} get-feature $ctrlr -f 1 "${sel_cmd[@]}" -l 100 > ${KERNEL_OUT}.8
 ${NVME_CMD} get-log $ctrlr -i 1 -l 100 > ${KERNEL_OUT}.9
 ${NVME_CMD} reset $ctrlr > ${KERNEL_OUT}.10
 # Negative test to make sure status message is the same on failures
@@ -82,7 +87,7 @@ if [ "$oacs_firmware" -ne "0" ]; then
 fi
 ${NVME_CMD} smart-log $ctrlr
 ${NVME_CMD} error-log $ctrlr > ${CUSE_OUT}.7
-${NVME_CMD} get-feature $ctrlr -f 1 -s 1 -l 100 > ${CUSE_OUT}.8
+${NVME_CMD} get-feature $ctrlr -f 1 "${sel_cmd[@]}" -l 100 > ${CUSE_OUT}.8
 ${NVME_CMD} get-log $ctrlr -i 1 -l 100 > ${CUSE_OUT}.9
 ${NVME_CMD} reset $ctrlr > ${CUSE_OUT}.10
 ${NVME_CMD} set-feature $ctrlr -n 1 -f 2 -v 0 2> ${CUSE_OUT}.11 || true
@@ -97,10 +102,11 @@ done
 rm -Rf $testdir/match_files
 
 # Verify read/write path
-tr < /dev/urandom -dc "a-zA-Z0-9" | fold -w 512 | head -n 1 > $testdir/write_file
-${NVME_CMD} write $ns --data-size=512 --data=$testdir/write_file
-${NVME_CMD} read $ns --data-size=512 --data=$testdir/read_file
-diff --ignore-trailing-space $testdir/write_file $testdir/read_file
+bs=$($rpc_py bdev_get_bdevs | jq '.[].block_size')
+head -c"$bs" /dev/urandom > "$testdir/write_file"
+${NVME_CMD} write $ns --data-size="$bs" --data=$testdir/write_file
+${NVME_CMD} read $ns --data-size="$bs" --data=$testdir/read_file
+cmp "$testdir/write_file" "$testdir/read_file"
 rm -f $testdir/write_file $testdir/read_file
 
 # Verify admin cmd when no data is transferred,

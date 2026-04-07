@@ -27,15 +27,18 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 **********************************************************************/
 
-#include "sha1_mb.h"
+#include "sha1_mb_internal.h"
 
-void sha1_mb_mgr_init_sse(SHA1_MB_JOB_MGR * state)
+void
+_sha1_mb_mgr_init_sse(ISAL_SHA1_MB_JOB_MGR *state)
 {
-	unsigned int j;
-	state->unused_lanes = 0xF3210;
-	state->num_lanes_inuse = 0;
-	for (j = 0; j < SHA1_MIN_LANES; j++) {
-		state->lens[j] = 0;
-		state->ldata[j].job_in_lane = 0;
-	}
+        unsigned int j;
+
+        memset(state, 0, sizeof(*state));
+        state->unused_lanes = 0xF3210;
+        state->num_lanes_inuse = 0;
+        for (j = 0; j < ISAL_SHA1_MIN_LANES; j++) {
+                state->lens[j] = 0;
+                state->ldata[j].job_in_lane = 0;
+        }
 }

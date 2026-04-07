@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
@@ -106,6 +107,7 @@ void cache_mngt_core_deinit_attached_meta(ocf_core_t core)
 void cache_mngt_core_remove_from_meta(ocf_core_t core)
 {
 	ocf_cache_t cache = ocf_core_get_cache(core);
+	ocf_core_id_t core_id = ocf_core_get_id(core);
 
 	ocf_metadata_start_exclusive_access(&cache->metadata.lock);
 
@@ -116,6 +118,9 @@ void cache_mngt_core_remove_from_meta(ocf_core_t core)
 	ocf_mngt_core_clear_uuid_metadata(core);
 	core->conf_meta->seq_no = OCF_SEQ_NO_INVALID;
 
+	env_bit_clear(core_id, cache->conf_meta->valid_core_bitmap);
+	cache->conf_meta->core_count--;
+
 	ocf_metadata_end_exclusive_access(&cache->metadata.lock);
 }
 
@@ -123,18 +128,14 @@ void cache_mngt_core_remove_from_meta(ocf_core_t core)
 void cache_mngt_core_remove_from_cache(ocf_core_t core)
 {
 	ocf_cache_t cache = ocf_core_get_cache(core);
-	ocf_core_id_t core_id = ocf_core_get_id(core);
 
 	ocf_core_seq_cutoff_deinit(core);
 	env_free(core->counters);
 	core->counters = NULL;
 	core->added = false;
-	env_bit_clear(core_id, cache->conf_meta->valid_core_bitmap);
 
 	if (!core->opened && --cache->ocf_core_inactive_count == 0)
 		env_bit_clear(ocf_cache_state_incomplete, &cache->cache_state);
-
-	cache->conf_meta->core_count--;
 }
 
 void ocf_mngt_cache_put(ocf_cache_t cache)
@@ -149,6 +150,13 @@ void ocf_mngt_cache_put(ocf_cache_t cache)
 		env_vfree(cache);
 		ocf_ctx_put(ctx);
 	}
+}
+
+void __set_cleaning_policy(ocf_cache_t cache,
+		ocf_cleaning_t new_cleaning_policy)
+{
+	cache->conf_meta->cleaning_policy_type = new_cleaning_policy;
+	cache->cleaner.policy = new_cleaning_policy;
 }
 
 int ocf_mngt_cache_get_by_name(ocf_ctx_t ctx, const char *name, size_t name_len,
@@ -268,10 +276,10 @@ static int _ocf_mngt_cache_trylock(ocf_cache_t cache,
 	if (env_bit_test(ocf_cache_state_stopping, &cache->cache_state)) {
 		/* Cache already stopping, do not allow any operation */
 		unlock_fn(&cache->lock);
-		return -OCF_ERR_CACHE_NOT_EXIST;
+		result = -OCF_ERR_CACHE_NOT_EXIST;
 	}
 
-	return 0;
+	return result;
 }
 
 static void _ocf_mngt_cache_unlock(ocf_cache_t cache,

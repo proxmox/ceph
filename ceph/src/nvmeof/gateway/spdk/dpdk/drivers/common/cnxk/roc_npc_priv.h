@@ -30,6 +30,10 @@
 	((((lid) - (NPC_LID_LA)) * NPC_LAYER_KEYX_SZ) +                        \
 	 NPC_PARSE_KEX_S_LA_OFFSET)
 
+#define NPC_LAYER_KEYX_SZ_CN20K (2)
+#define NPC_PARSE_KEX_S_LID_OFFSET_CN20K(lid)                                                      \
+	((((lid) - (NPC_LID_LA)) * NPC_LAYER_KEYX_SZ_CN20K) + NPC_PARSE_KEX_S_LA_OFFSET)
+
 /* This mark value indicates flag action */
 #define NPC_FLOW_FLAG_VAL (0xffff)
 
@@ -43,7 +47,11 @@
 
 #define NPC_MCAM_KEX_FIELD_MAX	  23
 #define NPC_MCAM_MAX_PROTO_FIELDS (NPC_MCAM_KEX_FIELD_MAX + 1)
-#define NPC_MCAM_KEY_X4_WORDS	  7 /* Number of 64-bit words */
+#if defined(ROC_PLATFORM_CN20K)
+#define NPC_MCAM_KEY_X4_WORDS 8 /* Number of 64-bit words */
+#else
+#define NPC_MCAM_KEY_X4_WORDS 7 /* Number of 64-bit words */
+#endif
 
 #define NPC_RVUPF_MAX_9XXX 0x10 /* HRM: RVU_PRIV_CONST */
 #define NPC_RVUPF_MAX_98XX 0x18 /* HRM: RVU_PRIV_CONST */
@@ -76,6 +84,19 @@
  */
 #define NPC_LFLAG_LC_OFFSET (NPC_LTYPE_OFFSET_START + 6)
 #define NPC_LTYPE_LC_OFFSET (NPC_LTYPE_OFFSET_START + 8)
+
+/* LB OFFSET : START + LA (1b flags + 1b ltype) + LB (1b flags) */
+#define NPC_CN20K_LTYPE_LB_OFFSET (NPC_LTYPE_OFFSET_START + 3)
+#define NPC_CN20K_LFLAG_LB_OFFSET (NPC_LTYPE_OFFSET_START + 2)
+
+/* LC OFFSET : START + LA (1b flags + 1b ltype) + LB (1b flags + 1b ltype) + LC
+ * (1b flags)
+ */
+#define NPC_CN20K_LFLAG_LC_OFFSET (NPC_LTYPE_OFFSET_START + 4)
+#define NPC_CN20K_LTYPE_LC_OFFSET (NPC_LTYPE_OFFSET_START + 5)
+
+#define CN10K_SDP_CH_START 0x80
+#define CN10K_SDP_CH_MASK  0xF80
 
 struct npc_action_vtag_info {
 	uint16_t vlan_id;
@@ -173,9 +194,9 @@ struct npc_parse_item_info {
 	const void *def_mask; /* default mask */
 	void *hw_mask;	      /* hardware supported mask */
 	int len;	      /* length of item */
+	uint8_t hw_hdr_len;   /* Extra data len at each layer*/
 	const void *spec;     /* spec to use, NULL implies match any */
 	const void *mask;     /* mask to use */
-	uint8_t hw_hdr_len;   /* Extra data len at each layer*/
 };
 
 struct npc_parse_state {
@@ -189,13 +210,16 @@ struct npc_parse_state {
 	uint8_t layer_mask;
 	uint8_t lt[NPC_MAX_LID];
 	uint8_t flags[NPC_MAX_LID];
+	bool has_eth_type;
+	bool is_second_pass_rule;
+	bool set_ipv6ext_ltype_mask;
+	/* adjust ltype in MCAM to match at least one vlan */
+	bool set_vlan_ltype_mask;
 	uint8_t *mcam_data; /* point to flow->mcam_data + key_len */
 	uint8_t *mcam_mask; /* point to flow->mcam_mask + key_len */
 	bool is_vf;
-	/* adjust ltype in MCAM to match at least one vlan */
-	bool set_vlan_ltype_mask;
-	bool set_ipv6ext_ltype_mask;
-	bool is_second_pass_rule;
+	uint16_t dst_pf_func;
+	uint16_t nb_tx_queues;
 };
 
 enum npc_kpu_parser_flag {
@@ -322,6 +346,7 @@ struct npc_xtract_info {
 	uint8_t key_off;      /* Byte offset in MCAM key where data is placed */
 	uint8_t enable;	      /* Extraction enabled or disabled */
 	uint8_t flags_enable; /* Flags extraction enabled */
+	uint8_t use_hash;     /* Use field hash */
 };
 
 /* Information for a given {LAYER, LTYPE} */
@@ -333,6 +358,14 @@ struct npc_lid_lt_xtract_info {
 	struct npc_xtract_info xtract[NPC_MAX_LD];
 };
 
+struct npc_lid_lt_xtract_info_cn20k {
+	/* Info derived from parser configuration */
+	uint16_t npc_proto;	    /* Network protocol identified */
+	uint8_t valid_flags_mask;   /* Flags applicable */
+	uint8_t is_terminating : 1; /* No more parsing */
+	struct npc_xtract_info xtract;
+};
+
 union npc_kex_ldata_flags_cfg {
 	struct {
 		uint64_t lid : 3;
@@ -341,6 +374,11 @@ union npc_kex_ldata_flags_cfg {
 
 	uint64_t i;
 };
+
+#define NPC_MAX_EXTRACTTORS 24
+typedef struct npc_lid_lt_xtract_info_cn20k npc_dxcfg_cn20k_t[NPC_MAX_INTF][NPC_MAX_EXTRACTTORS]
+							     [NPC_MAX_LT];
+typedef union npc_kex_ldata_flags_cfg npc_lid_cn20k_t[NPC_MAX_INTF][NPC_MAX_EXTRACTTORS];
 
 typedef struct npc_lid_lt_xtract_info npc_dxcfg_t[NPC_MAX_INTF][NPC_MAX_LID]
 						 [NPC_MAX_LT];
@@ -371,30 +409,55 @@ struct npc_prio_flow_entry {
 
 TAILQ_HEAD(npc_prio_flow_list_head, npc_prio_flow_entry);
 
+struct npc_age_flow_entry {
+	struct roc_npc_flow *flow;
+	TAILQ_ENTRY(npc_age_flow_entry) next;
+};
+
+TAILQ_HEAD(npc_age_flow_list_head, npc_age_flow_entry);
+
 struct npc {
 	struct mbox *mbox;			/* Mbox */
-	uint32_t keyx_supp_nmask[NPC_MAX_INTF]; /* nibble mask */
+	uint64_t keyx_supp_nmask[NPC_MAX_INTF]; /* nibble mask */
+	uint8_t hash_extract_cap;		/* hash extract support */
 	uint8_t profile_name[MKEX_NAME_LEN];	/* KEX profile name */
-	uint32_t keyx_len[NPC_MAX_INTF];	/* per intf key len in bits */
-	uint32_t datax_len[NPC_MAX_INTF];	/* per intf data len in bits */
-	uint32_t keyw[NPC_MAX_INTF];		/* max key + data len bits */
-	uint32_t mcam_entries;			/* mcam entries supported */
-	uint16_t channel;			/* RX Channel number */
 	bool is_sdp_link;
+	uint16_t channel;		  /* RX Channel number */
+	uint32_t keyx_len[NPC_MAX_INTF];  /* per intf key len in bits */
+	uint32_t datax_len[NPC_MAX_INTF]; /* per intf data len in bits */
+	uint32_t keyw[NPC_MAX_INTF];	  /* max key + data len bits */
+	uint32_t mcam_entries;		  /* mcam entries supported */
+	uint16_t switch_header_type;	  /* Supported switch header type */
+	uint16_t flow_max_priority;	  /* Max priority for flow */
 	uint16_t sdp_channel;
 	uint16_t sdp_channel_mask;
-	uint32_t rss_grps;			/* rss groups supported */
-	uint16_t flow_prealloc_size;		/* Pre allocated mcam size */
-	uint16_t flow_max_priority;		/* Max priority for flow */
-	uint16_t switch_header_type; /* Supported switch header type */
-	uint32_t vtag_strip_actions; /* vtag insert/strip actions */
-	uint16_t pf_func;	     /* pf_func of device */
-	npc_dxcfg_t prx_dxcfg;	     /* intf, lid, lt, extract */
-	npc_fxcfg_t prx_fxcfg;	     /* Flag extract */
-	npc_ld_flags_t prx_lfcfg;    /* KEX LD_Flags CFG */
+	uint32_t rss_grps;	     /* rss groups supported */
+	uint16_t flow_prealloc_size; /* Pre allocated mcam size */
+	uint8_t exact_match_ena;
+	uint16_t pf_func; /* pf_func of device */
+	uint32_t mark_actions;
+	uint32_t vtag_strip_actions;	   /* vtag insert/strip actions */
+	npc_dxcfg_t prx_dxcfg;		   /* intf, lid, lt, extract */
+	npc_dxcfg_cn20k_t prx_dxcfg_cn20k; /* intf, ext, lt, extract */
+	npc_lid_cn20k_t lid_cfg;	   /* KEX LD_Flags CFG */
+	npc_fxcfg_t prx_fxcfg;		   /* Flag extract */
+	npc_ld_flags_t prx_lfcfg;	   /* KEX LD_Flags CFG */
 	struct npc_flow_list *flow_list;
 	struct npc_prio_flow_list_head *prio_flow_list;
+	struct npc_age_flow_list_head age_flow_list;
 	struct plt_bitmap *rss_grp_entries;
+	struct npc_flow_list ipsec_list;
+	uint8_t enable_debug;
+};
+
+#define NPC_HASH_FIELD_LEN 16
+
+struct npc_hash_cfg {
+	uint64_t secret_key[3];
+	/* NPC_AF_INTF(0..1)_HASH(0..1)_MASK(0..1) */
+	uint64_t hash_mask[NPC_MAX_INTF][NPC_MAX_HASH][NPC_MAX_HASH_MASK];
+	/* NPC_AF_INTF(0..1)_HASH(0..1)_RESULT_CTRL */
+	uint64_t hash_ctrl[NPC_MAX_INTF][NPC_MAX_HASH];
 };
 
 static inline struct npc *
@@ -403,35 +466,48 @@ roc_npc_to_npc_priv(struct roc_npc *npc)
 	return (struct npc *)npc->reserved;
 }
 
-int npc_mcam_free_counter(struct npc *npc, uint16_t ctr_id);
-int npc_mcam_read_counter(struct npc *npc, uint32_t ctr_id, uint64_t *count);
-int npc_mcam_clear_counter(struct npc *npc, uint32_t ctr_id);
-int npc_mcam_free_entry(struct npc *npc, uint32_t entry);
+static inline bool
+roc_npc_action_is_rx_inline(uint64_t npc_action)
+{
+	uint64_t op = npc_action & 0xFULL;
+
+	return (op == NIX_RX_ACTIONOP_UCAST_IPSEC || op == NIX_RX_ACTIONOP_UCAST_CPT);
+}
+
+int npc_mcam_get_stats(struct mbox *mbox, struct roc_npc_flow *flow, uint64_t *count);
+int npc_mcam_alloc_counter(struct mbox *mbox, uint16_t *ctr);
+int npc_mcam_free_counter(struct mbox *mbox, uint16_t ctr_id);
+int npc_mcam_read_counter(struct mbox *mbox, uint32_t ctr_id, uint64_t *count);
+int npc_mcam_clear_counter(struct mbox *mbox, uint32_t ctr_id);
+int npc_mcam_free_entry(struct mbox *mbox, uint32_t entry);
 int npc_mcam_free_all_entries(struct npc *npc);
 int npc_mcam_alloc_and_write(struct npc *npc, struct roc_npc_flow *flow,
 			     struct npc_parse_state *pst);
-int npc_mcam_alloc_entry(struct npc *npc, struct roc_npc_flow *mcam,
-			 struct roc_npc_flow *ref_mcam, int prio,
-			 int *resp_count);
-int npc_mcam_alloc_entries(struct npc *npc, int ref_mcam, int *alloc_entry,
-			   int req_count, int prio, int *resp_count);
+int npc_mcam_alloc_entry(struct npc *npc, struct roc_npc_flow *mcam, struct roc_npc_flow *ref_mcam,
+			 uint8_t prio, int *resp_count);
+int npc_mcam_alloc_entry_cn20k(struct npc *npc, struct roc_npc_flow *mcam, int *resp_count);
 
-int npc_mcam_ena_dis_entry(struct npc *npc, struct roc_npc_flow *mcam,
-			   bool enable);
-int npc_mcam_write_entry(struct npc *npc, struct roc_npc_flow *mcam);
+int npc_mcam_alloc_entries(struct mbox *mbox, int ref_mcam, int *alloc_entry, int req_count,
+			   int prio, int *resp_count, bool is_conti);
+
+int npc_mcam_ena_dis_entry(struct npc *npc, struct roc_npc_flow *mcam, bool enable);
+int npc_mcam_write_entry(struct mbox *mbox, struct roc_npc_flow *mcam);
 int npc_flow_enable_all_entries(struct npc *npc, bool enable);
-int npc_update_parse_state(struct npc_parse_state *pst,
-			   struct npc_parse_item_info *info, int lid, int lt,
-			   uint8_t flags);
-void npc_get_hw_supp_mask(struct npc_parse_state *pst,
-			  struct npc_parse_item_info *info, int lid, int lt);
-int npc_parse_item_basic(const struct roc_npc_item_info *item,
-			 struct npc_parse_item_info *info);
+int npc_update_parse_state(struct npc_parse_state *pst, struct npc_parse_item_info *info, int lid,
+			   int lt, uint8_t flags);
+void npc_get_hw_supp_mask(struct npc_parse_state *pst, struct npc_parse_item_info *info, int lid,
+			  int lt);
+uint8_t npc_get_key_type(struct npc *npc, struct roc_npc_flow *flow);
+int npc_mask_is_supported(const char *mask, const char *hw_mask, int len);
+int npc_parse_item_basic(const struct roc_npc_item_info *item, struct npc_parse_item_info *info);
 int npc_parse_meta_items(struct npc_parse_state *pst);
 int npc_parse_mark_item(struct npc_parse_state *pst);
+int npc_parse_port_representor_id(struct npc_parse_state *pst);
+int npc_parse_represented_port_id(struct npc_parse_state *pst);
 int npc_parse_pre_l2(struct npc_parse_state *pst);
 int npc_parse_higig2_hdr(struct npc_parse_state *pst);
 int npc_parse_cpt_hdr(struct npc_parse_state *pst);
+int npc_parse_tx_queue(struct npc_parse_state *pst);
 int npc_parse_la(struct npc_parse_state *pst);
 int npc_parse_lb(struct npc_parse_state *pst);
 int npc_parse_lc(struct npc_parse_state *pst);
@@ -441,24 +517,32 @@ int npc_parse_lf(struct npc_parse_state *pst);
 int npc_parse_lg(struct npc_parse_state *pst);
 int npc_parse_lh(struct npc_parse_state *pst);
 int npc_mcam_fetch_kex_cfg(struct npc *npc);
-int npc_get_free_mcam_entry(struct mbox *mbox, struct roc_npc_flow *flow,
-			    struct npc *npc);
+int npc_mcam_fetch_hw_cap(struct npc *npc, uint8_t *npc_hw_cap);
+int npc_get_free_mcam_entry(struct mbox *mbox, struct roc_npc_flow *flow, struct npc *npc);
 void npc_delete_prio_list_entry(struct npc *npc, struct roc_npc_flow *flow);
 int npc_flow_free_all_resources(struct npc *npc);
 const struct roc_npc_item_info *
 npc_parse_skip_void_and_any_items(const struct roc_npc_item_info *pattern);
-int npc_program_mcam(struct npc *npc, struct npc_parse_state *pst,
-		     bool mcam_alloc);
+int npc_program_mcam(struct npc *npc, struct npc_parse_state *pst, bool mcam_alloc);
 uint64_t npc_get_kex_capability(struct npc *npc);
-int npc_rss_free_grp_get(struct npc *npc, uint32_t *grp);
-int npc_rss_action_configure(struct roc_npc *roc_npc,
-			     const struct roc_npc_action_rss *rss,
-			     uint8_t *alg_idx, uint32_t *rss_grp,
-			     uint32_t mcam_id);
-int npc_rss_action_program(struct roc_npc *roc_npc,
-			   const struct roc_npc_action actions[],
+int npc_process_ipv6_field_hash(const struct roc_npc_flow_item_ipv6 *ipv6_spec,
+				const struct roc_npc_flow_item_ipv6 *ipv6_mask,
+				struct npc_parse_state *pst, uint8_t type);
+int npc_rss_action_configure(struct roc_npc *roc_npc, const struct roc_npc_action_rss *rss,
+			     uint8_t *alg_idx, uint32_t *rss_grp, uint32_t mcam_id,
+			     uint16_t rss_repte_pf_func);
+int npc_rss_action_program(struct roc_npc *roc_npc, const struct roc_npc_action actions[],
 			   struct roc_npc_flow *flow);
 int npc_rss_group_free(struct npc *npc, struct roc_npc_flow *flow);
 int npc_mcam_init(struct npc *npc, struct roc_npc_flow *flow, int mcam_id);
 int npc_mcam_move(struct mbox *mbox, uint16_t old_ent, uint16_t new_ent);
+void npc_age_flow_list_entry_add(struct roc_npc *npc, struct roc_npc_flow *flow);
+void npc_age_flow_list_entry_delete(struct roc_npc *npc, struct roc_npc_flow *flow);
+uint32_t npc_aged_flows_get(void *args);
+int npc_aged_flows_bitmap_alloc(struct roc_npc *roc_npc);
+void npc_aged_flows_bitmap_free(struct roc_npc *roc_npc);
+int npc_aging_ctrl_thread_create(struct roc_npc *roc_npc, const struct roc_npc_action_age *age,
+				 struct roc_npc_flow *flow);
+void npc_aging_ctrl_thread_destroy(struct roc_npc *roc_npc);
+int npc_rss_free_grp_get(struct npc *npc, uint32_t *pos);
 #endif /* _ROC_NPC_PRIV_H_ */

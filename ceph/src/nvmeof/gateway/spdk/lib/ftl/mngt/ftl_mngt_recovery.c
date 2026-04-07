@@ -54,7 +54,7 @@ recovery_iter_advance(struct spdk_ftl_dev *dev, struct ftl_mngt_recovery_ctx *ct
 	uint64_t first_block, last_blocks;
 
 	ctx->iter.i++;
-	region = &dev->layout.region[FTL_LAYOUT_REGION_TYPE_L2P];
+	region = ftl_layout_region_get(dev, FTL_LAYOUT_REGION_TYPE_L2P);
 	snippet = &ctx->l2p_snippet.region;
 
 	/* Advance processed blocks */
@@ -100,8 +100,7 @@ ftl_mngt_recovery_init(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 
 	/* Below values are in byte unit */
 	mem_limit = dev->conf.l2p_dram_limit * MiB;
-	mem_limit = spdk_min(mem_limit, spdk_divide_round_up(dev->num_lbas * dev->layout.l2p.addr_size,
-			     MiB) * MiB);
+	mem_limit = spdk_min(mem_limit, spdk_round_up(dev->num_lbas * dev->layout.l2p.addr_size, MiB));
 
 	lba_limit = mem_limit / (sizeof(uint64_t) + dev->layout.l2p.addr_size);
 	l2p_limit = lba_limit * dev->layout.l2p.addr_size;
@@ -121,7 +120,7 @@ ftl_mngt_recovery_init(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 	dev->sb->ckpt_seq_id = 0;
 
 	/* Initialize region */
-	ctx->l2p_snippet.region = dev->layout.region[FTL_LAYOUT_REGION_TYPE_L2P];
+	ctx->l2p_snippet.region = *ftl_layout_region_get(dev, FTL_LAYOUT_REGION_TYPE_L2P);
 	/* Limit blocks in region, it will be needed for ftl_md_set_region */
 	ctx->l2p_snippet.region.current.blocks = ctx->iter.block_limit;
 
@@ -338,7 +337,7 @@ ftl_mngt_recovery_iteration_init_seq_ids(struct spdk_ftl_dev *dev, struct ftl_mn
 		page_id = lba / lbas_in_page;
 
 		assert(page_id < ftl_md_get_buffer_size(md) / sizeof(*trim_map));
-		assert(page_id < dev->layout.region[FTL_LAYOUT_REGION_TYPE_L2P].current.blocks);
+		assert(page_id < ftl_layout_region_get(dev, FTL_LAYOUT_REGION_TYPE_L2P)->current.blocks);
 		assert(lba_off < ctx->l2p_snippet.count);
 
 		trim_seq_id = trim_map[page_id];
@@ -374,10 +373,7 @@ ftl_mngt_recovery_iteration_load_l2p(struct spdk_ftl_dev *dev, struct ftl_mngt_p
 		      region->current.offset, region->current.offset + region->current.blocks,
 		      ctx->iter.lba_first, ctx->iter.lba_last);
 
-	if (ftl_md_set_region(md, &ctx->l2p_snippet.region)) {
-		ftl_mngt_fail_step(mngt);
-		return;
-	}
+	ftl_md_set_region(md, &ctx->l2p_snippet.region);
 
 	md->owner.cb_ctx = mngt;
 	md->cb = l2p_cb;
@@ -715,13 +711,22 @@ ftl_mngt_restore_valid_counters(struct spdk_ftl_dev *dev, struct ftl_mngt_proces
 	ftl_mngt_next_step(mngt);
 }
 
+static bool
+trim_pending(struct spdk_ftl_dev *dev)
+{
+	struct ftl_trim_log *log = ftl_md_get_buffer(dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_LOG]);
+
+	if (log->hdr.trim.seq_id) {
+		return true;
+	}
+
+	return false;
+}
+
 static void
-ftl_mngt_complete_unmap_cb(struct spdk_ftl_dev *dev, struct ftl_md *md, int status)
+ftl_mngt_recover_trim_cb(struct spdk_ftl_dev *dev, struct ftl_md *md, int status)
 {
 	struct ftl_mngt_process *mngt = md->owner.cb_ctx;
-
-	dev->sb_shm->trim.in_progress = false;
-
 	if (!status) {
 		ftl_mngt_next_step(mngt);
 	} else {
@@ -730,90 +735,211 @@ ftl_mngt_complete_unmap_cb(struct spdk_ftl_dev *dev, struct ftl_md *md, int stat
 }
 
 static void
-ftl_mngt_complete_unmap(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+ftl_mngt_complete_trim(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
 	uint64_t start_lba, num_blocks, seq_id;
-	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_MD];
 
 	if (dev->sb_shm->trim.in_progress) {
 		start_lba = dev->sb_shm->trim.start_lba;
 		num_blocks = dev->sb_shm->trim.num_blocks;
 		seq_id = dev->sb_shm->trim.seq_id;
-
 		assert(seq_id <= dev->sb->seq_id);
-
-		FTL_NOTICELOG(dev, "Incomplete unmap detected lba: %"PRIu64" num_blocks: %"PRIu64"\n",
-			      start_lba, num_blocks);
-
-		ftl_set_unmap_map(dev, start_lba, num_blocks, seq_id);
+		ftl_set_trim_map(dev, start_lba, num_blocks, seq_id);
 	}
 
-	md->owner.cb_ctx = mngt;
-	md->cb = ftl_mngt_complete_unmap_cb;
-
-	ftl_md_persist(md);
-}
-
-static void
-ftl_mngt_recover_unmap_map_cb(struct spdk_ftl_dev *dev, struct ftl_md *md, int status)
-{
-	struct ftl_mngt_process *mngt = md->owner.cb_ctx;
-	uint64_t num_md_blocks, first_page, num_pages;
-	uint32_t lbas_in_page = FTL_BLOCK_SIZE / dev->layout.l2p.addr_size;
-	uint64_t *page = ftl_md_get_buffer(md);
-	union ftl_md_vss *page_vss = ftl_md_get_vss_buffer(md);
-	uint64_t lba, num_blocks, vss_seq_id;
-	size_t i, j;
-
-	if (status) {
-		ftl_mngt_fail_step(mngt);
-		return;
-	}
-
-	num_md_blocks = ftl_md_get_buffer_size(md) / FTL_BLOCK_SIZE;
-
-	for (i = 0; i < num_md_blocks; ++i, page_vss++) {
-		lba = page_vss->unmap.start_lba;
-		num_blocks = page_vss->unmap.num_blocks;
-		vss_seq_id = page_vss->unmap.seq_id;
-
-		first_page = lba / lbas_in_page;
-		num_pages = num_blocks / lbas_in_page;
-
-		if (lba % lbas_in_page || num_blocks % lbas_in_page) {
-			ftl_mngt_fail_step(mngt);
-			return;
-		}
-
-		for (j = first_page; j < first_page + num_pages; ++j) {
-			page[j] = spdk_max(vss_seq_id, page[j]);
-		}
+	if (trim_pending(dev)) {
+		struct ftl_trim_log *log = ftl_md_get_buffer(dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_LOG]);
+		FTL_NOTICELOG(dev, "Incomplete trim detected lba: %"PRIu64" num_blocks: %"PRIu64"\n",
+			      log->hdr.trim.start_lba, log->hdr.trim.num_blocks);
 	}
 
 	ftl_mngt_next_step(mngt);
 }
 
 static void
-ftl_mngt_recover_unmap_map(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+ftl_mngt_recover_trim_md(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
 	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_MD];
 
-	if (ftl_fast_recovery(dev)) {
-		FTL_DEBUGLOG(dev, "SHM: skipping unmap map recovery\n");
-		ftl_mngt_next_step(mngt);
+	md->owner.cb_ctx = mngt;
+	md->cb = ftl_mngt_recover_trim_cb;
+	ftl_md_restore(md);
+}
+
+static void
+ftl_mngt_recover_trim_md_persist(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+{
+	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_MD];
+
+	if (!trim_pending(dev)) {
+		/* No pending trim logged */
+		ftl_mngt_skip_step(mngt);
 		return;
 	}
 
 	md->owner.cb_ctx = mngt;
-	md->cb = ftl_mngt_recover_unmap_map_cb;
+	md->cb = ftl_mngt_recover_trim_cb;
+	ftl_md_persist(md);
+}
+
+static void
+ftl_mngt_recover_trim_log_cb(struct spdk_ftl_dev *dev, struct ftl_md *md, int status)
+{
+	struct ftl_mngt_process *mngt = md->owner.cb_ctx;
+	struct ftl_trim_log *log = ftl_md_get_buffer(md);
+	uint64_t *page;
+
+	if (status) {
+		ftl_mngt_fail_step(mngt);
+		return;
+	}
+
+	if (!trim_pending(dev)) {
+		/* No pending trim logged */
+		ftl_mngt_skip_step(mngt);
+		return;
+	}
+
+	/* Pending trim, complete the trim transaction */
+	const uint64_t seq_id = log->hdr.trim.seq_id;
+	const uint64_t lba = log->hdr.trim.start_lba;
+	const uint64_t num_blocks = log->hdr.trim.num_blocks;
+	const uint64_t lbas_in_page = FTL_BLOCK_SIZE / dev->layout.l2p.addr_size;
+	const uint64_t first_page = lba / lbas_in_page;
+	const uint64_t num_pages = num_blocks / lbas_in_page;
+
+	page = ftl_md_get_buffer(dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_MD]);
+
+	if (lba % lbas_in_page || num_blocks % lbas_in_page) {
+		FTL_ERRLOG(dev, "Invalid trim log content\n");
+		ftl_mngt_fail_step(mngt);
+		return;
+	}
+
+	for (uint64_t i = first_page; i < first_page + num_pages; ++i) {
+		if (page[i] > seq_id) {
+			FTL_ERRLOG(dev, "Invalid trim metadata content\n");
+			ftl_mngt_fail_step(mngt);
+			return;
+		}
+		page[i] = seq_id;
+	}
+
+	ftl_mngt_next_step(mngt);
+}
+
+static void
+ftl_mngt_recover_trim_log(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+{
+	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_LOG];
+
+	md->owner.cb_ctx = mngt;
+	md->cb = ftl_mngt_recover_trim_log_cb;
 	ftl_md_restore(md);
+}
+
+static void
+ftl_mngt_recover_trim_persist(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+{
+	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_LOG];
+
+	if (!trim_pending(dev)) {
+		/* No pending trim logged */
+		ftl_mngt_skip_step(mngt);
+		return;
+	}
+
+	md->owner.cb_ctx = mngt;
+	md->cb = ftl_mngt_recover_trim_cb;
+	ftl_md_persist(md);
+}
+
+static void
+ftl_mngt_recover_trim_log_clear(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+{
+	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_TRIM_LOG];
+	struct ftl_trim_log *log = ftl_md_get_buffer(md);
+
+	if (!trim_pending(dev)) {
+		/* No pending trim logged */
+		ftl_mngt_skip_step(mngt);
+		return;
+	}
+
+	memset(&log->hdr, 0, sizeof(log->hdr));
+	md->owner.cb_ctx = mngt;
+	md->cb = ftl_mngt_recover_trim_cb;
+	ftl_md_persist(md);
+}
+
+static const struct ftl_mngt_process_desc g_desc_trim_recovery = {
+	.name = "FTL trim recovery ",
+	.steps = {
+		{
+			.name = "Recover trim metadata",
+			.action = ftl_mngt_recover_trim_md,
+		},
+		{
+			.name = "Recover trim log",
+			.action = ftl_mngt_recover_trim_log,
+		},
+		{
+			.name = "Persist trim metadata",
+			.action = ftl_mngt_recover_trim_md_persist,
+		},
+		{
+			.name = "Clear trim log",
+			.action = ftl_mngt_recover_trim_log_clear,
+		},
+		{}
+	}
+};
+
+static const struct ftl_mngt_process_desc g_desc_trim_shm_recovery = {
+	.name = "FTL trim shared memory recovery ",
+	.steps = {
+		{
+			.name = "Complete trim transaction",
+			.action = ftl_mngt_complete_trim,
+		},
+		{
+			.name = "Persist trim log",
+			.action = ftl_mngt_recover_trim_persist,
+		},
+		{
+			.name = "Persist trim metadata",
+			.action = ftl_mngt_recover_trim_md_persist,
+		},
+		{
+			.name = "Clear trim log",
+			.action = ftl_mngt_recover_trim_log_clear,
+		},
+		{}
+	}
+};
+
+static void
+ftl_mngt_recover_trim(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+{
+	if (ftl_fast_recovery(dev)) {
+		ftl_mngt_skip_step(mngt);
+		return;
+	}
+
+	ftl_mngt_call_process(mngt, &g_desc_trim_recovery, NULL);
+}
+
+static void
+ftl_mngt_recover_trim_shm(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+{
+	ftl_mngt_call_process(mngt, &g_desc_trim_shm_recovery, NULL);
 }
 
 static void
 ftl_mngt_recovery_shm_l2p(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
 	if (ftl_fast_recovery(dev)) {
-		ftl_mngt_call_process(mngt, &g_desc_recovery_shm);
+		ftl_mngt_call_process(mngt, &g_desc_recovery_shm, NULL);
 	} else {
 		ftl_mngt_skip_step(mngt);
 	}
@@ -899,8 +1025,8 @@ static const struct ftl_mngt_process_desc g_desc_recovery = {
 			.action = ftl_mngt_recover_seq_id
 		},
 		{
-			.name = "Recover unmap map",
-			.action = ftl_mngt_recover_unmap_map
+			.name = "Recover trim",
+			.action = ftl_mngt_recover_trim
 		},
 		{
 			.name = "Recover open chunks P2L",
@@ -928,10 +1054,6 @@ static const struct ftl_mngt_process_desc g_desc_recovery = {
 			.action = ftl_mngt_finalize_init_bands,
 		},
 		{
-			.name = "Free P2L region bufs",
-			.action = ftl_mngt_p2l_free_bufs,
-		},
-		{
 			.name = "Start core poller",
 			.action = ftl_mngt_start_core_poller,
 			.cleanup = ftl_mngt_stop_core_poller
@@ -957,7 +1079,7 @@ static const struct ftl_mngt_process_desc g_desc_recovery_shm = {
 	.ctx_size = sizeof(struct ftl_mngt_recovery_ctx),
 	.steps = {
 		{
-			.name = "Restore L2P from SHM",
+			.name = "Restore L2P from shared memory",
 			.action = ftl_mngt_restore_l2p,
 		},
 		{
@@ -965,8 +1087,8 @@ static const struct ftl_mngt_process_desc g_desc_recovery_shm = {
 			.action = ftl_mngt_restore_valid_counters,
 		},
 		{
-			.name = "Complete unmap transaction",
-			.action = ftl_mngt_complete_unmap,
+			.name = "Recover trim from shared memory",
+			.action = ftl_mngt_recover_trim_shm,
 		},
 		{}
 	}
@@ -975,5 +1097,5 @@ static const struct ftl_mngt_process_desc g_desc_recovery_shm = {
 void
 ftl_mngt_recover(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
-	ftl_mngt_call_process(mngt, &g_desc_recovery);
+	ftl_mngt_call_process(mngt, &g_desc_recovery, NULL);
 }

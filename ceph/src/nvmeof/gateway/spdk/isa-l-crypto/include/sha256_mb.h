@@ -39,17 +39,17 @@
  * <b> Multi-buffer SHA256  Entire or First-Update..Update-Last </b>
  *
  * The interface to this multi-buffer hashing code is carried out through the
- * context-level (CTX) init, submit and flush functions and the SHA256_HASH_CTX_MGR and
- * SHA256_HASH_CTX objects. Numerous SHA256_HASH_CTX objects may be instantiated by the
- * application for use with a single SHA256_HASH_CTX_MGR.
+ * context-level (CTX) init, submit and flush functions and the ISAL_SHA256_HASH_CTX_MGR and
+ * ISAL_SHA256_HASH_CTX objects. Numerous ISAL_SHA256_HASH_CTX objects may be instantiated by the
+ * application for use with a single ISAL_SHA256_HASH_CTX_MGR.
  *
  * The CTX interface functions carry out the initialization and padding of the jobs
  * entered by the user and add them to the multi-buffer manager. The lower level "scheduler"
  * layer then processes the jobs in an out-of-order manner. The scheduler layer functions
  * are internal and are not intended to be invoked directly. Jobs can be submitted
- * to a CTX as a complete buffer to be hashed, using the HASH_ENTIRE flag, or as partial
- * jobs which can be started using the HASH_FIRST flag, and later resumed or finished
- * using the HASH_UPDATE and HASH_LAST flags respectively.
+ * to a CTX as a complete buffer to be hashed, using the ISAL_HASH_ENTIRE flag, or as partial
+ * jobs which can be started using the ISAL_HASH_FIRST flag, and later resumed or finished
+ * using the ISAL_HASH_UPDATE and ISAL_HASH_LAST flags respectively.
  *
  * <b>Note:</b> The submit function does not require data buffers to be block sized.
  *
@@ -57,33 +57,33 @@
  * AVX512. In addition, a multibinary interface is provided, which selects the appropriate
  * architecture-specific function at runtime.
  *
- * <b>Usage:</b> The application creates a SHA256_HASH_CTX_MGR object and initializes it
+ * <b>Usage:</b> The application creates a ISAL_SHA256_HASH_CTX_MGR object and initializes it
  * with a call to sha256_ctx_mgr_init*() function, where henceforth "*" stands for the
  * relevant suffix for each architecture; _sse, _avx, _avx2, _avx512(or no suffix for the
- * multibinary version). The SHA256_HASH_CTX_MGR object will be used to schedule processor
- * resources, with up to 4 SHA256_HASH_CTX objects (or 8 in the AVX2 case, 16 in the AVX512)
+ * multibinary version). The ISAL_SHA256_HASH_CTX_MGR object will be used to schedule processor
+ * resources, with up to 4 ISAL_SHA256_HASH_CTX objects (or 8 in the AVX2 case, 16 in the AVX512)
  * being processed at a time.
  *
- * Each SHA256_HASH_CTX must be initialized before first use by the hash_ctx_init macro
+ * Each ISAL_SHA256_HASH_CTX must be initialized before first use by the isal_hash_ctx_init macro
  * defined in multi_buffer.h. After initialization, the application may begin computing
- * a hash by giving the SHA256_HASH_CTX to a SHA256_HASH_CTX_MGR using the submit functions
- * sha256_ctx_mgr_submit*() with the HASH_FIRST flag set. When the SHA256_HASH_CTX is
- * returned to the application (via this or a later call to sha256_ctx_mgr_submit*() or
- * sha256_ctx_mgr_flush*()), the application can then re-submit it with another call to
- * sha256_ctx_mgr_submit*(), but without the HASH_FIRST flag set.
+ * a hash by giving the ISAL_SHA256_HASH_CTX to a ISAL_SHA256_HASH_CTX_MGR using the submit
+ * functions sha256_ctx_mgr_submit*() with the ISAL_HASH_FIRST flag set. When the
+ * ISAL_SHA256_HASH_CTX is returned to the application (via this or a later call to
+ * sha256_ctx_mgr_submit*() or sha256_ctx_mgr_flush*()), the application can then re-submit it with
+ * another call to sha256_ctx_mgr_submit*(), but without the ISAL_HASH_FIRST flag set.
  *
- * Ideally, on the last buffer for that hash, sha256_ctx_mgr_submit_sse is called with
- * HASH_LAST, although it is also possible to submit the hash with HASH_LAST and a zero
- * length if necessary. When a SHA256_HASH_CTX is returned after having been submitted with
- * HASH_LAST, it will contain a valid hash. The SHA256_HASH_CTX can be reused immediately
- * by submitting with HASH_FIRST.
+ * Ideally, on the last buffer for that hash, sha256_ctx_mgr_submit is called with
+ * ISAL_HASH_LAST, although it is also possible to submit the hash with ISAL_HASH_LAST and a zero
+ * length if necessary. When a ISAL_SHA256_HASH_CTX is returned after having been submitted with
+ * ISAL_HASH_LAST, it will contain a valid hash. The ISAL_SHA256_HASH_CTX can be reused immediately
+ * by submitting with ISAL_HASH_FIRST.
  *
  * For example, you would submit hashes with the following flags for the following numbers
  * of buffers:
  * <ul>
- *  <li> one buffer: HASH_FIRST | HASH_LAST  (or, equivalently, HASH_ENTIRE)
- *  <li> two buffers: HASH_FIRST, HASH_LAST
- *  <li> three buffers: HASH_FIRST, HASH_UPDATE, HASH_LAST
+ *  <li> one buffer: ISAL_HASH_FIRST | ISAL_HASH_LAST  (or, equivalently, ISAL_HASH_ENTIRE)
+ *  <li> two buffers: ISAL_HASH_FIRST, ISAL_HASH_LAST
+ *  <li> three buffers: ISAL_HASH_FIRST, ISAL_HASH_UPDATE, ISAL_HASH_LAST
  * etc.
  * </ul>
  *
@@ -93,18 +93,19 @@
  * A few possible error conditions exist:
  * <ul>
  *  <li> Submitting flags other than the allowed entire/first/update/last values
- *  <li> Submitting a context that is currently being managed by a SHA256_HASH_CTX_MGR.
- *  <li> Submitting a context after HASH_LAST is used but before HASH_FIRST is set.
+ *  <li> Submitting a context that is currently being managed by a ISAL_SHA256_HASH_CTX_MGR.
+ *  <li> Submitting a context after ISAL_HASH_LAST is used but before ISAL_HASH_FIRST is set.
  * </ul>
  *
- *  These error conditions are reported by returning the SHA256_HASH_CTX immediately after
+ *  These error conditions are reported by returning the ISAL_SHA256_HASH_CTX immediately after
  *  a submit with its error member set to a non-zero error code (defined in
- *  multi_buffer.h). No changes are made to the SHA256_HASH_CTX_MGR in the case of an
+ *  multi_buffer.h). No changes are made to the ISAL_SHA256_HASH_CTX_MGR in the case of an
  *  error; no processing is done for other hashes.
  *
  */
 
 #include <stdint.h>
+#include <string.h>
 #include "multi_buffer.h"
 #include "types.h"
 
@@ -116,88 +117,113 @@
 extern "C" {
 #endif
 
+/*
+ * Define enums from API v2.24, so applications that were using this version
+ * will still be compiled successfully.
+ * This list does not need to be extended for new definitions.
+ */
+#ifndef NO_COMPAT_ISAL_CRYPTO_API_2_24
+/***** Previous hash constants and typedefs *****/
+#define SHA256_DIGEST_NWORDS       ISAL_SHA256_DIGEST_NWORDS
+#define SHA256_PADLENGTHFIELD_SIZE ISAL_SHA256_PADLENGTHFIELD_SIZE
+#define SHA256_MAX_LANES           ISAL_SHA256_MAX_LANES
+#define SHA256_MIN_LANES           ISAL_SHA256_MIN_LANES
+#define SHA256_BLOCK_SIZE          ISAL_SHA256_BLOCK_SIZE
+#define SHA256_WORD_T              ISAL_SHA256_WORD_T
+
+/***** Previous structure definitions *****/
+#define SHA256_JOB          ISAL_SHA256_JOB
+#define SHA256_MB_ARGS_X16  ISAL_SHA256_MB_ARGS_X16
+#define SHA256_LANE_DATA    ISAL_SHA256_LANE_DATA
+#define SHA256_MB_JOB_MGR   ISAL_SHA256_MB_JOB_MGR
+#define SHA256_HASH_CTX_MGR ISAL_SHA256_HASH_CTX_MGR
+#define SHA256_HASH_CTX     ISAL_SHA256_HASH_CTX
+#endif /* !NO_COMPAT_ISAL_CRYPTO_API_2_24 */
+
 // Hash Constants and Typedefs
-#define SHA256_DIGEST_NWORDS		8
-#define SHA256_MAX_LANES		16
-#define SHA256_X8_LANES			8
-#define SHA256_MIN_LANES		4
-#define SHA256_BLOCK_SIZE		64
-#define SHA256_LOG2_BLOCK_SIZE		6
-#define SHA256_PADLENGTHFIELD_SIZE	8
-#define SHA256_INITIAL_DIGEST		\
-	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, \
-	0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+#define ISAL_SHA256_DIGEST_NWORDS       8
+#define ISAL_SHA256_MAX_LANES           16
+#define ISAL_SHA256_MIN_LANES           4
+#define ISAL_SHA256_BLOCK_SIZE          64
+#define ISAL_SHA256_PADLENGTHFIELD_SIZE 8
 
-typedef uint32_t sha256_digest_array[SHA256_DIGEST_NWORDS][SHA256_MAX_LANES];
-typedef uint32_t SHA256_WORD_T;
+typedef uint32_t sha256_digest_array[ISAL_SHA256_DIGEST_NWORDS][ISAL_SHA256_MAX_LANES];
+typedef uint32_t ISAL_SHA256_WORD_T;
 
-/** @brief Scheduler layer - Holds info describing a single SHA256 job for the multi-buffer manager */
+/** @brief Scheduler layer - Holds info describing a single SHA256 job for the multi-buffer manager
+ */
 
 typedef struct {
-	uint8_t*  buffer;	//!< pointer to data buffer for this job
-	uint64_t  len;		//!< length of buffer for this job in blocks.
-	DECLARE_ALIGNED(uint32_t result_digest[SHA256_DIGEST_NWORDS], 64);
-	JOB_STS status;		//!< output job status
-	void*   user_data;	//!< pointer for user's job-related data
-} SHA256_JOB;
+        uint8_t *buffer; //!< pointer to data buffer for this job
+        uint64_t len;    //!< length of buffer for this job in blocks.
+        DECLARE_ALIGNED(uint32_t result_digest[ISAL_SHA256_DIGEST_NWORDS], 64);
+        ISAL_JOB_STS status; //!< output job status
+        void *user_data;     //!< pointer for user's job-related data
+} ISAL_SHA256_JOB;
 
 /** @brief Scheduler layer -  Holds arguments for submitted SHA256 job */
 
 typedef struct {
-	sha256_digest_array digest;
-	uint8_t* data_ptr[SHA256_MAX_LANES];
-} SHA256_MB_ARGS_X16;
+        sha256_digest_array digest;
+        uint8_t *data_ptr[ISAL_SHA256_MAX_LANES];
+} ISAL_SHA256_MB_ARGS_X16;
 
 /** @brief Scheduler layer - Lane data */
 
 typedef struct {
-	SHA256_JOB *job_in_lane;
-} SHA256_LANE_DATA;
+        ISAL_SHA256_JOB *job_in_lane;
+} ISAL_SHA256_LANE_DATA;
 
 /** @brief Scheduler layer - Holds state for multi-buffer SHA256 jobs */
 
 typedef struct {
-	SHA256_MB_ARGS_X16 args;
-	uint32_t lens[SHA256_MAX_LANES];
-	uint64_t unused_lanes; //!< each nibble is index (0...3 or 0...7) of unused lanes, nibble 4 or 8 is set to F as a flag
-	SHA256_LANE_DATA ldata[SHA256_MAX_LANES];
-	uint32_t num_lanes_inuse;
-} SHA256_MB_JOB_MGR;
+        ISAL_SHA256_MB_ARGS_X16 args;
+        DECLARE_ALIGNED(uint32_t lens[ISAL_SHA256_MAX_LANES], 16);
+        uint64_t unused_lanes; //!< each nibble is index (0...3 or 0...7) of unused lanes, nibble 4
+                               //!< or 8 is set to F as a flag
+        ISAL_SHA256_LANE_DATA ldata[ISAL_SHA256_MAX_LANES];
+        uint32_t num_lanes_inuse;
+} ISAL_SHA256_MB_JOB_MGR;
 
 /** @brief Context layer - Holds state for multi-buffer SHA256 jobs */
 
 typedef struct {
-	SHA256_MB_JOB_MGR mgr;
-} SHA256_HASH_CTX_MGR;
+        ISAL_SHA256_MB_JOB_MGR mgr;
+} ISAL_SHA256_HASH_CTX_MGR;
 
-/** @brief Context layer - Holds info describing a single SHA256 job for the multi-buffer CTX manager */
+/** @brief Context layer - Holds info describing a single SHA256 job for the multi-buffer CTX
+ * manager This structure must be allocated to 16-byte aligned memory */
 
 typedef struct {
-	SHA256_JOB	job; // Must be at struct offset 0.
-	HASH_CTX_STS	status;		//!< Context status flag
-	HASH_CTX_ERROR	error;		//!< Context error flag
-	uint64_t	total_length;	//!< Running counter of length processed for this CTX's job
-	const void*	incoming_buffer; //!< pointer to data input buffer for this CTX's job
-	uint32_t	incoming_buffer_length; //!< length of buffer for this job in bytes.
-	uint8_t		partial_block_buffer[SHA256_BLOCK_SIZE * 2]; //!< CTX partial blocks
-	uint32_t	partial_block_buffer_length;
-	void*		user_data;	//!< pointer for user to keep any job-related data
-} SHA256_HASH_CTX;
+        ISAL_SHA256_JOB job;             // Must be at struct offset 0.
+        ISAL_HASH_CTX_STS status;        //!< Context status flag
+        ISAL_HASH_CTX_ERROR error;       //!< Context error flag
+        uint64_t total_length;           //!< Running counter of length processed for this CTX's job
+        const void *incoming_buffer;     //!< pointer to data input buffer for this CTX's job
+        uint32_t incoming_buffer_length; //!< length of buffer for this job in bytes.
+        uint8_t partial_block_buffer[ISAL_SHA256_BLOCK_SIZE * 2]; //!< CTX partial blocks
+        uint32_t partial_block_buffer_length;
+        void *user_data; //!< pointer for user to keep any job-related data
+} ISAL_SHA256_HASH_CTX;
 
 /******************** multibinary function prototypes **********************/
 
 /**
  * @brief Initialize the SHA256 multi-buffer manager structure.
  * @requires SSE4.1 or AVX or AVX2
+ * @deprecated Please use isal_sha256_ctx_mgr_init() instead.
  *
  * @param mgr	Structure holding context level state info
  * @returns void
  */
-void      sha256_ctx_mgr_init   (SHA256_HASH_CTX_MGR* mgr);
+ISAL_DEPRECATED("Please use isal_sha256_ctx_mgr_init() instead")
+void
+sha256_ctx_mgr_init(ISAL_SHA256_HASH_CTX_MGR *mgr);
 
 /**
  * @brief  Submit a new SHA256 job to the multi-buffer manager.
  * @requires SSE4.1 or AVX or AVX2
+ * @deprecated Please use isal_sha256_ctx_mgr_submit() instead.
  *
  * @param  mgr Structure holding context level state info
  * @param  ctx Structure holding ctx job info
@@ -206,244 +232,70 @@ void      sha256_ctx_mgr_init   (SHA256_HASH_CTX_MGR* mgr);
  * @param  flags Input flag specifying job type (first, update, last or entire)
  * @returns NULL if no jobs complete or pointer to jobs structure.
  */
-SHA256_HASH_CTX* sha256_ctx_mgr_submit (SHA256_HASH_CTX_MGR* mgr, SHA256_HASH_CTX* ctx,
-					const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
+ISAL_DEPRECATED("Please use isal_sha256_ctx_mgr_submit() instead")
+ISAL_SHA256_HASH_CTX *
+sha256_ctx_mgr_submit(ISAL_SHA256_HASH_CTX_MGR *mgr, ISAL_SHA256_HASH_CTX *ctx, const void *buffer,
+                      uint32_t len, ISAL_HASH_CTX_FLAG flags);
 
 /**
  * @brief Finish all submitted SHA256 jobs and return when complete.
  * @requires SSE4.1 or AVX or AVX2
+ * @deprecated Please use isal_sha256_ctx_mgr_flush() instead.
  *
  * @param mgr	Structure holding context level state info
  * @returns NULL if no jobs to complete or pointer to jobs structure.
  */
-SHA256_HASH_CTX* sha256_ctx_mgr_flush  (SHA256_HASH_CTX_MGR* mgr);
-
-
-/*******************************************************************
- * CTX level API function prototypes
- ******************************************************************/
-
-/**
- * @brief Initialize the context level SHA256 multi-buffer manager structure.
- * @requires SSE4.1
- *
- * @param mgr Structure holding context level state info
- * @returns void
- */
-void      sha256_ctx_mgr_init_sse   (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA256 job to the context level multi-buffer manager.
- * @requires SSE4.1
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_submit_sse (SHA256_HASH_CTX_MGR* mgr, SHA256_HASH_CTX* ctx,
-					const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA256 jobs and return when complete.
- * @requires SSE4.1
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_flush_sse  (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief Initialize the context level SHA256 multi-buffer manager structure.
- * @requires SSE4.1 and SHANI
- *
- * @param mgr Structure holding context level state info
- * @returns void
- */
-void      sha256_ctx_mgr_init_sse_ni (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA256 job to the context level multi-buffer manager.
- * @requires SSE4.1 and SHANI
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_submit_sse_ni (SHA256_HASH_CTX_MGR* mgr, SHA256_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA256 jobs and return when complete.
- * @requires SSE4.1 and SHANI
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_flush_sse_ni (SHA256_HASH_CTX_MGR* mgr);
+ISAL_DEPRECATED("Please use isal_sha256_ctx_mgr_flush() instead")
+ISAL_SHA256_HASH_CTX *
+sha256_ctx_mgr_flush(ISAL_SHA256_HASH_CTX_MGR *mgr);
 
 /**
  * @brief Initialize the SHA256 multi-buffer manager structure.
- * @requires AVX
+ * @requires SSE4.1 for x86 or ASIMD for ARM
  *
- * @param mgr Structure holding context level state info
- * @returns void
+ * @param[in] mgr Structure holding context level state info
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
  */
-void      sha256_ctx_mgr_init_avx   (SHA256_HASH_CTX_MGR* mgr);
+int
+isal_sha256_ctx_mgr_init(ISAL_SHA256_HASH_CTX_MGR *mgr);
 
 /**
  * @brief  Submit a new SHA256 job to the multi-buffer manager.
- * @requires AVX
+ * @requires SSE4.1 for x86 or ASIMD for ARM
  *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
+ * @param[in] mgr Structure holding context level state info
+ * @param[in] ctx_in Structure holding ctx job info
+ * @param[out] ctx_out	Pointer address to output job ctx info.
+ *			Modified to point to completed job structure or
+ *			NULL if no jobs completed.
+ * @param[in] buffer Pointer to buffer to be processed
+ * @param[in] len Length of buffer (in bytes) to be processed
+ * @param[in] flags Input flag specifying job type (first, update, last or entire)
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
  */
-SHA256_HASH_CTX* sha256_ctx_mgr_submit_avx (SHA256_HASH_CTX_MGR* mgr, SHA256_HASH_CTX* ctx,
-					const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
+int
+isal_sha256_ctx_mgr_submit(ISAL_SHA256_HASH_CTX_MGR *mgr, ISAL_SHA256_HASH_CTX *ctx_in,
+                           ISAL_SHA256_HASH_CTX **ctx_out, const void *buffer, const uint32_t len,
+                           const ISAL_HASH_CTX_FLAG flags);
 
 /**
  * @brief Finish all submitted SHA256 jobs and return when complete.
- * @requires AVX
+ * @requires SSE4.1 for x86 or ASIMD for ARM
  *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
+ * @param[in] mgr Structure holding context level state info
+ * @param[out] ctx_out	Pointer address to output job ctx info.
+ *			Modified to point to completed job structure or
+ *			NULL if no jobs completed.
+ * @return Operation status
+ * @retval 0 on success
+ * @retval Non-zero \a ISAL_CRYPTO_ERR on failure
  */
-SHA256_HASH_CTX* sha256_ctx_mgr_flush_avx  (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief Initialize the SHA256 multi-buffer manager structure.
- * @requires AVX2
- *
- * @param mgr	Structure holding context level state info
- * @returns void
- */
-void      sha256_ctx_mgr_init_avx2   (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA256 job to the multi-buffer manager.
- * @requires AVX2
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_submit_avx2 (SHA256_HASH_CTX_MGR* mgr, SHA256_HASH_CTX* ctx,
-					const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA256 jobs and return when complete.
- * @requires AVX2
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_flush_avx2  (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief Initialize the SHA256 multi-buffer manager structure.
- * @requires AVX512
- *
- * @param mgr	Structure holding context level state info
- * @returns void
- */
-void      sha256_ctx_mgr_init_avx512   (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA256 job to the multi-buffer manager.
- * @requires AVX512
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_submit_avx512 (SHA256_HASH_CTX_MGR* mgr, SHA256_HASH_CTX* ctx,
-					const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA256 jobs and return when complete.
- * @requires AVX512
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_flush_avx512  (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief Initialize the SHA256 multi-buffer manager structure.
- * @requires AVX512 and SHANI
- *
- * @param mgr	Structure holding context level state info
- * @returns void
- */
-void      sha256_ctx_mgr_init_avx512_ni (SHA256_HASH_CTX_MGR* mgr);
-
-/**
- * @brief  Submit a new SHA256 job to the multi-buffer manager.
- * @requires AVX512 and SHANI
- *
- * @param  mgr Structure holding context level state info
- * @param  ctx Structure holding ctx job info
- * @param  buffer Pointer to buffer to be processed
- * @param  len Length of buffer (in bytes) to be processed
- * @param  flags Input flag specifying job type (first, update, last or entire)
- * @returns NULL if no jobs complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_submit_avx512_ni (SHA256_HASH_CTX_MGR* mgr, SHA256_HASH_CTX* ctx,
-				const void* buffer, uint32_t len, HASH_CTX_FLAG flags);
-
-/**
- * @brief Finish all submitted SHA256 jobs and return when complete.
- * @requires AVX512 and SHANI
- *
- * @param mgr	Structure holding context level state info
- * @returns NULL if no jobs to complete or pointer to jobs structure.
- */
-SHA256_HASH_CTX* sha256_ctx_mgr_flush_avx512_ni (SHA256_HASH_CTX_MGR* mgr);
-
-
-/*******************************************************************
- * Scheduler (internal) level out-of-order function prototypes
- ******************************************************************/
-
-void        sha256_mb_mgr_init_sse   (SHA256_MB_JOB_MGR *state);
-SHA256_JOB* sha256_mb_mgr_submit_sse (SHA256_MB_JOB_MGR *state, SHA256_JOB* job);
-SHA256_JOB* sha256_mb_mgr_flush_sse  (SHA256_MB_JOB_MGR *state);
-
-#define     sha256_mb_mgr_init_avx   sha256_mb_mgr_init_sse
-SHA256_JOB* sha256_mb_mgr_submit_avx (SHA256_MB_JOB_MGR *state, SHA256_JOB* job);
-SHA256_JOB* sha256_mb_mgr_flush_avx  (SHA256_MB_JOB_MGR *state);
-
-void        sha256_mb_mgr_init_avx2   (SHA256_MB_JOB_MGR *state);
-SHA256_JOB* sha256_mb_mgr_submit_avx2 (SHA256_MB_JOB_MGR *state, SHA256_JOB* job);
-SHA256_JOB* sha256_mb_mgr_flush_avx2  (SHA256_MB_JOB_MGR *state);
-
-void        sha256_mb_mgr_init_avx512   (SHA256_MB_JOB_MGR *state);
-SHA256_JOB* sha256_mb_mgr_submit_avx512 (SHA256_MB_JOB_MGR *state, SHA256_JOB* job);
-SHA256_JOB* sha256_mb_mgr_flush_avx512  (SHA256_MB_JOB_MGR *state);
-
-void        sha256_mb_mgr_init_sse_ni    (SHA256_MB_JOB_MGR *state);
-SHA256_JOB* sha256_mb_mgr_submit_sse_ni  (SHA256_MB_JOB_MGR *state, SHA256_JOB* job);
-SHA256_JOB* sha256_mb_mgr_flush_sse_ni   (SHA256_MB_JOB_MGR *state);
-
-void        sha256_mb_mgr_init_avx512_ni    (SHA256_MB_JOB_MGR *state);
-SHA256_JOB* sha256_mb_mgr_submit_avx512_ni  (SHA256_MB_JOB_MGR *state, SHA256_JOB* job);
-SHA256_JOB* sha256_mb_mgr_flush_avx512_ni   (SHA256_MB_JOB_MGR *state);
-
+int
+isal_sha256_ctx_mgr_flush(ISAL_SHA256_HASH_CTX_MGR *mgr, ISAL_SHA256_HASH_CTX **ctx_out);
 #ifdef __cplusplus
 }
 #endif

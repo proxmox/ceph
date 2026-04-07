@@ -1,4 +1,4 @@
-; Copyright (c) 2017-2022, Intel Corporation
+; Copyright (c) 2017-2023, Intel Corporation
 ; 
 ; Redistribution and use in source and binary forms, with or without
 ; modification, are permitted provided that the following conditions are met:
@@ -678,3 +678,39 @@ EXPORTS
     get_completed_job_avx2_t2            	@652
     get_completed_job_avx512_t1              	@653
     get_completed_job_avx512_t2            	@654
+    get_next_burst_avx2_t3                      @655
+    submit_burst_avx2_t3                        @656
+    submit_burst_nocheck_avx2_t3                @657
+    flush_burst_avx2_t3                         @658
+    submit_cipher_burst_avx2_t3                 @659
+    submit_cipher_burst_nocheck_avx2_t3         @660
+    submit_hash_burst_avx2_t3                   @661
+    submit_hash_burst_nocheck_avx2_t3           @662
+    flush_job_avx2_t3				@663
+    queue_size_avx2_t3				@664
+    submit_job_avx2_t3				@665
+    submit_job_nocheck_avx2_t3			@666
+    get_next_job_avx2_t3                	@667
+    get_completed_job_avx2_t3            	@668
+    des_cfb_one					@669
+    aes_cfb_256_one_sse				@670
+    aes_cfb_256_one_avx 			@671
+    aes_cfb_256_one_avx2			@672
+    aes_cfb_256_one_avx512			@673
+    aes_cfb_256_one_sse_no_aesni		@674
+    imb_quic_aes_gcm				@675
+    imb_quic_hp_aes_ecb				@676
+    imb_hmac_ipad_opad                          @677
+    imb_set_session                             @678
+    ghash_pre_avx_gen4                          @679
+    ghash_pre_avx512                            @680
+    sha1_sse_shani                              @681
+    sha1_one_block_sse_shani                    @682
+    sha224_sse_shani                            @683
+    sha224_one_block_sse_shani                  @684
+    sha256_sse_shani                            @685
+    sha256_one_block_sse_shani                  @686
+    imb_quic_chacha20_poly1305			@687
+    imb_quic_hp_chacha20			@688
+    imb_self_test_set_cb			@689
+    imb_self_test_get_cb			@690

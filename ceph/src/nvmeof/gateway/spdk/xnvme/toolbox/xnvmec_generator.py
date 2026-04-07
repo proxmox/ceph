@@ -18,19 +18,17 @@ import logging
 import os
 import re
 import sys
+from pathlib import Path
 from subprocess import PIPE, Popen
 
-MESON_BASH_INSTALL = (
-    "install_data('{completion}', "
-    "install_dir: bash_completion_dep.get_variable('completionsdir'))"
-)
+MESON_BASH_INSTALL = "install_data('{completion}', install_dir: bash_completions_dir)"
 MESON_MAN_INSTALL = "install_man('{manpage}')"
 
 RE_SIG = "".join(
     [
         r"^Usage:\s(?P<usage>.*)$",
-        r"(?P<descr>(.|\n)*)",
-        r"Where.*:$\n\n(?P<body>(.|\n)*)\n\nSee",
+        r"(?P<descr>(?:.|\n)*?)",
+        r"(?:Where.*:|With.*:|Positional arguments:)$(?P<body>(?:.|\n)*)See",
     ]
 )
 
@@ -44,8 +42,9 @@ SCRIPT = """# ${tname} completion                           -*- shell-script -*-
 #
 # Bash completion script for the `${tname}` CLI
 #
-# Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+#
+# SPDX-License-Identifier: BSD-3-Clause
 
 _${tname}_completions()
 {
@@ -132,7 +131,7 @@ def run(cmd, cmd_input=None, cwd=None):
     """Run the given 'cmd' and return (stdout, stderr, returncode)"""
 
     with Popen(
-        " ".join(cmd) if cwd else cmd,
+        " ".join(cmd),
         stdin=PIPE,
         stdout=PIPE,
         stderr=PIPE,
@@ -146,6 +145,16 @@ def run(cmd, cmd_input=None, cwd=None):
         rcode = proc.returncode
 
         return out.decode("utf-8"), err.decode("utf-8"), rcode
+
+
+def emit_meson_build(args, folder, meson_file):
+    """Emit a meson.build file"""
+    with open(os.sep.join([args.output, folder, "meson.build"]), "w") as mfd:
+        mfd.write("# SPDX-FileCopyrightText: Samsung Electronics Co., Ltd\n")
+        mfd.write("#\n")
+        mfd.write("# SPDX-License-Identifier: BSD-3-Clause\n")
+        mfd.write("\n")
+        mfd.write("\n".join(meson_file))
 
 
 def parse_tool_sub_sig(tsig, sname):
@@ -172,7 +181,11 @@ def parse_tool_sub_sig(tsig, sname):
     }
 
     for line in match.group("body").strip().splitlines():
-        arg, descr = line.strip().split(";", 1)
+        try:
+            arg, descr = line.strip().split(";", 1)
+        except ValueError:
+            # skip headings and newlines in body e.g. "With <args> for backend:"
+            continue
 
         arg = arg.strip()
         if arg[0] not in ["-", "["]:
@@ -226,7 +239,11 @@ def parse_tool_sig(tpath):
     }
 
     for line in match.group("body").splitlines():
-        sname = line.strip().split(" ")[0]
+        line = line.strip()
+        if not line:
+            continue
+
+        sname = line.split(" ")[0]
         tsig["snames"].append(sname)
 
         if not parse_tool_sub_sig(tsig, sname):
@@ -254,31 +271,29 @@ def emit_completion(tool):
     return compl
 
 
-def gen_completions(args, tools):
+def gen_completions(args, folders):
     """Generate Bash-completions"""
 
-    meson = []  # Populate with lines for a meson.build file
+    for folder, tools in folders.items():
+        meson = []  # Populate with lines for a meson.build file
 
-    logging.info("Writing scripts to: %r", args.output)
-    for tool in tools:
+        logging.info("Writing scripts to: %r", args.output)
+        for tool in tools:
+            tool_fname = "%s-completions" % tool["name"]
+            tool_fpath = os.sep.join([args.output, folder, tool_fname])
 
-        tool_fname = "%s-completions" % tool["name"]
-        tool_fpath = os.sep.join([args.output, tool_fname])
+            logging.info("Generating for %r at %r", tool["name"], tool_fpath)
 
-        logging.info("Generating for %r at %r", tool["name"], tool_fpath)
+            script = emit_completion(tool)
 
-        script = emit_completion(tool)
+            with open(tool_fpath, "w") as tfd:
+                tfd.write(script)
 
-        with open(tool_fpath, "w") as tfd:
-            tfd.write(script)
+            meson.append(MESON_BASH_INSTALL.format(completion=tool_fname))
 
-        meson.append(MESON_BASH_INSTALL.format(completion=tool_fname))
+        meson.sort()
 
-    meson.sort()
-
-    # Emit a meson.build
-    with open(os.sep.join([args.output, "meson.build"]), "w") as mfd:
-        mfd.write("\n".join(meson))
+        emit_meson_build(args, folder, meson)
 
     return 0
 
@@ -313,11 +328,12 @@ def emit_manpage_sub(tool, sub):
         .replace("${sponsor}", "Samsung")
     )
 
+    title = "-".join([tool["name"].upper(), sub["name"].upper()])
     manpage, err, rcode = run(
         [
             "txt2man",
             "-t",
-            "-".join([tool["name"].upper(), sub["name"].upper()]),
+            title,
             "-v",
             "xNVMe",
             "-s",
@@ -331,7 +347,7 @@ def emit_manpage_sub(tool, sub):
         logging.error("FAILED: txt2man; %s, %d", err, rcode)
         return None
 
-    return manpage
+    return manpage, txtpage
 
 
 def emit_manpage_main(tool):
@@ -363,11 +379,12 @@ def emit_manpage_main(tool):
         )
     )
 
+    title = tool["name"].upper()
     manpage, err, rcode = run(
         [
             "txt2man",
             "-t",
-            tool["name"].upper(),
+            title,
             "-v",
             "xNVMe",
             "-s",
@@ -381,50 +398,79 @@ def emit_manpage_main(tool):
         logging.error("FAILED: txt2man; '%s', rcode:%s", err, rcode)
         return None
 
-    return manpage
+    return manpage, txtpage
 
 
-def gen_manpage(args, tools):
+def gen_manpage(args, folders):
     """Generate man pages"""
 
-    meson = []  # Populate with lines for a meson.build file
+    for folder, tools in folders.items():
+        meson = []  # Populate with lines for a meson.build file
 
-    logging.info("Writing man pages to: %r", args.output)
-    for tool in tools:
-        tool_fname = "%s.1" % tool["name"]
-        tool_fpath = os.sep.join([args.output, tool_fname])
+        logging.info("Writing man pages to: %r", args.output)
+        for tool in tools:
+            tool_fname = "%s.1" % tool["name"]
+            tool_fpath = Path(args.output) / folder / tool_fname
+            tool_fpath_txt = Path("/tmp") / f"{tool_fname}.txt"
 
-        logging.info("Generating for %r at %r", tool["name"], tool_fpath)
+            logging.info(f"Generating for {tool['name']} at {tool_fpath}")
 
-        manpage = emit_manpage_main(tool)
-        if manpage is None:
-            return 1
+            manpage, txtpage = emit_manpage_main(tool)
+            if manpage is None:
+                return 1
 
-        with open(tool_fpath, "w") as tfd:
-            tfd.write(manpage)
+            with tool_fpath.open("w") as tfd:
+                tfd.write(manpage)
 
-        meson.append(MESON_MAN_INSTALL.format(manpage=tool_fname))
+            with tool_fpath_txt.open("w") as txt:
+                txt.write(txtpage)
 
-        for sname in tool["snames"]:
-            sub = tool["subs"][sname]
-            sub_fname = "%s-%s.1" % (tool["name"], sub["name"])
-            sub_fpath = os.sep.join([args.output, sub_fname])
+            meson.append(MESON_MAN_INSTALL.format(manpage=tool_fname))
 
-            logging.info("Generating '%s'", sub_fpath)
+            for sname in tool["snames"]:
+                sub = tool["subs"][sname]
+                sub_fname = "%s-%s.1" % (tool["name"], sub["name"])
+                sub_fpath = Path(args.output) / folder / sub_fname
+                sub_fpath_txt = Path("/tmp") / f"{sub_fname}.txt"
 
-            manpage = emit_manpage_sub(tool, sub)
-            with open(sub_fpath, "w") as mfd:
-                mfd.write(manpage)
+                logging.info("Generating '%s'", sub_fpath)
 
-            meson.append(MESON_MAN_INSTALL.format(manpage=sub_fname))
+                manpage, txtpage = emit_manpage_sub(tool, sub)
+                with sub_fpath.open("w") as mfd:
+                    mfd.write(manpage)
 
-    meson.sort()
+                with sub_fpath_txt.open("w") as txt:
+                    txt.write(txtpage)
 
-    # Emit a meson.build
-    with open(os.sep.join([args.output, "meson.build"]), "w") as mfd:
-        mfd.write("\n".join(meson))
+                meson.append(MESON_MAN_INSTALL.format(manpage=sub_fname))
+
+        meson.sort()
+
+        emit_meson_build(args, folder, meson)
 
     return 0
+
+
+def find_binaries(folder):
+    """This will look in builddir for xnvme-executables"""
+
+    builddir = Path(__file__).parent.parent / "builddir"
+
+    bins = []
+
+    for path in sorted((builddir / folder).rglob("*")):
+        if path.stem.startswith("xnvme_single"):
+            continue
+        if path.stem.startswith("xnvme_dev"):
+            continue
+        if path.stem.startswith("xnvme_enum"):
+            continue
+        if path.stem.startswith("xnvme_hello"):
+            continue
+        if path.is_file() and path.stat().st_mode & os.X_OK:
+            bins.append(path.name)
+
+    return bins
 
 
 def setup():
@@ -443,14 +489,8 @@ def setup():
         choices=sorted(generators.keys()),
     )
     prsr.add_argument(
-        "--tools",
-        nargs="+",
-        required=True,
-        help="Name of tools to generate bash-completions for",
-    )
-    prsr.add_argument(
         "--output",
-        help="Path to directory in which to emit completion scripts",
+        help="Path to directory in which to emit subfolders with completions/manpages",
         default=os.sep.join(["."]),
     )
     prsr.add_argument(
@@ -475,17 +515,19 @@ def setup():
 def main(args):
     """Generate bash-completions and man-pages for xNVMe CLI tools"""
 
-    tools = []
-    for tool in args.tools:  # Parse tools, their subs and args
-        logging.info("Parsing tool: %r", tool)
+    folders = {"examples": [], "tests": [], "tools": []}
+    for folder, tools in folders.items():
+        for tool in find_binaries(folder):
+            logging.info("Parsing tool: %r", tool)
 
-        tsig = parse_tool_sig(tool)
-        if not tsig["snames"]:
-            logging.error("failed parsing snames from tool: '%s'", tool)
+            tsig = parse_tool_sig(tool)
+            if not tsig or not tsig.get("snames", None):
+                logging.error("failed parsing snames from tool: '%s'", tool)
+                continue
 
-        tools.append(tsig)
+            tools.append(tsig)
 
-    return args.gen(args, tools)
+    return args.gen(args, folders)
 
 
 if __name__ == "__main__":

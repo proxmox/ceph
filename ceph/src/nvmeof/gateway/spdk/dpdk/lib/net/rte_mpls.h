@@ -14,16 +14,12 @@
 #include <stdint.h>
 #include <rte_byteorder.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /**
  * MPLS header.
  */
 __extension__
-struct rte_mpls_hdr {
-	uint16_t tag_msb;   /**< Label(msb). */
+struct __rte_packed_begin rte_mpls_hdr {
+	rte_be16_t tag_msb; /**< Label(msb). */
 #if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
 	uint8_t tag_lsb:4;  /**< Label(lsb). */
 	uint8_t tc:3;       /**< Traffic class. */
@@ -34,10 +30,6 @@ struct rte_mpls_hdr {
 	uint8_t tag_lsb:4;  /**< label(lsb) */
 #endif
 	uint8_t  ttl;       /**< Time to live. */
-} __rte_packed;
-
-#ifdef __cplusplus
-}
-#endif
+} __rte_packed_end;
 
 #endif /* RTE_MPLS_H_ */

@@ -1,4 +1,5 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   Copyright (C) 2022 Intel Corporation.
  *   All rights reserved.
  */
@@ -11,6 +12,8 @@
 
 #include "ftl_io.h"
 #include "ftl_utils.h"
+#include "ftl_internal.h"
+#include "nvc/ftl_nvc_dev.h"
 
 /*
  * FTL non volatile cache is divided into groups of blocks called chunks.
@@ -23,8 +26,9 @@
 
 #define FTL_NVC_VERSION_0	0
 #define FTL_NVC_VERSION_1	1
+#define FTL_NVC_VERSION_2	2
 
-#define FTL_NVC_VERSION_CURRENT FTL_NVC_VERSION_1
+#define FTL_NVC_VERSION_CURRENT FTL_NVC_VERSION_2
 
 #define FTL_NV_CACHE_NUM_COMPACTORS 8
 
@@ -53,10 +57,14 @@ enum ftl_chunk_state {
 	FTL_CHUNK_STATE_FREE,
 	FTL_CHUNK_STATE_OPEN,
 	FTL_CHUNK_STATE_CLOSED,
+	FTL_CHUNK_STATE_INACTIVE,
 	FTL_CHUNK_STATE_MAX
 };
 
 struct ftl_nv_cache_chunk_md {
+	/* Chunk metadata version */
+	uint64_t version;
+
 	/* Sequence id of writing */
 	uint64_t seq_id;
 
@@ -84,12 +92,14 @@ struct ftl_nv_cache_chunk_md {
 	/* CRC32 checksum of the associated P2L map when chunk is in closed state */
 	uint32_t p2l_map_checksum;
 
+	/* P2L IO log type */
+	enum ftl_layout_region_type p2l_log_type;
+
 	/* Reserved */
-	uint8_t reserved[4052];
+	uint8_t reserved[4040];
 } __attribute__((packed));
 
-#define FTL_NV_CACHE_CHUNK_MD_SIZE sizeof(struct ftl_nv_cache_chunk_md)
-SPDK_STATIC_ASSERT(FTL_NV_CACHE_CHUNK_MD_SIZE == FTL_BLOCK_SIZE,
+SPDK_STATIC_ASSERT(sizeof(struct ftl_nv_cache_chunk_md) == FTL_BLOCK_SIZE,
 		   "FTL NV Chunk metadata size is invalid");
 
 struct ftl_nv_cache_chunk {
@@ -119,12 +129,14 @@ struct ftl_nv_cache_chunk {
 
 	/* For writing metadata */
 	struct ftl_md_io_entry_ctx md_persist_entry_ctx;
+
+	/* P2L Log for IOs */
+	struct ftl_p2l_log *p2l_log;
 };
 
 struct ftl_nv_cache_compactor {
 	struct ftl_nv_cache *nv_cache;
-	struct ftl_rq *wr;
-	struct ftl_rq *rd;
+	struct ftl_rq *rq;
 	TAILQ_ENTRY(ftl_nv_cache_compactor) entry;
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
 };
@@ -132,6 +144,9 @@ struct ftl_nv_cache_compactor {
 struct ftl_nv_cache {
 	/* Flag indicating halt request */
 	bool halt;
+
+	/* NV cache device type */
+	const struct ftl_nv_cache_device_type *nvc_type;
 
 	/* Write buffer cache bdev */
 	struct spdk_bdev_desc *bdev_desc;
@@ -189,6 +204,10 @@ struct ftl_nv_cache {
 	TAILQ_HEAD(, ftl_nv_cache_chunk) needs_free_persist_list;
 	uint64_t chunk_free_persist_count;
 
+	/* Chunks which are inactive */
+	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_inactive_list;
+	uint64_t chunk_inactive_count;
+
 	TAILQ_HEAD(, ftl_nv_cache_compactor) compactor_list;
 	uint64_t compaction_active_count;
 	uint64_t chunk_compaction_threshold;
@@ -219,9 +238,14 @@ struct ftl_nv_cache {
 	} throttle;
 };
 
+typedef void (*nvc_scrub_cb)(struct spdk_ftl_dev *dev, void *cb_ctx, int status);
+
+void ftl_nv_cache_scrub(struct spdk_ftl_dev *dev, nvc_scrub_cb cb, void *cb_ctx);
+
 int ftl_nv_cache_init(struct spdk_ftl_dev *dev);
 void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev);
 bool ftl_nv_cache_write(struct ftl_io *io);
+void ftl_nv_cache_write_complete(struct ftl_io *io, bool success);
 void ftl_nv_cache_fill_md(struct ftl_io *io);
 int ftl_nv_cache_read(struct ftl_io *io, ftl_addr addr, uint32_t num_blocks,
 		      spdk_bdev_io_completion_cb cb, void *cb_arg);
@@ -233,6 +257,8 @@ void ftl_chunk_map_set_lba(struct ftl_nv_cache_chunk *chunk,
 uint64_t ftl_chunk_map_get_lba(struct ftl_nv_cache_chunk *chunk, uint64_t offset);
 
 void ftl_nv_cache_set_addr(struct spdk_ftl_dev *dev, uint64_t lba, ftl_addr addr);
+
+void ftl_nv_cache_chunk_set_addr(struct ftl_nv_cache_chunk *chunk, uint64_t lba, ftl_addr addr);
 
 int ftl_nv_cache_save_state(struct ftl_nv_cache *nv_cache);
 
@@ -276,5 +302,7 @@ struct ftl_nv_cache_chunk *ftl_nv_cache_get_chunk_from_addr(struct spdk_ftl_dev 
 		ftl_addr addr);
 
 uint64_t ftl_nv_cache_acquire_trim_seq_id(struct ftl_nv_cache *nv_cache);
+
+void ftl_nv_cache_chunk_md_initialize(struct ftl_nv_cache_chunk_md *md);
 
 #endif  /* FTL_NV_CACHE_H */

@@ -1,0 +1,55 @@
+---
+libaio:
+  legend: 'libaio'
+
+io_uring:
+  legend: 'io_uring'
+
+io_uring_cmd:
+  legend: 'io_uring_cmd'
+
+posixaio:
+  legend: 'posixaio'
+
+spdk:
+  legend: 'spdk(nvme)'
+
+spdk_bdev:
+  legend: 'spdk(bdev)'
+
+xnvme_spdk:
+  legend: 'xnvme(spdk)'
+
+xnvme_libaio:
+  legend: 'xnvme(libaio)'
+
+xnvme_io_uring:
+  legend: 'xnvme(io_uring)'
+
+xnvme_io_uring_cmd:
+  legend: 'xnvme(io_uring_cmd)'
+
+xnvme_posix:
+  legend: 'xnvme(posix)'
+
+xnvme_kqueue:
+  legend: 'xnvme(kqueue)'
+
+xnvme_null:
+  legend: 'xnvme(nil)'
+
+"null":
+  legend: 'null'
+
+# Windows
+xnvme_io_ring:
+  legend: 'xnvme(ioring)'
+
+xnvme_iocp:
+  legend: 'xnvme(iocp)'
+
+xnvme_iocp_th:
+  legend: 'xnvme(iocp_th)'
+
+windowsaio:
+  legend: 'windowsaio'

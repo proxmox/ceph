@@ -1,6 +1,7 @@
 #
-# Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2019-2022 Intel Corporation
+# Copyright(c) 2024 Huawei Technologies
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 import logging
@@ -12,6 +13,7 @@ from ..utils import Size as S
 
 
 class OcfErrorCode(IntEnum):
+    OCF_OK = 0
     OCF_ERR_INVAL = 1000000
     OCF_ERR_AGAIN = auto()
     OCF_ERR_INTR = auto()
@@ -21,6 +23,8 @@ class OcfErrorCode(IntEnum):
     OCF_ERR_METADATA_VER = auto()
     OCF_ERR_NO_METADATA = auto()
     OCF_ERR_METADATA_FOUND = auto()
+    OCF_ERR_SUPERBLOCK_MISMATCH = auto()
+    OCF_ERR_CRC_MISMATCH = auto()
     OCF_ERR_INVAL_VOLUME_TYPE = auto()
     OCF_ERR_UNKNOWN = auto()
     OCF_ERR_TOO_MANY_CACHES = auto()
@@ -49,6 +53,15 @@ class OcfErrorCode(IntEnum):
     OCF_ERR_INVALID_CACHE_LINE_SIZE = auto()
     OCF_ERR_CACHE_NAME_MISMATCH = auto()
     OCF_ERR_INVAL_CACHE_DEV = auto()
+    OCF_ERR_CORE_UUID_EXISTS = auto()
+    OCF_ERR_CACHE_LINE_SIZE_MISMATCH = auto()
+    OCF_ERR_CACHE_STANDBY = auto()
+    OCF_ERR_CACHE_DETACHED = auto()
+    OCF_ERR_CORE_SIZE_MISMATCH = auto()
+    OCF_ERR_STANDBY_ATTACHED = auto()
+    OCF_ERR_CORE_NOT_REMOVED = auto()
+    OCF_ERR_CACHE_NOT_STANDBY = auto()
+    OCF_ERR_CLEANER_DISABLED = auto()
 
 
 class OcfCompletion:
@@ -59,9 +72,7 @@ class OcfCompletion:
 
     class CompletionResult:
         def __init__(self, completion_args):
-            self.completion_args = {
-                x[0]: i for i, x in enumerate(completion_args)
-            }
+            self.completion_args = {x[0]: i for i, x in enumerate(completion_args)}
             self.results = None
             self.arg_types = [x[1] for x in completion_args]
 
@@ -94,8 +105,11 @@ class OcfCompletion:
 
         return complete
 
-    def wait(self):
-        self.e.wait()
+    def wait(self, timeout=None):
+        return self.e.wait(timeout=timeout)
+
+    def completed(self):
+        return self.e.is_set()
 
 
 class OcfError(BaseException):
@@ -121,9 +135,7 @@ class SharedOcfObject(Structure):
             return cls._instances_[ref]
         except:  # noqa E722
             logging.getLogger("pyocf").error(
-                "OcfSharedObject corruption. wanted: {} instances: {}".format(
-                    ref, cls._instances_
-                )
+                "OcfSharedObject corruption. wanted: {} instances: {}".format(ref, cls._instances_)
             )
             return None
 

@@ -47,7 +47,7 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-
+#include <inttypes.h>
 #include <sys/eventfd.h>
 
 #include "dma.h"
@@ -140,13 +140,6 @@ dev_get_caps(vfu_ctx_t *vfu_ctx, vfu_reg_info_t *vfu_reg, bool is_migr_reg,
             sparse = (struct vfio_region_info_cap_sparse_mmap*)header;
         }
 
-        if (nr_mmap_areas > vfu_ctx->client_max_fds) {
-            vfu_log(vfu_ctx, LOG_DEBUG, "%s: region has nr_mmap_areas=%d, "
-                    "but client only supports %d fds", __func__,
-                    nr_mmap_areas, vfu_ctx->client_max_fds);
-            return ERROR_INT(ENOSPC);
-        }
-
         *fds = malloc(nr_mmap_areas * sizeof(int));
         if (*fds == NULL) {
             return ERROR_INT(ENOMEM);
@@ -154,7 +147,9 @@ dev_get_caps(vfu_ctx_t *vfu_ctx, vfu_reg_info_t *vfu_reg, bool is_migr_reg,
         sparse->header.id = VFIO_REGION_INFO_CAP_SPARSE_MMAP;
         sparse->header.version = 1;
         sparse->header.next = 0;
-        sparse->nr_areas = *nr_fds = nr_mmap_areas;
+        sparse->nr_areas = nr_mmap_areas;
+        *nr_fds = 1;
+        (*fds)[0] = vfu_reg->fd;
 
         for (i = 0; i < nr_mmap_areas; i++) {
             struct iovec *iov = &vfu_reg->mmap_areas[i];
@@ -162,7 +157,6 @@ dev_get_caps(vfu_ctx_t *vfu_ctx, vfu_reg_info_t *vfu_reg, bool is_migr_reg,
             vfu_log(vfu_ctx, LOG_DEBUG, "%s: area %d [%p, %p)", __func__,
                     i, iov->iov_base, iov_end(iov));
 
-            (*fds)[i] = vfu_reg->fd;
             sparse->areas[i].offset = (uintptr_t)iov->iov_base;
             sparse->areas[i].size = iov->iov_len;
         }
@@ -170,6 +164,7 @@ dev_get_caps(vfu_ctx_t *vfu_ctx, vfu_reg_info_t *vfu_reg, bool is_migr_reg,
     return 0;
 }
 
+#ifdef DEBUG
 static void
 debug_region_access(vfu_ctx_t *vfu_ctx, size_t region, char *buf,
                     size_t count, uint64_t offset, bool is_write)
@@ -183,19 +178,29 @@ debug_region_access(vfu_ctx_t *vfu_ctx, size_t region, char *buf,
     case 2: val = *((uint16_t *)buf); break;
     case 1: val = *((uint8_t *)buf); break;
     default:
-            vfu_log(vfu_ctx, LOG_DEBUG, "region%zu: %s %zu bytes at %#lx",
-                    region, verb, count, offset);
+            vfu_log(vfu_ctx, LOG_DEBUG, "region%zu: %s %zu bytes at %#llx",
+                    region, verb, count, (ull_t)offset);
             return;
     }
 
     if (is_write) {
-        vfu_log(vfu_ctx, LOG_DEBUG, "region%zu: wrote %#zx to (%#lx:%zu)",
-                region, val, offset, count);
+        vfu_log(vfu_ctx, LOG_DEBUG, "region%zu: wrote %#llx to (%#llx:%zu)",
+                region, (ull_t)val, (ull_t)offset,
+                count);
     } else {
-        vfu_log(vfu_ctx, LOG_DEBUG, "region%zu: read %#zx from (%#lx:%zu)",
-                region, val, offset, count);
+        vfu_log(vfu_ctx, LOG_DEBUG, "region%zu: read %#llx from (%#llx:%zu)",
+                region, (ull_t)val, (ull_t)offset,
+                count);
     }
 }
+#else
+static void
+debug_region_access(vfu_ctx_t *vfu_ctx UNUSED, size_t region UNUSED,
+                    char *buf UNUSED, size_t count UNUSED,
+                    uint64_t offset UNUSED, bool is_write UNUSED)
+{
+}
+#endif
 
 static ssize_t
 region_access(vfu_ctx_t *vfu_ctx, size_t region, char *buf,
@@ -234,13 +239,12 @@ region_access(vfu_ctx_t *vfu_ctx, size_t region, char *buf,
     }
 
 out:
-    if (ret != (ssize_t)count) {
-        vfu_log(vfu_ctx, LOG_DEBUG, "region%zu: %s (%#lx:%zu) failed: %m",
-                region, verb, offset, count);
+    if (unlikely(ret != (ssize_t)count)) {
+        vfu_log(vfu_ctx, LOG_DEBUG, "region%zu: %s (%#llx:%zu) failed: %m",
+                region, verb, (ull_t)offset, count);
     } else {
         debug_region_access(vfu_ctx, region, buf, count, offset, is_write);
     }
-
     return ret;
 }
 
@@ -253,40 +257,44 @@ is_valid_region_access(vfu_ctx_t *vfu_ctx, size_t size, uint16_t cmd,
     assert(vfu_ctx != NULL);
     assert(ra != NULL);
 
-    if (size < sizeof(*ra)) {
+    if (unlikely(size < sizeof(*ra))) {
         vfu_log(vfu_ctx, LOG_ERR, "message size too small (%zu)", size);
         return false;
     }
 
-    if (ra->count > SERVER_MAX_DATA_XFER_SIZE) {
+    if (unlikely(ra->count > SERVER_MAX_DATA_XFER_SIZE)) {
         vfu_log(vfu_ctx, LOG_ERR, "region access count too large (%u)",
                 ra->count);
         return false;
     }
 
-    if (cmd == VFIO_USER_REGION_WRITE && size - sizeof(*ra) != ra->count) {
+    if (unlikely(cmd == VFIO_USER_REGION_WRITE
+                 && size - sizeof(*ra) != ra->count)) {
         vfu_log(vfu_ctx, LOG_ERR, "region write count too small: "
-                "expected %lu, got %u", size - sizeof(*ra), ra->count);
+                "expected %zu, got %u", size - sizeof(*ra), ra->count);
         return false;
     }
 
     index = ra->region;
 
-    if (index >= vfu_ctx->nr_regions) {
+    if (unlikely(index >= vfu_ctx->nr_regions)) {
         vfu_log(vfu_ctx, LOG_ERR, "bad region index %zu", index);
         return false;
     }
 
-    if (satadd_u64(ra->offset, ra->count) > vfu_ctx->reg_info[index].size) {
-        vfu_log(vfu_ctx, LOG_ERR, "out of bounds region access %#lx-%#lx "
-                "(size %u)", ra->offset, ra->offset + ra->count,
+    if (unlikely(satadd_u64(ra->offset, ra->count)
+                 > vfu_ctx->reg_info[index].size)) {
+        vfu_log(vfu_ctx, LOG_ERR,
+                "out of bounds region access %#llx-%#llx (size %u)",
+                (ull_t)ra->offset,
+                (ull_t)(ra->offset + ra->count),
                 vfu_ctx->reg_info[index].size);
 
         return false;
     }
 
-    if (device_is_stopped_and_copying(vfu_ctx->migration) &&
-        index != VFU_PCI_DEV_MIGR_REGION_IDX) {
+    if (unlikely(device_is_stopped_and_copying(vfu_ctx->migration) &&
+        index != VFU_PCI_DEV_MIGR_REGION_IDX)) {
         vfu_log(vfu_ctx, LOG_ERR,
                 "cannot access region %zu while device in stop-and-copy state",
                 index);
@@ -307,11 +315,11 @@ handle_region_access(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
     assert(vfu_ctx != NULL);
     assert(msg != NULL);
 
-    if (!is_valid_region_access(vfu_ctx, msg->in.iov.iov_len, msg->hdr.cmd, in_ra)) {
+    if (unlikely(!is_valid_region_access(vfu_ctx, msg->in.iov.iov_len, msg->hdr.cmd, in_ra))) {
         return ERROR_INT(EINVAL);
     }
 
-    if (in_ra->count == 0) {
+    if (unlikely(in_ra->count == 0)) {
         return 0;
     }
 
@@ -320,7 +328,7 @@ handle_region_access(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
         msg->out.iov.iov_len += in_ra->count;
     }
     msg->out.iov.iov_base = calloc(1, msg->out.iov.iov_len);
-    if (msg->out.iov.iov_base == NULL) {
+    if (unlikely(msg->out.iov.iov_base == NULL)) {
         return -1;
     }
 
@@ -337,9 +345,9 @@ handle_region_access(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
 
     ret = region_access(vfu_ctx, in_ra->region, buf, in_ra->count,
                         in_ra->offset, msg->hdr.cmd == VFIO_USER_REGION_WRITE);
-    if (ret != in_ra->count) {
+    if (ret != (ssize_t)in_ra->count) {
         /* FIXME we should return whatever has been accessed, not an error */
-        if (ret >= 0) {
+        if (unlikely(ret >= 0)) {
             ret = ERROR_INT(EINVAL);
         }
         return ret;
@@ -361,7 +369,8 @@ handle_device_get_info(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
 
     in_info = msg->in.iov.iov_base;
 
-    if (msg->in.iov.iov_len < sizeof(*in_info) || in_info->argsz < sizeof(*out_info)) {
+    if (unlikely(msg->in.iov.iov_len < sizeof(*in_info) ||
+                 in_info->argsz < sizeof(*out_info))) {
         return ERROR_INT(EINVAL);
     }
 
@@ -458,24 +467,26 @@ handle_device_get_region_info(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
     }
 
     vfu_log(vfu_ctx, LOG_DEBUG, "region_info[%d] offset %#llx flags %#x "
-            "size %llu " "argsz %u", out_info->index, out_info->offset,
-            out_info->flags, out_info->size, out_info->argsz);
+            "size %llu argsz %u", out_info->index,
+            (ull_t)out_info->offset,
+            out_info->flags, (ull_t)out_info->size,
+            out_info->argsz);
 
     return 0;
 }
 
 EXPORT int
 vfu_create_ioeventfd(vfu_ctx_t *vfu_ctx, uint32_t region_idx, int fd,
-                     size_t offset, uint32_t size, uint32_t flags,
-                     uint64_t datamatch, int shadow_fd)
+                     size_t gpa_offset, uint32_t size, uint32_t flags,
+                     uint64_t datamatch, int shadow_fd, size_t shadow_offset)
 {
     vfu_reg_info_t *vfu_reg;
 
     assert(vfu_ctx != NULL);
-    assert(fd >= 0);
 
 #ifndef SHADOW_IOEVENTFD
     if (shadow_fd != -1) {
+        vfu_log(vfu_ctx, LOG_DEBUG, "shadow ioeventfd not compiled");
         return ERROR_INT(EINVAL);
     }
 #endif
@@ -486,7 +497,7 @@ vfu_create_ioeventfd(vfu_ctx_t *vfu_ctx, uint32_t region_idx, int fd,
 
     vfu_reg = &vfu_ctx->reg_info[region_idx];
 
-    if (offset + size > vfu_reg->size) {
+    if (gpa_offset + size > vfu_reg->size) {
         return ERROR_INT(EINVAL);
     }
 
@@ -496,11 +507,12 @@ vfu_create_ioeventfd(vfu_ctx_t *vfu_ctx, uint32_t region_idx, int fd,
     }
 
     elem->fd = fd;
-    elem->offset = offset;
+    elem->gpa_offset = gpa_offset;
     elem->size = size;
     elem->flags = flags;
     elem->datamatch = datamatch;
     elem->shadow_fd = shadow_fd;
+    elem->shadow_offset = shadow_offset;
     LIST_INSERT_HEAD(&vfu_reg->subregions, elem, entry);
 
     return 0;
@@ -529,6 +541,15 @@ free_regions(vfu_ctx_t *vfu_ctx)
  * This function is used to add fd's to the fd return array and gives you back
  * the index of the fd that has been added. If the fd is already present it will
  * return the index to that duplicate fd to reduce the number of fd's sent.
+ * The fd must be a valid fd or -1, any other negative value is not permitted.
+ *
+ * out_fds: an array where the fd is stored
+ * nr_out_fds: pointer to memory that contains the size of the array
+ * fd_search: the fd to add
+ *
+ * returns: the array index where the fd is added to, can be the index of an
+ *  existing fd if this is a duplicate fd. If the fd is -1 then the function
+ *  returns -1.
  */
 static int
 add_fd_index(int *out_fds, size_t *nr_out_fds, int fd_search)
@@ -537,6 +558,11 @@ add_fd_index(int *out_fds, size_t *nr_out_fds, int fd_search)
 
     assert(out_fds != NULL);
     assert(nr_out_fds != NULL);
+
+    assert(fd_search >= -1);
+    if (fd_search == -1) {
+        return -1;
+    }
 
     for (i = 0; i < *nr_out_fds; i++) {
         if (out_fds[i] == fd_search) {
@@ -569,12 +595,14 @@ handle_device_get_region_io_fds(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
     assert(msg->out.fds == NULL);
 
     if (msg->in.iov.iov_len < sizeof(vfio_user_region_io_fds_request_t)) {
+        vfu_log(vfu_ctx, LOG_DEBUG, "input message too small");
         return ERROR_INT(EINVAL);
     }
 
     req = msg->in.iov.iov_base;
 
     if (req->flags != 0 || req->count != 0) {
+        vfu_log(vfu_ctx, LOG_DEBUG, "bad flags or bad count");
         return ERROR_INT(EINVAL);
     }
 
@@ -588,6 +616,7 @@ handle_device_get_region_io_fds(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
 
     // At least one flag must be set for a valid region.
     if (!(vfu_reg->flags & VFU_REGION_FLAG_MASK)) {
+        vfu_log(vfu_ctx, LOG_DEBUG, "bad region flags");
         return ERROR_INT(EINVAL);
     }
 
@@ -600,6 +629,7 @@ handle_device_get_region_io_fds(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
 
     if (req->argsz < sizeof(vfio_user_region_io_fds_reply_t) ||
         req->argsz > SERVER_MAX_DATA_XFER_SIZE) {
+        vfu_log(vfu_ctx, LOG_DEBUG, "bad argsz");
         return ERROR_INT(EINVAL);
     }
 
@@ -624,30 +654,34 @@ handle_device_get_region_io_fds(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
                           sizeof(vfio_user_sub_region_ioeventfd_t);
 
     msg->out.nr_fds = 0;
-    if (req->argsz >= reply->argsz) {
-        msg->out.fds = calloc(sizeof(int),
-                              max_sent_sub_regions + nr_shadow_reg);
+
+    if (max_sent_sub_regions > 0 && req->argsz >= reply->argsz) {
+        msg->out.fds = calloc(max_sent_sub_regions + nr_shadow_reg, sizeof(int));
         if (msg->out.fds == NULL) {
             return -1;
         }
 
         sub_reg = LIST_FIRST(&vfu_reg->subregions);
+
         for (i = 0; i < max_sent_sub_regions; i++) {
+            int fdi;
 
             ioefd = &reply->sub_regions[i].ioeventfd;
-            ioefd->offset = sub_reg->offset;
+            ioefd->gpa_offset = sub_reg->gpa_offset;
             ioefd->size = sub_reg->size;
-            ioefd->fd_index = add_fd_index(msg->out.fds, &msg->out.nr_fds,
-                                        sub_reg->fd);
+            fdi = add_fd_index(msg->out.fds, &msg->out.nr_fds, sub_reg->fd);
+            ioefd->fd_index = fdi;
             if (sub_reg->shadow_fd == -1) {
                 ioefd->type = VFIO_USER_IO_FD_TYPE_IOEVENTFD;
             } else {
                 ioefd->type = VFIO_USER_IO_FD_TYPE_IOEVENTFD_SHADOW;
-                int ret = add_fd_index(msg->out.fds, &msg->out.nr_fds, sub_reg->shadow_fd);
-                assert(ret == 1);
+                fdi = add_fd_index(msg->out.fds, &msg->out.nr_fds,
+                                   sub_reg->shadow_fd);
+                ioefd->shadow_mem_fd_index = fdi;
             }
             ioefd->flags = sub_reg->flags;
             ioefd->datamatch = sub_reg->datamatch;
+            ioefd->shadow_offset = sub_reg->shadow_offset;
 
             sub_reg = LIST_NEXT(sub_reg, entry);
         }
@@ -689,8 +723,10 @@ handle_dma_map(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg,
         return ERROR_INT(EINVAL);
     }
 
-    snprintf(rstr, sizeof(rstr), "[%#lx, %#lx) offset=%#lx flags=%#x",
-             dma_map->addr, dma_map->addr + dma_map->size, dma_map->offset,
+    snprintf(rstr, sizeof(rstr), "[%#llx, %#llx) offset=%#llx flags=%#x",
+             (ull_t)dma_map->addr,
+             (ull_t)(dma_map->addr + dma_map->size),
+             (ull_t)dma_map->offset,
              dma_map->flags);
 
     vfu_log(vfu_ctx, LOG_DEBUG, "adding DMA region %s", rstr);
@@ -718,7 +754,8 @@ handle_dma_map(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg,
         }
     }
 
-    ret = dma_controller_add_region(vfu_ctx->dma, (void *)dma_map->addr,
+    ret = dma_controller_add_region(vfu_ctx->dma,
+                                    (vfu_dma_addr_t)(uintptr_t)dma_map->addr,
                                     dma_map->size, fd, dma_map->offset,
                                     prot);
     if (ret < 0) {
@@ -765,8 +802,9 @@ is_valid_unmap(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg,
 
     case VFIO_DMA_UNMAP_FLAG_ALL:
         if (dma_unmap->addr || dma_unmap->size) {
-            vfu_log(vfu_ctx, LOG_ERR, "bad addr=%#lx or size=%#lx, expected "
-                    "both to be zero", dma_unmap->addr, dma_unmap->size);
+            vfu_log(vfu_ctx, LOG_ERR, "bad addr=%#llx or size=%#llx, expected "
+                    "both to be zero", (ull_t)dma_unmap->addr,
+                    (ull_t)dma_unmap->size);
             errno = EINVAL;
             return false;
         }
@@ -809,8 +847,10 @@ handle_dma_unmap(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg,
         return -1;
     }
 
-    snprintf(rstr, sizeof(rstr), "[%#lx, %#lx) flags=%#x",
-             dma_unmap->addr, dma_unmap->addr + dma_unmap->size, dma_unmap->flags);
+    snprintf(rstr, sizeof(rstr), "[%#llx, %#llx) flags=%#x",
+             (ull_t)dma_unmap->addr,
+             (ull_t)(dma_unmap->addr + dma_unmap->size),
+             dma_unmap->flags);
 
     vfu_log(vfu_ctx, LOG_DEBUG, "removing DMA region %s", rstr);
 
@@ -835,7 +875,7 @@ handle_dma_unmap(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg,
     if (dma_unmap->flags & VFIO_DMA_UNMAP_FLAG_GET_DIRTY_BITMAP) {
         memcpy(msg->out.iov.iov_base + sizeof(*dma_unmap), dma_unmap->bitmap, sizeof(*dma_unmap->bitmap));
         ret = dma_controller_dirty_page_get(vfu_ctx->dma,
-                                            (vfu_dma_addr_t)dma_unmap->addr,
+                                            (vfu_dma_addr_t)(uintptr_t)dma_unmap->addr,
                                             dma_unmap->size,
                                             dma_unmap->bitmap->pgsize,
                                             dma_unmap->bitmap->size,
@@ -847,7 +887,7 @@ handle_dma_unmap(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg,
     }
 
     ret = dma_controller_remove_region(vfu_ctx->dma,
-                                       (void *)dma_unmap->addr,
+                                       (vfu_dma_addr_t)(uintptr_t)dma_unmap->addr,
                                        dma_unmap->size,
                                        vfu_ctx->dma_unregister,
                                        vfu_ctx);
@@ -864,30 +904,37 @@ out:
     return ret;
 }
 
-static int
-do_device_reset(vfu_ctx_t *vfu_ctx, vfu_reset_type_t reason)
+int
+call_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t reason)
 {
     int ret;
 
-    if (vfu_ctx->reset != NULL) {
-        vfu_ctx->in_cb = CB_RESET;
-        ret = vfu_ctx->reset(vfu_ctx, reason);
-        vfu_ctx->in_cb = CB_NONE;
-        if (ret < 0) {
-            return ret;
-        }
+    if (vfu_ctx->reset == NULL) {
+        return 0;
     }
+
+    vfu_ctx->in_cb = CB_RESET;
+    ret = vfu_ctx->reset(vfu_ctx, reason);
+    vfu_ctx->in_cb = CB_NONE;
+
+    return ret;
+}
+
+static int
+device_reset(vfu_ctx_t *vfu_ctx, vfu_reset_type_t reason)
+{
+    int ret;
+
+    ret = call_reset_cb(vfu_ctx, reason);
+    if (ret < 0) {
+        return ret;
+    }
+
     if (vfu_ctx->migration != NULL) {
         return handle_device_state(vfu_ctx, vfu_ctx->migration,
                                    VFIO_DEVICE_STATE_V1_RUNNING, false);
     }
     return 0;
-}
-
-int
-handle_device_reset(vfu_ctx_t *vfu_ctx, vfu_reset_type_t reason)
-{
-    return do_device_reset(vfu_ctx, reason);
 }
 
 static int
@@ -942,7 +989,7 @@ handle_dirty_pages_get(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
         range_out = msg->out.iov.iov_base + sizeof(*dirty_pages_out);
         memcpy(range_out, range_in, sizeof(*range_out));
         ret = dma_controller_dirty_page_get(vfu_ctx->dma,
-                                            (vfu_dma_addr_t)range_in->iova,
+                                            (vfu_dma_addr_t)(uintptr_t)range_in->iova,
                                             range_in->size,
                                             range_in->bitmap.pgsize,
                                             range_in->bitmap.size, bitmap_out);
@@ -957,8 +1004,8 @@ handle_dirty_pages_get(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
         }
     } else {
         vfu_log(vfu_ctx, LOG_ERR,
-                "dirty pages: get [%#lx, %#lx): buffer too small (%u < %lu)",
-                range_in->iova, range_in->iova + range_in->size,
+                "dirty pages: get [%#llx, %#llx): buffer too small (%u < %zu)",
+                (ull_t)range_in->iova, (ull_t)range_in->iova + range_in->size,
                 dirty_pages_in->argsz, argsz);
     }
 
@@ -1166,7 +1213,7 @@ handle_request(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg)
 
     case VFIO_USER_DEVICE_RESET:
         vfu_log(vfu_ctx, LOG_INFO, "device reset by client");
-        ret = handle_device_reset(vfu_ctx, VFU_RESET_DEVICE);
+        ret = device_reset(vfu_ctx, VFU_RESET_DEVICE);
         break;
 
     case VFIO_USER_DIRTY_PAGES:
@@ -1472,6 +1519,7 @@ vfu_run_ctx(vfu_ctx_t *vfu_ctx)
              * be called at all.
              */
             if (vfu_ctx->quiesced) {
+		    // FIXME?
                 vfu_log(vfu_ctx, LOG_DEBUG, "device unquiesced");
                 vfu_ctx->quiesced = false;
             }
@@ -1591,7 +1639,7 @@ vfu_reset_ctx_quiesced(vfu_ctx_t *vfu_ctx)
     }
 
     /* FIXME what happens if the device reset callback fails? */
-    do_device_reset(vfu_ctx, VFU_RESET_LOST_CONN);
+    device_reset(vfu_ctx, VFU_RESET_LOST_CONN);
 
     if (vfu_ctx->irqs != NULL) {
         irqs_reset(vfu_ctx);
@@ -1714,7 +1762,7 @@ vfu_create_ctx(vfu_trans_t trans, const char *path, int flags, void *pvt,
 
     /*
      * FIXME: Now we always allocate for migration region. Check if its better
-     * to seperate migration region from standard regions in vfu_ctx.reg_info
+     * to separate migration region from standard regions in vfu_ctx.reg_info
      * and move it into vfu_ctx.migration.
      */
     vfu_ctx->nr_regions = VFU_PCI_DEV_NUM_REGIONS;
@@ -1891,6 +1939,10 @@ vfu_setup_region(vfu_ctx_t *vfu_ctx, int region_idx, size_t size,
     for (i = 0; i < nr_mmap_areas; i++) {
         struct iovec *iov = &mmap_areas[i];
         if ((size_t)iov_end(iov) > size) {
+            vfu_log(vfu_ctx, LOG_ERR, "mmap area #%zu %#llx-%#llx exceeds region size of %#llx\n",
+                    i, (unsigned long long)(uintptr_t)iov->iov_base,
+		    (unsigned long long)(uintptr_t)(iov->iov_base) + iov->iov_len - 1,
+		    (unsigned long long)size);
             return ERROR_INT(EINVAL);
         }
     }
@@ -2150,7 +2202,7 @@ vfu_dma_transfer(vfu_ctx_t *vfu_ctx, enum vfio_user_command cmd,
     while (remaining > 0) {
         int ret;
 
-        dma_req->addr = (uint64_t)sg->dma_addr + count;
+        dma_req->addr = (uintptr_t)sg->dma_addr + count;
         dma_req->count = MIN(remaining, vfu_ctx->client_max_data_xfer_size);
 
         if (cmd == VFIO_USER_DMA_WRITE) {
@@ -2179,10 +2231,13 @@ vfu_dma_transfer(vfu_ctx_t *vfu_ctx, enum vfio_user_command cmd,
 
         if (dma_reply->addr != dma_req->addr ||
             dma_reply->count != dma_req->count) {
+            /* TODO shouldn't we use %#llx for both and also use the range format? */
             vfu_log(vfu_ctx, LOG_ERR, "bad reply to DMA transfer: "
-                    "request:%#lx,%lu reply:%#lx,%lu",
-                    dma_req->addr, dma_req->count,
-                    dma_reply->addr, dma_reply->count);
+                    "request:%#llx,%llu reply:%#llx,%llu",
+                    (ull_t)dma_req->addr,
+                    (ull_t)dma_req->count,
+                    (ull_t)dma_reply->addr,
+                    (ull_t)dma_reply->count);
             free(rbuf);
             return ERROR_INT(EINVAL);
         }

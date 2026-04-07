@@ -1,18 +1,23 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// Copyright (C) Gurmeet Singh <gur.singh@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_LINUX_ENABLED
 #include <errno.h>
-#include <sys/ioctl.h>
+#include <fcntl.h>
 #include <linux/nvme_ioctl.h>
-#include <libxnvme_spec_fs.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <xnvme_be_linux.h>
 #include <xnvme_be_linux_nvme.h>
+#include <xnvme_spec.h>
 
 #ifdef XNVME_DEBUG_ENABLED
 static const char *
@@ -121,7 +126,7 @@ xnvme_be_linux_nvme_map_cpl(struct xnvme_cmd_ctx *ctx, unsigned long ioctl_req, 
 	ctx->cpl.status.val = 0;
 	if (res) {
 		ctx->cpl.status.sc = res & 0xFF;
-		ctx->cpl.status.sct = XNVME_STATUS_CODE_TYPE_VENDOR;
+		ctx->cpl.status.sct = (res >> 8) & 0x7;
 	}
 
 	return 0;
@@ -162,11 +167,58 @@ ioctl_wrap(struct xnvme_dev *dev, unsigned long ioctl_req, struct xnvme_cmd_ctx 
 	return -EIO;
 }
 
+static int
+_controller_get_registers(const struct xnvme_dev *dev, void *dbuf, size_t dbuf_nbytes)
+{
+	const struct xnvme_ident *ident = &dev->ident;
+	char path[512] = {0};
+	void *membase;
+	int err = 0;
+	int fd;
+
+	switch (ident->dtype) {
+	case XNVME_DEV_TYPE_NVME_NAMESPACE:
+		snprintf(path, sizeof(path), "/sys/block/%s/device/device/resource0",
+			 basename(ident->uri));
+		break;
+
+	case XNVME_DEV_TYPE_NVME_CONTROLLER:
+		snprintf(path, sizeof(path), "/sys/class/nvme/%s/device/resource0",
+			 basename(ident->uri));
+		break;
+
+	default:
+		XNVME_DEBUG("FAILED: dev is not an NVMe controller nor namespace");
+		return -EINVAL;
+	}
+
+	fd = open(path, O_RDONLY | O_SYNC);
+	if (fd < 0) {
+		err = -errno;
+		XNVME_DEBUG("FAILED: open('%s') got err: %d", path, err);
+		return err;
+	}
+
+	membase = mmap(NULL, getpagesize(), PROT_READ, MAP_SHARED, fd, 0);
+	if (membase == MAP_FAILED) {
+		err = -errno;
+
+		XNVME_DEBUG("FAILED: mmap(), got err: %d", err);
+		goto exit;
+	}
+	memcpy(dbuf, membase, dbuf_nbytes);
+	munmap(membase, getpagesize());
+
+exit:
+	close(fd);
+
+	return err;
+}
+
 #ifdef NVME_IOCTL_IO64_CMD_VEC
 int
 xnvme_be_linux_nvme_cmd_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_t dvec_cnt,
-			    size_t XNVME_UNUSED(dvec_nbytes), struct iovec *mvec, size_t mvec_cnt,
-			    size_t XNVME_UNUSED(mvec_nbytes))
+			    size_t XNVME_UNUSED(dvec_nbytes), void *mbuf, size_t mbuf_nbytes)
 {
 	struct nvme_passthru_cmd64 *kcmd = (void *)ctx;
 	int err;
@@ -188,8 +240,8 @@ xnvme_be_linux_nvme_cmd_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_
 
 	kcmd->addr = (uint64_t)dvec;
 	kcmd->vec_cnt = dvec_cnt;
-	kcmd->metadata = (uint64_t)mvec;
-	kcmd->metadata_len = mvec_cnt;
+	kcmd->metadata = (uint64_t)mbuf;
+	kcmd->metadata_len = mbuf_nbytes;
 
 	err = ioctl_wrap(ctx->dev, NVME_IOCTL_IO64_CMD_VEC, ctx);
 	if (err) {
@@ -203,8 +255,8 @@ xnvme_be_linux_nvme_cmd_iov(struct xnvme_cmd_ctx *ctx, struct iovec *dvec, size_
 int
 xnvme_be_linux_nvme_cmd_iov(struct xnvme_cmd_ctx *XNVME_UNUSED(ctx),
 			    struct iovec *XNVME_UNUSED(dvec), size_t XNVME_UNUSED(dvec_cnt),
-			    size_t XNVME_UNUSED(dvec_nbytes), struct iovec *XNVME_UNUSED(mvec),
-			    size_t XNVME_UNUSED(mvec_cnt), size_t XNVME_UNUSED(mvec_nbytes))
+			    size_t XNVME_UNUSED(dvec_nbytes), void *XNVME_UNUSED(mbuf),
+			    size_t XNVME_UNUSED(mbuf_nbytes))
 {
 	XNVME_DEBUG("FAILED: NVME_IOCTL_IO64_CMD_VEC; ENOSYS");
 	return -ENOSYS;
@@ -232,11 +284,13 @@ xnvme_be_linux_nvme_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nb
 	switch (ctx->cmd.common.opcode) {
 	case XNVME_SPEC_FS_OPC_READ:
 		ctx->cmd.nvm.slba = ctx->cmd.nvm.slba >> ctx->dev->geo.ssw;
+		ctx->cmd.nvm.nlb = (dbuf_nbytes / ctx->dev->geo.lba_nbytes) - 1;
 		ctx->cmd.common.opcode = XNVME_SPEC_NVM_OPC_READ;
 		break;
 
 	case XNVME_SPEC_FS_OPC_WRITE:
 		ctx->cmd.nvm.slba = ctx->cmd.nvm.slba >> ctx->dev->geo.ssw;
+		ctx->cmd.nvm.nlb = (dbuf_nbytes / ctx->dev->geo.lba_nbytes) - 1;
 		ctx->cmd.common.opcode = XNVME_SPEC_NVM_OPC_WRITE;
 		break;
 	}
@@ -281,6 +335,49 @@ xnvme_be_linux_nvme_cmd_admin(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf
 }
 
 int
+xnvme_be_linux_nvme_cmd_pseudo(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes,
+			       void *XNVME_UNUSED(mbuf), size_t XNVME_UNUSED(mbuf_nbytes))
+{
+	struct xnvme_be_linux_state *state = (void *)ctx->dev->be.state;
+	int ioctl_req;
+	int err;
+
+	switch (ctx->cmd.common.opcode) {
+	case XNVME_SPEC_PSEUDO_OPC_SHOW_REGS:
+		if (dbuf_nbytes != sizeof(struct xnvme_spec_ctrlr_bar)) {
+			XNVME_DEBUG(
+				"FAILED: dbuf_nbytes(%zu) != sizeof(struct xnvme_spec_ctrlr_bar)",
+				dbuf_nbytes);
+			return -EINVAL;
+		}
+		return _controller_get_registers(ctx->dev, dbuf, dbuf_nbytes);
+
+	case XNVME_SPEC_PSEUDO_OPC_CONTROLLER_RESET:
+		ioctl_req = NVME_IOCTL_RESET;
+		break;
+
+	case XNVME_SPEC_PSEUDO_OPC_SUBSYSTEM_RESET:
+		ioctl_req = NVME_IOCTL_SUBSYS_RESET;
+		break;
+
+	case XNVME_SPEC_PSEUDO_OPC_NAMESPACE_RESCAN:
+		ioctl_req = NVME_IOCTL_RESCAN;
+		break;
+	default:
+		XNVME_DEBUG("FAILED: unsupported opcode: %d", ctx->cmd.common.opcode);
+		return -ENOSYS;
+	}
+
+	err = ioctl(state->fd, ioctl_req);
+	if (err < 0) {
+		XNVME_DEBUG("FAILED: ioctl() err: %d", err);
+		return err;
+	}
+
+	return 0;
+}
+
+int
 xnvme_be_linux_nvme_dev_nsid(struct xnvme_dev *dev)
 {
 	struct xnvme_be_linux_state *state = (void *)dev->be.state;
@@ -312,7 +409,9 @@ struct xnvme_be_admin g_xnvme_be_linux_admin_nvme = {
 	.id = "nvme",
 #ifdef XNVME_BE_LINUX_ENABLED
 	.cmd_admin = xnvme_be_linux_nvme_cmd_admin,
+	.cmd_pseudo = xnvme_be_linux_nvme_cmd_pseudo,
 #else
 	.cmd_admin = xnvme_be_nosys_sync_cmd_admin,
+	.cmd_pseudo = xnvme_be_nosys_sync_cmd_pseudo,
 #endif
 };

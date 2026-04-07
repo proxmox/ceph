@@ -1,5 +1,5 @@
 ;
-;; Copyright (c) 2022, Intel Corporation
+;; Copyright (c) 2022-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -38,10 +38,10 @@
 ;;
 ;; Linux/Windows clobbers: xmm0 - xmm15
 
-%include "include/os.asm"
+%include "include/os.inc"
 %include "include/cet.inc"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/clear_regs.asm"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/clear_regs.inc"
 
 ; resdq = res0 => 16 bytes
 struc frame
@@ -184,7 +184,7 @@ sha256_ni_x1:
         shl             lane, 5
 	movdqu		STATE0, [args + lane]
 	movdqu		STATE1,	[args + lane + 16]
- 
+
 	pshufd		STATE0, STATE0, 0xB1	; CDAB
 	pshufd		STATE1, STATE1, 0x1B	; EFGH
 	movdqa		MSGTMP4, STATE0
@@ -403,7 +403,7 @@ sha256_ni_x1:
 
 done_hash:
 
-        ;; Clear stack frame (4*16 bytes)
+        ;; Clear stack frame (2*16 bytes)
 %ifdef SAFE_DATA
         clear_all_xmms_sse_asm
         movdqa [rsp + frame.ABEF_SAVE], xmm0

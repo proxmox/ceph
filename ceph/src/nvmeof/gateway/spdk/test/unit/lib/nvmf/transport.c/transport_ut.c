@@ -3,8 +3,9 @@
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
-#include "common/lib/test_env.c"
+#include "spdk_internal/cunit.h"
+#include "common/lib/ut_multithread.c"
+#include "common/lib/test_iobuf.c"
 #include "nvmf/transport.c"
 #include "nvmf/rdma.c"
 #include "common/lib/test_rdma.c"
@@ -30,15 +31,12 @@ DEFINE_STUB(spdk_nvme_transport_id_compare, int, (const struct spdk_nvme_transpo
 DEFINE_STUB_V(spdk_nvmf_tgt_new_qpair, (struct spdk_nvmf_tgt *tgt, struct spdk_nvmf_qpair *qpair));
 DEFINE_STUB(spdk_nvmf_request_get_dif_ctx, bool, (struct spdk_nvmf_request *req,
 		struct spdk_dif_ctx *dif_ctx), false);
-DEFINE_STUB(spdk_nvmf_qpair_disconnect, int, (struct spdk_nvmf_qpair *qpair,
-		nvmf_qpair_disconnect_cb cb_fn, void *ctx), 0);
+DEFINE_STUB(spdk_nvmf_qpair_disconnect, int, (struct spdk_nvmf_qpair *qpair), 0);
 DEFINE_STUB_V(spdk_nvmf_request_exec, (struct spdk_nvmf_request *req));
 DEFINE_STUB_V(spdk_nvme_trid_populate_transport, (struct spdk_nvme_transport_id *trid,
 		enum spdk_nvme_transport_type trtype));
 DEFINE_STUB(nvmf_ctrlr_abort_request, int, (struct spdk_nvmf_request *req), 0);
 DEFINE_STUB(spdk_nvmf_request_complete, int, (struct spdk_nvmf_request *req), 0);
-DEFINE_STUB(ut_transport_create, struct spdk_nvmf_transport *,
-	    (struct spdk_nvmf_transport_opts *opts), NULL);
 DEFINE_STUB(ut_transport_destroy, int, (struct spdk_nvmf_transport *transport,
 					spdk_nvmf_transport_destroy_done_cb cb_fn, void *cb_arg), 0);
 DEFINE_STUB(ibv_get_device_name, const char *, (struct ibv_device *device), NULL);
@@ -81,8 +79,6 @@ DEFINE_STUB(rdma_get_dst_port, __be16, (struct rdma_cm_id *id), 0);
 DEFINE_STUB(rdma_get_src_port, __be16, (struct rdma_cm_id *id), 0);
 DEFINE_STUB(spdk_nvmf_qpair_get_listen_trid, int, (struct spdk_nvmf_qpair *qpair,
 		struct spdk_nvme_transport_id *trid), 0);
-DEFINE_STUB(ibv_reg_mr_iova2, struct ibv_mr *, (struct ibv_pd *pd, void *addr, size_t length,
-		uint64_t iova, unsigned int access), NULL);
 DEFINE_STUB(spdk_nvme_transport_id_adrfam_str, const char *, (enum spdk_nvmf_adrfam adrfam), NULL);
 DEFINE_STUB_V(ut_opts_init, (struct spdk_nvmf_transport_opts *opts));
 DEFINE_STUB(ut_transport_listen, int, (struct spdk_nvmf_transport *transport,
@@ -90,6 +86,7 @@ DEFINE_STUB(ut_transport_listen, int, (struct spdk_nvmf_transport *transport,
 DEFINE_STUB_V(ut_transport_stop_listen, (struct spdk_nvmf_transport *transport,
 		const struct spdk_nvme_transport_id *trid));
 DEFINE_STUB(spdk_mempool_lookup, struct spdk_mempool *, (const char *name), NULL);
+DEFINE_STUB(spdk_rdma_cm_id_get_numa_id, int32_t, (struct rdma_cm_id *cm_id), 0);
 
 /* ibv_reg_mr can be a macro, need to undefine it */
 #ifdef ibv_reg_mr
@@ -108,41 +105,121 @@ ibv_reg_mr(struct ibv_pd *pd, void *addr, size_t length, int access)
 	}
 }
 
+struct spdk_nvmf_transport ut_transport = {};
+
+static int
+ut_transport_create(struct spdk_nvmf_transport_opts *opts, spdk_nvmf_transport_create_done_cb cb_fn,
+		    void *cb_arg)
+{
+	cb_fn(cb_arg, &ut_transport);
+	return 0;
+}
+
+static void
+test_nvmf_create_transport_done(void *cb_arg, struct spdk_nvmf_transport *transport)
+{
+	struct spdk_nvmf_transport **ctx = cb_arg;
+
+	*ctx = transport;
+}
+
 static void
 test_spdk_nvmf_transport_create(void)
 {
 	int rc;
-	struct spdk_nvmf_transport ut_transport = {};
 	struct spdk_nvmf_transport *transport = NULL;
 	struct nvmf_transport_ops_list_element *ops_element;
+	struct spdk_iobuf_opts opts_iobuf = {};
 	struct spdk_nvmf_transport_ops ops = {
 		.name = "new_ops",
 		.type = (enum spdk_nvme_transport_type)SPDK_NVMF_TRTYPE_RDMA,
-		.create = ut_transport_create,
+		.create_async = ut_transport_create,
 		.destroy = ut_transport_destroy
 	};
 
+	opts_iobuf.large_bufsize = 0x10000;
+	opts_iobuf.large_pool_count = 4096;
+	opts_iobuf.small_bufsize = 0x1000;
+	opts_iobuf.small_pool_count = 4096;
+
+	rc = spdk_iobuf_set_opts(&opts_iobuf);
+	CU_ASSERT(rc == 0);
+
 	/* No available ops element */
-	transport = spdk_nvmf_transport_create("new_ops", &g_rdma_ut_transport_opts);
+	rc = spdk_nvmf_transport_create_async("new_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc != 0);
 	CU_ASSERT(transport == NULL);
 
-	/* Create transport successfully */
-	MOCK_SET(ut_transport_create, &ut_transport);
 	spdk_nvmf_transport_register(&ops);
 
-	transport = spdk_nvmf_transport_create("new_ops", &g_rdma_ut_transport_opts);
+	/* Ensure io_unit_size cannot be set to 0 */
+	g_rdma_ut_transport_opts.io_unit_size = 0;
+	rc = spdk_nvmf_transport_create_async("new_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc != 0);
+	CU_ASSERT(transport == NULL);
+
+	/* Ensure io_unit_size cannot be larger than large_bufsize */
+	g_rdma_ut_transport_opts.io_unit_size = opts_iobuf.large_bufsize * 2;
+	rc = spdk_nvmf_transport_create_async("new_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc != 0);
+	CU_ASSERT(transport == NULL);
+
+	g_rdma_ut_transport_opts.io_unit_size = SPDK_NVMF_RDMA_MIN_IO_BUFFER_SIZE;
+
+	/* Ensure kas cannot be set to 0 */
+	g_rdma_ut_transport_opts.kas = 0;
+	rc = spdk_nvmf_transport_create_async("new_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc != 0);
+	CU_ASSERT(transport == NULL);
+
+	g_rdma_ut_transport_opts.kas = NVMF_DEFAULT_KAS;
+
+	/* Ensure min_kato cannot be set to 0 */
+	g_rdma_ut_transport_opts.min_kato = 0;
+	rc = spdk_nvmf_transport_create_async("new_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc != 0);
+	CU_ASSERT(transport == NULL);
+
+	g_rdma_ut_transport_opts.min_kato = NVMF_DEFAULT_MIN_KATO;
+
+	/* min_kato should be rounded up to a multiple of kas * NVMF_KAS_TIME_UNIT_IN_MS */
+	g_rdma_ut_transport_opts.kas = NVMF_DEFAULT_KAS;
+	g_rdma_ut_transport_opts.min_kato = 1000;
+	rc = spdk_nvmf_transport_create_async("new_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(transport == &ut_transport);
+	CU_ASSERT(transport->opts.min_kato == NVMF_DEFAULT_KAS * NVMF_KAS_TIME_UNIT_IN_MS);
+
+	rc = spdk_nvmf_transport_destroy(transport, NULL, NULL);
+	CU_ASSERT(rc == 0);
+
+	g_rdma_ut_transport_opts.kas = NVMF_DEFAULT_KAS;
+	g_rdma_ut_transport_opts.min_kato = NVMF_DEFAULT_MIN_KATO;
+
+	/* Create transport successfully */
+	rc = spdk_nvmf_transport_create_async("new_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(transport == &ut_transport);
 	CU_ASSERT(!memcmp(&transport->opts, &g_rdma_ut_transport_opts, sizeof(g_rdma_ut_transport_opts)));
 	CU_ASSERT(!memcmp(transport->ops, &ops, sizeof(ops)));
-	CU_ASSERT(transport->data_buf_pool != NULL);
 
 	rc = spdk_nvmf_transport_destroy(transport, NULL, NULL);
 	CU_ASSERT(rc == 0);
 
 	/* transport_opts parameter invalid */
+	transport = NULL;
 	g_rdma_ut_transport_opts.max_io_size = 4096;
 
-	transport = spdk_nvmf_transport_create("new_ops", &g_rdma_ut_transport_opts);
+	rc = spdk_nvmf_transport_create_async("new_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc != 0);
 	CU_ASSERT(transport == NULL);
 	g_rdma_ut_transport_opts.max_io_size = (SPDK_NVMF_RDMA_MIN_IO_BUFFER_SIZE *
 						RDMA_UT_UNITS_IN_MAX_IO);
@@ -150,7 +227,6 @@ test_spdk_nvmf_transport_create(void)
 	ops_element = TAILQ_LAST(&g_spdk_nvmf_transport_ops, nvmf_transport_ops_list);
 	TAILQ_REMOVE(&g_spdk_nvmf_transport_ops, ops_element, link);
 	free(ops_element);
-	MOCK_CLEAR(ut_transport_create);
 }
 
 static struct spdk_nvmf_transport_poll_group *
@@ -181,28 +257,18 @@ test_nvmf_transport_poll_group_create(void)
 	ops.poll_group_destroy = ut_poll_group_destroy;
 	transport.ops = &ops;
 	transport.opts.buf_cache_size = SPDK_NVMF_DEFAULT_BUFFER_CACHE_SIZE;
-	transport.data_buf_pool = spdk_mempool_create("buf_pool", 32, 4096, 0, 0);
 
 	poll_group = nvmf_transport_poll_group_create(&transport, NULL);
 	SPDK_CU_ASSERT_FATAL(poll_group != NULL);
 	CU_ASSERT(poll_group->transport == &transport);
-	CU_ASSERT(poll_group->buf_cache_size == SPDK_NVMF_DEFAULT_BUFFER_CACHE_SIZE);
-	CU_ASSERT(poll_group->buf_cache_count == SPDK_NVMF_DEFAULT_BUFFER_CACHE_SIZE);
 
 	nvmf_transport_poll_group_destroy(poll_group);
-	spdk_mempool_free(transport.data_buf_pool);
-
-	/* Mempool members insufficient */
-	transport.data_buf_pool = spdk_mempool_create("buf_pool", 31, 4096, 0, 0);
 
 	poll_group = nvmf_transport_poll_group_create(&transport, NULL);
 	SPDK_CU_ASSERT_FATAL(poll_group != NULL);
 	CU_ASSERT(poll_group->transport == &transport);
-	CU_ASSERT(poll_group->buf_cache_size == 31);
-	CU_ASSERT(poll_group->buf_cache_count == 31);
 
 	nvmf_transport_poll_group_destroy(poll_group);
-	spdk_mempool_free(transport.data_buf_pool);
 }
 
 static void
@@ -211,22 +277,22 @@ test_spdk_nvmf_transport_opts_init(void)
 	int rc;
 	bool rcbool;
 	size_t opts_size;
-	struct spdk_nvmf_transport rtransport = {};
 	struct spdk_nvmf_transport *transport = NULL;
 	struct spdk_nvmf_transport_opts opts = {};
 	const struct spdk_nvmf_transport_ops *tops;
 	struct spdk_nvmf_transport_ops ops = {
 		.name = "ut_ops",
 		.type = (enum spdk_nvme_transport_type)SPDK_NVMF_TRTYPE_RDMA,
-		.create = ut_transport_create,
+		.create_async = ut_transport_create,
 		.destroy = ut_transport_destroy,
 		.opts_init = ut_opts_init
 	};
 
-	MOCK_SET(ut_transport_create, &rtransport);
 	spdk_nvmf_transport_register(&ops);
-	transport = spdk_nvmf_transport_create("ut_ops", &g_rdma_ut_transport_opts);
-	CU_ASSERT(transport == &rtransport);
+	rc = spdk_nvmf_transport_create_async("ut_ops", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(transport == &ut_transport);
 
 	tops = nvmf_get_transport_ops(ops.name);
 	CU_ASSERT(memcmp(tops, &ops, sizeof(struct spdk_nvmf_transport_ops)) == 0);
@@ -266,7 +332,6 @@ static void
 test_spdk_nvmf_transport_listen_ext(void)
 {
 	int rc;
-	struct spdk_nvmf_transport rtransport = {};
 	struct spdk_nvmf_transport *transport = NULL;
 	struct spdk_nvme_transport_id trid1 = {};
 	struct spdk_nvme_transport_id trid2 = {};
@@ -275,7 +340,7 @@ test_spdk_nvmf_transport_listen_ext(void)
 	struct spdk_nvmf_transport_ops ops = {
 		.name = "ut_ops1",
 		.type = (enum spdk_nvme_transport_type)SPDK_NVMF_TRTYPE_RDMA,
-		.create = ut_transport_create,
+		.create_async = ut_transport_create,
 		.destroy = ut_transport_destroy,
 		.opts_init = ut_opts_init,
 		.listen = ut_transport_listen,
@@ -288,9 +353,11 @@ test_spdk_nvmf_transport_listen_ext(void)
 	memcpy(trid1.traddr, "192.168.100.72", sizeof("192.168.100.72"));
 	memcpy(trid1.trsvcid, "4420", sizeof("4420"));
 
-	MOCK_SET(ut_transport_create, &rtransport);
 	spdk_nvmf_transport_register(&ops);
-	transport = spdk_nvmf_transport_create("ut_ops1", &g_rdma_ut_transport_opts);
+	rc = spdk_nvmf_transport_create_async("ut_ops1", &g_rdma_ut_transport_opts,
+					      test_nvmf_create_transport_done, &transport);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(transport == &ut_transport);
 
 	/* Test1: Execute listen failed */
 	MOCK_SET(ut_transport_listen, -1);
@@ -352,7 +419,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvmf", NULL, NULL);
@@ -362,9 +428,10 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_spdk_nvmf_transport_opts_init);
 	CU_ADD_TEST(suite, test_spdk_nvmf_transport_listen_ext);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	allocate_threads(1);
+	set_thread(0);
+
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

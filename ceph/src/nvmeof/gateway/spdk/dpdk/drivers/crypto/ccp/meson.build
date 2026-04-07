@@ -18,8 +18,9 @@ sources = files(
         'rte_ccp_pmd.c',
         'ccp_crypto.c',
         'ccp_dev.c',
-        'ccp_pci.c',
         'ccp_pmd_ops.c',
 )
 
 ext_deps += dep
+
+cflags += no_wvla_cflag

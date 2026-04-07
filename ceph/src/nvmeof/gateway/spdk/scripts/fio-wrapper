@@ -23,13 +23,14 @@ fio_config() {
 		iodepth=$iodepth
 		norandommap=$((verify == 1 ? 0 : 1))
 		numjobs=$numjobs
-		verify_dump=1
-		verify_backlog=512
-		verify_state_save=0
+		${rwmixread:+rwmixread=$rwmixread}
 	FIO
 
 	if ((verify == 1)); then
 		cat <<- FIO
+			verify_dump=1
+			verify_backlog=512
+			verify_state_save=0
 			do_verify=$verify
 			verify=crc32c-intel
 		FIO
@@ -44,7 +45,11 @@ fio_config() {
 }
 
 run_fio() {
-	fio_config "$@" | fio -
+	local output_args
+	if [[ -n "$output" ]]; then
+		output_args=("--group_reporting=1" "--output-format=json" "--output=$output")
+	fi
+	fio_config "$@" | fio "${output_args[@]}" -
 }
 
 get_iscsi() {
@@ -67,6 +72,12 @@ get_nvme() {
 	printf '%s\n' "${blocks[@]}"
 }
 
+get_ublk() {
+	local blocks
+	blocks=(/sys/block/ublk*)
+	printf '%s\n' "${blocks[@]##*/}"
+}
+
 get_devices() {
 	local devs=("$@")
 
@@ -74,6 +85,7 @@ get_devices() {
 		case "$protocol" in
 			iscsi) devs=($(get_iscsi)) ;;
 			nvmf) devs=($(get_nvme)) ;;
+			ublk) devs=($(get_ublk)) ;;
 			*) ;;
 		esac
 	fi
@@ -110,7 +122,9 @@ configure_devices() {
 		else
 			printf 'Could not set queue depth (%s)\n' "$dev" >&2
 		fi
-		echo none > "/sys/block/$dev/queue/scheduler"
+		if [[ -e /sys/block/$dev/queue/scheduler ]]; then
+			echo none > "/sys/block/$dev/queue/scheduler"
+		fi
 	done
 }
 
@@ -121,10 +135,12 @@ numjobs=1
 protocol="nvmf"
 runtime=1
 testtype="read"
+output=""
+rwmixread=""
 verify=0
 
 # Keep short args compatible with fio.py
-while getopts :i:d:n:p:r:t:v arg; do
+while getopts :i:d:n:p:r:t:o:m:v arg; do
 	case "$arg" in
 		i) blocksize=$OPTARG ;;
 		d) iodepth=$OPTARG ;;
@@ -132,6 +148,8 @@ while getopts :i:d:n:p:r:t:v arg; do
 		p) protocol=$OPTARG ;;
 		r) runtime=$OPTARG ;;
 		t) testtype=$OPTARG ;;
+		o) output=$OPTARG ;;
+		m) rwmixread=$OPTARG ;;
 		v) verify=1 ;;
 		*) ;;
 	esac

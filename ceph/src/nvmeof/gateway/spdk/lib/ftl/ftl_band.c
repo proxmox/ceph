@@ -1,5 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2018 Intel Corporation.
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   All rights reserved.
  */
 
@@ -133,6 +134,23 @@ ftl_band_tail_md_addr(struct ftl_band *band)
 	addr = ftl_band_tail_md_offset(band) + band->start_addr;
 
 	return addr;
+}
+
+const char *
+ftl_band_get_state_name(struct ftl_band *band)
+{
+	static const char *names[] = {
+		"FREE", "PREPARING", "OPENING", "OPEN", "FULL", "CLOSING",
+		"CLOSED",
+	};
+
+	assert(band->md->state < SPDK_COUNTOF(names));
+	if (band->md->state < SPDK_COUNTOF(names)) {
+		return names[band->md->state];
+	} else {
+		assert(false);
+		return "?";
+	}
 }
 
 void
@@ -315,7 +333,7 @@ ftl_band_alloc_md_entry(struct ftl_band *band)
 {
 	struct spdk_ftl_dev *dev = band->dev;
 	struct ftl_p2l_map *p2l_map = &band->p2l_map;
-	struct ftl_layout_region *region = &dev->layout.region[FTL_LAYOUT_REGION_TYPE_BAND_MD];
+	struct ftl_layout_region *region = ftl_layout_region_get(dev, FTL_LAYOUT_REGION_TYPE_BAND_MD);
 
 	p2l_map->band_dma_md = ftl_mempool_get(dev->band_md_pool);
 
@@ -429,8 +447,8 @@ ftl_p2l_map_pool_elem_size(struct spdk_ftl_dev *dev)
 	return ftl_tail_md_num_blocks(dev) * FTL_BLOCK_SIZE;
 }
 
-static double
-_band_invalidity(struct ftl_band *band)
+double
+ftl_band_invalidity(struct ftl_band *band)
 {
 	double valid = band->p2l_map.num_valid;
 	double count = ftl_band_user_blocks(band);
@@ -449,7 +467,7 @@ dump_bands_under_relocation(struct spdk_ftl_dev *dev)
 
 		FTL_DEBUGLOG(dev, "Band, id %u, phys_is %u, wr cnt = %u, invalidity = %u%%\n",
 			     band->id, band->phys_id, (uint32_t)band->md->wr_cnt,
-			     (uint32_t)(_band_invalidity(band) * 100));
+			     (uint32_t)(ftl_band_invalidity(band) * 100));
 	}
 }
 
@@ -490,7 +508,7 @@ get_band_phys_info(struct spdk_ftl_dev *dev, uint64_t phys_id,
 			continue;
 		}
 
-		*invalidity += _band_invalidity(band);
+		*invalidity += ftl_band_invalidity(band);
 	}
 
 	*invalidity /= dev->num_logical_bands_in_physical;
@@ -676,7 +694,7 @@ ftl_band_initialize_free_state(struct ftl_band *band)
 	_ftl_band_set_free(band);
 }
 
-void
+int
 ftl_bands_load_state(struct spdk_ftl_dev *dev)
 {
 	uint64_t i;
@@ -685,8 +703,16 @@ ftl_bands_load_state(struct spdk_ftl_dev *dev)
 	for (i = 0; i < dev->num_bands; i++) {
 		band = &dev->bands[i];
 
+		if (band->md->version != FTL_BAND_VERSION_CURRENT) {
+			FTL_ERRLOG(dev, "Invalid band version detected, %"PRIu64" (expected %d)\n",
+				   band->md->version, FTL_BAND_VERSION_CURRENT);
+			return -1;
+		}
+
 		if (band->md->state == FTL_BAND_STATE_FREE) {
 			ftl_band_initialize_free_state(band);
 		}
 	}
+
+	return 0;
 }

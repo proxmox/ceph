@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2019-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __VOLUME_H__
@@ -10,11 +11,6 @@
 #include "ocf_env.h"
 #include "ctx.h"
 #include "data.h"
-
-struct myvolume_io {
-	struct volume_data *data;
-	uint32_t offset;
-};
 
 struct myvolume {
 	uint8_t *mem;

@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2019-2022, Intel Corporation
+;; Copyright (c) 2019-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -27,10 +27,10 @@
 
 ;;; routines to do 128/192/256 bit CBC AES encrypt
 
-%include "include/os.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/reg_sizes.asm"
-%include "include/clear_regs.asm"
+%include "include/os.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/reg_sizes.inc"
+%include "include/clear_regs.inc"
 
 struc STACK
 _gpr_save:      resq    4

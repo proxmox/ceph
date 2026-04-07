@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2022, Intel Corporation
+;; Copyright (c) 2022-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -29,5 +29,5 @@
 
 %define AES_ECB_NROUNDS 14
 
-%include "include/os.asm"
+%include "include/os.inc"
 %include "avx_t1/aes128_ecb_by8_avx.asm"

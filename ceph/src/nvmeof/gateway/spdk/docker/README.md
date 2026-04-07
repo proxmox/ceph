@@ -5,6 +5,9 @@ into docker container images. The example containers consist of SPDK NVMe-oF
 target sharing devices to another SPDK NVMe-oF application. Which serves
 as both initiator and target. Finally a traffic generator based on FIO
 issues I/O to the connected devices.
+Please note that some simplifications have been made to the configuration files
+for the purpose of the example, please do not use the files directly in
+the production environment.
 
 ## Prerequisites
 
@@ -44,15 +47,10 @@ See `build_base` folder for details on what's included in the final image.
 
 Running `docker-compose up` creates 3 docker containers:
 
--- storage-target: Contains SPDK NVMe-oF target exposing single subsystem to
-`proxy-container` based on malloc bdev.
--- proxy-container: Contains SPDK NVMe-oF target connecting to `storage-target`
-and then exposing the same devices to `traffic-generator-nvme` using NVMe-oF and
-to `traffic-generator-virtio` using Virtio.
--- traffic-generator-nvme: Contains FIO using SPDK plugin to connect to `proxy-container`
-and runs a sample workload.
--- traffic-generator-virtio: Contains FIO using SPDK plugin to connect to `proxy-container`
-and runs a sample workload.
+- storage-target: Contains SPDK NVMe-oF target exposing single subsystem to `proxy-container` based on malloc bdev.
+- proxy-container: Connecting to `storage-target` and then exposing the same devices to `traffic-generator-nvme` using NVMe-oF and to `traffic-generator-virtio` using Virtio.
+- traffic-generator-nvme: Contains FIO using SPDK plugin to connect to `proxy-container` and runs a sample workload.
+- traffic-generator-virtio: Contains FIO using SPDK plugin to connect to `proxy-container` and runs a sample workload.
 
 Each container is connected to a separate "spdk" network which is created before
 deploying the containers. See `docker-compose.yaml` for the network's detailed setup and ip assignment.
@@ -89,6 +87,27 @@ examine the final setup. E.g.:
 ~~~{.sh}
 docker-compose exec storage-target rpc.py bdev_get_bdevs
 docker-compose exec proxy-container rpc.py nvmf_get_subsystems
+~~~
+
+## Monitoring
+
+`docker-compose.monitoring.yaml` shows an example deployment of the storage containers based on SPDK.
+
+Running `docker-compose -f docker-compose.monitoring.yaml up` creates 3 docker containers:
+
+- storage-target: Contains SPDK NVMe-oF target exposing single subsystem based on malloc bdev.
+- [telegraf](https://www.influxdata.com/time-series-platform/telegraf/) is a very minimal memory footprint agent for collecting and sending metrics and events.
+- [prometheus](https://prometheus.io/) is leading open-source monitoring solution.
+
+`telegraf` connects to `spdk` via `rpc_http_proxy.py` and uses `bdev_get_iostat` commands to fetch bdev statistics.
+
+In order to see data change, once all of the 3 containers are brought up, use `docker-compose run traffic-generator-nvme` to generate some traffic.
+
+Open Prometheus UI or query via cmdline. E.g.:
+
+~~~{.sh}
+curl --fail http://127.0.0.1:9090/api/v1/query?query=spdk_bytes_read
+curl --fail http://127.0.0.1:9090/api/v1/query?query=spdk_bytes_written
 ~~~
 
 ## Caveats

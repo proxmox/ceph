@@ -32,7 +32,6 @@
 
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_SHANI
 extern  sha256_mb_x4_sse
 extern  sha256_ni_x2
 
@@ -98,11 +97,11 @@ section .text
 %define _GPR_SAVE       8*7
 %define STACK_SPACE     _GPR_SAVE + _XMM_SAVE
 
-; SHA256_JOB* sha256_mb_mgr_submit_sse_ni(SHA256_MB_JOB_MGR *state, SHA256_JOB *job)
+; ISAL_SHA256_JOB* _sha256_mb_mgr_submit_sse_ni(ISAL_SHA256_MB_JOB_MGR *state, ISAL_SHA256_JOB *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-mk_global sha256_mb_mgr_submit_sse_ni, function
-sha256_mb_mgr_submit_sse_ni:
+mk_global _sha256_mb_mgr_submit_sse_ni, function, internal
+_sha256_mb_mgr_submit_sse_ni:
 	endbranch
 
 	sub     rsp, STACK_SPACE
@@ -131,7 +130,7 @@ sha256_mb_mgr_submit_sse_ni:
 	and     lane, 0xF
 	shr     unused_lanes, 4
 	imul    lane_data, lane, _LANE_DATA_size
-	mov     dword [job + _status], STS_BEING_PROCESSED
+	mov     dword [job + _status], ISAL_STS_BEING_PROCESSED
 	lea     lane_data, [state + _ldata + lane_data]
 	mov     [state + _unused_lanes], unused_lanes
 	mov     DWORD(len), [job + _len]
@@ -233,7 +232,7 @@ len_is_0:
 	mov     job_rax, [lane_data + _job_in_lane]
 	mov     unused_lanes, [state + _unused_lanes]
 	mov     qword [lane_data + _job_in_lane], 0
-	mov     dword [job_rax + _status], STS_COMPLETED
+	mov     dword [job_rax + _status], ISAL_STS_COMPLETED
 	shl     unused_lanes, 4
 	or      unused_lanes, idx
 	mov     [state + _unused_lanes], unused_lanes
@@ -292,10 +291,3 @@ H4:     dd  0x510e527f
 H5:     dd  0x9b05688c
 H6:     dd  0x1f83d9ab
 H7:     dd  0x5be0cd19
-
-%else
- %ifidn __OUTPUT_FORMAT__, win64
-  global no_sha256_mb_mgr_submit_sse_ni
-  no_sha256_mb_mgr_submit_sse_ni:
- %endif
-%endif ; HAVE_AS_KNOWS_SHANI

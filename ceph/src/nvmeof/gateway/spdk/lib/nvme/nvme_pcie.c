@@ -79,15 +79,15 @@ _nvme_pcie_event_process(struct spdk_pci_event *event, void *cb_ctx)
 			return;
 		}
 
-		ctrlr = nvme_get_ctrlr_by_trid_unsafe(&trid);
+		ctrlr = nvme_get_ctrlr_by_trid_unsafe(&trid, NULL);
 		if (ctrlr == NULL) {
 			return;
 		}
 		SPDK_DEBUGLOG(nvme, "remove nvme address: %s\n", trid.traddr);
 
-		nvme_robust_mutex_lock(&ctrlr->ctrlr_lock);
+		nvme_ctrlr_lock(ctrlr);
 		nvme_ctrlr_fail(ctrlr, true);
-		nvme_robust_mutex_unlock(&ctrlr->ctrlr_lock);
+		nvme_ctrlr_unlock(ctrlr);
 
 		/* get the user app to clean up and stop I/O */
 		if (ctrlr->remove_cb) {
@@ -103,6 +103,7 @@ _nvme_pcie_hotplug_monitor(struct spdk_nvme_probe_ctx *probe_ctx)
 {
 	struct spdk_nvme_ctrlr *ctrlr, *tmp;
 	struct spdk_pci_event event;
+	int rc = 0;
 
 	if (g_spdk_nvme_driver->hotplug_fd >= 0) {
 		while (spdk_pci_get_event(g_spdk_nvme_driver->hotplug_fd, &event) > 0) {
@@ -124,12 +125,13 @@ _nvme_pcie_hotplug_monitor(struct spdk_nvme_probe_ctx *probe_ctx)
 		pctrlr = nvme_pcie_ctrlr(ctrlr);
 		if (spdk_pci_device_is_removed(pctrlr->devhandle)) {
 			do_remove = true;
+			rc = 1;
 		}
 
 		if (do_remove) {
-			nvme_robust_mutex_lock(&ctrlr->ctrlr_lock);
+			nvme_ctrlr_lock(ctrlr);
 			nvme_ctrlr_fail(ctrlr, true);
-			nvme_robust_mutex_unlock(&ctrlr->ctrlr_lock);
+			nvme_ctrlr_unlock(ctrlr);
 			if (ctrlr->remove_cb) {
 				nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
 				ctrlr->remove_cb(ctrlr->cb_ctx, ctrlr);
@@ -137,7 +139,7 @@ _nvme_pcie_hotplug_monitor(struct spdk_nvme_probe_ctx *probe_ctx)
 			}
 		}
 	}
-	return 0;
+	return rc;
 }
 
 static volatile void *
@@ -146,6 +148,14 @@ nvme_pcie_reg_addr(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset)
 	struct nvme_pcie_ctrlr *pctrlr = nvme_pcie_ctrlr(ctrlr);
 
 	return (volatile void *)((uintptr_t)pctrlr->regs + offset);
+}
+
+static volatile struct spdk_nvme_registers *
+nvme_pcie_ctrlr_get_registers(struct spdk_nvme_ctrlr *ctrlr)
+{
+	struct nvme_pcie_ctrlr *pctrlr = nvme_pcie_ctrlr(ctrlr);
+
+	return pctrlr->regs;
 }
 
 static int
@@ -816,17 +826,28 @@ pcie_nvme_enum_cb(void *ctx, struct spdk_pci_device *pci_dev)
 	struct spdk_nvme_transport_id trid = {};
 	struct nvme_pcie_enum_ctx *enum_ctx = ctx;
 	struct spdk_nvme_ctrlr *ctrlr;
-	struct spdk_pci_addr pci_addr;
+	struct spdk_pci_addr pci_addr, _pci_addr;
 
 	pci_addr = spdk_pci_device_get_addr(pci_dev);
 
 	spdk_nvme_trid_populate_transport(&trid, SPDK_NVME_TRANSPORT_PCIE);
 	spdk_pci_addr_fmt(trid.traddr, sizeof(trid.traddr), &pci_addr);
 
-	ctrlr = nvme_get_ctrlr_by_trid_unsafe(&trid);
+	if (spdk_pci_addr_parse(&_pci_addr, trid.traddr)) {
+		SPDK_ERRLOG("spdk_pci_addr_parse failed; likely internal environment layer issue.\n");
+		assert(false);
+		return -1;
+	}
+
+	ctrlr = nvme_get_ctrlr_by_trid_unsafe(&trid, NULL);
 	if (!spdk_process_is_primary()) {
 		if (!ctrlr) {
 			SPDK_ERRLOG("Controller must be constructed in the primary process first.\n");
+			return -1;
+		}
+
+		if (ctrlr->opts.enable_interrupts) {
+			SPDK_ERRLOG("Secondary processes are not supported in interrupt mode.\n");
 			return -1;
 		}
 
@@ -840,6 +861,16 @@ pcie_nvme_enum_cb(void *ctx, struct spdk_pci_device *pci_dev)
 	}
 
 	return nvme_ctrlr_probe(&trid, enum_ctx->probe_ctx, pci_dev);
+}
+
+static int
+nvme_pci_ctrlr_scan_attached(struct spdk_nvme_probe_ctx *probe_ctx)
+{
+	/* Only the primary process can monitor hotplug. */
+	if (spdk_process_is_primary()) {
+		return _nvme_pcie_hotplug_monitor(probe_ctx);
+	}
+	return 0;
 }
 
 static int
@@ -858,8 +889,10 @@ nvme_pcie_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 	}
 
 	/* Only the primary process can monitor hotplug. */
-	if (spdk_process_is_primary()) {
-		_nvme_pcie_hotplug_monitor(probe_ctx);
+	if (nvme_pci_ctrlr_scan_attached(probe_ctx) > 0) {
+		/* Some removal events were received. Return immediately, avoiding
+		 * an spdk_pci_enumerate() which could trigger issue #3205. */
+		return 0;
 	}
 
 	if (enum_ctx.has_pci_addr == false) {
@@ -891,7 +924,7 @@ static struct spdk_nvme_ctrlr *
 	}
 
 	pctrlr = spdk_zmalloc(sizeof(struct nvme_pcie_ctrlr), 64, NULL,
-			      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
+			      SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
 	if (pctrlr == NULL) {
 		spdk_pci_device_unclaim(pci_dev);
 		SPDK_ERRLOG("could not allocate ctrlr\n");
@@ -907,6 +940,10 @@ static struct spdk_nvme_ctrlr *
 					      NVME_PCIE_MIN_ADMIN_QUEUE_SIZE);
 	pci_id = spdk_pci_device_get_id(pci_dev);
 	pctrlr->ctrlr.quirks = nvme_get_quirks(&pci_id);
+	if (pci_dev->numa_id != SPDK_ENV_NUMA_ID_ANY) {
+		pctrlr->ctrlr.numa.id_valid = 1;
+		pctrlr->ctrlr.numa.id = pci_dev->numa_id;
+	}
 
 	rc = nvme_ctrlr_construct(&pctrlr->ctrlr);
 	if (rc != 0) {
@@ -1002,16 +1039,33 @@ nvme_pcie_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr)
 
 	nvme_ctrlr_destruct_finish(ctrlr);
 
-	nvme_ctrlr_free_processes(ctrlr);
-
 	nvme_pcie_ctrlr_free_bars(pctrlr);
 
 	if (devhandle) {
+		if (ctrlr->opts.enable_interrupts) {
+			spdk_pci_device_disable_interrupts(devhandle);
+		}
 		spdk_pci_device_unclaim(devhandle);
 		spdk_pci_device_detach(devhandle);
 	}
 
 	spdk_free(pctrlr);
+
+	return 0;
+}
+
+static int
+nvme_pcie_ctrlr_enable_interrupts(struct spdk_nvme_ctrlr *ctrlr)
+{
+	struct spdk_pci_device *devhandle = nvme_ctrlr_proc_get_devhandle(ctrlr);
+	int rc;
+
+	assert(devhandle != NULL);
+	rc = spdk_pci_device_enable_interrupts(devhandle, ctrlr->opts.num_io_queues);
+	if (rc) {
+		SPDK_ERRLOG("enable_interrupts() failed\n");
+		return -EIO;
+	}
 
 	return 0;
 }
@@ -1064,9 +1118,12 @@ const struct spdk_nvme_transport_ops pcie_ops = {
 	.type = SPDK_NVME_TRANSPORT_PCIE,
 	.ctrlr_construct = nvme_pcie_ctrlr_construct,
 	.ctrlr_scan = nvme_pcie_ctrlr_scan,
+	.ctrlr_scan_attached = nvme_pci_ctrlr_scan_attached,
 	.ctrlr_destruct = nvme_pcie_ctrlr_destruct,
 	.ctrlr_enable = nvme_pcie_ctrlr_enable,
+	.ctrlr_enable_interrupts = nvme_pcie_ctrlr_enable_interrupts,
 
+	.ctrlr_get_registers = nvme_pcie_ctrlr_get_registers,
 	.ctrlr_set_reg_4 = nvme_pcie_ctrlr_set_reg_4,
 	.ctrlr_set_reg_8 = nvme_pcie_ctrlr_set_reg_8,
 	.ctrlr_get_reg_4 = nvme_pcie_ctrlr_get_reg_4,
@@ -1094,6 +1151,7 @@ const struct spdk_nvme_transport_ops pcie_ops = {
 	.qpair_submit_request = nvme_pcie_qpair_submit_request,
 	.qpair_process_completions = nvme_pcie_qpair_process_completions,
 	.qpair_iterate_requests = nvme_pcie_qpair_iterate_requests,
+	.qpair_get_fd = nvme_pcie_qpair_get_fd,
 	.admin_qpair_abort_aers = nvme_pcie_admin_qpair_abort_aers,
 
 	.poll_group_create = nvme_pcie_poll_group_create,
@@ -1102,6 +1160,7 @@ const struct spdk_nvme_transport_ops pcie_ops = {
 	.poll_group_add = nvme_pcie_poll_group_add,
 	.poll_group_remove = nvme_pcie_poll_group_remove,
 	.poll_group_process_completions = nvme_pcie_poll_group_process_completions,
+	.poll_group_check_disconnected_qpairs = nvme_pcie_poll_group_check_disconnected_qpairs,
 	.poll_group_destroy = nvme_pcie_poll_group_destroy,
 	.poll_group_get_stats = nvme_pcie_poll_group_get_stats,
 	.poll_group_free_stats = nvme_pcie_poll_group_free_stats

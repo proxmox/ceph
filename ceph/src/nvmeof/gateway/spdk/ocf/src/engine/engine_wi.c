@@ -1,34 +1,28 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
 #include "../ocf_cache_priv.h"
 #include "engine_wi.h"
 #include "engine_common.h"
+#include "engine_io.h"
 #include "../concurrency/ocf_concurrency.h"
 #include "../ocf_request.h"
 #include "../utils/utils_cache_line.h"
-#include "../utils/utils_io.h"
 #include "../metadata/metadata.h"
 
 #define OCF_ENGINE_DEBUG_IO_NAME "wi"
 #include "engine_debug.h"
 
-static int ocf_write_wi_update_and_flush_metadata(struct ocf_request *req);
-
-static const struct ocf_io_if _io_if_wi_update_metadata = {
-		.read = ocf_write_wi_update_and_flush_metadata,
-		.write = ocf_write_wi_update_and_flush_metadata,
-};
-
-int _ocf_write_wi_next_pass(struct ocf_request *req)
+static int _ocf_write_wi_next_pass(struct ocf_request *req)
 {
 	ocf_req_unlock_wr(ocf_cache_line_concurrency(req->cache), req);
 
 	if (req->wi_second_pass) {
-		req->complete(req, req->error);
+		req->complete(req, 0);
 		ocf_req_put(req);
 
 		return 0;
@@ -50,34 +44,23 @@ int _ocf_write_wi_next_pass(struct ocf_request *req)
 	return 0;
 }
 
-static const struct ocf_io_if _io_if_wi_next_pass = {
-		.read = _ocf_write_wi_next_pass,
-		.write = _ocf_write_wi_next_pass,
-};
-
 static void _ocf_write_wi_io_flush_metadata(struct ocf_request *req, int error)
 {
 	if (error) {
 		ocf_core_stats_cache_error_update(req->core, OCF_WRITE);
-		req->error |= error;
-	}
-
-	if (env_atomic_dec_return(&req->req_remaining))
-		return;
-
-	if (!req->error && !req->wi_second_pass && ocf_engine_is_miss(req)) {
-		/* need another pass */
-		ocf_engine_push_req_front_if(req, &_io_if_wi_next_pass,
-				true);
-		return;
-	}
-
-	if (req->error)
 		ocf_engine_error(req, true, "Failed to write data to cache");
+	}
+
+	if (!error && !req->wi_second_pass && ocf_engine_is_miss(req)) {
+		/* need another pass */
+		ocf_queue_push_req_cb(req, _ocf_write_wi_next_pass,
+				OCF_QUEUE_ALLOW_SYNC | OCF_QUEUE_PRIO_HIGH);
+		return;
+	}
 
 	ocf_req_unlock_wr(ocf_cache_line_concurrency(req->cache), req);
 
-	req->complete(req, req->error);
+	req->complete(req, error);
 
 	ocf_req_put(req);
 }
@@ -94,8 +77,6 @@ static int ocf_write_wi_update_and_flush_metadata(struct ocf_request *req)
 
 	/* There are mapped cache line, need to remove them */
 
-	env_atomic_set(&req->req_remaining, 1); /* One core IO */
-
 	ocf_hb_req_prot_lock_wr(req); /*- Metadata WR access ---------------*/
 
 	/* Remove mapped cache lines from metadata */
@@ -107,6 +88,8 @@ static int ocf_write_wi_update_and_flush_metadata(struct ocf_request *req)
 		/* Request was dirty and need to flush metadata */
 		ocf_metadata_flush_do_asynch(cache, req,
 				_ocf_write_wi_io_flush_metadata);
+
+		return 0;
 	}
 
 	_ocf_write_wi_io_flush_metadata(req, 0);
@@ -116,26 +99,20 @@ static int ocf_write_wi_update_and_flush_metadata(struct ocf_request *req)
 
 static void _ocf_write_wi_core_complete(struct ocf_request *req, int error)
 {
-	if (error) {
-		req->error = error;
-		req->info.core_error = 1;
-		ocf_core_stats_core_error_update(req->core, OCF_WRITE);
-	}
-
-	if (env_atomic_dec_return(&req->req_remaining))
-		return;
-
 	OCF_DEBUG_RQ(req, "Completion");
 
-	if (req->error) {
+	if (error) {
+		ocf_core_stats_core_error_update(req->core, OCF_WRITE);
+
 		ocf_req_unlock_wr(ocf_cache_line_concurrency(req->cache), req);
 
-		req->complete(req, req->error);
+		req->complete(req, error);
 
 		ocf_req_put(req);
 	} else {
-		ocf_engine_push_req_front_if(req, &_io_if_wi_update_metadata,
-				true);
+		ocf_queue_push_req_cb(req,
+				ocf_write_wi_update_and_flush_metadata,
+				OCF_QUEUE_ALLOW_SYNC | OCF_QUEUE_PRIO_HIGH);
 	}
 }
 
@@ -144,16 +121,30 @@ static int _ocf_write_wi_core_write(struct ocf_request *req)
 	/* Get OCF request - increase reference counter */
 	ocf_req_get(req);
 
-	env_atomic_set(&req->req_remaining, 1); /* One core IO */
+	if (req->info.dirty_any) {
+		ocf_hb_req_prot_lock_rd(req);
+		/* Need to clean, start it */
+		ocf_engine_clean(req);
+		ocf_hb_req_prot_unlock_rd(req);
+
+		/* The processing shall be resumed once the async cleaning
+		   ends */
+		ocf_req_put(req);
+
+		return 0;
+	}
 
 	OCF_DEBUG_RQ(req, "Submit");
 
 	/* Submit write IO to the core */
-	ocf_submit_volume_req(&req->core->volume, req,
-			   _ocf_write_wi_core_complete);
+	ocf_engine_forward_core_io_req(req, _ocf_write_wi_core_complete);
 
 	/* Update statistics */
 	ocf_engine_update_block_stats(req);
+
+	ocf_core_stats_pt_block_update(req->core, req->part_id, req->rw,
+			req->bytes);
+
 	ocf_core_stats_request_pt_update(req->core, req->part_id, req->rw,
 			req->info.hit_no, req->core_line_count);
 
@@ -166,13 +157,8 @@ static int _ocf_write_wi_core_write(struct ocf_request *req)
 static void _ocf_write_wi_on_resume(struct ocf_request *req)
 {
 	OCF_DEBUG_RQ(req, "On resume");
-	ocf_engine_push_req_front(req, true);
+	ocf_queue_push_req(req, OCF_QUEUE_ALLOW_SYNC | OCF_QUEUE_PRIO_HIGH);
 }
-
-static const struct ocf_io_if _io_if_wi_core_write = {
-	.read = _ocf_write_wi_core_write,
-	.write = _ocf_write_wi_core_write,
-};
 
 int ocf_write_wi(struct ocf_request *req)
 {
@@ -180,15 +166,14 @@ int ocf_write_wi(struct ocf_request *req)
 
 	OCF_DEBUG_TRACE(req->cache);
 
-	ocf_io_start(&req->ioi.io);
 
 	/* Get OCF request - increase reference counter */
 	ocf_req_get(req);
 
-	/* Set resume io_if */
-	req->io_if = req->wi_second_pass ?
-			&_io_if_wi_update_metadata :
-			&_io_if_wi_core_write;
+	/* Set resume handler */
+	req->engine_handler = req->wi_second_pass ?
+			ocf_write_wi_update_and_flush_metadata :
+			_ocf_write_wi_core_write;
 
 	ocf_req_hash(req);
 	ocf_hb_req_prot_lock_rd(req); /*- Metadata READ access, No eviction --------*/
@@ -209,7 +194,7 @@ int ocf_write_wi(struct ocf_request *req)
 
 	if (lock >= 0) {
 		if (lock == OCF_LOCK_ACQUIRED) {
-			req->io_if->write(req);
+			req->engine_handler(req);
 		} else {
 			/* WR lock was not acquired, need to wait for resume */
 			OCF_DEBUG_RQ(req, "NO LOCK");

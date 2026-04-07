@@ -20,14 +20,14 @@ import tempfile
 
 TSC_MAX = (1 << 64) - 1
 UCHAR_MAX = (1 << 8) - 1
-TRACE_MAX_LCORE = 128
+TRACE_MAX_LCORE = 1024
 TRACE_MAX_GROUP_ID = 16
 TRACE_MAX_TPOINT_ID = TRACE_MAX_GROUP_ID * 64
 TRACE_MAX_ARGS_COUNT = 8
 TRACE_MAX_RELATIONS = 16
 TRACE_INVALID_OBJECT = (1 << 64) - 1
 OBJECT_NONE = 0
-OWNER_NONE = 0
+OWNER_TYPE_NONE = 0
 
 
 @dataclass
@@ -107,7 +107,7 @@ class DTrace:
         files = subprocess.check_output(['git', 'ls-files', '*.[ch]',
                                         ':!:include/spdk_internal/usdt.h'])
         files = filter(lambda f: len(f) > 0, str(files, 'ascii').split('\n'))
-        regex = re.compile(r'SPDK_DTRACE_PROBE([0-9]*)\((\w+)')
+        regex = re.compile(r'SPDK_DTRACE_PROBE([0-9]*)_TICKS\((\w+)')
         probes = {}
 
         for fname in files:
@@ -175,7 +175,7 @@ class TraceEntry:
     lcore: int
     tpoint: Tracepoint
     tsc: int
-    poller: str
+    owner: str
     size: int
     object_id: str
     object_ptr: int
@@ -213,7 +213,7 @@ class JsonProvider(TraceProvider):
             self._tpoints[tpoint_id] = Tracepoint(
                 name=tpoint['name'], id=tpoint_id,
                 new_object=tpoint['new_object'], object_type=OBJECT_NONE,
-                owner_type=OWNER_NONE,
+                owner_type=OWNER_TYPE_NONE,
                 args=[TracepointArgument(name=a['name'],
                                          argtype=a['type'])
                       for a in tpoint.get('args', [])])
@@ -242,7 +242,7 @@ class JsonProvider(TraceProvider):
         return TraceEntry(tpoint=tpoint, lcore=entry['lcore'], tsc=entry['tsc'],
                           size=entry.get('size'), object_id=obj.get('id'),
                           object_ptr=obj.get('value'), related=entry.get('related'),
-                          time=obj.get('time'), poller=entry.get('poller'),
+                          time=obj.get('time'), owner=entry.get('owner'),
                           args={n.name: v for n, v in zip(tpoint.args, entry.get('args', []))})
 
     def tsc_rate(self):
@@ -301,8 +301,9 @@ class CTracepoint(ct.Structure):
                 ('related_objects', CTpointRelatedObject * TRACE_MAX_RELATIONS)]
 
 
-class CTraceFlags(ct.Structure):
-    _fields_ = [('tsc_rate', ct.c_uint64),
+class CTraceFile(ct.Structure):
+    _fields_ = [('file_size', ct.c_uint64),
+                ('tsc_rate', ct.c_uint64),
                 ('tpoint_mask', ct.c_uint64 * TRACE_MAX_GROUP_ID),
                 ('owner', CTraceOwner * (UCHAR_MAX + 1)),
                 ('object', CTraceObject * (UCHAR_MAX + 1)),
@@ -312,7 +313,7 @@ class CTraceFlags(ct.Structure):
 class CTraceEntry(ct.Structure):
     _fields_ = [('tsc', ct.c_uint64),
                 ('tpoint_id', ct.c_uint16),
-                ('poller_id', ct.c_uint16),
+                ('owner_id', ct.c_uint16),
                 ('size', ct.c_uint32),
                 ('object_id', ct.c_uint64)]
 
@@ -347,7 +348,7 @@ class NativeProvider(TraceProvider):
         self._lib = ct.CDLL('build/lib/libspdk_trace_parser.so')
         self._lib.spdk_trace_parser_init.restype = ct.c_void_p
         self._lib.spdk_trace_parser_init.errcheck = lambda r, *_: ct.c_void_p(r)
-        self._lib.spdk_trace_parser_get_flags.restype = ct.POINTER(CTraceFlags)
+        self._lib.spdk_trace_parser_get_file.restype = ct.POINTER(CTraceFile)
         opts = CParserOpts(filename=bytes(filename, 'ascii'), mode=0,
                            lcore=TRACE_MAX_LCORE)
         self._parser = self._lib.spdk_trace_parser_init(ct.byref(opts))
@@ -367,7 +368,7 @@ class NativeProvider(TraceProvider):
                       for a in tpoint.args[:tpoint.num_args]])
 
     def _parse_defs(self):
-        flags = self._lib.spdk_trace_parser_get_flags(self._parser)
+        flags = self._lib.spdk_trace_parser_get_file(self._parser)
         self._tsc_rate = flags.contents.tsc_rate
         self._parse_tpoints(flags.contents.tpoint)
 
@@ -405,10 +406,10 @@ class NativeProvider(TraceProvider):
             else:
                 object_id, ts = None, None
 
-            if tpoint.owner_type != OWNER_NONE:
-                poller_id = '{}{:02}'.format(self._owners[tpoint.owner_type], entry.poller_id)
+            if tpoint.owner_type != OWNER_TYPE_NONE:
+                owner_id = '{}{:02}'.format(self._owners[tpoint.owner_type], entry.owner_id)
             else:
-                poller_id = None
+                owner_id = None
 
             if pe.related_type != OBJECT_NONE:
                 related = '{}{}'.format(self._objects[pe.related_type], pe.related_index)
@@ -417,7 +418,7 @@ class NativeProvider(TraceProvider):
 
             yield TraceEntry(tpoint=tpoint, lcore=lcore, tsc=entry.tsc,
                              size=entry.size, object_id=object_id,
-                             object_ptr=entry.object_id, poller=poller_id, time=ts,
+                             object_ptr=entry.object_id, owner=owner_id, time=ts,
                              args=args, related=related)
 
 
@@ -469,7 +470,7 @@ class Trace:
             related = ' (' + e.related + ')' if e.related is not None else ''
 
             print(('{:3} {:16.3f} {:3} {:24} {:12}'.format(
-                e.lcore, timestamp, e.poller if e.poller is not None else '',
+                e.lcore, timestamp, e.owner if e.owner is not None else '',
                 e.tpoint.name, f'size: {e.size}' if e.size else '') +
                 (f'id: {e.object_id + related:12} ' if e.object_id is not None else '') +
                 (f'time: {diff:<8.3f} ' if diff is not None else '') +

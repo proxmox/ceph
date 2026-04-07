@@ -34,7 +34,7 @@
 #endif
 
 
-// copying data from sparse memory unto continous stack space
+// copying data from sparse memory unto continuous stack space
 // in oroder to gather-load into SVE registers
 .macro copy_mb_16words vecs:req,dest:req
 	mov	src,\vecs
@@ -66,6 +66,7 @@
 .endm
 
 #include "md5_sve_common.S"
+.text
 
 /* int md5_mb_sve_max_lanes()
  */
@@ -78,7 +79,7 @@ md5_mb_sve_max_lanes:
 	.size md5_mb_sve_max_lanes, .-md5_mb_sve_max_lanes
 
 /*
- *  void md5_mb_sve/sv2(int blocks, int total_lanes, MD5_JOB **job_vec)
+ *  void md5_mb_sve/sv2(int blocks, int total_lanes, ISAL_MD5_JOB **job_vec)
  */
 	num_blocks	.req	w0
 	total_lanes	.req	w1

@@ -9,7 +9,7 @@
 #include "scsi/scsi_bdev.c"
 #include "common/lib/test_env.c"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "spdk_internal/mock.h"
 #include "spdk/bdev_module.h"
@@ -19,10 +19,13 @@ SPDK_LOG_REGISTER_COMPONENT(scsi)
 static uint64_t g_test_bdev_num_blocks;
 
 TAILQ_HEAD(, spdk_bdev_io) g_bdev_io_queue;
+int g_outstanding_bdev_io_count = 0;
 int g_scsi_cb_called = 0;
 
 TAILQ_HEAD(, spdk_bdev_io_wait_entry) g_io_wait_queue;
+int g_pending_bdev_io_count  = 0;
 bool g_bdev_io_pool_full = false;
+int g_bdev_io_pool_count = -1;
 
 bool
 spdk_bdev_io_type_supported(struct spdk_bdev *bdev, enum spdk_bdev_io_type io_type)
@@ -38,6 +41,9 @@ DEFINE_STUB(spdk_bdev_get_name, const char *,
 
 DEFINE_STUB(spdk_bdev_get_block_size, uint32_t,
 	    (const struct spdk_bdev *bdev), 512);
+
+DEFINE_STUB(spdk_bdev_get_acwu, uint16_t,
+	    (const struct spdk_bdev *bdev), 1);
 
 DEFINE_STUB(spdk_bdev_get_md_size, uint32_t,
 	    (const struct spdk_bdev *bdev), 8);
@@ -98,6 +104,9 @@ DEFINE_STUB(spdk_scsi_dev_get_first_lun, struct spdk_scsi_lun *,
 DEFINE_STUB(spdk_scsi_dev_get_next_lun, struct spdk_scsi_lun *,
 	    (struct spdk_scsi_lun *prev_lun), NULL);
 
+DEFINE_STUB(spdk_scsi_sbc_opcode_string, const char *,
+	    (uint8_t opcode, uint16_t sa), "UNKNOWN");
+
 static void
 ut_put_task(struct spdk_scsi_task *task)
 {
@@ -133,6 +142,12 @@ spdk_bdev_io_get_scsi_status(const struct spdk_bdev_io *bdev_io,
 		*asc = SPDK_SCSI_ASC_NO_ADDITIONAL_SENSE;
 		*ascq = SPDK_SCSI_ASCQ_CAUSE_NOT_REPORTABLE;
 		break;
+	case SPDK_BDEV_IO_STATUS_MISCOMPARE:
+		*sc = SPDK_SCSI_STATUS_CHECK_CONDITION;
+		*sk = SPDK_SCSI_SENSE_MISCOMPARE;
+		*asc = SPDK_SCSI_ASC_MISCOMPARE_DURING_VERIFY_OPERATION;
+		*ascq = bdev_io->internal.error.scsi.ascq;
+		break;
 	case SPDK_BDEV_IO_STATUS_SCSI_ERROR:
 		*sc = bdev_io->internal.error.scsi.sc;
 		*sk = bdev_io->internal.error.scsi.sk;
@@ -156,24 +171,41 @@ spdk_bdev_io_get_iovec(struct spdk_bdev_io *bdev_io, struct iovec **iovp, int *i
 }
 
 static void
-ut_bdev_io_flush(void)
+ut_bdev_io_complete(void)
 {
 	struct spdk_bdev_io *bdev_io;
+
+	while (!TAILQ_EMPTY(&g_bdev_io_queue)) {
+		bdev_io = TAILQ_FIRST(&g_bdev_io_queue);
+		TAILQ_REMOVE(&g_bdev_io_queue, bdev_io, internal.link);
+		bdev_io->internal.cb(bdev_io, true, bdev_io->internal.caller_ctx);
+		free(bdev_io);
+		g_outstanding_bdev_io_count--;
+		if (g_bdev_io_pool_count != -1) {
+			g_bdev_io_pool_count++;
+		}
+	}
+}
+
+static void
+ut_bdev_io_retry(void)
+{
 	struct spdk_bdev_io_wait_entry *entry;
 
-	while (!TAILQ_EMPTY(&g_bdev_io_queue) || !TAILQ_EMPTY(&g_io_wait_queue)) {
-		while (!TAILQ_EMPTY(&g_bdev_io_queue)) {
-			bdev_io = TAILQ_FIRST(&g_bdev_io_queue);
-			TAILQ_REMOVE(&g_bdev_io_queue, bdev_io, internal.link);
-			bdev_io->internal.cb(bdev_io, true, bdev_io->internal.caller_ctx);
-			free(bdev_io);
-		}
+	while (!TAILQ_EMPTY(&g_io_wait_queue)) {
+		entry = TAILQ_FIRST(&g_io_wait_queue);
+		TAILQ_REMOVE(&g_io_wait_queue, entry, link);
+		g_pending_bdev_io_count--;
+		entry->cb_fn(entry->cb_arg);
+	}
+}
 
-		while (!TAILQ_EMPTY(&g_io_wait_queue)) {
-			entry = TAILQ_FIRST(&g_io_wait_queue);
-			TAILQ_REMOVE(&g_io_wait_queue, entry, link);
-			entry->cb_fn(entry->cb_arg);
-		}
+static void
+ut_bdev_io_flush(void)
+{
+	while (!TAILQ_EMPTY(&g_bdev_io_queue) || !TAILQ_EMPTY(&g_io_wait_queue)) {
+		ut_bdev_io_complete();
+		ut_bdev_io_retry();
 	}
 }
 
@@ -185,6 +217,10 @@ _spdk_bdev_io_op(spdk_bdev_io_completion_cb cb, void *cb_arg)
 	if (g_bdev_io_pool_full) {
 		g_bdev_io_pool_full = false;
 		return -ENOMEM;
+	} else if (g_bdev_io_pool_count == 0) {
+		return -ENOMEM;
+	} else if (g_bdev_io_pool_count != -1) {
+		g_bdev_io_pool_count--;
 	}
 
 	bdev_io = calloc(1, sizeof(*bdev_io));
@@ -194,6 +230,7 @@ _spdk_bdev_io_op(spdk_bdev_io_completion_cb cb, void *cb_arg)
 	bdev_io->internal.caller_ctx = cb_arg;
 
 	TAILQ_INSERT_TAIL(&g_bdev_io_queue, bdev_io, internal.link);
+	g_outstanding_bdev_io_count++;
 
 	return 0;
 }
@@ -212,6 +249,16 @@ spdk_bdev_writev_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 			struct iovec *iov, int iovcnt,
 			uint64_t offset_blocks, uint64_t num_blocks,
 			spdk_bdev_io_completion_cb cb, void *cb_arg)
+{
+	return _spdk_bdev_io_op(cb, cb_arg);
+}
+
+int
+spdk_bdev_comparev_and_writev_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+				     struct iovec *compare_iov, int compare_iovcnt,
+				     struct iovec *write_iov, int write_iovcnt,
+				     uint64_t offset_blocks, uint64_t num_blocks,
+				     spdk_bdev_io_completion_cb cb, void *cb_arg)
 {
 	return _spdk_bdev_io_op(cb, cb_arg);
 }
@@ -244,6 +291,7 @@ spdk_bdev_queue_io_wait(struct spdk_bdev *bdev, struct spdk_io_channel *ch,
 			struct spdk_bdev_io_wait_entry *entry)
 {
 	TAILQ_INSERT_TAIL(&g_io_wait_queue, entry, link);
+	g_pending_bdev_io_count++;
 	return 0;
 }
 
@@ -251,8 +299,9 @@ int
 spdk_dif_ctx_init(struct spdk_dif_ctx *ctx, uint32_t block_size, uint32_t md_size,
 		  bool md_interleave, bool dif_loc, enum spdk_dif_type dif_type, uint32_t dif_flags,
 		  uint32_t init_ref_tag, uint16_t apptag_mask, uint16_t app_tag,
-		  uint32_t data_offset, uint16_t guard_seed)
+		  uint32_t data_offset, uint64_t guard_seed, struct spdk_dif_ctx_init_ext_opts *opts)
 {
+	ctx->dif_pi_format = opts->dif_pi_format;
 	ctx->init_ref_tag = init_ref_tag;
 	ctx->ref_tag_offset = data_offset / 512;
 	return 0;
@@ -981,6 +1030,102 @@ get_dif_ctx_test(void)
 	CU_ASSERT(dif_ctx.init_ref_tag + dif_ctx.ref_tag_offset == 0x12345678);
 }
 
+static void
+unmap_split_test(void)
+{
+	struct spdk_bdev bdev = { .blocklen = 512 };
+	struct spdk_scsi_lun lun;
+	struct spdk_scsi_task task;
+	uint8_t cdb[16];
+	char data[4096];
+	int rc;
+
+	lun.bdev = &bdev;
+
+	/* Test block device size of 512 MiB */
+	g_test_bdev_num_blocks = 512 * 1024 * 1024;
+
+	/* Unmap 5 blocks using 6 descriptors(descriptor 2 has 0 blocks). bdev_io pool size is 2.
+	 * Hence, unmap should be done by 3 iterations.
+	 * 1st - 2 unmaps(0, 1), 2nd - 3 unmaps(2, 3, 4), and 3rd - 1 unmap(5).
+	 */
+	ut_init_task(&task);
+	task.lun = &lun;
+	task.cdb = cdb;
+	memset(cdb, 0, sizeof(cdb));
+	cdb[0] = 0x42; /* UNMAP */
+	to_be16(&data[7], 6); /* 6 parameters in list */
+	memset(data, 0, sizeof(data));
+	to_be16(&data[2], 16 * 6); /* 6 descriptors */
+	to_be64(&data[8], 1); /* LBA 1 */
+	to_be32(&data[16], 2); /* 2 blocks */
+	to_be64(&data[24], 5); /* LBA 5 */
+	to_be32(&data[32], 3); /* 3 blocks */
+	to_be64(&data[40], 10); /* LBA 10 */
+	to_be32(&data[48], 0); /* 0 block */
+	to_be64(&data[56], 15); /* LBA 15 */
+	to_be32(&data[64], 4); /* 4 blocks */
+	to_be64(&data[72], 30); /* LBA 30 */
+	to_be32(&data[80], 1); /* 1 block */
+	to_be64(&data[88], 40); /* LBA 40 */
+	to_be32(&data[96], 1); /* 1 block */
+	spdk_scsi_task_set_data(&task, data, sizeof(data));
+	task.status = SPDK_SCSI_STATUS_GOOD;
+
+	g_bdev_io_pool_full = true;
+
+	rc = bdev_scsi_execute(&task);
+	CU_ASSERT(rc == SPDK_SCSI_TASK_PENDING);
+	CU_ASSERT(task.status == SPDK_SCSI_STATUS_GOOD);
+	CU_ASSERT(g_scsi_cb_called == 0);
+	CU_ASSERT(g_outstanding_bdev_io_count == 0);
+	CU_ASSERT(g_pending_bdev_io_count == 1);
+
+	g_bdev_io_pool_count = 2;
+	ut_bdev_io_retry();
+
+	/* descriptor 0 and 1 */
+	CU_ASSERT(g_outstanding_bdev_io_count == 2);
+	CU_ASSERT(g_pending_bdev_io_count == 0);
+
+	g_bdev_io_pool_full = true;
+	ut_bdev_io_complete();
+
+	CU_ASSERT(g_outstanding_bdev_io_count == 0);
+	CU_ASSERT(g_pending_bdev_io_count == 1);
+
+	ut_bdev_io_retry();
+
+	/* descriptor 2 and 3 (descriptor 2 is valid even though it is 0 blocks) */
+	CU_ASSERT(g_outstanding_bdev_io_count == 2);
+	CU_ASSERT(g_pending_bdev_io_count == 0);
+
+	g_bdev_io_pool_full = true;
+	ut_bdev_io_complete();
+
+	CU_ASSERT(g_outstanding_bdev_io_count == 0);
+	CU_ASSERT(g_pending_bdev_io_count == 1);
+
+	ut_bdev_io_retry();
+
+	/* descriptor 4 and 5 */
+	CU_ASSERT(g_outstanding_bdev_io_count == 2);
+	CU_ASSERT(g_pending_bdev_io_count == 0);
+
+	ut_bdev_io_complete();
+
+	CU_ASSERT(task.status == SPDK_SCSI_STATUS_GOOD);
+	CU_ASSERT(g_scsi_cb_called == 1);
+
+	g_scsi_cb_called = 0;
+	g_bdev_io_pool_count = -1;
+
+	SPDK_CU_ASSERT_FATAL(TAILQ_EMPTY(&g_bdev_io_queue));
+	SPDK_CU_ASSERT_FATAL(TAILQ_EMPTY(&g_io_wait_queue));
+
+	ut_put_task(&task);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -990,7 +1135,6 @@ main(int argc, char **argv)
 	TAILQ_INIT(&g_bdev_io_queue);
 	TAILQ_INIT(&g_io_wait_queue);
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("translation_suite", NULL, NULL);
@@ -1008,10 +1152,9 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, xfer_test);
 	CU_ADD_TEST(suite, scsi_name_padding_test);
 	CU_ADD_TEST(suite, get_dif_ctx_test);
+	CU_ADD_TEST(suite, unmap_split_test);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2020-2022, Intel Corporation
+;; Copyright (c) 2020-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -33,11 +33,11 @@
 ;; "The design of Poly1305"
 ;;     http://loup-vaillant.fr/tutorials/poly1305-design
 
-%include "include/os.asm"
-%include "include/reg_sizes.asm"
-%include "include/memcpy.asm"
-%include "include/imb_job.asm"
-%include "include/clear_regs.asm"
+%include "include/os.inc"
+%include "include/reg_sizes.inc"
+%include "include/memcpy.inc"
+%include "include/imb_job.inc"
+%include "include/clear_regs.inc"
 
 [bits 64]
 default rel

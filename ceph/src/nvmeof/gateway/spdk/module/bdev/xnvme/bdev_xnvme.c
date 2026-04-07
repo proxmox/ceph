@@ -5,7 +5,6 @@
  */
 
 #include "libxnvme.h"
-#include "libxnvme_pp.h"
 
 #include "bdev_xnvme.h"
 
@@ -99,10 +98,17 @@ bdev_xnvme_get_io_channel(void *ctx)
 static bool
 bdev_xnvme_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 {
+	struct bdev_xnvme *xnvme = ctx;
+
 	switch (io_type) {
 	case SPDK_BDEV_IO_TYPE_READ:
 	case SPDK_BDEV_IO_TYPE_WRITE:
 		return true;
+	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+	case SPDK_BDEV_IO_TYPE_UNMAP:
+		/* libaio and io_uring only supports read and write */
+		return !strcmp(xnvme->io_mechanism, "io_uring_cmd") &&
+		       xnvme_dev_get_csi(xnvme->dev) == XNVME_SPEC_CSI_NVM;
 	default:
 		return false;
 	}
@@ -127,20 +133,64 @@ bdev_xnvme_destruct(void *ctx)
 	return 0;
 }
 
+static int
+bdev_xnvme_unmap(struct spdk_bdev_io *bdev_io, struct xnvme_cmd_ctx *ctx, struct bdev_xnvme *xnvme)
+{
+	struct spdk_nvme_dsm_range *range;
+	uint64_t offset, remaining;
+	uint64_t num_ranges_u64, num_blocks, offset_blocks;
+	uint16_t num_ranges;
+
+	num_blocks = bdev_io->u.bdev.num_blocks;
+	offset_blocks = bdev_io->u.bdev.offset_blocks;
+
+	num_ranges_u64 = spdk_divide_round_up(num_blocks, xnvme->bdev.max_unmap);
+	if (num_ranges_u64 > xnvme->bdev.max_unmap_segments) {
+		SPDK_ERRLOG("Unmap request for %" PRIu64 " blocks is too large\n", num_blocks);
+		return -EINVAL;
+	}
+	num_ranges = (uint16_t)num_ranges_u64;
+
+	offset = offset_blocks;
+	remaining = num_blocks;
+
+	assert(bdev_io->u.bdev.iovcnt == 1);
+	range = (struct spdk_nvme_dsm_range *) bdev_io->u.bdev.iovs->iov_base;
+
+	/* Fill max-size ranges until the remaining blocks fit into one range */
+	while (remaining > xnvme->bdev.max_unmap) {
+		range->attributes.raw = 0;
+		range->length = xnvme->bdev.max_unmap;
+		range->starting_lba = offset;
+
+		offset += xnvme->bdev.max_unmap;
+		remaining -= xnvme->bdev.max_unmap;
+		range++;
+	}
+
+	/* Final range describes the remaining blocks */
+	range->attributes.raw = 0;
+	range->length = remaining;
+	range->starting_lba = offset;
+
+	ctx->cmd.common.opcode = XNVME_SPEC_NVM_OPC_DATASET_MANAGEMENT;
+	ctx->cmd.common.nsid = xnvme->nsid;
+	ctx->cmd.nvm.nlb = num_blocks - 1;
+	ctx->cmd.nvm.slba = offset_blocks;
+	ctx->cmd.dsm.nr = num_ranges - 1;
+	ctx->cmd.dsm.ad = true;
+
+	return 0;
+}
+
 static void
-bdev_xnvme_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
+_xnvme_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
 	struct bdev_xnvme_task *xnvme_task = (struct bdev_xnvme_task *)bdev_io->driver_ctx;
 	struct bdev_xnvme *xnvme = (struct bdev_xnvme *)bdev_io->bdev->ctxt;
 	struct bdev_xnvme_io_channel *xnvme_ch = spdk_io_channel_get_ctx(ch);
 	struct xnvme_cmd_ctx *ctx = xnvme_queue_get_cmd_ctx(xnvme_ch->queue);
 	int err;
-
-	if (!success) {
-		xnvme_queue_put_cmd_ctx(xnvme_ch->queue, ctx);
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-		return;
-	}
 
 	SPDK_DEBUGLOG(xnvme, "bdev_io : %p, iov_cnt : %d, bdev_xnvme_task : %p\n",
 		      bdev_io, bdev_io->u.bdev.iovcnt, (struct bdev_xnvme_task *)bdev_io->driver_ctx);
@@ -158,7 +208,19 @@ bdev_xnvme_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, 
 		ctx->cmd.nvm.nlb = bdev_io->u.bdev.num_blocks - 1;
 		ctx->cmd.nvm.slba = bdev_io->u.bdev.offset_blocks;
 		break;
-
+	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+		ctx->cmd.common.opcode = XNVME_SPEC_NVM_OPC_WRITE_ZEROES;
+		ctx->cmd.common.nsid = xnvme->nsid;
+		ctx->cmd.nvm.nlb = bdev_io->u.bdev.num_blocks - 1;
+		ctx->cmd.nvm.slba = bdev_io->u.bdev.offset_blocks;
+		break;
+	case SPDK_BDEV_IO_TYPE_UNMAP:
+		if (bdev_xnvme_unmap(bdev_io, ctx, xnvme)) {
+			xnvme_queue_put_cmd_ctx(xnvme_ch->queue, ctx);
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+			return;
+		}
+		break;
 	default:
 		SPDK_ERRLOG("Wrong io type\n");
 
@@ -202,6 +264,20 @@ bdev_xnvme_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, 
 }
 
 static void
+bdev_xnvme_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
+{
+	struct bdev_xnvme_io_channel *xnvme_ch = spdk_io_channel_get_ctx(ch);
+
+	if (!success) {
+		xnvme_queue_put_cmd_ctx(xnvme_ch->queue, xnvme_queue_get_cmd_ctx(xnvme_ch->queue));
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		return;
+	}
+
+	_xnvme_submit_request(ch, bdev_io);
+}
+
+static void
 bdev_xnvme_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
 	switch (bdev_io->type) {
@@ -212,6 +288,14 @@ bdev_xnvme_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_
 	case SPDK_BDEV_IO_TYPE_WRITE:
 		spdk_bdev_io_get_buf(bdev_io, bdev_xnvme_get_buf_cb,
 				     bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen);
+		break;
+	case SPDK_BDEV_IO_TYPE_UNMAP:
+		/* The max number of segments defined by spec is 256 and an
+		 * spdk_nvme_dsm_range structure is 16 bytes */
+		spdk_bdev_io_get_buf(bdev_io, bdev_xnvme_get_buf_cb, 256 * 16);
+		break;
+	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+		_xnvme_submit_request(ch, bdev_io);
 		break;
 
 	default:
@@ -310,6 +394,7 @@ create_xnvme_bdev(const char *name, const char *filename, const char *io_mechani
 		  bool conserve_cpu)
 {
 	struct bdev_xnvme *xnvme;
+	const struct xnvme_spec_nvm_idfy_ctrlr *ctrlr;
 	uint32_t block_size;
 	uint64_t bdev_size;
 	int rc;
@@ -331,13 +416,14 @@ create_xnvme_bdev(const char *name, const char *filename, const char *io_mechani
 		goto error_return;
 	}
 
-	if (!conserve_cpu) {
+	xnvme->conserve_cpu = conserve_cpu;
+	if (!xnvme->conserve_cpu) {
 		if (!strcmp(xnvme->io_mechanism, "libaio")) {
 			opts.poll_io = 1;
 		} else if (!strcmp(xnvme->io_mechanism, "io_uring")) {
 			opts.poll_io = 1;
 		} else if (!strcmp(xnvme->io_mechanism, "io_uring_cmd")) {
-			opts.poll_sq = 1;
+			opts.poll_io = 1;
 		}
 	}
 
@@ -366,6 +452,14 @@ create_xnvme_bdev(const char *name, const char *filename, const char *io_mechani
 	xnvme->bdev.module = &xnvme_if;
 
 	xnvme->bdev.write_cache = 0;
+	xnvme->bdev.max_write_zeroes = UINT16_MAX + 1;
+
+	if (xnvme_dev_get_csi(xnvme->dev) == XNVME_SPEC_CSI_NVM) {
+		ctrlr = (struct xnvme_spec_nvm_idfy_ctrlr *) xnvme_dev_get_ctrlr_css(xnvme->dev);
+		xnvme->bdev.max_unmap = ctrlr->dmrsl ? ctrlr->dmrsl : SPDK_NVME_DATASET_MANAGEMENT_RANGE_MAX_BLOCKS;
+		xnvme->bdev.max_unmap_segments = ctrlr->dmrl ? ctrlr->dmrl :
+						 SPDK_NVME_DATASET_MANAGEMENT_MAX_RANGES;
+	}
 
 	if (block_size == 0) {
 		SPDK_ERRLOG("Block size could not be auto-detected\n");
@@ -417,42 +511,15 @@ error_return:
 	return NULL;
 }
 
-struct delete_xnvme_bdev_ctx {
-	struct bdev_xnvme *xnvme;
-	spdk_delete_xnvme_complete cb_fn;
-	void *cb_arg;
-};
-
-static void
-xnvme_bdev_unregister_cb(void *arg, int bdeverrno)
-{
-	struct delete_xnvme_bdev_ctx *ctx = arg;
-
-	ctx->cb_fn(ctx->cb_arg, bdeverrno);
-	free(ctx);
-}
-
 void
-delete_xnvme_bdev(struct spdk_bdev *bdev, spdk_delete_xnvme_complete cb_fn, void *cb_arg)
+delete_xnvme_bdev(const char *name, spdk_bdev_unregister_cb cb_fn, void *cb_arg)
 {
-	struct delete_xnvme_bdev_ctx *ctx;
-	struct bdev_xnvme *xnvme = (struct bdev_xnvme *)bdev->ctxt;
+	int rc;
 
-	if (!bdev || bdev->module != &xnvme_if) {
-		cb_fn(cb_arg, -ENODEV);
-		return;
+	rc = spdk_bdev_unregister_by_name(name, &xnvme_if, cb_fn, cb_arg);
+	if (rc != 0) {
+		cb_fn(cb_arg, rc);
 	}
-
-	ctx = calloc(1, sizeof(*ctx));
-	if (ctx == NULL) {
-		cb_fn(cb_arg, -ENOMEM);
-		return;
-	}
-
-	ctx->xnvme = xnvme;
-	ctx->cb_fn = cb_fn;
-	ctx->cb_arg = cb_arg;
-	spdk_bdev_unregister(bdev, xnvme_bdev_unregister_cb, ctx);
 }
 
 static int

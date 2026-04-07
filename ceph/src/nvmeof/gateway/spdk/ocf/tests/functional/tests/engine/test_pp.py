@@ -1,19 +1,23 @@
 #
-# Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# Copyright(c) 2019-2022 Intel Corporation
+# Copyright(c) 2024 Huawei Technologies
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 from ctypes import c_int
 import pytest
 import math
+from datetime import timedelta
 
 from pyocf.types.cache import Cache, PromotionPolicy, NhitParams
 from pyocf.types.core import Core
-from pyocf.types.volume import Volume
+from pyocf.types.volume import RamVolume
+from pyocf.types.volume_core import CoreVolume
 from pyocf.types.data import Data
 from pyocf.types.io import IoDir
 from pyocf.utils import Size
 from pyocf.types.shared import OcfCompletion
+from pyocf.rio import Rio, ReadWrite
 
 
 @pytest.mark.parametrize("promotion_policy", PromotionPolicy)
@@ -26,8 +30,8 @@ def test_init_nhit(pyocf_ctx, promotion_policy):
         * verify that promotion policy type is properly reflected in stats
     """
 
-    cache_device = Volume(Size.from_MiB(30))
-    core_device = Volume(Size.from_MiB(30))
+    cache_device = RamVolume(Size.from_MiB(50))
+    core_device = RamVolume(Size.from_MiB(50))
 
     cache = Cache.start_on_device(cache_device, promotion_policy=promotion_policy)
     core = Core.using_device(core_device)
@@ -53,57 +57,46 @@ def test_change_to_nhit_and_back_io_in_flight(pyocf_ctx):
     """
 
     # Step 1
-    cache_device = Volume(Size.from_MiB(30))
-    core_device = Volume(Size.from_MiB(30))
+    cache_device = RamVolume(Size.from_MiB(50))
+    core_device = RamVolume(Size.from_MiB(50))
 
     cache = Cache.start_on_device(cache_device)
     core = Core.using_device(core_device)
 
     cache.add_core(core)
+    vol = CoreVolume(core)
+    queue = cache.get_default_queue()
 
     # Step 2
-    completions = []
-    for i in range(2000):
-        comp = OcfCompletion([("error", c_int)])
-        write_data = Data(4096)
-        io = core.new_io(
-            cache.get_default_queue(), i * 4096, write_data.size, IoDir.WRITE, 0, 0
-        )
-        completions += [comp]
-        io.set_data(write_data)
-        io.callback = comp.callback
-        io.submit()
+    r = (
+        Rio()
+        .target(vol)
+        .njobs(10)
+        .bs(Size.from_KiB(4))
+        .readwrite(ReadWrite.RANDWRITE)
+        .size(core_device.size)
+        .time_based()
+        .time(timedelta(minutes=1))
+        .qd(10)
+        .run_async([queue])
+    )
 
     # Step 3
     cache.set_promotion_policy(PromotionPolicy.NHIT)
 
     # Step 4
-    for c in completions:
-        c.wait()
-        assert not c.results["error"], "No IO's should fail when turning NHIT policy on"
+    r.abort()
+    assert r.error_count == 0, "No IO's should fail when turning NHIT policy on"
 
     # Step 5
-    completions = []
-    for i in range(2000):
-        comp = OcfCompletion([("error", c_int)])
-        write_data = Data(4096)
-        io = core.new_io(
-            cache.get_default_queue(), i * 4096, write_data.size, IoDir.WRITE, 0, 0
-        )
-        completions += [comp]
-        io.set_data(write_data)
-        io.callback = comp.callback
-        io.submit()
+    r.run_async([queue])
 
     # Step 6
     cache.set_promotion_policy(PromotionPolicy.ALWAYS)
 
     # Step 7
-    for c in completions:
-        c.wait()
-        assert not c.results[
-            "error"
-        ], "No IO's should fail when turning NHIT policy off"
+    r.abort()
+    assert r.error_count == 0, "No IO's should fail when turning NHIT policy off"
 
 
 def fill_cache(cache, fill_ratio):
@@ -116,54 +109,26 @@ def fill_cache(cache, fill_ratio):
 
     cache_lines = cache.get_stats()["conf"]["size"]
 
-    bytes_to_fill = cache_lines.bytes * fill_ratio
-    max_io_size = cache.device.get_max_io_size().bytes
-
-    ios_to_issue = math.floor(bytes_to_fill / max_io_size)
+    bytes_to_fill = Size(round(cache_lines.bytes * fill_ratio))
 
     core = cache.cores[0]
-    completions = []
-    for i in range(ios_to_issue):
-        comp = OcfCompletion([("error", c_int)])
-        write_data = Data(max_io_size)
-        io = core.new_io(
-            cache.get_default_queue(),
-            i * max_io_size,
-            write_data.size,
-            IoDir.WRITE,
-            0,
-            0,
-        )
-        io.set_data(write_data)
-        io.callback = comp.callback
-        completions += [comp]
-        io.submit()
+    vol = CoreVolume(core)
+    queue = cache.get_default_queue()
 
-    if bytes_to_fill % max_io_size:
-        comp = OcfCompletion([("error", c_int)])
-        write_data = Data(Size.from_B(bytes_to_fill % max_io_size, sector_aligned=True))
-        io = core.new_io(
-            cache.get_default_queue(),
-            ios_to_issue * max_io_size,
-            write_data.size,
-            IoDir.WRITE,
-            0,
-            0,
-        )
-        io.set_data(write_data)
-        io.callback = comp.callback
-        completions += [comp]
-        io.submit()
-
-    for c in completions:
-        c.wait()
+    r = (
+        Rio()
+        .target(vol)
+        .readwrite(ReadWrite.RANDWRITE)
+        .size(bytes_to_fill)
+        .bs(Size(512))
+        .qd(10)
+        .run([queue])
+    )
 
 
 @pytest.mark.parametrize("fill_percentage", [0, 1, 50, 99])
 @pytest.mark.parametrize("insertion_threshold", [2, 8])
-def test_promoted_after_hits_various_thresholds(
-    pyocf_ctx, insertion_threshold, fill_percentage
-):
+def test_promoted_after_hits_various_thresholds(pyocf_ctx, insertion_threshold, fill_percentage):
     """
     Check promotion policy behavior with various set thresholds
 
@@ -177,12 +142,14 @@ def test_promoted_after_hits_various_thresholds(
     """
 
     # Step 1
-    cache_device = Volume(Size.from_MiB(30))
-    core_device = Volume(Size.from_MiB(30))
+    cache_device = RamVolume(Size.from_MiB(50))
+    core_device = RamVolume(Size.from_MiB(50))
 
     cache = Cache.start_on_device(cache_device, promotion_policy=PromotionPolicy.NHIT)
     core = Core.using_device(core_device)
     cache.add_core(core)
+    vol = CoreVolume(core)
+    queue = cache.get_default_queue()
 
     # Step 2
     cache.set_promotion_policy_param(
@@ -194,33 +161,27 @@ def test_promoted_after_hits_various_thresholds(
     # Step 3
     fill_cache(cache, fill_percentage / 100)
 
+    cache.settle()
     stats = cache.get_stats()
     cache_lines = stats["conf"]["size"]
     assert stats["usage"]["occupancy"]["fraction"] // 10 == fill_percentage * 10
     filled_occupancy = stats["usage"]["occupancy"]["value"]
 
     # Step 4
-    last_core_line = int(core_device.size) - cache_lines.line_size
-    completions = []
+    last_core_line = Size(int(core_device.size) - cache_lines.line_size)
+    r = (
+        Rio()
+        .readwrite(ReadWrite.WRITE)
+        .bs(Size(4096))
+        .offset(last_core_line)
+        .target(vol)
+        .size(Size(4096))
+    )
+
     for i in range(insertion_threshold - 1):
-        comp = OcfCompletion([("error", c_int)])
-        write_data = Data(cache_lines.line_size)
-        io = core.new_io(
-            cache.get_default_queue(),
-            last_core_line,
-            write_data.size,
-            IoDir.WRITE,
-            0,
-            0,
-        )
-        completions += [comp]
-        io.set_data(write_data)
-        io.callback = comp.callback
-        io.submit()
+        r.run([queue])
 
-    for c in completions:
-        c.wait()
-
+    cache.settle()
     stats = cache.get_stats()
     threshold_reached_occupancy = stats["usage"]["occupancy"]["value"]
     assert threshold_reached_occupancy == filled_occupancy, (
@@ -229,20 +190,12 @@ def test_promoted_after_hits_various_thresholds(
     )
 
     # Step 5
-    comp = OcfCompletion([("error", c_int)])
-    write_data = Data(cache_lines.line_size)
-    io = core.new_io(
-        cache.get_default_queue(), last_core_line, write_data.size, IoDir.WRITE, 0, 0
-    )
-    io.set_data(write_data)
-    io.callback = comp.callback
-    io.submit()
+    r.run([queue])
 
-    comp.wait()
-
+    cache.settle()
+    stats = cache.get_stats()
     assert (
-        threshold_reached_occupancy
-        == cache.get_stats()["usage"]["occupancy"]["value"] - 1
+        threshold_reached_occupancy == stats["usage"]["occupancy"]["value"] - 1
     ), "Previous request should be promoted and occupancy should rise"
 
 
@@ -260,22 +213,17 @@ def test_partial_hit_promotion(pyocf_ctx):
     """
 
     # Step 1
-    cache_device = Volume(Size.from_MiB(30))
-    core_device = Volume(Size.from_MiB(30))
+    cache_device = RamVolume(Size.from_MiB(50))
+    core_device = RamVolume(Size.from_MiB(50))
 
     cache = Cache.start_on_device(cache_device)
     core = Core.using_device(core_device)
     cache.add_core(core)
+    vol = CoreVolume(core)
+    queue = cache.get_default_queue()
 
     # Step 2
-    comp = OcfCompletion([("error", c_int)])
-    write_data = Data(Size.from_sector(1))
-    io = core.new_io(cache.get_default_queue(), 0, write_data.size, IoDir.READ, 0, 0)
-    io.set_data(write_data)
-    io.callback = comp.callback
-    io.submit()
-
-    comp.wait()
+    r = Rio().readwrite(ReadWrite.READ).bs(Size(512)).size(Size(512)).target(vol).run([queue])
 
     stats = cache.get_stats()
     cache_lines = stats["conf"]["size"]
@@ -283,23 +231,13 @@ def test_partial_hit_promotion(pyocf_ctx):
 
     # Step 3
     cache.set_promotion_policy(PromotionPolicy.NHIT)
-    cache.set_promotion_policy_param(
-        PromotionPolicy.NHIT, NhitParams.TRIGGER_THRESHOLD, 0
-    )
-    cache.set_promotion_policy_param(
-        PromotionPolicy.NHIT, NhitParams.INSERTION_THRESHOLD, 100
-    )
+    cache.set_promotion_policy_param(PromotionPolicy.NHIT, NhitParams.TRIGGER_THRESHOLD, 0)
+    cache.set_promotion_policy_param(PromotionPolicy.NHIT, NhitParams.INSERTION_THRESHOLD, 100)
 
     # Step 4
-    comp = OcfCompletion([("error", c_int)])
-    write_data = Data(2 * cache_lines.line_size)
-    io = core.new_io(cache.get_default_queue(), 0, write_data.size, IoDir.WRITE, 0, 0)
-    io.set_data(write_data)
-    io.callback = comp.callback
-    io.submit()
-    comp.wait()
+    req_size = Size(2 * cache_lines.line_size)
+    r.size(req_size).bs(req_size).readwrite(ReadWrite.WRITE).run([queue])
 
+    cache.settle()
     stats = cache.get_stats()
-    assert (
-        stats["usage"]["occupancy"]["value"] == 2
-    ), "Second cache line should be mapped"
+    assert stats["usage"]["occupancy"]["value"] == 2, "Second cache line should be mapped"

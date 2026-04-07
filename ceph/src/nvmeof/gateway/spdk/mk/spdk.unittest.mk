@@ -25,7 +25,7 @@ CFLAGS += -ffunction-sections
 CFLAGS += -DSPDK_UNIT_TEST=1
 LDFLAGS += -Wl,--gc-sections
 
-SPDK_LIB_LIST += thread trace util log
+SPDK_LIB_LIST += thread trace util log ut
 
 LIBS += -lcunit $(SPDK_STATIC_LIB_LINKER_ARGS)
 
@@ -36,6 +36,7 @@ ENV_LINKER_ARGS =
 else
 # Rewrite the env linker args to be static.
 ENV_DPDK_FILE = $(call spdk_lib_list_to_static_libs,env_dpdk)
+SPDK_LIB_LIST += env_dpdk
 endif
 
 install: all

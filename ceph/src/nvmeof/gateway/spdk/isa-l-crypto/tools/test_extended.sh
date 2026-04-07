@@ -18,6 +18,7 @@ command -V gmake >/dev/null 2>&1 && MAKE=gmake
 command -V greadlink >/dev/null 2>&1 && READLINK=greadlink
 [ -n "$CC" ] && build_opt+="CC=$CC "
 [ -n "$AS" ] && build_opt+="AS=$AS "
+[ -n "$EXTRA_BUILD_OPTS" ] && build_opt+="$EXTRA_BUILD_OPTS "
 
 out="$PWD"
 src=$($READLINK -f $(dirname $0))/..
@@ -83,7 +84,7 @@ fi
 
 # Std makefile build perf tests
 test_start "extended_perf_test"
-time $MAKE -f Makefile.unx -j $cpus perfs
+time $MAKE -f Makefile.unx -j $cpus $build_opt perfs
 test_end "extended_perf_test" $?
 msg+=$'Std makefile build perf: Pass\n'
 
@@ -99,6 +100,12 @@ time $MAKE -f Makefile.unx -j $cpus $build_opt D="TEST_SEED=$S" other
 test_end "extended_other_tests" $?
 msg+=$'Other tests build: Pass\n'
 
+# Std makefile build extended apps
+test_start "extended_apps"
+time $MAKE -C tests/extended/
+test_end "extended_apps" $?
+msg+=$'Extended apps build: Pass\n'
+
 $MAKE -f Makefile.unx clean
 
 # Std makefile run tests with NT_LDST
@@ -111,13 +118,36 @@ msg+=$'Std makefile tests: Pass\n'
 $MAKE -f Makefile.unx clean
 
 # noarch makefile run tests
+# FIPS build not supported - remove from build options
+noarch_build_opt=$(echo "$build_opt" | sed 's/FIPS_MODE=y//')
+
 test_start "extended_makefile_tests"
-time $MAKE -f Makefile.unx -j $cpus $build_opt D="TEST_SEED=$S" \
+time $MAKE -f Makefile.unx -j $cpus $noarch_build_opt D="TEST_SEED=$S" \
 	arch=noarch
-time $MAKE -f Makefile.unx -j $cpus $build_opt D="TEST_SEED=$S" \
+time $MAKE -f Makefile.unx -j $cpus $noarch_build_opt D="TEST_SEED=$S" \
 	arch=noarch $test_level
 test_end "extended_makefile_tests" $?
 msg+=$'noarch makefile tests: Pass\n'
+
+$MAKE -f Makefile.unx clean
+
+# Test other implementations with SDE
+if [ $(uname -m) == "x86_64" ] && command -V sde64 >/dev/null 2>&1; then
+    # Compile tests
+    $MAKE -f Makefile.unx -j $cpus checks
+    # Loop through architectures
+    while [ $# -gt 0 ]
+    do
+        test_start "SDE test on $1 architecture"
+        time sde64 -$1 -- $MAKE -f Makefile.unx -j $cpus D="TEST_SEED=$S" check
+        test_end "SDE test on $1 architecture" $?
+        # Drop architecture from list, to test the next one
+        shift;
+    done
+        msg+=$'Running tests with SDE: Pass\n'
+    else
+        msg+=$'Running tests with SDE: Skip\n'
+fi
 
 set +x
 echo

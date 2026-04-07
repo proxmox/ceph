@@ -213,7 +213,7 @@ virtio_scsi_dev_init(struct virtio_scsi_dev *svdev, uint16_t max_queues, uint64_
 	}
 
 	ctrlq_ring = spdk_ring_create(SPDK_RING_TYPE_MP_SC, CTRLQ_RING_SIZE,
-				      SPDK_ENV_SOCKET_ID_ANY);
+				      SPDK_ENV_NUMA_ID_ANY);
 	if (ctrlq_ring == NULL) {
 		SPDK_ERRLOG("Failed to allocate send ring for the controlq.\n");
 		return -1;
@@ -297,7 +297,7 @@ virtio_pci_scsi_dev_create(const char *name, struct virtio_pci_ctx *pci_ctx)
 	if (name == NULL) {
 		default_name = spdk_sprintf_alloc("VirtioScsi%"PRIu32, pci_dev_counter++);
 		if (default_name == NULL) {
-			free(vdev);
+			free(svdev);
 			return NULL;
 		}
 		name = default_name;

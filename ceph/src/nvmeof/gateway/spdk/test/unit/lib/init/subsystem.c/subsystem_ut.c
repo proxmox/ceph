@@ -6,7 +6,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "unit/lib/json_mock.c"
 #include "init/subsystem.c"
@@ -57,7 +57,7 @@ static void
 subsystem_sort_test_depends_on_single(void)
 {
 	struct spdk_subsystem *subsystem;
-	int i;
+	short int i;
 	char subsystem_name[16];
 
 	global_rc = -1;
@@ -210,7 +210,6 @@ main(int argc, char **argv)
 	unsigned int	num_failures;
 	struct spdk_thread *thread;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("subsystem_suite", NULL, NULL);
@@ -223,9 +222,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, subsystem_sort_test_depends_on_multiple);
 	CU_ADD_TEST(suite, subsystem_sort_test_missing_dependency);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

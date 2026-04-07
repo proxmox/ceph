@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2012-2022, Intel Corporation
+# Copyright (c) 2012-2023, Intel Corporation
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -50,58 +50,80 @@ USE_YASM ?= n
 YASM ?= yasm
 NASM ?= nasm
 
+CC ?= gcc
+
+OBJ_DIR ?= obj
+LIB_DIR ?= .
+
+# skip version detection with clean or style target
+ifneq ($(MAKECMDGOALS),clean)
+ifneq ($(MAKECMDGOALS),style)
+
+# MINGW should be non-zero value if detected
+MINGW ?= $(shell $(CC) -dM -E - < /dev/null | grep -i mingw | wc -l | sed 's/^ *//')
+
+ifeq ($(MINGW),0)
+MULT = \*
+else
+MULT = \\*
+endif
+
 # Detect NASM version (minimum version required: 2.14)
 NASM_VERSION = $(shell $(NASM) -v | cut -d " " -f 3)
 
 NASM_MAJOR_REQ = 2
 NASM_MINOR_REQ = 14
+NASM_MIN_REQ = $(shell expr $(NASM_MAJOR_REQ) $(MULT) 100 + $(NASM_MINOR_REQ) )
 
 ifeq ($(NASM_VERSION),)
 $(error "NASM is not installed! Minimum required version: $(NASM_MAJOR_REQ).$(NASM_MINOR_REQ)")
 else
 NASM_MAJOR_VER = $(shell echo $(NASM_VERSION) | cut -d "." -f 1)
 NASM_MINOR_VER = $(shell echo $(NASM_VERSION) | cut -d "." -f 2 | cut -c 1-2)
-NASM_GE_MAJOR = $(shell [ $(NASM_MAJOR_VER) -ge $(NASM_MAJOR_REQ) ] && echo true)
-NASM_GE_MINOR = $(shell [ $(NASM_MINOR_VER) -ge $(NASM_MINOR_REQ) ] && echo true)
-ifneq ($(NASM_GE_MAJOR),true)
-$(warning "NASM version found: $(NASM_VERSION)")
-$(error "Minimum required: $(NASM_MAJOR_REQ).$(NASM_MINOR_REQ)")
-endif
-ifneq ($(NASM_GE_MINOR),true)
-$(warning "NASM version found: $(NASM_VERSION)")
-$(error "Minimum required: $(NASM_MAJOR_REQ).$(NASM_MINOR_REQ)")
-endif
-endif
+NASM_VER = $(shell expr $(NASM_MAJOR_VER) $(MULT) 100 + $(NASM_MINOR_VER) )
 
-OBJ_DIR ?= obj
-LIB_DIR ?= .
+NASM_GE_REQ = $(shell [ $(NASM_VER) -ge $(NASM_MIN_REQ) ] && echo true)
+
+$(info NASM '$(NASM)' version: $(NASM_VERSION))
+
+ifneq ($(NASM_GE_REQ),true)
+$(error "Minimum required NASM version: $(NASM_MAJOR_REQ).$(NASM_MINOR_REQ)")
+endif # NASM_GE_REQ
+endif # NASM_VERSION
+
+# Minimum version of NASM with AVX_IFMA support: 2.16
+AVX_IFMA := y
+NASM_MAJOR_AVX_IFMA = 2
+NASM_MINOR_AVX_IFMA = 16
+NASM_MIN_IFMA_REQ = $(shell expr $(NASM_MAJOR_AVX_IFMA) $(MULT) 100 + $(NASM_MINOR_AVX_IFMA) )
+
+NASM_IFMA_GE_REQ = $(shell [ $(NASM_VER) -ge $(NASM_MIN_IFMA_REQ) ] && echo true)
+ifneq ($(NASM_IFMA_GE_REQ),true)
+$(warning Minimum required NASM version for AVX-IFMA: $(NASM_MAJOR_AVX_IFMA).$(NASM_MINOR_AVX_IFMA). AVX-IFMA code not compiled - update NASM.)
+AVX_IFMA := n
+endif # NASM_AVX_IFMA_GET_REQ
 
 INCLUDE_DIRS := include . no-aesni
 INCLUDES := $(foreach i,$(INCLUDE_DIRS),-I $i)
-
-CC ?= gcc
-# MINGW should be non-zero value if detected
-MINGW ?= $(shell $(CC) -dM -E - < /dev/null | grep -i mingw | wc -l | sed 's/^ *//')
 
 # if "-z ibt" is supported then assume "-z shstk, -z cet-report=error" are also supported
 # "-fcf-protection" needs to be checked separately
 ifeq ($(MINGW),0)
 CC_HAS_CET = $(and $(shell $(CC) --target-help 2> /dev/null | grep -m1 -e "-z ibt" | wc -l), \
 	$(shell $(CC) --help=common 2> /dev/null | grep -m1 -e "-fcf-protection" | wc -l))
-CET_LDFLAGS=-r -z ibt -z shstk
 endif
-CFLAGS := -DNO_COMPAT_IMB_API_053 $(EXTRA_CFLAGS) $(INCLUDES) \
+CFLAGS := $(EXTRA_CFLAGS) $(INCLUDES) \
 	-W -Wall -Wextra -Wmissing-declarations -Wpointer-arith \
 	-Wcast-qual -Wundef -Wwrite-strings  \
 	-Wformat -Wformat-security \
 	-Wunreachable-code -Wmissing-noreturn -Wsign-compare -Wno-endif-labels \
 	-Wstrict-prototypes -Wmissing-prototypes -Wold-style-definition \
-	-fno-delete-null-pointer-checks -fwrapv
+	-fno-delete-null-pointer-checks -fwrapv -std=c99
 
-# SPDK crypto needs shared but -fPIC so to make it clear what
-# we are doing, we just comment out the CFLAGS below and
-# explicitly set them in our relevant makefile.
+# Let SPDK decide when to pass -fPIC,
+# rather than forcing it here.
 #CFLAGS += -fPIC
+
 # -fno-strict-overflow is not supported by clang
 ifneq ($(CC),clang)
 CFLAGS += -fno-strict-overflow
@@ -113,6 +135,10 @@ endif
 
 ifeq ($(CC_HAS_CET),1)
 CFLAGS += -fcf-protection=full
+endif
+
+ifeq ($(AVX_IFMA), y)
+CFLAGS += -DAVX_IFMA
 endif
 
 ASM_INCLUDE_DIRS := .
@@ -188,6 +214,7 @@ OPT_NOAESNI := -msse4.2 -mno-aes -mno-pclmul
 ifeq ($(CC),$(filter $(CC),gcc cc))
 GCC_VERSION = $(shell $(CC) -dumpversion | cut -d. -f1)
 GCC_GE_V5 = $(shell [ $(GCC_VERSION) -ge 5 ] && echo true)
+$(info CC '$(CC)' version: $(GCC_VERSION))
 ifeq ($(GCC_GE_V5),true)
 OPT_SSE := -march=nehalem -maes -mpclmul
 OPT_AVX := -march=sandybridge -maes -mpclmul
@@ -201,6 +228,7 @@ endif
 ifeq ($(CC),$(filter $(CC),clang))
 CLANG_VERSION = $(shell $(CC) --version | head -n 1 | cut -d ' ' -f 3)
 CLANG_GE_V381 = $(shell test "$(CLANG_VERSION)" \> "3.8.0" && echo true)
+$(info CLANG '$(CC)' version: $(CLANG_VERSION))
 ifeq ($(CLANG_GE_V381),true)
 OPT_SSE := -march=nehalem -maes -mpclmul
 OPT_AVX := -march=sandybridge -maes -mpclmul
@@ -222,16 +250,16 @@ LDFLAGS += -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now
 endif
 LIBPERM = 0755
 ifeq ($(CC_HAS_CET),1)
-LDFLAGS += -fcf-protection=full -Wl,-z,ibt -Wl,-z,shstk -Wl,-z,cet-report=error
+LDFLAGS += -Wl,-z,ibt -Wl,-z,shstk -Wl,-z,cet-report=error
 endif
 else
 LIBNAME = $(LIB).a
 LIBPERM = 0644
 LDFLAGS += -g
-ifeq ($(CC_HAS_CET),1)
-LDFLAGS += -fcf-protection=full
 endif
-endif
+
+endif # style target
+endif # clean target
 
 # warning messages
 SAFE_PARAM_MSG1="SAFE_PARAM option not set."
@@ -267,9 +295,12 @@ c_lib_objs := \
 	aes_xcbc_expand_key.o \
 	md5_one_block.o \
 	sha_sse.o \
+	sha_ni_sse.o \
 	sha_mb_sse.o \
 	sha_ni_mb_sse.o \
 	sha_avx.o \
+	sha_avx2.o \
+	sha_avx512.o \
 	sha_mb_avx.o \
 	sha_mb_avx2.o \
 	sha_mb_avx512.o \
@@ -294,7 +325,13 @@ c_lib_objs := \
 	mb_mgr_auto.o \
 	error.o \
 	ooo_mgr_reset.o \
-	self_test.o
+	self_test.o \
+	quic_aes_gcm.o \
+	quic_hp_aes_ecb.o \
+	quic_hp_chacha20.o \
+	quic_chacha20_poly1305.o \
+	hmac_ipad_opad.o \
+	cipher_suite_id.o
 
 ifeq ($(AESNI_EMU), y)
 c_lib_objs := $(c_lib_objs) \
@@ -304,6 +341,10 @@ c_lib_objs := $(c_lib_objs) \
 	snow3g_sse_no_aesni.o
 endif
 
+ifeq ($(AVX_IFMA), y)
+c_lib_objs := $(c_lib_objs) \
+	mb_mgr_avx2_t3.o
+endif
 #
 # List of ASM modules (root directory/common)
 #
@@ -322,7 +363,10 @@ asm_generic_lib_objs := \
 	crc32_refl_const.o \
 	crc32_const.o \
 	poly1305.o \
-	chacha20_poly1305.o
+	chacha20_poly1305.o \
+	mbcpuid.o \
+	atomic.o \
+	sm3.o
 
 #
 # List of ASM modules (no-aesni directory)
@@ -373,7 +417,8 @@ asm_noaesni_lib_objs := \
 	crc32_iuup_sse_no_aesni.o \
 	crc32_wimax_sse_no_aesni.o \
 	snow_v_sse_no_aesni.o \
-	snow3g_uia2_sse_no_aesni.o
+	snow3g_uia2_sse_no_aesni.o \
+	sm4_sse_no_aesni.o
 
 #
 # List of ASM modules (sse directory)
@@ -395,6 +440,7 @@ asm_sse_lib_objs := \
 	aes128_cntr_by8_sse.o \
 	aes192_cntr_by8_sse.o \
 	aes256_cntr_by8_sse.o \
+	aes_ecb_quic_x8_sse.o \
 	aes128_ecb_by4_sse.o \
 	aes192_ecb_by4_sse.o \
 	aes256_ecb_by4_sse.o \
@@ -416,6 +462,8 @@ asm_sse_lib_objs := \
 	sha256_one_block_sse.o \
 	sha384_one_block_sse.o \
 	sha512_one_block_sse.o \
+	sha1_ni_one_block_sse.o \
+	sha256_ni_one_block_sse.o \
 	sha512_x2_sse.o \
 	sha256_mult_sse.o \
 	sha1_ni_x2_sse.o \
@@ -484,7 +532,8 @@ asm_sse_lib_objs := \
 	chacha20_sse.o \
 	memcpy_sse.o \
 	snow_v_sse.o \
-	snow3g_uia2_by4_sse.o
+	snow3g_uia2_by4_sse.o \
+	sm4_sse.o
 
 #
 # List of ASM modules (avx directory)
@@ -505,6 +554,7 @@ asm_avx_lib_objs := \
 	aes128_ecb_by8_avx.o \
 	aes192_ecb_by8_avx.o \
 	aes256_ecb_by8_avx.o \
+	aes_ecb_quic_x8_avx.o \
 	aes_cfb_avx.o \
 	aes128_cbc_mac_x8_avx.o \
 	aes256_cbc_mac_x8_avx.o \
@@ -571,9 +621,13 @@ asm_avx2_lib_objs := \
 	sha256_oct_avx2.o \
 	sha512_x4_avx2.o \
 	zuc_x8_avx2.o \
+	zuc_x8_gfni_avx2.o \
 	aes128_ecb_vaes_avx2.o \
 	aes192_ecb_vaes_avx2.o \
 	aes256_ecb_vaes_avx2.o \
+	aes128_cntr_vaes_avx2.o \
+	aes192_cntr_vaes_avx2.o \
+	aes256_cntr_vaes_avx2.o \
 	mb_mgr_hmac_md5_flush_avx2.o \
 	mb_mgr_hmac_md5_submit_avx2.o \
 	mb_mgr_hmac_sha1_flush_avx2.o \
@@ -587,7 +641,14 @@ asm_avx2_lib_objs := \
 	mb_mgr_hmac_sha512_flush_avx2.o \
 	mb_mgr_hmac_sha512_submit_avx2.o \
 	mb_mgr_zuc_submit_flush_avx2.o \
+	mb_mgr_zuc_submit_flush_gfni_avx2.o \
 	chacha20_avx2.o
+
+#
+# List of ASM modules (avx2_t3 directory)
+#
+asm_avx2_ifma_lib_objs := \
+	poly_fma_avx2.o
 
 #
 # List of ASM modules (avx512 directory)
@@ -598,6 +659,7 @@ asm_avx512_lib_objs := \
 	sha512_x8_avx512.o \
 	des_x16_avx512.o \
 	aes_ecb_vaes_avx512.o \
+	aes_ecb_quic_vaes_avx512.o \
 	aes_cntr_api_by16_vaes_avx512.o \
 	aes_cntr_bit_api_by16_vaes_avx512.o \
 	aes_cntr_ccm_api_by16_vaes_avx512.o \
@@ -671,16 +733,16 @@ asm_sse_gcm_objs := \
 	gcm128_sgl_api_by8_sse.o gcm192_sgl_api_by8_sse.o gcm256_sgl_api_by8_sse.o \
 	gcm128_gmac_api_by8_sse.o gcm192_gmac_api_by8_sse.o gcm256_gmac_api_by8_sse.o
 
-asm_avx_gcm_objs := \
-	aes128_gcm_by8_avx.o aes192_gcm_by8_avx.o aes256_gcm_by8_avx.o
+asm_avx_gcm_objs :=
 
 asm_avx2_gcm_objs := \
-	aes128_gcm_by8_avx2.o aes192_gcm_by8_avx2.o aes256_gcm_by8_avx2.o
+	aes128_gcm_by8_avx2.o aes192_gcm_by8_avx2.o aes256_gcm_by8_avx2.o \
+	aes128_gcm_vaes_avx2.o aes192_gcm_vaes_avx2.o aes256_gcm_vaes_avx2.o
 
 asm_avx512_gcm_objs := \
-	aes128_gcm_by48_api_vaes_avx512.o aes192_gcm_by48_api_vaes_avx512.o aes256_gcm_by48_api_vaes_avx512.o \
-	aes128_gcm_by48_sgl_api_vaes_avx512.o aes192_gcm_by48_sgl_api_vaes_avx512.o aes256_gcm_by48_sgl_api_vaes_avx512.o \
-	aes128_gmac_by48_api_vaes_avx512.o aes192_gmac_by48_api_vaes_avx512.o aes256_gmac_by48_api_vaes_avx512.o \
+	aes128_gcm_api_vaes_avx512.o aes192_gcm_api_vaes_avx512.o aes256_gcm_api_vaes_avx512.o \
+	aes128_gcm_sgl_api_vaes_avx512.o aes192_gcm_sgl_api_vaes_avx512.o aes256_gcm_sgl_api_vaes_avx512.o \
+	aes128_gmac_api_vaes_avx512.o aes192_gmac_api_vaes_avx512.o aes256_gmac_api_vaes_avx512.o \
 	aes128_gcm_by8_avx512.o aes192_gcm_by8_avx512.o aes256_gcm_by8_avx512.o
 
 #
@@ -695,6 +757,10 @@ asm_obj_files := $(asm_generic_lib_objs) \
 ifeq ($(AESNI_EMU), y)
 asm_obj_files := $(asm_obj_files) $(asm_noaesni_lib_objs) $(asm_noaesni_gcm_objs)
 endif
+ifeq ($(AVX_IFMA), y)
+asm_obj_files := $(asm_obj_files) $(asm_avx2_ifma_lib_objs)
+endif
+
 c_obj_files := $(c_lib_objs) $(c_gcm_objs)
 
 #
@@ -721,9 +787,22 @@ dep_target_files := $(dep_files:%=$(OBJ_DIR)/%)
 
 all: $(LIB_DIR)/$(LIBNAME)
 
+STR_FILTER = ""
+ifneq ($(AESNI_EMU),y)
+ifneq ($(AVX_IFMA),y)
+STR_FILTER = "_no_aesni\|_avx2_t3"
+else
+STR_FILTER = "_no_aesni"
+endif
+else
+ifneq ($(AVX_IFMA),y)
+STR_FILTER = "_avx2_t3"
+endif
+endif
+
 $(LIB)_lnk.def: $(LIB).def
-ifneq ($(AESNI_EMU), y)
-	grep -v _no_aesni $(LIB).def > $(LIB)_lnk.def
+ifneq ($(STR_FILTER), "")
+	grep -v $(STR_FILTER) $(LIB).def > $(LIB)_lnk.def
 else
 	cp -f $(LIB).def $(LIB)_lnk.def
 endif
@@ -807,10 +886,6 @@ ifeq ($(USE_YASM),y)
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
-endif
 
 $(OBJ_DIR)/%.o:sse_t1/%.c
 	$(CC) -MMD $(OPT_SSE) -c $(CFLAGS) $< -o $@
@@ -820,10 +895,6 @@ ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
-endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
 endif
 
 $(OBJ_DIR)/%.o:sse_t2/%.c
@@ -835,10 +906,6 @@ ifeq ($(USE_YASM),y)
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
-endif
 
 $(OBJ_DIR)/%.o:sse_t3/%.c
 	$(CC) -MMD $(OPT_SSE) -c $(CFLAGS) $< -o $@
@@ -848,10 +915,6 @@ ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
-endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
 endif
 
 $(OBJ_DIR)/%.o:avx_t1/%.c
@@ -863,10 +926,6 @@ ifeq ($(USE_YASM),y)
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
-endif
 
 $(OBJ_DIR)/%.o:avx_t2/%.c
 	$(CC) -MMD $(OPT_AVX) -c $(CFLAGS) $< -o $@
@@ -877,11 +936,6 @@ ifeq ($(USE_YASM),y)
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
-endif
-
 $(OBJ_DIR)/%.o:avx2_t1/%.c
 	$(CC) -MMD $(OPT_AVX2) -c $(CFLAGS) $< -o $@
 
@@ -891,11 +945,6 @@ ifeq ($(USE_YASM),y)
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
-endif
-
 $(OBJ_DIR)/%.o:avx2_t2/%.c
 	$(CC) -MMD $(OPT_AVX2) -c $(CFLAGS) $< -o $@
 
@@ -905,9 +954,14 @@ ifeq ($(USE_YASM),y)
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
+$(OBJ_DIR)/%.o:avx2_t3/%.c
+	$(CC) -MMD $(OPT_AVX2) -c $(CFLAGS) $< -o $@
+
+$(OBJ_DIR)/%.o:avx2_t3/%.asm
+ifeq ($(USE_YASM),y)
+	$(YASM) $(YASM_FLAGS) $< -o $@
+else
+	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
 
 $(OBJ_DIR)/%.o:avx512_t1/%.c
@@ -919,10 +973,6 @@ ifeq ($(USE_YASM),y)
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
-endif
 
 $(OBJ_DIR)/%.o:avx512_t2/%.c
 	$(CC) -MMD $(OPT_AVX512) -c $(CFLAGS) $< -o $@
@@ -933,10 +983,6 @@ ifeq ($(USE_YASM),y)
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
 endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
-endif
 
 $(OBJ_DIR)/%.o:no-aesni/%.c
 	$(CC) -MMD $(OPT_NOAESNI) -c $(CFLAGS_NO_SIMD) $< -o $@
@@ -946,10 +992,6 @@ ifeq ($(USE_YASM),y)
 	$(YASM) $(YASM_FLAGS) $< -o $@
 else
 	$(NASM) -MD $(@:.o=.d) -MT $@ -o $@ $(NASM_FLAGS) $<
-endif
-ifeq ($(CC_HAS_CET),1)
-	$(LD) $(CET_LDFLAGS) -o $@.tmp $@
-	mv $@.tmp $@
 endif
 
 $(OBJ_DIR):
@@ -966,10 +1008,9 @@ TAGS:
 
 .PHONY: clean
 clean:
-	rm -Rf $(target_obj_files)
-	rm -Rf $(dep_target_files)
-	rm -f $(LIB_DIR)/$(LIB)_lnk.def
-	rm -f $(LIB_DIR)/$(LIB).a $(LIB_DIR)/$(LIB).so* $(LIB_DIR)/$(LIB).dll
+	-rm -Rf $(OBJ_DIR)
+	-rm -f $(LIB_DIR)/$(LIB)_lnk.def
+	-rm -f $(LIB_DIR)/$(LIB).a $(LIB_DIR)/$(LIB).so* $(LIB_DIR)/$(LIB).dll
 
 .PHONY: doxy
 doxy:
@@ -1009,6 +1050,8 @@ help:
 	@echo "SAFE_OPTIONS=n"
 	@echo "          - Disable all safe options (enabled by default)"
 
+.PHONY: style
+style: clang-format checkpatch
 
 CHECKPATCH ?= checkpatch.pl
 # checkpatch ignore settings:
@@ -1022,13 +1065,7 @@ CHECKPATCH ?= checkpatch.pl
 #
 # NOTE: these flags cannot be broken into multiple lines due to
 #       spaces injected by make
-CHECKPATCH_FLAGS = --no-tree --no-signoff --emacs --no-color --ignore CODE_INDENT,INITIALISED_STATIC,LEADING_SPACE,SPLIT_STRING,UNSPECIFIED_INT,ARRAY_SIZE,BLOCK_COMMENT_STYLE,GLOBAL_INITIALISERS,NEW_TYPEDEFS,AVOID_EXTERNS,COMPLEX_MACRO,PREFER_ALIGNED,USE_FUNC,CONSTANT_COMPARISON,SPACING,GCC_BINARY_CONSTANT
-
-%.c_style_check : %.c
-	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
-
-%.h_style_check : %.h
-	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
+CHECKPATCH_FLAGS = --no-tree --no-signoff --emacs --no-color --max-line-length=100 --ignore CODE_INDENT,INITIALISED_STATIC,LEADING_SPACE,SPLIT_STRING,UNSPECIFIED_INT,ARRAY_SIZE,BLOCK_COMMENT_STYLE,GLOBAL_INITIALISERS,NEW_TYPEDEFS,AVOID_EXTERNS,COMPLEX_MACRO,PREFER_ALIGNED,USE_FUNC,CONSTANT_COMPARISON,SPACING,GCC_BINARY_CONSTANT,VOLATILE
 
 %.asm_style_check : %.asm
 	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
@@ -1036,12 +1073,37 @@ CHECKPATCH_FLAGS = --no-tree --no-signoff --emacs --no-color --ignore CODE_INDEN
 %.inc_style_check : %.inc
 	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $<
 
-SOURCES_DIRS := . sse avx avx2 avx512 include no-aesni
-SOURCES := $(foreach dir,$(SOURCES_DIRS),$(wildcard $(dir)/*.[ch]) $(wildcard $(dir)/*.asm) $(wildcard $(dir)/*.inc))
-SOURCES_STYLE := $(foreach infile,$(SOURCES),$(infile)_style_check)
+SOURCES_DIRS := . sse_t1 sse_t2 sse_t3 avx_t1 avx_t2 avx2_t1 avx_t2 avx2_t3 avx512_t1 avx512_t2 x86_64 include no-aesni
+ASM_SOURCES := $(foreach dir,$(SOURCES_DIRS), $(wildcard $(dir)/**/*.asm) $(wildcard $(dir)/**/*.inc))
 
-.PHONY: style
-style: $(SOURCES_STYLE)
+.PHONY: checkpatch
+checkpatch:
+	$(CHECKPATCH) $(CHECKPATCH_FLAGS) -f $(ASM_SOURCES)
+
+.PHONY: clang-format
+CLANGFORMAT?=clang-format
+clang-format:
+	@for file in $(wildcard ./*.[ch]) $(wildcard ./**/*.[ch]); do \
+		echo "Checking style $$file"; \
+		$(CLANGFORMAT) -style=file "$$file" | diff "$$file" - | tee /dev/stderr | [ $$(wc -c) -eq 0 ] || \
+		{ echo "ERROR: $$file has style problems"; exit 1; } \
+	done
+
+# cppcheck analysis check
+CPPCHECK ?= cppcheck
+CPPCHECK_OPTS ?= -I./include -I./
+CPPCHECK_FLAGS = -j $(shell getconf _NPROCESSORS_ONLN)
+CPPCHECK_FLAGS1 = --cppcheck-build-dir=.cppcheck $(CPPCHECK_FLAGS)
+CPPCHECK_FLAGS2 = --cppcheck-build-dir=.bughunt $(CPPCHECK_FLAGS)
+.PHONY: cppcheck
+cppcheck:
+	mkdir -p .cppcheck
+	$(CPPCHECK) --force --enable=all $(CPPCHECK_FLAGS1) $(CPPCHECK_OPTS) ./
+
+.PHONY: bughunt
+bughunt:
+	mkdir -p .bughunt
+	$(CPPCHECK) --bug-hunting --inconclusive $(CPPCHECK_FLAGS2) $(CPPCHECK_OPTS) ./
 
 # if target not clean or rinse then make dependencies
 ifneq ($(MAKECMDGOALS),clean)

@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_ERR_H__
@@ -43,6 +44,12 @@ typedef enum {
 
 	/** Cache metadata found on device */
 	OCF_ERR_METADATA_FOUND,
+
+	/** Metadata on the device doesn't match with metadata in DRAM */
+	OCF_ERR_SUPERBLOCK_MISMATCH,
+
+	/** Metadata checksum is not correct. Metadata is damaged */
+	OCF_ERR_CRC_MISMATCH,
 
 	/** Invalid volume type */
 	OCF_ERR_INVAL_VOLUME_TYPE,
@@ -131,7 +138,32 @@ typedef enum {
 	/** Core with the uuid already exists */
 	OCF_ERR_CORE_UUID_EXISTS,
 
-	OCF_ERR_MAX = OCF_ERR_CORE_UUID_EXISTS,
+	/** Cache initialized with wrong cache line size */
+	OCF_ERR_CACHE_LINE_SIZE_MISMATCH,
+
+	/** Invalid operation for cache in standby state. */
+	OCF_ERR_CACHE_STANDBY,
+
+	/** Invalid operation for cache in standby state. */
+	OCF_ERR_CACHE_DETACHED,
+
+	/** Size of core volume doesn't match the size stored in cache metadata */
+	OCF_ERR_CORE_SIZE_MISMATCH,
+
+	/** Operation invalid with cache drive atatched in failover standby */
+	OCF_ERR_STANDBY_ATTACHED,
+
+	/** Failed to remove the core */
+	OCF_ERR_CORE_NOT_REMOVED,
+
+	/** Operation only allowed in standby mode **/
+	OCF_ERR_CACHE_NOT_STANDBY,
+
+	/** Operation not allowed when cleaner is disabled **/
+	OCF_ERR_CLEANER_DISABLED,
+
+	OCF_ERR_MAX = OCF_ERR_CLEANER_DISABLED,
+
 } ocf_error_t;
 
 #endif /* __OCF_ERR_H__ */

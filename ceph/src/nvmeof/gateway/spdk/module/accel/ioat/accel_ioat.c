@@ -1,5 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2020 Intel Corporation.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES.
  *   All rights reserved.
  */
 
@@ -7,7 +8,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_internal/accel_module.h"
+#include "spdk/accel_module.h"
 #include "spdk/log.h"
 #include "spdk/likely.h"
 
@@ -15,6 +16,7 @@
 #include "spdk/event.h"
 #include "spdk/thread.h"
 #include "spdk/ioat.h"
+#include "spdk/json.h"
 
 static bool g_ioat_enable = false;
 static bool g_ioat_initialized = false;
@@ -70,7 +72,8 @@ ioat_free_device(struct ioat_device *dev)
 
 static int accel_ioat_init(void);
 static void accel_ioat_exit(void *ctx);
-static bool ioat_supports_opcode(enum accel_opcode opc);
+static void accel_ioat_write_config_json(struct spdk_json_write_ctx *w);
+static bool ioat_supports_opcode(enum spdk_accel_opcode opc);
 static struct spdk_io_channel *ioat_get_io_channel(void);
 static int ioat_submit_tasks(struct spdk_io_channel *ch, struct spdk_accel_task *accel_task);
 
@@ -83,15 +86,13 @@ accel_ioat_get_ctx_size(void)
 static struct spdk_accel_module_if g_ioat_module = {
 	.module_init = accel_ioat_init,
 	.module_fini = accel_ioat_exit,
-	.write_config_json = NULL,
+	.write_config_json = accel_ioat_write_config_json,
 	.get_ctx_size = accel_ioat_get_ctx_size,
 	.name			= "ioat",
 	.supports_opcode	= ioat_supports_opcode,
 	.get_io_channel		= ioat_get_io_channel,
 	.submit_tasks		= ioat_submit_tasks
 };
-
-SPDK_ACCEL_MODULE_REGISTER(ioat, &g_ioat_module)
 
 static void
 ioat_done(void *cb_arg)
@@ -113,20 +114,20 @@ ioat_poll(void *arg)
 static struct spdk_io_channel *ioat_get_io_channel(void);
 
 static bool
-ioat_supports_opcode(enum accel_opcode opc)
+ioat_supports_opcode(enum spdk_accel_opcode opc)
 {
 	if (!g_ioat_initialized) {
+		assert(0);
 		return false;
 	}
 
 	switch (opc) {
-	case ACCEL_OPC_COPY:
-	case ACCEL_OPC_FILL:
+	case SPDK_ACCEL_OPC_COPY:
+	case SPDK_ACCEL_OPC_FILL:
 		return true;
 	default:
 		return false;
 	}
-
 }
 
 static int
@@ -164,17 +165,12 @@ ioat_submit_tasks(struct spdk_io_channel *ch, struct spdk_accel_task *accel_task
 	struct spdk_accel_task *tmp;
 	int rc = 0;
 
-	if (accel_task->flags == ACCEL_FLAG_PERSISTENT) {
-		SPDK_ERRLOG("IOAT does not support durable destinations.\n");
-		return -EINVAL;
-	}
-
 	do {
 		switch (accel_task->op_code) {
-		case ACCEL_OPC_FILL:
+		case SPDK_ACCEL_OPC_FILL:
 			rc = ioat_submit_fill(ioat_ch,  accel_task);
 			break;
-		case ACCEL_OPC_COPY:
+		case SPDK_ACCEL_OPC_COPY:
 			rc = ioat_submit_copy(ioat_ch, accel_task);
 			break;
 		default:
@@ -182,7 +178,7 @@ ioat_submit_tasks(struct spdk_io_channel *ch, struct spdk_accel_task *accel_task
 			break;
 		}
 
-		tmp = TAILQ_NEXT(accel_task, link);
+		tmp = STAILQ_NEXT(accel_task, link);
 
 		/* Report any build errors via the callback now. */
 		if (rc) {
@@ -279,12 +275,14 @@ void
 accel_ioat_enable_probe(void)
 {
 	g_ioat_enable = true;
+	spdk_accel_module_list_add(&g_ioat_module);
 }
 
 static int
 accel_ioat_init(void)
 {
 	if (!g_ioat_enable) {
+		assert(0);
 		return 0;
 	}
 
@@ -294,12 +292,10 @@ accel_ioat_init(void)
 	}
 
 	if (TAILQ_EMPTY(&g_devices)) {
-		SPDK_NOTICELOG("No available ioat devices\n");
-		return -1;
+		return -ENODEV;
 	}
 
 	g_ioat_initialized = true;
-	SPDK_NOTICELOG("Accel framework IOAT module initialized.\n");
 	spdk_io_device_register(&g_ioat_module, ioat_create_cb, ioat_destroy_cb,
 				sizeof(struct ioat_io_channel), "ioat_accel_module");
 	return 0;
@@ -337,6 +333,16 @@ accel_ioat_exit(void *ctx)
 		spdk_io_device_unregister(&g_ioat_module, _device_unregister_cb);
 	} else {
 		spdk_accel_module_finish();
+	}
+}
+
+static void
+accel_ioat_write_config_json(struct spdk_json_write_ctx *w)
+{
+	if (g_ioat_enable) {
+		spdk_json_write_object_begin(w);
+		spdk_json_write_named_string(w, "method", "ioat_scan_accel_module");
+		spdk_json_write_object_end(w);
 	}
 }
 

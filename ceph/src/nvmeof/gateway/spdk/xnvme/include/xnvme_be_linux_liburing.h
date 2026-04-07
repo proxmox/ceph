@@ -1,5 +1,7 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef __INTERNAL_XNVME_BE_LINUX_LIBURING_H
 #define __INTERNAL_XNVME_BE_LINUX_LIBURING_H
 #include <liburing.h>
@@ -14,8 +16,9 @@ struct xnvme_queue_liburing {
 
 	uint8_t poll_io;
 	uint8_t poll_sq;
+	uint8_t batching;
 
-	uint8_t _rsvd[14];
+	uint8_t _rsvd[13];
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_queue_liburing) == XNVME_BE_QUEUE_STATE_NBYTES,
 		    "Incorrect size")

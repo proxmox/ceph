@@ -31,8 +31,6 @@
 %include "sha1_mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_AVX512
-
 extern sha1_mb_x16_avx512
 extern sha1_opt_x1
 
@@ -82,10 +80,10 @@ STACK_SPACE     equ _GPR_SAVE + _GPR_SAVE_SIZE + _ALIGN_SIZE
 
 %define APPEND(a,b) a %+ b
 
-; SHA1_JOB* sha1_mb_mgr_flush_avx512(SHA1_MB_JOB_MGR *state)
+; SHA1_JOB* _sha1_mb_mgr_flush_avx512(SHA1_MB_JOB_MGR *state)
 ; arg 1 : rcx : state
-mk_global sha1_mb_mgr_flush_avx512, function
-sha1_mb_mgr_flush_avx512:
+mk_global _sha1_mb_mgr_flush_avx512, function, internal
+_sha1_mb_mgr_flush_avx512:
 	endbranch
 	sub     rsp, STACK_SPACE
 	mov     [rsp + _GPR_SAVE + 8*0], rbx
@@ -192,7 +190,7 @@ len_is_0:
 
 	mov	job_rax, [lane_data + _job_in_lane]
 	mov	qword [lane_data + _job_in_lane], 0
-	mov	dword [job_rax + _status], STS_COMPLETED
+	mov	dword [job_rax + _status], ISAL_STS_COMPLETED
 	mov	unused_lanes, [state + _unused_lanes]
 	shl	unused_lanes, 4
 	or	unused_lanes, idx
@@ -262,10 +260,3 @@ lane_12:    dq  12
 lane_13:    dq  13
 lane_14:    dq  14
 lane_15:    dq  15
-
-%else
-%ifidn __OUTPUT_FORMAT__, win64
-global no_sha1_mb_mgr_flush_avx512
-no_sha1_mb_mgr_flush_avx512:
-%endif
-%endif ; HAVE_AS_KNOWS_AVX512

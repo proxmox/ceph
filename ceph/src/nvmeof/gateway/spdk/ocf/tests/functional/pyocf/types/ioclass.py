@@ -1,6 +1,6 @@
 #
 # Copyright(c) 2019-2021 Intel Corporation
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# SPDX-License-Identifier: BSD-3-Clause
 #
 
 from ctypes import c_uint8, c_uint32, c_int, c_int16, c_uint16, c_char, c_char_p, Structure
@@ -25,7 +25,7 @@ class IoClassConfig(Structure):
         ("_max_size", c_uint32),
         ("_name", c_char_p),
         ("_cache_mode", c_int),
-        ("_prio", c_uint16),
+        ("_priority", c_uint16),
     ]
 
 

@@ -22,7 +22,8 @@ import { BehaviorSubject, Observable, of, Subject, Subscription } from 'rxjs';
 
 import { TableStatus } from '~/app/shared/classes/table-status';
 import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
-import { Icons } from '~/app/shared/enum/icons.enum';
+import { Icons, IconSize, ICON_TYPE } from '~/app/shared/enum/icons.enum';
+
 import { CdTableColumn } from '~/app/shared/models/cd-table-column';
 import { CdTableColumnFilter } from '~/app/shared/models/cd-table-column-filter';
 import { CdTableColumnFiltersChange } from '~/app/shared/models/cd-table-column-filters-change';
@@ -61,8 +62,8 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
   executingTpl: TemplateRef<any>;
   @ViewChild('classAddingTpl', { static: true })
   classAddingTpl: TemplateRef<any>;
-  @ViewChild('badgeTpl', { static: true })
-  badgeTpl: TemplateRef<any>;
+  @ViewChild('tagTpl', { static: true })
+  tagTpl: TemplateRef<any>;
   @ViewChild('mapTpl', { static: true })
   mapTpl: TemplateRef<any>;
   @ViewChild('truncateTpl', { static: true })
@@ -212,6 +213,22 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
   scrollable: boolean = true;
 
   /**
+   * Title to be displayed when there is no data
+   */
+  @Input()
+  emptyStateTitle: string = $localize`No data available`;
+  /**
+   * Helper text to be displayed when there is no data
+   */
+  @Input()
+  emptyStateMessage: string = $localize`There are currently no records to display.`;
+  /**
+   * Icon to be displayed when there is no data
+   */
+  @Input()
+  emptyStateIcon: string = ICON_TYPE.deploy;
+
+  /**
    * Should be a function to update the input data if undefined nothing will be triggered
    *
    * Sometimes it's useful to only define fetchData once.
@@ -339,6 +356,7 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
   }
 
   icons = Icons;
+  iconSize = IconSize;
   cellTemplates: {
     [key: string]: TemplateRef<any>;
   } = {};
@@ -383,6 +401,7 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
     });
   }
   private previousRows = new Map<string | number, TableItem[]>();
+  private debouncedSearch = this.reloadData.bind(this);
 
   constructor(
     // private ngZone: NgZone,
@@ -539,7 +558,13 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
     // debounce reloadData method so that search doesn't run api requests
     // for every keystroke
     if (this.serverSide) {
-      this.reloadData = _.debounce(this.reloadData, 1000);
+      this.reloadData = _.throttle(this.reloadData.bind(this), 1000, {
+        leading: true,
+        trailing: false
+      });
+      this.debouncedSearch = _.debounce(this.reloadData.bind(this), 1000);
+    } else {
+      this.debouncedSearch = this.reloadData.bind(this);
     }
 
     // ngx-datatable triggers calculations each time mouse enters a row,
@@ -822,7 +847,7 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
     this.cellTemplates.perSecond = this.perSecondTpl;
     this.cellTemplates.executing = this.executingTpl;
     this.cellTemplates.classAdding = this.classAddingTpl;
-    this.cellTemplates.badge = this.badgeTpl;
+    this.cellTemplates.tag = this.tagTpl;
     this.cellTemplates.map = this.mapTpl;
     this.cellTemplates.truncate = this.truncateTpl;
     this.cellTemplates.timeAgo = this.timeAgoTpl;
@@ -883,7 +908,8 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
       });
       context.pageInfo.offset = this.userConfig.offset;
       context.pageInfo.limit = this.userConfig.limit;
-      context.search = this.userConfig.search;
+      if (this.serverSide) context.search = this.search;
+      else context.search = this.userConfig.search;
       if (this.userConfig.sorts?.length) {
         const sort = this.userConfig.sorts[0];
         context.sort = `${sort.dir === 'desc' ? '-' : '+'}${sort.prop}`;
@@ -905,6 +931,7 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
     this.userConfig.limit = this.model.pageLength;
 
     if (this.serverSide) {
+      this.loadingIndicator = true;
       this.reloadData();
       return;
     }
@@ -1238,7 +1265,7 @@ export class TableComponent implements AfterViewInit, OnInit, OnChanges, OnDestr
         this.userConfig.limit = this.limit;
         this.userConfig.search = this.search;
         this.updating = false;
-        this.reloadData();
+        this.debouncedSearch();
       }
       this.rows = this.data;
     } else {

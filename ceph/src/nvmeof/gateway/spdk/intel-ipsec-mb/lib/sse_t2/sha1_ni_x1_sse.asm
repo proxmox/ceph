@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2022, Intel Corporation
+;; Copyright (c) 2022-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -38,11 +38,11 @@
 ;;
 ;; Linux/Windows clobbers: xmm0 - xmm15
 
-%include "include/os.asm"
+%include "include/os.inc"
 ;%define DO_DBGPRINT
-%include "include/dbgprint.asm"
-%include "include/clear_regs.asm"
-%include "include/mb_mgr_datastruct.asm"
+%include "include/dbgprint.inc"
+%include "include/clear_regs.inc"
+%include "include/mb_mgr_datastruct.inc"
 
 %ifdef LINUX
 %define arg1	rdi
@@ -64,9 +64,6 @@
 struc frame
 .ABCD_SAVE	reso	1
 .E_SAVE		reso	1
-.ABCD_SAVEb	reso	1
-.E_SAVEb	reso	1
-.XMM_SAVE	reso	3
 .align		resq	1
 endstruc
 
@@ -103,10 +100,6 @@ MKGLOBAL(sha1_ni_x1,function,internal)
 align 32
 sha1_ni_x1:
 	sub		rsp, frame_size
-
-	movdqa		[rsp + frame.XMM_SAVE], xmm6
-	movdqa		[rsp + frame.XMM_SAVE + 16], xmm14
-	movdqa		[rsp + frame.XMM_SAVE + 16*2], xmm15
 
 	shl		NUM_BLKS, 6	; convert to bytes
 	jz		done_hash
@@ -323,13 +316,8 @@ done_hash:
 
         movdqa   [rsp + 0*16], MSG0
         movdqa   [rsp + 1*16], MSG0
-        movdqa   [rsp + 2*16], MSG0
-        movdqa   [rsp + 3*16], MSG0
 %endif
 
-	movdqa		xmm6, [rsp + frame.XMM_SAVE]
-	movdqa		xmm14, [rsp + frame.XMM_SAVE + 16]
-	movdqa		xmm15, [rsp + frame.XMM_SAVE + 16*2]
 	add		rsp, frame_size
 
 	ret

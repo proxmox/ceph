@@ -4,11 +4,15 @@
 #  All rights reserved.
 #
 
+# Note: we use setattr
+# pylint: disable=no-member
+
 import os
 import re
 import sys
 import argparse
 import json
+import inspect
 import logging
 import zipfile
 import threading
@@ -22,6 +26,9 @@ import paramiko
 import pandas as pd
 from common import *
 from subprocess import CalledProcessError
+from abc import abstractmethod, ABC
+from dataclasses import dataclass
+from typing import Any
 
 sys.path.append(os.path.dirname(__file__) + '/../../../python')
 
@@ -29,20 +36,44 @@ import spdk.rpc as rpc  # noqa
 import spdk.rpc.client as rpc_client  # noqa
 
 
-class Server:
+@dataclass
+class ConfigField:
+    name: str = None
+    default: Any = None
+    required: bool = False
+
+
+class Server(ABC):
+
+    RDMA_PROTOCOL_IWARP = 0
+    RDMA_PROTOCOL_ROCE = 1
+    RDMA_PROTOCOL_UNKNOWN = -1
+
     def __init__(self, name, general_config, server_config):
         self.name = name
-        self.username = general_config["username"]
-        self.password = general_config["password"]
-        self.transport = general_config["transport"].lower()
-        self.nic_ips = server_config["nic_ips"]
-        self.mode = server_config["mode"]
 
         self.log = logging.getLogger(self.name)
 
-        self.irq_scripts_dir = "/usr/src/local/mlnx-tools/ofed_scripts"
-        if "irq_scripts_dir" in server_config and server_config["irq_scripts_dir"]:
-            self.irq_scripts_dir = server_config["irq_scripts_dir"]
+        config_fields = [
+            ConfigField(name='username', required=True),
+            ConfigField(name='password', required=True),
+            ConfigField(name='transport', required=True),
+            ConfigField(name='skip_spdk_install', default=False),
+            ConfigField(name='irdma_roce_enable', default=False),
+            ConfigField(name='pause_frames', default=None)
+        ]
+
+        self.read_config(config_fields, general_config)
+        self.transport = self.transport.lower()
+
+        config_fields = [
+            ConfigField(name='nic_ips', required=True),
+            ConfigField(name='mode', required=True),
+            ConfigField(name='irq_scripts_dir', default='/usr/src/local/mlnx-tools/ofed_scripts'),
+            ConfigField(name='enable_arfs', default=False),
+            ConfigField(name='tuned_profile', default='')
+        ]
+        self.read_config(config_fields, server_config)
 
         self.local_nic_info = []
         self._nics_json_obj = {}
@@ -50,27 +81,56 @@ class Server:
         self.sysctl_restore_dict = {}
         self.tuned_restore_dict = {}
         self.governor_restore = ""
-        self.tuned_profile = ""
 
-        self.enable_adq = False
-        self.adq_priority = None
-        self.irq_settings = {"mode": "default"}
-
-        if "adq_enable" in server_config and server_config["adq_enable"]:
-            self.enable_adq = server_config["adq_enable"]
-            self.adq_priority = 1
-        if "irq_settings" in server_config:
-            self.irq_settings.update(server_config["irq_settings"])
-        if "tuned_profile" in server_config:
-            self.tuned_profile = server_config["tuned_profile"]
+        self.enable_adq = server_config.get('adq_enable', False)
+        self.adq_priority = 1 if self.enable_adq else None
+        self.irq_settings = {'mode': 'default', **server_config.get('irq_settings', {})}
 
         if not re.match(r'^[A-Za-z0-9\-]+$', name):
             self.log.info("Please use a name which contains only letters, numbers or dashes")
             sys.exit(1)
 
+    def read_config(self, config_fields, config):
+        for config_field in config_fields:
+            value = config.get(config_field.name, config_field.default)
+            if config_field.required and value is None:
+                raise ValueError('%s config key is required' % config_field.name)
+
+            setattr(self, config_field.name, value)
+
     @staticmethod
     def get_uncommented_lines(lines):
         return [line for line in lines if line and not line.startswith('#')]
+
+    @staticmethod
+    def get_core_list_from_mask(core_mask):
+        # Generate list of individual cores from hex core mask
+        # (e.g. '0xffff') or list containing:
+        # - individual cores (e.g. '1, 2, 3')
+        # - core ranges (e.g. '0-3')
+        # - mix of both (e.g. '0, 1-4, 9, 11-13')
+
+        core_list = []
+        if "0x" in core_mask:
+            core_mask_int = int(core_mask, 16)
+            for i in range(core_mask_int.bit_length()):
+                if (1 << i) & core_mask_int:
+                    core_list.append(i)
+            return core_list
+        else:
+            # Core list can be provided in .json config with square brackets
+            # remove them first
+            core_mask = core_mask.replace("[", "")
+            core_mask = core_mask.replace("]", "")
+
+            for i in core_mask.split(","):
+                if "-" in i:
+                    start, end = i.split("-")
+                    core_range = range(int(start), int(end) + 1)
+                    core_list.extend(core_range)
+                else:
+                    core_list.append(int(i))
+            return core_list
 
     def get_nic_name_by_ip(self, ip):
         if not self._nics_json_obj:
@@ -81,6 +141,7 @@ class Server:
                 if ip in addr["local"]:
                     return nic["ifname"]
 
+    @abstractmethod
     def set_local_nic_info_helper(self):
         pass
 
@@ -122,15 +183,79 @@ class Server:
         self.load_drivers()
         self.configure_services()
         self.configure_sysctl()
+        self.configure_arfs()
         self.configure_tuned()
         self.configure_cpu_governor()
         self.configure_irq_affinity(**self.irq_settings)
+        self.configure_pause_frames()
+
+    def check_rdma_protocol(self):
+        try:
+            roce_ena = self.exec_cmd(["cat", "/sys/module/irdma/parameters/roce_ena"]).strip()
+            return self.RDMA_PROTOCOL_IWARP if roce_ena == "0" else self.RDMA_PROTOCOL_ROCE
+        except CalledProcessError as e:
+            self.log.error("ERROR: failed to check RDMA protocol!")
+            self.log.error("%s resulted in error: %s" % (e.cmd, e.output))
+            return self.RDMA_PROTOCOL_UNKNOWN
 
     def load_drivers(self):
         self.log.info("Loading drivers")
-        self.exec_cmd(["sudo", "modprobe", "-a",
-                       "nvme-%s" % self.transport,
-                       "nvmet-%s" % self.transport])
+        self.exec_cmd(["sudo", "modprobe", "-a", f"nvme-{self.transport}", f"nvmet-{self.transport}"])
+
+        if self.transport != "rdma":
+            return
+
+        current_mode = self.check_rdma_protocol()
+        if current_mode == self.RDMA_PROTOCOL_UNKNOWN:
+            self.log.error("ERROR: failed to check RDMA protocol mode")
+            return
+
+        if self.irdma_roce_enable:
+            if current_mode == self.RDMA_PROTOCOL_IWARP:
+                self.reload_driver("irdma", "roce_ena=1")
+                self.log.info("Loaded irdma driver with RoCE enabled")
+            else:
+                self.log.info("Leaving irdma driver with RoCE enabled")
+        else:
+            self.reload_driver("irdma", "roce_ena=0")
+            self.log.info("Loaded irdma driver with iWARP enabled")
+
+    def set_pause_frames(self, rx_state, tx_state):
+        for nic_ip in self.nic_ips:
+            nic_name = self.get_nic_name_by_ip(nic_ip)
+            self.exec_cmd(["sudo", "ethtool", "-A", nic_name, "rx", rx_state, "tx", tx_state])
+
+    def configure_pause_frames(self):
+        if self.pause_frames is None:
+            self.log.info("Keeping NIC's default pause frames setting")
+            return
+        elif not self.pause_frames:
+            self.log.info("Turning off pause frames")
+            self.set_pause_frames("off", "off")
+        else:
+            self.log.info("Turning on pause frames")
+            self.set_pause_frames("on", "on")
+
+    def configure_arfs(self):
+        rps_flow_cnt = 512 if self.enable_arfs else 0
+
+        nic_names = [self.get_nic_name_by_ip(n) for n in self.nic_ips]
+        for nic_name in nic_names:
+            rps_wildcard_path = f"/sys/class/net/{nic_name}/queues/rx-*/rps_flow_cnt"
+            self.exec_cmd(["sudo", "ethtool", "-K", nic_name, "ntuple", "on"])
+            self.log.info(f"Setting rps_flow_cnt={rps_flow_cnt} for {nic_name} rx queues")
+
+            self.exec_cmd(["bash", "-c", f"echo {rps_flow_cnt} | sudo tee {rps_wildcard_path}"])
+
+            set_values = list(set(self.exec_cmd(["sudo", "bash", "-c", f'cat {rps_wildcard_path}']).strip().split("\n")))
+            if len(set_values) > 1:
+                self.log.error(f"""Not all NIC {nic_name} queues had rps_flow_cnt set properly. Found rps_flow_cnt values: {set_values}""")
+            elif set_values[0] != str(rps_flow_cnt):
+                self.log.error(f"""Wrong rps_flow_cnt set on {nic_name} queues. Found {set_values[0]}, should be {rps_flow_cnt}""")
+            else:
+                self.log.info(f"Configuration of {nic_name} completed with confirmed rps_flow_cnt settings.")
+
+        self.log.info("ARFS configuration completed.")
 
     def configure_adq(self):
         self.adq_load_modules()
@@ -200,10 +325,11 @@ class Server:
             self.log.info(xps_cmd)
             self.exec_cmd(xps_cmd)
 
-    def reload_driver(self, driver):
+    def reload_driver(self, driver, *modprobe_args):
+
         try:
             self.exec_cmd(["sudo", "rmmod", driver])
-            self.exec_cmd(["sudo", "modprobe", driver])
+            self.exec_cmd(["sudo", "modprobe", driver, *modprobe_args])
         except CalledProcessError as e:
             self.log.error("ERROR: failed to reload %s module!" % driver)
             self.log.error("%s resulted in error: %s" % (e.cmd, e.output))
@@ -284,10 +410,14 @@ class Server:
             "net.ipv4.tcp_wmem": "8192 1048576 33554432",
             "net.ipv4.route.flush": 1,
             "vm.overcommit_memory": 1,
+            "net.core.rps_sock_flow_entries": 0
         }
 
         if self.enable_adq:
             sysctl_opts.update(self.adq_set_busy_read(1))
+
+        if self.enable_arfs:
+            sysctl_opts.update({"net.core.rps_sock_flow_entries": 32768})
 
         for opt, value in sysctl_opts.items():
             self.sysctl_restore_dict.update({opt: self.exec_cmd(["sysctl", "-n", opt]).strip()})
@@ -327,35 +457,6 @@ class Server:
         # This assumes that there is the same CPU scaling governor on each CPU
         self.governor_restore = self.exec_cmd(["cat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"]).strip()
         self.exec_cmd(["sudo", "cpupower", "frequency-set", "-g", "performance"])
-
-    def get_core_list_from_mask(self, core_mask):
-        # Generate list of individual cores from hex core mask
-        # (e.g. '0xffff') or list containing:
-        # - individual cores (e.g. '1, 2, 3')
-        # - core ranges (e.g. '0-3')
-        # - mix of both (e.g. '0, 1-4, 9, 11-13')
-
-        core_list = []
-        if "0x" in core_mask:
-            core_mask_int = int(core_mask, 16)
-            for i in range(core_mask_int.bit_length()):
-                if (1 << i) & core_mask_int:
-                    core_list.append(i)
-            return core_list
-        else:
-            # Core list can be provided in .json config with square brackets
-            # remove them first
-            core_mask = core_mask.replace("[", "")
-            core_mask = core_mask.replace("]", "")
-
-            for i in core_mask.split(","):
-                if "-" in i:
-                    start, end = i.split("-")
-                    core_range = range(int(start), int(end) + 1)
-                    core_list.extend(core_range)
-                else:
-                    core_list.append(int(i))
-            return core_list
 
     def configure_irq_affinity(self, mode="default", cpulist=None, exclude_cpulist=False):
         self.log.info("Setting NIC irq affinity for NICs. Using %s mode" % mode)
@@ -442,52 +543,64 @@ class Server:
         if self.enable_adq:
             self.reload_driver("ice")
 
+    def check_for_throttling(self):
+        patterns = [
+            r"CPU\d+: Core temperature is above threshold, cpu clock is throttled",
+            r"mlx5_core \S+: poll_health:\d+:\(pid \d+\): device's health compromised",
+            r"mlx5_core \S+: print_health_info:\d+:\(pid \d+\): Health issue observed, High temperature",
+            r"mlx5_core \S+: temp_warn:\d+:\(pid \d+\): High temperature on sensors"
+        ]
+
+        issue_found = False
+        try:
+            output = self.exec_cmd(["dmesg"])
+
+            for line in output.split("\n"):
+                for pattern in patterns:
+                    if re.search(pattern, line):
+                        self.log.warning("Throttling or temperature issue found")
+                        issue_found = True
+            return 1 if issue_found else 0
+        except Exception as e:
+            self.log.error("ERROR: failed to execute dmesg command")
+            self.log.error(f"Error {e}")
+            return 1
+
+    def stop(self):
+        if self.check_for_throttling():
+            err_message = (f"Throttling or temperature issue found on {self.name} system! "
+                           "Check system logs!")
+            raise CpuThrottlingError(err_message)
+
 
 class Target(Server):
     def __init__(self, name, general_config, target_config):
         super().__init__(name, general_config, target_config)
 
         # Defaults
-        self.enable_zcopy = False
-        self.scheduler_name = "static"
-        self.null_block = 0
         self._nics_json_obj = json.loads(self.exec_cmd(["ip", "-j", "address", "show"]))
         self.subsystem_info_list = []
         self.initiator_info = []
-        self.nvme_allowlist = []
-        self.nvme_blocklist = []
 
-        # Target-side measurement options
-        self.enable_pm = True
-        self.enable_sar = True
-        self.enable_pcm = True
-        self.enable_bw = True
-        self.enable_dpdk_memory = True
+        config_fields = [
+            ConfigField(name='mode', required=True),
+            ConfigField(name='results_dir', required=True),
+            ConfigField(name='enable_pm', default=True),
+            ConfigField(name='enable_sar', default=True),
+            ConfigField(name='enable_pcm', default=True),
+            ConfigField(name='enable_dpdk_memory', default=True)
+        ]
+        self.read_config(config_fields, target_config)
 
-        if "null_block_devices" in target_config:
-            self.null_block = target_config["null_block_devices"]
-        if "scheduler_settings" in target_config:
-            self.scheduler_name = target_config["scheduler_settings"]
-        if "zcopy_settings" in target_config:
-            self.enable_zcopy = target_config["zcopy_settings"]
-        if "results_dir" in target_config:
-            self.results_dir = target_config["results_dir"]
-        if "blocklist" in target_config:
-            self.nvme_blocklist = target_config["blocklist"]
-        if "allowlist" in target_config:
-            self.nvme_allowlist = target_config["allowlist"]
-            # Blocklist takes precedence, remove common elements from allowlist
-            self.nvme_allowlist = list(set(self.nvme_allowlist) - set(self.nvme_blocklist))
-        if "enable_pm" in target_config:
-            self.enable_pm = target_config["enable_pm"]
-        if "enable_sar" in target_config:
-            self.enable_sar = target_config["enable_sar"]
-        if "enable_pcm" in target_config:
-            self.enable_pcm = target_config["enable_pcm"]
-        if "enable_bandwidth" in target_config:
-            self.enable_bw = target_config["enable_bandwidth"]
-        if "enable_dpdk_memory" in target_config:
-            self.enable_dpdk_memory = target_config["enable_dpdk_memory"]
+        self.null_block = target_config.get('null_block_devices', 0)
+        self.scheduler_name = target_config.get('scheduler_settings', 'static')
+        self.enable_zcopy = target_config.get('zcopy_settings', False)
+        self.enable_bw = target_config.get('enable_bandwidth', True)
+        self.nvme_blocklist = target_config.get('blocklist', [])
+        self.nvme_allowlist = target_config.get('allowlist', [])
+
+        # Blocklist takes precedence, remove common elements from allowlist
+        self.nvme_allowlist = list(set(self.nvme_allowlist) - set(self.nvme_blocklist))
 
         self.log.info("Items now on allowlist: %s" % self.nvme_allowlist)
         self.log.info("Items now on blocklist: %s" % self.nvme_blocklist)
@@ -496,7 +609,7 @@ class Target(Server):
         self.spdk_dir = os.path.abspath(os.path.join(self.script_dir, "../../../"))
         self.set_local_nic_info(self.set_local_nic_info_helper())
 
-        if "skip_spdk_install" not in general_config or general_config["skip_spdk_install"] is False:
+        if not self.skip_spdk_install:
             self.zip_spdk_sources(self.spdk_dir, "/tmp/spdk.zip")
 
         self.configure_system()
@@ -591,31 +704,20 @@ class Target(Server):
                       "-d", "%s" % results_dir, "-l", "-p", "%s" % prefix,
                        "-x", "-c", "%s" % run_time, "-t", "%s" % 1, "-r"])
 
-    def measure_pcm_memory(self, results_dir, pcm_file_name, ramp_time, run_time):
-        time.sleep(ramp_time)
-        cmd = ["pcm-memory", "1", "-csv=%s/%s" % (results_dir, pcm_file_name)]
-        pcm_memory = subprocess.Popen(cmd)
-        time.sleep(run_time)
-        pcm_memory.terminate()
-
     def measure_pcm(self, results_dir, pcm_file_name, ramp_time, run_time):
         time.sleep(ramp_time)
         cmd = ["pcm", "1", "-i=%s" % run_time,
                "-csv=%s/%s" % (results_dir, pcm_file_name)]
-        subprocess.run(cmd)
+        out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         df = pd.read_csv(os.path.join(results_dir, pcm_file_name), header=[0, 1])
         df = df.rename(columns=lambda x: re.sub(r'Unnamed:[\w\s]*$', '', x))
         skt = df.loc[:, df.columns.get_level_values(1).isin({'UPI0', 'UPI1', 'UPI2'})]
         skt_pcm_file_name = "_".join(["skt", pcm_file_name])
         skt.to_csv(os.path.join(results_dir, skt_pcm_file_name), index=False)
 
-    def measure_pcm_power(self, results_dir, pcm_power_file_name, ramp_time, run_time):
-        time.sleep(ramp_time)
-        out = self.exec_cmd(["pcm-power", "1", "-i=%s" % run_time])
-        with open(os.path.join(results_dir, pcm_power_file_name), "w") as fh:
-            fh.write(out)
-        # TODO: Above command results in a .csv file containing measurements for all gathered samples.
-        #       Improve this so that additional file containing measurements average is generated too.
+        if out.returncode:
+            self.log.warning("PCM Power measurement finished with a non-zero return code.")
+            self.log.warning(out.stdout.decode(encoding="utf-8"))
 
     def measure_network_bandwidth(self, results_dir, bandwidth_file_name, ramp_time, run_time):
         self.log.info("Waiting %d seconds for ramp-up to finish before measuring bandwidth stats" % ramp_time)
@@ -657,36 +759,26 @@ class Initiator(Server):
     def __init__(self, name, general_config, initiator_config):
         super().__init__(name, general_config, initiator_config)
 
-        # Required fields
-        self.ip = initiator_config["ip"]
-        self.target_nic_ips = initiator_config["target_nic_ips"]
+        # required fields and defaults
+        config_fields = [
+            ConfigField(name='mode', required=True),
+            ConfigField(name='ip', required=True),
+            ConfigField(name='target_nic_ips', required=True),
+            ConfigField(name='cpus_allowed', default=None),
+            ConfigField(name='cpus_allowed_policy', default='shared'),
+            ConfigField(name='spdk_dir', default='/tmp/spdk'),
+            ConfigField(name='fio_bin', default='/usr/src/fio/fio'),
+            ConfigField(name='nvmecli_bin', default='nvme'),
+            ConfigField(name='cpu_frequency', default=None),
+            ConfigField(name='allow_cpu_sharing', default=True)
+        ]
 
-        # Defaults
-        self.cpus_allowed = None
-        self.cpus_allowed_policy = "shared"
-        self.spdk_dir = "/tmp/spdk"
-        self.fio_bin = "/usr/src/fio/fio"
-        self.nvmecli_bin = "nvme"
-        self.cpu_frequency = None
-        self.subsystem_info_list = []
-        self.allow_cpu_sharing = True
+        self.read_config(config_fields, initiator_config)
 
-        if "spdk_dir" in initiator_config:
-            self.spdk_dir = initiator_config["spdk_dir"]
-        if "fio_bin" in initiator_config:
-            self.fio_bin = initiator_config["fio_bin"]
-        if "nvmecli_bin" in initiator_config:
-            self.nvmecli_bin = initiator_config["nvmecli_bin"]
-        if "cpus_allowed" in initiator_config:
-            self.cpus_allowed = initiator_config["cpus_allowed"]
-        if "cpus_allowed_policy" in initiator_config:
-            self.cpus_allowed_policy = initiator_config["cpus_allowed_policy"]
-        if "cpu_frequency" in initiator_config:
-            self.cpu_frequency = initiator_config["cpu_frequency"]
-        if "allow_cpu_sharing" in initiator_config:
-            self.allow_cpu_sharing = initiator_config["allow_cpu_sharing"]
         if os.getenv('SPDK_WORKSPACE'):
             self.spdk_dir = os.getenv('SPDK_WORKSPACE')
+
+        self.subsystem_info_list = []
 
         self.ssh_connection = paramiko.SSHClient()
         self.ssh_connection.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -695,8 +787,9 @@ class Initiator(Server):
         self.exec_cmd(["mkdir", "-p", "%s" % self.spdk_dir])
         self._nics_json_obj = json.loads(self.exec_cmd(["ip", "-j", "address", "show"]))
 
-        if "skip_spdk_install" not in general_config or general_config["skip_spdk_install"] is False:
+        if not self.skip_spdk_install:
             self.copy_spdk("/tmp/spdk.zip")
+
         self.set_local_nic_info(self.set_local_nic_info_helper())
         self.set_cpu_frequency()
         self.configure_system()
@@ -709,7 +802,12 @@ class Initiator(Server):
 
     def stop(self):
         self.restore_settings()
-        self.ssh_connection.close()
+        try:
+            super().stop()
+        except CpuThrottlingError as err:
+            raise err
+        finally:
+            self.ssh_connection.close()
 
     def exec_cmd(self, cmd, stderr_redirect=False, change_dir=None):
         if change_dir:
@@ -765,14 +863,25 @@ class Initiator(Server):
                           os.path.join(dest_dir, file))
         self.log.info("Done copying results")
 
-    def match_subsystems(self, target_subsytems):
-        subsystems = [subsystem for subsystem in target_subsytems if subsystem[2] in self.target_nic_ips]
+    def match_subsystems(self, target_subsystems):
+        subsystems = [subsystem for subsystem in target_subsystems if subsystem[2] in self.target_nic_ips]
+        if not subsystems:
+            raise Exception("No matching subsystems found on target side!")
         subsystems.sort(key=lambda x: x[1])
         self.log.info("Found matching subsystems on target side:")
         for s in subsystems:
             self.log.info(s)
         self.subsystem_info_list = subsystems
 
+    @abstractmethod
+    def init_connect(self):
+        pass
+
+    @abstractmethod
+    def init_disconnect(self):
+        pass
+
+    @abstractmethod
     def gen_fio_filename_conf(self, *args, **kwargs):
         # Logic implemented in SPDKInitiator and KernelInitiator classes
         pass
@@ -822,41 +931,29 @@ class Initiator(Server):
         return "\n".join(["cpus_allowed=%s" % ",".join(allowed_cpus),
                           "numa_mem_policy=prefer:%s" % section_local_numa])
 
-    def gen_fio_config(self, rw, rwmixread, block_size, io_depth, subsys_no,
-                       num_jobs=None, ramp_time=0, run_time=10, rate_iops=0,
-                       offset=False, offset_inc=0):
-        fio_conf_template = """
-[global]
-ioengine={ioengine}
-{spdk_conf}
-thread=1
-group_reporting=1
-direct=1
-percentile_list=50:90:99:99.5:99.9:99.99:99.999
+    def gen_fio_config(self, rw, block_size, io_depth, subsys_no, fio_settings):
+        fio_conf_template = inspect.cleandoc("""
+            [global]
+            ioengine={ioengine}
+            {spdk_conf}
+            thread=1
+            group_reporting=1
+            direct=1
+            percentile_list=50:90:99:99.5:99.9:99.99:99.999
 
-norandommap=1
-rw={rw}
-rwmixread={rwmixread}
-bs={block_size}
-time_based=1
-ramp_time={ramp_time}
-runtime={run_time}
-rate_iops={rate_iops}
-"""
+            norandommap=1
+            rw={rw}
+            rwmixread={rwmixread}
+            bs={block_size}
+            time_based=1
+            ramp_time={ramp_time}
+            runtime={run_time}
+            rate_iops={rate_iops}
+        """)
 
         if self.cpus_allowed is not None:
             self.log.info("Limiting FIO workload execution on specific cores %s" % self.cpus_allowed)
-            cpus_num = 0
-            cpus = self.cpus_allowed.split(",")
-            for cpu in cpus:
-                if "-" in cpu:
-                    a, b = cpu.split("-")
-                    a = int(a)
-                    b = int(b)
-                    cpus_num += len(range(a, b))
-                else:
-                    cpus_num += 1
-            self.num_cores = cpus_num
+            self.num_cores = len(self.get_core_list_from_mask(self.cpus_allowed))
             threads = range(0, self.num_cores)
         elif hasattr(self, 'num_cores'):
             self.log.info("Limiting FIO workload execution to %s cores" % self.num_cores)
@@ -865,30 +962,26 @@ rate_iops={rate_iops}
             self.num_cores = len(self.subsystem_info_list)
             threads = range(0, len(self.subsystem_info_list))
 
-        filename_section = self.gen_fio_filename_conf(self.subsystem_info_list, threads, io_depth, num_jobs,
-                                                      offset, offset_inc)
+        filename_section = self.gen_fio_filename_conf(self.subsystem_info_list, threads, io_depth, fio_settings["num_jobs"],
+                                                      fio_settings["offset"], fio_settings["offset_inc"], fio_settings["numa_align"])
 
         fio_config = fio_conf_template.format(ioengine=self.ioengine, spdk_conf=self.spdk_conf,
-                                              rw=rw, rwmixread=rwmixread, block_size=block_size,
-                                              ramp_time=ramp_time, run_time=run_time, rate_iops=rate_iops)
+                                              rw=rw, rwmixread=fio_settings["rw_mix_read"], block_size=block_size,
+                                              ramp_time=fio_settings["ramp_time"], run_time=fio_settings["run_time"],
+                                              rate_iops=fio_settings["rate_iops"])
 
         # TODO: hipri disabled for now, as it causes fio errors:
         # io_u error on file /dev/nvme2n1: Operation not supported
         # See comment in KernelInitiator class, init_connect() function
         if "io_uring" in self.ioengine:
-            fio_config = fio_config + """
-fixedbufs=1
-registerfiles=1
-#hipri=1
-"""
-        if num_jobs:
-            fio_config = fio_config + "numjobs=%s \n" % num_jobs
+            fio_config = "\n".join([fio_config, "fixedbufs=1", "registerfiles=1", "#hipri=1"])
+        if fio_settings["num_jobs"]:
+            fio_config = "\n".join([fio_config, f"numjobs={fio_settings['num_jobs']}"])
         if self.cpus_allowed is not None:
-            fio_config = fio_config + "cpus_allowed=%s \n" % self.cpus_allowed
-            fio_config = fio_config + "cpus_allowed_policy=%s \n" % self.cpus_allowed_policy
-        fio_config = fio_config + filename_section
+            fio_config = "\n".join([fio_config, f"cpus_allowed={self.cpus_allowed}", f"cpus_allowed_policy={self.cpus_allowed_policy}"])
+        fio_config = "\n".join([fio_config, filename_section])
 
-        fio_config_filename = "%s_%s_%s_m_%s" % (block_size, io_depth, rw, rwmixread)
+        fio_config_filename = "%s_%s_%s_m_%s" % (block_size, io_depth, rw, fio_settings["rw_mix_read"])
         if hasattr(self, "num_cores"):
             fio_config_filename += "_%sCPU" % self.num_cores
         fio_config_filename += ".fio"
@@ -908,7 +1001,7 @@ registerfiles=1
                 self.log.info(self.exec_cmd(["sudo", "cpupower", "frequency-info"]))
             except Exception:
                 self.log.error("ERROR: cpu_frequency will not work when intel_pstate is enabled!")
-                sys.exit()
+                sys.exit(1)
         else:
             self.log.warning("WARNING: you have disabled intel_pstate and using default cpu governance.")
 
@@ -944,10 +1037,7 @@ class KernelTarget(Target):
     def __init__(self, name, general_config, target_config):
         super().__init__(name, general_config, target_config)
         # Defaults
-        self.nvmet_bin = "nvmetcli"
-
-        if "nvmet_bin" in target_config:
-            self.nvmet_bin = target_config["nvmet_bin"]
+        self.nvmet_bin = target_config.get('nvmet_bin', 'nvmetcli')
 
     def load_drivers(self):
         self.log.info("Loading drivers")
@@ -968,6 +1058,7 @@ class KernelTarget(Target):
     def stop(self):
         self.nvmet_command(self.nvmet_bin, "clear")
         self.restore_settings()
+        super().stop()
 
     def get_nvme_device_bdf(self, nvme_dev_path):
         nvme_name = os.path.basename(nvme_dev_path)
@@ -1067,45 +1158,33 @@ class KernelTarget(Target):
 
 class SPDKTarget(Target):
     def __init__(self, name, general_config, target_config):
-        # Required fields
+        # IRQ affinity on SPDK Target side takes Target's core mask into consideration.
+        # Method setting IRQ affinity is run as part of parent classes init,
+        # so we need to have self.core_mask set before changing IRQ affinity.
         self.core_mask = target_config["core_mask"]
         self.num_cores = len(self.get_core_list_from_mask(self.core_mask))
 
         super().__init__(name, general_config, target_config)
 
-        # Defaults
-        self.dif_insert_strip = False
-        self.null_block_dif_type = 0
-        self.num_shared_buffers = 4096
-        self.max_queue_depth = 128
-        self.bpf_proc = None
-        self.bpf_scripts = []
-        self.enable_dsa = False
-        self.scheduler_core_limit = None
-        self.iobuf_small_pool_count = 16383
-        self.iobuf_large_pool_count = 2047
-        self.num_cqe = 4096
+        # Format: property, default value
+        config_fields = [
+            ConfigField(name='dif_insert_strip', default=False),
+            ConfigField(name='null_block_dif_type', default=0),
+            ConfigField(name='num_shared_buffers', default=4096),
+            ConfigField(name='max_queue_depth', default=128),
+            ConfigField(name='bpf_scripts', default=[]),
+            ConfigField(name='scheduler_core_limit', default=None),
+            ConfigField(name='dsa_settings', default=False),
+            ConfigField(name='iobuf_small_pool_count', default=32767),
+            ConfigField(name='iobuf_large_pool_count', default=16383),
+            ConfigField(name='num_cqe', default=4096),
+            ConfigField(name='sock_impl', default='posix')
+        ]
 
-        if "num_shared_buffers" in target_config:
-            self.num_shared_buffers = target_config["num_shared_buffers"]
-        if "max_queue_depth" in target_config:
-            self.max_queue_depth = target_config["max_queue_depth"]
-        if "null_block_dif_type" in target_config:
-            self.null_block_dif_type = target_config["null_block_dif_type"]
-        if "dif_insert_strip" in target_config:
-            self.dif_insert_strip = target_config["dif_insert_strip"]
-        if "bpf_scripts" in target_config:
-            self.bpf_scripts = target_config["bpf_scripts"]
-        if "dsa_settings" in target_config:
-            self.enable_dsa = target_config["dsa_settings"]
-        if "scheduler_core_limit" in target_config:
-            self.scheduler_core_limit = target_config["scheduler_core_limit"]
-        if "iobuf_small_pool_count" in target_config:
-            self.iobuf_small_pool_count = target_config["iobuf_small_pool_count"]
-        if "iobuf_large_pool_count" in target_config:
-            self.iobuf_large_pool_count = target_config["iobuf_large_pool_count"]
-        if "num_cqe" in target_config:
-            self.num_cqe = target_config["num_cqe"]
+        self.read_config(config_fields, target_config)
+
+        self.bpf_proc = None
+        self.enable_dsa = False
 
         self.log.info("====DSA settings:====")
         self.log.info("DSA enabled: %s" % (self.enable_dsa))
@@ -1192,7 +1271,7 @@ class SPDKTarget(Target):
         self.log.info("Adding null block bdevices to config via RPC")
         for i in range(null_block_count):
             self.log.info("Setting bdev protection to :%s" % self.null_block_dif_type)
-            rpc.bdev.bdev_null_create(self.client, 102400, block_size + md_size, "Nvme{}n1".format(i),
+            rpc.bdev.bdev_null_create(self.client, 102400, block_size, "Nvme{}n1".format(i),
                                       dif_type=self.null_block_dif_type, md_size=md_size)
         self.log.info("SPDK Bdevs configuration:")
         rpc_client.print_dict(rpc.bdev.bdev_get_bdevs(self.client))
@@ -1229,7 +1308,7 @@ class SPDKTarget(Target):
 
             rpc.nvmf.nvmf_create_subsystem(self.client, nqn, serial,
                                            allow_any_host=True, max_namespaces=8)
-            rpc.nvmf.nvmf_subsystem_add_ns(self.client, nqn, bdev_name)
+            rpc.nvmf.nvmf_subsystem_add_ns(client=self.client, nqn=nqn, bdev_name=bdev_name)
             for nqn_name in [nqn, "discovery"]:
                 rpc.nvmf.nvmf_subsystem_add_listener(self.client,
                                                      nqn=nqn_name,
@@ -1277,7 +1356,7 @@ class SPDKTarget(Target):
             time.sleep(1)
         self.client = rpc_client.JSONRPCClient("/var/tmp/spdk.sock")
 
-        rpc.sock.sock_set_default_impl(self.client, impl_name="posix")
+        rpc.sock.sock_set_default_impl(self.client, impl_name=self.sock_impl)
         rpc.iobuf.iobuf_set_options(self.client,
                                     small_pool_count=self.iobuf_small_pool_count,
                                     large_pool_count=self.iobuf_large_pool_count,
@@ -1285,13 +1364,13 @@ class SPDKTarget(Target):
                                     large_bufsize=None)
 
         if self.enable_zcopy:
-            rpc.sock.sock_impl_set_options(self.client, impl_name="posix",
+            rpc.sock.sock_impl_set_options(self.client, impl_name=self.sock_impl,
                                            enable_zerocopy_send_server=True)
             self.log.info("Target socket options:")
-            rpc_client.print_dict(rpc.sock.sock_impl_get_options(self.client, impl_name="posix"))
+            rpc_client.print_dict(rpc.sock.sock_impl_get_options(self.client, impl_name=self.sock_impl))
 
         if self.enable_adq:
-            rpc.sock.sock_impl_set_options(self.client, impl_name="posix", enable_placement_id=1)
+            rpc.sock.sock_impl_set_options(self.client, impl_name=self.sock_impl, enable_placement_id=1)
             rpc.bdev.bdev_nvme_set_options(self.client, timeout_us=0, action_on_timeout=None,
                                            nvme_adminq_poll_period_us=100000, retry_count=4)
 
@@ -1330,6 +1409,7 @@ class SPDKTarget(Target):
                 except FileNotFoundError:
                     pass
         self.restore_settings()
+        super().stop()
 
 
 class KernelInitiator(Initiator):
@@ -1337,15 +1417,13 @@ class KernelInitiator(Initiator):
         super().__init__(name, general_config, initiator_config)
 
         # Defaults
-        self.extra_params = ""
+        self.extra_params = initiator_config.get('extra_params', '')
+
         self.ioengine = "libaio"
         self.spdk_conf = ""
 
         if "num_cores" in initiator_config:
             self.num_cores = initiator_config["num_cores"]
-
-        if "extra_params" in initiator_config:
-            self.extra_params = initiator_config["extra_params"]
 
         if "kernel_engine" in initiator_config:
             self.ioengine = initiator_config["kernel_engine"]
@@ -1412,7 +1490,7 @@ class KernelInitiator(Initiator):
                                    self.exec_cmd(["cat", "/sys/class/nvme/%s/address" % nvme_ctrl]))
         return self.get_route_nic_numa(remote_nvme_ip.group(0))
 
-    def gen_fio_filename_conf(self, subsystems, threads, io_depth, num_jobs=1, offset=False, offset_inc=0):
+    def gen_fio_filename_conf(self, subsystems, threads, io_depth, num_jobs=1, offset=False, offset_inc=0, numa_align=True):
         self.available_cpus = self.get_numa_cpu_map()
         if len(threads) >= len(subsystems):
             threads = range(0, len(subsystems))
@@ -1447,7 +1525,9 @@ class KernelInitiator(Initiator):
             if offset:
                 offset_section = self.gen_fio_offset_section(offset_inc, num_jobs)
 
-            numa_opts = self.gen_fio_numa_section(r, num_jobs)
+            numa_opts = ""
+            if numa_align:
+                numa_opts = self.gen_fio_numa_section(r, num_jobs)
 
             filename_section = "\n".join([filename_section, header, disks, iodepth, numa_opts, offset_section, ""])
 
@@ -1458,13 +1538,15 @@ class SPDKInitiator(Initiator):
     def __init__(self, name, general_config, initiator_config):
         super().__init__(name, general_config, initiator_config)
 
-        if "skip_spdk_install" not in general_config or general_config["skip_spdk_install"] is False:
+        if not self.skip_spdk_install:
             self.install_spdk()
 
         # Optional fields
-        self.enable_data_digest = False
-        if "enable_data_digest" in initiator_config:
-            self.enable_data_digest = initiator_config["enable_data_digest"]
+        self.enable_data_digest = initiator_config.get('enable_data_digest', False)
+        self.small_pool_count = initiator_config.get('small_pool_count', 32768)
+        self.large_pool_count = initiator_config.get('large_pool_count', 16384)
+        self.sock_impl = initiator_config.get('sock_impl', 'posix')
+
         if "num_cores" in initiator_config:
             self.num_cores = initiator_config["num_cores"]
 
@@ -1498,16 +1580,39 @@ class SPDKInitiator(Initiator):
         self.exec_cmd(["echo", "'%s'" % bdev_conf, ">", "%s/bdev.conf" % self.spdk_dir])
 
     def init_disconnect(self):
-        # SPDK Initiator does not need to explicity disconnect as this gets done
+        # SPDK Initiator does not need to explicitly disconnect as this gets done
         # after fio bdev plugin finishes IO.
-        pass
+        return
 
     def gen_spdk_bdev_conf(self, remote_subsystem_list):
-        bdev_cfg_section = {
+        spdk_cfg_section = {
             "subsystems": [
                 {
                     "subsystem": "bdev",
                     "config": []
+                },
+                {
+                    "subsystem": "iobuf",
+                    "config": [
+                        {
+                            "method": "iobuf_set_options",
+                            "params": {
+                                "small_pool_count": self.small_pool_count,
+                                "large_pool_count": self.large_pool_count
+                            }
+                        }
+                    ]
+                },
+                {
+                    "subsystem": "sock",
+                    "config": [
+                        {
+                            "method": "sock_set_default_impl",
+                            "params": {
+                                "impl_name": self.sock_impl
+                            }
+                        }
+                    ]
                 }
             ]
         }
@@ -1532,11 +1637,11 @@ class SPDKInitiator(Initiator):
             if self.enable_data_digest:
                 nvme_ctrl["params"].update({"ddgst": self.enable_data_digest})
 
-            bdev_cfg_section["subsystems"][0]["config"].append(nvme_ctrl)
+            spdk_cfg_section["subsystems"][0]["config"].append(nvme_ctrl)
 
-        return json.dumps(bdev_cfg_section, indent=2)
+        return json.dumps(spdk_cfg_section, indent=2)
 
-    def gen_fio_filename_conf(self, subsystems, threads, io_depth, num_jobs=1, offset=False, offset_inc=0):
+    def gen_fio_filename_conf(self, subsystems, threads, io_depth, num_jobs=1, offset=False, offset_inc=0, numa_align=True):
         self.available_cpus = self.get_numa_cpu_map()
         filename_section = ""
         if len(threads) >= len(subsystems):
@@ -1571,7 +1676,9 @@ class SPDKInitiator(Initiator):
             if offset:
                 offset_section = self.gen_fio_offset_section(offset_inc, num_jobs)
 
-            numa_opts = self.gen_fio_numa_section(r, num_jobs)
+            numa_opts = ""
+            if numa_align:
+                numa_opts = self.gen_fio_numa_section(r, num_jobs)
 
             filename_section = "\n".join([filename_section, header, disks, iodepth, numa_opts, offset_section, ""])
 
@@ -1583,11 +1690,113 @@ class SPDKInitiator(Initiator):
 
         # Remove two last characters to get controller name instead of subsystem name
         nvme_ctrl = bdev_name[:-2]
-        remote_nvme_ip = list(filter(lambda x: x["params"]["name"] == "%s" % nvme_ctrl, bdev_conf_json_obj))[0]["params"]["traddr"]
-        return self.get_route_nic_numa(remote_nvme_ip)
+        for bdev in bdev_conf_json_obj:
+            if bdev["method"] == "bdev_nvme_attach_controller" and bdev["params"]["name"] == nvme_ctrl:
+                return self.get_route_nic_numa(bdev["params"]["traddr"])
+        return None
+
+
+def initiators_match_subsystems(initiators, target_obj):
+    for i in initiators:
+        i.match_subsystems(target_obj.subsystem_info_list)
+        if i.enable_adq:
+            i.adq_configure_tc()
+
+
+def run_single_fio_test(args, initiators, configs, target_obj, block_size, io_depth, rw, fio_settings):
+
+    for run_no in range(1, fio_settings["run_num"]+1):
+        threads = []
+        power_daemon = None
+        measurements_prefix = "%s_%s_%s_m_%s_run_%s" % (block_size, io_depth, rw, fio_settings["rw_mix_read"], run_no)
+
+        for i, cfg in zip(initiators, configs):
+            t = threading.Thread(target=i.run_fio, args=(cfg, run_no))
+            threads.append(t)
+        if target_obj.enable_sar:
+            sar_file_prefix = measurements_prefix + "_sar"
+            t = threading.Thread(target=target_obj.measure_sar,
+                                 args=(args.results, sar_file_prefix, fio_settings["ramp_time"], fio_settings["run_time"]))
+            threads.append(t)
+
+        if target_obj.enable_pcm:
+            pcm_fnames = ["%s_%s.csv" % (measurements_prefix, x) for x in ["pcm_cpu"]]
+            pcm_cpu_t = threading.Thread(target=target_obj.measure_pcm,
+                                         args=(args.results, pcm_fnames[0], fio_settings["ramp_time"], fio_settings["run_time"]))
+            threads.append(pcm_cpu_t)
+
+        if target_obj.enable_bw:
+            bandwidth_file_name = measurements_prefix + "_bandwidth.csv"
+            t = threading.Thread(target=target_obj.measure_network_bandwidth,
+                                 args=(args.results, bandwidth_file_name, fio_settings["ramp_time"], fio_settings["run_time"]))
+            threads.append(t)
+
+        if target_obj.enable_dpdk_memory:
+            dpdk_mem_file_name = measurements_prefix + "_dpdk_mem.txt"
+            t = threading.Thread(target=target_obj.measure_dpdk_memory, args=(args.results, dpdk_mem_file_name, fio_settings["ramp_time"]))
+            threads.append(t)
+
+        if target_obj.enable_pm:
+            power_daemon = threading.Thread(target=target_obj.measure_power,
+                                            args=(args.results, measurements_prefix, script_full_dir,
+                                                  fio_settings["ramp_time"], fio_settings["run_time"]))
+            threads.append(power_daemon)
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+
+def run_fio_tests(args, initiators, target_obj, fio_settings):
+
+    for block_size, io_depth, rw in fio_settings["workloads"]:
+        configs = []
+        for i in initiators:
+            i.init_connect()
+            cfg = i.gen_fio_config(rw, block_size, io_depth, target_obj.subsys_no, fio_settings)
+            configs.append(cfg)
+
+        run_single_fio_test(args, initiators, configs, target_obj, block_size, io_depth, rw, fio_settings)
+
+        for i in initiators:
+            i.init_disconnect()
+            i.copy_result_files(args.results)
+
+    try:
+        parse_results(args.results, args.csv_filename)
+    except Exception as err:
+        logging.error("There was an error with parsing the results")
+        raise err
+
+
+def validate_allowlist_settings(data, is_forced_used):
+    if data["target"].get("null_block_devices"):
+        logging.info("Null block devices used for testing. Allow and block lists will not be checked.")
+        return True
+
+    if is_forced_used:
+        logging.warning("""Force mode used. All available NVMe drives on your system will be used,
+                     which may potentially lead to data loss""")
+        return True
+
+    if not (data["target"].get("allowlist") or data["target"].get("blocklist")):
+        logging.error("""This script requires allowlist or blocklist to be defined.
+                      You can choose to use all available NVMe drives on your system (-f option),
+                      which may potentially lead to data loss.""")
+        return False
+
+    return True
+
+
+class CpuThrottlingError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
 
 
 if __name__ == "__main__":
+    exit_code = 0
+
     script_full_dir = os.path.dirname(os.path.realpath(__file__))
     default_config_file_path = os.path.relpath(os.path.join(script_full_dir, "config.json"))
 
@@ -1613,20 +1822,11 @@ if __name__ == "__main__":
         data = json.load(config)
 
     initiators = []
-    fio_cases = []
-
     general_config = data["general"]
     target_config = data["target"]
     initiator_configs = [data[x] for x in data.keys() if "initiator" in x]
 
-    if "null_block_devices" not in data["target"] and \
-        (args.force is False and
-            "allowlist" not in data["target"] and
-            "blocklist" not in data["target"]):
-        # TODO: Also check if allowlist or blocklist are not empty.
-        logging.warning("""WARNING: This script requires allowlist and blocklist to be defined.
-        You can choose to use all available NVMe drives on your system, which may potentially
-        lead to data loss. If you wish to proceed with all attached NVMes, use "-f" option.""")
+    if not validate_allowlist_settings(data, args.force):
         exit(1)
 
     for k, v in data.items():
@@ -1643,26 +1843,18 @@ if __name__ == "__main__":
                 init_obj = KernelInitiator(k, data["general"], v)
             initiators.append(init_obj)
         elif "fio" in k:
-            fio_workloads = itertools.product(data[k]["bs"],
-                                              data[k]["qd"],
-                                              data[k]["rw"])
-
-            fio_run_time = data[k]["run_time"]
-            fio_ramp_time = data[k]["ramp_time"]
-            fio_rw_mix_read = data[k]["rwmixread"]
-            fio_run_num = data[k]["run_num"] if "run_num" in data[k].keys() else None
-            fio_num_jobs = data[k]["num_jobs"] if "num_jobs" in data[k].keys() else None
-
-            fio_rate_iops = 0
-            if "rate_iops" in data[k]:
-                fio_rate_iops = data[k]["rate_iops"]
-
-            fio_offset = False
-            if "offset" in data[k]:
-                fio_offset = data[k]["offset"]
-            fio_offset_inc = 0
-            if "offset_inc" in data[k]:
-                fio_offset_inc = data[k]["offset_inc"]
+            fio_settings = {
+                "workloads": itertools.product(data[k]["bs"], data[k]["qd"],  data[k]["rw"]),
+                "run_time": data[k].get("run_time", 10),
+                "ramp_time": data[k].get("ramp_time", 0),
+                "rw_mix_read": data[k].get("rwmixread", 70),
+                "run_num": data[k].get("run_num", None),
+                "num_jobs": data[k].get("num_jobs", None),
+                "rate_iops": data[k].get("rate_iops", 0),
+                "offset": data[k].get("offset", False),
+                "offset_inc": data[k].get("offset_inc", 0),
+                "numa_align": data[k].get("numa_align", 1)
+            }
         else:
             continue
 
@@ -1676,87 +1868,26 @@ if __name__ == "__main__":
             {"name": i.name, "target_nic_ips": i.target_nic_ips, "initiator_nic_ips": i.nic_ips}
         )
 
-    # TODO: This try block is definietly too large. Need to break this up into separate
-    # logical blocks to reduce size.
     try:
         target_obj.tgt_start()
-
-        for i in initiators:
-            i.match_subsystems(target_obj.subsystem_info_list)
-            if i.enable_adq:
-                i.adq_configure_tc()
+        initiators_match_subsystems(initiators, target_obj)
 
         # Poor mans threading
         # Run FIO tests
-        for block_size, io_depth, rw in fio_workloads:
-            configs = []
-            for i in initiators:
-                i.init_connect()
-                cfg = i.gen_fio_config(rw, fio_rw_mix_read, block_size, io_depth, target_obj.subsys_no,
-                                       fio_num_jobs, fio_ramp_time, fio_run_time, fio_rate_iops,
-                                       fio_offset, fio_offset_inc)
-                configs.append(cfg)
+        run_fio_tests(args, initiators, target_obj, fio_settings)
 
-            for run_no in range(1, fio_run_num+1):
-                threads = []
-                power_daemon = None
-                measurements_prefix = "%s_%s_%s_m_%s_run_%s" % (block_size, io_depth, rw, fio_rw_mix_read, run_no)
+    except Exception as e:
+        logging.error("Exception occurred while running FIO tests")
+        logging.error(e)
+        exit_code = 1
 
-                for i, cfg in zip(initiators, configs):
-                    t = threading.Thread(target=i.run_fio, args=(cfg, run_no))
-                    threads.append(t)
-                if target_obj.enable_sar:
-                    sar_file_prefix = measurements_prefix + "_sar"
-                    t = threading.Thread(target=target_obj.measure_sar, args=(args.results, sar_file_prefix, fio_ramp_time, fio_run_time))
-                    threads.append(t)
-
-                if target_obj.enable_pcm:
-                    pcm_fnames = ["%s_%s.csv" % (measurements_prefix, x) for x in ["pcm_cpu", "pcm_memory", "pcm_power"]]
-
-                    pcm_cpu_t = threading.Thread(target=target_obj.measure_pcm,
-                                                 args=(args.results, pcm_fnames[0], fio_ramp_time, fio_run_time))
-                    pcm_mem_t = threading.Thread(target=target_obj.measure_pcm_memory,
-                                                 args=(args.results, pcm_fnames[1], fio_ramp_time, fio_run_time))
-                    pcm_pow_t = threading.Thread(target=target_obj.measure_pcm_power,
-                                                 args=(args.results, pcm_fnames[2], fio_ramp_time, fio_run_time))
-
-                    threads.append(pcm_cpu_t)
-                    threads.append(pcm_mem_t)
-                    threads.append(pcm_pow_t)
-
-                if target_obj.enable_bw:
-                    bandwidth_file_name = measurements_prefix + "_bandwidth.csv"
-                    t = threading.Thread(target=target_obj.measure_network_bandwidth,
-                                         args=(args.results, bandwidth_file_name, fio_ramp_time, fio_run_time))
-                    threads.append(t)
-
-                if target_obj.enable_dpdk_memory:
-                    dpdk_mem_file_name = measurements_prefix + "_dpdk_mem.txt"
-                    t = threading.Thread(target=target_obj.measure_dpdk_memory, args=(args.results, dpdk_mem_file_name, fio_ramp_time))
-                    threads.append(t)
-
-                if target_obj.enable_pm:
-                    power_daemon = threading.Thread(target=target_obj.measure_power,
-                                                    args=(args.results, measurements_prefix, script_full_dir,
-                                                          fio_ramp_time, fio_run_time))
-                    threads.append(power_daemon)
-
-                for t in threads:
-                    t.start()
-                for t in threads:
-                    t.join()
-
-            for i in initiators:
-                i.init_disconnect()
-                i.copy_result_files(args.results)
-        try:
-            parse_results(args.results, args.csv_filename)
-        except Exception:
-            logging.error("There was an error with parsing the results")
     finally:
-        for i in initiators:
+        for i in [*initiators, target_obj]:
             try:
                 i.stop()
+            except CpuThrottlingError as err:
+                logging.error(err)
+                exit_code = 1
             except Exception as err:
                 pass
-        target_obj.stop()
+        sys.exit(exit_code)

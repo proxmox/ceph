@@ -5,7 +5,7 @@
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "spdk/env.h"
 #include "spdk_internal/mock.h"
 #include "thread/thread_internal.h"
@@ -997,7 +997,7 @@ test_reset_zone(void)
 	zone_id = num_zones * bdev->bdev.zone_size;
 	send_reset_zone(bdev, ch, zone_id, output_index, false);
 
-	/* Send reset to already resetted zone */
+	/* Send reset to already reset zone */
 	zone_id = 0;
 	send_reset_zone(bdev, ch, zone_id, output_index, true);
 	send_zone_info(bdev, ch, zone_id, zone_id, SPDK_BDEV_ZONE_STATE_EMPTY, output_index, true);
@@ -1471,7 +1471,6 @@ main(int argc, char **argv)
 	CU_pSuite       suite = NULL;
 	unsigned int    num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("zone_block", NULL, NULL);
@@ -1491,10 +1490,8 @@ main(int argc, char **argv)
 	g_thread = spdk_thread_create("test", NULL);
 	spdk_set_thread(g_thread);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 	set_test_opts();
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
 	spdk_thread_exit(g_thread);
 	while (!spdk_thread_is_exited(g_thread)) {

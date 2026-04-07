@@ -1,5 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2022 Intel Corporation.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES.
  *   All rights reserved.
  */
 
@@ -7,7 +8,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_internal/accel_module.h"
+#include "spdk/accel_module.h"
 #include "spdk/log.h"
 #include "spdk_internal/idxd.h"
 
@@ -20,6 +21,9 @@
 #include "spdk/json.h"
 #include "spdk/trace.h"
 #include "spdk_internal/trace_defs.h"
+
+#define ACCEL_DSA_MD_IOBUF_SMALL_CACHE_SIZE			128
+#define ACCEL_DSA_MD_IOBUF_LARGE_CACHE_SIZE			32
 
 static bool g_dsa_enable = false;
 static bool g_kernel_mode = false;
@@ -43,6 +47,8 @@ static pthread_mutex_t g_dev_lock = PTHREAD_MUTEX_INITIALIZER;
 struct idxd_task {
 	struct spdk_accel_task	task;
 	struct idxd_io_channel	*chan;
+	struct iovec		md_iov;
+	struct spdk_iobuf_entry	iobuf;
 };
 
 struct idxd_io_channel {
@@ -51,7 +57,8 @@ struct idxd_io_channel {
 	enum channel_state		state;
 	struct spdk_poller		*poller;
 	uint32_t			num_outstanding;
-	TAILQ_HEAD(, spdk_accel_task)	queued_tasks;
+	STAILQ_HEAD(, spdk_accel_task)	queued_tasks;
+	struct spdk_iobuf_channel	iobuf;
 };
 
 static struct spdk_io_channel *dsa_get_io_channel(void);
@@ -61,7 +68,7 @@ idxd_select_device(struct idxd_io_channel *chan)
 {
 	uint32_t count = 0;
 	struct idxd_device *dev;
-	uint32_t socket_id = spdk_env_get_socket_id(spdk_env_get_current_core());
+	uint32_t numa_id = spdk_env_get_numa_id(spdk_env_get_current_core());
 
 	/*
 	 * We allow channels to share underlying devices,
@@ -78,7 +85,7 @@ idxd_select_device(struct idxd_io_channel *chan)
 		dev = g_next_dev;
 		pthread_mutex_unlock(&g_dev_lock);
 
-		if (socket_id != spdk_idxd_get_socket(dev->dsa)) {
+		if (numa_id != spdk_idxd_get_socket(dev->dsa)) {
 			continue;
 		}
 
@@ -89,11 +96,11 @@ idxd_select_device(struct idxd_io_channel *chan)
 		 */
 		chan->chan = spdk_idxd_get_channel(dev->dsa);
 		if (chan->chan != NULL) {
-			SPDK_DEBUGLOG(accel_dsa, "On socket %d using device on socket %d\n",
-				      socket_id, spdk_idxd_get_socket(dev->dsa));
+			SPDK_DEBUGLOG(accel_dsa, "On socket %d using device on numa %d\n",
+				      numa_id, spdk_idxd_get_socket(dev->dsa));
 			return dev;
 		}
-	} while (count++ < g_num_devices);
+	} while (++count < g_num_devices);
 
 	/* We are out of available channels and/or devices for the local socket. We fix the number
 	 * of channels that we allocate per device and only allocate devices on the same socket
@@ -109,8 +116,27 @@ dsa_done(void *cb_arg, int status)
 {
 	struct idxd_task *idxd_task = cb_arg;
 	struct idxd_io_channel *chan;
+	int rc;
 
 	chan = idxd_task->chan;
+
+	/* If the DSA DIF Check operation detects an error, detailed info about
+	 * this error (like actual/expected values) needs to be obtained by
+	 * calling the software DIF Verify operation.
+	 */
+	if (spdk_unlikely(status == -EIO)) {
+		if (idxd_task->task.op_code == SPDK_ACCEL_OPC_DIF_VERIFY ||
+		    idxd_task->task.op_code == SPDK_ACCEL_OPC_DIF_VERIFY_COPY) {
+			rc = spdk_dif_verify(idxd_task->task.s.iovs, idxd_task->task.s.iovcnt,
+					     idxd_task->task.dif.num_blocks,
+					     idxd_task->task.dif.ctx, idxd_task->task.dif.err);
+			if (rc != 0) {
+				SPDK_ERRLOG("DIF error detected. type=%d, offset=%" PRIu32 "\n",
+					    idxd_task->task.dif.err->err_type,
+					    idxd_task->task.dif.err->err_offset);
+			}
+		}
+	}
 
 	assert(chan->num_outstanding > 0);
 	spdk_trace_record(TRACE_ACCEL_DSA_OP_COMPLETE, 0, 0, 0, chan->num_outstanding - 1);
@@ -139,6 +165,122 @@ idxd_submit_dualcast(struct idxd_io_channel *ch, struct idxd_task *idxd_task, in
 }
 
 static int
+check_dsa_dif_strip_overlap_bufs(struct spdk_accel_task *task)
+{
+	uint64_t src_seg_addr_end_ext;
+	uint64_t dst_seg_addr_end_ext;
+	size_t i;
+
+	/* The number of source and destination iovecs must be the same.
+	 * If so, one of them can be used to iterate over both vectors
+	 * later in the loop. */
+	if (task->d.iovcnt != task->s.iovcnt) {
+		SPDK_ERRLOG("Mismatched iovcnts: src=%d, dst=%d\n",
+			    task->s.iovcnt, task->d.iovcnt);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < task->s.iovcnt; i++) {
+		src_seg_addr_end_ext = (uint64_t)task->s.iovs[i].iov_base +
+				       task->s.iovs[i].iov_len;
+
+		dst_seg_addr_end_ext = (uint64_t)task->d.iovs[i].iov_base +
+				       task->s.iovs[i].iov_len;
+
+		if ((dst_seg_addr_end_ext >= (uint64_t)task->s.iovs[i].iov_base) &&
+		    (dst_seg_addr_end_ext <= src_seg_addr_end_ext)) {
+			return -EFAULT;
+		}
+	}
+
+	return 0;
+}
+
+static void
+spdk_accel_sw_task_complete(void *ctx)
+{
+	struct spdk_accel_task *task = (struct spdk_accel_task *)ctx;
+
+	spdk_accel_task_complete(task, task->status);
+}
+
+static void
+_accel_dsa_dix_verify_generate_cb(void *cb_arg, int status)
+{
+	struct idxd_task *idxd_task = cb_arg;
+	struct iovec *original_mdiov = idxd_task->task.d.iovs;
+	size_t mdiov_len = idxd_task->md_iov.iov_len;
+	int rc;
+
+	if (status != 0) {
+		SPDK_ERRLOG("Unable to complete DIX Verify (DIX Generate failed)\n");
+		goto end;
+	}
+
+	rc = memcmp(original_mdiov->iov_base, idxd_task->md_iov.iov_base, mdiov_len);
+	if (rc != 0) {
+		SPDK_ERRLOG("DIX Verify failed\n");
+		status = -EINVAL;
+		rc = spdk_dix_verify(idxd_task->task.s.iovs, idxd_task->task.s.iovcnt,
+				     original_mdiov, idxd_task->task.dif.num_blocks,
+				     idxd_task->task.dif.ctx, idxd_task->task.dif.err);
+		if (rc != 0) {
+			SPDK_ERRLOG("DIX error detected. type=%d, offset=%" PRIu32 "\n",
+				    idxd_task->task.dif.err->err_type,
+				    idxd_task->task.dif.err->err_offset);
+		}
+	}
+
+end:
+	spdk_iobuf_put(&idxd_task->chan->iobuf, idxd_task->md_iov.iov_base, mdiov_len);
+	dsa_done(idxd_task, status);
+}
+
+static void
+_accel_dsa_dix_verify(struct idxd_task *idxd_task)
+{
+	int rc;
+
+	/* Since Intel DSA doesn't provide a separate DIX Verify operation, it is done
+	 * in two steps: DIX Generate to a new buffer and mem compare.
+	 */
+	rc = spdk_idxd_submit_dix_generate(idxd_task->chan->chan, idxd_task->task.s.iovs,
+					   idxd_task->task.s.iovcnt, &idxd_task->md_iov, idxd_task->task.dif.num_blocks,
+					   idxd_task->task.dif.ctx, 0, _accel_dsa_dix_verify_generate_cb, idxd_task);
+	if (rc != 0) {
+		SPDK_ERRLOG("Unable to complete DIX Verify (DIX Generate failed)\n");
+		spdk_iobuf_put(&idxd_task->chan->iobuf, idxd_task->md_iov.iov_base,
+			       idxd_task->md_iov.iov_len);
+		dsa_done(idxd_task, rc);
+	}
+}
+
+static void
+accel_dsa_dix_verify_get_iobuf_cb(struct spdk_iobuf_entry *iobuf, void *buf)
+{
+	struct idxd_task *idxd_task;
+
+	idxd_task = SPDK_CONTAINEROF(iobuf, struct idxd_task, iobuf);
+	idxd_task->md_iov.iov_base = buf;
+	_accel_dsa_dix_verify(idxd_task);
+}
+
+static int
+accel_dsa_dix_verify(struct idxd_io_channel *chan, int flags,
+		     struct idxd_task *idxd_task)
+{
+	idxd_task->md_iov.iov_len = idxd_task->task.d.iovs[0].iov_len;
+	idxd_task->md_iov.iov_base = spdk_iobuf_get(&chan->iobuf, idxd_task->md_iov.iov_len,
+				     &idxd_task->iobuf, accel_dsa_dix_verify_get_iobuf_cb);
+
+	if (idxd_task->md_iov.iov_base != NULL) {
+		_accel_dsa_dix_verify(idxd_task);
+	}
+
+	return 0;
+}
+
+static int
 _process_single_task(struct spdk_io_channel *ch, struct spdk_accel_task *task)
 {
 	struct idxd_io_channel *chan = spdk_io_channel_get_ctx(ch);
@@ -149,47 +291,82 @@ _process_single_task(struct spdk_io_channel *ch, struct spdk_accel_task *task)
 	idxd_task->chan = chan;
 
 	switch (task->op_code) {
-	case ACCEL_OPC_COPY:
-		if (task->flags & ACCEL_FLAG_PERSISTENT) {
-			flags |= SPDK_IDXD_FLAG_PERSISTENT;
-			flags |= SPDK_IDXD_FLAG_NONTEMPORAL;
-		}
+	case SPDK_ACCEL_OPC_COPY:
 		rc = spdk_idxd_submit_copy(chan->chan, task->d.iovs, task->d.iovcnt,
 					   task->s.iovs, task->s.iovcnt, flags, dsa_done, idxd_task);
 		break;
-	case ACCEL_OPC_DUALCAST:
-		if (task->flags & ACCEL_FLAG_PERSISTENT) {
-			flags |= SPDK_IDXD_FLAG_PERSISTENT;
-			flags |= SPDK_IDXD_FLAG_NONTEMPORAL;
-		}
+	case SPDK_ACCEL_OPC_DUALCAST:
 		rc = idxd_submit_dualcast(chan, idxd_task, flags);
 		break;
-	case ACCEL_OPC_COMPARE:
+	case SPDK_ACCEL_OPC_COMPARE:
 		rc = spdk_idxd_submit_compare(chan->chan, task->s.iovs, task->s.iovcnt,
 					      task->s2.iovs, task->s2.iovcnt, flags,
 					      dsa_done, idxd_task);
 		break;
-	case ACCEL_OPC_FILL:
-		if (task->flags & ACCEL_FLAG_PERSISTENT) {
-			flags |= SPDK_IDXD_FLAG_PERSISTENT;
-			flags |= SPDK_IDXD_FLAG_NONTEMPORAL;
-		}
+	case SPDK_ACCEL_OPC_FILL:
 		rc = spdk_idxd_submit_fill(chan->chan, task->d.iovs, task->d.iovcnt,
 					   task->fill_pattern, flags, dsa_done, idxd_task);
 		break;
-	case ACCEL_OPC_CRC32C:
+	case SPDK_ACCEL_OPC_CRC32C:
 		rc = spdk_idxd_submit_crc32c(chan->chan, task->s.iovs, task->s.iovcnt, task->seed,
 					     task->crc_dst, flags, dsa_done, idxd_task);
 		break;
-	case ACCEL_OPC_COPY_CRC32C:
-		if (task->flags & ACCEL_FLAG_PERSISTENT) {
-			flags |= SPDK_IDXD_FLAG_PERSISTENT;
-			flags |= SPDK_IDXD_FLAG_NONTEMPORAL;
-		}
+	case SPDK_ACCEL_OPC_COPY_CRC32C:
 		rc = spdk_idxd_submit_copy_crc32c(chan->chan, task->d.iovs, task->d.iovcnt,
 						  task->s.iovs, task->s.iovcnt,
 						  task->seed, task->crc_dst, flags,
 						  dsa_done, idxd_task);
+		break;
+	case SPDK_ACCEL_OPC_DIF_VERIFY:
+		rc = spdk_idxd_submit_dif_check(chan->chan,
+						task->s.iovs, task->s.iovcnt,
+						task->dif.num_blocks, task->dif.ctx, flags,
+						dsa_done, idxd_task);
+		break;
+	case SPDK_ACCEL_OPC_DIF_GENERATE_COPY:
+		rc = spdk_idxd_submit_dif_insert(chan->chan,
+						 task->d.iovs, task->d.iovcnt,
+						 task->s.iovs, task->s.iovcnt,
+						 task->dif.num_blocks, task->dif.ctx, flags,
+						 dsa_done, idxd_task);
+		break;
+	case SPDK_ACCEL_OPC_DIF_VERIFY_COPY:
+		/* For DIF strip operations, DSA may incorrectly report an overlapping buffer
+		 * error if the destination buffer immediately precedes the source buffer.
+		 * This is because DSA uses the transfer size in the descriptor for both
+		 * the source and destination buffers when checking for buffer overlap.
+		 * Since the transfer size applies to the source buffer, which is larger
+		 * than the destination buffer by metadata, it should not be used as
+		 * the destination buffer size. To avoid reporting errors by DSA, the software
+		 * checks whether such an error condition can occur, and if so the software
+		 * fallback is performed. */
+		rc = check_dsa_dif_strip_overlap_bufs(task);
+		if (rc == 0) {
+			rc = spdk_idxd_submit_dif_strip(chan->chan,
+							task->d.iovs, task->d.iovcnt,
+							task->s.iovs, task->s.iovcnt,
+							task->dif.num_blocks, task->dif.ctx, flags,
+							dsa_done, idxd_task);
+		} else if (rc == -EFAULT) {
+			rc = spdk_dif_verify_copy(task->d.iovs,
+						  task->d.iovcnt,
+						  task->s.iovs,
+						  task->s.iovcnt,
+						  task->dif.num_blocks,
+						  task->dif.ctx,
+						  task->dif.err);
+			idxd_task->task.status = rc;
+			spdk_thread_send_msg(spdk_get_thread(), spdk_accel_sw_task_complete, (void *)&idxd_task->task);
+			rc = 0;
+		}
+		break;
+	case SPDK_ACCEL_OPC_DIX_GENERATE:
+		rc = spdk_idxd_submit_dix_generate(chan->chan, task->s.iovs, task->s.iovcnt,
+						   task->d.iovs, task->dif.num_blocks,
+						   task->dif.ctx, flags, dsa_done, idxd_task);
+		break;
+	case SPDK_ACCEL_OPC_DIX_VERIFY:
+		rc = accel_dsa_dix_verify(chan, flags, idxd_task);
 		break;
 	default:
 		assert(false);
@@ -206,53 +383,60 @@ _process_single_task(struct spdk_io_channel *ch, struct spdk_accel_task *task)
 }
 
 static int
-dsa_submit_tasks(struct spdk_io_channel *ch, struct spdk_accel_task *first_task)
+dsa_submit_task(struct spdk_io_channel *ch, struct spdk_accel_task *task)
 {
 	struct idxd_io_channel *chan = spdk_io_channel_get_ctx(ch);
-	struct spdk_accel_task *task, *tmp;
 	int rc = 0;
 
-	task = first_task;
+	assert(STAILQ_NEXT(task, link) == NULL);
 
-	if (chan->state == IDXD_CHANNEL_ERROR) {
-		while (task) {
-			tmp = TAILQ_NEXT(task, link);
+	if (spdk_unlikely(chan->state == IDXD_CHANNEL_ERROR)) {
+		spdk_accel_task_complete(task, -EINVAL);
+		return 0;
+	}
+
+	if (!STAILQ_EMPTY(&chan->queued_tasks)) {
+		STAILQ_INSERT_TAIL(&chan->queued_tasks, task, link);
+		return 0;
+	}
+
+	rc = _process_single_task(ch, task);
+	if (rc == -EBUSY) {
+		STAILQ_INSERT_TAIL(&chan->queued_tasks, task, link);
+	} else if (rc) {
+		spdk_accel_task_complete(task, rc);
+	}
+
+	return 0;
+}
+
+static int
+dsa_submit_queued_tasks(struct idxd_io_channel *chan)
+{
+	struct spdk_accel_task *task, *tmp;
+	struct spdk_io_channel *ch = spdk_io_channel_from_ctx(chan);
+	int rc = 0;
+
+	if (spdk_unlikely(chan->state == IDXD_CHANNEL_ERROR)) {
+		/* Complete queued tasks with error and clear the list */
+		while ((task = STAILQ_FIRST(&chan->queued_tasks))) {
+			STAILQ_REMOVE_HEAD(&chan->queued_tasks, link);
 			spdk_accel_task_complete(task, -EINVAL);
-			task = tmp;
 		}
 		return 0;
 	}
 
-	if (!TAILQ_EMPTY(&chan->queued_tasks)) {
-		goto queue_tasks;
-	}
-
-	/* The caller will either submit a single task or a group of tasks that are
-	 * linked together but they cannot be on a list. For example, see idxd_poll()
-	 * where a list of queued tasks is being resubmitted, the list they are on
-	 * is initialized after saving off the first task from the list which is then
-	 * passed in here.  Similar thing is done in the accel framework.
-	 */
-	while (task) {
-		tmp = TAILQ_NEXT(task, link);
+	STAILQ_FOREACH_SAFE(task, &chan->queued_tasks, link, tmp) {
 		rc = _process_single_task(ch, task);
-
 		if (rc == -EBUSY) {
-			goto queue_tasks;
-		} else if (rc) {
+			return rc;
+		}
+		STAILQ_REMOVE_HEAD(&chan->queued_tasks, link);
+		if (rc) {
 			spdk_accel_task_complete(task, rc);
 		}
-		task = tmp;
 	}
 
-	return 0;
-
-queue_tasks:
-	while (task != NULL) {
-		tmp = TAILQ_NEXT(task, link);
-		TAILQ_INSERT_TAIL(&chan->queued_tasks, task, link);
-		task = tmp;
-	}
 	return 0;
 }
 
@@ -260,23 +444,13 @@ static int
 idxd_poll(void *arg)
 {
 	struct idxd_io_channel *chan = arg;
-	struct spdk_accel_task *task = NULL;
-	struct idxd_task *idxd_task;
 	int count;
 
 	count = spdk_idxd_process_events(chan->chan);
 
 	/* Check if there are any pending ops to process if the channel is active */
-	if (chan->state == IDXD_CHANNEL_ACTIVE) {
-		/* Submit queued tasks */
-		if (!TAILQ_EMPTY(&chan->queued_tasks)) {
-			task = TAILQ_FIRST(&chan->queued_tasks);
-			idxd_task = SPDK_CONTAINEROF(task, struct idxd_task, task);
-
-			TAILQ_INIT(&chan->queued_tasks);
-
-			dsa_submit_tasks(spdk_io_channel_from_ctx(idxd_task->chan), task);
-		}
+	if (!STAILQ_EMPTY(&chan->queued_tasks)) {
+		dsa_submit_queued_tasks(chan);
 	}
 
 	return count > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE;
@@ -289,20 +463,31 @@ accel_dsa_get_ctx_size(void)
 }
 
 static bool
-dsa_supports_opcode(enum accel_opcode opc)
+dsa_supports_opcode(enum spdk_accel_opcode opc)
 {
 	if (!g_dsa_initialized) {
+		assert(0);
 		return false;
 	}
 
 	switch (opc) {
-	case ACCEL_OPC_COPY:
-	case ACCEL_OPC_FILL:
-	case ACCEL_OPC_DUALCAST:
-	case ACCEL_OPC_COMPARE:
-	case ACCEL_OPC_CRC32C:
-	case ACCEL_OPC_COPY_CRC32C:
+	case SPDK_ACCEL_OPC_COPY:
+	case SPDK_ACCEL_OPC_FILL:
+	case SPDK_ACCEL_OPC_DUALCAST:
+	case SPDK_ACCEL_OPC_COMPARE:
+	case SPDK_ACCEL_OPC_CRC32C:
+	case SPDK_ACCEL_OPC_COPY_CRC32C:
 		return true;
+	case SPDK_ACCEL_OPC_DIF_VERIFY:
+	case SPDK_ACCEL_OPC_DIF_GENERATE_COPY:
+	case SPDK_ACCEL_OPC_DIF_VERIFY_COPY:
+	/* In theory, DIX Generate could work without the iommu, but iommu is required
+	 * for consistency with other DIF operations.
+	 */
+	case SPDK_ACCEL_OPC_DIX_GENERATE:
+	case SPDK_ACCEL_OPC_DIX_VERIFY:
+		/* Supported only if the IOMMU is enabled */
+		return spdk_iommu_is_enabled();
 	default:
 		return false;
 	}
@@ -320,16 +505,15 @@ static struct spdk_accel_module_if g_dsa_module = {
 	.name			= "dsa",
 	.supports_opcode	= dsa_supports_opcode,
 	.get_io_channel		= dsa_get_io_channel,
-	.submit_tasks		= dsa_submit_tasks
+	.submit_tasks		= dsa_submit_task
 };
-
-SPDK_ACCEL_MODULE_REGISTER(dsa, &g_dsa_module)
 
 static int
 dsa_create_cb(void *io_device, void *ctx_buf)
 {
 	struct idxd_io_channel *chan = ctx_buf;
 	struct idxd_device *dsa;
+	int rc;
 
 	dsa = idxd_select_device(chan);
 	if (dsa == NULL) {
@@ -339,9 +523,16 @@ dsa_create_cb(void *io_device, void *ctx_buf)
 
 	chan->dev = dsa;
 	chan->poller = SPDK_POLLER_REGISTER(idxd_poll, chan, 0);
-	TAILQ_INIT(&chan->queued_tasks);
+	STAILQ_INIT(&chan->queued_tasks);
 	chan->num_outstanding = 0;
 	chan->state = IDXD_CHANNEL_ACTIVE;
+	rc = spdk_iobuf_channel_init(&chan->iobuf, "accel_dsa",
+				     ACCEL_DSA_MD_IOBUF_SMALL_CACHE_SIZE,
+				     ACCEL_DSA_MD_IOBUF_LARGE_CACHE_SIZE);
+	if (rc != 0) {
+		SPDK_ERRLOG("Failed to create an iobuf channel in accel dsa\n");
+		return -ENOMEM;
+	}
 
 	return 0;
 }
@@ -351,6 +542,7 @@ dsa_destroy_cb(void *io_device, void *ctx_buf)
 {
 	struct idxd_io_channel *chan = ctx_buf;
 
+	spdk_iobuf_channel_fini(&chan->iobuf);
 	spdk_poller_unregister(&chan->poller);
 	spdk_idxd_put_channel(chan->chan);
 }
@@ -381,12 +573,25 @@ attach_cb(void *cb_ctx, struct spdk_idxd_device *idxd)
 	g_num_devices++;
 }
 
-void
+int
 accel_dsa_enable_probe(bool kernel_mode)
 {
+	int rc;
+
+	if (g_dsa_enable) {
+		return -EALREADY;
+	}
+
+	rc = spdk_idxd_set_config(kernel_mode);
+	if (rc != 0) {
+		return rc;
+	}
+
+	spdk_accel_module_list_add(&g_dsa_module);
 	g_kernel_mode = kernel_mode;
 	g_dsa_enable = true;
-	spdk_idxd_set_config(g_kernel_mode);
+
+	return 0;
 }
 
 static bool
@@ -402,6 +607,8 @@ probe_cb(void *cb_ctx, struct spdk_pci_device *dev)
 static int
 accel_dsa_init(void)
 {
+	int rc;
+
 	if (!g_dsa_enable) {
 		return -EINVAL;
 	}
@@ -412,12 +619,16 @@ accel_dsa_init(void)
 	}
 
 	if (TAILQ_EMPTY(&g_dsa_devices)) {
-		SPDK_NOTICELOG("no available dsa devices\n");
-		return -EINVAL;
+		return -ENODEV;
+	}
+
+	rc = spdk_iobuf_register_module("accel_dsa");
+	if (rc != 0) {
+		SPDK_ERRLOG("Failed to register accel_dsa iobuf module\n");
+		return rc;
 	}
 
 	g_dsa_initialized = true;
-	SPDK_NOTICELOG("Accel framework DSA module initialized.\n");
 	spdk_io_device_register(&g_dsa_module, dsa_create_cb, dsa_destroy_cb,
 				sizeof(struct idxd_io_channel), "dsa_accel_module");
 	return 0;
@@ -456,14 +667,16 @@ accel_dsa_write_config_json(struct spdk_json_write_ctx *w)
 	}
 }
 
-SPDK_TRACE_REGISTER_FN(dsa_trace, "dsa", TRACE_GROUP_ACCEL_DSA)
+static void
+dsa_trace(void)
 {
-	spdk_trace_register_description("DSA_OP_SUBMIT", TRACE_ACCEL_DSA_OP_SUBMIT, OWNER_NONE, OBJECT_NONE,
-					0,
+	spdk_trace_register_description("DSA_OP_SUBMIT", TRACE_ACCEL_DSA_OP_SUBMIT, OWNER_TYPE_NONE,
+					OBJECT_NONE, 0,
 					SPDK_TRACE_ARG_TYPE_INT, "count");
-	spdk_trace_register_description("DSA_OP_COMPLETE", TRACE_ACCEL_DSA_OP_COMPLETE, OWNER_NONE,
+	spdk_trace_register_description("DSA_OP_COMPLETE", TRACE_ACCEL_DSA_OP_COMPLETE, OWNER_TYPE_NONE,
 					OBJECT_NONE,
 					0, SPDK_TRACE_ARG_TYPE_INT, "count");
 }
+SPDK_TRACE_REGISTER_FN(dsa_trace, "dsa", TRACE_GROUP_ACCEL_DSA)
 
 SPDK_LOG_REGISTER_COMPONENT(accel_dsa)

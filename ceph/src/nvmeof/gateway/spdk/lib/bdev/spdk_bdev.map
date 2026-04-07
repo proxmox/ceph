@@ -18,7 +18,11 @@
 	spdk_for_each_bdev;
 	spdk_for_each_bdev_leaf;
 	spdk_bdev_open_ext;
+	spdk_bdev_open_ext_v2;
+	spdk_bdev_open_opts_init;
+	spdk_bdev_open_async;
 	spdk_bdev_close;
+	spdk_bdev_get_numa_id;
 	spdk_bdev_desc_get_bdev;
 	spdk_bdev_set_timeout;
 	spdk_bdev_io_type_supported;
@@ -43,8 +47,17 @@
 	spdk_bdev_get_data_block_size;
 	spdk_bdev_get_physical_block_size;
 	spdk_bdev_get_dif_type;
+	spdk_bdev_get_dif_pi_format;
 	spdk_bdev_is_dif_head_of_md;
 	spdk_bdev_is_dif_check_enabled;
+	spdk_bdev_desc_get_block_size;
+	spdk_bdev_desc_get_md_size;
+	spdk_bdev_desc_is_md_interleaved;
+	spdk_bdev_desc_is_md_separate;
+	spdk_bdev_desc_get_dif_type;
+	spdk_bdev_desc_get_dif_pi_format;
+	spdk_bdev_desc_is_dif_head_of_md;
+	spdk_bdev_desc_is_dif_check_enabled;
 	spdk_bdev_get_current_qd;
 	spdk_bdev_get_qd;
 	spdk_bdev_get_qd_sampling_period;
@@ -85,6 +98,7 @@
 	spdk_bdev_nvme_admin_passthru;
 	spdk_bdev_nvme_io_passthru;
 	spdk_bdev_nvme_io_passthru_md;
+	spdk_bdev_nvme_iov_passthru_md;
 	spdk_bdev_free_io;
 	spdk_bdev_queue_io_wait;
 	spdk_bdev_get_io_stat;
@@ -98,6 +112,8 @@
 	spdk_bdev_io_get_cb_arg;
 	spdk_bdev_io_get_seek_offset;
 	spdk_bdev_histogram_enable;
+	spdk_bdev_histogram_enable_ext;
+	spdk_bdev_enable_histogram_opts_init;
 	spdk_bdev_histogram_get;
 	spdk_bdev_channel_get_histogram;
 	spdk_bdev_get_media_events;
@@ -108,6 +124,10 @@
 	spdk_bdev_for_each_channel_continue;
 	spdk_bdev_get_max_copy;
 	spdk_bdev_copy_blocks;
+	spdk_bdev_get_nvme_ctratt;
+	spdk_bdev_get_nvme_nsid;
+	spdk_bdev_get_io_type_name;
+	spdk_bdev_get_io_type;
 
 	# Public functions in bdev_module.h
 	spdk_bdev_register;
@@ -120,6 +140,9 @@
 	spdk_bdev_module_fini_start_done;
 	spdk_bdev_module_claim_bdev;
 	spdk_bdev_module_release_bdev;
+	spdk_bdev_claim_get_name;
+	spdk_bdev_claim_opts_init;
+	spdk_bdev_module_claim_bdev_desc;
 	spdk_bdev_alias_add;
 	spdk_bdev_alias_del;
 	spdk_bdev_alias_del_all;
@@ -133,6 +156,7 @@
 	spdk_bdev_io_complete_nvme_status;
 	spdk_bdev_io_complete_scsi_status;
 	spdk_bdev_io_complete_aio_status;
+	spdk_bdev_io_complete_base_io_status;
 	spdk_bdev_io_get_thread;
 	spdk_bdev_io_get_io_channel;
 	spdk_bdev_io_get_submit_tsc;
@@ -149,7 +173,9 @@
 	spdk_bdev_part_free;
 	spdk_bdev_part_base_hotremove;
 	spdk_bdev_part_base_construct_ext;
+	spdk_bdev_part_construct_opts_init;
 	spdk_bdev_part_construct;
+	spdk_bdev_part_construct_ext;
 	spdk_bdev_part_submit_request;
 	spdk_bdev_part_submit_request_ext;
 	spdk_bdev_part_get_bdev;
@@ -162,6 +188,11 @@
 	spdk_bdev_reset_io_stat;
 	spdk_bdev_add_io_stat;
 	spdk_bdev_dump_io_stat_json;
+	spdk_bdev_quiesce;
+	spdk_bdev_unquiesce;
+	spdk_bdev_quiesce_range;
+	spdk_bdev_unquiesce_range;
+	spdk_bdev_io_hide_metadata;
 
 	# Public functions in bdev_zone.h
 	spdk_bdev_get_zone_size;

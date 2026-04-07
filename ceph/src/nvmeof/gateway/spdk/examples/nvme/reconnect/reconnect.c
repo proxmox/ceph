@@ -9,6 +9,7 @@
 
 #include "spdk/env.h"
 #include "spdk/nvme.h"
+#include "spdk_internal/nvme_util.h"
 #include "spdk/queue.h"
 #include "spdk/string.h"
 #include "spdk/util.h"
@@ -91,13 +92,14 @@ static bool g_dpdk_mem_single_seg = false;
 
 static const char *g_core_mask;
 
-struct trid_entry {
-	struct spdk_nvme_transport_id	trid;
-	struct spdk_nvme_transport_id	failover_trid;
-	TAILQ_ENTRY(trid_entry)		tailq;
+struct _trid_entry {
+	struct spdk_nvme_trid_entry entry;
+	TAILQ_ENTRY(_trid_entry) tailq;
 };
 
-static TAILQ_HEAD(, trid_entry) g_trid_list = TAILQ_HEAD_INITIALIZER(g_trid_list);
+#define MAX_TRID_ENTRY 256
+static struct _trid_entry g_trids[MAX_TRID_ENTRY];
+static TAILQ_HEAD(, _trid_entry) g_trid_list = TAILQ_HEAD_INITIALIZER(g_trid_list);
 
 static inline void task_complete(struct perf_task *task);
 static void submit_io(struct ns_worker_ctx *ns_ctx, int queue_depth);
@@ -224,32 +226,6 @@ nvme_cleanup_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 }
 
 static void
-build_nvme_name(char *name, size_t length, struct spdk_nvme_ctrlr *ctrlr)
-{
-	const struct spdk_nvme_transport_id *trid;
-
-	trid = spdk_nvme_ctrlr_get_transport_id(ctrlr);
-
-	switch (trid->trtype) {
-	case SPDK_NVME_TRANSPORT_RDMA:
-		snprintf(name, length, "RDMA (addr:%s subnqn:%s)", trid->traddr, trid->subnqn);
-		break;
-	case SPDK_NVME_TRANSPORT_TCP:
-		snprintf(name, length, "TCP (addr:%s subnqn:%s)", trid->traddr, trid->subnqn);
-		break;
-	case SPDK_NVME_TRANSPORT_VFIOUSER:
-		snprintf(name, length, "VFIOUSER (%s)", trid->traddr);
-		break;
-	case SPDK_NVME_TRANSPORT_CUSTOM:
-		snprintf(name, length, "CUSTOM (%s)", trid->traddr);
-		break;
-	default:
-		fprintf(stderr, "Unknown transport type %d\n", trid->trtype);
-		break;
-	}
-}
-
-static void
 register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 {
 	struct ns_entry *entry;
@@ -319,7 +295,7 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 		g_max_io_size_blocks = entry->io_size_blocks;
 	}
 
-	build_nvme_name(entry->name, sizeof(entry->name), ctrlr);
+	spdk_nvme_build_name(entry->name, sizeof(entry->name), ctrlr, ns);
 
 	g_num_namespaces++;
 	TAILQ_INSERT_TAIL(&g_namespaces, entry, link);
@@ -337,7 +313,7 @@ unregister_namespaces(void)
 }
 
 static void
-register_ctrlr(struct spdk_nvme_ctrlr *ctrlr, struct trid_entry *trid_entry)
+register_ctrlr(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_trid_entry *trid_entry)
 {
 	struct spdk_nvme_ns *ns;
 	struct ctrlr_entry *entry = calloc(1, sizeof(struct ctrlr_entry));
@@ -364,8 +340,8 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr, struct trid_entry *trid_entry)
 	 */
 	snprintf(entry->failover_trid.subnqn, SPDK_NVMF_NQN_MAX_LEN + 1, "%s", ctrlr_trid->subnqn);
 
-
-	build_nvme_name(entry->name, sizeof(entry->name), ctrlr);
+	spdk_nvme_build_name(entry->name, sizeof(entry->name), ctrlr, NULL);
+	printf("Attached to NVMeoF Controller at %s\n", entry->name);
 
 	entry->ctrlr = ctrlr;
 	entry->trtype = trid_entry->trid.trtype;
@@ -411,6 +387,8 @@ submit_single_io(struct perf_task *task)
 
 	if (spdk_unlikely(rc != 0)) {
 		fprintf(stderr, "starting I/O failed\n");
+		spdk_dma_free(task->iov.iov_base);
+		free(task);
 	} else {
 		ns_ctx->current_queue_depth++;
 	}
@@ -537,13 +515,11 @@ work_fn(void *arg)
 				ns_ctx->is_draining = true;
 			}
 
-			if (ns_ctx->current_queue_depth > 0) {
-				check_io(ns_ctx);
-				if (ns_ctx->current_queue_depth == 0) {
-					nvme_cleanup_ns_worker_ctx(ns_ctx);
-				} else {
-					unfinished_ns_ctx++;
-				}
+			check_io(ns_ctx);
+			if (ns_ctx->current_queue_depth == 0) {
+				nvme_cleanup_ns_worker_ctx(ns_ctx);
+			} else {
+				unfinished_ns_ctx++;
 			}
 		}
 	} while (unfinished_ns_ctx > 0);
@@ -564,16 +540,9 @@ usage(char *program_name)
 	printf("\t[-t time in seconds]\n");
 	printf("\t[-c core mask for I/O submission/completion.]\n");
 	printf("\t\t(default: 1)\n");
-	printf("\t[-r Transport ID for NVMeoF]\n");
-	printf("\t Format: 'key:value [key:value] ...'\n");
-	printf("\t Keys:\n");
-	printf("\t  trtype      Transport type (e.g. RDMA)\n");
-	printf("\t  adrfam      Address family (e.g. IPv4, IPv6)\n");
-	printf("\t  traddr      Transport address (e.g. 192.168.100.8 for RDMA)\n");
-	printf("\t  trsvcid     Transport service identifier (e.g. 4420)\n");
-	printf("\t  subnqn      Subsystem NQN (default: %s)\n", SPDK_NVMF_DISCOVERY_NQN);
-	printf("\t  alt_traddr  (Optional) Alternative Transport address for failover.\n");
-	printf("\t Example: -r 'trtype:RDMA adrfam:IPv4 traddr:192.168.100.8 trsvcid:4420' for NVMeoF\n");
+	spdk_nvme_transport_id_usage(stdout,
+				     SPDK_NVME_TRID_USAGE_OPT_MANDATORY | SPDK_NVME_TRID_USAGE_OPT_NO_PCIE |
+				     SPDK_NVME_TRID_USAGE_OPT_ALT_TRADDR);
 	printf("\t[-k keep alive timeout period in millisecond]\n");
 	printf("\t[-s DPDK huge memory size in MB.]\n");
 	printf("\t[-m max completions per poll]\n");
@@ -590,66 +559,16 @@ usage(char *program_name)
 #endif
 }
 
-static void
-unregister_trids(void)
-{
-	struct trid_entry *trid_entry, *tmp;
-
-	TAILQ_FOREACH_SAFE(trid_entry, &g_trid_list, tailq, tmp) {
-		TAILQ_REMOVE(&g_trid_list, trid_entry, tailq);
-		free(trid_entry);
-	}
-}
-
-static int
-add_trid(const char *trid_str)
-{
-	struct trid_entry *trid_entry;
-	struct spdk_nvme_transport_id *trid;
-	char *alt_traddr;
-	int len;
-
-	trid_entry = calloc(1, sizeof(*trid_entry));
-	if (trid_entry == NULL) {
-		return -1;
-	}
-
-	trid = &trid_entry->trid;
-	snprintf(trid->subnqn, sizeof(trid->subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
-
-	if (spdk_nvme_transport_id_parse(trid, trid_str) != 0) {
-		fprintf(stderr, "Invalid transport ID format '%s'\n", trid_str);
-		free(trid_entry);
-		return 1;
-	}
-
-	trid_entry->failover_trid = trid_entry->trid;
-
-	alt_traddr = strcasestr(trid_str, "alt_traddr:");
-	if (alt_traddr) {
-		alt_traddr += strlen("alt_traddr:");
-		len = strcspn(alt_traddr, " \t\n");
-		if (len > SPDK_NVMF_TRADDR_MAX_LEN) {
-			fprintf(stderr, "The failover traddr %s is too long.\n", alt_traddr);
-			free(trid_entry);
-			return -1;
-		}
-		snprintf(trid_entry->failover_trid.traddr, SPDK_NVMF_TRADDR_MAX_LEN + 1, "%s", alt_traddr);
-	}
-
-	TAILQ_INSERT_TAIL(&g_trid_list, trid_entry, tailq);
-	return 0;
-}
-
 static int
 parse_args(int argc, char **argv)
 {
-	struct trid_entry *trid_entry, *trid_entry_tmp;
+	struct _trid_entry *trid_entry;
 	const char *workload_type;
 	int op;
 	bool mix_specified = false;
 	long int val;
 	int rc;
+	uint32_t trid_count = 0;
 
 	/* default value */
 	g_queue_depth = 0;
@@ -714,10 +633,19 @@ parse_args(int argc, char **argv)
 			g_dpdk_mem_single_seg = true;
 			break;
 		case 'r':
-			if (add_trid(optarg)) {
+			if (trid_count == MAX_TRID_ENTRY) {
+				fprintf(stderr, "Number of Transport ID specified with -r is limited to %u\n", MAX_TRID_ENTRY);
+				return 1;
+			}
+
+			rc = spdk_nvme_trid_entry_parse(&g_trids[trid_count].entry, optarg);
+			if (rc < 0) {
 				usage(argv[0]);
 				return 1;
 			}
+
+			TAILQ_INSERT_TAIL(&g_trid_list, &g_trids[trid_count], tailq);
+			++trid_count;
 			break;
 		case 'w':
 			workload_type = optarg;
@@ -823,8 +751,8 @@ parse_args(int argc, char **argv)
 	}
 
 	/* check whether there is local PCIe type and fail. */
-	TAILQ_FOREACH_SAFE(trid_entry, &g_trid_list, tailq, trid_entry_tmp) {
-		if (trid_entry->trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
+	TAILQ_FOREACH(trid_entry, &g_trid_list, tailq) {
+		if (trid_entry->entry.trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
 			fprintf(stderr, "This application was not intended to be run on PCIe controllers.\n");
 			return 1;
 		}
@@ -903,26 +831,20 @@ static void
 attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
 {
-	struct trid_entry	*trid_entry = cb_ctx;
-
-	printf("Attached to NVMe over Fabrics controller at %s:%s: %s\n",
-	       trid->traddr, trid->trsvcid,
-	       trid->subnqn);
-
-	register_ctrlr(ctrlr, trid_entry);
+	register_ctrlr(ctrlr, cb_ctx);
 }
 
 static int
 register_controllers(void)
 {
-	struct trid_entry *trid_entry;
+	struct _trid_entry *trid_entry;
 
 	printf("Initializing NVMe Controllers\n");
 
 	TAILQ_FOREACH(trid_entry, &g_trid_list, tailq) {
-		if (spdk_nvme_probe(&trid_entry->trid, trid_entry, probe_cb, attach_cb, NULL) != 0) {
+		if (spdk_nvme_probe(&trid_entry->entry.trid, &trid_entry->entry, probe_cb, attach_cb, NULL) != 0) {
 			fprintf(stderr, "spdk_nvme_probe() failed for transport address '%s'\n",
-				trid_entry->trid.traddr);
+				trid_entry->entry.trid.traddr);
 			return -1;
 		}
 	}
@@ -1056,6 +978,7 @@ main(int argc, char **argv)
 		return rc;
 	}
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "reconnect";
 	if (g_core_mask) {
@@ -1068,7 +991,6 @@ main(int argc, char **argv)
 	opts.hugepage_single_segments = g_dpdk_mem_single_seg;
 	if (spdk_env_init(&opts) < 0) {
 		fprintf(stderr, "Unable to initialize SPDK env\n");
-		unregister_trids();
 		return 1;
 	}
 
@@ -1127,7 +1049,6 @@ cleanup:
 	if (thread_id && pthread_cancel(thread_id) == 0) {
 		pthread_join(thread_id, NULL);
 	}
-	unregister_trids();
 	unregister_namespaces();
 	unregister_controllers();
 	unregister_workers();

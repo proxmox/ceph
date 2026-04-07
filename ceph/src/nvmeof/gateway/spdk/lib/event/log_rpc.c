@@ -205,14 +205,13 @@ rpc_log_set_flag(struct spdk_jsonrpc_request *request,
 		goto end;
 	}
 
-	if (req.flag == 0) {
-		SPDK_DEBUGLOG(log_rpc, "invalid flag 0\n");
+	if (spdk_log_set_flag(req.flag) != 0) {
+		SPDK_DEBUGLOG(log_rpc, "tried to set invalid log flag\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
-						 "invalid flag 0");
+						 "invalid log flag");
 		goto end;
 	}
 
-	spdk_log_set_flag(req.flag);
 	spdk_jsonrpc_send_bool_response(request, true);
 end:
 	free_rpc_log_flag(&req);
@@ -233,14 +232,13 @@ rpc_log_clear_flag(struct spdk_jsonrpc_request *request,
 		goto end;
 	}
 
-	if (req.flag == 0) {
-		SPDK_DEBUGLOG(log_rpc, "Invalid flag 0\n");
+	if (spdk_log_clear_flag(req.flag) != 0) {
+		SPDK_DEBUGLOG(log_rpc, "tried to clear invalid log flag\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
-						 "invalid flag 0");
+						 "invalid log flag");
 		goto end;
 	}
 
-	spdk_log_clear_flag(req.flag);
 	spdk_jsonrpc_send_bool_response(request, true);
 end:
 	free_rpc_log_flag(&req);

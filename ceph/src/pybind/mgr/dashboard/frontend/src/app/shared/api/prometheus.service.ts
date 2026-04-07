@@ -8,6 +8,7 @@ import { AlertmanagerSilence } from '../models/alertmanager-silence';
 import {
   AlertmanagerAlert,
   AlertmanagerNotification,
+  GroupAlertmanagerAlert,
   PrometheusRuleGroup
 } from '../models/prometheus-alerts';
 import moment from 'moment';
@@ -79,6 +80,11 @@ export class PrometheusService {
     return this.http.get<AlertmanagerAlert[]>(this.baseURL, { params });
   }
 
+  getGroupedAlerts(clusterFilteredAlerts = false, params: Record<string, any> = {}) {
+    params['cluster_filter'] = clusterFilteredAlerts;
+    return this.http.get<GroupAlertmanagerAlert[]>(`${this.baseURL}/alertgroup`, { params });
+  }
+
   getSilences(params = {}): Observable<AlertmanagerSilence[]> {
     return this.http.get<AlertmanagerSilence[]>(`${this.baseURL}/silences`, { params });
   }
@@ -148,10 +154,16 @@ export class PrometheusService {
   }
 
   getGaugeQueryData(query: string): Observable<PromqlGuageMetric> {
-    return this.getPrometheusQueryData({ params: query }).pipe(
-      map((result: PromqlGuageMetric) => result),
-      catchError(() => of({ result: [] } as PromqlGuageMetric))
-    );
+    let result$: Observable<PromqlGuageMetric> = of({ result: [] } as PromqlGuageMetric);
+
+    this.ifPrometheusConfigured(() => {
+      result$ = this.getPrometheusQueryData({ params: query }).pipe(
+        map((result: PromqlGuageMetric) => result),
+        catchError(() => of({ result: [] } as PromqlGuageMetric))
+      );
+    });
+
+    return result$;
   }
 
   formatGuageMetric(data: string): number {

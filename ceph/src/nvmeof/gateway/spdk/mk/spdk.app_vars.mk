@@ -5,15 +5,6 @@
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib_deps.mk
 
-# _uniq returns the unique elements from the list specified. It does
-# not change the order of the elements. If the same element occurs
-# multiple times in the list, the last instance is kept and the others
-# removed.
-# Example: _uniq(conf log json log util util log util) = conf json log util
-define _uniq
-$(if $1,$(call _uniq,$(filter-out $(lastword $1),$1)) $(lastword $1))
-endef
-
 define _deplibs
 $(if $1,$(foreach d,$1,$(d) $(call _deplibs,$(DEPDIRS-$(d)))))
 endef
@@ -22,6 +13,7 @@ define deplibs
 $(call _uniq,$(call _deplibs,$1))
 endef
 
+SPDK_LIB_LIST += $(ENV_DEPLIBS)
 SPDK_DEPLIB_LIST += $(call deplibs,$(SPDK_LIB_LIST))
 
 SPDK_LIB_FILES = $(call spdk_lib_list_to_static_libs,$(SPDK_DEPLIB_LIST))
@@ -38,7 +30,7 @@ SPDK_LIB_LINKER_ARGS = \
 # library with whole-archive, to keep its functions from getting stripped out
 # when LTO is enabled.
 SPDK_STATIC_LIB_LINKER_ARGS = \
-	$(SPDK_LIB_LIST:%=$(SPDK_ROOT_DIR)/build/lib/libspdk_%.a) \
+	$(SPDK_LIB_FILES) \
 	-Wl,--whole-archive \
 	$(SPDK_ROOT_DIR)/build/lib/libspdk_ut_mock.a \
 	-Wl,--no-whole-archive

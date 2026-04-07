@@ -6,7 +6,7 @@ import { Observable, of as observableOf } from 'rxjs';
 import { catchError, mapTo } from 'rxjs/operators';
 import { CephServiceSpec } from '../models/service.interface';
 
-export const MAX_NAMESPACE = 4096;
+export const DEFAULT_MAX_NAMESPACE_PER_SUBSYSTEM = 512;
 
 export type GatewayGroup = CephServiceSpec;
 
@@ -168,8 +168,8 @@ export class NvmeofService {
   }
 
   // Namespaces
-  listNamespaces(subsystemNQN: string, group: string) {
-    return this.http.get(`${API_PATH}/subsystem/${subsystemNQN}/namespace?gw_group=${group}`);
+  listNamespaces(group: string) {
+    return this.http.get(`${API_PATH}/gateway_group/${group}/namespace`);
   }
 
   getNamespace(subsystemNQN: string, nsid: string, group: string) {

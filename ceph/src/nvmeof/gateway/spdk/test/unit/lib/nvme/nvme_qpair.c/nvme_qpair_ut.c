@@ -6,7 +6,7 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "common/lib/test_env.c"
 
@@ -23,16 +23,19 @@ struct nvme_driver _g_nvme_driver = {
 	.lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
-DEFINE_STUB_V(nvme_transport_qpair_abort_reqs, (struct spdk_nvme_qpair *qpair, uint32_t dnr));
+DEFINE_STUB_V(nvme_transport_qpair_abort_reqs, (struct spdk_nvme_qpair *qpair));
 DEFINE_STUB(nvme_transport_qpair_submit_request, int,
 	    (struct spdk_nvme_qpair *qpair, struct nvme_request *req), 0);
 DEFINE_STUB(spdk_nvme_ctrlr_free_io_qpair, int, (struct spdk_nvme_qpair *qpair), 0);
 DEFINE_STUB_V(nvme_transport_ctrlr_disconnect_qpair, (struct spdk_nvme_ctrlr *ctrlr,
 		struct spdk_nvme_qpair *qpair));
+DEFINE_STUB(nvme_transport_ctrlr_process_transport_events, int,
+	    (struct spdk_nvme_ctrlr *ctrlr), 0);
 DEFINE_STUB_V(nvme_ctrlr_disconnect_qpair, (struct spdk_nvme_qpair *qpair));
 
-DEFINE_STUB_V(nvme_ctrlr_complete_queued_async_events, (struct spdk_nvme_ctrlr *ctrlr));
 DEFINE_STUB_V(nvme_ctrlr_abort_queued_aborts, (struct spdk_nvme_ctrlr *ctrlr));
+DEFINE_STUB(nvme_ctrlr_reinitialize_io_qpair, int,
+	    (struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair), 0);
 
 void
 nvme_ctrlr_fail(struct spdk_nvme_ctrlr *ctrlr, bool hot_remove)
@@ -672,12 +675,13 @@ test_nvme_qpair_init_deinit(void)
 		/* Check requests address alignment */
 		CU_ASSERT((uint64_t)var_req % 64 == 0);
 		CU_ASSERT(var_req->qpair == &qpair);
+		var_req->pid = getpid();
 		reqs[i++] = var_req;
 	}
 	CU_ASSERT(i == 3);
 
 	/* Allocate cmd memory for deinit using */
-	cmd = spdk_zmalloc(sizeof(*cmd), 64, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
+	cmd = spdk_zmalloc(sizeof(*cmd), 64, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
 	SPDK_CU_ASSERT_FATAL(cmd != NULL);
 	TAILQ_INSERT_TAIL(&qpair.err_cmd_head, cmd, link);
 	for (int i = 0; i < 3; i++) {
@@ -750,7 +754,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_qpair", NULL, NULL);
@@ -770,9 +773,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_qpair_init_deinit);
 	CU_ADD_TEST(suite, test_nvme_get_sgl_print_info);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

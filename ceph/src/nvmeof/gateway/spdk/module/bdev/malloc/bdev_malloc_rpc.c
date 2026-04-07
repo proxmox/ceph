@@ -15,31 +15,18 @@ free_rpc_construct_malloc(struct malloc_bdev_opts *r)
 	free(r->name);
 }
 
-static int
-decode_mdisk_uuid(const struct spdk_json_val *val, void *out)
-{
-	char *str = NULL;
-	int rc;
-
-	rc = spdk_json_decode_string(val, &str);
-	if (rc == 0) {
-		rc = spdk_uuid_parse(out, str);
-	}
-
-	free(str);
-	return rc;
-}
-
 static const struct spdk_json_object_decoder rpc_construct_malloc_decoders[] = {
 	{"name", offsetof(struct malloc_bdev_opts, name), spdk_json_decode_string, true},
-	{"uuid", offsetof(struct malloc_bdev_opts, uuid), decode_mdisk_uuid, true},
+	{"uuid", offsetof(struct malloc_bdev_opts, uuid), spdk_json_decode_uuid, true},
 	{"num_blocks", offsetof(struct malloc_bdev_opts, num_blocks), spdk_json_decode_uint64},
 	{"block_size", offsetof(struct malloc_bdev_opts, block_size), spdk_json_decode_uint32},
+	{"physical_block_size", offsetof(struct malloc_bdev_opts, physical_block_size), spdk_json_decode_uint32, true},
 	{"optimal_io_boundary", offsetof(struct malloc_bdev_opts, optimal_io_boundary), spdk_json_decode_uint32, true},
 	{"md_size", offsetof(struct malloc_bdev_opts, md_size), spdk_json_decode_uint32, true},
 	{"md_interleave", offsetof(struct malloc_bdev_opts, md_interleave), spdk_json_decode_bool, true},
 	{"dif_type", offsetof(struct malloc_bdev_opts, dif_type), spdk_json_decode_int32, true},
 	{"dif_is_head_of_md", offsetof(struct malloc_bdev_opts, dif_is_head_of_md), spdk_json_decode_bool, true},
+	{"dif_pi_format", offsetof(struct malloc_bdev_opts, dif_pi_format), spdk_json_decode_uint32, true},
 };
 
 static void

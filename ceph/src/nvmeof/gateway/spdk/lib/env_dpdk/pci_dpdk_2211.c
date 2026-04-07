@@ -16,6 +16,13 @@ SPDK_STATIC_ASSERT(offsetof(struct spdk_pci_driver, driver_buf) == 0, "driver_bu
 SPDK_STATIC_ASSERT(offsetof(struct spdk_pci_driver, driver) >= sizeof(struct rte_pci_driver),
 		   "driver_buf not big enough");
 
+/* Following API was added in versions later than DPDK 22.11.
+ * It is unused right now, if this changes a new pci_dpdk_* should be added.
+ */
+#define rte_pci_mmio_read(...) SPDK_STATIC_ASSERT(false, "rte_pci_mmio_read requires new pci_dpdk_2307 compat layer")
+#define rte_pci_mmio_write(...) SPDK_STATIC_ASSERT(false, "rte_pci_mmio_write requires new pci_dpdk_2307 compat layer")
+#define rte_pci_pasid_set_state(...) SPDK_STATIC_ASSERT(false, "rte_pci_pasid_set_state requires new pci_dpdk_2307 compat layer")
+
 static struct rte_mem_resource *
 pci_device_get_mem_resource_2211(struct rte_pci_device *dev, uint32_t bar)
 {
@@ -148,34 +155,43 @@ pci_driver_register_2211(struct spdk_pci_driver *driver,
 static int
 pci_device_enable_interrupt_2211(struct rte_pci_device *rte_dev)
 {
-#if RTE_VERSION < RTE_VERSION_NUM(21, 11, 0, 0)
-	assert(false);
-	return -1;
-#else
 	return rte_intr_enable(rte_dev->intr_handle);
-#endif
 }
 
 static int
 pci_device_disable_interrupt_2211(struct rte_pci_device *rte_dev)
 {
-#if RTE_VERSION < RTE_VERSION_NUM(21, 11, 0, 0)
-	assert(false);
-	return -1;
-#else
 	return rte_intr_disable(rte_dev->intr_handle);
-#endif
 }
 
 static int
 pci_device_get_interrupt_efd_2211(struct rte_pci_device *rte_dev)
 {
-#if RTE_VERSION < RTE_VERSION_NUM(21, 11, 0, 0)
-	assert(false);
-	return -1;
-#else
 	return rte_intr_fd_get(rte_dev->intr_handle);
-#endif
+}
+
+static int
+pci_device_create_interrupt_efds_2211(struct rte_pci_device *rte_dev, uint32_t count)
+{
+	return rte_intr_efd_enable(rte_dev->intr_handle, count);
+}
+
+static void
+pci_device_delete_interrupt_efds_2211(struct rte_pci_device *rte_dev)
+{
+	return rte_intr_efd_disable(rte_dev->intr_handle);
+}
+
+static int
+pci_device_get_interrupt_efd_by_index_2211(struct rte_pci_device *rte_dev, uint32_t index)
+{
+	return rte_intr_efds_index_get(rte_dev->intr_handle, index);
+}
+
+static int
+pci_device_interrupt_cap_multi_2211(struct rte_pci_device *rte_dev)
+{
+	return rte_intr_cap_multiple(rte_dev->intr_handle);
 }
 
 static int
@@ -227,6 +243,10 @@ struct dpdk_fn_table fn_table_2211 = {
 	.pci_device_enable_interrupt	= pci_device_enable_interrupt_2211,
 	.pci_device_disable_interrupt	= pci_device_disable_interrupt_2211,
 	.pci_device_get_interrupt_efd	= pci_device_get_interrupt_efd_2211,
+	.pci_device_create_interrupt_efds = pci_device_create_interrupt_efds_2211,
+	.pci_device_delete_interrupt_efds = pci_device_delete_interrupt_efds_2211,
+	.pci_device_get_interrupt_efd_by_index = pci_device_get_interrupt_efd_by_index_2211,
+	.pci_device_interrupt_cap_multi	= pci_device_interrupt_cap_multi_2211,
 	.bus_scan			= bus_scan_2211,
 	.bus_probe			= bus_probe_2211,
 	.device_get_devargs		= device_get_devargs_2211,

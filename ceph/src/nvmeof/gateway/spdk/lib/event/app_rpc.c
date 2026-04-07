@@ -17,6 +17,7 @@
 #include "spdk/log.h"
 #include "spdk_internal/event.h"
 #include "spdk_internal/thread.h"
+#include "event_internal.h"
 
 struct rpc_spdk_kill_instance {
 	char *sig_name;
@@ -356,6 +357,7 @@ _rpc_framework_get_reactors(void *arg1, void *arg2)
 	struct rpc_get_stats_ctx *ctx = arg1;
 	uint32_t current_core;
 	uint32_t curr_core_freq;
+	uint64_t sys, usr, irq;
 	struct spdk_reactor *reactor;
 	struct spdk_lw_thread *lw_thread;
 	struct spdk_thread *thread;
@@ -369,9 +371,17 @@ _rpc_framework_get_reactors(void *arg1, void *arg2)
 
 	spdk_json_write_object_begin(ctx->w);
 	spdk_json_write_named_uint32(ctx->w, "lcore", current_core);
+	spdk_json_write_named_uint64(ctx->w, "tid", spdk_get_tid());
 	spdk_json_write_named_uint64(ctx->w, "busy", reactor->busy_tsc);
 	spdk_json_write_named_uint64(ctx->w, "idle", reactor->idle_tsc);
 	spdk_json_write_named_bool(ctx->w, "in_interrupt", reactor->in_interrupt);
+
+	if (app_get_proc_stat(current_core, &usr, &sys, &irq) != 0) {
+		irq = sys = usr = 0;
+	}
+	spdk_json_write_named_uint64(ctx->w, "irq", irq);
+	spdk_json_write_named_uint64(ctx->w, "sys", sys);
+	spdk_json_write_named_uint64(ctx->w, "usr", usr);
 
 	governor = spdk_governor_get();
 	if (governor != NULL) {
@@ -424,6 +434,7 @@ rpc_framework_get_reactors(struct spdk_jsonrpc_request *request,
 
 	spdk_json_write_object_begin(ctx->w);
 	spdk_json_write_named_uint64(ctx->w, "tick_rate", spdk_get_ticks_hz());
+	spdk_json_write_named_uint64(ctx->w, "pid", getpid());
 	spdk_json_write_named_array_begin(ctx->w, "reactors");
 
 	spdk_for_each_reactor(_rpc_framework_get_reactors, ctx, NULL,
@@ -453,31 +464,32 @@ rpc_framework_set_scheduler(struct spdk_jsonrpc_request *request,
 			    const struct spdk_json_val *params)
 {
 	struct rpc_set_scheduler_ctx req = {NULL};
-	struct spdk_scheduler *scheduler = NULL;
+	struct spdk_scheduler *scheduler;
+	bool has_custom_opts = false;
 	int ret;
 
-	ret = spdk_json_decode_object_relaxed(params, rpc_set_scheduler_decoders,
-					      SPDK_COUNTOF(rpc_set_scheduler_decoders),
-					      &req);
+	ret = spdk_json_decode_object(params, rpc_set_scheduler_decoders,
+				      SPDK_COUNTOF(rpc_set_scheduler_decoders),
+				      &req);
+	if (ret) {
+		has_custom_opts = true;
+		ret = spdk_json_decode_object_relaxed(params, rpc_set_scheduler_decoders,
+						      SPDK_COUNTOF(rpc_set_scheduler_decoders),
+						      &req);
+	}
 	if (ret) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
 		goto end;
 	}
 
-	scheduler = spdk_scheduler_get();
-	/* SPDK does not support changing scheduler back to static. */
-	if (scheduler != NULL && (strcmp(req.name, "static") == 0) &&
-	    strcmp(scheduler->name, "static") != 0) {
-		spdk_jsonrpc_send_error_response(request,
-						 SPDK_JSONRPC_ERROR_INVALID_PARAMS,
-						 "Static scheduler cannot be re-enabled "
-						 "after a different scheduler was selected");
-		goto end;
-	}
-
 	if (req.period != 0) {
 		spdk_scheduler_set_period(req.period);
+	} else if (spdk_scheduler_get_period() == 0) {
+		/* User didn't specify a period, and no period has been set
+		 * previously, so set it now to 1 second.
+		 */
+		spdk_scheduler_set_period(SPDK_SEC_TO_USEC);
 	}
 
 	ret = spdk_scheduler_set(req.name);
@@ -487,8 +499,12 @@ rpc_framework_set_scheduler(struct spdk_jsonrpc_request *request,
 		goto end;
 	}
 
+	scheduler = spdk_scheduler_get();
 	if (scheduler != NULL && scheduler->set_opts != NULL) {
 		ret = scheduler->set_opts(params);
+	} else if (has_custom_opts) {
+		/* No custom options are allowed if set_opts are not implemented. */
+		ret = -EINVAL;
 	}
 	if (ret) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR, spdk_strerror(ret));
@@ -511,6 +527,7 @@ rpc_framework_get_scheduler(struct spdk_jsonrpc_request *request,
 	struct spdk_scheduler *scheduler = spdk_scheduler_get();
 	uint64_t scheduler_period = spdk_scheduler_get_period();
 	struct spdk_governor *governor = spdk_governor_get();
+	uint32_t scheduling_core = spdk_scheduler_get_scheduling_lcore();
 
 	if (params) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
@@ -524,6 +541,8 @@ rpc_framework_get_scheduler(struct spdk_jsonrpc_request *request,
 		spdk_json_write_named_string(w, "scheduler_name", scheduler->name);
 	}
 	spdk_json_write_named_uint64(w, "scheduler_period", scheduler_period);
+	spdk_json_write_named_string(w, "isolated_core_mask", scheduler_get_isolated_core_mask());
+	spdk_json_write_named_uint32(w, "scheduling_core", scheduling_core);
 	if (governor != NULL) {
 		spdk_json_write_named_string(w, "governor_name", governor->name);
 	}
@@ -535,7 +554,122 @@ rpc_framework_get_scheduler(struct spdk_jsonrpc_request *request,
 	spdk_json_write_object_end(w);
 	spdk_jsonrpc_end_result(request, w);
 }
-SPDK_RPC_REGISTER("framework_get_scheduler", rpc_framework_get_scheduler, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("framework_get_scheduler", rpc_framework_get_scheduler,
+		  SPDK_RPC_STARTUP | SPDK_RPC_RUNTIME)
+
+static void
+rpc_framework_get_governor(struct spdk_jsonrpc_request *request,
+			   const struct spdk_json_val *params)
+{
+	struct spdk_json_write_ctx *w;
+	struct spdk_governor *governor = spdk_governor_get();
+
+	if (params) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "'rpc_get_governor' requires no arguments");
+		return;
+	}
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_object_begin(w);
+
+	if (governor != NULL) {
+		uint32_t core, index, num;
+		uint32_t freqs[SPDK_MAX_LCORE_FREQS];
+
+		spdk_json_write_named_string(w, "governor_name", governor->name);
+
+		spdk_json_write_named_object_begin(w, "module_specific");
+
+		governor->dump_info_json(w);
+
+		spdk_json_write_object_end(w);
+
+		spdk_json_write_named_array_begin(w, "cores");
+
+		SPDK_ENV_FOREACH_CORE(core) {
+			spdk_json_write_object_begin(w);
+			spdk_json_write_named_uint32(w, "lcore_id", core);
+
+			memset(freqs, 0, SPDK_MAX_LCORE_FREQS * sizeof(uint32_t));
+
+			num = governor->get_core_avail_freqs(core, freqs, SPDK_MAX_LCORE_FREQS);
+
+			spdk_json_write_named_array_begin(w, "available_frequencies");
+			for (index = 0; index < num; index++) {
+				spdk_json_write_uint32(w, freqs[index]);
+			}
+			spdk_json_write_array_end(w);
+
+			spdk_json_write_named_uint32(w, "current_frequency", governor->get_core_curr_freq(core));
+			spdk_json_write_object_end(w);
+		}
+
+		spdk_json_write_array_end(w);
+	}
+
+	spdk_json_write_object_end(w);
+	spdk_jsonrpc_end_result(request, w);
+}
+SPDK_RPC_REGISTER("framework_get_governor", rpc_framework_get_governor, SPDK_RPC_RUNTIME)
+
+struct rpc_set_scheduler_opts_ctx {
+	char *isolated_core_mask;
+	uint32_t scheduling_core;
+};
+
+static const struct spdk_json_object_decoder rpc_set_scheduler_opts_decoders[] = {
+	{"isolated_core_mask", offsetof(struct rpc_set_scheduler_opts_ctx, isolated_core_mask), spdk_json_decode_string, true},
+	{"scheduling_core", offsetof(struct rpc_set_scheduler_opts_ctx, scheduling_core), spdk_json_decode_uint32, true},
+};
+
+static void
+free_rpc_scheduler_set_options(struct rpc_set_scheduler_opts_ctx *r)
+{
+	free(r->isolated_core_mask);
+}
+
+static void
+rpc_scheduler_set_options(struct spdk_jsonrpc_request *request,
+			  const struct spdk_json_val *params)
+{
+	struct rpc_set_scheduler_opts_ctx req = {NULL};
+	struct spdk_cpuset core_mask;
+
+	req.scheduling_core = spdk_scheduler_get_scheduling_lcore();
+
+	if (spdk_json_decode_object(params, rpc_set_scheduler_opts_decoders,
+				    SPDK_COUNTOF(rpc_set_scheduler_opts_decoders), &req)) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "Invalid parameters");
+		goto end;
+	}
+
+	if (req.isolated_core_mask != NULL) {
+		spdk_cpuset_parse(&core_mask, req.isolated_core_mask);
+		if (spdk_cpuset_get_cpu(&core_mask, req.scheduling_core)) {
+			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+							 "Scheduling core cannot be included in isolated core mask.\n");
+			goto end;
+		}
+		if (scheduler_set_isolated_core_mask(core_mask) == false) {
+			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+							 "Invalid isolated core mask\n");
+			goto end;
+		}
+	}
+
+	if (spdk_scheduler_set_scheduling_lcore(req.scheduling_core) == false) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "Invalid scheduling core.\n");
+		goto end;
+	}
+
+	spdk_jsonrpc_send_bool_response(request, true);
+end:
+	free_rpc_scheduler_set_options(&req);
+}
+SPDK_RPC_REGISTER("scheduler_set_options", rpc_scheduler_set_options, SPDK_RPC_STARTUP)
 
 struct rpc_thread_set_cpumask_ctx {
 	struct spdk_jsonrpc_request *request;
@@ -627,7 +761,7 @@ rpc_thread_set_cpumask(struct spdk_jsonrpc_request *request,
 		coremask = spdk_app_get_core_mask();
 		spdk_cpuset_copy(&tmp_mask, coremask);
 		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-						     "No CPU is selected from reactor mask %s\n",
+						     "No CPU is selected from reactor mask %s",
 						     spdk_cpuset_fmt(&tmp_mask));
 		goto err;
 	}
@@ -648,7 +782,7 @@ rpc_thread_set_cpumask(struct spdk_jsonrpc_request *request,
 		spdk_cpuset_and(&tmp_cpuset, &ctx->cpumask);
 		if (spdk_cpuset_count(&tmp_cpuset) == 0) {
 			spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-							     "cpumask %s are all in interrupt mode, and can't be scheduled yet\n",
+							     "cpumask %s are all in interrupt mode, and can't be scheduled yet",
 							     req.cpumask);
 			goto err;
 		}

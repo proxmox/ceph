@@ -1,5 +1,5 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
- *   Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2021, 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
@@ -11,17 +11,22 @@
 #include "spdk/likely.h"
 #include "spdk/string.h"
 #include "spdk/util.h"
+#include "spdk/md5.h"
 
 #include <infiniband/verbs.h>
 
 struct dma_test_task;
 
 struct dma_test_req {
-	struct iovec iov;
+	struct iovec *iovs;
 	struct spdk_bdev_ext_io_opts io_opts;
+	uint64_t io_offset;
 	uint64_t submit_tsc;
 	struct ibv_mr *mr;
 	struct dma_test_task *task;
+	void *buffer;
+	uint32_t idx;
+	uint8_t md5_orig[SPDK_MD5DIGEST_LEN];
 };
 
 struct dma_test_task_stats {
@@ -37,13 +42,13 @@ struct dma_test_task {
 	uint64_t cur_io_offset;
 	uint64_t max_offset_in_ios;
 	uint64_t num_blocks_per_io;
+	uint64_t num_blocks_per_core;
 	int rw_percentage;
 	uint32_t seed;
 	uint32_t io_inflight;
 	struct dma_test_task_stats stats;
 	struct dma_test_task_stats last_stats;
 	bool is_draining;
-	bool is_random;
 	struct dma_test_req *reqs;
 	struct spdk_thread *thread;
 	const char *bdev_name;
@@ -51,6 +56,7 @@ struct dma_test_task {
 	uint64_t num_pull_push;
 	uint64_t num_mem_zero;
 	uint32_t lcore;
+	uint32_t idx; /* sequential number of this task */
 
 	TAILQ_ENTRY(dma_test_task) link;
 };
@@ -77,7 +83,10 @@ static uint32_t g_io_size;
 static uint32_t g_run_time_sec;
 static uint32_t g_run_count;
 static uint32_t g_test_ops;
+static uint32_t g_corrupt_mkey_counter;
+static uint32_t g_iovcnt = 1;
 static bool g_is_random;
+static bool g_verify;
 static bool g_force_memory_domains_support;
 
 static struct spdk_thread *g_main_thread;
@@ -214,7 +223,7 @@ dma_test_bdev_io_completion_cb(struct spdk_bdev_io *bdev_io, bool success, void 
 	--task->io_inflight;
 	dma_test_task_update_stats(task, req->submit_tsc);
 
-	if (!success) {
+	if (!success && !g_corrupt_mkey_counter) {
 		if (!g_run_rc) {
 			fprintf(stderr, "IO completed with error\n");
 			g_run_rc = -1;
@@ -232,13 +241,107 @@ dma_test_bdev_io_completion_cb(struct spdk_bdev_io *bdev_io, bool success, void 
 	dma_test_submit_io(req);
 }
 
+static void
+dma_test_bdev_io_completion_verify_read_done(struct spdk_bdev_io *bdev_io, bool success,
+		void *cb_arg)
+{
+	uint8_t md5_new[SPDK_MD5DIGEST_LEN];
+	struct dma_test_req *req = cb_arg;
+	struct dma_test_task *task = req->task;
+	struct spdk_md5ctx md5ctx;
+
+	assert(task->io_inflight > 0);
+	--task->io_inflight;
+	dma_test_task_update_stats(task, req->submit_tsc);
+
+	if (!success && !g_corrupt_mkey_counter) {
+		if (!g_run_rc) {
+			fprintf(stderr, "IO completed with error\n");
+			g_run_rc = -1;
+		}
+		task->is_draining = true;
+	}
+
+	spdk_bdev_free_io(bdev_io);
+
+	if (spdk_unlikely(task->is_draining)) {
+		dma_test_check_and_signal_task_done(task);
+		return;
+	}
+
+	spdk_md5init(&md5ctx);
+	spdk_md5update(&md5ctx, req->buffer, g_io_size);
+	spdk_md5final(md5_new, &md5ctx);
+
+	if (memcmp(req->md5_orig, md5_new, SPDK_MD5DIGEST_LEN) != 0) {
+		fprintf(stderr, "lcore %u, offset %"PRIu64" md5 mismatch\n", task->lcore, req->io_offset);
+		if (!g_run_rc) {
+			g_run_rc = -1;
+		}
+		task->is_draining = true;
+		dma_test_check_and_signal_task_done(task);
+		return;
+	}
+
+	dma_test_submit_io(req);
+}
+
+static void
+dma_test_bdev_io_completion_verify_write_done(struct spdk_bdev_io *bdev_io, bool success,
+		void *cb_arg)
+{
+	struct dma_test_req *req = cb_arg;
+	struct dma_test_task *task = req->task;
+	int rc;
+
+	assert(task->io_inflight > 0);
+	--task->io_inflight;
+	dma_test_task_update_stats(task, req->submit_tsc);
+
+	if (!success && !g_corrupt_mkey_counter) {
+		if (!g_run_rc) {
+			fprintf(stderr, "IO completed with error\n");
+			g_run_rc = -1;
+		}
+		task->is_draining = true;
+	}
+
+	spdk_bdev_free_io(bdev_io);
+
+	if (spdk_unlikely(task->is_draining)) {
+		dma_test_check_and_signal_task_done(task);
+		return;
+	}
+
+	req->submit_tsc = spdk_get_ticks();
+	rc = spdk_bdev_readv_blocks_ext(task->desc, task->channel, req->iovs, g_iovcnt,
+					req->io_offset, task->num_blocks_per_io,
+					dma_test_bdev_io_completion_verify_read_done, req, &req->io_opts);
+	if (spdk_unlikely(rc)) {
+		if (!g_run_rc) {
+			/* log an error only once */
+			fprintf(stderr, "Failed to submit read IO, rc %d, stop sending IO\n", rc);
+			g_run_rc = rc;
+		}
+		task->is_draining = true;
+		dma_test_check_and_signal_task_done(task);
+		return;
+	}
+
+	task->io_inflight++;
+}
+
 static inline uint64_t
-dma_test_get_offset_in_ios(struct dma_test_task *task)
+dma_test_get_offset_in_ios(struct dma_test_task *task, uint32_t req_offset)
 {
 	uint64_t offset;
 
-	if (task->is_random) {
+	if (g_is_random) {
 		offset = rand_r(&task->seed) % task->max_offset_in_ios;
+		if (g_verify) {
+			offset += task->num_blocks_per_core * task->idx;
+			offset += task->max_offset_in_ios * req_offset;
+		}
 	} else {
 		offset = task->cur_io_offset++;
 		if (spdk_unlikely(task->cur_io_offset == task->max_offset_in_ios)) {
@@ -252,6 +355,9 @@ dma_test_get_offset_in_ios(struct dma_test_task *task)
 static inline bool
 dma_test_task_is_read(struct dma_test_task *task)
 {
+	if (g_verify) {
+		return false;
+	}
 	if (task->rw_percentage == 100) {
 		return true;
 	}
@@ -347,10 +453,18 @@ dma_test_translate_memory_cb(struct spdk_memory_domain *src_domain, void *src_do
 			     void *addr, size_t len, struct spdk_memory_domain_translation_result *result)
 {
 	struct dma_test_req *req = src_domain_ctx;
+	struct dma_test_task *task = req->task;
 	struct ibv_qp *dst_domain_qp = (struct ibv_qp *)dst_domain_ctx->rdma.ibv_qp;
 
+	if (spdk_unlikely(addr < req->buffer ||
+			  (uint8_t *)addr + len > (uint8_t *)req->buffer + g_io_size)) {
+		fprintf(stderr, "incorrect data %p, len %zu\n", addr, len);
+		return -1;
+	}
+
 	if (spdk_unlikely(!req->mr)) {
-		req->mr = ibv_reg_mr(dst_domain_qp->pd, addr, len, IBV_ACCESS_LOCAL_WRITE |
+		req->mr = ibv_reg_mr(dst_domain_qp->pd, req->buffer, g_io_size,
+				     IBV_ACCESS_LOCAL_WRITE |
 				     IBV_ACCESS_REMOTE_READ |
 				     IBV_ACCESS_REMOTE_WRITE);
 		if (!req->mr) {
@@ -366,7 +480,14 @@ dma_test_translate_memory_cb(struct spdk_memory_domain *src_domain, void *src_do
 	result->rdma.rkey = req->mr->rkey;
 	result->dst_domain = dst_domain;
 
-	req->task->num_translations++;
+	task->num_translations++;
+
+	if (g_corrupt_mkey_counter && task->num_translations >= g_corrupt_mkey_counter &&
+	    task->num_translations % g_corrupt_mkey_counter == 0) {
+		SPDK_NOTICELOG("Corrupt mkey on core %u\n", task->lcore);
+		result->rdma.lkey = 0xffffffff;
+		result->rdma.rkey = 0xffffffff;
+	}
 
 	return 0;
 }
@@ -375,21 +496,22 @@ static int
 dma_test_submit_io(struct dma_test_req *req)
 {
 	struct dma_test_task *task = req->task;
-	uint64_t offset_in_ios;
 	int rc;
 	bool is_read;
 
-	offset_in_ios = dma_test_get_offset_in_ios(task);
-	is_read = dma_test_task_is_read(task);
+	req->io_offset = dma_test_get_offset_in_ios(task, req->idx) * task->num_blocks_per_io;
 	req->submit_tsc = spdk_get_ticks();
+	is_read = dma_test_task_is_read(task);
 	if (is_read) {
-		rc = spdk_bdev_readv_blocks_ext(task->desc, task->channel, &req->iov, 1,
-						offset_in_ios * task->num_blocks_per_io, task->num_blocks_per_io,
+		rc = spdk_bdev_readv_blocks_ext(task->desc, task->channel, req->iovs, g_iovcnt,
+						req->io_offset, task->num_blocks_per_io,
 						dma_test_bdev_io_completion_cb, req, &req->io_opts);
 	} else {
-		rc = spdk_bdev_writev_blocks_ext(task->desc, task->channel, &req->iov, 1,
-						 offset_in_ios * task->num_blocks_per_io, task->num_blocks_per_io,
-						 dma_test_bdev_io_completion_cb, req, &req->io_opts);
+		rc = spdk_bdev_writev_blocks_ext(task->desc, task->channel, req->iovs, g_iovcnt,
+						 req->io_offset, task->num_blocks_per_io,
+						 g_verify ? dma_test_bdev_io_completion_verify_write_done
+						 : dma_test_bdev_io_completion_cb,
+						 req, &req->io_opts);
 	}
 
 	if (spdk_unlikely(rc)) {
@@ -532,6 +654,26 @@ dma_test_construct_task_on_thread(void *ctx)
 
 	task->max_offset_in_ios = spdk_bdev_get_num_blocks(spdk_bdev_desc_get_bdev(
 					  task->desc)) / task->num_blocks_per_io;
+	if (g_verify) {
+		/* In verify mode each req writes a buffer and then reads its context again. It is possible that
+		 * while some req is reading a buffer, another req from another thread writes a new data to
+		 * the same lba. To prevent it, split lba range among threads and then split a smaller range
+		 * among requests */
+		task->num_blocks_per_core = task->max_offset_in_ios / spdk_env_get_core_count();
+		task->max_offset_in_ios = task->num_blocks_per_core;
+		if (!task->max_offset_in_ios) {
+			fprintf(stderr, "Disk is too small to run on %u cores\n", spdk_env_get_core_count());
+			g_run_rc = -EINVAL;
+			spdk_thread_send_msg(g_main_thread, dma_test_construct_task_done, NULL);
+		}
+		task->max_offset_in_ios /= g_queue_depth;
+		if (!task->max_offset_in_ios) {
+			fprintf(stderr, "Disk is too small to run on %u cores with qdepth %u\n", spdk_env_get_core_count(),
+				g_queue_depth);
+			g_run_rc = -EINVAL;
+			spdk_thread_send_msg(g_main_thread, dma_test_construct_task_done, NULL);
+		}
+	}
 
 	spdk_thread_send_msg(g_main_thread, dma_test_construct_task_done, task);
 }
@@ -585,6 +727,39 @@ dma_test_check_bdev_supports_rdma_memory_domain(struct spdk_bdev *bdev)
 }
 
 static int
+req_alloc_buffers(struct dma_test_req *req)
+{
+	struct spdk_md5ctx md5ctx;
+	size_t iov_len, remainder;
+	uint32_t i;
+
+	iov_len = g_io_size / g_iovcnt;
+	remainder = g_io_size - iov_len * g_iovcnt;
+
+	req->buffer = malloc(g_io_size);
+	if (!req->buffer) {
+		return -ENOMEM;
+	}
+	memset(req->buffer, (int)req->idx + 1, g_io_size);
+	req->iovs = calloc(g_iovcnt, sizeof(struct iovec));
+	if (!req->iovs) {
+		return -ENOMEM;
+	}
+	for (i = 0; i < g_iovcnt; i++) {
+		req->iovs[i].iov_len = iov_len;
+		req->iovs[i].iov_base = (uint8_t *)req->buffer + iov_len * i;
+	}
+	req->iovs[g_iovcnt - 1].iov_len += remainder;
+	if (g_verify) {
+		spdk_md5init(&md5ctx);
+		spdk_md5update(&md5ctx, req->buffer, g_io_size);
+		spdk_md5final(req->md5_orig, &md5ctx);
+	}
+
+	return 0;
+}
+
+static int
 allocate_task(uint32_t core, const char *bdev_name)
 {
 	char thread_name[32];
@@ -592,6 +767,7 @@ allocate_task(uint32_t core, const char *bdev_name)
 	uint32_t i;
 	struct dma_test_task *task;
 	struct dma_test_req *req;
+	int rc;
 
 	task = calloc(1, sizeof(*task));
 	if (!task) {
@@ -607,16 +783,18 @@ allocate_task(uint32_t core, const char *bdev_name)
 		return -ENOMEM;
 	}
 
+	task->lcore = core;
+	task->seed = core;
 	for (i = 0; i < g_queue_depth; i++) {
 		req = &task->reqs[i];
 		req->task = task;
-		req->iov.iov_len = g_io_size;
-		req->iov.iov_base = malloc(req->iov.iov_len);
-		if (!req->iov.iov_base) {
+		req->idx = i;
+		rc = req_alloc_buffers(req);
+		if (rc) {
 			fprintf(stderr, "Failed to allocate request data buffer\n");
-			return -ENOMEM;
+			return rc;
 		}
-		memset(req->iov.iov_base, 0xc, req->iov.iov_len);
+
 		req->io_opts.size = sizeof(req->io_opts);
 		req->io_opts.memory_domain = g_domain;
 		req->io_opts.memory_domain_ctx = req;
@@ -631,11 +809,8 @@ allocate_task(uint32_t core, const char *bdev_name)
 			spdk_cpuset_fmt(&cpu_set));
 		return -ENOMEM;
 	}
-
-	task->seed = core;
-	task->lcore = core;
+	task->idx = g_num_construct_tasks++;
 	task->bdev_name = bdev_name;
-	task->is_random = g_is_random;
 	task->rw_percentage = g_rw_percentage;
 	task->num_blocks_per_io = g_num_blocks_per_io;
 	task->stats.min_tsc = UINT64_MAX;
@@ -654,7 +829,8 @@ destroy_task(struct dma_test_task *task)
 		if (req->mr) {
 			ibv_dereg_mr(req->mr);
 		}
-		free(req->iov.iov_base);
+		free(req->buffer);
+		free(req->iovs);
 	}
 	free(task->reqs);
 	TAILQ_REMOVE(&g_tasks, task, link);
@@ -787,7 +963,6 @@ dma_test_start(void *arg)
 			spdk_app_stop(rc);
 			return;
 		}
-		g_num_construct_tasks++;
 		g_num_complete_tasks++;
 	}
 
@@ -809,6 +984,8 @@ print_usage(void)
 	printf(" -x <op,op>        Comma separated memory domain operations expected in the test. Values are \"translate\" and \"pull_push\"\n");
 	printf(" -w <str>          io pattern (read, write, randread, randwrite, randrw)\n");
 	printf(" -M <0-100>        rw percentage (100 for reads, 0 for writes)\n");
+	printf(" -O <val>          iovs count to be used in IO, default 1\n");
+	printf(" -Y <val>          Return invalid mkey each <val>th translation\n");
 }
 
 static int
@@ -816,6 +993,7 @@ parse_expected_ops(const char *_str)
 {
 	char *str = strdup(_str);
 	char *tok;
+	char *sp = NULL;
 	int rc = 0;
 
 	if (!str) {
@@ -823,7 +1001,7 @@ parse_expected_ops(const char *_str)
 		return -ENOMEM;
 	}
 
-	tok = strtok(str, ",");
+	tok = strtok_r(str, ",", &sp);
 	while (tok) {
 		if (strcmp(tok, "translate") == 0) {
 			g_test_ops |= DMA_TEST_DOMAIN_OP_TRANSLATE;
@@ -836,7 +1014,7 @@ parse_expected_ops(const char *_str)
 			rc = -EINVAL;
 			break;
 		}
-		tok = strtok(NULL, ",");
+		tok = strtok_r(NULL, ",", &sp);
 	}
 
 	free(str);
@@ -859,6 +1037,8 @@ parse_arg(int ch, char *arg)
 	case 'o':
 	case 't':
 	case 'M':
+	case 'O':
+	case 'Y':
 		tmp = spdk_strtol(arg, 10);
 		if (tmp < 0) {
 			fprintf(stderr, "Invalid option %c value %s\n", ch, arg);
@@ -877,6 +1057,12 @@ parse_arg(int ch, char *arg)
 			break;
 		case 'M':
 			g_rw_percentage = (uint32_t) tmp;
+			break;
+		case 'O':
+			g_iovcnt = (uint32_t) tmp;
+			break;
+		case 'Y':
+			g_corrupt_mkey_counter = (uint32_t) tmp;
 			break;
 		}
 		break;
@@ -915,6 +1101,10 @@ verify_args(void)
 		fprintf(stderr, "io size (-o) is not set\n");
 		return 1;
 	}
+	if (g_iovcnt == 0) {
+		fprintf(stderr, "iov count (-O) is invalid\n");
+		return 1;
+	}
 	if (g_run_time_sec == 0) {
 		fprintf(stderr, "test run time (-t) is not set\n");
 		return 1;
@@ -937,8 +1127,14 @@ verify_args(void)
 			fprintf(stderr, "Invalid -M value (%d) must be 0..100\n", g_rw_percentage);
 			return 1;
 		}
+	} else if (strcmp(rw_mode, "verify") == 0) {
+		g_is_random = true;
+		g_verify = true;
+		if (g_rw_percentage > 0) {
+			fprintf(stderr, "Ignoring -M option\n");
+		}
 	} else {
-		fprintf(stderr, "io pattern (-w) one of [read, write, randread, randwrite, rw, randrw]\n");
+		fprintf(stderr, "io pattern (-w) one of [read, write, randread, randwrite, rw, randrw, verify]\n");
 		return 1;
 	}
 	if (!g_bdev_name) {
@@ -958,8 +1154,9 @@ main(int argc, char **argv)
 	spdk_app_opts_init(&opts, sizeof(opts));
 	opts.name = "test_dma";
 	opts.shutdown_cb = dma_test_shutdown_cb;
+	opts.rpc_addr = NULL;
 
-	rc = spdk_app_parse_args(argc, argv, &opts, "b:fq:o:t:x:w:M:", NULL, parse_arg, print_usage);
+	rc = spdk_app_parse_args(argc, argv, &opts, "b:fq:o:t:x:w:M:O:Y:", NULL, parse_arg, print_usage);
 	if (rc != SPDK_APP_PARSE_ARGS_SUCCESS) {
 		exit(rc);
 	}

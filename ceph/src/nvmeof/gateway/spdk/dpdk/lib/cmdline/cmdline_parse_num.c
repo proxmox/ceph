@@ -9,14 +9,15 @@
 #include <inttypes.h>
 #include <string.h>
 #include <rte_string_fns.h>
+#include <stdlib.h>
 
 #include "cmdline_parse.h"
 #include "cmdline_parse_num.h"
 
 #ifdef RTE_LIBRTE_CMDLINE_DEBUG
-#define debug_printf(args...) printf(args)
+#define debug_printf(...) printf(__VA_ARGS__)
 #else
-#define debug_printf(args...) do {} while(0)
+#define debug_printf(...) do {} while (0)
 #endif
 
 struct cmdline_token_ops cmdline_token_num_ops = {
@@ -25,7 +26,6 @@ struct cmdline_token_ops cmdline_token_num_ops = {
 	.complete_get_elt = NULL,
 	.get_help = cmdline_get_help_num,
 };
-
 
 enum num_parse_state_t {
 	START,

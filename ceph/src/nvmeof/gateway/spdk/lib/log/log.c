@@ -4,6 +4,7 @@
  */
 
 #include "spdk/stdinc.h"
+#include "spdk/util.h"
 
 #include "spdk/log.h"
 
@@ -17,13 +18,16 @@ static const char *const spdk_level_names[] = {
 
 #define MAX_TMPBUF 1024
 
-static logfunc *g_log = NULL;
+static struct spdk_log_opts g_log_opts = {
+	.log = NULL,
+	.open = NULL,
+	.close = NULL,
+	.user_ctx = NULL,
+};
 static bool g_log_timestamps = true;
 
 enum spdk_log_level g_spdk_log_level;
 enum spdk_log_level g_spdk_log_print_level;
-
-SPDK_LOG_REGISTER_COMPONENT(log)
 
 void
 spdk_log_set_level(enum spdk_log_level level)
@@ -51,22 +55,57 @@ spdk_log_get_print_level(void) {
 	return g_spdk_log_print_level;
 }
 
-void
-spdk_log_open(logfunc *logf)
+static void
+log_open(void *ctx)
 {
-	if (logf) {
-		g_log = logf;
+	openlog("spdk", LOG_PID, LOG_LOCAL7);
+}
+
+static void
+log_close(void *ctx)
+{
+	closelog();
+}
+
+void
+spdk_log_open(spdk_log_cb *log)
+{
+	if (log) {
+		struct spdk_log_opts opts = {.log = log};
+		opts.size = SPDK_SIZEOF(&opts, log);
+		spdk_log_open_ext(&opts);
 	} else {
-		openlog("spdk", LOG_PID, LOG_LOCAL7);
+		spdk_log_open_ext(NULL);
+	}
+}
+
+void
+spdk_log_open_ext(struct spdk_log_opts *opts)
+{
+	if (!opts) {
+		g_log_opts.open = log_open;
+		g_log_opts.close = log_close;
+		goto out;
+	}
+
+	g_log_opts.log = SPDK_GET_FIELD(opts, log, NULL);
+	g_log_opts.open = SPDK_GET_FIELD(opts, open, NULL);
+	g_log_opts.close = SPDK_GET_FIELD(opts, close, NULL);
+	g_log_opts.user_ctx = SPDK_GET_FIELD(opts, user_ctx, NULL);
+
+out:
+	if (g_log_opts.open) {
+		g_log_opts.open(g_log_opts.user_ctx);
 	}
 }
 
 void
 spdk_log_close(void)
 {
-	if (!g_log) {
-		closelog();
+	if (g_log_opts.close) {
+		g_log_opts.close(g_log_opts.user_ctx);
 	}
+	memset(&g_log_opts, 0, sizeof(g_log_opts));
 }
 
 void
@@ -138,11 +177,13 @@ spdk_vlog(enum spdk_log_level level, const char *file, const int line, const cha
 	  const char *format, va_list ap)
 {
 	int severity = LOG_INFO;
-	char buf[MAX_TMPBUF];
+	char *buf, _buf[MAX_TMPBUF], *ext_buf = NULL;
 	char timestamp[64];
+	va_list ap_copy;
+	int rc;
 
-	if (g_log) {
-		g_log(level, file, line, func, format, ap);
+	if (g_log_opts.log) {
+		g_log_opts.log(level, file, line, func, format, ap);
 		return;
 	}
 
@@ -155,7 +196,22 @@ spdk_vlog(enum spdk_log_level level, const char *file, const int line, const cha
 		return;
 	}
 
-	vsnprintf(buf, sizeof(buf), format, ap);
+	buf = _buf;
+
+	va_copy(ap_copy, ap);
+	rc = vsnprintf(_buf, sizeof(_buf), format, ap);
+	if (rc > MAX_TMPBUF) {
+		/* The output including the terminating was more than MAX_TMPBUF bytes.
+		 * Try allocating memory large enough to hold the output.
+		 */
+		rc = vasprintf(&ext_buf, format, ap_copy);
+		if (rc < 0) {
+			/* Failed to allocate memory. Allow output to be truncated. */
+		} else {
+			buf = ext_buf;
+		}
+	}
+	va_end(ap_copy);
 
 	if (level <= g_spdk_log_print_level) {
 		get_timestamp_prefix(timestamp, sizeof(timestamp));
@@ -173,6 +229,39 @@ spdk_vlog(enum spdk_log_level level, const char *file, const int line, const cha
 			syslog(severity, "%s", buf);
 		}
 	}
+
+	free(ext_buf);
+}
+
+void
+spdk_vflog(FILE *fp, const char *file, const int line, const char *func,
+	   const char *format, va_list ap)
+{
+	char buf[MAX_TMPBUF];
+	char timestamp[64];
+
+	vsnprintf(buf, sizeof(buf), format, ap);
+
+	get_timestamp_prefix(timestamp, sizeof(timestamp));
+
+	if (file) {
+		fprintf(fp, "%s%s:%4d:%s: %s", timestamp, file, line, func, buf);
+	} else {
+		fprintf(fp, "%s%s", timestamp, buf);
+	}
+
+	fflush(fp);
+}
+
+void
+spdk_flog(FILE *fp, const char *file, const int line, const char *func,
+	  const char *format, ...)
+{
+	va_list ap;
+
+	va_start(ap, format);
+	spdk_vflog(fp, file, line, func, format, ap);
+	va_end(ap);
 }
 
 static void

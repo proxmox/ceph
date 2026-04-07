@@ -13,14 +13,23 @@
 
 #define VHOST_MEMORY_MAX_NREGIONS 8
 
+#define VHOST_USER_NET_SUPPORTED_FEATURES \
+	(VIRTIO_NET_SUPPORTED_FEATURES | \
+	 (1ULL << VIRTIO_F_RING_PACKED) | \
+	 (1ULL << VIRTIO_NET_F_MTU) | \
+	 (1ULL << VHOST_F_LOG_ALL) | \
+	 (1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
+	 (1ULL << VIRTIO_NET_F_CTRL_RX) | \
+	 (1ULL << VIRTIO_NET_F_GUEST_ANNOUNCE))
+
 #define VHOST_USER_PROTOCOL_FEATURES	((1ULL << VHOST_USER_PROTOCOL_F_MQ) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD) |\
 					 (1ULL << VHOST_USER_PROTOCOL_F_RARP) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_NET_MTU) | \
-					 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_BACKEND_REQ) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_SESSION) | \
-					 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_BACKEND_SEND_FD) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_STATUS))
@@ -47,7 +56,7 @@ typedef enum VhostUserRequest {
 	VHOST_USER_SET_VRING_ENABLE = 18,
 	VHOST_USER_SEND_RARP = 19,
 	VHOST_USER_NET_SET_MTU = 20,
-	VHOST_USER_SET_SLAVE_REQ_FD = 21,
+	VHOST_USER_SET_BACKEND_REQ_FD = 21,
 	VHOST_USER_IOTLB_MSG = 22,
 	VHOST_USER_GET_CONFIG = 24,
 	VHOST_USER_SET_CONFIG = 25,
@@ -62,12 +71,12 @@ typedef enum VhostUserRequest {
 	VHOST_USER_GET_STATUS = 40,
 } VhostUserRequest;
 
-typedef enum VhostUserSlaveRequest {
-	VHOST_USER_SLAVE_NONE = 0,
-	VHOST_USER_SLAVE_IOTLB_MSG = 1,
-	VHOST_USER_SLAVE_CONFIG_CHANGE_MSG = 2,
-	VHOST_USER_SLAVE_VRING_HOST_NOTIFIER_MSG = 3,
-} VhostUserSlaveRequest;
+typedef enum VhostUserBackendRequest {
+	VHOST_USER_BACKEND_NONE = 0,
+	VHOST_USER_BACKEND_IOTLB_MSG = 1,
+	VHOST_USER_BACKEND_CONFIG_CHANGE_MSG = 2,
+	VHOST_USER_BACKEND_VRING_HOST_NOTIFIER_MSG = 3,
+} VhostUserBackendRequest;
 
 typedef struct VhostUserMemoryRegion {
 	uint64_t guest_phys_addr;
@@ -90,11 +99,10 @@ typedef struct VhostUserLog {
 /* Comply with Cryptodev-Linux */
 #define VHOST_USER_CRYPTO_MAX_HMAC_KEY_LENGTH	512
 #define VHOST_USER_CRYPTO_MAX_CIPHER_KEY_LENGTH	64
+#define VHOST_USER_CRYPTO_MAX_KEY_LENGTH	1024
 
 /* Same structure as vhost-user backend session info */
-typedef struct VhostUserCryptoSessionParam {
-	int64_t session_id;
-	uint32_t op_code;
+typedef struct VhostUserCryptoSymSessionParam {
 	uint32_t cipher_algo;
 	uint32_t cipher_key_len;
 	uint32_t hash_algo;
@@ -105,10 +113,36 @@ typedef struct VhostUserCryptoSessionParam {
 	uint8_t dir;
 	uint8_t hash_mode;
 	uint8_t chaining_dir;
-	uint8_t *ciphe_key;
+	uint8_t *cipher_key;
 	uint8_t *auth_key;
 	uint8_t cipher_key_buf[VHOST_USER_CRYPTO_MAX_CIPHER_KEY_LENGTH];
 	uint8_t auth_key_buf[VHOST_USER_CRYPTO_MAX_HMAC_KEY_LENGTH];
+} VhostUserCryptoSymSessionParam;
+
+
+typedef struct VhostUserCryptoAsymRsaParam {
+	uint32_t padding_algo;
+	uint32_t hash_algo;
+} VhostUserCryptoAsymRsaParam;
+
+typedef struct VhostUserCryptoAsymSessionParam {
+	uint32_t algo;
+	uint32_t key_type;
+	uint32_t key_len;
+	uint8_t *key;
+	union {
+		VhostUserCryptoAsymRsaParam rsa;
+	} u;
+	uint8_t key_buf[VHOST_USER_CRYPTO_MAX_KEY_LENGTH];
+} VhostUserCryptoAsymSessionParam;
+
+typedef struct VhostUserCryptoSessionParam {
+	uint32_t op_code;
+	union {
+		VhostUserCryptoSymSessionParam sym_sess;
+		VhostUserCryptoAsymSessionParam asym_sess;
+	} u;
+	int64_t session_id;
 } VhostUserCryptoSessionParam;
 
 typedef struct VhostUserVringArea {
@@ -134,10 +168,10 @@ struct vhost_user_config {
 	uint8_t region[VHOST_USER_MAX_CONFIG_SIZE];
 };
 
-typedef struct VhostUserMsg {
+typedef struct __rte_packed_begin VhostUserMsg {
 	union {
-		uint32_t master; /* a VhostUserRequest value */
-		uint32_t slave;  /* a VhostUserSlaveRequest value*/
+		uint32_t frontend; /* a VhostUserRequest value */
+		uint32_t backend;  /* a VhostUserBackendRequest value*/
 	} request;
 
 #define VHOST_USER_VERSION_MASK     0x3
@@ -160,16 +194,16 @@ typedef struct VhostUserMsg {
 		struct vhost_user_config cfg;
 	} payload;
 	/* Nothing should be added after the payload */
-} __rte_packed VhostUserMsg;
+} __rte_packed_end VhostUserMsg;
 
 /* Note: this structure and VhostUserMsg can't be changed carelessly as
  * external message handlers rely on them.
  */
-struct __rte_packed vhu_msg_context {
+struct __rte_packed_begin vhu_msg_context {
 	VhostUserMsg msg;
 	int fds[VHOST_MEMORY_MAX_NREGIONS];
 	int fd_num;
-};
+} __rte_packed_end;
 
 #define VHOST_USER_HDR_SIZE offsetof(VhostUserMsg, payload.u64)
 
@@ -179,11 +213,11 @@ struct __rte_packed vhu_msg_context {
 
 /* vhost_user.c */
 int vhost_user_msg_handler(int vid, int fd);
-int vhost_user_iotlb_miss(struct virtio_net *dev, uint64_t iova, uint8_t perm);
 
 /* socket.c */
 int read_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int max_fds,
 		int *fd_num);
 int send_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int fd_num);
+int vhost_user_new_device(void);
 
 #endif

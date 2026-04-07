@@ -28,15 +28,20 @@ function usage() {
 	echo " --cross-prefix=prefix     Prefix for cross compilation (default: none)"
 	echo "                           example: aarch64-linux-gnu"
 	echo " --libdir=path             Configure installation path for the libraries (default: \$prefix/lib)"
-	echo ""
+	echo " --max-lcores=VAL          DPDK configuration. VAL defines maximum number of lcores supported"
+	echo "                           by EAL, or enables autodetection if set to 'detect'. When 'detect'"
+	echo "                           is specified, DPDK will detect number of cores in the system during"
+	echo "                           compilation, and will set maximum number of lcores to this value"
+	echo " --max-numa-nodes=VAL      VAL defines maximum number of NUMA nodes supported for iobuf"
+	echo "                           buffer pools."
 	echo " --enable-debug            Configure for debug builds"
 	echo " --enable-werror           Treat compiler warnings as errors"
 	echo " --enable-asan             Enable address sanitizer"
 	echo " --enable-ubsan            Enable undefined behavior sanitizer"
 	echo " --enable-coverage         Enable code coverage tracking"
 	echo " --enable-lto              Enable link-time optimization"
-	echo " --enable-pgo-capture      Enable generation of profile guided optimization data"
-	echo " --enable-pgo-use          Use previously captured profile guided optimization data"
+	echo " --enable-pgo-capture[=PATH]      Enable generation of profile guided optimization data"
+	echo " --enable-pgo-use[=PATH]   Use previously captured profile guided optimization data"
 	echo " --enable-cet              Enable Intel Control-flow Enforcement Technology (CET)"
 	echo " --disable-tests           Disable building of functional tests"
 	echo " --disable-unit-tests      Disable building of unit tests"
@@ -71,9 +76,6 @@ function usage() {
 	echo "                           vfio-user initiator is always built-in in Linux."
 	echo "                           example: /usr/src/libvfio-user"
 	echo " --without-vfio-user       No path required."
-	echo " --with-pmdk[=DIR]         Build persistent memory bdev. (Deprecated)
-					 example: /usr/share/pmdk"
-	echo " --without-pmdk		 No path required."
 	echo " --with-vbdev-compress     Build vbdev compression module and dependencies."
 	echo " --without-vbdev-compress  No path required."
 	echo " --with-dpdk-compressdev   Build accel DPDK compression module and dependencies."
@@ -82,7 +84,7 @@ function usage() {
 	echo " --without-rbd             No path required."
 	echo " --with-ublk               Build ublk library."
 	echo " --without-ublk            No path required."
-	echo " --with-rdma[=DIR]         Build RDMA transport for NVMf target and initiator."
+	echo " --with-rdma[=PROVIDER]    Build RDMA transport for NVMf target and initiator."
 	echo " --without-rdma            Accepts optional RDMA provider name. Can be \"verbs\" or \"mlx5_dv\"."
 	echo "                           If no provider specified, \"verbs\" provider is used by default."
 	echo " --with-fc[=DIR]           Build FC transport for NVMf target."
@@ -95,9 +97,10 @@ function usage() {
 	echo " --without-shared          No path required."
 	echo " --with-iscsi-initiator    Build with iscsi bdev module."
 	echo " --without-iscsi-initiator No path required."
-	echo " --with-vtune=DIR          Required to profile I/O under Intel VTune Amplifier XE. (Deprecated)"
-	echo " --without-vtune           example: /opt/intel/vtune_amplifier_xe_version"
-	echo " --with-ocf[=DIR]          Build OCF library and bdev module. (Deprecated)"
+	echo " --with-vtune=DIR          Required to profile I/O under Intel VTune Profiler."
+	echo "                           example: /opt/intel/oneapi/vtune/version"
+	echo " --without-vtune           Support for Intel VTune Profiler will not be provided."
+	echo " --with-ocf[=DIR]          Build OCF library and bdev module."
 	echo " --without-ocf             If argument is directory, interpret it as root of OCF repo"
 	echo "                           If argument is file, interpret it as compiled OCF lib"
 	echo "                           If no argument is specified, OCF git submodule is used by default"
@@ -106,6 +109,8 @@ function usage() {
 	echo " --without-uring           If an argument is provided, it is considered a directory containing"
 	echo "                           liburing.a and io_uring.h. Otherwise the regular system paths will"
 	echo "                           be searched."
+	echo " --with-dpdk-uadk          Build uadk DPDK module. No path required."
+	echo " --without-dpdk-uadk       Disable uadk DPDK module."
 	echo " --without-uring-zns       Build I/O uring module without ZNS (zoned namespaces) support."
 	echo " --with-openssl[=DIR]      Build OPENSSL with custom path. Otherwise the regular system paths will"
 	echo "                           be searched."
@@ -127,6 +132,10 @@ function usage() {
 	echo " --without-sma             No path required."
 	echo " --with-avahi              Build with Avahi mDNS discovery client service enabled in bdev-nvme module."
 	echo " --without-avahi           No path required."
+	echo " --with-golang             Build with components written in Go"
+	echo " --without-golang          No path required."
+	echo " --with-aio-fsdev          Build aio FSDEV component."
+	echo " --without-aio-fsdev       No path required."
 	echo ""
 	echo "Environment variables:"
 	echo ""
@@ -167,8 +176,9 @@ done
 # Detect the compiler toolchain
 $rootdir/scripts/detect_cc.sh --cc="$CC" --cxx="$CXX" --lto="${CONFIG[LTO]}" --ld="$LD" --cross-prefix="${CONFIG[CROSS_PREFIX]}" > $rootdir/mk/cc.mk
 
-CC=$(grep "DEFAULT_CC=" "$rootdir/mk/cc.mk" | sed s/DEFAULT_CC=//)
-CC_TYPE=$(grep "CC_TYPE=" "$rootdir/mk/cc.mk" | cut -d "=" -f 2)
+mapfile -t cc < <(grep "=" "$rootdir/mk/cc.mk")
+source <(printf '%q\n' "${cc[@]}")
+CC=$DEFAULT_CC
 
 arch=$($CC -dumpmachine)
 sys_name=$(uname -s)
@@ -181,7 +191,9 @@ if [[ $sys_name != "Linux" ]]; then
 	# Vhost, rte_vhost library and virtio are only supported on Linux.
 	CONFIG[VHOST]="n"
 	CONFIG[VIRTIO]="n"
-	echo "Notice: Vhost, rte_vhost library and virtio are only supported on Linux. Turning off default feature."
+	CONFIG[NVME_CUSE]="n"
+	echo "Notice: Vhost, rte_vhost library, virtio, and fuse"
+	echo "are only supported on Linux. Turning off default feature."
 fi
 
 function check_dir() {
@@ -331,11 +343,19 @@ for i in "$@"; do
 		--enable-pgo-capture)
 			CONFIG[PGO_CAPTURE]=y
 			;;
+		--enable-pgo-capture=*)
+			CONFIG[PGO_CAPTURE]=y
+			CONFIG[PGO_DIR]="${i#*=}"
+			;;
 		--disable-pgo-capture)
 			CONFIG[PGO_CAPTURE]=n
 			;;
 		--enable-pgo-use)
 			CONFIG[PGO_USE]=y
+			;;
+		--enable-pgo-use=*)
+			CONFIG[PGO_USE]=y
+			CONFIG[PGO_DIR]="${i#*=}"
 			;;
 		--disable-pgo-use)
 			CONFIG[PGO_USE]=n
@@ -503,6 +523,12 @@ for i in "$@"; do
 		--without-crypto)
 			CONFIG[CRYPTO]=n
 			;;
+		--with-dpdk-uadk)
+			CONFIG[DPDK_UADK]=y
+			;;
+		--without-dpdk-uadk)
+			CONFIG[DPDK_UADK]=n
+			;;
 		--with-vhost)
 			CONFIG[VHOST]=y
 			;;
@@ -526,18 +552,6 @@ for i in "$@"; do
 			;;
 		--without-vfio-user)
 			CONFIG[VFIO_USER]=n
-			;;
-		--with-pmdk)
-			CONFIG[PMDK]=y
-			CONFIG[PMDK_DIR]=""
-			;;
-		--with-pmdk=*)
-			CONFIG[PMDK]=y
-			check_dir "$i"
-			CONFIG[PMDK_DIR]=$(readlink -f ${i#*=})
-			;;
-		--without-pmdk)
-			CONFIG[PMDK]=n
 			;;
 		--with-vbdev-compress)
 			CONFIG[VBDEV_COMPRESS]=y
@@ -666,6 +680,37 @@ for i in "$@"; do
 		--without-avahi)
 			CONFIG[AVAHI]=n
 			;;
+		--with-golang)
+			CONFIG[GOLANG]=y
+			;;
+		--without-golang)
+			CONFIG[GOLANG]=n
+			;;
+		--max-lcores='')
+			echo "Must specify max number of lcores for --max-lcores"
+			usage
+			exit 1
+			;;
+		--max-lcores=*)
+			CONFIG[MAX_LCORES]="${i#*=}"
+			CONFIG["MAX_LCORES"]=${CONFIG["MAX_LCORES"],,}
+			;;
+		--max-numa-nodes='')
+			echo "Must specify max number of nodes for --max-numa-nodes"
+			usage
+			exit 1
+			;;
+		--max-numa-nodes=*)
+			CONFIG[MAX_NUMA_NODES]="${i#*=}"
+			CONFIG["MAX_NUMA_NODES"]=${CONFIG["MAX_NUMA_NODES"],,}
+			;;
+		--with-aio-fsdev)
+			CONFIG[AIO_FSDEV]=y
+			AIO_FSDEV_REQUIRED=y
+			;;
+		--without-aio-fsdev)
+			CONFIG[AIO_FSDEV]=n
+			;;
 		--)
 			break
 			;;
@@ -683,6 +728,10 @@ else
 	BUILD_CMD=($CC -o /dev/null -x c $CPPFLAGS $CFLAGS $LDFLAGS)
 fi
 BUILD_CMD+=(-I/usr/local/include -L/usr/local/lib)
+BUILD_CMD+=("-fuse-ld=$LD_TYPE")
+if [[ -n "${CONFIG[OPENSSL_PATH]}" ]]; then
+	BUILD_CMD+=("-I${CONFIG[OPENSSL_PATH]}/include" "-L${CONFIG[OPENSSL_PATH]}")
+fi
 
 if [[ "${CONFIG[VFIO_USER]}" = "y" ]]; then
 	if ! echo -e '#include <json-c/json.h>' \
@@ -709,8 +758,7 @@ if [[ "${CONFIG[IDXD]}" = "y" ]]; then
 		cpu_vendor=$(grep -i 'vendor' /proc/cpuinfo --max-count=1)
 	fi
 	if [[ "$cpu_vendor" != *"$intel"* ]]; then
-		echo "ERROR: IDXD cannot be used due to CPU incompatibility."
-		exit 1
+		echo "WARNING: IDXD cannot be used due to CPU incompatibility."
 	fi
 	if [ -e /usr/include/accel-config/libaccel_config.h ]; then
 		CONFIG[IDXD_KERNEL]=y
@@ -781,7 +829,6 @@ else
 fi
 
 if [ "${CONFIG[VTUNE]}" = "y" ]; then
-	echo "WARNING: VTune support is deprecated."
 	if [ -z "${CONFIG[VTUNE_DIR]}" ]; then
 		echo "When VTune is enabled, you must specify the VTune directory using --with-vtune=path"
 		exit 1
@@ -800,10 +847,7 @@ fi
 
 if [[ $sys_name == "FreeBSD" ]]; then
 	# FreeBSD doesn't support all configurations
-	if [[ "${CONFIG[COVERAGE]}" == "y" ]]; then
-		echo "ERROR: CONFIG_COVERAGE not available on FreeBSD"
-		exit 1
-	fi
+	CONFIG[FSDEV]=n
 fi
 
 if [[ $sys_name == "Linux" ]]; then
@@ -906,17 +950,6 @@ if [[ "${CONFIG[FC]}" = "y" ]]; then
 	fi
 fi
 
-if [[ "${CONFIG[PMDK]}" = "y" ]]; then
-	echo "WARNING: PMDK - bdev_pmem is deprecated."
-	echo "WARNING: PMDK - ACCEL_FLAG_PERSISTENT in accel_sw module is deprecated."
-	if ! echo -e '#include <libpmemblk.h>\nint main(void) { return 0; }\n' \
-		| "${BUILD_CMD[@]}" -lpmemblk - 2> /dev/null; then
-		echo "--with-pmdk requires libpmemblk."
-		echo "Please install then re-run this script."
-		exit 1
-	fi
-fi
-
 function dpdk_version() {
 	# Check DPDK version to determine if mlx5_pci driver is supported
 	local dpdk_ver="none"
@@ -943,7 +976,6 @@ function mlx5_build() {
 }
 
 if [[ "${CONFIG[VBDEV_COMPRESS]}" = "y" ]]; then
-	echo "WARNING: PMDK - Persistent device support with bdev_compress is deprecated."
 	if ! echo -e '#include <libpmem.h>\nint main(void) { return 0; }\n' \
 		| "${BUILD_CMD[@]}" -lpmem - 2> /dev/null; then
 		echo "--with-vbdev-compress requires libpmem."
@@ -1020,7 +1052,7 @@ fi
 if [[ "${CONFIG[NVME_CUSE]}" = "y" ]]; then
 	if ! echo -e '#define FUSE_USE_VERSION 31\n#include <fuse3/cuse_lowlevel.h>\n#include <fuse3/fuse_lowlevel.h>\n#include <fuse3/fuse_opt.h>\nint main(void) { return 0; }\n' \
 		| "${BUILD_CMD[@]}" -lfuse3 -D_FILE_OFFSET_BITS=64 - 2> /dev/null; then
-		echo "--with-cuse requires libfuse3."
+		echo "--with-nvme-cuse requires libfuse3."
 		echo "Please install then re-run this script."
 		exit 1
 	fi
@@ -1041,6 +1073,14 @@ if [[ "${CONFIG[UBLK]}" = "y" ]]; then
 		'int main(void) { return 0; }\n' \
 		| "${BUILD_CMD[@]}" -luring - 2> /dev/null; then
 		echo "--with-ublk requires liburing and ublk_drv."
+		echo "Please install then re-run this script."
+		exit 1
+	fi
+fi
+
+if [[ "${CONFIG[DPDK_UADK]}" = "y" ]]; then
+	if ! pkg-config --exists libwd; then
+		echo "--with-dpdk-uadk requires uadk library."
 		echo "Please install then re-run this script."
 		exit 1
 	fi
@@ -1109,8 +1149,31 @@ if echo -e '#include <stdlib.h>\nint main(void) { arc4random(); return 0; }\n' \
 	CONFIG[HAVE_ARC4RANDOM]="y"
 fi
 
+if echo -e '#include <uuid/uuid.h>\nint main(void) { uuid_generate_sha1(NULL, NULL, NULL, 0); return 0; }\n' \
+	| "${BUILD_CMD[@]}" - -luuid 2> /dev/null; then
+	CONFIG[HAVE_UUID_GENERATE_SHA1]="y"
+fi
+
+if echo -e '#include <execinfo.h>' | "${BUILD_CMD[@]}" -c - 2> /dev/null; then
+	CONFIG[HAVE_EXECINFO_H]=y
+fi
+
+if echo -e '#include <keyutils.h>\nint main(void) { request_key(0, 0, 0, -1); return 0; }' \
+	| "${BUILD_CMD[@]}" - -lkeyutils 2> /dev/null; then
+	CONFIG[HAVE_KEYUTILS]=y
+fi
+
+if echo -e '#include <openssl/evp.h>\nint main(void) { EVP_MAC *m = EVP_MAC_fetch(0, 0, 0); return 0; }' \
+	| "${BUILD_CMD[@]}" - -lcrypto 2> /dev/null; then
+	CONFIG[HAVE_EVP_MAC]=y
+fi
+
+if echo -e '#include <lz4.h>\nint main(void) { return 0; }\n' \
+	| "${BUILD_CMD[@]}" -llz4 - 2> /dev/null; then
+	CONFIG[HAVE_LZ4]="y"
+fi
+
 if [[ "${CONFIG[OCF]}" = "y" ]]; then
-	echo "WARNING: OCF - bdev_ocf is deprecated."
 	# If OCF_PATH is a file, assume it is a library and use it to compile with
 	if [ -f ${CONFIG[OCF_PATH]} ]; then
 		CONFIG[CUSTOMOCF]=y
@@ -1122,11 +1185,17 @@ fi
 if [[ "${CONFIG[PGO_CAPTURE]}" = "y" && "${CONFIG[PGO_USE]}" = "y" ]]; then
 	echo "ERROR: --enable-pgo-capture and --enable-pgo-use are mutually exclusive."
 	exit 1
-elif [[ "${CONFIG[PGO_USE]}" = "y" ]]; then
+elif [[ "${CONFIG[PGO_CAPTURE]}" = "y" || "${CONFI[PGO_USE]}" = "y" ]]; then
+	if [[ -z "${CONFIG[PGO_DIR]}" ]]; then
+		CONFIG[PGO_DIR]=$(realpath $rootdir/build/pgo)
+	fi
+fi
+
+if [[ "${CONFIG[PGO_USE]}" = "y" ]]; then
 	if [[ "$CC_TYPE" = "clang" ]]; then
 		# For clang we need to run an extra step on gathered profiling data.
 		echo "Generating suitable profile data"
-		llvm-profdata merge -output=build/pgo/default.profdata build/pgo
+		llvm-profdata merge -output=${CONFIG[PGO_DIR]}/default.profdata ${CONFIG[PGO_DIR]}
 	fi
 fi
 
@@ -1191,7 +1260,7 @@ if [[ $arch == x86_64* ]] || [[ $arch == aarch64* ]]; then
 	fi
 	# check gas version on aarch64
 	if [[ $arch == aarch64* ]]; then
-		ver=$(as --version 2> /dev/null | awk 'NR==1{print $7}')
+		ver=$(as --version 2> /dev/null | awk '/GNU assembler/{print $NF}')
 		if lt "$ver" 2.24; then
 			# ISA-L, compression & crypto require gas version 2.24 or newer.
 			CONFIG[ISAL]=n
@@ -1210,15 +1279,21 @@ fi
 # now either configure ISA-L or disable unavailable features
 if [[ "${CONFIG[ISAL]}" = "y" ]]; then
 	cd $rootdir/isa-l
-	ISAL_LOG=$rootdir/isa-l/spdk-isal.log
+	ISAL_LOG=$rootdir/.spdk-isal.log
 	if [[ -n "${CONFIG[CROSS_PREFIX]}" ]]; then
 		ISAL_OPTS=("--host=${CONFIG[CROSS_PREFIX]}")
 	else
 		ISAL_OPTS=()
 	fi
+	if [[ "${CONFIG[SHARED]}" = "y" ]]; then
+		ISAL_OPTS+=("--enable-shared=yes")
+	else
+		ISAL_OPTS+=("--enable-shared=no")
+	fi
+	ISAL_OPTS+=("--prefix=${CONFIG[PREFIX]}")
 	echo -n "Configuring ISA-L (logfile: $ISAL_LOG)..."
 	./autogen.sh &> $ISAL_LOG
-	./configure CFLAGS="-fPIC -g -O2" "${ISAL_OPTS[@]}" --enable-shared=no >> $ISAL_LOG 2>&1
+	./configure CFLAGS="-fPIC -g -O2 -fuse-ld=$LD_TYPE -Wno-unused-command-line-argument" "${ISAL_OPTS[@]}" --enable-shared=no >> $ISAL_LOG 2>&1
 	echo "done."
 	cd $rootdir
 else
@@ -1239,14 +1314,19 @@ if [[ "${CONFIG[ISAL]}" = "y" ]]; then
 	fi
 
 	cd $rootdir/isa-l-crypto
-	ISAL_CRYPTO_LOG=$rootdir/isa-l-crypto/spdk-isal-crypto.log
+	ISAL_CRYPTO_LOG=$rootdir/.spdk-isal-crypto.log
 	if [[ -n "${CONFIG[CROSS_PREFIX]}" ]]; then
 		ISAL_CRYPTO_OPTS+=("--host=${CONFIG[CROSS_PREFIX]}")
 	fi
-	ISAL_CRYPTO_OPTS+=("--enable-shared=no")
+	if [[ "${CONFIG[SHARED]}" = "y" ]]; then
+		ISAL_CRYPTO_OPTS+=("--enable-shared=yes")
+	else
+		ISAL_CRYPTO_OPTS+=("--enable-shared=no")
+	fi
+	ISAL_CRYPTO_OPTS+=("--prefix=${CONFIG[PREFIX]}")
 	echo -n "Configuring ISA-L-crypto (logfile: $ISAL_CRYPTO_LOG)..."
 	./autogen.sh &> $ISAL_CRYPTO_LOG
-	./configure CFLAGS="-fPIC -g -O2" "${ISAL_CRYPTO_OPTS[@]}" >> $ISAL_CRYPTO_LOG 2>&1
+	./configure CFLAGS="-fPIC -g -O2 -fuse-ld=$LD_TYPE -Wno-unused-command-line-argument" "${ISAL_CRYPTO_OPTS[@]}" >> $ISAL_CRYPTO_LOG 2>&1
 	echo "done."
 	cd $rootdir
 	CONFIG[ISAL_CRYPTO]=y
@@ -1269,6 +1349,62 @@ if [[ "${CONFIG[AVAHI]}" = "y" ]]; then
 		echo "--with-avahi requires libavahi-client and libavahi-common."
 		echo "Please install then re-run this script."
 		exit 1
+	fi
+fi
+
+if [[ "${CONFIG[GOLANG]}" = "y" ]]; then
+	if ! go version 2> /dev/null; then
+		echo "--with-golang requires Go installation."
+		echo "Please install then re-run this script."
+		exit 1
+	fi
+fi
+
+if [[ -n ${CONFIG[MAX_LCORES]} ]]; then
+	if [[ ! ${CONFIG[MAX_LCORES]} =~ ^([1-9][0-9]*|detect)$ ]] || ((CONFIG[MAX_LCORES] > 1024)); then
+		echo "ERROR: Max number of lcores must be a decimal number in range [1..1024] or 'detect' (given: ${CONFIG[MAX_LCORES]})"
+		exit 1
+	fi
+fi
+
+if [[ -n ${CONFIG[MAX_NUMA_NODES]} ]]; then
+	if [[ ! ${CONFIG[MAX_NUMA_NODES]} =~ ^([1-9][0-9]*)$ ]] || ((CONFIG[MAX_NUMA_NODES] > 16)); then
+		echo "ERROR: Max number of lcores must be a decimal number in range [1..16] (given: ${CONFIG[MAX_LCORES]})"
+		exit 1
+	fi
+fi
+
+if [[ "${CONFIG[FSDEV]}" = "n" ]]; then
+	if [[ "$AIO_FSDEV_REQUIRED" = "y" ]]; then
+		echo "ERROR: --with-aio-fsdev cannot be specified as fsdev is disabled."
+		exit 1
+	fi
+
+	# if AIO_FSDEV is not explicitly required by user, we just silently disable it
+	CONFIG[AIO_FSDEV]=n
+fi
+
+if [[ "${CONFIG[AIO_FSDEV]}" = "y" ]]; then
+	if echo -e '#define _GNU_SOURCE\n#include <unistd.h>\n' \
+		'int main(void) { return copy_file_range(0, 0, 0, 0, 0, 0); }\n' \
+		| "${BUILD_CMD[@]}" - 2> /dev/null; then
+		CONFIG[COPY_FILE_RANGE]=y
+	else
+		CONFIG[COPY_FILE_RANGE]=n
+	fi
+	if echo -e '#include <sys/stat.h>\n' \
+		'int main(void) { struct stat s; s.st_atime = s.st_atime; return 0 ;}\n' \
+		| "${BUILD_CMD[@]}" - 2> /dev/null; then
+		CONFIG[HAVE_STRUCT_STAT_ST_ATIM]=y
+		CONFIG[HAVE_STRUCT_STAT_ST_ATIMESPEC]=n
+	elif echo -e '#include <sys/stat.h>\n' \
+		'int main(void) { struct stat s; s.st_atimespec = s.st_atimespec; return 0; }\n' \
+		| "${BUILD_CMD[@]}" - 2> /dev/null; then
+		CONFIG[HAVE_STRUCT_STAT_ST_ATIM]=n
+		CONFIG[HAVE_STRUCT_STAT_ST_ATIMESPEC]=y
+	else
+		CONFIG[HAVE_STRUCT_STAT_ST_ATIM]=n
+		CONFIG[HAVE_STRUCT_STAT_ST_ATIMESPEC]=n
 	fi
 fi
 

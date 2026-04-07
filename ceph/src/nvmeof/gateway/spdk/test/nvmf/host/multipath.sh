@@ -3,10 +3,10 @@
 #  Copyright (C) 2020 Intel Corporation
 #  All rights reserved.
 #
-testdir=$(readlink -f $(dirname $0))
-rootdir=$(readlink -f $testdir/../../..)
-source $rootdir/test/common/autotest_common.sh
-source $rootdir/test/nvmf/common.sh
+testdir=$(readlink -f "$(dirname $0)")
+rootdir=$(readlink -f "$testdir/../../..")
+source "$rootdir/test/common/autotest_common.sh"
+source "$rootdir/test/nvmf/common.sh"
 
 MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
@@ -18,6 +18,14 @@ bdevperf_rpc_sock=/var/tmp/bdevperf.sock
 
 # NQN prefix to use for subsystem NQNs
 NQN=nqn.2016-06.io.spdk:cnode1
+
+cleanup() {
+	process_shm --id $NVMF_APP_SHM_ID || true
+	cat "$testdir/try.txt"
+	rm -f "$testdir/try.txt"
+	killprocess $bdevperf_pid
+	nvmftestfini
+}
 
 nvmftestinit
 
@@ -32,10 +40,10 @@ $rpc_py nvmf_subsystem_add_ns $NQN Malloc0
 $rpc_py nvmf_subsystem_add_listener $NQN -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 $rpc_py nvmf_subsystem_add_listener $NQN -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_SECOND_PORT
 
-$rootdir/build/examples/bdevperf -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w verify -t 90 &> $testdir/try.txt &
+"$rootdir/build/examples/bdevperf" -m 0x4 -z -r $bdevperf_rpc_sock -q 128 -o 4096 -w verify -t 90 &> "$testdir/try.txt" &
 bdevperf_pid=$!
 
-trap 'process_shm --id $NVMF_APP_SHM_ID; rm -f $testdir/try.txt; killprocess $bdevperf_pid; nvmftestfini; exit 1' SIGINT SIGTERM EXIT
+trap 'cleanup; exit 1' SIGINT SIGTERM EXIT
 waitforlisten $bdevperf_pid $bdevperf_rpc_sock
 
 # Create a controller and set multipath behavior
@@ -43,7 +51,7 @@ waitforlisten $bdevperf_pid $bdevperf_rpc_sock
 $rpc_py -s $bdevperf_rpc_sock bdev_nvme_set_options -r -1
 # -l -1 ctrlr_loss_timeout_sec -1 means infinite reconnects
 # -o 10 reconnect_delay_sec time to delay a reconnect retry is limited to 10 sec
-$rpc_py -s $bdevperf_rpc_sock bdev_nvme_attach_controller -b Nvme0 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT -f ipv4 -n $NQN -l -1 -o 10
+$rpc_py -s $bdevperf_rpc_sock bdev_nvme_attach_controller -b Nvme0 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT -f ipv4 -n $NQN -x multipath -l -1 -o 10
 $rpc_py -s $bdevperf_rpc_sock bdev_nvme_attach_controller -b Nvme0 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_SECOND_PORT -f ipv4 -n $NQN -x multipath -l -1 -o 10
 
 function set_ANA_state() {
@@ -53,20 +61,19 @@ function set_ANA_state() {
 
 # check for io on the expected ANA state port
 function confirm_io_on_port() {
-	$bpf_sh $nvmfapp_pid $rootdir/scripts/bpf/nvmf_path.bt &> $testdir/trace.txt &
+	$bpf_sh $nvmfapp_pid "$rootdir/scripts/bpf/nvmf_path.bt" &> "$testdir/trace.txt" &
 	dtrace_pid=$!
 	sleep 6
 	active_port=$($rpc_py nvmf_subsystem_get_listeners $NQN | jq -r '.[] | select (.ana_states[0].ana_state=="'$1'") | .address.trsvcid')
-	cat $testdir/trace.txt
-	port=$(cut < $testdir/trace.txt -d ']' -f1 | awk '$1=="@path['$NVMF_FIRST_TARGET_IP'," {print $2}' | sed -n '1p')
+	cat "$testdir/trace.txt"
+	port=$(cut < "$testdir/trace.txt" -d ']' -f1 | awk '$1=="@path['$NVMF_FIRST_TARGET_IP'," {print $2}' | sed -n '1p')
 	[[ "$active_port" == "$port" ]]
 	[[ "$port" == "$2" ]]
 	kill $dtrace_pid
-	rm -f $testdir/trace.txt
+	rm -f "$testdir/trace.txt"
 }
 
-$rootdir/examples/bdev/bdevperf/bdevperf.py -t 120 -s $bdevperf_rpc_sock perform_tests &
-rpc_pid=$!
+"$rootdir/examples/bdev/bdevperf/bdevperf.py" -t 120 -s $bdevperf_rpc_sock perform_tests &
 
 sleep 1
 
@@ -104,14 +111,15 @@ $rpc_py nvmf_subsystem_listener_set_ana_state $NQN -t $TEST_TRANSPORT -a $NVMF_F
 sleep 6
 confirm_io_on_port "optimized" $NVMF_SECOND_PORT
 
-wait $rpc_pid
-cat $testdir/try.txt
-
 killprocess $bdevperf_pid
+# Make sure we catch bdevperf's exit status
+wait $bdevperf_pid
+
+cat "$testdir/try.txt"
 
 $rpc_py nvmf_delete_subsystem $NQN
 
 trap - SIGINT SIGTERM EXIT
 
-rm -f $testdir/try.txt
+rm -f "$testdir/try.txt"
 nvmftestfini

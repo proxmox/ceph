@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
@@ -16,6 +16,9 @@ int ocf_cache_io_class_get_info(ocf_cache_t cache, uint32_t io_class,
 	struct ocf_part *part;
 
 	OCF_CHECK_NULL(cache);
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	if (!info)
 		return -OCF_ERR_INVAL;
@@ -42,7 +45,7 @@ int ocf_cache_io_class_get_info(ocf_cache_t cache, uint32_t io_class,
 	info->min_size = cache->user_parts[part_id].config->min_size;
 	info->max_size = cache->user_parts[part_id].config->max_size;
 
-	info->cleaning_policy_type = cache->conf_meta->cleaning_policy_type;
+	info->cleaning_policy_type = cache->cleaner.policy;
 
 	info->cache_mode = cache->user_parts[part_id].config->cache_mode;
 
@@ -57,6 +60,9 @@ int ocf_io_class_visit(ocf_cache_t cache, ocf_io_class_visitor_t visitor,
 	int result = 0;
 
 	OCF_CHECK_NULL(cache);
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	if (!visitor)
 		return -OCF_ERR_INVAL;

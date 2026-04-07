@@ -45,15 +45,27 @@ struct ftl_superblock_header {
 SPDK_STATIC_ASSERT(sizeof(struct ftl_superblock_header) == 24,
 		   "ftl_superblock_header incorrect size");
 
-struct ftl_superblock_md_region {
+struct ftl_superblock_v3_md_region {
 	uint32_t		type;
 	uint32_t		version;
 	uint64_t		blk_offs;
 	uint64_t		blk_sz;
 	ftl_df_obj_id		df_next;
 } __attribute__((packed));
-SPDK_STATIC_ASSERT(sizeof(struct ftl_superblock_md_region) == 32,
-		   "ftl_superblock_md_region incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct ftl_superblock_v3_md_region) == 32,
+		   "ftl_superblock_v3_md_region incorrect size");
+
+struct ftl_superblock_v5_md_blob_hdr {
+	/* Blob size in bytes */
+	uint16_t		blob_sz;
+	/* Reserved */
+	uint16_t		reserved1;
+	uint32_t		reserved2;
+	/* DF pointer to the blob in a SB buf */
+	ftl_df_obj_id	df_id;
+} __attribute__((packed));
+SPDK_STATIC_ASSERT(sizeof(struct ftl_superblock_v5_md_blob_hdr) == 16,
+		   "ftl_superblock_v5_md_blob_hdr incorrect size");
 
 struct ftl_superblock_shm {
 	/* SHM initialization completed */

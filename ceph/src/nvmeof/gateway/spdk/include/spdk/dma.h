@@ -138,6 +138,32 @@ struct spdk_memory_domain_translation_ctx {
 };
 
 /**
+ * Definition of function which starts asynchronous operation to transfer data from the source to
+ * destination memory domains.
+ * Implementation of this function must call \b cpl_cb only when it returns 0. All other return codes mean failure.
+ *
+ * \param dst_domain Memory domain to which the data should be transferred
+ * \param dst_domain_ctx Optional context passed by upper layer with IO request
+ * \param dst_iov Iov vector in dst_domain space
+ * \param dst_iovcnt dst_iov array size
+ * \param src_domain Memory domain from which the data should be transferred
+ * \param src_domain_ctx Optional context passed by the caller
+ * \param src_iov Iov vector in local memory
+ * \param src_iovcnt src_iov array size
+ * \param src_translation Optional memory translation from the source to the destination memory domain
+ * \param cpl_cb A callback to be called when push operation completes
+ * \param cpl_cb_arg Optional argument to be passed to \b cpl_cb
+ * \return 0 on success, negated errno on failure
+ */
+typedef int (*spdk_memory_domain_transfer_data_cb)(struct spdk_memory_domain *dst_domain,
+		void *dst_domain_ctx,
+		struct iovec *dst_iov, uint32_t dst_iovcnt,
+		struct spdk_memory_domain *src_domain, void *src_domain_ctx,
+		struct iovec *src_iov, uint32_t src_iovcnt,
+		struct spdk_memory_domain_translation_result *src_translation,
+		spdk_memory_domain_data_cpl_cb cpl_cb, void *cpl_cb_arg);
+
+/**
  * Definition of function which translates data from src_domain to a form accessible by dst_domain.
  *
  * \param src_domain Memory domain to which the data buffer belongs
@@ -154,6 +180,17 @@ typedef int (*spdk_memory_domain_translate_memory_cb)(struct spdk_memory_domain 
 		struct spdk_memory_domain_translation_ctx *dst_domain_ctx, void *addr, size_t len,
 		struct spdk_memory_domain_translation_result *result);
 
+/**
+ * Definition of function which invalidates the data range in the given domain
+ *
+ * \param domain Memory domain to which the data buffer belongs
+ * \param domain_ctx Optional context passed by upper layer
+ * \param iov Iov array in \b domain memory space to be invalidated
+ * \param iovcnt Iov array size
+ */
+typedef void (*spdk_memory_domain_invalidate_data_cb)(struct spdk_memory_domain *domain,
+		void *domain_ctx, struct iovec *iov, uint32_t iovcnt);
+
 /** Context of memory domain of RDMA type */
 struct spdk_memory_domain_rdma_ctx {
 	/** size of this structure in bytes */
@@ -169,6 +206,8 @@ struct spdk_memory_domain_ctx {
 	 * Depending on memory domain type, this pointer can be cast to a specific structure,
 	 * e.g. to spdk_memory_domain_rdma_ctx structure for RDMA memory domain */
 	void *user_ctx;
+	/** size of \b user_ctx in bytes */
+	size_t user_ctx_size;
 };
 
 /**
@@ -199,6 +238,15 @@ void spdk_memory_domain_set_translation(struct spdk_memory_domain *domain,
 					spdk_memory_domain_translate_memory_cb translate_cb);
 
 /**
+ * Set invalidate function for memory domain. Overwrites existing invalidate function.
+ *
+ * @param domain Memory domain
+ * @param invalidate_cb Invalidate function
+ */
+void spdk_memory_domain_set_invalidate(struct spdk_memory_domain *domain,
+				       spdk_memory_domain_invalidate_data_cb invalidate_cb);
+
+/**
  * Set pull function for memory domain. Overwrites existing pull function.
  *
  * \param domain Memory domain
@@ -217,6 +265,15 @@ void spdk_memory_domain_set_push(struct spdk_memory_domain *domain,
 				 spdk_memory_domain_push_data_cb push_cb);
 
 /**
+ * Set data transfer for memory domain. Overwrites existing function.
+ *
+ * \param domain Memory domain
+ * \param transfer_cb Data transfer function
+ */
+void spdk_memory_domain_set_data_transfer(struct spdk_memory_domain *domain,
+		spdk_memory_domain_transfer_data_cb transfer_cb);
+
+/**
  * Set memzero function for memory domain. Overwrites existing memzero function.
  *
  * \param domain Memory domain
@@ -232,6 +289,15 @@ void spdk_memory_domain_set_memzero(struct spdk_memory_domain *domain,
  * \return Memory domain context
  */
 struct spdk_memory_domain_ctx *spdk_memory_domain_get_context(struct spdk_memory_domain *domain);
+
+/**
+ * Get an opaque pointer to the user context and its size.
+ *
+ * \param domain Memory domain
+ * \param ctx_size Stores size of the user context. NULL pointer is not allowed
+ * \return User context pointer
+ */
+void *spdk_memory_domain_get_user_context(struct spdk_memory_domain *domain, size_t *ctx_size);
 
 /**
  * Get type of the DMA device that can access this memory domain
@@ -293,6 +359,30 @@ int spdk_memory_domain_push_data(struct spdk_memory_domain *dst_domain, void *ds
 				 spdk_memory_domain_data_cpl_cb cpl_cb, void *cpl_cb_arg);
 
 /**
+ * Asynchronously transfer data from the source memory domain to the destination memory domain
+ *
+ * \param dst_domain Memory domain to which the data should be transferred
+ * \param dst_domain_ctx Optional context passed by upper layer with IO request
+ * \param dst_iov Iov vector in dst_domain space
+ * \param dst_iovcnt dst_iov array size
+ * \param src_domain Memory domain from which the data should be transferred
+ * \param src_domain_ctx Optional context passed by the caller
+ * \param src_iov Iov vector in local memory
+ * \param src_iovcnt src_iov array size
+ * \param src_translation Optional memory translation from the source to the destination memory domain
+ * \param cpl_cb A callback to be called when push operation completes
+ * \param cpl_cb_arg Optional argument to be passed to \b cpl_cb
+ * \return 0 on success, negated errno on failure. push_cb implementation must only call the callback when 0
+ * is returned
+ */
+int spdk_memory_domain_transfer_data(struct spdk_memory_domain *dst_domain, void *dst_domain_ctx,
+				     struct iovec *dst_iov, uint32_t dst_iovcnt,
+				     struct spdk_memory_domain *src_domain, void *src_domain_ctx,
+				     struct iovec *src_iov, uint32_t src_iovcnt,
+				     struct spdk_memory_domain_translation_result *src_translation,
+				     spdk_memory_domain_data_cpl_cb cpl_cb, void *cpl_cb_arg);
+
+/**
  * Translate data located in \b src_domain space at address \b addr with size \b len into an equivalent
  * description of memory in dst_domain.
  *
@@ -315,6 +405,21 @@ int spdk_memory_domain_push_data(struct spdk_memory_domain *dst_domain, void *ds
 int spdk_memory_domain_translate_data(struct spdk_memory_domain *src_domain, void *src_domain_ctx,
 				      struct spdk_memory_domain *dst_domain, struct spdk_memory_domain_translation_ctx *dst_domain_ctx,
 				      void *addr, size_t len, struct spdk_memory_domain_translation_result *result);
+
+/**
+ * Invalidate memory in the given domain.
+ *
+ * This function calls \b domain invalidate callback, the callback needs to be set using \ref
+ * spdk_memory_domain_set_invalidate function.
+ * This operation is optional and is meant to be executed on the translation result \ref spdk_memory_domain_translate_data.
+ *
+ * \param domain Memory domain in which address space of the buffer is located
+ * \param domain_ctx User defined context
+ * \param iov Iov vector in \b domain memory space to be invalidated
+ * \param iovcnt iov array size
+ */
+void spdk_memory_domain_invalidate_data(struct spdk_memory_domain *domain, void *domain_ctx,
+					struct iovec *iov, uint32_t iovcnt);
 
 /**
  * Fills memory in \b domain with zeroes
@@ -353,6 +458,12 @@ struct spdk_memory_domain *spdk_memory_domain_get_first(const char *id);
 struct spdk_memory_domain *spdk_memory_domain_get_next(struct spdk_memory_domain *prev,
 		const char *id);
 
+/**
+ * Get the System memory domain.
+ *
+ * \return Pointer to the System memory domain.
+ */
+struct spdk_memory_domain *spdk_memory_domain_get_system_domain(void);
 
 #ifdef __cplusplus
 }

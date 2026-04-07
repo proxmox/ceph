@@ -1,4 +1,5 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   Copyright (C) 2022 Intel Corporation.
  *   All rights reserved.
  */
@@ -26,27 +27,14 @@ has_mirror(struct ftl_md *md)
 	return false;
 }
 
-static int
-setup_mirror(struct ftl_md *md)
+static struct ftl_md *
+ftl_md_get_mirror(struct ftl_md *md)
 {
-	if (!md->mirror) {
-		md->mirror = calloc(1, sizeof(*md->mirror));
-		if (!md->mirror) {
-			return -ENOMEM;
-		}
-		md->mirror_enabled = true;
+	if (has_mirror(md)) {
+		return md->dev->layout.md[md->region->mirror_type];
 	}
 
-	md->mirror->dev = md->dev;
-	md->mirror->data_blocks = md->data_blocks;
-	md->mirror->data = md->data;
-	md->mirror->vss_data = md->vss_data;
-
-	/* Set proper region in secondary object */
-	assert(md->region->mirror_type != FTL_LAYOUT_REGION_TYPE_INVALID);
-	md->mirror->region = &md->dev->layout.region[md->region->mirror_type];
-
-	return 0;
+	return NULL;
 }
 
 uint64_t
@@ -62,6 +50,19 @@ xfer_size(struct ftl_md *md)
 }
 
 static void
+ftl_md_create_spdk_buf(struct ftl_md *md, uint64_t vss_blksz)
+{
+	md->shm_fd = -1;
+	md->vss_data = NULL;
+	md->data = spdk_zmalloc(md->data_blocks * (FTL_BLOCK_SIZE + vss_blksz), FTL_BLOCK_SIZE, NULL,
+				SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
+
+	if (md->data && vss_blksz) {
+		md->vss_data = ((char *)md->data) + md->data_blocks * FTL_BLOCK_SIZE;
+	}
+}
+
+static void
 ftl_md_create_heap(struct ftl_md *md, uint64_t vss_blksz)
 {
 	md->shm_fd = -1;
@@ -70,6 +71,16 @@ ftl_md_create_heap(struct ftl_md *md, uint64_t vss_blksz)
 
 	if (md->data && vss_blksz) {
 		md->vss_data = ((char *)md->data) + md->data_blocks * FTL_BLOCK_SIZE;
+	}
+}
+
+static void
+ftl_md_destroy_spdk_buf(struct ftl_md *md)
+{
+	if (md->data) {
+		spdk_free(md->data);
+		md->data = NULL;
+		md->vss_data = NULL;
 	}
 }
 
@@ -281,6 +292,8 @@ struct ftl_md *ftl_md_create(struct spdk_ftl_dev *dev, uint64_t blocks,
 		if (flags & FTL_MD_CREATE_SHM) {
 			ftl_md_setup_obj(md, flags, name);
 			ftl_md_create_shm(md, vss_blksz, flags);
+		} else if (flags & FTL_MD_CREATE_SPDK_BUF) {
+			ftl_md_create_spdk_buf(md, vss_blksz);
 		} else {
 			assert((flags & FTL_MD_CREATE_HEAP) == FTL_MD_CREATE_HEAP);
 			ftl_md_create_heap(md, vss_blksz);
@@ -304,9 +317,7 @@ struct ftl_md *ftl_md_create(struct spdk_ftl_dev *dev, uint64_t blocks,
 			}
 		}
 
-		if (ftl_md_set_region(md, region)) {
-			goto err;
-		}
+		ftl_md_set_region(md, region);
 	}
 
 	return md;
@@ -338,11 +349,10 @@ ftl_md_destroy(struct ftl_md *md, int flags)
 		return;
 	}
 
-	ftl_md_free_buf(md, flags);
-
-	spdk_free(md->entry_vss_dma_buf);
-
-	free(md->mirror);
+	if (!md->is_mirror) {
+		ftl_md_free_buf(md, flags);
+		spdk_free(md->entry_vss_dma_buf);
+	}
 	free(md);
 }
 
@@ -354,8 +364,12 @@ ftl_md_free_buf(struct ftl_md *md, int flags)
 	}
 
 	if (md->shm_fd < 0) {
-		assert(flags == 0);
-		ftl_md_destroy_heap(md);
+		if (flags & FTL_MD_DESTROY_SPDK_BUF) {
+			ftl_md_destroy_spdk_buf(md);
+		} else {
+			assert(flags == 0);
+			ftl_md_destroy_heap(md);
+		}
 	} else {
 		ftl_md_destroy_shm(md, flags);
 	}
@@ -437,18 +451,6 @@ get_bdev_io_ftl_stats_type(struct spdk_ftl_dev *dev, struct spdk_bdev_io *bdev_i
 }
 
 static void
-audit_md_vss_version(struct ftl_md *md, uint64_t blocks)
-{
-#if defined(DEBUG)
-	union ftl_md_vss *vss = md->io.md;
-	while (blocks) {
-		blocks--;
-		assert(vss[blocks].version.md_version == md->region->current.version);
-	}
-#endif
-}
-
-static void
 read_write_blocks_cb(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 {
 	struct ftl_md *md = arg;
@@ -471,7 +473,6 @@ read_write_blocks_cb(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 			if (md->vss_data) {
 				uint64_t vss_offset = md->io.data_offset / FTL_BLOCK_SIZE;
 				vss_offset *= FTL_MD_VSS_SZ;
-				audit_md_vss_version(md, blocks);
 				memcpy(md->vss_data + vss_offset, md->io.md, blocks * FTL_MD_VSS_SZ);
 			}
 		}
@@ -586,15 +587,8 @@ io_submit(struct ftl_md *md)
 			vss_offset *= FTL_MD_VSS_SZ;
 			assert(md->io.md);
 			memcpy(md->io.md, md->vss_data + vss_offset, FTL_MD_VSS_SZ * blocks);
-			audit_md_vss_version(md, blocks);
 		}
 	}
-#if defined(DEBUG)
-	if (md->io.md && md->io.op == FTL_MD_OP_CLEAR) {
-		uint64_t blocks = spdk_min(md->io.remaining, ftl_md_xfer_blocks(md->dev));
-		audit_md_vss_version(md, blocks);
-	}
-#endif
 
 	read_write_blocks(md);
 }
@@ -707,7 +701,7 @@ ftl_md_persist_entry_write_blocks(struct ftl_md_io_entry_ctx *ctx, struct ftl_md
 
 	rc = write_blocks(md->dev, md->region->bdev_desc, md->region->ioch,
 			  ctx->buffer, ctx->vss_buffer,
-			  persist_entry_lba(md, ctx->start_entry), md->region->entry_size,
+			  persist_entry_lba(md, ctx->start_entry), md->region->entry_size * ctx->num_entries,
 			  persist_entry_cb, ctx);
 	if (spdk_unlikely(rc)) {
 		if (rc == -ENOMEM) {
@@ -728,8 +722,9 @@ static void
 ftl_md_persist_entry_mirror(void *_ctx)
 {
 	struct ftl_md_io_entry_ctx *ctx = _ctx;
+	struct ftl_md *md_mirror = ftl_md_get_mirror(ctx->md);
 
-	ftl_md_persist_entry_write_blocks(ctx, ctx->md->mirror, ftl_md_persist_entry_mirror);
+	ftl_md_persist_entry_write_blocks(ctx, md_mirror, ftl_md_persist_entry_mirror);
 }
 
 static void
@@ -742,7 +737,7 @@ ftl_md_persist_entry_primary(void *_ctx)
 	rc = ftl_md_persist_entry_write_blocks(ctx, md, ftl_md_persist_entry_primary);
 
 	if (!rc && has_mirror(md)) {
-		assert(md->region->entry_size == md->mirror->region->entry_size);
+		assert(md->region->entry_size == (ftl_md_get_mirror(md))->region->entry_size);
 
 		/* The MD object has mirror so execute persist on it too */
 		ftl_md_persist_entry_mirror(ctx);
@@ -761,12 +756,16 @@ _ftl_md_persist_entry(struct ftl_md_io_entry_ctx *ctx)
 }
 
 void
-ftl_md_persist_entry(struct ftl_md *md, uint64_t start_entry, void *buffer, void *vss_buffer,
-		     ftl_md_io_entry_cb cb, void *cb_arg,
-		     struct ftl_md_io_entry_ctx *ctx)
+ftl_md_persist_entries(struct ftl_md *md, uint64_t start_entry, uint64_t num_entries, void *buffer,
+		       void *vss_buffer, ftl_md_io_entry_cb cb, void *cb_arg,
+		       struct ftl_md_io_entry_ctx *ctx)
 {
 	if (spdk_unlikely(0 == md->region->entry_size)) {
 		/* This MD has not been configured to support persist entry call */
+		ftl_abort();
+	}
+	if (spdk_unlikely(start_entry + num_entries > md->region->num_entries)) {
+		/* Exceeding number of available entries */
 		ftl_abort();
 	}
 
@@ -776,6 +775,7 @@ ftl_md_persist_entry(struct ftl_md *md, uint64_t start_entry, void *buffer, void
 	ctx->md = md;
 	ctx->start_entry = start_entry;
 	ctx->buffer = buffer;
+	ctx->num_entries = num_entries;
 	ctx->vss_buffer = vss_buffer ? : md->entry_vss_dma_buf;
 
 	_ftl_md_persist_entry(ctx);
@@ -793,14 +793,11 @@ read_entry_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 
 	if (!success) {
 		if (has_mirror(md)) {
-			if (setup_mirror(md)) {
-				/* An error when setup the mirror */
-				ctx->status = -EIO;
-				goto finish_io;
-			}
+			md->mirror_enabled = true;
 
 			/* First read from the mirror */
-			ftl_md_read_entry(md->mirror, ctx->start_entry, ctx->buffer, ctx->vss_buffer,
+			ftl_md_read_entry(ftl_md_get_mirror(md), ctx->start_entry, ctx->buffer,
+					  ctx->vss_buffer,
 					  ctx->cb, ctx->cb_arg,
 					  ctx);
 			return;
@@ -895,18 +892,16 @@ void
 ftl_md_persist(struct ftl_md *md)
 {
 	if (has_mirror(md)) {
-		if (setup_mirror(md)) {
-			/* An error when setup the mirror */
-			spdk_thread_send_msg(spdk_get_thread(), exception, md);
-			return;
-		}
+		struct ftl_md *md_mirror = ftl_md_get_mirror(md);
+
+		md->mirror_enabled = true;
 
 		/* Set callback and context in mirror */
-		md->mirror->cb = persist_mirror_cb;
-		md->mirror->owner.private = md;
+		md_mirror->cb = persist_mirror_cb;
+		md_mirror->owner.private = md;
 
 		/* First persist the mirror */
-		ftl_md_persist(md->mirror);
+		ftl_md_persist(md_mirror);
 		return;
 	}
 
@@ -966,31 +961,31 @@ restore_done(struct ftl_md *md)
 		 */
 
 		if (has_mirror(md)) {
-			if (setup_mirror(md)) {
-				/* An error when setup the mirror */
-				return -EIO;
-			}
+			struct ftl_md *md_mirror = ftl_md_get_mirror(md);
+
+			md->mirror_enabled = true;
 
 			/* Set callback and context in mirror */
-			md->mirror->cb = restore_mirror_cb;
-			md->mirror->owner.private = md;
+			md_mirror->cb = restore_mirror_cb;
+			md_mirror->owner.private = md;
 
 			/* First persist the mirror */
-			ftl_md_restore(md->mirror);
+			ftl_md_restore(md_mirror);
 			return -EAGAIN;
 		} else {
 			return -EIO;
 		}
 	} else if (0 == md->io.status && false == md->dev->sb->clean) {
 		if (has_mirror(md)) {
+			struct ftl_md *md_mirror = ftl_md_get_mirror(md);
 			/* There was a dirty shutdown, synchronize primary to mirror */
 
 			/* Set callback and context in the mirror */
-			md->mirror->cb = restore_sync_cb;
-			md->mirror->owner.private = md;
+			md_mirror->cb = restore_sync_cb;
+			md_mirror->owner.private = md;
 
 			/* First persist the mirror */
-			ftl_md_persist(md->mirror);
+			ftl_md_persist(md_mirror);
 			return -EAGAIN;
 		}
 	}
@@ -1010,8 +1005,10 @@ io_done(struct ftl_md *md)
 	}
 
 	if (status != -EAGAIN) {
-		md->cb(md->dev, md, status);
+		/* The MD instance may be destroyed in ctx of md->cb(), e.g. upon region upgrade. */
+		/* Need to cleanup DMA bufs first. */
 		io_cleanup(md);
+		md->cb(md->dev, md, status);
 	}
 }
 
@@ -1061,13 +1058,7 @@ clear_mirror_cb(struct spdk_ftl_dev *dev, struct ftl_md *secondary, int status)
 		io_done(primary);
 	} else {
 		/* Now continue the persist procedure on the primary MD object */
-		if (0 == io_init(primary, FTL_MD_OP_CLEAR) &&
-		    0 == pattern_prepare(primary, *(int *)secondary->io.data,
-					 secondary->io.md)) {
-			io_submit(primary);
-		} else {
-			spdk_thread_send_msg(spdk_get_thread(), exception, primary);
-		}
+		io_submit(primary);
 	}
 }
 
@@ -1075,18 +1066,22 @@ void
 ftl_md_clear(struct ftl_md *md, int data_pattern, union ftl_md_vss *vss_pattern)
 {
 	if (has_mirror(md)) {
-		if (setup_mirror(md)) {
-			/* An error when setup the mirror */
-			spdk_thread_send_msg(spdk_get_thread(), exception, md);
-			return;
-		}
+		struct ftl_md *md_mirror = ftl_md_get_mirror(md);
+
+		md->mirror_enabled = true;
 
 		/* Set callback and context in mirror */
-		md->mirror->cb = clear_mirror_cb;
-		md->mirror->owner.private = md;
+		md_mirror->cb = clear_mirror_cb;
+		md_mirror->owner.private = md;
 
-		/* First persist the mirror */
-		ftl_md_clear(md->mirror, data_pattern, vss_pattern);
+		/* The pattern bufs will not be available outside of this fn context */
+		/* Configure the IO for the primary region now */
+		if (0 == io_init(md, FTL_MD_OP_CLEAR) && 0 == pattern_prepare(md, data_pattern, vss_pattern)) {
+			/* First persist the mirror */
+			ftl_md_clear(md_mirror, data_pattern, vss_pattern);
+		} else {
+			spdk_thread_send_msg(spdk_get_thread(), exception, md);
+		}
 		return;
 	}
 
@@ -1103,7 +1098,7 @@ ftl_md_get_region(struct ftl_md *md)
 	return md->region;
 }
 
-int
+void
 ftl_md_set_region(struct ftl_md *md,
 		  const struct ftl_layout_region *region)
 {
@@ -1121,10 +1116,8 @@ ftl_md_set_region(struct ftl_md *md,
 	}
 
 	if (has_mirror(md)) {
-		return setup_mirror(md);
+		md->mirror_enabled = true;
 	}
-
-	return 0;
 }
 
 int
@@ -1147,10 +1140,16 @@ ftl_md_create_region_flags(struct spdk_ftl_dev *dev, int region_type)
 		break;
 	case FTL_LAYOUT_REGION_TYPE_VALID_MAP:
 	case FTL_LAYOUT_REGION_TYPE_TRIM_MD:
+	case FTL_LAYOUT_REGION_TYPE_TRIM_LOG:
 		if (!ftl_fast_startup(dev) && !ftl_fast_recovery(dev)) {
 			flags |= FTL_MD_CREATE_SHM_NEW;
 		}
 		break;
+	case FTL_LAYOUT_REGION_TYPE_P2L_CKPT_GC:
+	case FTL_LAYOUT_REGION_TYPE_P2L_CKPT_GC_NEXT:
+	case FTL_LAYOUT_REGION_TYPE_P2L_CKPT_COMP:
+	case FTL_LAYOUT_REGION_TYPE_P2L_CKPT_COMP_NEXT:
+		return FTL_MD_CREATE_SPDK_BUF;
 	default:
 		return FTL_MD_CREATE_HEAP;
 	}
@@ -1167,11 +1166,16 @@ ftl_md_destroy_region_flags(struct spdk_ftl_dev *dev, int region_type)
 	case FTL_LAYOUT_REGION_TYPE_VALID_MAP:
 	case FTL_LAYOUT_REGION_TYPE_NVC_MD:
 	case FTL_LAYOUT_REGION_TYPE_TRIM_MD:
+	case FTL_LAYOUT_REGION_TYPE_TRIM_LOG:
 		if (dev->conf.fast_shutdown) {
 			return FTL_MD_DESTROY_SHM_KEEP;
 		}
 		break;
-
+	case FTL_LAYOUT_REGION_TYPE_P2L_CKPT_GC:
+	case FTL_LAYOUT_REGION_TYPE_P2L_CKPT_GC_NEXT:
+	case FTL_LAYOUT_REGION_TYPE_P2L_CKPT_COMP:
+	case FTL_LAYOUT_REGION_TYPE_P2L_CKPT_COMP_NEXT:
+		return FTL_MD_DESTROY_SPDK_BUF;
 	default:
 		break;
 	}

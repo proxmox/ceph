@@ -1,5 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2018 Intel Corporation.
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   All rights reserved.
  */
 
@@ -21,8 +22,9 @@
 
 #define FTL_BAND_VERSION_0	0
 #define FTL_BAND_VERSION_1	1
+#define FTL_BAND_VERSION_2	2
 
-#define FTL_BAND_VERSION_CURRENT FTL_BAND_VERSION_1
+#define FTL_BAND_VERSION_CURRENT FTL_BAND_VERSION_2
 
 struct spdk_ftl_dev;
 struct ftl_band;
@@ -46,6 +48,9 @@ typedef void (*ftl_band_md_cb)(struct ftl_band *band, void *ctx, enum ftl_md_sta
 typedef void (*ftl_band_validate_md_cb)(struct ftl_band *band, bool valid);
 
 struct ftl_band_md {
+	/* Band metadata version */
+	uint64_t version;
+
 	/* Band iterator for writing */
 	struct {
 		/* Current physical address of the write pointer */
@@ -83,10 +88,12 @@ struct ftl_band_md {
 	uint32_t			p2l_map_checksum;
 
 	/* Reserved */
-	uint8_t				reserved2[4028];
+	uint8_t				reserved2[4020];
 } __attribute__((packed));
 
-SPDK_STATIC_ASSERT(sizeof(struct ftl_band_md) == FTL_BLOCK_SIZE, "Incorrect metadata size");
+SPDK_STATIC_ASSERT(sizeof(struct ftl_band_md) == FTL_BLOCK_SIZE, "Incorrect band metadata size");
+SPDK_STATIC_ASSERT(offsetof(struct ftl_band_md, version) == 0,
+		   "Incorrect band metadata version offset");
 
 struct ftl_band {
 	/* Device this band belongs to */
@@ -158,6 +165,7 @@ uint64_t ftl_band_block_offset_from_addr(struct ftl_band *band, ftl_addr addr);
 ftl_addr ftl_band_addr_from_block_offset(struct ftl_band *band, uint64_t block_off);
 void ftl_band_set_type(struct ftl_band *band, enum ftl_band_type type);
 void ftl_band_set_state(struct ftl_band *band, enum ftl_band_state state);
+const char *ftl_band_get_state_name(struct ftl_band *band);
 void ftl_band_acquire_p2l_map(struct ftl_band *band);
 int ftl_band_alloc_p2l_map(struct ftl_band *band);
 int ftl_band_open_p2l_map(struct ftl_band *band);
@@ -177,7 +185,7 @@ struct ftl_band *ftl_band_search_next_to_reloc(struct spdk_ftl_dev *dev);
 void ftl_band_init_gc_iter(struct spdk_ftl_dev *dev);
 ftl_addr ftl_band_p2l_map_addr(struct ftl_band *band);
 void ftl_valid_map_load_state(struct spdk_ftl_dev *dev);
-void ftl_bands_load_state(struct spdk_ftl_dev *dev);
+int ftl_bands_load_state(struct spdk_ftl_dev *dev);
 void ftl_band_open(struct ftl_band *band, enum ftl_band_type type);
 void ftl_band_close(struct ftl_band *band);
 void ftl_band_free(struct ftl_band *band);
@@ -188,6 +196,7 @@ void ftl_band_basic_rq_read(struct ftl_band *band, struct ftl_basic_rq *brq);
 void ftl_band_get_next_gc(struct spdk_ftl_dev *dev, ftl_band_ops_cb cb, void *cntx);
 void ftl_band_read_tail_brq_md(struct ftl_band *band, ftl_band_md_cb cb, void *cntx);
 void ftl_band_initialize_free_state(struct ftl_band *band);
+double ftl_band_invalidity(struct ftl_band *band);
 
 static inline void
 ftl_band_set_owner(struct ftl_band *band,

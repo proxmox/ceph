@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
@@ -49,6 +50,7 @@ static void ocf_stats_part_init(struct ocf_counters_part *stats)
 	ocf_stats_block_init(&stats->blocks);
 	ocf_stats_block_init(&stats->core_blocks);
 	ocf_stats_block_init(&stats->cache_blocks);
+	ocf_stats_block_init(&stats->pass_through_blocks);
 }
 
 static void ocf_stats_error_init(struct ocf_counters_error *stats)
@@ -95,6 +97,15 @@ void ocf_core_stats_core_block_update(ocf_core_t core, ocf_part_id_t part_id,
 {
 	struct ocf_counters_block *counters =
 		&core->counters->part_counters[part_id].core_blocks;
+
+	_ocf_stats_block_update(counters, dir, bytes);
+}
+
+void ocf_core_stats_pt_block_update(ocf_core_t core, ocf_part_id_t part_id,
+		int dir, uint64_t bytes)
+{
+	struct ocf_counters_block *counters =
+		&core->counters->part_counters[part_id].pass_through_blocks;
 
 	_ocf_stats_block_update(counters, dir, bytes);
 }
@@ -203,9 +214,12 @@ void ocf_core_stats_initialize(ocf_core_t core)
 #endif
 }
 
-void ocf_core_stats_initialize_all(ocf_cache_t cache)
+int ocf_core_stats_initialize_all(ocf_cache_t cache)
 {
 	ocf_core_id_t id;
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	for (id = 0; id < OCF_CORE_MAX; id++) {
 		if (!env_bit_test(id, cache->conf_meta->valid_core_bitmap))
@@ -213,6 +227,8 @@ void ocf_core_stats_initialize_all(ocf_cache_t cache)
 
 		ocf_core_stats_initialize(&cache->core[id]);
 	}
+
+	return 0;
 }
 
 static void copy_req_stats(struct ocf_stats_req *dest,
@@ -286,6 +302,9 @@ int ocf_core_io_class_get_stats(ocf_core_t core, ocf_part_id_t part_id,
 
 	cache = ocf_core_get_cache(core);
 
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
 	if (!ocf_user_part_is_valid(&cache->user_parts[part_id]))
 		return -OCF_ERR_IO_CLASS_NOT_EXIST;
 
@@ -304,6 +323,7 @@ int ocf_core_io_class_get_stats(ocf_core_t core, ocf_part_id_t part_id,
 	copy_block_stats(&stats->blocks, &part_stat->blocks);
 	copy_block_stats(&stats->cache_blocks, &part_stat->cache_blocks);
 	copy_block_stats(&stats->core_blocks, &part_stat->core_blocks);
+	copy_block_stats(&stats->pass_through_blocks, &part_stat->pass_through_blocks);
 
 	return 0;
 }
@@ -313,11 +333,16 @@ int ocf_core_get_stats(ocf_core_t core, struct ocf_stats_core *stats)
 	uint32_t i;
 	struct ocf_counters_core *core_stats = NULL;
 	struct ocf_counters_part *curr = NULL;
+	ocf_cache_t cache;
 
 	OCF_CHECK_NULL(core);
 
 	if (!stats)
 		return -OCF_ERR_INVAL;
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	core_stats = core->counters;
 
@@ -344,6 +369,7 @@ int ocf_core_get_stats(ocf_core_t core, struct ocf_stats_core *stats)
 		accum_block_stats(&stats->core, &curr->blocks);
 		accum_block_stats(&stats->core_volume, &curr->core_blocks);
 		accum_block_stats(&stats->cache_volume, &curr->cache_blocks);
+		accum_block_stats(&stats->pass_through_blocks, &curr->pass_through_blocks);
 
 		stats->cache_occupancy += env_atomic_read(&core->runtime_meta->
 				part_counters[i].cached_clines);
@@ -394,27 +420,25 @@ static int to_packet_idx(uint32_t len)
 	return IO_PACKET_SIZE;
 }
 
-void ocf_core_update_stats(ocf_core_t core, struct ocf_io *io)
+void ocf_core_update_stats(ocf_core_t core, ocf_io_t io)
 {
+	struct ocf_request *req = ocf_io_to_req(io);
 	struct ocf_counters_debug *stats;
 	int idx;
 
 	OCF_CHECK_NULL(core);
 	OCF_CHECK_NULL(io);
 
-	core_id = ocf_core_get_id(core);
-	cache = ocf_core_get_cache(core);
-
 	stats = &core->counters->debug_stats;
 
-	idx = to_packet_idx(io->bytes);
-	if (io->dir == OCF_WRITE)
+	idx = to_packet_idx(req->bytes);
+	if (req->rw == OCF_WRITE)
 		env_atomic64_inc(&stats->write_size[idx]);
 	else
 		env_atomic64_inc(&stats->read_size[idx]);
 
-	idx = to_align_idx(io->addr);
-	if (io->dir == OCF_WRITE)
+	idx = to_align_idx(req->addr);
+	if (req->rw == OCF_WRITE)
 		env_atomic64_inc(&stats->write_align[idx]);
 	else
 		env_atomic64_inc(&stats->read_align[idx]);
@@ -422,6 +446,6 @@ void ocf_core_update_stats(ocf_core_t core, struct ocf_io *io)
 
 #else
 
-void ocf_core_update_stats(ocf_core_t core, struct ocf_io *io) {}
+void ocf_core_update_stats(ocf_core_t core, ocf_io_t io) {}
 
 #endif

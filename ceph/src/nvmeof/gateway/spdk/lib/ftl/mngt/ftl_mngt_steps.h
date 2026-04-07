@@ -1,4 +1,5 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   Copyright (C) 2022 Intel Corporation.
  *   All rights reserved.
  */
@@ -13,12 +14,6 @@ void ftl_mngt_check_conf(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt
 void ftl_mngt_open_base_bdev(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
 void ftl_mngt_close_base_bdev(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
-
-#ifdef SPDK_FTL_VSS_EMU
-void ftl_mngt_md_init_vss_emu(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
-
-void ftl_mngt_md_deinit_vss_emu(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
-#endif
 
 void ftl_mngt_superblock_init(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
@@ -66,7 +61,7 @@ void ftl_mngt_deinit_l2p(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt
 
 void ftl_mngt_clear_l2p(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
-void ftl_mngt_unmap_l2p(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
+void ftl_mngt_trim_l2p(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
 void ftl_mngt_restore_l2p(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
@@ -120,17 +115,21 @@ void ftl_mngt_init_vld_map(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mn
 
 void ftl_mngt_deinit_vld_map(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
-void ftl_mngt_init_unmap_map(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
+void ftl_mngt_init_trim_map(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
-void ftl_mngt_deinit_unmap_map(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
+void ftl_mngt_deinit_trim_map(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
-void ftl_mngt_unmap_clear(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
+void ftl_mngt_trim_metadata_clear(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
+
+void ftl_mngt_trim_log_clear(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
 void ftl_mngt_p2l_init_ckpt(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
 void ftl_mngt_p2l_deinit_ckpt(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
 void ftl_mngt_p2l_wipe(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
+
+void ftl_mngt_p2l_log_io_wipe(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 
 void ftl_mngt_p2l_free_bufs(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt);
 

@@ -6,10 +6,10 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-SO_VER := 7
-SO_MINOR := 1
+SO_VER := 11
+SO_MINOR := 0
 
-C_SRCS = thread.c
+C_SRCS = thread.c iobuf.c
 LIBNAME = thread
 
 SPDK_MAP_FILE = $(abspath $(CURDIR)/spdk_thread.map)

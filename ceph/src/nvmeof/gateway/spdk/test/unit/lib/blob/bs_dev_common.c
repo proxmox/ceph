@@ -1,6 +1,7 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
+ *   Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "thread/thread_internal.h"
@@ -10,12 +11,19 @@
 #define DEV_BUFFER_SIZE (64 * 1024 * 1024)
 #define DEV_BUFFER_BLOCKLEN (4096)
 #define DEV_BUFFER_BLOCKCNT (DEV_BUFFER_SIZE / DEV_BUFFER_BLOCKLEN)
+#define DEV_MAX_PHYS_BLOCKLEN (16384)
+#define FIRST_DATA_CLUSTER(bs) \
+	((DEV_BUFFER_SIZE / spdk_bs_get_cluster_size(bs)) - spdk_bs_total_data_cluster_count(bs))
+
 uint8_t *g_dev_buffer;
 uint64_t g_dev_write_bytes;
 uint64_t g_dev_read_bytes;
+uint64_t g_dev_copy_bytes;
 bool g_dev_writev_ext_called;
 bool g_dev_readv_ext_called;
+bool g_dev_copy_enabled;
 struct spdk_blob_ext_io_opts g_blob_ext_io_opts;
+uint32_t g_phys_blocklen;
 
 struct spdk_power_failure_counters {
 	uint64_t general_counter;
@@ -372,6 +380,27 @@ dev_write_zeroes(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 	spdk_thread_send_msg(spdk_get_thread(), dev_complete, cb_args);
 }
 
+static bool
+dev_translate_lba(struct spdk_bs_dev *dev, uint64_t lba, uint64_t *base_lba)
+{
+	*base_lba = lba;
+	return true;
+}
+
+static void
+dev_copy(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, uint64_t dst_lba,
+	 uint64_t src_lba, uint64_t lba_count, struct spdk_bs_dev_cb_args *cb_args)
+{
+	void *dst = &g_dev_buffer[dst_lba * dev->blocklen];
+	const void *src = &g_dev_buffer[src_lba * dev->blocklen];
+	uint64_t size = lba_count * dev->blocklen;
+
+	memcpy(dst, src, size);
+	g_dev_copy_bytes += size;
+
+	cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, 0);
+}
+
 static struct spdk_bs_dev *
 init_dev(void)
 {
@@ -391,8 +420,11 @@ init_dev(void)
 	dev->flush = dev_flush;
 	dev->unmap = dev_unmap;
 	dev->write_zeroes = dev_write_zeroes;
+	dev->translate_lba = dev_translate_lba;
+	dev->copy = g_dev_copy_enabled ? dev_copy : NULL;
 	dev->blockcnt = DEV_BUFFER_BLOCKCNT;
 	dev->blocklen = DEV_BUFFER_BLOCKLEN;
+	dev->phys_blocklen = g_phys_blocklen;
 
 	return dev;
 }

@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2020-2022, Intel Corporation
+  Copyright (c) 2020-2023, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -39,69 +39,68 @@
 #pragma warning(disable : 4996)
 #endif
 
-IMB_DLL_LOCAL int imb_errno;
-IMB_DLL_LOCAL const int imb_errno_types[] = {
-        IMB_ERR_NULL_MBMGR,
-        IMB_ERR_JOB_NULL_SRC,
-        IMB_ERR_JOB_NULL_DST,
-        IMB_ERR_JOB_NULL_KEY,
-        IMB_ERR_JOB_NULL_IV,
-        IMB_ERR_JOB_NULL_AUTH,
-        IMB_ERR_JOB_NULL_AAD,
-        IMB_ERR_JOB_CIPH_LEN,
-        IMB_ERR_JOB_AUTH_LEN,
-        IMB_ERR_JOB_IV_LEN,
-        IMB_ERR_JOB_KEY_LEN,
-        IMB_ERR_JOB_AUTH_TAG_LEN,
-        IMB_ERR_JOB_AAD_LEN,
-        IMB_ERR_JOB_SRC_OFFSET,
-        IMB_ERR_JOB_CHAIN_ORDER,
-        IMB_ERR_CIPH_MODE,
-        IMB_ERR_HASH_ALGO,
-        IMB_ERR_JOB_NULL_AUTH_KEY,
-        IMB_ERR_JOB_NULL_SGL_CTX,
-        IMB_ERR_JOB_NULL_NEXT_IV,
-        IMB_ERR_JOB_PON_PLI,
-        IMB_ERR_NULL_SRC,
-        IMB_ERR_NULL_DST,
-        IMB_ERR_NULL_KEY,
-        IMB_ERR_NULL_EXP_KEY,
-        IMB_ERR_NULL_IV,
-        IMB_ERR_NULL_AUTH,
-        IMB_ERR_NULL_AAD,
-        IMB_ERR_CIPH_LEN,
-        IMB_ERR_AUTH_LEN,
-        IMB_ERR_IV_LEN,
-        IMB_ERR_KEY_LEN,
-        IMB_ERR_AUTH_TAG_LEN,
-        IMB_ERR_AAD_LEN,
-        IMB_ERR_SRC_OFFSET,
-        IMB_ERR_NULL_AUTH_KEY,
-        IMB_ERR_NULL_CTX,
-        IMB_ERR_NO_AESNI_EMU,
-        IMB_ERR_JOB_NULL_HMAC_OPAD,
-        IMB_ERR_JOB_NULL_HMAC_IPAD,
-        IMB_ERR_JOB_NULL_XCBC_K1_EXP,
-        IMB_ERR_JOB_NULL_XCBC_K2,
-        IMB_ERR_JOB_NULL_XCBC_K3,
-        IMB_ERR_JOB_CIPH_DIR,
-        IMB_ERR_JOB_NULL_GHASH_INIT_TAG,
-        IMB_ERR_MISSING_CPUFLAGS_INIT_MGR,
-        IMB_ERR_NULL_JOB,
-        IMB_ERR_QUEUE_SPACE,
-        IMB_ERR_NULL_BURST,
-        IMB_ERR_BURST_SIZE,
-        IMB_ERR_BURST_OOO,
-        IMB_ERR_SELFTEST
-};
+IMB_DLL_LOCAL volatile int imb_errno;
+IMB_DLL_LOCAL const int imb_errno_types[] = { IMB_ERR_NULL_MBMGR,
+                                              IMB_ERR_JOB_NULL_SRC,
+                                              IMB_ERR_JOB_NULL_DST,
+                                              IMB_ERR_JOB_NULL_KEY,
+                                              IMB_ERR_JOB_NULL_IV,
+                                              IMB_ERR_JOB_NULL_AUTH,
+                                              IMB_ERR_JOB_NULL_AAD,
+                                              IMB_ERR_JOB_CIPH_LEN,
+                                              IMB_ERR_JOB_AUTH_LEN,
+                                              IMB_ERR_JOB_IV_LEN,
+                                              IMB_ERR_JOB_KEY_LEN,
+                                              IMB_ERR_JOB_AUTH_TAG_LEN,
+                                              IMB_ERR_JOB_AAD_LEN,
+                                              IMB_ERR_JOB_SRC_OFFSET,
+                                              IMB_ERR_JOB_CHAIN_ORDER,
+                                              IMB_ERR_CIPH_MODE,
+                                              IMB_ERR_HASH_ALGO,
+                                              IMB_ERR_JOB_NULL_AUTH_KEY,
+                                              IMB_ERR_JOB_NULL_SGL_CTX,
+                                              IMB_ERR_JOB_NULL_NEXT_IV,
+                                              IMB_ERR_JOB_PON_PLI,
+                                              IMB_ERR_NULL_SRC,
+                                              IMB_ERR_NULL_DST,
+                                              IMB_ERR_NULL_KEY,
+                                              IMB_ERR_NULL_EXP_KEY,
+                                              IMB_ERR_NULL_IV,
+                                              IMB_ERR_NULL_AUTH,
+                                              IMB_ERR_NULL_AAD,
+                                              IMB_ERR_CIPH_LEN,
+                                              IMB_ERR_AUTH_LEN,
+                                              IMB_ERR_IV_LEN,
+                                              IMB_ERR_KEY_LEN,
+                                              IMB_ERR_AUTH_TAG_LEN,
+                                              IMB_ERR_AAD_LEN,
+                                              IMB_ERR_SRC_OFFSET,
+                                              IMB_ERR_NULL_AUTH_KEY,
+                                              IMB_ERR_NULL_CTX,
+                                              IMB_ERR_NO_AESNI_EMU,
+                                              IMB_ERR_JOB_NULL_HMAC_OPAD,
+                                              IMB_ERR_JOB_NULL_HMAC_IPAD,
+                                              IMB_ERR_JOB_NULL_XCBC_K1_EXP,
+                                              IMB_ERR_JOB_NULL_XCBC_K2,
+                                              IMB_ERR_JOB_NULL_XCBC_K3,
+                                              IMB_ERR_JOB_CIPH_DIR,
+                                              IMB_ERR_JOB_NULL_GHASH_INIT_TAG,
+                                              IMB_ERR_MISSING_CPUFLAGS_INIT_MGR,
+                                              IMB_ERR_NULL_JOB,
+                                              IMB_ERR_QUEUE_SPACE,
+                                              IMB_ERR_NULL_BURST,
+                                              IMB_ERR_BURST_SIZE,
+                                              IMB_ERR_BURST_OOO,
+                                              IMB_ERR_SELFTEST,
+                                              IMB_ERR_BURST_SUITE_ID,
+                                              IMB_ERR_JOB_SGL_STATE };
 
-#ifdef DEBUG
-static_assert((IMB_DIM(imb_errno_types) + 1) == (IMB_ERR_MAX - IMB_ERR_MIN),
-              "imb_errno_types[] mismatch vs enum IMB_ERR");
-#endif
-
-int imb_get_errno(IMB_MGR *mb_mgr)
+int
+imb_get_errno(IMB_MGR *mb_mgr)
 {
+        /* check for imb_errno_types[] mismatch vs enum IMB_ERR */
+        IMB_ASSERT((IMB_DIM(imb_errno_types) + 1) == (IMB_ERR_MAX - IMB_ERR_MIN));
+
         /* try get IMB_MGR error status first */
         if (mb_mgr != NULL && mb_mgr->imb_errno)
                 return mb_mgr->imb_errno;
@@ -113,10 +112,10 @@ int imb_get_errno(IMB_MGR *mb_mgr)
 const char *
 imb_get_strerror(int errnum)
 {
-	if (errnum >= IMB_ERR_MAX)
-		return "Unknown error";
+        if (errnum >= IMB_ERR_MAX)
+                return "Unknown error";
 
-        switch (errnum){
+        switch (errnum) {
         case 0:
                 return "No error";
         case IMB_ERR_NULL_MBMGR:
@@ -187,7 +186,7 @@ imb_get_strerror(int errnum)
                 return "Null authentication tag output pointer (direct API)";
         case IMB_ERR_NULL_AAD:
                 return "Null Additional Authenticated Data (AAD) "
-                        "pointer (direct API)";
+                       "pointer (direct API)";
         case IMB_ERR_CIPH_LEN:
                 return "Invalid cipher message length (direct API)";
         case IMB_ERR_AUTH_LEN:
@@ -200,7 +199,7 @@ imb_get_strerror(int errnum)
                 return "Invalid authentication tag length (direct API)";
         case IMB_ERR_AAD_LEN:
                 return "Invalid Additional Authenticated Data (AAD) "
-                        "length (direct API)";
+                       "length (direct API)";
         case IMB_ERR_SRC_OFFSET:
                 return "Invalid source offset (direct API)";
         case IMB_ERR_NULL_AUTH_KEY:
@@ -226,6 +225,10 @@ imb_get_strerror(int errnum)
                 return "Burst jobs out of order";
         case IMB_ERR_SELFTEST:
                 return "Self-test failed";
+        case IMB_ERR_BURST_SUITE_ID:
+                return "Invalid cipher suite ID (async burst API)";
+        case IMB_ERR_JOB_SGL_STATE:
+                return "Invalid SGL state";
         default:
                 return strerror(errnum);
         }

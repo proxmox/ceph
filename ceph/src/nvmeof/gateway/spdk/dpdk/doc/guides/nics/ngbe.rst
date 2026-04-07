@@ -27,6 +27,7 @@ Features
 - Scattered and gather for TX and RX
 - IEEE 1588
 - FW version
+- Interrupt mode for RX
 
 
 Prerequisites
@@ -38,8 +39,19 @@ Prerequisites
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
 
-Pre-Installation Configuration
-------------------------------
+Configuration
+-------------
+
+Compilation Options
+~~~~~~~~~~~~~~~~~~~
+
+The following build-time options may be enabled on build time using.
+
+``-Dc_args=`` meson argument (e.g. ``-Dc_args=-DRTE_LIBRTE_NGBE_PF_DISABLE_STRIP_CRC``).
+
+- ``RTE_LIBRTE_NGBE_PF_DISABLE_STRIP_CRC`` (undefined by default)
+
+  Decide to enable or disable HW CRC in VF PMD.
 
 Dynamic Logging Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -69,5 +81,4 @@ for details.
 Limitations or Known issues
 ---------------------------
 
-Build with ICC is not supported yet.
 Power8, ARMv7 and BSD are not supported yet.

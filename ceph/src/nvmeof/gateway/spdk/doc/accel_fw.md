@@ -86,6 +86,13 @@ The DSA hardware supports a limited queue depth and channels. This means that
 only a limited number of `spdk_thread`s will be able to acquire a channel.
 Design software to deal with the inability to get a channel.
 
+**Important**: The devices `PCI_DEVICE_ID_INTEL_DSA_SPR0` and `PCI_DEVICE_ID_INTEL_IAX_SPR0`
+have been added to the vfio_pci denylist. This prevents the use of userspace DSA and IAA drivers
+from SPDK on systems that are affected.
+
+**Additionally**, to use the kernel DSA driver from SPDK, users are required to possess
+the `CAP_SYS_RAWIO` capability.
+
 #### How to use kernel idxd driver {#accel_idxd_kernel}
 
 There are several dependencies to leverage the Linux idxd driver for driving DSA devices.
@@ -150,6 +157,7 @@ The following ciphers and PMDs are supported:
   (Note: QAT is functional however is marked as experimental until the hardware has
   been fully integrated with the SPDK CI system.)
 - MLX5 Crypto Poll Mode Driver: RTE_CRYPTO_CIPHER_AES256_XTS, RTE_CRYPTO_CIPHER_AES512_XTS
+- UADK Crypto Poll Mode Driver: RTE_CRYPTO_CIPHER_AES256_XTS, RTE_CRYPTO_CIPHER_AES512_XTS
 
 To enable this module, use [`dpdk_cryptodev_scan_accel_module`](https://spdk.io/doc/jsonrpc.html),
 this RPC is available in STARTUP state and the SPDK application needs to be run with `--wait-for-rpc`

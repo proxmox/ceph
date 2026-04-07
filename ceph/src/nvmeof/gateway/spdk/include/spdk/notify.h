@@ -22,7 +22,7 @@ struct spdk_notify_type;
 typedef int (*spdk_notify_foreach_type_cb)(const struct spdk_notify_type *type, void *ctx);
 
 #define SPDK_NOTIFY_MAX_NAME_SIZE 128
-#define SPDK_NOTIFY_MAX_CTX_SIZE 128
+#define SPDK_NOTIFY_MAX_CTX_SIZE 512
 
 struct spdk_notify_event {
 	char type[SPDK_NOTIFY_MAX_NAME_SIZE];
@@ -49,6 +49,16 @@ typedef int (*spdk_notify_foreach_event_cb)(uint64_t idx, const struct spdk_noti
  * \return registered notification type or NULL on failure.
  */
 struct spdk_notify_type *spdk_notify_type_register(const char *type);
+
+/**
+ * Register \c type as new notification type if it's not registered yet.
+ *
+ * \note This function is thread safe.
+ *
+ * \param type New notification type to register.
+ * \return registered notification type or NULL on failure.
+ */
+struct spdk_notify_type *spdk_notify_type_register_once(const char *type);
 
 /**
  * Return name of the notification type.

@@ -1,5 +1,5 @@
 ================================================================================
-v2.24 Intel Intelligent Storage Acceleration Library Crypto Release Notes
+v2.25 Intel Intelligent Storage Acceleration Library Crypto Release Notes
 ================================================================================
 
 ================================================================================
@@ -17,9 +17,33 @@ RELEASE NOTE CONTENTS
 
 * 32-bit lib is not supported in Windows.
 
+* 32-bit lib is not validated.
+
 ================================================================================
 2. FIXED ISSUES
 ================================================================================
+v2.25
+
+* Fixed build with gcc 11.1.
+
+* Fixed SHA512 internal reference function parameters.
+
+* Fixed SM3 lane handling for aarch64.
+
+* Replaced non-VEX encoded with VEX-encoded instructions in AES-XTS implementation.
+
+* Fixed clang compilation with older assemblers.
+
+* Fixed SHA512 calculation error on aarch64.
+
+* Fixed MD5/SHA1/SHA256/SHA512 base functions for small inputs (less than block size).
+
+* Fixed AES-XTS OpenSSL calls, limiting the input size, as per restrictions in 3.0 version.
+
+* Fixed Windows build on test applications.
+
+* Fixed SHA1 context structure to force alignment for lengths array.
+
 v2.21
 
 * Put correct vec instruction versions in aes_cbc_enc_{128,192,256}().  May help
@@ -55,6 +79,34 @@ v2.7
 ================================================================================
 3. CHANGE LOG & FEATURES ADDED
 ================================================================================
+v2.25
+
+* Added new API including parameter checking (starting with isal_ prefix).
+
+* Added new API returning the library version.
+
+* Added FIPS mode, including self tests in NIST approved algorithms (more information in https://github.com/intel/isa-l_crypto/blob/master/FIPS.md).
+
+* Deprecated previous API in favour of new API (more information in https://github.com/intel/isa-l_crypto/wiki/New-API-introduced-from-v2.25).
+
+* Optimized AES-GCM for AVX512-VAES x86 implementation.
+
+* Optimized SM3 for AVX512 x86 implementation.
+
+* Optimized MD5 and SM3 for aarch64.
+
+* New optimized version of AES-CBC and AES-XTS for aarch64.
+
+* Optimized multi-hash SHA1-Murmur for aarch64.
+
+* Optimized multi-hash SHA1 for aarch64.
+
+* Added ACVP test applications for AES-CBC, AES-GCM, AES-XTS and SHA1/256/512.
+
+* Removed YASM support, so only NASM assembler is supported for x86.
+
+* Bumped minimum NASM version to 2.14.01, which supports all x86 ISA used in this library.
+
 v2.24
 
 * New optimized version of AES-CBC decode
@@ -147,7 +199,7 @@ v2.14
 * The AES key expand functions that were used for AES-XTS with pre-expanded keys
   now expand the decrypt keys in a different order. The order that decrypt keys
   are stored and used by XTS_AES_128_dec_expanded_key() is reversed from
-  previous versions to be compatable with CBC and GCM key expansion. The
+  previous versions to be compatible with CBC and GCM key expansion. The
   aes_keyexp_*() and XTS_AES_128_dec_expanded_key() functions should work the
   same when paired together.
 

@@ -11,6 +11,9 @@
 # if PCI_BLOCKED is empty assume device is NOT blocked
 # Params:
 # $1 - PCI BDF
+
+shopt -s extglob
+
 function pci_can_use() {
 	local i
 
@@ -50,6 +53,8 @@ cache_pci_init() {
 	local -gA pci_bus_driver
 	local -gA pci_mod_driver
 	local -gA pci_mod_resolved
+	local -gA pci_iommu_groups
+	local -ga iommu_groups
 
 	[[ -z ${pci_bus_cache[*]} || $CMD == reset ]] || return 1
 
@@ -59,6 +64,8 @@ cache_pci_init() {
 	pci_bus_driver=()
 	pci_mod_driver=()
 	pci_mod_resolved=()
+	pci_iommu_groups=()
+	iommu_groups=()
 }
 
 cache_pci() {
@@ -82,6 +89,43 @@ cache_pci() {
 		pci_mod_driver["$pci"]=$mod
 		pci_mod_resolved["$pci"]=$(resolve_mod "$mod")
 	fi
+
+	cache_pci_iommu_group "$pci"
+}
+
+cache_iommu_group() {
+	local iommu_group=$1 pcis=() pci
+
+	[[ -e /sys/kernel/iommu_groups/$iommu_group/type ]] || return 0
+
+	local -n _iommu_group_ref=_iommu_group_$iommu_group
+
+	iommu_groups[iommu_group]="_iommu_group_${iommu_group}[@]"
+
+	for pci in "/sys/kernel/iommu_groups/$iommu_group/devices/"*; do
+		pci=${pci##*/}
+		[[ -n ${pci_iommu_groups["$pci"]} ]] && continue
+		pci_iommu_groups["$pci"]=$iommu_group
+		_iommu_group_ref+=("$pci")
+	done
+
+}
+
+cache_pci_iommu_group() {
+	local pci=$1 iommu_group
+
+	[[ -e /sys/bus/pci/devices/$pci/iommu_group ]] || return 0
+
+	iommu_group=$(readlink -f "/sys/bus/pci/devices/$pci/iommu_group")
+	iommu_group=${iommu_group##*/}
+
+	cache_iommu_group "$iommu_group"
+}
+
+is_iommu_enabled() {
+	[[ -e /sys/kernel/iommu_groups/0 ]] && return 0
+	[[ -e /sys/module/vfio/parameters/enable_unsafe_noiommu_mode ]] || return 1
+	[[ $(< /sys/module/vfio/parameters/enable_unsafe_noiommu_mode) == Y ]]
 }
 
 cache_pci_bus_sysfs() {
@@ -94,12 +138,7 @@ cache_pci_bus_sysfs() {
 
 	for pci in /sys/bus/pci/devices/*; do
 		class=$(< "$pci/class") vendor=$(< "$pci/vendor") device=$(< "$pci/device") driver="" mod=""
-		if [[ -e $pci/driver ]]; then
-			driver=$(readlink -f "$pci/driver")
-			driver=${driver##*/}
-		else
-			driver=unbound
-		fi
+		driver=$(get_pci_driver_sysfs "${pci##*/}")
 		if [[ -e $pci/modalias ]]; then
 			mod=$(< "$pci/modalias")
 		fi
@@ -121,10 +160,14 @@ cache_pci_bus_lspci() {
 		if [[ ${dev[*]} =~ -p([0-9]+) ]]; then
 			dev[1]+=${BASH_REMATCH[1]}
 		else
-			dev[1]+=00
+			dev[1]+="00"
 		fi
-		# pci class vendor device
-		cache_pci "${dev[@]::4}"
+		# pci class vendor device driver
+		# lspci supports driver listing only under Linux, however, it's not
+		# included when specific display mode (i.e. -mm) is in use, even if
+		# extra -k is slapped on the cmdline. So with that in mind, just
+		# get that info from sysfs.
+		cache_pci "${dev[@]::4}" "$(get_pci_driver_sysfs "${dev[0]}")"
 	done < <(lspci -Dnmm)
 }
 
@@ -139,7 +182,7 @@ cache_pci_bus_pciconf() {
 
 	while read -r pci pci_info; do
 		driver=${pci%@*}
-		pci=${pci##*pci} pci=${pci%:}
+		pci=${pci#*:} pci=${pci%:} # E.g.: nvme0@pci0:0:16:0: -> 0:16:0
 		source <(echo "$pci_info")
 		# pciconf under FreeBSD 13.1 provides vendor and device IDs in its
 		# output under separate, dedicated fields. For 12.x they need to
@@ -150,6 +193,15 @@ cache_pci_bus_pciconf() {
 		fi
 		cache_pci "$pci" "$class" "$vendor" "$device" "$driver"
 	done < <(pciconf -l)
+}
+
+get_pci_driver_sysfs() {
+	local pci=/sys/bus/pci/devices/$1 driver
+
+	if [[ -e $pci/driver ]]; then
+		driver=$(readlink -f "$pci/driver") driver=${driver##*/}
+	fi
+	echo "$driver"
 }
 
 cache_pci_bus() {
@@ -326,7 +378,7 @@ eq() { cmp_versions "$1" "==" "$2"; }
 neq() { ! eq "$1" "$2"; }
 
 block_in_use() {
-	local block=$1 data pt
+	local block=$1 pt
 	# Skip devices that are in use - simple blkid it to see if
 	# there's any metadata (pt, fs, etc.) present on the drive.
 	# FIXME: Special case to ignore atari as a potential false
@@ -339,15 +391,9 @@ block_in_use() {
 		return 1
 	fi
 
-	data=$(blkid "/dev/${block##*/}") || data=none
-
-	if [[ $data == none ]]; then
+	if ! pt=$(blkid -s PTTYPE -o value "/dev/${block##*/}"); then
 		return 1
-	fi
-
-	pt=$(blkid -s PTTYPE -o value "/dev/${block##*/}") || pt=none
-
-	if [[ $pt == none || $pt == atari ]]; then
+	elif [[ $pt == atari ]]; then
 		return 1
 	fi
 
@@ -385,9 +431,124 @@ get_spdk_gpt() {
 	echo "$spdk_guid"
 }
 
+map_supported_devices() {
+	local type=${1^^}
+	local ids dev_types dev_type dev_id bdf bdfs vmd _vmd
+
+	local -gA nvme_d
+	local -gA ioat_d dsa_d iaa_d
+	local -gA virtio_d
+	local -gA vmd_d nvme_vmd_d vmd_nvme_d vmd_nvme_count
+	local -gA all_devices_d types_d all_devices_type_d
+
+	ids+="PCI_DEVICE_ID_INTEL_IOAT" dev_types+="IOAT"
+	ids+="|PCI_DEVICE_ID_INTEL_DSA" dev_types+="|DSA"
+	ids+="|PCI_DEVICE_ID_INTEL_IAA" dev_types+="|IAA"
+	ids+="|PCI_DEVICE_ID_VIRTIO" dev_types+="|VIRTIO"
+	ids+="|PCI_DEVICE_ID_INTEL_VMD" dev_types+="|VMD"
+	ids+="|SPDK_PCI_CLASS_NVME" dev_types+="|NVME"
+
+	[[ -e $rootdir/include/spdk/pci_ids.h ]] || return 1
+
+	((${#pci_bus_cache[@]} == 0)) && cache_pci_bus
+
+	while read -r _ dev_type dev_id; do
+		[[ $dev_type == *$type* ]] || continue
+		bdfs=(${pci_bus_cache["0x8086:$dev_id"]})
+		[[ $dev_type == *NVME* ]] && bdfs=(${pci_bus_cache["$dev_id"]})
+		[[ $dev_type == *VIRT* ]] && bdfs=(${pci_bus_cache["0x1af4:$dev_id"]})
+		[[ $dev_type =~ ($dev_types) ]] && dev_type=${BASH_REMATCH[1],,}
+		types_d["$dev_type"]=1
+		for bdf in "${bdfs[@]}"; do
+			eval "${dev_type}_d[$bdf]=0"
+			all_devices_d["$bdf"]=0
+			all_devices_type_d["$bdf"]=$dev_type
+		done
+	done < <(grep -E "$ids" "$rootdir/include/spdk/pci_ids.h")
+
+	# Rebuild vmd refs from the very cratch to not have duplicates in case we were called
+	# multiple times.
+	unset -v "${!_vmd_@}"
+
+	for bdf in "${!nvme_d[@]}"; do
+		vmd=$(is_nvme_behind_vmd "$bdf") && _vmd=${vmd//[:.]/_} || continue
+		nvme_vmd_d["$bdf"]=$vmd
+		vmd_nvme_d["$vmd"]="_vmd_${_vmd}_nvmes[@]"
+		((++vmd_nvme_count["$vmd"]))
+		eval "_vmd_${_vmd}_nvmes+=($bdf)"
+	done
+}
+
+is_nvme_behind_vmd() {
+	local nvme_bdf=$1 dev_path
+
+	IFS="/" read -ra dev_path < <(readlink -f "/sys/bus/pci/devices/$nvme_bdf")
+
+	for dev in "${dev_path[@]}"; do
+		[[ -n $dev && -n ${vmd_d["$dev"]} ]] && echo $dev && return 0
+	done
+	return 1
+}
+
+is_nvme_iommu_shared_with_vmd() {
+	local nvme_bdf=$1 vmd
+
+	# This use-case is quite specific to vfio-pci|iommu setup
+	is_iommu_enabled || return 1
+
+	[[ -n ${nvme_vmd_d["$nvme_bdf"]} ]] || return 1
+	# nvme is behind VMD ...
+	((pci_iommu_groups["$nvme_bdf"] == pci_iommu_groups["${nvme_vmd_d["$nvme_bdf"]}"])) || return 1
+	# ... and it shares iommu_group with it
+}
+
+kmsg() {
+	((UID == 0)) || return 0
+	[[ -w /dev/kmsg && $(< /proc/sys/kernel/printk_devkmsg) == on ]] || return 0
+	echo "$*" > /dev/kmsg
+}
+
+function get_block_dev_from_bdf() {
+	local bdf=$1
+	local block blocks=() ctrl sub
+
+	for block in /sys/block/!(nvme*); do
+		if [[ $(readlink -f "$block/device") == *"/$bdf/"* ]]; then
+			blocks+=("${block##*/}")
+		fi
+	done
+
+	blocks+=($(get_block_dev_from_nvme "$bdf"))
+
+	printf '%s\n' "${blocks[@]}"
+}
+
+function get_block_dev_from_nvme() {
+	local bdf=$1 block ctrl sub
+
+	for ctrl in /sys/class/nvme/nvme*; do
+		[[ -e $ctrl/address && $(< "$ctrl/address") == "$bdf" ]] || continue
+		sub=$(< "$ctrl/subsysnqn") && break
+	done
+
+	[[ -n $sub ]] || return 0
+
+	for block in /sys/block/nvme*; do
+		[[ -e $block/hidden && $(< "$block/hidden") == 1 ]] && continue
+		if [[ -e $block/device/subsysnqn && $(< "$block/device/subsysnqn") == "$sub" ]]; then
+			echo "${block##*/}"
+		fi
+	done
+}
+
 if [[ -e "$CONFIG_WPDK_DIR/bin/wpdk_common.sh" ]]; then
 	# Adjust uname to report the operating system as WSL, Msys or Cygwin
 	# and the kernel name as Windows. Define kill() to invoke the SIGTERM
 	# handler before causing a hard stop with TerminateProcess.
 	source "$CONFIG_WPDK_DIR/bin/wpdk_common.sh"
 fi
+
+# Make sure we have access to proper binaries installed in pkgdep/common.sh
+if [[ -e /etc/opt/spdk-pkgdep/paths/export.sh ]]; then
+	source /etc/opt/spdk-pkgdep/paths/export.sh
+fi > /dev/null

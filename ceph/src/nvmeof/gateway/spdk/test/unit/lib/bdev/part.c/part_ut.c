@@ -1,9 +1,10 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2018 Intel Corporation.
  *   All rights reserved.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "common/lib/ut_multithread.c"
 #include "unit/lib/json_mock.c"
@@ -14,6 +15,8 @@
 
 #include "bdev/bdev.c"
 #include "bdev/part.c"
+
+#include "common/lib/bdev/common_stubs.h"
 
 struct ut_expected_io {
 };
@@ -26,13 +29,7 @@ struct bdev_ut_channel {
 
 static uint32_t g_part_ut_io_device;
 static struct bdev_ut_channel *g_bdev_ut_channel;
-
-DEFINE_STUB(spdk_notify_send, uint64_t, (const char *type, const char *ctx), 0);
-DEFINE_STUB(spdk_notify_type_register, struct spdk_notify_type *, (const char *type), NULL);
-DEFINE_STUB(spdk_memory_domain_get_dma_device_id, const char *, (struct spdk_memory_domain *domain),
-	    "test_domain");
-DEFINE_STUB(spdk_memory_domain_get_dma_device_type, enum spdk_dma_device_type,
-	    (struct spdk_memory_domain *domain), 0);
+static int g_accel_io_device;
 
 DEFINE_RETURN_MOCK(spdk_memory_domain_pull_data, int);
 int
@@ -55,6 +52,39 @@ spdk_memory_domain_push_data(struct spdk_memory_domain *dst_domain, void *dst_do
 	HANDLE_RETURN_MOCK(spdk_memory_domain_push_data);
 
 	cpl_cb(cpl_cb_arg, 0);
+	return 0;
+}
+
+struct spdk_io_channel *
+spdk_accel_get_io_channel(void)
+{
+	return spdk_get_io_channel(&g_accel_io_device);
+}
+
+static int
+ut_accel_ch_create_cb(void *io_device, void *ctx)
+{
+	return 0;
+}
+
+static void
+ut_accel_ch_destroy_cb(void *io_device, void *ctx)
+{
+}
+
+static int
+ut_part_setup(void)
+{
+	spdk_io_device_register(&g_accel_io_device, ut_accel_ch_create_cb,
+				ut_accel_ch_destroy_cb, 0, NULL);
+	return 0;
+}
+
+static int
+ut_part_teardown(void)
+{
+	spdk_io_device_unregister(&g_accel_io_device, NULL);
+
 	return 0;
 }
 
@@ -160,12 +190,20 @@ __destruct(void *ctx)
 	return 0;
 }
 
+static bool
+__io_type_supported(void *ctx, enum spdk_bdev_io_type type)
+{
+	return true;
+}
+
 static struct spdk_bdev_fn_table base_fn_table = {
 	.destruct		= __destruct,
 	.get_io_channel = part_ut_get_io_channel,
+	.io_type_supported	= __io_type_supported,
 };
 static struct spdk_bdev_fn_table part_fn_table = {
 	.destruct		= __destruct,
+	.io_type_supported	= __io_type_supported,
 };
 
 static void
@@ -349,28 +387,68 @@ part_get_io_channel_test(void)
 	ut_fini_bdev();
 }
 
+static void
+part_construct_ext(void)
+{
+	struct spdk_bdev_part_base	*base;
+	struct spdk_bdev_part		part1 = {};
+	struct spdk_bdev		bdev_base = {};
+	SPDK_BDEV_PART_TAILQ		tailq = TAILQ_HEAD_INITIALIZER(tailq);
+	const char			*uuid = "7ed764b7-a841-41b1-ba93-6548d9335a44";
+	struct spdk_bdev_part_construct_opts opts;
+	int rc;
+
+	bdev_base.name = "base";
+	bdev_base.fn_table = &base_fn_table;
+	bdev_base.module = &bdev_ut_if;
+	rc = spdk_bdev_register(&bdev_base);
+	CU_ASSERT(rc == 0);
+	rc = spdk_bdev_part_base_construct_ext("base", NULL, &vbdev_ut_if,
+					       &part_fn_table, &tailq, NULL,
+					       NULL, 0, NULL, NULL, &base);
+
+	CU_ASSERT(rc == 0);
+	SPDK_CU_ASSERT_FATAL(base != NULL);
+
+	/* Verify opts.uuid is used as bdev UUID */
+	spdk_bdev_part_construct_opts_init(&opts, sizeof(opts));
+	spdk_uuid_parse(&opts.uuid, uuid);
+	rc = spdk_bdev_part_construct_ext(&part1, base, "test1", 0, 100, "test", &opts);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(base->ref == 1);
+	SPDK_CU_ASSERT_FATAL(base->claimed == true);
+	CU_ASSERT(spdk_bdev_get_by_name(uuid) != NULL);
+	CU_ASSERT(spdk_bdev_get_by_name("test1") != NULL);
+
+	/* Clean up */
+	spdk_bdev_part_base_hotremove(base, &tailq);
+	spdk_bdev_part_base_free(base);
+	_part_cleanup(&part1);
+	spdk_bdev_unregister(&bdev_base, NULL, NULL);
+
+	poll_threads();
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite		suite = NULL;
 	unsigned int		num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
-	suite = CU_add_suite("bdev_part", NULL, NULL);
+	suite = CU_add_suite("bdev_part", ut_part_setup, ut_part_teardown);
 
 	CU_ADD_TEST(suite, part_test);
 	CU_ADD_TEST(suite, part_free_test);
 	CU_ADD_TEST(suite, part_get_io_channel_test);
+	CU_ADD_TEST(suite, part_construct_ext);
 
 	allocate_cores(1);
 	allocate_threads(1);
 	set_thread(0);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	free_threads();

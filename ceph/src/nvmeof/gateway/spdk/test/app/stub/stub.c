@@ -14,6 +14,7 @@ static char g_path[256];
 static struct spdk_poller *g_poller;
 /* default sleep time in ms */
 static uint32_t g_sleep_time = 1000;
+static uint32_t g_io_queue_size;
 
 struct ctrlr_entry {
 	struct spdk_nvme_ctrlr *ctrlr;
@@ -30,6 +31,7 @@ cleanup(void)
 
 	TAILQ_FOREACH_SAFE(ctrlr_entry, &g_controllers, link, tmp) {
 		TAILQ_REMOVE(&g_controllers, ctrlr_entry, link);
+		spdk_nvme_cuse_unregister(ctrlr_entry->ctrlr);
 		spdk_nvme_detach_async(ctrlr_entry->ctrlr, &detach_ctx);
 		free(ctrlr_entry);
 	}
@@ -47,9 +49,11 @@ usage(char *executable_name)
 	printf(" -i shared memory ID [required]\n");
 	printf(" -m mask    core mask for DPDK\n");
 	printf(" -n channel number of memory channels used for DPDK\n");
+	printf(" -L flag    enable log flag\n");
 	printf(" -p core    main (primary) core for DPDK\n");
 	printf(" -s size    memory size in MB for DPDK\n");
 	printf(" -t msec    sleep time (ms) between checking for admin completions\n");
+	printf(" -q size    override default io_queue_size when attaching controllers\n");
 	printf(" -H         show this usage\n");
 }
 
@@ -57,11 +61,9 @@ static bool
 probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	 struct spdk_nvme_ctrlr_opts *opts)
 {
-	/*
-	 * Set the io_queue_size to UINT16_MAX to initialize
-	 * the controller with the possible largest queue size.
-	 */
-	opts->io_queue_size = UINT16_MAX;
+	if (g_io_queue_size > 0) {
+		opts->io_queue_size = g_io_queue_size;
+	}
 	return true;
 }
 
@@ -79,6 +81,9 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 
 	entry->ctrlr = ctrlr;
 	TAILQ_INSERT_TAIL(&g_controllers, entry, link);
+	if (spdk_nvme_cuse_register(ctrlr) != 0) {
+		fprintf(stderr, "could not register ctrlr with cuse\n");
+	}
 }
 
 static int
@@ -98,6 +103,13 @@ stub_start(void *arg1)
 {
 	int shm_id = (intptr_t)arg1;
 
+	snprintf(g_path, sizeof(g_path), "/var/run/spdk_stub%d", shm_id);
+
+	/* If sentinel file already exists from earlier crashed stub, delete
+	 * it now to avoid mknod() failure after spdk_nvme_probe() completes.
+	 */
+	unlink(g_path);
+
 	spdk_unaffinitize_thread();
 
 	if (spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, NULL) != 0) {
@@ -105,7 +117,6 @@ stub_start(void *arg1)
 		exit(1);
 	}
 
-	snprintf(g_path, sizeof(g_path), "/var/run/spdk_stub%d", shm_id);
 	if (mknod(g_path, S_IFREG, 0) != 0) {
 		fprintf(stderr, "could not create sentinel file %s\n", g_path);
 		exit(1);
@@ -134,10 +145,20 @@ main(int argc, char **argv)
 
 	opts.name = "stub";
 	opts.rpc_addr = NULL;
+	opts.env_context = "--proc-type=primary";
 
-	while ((ch = getopt(argc, argv, "i:m:n:p:s:t:H")) != -1) {
+	while ((ch = getopt(argc, argv, "i:m:n:p:q:s:t:HL:")) != -1) {
 		if (ch == 'm') {
 			opts.reactor_mask = optarg;
+		} else if (ch == 'L') {
+			if (spdk_log_set_flag(optarg) != 0) {
+				SPDK_ERRLOG("unknown flag: %s\n", optarg);
+				usage(argv[0]);
+				exit(EXIT_FAILURE);
+			}
+#ifdef DEBUG
+			opts.print_level = SPDK_LOG_DEBUG;
+#endif
 		} else if (ch == '?' || ch == 'H') {
 			usage(argv[0]);
 			exit(EXIT_SUCCESS);
@@ -162,6 +183,9 @@ main(int argc, char **argv)
 				break;
 			case 't':
 				g_sleep_time = val;
+				break;
+			case 'q':
+				g_io_queue_size = val;
 				break;
 			default:
 				usage(argv[0]);

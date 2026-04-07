@@ -18,12 +18,13 @@
 extern "C" {
 #endif
 
+#define SPDK_TRACE_SHM_NAME_BASE "_trace."
 #define SPDK_DEFAULT_NUM_TRACE_ENTRIES	 (32 * 1024)
 
 struct spdk_trace_entry {
 	uint64_t	tsc;
 	uint16_t	tpoint_id;
-	uint16_t	poller_id;
+	uint16_t	owner_id;
 	uint32_t	size;
 	uint64_t	object_id;
 	uint8_t		args[8];
@@ -39,12 +40,18 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_trace_entry_buffer) == sizeof(struct spdk_
 		   "Invalid size of trace entry buffer");
 
 /* If type changes from a uint8_t, change this value. */
-#define SPDK_TRACE_MAX_OWNER (UCHAR_MAX + 1)
+#define SPDK_TRACE_MAX_OWNER_TYPE (UCHAR_MAX + 1)
 
-struct spdk_trace_owner {
+struct spdk_trace_owner_type {
 	uint8_t	type;
 	char	id_prefix;
 };
+
+struct spdk_trace_owner {
+	uint64_t	tsc;
+	uint8_t		type;
+	char		description[];
+} __attribute__((packed));
 
 /* If type changes from a uint8_t, change this value. */
 #define SPDK_TRACE_MAX_OBJECT (UCHAR_MAX + 1)
@@ -54,7 +61,8 @@ struct spdk_trace_object {
 	char	id_prefix;
 };
 
-#define SPDK_TRACE_MAX_GROUP_ID  16
+#define	SPDK_TRACE_THREAD_NAME_LEN 16
+#define SPDK_TRACE_MAX_GROUP_ID  20
 #define SPDK_TRACE_MAX_TPOINT_ID (SPDK_TRACE_MAX_GROUP_ID * 64)
 #define SPDK_TPOINT_ID(group, tpoint)	((group * 64) + tpoint)
 
@@ -112,35 +120,33 @@ struct spdk_trace_history {
 	struct spdk_trace_entry		entries[0];
 };
 
-#define SPDK_TRACE_MAX_LCORE		128
+#define SPDK_TRACE_MAX_LCORE		1024
 
-struct spdk_trace_flags {
+struct spdk_trace_file {
+	uint64_t			file_size;
 	uint64_t			tsc_rate;
 	uint64_t			tpoint_mask[SPDK_TRACE_MAX_GROUP_ID];
-	struct spdk_trace_owner		owner[UCHAR_MAX + 1];
+	char				tname[SPDK_TRACE_MAX_LCORE][SPDK_TRACE_THREAD_NAME_LEN];
+	struct spdk_trace_owner_type	owner_type[SPDK_TRACE_MAX_OWNER_TYPE];
 	struct spdk_trace_object	object[UCHAR_MAX + 1];
 	struct spdk_trace_tpoint	tpoint[SPDK_TRACE_MAX_TPOINT_ID];
 
-	/** Offset of each trace_history from the beginning of this data structure.
-	 * The last one is the offset of the file end.
+	uint16_t			num_owners;
+	uint16_t			owner_description_size;
+	uint8_t				reserved[4];
+
+	/** Offset of each trace_history from the beginning of this data structure. */
+	uint64_t			lcore_history_offsets[SPDK_TRACE_MAX_LCORE];
+
+	/** Offset of beginning of struct spdk_trace_owner data. */
+	uint64_t			owner_offset;
+
+	/** Variable sized data sections are at the end of this data structure,
+	 *  referenced by offsets defined in this structure.
 	 */
-	uint64_t			lcore_history_offsets[SPDK_TRACE_MAX_LCORE + 1];
+	uint8_t	data[0];
 };
-extern struct spdk_trace_flags *g_trace_flags;
-extern struct spdk_trace_histories *g_trace_histories;
-
-
-struct spdk_trace_histories {
-	struct spdk_trace_flags flags;
-
-	/**
-	 * struct spdk_trace_history has a dynamic size determined by num_entries
-	 * in spdk_trace_init. Mark array size of per_lcore_history to be 0 in uint8_t
-	 * as a reminder that each per_lcore_history pointer should be gotten by
-	 * proper API, instead of directly referencing by struct element.
-	 */
-	uint8_t	per_lcore_history[0];
-};
+extern struct spdk_trace_file *g_trace_file;
 
 static inline uint64_t
 spdk_get_trace_history_size(uint64_t num_entries)
@@ -149,13 +155,13 @@ spdk_get_trace_history_size(uint64_t num_entries)
 }
 
 static inline uint64_t
-spdk_get_trace_histories_size(struct spdk_trace_histories *trace_histories)
+spdk_get_trace_file_size(struct spdk_trace_file *trace_file)
 {
-	return trace_histories->flags.lcore_history_offsets[SPDK_TRACE_MAX_LCORE];
+	return trace_file->file_size;
 }
 
 static inline struct spdk_trace_history *
-spdk_get_per_lcore_history(struct spdk_trace_histories *trace_histories, unsigned lcore)
+spdk_get_per_lcore_history(struct spdk_trace_file *trace_file, unsigned lcore)
 {
 	uint64_t lcore_history_offset;
 
@@ -163,26 +169,42 @@ spdk_get_per_lcore_history(struct spdk_trace_histories *trace_histories, unsigne
 		return NULL;
 	}
 
-	lcore_history_offset = trace_histories->flags.lcore_history_offsets[lcore];
+	lcore_history_offset = trace_file->lcore_history_offsets[lcore];
 	if (lcore_history_offset == 0) {
 		return NULL;
 	}
 
-	return (struct spdk_trace_history *)(((char *)trace_histories) + lcore_history_offset);
+	return (struct spdk_trace_history *)(((char *)trace_file) + lcore_history_offset);
 }
 
-void _spdk_trace_record(uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id,
+static inline struct spdk_trace_owner *
+spdk_get_trace_owner(const struct spdk_trace_file *trace_file, uint16_t owner_id)
+{
+	uint64_t owner_size;
+
+	if (owner_id >= trace_file->num_owners) {
+		return NULL;
+	}
+
+	owner_size = sizeof(struct spdk_trace_owner) + trace_file->owner_description_size;
+	return (struct spdk_trace_owner *)
+	       (((char *)trace_file) + trace_file->owner_offset + owner_id * owner_size);
+}
+
+void _spdk_trace_record(uint64_t tsc, uint16_t tpoint_id, uint16_t owner_id,
 			uint32_t size, uint64_t object_id, int num_args, ...);
 
-#define _spdk_trace_record_tsc(tsc, tpoint_id, poller_id, size, object_id, num_args, ...)	\
+#define spdk_trace_tpoint_enabled(tpoint_id)	\
+	spdk_unlikely((g_trace_file != NULL  && \
+	((1ULL << (tpoint_id & 0x3F)) &	g_trace_file->tpoint_mask[tpoint_id >> 6])))
+
+#define _spdk_trace_record_tsc(tsc, tpoint_id, owner_id, size, object_id, num_args, ...)	\
 	do {											\
 		assert(tpoint_id < SPDK_TRACE_MAX_TPOINT_ID);					\
-		if (g_trace_histories == NULL ||						\
-		    !((1ULL << (tpoint_id & 0x3F)) &						\
-		      g_trace_histories->flags.tpoint_mask[tpoint_id >> 6])) {			\
+		if (!spdk_trace_tpoint_enabled(tpoint_id)) {					\
 			break;									\
 		}										\
-		_spdk_trace_record(tsc, tpoint_id, poller_id, size, object_id,			\
+		_spdk_trace_record(tsc, tpoint_id, owner_id, size, object_id,			\
 				   num_args, ## __VA_ARGS__);					\
 	} while (0)
 
@@ -198,14 +220,14 @@ void _spdk_trace_record(uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id,
  *
  * \param tsc Current tsc.
  * \param tpoint_id Tracepoint id to record.
- * \param poller_id Poller id to record.
+ * \param owner_id Owner id to record.
  * \param size Size to record.
  * \param object_id Object id to record.
  * \param ... Extra tracepoint arguments. The number, types, and order of the arguments
  *	      must match the definition of the tracepoint.
  */
-#define spdk_trace_record_tsc(tsc, tpoint_id, poller_id, size, object_id, ...)	\
-	_spdk_trace_record_tsc(tsc, tpoint_id, poller_id, size, object_id,	\
+#define spdk_trace_record_tsc(tsc, tpoint_id, owner_id, size, object_id, ...)	\
+	_spdk_trace_record_tsc(tsc, tpoint_id, owner_id, size, object_id,	\
 			       spdk_trace_num_args(__VA_ARGS__), ## __VA_ARGS__)
 
 /**
@@ -215,14 +237,14 @@ void _spdk_trace_record(uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id,
  * the current tsc to save in the tracepoint.
  *
  * \param tpoint_id Tracepoint id to record.
- * \param poller_id Poller id to record.
+ * \param owner_id Owner id to record.
  * \param size Size to record.
  * \param object_id Object id to record.
  * \param ... Extra tracepoint arguments. The number, types, and order of the arguments
  *	      must match the definition of the tracepoint.
  */
-#define spdk_trace_record(tpoint_id, poller_id, size, object_id, ...) \
-	spdk_trace_record_tsc(0, tpoint_id, poller_id, size, object_id, ## __VA_ARGS__)
+#define spdk_trace_record(tpoint_id, owner_id, size, object_id, ...) \
+	spdk_trace_record_tsc(0, tpoint_id, owner_id, size, object_id, ## __VA_ARGS__)
 
 /**
  * Get the current tpoint mask of the given tpoint group.
@@ -279,30 +301,82 @@ void spdk_trace_clear_tpoint_group_mask(uint64_t tpoint_group_mask);
  *
  * \param shm_name Name of shared memory.
  * \param num_entries Number of trace entries per lcore.
+ * \param num_threads Number of user created threads.
  * \return 0 on success, else non-zero indicates a failure.
  */
-int spdk_trace_init(const char *shm_name, uint64_t num_entries);
+int spdk_trace_init(const char *shm_name, uint64_t num_entries, uint32_t num_threads);
+
+/**
+ * Initialize trace environment for an user created thread.
+ *
+ * \return 0 on success, else non-zero indicates a failure.
+ */
+int spdk_trace_register_user_thread(void);
+
+/**
+ * De-initialize trace environment for an user created thread.
+ *
+ * \return 0 on success, else non-zero indicates a failure.
+ */
+int spdk_trace_unregister_user_thread(void);
 
 /**
  * Unmap global trace memory structs.
  */
 void spdk_trace_cleanup(void);
 
-/**
- * Initialize trace flags.
- */
-void spdk_trace_flags_init(void);
-
-#define OWNER_NONE 0
+#define OWNER_TYPE_NONE 0
 #define OBJECT_NONE 0
 
 /**
- * Register the trace owner.
+ * Register the trace owner type.
  *
  * \param type Type of the trace owner.
  * \param id_prefix Prefix of id for the trace owner.
  */
-void spdk_trace_register_owner(uint8_t type, char id_prefix);
+void spdk_trace_register_owner_type(uint8_t type, char id_prefix);
+
+/**
+ * Register the trace owner.
+ *
+ * \param owner_type Type of the owner being registered.
+ * \param description Textual string describing the trace owner.
+ * \return Allocated owner_id for the newly registered owner. Returns 0 if
+ *         no trace_id could be allocated.
+ */
+uint16_t spdk_trace_register_owner(uint8_t owner_type, const char *description);
+
+/**
+ * Change the description for a previously registered owner.
+ *
+ * \param owner_id ID of previously registered owner.
+ * \param description New description for the owner.
+ */
+void spdk_trace_owner_set_description(uint16_t owner_id, const char *description);
+
+/**
+ * Append to the description for a previously registered owner.
+ *
+ * A space will be inserted before the appended string.
+ *
+ * This may be useful for modules that are modifying an existing description
+ * with additional information.
+ *
+ * Callers may pass 0 safely, in this case the function will just be a nop.
+ *
+ * \param owner_id ID of previously registered owner.
+ * \param description Additional description for the owner
+ */
+void spdk_trace_owner_append_description(uint16_t owner_id, const char *description);
+
+/**
+ * Unregister a previously registered owner.
+ *
+ * Callers may pass 0 safely, in this case the function will just be a nop.
+ *
+ * \param owner_id ID of previously registered owner.
+ */
+void spdk_trace_unregister_owner(uint16_t owner_id);
 
 /**
  * Register the trace object.
@@ -423,8 +497,7 @@ void spdk_trace_add_register_fn(struct spdk_trace_register_fn *reg_fn);
 	__attribute__((constructor)) static void _ ## fn(void)	\
 	{							\
 		spdk_trace_add_register_fn(&reg_ ## fn);	\
-	}							\
-	static void fn(void)
+	}
 
 #ifdef __cplusplus
 }

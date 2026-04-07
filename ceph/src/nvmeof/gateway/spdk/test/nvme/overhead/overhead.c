@@ -8,11 +8,11 @@
 #include "spdk/barrier.h"
 #include "spdk/fd.h"
 #include "spdk/nvme.h"
+#include "spdk_internal/nvme_util.h"
 #include "spdk/env.h"
 #include "spdk/string.h"
 #include "spdk/nvme_intel.h"
 #include "spdk/histogram_data.h"
-#include "spdk/string.h"
 #include "spdk/log.h"
 
 #if HAVE_LIBAIO
@@ -467,7 +467,7 @@ usage(char *program_name)
 	printf("\t[-H enable histograms]\n");
 	printf("\t[-g use single file descriptor for DPDK memory segments]\n");
 	printf("\t[-i shared memory group ID]\n");
-	printf("\t[-r remote NVMe over Fabrics target address]\n");
+	spdk_nvme_transport_id_usage(stdout, 0);
 #ifdef DEBUG
 	printf("\t[-L enable debug logging]\n");
 #else
@@ -697,6 +697,7 @@ main(int argc, char **argv)
 	int			rc;
 	struct spdk_env_opts	opts;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	rc = parse_args(argc, argv, &opts);
 	if (rc != 0) {

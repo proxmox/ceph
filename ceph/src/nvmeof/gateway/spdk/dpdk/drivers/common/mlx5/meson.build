@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright 2019 Mellanox Technologies, Ltd
 
-if not (is_linux or (is_windows and is_ms_linker))
+if not (is_linux or is_windows)
     build = false
-    reason = 'only supported on Linux and Windows build with clang'
+    reason = 'only supported on Linux and Windows'
+    subdir_done()
+endif
+if is_windows and not is_ms_linker and not meson.is_cross_build()
+    build = false
+    reason = 'MinGW is supported only for cross-compilation test'
     subdir_done()
 endif
 
@@ -18,6 +23,8 @@ sources += files(
         'mlx5_common_devx.c',
         'mlx5_common_utils.c',
 )
+
+cflags += no_wvla_cflag
 
 cflags_options = [
         '-std=c11',
@@ -37,6 +44,10 @@ else
     cflags += [ '-UPEDANTIC' ]
 endif
 
+require_iova_in_mbuf = false
+
 mlx5_config = configuration_data()
 subdir(exec_env)
 configure_file(output: 'mlx5_autoconf.h', configuration: mlx5_config)
+
+annotate_locks = false

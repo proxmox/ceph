@@ -10,7 +10,6 @@
 #include "spdk/util.h"
 #include "spdk/string.h"
 #include "spdk/env.h"
-#include "spdk/log.h"
 #include "spdk/scsi.h"
 #include "spdk/vhost.h"
 #include "vhost_internal.h"
@@ -19,6 +18,7 @@
 struct rpc_vhost_scsi_ctrlr {
 	char *ctrlr;
 	char *cpumask;
+	bool delay;
 };
 
 static void
@@ -31,6 +31,7 @@ free_rpc_vhost_scsi_ctrlr(struct rpc_vhost_scsi_ctrlr *req)
 static const struct spdk_json_object_decoder rpc_vhost_create_scsi_ctrlr[] = {
 	{"ctrlr", offsetof(struct rpc_vhost_scsi_ctrlr, ctrlr), spdk_json_decode_string },
 	{"cpumask", offsetof(struct rpc_vhost_scsi_ctrlr, cpumask), spdk_json_decode_string, true},
+	{"delay", offsetof(struct rpc_vhost_scsi_ctrlr, delay), spdk_json_decode_bool, true},
 };
 
 static void
@@ -48,7 +49,11 @@ rpc_vhost_create_scsi_controller(struct spdk_jsonrpc_request *request,
 		goto invalid;
 	}
 
-	rc = spdk_vhost_scsi_dev_construct(req.ctrlr, req.cpumask);
+	if (req.delay) {
+		rc = spdk_vhost_scsi_dev_construct_no_start(req.ctrlr, req.cpumask);
+	} else {
+		rc = spdk_vhost_scsi_dev_construct(req.ctrlr, req.cpumask);
+	}
 	if (rc < 0) {
 		goto invalid;
 	}
@@ -64,6 +69,53 @@ invalid:
 					 spdk_strerror(-rc));
 }
 SPDK_RPC_REGISTER("vhost_create_scsi_controller", rpc_vhost_create_scsi_controller,
+		  SPDK_RPC_RUNTIME)
+
+struct rpc_start_vhost_scsi_ctrlr {
+	char *ctrlr;
+};
+
+static void
+free_rpc_start_vhost_scsi_ctrlr(struct rpc_start_vhost_scsi_ctrlr *req)
+{
+	free(req->ctrlr);
+}
+
+static const struct spdk_json_object_decoder rpc_start_vhost_scsi_ctrlr_decoder[] = {
+	{"ctrlr", offsetof(struct rpc_start_vhost_scsi_ctrlr, ctrlr), spdk_json_decode_string },
+};
+
+static void
+rpc_vhost_start_scsi_controller(struct spdk_jsonrpc_request *request,
+				const struct spdk_json_val *params)
+{
+	struct rpc_start_vhost_scsi_ctrlr req = {0};
+	int rc;
+
+	if (spdk_json_decode_object(params, rpc_start_vhost_scsi_ctrlr_decoder,
+				    SPDK_COUNTOF(rpc_start_vhost_scsi_ctrlr_decoder),
+				    &req)) {
+		SPDK_DEBUGLOG(vhost_rpc, "spdk_json_decode_object failed\n");
+		rc = -EINVAL;
+		goto invalid;
+	}
+
+	rc = vhost_scsi_controller_start(req.ctrlr);
+	if (rc < 0) {
+		goto invalid;
+	}
+
+	free_rpc_start_vhost_scsi_ctrlr(&req);
+
+	spdk_jsonrpc_send_bool_response(request, true);
+	return;
+
+invalid:
+	free_rpc_start_vhost_scsi_ctrlr(&req);
+	spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+					 spdk_strerror(-rc));
+}
+SPDK_RPC_REGISTER("vhost_start_scsi_controller", rpc_vhost_start_scsi_controller,
 		  SPDK_RPC_RUNTIME)
 
 struct rpc_vhost_scsi_ctrlr_add_target {
@@ -271,6 +323,13 @@ free_rpc_delete_vhost_ctrlr(struct rpc_delete_vhost_ctrlr *req)
 	free(req->ctrlr);
 }
 
+struct vhost_delete_ctrlr_context {
+	struct spdk_jsonrpc_request *request;
+	const struct spdk_json_val *params;
+};
+
+static void _rpc_vhost_delete_controller(void *arg);
+
 static void
 rpc_vhost_delete_controller(struct spdk_jsonrpc_request *request,
 			    const struct spdk_json_val *params)
@@ -297,6 +356,21 @@ rpc_vhost_delete_controller(struct spdk_jsonrpc_request *request,
 
 	rc = spdk_vhost_dev_remove(vdev);
 	if (rc < 0) {
+		if (rc == -EBUSY) {
+			struct vhost_delete_ctrlr_context *ctx;
+
+			ctx = calloc(1, sizeof(*ctx));
+			if (ctx == NULL) {
+				SPDK_ERRLOG("Failed to allocate memory for vhost_delete_ctrlr context\n");
+				rc = -ENOMEM;
+				goto invalid;
+			}
+			ctx->request = request;
+			ctx->params = params;
+			spdk_thread_send_msg(spdk_get_thread(), _rpc_vhost_delete_controller, ctx);
+			free_rpc_delete_vhost_ctrlr(&req);
+			return;
+		}
 		goto invalid;
 	}
 
@@ -312,6 +386,14 @@ invalid:
 
 }
 SPDK_RPC_REGISTER("vhost_delete_controller", rpc_vhost_delete_controller, SPDK_RPC_RUNTIME)
+
+static void _rpc_vhost_delete_controller(void *arg)
+{
+	struct vhost_delete_ctrlr_context *ctx = arg;
+
+	rpc_vhost_delete_controller(ctx->request, ctx->params);
+	free(ctx);
+}
 
 struct rpc_get_vhost_ctrlrs {
 	char *name;
@@ -332,6 +414,9 @@ _rpc_get_vhost_controller(struct spdk_json_write_ctx *w, struct spdk_vhost_dev *
 	spdk_json_write_named_uint32(w, "delay_base_us", delay_base_us);
 	spdk_json_write_named_uint32(w, "iops_threshold", iops_threshold);
 	spdk_json_write_named_string(w, "socket", vdev->path);
+	spdk_json_write_named_array_begin(w, "sessions");
+	vhost_session_info_json(vdev, w);
+	spdk_json_write_array_end(w);
 
 	spdk_json_write_named_object_begin(w, "backend_specific");
 	vhost_dump_info_json(vdev, w);

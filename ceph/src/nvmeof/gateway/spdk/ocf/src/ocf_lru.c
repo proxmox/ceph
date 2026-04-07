@@ -1,12 +1,15 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2023-2024 Huawei Technologies Co., Ltd.
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf_space.h"
 #include "ocf_lru.h"
 #include "utils/utils_cleaner.h"
 #include "utils/utils_cache_line.h"
+#include "utils/utils_generator.h"
+#include "utils/utils_parallelize.h"
 #include "concurrency/ocf_concurrency.h"
 #include "mngt/ocf_mngt_common.h"
 #include "engine/engine_zero.h"
@@ -194,7 +197,7 @@ static void remove_lru_list_nobalance(ocf_cache_t cache,
 	node->hot = false;
 }
 
-static void remove_lru_list(ocf_cache_t cache, struct ocf_lru_list *list,
+void ocf_lru_remove_locked(ocf_cache_t cache, struct ocf_lru_list *list,
 		ocf_cache_line_t cline)
 {
 	remove_lru_list_nobalance(cache, list, cline);
@@ -221,7 +224,7 @@ void ocf_lru_init_cline(ocf_cache_t cache, ocf_cache_line_t cline)
 	node->next = end_marker;
 }
 
-static struct ocf_lru_list *ocf_lru_get_list(struct ocf_part *part,
+struct ocf_lru_list *ocf_lru_get_list(struct ocf_part *part,
 		uint32_t lru_idx, bool clean)
 {
 	if (part->id == PARTITION_FREELIST)
@@ -257,7 +260,7 @@ void ocf_lru_add(ocf_cache_t cache, ocf_cache_line_t cline)
 static inline void ocf_lru_move(ocf_cache_t cache, ocf_cache_line_t cline,
 		struct ocf_lru_list *src_list, struct ocf_lru_list *dst_list)
 {
-	remove_lru_list(cache, src_list, cline);
+	ocf_lru_remove_locked(cache, src_list, cline);
 	add_lru_head(cache, dst_list, cline);
 }
 
@@ -373,7 +376,7 @@ static inline bool _lru_lru_all_empty(struct ocf_lru_iter *iter)
 	return iter->num_avail_lrus == 0;
 }
 
-static bool inline _lru_trylock_hash(struct ocf_lru_iter *iter,
+static inline bool _lru_trylock_hash(struct ocf_lru_iter *iter,
 		ocf_core_id_t core_id, uint64_t core_line)
 {
 	if (iter->hash_locked != NULL && iter->hash_locked(
@@ -386,7 +389,7 @@ static bool inline _lru_trylock_hash(struct ocf_lru_iter *iter,
 			core_id, core_line);
 }
 
-static void inline _lru_unlock_hash(struct ocf_lru_iter *iter,
+static inline void _lru_unlock_hash(struct ocf_lru_iter *iter,
 		ocf_core_id_t core_id, uint64_t core_line)
 {
 	if (iter->hash_locked != NULL && iter->hash_locked(
@@ -399,7 +402,7 @@ static void inline _lru_unlock_hash(struct ocf_lru_iter *iter,
 			core_id, core_line);
 }
 
-static bool inline _lru_iter_evition_lock(struct ocf_lru_iter *iter,
+static inline bool _lru_iter_evition_lock(struct ocf_lru_iter *iter,
 		ocf_cache_line_t cache_line,
 		ocf_core_id_t *core_id, uint64_t *core_line)
 
@@ -568,28 +571,18 @@ static inline ocf_cache_line_t lru_iter_cleaning_next(struct ocf_lru_iter *iter)
 static void ocf_lru_clean_end(void *private_data, int error)
 {
 	struct ocf_part_cleaning_ctx *ctx = private_data;
+	struct flush_data *entries = ctx->entries;
 	unsigned i;
 
 	for (i = 0; i < OCF_EVICTION_CLEAN_SIZE; i++) {
-		if (ctx->cline[i] != end_marker)
-			ocf_cache_line_unlock_rd(ctx->cache->device->concurrency
-					.cache_line, ctx->cline[i]);
+		if (entries[i].cache_line == end_marker)
+			break;
+		ocf_cache_line_unlock_rd(
+				ctx->cache->device->concurrency.cache_line,
+				entries[i].cache_line);
 	}
 
 	ocf_refcnt_dec(&ctx->counter);
-}
-
-static int ocf_lru_clean_get(ocf_cache_t cache, void *getter_context,
-		uint32_t idx, ocf_cache_line_t *line)
-{
-	struct ocf_part_cleaning_ctx *ctx = getter_context;
-
-	if (ctx->cline[idx] == end_marker)
-		return -1;
-
-	*line = ctx->cline[idx];
-
-	return 0;
 }
 
 void ocf_lru_clean(ocf_cache_t cache, struct ocf_user_part *user_part,
@@ -598,20 +591,13 @@ void ocf_lru_clean(ocf_cache_t cache, struct ocf_user_part *user_part,
 	struct ocf_part_cleaning_ctx *ctx = &user_part->cleaning;
 	struct ocf_cleaner_attribs attribs = {
 		.lock_cacheline = false,
-		.lock_metadata = true,
-		.do_sort = true,
 
 		.cmpl_context = ctx,
 		.cmpl_fn = ocf_lru_clean_end,
 
-		.getter = ocf_lru_clean_get,
-		.getter_context = ctx,
-
-		.count = min(count, OCF_EVICTION_CLEAN_SIZE),
-
 		.io_queue = io_queue
 	};
-	ocf_cache_line_t *cline = ctx->cline;
+	struct flush_data *entries = ctx->entries;
 	struct ocf_lru_iter iter;
 	unsigned lru_idx;
 	int cnt;
@@ -641,21 +627,26 @@ void ocf_lru_clean(ocf_cache_t cache, struct ocf_user_part *user_part,
 	OCF_METADATA_LRU_WR_LOCK_ALL();
 
 	lru_iter_cleaning_init(&iter, cache, &user_part->part, lru_idx);
-	i = 0;
-	while (i < OCF_EVICTION_CLEAN_SIZE) {
-		cline[i] = lru_iter_cleaning_next(&iter);
-		if (cline[i] == end_marker)
+	count = min(count, OCF_EVICTION_CLEAN_SIZE);
+	for (i = 0; i < count; i++) {
+		entries[i].cache_line = lru_iter_cleaning_next(&iter);
+		if (entries[i].cache_line == end_marker)
 			break;
-		i++;
+		ocf_metadata_get_core_info(cache, entries[i].cache_line,
+				&entries[i].core_id, &entries[i].core_line);
 	}
-	while (i < OCF_EVICTION_CLEAN_SIZE)
-		cline[i++] = end_marker;
 
 	OCF_METADATA_LRU_WR_UNLOCK_ALL();
 
 	ocf_metadata_end_shared_access(&cache->metadata.lock, lock_idx);
 
-	ocf_cleaner_fire(cache, &attribs);
+	if (i == 0) {
+		ocf_refcnt_dec(&ctx->counter);
+		return;
+	}
+
+	ocf_cleaner_sort_flush_data(entries, i);
+	ocf_cleaner_do_flush_data_async(cache, entries, i, &attribs);
 }
 
 static void ocf_lru_invalidate(ocf_cache_t cache, ocf_cache_line_t cline,
@@ -846,7 +837,7 @@ void ocf_lru_clean_cline(ocf_cache_t cache, struct ocf_part *part,
 	dirty_list = ocf_lru_get_list(part, lru_list, false);
 
 	OCF_METADATA_LRU_WR_LOCK(cline);
-	remove_lru_list(cache, dirty_list, cline);
+	ocf_lru_remove_locked(cache, dirty_list, cline);
 	add_lru_head(cache, clean_list, cline);
 	OCF_METADATA_LRU_WR_UNLOCK(cline);
 }
@@ -862,68 +853,96 @@ void ocf_lru_dirty_cline(ocf_cache_t cache, struct ocf_part *part,
 	dirty_list = ocf_lru_get_list(part, lru_list, false);
 
 	OCF_METADATA_LRU_WR_LOCK(cline);
-	remove_lru_list(cache, clean_list, cline);
+	ocf_lru_remove_locked(cache, clean_list, cline);
 	add_lru_head(cache, dirty_list, cline);
 	OCF_METADATA_LRU_WR_UNLOCK(cline);
 }
 
-static ocf_cache_line_t next_phys_invalid(ocf_cache_t cache,
-		ocf_cache_line_t phys)
+struct ocf_lru_populate_context {
+	ocf_cache_t cache;
+	env_atomic curr_size;
+
+	ocf_lru_populate_end_t cmpl;
+	void *priv;
+};
+
+static int ocf_lru_populate_handle(ocf_parallelize_t parallelize,
+		void *priv, unsigned shard_id, unsigned shards_cnt)
 {
-	ocf_cache_line_t lg;
-	ocf_cache_line_t collision_table_entries =
-			ocf_metadata_collision_table_entries(cache);
-
-	if (phys == collision_table_entries)
-		return collision_table_entries;
-
-	lg = ocf_metadata_map_phy2lg(cache, phys);
-	while (metadata_test_valid_any(cache, lg)) {
-		++phys;
-
-		if (phys == collision_table_entries)
-			break;
-
-		lg = ocf_metadata_map_phy2lg(cache, phys);
-	}
-
-	return phys;
-}
-
-/* put invalid cachelines on freelist partition lru list  */
-void ocf_lru_populate(ocf_cache_t cache, ocf_cache_line_t num_free_clines)
-{
-	ocf_cache_line_t phys, cline;
-	ocf_cache_line_t collision_table_entries =
-			ocf_metadata_collision_table_entries(cache);
+	struct ocf_lru_populate_context *context = priv;
+	ocf_cache_t cache = context->cache;
+	ocf_cache_line_t cnt, cline;
+	ocf_cache_line_t entries = ocf_metadata_collision_table_entries(cache);
+	struct ocf_generator_bisect_state generator;
 	struct ocf_lru_list *list;
-	unsigned lru_list;
-	unsigned i;
+	unsigned lru_list = shard_id;
 	unsigned step = 0;
+	uint32_t portion, offset;
+	uint32_t i, idx;
 
-	phys = 0;
-	for (i = 0; i < num_free_clines; i++) {
-		/* find first invalid cacheline */
-		phys = next_phys_invalid(cache, phys);
-		ENV_BUG_ON(phys == collision_table_entries);
-		cline = ocf_metadata_map_phy2lg(cache, phys);
-		++phys;
+	portion = OCF_DIV_ROUND_UP((uint64_t)entries, shards_cnt);
+	offset = shard_id * portion / shards_cnt;
+	ocf_generator_bisect_init(&generator, portion, offset);
+
+	list = ocf_lru_get_list(&cache->free, lru_list, true);
+
+	cnt = 0;
+	for (i = 0; i < portion; i++) {
+		OCF_COND_RESCHED_DEFAULT(step);
+
+		idx = ocf_generator_bisect_next(&generator);
+		cline = idx * shards_cnt + shard_id;
+		if (cline >= entries)
+			continue;
 
 		ocf_metadata_set_partition_id(cache, cline, PARTITION_FREELIST);
 
-		lru_list = (cline % OCF_NUM_LRU_LISTS);
-		list = ocf_lru_get_list(&cache->free, lru_list, true);
+		add_lru_head_nobalance(cache, list, cline);
 
-		add_lru_head(cache, list, cline);
-
-		OCF_COND_RESCHED_DEFAULT(step);
+		cnt++;
 	}
 
-	/* we should have reached the last invalid cache line */
-	phys = next_phys_invalid(cache, phys);
-	ENV_BUG_ON(phys != collision_table_entries);
+	env_atomic_add(cnt, &context->curr_size);
 
-	env_atomic_set(&cache->free.runtime->curr_size, num_free_clines);
+	return 0;
+}
+
+static void ocf_lru_populate_finish(ocf_parallelize_t parallelize,
+		void *priv, int error)
+{
+	struct ocf_lru_populate_context *context = priv;
+
+	env_atomic_set(&context->cache->free.runtime->curr_size,
+		env_atomic_read(&context->curr_size));
+
+	context->cmpl(context->priv, error);
+
+	ocf_parallelize_destroy(parallelize);
+}
+
+/* put invalid cachelines on freelist partition lru list  */
+void ocf_lru_populate(ocf_cache_t cache,
+		ocf_lru_populate_end_t cmpl, void *priv)
+{
+	struct ocf_lru_populate_context *context;
+	ocf_parallelize_t parallelize;
+	int result;
+
+	result = ocf_parallelize_create(&parallelize, cache, OCF_NUM_LRU_LISTS,
+			sizeof(*context), ocf_lru_populate_handle,
+			ocf_lru_populate_finish, false);
+	if (result) {
+		cmpl(priv, result);
+		return;
+	}
+
+	context = ocf_parallelize_get_priv(parallelize);
+	context->cache = cache;
+	env_atomic_set(&context->curr_size, 0);
+	context->cmpl = cmpl;
+	context->priv = priv;
+
+	ocf_parallelize_run(parallelize);
 }
 
 static bool _is_cache_line_acting(struct ocf_cache *cache,
@@ -1026,4 +1045,13 @@ int ocf_metadata_actor(struct ocf_cache *cache,
 uint32_t ocf_lru_num_free(ocf_cache_t cache)
 {
 	return env_atomic_read(&cache->free.runtime->curr_size);
+}
+
+void ocf_lru_add_free(ocf_cache_t cache, ocf_cache_line_t cline)
+{
+	uint32_t lru_list = (cline % OCF_NUM_LRU_LISTS);
+	struct ocf_lru_list *list;
+
+	list = ocf_lru_get_list(&cache->free, lru_list, true);
+	add_lru_head_nobalance(cache, list, cline);
 }

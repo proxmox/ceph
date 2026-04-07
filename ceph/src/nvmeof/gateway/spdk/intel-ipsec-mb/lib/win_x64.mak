@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017-2022, Intel Corporation
+# Copyright (c) 2017-2023, Intel Corporation
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -112,8 +112,8 @@ DAFLAGS = $(DAFLAGS) -DAESNI_EMU
 
 CC = cl
 
-CFLAGS_ALL = $(EXTRA_CFLAGS) /DNO_COMPAT_IMB_API_053 /I. /Iinclude /Ino-aesni \
-	/nologo /Y- /W3 /WX- /Gm- /fp:precise /EHsc /Z7
+CFLAGS_ALL = $(EXTRA_CFLAGS) /I. /Iinclude /Ino-aesni \
+	/nologo /Y- /W3 /WX- /Gm- /fp:precise /EHsc /Z7 /std:c11
 
 CFLAGS = $(CFLAGS_ALL) $(OPT) $(DCFLAGS)
 CFLAGS_NO_SIMD = $(CFLAGS_ALL) /Od $(DCFLAGS)
@@ -161,10 +161,13 @@ lib_objs1 = \
 	$(OBJ_DIR)\aes128_ecb_by8_avx.obj \
 	$(OBJ_DIR)\aes192_ecb_by8_avx.obj \
 	$(OBJ_DIR)\aes256_ecb_by8_avx.obj \
+	$(OBJ_DIR)\aes_ecb_quic_x8_sse.obj \
+	$(OBJ_DIR)\aes_ecb_quic_x8_avx.obj \
 	$(OBJ_DIR)\aes128_ecb_vaes_avx2.obj \
 	$(OBJ_DIR)\aes192_ecb_vaes_avx2.obj \
 	$(OBJ_DIR)\aes256_ecb_vaes_avx2.obj \
 	$(OBJ_DIR)\aes_ecb_vaes_avx512.obj \
+	$(OBJ_DIR)\aes_ecb_quic_vaes_avx512.obj \
 	$(OBJ_DIR)\pon_by8_sse.obj \
 	$(OBJ_DIR)\aes128_cntr_by8_sse.obj \
 	$(OBJ_DIR)\pon_by8_avx.obj \
@@ -172,17 +175,20 @@ lib_objs1 = \
 	$(OBJ_DIR)\aes128_cntr_by8_avx.obj \
 	$(OBJ_DIR)\aes128_cntr_ccm_by8_sse.obj \
 	$(OBJ_DIR)\aes128_cntr_ccm_by8_avx.obj \
+	$(OBJ_DIR)\aes128_cntr_vaes_avx2.obj \
 	$(OBJ_DIR)\aes128_ecbenc_x3.obj \
 	$(OBJ_DIR)\aes192_cbc_dec_by4_sse.obj \
 	$(OBJ_DIR)\aes192_cbc_dec_by8_sse.obj \
 	$(OBJ_DIR)\aes192_cbc_dec_by8_avx.obj \
 	$(OBJ_DIR)\aes192_cntr_by8_sse.obj \
 	$(OBJ_DIR)\aes192_cntr_by8_avx.obj \
+	$(OBJ_DIR)\aes192_cntr_vaes_avx2.obj \
 	$(OBJ_DIR)\aes256_cbc_dec_by4_sse.obj \
 	$(OBJ_DIR)\aes256_cbc_dec_by8_sse.obj \
 	$(OBJ_DIR)\aes256_cbc_dec_by8_avx.obj \
 	$(OBJ_DIR)\aes256_cntr_by8_sse.obj \
 	$(OBJ_DIR)\aes256_cntr_by8_avx.obj \
+	$(OBJ_DIR)\aes256_cntr_vaes_avx2.obj \
 	$(OBJ_DIR)\aes256_cntr_ccm_by8_sse.obj \
 	$(OBJ_DIR)\aes256_cntr_ccm_by8_avx.obj \
 	$(OBJ_DIR)\aes_cfb_sse.obj \
@@ -216,6 +222,9 @@ lib_objs1 = \
 	$(OBJ_DIR)\md5_x4x2_sse.obj \
 	$(OBJ_DIR)\md5_x8x2_avx2.obj \
 	$(OBJ_DIR)\save_xmms.obj \
+	$(OBJ_DIR)\mbcpuid.obj \
+	$(OBJ_DIR)\atomic.obj \
+	$(OBJ_DIR)\sm3.obj \
 	$(OBJ_DIR)\clear_regs_mem_fns.obj \
 	$(OBJ_DIR)\sha1_x4_avx.obj \
 	$(OBJ_DIR)\sha1_x4_sse.obj \
@@ -223,6 +232,7 @@ lib_objs1 = \
 	$(OBJ_DIR)\sha1_ni_x1_sse.obj \
 	$(OBJ_DIR)\sha1_one_block_avx.obj \
 	$(OBJ_DIR)\sha1_one_block_sse.obj \
+	$(OBJ_DIR)\sha1_ni_one_block_sse.obj \
 	$(OBJ_DIR)\sha1_x8_avx2.obj \
 	$(OBJ_DIR)\sha1_x16_avx512.obj \
 	$(OBJ_DIR)\sha224_one_block_avx.obj \
@@ -230,6 +240,7 @@ lib_objs1 = \
 	$(OBJ_DIR)\sha256_oct_avx2.obj \
 	$(OBJ_DIR)\sha256_one_block_avx.obj \
 	$(OBJ_DIR)\sha256_one_block_sse.obj \
+	$(OBJ_DIR)\sha256_ni_one_block_sse.obj \
 	$(OBJ_DIR)\sha256_ni_x2_sse.obj \
 	$(OBJ_DIR)\sha256_ni_x1_sse.obj \
 	$(OBJ_DIR)\sha256_x16_avx512.obj \
@@ -255,11 +266,11 @@ lib_objs1 = \
 	$(OBJ_DIR)\zuc_x4_gfni_sse.obj \
 	$(OBJ_DIR)\zuc_x4_avx.obj \
 	$(OBJ_DIR)\zuc_x8_avx2.obj \
+	$(OBJ_DIR)\zuc_x8_gfni_avx2.obj \
 	$(OBJ_DIR)\zuc_x16_avx512.obj \
 	$(OBJ_DIR)\zuc_x16_vaes_avx512.obj \
 	$(OBJ_DIR)\zuc_iv.obj \
 	$(OBJ_DIR)\snow3g_sse.obj \
-	$(OBJ_DIR)\snow3g_uea2_by4_sse.obj \
 	$(OBJ_DIR)\snow3g_uia2_by4_sse.obj \
 	$(OBJ_DIR)\snow3g_avx.obj \
 	$(OBJ_DIR)\snow3g_avx2.obj \
@@ -275,7 +286,10 @@ lib_objs1 = \
 	$(OBJ_DIR)\aes_xcbc_expand_key.obj \
 	$(OBJ_DIR)\md5_one_block.obj \
 	$(OBJ_DIR)\sha_sse.obj \
+	$(OBJ_DIR)\sha_ni_sse.obj \
 	$(OBJ_DIR)\sha_avx.obj \
+	$(OBJ_DIR)\sha_avx2.obj \
+	$(OBJ_DIR)\sha_avx512.obj \
 	$(OBJ_DIR)\sha_mb_sse.obj \
 	$(OBJ_DIR)\sha_ni_mb_sse.obj \
 	$(OBJ_DIR)\sha_mb_avx.obj \
@@ -351,7 +365,14 @@ lib_objs1 = \
 	$(OBJ_DIR)\memcpy_sse.obj \
 	$(OBJ_DIR)\memcpy_avx.obj \
 	$(OBJ_DIR)\ooo_mgr_reset.obj \
-	$(OBJ_DIR)\self_test.obj
+	$(OBJ_DIR)\self_test.obj \
+	$(OBJ_DIR)\quic_aes_gcm.obj \
+	$(OBJ_DIR)\quic_hp_aes_ecb.obj \
+	$(OBJ_DIR)\quic_hp_chacha20.obj \
+	$(OBJ_DIR)\quic_chacha20_poly1305.obj \
+	$(OBJ_DIR)\hmac_ipad_opad.obj \
+	$(OBJ_DIR)\cipher_suite_id.obj \
+	$(OBJ_DIR)\sm4_sse.obj
 
 lib_objs2 = \
 	$(OBJ_DIR)\mb_mgr_aes192_cbc_enc_flush_avx.obj \
@@ -444,6 +465,7 @@ lib_objs2 = \
 	$(OBJ_DIR)\mb_mgr_zuc_submit_flush_gfni_sse.obj \
 	$(OBJ_DIR)\mb_mgr_zuc_submit_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_zuc_submit_flush_avx2.obj \
+	$(OBJ_DIR)\mb_mgr_zuc_submit_flush_gfni_avx2.obj \
 	$(OBJ_DIR)\mb_mgr_zuc_submit_flush_avx512.obj \
 	$(OBJ_DIR)\mb_mgr_zuc_submit_flush_gfni_avx512.obj \
 	$(OBJ_DIR)\mb_mgr_avx.obj \
@@ -532,28 +554,29 @@ no_aesni_objs = \
 	$(OBJ_DIR)\gcm192_gmac_api_sse_no_aesni.obj \
 	$(OBJ_DIR)\gcm256_api_sse_no_aesni.obj \
 	$(OBJ_DIR)\gcm256_sgl_api_sse_no_aesni.obj \
-	$(OBJ_DIR)\gcm256_gmac_api_sse_no_aesni.obj
+	$(OBJ_DIR)\gcm256_gmac_api_sse_no_aesni.obj \
+	$(OBJ_DIR)\sm4_sse_no_aesni.obj
 
 gcm_objs = \
 	$(OBJ_DIR)\gcm.obj \
-	$(OBJ_DIR)\aes128_gcm_by8_avx.obj \
 	$(OBJ_DIR)\aes128_gcm_by8_avx2.obj \
+	$(OBJ_DIR)\aes128_gcm_vaes_avx2.obj \
 	$(OBJ_DIR)\aes128_gcm_by8_avx512.obj \
-	$(OBJ_DIR)\aes128_gcm_by48_api_vaes_avx512.obj \
-	$(OBJ_DIR)\aes128_gcm_by48_sgl_api_vaes_avx512.obj \
-	$(OBJ_DIR)\aes128_gmac_by48_api_vaes_avx512.obj \
-	$(OBJ_DIR)\aes192_gcm_by8_avx.obj \
+	$(OBJ_DIR)\aes128_gcm_api_vaes_avx512.obj \
+	$(OBJ_DIR)\aes128_gcm_sgl_api_vaes_avx512.obj \
+	$(OBJ_DIR)\aes128_gmac_api_vaes_avx512.obj \
 	$(OBJ_DIR)\aes192_gcm_by8_avx2.obj \
+	$(OBJ_DIR)\aes192_gcm_vaes_avx2.obj \
 	$(OBJ_DIR)\aes192_gcm_by8_avx512.obj \
-	$(OBJ_DIR)\aes192_gcm_by48_api_vaes_avx512.obj \
-	$(OBJ_DIR)\aes192_gcm_by48_sgl_api_vaes_avx512.obj \
-	$(OBJ_DIR)\aes192_gmac_by48_api_vaes_avx512.obj \
-	$(OBJ_DIR)\aes256_gcm_by8_avx.obj \
+	$(OBJ_DIR)\aes192_gcm_api_vaes_avx512.obj \
+	$(OBJ_DIR)\aes192_gcm_sgl_api_vaes_avx512.obj \
+	$(OBJ_DIR)\aes192_gmac_api_vaes_avx512.obj \
 	$(OBJ_DIR)\aes256_gcm_by8_avx2.obj \
+	$(OBJ_DIR)\aes256_gcm_vaes_avx2.obj \
 	$(OBJ_DIR)\aes256_gcm_by8_avx512.obj \
-	$(OBJ_DIR)\aes256_gcm_by48_api_vaes_avx512.obj \
-	$(OBJ_DIR)\aes256_gcm_by48_sgl_api_vaes_avx512.obj \
-	$(OBJ_DIR)\aes256_gmac_by48_api_vaes_avx512.obj \
+	$(OBJ_DIR)\aes256_gcm_api_vaes_avx512.obj \
+	$(OBJ_DIR)\aes256_gcm_sgl_api_vaes_avx512.obj \
+	$(OBJ_DIR)\aes256_gmac_api_vaes_avx512.obj \
 	$(OBJ_DIR)\gcm128_api_by8_sse.obj \
 	$(OBJ_DIR)\gcm128_sgl_api_by8_sse.obj \
 	$(OBJ_DIR)\gcm128_gmac_api_by8_sse.obj \
@@ -568,6 +591,11 @@ gcm_objs = \
 all_objs = $(lib_objs1) $(lib_objs2) $(gcm_objs) $(no_aesni_objs)
 !else
 all_objs = $(lib_objs1) $(lib_objs2) $(gcm_objs)
+!endif
+
+!if "$(AVX_IFMA)" == "y"
+all_objs = $(all_objs) $(OBJ_DIR)\mb_mgr_avx2_t3.obj $(OBJ_DIR)\poly_fma_avx2.obj
+DCFLAGS = $(DCFLAGS) /DAVX_IFMA
 !endif
 
 all: $(LIB_DIR)\$(LIBNAME) $(DEPALL)
@@ -593,13 +621,26 @@ $(LIB_DIR)\$(LIBNAME): $(all_objs) $(LIBBASE)_lnk.def
 	@echo NOTE:  $(SAFE_OPTIONS_MSG1) $(SAFE_OPTIONS_MSG2)
 !endif
 
+STR_FILTER = ""
+!if "$(AESNI_EMU)" != "y"
+!if "$(AVX_IFMA)" != "y"
+STR_FILTER = "_no_aesni _avx2_t3"
+!else
+STR_FILTER = "_no_aesni"
+!endif
+!else
+!if "$(AVX_IFMA)" != "y"
+STR_FILTER = "_avx2_t3"
+!endif
+!endif
+
 $(all_objs): $(OBJ_DIR) $(LIB_DIR)
 
 $(LIBBASE)_lnk.def: $(LIBBASE).def
-!if "$(AESNI_EMU)" == "y"
+!if $(STR_FILTER) == ""
         copy /Y $(LIBBASE).def $(LIBBASE)_lnk.def
 !else
-	findstr /v _no_aesni $(LIBBASE).def > $(LIBBASE)_lnk.def
+	findstr /v $(STR_FILTER) $(LIBBASE).def > $(LIBBASE)_lnk.def
 !endif
 
 $(DEPALL): $(all_objs)
@@ -659,6 +700,13 @@ $(DEPALL): $(all_objs)
         $(DEPTOOL) $< $@ "$(DEPFLAGS)" > $@.dep
 
 {avx2_t2\}.asm{$(OBJ_DIR)}.obj:
+	$(AS) -MD $@.dep -o $@ $(AFLAGS) $<
+
+{avx2_t3\}.c{$(OBJ_DIR)}.obj:
+	$(CC) /arch:AVX /Fo$@ /c $(CFLAGS) $<
+        $(DEPTOOL) $< $@ "$(DEPFLAGS)" > $@.dep
+
+{avx2_t3\}.asm{$(OBJ_DIR)}.obj:
 	$(AS) -MD $@.dep -o $@ $(AFLAGS) $<
 
 {avx512_t1\}.c{$(OBJ_DIR)}.obj:

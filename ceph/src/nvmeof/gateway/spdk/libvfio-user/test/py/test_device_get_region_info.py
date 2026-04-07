@@ -35,6 +35,8 @@ ctx = None
 sock = None
 
 argsz = len(vfio_region_info())
+migr_region_size = 2 << PAGE_SHIFT
+migr_mmap_areas = [(PAGE_SIZE, PAGE_SIZE)]
 
 
 def test_device_get_region_info_setup():
@@ -77,13 +79,11 @@ def test_device_get_region_info_setup():
     assert ret == 0
 
     f = tempfile.TemporaryFile()
-    f.truncate(0x2000)
+    f.truncate(migr_region_size)
 
-    mmap_areas = [(0x1000, 0x1000)]
-
-    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX, size=0x2000,
-                           flags=VFU_REGION_FLAG_RW, mmap_areas=mmap_areas,
-                           fd=f.fileno())
+    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX,
+                           size=migr_region_size, flags=VFU_REGION_FLAG_RW,
+                           mmap_areas=migr_mmap_areas, fd=f.fileno())
     assert ret == 0
 
     ret = vfu_realize_ctx(ctx)
@@ -118,17 +118,6 @@ def test_device_get_region_info_bad_index():
 
     msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload,
         expect=errno.EINVAL)
-
-
-# python tests use max client fds of 8, but this region has 9 mmap areas.
-def test_device_get_region_info_caps_too_few_fds():
-    payload = vfio_region_info(argsz=192, flags=0,
-                          index=VFU_PCI_DEV_BAR3_REGION_IDX, cap_offset=0,
-                          size=0, offset=0)
-    payload = bytes(payload) + b'\0' * (192 - 32)
-
-    msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload,
-        expect=errno.ENOSPC)
 
 
 def test_device_get_region_info_larger_argsz():
@@ -191,7 +180,7 @@ def test_device_get_region_info_caps():
                           size=0, offset=0)
     payload = bytes(payload) + b'\0' * (80 - 32)
 
-    result = msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+    fds, result = msg_fds(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
 
     info, result = vfio_region_info.pop_from_buffer(result)
     cap, result = vfio_region_info_cap_sparse_mmap.pop_from_buffer(result)
@@ -213,7 +202,7 @@ def test_device_get_region_info_caps():
     assert area2.offset == 0x4000
     assert area2.size == 0x2000
 
-    # skip reading the SCM_RIGHTS
+    assert(len(fds) == 1)
     disconnect_client(ctx, sock)
 
 
@@ -246,10 +235,10 @@ def test_device_get_region_info_migr():
     assert cap.id == VFIO_REGION_INFO_CAP_SPARSE_MMAP
     assert cap.version == 1
     assert cap.next == 0
-    assert cap.nr_areas == 1
+    assert cap.nr_areas == len(migr_mmap_areas) == 1
 
-    assert area.offset == 0x1000
-    assert area.size == 0x1000
+    assert area.offset == migr_mmap_areas[0][0]
+    assert area.size == migr_mmap_areas[0][1]
 
     # skip reading the SCM_RIGHTS
     disconnect_client(ctx, sock)
@@ -257,5 +246,78 @@ def test_device_get_region_info_migr():
 
 def test_device_get_region_info_cleanup():
     vfu_destroy_ctx(ctx)
+
+
+def test_device_get_pci_config_space_info_implicit_pci_init():
+    """Checks that the PCI config space is implicitly configured if
+    vfu_pci_init() is called."""
+
+    ctx = vfu_create_ctx(flags=LIBVFIO_USER_FLAG_ATTACH_NB)
+    assert ctx is not None
+
+    vfu_pci_init(ctx)
+
+    ret = vfu_realize_ctx(ctx)
+    assert ret == 0
+
+    sock = connect_client(ctx)
+
+    payload = vfio_region_info(argsz=argsz + 8, flags=0,
+                          index=VFU_PCI_DEV_CFG_REGION_IDX, cap_offset=0,
+                          size=0, offset=0)
+
+    result = msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+
+    assert(len(result) == argsz)
+
+    info, _ = vfio_region_info.pop_from_buffer(result)
+
+    assert info.argsz == argsz
+    assert info.flags == (VFIO_REGION_INFO_FLAG_READ |
+                          VFIO_REGION_INFO_FLAG_WRITE)
+    assert info.index == VFU_PCI_DEV_CFG_REGION_IDX
+    assert info.cap_offset == 0
+    # libvfio-user.py default to PCI Express in vfu_pci_init()
+    assert info.size == PCI_CFG_SPACE_EXP_SIZE
+    assert info.offset == 0
+
+    disconnect_client(ctx, sock)
+
+    vfu_destroy_ctx(ctx)
+
+
+def test_device_get_pci_config_space_info_implicit_no_pci_init():
+    """Checks that the PCI config space is implicitly configured even if
+    vfu_pci_init() is not called."""
+
+    ctx = vfu_create_ctx(flags=LIBVFIO_USER_FLAG_ATTACH_NB)
+    assert ctx is not None
+
+    ret = vfu_realize_ctx(ctx)
+    assert ret == 0
+
+    sock = connect_client(ctx)
+
+    payload = vfio_region_info(argsz=argsz + 8, flags=0,
+                          index=VFU_PCI_DEV_CFG_REGION_IDX, cap_offset=0,
+                          size=0, offset=0)
+
+    result = msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+
+    assert(len(result) == argsz)
+
+    info, _ = vfio_region_info.pop_from_buffer(result)
+
+    assert info.argsz == argsz
+    assert info.flags == VFU_REGION_FLAG_RW
+    assert info.index == VFU_PCI_DEV_CFG_REGION_IDX
+    assert info.cap_offset == 0
+    assert info.size == PCI_CFG_SPACE_SIZE
+    assert info.offset == 0
+
+    disconnect_client(ctx, sock)
+
+    vfu_destroy_ctx(ctx)
+
 
 # ex: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: #

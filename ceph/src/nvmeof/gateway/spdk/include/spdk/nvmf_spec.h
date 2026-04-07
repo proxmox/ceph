@@ -11,6 +11,10 @@
 #include "spdk/assert.h"
 #include "spdk/nvme_spec.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * \file
  * NVMe over Fabrics specification definitions
@@ -130,12 +134,21 @@ enum spdk_nvmf_adrfam {
  * NVM subsystem types
  */
 enum spdk_nvmf_subtype {
-	/** Discovery type for NVM subsystem */
+	/** Referral to a discovery service */
 	SPDK_NVMF_SUBTYPE_DISCOVERY		= 0x1,
 
-	/** NVMe type for NVM subsystem */
-	SPDK_NVMF_SUBTYPE_NVME		= 0x2,
+	/** NVM Subsystem */
+	SPDK_NVMF_SUBTYPE_NVME			= 0x2,
+
+	/** Current Discovery Subsystem */
+	SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT	= 0x3
 };
+
+/* Discovery Log Entry Flags - Duplicate Returned Information */
+#define SPDK_NVMF_DISCOVERY_LOG_EFLAGS_DUPRETINFO (1u << 0u)
+
+/* Discovery Log Entry Flags - Explicit Persistent Connection Support for Discovery */
+#define SPDK_NVMF_DISCOVERY_LOG_EFLAGS_EPCSD (1u << 1u)
 
 /**
  * Connections shall be made over a fabric secure channel
@@ -214,7 +227,12 @@ struct spdk_nvmf_fabric_connect_rsp {
 	union {
 		struct {
 			uint16_t cntlid;
-			uint16_t authreq;
+			struct {
+				uint16_t reserved1	: 1;
+				uint16_t atr		: 1;
+				uint16_t ascr		: 1;
+				uint16_t reserved2	: 13;
+			} authreq;
 		} success;
 
 		struct {
@@ -333,8 +351,11 @@ enum spdk_nvme_tcp_secure_socket_type {
 	/** No security */
 	SPDK_NVME_TCP_SECURITY_NONE			= 0,
 
-	/** TLS (Secure Sockets) */
-	SPDK_NVME_TCP_SECURITY_TLS			= 1,
+	/** TLS (Secure Sockets) version 1.2 */
+	SPDK_NVME_TCP_SECURITY_TLS_1_2			= 1,
+
+	/** TLS (Secure Sockets) version 1.3 */
+	SPDK_NVME_TCP_SECURITY_TLS_1_3			= 2,
 };
 
 /** TCP transport-specific address subtype */
@@ -392,7 +413,10 @@ struct spdk_nvmf_discovery_log_page_entry {
 	/** Admin max SQ size */
 	uint16_t	asqsz;
 
-	uint8_t		reserved0[22];
+	/** Entry Flags */
+	uint16_t	eflags;
+
+	uint8_t		reserved0[20];
 
 	/** Transport service identifier */
 	uint8_t		trsvcid[SPDK_NVMF_TRSVCID_MAX_LEN];
@@ -418,6 +442,151 @@ struct spdk_nvmf_discovery_log_page {
 	struct spdk_nvmf_discovery_log_page_entry entries[0];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_discovery_log_page) == 1024, "Incorrect size");
+
+/** Security protocol identifier assigned to NVMe */
+#define SPDK_NVMF_AUTH_SECP_NVME 0xe9
+
+/** Authentication types */
+enum spdk_nvmf_auth_type {
+	SPDK_NVMF_AUTH_TYPE_COMMON_MESSAGE	= 0x0,
+	SPDK_NVMF_AUTH_TYPE_DHCHAP		= 0x1,
+};
+
+/** AUTH message identifiers */
+enum spdk_nvmf_auth_id {
+	SPDK_NVMF_AUTH_ID_NEGOTIATE		= 0x00,
+	SPDK_NVMF_AUTH_ID_DHCHAP_CHALLENGE	= 0x01,
+	SPDK_NVMF_AUTH_ID_DHCHAP_REPLY		= 0x02,
+	SPDK_NVMF_AUTH_ID_DHCHAP_SUCCESS1	= 0x03,
+	SPDK_NVMF_AUTH_ID_DHCHAP_SUCCESS2	= 0x04,
+	SPDK_NVMF_AUTH_ID_FAILURE2		= 0xf0,
+	SPDK_NVMF_AUTH_ID_FAILURE1		= 0xf1,
+};
+
+/** Hash function identifiers */
+enum spdk_nvmf_dhchap_hash {
+	SPDK_NVMF_DHCHAP_HASH_NONE	= 0x0,
+	SPDK_NVMF_DHCHAP_HASH_SHA256	= 0x1,
+	SPDK_NVMF_DHCHAP_HASH_SHA384	= 0x2,
+	SPDK_NVMF_DHCHAP_HASH_SHA512	= 0x3,
+};
+
+/** Diffie-Hellman group identifiers */
+enum spdk_nvmf_dhchap_dhgroup {
+	SPDK_NVMF_DHCHAP_DHGROUP_NULL = 0x0,
+	SPDK_NVMF_DHCHAP_DHGROUP_2048 = 0x1,
+	SPDK_NVMF_DHCHAP_DHGROUP_3072 = 0x2,
+	SPDK_NVMF_DHCHAP_DHGROUP_4096 = 0x3,
+	SPDK_NVMF_DHCHAP_DHGROUP_6144 = 0x4,
+	SPDK_NVMF_DHCHAP_DHGROUP_8192 = 0x5,
+};
+
+struct spdk_nvmf_auth_descriptor {
+	uint8_t		auth_id;
+	uint8_t		reserved0;
+	uint8_t		halen;
+	uint8_t		dhlen;
+	uint8_t		hash_id_list[30];
+	uint8_t		dhg_id_list[30];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_auth_descriptor) == 64, "Incorrect size");
+
+/** Secure channel concatenation */
+enum spdk_nvmf_auth_scc {
+	/** No secure channel concatenation */
+	SPDK_NVMF_AUTH_SCC_DISABLED	= 0,
+	/** Secure channel concatenation with TLS (TCP) */
+	SPDK_NVMF_AUTH_SCC_TLS		= 1,
+};
+
+struct spdk_nvmf_auth_negotiate {
+	uint8_t					auth_type;
+	uint8_t					auth_id;
+	uint8_t					reserved0[2];
+	uint16_t				t_id;
+	uint8_t					sc_c;
+	uint8_t					napd;
+	struct spdk_nvmf_auth_descriptor	descriptors[0];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_auth_negotiate) == 8, "Incorrect size");
+
+struct spdk_nvmf_dhchap_challenge {
+	uint8_t		auth_type;
+	uint8_t		auth_id;
+	uint8_t		reserved0[2];
+	uint16_t	t_id;
+	uint8_t		hl;
+	uint8_t		reserved1;
+	uint8_t		hash_id;
+	uint8_t		dhg_id;
+	uint16_t	dhvlen;
+	uint32_t	seqnum;
+	uint8_t		cval[0];
+	/* Followed by optional dhv if dhvlen > 0 */
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_dhchap_challenge) == 16, "Incorrect size");
+
+struct spdk_nvmf_dhchap_reply {
+	uint8_t		auth_type;
+	uint8_t		auth_id;
+	uint8_t		reserved0[2];
+	uint16_t	t_id;
+	uint8_t		hl;
+	uint8_t		reserved1;
+	uint8_t		cvalid;
+	uint8_t		reserved2;
+	uint16_t	dhvlen;
+	uint32_t	seqnum;
+	uint8_t		rval[0];
+	/* Followed by cval[hl] and dhv[dhvlen] */
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_dhchap_reply) == 16, "Incorrect size");
+
+struct spdk_nvmf_dhchap_success1 {
+	uint8_t		auth_type;
+	uint8_t		auth_id;
+	uint8_t		reserved0[2];
+	uint16_t	t_id;
+	uint8_t		hl;
+	uint8_t		reserved1;
+	uint8_t		rvalid;
+	uint8_t		reserved2[7];
+	uint8_t		rval[0];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_dhchap_success1) == 16, "Incorrect size");
+
+struct spdk_nvmf_dhchap_success2 {
+	uint8_t		auth_type;
+	uint8_t		auth_id;
+	uint8_t		reserved0[2];
+	uint16_t	t_id;
+	uint8_t		reserved1[10];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_dhchap_success2) == 16, "Incorrect size");
+
+/** AUTH_Failure reason codes */
+#define SPDK_NVMF_AUTH_FAILURE 1
+
+/** AUTH_Failure reason code explanations */
+enum spdk_nvmf_auth_failure_reason {
+	SPDK_NVMF_AUTH_FAILED				= 0x1,
+	SPDK_NVMF_AUTH_PROTOCOL_UNUSABLE		= 0x2,
+	SPDK_NVMF_AUTH_SCC_MISMATCH			= 0x3,
+	SPDK_NVMF_AUTH_HASH_UNUSABLE			= 0x4,
+	SPDK_NVMF_AUTH_DHGROUP_UNUSABLE			= 0x5,
+	SPDK_NVMF_AUTH_INCORRECT_PAYLOAD		= 0x6,
+	SPDK_NVMF_AUTH_INCORRECT_PROTOCOL_MESSAGE	= 0x7,
+};
+
+struct spdk_nvmf_auth_failure {
+	uint8_t		auth_type;
+	uint8_t		auth_id;
+	uint8_t		reserved0[2];
+	uint16_t	t_id;
+	uint8_t		rc;
+	uint8_t		rce;
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_auth_failure) == 8, "Incorrect size");
 
 /* RDMA Fabric specific definitions below */
 
@@ -702,5 +871,9 @@ SPDK_STATIC_ASSERT(offsetof(struct spdk_nvme_tcp_r2t_hdr, r2to) == 12, "Incorrec
 SPDK_STATIC_ASSERT(offsetof(struct spdk_nvme_tcp_r2t_hdr, r2tl) == 16, "Incorrect offset");
 
 #pragma pack(pop)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __NVMF_SPEC_H__ */

@@ -1,6 +1,7 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2016 Intel Corporation.  All rights reserved.
  *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 /**
@@ -66,7 +67,6 @@ struct spdk_app_opts {
 
 	/* Hole at bytes 17-23. */
 	uint8_t	reserved17[7];
-
 	const char *rpc_addr; /* Can be UNIX domain socket path or IP address + TCP port */
 	const char *reactor_mask;
 	const char *tpoint_group_mask;
@@ -89,9 +89,10 @@ struct spdk_app_opts {
 	bool			no_pci;
 	bool			hugepage_single_segments;
 	bool			unlink_hugepage;
+	bool			no_huge;
 
-	/* Hole at bytes 83-85. */
-	uint8_t			reserved83[5];
+	/* Hole at bytes 84-87. */
+	uint8_t			reserved84[4];
 
 	const char		*hugedir;
 	enum spdk_log_level	print_level;
@@ -121,7 +122,7 @@ struct spdk_app_opts {
 	/**
 	 * for passing user-provided log call
 	 */
-	logfunc         *log;
+	spdk_log_cb		*log;
 
 	uint64_t		base_virtaddr;
 
@@ -129,7 +130,10 @@ struct spdk_app_opts {
 	 * The size of spdk_app_opts according to the caller of this library is used for ABI
 	 * compatibility. The library uses this field to know how many fields in this
 	 * structure are valid. And the library will populate any remaining fields with default values.
-	 * After that, new added fields should be put after opts_size.
+	 *
+	 * New fields should usually be added at the end of this structure. The only exception is
+	 * if using bytes from a reserved byte array after opts_size. In that case it is OK to use
+	 * some of those bytes, as long as the default value is specified as 0.
 	 */
 	size_t opts_size;
 
@@ -143,8 +147,12 @@ struct spdk_app_opts {
 	 */
 	bool disable_signal_handlers;
 
-	/* Hole at bytes 185-191. */
-	uint8_t reserved185[7];
+	bool interrupt_mode;
+
+	bool enforce_numa;
+
+	/* Hole at bytes 187-191. */
+	uint8_t reserved187[5];
 
 	/**
 	 * The allocated size for the message pool used by the threading library.
@@ -163,8 +171,35 @@ struct spdk_app_opts {
 	 * The vf_token is an UUID that shared between SR-IOV PF and VF.
 	 */
 	const char		*vf_token;
+
+	/**
+	 * Used to store lcore to CPU mappig to pass it to DPDK
+	 */
+	const char *lcore_map; /* lcore mapping */
+
+	/**
+	 * Log level for JSON RPC.
+	 */
+	enum spdk_log_level rpc_log_level;
+
+	/**
+	 * If non-NULL, a pointer to JSON RPC log file.
+	 */
+	FILE *rpc_log_file;
+
+	/**
+	 * Raw JSON configuration data and its size.
+	 * Cannot be used simultaneously with json_config_file option.
+	 */
+	void *json_data;
+	size_t json_data_size;
+
+	/**
+	 * If set, disable CPU claiming.
+	 */
+	bool disable_cpumask_locks;
 } __attribute__((packed));
-SPDK_STATIC_ASSERT(sizeof(struct spdk_app_opts) == 216, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_app_opts) == 253, "Incorrect size");
 
 /**
  * Initialize the default value of opts
@@ -272,11 +307,13 @@ typedef enum spdk_app_parse_args_rvals spdk_app_parse_args_rvals_t;
  * \param argv Array of command line arguments.
  * \param opts Default options for the application.
  * \param getopt_str String representing the app-specific command line parameters.
- * Characters in this string must not conflict with characters in SPDK_APP_GETOPT_STRING.
- * \param app_long_opts Array of full-name parameters. Can be NULL.
+ *        Characters in this string must not conflict with characters in SPDK_APP_GETOPT_STRING.
+ *        This argument is optional.
+ * \param app_long_opts Array of full-name parameters. This argument is optional.
  * \param parse Function pointer to call if an argument in getopt_str is found.
+ *        This argument is optional but only if getopt_str is not provided.
  * \param usage Function pointer to print usage messages for app-specific command
- *		line parameters.
+ *        line parameters. This argument is optional.
  *\return SPDK_APP_PARSE_ARGS_FAIL on failure, SPDK_APP_PARSE_ARGS_SUCCESS on
  *        success, SPDK_APP_PARSE_ARGS_HELP if '-h' passed as an option.
  */

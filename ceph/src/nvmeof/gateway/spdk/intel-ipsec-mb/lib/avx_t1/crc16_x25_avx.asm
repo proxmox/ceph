@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2020-2022, Intel Corporation
+;; Copyright (c) 2020-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,10 +25,10 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/os.asm"
-%include "include/reg_sizes.asm"
+%include "include/os.inc"
+%include "include/reg_sizes.inc"
 %include "include/crc32_refl_const.inc"
-%include "include/clear_regs.asm"
+%include "include/clear_regs.inc"
 %include "include/cet.inc"
 %include "include/error.inc"
 

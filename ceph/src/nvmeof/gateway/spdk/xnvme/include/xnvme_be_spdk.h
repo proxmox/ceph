@@ -1,5 +1,7 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef __INTERNAL_XNVME_BE_SPDK_H
 #define __INTERNAL_XNVME_BE_SPDK_H
 #include <pthread.h>
@@ -12,12 +14,21 @@
 #define XNVME_BE_SPDK_QPAIR_MAX 64
 #define XNVME_BE_SPDK_ALIGN     0x1000
 
+struct xnvme_be_spdk_iov_payload {
+	struct iovec *iov;
+	size_t iov_cnt;
+	size_t iov_pos;
+	size_t iov_offset;
+};
+
 struct xnvme_queue_spdk {
 	struct xnvme_queue_base base;
 
 	struct spdk_nvme_qpair *qpair;
 
-	uint8_t rsvd[224];
+	struct xnvme_be_spdk_iov_payload *iov_payloads;
+
+	uint8_t rsvd[216];
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_queue_spdk) == XNVME_BE_QUEUE_STATE_NBYTES,
 		    "Incorrect size")
@@ -48,7 +59,9 @@ struct xnvme_be_spdk_state {
 
 	uint8_t attached;
 
-	uint8_t _rsvd[39];
+	uint8_t _rsvd[7];
+
+	struct xnvme_be_spdk_iov_payload payload;
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_be_spdk_state) == XNVME_BE_STATE_NBYTES, "Incorrect size")
 

@@ -6,11 +6,14 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/nvme.h"
+#include "spdk_internal/nvme_util.h"
 #include "spdk/vmd.h"
 #include "spdk/nvme_zns.h"
 #include "spdk/env.h"
 #include "spdk/string.h"
 #include "spdk/log.h"
+
+#define DATA_BUFFER_STRING "Hello world!"
 
 struct ctrlr_entry {
 	struct spdk_nvme_ctrlr		*ctrlr;
@@ -80,13 +83,18 @@ read_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		exit(1);
 	}
 
+	if (strcmp(sequence->buf, DATA_BUFFER_STRING)) {
+		fprintf(stderr, "Read data doesn't match write data\n");
+		exit(1);
+	}
+
 	/*
 	 * The read I/O has completed.  Print the contents of the
 	 *  buffer, free the buffer, then mark the sequence as
 	 *  completed.  This will trigger the hello_world() function
 	 *  to exit its polling loop.
 	 */
-	printf("%s", sequence->buf);
+	printf("%s\n", sequence->buf);
 	spdk_free(sequence->buf);
 }
 
@@ -118,7 +126,7 @@ write_complete(void *arg, const struct spdk_nvme_cpl *completion)
 	} else {
 		spdk_free(sequence->buf);
 	}
-	sequence->buf = spdk_zmalloc(0x1000, 0x1000, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
+	sequence->buf = spdk_zmalloc(0x1000, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
 
 	rc = spdk_nvme_ns_cmd_read(ns_entry->ns, ns_entry->qpair, sequence->buf,
 				   0, /* LBA start */
@@ -203,7 +211,7 @@ hello_world(void)
 		sequence.buf = spdk_nvme_ctrlr_map_cmb(ns_entry->ctrlr, &sz);
 		if (sequence.buf == NULL || sz < 0x1000) {
 			sequence.using_cmb_io = 0;
-			sequence.buf = spdk_zmalloc(0x1000, 0x1000, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
+			sequence.buf = spdk_zmalloc(0x1000, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
 		}
 		if (sequence.buf == NULL) {
 			printf("ERROR: write buffer allocation failed\n");
@@ -227,11 +235,11 @@ hello_world(void)
 		}
 
 		/*
-		 * Print "Hello world!" to sequence.buf.  We will write this data to LBA
+		 * Print DATA_BUFFER_STRING to sequence.buf. We will write this data to LBA
 		 *  0 on the namespace, and then later read it back into a separate buffer
 		 *  to demonstrate the full I/O path.
 		 */
-		snprintf(sequence.buf, 0x1000, "%s", "Hello world!\n");
+		snprintf(sequence.buf, 0x1000, "%s", DATA_BUFFER_STRING);
 
 		/*
 		 * Write the data buffer to LBA 0 of this namespace.  "write_complete" and
@@ -374,7 +382,7 @@ usage(const char *program_name)
 	printf("\t[-d DPDK huge memory size in MB]\n");
 	printf("\t[-g use single file descriptor for DPDK memory segments]\n");
 	printf("\t[-i shared memory group ID]\n");
-	printf("\t[-r remote NVMe over Fabrics target address]\n");
+	spdk_nvme_transport_id_usage(stdout, 0);
 	printf("\t[-V enumerate VMD]\n");
 #ifdef DEBUG
 	printf("\t[-L enable debug logging]\n");
@@ -391,7 +399,7 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 	spdk_nvme_trid_populate_transport(&g_trid, SPDK_NVME_TRANSPORT_PCIE);
 	snprintf(g_trid.subnqn, sizeof(g_trid.subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
 
-	while ((op = getopt(argc, argv, "d:gi:r:L:V")) != -1) {
+	while ((op = getopt(argc, argv, "d:ghi:r:L:V")) != -1) {
 		switch (op) {
 		case 'V':
 			g_vmd = true;
@@ -430,6 +438,9 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			spdk_log_set_print_level(SPDK_LOG_DEBUG);
 #endif
 			break;
+		case 'h':
+			usage(argv[0]);
+			exit(EXIT_SUCCESS);
 		default:
 			usage(argv[0]);
 			return 1;
@@ -451,6 +462,7 @@ main(int argc, char **argv)
 	 * This library must be initialized first.
 	 *
 	 */
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	rc = parse_args(argc, argv, &opts);
 	if (rc != 0) {
@@ -492,13 +504,14 @@ main(int argc, char **argv)
 
 	printf("Initialization complete.\n");
 	hello_world();
+
+exit:
+	fflush(stdout);
 	cleanup();
 	if (g_vmd) {
 		spdk_vmd_fini();
 	}
 
-exit:
-	cleanup();
 	spdk_env_fini();
 	return rc;
 }

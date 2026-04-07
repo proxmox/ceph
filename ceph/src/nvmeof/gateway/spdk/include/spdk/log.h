@@ -12,6 +12,7 @@
 #ifndef SPDK_LOG_H
 #define SPDK_LOG_H
 
+#include "spdk/assert.h"
 #include "spdk/stdinc.h"
 #include "spdk/queue.h"
 
@@ -29,14 +30,51 @@ extern "C" {
  * \param format Format string to the message.
  * \param args Additional arguments for format string.
  */
-typedef void logfunc(int level, const char *file, const int line,
-		     const char *func, const char *format, va_list args);
+typedef void spdk_log_cb(int level, const char *file, const int line,
+			 const char *func, const char *format, va_list args);
+
+/**
+ * for opening user-provided logger
+ *
+ * \param ctx User-defined context for log open/close
+ */
+typedef void spdk_log_open_cb(void *ctx);
+
+/**
+ * for closing user-provided logger
+ *
+ * \param ctx User-defined context for log open/close
+ */
+typedef void spdk_log_close_cb(void *ctx);
+
+struct spdk_log_opts {
+	/**
+	 * The size of spdk_log_opts according to the caller of this library is used for ABI
+	 * compatibility.  The library uses this field to know how many fields in this
+	 * structure are valid. And the library will populate any remaining fields with default values.
+	 * New added fields should be put at the end of the struct.
+	 */
+	size_t			size;
+	spdk_log_cb		*log;
+	spdk_log_open_cb	*open;
+	spdk_log_close_cb	*close;
+	void			*user_ctx;
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_log_opts) == 40, "Incorrect size");
 
 /**
  * Initialize the logging module. Messages prior
  * to this call will be dropped.
  */
-void spdk_log_open(logfunc *logf);
+void spdk_log_open(spdk_log_cb *log);
+
+/**
+ * Extended API to initialize the logging module. Messages prior
+ * to this call will be dropped.
+ *
+ * \param opts Options to provide log related functions with user-defined context for open/close
+ */
+void spdk_log_open_ext(struct spdk_log_opts *opts);
 
 /**
  * Close the currently active log. Messages after this call
@@ -113,28 +151,46 @@ enum spdk_log_level spdk_log_get_print_level(void);
 	spdk_log(SPDK_LOG_ERROR, __FILE__, __LINE__, __func__, __VA_ARGS__)
 #define SPDK_PRINTF(...) \
 	spdk_log(SPDK_LOG_NOTICE, NULL, -1, NULL, __VA_ARGS__)
-#define SPDK_INFOLOG(FLAG, ...)									\
+#define SPDK_INFOLOG(flag, ...)									\
 	do {											\
-		extern struct spdk_log_flag SPDK_LOG_##FLAG;					\
-		if (SPDK_LOG_##FLAG.enabled) {							\
+		extern struct spdk_log_flag SPDK_LOG_##flag;					\
+		if (SPDK_LOG_##flag.enabled) {							\
 			spdk_log(SPDK_LOG_INFO, __FILE__, __LINE__, __func__, __VA_ARGS__);	\
 		}										\
 	} while (0)
 
+#define SPDK_ERRLOG_RATELIMIT(...) \
+	do {							\
+		static uint64_t last_tsc = 0;			\
+		static uint64_t squashed = 0;			\
+		uint64_t tsc = spdk_get_ticks();		\
+		if (tsc > last_tsc + spdk_get_ticks_hz()) {	\
+			last_tsc = tsc;				\
+			SPDK_ERRLOG(__VA_ARGS__);		\
+			if (squashed > 0) {			\
+				SPDK_ERRLOG("(same message squashed %" PRIu64 " times)\n", \
+					    squashed);		\
+				squashed = 0;			\
+			}					\
+		} else {					\
+			squashed++;				\
+		}						\
+	} while (0)
+
 #ifdef DEBUG
-#define SPDK_DEBUGLOG(FLAG, ...)								\
+#define SPDK_DEBUGLOG(flag, ...)								\
 	do {											\
-		extern struct spdk_log_flag SPDK_LOG_##FLAG;					\
-		if (SPDK_LOG_##FLAG.enabled) {							\
+		extern struct spdk_log_flag SPDK_LOG_##flag;					\
+		if (SPDK_LOG_##flag.enabled) {							\
 			spdk_log(SPDK_LOG_DEBUG, __FILE__, __LINE__, __func__, __VA_ARGS__);	\
 		}										\
 	} while (0)
 
-#define SPDK_LOGDUMP(FLAG, LABEL, BUF, LEN)				\
+#define SPDK_LOGDUMP(flag, label, buf, len)				\
 	do {								\
-		extern struct spdk_log_flag SPDK_LOG_##FLAG;		\
-		if (SPDK_LOG_##FLAG.enabled) {				\
-			spdk_log_dump(stderr, (LABEL), (BUF), (LEN));	\
+		extern struct spdk_log_flag SPDK_LOG_##flag;		\
+		if (SPDK_LOG_##flag.enabled) {				\
+			spdk_log_dump(stderr, (label), (buf), (len));	\
 		}							\
 	} while (0)
 
@@ -171,6 +227,33 @@ void spdk_vlog(enum spdk_log_level level, const char *file, const int line, cons
 	       const char *format, va_list ap);
 
 /**
+ * Write messages to the log file. If \c level is set to \c SPDK_LOG_DISABLED,
+ * this log message won't be written.
+ *
+ * \param fp File to hold the log.
+ * \param file Name of the current source file.
+ * \param line Current source line number.
+ * \param func Current source function name.
+ * \param format Format string to the message.
+ */
+void spdk_flog(FILE *fp, const char *file, const int line, const char *func,
+	       const char *format, ...) __attribute__((__format__(__printf__, 5, 6)));
+
+/**
+ * Same as spdk_flog except that instead of being called with variable number of
+ * arguments it is called with an argument list as defined in stdarg.h
+ *
+ * \param fp File to hold the log.
+ * \param file Name of the current source file.
+ * \param line Current source line number.
+ * \param func Current source function name.
+ * \param format Format string to the message.
+ * \param ap printf arguments
+ */
+void spdk_vflog(FILE *fp, const char *file, const int line, const char *func,
+		const char *format, va_list ap);
+
+/**
  * Log the contents of a raw buffer to a file.
  *
  * \param fp File to hold the log.
@@ -194,14 +277,14 @@ struct spdk_log_flag {
  */
 void spdk_log_register_flag(const char *name, struct spdk_log_flag *flag);
 
-#define SPDK_LOG_REGISTER_COMPONENT(FLAG) \
-struct spdk_log_flag SPDK_LOG_##FLAG = { \
-	.name = #FLAG, \
+#define SPDK_LOG_REGISTER_COMPONENT(flag) \
+struct spdk_log_flag SPDK_LOG_##flag = { \
+	.name = #flag, \
 	.enabled = false, \
 }; \
-__attribute__((constructor)) static void register_flag_##FLAG(void) \
+__attribute__((constructor)) static void register_flag_##flag(void) \
 { \
-	spdk_log_register_flag(#FLAG, &SPDK_LOG_##FLAG); \
+	spdk_log_register_flag(#flag, &SPDK_LOG_##flag); \
 }
 
 /**
@@ -228,20 +311,22 @@ struct spdk_log_flag *spdk_log_get_next_flag(struct spdk_log_flag *flag);
 bool spdk_log_get_flag(const char *flag);
 
 /**
- * Enable the log flag.
+ * Enable the log flag.  The name of the flag can be a glob pattern (as expanded by fnmatch(3)), in
+ * which case all matching flags will be set.
  *
  * \param flag Log flag to be enabled.
  *
- * \return 0 on success, -1 on failure.
+ * \return 0 on success, negative errno on failure.
  */
 int spdk_log_set_flag(const char *flag);
 
 /**
- * Clear a log flag.
+ * Clear a log flag.  The name of the flag can be a glob pattern (as expanded by fnmatch(3)), in
+ * which case all matching flags will be cleared.
  *
  * \param flag Log flag to clear.
  *
- * \return 0 on success, -1 on failure.
+ * \return 0 on success, negative errno on failure.
  */
 int spdk_log_clear_flag(const char *flag);
 

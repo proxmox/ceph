@@ -1,6 +1,7 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
+ *   Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #ifndef SPDK_INTERNAL_LVOLSTORE_H
@@ -9,6 +10,7 @@
 #include "spdk/blob.h"
 #include "spdk/lvol.h"
 #include "spdk/queue.h"
+#include "spdk/tree.h"
 #include "spdk/uuid.h"
 
 /* Default size of blobstore cluster */
@@ -26,11 +28,10 @@ struct spdk_lvs_req {
 };
 
 struct spdk_lvs_grow_req {
+	struct spdk_lvs_req	base;
 	spdk_lvs_op_complete	cb_fn;
 	void			*cb_arg;
-	struct spdk_lvol_store	*lvol_store;
 	struct lvol_store_bdev	*lvs_bdev;
-	int			lvserrno;
 	int			lvol_cnt;
 };
 
@@ -38,9 +39,19 @@ struct spdk_lvol_req {
 	spdk_lvol_op_complete   cb_fn;
 	void                    *cb_arg;
 	struct spdk_lvol	*lvol;
+	/* Only set while lvol is being deleted and has a clone. */
+	struct spdk_lvol	*clone_lvol;
 	size_t			sz;
 	struct spdk_io_channel	*channel;
 	char			name[SPDK_LVOL_NAME_MAX];
+};
+
+struct spdk_lvol_copy_req {
+	spdk_lvol_op_complete	cb_fn;
+	void			*cb_arg;
+	struct spdk_lvol	*lvol;
+	struct spdk_io_channel	*channel;
+	struct spdk_bs_dev	*ext_dev;
 };
 
 struct spdk_lvs_with_handle_req {
@@ -62,7 +73,17 @@ struct spdk_lvol_with_handle_req {
 	spdk_lvol_op_with_handle_complete cb_fn;
 	void				*cb_arg;
 	struct spdk_lvol		*lvol;
+	struct spdk_lvol		*origlvol;
 };
+
+struct spdk_lvol_bs_dev_req {
+	struct spdk_lvol	*lvol;
+	struct spdk_bs_dev	*bs_dev;
+	spdk_lvol_op_complete	cb_fn;
+	void			*cb_arg;
+};
+
+struct spdk_lvs_degraded_lvol_set;
 
 struct spdk_lvol_store {
 	struct spdk_bs_dev		*bs_dev;
@@ -74,10 +95,15 @@ struct spdk_lvol_store {
 	int				lvols_opened;
 	TAILQ_HEAD(, spdk_lvol)		lvols;
 	TAILQ_HEAD(, spdk_lvol)		pending_lvols;
+	TAILQ_HEAD(, spdk_lvol)		retry_open_lvols;
+	bool				load_esnaps;
 	bool				on_list;
 	TAILQ_ENTRY(spdk_lvol_store)	link;
 	char				name[SPDK_LVS_NAME_MAX];
 	char				new_name[SPDK_LVS_NAME_MAX];
+	spdk_bs_esnap_dev_create	esnap_bs_dev_create;
+	RB_HEAD(degraded_lvol_sets_tree, spdk_lvs_degraded_lvol_set)	degraded_lvol_sets_tree;
+	struct spdk_thread		*thread;
 };
 
 struct spdk_lvol {
@@ -88,12 +114,13 @@ struct spdk_lvol {
 	char				name[SPDK_LVOL_NAME_MAX];
 	struct spdk_uuid		uuid;
 	char				uuid_str[SPDK_UUID_STRING_LEN];
-	bool				thin_provision;
 	struct spdk_bdev		*bdev;
 	int				ref_count;
 	bool				action_in_progress;
 	enum blob_clear_method		clear_method;
-	TAILQ_ENTRY(spdk_lvol) link;
+	TAILQ_ENTRY(spdk_lvol)		link;
+	struct spdk_lvs_degraded_lvol_set *degraded_set;
+	TAILQ_ENTRY(spdk_lvol)		degraded_link;
 };
 
 struct lvol_store_bdev *vbdev_lvol_store_first(void);
@@ -104,5 +131,11 @@ void spdk_lvol_resize(struct spdk_lvol *lvol, uint64_t sz, spdk_lvol_op_complete
 
 void spdk_lvol_set_read_only(struct spdk_lvol *lvol, spdk_lvol_op_complete cb_fn,
 			     void *cb_arg);
+
+int spdk_lvs_esnap_missing_add(struct spdk_lvol_store *lvs, struct spdk_lvol *lvol,
+			       const void *esnap_id, uint32_t id_len);
+void spdk_lvs_esnap_missing_remove(struct spdk_lvol *lvol);
+bool spdk_lvs_notify_hotplug(const void *esnap_id, uint32_t id_len,
+			     spdk_lvol_op_with_handle_complete cb_fn, void *cb_arg);
 
 #endif /* SPDK_INTERNAL_LVOLSTORE_H */

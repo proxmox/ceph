@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /*
@@ -86,6 +86,11 @@ void __wrap_ocf_user_part_sort(struct ocf_cache *cache)
 
 int __wrap_ocf_metadata_flush_superblock(struct ocf_cache *cache)
 {
+}
+
+bool __wrap_ocf_cache_is_standby(struct ocf_cache *cache)
+{
+	return false;
 }
 
 /* Helper function for test prepration */

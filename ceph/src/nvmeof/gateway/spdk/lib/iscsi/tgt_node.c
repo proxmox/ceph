@@ -17,6 +17,7 @@
 #include "iscsi/portal_grp.h"
 #include "iscsi/init_grp.h"
 #include "iscsi/task.h"
+#include "spdk/histogram_data.h"
 
 #define MAX_TMPBUF 4096
 #define MAX_MASKBUF 128
@@ -686,6 +687,9 @@ _iscsi_tgt_node_destruct(void *cb_arg, int rc)
 	pthread_mutex_unlock(&g_iscsi.mutex);
 
 	pthread_mutex_destroy(&target->mutex);
+
+	spdk_histogram_data_free(target->histogram);
+
 	free(target);
 
 	if (destruct_cb_fn) {
@@ -1213,7 +1217,7 @@ iscsi_tgt_node_cleanup_luns(struct spdk_iscsi_conn *conn,
 		task->scsi.initiator_port = conn->initiator_port;
 		task->scsi.lun = lun;
 
-		iscsi_op_abort_task_set(task, SPDK_SCSI_TASK_FUNC_LUN_RESET);
+		iscsi_op_abort_task_set(task, SPDK_SCSI_TASK_FUNC_TARGET_RESET);
 	}
 
 	return 0;
@@ -1341,6 +1345,26 @@ iscsi_tgt_node_info_json(struct spdk_iscsi_tgt_node *target,
 }
 
 static void
+iscsi_tgt_node_histogram_config_json(struct spdk_iscsi_tgt_node *target,
+				     struct spdk_json_write_ctx *w)
+{
+	if (!target->histogram) {
+		return;
+	}
+
+	spdk_json_write_object_begin(w);
+	spdk_json_write_named_string(w, "method", "iscsi_enable_histogram");
+
+	spdk_json_write_named_object_begin(w, "params");
+	spdk_json_write_named_string(w, "name", target->name);
+
+	spdk_json_write_named_bool(w, "enable", true);
+	spdk_json_write_object_end(w);
+
+	spdk_json_write_object_end(w);
+}
+
+static void
 iscsi_tgt_node_config_json(struct spdk_iscsi_tgt_node *target,
 			   struct spdk_json_write_ctx *w)
 {
@@ -1352,6 +1376,8 @@ iscsi_tgt_node_config_json(struct spdk_iscsi_tgt_node *target,
 	iscsi_tgt_node_info_json(target, w);
 
 	spdk_json_write_object_end(w);
+
+	iscsi_tgt_node_histogram_config_json(target, w);
 }
 
 void
@@ -1372,4 +1398,25 @@ iscsi_tgt_nodes_config_json(struct spdk_json_write_ctx *w)
 	TAILQ_FOREACH(target, &g_iscsi.target_head, tailq) {
 		iscsi_tgt_node_config_json(target, w);
 	}
+}
+
+int
+iscsi_tgt_node_enable_histogram(struct spdk_iscsi_tgt_node *target, bool enable)
+{
+	if (enable) {
+		if (!target->histogram) {
+			target->histogram = spdk_histogram_data_alloc();
+			if (target->histogram == NULL) {
+				SPDK_ERRLOG("could not allocate histogram\n");
+				return -ENOMEM;
+			}
+		}
+	} else {
+		if (target->histogram) {
+			spdk_histogram_data_free(target->histogram);
+			target->histogram = NULL;
+		}
+	}
+
+	return 0;
 }

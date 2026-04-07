@@ -6,6 +6,37 @@
 IXGBE Driver
 ============
 
+Supported Chipsets and NICs
+---------------------------
+
+- Intel 82599EB 10 Gigabit Ethernet Controller
+- Intel 82598EB 10 Gigabit Ethernet Controller
+- Intel 82599ES 10 Gigabit Ethernet Controller
+- Intel 82599EN 10 Gigabit Ethernet Controller
+- Intel Ethernet Controller X540-AT2
+- Intel Ethernet Controller X550-BT2
+- Intel Ethernet Controller X550-AT2
+- Intel Ethernet Controller X550-AT
+- Intel Ethernet Converged Network Adapter X520-SR1
+- Intel Ethernet Converged Network Adapter X520-SR2
+- Intel Ethernet Converged Network Adapter X520-LR1
+- Intel Ethernet Converged Network Adapter X520-DA1
+- Intel Ethernet Converged Network Adapter X520-DA2
+- Intel Ethernet Converged Network Adapter X520-DA4
+- Intel Ethernet Converged Network Adapter X520-QDA1
+- Intel Ethernet Converged Network Adapter X520-T2
+- Intel 10 Gigabit AF DA Dual Port Server Adapter
+- Intel 10 Gigabit AT Server Adapter
+- Intel 10 Gigabit AT2 Server Adapter
+- Intel 10 Gigabit CX4 Dual Port Server Adapter
+- Intel 10 Gigabit XF LR Server Adapter
+- Intel 10 Gigabit XF SR Dual Port Server Adapter
+- Intel 10 Gigabit XF SR Server Adapter
+- Intel Ethernet Converged Network Adapter X540-T1
+- Intel Ethernet Converged Network Adapter X540-T2
+- Intel Ethernet Converged Network Adapter X550-T1
+- Intel Ethernet Converged Network Adapter X550-T2
+
 Vector PMD for IXGBE
 --------------------
 
@@ -15,8 +46,6 @@ The wider register gives space to hold multiple packet buffers so as to save ins
 
 There is no change to PMD API. The RX/TX handler are the only two entries for vPMD packet I/O.
 They are transparently registered at runtime RX/TX execution if all condition checks pass.
-
-1.  To date, only an SSE version of IX GBE vPMD is available.
 
 Some constraints apply as pre-conditions for specific optimizations on bulk packet transfers.
 The following sections explain RX and TX constraints in the vPMD.
@@ -39,15 +68,13 @@ Ensure that the following pre-conditions are satisfied:
 
 *   (rxq->nb_rx_desc % rxq->rx_free_thresh) == 0
 
-*   rxq->nb_rx_desc  < (IXGBE_MAX_RING_DESC - RTE_PMD_IXGBE_RX_MAX_BURST)
+*   rxq->nb_rx_desc >= IXGBE_MIN_RING_DESC
+
+*   rxq->nb_rx_desc <= IXGBE_MAX_RING_DESC
 
 These conditions are checked in the code.
 
-Scattered packets are not supported in this mode.
-If an incoming packet is greater than the maximum acceptable length of one "mbuf" data size (by default, the size is 2 KB),
-vPMD for RX would be disabled.
-
-By default, IXGBE_MAX_RING_DESC is set to 4096 and RTE_PMD_IXGBE_RX_MAX_BURST is set to 32.
+By default, IXGBE_MAX_RING_DESC is set to 8192 and RTE_PMD_IXGBE_RX_MAX_BURST is set to 32.
 
 Windows Prerequisites and Pre-conditions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -329,37 +356,6 @@ the VFs which are required.::
 Currently hot-plugging of representor ports is not supported so all required
 representors must be specified on the creation of the PF.
 
-Supported Chipsets and NICs
----------------------------
-
-- Intel 82599EB 10 Gigabit Ethernet Controller
-- Intel 82598EB 10 Gigabit Ethernet Controller
-- Intel 82599ES 10 Gigabit Ethernet Controller
-- Intel 82599EN 10 Gigabit Ethernet Controller
-- Intel Ethernet Controller X540-AT2
-- Intel Ethernet Controller X550-BT2
-- Intel Ethernet Controller X550-AT2
-- Intel Ethernet Controller X550-AT
-- Intel Ethernet Converged Network Adapter X520-SR1
-- Intel Ethernet Converged Network Adapter X520-SR2
-- Intel Ethernet Converged Network Adapter X520-LR1
-- Intel Ethernet Converged Network Adapter X520-DA1
-- Intel Ethernet Converged Network Adapter X520-DA2
-- Intel Ethernet Converged Network Adapter X520-DA4
-- Intel Ethernet Converged Network Adapter X520-QDA1
-- Intel Ethernet Converged Network Adapter X520-T2
-- Intel 10 Gigabit AF DA Dual Port Server Adapter
-- Intel 10 Gigabit AT Server Adapter
-- Intel 10 Gigabit AT2 Server Adapter
-- Intel 10 Gigabit CX4 Dual Port Server Adapter
-- Intel 10 Gigabit XF LR Server Adapter
-- Intel 10 Gigabit XF SR Dual Port Server Adapter
-- Intel 10 Gigabit XF SR Server Adapter
-- Intel Ethernet Converged Network Adapter X540-T1
-- Intel Ethernet Converged Network Adapter X540-T2
-- Intel Ethernet Converged Network Adapter X550-T1
-- Intel Ethernet Converged Network Adapter X550-T2
-
 .. _net_ixgbe_testpmd_commands:
 
 Testpmd driver specific commands
@@ -461,3 +457,17 @@ show bypass config
 Show the bypass configuration for a bypass enabled NIC using the lowest port on the NIC::
 
    testpmd> show bypass config (port_id)
+
+
+Secondary Process Support
+-------------------------
+
+IXGBE Physical Function Driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Control plane operations are currently not supported in secondary processes.
+
+IXGBE Virtual Function Driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Control plane operations are currently not supported in secondary processes.

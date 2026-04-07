@@ -430,7 +430,7 @@ launch_next_test(void *arg)
 	static uint32_t last_fail_count = 0;
 	static uint32_t current_test = 0;
 
-	assert(spdk_get_thread() == spdk_thread_get_app_thread());
+	assert(spdk_thread_is_app_thread(NULL));
 
 	if (current_test != 0) {
 		const char *name = g_tests[current_test - 1].name;
@@ -496,6 +496,7 @@ main(int argc, char **argv)
 	opts.name = "spdk_lock_test";
 	snprintf(mask, sizeof(mask), "0x%x", (1 << SPDK_COUNTOF(g_thread)) - 1);
 	opts.reactor_mask = mask;
+	opts.rpc_addr = NULL;
 
 	spdk_app_start(&opts, start_tests, NULL);
 

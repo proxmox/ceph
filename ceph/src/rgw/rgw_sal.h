@@ -163,6 +163,7 @@ static constexpr uint32_t FLAG_PREVENT_VERSIONING = 0x0002;
 // if cannot do all elements of op, do as much as possible (e.g.,
 // delete object where head object is missing)
 static constexpr uint32_t FLAG_FORCE_OP = 0x0004;
+static constexpr uint32_t FLAG_SKIP_UPDATE_OLH = 0x0008;
 
 enum class RGWRestoreStatus : uint8_t {
   None  = 0,
@@ -935,7 +936,10 @@ class Bucket {
                                     uint64_t num_objs, optional_yield y) = 0;
     /** Change the owner of this bucket in the backing store.  Current owner must be set.  Does not
      * change ownership of the objects in the bucket. */
-    virtual int chown(const DoutPrefixProvider* dpp, const rgw_owner& new_owner, optional_yield y) = 0;
+    virtual int chown(const DoutPrefixProvider* dpp,
+                      const rgw_owner& new_owner,
+                      const std::string& new_owner_name,
+                      optional_yield y) = 0;
     /** Store the cached bucket info into the backing store */
     virtual int put_info(const DoutPrefixProvider* dpp, bool exclusive, ceph::real_time mtime, optional_yield y) = 0;
     /** Get the owner of this bucket */
@@ -1160,7 +1164,10 @@ class Object {
         std::list<rgw_obj_index_key>* remove_objs{nullptr};
         ceph::real_time expiration_time;
         ceph::real_time unmod_since;
+        ceph::real_time last_mod_time_match;
         ceph::real_time mtime;
+        std::optional<uint64_t> size_match;
+        const char *if_match{nullptr};
         bool high_precision_time{false};
         rgw_zone_set* zones_trace{nullptr};
 	bool abortmp{false};
@@ -1523,7 +1530,9 @@ public:
 		       std::string& tag, ACLOwner& owner,
 		       uint64_t olh_epoch,
 		       rgw::sal::Object* target_obj,
-                       prefix_map_t& processed_prefixes) = 0;
+           prefix_map_t& processed_prefixes,
+           const char *if_match = nullptr,
+           const char *if_nomatch = nullptr) = 0;
   /** Cleanup orphaned parts caused by racing condition involving part upload retry */
   virtual int cleanup_orphaned_parts(const DoutPrefixProvider *dpp,
                                      CephContext *cct, optional_yield y,

@@ -4,10 +4,11 @@
  NVMe-over-Fabrics
 ===================
 
-NVMe supports multiple transports_, **PCIe** for locally attached devices,
-**TCP** and **RDMA** (iWRAP, InifiniBand, RoCE) for access over a networked
-fabric. The use of NVMe over a networked fabrics is defined by the NVMe-oF_
-specfication and often referred to a NVMe-over-Fabrics or just **fabrics**.
+NVMe supports multiple memory and message-based transports. **PCIe** for
+locally attached devices, **TCP** and **RDMA** (iWRAP, InifiniBand, RoCE) for
+access over a networked fabric. The use of NVMe over a networked fabrics is
+defined by the :xref-nvme-specs:`NVMe specifications<>` and often referred to a
+NVMe-over-Fabrics or just **fabrics**.
 
 In a fabrics setup, one machine typically has a bunch of NVMe devices attached
 via PCIe, these are then **exported** aka made accessible over a networked
@@ -47,7 +48,7 @@ is available on the system in ``/dev/nvme0n1`` and it has PCIe identifier
 
 It is assumed that both the **initiator**, as well as the **target**, are
 running Debian Linux / Bullseye and that **xNVMe** is installed according to
-the :ref:`sec-getting-started` section. Additonally, the **xNVMe** source repos
+the :ref:`sec-gs` section. Additonally, the **xNVMe** source repos
 is available at ``${XNVME_REPOS}``.
 
 When running the commands/scripts in the following sections, then it is assumed
@@ -93,7 +94,7 @@ Exporting Targets using SPDK
 ----------------------------
 
 Assuming that you have build and installed **xNVMe** as described in the
-:ref:`sec-getting-started` section, then you have the **xNVMe** repository
+:ref:`sec-gs` section, then you have the **xNVMe** repository
 available. We will be using the **SPDK** subproject from it, as it is already
 build and available for use.
 
@@ -107,8 +108,9 @@ Or, by running the script:
 ``${XNVME_REPOS}/docs/tutorial/fabrics/fabrics_target_spdk.sh``
 
 .. note:: For additional documentation on the setup of fabrics using SPDK, then
-   consult the SPDK documentation on SPDK-NVMe-oF_, it has more details and
-   pointers on SPDK specifics and a nice description of the ``NQN`` definition.
+   consult the SPDK documentation on :xref-spdk-nvmeof:`SPDK-NVMe-oF<>`, it has
+   more details and pointers on SPDK specifics and a nice description of the
+   ``NQN`` definition.
 
 Initiator Setup
 ===============
@@ -147,6 +149,16 @@ Connect to the exported fabrics endpoint using **nvme-cli**:
 Or, by running the script:
 ``${XNVME_REPOS}/docs/tutorial/fabrics/fabrics_initiator_nvmecli.sh``
 
-.. _SPDK-NVMe-oF: https://spdk.io/doc/nvmf.html
-.. _transports: https://nvmexpress.org/developers/nvme-transport-specifications/
-.. _NVMe-oF: https://nvmexpress.org/developers/nvme-transport-specifications/
+Solving performance issues
+--------------------------
+
+The performance of NVMe-over-Fabrics should be similar to the performance of NVMe-over-PCIe.
+If the NVMe-over-Fabrics setup is not performing as expected, there are a couple of things to try.
+
+First, if the **initiator** and **target** are the same machine, e.g., if the localhost IP is used, then it is important for performance that the **initiator** and **target** processes are on separate CPU cores. This can typically be achieved by using ``taskset`` or passing the commandline option ``--cpumask`` to fio or the SPDK nvmf_tgt app. If the processes are on same CPU core it can lead to CPU congestion.
+
+If the **initiator** and **target** are on different machines, then the bandwidth of their network interfaces can be a limiting factor. As such, it is advisable to use the fastest possible network interfaces. Additonally, if the machines are connected directly, that is, not through a switch or similar, then performance can also be improved by adjusting the MTU of the network cards to be as high as supported.
+This can be done by using this command: ``ip link set dev ${NETWORK_INTERFACE} mtu ${DESIRED_MTU}``.
+
+If it is not possible to saturate the device with the available network card, the I/O bandwidth can be increased through latency hiding by using a greater block size and/or io-depth. 
+

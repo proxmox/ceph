@@ -28,8 +28,8 @@
 **********************************************************************/
 /*
 void gist_aes_gcm_dec_##mode(                                       \
-    const struct gcm_key_data *key_data,                            \
-    struct gcm_context_data *context,                               \
+    const struct isal_gcm_key_data *key_data,                       \
+    struct isal_gcm_context_data *context,                          \
     uint8_t *out,                                                   \
     uint8_t const *in,                                              \
     uint64_t len,                                                   \
@@ -136,7 +136,7 @@ START_FUNC(enc,KEY_LEN,_nt_)
 1:
     cbnz            aad_len,1f         /* aad_len >16,skip */
     rbit            vAadHash.16b,vLeftDat.16b
-    b               24f                 /* aad_len <=16, skip aadhash caculate */
+    b               24f                 /* aad_len <=16, skip aadhash calculate */
 1:
     /* aad_len > 16 */
     ldr             qAadHash,[aad],16
@@ -379,7 +379,7 @@ START_FUNC(dec,KEY_LEN,_nt_)
 1:
     cbnz            aad_len,1f         /* aad_len >16,skip */
     rbit            vAadHash.16b,vLeftDat.16b
-    b               24f                 /* aad_len <=16, skip aadhash caculate */
+    b               24f                 /* aad_len <=16, skip aadhash calculate */
 1:
     /* aad_len > 16 */
     ldr             qAadHash,[aad],16

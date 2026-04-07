@@ -1,6 +1,7 @@
-// Copyright (C) Simon A. F. Lund <simon.lund@samsung.com>
-// Copyright (C) Michael Bang <mi.bang@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef __INTERNAL_XNVME_BE_VFIO_H
 #define __INTERNAL_XNVME_BE_VFIO_H
 #include <errno.h>
@@ -11,16 +12,18 @@
 #include <xnvme_be.h>
 #include <xnvme_queue.h>
 
+#define XNVME_BE_VFIO_NQUEUES_MAX 64
+
 struct xnvme_be_vfio_state {
 	struct nvme_ctrl *ctrl;
 	unsigned long long qidmap; // Queue identifier bit map
-	uint queue_id;             // Next queue id to be created on ctrl
 
-	struct nvme_sq *sq_sync;   // Submission queue for synchronous IOs
-	struct nvme_cq *cq_sync;   // Completion queue for synchronous IOs
-	struct nvme_cqe *cqe_sync; // Completion queue entry for synchronous IOs
+	struct nvme_sq *sq_sync; // Submission queue for synchronous IOs
+	struct nvme_cq *cq_sync; // Completion queue for synchronous IOs
 
-	uint8_t _rsvd[78];
+	int *efds; // Completion event FDs
+	int nefds; // Number of completion event FDs
+	uint8_t _rvds[82];
 };
 XNVME_STATIC_ASSERT(sizeof(struct xnvme_be_vfio_state) == XNVME_BE_STATE_NBYTES, "Incorrect size")
 

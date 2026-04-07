@@ -4,62 +4,79 @@
 #  All rights reserved.
 #
 shopt -s extglob
-git_repo_abi="https://github.com/spdk/spdk-abi.git"
-
-function get_spdk_abi() {
-	local dest=$1
-	mkdir -p $dest
-	if [[ -d $SPDK_ABI_DIR ]]; then
-		echo "spdk-abi found at $SPDK_ABI_DIR"
-		cp -r "$SPDK_ABI_DIR"/* "$dest/"
-	else
-		# In case that someone run test manually and did not set existing
-		# spdk-abi directory via SPDK_ABI_DIR
-		echo "spdk-abi has not been found at $SPDK_ABI_DIR, cloning"
-		git clone $git_repo_abi "$dest"
-	fi
-}
-
-function get_release_branch() {
-	tag=$(git describe --tags --abbrev=0 --exclude=LTS --exclude=*-pre)
-	branch="${tag:0:6}.x"
-	echo "$branch"
-}
 
 if [ "$(uname -s)" = "FreeBSD" ]; then
 	echo "Not testing for shared object dependencies on FreeBSD."
-	exit 0
-fi
-
-rootdir=$(readlink -f $(dirname $0)/../..)
-
-if [[ ! -f $1 ]]; then
-	echo "ERROR: SPDK test configuration not specified"
 	exit 1
 fi
 
-source $1
+testdir=$(readlink -f $(dirname $0))
+rootdir=$(readlink -f $testdir/../..)
+
+function usage() {
+	script_name="$(basename $0)"
+	echo "Usage: $script_name"
+	echo "    -c, --config-file     Rebuilds SPDK according to config file from autotest"
+	echo "    -a, --spdk-abi-path   Use spdk-abi from specified path, otherwise"
+	echo "                          latest version is pulled and deleted after test"
+	echo "        --release=RELEASE Compare ABI against RELEASE"
+	echo "    -h, --help            Print this help"
+	echo "Example:"
+	echo "$script_name -c ./autotest.config -a /path/to/spdk-abi"
+}
+
+# Parse input arguments #
+while getopts 'hc:a:-:' optchar; do
+	case "$optchar" in
+		-)
+			case "$OPTARG" in
+				help)
+					usage
+					exit 0
+					;;
+				config-file=*)
+					config_file="$(readlink -f ${OPTARG#*=})"
+					;;
+				spdk-abi-path=*)
+					user_abi_dir="$(readlink -f ${OPTARG#*=})"
+					;;
+				release=*)
+					RELEASE="${OPTARG#*=}"
+					;;
+				*) exit 1 ;;
+			esac
+			;;
+		h)
+			usage
+			exit 0
+			;;
+		c) config_file="$(readlink -f ${OPTARG#*=})" ;;
+		a) user_abi_dir="$(readlink -f ${OPTARG#*=})" ;;
+		*) exit 1 ;;
+	esac
+done
+
 source "$rootdir/test/common/autotest_common.sh"
 
+if [[ -e $config_file ]]; then
+	source "$config_file"
+fi
+
+source_abi_dir="${user_abi_dir:-"$testdir/abi"}"
 libdir="$rootdir/build/lib"
 libdeps_file="$rootdir/mk/spdk.lib_deps.mk"
-suppression_file="$HOME/abigail_suppressions.ini"
 
 function check_header_filenames() {
 	local dups_found=0
 
-	xtrace_disable
-
-	include_headers=$(git ls-files -- include/spdk include/spdk_internal | xargs -n 1 basename)
+	include_headers=$(git ls-files -- $rootdir/include/spdk $rootdir/include/spdk_internal | xargs -n 1 basename)
 	dups=
 	for file in $include_headers; do
-		if [[ $(git ls-files "lib/**/$file" "module/**/$file" --error-unmatch 2> /dev/null) ]]; then
+		if [[ $(git ls-files "$rootdir/lib/**/$file" "$rootdir/module/**/$file" --error-unmatch 2> /dev/null) ]]; then
 			dups+=" $file"
 			dups_found=1
 		fi
 	done
-
-	xtrace_restore
 
 	if ((dups_found == 1)); then
 		echo "Private header file(s) found with same name as public header file."
@@ -70,38 +87,78 @@ function check_header_filenames() {
 	fi
 }
 
+function get_release() {
+	local tag version major minor patch suffix
+
+	if [[ -n "$1" ]]; then
+		version="$1"
+	else
+		IFS='.-' read -r major minor patch suffix < "$rootdir/VERSION"
+		version="v$major.$minor"
+		((patch > 0)) && version+=".$patch"
+		version+=${suffix:+-$suffix}
+		# When tag does not already exist, search for last tag on current branch
+		if ! git show-ref --tags "$version" --quiet; then
+			unset version
+		fi
+	fi
+
+	tag=$(git describe --tags --abbrev=0 --exclude=LTS --exclude="*-pre" $version)
+	echo "${tag:0:6}"
+}
+
 function confirm_abi_deps() {
 	local processed_so=0
+	local abi_test_failed=false
 	local abidiff_output
 	local release
-	local source_abi_dir="$rootdir/test/make/abi"
+	local suppression_file="$testdir/abigail_suppressions.ini"
 
-	release=$(get_release_branch)
+	release="${RELEASE:-$(get_release)}.x"
 
-	get_spdk_abi "$source_abi_dir"
-	echo "* Running ${FUNCNAME[0]} against the latest (${release%.*}) release" >&2
+	if [[ ! -d $source_abi_dir ]]; then
+		mkdir -p $source_abi_dir
+		echo "spdk-abi has not been found at $source_abi_dir, cloning"
+		git clone "https://github.com/spdk/spdk-abi.git" "$source_abi_dir"
+	fi
+
+	if [[ ! -d "$source_abi_dir/$release" ]]; then
+		echo "Release (${release%.*}) does not exist in spdk-abi repository"
+		return 1
+	fi
+
+	echo "* Running ${FUNCNAME[0]} against the ${release%.*} release" >&2
 
 	if ! hash abidiff; then
 		echo "Unable to check ABI compatibility. Please install abidiff."
 		return 1
 	fi
 
-	cat << EOF > ${suppression_file}
-[suppress_type]
-	name = spdk_nvme_power_state
-[suppress_type]
-	name = spdk_nvme_ctrlr_data
-[suppress_type]
-	name = spdk_nvme_cdata_oacs
-[suppress_type]
-	name = spdk_nvme_cdata_nvmf_specific
-[suppress_type]
-	name = spdk_nvme_cmd
-[suppress_type]
-	name = spdk_bs_opts
-[suppress_type]
-	name = spdk_app_opts
-EOF
+	# Type suppression should be used for deliberate change in the structure,
+	# that do not affect the ABI compatibility.
+	# One example is utilizing a previously reserved field in the structure.
+	# Suppression file should contain at the very least the name of type
+	# and point to major SO_VER of the library it applies to.
+	#
+	# To avoid ignoring an actual changes in ABI for a particular SO_VER,
+	# the suppression should be as specific as possible to the change.
+	# has_data_member_* conditions can be used to narrow down the
+	# name of previously existing field, or specify the offset.
+	# Please refer to libabigail for details.
+	#
+	# Example format:
+	# [suppress_type]
+	#	label = Added interrupt_mode field
+	#	name = spdk_app_opts
+	#	soname_regexp = ^libspdk_event\\.so\\.12\\.*$
+	cat <<- EOF > ${suppression_file}
+		[suppress_type]
+			label = Removed spdk_nvme_accel_fn_table.submit_accel_crc32c field
+			name = spdk_nvme_accel_fn_table
+			soname_regexp = ^libspdk_nvme\\.so\\.14\\.*$
+			has_data_member_regexp = ^submit_accel_crc32c$
+			has_data_member_inserted_between = {64, 128}
+	EOF
 
 	for object in "$libdir"/libspdk_*.so; do
 		abidiff_output=0
@@ -150,7 +207,7 @@ EOF
 			if ((changed_leaf_types != 0)); then
 				if ((new_so_maj == old_so_maj)); then
 					abidiff_output=1
-					touch $fail_file
+					abi_test_failed=true
 					echo "Please update the major SO version for $so_file. A header accessible type has been modified since last release."
 				fi
 				found_abi_change=true
@@ -159,7 +216,7 @@ EOF
 			if ((removed_functions != 0)) || ((removed_vars != 0)); then
 				if ((new_so_maj == old_so_maj)); then
 					abidiff_output=1
-					touch $fail_file
+					abi_test_failed=true
 					echo "Please update the major SO version for $so_file. API functions or variables have been removed since last release."
 				fi
 				found_abi_change=true
@@ -168,7 +225,7 @@ EOF
 			if ((changed_functions != 0)) || ((changed_vars != 0)); then
 				if ((new_so_maj == old_so_maj)); then
 					abidiff_output=1
-					touch $fail_file
+					abi_test_failed=true
 					echo "Please update the major SO version for $so_file. API functions or variables have been changed since last release."
 				fi
 				found_abi_change=true
@@ -177,33 +234,35 @@ EOF
 			if ((added_functions != 0)) || ((added_vars != 0)); then
 				if ((new_so_min == old_so_min && new_so_maj == old_so_maj)) && ! $found_abi_change; then
 					abidiff_output=1
-					touch $fail_file
+					abi_test_failed=true
 					echo "Please update the minor SO version for $so_file. API functions or variables have been added since last release."
 				fi
 				found_abi_change=true
 			fi
 
 			if [[ $so_name_changed == yes ]]; then
-				# After 22.01 LTS all SO major versions were intentionally increased. Disable this check until SPDK 22.05 release.
-				found_abi_change=true
+				# All SO major versions are intentionally increased after LTS to allow SO minor changes during the supported period.
+				if [[ "$release" == "$(get_release LTS).x" ]]; then
+					found_abi_change=true
+				fi
 				if ! $found_abi_change; then
 					echo "SO name for $so_file changed without a change to abi. please revert that change."
-					touch $fail_file
+					abi_test_failed=true
 				fi
 
 				if ((new_so_maj != old_so_maj && new_so_min != 0)); then
 					echo "SO major version for $so_file was bumped. Please reset the minor version to 0."
-					touch $fail_file
+					abi_test_failed=true
 				fi
 
 				if ((new_so_min > old_so_min + 1)); then
 					echo "SO minor version for $so_file was incremented more than once. Please revert minor version to $((old_so_min + 1))."
-					touch $fail_file
+					abi_test_failed=true
 				fi
 
 				if ((new_so_maj > old_so_maj + 1)); then
 					echo "SO major version for $so_file was incremented more than once. Please revert major version to $((old_so_maj + 1))."
-					touch $fail_file
+					abi_test_failed=true
 				fi
 			fi
 
@@ -214,8 +273,35 @@ EOF
 		processed_so=$((processed_so + 1))
 	done
 	rm -f $suppression_file
+	if [[ "$processed_so" -eq 0 ]]; then
+		echo "No shared objects were processed."
+		return 1
+	fi
 	echo "Processed $processed_so objects."
-	rm -rf "$source_abi_dir"
+	if [[ -z $user_abi_dir ]]; then
+		rm -rf "$source_abi_dir"
+	fi
+	if $abi_test_failed; then
+		echo "ERROR: ABI test failed"
+		exit 1
+	fi
+}
+
+list_deps_mk() {
+	local tab=$'\t'
+
+	make -f - <<- MAKE
+		SPDK_ROOT_DIR := $rootdir
+		include \$(SPDK_ROOT_DIR)/mk/spdk.common.mk
+		include \$(SPDK_ROOT_DIR)/mk/spdk.lib_deps.mk
+
+		all: \$(filter DEPDIRS-%,\$(.VARIABLES))
+
+		# Ignore any event_* dependencies. Those are based on the subsystem
+		# configuration and not readelf
+		DEPDIRS-%:
+			$tab@echo "\$(@:DEPDIRS-%=%)=\"\$(filter-out event_%,\$(\$@))\""
+	MAKE
 }
 
 function get_lib_shortname() {
@@ -223,33 +309,16 @@ function get_lib_shortname() {
 	echo "${lib//@(libspdk_|.so)/}"
 }
 
-function import_libs_deps_mk() {
-	local var_mk val_mk dep_mk fun_mk
-	while read -r var_mk _ val_mk; do
-		if [[ $var_mk == "#"* || ! $var_mk =~ (DEPDIRS-|_DEPS|_LIBS) ]]; then
-			continue
-		fi
-		var_mk=${var_mk#*-}
-		for dep_mk in $val_mk; do
-			fun_mk=${dep_mk//@('$('|')')/}
-			if [[ $fun_mk != "$dep_mk" ]]; then
-				eval "${fun_mk}() { echo \$$fun_mk ; }"
-			# Ignore any event_* dependencies. Those are based on the subsystem configuration and not readelf.
-			elif ((IGNORED_LIBS["$dep_mk"] == 1)) || [[ $dep_mk =~ event_ ]]; then
-				continue
-			fi
-			eval "$var_mk=\${$var_mk:+\$$var_mk }$dep_mk"
-		done
-	done < "$libdeps_file"
-}
+# shellcheck disable=SC2005
+sort_libs() { echo $(printf "%s\n" "$@" | sort); }
 
 function confirm_deps() {
-	local lib=$1 deplib lib_shortname
+	local lib=$1 deplib lib_shortname symbols dep_names lib_make_deps found_symbol_lib
 
 	lib_shortname=$(get_lib_shortname "$lib")
 	lib_make_deps=(${!lib_shortname})
 
-	symbols=($(readelf -s --wide "$lib" | grep -E "NOTYPE.*GLOBAL.*UND" | awk '{print $8}' | sort -u))
+	symbols=($(readelf -s --wide "$lib" | awk '$7 == "UND" {print $8}' | sort -u))
 	symbols_regx=$(
 		IFS="|"
 		echo "(${symbols[*]})"
@@ -269,10 +338,11 @@ function confirm_deps() {
 	diff=$(echo "${dep_names[@]}" "${lib_make_deps[@]}" | tr ' ' '\n' | sort | uniq -u)
 	if [ "$diff" != "" ]; then
 		touch $fail_file
-		echo "there was a dependency mismatch in the library $lib_shortname"
-		echo "The makefile (spdk.lib_deps.mk) lists: '${lib_make_deps[*]}'"
-		echo "readelf outputs   : '${dep_names[*]}'"
-		echo "---------------------------------------------------------------------"
+		cat <<- MSG
+			There was a dependency mismatch in the library $lib_shortname
+			The makefile (spdk.lib_deps.mk) lists: '$(sort_libs "${lib_make_deps[@]}")'
+			readelf outputs:                       '$(sort_libs "${dep_names[@]}")'
+		MSG
 	fi
 }
 
@@ -283,51 +353,50 @@ function confirm_makefile_deps() {
 	# for dependencies to avoid printing out a bunch of confusing symbols under the missing
 	# symbols section.
 	SPDK_LIBS=("$libdir/"libspdk_!(env_dpdk).so)
+	fail_file="$testdir/check_so_deps_fail"
+
+	rm -f $fail_file
 
 	declare -A IGNORED_LIBS=()
-	if grep -q 'CONFIG_RDMA?=n' $rootdir/mk/config.mk; then
+	if [[ $CONFIG_RDMA == n ]]; then
 		IGNORED_LIBS["rdma"]=1
 	fi
 
 	(
-		import_libs_deps_mk
+		source <(list_deps_mk)
 		for lib in "${SPDK_LIBS[@]}"; do confirm_deps "$lib" & done
 		wait
 	)
+
+	if [ -f $fail_file ]; then
+		rm -f $fail_file
+		echo "ERROR: Makefile deps test failed"
+		exit 1
+	fi
 }
 
-run_test "check_header_filenames" check_header_filenames
+if [[ -e $config_file ]]; then
+	config_params=$(get_config_params)
+	if [[ "$SPDK_TEST_OCF" -eq 1 ]]; then
+		config_params="$config_params --with-ocf=$rootdir/ocf.a"
+	fi
 
-config_params=$(get_config_params)
-if [ "$SPDK_TEST_OCF" -eq 1 ]; then
-	config_params="$config_params --with-ocf=$rootdir/ocf.a"
+	if [[ -f $rootdir/mk/config.mk ]]; then
+		$MAKE $MAKEFLAGS clean
+	fi
+
+	$rootdir/configure $config_params --with-shared
+	$MAKE $MAKEFLAGS
 fi
-
-if [[ -f $rootdir/mk/spdk.common.mk ]]; then
-	$MAKE $MAKEFLAGS clean
-fi
-
-./configure $config_params --with-shared
-# By setting SPDK_NO_LIB_DEPS=1, we ensure that we won't create any link dependencies.
-# Then we can be sure we get a valid accounting of the symbol dependencies we have.
-SPDK_NO_LIB_DEPS=1 $MAKE $MAKEFLAGS
 
 xtrace_disable
 
-fail_file=$output_dir/check_so_deps_fail
-
-rm -f $fail_file
-
+run_test "check_header_filenames" check_header_filenames
 run_test "confirm_abi_deps" confirm_abi_deps
-
 run_test "confirm_makefile_deps" confirm_makefile_deps
 
-$MAKE $MAKEFLAGS clean
-
-if [ -f $fail_file ]; then
-	rm -f $fail_file
-	echo "shared object test failed"
-	exit 1
+if [[ -e $config_file ]]; then
+	$MAKE $MAKEFLAGS clean
 fi
 
 xtrace_restore

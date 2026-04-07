@@ -29,12 +29,12 @@
           </dd>
           <ng-container>
             <dt>Telemetry Dashboard
-              <span
-                class="badge"
-                [ngClass]="telemetryEnabled ? 'badge-success' : 'badge-secondary'"
-                [ngbTooltip]="getTelemetryText()" >
+              <cds-tag *ngIf="telemetryEnabled !== null"
+                       [class]="telemetryEnabled ? 'tag-success' : 'tag-secondary'"
+                       [size]="'md'"
+                       [ngbTooltip]="getTelemetryText()">
                 {{ telemetryEnabled ? 'Active' : 'Inactive' }}
-              </span>
+              </cds-tag>
             </dt>
             <dd>
               <a target="_blank"
@@ -242,9 +242,9 @@
           <div class="ms-4 me-4 mt-0">
             <cd-dashboard-time-selector (selectedTime)="getPrometheusData($event)">
             </cd-dashboard-time-selector>
-            <ng-container *ngIf="usedCapacity">
+            <ng-container *ngIf="totalCapacity">
               <cd-dashboard-area-chart chartTitle="Used Capacity (RAW)"
-                                       [maxValue]="usedCapacity"
+                                       [maxValue]="totalCapacity"
                                        dataUnits="B"
                                        [labelsArray]="['Used Capacity']"
                                        [dataArray]="[queriesResults.USEDCAPACITY]">
@@ -286,8 +286,8 @@
   <ng-container *ngFor="let alert of prometheusAlertService.alerts; let i = index;  trackBy: trackByFn">
     <div [ngClass]="['border-'+alertClass[alert.labels.severity]]"
          *ngIf="alert.status.state === 'active' &&
-         alert.labels.severity === alertType ||
-         !alertType">
+         (alert.labels.severity === alertType ||
+         !alertType)">
       <div class="card tc_alerts border-0 pt-3">
         <div class="row no-gutters ps-2">
           <div class="col-sm-1 text-center">
@@ -300,12 +300,16 @@
             <div class="card-body ps-0 pe-1 pb-1 pt-0">
               <h6 class="card-title bold">{{ alert.labels.alertname }}</h6>
               <p class="card-text me-3 mb-0 text-truncate"
-                 [innerHtml]="alert.annotations.description"
-                 [ngbTooltip]="alert.annotations.description"></p>
+                 [innerHtml]="alert.annotations.summary"
+                 [ngbTooltip]="alert.annotations.summary"></p>
               <p class="card-text text-muted me-3">
                 <small class="date"
                        [title]="alert.startsAt | cdDate"
                        i18n>Active since: {{ alert.startsAt  | relativeDate }}</small>
+                <small class="alert_count"
+                       *ngIf="alert.alert_count > 1"
+                       [title]="alert.alert_count"
+                       i18n>Total occurrences: {{ alert.alert_count }}</small>
               </p>
             </div>
           </div>

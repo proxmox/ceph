@@ -1,6 +1,8 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2020 Intel Corporation.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  *   All rights reserved.
+ *   Copyright 2023 Solidigm All Rights Reserved
  */
 
 #include "spdk/rpc.h"
@@ -11,27 +13,30 @@
 
 #include "bdev_ftl.h"
 
-static int
-rpc_bdev_ftl_decode_uuid(const struct spdk_json_val *val, void *out)
+static void
+rpc_bdev_ftl_basic_cb(void *cb_arg, int bdeverrno)
 {
-	char *uuid_str;
-	int ret;
+	struct spdk_jsonrpc_request *request = cb_arg;
 
-	uuid_str = spdk_json_strdup(val);
-	if (!uuid_str) {
-		return -ENOMEM;
+	if (bdeverrno == 0) {
+		spdk_jsonrpc_send_bool_response(request, true);
+	} else {
+		spdk_jsonrpc_send_error_response(request, bdeverrno, spdk_strerror(-bdeverrno));
 	}
-
-	ret = spdk_uuid_parse(out, uuid_str);
-
-	free(uuid_str);
-	return ret;
 }
+
+struct rpc_ftl_basic_param {
+	char *name;
+};
+
+static const struct spdk_json_object_decoder rpc_ftl_basic_decoders[] = {
+	{"name", offsetof(struct rpc_ftl_basic_param, name), spdk_json_decode_string},
+};
 
 static const struct spdk_json_object_decoder rpc_bdev_ftl_create_decoders[] = {
 	{"name", offsetof(struct spdk_ftl_conf, name), spdk_json_decode_string},
 	{"base_bdev", offsetof(struct spdk_ftl_conf, base_bdev), spdk_json_decode_string},
-	{"uuid", offsetof(struct spdk_ftl_conf, uuid), rpc_bdev_ftl_decode_uuid, true},
+	{"uuid", offsetof(struct spdk_ftl_conf, uuid), spdk_json_decode_uuid, true},
 	{"cache", offsetof(struct spdk_ftl_conf, cache_bdev), spdk_json_decode_string},
 	{
 		"overprovisioning", offsetof(struct spdk_ftl_conf, overprovisioning),
@@ -55,7 +60,6 @@ static void
 rpc_bdev_ftl_create_cb(const struct ftl_bdev_info *bdev_info, void *ctx, int status)
 {
 	struct spdk_jsonrpc_request *request = ctx;
-	char bdev_uuid[SPDK_UUID_STRING_LEN];
 	struct spdk_json_write_ctx *w;
 
 	if (status) {
@@ -66,10 +70,9 @@ rpc_bdev_ftl_create_cb(const struct ftl_bdev_info *bdev_info, void *ctx, int sta
 	}
 
 	w = spdk_jsonrpc_begin_result(request);
-	spdk_uuid_fmt_lower(bdev_uuid, sizeof(bdev_uuid), &bdev_info->uuid);
 	spdk_json_write_object_begin(w);
 	spdk_json_write_named_string(w, "name", bdev_info->name);
-	spdk_json_write_named_string(w, "uuid", bdev_uuid);
+	spdk_json_write_named_uuid(w, "uuid", &bdev_info->uuid);
 	spdk_json_write_object_end(w);
 	spdk_jsonrpc_end_result(request, w);
 }
@@ -92,8 +95,16 @@ rpc_bdev_ftl_create(struct spdk_jsonrpc_request *request,
 		goto out;
 	}
 
-	if (spdk_mem_all_zero(&conf.uuid, sizeof(conf.uuid))) {
+	if (spdk_uuid_is_null(&conf.uuid)) {
 		conf.mode |= SPDK_FTL_MODE_CREATE;
+	}
+
+	if (spdk_bdev_get_by_name(conf.name) != NULL) {
+		SPDK_ERRLOG("Bdev \"%s\" already exists", conf.name);
+		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						     "Failed to create FTL bdev: %s",
+						     spdk_strerror(EEXIST));
+		goto out;
 	}
 
 	rc = bdev_ftl_create_bdev(&conf, rpc_bdev_ftl_create_cb, request);
@@ -138,14 +149,6 @@ static const struct spdk_json_object_decoder rpc_delete_ftl_decoders[] = {
 };
 
 static void
-rpc_bdev_ftl_delete_cb(void *cb_arg, int bdeverrno)
-{
-	struct spdk_jsonrpc_request *request = cb_arg;
-
-	spdk_jsonrpc_send_bool_response(request, bdeverrno == 0);
-}
-
-static void
 rpc_bdev_ftl_delete(struct spdk_jsonrpc_request *request,
 		    const struct spdk_json_val *params)
 {
@@ -159,7 +162,7 @@ rpc_bdev_ftl_delete(struct spdk_jsonrpc_request *request,
 		goto invalid;
 	}
 
-	bdev_ftl_delete_bdev(attrs.name, attrs.fast_shutdown, rpc_bdev_ftl_delete_cb, request);
+	bdev_ftl_delete_bdev(attrs.name, attrs.fast_shutdown, rpc_bdev_ftl_basic_cb, request);
 invalid:
 	free(attrs.name);
 }
@@ -185,13 +188,6 @@ static const struct spdk_json_object_decoder rpc_ftl_unmap_decoders[] = {
 	{"num_blocks", offsetof(struct rpc_ftl_unmap, num_blocks), spdk_json_decode_uint64, true},
 };
 
-static void
-rpc_bdev_ftl_unmap_cb(void *cb_arg, int bdeverrno)
-{
-	struct spdk_jsonrpc_request *request = cb_arg;
-
-	spdk_jsonrpc_send_bool_response(request, bdeverrno == 0);
-}
 
 static void
 rpc_bdev_ftl_unmap(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
@@ -201,34 +197,32 @@ rpc_bdev_ftl_unmap(struct spdk_jsonrpc_request *request, const struct spdk_json_
 	if (spdk_json_decode_object(params, rpc_ftl_unmap_decoders, SPDK_COUNTOF(rpc_ftl_unmap_decoders),
 				    &attrs)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
-		goto invalid;
+	} else {
+		bdev_ftl_unmap(attrs.name, attrs.lba, attrs.num_blocks, rpc_bdev_ftl_basic_cb, request);
 	}
-
-	bdev_ftl_unmap(attrs.name, attrs.lba, attrs.num_blocks, rpc_bdev_ftl_unmap_cb, request);
-invalid:
 	free(attrs.name);
 }
 
 SPDK_RPC_REGISTER("bdev_ftl_unmap", rpc_bdev_ftl_unmap, SPDK_RPC_RUNTIME)
 
-struct rpc_ftl_stats {
-	char *name;
-};
-
-static const struct spdk_json_object_decoder rpc_ftl_stats_decoders[] = {
-	{"name", offsetof(struct rpc_ftl_stats, name), spdk_json_decode_string},
-};
-
 static void
-_rpc_bdev_ftl_get_stats(void *cntx)
+_rpc_bdev_ftl_get_stats(void *ctx, int rc)
 {
-	struct rpc_ftl_stats_ctx *ftl_stats = cntx;
-	struct spdk_jsonrpc_request *request = ftl_stats->request;
-	struct ftl_stats *stats = ftl_stats->ftl_stats;
-	struct spdk_json_write_ctx *w = spdk_jsonrpc_begin_result(request);
+	struct rpc_ftl_stats_ctx *ftl_stats_ctx = ctx;
+	struct spdk_jsonrpc_request *request = ftl_stats_ctx->request;
+	struct ftl_stats *stats = &ftl_stats_ctx->ftl_stats;
+	struct spdk_json_write_ctx *w;
 
+	if (rc) {
+		free(ftl_stats_ctx);
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+		return;
+	}
+
+	w = spdk_jsonrpc_begin_result(request);
 	spdk_json_write_object_begin(w);
-	spdk_json_write_named_string(w, "name", spdk_bdev_desc_get_bdev(ftl_stats->ftl_bdev_desc)->name);
+	spdk_json_write_named_string(w, "name",
+				     spdk_bdev_desc_get_bdev(ftl_stats_ctx->ftl_bdev_desc)->name);
 
 	/* TODO: Instead of named objects, store them in an array with the name being an attribute */
 	for (uint64_t i = 0; i < FTL_STATS_TYPE_MAX; i++) {
@@ -280,39 +274,98 @@ _rpc_bdev_ftl_get_stats(void *cntx)
 
 	spdk_json_write_object_end(w);
 	spdk_jsonrpc_end_result(request, w);
-
-	free(stats);
+	free(ftl_stats_ctx);
 }
 
 static void
 rpc_bdev_ftl_get_stats(struct spdk_jsonrpc_request *request,
 		       const struct spdk_json_val *params)
 {
-	struct ftl_stats *stats;
-	struct rpc_ftl_stats attrs = {};
-	int rc;
+	struct rpc_ftl_basic_param attrs = {};
+	struct rpc_ftl_stats_ctx *ctx = calloc(1, sizeof(*ctx));
 
-	if (spdk_json_decode_object(params, rpc_ftl_stats_decoders, SPDK_COUNTOF(rpc_ftl_stats_decoders),
+	if (!ctx) {
+		spdk_jsonrpc_send_error_response(request, -ENOMEM, spdk_strerror(-ENOMEM));
+		return;
+	}
+
+	if (spdk_json_decode_object(params, rpc_ftl_basic_decoders, SPDK_COUNTOF(rpc_ftl_basic_decoders),
 				    &attrs)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
-		goto invalid;
+		free(ctx);
+		free(attrs.name);
+		return;
 	}
 
-	stats = calloc(1, sizeof(struct ftl_stats));
-	if (!stats) {
-		spdk_jsonrpc_send_bool_response(request, false);
-		goto invalid;
-	}
-
-	rc = bdev_ftl_get_stats(attrs.name, _rpc_bdev_ftl_get_stats, request, stats);
-	if (rc) {
-		free(stats);
-		spdk_jsonrpc_send_bool_response(request, false);
-		goto invalid;
-	}
-
-invalid:
+	ctx->request = request;
+	bdev_ftl_get_stats(attrs.name, _rpc_bdev_ftl_get_stats, ctx);
 	free(attrs.name);
 }
 
 SPDK_RPC_REGISTER("bdev_ftl_get_stats", rpc_bdev_ftl_get_stats, SPDK_RPC_RUNTIME)
+
+static void
+rpc_bdev_ftl_get_properties_cb(void *ctx, int rc)
+{
+	struct spdk_jsonrpc_request *request = ctx;
+
+	if (rc) {
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+	}
+}
+
+static void
+rpc_bdev_ftl_get_properties(struct spdk_jsonrpc_request *request,
+			    const struct spdk_json_val *params)
+{
+	struct rpc_ftl_basic_param attrs = {};
+
+	if (spdk_json_decode_object(params, rpc_ftl_basic_decoders, SPDK_COUNTOF(rpc_ftl_basic_decoders),
+				    &attrs)) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
+		free(attrs.name);
+		return;
+	}
+
+	bdev_ftl_get_properties(attrs.name, rpc_bdev_ftl_get_properties_cb, request);
+	free(attrs.name);
+}
+
+SPDK_RPC_REGISTER("bdev_ftl_get_properties", rpc_bdev_ftl_get_properties, SPDK_RPC_RUNTIME)
+
+struct rpc_ftl_set_property_param {
+	char *name;
+	char *ftl_property;
+	char *value;
+};
+
+static const struct spdk_json_object_decoder rpc_ftl_set_property_decoders[] = {
+	{"name", offsetof(struct rpc_ftl_set_property_param, name), spdk_json_decode_string},
+	{"ftl_property", offsetof(struct rpc_ftl_set_property_param, ftl_property), spdk_json_decode_string},
+	{"value", offsetof(struct rpc_ftl_set_property_param, value), spdk_json_decode_string},
+};
+
+static void
+rpc_bdev_ftl_set_property(struct spdk_jsonrpc_request *request,
+			  const struct spdk_json_val *params)
+{
+	struct rpc_ftl_set_property_param attrs = {};
+
+	if (spdk_json_decode_object(params, rpc_ftl_set_property_decoders,
+				    SPDK_COUNTOF(rpc_ftl_set_property_decoders),
+				    &attrs)) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
+		free(attrs.name);
+		free(attrs.ftl_property);
+		free(attrs.value);
+		return;
+	}
+
+	bdev_ftl_set_property(attrs.name, attrs.ftl_property, attrs.value,
+			      rpc_bdev_ftl_basic_cb, request);
+	free(attrs.name);
+	free(attrs.ftl_property);
+	free(attrs.value);
+}
+
+SPDK_RPC_REGISTER("bdev_ftl_set_property", rpc_bdev_ftl_set_property, SPDK_RPC_RUNTIME)

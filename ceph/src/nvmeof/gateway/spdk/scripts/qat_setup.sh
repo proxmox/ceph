@@ -4,16 +4,17 @@
 #  All rights reserved.
 #
 shopt -s nullglob
+set -e
 
 rootdir=$(readlink -f $(dirname $0))/..
-allowed_drivers=("igb_uio" "uio_pci_generic")
+allowed_drivers=("igb_uio" "uio_pci_generic" "vfio-pci")
 
 reload_intel_qat() {
-	# We need to make sure the out-of-tree intel_qat driver, provided via vm_setup.sh, is in
-	# use. Otherwise, some dependency modules loaded by qat_service may fail causing some
-	# disturbance later on during the tests - in particular, it's been seen that the adf_ctl
-	# was returning inconsistent data (wrong pci addresses), confusing the service into
-	# believing SR-IOV is not enabled.
+	# We need to make sure the out-of-tree intel_qat driver, provided via autotest_setup.sh,
+	# is in use. Otherwise, some dependency modules loaded by qat_service may fail causing
+	# some disturbance later on during the tests - in particular, it's been seen that the
+	# adf_ctl was returning inconsistent data (wrong pci addresses), confusing the service
+	# into believing SR-IOV is not enabled.
 
 	# If this file doesn't exist, then either intel_qat is a kernel built-in or is not loaded.
 	# Nothing to do in such cases, qat_service will load the module for us.
@@ -58,9 +59,22 @@ reload_intel_qat() {
 
 bad_driver=true
 driver_to_bind=uio_pci_generic
-num_vfs=16
 
-qat_pci_bdfs=($(lspci -Dd:37c8 | awk '{print $1}'))
+# try starting the qat service. If this doesn't work, just treat it as a warning for now.
+if ! service qat_service start; then
+	echo "failed to start the qat service. Something may be wrong with your 01.org driver."
+fi
+
+reload_intel_qat
+
+_qat_pci_bdfs=(
+	/sys/bus/pci/drivers/c6xx/0000*
+	/sys/bus/pci/drivers/dh895xcc/0000*
+	/sys/bus/pci/drivers/4xxx/0000*
+)
+
+qat_pci_bdfs=("${_qat_pci_bdfs[@]#*drivers/}")
+
 if [ ${#qat_pci_bdfs[@]} -eq 0 ]; then
 	echo "No QAT devices found. Exiting"
 	exit 1
@@ -82,72 +96,72 @@ if $bad_driver; then
 	exit 1
 fi
 
-reload_intel_qat
-
-# try starting the qat service. If this doesn't work, just treat it as a warning for now.
-if ! service qat_service start; then
-	echo "failed to start the qat service. Something may be wrong with your 01.org driver."
-fi
-
+expected_num_vfs=0 set_num_vfs=0
 # configure virtual functions for the QAT cards.
 for qat_bdf in "${qat_pci_bdfs[@]}"; do
-	if [[ ! -e /sys/bus/pci/drivers/c6xx/$qat_bdf/sriov_numvfs ]]; then
-		echo "($qat_bdf) sriov_numvfs interface missing, is SR-IOV enabled?"
+	if [[ ! -e /sys/bus/pci/drivers/$qat_bdf/sriov_numvfs ]]; then
+		echo "(${qat_bdf##*/}) sriov_numvfs interface missing, is SR-IOV enabled?"
 		continue
 	fi
-	echo "$num_vfs" > /sys/bus/pci/drivers/c6xx/$qat_bdf/sriov_numvfs
-	num_vfs_set=$(cat /sys/bus/pci/drivers/c6xx/$qat_bdf/sriov_numvfs)
+	# Make sure autoprobe is disabled for the VFs so we don't have to race with the
+	# qat_*vf drivers while binding the devices.
+	echo "0" > "/sys/bus/pci/drivers/$qat_bdf/sriov_drivers_autoprobe"
+	num_vfs=$(< "/sys/bus/pci/drivers/$qat_bdf/sriov_totalvfs")
+	echo "$num_vfs" > /sys/bus/pci/drivers/$qat_bdf/sriov_numvfs
+	num_vfs_set=$(< "/sys/bus/pci/drivers/$qat_bdf/sriov_numvfs")
 	if ((num_vfs != num_vfs_set)); then
 		echo "Number of VFs set to $num_vfs_set, expected $num_vfs"
 	else
-		echo "$qat_bdf set to $num_vfs VFs"
+		echo "${qat_bdf##*/} set to $num_vfs VFs"
 	fi
+	((expected_num_vfs += num_vfs))
+	((set_num_vfs += num_vfs_set))
 done
 
-# Confirm we have all of the virtual functions we asked for.
+# Build VF list out of qat_pci_bdfs[@] by slapping /virtfn* to the path to know if we got'em all.
+# shellcheck disable=SC2206 # <- intentional
+qat_vf_bdfs=(${_qat_pci_bdfs[@]/%//virtfn*})
 
-qat_vf_bdfs=($(lspci -Dd:37c9 | awk '{print $1}'))
-if ((${#qat_vf_bdfs[@]} != ${#qat_pci_bdfs[@]} * num_vfs)); then
-	echo "Failed to prepare the VFs. Aborting"
+if ((expected_num_vfs != set_num_vfs || ${#qat_vf_bdfs[@]} != expected_num_vfs)); then
+	echo "Failed to prepare the VFs. Aborting" >&2
 	exit 1
 fi
 
-# Unbind old driver if necessary.
-for vf in "${qat_vf_bdfs[@]}"; do
-	old_driver=$(basename $(readlink -f /sys/bus/pci/devices/${vf}/driver))
-	if [ $old_driver != "driver" ]; then
-		echo "unbinding driver $old_driver from qat VF at BDF $vf"
-		echo -n $vf > /sys/bus/pci/drivers/$old_driver/unbind
-	fi
-done
-
-modprobe uio
-
 # Insert the dpdk uio kernel module.
 if [ $driver_to_bind == "igb_uio" ]; then
+	modprobe uio
 	if ! modprobe igb_uio; then
 		echo "Unable to insert the igb_uio kernel module. Aborting."
 		exit 1
 	fi
 elif [ "$driver_to_bind" == "uio_pci_generic" ]; then
+	modprobe uio
 	modprobe uio_pci_generic
+elif [ "$driver_to_bind" == "vfio-pci" ]; then
+	modprobe vfio
+	modprobe vfio_pci
 else
 	echo "Unsure how to work with driver $driver_to_bind. Please configure it in qat_setup.sh"
 	exit 1
 fi
 
-echo -n "8086 37c9" > /sys/bus/pci/drivers/$driver_to_bind/remove_id 2> /dev/null
-echo -n "8086 37c9" > /sys/bus/pci/drivers/$driver_to_bind/new_id
+# Unbind old driver if necessary.
 for vf in "${qat_vf_bdfs[@]}"; do
-	if ! ls -l /sys/bus/pci/devices/$vf/driver | grep -q $driver_to_bind; then
-		echo "unable to bind the driver to the device at bdf $vf"
-		if [ "$driver_to_bind" == "uio_pci_generic" ]; then
-			echo "Your kernel's uio_pci_generic module does not support binding to virtual functions."
-			echo "It likely is missing Linux git commit ID acec09e67 which is needed to bind"
-			echo "uio_pci_generic to virtual functions which have no legacy interrupt vector."
-			echo "Please build DPDK kernel module for igb_uio and re-run this script specifying the igb_uio driver."
+	vf=$(readlink -f "$vf")
+	if [[ -e $vf/driver ]]; then
+		old_driver=$(basename "$(readlink -f "$vf/driver")")
+		if [[ $old_driver != "$driver_to_bind" ]]; then
+			echo "unbinding driver $old_driver from qat VF at BDF ${vf##*/}"
+			echo "${vf##*/}" > "/sys/bus/pci/drivers/$old_driver/unbind"
 		fi
-		exit 1
+	fi
+	# Bind new driver
+	if [ "$driver_to_bind" == "vfio-pci" ]; then
+		"$rootdir/dpdk/usertools/dpdk-devbind.py" -b vfio-pci $vf
+	else
+		echo "$driver_to_bind" > "$vf/driver_override"
+		echo "${vf##*/}" > /sys/bus/pci/drivers_probe
 	fi
 done
+
 echo "Properly configured the qat device with driver $driver_to_bind."

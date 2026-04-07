@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /*
@@ -89,6 +89,11 @@ int __wrap_ocf_mngt_cache_trylock(env_rwsem *s)
 void __wrap_ocf_mngt_cache_unlock(env_rwsem *s)
 {
 	function_called();
+}
+
+bool __wrap_ocf_cache_is_standby(ocf_cache_t cache)
+{
+        return false;
 }
 
 static void cleaner_complete(ocf_cleaner_t cleaner, uint32_t interval)

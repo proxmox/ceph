@@ -1,0 +1,55 @@
+.. _sec-toolchain-{{ oslabel }}:
+
+{{ osname }}
+{% for _ in  osname %}-{% endfor %}
+
+{% for platform in platforms -%}
+{%- for ver in platform.ver -%}
+{%- set ident="%s-%s" % (platform.name, ver) -%}
+{%- set title="%s (%s)" % (platform.alias, ver) -%}
+{{ title }}
+{% for _ in  title %}~{% endfor %}
+
+{% if "windows" in platform.os %}
+Install the necessary toolchain and libraries with appropriate system privileges
+(e.g., in an elevated PowerShell session) by executing the script::
+
+  .\xnvme\toolbox\pkgs\{{ platform.name }}-{{ ver }}.ps1
+
+Or, run the commands contained within the script manually:
+
+.. literalinclude:: ../../../toolbox/pkgs/{{ platform.name }}-{{ ver }}.ps1
+   :language: powershell
+
+{% else -%}
+Install the required toolchain and libraries, with sufficient system privileges
+(e.g. as ``root`` or with ``sudo``), by executing the commands below. You can
+run this from the root of the **xNVMe** by invoking::
+
+  sudo ./xnvme/toolbox/pkgs/{{ platform.name }}-{{ ver }}.sh
+
+Or, run the commands contained within the script manually:
+
+.. literalinclude:: ../../../toolbox/pkgs/{{ platform.name }}-{{ ver }}.sh
+   :language: bash
+   :lines: 8-
+
+.. note::
+   A Docker-image is provided via ``ghcr.io``, specifically
+   ``ghcr.io/xnvme/xnvme-deps-{{ ident }}:next``. This Docker-image contains
+   all the software described above.
+
+{% endif -%}
+Then go ahead and configure, build and install using ``meson``:
+
+.. literalinclude:: ../../../toolbox/pkgs/{% if ident in build_scripts %}{{ build_scripts[ident].name }}{% else %}default-build.sh{% endif %}
+   :language: bash
+   :lines: 2-
+
+{% if platform.notes %}
+.. note::
+   {{ platform.notes | indent(width=3) }}
+{% endif %}
+
+{% endfor -%}
+{% endfor %}

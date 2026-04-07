@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2017-2022, Intel Corporation
+;; Copyright (c) 2017-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,9 +25,9 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/os.asm"
-%include "include/memcpy.asm"
-%include "include/clear_regs.asm"
+%include "include/os.inc"
+%include "include/memcpy.inc"
+%include "include/clear_regs.inc"
 %include "include/cet.inc"
 %include "include/error.inc"
 ;;; Routines to do 128/256 bit CFB AES encrypt/decrypt operations on one block only.
@@ -206,6 +206,7 @@ AES_CFB_128_ONE:
 MKGLOBAL(AES_CFB_256_ONE,function,)
 align 32
 AES_CFB_256_ONE:
+        endbranch64
         do_cfb 13
 
 	ret

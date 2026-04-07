@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2020-2022, Intel Corporation
+  Copyright (c) 2020-2023, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -32,7 +32,7 @@
  * declare global variable to store
  * process wide error status
  */
-extern int imb_errno;
+extern volatile int imb_errno;
 
 /**
  * @brief API to set error status
@@ -40,15 +40,19 @@ extern int imb_errno;
  * @param mb_mgr Pointer to multi-buffer manager
  * @param errnum Error type
  */
-__forceinline
-void imb_set_errno(IMB_MGR *mb_mgr, const int errnum)
+__forceinline void
+imb_set_errno(IMB_MGR *mb_mgr, const int errnum)
 {
         /* set MB_MGR error status */
         if (mb_mgr != NULL)
                 mb_mgr->imb_errno = errnum;
 
-        /* set global error status */
-        imb_errno = errnum;
+        /*
+         * set global error status
+         * (only if different, to limit unneeded stores)
+         */
+        if (imb_errno != errnum)
+                imb_errno = errnum;
 }
 
 #endif /* ERROR_H */

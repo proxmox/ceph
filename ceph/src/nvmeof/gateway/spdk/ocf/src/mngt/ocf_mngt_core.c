@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "ocf/ocf.h"
@@ -14,7 +15,7 @@
 #include "../ocf_def_priv.h"
 #include "../cleaning/cleaning_ops.h"
 
-static ocf_seq_no_t _ocf_mngt_get_core_seq_no(ocf_cache_t cache)
+ocf_seq_no_t ocf_mngt_get_core_seq_no(ocf_cache_t cache)
 {
 	if (cache->conf_meta->curr_core_seq_no == OCF_SEQ_NO_MAX)
 		return OCF_SEQ_NO_INVALID;
@@ -53,20 +54,22 @@ static int _ocf_uuid_set(const struct ocf_volume_uuid *uuid,
 	int result;
 
 	if (!uuid->data)
-		return -EINVAL;
+		return -OCF_ERR_INVAL;
 
 	if (uuid->size > sizeof(muuid->data))
-		return -ENOBUFS;
+		return -OCF_ERR_INVAL;
 
 	result = env_memcpy(muuid->data, sizeof(muuid->data),
 			uuid->data, uuid->size);
 	if (result)
 		return result;
 
-	result = env_memset(muuid->data + uuid->size,
-			sizeof(muuid->data) - uuid->size, 0);
-	if (result)
-		return result;
+	if (uuid->size < sizeof(muuid->data)) {
+		result = env_memset(muuid->data + uuid->size,
+				sizeof(muuid->data) - uuid->size, 0);
+		if (result)
+			return result;
+	}
 
 	muuid->size = uuid->size;
 
@@ -134,6 +137,7 @@ static void _ocf_mngt_cache_add_core_handle_error(
 	if (context->flags.counters_allocated) {
 		env_bit_clear(core_id,
 				cache->conf_meta->valid_core_bitmap);
+		cache->conf_meta->core_count--;
 		core->conf_meta->valid = false;
 		core->added = false;
 		core->opened = false;
@@ -220,13 +224,16 @@ int ocf_mngt_core_init_front_volume(ocf_core_t core)
 	};
 	int ret;
 
-	type = ocf_ctx_get_volume_type(cache->owner, 0);
+	type = ocf_ctx_get_volume_type_internal(cache->owner,
+			OCF_VOLUME_TYPE_CORE);
 	if (!type)
 		return -OCF_ERR_INVAL;
 
 	ret = ocf_volume_init(&core->front_volume, type, &uuid, false);
 	if (ret)
 		return ret;
+
+	core->front_volume.cache = cache;
 
 	ret = ocf_volume_open(&core->front_volume, NULL);
 	if (ret)
@@ -253,8 +260,8 @@ static void ocf_mngt_cache_try_add_core_prepare(ocf_pipeline_t pipeline,
 		goto err;
 
 	if (core->opened) {
-		result = -OCF_ERR_INVAL;
-		goto err;
+		ocf_cache_log(cache, log_err, "Core already opened\n");
+		OCF_PL_FINISH_RET(context->pipeline, -OCF_ERR_CORE_UUID_EXISTS);
 	}
 
 	volume = ocf_core_get_volume(core);
@@ -301,8 +308,8 @@ static void ocf_mngt_cache_try_add_core_insert(ocf_pipeline_t pipeline,
 	if (ocf_volume_get_length(volume) != core->conf_meta->length) {
 		ocf_cache_log(cache, log_err,
 				"Size of core volume doesn't match with"
-				" the size stored in cache metadata!");
-		result = -OCF_ERR_CORE_NOT_AVAIL;
+				" the size stored in cache metadata!\n");
+		result = -OCF_ERR_CORE_SIZE_MISMATCH;
 		goto error_after_open;
 	}
 
@@ -353,9 +360,6 @@ static void _ocf_mngt_cache_add_core_flush_sb_complete(void *priv, int error)
 	if (error)
 		OCF_PL_FINISH_RET(context->pipeline, -OCF_ERR_WRITE_CACHE);
 
-	/* Increase value of added cores */
-	context->cache->conf_meta->core_count++;
-
 	ocf_pipeline_next(context->pipeline);
 }
 
@@ -370,7 +374,7 @@ static void ocf_mngt_cache_add_core_insert(ocf_pipeline_t pipeline,
 	struct ocf_volume_uuid new_uuid;
 	ocf_volume_t volume;
 	ocf_volume_type_t type;
-	ocf_seq_no_t core_sequence_no;
+	ocf_seq_no_t core_sequence_no = 0;
 	uint64_t length;
 	int i, result = 0;
 
@@ -410,17 +414,20 @@ static void ocf_mngt_cache_add_core_insert(ocf_pipeline_t pipeline,
 			OCF_PL_FINISH_RET(pipeline, result);
 	}
 
-	result = ocf_volume_open(volume, NULL);
+	result = ocf_volume_open(volume, cfg->volume_params);
 	if (result)
 		OCF_PL_FINISH_RET(pipeline, result);
 
 	context->flags.volume_opened = true;
 
 	length = ocf_volume_get_length(volume);
-	if (!length)
+	if (!length) {
+		ocf_cache_log(cache, log_err, "Core %s is zero size\n", cfg->name);
 		OCF_PL_FINISH_RET(pipeline, -OCF_ERR_CORE_NOT_AVAIL);
+	}
 
 	core->conf_meta->length = length;
+	core->conf_meta->type = cfg->volume_type;
 
 	if (ocf_cache_is_device_attached(cache)) {
 		result = ocf_cleaning_add_core(cache, core_id);
@@ -458,6 +465,8 @@ static void ocf_mngt_cache_add_core_insert(ocf_pipeline_t pipeline,
 
 	/* In metadata mark data this core was added into cache */
 	env_bit_set(core_id, cache->conf_meta->valid_core_bitmap);
+	context->cache->conf_meta->core_count++;
+
 	core->conf_meta->valid = true;
 	core->added = true;
 	core->opened = true;
@@ -469,15 +478,30 @@ static void ocf_mngt_cache_add_core_insert(ocf_pipeline_t pipeline,
 			cfg->seq_cutoff_threshold);
 	env_atomic_set(&core->conf_meta->seq_cutoff_promo_count,
 			cfg->seq_cutoff_promotion_count);
+	env_atomic_set(&core->conf_meta->seq_cutoff_promote_on_threshold,
+			cfg->seq_cutoff_promote_on_threshold);
 
 	/* Add core sequence number for atomic metadata matching */
-	core_sequence_no = _ocf_mngt_get_core_seq_no(cache);
-	if (core_sequence_no == OCF_SEQ_NO_INVALID)
-		OCF_PL_FINISH_RET(pipeline, -OCF_ERR_TOO_MANY_CORES);
+	if (ocf_cache_is_device_attached(cache) &&
+			ocf_volume_is_atomic(&cache->device->volume)) {
+		core_sequence_no = ocf_mngt_get_core_seq_no(cache);
+		if (core_sequence_no == OCF_SEQ_NO_INVALID)
+			OCF_PL_FINISH_RET(pipeline, -OCF_ERR_TOO_MANY_CORES);
+	}
 
 	core->conf_meta->seq_no = core_sequence_no;
 
 	/* Update super-block with core device addition */
+
+	if (!ocf_cache_is_device_attached(cache)) {
+		if (!cache->metadata.is_volatile) {
+			ocf_cache_log(cache, log_warn, "Cache is in detached state. "
+					"The changes about the new core won't persist cache stop "
+					"unless a cache volume is attached\n");
+		}
+		OCF_PL_NEXT_RET(pipeline);
+	}
+
 	ocf_metadata_flush_superblock(cache,
 			_ocf_mngt_cache_add_core_flush_sb_complete, context);
 }
@@ -504,11 +528,6 @@ static void ocf_mngt_cache_add_core_finish(ocf_pipeline_t pipeline,
 
 	if (error) {
 		_ocf_mngt_cache_add_core_handle_error(context);
-
-		if (error == -OCF_ERR_CORE_NOT_AVAIL) {
-			ocf_cache_log(cache, log_err, "Core %s is zero size\n",
-					context->cfg.name);
-		}
 		ocf_cache_log(cache, log_err, "Adding core %s failed\n",
 				context->cfg.name);
 		goto out;
@@ -554,6 +573,9 @@ void ocf_mngt_cache_add_core(ocf_cache_t cache,
 	int result;
 
 	OCF_CHECK_NULL(cache);
+
+	if (ocf_cache_is_standby(cache))
+		OCF_CMPL_RET(cache, NULL, priv, -OCF_ERR_CACHE_STANDBY);
 
 	if (!cache->mngt_queue)
 		OCF_CMPL_RET(cache, NULL, priv, -OCF_ERR_INVAL);
@@ -628,15 +650,16 @@ static void ocf_mngt_cache_remove_core_finish(ocf_pipeline_t pipeline,
 	ocf_pipeline_destroy(context->pipeline);
 }
 
-static void ocf_mngt_cache_remove_core_flush_meta_complete(void *priv, int error)
+static void ocf_mngt_cache_remove_core_flush_collision_complete(void *priv,
+		int error)
 {
 	struct ocf_mngt_cache_remove_core_context *context = priv;
 
-	error = error ? -OCF_ERR_WRITE_CACHE : 0;
+	error = error ? -OCF_ERR_CORE_NOT_REMOVED : 0;
 	OCF_PL_NEXT_ON_SUCCESS_RET(context->pipeline, error);
 }
 
-static void _ocf_mngt_cache_remove_core_attached(ocf_pipeline_t pipeline,
+static void _ocf_mngt_cache_remove_core_mapping(ocf_pipeline_t pipeline,
 		void *priv, ocf_pipeline_arg_t arg)
 {
 	struct ocf_mngt_cache_remove_core_context *context = priv;
@@ -647,14 +670,22 @@ static void _ocf_mngt_cache_remove_core_attached(ocf_pipeline_t pipeline,
 		OCF_PL_NEXT_RET(pipeline);
 
 	cache_mngt_core_deinit_attached_meta(core);
-	cache_mngt_core_remove_from_cleaning_pol(core);
 
 	if (env_atomic_read(&core->runtime_meta->dirty_clines) == 0)
 		OCF_PL_NEXT_RET(pipeline);
 
 	ocf_metadata_flush_collision(cache,
-			ocf_mngt_cache_remove_core_flush_meta_complete,
+			ocf_mngt_cache_remove_core_flush_collision_complete,
 			context);
+}
+
+static void ocf_mngt_cache_remove_core_flush_superblock_complete(void *priv,
+		int error)
+{
+	struct ocf_mngt_cache_remove_core_context *context = priv;
+
+	error = error ? -OCF_ERR_WRITE_CACHE : 0;
+	OCF_PL_NEXT_ON_SUCCESS_RET(context->pipeline, error);
 }
 
 static void _ocf_mngt_cache_remove_core(ocf_pipeline_t pipeline, void *priv,
@@ -666,12 +697,18 @@ static void _ocf_mngt_cache_remove_core(ocf_pipeline_t pipeline, void *priv,
 
 	ocf_core_log(core, log_debug, "Removing core\n");
 
+	if (ocf_cache_is_device_attached(cache))
+		cache_mngt_core_remove_from_cleaning_pol(core);
+
 	cache_mngt_core_remove_from_meta(core);
 	cache_mngt_core_remove_from_cache(core);
 	cache_mngt_core_deinit(core);
 
+	if (!ocf_cache_is_device_attached(cache))
+		OCF_PL_NEXT_RET(pipeline);
+
 	ocf_metadata_flush_superblock(cache,
-			ocf_mngt_cache_remove_core_flush_meta_complete,
+			ocf_mngt_cache_remove_core_flush_superblock_complete,
 			context);
 }
 
@@ -701,7 +738,7 @@ struct ocf_pipeline_properties ocf_mngt_cache_remove_core_pipeline_props = {
 	.finish = ocf_mngt_cache_remove_core_finish,
 	.steps = {
 		OCF_PL_STEP(ocf_mngt_cache_remove_core_wait_cleaning),
-		OCF_PL_STEP(_ocf_mngt_cache_remove_core_attached),
+		OCF_PL_STEP(_ocf_mngt_cache_remove_core_mapping),
 		OCF_PL_STEP(_ocf_mngt_cache_remove_core),
 		OCF_PL_STEP_TERMINATOR(),
 	},
@@ -718,6 +755,9 @@ void ocf_mngt_cache_remove_core(ocf_core_t core,
 	OCF_CHECK_NULL(core);
 
 	cache = ocf_core_get_cache(core);
+
+	if (ocf_cache_is_standby(cache))
+		OCF_CMPL_RET(cache, -OCF_ERR_CACHE_STANDBY);
 
 	if (!cache->mngt_queue)
 		OCF_CMPL_RET(cache, -OCF_ERR_INVAL);
@@ -836,6 +876,9 @@ void ocf_mngt_cache_detach_core(ocf_core_t core,
 
 	cache = ocf_core_get_cache(core);
 
+	if (ocf_cache_is_standby(cache))
+		OCF_CMPL_RET(cache, -OCF_ERR_CACHE_STANDBY);
+
 	if (!cache->mngt_queue)
 		OCF_CMPL_RET(cache, -OCF_ERR_INVAL);
 
@@ -861,10 +904,16 @@ int ocf_mngt_core_set_uuid(ocf_core_t core, const struct ocf_volume_uuid *uuid)
 	struct ocf_volume_uuid *current_uuid;
 	int result;
 	int diff;
+	ocf_cache_t cache;
 
 	OCF_CHECK_NULL(core);
 	OCF_CHECK_NULL(uuid);
 	OCF_CHECK_NULL(uuid->data);
+
+	cache = ocf_core_get_cache(core);
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	current_uuid = &ocf_core_get_volume(core)->uuid;
 
@@ -889,8 +938,15 @@ int ocf_mngt_core_set_uuid(ocf_core_t core, const struct ocf_volume_uuid *uuid)
 
 int ocf_mngt_core_set_user_metadata(ocf_core_t core, void *data, size_t size)
 {
+	ocf_cache_t cache;
+
 	OCF_CHECK_NULL(core);
 	OCF_CHECK_NULL(data);
+
+	cache = ocf_core_get_cache(core);
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	if (size > OCF_CORE_USER_DATA_SIZE)
 		return -EINVAL;
@@ -901,8 +957,15 @@ int ocf_mngt_core_set_user_metadata(ocf_core_t core, void *data, size_t size)
 
 int ocf_mngt_core_get_user_metadata(ocf_core_t core, void *data, size_t size)
 {
+	ocf_cache_t cache;
+
 	OCF_CHECK_NULL(core);
 	OCF_CHECK_NULL(data);
+
+	cache = ocf_core_get_cache(core);
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	if (size > sizeof(core->conf_meta->user_data))
 		return -EINVAL;
@@ -941,7 +1004,16 @@ static int _cache_mngt_set_core_seq_cutoff_threshold(ocf_core_t core, void *cntx
 
 int ocf_mngt_core_set_seq_cutoff_threshold(ocf_core_t core, uint32_t thresh)
 {
+	ocf_cache_t cache;
+
 	OCF_CHECK_NULL(core);
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	if (!ocf_cache_is_device_attached(cache))
+		return -OCF_ERR_CACHE_DETACHED;
 
 	return _cache_mngt_set_core_seq_cutoff_threshold(core, &thresh);
 }
@@ -951,14 +1023,26 @@ int ocf_mngt_core_set_seq_cutoff_threshold_all(ocf_cache_t cache,
 {
 	OCF_CHECK_NULL(cache);
 
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	if (!ocf_cache_is_device_attached(cache))
+		return -OCF_ERR_CACHE_DETACHED;
+
 	return ocf_core_visit(cache, _cache_mngt_set_core_seq_cutoff_threshold,
 			&thresh, true);
 }
 
 int ocf_mngt_core_get_seq_cutoff_threshold(ocf_core_t core, uint32_t *thresh)
 {
+	ocf_cache_t cache;
+
 	OCF_CHECK_NULL(core);
 	OCF_CHECK_NULL(thresh);
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	*thresh = ocf_core_get_seq_cutoff_threshold(core);
 
@@ -1011,7 +1095,16 @@ static int _cache_mngt_set_core_seq_cutoff_policy(ocf_core_t core, void *cntx)
 int ocf_mngt_core_set_seq_cutoff_policy(ocf_core_t core,
 		ocf_seq_cutoff_policy policy)
 {
+	ocf_cache_t cache;
+
 	OCF_CHECK_NULL(core);
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	if (!ocf_cache_is_device_attached(cache))
+		return -OCF_ERR_CACHE_DETACHED;
 
 	return _cache_mngt_set_core_seq_cutoff_policy(core, &policy);
 }
@@ -1020,15 +1113,27 @@ int ocf_mngt_core_set_seq_cutoff_policy_all(ocf_cache_t cache,
 {
 	OCF_CHECK_NULL(cache);
 
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	if (!ocf_cache_is_device_attached(cache))
+		return -OCF_ERR_CACHE_DETACHED;
+
 	return ocf_core_visit(cache, _cache_mngt_set_core_seq_cutoff_policy,
-			&policy, true);
+						  &policy, true);
 }
 
 int ocf_mngt_core_get_seq_cutoff_policy(ocf_core_t core,
 		ocf_seq_cutoff_policy *policy)
 {
+	ocf_cache_t cache;
+
 	OCF_CHECK_NULL(core);
 	OCF_CHECK_NULL(policy);
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
 
 	*policy = ocf_core_get_seq_cutoff_policy(core);
 
@@ -1068,7 +1173,16 @@ static int _cache_mngt_set_core_seq_cutoff_promo_count(ocf_core_t core,
 int ocf_mngt_core_set_seq_cutoff_promotion_count(ocf_core_t core,
 		uint32_t count)
 {
+	ocf_cache_t cache;
+
 	OCF_CHECK_NULL(core);
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	if (!ocf_cache_is_device_attached(cache))
+		return -OCF_ERR_CACHE_DETACHED;
 
 	return _cache_mngt_set_core_seq_cutoff_promo_count(core, &count);
 }
@@ -1078,18 +1192,96 @@ int ocf_mngt_core_set_seq_cutoff_promotion_count_all(ocf_cache_t cache,
 {
 	OCF_CHECK_NULL(cache);
 
-	return ocf_core_visit(cache,
-			_cache_mngt_set_core_seq_cutoff_promo_count,
-			&count, true);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	if (!ocf_cache_is_device_attached(cache))
+		return -OCF_ERR_CACHE_DETACHED;
+
+	return ocf_core_visit(cache, _cache_mngt_set_core_seq_cutoff_promo_count,
+						  &count, true);
 }
 
 int ocf_mngt_core_get_seq_cutoff_promotion_count(ocf_core_t core,
 		uint32_t *count)
 {
+	ocf_cache_t cache;
+
 	OCF_CHECK_NULL(core);
 	OCF_CHECK_NULL(count);
 
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
 	*count = ocf_core_get_seq_cutoff_promotion_count(core);
+
+	return 0;
+}
+
+static int _cache_mngt_set_core_seq_cutoff_promote_on_threshold(
+		ocf_core_t core, void *cntx)
+{
+	bool promote = *(bool*) cntx;
+	bool promote_old = ocf_core_get_seq_cutoff_promote_on_threshold(core);
+
+	if (promote_old == promote) {
+		ocf_core_log(core, log_info,
+				"Sequential cutoff promote on threshold "
+				"is already set to %s\n", promote ? "true" : "false");
+		return 0;
+	}
+
+	env_atomic_set(&core->conf_meta->seq_cutoff_promote_on_threshold,
+			promote);
+
+	ocf_core_log(core, log_info, "Changing sequential cutoff promote "
+			"on threshold from %s to %s successful\n",
+			promote_old ? "true" : "false", promote ? "true" : "false");
+
+	return 0;
+}
+
+int ocf_mngt_core_set_seq_cutoff_promote_on_threshold(ocf_core_t core,
+		bool promote)
+{
+	ocf_cache_t cache;
+
+	OCF_CHECK_NULL(core);
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	return _cache_mngt_set_core_seq_cutoff_promote_on_threshold(core, &promote);
+}
+
+int ocf_mngt_core_set_seq_cutoff_promote_on_threshold_all(ocf_cache_t cache,
+		bool promote)
+{
+	OCF_CHECK_NULL(cache);
+
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	return ocf_core_visit(cache,
+			_cache_mngt_set_core_seq_cutoff_promote_on_threshold,
+			&promote, true);
+}
+
+int ocf_mngt_core_get_seq_cutoff_promote_on_threshold(ocf_core_t core,
+		bool *promote)
+{
+	ocf_cache_t cache;
+
+	OCF_CHECK_NULL(core);
+	OCF_CHECK_NULL(promote);
+
+	cache = ocf_core_get_cache(core);
+	if (ocf_cache_is_standby(cache))
+		return -OCF_ERR_CACHE_STANDBY;
+
+	*promote = ocf_core_get_seq_cutoff_promote_on_threshold(core);
 
 	return 0;
 }

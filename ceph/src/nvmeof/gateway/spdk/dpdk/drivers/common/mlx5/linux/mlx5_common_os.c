@@ -96,10 +96,11 @@ mlx5_translate_port_name(const char *port_name_in,
 	char ctrl = 0, pf_c1, pf_c2, vf_c1, vf_c2, eol;
 	char *end;
 	int sc_items;
+	int32_t ctrl_num = -1;
 
-	sc_items = sscanf(port_name_in, "%c%d",
-			  &ctrl, &port_info_out->ctrl_num);
+	sc_items = sscanf(port_name_in, "%c%d", &ctrl, &ctrl_num);
 	if (sc_items == 2 && ctrl == 'c') {
+		port_info_out->ctrl_num = ctrl_num;
 		port_name_in++; /* 'c' */
 		port_name_in += snprintf(NULL, 0, "%d",
 					  port_info_out->ctrl_num);
@@ -266,7 +267,7 @@ mlx5_glue_path(char *buf, size_t size)
 		goto error;
 	return buf;
 error:
-	RTE_LOG(ERR, PMD, "unable to append \"-glue\" to last component of"
+	DRV_LOG(ERR, "unable to append \"-glue\" to last component of"
 		" RTE_EAL_PMD_PATH (\"" RTE_EAL_PMD_PATH "\"), please"
 		" re-configure DPDK");
 	return NULL;
@@ -555,7 +556,7 @@ mlx5_os_pd_prepare(struct mlx5_common_device *cdev)
 }
 
 static struct ibv_device *
-mlx5_os_get_ibv_device(const struct rte_pci_addr *addr)
+mlx5_os_get_ibv_device(const struct rte_pci_device *pci_dev)
 {
 	int n;
 	struct ibv_device **ibv_list = mlx5_glue->get_device_list(&n);
@@ -564,6 +565,8 @@ mlx5_os_get_ibv_device(const struct rte_pci_addr *addr)
 	uint8_t guid2[32] = {0};
 	int ret1, ret2 = -1;
 	struct rte_pci_addr paddr;
+	const struct rte_pci_addr *addr = &pci_dev->addr;
+	bool is_vf_dev = mlx5_dev_is_vf_pci(pci_dev);
 
 	if (ibv_list == NULL || !n) {
 		rte_errno = ENOSYS;
@@ -579,11 +582,11 @@ mlx5_os_get_ibv_device(const struct rte_pci_addr *addr)
 		if (ret1 > 0)
 			ret2 = mlx5_get_device_guid(&paddr, guid2, sizeof(guid2));
 		/* Bond device can bond secondary PCIe */
-		if ((strstr(ibv_list[n]->name, "bond") &&
-		    ((ret1 > 0 && ret2 > 0 && !memcmp(guid1, guid2, sizeof(guid1))) ||
-		    (addr->domain == paddr.domain && addr->bus == paddr.bus &&
-		     addr->devid == paddr.devid))) ||
-		     !rte_pci_addr_cmp(addr, &paddr)) {
+		if ((strstr(ibv_list[n]->name, "bond") && !is_vf_dev &&
+		     ((ret1 > 0 && ret2 > 0 && !memcmp(guid1, guid2, sizeof(guid1))) ||
+		      (addr->domain == paddr.domain && addr->bus == paddr.bus &&
+		       addr->devid == paddr.devid))) ||
+		    !rte_pci_addr_cmp(addr, &paddr)) {
 			ibv_match = ibv_list[n];
 			break;
 		}
@@ -697,7 +700,7 @@ mlx5_os_get_ibv_dev(const struct rte_device *dev)
 	struct ibv_device *ibv;
 
 	if (mlx5_dev_is_pci(dev))
-		ibv = mlx5_os_get_ibv_device(&RTE_DEV_TO_PCI_CONST(dev)->addr);
+		ibv = mlx5_os_get_ibv_device(RTE_DEV_TO_PCI_CONST(dev));
 	else
 		ibv = mlx5_get_aux_ibv_device(RTE_DEV_TO_AUXILIARY_CONST(dev));
 	if (ibv == NULL) {
@@ -868,6 +871,58 @@ mlx5_os_open_device(struct mlx5_common_device *cdev, uint32_t classes)
 	mlx5_set_context_attr(cdev->dev, ctx);
 	cdev->ctx = ctx;
 	return 0;
+}
+
+/**
+ * API function to obtain a new InfiniBand (IB) context for a given common device.
+ *
+ * This function provides a port-agnostic IB context for a physical device, enabling the
+ * device to create and manage resources that can be initialized when a port starts and
+ * released when another port stops.
+ *
+ * For Linux, it imports new context from the existing context.
+ *
+ * @param cdev
+ *   Pointer to the mlx5 device structure.
+ *
+ * @return
+ *   Pointer to an `ibv_context` on success, or NULL on failure, with `rte_errno` set.
+ */
+void *
+mlx5_os_get_physical_device_ctx(struct mlx5_common_device *cdev)
+{
+	struct ibv_context *ctx = NULL;
+	int cmd_fd = ((struct ibv_context *)cdev->ctx)->cmd_fd;
+	int new_cmd_fd;
+
+	/*
+	 * Duplicate the command FD to pass it as input to the import device function.
+	 * If the import function succeeds, the new device context takes ownership of
+	 * this FD, which will be freed when the new device is closed.
+	 * If the import function fails, we are responsible for closing this FD.
+	 */
+	new_cmd_fd = dup(cmd_fd);
+	if (new_cmd_fd < 0) {
+		DRV_LOG(ERR,
+			"Failed to duplicate FD %d for IB device \"%s\": %s",
+			cmd_fd, mlx5_os_get_ctx_device_name(cdev->ctx),
+			rte_strerror(errno));
+		rte_errno = errno;
+		return NULL;
+	}
+	/* Attempt to import the duplicated FD to create a new device context. */
+	ctx = mlx5_glue->import_device(new_cmd_fd);
+	if (!ctx) {
+		DRV_LOG(ERR, "Failed to import IB device \"%s\": %s",
+			mlx5_os_get_ctx_device_name(cdev->ctx),
+			rte_strerror(errno));
+		close(new_cmd_fd);
+		rte_errno = errno;
+		return NULL;
+	}
+	DRV_LOG(INFO, "IB device \"%s\" successfully imported, old_fd=%d, new_fd=%d",
+		mlx5_os_get_ctx_device_name(cdev->ctx), cmd_fd, new_cmd_fd);
+	return (void *)ctx;
 }
 
 int

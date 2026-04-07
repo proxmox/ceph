@@ -20,7 +20,7 @@ rpc_nvmf_set_max_subsystems(struct spdk_jsonrpc_request *request,
 {
 	uint32_t max_subsystems = 0;
 
-	if (g_spdk_nvmf_tgt_max_subsystems != 0) {
+	if (g_spdk_nvmf_tgt_conf.opts.max_subsystems != 0) {
 		SPDK_ERRLOG("this RPC must not be called more than once.\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "Must not call more than once");
@@ -37,7 +37,7 @@ rpc_nvmf_set_max_subsystems(struct spdk_jsonrpc_request *request,
 		}
 	}
 
-	g_spdk_nvmf_tgt_max_subsystems = max_subsystems;
+	g_spdk_nvmf_tgt_conf.opts.max_subsystems = max_subsystems;
 
 	spdk_jsonrpc_send_bool_response(request, true);
 }
@@ -66,10 +66,11 @@ decode_admin_passthru(const struct spdk_json_val *val, void *out)
 static int
 decode_discovery_filter(const struct spdk_json_val *val, void *out)
 {
-	enum spdk_nvmf_tgt_discovery_filter *_filter = (enum spdk_nvmf_tgt_discovery_filter *)out;
-	enum spdk_nvmf_tgt_discovery_filter filter = SPDK_NVMF_TGT_DISCOVERY_MATCH_ANY;
+	uint32_t *_filter = out;
+	uint32_t filter = SPDK_NVMF_TGT_DISCOVERY_MATCH_ANY;
 	char *tokens = spdk_json_strdup(val);
 	char *tok;
+	char *sp = NULL;
 	int rc = -EINVAL;
 	bool all_specified = false;
 
@@ -77,7 +78,7 @@ decode_discovery_filter(const struct spdk_json_val *val, void *out)
 		return -ENOMEM;
 	}
 
-	tok = strtok(tokens, ",");
+	tok = strtok_r(tokens, ",", &sp);
 	while (tok) {
 		if (strncmp(tok, "match_any", 9) == 0) {
 			if (filter != SPDK_NVMF_TGT_DISCOVERY_MATCH_ANY) {
@@ -101,7 +102,7 @@ decode_discovery_filter(const struct spdk_json_val *val, void *out)
 			}
 		}
 
-		tok = strtok(NULL, ",");
+		tok = strtok_r(NULL, ",", &sp);
 	}
 
 	rc = 0;
@@ -159,10 +160,78 @@ nvmf_decode_poll_groups_mask(const struct spdk_json_val *val, void *out)
 	return -1;
 }
 
+static int
+decode_digest(const struct spdk_json_val *val, void *out)
+{
+	uint32_t *flags = out;
+	char *digest = NULL;
+	int rc;
+
+	rc = spdk_json_decode_string(val, &digest);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = spdk_nvme_dhchap_get_digest_id(digest);
+	if (rc >= 0) {
+		*flags |= SPDK_BIT(rc);
+		rc = 0;
+	}
+	free(digest);
+
+	return rc;
+}
+
+static int
+decode_digest_array(const struct spdk_json_val *val, void *out)
+{
+	uint32_t *flags = out;
+	size_t count;
+
+	*flags = 0;
+
+	return spdk_json_decode_array(val, decode_digest, out, 32, &count, 0);
+}
+
+static int
+decode_dhgroup(const struct spdk_json_val *val, void *out)
+{
+	uint32_t *flags = out;
+	char *dhgroup = NULL;
+	int rc;
+
+	rc = spdk_json_decode_string(val, &dhgroup);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = spdk_nvme_dhchap_get_dhgroup_id(dhgroup);
+	if (rc >= 0) {
+		*flags |= SPDK_BIT(rc);
+		rc = 0;
+	}
+	free(dhgroup);
+
+	return rc;
+}
+
+static int
+decode_dhgroup_array(const struct spdk_json_val *val, void *out)
+{
+	uint32_t *flags = out;
+	size_t count;
+
+	*flags = 0;
+
+	return spdk_json_decode_array(val, decode_dhgroup, out, 32, &count, 0);
+}
+
 static const struct spdk_json_object_decoder nvmf_rpc_subsystem_tgt_conf_decoder[] = {
 	{"admin_cmd_passthru", offsetof(struct spdk_nvmf_tgt_conf, admin_passthru), decode_admin_passthru, true},
 	{"poll_groups_mask", 0, nvmf_decode_poll_groups_mask, true},
-	{"discovery_filter", offsetof(struct spdk_nvmf_tgt_conf, discovery_filter), decode_discovery_filter, true}
+	{"discovery_filter", offsetof(struct spdk_nvmf_tgt_conf, opts.discovery_filter), decode_discovery_filter, true},
+	{"dhchap_digests", offsetof(struct spdk_nvmf_tgt_conf, opts.dhchap_digests), decode_digest_array, true},
+	{"dhchap_dhgroups", offsetof(struct spdk_nvmf_tgt_conf, opts.dhchap_dhgroups), decode_dhgroup_array, true},
 };
 
 static void
@@ -221,9 +290,9 @@ rpc_nvmf_set_crdt(struct spdk_jsonrpc_request *request,
 		}
 	}
 
-	g_spdk_nvmf_tgt_crdt[0] = rpc_set_crdt.crdt1;
-	g_spdk_nvmf_tgt_crdt[1] = rpc_set_crdt.crdt2;
-	g_spdk_nvmf_tgt_crdt[2] = rpc_set_crdt.crdt3;
+	g_spdk_nvmf_tgt_conf.opts.crdt[0] = rpc_set_crdt.crdt1;
+	g_spdk_nvmf_tgt_conf.opts.crdt[1] = rpc_set_crdt.crdt2;
+	g_spdk_nvmf_tgt_conf.opts.crdt[2] = rpc_set_crdt.crdt3;
 
 	spdk_jsonrpc_send_bool_response(request, true);
 }

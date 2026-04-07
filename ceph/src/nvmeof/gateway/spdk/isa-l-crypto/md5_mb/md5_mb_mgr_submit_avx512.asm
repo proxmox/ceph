@@ -31,7 +31,6 @@
 %include "md5_mb_mgr_datastruct.asm"
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_AVX512
 extern md5_mb_x16x2_avx512
 
 [bits 64]
@@ -102,8 +101,8 @@ align 64
 ; JOB* submit_job(MB_MGR *state, JOB_MD5 *job)
 ; arg 1 : rcx : state
 ; arg 2 : rdx : job
-mk_global md5_mb_mgr_submit_avx512, function
-md5_mb_mgr_submit_avx512:
+mk_global _md5_mb_mgr_submit_avx512, function, internal
+_md5_mb_mgr_submit_avx512:
 	endbranch
 
 	sub	rsp, STACK_SPACE
@@ -133,7 +132,7 @@ md5_mb_mgr_submit_avx512:
 	and	lane, 0x3F
 	MEM_VPSRLDDQ (state + _unused_lanes), unused_lanes
 	imul	lane_data, lane, _LANE_DATA_size
-	mov	dword [job + _status], STS_BEING_PROCESSED
+	mov	dword [job + _status], ISAL_STS_BEING_PROCESSED
 	lea	lane_data, [state + _ldata + lane_data]
 	mov	DWORD(len), [job + _len]
 
@@ -217,7 +216,7 @@ len_is_0:
 	mov	job_rax, [lane_data + _job_in_lane]
 	mov	lane, [state + _unused_lanes]
 	mov	qword [lane_data + _job_in_lane], 0
-	mov	dword [job_rax + _status], STS_COMPLETED
+	mov	dword [job_rax + _status], ISAL_STS_COMPLETED
 
 	shl	lane, 8
 	or	 lane, idx
@@ -274,10 +273,3 @@ align 32
 clear_low_6bits:
 	dq 0x00000000FFFFFFC0, 0x0000000000000000
 	dq 0x00000000FFFFFFC0, 0x0000000000000000
-
-%else
-%ifidn __OUTPUT_FORMAT__, win64
-global no_md5_mb_mgr_submit_avx512
-no_md5_mb_mgr_submit_avx512:
-%endif
-%endif ; HAVE_AS_KNOWS_AVX512

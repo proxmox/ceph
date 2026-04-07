@@ -72,4 +72,5 @@ run_test "vhost_blk_packed_ring_integrity" $WORKDIR/fiotest/fio.sh -x --fio-bin=
 	--fio-job=$WORKDIR/common/fio_jobs/default_integrity.job \
 	--packed
 
-run_test "spdkcli_vhost" ./test/spdkcli/vhost.sh
+run_test "spdkcli_vhost" $rootdir/test/spdkcli/vhost.sh
+run_test "nvmf_vhost" "$WORKDIR/nvmf/nvmf_vhost.sh"

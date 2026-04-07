@@ -10,6 +10,10 @@
 #include "spdk/nvmf.h"
 #include "spdk/bdev.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum spdk_nvmf_request_exec_status {
 	SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE,
 	SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS,
@@ -74,6 +78,19 @@ int spdk_nvmf_ctrlr_identify_ns(struct spdk_nvmf_ctrlr *ctrlr,
 				struct spdk_nvme_cmd *cmd,
 				struct spdk_nvme_cpl *rsp,
 				struct spdk_nvme_ns_data *nsdata);
+
+/**
+ * Fills the identify namespace attributes for the specified controller.
+ *
+ * This funtion uses nvme passthru for the namespaces that are backed by bdevs
+ * that support NVME_ADMIN IO type. It differs from spdk_nvmf_ctrlr_identify_ns
+ * by requesting identify namespace data and populate performance and atomic
+ * operations fields.
+ *
+ * \param req The NVMe-oF request
+ * \return \ref spdk_nvmf_request_exec_status
+ */
+int spdk_nvmf_ctrlr_identify_ns_ext(struct spdk_nvmf_request *req);
 
 /**
  * Callback function definition for a custom admin command handler.
@@ -153,6 +170,20 @@ int spdk_nvmf_bdev_ctrlr_abort_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc
 				   struct spdk_io_channel *ch, struct spdk_nvmf_request *req,
 				   struct spdk_nvmf_request *req_to_abort);
 
+
+/**
+ * Attempts to abort a request in the specified bdev
+ *
+ * \param bdev Bdev that is processing req_to_abort
+ * \param desc Bdev desc
+ * \param ch Channel on which req_to_abort was originally submitted
+ * \param req Abort cmd req
+ * \param req_to_abort The request that should be aborted
+ */
+int spdk_nvmf_bdev_ctrlr_io_cancel_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+				       struct spdk_io_channel *ch, struct spdk_nvmf_request *req,
+				       struct spdk_nvmf_request *req_to_abort);
+
 /**
  * Provide access to the underlying bdev that is associated with a namespace.
  *
@@ -195,13 +226,28 @@ struct spdk_nvmf_ctrlr *spdk_nvmf_request_get_ctrlr(struct spdk_nvmf_request *re
 struct spdk_nvmf_subsystem *spdk_nvmf_request_get_subsystem(struct spdk_nvmf_request *req);
 
 /**
- * Get the data and length associated with this request.
+ * Copy the data from the given @buf into the request iovec.
  *
  * \param req The NVMe-oF request
- * \param data The data buffer associated with this request
- * \param length The length of the data buffer
+ * \param buf The data buffer
+ * \param buflen The length of the data buffer
+ *
+ * \return the number of bytes copied
  */
-void spdk_nvmf_request_get_data(struct spdk_nvmf_request *req, void **data, uint32_t *length);
+size_t spdk_nvmf_request_copy_from_buf(struct spdk_nvmf_request *req,
+				       void *buf, size_t buflen);
+
+/**
+ * Copy the data from the request iovec into the given @buf.
+ *
+ * \param req The NVMe-oF request
+ * \param buf The data buffer
+ * \param buflen The length of the data buffer
+ *
+ * \return the number of bytes copied
+ */
+size_t spdk_nvmf_request_copy_to_buf(struct spdk_nvmf_request *req,
+				     void *buf, size_t buflen);
 
 /**
  * Get the NVMe-oF command associated with this request.
@@ -230,5 +276,9 @@ struct spdk_nvme_cpl *spdk_nvmf_request_get_response(struct spdk_nvmf_request *r
  * \return req_to_abort The NVMe-oF request that is in process of being aborted
  */
 struct spdk_nvmf_request *spdk_nvmf_request_get_req_to_abort(struct spdk_nvmf_request *req);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SPDK_NVMF_CMD_H_ */

@@ -1,3 +1,7 @@
+.. SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+..
+.. SPDX-License-Identifier: BSD-3-Clause
+
 Changelog
 =========
 
@@ -13,6 +17,318 @@ Known Issues
 ------------
 
 See the file named ``ISSUES`` in the root of the repository.
+
+v0.7.5
+------
+
+For details, then see the commit-messages, for highlights see below.
+
+* API Extensions
+
+  - Add helper `xnvme_nvm_compare()`
+
+    - Plus emulation via ramdisk
+
+* API Refactoring
+
+  These are the changes you need to account for if you are using the following
+  functions defined in the public xNVMe API:
+
+  - `xnvme_nvm_sanitize()`: arguments 'oipbp' and 'nodas' are now `bool`
+  - `xnvme_znd_mgmt_recv()`: argument renamed from 'action' to `zra`
+  - `xnvme_znd_mgmt_send()`: argument renamed from 'action_so' to `zsaso`
+  - `xnvme_cli_args`
+  
+    - `{clear,direct,all,save,verbose,ad,idw,idr}*`: changed to `bool`
+    - `action` renamed to `sanact`
+    - `zrms` renamed to `zsa`
+    
+  - `xnvme_pi_generate`
+  
+    - `dbuf` renamed to `data_buf`
+    - `mbuf` renamed to `md_buf`
+
+  - Renamed `enum xnvme_retreive_opts` to `enum xnvme_retrieve_opts`
+
+* Backends
+
+  - The vfio backend now support iovec payloads
+
+* Library
+
+  - A version-script now controls library symbols, effectively preventing symbol
+    leakage from linked libraries.
+  - The build no longer fails when SPDK dependencies are not satisfied
+  
+    - Instead of failing the build, the SPDK backend is disabled.
+    - SPDK is still "special" in the sense that xNVMe builds and links a patched
+      version. However, the default behavior now is to disable the SPDK backend
+      instead of failing the build when transient dependencies are missing.
+      This is a much nicer behavior for users who simply grab xNVMe to consume
+      `io_uring` command and NVMe driver ioctl interfaces.
+
+  - Replaced custom shared/static library logic with default Meson handling
+
+    - The default is to build both the static and shared libraries.
+    - The tools, examples, and tests are by default linked with the shared
+      version of the library.
+    - To build only a single version, use '--default-library' specifying either
+      'static' or 'shared'.
+
+* Infrastructure
+
+  - The ramdisk workflow is now running on macOS.
+  - Expanded automated performance evaluation to include Windows and FreeBSD.
+  - Latency report
+  
+    - Overhead per command evaluated on Linux, FreeBSD, and Windows.
+    - Uses `fio`.
+    
+  - Scalability report
+  
+    - Single-core peak performance when using xNVMe via SPDK/bdev_xnvme.
+
+* Documentation
+
+  - The Sphinx-doc project theme now uses the (in)famous PyData Sphinx-theme.
+  - Major overhaul: the documentation and xNVMe website are now unified as a
+    Sphinx-doc project.
+  - A complete rewrite of the getting-started, toolchain, and API sections.
+
+v0.7.4
+------
+
+A lot of minor fixes, reduction of technical debt, and fixes in preperation for
+Debian packaging. See the commits for details.
+
+* Packaging, see subsection "packaging" in the Contributor section of the docs
+
+* feat: Delayed identification, upon xnvme_dev_open() then a device was
+  "identified" and its geometry "derived", this is dropped in favor of "adhoc" /
+  "implicit" action when the data is requested.
+
+* feat: The SPDK backend now supports iovec payloads
+
+* feat: end-to-end data-protection is now available with helpers in the public
+  API
+
+* feat: Support for completion-notification via eventfd() by using helper
+  function xnvme_queue_get_completion_fd()
+
+v0.7.3
+------
+
+* Pseudo Commands
+
+  - Encapsulation of functionality not NVMe-spec defined, yet common for
+    drivers etc. encapsulated for backend-handling as "pseudo-commands" these
+    are
+
+    - xnvme_controller_reset()
+    - xnvme_controller_get_registers()
+    - xnvme_namespace_rescan()
+    - xnvme_subsystem_reset()
+
+  - Implemented in the SPDK and Linux backends
+  - Usage via cli-tools is available
+
+* Controller Handles
+
+  - Having device-handles to NVMe-controllers is a necessity for e.g. reading
+    controller-registers as provided via xnvme_controller_get_registers()
+
+* Backend: SPDK
+
+  - Support for the KV Command-Set over NVMe/TCP
+
+v0.7.2
+------
+
+* API Refactoring
+
+  - refactor(api): hoist inline-struct 'xnvme_opts.css'
+  - refactor(api)!: hoist "xnvme_opts.oflags" and drop int-version
+  - refactor(api): hoist and define xnvme_cmd_ctx_async
+  - refactor(api): hoist and define xnvme_lba_range_attr
+
+* Backends: libvfn/vfio
+
+  - Fix use of the libvfn API (memory-mapping)
+	- Bumping of the libvfn to libvfn 3.0.0-rc2, bumped to support
+    eventfd-notification and fix errors with memory-mapping
+
+* Backend: SPDK
+
+  - feat(build/spdk): add libarchive dependency
+  - feat(build/spdk): bump to v23.09
+
+* Backends: Windows
+
+  - Added support for SPDK in Windows via WPDK
+
+Backend: linux / liburing
+
+  - feat(be/liburing): turn on batching by default
+
+* Feature: Pseudo-commands
+
+	- Backend interface expanded with "pseudo-commands", this is to unify aspects
+    which are not command-encapsulated; reading controller-registers, resetting
+    subsystems etc.
+	- api: add xnvme_subsystem_reset() / xnvme_controller_reset() /
+    xnvme_namespace_rescan(), these construct "pseudo-commands" to instruct the
+    backend to e.g. reset.
+
+* Rust
+
+  - xNVMe now has experimental Rust bindings via crate 'xnvme-sys'
+  - feat(rust/xnvme-sys): add bindgen-emitted wrapper for libxnvme
+  - feat(rust/xnvme_sys): add simplest example of call via bindings
+  - feat(git/ignore): add 'rust/target' to ignore
+  - feat(pcf,gha): add build of Rust crates
+
+
+* Misc. Fixes
+
+  - fix: format-strings (use PRI-macros instead of e.g. lu-specifiers)
+  - fix(cli,enum): use xnvme_buf_virt_{alloc|free}() instead of malloc/free
+  - fix: use zu format-specifier for size_t
+  - fix(cli): change assignment for create_mode
+  - fix(spec): adjust format-specifier for comp_temp
+  - fix(be/libaio): remove comparison warning 
+  - refactor(toolbox/xnvmec_generator): emit to subfolders
+  - refactor(build/manpages)!: only install manpages for installed binaries
+  - refactor(build/completions)!: only install completions for installed binaries
+  - fix(meson/options): remove unused option shared_library
+  - fix(meson/options): remove unused option enable-ysnp
+  - fix(toolbox/pkgs): build libvfn as release
+
+* Build
+
+  - Cleanup helper targets
+
+* cijoe
+
+  - feat(cijoe): add workflow for provisioning via git
+
+* Documentation
+
+  - Added Tutorial for FDP
+  - Added Overview of the xNVMe CI environment
+
+v0.7.1
+------
+
+* API
+  - Introduced memory-mapping API (libxnvme_mem.h), that is, when the user
+    manages memory and thus does not want to use xnvme_buf_alloc() as doing so
+    would introduce bounce-buffers.
+
+* CLI
+  - The passthru cli-interfaces now use --cdwXY arguments instead of
+    "command-files", this alignes with nvme-cli and is arguably simpler
+
+* Backends: Linux
+  - Performance improvments in io_uring and io_uring_cmd backends due to the
+    addition batching via delayed submission
+  - Performance improvements to libaio due to the addition of the "ring-hack"
+
+* Backends: Windows
+  - Support added for writing via "ioring" on Windows, previously only batched
+    reads were possible via this interface.
+
+* Infrastructure; github-actions, docker-images, third-party etc. bump the
+  reference toolchain platforms, that is
+  - Debian is now Trixie, Bookworm and Bullseye.
+  - Ubuntu is now Lunar, Jammy and Focal
+  - Added Rocky Linux 9.2
+  - Added Oracle Linux 9.
+  - Dropped CentOS 7
+  - Dropped CentOS Stream 8
+  - Dropped openSUSE Leap 15.3 and 15.4, Tumbleweed remains
+
+* Removal of a bunch of deprecated files and code. General *cleanup*.
+
+v0.7.0
+------
+
+This release got a whole lot bigger than it ought to. Aiming for more
+frequent releases in the future. A bunch of changes to API,
+implementation, and even the license.
+
+Regarding the license. For compatibility with GPL-licensed software.
+That is, consumption of xNVMe from GPL-licences software, then xNVMe is
+changed from APACHE to BSD-3-Clause. To better determine the license,
+the project has aligned with the golden practice of REUSE-compliance
+(https://reuse.software/).
+
+* API
+  * Refactored to provide a single "entry-point" header
+  * Headers no longer include other headers (except for the entry-point)
+  * Renamed the command-line api from xnvmec to xnvme_cli
+
+* API / Command-Sets
+  * Support for FDP and DSM
+  * Support for Key-Value SSDs
+
+* Backends
+  * The POSIX backend is replaced by CBI -- Common Backend Implementation
+  * Instead of "POSIX" then a handful of commonly useful implementations
+    are provided, being "strictly" POSIX was an impractical restriction,
+    such as lacking support for features which are provided on modern
+    operating systems but not defined by POSIX.
+
+* Backends: FreeBSD
+  * Support for kqueue based aio
+
+* Backends: SPDK
+  * Now has options to control Admin and I/O command timeout
+  * Removed patches no longer needed (available upstream)
+
+* Backends: vfio
+  * Removed as subproject and instead links "properly" with the
+    system-provided libvfn
+
+* tools
+  * switched fio from "external" to "internal" / "upstream" fio engine
+
+For additional details then please have a look at the commit-history,
+the v0.7.0 related issue on GitHUB and PR.
+
+v0.6.0
+------
+
+A handful of improvements for Windows, additional steps toward removing
+third-party vendoring / bundling, addition of experimental tunable knobs for
+io_uring/SQPOLL, and several improvements to testing and CI infra.
+
+* API
+  - Removed SLIST from API, although "sys/queue.h" are commonly available on
+    Linux/FreeBSD, then they are not part of toolchain on Windows.
+
+* Third-party
+  - Bumped SPDK to v22.09, and with that removed mutliple out-of-tree patches
+    for DPDK.
+
+* CLI
+  - The xNVMe command-line library (libxnvmec) and all the cli-tools using it
+    are refactored to use common sets of command-line arguments. Along with
+    this came a consistent set of CLI-arguments for admin/sync/async.
+
+* Backends
+  - ramdisk: The ramdisk got support for write-zeroes, iovec payloads and added
+    to CI testing.
+  - linux: support for a buffer-allocator using HUGEPAGES and tunable knobs for
+    controlling the behavior of io_uring SQPOLL via environment variables.
+  - windows: support for the experimental IORING Windows SPDK API and support
+    for block devices (SCSI and SATA).
+  - spdk: when controllers are re-used for device-handles, events are
+    processed as a means to check whether the controller is still "alive"
+
+* CI
+  - scan-build now runs for each PR
+  - basic tests are now running post-building testing using the RAMDISK
+  - Testing of fabrics with TCP transport is now part of the setup
 
 v0.5.0
 ------

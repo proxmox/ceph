@@ -1,12 +1,10 @@
-#ifndef __LIBXNVME_PP_H
-#define __LIBXNVME_PP_H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#include <libxnvme.h>
-#include <libxnvmec.h>
+/**
+ * SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * @headerfile libxnvme_pp.h
+ */
 
 /**
  * Options for pretty-printer (``*_pr``, ``*_fpr``) functions
@@ -144,37 +142,6 @@ xnvme_ident_fpr(FILE *stream, const struct xnvme_ident *ident, int opts);
 int
 xnvme_ident_pr(const struct xnvme_ident *ident, int opts);
 
-struct xnvme_enumeration;
-
-/**
- * Prints the given ::xnvme_enumeration to the given output stream
- *
- * @param stream output stream used for printing
- * @param list pointer to structure to print
- * @param opts printer options, see ::xnvme_pr
- *
- * @return On success, the number of characters printed is returned.
- */
-int
-xnvme_enumeration_fpr(FILE *stream, struct xnvme_enumeration *list, int opts);
-
-int
-xnvme_enumeration_fpp(FILE *stream, struct xnvme_enumeration *list, int opts);
-
-int
-xnvme_enumeration_pp(struct xnvme_enumeration *list, int opts);
-
-/**
- * Prints the given ::xnvme_enumeration to stdout
- *
- * @param list pointer to structure to print
- * @param opts printer options, see ::xnvme_pr
- *
- * @return On success, the number of characters printed is returned.
- */
-int
-xnvme_enumeration_pr(struct xnvme_enumeration *list, int opts);
-
 /**
  * Prints the given ::xnvme_dev to the given output stream
  *
@@ -240,9 +207,3 @@ xnvme_cmd_ctx_pr(const struct xnvme_cmd_ctx *ctx, int UNUSED_opts);
  */
 int
 xnvme_opts_pr(const struct xnvme_opts *opts, int pr_opts);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __LIBXNVME_PP_H */

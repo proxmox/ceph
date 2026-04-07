@@ -7,6 +7,7 @@
 	spdk_thread_lib_fini;
 	spdk_thread_create;
 	spdk_thread_get_app_thread;
+	spdk_thread_is_app_thread;
 	spdk_set_thread;
 	spdk_thread_exit;
 	spdk_thread_is_running;
@@ -15,6 +16,8 @@
 	spdk_thread_get_ctx;
 	spdk_thread_get_cpumask;
 	spdk_thread_set_cpumask;
+	spdk_thread_bind;
+	spdk_thread_is_bound;
 	spdk_thread_get_from_ctx;
 	spdk_thread_poll;
 	spdk_thread_next_poller_expiration;
@@ -32,12 +35,14 @@
 	spdk_thread_send_critical_msg;
 	spdk_for_each_thread;
 	spdk_thread_set_interrupt_mode;
+	spdk_thread_get_trace_id;
 	spdk_poller_register;
 	spdk_poller_register_named;
 	spdk_poller_unregister;
 	spdk_poller_pause;
 	spdk_poller_resume;
 	spdk_poller_register_interrupt;
+	spdk_thread_register_post_poller_handler;
 	spdk_io_device_register;
 	spdk_io_device_unregister;
 	spdk_get_io_channel;
@@ -52,9 +57,13 @@
 	spdk_io_channel_iter_get_ctx;
 	spdk_for_each_channel_continue;
 	spdk_interrupt_register;
+	spdk_interrupt_register_for_events;
+	spdk_interrupt_register_ext;
 	spdk_interrupt_unregister;
 	spdk_interrupt_set_event_types;
+	spdk_interrupt_register_fd_group;
 	spdk_thread_get_interrupt_fd;
+	spdk_thread_get_interrupt_fd_group;
 	spdk_interrupt_mode_enable;
 	spdk_interrupt_mode_is_enabled;
 	spdk_spin_init;
@@ -69,8 +78,12 @@
 	spdk_iobuf_channel_init;
 	spdk_iobuf_channel_fini;
 	spdk_iobuf_register_module;
+	spdk_iobuf_unregister_module;
 	spdk_iobuf_for_each_entry;
 	spdk_iobuf_entry_abort;
+	spdk_iobuf_get;
+	spdk_iobuf_put;
+	spdk_iobuf_get_stats;
 
 	# internal functions in spdk_internal/thread.h
 	spdk_poller_get_name;

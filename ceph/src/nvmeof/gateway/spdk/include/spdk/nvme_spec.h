@@ -1,6 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
- *   Copyright (C) 2015 Intel Corporation.
- *   All rights reserved.
+ *   Copyright (C) 2015 Intel Corporation. All rights reserved.
+ *   Copyright (c) 2024 Samsung Electronics Co., Ltd. All rights reserved.
  */
 
 /**
@@ -98,7 +98,10 @@ union spdk_nvme_cap_register {
 		/** persistent memory region supported */
 		uint32_t pmrs		: 1;
 
-		uint32_t reserved3	: 7;
+		/** controller memory buffer supported */
+		uint32_t cmbs		: 1;
+
+		uint32_t reserved3	: 6;
 	} bits;
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cap_register) == 8, "Incorrect size");
@@ -607,7 +610,8 @@ enum spdk_nvme_sgl_descriptor_subtype {
 	SPDK_NVME_SGL_SUBTYPE_TRANSPORT		= 0xa,
 };
 
-struct __attribute__((packed)) spdk_nvme_sgl_descriptor {
+#pragma pack(push, 1)
+struct spdk_nvme_sgl_descriptor {
 	uint64_t address;
 	union {
 		struct {
@@ -632,6 +636,7 @@ struct __attribute__((packed)) spdk_nvme_sgl_descriptor {
 	};
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_sgl_descriptor) == 16, "Incorrect size");
+#pragma pack(pop)
 
 enum spdk_nvme_psdt_value {
 	SPDK_NVME_PSDT_PRP		= 0x0,
@@ -1025,6 +1030,63 @@ union spdk_nvme_feat_reservation_persistence {
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_feat_reservation_persistence) == 4, "Incorrect size");
 
+/**
+ * Data used by Set Features/Get Features \ref SPDK_NVME_FEAT_FDP
+ */
+union spdk_nvme_feat_fdp_cdw11 {
+	uint32_t raw;
+	struct {
+		/* Endurance Group Identifier */
+		uint32_t endgid   : 16;
+		uint32_t reserved : 16;
+	} bits;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_feat_fdp_cdw11) == 4, "Incorrect size");
+
+/**
+ * Data used by Set Features/Get Features \ref SPDK_NVME_FEAT_FDP
+ */
+union spdk_nvme_feat_fdp_cdw12 {
+	uint32_t raw;
+	struct {
+		/* Flexible Data Placement Enable */
+		uint32_t fdpe      : 1;
+		uint32_t reserved1 : 7;
+		/* Flexible Data Placement Configuration Index */
+		uint32_t fdpci     : 8;
+		uint32_t reserved2 : 16;
+	} bits;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_feat_fdp_cdw12) == 4, "Incorrect size");
+
+/**
+ * Data used by Set Features/Get Features \ref SPDK_NVME_FEAT_FDP_EVENTS
+ */
+union spdk_nvme_feat_fdp_events_cdw11 {
+	uint32_t raw;
+	struct {
+		/* Placement Handle associated with RUH */
+		uint32_t phndl    : 16;
+		/* Number of FDP event types in data buffer */
+		uint32_t noet     : 8;
+		uint32_t reserved : 8;
+	} bits;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_feat_fdp_events_cdw11) == 4, "Incorrect size");
+
+/**
+ * Data used by Set Feature \ref SPDK_NVME_FEAT_FDP_EVENTS
+ */
+union spdk_nvme_feat_fdp_events_cdw12 {
+	uint32_t raw;
+	struct {
+		/* FDP Event Enable */
+		uint32_t fdpee     : 1;
+		uint32_t reserved1 : 31;
+	} bits;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_feat_fdp_events_cdw12) == 4, "Incorrect size");
+
 union spdk_nvme_cmd_cdw10 {
 	uint32_t raw;
 	struct {
@@ -1039,8 +1101,7 @@ union spdk_nvme_cmd_cdw10 {
 		/* Log Page Identifier */
 		uint32_t lid       : 8;
 		/* Log Specific Field */
-		uint32_t lsp       : 4;
-		uint32_t reserved  : 3;
+		uint32_t lsp       : 7;
 		/* Retain Asynchronous Event */
 		uint32_t rae       : 1;
 		/* Number of Dwords Lower */
@@ -1053,6 +1114,13 @@ union spdk_nvme_cmd_cdw10 {
 		/* Command Identifier */
 		uint32_t cid       : 16;
 	} abort;
+
+	struct {
+		/* Submission Queue Identifier */
+		uint32_t sqid      : 16;
+		/* Command Identifier */
+		uint32_t cid       : 16;
+	} io_cancel;
 
 	struct {
 		/* NVMe Security Specific Field */
@@ -1143,6 +1211,14 @@ union spdk_nvme_cmd_cdw10 {
 		uint32_t rtype     : 8;
 		uint32_t reserved2 : 16;
 	} resv_acquire;
+
+	struct {
+		/* Management Operation */
+		uint32_t mo        : 8;
+		uint32_t reserved  : 8;
+		/* Management Operation Specific */
+		uint32_t mos       : 16;
+	} mgmt_send_recv;
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cmd_cdw10) == 4, "Incorrect size");
 
@@ -1214,6 +1290,8 @@ union spdk_nvme_cmd_cdw11 {
 	union spdk_nvme_feat_host_identifier feat_host_identifier;
 	union spdk_nvme_feat_reservation_notification_mask feat_rsv_notification_mask;
 	union spdk_nvme_feat_reservation_persistence feat_rsv_persistence;
+	union spdk_nvme_feat_fdp_cdw11 feat_fdp_cdw11;
+	union spdk_nvme_feat_fdp_events_cdw11 feat_fdp_events_cdw11;
 
 	struct {
 		/* Attribute – Integral Dataset for Read */
@@ -1224,6 +1302,12 @@ union spdk_nvme_cmd_cdw11 {
 		uint32_t ad       : 1;
 		uint32_t reserved : 29;
 	} dsm;
+
+	struct {
+		uint32_t action    : 8;
+		uint32_t wildcard_ns_id: 1;
+		uint32_t reserved  : 23;
+	} io_cancel;
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cmd_cdw11) == 4, "Incorrect size");
 
@@ -1232,8 +1316,27 @@ union spdk_nvme_cmd_cdw12 {
 
 	struct {
 		/* Number of Ranges */
+		uint32_t nlb       : 16;
+		uint32_t reserved  : 4;
+		/* Directive Type */
+		uint32_t dtype     : 4;
+		/* Storage Tag Check */
+		uint32_t stc       : 1;
+		uint32_t reserved2 : 1;
+		/* Protection Information Check */
+		uint32_t prchk     : 3;
+		/* Protection Information Action */
+		uint32_t pract     : 1;
+		/* Force Unit Access */
+		uint32_t fua       : 1;
+		/* Limited Retry */
+		uint32_t lr        : 1;
+	} write;
+
+	struct {
+		/* Number of Ranges */
 		uint32_t nr        : 8;
-		/* Desciptor Format */
+		/* Descriptor Format */
 		uint32_t df        : 4;
 		/* Protection Information Field Read */
 		uint32_t prinfor   : 4;
@@ -1250,8 +1353,42 @@ union spdk_nvme_cmd_cdw12 {
 		/* Limited Retry */
 		uint32_t lr        : 1;
 	} copy;
+
+	struct {
+		/* Number of Logical Blocks */
+		uint32_t nlb       : 16;
+		uint32_t reserved  : 8;
+		/* Storage Tag Check */
+		uint32_t stc       : 1;
+		/* Deallocate */
+		uint32_t deac      : 1;
+		/* Protection Information Check */
+		uint32_t prchk     : 3;
+		/* Protection Information Action */
+		uint32_t pract     : 1;
+		/* Force Unit Access */
+		uint32_t fua       : 1;
+		/* Limited Retry */
+		uint32_t lr        : 1;
+	} write_zeroes;
+
+	union spdk_nvme_feat_fdp_cdw12 feat_fdp_cdw12;
+	union spdk_nvme_feat_fdp_events_cdw12 feat_fdp_events_cdw12;
 };
 SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cmd_cdw12) == 4, "Incorrect size");
+
+union spdk_nvme_cmd_cdw13 {
+	uint32_t raw;
+
+	struct {
+		/* Dataset Management */
+		uint32_t dsm       : 8;
+		uint32_t reserved  : 8;
+		/* Directive Specific */
+		uint32_t dspec     : 16;
+	} write;
+};
+SPDK_STATIC_ASSERT(sizeof(union spdk_nvme_cmd_cdw13) == 4, "Incorrect size");
 
 struct spdk_nvme_cmd {
 	/* dword 0 */
@@ -1296,8 +1433,12 @@ struct spdk_nvme_cmd {
 		uint32_t cdw12;
 		union spdk_nvme_cmd_cdw12 cdw12_bits;
 	};
-	/* dword 13-15 */
-	uint32_t cdw13;		/* command-specific */
+	/* command-specific */
+	union {
+		uint32_t cdw13;
+		union spdk_nvme_cmd_cdw13 cdw13_bits;
+	};
+	/* dword 14-15 */
 	uint32_t cdw14;		/* command-specific */
 	uint32_t cdw15;		/* command-specific */
 };
@@ -1334,6 +1475,12 @@ struct spdk_nvme_cpl {
 		struct spdk_nvme_status	status;
 	};
 };
+
+struct dw0_io_cancel_cpl {
+	uint32_t	num_aborted  : 16;
+	uint32_t	num_deferred : 16;
+};
+
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_cpl) == 16, "Incorrect size");
 
 /**
@@ -1428,6 +1575,11 @@ enum spdk_nvme_generic_command_status_code {
 	SPDK_NVME_SC_COMMAND_NAMESPACE_IS_PROTECTED	= 0x20,
 	SPDK_NVME_SC_COMMAND_INTERRUPTED		= 0x21,
 	SPDK_NVME_SC_COMMAND_TRANSIENT_TRANSPORT_ERROR	= 0x22,
+	SPDK_NVME_SC_COMMAND_PROHIBITED_BY_LOCKDOWN	= 0x23,
+	SPDK_NVME_SC_ADMIN_COMMAND_MEDIA_NOT_READY	= 0x24,
+
+	SPDK_NVME_SC_FDP_DISABLED			= 0x29,
+	SPDK_NVME_SC_INVALID_PLACEMENT_HANDLE_LIST	= 0x2A,
 
 	SPDK_NVME_SC_LBA_OUT_OF_RANGE			= 0x80,
 	SPDK_NVME_SC_CAPACITY_EXCEEDED			= 0x81,
@@ -1603,9 +1755,12 @@ enum spdk_nvme_nvm_opcode {
 	SPDK_NVME_OPC_RESERVATION_REPORT		= 0x0e,
 
 	SPDK_NVME_OPC_RESERVATION_ACQUIRE		= 0x11,
+	SPDK_NVME_OPC_IO_MANAGEMENT_RECEIVE		= 0x12,
 	SPDK_NVME_OPC_RESERVATION_RELEASE		= 0x15,
+	SPDK_NVME_OPC_IO_CANCEL				= 0x18,
 
 	SPDK_NVME_OPC_COPY				= 0x19,
+	SPDK_NVME_OPC_IO_MANAGEMENT_SEND		= 0x1D,
 };
 
 /**
@@ -1654,11 +1809,87 @@ spdk_nvme_bytes_to_numd(uint32_t len)
 	return (len >> 2) - 1;
 }
 
-struct __attribute__((packed)) spdk_nvme_host_behavior {
+#pragma pack(push, 1)
+struct spdk_nvme_host_behavior {
 	uint8_t acre;
-	uint8_t reserved[511];
+	uint8_t etdas;
+	uint8_t lbafee;
+	uint8_t reserved[509];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_host_behavior) == 512, "Incorrect size");
+#pragma pack(pop)
+
+/**
+ * Supported FDP event descriptor
+ */
+struct spdk_nvme_fdp_event_desc {
+	/* FDP Event type */
+	uint8_t fdp_etype;
+
+	/* FDP event type attributes */
+	union {
+		uint8_t raw;
+		struct {
+			/*  FDP event enabled */
+			uint8_t fdp_ee   : 1;
+			uint8_t reserved : 7;
+		} bits;
+	} fdpeta;
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_event_desc) == 2, "Incorrect size");
+
+/**
+ * Reclaim unit handle status descriptor
+ */
+struct spdk_nvme_fdp_ruhs_desc {
+	/* Placement Identifier */
+	uint16_t pid;
+
+	/* Reclaim Unit Handle Identifier */
+	uint16_t ruhid;
+
+	/* Estimated Active Reclaim Unit Time Remaining */
+	uint32_t earutr;
+
+	/* Reclaim Unit Available Media Writes */
+	uint64_t ruamw;
+
+	uint8_t reserved[16];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_ruhs_desc) == 32, "Incorrect size");
+
+/**
+ * Reclaim unit handle status
+ */
+struct spdk_nvme_fdp_ruhs {
+	uint8_t reserved[14];
+
+	/* Number of Reclaim Unit Handle Status Descriptors */
+	uint16_t nruhsd;
+
+	struct spdk_nvme_fdp_ruhs_desc ruhs_desc[];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_ruhs) == 16, "Incorrect size");
+
+/**
+ * Management operation to perform for IO management receive
+ */
+enum spdk_nvme_fdp_mgmt_recv_mo {
+	SPDK_NVME_FDP_IO_MGMT_RECV_NA		= 0x00,
+	SPDK_NVME_FDP_IO_MGMT_RECV_RUHS		= 0x01,
+	/* 0x02-0xFE - reserved */
+	SPDK_NVME_FDP_IO_MGMT_RECV_VS		= 0xFF,
+};
+
+/**
+ * Management operation to perform for IO management send
+ */
+enum spdk_nvme_fdp_mgmt_send_mo {
+	SPDK_NVME_FDP_IO_MGMT_SEND_NA		= 0x00,
+	SPDK_NVME_FDP_IO_MGMT_SEND_RUHU		= 0x01,
+	/* 0x02-0xFE - reserved */
+	SPDK_NVME_FDP_IO_MGMT_SEND_VS		= 0xFF,
+};
 
 enum spdk_nvme_feat {
 	/* 0x00 - reserved */
@@ -1705,9 +1936,28 @@ enum spdk_nvme_feat {
 	SPDK_NVME_FEAT_HOST_BEHAVIOR_SUPPORT			= 0x16,
 	SPDK_NVME_FEAT_SANITIZE_CONFIG				= 0x17,
 	SPDK_NVME_FEAT_ENDURANCE_GROUP_EVENT			= 0x18,
-	/* 0x12-0x77 - reserved */
+	SPDK_NVME_FEAT_IO_COMMAND_SET_PROFILE			= 0x19,
+	SPDK_NVME_FEAT_SPINUP_CONTROL				= 0x1A,
+	/* 0x1B-0x1C - reserved */
 
-	/* 0x78-0x7F - NVMe-MI features */
+	/**
+	 * cdw11 layout defined by \ref spdk_nvme_feat_fdp_cdw11
+	 * cdw12 layout defined by \ref spdk_nvme_feat_fdp_cdw12
+	 */
+	SPDK_NVME_FEAT_FDP					= 0x1D,
+
+	/**
+	 * cdw11 layout defined by \ref spdk_nvme_feat_fdp_events_cdw11
+	 * cdw12 layout defined by \ref spdk_nvme_feat_fdp_events_cdw12
+	 * data layout defined by \ref spdk_nvme_fdp_event_desc
+	 */
+	SPDK_NVME_FEAT_FDP_EVENTS				= 0x1E,
+
+	/* 0x1F-0x77 - reserved */
+	/* 0x78-0x7C - NVMe-MI features */
+	SPDK_NVME_FEAT_ENHANCED_CONTROLLER_METADATA		= 0x7D,
+	SPDK_NVME_FEAT_CONTROLLER_METADATA			= 0x7E,
+	SPDK_NVME_FEAT_NAMESPACE_METADATA			= 0x7F,
 
 	/** cdw11 layout defined by \ref spdk_nvme_feat_software_progress_marker */
 	SPDK_NVME_FEAT_SOFTWARE_PROGRESS_MARKER			= 0x80,
@@ -1718,8 +1968,9 @@ enum spdk_nvme_feat {
 	SPDK_NVME_FEAT_HOST_RESERVE_MASK			= 0x82,
 	/** cdw11 layout defined by \ref spdk_nvme_feat_reservation_persistence */
 	SPDK_NVME_FEAT_HOST_RESERVE_PERSIST			= 0x83,
+	SPDK_NVME_FEAT_NAMESPACE_WRITE_PROTECTION_CONFIG	= 0x84,
 
-	/* 0x84-0xBF - command set specific (reserved) */
+	/* 0x85-0xBF - command set specific (reserved) */
 
 	/* 0xC0-0xFF - vendor specific */
 };
@@ -1786,13 +2037,13 @@ enum spdk_nvme_identify_cns {
 	/** List namespace identification descriptors */
 	SPDK_NVME_IDENTIFY_NS_ID_DESCRIPTOR_LIST	= 0x03,
 
-	/** Identify namespace indicated in CDW1.NSID, specific to CWD11.CSI */
+	/** Identify namespace indicated in CDW1.NSID, specific to CDW11.CSI */
 	SPDK_NVME_IDENTIFY_NS_IOCS			= 0x05,
 
-	/** Identify controller, specific to CWD11.CSI */
+	/** Identify controller, specific to CDW11.CSI */
 	SPDK_NVME_IDENTIFY_CTRLR_IOCS			= 0x06,
 
-	/** List active NSIDs greater than CDW1.NSID, specific to CWD11.CSI */
+	/** List active NSIDs greater than CDW1.NSID, specific to CDW11.CSI */
 	SPDK_NVME_IDENTIFY_ACTIVE_NS_LIST_IOCS		= 0x07,
 
 	/** List allocated NSIDs greater than CDW1.NSID */
@@ -1813,7 +2064,7 @@ enum spdk_nvme_identify_cns {
 	/** Get secondary controller list */
 	SPDK_NVME_IDENTIFY_SECONDARY_CTRLR_LIST		= 0x15,
 
-	/** List allocated NSIDs greater than CDW1.NSID, specific to CWD11.CSI */
+	/** List allocated NSIDs greater than CDW1.NSID, specific to CDW11.CSI */
 	SPDK_NVME_IDENTIFY_ALLOCATED_NS_LIST_IOCS	= 0x1a,
 
 	/** Identify namespace if CDW1.NSID is allocated, specific to CDWD11.CSI */
@@ -2004,59 +2255,68 @@ struct spdk_nvme_cdata_oaes {
 	uint32_t	discovery_log_change_notices : 1;
 };
 
-struct spdk_nvme_cdata_ctratt {
-	/* Supports 128-bit host identifier */
-	uint32_t	host_id_exhid_supported: 1;
+union spdk_nvme_cdata_ctratt {
+	uint32_t	raw;
+	struct {
+		/* Supports 128-bit host identifier */
+		uint32_t	host_id_exhid_supported: 1;
 
-	/* Supports non-operational power state permissive mode */
-	uint32_t	non_operational_power_state_permissive_mode: 1;
+		/* Supports non-operational power state permissive mode */
+		uint32_t	non_operational_power_state_permissive_mode: 1;
 
-	/* Supports NVM sets */
-	uint32_t	nvm_sets: 1;
+		/* Supports NVM sets */
+		uint32_t	nvm_sets: 1;
 
-	/* Supports read recovery levels */
-	uint32_t	read_recovery_levels: 1;
+		/* Supports read recovery levels */
+		uint32_t	read_recovery_levels: 1;
 
-	/* Supports endurance groups */
-	uint32_t	endurance_groups: 1;
+		/* Supports endurance groups */
+		uint32_t	endurance_groups: 1;
 
-	/* Supports predictable latency mode */
-	uint32_t	predictable_latency_mode: 1;
+		/* Supports predictable latency mode */
+		uint32_t	predictable_latency_mode: 1;
 
-	/* Supports traffic based keep alive */
-	uint32_t	tbkas: 1;
+		/* Supports traffic based keep alive */
+		uint32_t	tbkas: 1;
 
-	/* Supports reporting of namespace granularity */
-	uint32_t	namespace_granularity: 1;
+		/* Supports reporting of namespace granularity */
+		uint32_t	namespace_granularity: 1;
 
-	/* Supports SQ associations */
-	uint32_t	sq_associations: 1;
+		/* Supports SQ associations */
+		uint32_t	sq_associations: 1;
 
-	/* Supports reporting of UUID list */
-	uint32_t	uuid_list: 1;
+		/* Supports reporting of UUID list */
+		uint32_t	uuid_list: 1;
 
-	/* NVM subsystem supports multiple domains */
-	uint32_t	mds: 1;
+		/* NVM subsystem supports multiple domains */
+		uint32_t	mds: 1;
 
-	/* Supports fixed capacity management */
-	uint32_t	fixed_capacity_management: 1;
+		/* Supports fixed capacity management */
+		uint32_t	fixed_capacity_management: 1;
 
-	/* Supports variable capacity management */
-	uint32_t	variable_capacity_management: 1;
+		/* Supports variable capacity management */
+		uint32_t	variable_capacity_management: 1;
 
-	/* Supports delete endurance group operation */
-	uint32_t	delete_endurance_group: 1;
+		/* Supports delete endurance group operation */
+		uint32_t	delete_endurance_group: 1;
 
-	/* Supports delete NVM set */
-	uint32_t	delete_nvm_set: 1;
+		/* Supports delete NVM set */
+		uint32_t	delete_nvm_set: 1;
 
-	/* Supports I/O command set specific extended PI formats */
-	uint32_t	elbas: 1;
+		/* Supports I/O command set specific extended PI formats */
+		uint32_t	elbas: 1;
 
-	uint32_t	reserved: 16;
+		uint32_t	reserved1: 3;
+
+		/* Supports flexible data placement */
+		uint32_t	fdps: 1;
+
+		uint32_t	reserved2: 12;
+	} bits;
 };
 
-struct __attribute__((packed)) spdk_nvme_ctrlr_data {
+#pragma pack(push, 1)
+struct spdk_nvme_ctrlr_data {
 	/* bytes 0-255: controller capabilities and features */
 
 	/** pci vendor id */
@@ -2108,7 +2368,7 @@ struct __attribute__((packed)) spdk_nvme_ctrlr_data {
 	struct spdk_nvme_cdata_oaes oaes;
 
 	/** controller attributes */
-	struct spdk_nvme_cdata_ctratt ctratt;
+	union spdk_nvme_cdata_ctratt ctratt;
 
 	/** Read Recovery Levels Supported */
 	uint16_t		rrls;
@@ -2450,6 +2710,7 @@ struct __attribute__((packed)) spdk_nvme_ctrlr_data {
 	uint8_t			vs[1024];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_ctrlr_data) == 4096, "Incorrect size");
+#pragma pack(pop)
 
 struct spdk_nvme_zns_ctrlr_data {
 	/** zone append size limit */
@@ -2459,7 +2720,8 @@ struct spdk_nvme_zns_ctrlr_data {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_zns_ctrlr_data) == 4096, "Incorrect size");
 
-struct __attribute__((packed)) spdk_nvme_primary_ctrl_capabilities {
+#pragma pack(push, 1)
+struct spdk_nvme_primary_ctrl_capabilities {
 	/**  controller id */
 	uint16_t		cntlid;
 	/**  port identifier */
@@ -2500,7 +2762,7 @@ struct __attribute__((packed)) spdk_nvme_primary_ctrl_capabilities {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_primary_ctrl_capabilities) == 4096, "Incorrect size");
 
-struct __attribute__((packed)) spdk_nvme_secondary_ctrl_entry {
+struct spdk_nvme_secondary_ctrl_entry {
 	/** controller identifier of the secondary controller */
 	uint16_t		scid;
 	/** controller identifier of the associated primary controller */
@@ -2521,13 +2783,14 @@ struct __attribute__((packed)) spdk_nvme_secondary_ctrl_entry {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_secondary_ctrl_entry) == 32, "Incorrect size");
 
-struct __attribute__((packed)) spdk_nvme_secondary_ctrl_list {
+struct spdk_nvme_secondary_ctrl_list {
 	/** number of Secondary controller entries in the list */
 	uint8_t					number;
 	uint8_t					reserved[31];
 	struct spdk_nvme_secondary_ctrl_entry	entries[127];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_secondary_ctrl_list) == 4096, "Incorrect size");
+#pragma pack(pop)
 
 struct spdk_nvme_ns_data {
 	/** namespace size */
@@ -2564,9 +2827,12 @@ struct spdk_nvme_ns_data {
 
 	/** formatted lba size */
 	struct {
-		uint8_t		format    : 4;
-		uint8_t		extended  : 1;
-		uint8_t		reserved2 : 3;
+		/** LSB for Format index */
+		uint8_t		format     : 4;
+		uint8_t		extended   : 1;
+		/** MSB for Format index, to be ignored if nlbaf <= 16 */
+		uint8_t		msb_format : 2;
+		uint8_t		reserved2  : 1;
 	} flbas;
 
 	/** metadata capabilities */
@@ -2729,12 +2995,25 @@ struct spdk_nvme_ns_data {
 	/** Maximum Source Range Count */
 	uint8_t	                msrc;
 
-	uint8_t			reserved64[11];
+	uint8_t			reserved81[11];
 
 	/** ANA group identifier */
 	uint32_t		anagrpid;
 
-	uint8_t			reserved96[8];
+	uint8_t			reserved96[3];
+
+	/** namespace attributes */
+	struct {
+		/** Namespace write protected */
+		uint8_t	write_protected	: 1;
+		uint8_t	reserved	: 7;
+	} nsattr;
+
+	/** NVM Set Identifier */
+	uint16_t		nvmsetid;
+
+	/** Endurance group identifier */
+	uint16_t		endgid;
 
 	/** namespace globally unique identifier */
 	uint8_t			nguid[16];
@@ -2754,13 +3033,74 @@ struct spdk_nvme_ns_data {
 		uint32_t	rp	  : 2;
 
 		uint32_t	reserved6 : 6;
-	} lbaf[16];
-
-	uint8_t			reserved6[192];
+	} lbaf[64];
 
 	uint8_t			vendor_specific[3712];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_ns_data) == 4096, "Incorrect size");
+
+enum spdk_nvme_pi_format {
+	SPDK_NVME_16B_GUARD_PI	= 0,
+	SPDK_NVME_32B_GUARD_PI	= 1,
+	SPDK_NVME_64B_GUARD_PI	= 2,
+};
+
+struct spdk_nvme_nvm_ns_data {
+	/** logical block storage tag mask */
+	uint64_t		lbstm;
+
+	/** protection information capabilities */
+	struct {
+		/** 16b guard protection information storage tag support */
+		uint8_t		_16bpists	: 1;
+
+		/** 16b guard protection information storage tag mask */
+		uint8_t		_16bpistm	: 1;
+
+		/** storage tag check read support */
+		uint8_t		stcrs		: 1;
+
+		uint8_t		reserved	: 5;
+	} pic;
+
+	uint8_t			reserved[3];
+
+	struct {
+		/** storage tag size */
+		uint32_t	sts		: 7;
+
+		/** protection information format */
+		uint32_t	pif		: 2;
+
+		uint32_t	reserved	: 23;
+	} elbaf[64];
+
+	uint8_t			reserved2[3828];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_nvm_ns_data) == 4096, "Incorrect size");
+
+struct spdk_nvme_nvm_ctrlr_data {
+	/* verify size limit */
+	uint8_t			vsl;
+
+	/* write zeroes size limit */
+	uint8_t			wzsl;
+
+	/* write uncorrectable size limit */
+	uint8_t			wusl;
+
+	/* dataset management ranges limit */
+	uint8_t			dmrl;
+
+	/* dataset management range size limit */
+	uint32_t		dmrsl;
+
+	/* dataset management size limit */
+	uint64_t		dmsl;
+
+	uint8_t			rsvd16[4080];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_nvm_ctrlr_data) == 4096, "Incorrect size");
 
 struct spdk_nvme_zns_ns_data {
 	/** zone operation characteristics */
@@ -2788,7 +3128,25 @@ struct spdk_nvme_zns_ns_data {
 	/** finish recommended limit */
 	uint32_t		frl;
 
-	uint8_t			reserved20[2796];
+	/** reset recommended limit 1 */
+	uint32_t		rrl1;
+
+	/** reset recommended limit 2 */
+	uint32_t		rrl2;
+
+	/** reset recommended limit 3 */
+	uint32_t		rrl3;
+
+	/** finish recommended limit 1 */
+	uint32_t		frl1;
+
+	/** finish recommended limit 2 */
+	uint32_t		frl2;
+
+	/** finish recommended limit 3 */
+	uint32_t		frl3;
+
+	uint8_t			reserved44[2772];
 
 	/** zns lba format extension support */
 	struct {
@@ -2799,13 +3157,23 @@ struct spdk_nvme_zns_ns_data {
 		uint64_t	zdes : 8;
 
 		uint64_t	reserved15 : 56;
-	} lbafe[16];
-
-	uint8_t			reserved3072[768];
+	} lbafe[64];
 
 	uint8_t			vendor_specific[256];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_zns_ns_data) == 4096, "Incorrect size");
+
+/**
+ * IO command set vector for IDENTIFY_IOCS
+ */
+struct spdk_nvme_iocs_vector {
+	uint8_t	nvm  : 1;
+	uint8_t	kv   : 1;
+	uint8_t	zns  : 1;
+	uint8_t	rsvd : 5;
+	uint8_t	rsvd2[7];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_iocs_vector) == 8, "Incorrect size");
 
 /**
  * Deallocated logical block features - read value
@@ -2865,7 +3233,8 @@ enum spdk_nvme_reservation_acquire_action {
 	SPDK_NVME_RESERVE_PREEMPT_ABORT		= 0x2,
 };
 
-struct __attribute__((packed)) spdk_nvme_reservation_status_data {
+#pragma pack(push, 1)
+struct spdk_nvme_reservation_status_data {
 	/** reservation action generation counter */
 	uint32_t		gen;
 	/** reservation type */
@@ -2879,14 +3248,14 @@ struct __attribute__((packed)) spdk_nvme_reservation_status_data {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_reservation_status_data) == 24, "Incorrect size");
 
-struct __attribute__((packed)) spdk_nvme_reservation_status_extended_data {
+struct spdk_nvme_reservation_status_extended_data {
 	struct spdk_nvme_reservation_status_data	data;
 	uint8_t						reserved[40];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_reservation_status_extended_data) == 64,
 		   "Incorrect size");
 
-struct __attribute__((packed)) spdk_nvme_registered_ctrlr_data {
+struct spdk_nvme_registered_ctrlr_data {
 	/** controller id */
 	uint16_t		cntlid;
 	/** reservation status */
@@ -2902,7 +3271,7 @@ struct __attribute__((packed)) spdk_nvme_registered_ctrlr_data {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_registered_ctrlr_data) == 24, "Incorrect size");
 
-struct __attribute__((packed)) spdk_nvme_registered_ctrlr_extended_data {
+struct spdk_nvme_registered_ctrlr_extended_data {
 	/** controller id */
 	uint16_t		cntlid;
 	/** reservation status */
@@ -2918,6 +3287,7 @@ struct __attribute__((packed)) spdk_nvme_registered_ctrlr_extended_data {
 	uint8_t			reserved3[32];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_registered_ctrlr_extended_data) == 64, "Incorrect size");
+#pragma pack(pop)
 
 /**
  * Change persist through power loss state for
@@ -2997,7 +3367,8 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_reservation_notification_log) == 64, 
  * Log page identifiers for SPDK_NVME_OPC_GET_LOG_PAGE
  */
 enum spdk_nvme_log_page {
-	/* 0x00 - reserved */
+	/** Supported log pages (optional) */
+	SPDK_NVME_LOG_SUPPORTED_LOG_PAGES	= 0x00,
 
 	/** Error information (mandatory) - \ref spdk_nvme_error_information_entry */
 	SPDK_NVME_LOG_ERROR			= 0x01,
@@ -3023,12 +3394,62 @@ enum spdk_nvme_log_page {
 	/** Controller initiated telemetry log (optional) */
 	SPDK_NVME_LOG_TELEMETRY_CTRLR_INITIATED	= 0x08,
 
-	/* 0x09-0x0B - reserved */
+	/** Endurance group Information (optional) */
+	SPDK_NVME_LOG_ENDURANCE_GROUP_INFORMATION	= 0x09,
+
+	/** Predictable latency per NVM set (optional) */
+	SPDK_NVME_LOG_PREDICATBLE_LATENCY	= 0x0A,
+
+	/** Predictable latency event aggregate (optional) */
+	SPDK_NVME_LOG_PREDICTABLE_LATENCY_EVENT	= 0x0B,
 
 	/** Asymmetric namespace access log (optional) */
 	SPDK_NVME_LOG_ASYMMETRIC_NAMESPACE_ACCESS = 0x0C,
 
-	/* 0x0D-0x6F - reserved */
+	/** Persistent event log (optional) */
+	SPDK_NVME_LOG_PERSISTENT_EVENT_LOG = 0x0D,
+
+	/* 0x0E NVM command set specific */
+
+	/** Endurance group event aggregate (optional) */
+	SPDK_NVME_LOG_ENDURANCE_GROUP_EVENT = 0x0F,
+
+	/** Media unit status (optional) */
+	SPDK_NVME_LOG_MEDIA_UNIT_STATUS = 0x10,
+
+	/** Supported capacity configuration list (optional) */
+	SPDK_NVME_LOG_CAPACITY_CONFIGURATION_LIST	= 0x11,
+
+	/** Feature identifiers supported and effects (optional) */
+	SPDK_NVME_LOG_FEATURE_IDS_EFFECTS	= 0x12,
+
+	/** NVMe-MI commands supported and effects (optional) */
+	SPDK_NVME_LOG_NVME_MI_COMMANDS_EFFECTS	= 0x13,
+
+	/** Command and feature lockdown (optional) */
+	SPDK_NVME_LOG_COMMAND_FEATURE_LOCKDOWN	= 0x14,
+
+	/** Boot partition (optional) */
+	SPDK_NVME_LOG_BOOT_PARTITION	= 0x15,
+
+	/** Rotational media information (optional) */
+	SPDK_NVME_LOG_ROTATIONAL_MEDIA_INFORMATION	= 0x16,
+
+	/* 0x17-0x1f - reserved */
+
+	/** FDP configurations (optional) */
+	SPDK_NVME_LOG_FDP_CONFIGURATIONS	= 0x20,
+
+	/** Reclaim unit handle usage (optional) */
+	SPDK_NVME_LOG_RECLAIM_UNIT_HANDLE_USAGE	= 0x21,
+
+	/** FDP statistics (optional) */
+	SPDK_NVME_LOG_FDP_STATISTICS	= 0x22,
+
+	/** FDP events (optional) */
+	SPDK_NVME_LOG_FDP_EVENTS	= 0x23,
+
+	/* 0x24-0x6f - reserved */
 
 	/** Discovery(refer to the NVMe over Fabrics specification) */
 	SPDK_NVME_LOG_DISCOVERY		= 0x70,
@@ -3041,7 +3462,10 @@ enum spdk_nvme_log_page {
 	/** Sanitize status (optional) */
 	SPDK_NVME_LOG_SANITIZE_STATUS = 0x81,
 
-	/* 0x81-0xBF - I/O command set specific */
+	/* 0x82-0xBE - I/O command set specific */
+
+	/** Changed zone list (refer to Zoned Namespace command set) */
+	SPDK_NVME_LOG_CHANGED_ZONE_LIST = 0xBF,
 
 	/* 0xC0-0xFF - vendor specific */
 	SPDK_NVME_LOG_VENDOR_SPECIFIC_START	= 0xc0,
@@ -3073,7 +3497,8 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_error_information_entry) == 64, "Inco
 /**
  * SMART / health information page (\ref SPDK_NVME_LOG_HEALTH_INFORMATION)
  */
-struct __attribute__((packed)) __attribute__((aligned)) spdk_nvme_health_information_page {
+#pragma pack(push, 1)
+struct spdk_nvme_health_information_page {
 	union spdk_nvme_critical_warning_state	critical_warning;
 
 	uint16_t		temperature;
@@ -3109,6 +3534,7 @@ struct __attribute__((packed)) __attribute__((aligned)) spdk_nvme_health_informa
 	uint8_t			reserved2[296];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_health_information_page) == 512, "Incorrect size");
+#pragma pack(pop)
 
 /* Commands Supported and Effects Data Structure */
 struct spdk_nvme_cmds_and_effect_entry {
@@ -3369,6 +3795,224 @@ struct spdk_nvme_ana_group_descriptor {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_ana_group_descriptor) == 32, "Incorrect size");
 
+/* Reclaim unit handle type */
+enum spdk_nvme_fdp_ruh_type {
+	/* 0x0 Reserved */
+
+	/* Reclaim unit handle type initially isolated */
+	SPDK_NVME_FDP_RUHT_INITIALLY_ISOLATED		= 0x1,
+	/* Reclaim unit handle type persistently isolated */
+	SPDK_NVME_FDP_RUHT_PERSISTENTLY_ISOLATED	= 0x2,
+
+	/* 0x3 - 0xBF Reserved */
+
+	/* 0xC0 - 0xFF Vendor specific */
+};
+
+/* Reclaim unit handle descriptor */
+struct spdk_nvme_fdp_ruh_descriptor {
+	/* Reclaim unit handle type */
+	uint8_t ruht;
+	uint8_t reserved[3];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_ruh_descriptor) == 4, "Incorrect size");
+
+/* FDP configuration descriptor */
+struct spdk_nvme_fdp_cfg_descriptor {
+	/* Descriptor size */
+	uint16_t ds;
+
+	/* FDP attributes */
+	union {
+		uint8_t raw;
+		struct {
+			/* Reclaim group identifier format */
+			uint8_t rgif	: 4;
+			/* FDP volatile write cache */
+			uint8_t fdpvwc	: 1;
+			uint8_t rsvd1	: 2;
+			/* FDP configuration valid */
+			uint8_t fdpcv	: 1;
+		} bits;
+	} fdpa;
+
+	/* Vendor specific size */
+	uint8_t vss;
+	/* Number of reclaim groups */
+	uint32_t nrg;
+	/* Number of reclaim unit handles */
+	uint16_t nruh;
+	/* Max placement identifiers */
+	uint16_t maxpids;
+	/* Number of namespaces supported */
+	uint32_t nns;
+	/* Reclaim unit nominal size */
+	uint64_t runs;
+	/* Estimated reclaim unit time limit */
+	uint32_t erutl;
+	uint8_t rsvd28[36];
+	struct spdk_nvme_fdp_ruh_descriptor ruh_desc[];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_cfg_descriptor) == 64, "Incorrect size");
+
+/* FDP configurations log page (\ref SPDK_NVME_LOG_FDP_CONFIGURATIONS) */
+struct spdk_nvme_fdp_cfg_log_page {
+	/* Number of FDP configurations */
+	uint16_t ncfg;
+	/* Version of log page */
+	uint8_t version;
+	uint8_t reserved1;
+	/* Size of this log page in bytes */
+	uint32_t size;
+	uint8_t reserved2[8];
+	struct spdk_nvme_fdp_cfg_descriptor cfg_desc[];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_cfg_log_page) == 16, "Incorrect size");
+
+/* Reclaim unit handle attributes */
+enum spdk_nvme_fdp_ruh_attributes {
+	/* Not used by a namespace */
+	SPDK_NVME_FDP_RUHA_UNUSED		= 0x0,
+	/* Use a specific reclaim unit handle */
+	SPDK_NVME_FDP_RUHA_HOST_SPECIFIED	= 0x1,
+	/* Use the only default reclaim unit handle  */
+	SPDK_NVME_FDP_RUHA_CTRLR_SPECIFIED	= 0x2,
+
+	/* 0x3 - 0xFF Reserved */
+};
+
+/* Reclaim unit handle usage descriptor */
+struct spdk_nvme_fdp_ruhu_descriptor {
+	/* Reclaim unit handle attributes */
+	uint8_t ruha;
+	uint8_t reserved[7];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_ruhu_descriptor) == 8, "Incorrect size");
+
+/* Reclaim unit handle usage log page (\ref SPDK_NVME_LOG_RECLAIM_UNIT_HANDLE_USAGE) */
+struct spdk_nvme_fdp_ruhu_log_page {
+	/* Number of Reclaim Unit Handles */
+	uint16_t nruh;
+	uint8_t reserved[6];
+	struct spdk_nvme_fdp_ruhu_descriptor ruhu_desc[];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_ruhu_log_page) == 8, "Incorrect size");
+
+/* FDP statistics log page (\ref SPDK_NVME_LOG_FDP_STATISTICS) */
+struct spdk_nvme_fdp_stats_log_page {
+	/* Host bytes with metadata written */
+	uint64_t hbmw[2];
+	/* Media bytes with metadata written */
+	uint64_t mbmw[2];
+	/* Media bytes erased */
+	uint64_t mbe[2];
+	uint8_t rsvd48[16];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_stats_log_page) == 64, "Incorrect size");
+
+/* FDP report event types (cdw10 log specific parameter) */
+enum spdk_nvme_fdp_report_event_type {
+	/* Report FDP controller events */
+	SPDK_NVME_FDP_REPORT_CTRL_EVENTS	= 0x0,
+	/* Report FDP host events */
+	SPDK_NVME_FDP_REPORT_HOST_EVENTS	= 0x1,
+};
+
+/* FDP event type */
+enum spdk_nvme_fdp_event_type {
+	/* FDP host events */
+	/* Reclaim unit not fully written to capacity */
+	SPDK_NVME_FDP_EVENT_RU_NOT_WRITTEN_CAPACITY	= 0x0,
+	/* Reclaim unit time limit exceeded */
+	SPDK_NVME_FDP_EVENT_RU_TIME_LIMIT_EXCEEDED	= 0x1,
+	/* Controller reset modified reclaim unit handles */
+	SPDK_NVME_FDP_EVENT_CTRLR_RESET_MODIFY_RUH	= 0x2,
+	/* Invalid placement identifier */
+	SPDK_NVME_FDP_EVENT_INVALID_PLACEMENT_ID	= 0x3,
+
+	/* 0x4 - 0x6F Reserved */
+
+	/* 0x70 - 0x7F Vendor specific */
+
+	/* FDP controller events */
+	/* Media reallocated */
+	SPDK_NVME_FDP_EVENT_MEDIA_REALLOCATED		= 0x80,
+	/* Implicitly modified reclaim unit handle */
+	SPDK_NVME_FDP_EVENT_IMPLICIT_MODIFIED_RUH	= 0x81,
+
+	/* 0x82 - 0xEF Reserved */
+
+	/* 0xF0 - 0xFF Vendor specific */
+};
+
+/* Media reallocated */
+#pragma pack(push, 1)
+struct spdk_nvme_fdp_event_media_reallocated {
+	/* Specific event flags */
+	union {
+		uint8_t raw;
+		struct {
+			/* LBA valid */
+			uint8_t lbav		: 1;
+			uint8_t reserved	: 7;
+		} bits;
+	} sef;
+
+	uint8_t reserved1;
+	/* Number of LBAs moved */
+	uint16_t nlbam;
+	/* Logical block address */
+	uint64_t lba;
+	uint8_t reserved2[4];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_event_media_reallocated) == 16, "Incorrect size");
+
+/* FDP event */
+struct spdk_nvme_fdp_event {
+	/* Event type */
+	uint8_t etype;
+
+	/* FDP event flags */
+	union {
+		uint8_t raw;
+		struct {
+			/* Placement identifier valid */
+			uint8_t piv		: 1;
+			/* NSID valid */
+			uint8_t nsidv		: 1;
+			/* Location valid */
+			uint8_t lv		: 1;
+			uint8_t reserved	: 5;
+		} bits;
+	} fdpef;
+
+	/* Placement identifier */
+	uint16_t pid;
+	/* Event timestamp */
+	uint64_t timestamp;
+	/* Namespace identifier */
+	uint32_t nsid;
+	/* Event type specific */
+	uint64_t event_type_specific[2];
+	/* Reclaim group identifier */
+	uint16_t rgid;
+	/* Reclaim unit handle identifier */
+	uint16_t ruhid;
+	uint8_t reserved[4];
+	uint8_t vs[24];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_event) == 64, "Incorrect size");
+#pragma pack(pop)
+
+/* FDP events log page (\ref SPDK_NVME_LOG_FDP_EVENTS) */
+struct spdk_nvme_fdp_events_log_page {
+	/* Number of FDP events */
+	uint32_t nevents;
+	uint8_t reserved[60];
+	struct spdk_nvme_fdp_event event[];
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_fdp_events_log_page) == 64, "Incorrect size");
+
 /**
  * Namespace attachment Type Encoding
  */
@@ -3469,13 +4113,21 @@ enum spdk_nvme_metadata_setting {
 	SPDK_NVME_FMT_NVM_METADATA_TRANSFER_AS_LBA	= 0x1,
 };
 
+/* Format - Command Dword 10 */
 struct spdk_nvme_format {
+	/* LBA format lower (LSB 4 bits of format index), also called lbafl in 2.0 spec */
 	uint32_t	lbaf		: 4;
+	/* Metadata settings, also called mset in 2.0 spec */
 	uint32_t	ms		: 1;
+	/* Protection information */
 	uint32_t	pi		: 3;
+	/* Protection information location */
 	uint32_t	pil		: 1;
+	/* Secure erase settings */
 	uint32_t	ses		: 3;
-	uint32_t	reserved	: 20;
+	/* LBA format upper (MSB 2 bits of format index) */
+	uint32_t	lbafu		: 2;
+	uint32_t	reserved	: 18;
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_format) == 4, "Incorrect size");
 
@@ -3674,6 +4326,7 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_zns_zone_report) == 64, "Incorrect si
 enum spdk_nvme_directive_type {
 	SPDK_NVME_DIRECTIVE_TYPE_IDENTIFY = 0x0,
 	SPDK_NVME_DIRECTIVE_TYPE_STREAMS = 0x1,
+	SPDK_NVME_DIRECTIVE_TYPE_DATA_PLACEMENT = 0x2,
 };
 
 enum spdk_nvme_identify_directive_send_operation {
@@ -3690,7 +4343,9 @@ struct spdk_nvme_ns_identify_directive_param {
 		uint8_t identify	: 1;
 		/* set to 1b if the Streams Directive is supported */
 		uint8_t streams		: 1;
-		uint8_t reserved1	: 6;
+		/* set to 1b if the Data Placement Directive is supported */
+		uint8_t data_pd		: 1;
+		uint8_t reserved1	: 5;
 		uint8_t reserved2[31];
 	} directives_supported;
 	struct {
@@ -3698,11 +4353,33 @@ struct spdk_nvme_ns_identify_directive_param {
 		uint8_t identify	: 1;
 		/* set to 1b if the Streams Directive is enabled */
 		uint8_t streams		: 1;
-		uint8_t reserved1	: 6;
+		/* set to 1b if the Data Placement Directive is enabled */
+		uint8_t data_pd		: 1;
+		uint8_t reserved1	: 5;
 		uint8_t reserved2[31];
 	} directives_enabled;
+	struct {
+		/**
+		 * cleared to 0b as the host is not able to change the state of
+		 * Identify Directive
+		 */
+		uint8_t identify	: 1;
+		/**
+		 * cleared to 0b to indicate that the Streams Directive state
+		 * is not preserved across ctrl reset
+		 */
+		uint8_t streams		: 1;
+		/**
+		 * set to 1b if the Data Placement Directive is supported to
+		 * indicate that the host specified Data Placement Directive
+		 * state is preserved across ctrl reset
+		 */
+		uint8_t data_pd		: 1;
+		uint8_t reserved1	: 5;
+		uint8_t reserved2[31];
+	} directives_persistence;
 
-	uint32_t reserved[1008];
+	uint32_t reserved[1000];
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_ns_identify_directive_param) == 4096, "Incorrect size");
 
@@ -3754,6 +4431,21 @@ struct spdk_nvme_ns_streams_status {
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_ns_streams_status) == 131072, "Incorrect size");
 
+enum spdk_nvme_ctrlr_type {
+	/* 0x00 - reserved */
+
+	/* I/O Controller */
+	SPDK_NVME_CTRLR_IO		= 0x1,
+
+	/* Discovery Controller */
+	SPDK_NVME_CTRLR_DISCOVERY	= 0x2,
+
+	/* Administrative Controller */
+	SPDK_NVME_CTRLR_ADMINISTRATIVE	= 0x3,
+
+	/* 0x4-0xFF - Reserved */
+};
+
 #define spdk_nvme_cpl_is_error(cpl)			\
 	((cpl)->status.sc != SPDK_NVME_SC_SUCCESS ||	\
 	 (cpl)->status.sct != SPDK_NVME_SCT_GENERIC)
@@ -3790,8 +4482,16 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_ns_streams_status) == 131072, "Incorr
 #define SPDK_NVME_IO_FLAGS_FUSE_FIRST (SPDK_NVME_CMD_FUSE_FIRST << 0)
 #define SPDK_NVME_IO_FLAGS_FUSE_SECOND (SPDK_NVME_CMD_FUSE_SECOND << 0)
 #define SPDK_NVME_IO_FLAGS_FUSE_MASK (SPDK_NVME_CMD_FUSE_MASK << 0)
-/** Enable Directive type as streams */
-#define SPDK_NVME_IO_FLAGS_STREAMS_DIRECTIVE (1U << 20)
+
+/* Bits 20-31 of SPDK_NVME_IO_FLAGS map directly to their associated bits in
+ * cdw12 for NVMe IO commands
+ */
+/** For enabling directive types on write-oriented commands */
+#define SPDK_NVME_IO_FLAGS_DIRECTIVE(dtype) (dtype << 20)
+#define SPDK_NVME_IO_FLAGS_STREAMS_DIRECTIVE \
+	SPDK_NVME_IO_FLAGS_DIRECTIVE(SPDK_NVME_DIRECTIVE_TYPE_STREAMS)
+#define SPDK_NVME_IO_FLAGS_DATA_PLACEMENT_DIRECTIVE \
+	SPDK_NVME_IO_FLAGS_DIRECTIVE(SPDK_NVME_DIRECTIVE_TYPE_DATA_PLACEMENT)
 /** Zone append specific, determines the contents of the reference tag written to the media */
 #define SPDK_NVME_IO_FLAGS_ZONE_APPEND_PIREMAP (1U << 25)
 /** Enable protection information checking of the Logical Block Reference Tag field */
@@ -3808,6 +4508,7 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_ns_streams_status) == 131072, "Incorr
 /** Mask of valid io flags mask */
 #define SPDK_NVME_IO_FLAGS_VALID_MASK 0xFFFF0003
 #define SPDK_NVME_IO_FLAGS_CDW12_MASK 0xFFFF0000
+#define SPDK_NVME_IO_FLAGS_PRCHK_MASK 0x1C000000
 
 /** Identify command buffer response size */
 #define SPDK_NVME_IDENTIFY_BUFLEN 4096

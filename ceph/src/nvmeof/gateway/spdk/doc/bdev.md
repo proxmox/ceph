@@ -214,12 +214,12 @@ rpc.py must be twice as long than the key length in binary form.
 
 #### Example command
 
-`rpc.py accel_crypto_key_create -c AES_XTS -k2 7859243a027411e581e0c40a35c8228f -k d16a2f3a9e9f5b32daefacd7f5984f4578add84425be4a0baa489b9de8884b09 -n sample_key`
+`rpc.py accel_crypto_key_create -c AES_XTS -e 7859243a027411e581e0c40a35c8228f -k 10fee72b3d47553e065affdb48c54a81 -n sample_key`
 
 This command will create a key called `sample_key`, the AES key
-'d16a2f3a9e9f5b32daefacd7f5984f4578add84425be4a0baa489b9de8884b09' and the XTS key
+'10fee72b3d47553e065affdb48c54a81' and the XTS key
 '7859243a027411e581e0c40a35c8228f'. In other words, the compound AES_XTS key to be used is
-'d16a2f3a9e9f5b32daefacd7f5984f4578add84425be4a0baa489b9de8884b097859243a027411e581e0c40a35c8228f'
+'10fee72b3d47553e065affdb48c54a817859243a027411e581e0c40a35c8228f'
 
 ### Delete the virtual crypto block device
 
@@ -442,9 +442,6 @@ The SPDK NVMe bdev driver provides the multipath feature. Please refer to
 
 ### NVMe bdev character device {#bdev_config_nvme_cuse}
 
-This feature is considered as experimental. You must configure with --with-nvme-cuse
-option to enable this RPC.
-
 Example commands
 
 `rpc.py bdev_nvme_cuse_register -n Nvme3`
@@ -533,50 +530,16 @@ Example commands
 
 `rpc.py bdev_passthru_delete pt`
 
-## Pmem {#bdev_config_pmem}
-
-The SPDK pmem bdev driver uses pmemblk pool as the target for block I/O operations. For
-details on Pmem memory please refer to PMDK documentation on http://pmem.io website.
-First, user needs to configure SPDK to include PMDK support:
-
-`configure --with-pmdk`
-
-To create pmemblk pool for use with SPDK user should use `bdev_pmem_create_pool` RPC command.
-
-Example command
-
-`rpc.py bdev_pmem_create_pool /path/to/pmem_pool 25 4096`
-
-To get information on created pmem pool file user can use `bdev_pmem_get_pool_info` RPC command.
-
-Example command
-
-`rpc.py bdev_pmem_get_pool_info /path/to/pmem_pool`
-
-To remove pmem pool file user can use `bdev_pmem_delete_pool` RPC command.
-
-Example command
-
-`rpc.py bdev_pmem_delete_pool /path/to/pmem_pool`
-
-To create bdev based on pmemblk pool file user should use `bdev_pmem_create` RPC
-command.
-
-Example command
-
-`rpc.py bdev_pmem_create /path/to/pmem_pool -n pmem`
-
-To remove a block device representation use the bdev_pmem_delete command.
-
-`rpc.py bdev_pmem_delete pmem`
-
 ## RAID {#bdev_ug_raid}
 
-RAID virtual bdev module provides functionality to combine any SPDK bdevs into
-one RAID bdev. Currently SPDK supports only RAID 0. RAID functionality does not
-store on-disk metadata on the member disks, so user must recreate the RAID
-volume when restarting application. User may specify member disks to create RAID
-volume event if they do not exists yet - as the member disks are registered at
+RAID virtual bdev module provides functionality to combine any SPDK bdevs into one
+RAID bdev. Currently SPDK supports RAID0, Concat, RAID1 and RAID5F levels. To enable
+RAID5F, configure SPDK using the `--with-raid5f` option. For RAID levels with redundancy
+(1 and 5F) degraded operation and rebuild are supported. RAID metadata may be stored
+on member disks if enabled when creating the RAID bdev, so user does not have to
+recreate the RAID volume when restarting application. It is not enabled by
+default for backward compatibility. User may specify member disks to create
+RAID volume even if they do not exist yet - as the member disks are registered at
 a later time, the RAID module will claim them and will surface the RAID volume
 after all of the member disks are available. It is allowed to use disks of
 different sizes - the smallest disk size will be the amount of space used on
@@ -633,21 +596,27 @@ To remove a uring bdev use the `bdev_uring_delete` RPC.
 
 `rpc.py bdev_uring_delete bdev_u0`
 
-## xnvme {#bdev_ug_xnvme}
+## xNVMe {#bdev_ug_xnvme}
 
-The xnvme bdev module issues I/O to the underlying NVMe devices through various I/O mechanisms
+The xNVMe bdev module issues I/O to the underlying NVMe devices through various I/O mechanisms
 such as libaio, io_uring, Asynchronous IOCTL using io_uring passthrough, POSIX aio, emulated aio etc.
 
-This module requires xNVMe library.
-For more information on xNVMe refer to [xNVMe] (https://xnvme.io/docs/latest)
+This module requires the xNVMe library.
+For more information on xNVMe refer to [xNVMe] (https://xnvme.io)
 
 The user needs to configure SPDK to include xNVMe support:
 
 `configure --with-xnvme`
 
-To create a xnvme bdev with given filename, bdev name and I/O mechanism use the `bdev_xnvme_create` RPC.
+To create a xNVMe bdev with given filename, bdev name and I/O mechanism use the `bdev_xnvme_create` RPC.
 
 `rpc.py  bdev_xnvme_create /dev/ng0n1 bdev_ng0n1 io_uring_cmd`
+
+The most important I/O mechanisms are:
+
+- "libaio"
+- "io_uring"
+- "io_uring_cmd" (requires linux kernel v5.19 or newer)
 
 To remove a xnvme bdev use the `bdev_xnvme_delete` RPC.
 

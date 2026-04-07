@@ -1,10 +1,10 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2018 Intel Corporation.
  *   All rights reserved.
- *   Copyright (c) 2021, 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *   Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 /* We have our own mock for this */
 #define UNIT_TEST_NO_VTOPHYS
 #include "common/lib/test_env.c"
@@ -213,7 +213,7 @@ rte_pktmbuf_pool_create(const char *name, unsigned n, unsigned cache_size,
 
 	tmp = spdk_mempool_create("mbuf_mp", 1024, sizeof(struct rte_mbuf),
 				  SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-				  SPDK_ENV_SOCKET_ID_ANY);
+				  SPDK_ENV_NUMA_ID_ANY);
 
 	return (struct rte_mempool *)tmp;
 }
@@ -250,6 +250,9 @@ DEFINE_STUB(rte_mbuf_dynfield_register, int, (const struct rte_mbuf_dynfield *pa
 	    DPDK_DYNFIELD_OFFSET);
 DEFINE_STUB(rte_socket_id, unsigned, (void), 0);
 DEFINE_STUB(rte_vdev_init, int, (const char *name, const char *args), 0);
+DEFINE_STUB(rte_vdev_uninit, int, (const char *name), 0);
+DEFINE_STUB_V(rte_compressdev_stop, (uint8_t dev_id));
+DEFINE_STUB(rte_compressdev_close, int, (uint8_t dev_id), 0);
 DEFINE_STUB_V(rte_comp_op_free, (struct rte_comp_op *op));
 DEFINE_STUB(rte_comp_op_alloc, struct rte_comp_op *, (struct rte_mempool *mempool), NULL);
 
@@ -447,7 +450,7 @@ test_setup(void)
 	g_device_qp.device->sgl_out = true;
 	g_comp_ch->src_mbufs = calloc(UT_MBUFS_PER_OP_BOUND_TEST, sizeof(void *));
 	g_comp_ch->dst_mbufs = calloc(UT_MBUFS_PER_OP, sizeof(void *));
-	TAILQ_INIT(&g_comp_ch->queued_tasks);
+	STAILQ_INIT(&g_comp_ch->queued_tasks);
 
 	for (i = 0; i < UT_MBUFS_PER_OP_BOUND_TEST - 1; i++) {
 		g_expected_src_mbufs[i].next = &g_expected_src_mbufs[i + 1];
@@ -500,7 +503,7 @@ test_compress_operation(void)
 	int src_iovcnt;
 	struct iovec dst_iovs[3] = {};
 	int dst_iovcnt;
-	struct spdk_accel_task *task_p, task = {};
+	struct spdk_accel_task task = {};
 	int rc, i;
 	struct rte_mbuf *exp_src_mbuf[UT_MBUFS_PER_OP];
 	struct rte_mbuf *exp_dst_mbuf[UT_MBUFS_PER_OP];
@@ -515,58 +518,54 @@ test_compress_operation(void)
 	}
 
 	task.cb_fn = _compress_done;
-	task.op_code = ACCEL_OPC_COMPRESS;
+	task.op_code = SPDK_ACCEL_OPC_COMPRESS;
 	task.output_size = &output_size;
 	task.d.iovs = dst_iovs;
 	task.d.iovcnt = dst_iovcnt;
 	task.s.iovs = src_iovs;
 	task.s.iovcnt = src_iovcnt;
-	task_p = &task;
 
 	/* test rte_comp_op_alloc failure */
 	MOCK_SET(rte_comp_op_alloc, NULL);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	rc = _compress_operation(g_comp_ch, &task);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == false);
-	while (!TAILQ_EMPTY(&g_comp_ch->queued_tasks)) {
-		task_p = TAILQ_FIRST(&g_comp_ch->queued_tasks);
-		TAILQ_REMOVE(&g_comp_ch->queued_tasks, task_p, link);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == false);
+	while (!STAILQ_EMPTY(&g_comp_ch->queued_tasks)) {
+		STAILQ_REMOVE_HEAD(&g_comp_ch->queued_tasks, link);
 	}
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 
 	/* test mempool get failure */
 	MOCK_SET(rte_comp_op_alloc, &g_comp_op[0]);
 	ut_rte_pktmbuf_alloc_bulk = -1;
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	rc = _compress_operation(g_comp_ch, &task);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == false);
-	while (!TAILQ_EMPTY(&g_comp_ch->queued_tasks)) {
-		task_p = TAILQ_FIRST(&g_comp_ch->queued_tasks);
-		TAILQ_REMOVE(&g_comp_ch->queued_tasks, task_p, link);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == false);
+	while (!STAILQ_EMPTY(&g_comp_ch->queued_tasks)) {
+		STAILQ_REMOVE_HEAD(&g_comp_ch->queued_tasks, link);
 	}
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == 0);
 	ut_rte_pktmbuf_alloc_bulk = 0;
 
 	/* test enqueue failure busy */
 	ut_enqueue_value = FAKE_ENQUEUE_BUSY;
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	rc = _compress_operation(g_comp_ch, &task);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == false);
-	while (!TAILQ_EMPTY(&g_comp_ch->queued_tasks)) {
-		task_p = TAILQ_FIRST(&g_comp_ch->queued_tasks);
-		TAILQ_REMOVE(&g_comp_ch->queued_tasks, task_p, link);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == false);
+	while (!STAILQ_EMPTY(&g_comp_ch->queued_tasks)) {
+		STAILQ_REMOVE_HEAD(&g_comp_ch->queued_tasks, link);
 	}
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == 0);
 	ut_enqueue_value = 1;
 
 	/* test enqueue failure error */
 	ut_enqueue_value = FAKE_ENQUEUE_ERROR;
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	rc = _compress_operation(g_comp_ch, &task);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == -EINVAL);
 	ut_enqueue_value = FAKE_ENQUEUE_SUCCESS;
 
@@ -600,23 +599,23 @@ test_compress_operation(void)
 	}
 
 	rc = _compress_operation(g_comp_ch, &task);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == 0);
 
 	/* test sgl out failure */
 	g_device.sgl_out = false;
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	rc = _compress_operation(g_comp_ch, &task);
 	CU_ASSERT(rc == -EINVAL);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	g_device.sgl_out = true;
 
 	/* test sgl in failure */
 	g_device.sgl_in = false;
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	rc = _compress_operation(g_comp_ch, &task);
 	CU_ASSERT(rc == -EINVAL);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	g_device.sgl_in = true;
 }
 
@@ -699,7 +698,7 @@ test_compress_operation_cross_boundary(void)
 	exp_src_mbuf[3]->pkt_len = exp_src_mbuf[3]->buf_len = 0x1000;
 
 	task.cb_fn = _compress_done;
-	task.op_code = ACCEL_OPC_COMPRESS;
+	task.op_code = SPDK_ACCEL_OPC_COMPRESS;
 	task.output_size = &output_size;
 	task.d.iovs = dst_iovs;
 	task.d.iovcnt = dst_iovcnt;
@@ -707,7 +706,7 @@ test_compress_operation_cross_boundary(void)
 	task.s.iovcnt = src_iovcnt;
 
 	rc = _compress_operation(g_comp_ch, &task);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == 0);
 
 	/* Now force the 2nd IOV to get partial length from spdk_vtophys */
@@ -737,7 +736,7 @@ test_compress_operation_cross_boundary(void)
 	exp_src_mbuf[3]->pkt_len = exp_src_mbuf[3]->buf_len = 0x1000;
 
 	rc = _compress_operation(g_comp_ch, &task);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == 0);
 
 	/* Finally force the 3rd IOV to get partial length from spdk_vtophys */
@@ -766,7 +765,7 @@ test_compress_operation_cross_boundary(void)
 	exp_src_mbuf[3]->pkt_len = exp_src_mbuf[3]->buf_len = 0x800;
 
 	rc = _compress_operation(g_comp_ch, &task);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == 0);
 
 	/* Single input iov is split on page boundary, sgl_in is not supported */
@@ -810,7 +809,7 @@ test_setup_compress_mbuf(void)
 	rc = _setup_compress_mbuf(exp_src_mbuf, &src_mbuf_added, &total_length,
 				  &src_iovs, src_iovcnt, &task);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(total_length = src_iovs.iov_len);
+	CU_ASSERT(total_length == src_iovs.iov_len);
 	CU_ASSERT(src_mbuf_added == 0);
 	CU_ASSERT(ut_total_rte_pktmbuf_attach_extbuf == 1);
 
@@ -828,7 +827,7 @@ test_setup_compress_mbuf(void)
 	rc = _setup_compress_mbuf(exp_src_mbuf, &src_mbuf_added, &total_length,
 				  &src_iovs, src_iovcnt, &task);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(total_length = src_iovs.iov_len);
+	CU_ASSERT(total_length == src_iovs.iov_len);
 	CU_ASSERT(src_mbuf_added == 0);
 	CU_ASSERT(ut_total_rte_pktmbuf_attach_extbuf == 2);
 
@@ -845,7 +844,7 @@ test_setup_compress_mbuf(void)
 	rc = _setup_compress_mbuf(exp_src_mbuf, &src_mbuf_added, &total_length,
 				  &src_iovs, src_iovcnt, &task);
 	CU_ASSERT(rc == 0);
-	CU_ASSERT(total_length = src_iovs.iov_len);
+	CU_ASSERT(total_length == src_iovs.iov_len);
 	CU_ASSERT(src_mbuf_added == 0);
 	CU_ASSERT(ut_total_rte_pktmbuf_attach_extbuf == 3);
 
@@ -890,17 +889,17 @@ test_poller(void)
 	/* Error from dequeue, nothing needing to be resubmitted.
 	 */
 	ut_rte_compressdev_dequeue_burst = 1;
-	ut_expected_task_status = RTE_COMP_OP_STATUS_NOT_PROCESSED;
+	ut_expected_task_status = -EIO;
 	/* setup what we want dequeue to return for the op */
 	*RTE_MBUF_DYNFIELD(g_comp_op[0].m_src, g_mbuf_offset, uint64_t *) = (uint64_t)&task[0];
 	g_comp_op[0].produced = 1;
 	g_done_count = 0;
 	g_comp_op[0].status = RTE_COMP_OP_STATUS_NOT_PROCESSED;
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	rc = comp_dev_poller((void *)g_comp_ch);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == SPDK_POLLER_BUSY);
-	ut_expected_task_status = RTE_COMP_OP_STATUS_SUCCESS;
+	ut_expected_task_status = 0;
 
 	/* Success from dequeue, 2 ops. nothing needing to be resubmitted.
 	 */
@@ -914,9 +913,9 @@ test_poller(void)
 	g_comp_op[1].status = RTE_COMP_OP_STATUS_SUCCESS;
 	g_done_count = 0;
 	ut_enqueue_value = FAKE_ENQUEUE_SUCCESS;
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	rc = comp_dev_poller((void *)g_comp_ch);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == SPDK_POLLER_BUSY);
 
 	/* One to dequeue, one op to be resubmitted. */
@@ -932,7 +931,7 @@ test_poller(void)
 	task_to_resubmit->s.iovcnt = 3;
 	task_to_resubmit->d.iovs = &dst_iovs[0];
 	task_to_resubmit->d.iovcnt = 3;
-	task_to_resubmit->op_code = ACCEL_OPC_COMPRESS;
+	task_to_resubmit->op_code = SPDK_ACCEL_OPC_COMPRESS;
 	task_to_resubmit->cb_arg = args;
 	ut_enqueue_value = FAKE_ENQUEUE_SUCCESS;
 	ut_expected_op.private_xform = &g_decomp_xform;
@@ -963,12 +962,12 @@ test_poller(void)
 		exp_dst_mbuf[i]->pkt_len = dst_iovs[i].iov_len;
 	}
 	MOCK_SET(rte_comp_op_alloc, &g_comp_op[0]);
-	TAILQ_INSERT_TAIL(&g_comp_ch->queued_tasks,
-			  task_to_resubmit,
-			  link);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == false);
+	STAILQ_INSERT_TAIL(&g_comp_ch->queued_tasks,
+			   task_to_resubmit,
+			   link);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == false);
 	rc = comp_dev_poller((void *)g_comp_ch);
-	CU_ASSERT(TAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
+	CU_ASSERT(STAILQ_EMPTY(&g_comp_ch->queued_tasks) == true);
 	CU_ASSERT(rc == SPDK_POLLER_BUSY);
 
 	free(task_to_resubmit);
@@ -982,7 +981,7 @@ test_initdrivers(void)
 
 	/* compressdev count 0 */
 	rc = accel_init_compress_drivers();
-	CU_ASSERT(rc == 0);
+	CU_ASSERT(rc == -ENODEV);
 
 	/* bogus count */
 	ut_rte_compressdev_count = RTE_COMPRESS_MAX_DEVS + 1;
@@ -1039,7 +1038,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("compress", test_setup, test_cleanup);
@@ -1049,9 +1047,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_initdrivers);
 	CU_ADD_TEST(suite, test_poller);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

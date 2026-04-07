@@ -24,13 +24,14 @@ def nvmf_set_max_subsystems(client,
 def nvmf_set_config(client,
                     passthru_identify_ctrlr=None,
                     poll_groups_mask=None,
-                    discovery_filter=None):
+                    discovery_filter=None, dhchap_digests=None, dhchap_dhgroups=None):
     """Set NVMe-oF target subsystem configuration.
 
     Args:
         discovery_filter: Set discovery filter (optional), possible values are: `match_any` (default) or
          comma separated values: `transport`, `address`, `svcid`
-
+        dhchap_digests: List of allowed DH-HMAC-CHAP digests. (optional)
+        dhchap_dhgroups: List of allowed DH-HMAC-CHAP DH groups. (optional)
     Returns:
         True or False
     """
@@ -44,6 +45,10 @@ def nvmf_set_config(client,
         params['poll_groups_mask'] = poll_groups_mask
     if discovery_filter:
         params['discovery_filter'] = discovery_filter
+    if dhchap_digests is not None:
+        params['dhchap_digests'] = dhchap_digests
+    if dhchap_dhgroups is not None:
+        params['dhchap_dhgroups'] = dhchap_dhgroups
 
     return client.call('nvmf_set_config', params)
 
@@ -124,6 +129,11 @@ def nvmf_create_transport(client, **params):
         disable_adaptive_irq: Disable adaptive interrupt feature - VFIO-USER specific (optional)
         disable_shadow_doorbells: disable shadow doorbell support - VFIO-USER specific (optional)
         acceptor_poll_rate: Acceptor poll period in microseconds (optional)
+        ack_timeout: ACK timeout in milliseconds (optional)
+        data_wr_pool_size: RDMA data WR pool size. RDMA specific (optional)
+        disable_command_passthru: Disallow command passthru.
+        kas: The granularity of the KATO (Keep Alive Timeout) in 100 millisecond units (optional)
+        min_kato: The minimum keep alive timeout value in milliseconds (optional)
     Returns:
         True or False
     """
@@ -186,19 +196,25 @@ def nvmf_create_subsystem(client,
                           max_namespaces=0,
                           ana_reporting=False,
                           min_cntlid=1,
-                          max_cntlid=0xffef):
+                          max_cntlid=0xffef,
+                          max_discard_size_kib=0,
+                          max_write_zeroes_size_kib=0,
+                          passthrough=False):
     """Construct an NVMe over Fabrics target subsystem.
 
     Args:
         nqn: Subsystem NQN.
-        tgt_name: name of the parent NVMe-oF target (optional).
-        serial_number: Serial number of virtual controller.
-        model_number: Model number of virtual controller.
-        allow_any_host: Allow any host (True) or enforce allowed host list (False). Default: False.
-        max_namespaces: Maximum number of namespaces that can be attached to the subsystem (optional). Default: 0 (Unlimited).
-        ana_reporting: Enable ANA reporting feature. Default: False.
+        tgt_name: Parent NVMe-oF target name. (Optional)
+        serial_number: Serial number of virtual controller. (Optional)
+        model_number: Model number of virtual controller. (Optional)
+        max_namespaces: Maximum number of namespaces that can be attached to the subsystem. Default: 32 (also used if user specifies 0)
+        allow_any_host: Allow any host (`true`) or enforce allowed host list (`false`). Default: `false`
+        ana_reporting: Enable ANA reporting feature. Default: `false`
         min_cntlid: Minimum controller ID. Default: 1
         max_cntlid: Maximum controller ID. Default: 0xffef
+        max_discard_size_kib: Maximum discard size (Kib). Default: 0
+        max_write_zeroes_size_kib: Maximum write_zeroes size (Kib). Default: 0
+        passthrough: Use NVMe passthrough for I/O commands and namespace-directed admin commands. Default: `false`
 
 
     Returns:
@@ -232,6 +248,15 @@ def nvmf_create_subsystem(client,
     if max_cntlid is not None:
         params['max_cntlid'] = max_cntlid
 
+    if max_discard_size_kib is not None:
+        params['max_discard_size_kib'] = max_discard_size_kib
+
+    if max_write_zeroes_size_kib is not None:
+        params['max_write_zeroes_size_kib'] = max_write_zeroes_size_kib
+
+    if passthrough:
+        params['passthrough'] = passthrough
+
     return client.call('nvmf_create_subsystem', params)
 
 
@@ -246,6 +271,7 @@ def nvmf_subsystem_add_listener(client, **params):
         trsvcid: Transport service ID (required for RDMA or TCP).
         tgt_name: name of the parent NVMe-oF target (optional).
         adrfam: Address family ("IPv4", "IPv6", "IB", or "FC").
+        sock_impl: The socket implementation to use for the listener (optional).
 
     Returns:
         True or False
@@ -349,16 +375,95 @@ def nvmf_subsystem_listener_set_ana_state(
     return client.call('nvmf_subsystem_listener_set_ana_state', params)
 
 
-def nvmf_subsystem_add_ns(client,
-                          nqn,
-                          bdev_name,
-                          tgt_name=None,
-                          ptpl_file=None,
-                          nsid=None,
-                          nguid=None,
-                          eui64=None,
-                          uuid=None,
-                          anagrpid=None):
+def nvmf_discovery_add_referral(client, **params):
+
+    """Add a discovery service referral
+
+    Args:
+        tgt_name: name of the parent NVMe-oF target (optional).
+        trtype: Transport type ("RDMA").
+        traddr: Transport address.
+        trsvcid: Transport service ID (required for RDMA or TCP).
+        adrfam: Address family ("IPv4", "IPv6", "IB", or "FC").
+        secure_channel: The connection to that discovery
+            subsystem requires a secure channel (optional).
+        subnqn: Subsystem NQN.
+
+    Returns:
+        True or False
+    """
+
+    strip_globals(params)
+    apply_defaults(params, tgt_name=None)
+    group_as(params, 'address', ['trtype', 'traddr', 'trsvcid', 'adrfam'])
+    remove_null(params)
+
+    if params.get('subnqn') == 'discovery':
+        params['subnqn'] = 'nqn.2014-08.org.nvmexpress.discovery'
+
+    return client.call('nvmf_discovery_add_referral', params)
+
+
+def nvmf_discovery_remove_referral(
+        client,
+        trtype,
+        traddr,
+        trsvcid,
+        adrfam,
+        tgt_name=None,
+        subnqn=None):
+    """Remove a discovery service referral
+
+    Args:
+        trtype: Transport type ("RDMA").
+        traddr: Transport address.
+        trsvcid: Transport service ID.
+        adrfam: Address family ("IPv4", "IPv6", "IB", or "FC").
+        tgt_name: name of the parent NVMe-oF target (optional).
+        subnqn: Subsystem NQN.
+
+    Returns:
+            True or False
+    """
+    address = {'trtype': trtype,
+               'traddr': traddr}
+
+    if trsvcid:
+        address['trsvcid'] = trsvcid
+
+    if adrfam:
+        address['adrfam'] = adrfam
+
+    params = {'address': address}
+
+    if tgt_name:
+        params['tgt_name'] = tgt_name
+    if subnqn is not None:
+        if subnqn == 'discovery':
+            subnqn = 'nqn.2014-08.org.nvmexpress.discovery'
+        params['subnqn'] = subnqn
+
+    return client.call('nvmf_discovery_remove_referral', params)
+
+
+def nvmf_discovery_get_referrals(client, tgt_name=None):
+    """Get list of referrals of an NVMe-oF target.
+
+    Args:
+        tgt_name: name of the parent NVMe-oF target (optional).
+
+    Returns:
+        List of referral objects of an NVMe-oF target.
+    """
+    params = {}
+
+    if tgt_name:
+        params['tgt_name'] = tgt_name
+
+    return client.call('nvmf_discovery_get_referrals', params)
+
+
+def nvmf_subsystem_add_ns(client, **params):
     """Add a namespace to a subsystem.
 
     Args:
@@ -370,37 +475,65 @@ def nvmf_subsystem_add_ns(client,
         eui64: 8-byte namespace EUI-64 in hexadecimal (e.g. "ABCDEF0123456789") (optional).
         uuid: Namespace UUID (optional).
         anagrpid: ANA group ID (optional).
+        no_auto_visible: Do not automatically make namespace visible to controllers (optional)
+        hide_metadata: Enable hide_metadata option to the bdev (optional)
 
     Returns:
         The namespace ID
     """
-    ns = {'bdev_name': bdev_name}
 
-    if ptpl_file:
-        ns['ptpl_file'] = ptpl_file
+    strip_globals(params)
+    apply_defaults(params, tgt_name=None)
+    group_as(params, 'namespace', ['bdev_name', 'ptpl_file', 'nsid',
+                                   'nguid', 'eui64', 'uuid', 'anagrpid', 'no_auto_visible',
+                                   'hide_metadata'])
+    remove_null(params)
 
-    if nsid:
-        ns['nsid'] = nsid
+    return client.call('nvmf_subsystem_add_ns', params)
 
-    if nguid:
-        ns['nguid'] = nguid
 
-    if eui64:
-        ns['eui64'] = eui64
+def nvmf_subsystem_set_ns_ana_group(client, nqn, nsid, anagrpid, tgt_name=None):
+    """Change ANA group ID of a namespace.
 
-    if uuid:
-        ns['uuid'] = uuid
+    Args:
+        nqn: Subsystem NQN.
+        nsid: Namespace ID.
+        anagrpid: ANA group ID.
+        tgt_name: name of the parent NVMe-oF target (optional).
 
-    if anagrpid:
-        ns['anagrpid'] = anagrpid
-
+    Returns:
+        True or False
+    """
     params = {'nqn': nqn,
-              'namespace': ns}
+              'nsid': nsid,
+              'anagrpid': anagrpid}
 
     if tgt_name:
         params['tgt_name'] = tgt_name
 
-    return client.call('nvmf_subsystem_add_ns', params)
+    return client.call('nvmf_subsystem_set_ns_ana_group', params)
+
+
+def nvmf_subsystem_set_ns_visibility(client, nqn, nsid, auto_visible, tgt_name=None):
+    """Change visibility of a namespace.
+
+    Args:
+        nqn: Subsystem NQN.
+        nsid: Namespace ID.
+        auto_visible: visibility
+        tgt_name: name of the parent NVMe-oF target (optional).
+
+    Returns:
+        True or False
+    """
+    params = {'nqn': nqn,
+              'nsid': nsid,
+              'auto_visible': auto_visible}
+
+    if tgt_name:
+        params['tgt_name'] = tgt_name
+
+    return client.call('nvmf_subsystem_set_ns_visibility', params)
 
 
 def nvmf_subsystem_remove_ns(client, nqn, nsid, tgt_name=None):
@@ -423,13 +556,42 @@ def nvmf_subsystem_remove_ns(client, nqn, nsid, tgt_name=None):
     return client.call('nvmf_subsystem_remove_ns', params)
 
 
-def nvmf_subsystem_add_host(client, nqn, host, tgt_name=None):
+def nvmf_ns_visible(visible, client, nqn, nsid, host, tgt_name=None):
+    """Set visibility of namespace for a host's controllers
+
+    Args:
+        nqn: Subsystem NQN.
+        nsid: Namespace ID.
+        host: Host NQN to set visibility
+        tgt_name: name of the parent NVMe-oF target (optional).
+
+    Returns:
+        True or False
+    """
+    params = {'nqn': nqn,
+              'nsid': nsid,
+              'host': host}
+
+    if tgt_name:
+        params['tgt_name'] = tgt_name
+
+    if visible:
+        return client.call('nvmf_ns_add_host', params)
+    else:
+        return client.call('nvmf_ns_remove_host', params)
+
+
+def nvmf_subsystem_add_host(client, nqn, host, tgt_name=None, psk=None, dhchap_key=None,
+                            dhchap_ctrlr_key=None):
     """Add a host NQN to the list of allowed hosts.
 
     Args:
         nqn: Subsystem NQN.
         host: Host NQN to add to the list of allowed host NQNs
-        tgt_name: name of the parent NVMe-oF target (optional).
+        tgt_name: name of the parent NVMe-oF target (optional)
+        psk: PSK file path for TLS (optional)
+        dhchap_key: DH-HMAC-CHAP key name (optional)
+        dhchap_ctrlr_key: DH-HMAC-CHAP controller key name (optional)
 
     Returns:
         True or False
@@ -439,6 +601,12 @@ def nvmf_subsystem_add_host(client, nqn, host, tgt_name=None):
 
     if tgt_name:
         params['tgt_name'] = tgt_name
+    if psk:
+        params['psk'] = psk
+    if dhchap_key is not None:
+        params['dhchap_key'] = dhchap_key
+    if dhchap_ctrlr_key is not None:
+        params['dhchap_ctrlr_key'] = dhchap_ctrlr_key
 
     return client.call('nvmf_subsystem_add_host', params)
 
@@ -461,6 +629,31 @@ def nvmf_subsystem_remove_host(client, nqn, host, tgt_name=None):
         params['tgt_name'] = tgt_name
 
     return client.call('nvmf_subsystem_remove_host', params)
+
+
+def nvmf_subsystem_set_keys(client, nqn, host, tgt_name=None,
+                            dhchap_key=None, dhchap_ctrlr_key=None):
+    """Set keys required for a host to connect to a given subsystem.
+
+    Args:
+        nqn: Subsystem NQN.
+        host: Host NQN.
+        tgt_name: Name of the NVMe-oF target (optional).
+        dhchap_key: DH-HMAC-CHAP key name (optional)
+        dhchap_ctrlr_key: DH-HMAC-CHAP controller key name (optional)
+    """
+
+    params = {'nqn': nqn,
+              'host': host}
+
+    if tgt_name is not None:
+        params['tgt_name'] = tgt_name
+    if dhchap_key is not None:
+        params['dhchap_key'] = dhchap_key
+    if dhchap_ctrlr_key is not None:
+        params['dhchap_ctrlr_key'] = dhchap_ctrlr_key
+
+    return client.call('nvmf_subsystem_set_keys', params)
 
 
 def nvmf_subsystem_allow_any_host(client, nqn, disable, tgt_name=None):
@@ -594,3 +787,35 @@ def nvmf_set_crdt(client, crdt1=None, crdt2=None, crdt3=None):
         params['crdt3'] = crdt3
 
     return client.call('nvmf_set_crdt', params)
+
+
+def nvmf_publish_mdns_prr(client, tgt_name=None):
+    """Publish mdns pull registration request
+
+    Args:
+        tgt_name: name of the NVMe-oF target (optional).
+
+    Returns:
+        Success or Fail
+    """
+    params = {}
+    if tgt_name:
+        params['tgt_name'] = tgt_name
+
+    return client.call('nvmf_publish_mdns_prr', params)
+
+
+def nvmf_stop_mdns_prr(client, tgt_name=None):
+    """Stop publishing mdns pull registration request
+
+    Args:
+        tgt_name: name of the NVMe-oF target (optional).
+
+    Returns:
+        Success or Fail
+    """
+    params = {}
+    if tgt_name:
+        params['tgt_name'] = tgt_name
+
+    return client.call('nvmf_stop_mdns_prr', params)

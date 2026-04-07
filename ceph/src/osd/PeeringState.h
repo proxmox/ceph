@@ -1197,6 +1197,7 @@ public:
     std::set<pg_shard_t>::const_iterator remote_recovery_reservation_it;
     explicit WaitRemoteRecoveryReserved(my_context ctx);
     boost::statechart::result react(const RemoteRecoveryReserved &evt);
+    boost::statechart::result react(const AdvMap& ev);
     void exit();
   };
 
@@ -1208,6 +1209,7 @@ public:
     explicit WaitLocalRecoveryReserved(my_context ctx);
     void exit();
     boost::statechart::result react(const RecoveryTooFull &evt);
+    boost::statechart::result react(const AdvMap& ev);
   };
 
   struct Activating : boost::statechart::state< Activating, Active >, NamedState {
@@ -1507,8 +1509,6 @@ public:
   eversion_t  last_update_applied;  ///< last_update readable
   /// last version to which rollback_info trimming has been applied
   eversion_t  last_rollback_info_trimmed_to_applied;
-  // last version in which the stats for a shard were updated
-  std::map<pg_shard_t,eversion_t> stats_last_update;
 
   /// Counter to determine when pending flushes have completed
   unsigned flushes_in_progress = 0;
@@ -1812,6 +1812,7 @@ private:
 
   void update_blocked_by();
   void update_calc_stats();
+  void increment_stats_invalidations_counter(bool invalidation_state);
 
   void add_log_entry(const pg_log_entry_t& e, ObjectStore::Transaction &t, bool applied);
 

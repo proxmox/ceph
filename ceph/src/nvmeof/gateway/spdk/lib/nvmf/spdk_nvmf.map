@@ -2,6 +2,8 @@
 	global:
 
 	# public functions in nvmf.h
+	spdk_nvmf_tgt_add_referral;
+	spdk_nvmf_tgt_remove_referral;
 	spdk_nvmf_tgt_create;
 	spdk_nvmf_tgt_destroy;
 	spdk_nvmf_tgt_get_name;
@@ -29,7 +31,10 @@
 	spdk_nvmf_tgt_find_subsystem;
 	spdk_nvmf_subsystem_get_first;
 	spdk_nvmf_subsystem_get_next;
+	spdk_nvmf_ns_add_host;
+	spdk_nvmf_ns_remove_host;
 	spdk_nvmf_subsystem_add_host;
+	spdk_nvmf_subsystem_add_host_ext;
 	spdk_nvmf_subsystem_remove_host;
 	spdk_nvmf_subsystem_disconnect_host;
 	spdk_nvmf_subsystem_set_allow_any_host;
@@ -37,15 +42,18 @@
 	spdk_nvmf_subsystem_host_allowed;
 	spdk_nvmf_subsystem_get_first_host;
 	spdk_nvmf_subsystem_get_next_host;
+	spdk_nvmf_subsystem_set_keys;
 	spdk_nvmf_host_get_nqn;
 	spdk_nvmf_subsystem_add_listener;
+	spdk_nvmf_subsystem_add_listener_ext;
 	spdk_nvmf_subsystem_remove_listener;
 	spdk_nvmf_subsystem_listener_allowed;
 	spdk_nvmf_subsystem_get_first_listener;
 	spdk_nvmf_subsystem_get_next_listener;
 	spdk_nvmf_subsystem_listener_get_trid;
 	spdk_nvmf_subsystem_allow_any_listener;
-	spdk_nvmf_subsytem_any_listener_allowed;
+	spdk_nvmf_subsystem_any_listener_allowed;
+	spdk_nvmf_subsystem_listener_opts_init;
 	spdk_nvmf_ns_opts_get_defaults;
 	spdk_nvmf_subsystem_add_ns_ext;
 	spdk_nvmf_subsystem_remove_ns;
@@ -67,6 +75,7 @@
 	spdk_nvmf_subsystem_get_max_nsid;
 	spdk_nvmf_transport_opts_init;
 	spdk_nvmf_transport_create;
+	spdk_nvmf_transport_create_async;
 	spdk_nvmf_transport_destroy;
 	spdk_nvmf_tgt_get_transport;
 	spdk_nvmf_transport_get_first;
@@ -75,26 +84,37 @@
 	spdk_nvmf_get_transport_type;
 	spdk_nvmf_get_transport_name;
 	spdk_nvmf_tgt_add_transport;
-        spdk_nvmf_tgt_pause_polling;
-        spdk_nvmf_tgt_resume_polling;
+	spdk_nvmf_tgt_pause_polling;
+	spdk_nvmf_tgt_resume_polling;
 	spdk_nvmf_transport_listen;
 	spdk_nvmf_transport_stop_listen;
 	spdk_nvmf_transport_stop_listen_async;
 	spdk_nvmf_poll_group_dump_stat;
 	spdk_nvmf_rdma_init_hooks;
 	spdk_nvmf_subsystem_set_ana_reporting;
+	spdk_nvmf_subsystem_get_ana_reporting;
+	spdk_nvmf_subsystem_set_ana_state;
+	spdk_nvmf_subsystem_get_ana_state;
+	spdk_nvmf_subsystem_set_ns_ana_group;
+	spdk_nvmf_subsystem_set_ns_visibility;
+	spdk_nvmf_subsystem_is_discovery;
+	spdk_nvmf_subsystem_set_cntlid_range;
+	spdk_nvmf_set_custom_ns_reservation_ops;
+	spdk_nvmf_send_discovery_log_notice;
 
 	# public functions in nvmf_cmd.h
 	spdk_nvmf_ctrlr_identify_ctrlr;
 	spdk_nvmf_ctrlr_identify_iocs_specific;
 	spdk_nvmf_ctrlr_identify_ns;
+	spdk_nvmf_ctrlr_identify_ns_ext;
 	spdk_nvmf_set_custom_admin_cmd_hdlr;
 	spdk_nvmf_set_passthru_admin_cmd;
 	spdk_nvmf_bdev_ctrlr_nvme_passthru_admin;
+	spdk_nvmf_request_copy_from_buf;
+	spdk_nvmf_request_copy_to_buf;
 	spdk_nvmf_request_get_bdev;
 	spdk_nvmf_request_get_ctrlr;
 	spdk_nvmf_request_get_subsystem;
-	spdk_nvmf_request_get_data;
 	spdk_nvmf_request_get_cmd;
 	spdk_nvmf_request_get_response;
 	spdk_nvmf_request_get_req_to_abort;
@@ -105,12 +125,10 @@
 	spdk_nvmf_transport_register;
 	spdk_nvmf_tgt_new_qpair;
 	spdk_nvmf_ctrlr_connect;
-	spdk_nvmf_ctrlr_data_init;
 	spdk_nvmf_ctrlr_get_regs;
 	spdk_nvmf_request_free_buffers;
 	spdk_nvmf_request_get_buffers;
 	spdk_nvmf_request_get_dif_ctx;
-	spdk_nvmf_request_exec_fabrics;
 	spdk_nvmf_request_exec;
 	spdk_nvmf_request_free;
 	spdk_nvmf_request_complete;
@@ -122,6 +140,8 @@
 	spdk_nvmf_ctrlr_restore_migr_data;
 	spdk_nvmf_req_get_xfer;
 	spdk_nvmf_poll_group_remove;
+	spdk_nvmf_ctrlr_async_event_error_event;
+	spdk_nvmf_ctrlr_abort_aer;
 
 	local: *;
 };

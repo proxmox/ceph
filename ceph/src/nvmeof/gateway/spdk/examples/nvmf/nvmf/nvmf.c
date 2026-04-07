@@ -1,6 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
- *   Copyright (C) 2019 Intel Corporation.
- *   All rights reserved.
+ *   Copyright (C) 2019 Intel Corporation. All rights reserved.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
@@ -14,10 +14,12 @@
 #include "spdk/rpc.h"
 #include "spdk/nvmf.h"
 #include "spdk/likely.h"
+#include "spdk/util.h"
 
 #include "spdk_internal/event.h"
 
 #define NVMF_DEFAULT_SUBSYSTEMS		32
+#define NVMF_GETOPT_STRING "g:i:m:n:p:r:s:u:h"
 
 static const char *g_rpc_addr = SPDK_DEFAULT_RPC_ADDR;
 
@@ -95,15 +97,22 @@ usage(char *program_name)
 	printf("\t[-r RPC listen address (default /var/tmp/spdk.sock)]\n");
 	printf("\t[-s memory size in MB for DPDK (default: 0MB)]\n");
 	printf("\t[-u disable PCI access]\n");
+	printf("\t[--no-huge SPDK is run without hugepages]\n");
 }
+
+static const struct option g_nvmf_cmdline_opts[] = {
+#define NVMF_NO_HUGE        257
+	{"no-huge",			no_argument,	NULL, NVMF_NO_HUGE},
+	{0, 0, 0, 0}
+};
 
 static int
 parse_args(int argc, char **argv, struct spdk_env_opts *opts)
 {
-	int op;
+	int op, opt_index;
 	long int value;
 
-	while ((op = getopt(argc, argv, "g:i:m:n:p:r:s:u:h")) != -1) {
+	while ((op = getopt_long(argc, argv, NVMF_GETOPT_STRING, g_nvmf_cmdline_opts, &opt_index)) != -1) {
 		switch (op) {
 		case 'g':
 			value = spdk_strtol(optarg, 10);
@@ -148,6 +157,9 @@ parse_args(int argc, char **argv, struct spdk_env_opts *opts)
 		case 'h':
 			usage(argv[0]);
 			exit(EXIT_SUCCESS);
+		case NVMF_NO_HUGE:
+			opts->no_huge = true;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -171,8 +183,7 @@ nvmf_reactor_run(void *arg)
 
 			spdk_thread_poll(thread, 0, 0);
 
-			if (spdk_unlikely(spdk_thread_is_exited(thread) &&
-					  spdk_thread_is_idle(thread))) {
+			if (spdk_unlikely(spdk_thread_is_exited(thread))) {
 				spdk_thread_destroy(thread);
 			} else if (spdk_unlikely(lw_thread->resched)) {
 				lw_thread->resched = false;
@@ -326,7 +337,7 @@ nvmf_init_threads(void)
 
 		nvmf_reactor->core = i;
 
-		nvmf_reactor->threads = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 1024, SPDK_ENV_SOCKET_ID_ANY);
+		nvmf_reactor->threads = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 1024, SPDK_ENV_NUMA_ID_ANY);
 		if (!nvmf_reactor->threads) {
 			fprintf(stderr, "failed to alloc ring\n");
 			free(nvmf_reactor);
@@ -407,6 +418,7 @@ nvmf_create_nvmf_tgt(void)
 	struct spdk_nvmf_subsystem *subsystem;
 	struct spdk_nvmf_target_opts tgt_opts = {};
 
+	tgt_opts.size = SPDK_SIZEOF(&tgt_opts, discovery_filter);
 	tgt_opts.max_subsystems = g_nvmf_tgt.max_subsystems;
 	snprintf(tgt_opts.name, sizeof(tgt_opts.name), "%s", "nvmf_example");
 	/* Construct the default NVMe-oF target
@@ -429,7 +441,7 @@ nvmf_create_nvmf_tgt(void)
 	 *	3,The ability to discover controllers that are statically configured.
 	 */
 	subsystem = spdk_nvmf_subsystem_create(g_nvmf_tgt.tgt, SPDK_NVMF_DISCOVERY_NQN,
-					       SPDK_NVMF_SUBTYPE_DISCOVERY, 0);
+					       SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT, 0);
 	if (subsystem == NULL) {
 		fprintf(stderr, "failed to create discovery nvmf library subsystem\n");
 		goto error;
@@ -606,7 +618,7 @@ nvmf_poll_groups_create(void)
 	SPDK_ENV_FOREACH_CORE(i) {
 		spdk_cpuset_zero(&tmp_cpumask);
 		spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
-		snprintf(thread_name, sizeof(thread_name), "nvmf_tgt_poll_group_%u", i);
+		snprintf(thread_name, sizeof(thread_name), "nvmf_tgt_poll_group_%03u", i);
 
 		thread = spdk_thread_create(thread_name, &tmp_cpumask);
 		assert(thread != NULL);
@@ -675,7 +687,7 @@ nvmf_subsystem_init_done(int rc, void *cb_arg)
 {
 	fprintf(stdout, "bdev subsystem init successfully\n");
 
-	rc = spdk_rpc_initialize(g_rpc_addr);
+	rc = spdk_rpc_initialize(g_rpc_addr, NULL);
 	if (rc) {
 		spdk_app_stop(rc);
 		return;
@@ -842,6 +854,7 @@ main(int argc, char **argv)
 	int rc;
 	struct spdk_env_opts opts;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "nvmf-example";
 

@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2022, Intel Corporation
+;; Copyright (c) 2022-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,12 +25,12 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/os.asm"
-%include "include/imb_job.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/reg_sizes.asm"
-%include "include/clear_regs.asm"
-%include "sse_t1/snow3g_uea2_by4_sse.asm"
+%include "include/os.inc"
+%include "include/imb_job.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/reg_sizes.inc"
+%include "include/clear_regs.inc"
+%include "include/snow3g_uea2_by4_sse.inc"
 
 %define SUBMIT_JOB_SNOW3G_UIA2 submit_job_snow3g_uia2_sse
 %define FLUSH_JOB_SNOW3G_UIA2 flush_job_snow3g_uia2_sse

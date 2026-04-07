@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2020-2022, Intel Corporation
+;; Copyright (c) 2020-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -27,10 +27,10 @@
 
 ;;; routines to do 128 bit AES in CBCS mode encryption
 
-%include "include/os.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/reg_sizes.asm"
-%include "include/clear_regs.asm"
+%include "include/os.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/reg_sizes.inc"
+%include "include/clear_regs.inc"
 
 %define GPR_SAVE_AREA   rsp + _gpr_save
 

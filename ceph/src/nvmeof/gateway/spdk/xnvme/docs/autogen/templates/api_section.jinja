@@ -1,28 +1,18 @@
-.. _sec-c-api-{{ ns }}:
+.. _sec-api-c-{{ ns }}:
 
-{% for _ in range(ns|length + 2) %}={% endfor %}
- {{ ns }}
-{% for _ in range(ns|length + 2) %}={% endfor %}
+===={% for _ in range(ns|length) %}={% endfor %}===
+ lib{{ ns }}.h
+===={% for _ in range(ns|length) %}={% endfor %}===
 
-{% if show_header %}
 
-.. _sec-c-api-{{ ns }}-header:
-
-Header
-======
-
-.. literalinclude:: ../../include/lib{{ ns }}.h
-   :language: c
-
-{% endif %}
-
-.. _sec-c-api-{{ ns }}-enum:
+{% if show_enums %}
+.. _sec-api-c-{{ ns }}-enum:
 
 Enums
 =====
 
 {% for symb in api.enum %}
-.. _sec-c-api-{{ ns }}-enum-{{ symb }}:
+.. _sec-api-c-{{ ns }}-enum-{{ symb }}:
 
 {{ symb }}
 {% for _ in range(symb|length) %}-{% endfor %}
@@ -30,14 +20,16 @@ Enums
 .. doxygenenum:: {{ symb }}
 
 {% endfor %}
+{% endif %}
 
-.. _sec-c-api-{{ ns }}-struct:
+.. _sec-api-c-{{ ns }}-struct:
 
+{% if show_structs %}
 Structs
 =======
 
 {% for symb in api.struct %}
-.. _sec-c-api-{{ ns }}-struct-{{ symb }}:
+.. _sec-api-c-{{ ns }}-struct-{{ symb }}:
 
 {{ symb }}
 {% for _ in range(symb|length) %}-{% endfor %}
@@ -47,14 +39,16 @@ Structs
    :undoc-members:
 
 {% endfor %}
+{% endif %}
 
-.. _sec-c-api-{{ ns }}-func:
+{% if show_funcs %}
+.. _sec-api-c-{{ ns }}-func:
 
 Functions
 =========
 
 {% for symb in api.func %}
-.. _sec-c-api-{{ ns }}-func-{{ symb }}:
+.. _sec-api-c-{{ ns }}-func-{{ symb }}:
 
 {{ symb }}
 {% for _ in range(symb|length) %}-{% endfor %}
@@ -62,3 +56,16 @@ Functions
 .. doxygenfunction:: {{ symb }}
 
 {% endfor %}
+{% endif %}
+
+{% if show_header %}
+
+.. _sec-api-c-{{ ns }}-header:
+
+Header
+======
+
+.. literalinclude:: ../../../include/lib{{ ns }}.h
+   :language: c
+
+{% endif %}

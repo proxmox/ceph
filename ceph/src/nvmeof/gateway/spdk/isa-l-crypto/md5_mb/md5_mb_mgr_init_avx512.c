@@ -29,16 +29,19 @@
 
 #include "md5_mb.h"
 
-void md5_mb_mgr_init_avx512(MD5_MB_JOB_MGR * state)
+void
+_md5_mb_mgr_init_avx512(ISAL_MD5_MB_JOB_MGR *state)
 {
-	unsigned int j;
-	state->unused_lanes[0] = 0x0706050403020100;
-	state->unused_lanes[1] = 0x0f0e0d0c0b0a0908;
-	state->unused_lanes[2] = 0x1716151413121110;
-	state->unused_lanes[3] = 0x1f1e1d1c1b1a1918;
-	state->num_lanes_inuse = 0;
-	for (j = 0; j < 32; j++) {
-		state->lens[j] = 0xFFFFFFFF;
-		state->ldata[j].job_in_lane = 0;
-	}
+        unsigned int j;
+
+        memset(state, 0, sizeof(*state));
+        state->unused_lanes[0] = 0x0706050403020100;
+        state->unused_lanes[1] = 0x0f0e0d0c0b0a0908;
+        state->unused_lanes[2] = 0x1716151413121110;
+        state->unused_lanes[3] = 0x1f1e1d1c1b1a1918;
+        state->num_lanes_inuse = 0;
+        for (j = 0; j < 32; j++) {
+                state->lens[j] = 0xFFFFFFFF;
+                state->ldata[j].job_in_lane = 0;
+        }
 }

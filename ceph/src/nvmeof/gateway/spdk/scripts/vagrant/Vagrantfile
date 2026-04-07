@@ -9,19 +9,15 @@ def get_box_type(distro, force_distro)
 
   distro_to_type = {
     'centos7'    => 'centos/7',
-    'centos8'    => 'centos/8',
-    'ubuntu1604' => 'peru/ubuntu-16.04-server-amd64',
-    'ubuntu1804' => 'peru/ubuntu-18.04-server-amd64',
     'ubuntu2004' => 'peru/ubuntu-20.04-server-amd64',
     'ubuntu2204' => 'generic/ubuntu2204',
-    'fedora33'   => 'generic/fedora33',
-    'fedora34'   => 'generic/fedora34',
-    'fedora35'   => 'generic/fedora35',
-    'fedora36'   => 'generic/fedora36',
+    'fedora37'   => 'generic/fedora37',
+    'fedora38'   => 'generic/fedora38',
     'arch'       => 'generic/arch',
     'freebsd12'  => 'generic/freebsd12',
     'freebsd13'  => 'generic/freebsd13',
-    'rocky8'     => 'rockylinux/8'
+    'rocky8'     => 'rockylinux/8',
+    'rocky9'     => 'rockylinux/9'
   }
   abort("Invalid argument! #{distro}") unless distro_to_type.key?(distro) || force_distro
 
@@ -83,11 +79,20 @@ def copy_vagrant_tools(config,files_sync_backend)
   config.vm.synced_folder src_path, "/home/vagrant/tools", files_sync_backend
 end
 
-def copy_spdk_dir(config, files_sync_backend)
+def copy_sources_dirs(config, files_sync_backend)
   return unless ENV['COPY_SPDK_DIR'] == "1"
   return unless ENV['SPDK_DIR']
 
-  config.vm.synced_folder ENV['SPDK_DIR'], '/home/vagrant/spdk_repo/spdk', files_sync_backend
+  repo_prefix = '/home/vagrant/spdk_repo'
+  config.vm.synced_folder ENV['SPDK_DIR'], "#{repo_prefix}/spdk", files_sync_backend
+
+  # Optional directories
+  for dir in ['spdk-abi', 'dpdk']
+    src_path = "#{ENV['SPDK_DIR']}/../#{dir}"
+    next unless File.directory?(File.expand_path(src_path))
+
+    config.vm.synced_folder src_path, "#{repo_prefix}/#{dir}", files_sync_backend
+  end
 end
 
 def copy_spdk_artifacts(config, plugins_sync_backend)
@@ -137,29 +142,49 @@ def setup_nvme_disk(libvirt, disk, index)
   nvme_pmrs=(ENV['NVME_PMR'] || "").split(',')
   nvme_zns=(ENV['NVME_ZNS'] || "").split(',')
   nvme_ms=(ENV['NVME_MS'] || "").split(',')
-
+  nvme_fdp=(ENV['NVME_FDP'] || "").split(',')
 
   namespace_disks = []
   pmr_cmdline = ""
   nvme_controller = ""
+  fdp_subsys = ""
+  fdp_subsys_id = ""
+  ms = ""
+
+  addr = 0x10 + index
 
   # Define controller
-  nvme_controller = "nvme,id=#{nvme_disk_id},serial=1234#{index}"
+  nvme_controller = "nvme,id=#{nvme_disk_id},serial=1234#{index},addr=0x#{addr.to_s(16)}"
 
+  # For the FDP, we need to hook our nvme into a dedicated subsystem
+  if !nvme_fdp[index].nil? && nvme_fdp[index] != ""
+    fdp_subsys_id = "fdp-subsys#{index}"
+    fdp = nvme_fdp[index].split(':')[0..3]
+    fdp_ruhs = (nvme_fdp[index].split(':')[4..]) # fdp.ruhs per ns
+
+    # Put some defaults in place if needed
+    fdp_enable = "#{fdp[0] != nil && fdp[0] != '' ? fdp[0] : 'off'}"
+    fdp_runs = "#{fdp[1]   != nil && fdp[1] != '' ? fdp[1] : '96M'}"
+    fdp_nrg = "#{fdp[2]    != nil && fdp[2] != '' ? fdp[2] : 2}"
+    fdp_nruh = "#{fdp[3]   != nil && fdp[3] != '' ? fdp[3] : 8}"
+
+    fdp_subsys = "nvme-subsys,id=#{fdp_subsys_id},fdp=#{fdp_enable}"
+    fdp_subsys << ",fdp.runs=#{fdp_runs},fdp.nrg=#{fdp_nrg},fdp.nruh=#{fdp_nruh}"
+
+    nvme_controller << ",subsys=#{fdp_subsys_id}"
+
+    libvirt.qemuargs :value => "-device"
+    libvirt.qemuargs :value => fdp_subsys
+  end
   # Gather all drives - each namespace requires separate drive
   if nvme_namespaces[index].nil?
     namespace_disks = namespace_disks + nvme_disk.split()
   elsif !nvme_namespaces[index].nil? && !nvme_namespaces[index].match(/^[0-9]+$/)
     namespace_disks = namespace_disks + nvme_disk.split() + nvme_namespaces[index].split(':')
-  elsif !nvme_namespaces[index].nil? && nvme_namespaces[index].match(/^[0-9]+$/)
-    # Compatibility with spdk-5.0.0 fork
+  elsif !nvme_namespaces[index].nil? && nvme_namespaces[index] == "1"
     libvirt.qemuargs :value => "-drive"
     libvirt.qemuargs :value => "format=raw,file=#{nvme_disk},if=none,id=#{nvme_disk_id}"
-    if nvme_namespaces[index] == "1"
       nvme_controller <<",drive=#{nvme_disk_id}"
-    else
-      nvme_controller <<",namespaces=#{nvme_namespaces[index]},drive=#{nvme_disk_id}"
-    end
   end
 
   if !nvme_cmbs[index].nil? && nvme_cmbs[index] != ""
@@ -190,11 +215,17 @@ def setup_nvme_disk(libvirt, disk, index)
       next
     end
     zoned = nvme_zns[index].nil? ? "false" : "true"
-    ms = nvme_ms[index].nil? ? "" : ",ms=64"
+    if ! nvme_ms[index].nil? && nvme_ms[index] == "true"
+        ms = ",ms=64"
+    end
+    ns = "nvme-ns,drive=#{nvme_disk_id}-drive#{nsid},bus=#{nvme_disk_id},nsid=#{nsid + 1},zoned=#{zoned},logical_block_size=4096,physical_block_size=4096#{ms}"
+    if !fdp_ruhs.nil? && !fdp_ruhs[nsid].nil? && fdp_ruhs[nsid] != ""
+        ns << ",fdp.ruhs=#{fdp_ruhs[nsid]}"
+    end
     libvirt.qemuargs :value => "-drive"
     libvirt.qemuargs :value => "format=raw,file=#{disk},if=none,id=#{nvme_disk_id}-drive#{nsid}"
     libvirt.qemuargs :value => "-device"
-    libvirt.qemuargs :value => "nvme-ns,drive=#{nvme_disk_id}-drive#{nsid},bus=#{nvme_disk_id},nsid=#{nsid + 1},zoned=#{zoned},logical_block_size=4096,physical_block_size=4096#{ms}"
+    libvirt.qemuargs :value => ns
   }
 
 end
@@ -228,7 +259,7 @@ def deploy_test_vm(config, distro, plugins_sync_backend)
   make_spdk_local_copy_of_nfs(config,distro) if plugins_sync_backend[:type] == :nfs
 
   config.vm.provision "shell" do |setup|
-    setup.inline = "/home/vagrant/spdk_repo/spdk/test/common/config/vm_setup.sh"
+    setup.inline = "/home/vagrant/spdk_repo/spdk/test/common/config/autotest_setup.sh"
     setup.privileged = false
     setup.args = ["-u", "-i"]
   end
@@ -263,6 +294,7 @@ def setup_libvirt(config, vmcpu, vmram, distro)
     libvirt.memory = vmram
     libvirt.cpus = vmcpu
     libvirt.video_type = "cirrus"
+    libvirt.nic_model_type = (ENV['NIC_MODEL'] || "virtio")
 
     if (distro.include?("freebsd"))
       # generic/freebsd boxes need to be explicitly run with SCSI bus,
@@ -307,8 +339,8 @@ def setup_libvirt(config, vmcpu, vmram, distro)
 end
 
 #################################################################################################
-# Pick the right distro and bootstrap, default is fedora33
-distro = (ENV['SPDK_VAGRANT_DISTRO'] || "fedora33")
+# Pick the right distro and bootstrap, default is fedora37
+distro = (ENV['SPDK_VAGRANT_DISTRO'] || "fedora37")
 provider = (ENV['SPDK_VAGRANT_PROVIDER'] || "virtualbox")
 
 # Get all variables for creating vm
@@ -318,15 +350,15 @@ vmram = (ENV['SPDK_VAGRANT_VMRAM'] || 4096)
 force_distro = ENV['FORCE_DISTRO'] == "true" ? true : false
 
 distro_to_use = get_box_type(distro, force_distro)
-if (distro_to_use.include?("generic/freebsd"))
-  files_sync_backend = {type: :nfs, nfs_udp: false,  mount_options: ['ro']}
-  plugins_sync_backend = {type: :nfs, nfs_udp: false}
+# Remove --copy-links from default rsync cmdline since we do want to sync
+# actual symlinks as well. Also, since copy is made between host and its
+# local VM we don't need to worry about saturating the local link so skip
+# the compression to speed up the whole transfer.
+files_sync_backend = {type: "rsync", rsync__auto: false, rsync__args: ["--archive", "--verbose", "--delete"]}
+
+if ENV['NFS4_BACKEND'] or not Vagrant.has_plugin?("vagrant-sshfs")
+  plugins_sync_backend = {type: :nfs, nfs_udp: false, nfs_version: 4}
 else
-  # Remove --copy-links from default rsync cmdline since we do want to sync
-  # actual symlinks as well. Also, since copy is made between host and its
-  # local VM we don't need to worry about saturating the local link so skip
-  # the compression to speed up the whole transfer.
-  files_sync_backend = {type: "rsync", rsync__auto: false, rsync__args: ["--archive", "--verbose", "--delete"]}
   plugins_sync_backend = {type: :sshfs}
 end
 
@@ -344,7 +376,7 @@ Vagrant.configure(2) do |config|
   # Copy in the user's tools if they exists
   copy_vagrant_tools(config,files_sync_backend)
 
-  copy_spdk_dir(config, files_sync_backend)
+  copy_sources_dirs(config, files_sync_backend)
 
   # rsync artifacts from build
   copy_spdk_artifacts(config, plugins_sync_backend)

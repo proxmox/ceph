@@ -36,7 +36,7 @@
         aesimc   v\block\().16b,v\block\().16b
     .endif
     .if \key > 13
-        .error "erro her"
+        .error "error here"
     .endif
 .endm
 
@@ -448,10 +448,10 @@
 .endm
 
 /*
-void aes_cbc_dec_128(
+void _aes_cbc_dec_128(
 	void     *in,        //!< Input cipher text
 	uint8_t  *IV,        //!< Must be 16 bytes aligned to a 16 byte boundary
-	uint8_t  *keys,      //!< Must be on a 16 byte boundary and length of key size * key rounds or dec_keys of cbc_key_data
+	uint8_t  *keys,      //!< Must be on a 16 byte boundary and length of key size * key rounds or dec_keys of isal_cbc_key_data
 	void     *out,       //!< Output plain text
 	uint64_t len_bytes   //!< Must be a multiple of 16 bytes
 	);
@@ -468,11 +468,11 @@ void aes_cbc_dec_128(
     declare_var_generic_reg len_quotient_in,6
 
 .macro  define_aes_cbc_dec_func mode:req,blocks:req
-    .global aes_cbc_dec_\mode\()_aes_\blocks
-aes_cbc_dec_\mode\()_aes_\blocks:
+    .global _aes_cbc_dec_\mode\()_aes_\blocks
+_aes_cbc_dec_\mode\()_aes_\blocks:
     cbc_decrypt %((256-mode)/32),\blocks
     ret
-    .size   aes_cbc_dec_\mode\()_aes_\blocks, . - aes_cbc_dec_\mode\()_aes_\blocks
+    .size   _aes_cbc_dec_\mode\()_aes_\blocks, . - _aes_cbc_dec_\mode\()_aes_\blocks
 .endm
 
 .irp    blocks,1,2,3,4,5,6,7,8,9

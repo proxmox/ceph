@@ -32,8 +32,6 @@
 
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_AVX512
-
 [bits 64]
 default rel
 section .text
@@ -228,7 +226,7 @@ section .text
 %define pref		tmp3
 %macro PREFETCH_X 1
 %define %%mem  %1
-	prefetchnta %%mem
+	prefetcht1  %%mem
 %endmacro
 
 ;init hash digests
@@ -243,22 +241,22 @@ section .text
 section .text
 align 32
 
-;void mh_sha1_block_avx512(const uint8_t * input_data, uint32_t digests[SHA1_DIGEST_WORDS][HASH_SEGS],
-;		uint8_t frame_buffer[MH_SHA1_BLOCK_SIZE], uint32_t num_blocks);
+;void _mh_sha1_block_avx512(const uint8_t * input_data, uint32_t digests[ISAL_SHA1_DIGEST_WORDS][ISAL_HASH_SEGS],
+;		uint8_t frame_buffer[ISAL_MH_SHA1_BLOCK_SIZE], uint32_t num_blocks);
 ; arg 0 pointer to input data
 ; arg 1 pointer to digests, include segments digests(uint32_t digests[16][5])
 ; arg 2 pointer to aligned_frame_buffer which is used to save the big_endian data.
 ; arg 3 number  of 1KB blocks
 ;
-global mh_sha1_block_avx512
-func(mh_sha1_block_avx512)
+mk_global _mh_sha1_block_avx512, function, internal
+func(_mh_sha1_block_avx512)
 	endbranch
 	FUNC_SAVE
 
 	; save rsp
 	mov	RSP_SAVE, rsp
 
-	cmp	loops, 0
+	test	loops, loops
 	jle	.return
 
 	; align rsp to 64 Bytes needed by avx512
@@ -271,7 +269,7 @@ func(mh_sha1_block_avx512)
 	VMOVPS  HH3, [mh_digests_p + 64*3]
 	VMOVPS  HH4, [mh_digests_p + 64*4]
 	;a mask used to transform to big-endian data
-	vmovdqa64 SHUF_MASK, [PSHUFFLE_BYTE_FLIP_MASK]
+	vbroadcasti32x4 SHUF_MASK, [PSHUFFLE_BYTE_FLIP_MASK]
 
 .block_loop:
 	;transform to big-endian data and store on aligned_frame
@@ -293,7 +291,7 @@ func(mh_sha1_block_avx512)
 	vmovdqa64  D, HH3
 	vmovdqa64  E, HH4
 
-	vmovdqa32	KT, [K00_19]
+	vpbroadcastd	KT, [K00_19]
 %assign I 0xCA
 %assign J 0
 %assign K 2
@@ -306,13 +304,13 @@ func(mh_sha1_block_avx512)
 	MSG_SCHED_ROUND_16_79  APPEND(W,J), APPEND(W,K), APPEND(W,L), APPEND(W,M)
 	%endif
 	%if N = 19
-		vmovdqa32	KT, [K20_39]
+		vpbroadcastd	KT, [K20_39]
 		%assign I 0x96
 	%elif N = 39
-		vmovdqa32	KT, [K40_59]
+		vpbroadcastd	KT, [K40_59]
 		%assign I 0xE8
 	%elif N = 59
-		vmovdqa32	KT, [K60_79]
+		vpbroadcastd	KT, [K60_79]
 		%assign I 0x96
 	%endif
 	%if N % 10 = 9
@@ -355,52 +353,11 @@ section .data align=64
 align 64
 PSHUFFLE_BYTE_FLIP_MASK: dq 0x0405060700010203
 			 dq 0x0c0d0e0f08090a0b
-			 dq 0x0405060700010203
-			 dq 0x0c0d0e0f08090a0b
-			 dq 0x0405060700010203
-			 dq 0x0c0d0e0f08090a0b
-			 dq 0x0405060700010203
-			 dq 0x0c0d0e0f08090a0b
 
-K00_19:			dq 0x5A8279995A827999
-			dq 0x5A8279995A827999
-			dq 0x5A8279995A827999
-			dq 0x5A8279995A827999
-			dq 0x5A8279995A827999
-			dq 0x5A8279995A827999
-			dq 0x5A8279995A827999
-			dq 0x5A8279995A827999
+K00_19:			dd  0x5A827999
 
-K20_39:			dq  0x6ED9EBA16ED9EBA1
-			dq  0x6ED9EBA16ED9EBA1
-			dq  0x6ED9EBA16ED9EBA1
-			dq  0x6ED9EBA16ED9EBA1
-			dq  0x6ED9EBA16ED9EBA1
-			dq  0x6ED9EBA16ED9EBA1
-			dq  0x6ED9EBA16ED9EBA1
-			dq  0x6ED9EBA16ED9EBA1
+K20_39:			dd  0x6ED9EBA1
 
-K40_59:			dq  0x8F1BBCDC8F1BBCDC
-			dq  0x8F1BBCDC8F1BBCDC
-			dq  0x8F1BBCDC8F1BBCDC
-			dq  0x8F1BBCDC8F1BBCDC
-			dq  0x8F1BBCDC8F1BBCDC
-			dq  0x8F1BBCDC8F1BBCDC
-			dq  0x8F1BBCDC8F1BBCDC
-			dq  0x8F1BBCDC8F1BBCDC
+K40_59:			dd  0x8F1BBCDC
 
-K60_79:			dq  0xCA62C1D6CA62C1D6
-			dq  0xCA62C1D6CA62C1D6
-			dq  0xCA62C1D6CA62C1D6
-			dq  0xCA62C1D6CA62C1D6
-			dq  0xCA62C1D6CA62C1D6
-			dq  0xCA62C1D6CA62C1D6
-			dq  0xCA62C1D6CA62C1D6
-			dq  0xCA62C1D6CA62C1D6
-
-%else
-%ifidn __OUTPUT_FORMAT__, win64
-global no_mh_sha1_block_avx512
-no_mh_sha1_block_avx512:
-%endif
-%endif ; HAVE_AS_KNOWS_AVX512
+K60_79:			dd  0xCA62C1D6

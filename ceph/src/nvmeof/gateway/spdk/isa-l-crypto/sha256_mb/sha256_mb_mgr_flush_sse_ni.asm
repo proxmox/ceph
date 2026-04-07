@@ -32,8 +32,7 @@
 
 %include "reg_sizes.asm"
 
-%ifdef HAVE_AS_KNOWS_SHANI
-extern  sha256_mb_x4_sse
+extern sha256_mb_x4_sse
 extern sha256_ni_x1
 
 [bits 64]
@@ -95,10 +94,10 @@ STACK_SPACE     equ _GPR_SAVE + _GPR_SAVE_SIZE + _ALIGN_SIZE
 
 %define APPEND(a,b) a %+ b
 
-; SHA256_JOB* sha256_mb_mgr_flush_sse_ni(SHA256_MB_JOB_MGR *state)
+; ISAL_SHA256_JOB* _sha256_mb_mgr_flush_sse_ni(ISAL_SHA256_MB_JOB_MGR *state)
 ; arg 1 : rcx : state
-mk_global sha256_mb_mgr_flush_sse_ni, function
-sha256_mb_mgr_flush_sse_ni:
+mk_global _sha256_mb_mgr_flush_sse_ni, function, internal
+_sha256_mb_mgr_flush_sse_ni:
 	endbranch
 
 	sub     rsp, STACK_SPACE
@@ -201,7 +200,7 @@ len_is_0:
 
 	mov     job_rax, [lane_data + _job_in_lane]
 	mov     qword [lane_data + _job_in_lane], 0
-	mov     dword [job_rax + _status], STS_COMPLETED
+	mov     dword [job_rax + _status], ISAL_STS_COMPLETED
 	mov     unused_lanes, [state + _unused_lanes]
 	shl     unused_lanes, 4
 	or      unused_lanes, idx
@@ -252,10 +251,3 @@ align 16
 one:    dq  1
 two:    dq  2
 three:  dq  3
-
-%else
- %ifidn __OUTPUT_FORMAT__, win64
-  global no_sha256_mb_mgr_flush_sse_ni
-  no_sha256_mb_mgr_flush_sse_ni:
- %endif
-%endif ; HAVE_AS_KNOWS_SHANI

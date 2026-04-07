@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 FROM refenv/qemu-nvme:latest
 
 COPY xnvme xnvme
@@ -12,7 +16,7 @@ WORKDIR xnvme
 
 RUN bash toolbox/pkgs/debian-bullseye.sh
 
-RUN meson setup builddir -Dwith-spdk=false && \
+RUN meson setup builddir -Dwith-spdk=disabled && \
 	make && \
 	make build-deb && \
 	make install-deb && \

@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2019-2022, Intel Corporation
+;; Copyright (c) 2019-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -26,11 +26,11 @@
 ;;
 %use smartalign
 
-%include "include/imb_job.asm"
-%include "include/reg_sizes.asm"
-%include "include/os.asm"
-%include "include/clear_regs.asm"
-%include "include/mb_mgr_datastruct.asm"
+%include "include/imb_job.inc"
+%include "include/reg_sizes.inc"
+%include "include/os.inc"
+%include "include/clear_regs.inc"
+%include "include/mb_mgr_datastruct.inc"
 
 ;; In System V AMD64 ABI
 ;;	callee saves: RBX, RBP, R12-R15

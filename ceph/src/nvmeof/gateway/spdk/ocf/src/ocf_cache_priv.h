@@ -1,6 +1,7 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __OCF_CACHE_PRIV_H__
@@ -10,8 +11,8 @@
 #include "ocf_env.h"
 #include "ocf_volume_priv.h"
 #include "ocf_core_priv.h"
+#include "ocf_part.h"
 #include "metadata/metadata_structs.h"
-#include "metadata/metadata_partition_structs.h"
 #include "utils/utils_list.h"
 #include "utils/utils_pipeline.h"
 #include "utils/utils_refcnt.h"
@@ -19,27 +20,15 @@
 #include "ocf_stats_priv.h"
 #include "cleaning/cleaning.h"
 #include "ocf_logger_priv.h"
-#include "ocf/ocf_trace.h"
+#include "ocf_queue_priv.h"
 #include "promotion/promotion.h"
 
 #define DIRTY_FLUSHED 1
 #define DIRTY_NOT_FLUSHED 0
 
-/**
- * @brief Structure used for aggregating trace-related ocf_cache fields
- */
-struct ocf_trace {
-	/* Placeholder for push_event callback */
-	ocf_trace_callback_t trace_callback;
-
-	/* Telemetry context */
-	void *trace_ctx;
-
-	env_atomic64 trace_seq_ref;
-};
-
 /* Cache device */
 struct ocf_cache_device {
+	struct ocf_volume front_volume;
 	struct ocf_volume volume;
 
 	/* Hash Table contains contains pointer to the entry in
@@ -65,6 +54,8 @@ struct ocf_cache_device {
 };
 
 struct ocf_cache {
+	char name[OCF_CACHE_NAME_SIZE];
+
 	ocf_ctx_t owner;
 
 	struct list_head list;
@@ -94,7 +85,14 @@ struct ocf_cache {
 		/* # of requests accessing attached metadata, excluding
 		 * management reqs */
 		struct ocf_refcnt metadata __attribute__((aligned(64)));
+		/* # of requests in d2c mode */
+		struct ocf_refcnt d2c;
 	} refcnt;
+
+	struct {
+		env_allocator *allocator;
+		struct ocf_alock *concurrency;
+	} standby;
 
 	struct ocf_core core[OCF_CORE_MAX];
 
@@ -111,6 +109,8 @@ struct ocf_cache {
 	struct ocf_cleaner cleaner;
 
 	struct list_head io_queues;
+	env_spinlock io_queues_lock;
+
 	ocf_promotion_policy_t promotion_policy;
 
 	struct {
@@ -133,8 +133,6 @@ struct ocf_cache {
 	bool use_submit_io_fast;
 
 	struct {
-		struct ocf_trace trace;
-
 		struct ocf_async_lock lock;
 	} __attribute__((aligned(64)));
 	// This should be on it's own cacheline ideally
@@ -183,6 +181,12 @@ static inline uint64_t ocf_get_cache_occupancy(ocf_cache_t cache)
 	return result;
 }
 
+uint32_t ocf_cache_get_queue_count(ocf_cache_t cache);
+
 int ocf_cache_set_name(ocf_cache_t cache, const char *src, size_t src_size);
+
+int ocf_cache_volume_type_init(ocf_ctx_t ctx);
+
+bool ocf_cache_mode_is_valid(ocf_cache_mode_t mode);
 
 #endif /* __OCF_CACHE_PRIV_H__ */

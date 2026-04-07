@@ -7,8 +7,12 @@ sources = files(
         'auxiliary_params.c',
 )
 if is_linux
+    cflags += '-DAUXILIARY_OS_SUPPORTED'
     sources += files(
             'linux/auxiliary.c',
     )
 endif
+
+require_iova_in_mbuf = false
+
 deps += ['kvargs']

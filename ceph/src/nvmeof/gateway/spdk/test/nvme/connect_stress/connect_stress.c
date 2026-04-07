@@ -7,6 +7,7 @@
 
 #include "spdk/env.h"
 #include "spdk/nvme.h"
+#include "spdk_internal/nvme_util.h"
 #include "spdk/string.h"
 #include "spdk/util.h"
 #include "spdk/log.h"
@@ -15,7 +16,7 @@
 
 static int g_time_in_sec;
 
-static struct spdk_nvme_transport_id g_trid;
+static struct spdk_nvme_trid_entry g_trid;
 
 static void
 usage(char *program_name)
@@ -25,16 +26,8 @@ usage(char *program_name)
 	printf("\t[-t, --time <sec> time in seconds]\n");
 	printf("\t[-c, --core-mask <mask>]\n");
 	printf("\t\t(default: 1)\n");
-	printf("\t[-r, --transport <fmt> Transport ID for local PCIe NVMe or NVMeoF]\n");
-	printf("\t Format: 'key:value [key:value] ...'\n");
-	printf("\t Keys:\n");
-	printf("\t  trtype      Transport type (e.g. PCIe, RDMA)\n");
-	printf("\t  adrfam      Address family (e.g. IPv4, IPv6)\n");
-	printf("\t  traddr      Transport address (e.g. 0000:04:00.0 for PCIe or 192.168.100.8 for RDMA)\n");
-	printf("\t  trsvcid     Transport service identifier (e.g. 4420)\n");
-	printf("\t  subnqn      Subsystem NQN\n");
-	printf("\t Example: -r 'trtype:PCIe traddr:0000:04:00.0' for PCIe or\n");
-	printf("\t          -r 'trtype:RDMA adrfam:IPv4 traddr:192.168.100.8 trsvcid:4420' for NVMeoF\n");
+	spdk_nvme_transport_id_usage(stdout,
+				     SPDK_NVME_TRID_USAGE_OPT_MANDATORY | SPDK_NVME_TRID_USAGE_OPT_LONGOPT);
 	printf("\t[-s, --hugemem-size <MB> DPDK huge memory size in MB.]\n");
 	printf("\t\t(default: 0 - unlimited)\n");
 	printf("\t[-i, --shmem-grp-id <id> shared memory group ID]\n");
@@ -46,24 +39,8 @@ usage(char *program_name)
 #else
 	printf("\t[-G, --enable-debug enable debug logging (flag disabled, must reconfigure with --enable-debug)]\n");
 	printf("\t[--iova-mode <mode> specify DPDK IOVA mode: va|pa]\n");
+	printf("\t[--no-huge, SPDK is run without hugepages\n");
 #endif
-}
-
-static int
-add_trid(const char *trid_str)
-{
-	g_trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
-	snprintf(g_trid.subnqn, sizeof(g_trid.subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
-
-	if (spdk_nvme_transport_id_parse(&g_trid, trid_str) != 0) {
-		fprintf(stderr, "Invalid transport ID format '%s'\n", trid_str);
-		return 1;
-	}
-
-	spdk_nvme_transport_id_populate_trstring(&g_trid,
-			spdk_nvme_transport_id_trtype_str(g_trid.trtype));
-
-	return 0;
 }
 
 #define PERF_GETOPT_SHORT "c:i:r:s:t:GS:T:"
@@ -87,6 +64,8 @@ static const struct option g_cmdline_opts[] = {
 	{"logflag",			required_argument,	NULL, PERF_LOG_FLAG},
 #define PERF_IOVA_MODE		258
 	{"iova-mode",			required_argument,	NULL, PERF_IOVA_MODE},
+#define PERF_NO_HUGE		259
+	{"no-huge",		no_argument,		NULL, PERF_NO_HUGE},
 	/* Should be the last element */
 	{0, 0, 0, 0}
 };
@@ -131,10 +110,13 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 				return 1;
 			}
 			trid_set = true;
-			if (add_trid(optarg)) {
+
+			rc = spdk_nvme_trid_entry_parse(&g_trid, optarg);
+			if (rc < 0) {
 				usage(argv[0]);
 				return 1;
 			}
+
 			break;
 		case PERF_ENABLE_DEBUG:
 #ifndef DEBUG
@@ -168,6 +150,9 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_IOVA_MODE:
 			env_opts->iova_mode = optarg;
 			break;
+		case PERF_NO_HUGE:
+			env_opts->no_huge = true;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -187,7 +172,7 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 	}
 
 	env_opts->no_pci = true;
-	if (g_trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
+	if (g_trid.trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
 		env_opts->no_pci = false;
 	}
 
@@ -202,10 +187,10 @@ test_controller(void)
 	union spdk_nvme_csts_register csts;
 	struct spdk_nvme_ctrlr *ctrlr;
 
-	ctrlr = spdk_nvme_connect(&g_trid, NULL, 0);
+	ctrlr = spdk_nvme_connect(&g_trid.trid, NULL, 0);
 	if (ctrlr == NULL) {
 		fprintf(stderr, "spdk_nvme_connect() failed for transport address '%s'\n",
-			g_trid.traddr);
+			g_trid.trid.traddr);
 		return -1;
 	}
 	if (spdk_nvme_ctrlr_is_discovery(ctrlr)) {
@@ -244,6 +229,7 @@ main(int argc, char **argv)
 	uint64_t tsc_end;
 	int rc;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "connect_stress";
 	rc = parse_args(argc, argv, &opts);
@@ -255,12 +241,12 @@ main(int argc, char **argv)
 		return -1;
 	}
 
-	if (g_trid.trtype != SPDK_NVME_TRANSPORT_PCIE) {
+	if (g_trid.trid.trtype != SPDK_NVME_TRANSPORT_PCIE) {
 		printf("Testing NVMe over Fabrics controller at %s:%s: %s\n",
-		       g_trid.traddr, g_trid.trsvcid,
-		       g_trid.subnqn);
+		       g_trid.trid.traddr, g_trid.trid.trsvcid,
+		       g_trid.trid.subnqn);
 	} else {
-		printf("Testing NVMe PCI controller at %s\n", g_trid.traddr);
+		printf("Testing NVMe PCI controller at %s\n", g_trid.trid.traddr);
 	}
 
 	tsc_end = spdk_get_ticks() + g_time_in_sec * spdk_get_ticks_hz();
@@ -268,5 +254,5 @@ main(int argc, char **argv)
 		rc = test_controller();
 	}
 
-	return 0;
+	return rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

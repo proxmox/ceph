@@ -6,6 +6,7 @@
 rootdir=$(readlink -f $(dirname $0)/../..)
 source "$rootdir/test/common/autotest_common.sh"
 source "$rootdir/test/nvmf/common.sh"
+source "$rootdir/test/json_config/common.sh"
 
 if [[ $SPDK_TEST_ISCSI -eq 1 ]]; then
 	source "$rootdir/test/iscsi_tgt/common.sh"
@@ -22,7 +23,6 @@ if ((SPDK_TEST_BLOCKDEV + \
 	SPDK_TEST_NVMF + \
 	SPDK_TEST_VHOST + \
 	SPDK_TEST_VHOST_INIT + \
-	SPDK_TEST_PMDK + \
 	SPDK_TEST_RBD == 0)); then
 	echo "WARNING: No tests are enabled so not running JSON configuration tests"
 	exit 0
@@ -32,10 +32,6 @@ declare -A app_pid=([target]="" [initiator]="")
 declare -A app_socket=([target]='/var/tmp/spdk_tgt.sock' [initiator]='/var/tmp/spdk_initiator.sock')
 declare -A app_params=([target]='-m 0x1 -s 1024' [initiator]='-m 0x2 -g -u -s 1024')
 declare -A configs_path=([target]="$rootdir/spdk_tgt_config.json" [initiator]="$rootdir/spdk_initiator_config.json")
-
-function tgt_rpc() {
-	$rootdir/scripts/rpc.py -s "${app_socket[target]}" "$@"
-}
 
 function initiator_rpc() {
 	$rootdir/scripts/rpc.py -s "${app_socket[initiator]}" "$@"
@@ -48,9 +44,16 @@ function tgt_check_notification_types() {
 
 	local ret=0
 	local enabled_types=("bdev_register" "bdev_unregister")
+	if [[ $CONFIG_FSDEV == y ]]; then
+		enabled_types+=("fsdev_register" "fsdev_unregister")
+	fi
 
 	local get_types=($(tgt_rpc notify_get_types | jq -r '.[]'))
-	if [[ ${enabled_types[*]} != "${get_types[*]}" ]]; then
+
+	local type_diff
+	type_diff=$(echo "${enabled_types[@]}" "${get_types[@]}" | tr ' ' '\n' | sort | uniq -u)
+
+	if [[ -n "$type_diff" ]]; then
 		echo "ERROR: expected types: ${enabled_types[*]}, but got: ${get_types[*]}"
 		ret=1
 	fi
@@ -71,10 +74,10 @@ function tgt_check_notifications() {
 	local events_to_check
 	local recorded_events
 
-	events_to_check=("$@")
-	recorded_events=($(get_notifications))
+	# Seems like notifications don't necessarily have to come in order, so make sure they are sorted
+	events_to_check=($(printf '%s\n' "$@" | sort))
+	recorded_events=($(get_notifications | sort))
 
-	# These should be in order hence compare entire arrays
 	if [[ ${events_to_check[*]} != "${recorded_events[*]}" ]]; then
 		cat <<- ERROR
 			Expected events did not match.
@@ -91,56 +94,6 @@ function tgt_check_notifications() {
 		Expected events matched:
 		$(printf ' %s\n' "${recorded_events[@]}")
 	INFO
-}
-
-# $1 - target / initiator
-# $2..$n app parameters
-function json_config_test_start_app() {
-	local app=$1
-	shift
-
-	[[ -n "${#app_socket[$app]}" ]] # Check app type
-	[[ -z "${app_pid[$app]}" ]]     # Assert if app is not running
-
-	local app_extra_params=""
-	if [[ $SPDK_TEST_VHOST -eq 1 || $SPDK_TEST_VHOST_INIT -eq 1 ]]; then
-		# If PWD is nfs/sshfs we can't create UNIX sockets there. Always use safe location instead.
-		app_extra_params='-S /var/tmp'
-	fi
-
-	$SPDK_BIN_DIR/spdk_tgt ${app_params[$app]} ${app_extra_params} -r ${app_socket[$app]} "$@" &
-	app_pid[$app]=$!
-
-	echo "Waiting for $app to run..."
-	waitforlisten ${app_pid[$app]} ${app_socket[$app]}
-	echo ""
-}
-
-# $1 - target / initiator
-function json_config_test_shutdown_app() {
-	local app=$1
-
-	# Check app type && assert app was started
-	[[ -n "${#app_socket[$app]}" ]]
-	[[ -n "${app_pid[$app]}" ]]
-
-	# spdk_kill_instance RPC will trigger ASAN
-	kill -SIGINT ${app_pid[$app]}
-
-	for ((i = 0; i < 30; i++)); do
-		if ! kill -0 ${app_pid[$app]} 2> /dev/null; then
-			app_pid[$app]=
-			break
-		fi
-		sleep 0.5
-	done
-
-	if [[ -n "${app_pid[$app]}" ]]; then
-		echo "SPDK $app shutdown timeout"
-		return 1
-	fi
-
-	echo "SPDK $app shutdown done"
 }
 
 function create_accel_config() {
@@ -190,12 +143,10 @@ function create_bdev_subsystem_config() {
 			bdev_register:Malloc1
 		)
 
-		if [[ $(uname -s) = Linux ]]; then
-			# This AIO bdev must be large enough to be used as LVOL store
-			dd if=/dev/zero of="$SPDK_TEST_STORAGE/sample_aio" bs=1024 count=102400
-			tgt_rpc bdev_aio_create "$SPDK_TEST_STORAGE/sample_aio" aio_disk 1024
-			expected_notifications+=(bdev_register:aio_disk)
-		fi
+		# This AIO bdev must be large enough to be used as LVOL store
+		dd if=/dev/zero of="$SPDK_TEST_STORAGE/sample_aio" bs=1024 count=102400
+		tgt_rpc bdev_aio_create "$SPDK_TEST_STORAGE/sample_aio" aio_disk 1024
+		expected_notifications+=(bdev_register:aio_disk)
 
 		# For LVOLs use split to check for proper order of initialization.
 		# If LVOLs configuration will be reordered (eg moved before splits or AIO/NVMe)
@@ -225,14 +176,6 @@ function create_bdev_subsystem_config() {
 		)
 	fi
 
-	if [[ $SPDK_TEST_PMDK -eq 1 ]]; then
-		pmem_pool_file=$(mktemp /tmp/pool_file1.XXXXX)
-		rm -f $pmem_pool_file
-		tgt_rpc bdev_pmem_create_pool $pmem_pool_file 128 4096
-		tgt_rpc bdev_pmem_create -n pmem1 $pmem_pool_file
-		expected_notifications+=(bdev_register:pmem1)
-	fi
-
 	if [[ $SPDK_TEST_RBD -eq 1 ]]; then
 		rbd_setup 127.0.0.1
 		tgt_rpc bdev_rbd_create $RBD_POOL $RBD_NAME 4096
@@ -256,12 +199,6 @@ function cleanup_bdev_subsystem_config() {
 
 	if [[ $(uname -s) = Linux ]]; then
 		rm -f "$SPDK_TEST_STORAGE/sample_aio"
-	fi
-
-	if [[ $SPDK_TEST_PMDK -eq 1 && -n "$pmem_pool_file" && -f "$pmem_pool_file" ]]; then
-		tgt_rpc bdev_pmem_delete pmem1
-		tgt_rpc bdev_pmem_delete_pool $pmem_pool_file
-		rm -f $pmem_pool_file
 	fi
 
 	if [[ $SPDK_TEST_RBD -eq 1 ]]; then
@@ -377,6 +314,10 @@ function json_config_test_fini() {
 	local ret=0
 
 	if [[ -n "${app_pid[initiator]}" ]]; then
+		if [[ $SPDK_TEST_VHOST_INIT -eq 1 ]]; then
+			initiator_rpc bdev_virtio_detach_controller VirtioScsiCtrlr0 || :
+			initiator_rpc bdev_virtio_detach_controller VirtioBlk0 || :
+		fi
 		killprocess ${app_pid[initiator]}
 	fi
 
@@ -416,16 +357,6 @@ function json_config_clear() {
 	if [ $count -eq 0 ]; then
 		return 1
 	fi
-}
-
-on_error_exit() {
-	set -x
-	set +e
-	print_backtrace
-	trap - ERR
-	echo "Error on $1 - $2"
-	json_config_test_fini
-	exit 1
 }
 
 trap 'on_error_exit "${FUNCNAME}" "${LINENO}"' ERR

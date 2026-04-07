@@ -13,13 +13,13 @@ VMD_ALLOWED=()
 
 function vmd_identify() {
 	for bdf in $pci_devs; do
-		$SPDK_EXAMPLE_DIR/identify -i 0 -V -r "trtype:PCIe traddr:$bdf"
+		$SPDK_BIN_DIR/spdk_nvme_identify -i 0 -V -r "trtype:PCIe traddr:$bdf"
 	done
 }
 
 function vmd_perf() {
 	for bdf in $pci_devs; do
-		$SPDK_EXAMPLE_DIR/perf -q 128 -w read -o 12288 -t 1 -LL -i 0 -V -r "trtype:PCIe traddr:$bdf"
+		$SPDK_BIN_DIR/spdk_nvme_perf -q 128 -w read -o 12288 -t 1 -LL -i 0 -V -r "trtype:PCIe traddr:$bdf"
 	done
 }
 

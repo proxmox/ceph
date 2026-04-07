@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2017-2022, Intel Corporation
+;; Copyright (c) 2017-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -32,13 +32,13 @@
 ;;
 ;; Clobbers ZMM0-31
 
-%include "include/os.asm"
-%include "include/imb_job.asm"
-%include "include/mb_mgr_datastruct.asm"
-%include "include/reg_sizes.asm"
-%include "include/memcpy.asm"
+%include "include/os.inc"
+%include "include/imb_job.inc"
+%include "include/mb_mgr_datastruct.inc"
+%include "include/reg_sizes.inc"
+%include "include/memcpy.inc"
 %include "include/const.inc"
-%include "include/clear_regs.asm"
+%include "include/clear_regs.inc"
 
 %use smartalign
 

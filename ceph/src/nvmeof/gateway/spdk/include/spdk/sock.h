@@ -15,6 +15,7 @@
 #include "spdk/queue.h"
 #include "spdk/json.h"
 #include "spdk/assert.h"
+#include "spdk/thread.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,23 +44,31 @@ struct spdk_sock_request {
 	void	(*cb_fn)(void *cb_arg, int err);
 	void				*cb_arg;
 
-	/**
-	 * These fields are used by the socket layer and should not be modified
-	 */
+	/* These fields are used by the socket layer and should not be modified. */
 	struct __sock_request_internal {
 		TAILQ_ENTRY(spdk_sock_request)	link;
-#ifdef DEBUG
+
+		/**
+		 * curr_list is only used in DEBUG mode, but we include it in
+		 * release builds too to ensure ABI compatibility between debug
+		 * and release builds.
+		 */
 		void				*curr_list;
-#endif
+
 		uint32_t			offset;
 
-		/* Indicate if the whole req or part of it is sent with zerocopy */
-		bool				is_zcopy;
+		/* Last zero-copy sendmsg index. */
+		uint32_t			zcopy_idx;
+
+		/* Indicate if the whole req or part of it is pending zerocopy completion. */
+		bool pending_zcopy;
 	} internal;
 
 	int				iovcnt;
 	/* struct iovec			iov[]; */
 };
+
+SPDK_STATIC_ASSERT(sizeof(struct spdk_sock_request) == 64, "Incorrect size.");
 
 #define SPDK_SOCK_REQUEST_IOV(req, i) ((struct iovec *)(((uint8_t *)req + sizeof(struct spdk_sock_request)) + (sizeof(struct iovec) * i)))
 
@@ -143,12 +152,46 @@ struct spdk_sock_impl_opts {
 	/**
 	 * Set default PSK key. Used by ssl socket module.
 	 */
-	char *psk_key;
+	uint8_t *psk_key;
+
+	/**
+	 * Size of psk_key.
+	 */
+	uint32_t psk_key_size;
 
 	/**
 	 * Set default PSK identity. Used by ssl socket module.
 	 */
 	char *psk_identity;
+
+	/**
+	 * Optional callback to retrieve PSK based on client's identity.
+	 *
+	 * \param out Buffer for PSK in binary format to be filled with found key.
+	 * \param out_len Length of "out" buffer.
+	 * \param cipher Cipher suite to be set by this callback.
+	 * \param psk_identity PSK identity for which the key needs to be found.
+	 * \param get_key_ctx Context for this callback.
+	 *
+	 * \return key length on success, -1 on failure.
+	 */
+	int (*get_key)(uint8_t *out, int out_len, const char **cipher, const char *psk_identity,
+		       void *get_key_ctx);
+
+	/**
+	 * Context to be passed to get_key() callback.
+	 */
+	void *get_key_ctx;
+
+	/**
+	 * Cipher suite. Used by ssl socket module.
+	 * For connecting side, it must contain a single cipher:
+	 * example: "TLS_AES_256_GCM_SHA384"
+	 *
+	 * For listening side, it may be a colon separated list of ciphers:
+	 * example: "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256"
+	 */
+	const char *tls_cipher_suites;
 };
 
 /**
@@ -197,8 +240,26 @@ struct spdk_sock_opts {
 	 * Size of the impl_opts structure.
 	 */
 	size_t impl_opts_size;
-} __attribute__((packed));
-SPDK_STATIC_ASSERT(sizeof(struct spdk_sock_opts) == 40, "Incorrect size");
+
+	/**
+	 * Source address.  If NULL, any available address will be used.  Only valid for connect().
+	 */
+	const char *src_addr;
+
+	/**
+	 * Source port.  If zero, a random ephemeral port will be used.  Only valid for connect().
+	 */
+	uint16_t src_port;
+
+	/* Hole at bytes 50-51. */
+	uint8_t reserved50[2];
+
+	/**
+	 * Time in msec to wait until connection is done (0 = no timeout).
+	 */
+	uint32_t connect_timeout;
+};
+SPDK_STATIC_ASSERT(sizeof(struct spdk_sock_opts) == 56, "Incorrect size");
 
 /**
  * Initialize the default value of opts.
@@ -226,6 +287,15 @@ void spdk_sock_get_default_opts(struct spdk_sock_opts *opts);
  */
 int spdk_sock_getaddr(struct spdk_sock *sock, char *saddr, int slen, uint16_t *sport,
 		      char *caddr, int clen, uint16_t *cport);
+
+/**
+ * Get socket implementation name.
+ *
+ * \param sock Pointer to SPDK socket.
+ *
+ * \return Implementation name of given socket.
+ */
+const char *spdk_sock_get_impl_name(struct spdk_sock *sock);
 
 /**
  * Create a socket using the specific sock implementation, connect the socket
@@ -306,6 +376,26 @@ struct spdk_sock *spdk_sock_listen_ext(const char *ip, int port, const char *imp
 struct spdk_sock *spdk_sock_accept(struct spdk_sock *sock);
 
 /**
+ * Gets the name of the network interface of the local port for the socket.
+ *
+ * \param sock socket to find the interface name for
+ *
+ * \return null-terminated string containing interface name if found, NULL
+ *	   interface name could not be found
+ */
+const char *spdk_sock_get_interface_name(struct spdk_sock *sock);
+
+
+/**
+ * Gets the NUMA node ID for the network interface of the local port for the TCP socket.
+ *
+ * \param sock TCP socket to find the NUMA socket ID for
+ *
+ * \return NUMA ID, or SPDK_ENV_NUMA_ID_ANY if the NUMA ID is unknown
+ */
+int32_t spdk_sock_get_numa_id(struct spdk_sock *sock);
+
+/**
  * Close a socket.
  *
  * \param sock Socket to close.
@@ -317,31 +407,41 @@ int spdk_sock_close(struct spdk_sock **sock);
 /**
  * Flush a socket from data gathered in previous writev_async calls.
  *
+ * On failure check errno matching EAGAIN to determine failure is retryable.
+ *
+ * It is not recommended to rely on the number of bytes returned on success.
+ * This behavior is deprecated and will be removed in 25.09 release, function
+ * will return 0 on success instead.
+ *
  * \param sock Socket to flush.
  *
- * \return number of bytes sent on success, -1 (with errno set) on failure
+ * \return number of bytes sent on success, -1 on failure with errno set.
  */
 int spdk_sock_flush(struct spdk_sock *sock);
 
 /**
  * Receive a message from the given socket.
  *
+ * On failure check errno matching EAGAIN to determine failure is retryable.
+ *
  * \param sock Socket to receive message.
  * \param buf Pointer to a buffer to hold the data.
  * \param len Length of the buffer.
  *
- * \return the length of the received message on success, -1 on failure.
+ * \return the length of the received message on success, -1 on failure with errno set.
  */
 ssize_t spdk_sock_recv(struct spdk_sock *sock, void *buf, size_t len);
 
 /**
  * Write message to the given socket from the I/O vector array.
  *
+ * On failure check errno matching EAGAIN to determine failure is retryable.
+ *
  * \param sock Socket to write to.
  * \param iov I/O vector.
  * \param iovcnt Number of I/O vectors in the array.
  *
- * \return the length of written message on success, -1 on failure.
+ * \return the length of written message on success, -1 on failure with errno set.
  */
 ssize_t spdk_sock_writev(struct spdk_sock *sock, struct iovec *iov, int iovcnt);
 
@@ -366,14 +466,31 @@ void spdk_sock_writev_async(struct spdk_sock *sock, struct spdk_sock_request *re
 ssize_t spdk_sock_readv(struct spdk_sock *sock, struct iovec *iov, int iovcnt);
 
 /**
- * Read message from the given socket asynchronously, calling the provided callback when the whole
- * buffer is filled or an error is encountered.  Only a single read request can be active at a time
- * (including synchronous reads).
+ * Receive the next portion of the stream from the socket.
  *
- * \param sock Socket to receive message.
- * \param req The read request to submit.
+ * A buffer provided to this socket's group's pool using
+ * spdk_sock_group_provide_buf() will contain the data and be
+ * returned in *buf.
+ *
+ * Note that the amount of data in buf is determined entirely by
+ * the sock layer. You cannot request to receive only a limited
+ * amount here. You simply get whatever the next portion of the stream
+ * is, as determined by the sock module. You can place an upper limit
+ * on the size of the buffer since these buffers are originally
+ * provided to the group through spdk_sock_group_provide_buf().
+ *
+ * This code path will only work if the recvbuf is disabled. To disable
+ * the recvbuf, call spdk_sock_set_recvbuf with a size of 0.
+ *
+ * On failure check errno matching EAGAIN to determine failure is retryable.
+ *
+ * \param sock Socket to receive from.
+ * \param buf Populated with the next portion of the stream
+ * \param ctx Returned context pointer from when the buffer was provided.
+ *
+ * \return On success, the length of the buffer placed into buf, On failure, -1 with errno set.
  */
-void spdk_sock_readv_async(struct spdk_sock *sock, struct spdk_sock_request *req);
+int spdk_sock_recv_next(struct spdk_sock *sock, void **buf, void **ctx);
 
 /**
  * Set the value used to specify the low water mark (in bytes) for this socket.
@@ -466,7 +583,7 @@ void *spdk_sock_group_get_ctx(struct spdk_sock_group *sock_group);
  * \param cb_fn Called when the operation completes.
  * \param cb_arg Argument passed to the callback function.
  *
- * \return 0 on success, -1 on failure.
+ * \return 0 on success, -1 on failure with errno set.
  */
 int spdk_sock_group_add_sock(struct spdk_sock_group *group, struct spdk_sock *sock,
 			     spdk_sock_cb cb_fn, void *cb_arg);
@@ -477,9 +594,22 @@ int spdk_sock_group_add_sock(struct spdk_sock_group *group, struct spdk_sock *so
  * \param group Socket group.
  * \param sock Socket to remove.
  *
- * \return 0 on success, -1 on failure.
+ * \return 0 on success, -1 on failure with errno set.
  */
 int spdk_sock_group_remove_sock(struct spdk_sock_group *group, struct spdk_sock *sock);
+
+/**
+ * Provides a buffer to the group to be used in its receive pool.
+ * See spdk_sock_recv_next() for more details.
+ *
+ * \param group Socket group.
+ * \param buf Pointer the buffer provided.
+ * \param len Length of the buffer.
+ * \param ctx Pointer that will be returned in spdk_sock_recv_next()
+ *
+ * \return 0 on success, -1 on failure.
+ */
+int spdk_sock_group_provide_buf(struct spdk_sock_group *group, void *buf, size_t len, void *ctx);
 
 /**
  * Poll incoming events for each registered socket.
@@ -502,6 +632,9 @@ int spdk_sock_group_poll_count(struct spdk_sock_group *group, int max_events);
 
 /**
  * Close all registered sockets of the group and then remove the group.
+ *
+ * If any sockets were added to the group by \ref spdk_sock_group_add_sock
+ * these must be removed first by using \ref spdk_sock_group_remove_sock.
  *
  * \param group Group to close.
  *
@@ -545,7 +678,7 @@ int spdk_sock_impl_set_opts(const char *impl_name, const struct spdk_sock_impl_o
 			    size_t len);
 
 /**
- * Set the given sock implementation to be used a default one.
+ * Set the given sock implementation to be used as the default one.
  *
  * Note: passing a specific sock implementation name in some sock API functions
  * (such as @ref spdk_sock_connect, @ref spdk_sock_listen and etc) ignores the default value set by this function.
@@ -556,11 +689,51 @@ int spdk_sock_impl_set_opts(const char *impl_name, const struct spdk_sock_impl_o
 int spdk_sock_set_default_impl(const char *impl_name);
 
 /**
+ * Get the name of the current default implementation
+ *
+ * \return The name of the default implementation
+ */
+const char *spdk_sock_get_default_impl(void);;
+
+/**
  * Write socket subsystem configuration into provided JSON context.
  *
  * \param w JSON write context
  */
 void spdk_sock_write_config_json(struct spdk_json_write_ctx *w);
+
+/**
+ * Register an spdk_interrupt with specific event types on the current thread for the given socket group.
+ *
+ * The provided function will be called any time one of specified event types triggers on
+ * the associated file descriptor.
+ * Event types argument is a bit mask composed by ORing together
+ * enum spdk_interrupt_event_types values.
+ *
+ * \param group Socket group.
+ * \param events Event notification types.
+ * \param fn Called each time there are events in spdk_interrupt.
+ * \param arg Function argument for fn.
+ * \param name Human readable name for the spdk_interrupt.
+ *
+ * \return 0 on success or non-zero on failure.
+ */
+int spdk_sock_group_register_interrupt(struct spdk_sock_group *group, uint32_t events,
+				       spdk_interrupt_fn fn, void *arg, const char *name);
+
+/*
+ * \brief Register an spdk_interrupt on the current thread for the given socket group
+ * and with setting its name to the string of the spdk_interrupt function name.
+ */
+#define SPDK_SOCK_GROUP_REGISTER_INTERRUPT(sock, events, fn, arg)	\
+	spdk_sock_group_register_interrupt(sock, events, fn, arg, #fn)
+
+/**
+ * Unregister an spdk_interrupt for the given socket group from the current thread.
+ *
+ * \param group Socket group.
+ */
+void spdk_sock_group_unregister_interrupt(struct spdk_sock_group *group);
 
 #ifdef __cplusplus
 }

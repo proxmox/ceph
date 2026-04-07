@@ -8,8 +8,6 @@ testdir=$(readlink -f "$(dirname $0)")
 rootdir=$(readlink -f "$testdir/../../")
 source "$rootdir/test/common/autotest_common.sh"
 
-shopt -s nullglob
-
 rpc_sock1=/var/tmp/spdk.sock
 rpc_sock2=/var/tmp/spdk2.sock
 
@@ -26,7 +24,11 @@ locks_exist() {
 
 no_locks() {
 	local lock_files=(/var/tmp/spdk_cpu_lock*)
-	((${#lock_files[@]} == 0))
+	if ((${#lock_files[@]} != 0)); then
+		sleep 1
+		lock_files=(/var/tmp/spdk_cpu_lock*)
+		((${#lock_files[@]} == 0))
+	fi
 }
 
 check_remaining_locks() {

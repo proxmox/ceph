@@ -1,22 +1,20 @@
-// Copyright (C) Mads Ynddal <m.ynddal@samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_MACOS_ENABLED
-#include <errno.h>
-#include <fcntl.h>
-#include <dirent.h>
-#include <unistd.h>
-#include <libxnvme_ident.h>
-#include <libxnvme_file.h>
-#include <libxnvme_spec_fs.h>
-#include <xnvme_dev.h>
-#include <xnvme_be_macos.h>
-#include <xnvme_be_posix.h>
+#include <mach/mach_error.h>
+#include <IOKit/IOTypes.h>
 #include <IOKit/storage/nvme/NVMeSMARTLibExternal.h>
 #include <CoreFoundation/CoreFoundation.h>
-#include <mach/mach_error.h>
 #include <libgen.h>
+
+#include <xnvme_dev.h>
+#include <xnvme_be_cbi.h>
+#include <xnvme_be_macos.h>
 
 #ifndef _PATH_DEV_DISK
 #define _PATH_DEV_DISK "/dev/"
@@ -75,7 +73,7 @@ _get_nvme_smart_interface(io_object_t ioservice_device,
 		(**plugin_interface)
 			->QueryInterface(*plugin_interface,
 					 CFUUIDGetUUIDBytes(kIONVMeSMARTInterfaceID),
-					 nvme_smart_interface);
+					 (LPVOID *)nvme_smart_interface);
 	} else {
 		XNVME_DEBUG("IOCreatePlugInInterfaceForService failed: %s",
 			    (char *)mach_error_string(ret));
@@ -127,6 +125,9 @@ xnvme_be_macos_enumerate(const char *sys_uri, struct xnvme_opts *opts, xnvme_enu
 		return -ENOSYS;
 	}
 
+	struct xnvme_opts tmp_opts = *opts;
+	tmp_opts.be = xnvme_be_macos.attr.name;
+
 	for (int nid = 0; nid < 256; nid++) {
 		char path[128] = {0};
 		char disk_id[128] = {0};
@@ -143,7 +144,7 @@ xnvme_be_macos_enumerate(const char *sys_uri, struct xnvme_opts *opts, xnvme_enu
 
 		snprintf(uri, XNVME_IDENT_URI_LEN - 1, "%s", path);
 
-		dev = xnvme_dev_open(uri, opts);
+		dev = xnvme_dev_open(uri, &tmp_opts);
 		if (!dev) {
 			XNVME_DEBUG("xnvme_dev_open(): %d", errno);
 			continue;
@@ -172,7 +173,7 @@ xnvme_be_macos_state_term(struct xnvme_be_macos_state *state)
 	}
 
 	if (state->nvme_smart_interface) {
-		IOObjectRelease(state->nvme_smart_interface);
+		(*state->nvme_smart_interface)->Release(state->nvme_smart_interface);
 	}
 
 	if (state->plugin_interface) {
@@ -211,7 +212,6 @@ xnvme_be_macos_dev_open(struct xnvme_dev *dev)
 	struct xnvme_be_macos_state *state = (void *)dev->be.state;
 	struct xnvme_opts *opts = &dev->opts;
 	int flags = xnvme_file_opts_to_macos(opts);
-	int err;
 	io_object_t ioservice_device;
 	IONVMeSMARTInterface **nvme_smart_interface;
 	IOCFPlugInInterface **plugin_interface;
@@ -246,32 +246,21 @@ xnvme_be_macos_dev_open(struct xnvme_dev *dev)
 			dev->be.admin = g_xnvme_be_macos_admin;
 		}
 		if (!opts->sync) {
-			dev->be.sync = g_xnvme_be_posix_sync_psync;
+			dev->be.sync = g_xnvme_be_macos_sync_psync;
 		}
 		if (!opts->async) {
-			dev->be.async = g_xnvme_be_posix_async_emu;
+			dev->be.async = g_xnvme_be_cbi_async_emu;
 		}
 	} else {
 		XNVME_DEBUG("non-nvme disks are currently unsupported.");
 		return -ENOTSUP;
 
 		state->fd = open(dev->ident.uri, flags, opts->create_mode);
-		state->ioservice_device = NULL;
+		state->ioservice_device = 0;
 		state->nvme_smart_interface = NULL;
 		dev->ident.nsid = 1;
 		dev->ident.dtype = XNVME_DEV_TYPE_FS_FILE;
 		dev->ident.csi = XNVME_SPEC_CSI_FS;
-	}
-
-	err = xnvme_be_dev_idfy(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_idfy");
-		return -EINVAL;
-	}
-	err = xnvme_be_dev_derive_geometry(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_derive_geometry()");
-		return err;
 	}
 
 	return 0;

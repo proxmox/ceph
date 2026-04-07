@@ -25,6 +25,9 @@ uint64_t test_offset_from_addr(ftl_addr addr, struct ftl_band *band);
 
 DEFINE_STUB(spdk_bdev_desc_get_bdev, struct spdk_bdev *, (struct spdk_bdev_desc *desc), NULL);
 
+DEFINE_STUB(ftl_nv_cache_device_get_type_by_bdev, const struct ftl_nv_cache_device_type *,
+	    (struct spdk_ftl_dev *dev, struct spdk_bdev *bdev), NULL);
+
 uint64_t
 spdk_bdev_get_zone_size(const struct spdk_bdev *bdev)
 {
@@ -85,9 +88,13 @@ test_init_ftl_dev(const struct base_bdev_geometry *geo)
 		dev->bands[i].md = md;
 	}
 
+	for (int i = 0; i < FTL_LAYOUT_REGION_TYPE_MAX; i++) {
+		dev->layout.region[i].type = i;
+	}
+
 	dev->p2l_pool = (struct ftl_mempool *)spdk_mempool_create("ftl_ut", 2, 0x210200,
 			SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-			SPDK_ENV_SOCKET_ID_ANY);
+			SPDK_ENV_NUMA_ID_ANY);
 	SPDK_CU_ASSERT_FATAL(dev->p2l_pool != NULL);
 
 	TAILQ_INIT(&dev->free_bands);

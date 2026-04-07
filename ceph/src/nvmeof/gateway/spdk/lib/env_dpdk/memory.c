@@ -117,6 +117,7 @@ static TAILQ_HEAD(spdk_mem_map_head, spdk_mem_map) g_spdk_mem_maps =
 static pthread_mutex_t g_spdk_mem_map_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool g_legacy_mem;
+static bool g_huge_pages = true;
 
 /*
  * Walk the currently registered memory via the main memory registration map
@@ -328,21 +329,22 @@ spdk_mem_map_free(struct spdk_mem_map **pmap)
 }
 
 int
-spdk_mem_register(void *vaddr, size_t len)
+spdk_mem_register(void *_vaddr, size_t len)
 {
 	struct spdk_mem_map *map;
 	int rc;
-	void *seg_vaddr;
+	uint64_t vaddr = (uintptr_t)_vaddr;
+	uint64_t seg_vaddr;
 	size_t seg_len;
 	uint64_t reg;
 
 	if ((uintptr_t)vaddr & ~MASK_256TB) {
-		DEBUG_PRINT("invalid usermode virtual address %p\n", vaddr);
+		DEBUG_PRINT("invalid usermode virtual address %jx\n", vaddr);
 		return -EINVAL;
 	}
 
 	if (((uintptr_t)vaddr & MASK_2MB) || (len & MASK_2MB)) {
-		DEBUG_PRINT("invalid %s parameters, vaddr=%p len=%ju\n",
+		DEBUG_PRINT("invalid %s parameters, vaddr=%jx len=%ju\n",
 			    __func__, vaddr, len);
 		return -EINVAL;
 	}
@@ -376,7 +378,8 @@ spdk_mem_register(void *vaddr, size_t len)
 	}
 
 	TAILQ_FOREACH(map, &g_spdk_mem_maps, tailq) {
-		rc = map->ops.notify_cb(map->cb_ctx, map, SPDK_MEM_MAP_NOTIFY_REGISTER, seg_vaddr, seg_len);
+		rc = map->ops.notify_cb(map->cb_ctx, map, SPDK_MEM_MAP_NOTIFY_REGISTER,
+					(void *)seg_vaddr, seg_len);
 		if (rc != 0) {
 			pthread_mutex_unlock(&g_spdk_mem_map_mutex);
 			return rc;
@@ -388,21 +391,22 @@ spdk_mem_register(void *vaddr, size_t len)
 }
 
 int
-spdk_mem_unregister(void *vaddr, size_t len)
+spdk_mem_unregister(void *_vaddr, size_t len)
 {
 	struct spdk_mem_map *map;
 	int rc;
-	void *seg_vaddr;
+	uint64_t vaddr = (uintptr_t)_vaddr;
+	uint64_t seg_vaddr;
 	size_t seg_len;
 	uint64_t reg, newreg;
 
 	if ((uintptr_t)vaddr & ~MASK_256TB) {
-		DEBUG_PRINT("invalid usermode virtual address %p\n", vaddr);
+		DEBUG_PRINT("invalid usermode virtual address %jx\n", vaddr);
 		return -EINVAL;
 	}
 
 	if (((uintptr_t)vaddr & MASK_2MB) || (len & MASK_2MB)) {
-		DEBUG_PRINT("invalid %s parameters, vaddr=%p len=%ju\n",
+		DEBUG_PRINT("invalid %s parameters, vaddr=%jx len=%ju\n",
 			    __func__, vaddr, len);
 		return -EINVAL;
 	}
@@ -448,7 +452,8 @@ spdk_mem_unregister(void *vaddr, size_t len)
 
 		if (seg_len > 0 && (reg & REG_MAP_NOTIFY_START)) {
 			TAILQ_FOREACH_REVERSE(map, &g_spdk_mem_maps, spdk_mem_map_head, tailq) {
-				rc = map->ops.notify_cb(map->cb_ctx, map, SPDK_MEM_MAP_NOTIFY_UNREGISTER, seg_vaddr, seg_len);
+				rc = map->ops.notify_cb(map->cb_ctx, map, SPDK_MEM_MAP_NOTIFY_UNREGISTER,
+							(void *)seg_vaddr, seg_len);
 				if (rc != 0) {
 					pthread_mutex_unlock(&g_spdk_mem_map_mutex);
 					return rc;
@@ -467,7 +472,8 @@ spdk_mem_unregister(void *vaddr, size_t len)
 
 	if (seg_len > 0) {
 		TAILQ_FOREACH_REVERSE(map, &g_spdk_mem_maps, spdk_mem_map_head, tailq) {
-			rc = map->ops.notify_cb(map->cb_ctx, map, SPDK_MEM_MAP_NOTIFY_UNREGISTER, seg_vaddr, seg_len);
+			rc = map->ops.notify_cb(map->cb_ctx, map, SPDK_MEM_MAP_NOTIFY_UNREGISTER,
+						(void *)seg_vaddr, seg_len);
 			if (rc != 0) {
 				pthread_mutex_unlock(&g_spdk_mem_map_mutex);
 				return rc;
@@ -717,9 +723,36 @@ memory_iter_cb(const struct rte_memseg_list *msl,
 	return spdk_mem_register(ms->addr, len);
 }
 
+static bool g_mem_event_cb_registered = false;
+
+static int
+mem_map_mem_event_callback_register(void)
+{
+	int rc;
+
+	rc = rte_mem_event_callback_register("spdk", memory_hotplug_cb, NULL);
+	if (rc != 0) {
+		return rc;
+	}
+
+	g_mem_event_cb_registered = true;
+	return 0;
+}
+
+static void
+mem_map_mem_event_callback_unregister(void)
+{
+	if (g_mem_event_cb_registered) {
+		g_mem_event_cb_registered = false;
+		rte_mem_event_callback_unregister("spdk", NULL);
+	}
+}
+
 int
 mem_map_init(bool legacy_mem)
 {
+	int rc;
+
 	g_legacy_mem = legacy_mem;
 
 	g_mem_reg_map = spdk_mem_map_alloc(0, NULL, NULL);
@@ -728,13 +761,46 @@ mem_map_init(bool legacy_mem)
 		return -ENOMEM;
 	}
 
+	if (!g_huge_pages) {
+		return 0;
+	}
+
+	if (!g_legacy_mem) {
+		/**
+		 * To prevent DPDK complaining, only register the callback when
+		 * we are not in legacy mem mode.
+		 */
+		rc = mem_map_mem_event_callback_register();
+		if (rc != 0) {
+			DEBUG_PRINT("memory event callback registration failed, rc = %d\n", rc);
+			goto err_free_reg_map;
+		}
+	}
+
 	/*
 	 * Walk all DPDK memory segments and register them
 	 * with the main memory map
 	 */
-	rte_mem_event_callback_register("spdk", memory_hotplug_cb, NULL);
-	rte_memseg_contig_walk(memory_iter_cb, NULL);
+	rc = rte_memseg_contig_walk(memory_iter_cb, NULL);
+	if (rc != 0) {
+		DEBUG_PRINT("memory segments walking failed, rc = %d\n", rc);
+		goto err_unregister_mem_cb;
+	}
+
 	return 0;
+
+err_unregister_mem_cb:
+	mem_map_mem_event_callback_unregister();
+err_free_reg_map:
+	spdk_mem_map_free(&g_mem_reg_map);
+	return rc;
+}
+
+void
+mem_map_fini(void)
+{
+	mem_map_mem_event_callback_unregister();
+	spdk_mem_map_free(&g_mem_reg_map);
 }
 
 bool
@@ -758,6 +824,7 @@ static TAILQ_HEAD(, spdk_vtophys_pci_device) g_vtophys_pci_devices =
 
 static struct spdk_mem_map *g_vtophys_map;
 static struct spdk_mem_map *g_phys_ref_map;
+static struct spdk_mem_map *g_numa_map;
 
 #if VFIO_ENABLED
 static int
@@ -1268,6 +1335,40 @@ vtophys_notify(void *cb_ctx, struct spdk_mem_map *map,
 }
 
 static int
+numa_notify(void *cb_ctx, struct spdk_mem_map *map,
+	    enum spdk_mem_map_notify_action action,
+	    void *vaddr, size_t len)
+{
+	struct rte_memseg *seg;
+
+	/* We always return 0 from here, even if we aren't able to get a
+	 * memseg for the address. This can happen in non-DPDK memory
+	 * registration paths, for example vhost or vfio-user. That is OK,
+	 * spdk_mem_get_numa_id() just returns SPDK_ENV_NUMA_ID_ANY for
+	 * that kind of memory. If we return an error here, the
+	 * spdk_mem_register() from vhost or vfio-user would fail which is
+	 * not what we want.
+	 */
+	seg = rte_mem_virt2memseg(vaddr, NULL);
+	if (seg == NULL) {
+		return 0;
+	}
+
+	switch (action) {
+	case SPDK_MEM_MAP_NOTIFY_REGISTER:
+		spdk_mem_map_set_translation(map, (uint64_t)vaddr, len, seg->socket_id);
+		break;
+	case SPDK_MEM_MAP_NOTIFY_UNREGISTER:
+		spdk_mem_map_clear_translation(map, (uint64_t)vaddr, len);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static int
 vtophys_check_contiguous_entries(uint64_t paddr1, uint64_t paddr2)
 {
 	/* This function is always called with paddrs for two subsequent
@@ -1479,6 +1580,11 @@ vtophys_init(void)
 		.are_contiguous = NULL,
 	};
 
+	const struct spdk_mem_map_ops numa_map_ops = {
+		.notify_cb = numa_notify,
+		.are_contiguous = NULL,
+	};
+
 #if VFIO_ENABLED
 	vtophys_iommu_init();
 #endif
@@ -1489,19 +1595,41 @@ vtophys_init(void)
 		return -ENOMEM;
 	}
 
-	g_vtophys_map = spdk_mem_map_alloc(SPDK_VTOPHYS_ERROR, &vtophys_map_ops, NULL);
-	if (g_vtophys_map == NULL) {
-		DEBUG_PRINT("vtophys map allocation failed\n");
+	g_numa_map = spdk_mem_map_alloc(SPDK_ENV_NUMA_ID_ANY, &numa_map_ops, NULL);
+	if (g_numa_map == NULL) {
+		DEBUG_PRINT("numa map allocation failed.\n");
 		spdk_mem_map_free(&g_phys_ref_map);
 		return -ENOMEM;
 	}
+
+	if (g_huge_pages) {
+		g_vtophys_map = spdk_mem_map_alloc(SPDK_VTOPHYS_ERROR, &vtophys_map_ops, NULL);
+		if (g_vtophys_map == NULL) {
+			DEBUG_PRINT("vtophys map allocation failed\n");
+			spdk_mem_map_free(&g_numa_map);
+			spdk_mem_map_free(&g_phys_ref_map);
+			return -ENOMEM;
+		}
+	}
 	return 0;
+}
+
+void
+vtophys_fini(void)
+{
+	spdk_mem_map_free(&g_vtophys_map);
+	spdk_mem_map_free(&g_numa_map);
+	spdk_mem_map_free(&g_phys_ref_map);
 }
 
 uint64_t
 spdk_vtophys(const void *buf, uint64_t *size)
 {
 	uint64_t vaddr, paddr_2mb;
+
+	if (!g_huge_pages) {
+		return SPDK_VTOPHYS_ERROR;
+	}
 
 	vaddr = (uint64_t)buf;
 	paddr_2mb = spdk_mem_map_translate(g_vtophys_map, vaddr, size);
@@ -1518,6 +1646,12 @@ spdk_vtophys(const void *buf, uint64_t *size)
 	} else {
 		return paddr_2mb + (vaddr & MASK_2MB);
 	}
+}
+
+int32_t
+spdk_mem_get_numa_id(const void *buf, uint64_t *size)
+{
+	return spdk_mem_map_translate(g_numa_map, (uint64_t)buf, size);
 }
 
 int
@@ -1543,4 +1677,10 @@ spdk_mem_get_fd_and_offset(void *vaddr, uint64_t *offset)
 	}
 
 	return fd;
+}
+
+void
+mem_disable_huge_pages(void)
+{
+	g_huge_pages = false;
 }

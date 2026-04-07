@@ -3,10 +3,11 @@
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "spdk/log.h"
 #include "spdk/util.h"
 #include "spdk/nvme.h"
+#include "spdk_internal/nvme_util.h"
 #include "spdk/string.h"
 
 static struct spdk_nvme_transport_id g_trid;
@@ -734,28 +735,6 @@ fabric_property_get(void)
 	spdk_nvme_detach(ctrlr);
 }
 
-static int
-parse_args(int argc, char **argv, struct spdk_env_opts *opts)
-{
-	int op;
-
-	while ((op = getopt(argc, argv, "gr:")) != -1) {
-		switch (op) {
-		case 'g':
-			opts->hugepage_single_segments = true;
-			break;
-		case 'r':
-			g_trid_str = optarg;
-			break;
-		default:
-			SPDK_ERRLOG("Unknown op '%c'\n", op);
-			return -1;
-		}
-	}
-
-	return 0;
-}
-
 static void
 admin_set_features_number_of_queues(void)
 {
@@ -814,8 +793,6 @@ admin_set_features_number_of_queues(void)
  * 09h Interrupt Vector Configuration.
  * 0Ah Write Atomicity Normal.
  * 0Bh Asynchronous Event Configuration.
- * 0Fh Keep Alive Timer.
- * 16h Host Behavior Support.
  */
 static void
 admin_get_features_mandatory_features(void)
@@ -823,7 +800,6 @@ admin_get_features_mandatory_features(void)
 	struct spdk_nvme_ctrlr *ctrlr;
 	struct spdk_nvme_cmd cmd;
 	struct status s;
-	void *buf;
 	int rc;
 
 	SPDK_CU_ASSERT_FATAL(spdk_nvme_transport_id_parse(&g_trid, g_trid_str) == 0);
@@ -940,7 +916,29 @@ admin_get_features_mandatory_features(void)
 	CU_ASSERT(s.cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(s.cpl.status.sc == SPDK_NVME_SC_SUCCESS);
 
+	spdk_nvme_detach(ctrlr);
+}
+
+/* Test the optional features with Get Features command:
+ * 0Fh Keep Alive Timer.
+ * 16h Host Behavior Support.
+ */
+static void
+admin_get_features_optional_features(void)
+{
+	struct spdk_nvme_ctrlr *ctrlr;
+	struct spdk_nvme_cmd cmd;
+	struct status s;
+	void *buf;
+	int rc;
+
+	SPDK_CU_ASSERT_FATAL(spdk_nvme_transport_id_parse(&g_trid, g_trid_str) == 0);
+	ctrlr = spdk_nvme_connect(&g_trid, NULL, 0);
+	SPDK_CU_ASSERT_FATAL(ctrlr);
+
 	/* Keep Alive Timer */
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
 	cmd.cdw10_bits.get_features.fid = SPDK_NVME_FEAT_KEEP_ALIVE_TIMER;
 
 	s.done = false;
@@ -1427,39 +1425,84 @@ admin_create_io_sq_shared_cq(void)
 	spdk_nvme_detach(ctrlr);
 }
 
+static struct option g_options[] = {
+#define OPTION_TRID 'r'
+	{"trid", required_argument, NULL, OPTION_TRID},
+#define OPTION_SINGLE_FILE_SEGMENTS 'g'
+	{"single-file-segments", no_argument, NULL, OPTION_SINGLE_FILE_SEGMENTS},
+};
+
+static int
+parse_arg(int op, const char *optarg, void *cb_arg)
+{
+	struct spdk_env_opts *opts = cb_arg;
+
+	switch (op) {
+	case 'g':
+		opts->hugepage_single_segments = true;
+		break;
+	case 'r':
+		g_trid_str = optarg;
+		break;
+	default:
+		SPDK_ERRLOG("Unknown op '%c'\n", op);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int
+init(void *cb_arg)
+{
+	struct spdk_env_opts *opts = cb_arg;
+	int rc;
+
+	if (g_trid_str == NULL) {
+		fprintf(stderr, "-r <trid> not specified\n");
+		return -EINVAL;
+	}
+
+	rc = spdk_env_init(opts);
+	if (rc != 0) {
+		fprintf(stderr, "could not spdk_env_init\n");
+		return rc;
+	}
+
+	return 0;
+}
+
+static void
+usage(void *cb_arg)
+{
+	spdk_nvme_transport_id_usage(stdout, SPDK_NVME_TRID_USAGE_OPT_MANDATORY);
+	printf("  -g, --single-file-segments       force creating just one hugetlbfs file\n");
+}
+
 int
 main(int argc, char **argv)
 {
 	struct spdk_env_opts	opts;
+	struct spdk_ut_opts	ut_opts = {
+		.optstring = "gr:",
+		.opts = g_options,
+		.optlen = SPDK_COUNTOF(g_options),
+		.cb_arg = &opts,
+		.option_cb_fn = parse_arg,
+		.init_cb_fn = init,
+		.usage_cb_fn = usage,
+	};
 	CU_pSuite		suite = NULL;
 	unsigned int		num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_compliance", NULL, NULL);
-
-	spdk_env_opts_init(&opts);
-	opts.name = "nvme_compliance";
-	if (parse_args(argc, argv, &opts)) {
-		fprintf(stderr, "could not parse_args\n");
-		return -1;
-	}
-
-	if (g_trid_str == NULL) {
-		fprintf(stderr, "-t <trid> not specified\n");
-		return -1;
-	}
-
-	if (spdk_env_init(&opts)) {
-		fprintf(stderr, "could not spdk_env_init\n");
-		return -1;
-	}
-
 	CU_ADD_TEST(suite, admin_identify_ctrlr_verify_dptr);
 	CU_ADD_TEST(suite, admin_identify_ctrlr_verify_fused);
 	CU_ADD_TEST(suite, admin_identify_ns);
 	CU_ADD_TEST(suite, admin_get_features_mandatory_features);
+	CU_ADD_TEST(suite, admin_get_features_optional_features);
 	CU_ADD_TEST(suite, admin_set_features_number_of_queues);
 	CU_ADD_TEST(suite, admin_get_log_page_mandatory_logs);
 	CU_ADD_TEST(suite, admin_get_log_page_with_lpo);
@@ -1474,9 +1517,11 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, admin_create_io_qp_max_qps);
 	CU_ADD_TEST(suite, admin_create_io_sq_shared_cq);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	opts.opts_size = sizeof(opts);
+	spdk_env_opts_init(&opts);
+	opts.name = "nvme_compliance";
+
+	num_failures = spdk_ut_run_tests(argc, argv, &ut_opts);
 	CU_cleanup_registry();
 	return num_failures;
 }

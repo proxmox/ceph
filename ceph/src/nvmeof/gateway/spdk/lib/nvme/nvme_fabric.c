@@ -149,7 +149,7 @@ nvme_fabric_prop_get_cmd_sync(struct spdk_nvme_ctrlr *ctrlr,
 		if (!status->timed_out) {
 			free(status);
 		}
-		SPDK_ERRLOG("Property Get failed\n");
+		SPDK_ERRLOG("Property Get failed, offset %x, size %u\n", offset, size);
 		return -1;
 	}
 
@@ -290,8 +290,10 @@ nvme_fabric_discover_probe(struct spdk_nvmf_discovery_log_page_entry *entry,
 
 	memset(&trid, 0, sizeof(trid));
 
-	if (entry->subtype == SPDK_NVMF_SUBTYPE_DISCOVERY) {
-		SPDK_WARNLOG("Skipping unsupported discovery service referral\n");
+	if (entry->subtype == SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT ||
+	    entry->subtype == SPDK_NVMF_SUBTYPE_DISCOVERY) {
+		SPDK_WARNLOG("Skipping unsupported current discovery service or"
+			     " discovery service referral\n");
 		return;
 	} else if (entry->subtype != SPDK_NVMF_SUBTYPE_NVME) {
 		SPDK_WARNLOG("Skipping unknown subtype %u\n", entry->subtype);
@@ -542,6 +544,9 @@ nvme_fabric_qpair_connect_async(struct spdk_nvme_qpair *qpair, uint32_t num_entr
 
 	assert(qpair->reserved_req != NULL);
 	req = qpair->reserved_req;
+	NVME_INIT_REQUEST(req, nvme_completion_poll_cb, status, NVME_PAYLOAD_CONTIG(nvmf_data, NULL),
+			  sizeof(*nvmf_data), 0);
+
 	memcpy(&req->cmd, &cmd, sizeof(cmd));
 
 	if (nvme_qpair_is_admin_queue(qpair)) {
@@ -555,9 +560,6 @@ nvme_fabric_qpair_connect_async(struct spdk_nvme_qpair *qpair, uint32_t num_entr
 	memcpy(nvmf_data->hostid, ctrlr->opts.extended_host_id, sizeof(nvmf_data->hostid));
 	snprintf(nvmf_data->hostnqn, sizeof(nvmf_data->hostnqn), "%s", ctrlr->opts.hostnqn);
 	snprintf(nvmf_data->subnqn, sizeof(nvmf_data->subnqn), "%s", ctrlr->trid.subnqn);
-
-	NVME_INIT_REQUEST(req, nvme_completion_poll_cb, status, NVME_PAYLOAD_CONTIG(nvmf_data, NULL),
-			  sizeof(*nvmf_data), 0);
 
 	rc = nvme_qpair_submit_request(qpair, req);
 	if (rc < 0) {
@@ -573,6 +575,7 @@ nvme_fabric_qpair_connect_async(struct spdk_nvme_qpair *qpair, uint32_t num_entr
 				      spdk_get_ticks_hz() / SPDK_SEC_TO_USEC;
 	}
 
+	qpair->auth.flags = 0;
 	qpair->poll_status = status;
 	return 0;
 }
@@ -612,10 +615,16 @@ nvme_fabric_qpair_connect_poll(struct spdk_nvme_qpair *qpair)
 		goto finish;
 	}
 
+	rsp = (struct spdk_nvmf_fabric_connect_rsp *)&status->cpl;
 	if (nvme_qpair_is_admin_queue(qpair)) {
-		rsp = (struct spdk_nvmf_fabric_connect_rsp *)&status->cpl;
 		ctrlr->cntlid = rsp->status_code_specific.success.cntlid;
 		SPDK_DEBUGLOG(nvme, "CNTLID 0x%04" PRIx16 "\n", ctrlr->cntlid);
+	}
+	if (rsp->status_code_specific.success.authreq.atr) {
+		qpair->auth.flags |= NVME_QPAIR_AUTH_FLAG_ATR;
+	}
+	if (rsp->status_code_specific.success.authreq.ascr) {
+		qpair->auth.flags |= NVME_QPAIR_AUTH_FLAG_ASCR;
 	}
 finish:
 	qpair->poll_status = NULL;
@@ -625,6 +634,15 @@ finish:
 	}
 
 	return rc;
+}
+
+bool
+nvme_fabric_qpair_auth_required(struct spdk_nvme_qpair *qpair)
+{
+	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
+
+	return qpair->auth.flags & (NVME_QPAIR_AUTH_FLAG_ATR | NVME_QPAIR_AUTH_FLAG_ASCR) ||
+	       ctrlr->opts.dhchap_ctrlr_key != NULL || qpair->auth.cb_fn != NULL;
 }
 
 int

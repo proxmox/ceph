@@ -1,4 +1,5 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   Copyright (C) 2022 Intel Corporation.
  *   All rights reserved.
  */
@@ -17,9 +18,9 @@ ftl_mngt_select_startup_mode(struct spdk_ftl_dev *dev,
 			     struct ftl_mngt_process *mngt)
 {
 	if (dev->conf.mode & SPDK_FTL_MODE_CREATE) {
-		ftl_mngt_call_process(mngt, &desc_first_start);
+		ftl_mngt_call_process(mngt, &desc_first_start, NULL);
 	} else {
-		ftl_mngt_call_process(mngt, &desc_restore);
+		ftl_mngt_call_process(mngt, &desc_restore, NULL);
 	}
 }
 
@@ -28,7 +29,7 @@ ftl_mngt_select_restore_mode(struct spdk_ftl_dev *dev,
 			     struct ftl_mngt_process *mngt)
 {
 	if (dev->sb->clean) {
-		ftl_mngt_call_process(mngt, &desc_clean_start);
+		ftl_mngt_call_process(mngt, &desc_clean_start, NULL);
 	} else {
 		ftl_mngt_recover(dev, mngt);
 	}
@@ -55,13 +56,6 @@ static const struct ftl_mngt_process_desc desc_startup = {
 			.action = ftl_mngt_open_cache_bdev,
 			.cleanup = ftl_mngt_close_cache_bdev
 		},
-#ifdef SPDK_FTL_VSS_EMU
-		{
-			.name = "Initialize VSS emu",
-			.action = ftl_mngt_md_init_vss_emu,
-			.cleanup = ftl_mngt_md_deinit_vss_emu
-		},
-#endif
 		{
 			.name = "Initialize superblock",
 			.action = ftl_mngt_superblock_init,
@@ -100,6 +94,14 @@ static const struct ftl_mngt_process_desc desc_startup = {
 			.action = ftl_mngt_layout_verify,
 		},
 		{
+			.name = "Upgrade layout",
+			.action = ftl_mngt_layout_upgrade,
+		},
+		{
+			.name = "Scrub NV cache",
+			.action = ftl_mngt_scrub_nv_cache,
+		},
+		{
 			.name = "Initialize metadata",
 			.action = ftl_mngt_init_md,
 			.cleanup = ftl_mngt_deinit_md
@@ -114,18 +116,14 @@ static const struct ftl_mngt_process_desc desc_startup = {
 			.cleanup = ftl_mngt_deinit_nv_cache
 		},
 		{
-			.name = "Upgrade layout",
-			.action = ftl_mngt_layout_upgrade,
-		},
-		{
 			.name = "Initialize valid map",
 			.action = ftl_mngt_init_vld_map,
 			.cleanup = ftl_mngt_deinit_vld_map
 		},
 		{
 			.name = "Initialize trim map",
-			.action = ftl_mngt_init_unmap_map,
-			.cleanup = ftl_mngt_deinit_unmap_map
+			.action = ftl_mngt_init_trim_map,
+			.cleanup = ftl_mngt_deinit_trim_map
 		},
 		{
 			.name = "Initialize bands metadata",
@@ -163,10 +161,6 @@ static const struct ftl_mngt_process_desc desc_first_start = {
 			.action = ftl_mngt_clear_l2p,
 		},
 		{
-			.name = "Scrub NV cache",
-			.action = ftl_mngt_scrub_nv_cache,
-		},
-		{
 			.name = "Finalize band initialization",
 			.action = ftl_mngt_finalize_init_bands,
 		},
@@ -188,12 +182,16 @@ static const struct ftl_mngt_process_desc desc_first_start = {
 			.action = ftl_mngt_p2l_wipe,
 		},
 		{
-			.name = "Clear trim map",
-			.action = ftl_mngt_unmap_clear,
+			.name = "Wipe P2L Log IO region",
+			.action = ftl_mngt_p2l_log_io_wipe,
 		},
 		{
-			.name = "Free P2L region bufs",
-			.action = ftl_mngt_p2l_free_bufs,
+			.name = "Clear trim map",
+			.action = ftl_mngt_trim_metadata_clear,
+		},
+		{
+			.name = "Clear trim log",
+			.action = ftl_mngt_trim_log_clear,
 		},
 		{
 			.name = "Set FTL dirty state",
@@ -259,10 +257,6 @@ static const struct ftl_mngt_process_desc desc_clean_start = {
 			.action = ftl_mngt_finalize_init_bands,
 		},
 		{
-			.name = "Free P2L region bufs",
-			.action = ftl_mngt_p2l_free_bufs,
-		},
-		{
 			.name = "Start core poller",
 			.action = ftl_mngt_start_core_poller,
 			.cleanup = ftl_mngt_stop_core_poller
@@ -289,7 +283,7 @@ ftl_mngt_call_dev_startup(struct spdk_ftl_dev *dev, ftl_mngt_completion cb, void
 	return ftl_mngt_process_execute(dev, &desc_startup, cb, cb_cntx);
 }
 
-struct ftl_unmap_ctx {
+struct ftl_trim_ctx {
 	uint64_t lba;
 	uint64_t num_blocks;
 	spdk_ftl_fn cb_fn;
@@ -299,7 +293,7 @@ struct ftl_unmap_ctx {
 };
 
 static void
-ftl_mngt_process_unmap_cb(void *ctx, int status)
+ftl_mngt_process_trim_cb(void *ctx, int status)
 {
 	struct ftl_mngt_process *mngt = ctx;
 
@@ -311,10 +305,10 @@ ftl_mngt_process_unmap_cb(void *ctx, int status)
 }
 
 static void
-ftl_mngt_process_unmap(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
+ftl_mngt_process_trim(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 {
 	struct ftl_io *io = ftl_mngt_get_process_ctx(mngt);
-	struct ftl_unmap_ctx *ctx = ftl_mngt_get_caller_ctx(mngt);
+	struct ftl_trim_ctx *ctx = ftl_mngt_get_caller_ctx(mngt);
 	int rc;
 
 	if (!dev->ioch) {
@@ -322,52 +316,52 @@ ftl_mngt_process_unmap(struct spdk_ftl_dev *dev, struct ftl_mngt_process *mngt)
 		return;
 	}
 
-	rc = spdk_ftl_unmap(dev, io, dev->ioch, ctx->lba, ctx->num_blocks, ftl_mngt_process_unmap_cb, mngt);
+	rc = spdk_ftl_unmap(dev, io, dev->ioch, ctx->lba, ctx->num_blocks, ftl_mngt_process_trim_cb, mngt);
 	if (rc == -EAGAIN) {
 		ftl_mngt_continue_step(mngt);
 	}
 }
 
 /*
- * RPC unmap path.
+ * RPC trim path.
  */
-static const struct ftl_mngt_process_desc g_desc_unmap = {
-	.name = "FTL unmap",
+static const struct ftl_mngt_process_desc g_desc_trim = {
+	.name = "FTL trim",
 	.ctx_size = sizeof(struct ftl_io),
 	.steps = {
 		{
-			.name = "Process unmap",
-			.action = ftl_mngt_process_unmap,
+			.name = "Process trim",
+			.action = ftl_mngt_process_trim,
 		},
 		{}
 	}
 };
 
 static void
-unmap_user_cb(void *_ctx)
+trim_user_cb(void *_ctx)
 {
-	struct ftl_unmap_ctx *ctx = _ctx;
+	struct ftl_trim_ctx *ctx = _ctx;
 
 	ctx->cb_fn(ctx->cb_arg, ctx->status);
 	free(ctx);
 }
 
 static void
-ftl_mngt_unmap_cb(struct spdk_ftl_dev *dev, void *_ctx, int status)
+ftl_mngt_trim_cb(struct spdk_ftl_dev *dev, void *_ctx, int status)
 {
-	struct ftl_unmap_ctx *ctx = _ctx;
+	struct ftl_trim_ctx *ctx = _ctx;
 	ctx->status = status;
 
-	if (spdk_thread_send_msg(ctx->thread, unmap_user_cb, ctx)) {
+	if (spdk_thread_send_msg(ctx->thread, trim_user_cb, ctx)) {
 		ftl_abort();
 	}
 }
 
 int
-ftl_mngt_unmap(struct spdk_ftl_dev *dev, uint64_t lba, uint64_t num_blocks, spdk_ftl_fn cb,
-	       void *cb_cntx)
+ftl_mngt_trim(struct spdk_ftl_dev *dev, uint64_t lba, uint64_t num_blocks, spdk_ftl_fn cb,
+	      void *cb_cntx)
 {
-	struct ftl_unmap_ctx *ctx;
+	struct ftl_trim_ctx *ctx;
 
 	ctx = calloc(1, sizeof(*ctx));
 	if (ctx == NULL) {
@@ -380,7 +374,7 @@ ftl_mngt_unmap(struct spdk_ftl_dev *dev, uint64_t lba, uint64_t num_blocks, spdk
 	ctx->cb_arg = cb_cntx;
 	ctx->thread = spdk_get_thread();
 
-	return ftl_mngt_process_execute(dev, &g_desc_unmap, ftl_mngt_unmap_cb, ctx);
+	return ftl_mngt_process_execute(dev, &g_desc_trim, ftl_mngt_trim_cb, ctx);
 }
 
 void

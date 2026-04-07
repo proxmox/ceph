@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017-2019 Intel Corporation
 
+if is_ms_compiler
+    subdir_done()
+endif
+
 fs = import('fs')
 
 # Defines the order of dependencies evaluation
@@ -9,8 +13,11 @@ subdirs = [
         'bus',
         'common/cnxk',    # depends on bus.
         'common/mlx5',    # depends on bus.
+        'common/nfp',     # depends on bus.
+        'common/nitrox',  # depends on bus.
         'common/qat',     # depends on bus.
         'common/sfc_efx', # depends on bus.
+        'common/zsda',    # depends on bus.
         'mempool',        # depends on common and bus.
         'dma',            # depends on common and bus.
         'net',            # depends on common, bus, mempool
@@ -18,15 +25,17 @@ subdirs = [
         'crypto',         # depends on common, bus and mempool (net in future).
         'compress',       # depends on common, bus, mempool.
         'regex',          # depends on common, bus, regexdev.
+        'ml',             # depends on common, bus and mempool
         'vdpa',           # depends on common, bus and mempool.
         'event',          # depends on common, bus, mempool and net.
         'baseband',       # depends on common and bus.
         'gpu',            # depends on common and bus.
+        'power',
 ]
 
 if meson.is_cross_build()
-    disable_drivers += ',' + meson.get_cross_property('disable_drivers', '')
-    enable_drivers += ',' + meson.get_cross_property('enable_drivers', '')
+    disable_drivers += ',' + meson.get_external_property('disable_drivers', '')
+    enable_drivers += ',' + meson.get_external_property('enable_drivers', '')
 endif
 
 # add cmdline disabled drivers and meson disabled drivers together
@@ -36,8 +45,10 @@ disable_drivers = run_command(list_dir_globs, disable_drivers, check: true).stdo
 # add cmdline enabled drivers and meson enabled drivers together
 enable_drivers = ',' + get_option('enable_drivers')
 enable_drivers = run_command(list_dir_globs, enable_drivers, check: true).stdout().split()
+require_drivers = true
 if enable_drivers.length() == 0
-    enable_drivers = run_command(list_dir_globs, '*/*', check: true).stdout().split()
+    require_drivers = false
+    enable_drivers = run_command(list_dir_globs, '*/*,*/*/*', check: true).stdout().split()
 endif
 
 # these drivers must always be enabled, otherwise the build breaks
@@ -50,9 +61,12 @@ default_cflags = machine_args
 default_cflags += ['-DALLOW_EXPERIMENTAL_API']
 default_cflags += ['-DALLOW_INTERNAL_API']
 
-if cc.has_argument('-Wno-format-truncation')
-    default_cflags += '-Wno-format-truncation'
-endif
+warning_disable_cflags = ['-Wno-format-truncation', '-Wno-address-of-packed-member']
+foreach cflag:warning_disable_cflags
+    if cc.has_argument(cflag)
+        default_cflags += cflag
+    endif
+endforeach
 
 dpdk_drivers_build_dir = meson.current_build_dir()
 
@@ -69,6 +83,25 @@ foreach subpath:subdirs
     else
         class = subpath
         subdir(class)
+        skip_class = false
+        foreach d:std_deps
+            if not is_variable('shared_rte_' + d)
+                skip_class = true
+                reason = 'missing internal dependency, "@0@"'.format(d)
+                if dpdk_libs_deprecated.contains(d)
+                    reason += ' (deprecated lib)'
+                endif
+                message('Disabling @1@/* drivers: missing internal dependency "@0@"'
+                        .format(d, class))
+                break
+            endif
+        endforeach
+        if skip_class
+            drv_path = join_paths(class, '*')
+            dpdk_drvs_disabled += drv_path
+            set_variable('drv_' + drv_path.underscorify() + '_disable_reason', reason)
+            continue
+        endif
     endif
 
     # save class name on first occurrence
@@ -91,6 +124,7 @@ foreach subpath:subdirs
         build = true # set to false to disable, e.g. missing deps
         reason = '<unknown reason>' # set if build == false to explain
         name = drv
+        annotate_locks = true
         sources = []
         headers = []
         driver_sdk_headers = [] # public headers included by drivers
@@ -108,7 +142,11 @@ foreach subpath:subdirs
         ext_deps = []
         pkgconfig_extra_libs = []
         testpmd_sources = []
-        pmd_supports_disable_iova_as_pa = false
+        require_iova_in_mbuf = true
+
+        if name.contains('/')
+            name = name.split('/')[1]
+        endif
 
         if not enable_drivers.contains(drv_path)
             build = false
@@ -126,9 +164,15 @@ foreach subpath:subdirs
             # pull in driver directory which should update all the local variables
             subdir(drv_path)
 
-            if dpdk_conf.get('RTE_IOVA_AS_PA') == 0 and not pmd_supports_disable_iova_as_pa and not always_enable.contains(drv_path)
+            if dpdk_conf.get('RTE_IOVA_IN_MBUF') == 0 and require_iova_in_mbuf
                 build = false
-                reason = 'driver does not support disabling IOVA as PA mode'
+                reason = 'requires IOVA in mbuf (set enable_iova_as_pa option)'
+            endif
+            # error out if we can't build a driver and that driver was explicitly requested,
+            # i.e. not via wildcard.
+            if not build and require_drivers and get_option('enable_drivers').contains(drv_path)
+                error('Cannot build explicitly requested driver "@0@".\n'.format(drv_path)
+                        +'\tReason: ' + reason)
             endif
 
             # get dependency objs from strings
@@ -146,6 +190,12 @@ foreach subpath:subdirs
                     endif
                     message('Disabling @1@ [@2@]: missing internal dependency "@0@"'
                             .format(d, name, 'drivers/' + drv_path))
+                    # error out if we can't build a driver and that driver was explicitly
+                    # requested, i.e. not via wildcard.
+                    if require_drivers and get_option('enable_drivers').contains(drv_path)
+                        error('Cannot build explicitly requested driver "@0@".\n'.format(drv_path)
+                                +'\tPlease enable missing dependency "@0@"'.format(d))
+                    endif
                 else
                     shared_deps += [get_variable('shared_rte_' + d)]
                     static_deps += [get_variable('static_rte_' + d)]
@@ -159,7 +209,7 @@ foreach subpath:subdirs
             # component disable printout in those cases
             if reason != ''
                 dpdk_drvs_disabled += drv_path
-                set_variable(drv_path.underscorify() + '_disable_reason', reason)
+                set_variable('drv_' + drv_path.underscorify() + '_disable_reason', reason)
             endif
             continue
         endif
@@ -167,6 +217,10 @@ foreach subpath:subdirs
         enabled_drivers += name
         lib_name = '_'.join(['rte', class, name])
         cflags += '-DRTE_LOG_DEFAULT_LOGTYPE=' + '.'.join([log_prefix, name])
+        if annotate_locks and cc.get_id() == 'clang' and cc.version().version_compare('>=3.5.0')
+            cflags += '-DRTE_ANNOTATE_LOCKS'
+            cflags += '-Wthread-safety'
+        endif
         dpdk_conf.set(lib_name.to_upper(), 1)
 
         dpdk_extra_ldflags += pkgconfig_extra_libs
@@ -175,6 +229,7 @@ foreach subpath:subdirs
         if get_option('enable_driver_sdk')
             install_headers(driver_sdk_headers)
         endif
+        dpdk_chkinc_headers += driver_sdk_headers
 
         if headers.length() > 0
             dpdk_includes += include_directories(drv_path)
@@ -206,7 +261,6 @@ foreach subpath:subdirs
 
         # now build the shared driver
         version_map = '@0@/@1@/version.map'.format(meson.current_source_dir(), drv_path)
-        implib = 'lib' + lib_name + '.dll.a'
 
         lk_deps = []
         lk_args = []
@@ -227,25 +281,22 @@ foreach subpath:subdirs
             endif
         endif
 
-        def_file = custom_target(lib_name + '_def',
-                command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
-                input: version_map,
-                output: '@0@_exports.def'.format(lib_name))
-
-        mingw_map = custom_target(lib_name + '_mingw',
-                command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
-                input: version_map,
-                output: '@0@_mingw.map'.format(lib_name))
-
-        lk_deps += [def_file, mingw_map]
-
         if is_windows
             if is_ms_linker
+                def_file = custom_target(lib_name + '_def',
+                        command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
+                        input: version_map,
+                        output: '@0@_exports.def'.format(lib_name))
+                lk_deps += [def_file]
+
                 lk_args = ['-Wl,/def:' + def_file.full_path()]
-                if meson.version().version_compare('<0.54.0')
-                    lk_args += ['-Wl,/implib:drivers\\' + implib]
-                endif
             else
+                mingw_map = custom_target(lib_name + '_mingw',
+                        command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
+                        input: version_map,
+                        output: '@0@_mingw.map'.format(lib_name))
+                lk_deps += [mingw_map]
+
                 lk_args = ['-Wl,--version-script=' + mingw_map.full_path()]
             endif
         else

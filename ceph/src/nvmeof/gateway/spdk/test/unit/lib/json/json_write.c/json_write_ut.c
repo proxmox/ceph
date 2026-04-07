@@ -5,12 +5,14 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "json/json_write.c"
 #include "json/json_parse.c"
 
 #include "spdk/util.h"
+
+#define UT_UUID "e524acae-8c26-43e4-882a-461b8690583b"
 
 static uint8_t g_buf[1000];
 static uint8_t *g_write_pos;
@@ -56,6 +58,9 @@ write_cb(void *cb_ctx, const void *data, size_t size)
 #define END_FAIL() \
 	CU_ASSERT(spdk_json_write_end(w) < 0)
 
+#define RESET() \
+	spdk_json_write_reset(w)
+
 #define VAL_STRING(str) \
 	CU_ASSERT(spdk_json_write_string_raw(w, str, sizeof(str) - 1) == 0)
 
@@ -99,6 +104,8 @@ write_cb(void *cb_ctx, const void *data, size_t size)
 	CU_ASSERT(spdk_json_write_named_uint128(w, name, low, high) == 0);
 
 #define VAL_DOUBLE(d) CU_ASSERT(spdk_json_write_double(w, d) == 0);
+
+#define VAL_UUID(u) CU_ASSERT(spdk_json_write_uuid(w, u) == 0)
 
 #define VAL_ARRAY_BEGIN() CU_ASSERT(spdk_json_write_array_begin(w) == 0)
 #define VAL_ARRAY_END() CU_ASSERT(spdk_json_write_array_end(w) == 0)
@@ -551,6 +558,21 @@ test_write_number_double(void)
 }
 
 static void
+test_write_uuid(void)
+{
+	struct spdk_json_write_ctx *w;
+	struct spdk_uuid uuid;
+	int rc;
+
+	rc = spdk_uuid_parse(&uuid, UT_UUID);
+	CU_ASSERT_EQUAL(rc, 0);
+
+	BEGIN();
+	VAL_UUID(&uuid);
+	END("\"" UT_UUID "\"");
+}
+
+static void
 test_write_array(void)
 {
 	struct spdk_json_write_ctx *w;
@@ -845,13 +867,52 @@ test_write_val(void)
 	END("{\"a\":[1,2,3],\"b\":{\"c\":\"d\"},\"e\":true,\"f\":false,\"g\":null}");
 }
 
+/* Write reset test */
+static void
+test_write_reset(void)
+{
+	struct spdk_json_write_ctx *w;
+	struct spdk_uuid uuid;
+	int rc;
+
+	rc = spdk_uuid_parse(&uuid, UT_UUID);
+	CU_ASSERT_EQUAL(rc, 0);
+
+	BEGIN();
+	RESET();
+	VAL_INT32(1234);
+	END_SIZE("1234", 4);
+
+	BEGIN();
+	VAL_STRING("http://www.example.com/image/481989943");
+	RESET();
+	VAL_INT32(2345);
+	END_SIZE("2345", 4);
+
+	BEGIN();
+	VAL_UUID(&uuid);
+	RESET();
+	VAL_INT64(34567890);
+	END_SIZE("34567890", 8);
+}
+
+static void
+test_object_end_fail(void)
+{
+	struct spdk_json_write_ctx *w;
+	BEGIN();
+	VAL_OBJECT_BEGIN();
+	VAL_OBJECT_END();
+	CU_ASSERT(spdk_json_write_object_end(w) < 0);
+	END_FAIL();
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("json", NULL, NULL);
@@ -867,16 +928,17 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_write_number_int64);
 	CU_ADD_TEST(suite, test_write_number_uint64);
 	CU_ADD_TEST(suite, test_write_number_double);
+	CU_ADD_TEST(suite, test_write_uuid);
 	CU_ADD_TEST(suite, test_write_array);
 	CU_ADD_TEST(suite, test_write_object);
 	CU_ADD_TEST(suite, test_write_nesting);
 	CU_ADD_TEST(suite, test_write_val);
+	CU_ADD_TEST(suite, test_write_reset);
+	CU_ADD_TEST(suite, test_object_end_fail);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 
-	CU_basic_run_tests();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 
 	return num_failures;

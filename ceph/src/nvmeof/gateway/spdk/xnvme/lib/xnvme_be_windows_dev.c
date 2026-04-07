@@ -1,21 +1,42 @@
-// Copyright (C) Rishabh Shukla <rishabh.sh@samsung.com>
-// Copyright (C) Pranjal Dave <pranjal.58@partner.samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
+#include <libxnvme.h>
 #include <xnvme_be.h>
 #include <xnvme_be_nosys.h>
 #ifdef XNVME_BE_WINDOWS_ENABLED
-#include <stdio.h>
 #include <tchar.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/stat.h>
+#include <initguid.h>
 #include <windows.h>
 #include <Setupapi.h>
-#include <libxnvme_spec_fs.h>
 #include <xnvme_be_windows.h>
+
+int
+xnvme_be_windows_get_device_type(HANDLE dev_handle)
+{
+	ULONG ret_len;
+	STORAGE_PROPERTY_QUERY query = {0};
+	STORAGE_ADAPTER_DESCRIPTOR result = {0};
+	int ret;
+
+	query.PropertyId = (STORAGE_PROPERTY_ID)StorageAdapterProperty;
+	query.QueryType = PropertyStandardQuery;
+
+	ret = DeviceIoControl(dev_handle, IOCTL_STORAGE_QUERY_PROPERTY, &query, sizeof(query),
+			      &result, sizeof(result), &ret_len, NULL);
+
+	if (!ret) {
+		XNVME_DEBUG("Error retriving Storage Query property. Error: %d\n", GetLastError());
+	}
+
+	return result.BusType;
+}
 
 /**
  * Close a device handle open by CreateFile()
@@ -68,11 +89,12 @@ xnvme_be_windows_dev_open(struct xnvme_dev *dev)
 	DWORD access_mode = 0;
 	DWORD file_attributes = FILE_ATTRIBUTE_NORMAL;
 	int err = 0;
+	int dev_type;
 
 	int flags = xnvme_file_opts_to_win(opts);
 
-	XNVME_DEBUG("INFO: open() : opts->oflags: 0x%x, flags: 0x%x, opts->create_mode: 0x%x",
-		    opts->oflags, flags, opts->create_mode);
+	XNVME_DEBUG("INFO: open() : flags: 0x%x, opts->create_mode: 0x%x", flags,
+		    opts->create_mode);
 
 	state->fd = _open(ident->uri, flags, opts->create_mode);
 	if (state->fd < 0) {
@@ -170,8 +192,13 @@ xnvme_be_windows_dev_open(struct xnvme_dev *dev)
 		dev->ident.csi = XNVME_SPEC_CSI_NVM;
 		// Making the nsid 1 by default
 		dev->ident.nsid = 1;
+		dev_type = xnvme_be_windows_get_device_type(state->async_handle);
 		if (!opts->admin) {
-			dev->be.admin = g_xnvme_be_windows_admin_nvme;
+			if (dev_type == BusTypeNvme) {
+				dev->be.admin = g_xnvme_be_windows_admin_nvme;
+			} else if (dev_type == BusTypeScsi || dev_type == BusTypeSata) {
+				dev->be.admin = g_xnvme_be_windows_admin_block;
+			}
 		}
 		if (!opts->sync) {
 			dev->be.sync = g_xnvme_be_windows_sync_nvme;
@@ -184,24 +211,6 @@ xnvme_be_windows_dev_open(struct xnvme_dev *dev)
 	default:
 		XNVME_DEBUG("FAILED: open() : unsupported S_IFMT: %d", dev_stat.st_mode & S_IFMT);
 		return -EINVAL;
-	}
-
-	err = xnvme_be_dev_idfy(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_idfy()");
-		_be_windows_state_term((void *)dev->be.state);
-		return err;
-	}
-	err = xnvme_be_dev_derive_geometry(dev);
-	if (err) {
-		XNVME_DEBUG("FAILED: open() : xnvme_be_dev_derive_geometry()");
-		_be_windows_state_term((void *)dev->be.state);
-		return err;
-	}
-
-	// TODO: consider this. Due to Kernel-segment constraint force mdts down
-	if ((dev->geo.mdts_nbytes / dev->geo.lba_nbytes) > 127) {
-		dev->geo.mdts_nbytes = dev->geo.lba_nbytes * 127;
 	}
 
 	XNVME_DEBUG("INFO: --- open() : OK ---");
@@ -278,6 +287,9 @@ xnvme_be_windows_enumerate(const char *sys_uri, struct xnvme_opts *opts,
 		return -ENOSYS;
 	}
 
+	struct xnvme_opts tmp_opts = *opts;
+	tmp_opts.be = xnvme_be_windows.attr.name;
+
 	int err = 0;
 	int num_devices = 0;
 	num_devices = _be_windows_populate_devices();
@@ -326,7 +338,7 @@ xnvme_be_windows_enumerate(const char *sys_uri, struct xnvme_opts *opts,
 			_stprintf_s(uri, XNVME_IDENT_URI_LEN - 1, _T("%s"), str_device_name);
 			printf("%s\n", uri);
 
-			dev = xnvme_dev_open(uri, opts);
+			dev = xnvme_dev_open(uri, &tmp_opts);
 			if (!dev) {
 				XNVME_DEBUG("xnvme_dev_open(): %d", errno);
 				return -errno;

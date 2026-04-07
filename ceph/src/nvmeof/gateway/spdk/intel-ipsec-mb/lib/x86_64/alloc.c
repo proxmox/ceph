@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2018-2022, Intel Corporation
+  Copyright (c) 2018-2023, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -27,7 +27,8 @@
 
 #include <stdint.h>
 #ifdef LINUX
-#include <stdlib.h> /* posix_memalign() and free() */
+#include <stdlib.h> /* free() */
+#include <malloc.h> /* memalign() */
 #else
 #include <malloc.h> /* _aligned_malloc() and aligned_free() */
 #endif
@@ -40,63 +41,66 @@
 
 #define IMB_OOO_ROAD_BLOCK 0xDEADCAFEDEADCAFEULL
 
-#define ALIGNMENT 64
+#define ALIGNMENT   64
 #define ALIGN(x, y) ((x + (y - 1)) & (~(y - 1)))
 
-#define OOO_INFO(imb_mgr_ooo_ptr_name__, ooo_mgr_type__) \
-        { offsetof(IMB_MGR, imb_mgr_ooo_ptr_name__), \
-          ALIGN(sizeof(ooo_mgr_type__), ALIGNMENT),      \
-          offsetof(ooo_mgr_type__, road_block) }
+#define OOO_INFO(imb_mgr_ooo_ptr_name__, ooo_mgr_type__)                                           \
+        {                                                                                          \
+                offsetof(IMB_MGR, imb_mgr_ooo_ptr_name__),                                         \
+                        ALIGN(sizeof(ooo_mgr_type__), ALIGNMENT),                                  \
+                        offsetof(ooo_mgr_type__, road_block)                                       \
+        }
 
 const struct {
         size_t ooo_ptr_offset;
         size_t ooo_aligned_size;
         size_t road_block_offset;
-} ooo_mgr_table[] = {
-        OOO_INFO(aes128_ooo, MB_MGR_AES_OOO),
-        OOO_INFO(aes192_ooo, MB_MGR_AES_OOO),
-        OOO_INFO(aes256_ooo, MB_MGR_AES_OOO),
-        OOO_INFO(docsis128_sec_ooo, MB_MGR_DOCSIS_AES_OOO),
-        OOO_INFO(docsis128_crc32_sec_ooo, MB_MGR_DOCSIS_AES_OOO),
-        OOO_INFO(docsis256_sec_ooo, MB_MGR_DOCSIS_AES_OOO),
-        OOO_INFO(docsis256_crc32_sec_ooo, MB_MGR_DOCSIS_AES_OOO),
-        OOO_INFO(des_enc_ooo, MB_MGR_DES_OOO),
-        OOO_INFO(des_dec_ooo, MB_MGR_DES_OOO),
-        OOO_INFO(des3_enc_ooo, MB_MGR_DES_OOO),
-        OOO_INFO(des3_dec_ooo, MB_MGR_DES_OOO),
-        OOO_INFO(docsis_des_enc_ooo, MB_MGR_DES_OOO),
-        OOO_INFO(docsis_des_dec_ooo, MB_MGR_DES_OOO),
-        OOO_INFO(hmac_sha_1_ooo, MB_MGR_HMAC_SHA_1_OOO),
-        OOO_INFO(hmac_sha_224_ooo, MB_MGR_HMAC_SHA_256_OOO),
-        OOO_INFO(hmac_sha_256_ooo, MB_MGR_HMAC_SHA_256_OOO),
-        OOO_INFO(hmac_sha_384_ooo, MB_MGR_HMAC_SHA_512_OOO),
-        OOO_INFO(hmac_sha_512_ooo, MB_MGR_HMAC_SHA_512_OOO),
-        OOO_INFO(hmac_md5_ooo, MB_MGR_HMAC_MD5_OOO),
-        OOO_INFO(aes_xcbc_ooo, MB_MGR_AES_XCBC_OOO),
-        OOO_INFO(aes_ccm_ooo, MB_MGR_CCM_OOO),
-        OOO_INFO(aes_cmac_ooo, MB_MGR_CMAC_OOO),
-        OOO_INFO(aes128_cbcs_ooo, MB_MGR_AES_OOO),
-        OOO_INFO(zuc_eea3_ooo, MB_MGR_ZUC_OOO),
-        OOO_INFO(zuc_eia3_ooo, MB_MGR_ZUC_OOO),
-        OOO_INFO(zuc256_eea3_ooo, MB_MGR_ZUC_OOO),
-        OOO_INFO(zuc256_eia3_ooo, MB_MGR_ZUC_OOO),
-        OOO_INFO(aes256_ccm_ooo, MB_MGR_CCM_OOO),
-	OOO_INFO(aes256_cmac_ooo, MB_MGR_CMAC_OOO),
-        OOO_INFO(snow3g_uea2_ooo, MB_MGR_SNOW3G_OOO),
-        OOO_INFO(snow3g_uia2_ooo, MB_MGR_SNOW3G_OOO),
-        OOO_INFO(sha_1_ooo, MB_MGR_SHA_1_OOO),
-        OOO_INFO(sha_224_ooo, MB_MGR_SHA_256_OOO),
-        OOO_INFO(sha_256_ooo, MB_MGR_SHA_256_OOO),
-        OOO_INFO(sha_384_ooo, MB_MGR_SHA_512_OOO),
-        OOO_INFO(sha_512_ooo, MB_MGR_SHA_512_OOO)
-};
+} ooo_mgr_table[] = { OOO_INFO(aes128_ooo, MB_MGR_AES_OOO),
+                      OOO_INFO(aes192_ooo, MB_MGR_AES_OOO),
+                      OOO_INFO(aes256_ooo, MB_MGR_AES_OOO),
+                      OOO_INFO(docsis128_sec_ooo, MB_MGR_DOCSIS_AES_OOO),
+                      OOO_INFO(docsis128_crc32_sec_ooo, MB_MGR_DOCSIS_AES_OOO),
+                      OOO_INFO(docsis256_sec_ooo, MB_MGR_DOCSIS_AES_OOO),
+                      OOO_INFO(docsis256_crc32_sec_ooo, MB_MGR_DOCSIS_AES_OOO),
+                      OOO_INFO(des_enc_ooo, MB_MGR_DES_OOO),
+                      OOO_INFO(des_dec_ooo, MB_MGR_DES_OOO),
+                      OOO_INFO(des3_enc_ooo, MB_MGR_DES_OOO),
+                      OOO_INFO(des3_dec_ooo, MB_MGR_DES_OOO),
+                      OOO_INFO(docsis_des_enc_ooo, MB_MGR_DES_OOO),
+                      OOO_INFO(docsis_des_dec_ooo, MB_MGR_DES_OOO),
+                      OOO_INFO(hmac_sha_1_ooo, MB_MGR_HMAC_SHA_1_OOO),
+                      OOO_INFO(hmac_sha_224_ooo, MB_MGR_HMAC_SHA_256_OOO),
+                      OOO_INFO(hmac_sha_256_ooo, MB_MGR_HMAC_SHA_256_OOO),
+                      OOO_INFO(hmac_sha_384_ooo, MB_MGR_HMAC_SHA_512_OOO),
+                      OOO_INFO(hmac_sha_512_ooo, MB_MGR_HMAC_SHA_512_OOO),
+                      OOO_INFO(hmac_md5_ooo, MB_MGR_HMAC_MD5_OOO),
+                      OOO_INFO(aes_xcbc_ooo, MB_MGR_AES_XCBC_OOO),
+                      OOO_INFO(aes_ccm_ooo, MB_MGR_CCM_OOO),
+                      OOO_INFO(aes_cmac_ooo, MB_MGR_CMAC_OOO),
+                      OOO_INFO(aes128_cbcs_ooo, MB_MGR_AES_OOO),
+                      OOO_INFO(zuc_eea3_ooo, MB_MGR_ZUC_OOO),
+                      OOO_INFO(zuc_eia3_ooo, MB_MGR_ZUC_OOO),
+                      OOO_INFO(zuc256_eea3_ooo, MB_MGR_ZUC_OOO),
+                      OOO_INFO(zuc256_eia3_ooo, MB_MGR_ZUC_OOO),
+                      OOO_INFO(aes256_ccm_ooo, MB_MGR_CCM_OOO),
+                      OOO_INFO(aes256_cmac_ooo, MB_MGR_CMAC_OOO),
+                      OOO_INFO(snow3g_uea2_ooo, MB_MGR_SNOW3G_OOO),
+                      OOO_INFO(snow3g_uia2_ooo, MB_MGR_SNOW3G_OOO),
+                      OOO_INFO(sha_1_ooo, MB_MGR_SHA_1_OOO),
+                      OOO_INFO(sha_224_ooo, MB_MGR_SHA_256_OOO),
+                      OOO_INFO(sha_256_ooo, MB_MGR_SHA_256_OOO),
+                      OOO_INFO(sha_384_ooo, MB_MGR_SHA_512_OOO),
+                      OOO_INFO(sha_512_ooo, MB_MGR_SHA_512_OOO),
+                      OOO_INFO(zuc256_eia3_8B_ooo, MB_MGR_ZUC_OOO),
+                      OOO_INFO(zuc256_eia3_16B_ooo, MB_MGR_ZUC_OOO) };
 
 /**
  * @brief Calculates necessary memory size for IMB_MGR.
  *
  * @return Size for IMB_MGR (aligned to 64 bytes)
  */
-size_t imb_get_mb_mgr_size(void)
+size_t
+imb_get_mb_mgr_size(void)
 {
         size_t ooo_total_size = 0;
         unsigned i;
@@ -110,7 +114,8 @@ size_t imb_get_mb_mgr_size(void)
         return (sizeof(IMB_MGR) + ooo_total_size + ALIGNMENT);
 }
 
-static uint8_t *get_ooo_ptr(IMB_MGR *mgr, const size_t offset)
+static uint8_t *
+get_ooo_ptr(IMB_MGR *mgr, const size_t offset)
 {
         uint8_t *mgr_offset = &((uint8_t *) mgr)[offset];
         uint8_t **ptr = (uint8_t **) mgr_offset;
@@ -118,7 +123,8 @@ static uint8_t *get_ooo_ptr(IMB_MGR *mgr, const size_t offset)
         return *ptr;
 }
 
-static void set_ooo_ptr(IMB_MGR *mgr, const size_t offset, uint8_t *new_ptr)
+static void
+set_ooo_ptr(IMB_MGR *mgr, const size_t offset, uint8_t *new_ptr)
 {
         uint8_t *mgr_offset = &((uint8_t *) mgr)[offset];
         uint8_t **ptr = (uint8_t **) mgr_offset;
@@ -126,7 +132,8 @@ static void set_ooo_ptr(IMB_MGR *mgr, const size_t offset, uint8_t *new_ptr)
         *ptr = new_ptr;
 }
 
-static void set_road_block(uint8_t *ooo_ptr, const size_t offset)
+static void
+set_road_block(uint8_t *ooo_ptr, const size_t offset)
 {
         uint64_t *p_road_block = (uint64_t *) &ooo_ptr[offset];
 
@@ -139,13 +146,13 @@ static void set_road_block(uint8_t *ooo_ptr, const size_t offset)
  * This is to assist in searching for sensitive data remaining
  * in the heap after algorithmic code completes
  */
-static void set_ooo_mgr_road_block(IMB_MGR *mgr)
+static void
+set_ooo_mgr_road_block(IMB_MGR *mgr)
 {
         unsigned n;
 
         for (n = 0; n < IMB_DIM(ooo_mgr_table); n++)
-                set_road_block(get_ooo_ptr(mgr,
-                                           ooo_mgr_table[n].ooo_ptr_offset),
+                set_road_block(get_ooo_ptr(mgr, ooo_mgr_table[n].ooo_ptr_offset),
                                ooo_mgr_table[n].road_block_offset);
 }
 
@@ -165,14 +172,15 @@ static void set_ooo_mgr_road_block(IMB_MGR *mgr)
  *     IMB_FLAG_SHANI_OFF - disable use (and detection) of SHA extensions,
  *                          currently SHANI is only available for SSE
  *     IMB_FLAG_AESNI_OFF - disable use (and detection) of AES extensions.
- *     IMB_FLAG_GFNI_OFF - disable use (and detection) of Galois Field extensions.
+ *     IMB_FLAG_GFNI_OFF - disable use (and detection) of
+ *                         Galois Field extensions.
  *
  * @param reset_mgr if 0, IMB_MGR structure is not cleared, else it is.
  *
  * @return Pointer to IMB_MGR structure
  */
-IMB_MGR *imb_set_pointers_mb_mgr(void *mem_ptr, const uint64_t flags,
-                                 const unsigned reset_mgr)
+IMB_MGR *
+imb_set_pointers_mb_mgr(void *mem_ptr, const uint64_t flags, const unsigned reset_mgr)
 {
         if (mem_ptr == NULL) {
                 imb_set_errno(mem_ptr, ENOMEM);
@@ -234,7 +242,7 @@ IMB_MGR *imb_set_pointers_mb_mgr(void *mem_ptr, const uint64_t flags,
         for (i = 0; i < IMB_DIM(ooo_mgr_table); i++) {
                 set_ooo_ptr(ptr, ooo_mgr_table[i].ooo_ptr_offset, free_ptr);
                 free_ptr = &free_ptr[ooo_mgr_table[i].ooo_aligned_size];
-                IMB_ASSERT((uintptr_t)(free_ptr - ptr8) <= mem_size);
+                IMB_ASSERT((uintptr_t) (free_ptr - ptr8) <= mem_size);
         }
         set_ooo_mgr_road_block(ptr);
 
@@ -247,13 +255,10 @@ alloc_aligned_mem(const size_t size)
         void *ptr;
 
 #ifdef LINUX
-        if (posix_memalign((void **)&ptr, ALIGNMENT, size))
-                return NULL;
+        ptr = memalign(ALIGNMENT, size);
 #else
         ptr = _aligned_malloc(size, ALIGNMENT);
 #endif
-
-        IMB_ASSERT(ptr != NULL);
 
         return ptr;
 }
@@ -278,12 +283,14 @@ free_mem(void *ptr)
  *     IMB_FLAG_SHANI_OFF - disable use (and detection) of SHA extensions,
  *                          currently SHANI is only available for SSE
  *     IMB_FLAG_AESNI_OFF - disable use (and detection) of AES extensions.
- *     IMB_FLAG_GFNI_OFF - disable use (and detection) of Galois Field extensions.
+ *     IMB_FLAG_GFNI_OFF - disable use (and detection) of
+ *                         Galois Field extensions.
  *
  * @return Pointer to allocated memory for MB_MGR structure
  * @retval NULL on allocation error
  */
-IMB_MGR *alloc_mb_mgr(uint64_t flags)
+IMB_MGR *
+alloc_mb_mgr(uint64_t flags)
 {
         IMB_MGR *ptr = NULL;
 
@@ -312,7 +319,8 @@ IMB_MGR *alloc_mb_mgr(uint64_t flags)
  * @param ptr a pointer to allocated MB_MGR structure
  *
  */
-void free_mb_mgr(IMB_MGR *ptr)
+void
+free_mb_mgr(IMB_MGR *ptr)
 {
         IMB_ASSERT(ptr != NULL);
 

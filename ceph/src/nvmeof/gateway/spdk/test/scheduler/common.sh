@@ -3,14 +3,12 @@
 #  All rights reserved.
 #
 
-shopt -s nullglob extglob
-
 declare -r sysfs_system=/sys/devices/system
 declare -r sysfs_cpu=$sysfs_system/cpu
 declare -r sysfs_node=$sysfs_system/node
 
 declare -r scheduler=$rootdir/test/event/scheduler/scheduler
-declare -r plugin=scheduler_plugin
+declare plugin=scheduler_plugin
 
 source "$rootdir/test/scheduler/cgroups.sh"
 
@@ -60,10 +58,13 @@ map_cpus_node() {
 	local cpu_idx core_idx
 
 	for cpu_idx in $(parse_cpu_list "$sysfs_node/node$node_idx/cpulist"); do
-		if is_cpu_online "$cpu_idx"; then
+		if is_cpu_online_f "$cpu_idx"; then
 			core_idx=$(< "$sysfs_cpu/cpu$cpu_idx/topology/core_id")
 			local -n _cpu_core_map=node_${node_idx}_core_${core_idx}
 			_cpu_core_map+=("$cpu_idx") cpu_core_map[cpu_idx]=$core_idx
+			local -n _cpu_siblings=node_${node_idx}_core_${core_idx}_thread_${cpu_idx}
+			_cpu_siblings=($(parse_cpu_list "$sysfs_cpu/cpu$cpu_idx/topology/thread_siblings_list"))
+			cpu_siblings[cpu_idx]="node_${node_idx}_core_${core_idx}_thread_${cpu_idx}[@]"
 		fi
 		_cpu_node_map[cpu_idx]=$cpu_idx cpu_node_map[cpu_idx]=$node_idx
 		cpus+=("$cpu_idx")
@@ -74,6 +75,7 @@ map_cpus_node() {
 
 map_cpus() {
 	local -g cpus=()
+	local -g cpu_siblings=()
 	local -g nodes=()
 	local -g cpu_node_map=()
 	local -g cpu_core_map=()
@@ -132,14 +134,38 @@ is_cpu_offline() {
 	! is_cpu_online "$1"
 }
 
+is_cpu_online_f() {
+	local cpu=$1
+
+	if ((cpu == 0)); then
+		# cpu0 is special as it requires proper support in the kernel to be hot pluggable.
+		# As such, it usually does not have its own online attribute so always check the
+		# online list instead.
+		is_cpu_online "$cpu"
+	else
+		[[ -e $sysfs_cpu/cpu$cpu/online ]] || return 1
+		(($(< "$sysfs_cpu/cpu$cpu/online") == 1))
+	fi
+}
+
+is_cpu_offline_f() {
+	! is_cpu_online_f "$1"
+}
+
+is_numa() {
+	local nodes=("$sysfs_node/node"+([0-9]))
+
+	((${#nodes[@]} > 1))
+}
+
 online_cpu() {
-	is_cpu_offline "$1" || return 0
-	[[ -e $sysfs_cpu/cpu$1/online ]] && echo 1 > "$sysfs_cpu/cpu$1/online"
+	is_cpu_offline_f "$1" || return 0
+	echo 1 > "$sysfs_cpu/cpu$1/online"
 }
 
 offline_cpu() {
-	is_cpu_online "$1" || return 0
-	[[ -e $sysfs_cpu/cpu$1/online ]] && echo 0 > "$sysfs_cpu/cpu$1/online"
+	is_cpu_online_f "$1" || return 0
+	echo 0 > "$sysfs_cpu/cpu$1/online"
 }
 
 mask_cpus() {
@@ -196,15 +222,23 @@ get_proc_cpu_affinity() {
 	xtrace_disable
 
 	local pid=${1:-$$}
-	local status val
+	local status val status_file
 
-	[[ -e /proc/$pid/status ]] || return 1
+	if [[ -e $pid ]]; then
+		status_file=$pid
+	elif [[ -e /proc/$pid/status ]]; then
+		status_file=/proc/$pid/status
+	else
+		return 1
+	fi
+
+	# shellcheck disable=SC2188
 	while IFS=":"$'\t' read -r status val; do
 		if [[ $status == Cpus_allowed_list ]]; then
 			parse_cpu_list <(echo "$val")
 			return 0
 		fi
-	done < "/proc/$pid/status"
+	done < <(< "$status_file")
 
 	xtrace_restore
 }
@@ -347,18 +381,18 @@ set_cpufreq() {
 	[[ -n $min_freq ]] || return 1
 
 	case "${cpufreq_drivers[cpu]}" in
-		acpi-cpufreq)
-			if [[ ${cpufreq_governors[cpu]} != userspace ]]; then
-				echo "userspace" > "$cpufreq/scaling_governors"
+		acpi-cpufreq | cppc_cpufreq)
+			if [[ $(< "$cpufreq/scaling_governor") != userspace ]]; then
+				echo "userspace" > "$cpufreq/scaling_governor"
 			fi
 			echo "$min_freq" > "$cpufreq/scaling_setspeed"
 			;;
 		intel_pstate | intel_cpufreq)
-			if ((min_freq <= cpufreq_max_freqs[cpu])); then
-				echo "$min_freq" > "$cpufreq/scaling_min_freq"
-			fi
 			if [[ -n $max_freq ]] && ((max_freq >= min_freq)); then
 				echo "$max_freq" > "$cpufreq/scaling_max_freq"
+			fi
+			if ((min_freq <= cpufreq_max_freqs[cpu])); then
+				echo "$min_freq" > "$cpufreq/scaling_min_freq"
 			fi
 			;;
 	esac
@@ -378,7 +412,7 @@ exec_under_dynamic_scheduler() {
 	if [[ -e /proc/$spdk_pid/status ]]; then
 		killprocess "$spdk_pid"
 	fi
-	exec_in_cgroup "/cpuset/spdk" "$@" --wait-for-rpc &
+	"$@" --wait-for-rpc &
 	spdk_pid=$!
 	# Give some time for the app to init itself
 	waitforlisten "$spdk_pid"
@@ -386,6 +420,32 @@ exec_under_dynamic_scheduler() {
 	"$rootdir/scripts/rpc.py" framework_start_init
 }
 
+exec_under_static_scheduler() {
+	if [[ -e /proc/$spdk_pid/status ]]; then
+		killprocess "$spdk_pid"
+	fi
+	"$@" --wait-for-rpc &
+	spdk_pid=$!
+	# Give some time for the app to init itself
+	waitforlisten "$spdk_pid"
+}
+
+# Gather busy/idle stats since this function was last called
+get_thread_stats_current() {
+	xtrace_disable
+
+	local total_busy total_idle
+
+	_get_thread_stats total_busy total_idle
+
+	for thread in "${!thread_map[@]}"; do
+		: $((busy[thread] = total_busy[thread] - past_busy[thread], past_busy[thread] = total_busy[thread]))
+		: $((idle[thread] = total_idle[thread] - past_idle[thread], past_idle[thread] = total_idle[thread]))
+	done
+	xtrace_restore
+}
+
+# Gather busy/idle stats since application start
 get_thread_stats() {
 	xtrace_disable
 	_get_thread_stats busy idle
@@ -411,14 +471,16 @@ get_cpu_stat() {
 	local cpu_idx=$1
 	local stat=$2 stats astats
 
-	while read -r cpu stats; do
-		[[ $cpu == "cpu$cpu_idx" ]] && astats=($stats)
-	done < /proc/stat
+	# cpu0 0 0 0 0 0 0 0 0 0 -> _cpu0=(0 0 0 0 0 0 0 0 0)
+	source <(grep '^cpu[0-9]' /proc/stat | sed 's/\([^ ]*\) \(.*\)/_\1=(\2)/')
+
+	# If we were called with valid cpu id return requested time
+	[[ -v _cpu$cpu_idx ]] || return 0
+	local -n cpu_stat=_cpu$cpu_idx
 
 	case "$stat" in
-		idle) echo "${astats[3]}" ;;
-		all) printf '%u\n' "${astats[@]}" ;;
-		*) ;;
+		idle) echo "${cpu_stat[3]}" ;;
+		*) printf '%u\n' "${cpu_stat[@]}" ;;
 	esac
 }
 
@@ -437,11 +499,12 @@ active_thread() {
 get_cpu_time() {
 	xtrace_disable
 
-	local interval=$1 cpu_time=${2:-idle} interval_count
-	shift 2
+	local interval=$1 cpu_time=${2:-idle} print=${3:-0} wait=${4:-1} interval_count
+	shift 4
 	local cpus=("$@") cpu
 	local stats stat old_stats avg_load
 	local total_sample
+	local keep_going=0
 
 	# Exposed for the caller
 	local -g cpu_times=()
@@ -479,18 +542,23 @@ get_cpu_time() {
 	unset -v ${!raw_samples@}
 
 	cpu_time=${cpu_time_map["$cpu_time"]}
-	interval=$((interval <= 0 ? 1 : interval))
-	# We skip first sample to have min 2 for stat comparison
-	interval=$((interval + 1)) interval_count=0
-	while ((interval_count++, --interval >= 0)); do
+	interval_count=0
+	if ((interval <= 0)); then
+		keep_going=1
+	else
+		# We skip first sample to have min 2 for stat comparison
+		interval=$((interval + 1))
+	fi
+	while ((interval_count++, keep_going ? 1 : --interval >= 0)); do
+		((interval_count > 1 && print == 1)) && print_cpu_time_header
+		get_cpu_stat all
 		for cpu in "${cpus[@]}"; do
 			local -n old_stats=old_stats_$cpu
 			local -n avg_load=avg_load_$cpu
 			local -n raw_samples=raw_samples_$cpu
-
+			local -n stats=_cpu$cpu
 			sample_stats=() total_sample=0
 
-			stats=($(get_cpu_stat "$cpu" all))
 			if ((interval_count == 1)); then
 				# Skip first sample
 				old_stats=("${stats[@]}")
@@ -509,8 +577,9 @@ get_cpu_time() {
 				avg_stat+=($((sample_stats[stat] * 100 / (total_sample == 0 ? 1 : total_sample))))
 			done
 			old_stats=("${stats[@]}")
+			((print == 1)) && print_cpu_time "$cpu"
 		done
-		sleep 1s
+		sleep "${wait}s"
 	done
 
 	# We collected % for each time. Now determine the avg % for requested time.
@@ -529,6 +598,47 @@ get_cpu_time() {
 	xtrace_restore
 }
 
+print_cpu_time_header() {
+	local ts
+	ts=$(date "+%R:%S %Z")
+
+	printf '(%s) %8s %8s %8s %8s %8s %8s %8s %8s %8s %8s %8s (test:%s)\n' \
+		"$ts" \
+		"CPU" "%usr" "%nice" "%sys" "%iowait" "%irq" "%soft" "%steal" \
+		"%guest" "%gnice" "%idle" "${TEST_TAG:-N/A}"
+}
+
+print_cpu_time() {
+	local cpu=$1
+
+	local -n _cpu_ref=avg_load_$cpu
+	((${#_cpu_ref[@]} > 0)) || return 0
+
+	usr=("${!_cpu_ref[0]}")
+	nice=("${!_cpu_ref[1]}")
+	system=("${!_cpu_ref[2]}")
+	idle=("${!_cpu_ref[3]}")
+	iowait=("${!_cpu_ref[4]}")
+	irq=("${!_cpu_ref[5]}")
+	soft=("${!_cpu_ref[6]}")
+	steal=("${!_cpu_ref[7]}")
+	guest=("${!_cpu_ref[8]}")
+	gnice=("${!_cpu_ref[9]}")
+
+	printf '%23u %8u %8u %8u %8u %8u %8u %8u %8u %8u %8u\n' \
+		"$cpu" \
+		"${usr[-1]}" \
+		"${nice[-1]}" \
+		"${system[-1]}" \
+		"${iowait[-1]}" \
+		"${irq[-1]}" \
+		"${soft[-1]}" \
+		"${steal[-1]}" \
+		"${guest[-1]}" \
+		"${gnice[-1]}" \
+		"${idle[-1]}"
+}
+
 collect_cpu_idle() {
 	((${#cpus_to_collect[@]} > 0)) || return 1
 
@@ -540,13 +650,14 @@ collect_cpu_idle() {
 	printf 'Collecting cpu idle stats (cpus: %s) for %u seconds...\n' \
 		"${cpus_to_collect[*]}" "$time"
 
-	get_cpu_time "$time" idle "${cpus_to_collect[@]}"
+	get_cpu_time "$time" idle 0 1 "${cpus_to_collect[@]}"
 
-	local user_load
+	local user_load load_median user_spdk_load
 	for cpu in "${cpus_to_collect[@]}"; do
 		samples=(${cpu_times[cpu]})
-		printf '* cpu%u idle samples: %s (avg: %u%%)\n' \
-			"$cpu" "${samples[*]}" "${avg_cpu_time[cpu]}"
+		load_median=$(calc_median "${samples[@]}")
+		printf '* cpu%u idle samples: %s (avg: %u%%, median: %u%%)\n' \
+			"$cpu" "${samples[*]}" "${avg_cpu_time[cpu]}" "$load_median"
 		# Cores with polling reactors have 0% idle time,
 		# while the ones in interrupt mode won't have 100% idle.
 		# During the tests, polling reactors spend the major portion
@@ -565,6 +676,17 @@ collect_cpu_idle() {
 		else
 			printf '* cpu%u is not idle\n' "$cpu"
 			is_idle[cpu]=0
+			# HACK: Since we verify this in context of business of particular SPDK threads, make
+			# the last check against their {u,s}time to determine if we are really busy or not. This
+			# is meant to null and void potential jitter on the cpu.
+			# See https://github.com/spdk/spdk/issues/3362.
+			user_spdk_load=$(get_spdk_proc_time "$time" "$cpu")
+			if ((user_spdk_load <= 15)); then
+				printf '* SPDK thread pinned to cpu%u seems to be idle regardless (%u%%)\n' \
+					"$cpu" \
+					"$user_spdk_load"
+				is_idle[cpu]=1
+			fi
 		fi
 	done
 }
@@ -583,9 +705,9 @@ cpu_usage_clk_tck() {
 
 	# Construct delta based on last two samples of a given time.
 	case "$time" in
-		user | all) ((clk_delta += (user[-1] - user[-2]))) ;;&
-		nice | all) ((clk_delta += (nice[-1] - nice[-2]))) ;;&
-		system | all) ((clk_delta += (system[-1] - system[-2]))) ;;
+		user | all) : $((clk_delta += (user[-1] - user[-2]))) ;;&
+		nice | all) : $((clk_delta += (nice[-1] - nice[-2]))) ;;&
+		system | all) : $((clk_delta += (system[-1] - system[-2]))) ;;
 		*) ;;
 	esac
 	# We assume 1s between each sample. See get_cpu_time().
@@ -616,4 +738,66 @@ update_thread_cpus_map() {
 		done
 	done
 	((${#thread_cpus[@]} > 0))
+}
+
+calc_median() {
+	local samples=("$@") samples_sorted
+	local middle median sample
+
+	samples_sorted=($(printf '%s\n' "${samples[@]}" | sort -n))
+
+	middle=$((${#samples_sorted[@]} / 2))
+	if ((${#samples_sorted[@]} % 2 == 0)); then
+		median=$(((samples_sorted[middle - 1] + samples_sorted[middle]) / 2))
+	else
+		median=${samples_sorted[middle]}
+	fi
+
+	echo "$median"
+
+}
+
+get_spdk_proc_time() {
+	# Similar to cpu_usage_clk_tck() but the values we are working here, per process, are already
+	# divided by SC_CLK_TCK. See proc(5).
+
+	xtrace_disable
+
+	local interval=$1 cpu=$2
+	local thread thread_to_time stats
+	local _time time _stime stime _utime utime
+	local thread_cpu_list
+
+	[[ -e /proc/$spdk_pid/status ]] || return 1
+
+	# Find SPDK thread pinned to given cpu
+	for thread in "/proc/$spdk_pid/task/"*; do
+		thread_cpu_list=($(get_proc_cpu_affinity "$thread/status"))
+		# we aim at reactor threads and these should be bound to a single cpu
+		((${#thread_cpu_list[@]} > 1)) && continue
+		((thread_cpu_list[0] == cpu)) && thread_to_time=$thread && break
+	done
+
+	[[ -e $thread_to_time/stat ]] || return 1
+	interval=$((interval <= 1 ? 2 : interval))
+
+	while ((--interval >= 0)); do
+		# See cgroups.sh -> id_proc()
+		stats=$(< "$thread_to_time/stat") stats=(${stats/*) /})
+		_utime[interval]=${stats[11]} # Amount of time spent in user mode
+		_stime[interval]=${stats[12]} # Amount of time spent in kernel mode
+		_time[interval]=$((_utime[interval] + _stime[interval]))
+		((${#_time[@]} == 1)) && continue
+		utime+=($((_utime[interval] - _utime[interval + 1])))
+		stime+=($((_stime[interval] - _stime[interval + 1])))
+		time+=($((_time[interval] - _time[interval + 1])))
+		sleep 1
+	done
+
+	echo "stime samples: ${stime[*]}" >&2
+	echo "utime samples: ${utime[*]}" >&2
+
+	calc_median "${time[@]}"
+
+	xtrace_restore
 }

@@ -4,7 +4,7 @@
  *   Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 /* We have our own mock for this */
 #define UNIT_TEST_NO_VTOPHYS
 #include "common/lib/test_env.c"
@@ -30,6 +30,8 @@ struct vbdev_compress g_comp_bdev;
 struct comp_bdev_io *g_io_ctx;
 struct comp_io_channel *g_comp_ch;
 
+struct spdk_reduce_vol_params g_vol_params;
+
 static int ut_spdk_reduce_vol_op_complete_err = 0;
 void
 spdk_reduce_vol_writev(struct spdk_reduce_vol *vol, struct iovec *iov, int iovcnt,
@@ -47,18 +49,25 @@ spdk_reduce_vol_readv(struct spdk_reduce_vol *vol, struct iovec *iov, int iovcnt
 	cb_fn(cb_arg, ut_spdk_reduce_vol_op_complete_err);
 }
 
+void
+spdk_reduce_vol_unmap(struct spdk_reduce_vol *vol,
+		      uint64_t offset, uint64_t length, spdk_reduce_vol_op_complete cb_fn,
+		      void *cb_arg)
+{
+	cb_fn(cb_arg, ut_spdk_reduce_vol_op_complete_err);
+	spdk_thread_poll(spdk_get_thread(), 0, 0);
+}
+
 #include "bdev/compress/vbdev_compress.c"
 
 /* SPDK stubs */
-DEFINE_STUB(spdk_accel_get_opc_module_name, int, (enum accel_opcode opcode,
+DEFINE_STUB(spdk_accel_get_opc_module_name, int, (enum spdk_accel_opcode opcode,
 		const char **module_name), 0);
 DEFINE_STUB(spdk_accel_get_io_channel, struct spdk_io_channel *, (void), (void *)0xfeedbeef);
 DEFINE_STUB(spdk_bdev_get_aliases, const struct spdk_bdev_aliases_list *,
 	    (const struct spdk_bdev *bdev), NULL);
 DEFINE_STUB_V(spdk_bdev_module_list_add, (struct spdk_bdev_module *bdev_module));
 DEFINE_STUB_V(spdk_bdev_free_io, (struct spdk_bdev_io *g_bdev_io));
-DEFINE_STUB(spdk_bdev_io_type_supported, bool, (struct spdk_bdev *bdev,
-		enum spdk_bdev_io_type io_type), 0);
 DEFINE_STUB_V(spdk_bdev_module_release_bdev, (struct spdk_bdev *bdev));
 DEFINE_STUB_V(spdk_bdev_close, (struct spdk_bdev_desc *desc));
 DEFINE_STUB(spdk_bdev_get_name, const char *, (const struct spdk_bdev *bdev), 0);
@@ -83,13 +92,17 @@ DEFINE_STUB_V(spdk_reduce_vol_unload, (struct spdk_reduce_vol *vol,
 DEFINE_STUB_V(spdk_reduce_vol_load, (struct spdk_reduce_backing_dev *backing_dev,
 				     spdk_reduce_vol_op_with_handle_complete cb_fn, void *cb_arg));
 DEFINE_STUB(spdk_reduce_vol_get_params, const struct spdk_reduce_vol_params *,
-	    (struct spdk_reduce_vol *vol), NULL);
+	    (struct spdk_reduce_vol *vol), &g_vol_params);
+DEFINE_STUB(spdk_reduce_vol_get_pm_path, const char *,
+	    (const struct spdk_reduce_vol *vol), NULL);
 DEFINE_STUB_V(spdk_reduce_vol_init, (struct spdk_reduce_vol_params *params,
 				     struct spdk_reduce_backing_dev *backing_dev,
 				     const char *pm_file_dir,
 				     spdk_reduce_vol_op_with_handle_complete cb_fn, void *cb_arg));
 DEFINE_STUB_V(spdk_reduce_vol_destroy, (struct spdk_reduce_backing_dev *backing_dev,
 					spdk_reduce_vol_op_complete cb_fn, void *cb_arg));
+DEFINE_STUB(spdk_reduce_vol_get_info, const struct spdk_reduce_vol_info *,
+	    (const struct spdk_reduce_vol *vol), 0);
 
 int g_small_size_counter = 0;
 int g_small_size_modify = 0;
@@ -177,18 +190,20 @@ spdk_bdev_io_complete(struct spdk_bdev_io *bdev_io, enum spdk_bdev_io_status sta
 }
 
 int
-spdk_accel_submit_compress(struct spdk_io_channel *ch, void *dst, uint64_t nbytes,
-			   struct iovec *src_iovs, size_t src_iovcnt, uint32_t *output_size, int flags,
-			   spdk_accel_completion_cb cb_fn, void *cb_arg)
+spdk_accel_submit_compress_ext(struct spdk_io_channel *ch, void *dst, uint64_t nbytes,
+			       struct iovec *src_iovs, size_t src_iovcnt,
+			       enum spdk_accel_comp_algo algo, uint32_t level,
+			       uint32_t *output_size, spdk_accel_completion_cb cb_fn, void *cb_arg)
 {
 
 	return 0;
 }
 
 int
-spdk_accel_submit_decompress(struct spdk_io_channel *ch, struct iovec *dst_iovs, size_t dst_iovcnt,
-			     struct iovec *src_iovs, size_t src_iovcnt, uint32_t *output_size, int flags,
-			     spdk_accel_completion_cb cb_fn, void *cb_arg)
+spdk_accel_submit_decompress_ext(struct spdk_io_channel *ch, struct iovec *dst_iovs,
+				 size_t dst_iovcnt, struct iovec *src_iovs, size_t src_iovcnt,
+				 enum spdk_accel_comp_algo algo, uint32_t *output_size,
+				 spdk_accel_completion_cb cb_fn, void *cb_arg)
 {
 
 	return 0;
@@ -206,9 +221,7 @@ test_setup(void)
 	spdk_set_thread(thread);
 
 	g_comp_bdev.reduce_thread = thread;
-	g_comp_bdev.backing_dev.unmap = _comp_reduce_unmap;
-	g_comp_bdev.backing_dev.readv = _comp_reduce_readv;
-	g_comp_bdev.backing_dev.writev = _comp_reduce_writev;
+	g_comp_bdev.backing_dev.submit_backing_io = _comp_reduce_submit_backing_io;
 	g_comp_bdev.backing_dev.compress = _comp_reduce_compress;
 	g_comp_bdev.backing_dev.decompress = _comp_reduce_decompress;
 	g_comp_bdev.backing_dev.blocklen = 512;
@@ -228,6 +241,9 @@ test_setup(void)
 
 	g_io_ctx->comp_ch = g_comp_ch;
 	g_io_ctx->comp_bdev = &g_comp_bdev;
+
+	g_vol_params.chunk_size = 16384;
+	g_vol_params.logical_block_size = 512;
 
 	return 0;
 }
@@ -299,6 +315,39 @@ test_vbdev_compress_submit_request(void)
 	vbdev_compress_submit_request(g_io_ch, g_bdev_io);
 	CU_ASSERT(g_bdev_io->internal.status == SPDK_BDEV_IO_STATUS_FAILED);
 	CU_ASSERT(g_completion_called == true);
+
+	/* test unmap. for io unit = 4k, blocksize=512, chunksize=16k.
+	 * array about offset and length, unit block.
+	 * Contains cases of {one partial chunk;
+	 * one full chunk;
+	 * one full chunk and one partial tail chunks;
+	 * one full chunk and two partial head/tail chunks;
+	 * multi full chunk and two partial chunks} */
+	uint64_t unmap_io_array[][2] = {
+		{7, 15},
+		{0, 32},
+		{0, 47},
+		{7, 83},
+		{17, 261}
+	};
+	g_bdev_io->type = SPDK_BDEV_IO_TYPE_UNMAP;
+	for (uint64_t i = 0; i < SPDK_COUNTOF(unmap_io_array); i++) {
+		g_bdev_io->u.bdev.offset_blocks = unmap_io_array[i][0];
+		g_bdev_io->u.bdev.offset_blocks = unmap_io_array[i][1];
+		/* test success */
+		ut_spdk_reduce_vol_op_complete_err = 0;
+		g_completion_called = false;
+		vbdev_compress_submit_request(g_io_ch, g_bdev_io);
+		CU_ASSERT(g_bdev_io->internal.status == SPDK_BDEV_IO_STATUS_SUCCESS);
+		CU_ASSERT(g_completion_called == true);
+
+		/* test fail */
+		ut_spdk_reduce_vol_op_complete_err = 1;
+		g_completion_called = false;
+		vbdev_compress_submit_request(g_io_ch, g_bdev_io);
+		CU_ASSERT(g_bdev_io->internal.status == SPDK_BDEV_IO_STATUS_FAILED);
+		CU_ASSERT(g_completion_called == true);
+	}
 }
 
 static void
@@ -317,9 +366,33 @@ test_reset(void)
 	 */
 }
 
+bool g_comp_base_support_rw = true;
+
+bool
+spdk_bdev_io_type_supported(struct spdk_bdev *bdev, enum spdk_bdev_io_type io_type)
+{
+	return g_comp_base_support_rw;
+}
+
 static void
 test_supported_io(void)
 {
+	g_comp_base_support_rw = false;
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_READ) == false);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_WRITE) == false);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_UNMAP) == true);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_RESET) == false);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_FLUSH) == false);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_WRITE_ZEROES) == false);
+
+	g_comp_base_support_rw = true;
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_READ) == true);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_WRITE) == true);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_UNMAP) == true);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_RESET) == false);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_FLUSH) == false);
+	CU_ASSERT(vbdev_compress_io_type_supported(&g_comp_bdev, SPDK_BDEV_IO_TYPE_WRITE_ZEROES) == false);
+
 
 }
 
@@ -329,7 +402,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("compress", test_setup, test_cleanup);
@@ -340,9 +412,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_supported_io);
 	CU_ADD_TEST(suite, test_reset);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

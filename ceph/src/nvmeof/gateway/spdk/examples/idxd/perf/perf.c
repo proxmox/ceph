@@ -523,7 +523,7 @@ _submit_single(struct idxd_chan_entry *t, struct idxd_task *task)
 		/* For fill use the first byte of the task->dst buffer */
 		diov.iov_base = task->dst;
 		diov.iov_len = g_xfer_size_bytes;
-		rc = spdk_idxd_submit_fill(t->ch, &diov, 1, *(uint8_t *)task->src,
+		rc = spdk_idxd_submit_fill(t->ch, &diov, 1, *(uint64_t *)task->src,
 					   flags, idxd_done, task);
 		break;
 	case IDXD_CRC32C:
@@ -818,6 +818,7 @@ init_env(void)
 {
 	struct spdk_env_opts opts;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "idxd_perf";
 	opts.core_mask = g_core_mask;

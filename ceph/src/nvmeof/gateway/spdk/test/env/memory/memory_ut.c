@@ -6,9 +6,9 @@
 #include "env_dpdk/memory.c"
 
 #define UNIT_TEST_NO_VTOPHYS
-#define UNIT_TEST_NO_PCI_ADDR
+#define UNIT_TEST_NO_ENV_MEMORY
 #include "common/lib/test_env.c"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "spdk/bit_array.h"
 
@@ -22,6 +22,7 @@ DEFINE_STUB(rte_mem_virt2memseg, struct rte_memseg *,
 DEFINE_STUB(spdk_env_dpdk_external_init, bool, (void), true);
 DEFINE_STUB(rte_mem_event_callback_register, int,
 	    (const char *name, rte_mem_event_callback_t clb, void *arg), 0);
+DEFINE_STUB(rte_mem_event_callback_unregister, int, (const char *name, void *arg), 0);
 DEFINE_STUB(rte_mem_virt2iova, rte_iova_t, (const void *virtaddr), 0);
 DEFINE_STUB(rte_eal_iova_mode, enum rte_iova_mode, (void), RTE_IOVA_VA);
 DEFINE_STUB(rte_vfio_is_enabled, int, (const char *modname), 0);
@@ -503,9 +504,7 @@ main(int argc, char **argv)
 		return CU_get_error();
 	}
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	spdk_bit_array_free(&g_page_array);

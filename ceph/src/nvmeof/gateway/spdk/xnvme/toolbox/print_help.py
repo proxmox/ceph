@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Traverse Makefile and print all help instructions"""
 import argparse
 import os
@@ -79,6 +84,10 @@ def print_help(args):
                 f"  make help          {SEP} Brief target description",
                 f"  make help-verbose  {SEP} Verbose target descriptions",
                 f"  make [target]      {SEP} Invoke the given 'target'",
+                " ",
+                "Example:",
+                " ",
+                "  make common && sudo make install",
                 " ",
                 "Targets:",
                 " ",

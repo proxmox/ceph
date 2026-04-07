@@ -3,7 +3,7 @@
  *   All rights reserved.
  */
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "spdk_internal/mock.h"
 #include "spdk_internal/idxd.h"
 #include "common/lib/test_env.c"
@@ -72,6 +72,7 @@ spdk_pci_device_cfg_write32(struct spdk_pci_device *dev, uint32_t value,
 
 #define WQ_CFG_OFFSET (0x800 / IDXD_TABLE_OFFSET_MULT)
 #define TOTAL_WQE_SIZE 0x40
+#define LOG2_WQ_MAX_BATCH 5
 static int
 test_idxd_wq_config(void)
 {
@@ -216,7 +217,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("idxd_user", NULL, NULL);
@@ -226,9 +226,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_idxd_group_config);
 	CU_ADD_TEST(suite, test_idxd_wq_config);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

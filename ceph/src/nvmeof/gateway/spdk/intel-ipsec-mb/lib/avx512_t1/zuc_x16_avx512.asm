@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2020-2022, Intel Corporation
+;; Copyright (c) 2020-2023, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -25,12 +25,12 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "include/os.asm"
-%include "include/reg_sizes.asm"
+%include "include/os.inc"
+%include "include/reg_sizes.inc"
 %include "include/zuc_sbox.inc"
-%include "include/transpose_avx512.asm"
+%include "include/transpose_avx512.inc"
 %include "include/const.inc"
-%include "include/mb_mgr_datastruct.asm"
+%include "include/mb_mgr_datastruct.inc"
 %include "include/cet.inc"
 %define APPEND(a,b) a %+ b
 %define APPEND3(a,b,c) a %+ b %+ c

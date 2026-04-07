@@ -1,6 +1,7 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2024 Huawei Technologies
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef UTILS_CACHE_LINE_H_
@@ -18,32 +19,6 @@
  * @file utils_cache_line.h
  * @brief OCF utilities for cache line operations
  */
-
-static inline ocf_cache_line_size_t ocf_line_size(
-		struct ocf_cache *cache)
-{
-	return cache->metadata.settings.size;
-}
-
-static inline uint64_t ocf_line_pages(struct ocf_cache *cache)
-{
-	return cache->metadata.settings.size / PAGE_SIZE;
-}
-
-static inline uint64_t ocf_line_sectors(struct ocf_cache *cache)
-{
-	return cache->metadata.settings.sector_count;
-}
-
-static inline uint64_t ocf_line_end_sector(struct ocf_cache *cache)
-{
-	return cache->metadata.settings.sector_end;
-}
-
-static inline uint64_t ocf_line_start_sector(struct ocf_cache *cache)
-{
-	return cache->metadata.settings.sector_start;
-}
 
 static inline uint64_t ocf_bytes_round_lines(struct ocf_cache *cache,
 		uint64_t bytes)
@@ -218,17 +193,16 @@ static inline void ocf_purge_map_info(struct ocf_request *req)
 		if (map_idx == 0) {
 			/* First */
 
-			start_bit = BYTES_TO_SECTORS(req->byte_position)
-					% ocf_line_sectors(cache);
-
+			start_bit = (BYTES_TO_SECTORS(req->addr)
+					% ocf_line_sectors(cache));
 		}
 
 		if (map_idx == (count - 1)) {
 			/* Last */
 
-			end_bit = BYTES_TO_SECTORS(req->byte_position +
-					req->byte_length - 1) %
-					ocf_line_sectors(cache);
+			end_bit = (BYTES_TO_SECTORS(req->addr +
+					req->bytes - 1) %
+					ocf_line_sectors(cache));
 		}
 
 		ocf_metadata_start_collision_shared_access(cache, map[map_idx].
@@ -244,8 +218,8 @@ static inline
 uint8_t ocf_map_line_start_sector(struct ocf_request *req, uint32_t line)
 {
 	if (line == 0) {
-		return BYTES_TO_SECTORS(req->byte_position)
-					% ocf_line_sectors(req->cache);
+		return (BYTES_TO_SECTORS(req->addr)
+				% ocf_line_sectors(req->cache));
 	}
 
 	return 0;
@@ -255,9 +229,8 @@ static inline
 uint8_t ocf_map_line_end_sector(struct ocf_request *req, uint32_t line)
 {
 	if (line == req->core_line_count - 1) {
-		return BYTES_TO_SECTORS(req->byte_position +
-					req->byte_length - 1) %
-					ocf_line_sectors(req->cache);
+		return (BYTES_TO_SECTORS(req->addr + req->bytes - 1) %
+				ocf_line_sectors(req->cache));
 	}
 
 	return ocf_line_end_sector(req->cache);

@@ -1,6 +1,6 @@
 /*
- * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * Copyright(c) 2012-2022 Intel Corporation
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef __LAYER_CLEANING_POLICY_H__
@@ -41,6 +41,7 @@ struct cleaning_policy_meta {
 
 struct ocf_cleaner {
 	struct ocf_refcnt refcnt __attribute__((aligned(64)));
+	ocf_cleaning_t policy;
 	void *cleaning_policy_context;
 	ocf_queue_t io_queue;
 	ocf_cleaner_end_t end;
@@ -52,5 +53,7 @@ int ocf_start_cleaner(ocf_cache_t cache);
 void ocf_kick_cleaner(ocf_cache_t cache);
 
 void ocf_stop_cleaner(ocf_cache_t cache);
+
+typedef void (*ocf_cleaning_populate_end_t)(void *priv, int error);
 
 #endif

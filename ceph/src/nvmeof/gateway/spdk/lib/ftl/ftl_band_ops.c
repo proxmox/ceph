@@ -1,5 +1,6 @@
 /*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2022 Intel Corporation.
+ *   Copyright 2023 Solidigm All Rights Reserved
  *   All rights reserved.
  */
 
@@ -19,12 +20,21 @@ write_rq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 
 	ftl_stats_bdev_io_completed(dev, rq->owner.compaction ? FTL_STATS_TYPE_CMP : FTL_STATS_TYPE_GC,
 				    bdev_io);
+	spdk_bdev_free_io(bdev_io);
 
 	rq->success = success;
+	if (spdk_likely(rq->success)) {
+		ftl_p2l_ckpt_issue(rq);
+	} else {
+#ifdef SPDK_FTL_RETRY_ON_ERROR
+		assert(rq->io.band->queue_depth > 0);
+		rq->io.band->queue_depth--;
+		rq->owner.cb(rq);
 
-	ftl_p2l_ckpt_issue(rq);
-
-	spdk_bdev_free_io(bdev_io);
+#else
+		ftl_abort();
+#endif
+	}
 }
 
 static void
@@ -35,10 +45,9 @@ ftl_band_rq_bdev_write(void *_rq)
 	struct spdk_ftl_dev *dev = band->dev;
 	int rc;
 
-	rc = spdk_bdev_writev_blocks(dev->base_bdev_desc, dev->base_ioch,
-				     rq->io_vec, rq->io_vec_size,
-				     rq->io.addr, rq->num_blocks,
-				     write_rq_end, rq);
+	rc = spdk_bdev_write_blocks(dev->base_bdev_desc, dev->base_ioch,
+				    rq->io_payload, rq->io.addr, rq->num_blocks,
+				    write_rq_end, rq);
 
 	if (spdk_unlikely(rc)) {
 		if (rc == -ENOMEM) {
@@ -280,7 +289,7 @@ ftl_band_open(struct ftl_band *band, enum ftl_band_type type)
 {
 	struct spdk_ftl_dev *dev = band->dev;
 	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_BAND_MD];
-	struct ftl_layout_region *region = &dev->layout.region[FTL_LAYOUT_REGION_TYPE_BAND_MD];
+	struct ftl_layout_region *region = ftl_layout_region_get(dev, FTL_LAYOUT_REGION_TYPE_BAND_MD);
 	struct ftl_p2l_map *p2l_map = &band->p2l_map;
 
 	ftl_band_set_type(band, type);
@@ -299,8 +308,8 @@ ftl_band_open(struct ftl_band *band, enum ftl_band_type type)
 		ftl_abort();
 	}
 
-	ftl_md_persist_entry(md, band->id, p2l_map->band_dma_md, NULL,
-			     band_open_cb, band, &band->md_persist_entry_ctx);
+	ftl_md_persist_entries(md, band->id, 1, p2l_map->band_dma_md, NULL,
+			       band_open_cb, band, &band->md_persist_entry_ctx);
 }
 
 static void
@@ -327,7 +336,7 @@ band_map_write_cb(struct ftl_basic_rq *brq)
 	struct ftl_band *band = brq->io.band;
 	struct ftl_p2l_map *p2l_map = &band->p2l_map;
 	struct spdk_ftl_dev *dev = band->dev;
-	struct ftl_layout_region *region = &dev->layout.region[FTL_LAYOUT_REGION_TYPE_BAND_MD];
+	struct ftl_layout_region *region = ftl_layout_region_get(dev, FTL_LAYOUT_REGION_TYPE_BAND_MD);
 	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_BAND_MD];
 	uint32_t band_map_crc;
 
@@ -339,8 +348,8 @@ band_map_write_cb(struct ftl_basic_rq *brq)
 		p2l_map->band_dma_md->state = FTL_BAND_STATE_CLOSED;
 		p2l_map->band_dma_md->p2l_map_checksum = band_map_crc;
 
-		ftl_md_persist_entry(md, band->id, p2l_map->band_dma_md, NULL,
-				     band_close_cb, band, &band->md_persist_entry_ctx);
+		ftl_md_persist_entries(md, band->id, 1, p2l_map->band_dma_md, NULL,
+				       band_close_cb, band, &band->md_persist_entry_ctx);
 	} else {
 #ifdef SPDK_FTL_RETRY_ON_ERROR
 		/* Try to retry in case of failure */
@@ -394,15 +403,15 @@ ftl_band_free(struct ftl_band *band)
 	struct spdk_ftl_dev *dev = band->dev;
 	struct ftl_p2l_map *p2l_map = &band->p2l_map;
 	struct ftl_md *md = dev->layout.md[FTL_LAYOUT_REGION_TYPE_BAND_MD];
-	struct ftl_layout_region *region = &dev->layout.region[FTL_LAYOUT_REGION_TYPE_BAND_MD];
+	struct ftl_layout_region *region = ftl_layout_region_get(dev, FTL_LAYOUT_REGION_TYPE_BAND_MD);
 
 	memcpy(p2l_map->band_dma_md, band->md, region->entry_size * FTL_BLOCK_SIZE);
 	p2l_map->band_dma_md->state = FTL_BAND_STATE_FREE;
 	p2l_map->band_dma_md->close_seq_id = 0;
 	p2l_map->band_dma_md->p2l_map_checksum = 0;
 
-	ftl_md_persist_entry(md, band->id, p2l_map->band_dma_md, NULL,
-			     band_free_cb, band, &band->md_persist_entry_ctx);
+	ftl_md_persist_entries(md, band->id, 1, p2l_map->band_dma_md, NULL,
+			       band_free_cb, band, &band->md_persist_entry_ctx);
 
 	/* TODO: The whole band erase code should probably be done here instead */
 }

@@ -1,6 +1,7 @@
-// Copyright (C) Rishabh Shukla <rishabh.sh@samsung.com>
-// Copyright (C) Pranjal Dave <pranjal.58@partner.samsung.com>
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Samsung Electronics Co., Ltd
+//
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
@@ -52,5 +53,10 @@ xnvme_be_windows_sync_nvme_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t 
 int
 xnvme_be_windows_nvme_cmd_admin(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes,
 				void *mbuf, size_t mbuf_nbytes);
+
+int
+xnvme_be_windows_block_cmd_admin(struct xnvme_cmd_ctx *ctx, void *dbuf,
+				 size_t XNVME_UNUSED(dbuf_nbytes), void *XNVME_UNUSED(mbuf),
+				 size_t XNVME_UNUSED(mbuf_nbytes));
 
 #endif /* __INTERNAL_XNVME_BE_WINDOWS_NVME_H */

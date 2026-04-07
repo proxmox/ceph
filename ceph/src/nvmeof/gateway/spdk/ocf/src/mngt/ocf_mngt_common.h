@@ -1,6 +1,6 @@
 /*
  * Copyright(c) 2012-2021 Intel Corporation
- * SPDX-License-Identifier: BSD-3-Clause-Clear
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 
@@ -29,5 +29,8 @@ int ocf_mngt_cache_lock_init(ocf_cache_t cache);
 void ocf_mngt_cache_lock_deinit(ocf_cache_t cache);
 
 bool ocf_mngt_cache_is_locked(ocf_cache_t cache);
+
+void __set_cleaning_policy(ocf_cache_t cache,
+		ocf_cleaning_t new_cleaning_policy);
 
 #endif /* __OCF_MNGT_COMMON_H__ */

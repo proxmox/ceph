@@ -7,7 +7,7 @@
 
 #include "spdk/util.h"
 #include "spdk/queue.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include <rte_config.h>
 #include <rte_version.h>
@@ -180,9 +180,7 @@ main(int argc, char **argv)
 		return CU_get_error();
 	}
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

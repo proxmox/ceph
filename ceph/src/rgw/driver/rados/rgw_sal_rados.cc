@@ -555,6 +555,10 @@ int RadosBucket::remove_bypass_gc(int concurrent_max, bool
         rgw_raw_obj raw_head_obj;
         store->get_raw_obj(manifest.get_head_placement_rule(), head_obj, &raw_head_obj);
 
+        // tag for cls_refcount
+        const std::string tag = (astate->tail_tag.length() > 0
+                               ? astate->tail_tag.to_str()
+                               : astate->obj_tag.to_str());
         for (; miter != manifest.obj_end(dpp) && max_aio--; ++miter) {
           if (!max_aio) {
             ret = drain_aio(handles);
@@ -571,7 +575,7 @@ int RadosBucket::remove_bypass_gc(int concurrent_max, bool
             continue;
           }
 
-          ret = store->getRados()->delete_raw_obj_aio(dpp, last_obj, handles);
+          ret = store->getRados()->delete_tail_obj_aio(dpp, last_obj, tag, handles);
           if (ret < 0) {
             ldpp_dout(dpp, -1) << "ERROR: delete obj aio failed with " << ret << dendl;
             return ret;
@@ -709,8 +713,10 @@ int RadosBucket::unlink(const DoutPrefixProvider* dpp, const rgw_owner& owner, o
                                              y, dpp, update_entrypoint);
 }
 
-int RadosBucket::chown(const DoutPrefixProvider* dpp, const rgw_owner& new_owner, optional_yield y)
-{
+int RadosBucket::chown(const DoutPrefixProvider* dpp,
+                       const rgw_owner& new_owner,
+                       const std::string& new_owner_name,
+                       optional_yield y) {
   // unlink from the owner, but don't update the entrypoint until link()
   int r = this->unlink(dpp, info.owner, y, false);
   if (r < 0) {
@@ -730,13 +736,26 @@ int RadosBucket::chown(const DoutPrefixProvider* dpp, const rgw_owner& new_owner
     try {
       auto p = i->second.cbegin();
 
-      RGWAccessControlPolicy acl;
-      decode(acl, p);
+      RGWAccessControlPolicy policy;
+      decode(policy, p);
+      //Get the ACL from the policy
+      RGWAccessControlList& acl = policy.get_acl();
+      ACLOwner& owner = policy.get_owner();
 
-      acl.get_owner().id = new_owner;
+      //Remove grant that is set to old owner
+      acl.remove_canon_user_grant(owner.id);
+
+      //Create a grant and add grant
+      ACLGrant grant;
+      grant.set_canon(new_owner, new_owner_name, RGW_PERM_FULL_CONTROL);
+      acl.add_grant(grant);
+
+      //Update the ACL owner to the new user
+      owner.id = new_owner;
+      owner.display_name = new_owner_name;
 
       bufferlist bl;
-      encode(acl, bl);
+      encode(policy, bl);
 
       i->second = std::move(bl);
     } catch (const buffer::error&) {
@@ -3225,18 +3244,20 @@ int RadosObject::handle_obj_expiry(const DoutPrefixProvider* dpp, optional_yield
     obj_key.instance = "null";
   }
 
-  real_time read_mtime;
-  std::unique_ptr<rgw::sal::Object::ReadOp> read_op(get_read_op());
-  read_op->params.lastmod = &read_mtime;
-  ret = read_op->prepare(y, dpp);
+  ret = get_obj_attrs(y, dpp);
   if (ret < 0) {
     ldpp_dout(dpp, -1) << "handle_obj_expiry Obj:" << get_key() << 
-	    ", read_op failed ret=" << ret << dendl;
+	    ", getting object attrs failed ret=" << ret << dendl;
     return ret;
   }
 
   if (obj_key.instance == "null") {
     obj_key.instance.clear();
+  }
+
+  // ensure object is not overwritten and is really expired
+  if (!is_expired()) {
+    return 0;
   }
 
   set_atomic(true);
@@ -3270,7 +3291,7 @@ int RadosObject::handle_obj_expiry(const DoutPrefixProvider* dpp, optional_yield
           obj_op.meta.if_nomatch = NULL;
           obj_op.meta.user_data = NULL;
           obj_op.meta.zones_trace = NULL;
-          obj_op.meta.set_mtime = read_mtime;
+          obj_op.meta.set_mtime = state.mtime;
 
           RGWObjManifest *pmanifest;
           pmanifest = &m;
@@ -3301,6 +3322,7 @@ int RadosObject::handle_obj_expiry(const DoutPrefixProvider* dpp, optional_yield
           attrs.erase(RGW_ATTR_RESTORE_EXPIRY_DATE);
           attrs.erase(RGW_ATTR_CLOUDTIER_STORAGE_CLASS);
       	  attrs.erase(RGW_ATTR_RESTORE_VERSIONED_EPOCH);
+      	  attrs.erase(RGW_ATTR_DELETE_AT);
 
           bufferlist bl;
           bl.append(tier_config.name);
@@ -3322,12 +3344,9 @@ int RadosObject::handle_obj_expiry(const DoutPrefixProvider* dpp, optional_yield
     }
   }
   // object is not restored/temporary; go for regular deletion
-  // ensure object is not overwritten and is really expired
-  if (is_expired()) {
     ldpp_dout(dpp, 10) << "Deleting expired obj:" << get_key() << dendl;
 
     ret = obj->delete_object(dpp, null_yield, rgw::sal::FLAG_LOG_OP, nullptr, nullptr);
-  }
 
   return ret;
 }
@@ -3567,7 +3586,10 @@ int RadosObject::RadosDeleteOp::delete_obj(const DoutPrefixProvider* dpp, option
   parent_op.params.remove_objs = params.remove_objs;
   parent_op.params.expiration_time = params.expiration_time;
   parent_op.params.unmod_since = params.unmod_since;
+  parent_op.params.last_mod_time_match = params.last_mod_time_match;
   parent_op.params.mtime = params.mtime;
+  parent_op.params.size_match = params.size_match;
+  parent_op.params.if_match = params.if_match;
   parent_op.params.high_precision_time = params.high_precision_time;
   parent_op.params.zones_trace = params.zones_trace;
   parent_op.params.abortmp = params.abortmp;
@@ -3577,7 +3599,7 @@ int RadosObject::RadosDeleteOp::delete_obj(const DoutPrefixProvider* dpp, option
       parent_op.params.check_objv = params.objv_tracker->version_for_check();
   }
 
-  int ret = parent_op.delete_obj(y, dpp, flags & FLAG_LOG_OP, flags & FLAG_FORCE_OP);
+  int ret = parent_op.delete_obj(y, dpp, flags & FLAG_LOG_OP, flags & FLAG_FORCE_OP, flags & FLAG_SKIP_UPDATE_OLH);
   if (ret < 0) {
     return ret;
   }
@@ -3608,7 +3630,7 @@ int RadosObject::delete_object(const DoutPrefixProvider* dpp,
   }
 
   // convert flags to bool params
-  return del_op.delete_obj(y, dpp, flags & FLAG_LOG_OP, flags & FLAG_FORCE_OP);
+  return del_op.delete_obj(y, dpp, flags & FLAG_LOG_OP, flags & FLAG_FORCE_OP, flags & FLAG_SKIP_UPDATE_OLH);
 } // RadosObject::delete_object
 
 int RadosObject::copy_object(const ACLOwner& owner,
@@ -4108,7 +4130,9 @@ int RadosMultipartUpload::complete(const DoutPrefixProvider *dpp,
 				   std::string& tag, ACLOwner& owner,
 				   uint64_t olh_epoch,
 				   rgw::sal::Object* target_obj,
-				   prefix_map_t& processed_prefixes)
+				   prefix_map_t& processed_prefixes,
+           const char *if_match,
+           const char *if_nomatch)
 {
   char final_etag[CEPH_CRYPTO_MD5_DIGESTSIZE];
   char final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
@@ -4299,6 +4323,8 @@ int RadosMultipartUpload::complete(const DoutPrefixProvider *dpp,
   obj_op.meta.modify_tail = true;
   obj_op.meta.completeMultipart = true;
   obj_op.meta.olh_epoch = olh_epoch;
+  obj_op.meta.if_match = if_match;
+  obj_op.meta.if_nomatch = if_nomatch;
 
   const req_context rctx{dpp, y, nullptr};
   ret = obj_op.write_meta(ofs, accounted_size, attrs, rctx, get_trace());
