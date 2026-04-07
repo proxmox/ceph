@@ -31,10 +31,10 @@ index 196dc084135..aa257a14632 100644
  rm_conffile /etc/logrotate.d/ceph.logrotate
 +rm_conffile /etc/init.d/ceph 19.2.2-pve6~ ceph-base
 diff --git a/debian/rules b/debian/rules
-index fa7e55b03be..212b931d21e 100755
+index 12208a0a080..77bba513bca 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -101,8 +101,6 @@ override_dh_installinit:
+@@ -102,8 +102,6 @@ override_dh_installinit:
  	install -m0644 etc/default/ceph debian/ceph-common/etc/default/
  	install -d -m0755 debian/ceph-common/usr/lib/tmpfiles.d
  	install -m 0644 -D systemd/ceph.tmpfiles.d debian/ceph-common/usr/lib/tmpfiles.d/ceph.conf

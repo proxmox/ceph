@@ -13,10 +13,10 @@ Signed-off-by: Max R. Carrara <m.carrara@proxmox.com>
  1 file changed, 5 insertions(+), 5 deletions(-)
 
 diff --git a/debian/control b/debian/control
-index 35c1dbe5bd2..e868d2aa29e 100644
+index 7d770df19c6..a4ea16807f9 100644
 --- a/debian/control
 +++ b/debian/control
-@@ -239,11 +239,11 @@ Depends: ceph-base (= ${binary:Version}),
+@@ -243,11 +243,11 @@ Depends: ceph-base (= ${binary:Version}),
           ${misc:Depends},
           ${python3:Depends},
           ${shlibs:Depends},

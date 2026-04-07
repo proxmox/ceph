@@ -16,10 +16,10 @@ Signed-off-by: Max R. Carrara <m.carrara@proxmox.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/debian/rules b/debian/rules
-index b935efaa8cd..48f2aad2e1b 100755
+index ee4eff2bdc5..63d9e4a3c1f 100755
 --- a/debian/rules
 +++ b/debian/rules
-@@ -88,7 +88,7 @@ override_dh_auto_install:
+@@ -89,7 +89,7 @@ override_dh_auto_install:
  
  # doc/changelog is a directory, which confuses dh_installchangelogs
  override_dh_installchangelogs:
