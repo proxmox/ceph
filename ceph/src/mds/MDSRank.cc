@@ -96,8 +96,8 @@ private:
 
     // I need to seal off the current segment, and then mark all
     // previous segments for expiry
-    auto sle = mdcache->create_subtree_map();
-    mdlog->submit_entry(sle);
+    auto* sle = mdcache->create_subtree_map();
+    [[maybe_unused]] LogSegment::seq_t seq = mdlog->submit_entry(sle);
 
     Context *ctx = new LambdaContext([this](int r) {
         handle_flush_mdlog(r);
@@ -213,10 +213,6 @@ private:
     // Now everyone I'm interested in is expired
     mdlog->trim_expired_segments();
 
-    dout(5) << __func__ << ": trim complete, expire_pos/trim_pos is now "
-            << std::hex << mdlog->get_journaler()->get_expire_pos() << "/"
-            << mdlog->get_journaler()->get_trimmed_pos() << dendl;
-
     write_journal_head();
   }
 
@@ -244,6 +240,10 @@ private:
 
   void finish(int r) override {
     dout(20) << __func__ << ": r=" << r << dendl;
+
+    dout(5) << __func__ << ": trimming is complete; wait for journal head write. Journal expire_pos/trim_pos is now "
+            << std::hex << mdlog->get_journaler()->get_expire_pos() << "/"
+            << mdlog->get_journaler()->get_trimmed_pos() << dendl;
     on_finish->complete(r);
   }
 
@@ -3100,6 +3100,23 @@ void MDSRankDispatcher::handle_asok_command(
   } else if (command == "quiesce db") {
     command_quiesce_db(cmdmap, on_finish);
     return;
+  } else if (command == "dump stray") {
+    dout(10) << "dump_stray start" <<  dendl;
+    // the context is a wrapper for formatter to be used while scanning stray dir
+    auto context = std::make_unique<MDCache::C_MDS_DumpStrayDirCtx>(mdcache, f,
+     [this,on_finish](int r) {
+      // completion callback, will be called when scan is done
+      dout(10) << "dump_stray done" <<  dendl;
+      bufferlist bl;
+      on_finish(r, "", bl);
+    });
+    std::lock_guard l(mds_lock);
+    r = mdcache->stray_status(std::move(context));
+    // since the scanning op can be async, we want to know it, for better semantics
+    if (r == -EAGAIN) {
+     dout(10) << "dump_stray wait" << dendl;
+    }
+    return;
   } else {
     r = -ENOSYS;
   }
@@ -3531,7 +3548,7 @@ void MDSRank::command_quiesce_path(Formatter* f, const cmdmap_t& cmdmap, asok_fi
 
   // This is a little ugly, apologies.
   // We should still be under the mds lock for this test to be valid.
-  // MDCache will delete the quiesce_ctx if it manages to complete syncrhonously,
+  // MDCache will delete the quiesce_ctx if it manages  
   // so we are testing the `mdr->internal_op_finish` to see if that has happend
   if (!await && mdr && mdr->internal_op_finish) {
     ceph_assert(mdr->internal_op_finish == quiesce_ctx);
@@ -4066,6 +4083,7 @@ const char** MDSRankDispatcher::get_tracked_conf_keys() const
     "clog_to_syslog_level",
     "fsid",
     "host",
+    "mds_allow_batched_ops",
     "mds_alternate_name_max",
     "mds_bal_fragment_dirs",
     "mds_bal_fragment_interval",

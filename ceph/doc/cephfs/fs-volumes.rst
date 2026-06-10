@@ -446,6 +446,10 @@ The output format is JSON and contains the following fields.
 * ``features``: features supported by the subvolume
 * ``state``: current state of the subvolume
 * ``earmark``: earmark of the subvolume
+* ``source``: exists only if subvolume is a clone. It contains name of the
+  source snapshot and names of the volume, subvolume group and subvolume in
+  which the source snapshot is located. If the clone was created with Tentacle
+  or earlier release, value of this field is 'N/A'.
 
 If a subvolume has been removed but its snapshots have been retained, the
 output contains only the following fields.
@@ -600,6 +604,15 @@ Using the ``--force`` flag allows the command to succeed when it would
 otherwise fail (if the snapshot did not exist).
 
 .. note:: if the last snapshot within a snapshot retained subvolume is removed, the subvolume is also removed
+
+Fetching Path of a Snapshot of a Subvolume
+------------------------------------------
+Use a command of the following form to fetch the absolute path of a snapshot of
+a subvolume:
+
+.. prompt:: base #
+
+    ceph fs subvolume snapshot getpath <volname> <subvol_name> <snap_name> [<group_name>]
 
 Listing the Snapshots of a Subvolume
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1556,6 +1569,14 @@ drastic measures and then assess if the file system experience has improved due
 to it. One example of such less drastic measure is to disable asynchronous
 threads launched by volumes plugins for cloning and purging trash. For details
 on these see: :ref:`Pause Purge threads<pause-purge-threads>` and :ref:`Pause Clone Threads<pause-clone-threads>`.
+
+
+
+.. note:: Pool namespace for CephFS volumes until Tentacle release had names in
+   this format: "fsvolumens__<subvol-name>". However, this could lead to clash
+   in namespace when two subvolumes of same were located in this different
+   subvolume group. And therefore after Tentacle pool namespace format was
+   changed to "fsvolumens__<subvol-grp-name>_<subvol-name>".
 
 
 .. _manila: https://github.com/openstack/manila

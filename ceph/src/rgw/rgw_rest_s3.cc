@@ -358,6 +358,25 @@ inline bool str_has_cntrl(const char* s) {
   return str_has_cntrl(_s);
 }
 
+// remove any aws-chunked entries from the comma-separated list
+static std::string content_encoding_without_aws_chunked(std::string_view value)
+{
+  std::string result;
+  result.reserve(value.size());
+
+  for (std::string_view part : ceph::split(value, ", ")) {
+    if (part == "aws-chunked") {
+      continue;
+    }
+    if (!result.empty()) {
+      result += ", ";
+    }
+    result += part;
+  }
+
+  return result;
+}
+
 int RGWGetObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t bl_ofs,
 					      off_t bl_len)
 {
@@ -535,7 +554,20 @@ int RGWGetObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t bl_ofs,
             --len;
             s.resize(len);
           }
-          response_attrs[aiter->second] = s;
+
+          if (aiter->first == RGW_ATTR_CONTENT_ENC) {
+            // Amazon S3 stores the resulting object without the aws-chunked
+            // value in the content-encoding header. If aws-chunked is the only
+            // value that you pass in the content-encoding header, S3 considers
+            // the content-encoding header empty and does not return this header
+            // when your retrieve the object.
+            std::string encoding = content_encoding_without_aws_chunked(s);
+            if (!encoding.empty()) {
+              response_attrs[aiter->second] = std::move(encoding);
+            }
+          } else {
+            response_attrs[aiter->second] = std::move(s);
+          }
         }
       } else if (iter->first.compare(RGW_ATTR_CONTENT_TYPE) == 0) {
         /* Special handling for content_type. */
@@ -3947,6 +3979,18 @@ int RGWInitMultipart_ObjStore_S3::get_params(optional_yield y)
   ret = create_s3_policy(s, driver, policy, s->owner);
   if (ret < 0)
     return ret;
+
+  auto tag_str = s->info.env->get("HTTP_X_AMZ_TAGGING");
+  if(tag_str) {
+    ret = obj_tags.set_from_string(tag_str);
+    if (ret < 0) {
+      ldpp_dout(this, 0) << "setting obj tags failed with " << ret << dendl;
+      if (ret == -ERR_INVALID_TAG) {
+        ret = -EINVAL; // s3 returns only -EINVAL for PUT requests
+      }
+      return ret;
+    }
+  }
 
   //handle object lock
   auto obj_lock_mode_str = s->info.env->get("HTTP_X_AMZ_OBJECT_LOCK_MODE");

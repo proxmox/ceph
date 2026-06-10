@@ -271,6 +271,7 @@ public:
     _fork_watchers.push_back(w);
   }
 
+  void drop_temp_messenger_obj();
   void notify_pre_fork();
   void notify_post_fork();
 
@@ -282,10 +283,18 @@ public:
   void set_mon_addrs(const MonMap& mm);
   void set_mon_addrs(const std::vector<entity_addrvec_t>& in) {
     auto ptr = std::make_shared<std::vector<entity_addrvec_t>>(in);
+#ifdef __cpp_lib_atomic_shared_ptr
+    _mon_addrs.store(std::move(ptr), std::memory_order_relaxed);
+#else
     atomic_store_explicit(&_mon_addrs, std::move(ptr), std::memory_order_relaxed);
+#endif
   }
   std::shared_ptr<std::vector<entity_addrvec_t>> get_mon_addrs() const {
+#ifdef __cpp_lib_atomic_shared_ptr
+    auto ptr = _mon_addrs.load(std::memory_order_relaxed);
+#else
     auto ptr = atomic_load_explicit(&_mon_addrs, std::memory_order_relaxed);
+#endif
     return ptr;
   }
 
@@ -306,7 +315,11 @@ private:
 
   int _crypto_inited;
 
+#ifdef __cpp_lib_atomic_shared_ptr
+  std::atomic<std::shared_ptr<std::vector<entity_addrvec_t>>> _mon_addrs;
+#else
   std::shared_ptr<std::vector<entity_addrvec_t>> _mon_addrs;
+#endif
 
   /* libcommon service thread.
    * SIGHUP wakes this thread, which then reopens logfiles */
@@ -382,9 +395,19 @@ private:
     l_mempool_items,
     l_mempool_last
   };
+  // This is just how PerfCounters indices work, we have a bunch of
+  // bare enums all over.
+  enum {
+    // Picked by grepping for the current highest value and adding 1000
+    l_service_first = 1001000,
+    l_service_unique_id,
+    l_service_last
+  };
   PerfCounters *_cct_perf = nullptr;
   PerfCounters* _mempool_perf = nullptr;
   std::vector<std::string> _mempool_perf_names, _mempool_perf_descriptions;
+  std::string service_unique_id;
+  PerfCounters* _service_perf = nullptr;
 
   /**
    * Enable the performance counters.

@@ -596,6 +596,7 @@ void SessionMapStore::decode_legacy(bufferlist::const_iterator& p)
 void Session::dump(Formatter *f, bool cap_dump) const
 {
   f->dump_int("id", info.inst.name.num());
+  f->dump_object("auth_name", info.auth_name);
   f->dump_object("entity", info.inst);
   f->dump_string("state", get_state_name());
   f->dump_int("num_leases", leases.size());
@@ -615,6 +616,7 @@ void Session::dump(Formatter *f, bool cap_dump) const
   f->dump_unsigned("num_completed_requests", get_num_completed_requests());
   f->dump_unsigned("num_completed_flushes", get_num_completed_flushes());
   f->dump_bool("reconnecting", reconnecting);
+  f->dump_int("importing_count", importing_count);
   f->dump_object("recall_caps", recall_caps);
   f->dump_object("release_caps", release_caps);
   f->dump_object("recall_caps_throttle", recall_caps_throttle);

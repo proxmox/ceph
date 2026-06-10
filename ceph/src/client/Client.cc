@@ -3958,6 +3958,7 @@ void Client::send_cap(Inode *in, MetaSession *session, Cap *cap,
 				   want,
 				   flush,
 				   cap->mseq,
+                                   cap->issue_seq,
                                    cap_epoch_barrier);
   /*
    * Since the setattr will check the cephx mds auth access before
@@ -3971,7 +3972,6 @@ void Client::send_cap(Inode *in, MetaSession *session, Cap *cap,
   m->caller_uid = -1;
   m->caller_gid = -1;
 
-  m->head.issue_seq = cap->issue_seq;
   m->set_tid(flush_tid);
 
   m->head.uid = in->uid;
@@ -5650,10 +5650,10 @@ void Client::handle_cap_export(MetaSession *session, Inode *in, const MConstRef<
         if (it != in->caps.end()) {
 	  Cap &tcap = it->second;
 	  if (tcap.cap_id == m->peer.cap_id &&
-	      ceph_seq_cmp(tcap.seq, m->peer.seq) < 0) {
+	      ceph_seq_cmp(tcap.seq, m->peer.issue_seq) < 0) {
 	    tcap.cap_id = m->peer.cap_id;
-	    tcap.seq = m->peer.seq - 1;
-	    tcap.issue_seq = tcap.seq;
+	    tcap.seq = m->peer.issue_seq - 1;
+	    tcap.issue_seq = m->peer.issue_seq - 1;
 	    tcap.issued |= cap.issued;
 	    tcap.implemented |= cap.issued;
 	    if (&cap == in->auth_cap)
@@ -5663,7 +5663,7 @@ void Client::handle_cap_export(MetaSession *session, Inode *in, const MConstRef<
 	  }
         } else {
 	  add_update_cap(in, tsession.get(), m->peer.cap_id, cap.issued, 0,
-		         m->peer.seq - 1, m->peer.mseq, (uint64_t)-1,
+		         m->peer.issue_seq - 1, m->peer.mseq, (uint64_t)-1,
 		         &cap == in->auth_cap ? CEPH_CAP_FLAG_AUTH : 0,
 		         cap.latest_perms);
         }
@@ -6193,22 +6193,23 @@ int Client::may_setattr(const InodeRef& in, struct ceph_statx *stx, int mask,
   }
 
   if (mask & CEPH_SETATTR_MODE) {
-    bool allowed = false;
     /*
      * Currently the kernel fuse and libfuse code is buggy and
      * won't pass the ATTR_KILL_SUID/ATTR_KILL_SGID to ceph-fuse.
      * But will just set the ATTR_MODE and at the same time by
      * clearing the suid/sgid bits.
      *
-     * Only allow unprivileged users to clear S_ISUID and S_ISUID.
+     * Only allow unprivileged users to clear S_ISUID and S_ISGID.
      */
-    if ((in->mode & (S_ISUID | S_ISGID)) != (stx->stx_mode & (S_ISUID | S_ISGID)) &&
-        (in->mode & ~(S_ISUID | S_ISGID)) == (stx->stx_mode & ~(S_ISUID | S_ISGID))) {
-      allowed = true;
-    }
-    uint32_t m = ~stx->stx_mode & in->mode; // mode bits removed
-    ldout(cct, 20) << __func__ << " " << *in << " = " << hex << m << dec <<  dendl;
-    if (perms.uid() != 0 && perms.uid() != in->uid && !allowed)
+    uint32_t removed_bits = ~stx->stx_mode & in->mode;
+    uint32_t added_bits = ~in->mode & stx->stx_mode;
+    bool clearing_suid_sgid = (
+      // no new bits added
+      added_bits == 0 &&
+      // only suid/suid bits removed
+      (removed_bits & ~(S_ISUID | S_ISGID)) == 0);
+    ldout(cct, 20) << __func__ << " " << *in << " = " << hex << removed_bits << dec <<  dendl;
+    if (perms.uid() != 0 && perms.uid() != in->uid && !clearing_suid_sgid)
       goto out;
 
     gid_t i_gid = (mask & CEPH_SETATTR_GID) ? stx->stx_gid : in->gid;
@@ -7503,6 +7504,11 @@ int Client::_lookup(const InodeRef& dir, const std::string& name, std::string& a
   mask &= CEPH_CAP_ANY_SHARED | CEPH_STAT_RSTAT;
   std::string dname = name;
 
+  if (!dir->is_dir()) {
+    r = -ENOTDIR;
+    goto done;
+  }
+
   if (dname == ".."sv) {
     if (dir->dentries.empty()) {
       MetaRequest *req = new MetaRequest(CEPH_MDS_OP_LOOKUPPARENT);
@@ -7526,11 +7532,6 @@ int Client::_lookup(const InodeRef& dir, const std::string& name, std::string& a
 
   if (dname == "."sv) {
     *target = dir;
-    goto done;
-  }
-
-  if (!dir->is_dir()) {
-    r = -ENOTDIR;
     goto done;
   }
 
@@ -7703,6 +7704,11 @@ int Client::path_walk(InodeRef dirinode, const filepath& origpath, walk_dentry_r
     ldout(cct, 10) << " " << i << " " << *diri << " " << dname << dendl;
     ldout(cct, 20) << "  (path is " << path << ")" << dendl;
     InodeRef next;
+    if (!diri.get()->is_dir()) {
+      ldout(cct, 20) << diri.get() << " is not a dir inode, name " << dname.c_str() << dendl;
+      rc = -ENOTDIR;
+      goto out;
+    }
     if (should_check_perms()) {
       int r = may_lookup(diri.get(), perms);
       if (r < 0) {
@@ -10953,7 +10959,6 @@ void Client::C_Read_Sync_NonBlocking::finish(int r)
         goto success;
     }
 
-    clnt->put_cap_ref(in, CEPH_CAP_FILE_RD);
     // reverify size
     {
       r = clnt->_getattr(in, CEPH_STAT_CAP_SIZE, f->actor_perms);
@@ -10964,14 +10969,6 @@ void Client::C_Read_Sync_NonBlocking::finish(int r)
     // eof?  short read.
     if ((uint64_t)pos >= in->size)
       goto success;
-
-    {
-      int have_caps2 = 0;
-      r = clnt->get_caps(f, CEPH_CAP_FILE_RD, have_caps, &have_caps2, -1);
-      if (r < 0) {
-        goto error;
-      }
-    }
 
     wanted = left;
     retry();
@@ -11126,6 +11123,19 @@ retry:
     // branch below but in a non-blocking fashion. The code in _read_sync
     // is duplicated and modified and exists in
     // C_Read_Sync_NonBlocking::finish().
+
+    // trim read based on file size?
+    if (size == 0) {
+      // zero byte read requested -- therefore just release managed
+      // pointers and complete the C_Read_Finisher immediately with 0 bytes
+      Context *iof = iofinish.release();
+      crf.release();
+      iof->complete(0);
+
+      // Signal async completion
+      return 0;
+    }
+
     C_Read_Sync_NonBlocking *crsa =
       new C_Read_Sync_NonBlocking(this, iofinish.release(), f, in, f->pos,
                                   offset, size, bl, filer.get(), have);
@@ -11554,9 +11564,17 @@ int64_t Client::_write_success(Fh *f, utime_t start, uint64_t fpos,
   return r;
 }
 
+void Client::C_Lock_Client_Finisher::finish(int r)
+{
+  std::scoped_lock lock(clnt->client_lock);
+  onfinish->complete(r);
+}
+
 void Client::C_Write_Finisher::finish_io(int r)
 {
   bool fini;
+
+  ceph_assert(ceph_mutex_is_locked_by_me(clnt->client_lock));
 
   clnt->put_cap_ref(in, CEPH_CAP_FILE_BUFFER);
 
@@ -11592,6 +11610,8 @@ void Client::C_Write_Finisher::finish_fsync(int r)
 {
   bool fini;
   client_t const whoami = clnt->whoami;  // For the benefit of ldout prefix
+
+  ceph_assert(ceph_mutex_is_locked_by_me(clnt->client_lock));
 
   ldout(clnt->cct, 3) << "finish_fsync r = " << r << dendl;
 
@@ -11753,6 +11773,7 @@ int64_t Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
 
   std::unique_ptr<Context> iofinish = nullptr;
   std::unique_ptr<C_Write_Finisher> cwf = nullptr;
+  std::unique_ptr<Context> filer_iofinish = nullptr;
   
   if (in->inline_version < CEPH_INLINE_NONE) {
     if (endoff > cct->_conf->client_max_inline_size ||
@@ -11864,7 +11885,10 @@ int64_t Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
     if (onfinish == nullptr) {
       // We need a safer condition to wait on.
       cond_iofinish = new C_SaferCond();
-      iofinish.reset(cond_iofinish);
+      filer_iofinish.reset(cond_iofinish);
+    } else {
+      //Register a wrapper callback for the C_Write_Finisher which takes 'client_lock'
+      filer_iofinish.reset(new C_Lock_Client_Finisher(this, iofinish.get()));
     }
 
     get_cap_ref(in, CEPH_CAP_FILE_BUFFER);
@@ -11872,11 +11896,12 @@ int64_t Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
     filer->write_trunc(in->ino, &in->layout, in->snaprealm->get_snap_context(),
 		       offset, size, bl, ceph::real_clock::now(), 0,
 		       in->truncate_size, in->truncate_seq,
-		       iofinish.get());
+		       filer_iofinish.get());
 
     if (onfinish) {
       // handle non-blocking caller (onfinish != nullptr), we can now safely
       // release all the managed pointers
+      filer_iofinish.release();
       iofinish.release();
       onuninline.release();
       cwf.release();
@@ -12072,6 +12097,7 @@ void Client::C_nonblocking_fsync_state::advance()
 
     if (waitfor_safe) {
       clnt->put_request(req);
+      waitfor_safe = false;
     }
 
     if (flush_wait && !flush_completed) {
@@ -12454,20 +12480,18 @@ int Client::getcwd(string& dir, const UserPerm& perms)
   return _getcwd(dir, perms);
 }
 
-int Client::statfs(const char *path, struct statvfs *stbuf,
+int Client::_statfs(Inode *in, struct statvfs *stbuf,
 		   const UserPerm& perms)
 {
-  RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
-  if (!mref_reader.is_state_satisfied())
-    return -ENOTCONN;
+  ceph_assert(ceph_mutex_is_locked_by_me(client_lock));
 
+  ldout(cct, 10) << __func__ << dendl;
   tout(cct) << __func__ << std::endl;
   unsigned long int total_files_on_fs;
 
   ceph_statfs stats;
   C_SaferCond cond;
 
-  std::unique_lock lock(client_lock);
   const vector<int64_t> &data_pools = mdsmap->get_data_pools();
   if (data_pools.size() == 1) {
     objecter->get_fs_stats(stats, data_pools[0], &cond);
@@ -12475,12 +12499,18 @@ int Client::statfs(const char *path, struct statvfs *stbuf,
     objecter->get_fs_stats(stats, std::optional<int64_t>(), &cond);
   }
 
-  lock.unlock();
+  client_lock.unlock();
   int rval = cond.wait();
-  lock.lock();
+  client_lock.lock();
 
-  ceph_assert(root);
-  total_files_on_fs = root->rstat.rfiles + root->rstat.rsubdirs;
+  ceph_assert(in);
+  // Usually quota_root will == root_ancestor, but if the mount root has no
+  // quota but we can see a parent of it that does have a quota, we'll
+  // respect that one instead.
+  InodeRef qr_bytes = in->quota.is_enabled(QUOTA_MAX_BYTES) ? in : get_quota_root(in, perms, QUOTA_MAX_BYTES);
+  InodeRef qr_files = in->quota.is_enabled(QUOTA_MAX_FILES) ? in : get_quota_root(in, perms, QUOTA_MAX_FILES);
+
+  total_files_on_fs = qr_files->rstat.rfiles + qr_files->rstat.rsubdirs;
 
   if (rval < 0) {
     ldout(cct, 1) << "underlying call to statfs returned error: "
@@ -12508,31 +12538,25 @@ int Client::statfs(const char *path, struct statvfs *stbuf,
   stbuf->f_flag = 0;        // ??
   stbuf->f_namemax = NAME_MAX;
 
-  // Usually quota_root will == root_ancestor, but if the mount root has no
-  // quota but we can see a parent of it that does have a quota, we'll
-  // respect that one instead.
-  ceph_assert(root != nullptr);
-  InodeRef quota_root = root->quota.is_enabled(QUOTA_MAX_BYTES) ? root : get_quota_root(root.get(), perms, QUOTA_MAX_BYTES);
-
   // get_quota_root should always give us something if client quotas are
   // enabled
-  ceph_assert(cct->_conf.get_val<bool>("client_quota") == false || quota_root != nullptr);
+  ceph_assert(cct->_conf.get_val<bool>("client_quota") == false || qr_bytes != nullptr);
 
   /* If bytes quota is set on a directory and conf option "client quota df"
    * is also set, available space = quota limit - used space. Else,
    * available space = total space - used space. */
-  if (quota_root && cct->_conf->client_quota_df && quota_root->quota.max_bytes) {
+  if (qr_bytes && cct->_conf->client_quota_df && qr_bytes->quota.max_bytes) {
 
     // Skip the getattr if any sessions are stale, as we don't want to
     // block `df` if this client has e.g. been evicted, or if the MDS cluster
     // is unhealthy.
     if (!_any_stale_sessions()) {
-      int r = _getattr(quota_root, 0, perms, true);
+      int r = _getattr(qr_bytes, 0, perms, true);
       if (r != 0) {
         // Ignore return value: error getting latest inode metadata is not a good
         // reason to break "df".
         lderr(cct) << "Error in getattr on quota root 0x"
-                   << std::hex << quota_root->ino << std::dec
+                   << std::hex << qr_bytes->ino << std::dec
                    << " statfs result may be outdated" << dendl;
       }
     }
@@ -12540,8 +12564,8 @@ int Client::statfs(const char *path, struct statvfs *stbuf,
     // Special case: if there is a size quota set on the Inode acting
     // as the root for this client mount, then report the quota status
     // as the filesystem statistics.
-    const fsblkcnt_t total = quota_root->quota.max_bytes >> CEPH_BLOCK_SHIFT;
-    const fsblkcnt_t used = quota_root->rstat.rbytes >> CEPH_BLOCK_SHIFT;
+    const fsblkcnt_t total = qr_bytes->quota.max_bytes >> CEPH_BLOCK_SHIFT;
+    const fsblkcnt_t used = qr_bytes->rstat.rbytes >> CEPH_BLOCK_SHIFT;
     // It is possible for a quota to be exceeded: arithmetic here must
     // handle case where used > total.
     const fsblkcnt_t free = total > used ? total - used : 0;
@@ -12898,10 +12922,29 @@ int Client::get_snap_info(const char *path, const UserPerm &perms, SnapInfo *sna
 
 int Client::ll_statfs(Inode *in, struct statvfs *stbuf, const UserPerm& perms)
 {
-  /* Since the only thing this does is wrap a call to statfs, and
-     statfs takes a lock, it doesn't seem we have a need to split it
-     out. */
-  return statfs(0, stbuf, perms);
+  RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
+  if (!mref_reader.is_state_satisfied())
+    return -ENOTCONN;
+
+  std::unique_lock cl(client_lock);
+  return _statfs(in, stbuf, perms);
+}
+
+int Client::statfs(const char *path, struct statvfs *stbuf, const UserPerm& perms)
+{
+  RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
+  if (!mref_reader.is_state_satisfied())
+    return -ENOTCONN;
+
+  std::unique_lock cl(client_lock);
+
+  walk_dentry_result wdr;
+  if (int rc = path_walk(cwd, filepath(path), &wdr, perms, {}); rc < 0) {
+    return rc;
+  }
+
+  auto in = wdr.target.get();
+  return _statfs(in, stbuf, perms);
 }
 
 void Client::_ll_register_callbacks(struct ceph_client_callback_args *args)
@@ -13390,9 +13433,7 @@ int Client::ll_walk(const char* name, Inode **out, struct ceph_statx *stx,
   if (!mref_reader.is_state_satisfied())
     return -ENOTCONN;
 
-  filepath fp(name, 0);
   InodeRef in;
-  int rc;
   unsigned mask = statx_to_mask(flags, want);
 
   ldout(cct, 3) << __func__ << " " << name << dendl;
@@ -13400,8 +13441,7 @@ int Client::ll_walk(const char* name, Inode **out, struct ceph_statx *stx,
   tout(cct) << name << std::endl;
 
   std::scoped_lock lock(client_lock);
-  rc = path_walk(cwd, fp, &in, perms, {.followsym = !(flags & AT_SYMLINK_NOFOLLOW), .mask = mask});
-  if (rc < 0) {
+  if (int rc = path_walk(cwd, filepath(name), &in, perms, {.followsym = !(flags & AT_SYMLINK_NOFOLLOW), .mask = mask}); rc < 0) {
     /* zero out mask, just in case... */
     stx->stx_mask = 0;
     stx->stx_ino = 0;
@@ -17574,6 +17614,22 @@ int StandaloneClient::init()
     monclient->shutdown();
     return r;
   }
+
+  r = authenticate();
+  if (r < 0) {
+    // need to do cleanup because we're in an intermediate init state
+    {
+      std::scoped_lock l(timer_lock);
+      timer.shutdown();
+    }
+
+    client_lock.unlock();
+    objecter->shutdown();
+    objectcacher->stop();
+    monclient->shutdown();
+    return r;
+  }
+
   objecter->start();
 
   client_lock.unlock();

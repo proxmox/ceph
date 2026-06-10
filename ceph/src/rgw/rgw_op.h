@@ -1841,6 +1841,7 @@ public:
 
 class RGWInitMultipart : public RGWOp {
 protected:
+  RGWObjTags obj_tags;
   std::string upload_id;
   RGWAccessControlPolicy policy;
   ceph::real_time mtime;
@@ -2030,8 +2031,15 @@ class RGWDeleteMultiObj : public RGWOp {
    * set_partial_response to record the outcome.
    */
   void handle_individual_object(const rgw_obj_key& o,
-				optional_yield y,
-                                boost::asio::deadline_timer *formatter_flush_cond);
+                                optional_yield y,
+                                boost::asio::deadline_timer *formatter_flush_cond,
+                                const bool skip_olh_obj_update = false);
+  void handle_versioned_objects(const std::vector<rgw_obj_key>& objects,
+                                uint32_t max_aio, boost::asio::yield_context yield);
+  void handle_non_versioned_objects(const std::vector<rgw_obj_key>& objects,
+                                    uint32_t max_aio, boost::asio::yield_context yield);
+  void handle_objects(const std::vector<rgw_obj_key>& objects,
+                      uint32_t max_aio, boost::asio::yield_context yield);
 
   /**
    * When the request is being executed in a coroutine, performs

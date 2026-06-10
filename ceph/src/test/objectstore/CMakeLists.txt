@@ -11,6 +11,7 @@ target_include_directories(store_test_fixture PRIVATE
 add_executable(ceph_test_objectstore
   store_test.cc
   $<TARGET_OBJECTS:store_test_fixture>)
+
 target_link_libraries(ceph_test_objectstore
   os
   ceph-common
@@ -21,6 +22,21 @@ target_link_libraries(ceph_test_objectstore
   ${CMAKE_DL_LIBS}
   )
 install(TARGETS ceph_test_objectstore
+  DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+add_executable(ceph_test_bluestore_vselector
+  test_bluestore_vselector.cc)
+
+target_link_libraries(ceph_test_bluestore_vselector
+  os
+  ceph-common
+  ${UNITTEST_LIBS}
+  global
+  ${EXTRALIBS}
+  ${BLKID_LIBRARIES}
+  ${CMAKE_DL_LIBS}
+  )
+install(TARGETS ceph_test_bluestore_vselector
   DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 add_executable(ceph_test_keyvaluedb
@@ -109,12 +125,11 @@ if(WITH_BLUESTORE)
   add_ceph_unittest(unittest_bdev)
   target_link_libraries(unittest_bdev os global)
 
-  # unittest_deferred
-  add_executable(unittest_deferred
+  # test_corrupt_deferred
+  add_executable(test_corrupt_deferred
     test_deferred.cc
     )
-  add_ceph_unittest(unittest_deferred)
-  target_link_libraries(unittest_deferred os global)
+  target_link_libraries(test_corrupt_deferred os global)
 
 endif(WITH_BLUESTORE)
 

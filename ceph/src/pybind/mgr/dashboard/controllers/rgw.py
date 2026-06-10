@@ -628,7 +628,7 @@ class RgwBucket(RgwRESTController):
             self._set_policy(bucket_name, bucket_policy, daemon_name, uid)
         if canned_acl:
             self._set_acl(bucket_name, canned_acl, uid, daemon_name)
-        if replication:
+        if replication is not None:
             self._set_replication(bucket_name, replication, uid, daemon_name)
         if lifecycle and not lifecycle == '{}':
             self._set_lifecycle(bucket_name, lifecycle, daemon_name, uid)
@@ -1172,12 +1172,14 @@ class RgwZonegroup(RESTController):
         result = multisite_instance.get_all_zonegroups_info()
         return result
 
-    def delete(self, zonegroup_name, delete_pools, pools: Optional[List[str]] = None):
+    def delete(self, zonegroup_name, delete_pools, pools: Optional[List[str]] = None,
+               realm_name: Optional[str] = None):
         if pools is None:
             pools = []
         try:
             multisite_instance = RgwMultisite()
-            result = multisite_instance.delete_zonegroup(zonegroup_name, delete_pools, pools)
+            result = multisite_instance.delete_zonegroup(zonegroup_name, delete_pools,
+                                                         pools, realm_name)
             return result
         except NoRgwDaemonsException as e:
             raise DashboardException(e, http_status_code=404, component='rgw')
@@ -1229,14 +1231,16 @@ class RgwZone(RESTController):
         return result
 
     def delete(self, zone_name, delete_pools, pools: Optional[List[str]] = None,
-               zonegroup_name=None):
+               zonegroup_name=None, realm_name: Optional[str] = None):
         if pools is None:
             pools = []
         if zonegroup_name is None:
             zonegroup_name = ''
         try:
             multisite_instance = RgwMultisite()
-            result = multisite_instance.delete_zone(zone_name, delete_pools, pools, zonegroup_name)
+            result = multisite_instance.delete_zone(zone_name, delete_pools,
+                                                    pools, zonegroup_name,
+                                                    realm_name)
             return result
         except NoRgwDaemonsException as e:
             raise DashboardException(e, http_status_code=404, component='rgw')

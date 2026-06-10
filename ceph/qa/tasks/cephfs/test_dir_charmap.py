@@ -228,6 +228,57 @@ class TestCharMapVxattr(CephFSTestCase, CharMapMixin):
                 stderr = p.stderr.getvalue()
                 self.fail("command failed:\n%s", stderr)
 
+    def test_cs_snaps_set_insensitive(self):
+        """
+        That setting a charmap fails for an empty directory with snaps.
+        """
+
+        attrs = {
+          "ceph.dir.casesensitive": False,
+          "ceph.dir.normalization": "nfc",
+          "ceph.dir.encoding": "utf8",
+        }
+
+        self.mount_a.run_shell_payload("mkdir -p foo/dir; mkdir foo/.snap/one; rmdir foo/dir")
+        for attr, v in attrs.items():
+            try:
+                self.mount_a.setfattr("foo/", attr, v, helpfulexception=True)
+            except DirectoryNotEmptyError:
+                pass
+            else:
+                self.fail("should fail")
+            try:
+                self.check_cs("foo")
+            except NoSuchAttributeError:
+                pass
+            else:
+                self.fail("should fail")
+
+    def test_cs_parent_snaps_set_insensitive(self):
+        """
+        That setting a charmap succeeds for an empty directory with parent snaps.
+        """
+
+        attrs = {
+          "ceph.dir.casesensitive": False,
+          "ceph.dir.normalization": "nfc",
+          "ceph.dir.encoding": "utf8",
+        }
+
+        self.mount_a.run_shell_payload("mkdir -p foo/{trash,bar}; mkdir foo/.snap/one; rmdir foo/trash;")
+        for attr, v in attrs.items():
+            try:
+                self.mount_a.setfattr("foo/bar", attr, v, helpfulexception=True)
+            except DirectoryNotEmptyError:
+                pass
+            else:
+                self.fail("should fail")
+            try:
+                self.check_cs("foo/bar")
+            except NoSuchAttributeError:
+                pass
+            else:
+                self.fail("should fail")
 
     def test_cs_remount(self):
         """
@@ -268,6 +319,20 @@ class TestCharMapVxattr(CephFSTestCase, CharMapMixin):
                 pass
             else:
                 self.fail("should fail")
+
+    def test_charmap_to_stray(self):
+        """
+        That internal renames for reintegration works with charmap.
+        """
+
+        self.mount_a.run_shell_payload("mkdir foo/")
+        self.mount_a.setfattr("foo/", "ceph.dir.casesensitive", "0")
+        self.check_cs("foo", casesensitive=False)
+
+        self.mount_a.run_shell_payload("touch foo/a; ln foo/a foo/b; rm foo/a; sync foo")
+        self.fs.flush()
+
+        self.mount_a.run_shell_payload("stat foo/b")
 
 
 class TestCharMapRecovery(CephFSTestCase, CharMapMixin):

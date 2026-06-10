@@ -3,11 +3,11 @@
 Telemetry Module
 ================
 
-The telemetry module sends anonymous data about the cluster back to the Ceph
+The telemetry module sends anonymous data about the cluster back to the
 developers to report how Ceph is used and to report problems experienced by
 users. 
 
-This data is visualized on `public dashboards
+This data is visualized on the `public dashboards
 <https://telemetry-public.ceph.com/>`_ that allow the community to see a
 summary of statistics including how many clusters are reporting, their total
 capacity and OSD count, and version distribution trends.
@@ -15,15 +15,15 @@ capacity and OSD count, and version distribution trends.
 Channels
 --------
 
-The telemetry report is broken down into several "channels", each with
-a different type of information. If telemetry has been enabled,
-individual channels can be turned on and off. (If telemetry is off,
-the per-channel setting has no effect.)
+The telemetry report is broken down into several "channels", each with a
+different type of information. When telemetry is enabled, individual channels
+can be turned on and off. (If telemetry is disabled, the per-channel setting
+has no effect.)
 
 * **basic** (default: on): Basic information about the cluster
 
     - capacity of the cluster
-    - number of monitors, managers, OSDs, MDSs, object gateways, or other
+    - number of Monitors, Managers, OSDs, MDSs, object gateways, or other
       daemons
     - software version currently being used
     - number and types of RADOS pools and CephFS file systems
@@ -60,9 +60,9 @@ reported data does not include pool names, object names, object contents,
 hostnames, or device serial numbers.
 
 The reported data contains counters and statistics pertaining to how the
-cluster has been deployed, the version of Ceph, the distribution of the hosts,
-and other parameters that help the project develop a better understanding of
-the way Ceph is used.
+cluster has been deployed, the version of Ceph, the OS distribution, and other
+parameters that help the project develop a better understanding of the way Ceph
+is used.
 
 Data is sent secured to
 `https://telemetry.ceph.com<https://telemetry.ceph.com>`_.
@@ -84,8 +84,8 @@ commands:
    ceph telemetry disable channel ident
    ceph telemetry disable channel perf
 
-Multiple channels can be enabled or disabled at the same time by running the
-following commands:
+Multiple channels can be enabled or disabled at the same time by running
+commands of the following form:
 
 .. prompt:: bash #
 
@@ -100,7 +100,7 @@ commands:
    ceph telemetry enable channel all
    ceph telemetry disable channel all
 
-Note that telemetry must be on for these commands to take effect.
+Note that telemetry must be enabled for these commands to take effect.
 
 List all channels with:
 
@@ -121,8 +121,7 @@ List all channels with:
 Enabling Telemetry
 ------------------
 
-To allow the *telemetry* module to start sharing data, run the following
-command:
+To allow the *telemetry* module to share data, run the following command:
 
 .. prompt:: bash #
 
@@ -157,10 +156,9 @@ If telemetry is disabled, run the following command to preview a sample report:
 
    ceph telemetry preview
 
-The generation of a sample report might take a few moments in big clusters
-(clusters with hundreds of OSDs or more).
+The generation of a sample report for larger clusters might take some time.
 
-To protect your privacy, device reports are generated separately. Data
+To protect sensitive information, device reports are generated separately. Data
 including  hostnames and device serial numbers are anonymized. The device
 telemetry is sent to a different endpoint and does not associate the device
 data with a particular cluster. To see a preview of the device report, run the
@@ -177,10 +175,10 @@ report:
 
    ceph telemetry preview-device
 
-.. note:: In order to generate the device report we use Smartmontools version
-   7.0 and up, which supports JSON output. If you have any concerns about
-   privacy with regard to the information included in this report, contact the
-   Ceph developers.
+.. note:: ``smartmontools`` version 7.0 or later must be installed so that JSON
+   output can be specified and parsed. If you have any concerns about privacy
+   with regard to the information included in this report, contact the Ceph
+   developers.
 
 When telemetry is enabled, run the following command to generate both reports
 in a single output: 
@@ -237,6 +235,7 @@ To list all collections, run the following command:
   basic_pool_options_bluestore    NOT REPORTING: NOT OPTED-IN                          Per-pool bluestore config options
   basic_pool_usage                NOT REPORTING: NOT OPTED-IN                          Default pool application and usage statistics
   basic_rook_v01                  NOT REPORTING: NOT OPTED-IN                          Basic Rook deployment data
+  basic_stretch_cluster           NOT REPORTING: NOT OPTED-IN                          Stretch Mode information for stretch cluster deployments
   basic_usage_by_class            NOT REPORTING: NOT OPTED-IN                          Default device class usage statistics
   crash_base                      NOT REPORTING: NOT OPTED-IN                          Information about daemon crashes (daemon type and version, backtrace, etc.)
   device_base                     NOT REPORTING: NOT OPTED-IN                          Information about device health metrics
