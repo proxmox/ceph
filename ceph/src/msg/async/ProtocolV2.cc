@@ -250,11 +250,11 @@ void ProtocolV2::reset_recv_state() {
     // `write_event()` unlocks it just before calling `write_message()`.
     // `submit_to()` here is NOT blocking.
     connection->center->submit_to(connection->center->get_id(), [this] {
-      ldout(cct, 5) << "reset_recv_state (warped) reseting crypto and compression handlers"
-                    << dendl;
       // Possibly unnecessary. See the comment in `deactivate_existing`.
       std::lock_guard<std::mutex> l(connection->lock);
       std::lock_guard<std::mutex> wl(connection->write_lock);
+      ldout(cct, 5) << "reset_recv_state (warped) reseting crypto and compression handlers"
+                    << dendl;
       reset_security();
       reset_compression();
     }, /* always_async = */true);
@@ -431,12 +431,15 @@ void ProtocolV2::send_message(Message *m) {
   // TODO: Currently not all messages supports reencode like MOSDMap, so here
   // only let fast dispatch support messages prepare message
   const bool can_fast_prepare = messenger->ms_can_fast_dispatch(m);
-  if (can_fast_prepare) {
+  bool is_prepared;
+  if (can_fast_prepare && f) {
     prepare_send_message(f, m);
+    is_prepared = can_fast_prepare;
+  } else {
+    is_prepared = false;
   }
 
   std::lock_guard<std::mutex> l(connection->write_lock);
-  bool is_prepared = can_fast_prepare;
   // "features" changes will change the payload encoding
   if (can_fast_prepare && (!can_write || connection->get_features() != f)) {
     // ensure the correctness of message encoding
@@ -2222,7 +2225,9 @@ CtPtr ProtocolV2::_auth_bad_method(int r)
   std::vector<uint32_t> allowed_methods;
   std::vector<uint32_t> allowed_modes;
   messenger->auth_server->get_supported_auth_methods(
-    connection->get_peer_type(), &allowed_methods, &allowed_modes);
+    connection->get_peer_type(), &allowed_methods);
+  messenger->auth_server->get_supported_con_modes(
+    connection->get_peer_type(), auth_meta->auth_method, &allowed_modes);
   ldout(cct, 1) << __func__ << " auth_method " << auth_meta->auth_method
 		<< " r " << cpp_strerror(r)
 		<< ", allowed_methods " << allowed_methods

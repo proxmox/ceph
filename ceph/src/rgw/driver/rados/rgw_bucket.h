@@ -220,6 +220,7 @@ extern int rgw_object_get_attr(rgw::sal::Driver* driver, rgw::sal::Object* obj,
 
 void check_bad_owner_bucket_mapping(rgw::sal::Driver* driver,
                                     const rgw_owner& owner,
+                                    const std::string& owner_name,
                                     const std::string& tenant,
                                     bool fix, optional_yield y,
                                     const DoutPrefixProvider *dpp);
@@ -233,6 +234,7 @@ struct RGWBucketAdminOpState {
   std::string object_name;
   std::string new_bucket_name;
   std::string marker;
+  uint32_t max_entries;
 
   bool list_buckets;
   bool stat_buckets;

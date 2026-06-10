@@ -1773,7 +1773,7 @@ options:
 - name: mon_warn_pg_not_scrubbed_ratio
   type: float
   level: advanced
-  desc: Percentage of the scrub max interval past the scrub max interval to warn
+  desc: Raise a health warning when shallow scrubs are delayed by this percentage of the shallow scrub interval. Note that this must be set at mgr or with global scope. Set this configurable with the command "ceph config set mgr mon_warn_pg_not_scrubbed_ratio <ratio_value>".
   default: 0.5
   see_also:
   - osd_scrub_max_interval
@@ -5456,7 +5456,7 @@ options:
 - name: bluestore_slow_ops_warn_threshold
   type: uint
   level: advanced
-  desc: Set the minimum number of BluesStore slow ops before raising a health warning state
+  desc: Set the minimum number of BlueStore slow ops before raising a health warning state
   default: 1
   with_legacy: true
   see_also:
@@ -6598,3 +6598,20 @@ options:
   desc: Enables exception throwing instead of process abort on transaction submission error.
   default: false
   with_legacy: false
+- name: service_unique_id
+  type: str
+  level: advanced
+  desc: Unique string to be returned in PerfCounters
+  fmt_desc: A unique id to be created by orchestration software or the
+    administrator upon initial setup of a service. Enforcing uniqueness
+    is entirely the responsibility of the process used to create and
+    manage the cluster. A unique id will be unique within the scope of
+    the entire cluster across all services if they are chosen to be so.
+  note: If this is empty no uniquifier is provided.
+  tags:
+  - service
+  services:
+  - common
+  flags:
+  - no_mon_update
+  - startup

@@ -1566,6 +1566,7 @@ Usage:
     @_cli_write_command('orch daemon add nvmeof')
     def _nvmeof_add(self,
                     pool: str,
+                    group: str = '',
                     placement: Optional[str] = None,
                     inbuf: Optional[str] = None) -> HandleCommandResult:
         """Start nvmeof daemon(s)"""
@@ -1573,8 +1574,9 @@ Usage:
             raise OrchestratorValidationError('unrecognized command -i; -h or --help for usage')
 
         spec = NvmeofServiceSpec(
-            service_id='nvmeof',
+            service_id=f'{pool}.{group}' if group else pool,
             pool=pool,
+            group=group,
             placement=PlacementSpec.from_string(placement),
         )
         return self._daemon_add_misc(spec)
@@ -1641,12 +1643,14 @@ Usage:
                    format: Format = Format.plain,
                    unmanaged: bool = False,
                    no_overwrite: bool = False,
+                   continue_on_error: bool = False,
                    inbuf: Optional[str] = None) -> HandleCommandResult:
         """Update the size or placement for a service or apply a large yaml spec"""
         usage = """Usage:
   ceph orch apply -i <yaml spec> [--dry-run]
   ceph orch apply <service_type> [--placement=<placement_string>] [--unmanaged]
         """
+        errs: List[str] = []
         if inbuf:
             if service_type or placement or unmanaged:
                 raise OrchestratorValidationError(usage)
@@ -1654,9 +1658,22 @@ Usage:
             specs: List[Union[ServiceSpec, HostSpec]] = []
             # YAML '---' document separator with no content generates
             # None entries in the output. Let's skip them silently.
-            content = [o for o in yaml_objs if o is not None]
+            try:
+                content = [o for o in yaml_objs if o is not None]
+            except yaml.scanner.ScannerError as e:
+                msg = f"Invalid YAML received : {str(e)}"
+                self.log.exception(msg)
+                return HandleCommandResult(-errno.EINVAL, stderr=msg)
+
             for s in content:
-                spec = json_to_generic_spec(s)
+                try:
+                    spec = json_to_generic_spec(s)
+                except Exception as e:
+                    if continue_on_error:
+                        errs.append(f'Failed to convert {s} from json object: {str(e)}')
+                        continue
+                    else:
+                        raise e
 
                 # validate the config (we need MgrModule for that)
                 if isinstance(spec, ServiceSpec) and spec.config:
@@ -1664,7 +1681,12 @@ Usage:
                         try:
                             self.get_foreign_ceph_option('mon', k)
                         except KeyError:
-                            raise SpecValidationError(f'Invalid config option {k} in spec')
+                            err = SpecValidationError(f'Invalid config option {k} in spec')
+                            if continue_on_error:
+                                errs.append(str(err))
+                                continue
+                            else:
+                                raise err
 
                 # There is a general "osd" service with no service id, but we use
                 # that to dump osds created individually with "ceph orch daemon add osd"
@@ -1679,7 +1701,12 @@ Usage:
                     and spec.service_type == 'osd'
                     and not spec.service_id
                 ):
-                    raise SpecValidationError('Please provide the service_id field in your OSD spec')
+                    err = SpecValidationError('Please provide the service_id field in your OSD spec')
+                    if continue_on_error:
+                        errs.append(str(err))
+                        continue
+                    else:
+                        raise err
 
                 if dry_run and not isinstance(spec, HostSpec):
                     spec.preview_only = dry_run
@@ -1689,15 +1716,30 @@ Usage:
                     continue
                 specs.append(spec)
         else:
+            # Note in this case there is only ever one spec
+            # being applied so there is no need to worry about
+            # handling of continue_on_error
             placementspec = PlacementSpec.from_string(placement)
             if not service_type:
                 raise OrchestratorValidationError(usage)
             specs = [ServiceSpec(service_type.value, placement=placementspec,
                                  unmanaged=unmanaged, preview_only=dry_run)]
-        return self._apply_misc(specs, dry_run, format, no_overwrite)
+        cmd_result = self._apply_misc(specs, dry_run, format, no_overwrite, continue_on_error)
+        if errs:
+            # HandleCommandResult is a named tuple, so use
+            # _replace to modify it.
+            cmd_result = cmd_result._replace(stdout=cmd_result.stdout + '\n' + '\n'.join(errs))
+        return cmd_result
 
-    def _apply_misc(self, specs: Sequence[GenericSpec], dry_run: bool, format: Format, no_overwrite: bool = False) -> HandleCommandResult:
-        completion = self.apply(specs, no_overwrite)
+    def _apply_misc(
+        self,
+        specs: Sequence[GenericSpec],
+        dry_run: bool,
+        format: Format,
+        no_overwrite: bool = False,
+        continue_on_error: bool = False
+    ) -> HandleCommandResult:
+        completion = self.apply(specs, no_overwrite, continue_on_error)
         raise_if_exception(completion)
         out = completion.result_str()
         if dry_run:
@@ -1838,6 +1880,7 @@ Usage:
     @_cli_write_command('orch apply nvmeof')
     def _apply_nvmeof(self,
                       pool: str,
+                      group: str = '',
                       placement: Optional[str] = None,
                       unmanaged: bool = False,
                       dry_run: bool = False,
@@ -1849,8 +1892,9 @@ Usage:
             raise OrchestratorValidationError('unrecognized command -i; -h or --help for usage')
 
         spec = NvmeofServiceSpec(
-            service_id=pool,
+            service_id=f'{pool}.{group}' if group else pool,
             pool=pool,
+            group=group,
             placement=PlacementSpec.from_string(placement),
             unmanaged=unmanaged,
             preview_only=dry_run
@@ -2096,7 +2140,13 @@ Usage:
             specs: List[TunedProfileSpec] = []
             # YAML '---' document separator with no content generates
             # None entries in the output. Let's skip them silently.
-            content = [o for o in yaml_objs if o is not None]
+            try:
+                content = [o for o in yaml_objs if o is not None]
+            except yaml.scanner.ScannerError as e:
+                msg = f"Invalid YAML received : {str(e)}"
+                self.log.exception(msg)
+                return HandleCommandResult(-errno.EINVAL, stderr=msg)
+
             for spec in content:
                 specs.append(TunedProfileSpec.from_json(spec))
         else:

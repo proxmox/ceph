@@ -130,8 +130,9 @@ public:
   version_t prepare_force_open_sessions(std::map<client_t,entity_inst_t> &cm,
 					std::map<client_t,client_metadata_t>& cmm,
 					std::map<client_t,std::pair<Session*,uint64_t> >& smap);
-  void finish_force_open_sessions(const std::map<client_t,std::pair<Session*,uint64_t> >& smap,
+  void finish_force_open_sessions(std::map<client_t,std::pair<Session*,uint64_t> >& smap,
 				  bool dec_import=true);
+  void close_forced_opened_sessions(const std::map<client_t,std::pair<Session*,uint64_t> >& smap);
   void flush_client_sessions(std::set<client_t>& client_set, MDSGatherBuilder& gather);
   void finish_flush_session(Session *session, version_t seq);
   void terminate_sessions();
@@ -282,6 +283,7 @@ public:
   void handle_client_unlink(const MDRequestRef& mdr);
   bool _dir_is_nonempty_unlocked(const MDRequestRef& mdr, CInode *rmdiri);
   bool _dir_is_nonempty(const MDRequestRef& mdr, CInode *rmdiri);
+  bool _dir_has_snaps(const MDRequestRef& mdr, CInode *diri);
   void _unlink_local(const MDRequestRef& mdr, CDentry *dn, CDentry *straydn);
   void _unlink_local_finish(const MDRequestRef& mdr,
 			    CDentry *dn, CDentry *straydn,
@@ -570,6 +572,7 @@ private:
   unsigned delegate_inos_pct = 0;
   uint64_t dir_max_entries = 0;
   int64_t bal_fragment_size_max = 0;
+  bool allow_batched_ops = true;
 
   double inject_rename_corrupt_dentry_first = 0.0;
 

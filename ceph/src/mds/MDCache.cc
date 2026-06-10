@@ -5893,7 +5893,7 @@ void MDCache::do_cap_import(Session *session, CInode *in, Capability *cap,
   auto reap = make_message<MClientCaps>(CEPH_CAP_OP_IMPORT,
 					in->ino(), realm->inode->ino(), cap->get_cap_id(),
 					cap->get_last_seq(), cap->pending(), cap->wanted(),
-					0, cap->get_mseq(), mds->get_osd_epoch_barrier());
+					0, cap->get_mseq(), cap->get_last_issue(), mds->get_osd_epoch_barrier());
   in->encode_cap_message(reap, cap);
   reap->snapbl = mds->server->get_snap_trace(session, realm);
   reap->set_cap_peer(p_cap_id, p_seq, p_mseq, peer, p_flags);
@@ -8331,7 +8331,8 @@ int MDCache::path_traverse(const MDRequestRef& mdr, MDSContextFactory& cf,
 
   if (mds->logger) mds->logger->inc(l_mds_traverse);
 
-  dout(7) << "traverse: opening base ino " << path.get_ino() << " snap " << snapid << dendl;
+  dout(7) << "traverse: opening base ino " << path.get_ino() << " snap " << snapid
+          << " path depth " << path.depth() << dendl;
   CInode *cur = get_inode(path.get_ino());
   if (!cur) {
     if (MDS_INO_IS_MDSDIR(path.get_ino())) {
@@ -9849,6 +9850,10 @@ void MDCache::request_forward(const MDRequestRef& mdr, mds_rank_t who, int port)
 
 void MDCache::dispatch_request(const MDRequestRef& mdr)
 {
+  if (!mdr) {
+    dout(0) << __func__ << ": received a null request!"  << dendl;
+    return;
+  }
   if (mdr->dead) {
     dout(20) << __func__ << ": dead " << *mdr << dendl;
     return;
@@ -9915,8 +9920,9 @@ void MDCache::request_cleanup(const MDRequestRef& mdr)
     auto new_batch_head = it->second->find_new_head();
     if (!new_batch_head) {
       mdr->batch_op_map->erase(it);
+    } else {
+      mds->finisher->queue(new C_MDS_RetryRequest(this, new_batch_head));
     }
-    mds->finisher->queue(new C_MDS_RetryRequest(this, new_batch_head));
   }
 
   if (mdr->has_more()) {
@@ -10199,13 +10205,21 @@ void MDCache::notify_global_snaprealm_update(int snap_op)
 
 struct C_MDC_RetryScanStray : public MDCacheContext {
   dirfrag_t next;
-  C_MDC_RetryScanStray(MDCache *c,  dirfrag_t n) : MDCacheContext(c), next(n) { }
+  std::unique_ptr<MDCache::C_MDS_DumpStrayDirCtx> cmd_ctx;
+  C_MDC_RetryScanStray(MDCache *c,  dirfrag_t n, std::unique_ptr<MDCache::C_MDS_DumpStrayDirCtx> ctx) :
+   MDCacheContext(c), next(n), cmd_ctx(std::move(ctx)) {}
   void finish(int r) override {
-    mdcache->scan_stray_dir(next);
+    mdcache->scan_stray_dir(next, std::move(cmd_ctx));
   }
 };
 
-void MDCache::scan_stray_dir(dirfrag_t next)
+/*
+ * If the cmd_ctx is not nullptr, the caller is asok command handler,
+ * which will block until the on_finish will be called.
+ * The cmd_ctx holds the formatter to dump stray dir content while scanning.
+ * The function can return EAGAIN, to make possible waiting semantics clear.
+*/
+int MDCache::scan_stray_dir(dirfrag_t next, std::unique_ptr<MDCache::C_MDS_DumpStrayDirCtx> cmd_ctx)
 {
   dout(10) << "scan_stray_dir " << next << dendl;
 
@@ -10224,13 +10238,13 @@ void MDCache::scan_stray_dir(dirfrag_t next)
 	continue;
 
       if (!dir->can_auth_pin()) {
-	dir->add_waiter(CDir::WAIT_UNFREEZE, new C_MDC_RetryScanStray(this, dir->dirfrag()));
-	return;
+	dir->add_waiter(CDir::WAIT_UNFREEZE, new C_MDC_RetryScanStray(this, dir->dirfrag(), std::move(cmd_ctx)));
+	return -EAGAIN;
       }
 
       if (!dir->is_complete()) {
-	dir->fetch(new C_MDC_RetryScanStray(this, dir->dirfrag()));
-	return;
+	dir->fetch(new C_MDC_RetryScanStray(this, dir->dirfrag(), std::move(cmd_ctx)));
+	return -EAGAIN;
       }
 
       for (auto &p : dir->items) {
@@ -10239,14 +10253,32 @@ void MDCache::scan_stray_dir(dirfrag_t next)
 	CDentry::linkage_t *dnl = dn->get_projected_linkage();
 	if (dnl->is_primary()) {
 	  CInode *in = dnl->get_inode();
+    // only if we came from asok cmd handler
+    if (cmd_ctx) {
+      cmd_ctx->begin_dump();
+      cmd_ctx->get_formatter()->open_object_section("stray_inode");
+      cmd_ctx->get_formatter()->dump_int("ino: ", in->ino());
+      cmd_ctx->get_formatter()->dump_string("stray_prior_path: ", in->get_inode()->stray_prior_path);
+      in->dump(cmd_ctx->get_formatter(), CInode::DUMP_CAPS);
+      cmd_ctx->get_formatter()->close_section();
+    }
 	  if (in->get_inode()->nlink == 0)
 	    in->state_set(CInode::STATE_ORPHAN);
-	  maybe_eval_stray(in);
+    // no need to evaluate stray when dumping the dir content
+    if (!cmd_ctx) {
+	    maybe_eval_stray(in);
+    }
 	}
       }
     }
     next.frag = frag_t();
   }
+  // only if we came from asok cmd handler
+  if (cmd_ctx) {
+    cmd_ctx->end_dump();
+    cmd_ctx->finish(0);
+  }
+  return 0;
 }
 
 void MDCache::fetch_backtrace(inodeno_t ino, int64_t pool, bufferlist& bl, Context *fin)
@@ -10257,9 +10289,10 @@ void MDCache::fetch_backtrace(inodeno_t ino, int64_t pool, bufferlist& bl, Conte
     mds->logger->inc(l_mds_openino_backtrace_fetch);
 }
 
-
-
-
+int MDCache::stray_status(std::unique_ptr<C_MDS_DumpStrayDirCtx> ctx)
+{
+  return scan_stray_dir(dirfrag_t(), std::move(ctx));
+}
 
 // ========================================================================================
 // DISCOVER
@@ -13043,7 +13076,9 @@ int MDCache::dump_cache(std::string_view fn, Formatter *f, double timeout)
 void C_MDS_RetryRequest::finish(int r)
 {
   mdr->retry++;
-  cache->dispatch_request(mdr);
+  if (mdr) {
+    cache->dispatch_request(mdr);
+  }
 }
 
 MDSContext *CF_MDS_RetryRequestFactory::build()
@@ -13852,7 +13887,10 @@ void MDCache::add_quiesce(CInode* parent, CInode* in)
   auto& qs = *qis->qs;
   auto& qops = qrmdr->more()->quiesce_ops;
 
-  if (auto it = qops.find(in->ino()); it != qops.end()) {
+  if (!in->is_head()) {
+    dout(25) << " skipping non-head inode: " << *in << dendl;
+    return;
+  } else if (auto it = qops.find(in->ino()); it != qops.end()) {
     dout(25) << __func__ << ": existing quiesce metareqid: "  << it->second << dendl;
     return;
   }

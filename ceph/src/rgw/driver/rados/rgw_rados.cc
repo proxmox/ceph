@@ -1154,6 +1154,10 @@ int RGWRados::register_to_service_map(const DoutPrefixProvider *dpp, const strin
   metadata["realm_name"] = svc.zone->get_realm().get_name();
   metadata["realm_id"] = svc.zone->get_realm().get_id();
   metadata["id"] = name;
+  auto service_unique_id = cct->_conf.get_val<std::string>("service_unique_id");
+  if (!service_unique_id.empty()) {
+    metadata["service_unique_id"] = std::move(service_unique_id);
+  }
   int ret = rados.service_daemon_register(
     daemon_type,
     stringify(rados.get_instance_id()),
@@ -4770,7 +4774,7 @@ int RGWRados::copy_obj(RGWObjectCtx& src_obj_ctx,
   if (lh != attrs.end())
     src_attrs[RGW_ATTR_OBJECT_LEGAL_HOLD] = lh->second;
 
-  if (dest_bucket_info.flags & BUCKET_VERSIONS_SUSPENDED) {
+  if (!dest_bucket_info.versioning_enabled()) {
     src_attrs.erase(RGW_ATTR_OLH_ID_TAG);
     src_attrs.erase(RGW_ATTR_OLH_INFO);
     src_attrs.erase(RGW_ATTR_OLH_VER);
@@ -5753,7 +5757,8 @@ struct tombstone_entry {
 int RGWRados::Object::Delete::delete_obj(optional_yield y,
 					 const DoutPrefixProvider* dpp,
 					 bool log_op,
-					 const bool force)
+					 const bool force,
+					 const bool skip_olh_obj_update)
 {
   RGWRados *store = target->get_store();
   const rgw_obj& src_obj = target->get_obj();
@@ -5800,7 +5805,7 @@ int RGWRados::Object::Delete::delete_obj(optional_yield y,
 
       int r = store->set_olh(dpp, target->get_ctx(), target->get_bucket_info(), marker, true,
                              &meta, params.olh_epoch, params.unmod_since, params.high_precision_time,
-                             y, params.zones_trace, add_log);
+                             y, params.zones_trace, add_log, skip_olh_obj_update);
       if (r < 0) {
         return r;
       }
@@ -5815,7 +5820,7 @@ int RGWRados::Object::Delete::delete_obj(optional_yield y,
       r = store->unlink_obj_instance(
 	dpp, target->get_ctx(), target->get_bucket_info(), obj,
 	params.olh_epoch, y, params.bilog_flags,
-	params.null_verid, params.zones_trace, add_log, force);
+	params.null_verid, params.zones_trace, add_log, force, skip_olh_obj_update);
       if (r < 0) {
         return r;
       }
@@ -5991,7 +5996,8 @@ int RGWRados::delete_obj(const DoutPrefixProvider *dpp,
                          const real_time& expiration_time,
                          rgw_zone_set *zones_trace,
                          bool log_op,
-                         const bool force) // force removal even if head object is broken
+                         const bool force, // force removal even if head object is broken
+                         const bool skip_olh_obj_update) // true for all deletes (except the last one) initiated by a multi-object delete op
 {
   RGWRados::Object del_target(this, bucket_info, obj_ctx, obj);
   RGWRados::Object::Delete del_op(&del_target);
@@ -6003,7 +6009,7 @@ int RGWRados::delete_obj(const DoutPrefixProvider *dpp,
   del_op.params.zones_trace = zones_trace;
   del_op.params.null_verid = null_verid;
 
-  return del_op.delete_obj(y, dpp, log_op, force);
+  return del_op.delete_obj(y, dpp, log_op, force, skip_olh_obj_update);
 }
 
 int RGWRados::delete_raw_obj(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj, optional_yield y)
@@ -8331,7 +8337,7 @@ int RGWRados::apply_olh_log(const DoutPrefixProvider *dpp,
     rgw_obj obj_instance(bucket, key);
     int ret = delete_obj(dpp, obj_ctx, bucket_info, obj_instance, 0, y,
 			 null_verid, RGW_BILOG_FLAG_VERSIONED_OP,
-			 ceph::real_time(), zones_trace, log_op, force);
+			 ceph::real_time(), zones_trace, log_op, force, true /* skip_olh_obj_update */);
     if (ret < 0 && ret != -ENOENT) {
       ldpp_dout(dpp, 0) << "ERROR: delete_obj() returned " << ret << " obj_instance=" << obj_instance << dendl;
       return ret;
@@ -8525,9 +8531,11 @@ int RGWRados::set_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
       // it's possible that the pending xattr from this op prevented the olh
       // object from being cleaned by another thread that was deleting the last
       // existing version. We invoke a best-effort update_olh here to handle this case.
-      int r = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y, zones_trace, log_data_change);
-      if (r < 0 && r != -ECANCELED) {
-        ldpp_dout(dpp, 20) << "update_olh() target_obj=" << olh_obj << " returned " << r << dendl;
+      if (! skip_olh_obj_update) {
+        int r = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y, zones_trace, log_data_change);
+        if (r < 0 && r != -ECANCELED) {
+          ldpp_dout(dpp, 20) << "update_olh() target_obj=" << olh_obj << " returned " << r << dendl;
+        }
       }
       return ret;
     }
@@ -8541,6 +8549,7 @@ int RGWRados::set_olh(const DoutPrefixProvider *dpp, RGWObjectCtx& obj_ctx,
 
   // exit early if we're skipping the olh update and just updating the index
   if (skip_olh_obj_update) {
+    ldpp_dout(dpp, 20) << "skip update_olh() target_obj=" << olh_obj << dendl;
     return 0;
   }
 
@@ -8566,7 +8575,8 @@ int RGWRados::unlink_obj_instance(const DoutPrefixProvider* dpp,
 				  bool null_verid,
 				  rgw_zone_set* zones_trace,
 				  bool log_op,
-				  const bool force)
+				  const bool force,
+				  const bool skip_olh_obj_update)
 {
   string op_tag;
 
@@ -8624,10 +8634,12 @@ int RGWRados::unlink_obj_instance(const DoutPrefixProvider* dpp,
       // it's possible that the pending xattr from this op prevented the olh
       // object from being cleaned by another thread that was deleting the last
       // existing version. We invoke a best-effort update_olh here to handle this case.
-      int r = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y,
-			 zones_trace, null_verid, log_op, force);
-      if (r < 0 && r != -ECANCELED) {
-        ldpp_dout(dpp, 20) << "update_olh() target_obj=" << olh_obj << " returned " << r << dendl;
+      if (! skip_olh_obj_update) {
+        int r = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y,
+                           zones_trace, null_verid, log_op, force);
+        if (r < 0 && r != -ECANCELED) {
+          ldpp_dout(dpp, 20) << "update_olh() target_obj=" << olh_obj << " returned " << r << dendl;
+        }
       }
       return ret;
     } // if error in bucket_index_unlink_instance call
@@ -8637,6 +8649,11 @@ int RGWRados::unlink_obj_instance(const DoutPrefixProvider* dpp,
   if (i == MAX_ECANCELED_RETRY) {
     ldpp_dout(dpp, 0) << "ERROR: exceeded max ECANCELED retries, aborting (EIO)" << dendl;
     return -EIO;
+  }
+
+  if (skip_olh_obj_update) {
+    ldpp_dout(dpp, 20) << "skip update_olh() target_obj=" << olh_obj << dendl;
+    return 0;
   }
 
   ret = update_olh(dpp, obj_ctx, state, bucket_info, olh_obj, y,
@@ -10257,8 +10274,11 @@ int RGWRados::remove_objs_from_index(const DoutPrefixProvider *dpp,
   std::map<int, std::set<std::string>> sharded_removals;
   for (const auto& entry_key : entry_key_list) {
     const rgw_obj_key obj_key(entry_key);
-    const uint32_t shard =
-      RGWSI_BucketIndex_RADOS::bucket_shard_index(obj_key, num_shards);
+    const uint32_t shard = [&obj_key, num_shards]() -> uint32_t {
+      int32_t temp = RGWSI_BucketIndex_RADOS::bucket_shard_index(obj_key, num_shards);
+      return (-1 == temp) ? 0 : (uint32_t) temp;
+    }();
+
 
     // entry_key already combines namespace and name, so we first have
     // to break that apart before we can then combine with instance
@@ -10522,8 +10542,19 @@ int RGWRados::check_bucket_shards(const RGWBucketInfo& bucket_info,
   }
 
   uint32_t suggested_num_shards = 0;
-  const uint64_t max_objs_per_shard =
+  uint64_t max_objs_per_shard =
     cct->_conf.get_val<uint64_t>("rgw_max_objs_per_shard");
+
+  if (bucket_info.versioned()) {
+    // Since each versioned bucket requires 4 entries for the first object
+    // and 2 additional entries for each additional object, we want to
+    // trigger resharding sooner.
+    max_objs_per_shard /= 3;
+  }
+
+  // make sure it's at least 1, as in some testing scenarios it's artificially low
+  constexpr uint64_t min_max_objs_per_shard = 1;
+  max_objs_per_shard = std::max(min_max_objs_per_shard, max_objs_per_shard);
 
   // TODO: consider per-bucket sync policy here?
   const bool is_multisite = svc.zone->need_to_log_data();
@@ -10625,7 +10656,10 @@ librados::Rados* RGWRados::get_rados_handle()
   return &rados;
 }
 
-int RGWRados::delete_raw_obj_aio(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj, list<librados::AioCompletion *>& handles)
+int RGWRados::delete_tail_obj_aio(const DoutPrefixProvider *dpp,
+                                  const rgw_raw_obj& obj,
+                                  const std::string& tag,
+                                  list<librados::AioCompletion *>& handles)
 {
   rgw_rados_ref ref;
   int ret = get_raw_obj_ref(dpp, obj, &ref);
@@ -10635,8 +10669,7 @@ int RGWRados::delete_raw_obj_aio(const DoutPrefixProvider *dpp, const rgw_raw_ob
   }
 
   ObjectWriteOperation op;
-  list<string> prefixes;
-  cls_rgw_remove_obj(op, prefixes);
+  cls_refcount_put(op, tag, true);
 
   AioCompletion *c = librados::Rados::aio_create_completion(nullptr, nullptr);
   ret = ref.ioctx.aio_operate(ref.obj.oid, c, &op);

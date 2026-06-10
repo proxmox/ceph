@@ -3662,7 +3662,7 @@ int BlueFS::_flush_data(FileWriter *h, uint64_t offset, uint64_t length, bool bu
     }
     h->dirty_devs[p->bdev] = true;
     if (p->bdev == BDEV_SLOW) {
-      bytes_written_slow += t.length();
+      bytes_written_slow += x_len;
     }
 
     bloff += x_len;
@@ -3867,10 +3867,12 @@ int BlueFS::truncate(FileWriter *h, uint64_t offset)/*_WF_L*/
         changed_extents = true;
         ++p;
       } else {
-        // cut_off > p->length means that we misaligned the extent
-        ceph_assert(cut_off == p->length);
+        // Usually cut_off == p->length.
+        // Case cut_off > p->length means that we misaligned the extent
+        // or alloc size changed in the meantime.
+        // In both cases just leave extent untouched.
         fnode.allocated = (offset - x_off) + p->length;
-        ++p; // leave extent untouched
+        ++p;
       }
       while (p != fnode.extents.end()) {
         dirty.pending_release[p->bdev].insert(p->offset, p->length);

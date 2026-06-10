@@ -134,7 +134,7 @@ DEFAULT_NVMEOF_IMAGE = 'quay.io/ceph/nvmeof:1.2.5'
 DEFAULT_LOKI_IMAGE = 'quay.io/ceph/loki:3.0.0'
 DEFAULT_PROMTAIL_IMAGE = 'quay.io/ceph/promtail:3.0.0'
 DEFAULT_ALERT_MANAGER_IMAGE = 'quay.io/prometheus/alertmanager:v0.25.0'
-DEFAULT_GRAFANA_IMAGE = 'quay.io/ceph/grafana:10.4.0'
+DEFAULT_GRAFANA_IMAGE = 'quay.io/ceph/grafana:12.3.1'
 DEFAULT_HAPROXY_IMAGE = 'quay.io/ceph/haproxy:2.3'
 DEFAULT_KEEPALIVED_IMAGE = 'quay.io/ceph/keepalived:2.2.4'
 DEFAULT_SNMP_GATEWAY_IMAGE = 'quay.io/ceph/snmp-notifier:v1.2.1'
@@ -3487,7 +3487,12 @@ Then run the following:
         return "Scheduled %s update..." % spec.service_name()
 
     @handle_orch_error
-    def apply(self, specs: Sequence[GenericSpec], no_overwrite: bool = False) -> List[str]:
+    def apply(
+        self,
+        specs: Sequence[GenericSpec],
+        no_overwrite: bool = False,
+        continue_on_error: bool = True
+    ) -> List[str]:
         results = []
         for spec in specs:
             if no_overwrite:
@@ -3499,7 +3504,14 @@ Then run the following:
                     results.append('Skipped %s service spec. To change %s spec omit --no-overwrite flag'
                                    % (cast(ServiceSpec, spec).service_name(), cast(ServiceSpec, spec).service_name()))
                     continue
-            results.append(self._apply(spec))
+            try:
+                res = self._apply(spec)
+                results.append(res)
+            except Exception as e:
+                if continue_on_error:
+                    results.append(f'Failed to apply spec for {spec}: {str(e)}')
+                else:
+                    raise e
         return results
 
     @handle_orch_error

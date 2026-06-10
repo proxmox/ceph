@@ -445,10 +445,14 @@ class KafkaReceiver(object):
         self.topic = topic
         self.stop = False
 
-    def verify_s3_events(self, keys, exact_match=False, deletions=False, etags=[]):
+    def verify_s3_events(self, keys, exact_match=False, deletions=False, etags=[], expected_sizes={}):
         """verify stored s3 records agains a list of keys"""
-        verify_s3_records_by_elements(self.events, keys, exact_match=exact_match, deletions=deletions, etags=etags)
+        verify_s3_records_by_elements(self.events, keys, exact_match=exact_match, deletions=deletions, etags=etags, expected_sizes=expected_sizes)
         self.events = []
+
+    def close(self, task):
+        stop_kafka_receiver(self, task)
+
 
 def kafka_receiver_thread_runner(receiver):
     """main thread function for the kafka receiver"""
@@ -720,9 +724,7 @@ def test_ps_s3_topic_admin_on_master():
     assert_equal(result, 2)
 
     # get the remaining 2 topics
-    result = admin(['topic', 'list', '--tenant', tenant], get_config_cluster())
-    parsed_result = json.loads(result[0])
-    assert_equal(len(parsed_result['topics']), 2)
+    list_topics(2, tenant)
 
     # delete topics
     _, result = admin(['topic', 'rm', '--topic', topic_name+'_1', '--tenant', tenant], get_config_cluster())
@@ -731,9 +733,7 @@ def test_ps_s3_topic_admin_on_master():
     assert_equal(result, 0)
 
     # get topic list, make sure it is empty
-    result = admin(['topic', 'list', '--tenant', tenant], get_config_cluster())
-    parsed_result = json.loads(result[0])
-    assert_equal(len(parsed_result['topics']), 0)
+    list_topics(0, tenant)
 
 
 @attr('basic_test')
@@ -1436,7 +1436,7 @@ def notification_push(endpoint_type, conn, account=None, cloudevents=False, kafk
         # start amqp receiver
         task, receiver = create_kafka_receiver_thread(topic_name, kafka_brokers=kafka_brokers)
         task.start()
-        endpoint_address = 'kafka://' + kafka_server
+        endpoint_address = 'kafka://' + kafka_server + ':9092'
         # without acks from broker
         endpoint_args = 'push-endpoint='+endpoint_address+'&kafka-ack-level=broker'
         if kafka_brokers is not None:
@@ -5431,11 +5431,9 @@ def test_ps_s3_data_path_v2_large_migration():
     # check if we migrated all the topics
     for tenant in tenants_list:
         if tenant == '':
-            topics_result = admin(['topic', 'list'], get_config_cluster())
+            list_topics(1)
         else:
-            topics_result = admin(['topic', 'list', '--tenant', tenant], get_config_cluster())
-        topics_json = json.loads(topics_result[0])
-        assert_equal(len(topics_json['topics']), 1)
+            list_topics(1, tenant)
 
     # check if we migrated all the notifications
     for tenant, bucket in zip(tenants_list, buckets_list):
@@ -5591,11 +5589,9 @@ def test_ps_s3_data_path_v2_mixed_migration():
     # check if we migrated all the topics
     for tenant in tenants_list:
         if tenant == '':
-            topics_result = admin(['topic', 'list'], get_config_cluster())
+            list_topics(2)
         else:
-            topics_result = admin(['topic', 'list', '--tenant', tenant], get_config_cluster())
-        topics_json = json.loads(topics_result[0])
-        assert_equal(len(topics_json['topics']), 2)
+            list_topics(2, tenant)
 
     # check if we migrated all the notifications
     for tenant, bucket in zip(tenants_list, buckets_list):
