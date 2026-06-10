@@ -1,3 +1,9 @@
+ceph (19.2.4-pve1) trixie; urgency=medium
+
+  * update Ceph to Squid 19.2.4 stable release.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 10 Jun 2026 21:51:47 +0200
+
 ceph (19.2.3-pve4) trixie; urgency=medium
 
   * bluefs: fix OSD crash caused by incorrect allocation unit size alignment
