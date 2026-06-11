@@ -1,3 +1,9 @@
+ceph (19.2.4-1~bpo12+1) bookworm; urgency=medium
+
+  * update Ceph to Squid 19.2.4 stable release
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 11 Jun 2026 09:28:15 +0200
+
 ceph (19.2.3-1~bpo12+2) bookworm; urgency=medium
 
   * bluefs: fix OSD crash caused by incorrect allocation unit size alignment
