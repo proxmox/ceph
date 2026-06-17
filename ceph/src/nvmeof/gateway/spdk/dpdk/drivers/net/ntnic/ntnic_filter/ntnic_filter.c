@@ -248,6 +248,11 @@ interpret_end:
 
 int nthw_create_attr(struct cnv_attr_s *attribute, const struct rte_flow_attr *attr)
 {
+	if (!attribute) {
+		NT_LOG(ERR, FILTER, "ERROR no attribute to iterate!");
+		return -1;
+	}
+
 	memset(&attribute->attr, 0x0, sizeof(struct rte_flow_attr));
 
 	if (attr) {
@@ -355,8 +360,8 @@ int nthw_create_action_elements_inline(struct cnv_action_s *action,
 				case RTE_ETH_HASH_FUNCTION_MAX:
 				default:
 					NT_LOG(ERR, FILTER,
-						"RTE ACTION RSS - unsupported function: %u",
-						rss->func);
+						"RTE ACTION RSS - unsupported function: %i",
+						(int)rss->func);
 					return -1;
 				}
 
@@ -478,17 +483,18 @@ static int convert_flow(struct rte_eth_dev *eth_dev,
 	struct rte_flow_error *error)
 {
 	struct pmd_internals *internals = eth_dev->data->dev_private;
-	struct fpga_info_s *fpga_info = &internals->p_drv->ntdrv.adapter_info.fpga_info;
-
-	error->type = RTE_FLOW_ERROR_TYPE_NONE;
-	error->message = "none";
-	uint32_t queue_offset = 0;
 
 	if (!internals) {
 		rte_flow_error_set(error, EINVAL, RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 			"Missing eth_dev");
 		return -1;
 	}
+
+	struct fpga_info_s *fpga_info = &internals->p_drv->ntdrv.adapter_info.fpga_info;
+
+	error->type = RTE_FLOW_ERROR_TYPE_NONE;
+	error->message = "none";
+	uint32_t queue_offset = 0;
 
 	if (internals->type == PORT_TYPE_OVERRIDE && internals->vpq_nb_vq > 0) {
 		/*
@@ -1155,10 +1161,10 @@ static int poll_statistics(struct pmd_internals *internals)
 	struct drv_s *p_drv = internals->p_drv;
 	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
 	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
-	const int if_index = internals->n_intf_no;
+	const int n_intf_no = internals->n_intf_no;
 	uint64_t last_stat_rtc = 0;
 
-	if (!p_nt4ga_stat || if_index < 0 || if_index >= NUM_ADAPTER_PORTS_MAX)
+	if (!p_nt4ga_stat || n_intf_no < 0 || n_intf_no >= NUM_ADAPTER_PORTS_MAX)
 		return -1;
 
 	RTE_ASSERT(rte_tsc_freq > 0);
@@ -1184,36 +1190,36 @@ static int poll_statistics(struct pmd_internals *internals)
 	 * Add the RX statistics increments since last time we polled.
 	 * (No difference if physical or virtual port)
 	 */
-	internals->rxq_scg[0].rx_pkts += p_nt4ga_stat->a_port_rx_packets_total[if_index] -
-		p_nt4ga_stat->a_port_rx_packets_base[if_index];
-	internals->rxq_scg[0].rx_bytes += p_nt4ga_stat->a_port_rx_octets_total[if_index] -
-		p_nt4ga_stat->a_port_rx_octets_base[if_index];
+	internals->rxq_scg[0].rx_pkts += p_nt4ga_stat->a_port_rx_packets_total[n_intf_no] -
+		p_nt4ga_stat->a_port_rx_packets_base[n_intf_no];
+	internals->rxq_scg[0].rx_bytes += p_nt4ga_stat->a_port_rx_octets_total[n_intf_no] -
+		p_nt4ga_stat->a_port_rx_octets_base[n_intf_no];
 	internals->rxq_scg[0].err_pkts += 0;
-	internals->rx_missed += p_nt4ga_stat->a_port_rx_drops_total[if_index] -
-		p_nt4ga_stat->a_port_rx_drops_base[if_index];
+	internals->rx_missed += p_nt4ga_stat->a_port_rx_drops_total[n_intf_no] -
+		p_nt4ga_stat->a_port_rx_drops_base[n_intf_no];
 
 	/* Update the increment bases */
-	p_nt4ga_stat->a_port_rx_packets_base[if_index] =
-		p_nt4ga_stat->a_port_rx_packets_total[if_index];
-	p_nt4ga_stat->a_port_rx_octets_base[if_index] =
-		p_nt4ga_stat->a_port_rx_octets_total[if_index];
-	p_nt4ga_stat->a_port_rx_drops_base[if_index] =
-		p_nt4ga_stat->a_port_rx_drops_total[if_index];
+	p_nt4ga_stat->a_port_rx_packets_base[n_intf_no] =
+		p_nt4ga_stat->a_port_rx_packets_total[n_intf_no];
+	p_nt4ga_stat->a_port_rx_octets_base[n_intf_no] =
+		p_nt4ga_stat->a_port_rx_octets_total[n_intf_no];
+	p_nt4ga_stat->a_port_rx_drops_base[n_intf_no] =
+		p_nt4ga_stat->a_port_rx_drops_total[n_intf_no];
 
 	/* Tx (here we must distinguish between physical and virtual ports) */
 	if (internals->type == PORT_TYPE_PHYSICAL) {
 		/* Add the statistics increments since last time we polled */
-		internals->txq_scg[0].tx_pkts += p_nt4ga_stat->a_port_tx_packets_total[if_index] -
-			p_nt4ga_stat->a_port_tx_packets_base[if_index];
-		internals->txq_scg[0].tx_bytes += p_nt4ga_stat->a_port_tx_octets_total[if_index] -
-			p_nt4ga_stat->a_port_tx_octets_base[if_index];
+		internals->txq_scg[0].tx_pkts += p_nt4ga_stat->a_port_tx_packets_total[n_intf_no] -
+			p_nt4ga_stat->a_port_tx_packets_base[n_intf_no];
+		internals->txq_scg[0].tx_bytes += p_nt4ga_stat->a_port_tx_octets_total[n_intf_no] -
+			p_nt4ga_stat->a_port_tx_octets_base[n_intf_no];
 		internals->txq_scg[0].err_pkts += 0;
 
 		/* Update the increment bases */
-		p_nt4ga_stat->a_port_tx_packets_base[if_index] =
-			p_nt4ga_stat->a_port_tx_packets_total[if_index];
-		p_nt4ga_stat->a_port_tx_octets_base[if_index] =
-			p_nt4ga_stat->a_port_tx_octets_total[if_index];
+		p_nt4ga_stat->a_port_tx_packets_base[n_intf_no] =
+			p_nt4ga_stat->a_port_tx_packets_total[n_intf_no];
+		p_nt4ga_stat->a_port_tx_octets_base[n_intf_no] =
+			p_nt4ga_stat->a_port_tx_octets_total[n_intf_no];
 	}
 
 	/* Globally only once a second */

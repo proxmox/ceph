@@ -20,7 +20,7 @@ _ocf_precompile() {
 	# So we precompile OCF now for further use as standalone static library
 	"$rootdir/configure" $(echo $config_params | sed 's/--enable-coverage//g')
 	$MAKE $MAKEFLAGS include/spdk/config.h
-	CC=gcc CCAR=ar $MAKE $MAKEFLAGS -C "$rootdir/lib/env_ocf" exportlib O="$rootdir/ocf.a"
+	CC=gcc AR=ar $MAKE $MAKEFLAGS -C "$rootdir/lib/env_ocf" exportlib O="$rootdir/ocf.a"
 	# Set config to use precompiled library
 	config_params="$config_params --with-ocf=/$rootdir/ocf.a"
 	# need to reconfigure to avoid clearing ocf related files on future make clean.
@@ -143,34 +143,6 @@ _build_native_dpdk() {
 		export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$external_dpdk_base_dir/intel-ipsec-mb/$intel_ipsec_lib"
 	fi
 
-	if [[ "$SPDK_TEST_VBDEV_COMPRESS" -eq 1 ]]; then
-		isal_dir="$external_dpdk_base_dir/isa-l"
-		git clone --branch v2.29.0 --depth 1 https://github.com/intel/isa-l.git "$isal_dir"
-
-		cd $isal_dir
-		./autogen.sh
-		./configure CFLAGS="-fPIC -g -O2" --enable-shared=yes --prefix="$isal_dir/build"
-		ln -s $PWD/include $PWD/isa-l
-		$MAKE $MAKEFLAGS all
-		$MAKE install
-		DPDK_DRIVERS+=("compress")
-		DPDK_DRIVERS+=("compress/isal")
-		DPDK_DRIVERS+=("compress/qat")
-		DPDK_DRIVERS+=("common/qat")
-		if ge "$dpdk_ver" 21.02.0; then
-			# SPDK enables REDUCE_MLX in case supported version of DPDK is detected
-			# so make sure proper libs are built.
-			if test $mlx5_libs_added = "n"; then
-				DPDK_DRIVERS+=("bus/auxiliary")
-				DPDK_DRIVERS+=("common/mlx5")
-				DPDK_DRIVERS+=("common/mlx5/linux")
-			fi
-			DPDK_DRIVERS+=("compress/mlx5")
-		fi
-		export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$isal_dir/build/lib/pkgconfig"
-		export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$isal_dir/build/lib"
-	fi
-
 	cd $external_dpdk_base_dir
 	if [ "$(uname -s)" = "Linux" ]; then
 		if lt $dpdk_ver 21.11.0; then
@@ -204,7 +176,7 @@ _build_native_dpdk() {
 		sudo -E ninja -C "$external_dpdk_base_dir/build-tmp" $MAKEFLAGS install
 		# Sanitize ownership of the target directory post sudo above
 		sudo chown -R "$USER" "$external_dpdk_base_dir"
-		# Make sure kernel modules are available for freebsd_update_contigmem_mod() to fetch
+		# Make sure kernel modules are available for freebsd_update_mods() to fetch
 		mapfile -t drivers < <(find "$external_dpdk_base_dir/build-tmp" -name '*.ko')
 		if ((${#drivers[@]} > 0)); then
 			mkdir -p "$external_dpdk_dir/kmod"

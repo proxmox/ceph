@@ -152,6 +152,7 @@ zsda_pci_dev_destroy(struct zsda_pci_device *zsda_pci_dev,
 {
 
 	zsda_comp_dev_destroy(zsda_pci_dev);
+	zsda_crypto_dev_destroy(zsda_pci_dev);
 
 	return zsda_pci_device_release(pci_dev);
 }
@@ -177,9 +178,20 @@ zsda_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	ret = zsda_comp_dev_create(zsda_pci_dev);
 	if (ret)
-		ZSDA_LOG(ERR, "Failed! dev create.");
+		ZSDA_LOG(ERR, "Failed! comp_dev create.");
+
+	ret = zsda_crypto_dev_create(zsda_pci_dev);
+	if (ret) {
+		ZSDA_LOG(ERR, "Failed! crypto_dev create.");
+		goto exit;
+	}
 
 	return ret;
+
+exit:
+	zsda_comp_dev_destroy(zsda_pci_dev);
+
+	return ZSDA_FAILED;
 }
 
 static int
@@ -201,7 +213,8 @@ static struct rte_pci_driver rte_zsda_pmd = {
 	.id_table = pci_id_zsda_map,
 	.drv_flags = RTE_PCI_DRV_NEED_MAPPING,
 	.probe = zsda_pci_probe,
-	.remove = zsda_pci_remove };
+	.remove = zsda_pci_remove
+};
 
 RTE_PMD_REGISTER_PCI(ZSDA_PCI_NAME, rte_zsda_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(ZSDA_PCI_NAME, pci_id_zsda_map);

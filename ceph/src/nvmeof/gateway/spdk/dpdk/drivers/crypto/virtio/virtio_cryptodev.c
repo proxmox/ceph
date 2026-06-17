@@ -550,7 +550,6 @@ crypto_virtio_dev_init(struct rte_cryptodev *cryptodev, uint64_t features,
 {
 	struct virtio_crypto_hw *hw;
 
-	cryptodev->driver_id = cryptodev_virtio_driver_id;
 	cryptodev->dev_ops = &virtio_crypto_dev_ops;
 
 	cryptodev->enqueue_burst = virtio_crypto_pkt_tx_burst;
@@ -599,6 +598,7 @@ crypto_virtio_create(const char *name, struct rte_pci_device *pci_dev,
 	if (cryptodev == NULL)
 		return -ENODEV;
 
+	cryptodev->driver_id = cryptodev_virtio_driver_id;
 	if (crypto_virtio_dev_init(cryptodev, VIRTIO_CRYPTO_PMD_GUEST_FEATURES,
 			pci_dev) < 0)
 		return -1;
@@ -625,8 +625,7 @@ virtio_crypto_dev_uninit(struct rte_cryptodev *cryptodev)
 	cryptodev->enqueue_burst = NULL;
 	cryptodev->dequeue_burst = NULL;
 
-	rte_free(cryptodev->data);
-	cryptodev->data = NULL;
+	rte_cryptodev_pmd_release_device(cryptodev);
 
 	VIRTIO_CRYPTO_DRV_LOG_INFO("dev_uninit completed");
 
@@ -799,6 +798,10 @@ virtio_crypto_clear_session(
 	}
 
 	malloc_phys_addr = rte_malloc_virt2iova(ctrl);
+	if (malloc_phys_addr == RTE_BAD_IOVA) {
+		VIRTIO_CRYPTO_SESSION_LOG_ERR("malloc_phys_addr is invalid");
+		return;
+	}
 
 	/* status part */
 	status = &(((struct virtio_crypto_inhdr *)
@@ -916,6 +919,10 @@ virtio_crypto_clear_session_packed(
 	}
 
 	malloc_phys_addr = rte_malloc_virt2iova(ctrl);
+	if (malloc_phys_addr == RTE_BAD_IOVA) {
+		VIRTIO_CRYPTO_SESSION_LOG_ERR("malloc_phys_addr is invalid");
+		return;
+	}
 
 	/* status part */
 	status = &(((struct virtio_crypto_inhdr *)
@@ -1525,6 +1532,29 @@ virtio_crypto_asym_rsa_xform_to_der(
 }
 
 static int
+virtio_crypto_asym_rsa_xform_to_public_der(
+		struct rte_crypto_asym_xform *xform,
+		uint8_t *der)
+{
+	uint8_t data[VIRTIO_CRYPTO_MAX_CTRL_DATA];
+	size_t tlen = 0, len;
+	uint8_t *tlv;
+
+	if (xform->xform_type != RTE_CRYPTO_ASYM_XFORM_RSA)
+		return -EINVAL;
+
+	tlv = data;
+	len = tlv_encode(tlv, 0x02, xform->rsa.n.data, xform->rsa.n.length);
+	tlen += len;
+	len = tlv_encode(tlv + tlen, 0x02, xform->rsa.e.data, xform->rsa.e.length);
+	tlen += len;
+
+	RTE_ASSERT(tlen < VIRTIO_CRYPTO_MAX_CTRL_DATA);
+	len = tlv_encode(der, 0x30, data, tlen);
+	return len;
+}
+
+static int
 virtio_crypto_asym_rsa_configure_session(
 		struct rte_crypto_rsa_xform *rsa,
 		struct virtio_crypto_akcipher_session_para *para)
@@ -1607,7 +1637,13 @@ virtio_crypto_asym_configure_session(
 			return ret;
 		}
 
-		ret = virtio_crypto_asym_rsa_xform_to_der(xform, ctrl->data);
+		if (xform->rsa.key_type == RTE_RSA_KEY_TYPE_EXP) {
+			ret = virtio_crypto_asym_rsa_xform_to_public_der(
+					xform, ctrl->data);
+		} else {
+			ret = virtio_crypto_asym_rsa_xform_to_der(xform,
+					ctrl->data);
+		}
 		if (ret <= 0) {
 			VIRTIO_CRYPTO_SESSION_LOG_ERR("Invalid RSA primitives");
 			return ret;
@@ -1658,7 +1694,7 @@ virtio_crypto_dev_info_get(struct rte_cryptodev *dev,
 	PMD_INIT_FUNC_TRACE();
 
 	if (info != NULL) {
-		info->driver_id = cryptodev_virtio_driver_id;
+		info->driver_id = dev->driver_id;
 		info->feature_flags = dev->feature_flags;
 		info->max_nb_queue_pairs = hw->max_dataqueues;
 		/* No limit of number of sessions */

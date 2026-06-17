@@ -83,7 +83,7 @@ int nthw_phy_tile_init(nthw_phy_tile_t *p, nthw_fpga_t *p_fpga, int mn_phy_tile_
 		break;
 
 	default:
-		NT_LOG_DBG(DBG, NTHW, "unknown product ID: %u", p_fpga->mn_product_id);
+		NT_LOG_DBG(DBG, NTHW, "unknown product ID: %i", p_fpga->mn_product_id);
 		break;
 	}
 
@@ -797,7 +797,6 @@ static uint32_t nthw_phy_tile_cpi_request(nthw_phy_tile_t *p, uint8_t intf_no, u
 	/* Find quad lane */
 	quad_lane = nthw_phy_tile_read_xcvr(p, intf_no, lane, 0xFFFFC) & 0x3;
 
-	xcvr_instance = lane;
 	lane_offset = (uint32_t)(lane << 20);
 
 	cpi_cmd = (data << 16) | cpi_assert | cpi_set_get | (quad_lane << 8) | op_code;
@@ -806,7 +805,7 @@ static uint32_t nthw_phy_tile_cpi_request(nthw_phy_tile_t *p, uint8_t intf_no, u
 
 	nt_os_wait_usec(10000);
 
-	for (int i = 20; i > 0; i--) {
+	for (int i = 20; i >= 0; i--) {
 		data = nthw_phy_tile_read_xcvr(p, intf_no, lane, phy_addr + lane_offset);
 
 		value =

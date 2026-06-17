@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path, PurePath
-from typing import Final
+from typing import ClassVar, Final
 
 from framework.config.test_run import (
     DPDKBuildConfiguration,
@@ -29,9 +29,9 @@ from framework.logger import DTSLogger, get_dts_logger
 from framework.params.eal import EalParams
 from framework.remote_session.remote_session import CommandResult
 from framework.testbed_model.cpu import LogicalCore, LogicalCoreCount, LogicalCoreList, lcore_filter
+from framework.testbed_model.linux_session import LinuxSession
 from framework.testbed_model.node import Node
 from framework.testbed_model.os_session import OSSession
-from framework.testbed_model.port import Port
 from framework.testbed_model.virtual_device import VirtualDevice
 from framework.utils import MesonArgs, TarCompressionFormat
 
@@ -56,10 +56,9 @@ class DPDKBuildEnvironment:
     _node: Node
     _session: OSSession
     _logger: DTSLogger
-    _remote_tmp_dir: PurePath
-    _remote_dpdk_tree_path: str | PurePath | None
     _remote_dpdk_build_dir: PurePath | None
     _app_compile_timeout: float
+    _remote_tmp_dpdk_tree_dir: ClassVar[str] = "dpdk"
 
     compiler_version: str | None
 
@@ -70,8 +69,6 @@ class DPDKBuildEnvironment:
         self._logger = get_dts_logger()
         self._session = node.create_session("dpdk_build")
 
-        self._remote_tmp_dir = node.main_session.get_remote_tmp_dir()
-        self._remote_dpdk_tree_path = None
         self._remote_dpdk_build_dir = None
         self._app_compile_timeout = 90
 
@@ -84,6 +81,9 @@ class DPDKBuildEnvironment:
         sources and then building DPDK or using the exist ones from the `dpdk_location`. The drivers
         are bound to those that DPDK needs.
         """
+        if not isinstance(self.config.dpdk_location, RemoteDPDKTreeLocation):
+            self._node.main_session.create_directory(self.remote_dpdk_tree_path)
+
         match self.config.dpdk_location:
             case RemoteDPDKTreeLocation(dpdk_tree=dpdk_tree):
                 self._set_remote_dpdk_tree_path(dpdk_tree)
@@ -114,7 +114,7 @@ class DPDKBuildEnvironment:
             case LocalDPDKTarballLocation(tarball=tarball):
                 self._node.main_session.remove_remote_dir(self.remote_dpdk_tree_path)
                 tarball_path = self._node.main_session.join_remote_path(
-                    self._remote_tmp_dir, tarball.name
+                    self._node.tmp_dir, tarball.name
                 )
                 self._node.main_session.remove_remote_file(tarball_path)
 
@@ -122,7 +122,7 @@ class DPDKBuildEnvironment:
         """Set the path to the remote DPDK source tree based on the provided DPDK location.
 
         Verify DPDK source tree existence on the SUT node, if exists sets the
-        `_remote_dpdk_tree_path` property, otherwise sets nothing.
+        `remote_dpdk_tree_path` property, otherwise sets nothing.
 
         Args:
             dpdk_tree: The path to the DPDK source tree directory.
@@ -139,7 +139,7 @@ class DPDKBuildEnvironment:
         if not self._session.is_remote_dir(dpdk_tree):
             raise ConfigurationError(f"Remote DPDK source tree '{dpdk_tree}' must be a directory.")
 
-        self._remote_dpdk_tree_path = dpdk_tree
+        self.remote_dpdk_tree_path = dpdk_tree
 
     def _copy_dpdk_tree(self, dpdk_tree_path: Path) -> None:
         """Copy the DPDK source tree to the SUT.
@@ -148,17 +148,14 @@ class DPDKBuildEnvironment:
             dpdk_tree_path: The path to DPDK source tree on local filesystem.
         """
         self._logger.info(
-            f"Copying DPDK source tree to SUT: '{dpdk_tree_path}' into '{self._remote_tmp_dir}'."
+            f"Copying DPDK source tree to SUT: '{dpdk_tree_path}' into "
+            f"'{self.remote_dpdk_tree_path}'."
         )
         self._session.copy_dir_to(
             dpdk_tree_path,
-            self._remote_tmp_dir,
+            self.remote_dpdk_tree_path,
             exclude=[".git", "*.o"],
             compress_format=TarCompressionFormat.gzip,
-        )
-
-        self._remote_dpdk_tree_path = self._session.join_remote_path(
-            self._remote_tmp_dir, PurePath(dpdk_tree_path).name
         )
 
     def _validate_remote_dpdk_tarball(self, dpdk_tarball: PurePath) -> None:
@@ -187,42 +184,17 @@ class DPDKBuildEnvironment:
             The path of the copied tarball on the SUT node.
         """
         self._logger.info(
-            f"Copying DPDK tarball to SUT: '{dpdk_tarball}' into '{self._remote_tmp_dir}'."
+            f"Copying DPDK tarball to SUT: '{dpdk_tarball}' into '{self._node.tmp_dir}'."
         )
-        self._session.copy_to(dpdk_tarball, self._remote_tmp_dir)
-        return self._session.join_remote_path(self._remote_tmp_dir, dpdk_tarball.name)
+        self._session.copy_to(dpdk_tarball, self._node.tmp_dir)
+        return self._session.join_remote_path(self._node.tmp_dir, dpdk_tarball.name)
 
     def _prepare_and_extract_dpdk_tarball(self, remote_tarball_path: PurePath) -> None:
         """Prepare the remote DPDK tree path and extract the tarball.
 
-        This method extracts the remote tarball and sets the `_remote_dpdk_tree_path` property to
-        the path of the extracted DPDK tree on the SUT node.
-
         Args:
             remote_tarball_path: The path to the DPDK tarball on the SUT node.
         """
-
-        def remove_tarball_suffix(remote_tarball_path: PurePath) -> PurePath:
-            """Remove the tarball suffix from the path.
-
-            Args:
-                remote_tarball_path: The path to the remote tarball.
-
-            Returns:
-                The path without the tarball suffix.
-            """
-            if len(remote_tarball_path.suffixes) > 1:
-                if remote_tarball_path.suffixes[-2] == ".tar":
-                    suffixes_to_remove = "".join(remote_tarball_path.suffixes[-2:])
-                    return PurePath(str(remote_tarball_path).replace(suffixes_to_remove, ""))
-            return remote_tarball_path.with_suffix("")
-
-        tarball_top_dir = self._session.get_tarball_top_dir(remote_tarball_path)
-        self._remote_dpdk_tree_path = self._session.join_remote_path(
-            remote_tarball_path.parent,
-            tarball_top_dir or remove_tarball_suffix(remote_tarball_path),
-        )
-
         self._logger.info(
             "Extracting DPDK tarball on SUT: "
             f"'{remote_tarball_path}' into '{self.remote_dpdk_tree_path}'."
@@ -230,13 +202,14 @@ class DPDKBuildEnvironment:
         self._session.extract_remote_tarball(
             remote_tarball_path,
             self.remote_dpdk_tree_path,
+            strip_root_dir=True,
         )
 
     def _set_remote_dpdk_build_dir(self, build_dir: str):
         """Set the `remote_dpdk_build_dir` on the SUT.
 
         Check existence on the SUT node and sets the
-        `remote_dpdk_build_dir` property by joining the `_remote_dpdk_tree_path` and `build_dir`.
+        `remote_dpdk_build_dir` property by joining the `remote_dpdk_tree_path` and `build_dir`.
         Otherwise, sets nothing.
 
         Args:
@@ -285,7 +258,7 @@ class DPDKBuildEnvironment:
         """Build DPDK.
 
         Uses the already configured DPDK build configuration. Assumes that the
-        `_remote_dpdk_tree_path` has already been set on the SUT node.
+        `remote_dpdk_tree_path` has already been set on the SUT node.
         """
         self._session.build_dpdk(
             self._env_vars,
@@ -294,48 +267,14 @@ class DPDKBuildEnvironment:
             self.remote_dpdk_build_dir,
         )
 
-    def build_dpdk_app(self, app_name: str, **meson_dpdk_args: str | bool) -> PurePath:
-        """Build one or all DPDK apps.
+    def get_app(self, app_name: str) -> PurePath:
+        """Retrieve path for a DPDK app."""
+        return self._session.join_remote_path(self.remote_dpdk_build_dir, "app", f"dpdk-{app_name}")
 
-        Requires DPDK to be already built on the SUT node.
-
-        Args:
-            app_name: The name of the DPDK app to build.
-                When `app_name` is ``all``, build all example apps.
-            meson_dpdk_args: The arguments found in ``meson_options.txt`` in root DPDK directory.
-                Do not use ``-D`` with them.
-
-        Returns:
-            The directory path of the built app. If building all apps, return
-            the path to the examples directory (where all apps reside).
-        """
-        self._session.build_dpdk(
-            self._env_vars,
-            MesonArgs(examples=app_name, **meson_dpdk_args),  # type: ignore [arg-type]
-            # ^^ https://github.com/python/mypy/issues/11583
-            self.remote_dpdk_tree_path,
-            self.remote_dpdk_build_dir,
-            rebuild=True,
-            timeout=self._app_compile_timeout,
-        )
-
-        if app_name == "all":
-            return self._session.join_remote_path(self.remote_dpdk_build_dir, "examples")
-        return self._session.join_remote_path(
-            self.remote_dpdk_build_dir, "examples", f"dpdk-{app_name}"
-        )
-
-    @property
-    def remote_dpdk_tree_path(self) -> str | PurePath:
+    @cached_property
+    def remote_dpdk_tree_path(self) -> PurePath:
         """The remote DPDK tree path."""
-        if self._remote_dpdk_tree_path:
-            return self._remote_dpdk_tree_path
-
-        self._logger.warning(
-            "Failed to get remote dpdk tree path because we don't know the "
-            "location on the SUT node."
-        )
-        return ""
+        return self._node.tmp_dir.joinpath(self._remote_tmp_dpdk_tree_dir)
 
     @property
     def remote_dpdk_build_dir(self) -> str | PurePath:
@@ -415,16 +354,14 @@ class DPDKRuntimeEnvironment:
         self._ports_bound_to_dpdk = False
         self._kill_session = None
 
-    def setup(self, ports: Iterable[Port]):
+    def setup(self):
         """Set up the DPDK runtime on the target node."""
         if self.build:
             self.build.setup()
         self._prepare_devbind_script()
-        self.bind_ports_to_driver(ports)
 
-    def teardown(self, ports: Iterable[Port]) -> None:
+    def teardown(self) -> None:
         """Reset DPDK variables and bind port driver to the OS driver."""
-        self.bind_ports_to_driver(ports, for_dpdk=False)
         if self.build:
             self.build.teardown()
 
@@ -448,37 +385,23 @@ class DPDKRuntimeEnvironment:
             f"{app_path} {eal_params}", timeout, privileged=True, verify=True
         )
 
-    def bind_ports_to_driver(self, ports: Iterable[Port], for_dpdk: bool = True) -> None:
-        """Bind all ports on the SUT to a driver.
-
-        Args:
-            ports: The ports to act on.
-            for_dpdk: If :data:`True`, binds ports to os_driver_for_dpdk.
-                If :data:`False`, binds to os_driver.
-        """
-        for port in ports:
-            if port.bound_for_dpdk == for_dpdk:
-                continue
-
-            driver = port.config.os_driver_for_dpdk if for_dpdk else port.config.os_driver
-            self._node.main_session.send_command(
-                f"{self.devbind_script_path} -b {driver} --force {port.pci}",
-                privileged=True,
-                verify=True,
-            )
-            port.bound_for_dpdk = for_dpdk
-
     def _prepare_devbind_script(self) -> None:
         """Prepare the devbind script.
 
         If the environment has a build associated with it, then use the script within that build's
         tree. Otherwise, copy the script from the local repository.
 
+        This script is only available for Linux, if the detected session is not Linux then do
+        nothing.
+
         Raises:
             InternalError: If dpdk-devbind.py could not be found.
         """
+        if not isinstance(self._node.main_session, LinuxSession):
+            return
+
         if self.build:
-            self.devbind_script_path = self._node.main_session.join_remote_path(
+            devbind_script_path = self._node.main_session.join_remote_path(
                 self.build.remote_dpdk_tree_path, "usertools", "dpdk-devbind.py"
             )
         else:
@@ -486,20 +409,13 @@ class DPDKRuntimeEnvironment:
             if not local_script_path.exists():
                 raise InternalError("Could not find dpdk-devbind.py locally.")
 
-            self.devbind_script_path = self._node.main_session.join_remote_path(
+            devbind_script_path = self._node.main_session.join_remote_path(
                 self._node.tmp_dir, local_script_path.name
             )
 
-            self._node.main_session.copy_to(local_script_path, self.devbind_script_path)
+            self._node.main_session.copy_to(local_script_path, devbind_script_path)
 
-    @cached_property
-    def devbind_script_path(self) -> PurePath:
-        """The path to the dpdk-devbind.py script on the node.
-
-        Raises:
-            InternalError: If accessed before environment setup.
-        """
-        raise InternalError("Accessed devbind script path before setup.")
+        self._node.main_session.devbind_script_path = devbind_script_path
 
     def filter_lcores(
         self,

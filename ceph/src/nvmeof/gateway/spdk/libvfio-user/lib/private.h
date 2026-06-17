@@ -62,6 +62,12 @@
                              sizeof(struct vfio_user_region_access))
 
 /*
+ * Maximum value we are prepared to accept in hdr->error_no. Somewhat arbitrary
+ * value low enough to avoid any signed conversion issues.
+ */
+#define SERVER_MAX_ERROR_NO (4096)
+
+/*
  * Structure used to hold an in-flight request+reply.
  *
  * Incoming request body and fds are stored in in.*.
@@ -194,20 +200,6 @@ typedef struct ioeventfd {
     size_t shadow_offset;
     LIST_ENTRY(ioeventfd) entry;
 } ioeventfd_t;
-
-static inline int
-ERROR_INT(int err)
-{
-    errno = err;
-    return -1;
-}
-
-static inline void *
-ERROR_PTR(int err)
-{
-    errno = err;
-    return NULL;
-}
 
 int
 consume_fd(int *fds, size_t nr_fds, size_t index);

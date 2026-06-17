@@ -41,6 +41,9 @@ class GatewayInfo(NamedTuple):
     max_namespaces: Annotated[int, CliFlags.DROP]
     max_namespaces_per_subsystem: Annotated[int, CliFlags.DROP]
     max_subsystems: Annotated[int, CliFlags.DROP]
+    gateway_initialization_over: Annotated[bool, CliFlags.DROP]
+    io_stats_enabled: Annotated[bool, CliFlags.DROP]
+    location: Annotated[str, CliFlags.DROP]
     spdk_version: Optional[str] = ""
 
 
@@ -82,6 +85,7 @@ class Subsystem(NamedTuple):
     has_dhchap_key: bool
     allow_any_host: bool
     created_without_key: bool = False
+    network_mask: Annotated[List[str], CliFieldTransformer(lambda v: "\n".join(v))] = []
 
 
 class SubsystemList(NamedTuple):
@@ -96,7 +100,21 @@ class SubsystemStatus(NamedTuple):
     nqn: str
 
 
+class KMIPServerEndpoint(NamedTuple):
+    subsystem_nqn: str
+    server_name: str
+    address: str
+    port: int
+
+
+class SubsystemListKMIPEndpoints(NamedTuple):
+    status: int
+    error_message: str
+    endpoints: Annotated[List[KMIPServerEndpoint], CliFlags.EXCLUSIVE_LIST]
+
+
 class Connection(NamedTuple):
+    nqn: str
     traddr: str
     trsvcid: int
     trtype: str
@@ -106,6 +124,7 @@ class Connection(NamedTuple):
     controller_id: int
     use_psk: Optional[bool]
     use_dhchap: Optional[bool]
+    dhchap_controller_origin: Optional[str]
     subsystem: Optional[str]
     disconnected_due_to_keepalive_timeout: Optional[bool]
 
@@ -123,9 +142,15 @@ class NamespaceCreation(NamedTuple):
     nsid: int
 
 
+class EncryptionEntry(NamedTuple):
+    format: str
+    key_id: str
+
+
 class Namespace(NamedTuple):
     bdev_name: str
     rbd_image_name: Annotated[str, CliHeader("RBD Image")]
+    rados_namespace_name: Annotated[Optional[str], CliHeader("RADOS Namespace")]
     rbd_pool_name: Annotated[str, CliHeader("RBD Pool")]
     load_balancing_group: Annotated[int, CliHeader('LB Group')]
     rbd_image_size: Annotated[int, CliFlags.SIZE]
@@ -142,6 +167,9 @@ class Namespace(NamedTuple):
     trash_image: Optional[bool]
     disable_auto_resize: Optional[bool]
     read_only: Optional[bool]
+    location: Optional[str]
+    encryption_algorithm: Optional[str]
+    encryption_entries: Annotated[List[EncryptionEntry], CliFlags.EXCLUSIVE_LIST]
 
 
 class NamespaceList(NamedTuple):
@@ -183,11 +211,12 @@ class NamespaceIOStats(NamedTuple):
 class Listener(NamedTuple):
     host_name: Annotated[str, CliHeader("Host")]
     trtype: Annotated[str, CliHeader("Transport")]
-    traddr: Annotated[str, CliHeader("Target Address")]
+    adrfam: Annotated[int, CliHeader("Address Family")]  # 0: IPv4, 1: IPv6
+    traddr: Annotated[str, CliHeader("Address")]
+    trsvcid: Annotated[int, CliHeader("Port")]
     secure: Optional[bool]
     active: Optional[bool]
-    adrfam: Annotated[int, CliHeader("Address Family")] = 0  # 0: IPv4, 1: IPv6
-    trsvcid: Annotated[int, CliHeader("Target Port")] = 4420
+    manual: Optional[bool]
 
 
 class ListenerList(NamedTuple):
@@ -200,6 +229,7 @@ class Host(NamedTuple):
     nqn: str
     use_psk: Optional[bool]
     use_dhchap: Optional[bool]
+    dhchap_controller_origin: Optional[str]
     disconnected_due_to_keepalive_timeout: Annotated[Optional[bool], CliFlags.DROP]
 
 

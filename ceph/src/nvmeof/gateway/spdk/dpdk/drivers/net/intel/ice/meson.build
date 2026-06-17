@@ -2,7 +2,6 @@
 # Copyright(c) 2018 Intel Corporation
 
 subdir('base')
-objs = [base_objs]
 
 sources = files(
         'ice_acl_filter.c',
@@ -19,7 +18,6 @@ sources = files(
 testpmd_sources = files('ice_testpmd.c')
 
 deps += ['hash', 'net']
-includes += include_directories('base')
 
 if dpdk_conf.has('RTE_NET_IAVF')
     deps += 'net_iavf'
@@ -34,30 +32,8 @@ endif
 
 if arch_subdir == 'x86'
     sources += files('ice_rxtx_vec_sse.c')
-
-    ice_avx2_lib = static_library('ice_avx2_lib',
-            'ice_rxtx_vec_avx2.c',
-            dependencies: [static_rte_ethdev, static_rte_hash],
-            include_directories: includes,
-            c_args: [cflags, cc_avx2_flags])
-    objs += ice_avx2_lib.extract_objects('ice_rxtx_vec_avx2.c')
-
-    if cc_has_avx512
-        cflags += ['-DCC_AVX512_SUPPORT']
-        avx512_args = cflags + cc_avx512_flags
-        if cc.has_argument('-march=skylake-avx512')
-            avx512_args += '-march=skylake-avx512'
-            if cc.has_argument('-Wno-overriding-option')
-                avx512_args += '-Wno-overriding-option'
-            endif
-        endif
-        ice_avx512_lib = static_library('ice_avx512_lib',
-                'ice_rxtx_vec_avx512.c',
-                dependencies: [static_rte_ethdev, static_rte_hash],
-                include_directories: includes,
-                c_args: avx512_args)
-        objs += ice_avx512_lib.extract_objects('ice_rxtx_vec_avx512.c')
-    endif
+    sources_avx2 += files('ice_rxtx_vec_avx2.c')
+    sources_avx512 += files('ice_rxtx_vec_avx512.c')
 endif
 
 sources += files(

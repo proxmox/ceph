@@ -1451,6 +1451,8 @@ mlx5_flow_item_field_width(struct rte_eth_dev *dev,
 	case RTE_FLOW_FIELD_META:
 		return (flow_dv_get_metadata_reg(dev, attr, error) == REG_C_0) ?
 			rte_popcount32(priv->sh->dv_meta_mask) : 32;
+	case RTE_FLOW_FIELD_GTP_PSC_QFI:
+		return 6;
 	case RTE_FLOW_FIELD_POINTER:
 	case RTE_FLOW_FIELD_VALUE:
 		return inherit < 0 ? 0 : inherit;
@@ -10883,9 +10885,21 @@ flow_dv_translate_item_port_id(struct rte_eth_dev *dev, void *key,
 
 	MLX5_ASSERT(wks);
 	if (pid_v && pid_v->id == MLX5_PORT_ESW_MGR) {
-		flow_dv_translate_item_source_vport(key,
-				key_type & MLX5_SET_MATCHER_V ?
-				mlx5_flow_get_esw_manager_vport_id(dev) : 0xffff);
+		priv = dev->data->dev_private;
+		if (priv->sh->dev_cap.esw_info.regc_mask) {
+			if (key_type & MLX5_SET_MATCHER_M) {
+				vport_meta = priv->sh->dev_cap.esw_info.regc_mask;
+			} else {
+				vport_meta = priv->sh->dev_cap.esw_info.regc_value;
+				wks->vport_meta_tag = vport_meta;
+			}
+			flow_dv_translate_item_meta_vport(key, vport_meta,
+							  priv->sh->dev_cap.esw_info.regc_mask);
+		} else {
+			flow_dv_translate_item_source_vport(key,
+					key_type & MLX5_SET_MATCHER_V ?
+					mlx5_flow_get_esw_manager_vport_id(dev) : 0xffff);
+		}
 		return 0;
 	}
 	mask = pid_m ? pid_m->id : 0xffff;
@@ -18132,6 +18146,11 @@ flow_dv_query(struct rte_eth_dev *dev,
 						  error);
 			break;
 		case RTE_FLOW_ACTION_TYPE_AGE:
+			if (flow->indirect_type == MLX5_INDIRECT_ACTION_TYPE_CT)
+				return rte_flow_error_set(error, ENOTSUP,
+						  RTE_FLOW_ERROR_TYPE_ACTION,
+						  actions,
+						  "age not available");
 			ret = flow_dv_query_age(dev, flow, data, error);
 			break;
 		default:

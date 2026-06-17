@@ -98,6 +98,8 @@ private:
   bool _queue_discard(interval_set<uint64_t> &to_release);
   bool try_discard(interval_set<uint64_t> &to_release, bool async = true) override;
 
+  void collect_alerts(osd_alert_list_t& alerts, const std::string& device_name) override;
+
   int _aio_start();
   void _aio_stop();
 
@@ -145,6 +147,7 @@ public:
   int get_devices(std::set<std::string> *ls) const override;
 
   int get_ebd_state(ExtBlkDevState &state) const override;
+  int detect_ebd(std::string& id) override;
 
   int read(uint64_t off, uint64_t len, ceph::buffer::list *pbl,
 	   IOContext *ioc,

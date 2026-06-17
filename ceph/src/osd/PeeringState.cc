@@ -2892,6 +2892,10 @@ void PeeringState::activate(
   send_notify = false;
 
   if (is_primary()) {
+    // Update the epoch so that pwlc used by the primary during
+    // peering becomes the definitive copy of pwlc
+    info.partial_writes_last_complete_epoch = get_osdmap_epoch();
+
     // only update primary last_epoch_started if we will go active
     if (acting_set_writeable()) {
       ceph_assert(cct->_conf->osd_find_best_info_ignore_history_les ||
@@ -3347,9 +3351,6 @@ void PeeringState::consider_rollback_pwlc(eversion_t last_complete)
 		 << info.partial_writes_last_complete[shard] << dendl;
     }
   }
-  // Update the epoch so that pwlc adjustments made by the whole
-  // proc_master_log process are recognized as the newest updates
-  info.partial_writes_last_complete_epoch = get_osdmap_epoch();
 }
 
 void PeeringState::proc_master_log(
@@ -7353,7 +7354,8 @@ PeeringState::Deleting::Deleting(my_context ctx)
   // clear log
   PGLog::LogEntryHandlerRef rollbacker{pl->get_log_handler(t)};
   ps->pg_log.roll_forward(&ps->info, rollbacker.get());
-
+  // invalidate pwlc
+  ps->info.partial_writes_last_complete.clear();
   // adjust info to backfill
   ps->info.set_last_backfill(hobject_t());
   ps->pg_log.reset_backfill();
@@ -7425,7 +7427,10 @@ void PeeringState::GetInfo::get_infos()
       continue;
     }
     if (ps->peer_info.count(peer)) {
-      psdout(10) << " have osd." << peer << " info " << ps->peer_info[peer] << dendl;
+      uint64_t f = ps->get_osdmap()->get_xinfo(peer.osd).features;
+      psdout(10) << " have osd." << peer << " info " << ps->peer_info[peer]
+                 << " peer features: " << hex << f << dec << dendl;
+      ps->apply_peer_features(f);
       continue;
     }
     if (peer_info_requested.count(peer)) {

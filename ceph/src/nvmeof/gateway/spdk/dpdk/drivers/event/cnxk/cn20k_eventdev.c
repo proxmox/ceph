@@ -4,12 +4,14 @@
 
 #include "roc_api.h"
 
+#include "cn20k_cryptodev_ops.h"
 #include "cn20k_ethdev.h"
 #include "cn20k_eventdev.h"
 #include "cn20k_tx_worker.h"
 #include "cn20k_worker.h"
 #include "cnxk_common.h"
 #include "cnxk_eventdev.h"
+#include "cnxk_vector_adptr.h"
 #include "cnxk_worker.h"
 
 #define CN20K_SET_EVDEV_DEQ_OP(dev, deq_op, deq_ops)                                               \
@@ -346,6 +348,7 @@ cn20k_sso_fp_fns_set(struct rte_eventdev *event_dev)
 	event_dev->enqueue_new_burst = cn20k_sso_hws_enq_new_burst;
 	event_dev->enqueue_forward_burst = cn20k_sso_hws_enq_fwd_burst;
 
+	event_dev->ca_enqueue = cn20k_cpt_crypto_adapter_enqueue;
 	event_dev->profile_switch = cn20k_sso_hws_profile_switch;
 	event_dev->preschedule_modify = cn20k_sso_hws_preschedule_modify;
 	event_dev->preschedule = cn20k_sso_hws_preschedule;
@@ -708,11 +711,11 @@ cn20k_sso_rx_adapter_vwqe_enable(struct cnxk_sso_evdev *dev, uint16_t port_id, u
 	data.vwqe_wait_tmo = queue_conf->vector_timeout_ns / ((SSO_AGGR_DEF_TMO + 1) * 100);
 	data.xqe_type = 0;
 
-	rc = roc_sso_hwgrp_agq_alloc(&dev->sso, queue_conf->ev.queue_id, &data);
+	agq = UINT32_MAX;
+	rc = roc_sso_hwgrp_agq_alloc(&dev->sso, queue_conf->ev.queue_id, &data, &agq);
 	if (rc < 0)
 		return rc;
 
-	agq = roc_sso_hwgrp_agq_from_tag(&dev->sso, queue_conf->ev.queue_id, tag_mask, 0);
 	return agq;
 }
 
@@ -1038,10 +1041,72 @@ cn20k_sso_tx_adapter_queue_del(uint8_t id, const struct rte_eventdev *event_dev,
 }
 
 static int
+cn20k_crypto_adapter_caps_get(const struct rte_eventdev *event_dev,
+			      const struct rte_cryptodev *cdev, uint32_t *caps)
+{
+	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn20k", ENOTSUP);
+	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn20k", ENOTSUP);
+
+	*caps = RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD |
+		RTE_EVENT_CRYPTO_ADAPTER_CAP_SESSION_PRIVATE_DATA |
+		RTE_EVENT_CRYPTO_ADAPTER_CAP_EVENT_VECTOR;
+
+	return 0;
+}
+
+static int
+cn20k_crypto_adapter_qp_add(const struct rte_eventdev *event_dev, const struct rte_cryptodev *cdev,
+			    int32_t queue_pair_id,
+			    const struct rte_event_crypto_adapter_queue_conf *conf)
+{
+	int ret;
+
+	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn20k", EINVAL);
+	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn20k", EINVAL);
+
+	cn20k_sso_fp_fns_set((struct rte_eventdev *)(uintptr_t)event_dev);
+
+	ret = cnxk_crypto_adapter_qp_add(event_dev, cdev, queue_pair_id, conf);
+	cn20k_sso_set_priv_mem(event_dev, NULL);
+
+	return ret;
+}
+
+static int
+cn20k_crypto_adapter_qp_del(const struct rte_eventdev *event_dev, const struct rte_cryptodev *cdev,
+			    int32_t queue_pair_id)
+{
+	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn20k", EINVAL);
+	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn20k", EINVAL);
+
+	return cnxk_crypto_adapter_qp_del(cdev, queue_pair_id);
+}
+
+static int
 cn20k_tim_caps_get(const struct rte_eventdev *evdev, uint64_t flags, uint32_t *caps,
 		   const struct event_timer_adapter_ops **ops)
 {
 	return cnxk_tim_caps_get(evdev, flags, caps, ops, cn20k_sso_set_priv_mem);
+}
+
+static int
+cn20k_crypto_adapter_vec_limits(const struct rte_eventdev *event_dev,
+				const struct rte_cryptodev *cdev,
+				struct rte_event_crypto_adapter_vector_limits *limits)
+{
+	CNXK_VALID_DEV_OR_ERR_RET(event_dev->dev, "event_cn20k", EINVAL);
+	CNXK_VALID_DEV_OR_ERR_RET(cdev->device, "crypto_cn20k", EINVAL);
+
+	limits->log2_sz = false;
+	limits->min_sz = 0;
+	limits->max_sz = UINT16_MAX;
+	/* Unused timeout, in software implementation we aggregate all crypto
+	 * operations passed to the enqueue function
+	 */
+	limits->min_timeout_ns = 0;
+	limits->max_timeout_ns = 0;
+
+	return 0;
 }
 
 static struct eventdev_ops cn20k_sso_dev_ops = {
@@ -1080,6 +1145,14 @@ static struct eventdev_ops cn20k_sso_dev_ops = {
 	.eth_tx_adapter_free = cnxk_sso_tx_adapter_free,
 
 	.timer_adapter_caps_get = cn20k_tim_caps_get,
+
+	.crypto_adapter_caps_get = cn20k_crypto_adapter_caps_get,
+	.crypto_adapter_queue_pair_add = cn20k_crypto_adapter_qp_add,
+	.crypto_adapter_queue_pair_del = cn20k_crypto_adapter_qp_del,
+	.crypto_adapter_vector_limits_get = cn20k_crypto_adapter_vec_limits,
+
+	.vector_adapter_caps_get = cnxk_vector_caps_get,
+	.vector_adapter_info_get = cnxk_vector_info_get,
 
 	.xstats_get = cnxk_sso_xstats_get,
 	.xstats_reset = cnxk_sso_xstats_reset,

@@ -32,7 +32,7 @@ import errno
 import tempfile
 
 ctx = None
-sock = None
+client = None
 
 argsz = len(vfio_region_info())
 migr_region_size = 2 << PAGE_SHIFT
@@ -40,7 +40,7 @@ migr_mmap_areas = [(PAGE_SIZE, PAGE_SIZE)]
 
 
 def test_device_get_region_info_setup():
-    global ctx, sock
+    global ctx, client
 
     ctx = vfu_create_ctx(flags=LIBVFIO_USER_FLAG_ATTACH_NB)
     assert ctx is not None
@@ -78,25 +78,17 @@ def test_device_get_region_info_setup():
                            mmap_areas=mmap_areas, fd=f.fileno(), offset=0x0)
     assert ret == 0
 
-    f = tempfile.TemporaryFile()
-    f.truncate(migr_region_size)
-
-    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX,
-                           size=migr_region_size, flags=VFU_REGION_FLAG_RW,
-                           mmap_areas=migr_mmap_areas, fd=f.fileno())
-    assert ret == 0
-
     ret = vfu_realize_ctx(ctx)
     assert ret == 0
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
 
 def test_device_get_region_info_short_write():
 
     payload = struct.pack("II", 0, 0)
 
-    msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload,
+    msg(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload,
         expect=errno.EINVAL)
 
 
@@ -106,7 +98,7 @@ def test_device_get_region_info_bad_argsz():
                                index=VFU_PCI_DEV_BAR1_REGION_IDX, cap_offset=0,
                                size=0, offset=0)
 
-    msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload,
+    msg(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload,
         expect=errno.EINVAL)
 
 
@@ -116,7 +108,7 @@ def test_device_get_region_info_bad_index():
                                index=VFU_PCI_DEV_NUM_REGIONS, cap_offset=0,
                                size=0, offset=0)
 
-    msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload,
+    msg(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload,
         expect=errno.EINVAL)
 
 
@@ -126,9 +118,9 @@ def test_device_get_region_info_larger_argsz():
                           index=VFU_PCI_DEV_BAR1_REGION_IDX, cap_offset=0,
                           size=0, offset=0)
 
-    result = msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+    result = msg(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
 
-    assert(len(result) == argsz)
+    assert len(result) == argsz
 
     info, _ = vfio_region_info.pop_from_buffer(result)
 
@@ -142,13 +134,13 @@ def test_device_get_region_info_larger_argsz():
 
 
 def test_device_get_region_info_small_argsz_caps():
-    global sock
+    global client
 
     payload = vfio_region_info(argsz=argsz, flags=0,
                           index=VFU_PCI_DEV_BAR2_REGION_IDX, cap_offset=0,
                           size=0, offset=0)
 
-    result = msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+    result = msg(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
 
     info, _ = vfio_region_info.pop_from_buffer(result)
 
@@ -167,20 +159,21 @@ def test_device_get_region_info_small_argsz_caps():
     assert info.offset == 0x8000
 
     # skip reading the SCM_RIGHTS
-    disconnect_client(ctx, sock)
+    client.disconnect(ctx)
 
 
 def test_device_get_region_info_caps():
-    global sock
+    global client
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
     payload = vfio_region_info(argsz=80, flags=0,
                           index=VFU_PCI_DEV_BAR2_REGION_IDX, cap_offset=0,
                           size=0, offset=0)
     payload = bytes(payload) + b'\0' * (80 - 32)
 
-    fds, result = msg_fds(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+    fds, result = msg_fds(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_INFO,
+                          payload)
 
     info, result = vfio_region_info.pop_from_buffer(result)
     cap, result = vfio_region_info_cap_sparse_mmap.pop_from_buffer(result)
@@ -202,46 +195,8 @@ def test_device_get_region_info_caps():
     assert area2.offset == 0x4000
     assert area2.size == 0x2000
 
-    assert(len(fds) == 1)
-    disconnect_client(ctx, sock)
-
-
-def test_device_get_region_info_migr():
-    global sock
-
-    sock = connect_client(ctx)
-
-    payload = vfio_region_info(argsz=80, flags=0,
-                          index=VFU_PCI_DEV_MIGR_REGION_IDX, cap_offset=0,
-                          size=0, offset=0)
-    payload = bytes(payload) + b'\0' * (80 - 32)
-
-    result = msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
-
-    info, result = vfio_region_info.pop_from_buffer(result)
-    mcap, result = vfio_region_info_cap_type.pop_from_buffer(result)
-    cap, result = vfio_region_info_cap_sparse_mmap.pop_from_buffer(result)
-    area, result = vfio_region_sparse_mmap_area.pop_from_buffer(result)
-
-    assert info.argsz == 80
-    assert info.cap_offset == 32
-
-    assert mcap.id == VFIO_REGION_INFO_CAP_TYPE
-    assert mcap.version == 1
-    assert mcap.next == 48
-    assert mcap.type == VFIO_REGION_TYPE_MIGRATION
-    assert mcap.subtype == VFIO_REGION_SUBTYPE_MIGRATION
-
-    assert cap.id == VFIO_REGION_INFO_CAP_SPARSE_MMAP
-    assert cap.version == 1
-    assert cap.next == 0
-    assert cap.nr_areas == len(migr_mmap_areas) == 1
-
-    assert area.offset == migr_mmap_areas[0][0]
-    assert area.size == migr_mmap_areas[0][1]
-
-    # skip reading the SCM_RIGHTS
-    disconnect_client(ctx, sock)
+    assert len(fds) == 1
+    client.disconnect(ctx)
 
 
 def test_device_get_region_info_cleanup():
@@ -260,15 +215,15 @@ def test_device_get_pci_config_space_info_implicit_pci_init():
     ret = vfu_realize_ctx(ctx)
     assert ret == 0
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
     payload = vfio_region_info(argsz=argsz + 8, flags=0,
                           index=VFU_PCI_DEV_CFG_REGION_IDX, cap_offset=0,
                           size=0, offset=0)
 
-    result = msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+    result = msg(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
 
-    assert(len(result) == argsz)
+    assert len(result) == argsz
 
     info, _ = vfio_region_info.pop_from_buffer(result)
 
@@ -281,7 +236,7 @@ def test_device_get_pci_config_space_info_implicit_pci_init():
     assert info.size == PCI_CFG_SPACE_EXP_SIZE
     assert info.offset == 0
 
-    disconnect_client(ctx, sock)
+    client.disconnect(ctx)
 
     vfu_destroy_ctx(ctx)
 
@@ -296,15 +251,15 @@ def test_device_get_pci_config_space_info_implicit_no_pci_init():
     ret = vfu_realize_ctx(ctx)
     assert ret == 0
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
     payload = vfio_region_info(argsz=argsz + 8, flags=0,
                           index=VFU_PCI_DEV_CFG_REGION_IDX, cap_offset=0,
                           size=0, offset=0)
 
-    result = msg(ctx, sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+    result = msg(ctx, client.sock, VFIO_USER_DEVICE_GET_REGION_INFO, payload)
 
-    assert(len(result) == argsz)
+    assert len(result) == argsz
 
     info, _ = vfio_region_info.pop_from_buffer(result)
 
@@ -315,7 +270,7 @@ def test_device_get_pci_config_space_info_implicit_no_pci_init():
     assert info.size == PCI_CFG_SPACE_SIZE
     assert info.offset == 0
 
-    disconnect_client(ctx, sock)
+    client.disconnect(ctx)
 
     vfu_destroy_ctx(ctx)
 

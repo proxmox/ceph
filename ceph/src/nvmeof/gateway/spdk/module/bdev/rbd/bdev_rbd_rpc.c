@@ -13,12 +13,16 @@ struct rpc_create_rbd {
 	char *name;
 	char *user_id;
 	char *pool_name;
+	char *namespace_name;
 	char *rbd_name;
 	uint32_t block_size;
 	char **config;
 	char *cluster_name;
 	struct spdk_uuid uuid;
 	bool read_only;
+	uint32_t encryption_entries_count;
+	uint32_t *encryption_format;
+	char **passphrase;
 };
 
 static void
@@ -27,9 +31,12 @@ free_rpc_create_rbd(struct rpc_create_rbd *req)
 	free(req->name);
 	free(req->user_id);
 	free(req->pool_name);
+	free(req->namespace_name);
 	free(req->rbd_name);
 	bdev_rbd_free_config(req->config);
 	free(req->cluster_name);
+	free(req->encryption_format);
+	bdev_rbd_free_passphrase(req->passphrase);
 }
 
 static int
@@ -74,16 +81,55 @@ bdev_rbd_decode_config(const struct spdk_json_val *values, void *out)
 	return 0;
 }
 
+static int
+bdev_rbd_decode_passphrase(const struct spdk_json_val *values, void *out)
+{
+	char ***phrases = out;
+	size_t out_size;
+
+	*phrases = calloc(values->len + 1, sizeof(**phrases));
+	if (!*phrases) {
+		return -1;
+	}
+	if (spdk_json_decode_array(values, spdk_json_decode_string, *phrases, values->len, &out_size, sizeof(char *)) != 0) {
+		free(*phrases);
+		*phrases = NULL;
+		return -1;
+	}
+	return 0;
+}
+
+static int
+bdev_rbd_decode_encryption_format(const struct spdk_json_val *values, void *out)
+{
+	uint32_t **formats = out;
+	size_t out_size;
+
+	*formats = calloc(values->len + 1, sizeof(**formats));
+	if (!*formats) {
+		return -1;
+	}
+	if (spdk_json_decode_array(values, spdk_json_decode_uint32, *formats, values->len, &out_size, sizeof(uint32_t)) != 0) {
+		free(*formats);
+		*formats = NULL;
+		return -1;
+	}
+	return 0;
+}
+
 static const struct spdk_json_object_decoder rpc_create_rbd_decoders[] = {
 	{"name", offsetof(struct rpc_create_rbd, name), spdk_json_decode_string, true},
 	{"user_id", offsetof(struct rpc_create_rbd, user_id), spdk_json_decode_string, true},
 	{"pool_name", offsetof(struct rpc_create_rbd, pool_name), spdk_json_decode_string},
+	{"namespace_name", offsetof(struct rpc_create_rbd, namespace_name), spdk_json_decode_string, true},
 	{"rbd_name", offsetof(struct rpc_create_rbd, rbd_name), spdk_json_decode_string},
 	{"block_size", offsetof(struct rpc_create_rbd, block_size), spdk_json_decode_uint32},
 	{"config", offsetof(struct rpc_create_rbd, config), bdev_rbd_decode_config, true},
 	{"cluster_name", offsetof(struct rpc_create_rbd, cluster_name), spdk_json_decode_string, true},
 	{"uuid", offsetof(struct rpc_create_rbd, uuid), spdk_json_decode_uuid, true},
-	{"read_only", offsetof(struct rpc_create_rbd, read_only), spdk_json_decode_bool, true}
+	{"read_only", offsetof(struct rpc_create_rbd, read_only), spdk_json_decode_bool, true},
+	{"encryption_format", offsetof(struct rpc_create_rbd, encryption_format), bdev_rbd_decode_encryption_format, true},
+	{"passphrase", offsetof(struct rpc_create_rbd, passphrase), bdev_rbd_decode_passphrase, true}
 };
 
 static void
@@ -104,10 +150,16 @@ rpc_bdev_rbd_create(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	rc = bdev_rbd_create(&bdev, req.name, req.user_id, req.pool_name,
+	req.encryption_entries_count = 0;
+	while (req.passphrase[req.encryption_entries_count]) {
+		req.encryption_entries_count++;
+	}
+	rc = bdev_rbd_create(&bdev, req.name, req.user_id, req.pool_name, req.namespace_name,
 			     (const char *const *)req.config,
 			     req.rbd_name,
-			     req.block_size, req.cluster_name, &req.uuid, req.read_only);
+			     req.block_size, req.cluster_name, &req.uuid, req.read_only,
+			     req.encryption_entries_count, req.encryption_format,
+			     (const char **)req.passphrase);
 	if (rc) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
 		goto cleanup;
@@ -121,6 +173,53 @@ cleanup:
 	free_rpc_create_rbd(&req);
 }
 SPDK_RPC_REGISTER("bdev_rbd_create", rpc_bdev_rbd_create, SPDK_RPC_RUNTIME)
+
+/**
+ * RPC function to get the current rbd_with_crc32c setting
+ */
+static void
+rpc_bdev_rbd_get_with_crc32c(struct spdk_jsonrpc_request *request,
+			      const struct spdk_json_val *params)
+{
+	struct spdk_json_write_ctx *w;
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_bool(w, bdev_rbd_get_with_crc32c());
+	spdk_jsonrpc_end_result(request, w);
+}
+
+/**
+ * RPC function to set the rbd_with_crc32c parameter
+ */
+struct rpc_bdev_rbd_set_with_crc32c {
+	bool enable;
+};
+
+static const struct spdk_json_object_decoder rpc_bdev_rbd_set_with_crc32c_decoders[] = {
+	{"enable", offsetof(struct rpc_bdev_rbd_set_with_crc32c, enable), spdk_json_decode_bool},
+};
+
+static void
+rpc_bdev_rbd_set_with_crc32c(struct spdk_jsonrpc_request *request,
+			      const struct spdk_json_val *params)
+{
+	struct rpc_bdev_rbd_set_with_crc32c req = {};
+	struct spdk_json_write_ctx *w;
+
+	if (spdk_json_decode_object(params, rpc_bdev_rbd_set_with_crc32c_decoders,
+				    SPDK_COUNTOF(rpc_bdev_rbd_set_with_crc32c_decoders),
+				    &req)) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						"Missing or invalid enable parameter");
+		return;
+	}
+
+	bdev_rbd_set_with_crc32c(req.enable);
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_bool(w, bdev_rbd_get_with_crc32c());
+	spdk_jsonrpc_end_result(request, w);
+}
 
 struct rpc_bdev_rbd_delete {
 	char *name;
@@ -385,3 +484,6 @@ cleanup:
 	free_rpc_bdev_rbd_wait_for_latest_osdmap_cluster(&req);
 }
 SPDK_RPC_REGISTER("bdev_rbd_wait_for_latest_osdmap", rpc_bdev_rbd_wait_for_latest_osdmap, SPDK_RPC_RUNTIME)
+
+SPDK_RPC_REGISTER("bdev_rbd_get_with_crc32c", rpc_bdev_rbd_get_with_crc32c, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_rbd_set_with_crc32c", rpc_bdev_rbd_set_with_crc32c, SPDK_RPC_STARTUP)

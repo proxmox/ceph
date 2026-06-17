@@ -36,12 +36,12 @@ ice_monitor_callback(const uint64_t value,
 int
 ice_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc)
 {
-	volatile union ice_rx_flex_desc *rxdp;
-	struct ice_rx_queue *rxq = rx_queue;
+	volatile union ci_rx_flex_desc *rxdp;
+	struct ci_rx_queue *rxq = rx_queue;
 	uint16_t desc;
 
 	desc = rxq->rx_tail;
-	rxdp = &rxq->rx_ring[desc];
+	rxdp = &rxq->rx_flex_ring[desc];
 	/* watch for changes in status bit */
 	pmc->addr = &rxdp->wb.status_error0;
 
@@ -73,9 +73,9 @@ ice_proto_xtr_type_to_rxdid(uint8_t xtr_type)
 }
 
 static inline void
-ice_rxd_to_pkt_fields_by_comms_generic(__rte_unused struct ice_rx_queue *rxq,
+ice_rxd_to_pkt_fields_by_comms_generic(__rte_unused struct ci_rx_queue *rxq,
 				       struct rte_mbuf *mb,
-				       volatile union ice_rx_flex_desc *rxdp)
+				       volatile union ci_rx_flex_desc *rxdp)
 {
 	volatile struct ice_32b_rx_flex_desc_comms *desc =
 			(volatile struct ice_32b_rx_flex_desc_comms *)rxdp;
@@ -86,7 +86,7 @@ ice_rxd_to_pkt_fields_by_comms_generic(__rte_unused struct ice_rx_queue *rxq,
 		mb->hash.rss = rte_le_to_cpu_32(desc->rss_hash);
 	}
 
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	if (desc->flow_id != 0xFFFFFFFF) {
 		mb->ol_flags |= RTE_MBUF_F_RX_FDIR | RTE_MBUF_F_RX_FDIR_ID;
 		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
@@ -95,13 +95,13 @@ ice_rxd_to_pkt_fields_by_comms_generic(__rte_unused struct ice_rx_queue *rxq,
 }
 
 static inline void
-ice_rxd_to_pkt_fields_by_comms_ovs(__rte_unused struct ice_rx_queue *rxq,
+ice_rxd_to_pkt_fields_by_comms_ovs(__rte_unused struct ci_rx_queue *rxq,
 				   struct rte_mbuf *mb,
-				   volatile union ice_rx_flex_desc *rxdp)
+				   volatile union ci_rx_flex_desc *rxdp)
 {
 	volatile struct ice_32b_rx_flex_desc_comms_ovs *desc =
 			(volatile struct ice_32b_rx_flex_desc_comms_ovs *)rxdp;
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	uint16_t stat_err;
 #endif
 
@@ -110,7 +110,7 @@ ice_rxd_to_pkt_fields_by_comms_ovs(__rte_unused struct ice_rx_queue *rxq,
 		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
 	}
 
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	stat_err = rte_le_to_cpu_16(desc->status_error0);
 	if (likely(stat_err & (1 << ICE_RX_FLEX_DESC_STATUS0_RSS_VALID_S))) {
 		mb->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
@@ -120,9 +120,9 @@ ice_rxd_to_pkt_fields_by_comms_ovs(__rte_unused struct ice_rx_queue *rxq,
 }
 
 static inline void
-ice_rxd_to_pkt_fields_by_comms_aux_v1(struct ice_rx_queue *rxq,
+ice_rxd_to_pkt_fields_by_comms_aux_v1(struct ci_rx_queue *rxq,
 				      struct rte_mbuf *mb,
-				      volatile union ice_rx_flex_desc *rxdp)
+				      volatile union ci_rx_flex_desc *rxdp)
 {
 	volatile struct ice_32b_rx_flex_desc_comms *desc =
 			(volatile struct ice_32b_rx_flex_desc_comms *)rxdp;
@@ -134,7 +134,7 @@ ice_rxd_to_pkt_fields_by_comms_aux_v1(struct ice_rx_queue *rxq,
 		mb->hash.rss = rte_le_to_cpu_32(desc->rss_hash);
 	}
 
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	if (desc->flow_id != 0xFFFFFFFF) {
 		mb->ol_flags |= RTE_MBUF_F_RX_FDIR | RTE_MBUF_F_RX_FDIR_ID;
 		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
@@ -164,9 +164,9 @@ ice_rxd_to_pkt_fields_by_comms_aux_v1(struct ice_rx_queue *rxq,
 }
 
 static inline void
-ice_rxd_to_pkt_fields_by_comms_aux_v2(struct ice_rx_queue *rxq,
+ice_rxd_to_pkt_fields_by_comms_aux_v2(struct ci_rx_queue *rxq,
 				      struct rte_mbuf *mb,
-				      volatile union ice_rx_flex_desc *rxdp)
+				      volatile union ci_rx_flex_desc *rxdp)
 {
 	volatile struct ice_32b_rx_flex_desc_comms *desc =
 			(volatile struct ice_32b_rx_flex_desc_comms *)rxdp;
@@ -178,7 +178,7 @@ ice_rxd_to_pkt_fields_by_comms_aux_v2(struct ice_rx_queue *rxq,
 		mb->hash.rss = rte_le_to_cpu_32(desc->rss_hash);
 	}
 
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	if (desc->flow_id != 0xFFFFFFFF) {
 		mb->ol_flags |= RTE_MBUF_F_RX_FDIR | RTE_MBUF_F_RX_FDIR_ID;
 		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
@@ -215,7 +215,7 @@ static const ice_rxd_to_pkt_fields_t rxd_to_pkt_fields_ops[] = {
 };
 
 void
-ice_select_rxd_to_pkt_fields_handler(struct ice_rx_queue *rxq, uint32_t rxdid)
+ice_select_rxd_to_pkt_fields_handler(struct ci_rx_queue *rxq, uint32_t rxdid)
 {
 	rxq->rxdid = rxdid;
 
@@ -243,17 +243,17 @@ ice_select_rxd_to_pkt_fields_handler(struct ice_rx_queue *rxq, uint32_t rxdid)
 }
 
 static int
-ice_program_hw_rx_queue(struct ice_rx_queue *rxq)
+ice_program_hw_rx_queue(struct ci_rx_queue *rxq)
 {
-	struct ice_vsi *vsi = rxq->vsi;
+	struct ice_vsi *vsi = rxq->ice_vsi;
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	struct ice_pf *pf = ICE_VSI_TO_PF(vsi);
-	struct rte_eth_dev_data *dev_data = rxq->vsi->adapter->pf.dev_data;
+	struct rte_eth_dev_data *dev_data = rxq->ice_vsi->adapter->pf.dev_data;
 	struct ice_rlan_ctx rx_ctx;
 	uint16_t buf_size;
 	uint32_t rxdid = ICE_RXDID_COMMS_OVS;
 	uint32_t regval;
-	struct ice_adapter *ad = rxq->vsi->adapter;
+	struct ice_adapter *ad = rxq->ice_vsi->adapter;
 	uint32_t frame_size = dev_data->mtu + ICE_ETH_OVERHEAD;
 	int err;
 
@@ -275,17 +275,16 @@ ice_program_hw_rx_queue(struct ice_rx_queue *rxq)
 		return -EINVAL;
 	}
 
-	if (!rxq->ts_enable && (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
+	if (rxq->ts_flag == 0 && (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 		/* Register mbuf field and flag for Rx timestamp */
 		err = rte_mbuf_dyn_rx_timestamp_register(
-				&ice_timestamp_dynfield_offset,
-				&ice_timestamp_dynflag);
+				&rxq->ts_offset,
+				&rxq->ts_flag);
 		if (err) {
 			PMD_DRV_LOG(ERR,
 				"Cannot register mbuf field/flag for timestamp");
 			return -EINVAL;
 		}
-		rxq->ts_enable = true;
 	}
 
 	memset(&rx_ctx, 0, sizeof(rx_ctx));
@@ -371,11 +370,11 @@ set_hsplit_finish:
 		rx_ctx.dtype = 0; /* No Protocol Based Buffer Split mode */
 	}
 
-	rx_ctx.base = rxq->rx_ring_dma / ICE_QUEUE_BASE_ADDR_UNIT;
+	rx_ctx.base = rxq->rx_ring_phys_addr / ICE_QUEUE_BASE_ADDR_UNIT;
 	rx_ctx.qlen = rxq->nb_rx_desc;
 	rx_ctx.dbuf = rxq->rx_buf_len >> ICE_RLAN_CTX_DBUF_S;
 	rx_ctx.hbuf = rxq->rx_hdr_len >> ICE_RLAN_CTX_HBUF_S;
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	rx_ctx.dsize = 1; /* 32B descriptors */
 #endif
 	rx_ctx.rxmax = rxq->max_pkt_len;
@@ -452,15 +451,15 @@ set_hsplit_finish:
 
 /* Allocate mbufs for all descriptors in rx queue */
 static int
-ice_alloc_rx_queue_mbufs(struct ice_rx_queue *rxq)
+ice_alloc_rx_queue_mbufs(struct ci_rx_queue *rxq)
 {
-	struct ice_rx_entry *rxe = rxq->sw_ring;
+	struct ci_rx_entry *rxe = rxq->sw_ring;
 	uint64_t dma_addr;
 	uint16_t i;
 
 	for (i = 0; i < rxq->nb_rx_desc; i++) {
-		volatile union ice_rx_flex_desc *rxd;
-		rxd = &rxq->rx_ring[i];
+		volatile union ci_rx_flex_desc *rxd;
+		rxd = &rxq->rx_flex_ring[i];
 		struct rte_mbuf *mbuf = rte_mbuf_raw_alloc(rxq->mp);
 
 		if (unlikely(!mbuf)) {
@@ -502,7 +501,7 @@ ice_alloc_rx_queue_mbufs(struct ice_rx_queue *rxq)
 			rxd->read.pkt_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf_pay));
 		}
 
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 		rxd->read.rsvd1 = 0;
 		rxd->read.rsvd2 = 0;
 #endif
@@ -514,7 +513,7 @@ ice_alloc_rx_queue_mbufs(struct ice_rx_queue *rxq)
 
 /* Free all mbufs for descriptors in rx queue */
 static void
-_ice_rx_queue_release_mbufs(struct ice_rx_queue *rxq)
+_ice_rx_queue_release_mbufs(struct ci_rx_queue *rxq)
 {
 	uint16_t i;
 
@@ -591,7 +590,7 @@ ice_switch_rx_queue(struct ice_hw *hw, uint16_t q_idx, bool on)
 }
 
 static inline int
-ice_check_rx_burst_bulk_alloc_preconditions(struct ice_rx_queue *rxq)
+ice_check_rx_burst_bulk_alloc_preconditions(struct ci_rx_queue *rxq)
 {
 	int ret = 0;
 
@@ -618,9 +617,9 @@ ice_check_rx_burst_bulk_alloc_preconditions(struct ice_rx_queue *rxq)
 	return ret;
 }
 
-/* reset fields in ice_rx_queue back to default */
+/* reset fields in ci_rx_queue back to default */
 static void
-ice_reset_rx_queue(struct ice_rx_queue *rxq)
+ice_reset_rx_queue(struct ci_rx_queue *rxq)
 {
 	unsigned int i;
 	uint16_t len;
@@ -632,8 +631,8 @@ ice_reset_rx_queue(struct ice_rx_queue *rxq)
 
 	len = (uint16_t)(rxq->nb_rx_desc + ICE_RX_MAX_BURST);
 
-	for (i = 0; i < len * sizeof(union ice_rx_flex_desc); i++)
-		((volatile char *)rxq->rx_ring)[i] = 0;
+	for (i = 0; i < len * sizeof(union ci_rx_flex_desc); i++)
+		((volatile char *)rxq->rx_flex_ring)[i] = 0;
 
 	memset(&rxq->fake_mbuf, 0x0, sizeof(rxq->fake_mbuf));
 	for (i = 0; i < ICE_RX_MAX_BURST; ++i)
@@ -655,7 +654,7 @@ ice_reset_rx_queue(struct ice_rx_queue *rxq)
 int
 ice_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	int err;
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
@@ -679,7 +678,7 @@ ice_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 		return 0;
 
 	if (dev->data->dev_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
-		rxq->ts_enable = true;
+		rxq->offloads |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
 	err = ice_program_hw_rx_queue(rxq);
 	if (err) {
 		PMD_DRV_LOG(ERR, "fail to program RX queue %u",
@@ -715,7 +714,7 @@ ice_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 int
 ice_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	int err;
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
@@ -737,6 +736,49 @@ ice_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 		dev->data->rx_queue_state[rx_queue_id] =
 			RTE_ETH_QUEUE_STATE_STOPPED;
 	}
+
+	return 0;
+}
+
+/**
+ * ice_setup_txtime_ctx - setup a struct ice_txtime_ctx instance
+ * @txq: The queue on which tstamp ring to configure
+ * @txtime_ctx: Pointer to the Tx time queue context structure to be initialized
+ * @txtime_ena: Tx time enable flag, set to true if Tx time should be enabled
+ */
+static int
+ice_setup_txtime_ctx(struct ci_tx_queue *txq,
+		     struct ice_txtime_ctx *txtime_ctx, bool txtime_ena)
+{
+	struct ice_vsi *vsi = txq->ice_vsi;
+	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
+
+	txtime_ctx->base = txq->tsq->ts_mz->iova >> ICE_TX_CMPLTNQ_CTX_BASE_S;
+
+	/* Tx time Queue Length */
+	txtime_ctx->qlen = txq->tsq->nb_ts_desc;
+
+	if (txtime_ena)
+		txtime_ctx->txtime_ena_q = 1;
+
+	/* PF number */
+	txtime_ctx->pf_num = hw->pf_id;
+
+	switch (vsi->type) {
+	case ICE_VSI_PF:
+		txtime_ctx->vmvf_type = ICE_TLAN_CTX_VMVF_TYPE_PF;
+		break;
+	default:
+		PMD_DRV_LOG(ERR, "Unable to set VMVF type for VSI type %d", vsi->type);
+		return -EINVAL;
+	}
+
+	/* make sure the context is associated with the right VSI */
+	txtime_ctx->src_vsi = vsi->vsi_id;
+
+	txtime_ctx->ts_res = ICE_TXTIME_CTX_RESOLUTION_128NS;
+	txtime_ctx->drbell_mode_32 = ICE_TXTIME_CTX_DRBELL_MODE_32;
+	txtime_ctx->ts_fetch_prof_id = ICE_TXTIME_CTX_FETCH_PROF_ID_0;
 
 	return 0;
 }
@@ -800,11 +842,6 @@ ice_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	ice_set_ctx(hw, (uint8_t *)&tx_ctx, txq_elem->txqs[0].txq_ctx,
 		    ice_tlan_ctx_info);
 
-	txq->qtx_tail = hw->hw_addr + QTX_COMM_DBELL(txq->reg_idx);
-
-	/* Init the Tx tail register*/
-	ICE_PCI_REG_WRITE(txq->qtx_tail, 0);
-
 	/* Fix me, we assume TC always 0 here */
 	err = ice_ena_vsi_txq(hw->port_info, vsi->idx, 0, tx_queue_id, 1,
 			txq_elem, buf_len, NULL);
@@ -827,6 +864,36 @@ ice_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	/* record what kind of descriptor cleanup we need on teardown */
 	txq->vector_tx = ad->tx_vec_allowed;
 
+	if (txq->tsq != NULL && txq->tsq->ts_flag > 0) {
+		struct ice_aqc_set_txtime_qgrp *ts_elem;
+		struct ice_txtime_ctx txtime_ctx = { 0 };
+		u8 ts_buf_len = ice_struct_size(ts_elem, txtimeqs, 1);
+
+		ts_elem = ice_malloc(hw, ts_buf_len);
+		ice_setup_txtime_ctx(txq, &txtime_ctx, true);
+		ice_set_ctx(hw, (u8 *)&txtime_ctx,
+				ts_elem->txtimeqs[0].txtime_ctx,
+				ice_txtime_ctx_info);
+
+		txq->qtx_tail = hw->hw_addr + E830_GLQTX_TXTIME_DBELL_LSB(txq->reg_idx);
+
+		/* Init the Tx time tail register*/
+		ICE_PCI_REG_WRITE(txq->qtx_tail, 0);
+
+		err = ice_aq_set_txtimeq(hw, txq->reg_idx, 1, ts_elem, ts_buf_len, NULL);
+		rte_free(ts_elem);
+		if (err) {
+			PMD_DRV_LOG(ERR, "Failed to set Tx Time queue context, error: %d", err);
+			rte_free(txq_elem);
+			return err;
+		}
+	} else {
+		txq->qtx_tail = hw->hw_addr + QTX_COMM_DBELL(txq->reg_idx);
+
+		/* Init the Tx tail register*/
+		ICE_PCI_REG_WRITE(txq->qtx_tail, 0);
+	}
+
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
 
 	rte_free(txq_elem);
@@ -834,9 +901,9 @@ ice_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 }
 
 static int
-ice_fdir_program_hw_rx_queue(struct ice_rx_queue *rxq)
+ice_fdir_program_hw_rx_queue(struct ci_rx_queue *rxq)
 {
-	struct ice_vsi *vsi = rxq->vsi;
+	struct ice_vsi *vsi = rxq->ice_vsi;
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	uint32_t rxdid = ICE_RXDID_LEGACY_1;
 	struct ice_rlan_ctx rx_ctx;
@@ -848,7 +915,7 @@ ice_fdir_program_hw_rx_queue(struct ice_rx_queue *rxq)
 
 	memset(&rx_ctx, 0, sizeof(rx_ctx));
 
-	rx_ctx.base = rxq->rx_ring_dma / ICE_QUEUE_BASE_ADDR_UNIT;
+	rx_ctx.base = rxq->rx_ring_phys_addr / ICE_QUEUE_BASE_ADDR_UNIT;
 	rx_ctx.qlen = rxq->nb_rx_desc;
 	rx_ctx.dbuf = rxq->rx_buf_len >> ICE_RLAN_CTX_DBUF_S;
 	rx_ctx.hbuf = rxq->rx_hdr_len >> ICE_RLAN_CTX_HBUF_S;
@@ -909,7 +976,7 @@ ice_fdir_program_hw_rx_queue(struct ice_rx_queue *rxq)
 int
 ice_fdir_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	int err;
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
@@ -1047,6 +1114,15 @@ ice_reset_tx_queue(struct ci_tx_queue *txq)
 
 	txq->last_desc_cleaned = (uint16_t)(txq->nb_tx_desc - 1);
 	txq->nb_tx_free = (uint16_t)(txq->nb_tx_desc - 1);
+
+	if (txq->tsq != NULL && txq->tsq->ts_flag > 0) {
+		for (i = 0; i < txq->tsq->nb_ts_desc; i++) {
+			volatile struct ice_ts_desc *tsd = &txq->tsq->ice_ts_ring[i];
+			tsd->tx_desc_idx_tstamp = 0;
+		}
+
+		txq->tsq->ts_tail = 0;
+	}
 }
 
 int
@@ -1081,6 +1157,17 @@ ice_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	q_ids[0] = txq->reg_idx;
 	q_teids[0] = txq->q_teid;
 
+	if (txq->tsq != NULL && txq->tsq->ts_flag > 0) {
+		struct ice_aqc_ena_dis_txtime_qgrp txtime_pg;
+
+		dev->dev_ops->timesync_disable(dev);
+		status = ice_aq_ena_dis_txtimeq(hw, q_ids[0], 1, 0, &txtime_pg, NULL);
+		if (status != ICE_SUCCESS) {
+			PMD_DRV_LOG(DEBUG, "Failed to disable Tx time queue");
+			return -EINVAL;
+		}
+	}
+
 	/* Fix me, we assume TC always 0 here */
 	status = ice_dis_vsi_txq(hw->port_info, vsi->idx, 0, 1, &q_handle,
 				q_ids, q_teids, ICE_NO_RESET, 0, NULL);
@@ -1099,7 +1186,7 @@ ice_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 int
 ice_fdir_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	int err;
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
@@ -1167,10 +1254,11 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 		   struct rte_mempool *mp)
 {
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_adapter *ad =
 		ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct ice_vsi *vsi = pf->main_vsi;
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	const struct rte_memzone *rz;
 	uint32_t ring_size, tlen;
 	uint16_t len;
@@ -1206,7 +1294,7 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 
 	/* Allocate the rx queue data structure */
 	rxq = rte_zmalloc_socket(NULL,
-				 sizeof(struct ice_rx_queue),
+				 sizeof(struct ci_rx_queue),
 				 RTE_CACHE_LINE_SIZE,
 				 socket_id);
 
@@ -1240,7 +1328,7 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 		rxq->crc_len = 0;
 
 	rxq->drop_en = rx_conf->rx_drop_en;
-	rxq->vsi = vsi;
+	rxq->ice_vsi = vsi;
 	rxq->rx_deferred_start = rx_conf->rx_deferred_start;
 	rxq->proto_xtr = pf->proto_xtr != NULL ?
 			 pf->proto_xtr[queue_idx] : PROTO_XTR_NONE;
@@ -1250,7 +1338,7 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->xtr_field_offs = ad->devargs.xtr_field_offs;
 
 	/* Allocate the maximum number of RX ring hardware descriptor. */
-	len = ICE_MAX_RING_DESC;
+	len = ICE_MAX_NUM_DESC_BY_MAC(hw);
 
 	/**
 	 * Allocating a little more memory because vectorized/bulk_alloc Rx
@@ -1259,7 +1347,7 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 	len += ICE_RX_MAX_BURST;
 
 	/* Allocate the maximum number of RX ring hardware descriptor. */
-	ring_size = sizeof(union ice_rx_flex_desc) * len;
+	ring_size = sizeof(union ci_rx_flex_desc) * len;
 	ring_size = RTE_ALIGN(ring_size, ICE_DMA_MEM_ALIGN);
 	rz = rte_eth_dma_zone_reserve(dev, "rx_ring", queue_idx,
 				      ring_size, ICE_RING_BASE_ALIGN,
@@ -1274,8 +1362,8 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 	/* Zero all the descriptors in the ring. */
 	memset(rz->addr, 0, ring_size);
 
-	rxq->rx_ring_dma = rz->iova;
-	rxq->rx_ring = rz->addr;
+	rxq->rx_ring_phys_addr = rz->iova;
+	rxq->rx_flex_ring = rz->addr;
 
 	/* always reserve more for bulk alloc */
 	len = (uint16_t)(nb_desc + ICE_RX_MAX_BURST);
@@ -1287,7 +1375,7 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 
 	/* Allocate the software ring. */
 	rxq->sw_ring = rte_zmalloc_socket(NULL,
-					  sizeof(struct ice_rx_entry) * tlen,
+					  sizeof(struct ci_rx_entry) * tlen,
 					  RTE_CACHE_LINE_SIZE,
 					  socket_id);
 	if (!rxq->sw_ring) {
@@ -1324,7 +1412,7 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 void
 ice_rx_queue_release(void *rxq)
 {
-	struct ice_rx_queue *q = (struct ice_rx_queue *)rxq;
+	struct ci_rx_queue *q = (struct ci_rx_queue *)rxq;
 
 	if (!q) {
 		PMD_DRV_LOG(DEBUG, "Pointer to rxq is NULL");
@@ -1338,6 +1426,36 @@ ice_rx_queue_release(void *rxq)
 	rte_free(q);
 }
 
+/**
+ * ice_calc_ts_ring_count - Calculate the number of timestamp descriptors
+ * @hw: pointer to the hardware structure
+ * @tx_desc_count: number of Tx descriptors in the ring
+ *
+ * Return: the number of timestamp descriptors
+ */
+static uint16_t
+ice_calc_ts_ring_count(struct ice_hw *hw, u16 tx_desc_count)
+{
+	u16 prof = ICE_TXTIME_CTX_FETCH_PROF_ID_0;
+	u16 max_fetch_desc = 0;
+	u16 fetch;
+	u32 reg;
+	u16 i;
+
+	for (i = 0; i < ICE_TXTIME_FETCH_PROFILE_CNT; i++) {
+		reg = rd32(hw, E830_GLTXTIME_FETCH_PROFILE(prof, 0));
+		fetch = FIELD_GET(E830_GLTXTIME_FETCH_PROFILE_FETCH_TS_DESC_M, reg);
+		max_fetch_desc = max(fetch, max_fetch_desc);
+	}
+
+	if (!max_fetch_desc)
+		max_fetch_desc = ICE_TXTIME_FETCH_TS_DESC_DFLT;
+
+	max_fetch_desc = RTE_ALIGN(max_fetch_desc, ICE_REQ_DESC_MULTIPLE);
+
+	return tx_desc_count + max_fetch_desc;
+}
+
 int
 ice_tx_queue_setup(struct rte_eth_dev *dev,
 		   uint16_t queue_idx,
@@ -1346,6 +1464,7 @@ ice_tx_queue_setup(struct rte_eth_dev *dev,
 		   const struct rte_eth_txconf *tx_conf)
 {
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_vsi *vsi = pf->main_vsi;
 	struct ci_tx_queue *txq;
 	const struct rte_memzone *tz;
@@ -1470,7 +1589,7 @@ ice_tx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	/* Allocate TX hardware ring descriptors. */
-	ring_size = sizeof(struct ice_tx_desc) * ICE_MAX_RING_DESC;
+	ring_size = sizeof(struct ice_tx_desc) * ICE_MAX_NUM_DESC_BY_MAC(hw);
 	ring_size = RTE_ALIGN(ring_size, ICE_DMA_MEM_ALIGN);
 	tz = rte_eth_dma_zone_reserve(dev, "ice_tx_ring", queue_idx,
 				      ring_size, ICE_RING_BASE_ALIGN,
@@ -1508,6 +1627,47 @@ ice_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
+	if (vsi->type == ICE_VSI_PF && (offloads & RTE_ETH_TX_OFFLOAD_SEND_ON_TIMESTAMP)) {
+		if (hw->phy_model != ICE_PHY_E830) {
+			ice_tx_queue_release(txq);
+			PMD_INIT_LOG(ERR, "Tx Time Queue is not supported on this device");
+			return -EINVAL;
+		}
+
+		txq->tsq = rte_zmalloc_socket(NULL, sizeof(struct ice_txtime),
+				RTE_CACHE_LINE_SIZE, socket_id);
+		if (!txq->tsq) {
+			ice_tx_queue_release(txq);
+			PMD_INIT_LOG(ERR, "Failed to allocate memory for tx time queue structure");
+			return -ENOMEM;
+		}
+
+		int ret =
+			rte_mbuf_dyn_tx_timestamp_register(&txq->tsq->ts_offset,
+							 &txq->tsq->ts_flag);
+		if (ret) {
+			ice_tx_queue_release(txq);
+			PMD_INIT_LOG(ERR, "Cannot register Tx mbuf field/flag for timestamp");
+			return -EINVAL;
+		}
+		dev->dev_ops->timesync_enable(dev);
+
+		txq->tsq->nb_ts_desc = ice_calc_ts_ring_count(ICE_VSI_TO_HW(vsi), txq->nb_tx_desc);
+		ring_size = sizeof(struct ice_ts_desc) * txq->tsq->nb_ts_desc;
+		ring_size = RTE_ALIGN(ring_size, ICE_DMA_MEM_ALIGN);
+		const struct rte_memzone *ts_z = rte_eth_dma_zone_reserve(dev, "ice_tstamp_ring",
+				queue_idx, ring_size, ICE_RING_BASE_ALIGN, socket_id);
+		if (!ts_z) {
+			ice_tx_queue_release(txq);
+			PMD_INIT_LOG(ERR, "Failed to reserve DMA memory for TX timestamp");
+			return -ENOMEM;
+		}
+		txq->tsq->ts_mz = ts_z;
+		txq->tsq->ice_ts_ring = ts_z->addr;
+	} else {
+		txq->tsq = NULL;
+	}
+
 	ice_reset_tx_queue(txq);
 	txq->q_set = true;
 	dev->data->tx_queues[queue_idx] = txq;
@@ -1540,6 +1700,10 @@ ice_tx_queue_release(void *txq)
 
 	ci_txq_release_all_mbufs(q, false);
 	rte_free(q->sw_ring);
+	if (q->tsq) {
+		rte_memzone_free(q->tsq->ts_mz);
+		rte_free(q->tsq);
+	}
 	rte_memzone_free(q->mz);
 	rte_free(q);
 }
@@ -1548,7 +1712,7 @@ void
 ice_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 		 struct rte_eth_rxq_info *qinfo)
 {
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 
 	rxq = dev->data->rx_queues[queue_id];
 
@@ -1585,12 +1749,12 @@ uint32_t
 ice_rx_queue_count(void *rx_queue)
 {
 #define ICE_RXQ_SCAN_INTERVAL 4
-	volatile union ice_rx_flex_desc *rxdp;
-	struct ice_rx_queue *rxq;
+	volatile union ci_rx_flex_desc *rxdp;
+	struct ci_rx_queue *rxq;
 	uint16_t desc = 0;
 
 	rxq = rx_queue;
-	rxdp = &rxq->rx_ring[rxq->rx_tail];
+	rxdp = &rxq->rx_flex_ring[rxq->rx_tail];
 	while ((desc < rxq->nb_rx_desc) &&
 	       rte_le_to_cpu_16(rxdp->wb.status_error0) &
 	       (1 << ICE_RX_FLEX_DESC_STATUS0_DD_S)) {
@@ -1602,8 +1766,7 @@ ice_rx_queue_count(void *rx_queue)
 		desc += ICE_RXQ_SCAN_INTERVAL;
 		rxdp += ICE_RXQ_SCAN_INTERVAL;
 		if (rxq->rx_tail + desc >= rxq->nb_rx_desc)
-			rxdp = &(rxq->rx_ring[rxq->rx_tail +
-				 desc - rxq->nb_rx_desc]);
+			rxdp = &rxq->rx_flex_ring[rxq->rx_tail + desc - rxq->nb_rx_desc];
 	}
 
 	return desc;
@@ -1656,7 +1819,7 @@ ice_rxd_error_to_pkt_flags(uint16_t stat_err0)
 }
 
 static inline void
-ice_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union ice_rx_flex_desc *rxdp)
+ice_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union ci_rx_flex_desc *rxdp)
 {
 	if (rte_le_to_cpu_16(rxdp->wb.status_error0) &
 	    (1 << ICE_RX_FLEX_DESC_STATUS0_L2TAG1P_S)) {
@@ -1669,7 +1832,7 @@ ice_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union ice_rx_flex_desc *rxdp)
 		mb->vlan_tci = 0;
 	}
 
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	if (rte_le_to_cpu_16(rxdp->wb.status_error1) &
 	    (1 << ICE_RX_FLEX_DESC_STATUS1_L2TAG2P_S)) {
 		mb->ol_flags |= RTE_MBUF_F_RX_QINQ_STRIPPED | RTE_MBUF_F_RX_QINQ |
@@ -1695,25 +1858,25 @@ ice_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union ice_rx_flex_desc *rxdp)
 #define ICE_PTP_TS_VALID 0x1
 
 static inline int
-ice_rx_scan_hw_ring(struct ice_rx_queue *rxq)
+ice_rx_scan_hw_ring(struct ci_rx_queue *rxq)
 {
-	volatile union ice_rx_flex_desc *rxdp;
-	struct ice_rx_entry *rxep;
+	volatile union ci_rx_flex_desc *rxdp;
+	struct ci_rx_entry *rxep;
 	struct rte_mbuf *mb;
 	uint16_t stat_err0;
 	uint16_t pkt_len, hdr_len;
 	int32_t s[ICE_LOOK_AHEAD], nb_dd;
 	int32_t i, j, nb_rx = 0;
 	uint64_t pkt_flags = 0;
-	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+	uint32_t *ptype_tbl = rxq->ice_vsi->adapter->ptype_tbl;
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	bool is_tsinit = false;
 	uint64_t ts_ns;
-	struct ice_vsi *vsi = rxq->vsi;
+	struct ice_vsi *vsi = rxq->ice_vsi;
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
-	struct ice_adapter *ad = rxq->vsi->adapter;
+	struct ice_adapter *ad = rxq->ice_vsi->adapter;
 #endif
-	rxdp = &rxq->rx_ring[rxq->rx_tail];
+	rxdp = &rxq->rx_flex_ring[rxq->rx_tail];
 	rxep = &rxq->sw_ring[rxq->rx_tail];
 
 	stat_err0 = rte_le_to_cpu_16(rxdp->wb.status_error0);
@@ -1722,7 +1885,7 @@ ice_rx_scan_hw_ring(struct ice_rx_queue *rxq)
 	if (!(stat_err0 & (1 << ICE_RX_FLEX_DESC_STATUS0_DD_S)))
 		return 0;
 
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
 		uint64_t sw_cur_time = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
 
@@ -1784,8 +1947,8 @@ ice_rx_scan_hw_ring(struct ice_rx_queue *rxq)
 				rte_le_to_cpu_16(rxdp[j].wb.ptype_flex_flags0)];
 			ice_rxd_to_vlan_tci(mb, &rxdp[j]);
 			rxd_to_pkt_fields_ops[rxq->rxdid](rxq, mb, &rxdp[j]);
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-			if (ice_timestamp_dynflag > 0 &&
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
+			if (rxq->ts_flag > 0 &&
 			    (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 				rxq->time_high =
 				rte_le_to_cpu_32(rxdp[j].wb.flex_ts.ts_high);
@@ -1804,9 +1967,9 @@ ice_rx_scan_hw_ring(struct ice_rx_queue *rxq)
 				rxq->hw_time_update = rte_get_timer_cycles() /
 						     (rte_get_timer_hz() / 1000);
 				*RTE_MBUF_DYNFIELD(mb,
-						   ice_timestamp_dynfield_offset,
+						   rxq->ts_offset,
 						   rte_mbuf_timestamp_t *) = ts_ns;
-				pkt_flags |= ice_timestamp_dynflag;
+				pkt_flags |= rxq->ts_flag;
 			}
 
 			if (ad->ptp_ena && ((mb->packet_type &
@@ -1843,7 +2006,7 @@ ice_rx_scan_hw_ring(struct ice_rx_queue *rxq)
 }
 
 static inline uint16_t
-ice_rx_fill_from_stage(struct ice_rx_queue *rxq,
+ice_rx_fill_from_stage(struct ci_rx_queue *rxq,
 		       struct rte_mbuf **rx_pkts,
 		       uint16_t nb_pkts)
 {
@@ -1862,10 +2025,10 @@ ice_rx_fill_from_stage(struct ice_rx_queue *rxq,
 }
 
 static inline int
-ice_rx_alloc_bufs(struct ice_rx_queue *rxq)
+ice_rx_alloc_bufs(struct ci_rx_queue *rxq)
 {
-	volatile union ice_rx_flex_desc *rxdp;
-	struct ice_rx_entry *rxep;
+	volatile union ci_rx_flex_desc *rxdp;
+	struct ci_rx_entry *rxep;
 	struct rte_mbuf *mb;
 	uint16_t alloc_idx, i;
 	uint64_t dma_addr;
@@ -1894,7 +2057,7 @@ ice_rx_alloc_bufs(struct ice_rx_queue *rxq)
 		}
 	}
 
-	rxdp = &rxq->rx_ring[alloc_idx];
+	rxdp = &rxq->rx_flex_ring[alloc_idx];
 	for (i = 0; i < rxq->rx_free_thresh; i++) {
 		if (likely(i < (rxq->rx_free_thresh - 1)))
 			/* Prefetch next mbuf */
@@ -1933,7 +2096,7 @@ ice_rx_alloc_bufs(struct ice_rx_queue *rxq)
 static inline uint16_t
 rx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 {
-	struct ice_rx_queue *rxq = (struct ice_rx_queue *)rx_queue;
+	struct ci_rx_queue *rxq = (struct ci_rx_queue *)rx_queue;
 	uint16_t nb_rx = 0;
 
 	if (!nb_pkts)
@@ -1951,7 +2114,7 @@ rx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		if (ice_rx_alloc_bufs(rxq) != 0) {
 			uint16_t i, j;
 
-			rxq->vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed +=
+			rxq->ice_vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed +=
 				rxq->rx_free_thresh;
 			PMD_RX_LOG(DEBUG, "Rx mbuf alloc failed for "
 				   "port_id=%u, queue_id=%u",
@@ -2006,12 +2169,12 @@ ice_recv_scattered_pkts(void *rx_queue,
 			struct rte_mbuf **rx_pkts,
 			uint16_t nb_pkts)
 {
-	struct ice_rx_queue *rxq = rx_queue;
-	volatile union ice_rx_flex_desc *rx_ring = rxq->rx_ring;
-	volatile union ice_rx_flex_desc *rxdp;
-	union ice_rx_flex_desc rxd;
-	struct ice_rx_entry *sw_ring = rxq->sw_ring;
-	struct ice_rx_entry *rxe;
+	struct ci_rx_queue *rxq = rx_queue;
+	volatile union ci_rx_flex_desc *rx_ring = rxq->rx_flex_ring;
+	volatile union ci_rx_flex_desc *rxdp;
+	union ci_rx_flex_desc rxd;
+	struct ci_rx_entry *sw_ring = rxq->sw_ring;
+	struct ci_rx_entry *rxe;
 	struct rte_mbuf *first_seg = rxq->pkt_first_seg;
 	struct rte_mbuf *last_seg = rxq->pkt_last_seg;
 	struct rte_mbuf *nmb; /* new allocated mbuf */
@@ -2023,13 +2186,13 @@ ice_recv_scattered_pkts(void *rx_queue,
 	uint16_t rx_stat_err0;
 	uint64_t dma_addr;
 	uint64_t pkt_flags;
-	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+	uint32_t *ptype_tbl = rxq->ice_vsi->adapter->ptype_tbl;
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	bool is_tsinit = false;
 	uint64_t ts_ns;
-	struct ice_vsi *vsi = rxq->vsi;
+	struct ice_vsi *vsi = rxq->ice_vsi;
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
-	struct ice_adapter *ad = rxq->vsi->adapter;
+	struct ice_adapter *ad = rxq->ice_vsi->adapter;
 
 	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
 		uint64_t sw_cur_time = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
@@ -2050,7 +2213,7 @@ ice_recv_scattered_pkts(void *rx_queue,
 		/* allocate mbuf */
 		nmb = rte_mbuf_raw_alloc(rxq->mp);
 		if (unlikely(!nmb)) {
-			rxq->vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
+			rxq->ice_vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
 			break;
 		}
 		rxd = *rxdp; /* copy descriptor in ring to temp variable*/
@@ -2152,8 +2315,8 @@ ice_recv_scattered_pkts(void *rx_queue,
 		ice_rxd_to_vlan_tci(first_seg, &rxd);
 		rxd_to_pkt_fields_ops[rxq->rxdid](rxq, first_seg, &rxd);
 		pkt_flags = ice_rxd_error_to_pkt_flags(rx_stat_err0);
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-		if (ice_timestamp_dynflag > 0 &&
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
+		if (rxq->ts_flag > 0 &&
 		    (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 			rxq->time_high =
 			   rte_le_to_cpu_32(rxd.wb.flex_ts.ts_high);
@@ -2171,9 +2334,9 @@ ice_recv_scattered_pkts(void *rx_queue,
 			rxq->hw_time_update = rte_get_timer_cycles() /
 					     (rte_get_timer_hz() / 1000);
 			*RTE_MBUF_DYNFIELD(first_seg,
-					   (ice_timestamp_dynfield_offset),
+					   (rxq->ts_offset),
 					   rte_mbuf_timestamp_t *) = ts_ns;
-			pkt_flags |= ice_timestamp_dynflag;
+			pkt_flags |= rxq->ts_flag;
 		}
 
 		if (ad->ptp_ena && ((first_seg->packet_type & RTE_PTYPE_L2_MASK)
@@ -2318,8 +2481,8 @@ ice_dev_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 int
 ice_rx_descriptor_status(void *rx_queue, uint16_t offset)
 {
-	volatile union ice_rx_flex_desc *rxdp;
-	struct ice_rx_queue *rxq = rx_queue;
+	volatile union ci_rx_flex_desc *rxdp;
+	struct ci_rx_queue *rxq = rx_queue;
 	uint32_t desc;
 
 	if (unlikely(offset >= rxq->nb_rx_desc))
@@ -2332,7 +2495,7 @@ ice_rx_descriptor_status(void *rx_queue, uint16_t offset)
 	if (desc >= rxq->nb_rx_desc)
 		desc -= rxq->nb_rx_desc;
 
-	rxdp = &rxq->rx_ring[desc];
+	rxdp = &rxq->rx_flex_ring[desc];
 	if (rte_le_to_cpu_16(rxdp->wb.status_error0) &
 	    (1 << ICE_RX_FLEX_DESC_STATUS0_DD_S))
 		return RTE_ETH_RX_DESC_DONE;
@@ -2459,7 +2622,7 @@ ice_fdir_setup_tx_resources(struct ice_pf *pf)
 int
 ice_fdir_setup_rx_resources(struct ice_pf *pf)
 {
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	const struct rte_memzone *rz = NULL;
 	uint32_t ring_size;
 	struct rte_eth_dev *dev;
@@ -2473,7 +2636,7 @@ ice_fdir_setup_rx_resources(struct ice_pf *pf)
 
 	/* Allocate the RX queue data structure. */
 	rxq = rte_zmalloc_socket("ice fdir rx queue",
-				 sizeof(struct ice_rx_queue),
+				 sizeof(struct ci_rx_queue),
 				 RTE_CACHE_LINE_SIZE,
 				 SOCKET_ID_ANY);
 	if (!rxq) {
@@ -2499,12 +2662,12 @@ ice_fdir_setup_rx_resources(struct ice_pf *pf)
 	rxq->nb_rx_desc = ICE_FDIR_NUM_RX_DESC;
 	rxq->queue_id = ICE_FDIR_QUEUE_ID;
 	rxq->reg_idx = pf->fdir.fdir_vsi->base_queue;
-	rxq->vsi = pf->fdir.fdir_vsi;
+	rxq->ice_vsi = pf->fdir.fdir_vsi;
 
-	rxq->rx_ring_dma = rz->iova;
+	rxq->rx_ring_phys_addr = rz->iova;
 	memset(rz->addr, 0, ICE_FDIR_NUM_RX_DESC *
 	       sizeof(union ice_32byte_rx_desc));
-	rxq->rx_ring = (union ice_rx_flex_desc *)rz->addr;
+	rxq->rx_flex_ring = (union ci_rx_flex_desc *)rz->addr;
 
 	/*
 	 * Don't need to allocate software ring and reset for the fdir
@@ -2523,12 +2686,12 @@ ice_recv_pkts(void *rx_queue,
 	      struct rte_mbuf **rx_pkts,
 	      uint16_t nb_pkts)
 {
-	struct ice_rx_queue *rxq = rx_queue;
-	volatile union ice_rx_flex_desc *rx_ring = rxq->rx_ring;
-	volatile union ice_rx_flex_desc *rxdp;
-	union ice_rx_flex_desc rxd;
-	struct ice_rx_entry *sw_ring = rxq->sw_ring;
-	struct ice_rx_entry *rxe;
+	struct ci_rx_queue *rxq = rx_queue;
+	volatile union ci_rx_flex_desc *rx_ring = rxq->rx_flex_ring;
+	volatile union ci_rx_flex_desc *rxdp;
+	union ci_rx_flex_desc rxd;
+	struct ci_rx_entry *sw_ring = rxq->sw_ring;
+	struct ci_rx_entry *rxe;
 	struct rte_mbuf *nmb; /* new allocated mbuf */
 	struct rte_mbuf *nmb_pay; /* new allocated payload mbuf */
 	struct rte_mbuf *rxm; /* pointer to store old mbuf in SW ring */
@@ -2540,13 +2703,13 @@ ice_recv_pkts(void *rx_queue,
 	uint16_t rx_stat_err0;
 	uint64_t dma_addr;
 	uint64_t pkt_flags;
-	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+	uint32_t *ptype_tbl = rxq->ice_vsi->adapter->ptype_tbl;
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 	bool is_tsinit = false;
 	uint64_t ts_ns;
-	struct ice_vsi *vsi = rxq->vsi;
+	struct ice_vsi *vsi = rxq->ice_vsi;
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
-	struct ice_adapter *ad = rxq->vsi->adapter;
+	struct ice_adapter *ad = rxq->ice_vsi->adapter;
 
 	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
 		uint64_t sw_cur_time = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
@@ -2567,7 +2730,7 @@ ice_recv_pkts(void *rx_queue,
 		/* allocate header mbuf */
 		nmb = rte_mbuf_raw_alloc(rxq->mp);
 		if (unlikely(!nmb)) {
-			rxq->vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
+			rxq->ice_vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
 			break;
 		}
 
@@ -2594,7 +2757,7 @@ ice_recv_pkts(void *rx_queue,
 			/* allocate payload mbuf */
 			nmb_pay = rte_mbuf_raw_alloc(rxq->rxseg[1].mp);
 			if (unlikely(!nmb_pay)) {
-				rxq->vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
+				rxq->ice_vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
 				rxe->mbuf = NULL;
 				nb_hold--;
 				if (unlikely(rx_id == 0))
@@ -2650,8 +2813,8 @@ ice_recv_pkts(void *rx_queue,
 		ice_rxd_to_vlan_tci(rxm, &rxd);
 		rxd_to_pkt_fields_ops[rxq->rxdid](rxq, rxm, &rxd);
 		pkt_flags = ice_rxd_error_to_pkt_flags(rx_stat_err0);
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-		if (ice_timestamp_dynflag > 0 &&
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
+		if (rxq->ts_flag > 0 &&
 		    (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)) {
 			rxq->time_high =
 			   rte_le_to_cpu_32(rxd.wb.flex_ts.ts_high);
@@ -2669,9 +2832,9 @@ ice_recv_pkts(void *rx_queue,
 			rxq->hw_time_update = rte_get_timer_cycles() /
 					     (rte_get_timer_hz() / 1000);
 			*RTE_MBUF_DYNFIELD(rxm,
-					   (ice_timestamp_dynfield_offset),
+					   (rxq->ts_offset),
 					   rte_mbuf_timestamp_t *) = ts_ns;
-			pkt_flags |= ice_timestamp_dynflag;
+			pkt_flags |= rxq->ts_flag;
 		}
 
 		if (ad->ptp_ena && ((rxm->packet_type & RTE_PTYPE_L2_MASK) ==
@@ -2962,6 +3125,7 @@ ice_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct rte_mbuf *m_seg;
 	uint32_t cd_tunneling_params;
 	uint16_t tx_id;
+	uint16_t ts_id = -1;
 	uint16_t nb_tx;
 	uint16_t nb_used;
 	uint16_t nb_ctx;
@@ -2979,6 +3143,9 @@ ice_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	ice_tx_ring = txq->ice_tx_ring;
 	tx_id = txq->tx_tail;
 	txe = &sw_ring[tx_id];
+
+	if (txq->tsq != NULL && txq->tsq->ts_flag > 0)
+		ts_id = txq->tsq->ts_tail;
 
 	/* Check if the descriptor ring needs to be cleaned. */
 	if (txq->nb_tx_free < txq->tx_free_thresh)
@@ -3167,10 +3334,40 @@ ice_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		txd->cmd_type_offset_bsz |=
 			rte_cpu_to_le_64(((uint64_t)td_cmd) <<
 					 ICE_TXD_QW1_CMD_S);
+
+		if (txq->tsq != NULL && txq->tsq->ts_flag > 0) {
+			uint64_t txtime = *RTE_MBUF_DYNFIELD(tx_pkt,
+					txq->tsq->ts_offset, uint64_t *);
+			uint32_t tstamp = (uint32_t)(txtime % NS_PER_S) >>
+						ICE_TXTIME_CTX_RESOLUTION_128NS;
+			const uint32_t desc_tx_id = (tx_id == 0) ? txq->nb_tx_desc : tx_id;
+			__le32 ts_desc = rte_cpu_to_le_32(FIELD_PREP(ICE_TXTIME_TX_DESC_IDX_M,
+					desc_tx_id) | FIELD_PREP(ICE_TXTIME_STAMP_M, tstamp));
+			txq->tsq->ice_ts_ring[ts_id].tx_desc_idx_tstamp = ts_desc;
+			ts_id++;
+			/* To prevent an MDD, when wrapping the tstamp
+			 * ring create additional TS descriptors equal
+			 * to the number of the fetch TS descriptors
+			 * value. HW will merge the TS descriptors with
+			 * the same timestamp value into a single
+			 * descriptor.
+			 */
+			if (ts_id == txq->tsq->nb_ts_desc) {
+				uint16_t fetch = txq->tsq->nb_ts_desc - txq->nb_tx_desc;
+				ts_id = 0;
+				for (; ts_id < fetch; ts_id++)
+					txq->tsq->ice_ts_ring[ts_id].tx_desc_idx_tstamp = ts_desc;
+			}
+		}
 	}
 end_of_tx:
 	/* update Tail register */
-	ICE_PCI_REG_WRITE(txq->qtx_tail, tx_id);
+	if (txq->tsq != NULL && txq->tsq->ts_flag > 0) {
+		ICE_PCI_REG_WRITE(txq->qtx_tail, ts_id);
+		txq->tsq->ts_tail = ts_id;
+	} else {
+		ICE_PCI_REG_WRITE(txq->qtx_tail, tx_id);
+	}
 	txq->tx_tail = tx_id;
 
 	return nb_tx;
@@ -3472,7 +3669,7 @@ ice_set_rx_function(struct rte_eth_dev *dev)
 	struct ice_adapter *ad =
 		ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 #ifdef RTE_ARCH_X86
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	int i;
 	int rx_check_ret = -1;
 
@@ -4634,7 +4831,7 @@ ice_set_default_ptype_table(struct rte_eth_dev *dev)
  * tx queue
  */
 static inline int
-ice_check_fdir_programming_status(struct ice_rx_queue *rxq)
+ice_check_fdir_programming_status(struct ci_rx_queue *rxq)
 {
 	volatile union ice_32byte_rx_desc *rxdp;
 	uint64_t qword1;
@@ -4643,8 +4840,7 @@ ice_check_fdir_programming_status(struct ice_rx_queue *rxq)
 	uint32_t id;
 	int ret = -EAGAIN;
 
-	rxdp = (volatile union ice_32byte_rx_desc *)
-		(&rxq->rx_ring[rxq->rx_tail]);
+	rxdp = (volatile union ice_32byte_rx_desc *)&rxq->rx_flex_ring[rxq->rx_tail];
 	qword1 = rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len);
 	rx_status = (qword1 & ICE_RXD_QW1_STATUS_M)
 			>> ICE_RXD_QW1_STATUS_S;
@@ -4689,7 +4885,7 @@ int
 ice_fdir_programming(struct ice_pf *pf, struct ice_fltr_desc *fdir_desc)
 {
 	struct ci_tx_queue *txq = pf->fdir.txq;
-	struct ice_rx_queue *rxq = pf->fdir.rxq;
+	struct ci_rx_queue *rxq = pf->fdir.rxq;
 	volatile struct ice_fltr_desc *fdirdp;
 	volatile struct ice_tx_desc *txdp;
 	uint32_t td_cmd;

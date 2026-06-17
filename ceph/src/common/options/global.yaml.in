@@ -920,7 +920,7 @@ options:
   level: advanced
   desc: Messenger implementation to use for network communication
   fmt_desc: Transport type used by Async Messenger. Can be ``async+posix``,
-    ``async+dpdk`` or ``async+rdma``. Posix uses standard TCP/IP networking and is
+    ``async+dpdk``, ``async+rdma``, or ``async+smc``. Posix uses standard TCP/IP networking and is
     default. Other transports may be experimental and support may be limited.
   default: async+posix
   flags:
@@ -4490,6 +4490,18 @@ options:
   - bluestore_block_wal_size
   flags:
   - create
+  with_legacy: true
+- name: bluestore_use_ebd
+  type: bool
+  level: advanced
+  desc: EBD plugin used during mkfs is required for mounts.
+  long_desc: The flag has two effects, on mkfs and on mount.
+    If set for mkfs and EBD plugin did attach to the device then save plugin name to OSD metadata.
+    If set when mounting and plugin name is stored in OSD metadata then refuse to mount.
+    The flag has no meaning if the device has no associated EBD plugin.
+  default: true
+  see_also:
+  - osd_extblkdev_plugins
   with_legacy: true
 - name: bluestore_bdev_label_multi
   type: bool

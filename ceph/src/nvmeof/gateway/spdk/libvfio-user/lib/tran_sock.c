@@ -46,6 +46,7 @@
 typedef struct {
     int listen_fd;
     int conn_fd;
+    int client_cmd_socket_fd;
 } tran_sock_t;
 
 int
@@ -69,15 +70,15 @@ tran_sock_send_iovec(int sock, uint16_t msg_id, bool is_reply,
     memset(&msg, 0, sizeof(msg));
 
     if (is_reply) {
-        hdr.flags.type = VFIO_USER_F_TYPE_REPLY;
+        hdr.flags |= VFIO_USER_F_TYPE_REPLY;
         hdr.cmd = cmd;
         if (err != 0) {
-            hdr.flags.error = 1U;
+            hdr.flags |= VFIO_USER_F_ERROR;
             hdr.error_no = err;
         }
     } else {
         hdr.cmd = cmd;
-        hdr.flags.type = VFIO_USER_F_TYPE_COMMAND;
+        hdr.flags |= VFIO_USER_F_TYPE_COMMAND;
     }
 
     iovecs[0].iov_base = &hdr;
@@ -211,18 +212,18 @@ tran_sock_recv_fds(int sock, struct vfio_user_header *hdr, bool is_reply,
             return ERROR_INT(EPROTO);
         }
 
-        if (hdr->flags.type != VFIO_USER_F_TYPE_REPLY) {
+        if ((hdr->flags & VFIO_USER_F_TYPE_MASK) != VFIO_USER_F_TYPE_REPLY) {
             return ERROR_INT(EINVAL);
         }
 
-        if (hdr->flags.error == 1U) {
-            if (hdr->error_no <= 0) {
+        if (hdr->flags & VFIO_USER_F_ERROR) {
+            if (hdr->error_no <= 0 || hdr->error_no > SERVER_MAX_ERROR_NO) {
                 hdr->error_no = EINVAL;
             }
             return ERROR_INT(hdr->error_no);
         }
     } else {
-        if (hdr->flags.type != VFIO_USER_F_TYPE_COMMAND) {
+        if ((hdr->flags & VFIO_USER_F_TYPE_MASK) != VFIO_USER_F_TYPE_COMMAND) {
             return ERROR_INT(EINVAL);
         }
         if (msg_id != NULL) {
@@ -380,6 +381,7 @@ tran_sock_init(vfu_ctx_t *vfu_ctx)
 
     ts->listen_fd = -1;
     ts->conn_fd = -1;
+    ts->client_cmd_socket_fd = -1;
 
     if ((ts->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
         ret = errno;
@@ -419,8 +421,8 @@ tran_sock_init(vfu_ctx_t *vfu_ctx)
 
 out:
     if (ret != 0) {
-        if (ts != NULL && ts->listen_fd != -1) {
-            close(ts->listen_fd);
+        if (ts != NULL) {
+            close_safely(&ts->listen_fd);
         }
         free(ts);
         return ERROR_INT(ret);
@@ -464,12 +466,10 @@ tran_sock_attach(vfu_ctx_t *vfu_ctx)
         return -1;
     }
 
-    ret = tran_negotiate(vfu_ctx);
+    ret = tran_negotiate(vfu_ctx, &ts->client_cmd_socket_fd);
     if (ret < 0) {
-        ret = errno;
-        close(ts->conn_fd);
-        ts->conn_fd = -1;
-        return ERROR_INT(ret);
+        close_safely(&ts->conn_fd);
+        return -1;
     }
 
     return 0;
@@ -593,8 +593,8 @@ tran_sock_reply(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg, int err)
     }
 
     if (msg->out_iovecs != NULL) {
-        bcopy(msg->out_iovecs, iovecs + 1,
-              msg->nr_out_iovecs * sizeof(*iovecs));
+        memcpy(iovecs + 1, msg->out_iovecs,
+               msg->nr_out_iovecs * sizeof(*iovecs));
     } else {
         iovecs[1].iov_base = msg->out.iov.iov_base;
         iovecs[1].iov_len = msg->out.iov.iov_len;
@@ -609,6 +609,21 @@ tran_sock_reply(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg, int err)
     return ret;
 }
 
+static void maybe_print_cmd_collision_warning(vfu_ctx_t *vfu_ctx) {
+    static bool warning_printed = false;
+    static const char *warning_msg =
+        "You are using libvfio-user in a configuration that issues "
+        "client-to-server commands, but without the twin_socket feature "
+        "enabled. This is known to break when client and server send a command "
+        "at the same time. See "
+        "https://github.com/nutanix/libvfio-user/issues/279 for details.";
+
+    if (!warning_printed) {
+        vfu_log(vfu_ctx, LOG_WARNING, "%s", warning_msg);
+        warning_printed = true;
+    }
+}
+
 static int
 tran_sock_send_msg(vfu_ctx_t *vfu_ctx, uint16_t msg_id,
               enum vfio_user_command cmd,
@@ -617,14 +632,21 @@ tran_sock_send_msg(vfu_ctx_t *vfu_ctx, uint16_t msg_id,
               void *recv_data, size_t recv_len)
 {
     tran_sock_t *ts;
+    int fd;
 
     assert(vfu_ctx != NULL);
     assert(vfu_ctx->tran_data != NULL);
 
     ts = vfu_ctx->tran_data;
 
-    return tran_sock_msg(ts->conn_fd, msg_id, cmd, send_data, send_len,
-                         hdr, recv_data, recv_len);
+    fd = ts->client_cmd_socket_fd;
+    if (fd == -1) {
+        maybe_print_cmd_collision_warning(vfu_ctx);
+        fd = ts->conn_fd;
+    }
+
+    return tran_sock_msg(fd, msg_id, cmd, send_data, send_len, hdr, recv_data,
+                         recv_len);
 }
 
 static void
@@ -636,10 +658,9 @@ tran_sock_detach(vfu_ctx_t *vfu_ctx)
 
     ts = vfu_ctx->tran_data;
 
-    if (ts != NULL && ts->conn_fd != -1) {
-        // FIXME: handle EINTR
-        (void) close(ts->conn_fd);
-        ts->conn_fd = -1;
+    if (ts != NULL) {
+        close_safely(&ts->conn_fd);
+        close_safely(&ts->client_cmd_socket_fd);
     }
 }
 
@@ -654,11 +675,7 @@ tran_sock_fini(vfu_ctx_t *vfu_ctx)
 
     if (ts != NULL) {
         (void) unlink(vfu_ctx->uuid);
-        if (ts->listen_fd != -1) {
-            // FIXME: handle EINTR
-            (void) close(ts->listen_fd);
-            ts->listen_fd = -1;
-        }
+        close_safely(&ts->listen_fd);
     }
 
     free(vfu_ctx->tran_data);

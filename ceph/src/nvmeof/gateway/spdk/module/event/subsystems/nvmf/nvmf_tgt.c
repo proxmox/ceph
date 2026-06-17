@@ -55,7 +55,8 @@ struct spdk_nvmf_tgt_conf g_spdk_nvmf_tgt_conf = {
 		.dhchap_digests = NVMF_TGT_DEFAULT_DIGESTS,
 		.dhchap_dhgroups = NVMF_TGT_DEFAULT_DHGROUPS,
 	},
-	.admin_passthru.identify_ctrlr = false
+	.admin_passthru.identify_ctrlr = false,
+	.admin_passthru.vendor_specific = false
 };
 
 struct spdk_cpuset *g_poll_groups_mask = NULL;
@@ -400,18 +401,14 @@ fixup_identify_ctrlr(struct spdk_nvmf_request *req)
 }
 
 static int
-nvmf_custom_identify_hdlr(struct spdk_nvmf_request *req)
+nvmf_admin_passthru_generic_hdlr(struct spdk_nvmf_request *req,
+				 spdk_nvmf_nvme_passthru_cmd_cb cb_fn)
 {
-	struct spdk_nvme_cmd *cmd = spdk_nvmf_request_get_cmd(req);
 	struct spdk_bdev *bdev;
 	struct spdk_bdev_desc *desc;
 	struct spdk_io_channel *ch;
 	struct spdk_nvmf_subsystem *subsys;
 	int rc;
-
-	if (cmd->cdw10_bits.identify.cns != SPDK_NVME_IDENTIFY_CTRLR) {
-		return -1; /* continue */
-	}
 
 	subsys = spdk_nvmf_request_get_subsystem(req);
 	if (subsys == NULL) {
@@ -426,7 +423,7 @@ nvmf_custom_identify_hdlr(struct spdk_nvmf_request *req)
 	/* Forward to first namespace if it supports NVME admin commands */
 	rc = spdk_nvmf_request_get_bdev(1, req, &bdev, &desc, &ch);
 	if (rc) {
-		/* No bdev found for this namespace. Continue. */
+		/* No bdev found for this namespace */
 		return -1;
 	}
 
@@ -434,7 +431,25 @@ nvmf_custom_identify_hdlr(struct spdk_nvmf_request *req)
 		return -1;
 	}
 
-	return spdk_nvmf_bdev_ctrlr_nvme_passthru_admin(bdev, desc, ch, req, fixup_identify_ctrlr);
+	return spdk_nvmf_bdev_ctrlr_nvme_passthru_admin(bdev, desc, ch, req, cb_fn);
+}
+
+static int
+nvmf_custom_identify_hdlr(struct spdk_nvmf_request *req)
+{
+	struct spdk_nvme_cmd *cmd = spdk_nvmf_request_get_cmd(req);
+
+	if (cmd->cdw10_bits.identify.cns != SPDK_NVME_IDENTIFY_CTRLR) {
+		return -1; /* Only support Identify Controller */
+	}
+
+	return nvmf_admin_passthru_generic_hdlr(req, fixup_identify_ctrlr);
+}
+
+static int
+nvmf_custom_admin_no_cb_hdlr(struct spdk_nvmf_request *req)
+{
+	return nvmf_admin_passthru_generic_hdlr(req, NULL);
 }
 
 static void
@@ -461,6 +476,13 @@ nvmf_tgt_advance_state(void)
 			if (g_spdk_nvmf_tgt_conf.admin_passthru.identify_ctrlr) {
 				SPDK_NOTICELOG("Custom identify ctrlr handler enabled\n");
 				spdk_nvmf_set_custom_admin_cmd_hdlr(SPDK_NVME_OPC_IDENTIFY, nvmf_custom_identify_hdlr);
+			}
+			if (g_spdk_nvmf_tgt_conf.admin_passthru.vendor_specific) {
+				int i;
+				SPDK_NOTICELOG("Custom vendor specific commands handlers enabled\n");
+				for (i = SPDK_NVME_OPC_VENDOR_SPECIFIC_START; i <= SPDK_NVME_MAX_OPC; i++) {
+					spdk_nvmf_set_custom_admin_cmd_hdlr(i, nvmf_custom_admin_no_cb_hdlr);
+				}
 			}
 			/* Create poll group threads, and send a message to each thread
 			 * and create a poll group.
@@ -575,6 +597,8 @@ nvmf_subsystem_write_config_json(struct spdk_json_write_ctx *w)
 	spdk_json_write_named_object_begin(w, "admin_cmd_passthru");
 	spdk_json_write_named_bool(w, "identify_ctrlr",
 				   g_spdk_nvmf_tgt_conf.admin_passthru.identify_ctrlr);
+	spdk_json_write_named_bool(w, "vendor_specific",
+				   g_spdk_nvmf_tgt_conf.admin_passthru.vendor_specific);
 	spdk_json_write_object_end(w);
 	if (g_poll_groups_mask) {
 		spdk_json_write_named_string(w, "poll_groups_mask", spdk_cpuset_fmt(g_poll_groups_mask));

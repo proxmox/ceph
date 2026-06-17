@@ -14,7 +14,7 @@
 #include "spdk/string.h"
 #include "spdk/log.h"
 #include "spdk_internal/usdt.h"
-
+#include "nvmf_controller_stats.h"
 #include "nvmf_internal.h"
 #include "transport.h"
 
@@ -832,7 +832,7 @@ spdk_nvmf_tgt_listen_ext(struct spdk_nvmf_tgt *tgt, const struct spdk_nvme_trans
 
 int
 spdk_nvmf_tgt_stop_listen(struct spdk_nvmf_tgt *tgt,
-			  struct spdk_nvme_transport_id *trid)
+			  const struct spdk_nvme_transport_id *trid)
 {
 	struct spdk_nvmf_transport *transport;
 	int rc;
@@ -1465,9 +1465,8 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 			    struct spdk_nvmf_subsystem *subsystem)
 {
 	struct spdk_nvmf_subsystem_poll_group *sgroup;
-	uint32_t i, j;
+	uint32_t i;
 	struct spdk_nvmf_ns *ns;
-	struct spdk_nvmf_registrant *reg, *tmp;
 	struct spdk_io_channel *ch;
 	struct spdk_nvmf_subsystem_pg_ns_info *ns_info;
 	struct spdk_nvmf_ctrlr *ctrlr;
@@ -1554,21 +1553,7 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 			ns_info->uuid = *spdk_bdev_get_uuid(ns->bdev);
 			ns_info->num_blocks = spdk_bdev_get_num_blocks(ns->bdev);
 			ns_info->anagrpid = ns->anagrpid;
-			ns_info->crkey = ns->crkey;
-			ns_info->rtype = ns->rtype;
-			if (ns->holder) {
-				ns_info->holder_id = ns->holder->hostid;
-			}
-
-			memset(&ns_info->reg_hostid, 0, SPDK_NVMF_MAX_NUM_REGISTRANTS * sizeof(struct spdk_uuid));
-			j = 0;
-			TAILQ_FOREACH_SAFE(reg, &ns->registrants, link, tmp) {
-				if (j >= SPDK_NVMF_MAX_NUM_REGISTRANTS) {
-					SPDK_ERRLOG("Maximum %u registrants can support.\n", SPDK_NVMF_MAX_NUM_REGISTRANTS);
-					return -EINVAL;
-				}
-				ns_info->reg_hostid[j++] = reg->hostid;
-			}
+			nvmf_subsystem_poll_group_update_ns_reservation(ns, ns_info);
 		}
 	}
 
@@ -1919,6 +1904,144 @@ spdk_nvmf_poll_group_dump_stat(struct spdk_nvmf_poll_group *group, struct spdk_j
 		spdk_json_write_object_end(w);
 	}
 
+	spdk_json_write_array_end(w);
+	spdk_json_write_object_end(w);
+}
+
+
+/* RPC  handlers for IO statistics */
+static uint32_t bucket_2_size[IO_SIZE_BUCKETS] = {2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096};
+#define MIN_NUMBER_IOS_TO_IGNORE 10
+static void
+accumulate_latency(struct latency_stats *accum_latency_stats,
+		   const struct latency_stats *qp_latency_stats)
+{
+	accum_latency_stats->mean += qp_latency_stats->mean;
+	if (accum_latency_stats->max < qp_latency_stats->max) {
+		accum_latency_stats->max = qp_latency_stats->max;
+	}
+	if (accum_latency_stats->min > qp_latency_stats->min) {
+		accum_latency_stats->min = qp_latency_stats->min;
+	}
+}
+
+void
+spdk_nvmf_accumulate_stats(struct qp_io_stats *accum_stats,
+		 const struct qp_io_stats *qp_stats)
+{
+	int i, j;
+	if (qp_stats->total_num_ios < MIN_NUMBER_IOS_TO_IGNORE) { /* dont take into account QPs with no IOs */
+		return;
+	}
+	accum_stats->total_num_ios += qp_stats->total_num_ios;
+	for (i = 0; i < IO_SIZE_BUCKETS; i++) {
+		for (j = 0; j < IO_DIR_MAX; j++) {
+			/* Do not take into account buckets with no IOs - it could ruin minimum of statistics */
+			if (qp_stats->buckets[i].dir[j].io_count) {
+				accum_stats->buckets[i].dir[j].io_count +=  qp_stats->buckets[i].dir[j].io_count;
+				accumulate_latency(&accum_stats->buckets[i].dir[j].total, &qp_stats->buckets[i].dir[j].total);
+				accumulate_latency(&accum_stats->buckets[i].dir[j].bdev,  &qp_stats->buckets[i].dir[j].bdev);
+				accumulate_latency(&accum_stats->buckets[i].dir[j].net,   &qp_stats->buckets[i].dir[j].net);
+				accumulate_latency(&accum_stats->buckets[i].dir[j].qos,   &qp_stats->buckets[i].dir[j].qos);
+			}
+		}
+	}
+}
+
+static void
+dump_latency_stats(struct spdk_json_write_ctx *w,
+		   const struct latency_stats *s, uint64_t ticks_hz, uint64_t io_cnt)
+{
+	spdk_json_write_named_uint64(w, "min", s->min * 1000000ULL / ticks_hz);
+	spdk_json_write_named_uint64(w, "max", s->max * 1000000ULL / ticks_hz);
+	spdk_json_write_named_uint64(w, "mean",
+				     (uint64_t)((s->mean / io_cnt) * 1000000ULL / ticks_hz));
+}
+
+static void
+dump_latency_group(struct spdk_json_write_ctx *w,
+		   const struct io_latency_group *g, uint64_t ticks_hz)
+{
+	spdk_json_write_named_uint64(w, "io_count", g->io_count);
+
+	spdk_json_write_named_object_begin(w, "latency");
+
+	spdk_json_write_named_object_begin(w, "total");
+	dump_latency_stats(w, &g->total, ticks_hz, g->io_count);
+	spdk_json_write_object_end(w);
+
+	spdk_json_write_named_object_begin(w, "bdev");
+	dump_latency_stats(w, &g->bdev, ticks_hz, g->io_count);
+	spdk_json_write_object_end(w);
+
+	spdk_json_write_named_object_begin(w, "net");
+	dump_latency_stats(w, &g->net, ticks_hz, g->io_count);
+	spdk_json_write_object_end(w);
+
+	spdk_json_write_named_object_begin(w, "qos");
+	dump_latency_stats(w, &g->qos, ticks_hz, g->io_count);
+	spdk_json_write_object_end(w);
+
+	spdk_json_write_object_end(w); /* latency */
+}
+
+void
+spdk_nvmf_stats_reset_qp(struct qp_io_stats *qp_stats)
+{
+	memset(qp_stats, 0, sizeof(*qp_stats));
+	int i,j;
+	for (i = 0; i < IO_SIZE_BUCKETS; i++) {
+		for(j = 0; j < IO_DIR_MAX; j++) {
+			qp_stats->buckets[i].dir[j].bdev.min = UINT64_MAX;
+			qp_stats->buckets[i].dir[j].net.min = UINT64_MAX;
+			qp_stats->buckets[i].dir[j].qos.min = UINT64_MAX;
+			qp_stats->buckets[i].dir[j].total.min = UINT64_MAX;
+		}
+	}
+}
+
+void
+spdk_nvmf_dump_empty_ctrl_stats(struct spdk_json_write_ctx *w)
+{
+	spdk_json_write_object_begin(w);
+	spdk_json_write_named_uint64(w, "total_num_ios", 0);
+	spdk_json_write_named_array_begin(w, "buckets");
+	spdk_json_write_array_end(w);
+	spdk_json_write_object_end(w);
+}
+
+void
+spdk_nvmf_dump_ctrl_stats(struct spdk_json_write_ctx *w,
+		const struct qp_io_stats *stats)
+{
+	uint32_t i;
+	uint64_t ticks_hz = spdk_get_ticks_hz();
+	spdk_json_write_object_begin(w);
+	spdk_json_write_named_uint64(w, "total_num_ios",
+					stats->total_num_ios);
+	spdk_json_write_named_array_begin(w, "buckets");
+
+	for (i = 0; i < IO_SIZE_BUCKETS; i++) {
+		const struct io_size_bucket *b = &stats->buckets[i];
+		/* Skip empty buckets */
+		if (b->dir[IO_READ].io_count == 0 &&
+			b->dir[IO_WRITE].io_count == 0) {
+			continue;
+		}
+		spdk_json_write_object_begin(w);
+		spdk_json_write_named_uint32(w, "bucket-size (KB)", bucket_2_size[i]);
+		if (b->dir[IO_READ].io_count) {
+			spdk_json_write_named_object_begin(w, "read");
+			dump_latency_group(w, &b->dir[IO_READ], ticks_hz);
+			spdk_json_write_object_end(w);
+		}
+		if (b->dir[IO_WRITE].io_count) {
+			spdk_json_write_named_object_begin(w, "write");
+			dump_latency_group(w, &b->dir[IO_WRITE], ticks_hz);
+			spdk_json_write_object_end(w);
+		}
+		spdk_json_write_object_end(w);
+	}
 	spdk_json_write_array_end(w);
 	spdk_json_write_object_end(w);
 }

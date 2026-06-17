@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 
+#include <eal_export.h>
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_lcore.h>
@@ -417,6 +418,7 @@ pdump_server(const struct rte_mp_msg *mp_msg, const void *peer)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_init)
 int
 rte_pdump_init(void)
 {
@@ -424,7 +426,7 @@ rte_pdump_init(void)
 	int ret;
 
 	mz = rte_memzone_reserve(MZ_RTE_PDUMP_STATS, sizeof(*pdump_stats),
-				 rte_socket_id(), 0);
+				 SOCKET_ID_ANY, 0);
 	if (mz == NULL) {
 		PDUMP_LOG_LINE(ERR, "cannot allocate pdump statistics");
 		rte_errno = ENOMEM;
@@ -439,6 +441,7 @@ rte_pdump_init(void)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_uninit)
 int
 rte_pdump_uninit(void)
 {
@@ -609,6 +612,7 @@ pdump_enable(uint16_t port, uint16_t queue,
 					    ENABLE, ring, mp, prm);
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_enable)
 int
 rte_pdump_enable(uint16_t port, uint16_t queue, uint32_t flags,
 		 struct rte_ring *ring,
@@ -619,6 +623,7 @@ rte_pdump_enable(uint16_t port, uint16_t queue, uint32_t flags,
 			    ring, mp, NULL);
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_enable_bpf)
 int
 rte_pdump_enable_bpf(uint16_t port, uint16_t queue,
 		     uint32_t flags, uint32_t snaplen,
@@ -653,6 +658,7 @@ pdump_enable_by_deviceid(const char *device_id, uint16_t queue,
 					    ENABLE, ring, mp, prm);
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_enable_by_deviceid)
 int
 rte_pdump_enable_by_deviceid(char *device_id, uint16_t queue,
 			     uint32_t flags,
@@ -664,6 +670,7 @@ rte_pdump_enable_by_deviceid(char *device_id, uint16_t queue,
 					ring, mp, NULL);
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_enable_bpf_by_deviceid)
 int
 rte_pdump_enable_bpf_by_deviceid(const char *device_id, uint16_t queue,
 				 uint32_t flags, uint32_t snaplen,
@@ -675,6 +682,7 @@ rte_pdump_enable_bpf_by_deviceid(const char *device_id, uint16_t queue,
 					ring, mp, prm);
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_disable)
 int
 rte_pdump_disable(uint16_t port, uint16_t queue, uint32_t flags)
 {
@@ -694,6 +702,7 @@ rte_pdump_disable(uint16_t port, uint16_t queue, uint32_t flags)
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_disable_by_deviceid)
 int
 rte_pdump_disable_by_deviceid(char *device_id, uint16_t queue,
 				uint32_t flags)
@@ -730,6 +739,7 @@ pdump_sum_stats(uint16_t port, uint16_t nq,
 	}
 }
 
+RTE_EXPORT_SYMBOL(rte_pdump_stats)
 int
 rte_pdump_stats(uint16_t port, struct rte_pdump_stats *stats)
 {

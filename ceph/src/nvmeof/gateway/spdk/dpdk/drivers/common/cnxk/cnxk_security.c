@@ -2,6 +2,7 @@
  * Copyright(C) 2021 Marvell.
  */
 
+#include <eal_export.h>
 #include <rte_udp.h>
 
 #include "roc_api.h"
@@ -95,6 +96,9 @@ ot_ipsec_sa_common_param_fill(union roc_ot_ipsec_sa_word2 *w2, uint8_t *cipher_k
 				break;
 			case RTE_CRYPTO_CIPHER_AES_CTR:
 				w2->s.enc_type = ROC_IE_SA_ENC_AES_CTR;
+				memcpy(salt_key, &ipsec_xfrm->salt, 4);
+				tmp_salt = (uint32_t *)salt_key;
+				*tmp_salt = rte_be_to_cpu_32(*tmp_salt);
 				break;
 			case RTE_CRYPTO_CIPHER_3DES_CBC:
 				w2->s.enc_type = ROC_IE_SA_ENC_3DES_CBC;
@@ -301,6 +305,7 @@ ot_ipsec_inb_tunnel_hdr_fill(struct roc_ot_ipsec_inb_sa *sa,
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ot_ipsec_inb_sa_fill)
 int
 cnxk_ot_ipsec_inb_sa_fill(struct roc_ot_ipsec_inb_sa *sa,
 			  struct rte_security_ipsec_xform *ipsec_xfrm,
@@ -410,6 +415,7 @@ cnxk_ot_ipsec_inb_sa_fill(struct roc_ot_ipsec_inb_sa *sa,
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ot_ipsec_outb_sa_fill)
 int
 cnxk_ot_ipsec_outb_sa_fill(struct roc_ot_ipsec_outb_sa *sa,
 			   struct rte_security_ipsec_xform *ipsec_xfrm,
@@ -574,18 +580,21 @@ skip_tunnel_info:
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ot_ipsec_inb_sa_valid)
 bool
 cnxk_ot_ipsec_inb_sa_valid(struct roc_ot_ipsec_inb_sa *sa)
 {
 	return !!sa->w2.s.valid;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ot_ipsec_outb_sa_valid)
 bool
 cnxk_ot_ipsec_outb_sa_valid(struct roc_ot_ipsec_outb_sa *sa)
 {
 	return !!sa->w2.s.valid;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ipsec_ivlen_get)
 uint8_t
 cnxk_ipsec_ivlen_get(enum rte_crypto_cipher_algorithm c_algo,
 		     enum rte_crypto_auth_algorithm a_algo,
@@ -622,6 +631,7 @@ cnxk_ipsec_ivlen_get(enum rte_crypto_cipher_algorithm c_algo,
 	return ivlen;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ipsec_icvlen_get)
 uint8_t
 cnxk_ipsec_icvlen_get(enum rte_crypto_cipher_algorithm c_algo,
 		      enum rte_crypto_auth_algorithm a_algo,
@@ -668,6 +678,7 @@ cnxk_ipsec_icvlen_get(enum rte_crypto_cipher_algorithm c_algo,
 	return icv;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ipsec_outb_roundup_byte)
 uint8_t
 cnxk_ipsec_outb_roundup_byte(enum rte_crypto_cipher_algorithm c_algo,
 			     enum rte_crypto_aead_algorithm aead_algo)
@@ -698,6 +709,7 @@ cnxk_ipsec_outb_roundup_byte(enum rte_crypto_cipher_algorithm c_algo,
 	return roundup_byte;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ipsec_outb_rlens_get)
 int
 cnxk_ipsec_outb_rlens_get(struct cnxk_ipsec_outb_rlens *rlens,
 			  struct rte_security_ipsec_xform *ipsec_xfrm,
@@ -953,6 +965,8 @@ on_fill_ipsec_common_sa(struct rte_security_ipsec_xform *ipsec,
 		cipher_key_len = crypto_xform->aead.key.length;
 	} else {
 		if (cipher_xform) {
+			if (cipher_xform->cipher.algo == RTE_CRYPTO_CIPHER_AES_CTR)
+				memcpy(common_sa->iv.gcm.nonce, &ipsec->salt, 4);
 			cipher_key = cipher_xform->cipher.key.data;
 			cipher_key_len = cipher_xform->cipher.key.length;
 		}
@@ -970,6 +984,7 @@ on_fill_ipsec_common_sa(struct rte_security_ipsec_xform *ipsec,
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_on_ipsec_outb_sa_create)
 int
 cnxk_on_ipsec_outb_sa_create(struct rte_security_ipsec_xform *ipsec,
 			     struct rte_crypto_sym_xform *crypto_xform,
@@ -1115,6 +1130,7 @@ cnxk_on_ipsec_outb_sa_create(struct rte_security_ipsec_xform *ipsec,
 	return ctx_len;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_on_ipsec_inb_sa_create)
 int
 cnxk_on_ipsec_inb_sa_create(struct rte_security_ipsec_xform *ipsec,
 			    struct rte_crypto_sym_xform *crypto_xform,
@@ -1271,6 +1287,9 @@ ow_ipsec_sa_common_param_fill(union roc_ow_ipsec_sa_word2 *w2, uint8_t *cipher_k
 				break;
 			case RTE_CRYPTO_CIPHER_AES_CTR:
 				w2->s.enc_type = ROC_IE_SA_ENC_AES_CTR;
+				memcpy(salt_key, &ipsec_xfrm->salt, 4);
+				tmp_salt = (uint32_t *)salt_key;
+				*tmp_salt = rte_be_to_cpu_32(*tmp_salt);
 				break;
 			case RTE_CRYPTO_CIPHER_3DES_CBC:
 				w2->s.enc_type = ROC_IE_SA_ENC_3DES_CBC;
@@ -1465,6 +1484,7 @@ ow_ipsec_inb_tunnel_hdr_fill(struct roc_ow_ipsec_inb_sa *sa,
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ow_ipsec_inb_sa_fill)
 int
 cnxk_ow_ipsec_inb_sa_fill(struct roc_ow_ipsec_inb_sa *sa,
 			  struct rte_security_ipsec_xform *ipsec_xfrm,
@@ -1571,6 +1591,7 @@ cnxk_ow_ipsec_inb_sa_fill(struct roc_ow_ipsec_inb_sa *sa,
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ow_ipsec_outb_sa_fill)
 int
 cnxk_ow_ipsec_outb_sa_fill(struct roc_ow_ipsec_outb_sa *sa,
 			   struct rte_security_ipsec_xform *ipsec_xfrm,

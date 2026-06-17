@@ -95,17 +95,14 @@ F: devtools/check-maintainers.sh
 F: devtools/check-forbidden-tokens.awk
 F: devtools/check-git-log.sh
 F: devtools/check-spdx-tag.sh
-F: devtools/check-symbol-change.sh
-F: devtools/check-symbol-maps.sh
+F: devtools/check-symbol-change.py
 F: devtools/checkpatches.sh
 F: devtools/get-maintainer.sh
 F: devtools/git-log-fixes.sh
 F: devtools/load-devel-config
 F: devtools/parse-flow-support.sh
 F: devtools/process-iwyu.py
-F: devtools/update-abi.sh
 F: devtools/update-patches.py
-F: devtools/update_version_map_abi.py
 F: devtools/libabigail.abignore
 F: devtools/words-case.txt
 F: license/
@@ -127,7 +124,9 @@ F: config/
 F: buildtools/check-symbols.sh
 F: buildtools/chkincs/
 F: buildtools/call-sphinx-build.py
+F: buildtools/gen-version-map.py
 F: buildtools/get-cpu-count.py
+F: buildtools/get-min-meson-version.py
 F: buildtools/get-numa-count.py
 F: buildtools/list-dir-globs.py
 F: buildtools/map-list-symbol.sh
@@ -164,7 +163,6 @@ M: Tyler Retzlaff <roretzla@linux.microsoft.com>
 F: lib/eal/common/
 F: lib/eal/unix/
 F: lib/eal/include/
-F: lib/eal/version.map
 F: doc/guides/prog_guide/env_abstraction_layer.rst
 F: app/test/test_alarm.c
 F: app/test/test_atomic.c
@@ -394,7 +392,6 @@ Windows support
 M: Dmitry Kozlyuk <dmitry.kozliuk@gmail.com>
 M: Tyler Retzlaff <roretzla@linux.microsoft.com>
 F: lib/eal/windows/
-F: buildtools/map_to_win.py
 F: doc/guides/windows_gsg/
 
 Windows memory allocation
@@ -438,7 +435,6 @@ F: app/test/test_mbuf.c
 
 Ethernet API
 M: Thomas Monjalon <thomas@monjalon.net>
-M: Ferruh Yigit <ferruh.yigit@amd.com>
 M: Andrew Rybchenko <andrew.rybchenko@oktetlabs.ru>
 T: git://dpdk.org/next/dpdk-next-net
 F: lib/ethdev/
@@ -581,6 +577,13 @@ T: git://dpdk.org/next/dpdk-next-eventdev
 F: lib/eventdev/*dma_adapter*
 F: app/test/test_event_dma_adapter.c
 F: doc/guides/prog_guide/eventdev/event_dma_adapter.rst
+
+Eventdev Vector Adapter API - EXPERIMENTAL
+M: Pavan Nikhilesh <pbhagavatula@marvell.com>
+T: git://dpdk.org/next/dpdk-next-eventdev
+F: lib/eventdev/*vector_adapter*
+F: app/test/test_event_vector_adapter.c
+F: doc/guides/prog_guide/eventdev/event_vector_adapter.rst
 
 Raw device API
 M: Sachin Saxena <sachin.saxena@oss.nxp.com>
@@ -758,14 +761,13 @@ F: doc/guides/nics/features/enic.ini
 
 Google Virtual Ethernet
 M: Jeroen de Borst <jeroendb@google.com>
-M: Rushil Gupta <rushilg@google.com>
 M: Joshua Washington <joshwash@google.com>
 F: drivers/net/gve/
 F: doc/guides/nics/gve.rst
 F: doc/guides/nics/features/gve.ini
 
 Hisilicon hns3
-M: Jie Hai <haijie1@huawei.com>
+M: Dengdui Huang <huangdengdui@huawei.com>
 F: drivers/net/hns3/
 F: doc/guides/nics/hns3.rst
 F: doc/guides/nics/features/hns3.ini
@@ -802,7 +804,6 @@ F: doc/guides/nics/intel_vf.rst
 F: doc/guides/nics/features/ixgbe*.ini
 
 Intel i40e
-M: Ian Stokes <ian.stokes@intel.com>
 M: Bruce Richardson <bruce.richardson@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/intel/i40e/
@@ -818,7 +819,6 @@ F: doc/guides/nics/features/fm10k*.ini
 
 Intel iavf
 M: Vladimir Medvedkin <vladimir.medvedkin@intel.com>
-M: Ian Stokes <ian.stokes@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/intel/iavf/
 F: doc/guides/nics/features/iavf*.ini
@@ -1003,6 +1003,12 @@ F: drivers/net/qede/
 F: doc/guides/nics/qede.rst
 F: doc/guides/nics/features/qede*.ini
 
+Mucse rnp
+M: Wenbo Cao <caowenbo@mucse.com>
+F: drivers/net/rnp/
+F: doc/guides/nics/rnp.rst
+F: doc/guides/nics/features/rnp.ini
+
 Realtek r8169
 M: Howard Wang <howard_wang@realsil.com.cn>
 M: Chunhao Lin <hau@realtek.com>
@@ -1020,6 +1026,7 @@ F: doc/guides/nics/features/sfc.ini
 
 Wangxun ngbe
 M: Jiawen Wu <jiawenwu@trustnetic.com>
+M: Zaiyu Wang <zaiyuwang@trustnetic.com>
 F: drivers/net/ngbe/
 F: doc/guides/nics/ngbe.rst
 F: doc/guides/nics/features/ngbe.ini
@@ -1027,6 +1034,7 @@ F: doc/guides/nics/features/ngbe.ini
 Wangxun txgbe
 M: Jiawen Wu <jiawenwu@trustnetic.com>
 M: Jian Wang <jianwang@trustnetic.com>
+M: Zaiyu Wang <zaiyuwang@trustnetic.com>
 F: drivers/net/txgbe/
 F: doc/guides/nics/txgbe.rst
 F: doc/guides/nics/features/txgbe.ini
@@ -1274,6 +1282,12 @@ F: drivers/crypto/virtio/
 F: doc/guides/cryptodevs/virtio.rst
 F: doc/guides/cryptodevs/features/virtio.ini
 
+ZTE Storage Data Accelerator (ZSDA)
+M: Hanxiao Li <li.hanxiao@zte.com.cn>
+F: drivers/crypto/zsda/
+F: doc/guides/cryptodevs/zsda.rst
+F: doc/guides/cryptodevs/features/zsda.ini
+
 
 Compression Drivers
 -------------------
@@ -1449,7 +1463,7 @@ M: Pavan Nikhilesh <pbhagavatula@marvell.com>
 F: drivers/event/octeontx/timvf_*
 
 Intel DLB2
-M: Pravin Pathak <pravin.pathak@intel.com>
+M: Tirthendu Sarkar <tirthendu.sarkar@intel.com>
 F: drivers/event/dlb2/
 F: doc/guides/eventdevs/dlb2.rst
 
@@ -1831,6 +1845,11 @@ M: Mattias Rönnblom <mattias.ronnblom@ericsson.com>
 F: lib/dispatcher/
 F: app/test/test_dispatcher.c
 F: doc/guides/prog_guide/eventdev/dispatcher_lib.rst
+
+PMU - EXPERIMENTAL
+M: Tomasz Duszynski <tduszynski@marvell.com>
+F: lib/pmu/
+F: app/test/test_pmu.c
 
 Job statistics
 F: lib/jobstats/

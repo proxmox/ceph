@@ -39,7 +39,7 @@ from framework.testbed_model.traffic_generator.capturing_traffic_generator impor
     PacketFilteringConfig,
 )
 
-from .exception import ConfigurationError, InternalError, TestCaseVerifyError
+from .exception import ConfigurationError, InternalError, SkippedTestException, TestCaseVerifyError
 from .logger import DTSLogger, get_dts_logger
 from .utils import get_packet_summaries, to_pascal_case
 
@@ -110,8 +110,11 @@ class TestSuite(TestProtocol):
 
     @property
     def name(self) -> str:
-        """The name of the test suite class."""
-        return type(self).__name__
+        """The name of the test suite."""
+        module_prefix = (
+            f"{TestSuiteSpec.TEST_SUITES_PACKAGE_NAME}.{TestSuiteSpec.TEST_SUITE_MODULE_PREFIX}"
+        )
+        return type(self).__module__[len(module_prefix) :]
 
     @property
     def topology(self) -> Topology:
@@ -411,6 +414,25 @@ class TestSuite(TestProtocol):
             self._logger.debug(command_res.command)
         raise TestCaseVerifyError(failure_description)
 
+    def verify_else_skip(self, condition: bool, skip_reason: str) -> None:
+        """Verify `condition` and handle skips.
+
+        When `condition` is :data:`False`, raise a skip exception.
+
+        Args:
+            condition: The condition to check.
+            skip_reason: Description of the reason for skipping.
+
+        Raises:
+            SkippedTestException: `condition` is :data:`False`.
+        """
+        if not condition:
+            self._skip_test_case_verify(skip_reason)
+
+    def _skip_test_case_verify(self, skip_description: str) -> None:
+        self._logger.debug(f"Test case skipped: {skip_description}")
+        raise SkippedTestException(skip_description)
+
     def verify_packets(self, expected_packet: Packet, received_packets: list[Packet]) -> None:
         """Verify that `expected_packet` has been received.
 
@@ -598,6 +620,7 @@ class TestCase(TestProtocol, Protocol[TestSuiteMethodType]):
             test_case.topology_type = cls.topology_type
             test_case.topology_type.add_to_required(test_case)
             test_case.test_type = test_case_type
+            test_case.sut_ports_drivers = cls.sut_ports_drivers
             return test_case
 
         return _decorator

@@ -2,10 +2,10 @@
 #  Copyright (C) 2022 Intel Corporation.
 #  All rights reserved.
 
-from spdk.rpc.helpers import deprecated_alias
+from spdk.rpc.helpers import deprecated_method
 
 
-@deprecated_alias('iaa_scan_accel_engine')
+@deprecated_method
 def iaa_scan_accel_module(client):
     """Scan and enable IAA accel module.
     """

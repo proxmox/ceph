@@ -145,6 +145,19 @@ options:
   - mgr_module_path
   flags:
   - startup
+- name: mgr_subinterpreter_modules
+  type: str
+  level: advanced
+  desc: List of manager modules to load in independent subinterpreters
+  long_desc: A comma delimited list of module names. This list is read by manager
+    when it starts. By default, manager loads each module into the main interpreter.
+    Modules in this list will instead be loaded into independent subinterpreters.
+    Specifying '*' will cause all modules to be run in independent subinterpreters.
+  default: @mgr_subinterpreter_modules@
+  services:
+  - mgr
+  flags:
+  - startup
 - name: mgr_initial_modules
   type: str
   level: basic
@@ -160,6 +173,41 @@ options:
   flags:
   - no_mon_update
   - cluster_create
+- name: mgr_module_load_delay
+  type: millisecs
+  level: dev
+  default: 0
+  desc: Number of milliseconds for Manager modules to delay loading. For testing purposes only.
+  long_desc: Number of milliseconds for Manager modules to delay loading. For testing purposes only.
+  see_also:
+  - mgr_module_load_delay_name
+  flags:
+  - runtime
+  services:
+  - mgr
+- name: mgr_module_load_delay_name
+  type: str
+  level: dev
+  desc: Specify which Manager module is to delay loading by mgr_module_load_delay milliseconds. For testing purposes only.
+  long_desc: Specify which Manager module is to delay loading by mgr_module_load_delay milliseconds. For testing purposes only.
+  see_also:
+  - mgr_module_load_delay
+  flags:
+  - runtime
+  services:
+  - mgr
+- name: mgr_module_load_expiration
+  type: millisecs
+  level: dev
+  default: 20000
+  desc: Maximum number of milliseconds the active mgr is allowed to load the mgr modules before declaring availability.
+  long_desc: Maximum number of milliseconds the active mgr is allowed to load the mgr modules. If any modules are still
+    uninitialized after the expiration is exceeded, the mgr proceeds to declare availability, but a health error will be
+    issued indicating which modules didn't load in time.
+  flags:
+  - runtime
+  services:
+  - mgr
 - name: cephadm_path
   type: str
   level: advanced
@@ -377,3 +425,27 @@ options:
   services:
   - mgr
   with_legacy: true
+- name: mgr_osd_upgrade_check_convergence_factor
+  type: float
+  level: advanced
+  desc: The factor used to converge to a subset of OSDs within a CRUSH bucket
+    that can be upgraded without affecting immediate data availability.
+  fmt_desc: The factor used in calculations to converge to a subset of OSDs that
+    can be safely upgraded simultaneously. Each iteration of the calculation
+    uses this factor until a safe subset is found. The smaller the factor, the
+    lower the number of iterations needed to find a safe set. But the number of
+    OSDs found may not be optimal. Conversely, with a larger factor, a higher
+    number of iterations and time would be consumed to find a safe set. The
+    number of OSDs found in this case would be closer to optimal.
+  default: 0.8
+  min: 0.1
+  max: 0.9
+  services:
+  - mgr
+- name: mgr_test_metadata_error
+  type: bool
+  level: dev
+  desc: Used for simulating errors during operations involving metadata.
+  default: false
+  services:
+  - mgr

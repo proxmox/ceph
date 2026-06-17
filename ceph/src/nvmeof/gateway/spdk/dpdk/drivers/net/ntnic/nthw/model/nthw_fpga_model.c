@@ -183,7 +183,6 @@ nthw_fpga_mgr_t *nthw_fpga_mgr_new(void)
 
 void nthw_fpga_mgr_delete(nthw_fpga_mgr_t *p)
 {
-	memset(p, 0, sizeof(nthw_fpga_mgr_t));
 	free(p);
 }
 
@@ -855,8 +854,10 @@ void nthw_register_flush(const nthw_register_t *p, uint32_t cnt)
 
 void nthw_register_clr(nthw_register_t *p)
 {
-	memset(p->mp_shadow, 0, p->mn_len * sizeof(uint32_t));
-	nthw_register_make_dirty(p);
+	if (p->mp_shadow) {
+		memset(p->mp_shadow, 0, p->mn_len * sizeof(uint32_t));
+		nthw_register_make_dirty(p);
+	}
 }
 
 /*
@@ -904,7 +905,9 @@ void nthw_field_init(nthw_field_t *p, nthw_register_t *p_reg, const nthw_fpga_fi
 
 		if (p->mn_debug_mode >= 0x100) {
 			NT_LOG_DBGX(DBG, NTHW,
-				"fldid=%08d: [%08d:%08d] %08d/%08d: (%08d,%08d) (0x%08X,%08d,0x%08X)",
+				"fldid=%08" PRIu32 ": [%08" PRIu16 ":%08" PRIu16 "] %08" PRIu16 "/%08"
+				PRIu16 ": (%08i ,%08" PRIu32 ") (0x%08" PRIx32 ",%08"
+				PRIu32 ",0x%08" PRIx32 ")",
 				p_init->id, p_init->low, (p_init->low + p_init->bw),
 				p_init->bw, ((p_init->bw + 31) / 32), p->mn_first_word,
 				p->mn_first_bit, p->mn_front_mask, p->mn_body_length,

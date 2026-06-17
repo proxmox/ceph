@@ -111,30 +111,6 @@ def test_setup_region_bad_pci():
     assert c.get_errno() == errno.EINVAL
 
 
-def test_setup_region_bad_migr():
-    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX, size=512,
-                           flags=(VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM))
-    assert ret == -1
-    assert c.get_errno() == errno.EINVAL
-
-    f = tempfile.TemporaryFile()
-    f.truncate(0x2000)
-
-    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX, size=0x2000,
-                           flags=(VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM),
-                           fd=f.fileno())
-    assert ret == -1
-    assert c.get_errno() == errno.EINVAL
-
-    mmap_areas = [(0x0, 0x1000), (0x1000, 0x1000)]
-
-    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX, size=0x2000,
-                           flags=(VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM),
-                           mmap_areas=mmap_areas, fd=f.fileno())
-    assert ret == -1
-    assert c.get_errno() == errno.EINVAL
-
-
 def test_setup_region_cfg_always_cb_nocb():
     ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_CFG_REGION_IDX,
                            size=PCI_CFG_SPACE_EXP_SIZE, cb=None,
@@ -165,13 +141,13 @@ def test_setup_region_cfg_always_cb():
     ret = vfu_realize_ctx(ctx)
     assert ret == 0
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
-    payload = read_region(ctx, sock, VFU_PCI_DEV_CFG_REGION_IDX,
+    payload = read_region(ctx, client.sock, VFU_PCI_DEV_CFG_REGION_IDX,
                           offset=0, count=2)
     assert payload == b'\xcc\xcc'
 
-    disconnect_client(ctx, sock)
+    client.disconnect(ctx)
 
 
 def test_region_offset_overflow():
@@ -185,12 +161,12 @@ def test_region_offset_overflow():
     ret = vfu_realize_ctx(ctx)
     assert ret == 0
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
-    read_region(ctx, sock, VFU_PCI_DEV_CFG_REGION_IDX,
+    read_region(ctx, client.sock, VFU_PCI_DEV_CFG_REGION_IDX,
                 offset=UINT64_MAX, count=256, expect=errno.EINVAL)
 
-    disconnect_client(ctx, sock)
+    client.disconnect(ctx)
 
 
 def test_access_region_zero_count():
@@ -203,40 +179,40 @@ def test_access_region_zero_count():
     ret = vfu_realize_ctx(ctx)
     assert ret == 0
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
-    payload = read_region(ctx, sock, VFU_PCI_DEV_BAR0_REGION_IDX, offset=0,
-                          count=0)
+    payload = read_region(ctx, client.sock, VFU_PCI_DEV_BAR0_REGION_IDX,
+                          offset=0, count=0)
     assert payload == b''
 
-    write_region(ctx, sock, VFU_PCI_DEV_BAR0_REGION_IDX, offset=0, count=0,
-                 data=payload)
+    write_region(ctx, client.sock, VFU_PCI_DEV_BAR0_REGION_IDX, offset=0,
+                 count=0, data=payload)
 
-    disconnect_client(ctx, sock)
+    client.disconnect(ctx)
 
 
 def test_access_region_large_count():
     global ctx
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
-    read_region(ctx, sock, VFU_PCI_DEV_CFG_REGION_IDX, offset=0,
+    read_region(ctx, client.sock, VFU_PCI_DEV_CFG_REGION_IDX, offset=0,
                 count=SERVER_MAX_DATA_XFER_SIZE + 8, expect=errno.EINVAL)
 
-    disconnect_client(ctx, sock)
+    client.disconnect(ctx)
 
 
 def test_region_offset_too_short():
     global ctx
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
     payload = struct.pack("Q", 0)
 
-    msg(ctx, sock, VFIO_USER_REGION_WRITE, payload,
+    msg(ctx, client.sock, VFIO_USER_REGION_WRITE, payload,
         expect=errno.EINVAL)
 
-    disconnect_client(ctx, sock)
+    client.disconnect(ctx)
 
 
 def test_setup_region_cleanup():

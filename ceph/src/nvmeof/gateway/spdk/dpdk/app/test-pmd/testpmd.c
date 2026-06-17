@@ -705,7 +705,7 @@ eth_dev_set_mtu_mp(uint16_t port_id, uint16_t mtu)
 }
 
 /* Forward function declarations */
-static void setup_attached_port(void *arg);
+static void setup_attached_port(portid_t pi);
 static void check_all_ports_link_status(uint32_t port_mask);
 static int eth_event_callback(portid_t port_id,
 			      enum rte_eth_event_type type,
@@ -1729,8 +1729,7 @@ init_config(void)
 			mempools[i] = mbuf_pool_create
 					(mbuf_data_size[i],
 					 nb_mbuf_per_pool,
-					 socket_num == UMA_NO_CONFIG ?
-					 0 : socket_num, i);
+					 SOCKET_ID_ANY, i);
 	}
 
 	init_port_config();
@@ -2906,7 +2905,6 @@ start_port(portid_t pid)
 		at_least_one_port_exist = true;
 
 		port = &ports[pi];
-
 		if (port->port_status == RTE_PORT_STOPPED) {
 			port->port_status = RTE_PORT_HANDLING;
 			all_ports_already_started = false;
@@ -3057,7 +3055,8 @@ start_port(portid_t pid)
 				} else {
 					struct rte_mempool *mp =
 						mbuf_pool_find
-							(port->socket_id, 0);
+							((numa_support ? port->socket_id :
+							(unsigned int)SOCKET_ID_ANY), 0);
 					if (mp == NULL) {
 						fprintf(stderr,
 							"Failed to setup RX queue: No mempool allocation on the socket %d\n",
@@ -3254,7 +3253,6 @@ remove_invalid_ports(void)
 	remove_invalid_ports_in(ports_ids, &nb_ports);
 	remove_invalid_ports_in(fwd_ports_ids, &nb_fwd_ports);
 	nb_cfg_ports = nb_fwd_ports;
-	printf("Now total ports is %d\n", nb_ports);
 }
 
 static void
@@ -3427,11 +3425,14 @@ attach_port(char *identifier)
 		return;
 	}
 
-	/* First attach mode: event
-	 * New port flag is updated on RTE_ETH_EVENT_NEW event
-	 */
+	/* first attach mode: event */
 	if (setup_on_probe_event) {
-		goto out;
+		/* new ports are detected on RTE_ETH_EVENT_NEW event */
+		for (pi = 0; pi < RTE_MAX_ETHPORTS; pi++)
+			if (ports[pi].port_status == RTE_PORT_HANDLING &&
+					ports[pi].need_setup != 0)
+				setup_attached_port(pi);
+		return;
 	}
 
 	/* second attach mode: iterator */
@@ -3439,17 +3440,13 @@ attach_port(char *identifier)
 		/* setup ports matching the devargs used for probing */
 		if (port_is_forwarding(pi))
 			continue; /* port was already attached before */
-		setup_attached_port((void *)(intptr_t)pi);
+		setup_attached_port(pi);
 	}
-out:
-	printf("Port %s is attached.\n", identifier);
-	printf("Done\n");
 }
 
 static void
-setup_attached_port(void *arg)
+setup_attached_port(portid_t pi)
 {
-	portid_t pi = (intptr_t)arg;
 	unsigned int socket_id;
 	int ret;
 
@@ -3464,8 +3461,14 @@ setup_attached_port(void *arg)
 			"Error during enabling promiscuous mode for port %u: %s - ignore\n",
 			pi, rte_strerror(-ret));
 
+	ports_ids[nb_ports++] = pi;
+	fwd_ports_ids[nb_fwd_ports++] = pi;
+	nb_cfg_ports = nb_fwd_ports;
 	ports[pi].need_setup = 0;
 	ports[pi].port_status = RTE_PORT_STOPPED;
+
+	printf("Port %d is attached. Now total ports is %d\n", pi, nb_ports);
+	printf("Done\n");
 }
 
 static void
@@ -3495,8 +3498,10 @@ detach_device(struct rte_device *dev)
 		TESTPMD_LOG(ERR, "Failed to detach device %s\n", rte_dev_name(dev));
 		return;
 	}
+	remove_invalid_ports();
 
 	printf("Device is detached\n");
+	printf("Now total ports is %d\n", nb_ports);
 	printf("Done\n");
 	return;
 }
@@ -3728,25 +3733,7 @@ rmv_port_callback(void *arg)
 		struct rte_device *device = dev_info.device;
 		close_port(port_id);
 		detach_device(device); /* might be already removed or have more ports */
-		remove_invalid_ports();
 	}
-	if (need_to_start)
-		start_packet_forwarding(0);
-}
-
-static void
-remove_invalid_ports_callback(void *arg)
-{
-	portid_t port_id = (intptr_t)arg;
-	int need_to_start = 0;
-
-	if (!test_done && port_is_forwarding(port_id)) {
-		need_to_start = 1;
-		stop_packet_forwarding();
-	}
-
-	remove_invalid_ports();
-
 	if (need_to_start)
 		start_packet_forwarding(0);
 }
@@ -3772,23 +3759,8 @@ eth_event_callback(portid_t port_id, enum rte_eth_event_type type, void *param,
 
 	switch (type) {
 	case RTE_ETH_EVENT_NEW:
-		/* The port in ports_id and fwd_ports_ids is always valid
-		 * from index 0 ~ (nb_ports - 1) due to updating their
-		 * position when one port is detached or removed.
-		 */
-		ports_ids[nb_ports++] = port_id;
-		fwd_ports_ids[nb_fwd_ports++] = port_id;
-		nb_cfg_ports = nb_fwd_ports;
-		printf("Port %d is probed. Now total ports is %d\n", port_id, nb_ports);
-
-		if (setup_on_probe_event) {
-			ports[port_id].need_setup = 1;
-			ports[port_id].port_status = RTE_PORT_HANDLING;
-		}
-		/* Can't initialize port directly in new event. */
-		if (rte_eal_alarm_set(100000, setup_attached_port,
-				      (void *)(intptr_t)port_id))
-			fprintf(stderr, "Could not set up deferred task to setup this attached port.\n");
+		ports[port_id].need_setup = 1;
+		ports[port_id].port_status = RTE_PORT_HANDLING;
 		break;
 	case RTE_ETH_EVENT_INTR_RMV:
 		if (port_id_is_invalid(port_id, DISABLED_WARN))
@@ -3801,15 +3773,6 @@ eth_event_callback(portid_t port_id, enum rte_eth_event_type type, void *param,
 	case RTE_ETH_EVENT_DESTROY:
 		ports[port_id].port_status = RTE_PORT_CLOSED;
 		printf("Port %u is closed\n", port_id);
-		/*
-		 * Defer to remove port id due to the reason that the ethdev
-		 * state is changed from 'ATTACHED' to 'UNUSED' only after the
-		 * event callback finished. Otherwise this port id can not be
-		 * removed.
-		 */
-		if (rte_eal_alarm_set(100000, remove_invalid_ports_callback,
-				      (void *)(intptr_t)port_id))
-			fprintf(stderr, "Could not set up deferred task to remove this port id.\n");
 		break;
 	case RTE_ETH_EVENT_RX_AVAIL_THRESH: {
 		uint16_t rxq_id;
@@ -4130,9 +4093,10 @@ const uint16_t vlan_tags[] = {
 
 static void
 get_eth_dcb_conf(struct rte_eth_conf *eth_conf, enum dcb_mode_enable dcb_mode,
-		 enum rte_eth_nb_tcs num_tcs, uint8_t pfc_en)
+		 enum rte_eth_nb_tcs num_tcs, uint8_t pfc_en,
+		 uint8_t prio_tc[RTE_ETH_DCB_NUM_USER_PRIORITIES], uint8_t prio_tc_en)
 {
-	uint8_t i;
+	uint8_t dcb_tc_val, i;
 
 	/*
 	 * Builds up the correct configuration for dcb+vt based on the vlan tags array
@@ -4156,11 +4120,12 @@ get_eth_dcb_conf(struct rte_eth_conf *eth_conf, enum dcb_mode_enable dcb_mode,
 		for (i = 0; i < vmdq_rx_conf->nb_pool_maps; i++) {
 			vmdq_rx_conf->pool_map[i].vlan_id = vlan_tags[i];
 			vmdq_rx_conf->pool_map[i].pools =
-				1 << (i % vmdq_rx_conf->nb_queue_pools);
+				RTE_BIT64(i % vmdq_rx_conf->nb_queue_pools);
 		}
 		for (i = 0; i < RTE_ETH_DCB_NUM_USER_PRIORITIES; i++) {
-			vmdq_rx_conf->dcb_tc[i] = i % num_tcs;
-			vmdq_tx_conf->dcb_tc[i] = i % num_tcs;
+			dcb_tc_val = prio_tc_en ? prio_tc[i] : i % num_tcs;
+			vmdq_rx_conf->dcb_tc[i] = dcb_tc_val;
+			vmdq_tx_conf->dcb_tc[i] = dcb_tc_val;
 		}
 
 		/* set DCB mode of RX and TX of multiple queues */
@@ -4178,8 +4143,9 @@ get_eth_dcb_conf(struct rte_eth_conf *eth_conf, enum dcb_mode_enable dcb_mode,
 		tx_conf->nb_tcs = num_tcs;
 
 		for (i = 0; i < RTE_ETH_DCB_NUM_USER_PRIORITIES; i++) {
-			rx_conf->dcb_tc[i] = i % num_tcs;
-			tx_conf->dcb_tc[i] = i % num_tcs;
+			dcb_tc_val = prio_tc_en ? prio_tc[i] : i % num_tcs;
+			rx_conf->dcb_tc[i] = dcb_tc_val;
+			tx_conf->dcb_tc[i] = dcb_tc_val;
 		}
 
 		eth_conf->rxmode.mq_mode =
@@ -4195,11 +4161,30 @@ get_eth_dcb_conf(struct rte_eth_conf *eth_conf, enum dcb_mode_enable dcb_mode,
 		eth_conf->dcb_capability_en = RTE_ETH_DCB_PG_SUPPORT;
 }
 
+static void
+clear_eth_dcb_conf(portid_t pid, struct rte_eth_conf *eth_conf)
+{
+	uint32_t i;
+
+	eth_conf->rxmode.mq_mode &= ~(RTE_ETH_MQ_RX_DCB | RTE_ETH_MQ_RX_VMDQ_DCB);
+	eth_conf->txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
+	eth_conf->dcb_capability_en = 0;
+	if (dcb_config) {
+		/* Unset VLAN filter configuration if already config DCB. */
+		eth_conf->rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_VLAN_FILTER;
+		for (i = 0; i < RTE_DIM(vlan_tags); i++)
+			rx_vft_set(pid, vlan_tags[i], 0);
+	}
+}
+
 int
 init_port_dcb_config(portid_t pid,
 		     enum dcb_mode_enable dcb_mode,
 		     enum rte_eth_nb_tcs num_tcs,
-		     uint8_t pfc_en)
+		     uint8_t pfc_en,
+		     uint8_t prio_tc[RTE_ETH_DCB_NUM_USER_PRIORITIES],
+		     uint8_t prio_tc_en,
+		     uint8_t keep_qnum)
 {
 	struct rte_eth_conf port_conf;
 	struct rte_port *rte_port;
@@ -4215,16 +4200,19 @@ init_port_dcb_config(portid_t pid,
 	/* retain the original device configuration. */
 	memcpy(&port_conf, &rte_port->dev_conf, sizeof(struct rte_eth_conf));
 
-	/* set configuration of DCB in vt mode and DCB in non-vt mode */
-	get_eth_dcb_conf(&port_conf, dcb_mode, num_tcs, pfc_en);
-
-	port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_FILTER;
-	/* remove RSS HASH offload for DCB in vt mode */
-	if (port_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_VMDQ_DCB) {
-		port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_RSS_HASH;
-		for (i = 0; i < nb_rxq; i++)
-			rte_port->rxq[i].conf.offloads &=
-				~RTE_ETH_RX_OFFLOAD_RSS_HASH;
+	if (num_tcs > 1) {
+		/* set configuration of DCB in vt mode and DCB in non-vt mode */
+		get_eth_dcb_conf(&port_conf, dcb_mode, num_tcs, pfc_en, prio_tc, prio_tc_en);
+		port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_FILTER;
+		/* remove RSS HASH offload for DCB in vt mode */
+		if (port_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_VMDQ_DCB) {
+			port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_RSS_HASH;
+			for (i = 0; i < nb_rxq; i++)
+				rte_port->rxq[i].conf.offloads &=
+					~RTE_ETH_RX_OFFLOAD_RSS_HASH;
+		}
+	} else {
+		clear_eth_dcb_conf(pid, &port_conf);
 	}
 
 	/* re-configure the device . */
@@ -4239,7 +4227,8 @@ init_port_dcb_config(portid_t pid,
 	/* If dev_info.vmdq_pool_base is greater than 0,
 	 * the queue id of vmdq pools is started after pf queues.
 	 */
-	if (dcb_mode == DCB_VT_ENABLED &&
+	if (num_tcs > 1 &&
+	    dcb_mode == DCB_VT_ENABLED &&
 	    rte_port->dev_info.vmdq_pool_base > 0) {
 		fprintf(stderr,
 			"VMDQ_DCB multi-queue mode is nonsensical for port %d.\n",
@@ -4247,26 +4236,27 @@ init_port_dcb_config(portid_t pid,
 		return -1;
 	}
 
-	/* Assume the ports in testpmd have the same dcb capability
-	 * and has the same number of rxq and txq in dcb mode
-	 */
-	if (dcb_mode == DCB_VT_ENABLED) {
-		if (rte_port->dev_info.max_vfs > 0) {
-			nb_rxq = rte_port->dev_info.nb_rx_queues;
-			nb_txq = rte_port->dev_info.nb_tx_queues;
+	if (num_tcs > 1 && keep_qnum == 0) {
+		/* Assume the ports in testpmd have the same dcb capability
+		 * and has the same number of rxq and txq in dcb mode
+		 */
+		if (dcb_mode == DCB_VT_ENABLED) {
+			if (rte_port->dev_info.max_vfs > 0) {
+				nb_rxq = rte_port->dev_info.nb_rx_queues;
+				nb_txq = rte_port->dev_info.nb_tx_queues;
+			} else {
+				nb_rxq = rte_port->dev_info.max_rx_queues;
+				nb_txq = rte_port->dev_info.max_tx_queues;
+			}
 		} else {
-			nb_rxq = rte_port->dev_info.max_rx_queues;
-			nb_txq = rte_port->dev_info.max_tx_queues;
-		}
-	} else {
-		/*if vt is disabled, use all pf queues */
-		if (rte_port->dev_info.vmdq_pool_base == 0) {
-			nb_rxq = rte_port->dev_info.max_rx_queues;
-			nb_txq = rte_port->dev_info.max_tx_queues;
-		} else {
-			nb_rxq = (queueid_t)num_tcs;
-			nb_txq = (queueid_t)num_tcs;
-
+			/*if vt is disabled, use all pf queues */
+			if (rte_port->dev_info.vmdq_pool_base == 0) {
+				nb_rxq = rte_port->dev_info.max_rx_queues;
+				nb_txq = rte_port->dev_info.max_tx_queues;
+			} else {
+				nb_rxq = (queueid_t)num_tcs;
+				nb_txq = (queueid_t)num_tcs;
+			}
 		}
 	}
 	rx_free_thresh = 64;
@@ -4274,19 +4264,21 @@ init_port_dcb_config(portid_t pid,
 	memcpy(&rte_port->dev_conf, &port_conf, sizeof(struct rte_eth_conf));
 
 	rxtx_port_config(pid);
-	/* VLAN filter */
-	rte_port->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_FILTER;
-	for (i = 0; i < RTE_DIM(vlan_tags); i++)
-		rx_vft_set(pid, vlan_tags[i], 1);
+	if (num_tcs > 1) {
+		/* VLAN filter */
+		rte_port->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_VLAN_FILTER;
+		for (i = 0; i < RTE_DIM(vlan_tags); i++)
+			rx_vft_set(pid, vlan_tags[i], 1);
+	}
 
 	retval = eth_macaddr_get_print_err(pid, &rte_port->eth_addr);
 	if (retval != 0)
 		return retval;
 
-	rte_port->dcb_flag = 1;
+	rte_port->dcb_flag = num_tcs > 1 ? 1 : 0;
 
 	/* Enter DCB configuration status */
-	dcb_config = 1;
+	dcb_config = num_tcs > 1 ? 1 : 0;
 
 	return 0;
 }
@@ -4483,7 +4475,7 @@ main(int argc, char** argv)
 
 #ifdef RTE_LIB_METRICS
 	/* Init metrics library */
-	rte_metrics_init(rte_socket_id());
+	rte_metrics_init(SOCKET_ID_ANY);
 #endif
 
 #ifdef RTE_LIB_LATENCYSTATS

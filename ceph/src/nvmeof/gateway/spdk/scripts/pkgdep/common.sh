@@ -6,15 +6,12 @@
 install_liburing() {
 	local GIT_REPO_LIBURING=https://github.com/axboe/liburing.git
 	local liburing_dir=/usr/local/src/liburing
+	local liburing_version="liburing-2.2"
 
-	if [[ -d $liburing_dir ]]; then
-		echo "liburing source already present, not cloning"
-	else
-		mkdir -p $liburing_dir
-		git clone "${GIT_REPO_LIBURING}" "$liburing_dir"
-	fi
+	rm -rf "$liburing_dir"
 	# Use commit we know we can compile against. See #1673 as a reference.
-	git -C "$liburing_dir" checkout liburing-2.2
+	git clone --branch "${liburing_version}" "${GIT_REPO_LIBURING}" "${liburing_dir}"
+
 	(cd "$liburing_dir" && ./configure --libdir=/usr/lib64 --libdevdir=/usr/lib64 && make install)
 	echo /usr/lib64 > /etc/ld.so.conf.d/spdk-liburing.conf
 	ldconfig -X
@@ -23,13 +20,11 @@ install_liburing() {
 install_uadk() {
 	local GIT_REPO_UADK=https://github.com/Linaro/uadk
 	local uadk_dir=/usr/local/src/uadk
+	local uadk_version="v2.9.1"
 
-	if [[ -d $uadk_dir ]]; then
-		echo "uadk source already present, not cloning"
-	else
-		mkdir -p $uadk_dir
-		git clone "${GIT_REPO_UADK}" "$uadk_dir"
-	fi
+	rm -rf "$uadk_dir"
+	git clone --branch "${uadk_version}" "${GIT_REPO_UADK}" "${uadk_dir}"
+
 	(cd "$uadk_dir" && ./cleanup.sh && ./autogen.sh && ./configure --libdir=/usr/lib64 && make install)
 	echo /usr/lib64 > /etc/ld.so.conf.d/uadk.conf
 	ldconfig
@@ -51,9 +46,7 @@ _install_shfmt() {
 	source /etc/opt/spdk-pkgdep/paths/export.sh > /dev/null
 
 	rm -rf "$shfmt_dir"
-
-	git clone "$shfmt_repo" "$shfmt_dir"
-	git -C "$shfmt_dir" checkout "$version"
+	git clone --branch "$version" "$shfmt_repo" "$shfmt_dir"
 
 	# See cmd/shfmt/Dockerfile
 	CGO_ENABLED=0 go -C "$shfmt_dir" build \
@@ -267,6 +260,8 @@ if [[ $INSTALL_DEV_TOOLS == true ]]; then
 	install_shfmt
 	install_spdk_bash_completion
 	if [[ $ID != centos && $ID != rocky && $ID != sles ]]; then
+		# The gem mdl 0.11.0 depends on mixlib-shellout, which requires Ruby ≥ 3.0. While 20.04.6 LTS (Focal Fossa) has Ruby 2.7.0.
+		[[ $ID == ubuntu && $VERSION_CODENAME == focal ]] && gem install mixlib-shellout -v 3.3.8
 		install_markdownlint
 	else
 		echo "mdl not supported on $ID, disabling"

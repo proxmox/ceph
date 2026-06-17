@@ -23,10 +23,7 @@ nthw_hif_t *nthw_hif_new(void)
 
 void nthw_hif_delete(nthw_hif_t *p)
 {
-	if (p) {
-		memset(p, 0, sizeof(nthw_hif_t));
-		free(p);
-	}
+	free(p);
 }
 
 int nthw_hif_init(nthw_hif_t *p, nthw_fpga_t *p_fpga, int n_instance)
@@ -79,8 +76,9 @@ int nthw_hif_init(nthw_hif_t *p, nthw_fpga_t *p_fpga, int n_instance)
 	NT_LOG(DBG, NTHW, "%s: HIF %d: %d-%d-%d-%d-%d", p_adapter_id_str, p->mn_instance,
 		p->mn_fpga_id_item, p->mn_fpga_id_prod, p->mn_fpga_id_ver,
 		p->mn_fpga_id_rev, p->mn_fpga_id_build_no);
-	NT_LOG(DBG, NTHW, "%s: HIF %d: HIF ref clock: %d Hz (%d ticks/ps)", p_adapter_id_str,
-		p->mn_instance, p->mn_fpga_hif_ref_clk_freq, p->mn_fpga_param_hif_per_ps);
+	NT_LOG(DBG, NTHW, "%s: HIF %d: HIF ref clock: %" PRIu32 " Hz (%d ticks/ps)",
+		p_adapter_id_str, p->mn_instance, p->mn_fpga_hif_ref_clk_freq,
+		p->mn_fpga_param_hif_per_ps);
 
 	p->mp_reg_build_seed = NULL;	/* Reg/Fld not present on HIF */
 	p->mp_fld_build_seed = NULL;	/* Reg/Fld not present on HIF */

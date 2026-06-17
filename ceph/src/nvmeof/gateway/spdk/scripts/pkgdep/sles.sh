@@ -7,7 +7,7 @@
 # Minimal install
 zypper install -y gcc gcc-c++ make cunit-devel libaio-devel libopenssl-devel \
 	libuuid-devel python3-base ncurses-devel libjson-c-devel libcmocka-devel \
-	ninja meson python3-pyelftools fuse3-devel
+	ninja meson python3-devel python3-pyelftools fuse3-devel unzip
 # Additional dependencies for DPDK
 zypper install -y libnuma-devel nasm
 # Additional dependencies for ISA-L used in compression
@@ -16,10 +16,6 @@ if [[ $INSTALL_DEV_TOOLS == "true" ]]; then
 	# Tools for developers
 	zypper install -y git-core lcov python3-pycodestyle sg3_utils \
 		pciutils ShellCheck bash-completion
-fi
-if [[ $INSTALL_PMEM == "true" ]]; then
-	# Additional dependencies for building pmem based backends
-	zypper install -y libpmemobj-devel
 fi
 if [[ $INSTALL_RBD == "true" ]]; then
 	# Additional dependencies for RBD bdev in NVMe over Fabrics
@@ -31,7 +27,8 @@ if [[ $INSTALL_RDMA == "true" ]]; then
 fi
 if [[ $INSTALL_DOCS == "true" ]]; then
 	# Additional dependencies for building docs
-	zypper install -y doxygen mscgen graphviz
+	zypper install -y doxygen graphviz
+	[[ $VERSION != "16.0" ]] && zypper install -y mscgen
 fi
 if [[ $INSTALL_DAOS == "true" ]]; then
 	zypper ar https://packages.daos.io/v2.0/Leap15/packages/x86_64/ daos_packages

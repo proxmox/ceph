@@ -896,8 +896,9 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
     map<hobject_t, ECUtil::shard_extent_map_t> *written,
     shard_id_map<ObjectStore::Transaction> *transactions,
     DoutPrefixProvider *dpp,
-    const OSDMapRef &osdmap) final {
-    assert(t);
+    const OSDMapRef &osdmap,
+    bool& first_write_in_interval) final {
+    ceph_assert(t);
     ECTransaction::generate_transactions(
       t.get(),
       plan,
@@ -911,7 +912,8 @@ struct ECClassicalOp : ECCommon::RMWPipeline::Op {
       &temp_added,
       &temp_cleared,
       dpp,
-      osdmap);
+      osdmap,
+      first_write_in_interval);
   }
 
   bool skip_transaction(

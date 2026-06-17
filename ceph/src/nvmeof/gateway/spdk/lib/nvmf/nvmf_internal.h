@@ -32,6 +32,12 @@
 #define NVMF_DEFAULT_KAS 100
 #define NVMF_DEFAULT_MIN_KATO 10000
 
+#if __has_attribute(nonstring)
+#define __spdk_nonstring __attribute__((nonstring))
+#else
+#define __spdk_nonstring
+#endif
+
 enum spdk_nvmf_tgt_state {
 	NVMF_TGT_IDLE = 0,
 	NVMF_TGT_RUNNING,
@@ -158,6 +164,7 @@ struct spdk_nvmf_registrant {
 	struct spdk_uuid hostid;
 	/* Registration key */
 	uint64_t rkey;
+	uint16_t cntlid;
 };
 
 struct spdk_nvmf_ns {
@@ -173,6 +180,8 @@ struct spdk_nvmf_ns {
 	uint32_t gen;
 	/* registrants head */
 	TAILQ_HEAD(, spdk_nvmf_registrant) registrants;
+	/* Queued reservation requests: head is in-progress, rest are pending */
+	STAILQ_HEAD(, spdk_nvmf_request) reservations;
 	/* current reservation key */
 	uint64_t crkey;
 	/* reservation type */
@@ -262,6 +271,7 @@ struct spdk_nvmf_ctrlr {
 	bool				disconnect_in_progress;
 	/* valid only when disconnect_in_progress is true */
 	bool				disconnect_is_shn;
+	bool				executing_nssr;
 	bool				acre_enabled;
 	bool				dynamic_ctrlr;
 	/* LBA Format Extension Enabled (LBAFEE) */
@@ -357,6 +367,7 @@ struct spdk_nvmf_subsystem {
 	/* In-band authentication sequence number, protected by ->mutex */
 	uint32_t					auth_seqnum;
 	bool						passthrough;
+	bool						nssr_enabled;
 };
 
 static int
@@ -381,9 +392,9 @@ void nvmf_poll_group_pause_subsystem(struct spdk_nvmf_poll_group *group,
 void nvmf_poll_group_resume_subsystem(struct spdk_nvmf_poll_group *group,
 				      struct spdk_nvmf_subsystem *subsystem, spdk_nvmf_poll_group_mod_done cb_fn, void *cb_arg);
 
-void nvmf_get_discovery_log_page(struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
-				 uint32_t iovcnt, uint64_t offset, uint32_t length,
-				 struct spdk_nvme_transport_id *cmd_source_trid);
+int nvmf_get_discovery_log_page(struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
+				uint32_t iovcnt, uint64_t offset, uint32_t length,
+				struct spdk_nvme_transport_id *cmd_source_trid);
 
 void nvmf_ctrlr_destruct(struct spdk_nvmf_ctrlr *ctrlr);
 int nvmf_ctrlr_process_admin_cmd(struct spdk_nvmf_request *req);
@@ -395,7 +406,7 @@ void nvmf_ctrlr_ns_changed(struct spdk_nvmf_ctrlr *ctrlr, uint32_t nsid);
 bool nvmf_ctrlr_use_zcopy(struct spdk_nvmf_request *req);
 
 void nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
-				 bool dif_insert_or_strip);
+				 bool dif_insert_or_strip, uint32_t transport_max_io_size);
 void nvmf_bdev_ctrlr_identify_iocs_nvm(struct spdk_nvmf_ns *ns,
 				       struct spdk_nvme_nvm_ns_data *nsdata_nvm);
 int nvmf_bdev_ctrlr_read_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
@@ -440,6 +451,8 @@ struct spdk_nvmf_subsystem_listener *nvmf_subsystem_find_listener(
 	struct spdk_nvmf_subsystem *subsystem,
 	const struct spdk_nvme_transport_id *trid);
 bool nvmf_subsystem_zone_append_supported(struct spdk_nvmf_subsystem *subsystem);
+int nvmf_subsystem_poll_group_update_ns_reservation(const struct spdk_nvmf_ns *ns,
+		struct spdk_nvmf_subsystem_pg_ns_info *pg_ns);
 struct spdk_nvmf_listener *nvmf_transport_find_listener(
 	struct spdk_nvmf_transport *transport,
 	const struct spdk_nvme_transport_id *trid);

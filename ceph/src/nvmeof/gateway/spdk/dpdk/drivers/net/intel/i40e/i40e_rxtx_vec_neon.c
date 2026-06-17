@@ -16,71 +16,18 @@
 #include "i40e_rxtx.h"
 #include "i40e_rxtx_vec_common.h"
 
+#include "../common/rx_vec_arm.h"
+
 static inline void
-i40e_rxq_rearm(struct i40e_rx_queue *rxq)
+i40e_rxq_rearm(struct ci_rx_queue *rxq)
 {
-	int i;
-	uint16_t rx_id;
-	volatile union i40e_rx_desc *rxdp;
-	struct i40e_rx_entry *rxep = &rxq->sw_ring[rxq->rxrearm_start];
-	struct rte_mbuf *mb0, *mb1;
-	uint64x2_t dma_addr0, dma_addr1;
-	uint64x2_t zero = vdupq_n_u64(0);
-	uint64_t paddr;
-
-	rxdp = rxq->rx_ring + rxq->rxrearm_start;
-
-	/* Pull 'n' more MBUFs into the software ring */
-	if (unlikely(rte_mempool_get_bulk(rxq->mp,
-					  (void *)rxep,
-					  RTE_I40E_RXQ_REARM_THRESH) < 0)) {
-		if (rxq->rxrearm_nb + RTE_I40E_RXQ_REARM_THRESH >=
-		    rxq->nb_rx_desc) {
-			for (i = 0; i < RTE_I40E_DESCS_PER_LOOP; i++) {
-				rxep[i].mbuf = &rxq->fake_mbuf;
-				vst1q_u64(RTE_CAST_PTR(uint64_t *, &rxdp[i].read), zero);
-			}
-		}
-		rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
-			RTE_I40E_RXQ_REARM_THRESH;
-		return;
-	}
-
-	/* Initialize the mbufs in vector, process 2 mbufs in one loop */
-	for (i = 0; i < RTE_I40E_RXQ_REARM_THRESH; i += 2, rxep += 2) {
-		mb0 = rxep[0].mbuf;
-		mb1 = rxep[1].mbuf;
-
-		paddr = mb0->buf_iova + RTE_PKTMBUF_HEADROOM;
-		dma_addr0 = vdupq_n_u64(paddr);
-
-		/* flush desc with pa dma_addr */
-		vst1q_u64(RTE_CAST_PTR(uint64_t *, &rxdp++->read), dma_addr0);
-
-		paddr = mb1->buf_iova + RTE_PKTMBUF_HEADROOM;
-		dma_addr1 = vdupq_n_u64(paddr);
-		vst1q_u64(RTE_CAST_PTR(uint64_t *, &rxdp++->read), dma_addr1);
-	}
-
-	rxq->rxrearm_start += RTE_I40E_RXQ_REARM_THRESH;
-	rx_id = rxq->rxrearm_start - 1;
-
-	if (unlikely(rxq->rxrearm_start >= rxq->nb_rx_desc)) {
-		rxq->rxrearm_start = 0;
-		rx_id = rxq->nb_rx_desc - 1;
-	}
-
-	rxq->rxrearm_nb -= RTE_I40E_RXQ_REARM_THRESH;
-
-	rte_io_wmb();
-	/* Update the tail pointer on the NIC */
-	I40E_PCI_REG_WRITE_RELAXED(rxq->qrx_tail, rx_id);
+	ci_rxq_rearm(rxq);
 }
 
-#ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 /* NEON version of FDIR mark extraction for 4 32B descriptors at a time */
 static inline uint32x4_t
-descs_to_fdir_32b(volatile union i40e_rx_desc *rxdp, struct rte_mbuf **rx_pkt)
+descs_to_fdir_32b(volatile union ci_rx_desc *rxdp, struct rte_mbuf **rx_pkt)
 {
 	/* 32B descriptors: Load 2nd half of descriptors for FDIR ID data */
 	uint64x2_t desc0_qw23, desc1_qw23, desc2_qw23, desc3_qw23;
@@ -203,7 +150,7 @@ descs_to_fdir_16b(uint32x4_t fltstat, uint64x2_t descs[4], struct rte_mbuf **rx_
 #endif
 
 static inline void
-desc_to_olflags_v(struct i40e_rx_queue *rxq, volatile union i40e_rx_desc *rxdp,
+desc_to_olflags_v(struct ci_rx_queue *rxq, volatile union ci_rx_desc *rxdp,
 		  uint64x2_t descs[4], struct rte_mbuf **rx_pkts)
 {
 	uint32x4_t vlan0, vlan1, rss, l3_l4e;
@@ -284,7 +231,7 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, volatile union i40e_rx_desc *rxdp,
 
 	/* Extract FDIR ID only if FDIR is enabled to avoid useless work */
 	if (rxq->fdir_enabled) {
-#ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 		uint32x4_t v_fdir_ol_flags = descs_to_fdir_32b(rxdp, rx_pkts);
 #else
 		(void)rxdp; /* rxdp not required for 16B desc mode */
@@ -325,22 +272,22 @@ desc_to_ptype_v(uint64x2_t descs[4], struct rte_mbuf **__rte_restrict rx_pkts,
 }
 
 /**
- * vPMD raw receive routine, only accept(nb_pkts >= RTE_I40E_DESCS_PER_LOOP)
+ * vPMD raw receive routine, only accept(nb_pkts >= I40E_VPMD_DESCS_PER_LOOP)
  *
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
- * - floor align nb_pkts to a RTE_I40E_DESCS_PER_LOOP power-of-two
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
+ * - floor align nb_pkts to a I40E_VPMD_DESCS_PER_LOOP power-of-two
  */
 static inline uint16_t
-_recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
+_recv_raw_pkts_vec(struct ci_rx_queue *__rte_restrict rxq,
 		   struct rte_mbuf **__rte_restrict rx_pkts,
 		   uint16_t nb_pkts, uint8_t *split_packet)
 {
-	volatile union i40e_rx_desc *rxdp;
-	struct i40e_rx_entry *sw_ring;
+	volatile union ci_rx_desc *rxdp;
+	struct ci_rx_entry *sw_ring;
 	uint16_t nb_pkts_recd;
 	int pos;
-	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
+	uint32_t *ptype_tbl = rxq->i40e_vsi->adapter->ptype_tbl;
 
 	/* mask to shuffle from desc. to mbuf */
 	uint8x16_t shuf_msk = {
@@ -368,8 +315,8 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 		0, 0, 0       /* ignore non-length fields */
 		};
 
-	/* nb_pkts has to be floor-aligned to RTE_I40E_DESCS_PER_LOOP */
-	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, RTE_I40E_DESCS_PER_LOOP);
+	/* nb_pkts has to be floor-aligned to I40E_VPMD_DESCS_PER_LOOP */
+	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, I40E_VPMD_DESCS_PER_LOOP);
 
 	/* Just the act of getting into the function from the application is
 	 * going to cost about 7 cycles
@@ -381,7 +328,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 	/* See if we need to rearm the RX queue - gives the prefetch a bit
 	 * of time to act
 	 */
-	if (rxq->rxrearm_nb > RTE_I40E_RXQ_REARM_THRESH)
+	if (rxq->rxrearm_nb > I40E_VPMD_RXQ_REARM_THRESH)
 		i40e_rxq_rearm(rxq);
 
 	/* Before we start moving massive data around, check to see if
@@ -405,9 +352,9 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 	 */
 
 	for (pos = 0, nb_pkts_recd = 0; pos < nb_pkts;
-			pos += RTE_I40E_DESCS_PER_LOOP,
-			rxdp += RTE_I40E_DESCS_PER_LOOP) {
-		uint64x2_t descs[RTE_I40E_DESCS_PER_LOOP];
+			pos += I40E_VPMD_DESCS_PER_LOOP,
+			rxdp += I40E_VPMD_DESCS_PER_LOOP) {
+		uint64x2_t descs[I40E_VPMD_DESCS_PER_LOOP];
 		uint8x16_t pkt_mb1, pkt_mb2, pkt_mb3, pkt_mb4;
 		uint16x8x2_t sterr_tmp1, sterr_tmp2;
 		uint64x2_t mbp1, mbp2;
@@ -502,9 +449,8 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 
 		desc_to_ptype_v(descs, &rx_pkts[pos], ptype_tbl);
 
-		if (likely(pos + RTE_I40E_DESCS_PER_LOOP < nb_pkts)) {
-			rte_prefetch_non_temporal(rxdp + RTE_I40E_DESCS_PER_LOOP);
-		}
+		if (likely(pos + I40E_VPMD_DESCS_PER_LOOP < nb_pkts))
+			rte_prefetch_non_temporal(rxdp + I40E_VPMD_DESCS_PER_LOOP);
 
 		/* C.1 4=>2 filter staterr info only */
 		sterr_tmp2 = vzipq_u16(vreinterpretq_u16_u64(descs[1]),
@@ -538,7 +484,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 			/* store the resulting 32-bit value */
 			vst1q_lane_u32((uint32_t *)split_packet,
 				       vreinterpretq_u32_u8(eop_bits), 0);
-			split_packet += RTE_I40E_DESCS_PER_LOOP;
+			split_packet += I40E_VPMD_DESCS_PER_LOOP;
 
 			/* zero-out next pointers */
 			rx_pkts[pos]->next = NULL;
@@ -555,7 +501,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 
 		/* C.4 calc available number of desc */
 		if (unlikely(stat == 0)) {
-			nb_pkts_recd += RTE_I40E_DESCS_PER_LOOP;
+			nb_pkts_recd += I40E_VPMD_DESCS_PER_LOOP;
 		} else {
 			nb_pkts_recd += rte_ctz64(stat) / I40E_UINT16_BIT;
 			break;
@@ -572,7 +518,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *__rte_restrict rxq,
 
  /*
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
  */
 uint16_t
 i40e_recv_pkts_vec(void *__rte_restrict rx_queue,
@@ -585,15 +531,15 @@ i40e_recv_pkts_vec(void *__rte_restrict rx_queue,
  * vPMD receive routine that reassembles single burst of 32 scattered packets
  *
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
  */
 static uint16_t
 i40e_recv_scattered_burst_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			      uint16_t nb_pkts)
 {
 
-	struct i40e_rx_queue *rxq = rx_queue;
-	uint8_t split_flags[RTE_I40E_VPMD_RX_BURST] = {0};
+	struct ci_rx_queue *rxq = rx_queue;
+	uint8_t split_flags[I40E_VPMD_RX_BURST] = {0};
 
 	/* get some new buffers */
 	uint16_t nb_bufs = _recv_raw_pkts_vec(rxq, rx_pkts, nb_pkts,
@@ -633,15 +579,15 @@ i40e_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 {
 	uint16_t retval = 0;
 
-	while (nb_pkts > RTE_I40E_VPMD_RX_BURST) {
+	while (nb_pkts > I40E_VPMD_RX_BURST) {
 		uint16_t burst;
 
 		burst = i40e_recv_scattered_burst_vec(rx_queue,
 						      rx_pkts + retval,
-						      RTE_I40E_VPMD_RX_BURST);
+						      I40E_VPMD_RX_BURST);
 		retval += burst;
 		nb_pkts -= burst;
-		if (burst < RTE_I40E_VPMD_RX_BURST)
+		if (burst < I40E_VPMD_RX_BURST)
 			return retval;
 	}
 
@@ -738,15 +684,15 @@ i40e_xmit_fixed_burst_vec(void *__rte_restrict tx_queue,
 }
 
 void __rte_cold
-i40e_rx_queue_release_mbufs_vec(struct i40e_rx_queue *rxq)
+i40e_rx_queue_release_mbufs_vec(struct ci_rx_queue *rxq)
 {
 	_i40e_rx_queue_release_mbufs_vec(rxq);
 }
 
 int __rte_cold
-i40e_rxq_vec_setup(struct i40e_rx_queue *rxq)
+i40e_rxq_vec_setup(struct ci_rx_queue *rxq)
 {
-	rxq->rx_using_sse = 1;
+	rxq->vector_rx = 1;
 	rxq->mbuf_initializer = ci_rxq_mbuf_initializer(rxq->port_id);
 	return 0;
 }

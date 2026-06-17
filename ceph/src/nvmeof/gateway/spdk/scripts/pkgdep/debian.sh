@@ -6,33 +6,23 @@
 #  Copyright (c) 2022 Dell Inc, or its subsidiaries.
 #
 
-case "$VERSION_CODENAME" in
-	bookworm | noble)
-		# These ship with pip which enforces PEP668
-		apt-get install -y python3-venv
-		virtdir=${PIP_VIRTDIR:-/var/spdk/dependencies/pip}
-
-		mkdir --p "$virtdir"
-		pkgdep_toolpath pip "$virtdir/bin"
-
-		pip3() (
-			if [[ ! -e $virtdir/bin/activate ]]; then
-				python3 -m venv --upgrade-deps --system-site-packages "$virtdir"
-			fi
-			source "$virtdir/bin/activate"
-			"$virtdir/bin/pip3" "$@"
-		)
-
-		apt-get install -y pkgconf
-		;;
-	*)
-		apt-get install -y pkg-config
-		;;
-esac
-
 apt-get install -y gcc g++ make libcunit1-dev libaio-dev libssl-dev libjson-c-dev libcmocka-dev uuid-dev libiscsi-dev \
-	libkeyutils-dev libncurses5-dev libncursesw5-dev python3 python3-pip python3-dev unzip libfuse3-dev patchelf
+	libkeyutils-dev libncurses5-dev libncursesw5-dev python3 python3-pip python3-dev unzip libfuse3-dev patchelf \
+	curl procps pkgconf python3-venv
 
+# per PEP668 work inside virtual env
+virtdir=${PIP_VIRTDIR:-/var/spdk/dependencies/pip}
+if python3 -c 'import sys; exit(0 if sys.version_info >= (3,9) else 1)'; then
+	python3 -m venv --upgrade-deps --system-site-packages "$virtdir"
+else
+	# --upgrade-deps was introduced only in Python 3.9.0 (October 5, 2020).
+	python3 -m venv --system-site-packages "$virtdir"
+	"$virtdir"/bin/pip install --upgrade pip setuptools
+fi
+pkgdep_toolpath pip "$virtdir/bin"
+source "$virtdir/bin/activate"
+
+# install python packages
 pip3 install ninja
 pip3 install meson
 pip3 install pyelftools
@@ -58,10 +48,6 @@ if [[ $INSTALL_DEV_TOOLS == "true" ]]; then
 		abigail-tools bash-completion ruby-dev pycodestyle bundler rake
 	# Additional dependencies for nvmf performance test script
 	apt-get install -y python3-paramiko
-fi
-if [[ $INSTALL_PMEM == "true" ]]; then
-	# Additional dependencies for building pmem based backends
-	apt-get install -y libpmem-dev libpmemblk-dev libpmemobj-dev
 fi
 if [[ $INSTALL_RBD == "true" ]]; then
 	# Additional dependencies for RBD bdev in NVMe over Fabrics

@@ -134,7 +134,7 @@ lspci
 of a libvfio-user device and examine it with lspci(8):
 
 ```
-# lspci -vv -F <(build/dbg/samples/lspci)
+# lspci -vv -F <(build/samples/lspci)
 00:00.0 Non-VGA unclassified device: Device 0000:0000
         Control: I/O- Mem- BusMaster- SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx-
         Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
@@ -189,46 +189,18 @@ Start the source server as follows (pick whatever you like for
 `/tmp/vfio-user.sock`):
 
 ```
-rm -f /tmp/vfio-user.sock* ; build/dbg/samples/server -v /tmp/vfio-user.sock
+rm -f /tmp/vfio-user.sock* ; build/samples/server -v /tmp/vfio-user.sock
 ```
 
 And then the client:
 
 ```
-build/dbg/samples/client /tmp/vfio-user.sock
+build/samples/client /tmp/vfio-user.sock
 ```
 
 After a couple of seconds the client will start live migration. The source
 server will exit and the destination server will start, watch the client
 terminal for destination server messages.
-
-gpio
-----
-
-A [gpio](./samples/gpio-pci-idio-16.c) server implements a very simple GPIO
-device that can be used with a Linux VM.
-
-Start the `gpio` server process:
-
-```
-rm /tmp/vfio-user.sock
-./build/dbg/samples/gpio-pci-idio-16 -v /tmp/vfio-user.sock &
-```
-
-Next, build `qemu` and start a VM, as described below.
-
-Log in to your guest VM.  You'll probably need to build the `gpio-pci-idio-16`
-kernel module yourself - it's part of the standard Linux kernel, but not usually
-built and shipped on x86. 
-
-Once built, you should be able to load the module and observe the emulated GPIO
-device's pins:
-
-```
-insmod gpio-pci-idio-16.ko
-cat /sys/class/gpio/gpiochip480/base > /sys/class/gpio/export
-for ((i=0;i<12;i++)); do cat /sys/class/gpio/OUT0/value; done
-```
 
 shadow_ioeventfd_server
 -----------------------
@@ -244,23 +216,8 @@ Other usage notes
 qemu
 ----
 
-`vfio-user` client support is not yet merged into `qemu`. Instead, download and
-build [this branch of qemu](https://github.com/oracle/qemu/pull/1).
-
-Create a Linux install image, or use a pre-made one.
-
-Then, presuming you have a `libvfio-user` server listening on the UNIX socket
-`/tmp/vfio-user.sock`, you can start your guest VM with something like this:
-
-```
-./x86_64-softmmu/qemu-system-x86_64 -mem-prealloc -m 256 \
--object memory-backend-file,id=ram-node0,prealloc=yes,mem-path=/dev/hugepages/gpio,share=yes,size=256M \
--numa node,memdev=ram-node0 \
--kernel ~/vmlinuz -initrd ~/initrd -nographic \
--append "console=ttyS0 root=/dev/sda1 single" \
--hda ~/bionic-server-cloudimg-amd64-0.raw \
--device vfio-user-pci,socket=/tmp/vfio-user.sock
-```
+Step-by-step instructions for using `libvfio-user` with `qemu` can be [found
+here](docs/qemu.md).
 
 SPDK
 ----
@@ -293,6 +250,14 @@ You can configure `vfio-user` devices in a `libvirt` domain configuration:
   <qemu:arg value='vfio-user-pci,socket=/var/run/vfio-user.sock,x-enable-migration=on'/>
 </qemu:commandline>
 ```
+
+Live migration
+--------------
+
+The `master` branch of `libvfio-user` implements live migration with a protocol
+based on vfio's v2 protocol. Currently, there is no support for this in any qemu
+client. For current use cases that support live migration, such as SPDK, you
+should refer to the [migration-v1 branch](https://github.com/nutanix/libvfio-user/tree/migration-v1).
 
 History
 =======

@@ -3258,8 +3258,6 @@ static const struct {
 #if defined(RTE_ARCH_X86)
 	{bnxt_crx_pkts_vec,		"Vector SSE"},
 	{bnxt_recv_pkts_vec,		"Vector SSE"},
-#endif
-#if defined(RTE_ARCH_X86) && defined(CC_AVX2_SUPPORT)
 	{bnxt_crx_pkts_vec_avx2,	"Vector AVX2"},
 	{bnxt_recv_pkts_vec_avx2,	"Vector AVX2"},
 #endif
@@ -4587,10 +4585,10 @@ bnxt_check_fw_reset_done(struct bnxt *bp)
 	int rc;
 
 	do {
-		rc = rte_pci_read_config(bp->pdev, &val, sizeof(val), PCI_SUBSYSTEM_ID_OFFSET);
+		rc = rte_pci_read_config(bp->pdev, &val, sizeof(val), RTE_PCI_SUBSYSTEM_ID);
 		if (rc < 0) {
 			PMD_DRV_LOG_LINE(ERR, "Failed to read PCI offset 0x%x",
-				PCI_SUBSYSTEM_ID_OFFSET);
+				RTE_PCI_SUBSYSTEM_ID);
 			return rc;
 		}
 		if (val != 0xffff)
@@ -4825,10 +4823,10 @@ void bnxt_dev_reset_and_resume(void *arg)
 	 * we can poll this config register immediately for the value to revert.
 	 */
 	if (bp->flags & BNXT_FLAG_FATAL_ERROR) {
-		rc = rte_pci_read_config(bp->pdev, &val, sizeof(val), PCI_SUBSYSTEM_ID_OFFSET);
+		rc = rte_pci_read_config(bp->pdev, &val, sizeof(val), RTE_PCI_SUBSYSTEM_ID);
 		if (rc < 0) {
 			PMD_DRV_LOG_LINE(ERR, "Failed to read PCI offset 0x%x",
-				PCI_SUBSYSTEM_ID_OFFSET);
+				RTE_PCI_SUBSYSTEM_ID);
 			return;
 		}
 		if (val == 0xffff) {

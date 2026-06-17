@@ -19,10 +19,8 @@ DEFINE_STUB(nvme_ctrlr_submit_admin_request, int, (struct spdk_nvme_ctrlr *ctrlr
 		struct nvme_request *req), 0);
 
 DEFINE_STUB_V(nvme_completion_poll_cb, (void *arg, const struct spdk_nvme_cpl *cpl));
-
-DEFINE_STUB(nvme_wait_for_completion, int,
-	    (struct spdk_nvme_qpair *qpair,
-	     struct nvme_completion_poll_status *status), 0);
+DEFINE_STUB(nvme_wait_for_adminq_completion, int, (struct spdk_nvme_ctrlr *ctrlr,
+		struct nvme_completion_poll_status *status, bool release), 0);
 
 DEFINE_STUB(nvme_completion_is_retry, bool, (const struct spdk_nvme_cpl *cpl), false);
 
@@ -51,6 +49,7 @@ DEFINE_STUB(nvme_ctrlr_disable_poll, int, (struct spdk_nvme_ctrlr *ctrlr), 0);
 DEFINE_STUB_V(nvme_transport_ctrlr_disconnect_qpair_done, (struct spdk_nvme_qpair *qpair));
 DEFINE_STUB(spdk_nvme_ctrlr_get_numa_id, int32_t, (struct spdk_nvme_ctrlr *ctrlr),
 	    SPDK_ENV_NUMA_ID_ANY);
+DEFINE_STUB(nvme_qpair_state_string, const char *, (enum nvme_qpair_state state), NULL);
 
 int
 nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,

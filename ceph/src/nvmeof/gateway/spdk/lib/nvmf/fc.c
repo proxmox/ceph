@@ -1583,6 +1583,8 @@ _nvmf_fc_request_free(struct spdk_nvmf_fc_request *fc_req)
 					       group->transport);
 	}
 	fc_req->req.iovcnt = 0;
+	fc_req->req.raw = 0; /* clear all flags */
+	fc_req->req.cmd_cb_fn = NULL;
 
 	/* Free Fc request */
 	nvmf_fc_conn_free_fc_request(fc_req->fc_conn, fc_req);
@@ -1876,7 +1878,7 @@ nvmf_fc_request_complete(struct spdk_nvmf_request *req)
 		/* Defer this to make sure we dont call io cleanup in same context. */
 		nvmf_fc_poller_api_func(fc_req->hwqp, SPDK_NVMF_FC_POLLER_API_REQ_ABORT_COMPLETE,
 					(void *)fc_req);
-	} else if (rsp->status.sc == SPDK_NVME_SC_SUCCESS &&
+	} else if (spdk_nvme_cpl_is_success(rsp) &&
 		   req->xfer == SPDK_NVME_DATA_CONTROLLER_TO_HOST) {
 
 		nvmf_fc_request_set_state(fc_req, SPDK_NVMF_FC_REQ_READ_XFER);

@@ -1,8 +1,14 @@
-ceph (20.2.1-1noble) noble; urgency=medium
+ceph (20.2.2-1noble) noble; urgency=medium
 
   * new version
 
- -- root <contact@ceph.com>  Thu, 02 Apr 2026 14:34:57 +0000
+ -- root <contact@ceph.com>  Mon, 15 Jun 2026 15:26:42 +0000
+
+ceph (20.2.2-1) stable; urgency=medium
+
+  * New upstream release
+
+ -- Ceph Release Team <ceph-maintainers@ceph.io>  Mon, 15 Jun 2026 14:56:46 +0000
 
 ceph (20.2.1-1) stable; urgency=medium
 

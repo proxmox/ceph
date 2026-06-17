@@ -316,7 +316,7 @@ static void adjust_maturing_delay(adapter_info_t *drv, int port)
 
 	} else {
 		NT_LOG(WRN, NTNIC,
-			"Port %u: Cannot set the RPF adjusted maturing delay to %i because "
+			"Port %i: Cannot set the RPF adjusted maturing delay to %i because "
 			"that value is outside the legal range [%i:%i]",
 			port, delay, min_delay, max_delay);
 	}
@@ -367,8 +367,8 @@ static void get_link_state(adapter_info_t *drv, nim_i2c_ctx_p ctx, link_state_t 
 		&remote_fault);
 
 	if (curr_link_state != state->link_state)
-		NT_LOG(DBG, NTNIC, "Port %d: Faults(Local = %d, Remote = %d)", port, local_fault,
-			remote_fault);
+		NT_LOG(DBG, NTNIC, "Port %i: Faults(Local = %" PRIu32 ", Remote = %" PRIu32 ")",
+			port, local_fault, remote_fault);
 
 	state->nim_present = nim_is_present(ctx, port);
 
@@ -382,13 +382,13 @@ static void get_link_state(adapter_info_t *drv, nim_i2c_ctx_p ctx, link_state_t 
 
 	if (remote_fault == 0) {
 		phy_reset_rx(drv, port);
-		NT_LOG(DBG, NTNIC, "Port %u: resetRx due to local fault.", port);
+		NT_LOG(DBG, NTNIC, "Port %i: resetRx due to local fault.", port);
 		return;
 	}
 
 	/* In case of too many errors perform a reset */
 	if (nthw_phy_tile_get_rx_hi_ber(p, port)) {
-		NT_LOG(INF, NTNIC, "Port %u: HiBer", port);
+		NT_LOG(INF, NTNIC, "Port %i: HiBer", port);
 		phy_reset_rx(drv, port);
 		return;
 	}
@@ -519,10 +519,11 @@ static int create_nim(adapter_info_t *drv, int port, bool enable)
 	const uint8_t valid_nim_id = NT_NIM_QSFP28;
 	sfp_nim_state_t nim;
 	nt4ga_link_t *link_info = &drv->nt4ga_link;
-	nim_i2c_ctx_t *nim_ctx = &link_info->u.nim_ctx[port];
 
 	RTE_ASSERT(port >= 0 && port < NUM_ADAPTER_PORTS_MAX);
 	RTE_ASSERT(link_info->variables_initialized);
+
+	nim_i2c_ctx_t *nim_ctx = &link_info->u.nim_ctx[port];
 
 	if (!enable) {
 		phy_reset_rx(drv, port);
@@ -684,21 +685,13 @@ static int nim_ready_100_gb(adapter_info_t *p_info, int port)
 		return 1;
 	}
 
-	if (port == 0) {
-		/* setTxEqualization(uint8_t intf_no, uint8_t lane, uint32_t pre_tap2,
-		 * uint32_t main_tap, uint32_t pre_tap1, uint32_t post_tap1)
-		 */
-		nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 0, 0, 44, 2, 9);
-		nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 1, 0, 44, 2, 9);
-		nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 2, 0, 44, 2, 9);
-		nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 3, 0, 44, 2, 9);
-
-	} else {
-		nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 0, 0, 44, 2, 9);
-		nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 1, 0, 44, 2, 9);
-		nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 2, 0, 44, 2, 9);
-		nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 3, 0, 44, 2, 9);
-	}
+	/* setTxEqualization(uint8_t intf_no, uint8_t lane, uint32_t pre_tap2,
+	 * uint32_t main_tap, uint32_t pre_tap1, uint32_t post_tap1)
+	 */
+	nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 0, 0, 44, 2, 9);
+	nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 1, 0, 44, 2, 9);
+	nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 2, 0, 44, 2, 9);
+	nthw_phy_tile_set_tx_equalization(p_phy_tile, port, 3, 0, 44, 2, 9);
 
 	/*
 	 * Perform a full reset. If the RX is in reset from the start this sequence will
@@ -915,10 +908,10 @@ static void *_common_ptp_nim_state_machine(void *data)
 				RTE_ASSERT(new_state.br); /* Cannot be zero if NIM is present */
 				NT_LOG(DBG, NTNIC,
 					"%s: NIM id = %u (%s), br = %u, vendor = '%s', pn = '%s', sn='%s'",
-					drv->mp_port_id_str[i], nim_ctx->nim_id,
-					nthw_nim_id_to_text(nim_ctx->nim_id),
-					(unsigned int)new_state.br, nim_ctx->vendor_name,
-					nim_ctx->prod_no, nim_ctx->serial_no);
+					drv->mp_port_id_str[i], nim_ctx[i].nim_id,
+					nthw_nim_id_to_text(nim_ctx[i].nim_id),
+					(unsigned int)new_state.br, nim_ctx[i].vendor_name,
+					nim_ctx[i].prod_no, nim_ctx[i].serial_no);
 				link_state[i].lh_nim_absent = false;
 				NT_LOG(DBG, NTNIC, "%s: NIM module initialized",
 					drv->mp_port_id_str[i]);
@@ -974,7 +967,7 @@ int nt4ga_agx_link_100g_ports_init(struct adapter_info_s *p_adapter_info, nthw_f
 		res = nthw_rpf_init(p_nthw_agx->p_rpf, fpga, adapter_no);
 
 		if (res != 0) {
-			NT_LOG(ERR, NTNIC, "%s: Failed to initialize RPF module (%u)",
+			NT_LOG(ERR, NTNIC, "%s: Failed to initialize RPF module (%i)",
 				p_adapter_info->mp_adapter_id_str, res);
 			return res;
 		}
@@ -982,7 +975,7 @@ int nt4ga_agx_link_100g_ports_init(struct adapter_info_s *p_adapter_info, nthw_f
 		res = nthw_gfg_init(&gfg_mod[adapter_no], fpga, 0 /* Only one instance */);
 
 		if (res != 0) {
-			NT_LOG(ERR, NTNIC, "%s: Failed to initialize GFG module (%u)",
+			NT_LOG(ERR, NTNIC, "%s: Failed to initialize GFG module (%i)",
 				p_adapter_info->mp_adapter_id_str, res);
 			return res;
 		}
@@ -1010,20 +1003,18 @@ int nt4ga_agx_link_100g_ports_init(struct adapter_info_s *p_adapter_info, nthw_f
 
 		nthw_rpf_set_ts_at_eof(p_nthw_agx->p_rpf, true);
 
-		if (res == 0) {
-			p_adapter_info->nt4ga_link.speed_capa = NT_LINK_SPEED_100G;
-			p_adapter_info->nt4ga_link.variables_initialized = true;
-		}
+
+		p_adapter_info->nt4ga_link.speed_capa = NT_LINK_SPEED_100G;
+		p_adapter_info->nt4ga_link.variables_initialized = true;
 	}
 
 	/*
 	 * Create state-machine thread
 	 */
-	if (res == 0) {
-		if (!monitor_task_is_running[adapter_no]) {
-			res = rte_thread_create(&monitor_tasks[adapter_no], NULL,
-					nt4ga_agx_link_100g_mon, p_adapter_info);
-		}
+
+	if (!monitor_task_is_running[adapter_no]) {
+		res = rte_thread_create(&monitor_tasks[adapter_no], NULL,
+				nt4ga_agx_link_100g_mon, p_adapter_info);
 	}
 
 	return res;

@@ -22,6 +22,7 @@ nfp_flower_ctrl_vnic_recv(void *rx_queue,
 		struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts)
 {
+	uint16_t data_len;
 	uint64_t dma_addr;
 	uint16_t avail = 0;
 	struct rte_mbuf *mb;
@@ -78,9 +79,10 @@ nfp_flower_ctrl_vnic_recv(void *rx_queue,
 		 */
 		mb = rxb->mbuf;
 		rxb->mbuf = new_mb;
+		data_len = rte_le_to_cpu_16(rxds->rxd.data_len);
 
 		/* Size of this segment */
-		mb->data_len = rxds->rxd.data_len - NFP_DESC_META_LEN(rxds);
+		mb->data_len = data_len - NFP_DESC_META_LEN(rxds);
 		/* Size of the whole packet. We just support 1 segment */
 		mb->pkt_len = mb->data_len;
 
@@ -111,10 +113,10 @@ nfp_flower_ctrl_vnic_recv(void *rx_queue,
 		/* Now resetting and updating the descriptor */
 		rxds->vals[0] = 0;
 		rxds->vals[1] = 0;
-		dma_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(new_mb));
+		dma_addr = rte_mbuf_data_iova_default(new_mb);
 		rxds->fld.dd = 0;
-		rxds->fld.dma_addr_hi = (dma_addr >> 32) & 0xffff;
-		rxds->fld.dma_addr_lo = dma_addr & 0xffffffff;
+		rxds->fld.dma_addr_hi = rte_cpu_to_le_16((dma_addr >> 32) & 0xffff);
+		rxds->fld.dma_addr_lo = rte_cpu_to_le_32(dma_addr & 0xffffffff);
 		nb_hold++;
 
 		rxq->rd_p++;
@@ -192,10 +194,10 @@ nfp_flower_ctrl_vnic_nfd3_xmit(struct nfp_app_fw_flower *app_fw_flower,
 	*lmbuf = mbuf;
 	dma_addr = rte_mbuf_data_iova(mbuf);
 
-	txds->data_len = mbuf->pkt_len;
+	txds->data_len = rte_cpu_to_le_16(mbuf->pkt_len);
 	txds->dma_len = txds->data_len;
 	txds->dma_addr_hi = (dma_addr >> 32) & 0xff;
-	txds->dma_addr_lo = (dma_addr & 0xffffffff);
+	txds->dma_addr_lo = rte_cpu_to_le_32(dma_addr & 0xffffffff);
 	txds->offset_eop = FLOWER_PKT_DATA_OFFSET | NFD3_DESC_TX_EOP;
 
 	txq->wr_p++;

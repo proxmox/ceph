@@ -35,7 +35,7 @@
 #endif
 #define ASYM_TEST_MSG_LEN 256
 #define TEST_VECTOR_SIZE 256
-#define DEQ_TIMEOUT 50
+#define DEQ_TIMEOUT 10000
 
 static int gbl_driver_id;
 static struct crypto_testsuite_params_asym {
@@ -155,6 +155,7 @@ queue_ops_rsa_sign_verify(void *sess)
 	if (result_op->status != RTE_CRYPTO_OP_STATUS_ERROR) {
 		RTE_LOG(ERR, USER1, "Failed to process sign-verify op\n");
 		status = TEST_FAILED;
+		goto error_exit;
 	}
 
 	status = TEST_SUCCESS;
@@ -174,7 +175,10 @@ queue_ops_rsa_enc_dec(void *sess)
 	struct rte_crypto_op *op, *result_op;
 	struct rte_crypto_asym_op *asym_op;
 	uint8_t cipher_buf[TEST_DATA_SIZE] = {0};
-	int ret, status = TEST_SUCCESS;
+	uint8_t msg_buf[TEST_DATA_SIZE] = {0};
+	int ret, status;
+
+	memcpy(msg_buf, rsaplaintext.data, rsaplaintext.len);
 
 	/* Set up crypto op data structure */
 	op = rte_crypto_op_alloc(op_mpool, RTE_CRYPTO_OP_TYPE_ASYMMETRIC);
@@ -189,7 +193,7 @@ queue_ops_rsa_enc_dec(void *sess)
 	/* Compute encryption on the test vector */
 	asym_op->rsa.op_type = RTE_CRYPTO_ASYM_OP_ENCRYPT;
 
-	asym_op->rsa.message.data = rsaplaintext.data;
+	asym_op->rsa.message.data = msg_buf;
 	asym_op->rsa.cipher.data = cipher_buf;
 	asym_op->rsa.cipher.length = RTE_DIM(rsa_n);
 	asym_op->rsa.message.length = rsaplaintext.len;
@@ -224,6 +228,7 @@ queue_ops_rsa_enc_dec(void *sess)
 	asym_op = result_op->asym;
 	asym_op->rsa.message.length = RTE_DIM(rsa_n);
 	asym_op->rsa.op_type = RTE_CRYPTO_ASYM_OP_DECRYPT;
+	memset(asym_op->rsa.message.data, 0, asym_op->rsa.message.length);
 
 	/* Process crypto operation */
 	if (rte_cryptodev_enqueue_burst(dev_id, 0, &op, 1) != 1) {
@@ -240,11 +245,20 @@ queue_ops_rsa_enc_dec(void *sess)
 		status = TEST_FAILED;
 		goto error_exit;
 	}
-	status = TEST_SUCCESS;
-	ret = rsa_verify(&rsaplaintext, result_op);
-	if (ret)
-		status = TEST_FAILED;
 
+	if (result_op->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
+		RTE_LOG(ERR, USER1, "Expected crypto op to succeed\n");
+		status = TEST_FAILED;
+		goto error_exit;
+	}
+
+	ret = rsa_verify(&rsaplaintext, result_op);
+	if (ret) {
+		status = TEST_FAILED;
+		goto error_exit;
+	}
+
+	status = TEST_SUCCESS;
 error_exit:
 
 	rte_crypto_op_free(op);
@@ -259,6 +273,7 @@ test_rsa_sign_verify(void)
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
 	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
+	struct rte_crypto_asym_xform xform;
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
@@ -279,7 +294,10 @@ test_rsa_sign_verify(void)
 		return TEST_SKIPPED;
 	}
 
-	ret = rte_cryptodev_asym_session_create(dev_id, &rsa_xform, sess_mpool, &sess);
+	memcpy(&xform, &rsa_xform, sizeof(rsa_xform));
+	xform.rsa.key_type = RTE_RSA_KEY_TYPE_EXP;
+
+	ret = rte_cryptodev_asym_session_create(dev_id, &xform, sess_mpool, &sess);
 
 	if (ret < 0) {
 		RTE_LOG(ERR, USER1, "Session creation failed for "
@@ -305,6 +323,7 @@ test_rsa_enc_dec(void)
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
 	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
+	struct rte_crypto_asym_xform xform;
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
@@ -325,7 +344,10 @@ test_rsa_enc_dec(void)
 		return TEST_SKIPPED;
 	}
 
-	ret = rte_cryptodev_asym_session_create(dev_id, &rsa_xform, sess_mpool, &sess);
+	memcpy(&xform, &rsa_xform, sizeof(rsa_xform));
+	xform.rsa.key_type = RTE_RSA_KEY_TYPE_EXP;
+
+	ret = rte_cryptodev_asym_session_create(dev_id, &xform, sess_mpool, &sess);
 
 	if (ret < 0) {
 		RTE_LOG(ERR, USER1, "Session creation failed for enc_dec\n");
@@ -370,7 +392,7 @@ test_rsa_sign_verify_crt(void)
 		return TEST_SKIPPED;
 	}
 
-	ret = rte_cryptodev_asym_session_create(dev_id, &rsa_xform_crt, sess_mpool, &sess);
+	ret = rte_cryptodev_asym_session_create(dev_id, &rsa_xform, sess_mpool, &sess);
 
 	if (ret < 0) {
 		RTE_LOG(ERR, USER1, "Session creation failed for "
@@ -416,7 +438,7 @@ test_rsa_enc_dec_crt(void)
 		return TEST_SKIPPED;
 	}
 
-	ret = rte_cryptodev_asym_session_create(dev_id, &rsa_xform_crt, sess_mpool, &sess);
+	ret = rte_cryptodev_asym_session_create(dev_id, &rsa_xform, sess_mpool, &sess);
 
 	if (ret < 0) {
 		RTE_LOG(ERR, USER1, "Session creation failed for "
@@ -1675,7 +1697,9 @@ test_ecdsa_sign_verify_all_curve(void)
 	const char *msg;
 
 	for (curve_id = SECP192R1; curve_id < END_OF_CURVE_LIST; curve_id++) {
-		if (curve_id == ED25519 || curve_id == ED448)
+		if (curve_id == ED25519 || curve_id == ED448 ||
+		    curve_id == ECGROUP19 || curve_id == ECGROUP20 ||
+		    curve_id == ECGROUP21)
 			continue;
 
 		status = test_ecdsa_sign_verify(curve_id);
@@ -1839,7 +1863,9 @@ test_ecpm_all_curve(void)
 	const char *msg;
 
 	for (curve_id = SECP192R1; curve_id < END_OF_CURVE_LIST; curve_id++) {
-		if (curve_id == SECP521R1_UA || curve_id == ED25519 || curve_id == ED448)
+		if (curve_id == SECP521R1_UA || curve_id == ECGROUP19 ||
+		    curve_id == ECGROUP20 || curve_id == ECGROUP21 ||
+		    curve_id == ED25519 || curve_id == ED448)
 			continue;
 
 		status = test_ecpm(curve_id);
@@ -2042,6 +2068,15 @@ test_ecdh_pub_key_generate(enum curve curve_id)
 	case SECP521R1:
 		input_params = ecdh_param_secp521r1;
 		break;
+	case ECGROUP19:
+		input_params = ecdh_param_group19;
+		break;
+	case ECGROUP20:
+		input_params = ecdh_param_group20;
+		break;
+	case ECGROUP21:
+		input_params = ecdh_param_group21;
+		break;
 	case ED25519:
 		input_params = ecdh_param_ed25519;
 		break;
@@ -2203,6 +2238,15 @@ test_ecdh_pub_key_verify(enum curve curve_id)
 	case SECP521R1:
 		input_params = ecdh_param_secp521r1;
 		break;
+	case ECGROUP19:
+		input_params = ecdh_param_group19;
+		break;
+	case ECGROUP20:
+		input_params = ecdh_param_group20;
+		break;
+	case ECGROUP21:
+		input_params = ecdh_param_group21;
+		break;
 	default:
 		RTE_LOG(ERR, USER1,
 				"line %u FAILED: %s", __LINE__,
@@ -2332,6 +2376,15 @@ test_ecdh_shared_secret(enum curve curve_id)
 		break;
 	case SECP521R1:
 		input_params = ecdh_param_secp521r1;
+		break;
+	case ECGROUP19:
+		input_params = ecdh_param_group19;
+		break;
+	case ECGROUP20:
+		input_params = ecdh_param_group20;
+		break;
+	case ECGROUP21:
+		input_params = ecdh_param_group21;
 		break;
 	default:
 		RTE_LOG(ERR, USER1,
@@ -2555,7 +2608,9 @@ test_ecdh_all_curve(void)
 	const char *msg;
 
 	for (curve_id = SECP192R1; curve_id < END_OF_CURVE_LIST; curve_id++) {
-		if (curve_id == SECP521R1_UA || curve_id == ED25519 || curve_id == ED448)
+		if (curve_id == SECP521R1_UA || curve_id == ECGROUP19 ||
+		    curve_id == ECGROUP20 || curve_id == ECGROUP21 ||
+		    curve_id == ED25519 || curve_id == ED448)
 			continue;
 
 		status = test_ecdh_priv_key_generate(curve_id);
@@ -3923,6 +3978,14 @@ static struct unit_test_suite cryptodev_openssl_asym_testsuite  = {
 			"Modex Group 18 test",
 			ut_setup_asym, ut_teardown_asym,
 			modular_exponentiation, &modex_group_test_cases[5]),
+		TEST_CASE_NAMED_WITH_DATA(
+			"Modex Group 24 test",
+			ut_setup_asym, ut_teardown_asym,
+			modular_exponentiation, &modex_group_test_cases[6]),
+		TEST_CASE_NAMED_WITH_DATA(
+			"Modex Group 24 subgroup test",
+			ut_setup_asym, ut_teardown_asym,
+			modular_exponentiation, &modex_group_test_cases[7]),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_eddsa_sign_verify_all_curve),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
@@ -4010,6 +4073,14 @@ static struct unit_test_suite cryptodev_octeontx_asym_testsuite  = {
 			"Modex Group 18 test",
 			ut_setup_asym, ut_teardown_asym,
 			modular_exponentiation, &modex_group_test_cases[5]),
+		TEST_CASE_NAMED_WITH_DATA(
+			"Modex Group 24 test",
+			ut_setup_asym, ut_teardown_asym,
+			modular_exponentiation, &modex_group_test_cases[6]),
+		TEST_CASE_NAMED_WITH_DATA(
+			"Modex Group 24 subgroup test",
+			ut_setup_asym, ut_teardown_asym,
+			modular_exponentiation, &modex_group_test_cases[7]),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
 			     test_ecdsa_sign_verify_all_curve),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_sm2_sign),

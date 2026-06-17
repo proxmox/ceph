@@ -76,8 +76,6 @@ function usage() {
 	echo "                           vfio-user initiator is always built-in in Linux."
 	echo "                           example: /usr/src/libvfio-user"
 	echo " --without-vfio-user       No path required."
-	echo " --with-vbdev-compress     Build vbdev compression module and dependencies."
-	echo " --without-vbdev-compress  No path required."
 	echo " --with-dpdk-compressdev   Build accel DPDK compression module and dependencies."
 	echo " --without-dpdk-compressdev No path required."
 	echo " --with-rbd                Build Ceph RBD bdev module."
@@ -114,8 +112,8 @@ function usage() {
 	echo " --without-uring-zns       Build I/O uring module without ZNS (zoned namespaces) support."
 	echo " --with-openssl[=DIR]      Build OPENSSL with custom path. Otherwise the regular system paths will"
 	echo "                           be searched."
-	echo " --with-fuse               Build FUSE components for mounting a blobfs filesystem."
-	echo " --without-fuse            No path required."
+	echo " --with-fsdev              Build fsdev and fuse_dispatcher library components"
+	echo " --without-fsdev           No path required"
 	echo " --with-nvme-cuse          Build NVMe driver with support for CUSE-based character devices."
 	echo " --without-nvme-cuse       No path required."
 	echo " --with-raid5f             Build with bdev_raid module RAID5f support."
@@ -143,6 +141,7 @@ function usage() {
 	echo "CFLAGS                     C compiler flags"
 	echo "CXX                        C++ compiler"
 	echo "CXXFLAGS                   C++ compiler flags"
+	echo "AR                         Archiver to use"
 	echo "LD                         Linker"
 	echo "LDFLAGS                    Linker flags"
 	echo "DESTDIR                    Destination for 'make install'"
@@ -174,7 +173,7 @@ for i in "$@"; do
 done
 
 # Detect the compiler toolchain
-$rootdir/scripts/detect_cc.sh --cc="$CC" --cxx="$CXX" --lto="${CONFIG[LTO]}" --ld="$LD" --cross-prefix="${CONFIG[CROSS_PREFIX]}" > $rootdir/mk/cc.mk
+$rootdir/scripts/detect_cc.sh --cc="$CC" --cxx="$CXX" --lto="${CONFIG[LTO]}" --ar="$AR" --ld="$LD" --cross-prefix="${CONFIG[CROSS_PREFIX]}" > $rootdir/mk/cc.mk
 
 mapfile -t cc < <(grep "=" "$rootdir/mk/cc.mk")
 source <(printf '%q\n' "${cc[@]}")
@@ -553,12 +552,6 @@ for i in "$@"; do
 		--without-vfio-user)
 			CONFIG[VFIO_USER]=n
 			;;
-		--with-vbdev-compress)
-			CONFIG[VBDEV_COMPRESS]=y
-			;;
-		--without-vbdev-compress)
-			CONFIG[VBDEV_COMPRESS]=n
-			;;
 		--with-dpdk-compressdev)
 			CONFIG[DPDK_COMPRESSDEV]=y
 			;;
@@ -624,11 +617,11 @@ for i in "$@"; do
 			check_dir "$i"
 			CONFIG[OPENSSL_PATH]=$(readlink -f ${i#*=})
 			;;
-		--with-fuse)
-			CONFIG[FUSE]=y
+		--with-fsdev)
+			CONFIG[FSDEV]=y
 			;;
-		--without-fuse)
-			CONFIG[FUSE]=n
+		--without-fsdev)
+			CONFIG[FSDEV]=n
 			;;
 		--with-nvme-cuse)
 			CONFIG[NVME_CUSE]=y
@@ -975,46 +968,6 @@ function mlx5_build() {
 	return 0
 }
 
-if [[ "${CONFIG[VBDEV_COMPRESS]}" = "y" ]]; then
-	if ! echo -e '#include <libpmem.h>\nint main(void) { return 0; }\n' \
-		| "${BUILD_CMD[@]}" -lpmem - 2> /dev/null; then
-		echo "--with-vbdev-compress requires libpmem."
-		echo "Please install then re-run this script."
-		exit 1
-	fi
-	# Try to enable mlx5 compress
-	CONFIG[VBDEV_COMPRESS_MLX5]="y"
-
-	# Check if libmlx5 exists to enable mlx5_pci compress PMD
-	if ! mlx5_build; then
-		echo "libmlx5 is not found, so disabling DPDK mlx5_pci compress PMD"
-		CONFIG[VBDEV_COMPRESS_MLX5]="n"
-	else
-		if [[ "${CONFIG[DPDK_PKG_CONFIG]}" = "y" ]]; then
-			# Check if librte_compress_mlx5 exists in DPDK package
-			if [ ! -f "${CONFIG[DPDK_LIB_DIR]}"/librte_compress_mlx5.so ]; then
-				echo "librte_compress_mlx5 is not found, so disabling DPDK mlx5_pci compress PMD"
-				CONFIG[VBDEV_COMPRESS_MLX5]="n"
-			fi
-		else
-			# Check DPDK version to determine if mlx5_pci driver is supported
-			dpdk_ver=$(dpdk_version)
-			if [[ $dpdk_ver = "none" ]]; then
-				echo "Cannot get DPDK version, so disabling DPDK mlx5_pci compress PMD"
-				CONFIG[VBDEV_COMPRESS_MLX5]="n"
-			elif [[ -n $dpdk_ver ]] && lt "$dpdk_ver" 21.02.0; then
-				# mlx5_pci for compress is supported by DPDK >- 21.02.0
-				echo "DPDK version ${dpdk_ver} doesn't support mlx5_pci compress PMD"
-				CONFIG[VBDEV_COMPRESS_MLX5]="n"
-			elif [[ -n ${CONFIG[DPDK_LIB_DIR]} ]] && [ ! -f "${CONFIG[DPDK_LIB_DIR]}"/librte_compress_mlx5.so ]; then
-				# This is only checked when --with-dpdk or --with-dpdk=* is used
-				echo "librte_compress_mlx5 is not found, so disabling DPDK mlx5_pci compress PMD"
-				CONFIG[VBDEV_COMPRESS_MLX5]="n"
-			fi
-		fi
-	fi
-fi
-
 if [[ "${CONFIG[CRYPTO]}" = "y" ]]; then
 	# Try to enable mlx5 crypto
 	CONFIG[CRYPTO_MLX5]="y"
@@ -1149,6 +1102,11 @@ if echo -e '#include <stdlib.h>\nint main(void) { arc4random(); return 0; }\n' \
 	CONFIG[HAVE_ARC4RANDOM]="y"
 fi
 
+if echo -e '#include <uuid/uuid.h>\nint main(void) { return 0; }\n' \
+	| "${BUILD_CMD[@]}" - -luuid 2> /dev/null; then
+	CONFIG[HAVE_LIBUUID]="y"
+fi
+
 if echo -e '#include <uuid/uuid.h>\nint main(void) { uuid_generate_sha1(NULL, NULL, NULL, 0); return 0; }\n' \
 	| "${BUILD_CMD[@]}" - -luuid 2> /dev/null; then
 	CONFIG[HAVE_UUID_GENERATE_SHA1]="y"
@@ -1171,6 +1129,14 @@ fi
 if echo -e '#include <lz4.h>\nint main(void) { return 0; }\n' \
 	| "${BUILD_CMD[@]}" -llz4 - 2> /dev/null; then
 	CONFIG[HAVE_LZ4]="y"
+fi
+
+if [[ $sys_name == "Linux" ]]; then
+	# iocb.aio_rw_flags and io_prep_preadv2 are part of the same feature in libaio: http://pagure.io/libaio/c/a6f40
+	if echo -e '#include <libaio.h>\n#include <stddef.h>\nint main(void) { io_prep_preadv2(NULL, 0, NULL, 0, 0, 0); return 0; }' \
+		| "${BUILD_CMD[@]}" -laio - 2> /dev/null; then
+		CONFIG[AIO_HAVE_RW_FLAGS]="y"
+	fi
 fi
 
 if [[ "${CONFIG[OCF]}" = "y" ]]; then
@@ -1215,14 +1181,6 @@ if [[ "${CONFIG[URING]}" = "y" || "${CONFIG[XNVME]}" = "y" ]]; then
 			echo "Disabling Zoned NS support in Uring! Requires blkzoned.h from kernel >= linux-5.9."
 			CONFIG[URING_ZNS]=n
 		fi
-	fi
-fi
-
-if [[ "${CONFIG[FUSE]}" = "y" ]]; then
-	if [[ ! -d /usr/include/fuse3 ]] && [[ ! -d /usr/local/include/fuse3 ]]; then
-		echo "--with-fuse requires libfuse3."
-		echo "Please install then re-run this script."
-		exit 1
 	fi
 fi
 
@@ -1293,14 +1251,13 @@ if [[ "${CONFIG[ISAL]}" = "y" ]]; then
 	ISAL_OPTS+=("--prefix=${CONFIG[PREFIX]}")
 	echo -n "Configuring ISA-L (logfile: $ISAL_LOG)..."
 	./autogen.sh &> $ISAL_LOG
-	./configure CFLAGS="-fPIC -g -O2 -fuse-ld=$LD_TYPE -Wno-unused-command-line-argument" "${ISAL_OPTS[@]}" --enable-shared=no >> $ISAL_LOG 2>&1
+	./configure CFLAGS="-fPIC -g -O2 -fuse-ld=$LD_TYPE -Wno-unused-command-line-argument" "${ISAL_OPTS[@]}" >> $ISAL_LOG 2>&1
 	echo "done."
 	cd $rootdir
 else
 	echo "Without ISA-L, there is no software support for crypto or compression,"
 	echo "so these features will be disabled."
 	CONFIG[CRYPTO]=n
-	CONFIG[VBDEV_COMPRESS]=n
 	CONFIG[DPDK_COMPRESSDEV]=n
 fi
 

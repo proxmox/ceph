@@ -24,18 +24,14 @@ extern int rte_graph_logtype;
 	RTE_LOG_LINE_PREFIX(level, GRAPH,                                      \
 		"%s():%u ", __func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
+#define GRAPH_LOG2(level, _fname, _linenum, ...)                               \
+	RTE_LOG_LINE_PREFIX(level, GRAPH,                                      \
+		"%s():%u ", _fname RTE_LOG_COMMA _linenum, __VA_ARGS__)
+
 #define graph_err(...) GRAPH_LOG(ERR, __VA_ARGS__)
 #define graph_warn(...) GRAPH_LOG(WARNING, __VA_ARGS__)
 #define graph_info(...) GRAPH_LOG(INFO, __VA_ARGS__)
 #define graph_dbg(...) GRAPH_LOG(DEBUG, __VA_ARGS__)
-
-#define ID_CHECK(id, id_max)                                                   \
-	do {                                                                   \
-		if ((id) >= (id_max)) {                                        \
-			rte_errno = EINVAL;                                    \
-			goto fail;                                             \
-		}                                                              \
-	} while (0)
 
 #define SET_ERR_JMP(err, where, fmt, ...)                                      \
 	do {                                                                   \
@@ -197,6 +193,17 @@ struct node_head *node_list_head_get(void);
  *   Pointer to the node.
  */
 struct node *node_from_name(const char *name);
+
+/**
+ * @internal
+ *
+ * Override process func of a node.
+ *
+ * @return
+ *   - 0: Success.
+ *   - <0: Error
+ */
+int node_override_process_func(rte_node_t id, rte_node_process_t process);
 
 /* Graph list functions */
 STAILQ_HEAD(graph_head, graph);
@@ -447,5 +454,18 @@ int graph_sched_wq_create(struct graph *_graph, struct graph *_parent_graph,
  *   The graph object
  */
 void graph_sched_wq_destroy(struct graph *_graph);
+
+/**
+ * @internal
+ *
+ * Check if given node present in any of the created graphs.
+ *
+ * @param node
+ *   The node object
+ *
+ * @return
+ *   0 if not present in any graph, else return 1.
+ */
+bool graph_is_node_active_in_graph(struct node *_node);
 
 #endif /* _RTE_GRAPH_PRIVATE_H_ */

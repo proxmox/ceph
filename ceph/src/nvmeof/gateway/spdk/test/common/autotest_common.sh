@@ -111,14 +111,10 @@ export SPDK_TEST_BLOCKDEV
 export SPDK_TEST_RAID
 : ${SPDK_TEST_IOAT=0}
 export SPDK_TEST_IOAT
-: ${SPDK_TEST_BLOBFS=0}
-export SPDK_TEST_BLOBFS
 : ${SPDK_TEST_VHOST_INIT=0}
 export SPDK_TEST_VHOST_INIT
 : ${SPDK_TEST_LVOL=0}
 export SPDK_TEST_LVOL
-: ${SPDK_TEST_VBDEV_COMPRESS=0}
-export SPDK_TEST_VBDEV_COMPRESS
 : ${SPDK_RUN_ASAN=0}
 export SPDK_RUN_ASAN
 : ${SPDK_RUN_UBSAN=0}
@@ -176,6 +172,8 @@ export SPDK_JSONRPC_GO_CLIENT
 export SPDK_TEST_SETUP
 : ${SPDK_TEST_NVME_INTERRUPT=0}
 export SPDK_TEST_NVME_INTERRUPT
+: ${SPDK_TEST_SKIP_NVMF_KERNEL_TESTS=0}
+export SPDK_TEST_SKIP_NVMF_KERNEL_TESTS
 
 # always test with SPDK shared objects.
 export SPDK_LIB_DIR="$rootdir/build/lib"
@@ -442,12 +440,6 @@ function get_config_params() {
 		config_params+=' --disable-unit-tests'
 	fi
 
-	if [ -f /usr/include/libpmem.h ] && [ $SPDK_TEST_VBDEV_COMPRESS -eq 1 ]; then
-		if ge "$(nasm --version | awk '{print $3}')" 2.14 && [[ $SPDK_TEST_ISAL -eq 1 ]]; then
-			config_params+=' --with-vbdev-compress --with-dpdk-compressdev'
-		fi
-	fi
-
 	if [ -d /usr/include/rbd ] && [ -d /usr/include/rados ] && [ $SPDK_TEST_RBD -eq 1 ]; then
 		config_params+=' --with-rbd'
 	fi
@@ -470,12 +462,6 @@ function get_config_params() {
 	fi
 
 	config_params+=' --enable-coverage'
-
-	if [ $SPDK_TEST_BLOBFS -eq 1 ]; then
-		if [[ -d /usr/include/fuse3 ]] || [[ -d /usr/local/include/fuse3 ]]; then
-			config_params+=' --with-fuse'
-		fi
-	fi
 
 	if [[ -f /usr/include/liburing/io_uring.h && -f /usr/include/linux/ublk_cmd.h ]]; then
 		config_params+=' --with-ublk'
@@ -777,16 +763,16 @@ function gdb_attach() {
 
 function process_core() {
 	# Note that this always was racy as we can't really sync with the kernel
-	# to see if there's any core queued up for writing. We could check if
-	# collector is running and wait for it explicitly, but it doesn't seem
-	# to be worth the effort. So assume that if we are being called via
-	# trap, as in, when some error has occurred, wait up to 10s for any
-	# potential cores. If we are called just for cleanup at the very end,
-	# don't wait since all the tests ended successfully, hence having any
-	# critical cores lying around is unlikely.
+	# to see if there's any core queued up for writing. Assume that if we are
+	# being called via trap, as in, when some error has occurred, wait up to
+	# 10s for any potential cores. If we are called just for cleanup at the
+	# very end, don't wait since all the tests ended successfully, hence
+	# having any critical cores lying around is unlikely.
 	((autotest_es != 0)) && sleep 10
 
 	local coredumps core
+
+	"$rootdir/scripts/core-collector.sh" "$output_dir/coredumps"
 
 	coredumps=("$output_dir/coredumps/"*.bt.txt)
 
@@ -1451,20 +1437,36 @@ function autotest_cleanup() {
 }
 
 function freebsd_update_contigmem_mod() {
-	if [ $(uname) = FreeBSD ]; then
-		kldunload contigmem.ko || true
-		if [ -n "${SPDK_RUN_EXTERNAL_DPDK:-}" ]; then
-			cp -f "$SPDK_RUN_EXTERNAL_DPDK/kmod/contigmem.ko" /boot/modules/
-			cp -f "$SPDK_RUN_EXTERNAL_DPDK/kmod/contigmem.ko" /boot/kernel/
-			cp -f "$SPDK_RUN_EXTERNAL_DPDK/kmod/nic_uio.ko" /boot/modules/
-			cp -f "$SPDK_RUN_EXTERNAL_DPDK/kmod/nic_uio.ko" /boot/kernel/
-		else
-			cp -f "$rootdir/dpdk/build/kmod/contigmem.ko" /boot/modules/
-			cp -f "$rootdir/dpdk/build/kmod/contigmem.ko" /boot/kernel/
-			cp -f "$rootdir/dpdk/build/kmod/nic_uio.ko" /boot/modules/
-			cp -f "$rootdir/dpdk/build/kmod/nic_uio.ko" /boot/kernel/
+	local srcdir=${SPDK_RUN_EXTERNAL_DPDK:-"$rootdir/dpdk/build"}
+
+	# Skip update if requested
+	if [[ -n $USE_INSTALLED_CONTIGMEM ]]; then
+		# If the driver is unloaded (for whatever reason) load it back in -
+		# if it fails it means that driver is likely not around and/or the
+		# sysctl setup is not available. In such a case, this is a hard fail.
+		if ! kldstat -qm contigmem; then
+			kldload contigmem || return 1
 		fi
+		echo "Skipping update of contigmem driver"
+		return 0
 	fi
+
+	kldunload contigmem.ko || true
+	cp -f "$srcdir/kmod/contigmem.ko" /boot/modules/
+	cp -f "$srcdir/kmod/contigmem.ko" /boot/kernel/
+}
+
+function freebsd_update_nic_uio_mod() {
+	local srcdir=${SPDK_RUN_EXTERNAL_DPDK:-"$rootdir/dpdk/build"}
+	cp -f "$srcdir/kmod/nic_uio.ko" /boot/modules/
+	cp -f "$srcdir/kmod/nic_uio.ko" /boot/kernel/
+}
+
+function freebsd_update_mods() {
+	[[ $(uname) == FreeBSD ]] || return 0
+
+	freebsd_update_contigmem_mod
+	freebsd_update_nic_uio_mod
 }
 
 function freebsd_set_maxsock_buf() {
@@ -1689,22 +1691,8 @@ function is_pid_child() {
 	return 1
 }
 
-# Define temp storage for all the tests. Look for 2GB at minimum
-set_test_storage "${TEST_MIN_STORAGE_SIZE:-$((1 << 31))}"
-
-set -o errtrace
-shopt -s extdebug
-trap "trap - ERR; print_backtrace >&2" ERR
-
-PS4=' \t ${test_domain:-} -- ${BASH_SOURCE#${BASH_SOURCE%/*/*}/}@${LINENO} -- \$ '
-if $SPDK_AUTOTEST_X; then
-	# explicitly enable xtraces, overriding any tracking information.
-	xtrace_fd
-else
-	xtrace_disable
-fi
-
-if [[ $CONFIG_COVERAGE == y ]]; then
+function enable_coverage() {
+	[[ $CONFIG_COVERAGE == y ]] || return 0
 	if lt "$(lcov --version | awk '{print $NF}')" 2; then
 		lcov_rc_opt="--rc lcov_branch_coverage=1 --rc lcov_function_coverage=1"
 	else
@@ -1720,4 +1708,37 @@ if [[ $CONFIG_COVERAGE == y ]]; then
 		$lcov_opt
 		"
 	export LCOV="lcov $LCOV_OPTS"
+}
+
+function gather_coverage() {
+	[[ $CONFIG_COVERAGE == y ]] || return 0
+	# generate coverage data and combine with baseline
+	$LCOV -q -c --no-external -d "$rootdir" -t "$(hostname)" -o "$output_dir/cov_test.info"
+	$LCOV -q -a "$output_dir/cov_base.info" -a "$output_dir/cov_test.info" -o "$output_dir/cov_total.info"
+	$LCOV -q -r "$output_dir/cov_total.info" '*/dpdk/*' -o "$output_dir/cov_total.info"
+	# C++ headers in /usr can sometimes generate data even when specifying
+	# --no-external, so remove them. But we need to add an ignore-errors
+	# flag to squash warnings on systems where they don't generate data.
+	$LCOV -q -r "$output_dir/cov_total.info" --ignore-errors unused,unused '/usr/*' -o "$output_dir/cov_total.info"
+	$LCOV -q -r "$output_dir/cov_total.info" '*/examples/vmd/*' -o "$output_dir/cov_total.info"
+	$LCOV -q -r "$output_dir/cov_total.info" '*/app/spdk_lspci/*' -o "$output_dir/cov_total.info"
+	$LCOV -q -r "$output_dir/cov_total.info" '*/app/spdk_top/*' -o "$output_dir/cov_total.info"
+	rm -f "$output_dir/cov_base.info" "$output_dir/cov_test.info"
+}
+
+# Define temp storage for all the tests. Look for 2GB at minimum
+set_test_storage "${TEST_MIN_STORAGE_SIZE:-$((1 << 31))}"
+
+set -o errtrace
+shopt -s extdebug
+trap "trap - ERR; print_backtrace >&2" ERR
+
+PS4=' \t ${test_domain:-} -- ${BASH_SOURCE#${BASH_SOURCE%/*/*}/}@${LINENO} -- \$ '
+if $SPDK_AUTOTEST_X; then
+	# explicitly enable xtraces, overriding any tracking information.
+	xtrace_fd
+else
+	xtrace_disable
 fi
+
+enable_coverage

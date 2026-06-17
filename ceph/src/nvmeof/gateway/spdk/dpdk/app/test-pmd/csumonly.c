@@ -627,7 +627,6 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 	uint32_t rx_bad_outer_l4_csum;
 	uint32_t rx_bad_outer_ip_csum;
 	struct testpmd_offload_info info;
-	struct rte_net_hdr_lens hdr_lens = {0};
 	uint32_t ptype;
 
 	/* receive a burst of packet */
@@ -666,6 +665,8 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 #endif
 
 	for (i = 0; i < nb_rx; i++) {
+		struct rte_net_hdr_lens hdr_lens = {0};
+
 		if (likely(i < nb_rx - 1))
 			rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[i + 1],
 						       void *));
@@ -711,11 +712,11 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 		if (txp->parse_tunnel && RTE_ETH_IS_TUNNEL_PKT(ptype) != 0) {
 			info.is_tunnel = 1;
 			update_tunnel_outer(&info);
-			info.l2_len = hdr_lens.inner_l2_len + hdr_lens.tunnel_len;
+			info.l2_len = hdr_lens.inner_l2_len;
 			info.l3_len = hdr_lens.inner_l3_len;
 			info.l4_len = hdr_lens.inner_l4_len;
-			eth_hdr = (struct rte_ether_hdr *)(char *)l3_hdr +
-					info.outer_l3_len + hdr_lens.tunnel_len;
+			eth_hdr = (struct rte_ether_hdr *)((char *)l3_hdr +
+				hdr_lens.l3_len + hdr_lens.l4_len + hdr_lens.tunnel_len);
 			info.ethertype = get_ethertype_by_ptype(eth_hdr,
 						ptype & RTE_PTYPE_INNER_L3_MASK);
 			tx_ol_flags |= get_tunnel_ol_flags_by_ptype(ptype);
@@ -808,7 +809,7 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 				info.l2_len, rte_be_to_cpu_16(info.ethertype),
 				info.l3_len, info.l4_proto, info.l4_len, buf);
 			if (rx_ol_flags & RTE_MBUF_F_RX_LRO)
-				printf("rx: m->lro_segsz=%u\n", m->tso_segsz);
+				printf("rx: m->lro_segsz=%u\n", (unsigned int)m->tso_segsz);
 			if (info.is_tunnel == 1)
 				printf("rx: outer_l2_len=%d outer_ethertype=%x "
 					"outer_l3_len=%d\n", info.outer_l2_len,
@@ -820,28 +821,29 @@ pkt_burst_checksum_forward(struct fwd_stream *fs)
 					    RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
 					    RTE_ETH_TX_OFFLOAD_SCTP_CKSUM)) ||
 				info.tso_segsz != 0)
-				printf("tx: m->l2_len=%d m->l3_len=%d "
-					"m->l4_len=%d\n",
-					m->l2_len, m->l3_len, m->l4_len);
+				printf("tx: m->l2_len=%u m->l3_len=%u "
+					"m->l4_len=%u\n",
+					(unsigned int)m->l2_len, (unsigned int)m->l3_len,
+					(unsigned int)m->l4_len);
 			if (info.is_tunnel == 1) {
 				if ((tx_offloads &
 				    RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM) ||
 				    (tx_offloads &
 				    RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM) ||
 				    (tx_ol_flags & RTE_MBUF_F_TX_OUTER_IPV6))
-					printf("tx: m->outer_l2_len=%d "
-						"m->outer_l3_len=%d\n",
-						m->outer_l2_len,
-						m->outer_l3_len);
+					printf("tx: m->outer_l2_len=%u "
+						"m->outer_l3_len=%u\n",
+						(unsigned int)m->outer_l2_len,
+						(unsigned int)m->outer_l3_len);
 				if (info.tunnel_tso_segsz != 0 &&
 						(m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
 							RTE_MBUF_F_TX_UDP_SEG)))
-					printf("tx: m->tso_segsz=%d\n",
-						m->tso_segsz);
+					printf("tx: m->tso_segsz=%u\n",
+						(unsigned int)m->tso_segsz);
 			} else if (info.tso_segsz != 0 &&
 					(m->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
 						RTE_MBUF_F_TX_UDP_SEG)))
-				printf("tx: m->tso_segsz=%d\n", m->tso_segsz);
+				printf("tx: m->tso_segsz=%u\n", (unsigned int)m->tso_segsz);
 			rte_get_tx_ol_flag_list(m->ol_flags, buf, sizeof(buf));
 			printf("tx: flags=%s", buf);
 			printf("\n");

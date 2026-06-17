@@ -91,9 +91,11 @@ DEFINE_STUB(nvmf_ctrlr_copy_supported,
 	    (struct spdk_nvmf_ctrlr *ctrlr),
 	    false);
 
-DEFINE_STUB_V(nvmf_get_discovery_log_page,
-	      (struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
-	       uint32_t iovcnt, uint64_t offset, uint32_t length, struct spdk_nvme_transport_id *cmd_src_trid));
+DEFINE_STUB(nvmf_get_discovery_log_page,
+	    int,
+	    (struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
+	     uint32_t iovcnt, uint64_t offset, uint32_t length, struct spdk_nvme_transport_id *cmd_src_trid),
+	    0);
 
 DEFINE_STUB(spdk_nvmf_qpair_get_listen_trid,
 	    int,
@@ -204,6 +206,8 @@ DEFINE_STUB(spdk_nvmf_bdev_ctrlr_nvme_passthru_admin,
 	    0);
 DEFINE_STUB(spdk_bdev_reset, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 				   spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_nvme_nssr, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+				       spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
 DEFINE_STUB_V(spdk_bdev_free_io, (struct spdk_bdev_io *bdev_io));
 
 DEFINE_STUB(spdk_bdev_get_max_active_zones, uint32_t, (const struct spdk_bdev *bdev),
@@ -242,7 +246,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair)
 
 void
 nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
-			    bool dif_insert_or_strip)
+			    bool dif_insert_or_strip, uint32_t transport_max_io_size)
 {
 	uint64_t num_blocks;
 
@@ -403,10 +407,32 @@ test_get_log_page(void)
 	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
 
+	/* Get Log Page with invalid offset (offset exceeds requested log page size) */
+	memset(&cmd, 0, sizeof(cmd));
+	memset(&rsp, 0, sizeof(rsp));
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_LOG_PAGE;
+	cmd.nvme_cmd.cdw10_bits.get_log_page.lid = SPDK_NVME_LOG_FIRMWARE_SLOT;
+	cmd.nvme_cmd.cdw10_bits.get_log_page.numdl = spdk_nvme_bytes_to_numd(req.length);
+	cmd.nvme_cmd.cdw12 = sizeof(struct spdk_nvme_firmware_page) + 16;
+	CU_ASSERT(nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
+	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
+
 	/* Get Log Page without data buffer */
 	memset(&cmd, 0, sizeof(cmd));
 	memset(&rsp, 0, sizeof(rsp));
 	req.iovcnt = 0;
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_LOG_PAGE;
+	cmd.nvme_cmd.cdw10_bits.get_log_page.lid = SPDK_NVME_LOG_ERROR;
+	cmd.nvme_cmd.cdw10_bits.get_log_page.numdl = spdk_nvme_bytes_to_numd(req.length);
+	CU_ASSERT(nvmf_ctrlr_get_log_page(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
+	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
+
+	/* Get Log Page with controller scope using an NSID other than 0 or 0xFFFFFFFF */
+	memset(&cmd, 0, sizeof(cmd));
+	memset(&rsp, 0, sizeof(rsp));
+	cmd.nvme_cmd.nsid = 1;
 	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_LOG_PAGE;
 	cmd.nvme_cmd.cdw10_bits.get_log_page.lid = SPDK_NVME_LOG_ERROR;
 	cmd.nvme_cmd.cdw10_bits.get_log_page.numdl = spdk_nvme_bytes_to_numd(req.length);
@@ -1060,7 +1086,7 @@ test_get_ns_id_desc_list(void)
 	memset(&rsp, 0, sizeof(rsp));
 	CU_ASSERT(nvmf_ctrlr_process_admin_cmd(&req) == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
-	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_NAMESPACE_OR_FORMAT);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
 
 	/* Valid NSID, but ns has no IDs defined */
 	spdk_bit_array_set(ctrlr.visible_ns, 0);
@@ -1410,6 +1436,15 @@ test_set_get_features(void)
 	CU_ASSERT(rsp.nvme_cpl.status.sct == SPDK_NVME_SCT_GENERIC);
 	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_FIELD);
 
+	/* Get SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD - invalid NSID */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_GET_FEATURES;
+	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+	cmd.nvme_cmd.nsid = SPDK_COUNTOF(ns_arr) + 1;
+
+	rc = nvmf_ctrlr_get_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_NAMESPACE_OR_FORMAT);
+
 	/* Set SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD - valid TMPSEL */
 	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
 	cmd.nvme_cmd.cdw11 = 0x42;
@@ -1422,6 +1457,7 @@ test_set_get_features(void)
 	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
 	cmd.nvme_cmd.cdw11 = 0x42 | 1 << 16 | 1 << 19; /* Set reserved value */
 	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_TEMPERATURE_THRESHOLD;
+	cmd.nvme_cmd.nsid = 0;
 
 	rc = nvmf_ctrlr_set_features(&req);
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
@@ -1466,6 +1502,24 @@ test_set_get_features(void)
 
 	rc = nvmf_ctrlr_set_features(&req);
 	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+
+	/* Set SPDK_NVME_FEAT_ERROR_RECOVERY - invalid NSID */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_ARBITRATION;
+	cmd.nvme_cmd.nsid = SPDK_COUNTOF(ns_arr) + 1;
+
+	rc = nvmf_ctrlr_set_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_INVALID_NAMESPACE_OR_FORMAT);
+
+	/* Set SPDK_NVME_FEAT_ARBITRATION - valid NSID for controller scoped feature */
+	cmd.nvme_cmd.opc = SPDK_NVME_OPC_SET_FEATURES;
+	cmd.nvme_cmd.cdw10_bits.set_features.fid = SPDK_NVME_FEAT_ARBITRATION;
+	cmd.nvme_cmd.nsid = 1;
+
+	rc = nvmf_ctrlr_set_features(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(rsp.nvme_cpl.status.sc == SPDK_NVME_SC_FEATURE_NOT_NAMESPACE_SPECIFIC);
 
 	spdk_bit_array_free(&ctrlr.visible_ns);
 }
@@ -1779,6 +1833,16 @@ test_reservation_notification_log_page(void)
 	iov.iov_len = sizeof(logs);
 	nvmf_get_reservation_notification_log_page(&ctrlr, &iov, 1, 0, sizeof(logs), 0);
 	SPDK_CU_ASSERT_FATAL(ctrlr.num_avail_log_pages == 0);
+
+	/* Test Case: log page count rollover */
+	ctrlr.log_page_count = UINT64_MAX;
+	nvmf_ctrlr_reservation_notice_log(&ctrlr, &ns,
+					  SPDK_NVME_REGISTRATION_PREEMPTED);
+	poll_threads();
+	iov.iov_base = &logs[1];
+	iov.iov_len = sizeof(logs);
+	nvmf_get_reservation_notification_log_page(&ctrlr, &iov, 1, 0, sizeof(logs), 0);
+	SPDK_CU_ASSERT_FATAL(logs[1].log_page_count == 1);
 
 	cleanup_pending_async_events(&ctrlr);
 }
@@ -2690,7 +2754,7 @@ test_nvmf_ctrlr_create_destruct(void)
 	CU_ASSERT(ctrlr->vcprop.cap.bits.mpsmin == 0);
 	CU_ASSERT(ctrlr->vcprop.cap.bits.mpsmax == 0);
 	CU_ASSERT(ctrlr->vcprop.vs.bits.mjr == 1);
-	CU_ASSERT(ctrlr->vcprop.vs.bits.mnr == 3);
+	CU_ASSERT(ctrlr->vcprop.vs.bits.mnr == 4);
 	CU_ASSERT(ctrlr->vcprop.vs.bits.ter == 0);
 	CU_ASSERT(ctrlr->vcprop.cc.raw == 0);
 	CU_ASSERT(ctrlr->vcprop.cc.bits.en == 0);
@@ -3190,6 +3254,83 @@ test_nvmf_property_set(void)
 }
 
 static void
+test_nvmf_property_nssr(void)
+{
+	int rc;
+	struct spdk_nvmf_request req = {};
+	struct spdk_nvmf_qpair qpair = {};
+	struct spdk_nvmf_ctrlr ctrlrA = {};
+	struct spdk_nvmf_ctrlr ctrlrB = {};
+	struct spdk_nvmf_subsystem_poll_group sgroups = {};
+	struct spdk_nvmf_poll_group group;
+	struct spdk_nvmf_qpair admin_qpair;
+	union nvmf_h2c_msg cmd = {};
+	union nvmf_c2h_msg rsp = {};
+	struct spdk_nvmf_subsystem subsystem;
+	struct spdk_nvmf_ns *ns_arr[1] = { NULL };
+
+	req.qpair = &qpair;
+	qpair.ctrlr = &ctrlrA;
+	memset(&admin_qpair, 0, sizeof(admin_qpair));
+	memset(&group, 0, sizeof(group));
+	admin_qpair.group = &group;
+	ctrlrA.admin_qpair = &admin_qpair;
+	group.sgroups = &sgroups;
+	req.cmd = &cmd;
+	req.rsp = &rsp;
+	ctrlrA.subsys = &subsystem;
+	ctrlrB.subsys = &subsystem;
+	subsystem.ns = ns_arr;
+	TAILQ_INIT(&subsystem.ctrlrs);
+	TAILQ_INSERT_HEAD(&subsystem.ctrlrs, &ctrlrA, link);
+	TAILQ_INSERT_TAIL(&subsystem.ctrlrs, &ctrlrB, link);
+
+	ctrlrA.vcprop.cap.bits.nssrs = 1;
+	ctrlrB.vcprop.cap.bits.nssrs = 1;
+
+	/* Check setting NSSR */
+	memset(req.rsp, 0, sizeof(union nvmf_c2h_msg));
+	cmd.prop_set_cmd.ofst = offsetof(struct spdk_nvme_registers, nssr);
+	cmd.prop_set_cmd.value.u64 = SPDK_NVME_NSSR_VALUE;
+	cmd.prop_set_cmd.attrib.size = SPDK_NVMF_PROP_SIZE_4;
+
+	rc = nvmf_property_set(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(ctrlrA.executing_nssr == 1);
+	CU_ASSERT(ctrlrB.executing_nssr == 1);
+
+	/* Check NSSR not supported */
+	ctrlrA.executing_nssr = 0;
+	ctrlrB.executing_nssr = 0;
+	ctrlrA.vcprop.cap.bits.nssrs = 0;
+
+	rc = nvmf_property_set(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(req.rsp->nvme_cpl.status.sct == SPDK_NVME_SCT_COMMAND_SPECIFIC);
+	CU_ASSERT(req.rsp->nvme_cpl.status.sc == SPDK_NVMF_FABRIC_SC_INVALID_PARAM);
+	CU_ASSERT(ctrlrA.executing_nssr == 0);
+	ctrlrA.vcprop.cap.bits.nssrs = 1;
+
+	/* Check setting NSSR with wrong code */
+	ctrlrA.executing_nssr = 0;
+	memset(req.rsp, 0, sizeof(union nvmf_c2h_msg));
+	cmd.prop_set_cmd.value.u64 = 0xDEADBEEF;
+
+	rc = nvmf_property_set(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(ctrlrA.executing_nssr == 0);
+
+	/* Check clearing NSSRO */
+	ctrlrA.vcprop.csts.bits.nssro = 1;
+	cmd.prop_set_cmd.ofst = offsetof(struct spdk_nvme_registers, csts);
+	cmd.prop_set_cmd.value.u32.low = ctrlrA.vcprop.csts.raw;
+	memset(req.rsp, 0, sizeof(union nvmf_c2h_msg));
+	rc = nvmf_property_set(&req);
+	CU_ASSERT(rc == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE);
+	CU_ASSERT(ctrlrA.vcprop.csts.bits.nssro == 0);
+}
+
+static void
 test_nvmf_ctrlr_get_features_host_behavior_support(void)
 {
 	int rc;
@@ -3499,6 +3640,52 @@ test_nvmf_check_qpair_active(void)
 	}
 }
 
+static void
+test_nvmf_qpair_cid_is_reservation(void)
+{
+	struct spdk_nvmf_qpair qpair = { .outstanding = TAILQ_HEAD_INITIALIZER(qpair.outstanding) };
+	enum {
+		NUM_REQS_READS = 2,
+		NUM_REQS_RESERVATIONS = 4,
+		TOTAL_REQS = NUM_REQS_READS + NUM_REQS_RESERVATIONS,
+	};
+	struct spdk_nvmf_request reqs[TOTAL_REQS] = {};
+	union nvmf_h2c_msg cmd[TOTAL_REQS] = {};
+	enum spdk_nvme_nvm_opcode reservation_ops[NUM_REQS_RESERVATIONS] = {
+		SPDK_NVME_OPC_RESERVATION_REGISTER,
+		SPDK_NVME_OPC_RESERVATION_REPORT,
+		SPDK_NVME_OPC_RESERVATION_ACQUIRE,
+		SPDK_NVME_OPC_RESERVATION_RELEASE
+	};
+	size_t i;
+	for (i = 0; i < NUM_REQS_READS; i++) {
+		cmd[i].nvme_cmd.opc = SPDK_NVME_OPC_READ;
+		cmd[i].nvme_cmd.cid = i;
+
+		reqs[i].qpair = &qpair;
+		reqs[i].cmd = &cmd[i];
+		TAILQ_INSERT_TAIL(&qpair.outstanding, &reqs[i], link);
+	}
+	for (; i < TOTAL_REQS; i++) {
+		cmd[i].nvme_cmd.opc = reservation_ops[i - NUM_REQS_READS];
+		cmd[i].nvme_cmd.cid = i;
+
+		reqs[i].qpair = &qpair;
+		reqs[i].cmd = &cmd[i];
+		TAILQ_INSERT_TAIL(&qpair.outstanding, &reqs[i], link);
+	}
+	/* None of the reads should be considered reservation */
+	for (i = 0; i < NUM_REQS_READS; i++) {
+		SPDK_CU_ASSERT_FATAL(nvmf_qpair_cid_is_reservation(&qpair, i) == false);
+	}
+	/* Validate each reservation type is flagged */
+	for (; i < TOTAL_REQS; i++) {
+		SPDK_CU_ASSERT_FATAL(nvmf_qpair_cid_is_reservation(&qpair, i) == true);
+	}
+	/* Non-existent cid */
+	SPDK_CU_ASSERT_FATAL(nvmf_qpair_cid_is_reservation(&qpair, i * 2) == false);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -3536,10 +3723,12 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_zcopy_read);
 	CU_ADD_TEST(suite, test_zcopy_write);
 	CU_ADD_TEST(suite, test_nvmf_property_set);
+	CU_ADD_TEST(suite, test_nvmf_property_nssr);
 	CU_ADD_TEST(suite, test_nvmf_ctrlr_get_features_host_behavior_support);
 	CU_ADD_TEST(suite, test_nvmf_ctrlr_set_features_host_behavior_support);
 	CU_ADD_TEST(suite, test_nvmf_ctrlr_ns_attachment);
 	CU_ADD_TEST(suite, test_nvmf_check_qpair_active);
+	CU_ADD_TEST(suite, test_nvmf_qpair_cid_is_reservation);
 
 	allocate_threads(1);
 	set_thread(0);

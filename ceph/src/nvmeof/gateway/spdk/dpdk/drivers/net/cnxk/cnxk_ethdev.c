@@ -3,6 +3,7 @@
  */
 #include <cnxk_ethdev.h>
 
+#include <eal_export.h>
 #include <rte_eventdev.h>
 #include <rte_pmd_cnxk.h>
 
@@ -12,6 +13,7 @@ cnxk_ethdev_rx_offload_cb_t cnxk_ethdev_rx_offload_cb;
 
 #define NIX_TM_DFLT_RR_WT 71
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_cnxk_model_str_get, 23.11)
 const char *
 rte_pmd_cnxk_model_str_get(void)
 {
@@ -87,12 +89,14 @@ nix_inl_cq_sz_clamp_up(struct roc_nix *nix, struct rte_mempool *mp,
 	return nb_desc;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_ethdev_rx_offload_cb_register)
 void
 cnxk_ethdev_rx_offload_cb_register(cnxk_ethdev_rx_offload_cb_t cb)
 {
 	cnxk_ethdev_rx_offload_cb = cb;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(cnxk_nix_inb_mode_set)
 int
 cnxk_nix_inb_mode_set(struct cnxk_eth_dev *dev, bool use_inl_dev)
 {
@@ -649,6 +653,7 @@ cnxk_nix_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 	struct roc_nix *nix = &dev->nix;
 	struct cnxk_eth_rxq_sp *rxq_sp;
 	struct rte_mempool_ops *ops;
+	uint32_t desc_cnt = nb_desc;
 	const char *platform_ops;
 	struct roc_nix_rq *rq;
 	struct roc_nix_cq *cq;
@@ -703,6 +708,10 @@ cnxk_nix_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 	 */
 	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)
 		nb_desc = nix_inl_cq_sz_clamp_up(nix, lpb_pool, nb_desc);
+
+	/* Double the CQ descriptors */
+	if (nix->force_tail_drop)
+		nb_desc = 2 * RTE_MAX(nb_desc, (uint32_t)4096);
 
 	/* Setup ROC CQ */
 	cq = &dev->cqs[qid];
@@ -770,7 +779,7 @@ cnxk_nix_rx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid,
 	rxq_sp->qconf.conf.rx = *rx_conf;
 	/* Queue config should reflect global offloads */
 	rxq_sp->qconf.conf.rx.offloads = dev->rx_offloads;
-	rxq_sp->qconf.nb_desc = nb_desc;
+	rxq_sp->qconf.nb_desc = desc_cnt;
 	rxq_sp->qconf.mp = lpb_pool;
 	rxq_sp->tc = 0;
 	rxq_sp->tx_pause = (dev->fc_cfg.mode == RTE_ETH_FC_FULL ||
@@ -934,6 +943,12 @@ cnxk_rss_ethdev_to_nix(struct cnxk_eth_dev *dev, uint64_t ethdev_rss,
 
 	if (ethdev_rss & RTE_ETH_RSS_GTPU)
 		flowkey_cfg |= FLOW_KEY_TYPE_GTPU;
+
+	if (ethdev_rss & RTE_ETH_RSS_ESP)
+		flowkey_cfg |= FLOW_KEY_TYPE_ESP;
+
+	if (ethdev_rss & RTE_ETH_RSS_IB_BTH)
+		flowkey_cfg |= FLOW_KEY_TYPE_ROCEV2;
 
 	return flowkey_cfg;
 }
@@ -1223,8 +1238,8 @@ cnxk_nix_configure(struct rte_eth_dev *eth_dev)
 	uint16_t nb_rxq, nb_txq, nb_cq;
 	struct rte_ether_addr *ea;
 	uint64_t rx_cfg;
+	int rc, i;
 	void *qs;
-	int rc;
 
 	rc = -EINVAL;
 
@@ -1279,6 +1294,12 @@ cnxk_nix_configure(struct rte_eth_dev *eth_dev)
 		roc_nix_tm_fini(nix);
 		nix_rxchan_cfg_disable(dev);
 		roc_nix_lf_free(nix);
+
+		/* Reset to invalid */
+		for (i = 0; i < dev->max_mac_entries; i++)
+			dev->dmac_idx_map[i] = CNXK_NIX_DMAC_IDX_INVALID;
+
+		dev->dmac_filter_count = 1;
 	}
 
 	dev->rx_offloads = rxmode->offloads;
@@ -1884,7 +1905,7 @@ cnxk_eth_dev_init(struct rte_eth_dev *eth_dev)
 	struct rte_security_ctx *sec_ctx;
 	struct roc_nix *nix = &dev->nix;
 	struct rte_pci_device *pci_dev;
-	int rc, max_entries;
+	int rc, max_entries, i;
 
 	eth_dev->dev_ops = &cnxk_eth_dev_ops;
 	eth_dev->rx_queue_count = cnxk_nix_rx_queue_count;
@@ -1986,6 +2007,17 @@ cnxk_eth_dev_init(struct rte_eth_dev *eth_dev)
 		goto free_mac_addrs;
 	}
 
+	dev->dmac_addrs = rte_malloc("dmac_addrs", max_entries * RTE_ETHER_ADDR_LEN, 0);
+	if (dev->dmac_addrs == NULL) {
+		plt_err("Failed to allocate memory for dmac addresses");
+		rc = -ENOMEM;
+		goto free_mac_addrs;
+	}
+
+	/* Reset to invalid */
+	for (i = 0; i < max_entries; i++)
+		dev->dmac_idx_map[i] = CNXK_NIX_DMAC_IDX_INVALID;
+
 	dev->max_mac_entries = max_entries;
 	dev->dmac_filter_count = 1;
 
@@ -2044,6 +2076,8 @@ cnxk_eth_dev_init(struct rte_eth_dev *eth_dev)
 
 free_mac_addrs:
 	rte_free(eth_dev->data->mac_addrs);
+	rte_free(dev->dmac_addrs);
+	dev->dmac_addrs = NULL;
 	rte_free(dev->dmac_idx_map);
 dev_fini:
 	roc_nix_dev_fini(nix);
@@ -2174,6 +2208,9 @@ cnxk_eth_dev_uninit(struct rte_eth_dev *eth_dev, bool reset)
 
 	rte_free(dev->dmac_idx_map);
 	dev->dmac_idx_map = NULL;
+
+	rte_free(dev->dmac_addrs);
+	dev->dmac_addrs = NULL;
 
 	rte_free(eth_dev->data->mac_addrs);
 	eth_dev->data->mac_addrs = NULL;

@@ -122,6 +122,7 @@ enum spdk_bdev_io_type {
 	SPDK_BDEV_IO_TYPE_SEEK_DATA,
 	SPDK_BDEV_IO_TYPE_COPY,
 	SPDK_BDEV_IO_TYPE_NVME_IOV_MD,
+	SPDK_BDEV_IO_TYPE_NVME_NSSR,
 	SPDK_BDEV_IO_TYPE_IO_CANCEL,
 	SPDK_BDEV_NUM_IO_TYPES /* Keep last */
 };
@@ -303,8 +304,12 @@ struct spdk_bdev_ext_io_opts {
 	union spdk_bdev_nvme_cdw12 nvme_cdw12;
 	/** defined by \ref spdk_bdev_nvme_cdw13 */
 	union spdk_bdev_nvme_cdw13 nvme_cdw13;
+	/** precomputed CRC32C checksum for write operations */
+	uint32_t crc32c;
+	/** indicates whether the crc32c field contains a valid checksum */
+	bool has_crc32c;
 } __attribute__((packed));
-SPDK_STATIC_ASSERT(sizeof(struct spdk_bdev_ext_io_opts) == 52, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_bdev_ext_io_opts) == 57, "Incorrect size");
 
 /**
  * Get the options for the bdev module.
@@ -949,6 +954,46 @@ uint32_t spdk_bdev_get_data_block_size(const struct spdk_bdev *bdev);
  * \return Size of physical block size for this bdev in bytes.
  */
 uint32_t spdk_bdev_get_physical_block_size(const struct spdk_bdev *bdev);
+
+/**
+ * Get block device preferred write alignment.
+ *
+ * \param bdev Block device to query.
+ * \return preferred write alignment for this bdev in blocks. Value 0 means there is no preferred write alignment.
+ */
+uint32_t spdk_bdev_get_preferred_write_alignment(const struct spdk_bdev *bdev);
+
+/**
+ * Get block device preferred write granularity.
+ *
+ * \param bdev Block device to query.
+ * \return preferred write granularity for this bdev in blocks. Value 0 means there is no preferred write granularity.
+ */
+uint32_t spdk_bdev_get_preferred_write_granularity(const struct spdk_bdev *bdev);
+
+/**
+ * Get block device optimal write size.
+ *
+ * \param bdev Block device to query.
+ * \return preferred write size for this bdev in blocks. Value 0 means there is no preferred write size.
+ */
+uint32_t spdk_bdev_get_optimal_write_size(const struct spdk_bdev *bdev);
+
+/**
+ * Get block device preferred unmap alignment.
+ *
+ * \param bdev Block device to query.
+ * \return preferred unmap alignment for this bdev in blocks. Value 0 means there is no preferred unmap alignment.
+ */
+uint32_t spdk_bdev_get_preferred_unmap_alignment(const struct spdk_bdev *bdev);
+
+/**
+ * Get block device preferred unmap granularity.
+ *
+ * \param bdev Block device to query.
+ * \return preferred unmap granularity for this bdev in blocks. Value 0 means there is no preferred unmap granularity.
+ */
+uint32_t spdk_bdev_get_preferred_unmap_granularity(const struct spdk_bdev *bdev);
 
 /**
  * Get DIF type of the block device.
@@ -1912,6 +1957,24 @@ int spdk_bdev_reset(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 		    spdk_bdev_io_completion_cb cb, void *cb_arg);
 
 /**
+ * Submit a NVMe Subsystem Reset request to the bdev on the given channel.
+ *
+ * \ingroup bdev_io_submit_functions
+ *
+ * \param desc Block device descriptor.
+ * \param ch I/O channel. Obtained by calling spdk_bdev_get_io_channel().
+ * \param cb Called when the request is complete.
+ * \param cb_arg Argument passed to cb.
+ *
+ * \return 0 on success. On success, the callback will always
+ * be called (even if the request ultimately failed). Return
+ * negated errno on failure, in which case the callback will not be called.
+ *   * -ENOMEM - spdk_bdev_io buffer cannot be allocated
+ */
+int spdk_bdev_nvme_nssr(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+			spdk_bdev_io_completion_cb cb, void *cb_arg);
+
+/**
  * Submit abort requests to abort all I/Os which has bio_cb_arg as its callback
  * context to the bdev on the given channel.
  *
@@ -2118,6 +2181,14 @@ struct spdk_bdev_io_wait_entry {
 	struct spdk_bdev			*bdev;
 	spdk_bdev_io_wait_cb			cb_fn;
 	void					*cb_arg;
+	/**
+	 * When true, this I/O is critical to unblock other I/Os that
+	 * holding resource and depend on the completion of this IO.
+	 * If resource allocation fails such as ENOMEM,
+	 * this entry should be queued at the head to avoid deadlock.
+	 */
+	bool					dep_unblock;
+	uint8_t					pad[7];
 	TAILQ_ENTRY(spdk_bdev_io_wait_entry)	link;
 };
 

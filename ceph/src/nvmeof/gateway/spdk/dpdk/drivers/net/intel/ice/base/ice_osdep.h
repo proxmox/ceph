@@ -128,6 +128,15 @@ writeq(uint64_t value, volatile void *addr)
 #define wr64(a, reg, value) writeq((value), (a)->hw_addr + (reg))
 #define rd64(a, reg)        readq((a)->hw_addr + (reg))
 
+#ifdef RTE_TOOLCHAIN_MSVC
+#define __builtin_add_overflow(a, b, res) \
+	_Generic((a), \
+		uint8_t : _addcarry_u8, \
+		uint16_t : _addcarry_u16, \
+		uint32_t : _addcarry_u32, \
+		uint64_t : _addcarry_u64)(0, a, b, res)
+#endif
+
 #endif /* __INTEL_NET_BASE_OSDEP__ */
 
 #ifndef __always_unused
@@ -196,12 +205,18 @@ struct __rte_packed_begin ice_virt_mem {
 	u32 size;
 } __rte_packed_end;
 
-#define ice_malloc(h, s)    rte_zmalloc(NULL, s, 0)
-#define ice_calloc(h, c, s) rte_calloc(NULL, c, s, 0)
-#define ice_free(h, m)         rte_free(m)
+#define ice_malloc(h, s)    ((void)h, rte_zmalloc(NULL, s, 0))
+#define ice_calloc(h, c, s) ((void)h, rte_calloc(NULL, c, s, 0))
+#define ice_free(h, m)      ((void)h, rte_free(m))
 
 #define ice_memset(a, b, c, d) memset((a), (b), (c))
 #define ice_memcpy(a, b, c, d) rte_memcpy((a), (b), (c))
+
+/* Memory fence barrier */
+#define ice_memfence_read()        rte_io_rmb()
+#define ice_memfence_read_write()  rte_io_mb()
+#define ice_memfence_write()       rte_io_wmb()
+
 
 /* SW spinlock */
 struct ice_lock {

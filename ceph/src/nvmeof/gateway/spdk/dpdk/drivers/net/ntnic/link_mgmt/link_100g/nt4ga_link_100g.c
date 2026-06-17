@@ -137,6 +137,8 @@ static int _link_state_build(adapter_info_t *drv, nthw_mac_pcs_t *mac_pcs,
 	uint32_t lh_internal_local_fault;
 	uint32_t lh_received_local_fault;
 
+	RTE_ASSERT(state);
+
 	memset(state, 0, sizeof(*state));
 	state->link_disabled = is_port_disabled;
 	nthw_mac_pcs_get_link_summary(mac_pcs, &abs, &phy_link_state, &lh_abs, &ll_phy_link_state,
@@ -256,11 +258,11 @@ static int _create_nim(adapter_info_t *drv, int port, bool enable)
 	nim_i2c_ctx_t *nim_ctx;
 	sfp_nim_state_t nim;
 	nt4ga_link_t *link_info = &drv->nt4ga_link;
-	nthw_mac_pcs_t *mac_pcs = &link_info->u.var100g.mac_pcs100g[port];
 
 	RTE_ASSERT(port >= 0 && port < NUM_ADAPTER_PORTS_MAX);
 	RTE_ASSERT(link_info->variables_initialized);
 
+	nthw_mac_pcs_t *mac_pcs = &link_info->u.var100g.mac_pcs100g[port];
 	gpio_phy = &link_info->u.var100g.gpio_phy[port];
 	nim_ctx = &link_info->u.var100g.nim_ctx[port];
 
@@ -672,7 +674,7 @@ static int nt4ga_link_100g_ports_init(struct adapter_info_s *p_adapter_info, nth
 	 */
 	RTE_ASSERT(adapter_no >= 0 && adapter_no < NUM_ADAPTER_MAX);
 
-	if (res == 0 && !p_adapter_info->nt4ga_link.variables_initialized) {
+	if (!p_adapter_info->nt4ga_link.variables_initialized) {
 		nthw_mac_pcs_t *mac_pcs = p_adapter_info->nt4ga_link.u.var100g.mac_pcs100g;
 		nim_i2c_ctx_t *nim_ctx = p_adapter_info->nt4ga_link.u.var100g.nim_ctx;
 		nthw_gpio_phy_t *gpio_phy = p_adapter_info->nt4ga_link.u.var100g.gpio_phy;

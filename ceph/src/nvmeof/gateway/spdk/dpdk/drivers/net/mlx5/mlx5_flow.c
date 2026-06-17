@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <sys/queue.h>
 
+#include <eal_export.h>
 #include <rte_common.h>
 #include <rte_ether.h>
 #include <ethdev_driver.h>
@@ -1865,8 +1866,8 @@ mlx5_flow_rxq_dynf_set(struct rte_eth_dev *dev)
 				data->flow_meta_offset = rte_flow_dynf_metadata_offs;
 				data->flow_meta_port_mask = priv->sh->dv_meta_mask;
 			}
-			data->mark_flag = mark_flag;
 		}
+		data->mark_flag = mark_flag;
 	}
 }
 
@@ -2972,11 +2973,6 @@ mlx5_flow_validate_item_ipv6(const struct rte_eth_dev *dev,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "IPv6 proto (next header) should "
 					  "not be set as extension header");
-	if (item_flags & MLX5_FLOW_LAYER_IPIP)
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, item,
-					  "wrong tunnel type - IPv4 specified "
-					  "but IPv6 item provided");
 	if (item_flags & l3m)
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
@@ -3333,10 +3329,10 @@ mlx5_flow_validate_item_gre_key(const struct rte_eth_dev *dev,
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "GRE key following a wrong item");
-	gre_mask = gre_item->mask;
+	gre_mask = gre_item ? gre_item->mask : NULL;
 	if (!gre_mask)
 		gre_mask = &rte_flow_item_gre_mask;
-	gre_spec = gre_item->spec;
+	gre_spec = gre_item ? gre_item->spec : NULL;
 	if (gre_spec && (gre_mask->c_rsvd0_ver & RTE_BE16(0x2000)) &&
 			 !(gre_spec->c_rsvd0_ver & RTE_BE16(0x2000)))
 		return rte_flow_error_set(error, EINVAL,
@@ -3379,8 +3375,8 @@ mlx5_flow_validate_item_gre_option(struct rte_eth_dev *dev,
 				   const struct rte_flow_item *gre_item,
 				   struct rte_flow_error *error)
 {
-	const struct rte_flow_item_gre *gre_spec = gre_item->spec;
-	const struct rte_flow_item_gre *gre_mask = gre_item->mask;
+	const struct rte_flow_item_gre *gre_spec = gre_item ? gre_item->spec : NULL;
+	const struct rte_flow_item_gre *gre_mask = gre_item ? gre_item->mask : NULL;
 	const struct rte_flow_item_gre_opt *spec = item->spec;
 	const struct rte_flow_item_gre_opt *mask = item->mask;
 	struct mlx5_priv *priv = dev->data->dev_private;
@@ -7884,6 +7880,7 @@ err:
  * @return
  *   Negative value on error, positive on success.
  */
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_flow_engine_set_mode, 23.03)
 int
 rte_pmd_mlx5_flow_engine_set_mode(enum rte_pmd_mlx5_flow_engine_mode mode, uint32_t flags)
 {
@@ -10989,6 +10986,7 @@ error:
 	(MLX5DV_DR_DOMAIN_SYNC_FLAGS_SW | MLX5DV_DR_DOMAIN_SYNC_FLAGS_HW)
 #endif
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_sync_flow, 20.11)
 int rte_pmd_mlx5_sync_flow(uint16_t port_id, uint32_t domains)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
@@ -12265,6 +12263,7 @@ mlx5_flow_discover_ipv6_tc_support(struct rte_eth_dev *dev)
 	return 0;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_create_geneve_tlv_parser, 24.03)
 void *
 rte_pmd_mlx5_create_geneve_tlv_parser(uint16_t port_id,
 				      const struct rte_pmd_mlx5_geneve_tlv tlv_list[],
@@ -12282,6 +12281,7 @@ rte_pmd_mlx5_create_geneve_tlv_parser(uint16_t port_id,
 #endif
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_destroy_geneve_tlv_parser, 24.03)
 int
 rte_pmd_mlx5_destroy_geneve_tlv_parser(void *handle)
 {

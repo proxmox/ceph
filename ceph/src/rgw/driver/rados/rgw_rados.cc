@@ -57,6 +57,7 @@
 #include "rgw_etag_verifier.h"
 #include "rgw_worker.h"
 #include "rgw_notify.h"
+#include "rgw_bl_rados.h"
 #include "rgw_http_errors.h"
 
 #undef fork // fails to compile RGWPeriod::fork() below
@@ -1144,6 +1145,10 @@ void RGWRados::finalize()
     v1_topic_migration.stop();
   }
 
+  if (run_bucket_logging_thread) {
+    rgw::bucketlogging::shutdown();
+  }
+
   if (use_restore_thread) {
     restore->stop_processor();
   }
@@ -1268,6 +1273,10 @@ int RGWRados::init_complete(const DoutPrefixProvider *dpp, optional_yield y)
     return ret;
 
   ret = open_notif_pool_ctx(dpp);
+  if (ret < 0)
+    return ret;
+
+  ret = open_logging_pool_ctx(dpp);
   if (ret < 0)
     return ret;
 
@@ -1423,6 +1432,12 @@ int RGWRados::init_complete(const DoutPrefixProvider *dpp, optional_yield y)
 
   index_completion_manager = new RGWIndexCompletionManager(this);
 
+  if (run_bucket_logging_thread) {
+    if (!rgw::bucketlogging::init(dpp, this->driver, *svc.site)) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to initialize bucket logging manager" << dendl;
+    }
+      ldpp_dout(dpp, 0) << "INFO: initialized bucket logging manager" << dendl;
+  }
   if (run_notification_thread) {
     if (!rgw::notify::init(dpp, driver, *svc.site)) {
       ldpp_dout(dpp, 0) << "ERROR: failed to initialize notification manager" << dendl;
@@ -1443,7 +1458,6 @@ int RGWRados::init_complete(const DoutPrefixProvider *dpp, optional_yield y)
       v1_topic_migration.start(1);
     }
   }
-
   return ret;
 }
 
@@ -1545,6 +1559,11 @@ int RGWRados::open_reshard_pool_ctx(const DoutPrefixProvider *dpp)
 int RGWRados::open_notif_pool_ctx(const DoutPrefixProvider *dpp)
 {
   return rgw_init_ioctx(dpp, get_rados_handle(), svc.zone->get_zone_params().notif_pool, notif_pool_ctx, true, true);
+}
+
+int RGWRados::open_logging_pool_ctx(const DoutPrefixProvider *dpp)
+{
+  return rgw_init_ioctx(dpp, get_rados_handle(), svc.zone->get_zone_params().bucket_logging_pool, logging_pool_ctx, true, true);
 }
 
 int RGWRados::open_pool_ctx(const DoutPrefixProvider *dpp, const rgw_pool& pool, librados::IoCtx& io_ctx,
@@ -5006,7 +5025,7 @@ int RGWRados::copy_obj(RGWObjectCtx& src_obj_ctx,
   if (lh != attrs.end())
     src_attrs[RGW_ATTR_OBJECT_LEGAL_HOLD] = lh->second;
 
-  if (dest_bucket_info.flags & BUCKET_VERSIONS_SUSPENDED) {
+  if (!dest_bucket_info.versioning_enabled()) {
     src_attrs.erase(RGW_ATTR_OLH_ID_TAG);
     src_attrs.erase(RGW_ATTR_OLH_INFO);
     src_attrs.erase(RGW_ATTR_OLH_VER);
@@ -5347,6 +5366,35 @@ int RGWRados::copy_obj_data(RGWObjectCtx& obj_ctx,
                             log_op ? rgw::sal::FLAG_LOG_OP : 0);
 }
 
+int fixup_manifest_to_parts_len(const DoutPrefixProvider *dpp, rgw::sal::Attrs &src_attrs) {
+  auto iter = src_attrs.find(RGW_ATTR_MANIFEST);
+  if (iter == src_attrs.end()) {
+    return 0;
+  }
+
+  bufferlist &manifest_bl { iter->second };
+
+  // if the source object was encrypted, preserve the part lengths from
+  // the original object's manifest in RGW_ATTR_CRYPT_PARTS. if the object
+  // already replicated and has the RGW_ATTR_CRYPT_PARTS attr, preserve it
+  if (src_attrs.count(RGW_ATTR_CRYPT_MODE) &&
+      !src_attrs.count(RGW_ATTR_CRYPT_PARTS)) {
+    std::vector<size_t> parts_len;
+    int r = RGWGetObj_BlockDecrypt::read_manifest_parts(dpp, manifest_bl,
+							parts_len);
+    if (r < 0) {
+      ldpp_dout(dpp, 0) << "failed to read part lengths from the manifest r=" << r << dendl;
+      return r;
+    }
+    // store the encoded part lenghts in RGW_ATTR_CRYPT_PARTS
+    bufferlist parts_bl;
+    encode(parts_len, parts_bl);
+    src_attrs[RGW_ATTR_CRYPT_PARTS] = std::move(parts_bl);
+  }
+
+  return 0;
+}
+
 int RGWRados::transition_obj(RGWObjectCtx& obj_ctx,
                              RGWBucketInfo& bucket_info,
                              rgw_obj obj,
@@ -5370,6 +5418,11 @@ int RGWRados::transition_obj(RGWObjectCtx& obj_ctx,
   read_op.params.obj_size = &obj_size;
 
   int ret = read_op.prepare(y, dpp);
+  if (ret < 0) {
+    return ret;
+  }
+
+  ret = fixup_manifest_to_parts_len(dpp, attrs);
   if (ret < 0) {
     return ret;
   }

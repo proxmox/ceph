@@ -14,9 +14,11 @@
 
 #include <assert.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdalign.h>
 
+#include <rte_compat.h>
 #include <rte_config.h>
 
 /* OS specific include */
@@ -44,8 +46,40 @@ extern "C" {
 #endif
 #endif
 
+/*
+ * Macro __rte_constant checks if an expression's value can be determined at
+ * compile time. It takes a single argument, the expression to test, and
+ * returns 1 if the expression is a compile-time constant, and 0 otherwise.
+ * For most compilers it uses built-in function __builtin_constant_p, but for
+ * MSVC it uses a different method because MSVC does not have an equivalent
+ * to __builtin_constant_p.
+ *
+ * The trick used with MSVC relies on the way null pointer constants interact
+ * with the type of a ?: expression:
+ * An integer constant expression with the value 0, or such an expression cast
+ * to type void *, is called a null pointer constant.
+ * If both the second and third operands (of the ?: expression) are pointers or
+ * one is a null pointer constant and the other is a pointer, the result type
+ * is a pointer to a type qualified with all the type qualifiers of the types
+ * referenced by both operands. Furthermore, if both operands are pointers to
+ * compatible types or to differently qualified versions of compatible types,
+ * the result type is a pointer to an appropriately qualified version of the
+ * composite type; if one operand is a null pointer constant, the result has
+ * the type of the other operand; otherwise, one operand is a pointer to void
+ * or a qualified version of void, in which case the result type is a pointer
+ * to an appropriately qualified version of void.
+ *
+ * The _Generic keyword then checks the type of the expression
+ * (void *) ((e) * 0ll). It matches this type against the types listed in the
+ * _Generic construct:
+ *     - If the type is int *, the result is 1.
+ *     - If the type is void *, the result is 0.
+ *
+ * This explanation with some more details can be found at:
+ * https://stackoverflow.com/questions/49480442/detecting-integer-constant-expressions-in-macros
+ */
 #ifdef RTE_TOOLCHAIN_MSVC
-#define __rte_constant(e) 0
+#define __rte_constant(e) _Generic((1 ? (void *) ((e) * 0ll) : (int *) 0), int * : 1, void * : 0)
 #else
 #define __rte_constant(e) __extension__(__builtin_constant_p(e))
 #endif
@@ -886,6 +920,41 @@ __extension__ typedef uint64_t RTE_MARKER64[0];
  */
 uint64_t
 rte_str_to_size(const char *str);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Converts the uint64_t value provided to a human-readable string.
+ * It null-terminates the string, truncating the data if needed.
+ * An optional unit (like "B") can be provided as a string. It will be
+ * appended to the number, and a space will be inserted before the unit if needed.
+ *
+ * Sample outputs: (1) "use_iec" disabled, (2) "use_iec" enabled,
+ *                 (3) "use_iec" enabled and "B" as unit.
+ * 0 : "0", "0", "0 B"
+ * 700 : "700", "700", "700 B"
+ * 1000 : "1.00 k", "1000", "1000 B"
+ * 1024 : "1.02 k", "1.00 ki", "1.00 kiB"
+ * 21474836480 : "21.5 G", "20.0 Gi", "20.0 GiB"
+ * 109951162777600 : "110 T", "100 Ti", "100 TiB"
+ *
+ * @param buf
+ *     Buffer to write the string to.
+ * @param buf_size
+ *     Size of the buffer.
+ * @param count
+ *     Number to convert.
+ * @param use_iec
+ *     If true, use IEC units (1024-based), otherwise use SI units (1000-based).
+ * @param unit
+ *     Unit to append to the string (Like "B" for bytes). Can be NULL.
+ * @return
+ *     buf on success, NULL if the buffer is too small.
+ */
+__rte_experimental
+char *
+rte_size_to_str(char *buf, int buf_size, uint64_t count, bool use_iec, const char *unit);
 
 /**
  * Function to terminate the application immediately, printing an error

@@ -4983,7 +4983,7 @@ class pg_missing_const_i {
 public:
   virtual const std::map<hobject_t, pg_missing_item> &
     get_items() const = 0;
-  virtual const std::map<version_t, hobject_t> &get_rmissing() const = 0;
+  virtual const std::multimap<eversion_t, hobject_t> &get_rmissing() const = 0;
   virtual bool get_may_include_deletes() const = 0;
   virtual unsigned int num_missing() const = 0;
   virtual bool have_missing() const = 0;
@@ -5029,8 +5029,57 @@ template <bool TrackChanges>
 class pg_missing_set : public pg_missing_const_i {
   using item = pg_missing_item;
   std::map<hobject_t, item> missing;  // oid -> (need v, have v)
-  std::map<version_t, hobject_t> rmissing;  // v -> oid
+  /**
+   * rmissing
+   *
+   * Reverse mapping from pg_missing_item::need -> object
+   *
+   * This mapping uses eversion_t as a key because although the log
+   * and missing sets may not contain two entries with the same version,
+   * this doesn't hold *during* the log merge process because
+   * the order of divergent entries may not match the order of the
+   * corresponding entries in the authoritiative log.
+   *
+   * See https://tracker.ceph.com/issues/74306
+   */
+  std::multimap<eversion_t, hobject_t> rmissing;  // v -> oid
   ChangeTracker<TrackChanges> tracker;
+private:
+  // Private wrapper functions for rmissing manipulation
+  // These ensure rmissing can only be modified through controlled interfaces
+  
+  // Erase a version mapping, returns count of erased elements (0 or 1)
+  size_t rmissing_erase(const eversion_t& version, const hobject_t& oid) {
+    auto range = rmissing.equal_range(version);
+    for (auto it = range.first; it != range.second; ++it) {
+      if (it->second == oid) {
+        rmissing.erase(it);
+        return 1;
+      }
+    }
+    // If we get here, the (version, oid) pair wasn't found
+    return 0;
+  }
+
+  // Insert a version-to-object mapping while allowing distinct objects to
+  // legitimately share the same version. The same object still may not be
+  // inserted twice for that version.
+  void rmissing_insert(
+      const eversion_t& version,
+      const hobject_t& object) {
+    auto it = rmissing.lower_bound(version);
+
+    if (it != rmissing.end() && it->first == version) {
+      auto range = rmissing.equal_range(version);
+      for (auto check_it = range.first; check_it != range.second; ++check_it) {
+        if (check_it->second == object) {
+          return; // Entry already exists.
+        }
+      }
+    }
+
+    rmissing.insert(it, {version, object});
+  }
 
 public:
   pg_missing_set() = default;
@@ -5049,7 +5098,7 @@ public:
   const std::map<hobject_t, item> &get_items() const override {
     return missing;
   }
-  const std::map<version_t, hobject_t> &get_rmissing() const override {
+  const std::multimap<eversion_t, hobject_t> &get_rmissing() const override {
     return rmissing;
   }
   bool get_may_include_deletes() const override {
@@ -5117,7 +5166,8 @@ public:
     if (e.prior_version == eversion_t() || e.is_clone()) {
       // new object.
       if (is_missing_divergent_item) {  // use iterator
-        rmissing.erase(missing_it->second.need.version);
+        auto erased = rmissing_erase(missing_it->second.need, e.soid);
+        ceph_assert(erased == 1);  // Should always erase exactly one entry
         // .have = nil
         missing_it->second = item(e.version, eversion_t(), e.is_delete());
         missing_it->second.clean_regions.mark_fully_dirty();
@@ -5132,7 +5182,8 @@ public:
       }
     } else if (is_missing_divergent_item) {
       // already missing (prior).
-      rmissing.erase((missing_it->second).need.version);
+      auto erased = rmissing_erase((missing_it->second).need, e.soid);
+      ceph_assert(erased == 1);  // Should always erase exactly one entry
       missing_it->second.need = e.version;  // leave .have unchanged.
       missing_it->second.set_delete(e.is_delete());
       if (e.is_lost_revert())
@@ -5152,7 +5203,7 @@ public:
         missing[e.soid].clean_regions = e.clean_regions;
     }
     if (!skipped) {
-      rmissing[e.version.version] = e.soid;
+      rmissing_insert(e.version, e.soid);
       tracker.changed(e.soid);
     }
   }
@@ -5160,7 +5211,8 @@ public:
   void revise_need(hobject_t oid, eversion_t need, bool is_delete) {
     auto p = missing.find(oid);
     if (p != missing.end()) {
-      rmissing.erase((p->second).need.version);
+      auto erased = rmissing_erase((p->second).need, oid);
+      ceph_assert(erased == 1);  // Should always erase exactly one entry
       p->second.need = need;          // do not adjust .have
       p->second.set_delete(is_delete);
       p->second.clean_regions.mark_fully_dirty();
@@ -5168,8 +5220,7 @@ public:
       missing[oid] = item(need, eversion_t(), is_delete);
       missing[oid].clean_regions.mark_fully_dirty();
     }
-    rmissing[need.version] = oid;
-
+    rmissing_insert(need, oid);
     tracker.changed(oid);
   }
 
@@ -5192,12 +5243,12 @@ public:
   void add(const hobject_t& oid, eversion_t need, eversion_t have,
 	   bool is_delete) {
     missing[oid] = item(need, have, is_delete, true);
-    rmissing[need.version] = oid;
+    rmissing_insert(need, oid);
     tracker.changed(oid);
   }
 
   void add(const hobject_t& oid, pg_missing_item&& item) {
-    rmissing[item.need.version] = oid;
+    rmissing_insert(item.need, oid);
     missing.insert({oid, std::move(item)});
     tracker.changed(oid);
   }
@@ -5210,7 +5261,8 @@ public:
 
   void rm(std::map<hobject_t, item>::const_iterator m) {
     tracker.changed(m->first);
-    rmissing.erase(m->second.need.version);
+    auto erased = rmissing_erase(m->second.need, m->first);
+    ceph_assert(erased == 1);  // Should always erase exactly one entry
     missing.erase(m);
   }
 
@@ -5223,7 +5275,8 @@ public:
 
   void got(std::map<hobject_t, item>::const_iterator m) {
     tracker.changed(m->first);
-    rmissing.erase(m->second.need.version);
+    auto erased = rmissing_erase(m->second.need, m->first);
+    ceph_assert(erased == 1);  // Should always erase exactly one entry
     missing.erase(m);
   }
 
@@ -5291,8 +5344,9 @@ public:
     for (std::map<hobject_t,item>::iterator it =
 	   missing.begin();
 	 it != missing.end();
-	 ++it)
-      rmissing[it->second.need.version] = it->first;
+	 ++it) {
+      rmissing_insert(it->second.need, it->first);
+    }
     for (auto const &i: missing)
       tracker.changed(i.first);
   }

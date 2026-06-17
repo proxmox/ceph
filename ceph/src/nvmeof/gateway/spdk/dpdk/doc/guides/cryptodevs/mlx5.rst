@@ -6,13 +6,6 @@
 NVIDIA MLX5 Crypto Driver
 =========================
 
-.. note::
-
-   NVIDIA acquired Mellanox Technologies in 2020.
-   The DPDK documentation and code might still include instances
-   of or references to Mellanox trademarks (like BlueField and ConnectX)
-   that are now NVIDIA trademarks.
-
 The MLX5 crypto driver library
 (**librte_crypto_mlx5**) provides support for **NVIDIA ConnectX-6**,
 **NVIDIA ConnectX-6 Dx**, **NVIDIA ConnectX-7**, **NVIDIA ConnectX-8**,
@@ -136,11 +129,11 @@ DEK is passed in plaintext without keytag.
 
   The mlx5 crypto PMD can be verified by running the test application::
     Wrapped mode:
-      dpdk-test -c 1 -n 1 -w <dev>,class=crypto,wcs_file=<file_path>
+      dpdk-test -l 0 -n 1 -w <dev>,class=crypto,wcs_file=<file_path>
       RTE>>cryptodev_mlx5_autotest
 
     Plaintext mode:
-      dpdk-test -c 1 -n 1 -w <dev>,class=crypto
+      dpdk-test -l 0 -n 1 -w <dev>,class=crypto
       RTE>>cryptodev_mlx5_autotest
 
 

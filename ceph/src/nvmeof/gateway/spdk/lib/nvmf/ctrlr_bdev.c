@@ -7,6 +7,7 @@
 #include "spdk/stdinc.h"
 
 #include "nvmf_internal.h"
+#include "transport.h"
 
 #include "spdk/bdev.h"
 #include "spdk/endian.h"
@@ -117,13 +118,15 @@ nvmf_bdev_ctrlr_complete_admin_cmd(struct spdk_bdev_io *bdev_io, bool success,
 
 void
 nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
-			    bool dif_insert_or_strip)
+			    bool dif_insert_or_strip, uint32_t transport_max_io_size)
 {
 	struct spdk_bdev *bdev = ns->bdev;
 	struct spdk_bdev_desc *desc = ns->desc;
 	uint64_t num_blocks;
 	uint32_t phys_blocklen;
+	uint32_t max_num_blocks;
 	uint32_t max_copy;
+	uint32_t npwa, npwg, npda, npdg;
 
 	num_blocks = spdk_bdev_get_num_blocks(bdev);
 
@@ -167,19 +170,54 @@ nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *n
 		nsdata->lbaf[0].lbads = spdk_u32log2(spdk_bdev_get_data_block_size(bdev));
 	}
 
+	max_num_blocks = transport_max_io_size / (1U << nsdata->lbaf[0].lbads);
+
 	phys_blocklen = spdk_bdev_get_physical_block_size(bdev);
 	assert(phys_blocklen > 0);
 	/* Linux driver uses min(nawupf, npwg) to set physical_block_size */
 	nsdata->nsfeat.optperf = 1;
 	nsdata->nsfeat.ns_atomic_write_unit = 1;
-	nsdata->npwg = (phys_blocklen >> nsdata->lbaf[0].lbads) - 1;
+	/* Note that all of these preferred and optimal sizes are 0-based. */
+	npwg = spdk_bdev_get_preferred_write_granularity(bdev);
+	if (npwg == 0) {
+		nsdata->npwg = (phys_blocklen >> nsdata->lbaf[0].lbads) - 1;
+	} else {
+		nsdata->npwg = npwg - 1;
+	}
 	nsdata->nawupf = nsdata->npwg;
-	nsdata->npwa = nsdata->npwg;
-	nsdata->npdg = nsdata->npwg;
-	nsdata->npda = nsdata->npwg;
+	npwa = spdk_bdev_get_preferred_write_alignment(bdev);
+	if (npwa == 0) {
+		nsdata->npwa = nsdata->npwg;
+	} else {
+		nsdata->npwa = npwa - 1;
+	}
+	npdg = spdk_bdev_get_preferred_unmap_granularity(bdev);
+	if (npdg == 0) {
+		nsdata->npdg = nsdata->npwg;
+	} else {
+		nsdata->npdg = npdg - 1;
+	}
+	npda = spdk_bdev_get_preferred_unmap_alignment(bdev);
+	if (npda == 0) {
+		nsdata->npda = nsdata->npwg;
+	} else {
+		nsdata->npda = npda - 1;
+	}
+	nsdata->nows = spdk_bdev_get_optimal_write_size(bdev);
+	if (nsdata->nows > 0) {
+		nsdata->nows -= 1;
+	} else {
+		/* Set NOWS equal to controller MDTS if the namespace did
+		 * not set one explicitly.
+		 */
+		nsdata->nows = max_num_blocks - 1;
+	}
 
 	if (spdk_bdev_get_write_unit_size(bdev) == 1) {
-		nsdata->noiob = spdk_bdev_get_optimal_io_boundary(bdev);
+		/* Due to bug in the Linux kernel NVMe driver, we have to set noiob no larger
+		 * than mdts.
+		 */
+		nsdata->noiob = spdk_min(spdk_bdev_get_optimal_io_boundary(bdev), max_num_blocks);
 	}
 	nsdata->nmic.can_share = 1;
 	if (nvmf_ns_is_ptpl_capable(ns)) {
@@ -456,10 +494,12 @@ nvmf_bdev_ctrlr_write_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
 			  struct spdk_io_channel *ch, struct spdk_nvmf_request *req)
 {
 	struct spdk_bdev_ext_io_opts opts = {
-		.size = SPDK_SIZEOF(&opts, nvme_cdw13),
+		.size = SPDK_SIZEOF(&opts, has_crc32c),
 		.memory_domain = req->memory_domain,
 		.memory_domain_ctx = req->memory_domain_ctx,
 		.accel_sequence = req->accel_sequence,
+		.crc32c = req->precomputed_crc32c,
+		.has_crc32c = req->has_crc32c,
 	};
 	uint64_t bdev_num_blocks = spdk_bdev_get_num_blocks(bdev);
 	uint32_t block_size = spdk_bdev_desc_get_block_size(desc);
@@ -1012,7 +1052,6 @@ spdk_nvmf_bdev_ctrlr_io_cancel_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc
 {
 	int rc;
 	struct dw0_io_cancel_cpl *cpl = (struct dw0_io_cancel_cpl *)&req->rsp->nvme_cpl.cdw0;
-	struct spdk_bdev *bdev1 = spdk_bdev_desc_get_bdev(desc);
 
 	rc = spdk_bdev_abort(desc, ch, req_to_abort, nvmf_bdev_ctrlr_complete_io_cancel_cmd, req);
 	if (spdk_likely(rc == 0)) {

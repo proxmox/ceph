@@ -5,6 +5,18 @@
 #ifndef _IXGBE_RXTX_H_
 #define _IXGBE_RXTX_H_
 
+#include "ixgbe_type.h"
+
+/*
+ * For IXGBE, descriptor size is always 16 bytes, so in order to have all
+ * vectorized and common code building correctly and with proper offsets, force
+ * the common parts to consider IXGBE descriptors to be 16-bytes in size.
+ */
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
+#define RTE_NET_INTEL_USE_16BYTE_DESC
+#endif
+
+#include "../common/rx.h"
 #include "../common/tx.h"
 
 /*
@@ -29,18 +41,16 @@
 #define	IXGBE_MIN_RING_DESC	64
 #define	IXGBE_MAX_RING_DESC	8192
 
-#define RTE_PMD_IXGBE_TX_MAX_BURST 32
-#define RTE_PMD_IXGBE_RX_MAX_BURST 32
-#define RTE_IXGBE_TX_MAX_FREE_BUF_SZ 64
+#define IXGBE_TX_MAX_BURST            32
+#define IXGBE_RX_MAX_BURST            CI_RX_MAX_BURST
+#define IXGBE_TX_MAX_FREE_BUF_SZ      64
 
-#define RTE_IXGBE_DESCS_PER_LOOP    4
+#define IXGBE_VPMD_DESCS_PER_LOOP     CI_VPMD_DESCS_PER_LOOP
 
-#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
-#define RTE_IXGBE_RXQ_REARM_THRESH      32
-#define RTE_IXGBE_MAX_RX_BURST          RTE_IXGBE_RXQ_REARM_THRESH
-#endif
+#define IXGBE_VPMD_RXQ_REARM_THRESH   CI_VPMD_RX_REARM_THRESH
+#define IXGBE_VPMD_RX_BURST           CI_VPMD_RX_BURST
 
-#define RX_RING_SZ ((IXGBE_MAX_RING_DESC + RTE_PMD_IXGBE_RX_MAX_BURST) * \
+#define RX_RING_SZ ((IXGBE_MAX_RING_DESC + IXGBE_RX_MAX_BURST) * \
 		    sizeof(union ixgbe_adv_rx_desc))
 
 #ifdef RTE_PMD_PACKET_PREFETCH
@@ -49,9 +59,9 @@
 #define rte_packet_prefetch(p)  do {} while(0)
 #endif
 
-#define RTE_IXGBE_REGISTER_POLL_WAIT_10_MS  10
-#define RTE_IXGBE_WAIT_100_US               100
-#define RTE_IXGBE_VMTXSW_REGISTER_COUNT     2
+#define IXGBE_REGISTER_POLL_WAIT_10_MS  10
+#define IXGBE_WAIT_100_US               100
+#define IXGBE_VMTXSW_REGISTER_COUNT     2
 
 #define IXGBE_TX_MAX_SEG                    40
 
@@ -65,67 +75,6 @@
 #define IXGBE_PACKET_TYPE_MAX               0X80
 #define IXGBE_PACKET_TYPE_TN_MAX            0X100
 #define IXGBE_PACKET_TYPE_SHIFT             0X04
-
-/**
- * Structure associated with each descriptor of the RX ring of a RX queue.
- */
-struct ixgbe_rx_entry {
-	struct rte_mbuf *mbuf; /**< mbuf associated with RX descriptor. */
-};
-
-struct ixgbe_scattered_rx_entry {
-	struct rte_mbuf *fbuf; /**< First segment of the fragmented packet. */
-};
-
-/**
- * Structure associated with each RX queue.
- */
-struct ixgbe_rx_queue {
-	struct rte_mempool  *mb_pool; /**< mbuf pool to populate RX ring. */
-	volatile union ixgbe_adv_rx_desc *rx_ring; /**< RX ring virtual address. */
-	uint64_t            rx_ring_phys_addr; /**< RX ring DMA address. */
-	volatile uint32_t   *rdt_reg_addr; /**< RDT register address. */
-	volatile uint32_t   *rdh_reg_addr; /**< RDH register address. */
-	struct ixgbe_rx_entry *sw_ring; /**< address of RX software ring. */
-	struct ixgbe_scattered_rx_entry *sw_sc_ring; /**< address of scattered Rx software ring. */
-	struct rte_mbuf *pkt_first_seg; /**< First segment of current packet. */
-	struct rte_mbuf *pkt_last_seg; /**< Last segment of current packet. */
-	uint64_t            mbuf_initializer; /**< value to init mbufs */
-	uint16_t            nb_rx_desc; /**< number of RX descriptors. */
-	uint16_t            rx_tail;  /**< current value of RDT register. */
-	uint16_t            nb_rx_hold; /**< number of held free RX desc. */
-	uint16_t rx_nb_avail; /**< nr of staged pkts ready to ret to app */
-	uint16_t rx_next_avail; /**< idx of next staged pkt to ret to app */
-	uint16_t rx_free_trigger; /**< triggers rx buffer allocation */
-	uint8_t            rx_using_sse;
-	/**< indicates that vector RX is in use */
-#ifdef RTE_LIB_SECURITY
-	uint8_t            using_ipsec;
-	/**< indicates that IPsec RX feature is in use */
-#endif
-#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
-	uint16_t            rxrearm_nb;     /**< number of remaining to be re-armed */
-	uint16_t            rxrearm_start;  /**< the idx we start the re-arming from */
-#endif
-	uint16_t            rx_free_thresh; /**< max free RX desc to hold. */
-	uint16_t            queue_id; /**< RX queue index. */
-	uint16_t            reg_idx;  /**< RX queue register index. */
-	uint16_t            pkt_type_mask;  /**< Packet type mask for different NICs. */
-	uint16_t            port_id;  /**< Device port identifier. */
-	uint8_t             crc_len;  /**< 0 if CRC stripped, 4 otherwise. */
-	uint8_t             drop_en;  /**< If not 0, set SRRCTL.Drop_En. */
-	uint8_t             rx_deferred_start; /**< not in global dev start. */
-	/** UDP frames with a 0 checksum can be marked as checksum errors. */
-	uint8_t             rx_udp_csum_zero_err;
-	/** flags to set in mbuf when a vlan is detected. */
-	uint64_t            vlan_flags;
-	uint64_t	    offloads; /**< Rx offloads with RTE_ETH_RX_OFFLOAD_* */
-	/** need to alloc dummy mbuf, for wraparound when scanning hw ring */
-	struct rte_mbuf fake_mbuf;
-	/** hold packets to return to application */
-	struct rte_mbuf *rx_stage[RTE_PMD_IXGBE_RX_MAX_BURST*2];
-	const struct rte_memzone *mz;
-};
 
 /**
  * IXGBE CTX Constants
@@ -204,6 +153,8 @@ struct ixgbe_txq_ops {
  * in dev_init by secondary process when attaching to an existing ethdev.
  */
 void ixgbe_set_tx_function(struct rte_eth_dev *dev, struct ci_tx_queue *txq);
+int ixgbe_tx_burst_mode_get(struct rte_eth_dev *dev,
+		uint16_t queue_id, struct rte_eth_burst_mode *mode);
 
 /**
  * Sets the rx_pkt_burst callback in the ixgbe rte_eth_dev instance.
@@ -220,32 +171,47 @@ void ixgbe_set_tx_function(struct rte_eth_dev *dev, struct ci_tx_queue *txq);
  * @dev rte_eth_dev handle
  */
 void ixgbe_set_rx_function(struct rte_eth_dev *dev);
+int ixgbe_rx_burst_mode_get(struct rte_eth_dev *dev,
+		uint16_t queue_id, struct rte_eth_burst_mode *mode);
 
 int ixgbe_check_supported_loopback_mode(struct rte_eth_dev *dev);
-uint16_t ixgbe_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
-		uint16_t nb_pkts);
-uint16_t ixgbe_recv_scattered_pkts_vec(void *rx_queue,
-		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
-int ixgbe_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev);
-int ixgbe_rxq_vec_setup(struct ixgbe_rx_queue *rxq);
-void ixgbe_rx_queue_release_mbufs_vec(struct ixgbe_rx_queue *rxq);
 int ixgbe_dev_tx_done_cleanup(void *tx_queue, uint32_t free_cnt);
 
 extern const uint32_t ptype_table[IXGBE_PACKET_TYPE_MAX];
 extern const uint32_t ptype_table_tn[IXGBE_PACKET_TYPE_TN_MAX];
 
+int ixgbe_write_default_ctx_desc(struct ci_tx_queue *txq, struct rte_mempool *mp, bool vec);
 uint16_t ixgbe_recycle_tx_mbufs_reuse_vec(void *tx_queue,
 		struct rte_eth_recycle_rxq_info *recycle_rxq_info);
 void ixgbe_recycle_rx_descriptors_refill_vec(void *rx_queue, uint16_t nb_mbufs);
 
 uint16_t ixgbe_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 				    uint16_t nb_pkts);
-int ixgbe_txq_vec_setup(struct ci_tx_queue *txq);
+int ixgbe_write_default_ctx_desc(struct ci_tx_queue *txq, struct rte_mempool *mp, bool vec);
 
 uint64_t ixgbe_get_tx_port_offloads(struct rte_eth_dev *dev);
 uint64_t ixgbe_get_rx_queue_offloads(struct rte_eth_dev *dev);
 uint64_t ixgbe_get_rx_port_offloads(struct rte_eth_dev *dev);
 uint64_t ixgbe_get_tx_queue_offloads(struct rte_eth_dev *dev);
 int ixgbe_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc);
+
+/**
+ * Check if the Tx descriptor DD bit is set.
+ *
+ * @param txq
+ *   Pointer to the Tx queue structure.
+ * @param idx
+ *   Index of the Tx descriptor to check.
+ *
+ * @return
+ *   1 if the Tx descriptor is done, 0 otherwise.
+ */
+static inline int
+ixgbe_tx_desc_done(struct ci_tx_queue *txq, uint16_t idx)
+{
+	const uint32_t status = txq->ixgbe_tx_ring[idx].wb.status;
+
+	return !!(status & rte_cpu_to_le_32(IXGBE_ADVTXD_STAT_DD));
+}
 
 #endif /* _IXGBE_RXTX_H_ */

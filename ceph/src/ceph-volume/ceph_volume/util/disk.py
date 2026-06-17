@@ -715,6 +715,16 @@ def get_block_devs_sysfs(_sys_block_path: str = '/sys/block', _sys_dev_block_pat
         name = kname = pname = os.path.join("/dev", dev)
         if not os.path.exists(name):
             continue
+        # Exclude any CDROM devices (ex: IPMI devices)
+        # The linux kernel reports these as SCSI device type 5 under /sys/block/<dev>/device/type
+        # and they appear as /dev/sr* (ex: /dev/sr0)
+        # These are not physical disks and are not valid OSD targets, so skip them.
+        if get_file_contents(os.path.join(_sys_block_path, dev, 'device/type'), '').strip() == '5':
+            continue
+        # Skip kernel RAM disks (/dev/ram*); these are not valid OSD targets.
+        # Only matches 'ram' + digits (ram0, ram1, etc.).
+        if dev.startswith('ram') and dev[3:].isdigit():
+            continue
         type_: str = 'disk'
         holders: List[str] = os.listdir(os.path.join(_sys_block_path, dev, 'holders'))
         if holder_inner_loop():
@@ -736,6 +746,10 @@ def get_block_devs_sysfs(_sys_block_path: str = '/sys/block', _sys_dev_block_pat
     # Next, look for devices that _are_ partitions
     partitions: Dict[str, str] = get_partitions()
     for partition in partitions.keys():
+        # Skip partitions that belong to kernel RAM disks (/dev/ram*).
+        parent = partitions[partition]
+        if parent.startswith('ram') and parent[3:].isdigit():
+            continue
         name = kname = os.path.join("/dev", partition)
         result.append([name, kname, "part", partitions[partition]])
     return sorted(result, key=lambda x: x[0])
@@ -798,14 +812,6 @@ def get_devices(_sys_block_path='/sys/block', device=''):
 
         # If the device is ceph rbd it gets excluded
         if is_ceph_rbd(diskname):
-            continue
-
-        # If the mapper device is a logical volume it gets excluded
-        try:
-            if UdevData(diskname).is_lvm:
-                continue
-        except RuntimeError:
-            logger.debug("get_devices(): device {} couldn't be found.".format(diskname))
             continue
 
         # all facts that have no defaults

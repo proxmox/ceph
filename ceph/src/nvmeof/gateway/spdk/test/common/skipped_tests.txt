@@ -2,9 +2,6 @@
 
 # cases
 ftl_restore_fast
-ftl_write_after_write
-ftl_fio_extended
-ftl_fio_nightly
 
 # Waiting on Boot Partition support in CI
 nvme_bp
@@ -67,9 +64,6 @@ busy
 balanced
 core_load
 
-# TODO: remove this once CI is updated with libkeyutils
-keyring_linux
-
 # Disabled due to https://github.com/spdk/spdk/issues/3345
 nvmf_device_removal
 nvmf_device_removal_pci_remove_no_srq
@@ -79,6 +73,9 @@ nvmf_device_removal_pci_remove
 accel_mlx5_crypto
 accel_mlx5_copy
 accel_mlx5_crc32c
+
+# Disabled due to compression related deprecations and removals
+unittest_dpdk_compressdev
 
 # Disabled after move to spdk-ci
 accel_cdev_comp
@@ -94,10 +91,6 @@ autobuild
 autobuild_external_code
 autobuild_llvm_precompile
 bdev_crypto_enomem
-blobfs
-blobfs_mkfs
-blobstore
-blobstore_grow
 blockdev_crypto_aesni
 blockdev_crypto_qat
 blockdev_crypto_sw
@@ -106,11 +99,7 @@ blockdev_xnvme
 build_rpm_from_gen_spec
 build_shared_rpm
 chaining
-chap_during_discovery
-chap_mutual_auth
 cmb_copy
-compress_compdev
-compress_isal
 core_isolating
 custom_alloc
 denied
@@ -146,36 +135,16 @@ external_run_nvme_static
 framework_get_governor
 go_rpc
 guess_driver
-hello_blob
 hugepages
 idle
 interrupt_mode
 ioat
 ioat_perf
 ioat_verify
-iscsi_tgt
-iscsi_tgt_bdev_io_wait
 iscsi_tgt_calsoft
-iscsi_tgt_digest
-iscsi_tgt_digests
-iscsi_tgt_filesystem
-iscsi_tgt_filesystem_btrfs
-iscsi_tgt_filesystem_ext4
-iscsi_tgt_filesystem_xfs
-iscsi_tgt_fio
-iscsi_tgt_fuzz
-iscsi_tgt_initiator
-iscsi_tgt_ip_migration
-iscsi_tgt_iscsi_lvol
-iscsi_tgt_login_redirection
-iscsi_tgt_multiconnection
-iscsi_tgt_qos
+iscsi_tgt_data_digest
+iscsi_tgt_ext4test
 iscsi_tgt_rbd
-iscsi_tgt_reset
-iscsi_tgt_resize
-iscsi_tgt_rpc_config
-iscsi_tgt_sock
-iscsi_tgt_trace_record
 llvm_fuzz
 no_shrink_alloc
 nvme_cli_cuse
@@ -195,20 +164,8 @@ nvme_pmr
 nvme_pmr_persistence
 nvme_smartctl_cuse
 nvme_xnvme
-nvmf_bdevperf
 nvmf_llvm_fuzz
 nvmf_perf_adq
-nvmf_rdma
-nvmf_shutdown
-nvmf_shutdown_tc1
-nvmf_shutdown_tc2
-nvmf_shutdown_tc3
-nvmf_shutdown_tc4
-nvmf_srq_overwhelm
-nvmf_target_disconnect
-nvmf_target_disconnect_tc1
-nvmf_target_disconnect_tc2
-nvmf_target_disconnect_tc3
 nvmf_vhost
 ocf
 ocf_bdevperf_iotypes
@@ -221,12 +178,6 @@ ocf_remove
 ocf_stats
 odd_alloc
 packaging
-rocksdb
-rocksdb_insert
-rocksdb_overwrite
-rocksdb_randread
-rocksdb_readwrite
-rocksdb_writesync
 rpm_packaging
 scheduler
 scheduler_opts
@@ -241,8 +192,6 @@ sma_plugins
 sma_qos
 sma_vfiouser_qemu
 sma_vhost
-spdkcli_iscsi
-spdkcli_nvmf_rdma
 spdkcli_rbd
 spdkcli_vhost
 spdkcli_virtio
@@ -250,10 +199,8 @@ static_as_default
 test_create_multi_ublk
 test_create_ublk
 test_save_ublk_config
-thread_spdk_lock
 ublk
 ublk_recovery
-unittest
 unittest_idxd_user
 valgrind
 vfio_llvm_fuzz

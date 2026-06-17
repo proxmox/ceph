@@ -30,7 +30,7 @@ struct lcore_config {
 	volatile int ret;          /**< return value of function */
 
 	volatile RTE_ATOMIC(enum rte_lcore_state_t) state; /**< lcore state */
-	unsigned int socket_id;    /**< physical socket id for this lcore */
+	unsigned int numa_id;      /**< NUMA node ID for this lcore */
 	unsigned int core_id;      /**< core number on socket for this lcore */
 	int core_index;            /**< relative index, starting from 0 */
 	uint8_t core_role;         /**< role of core eg: OFF, RTE, SERVICE */
@@ -211,7 +211,12 @@ enum eal_mem_reserve_flags {
 	 * @see RTE_MAP_FORCE_ADDRESS for description of possible consequences
 	 *      (although implementations are not required to use it).
 	 */
-	EAL_RESERVE_FORCE_ADDRESS = 1 << 1
+	EAL_RESERVE_FORCE_ADDRESS = 1 << 1,
+	/**
+	 * Force reserving memory at the requested address,
+	 * but fail if a preexisting mapping collides with the request.
+	 */
+	EAL_RESERVE_FORCE_ADDRESS_NOREPLACE = 1 << 2,
 };
 
 /**

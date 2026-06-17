@@ -1119,6 +1119,30 @@ zxdh_np_dtb_data_res_free(struct zxdh_hw *hw)
 		zxdh_shared_data->np_init_done = 0;
 }
 
+static int
+zxdh_tbl_entry_online_destroy(struct rte_eth_dev *dev)
+{
+	struct zxdh_hw *hw = dev->data->dev_private;
+	struct zxdh_dtb_shared_data *dtb_data = &hw->dev_sd->dtb_sd;
+	uint32_t sdt_no;
+	int ret = 0;
+	if (!dtb_data->init_done)
+		return ret;
+	if (hw->is_pf) {
+		sdt_no = ZXDH_SDT_L2_ENTRY_TABLE0 + hw->hash_search_index;
+		ret = zxdh_np_dtb_hash_online_delete(hw->dev_id, dtb_data->queueid, sdt_no);
+		if (ret)
+			PMD_DRV_LOG(ERR, "%s sdt_no %d failed. code:%d ",
+				dev->data->name, sdt_no, ret);
+		sdt_no = ZXDH_SDT_MC_TABLE0 + hw->hash_search_index;
+		ret = zxdh_np_dtb_hash_online_delete(hw->dev_id, dtb_data->queueid, sdt_no);
+		if (ret)
+			PMD_DRV_LOG(ERR, "%s sdt_no %d failed. code:%d",
+				dev->data->name, sdt_no, ret);
+	}
+	return ret;
+}
+
 static void
 zxdh_np_uninit(struct rte_eth_dev *dev)
 {
@@ -1129,6 +1153,8 @@ zxdh_np_uninit(struct rte_eth_dev *dev)
 		return;
 	if (!dtb_data->init_done && !dtb_data->dev_refcnt)
 		return;
+
+	zxdh_tbl_entry_online_destroy(dev);
 
 	if (--dtb_data->dev_refcnt == 0)
 		zxdh_np_dtb_data_res_free(hw);
@@ -1224,10 +1250,6 @@ zxdh_set_rxtx_funcs(struct rte_eth_dev *eth_dev)
 {
 	struct zxdh_hw *hw = eth_dev->data->dev_private;
 
-	if (!zxdh_pci_packed_queue(hw)) {
-		PMD_DRV_LOG(ERR, "port %u not support packed queue", eth_dev->data->port_id);
-		return -1;
-	}
 	if (!zxdh_pci_with_feature(hw, ZXDH_NET_F_MRG_RXBUF)) {
 		PMD_DRV_LOG(ERR, "port %u not support rx mergeable", eth_dev->data->port_id);
 		return -1;
@@ -1472,6 +1494,8 @@ zxdh_dtb_dump_res_init(struct zxdh_hw *hw, ZXDH_DEV_INIT_CTRL_T *dpp_ctrl)
 
 	struct zxdh_dtb_bulk_dump_info dtb_dump_baseres[] = {
 		{"sdt_vport_att_table", 4 * 1024 * 1024, ZXDH_SDT_VPORT_ATT_TABLE, NULL},
+		{"sdt_vlan_att_table", 4 * 1024 * 1024, ZXDH_SDT_VLAN_ATT_TABLE, NULL},
+		{"sdt_rss_table", 4 * 1024 * 1024, ZXDH_SDT_RSS_ATT_TABLE, NULL},
 		{"sdt_l2_entry_table0", 5 * 1024 * 1024, ZXDH_SDT_L2_ENTRY_TABLE0, NULL},
 		{"sdt_l2_entry_table1", 5 * 1024 * 1024, ZXDH_SDT_L2_ENTRY_TABLE1, NULL},
 		{"sdt_l2_entry_table2", 5 * 1024 * 1024, ZXDH_SDT_L2_ENTRY_TABLE2, NULL},
@@ -1488,7 +1512,7 @@ zxdh_dtb_dump_res_init(struct zxdh_hw *hw, ZXDH_DEV_INIT_CTRL_T *dpp_ctrl)
 	for (i = 0; i < (int)RTE_DIM(dtb_dump_baseres); i++) {
 		struct zxdh_dtb_bulk_dump_info *p = dtb_dump_baseres + i;
 		char buf[ZXDH_MAX_NAME_LEN] = {0};
-
+		snprintf(buf, sizeof(buf), "%s_%x", p->mz_name, hw->dev_id);
 		p->mz_name = buf;
 
 		const struct rte_memzone *generic_dump_mz =
@@ -1518,6 +1542,7 @@ zxdh_np_dtb_res_init(struct rte_eth_dev *dev)
 	struct zxdh_hw *hw = dev->data->dev_private;
 	struct zxdh_bar_offset_params param = {0};
 	struct zxdh_bar_offset_res res = {0};
+	char buf[ZXDH_MAX_NAME_LEN] = {0};
 	struct zxdh_dtb_shared_data *dtb_data = &hw->dev_sd->dtb_sd;
 	int ret = 0;
 
@@ -1543,7 +1568,7 @@ zxdh_np_dtb_res_init(struct rte_eth_dev *dev)
 	dpp_ctrl->vport = hw->vport.vport;
 	dpp_ctrl->vector = ZXDH_MSIX_INTR_DTB_VEC;
 	strlcpy(dpp_ctrl->port_name, dev->device->name, sizeof(dpp_ctrl->port_name));
-	dpp_ctrl->pcie_vir_addr = (uint32_t)hw->bar_addr[0];
+	dpp_ctrl->pcie_vir_addr = hw->bar_addr[0];
 
 	param.pcie_id = hw->pcie_id;
 	param.virt_addr = hw->bar_addr[0] + ZXDH_CTRLCH_OFFSET;
@@ -1558,7 +1583,8 @@ zxdh_np_dtb_res_init(struct rte_eth_dev *dev)
 	dpp_ctrl->np_bar_offset = res.bar_offset;
 
 	if (!dtb_data->dtb_table_conf_mz) {
-		const struct rte_memzone *conf_mz = rte_memzone_reserve_aligned("zxdh_dtb_table_conf_mz",
+		snprintf(buf, sizeof(buf), "%s_%x", "zxdh_dtb_table_conf_mz", hw->dev_id);
+		const struct rte_memzone *conf_mz = rte_memzone_reserve_aligned(buf,
 				ZXDH_DTB_TABLE_CONF_SIZE, SOCKET_ID_ANY, 0, RTE_CACHE_LINE_SIZE);
 
 		if (conf_mz == NULL) {
@@ -1574,7 +1600,9 @@ zxdh_np_dtb_res_init(struct rte_eth_dev *dev)
 	}
 
 	if (!dtb_data->dtb_table_dump_mz) {
-		const struct rte_memzone *dump_mz = rte_memzone_reserve_aligned("zxdh_dtb_table_dump_mz",
+		memset(buf, '\0', sizeof(buf));
+		snprintf(buf, sizeof(buf), "%s_%x", "zxdh_dtb_table_dump_mz", hw->dev_id);
+		const struct rte_memzone *dump_mz = rte_memzone_reserve_aligned(buf,
 				ZXDH_DTB_TABLE_DUMP_SIZE, SOCKET_ID_ANY, 0, RTE_CACHE_LINE_SIZE);
 
 		if (dump_mz == NULL) {
@@ -1797,10 +1825,40 @@ out:
 }
 
 static int
+zxdh_tbl_entry_offline_destroy(struct zxdh_hw *hw)
+{
+	struct zxdh_dtb_shared_data *dtb_data = &hw->dev_sd->dtb_sd;
+	int ret = 0;
+	if (!dtb_data->init_done)
+		return ret;
+	if (hw->is_pf) {
+		uint32_t sdt_no;
+		sdt_no = ZXDH_SDT_L2_ENTRY_TABLE0 + hw->hash_search_index;
+		ret = zxdh_np_dtb_hash_offline_delete(hw->dev_id, dtb_data->queueid, sdt_no, 0);
+		if (ret)
+			PMD_DRV_LOG(ERR, "sdt_no %d delete failed. code:%d ", sdt_no, ret);
+		sdt_no = ZXDH_SDT_MC_TABLE0 + hw->hash_search_index;
+		ret = zxdh_np_dtb_hash_offline_delete(hw->dev_id, dtb_data->queueid, sdt_no, 0);
+		if (ret)
+			PMD_DRV_LOG(ERR, "sdt_no %d delete failed. code:%d ", sdt_no, ret);
+	}
+	return ret;
+}
+
+static int
 zxdh_np_init(struct rte_eth_dev *eth_dev)
 {
 	struct zxdh_hw *hw = eth_dev->data->dev_private;
+	struct zxdh_dtb_shared_data *dtb_data = &hw->dev_sd->dtb_sd;
 	int ret = 0;
+
+	if (hw->is_pf && dtb_data->init_done) {
+		dtb_data->dev_refcnt++;
+		zxdh_tbl_entry_offline_destroy(hw);
+		PMD_DRV_LOG(INFO, "no need to init dtb  dtb chanenl %d devref %d",
+			dtb_data->queueid, dtb_data->dev_refcnt);
+		return 0;
+	}
 
 	if (hw->is_pf) {
 		ret = zxdh_np_dtb_res_init(eth_dev);
@@ -1809,6 +1867,20 @@ zxdh_np_init(struct rte_eth_dev *eth_dev)
 			return ret;
 		}
 	}
+
+	if (hw->is_pf) {
+		ret = zxdh_np_se_res_get_and_init(hw->dev_id, ZXDH_SE_STD_NIC_RES_TYPE);
+		if (ret) {
+			PMD_DRV_LOG(ERR, "dpp apt init failed, code:%d ", ret);
+			return -ret;
+		}
+		if (hw->hash_search_index >= ZXDH_HASHIDX_MAX) {
+			PMD_DRV_LOG(ERR, "invalid hash idx %d", hw->hash_search_index);
+			return -1;
+		}
+		zxdh_tbl_entry_offline_destroy(hw);
+	}
+
 	if (zxdh_shared_data != NULL)
 		zxdh_shared_data->np_init_done = 1;
 
@@ -1910,6 +1982,17 @@ zxdh_priv_res_free(struct zxdh_hw *priv)
 	}
 }
 
+static uint8_t
+is_pf(uint16_t device_id)
+{
+	return (device_id == ZXDH_E310_PF_DEVICEID ||
+			device_id == ZXDH_E312_PF_DEVICEID ||
+			device_id == ZXDH_E312S_PF_DEVICEID ||
+			device_id == ZXDH_E316_PF_DEVICEID ||
+			device_id == ZXDH_E310_RDMA_PF_DEVICEID ||
+			device_id == ZXDH_E312_RDMA_PF_DEVICEID);
+}
+
 static int
 zxdh_eth_dev_init(struct rte_eth_dev *eth_dev)
 {
@@ -1943,10 +2026,8 @@ zxdh_eth_dev_init(struct rte_eth_dev *eth_dev)
 	hw->slot_id = ZXDH_INVALID_SLOT_IDX;
 	hw->is_pf = 0;
 
-	if (pci_dev->id.device_id == ZXDH_E310_PF_DEVICEID ||
-		pci_dev->id.device_id == ZXDH_E312_PF_DEVICEID) {
+	if (is_pf(pci_dev->id.device_id))
 		hw->is_pf = 1;
-	}
 
 	ret = zxdh_init_once(eth_dev);
 	if (ret != 0)
@@ -2042,6 +2123,14 @@ static const struct rte_pci_id pci_id_zxdh_map[] = {
 	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E310_VF_DEVICEID)},
 	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E312_PF_DEVICEID)},
 	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E312_VF_DEVICEID)},
+	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E312S_PF_DEVICEID)},
+	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E312S_VF_DEVICEID)},
+	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E316_PF_DEVICEID)},
+	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E316_VF_DEVICEID)},
+	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E310_RDMA_PF_DEVICEID)},
+	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E310_RDMA_VF_DEVICEID)},
+	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E312_RDMA_PF_DEVICEID)},
+	{RTE_PCI_DEVICE(ZXDH_PCI_VENDOR_ID, ZXDH_E312_RDMA_VF_DEVICEID)},
 	{.vendor_id = 0, /* sentinel */ },
 };
 static struct rte_pci_driver zxdh_pmd = {

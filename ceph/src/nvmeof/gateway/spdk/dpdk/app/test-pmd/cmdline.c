@@ -3447,19 +3447,172 @@ struct cmd_config_dcb {
 	cmdline_fixed_string_t vt_en;
 	uint8_t num_tcs;
 	cmdline_fixed_string_t pfc;
-	cmdline_fixed_string_t pfc_en;
+	cmdline_multi_string_t token_str;
 };
+
+static int
+parse_dcb_token_prio_tc(char *param_str[], int param_num,
+			uint8_t prio_tc[RTE_ETH_DCB_NUM_USER_PRIORITIES],
+			uint8_t *prio_tc_en)
+{
+	unsigned long prio, tc;
+	int prio_tc_maps = 0;
+	char *param, *end;
+	int i;
+
+	for (i = 0; i < param_num; i++) {
+		param = param_str[i];
+		prio = strtoul(param, &end, 10);
+		if (prio >= RTE_ETH_DCB_NUM_USER_PRIORITIES) {
+			fprintf(stderr, "Bad Argument: invalid PRIO %lu\n", prio);
+			return -1;
+		}
+		if ((*end != ':') || (strlen(end + 1) == 0)) {
+			fprintf(stderr, "Bad Argument: invalid PRIO:TC format %s\n", param);
+			return -1;
+		}
+		tc = strtoul(end + 1, &end, 10);
+		if (tc >= RTE_ETH_8_TCS) {
+			fprintf(stderr, "Bad Argument: invalid TC %lu\n", tc);
+			return -1;
+		}
+		if (*end != '\0') {
+			fprintf(stderr, "Bad Argument: invalid PRIO:TC format %s\n", param);
+			return -1;
+		}
+		prio_tc[prio] = tc;
+		prio_tc_maps++;
+	} while (0);
+
+	if (prio_tc_maps == 0) {
+		fprintf(stderr, "Bad Argument: no PRIO:TC provided\n");
+		return -1;
+	}
+	*prio_tc_en = 1;
+
+	return 0;
+}
+
+#define DCB_TOKEN_PRIO_TC	"prio-tc"
+#define DCB_TOKEN_KEEP_QNUM	"keep-qnum"
+
+static int
+parse_dcb_token_find(char *split_str[], int split_num, int *param_num)
+{
+	int i;
+
+	if (strcmp(split_str[0], DCB_TOKEN_KEEP_QNUM) == 0) {
+		*param_num = 0;
+		return 0;
+	}
+
+	if (strcmp(split_str[0], DCB_TOKEN_PRIO_TC) != 0) {
+		fprintf(stderr, "Bad Argument: unknown token %s\n", split_str[0]);
+		return -EINVAL;
+	}
+
+	for (i = 1; i < split_num; i++) {
+		if ((strcmp(split_str[i], DCB_TOKEN_PRIO_TC) != 0) &&
+		    (strcmp(split_str[i], DCB_TOKEN_KEEP_QNUM) != 0))
+			continue;
+		/* find another optional parameter, then exit. */
+		break;
+	}
+
+	*param_num = i - 1;
+
+	return 0;
+}
+
+static int
+parse_dcb_token_value(char *token_str,
+		      uint8_t *pfc_en,
+		      uint8_t prio_tc[RTE_ETH_DCB_NUM_USER_PRIORITIES],
+		      uint8_t *prio_tc_en,
+		      uint8_t *keep_qnum)
+{
+#define MAX_TOKEN_NUM	128
+	char *split_str[MAX_TOKEN_NUM];
+	int param_num, start, ret;
+	int split_num = 0;
+	char *token;
+
+	/* split multiple token to split str. */
+	do {
+		token = strtok_r(token_str, " \f\n\r\t\v", &token_str);
+		if (token == NULL)
+			break;
+		if (split_num >= MAX_TOKEN_NUM) {
+			fprintf(stderr, "Bad Argument: too much argument\n");
+			return -1;
+		}
+		split_str[split_num++] = token;
+	} while (1);
+
+	/* parse fixed parameter "pfc-en" first. */
+	token = split_str[0];
+	if (strcmp(token, "on") == 0)
+		*pfc_en = 1;
+	else if (strcmp(token, "off") == 0)
+		*pfc_en = 0;
+	else {
+		fprintf(stderr, "Bad Argument: pfc-en must be on or off\n");
+		return -EINVAL;
+	}
+
+	if (split_num == 1)
+		return 0;
+
+	/* start parse optional parameter. */
+	start = 1;
+	do {
+		param_num = 0;
+		ret = parse_dcb_token_find(&split_str[start], split_num - start, &param_num);
+		if (ret != 0)
+			return ret;
+
+		token = split_str[start];
+		if (strcmp(token, DCB_TOKEN_PRIO_TC) == 0) {
+			if (*prio_tc_en == 1) {
+				fprintf(stderr, "Bad Argument: detect multiple %s token\n",
+					DCB_TOKEN_PRIO_TC);
+				return -1;
+			}
+			ret = parse_dcb_token_prio_tc(&split_str[start + 1], param_num, prio_tc,
+						      prio_tc_en);
+			if (ret != 0)
+				return ret;
+		} else {
+			/* this must be keep-qnum. */
+			if (*keep_qnum == 1) {
+				fprintf(stderr, "Bad Argument: detect multiple %s token\n",
+					DCB_TOKEN_KEEP_QNUM);
+				return -1;
+			}
+			*keep_qnum = 1;
+		}
+
+		start += param_num + 1;
+		if (start >= split_num)
+			break;
+	} while (1);
+
+	return 0;
+}
 
 static void
 cmd_config_dcb_parsed(void *parsed_result,
                         __rte_unused struct cmdline *cl,
                         __rte_unused void *data)
 {
+	uint8_t prio_tc[RTE_ETH_DCB_NUM_USER_PRIORITIES] = {0};
 	struct cmd_config_dcb *res = parsed_result;
 	struct rte_eth_dcb_info dcb_info;
 	portid_t port_id = res->port_id;
+	uint8_t prio_tc_en = 0;
+	uint8_t keep_qnum = 0;
 	struct rte_port *port;
-	uint8_t pfc_en;
+	uint8_t pfc_en = 0;
 	int ret;
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN))
@@ -3472,9 +3625,9 @@ cmd_config_dcb_parsed(void *parsed_result,
 		return;
 	}
 
-	if ((res->num_tcs != RTE_ETH_4_TCS) && (res->num_tcs != RTE_ETH_8_TCS)) {
+	if (res->num_tcs < 1 || res->num_tcs > RTE_ETH_8_TCS) {
 		fprintf(stderr,
-			"The invalid number of traffic class, only 4 or 8 allowed.\n");
+			"The invalid number of traffic class, only 1~8 allowed.\n");
 		return;
 	}
 
@@ -3491,20 +3644,19 @@ cmd_config_dcb_parsed(void *parsed_result,
 		return;
 	}
 
-	if (!strncmp(res->pfc_en, "on", 2))
-		pfc_en = 1;
-	else
-		pfc_en = 0;
+	ret = parse_dcb_token_value(res->token_str, &pfc_en, prio_tc, &prio_tc_en, &keep_qnum);
+	if (ret != 0)
+		return;
 
 	/* DCB in VT mode */
 	if (!strncmp(res->vt_en, "on", 2))
 		ret = init_port_dcb_config(port_id, DCB_VT_ENABLED,
 				(enum rte_eth_nb_tcs)res->num_tcs,
-				pfc_en);
+				pfc_en, prio_tc, prio_tc_en, keep_qnum);
 	else
 		ret = init_port_dcb_config(port_id, DCB_ENABLED,
 				(enum rte_eth_nb_tcs)res->num_tcs,
-				pfc_en);
+				pfc_en, prio_tc, prio_tc_en, keep_qnum);
 	if (ret != 0) {
 		fprintf(stderr, "Cannot initialize network ports.\n");
 		return;
@@ -3531,13 +3683,17 @@ static cmdline_parse_token_num_t cmd_config_dcb_num_tcs =
 	TOKEN_NUM_INITIALIZER(struct cmd_config_dcb, num_tcs, RTE_UINT8);
 static cmdline_parse_token_string_t cmd_config_dcb_pfc =
         TOKEN_STRING_INITIALIZER(struct cmd_config_dcb, pfc, "pfc");
-static cmdline_parse_token_string_t cmd_config_dcb_pfc_en =
-        TOKEN_STRING_INITIALIZER(struct cmd_config_dcb, pfc_en, "on#off");
+static cmdline_parse_token_string_t cmd_config_dcb_token_str =
+	TOKEN_STRING_INITIALIZER(struct cmd_config_dcb, token_str, TOKEN_STRING_MULTI);
 
 static cmdline_parse_inst_t cmd_config_dcb = {
 	.f = cmd_config_dcb_parsed,
 	.data = NULL,
-	.help_str = "port config <port-id> dcb vt on|off <num_tcs> pfc on|off",
+	.help_str = "port config <port-id> dcb vt on|off <num_tcs> pfc on|off prio-tc PRIO-MAP keep-qnum\n"
+		    "where PRIO-MAP: [ PRIO-MAP ] PRIO-MAPPING\n"
+		    "	   PRIO-MAPPING := PRIO:TC\n"
+		    "	   PRIO: { 0 .. 7 }\n"
+		    "	   TC: { 0 .. 7 }",
 	.tokens = {
 		(void *)&cmd_config_dcb_port,
 		(void *)&cmd_config_dcb_config,
@@ -3547,7 +3703,7 @@ static cmdline_parse_inst_t cmd_config_dcb = {
 		(void *)&cmd_config_dcb_vt_en,
 		(void *)&cmd_config_dcb_num_tcs,
 		(void *)&cmd_config_dcb_pfc,
-		(void *)&cmd_config_dcb_pfc_en,
+		(void *)&cmd_config_dcb_token_str,
                 NULL,
         },
 };
@@ -9018,6 +9174,12 @@ static void cmd_dump_parsed(void *parsed_result,
 
 static cmdline_parse_token_string_t cmd_dump_dump =
 	TOKEN_STRING_INITIALIZER(struct cmd_dump_result, dump,
+		"" /* defined at init */);
+
+static void
+cmd_dump_init(void)
+{
+	cmd_dump_dump.string_data.str =
 		"dump_physmem#"
 		"dump_memzone#"
 		"dump_socket_mem#"
@@ -9029,7 +9191,8 @@ static cmdline_parse_token_string_t cmd_dump_dump =
 #ifndef RTE_EXEC_ENV_WINDOWS
 		"dump_trace#"
 #endif
-		"dump_log_types");
+		"dump_log_types";
+}
 
 static cmdline_parse_inst_t cmd_dump = {
 	.f = cmd_dump_parsed,  /* function to call */
@@ -12643,11 +12806,11 @@ cmd_config_dynf_specific_parsed(void *parsed_result,
 	}
 	old_port_flags = ports[res->port_id].mbuf_dynf;
 	if (!strcmp(res->value, "set")) {
-		ports[res->port_id].mbuf_dynf |= 1UL << flag;
+		ports[res->port_id].mbuf_dynf |= RTE_BIT64(flag);
 		if (old_port_flags == 0)
 			add_tx_dynf_callback(res->port_id);
 	} else {
-		ports[res->port_id].mbuf_dynf &= ~(1UL << flag);
+		ports[res->port_id].mbuf_dynf &= ~RTE_BIT64(flag);
 		if (ports[res->port_id].mbuf_dynf == 0)
 			remove_tx_dynf_callback(res->port_id);
 	}
@@ -13961,6 +14124,7 @@ init_cmdline(void)
 	/* initialize non-constant commands */
 	cmd_set_fwd_mode_init();
 	cmd_set_fwd_retry_mode_init();
+	cmd_dump_init();
 
 	count = 0;
 	for (i = 0; builtin_ctx[i] != NULL; i++)

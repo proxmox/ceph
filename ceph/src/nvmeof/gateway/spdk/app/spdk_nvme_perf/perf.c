@@ -131,6 +131,7 @@ struct ns_worker_ctx {
 	struct ns_entry		*entry;
 	struct ns_worker_stats	stats;
 	uint64_t		current_queue_depth;
+	uint64_t		number_ios;
 	uint64_t		offset_in_ios;
 	bool			is_draining;
 
@@ -242,6 +243,7 @@ static int g_nr_io_queues_per_ns = 1;
 static int g_nr_unused_io_queues;
 static int g_time_in_sec;
 static uint64_t g_number_ios;
+static int g_number_ios_percent;
 static uint64_t g_elapsed_time_in_usec;
 static int g_warmup_time_in_sec;
 static uint32_t g_max_completions;
@@ -271,7 +273,7 @@ static char *g_sock_threshold_impl;
 static uint8_t g_transport_tos = 0;
 
 static uint32_t g_rdma_srq_size;
-static struct spdk_key *g_psk = NULL;
+static struct spdk_key *g_psk = NULL, *g_dhchap = NULL, *g_dhchap_ctrlr = NULL;
 
 /* When user specifies -Q, some error messages are rate limited.  When rate
  * limited, we only print the error message every g_quiet_count times the
@@ -347,6 +349,8 @@ perf_set_sock_opts(const char *impl_name, const char *field, uint32_t val, const
 		sock_opts.tls_version = val;
 	} else if (strcmp(field, "ktls") == 0) {
 		sock_opts.enable_ktls = val;
+	} else if (strcmp(field, "num_ssl_tickets") == 0) {
+		sock_opts.num_ssl_tickets = val;
 	} else if (strcmp(field, "zerocopy_threshold") == 0) {
 		sock_opts.zerocopy_threshold = val;
 	} else {
@@ -1484,7 +1488,7 @@ submit_single_io(struct perf_task *task)
 		ns_ctx->stats.io_submitted++;
 	}
 
-	if (spdk_unlikely(g_number_ios && ns_ctx->stats.io_submitted >= g_number_ios)) {
+	if (spdk_unlikely(ns_ctx->number_ios && ns_ctx->stats.io_submitted >= ns_ctx->number_ios)) {
 		ns_ctx->is_draining = true;
 	}
 }
@@ -1869,6 +1873,7 @@ usage(char *program_name)
 	printf("\t-i, --shmem-grp-id <id> shared memory group ID\n");
 	printf("\t-d, --number-ios <val> number of I/O to perform per thread on each namespace. Note: this is additional exit criteria.\n");
 	printf("\t\t(default: 0 - unlimited)\n");
+	printf("\t\tYou may also specify an integer percent of the namespace size as <N>%% (e.g. -d 50%% for 50%% of the namespace size)\n");
 	printf("\t-e, --metadata <fmt> metadata configuration\n");
 	printf("\t\t Keys:\n");
 	printf("\t\t  PRACT      Protection Information Action bit (PRACT=1 or PRACT=0)\n");
@@ -1898,6 +1903,8 @@ usage(char *program_name)
 	printf("\t--tls-version <val> TLS version to use. Only valid for ssl impl. Default: 0 (auto-negotiation)\n");
 	printf("\t--psk-path <val> Path to PSK file (only applies when sock_impl == ssl)\n");
 	printf("\t--psk-identity <val> Default PSK ID, e.g. psk.spdk.io (only applies when sock_impl == ssl)\n");
+	printf("\t--dhchap-key <val> Path to DH-HMAC-CHAP key file (required if controller key is specified)\n");
+	printf("\t--dhchap-ctrlr-key <val> Path to DH-HMAC-CHAP controller key file\n");
 	printf("\t--zerocopy-threshold <val> data is sent with MSG_ZEROCOPY if size is greater than this val. Default: 0 to disable it\n");
 	printf("\t--zerocopy-threshold-sock-impl <impl> specify the sock implementation to set zerocopy_threshold\n");
 	printf("\t-z, --disable-zcopy <impl> disable zero copy send for the given sock implementation. Default for posix impl\n");
@@ -2396,9 +2403,27 @@ static const struct option g_perf_cmdline_opts[] = {
 	{"use-every-core", no_argument, NULL, PERF_USE_EVERY_CORE},
 #define PERF_NO_HUGE		270
 	{"no-huge", no_argument, NULL, PERF_NO_HUGE},
+#define PERF_DHCHAP_PATH		271
+	{"dhchap-key", required_argument, NULL, PERF_DHCHAP_PATH},
+#define PERF_DHCHAP_CTRLR_PATH		272
+	{"dhchap-ctrlr-key", required_argument, NULL, PERF_DHCHAP_CTRLR_PATH},
 	/* Should be the last element */
 	{0, 0, 0, 0}
 };
+
+static int
+parse_percent(const char *arg)
+{
+	char *endptr;
+	int percent = strtol(arg, &endptr, 10);
+
+	/* Allow percent values greater than 100 for preconditioning and extended testing */
+	if (endptr == arg || percent < 1 || *endptr != '%') {
+		return -1;
+	}
+
+	return percent;
+}
 
 static int
 parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
@@ -2472,6 +2497,15 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_NUMBER_IOS:
 		case PERF_IO_DEPTH:
 		case PERF_IO_QUEUE_SIZE:
+			if (op == PERF_NUMBER_IOS && strchr(optarg, '%')) {
+				/* Handle percent input for number-ios */
+				g_number_ios_percent = parse_percent(optarg);
+				if (g_number_ios_percent < 0) {
+					fprintf(stderr, "Invalid percent value for --number-ios: %s\n", optarg);
+					return 1;
+				}
+				break;
+			}
 			rc = spdk_parse_capacity(optarg, &val_u64, NULL);
 			if (rc != 0) {
 				fprintf(stderr, "Converting a string to integer failed\n");
@@ -2643,6 +2677,22 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			ssl_used = true;
 			perf_set_sock_opts("ssl", "psk_identity", 0, optarg);
 			break;
+		case PERF_DHCHAP_PATH:
+			free_key(&g_dhchap);
+			g_dhchap = alloc_key("perf-dhchap", optarg);
+			if (g_dhchap == NULL) {
+				fprintf(stderr, "Unable to set dhchap at %s\n", optarg);
+				return 1;
+			}
+			break;
+		case PERF_DHCHAP_CTRLR_PATH:
+			free_key(&g_dhchap_ctrlr);
+			g_dhchap_ctrlr = alloc_key("perf-dhchap-ctrlr", optarg);
+			if (g_dhchap_ctrlr == NULL) {
+				fprintf(stderr, "Unable to set dhchap-ctrl at %s\n", optarg);
+				return 1;
+			}
+			break;
 		case PERF_DISABLE_ZCOPY:
 			perf_set_sock_opts(optarg, "enable_zerocopy_send_client", 0, NULL);
 			break;
@@ -2766,8 +2816,9 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		perf_set_sock_opts(g_sock_threshold_impl, "zerocopy_threshold", g_sock_zcopy_threshold, NULL);
 	}
 
-	if (g_number_ios && g_warmup_time_in_sec) {
-		fprintf(stderr, "-d (--number-ios) with -a (--warmup-time) is not supported\n");
+	if ((g_number_ios || g_number_ios_percent) && g_warmup_time_in_sec) {
+		fprintf(stderr,
+			"-d (--number-ios) with -a (--warmup-time) is not supported\n");
 		return 1;
 	}
 
@@ -2887,6 +2938,8 @@ probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	opts->data_digest = g_data_digest;
 	opts->keep_alive_timeout_ms = g_keep_alive_timeout_in_ms;
 	opts->tls_psk = g_psk;
+	opts->dhchap_key = g_dhchap;
+	opts->dhchap_ctrlr_key = g_dhchap_ctrlr;
 	memcpy(opts->hostnqn, trid_entry->hostnqn, sizeof(opts->hostnqn));
 
 	opts->transport_tos = g_transport_tos;
@@ -2986,6 +3039,13 @@ allocate_ns_worker(struct ns_entry *entry, struct worker_thread *worker)
 	ns_ctx->stats.min_tsc = UINT64_MAX;
 	ns_ctx->entry = entry;
 	ns_ctx->histogram = spdk_histogram_data_alloc();
+	if (g_number_ios_percent > 0) {
+		ns_ctx->number_ios = entry->size_in_ios * g_number_ios_percent / 100;
+		printf("number_ios for namespace %s set to %lu (%d%% of namespace size)\n",
+		       entry->name, ns_ctx->number_ios, g_number_ios_percent);
+	} else {
+		ns_ctx->number_ios = g_number_ios;
+	}
 	TAILQ_INSERT_TAIL(&worker->ns_ctx, ns_ctx, link);
 
 	return 0;
@@ -3120,6 +3180,8 @@ main(int argc, char **argv)
 	rc = parse_args(argc, argv, &opts);
 	if (rc != 0 || rc == HELP_RETURN_CODE) {
 		free_key(&g_psk);
+		free_key(&g_dhchap);
+		free_key(&g_dhchap_ctrlr);
 		if (rc == HELP_RETURN_CODE) {
 			return 0;
 		}
@@ -3132,12 +3194,16 @@ main(int argc, char **argv)
 	if (rc != 0) {
 		fprintf(stderr, "Failed to init mutex\n");
 		free_key(&g_psk);
+		free_key(&g_dhchap);
+		free_key(&g_dhchap_ctrlr);
 		return -1;
 	}
 	if (spdk_env_init(&opts) < 0) {
 		fprintf(stderr, "Unable to initialize SPDK env\n");
 		pthread_mutex_destroy(&g_stats_mutex);
 		free_key(&g_psk);
+		free_key(&g_dhchap);
+		free_key(&g_dhchap_ctrlr);
 		return -1;
 	}
 
@@ -3146,6 +3212,8 @@ main(int argc, char **argv)
 		fprintf(stderr, "Unable to initialize keyring: %s\n", spdk_strerror(-rc));
 		pthread_mutex_destroy(&g_stats_mutex);
 		free_key(&g_psk);
+		free_key(&g_dhchap);
+		free_key(&g_dhchap_ctrlr);
 		spdk_env_fini();
 		return -1;
 	}
@@ -3255,6 +3323,8 @@ cleanup:
 	unregister_workers();
 
 	free_key(&g_psk);
+	free_key(&g_dhchap);
+	free_key(&g_dhchap_ctrlr);
 	spdk_keyring_cleanup();
 	spdk_env_fini();
 

@@ -1175,8 +1175,7 @@ ice_dcf_init_rss(struct ice_dcf_hw *hw)
 int
 ice_dcf_configure_queues(struct ice_dcf_hw *hw)
 {
-	struct ice_rx_queue **rxq =
-		(struct ice_rx_queue **)hw->eth_dev->data->rx_queues;
+	struct ci_rx_queue **rxq = (struct ci_rx_queue **)hw->eth_dev->data->rx_queues;
 	struct ci_tx_queue **txq =
 		(struct ci_tx_queue **)hw->eth_dev->data->tx_queues;
 	struct virtchnl_vsi_queue_config_info *vc_config;
@@ -1211,10 +1210,10 @@ ice_dcf_configure_queues(struct ice_dcf_hw *hw)
 
 		vc_qp->rxq.max_pkt_size = rxq[i]->max_pkt_len;
 		vc_qp->rxq.ring_len = rxq[i]->nb_rx_desc;
-		vc_qp->rxq.dma_ring_addr = rxq[i]->rx_ring_dma;
+		vc_qp->rxq.dma_ring_addr = rxq[i]->rx_ring_phys_addr;
 		vc_qp->rxq.databuffer_size = rxq[i]->rx_buf_len;
 
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 		if (hw->vf_res->vf_cap_flags &
 		    VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC &&
 		    hw->supported_rxdid &

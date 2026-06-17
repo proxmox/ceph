@@ -96,6 +96,7 @@ export class RgwMultisiteService {
     username: string,
     cluster?: string,
     replicationZoneName?: string,
+    secondaryTierType?: string,
     clusterDetailsArray?: any,
     selectedRealmName?: string
   ) {
@@ -122,6 +123,10 @@ export class RgwMultisiteService {
 
     if (selectedRealmName) {
       params = params.set('selectedRealmName', selectedRealmName);
+    }
+
+    if (secondaryTierType) {
+      params = params.set('secondary_tier_type', secondaryTierType);
     }
 
     return this.http.post(`${this.uiUrl}/multisite-replications`, null, { params: params });

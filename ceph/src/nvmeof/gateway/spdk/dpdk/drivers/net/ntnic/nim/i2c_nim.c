@@ -123,8 +123,7 @@ static int nim_read_write_data_lin(nim_i2c_ctx_p ctx, bool m_page_addressing, ui
 		 * Find out how much can be read from the current block in case of
 		 * single byte access
 		 */
-		if (multi_byte == 1)
-			max_seq_cnt = block_size - (lin_addr % block_size);
+		max_seq_cnt = block_size - (lin_addr % block_size);
 
 		if (m_page_addressing) {
 			if (lin_addr >= 128) {	/* Only page setup above this address */
@@ -305,7 +304,7 @@ static int qsfp_nim_state_build(nim_i2c_ctx_t *ctx, sfp_nim_state_t *state)
 	RTE_ASSERT(ctx && state);
 	RTE_ASSERT(ctx->nim_id != NT_NIM_UNKNOWN && "Nim is not initialized");
 
-	(void)memset(state, 0, sizeof(*state));
+	memset(state, 0, sizeof(*state));
 
 	switch (ctx->nim_id) {
 	case 12U:
@@ -878,7 +877,7 @@ bool nthw_qsfp28_set_fec_enable(nim_i2c_ctx_p ctx, bool media_side_fec, bool hos
 
 	write_data_lin(ctx, addr, sizeof(data), &data);
 	ctx->specific_u.qsfp.specific_u.qsfp28.media_side_fec_ena = media_side_fec;
-	ctx->specific_u.qsfp.specific_u.qsfp28.media_side_fec_ena = host_side_fec;
+	ctx->specific_u.qsfp.specific_u.qsfp28.host_side_fec_ena = host_side_fec;
 	return true;
 }
 

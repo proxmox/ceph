@@ -236,7 +236,8 @@ export class RgwMultisiteWizardComponent extends BaseModal implements OnInit {
         validators: [Validators.required]
       }),
       configType: new UntypedFormControl(ConfigType.NewRealm, {}),
-      selectedRealm: new UntypedFormControl(null, {})
+      selectedRealm: new UntypedFormControl(null, {}),
+      secondary_archive_zone: new UntypedFormControl(false, {})
     });
 
     if (!this.isMultiClusterConfigured) {
@@ -318,6 +319,7 @@ export class RgwMultisiteWizardComponent extends BaseModal implements OnInit {
       } else {
         const cluster = values['cluster'];
         const replicationZoneName = values['replicationZoneName'];
+        const secondaryTierType = values['secondary_archive_zone'] ? 'archive' : '';
         let selectedRealmName = '';
 
         if (this.multisiteSetupForm.get('configType').value === ConfigType.ExistingRealm) {
@@ -335,6 +337,7 @@ export class RgwMultisiteWizardComponent extends BaseModal implements OnInit {
             username,
             cluster,
             replicationZoneName,
+            secondaryTierType,
             this.clusterDetailsArray,
             selectedRealmName
           )

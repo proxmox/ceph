@@ -161,6 +161,54 @@ There are two areas that need to be set up on a System Under Test:
 
       sudo usermod -aG sudo <sut_user>
 
+#. **SR-IOV**
+
+   Before configuring virtual functions, SR-IOV support must be enabled in the system BIOS/UEFI:
+
+   #. Reboot the system and enter BIOS/UEFI settings.
+   #. Locate the SR-IOV option (often under PCIe or Advanced settings).
+   #. Set SR-IOV to **Enabled** and save changes.
+
+   For Mellanox environments, the following additional setup steps are required:
+
+   #. **Install mstflint tools** (if not already installed):
+
+      .. code-block:: bash
+
+         sudo apt install mstflint        # On Debian/Ubuntu
+         sudo yum install mstflint        # On RHEL/CentOS
+
+   #. **Start the MST service**:
+
+      .. code-block:: bash
+
+         sudo mst start
+
+   #. **List Mellanox devices**:
+
+      .. code-block:: bash
+
+         sudo mst status
+
+      This will output paths such as ``/dev/mst/mt4121_pciconf0``
+      and possibly additional functions (e.g., ``pciconf0.1``).
+
+   #. **Enable SR-IOV and configure number of VFs**:
+
+      .. code-block:: bash
+
+         sudo mlxconfig -d /dev/mst/mt4121_pciconf0 set SRIOV_EN=1 NUM_OF_VFS=8
+         sudo mlxconfig -d /dev/mst/mt4121_pciconf0.1 set SRIOV_EN=1 NUM_OF_VFS=8
+
+      Replace the device names with those matching your setup (from ``mst status``).
+      The number of VFs can be adjusted as needed.
+
+   #. **Reboot the system**:
+
+      .. code-block:: bash
+
+         sudo reboot now
+
 
 Setting up Traffic Generator Node
 ---------------------------------
@@ -405,6 +453,12 @@ There are four types of methods that comprise a test suite:
    If there's any functionality or logic missing from the framework,
    it should be implemented so that the test suites can use one of these two ways.
 
+   Test suites may also be configured individually using a file provided at the command line.
+   The file is a simple mapping of test suite names to their corresponding configurations.
+
+   Any test suite can be designed to require custom configuration attributes or optional ones.
+   Any optional attributes should supply a default value for the test suite to use.
+
 #. **Test case verification**
 
    Test case verification should be done with the ``verify`` method, which records the result.
@@ -505,5 +559,21 @@ And they both have two network ports which are physically connected to each othe
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. literalinclude:: ../../../dts/nodes.example.yaml
+   :language: yaml
+   :start-at: # Define
+
+Additionally, an example configuration file is provided
+to demonstrate custom test suite configuration:
+
+.. note::
+   You do not need to supply configurations for all test suites,
+   and not all test suites will support or need additional configuration.
+
+.. _tests_config_example:
+
+``dts/tests_config.example.yaml``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. literalinclude:: ../../../dts/tests_config.example.yaml
    :language: yaml
    :start-at: # Define

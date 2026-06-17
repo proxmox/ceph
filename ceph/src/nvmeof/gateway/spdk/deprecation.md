@@ -19,12 +19,38 @@ The tags can be matched with the level 4 headers below.
 
 ## Deprecation Notices
 
+### python
+
+#### `rpc`
+
+Deprecated all modules under python/spdk/rpc providing wrappers around RPC methods.
+
+Will be removed in the 26.01 release.
+
+Individual rpc modules provides very simple wrappers around existing client functions.
+There is no translations or useful abstractions happen inside those RPC modules.
+This can be easily replaced by setattr based dynamic functions on the JSONRPCClient.
+
+### util/net
+
+#### `spdk_net_getaddr`
+
+Returning -1 and setting errno on this function is deprecated and will be changed in the 26.01
+release. This function will return negative errno values instead.
+
 ### sock
 
-#### `spdk_sock_flush`
+#### `spdk_sock_\*`
 
-This function returnes number of bytes sent on success, whereas this behavior is deprecated and
-will be changed in 25.09 release in the way it will return 0 on success.
+`spdk_sock_getaddr`, `spdk_sock_close`, `spdk_sock_flush`, `spdk_sock_recv`, `spdk_sock_writev`,
+`spdk_sock_readv`, `spdk_sock_recv_next`, `spdk_sock_set_recvlowat`, `spdk_sock_set_recvbuf`,
+`spdk_sock_set_sendbuf`, `spdk_sock_group_add_sock`, `spdk_sock_group_remove_sock`,
+`spdk_sock_group_provide_buf`, `spdk_sock_group_poll`, `spdk_sock_group_poll_count`,
+`spdk_sock_group_close`, `spdk_sock_impl_get_opts`, `spdk_sock_impl_set_opts`,
+`spdk_sock_set_default_impl`, `spdk_sock_group_register_interrupt`
+
+Returning -1 and setting errno on these functions is deprecated and will be changed in the 26.01
+release. These functions will return negative errno values instead.
 
 ### gpt
 
@@ -40,40 +66,3 @@ See GitHub issue [2801](https://github.com/spdk/spdk/issues/2801) for additional
 
 New SPDK partition types should use GUID `6527994e-2c5a-4eec-9613-8f5944074e8b` which will create
 a bdev of the correct size.
-
-### env
-
-#### `spdk_env_get_socket_id`, `spdk_pci_device_get_socket_id`
-
-These functions are deprecated and will be removed in 25.09 release. Please use
-`spdk_env_get_numa_id` and `spdk_pci_device_get_numa_id` instead.
-
-### reduce
-
-#### 'spdk_reduce_vol_init', 'spdk_reduce_vol_load'
-
-The entire reduce library is deprecated and will be removed in 25.09 release.
-All functions in this library are effectively deprecated, but only these two
-are officially marked as such to ensure the library's deprecation is noticed.
-
-### bdev_compress
-
-#### 'bdev_compress_create', 'bdev_compress_delete', 'bdev_compress_get_orphans' RPCs
-
-The entire bdev compress module is deprecated and will be removed in 25.09
-release. The C module exports no public APIs, so none are listed here, but
-the module will emit deprecation warnings when usage is detected.
-
-### blobfs
-
-#### 'spdk_fs_init', 'spdk_fs_load', 'blobfs_\*' RPCs
-
-This entire blobfs library is deprecated and will be removed in 25.09 release.
-All functions in this library are effectively deprecated, but only these two
-are officially marked as such to ensure the library's deprecation is noticed.
-
-### rocksdb
-
-The SPDK rocksdb plugin is deprecated and will be removed in 25.09 release.
-This C++ plugin exports no public APIs, so none are listed here, but
-the pluging will emit deprecation warnings when usage is detected.

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2017-2018 Intel Corporation
  */
+#include <eal_export.h>
 #include <rte_malloc.h>
 #include <rte_hash.h>
 #include <rte_jhash.h>
@@ -1358,8 +1359,7 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 	op->sess_type = RTE_CRYPTO_OP_WITH_SESSION;
 
 	op->sym->cipher.data.offset = chain->para.cipher_start_src_offset;
-	op->sym->cipher.data.length = chain->para.src_data_len -
-			chain->para.cipher_start_src_offset;
+	op->sym->cipher.data.length = chain->para.len_to_cipher;
 
 	op->sym->auth.data.offset = chain->para.hash_start_src_offset;
 	op->sym->auth.data.length = chain->para.len_to_hash;
@@ -1492,10 +1492,10 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 	struct vhost_crypto_data_req *vc_req, *vc_req_out;
 	struct rte_cryptodev_asym_session *asym_session;
 	struct rte_cryptodev_sym_session *sym_session;
+	struct vhost_crypto_data_req data_req = {0};
 	struct vhost_crypto_session *vhost_session;
 	struct vhost_crypto_desc *desc = descs;
 	uint32_t nb_descs = 0, max_n_descs, i;
-	struct vhost_crypto_data_req data_req;
 	struct virtio_crypto_op_data_req req;
 	struct virtio_crypto_inhdr *inhdr;
 	struct vring_desc *src_desc;
@@ -1782,6 +1782,7 @@ vhost_crypto_complete_one_vm_requests(struct rte_crypto_op **ops,
 	return processed;
 }
 
+RTE_EXPORT_SYMBOL(rte_vhost_crypto_driver_start)
 int
 rte_vhost_crypto_driver_start(const char *path)
 {
@@ -1803,6 +1804,7 @@ rte_vhost_crypto_driver_start(const char *path)
 	return rte_vhost_driver_start(path);
 }
 
+RTE_EXPORT_SYMBOL(rte_vhost_crypto_create)
 int
 rte_vhost_crypto_create(int vid, uint8_t cryptodev_id,
 		struct rte_mempool *sess_pool,
@@ -1886,6 +1888,7 @@ error_exit:
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_vhost_crypto_free)
 int
 rte_vhost_crypto_free(int vid)
 {
@@ -1915,6 +1918,7 @@ rte_vhost_crypto_free(int vid)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_vhost_crypto_set_zero_copy)
 int
 rte_vhost_crypto_set_zero_copy(int vid, enum rte_vhost_crypto_zero_copy option)
 {
@@ -1970,6 +1974,7 @@ rte_vhost_crypto_set_zero_copy(int vid, enum rte_vhost_crypto_zero_copy option)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_vhost_crypto_fetch_requests)
 uint16_t
 rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 		struct rte_crypto_op **ops, uint16_t nb_ops)
@@ -2099,6 +2104,7 @@ out_unlock:
 	return i;
 }
 
+RTE_EXPORT_SYMBOL(rte_vhost_crypto_finalize_requests)
 uint16_t
 rte_vhost_crypto_finalize_requests(struct rte_crypto_op **ops,
 		uint16_t nb_ops, int *callfds, uint16_t *nb_callfds)

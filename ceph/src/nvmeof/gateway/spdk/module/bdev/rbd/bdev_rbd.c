@@ -19,13 +19,20 @@
 #include "spdk/likely.h"
 #include "spdk/bdev_module.h"
 #include "spdk/log.h"
+
 SPDK_LOG_REGISTER_COMPONENT(reservation)
 
 static int bdev_rbd_count = 0;
 
+/*
+ * global parameter to control CRC32C usage in RBD write operations.
+ */
+static bool g_rbd_with_crc32c = false;
+
 struct bdev_rbd_pool_ctx {
 	rados_t *cluster_p;
 	char *name;
+	char *namespace_name;
 	rados_ioctx_t io_ctx;
 	uint32_t ref;
 	STAILQ_ENTRY(bdev_rbd_pool_ctx) link;
@@ -39,6 +46,10 @@ struct bdev_rbd {
 	char *rbd_name;
 	char *user_id;
 	char *pool_name;
+	char *namespace_name;
+	uint32_t encryption_entries_count;
+	uint32_t *encryption_format;
+	char **passphrase;
 	char **config;
 
 	rados_t cluster;
@@ -65,6 +76,8 @@ struct bdev_rbd {
 	uint64_t reservation_epoch;
 	void *reservation_ns_context;
 	int (*reservation_fn_cbk)(void *ns);
+	char cluster_fsid[37];
+
 };
 
 struct bdev_rbd_io_channel {
@@ -77,6 +90,8 @@ struct bdev_rbd_io {
 	enum			spdk_bdev_io_status status;
 	rbd_completion_t	comp;
 	size_t			total_len;
+	uint32_t		precomputed_crc32c;  /* CRC32C checksum from NVMf layer */
+	bool			has_crc32c;          /* Whether CRC32C is available */
 };
 
 struct bdev_rbd_cluster {
@@ -127,7 +142,7 @@ _rbd_update_callback(void *arg)
   check_reservation:
 	rc = rbd_bdev_notify_ns_reservation_changed(rbd);
 	if (rc != 0) {
-		SPDK_ERRLOG("failed to notify reservation change.\n");
+		SPDK_NOTICELOG("failed to notify reservation change.\n");
 	}
 }
 
@@ -194,6 +209,7 @@ bdev_rbd_put_pool_ctx(struct bdev_rbd_pool_ctx *entry)
 		STAILQ_REMOVE(&g_map_bdev_rbd_pool_ctx, entry, bdev_rbd_pool_ctx, link);
 		rados_ioctx_destroy(entry->io_ctx);
 		free(entry->name);
+		free(entry->namespace_name);
 		free(entry);
 	}
 }
@@ -206,7 +222,9 @@ bdev_rbd_free(struct bdev_rbd *rbd)
 	}
 
 	if (rbd->image) {
-		rbd_update_unwatch(rbd->image, rbd->rbd_watch_handle);
+		if (rbd->rbd_watch_handle) {
+			rbd_update_unwatch(rbd->image, rbd->rbd_watch_handle);
+		}
 		rbd_flush(rbd->image);
 		rbd_close(rbd->image);
 	}
@@ -215,6 +233,9 @@ bdev_rbd_free(struct bdev_rbd *rbd)
 	free(rbd->rbd_name);
 	free(rbd->user_id);
 	free(rbd->pool_name);
+	free(rbd->namespace_name);
+	free(rbd->encryption_format);
+	bdev_rbd_free_passphrase(rbd->passphrase);
 	bdev_rbd_free_config(rbd->config);
 
 	if (rbd->cluster_name) {
@@ -272,6 +293,19 @@ bdev_rbd_dup_config(const char *const *config)
 		}
 	}
 	return copy;
+}
+
+void
+bdev_rbd_free_passphrase(char **passphrase)
+{
+	char **entry;
+
+	if (passphrase) {
+		for (entry = passphrase; *entry; entry++) {
+			free(*entry);
+		}
+		free(passphrase);
+	}
 }
 
 static int
@@ -376,7 +410,7 @@ bdev_rbd_cluster_handle(void *arg)
 }
 
 static int
-bdev_rbd_get_pool_ctx(rados_t *cluster_p, const char *name,  struct bdev_rbd_pool_ctx **ctx)
+bdev_rbd_get_pool_ctx(rados_t *cluster_p, const char *name, const char *namespace_name, struct bdev_rbd_pool_ctx **ctx)
 {
 	struct bdev_rbd_pool_ctx *entry;
 
@@ -387,7 +421,10 @@ bdev_rbd_get_pool_ctx(rados_t *cluster_p, const char *name,  struct bdev_rbd_poo
 	}
 
 	STAILQ_FOREACH(entry, &g_map_bdev_rbd_pool_ctx, link) {
-		if (strcmp(name, entry->name) == 0 && cluster_p == entry->cluster_p) {
+		if (strcmp(name, entry->name) == 0 && cluster_p == entry->cluster_p &&
+		    ((namespace_name == NULL && entry->namespace_name == NULL) ||
+		     (namespace_name && entry->namespace_name &&
+		      strcmp(namespace_name, entry->namespace_name) == 0))) {
 			entry->ref++;
 			*ctx = entry;
 			return 0;
@@ -406,9 +443,25 @@ bdev_rbd_get_pool_ctx(rados_t *cluster_p, const char *name,  struct bdev_rbd_poo
 		goto err_handle;
 	}
 
+	if (namespace_name) {
+		entry->namespace_name = strdup(namespace_name);
+		if (entry->namespace_name == NULL) {
+			SPDK_ERRLOG("Failed to allocate the namespace_name =%s space on entry =%p\n",
+				    namespace_name, entry);
+			goto err_handle1;
+		}
+	}
+
 	if (rados_ioctx_create(*cluster_p, name, &entry->io_ctx) < 0) {
 		goto err_handle1;
 	}
+
+	if (namespace_name) {
+		rados_ioctx_set_namespace(entry->io_ctx, namespace_name);
+		SPDK_DEBUGLOG(bdev_rbd, "Set RADOS namespace to '%s' for pool '%s'\n",
+					namespace_name, name);
+	}
+
 
 	entry->cluster_p = cluster_p;
 	entry->ref = 1;
@@ -419,10 +472,66 @@ bdev_rbd_get_pool_ctx(rados_t *cluster_p, const char *name,  struct bdev_rbd_poo
 
 err_handle1:
 	free(entry->name);
+	free(entry->namespace_name);
 err_handle:
 	free(entry);
 
 	return -1;
+}
+
+static void
+bdev_rbd_free_encryption_specs(rbd_encryption_spec_t *specs, uint32_t count)
+{
+	uint32_t i;
+
+	if (!specs)
+		return;
+
+	for (i = 0; i < count; i++) {
+		if (specs[i].format == RBD_ENCRYPTION_FORMAT_LUKS1) {
+			free((void *)(((rbd_encryption_luks1_format_options_t *)specs[i].opts)->passphrase));
+		}
+		else if (specs[i].format == RBD_ENCRYPTION_FORMAT_LUKS2) {
+			free((void *)(((rbd_encryption_luks2_format_options_t *)specs[i].opts)->passphrase));
+		}
+		else if (specs[i].format == RBD_ENCRYPTION_FORMAT_LUKS) {
+			free((void *)(((rbd_encryption_luks_format_options_t *)specs[i].opts)->passphrase));
+		}
+		free(specs[i].opts);
+	}
+	free(specs);
+}
+
+static int
+bdev_rbd_set_passphrase(char **out, size_t *phrasesize, const char *phrase)
+{
+	*out = strdup(phrase);
+	if (!*out) {
+		SPDK_ERRLOG("Cannot allocate memory for encryption pass phrase\n");
+		return -1;
+	}
+	*phrasesize = strlen(phrase);
+	return 0;
+}
+
+#define SET_ENC_ENTRY(_specs, _rbd, _index, _fstring, _fmt, _upfmt)                                                    \
+if ((_rbd)->encryption_format[_index] == RBD_ENCRYPTION_FORMAT_##_upfmt ) {                                            \
+	rbd_encryption_##_fmt##_format_options_t *opts;                                                                \
+	strcat(_fstring, #_upfmt " ");                                                                                 \
+	opts = calloc(1, sizeof(*opts));                                                                               \
+	if (!opts) {                                                                                                   \
+		SPDK_ERRLOG("Cannot allocate memory for encryption format options\n");                                 \
+		bdev_rbd_free_encryption_specs(_specs, (_rbd)->encryption_entries_count);                              \
+		return NULL;                                                                                           \
+	}                                                                                                              \
+	if (bdev_rbd_set_passphrase((char **)&opts->passphrase, &opts->passphrase_size, (_rbd->passphrase[_index]))) { \
+		free((char *)opts->passphrase);                                                                        \
+		free(opts);                                                                                            \
+		bdev_rbd_free_encryption_specs(_specs, (_rbd)->encryption_entries_count);                              \
+		return NULL;                                                                                           \
+	}                                                                                                              \
+	_specs[_index].opts = (rbd_encryption_options_t)opts;                                                          \
+	_specs[_index].opts_size = sizeof(*opts);                                                                      \
 }
 
 static void *
@@ -433,7 +542,7 @@ bdev_rbd_init_context(void *arg)
 	rados_ioctx_t *io_ctx = NULL;
 
 	if (rbd->cluster_name) {
-		if (bdev_rbd_get_pool_ctx(rbd->cluster_p, rbd->pool_name, &rbd->rados_ctx.ctx) < 0) {
+		if (bdev_rbd_get_pool_ctx(rbd->cluster_p, rbd->pool_name, rbd->namespace_name, &rbd->rados_ctx.ctx) < 0) {
 			SPDK_ERRLOG("Failed to create ioctx on rbd=%p with cluster_name=%s\n",
 				    rbd, rbd->cluster_name);
 			return NULL;
@@ -445,18 +554,67 @@ bdev_rbd_init_context(void *arg)
 			return NULL;
 		}
 		io_ctx = &rbd->rados_ctx.io_ctx;
+
+		if (rbd->namespace_name != NULL) {
+			rados_ioctx_set_namespace(*io_ctx, rbd->namespace_name);
+			SPDK_DEBUGLOG(bdev_rbd, "Set RADOS namespace to '%s' for pool '%s'\n",
+						rbd->namespace_name, rbd->pool_name);
+		}
 	}
 
 	assert(io_ctx != NULL);
 	if (rbd->rbd_read_only) {
-                SPDK_DEBUGLOG(bdev_rbd, "Will open RBD image %s/%s as read-only\n", rbd->pool_name, rbd->rbd_name);
+		SPDK_DEBUGLOG(bdev_rbd, "Will open RBD image %s/%s as read-only\n", rbd->pool_name, rbd->rbd_name);
 		rc = rbd_open_read_only(*io_ctx, rbd->rbd_name, &rbd->image, NULL);
 	} else {
 		rc = rbd_open(*io_ctx, rbd->rbd_name, &rbd->image, NULL);
 	}
 	if (rc < 0) {
 		SPDK_ERRLOG("Failed to open specified rbd device\n");
+		rbd->image = NULL;
 		return NULL;
+	}
+
+	if (rbd->encryption_entries_count > 0) {
+		uint32_t i;
+		rbd_encryption_spec_t *specs;
+		char *formats_string;
+
+		formats_string = calloc(rbd->encryption_entries_count, strlen("LUKSx") + 1);
+		if (!formats_string) {
+			SPDK_ERRLOG("Cannot allocate memory for encryption formats string\n");
+			return NULL;
+		}
+		specs = calloc(rbd->encryption_entries_count, sizeof(*specs));
+		if (!specs) {
+			SPDK_ERRLOG("Cannot allocate memory for encryption specs\n");
+			free(formats_string);
+			return NULL;
+		}
+		for (i = 0; i < rbd->encryption_entries_count; i++) {
+			specs[i].format = rbd->encryption_format[i];
+			SET_ENC_ENTRY(specs, rbd, i, formats_string, luks1, LUKS1)
+			SET_ENC_ENTRY(specs, rbd, i, formats_string, luks2, LUKS2)
+			SET_ENC_ENTRY(specs, rbd, i, formats_string, luks, LUKS)
+			if (!specs[i].opts) {
+				SPDK_ERRLOG("Invalid encryption format %d\n", rbd->encryption_format[i]);
+				bdev_rbd_free_encryption_specs(specs, rbd->encryption_entries_count);
+				free(formats_string);
+				return NULL;
+			}
+		}
+
+		SPDK_DEBUGLOG(bdev_rbd, "Will use encryption load for image %s/%s, using encryption format(s) %s\n",
+				rbd->pool_name, rbd->rbd_name, formats_string);
+		rc = rbd_encryption_load2(rbd->image, specs, rbd->encryption_entries_count);
+		bdev_rbd_free_encryption_specs(specs, rbd->encryption_entries_count);
+		if (rc != 0) {
+			SPDK_ERRLOG("Error %d trying to encryption load image %s/%s using format(s) %s\n", rc,
+					rbd->pool_name, rbd->rbd_name, formats_string);
+			free(formats_string);
+			return NULL;
+		}
+		free(formats_string);
 	}
 
 	rc = rbd_update_watch(rbd->image, &rbd->rbd_watch_handle, rbd_update_callback, (void *)rbd);
@@ -582,7 +740,11 @@ _bdev_rbd_start_aio(struct bdev_rbd *disk, struct spdk_bdev_io *bdev_io,
 		}
 		break;
 	case SPDK_BDEV_IO_TYPE_WRITE:
-		if (spdk_likely(iovcnt == 1)) {
+		if (rbd_io->has_crc32c && spdk_likely(iovcnt == 1)) {
+			ret = rbd_aio_write_with_crc32c(image, offset, iov[0].iov_len,
+							iov[0].iov_base, rbd_io->precomputed_crc32c,
+							rbd_io->comp, /* op_flags */ 0);
+		} else if (spdk_likely(iovcnt == 1)) {
 			ret = rbd_aio_write(image, offset, iov[0].iov_len, iov[0].iov_base,
 					    rbd_io->comp);
 		} else {
@@ -651,11 +813,36 @@ bdev_rbd_get_ctx_size(void)
 	return sizeof(struct bdev_rbd_io);
 }
 
+static int
+bdev_rbd_config_json(struct spdk_json_write_ctx *w)
+{
+	struct bdev_rbd_cluster *entry;
+
+	pthread_mutex_lock(&g_map_bdev_rbd_cluster_mutex);
+	STAILQ_FOREACH(entry, &g_map_bdev_rbd_cluster, link) {
+		spdk_json_write_object_begin(w);
+		spdk_json_write_named_string(w, "method", "bdev_rbd_register_cluster");
+		spdk_json_write_named_object_begin(w, "params");
+		spdk_json_write_named_string(w, "name", entry->name);
+		if (entry->user_id && *entry->user_id) {
+			spdk_json_write_named_string(w, "user_id", entry->user_id);
+		}
+		if (entry->core_mask && *entry->core_mask) {
+			spdk_json_write_named_string(w, "core_mask", entry->core_mask);
+		}
+		spdk_json_write_object_end(w);
+		spdk_json_write_object_end(w);
+	}
+	pthread_mutex_unlock(&g_map_bdev_rbd_cluster_mutex);
+	return 0;
+}
+
 static struct spdk_bdev_module rbd_if = {
 	.name = "rbd",
 	.module_init = bdev_rbd_library_init,
 	.module_fini = bdev_rbd_library_fini,
 	.get_ctx_size = bdev_rbd_get_ctx_size,
+	.config_json = bdev_rbd_config_json,
 
 };
 SPDK_BDEV_MODULE_REGISTER(rbd, &rbd_if)
@@ -752,7 +939,7 @@ _bdev_rbd_destruct(void *ctx)
 	spdk_io_device_unregister(rbd, bdev_rbd_free_cb);
 }
 
-enum spdk_bdev_type
+static enum spdk_bdev_type
 bdev_rbd_get_module_type(void *)
 {
 	return SPDK_BDEV_RDB;
@@ -798,6 +985,14 @@ bdev_rbd_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io
 	struct bdev_rbd_io *rbd_io = (struct bdev_rbd_io *)bdev_io->driver_ctx;
 
 	rbd_io->submit_td = submit_td;
+	rbd_io->has_crc32c = false;  /* Initialize CRC32C fields */
+	rbd_io->precomputed_crc32c = 0;
+
+	/* check if CRC32C is available from the I/O options */
+	if (g_rbd_with_crc32c && bdev_io->u.bdev.has_crc32c) {
+		rbd_io->precomputed_crc32c = bdev_io->u.bdev.crc32c;
+		rbd_io->has_crc32c = true;
+	}
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
 		spdk_bdev_io_get_buf(bdev_io, bdev_rbd_get_buf_cb,
@@ -926,7 +1121,12 @@ bdev_rbd_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 
 	spdk_json_write_named_string(w, "pool_name", rbd_bdev->pool_name);
 
+	if (rbd_bdev->namespace_name) {
+		spdk_json_write_named_string(w, "namespace_name", rbd_bdev->namespace_name);
+	}
+
 	spdk_json_write_named_string(w, "rbd_name", rbd_bdev->rbd_name);
+	spdk_json_write_named_bool(w, "read_only", rbd_bdev->rbd_read_only);
 
 	if (rbd_bdev->cluster_name) {
 		bdev_rbd_cluster_dump_entry(rbd_bdev->cluster_name, w);
@@ -957,8 +1157,9 @@ end:
 static void
 bdev_rbd_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 {
-	struct bdev_rbd *rbd = bdev->ctxt;
+	struct bdev_rbd *rbd;
 
+	rbd = bdev->ctxt;
 	spdk_json_write_object_begin(w);
 
 	spdk_json_write_named_string(w, "method", "bdev_rbd_create");
@@ -966,10 +1167,35 @@ bdev_rbd_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w
 	spdk_json_write_named_object_begin(w, "params");
 	spdk_json_write_named_string(w, "name", bdev->name);
 	spdk_json_write_named_string(w, "pool_name", rbd->pool_name);
+	if (rbd->namespace_name) {
+		spdk_json_write_named_string(w, "namespace_name", rbd->namespace_name);
+	}
 	spdk_json_write_named_string(w, "rbd_name", rbd->rbd_name);
+	spdk_json_write_named_bool(w, "read_only", rbd->rbd_read_only);
 	spdk_json_write_named_uint32(w, "block_size", bdev->blocklen);
 	if (rbd->user_id) {
 		spdk_json_write_named_string(w, "user_id", rbd->user_id);
+	}
+
+	if (rbd->encryption_format && rbd->encryption_entries_count > 0) {
+		uint32_t i;
+
+		spdk_json_write_named_object_begin(w, "encryption_format");
+		for (i = 0; i < rbd->encryption_entries_count; i++) {
+			spdk_json_write_uint32(w, rbd->encryption_format[i]);
+		}
+		spdk_json_write_object_end(w);
+	}
+
+	if (rbd->passphrase && rbd->encryption_entries_count > 0) {
+		uint32_t i;
+
+		spdk_json_write_named_object_begin(w, "passphrase");
+		for (i = 0; i < rbd->encryption_entries_count; i++) {
+			/* souldn't write the real pass phrase, it's a security breach */
+			spdk_json_write_string(w, "*");
+		}
+		spdk_json_write_object_end(w);
 	}
 
 	if (rbd->config) {
@@ -984,6 +1210,9 @@ bdev_rbd_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w
 	}
 
 	spdk_json_write_named_uuid(w, "uuid", &bdev->uuid);
+	if (rbd->cluster_name) {
+		spdk_json_write_named_string(w, "cluster_name", rbd->cluster_name);
+	}
 
 	spdk_json_write_object_end(w);
 
@@ -1401,15 +1630,20 @@ bdev_rbd_register_cluster(struct cluster_register_info *info)
 int
 bdev_rbd_create(struct spdk_bdev **bdev, const char *name, const char *user_id,
 		const char *pool_name,
+		const char *namespace_name,
 		const char *const *config,
 		const char *rbd_name,
 		uint32_t block_size,
 		const char *cluster_name,
 		const struct spdk_uuid *uuid,
-		bool read_only)
+		bool read_only,
+		uint32_t encryption_entries_count,
+		const uint32_t *encryption_format,
+		const char **passphrase)
 {
 	struct bdev_rbd *rbd;
 	int ret;
+	uint32_t i;
 
 	if ((pool_name == NULL) || (rbd_name == NULL) || (block_size == 0)) {
 		return -EINVAL;
@@ -1448,6 +1682,36 @@ bdev_rbd_create(struct spdk_bdev **bdev, const char *name, const char *user_id,
 		return -ENOMEM;
 	}
 
+	if (namespace_name) {
+		rbd->namespace_name = strdup(namespace_name);
+		if (!rbd->namespace_name) {
+			bdev_rbd_free(rbd);
+			return -ENOMEM;
+		}
+	}
+
+	rbd->encryption_entries_count = encryption_entries_count;
+	if (encryption_entries_count > 0) {
+		rbd->encryption_format = calloc(encryption_entries_count, sizeof(uint32_t));
+		if (!rbd->encryption_format) {
+			bdev_rbd_free(rbd);
+			return -ENOMEM;
+		}
+		rbd->passphrase = calloc(encryption_entries_count + 1, sizeof(char *));
+		if (!rbd->passphrase) {
+			bdev_rbd_free(rbd);
+			return -ENOMEM;
+		}
+		for (i = 0; i < encryption_entries_count; i++) {
+			rbd->encryption_format[i] = encryption_format[i];
+			rbd->passphrase[i] = strdup(passphrase[i]);
+			if (!rbd->passphrase[i]) {
+				bdev_rbd_free(rbd);
+				return -ENOMEM;
+			}
+		}
+	}
+
 	if (config && !(rbd->config = bdev_rbd_dup_config(config))) {
 		bdev_rbd_free(rbd);
 		return -ENOMEM;
@@ -1484,7 +1748,13 @@ bdev_rbd_create(struct spdk_bdev **bdev, const char *name, const char *user_id,
 	rbd->reservation_epoch = 0;
 	rbd->reservation_ns_context = NULL;
 	rbd->reservation_fn_cbk = NULL;
-	SPDK_NOTICELOG("Add %s rbd disk to lun\n", rbd->disk.name);
+	ret = rados_cluster_fsid(*(rbd->cluster_p), rbd->cluster_fsid, sizeof(rbd->cluster_fsid));
+	if(ret < 0) {
+		bdev_rbd_free(rbd);
+		SPDK_ERRLOG("Failed to get cluster-id, ret %d \n", ret);
+		return ret;
+	}
+	SPDK_NOTICELOG("Add %s rbd disk to lun , cluster-id %s\n", rbd->disk.name, rbd->cluster_fsid);
 
 	spdk_io_device_register(rbd, bdev_rbd_create_cb,
 				bdev_rbd_destroy_cb,
@@ -1568,6 +1838,9 @@ bdev_rbd_resize(const char *name, const uint64_t new_size_in_mb)
 	}
 
 	rc = spdk_bdev_notify_blockcnt_change(bdev, new_size_in_byte / bdev->blocklen);
+	if (new_size_in_mb == 0 && rc == -EBUSY) {
+		rc = 0;
+	}
 	if (rc != 0) {
 		SPDK_ERRLOG("failed to notify block cnt change.\n");
 	}
@@ -1637,6 +1910,7 @@ bdev_rbd_ns_reservation_update_json(struct spdk_bdev *bdev, struct spdk_json_wri
 	spdk_json_write_object_begin(*ctx);
 	spdk_json_write_named_uint64(*ctx, "version", rbd->reservation_version);
 	spdk_json_write_named_uint64(*ctx, "epoch", rbd->reservation_epoch);
+	spdk_json_write_named_string(*ctx, "cluster_id", rbd->cluster_fsid);
 	SPDK_INFOLOG(reservation, "updated metadata epoch %lu  for bdev %s\n", rbd->reservation_epoch,
 		     bdev->name);
 	return 0;
@@ -1647,21 +1921,77 @@ bdev_rbd_ns_reservation_load_json(struct spdk_bdev *bdev, void **json, int *json
 {
 	ssize_t  rc = 0;
 	struct bdev_rbd *rbd = (struct bdev_rbd *)bdev;
+	ssize_t values_cnt;
+	void  *end;
+	struct spdk_json_val *values = NULL;
 
+	size_t size = MAX_RESERV_FILE_SIZE;
 	*json = calloc(MAX_RESERV_FILE_SIZE, 1);
 	if (*json == NULL) {
 		return -ENOMEM;
 	}
-	*json_size = MAX_RESERV_FILE_SIZE;
-	rc = rbd_metadata_get(rbd->image, RESERVATION_KEY, *json, json_size);
+	rc = rbd_metadata_get(rbd->image, RESERVATION_KEY, *json, &size);
 	if (rc < 0) {
-		SPDK_ERRLOG("Failed to get metadata  key = %s rbd-name %s\n", RESERVATION_KEY, rbd->rbd_name);
+		SPDK_NOTICELOG("Failed to get metadata  key = %s rbd-name %s\n", RESERVATION_KEY, rbd->rbd_name);
 		return rc;
 	}
+	*json_size = (int)size;
+	rc = spdk_json_parse(*json, size, NULL, 0, &end, 0);
+	if (rc < 0) {
+		SPDK_ERRLOG("Parsing JSON configuration failed (%zd)\n", rc);
+		goto exit;
+	}
+	values_cnt = rc;
+	values = calloc(values_cnt, sizeof(struct spdk_json_val));
+	if (values == NULL) {
+		goto exit;
+	}
+	rc = spdk_json_parse(*json, size, values, values_cnt, &end, 0);
+	if (rc != values_cnt) {
+		SPDK_ERRLOG("Parsing JSON configuration failed (%zd)\n", rc);
+		rc = -EFAULT;
+		goto exit;
+	}
+	struct spdk_json_val *key = NULL, *val = NULL;
+	char *parsed_val = NULL; ;
+
+	rc = spdk_json_find(values, "cluster_id", &key, &val, SPDK_JSON_VAL_STRING);
+	if (rc != 0 || val == NULL) {
+		SPDK_NOTICELOG("cluster-id json value not found. Removing key %s!\n",RESERVATION_KEY);
+		rc = rbd_metadata_remove(rbd->image, RESERVATION_KEY);
+		if (rc < 0) {
+			SPDK_ERRLOG("cannot remove key %s\n",RESERVATION_KEY);
+		}
+		rc = -EFAULT;
+		goto exit;
+	}
+	rc = spdk_json_decode_string(val, &parsed_val);
+	if (rc == 0) {
+		SPDK_INFOLOG(reservation, "Found string value: %s, rbd->cluster-id %s\n", parsed_val,
+			rbd->cluster_fsid);
+		rc = (memcmp(rbd->cluster_fsid, parsed_val, sizeof(rbd->cluster_fsid)) == 0) ? 0 : -EFAULT;
+		if (rc != 0) {
+			SPDK_NOTICELOG("cluster-id json value found but is not valid %s. Removing key %s!\n",
+					parsed_val, RESERVATION_KEY);
+			rc = rbd_metadata_remove(rbd->image, RESERVATION_KEY);
+			if (rc < 0) {
+				SPDK_ERRLOG("cannot remove key %s\n",RESERVATION_KEY);
+			}
+			rc = -EFAULT;
+			goto exit;
+		}
+	} else {
+		SPDK_ERRLOG("Failed to parse number as string\n");
+		rc = -1;
+		goto exit;
+	}
+
 	SPDK_INFOLOG(reservation,
-		     "loaded from the image metadata: current epoch %lu for rbd-name %s, bdev %s\n",
-		     rbd->reservation_epoch, rbd->rbd_name, bdev->name);
-	return 0;
+			"loaded from the image metadata: current epoch %lu for rbd-name %s, bdev %s\n",
+			rbd->reservation_epoch, rbd->rbd_name, bdev->name);
+exit:
+	free(values);
+	return rc;
 }
 
 static int
@@ -1677,10 +2007,10 @@ rbd_bdev_check_epoch(struct bdev_rbd *rbd)
 		rc = -ENOMEM;
 		goto exit;
 	}
-	size_t size = MAX_RESERV_FILE_SIZE;
-	rc = rbd_metadata_get(rbd->image, RESERVATION_KEY, json, &size);
+	json_size = MAX_RESERV_FILE_SIZE;
+	rc = rbd_metadata_get(rbd->image, RESERVATION_KEY, json, &json_size);
 	if (rc < 0) {
-		SPDK_ERRLOG("Failed to get metadata  key = %s\n", RESERVATION_KEY);
+		SPDK_NOTICELOG("Failed to get metadata  key = %s\n", RESERVATION_KEY);
 		rc = -ENOKEY;
 		goto exit;
 	}
@@ -1747,7 +2077,7 @@ rbd_bdev_notify_ns_reservation_changed(struct bdev_rbd *rbd)
 			rc = rbd->reservation_fn_cbk(rbd->reservation_ns_context);
 		}
 		if (rc != 0) {
-			SPDK_ERRLOG("reservation metadata update was not loaded\n");
+			SPDK_NOTICELOG("reservation metadata update was not loaded\n");
 		}
 	}
 err:
@@ -1770,3 +2100,16 @@ bdev_rbd_library_fini(void)
 }
 
 SPDK_LOG_REGISTER_COMPONENT(bdev_rbd)
+
+bool
+bdev_rbd_get_with_crc32c(void)
+{
+	return g_rbd_with_crc32c;
+}
+
+/** enable or disable CRC32C optimization for RBD write operations */
+void
+bdev_rbd_set_with_crc32c(bool enable)
+{
+	g_rbd_with_crc32c = enable;
+}

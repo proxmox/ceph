@@ -89,7 +89,8 @@ struct spdk_nvmf_request {
 			uint8_t data_from_pool		: 1;
 			uint8_t dif_enabled		: 1;
 			uint8_t first_fused		: 1;
-			uint8_t rsvd			: 5;
+			uint8_t reservation_queued	: 1;
+			uint8_t rsvd			: 4;
 		};
 	};
 	uint8_t				zcopy_phase; /* type enum spdk_nvmf_zcopy_phase */
@@ -118,6 +119,8 @@ struct spdk_nvmf_request {
 	struct spdk_nvmf_request	*req_to_abort;
 	struct spdk_poller		*poller;
 	struct spdk_bdev_io		*zcopy_bdev_io; /* Contains the bdev_io when using ZCOPY */
+	uint32_t			precomputed_crc32c;  /* CRC32C checksum from NVMf layer */
+	bool				has_crc32c;          /* Whether CRC32C is available */
 
 	/* Internal state that keeps track of the iobuf allocation progress */
 	struct {
@@ -128,8 +131,9 @@ struct spdk_nvmf_request {
 	/* Timeout tracked for connect and abort flows. */
 	uint64_t timeout_tsc;
 	uint32_t			orig_nsid;
+	STAILQ_ENTRY(spdk_nvmf_request)	reservation_link;
 };
-SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_request) == 816, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_request) == 840, "Incorrect size");
 
 enum spdk_nvmf_qpair_state {
 	SPDK_NVMF_QPAIR_UNINITIALIZED = 0,
@@ -249,6 +253,7 @@ struct spdk_nvmf_ctrlr_data {
 	uint16_t ssvid;
 	/** ieee oui identifier */
 	uint8_t ieee[3];
+	uint8_t cntrltype;
 	struct spdk_nvme_cdata_oacs oacs;
 	struct spdk_nvme_cdata_oncs oncs;
 	struct spdk_nvme_cdata_fuses fuses;
@@ -503,6 +508,12 @@ struct spdk_nvmf_transport_ops {
 	void (*subsystem_dump_host)(struct spdk_nvmf_transport *transport,
 				    const struct spdk_nvmf_subsystem *subsystem,
 				    const char *hostnqn, struct spdk_json_write_ctx *w);
+
+	/*  Callbacks used for collection io statistics per nvmf controller 
+	 *  for specific transport 
+     */
+    int (*enable_qp_statistics)(bool enable);
+	void (*get_qp_statistics)(struct spdk_nvmf_qpair *qpair, void **stats, bool for_cleanup);
 };
 
 /**
@@ -544,8 +555,10 @@ struct spdk_nvmf_registers {
 	union spdk_nvme_aqa_register	aqa;
 	uint64_t			asq;
 	uint64_t			acq;
+	uint32_t			nssr;
+	uint32_t			reserved;
 };
-SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_registers) == 40, "Incorrect size");
+SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_registers) == 48, "Incorrect size");
 
 const struct spdk_nvmf_registers *spdk_nvmf_ctrlr_get_regs(struct spdk_nvmf_ctrlr *ctrlr);
 
@@ -564,6 +577,7 @@ int spdk_nvmf_request_free(struct spdk_nvmf_request *req);
 int spdk_nvmf_request_complete(struct spdk_nvmf_request *req);
 void spdk_nvmf_request_zcopy_start(struct spdk_nvmf_request *req);
 void spdk_nvmf_request_zcopy_end(struct spdk_nvmf_request *req, bool commit);
+void spdk_nvmf_request_set_crc32c(struct spdk_nvmf_request *req, uint32_t crc32c);
 
 static inline bool
 spdk_nvmf_request_using_zcopy(const struct spdk_nvmf_request *req)
@@ -630,7 +644,7 @@ struct spdk_nvmf_ctrlr_migr_data {
 	uint32_t reserved;
 
 	struct spdk_nvmf_registers regs;
-	uint8_t regs_reserved[216];
+	uint8_t regs_reserved[208];
 
 	struct spdk_nvmf_ctrlr_feat feat;
 	uint8_t feat_reserved[216];

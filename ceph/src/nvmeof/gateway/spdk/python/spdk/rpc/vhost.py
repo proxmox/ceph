@@ -3,8 +3,10 @@
 #  All rights reserved.
 
 from .cmd_parser import *
+from spdk.rpc.helpers import deprecated_method
 
 
+@deprecated_method
 def vhost_controller_set_coalescing(client, ctrlr, delay_base_us, iops_threshold):
     """Set coalescing for vhost controller.
     Args:
@@ -20,6 +22,7 @@ def vhost_controller_set_coalescing(client, ctrlr, delay_base_us, iops_threshold
     return client.call('vhost_controller_set_coalescing', params)
 
 
+@deprecated_method
 def virtio_blk_get_transports(client, name=None):
     """Get list of virtio-blk transports.
     Args:
@@ -37,17 +40,16 @@ def virtio_blk_get_transports(client, name=None):
     return client.call('virtio_blk_get_transports', params)
 
 
+@deprecated_method
 def virtio_blk_create_transport(client, **params):
     """Create virtio blk transport.
     Args:
         name: transport name
     """
-    strip_globals(params)
-    remove_null(params)
-
-    return client.call('virtio_blk_create_transport', params)
+    return client.call('virtio_blk_create_transport', remove_null(strip_globals(params)))
 
 
+@deprecated_method
 def vhost_create_scsi_controller(client, ctrlr, delay=False, cpumask=None):
     """Create a vhost scsi controller.
     Args:
@@ -63,6 +65,7 @@ def vhost_create_scsi_controller(client, ctrlr, delay=False, cpumask=None):
     return client.call('vhost_create_scsi_controller', params)
 
 
+@deprecated_method
 def vhost_start_scsi_controller(client, ctrlr):
     """Start a vhost scsi controller.
     Args:
@@ -73,6 +76,7 @@ def vhost_start_scsi_controller(client, ctrlr):
     return client.call('vhost_start_scsi_controller', params)
 
 
+@deprecated_method
 def vhost_scsi_controller_add_target(client, ctrlr, scsi_target_num, bdev_name):
     """Add LUN to vhost scsi controller target.
     Args:
@@ -88,6 +92,7 @@ def vhost_scsi_controller_add_target(client, ctrlr, scsi_target_num, bdev_name):
     return client.call('vhost_scsi_controller_add_target', params)
 
 
+@deprecated_method
 def vhost_scsi_controller_remove_target(client, ctrlr, scsi_target_num):
     """Remove target from vhost scsi controller.
     Args:
@@ -101,6 +106,7 @@ def vhost_scsi_controller_remove_target(client, ctrlr, scsi_target_num):
     return client.call('vhost_scsi_controller_remove_target', params)
 
 
+@deprecated_method
 def vhost_create_blk_controller(client, **params):
     """Create vhost BLK controller.
     Args:
@@ -111,12 +117,10 @@ def vhost_create_blk_controller(client, **params):
         readonly: set controller as read-only
         packed_ring: support controller packed_ring
     """
-    strip_globals(params)
-    remove_null(params)
-
-    return client.call('vhost_create_blk_controller', params)
+    return client.call('vhost_create_blk_controller', remove_null(strip_globals(params)))
 
 
+@deprecated_method
 def vhost_get_controllers(client, name=None):
     """Get information about configured vhost controllers.
 
@@ -132,6 +136,7 @@ def vhost_get_controllers(client, name=None):
     return client.call('vhost_get_controllers', params)
 
 
+@deprecated_method
 def vhost_delete_controller(client, ctrlr):
     """Delete vhost controller from configuration.
     Args:
@@ -141,6 +146,7 @@ def vhost_delete_controller(client, ctrlr):
     return client.call('vhost_delete_controller', params)
 
 
+@deprecated_method
 def bdev_virtio_attach_controller(client, name, trtype, traddr, dev_type, vq_count=None, vq_size=None):
     """Attaches virtio controller using
     provided transport type and device type.
@@ -168,6 +174,7 @@ def bdev_virtio_attach_controller(client, name, trtype, traddr, dev_type, vq_cou
     return client.call('bdev_virtio_attach_controller', params)
 
 
+@deprecated_method
 def bdev_virtio_detach_controller(client, name):
     """Remove a Virtio device
     This will delete all bdevs exposed by this device.
@@ -178,11 +185,13 @@ def bdev_virtio_detach_controller(client, name):
     return client.call('bdev_virtio_detach_controller', params)
 
 
+@deprecated_method
 def bdev_virtio_scsi_get_devices(client):
     """Get list of virtio scsi devices."""
     return client.call('bdev_virtio_scsi_get_devices')
 
 
+@deprecated_method
 def bdev_virtio_blk_set_hotplug(client, enable, period_us=None):
     """Set options for the bdev virtio blk. This is startup command.
 

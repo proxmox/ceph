@@ -248,9 +248,9 @@ cn20k_nix_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t qid, uint16_t nb_
 		inl_lf = dev->outb.lf_base + crypto_qid;
 
 		txq->cpt_io_addr = inl_lf->io_addr;
-		txq->cpt_fc = inl_lf->fc_addr;
-		txq->cpt_fc_sw = (int32_t *)((uintptr_t)dev->outb.fc_sw_mem +
-					     crypto_qid * RTE_CACHE_LINE_SIZE);
+		txq->cpt_fc = (uint64_t __rte_atomic *)inl_lf->fc_addr;
+		txq->cpt_fc_sw = (int32_t __rte_atomic *)((uintptr_t)dev->outb.fc_sw_mem +
+							  crypto_qid * RTE_CACHE_LINE_SIZE);
 
 		txq->cpt_desc = inl_lf->nb_desc * 0.7;
 		txq->sa_base = (uint64_t)dev->outb.sa_base;
@@ -604,8 +604,7 @@ cn20k_nix_dev_start(struct rte_eth_dev *eth_dev)
 	if (roc_idev_nix_rx_inject_get(nix->port_id))
 		dev->rx_offload_flags |= NIX_RX_SEC_REASSEMBLY_F;
 
-	if (dev->rx_offload_flags & NIX_RX_REAS_F)
-		cn20k_nix_rx_queue_bufsize_update(eth_dev);
+	cn20k_nix_rx_queue_bufsize_update(eth_dev);
 
 	cn20k_eth_set_tx_function(eth_dev);
 	cn20k_eth_set_rx_function(eth_dev);

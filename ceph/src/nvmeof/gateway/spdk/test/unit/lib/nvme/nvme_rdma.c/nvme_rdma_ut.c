@@ -181,7 +181,7 @@ nvme_rdma_ut_next_sge(void *cb_arg, void **address, uint32_t *length)
 static void
 test_nvme_rdma_build_sgl_request(void)
 {
-	struct nvme_rdma_qpair rqpair;
+	struct nvme_rdma_qpair rqpair = {};
 	struct spdk_nvme_ctrlr ctrlr = {0};
 	struct spdk_nvmf_cmd cmd = {{0}};
 	struct spdk_nvme_rdma_req rdma_req = {0};
@@ -290,7 +290,7 @@ test_nvme_rdma_build_sgl_request(void)
 static void
 test_nvme_rdma_build_sgl_inline_request(void)
 {
-	struct nvme_rdma_qpair rqpair;
+	struct nvme_rdma_qpair rqpair = {};
 	struct spdk_nvme_ctrlr ctrlr = {0};
 	struct spdk_nvmf_cmd cmd = {{0}};
 	struct spdk_nvme_rdma_req rdma_req = {0};
@@ -351,7 +351,7 @@ test_nvme_rdma_build_sgl_inline_request(void)
 static void
 test_nvme_rdma_build_contig_request(void)
 {
-	struct nvme_rdma_qpair rqpair;
+	struct nvme_rdma_qpair rqpair = {};
 	struct spdk_nvme_ctrlr ctrlr = {0};
 	struct spdk_nvmf_cmd cmd = {{0}};
 	struct spdk_nvme_rdma_req rdma_req = {0};
@@ -394,7 +394,7 @@ test_nvme_rdma_build_contig_request(void)
 static void
 test_nvme_rdma_build_contig_inline_request(void)
 {
-	struct nvme_rdma_qpair rqpair;
+	struct nvme_rdma_qpair rqpair = {};
 	struct spdk_nvme_ctrlr ctrlr = {0};
 	struct spdk_nvmf_cmd cmd = {{0}};
 	struct spdk_nvme_rdma_req rdma_req = {0};
@@ -447,7 +447,8 @@ test_nvme_rdma_build_contig_inline_request(void)
 static void
 test_nvme_rdma_create_reqs(void)
 {
-	struct nvme_rdma_qpair rqpair = {};
+	struct nvme_rdma_ctrlr rctrlr = {};
+	struct nvme_rdma_qpair rqpair = {.qpair = {.ctrlr = &rctrlr.ctrlr}};
 	int rc;
 
 	memset(&g_nvme_hooks, 0, sizeof(g_nvme_hooks));
@@ -646,7 +647,8 @@ test_nvme_rdma_poller_create(void)
 static void
 test_nvme_rdma_qpair_process_cm_event(void)
 {
-	struct nvme_rdma_qpair rqpair = {};
+	struct nvme_rdma_ctrlr rctrlr = {};
+	struct nvme_rdma_qpair rqpair = {.qpair = {.ctrlr = &rctrlr.ctrlr}};
 	struct rdma_cm_event	 event = {};
 	struct spdk_nvmf_rdma_accept_private_data	accept_data = {};
 	int rc = 0;
@@ -1058,7 +1060,8 @@ test_rdma_get_memory_translation(void)
 	struct spdk_memory_domain *domain = (struct spdk_memory_domain *) 0xfeedbeef;
 	struct ibv_qp qp = {.pd = (struct ibv_pd *) 0xfeedbeef};
 	struct spdk_rdma_provider_qp rdma_qp = {.qp = &qp, .domain = domain};
-	struct nvme_rdma_qpair rqpair = {.rdma_qp = &rdma_qp};
+	struct nvme_rdma_ctrlr rctrlr = {};
+	struct nvme_rdma_qpair rqpair = {.rdma_qp = &rdma_qp, .qpair = {.ctrlr = &rctrlr.ctrlr}};
 	struct spdk_nvme_ns_cmd_ext_io_opts io_opts = {.memory_domain = domain};
 	struct nvme_request req = {.payload = {.opts = &io_opts}};
 	struct nvme_rdma_memory_translation_ctx ctx = {
@@ -1268,7 +1271,8 @@ test_nvme_rdma_qpair_set_poller(void)
 	struct nvme_rdma_poll_group *group;
 	struct spdk_nvme_transport_poll_group *tgroup;
 	struct nvme_rdma_poller *poller;
-	struct nvme_rdma_qpair rqpair = {};
+	struct nvme_rdma_ctrlr rctrlr = {};
+	struct nvme_rdma_qpair rqpair = {.qpair = {.ctrlr = &rctrlr.ctrlr}}, rqpair_2 = {.qpair = {.ctrlr = &rctrlr.ctrlr}};
 	struct rdma_cm_id cm_id = {};
 
 	/* Case1: Test function nvme_rdma_poll_group_create */
@@ -1284,6 +1288,9 @@ test_nvme_rdma_qpair_set_poller(void)
 	rqpair.qpair.poll_group = tgroup;
 	rqpair.qpair.trtype = SPDK_NVME_TRANSPORT_RDMA;
 	rqpair.cm_id = &cm_id;
+	rqpair_2.qpair.poll_group = tgroup;
+	rqpair_2.qpair.trtype = SPDK_NVME_TRANSPORT_RDMA;
+	rqpair_2.cm_id = &cm_id;
 
 	/* Test1: Function ibv_create_cq failed */
 	cm_id.verbs = (void *)0xFEEDBEEF;
@@ -1324,7 +1331,7 @@ test_nvme_rdma_qpair_set_poller(void)
 
 	rqpair.qpair.poll_group_tailq_head = &tgroup->disconnected_qpairs;
 
-	nvme_rdma_poll_group_put_poller(group, rqpair.poller);
+	nvme_rdma_qpair_release_poller(&rqpair);
 	CU_ASSERT(STAILQ_EMPTY(&group->pollers));
 
 	rqpair.qpair.poll_group_tailq_head = &tgroup->connected_qpairs;
@@ -1353,7 +1360,29 @@ test_nvme_rdma_qpair_set_poller(void)
 
 	rqpair.qpair.poll_group_tailq_head = &tgroup->disconnected_qpairs;
 
-	nvme_rdma_poll_group_put_poller(group, rqpair.poller);
+	/* Test 6: Add and remove on more qpair, check required_num_wc */
+	rqpair_2.cq = NULL;
+	rqpair_2.num_entries = DEFAULT_NVME_RDMA_CQ_SIZE - 1;
+
+	rc = nvme_rdma_qpair_set_poller(&rqpair_2.qpair);
+	CU_ASSERT(rc == 0);
+	poller = STAILQ_FIRST(&group->pollers);
+	SPDK_CU_ASSERT_FATAL(poller != NULL);
+	CU_ASSERT(poller->current_num_wc == DEFAULT_NVME_RDMA_CQ_SIZE * 4);
+	CU_ASSERT(poller->required_num_wc == (DEFAULT_NVME_RDMA_CQ_SIZE - 1) * 4);
+	CU_ASSERT(rqpair_2.cq == poller->cq);
+	CU_ASSERT(rqpair_2.poller == poller);
+
+	nvme_rdma_qpair_release_poller(&rqpair_2);
+	poller = STAILQ_FIRST(&group->pollers);
+	SPDK_CU_ASSERT_FATAL(poller != NULL);
+	CU_ASSERT(poller->current_num_wc == DEFAULT_NVME_RDMA_CQ_SIZE * 4);
+	CU_ASSERT(poller->required_num_wc == (DEFAULT_NVME_RDMA_CQ_SIZE - 1) * 2);
+	CU_ASSERT(rqpair.cq == poller->cq);
+	CU_ASSERT(rqpair.poller == poller);
+
+	/* Cleanup */
+	nvme_rdma_qpair_release_poller(&rqpair);
 	CU_ASSERT(STAILQ_EMPTY(&group->pollers));
 
 	rc = nvme_rdma_poll_group_destroy(tgroup);

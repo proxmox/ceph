@@ -30,6 +30,7 @@ extern "C" {
 #define MIN_SO_RCVBUF_SIZE (4 * 1024)
 #define MIN_SO_SNDBUF_SIZE (4 * 1024)
 #define IOV_BATCH_SIZE 64
+#define DEFAULT_NUM_SSL_TICKETS 2
 
 struct spdk_sock {
 	struct spdk_net_impl		*net_impl;
@@ -83,6 +84,8 @@ struct spdk_net_impl {
 	const char *(*get_interface_name)(struct spdk_sock *sock);
 	int32_t (*get_numa_id)(struct spdk_sock *sock);
 	struct spdk_sock *(*connect)(const char *ip, int port, struct spdk_sock_opts *opts);
+	struct spdk_sock *(*connect_async)(const char *ip, int port, struct spdk_sock_opts *opts,
+					   spdk_sock_connect_cb_fn cb_fn, void *cb_arg);
 	struct spdk_sock *(*listen)(const char *ip, int port, struct spdk_sock_opts *opts);
 	struct spdk_sock *(*accept)(struct spdk_sock *sock);
 	int (*close)(struct spdk_sock *sock);
@@ -399,7 +402,7 @@ struct addrinfo *spdk_sock_posix_getaddrinfo(const char *ip, int port);
  *
  * Use close() when returned fd is no longer needed.
  *
- * \return fd on success, -1 on failure.
+ * \return 0 on success, negative errno value on failure.
  */
 int spdk_sock_posix_fd_create(struct addrinfo *res, struct spdk_sock_opts *opts,
 			      struct spdk_sock_impl_opts *impl_opts);
@@ -409,9 +412,27 @@ int spdk_sock_posix_fd_create(struct addrinfo *res, struct spdk_sock_opts *opts,
  *
  * On success O_NONBLOCK is cleared otherwise property value is undefined.
  *
- * \return 0 on success, -1 on failure, 1 to retry with different address if available.
+ * \return 0 on success, negative errno value on failure.
  */
 int spdk_sock_posix_fd_connect(int fd, struct addrinfo *res, struct spdk_sock_opts *opts);
+
+/**
+ * Initiates the socket connection.
+ *
+ * On success O_NONBLOCK is set otherwise property value is undefined.
+ *
+ * User must use \ref spdk_sock_posix_fd_connect_poll_async to determine connection status.
+ *
+ * \return 0 on success, negative errno value on failure.
+ */
+int spdk_sock_posix_fd_connect_async(int fd, struct addrinfo *res, struct spdk_sock_opts *opts);
+
+/**
+ * Polls the socket connection status.
+ *
+ * \return 0 on success, negative errno value on failure.
+ */
+int spdk_sock_posix_fd_connect_poll_async(int fd);
 
 /**
  * Insert a group into the placement map.

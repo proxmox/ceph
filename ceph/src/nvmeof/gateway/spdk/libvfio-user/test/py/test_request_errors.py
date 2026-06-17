@@ -33,12 +33,12 @@ import errno
 import os
 
 ctx = None
-sock = None
+client = None
 argsz = len(vfio_irq_set())
 
 
 def setup_function(function):
-    global ctx, sock
+    global ctx, client
 
     ctx = vfu_create_ctx(flags=LIBVFIO_USER_FLAG_ATTACH_NB)
     assert ctx is not None
@@ -54,17 +54,13 @@ def setup_function(function):
     ret = vfu_setup_device_reset_cb(ctx)
     assert ret == 0
 
-    ret = vfu_setup_region(ctx, index=VFU_PCI_DEV_MIGR_REGION_IDX,
-                           size=2 << PAGE_SHIFT, flags=VFU_REGION_FLAG_RW)
-    assert ret == 0
-
     ret = vfu_setup_device_migration_callbacks(ctx)
     assert ret == 0
 
     ret = vfu_realize_ctx(ctx)
     assert ret == 0
 
-    sock = connect_client(ctx)
+    client = connect_client(ctx)
 
 
 def teardown_function(function):
@@ -77,9 +73,9 @@ def test_too_small():
     hdr = struct.pack("HHIII", 0xbad1, VFIO_USER_DEVICE_SET_IRQS,
                       SIZEOF_VFIO_USER_HEADER - 1, VFIO_USER_F_TYPE_COMMAND, 0)
 
-    sock.send(hdr)
+    client.sock.send(hdr)
     vfu_run_ctx(ctx)
-    get_reply(sock, expect=errno.EINVAL)
+    get_reply(client.sock, expect=errno.EINVAL)
 
 
 def test_too_large():
@@ -87,9 +83,9 @@ def test_too_large():
     hdr = struct.pack("HHIII", 0xbad1, VFIO_USER_DEVICE_SET_IRQS,
                       SERVER_MAX_MSG_SIZE + 1, VFIO_USER_F_TYPE_COMMAND, 0)
 
-    sock.send(hdr)
+    client.sock.send(hdr)
     vfu_run_ctx(ctx)
-    get_reply(sock, expect=errno.EINVAL)
+    get_reply(client.sock, expect=errno.EINVAL)
 
 
 def test_unsolicited_reply():
@@ -97,24 +93,24 @@ def test_unsolicited_reply():
     hdr = struct.pack("HHIII", 0xbad2, VFIO_USER_DEVICE_SET_IRQS,
                       SIZEOF_VFIO_USER_HEADER, VFIO_USER_F_TYPE_REPLY, 0)
 
-    sock.send(hdr)
+    client.sock.send(hdr)
     vfu_run_ctx(ctx)
-    get_reply(sock, expect=errno.EINVAL)
+    get_reply(client.sock, expect=errno.EINVAL)
 
 
 def test_bad_command():
     hdr = vfio_user_header(VFIO_USER_MAX, size=1)
 
-    sock.send(hdr + b'\0')
+    client.sock.send(hdr + b'\0')
     vfu_run_ctx(ctx)
-    get_reply(sock, expect=errno.EINVAL)
+    get_reply(client.sock, expect=errno.EINVAL)
 
 
 def test_no_payload():
     hdr = vfio_user_header(VFIO_USER_DEVICE_SET_IRQS, size=0)
-    sock.send(hdr)
+    client.sock.send(hdr)
     vfu_run_ctx(ctx)
-    get_reply(sock, expect=errno.EINVAL)
+    get_reply(client.sock, expect=errno.EINVAL)
 
 
 def test_bad_request_closes_fds():
@@ -126,10 +122,10 @@ def test_bad_request_closes_fds():
     fd2 = eventfd()
 
     hdr = vfio_user_header(VFIO_USER_DEVICE_SET_IRQS, size=len(payload))
-    sock.sendmsg([hdr + payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
-                 struct.pack("II", fd1, fd2))])
+    client.sock.sendmsg([hdr + payload], [(socket.SOL_SOCKET,
+                        socket.SCM_RIGHTS, struct.pack("II", fd1, fd2))])
     vfu_run_ctx(ctx)
-    get_reply(sock, expect=errno.EINVAL)
+    get_reply(client.sock, expect=errno.EINVAL)
 
     #
     # It's a little cheesy, but this is just ensuring no fd's remain open past
@@ -149,8 +145,8 @@ def test_disconnected_socket(mock_quiesce, mock_reset):
     """Tests that calling vfu_run_ctx on a disconnected socket results in
     resetting the context and returning ENOTCONN."""
 
-    global ctx, sock
-    sock.close()
+    global ctx, client
+    client.sock.close()
 
     vfu_run_ctx(ctx, errno.ENOTCONN)
 
@@ -165,8 +161,8 @@ def test_disconnected_socket_quiesce_busy(mock_quiesce):
     """Tests that calling vfu_run_ctx on a disconnected socket results in
     resetting the context which returns EBUSY."""
 
-    global ctx, sock
-    sock.close()
+    global ctx, client
+    client.sock.close()
 
     vfu_run_ctx(ctx, errno.EBUSY)
 
@@ -189,24 +185,21 @@ def test_disconnected_socket_quiesce_busy(mock_quiesce):
 
 @patch('libvfio_user.reset_cb')
 @patch('libvfio_user.quiesce_cb', side_effect=fail_with_errno(errno.EBUSY))
-@patch('libvfio_user.migr_get_pending_bytes_cb')
-def test_reply_fail_quiesce_busy(mock_get_pending_bytes, mock_quiesce,
+@patch('libvfio_user.migr_trans_cb')
+def test_reply_fail_quiesce_busy(mock_migr_trans_cb, mock_quiesce,
                                  mock_reset):
     """Tests failing to reply and the quiesce callback returning EBUSY."""
 
-    global ctx, sock
+    global ctx, client
 
-    def get_pending_bytes_side_effect(ctx):
-        sock.close()
+    def migr_trans_cb_side_effect(ctx, state):
+        client.sock.close()
         return 0
-    mock_get_pending_bytes.side_effect = get_pending_bytes_side_effect
+    mock_migr_trans_cb.side_effect = migr_trans_cb_side_effect
 
-    # read the get_pending_bytes register, it should close the socket causing
-    # the reply to fail
-    read_region(ctx, sock, VFU_PCI_DEV_MIGR_REGION_IDX,
-                vfio_user_migration_info.pending_bytes.offset,
-                vfio_user_migration_info.pending_bytes.size, rsp=False,
-                busy=True)
+    # change the state, it should close the socket causing the reply to fail
+    transition_to_state(ctx, client.sock, VFIO_USER_DEVICE_STATE_STOP_COPY,
+                        rsp=False, busy=True)
 
     # vfu_run_ctx will try to reset the context and to do that it needs to
     # quiesce the device first
@@ -227,7 +220,7 @@ def test_reply_fail_quiesce_busy(mock_get_pending_bytes, mock_quiesce,
     mock_reset.assert_called_once_with(ctx, VFU_RESET_LOST_CONN)
 
     try:
-        get_reply(sock)
+        get_reply(client.sock)
     except OSError as e:
         assert e.errno == errno.EBADF
     else:

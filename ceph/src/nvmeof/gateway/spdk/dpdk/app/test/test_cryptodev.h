@@ -40,7 +40,11 @@
 #define TRUNCATED_DIGEST_BYTE_LENGTH_SHA384		(24)
 #define TRUNCATED_DIGEST_BYTE_LENGTH_SHA512		(32)
 
-#define MAXIMUM_IV_LENGTH				(16)
+/*
+ * maximum IV length need to include both the
+ * auth IV length (16 bytes) and the cipher IV length (16 bytes)
+ */
+#define MAXIMUM_IV_LENGTH				(32)
 #define AES_GCM_J0_LENGTH				(16)
 
 #define IV_OFFSET			(sizeof(struct rte_crypto_op) + \
@@ -73,6 +77,7 @@
 #define CRYPTODEV_NAME_CN10K_PMD	crypto_cn10k
 #define CRYPTODEV_NAME_MLX5_PMD		crypto_mlx5
 #define CRYPTODEV_NAME_UADK_PMD		crypto_uadk
+#define CRYPTODEV_NAME_ZSDA_SYM_PMD	crypto_zsda
 
 
 enum cryptodev_api_test_type {

@@ -90,6 +90,10 @@ DEFINE_STUB(spdk_nvme_ctrlr_get_admin_qp_fd, int, (struct spdk_nvme_ctrlr *ctrlr
 DEFINE_STUB(spdk_nvme_poll_group_set_interrupt_callback, int,
 	    (struct spdk_nvme_poll_group *group,
 	     spdk_nvme_poll_group_interrupt_cb cb_fn, void *ctx), 0);
+DEFINE_STUB(spdk_nvme_ns_is_active, bool, (struct spdk_nvme_ns *ns), true);
+DEFINE_STUB(spdk_nvme_ctrlr_reset_subsystem, int, (struct spdk_nvme_ctrlr *ctrlr), 0);
+DEFINE_STUB(spdk_nvme_ctrlr_is_nssr_supported, bool, (struct spdk_nvme_ctrlr *ctrlr), 0);
+
 int
 spdk_nvme_ctrlr_get_memory_domains(const struct spdk_nvme_ctrlr *ctrlr,
 				   struct spdk_memory_domain **domains, int array_size)
@@ -1157,6 +1161,14 @@ spdk_nvme_ns_cmd_dataset_management(struct spdk_nvme_ns *ns, struct spdk_nvme_qp
 {
 	return ut_submit_nvme_request(ns, qpair, SPDK_NVME_OPC_DATASET_MANAGEMENT, cb_fn, cb_arg);
 }
+
+int
+spdk_nvme_ns_cmd_flush(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
+		       spdk_nvme_cmd_cb cb_fn, void *cb_arg)
+{
+	return ut_submit_nvme_request(ns, qpair, SPDK_NVME_OPC_FLUSH, cb_fn, cb_arg);
+}
+
 
 int
 spdk_nvme_ns_cmd_write_zeroes(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,

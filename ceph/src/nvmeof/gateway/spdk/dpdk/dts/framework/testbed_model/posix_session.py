@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2023 PANTHEON.tech s.r.o.
 # Copyright(c) 2023 University of New Hampshire
+# Copyright(c) 2025 Arm Limited
 
 """POSIX compliant OS translator.
 
@@ -26,7 +27,7 @@ from framework.utils import (
 )
 
 from .cpu import Architecture
-from .os_session import OSSession, OSSessionInfo
+from .os_session import FilePermissions, OSSession, OSSessionInfo
 
 
 class PosixSession(OSSession):
@@ -103,10 +104,12 @@ class PosixSession(OSSession):
 
     def copy_from(self, source_file: str | PurePath, destination_dir: str | Path) -> None:
         """Overrides :meth:`~.os_session.OSSession.copy_from`."""
+        self._logger.debug(f"Copying file '{source_file}' to local '{destination_dir}'.")
         self.remote_session.copy_from(source_file, destination_dir)
 
     def copy_to(self, source_file: str | Path, destination_dir: str | PurePath) -> None:
         """Overrides :meth:`~.os_session.OSSession.copy_to`."""
+        self._logger.debug(f"Copying file '{source_file}' to remote '{destination_dir}'.")
         self.remote_session.copy_to(source_file, destination_dir)
 
     def copy_dir_from(
@@ -117,6 +120,7 @@ class PosixSession(OSSession):
         exclude: str | list[str] | None = None,
     ) -> None:
         """Overrides :meth:`~.os_session.OSSession.copy_dir_from`."""
+        self._logger.debug(f"Copying directory '{source_dir}' to local '{destination_dir}'.")
         source_dir = PurePath(source_dir)
         remote_tarball_path = self.create_remote_tarball(source_dir, compress_format, exclude)
 
@@ -135,6 +139,7 @@ class PosixSession(OSSession):
         exclude: str | list[str] | None = None,
     ) -> None:
         """Overrides :meth:`~.os_session.OSSession.copy_dir_to`."""
+        self._logger.debug(f"Copying directory '{source_dir}' to remote '{destination_dir}'.")
         source_dir = Path(source_dir)
         tarball_path = create_tarball(source_dir, compress_format, exclude=exclude)
         self.copy_to(tarball_path, destination_dir)
@@ -143,8 +148,17 @@ class PosixSession(OSSession):
         remote_tar_path = self.join_remote_path(
             destination_dir, f"{source_dir.name}.{compress_format.extension}"
         )
-        self.extract_remote_tarball(remote_tar_path)
+        self.extract_remote_tarball(remote_tar_path, destination_dir, strip_root_dir=True)
         self.remove_remote_file(remote_tar_path)
+
+    def change_permissions(
+        self, remote_path: PurePath, permissions: FilePermissions, recursive: bool = False
+    ) -> None:
+        """Overrides :meth:`~.os_session.OSSession.change_permissions`."""
+        self.send_command(
+            f"chmod {'-R ' if recursive else ''}{permissions.to_octal()} {remote_path}",
+            privileged=True,
+        )
 
     def remove_remote_file(self, remote_file_path: str | PurePath, force: bool = True) -> None:
         """Overrides :meth:`~.os_session.OSSession.remove_remote_dir`."""
@@ -195,18 +209,23 @@ class PosixSession(OSSession):
 
         return target_tarball_path
 
+    def create_directory(self, path: PurePath) -> None:
+        """Overrides :meth:`~.os_session.OSSession.create_directory`."""
+        self.send_command(f"mkdir -p {path}")
+
     def extract_remote_tarball(
         self,
         remote_tarball_path: str | PurePath,
-        expected_dir: str | PurePath | None = None,
+        destination_path: str | PurePath,
+        strip_root_dir: bool = False,
     ) -> None:
         """Overrides :meth:`~.os_session.OSSession.extract_remote_tarball`."""
-        self.send_command(
-            f"tar xfm {remote_tarball_path} -C {PurePosixPath(remote_tarball_path).parent}",
-            60,
-        )
-        if expected_dir:
-            self.send_command(f"ls {expected_dir}", verify=True)
+        cmd = f"tar xfmv {remote_tarball_path} -C {destination_path}"
+        if strip_root_dir and self.get_tarball_top_dir(remote_tarball_path):
+            cmd += " --strip-components=1"
+
+        self.send_command(cmd)
+        self.send_command(f"ls {destination_path}", verify=True)
 
     def is_remote_dir(self, remote_path: PurePath) -> bool:
         """Overrides :meth:`~.os_session.OSSession.is_remote_dir`."""
@@ -406,7 +425,9 @@ class PosixSession(OSSession):
             SETTINGS.timeout,
         ).stdout.split("\n")
         kernel_version = self.send_command("uname -r", SETTINGS.timeout).stdout
-        return OSSessionInfo(os_release_info[0].strip(), os_release_info[1].strip(), kernel_version)
+        return OSSessionInfo(
+            os_release_info[0].strip('"'), os_release_info[1].strip('"'), kernel_version
+        )
 
     def get_arch_info(self) -> str:
         """Overrides :meth'~.os_session.OSSession.get_arch_info'."""

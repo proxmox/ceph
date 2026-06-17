@@ -2,9 +2,8 @@
 # Copyright(c) 2017 Intel Corporation
 
 subdir('base')
-objs = [base_objs]
 
-sources = files(
+sources += files(
         'e1000_logs.c',
         'em_ethdev.c',
         'em_rxtx.c',
@@ -24,5 +23,3 @@ if not is_windows
                 'igc_txrx.c',
         )
 endif
-
-includes += include_directories('base')

@@ -40,11 +40,6 @@ function unittest_blob() {
 		$valgrind $testdir/lib/blob/blob.c/blob_ut
 	fi
 	$valgrind $testdir/lib/blob/blob_bdev.c/blob_bdev_ut
-	$valgrind $testdir/lib/blobfs/tree.c/tree_ut
-	$valgrind $testdir/lib/blobfs/blobfs_async_ut/blobfs_async_ut
-	# blobfs_sync_ut hangs when run under valgrind, so don't use $valgrind
-	$testdir/lib/blobfs/blobfs_sync_ut/blobfs_sync_ut
-	$valgrind $testdir/lib/blobfs/blobfs_bdev.c/blobfs_bdev_ut
 }
 
 function unittest_event() {
@@ -199,11 +194,6 @@ if [[ $CONFIG_CRYPTO == y ]]; then
 	run_test "unittest_bdev_crypto" $valgrind $testdir/lib/accel/dpdk_cryptodev.c/accel_dpdk_cryptodev_ut
 fi
 
-if [[ $CONFIG_VBDEV_COMPRESS == y ]]; then
-	run_test "unittest_bdev_compress" $valgrind $testdir/lib/bdev/compress.c/compress_ut
-	run_test "unittest_lib_reduce" $valgrind $testdir/lib/reduce/reduce.c/reduce_ut
-fi
-
 if [[ $CONFIG_DPDK_COMPRESSDEV == y ]]; then
 	run_test "unittest_dpdk_compressdev" $valgrind $testdir/lib/accel/dpdk_compressdev.c/accel_dpdk_compressdev_ut
 fi
@@ -212,7 +202,7 @@ if [[ $CONFIG_RAID5F == y ]]; then
 	run_test "unittest_bdev_raid5f" $valgrind $testdir/lib/bdev/raid/raid5f.c/raid5f_ut
 fi
 
-run_test "unittest_blob_blobfs" unittest_blob
+run_test "unittest_blob" unittest_blob
 run_test "unittest_event" unittest_event
 if [ $(uname -s) = Linux ]; then
 	run_test "unittest_ftl" unittest_ftl

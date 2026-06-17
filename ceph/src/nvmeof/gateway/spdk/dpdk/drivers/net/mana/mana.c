@@ -1490,6 +1490,20 @@ mana_pci_probe_mac(struct rte_pci_device *pci_dev,
 			continue;
 		}
 
+		if (dev_attr.orig_attr.vendor_part_id) {
+			if (dev_attr.orig_attr.vendor_part_id !=
+			    GDMA_DEVICE_MANA) {
+				DRV_LOG(INFO, "Skip device vendor part id %x",
+					dev_attr.orig_attr.vendor_part_id);
+				continue;
+			}
+			if (!dev_attr.raw_packet_caps) {
+				DRV_LOG(INFO,
+					"Skip device without RAW support");
+				continue;
+			}
+		}
+
 		for (port = 1; port <= dev_attr.orig_attr.phys_port_cnt;
 		     port++) {
 			struct rte_ether_addr addr;
@@ -1635,6 +1649,10 @@ static const struct rte_pci_id mana_pci_id_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MICROSOFT,
 			       PCI_DEVICE_ID_MICROSOFT_MANA)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MICROSOFT,
+			       PCI_DEVICE_ID_MICROSOFT_MANA_PF)
 	},
 	{
 		.vendor_id = 0

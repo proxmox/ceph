@@ -30,11 +30,13 @@
  *
  */
 
+#include <assert.h>
 #include <sys/param.h>
 #include <sys/types.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 
 #include <json.h>
 
@@ -51,9 +53,13 @@
  * {
  *     "capabilities": {
  *         "max_msg_fds": 32,
- *         "max_data_xfer_size": 1048576
+ *         "max_data_xfer_size": 1048576,
  *         "migration": {
  *             "pgsize": 4096
+ *         },
+ *         "twin_socket": {
+ *             "supported": true,
+ *             "fd_index": 0
  *         }
  *     }
  * }
@@ -63,7 +69,8 @@
  */
 int
 tran_parse_version_json(const char *json_str, int *client_max_fdsp,
-                        size_t *client_max_data_xfer_sizep, size_t *pgsizep)
+                        size_t *client_max_data_xfer_sizep, size_t *pgsizep,
+                        bool *twin_socket_supportedp)
 {
     struct json_object *jo_caps = NULL;
     struct json_object *jo_top = NULL;
@@ -129,6 +136,27 @@ tran_parse_version_json(const char *json_str, int *client_max_fdsp,
         }
     }
 
+    if (json_object_object_get_ex(jo_caps, "twin_socket", &jo)) {
+        struct json_object *jo2 = NULL;
+
+        if (json_object_get_type(jo) != json_type_object) {
+            goto out;
+        }
+
+        if (json_object_object_get_ex(jo, "supported", &jo2)) {
+            if (json_object_get_type(jo2) != json_type_boolean) {
+                goto out;
+            }
+
+            errno = 0;
+            *twin_socket_supportedp = json_object_get_boolean(jo2);
+
+            if (errno != 0) {
+                goto out;
+            }
+        }
+    }
+
     ret = 0;
 
 out:
@@ -142,7 +170,7 @@ out:
 
 static int
 recv_version(vfu_ctx_t *vfu_ctx, uint16_t *msg_idp,
-             struct vfio_user_version **versionp)
+             struct vfio_user_version **versionp, bool *twin_socket_supportedp)
 {
     struct vfio_user_version *cversion = NULL;
     vfu_msg_t msg = { { 0 } };
@@ -207,7 +235,7 @@ recv_version(vfu_ctx_t *vfu_ctx, uint16_t *msg_idp,
 
         ret = tran_parse_version_json(json_str, &vfu_ctx->client_max_fds,
                                       &vfu_ctx->client_max_data_xfer_size,
-                                      &pgsize);
+                                      &pgsize, twin_socket_supportedp);
 
         if (ret < 0) {
             /* No client-supplied strings in the log for release build. */
@@ -252,9 +280,7 @@ out:
         (void) vfu_ctx->tran->reply(vfu_ctx, &rmsg, ret);
 
         for (i = 0; i < msg.in.nr_fds; i++) {
-            if (msg.in.fds[i] != -1) {
-                close(msg.in.fds[i]);
-            }
+            close_safely(&msg.in.fds[i]);
         }
 
         free(msg.in.iov.iov_base);
@@ -267,36 +293,137 @@ out:
     return 0;
 }
 
+/*
+ * A json_object_object_add wrapper that takes ownership of *val
+ * unconditionally: Resets *val to NULL and makes sure *val gets dropped, even
+ * when an error occurs. Assumes key is new and a constant.
+ */
+static int
+json_add(struct json_object *jso, const char *key, struct json_object **val)
+{
+    int ret = 0;
+
+#if JSON_C_MAJOR_VERSION > 0 || JSON_C_MINOR_VERSION >= 13
+    ret = json_object_object_add_ex(jso, key, *val,
+                                    JSON_C_OBJECT_ADD_KEY_IS_NEW |
+                                    JSON_C_OBJECT_KEY_IS_CONSTANT);
+#else
+    /* Earlier versions will abort() on allocation failure. */
+    json_object_object_add(jso, key, *val);
+#endif
+
+    if (ret < 0) {
+        json_object_put(*val);
+    }
+    *val = NULL;
+    return ret;
+}
+
+static int
+json_add_uint64(struct json_object *jso, const char *key, uint64_t value)
+{
+    struct json_object *jo_tmp = NULL;
+
+    /*
+     * Note that newer versions of the library have a json_object_new_uint64
+     * function, but the int64 one is available also in older versions that we
+     * support, and our values don't require the full range anyways.
+     */
+    assert(value <= INT64_MAX);
+    jo_tmp = json_object_new_int64(value);
+    return json_add(jso, key, &jo_tmp);
+}
+
+/*
+ * Constructs the server's capabilities JSON string. The returned pointer must
+ * be freed by the caller.
+ */
+static char *
+format_server_capabilities(vfu_ctx_t *vfu_ctx, int twin_socket_fd_index)
+{
+    struct json_object *jo_twin_socket = NULL;
+    struct json_object *jo_migration = NULL;
+    struct json_object *jo_caps = NULL;
+    struct json_object *jo_top = NULL;
+    char *caps_str = NULL;
+
+    if ((jo_caps = json_object_new_object()) == NULL) {
+        goto out;
+    }
+
+    if (json_add_uint64(jo_caps, "max_msg_fds", SERVER_MAX_FDS) < 0) {
+        goto out;
+    }
+
+    if (json_add_uint64(jo_caps, "max_data_xfer_size",
+                        SERVER_MAX_DATA_XFER_SIZE) < 0) {
+        goto out;
+    }
+
+    if (vfu_ctx->migration != NULL) {
+        if ((jo_migration = json_object_new_object()) == NULL) {
+            goto out;
+        }
+
+        size_t pgsize = migration_get_pgsize(vfu_ctx->migration);
+        if (json_add_uint64(jo_migration, "pgsize", pgsize) < 0) {
+            goto out;
+        }
+
+        if (json_add(jo_caps, "migration", &jo_migration) < 0) {
+            goto out;
+        }
+    }
+
+    if (twin_socket_fd_index >= 0) {
+        struct json_object *jo_supported = NULL;
+
+        if ((jo_twin_socket = json_object_new_object()) == NULL) {
+            goto out;
+        }
+
+        if ((jo_supported = json_object_new_boolean(true)) == NULL ||
+            json_add(jo_twin_socket, "supported", &jo_supported) < 0 ||
+            json_add_uint64(jo_twin_socket, "fd_index",
+                            twin_socket_fd_index) < 0) {
+            goto out;
+        }
+
+        if (json_add(jo_caps, "twin_socket", &jo_twin_socket) < 0) {
+            goto out;
+        }
+    }
+
+    if ((jo_top = json_object_new_object()) == NULL ||
+        json_add(jo_top, "capabilities", &jo_caps) < 0) {
+        goto out;
+    }
+
+    caps_str = strdup(json_object_to_json_string(jo_top));
+
+out:
+    json_object_put(jo_twin_socket);
+    json_object_put(jo_migration);
+    json_object_put(jo_caps);
+    json_object_put(jo_top);
+    return caps_str;
+}
+
 static int
 send_version(vfu_ctx_t *vfu_ctx, uint16_t msg_id,
-             struct vfio_user_version *cversion)
+             struct vfio_user_version *cversion, int client_cmd_socket_fd)
 {
+    int twin_socket_fd_index = client_cmd_socket_fd >= 0 ? 0 : -1;
     struct vfio_user_version sversion = { 0 };
     struct iovec iovecs[2] = { { 0 } };
-    char server_caps[1024];
     vfu_msg_t msg = { { 0 } };
-    int slen;
+    char *server_caps = NULL;
+    int ret;
 
-    if (vfu_ctx->migration == NULL) {
-        slen = snprintf(server_caps, sizeof(server_caps),
-            "{"
-                "\"capabilities\":{"
-                    "\"max_msg_fds\":%u,"
-                    "\"max_data_xfer_size\":%u"
-                "}"
-             "}", SERVER_MAX_FDS, SERVER_MAX_DATA_XFER_SIZE);
-    } else {
-        slen = snprintf(server_caps, sizeof(server_caps),
-            "{"
-                "\"capabilities\":{"
-                    "\"max_msg_fds\":%u,"
-                    "\"max_data_xfer_size\":%u,"
-                    "\"migration\":{"
-                        "\"pgsize\":%zu"
-                    "}"
-                "}"
-             "}", SERVER_MAX_FDS, SERVER_MAX_DATA_XFER_SIZE,
-                  migration_get_pgsize(vfu_ctx->migration));
+    server_caps = format_server_capabilities(vfu_ctx, twin_socket_fd_index);
+    if (server_caps == NULL) {
+        errno = ENOMEM;
+        return -1;
     }
 
     // FIXME: we should save the client minor here, and check that before trying
@@ -308,36 +435,63 @@ send_version(vfu_ctx_t *vfu_ctx, uint16_t msg_id,
     iovecs[0].iov_len = sizeof(sversion);
     iovecs[1].iov_base = server_caps;
     /* Include the NUL. */
-    iovecs[1].iov_len = slen + 1;
+    iovecs[1].iov_len = strlen(server_caps) + 1;
 
     msg.hdr.cmd = VFIO_USER_VERSION;
     msg.hdr.msg_id = msg_id;
     msg.out_iovecs = iovecs;
     msg.nr_out_iovecs = 2;
+    if (client_cmd_socket_fd >= 0) {
+        msg.out.fds = &client_cmd_socket_fd;
+        msg.out.nr_fds = 1;
+        assert(msg.out.fds[twin_socket_fd_index] == client_cmd_socket_fd);
+    }
 
-    return vfu_ctx->tran->reply(vfu_ctx, &msg, 0);
+    ret = vfu_ctx->tran->reply(vfu_ctx, &msg, 0);
+    free(server_caps);
+    return ret;
 }
 
 int
-tran_negotiate(vfu_ctx_t *vfu_ctx)
+tran_negotiate(vfu_ctx_t *vfu_ctx, int *client_cmd_socket_fdp)
 {
     struct vfio_user_version *client_version = NULL;
+    int client_cmd_socket_fds[2] = { -1, -1 };
+    bool twin_socket_supported = false;
     uint16_t msg_id = 0x0bad;
     int ret;
 
-    ret = recv_version(vfu_ctx, &msg_id, &client_version);
+    ret = recv_version(vfu_ctx, &msg_id, &client_version,
+                       &twin_socket_supported);
 
     if (ret < 0) {
         vfu_log(vfu_ctx, LOG_ERR, "failed to recv version: %m");
         return ret;
     }
 
-    ret = send_version(vfu_ctx, msg_id, client_version);
+    if (twin_socket_supported && client_cmd_socket_fdp != NULL &&
+        vfu_ctx->client_max_fds > 0) {
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, client_cmd_socket_fds) == -1) {
+            vfu_log(vfu_ctx, LOG_ERR, "failed to create cmd socket: %m");
+            return -1;
+        }
+    }
+
+    ret = send_version(vfu_ctx, msg_id, client_version,
+                       client_cmd_socket_fds[0]);
 
     free(client_version);
 
+    /*
+     * The remote end of the client command socket pair is no longer needed.
+     * The local end is kept only if passed to the caller on successful return.
+     */
+    close_safely(&client_cmd_socket_fds[0]);
     if (ret < 0) {
         vfu_log(vfu_ctx, LOG_ERR, "failed to send version: %m");
+        close_safely(&client_cmd_socket_fds[1]);
+    } else if (client_cmd_socket_fdp != NULL) {
+        *client_cmd_socket_fdp = client_cmd_socket_fds[1];
     }
 
     return ret;

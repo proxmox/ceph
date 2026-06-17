@@ -2,7 +2,10 @@
 #  Copyright (C) 2021 Intel Corporation.
 #  All rights reserved.
 
+from spdk.rpc.helpers import deprecated_method
 
+
+@deprecated_method
 def sock_impl_get_options(client, impl_name=None):
     """Get parameters for the socket layer implementation.
 
@@ -16,6 +19,7 @@ def sock_impl_get_options(client, impl_name=None):
     return client.call('sock_impl_get_options', params)
 
 
+@deprecated_method
 def sock_impl_set_options(client,
                           impl_name=None,
                           recv_buf_size=None,
@@ -27,7 +31,8 @@ def sock_impl_set_options(client,
                           enable_zerocopy_send_client=None,
                           zerocopy_threshold=None,
                           tls_version=None,
-                          enable_ktls=None):
+                          enable_ktls=None,
+                          num_ssl_tickets=None):
     """Set parameters for the socket layer implementation.
 
     Args:
@@ -42,6 +47,7 @@ def sock_impl_set_options(client,
         zerocopy_threshold: set zerocopy_threshold in bytes(optional)
         tls_version: set TLS protocol version (optional)
         enable_ktls: enable or disable Kernel TLS (optional)
+        num_ssl_tickets: number of SSL tickets to set (optional)
     """
     params = {}
 
@@ -66,10 +72,13 @@ def sock_impl_set_options(client,
         params['tls_version'] = tls_version
     if enable_ktls is not None:
         params['enable_ktls'] = enable_ktls
+    if num_ssl_tickets is not None:
+        params['num_ssl_tickets'] = num_ssl_tickets
 
     return client.call('sock_impl_set_options', params)
 
 
+@deprecated_method
 def sock_set_default_impl(client, impl_name=None):
     """Set the default socket implementation.
 
@@ -83,6 +92,7 @@ def sock_set_default_impl(client, impl_name=None):
     return client.call('sock_set_default_impl', params)
 
 
+@deprecated_method
 def sock_get_default_impl(client):
     "Get the default socket implementation name."
 

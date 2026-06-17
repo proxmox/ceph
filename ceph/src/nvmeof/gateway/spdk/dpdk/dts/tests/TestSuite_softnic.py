@@ -9,7 +9,7 @@ Create a softnic virtual device and verify it successfully forwards packets.
 from pathlib import Path, PurePath
 
 from framework.params.testpmd import EthPeer
-from framework.remote_session.testpmd_shell import TestPmdShell
+from framework.remote_session.testpmd_shell import NicCapability, TestPmdShell
 from framework.test_suite import TestSuite, func_test
 from framework.testbed_model.capability import requires
 from framework.testbed_model.topology import TopologyType
@@ -17,6 +17,7 @@ from framework.testbed_model.virtual_device import VirtualDevice
 from framework.utils import generate_random_packets
 
 
+@requires(NicCapability.PHYSICAL_FUNCTION)
 @requires(topology_type=TopologyType.two_links)
 class TestSoftnic(TestSuite):
     """Softnic test suite."""
@@ -46,7 +47,7 @@ class TestSoftnic(TestSuite):
         spec_file = Path("rx_tx.spec")
         rx_tx_1_file = Path("rx_tx_1.io")
         rx_tx_2_file = Path("rx_tx_2.io")
-        path_sut = self._ctx.dpdk_build.remote_dpdk_build_dir
+        path_sut = self._ctx.sut_node.tmp_dir
         cli_file_sut = self.sut_node.main_session.join_remote_path(path_sut, cli_file)
         spec_file_sut = self.sut_node.main_session.join_remote_path(path_sut, spec_file)
         rx_tx_1_file_sut = self.sut_node.main_session.join_remote_path(path_sut, rx_tx_1_file)

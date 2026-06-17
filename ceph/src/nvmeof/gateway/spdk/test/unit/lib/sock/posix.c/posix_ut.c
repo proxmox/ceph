@@ -32,6 +32,9 @@ DEFINE_STUB(spdk_sock_posix_fd_create, int, (struct addrinfo *res, struct spdk_s
 		struct spdk_sock_impl_opts *impl_opts), 0);
 DEFINE_STUB(spdk_sock_posix_fd_connect, int, (int fd, struct addrinfo *res,
 		struct spdk_sock_opts *opts), 0);
+DEFINE_STUB(spdk_sock_posix_fd_connect_async, int, (int fd, struct addrinfo *res,
+		struct spdk_sock_opts *opts), 0);
+DEFINE_STUB(spdk_sock_posix_fd_connect_poll_async, int, (int fd), 0);
 DEFINE_STUB(spdk_sock_posix_getaddrinfo, struct addrinfo *, (const char *ip, int port), 0);
 
 static void
@@ -45,7 +48,7 @@ static void
 flush(void)
 {
 	struct spdk_posix_sock_group_impl group = {};
-	struct spdk_posix_sock psock = {};
+	struct spdk_posix_sock psock = {.ready = true};
 	struct spdk_sock *sock = &psock.base;
 	struct spdk_sock_request *req1, *req2;
 	bool cb_arg1, cb_arg2;
@@ -82,7 +85,7 @@ flush(void)
 	MOCK_SET(sendmsg, 64);
 	cb_arg1 = false;
 	rc = _sock_flush(sock);
-	CU_ASSERT(rc == 64);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(cb_arg1 == true);
 	CU_ASSERT(TAILQ_EMPTY(&sock->queued_reqs));
 
@@ -93,7 +96,7 @@ flush(void)
 	cb_arg1 = false;
 	cb_arg2 = false;
 	rc = _sock_flush(sock);
-	CU_ASSERT(rc == 128);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(cb_arg1 == true);
 	CU_ASSERT(cb_arg2 == true);
 	CU_ASSERT(TAILQ_EMPTY(&sock->queued_reqs));
@@ -105,7 +108,7 @@ flush(void)
 	cb_arg1 = false;
 	cb_arg2 = false;
 	rc = _sock_flush(sock);
-	CU_ASSERT(rc == 64);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(cb_arg1 == true);
 	CU_ASSERT(cb_arg2 == false);
 	CU_ASSERT(TAILQ_FIRST(&sock->queued_reqs) == req2);
@@ -117,7 +120,7 @@ flush(void)
 	MOCK_SET(sendmsg, 10);
 	cb_arg1 = false;
 	rc = _sock_flush(sock);
-	CU_ASSERT(rc == 10);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(cb_arg1 == false);
 	CU_ASSERT(TAILQ_FIRST(&sock->queued_reqs) == req1);
 
@@ -125,7 +128,7 @@ flush(void)
 	MOCK_SET(sendmsg, 24);
 	cb_arg1 = false;
 	rc = _sock_flush(sock);
-	CU_ASSERT(rc == 24);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(cb_arg1 == false);
 	CU_ASSERT(TAILQ_FIRST(&sock->queued_reqs) == req1);
 
@@ -133,7 +136,7 @@ flush(void)
 	MOCK_SET(sendmsg, 30);
 	cb_arg1 = false;
 	rc = _sock_flush(sock);
-	CU_ASSERT(rc == 30);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(cb_arg1 == true);
 	CU_ASSERT(TAILQ_EMPTY(&sock->queued_reqs));
 
@@ -144,8 +147,6 @@ flush(void)
 ssize_t
 recvmsg(int sockfd, struct msghdr *msg, int flags)
 {
-	struct sock_extended_err *serr;
-	struct cmsghdr *cm;
 	int rc;
 
 	rc = MOCK_GET(recvmsg);
@@ -153,6 +154,10 @@ recvmsg(int sockfd, struct msghdr *msg, int flags)
 		errno = -rc;
 		return -1;
 	}
+
+#if defined(__linux__)
+	struct sock_extended_err *serr;
+	struct cmsghdr *cm;
 
 	cm = CMSG_FIRSTHDR(msg);
 	cm->cmsg_level = SOL_IP;
@@ -164,6 +169,7 @@ recvmsg(int sockfd, struct msghdr *msg, int flags)
 	/* Use the mock queue to get the notification range. */
 	serr->ee_info = MOCK_GET(recvmsg);
 	serr->ee_data = MOCK_GET(recvmsg);
+#endif
 
 	return rc;
 }
@@ -176,7 +182,7 @@ flush_req_chunks_with_zero_copy_threshold(void)
 	struct spdk_sock_impl_opts impl_opts = { .zerocopy_threshold = 50 };
 	struct spdk_posix_sock_group_impl group = {};
 	struct spdk_sock_request *req;
-	struct spdk_posix_sock psock = {};
+	struct spdk_posix_sock psock = {.ready = true};
 	struct spdk_sock *sock;
 	bool req_completed;
 	int rc;
@@ -203,7 +209,7 @@ flush_req_chunks_with_zero_copy_threshold(void)
 	/* Send first chunk above zcopy threshold. */
 	MOCK_SET(sendmsg, 75);
 	rc = posix_sock_flush(sock);
-	CU_ASSERT(rc == 75);
+	CU_ASSERT(rc == 0);
 	/* Sent partially, request is not completed. */
 	CU_ASSERT(req_completed == false);
 
@@ -212,7 +218,7 @@ flush_req_chunks_with_zero_copy_threshold(void)
 	/* Notification not yet arrived. */
 	MOCK_SET(recvmsg, -EAGAIN);
 	rc = posix_sock_flush(sock);
-	CU_ASSERT(rc == 25);
+	CU_ASSERT(rc == 0);
 	/* Sent fully, but zcopy not yet arrived, so request is not completed. */
 	CU_ASSERT(req_completed == false);
 
@@ -237,7 +243,7 @@ flush_two_reqs_chunks_with_zero_copy_threshold(void)
 	struct spdk_sock_impl_opts impl_opts = { .zerocopy_threshold = 50 };
 	struct spdk_posix_sock_group_impl group = {};
 	struct spdk_sock_request *req1, *req2;
-	struct spdk_posix_sock psock = {};
+	struct spdk_posix_sock psock = {.ready = true};
 	struct spdk_sock *sock;
 	bool req1_completed, req2_completed;
 	int rc;
@@ -276,7 +282,7 @@ flush_two_reqs_chunks_with_zero_copy_threshold(void)
 	/* No zcopy notification for req1. */
 	MOCK_SET(recvmsg, -EAGAIN);
 	rc = posix_sock_flush(sock);
-	CU_ASSERT(rc == 100 + 75);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(req1_completed == false);
 	CU_ASSERT(req2_completed == false);
 
@@ -288,7 +294,7 @@ flush_two_reqs_chunks_with_zero_copy_threshold(void)
 	MOCK_ENQUEUE(recvmsg, 0); /* Pass notification range high. */
 	MOCK_ENQUEUE(recvmsg, -EAGAIN); /* No more messages. */
 	rc = posix_sock_flush(sock);
-	CU_ASSERT(rc == 20);
+	CU_ASSERT(rc == 0);
 	CU_ASSERT(req1_completed == true);
 	CU_ASSERT(req2_completed == false);
 
@@ -296,7 +302,7 @@ flush_two_reqs_chunks_with_zero_copy_threshold(void)
 	MOCK_SET(sendmsg, 5);
 	/* No need to recvmsg, notification for req2 zcopy chunk already received. */
 	rc = posix_sock_flush(sock);
-	CU_ASSERT(rc == 5);
+	CU_ASSERT(rc == 0);
 	/* Req2 should be completed within this flush. */
 	CU_ASSERT(req2_completed == true);
 

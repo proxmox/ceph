@@ -11,19 +11,18 @@
 #include "i40e_ethdev.h"
 #include "i40e_rxtx.h"
 #include "i40e_rxtx_vec_common.h"
-#include "i40e_rxtx_common_avx.h"
+
+#include "../common/rx_vec_x86.h"
 
 #include <rte_vect.h>
 
-#define RTE_I40E_DESCS_PER_LOOP_AVX 8
-
 static __rte_always_inline void
-i40e_rxq_rearm(struct i40e_rx_queue *rxq)
+i40e_rxq_rearm(struct ci_rx_queue *rxq)
 {
-	i40e_rxq_rearm_common(rxq, true);
+	ci_rxq_rearm(rxq, CI_RX_VEC_LEVEL_AVX512);
 }
 
-#ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 /* Handles 32B descriptor FDIR ID processing:
  * rxdp: receive descriptor ring, required to load 2nd 16B half of each desc
  * rx_pkts: required to store metadata back to mbufs
@@ -31,7 +30,7 @@ i40e_rxq_rearm(struct i40e_rx_queue *rxq)
  * desc_idx: required to select the correct shift at compile time
  */
 static inline __m256i
-desc_fdir_processing_32b(volatile union i40e_rx_desc *rxdp,
+desc_fdir_processing_32b(volatile union ci_rx_desc *rxdp,
 			 struct rte_mbuf **rx_pkts,
 			 const uint32_t pkt_idx,
 			 const uint32_t desc_idx)
@@ -102,30 +101,30 @@ desc_fdir_processing_32b(volatile union i40e_rx_desc *rxdp,
 	/* NOT REACHED, see above switch returns */
 	return _mm256_setzero_si256();
 }
-#endif /* RTE_LIBRTE_I40E_16BYTE_RX_DESC */
+#endif /* RTE_NET_INTEL_USE_16BYTE_DESC */
 
 #define PKTLEN_SHIFT     10
 
 /* Force inline as some compilers will not inline by default. */
 static __rte_always_inline uint16_t
-_recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
+_recv_raw_pkts_vec_avx512(struct ci_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			  uint16_t nb_pkts, uint8_t *split_packet)
 {
-	const uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
+	const uint32_t *ptype_tbl = rxq->i40e_vsi->adapter->ptype_tbl;
 	const __m256i mbuf_init = _mm256_set_epi64x(0, 0,
 			0, rxq->mbuf_initializer);
-	struct i40e_rx_entry *sw_ring = &rxq->sw_ring[rxq->rx_tail];
-	volatile union i40e_rx_desc *rxdp = rxq->rx_ring + rxq->rx_tail;
+	struct ci_rx_entry *sw_ring = &rxq->sw_ring[rxq->rx_tail];
+	volatile union ci_rx_desc *rxdp = rxq->rx_ring + rxq->rx_tail;
 
 	rte_prefetch0(rxdp);
 
-	/* nb_pkts has to be floor-aligned to RTE_I40E_DESCS_PER_LOOP_AVX */
-	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, RTE_I40E_DESCS_PER_LOOP_AVX);
+	/* nb_pkts has to be floor-aligned to I40E_VPMD_DESCS_PER_LOOP_WIDE */
+	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, I40E_VPMD_DESCS_PER_LOOP_WIDE);
 
 	/* See if we need to rearm the RX queue - gives the prefetch a bit
 	 * of time to act
 	 */
-	if (rxq->rxrearm_nb > RTE_I40E_RXQ_REARM_THRESH)
+	if (rxq->rxrearm_nb > I40E_VPMD_RXQ_REARM_THRESH)
 		i40e_rxq_rearm(rxq);
 
 	/* Before we start moving massive data around, check to see if
@@ -245,8 +244,8 @@ _recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	uint16_t i, received;
 
 	for (i = 0, received = 0; i < nb_pkts;
-			i += RTE_I40E_DESCS_PER_LOOP_AVX,
-			rxdp += RTE_I40E_DESCS_PER_LOOP_AVX) {
+			i += I40E_VPMD_DESCS_PER_LOOP_WIDE,
+			rxdp += I40E_VPMD_DESCS_PER_LOOP_WIDE) {
 		/* step 1, copy over 8 mbuf pointers to rx_pkts array */
 		_mm256_storeu_si256((void *)&rx_pkts[i],
 				_mm256_loadu_si256((void *)&sw_ring[i]));
@@ -312,7 +311,7 @@ _recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		if (split_packet) {
 			int j;
 
-			for (j = 0; j < RTE_I40E_DESCS_PER_LOOP_AVX; j++)
+			for (j = 0; j < I40E_VPMD_DESCS_PER_LOOP_WIDE; j++)
 				rte_mbuf_prefetch_part2(rx_pkts[i + j]);
 		}
 
@@ -419,7 +418,7 @@ _recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		 * not always performed. Branch over the code when not enabled.
 		 */
 		if (rxq->fdir_enabled) {
-#ifdef RTE_LIBRTE_I40E_16BYTE_RX_DESC
+#ifdef RTE_NET_INTEL_USE_16BYTE_DESC
 			/* 16B descriptor code path:
 			 * RSS and FDIR ID use the same offset in the desc, so
 			 * only one can be present at a time. The code below
@@ -539,7 +538,7 @@ _recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			mbuf_flags =
 				_mm256_or_si256(mbuf_flags, fdir_add_flags);
 			/* End 32B desc handling */
-#endif /* RTE_LIBRTE_I40E_16BYTE_RX_DESC */
+#endif /* RTE_NET_INTEL_USE_16BYTE_DESC */
 
 		} /* if() on FDIR enabled */
 
@@ -642,7 +641,7 @@ _recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			split_bits = _mm_shuffle_epi8(split_bits, eop_shuffle);
 			*(uint64_t *)split_packet =
 				_mm_cvtsi128_si64(split_bits);
-			split_packet += RTE_I40E_DESCS_PER_LOOP_AVX;
+			split_packet += I40E_VPMD_DESCS_PER_LOOP_WIDE;
 		}
 
 		/* perform dd_check */
@@ -657,7 +656,7 @@ _recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		burst += rte_popcount64(_mm_cvtsi128_si64
 				(_mm256_castsi256_si128(status0_7)));
 		received += burst;
-		if (burst != RTE_I40E_DESCS_PER_LOOP_AVX)
+		if (burst != I40E_VPMD_DESCS_PER_LOOP_WIDE)
 			break;
 	}
 
@@ -674,7 +673,7 @@ _recv_raw_pkts_vec_avx512(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 
 /**
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
  */
 uint16_t
 i40e_recv_pkts_vec_avx512(void *rx_queue, struct rte_mbuf **rx_pkts,
@@ -686,15 +685,15 @@ i40e_recv_pkts_vec_avx512(void *rx_queue, struct rte_mbuf **rx_pkts,
 /**
  * vPMD receive routine that reassembles single burst of 32 scattered packets
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
  */
 static uint16_t
 i40e_recv_scattered_burst_vec_avx512(void *rx_queue,
 				     struct rte_mbuf **rx_pkts,
 				     uint16_t nb_pkts)
 {
-	struct i40e_rx_queue *rxq = rx_queue;
-	uint8_t split_flags[RTE_I40E_VPMD_RX_BURST] = {0};
+	struct ci_rx_queue *rxq = rx_queue;
+	uint8_t split_flags[I40E_VPMD_RX_BURST] = {0};
 
 	/* get some new buffers */
 	uint16_t nb_bufs = _recv_raw_pkts_vec_avx512(rxq, rx_pkts, nb_pkts,
@@ -729,7 +728,7 @@ i40e_recv_scattered_burst_vec_avx512(void *rx_queue,
  * vPMD receive routine that reassembles scattered packets.
  * Main receive routine that can handle arbitrary burst sizes
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
  */
 uint16_t
 i40e_recv_scattered_pkts_vec_avx512(void *rx_queue,
@@ -738,12 +737,12 @@ i40e_recv_scattered_pkts_vec_avx512(void *rx_queue,
 {
 	uint16_t retval = 0;
 
-	while (nb_pkts > RTE_I40E_VPMD_RX_BURST) {
+	while (nb_pkts > I40E_VPMD_RX_BURST) {
 		uint16_t burst = i40e_recv_scattered_burst_vec_avx512(rx_queue,
-				rx_pkts + retval, RTE_I40E_VPMD_RX_BURST);
+				rx_pkts + retval, I40E_VPMD_RX_BURST);
 		retval += burst;
 		nb_pkts -= burst;
-		if (burst < RTE_I40E_VPMD_RX_BURST)
+		if (burst < I40E_VPMD_RX_BURST)
 			return retval;
 	}
 	return retval + i40e_recv_scattered_burst_vec_avx512(rx_queue,

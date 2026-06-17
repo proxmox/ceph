@@ -820,7 +820,7 @@ void PrimaryLogPG::maybe_force_recovery()
     return;
 
   // find the oldest missing object
-  version_t min_version = recovery_state.get_pg_log().get_log().head.version;
+  eversion_t min_version = recovery_state.get_pg_log().get_log().head;
   hobject_t soid;
   if (!recovery_state.get_pg_log().get_missing().get_rmissing().empty()) {
     min_version = recovery_state.get_pg_log().get_missing().get_rmissing().begin()->first;
@@ -1199,6 +1199,16 @@ void PrimaryLogPG::do_command(
       ret = -EPERM;
     }
     outbl.append(ss.str());
+  }
+
+  else if (prefix == "scrub-abort") {
+    if (is_primary()) {
+      m_scrubber->on_operator_abort_scrub(f.get());
+    } else {
+      ss << "Not primary";
+      ret = -EPERM;
+      outbl.append(ss.str());
+    }
   }
 
   // the test/debug commands that schedule a scrub by modifying timestamps
@@ -13489,12 +13499,11 @@ uint64_t PrimaryLogPG::recover_primary(uint64_t max, ThreadPool::TPHandle &handl
   int skipped = 0;
 
   PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
-  map<version_t, hobject_t>::const_iterator p =
-    missing.get_rmissing().lower_bound(recovery_state.get_pg_log().get_log().last_requested);
+  auto p = missing.get_rmissing().lower_bound(eversion_t(0, recovery_state.get_pg_log().get_log().last_requested));
   while (p != missing.get_rmissing().end()) {
     handle.reset_tp_timeout();
     hobject_t soid;
-    version_t v = p->first;
+    eversion_t v = p->first;
 
     auto it_objects = recovery_state.get_pg_log().get_log().objects.find(p->second);
     if (it_objects != recovery_state.get_pg_log().get_log().objects.end()) {
@@ -13628,7 +13637,7 @@ uint64_t PrimaryLogPG::recover_primary(uint64_t max, ThreadPool::TPHandle &handl
 
     // only advance last_requested if we haven't skipped anything
     if (!skipped)
-      recovery_state.set_last_requested(v);
+      recovery_state.set_last_requested(v.version);
   }
 
   pgbackend->run_recovery_op(h, recovery_state.get_recovery_op_priority());
@@ -13797,7 +13806,7 @@ uint64_t PrimaryLogPG::recover_replicas(uint64_t max, ThreadPool::TPHandle &hand
 
     // oldest first!
     const pg_missing_t &m(pm->second);
-    for (map<version_t, hobject_t>::const_iterator p = m.get_rmissing().begin();
+    for (auto p = m.get_rmissing().begin();
 	 p != m.get_rmissing().end() && started < max;
 	   ++p) {
       handle.reset_tp_timeout();

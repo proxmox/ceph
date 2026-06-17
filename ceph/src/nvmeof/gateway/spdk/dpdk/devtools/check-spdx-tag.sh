@@ -19,7 +19,7 @@ no_license_list=\
 ':^.git* :^.mailmap :^.ci/* :^README :^*/README* :^MAINTAINERS :^VERSION :^ABI_VERSION '\
 ':^license/ :^config/ :^buildtools/ :^*.abignore :^*.cocci :^*/poetry.lock '\
 ':^*/Kbuild :^kernel/linux/uapi/version '\
-':^*.map :^*.ini :^*.data :^*.json :^*.cfg :^*.txt :^*.svg :^*.png'
+':^*.ini :^*.data :^*.json :^*.cfg :^*.txt :^*.svg :^*.png'
 
 check_spdx() {
     if $verbose ; then
@@ -48,7 +48,7 @@ check_licenses() {
     fi
     exceptions=$(build_exceptions_list)
     git grep -l SPDX-License-Identifier: -- $no_license_list $exceptions |
-    xargs grep -L -E 'SPDX-License-Identifier:[[:space:]]*\(?BSD-3-Clause' > $tmpfile
+    xargs grep -L -E 'SPDX-License-Identifier:[[:space:]]*(\(?|.* OR )BSD-3-Clause' > $tmpfile
 
     wrong_license=$(wc -l < $tmpfile)
     $quiet || cat $tmpfile

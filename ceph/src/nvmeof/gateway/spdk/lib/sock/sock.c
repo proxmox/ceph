@@ -400,7 +400,7 @@ spdk_sock_posix_fd_create(struct addrinfo *res, struct spdk_sock_opts *opts,
 
 	fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
 	if (fd < 0) {
-		return -1;
+		return -errno;
 	}
 
 	sz = impl_opts->recv_buf_size;
@@ -416,31 +416,28 @@ spdk_sock_posix_fd_create(struct addrinfo *res, struct spdk_sock_opts *opts,
 	}
 
 	rc = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof val);
-	if (rc != 0) {
-		close(fd);
-		return -1;
+	if (rc < 0) {
+		goto err;
 	}
+
 	rc = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof val);
-	if (rc != 0) {
-		close(fd);
-		return -1;
+	if (rc < 0) {
+		goto err;
 	}
 
 #if defined(SO_PRIORITY)
 	if (opts->priority) {
 		rc = setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &opts->priority, sizeof val);
-		if (rc != 0) {
-			close(fd);
-			return -1;
+		if (rc < 0) {
+			goto err;
 		}
 	}
 #endif
 
 	if (res->ai_family == AF_INET6) {
 		rc = setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &val, sizeof val);
-		if (rc != 0) {
-			close(fd);
-			return -1;
+		if (rc < 0) {
+			goto err;
 		}
 	}
 
@@ -448,9 +445,8 @@ spdk_sock_posix_fd_create(struct addrinfo *res, struct spdk_sock_opts *opts,
 #if defined(__linux__)
 		to = opts->ack_timeout;
 		rc = setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &to, sizeof(to));
-		if (rc != 0) {
-			close(fd);
-			return -1;
+		if (rc < 0) {
+			goto err;
 		}
 #else
 		SPDK_WARNLOG("TCP_USER_TIMEOUT is not supported.\n");
@@ -458,23 +454,83 @@ spdk_sock_posix_fd_create(struct addrinfo *res, struct spdk_sock_opts *opts,
 	}
 
 	return fd;
+
+err:
+	close(fd);
+	return -errno;
+}
+
+static int
+sock_posix_fd_connect_poll(int fd, struct spdk_sock_opts *opts, bool block)
+{
+	int rc, err, timeout = 0;
+	struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+	socklen_t len = sizeof(err);
+
+	if (opts && block) {
+		assert(opts->connect_timeout <= INT_MAX);
+		timeout = opts->connect_timeout ? (int)opts->connect_timeout : -1;
+	}
+
+	rc = poll(&pfd, 1, timeout);
+	if (rc < 0) {
+		SPDK_ERRLOG("poll() failed, errno = %d\n", errno);
+		return -errno;
+	}
+
+	if (rc == 0) {
+		if (block) {
+			SPDK_ERRLOG("poll() timeout after %d ms\n", timeout);
+			return -ETIMEDOUT;
+		}
+
+		return -EAGAIN;
+	}
+
+	rc = getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+	if (rc < 0) {
+		SPDK_ERRLOG("getsockopt() failed, errno = %d\n", errno);
+		return -errno;
+	}
+
+	if (err) {
+		SPDK_ERRLOG("connect() failed, err = %d\n", err);
+		return -err;
+	}
+
+	if (!(pfd.revents & POLLOUT)) {
+		SPDK_ERRLOG("poll() returned %d event(s) %s%s%sbut not POLLOUT\n", rc,
+			    pfd.revents & POLLERR ? "POLLERR, " : "", pfd.revents & POLLHUP ? "POLLHUP, " : "",
+			    pfd.revents & POLLNVAL ? "POLLNVAL, " : "");
+	}
+
+	if (!(pfd.revents & POLLOUT)) {
+		return -EIO;
+	}
+
+	return 0;
 }
 
 int
-spdk_sock_posix_fd_connect(int fd, struct addrinfo *res, struct spdk_sock_opts *opts)
+spdk_sock_posix_fd_connect_poll_async(int fd)
+{
+	return sock_posix_fd_connect_poll(fd, NULL, false);
+}
+
+static int
+sock_posix_fd_connect(int fd, struct addrinfo *res, struct spdk_sock_opts *opts, bool block)
 {
 	char portnum[PORTNUMLEN];
 	const char *src_addr;
 	uint16_t src_port;
 	struct addrinfo hints, *src_ai;
-	int rc, err;
-	struct pollfd pfd = {.fd = fd, .events = POLLOUT};
-	socklen_t len = sizeof(err);
+	int rc;
 
 	/* Socket address may be not assigned immediately during bind() and
 	 * can return EINPROGRESS if function is invoked with O_NONBLOCK set. */
-	if (spdk_fd_clear_nonblock(fd)) {
-		return -1;
+	rc = spdk_fd_clear_nonblock(fd);
+	if (rc < 0) {
+		return rc;
 	}
 
 	src_addr = SPDK_GET_FIELD(opts, src_addr, NULL, opts->opts_size);
@@ -488,64 +544,57 @@ spdk_sock_posix_fd_connect(int fd, struct addrinfo *res, struct spdk_sock_opts *
 		rc = getaddrinfo(src_addr, src_port > 0 ? portnum : NULL, &hints, &src_ai);
 		if (rc != 0 || src_ai == NULL) {
 			SPDK_ERRLOG("getaddrinfo() failed %s (%d)\n", rc != 0 ? gai_strerror(rc) : "", rc);
-			return -1;
+			return -EINVAL;
 		}
 
 		rc = bind(fd, src_ai->ai_addr, src_ai->ai_addrlen);
-		if (rc != 0) {
+		if (rc < 0) {
 			SPDK_ERRLOG("bind() failed errno %d (%s:%s)\n", errno, src_addr ? src_addr : "", portnum);
 			freeaddrinfo(src_ai);
-			return -1;
+			return -errno;
 		}
 
 		freeaddrinfo(src_ai);
 	}
 
-	if (spdk_fd_set_nonblock(fd)) {
-		return -1;
+	rc = spdk_fd_set_nonblock(fd);
+	if (rc < 0) {
+		return rc;
 	}
 
 	rc = connect(fd, res->ai_addr, res->ai_addrlen);
-	if (rc != 0 && errno != EINPROGRESS) {
+	if (rc < 0 && errno != EINPROGRESS) {
 		SPDK_ERRLOG("connect() failed, errno = %d\n", errno);
-		return 1;
+		return -errno;
 	}
 
-	assert(opts->connect_timeout <= INT_MAX);
-	rc = poll(&pfd, 1, opts->connect_timeout ? (int)opts->connect_timeout : -1);
+	if (!block) {
+		return 0;
+	}
+
+	rc = sock_posix_fd_connect_poll(fd, opts, block);
 	if (rc < 0) {
-		SPDK_ERRLOG("poll() failed, errno = %d\n", errno);
-		return -1;
+		return rc;
 	}
 
-	if (rc == 0) {
-		SPDK_ERRLOG("poll() timeout after %d ms\n", opts->connect_timeout);
-		return -1;
-	}
-
-	rc = getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
-	if (rc != 0) {
-		SPDK_ERRLOG("getsockopt() failed, errno = %d\n", errno);
-		return -1;
-	}
-
-	if (err) {
-		SPDK_ERRLOG("connect() failed, err = %d\n", err);
-		return 1;
-	}
-
-	if (!(pfd.revents & POLLOUT)) {
-		SPDK_ERRLOG("poll() returned %d event(s) %s%s%sbut not POLLOUT\n", rc,
-			    pfd.revents & POLLERR ? "POLLERR, " : "", pfd.revents & POLLHUP ? "POLLHUP, " : "",
-			    pfd.revents & POLLNVAL ? "POLLNVAL, " : "");
-		return -1;
-	}
-
-	if (spdk_fd_clear_nonblock(fd)) {
-		return -1;
+	rc = spdk_fd_clear_nonblock(fd);
+	if (rc < 0) {
+		return rc;
 	}
 
 	return 0;
+}
+
+int
+spdk_sock_posix_fd_connect_async(int fd, struct addrinfo *res, struct spdk_sock_opts *opts)
+{
+	return sock_posix_fd_connect(fd, res, opts, false);
+}
+
+int
+spdk_sock_posix_fd_connect(int fd, struct addrinfo *res, struct spdk_sock_opts *opts)
+{
+	return sock_posix_fd_connect(fd, res, opts, true);
 }
 
 struct spdk_sock *
@@ -558,13 +607,16 @@ spdk_sock_connect(const char *ip, int port, const char *impl_name)
 	return spdk_sock_connect_ext(ip, port, impl_name, &opts);
 }
 
-struct spdk_sock *
-spdk_sock_connect_ext(const char *ip, int port, const char *_impl_name, struct spdk_sock_opts *opts)
+static struct spdk_sock *
+sock_connect_ext(const char *ip, int port, const char *_impl_name, struct spdk_sock_opts *opts,
+		 bool async, spdk_sock_connect_cb_fn cb_fn, void *cb_arg)
 {
 	struct spdk_net_impl *impl = NULL;
 	struct spdk_sock *sock;
 	struct spdk_sock_opts opts_local;
 	const char *impl_name = NULL;
+
+	assert(async || (!cb_fn && !cb_arg));
 
 	if (opts == NULL) {
 		SPDK_ERRLOG("the opts should not be NULL pointer\n");
@@ -578,33 +630,60 @@ spdk_sock_connect_ext(const char *ip, int port, const char *_impl_name, struct s
 	}
 
 	STAILQ_FOREACH_FROM(impl, &g_net_impls, link) {
-		if (impl_name && strncmp(impl_name, impl->name, strlen(impl->name) + 1)) {
-			continue;
-		}
-
-		SPDK_DEBUGLOG(sock, "Creating a client socket using impl %s\n", impl->name);
-		sock_init_opts(&opts_local, opts);
-		if (opts_local.connect_timeout > INT_MAX) {
-			SPDK_ERRLOG("connect_timeout opt cannot exceed INT_MAX\n");
-			return NULL;
-		}
-
-		sock = impl->connect(ip, port, &opts_local);
-		if (sock != NULL) {
-			/* Copy the contents, both the two structures are the same ABI version */
-			memcpy(&sock->opts, &opts_local, sizeof(sock->opts));
-			/* Clear out impl_opts to make sure we don't keep reference to a dangling
-			 * pointer */
-			sock->opts.impl_opts = NULL;
-			sock->net_impl = impl;
-			TAILQ_INIT(&sock->queued_reqs);
-			TAILQ_INIT(&sock->pending_reqs);
-
-			return sock;
+		if (impl_name && strncmp(impl_name, impl->name, strlen(impl->name) + 1) == 0) {
+			break;
 		}
 	}
 
-	return NULL;
+	if (!impl) {
+		SPDK_ERRLOG("Cannot find %s sock implementation\n", impl_name ? impl_name : "any");
+		return NULL;
+	}
+
+	if (async && !impl->connect_async) {
+		SPDK_ERRLOG("Asynchronous connect is not supported by %s\n", impl->name);
+		return NULL;
+	}
+
+	SPDK_DEBUGLOG(sock, "Creating a client socket using impl %s\n", impl->name);
+	sock_init_opts(&opts_local, opts);
+	if (opts_local.connect_timeout > INT_MAX) {
+		SPDK_ERRLOG("connect_timeout opt cannot exceed INT_MAX\n");
+		return NULL;
+	}
+
+	if (async) {
+		sock = impl->connect_async(ip, port, &opts_local, cb_fn, cb_arg);
+	} else {
+		sock = impl->connect(ip, port, &opts_local);
+	}
+
+	if (!sock) {
+		return NULL;
+	}
+
+	/* Copy the contents, both the two structures are the same ABI version */
+	memcpy(&sock->opts, &opts_local, sizeof(sock->opts));
+	/* Clear out impl_opts to make sure we don't keep reference to a dangling
+	 * pointer */
+	sock->opts.impl_opts = NULL;
+	sock->net_impl = impl;
+	TAILQ_INIT(&sock->queued_reqs);
+	TAILQ_INIT(&sock->pending_reqs);
+	return sock;
+}
+
+struct spdk_sock *
+spdk_sock_connect_ext(const char *ip, int port, const char *_impl_name, struct spdk_sock_opts *opts)
+{
+	return sock_connect_ext(ip, port, _impl_name, opts, false, NULL, NULL);
+}
+
+struct spdk_sock *
+spdk_sock_connect_async(const char *ip, int port, const char *_impl_name,
+			struct spdk_sock_opts *opts, spdk_sock_connect_cb_fn cb_fn, void *cb_arg)
+{
+	return sock_connect_ext(ip, port, _impl_name, opts, true, cb_fn, cb_arg);
 }
 
 struct spdk_sock *
@@ -637,27 +716,32 @@ spdk_sock_listen_ext(const char *ip, int port, const char *_impl_name, struct sp
 	}
 
 	STAILQ_FOREACH_FROM(impl, &g_net_impls, link) {
-		if (impl_name && strncmp(impl_name, impl->name, strlen(impl->name) + 1)) {
-			continue;
-		}
-
-		SPDK_DEBUGLOG(sock, "Creating a listening socket using impl %s\n", impl->name);
-		sock_init_opts(&opts_local, opts);
-		sock = impl->listen(ip, port, &opts_local);
-		if (sock != NULL) {
-			/* Copy the contents, both the two structures are the same ABI version */
-			memcpy(&sock->opts, &opts_local, sizeof(sock->opts));
-			/* Clear out impl_opts to make sure we don't keep reference to a dangling
-			 * pointer */
-			sock->opts.impl_opts = NULL;
-			sock->net_impl = impl;
-			/* Don't need to initialize the request queues for listen
-			 * sockets. */
-			return sock;
+		if (impl_name && strncmp(impl_name, impl->name, strlen(impl->name) + 1) == 0) {
+			break;
 		}
 	}
 
-	return NULL;
+	if (!impl) {
+		SPDK_ERRLOG("Cannot find %s sock implementation\n", impl_name ? impl_name : "any");
+		return NULL;
+	}
+
+	SPDK_DEBUGLOG(sock, "Creating a listening socket using impl %s\n", impl->name);
+	sock_init_opts(&opts_local, opts);
+	sock = impl->listen(ip, port, &opts_local);
+	if (!sock) {
+		return NULL;
+	}
+
+	/* Copy the contents, both the two structures are the same ABI version */
+	memcpy(&sock->opts, &opts_local, sizeof(sock->opts));
+	/* Clear out impl_opts to make sure we don't keep reference to a dangling
+	 * pointer */
+	sock->opts.impl_opts = NULL;
+	sock->net_impl = impl;
+	/* Don't need to initialize the request queues for listen
+	 * sockets. */
+	return sock;
 }
 
 struct spdk_sock *
@@ -1153,6 +1237,7 @@ spdk_sock_write_config_json(struct spdk_json_write_ctx *w)
 			spdk_json_write_named_uint32(w, "zerocopy_threshold", opts.zerocopy_threshold);
 			spdk_json_write_named_uint32(w, "tls_version", opts.tls_version);
 			spdk_json_write_named_bool(w, "enable_ktls", opts.enable_ktls);
+			spdk_json_write_named_uint32(w, "num_ssl_tickets", opts.num_ssl_tickets);
 			spdk_json_write_object_end(w);
 			spdk_json_write_object_end(w);
 		} else {

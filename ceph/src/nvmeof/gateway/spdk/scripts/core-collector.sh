@@ -3,27 +3,9 @@
 #  Copyright (C) 2020 Intel Corporation
 #  All rights reserved.
 #
-# We don't want to tell kernel to include %e or %E since these
-# can include whitespaces or other funny characters, and working
-# with those on the cmdline would be a nightmare. Use procfs for
-# the remaining pieces we want to gather:
-# |$rootdir/scripts/core-collector.sh %P %s %t $output_dir
 
+shopt -s nullglob
 rootdir=$(readlink -f "$(dirname "$0")/../")
-
-maps_to_json() {
-	local _maps=("${maps[@]}")
-	local mem_regions=() mem
-
-	mem_regions=("/proc/$core_pid/map_files/"*)
-
-	for mem in "${!mem_regions[@]}"; do
-		_maps[mem]=\"${_maps[mem]}@${mem_regions[mem]##*/}\"
-	done
-
-	local IFS=","
-	echo "${_maps[*]}"
-}
 
 core_meta() {
 	jq . <<- CORE
@@ -32,12 +14,9 @@ core_meta() {
 		    "ts": "$core_time",
 		    "size": "$core_size bytes",
 		    "PID": $core_pid,
+		    "TID": $core_thread,
 		    "signal": "$core_sig ($core_sig_name)",
-		    "path": "$exe_path",
-		    "cwd": "$cwd_path",
-		    "statm": "$statm",
-		    "filter": "$(coredump_filter)",
-		    "mapped": [ $(maps_to_json) ]
+		    "path": "$exe_path"
 		  }
 		}
 	CORE
@@ -45,44 +24,26 @@ core_meta() {
 
 bt() { hash gdb && gdb -batch -ex "thread apply all bt full" "$1" "$2" 2>&1; }
 
-stderr() {
-	exec 2> "$core.stderr.txt"
-	set -x
-}
+in_maps() {
+	local exe_path=$1 core=$2
+	local maps map
 
-coredump_filter() {
-	local bitmap bit
-	local _filter filter
+	shift 2 || return 1
 
-	bitmap[0]=anon-priv-mappings
-	bitmap[1]=anon-shared-mappings
-	bitmap[2]=file-priv-mappings
-	bitmap[3]=file-shared-mappings
-	bitmap[4]=elf-headers
-	bitmap[5]=priv-hp
-	bitmap[6]=shared-hp
-	bitmap[7]=priv-DAX
-	bitmap[8]=shared-DAX
+	# Filter out deleted mappings (e.g. hugepages backing files)
+	mapfile -t maps < <(
+		gdb -batch -ex "info proc mappings" "$exe_path" "$core" 2> /dev/null | grep -v deleted
+	)
 
-	_filter=0x$(< "/proc/$core_pid/coredump_filter")
-
-	for bit in "${!bitmap[@]}"; do
-		((_filter & 1 << bit)) || continue
-		filter=${filter:+$filter,}${bitmap[bit]}
+	for map; do
+		[[ ${maps[*]} == *"$map"* ]] && return 0
 	done
 
-	echo "$filter"
+	return 1
 }
 
-filter_process() {
-	# Did the process sit in our repo?
-	[[ $cwd_path == "$rootdir"* ]] && return 0
-
-	# Did we load our fio plugins?
-	[[ ${maps[*]} == *"$rootdir/build/fio/spdk_nvme"* ]] && return 0
-	[[ ${maps[*]} == *"$rootdir/build/fio/spdk_bdev"* ]] && return 0
-
-	# Do we depend on it?
+in_crit_bins() {
+	local exe_path=$1
 	local crit_binaries=() bin
 
 	crit_binaries+=("nvme")
@@ -98,50 +59,78 @@ filter_process() {
 	return 1
 }
 
-args+=(core_pid)
-args+=(core_sig)
-args+=(core_ts)
+filter_process() {
+	local exe_path=$1 core=$2
+	# Did the process sit in our repo?
+	[[ $exe_path == "$rootdir/"* ]] && return 0
+	# Did the process use our plugins?
+	in_maps "$exe_path" "$core" \
+		"$rootdir/build/fio/spdk_nvme" \
+		"$rootdir/build/fio/spdk_bdev" && return 0
+	# Do we depend on it?
+	in_crit_bins "$exe_path" && return 0
+	return 1
+}
 
-read -r "${args[@]}" <<< "$*"
+parse_core() {
+	local core=$1 _core
+	local cores_dir=$2
 
-exe_path=$(readlink -f "/proc/$core_pid/exe")
-cwd_path=$(readlink -f "/proc/$core_pid/cwd")
-exe_comm=$(< "/proc/$core_pid/comm")
-statm=$(< "/proc/$core_pid/statm")
-core_time=$(date -d@"$core_ts")
-core_sig_name=$(kill -l "$core_sig")
-mapfile -t maps < <(readlink -f "/proc/$core_pid/map_files/"*)
+	local core_pid core_thread
+	local core_save
+	local core_sig core_sig_name
+	local core_size
+	local core_time
+	local exe_comm exe_pat
 
-# Filter out processes that we don't care about
-filter_process || exit 0
+	local prefix=(
+		core_sig
+		core_pid
+		core_thread
+		core_time
+	)
 
-core=$(< "$rootdir/.coredump_path")/${exe_path##*/}_$core_pid.core
-stderr
+	# $output_dir/coredumps/%s-%p-%i-%t-%E.core
+	#  |
+	#  v
+	#  11-47378-47378-1748807733-!opt!spdk!build!bin!spdk_tgt.core
+	_core=${core##*/} _core=${_core%.core}
+	# !opt!spdk!build!bin!spdk_tgt
+	exe_path=${_core#*-*-*-*-}
+	# Split 11-47378-47378-1748807733 into respective variables
+	IFS="-" read -r "${prefix[@]}" <<< "${_core%"-$exe_path"}"
+	# /opt/spdk/build/bin/spdk_tgt
+	exe_path=${exe_path//\!/\/}
+	# If core comes from a process we don't support, skip it
+	filter_process "$exe_path" "$core" || return 0
+	# spdk_tgt
+	exe_comm=${exe_path##*/}
+	# 11 -> SEGV
+	core_sig_name=$(kill -l "$core_sig")
+	# seconds since Epoch to date
+	core_time=$(date -d"@$core_time")
+	# size in bytes
+	core_size=$(wc -c < "$core")
+	# $output_dir/coredumps/spdk_tgt-47378-47378
+	core_save=$cores_dir/$exe_comm-$core_pid-$core_thread
 
-# RLIMIT_CORE is not enforced when core is piped to us. To make
-# sure we won't attempt to overload underlying storage, copy
-# only the reasonable amount of bytes (systemd defaults to 2G
-# so let's follow that).
-rlimit=$((1024 * 1024 * 1024 * 2))
+	# Compress it
+	gzip -c "$core" > "$core_save.gz"
+	# Save the binary
+	cp "$exe_path" "$core_save.bin"
+	# Save the backtrace
+	bt "$exe_path" "$core" > "$core_save.bt.txt"
+	# Save the metadata of the core
+	core_meta > "$core_save.json"
+	# Nuke the original core
+	rm "$core"
+}
 
-# Clear path for lz
-rm -f "$core"{,.{bin,bt,gz,json}}
+cores_dir=$1
 
-# Slurp the core
-head -c "$rlimit" <&0 > "$core"
-core_size=$(wc -c < "$core")
+cores=("$cores_dir/"*.core)
+((${#cores[@]} > 0)) || exit 0
 
-# Compress it
-gzip -c "$core" > "$core.gz"
-
-# Save the binary
-cp "$exe_path" "$core.bin"
-
-# Save the backtrace
-bt "$exe_path" "$core" > "$core.bt.txt"
-
-# Save the metadata of the core
-core_meta > "$core.json"
-
-# Nuke the original core
-rm "$core"
+for core in "${cores[@]}"; do
+	parse_core "$core" "$cores_dir"
+done

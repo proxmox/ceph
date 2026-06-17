@@ -34,6 +34,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 
 #include "tran_pipe.h"
@@ -57,15 +58,15 @@ tran_pipe_send_iovec(int fd, uint16_t msg_id, bool is_reply,
     }
 
     if (is_reply) {
-        hdr.flags.type = VFIO_USER_F_TYPE_REPLY;
+        hdr.flags |= VFIO_USER_F_TYPE_REPLY;
         hdr.cmd = cmd;
         if (err != 0) {
-            hdr.flags.error = 1U;
+            hdr.flags |= VFIO_USER_F_ERROR;
             hdr.error_no = err;
         }
     } else {
         hdr.cmd = cmd;
-        hdr.flags.type = VFIO_USER_F_TYPE_COMMAND;
+        hdr.flags |= VFIO_USER_F_TYPE_COMMAND;
     }
 
     iovecs[0].iov_base = &hdr;
@@ -131,18 +132,18 @@ tran_pipe_recv(int fd, struct vfio_user_header *hdr, bool is_reply,
             return ERROR_INT(EPROTO);
         }
 
-        if (hdr->flags.type != VFIO_USER_F_TYPE_REPLY) {
+        if ((hdr->flags & VFIO_USER_F_TYPE_MASK) != VFIO_USER_F_TYPE_REPLY) {
             return ERROR_INT(EINVAL);
         }
 
-        if (hdr->flags.error == 1U) {
-            if (hdr->error_no <= 0) {
+        if (hdr->flags & VFIO_USER_F_ERROR) {
+            if (hdr->error_no <= 0 || hdr->error_no > SERVER_MAX_ERROR_NO) {
                 hdr->error_no = EINVAL;
             }
             return ERROR_INT(hdr->error_no);
         }
     } else {
-        if (hdr->flags.type != VFIO_USER_F_TYPE_COMMAND) {
+        if ((hdr->flags & VFIO_USER_F_TYPE_MASK) != VFIO_USER_F_TYPE_COMMAND) {
             return ERROR_INT(EINVAL);
         }
         if (msg_id != NULL) {
@@ -285,7 +286,7 @@ tran_pipe_attach(vfu_ctx_t *vfu_ctx)
     tp->in_fd = STDIN_FILENO;
     tp->out_fd = STDOUT_FILENO;
 
-    ret = tran_negotiate(vfu_ctx);
+    ret = tran_negotiate(vfu_ctx, NULL);
     if (ret < 0) {
         ret = errno;
         tp->in_fd = -1;
@@ -397,8 +398,8 @@ tran_pipe_reply(vfu_ctx_t *vfu_ctx, vfu_msg_t *msg, int err)
     }
 
     if (msg->out_iovecs != NULL) {
-        bcopy(msg->out_iovecs, iovecs + 1,
-              msg->nr_out_iovecs * sizeof(*iovecs));
+        memcpy(iovecs + 1, msg->out_iovecs,
+               msg->nr_out_iovecs * sizeof(*iovecs));
     } else {
         iovecs[1].iov_base = msg->out.iov.iov_base;
         iovecs[1].iov_len = msg->out.iov.iov_len;

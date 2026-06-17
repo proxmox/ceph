@@ -107,7 +107,7 @@ const routes: Routes = [
 
       // Cluster
       {
-        path: 'expand-cluster',
+        path: 'add-storage',
         component: CreateClusterComponent,
         canActivate: [ModuleStatusGuardService],
         data: {
@@ -115,8 +115,7 @@ const routes: Routes = [
             uiApiPath: 'orchestrator',
             redirectTo: 'overview',
             backend: 'cephadm'
-          },
-          breadcrumbs: 'Cluster/Expand Cluster'
+          }
         }
       },
       {
@@ -288,7 +287,7 @@ const routes: Routes = [
           },
           {
             path: 'alerts',
-            data: { breadcrumbs: 'Alerts' },
+            data: { breadcrumbs: 'Alert Rules' },
             component: RulesListComponent
           },
           {

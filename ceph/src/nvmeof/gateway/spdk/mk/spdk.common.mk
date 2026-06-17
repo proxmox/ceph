@@ -168,8 +168,8 @@ endif
 ifeq ($(CONFIG_URING),y)
 SYS_LIBS += -luring
 ifneq ($(strip $(CONFIG_URING_PATH)),)
-CFLAGS += -I$(CONFIG_URING_PATH)
-LDFLAGS += -L$(CONFIG_URING_PATH)
+CFLAGS += -I$(CONFIG_URING_PATH)/include
+LDFLAGS += -L$(CONFIG_URING_PATH)/lib
 endif
 endif
 
@@ -321,7 +321,7 @@ LDFLAGS += -fsanitize=fuzzer-no-link
 SYS_LIBS += $(CONFIG_FUZZER_LIB)
 endif
 
-SPDK_GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
+SPDK_GIT_COMMIT := 77d121fa4e83eb534daaccf3e377c2dfc1b8b1d2
 ifneq (, $(SPDK_GIT_COMMIT))
 COMMON_CFLAGS += -DSPDK_GIT_COMMIT=$(SPDK_GIT_COMMIT)
 endif
@@ -339,7 +339,7 @@ CFLAGS   += $(COMMON_CFLAGS) -Wno-pointer-sign -Wstrict-prototypes -Wold-style-d
 CXXFLAGS += $(COMMON_CFLAGS) -std=c++11
 
 SYS_LIBS += -lrt
-ifneq ($(OS),FreeBSD)
+ifeq ($(CONFIG_HAVE_LIBUUID),y)
 SYS_LIBS += -luuid
 endif
 SYS_LIBS += -lssl
@@ -371,7 +371,7 @@ LDFLAGS += $(shell $(PKGCONF) --libs libwd)
 endif
 endif
 
-ifneq ($(CONFIG_NVME_CUSE)$(CONFIG_FUSE),nn)
+ifeq ($(CONFIG_NVME_CUSE),y)
 SYS_LIBS += -lfuse3
 endif
 
@@ -438,7 +438,7 @@ LIB_C=\
 	$(Q)echo "  LIB $(notdir $@)"; \
 	rm -f $@; \
 	mkdir -p $(dir $@); \
-	$(CCAR) crDs $@ $(OBJS)
+	$(AR) crDs $@ $(OBJS)
 
 # Clean up generated files listed as arguments plus a default list
 CLEAN_C=\

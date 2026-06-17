@@ -104,6 +104,7 @@ s32 ixgbe_init_ops_generic(struct ixgbe_hw *hw)
 	mac->ops.init_uta_tables = NULL;
 	mac->ops.enable_rx = ixgbe_enable_rx_generic;
 	mac->ops.disable_rx = ixgbe_disable_rx_generic;
+	mac->ops.toggle_txdctl = ixgbe_toggle_txdctl_generic;
 
 	/* Flow Control */
 	mac->ops.fc_enable = ixgbe_fc_enable_generic;
@@ -4108,6 +4109,61 @@ s32 ixgbe_clear_vfta_generic(struct ixgbe_hw *hw)
 }
 
 /**
+ * ixgbe_toggle_txdctl_generic - Toggle VF's queues
+ * @hw: pointer to hardware structure
+ * @vf_number: VF index
+ *
+ * Enable and disable each queue in VF.
+ */
+s32 ixgbe_toggle_txdctl_generic(struct ixgbe_hw *hw, u32 vf_number)
+{
+	u8  queue_count, i;
+	u32 offset, reg;
+
+	if (vf_number > 63)
+		return IXGBE_ERR_PARAM;
+
+	/*
+	 * Determine number of queues by checking
+	 * number of virtual functions
+	 */
+	reg = IXGBE_READ_REG(hw, IXGBE_GCR_EXT);
+	switch (reg & IXGBE_GCR_EXT_VT_MODE_MASK) {
+	case IXGBE_GCR_EXT_VT_MODE_64:
+		queue_count = 2;
+		break;
+	case IXGBE_GCR_EXT_VT_MODE_32:
+		queue_count = 4;
+		break;
+	case IXGBE_GCR_EXT_VT_MODE_16:
+		queue_count = 8;
+		break;
+	default:
+		return IXGBE_ERR_CONFIG;
+	}
+
+	/* Toggle queues */
+	for (i = 0; i < queue_count; ++i) {
+		/* Calculate offset of current queue */
+		offset = queue_count * vf_number + i;
+
+		/* Enable queue */
+		reg = IXGBE_READ_REG(hw, IXGBE_PVFTXDCTL(offset));
+		reg |= IXGBE_TXDCTL_ENABLE;
+		IXGBE_WRITE_REG(hw, IXGBE_PVFTXDCTL(offset), reg);
+		IXGBE_WRITE_FLUSH(hw);
+
+		/* Disable queue */
+		reg = IXGBE_READ_REG(hw, IXGBE_PVFTXDCTL(offset));
+		reg &= ~IXGBE_TXDCTL_ENABLE;
+		IXGBE_WRITE_REG(hw, IXGBE_PVFTXDCTL(offset), reg);
+		IXGBE_WRITE_FLUSH(hw);
+	}
+
+	return IXGBE_SUCCESS;
+}
+
+/**
  * ixgbe_need_crosstalk_fix - Determine if we need to do cross talk fix
  * @hw: pointer to hardware structure
  *
@@ -4610,7 +4666,7 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, u32 *buffer,
 	/* first pull in the header so we know the buffer length */
 	for (bi = 0; bi < dword_len; bi++) {
 		buffer[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG, bi);
-		IXGBE_LE32_TO_CPUS((uintptr_t)&buffer[bi]);
+		IXGBE_LE32_TO_CPUS(&buffer[bi]);
 	}
 
 	/*
@@ -4646,7 +4702,7 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, u32 *buffer,
 	/* Pull in the rest of the buffer (bi is where we left off) */
 	for (; bi <= dword_len; bi++) {
 		buffer[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG, bi);
-		IXGBE_LE32_TO_CPUS((uintptr_t)&buffer[bi]);
+		IXGBE_LE32_TO_CPUS(&buffer[bi]);
 	}
 
 rel_out:

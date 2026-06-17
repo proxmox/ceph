@@ -189,6 +189,7 @@ struct roc_nix_fc_cfg {
 			uint32_t rq;
 			uint16_t tc;
 			uint16_t cq_drop;
+			uint16_t cq_bp;
 			bool enable;
 		} cq_cfg;
 
@@ -196,6 +197,7 @@ struct roc_nix_fc_cfg {
 			uint32_t rq;
 			uint16_t tc;
 			uint16_t cq_drop;
+			uint16_t cq_bp;
 			uint64_t pool;
 			uint64_t spb_pool;
 			uint64_t pool_drop_pct;
@@ -355,6 +357,8 @@ struct roc_nix_rq {
 	bool lpb_drop_ena;
 	/* SPB aura drop enable */
 	bool spb_drop_ena;
+	/* XQE drop enable */
+	bool xqe_drop_ena;
 	/* End of Input parameters */
 	struct roc_nix *roc_nix;
 	uint64_t meta_aura_handle;
@@ -369,6 +373,7 @@ struct roc_nix_cq {
 	uint8_t stash_thresh;
 	/* End of Input parameters */
 	uint16_t drop_thresh;
+	uint16_t bp_thresh;
 	struct roc_nix *roc_nix;
 	uintptr_t door;
 	int64_t *status;
@@ -431,6 +436,7 @@ struct roc_nix_ipsec_cfg {
 	plt_iova_t iova;
 	uint16_t max_sa;
 	uint8_t tt;
+	int8_t res_addr_offset;
 };
 
 /* Link status update callback */
@@ -469,6 +475,7 @@ struct roc_nix {
 	uint32_t dwrr_mtu;
 	bool ipsec_out_sso_pffunc;
 	bool custom_sa_action;
+	int8_t res_addr_offset;
 	bool local_meta_aura_ena;
 	uint32_t meta_buf_sz;
 	bool force_rx_aura_bp;
@@ -479,6 +486,8 @@ struct roc_nix {
 	uint32_t root_sched_weight;
 	uint16_t inb_cfg_param1;
 	uint16_t inb_cfg_param2;
+	bool force_tail_drop;
+	bool dis_xqe_drop;
 	/* End of input parameters */
 	/* LMT line base for "Per Core Tx LMT line" mode*/
 	uintptr_t lmt_base;

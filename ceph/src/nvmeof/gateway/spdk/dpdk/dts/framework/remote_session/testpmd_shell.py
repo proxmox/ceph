@@ -22,17 +22,10 @@ from dataclasses import dataclass, field
 from enum import Flag, auto
 from os import environ
 from pathlib import PurePath
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    ClassVar,
-    Concatenate,
-    Literal,
-    ParamSpec,
-    TypeAlias,
-)
+from typing import TYPE_CHECKING, Any, ClassVar, Concatenate, Literal, ParamSpec, Tuple, TypeAlias
 
 from framework.context import get_ctx
+from framework.remote_session.interactive_shell import only_active
 from framework.testbed_model.topology import TopologyType
 
 if TYPE_CHECKING or environ.get("DTS_DOC_BUILD"):
@@ -1278,6 +1271,11 @@ class TestPmdVerbosePacket(TextParser):
     l3_len: int | None = field(default=None, metadata=TextParser.find_int(r"l3_len=(\d+)"))
     #:
     l4_len: int | None = field(default=None, metadata=TextParser.find_int(r"l4_len=(\d+)"))
+    #:
+    l4_dport: int | None = field(
+        default=None,
+        metadata=TextParser.find_int(r"Destination (?:TCP|UDP) port=(\d+)"),
+    )
 
 
 class RxOffloadCapability(Flag):
@@ -1520,9 +1518,6 @@ class TestPmdShell(DPDKShell):
     _app_params: TestPmdParams
     _ports: list[TestPmdPort] | None
 
-    #: The path to the testpmd executable.
-    path: ClassVar[PurePath] = PurePath("app", "dpdk-testpmd")
-
     #: The testpmd's prompt.
     _default_prompt: ClassVar[str] = "testpmd>"
 
@@ -1540,9 +1535,14 @@ class TestPmdShell(DPDKShell):
         """Overrides :meth:`~.dpdk_shell.DPDKShell.__init__`. Changes app_params to kwargs."""
         if "port_topology" not in app_params and get_ctx().topology.type is TopologyType.one_link:
             app_params["port_topology"] = PortTopology.loop
-        super().__init__(name, privileged, TestPmdParams(**app_params))
+        super().__init__(name, privileged, app_params=TestPmdParams(**app_params))
         self.ports_started = not self._app_params.disable_device_start
         self._ports = None
+
+    @property
+    def path(self) -> PurePath:
+        """The path to the testpmd executable."""
+        return PurePath("app/dpdk-testpmd")
 
     @property
     def ports(self) -> list[TestPmdPort]:
@@ -1577,13 +1577,6 @@ class TestPmdShell(DPDKShell):
             if "Packet forwarding already started" not in start_cmd_output:
                 self._logger.debug(f"Failed to start packet forwarding: \n{start_cmd_output}")
                 raise InteractiveCommandExecutionError("Testpmd failed to start packet forwarding.")
-
-            number_of_ports = len(self._app_params.allowed_ports or [])
-            for port_id in range(number_of_ports):
-                if not self.wait_link_status_up(port_id):
-                    raise InteractiveCommandExecutionError(
-                        "Not all ports came up after starting packet forwarding in testpmd."
-                    )
 
     def stop(self, verify: bool = True) -> str:
         """Stop packet forwarding.
@@ -1723,6 +1716,24 @@ class TestPmdShell(DPDKShell):
         self.send_command(f"port config all rxq {number_of}")
         self.send_command(f"port config all txq {number_of}")
 
+    @requires_stopped_ports
+    def close_all_ports(self, verify: bool = True) -> None:
+        """Close all ports.
+
+        Args:
+            verify: If :data:`True` the output of the close command will be scanned in an attempt
+                to verify that all ports were stopped successfully. Defaults to :data:`True`.
+
+        Raises:
+            InteractiveCommandExecutionError: If `verify` is :data:`True` and at lease one port
+                failed to close.
+        """
+        port_close_output = self.send_command("port close all")
+        if verify:
+            num_ports = len(self.ports)
+            if not all(f"Port {p_id} is closed" in port_close_output for p_id in range(num_ports)):
+                raise InteractiveCommandExecutionError("Ports were not closed successfully.")
+
     def show_port_info_all(self) -> list[TestPmdPort]:
         """Returns the information of all the ports.
 
@@ -1836,11 +1847,13 @@ class TestPmdShell(DPDKShell):
                     f"Failed to {mcast_cmd} {multi_addr} on port {port_id} \n{output}"
                 )
 
-    def show_port_stats_all(self) -> list[TestPmdPortStats]:
+    def show_port_stats_all(self) -> Tuple[list[TestPmdPortStats], str]:
         """Returns the statistics of all the ports.
 
         Returns:
-            list[TestPmdPortStats]: A list containing all the ports stats as `TestPmdPortStats`.
+            Tuple[str, list[TestPmdPortStats]]: A tuple where the first element is the stats of all
+            ports as `TestPmdPortStats` and second is the raw testpmd output that was collected
+            from the sent command.
         """
         output = self.send_command("show port stats all")
 
@@ -1855,7 +1868,7 @@ class TestPmdShell(DPDKShell):
         #   #################################################
         #
         iter = re.finditer(r"(^  #*.+#*$[^#]+)^  #*\r$", output, re.MULTILINE)
-        return [TestPmdPortStats.parse(block.group(1)) for block in iter]
+        return ([TestPmdPortStats.parse(block.group(1)) for block in iter], output)
 
     def show_port_stats(self, port_id: int) -> TestPmdPortStats:
         """Returns the given port statistics.
@@ -1963,6 +1976,21 @@ class TestPmdShell(DPDKShell):
         else:
             self._logger.debug(f"Failed to create flow rule:\n{flow_output}")
             raise InteractiveCommandExecutionError(f"Failed to create flow rule:\n{flow_output}")
+
+    def flow_validate(self, flow_rule: FlowRule, port_id: int) -> bool:
+        """Validates a flow rule in the testpmd session.
+
+        Args:
+            flow_rule: :class:`FlowRule` object used for validating testpmd flow rule.
+            port_id: Integer representing the port to use.
+
+        Returns:
+            Boolean representing whether rule is valid or not.
+        """
+        flow_output = self.send_command(f"flow validate {port_id} {flow_rule}")
+        if "Flow rule validated" in flow_output:
+            return True
+        return False
 
     def flow_delete(self, flow_id: int, port_id: int, verify: bool = True) -> None:
         """Deletes the specified flow rule from the testpmd session.
@@ -2312,11 +2340,51 @@ class TestPmdShell(DPDKShell):
                 self._logger.debug(f"Failed to set VXLAN:\n{vxlan_output}")
                 raise InteractiveCommandExecutionError(f"Failed to set VXLAN:\n{vxlan_output}")
 
-    def _close(self) -> None:
+    def clear_port_stats(self, port_id: int, verify: bool = True) -> None:
+        """Clear statistics of a given port.
+
+        Args:
+            port_id: ID of the port to clear the statistics on.
+            verify: If :data:`True` the output of the command will be scanned to verify that it was
+                successful, otherwise failures will be ignored. Defaults to :data:`True`.
+
+        Raises:
+            InteractiveCommandExecutionError: If `verify` is :data:`True` and testpmd fails to
+                clear the statistics of the given port.
+        """
+        clear_output = self.send_command(f"clear port stats {port_id}")
+        if verify and f"NIC statistics for port {port_id} cleared" not in clear_output:
+            raise InteractiveCommandExecutionError(
+                f"Test pmd failed to set clear forwarding stats on port {port_id}"
+            )
+
+    def clear_port_stats_all(self, verify: bool = True) -> None:
+        """Clear the statistics of all ports that testpmd is aware of.
+
+        Args:
+            verify: If :data:`True` the output of the command will be scanned to verify that all
+                ports had their statistics cleared, otherwise failures will be ignored. Defaults to
+                :data:`True`.
+
+        Raises:
+            InteractiveCommandExecutionError: If `verify` is :data:`True` and testpmd fails to
+                clear the statistics of any of its ports.
+        """
+        clear_output = self.send_command("clear port stats all")
+        if verify:
+            if type(self._app_params.port_numa_config) is list:
+                for port_id in range(len(self._app_params.port_numa_config)):
+                    if f"NIC statistics for port {port_id} cleared" not in clear_output:
+                        raise InteractiveCommandExecutionError(
+                            f"Test pmd failed to set clear forwarding stats on port {port_id}"
+                        )
+
+    @only_active
+    def close(self) -> None:
         """Overrides :meth:`~.interactive_shell.close`."""
         self.stop()
         self.send_command("quit", "Bye...")
-        return super()._close()
+        return super().close()
 
     """
     ====== Capability retrieval methods ======
@@ -2587,6 +2655,23 @@ class TestPmdShell(DPDKShell):
         else:
             unsupported_capabilities.add(NicCapability.FLOW_CTRL)
 
+    def get_capabilities_physical_function(
+        self,
+        supported_capabilities: MutableSet["NicCapability"],
+        unsupported_capabilities: MutableSet["NicCapability"],
+    ) -> None:
+        """Store capability representing a physical function test run.
+
+        Args:
+            supported_capabilities: Supported capabilities will be added to this set.
+            unsupported_capabilities: Unsupported capabilities will be added to this set.
+        """
+        ctx = get_ctx()
+        if ctx.topology.vf_ports == []:
+            supported_capabilities.add(NicCapability.PHYSICAL_FUNCTION)
+        else:
+            unsupported_capabilities.add(NicCapability.PHYSICAL_FUNCTION)
+
 
 class NicCapability(NoAliasEnum):
     """A mapping between capability names and the associated :class:`TestPmdShell` methods.
@@ -2735,6 +2820,11 @@ class NicCapability(NoAliasEnum):
     )
     #: Device supports flow ctrl.
     FLOW_CTRL: TestPmdShellNicCapability = (TestPmdShell.get_capabilities_flow_ctrl, None)
+    #: Device is running on a physical function.
+    PHYSICAL_FUNCTION: TestPmdShellNicCapability = (
+        TestPmdShell.get_capabilities_physical_function,
+        None,
+    )
 
     def __call__(
         self,

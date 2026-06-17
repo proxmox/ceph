@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/queue.h>
+#include <eal_export.h>
 #include <rte_errno.h>
 #include <rte_interrupts.h>
 #include <rte_log.h>
@@ -162,6 +163,8 @@ rte_auxiliary_driver_remove_dev(struct rte_auxiliary_device *dev)
 		return -EINVAL;
 
 	drv = dev->driver;
+	if (drv == NULL)
+		return 0;
 
 	AUXILIARY_LOG(DEBUG, "Driver %s remove auxiliary device %s on NUMA node %i",
 		      drv->driver.name, dev->name, dev->device.numa_node);
@@ -258,6 +261,7 @@ auxiliary_parse(const char *name, void *addr)
 }
 
 /* Register a driver */
+RTE_EXPORT_INTERNAL_SYMBOL(rte_auxiliary_register)
 void
 rte_auxiliary_register(struct rte_auxiliary_driver *driver)
 {
@@ -265,6 +269,7 @@ rte_auxiliary_register(struct rte_auxiliary_driver *driver)
 }
 
 /* Unregister a driver */
+RTE_EXPORT_INTERNAL_SYMBOL(rte_auxiliary_unregister)
 void
 rte_auxiliary_unregister(struct rte_auxiliary_driver *driver)
 {

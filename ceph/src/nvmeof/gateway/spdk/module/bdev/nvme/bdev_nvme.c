@@ -188,6 +188,7 @@ static struct spdk_bdev_nvme_opts g_opts = {
 	.dhchap_digests = BDEV_NVME_DEFAULT_DIGESTS,
 	.dhchap_dhgroups = BDEV_NVME_DEFAULT_DHGROUPS,
 	.rdma_umr_per_io = false,
+	.enable_flush = false,
 };
 
 #define NVME_HOTPLUG_POLL_PERIOD_MAX			10000000ULL
@@ -1592,8 +1593,6 @@ bdev_nvme_io_complete_nvme_status(struct nvme_bdev_io *bio,
 	}
 
 complete:
-	bio->retry_count = 0;
-	bio->submit_tsc = 0;
 	bdev_io->u.bdev.accel_sequence = NULL;
 	__bdev_nvme_io_complete(bdev_io, 0, cpl);
 }
@@ -1635,8 +1634,6 @@ bdev_nvme_io_complete(struct nvme_bdev_io *bio, int rc)
 		break;
 	}
 
-	bio->retry_count = 0;
-	bio->submit_tsc = 0;
 	__bdev_nvme_io_complete(bdev_io, io_status, NULL);
 }
 
@@ -1920,7 +1917,10 @@ bdev_nvme_destruct(void *ctx)
 
 		assert(nvme_ns->id > 0);
 
-		if (nvme_ctrlr_get_ns(nvme_ns->ctrlr, nvme_ns->id) == NULL) {
+		/* A new namespace object with the same NSID may have been created after reconnect.
+		 * In that case, ignore the new one and continue destroying the original namespace.
+		 */
+		if (nvme_ctrlr_get_ns(nvme_ns->ctrlr, nvme_ns->id) != nvme_ns) {
 			pthread_mutex_unlock(&nvme_ns->ctrlr->mutex);
 
 			nvme_ctrlr_put_ref(nvme_ns->ctrlr);
@@ -3248,6 +3248,8 @@ static int bdev_nvme_unmap(struct nvme_bdev_io *bio, uint64_t offset_blocks,
 static int bdev_nvme_write_zeroes(struct nvme_bdev_io *bio, uint64_t offset_blocks,
 				  uint64_t num_blocks);
 
+static int bdev_nvme_flush(struct nvme_bdev_io *bio);
+
 static int bdev_nvme_copy(struct nvme_bdev_io *bio, uint64_t dst_offset_blocks,
 			  uint64_t src_offset_blocks,
 			  uint64_t num_blocks);
@@ -3363,9 +3365,20 @@ _bdev_nvme_submit_request(struct nvme_bdev_channel *nbdev_ch, struct spdk_bdev_i
 		bdev_nvme_reset_io(bdev->ctxt, nbdev_io);
 		return;
 
-	case SPDK_BDEV_IO_TYPE_FLUSH:
+	case SPDK_BDEV_IO_TYPE_NVME_NSSR:
+		spdk_nvme_ctrlr_reset_subsystem(nbdev_io->io_path->qpair->ctrlr->ctrlr);
 		bdev_nvme_io_complete(nbdev_io, 0);
 		return;
+
+	case SPDK_BDEV_IO_TYPE_FLUSH:
+		/* No need to send flush if Volatile Write Cache is disabled */
+		if (!bdev->write_cache || !g_opts.enable_flush) {
+			bdev_nvme_io_complete(nbdev_io, 0);
+			return;
+		}
+
+		rc = bdev_nvme_flush(nbdev_io);
+		break;
 
 	case SPDK_BDEV_IO_TYPE_ZONE_APPEND:
 		rc = bdev_nvme_zone_appendv(nbdev_io,
@@ -3474,6 +3487,20 @@ bdev_nvme_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 	_bdev_nvme_submit_request(nbdev_ch, bdev_io);
 }
 
+static void
+bdev_nvme_submit_request_initial(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
+{
+	struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
+
+	/* Initialize our values of submit tsc and retry count here
+	 * so that it doesn't interfere with the retry process
+	 */
+	nbdev_io->submit_tsc = 0;
+	nbdev_io->retry_count = 0;
+
+	bdev_nvme_submit_request(ch, bdev_io);
+}
+
 static bool
 bdev_nvme_is_supported_csi(enum spdk_nvme_csi csi)
 {
@@ -3528,6 +3555,9 @@ bdev_nvme_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 	case SPDK_BDEV_IO_TYPE_NVME_IO:
 	case SPDK_BDEV_IO_TYPE_ABORT:
 		return true;
+
+	case SPDK_BDEV_IO_TYPE_NVME_NSSR:
+		return spdk_nvme_ctrlr_is_nssr_supported(ctrlr);
 
 	case SPDK_BDEV_IO_TYPE_COMPARE:
 		return spdk_nvme_ns_supports_compare(ns);
@@ -4312,7 +4342,7 @@ bdev_nvme_accel_sequence_supported(void *ctx, enum spdk_bdev_io_type type)
 
 static const struct spdk_bdev_fn_table nvmelib_fn_table = {
 	.destruct			= bdev_nvme_destruct,
-	.submit_request			= bdev_nvme_submit_request,
+	.submit_request			= bdev_nvme_submit_request_initial,
 	.io_type_supported		= bdev_nvme_io_type_supported,
 	.get_io_channel			= bdev_nvme_get_io_channel,
 	.dump_info_json			= bdev_nvme_dump_info_json,
@@ -4572,6 +4602,12 @@ nbdev_create(struct spdk_bdev *disk, const char *base_name,
 	}
 	if (nsdata->nsfeat.optperf) {
 		phys_bs = bs * (1 + nsdata->npwg);
+
+		disk->preferred_write_granularity = nsdata->npwg + 1;
+		disk->preferred_write_alignment = nsdata->npwa + 1;
+		disk->optimal_write_size = nsdata->nows + 1;
+		disk->preferred_unmap_granularity = nsdata->npdg + 1;
+		disk->preferred_unmap_alignment = nsdata->npda + 1;
 	}
 	disk->phys_blocklen = spdk_min(phys_bs, atomic_bs);
 
@@ -4781,7 +4817,8 @@ timeout_cb(void *cb_arg, struct spdk_nvme_ctrlr *ctrlr,
 	if (nvme_ctrlr->active_path_id->trid.trtype == SPDK_NVME_TRANSPORT_PCIE || qpair != NULL) {
 		csts = spdk_nvme_ctrlr_get_regs_csts(ctrlr);
 		if (csts.bits.cfs) {
-			NVME_CTRLR_ERRLOG(nvme_ctrlr, "Controller Fatal Status, reset required\n");
+			NVME_CTRLR_ERRLOG(nvme_ctrlr, "%s, reset required\n",
+					  csts.raw == 0xFFFFFFFF ? "Could not read csts register" : "Controller Fatal Status");
 			bdev_nvme_reset_ctrlr(nvme_ctrlr);
 			return;
 		}
@@ -5143,37 +5180,44 @@ nvme_ctrlr_populate_namespaces(struct nvme_ctrlr *nvme_ctrlr,
 	}
 
 	/* Loop through all of the namespaces at the nvme level and see if any of them are new */
-	nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr);
-	while (nsid != 0) {
+	for (nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr); nsid != 0;
+	     nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid)) {
 		nvme_ns = nvme_ctrlr_get_ns(nvme_ctrlr, nsid);
-
-		if (nvme_ns == NULL) {
-			/* Found a new one */
-			nvme_ns = nvme_ns_alloc();
-			if (nvme_ns == NULL) {
-				NVME_CTRLR_ERRLOG(nvme_ctrlr, "Failed to allocate namespace\n");
-				/* This just fails to attach the namespace. It may work on a future attempt. */
-				continue;
-			}
-
-			nvme_ns->id = nsid;
-			nvme_ns->ctrlr = nvme_ctrlr;
-
-			nvme_ns->bdev = NULL;
-
-			if (ctx) {
-				ctx->populates_in_progress++;
-			}
-			nvme_ns->probe_ctx = ctx;
-
-			pthread_mutex_lock(&nvme_ctrlr->mutex);
-			RB_INSERT(nvme_ns_tree, &nvme_ctrlr->namespaces, nvme_ns);
-			pthread_mutex_unlock(&nvme_ctrlr->mutex);
-
-			nvme_ctrlr_populate_namespace(nvme_ctrlr, nvme_ns);
+		if (nvme_ns != NULL) {
+			continue;
 		}
 
-		nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid);
+		/* Found a new one */
+
+		ns = spdk_nvme_ctrlr_get_ns(nvme_ctrlr->ctrlr, nsid);
+		if (ns == NULL || !spdk_nvme_ns_is_active(ns)) {
+			/* Namespace was present during identify controller,
+			 * but identify ns was not yet sent. */
+			continue;
+		}
+
+		nvme_ns = nvme_ns_alloc();
+		if (nvme_ns == NULL) {
+			NVME_CTRLR_ERRLOG(nvme_ctrlr, "Failed to allocate namespace\n");
+			/* This just fails to attach the namespace. It may work on a future attempt. */
+			continue;
+		}
+
+		nvme_ns->id = nsid;
+		nvme_ns->ctrlr = nvme_ctrlr;
+
+		nvme_ns->bdev = NULL;
+
+		if (ctx) {
+			ctx->populates_in_progress++;
+		}
+		nvme_ns->probe_ctx = ctx;
+
+		pthread_mutex_lock(&nvme_ctrlr->mutex);
+		RB_INSERT(nvme_ns_tree, &nvme_ctrlr->namespaces, nvme_ns);
+		pthread_mutex_unlock(&nvme_ctrlr->mutex);
+
+		nvme_ctrlr_populate_namespace(nvme_ctrlr, nvme_ns);
 	}
 
 	if (ctx) {
@@ -6210,12 +6254,13 @@ spdk_bdev_nvme_get_opts(struct spdk_bdev_nvme_opts *opts, size_t opts_size)
 	SET_FIELD(dhchap_dhgroups, 0);
 	SET_FIELD(rdma_umr_per_io, false);
 	SET_FIELD(tcp_connect_timeout_ms, 0);
+	SET_FIELD(enable_flush, false);
 
 #undef SET_FIELD
 
 	/* Do not remove this statement, you should always update this statement when you adding a new field,
 	 * and do not forget to add the SET_FIELD statement for your added field. */
-	SPDK_STATIC_ASSERT(sizeof(struct spdk_bdev_nvme_opts) == 128, "Incorrect size");
+	SPDK_STATIC_ASSERT(sizeof(struct spdk_bdev_nvme_opts) == 136, "Incorrect size");
 }
 
 static bool bdev_nvme_check_io_error_resiliency_params(int32_t ctrlr_loss_timeout_sec,
@@ -6328,6 +6373,7 @@ spdk_bdev_nvme_set_opts(const struct spdk_bdev_nvme_opts *opts)
 	SET_FIELD(dhchap_digests, 0);
 	SET_FIELD(dhchap_dhgroups, 0);
 	SET_FIELD(tcp_connect_timeout_ms, 0);
+	SET_FIELD(enable_flush, false);
 
 	g_opts.opts_size = opts->opts_size;
 
@@ -8621,6 +8667,14 @@ bdev_nvme_write_zeroes(struct nvme_bdev_io *bio, uint64_t offset_blocks, uint64_
 }
 
 static int
+bdev_nvme_flush(struct nvme_bdev_io *bio)
+{
+	return spdk_nvme_ns_cmd_flush(bio->io_path->nvme_ns->ns,
+				      bio->io_path->qpair->qpair,
+				      bdev_nvme_queued_done, bio);
+}
+
+static int
 bdev_nvme_get_zone_info(struct nvme_bdev_io *bio, uint64_t zone_id, uint32_t num_zones,
 			struct spdk_bdev_zone_info *info)
 {
@@ -8927,6 +8981,8 @@ bdev_nvme_opts_config_json(struct spdk_json_write_ctx *w)
 	spdk_json_write_array_end(w);
 	spdk_json_write_named_bool(w, "rdma_umr_per_io", g_opts.rdma_umr_per_io);
 	spdk_json_write_named_uint32(w, "tcp_connect_timeout_ms", g_opts.tcp_connect_timeout_ms);
+	spdk_json_write_named_bool(w, "enable_flush", g_opts.enable_flush);
+
 	spdk_json_write_object_end(w);
 
 	spdk_json_write_object_end(w);

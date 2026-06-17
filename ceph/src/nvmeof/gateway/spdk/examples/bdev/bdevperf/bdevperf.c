@@ -11,6 +11,7 @@
 #include "spdk/endian.h"
 #include "spdk/env.h"
 #include "spdk/event.h"
+#include "spdk/memory.h"
 #include "spdk/log.h"
 #include "spdk/util.h"
 #include "spdk/thread.h"
@@ -51,7 +52,7 @@ static bool g_reset = false;
 static bool g_continue_on_failure = false;
 static bool g_abort = false;
 static bool g_error_to_exit = false;
-static int g_queue_depth = 0;
+static uint32_t g_queue_depth = 0;
 static uint64_t g_time_in_usec;
 static bool g_summarize_performance = true;
 static uint64_t g_show_performance_period_in_usec = SPDK_SEC_TO_USEC;
@@ -76,6 +77,7 @@ static double g_zipf_theta;
 static bool g_random_map = false;
 static bool g_unique_writes = false;
 static bool g_hide_metadata = false;
+static bool g_nohuge_alloc = false;
 
 static struct spdk_cpuset g_all_cpuset;
 static struct spdk_poller *g_perf_timer = NULL;
@@ -153,7 +155,7 @@ struct bdevperf_job {
 	bool				write_zeroes;
 	bool				flush;
 	bool				abort;
-	int				queue_depth;
+	uint32_t			queue_depth;
 	uint64_t			seed;
 
 	uint64_t			io_completed;
@@ -167,6 +169,7 @@ struct bdevperf_job {
 	uint64_t			offset_in_ios;
 	uint64_t			io_size_blocks;
 	uint64_t			buf_size;
+	uint64_t			md_buf_size;
 	uint32_t			dif_check_flags;
 	bool				is_draining;
 	bool				md_check;
@@ -276,6 +279,56 @@ parse_workload_type(enum job_config_rw ret)
 	}
 
 	return NULL;
+}
+
+static void *
+bdevperf_alloc(size_t size, size_t alignment, uint32_t node_id)
+{
+	void *buf;
+	int rc;
+
+	if (!g_nohuge_alloc) {
+		return spdk_zmalloc(size, alignment, NULL, node_id, SPDK_MALLOC_DMA);
+	}
+
+	size = spdk_divide_round_up(size, VALUE_4KB) * VALUE_4KB;
+	buf = aligned_alloc(alignment > VALUE_4KB ? alignment : VALUE_4KB, size);
+	if (buf == NULL) {
+		return buf;
+	}
+
+	rc = spdk_mem_register(buf, size);
+	if (rc != 0) {
+		fprintf(stderr, "Failed to register region: %p-%p: %s\n", buf, (char *)buf + size,
+			spdk_strerror(-rc));
+		free(buf);
+		return NULL;
+	}
+
+	return buf;
+}
+
+static void
+bdevperf_free(void *buf, size_t size)
+{
+	int rc;
+
+	if (buf == NULL) {
+		return;
+	}
+
+	if (!g_nohuge_alloc) {
+		spdk_free(buf);
+		return;
+	}
+
+	rc = spdk_mem_unregister(buf, spdk_divide_round_up(size, VALUE_4KB) * VALUE_4KB);
+	if (rc != 0) {
+		fprintf(stderr, "Failed to unregister region: %p-%p: %s\n", buf, (char *)buf + size,
+			spdk_strerror(-rc));
+	}
+
+	free(buf);
 }
 
 /*
@@ -798,10 +851,10 @@ clean:
 
 		TAILQ_FOREACH_SAFE(task, &job->task_list, link, ttmp) {
 			TAILQ_REMOVE(&job->task_list, task, link);
-			spdk_free(task->buf);
-			spdk_free(task->verify_buf);
-			spdk_free(task->md_buf);
-			spdk_free(task->verify_md_buf);
+			bdevperf_free(task->buf, job->buf_size);
+			bdevperf_free(task->verify_buf, job->buf_size);
+			bdevperf_free(task->md_buf, job->md_buf_size);
+			bdevperf_free(task->verify_md_buf, job->md_buf_size);
 			free(task);
 		}
 
@@ -1488,7 +1541,7 @@ bdevperf_job_run(void *ctx)
 {
 	struct bdevperf_job *job = ctx;
 	struct bdevperf_task *task;
-	int i;
+	uint32_t i;
 
 	/* Submit initial I/O for this job. Each time one
 	 * completes, another will be submitted. */
@@ -1905,6 +1958,7 @@ bdevperf_construct_job(struct spdk_bdev *bdev, struct job_config *config,
 	job->bdev = bdev;
 	job->io_size_blocks = job->io_size / data_block_size;
 	job->buf_size = job->io_size_blocks * block_size;
+	job->md_buf_size = spdk_bdev_get_md_size(bdev) * job->io_size_blocks;
 	job->abort = g_abort;
 	job_init_rw(job, config->rw);
 	job->md_check = spdk_bdev_get_dif_type(job->bdev) == SPDK_DIF_DISABLE;
@@ -1958,12 +2012,12 @@ bdevperf_construct_job(struct spdk_bdev *bdev, struct job_config *config,
 			bdevperf_job_free(job);
 			return -ENOMEM;
 		}
-		if (job->queue_depth > (int)job->size_in_ios) {
-			SPDK_WARNLOG("Due to constraints of verify job, queue depth (-q, %d) can't exceed the number of IO "
+		if (job->queue_depth > job->size_in_ios) {
+			SPDK_WARNLOG("Due to constraints of verify job, queue depth (-q, %"PRIu32") can't exceed the number of IO "
 				     "requests which can be submitted to the bdev %s simultaneously (%"PRIu64"). "
 				     "Queue depth is limited to %"PRIu64"\n",
 				     job->queue_depth, job->name, job->size_in_ios, job->size_in_ios);
-			job->queue_depth = (int)job->size_in_ios;
+			job->queue_depth = job->size_in_ios;
 		}
 	}
 
@@ -2011,8 +2065,8 @@ bdevperf_construct_job(struct spdk_bdev *bdev, struct job_config *config,
 			return -ENOMEM;
 		}
 
-		task->buf = spdk_zmalloc(job->buf_size, spdk_bdev_get_buf_align(job->bdev), NULL,
-					 numa_id, SPDK_MALLOC_DMA);
+		task->buf = bdevperf_alloc(job->buf_size, spdk_bdev_get_buf_align(job->bdev),
+					   numa_id);
 		if (!task->buf) {
 			fprintf(stderr, "Cannot allocate buf for task=%p\n", task);
 			spdk_zipf_free(&job->zipf);
@@ -2021,23 +2075,23 @@ bdevperf_construct_job(struct spdk_bdev *bdev, struct job_config *config,
 		}
 
 		if (job->verify && job->buf_size > SPDK_BDEV_LARGE_BUF_MAX_SIZE) {
-			task->verify_buf = spdk_zmalloc(job->buf_size, spdk_bdev_get_buf_align(job->bdev), NULL,
-							numa_id, SPDK_MALLOC_DMA);
+			task->verify_buf = bdevperf_alloc(job->buf_size, spdk_bdev_get_buf_align(job->bdev),
+							  numa_id);
 			if (!task->verify_buf) {
 				fprintf(stderr, "Cannot allocate buf_verify for task=%p\n", task);
-				spdk_free(task->buf);
+				bdevperf_free(task->buf, job->buf_size);
 				spdk_zipf_free(&job->zipf);
 				free(task);
 				return -ENOMEM;
 			}
 
 			if (spdk_bdev_is_md_separate(job->bdev)) {
-				task->verify_md_buf = spdk_zmalloc(spdk_bdev_get_md_size(bdev) * job->io_size_blocks,
-								   spdk_bdev_get_buf_align(job->bdev), NULL, numa_id, SPDK_MALLOC_DMA);
+				task->verify_md_buf = bdevperf_alloc(job->md_buf_size,
+								     spdk_bdev_get_buf_align(job->bdev), numa_id);
 				if (!task->verify_md_buf) {
 					fprintf(stderr, "Cannot allocate verify_md_buf for task=%p\n", task);
-					spdk_free(task->buf);
-					spdk_free(task->verify_buf);
+					bdevperf_free(task->buf, job->buf_size);
+					bdevperf_free(task->verify_buf, job->buf_size);
 					spdk_zipf_free(&job->zipf);
 					free(task);
 					return -ENOMEM;
@@ -2046,15 +2100,13 @@ bdevperf_construct_job(struct spdk_bdev *bdev, struct job_config *config,
 		}
 
 		if (spdk_bdev_desc_is_md_separate(job->bdev_desc)) {
-			task->md_buf = spdk_zmalloc(job->io_size_blocks *
-						    spdk_bdev_desc_get_md_size(job->bdev_desc), 0, NULL,
-						    numa_id, SPDK_MALLOC_DMA);
+			task->md_buf = bdevperf_alloc(job->md_buf_size, 0, numa_id);
 			if (!task->md_buf) {
 				fprintf(stderr, "Cannot allocate md buf for task=%p\n", task);
 				spdk_zipf_free(&job->zipf);
-				spdk_free(task->verify_buf);
-				spdk_free(task->verify_md_buf);
-				spdk_free(task->buf);
+				bdevperf_free(task->verify_buf, job->buf_size);
+				bdevperf_free(task->verify_md_buf, job->md_buf_size);
+				bdevperf_free(task->buf, job->buf_size);
 				free(task);
 				return -ENOMEM;
 			}
@@ -2643,17 +2695,17 @@ rpc_perform_tests_cb(void)
 }
 
 struct rpc_bdevperf_params {
-	int	time_in_sec;
-	char	*workload_type;
-	int	queue_depth;
-	char	*io_size;
-	int	rw_percentage;
+	int		time_in_sec;
+	char		*workload_type;
+	uint32_t	queue_depth;
+	char		*io_size;
+	int		rw_percentage;
 };
 
 static const struct spdk_json_object_decoder rpc_bdevperf_params_decoders[] = {
 	{"time_in_sec", offsetof(struct rpc_bdevperf_params, time_in_sec), spdk_json_decode_int32, true},
 	{"workload_type", offsetof(struct rpc_bdevperf_params, workload_type), spdk_json_decode_string, true},
-	{"queue_depth", offsetof(struct rpc_bdevperf_params, queue_depth), spdk_json_decode_int32, true},
+	{"queue_depth", offsetof(struct rpc_bdevperf_params, queue_depth), spdk_json_decode_uint32, true},
 	{"io_size", offsetof(struct rpc_bdevperf_params, io_size), spdk_json_decode_string, true},
 	{"rw_percentage", offsetof(struct rpc_bdevperf_params, rw_percentage), spdk_json_decode_int32, true},
 };
@@ -2794,6 +2846,8 @@ bdevperf_parse_arg(int ch, char *arg)
 			fprintf(stderr, "Illegal zipf theta value %s\n", arg);
 			return -EINVAL;
 		}
+	} else if (ch == 'H') {
+		g_nohuge_alloc = true;
 	} else if (ch == 'l') {
 		g_latency_display_level++;
 	} else if (ch == 'D') {
@@ -2881,6 +2935,7 @@ bdevperf_usage(void)
 	printf(" -J                        File name to open with append mode and log JSON RPC calls.\n");
 	printf(" -U                        generate unique data for each write I/O, has no effect on non-write I/O\n");
 	printf(" -N                        Enable hide_metadata option to each bdev\n");
+	printf(" -H                        allocate non-huge data buffers\n");
 }
 
 static void
@@ -2898,7 +2953,7 @@ bdevperf_fini(void)
 static int
 verify_test_params(void)
 {
-	if (!g_bdevperf_conf_file && g_queue_depth <= 0) {
+	if (!g_bdevperf_conf_file && g_queue_depth == 0) {
 		goto out;
 	}
 	if (!g_bdevperf_conf_file && g_io_size <= 0) {
@@ -3004,7 +3059,7 @@ main(int argc, char **argv)
 	opts.rpc_addr = NULL;
 	opts.shutdown_cb = spdk_bdevperf_shutdown_cb;
 
-	if ((rc = spdk_app_parse_args(argc, argv, &opts, "Zzfq:o:t:w:k:CEF:J:M:P:S:T:Xlj:DUN", NULL,
+	if ((rc = spdk_app_parse_args(argc, argv, &opts, "Zzfq:o:t:w:k:CEF:HJ:M:P:S:T:Xlj:DUN", NULL,
 				      bdevperf_parse_arg, bdevperf_usage)) !=
 	    SPDK_APP_PARSE_ARGS_SUCCESS) {
 		return rc;

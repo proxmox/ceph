@@ -72,9 +72,11 @@ DEFINE_STUB(spdk_nvmf_ns_find_host,
 	    (struct spdk_nvmf_ns *ns, const char *hostnqn),
 	    NULL);
 
-DEFINE_STUB_V(nvmf_get_discovery_log_page,
-	      (struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
-	       uint32_t iovcnt, uint64_t offset, uint32_t length, struct spdk_nvme_transport_id *cmd_src_trid));
+DEFINE_STUB(nvmf_get_discovery_log_page,
+	    int,
+	    (struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
+	     uint32_t iovcnt, uint64_t offset, uint32_t length, struct spdk_nvme_transport_id *cmd_src_trid),
+	    0);
 
 DEFINE_STUB_V(nvmf_subsystem_remove_ctrlr,
 	      (struct spdk_nvmf_subsystem *subsystem, struct spdk_nvmf_ctrlr *ctrlr));
@@ -235,6 +237,8 @@ DEFINE_STUB(accel_channel_create, int, (void *io_device, void *ctx_buf), 0);
 DEFINE_STUB_V(accel_channel_destroy, (void *io_device, void *ctx_buf));
 DEFINE_STUB(spdk_bdev_reset, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 				   spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
+DEFINE_STUB(spdk_bdev_nvme_nssr, int, (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+				       spdk_bdev_io_completion_cb cb, void *cb_arg), 0);
 DEFINE_STUB_V(spdk_bdev_free_io, (struct spdk_bdev_io *bdev_io));
 
 DEFINE_STUB(spdk_bdev_get_max_active_zones, uint32_t,
@@ -388,7 +392,7 @@ spdk_nvmf_request_get_buffers(struct spdk_nvmf_request *req,
 
 void
 nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
-			    bool dif_insert_or_strip)
+			    bool dif_insert_or_strip, uint32_t transport_max_io_size)
 {
 	uint64_t num_blocks;
 
@@ -1588,6 +1592,51 @@ test_nvmf_tcp_tls_generate_tls_psk(void)
 					  NVME_TCP_CIPHER_AES_128_GCM_SHA256) < 0);
 }
 
+static void
+test_nvmf_tcp_get_request_resuse_flags(void)
+{
+	struct spdk_nvmf_tcp_qpair tqpair = {};
+	struct spdk_nvmf_tcp_req tcp_req1 = {};
+	union nvmf_c2h_msg rsp = {};
+	struct spdk_nvmf_tcp_req *tcp_req;
+
+	TAILQ_INIT(&tqpair.tcp_req_free_queue);
+	TAILQ_INIT(&tqpair.tcp_req_working_queue);
+
+	tcp_req1.req.qpair = &tqpair.qpair;
+	tcp_req1.req.cmd = (union nvmf_h2c_msg *)&tcp_req1.cmd;
+	tcp_req1.req.rsp = &rsp;
+
+	/* Insert back into free queue with req flags */
+	tcp_req1.req.raw = 0xFF;
+	SPDK_CU_ASSERT_FATAL(tcp_req1.req.data_from_pool);
+	SPDK_CU_ASSERT_FATAL(tcp_req1.req.dif_enabled);
+	SPDK_CU_ASSERT_FATAL(tcp_req1.req.first_fused);
+	SPDK_CU_ASSERT_FATAL(tcp_req1.req.reservation_queued);
+
+	/* Enable admin passthrough */
+	tcp_req1.req.cmd_cb_fn = (spdk_nvmf_nvme_passthru_cmd_cb)(0xDEADBEEF);
+	SPDK_CU_ASSERT_FATAL(tcp_req1.req.cmd_cb_fn != NULL);
+
+	TAILQ_INSERT_TAIL(&tqpair.tcp_req_free_queue, &tcp_req1, state_link);
+	tqpair.state_cntr[TCP_REQUEST_STATE_FREE]++;
+	tqpair.state = NVMF_TCP_QPAIR_STATE_RUNNING;
+
+	tcp_req = nvmf_tcp_req_get(&tqpair);
+	SPDK_CU_ASSERT_FATAL(tcp_req != NULL);
+	/* Validate flags are not set */
+	SPDK_CU_ASSERT_FATAL(tcp_req->req.raw == 0);
+	SPDK_CU_ASSERT_FATAL(!tcp_req->req.data_from_pool);
+	SPDK_CU_ASSERT_FATAL(!tcp_req->req.dif_enabled);
+	SPDK_CU_ASSERT_FATAL(!tcp_req->req.first_fused);
+	SPDK_CU_ASSERT_FATAL(!tcp_req->req.reservation_queued);
+	/* Validate additional fields */
+	SPDK_CU_ASSERT_FATAL(tcp_req->req.zcopy_phase == NVMF_ZCOPY_PHASE_NONE);
+	SPDK_CU_ASSERT_FATAL(tcp_req->state == TCP_REQUEST_STATE_NEW);
+	/* Valiate admin passthrough is not enabled */
+	SPDK_CU_ASSERT_FATAL(tcp_req->req.cmd_cb_fn == NULL);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1615,6 +1664,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvmf_tcp_tls_generate_psk_id);
 	CU_ADD_TEST(suite, test_nvmf_tcp_tls_generate_retained_psk);
 	CU_ADD_TEST(suite, test_nvmf_tcp_tls_generate_tls_psk);
+	CU_ADD_TEST(suite, test_nvmf_tcp_get_request_resuse_flags);
 
 	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();

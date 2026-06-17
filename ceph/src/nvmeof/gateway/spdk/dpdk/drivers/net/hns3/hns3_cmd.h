@@ -178,6 +178,7 @@ enum hns3_opcode_type {
 
 	/* TQP commands */
 	HNS3_OPC_QUERY_TX_STATUS        = 0x0B03,
+	HNS3_OPC_TQP_TX_QUEUE_TC        = 0x0B04,
 	HNS3_OPC_QUERY_RX_STATUS        = 0x0B13,
 	HNS3_OPC_CFG_COM_TQP_QUEUE      = 0x0B20,
 	HNS3_OPC_RESET_TQP_QUEUE        = 0x0B22,
@@ -325,6 +326,7 @@ enum HNS3_CAPS_BITS {
 	HNS3_CAPS_TM_B = 19,
 	HNS3_CAPS_GRO_B = 20,
 	HNS3_CAPS_FC_AUTO_B = 30,
+	HNS3_CAPS_VF_MULTI_TCS_B = 34,
 };
 
 /* Capabilities of VF dependent on the PF */
@@ -334,6 +336,7 @@ enum HNS3VF_CAPS_BITS {
 	 * in kernel side PF.
 	 */
 	HNS3VF_CAPS_VLAN_FLT_MOD_B = 0,
+	HNS3VF_CAPS_MULTI_TCS_B = 1,
 };
 
 enum HNS3_API_CAP_BITS {
@@ -968,6 +971,13 @@ struct hns3_reset_tqp_queue_cmd {
 	uint8_t ready_to_reset;
 	uint8_t queue_direction;
 	uint8_t rsv[19];
+};
+
+struct hns3vf_tx_ring_tc_cmd {
+	uint16_t tqp_id;
+	uint16_t rsv1;
+	uint8_t  tc_id;
+	uint8_t  rsv2[19];
 };
 
 #define HNS3_CFG_RESET_MAC_B		3

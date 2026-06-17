@@ -10,6 +10,7 @@
 
 #include "idpf_ethdev.h"
 #include "idpf_rxtx.h"
+#include "../common/rx.h"
 
 #define IDPF_SCALAR_PATH		0
 #define IDPF_VECTOR_PATH		1
@@ -26,6 +27,18 @@
 		RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |		\
 		RTE_ETH_TX_OFFLOAD_UDP_CKSUM |	\
 		RTE_ETH_TX_OFFLOAD_TCP_CKSUM)
+
+static inline int
+idpf_tx_desc_done(struct ci_tx_queue *txq, uint16_t idx)
+{
+/* Check if the queue is using the splitq model */
+	if (txq->complq != NULL)
+		return 1;
+
+	return (txq->idpf_tx_ring[idx].qw1 &
+			rte_cpu_to_le_64(IDPF_TXD_QW1_DTYPE_M)) ==
+				rte_cpu_to_le_64(IDPF_TX_DESC_DTYPE_DESC_DONE);
+}
 
 static inline int
 idpf_rx_vec_queue_default(struct idpf_rx_queue *rxq)
@@ -49,13 +62,13 @@ idpf_rx_vec_queue_default(struct idpf_rx_queue *rxq)
 }
 
 static inline int
-idpf_tx_vec_queue_default(struct idpf_tx_queue *txq)
+idpf_tx_vec_queue_default(struct ci_tx_queue *txq)
 {
 	if (txq == NULL)
 		return IDPF_SCALAR_PATH;
 
-	if (txq->rs_thresh < IDPF_VPMD_TX_MAX_BURST ||
-	    (txq->rs_thresh & 3) != 0)
+	if (txq->tx_rs_thresh < IDPF_VPMD_TX_MAX_BURST ||
+	    (txq->tx_rs_thresh & 3) != 0)
 		return IDPF_SCALAR_PATH;
 
 	if ((txq->offloads & IDPF_TX_NO_VECTOR_FLAGS) != 0)
@@ -103,7 +116,7 @@ static inline int
 idpf_tx_vec_dev_check_default(struct rte_eth_dev *dev)
 {
 	int i;
-	struct idpf_tx_queue *txq;
+	struct ci_tx_queue *txq;
 	int ret = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {

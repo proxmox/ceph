@@ -388,16 +388,49 @@ and the algorithms used for a given DH-HMAC-CHAP transaction are negotiated at t
 SPDK NVMe-oF target selects the strongest available hash/group depending on its configuration and
 the capabilities of a peer.  Users can limit the allowed hash functions and/or Diffie-Hellman groups
 via RPCs.  For example, the following limits the target (`nvmf_set_config`) and the driver
-(`bdev_nvme_set_options`) to use sha384, sha512 and ffdhe6114, ffdhe8192:
+(`bdev_nvme_set_options`) to use sha384, sha512 and ffdhe6144, ffdhe8192:
 
 ```{.sh}
 $ scripts/rpc.py nvmf_set_config --dhchap-digests sha384,sha512 \
-    --dhchap-dhgroups ffdhe6114,ffdhe8192
+    --dhchap-dhgroups ffdhe6144,ffdhe8192
 $ scripts/rpc.py bdev_nvme_set_options --dhchap-digests sha384,sha512 \
-    --dhchap-dhgroups ffdhe6114,ffdhe8192
+    --dhchap-dhgroups ffdhe6144,ffdhe8192
 ```
 
 The NVMe specification describes the method for using in-band authentication in conjunction with
 establishing a secure channel (e.g. TLS).  However, that isn't supported currently, so in order to
 perform in-band authentication, hosts must connect over regular listeners (i.e. those that weren't
 created with the `--secure-channel` option).
+
+## NVMe Subsystem Reset (NSSR)
+
+NVM Subsystem Reset (NSSR) is optionally supported. When an NSSR occurs the entire NVM subsystem is
+reset including Controller Level Reset (CLR) on each controller in the subsystem and disabling of
+the Persistent Memory Regions (PMR) associated with those controllers.
+This feature is currently limited to namespaces (bdevs) with PCIe transport.
+
+NSSR support is disabled by default and can be enabled during creation of the subsystem.
+Please see `nvmf_create_subsystem` RPC's call parameters.
+
+During an NSSR each namespace (bdev) will additionally be reset. For bdev_nvme-backed namespaces
+an NSSR will prefer to trigger an NSSR on the underlying controller.
+If not supported, a CLR will be performed instead.
+For other bdev types a standard bdev reset operation is performed.
+
+NSSR resets the PCIe link and so NVMe devices appear to be hot-removed and then hot-inserted.
+The same configuration steps to support PCIe hotplug of NVMe devices is required to
+re-discover NVMe devices during an NSSR.
+
+Those steps might contain:
+
+* Unbinding the NVMe device from kernel's NVMe driver
+* Binding it to vfio driver
+* Attaching controller to SPDK via `bdev_nvme_attach_controller` RPC call (unless hotplug is not enabled via `bdev_nvme_set_hotplug`)
+* Adding namespace to the nvmf subsystem
+
+If bdev has multiple namespaces connected to multiple subsystems - executing NSSR on one namespace
+affects the other, since the whole bdev would be removed from and added back to the system.
+
+If a bdev is of type bdev_nvme and this underlying NVMe namespace is part of an NVM subsystem containing multiple namespaces,
+then all bdevs associated with that underlying subsystem will be destroyed and re-added,
+even if they are in a separate NVMe-oF subsystem that wasn't being reset. Beware of side effects.

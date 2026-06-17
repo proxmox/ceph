@@ -40,7 +40,6 @@ DEPDIRS-rdma_provider := log util rdma_utils
 ifeq ($(CONFIG_RDMA_PROV),mlx5_dv)
 DEPDIRS-rdma_provider += dma mlx5
 endif
-DEPDIRS-reduce := log util
 DEPDIRS-thread := log util trace
 DEPDIRS-keyring := log util $(JSON_LIBS)
 
@@ -65,7 +64,6 @@ DEPDIRS-notify := log util $(JSON_LIBS)
 DEPDIRS-trace := log util $(JSON_LIBS)
 
 DEPDIRS-bdev := accel log util thread $(JSON_LIBS) notify trace dma
-DEPDIRS-blobfs := log thread blob trace util
 DEPDIRS-event := log util thread $(JSON_LIBS) trace init
 DEPDIRS-init := jsonrpc json log rpc thread util
 DEPDIRS-ftl := log util thread bdev json jsonrpc
@@ -106,9 +104,6 @@ FSDEV_DEPS_THREAD = $(FSDEV_DEPS) thread
 # module/blob
 DEPDIRS-blob_bdev := log thread bdev
 
-# module/blobfs
-DEPDIRS-blobfs_bdev := $(BDEV_DEPS_THREAD) blob_bdev blobfs
-
 # module/accel
 DEPDIRS-accel_ioat := log ioat thread $(JSON_LIBS) accel
 DEPDIRS-accel_dsa := log util idxd thread $(JSON_LIBS) accel trace
@@ -146,7 +141,6 @@ DEPDIRS-bdev_rpc := $(BDEV_DEPS)
 DEPDIRS-bdev_split := $(BDEV_DEPS)
 
 DEPDIRS-bdev_aio := $(BDEV_DEPS_THREAD)
-DEPDIRS-bdev_compress := $(BDEV_DEPS_THREAD) reduce accel
 DEPDIRS-bdev_crypto := $(BDEV_DEPS_THREAD) accel
 DEPDIRS-bdev_delay := $(BDEV_DEPS_THREAD)
 DEPDIRS-bdev_error := $(BDEV_DEPS_THREAD)

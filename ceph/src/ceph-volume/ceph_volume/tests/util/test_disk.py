@@ -344,6 +344,83 @@ class TestGetDevices(object):
             result = disk.get_devices()
         assert result[sda_path]['actuators'] == fake_actuator_nb
 
+    def test_lvm_device_is_included(self, patched_get_block_devs_sysfs, fake_filesystem):
+        lv_path = '/dev/vg_test/lv1'
+        dm_path = '/dev/dm-0'
+        mapper_path = '/dev/mapper/vg_test-lv1'
+        patched_get_block_devs_sysfs.return_value = [
+            [dm_path, mapper_path, 'lvm', dm_path]
+        ]
+        fake_filesystem.create_dir('/sys/block/dm-0/slaves')
+        fake_filesystem.create_dir('/sys/block/dm-0/queue')
+        fake_filesystem.create_file('/sys/block/dm-0/size', contents='204800')
+        fake_filesystem.create_file('/sys/block/dm-0/queue/rotational', contents='1')
+        fake_filesystem.create_file('/sys/block/dm-0/queue/hw_sector_size', contents='512')
+        with patch("ceph_volume.util.disk.UdevData") as MockUdevData:
+            mock_instance = MagicMock()
+            mock_instance.slashed_path = lv_path
+            mock_instance.environment = {}
+            MockUdevData.return_value = mock_instance
+            result = disk.get_devices()
+        assert lv_path in result
+        assert result[lv_path]['type'] == 'lvm'
+        assert result[lv_path]['human_readable_size'] == '100.00 MB'
+
+
+class TestGetBlockDevsSysfs(object):
+    def test_optical_device_is_skipped(self, fake_filesystem):
+        # sr0 is a CDROM (IPMI/BMC virtual media),not a usable disk.
+        fake_filesystem.create_file('/dev/sr0')
+        fake_filesystem.create_dir('/sys/dev/block')
+        fake_filesystem.create_dir('/sys/block/sr0/holders')
+        fake_filesystem.create_dir('/sys/block/sr0/device')
+        fake_filesystem.create_file('/sys/block/sr0/device/type', contents='5\n')
+
+        assert disk.get_block_devs_sysfs(device='sr0') == []
+
+    def test_ram_device_is_skipped(self, fake_filesystem):
+        fake_filesystem.create_file('/dev/ram0')
+        fake_filesystem.create_dir('/sys/dev/block')
+        fake_filesystem.create_dir('/sys/block/ram0/holders')
+
+        assert disk.get_block_devs_sysfs(device='ram0') == []
+
+    def test_ram_device_partitions_are_skipped(self, fake_filesystem):
+        fake_filesystem.create_file('/dev/ram0')
+        fake_filesystem.create_dir('/sys/dev/block')
+        fake_filesystem.create_dir('/sys/block/ram0/holders')
+
+        # If ram0 is skipped, skip its partition ram0p1 too.
+        with patch('ceph_volume.util.disk.get_partitions', MagicMock(return_value={"ram0p1": "ram0"})):
+            assert disk.get_block_devs_sysfs(device='ram0') == []
+
+    def test_ram_devices_are_skipped_in_full_scan(self, fake_filesystem):
+        # Common inventory path: scan /sys/block and include partitions.
+        fake_filesystem.create_dir('/sys/dev/block')
+
+        fake_filesystem.create_file('/dev/ram0')
+        fake_filesystem.create_dir('/sys/block/ram0/holders')
+
+        fake_filesystem.create_file('/dev/sda')
+        fake_filesystem.create_dir('/sys/block/sda/holders')
+
+        with patch('ceph_volume.util.disk.get_partitions', MagicMock(return_value={"ram0p1": "ram0"})):
+            result = disk.get_block_devs_sysfs()
+
+        paths = [row[0] for row in result]
+        assert '/dev/sda' in paths
+        assert '/dev/ram0' not in paths
+        assert '/dev/ram0p1' not in paths
+
+    def test_regular_device_is_not_skipped(self, fake_filesystem):
+        # normal disk should still be reported.
+        fake_filesystem.create_file('/dev/sda')
+        fake_filesystem.create_dir('/sys/dev/block')
+        fake_filesystem.create_dir('/sys/block/sda/holders')
+
+        result = disk.get_block_devs_sysfs(device='sda')
+        assert result == [['/dev/sda', '/dev/sda', 'disk', '/dev/sda']]
+
 
 class TestSizeCalculations(object):
 

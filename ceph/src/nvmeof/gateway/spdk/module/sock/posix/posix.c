@@ -36,6 +36,21 @@
 #define SPDK_ZEROCOPY
 #endif
 
+struct posix_connect_ctx {
+	int fd;
+	bool ssl;
+	struct addrinfo *first_res;
+	struct addrinfo *next_res;
+	struct spdk_sock_opts opts;
+	struct spdk_sock_impl_opts impl_opts;
+	uint64_t timeout_tsc;
+	int set_recvlowat;
+	int set_recvbuf;
+	int set_sendbuf;
+	spdk_sock_connect_cb_fn cb_fn;
+	void *cb_arg;
+};
+
 struct spdk_posix_sock {
 	struct spdk_sock	base;
 	int			fd;
@@ -47,15 +62,18 @@ struct spdk_posix_sock {
 	bool			pipe_has_data;
 	bool			socket_has_data;
 	bool			zcopy;
+	bool			ready;
 
 	int			placement_id;
 
-	SSL_CTX			*ctx;
+	SSL_CTX			*ssl_ctx;
 	SSL			*ssl;
 
 	TAILQ_ENTRY(spdk_posix_sock)	link;
 
 	char			interface_name[IFNAMSIZ];
+
+	struct posix_connect_ctx	*connect_ctx;
 };
 
 TAILQ_HEAD(spdk_has_data_list, spdk_posix_sock);
@@ -85,7 +103,8 @@ static struct spdk_sock_impl_opts g_posix_impl_opts = {
 	.psk_identity = NULL,
 	.get_key = NULL,
 	.get_key_ctx = NULL,
-	.tls_cipher_suites = NULL
+	.tls_cipher_suites = NULL,
+	.num_ssl_tickets = DEFAULT_NUM_SSL_TICKETS
 };
 
 static struct spdk_sock_impl_opts g_ssl_impl_opts = {
@@ -100,7 +119,8 @@ static struct spdk_sock_impl_opts g_ssl_impl_opts = {
 	.tls_version = 0,
 	.enable_ktls = false,
 	.psk_key = NULL,
-	.psk_identity = NULL
+	.psk_identity = NULL,
+	.num_ssl_tickets = DEFAULT_NUM_SSL_TICKETS
 };
 
 static struct spdk_sock_map g_map = {
@@ -146,6 +166,7 @@ posix_sock_copy_impl_opts(struct spdk_sock_impl_opts *dest, const struct spdk_so
 	SET_FIELD(get_key);
 	SET_FIELD(get_key_ctx);
 	SET_FIELD(tls_cipher_suites);
+	SET_FIELD(num_ssl_tickets);
 
 #undef SET_FIELD
 #undef FIELD_OK
@@ -227,6 +248,12 @@ posix_sock_getaddr(struct spdk_sock *_sock, char *saddr, int slen, uint16_t *spo
 {
 	struct spdk_posix_sock *sock = __posix_sock(_sock);
 
+	if (!sock->ready) {
+		SPDK_ERRLOG("Connection %s.\n", sock->connect_ctx ? "in progress" : "failed");
+		errno = sock->connect_ctx ? EAGAIN : ENOTCONN;
+		return -1;
+	}
+
 	assert(sock != NULL);
 	return spdk_net_getaddr(sock->fd, saddr, slen, sport, caddr, clen, cport);
 }
@@ -272,11 +299,6 @@ posix_sock_get_numa_id(struct spdk_sock *sock)
 		return SPDK_ENV_NUMA_ID_ANY;
 	}
 }
-
-enum posix_sock_create_type {
-	SPDK_SOCK_CREATE_LISTEN,
-	SPDK_SOCK_CREATE_CONNECT,
-};
 
 static int
 posix_sock_alloc_pipe(struct spdk_posix_sock *sock, int sz)
@@ -361,10 +383,22 @@ posix_sock_set_recvbuf(struct spdk_sock *_sock, int sz)
 
 	assert(sock != NULL);
 
+	if (!sock->ready) {
+		if (sock->connect_ctx) {
+			sock->connect_ctx->set_recvbuf = sz;
+			return 0;
+		}
+
+		SPDK_ERRLOG("Connection failed.\n");
+		errno = ENOTCONN;
+		return -1;
+	}
+
 	if (_sock->impl_opts.enable_recv_pipe) {
 		rc = posix_sock_alloc_pipe(sock, sz);
 		if (rc) {
-			return rc;
+			errno = rc;
+			return -1;
 		}
 	}
 
@@ -377,12 +411,11 @@ posix_sock_set_recvbuf(struct spdk_sock *_sock, int sz)
 	}
 
 	rc = setsockopt(sock->fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof(sz));
-	if (rc < 0) {
+	if (rc) {
 		return rc;
 	}
 
 	_sock->impl_opts.recv_buf_size = sz;
-
 	return 0;
 }
 
@@ -395,6 +428,17 @@ posix_sock_set_sendbuf(struct spdk_sock *_sock, int sz)
 
 	assert(sock != NULL);
 
+	if (!sock->ready) {
+		if (sock->connect_ctx) {
+			sock->connect_ctx->set_sendbuf = sz;
+			return 0;
+		}
+
+		SPDK_ERRLOG("Connection failed.\n");
+		errno = ENOTCONN;
+		return -1;
+	}
+
 	/* Set kernel buffer size to be at least MIN_SO_SNDBUF_SIZE and
 	 * _sock->impl_opts.send_buf_size. */
 	min_size = spdk_max(MIN_SO_SNDBUF_SIZE, _sock->impl_opts.send_buf_size);
@@ -404,12 +448,11 @@ posix_sock_set_sendbuf(struct spdk_sock *_sock, int sz)
 	}
 
 	rc = setsockopt(sock->fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));
-	if (rc < 0) {
+	if (rc) {
 		return rc;
 	}
 
 	_sock->impl_opts.send_buf_size = sz;
-
 	return 0;
 }
 
@@ -453,11 +496,15 @@ posix_sock_init(struct spdk_posix_sock *sock, bool enable_zero_copy)
 		/* Save placement_id */
 		spdk_sock_map_insert(&g_map, sock->placement_id, NULL);
 	}
+#elif defined(__FreeBSD__)
+	spdk_sock_get_placement_id(sock->fd, sock->base.impl_opts.enable_placement_id,
+				   &sock->placement_id);
 #endif
+	sock->ready = true;
 }
 
 static struct spdk_posix_sock *
-posix_sock_alloc(int fd, struct spdk_sock_impl_opts *impl_opts, bool enable_zero_copy)
+posix_sock_alloc(int fd, struct spdk_sock_impl_opts *impl_opts)
 {
 	struct spdk_posix_sock *sock;
 
@@ -469,8 +516,6 @@ posix_sock_alloc(int fd, struct spdk_sock_impl_opts *impl_opts, bool enable_zero
 
 	sock->fd = fd;
 	memcpy(&sock->base.impl_opts, impl_opts, sizeof(*impl_opts));
-	posix_sock_init(sock, enable_zero_copy);
-
 	return sock;
 }
 
@@ -643,8 +688,7 @@ err:
 }
 
 static SSL_CTX *
-posix_sock_create_ssl_context(const SSL_METHOD *method, struct spdk_sock_opts *opts,
-			      struct spdk_sock_impl_opts *impl_opts)
+posix_sock_create_ssl_context(const SSL_METHOD *method, struct spdk_sock_impl_opts *impl_opts)
 {
 	SSL_CTX *ctx;
 	int tls_version = 0;
@@ -710,6 +754,12 @@ posix_sock_create_ssl_context(const SSL_METHOD *method, struct spdk_sock_opts *o
 		goto err;
 	}
 
+	if (impl_opts->num_ssl_tickets != DEFAULT_NUM_SSL_TICKETS &&
+	    !SSL_CTX_set_num_tickets(ctx, impl_opts->num_ssl_tickets)) {
+		SPDK_ERRLOG("Unable to set number of SSL tickets to %u\n", impl_opts->num_ssl_tickets);
+		goto err;
+	}
+
 	return ctx;
 
 err:
@@ -757,6 +807,30 @@ ssl_sock_setup_accept(SSL_CTX *ctx, int fd)
 	SPDK_DEBUGLOG(sock_posix, "Negotiated Cipher suite:%s\n",
 		      SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)));
 	return ssl;
+}
+
+static int
+posix_sock_configure_ssl(struct spdk_posix_sock *sock, bool client)
+{
+	SSL* (*setup_fn)(SSL_CTX *, int) = client ? ssl_sock_setup_connect : ssl_sock_setup_accept;
+
+	sock->ssl_ctx = posix_sock_create_ssl_context(client ? TLS_client_method() : TLS_server_method(),
+			&sock->base.impl_opts);
+	if (!sock->ssl_ctx) {
+		SPDK_ERRLOG("posix_sock_create_ssl_context() failed\n");
+		return -EPROTO;
+	}
+
+	sock->ssl = setup_fn(sock->ssl_ctx, sock->fd);
+	if (!sock->ssl) {
+		SPDK_ERRLOG("ssl_sock_setup_%s() failed\n", client ? "connect" : "accept");
+		SSL_CTX_free(sock->ssl_ctx);
+		sock->ssl_ctx = NULL;
+		return -EPROTO;
+	}
+
+	SSL_set_app_data(sock->ssl, &sock->base.impl_opts);
+	return 0;
 }
 
 static ssize_t
@@ -848,19 +922,12 @@ SSL_writev(SSL *ssl, struct iovec *iov, int iovcnt)
 }
 
 static struct spdk_sock *
-posix_sock_create(const char *ip, int port,
-		  enum posix_sock_create_type type,
-		  struct spdk_sock_opts *opts,
-		  bool enable_ssl)
+_posix_sock_listen(const char *ip, int port, struct spdk_sock_opts *opts, bool enable_ssl)
 {
-	struct spdk_posix_sock *sock;
 	struct spdk_sock_impl_opts impl_opts;
-	struct addrinfo *res, *res0;
-	int fd, rc;
-	bool enable_zcopy_user_opts = true;
-	bool enable_zcopy_impl_opts = true;
-	SSL_CTX *ctx = 0;
-	SSL *ssl = 0;
+	struct spdk_posix_sock *sock;
+	struct addrinfo *res0;
+	int rc, fd = -1;
 
 	assert(opts != NULL);
 	if (enable_ssl) {
@@ -874,126 +941,237 @@ posix_sock_create(const char *ip, int port,
 		return NULL;
 	}
 
-	/* try listen */
-	fd = -1;
-	for (res = res0; res != NULL; res = res->ai_next) {
+	for (struct addrinfo *res = res0; res != NULL; res = res->ai_next) {
 retry:
 		fd = spdk_sock_posix_fd_create(res, opts, &impl_opts);
 		if (fd < 0) {
 			continue;
 		}
-		if (type == SPDK_SOCK_CREATE_LISTEN) {
-			rc = bind(fd, res->ai_addr, res->ai_addrlen);
-			if (rc != 0) {
-				SPDK_ERRLOG("bind() failed at port %d, errno = %d\n", port, errno);
-				switch (errno) {
-				case EINTR:
-					/* interrupted? */
-					close(fd);
-					goto retry;
-				case EADDRNOTAVAIL:
-					SPDK_ERRLOG("IP address %s not available. "
-						    "Verify IP address in config file "
-						    "and make sure setup script is "
-						    "run before starting spdk app.\n", ip);
-				/* FALLTHROUGH */
-				default:
-					/* try next family */
-					close(fd);
-					fd = -1;
-					continue;
-				}
-			}
-			/* bind OK */
-			rc = listen(fd, 512);
-			if (rc != 0) {
-				SPDK_ERRLOG("listen() failed, errno = %d\n", errno);
-				close(fd);
-				fd = -1;
-				break;
-			}
-			enable_zcopy_impl_opts = impl_opts.enable_zerocopy_send_server;
-		} else if (type == SPDK_SOCK_CREATE_CONNECT) {
-			rc = spdk_sock_posix_fd_connect(fd, res, opts);
-			if (rc != 0) {
-				close(fd);
-				fd = -1;
-				if (rc == 1) {
-					continue;
-				} else {
-					break;
-				}
-			}
 
-			enable_zcopy_impl_opts = impl_opts.enable_zerocopy_send_client;
-			if (enable_ssl) {
-				ctx = posix_sock_create_ssl_context(TLS_client_method(), opts, &impl_opts);
-				if (!ctx) {
-					SPDK_ERRLOG("posix_sock_create_ssl_context() failed, errno = %d\n", errno);
-					close(fd);
-					fd = -1;
-					break;
-				}
-				ssl = ssl_sock_setup_connect(ctx, fd);
-				if (!ssl) {
-					SPDK_ERRLOG("ssl_sock_setup_connect() failed, errno = %d\n", errno);
-					close(fd);
-					fd = -1;
-					SSL_CTX_free(ctx);
-					break;
-				}
+		rc = bind(fd, res->ai_addr, res->ai_addrlen);
+		if (rc != 0) {
+			SPDK_ERRLOG("bind() failed at port %d, errno = %d\n", port, errno);
+			switch (errno) {
+			case EINTR:
+				/* interrupted? */
+				close(fd);
+				goto retry;
+			case EADDRNOTAVAIL:
+				SPDK_ERRLOG("IP address %s not available. "
+					    "Verify IP address in config file "
+					    "and make sure setup script is "
+					    "run before starting spdk app.\n", ip);
+			/* FALLTHROUGH */
+			default:
+				/* try next family */
+				close(fd);
+				fd = -1;
+				continue;
 			}
 		}
 
-		if (spdk_fd_set_nonblock(fd)) {
-			SSL_free(ssl);
-			SSL_CTX_free(ctx);
+		rc = listen(fd, 512);
+		if (rc != 0) {
+			SPDK_ERRLOG("listen() failed, errno = %d\n", errno);
 			close(fd);
 			fd = -1;
 			break;
 		}
+
+		if (spdk_fd_set_nonblock(fd)) {
+			close(fd);
+			fd = -1;
+			break;
+		}
+
 		break;
 	}
-	freeaddrinfo(res0);
 
+	freeaddrinfo(res0);
 	if (fd < 0) {
 		return NULL;
 	}
 
-	/* Only enable zero copy for non-loopback and non-ssl sockets. */
-	enable_zcopy_user_opts = opts->zcopy && !spdk_net_is_loopback(fd) && !enable_ssl;
-
-	sock = posix_sock_alloc(fd, &impl_opts, enable_zcopy_user_opts && enable_zcopy_impl_opts);
+	sock = posix_sock_alloc(fd, &impl_opts);
 	if (sock == NULL) {
-		SPDK_ERRLOG("sock allocation failed\n");
-		SSL_free(ssl);
-		SSL_CTX_free(ctx);
 		close(fd);
 		return NULL;
 	}
 
-	if (ctx) {
-		sock->ctx = ctx;
+	/* Only enable zero copy for non-loopback and non-ssl sockets. */
+	posix_sock_init(sock, opts->zcopy && !spdk_net_is_loopback(fd) && !enable_ssl &&
+			impl_opts.enable_zerocopy_send_server);
+	return &sock->base;
+}
+
+static int
+_sock_posix_connect_async(struct posix_connect_ctx *ctx)
+{
+	int rc = -ENOENT, fd;
+
+	/* It is either first execution or continuation; in that case invalid fd is expected. */
+	assert(ctx->fd == -1);
+	for (; ctx->next_res != NULL; ctx->next_res = ctx->next_res->ai_next) {
+		rc = spdk_sock_posix_fd_create(ctx->next_res, &ctx->opts, &ctx->impl_opts);
+		if (rc < 0) {
+			continue;
+		}
+
+		fd = rc;
+		rc = spdk_sock_posix_fd_connect_async(fd, ctx->next_res, &ctx->opts);
+		if (rc < 0) {
+			close(fd);
+			continue;
+		}
+
+		ctx->next_res = ctx->next_res->ai_next;
+		break;
 	}
 
-	if (ssl) {
-		sock->ssl = ssl;
-		SSL_set_app_data(ssl, &sock->base.impl_opts);
+	if (rc < 0) {
+		return rc;
+	}
+
+	ctx->fd = fd;
+	ctx->timeout_tsc = !ctx->opts.connect_timeout ? 0 : spdk_get_ticks() + ctx->opts.connect_timeout *
+			   spdk_get_ticks_hz() / 1000;
+	return 0;
+}
+
+static void
+sock_posix_connect_ctx_cleanup(struct posix_connect_ctx **_ctx, int rc)
+{
+	struct posix_connect_ctx *ctx = *_ctx;
+
+	*_ctx = NULL;
+	if (!ctx) {
+		return;
+	}
+
+	freeaddrinfo(ctx->first_res);
+	if (ctx->cb_fn) {
+		ctx->cb_fn(ctx->cb_arg, rc);
+	}
+
+	free(ctx);
+}
+
+static int
+sock_posix_connect_async(struct addrinfo *res, struct spdk_sock_opts *opts,
+			 struct spdk_sock_impl_opts *impl_opts, bool ssl, spdk_sock_connect_cb_fn cb_fn, void *cb_arg,
+			 struct posix_connect_ctx **_ctx)
+{
+	struct posix_connect_ctx *ctx;
+	int rc;
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		return -ENOMEM;
+	}
+
+	ctx->first_res = ctx->next_res = res;
+	ctx->opts = *opts;
+	ctx->impl_opts = *impl_opts;
+	ctx->ssl = ssl;
+	ctx->fd = -1;
+	ctx->set_recvlowat = -1;
+	ctx->set_recvbuf = -1;
+	ctx->set_sendbuf = -1;
+	ctx->cb_fn = cb_fn;
+	ctx->cb_arg = cb_arg;
+
+	rc = _sock_posix_connect_async(ctx);
+	if (rc < 0) {
+		free(ctx);
+		return rc;
+	}
+
+	*_ctx = ctx;
+	return 0;
+}
+
+static int posix_connect_poller(struct spdk_posix_sock *sock);
+
+static struct spdk_sock *
+_posix_sock_connect(const char *ip, int port, struct spdk_sock_opts *opts, bool async,
+		    bool enable_ssl, spdk_sock_connect_cb_fn cb_fn, void *cb_arg)
+{
+	struct spdk_sock_impl_opts impl_opts;
+	struct spdk_posix_sock *sock = NULL;
+	struct addrinfo *res0 = NULL;
+	int rc;
+
+	assert(opts != NULL);
+	if (enable_ssl) {
+		_opts_get_impl_opts(opts, &impl_opts, &g_ssl_impl_opts);
+	} else {
+		_opts_get_impl_opts(opts, &impl_opts, &g_posix_impl_opts);
+	}
+
+	res0 = spdk_sock_posix_getaddrinfo(ip, port);
+	if (!res0) {
+		rc = -EIO;
+		goto err;
+	}
+
+	sock = posix_sock_alloc(-1, &impl_opts);
+	if (!sock) {
+		rc = -ENOMEM;
+		goto err;
+	}
+
+	rc = sock_posix_connect_async(res0, opts, &impl_opts, enable_ssl, cb_fn, cb_arg,
+				      &sock->connect_ctx);
+	if (rc < 0) {
+		goto err;
+	}
+
+	sock->fd = sock->connect_ctx->fd;
+	if (async) {
+		return &sock->base;
+	}
+
+	do {
+		rc = posix_connect_poller(sock);
+	} while (rc == -EAGAIN);
+
+	if (!sock->ready) {
+		free(sock);
+		return NULL;
 	}
 
 	return &sock->base;
+
+err:
+	free(sock);
+	if (res0) {
+		freeaddrinfo(res0);
+	}
+
+	if (cb_fn) {
+		cb_fn(cb_arg, rc);
+	}
+
+	return NULL;
 }
 
 static struct spdk_sock *
 posix_sock_listen(const char *ip, int port, struct spdk_sock_opts *opts)
 {
-	return posix_sock_create(ip, port, SPDK_SOCK_CREATE_LISTEN, opts, false);
+	return _posix_sock_listen(ip, port, opts, false);
 }
 
 static struct spdk_sock *
 posix_sock_connect(const char *ip, int port, struct spdk_sock_opts *opts)
 {
-	return posix_sock_create(ip, port, SPDK_SOCK_CREATE_CONNECT, opts, false);
+	return _posix_sock_connect(ip, port, opts, false, false, NULL, NULL);
+}
+
+static struct spdk_sock *
+posix_sock_connect_async(const char *ip, int port, struct spdk_sock_opts *opts,
+			 spdk_sock_connect_cb_fn cb_fn, void *cb_arg)
+{
+	return _posix_sock_connect(ip, port, opts, true, false, cb_fn, cb_arg);
 }
 
 static struct spdk_sock *
@@ -1005,8 +1183,6 @@ _posix_sock_accept(struct spdk_sock *_sock, bool enable_ssl)
 	socklen_t			salen;
 	int				rc, fd;
 	struct spdk_posix_sock		*new_sock;
-	SSL_CTX *ctx = 0;
-	SSL *ssl = 0;
 
 	memset(&sa, 0, sizeof(sa));
 	salen = sizeof(sa);
@@ -1043,41 +1219,23 @@ _posix_sock_accept(struct spdk_sock *_sock, bool enable_ssl)
 	}
 #endif
 
-	/* Establish SSL connection */
+	new_sock = posix_sock_alloc(fd, &sock->base.impl_opts);
+	if (new_sock == NULL) {
+		close(fd);
+		return NULL;
+	}
+
 	if (enable_ssl) {
-		ctx = posix_sock_create_ssl_context(TLS_server_method(), &sock->base.opts, &sock->base.impl_opts);
-		if (!ctx) {
-			SPDK_ERRLOG("posix_sock_create_ssl_context() failed, errno = %d\n", errno);
+		rc = posix_sock_configure_ssl(new_sock, false);
+		if (rc < 0) {
+			free(new_sock);
 			close(fd);
-			return NULL;
-		}
-		ssl = ssl_sock_setup_accept(ctx, fd);
-		if (!ssl) {
-			SPDK_ERRLOG("ssl_sock_setup_accept() failed, errno = %d\n", errno);
-			close(fd);
-			SSL_CTX_free(ctx);
 			return NULL;
 		}
 	}
 
 	/* Inherit the zero copy feature from the listen socket */
-	new_sock = posix_sock_alloc(fd, &sock->base.impl_opts, sock->zcopy);
-	if (new_sock == NULL) {
-		close(fd);
-		SSL_free(ssl);
-		SSL_CTX_free(ctx);
-		return NULL;
-	}
-
-	if (ctx) {
-		new_sock->ctx = ctx;
-	}
-
-	if (ssl) {
-		new_sock->ssl = ssl;
-		SSL_set_app_data(ssl, &new_sock->base.impl_opts);
-	}
-
+	posix_sock_init(new_sock, sock->zcopy);
 	return &new_sock->base;
 }
 
@@ -1095,6 +1253,8 @@ posix_sock_close(struct spdk_sock *_sock)
 
 	assert(TAILQ_EMPTY(&_sock->pending_reqs));
 
+	sock_posix_connect_ctx_cleanup(&sock->connect_ctx, -ECONNRESET);
+
 	if (sock->ssl != NULL) {
 		SSL_shutdown(sock->ssl);
 	}
@@ -1102,15 +1262,19 @@ posix_sock_close(struct spdk_sock *_sock)
 	/* If the socket fails to close, the best choice is to
 	 * leak the fd but continue to free the rest of the sock
 	 * memory. */
-	close(sock->fd);
+	if (sock->fd != -1) {
+		close(sock->fd);
+	}
 
 	SSL_free(sock->ssl);
-	SSL_CTX_free(sock->ctx);
+	SSL_CTX_free(sock->ssl_ctx);
 
-	pipe_buf = spdk_pipe_destroy(sock->recv_pipe);
-	free(pipe_buf);
+	if (sock->recv_pipe) {
+		pipe_buf = spdk_pipe_destroy(sock->recv_pipe);
+		free(pipe_buf);
+	}
+
 	free(sock);
-
 	return 0;
 }
 
@@ -1224,10 +1388,16 @@ _sock_flush(struct spdk_sock *sock)
 	int retval;
 	struct spdk_sock_request *req;
 	int i;
-	ssize_t rc, sent;
+	ssize_t rc;
 	unsigned int offset;
 	size_t len;
 	bool is_zcopy = false;
+
+	rc = posix_connect_poller(psock);
+	if (rc < 0) {
+		errno = -rc;
+		return -1;
+	}
 
 	/* Can't flush from within a callback or we end up with recursive calls */
 	if (sock->cb_cnt > 0) {
@@ -1269,8 +1439,6 @@ _sock_flush(struct spdk_sock *sock)
 		return -1;
 	}
 
-	sent = rc;
-
 	if (is_zcopy) {
 		psock->sendmsg_idx++;
 	}
@@ -1300,7 +1468,12 @@ _sock_flush(struct spdk_sock *sock)
 			if (len > (size_t)rc) {
 				/* This element was partially sent. */
 				req->internal.offset += rc;
-				return sent;
+				/* Caller in interrupt mode should retry for partial flush */
+				if (spdk_unlikely(spdk_interrupt_mode_is_enabled())) {
+					errno = EAGAIN;
+					return -1;
+				}
+				return 0;
 			}
 
 			offset = 0;
@@ -1322,14 +1495,18 @@ _sock_flush(struct spdk_sock *sock)
 			}
 		}
 
+		req = TAILQ_FIRST(&sock->queued_reqs);
 		if (rc == 0) {
+			/* Caller in interrupt mode should retry for rest pending requests */
+			if (spdk_unlikely(spdk_interrupt_mode_is_enabled()) && req) {
+				errno = EAGAIN;
+				return -1;
+			}
 			break;
 		}
-
-		req = TAILQ_FIRST(&sock->queued_reqs);
 	}
 
-	return sent;
+	return 0;
 }
 
 static int
@@ -1453,6 +1630,12 @@ posix_sock_readv(struct spdk_sock *_sock, struct iovec *iov, int iovcnt)
 	struct spdk_posix_sock_group_impl *group = __posix_group_impl(sock->base.group_impl);
 	int rc, i;
 	size_t len;
+
+	rc = posix_connect_poller(sock);
+	if (rc < 0) {
+		errno = -rc;
+		return -1;
+	}
 
 	if (sock->recv_pipe == NULL) {
 		assert(sock->pipe_has_data == false);
@@ -1583,16 +1766,22 @@ posix_sock_set_recvlowat(struct spdk_sock *_sock, int nbytes)
 {
 	struct spdk_posix_sock *sock = __posix_sock(_sock);
 	int val;
-	int rc;
 
 	assert(sock != NULL);
 
-	val = nbytes;
-	rc = setsockopt(sock->fd, SOL_SOCKET, SO_RCVLOWAT, &val, sizeof val);
-	if (rc != 0) {
+	if (!sock->ready) {
+		if (sock->connect_ctx) {
+			sock->connect_ctx->set_recvlowat = nbytes;
+			return 0;
+		}
+
+		SPDK_ERRLOG("Connection failed.\n");
+		errno = ENOTCONN;
 		return -1;
 	}
-	return 0;
+
+	val = nbytes;
+	return setsockopt(sock->fd, SOL_SOCKET, SO_RCVLOWAT, &val, sizeof val);
 }
 
 static bool
@@ -1604,6 +1793,12 @@ posix_sock_is_ipv6(struct spdk_sock *_sock)
 	int rc;
 
 	assert(sock != NULL);
+
+	if (!sock->ready) {
+		SPDK_ERRLOG("Connection %s.\n", sock->connect_ctx ? "in progress" : "failed");
+		errno = sock->connect_ctx ? EAGAIN : ENOTCONN;
+		return -1;
+	}
 
 	memset(&sa, 0, sizeof sa);
 	salen = sizeof sa;
@@ -1626,6 +1821,12 @@ posix_sock_is_ipv4(struct spdk_sock *_sock)
 
 	assert(sock != NULL);
 
+	if (!sock->ready) {
+		SPDK_ERRLOG("Connection %s.\n", sock->connect_ctx ? "in progress" : "failed");
+		errno = sock->connect_ctx ? EAGAIN : ENOTCONN;
+		return -1;
+	}
+
 	memset(&sa, 0, sizeof sa);
 	salen = sizeof sa;
 	rc = getsockname(sock->fd, (struct sockaddr *) &sa, &salen);
@@ -1643,6 +1844,12 @@ posix_sock_is_connected(struct spdk_sock *_sock)
 	struct spdk_posix_sock *sock = __posix_sock(_sock);
 	uint8_t byte;
 	int rc;
+
+	rc = posix_connect_poller(sock);
+	if (rc < 0) {
+		errno = -rc;
+		return false;
+	}
 
 	rc = recv(sock->fd, &byte, 1, MSG_PEEK);
 	if (rc == 0) {
@@ -1665,6 +1872,12 @@ posix_sock_group_impl_get_optimal(struct spdk_sock *_sock, struct spdk_sock_grou
 {
 	struct spdk_posix_sock *sock = __posix_sock(_sock);
 	struct spdk_sock_group_impl *group_impl;
+
+	if (!sock->ready) {
+		SPDK_ERRLOG("Connection %s.\n", sock->connect_ctx ? "in progress" : "failed");
+		errno = sock->connect_ctx ? EAGAIN : ENOTCONN;
+		return NULL;
+	}
 
 	if (sock->placement_id != -1) {
 		spdk_sock_map_lookup(&g_map, sock->placement_id, &group_impl, hint);
@@ -1788,6 +2001,18 @@ posix_sock_group_impl_add_sock(struct spdk_sock_group_impl *_group, struct spdk_
 	struct spdk_posix_sock *sock = __posix_sock(_sock);
 	int rc;
 
+	if (!sock->ready) {
+		/* Defer adding the sock to the group;
+		 * the group is cached in the base object by the upper layer. */
+		if (sock->connect_ctx) {
+			return 0;
+		}
+
+		SPDK_ERRLOG("Connection failed.\n");
+		errno = ENOTCONN;
+		return -1;
+	}
+
 #if defined(SPDK_EPOLL)
 	struct epoll_event event;
 
@@ -1840,6 +2065,11 @@ posix_sock_group_impl_remove_sock(struct spdk_sock_group_impl *_group, struct sp
 	struct spdk_posix_sock_group_impl *group = __posix_group_impl(_group);
 	struct spdk_posix_sock *sock = __posix_sock(_sock);
 	int rc;
+
+	if (sock->connect_ctx || !sock->ready) {
+		spdk_sock_abort_requests(_sock);
+		return 0;
+	}
 
 	if (sock->pipe_has_data || sock->socket_has_data) {
 		TAILQ_REMOVE(&group->socks_with_data, sock, link);
@@ -2107,12 +2337,121 @@ ssl_sock_group_impl_close(struct spdk_sock_group_impl *_group)
 	return _sock_group_impl_close(_group, g_ssl_impl_opts.enable_placement_id);
 }
 
+static int
+posix_connect_poller(struct spdk_posix_sock *sock)
+{
+	struct posix_connect_ctx *ctx = sock->connect_ctx;
+	int rc;
+
+	if (sock->ready) {
+		return 0;
+	} else if (!ctx) {
+		return -ENOTCONN;
+	}
+
+	if (ctx->opts.connect_timeout && ctx->timeout_tsc < spdk_get_ticks()) {
+		rc = -ETIMEDOUT;
+		goto err;
+	}
+
+	rc = spdk_sock_posix_fd_connect_poll_async(ctx->fd);
+	if (rc == -EAGAIN) {
+		return -EAGAIN;;
+	}
+
+	if (rc < 0) {
+		int _rc = rc;
+
+		close(ctx->fd);
+		ctx->fd = -1;
+		rc = _sock_posix_connect_async(ctx);
+		if (rc < 0) {
+			rc = _rc;
+			goto err;
+		}
+
+		return -EAGAIN;
+	}
+
+	/* Connection established, proceed to deferred initialization. */
+	sock->fd = ctx->fd;
+
+	/* Only enable zero copy for non-loopback and non-ssl sockets. */
+	posix_sock_init(sock, sock->base.opts.zcopy && !spdk_net_is_loopback(sock->fd) && !ctx->ssl &&
+			sock->base.impl_opts.enable_zerocopy_send_client);
+
+	if (ctx->ssl) {
+		rc = posix_sock_configure_ssl(sock, true);
+		if (rc < 0) {
+			goto err;
+		}
+	}
+
+	if (ctx->set_recvlowat != -1) {
+		rc = posix_sock_set_recvlowat(&sock->base, ctx->set_recvlowat);
+		if (rc < 0) {
+			SPDK_ERRLOG("Connection was established but delayed posix_sock_set_recvlowat() failed %d (errno=%d).\n",
+				    rc, errno);
+			rc = -errno;
+			goto err;
+		}
+	}
+
+	if (ctx->set_recvbuf != -1) {
+		rc = posix_sock_set_recvbuf(&sock->base, ctx->set_recvbuf);
+		if (rc < 0) {
+			SPDK_ERRLOG("Connection was established but delayed posix_sock_set_recvbuf() failed %d (errno=%d).\n",
+				    rc, errno);
+			rc = -errno;
+			goto err;
+		}
+	}
+
+	if (ctx->set_sendbuf != -1) {
+		rc = posix_sock_set_sendbuf(&sock->base, ctx->set_sendbuf);
+		if (rc < 0) {
+			SPDK_ERRLOG("Connection was established but delayed posix_sock_set_sendbuf() failed %d (errno=%d).\n",
+				    rc, errno);
+			rc = -errno;
+			goto err;
+		}
+	}
+
+	if (sock->base.group_impl) {
+		rc = posix_sock_group_impl_add_sock(sock->base.group_impl, &sock->base);
+		if (rc) {
+			SPDK_ERRLOG("Connection was established but delayed posix_sock_group_impl_add_sock() failed %d (errno=%d).\n",
+				    rc, errno);
+			rc = -errno;
+			goto err;
+		}
+	}
+
+	goto out;
+
+err:
+	/* It is safe to pass NULL to SSL free functions. */
+	SSL_free(sock->ssl);
+	SSL_CTX_free(sock->ssl_ctx);
+	if (ctx->fd != -1) {
+		close(ctx->fd);
+	}
+
+	sock->fd = -1;
+	sock->ready = false;
+
+out:
+	sock_posix_connect_ctx_cleanup(&sock->connect_ctx, rc);
+	return rc;
+}
+
 static struct spdk_net_impl g_posix_net_impl = {
 	.name		= "posix",
 	.getaddr	= posix_sock_getaddr,
 	.get_interface_name = posix_sock_get_interface_name,
 	.get_numa_id	= posix_sock_get_numa_id,
 	.connect	= posix_sock_connect,
+	.connect_async	= posix_sock_connect_async,
 	.listen		= posix_sock_listen,
 	.accept		= posix_sock_accept,
 	.close		= posix_sock_close,
@@ -2145,13 +2484,20 @@ SPDK_NET_IMPL_REGISTER_DEFAULT(posix, &g_posix_net_impl);
 static struct spdk_sock *
 ssl_sock_listen(const char *ip, int port, struct spdk_sock_opts *opts)
 {
-	return posix_sock_create(ip, port, SPDK_SOCK_CREATE_LISTEN, opts, true);
+	return _posix_sock_listen(ip, port, opts, true);
 }
 
 static struct spdk_sock *
 ssl_sock_connect(const char *ip, int port, struct spdk_sock_opts *opts)
 {
-	return posix_sock_create(ip, port, SPDK_SOCK_CREATE_CONNECT, opts, true);
+	return _posix_sock_connect(ip, port, opts, false, true, NULL, NULL);
+}
+
+static struct spdk_sock *
+ssl_sock_connect_async(const char *ip, int port, struct spdk_sock_opts *opts,
+		       spdk_sock_connect_cb_fn cb_fn, void *cb_arg)
+{
+	return _posix_sock_connect(ip, port, opts, true, true, cb_fn, cb_arg);
 }
 
 static struct spdk_sock *
@@ -2166,6 +2512,7 @@ static struct spdk_net_impl g_ssl_net_impl = {
 	.get_interface_name = posix_sock_get_interface_name,
 	.get_numa_id	= posix_sock_get_numa_id,
 	.connect	= ssl_sock_connect,
+	.connect_async	= ssl_sock_connect_async,
 	.listen		= ssl_sock_listen,
 	.accept		= ssl_sock_accept,
 	.close		= posix_sock_close,

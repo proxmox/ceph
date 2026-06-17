@@ -2,6 +2,7 @@
  * Copyright(c) 2023 Intel Corporation
  */
 
+#include <eal_export.h>
 #include <rte_mbuf_dyn.h>
 #include <rte_errno.h>
 
@@ -10,6 +11,7 @@
 int idpf_timestamp_dynfield_offset = -1;
 uint64_t idpf_timestamp_dynflag;
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_rx_thresh_check)
 int
 idpf_qc_rx_thresh_check(uint16_t nb_desc, uint16_t thresh)
 {
@@ -25,6 +27,7 @@ idpf_qc_rx_thresh_check(uint16_t nb_desc, uint16_t thresh)
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_tx_thresh_check)
 int
 idpf_qc_tx_thresh_check(uint16_t nb_desc, uint16_t tx_rs_thresh,
 			uint16_t tx_free_thresh)
@@ -73,6 +76,7 @@ idpf_qc_tx_thresh_check(uint16_t nb_desc, uint16_t tx_rs_thresh,
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_rxq_mbufs_release)
 void
 idpf_qc_rxq_mbufs_release(struct idpf_rx_queue *rxq)
 {
@@ -89,31 +93,7 @@ idpf_qc_rxq_mbufs_release(struct idpf_rx_queue *rxq)
 	}
 }
 
-void
-idpf_qc_txq_mbufs_release(struct idpf_tx_queue *txq)
-{
-	uint16_t nb_desc, i;
-
-	if (txq == NULL || txq->sw_ring == NULL) {
-		DRV_LOG(DEBUG, "Pointer to rxq or sw_ring is NULL");
-		return;
-	}
-
-	if (txq->sw_nb_desc != 0) {
-		/* For split queue model, descriptor ring */
-		nb_desc = txq->sw_nb_desc;
-	} else {
-		/* For single queue model */
-		nb_desc = txq->nb_tx_desc;
-	}
-	for (i = 0; i < nb_desc; i++) {
-		if (txq->sw_ring[i].mbuf != NULL) {
-			rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
-			txq->sw_ring[i].mbuf = NULL;
-		}
-	}
-}
-
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_split_rx_descq_reset)
 void
 idpf_qc_split_rx_descq_reset(struct idpf_rx_queue *rxq)
 {
@@ -133,6 +113,7 @@ idpf_qc_split_rx_descq_reset(struct idpf_rx_queue *rxq)
 	rxq->expected_gen_id = 1;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_split_rx_bufq_reset)
 void
 idpf_qc_split_rx_bufq_reset(struct idpf_rx_queue *rxq)
 {
@@ -168,6 +149,7 @@ idpf_qc_split_rx_bufq_reset(struct idpf_rx_queue *rxq)
 	rxq->bufq2 = NULL;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_split_rx_queue_reset)
 void
 idpf_qc_split_rx_queue_reset(struct idpf_rx_queue *rxq)
 {
@@ -176,6 +158,7 @@ idpf_qc_split_rx_queue_reset(struct idpf_rx_queue *rxq)
 	idpf_qc_split_rx_bufq_reset(rxq->bufq2);
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_single_rx_queue_reset)
 void
 idpf_qc_single_rx_queue_reset(struct idpf_rx_queue *rxq)
 {
@@ -207,10 +190,11 @@ idpf_qc_single_rx_queue_reset(struct idpf_rx_queue *rxq)
 	rxq->rxrearm_nb = 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_split_tx_descq_reset)
 void
-idpf_qc_split_tx_descq_reset(struct idpf_tx_queue *txq)
+idpf_qc_split_tx_descq_reset(struct ci_tx_queue *txq)
 {
-	struct idpf_tx_entry *txe;
+	struct ci_tx_entry *txe;
 	uint32_t i, size;
 	uint16_t prev;
 
@@ -233,20 +217,21 @@ idpf_qc_split_tx_descq_reset(struct idpf_tx_queue *txq)
 	}
 
 	txq->tx_tail = 0;
-	txq->nb_used = 0;
+	txq->nb_tx_used = 0;
 
 	/* Use this as next to clean for split desc queue */
 	txq->last_desc_cleaned = 0;
 	txq->sw_tail = 0;
-	txq->nb_free = txq->nb_tx_desc - 1;
+	txq->nb_tx_free = txq->nb_tx_desc - 1;
 
-	memset(txq->ctype, 0, sizeof(txq->ctype));
-	txq->next_dd = txq->rs_thresh - 1;
-	txq->next_rs = txq->rs_thresh - 1;
+	txq->rs_compl_count = 0;
+	txq->tx_next_dd = txq->tx_rs_thresh - 1;
+	txq->tx_next_rs = txq->tx_rs_thresh - 1;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_split_tx_complq_reset)
 void
-idpf_qc_split_tx_complq_reset(struct idpf_tx_queue *cq)
+idpf_qc_split_tx_complq_reset(struct ci_tx_queue *cq)
 {
 	uint32_t i, size;
 
@@ -263,10 +248,11 @@ idpf_qc_split_tx_complq_reset(struct idpf_tx_queue *cq)
 	cq->expected_gen_id = 1;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_single_tx_queue_reset)
 void
-idpf_qc_single_tx_queue_reset(struct idpf_tx_queue *txq)
+idpf_qc_single_tx_queue_reset(struct ci_tx_queue *txq)
 {
-	struct idpf_tx_entry *txe;
+	struct ci_tx_entry *txe;
 	uint32_t i, size;
 	uint16_t prev;
 
@@ -278,11 +264,11 @@ idpf_qc_single_tx_queue_reset(struct idpf_tx_queue *txq)
 	txe = txq->sw_ring;
 	size = sizeof(struct idpf_base_tx_desc) * txq->nb_tx_desc;
 	for (i = 0; i < size; i++)
-		((volatile char *)txq->tx_ring)[i] = 0;
+		((volatile char *)txq->idpf_tx_ring)[i] = 0;
 
 	prev = (uint16_t)(txq->nb_tx_desc - 1);
 	for (i = 0; i < txq->nb_tx_desc; i++) {
-		txq->tx_ring[i].qw1 =
+		txq->idpf_tx_ring[i].qw1 =
 			rte_cpu_to_le_64(IDPF_TX_DESC_DTYPE_DESC_DONE);
 		txe[i].mbuf =  NULL;
 		txe[i].last_id = i;
@@ -291,15 +277,16 @@ idpf_qc_single_tx_queue_reset(struct idpf_tx_queue *txq)
 	}
 
 	txq->tx_tail = 0;
-	txq->nb_used = 0;
+	txq->nb_tx_used = 0;
 
 	txq->last_desc_cleaned = txq->nb_tx_desc - 1;
-	txq->nb_free = txq->nb_tx_desc - 1;
+	txq->nb_tx_free = txq->nb_tx_desc - 1;
 
-	txq->next_dd = txq->rs_thresh - 1;
-	txq->next_rs = txq->rs_thresh - 1;
+	txq->tx_next_dd = txq->tx_rs_thresh - 1;
+	txq->tx_next_rs = txq->tx_rs_thresh - 1;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_rx_queue_release)
 void
 idpf_qc_rx_queue_release(void *rxq)
 {
@@ -310,11 +297,11 @@ idpf_qc_rx_queue_release(void *rxq)
 
 	/* Split queue */
 	if (!q->adapter->is_rx_singleq) {
-		q->bufq1->ops->release_mbufs(q->bufq1);
+		q->bufq1->idpf_ops->release_mbufs(q->bufq1);
 		rte_free(q->bufq1->sw_ring);
 		rte_memzone_free(q->bufq1->mz);
 		rte_free(q->bufq1);
-		q->bufq2->ops->release_mbufs(q->bufq2);
+		q->bufq2->idpf_ops->release_mbufs(q->bufq2);
 		rte_free(q->bufq2->sw_ring);
 		rte_memzone_free(q->bufq2->mz);
 		rte_free(q->bufq2);
@@ -324,16 +311,17 @@ idpf_qc_rx_queue_release(void *rxq)
 	}
 
 	/* Single queue */
-	q->ops->release_mbufs(q);
+	q->idpf_ops->release_mbufs(q);
 	rte_free(q->sw_ring);
 	rte_memzone_free(q->mz);
 	rte_free(q);
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_tx_queue_release)
 void
 idpf_qc_tx_queue_release(void *txq)
 {
-	struct idpf_tx_queue *q = txq;
+	struct ci_tx_queue *q = txq;
 
 	if (q == NULL)
 		return;
@@ -343,12 +331,13 @@ idpf_qc_tx_queue_release(void *txq)
 		rte_free(q->complq);
 	}
 
-	q->ops->release_mbufs(q);
+	ci_txq_release_all_mbufs(q, false);
 	rte_free(q->sw_ring);
 	rte_memzone_free(q->mz);
 	rte_free(q);
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_ts_mbuf_register)
 int
 idpf_qc_ts_mbuf_register(struct idpf_rx_queue *rxq)
 {
@@ -366,6 +355,7 @@ idpf_qc_ts_mbuf_register(struct idpf_rx_queue *rxq)
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_single_rxq_mbufs_alloc)
 int
 idpf_qc_single_rxq_mbufs_alloc(struct idpf_rx_queue *rxq)
 {
@@ -401,6 +391,7 @@ idpf_qc_single_rxq_mbufs_alloc(struct idpf_rx_queue *rxq)
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_split_rxq_mbufs_alloc)
 int
 idpf_qc_split_rxq_mbufs_alloc(struct idpf_rx_queue *rxq)
 {
@@ -624,6 +615,7 @@ idpf_split_rx_bufq_refill(struct idpf_rx_queue *rx_bufq)
 	rx_bufq->rx_tail = next_avail;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_dp_splitq_recv_pkts)
 uint16_t
 idpf_dp_splitq_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			 uint16_t nb_pkts)
@@ -750,13 +742,13 @@ idpf_dp_splitq_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 }
 
 static inline void
-idpf_split_tx_free(struct idpf_tx_queue *cq)
+idpf_split_tx_free(struct ci_tx_queue *cq)
 {
 	volatile struct idpf_splitq_tx_compl_desc *compl_ring = cq->compl_ring;
 	volatile struct idpf_splitq_tx_compl_desc *txd;
 	uint16_t next = cq->tx_tail;
-	struct idpf_tx_entry *txe;
-	struct idpf_tx_queue *txq;
+	struct ci_tx_entry *txe;
+	struct ci_tx_queue *txq;
 	uint16_t gen, qid, q_head;
 	uint16_t nb_desc_clean;
 	uint8_t ctype;
@@ -789,7 +781,7 @@ idpf_split_tx_free(struct idpf_tx_queue *cq)
 				q_head;
 		else
 			nb_desc_clean = q_head - txq->last_desc_cleaned;
-		txq->nb_free += nb_desc_clean;
+		txq->nb_tx_free += nb_desc_clean;
 		txq->last_desc_cleaned = q_head;
 		break;
 	case IDPF_TXD_COMPLT_RS:
@@ -856,16 +848,17 @@ idpf_set_splitq_tso_ctx(struct rte_mbuf *mbuf,
 				 IDPF_TXD_FLEX_CTX_MSS_RT_M);
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_dp_splitq_xmit_pkts)
 uint16_t
 idpf_dp_splitq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 uint16_t nb_pkts)
 {
-	struct idpf_tx_queue *txq = (struct idpf_tx_queue *)tx_queue;
+	struct ci_tx_queue *txq = (struct ci_tx_queue *)tx_queue;
 	volatile struct idpf_flex_tx_sched_desc *txr;
 	volatile struct idpf_flex_tx_sched_desc *txd;
-	struct idpf_tx_entry *sw_ring;
+	struct ci_tx_entry *sw_ring;
 	union idpf_tx_offload tx_offload = {0};
-	struct idpf_tx_entry *txe, *txn;
+	struct ci_tx_entry *txe, *txn;
 	uint16_t nb_used, tx_id, sw_id;
 	struct rte_mbuf *tx_pkt;
 	uint16_t nb_to_clean;
@@ -874,7 +867,7 @@ idpf_dp_splitq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint8_t cmd_dtype;
 	uint16_t nb_ctx;
 
-	if (unlikely(txq == NULL) || unlikely(!txq->q_started))
+	if (unlikely(txq == NULL))
 		return nb_tx;
 
 	txr = txq->desc_ring;
@@ -886,7 +879,7 @@ idpf_dp_splitq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
 		tx_pkt = tx_pkts[nb_tx];
 
-		if (txq->nb_free <= txq->free_thresh) {
+		if (txq->nb_tx_free <= txq->tx_free_thresh) {
 			/* TODO: Need to refine
 			 * 1. free and clean: Better to decide a clean destination instead of
 			 * loop times. And don't free mbuf when RS got immediately, free when
@@ -895,12 +888,12 @@ idpf_dp_splitq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 * 2. out-of-order rewrite back haven't be supported, SW head and HW head
 			 * need to be separated.
 			 **/
-			nb_to_clean = 2 * txq->rs_thresh;
+			nb_to_clean = 2 * txq->tx_rs_thresh;
 			while (nb_to_clean--)
 				idpf_split_tx_free(txq->complq);
 		}
 
-		if (txq->nb_free < tx_pkt->nb_segs)
+		if (txq->nb_tx_free < tx_pkt->nb_segs)
 			break;
 
 		cmd_dtype = 0;
@@ -953,13 +946,13 @@ idpf_dp_splitq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		/* fill the last descriptor with End of Packet (EOP) bit */
 		txd->qw1.cmd_dtype |= IDPF_TXD_FLEX_FLOW_CMD_EOP;
 
-		txq->nb_free = (uint16_t)(txq->nb_free - nb_used);
-		txq->nb_used = (uint16_t)(txq->nb_used + nb_used);
+		txq->nb_tx_free = (uint16_t)(txq->nb_tx_free - nb_used);
+		txq->nb_tx_used = (uint16_t)(txq->nb_tx_used + nb_used);
 
-		if (txq->nb_used >= 32) {
+		if (txq->nb_tx_used >= 32) {
 			txd->qw1.cmd_dtype |= IDPF_TXD_FLEX_FLOW_CMD_RE;
 			/* Update txq RE bit counters */
-			txq->nb_used = 0;
+			txq->nb_tx_used = 0;
 		}
 	}
 
@@ -1047,6 +1040,7 @@ idpf_singleq_rx_rss_offload(struct rte_mbuf *mb,
 
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_dp_singleq_recv_pkts)
 uint16_t
 idpf_dp_singleq_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			  uint16_t nb_pkts)
@@ -1165,6 +1159,7 @@ idpf_dp_singleq_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return nb_rx;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_dp_singleq_recv_scatter_pkts)
 uint16_t
 idpf_dp_singleq_recv_scatter_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			       uint16_t nb_pkts)
@@ -1302,17 +1297,17 @@ idpf_dp_singleq_recv_scatter_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 }
 
 static inline int
-idpf_xmit_cleanup(struct idpf_tx_queue *txq)
+idpf_xmit_cleanup(struct ci_tx_queue *txq)
 {
 	uint16_t last_desc_cleaned = txq->last_desc_cleaned;
-	struct idpf_tx_entry *sw_ring = txq->sw_ring;
+	struct ci_tx_entry *sw_ring = txq->sw_ring;
 	uint16_t nb_tx_desc = txq->nb_tx_desc;
 	uint16_t desc_to_clean_to;
 	uint16_t nb_tx_to_clean;
 
-	volatile struct idpf_base_tx_desc *txd = txq->tx_ring;
+	volatile struct idpf_base_tx_desc *txd = txq->idpf_tx_ring;
 
-	desc_to_clean_to = (uint16_t)(last_desc_cleaned + txq->rs_thresh);
+	desc_to_clean_to = (uint16_t)(last_desc_cleaned + txq->tx_rs_thresh);
 	if (desc_to_clean_to >= nb_tx_desc)
 		desc_to_clean_to = (uint16_t)(desc_to_clean_to - nb_tx_desc);
 
@@ -1336,12 +1331,13 @@ idpf_xmit_cleanup(struct idpf_tx_queue *txq)
 	txd[desc_to_clean_to].qw1 = 0;
 
 	txq->last_desc_cleaned = desc_to_clean_to;
-	txq->nb_free = (uint16_t)(txq->nb_free + nb_tx_to_clean);
+	txq->nb_tx_free = (uint16_t)(txq->nb_tx_free + nb_tx_to_clean);
 
 	return 0;
 }
 
 /* TX function */
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_dp_singleq_xmit_pkts)
 uint16_t
 idpf_dp_singleq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			  uint16_t nb_pkts)
@@ -1349,9 +1345,9 @@ idpf_dp_singleq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	volatile struct idpf_base_tx_desc *txd;
 	volatile struct idpf_base_tx_desc *txr;
 	union idpf_tx_offload tx_offload = {0};
-	struct idpf_tx_entry *txe, *txn;
-	struct idpf_tx_entry *sw_ring;
-	struct idpf_tx_queue *txq;
+	struct ci_tx_entry *txe, *txn;
+	struct ci_tx_entry *sw_ring;
+	struct ci_tx_queue *txq;
 	struct rte_mbuf *tx_pkt;
 	struct rte_mbuf *m_seg;
 	uint64_t buf_dma_addr;
@@ -1368,16 +1364,16 @@ idpf_dp_singleq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	nb_tx = 0;
 	txq = tx_queue;
 
-	if (unlikely(txq == NULL) || unlikely(!txq->q_started))
+	if (unlikely(txq == NULL))
 		return nb_tx;
 
 	sw_ring = txq->sw_ring;
-	txr = txq->tx_ring;
+	txr = txq->idpf_tx_ring;
 	tx_id = txq->tx_tail;
 	txe = &sw_ring[tx_id];
 
 	/* Check if the descriptor ring needs to be cleaned. */
-	if (txq->nb_free < txq->free_thresh)
+	if (txq->nb_tx_free < txq->tx_free_thresh)
 		(void)idpf_xmit_cleanup(txq);
 
 	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
@@ -1410,14 +1406,14 @@ idpf_dp_singleq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		       " tx_first=%u tx_last=%u",
 		       txq->port_id, txq->queue_id, tx_id, tx_last);
 
-		if (nb_used > txq->nb_free) {
+		if (nb_used > txq->nb_tx_free) {
 			if (idpf_xmit_cleanup(txq) != 0) {
 				if (nb_tx == 0)
 					return 0;
 				goto end_of_tx;
 			}
-			if (unlikely(nb_used > txq->rs_thresh)) {
-				while (nb_used > txq->nb_free) {
+			if (unlikely(nb_used > txq->tx_rs_thresh)) {
+				while (nb_used > txq->nb_tx_free) {
 					if (idpf_xmit_cleanup(txq) != 0) {
 						if (nb_tx == 0)
 							return 0;
@@ -1479,10 +1475,10 @@ idpf_dp_singleq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 		/* The last packet data descriptor needs End Of Packet (EOP) */
 		td_cmd |= IDPF_TX_DESC_CMD_EOP;
-		txq->nb_used = (uint16_t)(txq->nb_used + nb_used);
-		txq->nb_free = (uint16_t)(txq->nb_free - nb_used);
+		txq->nb_tx_used = (uint16_t)(txq->nb_tx_used + nb_used);
+		txq->nb_tx_free = (uint16_t)(txq->nb_tx_free - nb_used);
 
-		if (txq->nb_used >= txq->rs_thresh) {
+		if (txq->nb_tx_used >= txq->tx_rs_thresh) {
 			TX_LOG(DEBUG, "Setting RS bit on TXD id="
 			       "%4u (port=%d queue=%d)",
 			       tx_last, txq->port_id, txq->queue_id);
@@ -1490,7 +1486,7 @@ idpf_dp_singleq_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			td_cmd |= IDPF_TX_DESC_CMD_RS;
 
 			/* Update txq RS bit counters */
-			txq->nb_used = 0;
+			txq->nb_tx_used = 0;
 		}
 
 		txd->qw1 |= rte_cpu_to_le_16(td_cmd << IDPF_TXD_QW1_CMD_S);
@@ -1509,6 +1505,7 @@ end_of_tx:
 }
 
 /* TX prep functions */
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_dp_prep_pkts)
 uint16_t
 idpf_dp_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		  uint16_t nb_pkts)
@@ -1610,16 +1607,18 @@ idpf_rxq_vec_setup_default(struct idpf_rx_queue *rxq)
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_singleq_rx_vec_setup)
 int __rte_cold
 idpf_qc_singleq_rx_vec_setup(struct idpf_rx_queue *rxq)
 {
-	rxq->ops = &def_rx_ops_vec;
+	rxq->idpf_ops = &def_rx_ops_vec;
 	return idpf_rxq_vec_setup_default(rxq);
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(idpf_qc_splitq_rx_vec_setup)
 int __rte_cold
 idpf_qc_splitq_rx_vec_setup(struct idpf_rx_queue *rxq)
 {
-	rxq->bufq2->ops = &def_rx_ops_vec;
+	rxq->bufq2->idpf_ops = &def_rx_ops_vec;
 	return idpf_rxq_vec_setup_default(rxq->bufq2);
 }

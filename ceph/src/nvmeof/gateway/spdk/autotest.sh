@@ -32,12 +32,13 @@ fi
 if [ $(uname -s) = Linux ]; then
 	old_core_pattern=$(< /proc/sys/kernel/core_pattern)
 	mkdir -p "$output_dir/coredumps"
-	# Set core_pattern to a known value to avoid ABRT, systemd-coredump, etc.
-	# Dump the $output_dir path to a file so collector can pick it up while executing.
-	# We don't set in in the core_pattern command line because of the string length limitation
-	# of 128 bytes. See 'man core 5' for details.
-	echo "|$rootdir/scripts/core-collector.sh %P %s %t" > /proc/sys/kernel/core_pattern
-	echo "$output_dir/coredumps" > "$rootdir/.coredump_path"
+	# Set core_pattern to a known value to avoid looking for cores handled by different
+	# entities, like apport, systemd-coredump, etc. We also don't want to pipe core to our
+	# own collector as under SELINUX it won't be able to execute due to limitation
+	# kernel_generic_help_t|kernel_t domains may impose. Stick to a simple pattern
+	# pointing at $output_dir/coredumps - when autotest finishes, process_core() will
+	# pick any core from that location.
+	echo "$output_dir/coredumps/%s-%p-%i-%t-%E.core" > /proc/sys/kernel/core_pattern
 
 	# make sure nbd (network block device) driver is loaded if it is available
 	# this ensures that when tests need to use nbd, it will be fully initialized
@@ -62,7 +63,7 @@ src=$(readlink -f $(dirname $0))
 out=$output_dir
 cd $src
 
-freebsd_update_contigmem_mod
+freebsd_update_mods
 freebsd_set_maxsock_buf
 
 if [[ $CONFIG_COVERAGE == y ]]; then
@@ -139,7 +140,7 @@ if [ $SPDK_TEST_UNITTEST -eq 1 ]; then
 fi
 
 if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
-	if [[ $SPDK_TEST_CRYPTO -eq 1 || $SPDK_TEST_VBDEV_COMPRESS -eq 1 ]]; then
+	if [[ $SPDK_TEST_CRYPTO -eq 1 ]]; then
 		if [[ $SPDK_TEST_USE_IGB_UIO -eq 1 ]]; then
 			$rootdir/scripts/qat_setup.sh igb_uio
 		else
@@ -264,15 +265,6 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 		run_test "spdkcli_iscsi" $rootdir/test/spdkcli/iscsi.sh
 	fi
 
-	if [ $SPDK_TEST_BLOBFS -eq 1 ]; then
-		run_test "rocksdb" $rootdir/test/blobfs/rocksdb/rocksdb.sh
-		run_test "blobstore" $rootdir/test/blobstore/blobstore.sh
-		run_test "blobstore_grow" $rootdir/test/blobstore/blobstore_grow/blobstore_grow.sh
-		run_test "blobfs" $rootdir/test/blobfs/blobfs.sh
-		run_test "hello_blob" $SPDK_EXAMPLE_DIR/hello_blob \
-			examples/blob/hello_world/hello_blob.json
-	fi
-
 	if [ $SPDK_TEST_NVMF -eq 1 ]; then
 		export NET_TYPE
 		# The NVMe-oF run test cases are split out like this so that the parser that compiles the
@@ -317,6 +309,10 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 	fi
 
 	if [ $SPDK_TEST_LVOL -eq 1 ]; then
+		run_test "blobstore" $rootdir/test/blobstore/blobstore.sh
+		run_test "blobstore_grow" $rootdir/test/blobstore/blobstore_grow/blobstore_grow.sh
+		run_test "hello_blob" $SPDK_EXAMPLE_DIR/hello_blob \
+			examples/blob/hello_world/hello_blob.json
 		run_test "lvol" $rootdir/test/lvol/lvol.sh
 		run_test "blob_io_wait" $rootdir/test/blobstore/blob_io_wait/blob_io_wait.sh
 	fi
@@ -345,11 +341,6 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 
 	if [ $SPDK_TEST_VMD -eq 1 ]; then
 		run_test "vmd" $rootdir/test/vmd/vmd.sh
-	fi
-
-	if [ $SPDK_TEST_VBDEV_COMPRESS -eq 1 ]; then
-		run_test "compress_compdev" $rootdir/test/compress/compress.sh "compdev"
-		run_test "compress_isal" $rootdir/test/compress/compress.sh "isal"
 	fi
 
 	if [ $SPDK_TEST_OPAL -eq 1 ]; then
@@ -393,17 +384,4 @@ chmod a+r $output_dir/timing.txt
 
 [[ -f "$output_dir/udev.log" ]] && rm -f "$output_dir/udev.log"
 
-if [[ $CONFIG_COVERAGE == y ]]; then
-	# generate coverage data and combine with baseline
-	$LCOV -q -c --no-external -d $src -t "$(hostname)" -o $out/cov_test.info
-	$LCOV -q -a $out/cov_base.info -a $out/cov_test.info -o $out/cov_total.info
-	$LCOV -q -r $out/cov_total.info '*/dpdk/*' -o $out/cov_total.info
-	# C++ headers in /usr can sometimes generate data even when specifying
-	# --no-external, so remove them. But we need to add an ignore-errors
-	# flag to squash warnings on systems where they don't generate data.
-	$LCOV -q -r $out/cov_total.info --ignore-errors unused,unused '/usr/*' -o $out/cov_total.info
-	$LCOV -q -r $out/cov_total.info '*/examples/vmd/*' -o $out/cov_total.info
-	$LCOV -q -r $out/cov_total.info '*/app/spdk_lspci/*' -o $out/cov_total.info
-	$LCOV -q -r $out/cov_total.info '*/app/spdk_top/*' -o $out/cov_total.info
-	rm -f $out/cov_base.info $out/cov_test.info OLD_STDOUT OLD_STDERR
-fi
+gather_coverage

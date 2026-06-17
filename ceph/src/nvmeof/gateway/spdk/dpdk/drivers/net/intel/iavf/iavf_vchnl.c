@@ -1218,7 +1218,7 @@ int
 iavf_configure_queues(struct iavf_adapter *adapter,
 		uint16_t num_queue_pairs, uint16_t index)
 {
-	struct iavf_rx_queue **rxq = (struct iavf_rx_queue **)adapter->dev_data->rx_queues;
+	struct ci_rx_queue **rxq = (struct ci_rx_queue **)adapter->dev_data->rx_queues;
 	struct ci_tx_queue **txq = (struct ci_tx_queue **)adapter->dev_data->tx_queues;
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
 	struct virtchnl_vsi_queue_config_info *vc_config;
@@ -1260,7 +1260,6 @@ iavf_configure_queues(struct iavf_adapter *adapter,
 		vc_qp->rxq.dma_ring_addr = rxq[i]->rx_ring_phys_addr;
 		vc_qp->rxq.databuffer_size = rxq[i]->rx_buf_len;
 		vc_qp->rxq.crc_disable = rxq[i]->crc_len != 0 ? 1 : 0;
-#ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 		if (vf->vf_res->vf_cap_flags &
 		    VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC) {
 			if (vf->supported_rxdid & RTE_BIT64(rxq[i]->rxdid)) {
@@ -1279,19 +1278,6 @@ iavf_configure_queues(struct iavf_adapter *adapter,
 			    rxq[i]->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
 				vc_qp->rxq.flags |= VIRTCHNL_PTP_RX_TSTAMP;
 		}
-#else
-		if (vf->vf_res->vf_cap_flags &
-			VIRTCHNL_VF_OFFLOAD_RX_FLEX_DESC &&
-			vf->supported_rxdid & BIT(IAVF_RXDID_LEGACY_0)) {
-			vc_qp->rxq.rxdid = IAVF_RXDID_LEGACY_0;
-			PMD_DRV_LOG(NOTICE, "request RXDID[%d] in Queue[%d]",
-				    vc_qp->rxq.rxdid, i);
-		} else {
-			PMD_DRV_LOG(ERR, "RXDID[%d] is not supported",
-				    IAVF_RXDID_LEGACY_0);
-			return -1;
-		}
-#endif
 	}
 
 	memset(&args, 0, sizeof(args));
@@ -2258,9 +2244,9 @@ iavf_get_ptp_cap(struct iavf_adapter *adapter)
 }
 
 int
-iavf_get_phc_time(struct iavf_rx_queue *rxq)
+iavf_get_phc_time(struct ci_rx_queue *rxq)
 {
-	struct iavf_adapter *adapter = rxq->vsi->adapter;
+	struct iavf_adapter *adapter = rxq->iavf_vsi->adapter;
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(adapter);
 	struct virtchnl_phc_time phc_time;
 	struct iavf_cmd_info args;

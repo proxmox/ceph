@@ -46,6 +46,11 @@
 	spdk_bdev_is_zoned;
 	spdk_bdev_get_data_block_size;
 	spdk_bdev_get_physical_block_size;
+	spdk_bdev_get_preferred_write_alignment;
+	spdk_bdev_get_preferred_write_granularity;
+	spdk_bdev_get_optimal_write_size;
+	spdk_bdev_get_preferred_unmap_alignment;
+	spdk_bdev_get_preferred_unmap_granularity;
 	spdk_bdev_get_dif_type;
 	spdk_bdev_get_dif_pi_format;
 	spdk_bdev_is_dif_head_of_md;
@@ -94,6 +99,7 @@
 	spdk_bdev_flush;
 	spdk_bdev_flush_blocks;
 	spdk_bdev_reset;
+	spdk_bdev_nvme_nssr;
 	spdk_bdev_abort;
 	spdk_bdev_nvme_admin_passthru;
 	spdk_bdev_nvme_io_passthru;
@@ -153,9 +159,13 @@
 	spdk_bdev_io_set_buf;
 	spdk_bdev_io_set_md_buf;
 	spdk_bdev_io_complete;
+	spdk_bdev_io_set_nvme_status;
 	spdk_bdev_io_complete_nvme_status;
+	spdk_bdev_io_set_scsi_status;
 	spdk_bdev_io_complete_scsi_status;
+	spdk_bdev_io_set_aio_status;
 	spdk_bdev_io_complete_aio_status;
+	spdk_bdev_io_set_base_io_status;
 	spdk_bdev_io_complete_base_io_status;
 	spdk_bdev_io_get_thread;
 	spdk_bdev_io_get_io_channel;

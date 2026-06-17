@@ -13,6 +13,8 @@ from .config import GatewayConfig
 from .state import GatewayState, LocalGatewayState, OmapLock, OmapGatewayState, GatewayStateHandler
 from .utils import GatewayLogger
 from .utils import GatewayUtilsCrypto
+from .utils import GatewayEnumUtils
+from .proto import gateway_pb2 as pb2
 
 from typing import Dict
 
@@ -24,8 +26,10 @@ import uuid
 import struct
 import selectors
 import os
+import errno
 from dataclasses import dataclass, field
 from ctypes import LittleEndianStructure, c_ubyte, c_uint8, c_uint16, c_uint32, c_uint64
+from .cephutils import CephUtils
 
 
 # NVMe tcp pdu type
@@ -323,29 +327,45 @@ class DiscoveryService:
         discovery_port: Discovery controller's listening port
     """
 
+    DEFAULT_BIND_RETRIES = 10
+    DEFAULT_BIND_SLEEP_INTERVAL = 0.5
+
     def __init__(self, config):
         self.version = 1
         self.config = config
+        self.ceph_utils = CephUtils(self.config)
         self.lock = threading.Lock()
-        self.abort_on_error = self.config.getboolean_with_default("discovery",
-                                                                  "abort_on_errors",
-                                                                  True)
         self.omap_state = OmapGatewayState(self.config, None, f"discovery-{socket.gethostname()}")
-        self.omap_state.abort_on_error = self.abort_on_error
+        self.omap_state.abort_on_error = False    # No need to crash on OMAP read lock failure
 
         self.gw_logger_object = GatewayLogger(config)
         self.logger = self.gw_logger_object.logger
 
-        gateway_group = self.config.get_with_default("gateway", "group", "")
-        self.omap_name = f"nvmeof.{gateway_group}.state" \
-            if gateway_group else "nvmeof.state"
-        self.logger.info(f"log pages info from omap: {self.omap_name}")
+        self.logger.info(f"log pages info from omap: {self.omap_state.omap_name}")
 
         self.discovery_addr = self.config.get_with_default("discovery", "addr", "0.0.0.0")
         self.discovery_port = self.config.get_with_default("discovery", "port", "8009")
-        if not self.discovery_addr or not self.discovery_port:
-            self.logger.error("discovery addr/port are empty.")
-            assert 0
+        self.bind_retries_limit = self.config.getint_with_default(
+            "discovery",
+            "bind_retries_limit",
+            DiscoveryService.DEFAULT_BIND_RETRIES)
+        if self.bind_retries_limit < 0:
+            self.logger.info("A negative bind retries limit, will not limit the "
+                             "number of bind retries")
+        elif self.bind_retries_limit == 0:
+            self.logger.warning("A zero bind retries limit, will use default value")
+            self.bind_retries_limit = DiscoveryService.DEFAULT_BIND_RETRIES
+
+        self.bind_sleep_interval = self.config.getfloat_with_default(
+            "discovery",
+            "bind_sleep_interval",
+            DiscoveryService.DEFAULT_BIND_SLEEP_INTERVAL)
+        if self.bind_sleep_interval < 0.0:
+            self.logger.warning(f"Negative bind sleep interval {self.bind_sleep_interval}, "
+                                f"will use default value")
+            self.bind_sleep_interval = DiscoveryService.DEFAULT_BIND_SLEEP_INTERVAL
+
+        assert self.discovery_addr and self.discovery_port, "discovery addr/port are empty"
         self.logger.info(f"discovery addr: {self.discovery_addr} port: {self.discovery_port}")
 
         self.omap_lock = None
@@ -400,8 +420,6 @@ class DiscoveryService:
             return omap_dict
         except Exception:
             self.logger.exception("Failure getting OMAP state for discovery")
-            if self.abort_on_error:
-                raise
         return {}
 
     def _get_vals(self, omap_dict, prefix):
@@ -750,7 +768,13 @@ class DiscoveryService:
         self.logger.debug("handle get log page request.")
         self_conn = self.conn_vals[conn.fileno()]
         my_omap_dict = self._read_all()
+        if not my_omap_dict:
+            self.logger.error("Error getting current state.")
+            return -1
         listeners = self._get_vals(my_omap_dict, GatewayState.LISTENER_PREFIX)
+        pool = self.config.get("ceph", "pool")
+        group = self.config.get("gateway", "group")
+        nvmemon_listeners = self.ceph_utils.get_gw_listeners(pool, group)
         hosts = self._get_vals(my_omap_dict, GatewayState.HOST_PREFIX)
         if len(self_conn.nvmeof_connect_data_hostnqn) != 256:
             self.logger.error("error hostnqn.")
@@ -798,11 +822,23 @@ class DiscoveryService:
         if len(allow_listeners) == 0:
             for host in hosts:
                 if host["host_nqn"] == '*' or host["host_nqn"] == hostnqn:
-                    for listener in listeners:
-                        # TODO: It is better to change nqn in the "listener"
-                        # to subsystem_nqn to avoid confusion
-                        if host["subsystem_nqn"] == listener["nqn"]:
+                    subsystem_nqn = host["subsystem_nqn"]
+                    if nvmemon_listeners and (subsystem_nqn in nvmemon_listeners):
+                        subsystem_listeners = nvmemon_listeners[subsystem_nqn]
+                        for _listener in subsystem_listeners:
+                            listener = {
+                                "adrfam": _listener["address_family"],
+                                "trsvcid": _listener["svcid"],
+                                "nqn": subsystem_nqn,
+                                "traddr": _listener["address"],
+                            }
                             allow_listeners += [listener,]
+                    else:
+                        for listener in listeners:
+                            # TODO: It is better to change nqn in the "listener"
+                            # to subsystem_nqn to avoid confusion
+                            if host["subsystem_nqn"] == listener["nqn"]:
+                                allow_listeners += [listener,]
             self_conn.allow_listeners = allow_listeners
 
         # Prepare all log page data segments
@@ -821,11 +857,18 @@ class DiscoveryService:
                 log_entry = DiscoveryLogEntry()
                 log_entry.trtype = TRANSPORT_TYPES.TCP
                 log_adrfam = allow_listeners[log_entry_counter]["adrfam"]
-                adrfam = ADRFAM_TYPES[log_adrfam.lower()]
+                if isinstance(log_adrfam, int):
+                    adrfam = GatewayEnumUtils.get_key_from_value(pb2.AddressFamily, log_adrfam)
+                else:
+                    adrfam = log_adrfam
                 if adrfam is None:
                     self.logger.error(f"unsupported address family {log_adrfam}")
                 else:
-                    log_entry.adrfam = adrfam
+                    adrfam = ADRFAM_TYPES[adrfam.lower()]
+                    if adrfam is None:
+                        self.logger.error(f"unsupported address family {log_adrfam}")
+                    else:
+                        log_entry.adrfam = adrfam
                 log_entry.subtype = NVMF_SUBTYPE.NVME
                 log_entry.treq = NVMF_TREQ_SECURE_CHANNEL.NOT_REQUIRED
                 log_entry.port_id = log_entry_counter
@@ -1073,8 +1116,8 @@ class DiscoveryService:
                     self_conn.recv_buffer += message
                 else:
                     return
-            except BlockingIOError:
-                self.logger.error("recived data failed.")
+            except OSError as ex:
+                self.logger.error(f"Recived data failed. {ex.errno}: {ex.strerror}")
 
             while True:
                 if len(self_conn.recv_buffer) < 8:
@@ -1188,7 +1231,25 @@ class DiscoveryService:
                 family = socket.AF_INET6
 
         self.sock = socket.socket(family, socket.SOCK_STREAM)
-        self.sock.bind((self.discovery_addr, int(self.discovery_port)))
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        retries = self.bind_retries_limit
+        # Notice that a negative value means, keep trying until we succeed
+        while retries != 0:
+            try:
+                retries -= 1
+                self.sock.bind((self.discovery_addr, int(self.discovery_port)))
+                self.logger.debug(f"bind of port {self.discovery_port} succesful")
+                break
+            except OSError as ex:
+                if ex.errno != errno.EADDRINUSE:
+                    self.logger.exception("bind failure")
+                    raise ex
+                if retries != 0:
+                    self.logger.warning("Bind failed as the address is in use, will try again")
+                else:
+                    self.logger.error("Bind failed as the address is in use, will abort")
+                    raise
+            time.sleep(self.bind_sleep_interval)
         self.sock.listen(MAX_CONNECTION)
         self.sock.setblocking(False)
         self.selector.register(self.sock, selectors.EVENT_READ, self.nvmeof_accept)

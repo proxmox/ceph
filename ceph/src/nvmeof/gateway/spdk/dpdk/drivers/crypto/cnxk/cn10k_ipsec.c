@@ -51,7 +51,7 @@ cn10k_ipsec_outb_sa_create(struct roc_cpt *roc_cpt, struct roc_cpt_lf *lf,
 		goto sa_dptr_free;
 	}
 
-	sec_sess->inst.w7 = cpt_inst_w7_get(roc_cpt, out_sa);
+	sec_sess->inst.w7 = cnxk_cpt_sec_inst_w7_get(roc_cpt, out_sa);
 
 #ifdef LA_IPSEC_DEBUG
 	/* Use IV from application in debug mode */
@@ -117,6 +117,8 @@ cn10k_ipsec_outb_sa_create(struct roc_cpt *roc_cpt, struct roc_cpt_lf *lf,
 		/* Enable mib counters */
 		sa_dptr->w0.s.count_mib_bytes = 1;
 		sa_dptr->w0.s.count_mib_pkts = 1;
+		sa_dptr->w0.s.count_glb_pkts = 1;
+		sa_dptr->w0.s.count_glb_octets = 1;
 	}
 
 	memset(out_sa, 0, sizeof(struct roc_ot_ipsec_outb_sa));
@@ -181,7 +183,7 @@ cn10k_ipsec_inb_sa_create(struct roc_cpt *roc_cpt, struct roc_cpt_lf *lf,
 	}
 
 	sec_sess->ipsec.is_outbound = 0;
-	sec_sess->inst.w7 = cpt_inst_w7_get(roc_cpt, in_sa);
+	sec_sess->inst.w7 = cnxk_cpt_sec_inst_w7_get(roc_cpt, in_sa);
 
 	/* Save index/SPI in cookie, specific required for Rx Inject */
 	sa_dptr->w1.s.cookie = 0xFFFFFFFF;
@@ -221,6 +223,8 @@ cn10k_ipsec_inb_sa_create(struct roc_cpt *roc_cpt, struct roc_cpt_lf *lf,
 		/* Enable mib counters */
 		sa_dptr->w0.s.count_mib_bytes = 1;
 		sa_dptr->w0.s.count_mib_pkts = 1;
+		sa_dptr->w0.s.count_glb_pkts = 1;
+		sa_dptr->w0.s.count_glb_octets = 1;
 	}
 
 	memset(in_sa, 0, sizeof(struct roc_ot_ipsec_inb_sa));

@@ -4,7 +4,7 @@ build-backend = "pdm.backend"
 
 [project]
 name = "ceph-nvmeof"
-version = "1.6.0"
+version = "1.7.2"
 description = "Service to provide Ceph storage over NVMe-oF protocol"
 readme = "README.md"
 requires-python = ">3.9.1"
@@ -29,8 +29,13 @@ dependencies = [
     "pyyaml>=6.0.1",
     "prometheus_client ~= 0.19.0",
     "netifaces ~= 0.11.0",
-    "cryptography>=43.0.3"
+    "cryptography>=43.0.3",
+    "PyKMIP",
+    "setuptools<82.0.0",
 ]
+
+[tool.pdm.resolution]
+excludes = ["enum34"]
 
 [tool.pdm.scripts]
 protoc = {call = "grpc_tools.command:build_package_protos('.')"}

@@ -45,7 +45,7 @@ spdk_net_get_address_string(struct sockaddr *sa, char *addr, size_t len)
 	const char *result = NULL;
 
 	if (sa == NULL || addr == NULL) {
-		return -1;
+		return -EINVAL;
 	}
 
 	switch (sa->sa_family) {
@@ -61,11 +61,11 @@ spdk_net_get_address_string(struct sockaddr *sa, char *addr, size_t len)
 		break;
 	}
 
-	if (result != NULL) {
-		return 0;
-	} else {
+	if (result == NULL) {
 		return -errno;
 	}
+
+	return 0;
 }
 
 bool
@@ -91,7 +91,11 @@ spdk_net_is_loopback(int fd)
 		return is_loopback;
 	}
 
-	getifaddrs(&addrs);
+	rc = getifaddrs(&addrs);
+	if (rc != 0) {
+		return is_loopback;
+	}
+
 	for (tmp = addrs; tmp != NULL; tmp = tmp->ifa_next) {
 		if (tmp->ifa_addr && (tmp->ifa_flags & IFF_UP) &&
 		    (tmp->ifa_addr->sa_family == sa.ss_family)) {
@@ -144,13 +148,15 @@ spdk_net_getaddr(int fd, char *laddr, int llen, uint16_t *lport,
 		break;
 	default:
 		/* Unsupported socket family */
+		errno = EINVAL;
 		return -1;
 	}
 
 	if (laddr) {
 		rc = spdk_net_get_address_string((struct sockaddr *)&sa, laddr, llen);
 		if (rc != 0) {
-			SPDK_ERRLOG("spdk_net_get_address_string() failed (errno=%d)\n", rc);
+			SPDK_ERRLOG("spdk_net_get_address_string() failed (errno=%d)\n", abs(rc));
+			errno = abs(rc);
 			return -1;
 		}
 	}
@@ -169,6 +175,7 @@ spdk_net_getaddr(int fd, char *laddr, int llen, uint16_t *lport,
 		/* It is an error to getaddr for a peer address on a listen socket. */
 		if (paddr != NULL || pport != NULL) {
 			SPDK_ERRLOG("paddr, pport not valid on listen sockets\n");
+			errno = EINVAL;
 			return -1;
 		}
 		return 0;
@@ -187,7 +194,8 @@ spdk_net_getaddr(int fd, char *laddr, int llen, uint16_t *lport,
 	if (paddr) {
 		rc = spdk_net_get_address_string((struct sockaddr *)&sa, paddr, plen);
 		if (rc != 0) {
-			SPDK_ERRLOG("spdk_net_get_address_string() failed (errno=%d)\n", rc);
+			SPDK_ERRLOG("spdk_net_get_address_string() failed (errno=%d)\n", abs(rc));
+			errno = abs(rc);
 			return -1;
 		}
 	}

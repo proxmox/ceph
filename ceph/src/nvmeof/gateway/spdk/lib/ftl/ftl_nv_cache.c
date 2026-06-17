@@ -25,6 +25,7 @@ static void compaction_process_read_entry(void *arg);
 static void ftl_property_dump_cache_dev(struct spdk_ftl_dev *dev,
 					const struct ftl_property *property,
 					struct spdk_json_write_ctx *w);
+static void read_chunk_p2l_map(void *arg);
 
 static inline void
 nvc_validate_md(struct ftl_nv_cache *nv_cache,
@@ -802,9 +803,9 @@ compaction_process_read_entry(void *arg)
 	struct spdk_ftl_dev *dev = rq->dev;
 	int rc;
 
-	rc = spdk_bdev_read_blocks(dev->nv_cache.bdev_desc, dev->nv_cache.cache_ioch,
-				   entry->io_payload, entry->bdev_io.offset_blocks, entry->bdev_io.num_blocks,
-				   compaction_process_read_entry_cb, entry);
+	rc = ftl_nv_cache_bdev_read_blocks_with_md(dev->nv_cache.bdev_desc, dev->nv_cache.cache_ioch,
+			entry->io_payload, NULL, entry->bdev_io.offset_blocks, entry->bdev_io.num_blocks,
+			compaction_process_read_entry_cb, entry);
 
 	if (spdk_unlikely(rc)) {
 		if (rc == -ENOMEM) {
@@ -841,7 +842,9 @@ read_chunk_p2l_map_cb(struct ftl_basic_rq *brq)
 
 	if (!brq->success) {
 #ifdef SPDK_FTL_RETRY_ON_ERROR
+		chunk_free_p2l_map(chunk);
 		read_chunk_p2l_map(chunk);
+		return;
 #else
 		ftl_abort();
 #endif
@@ -871,6 +874,7 @@ read_chunk_p2l_map(void *arg)
 			struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(nv_cache->bdev_desc);
 			struct spdk_bdev_io_wait_entry *wait_entry = &chunk->metadata_rq.io.bdev_io_wait;
 
+			chunk_free_p2l_map(chunk);
 			wait_entry->bdev = bdev;
 			wait_entry->cb_fn = read_chunk_p2l_map;
 			wait_entry->cb_arg = chunk;
@@ -1334,7 +1338,7 @@ ftl_nv_cache_read(struct ftl_io *io, ftl_addr addr, uint32_t num_blocks,
 
 	assert(ftl_addr_in_nvc(io->dev, addr));
 
-	rc = ftl_nv_cache_bdev_read_blocks_with_md(io->dev, nv_cache->bdev_desc, nv_cache->cache_ioch,
+	rc = ftl_nv_cache_bdev_read_blocks_with_md(nv_cache->bdev_desc, nv_cache->cache_ioch,
 			ftl_io_iovec_addr(io), NULL, ftl_addr_to_nvc_offset(io->dev, addr),
 			num_blocks, cb, cb_arg);
 
@@ -1830,10 +1834,9 @@ _ftl_chunk_basic_rq_write(void *_brq)
 {
 	struct ftl_basic_rq *brq = _brq;
 	struct ftl_nv_cache *nv_cache = brq->io.chunk->nv_cache;
-	struct spdk_ftl_dev *dev = SPDK_CONTAINEROF(nv_cache, struct spdk_ftl_dev, nv_cache);
 	int rc;
 
-	rc = ftl_nv_cache_bdev_write_blocks_with_md(dev, nv_cache->bdev_desc, nv_cache->cache_ioch,
+	rc = ftl_nv_cache_bdev_write_blocks_with_md(nv_cache->bdev_desc, nv_cache->cache_ioch,
 			brq->io_payload, NULL, brq->io.addr,
 			brq->num_blocks, write_brq_end, brq);
 	if (spdk_unlikely(rc)) {
@@ -1887,7 +1890,7 @@ ftl_chunk_basic_rq_read(struct ftl_nv_cache_chunk *chunk, struct ftl_basic_rq *b
 	brq->io.chunk = chunk;
 	brq->success = false;
 
-	rc = ftl_nv_cache_bdev_read_blocks_with_md(dev, nv_cache->bdev_desc, nv_cache->cache_ioch,
+	rc = ftl_nv_cache_bdev_read_blocks_with_md(nv_cache->bdev_desc, nv_cache->cache_ioch,
 			brq->io_payload, NULL, brq->io.addr, brq->num_blocks, read_brq_end, brq);
 
 	if (spdk_likely(!rc)) {

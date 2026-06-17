@@ -84,6 +84,10 @@ void km_attach_ndev_resource_management(struct km_flow_def_s *km, void **handle)
 		*handle = calloc(1,
 			(size_t)CAM_ENTRIES + sizeof(uint32_t) + (size_t)TCAM_ENTRIES +
 			sizeof(struct hasher_s));
+		if (!*handle) {
+			NT_LOG(ERR, FILTER, "Failed to allocate CAM and TCAM record manager");
+			return;
+		}
 		NT_LOG(DBG, FILTER, "Allocate NIC DEV CAM and TCAM record manager");
 	}
 
@@ -580,7 +584,7 @@ int km_rcp_set(struct km_flow_def_s *km, int index)
 				}
 
 				NT_LOG(DBG, FILTER,
-					"Set KM QW0 sel A: dyn: %i, offs: %i, size: %i",
+					"Set KM QW0 sel A: dyn: %i, offs: %i, size: %" PRIu32 "",
 					km->match_map[i]->extr_start_offs_id,
 					km->match_map[i]->rel_offs, km->match_map[i]->word_len);
 
@@ -611,7 +615,7 @@ int km_rcp_set(struct km_flow_def_s *km, int index)
 				}
 
 				NT_LOG(DBG, FILTER,
-					"Set KM QW4 sel A: dyn: %i, offs: %i, size: %i",
+					"Set KM QW4 sel A: dyn: %i, offs: %i, size: %" PRIu32 "",
 					km->match_map[i]->extr_start_offs_id,
 					km->match_map[i]->rel_offs, km->match_map[i]->word_len);
 
@@ -788,7 +792,7 @@ static int move_cuckoo_index(struct km_flow_def_s *km)
 				km->cam_dist[CAM_KM_DIST_IDX(km->bank_used) + 1].km_owner = NULL;
 
 			NT_LOG(DBG, FILTER,
-				"KM Cuckoo hash moved from bank %i to bank %i (%04X => %04X)",
+				"KM Cuckoo hash moved from bank %i to bank %" PRIu32 " (%04X => %04X)",
 				km->bank_used, bank, CAM_KM_DIST_IDX(km->bank_used),
 				CAM_KM_DIST_IDX(bank));
 			km->bank_used = bank;

@@ -6,13 +6,13 @@
 Provides a base class to create interactive shells based on DPDK.
 """
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from pathlib import PurePath
 
 from framework.context import get_ctx
 from framework.params.eal import EalParams
-from framework.remote_session.single_active_interactive_shell import (
-    SingleActiveInteractiveShell,
+from framework.remote_session.interactive_shell import (
+    InteractiveShell,
 )
 from framework.testbed_model.cpu import LogicalCoreList
 
@@ -46,12 +46,12 @@ def compute_eal_params(
     params.prefix = prefix
 
     if params.allowed_ports is None:
-        params.allowed_ports = ctx.topology.sut_ports
+        params.allowed_ports = ctx.topology.sut_dpdk_ports
 
     return params
 
 
-class DPDKShell(SingleActiveInteractiveShell, ABC):
+class DPDKShell(InteractiveShell, ABC):
     """The base class for managing DPDK-based interactive shells.
 
     This class shouldn't be instantiated directly, but instead be extended.
@@ -73,11 +73,14 @@ class DPDKShell(SingleActiveInteractiveShell, ABC):
 
         super().__init__(node, name, privileged, app_params)
 
-    def _update_real_path(self, path: PurePath) -> None:
-        """Extends :meth:`~.interactive_shell.InteractiveShell._update_real_path`.
+    @property
+    @abstractmethod
+    def path(self) -> PurePath:
+        """Relative path to the shell executable from the build folder."""
+
+    def _make_real_path(self):
+        """Overrides :meth:`~.interactive_shell.InteractiveShell._make_real_path`.
 
         Adds the remote DPDK build directory to the path.
         """
-        super()._update_real_path(
-            PurePath(get_ctx().dpdk_build.remote_dpdk_build_dir).joinpath(path)
-        )
+        return get_ctx().dpdk_build.remote_dpdk_build_dir.joinpath(self.path)

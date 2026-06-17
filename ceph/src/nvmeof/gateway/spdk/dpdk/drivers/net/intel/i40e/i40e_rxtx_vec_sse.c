@@ -12,84 +12,20 @@
 #include "i40e_rxtx.h"
 #include "i40e_rxtx_vec_common.h"
 
+#include "../common/rx_vec_x86.h"
+
 #include <rte_vect.h>
 
 static inline void
-i40e_rxq_rearm(struct i40e_rx_queue *rxq)
+i40e_rxq_rearm(struct ci_rx_queue *rxq)
 {
-	int i;
-	uint16_t rx_id;
-	volatile union i40e_rx_desc *rxdp;
-	struct i40e_rx_entry *rxep = &rxq->sw_ring[rxq->rxrearm_start];
-	struct rte_mbuf *mb0, *mb1;
-	__m128i hdr_room = _mm_set_epi64x(RTE_PKTMBUF_HEADROOM,
-			RTE_PKTMBUF_HEADROOM);
-	__m128i dma_addr0, dma_addr1;
-
-	rxdp = rxq->rx_ring + rxq->rxrearm_start;
-
-	/* Pull 'n' more MBUFs into the software ring */
-	if (rte_mempool_get_bulk(rxq->mp,
-				 (void *)rxep,
-				 RTE_I40E_RXQ_REARM_THRESH) < 0) {
-		if (rxq->rxrearm_nb + RTE_I40E_RXQ_REARM_THRESH >=
-		    rxq->nb_rx_desc) {
-			dma_addr0 = _mm_setzero_si128();
-			for (i = 0; i < RTE_I40E_DESCS_PER_LOOP; i++) {
-				rxep[i].mbuf = &rxq->fake_mbuf;
-				_mm_store_si128(RTE_CAST_PTR(__m128i *, &rxdp[i].read),
-						dma_addr0);
-			}
-		}
-		rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
-			RTE_I40E_RXQ_REARM_THRESH;
-		return;
-	}
-
-	/* Initialize the mbufs in vector, process 2 mbufs in one loop */
-	for (i = 0; i < RTE_I40E_RXQ_REARM_THRESH; i += 2, rxep += 2) {
-		__m128i vaddr0, vaddr1;
-
-		mb0 = rxep[0].mbuf;
-		mb1 = rxep[1].mbuf;
-
-		/* load buf_addr(lo 64bit) and buf_iova(hi 64bit) */
-		RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, buf_iova) !=
-				offsetof(struct rte_mbuf, buf_addr) + 8);
-		vaddr0 = _mm_loadu_si128((__m128i *)&mb0->buf_addr);
-		vaddr1 = _mm_loadu_si128((__m128i *)&mb1->buf_addr);
-
-		/* convert pa to dma_addr hdr/data */
-		dma_addr0 = _mm_unpackhi_epi64(vaddr0, vaddr0);
-		dma_addr1 = _mm_unpackhi_epi64(vaddr1, vaddr1);
-
-		/* add headroom to pa values */
-		dma_addr0 = _mm_add_epi64(dma_addr0, hdr_room);
-		dma_addr1 = _mm_add_epi64(dma_addr1, hdr_room);
-
-		/* flush desc with pa dma_addr */
-		_mm_store_si128(RTE_CAST_PTR(__m128i *, &rxdp++->read), dma_addr0);
-		_mm_store_si128(RTE_CAST_PTR(__m128i *, &rxdp++->read), dma_addr1);
-	}
-
-	rxq->rxrearm_start += RTE_I40E_RXQ_REARM_THRESH;
-	rx_id = rxq->rxrearm_start - 1;
-
-	if (unlikely(rxq->rxrearm_start >= rxq->nb_rx_desc)) {
-		rxq->rxrearm_start = 0;
-		rx_id = rxq->nb_rx_desc - 1;
-	}
-
-	rxq->rxrearm_nb -= RTE_I40E_RXQ_REARM_THRESH;
-
-	/* Update the tail pointer on the NIC */
-	I40E_PCI_REG_WC_WRITE(rxq->qrx_tail, rx_id);
+	ci_rxq_rearm(rxq, CI_RX_VEC_LEVEL_SSE);
 }
 
-#ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 /* SSE version of FDIR mark extraction for 4 32B descriptors at a time */
 static inline __m128i
-descs_to_fdir_32b(volatile union i40e_rx_desc *rxdp, struct rte_mbuf **rx_pkt)
+descs_to_fdir_32b(volatile union ci_rx_desc *rxdp, struct rte_mbuf **rx_pkt)
 {
 	/* 32B descriptors: Load 2nd half of descriptors for FDIR ID data */
 	__m128i desc0_qw23, desc1_qw23, desc2_qw23, desc3_qw23;
@@ -207,7 +143,7 @@ descs_to_fdir_16b(__m128i fltstat, __m128i descs[4], struct rte_mbuf **rx_pkt)
 #endif
 
 static inline void
-desc_to_olflags_v(struct i40e_rx_queue *rxq, volatile union i40e_rx_desc *rxdp,
+desc_to_olflags_v(struct ci_rx_queue *rxq, volatile union ci_rx_desc *rxdp,
 		  __m128i descs[4], struct rte_mbuf **rx_pkts)
 {
 	const __m128i mbuf_init = _mm_set_epi64x(0, rxq->mbuf_initializer);
@@ -285,7 +221,7 @@ desc_to_olflags_v(struct i40e_rx_queue *rxq, volatile union i40e_rx_desc *rxdp,
 
 	/* Extract FDIR ID only if FDIR is enabled to avoid useless work */
 	if (rxq->fdir_enabled) {
-#ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 		__m128i v_fdir_ol_flags = descs_to_fdir_32b(rxdp, rx_pkts);
 #else
 		(void)rxdp; /* rxdp not required for 16B desc mode */
@@ -340,23 +276,23 @@ desc_to_ptype_v(__m128i descs[4], struct rte_mbuf **rx_pkts,
 }
 
 /**
- * vPMD raw receive routine, only accept(nb_pkts >= RTE_I40E_DESCS_PER_LOOP)
+ * vPMD raw receive routine, only accept(nb_pkts >= I40E_VPMD_DESCS_PER_LOOP)
  *
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
- * - floor align nb_pkts to a RTE_I40E_DESCS_PER_LOOP power-of-two
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
+ * - floor align nb_pkts to a I40E_VPMD_DESCS_PER_LOOP power-of-two
  */
 static inline uint16_t
-_recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
+_recv_raw_pkts_vec(struct ci_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		   uint16_t nb_pkts, uint8_t *split_packet)
 {
-	volatile union i40e_rx_desc *rxdp;
-	struct i40e_rx_entry *sw_ring;
+	volatile union ci_rx_desc *rxdp;
+	struct ci_rx_entry *sw_ring;
 	uint16_t nb_pkts_recd;
 	int pos;
 	uint64_t var;
 	__m128i shuf_msk;
-	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
+	uint32_t *ptype_tbl = rxq->i40e_vsi->adapter->ptype_tbl;
 
 	__m128i crc_adjust = _mm_set_epi16(
 				0, 0, 0,    /* ignore non-length fields */
@@ -376,8 +312,8 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			offsetof(struct rte_mbuf, rx_descriptor_fields1) + 8);
 	__m128i dd_check, eop_check;
 
-	/* nb_pkts has to be floor-aligned to RTE_I40E_DESCS_PER_LOOP */
-	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, RTE_I40E_DESCS_PER_LOOP);
+	/* nb_pkts has to be floor-aligned to I40E_VPMD_DESCS_PER_LOOP */
+	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, I40E_VPMD_DESCS_PER_LOOP);
 
 	/* Just the act of getting into the function from the application is
 	 * going to cost about 7 cycles
@@ -389,7 +325,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	/* See if we need to rearm the RX queue - gives the prefetch a bit
 	 * of time to act
 	 */
-	if (rxq->rxrearm_nb > RTE_I40E_RXQ_REARM_THRESH)
+	if (rxq->rxrearm_nb > I40E_VPMD_RXQ_REARM_THRESH)
 		i40e_rxq_rearm(rxq);
 
 	/* Before we start moving massive data around, check to see if
@@ -443,9 +379,9 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	 */
 
 	for (pos = 0, nb_pkts_recd = 0; pos < nb_pkts;
-			pos += RTE_I40E_DESCS_PER_LOOP,
-			rxdp += RTE_I40E_DESCS_PER_LOOP) {
-		__m128i descs[RTE_I40E_DESCS_PER_LOOP];
+			pos += I40E_VPMD_DESCS_PER_LOOP,
+			rxdp += I40E_VPMD_DESCS_PER_LOOP) {
+		__m128i descs[I40E_VPMD_DESCS_PER_LOOP];
 		__m128i pkt_mb1, pkt_mb2, pkt_mb3, pkt_mb4;
 		__m128i zero, staterr, sterr_tmp1, sterr_tmp2;
 		/* 2 64 bit or 4 32 bit mbuf pointers in one XMM reg. */
@@ -559,7 +495,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			eop_bits = _mm_shuffle_epi8(eop_bits, eop_shuf_mask);
 			/* store the resulting 32-bit value */
 			*(int *)split_packet = _mm_cvtsi128_si32(eop_bits);
-			split_packet += RTE_I40E_DESCS_PER_LOOP;
+			split_packet += I40E_VPMD_DESCS_PER_LOOP;
 		}
 
 		/* C.3 calc available number of desc */
@@ -575,7 +511,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* C.4 calc available number of desc */
 		var = rte_popcount64(_mm_cvtsi128_si64(staterr));
 		nb_pkts_recd += var;
-		if (likely(var != RTE_I40E_DESCS_PER_LOOP))
+		if (likely(var != I40E_VPMD_DESCS_PER_LOOP))
 			break;
 	}
 
@@ -589,7 +525,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 
  /*
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
  */
 uint16_t
 i40e_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
@@ -602,15 +538,15 @@ i40e_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
  * vPMD receive routine that reassembles single burst of 32 scattered packets
  *
  * Notice:
- * - nb_pkts < RTE_I40E_DESCS_PER_LOOP, just return no packet
+ * - nb_pkts < I40E_VPMD_DESCS_PER_LOOP, just return no packet
  */
 static uint16_t
 i40e_recv_scattered_burst_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			      uint16_t nb_pkts)
 {
 
-	struct i40e_rx_queue *rxq = rx_queue;
-	uint8_t split_flags[RTE_I40E_VPMD_RX_BURST] = {0};
+	struct ci_rx_queue *rxq = rx_queue;
+	uint8_t split_flags[I40E_VPMD_RX_BURST] = {0};
 
 	/* get some new buffers */
 	uint16_t nb_bufs = _recv_raw_pkts_vec(rxq, rx_pkts, nb_pkts,
@@ -650,15 +586,15 @@ i40e_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 {
 	uint16_t retval = 0;
 
-	while (nb_pkts > RTE_I40E_VPMD_RX_BURST) {
+	while (nb_pkts > I40E_VPMD_RX_BURST) {
 		uint16_t burst;
 
 		burst = i40e_recv_scattered_burst_vec(rx_queue,
 						      rx_pkts + retval,
-						      RTE_I40E_VPMD_RX_BURST);
+						      I40E_VPMD_RX_BURST);
 		retval += burst;
 		nb_pkts -= burst;
-		if (burst < RTE_I40E_VPMD_RX_BURST)
+		if (burst < I40E_VPMD_RX_BURST)
 			return retval;
 	}
 
@@ -755,15 +691,15 @@ i40e_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 }
 
 void __rte_cold
-i40e_rx_queue_release_mbufs_vec(struct i40e_rx_queue *rxq)
+i40e_rx_queue_release_mbufs_vec(struct ci_rx_queue *rxq)
 {
 	_i40e_rx_queue_release_mbufs_vec(rxq);
 }
 
 int __rte_cold
-i40e_rxq_vec_setup(struct i40e_rx_queue *rxq)
+i40e_rxq_vec_setup(struct ci_rx_queue *rxq)
 {
-	rxq->rx_using_sse = 1;
+	rxq->vector_rx = 1;
 	rxq->mbuf_initializer = ci_rxq_mbuf_initializer(rxq->port_id);
 	return 0;
 }

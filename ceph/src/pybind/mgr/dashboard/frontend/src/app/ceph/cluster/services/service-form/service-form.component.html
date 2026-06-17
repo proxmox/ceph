@@ -322,7 +322,7 @@
       @if (hostsAndLabels$ | async; as data) {
       @if (!serviceForm.controls.unmanaged.value && serviceForm.controls.placement.value === 'label') {
       <div class="form-item">
-        <cds-combo-box type="multi"
+        <cds-combo-box type="single"
                        selectionFeedback="top-after-reopen"
                        label="Label"
                        cdRequiredField="Label"
@@ -331,9 +331,7 @@
                        [appendInline]="true"
                        [items]="data.labels"
                        [invalid]="serviceForm.controls.label.invalid && serviceForm.controls.label.dirty"
-                       [invalidText]="requiredFieldLabel"
-                       (selected)="multiSelector($event, 'label')"
-                       i18n>
+                       [invalidText]="requiredFieldLabel">
           <cds-dropdown-list></cds-dropdown-list>
         </cds-combo-box>
         <ng-template #requiredFieldLabel>
@@ -354,7 +352,7 @@
                        id="hosts"
                        [appendInline]="true"
                        [items]="data.hosts"
-                       (selected)="multiSelector($event, 'hosts')"
+                       (selected)="multiSelector($event)"
                        i18n>
           <cds-dropdown-list></cds-dropdown-list>
         </cds-combo-box>

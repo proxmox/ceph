@@ -181,15 +181,15 @@ static int dpdk_stats_collect(struct pmd_internals *internals, struct rte_eth_st
 	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
 	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
 	nthw_stat_t *p_nthw_stat = p_nt4ga_stat->mp_nthw_stat;
-	const int if_index = internals->n_intf_no;
+	const int n_intf_no = internals->n_intf_no;
 	uint64_t rx_total = 0;
 	uint64_t rx_total_b = 0;
 	uint64_t tx_total = 0;
 	uint64_t tx_total_b = 0;
 	uint64_t tx_err_total = 0;
 
-	if (!p_nthw_stat || !p_nt4ga_stat || !stats || if_index < 0 ||
-		if_index > NUM_ADAPTER_PORTS_MAX) {
+	if (!p_nthw_stat || !p_nt4ga_stat || !stats || n_intf_no < 0 ||
+		n_intf_no > NUM_ADAPTER_PORTS_MAX) {
 		NT_LOG_DBGX(WRN, NTNIC, "error exit");
 		return -1;
 	}
@@ -200,22 +200,24 @@ static int dpdk_stats_collect(struct pmd_internals *internals, struct rte_eth_st
 	 */
 	ntnic_filter_ops->poll_statistics(internals);
 
-	memset(stats, 0, sizeof(*stats));
-
-	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS && i < internals->nb_rx_queues; i++) {
-		stats->q_ipackets[i] = internals->rxq_scg[i].rx_pkts;
-		stats->q_ibytes[i] = internals->rxq_scg[i].rx_bytes;
-		rx_total += stats->q_ipackets[i];
-		rx_total_b += stats->q_ibytes[i];
+	for (i = 0; i < internals->nb_rx_queues; i++) {
+		if (i < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
+			stats->q_ipackets[i] = internals->rxq_scg[i].rx_pkts;
+			stats->q_ibytes[i] = internals->rxq_scg[i].rx_bytes;
+		}
+		rx_total += internals->rxq_scg[i].rx_pkts;
+		rx_total_b += internals->rxq_scg[i].rx_bytes;
 	}
 
-	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS && i < internals->nb_tx_queues; i++) {
-		stats->q_opackets[i] = internals->txq_scg[i].tx_pkts;
-		stats->q_obytes[i] = internals->txq_scg[i].tx_bytes;
-		stats->q_errors[i] = internals->txq_scg[i].err_pkts;
-		tx_total += stats->q_opackets[i];
-		tx_total_b += stats->q_obytes[i];
-		tx_err_total += stats->q_errors[i];
+	for (i = 0; i < internals->nb_tx_queues; i++) {
+		if (i < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
+			stats->q_opackets[i] = internals->txq_scg[i].tx_pkts;
+			stats->q_obytes[i] = internals->txq_scg[i].tx_bytes;
+			stats->q_errors[i] = internals->txq_scg[i].err_pkts;
+		}
+		tx_total += internals->txq_scg[i].tx_pkts;
+		tx_total_b += internals->txq_scg[i].tx_bytes;
+		tx_err_total += internals->txq_scg[i].err_pkts;
 	}
 
 	stats->imissed = internals->rx_missed;
@@ -313,8 +315,8 @@ static int eth_stats_reset(struct rte_eth_dev *eth_dev)
 	struct pmd_internals *internals = eth_dev->data->dev_private;
 	struct drv_s *p_drv = internals->p_drv;
 	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
-	const int if_index = internals->n_intf_no;
-	dpdk_stats_reset(internals, p_nt_drv, if_index);
+	const int n_intf_no = internals->n_intf_no;
+	dpdk_stats_reset(internals, p_nt_drv, n_intf_no);
 	return 0;
 }
 
@@ -329,6 +331,11 @@ eth_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *dev_info
 	}
 
 	struct pmd_internals *internals = eth_dev->data->dev_private;
+
+	if (internals == NULL) {
+		NT_LOG(ERR, NTNIC, "PMD-specific private data not initialized");
+		return -1;
+	}
 
 	const int n_intf_no = internals->n_intf_no;
 	struct adapter_info_s *p_adapter_info = &internals->p_drv->ntdrv.adapter_info;
@@ -372,7 +379,7 @@ static __rte_always_inline int copy_virtqueue_to_mbuf(struct rte_mbuf *mbuf,
 	 * 1. virtqueue packets may be segmented
 	 * 2. the mbuf size may be too small and may need to be segmented
 	 */
-	char *data = (char *)hw_recv->addr + SG_HDR_SIZE;
+	char *data = (char *)hw_recv[src_pkt].addr + SG_HDR_SIZE;
 	char *dst = (char *)mbuf->buf_addr + RTE_PKTMBUF_HEADROOM;
 
 	/* set packet length */
@@ -842,7 +849,8 @@ static int allocate_hw_virtio_queues(struct rte_eth_dev *eth_dev, int vf_num, st
 
 		if (!hwq->pkt_buffers) {
 			NT_LOG(ERR, NTNIC,
-				"Failed to allocated buffer array for hw-queue %p, total size %i, elements %i",
+				"Failed to allocated buffer array for hw-queue %p, total size %"
+				PRIu32 ", elements %i",
 				hwq->pkt_buffers, size, num_descr);
 			rte_free(virt);
 			return -1;
@@ -864,11 +872,16 @@ static int allocate_hw_virtio_queues(struct rte_eth_dev *eth_dev, int vf_num, st
 		res = nt_vfio_dma_map(vf_num, virt_addr, &iova_addr, size);
 
 		NT_LOG(DBG, NTNIC,
-			"VFIO MMAP res %i, virt %p, iova %016" PRIX64 ", vf_num %i, num pkt bufs %i, tot size %i",
+			"VFIO MMAP res %i, virt %p, iova %016"
+			PRIX64 ", vf_num %i, num pkt bufs %i, tot size %" PRIu32 "",
 			res, virt_addr, iova_addr, vf_num, num_descr, size);
 
 		if (res != 0)
 			return -1;
+
+		hwq->pkt_buffers_ctrl.virt_addr = virt_addr;
+		hwq->pkt_buffers_ctrl.phys_addr = (void *)iova_addr;
+		hwq->pkt_buffers_ctrl.len = size;
 
 		for (i = 0; i < num_descr; i++) {
 			hwq->pkt_buffers[i].virt_addr =
@@ -891,8 +904,12 @@ static int allocate_hw_virtio_queues(struct rte_eth_dev *eth_dev, int vf_num, st
 	hwq->vf_num = vf_num;
 	hwq->virt_queues_ctrl.virt_addr = virt;
 	hwq->virt_queues_ctrl.phys_addr = (void *)(iova_addr);
-	hwq->virt_queues_ctrl.len = 0x100000;
+	hwq->virt_queues_ctrl.len = ONE_G_SIZE;
 	iova_addr += 0x100000;
+
+	hwq->pkt_buffers_ctrl.virt_addr = NULL;
+	hwq->pkt_buffers_ctrl.phys_addr = NULL;
+	hwq->pkt_buffers_ctrl.len = 0;
 
 	NT_LOG(DBG, NTNIC,
 		"VFIO MMAP: virt_addr=%p phys_addr=%p size=%" PRIX32 " hpa=%" PRIX64 "",
@@ -905,7 +922,8 @@ static int allocate_hw_virtio_queues(struct rte_eth_dev *eth_dev, int vf_num, st
 
 	if (!hwq->pkt_buffers) {
 		NT_LOG(ERR, NTNIC,
-			"Failed to allocated buffer array for hw-queue %p, total size %i, elements %i",
+			"Failed to allocated buffer array for hw-queue %p, total size %"
+			PRIu32 ", elements %i",
 			hwq->pkt_buffers, size, num_descr);
 		rte_free(virt);
 		return -1;
@@ -938,11 +956,25 @@ static int deallocate_hw_virtio_queues(struct hwq_s *hwq)
 	void *virt = hwq->virt_queues_ctrl.virt_addr;
 
 	int res = nt_vfio_dma_unmap(vf_num, hwq->virt_queues_ctrl.virt_addr,
-			(uint64_t)hwq->virt_queues_ctrl.phys_addr, ONE_G_SIZE);
+			(uint64_t)hwq->virt_queues_ctrl.phys_addr, hwq->virt_queues_ctrl.len);
 
 	if (res != 0) {
 		NT_LOG(ERR, NTNIC, "VFIO UNMMAP FAILED! res %i, vf_num %i", res, vf_num);
 		return -1;
+	}
+
+	if (hwq->pkt_buffers_ctrl.virt_addr != NULL &&
+			hwq->pkt_buffers_ctrl.phys_addr != NULL &&
+			hwq->pkt_buffers_ctrl.len > 0) {
+		int res = nt_vfio_dma_unmap(vf_num,
+				hwq->pkt_buffers_ctrl.virt_addr,
+				(uint64_t)hwq->pkt_buffers_ctrl.phys_addr,
+				hwq->pkt_buffers_ctrl.len);
+
+		if (res != 0) {
+			NT_LOG(ERR, NTNIC, "VFIO UNMMAP FAILED! res %i, vf_num %i", res, vf_num);
+			return -1;
+		}
 	}
 
 	release_hw_virtio_queues(hwq);
@@ -965,19 +997,19 @@ static void eth_rx_queue_release(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 	deallocate_hw_virtio_queues(&rx_q->hwq);
 }
 
-static int num_queues_alloced;
+static int num_queues_allocated;
 
 /* Returns num queue starting at returned queue num or -1 on fail */
 static int allocate_queue(int num)
 {
-	int next_free = num_queues_alloced;
-	NT_LOG_DBGX(DBG, NTNIC, "num_queues_alloced=%u, New queues=%u, Max queues=%u",
-		num_queues_alloced, num, MAX_TOTAL_QUEUES);
+	int next_free = num_queues_allocated;
+	NT_LOG_DBGX(DBG, NTNIC, "num_queues_allocated=%i, New queues=%i, Max queues=%d",
+		num_queues_allocated, num, MAX_TOTAL_QUEUES);
 
-	if (num_queues_alloced + num > MAX_TOTAL_QUEUES)
+	if (num_queues_allocated + num > MAX_TOTAL_QUEUES)
 		return -1;
 
-	num_queues_alloced += num;
+	num_queues_allocated += num;
 	return next_free;
 }
 
@@ -985,7 +1017,7 @@ static int eth_rx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 	uint16_t rx_queue_id,
 	uint16_t nb_rx_desc __rte_unused,
 	unsigned int socket_id __rte_unused,
-	const struct rte_eth_rxconf *rx_conf __rte_unused,
+	const struct rte_eth_rxconf *rx_conf,
 	struct rte_mempool *mb_pool)
 {
 	NT_LOG_DBGX(DBG, NTNIC, "Rx queue setup");
@@ -1009,7 +1041,8 @@ static int eth_rx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 		return 0;
 	}
 
-	NT_LOG(DBG, NTNIC, "(%i) NTNIC RX OVS-SW queue setup: queue id %i, hw queue index %i",
+	NT_LOG(DBG, NTNIC, "(%" PRIu32 ") NTNIC RX OVS-SW queue setup: queue id %"
+		PRIu16 ", hw queue index %i",
 		internals->port, rx_queue_id, rx_q->queue.hw_id);
 
 	rx_q->mb_pool = mb_pool;
@@ -1018,7 +1051,8 @@ static int eth_rx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 
 	mbp_priv = rte_mempool_get_priv(rx_q->mb_pool);
 	rx_q->buf_size = (uint16_t)(mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM);
-	rx_q->enabled = 1;
+	rx_q->enabled = !rx_conf->rx_deferred_start;
+	rx_q->rx_deferred_start = rx_conf->rx_deferred_start;
 
 	if (allocate_hw_virtio_queues(eth_dev, EXCEPTION_PATH_HID, &rx_q->hwq,
 			SG_NB_HW_RX_DESCRIPTORS, SG_HW_RX_PKT_BUFFER_SIZE) < 0)
@@ -1037,9 +1071,11 @@ static int eth_rx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 			&rx_q->hwq.virt_queues_ctrl,
 			rx_q->hwq.pkt_buffers,
 			SPLIT_RING,
-			-1);
+			-1,
+			rx_conf->rx_deferred_start);
 
-	NT_LOG(DBG, NTNIC, "(%i) NTNIC RX OVS-SW queues successfully setup", internals->port);
+	NT_LOG(DBG, NTNIC, "(%" PRIu32 ") NTNIC RX OVS-SW queues successfully setup",
+		internals->port);
 
 	return 0;
 }
@@ -1048,7 +1084,7 @@ static int eth_tx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 	uint16_t tx_queue_id,
 	uint16_t nb_tx_desc __rte_unused,
 	unsigned int socket_id __rte_unused,
-	const struct rte_eth_txconf *tx_conf __rte_unused)
+	const struct rte_eth_txconf *tx_conf)
 {
 	const struct port_ops *port_ops = get_port_ops();
 
@@ -1073,7 +1109,7 @@ static int eth_tx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 		return 0;
 	}
 
-	NT_LOG(DBG, NTNIC, "(%i) NTNIC TX OVS-SW queue setup: queue id %i, hw queue index %i",
+	NT_LOG(DBG, NTNIC, "(%" PRIu32 ") NTNIC TX OVS-SW queue setup: queue id %" PRIu16 ", hw queue index %i",
 		tx_q->port, tx_queue_id, tx_q->queue.hw_id);
 
 	if (tx_queue_id > internals->nb_tx_queues) {
@@ -1129,11 +1165,14 @@ static int eth_tx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 			tx_q->hwq.pkt_buffers,
 			SPLIT_RING,
 			-1,
-			IN_ORDER);
+			IN_ORDER,
+			tx_conf->tx_deferred_start);
 
-	tx_q->enabled = 1;
+	tx_q->enabled = !tx_conf->tx_deferred_start;
+	tx_q->tx_deferred_start = tx_conf->tx_deferred_start;
 
-	NT_LOG(DBG, NTNIC, "(%i) NTNIC TX OVS-SW queues successfully setup", internals->port);
+	NT_LOG(DBG, NTNIC, "(%" PRIu32 ") NTNIC TX OVS-SW queues successfully setup",
+		internals->port);
 
 	if (internals->type == PORT_TYPE_PHYSICAL) {
 		struct adapter_info_s *p_adapter_info = &internals->p_drv->ntdrv.adapter_info;
@@ -1167,25 +1206,97 @@ static int dev_set_mtu_inline(struct rte_eth_dev *eth_dev, uint16_t mtu)
 
 static int eth_rx_queue_start(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 {
+	if (sg_ops == NULL) {
+		NT_LOG_DBGX(DBG, NTNIC, "SG module is not initialized");
+		return -1;
+	}
+
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
+	nthw_dbs_t *p_nthw_dbs = p_nt_drv->adapter_info.fpga_info.mp_nthw_dbs;
+	struct ntnic_rx_queue *rx_q = &internals->rxq_scg[rx_queue_id];
+	int index = rx_q->queue.hw_id;
+
+	if (sg_ops->nthw_switch_rx_virt_queue(p_nthw_dbs, index, 1) != 0) {
+		NT_LOG_DBGX(DBG, NTNIC, "Failed to start Rx queue #%d", index);
+		return -1;
+	}
+
+	rx_q->enabled = 1;
 	eth_dev->data->rx_queue_state[rx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
 	return 0;
 }
 
 static int eth_rx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 {
+	if (sg_ops == NULL) {
+		NT_LOG_DBGX(DBG, NTNIC, "SG module is not initialized");
+		return -1;
+	}
+
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
+	nthw_dbs_t *p_nthw_dbs = p_nt_drv->adapter_info.fpga_info.mp_nthw_dbs;
+	struct ntnic_rx_queue *rx_q = &internals->rxq_scg[rx_queue_id];
+	int index = rx_q->queue.hw_id;
+
+	if (sg_ops->nthw_switch_rx_virt_queue(p_nthw_dbs, index, 0) != 0) {
+		NT_LOG_DBGX(DBG, NTNIC, "Failed to stop Rx queue #%d", index);
+		return -1;
+	}
+
+	rx_q->enabled = 0;
 	eth_dev->data->rx_queue_state[rx_queue_id] = RTE_ETH_QUEUE_STATE_STOPPED;
 	return 0;
 }
 
-static int eth_tx_queue_start(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
+static int eth_tx_queue_start(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
 {
-	eth_dev->data->tx_queue_state[rx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
+	if (sg_ops == NULL) {
+		NT_LOG_DBGX(DBG, NTNIC, "SG module is not initialized");
+		return -1;
+	}
+
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
+	nthw_dbs_t *p_nthw_dbs = p_nt_drv->adapter_info.fpga_info.mp_nthw_dbs;
+	struct ntnic_tx_queue *tx_q = &internals->txq_scg[tx_queue_id];
+	int index = tx_q->queue.hw_id;
+
+	if (sg_ops->nthw_switch_tx_virt_queue(p_nthw_dbs, index, 1) != 0) {
+		NT_LOG_DBGX(DBG, NTNIC, "Failed to start Tx queue #%d", index);
+		return -1;
+	}
+
+	tx_q->enabled = 1;
+	eth_dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
 	return 0;
 }
 
-static int eth_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
+static int eth_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
 {
-	eth_dev->data->tx_queue_state[rx_queue_id] = RTE_ETH_QUEUE_STATE_STOPPED;
+	if (sg_ops == NULL) {
+		NT_LOG_DBGX(DBG, NTNIC, "SG module is not initialized");
+		return -1;
+	}
+
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
+	nthw_dbs_t *p_nthw_dbs = p_nt_drv->adapter_info.fpga_info.mp_nthw_dbs;
+	struct ntnic_tx_queue *tx_q = &internals->txq_scg[tx_queue_id];
+	int index = tx_q->queue.hw_id;
+
+	if (sg_ops->nthw_switch_tx_virt_queue(p_nthw_dbs, index, 0) != 0) {
+		NT_LOG_DBGX(DBG, NTNIC, "Failed to stop Tx queue #%d", index);
+		return -1;
+	}
+
+	tx_q->enabled = 0;
+	eth_dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STOPPED;
 	return 0;
 }
 
@@ -1243,7 +1354,7 @@ eth_set_mc_addr_list(struct rte_eth_dev *eth_dev,
 			mc_addrs[i] = mc_addr_set[i];
 
 		else
-			(void)memset(&mc_addrs[i], 0, sizeof(mc_addrs[i]));
+			memset(&mc_addrs[i], 0, sizeof(mc_addrs[i]));
 
 	return 0;
 }
@@ -1274,16 +1385,18 @@ eth_dev_start(struct rte_eth_dev *eth_dev)
 	const int n_intf_no = internals->n_intf_no;
 	struct adapter_info_s *p_adapter_info = &internals->p_drv->ntdrv.adapter_info;
 
-	NT_LOG_DBGX(DBG, NTNIC, "Port %u", internals->n_intf_no);
+	NT_LOG_DBGX(DBG, NTNIC, "Port %i", internals->n_intf_no);
 
 	/* Start queues */
 	uint q;
 
 	for (q = 0; q < internals->nb_rx_queues; q++)
-		eth_rx_queue_start(eth_dev, q);
+		if (!internals->rxq_scg[q].rx_deferred_start)
+			eth_rx_queue_start(eth_dev, q);
 
 	for (q = 0; q < internals->nb_tx_queues; q++)
-		eth_tx_queue_start(eth_dev, q);
+		if (!internals->txq_scg[q].tx_deferred_start)
+			eth_tx_queue_start(eth_dev, q);
 
 	if (internals->type == PORT_TYPE_VIRTUAL || internals->type == PORT_TYPE_OVERRIDE) {
 		eth_dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
@@ -1332,7 +1445,7 @@ eth_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct pmd_internals *internals = eth_dev->data->dev_private;
 
-	NT_LOG_DBGX(DBG, NTNIC, "Port %u", internals->n_intf_no);
+	NT_LOG_DBGX(DBG, NTNIC, "Port %i", internals->n_intf_no);
 
 	if (internals->type != PORT_TYPE_VIRTUAL) {
 		uint q;
@@ -1367,7 +1480,6 @@ eth_dev_set_link_up(struct rte_eth_dev *eth_dev)
 		return 0;
 
 	RTE_ASSERT(port >= 0 && port < NUM_ADAPTER_PORTS_MAX);
-	RTE_ASSERT(port == internals->n_intf_no);
 
 	port_ops->set_adm_state(p_adapter_info, port, true);
 
@@ -1393,7 +1505,6 @@ eth_dev_set_link_down(struct rte_eth_dev *eth_dev)
 		return 0;
 
 	RTE_ASSERT(port >= 0 && port < NUM_ADAPTER_PORTS_MAX);
-	RTE_ASSERT(port == internals->n_intf_no);
 
 	port_ops->set_link_status(p_adapter_info, port, false);
 
@@ -1527,7 +1638,7 @@ static int eth_xstats_get(struct rte_eth_dev *eth_dev, struct rte_eth_xstat *sta
 	struct drv_s *p_drv = internals->p_drv;
 	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
 	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
-	int if_index = internals->n_intf_no;
+	int n_intf_no = internals->n_intf_no;
 	int nb_xstats;
 
 	const struct ntnic_xstats_ops *ntnic_xstats_ops = get_ntnic_xstats_ops();
@@ -1538,7 +1649,7 @@ static int eth_xstats_get(struct rte_eth_dev *eth_dev, struct rte_eth_xstat *sta
 	}
 
 	rte_spinlock_lock(&p_nt_drv->stat_lck);
-	nb_xstats = ntnic_xstats_ops->nthw_xstats_get(p_nt4ga_stat, stats, n, if_index);
+	nb_xstats = ntnic_xstats_ops->nthw_xstats_get(p_nt4ga_stat, stats, n, n_intf_no);
 	rte_spinlock_unlock(&p_nt_drv->stat_lck);
 	return nb_xstats;
 }
@@ -1552,7 +1663,7 @@ static int eth_xstats_get_by_id(struct rte_eth_dev *eth_dev,
 	struct drv_s *p_drv = internals->p_drv;
 	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
 	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
-	int if_index = internals->n_intf_no;
+	int n_intf_no = internals->n_intf_no;
 	int nb_xstats;
 
 	const struct ntnic_xstats_ops *ntnic_xstats_ops = get_ntnic_xstats_ops();
@@ -1564,7 +1675,7 @@ static int eth_xstats_get_by_id(struct rte_eth_dev *eth_dev,
 
 	rte_spinlock_lock(&p_nt_drv->stat_lck);
 	nb_xstats =
-		ntnic_xstats_ops->nthw_xstats_get_by_id(p_nt4ga_stat, ids, values, n, if_index);
+		ntnic_xstats_ops->nthw_xstats_get_by_id(p_nt4ga_stat, ids, values, n, n_intf_no);
 	rte_spinlock_unlock(&p_nt_drv->stat_lck);
 	return nb_xstats;
 }
@@ -1575,7 +1686,7 @@ static int eth_xstats_reset(struct rte_eth_dev *eth_dev)
 	struct drv_s *p_drv = internals->p_drv;
 	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
 	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
-	int if_index = internals->n_intf_no;
+	int n_intf_no = internals->n_intf_no;
 
 	struct ntnic_xstats_ops *ntnic_xstats_ops = get_ntnic_xstats_ops();
 
@@ -1585,9 +1696,9 @@ static int eth_xstats_reset(struct rte_eth_dev *eth_dev)
 	}
 
 	rte_spinlock_lock(&p_nt_drv->stat_lck);
-	ntnic_xstats_ops->nthw_xstats_reset(p_nt4ga_stat, if_index);
+	ntnic_xstats_ops->nthw_xstats_reset(p_nt4ga_stat, n_intf_no);
 	rte_spinlock_unlock(&p_nt_drv->stat_lck);
-	return dpdk_stats_reset(internals, p_nt_drv, if_index);
+	return dpdk_stats_reset(internals, p_nt_drv, n_intf_no);
 }
 
 static int eth_xstats_get_names(struct rte_eth_dev *eth_dev,
@@ -2193,25 +2304,23 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 		NT_LOG(DBG, NTNIC, "Meter module is not initialized");
 
 	/* Initialize the queue system */
-	if (err == 0) {
-		sg_ops = get_sg_ops();
+	sg_ops = get_sg_ops();
 
-		if (sg_ops != NULL) {
-			err = sg_ops->nthw_virt_queue_init(fpga_info);
+	if (sg_ops != NULL) {
+		err = sg_ops->nthw_virt_queue_init(fpga_info);
 
-			if (err != 0) {
-				NT_LOG(ERR, NTNIC,
-					"%s: Cannot initialize scatter-gather queues",
-					p_nt_drv->adapter_info.mp_adapter_id_str);
-
-			} else {
-				NT_LOG(DBG, NTNIC, "%s: Initialized scatter-gather queues",
-					p_nt_drv->adapter_info.mp_adapter_id_str);
-			}
+		if (err != 0) {
+			NT_LOG(ERR, NTNIC,
+				"%s: Cannot initialize scatter-gather queues",
+				p_nt_drv->adapter_info.mp_adapter_id_str);
 
 		} else {
-			NT_LOG_DBGX(DBG, NTNIC, "SG module is not initialized");
+			NT_LOG(DBG, NTNIC, "%s: Initialized scatter-gather queues",
+				p_nt_drv->adapter_info.mp_adapter_id_str);
 		}
+
+	} else {
+		NT_LOG_DBGX(DBG, NTNIC, "SG module is not initialized");
 	}
 
 	/* Start ctrl, monitor, stat thread only for primary process. */
@@ -2302,13 +2411,13 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 		/* Setup queue_ids */
 		if (nb_rx_queues > 1) {
 			NT_LOG(DBG, NTNIC,
-				"(%i) NTNIC configured with Rx multi queues. %i queues",
+				"(%i) NTNIC configured with Rx multi queues. %" PRIu32 " queues",
 				internals->n_intf_no, nb_rx_queues);
 		}
 
 		if (nb_tx_queues > 1) {
 			NT_LOG(DBG, NTNIC,
-				"(%i) NTNIC configured with Tx multi queues. %i queues",
+				"(%i) NTNIC configured with Tx multi queues. %" PRIu32 " queues",
 				internals->n_intf_no, nb_tx_queues);
 		}
 

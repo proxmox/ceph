@@ -202,7 +202,7 @@ nvmf_generate_discovery_log(struct spdk_nvmf_tgt *tgt, const char *hostnqn, size
 	return disc_log;
 }
 
-void
+int
 nvmf_get_discovery_log_page(struct spdk_nvmf_tgt *tgt, const char *hostnqn, struct iovec *iov,
 			    uint32_t iovcnt, uint64_t offset, uint32_t length,
 			    struct spdk_nvme_transport_id *cmd_source_trid)
@@ -214,6 +214,13 @@ nvmf_get_discovery_log_page(struct spdk_nvmf_tgt *tgt, const char *hostnqn, stru
 	struct spdk_nvmf_discovery_log_page *discovery_log_page;
 
 	discovery_log_page = nvmf_generate_discovery_log(tgt, hostnqn, &log_page_size, cmd_source_trid);
+
+	if (offset >= log_page_size) {
+		SPDK_ERRLOG("Invalid Get log page discovery offset: (%" PRIu64 "), log page size (%zu)\n",
+			    offset, log_page_size);
+		free(discovery_log_page);
+		return -EINVAL;
+	}
 
 	/* Copy the valid part of the discovery log page, if any */
 	if (discovery_log_page) {
@@ -241,4 +248,6 @@ nvmf_get_discovery_log_page(struct spdk_nvmf_tgt *tgt, const char *hostnqn, stru
 
 		free(discovery_log_page);
 	}
+
+	return 0;
 }

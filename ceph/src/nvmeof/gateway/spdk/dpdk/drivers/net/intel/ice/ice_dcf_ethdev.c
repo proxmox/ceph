@@ -106,7 +106,7 @@ ice_dcf_xmit_pkts(__rte_unused void *tx_queue,
 }
 
 static int
-ice_dcf_init_rxq(struct rte_eth_dev *dev, struct ice_rx_queue *rxq)
+ice_dcf_init_rxq(struct rte_eth_dev *dev, struct ci_rx_queue *rxq)
 {
 	struct ice_dcf_adapter *dcf_ad = dev->data->dev_private;
 	struct rte_eth_dev_data *dev_data = dev->data;
@@ -145,8 +145,7 @@ ice_dcf_init_rxq(struct rte_eth_dev *dev, struct ice_rx_queue *rxq)
 static int
 ice_dcf_init_rx_queues(struct rte_eth_dev *dev)
 {
-	struct ice_rx_queue **rxq =
-		(struct ice_rx_queue **)dev->data->rx_queues;
+	struct ci_rx_queue **rxq = (struct ci_rx_queue **)dev->data->rx_queues;
 	int i, ret;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
@@ -282,9 +281,9 @@ ice_dcf_config_rx_queues_irqs(struct rte_eth_dev *dev,
 }
 
 static int
-alloc_rxq_mbufs(struct ice_rx_queue *rxq)
+alloc_rxq_mbufs(struct ci_rx_queue *rxq)
 {
-	volatile union ice_rx_flex_desc *rxd;
+	volatile union ci_rx_flex_desc *rxd;
 	struct rte_mbuf *mbuf = NULL;
 	uint64_t dma_addr;
 	uint16_t i;
@@ -305,10 +304,10 @@ alloc_rxq_mbufs(struct ice_rx_queue *rxq)
 		dma_addr =
 			rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 
-		rxd = &rxq->rx_ring[i];
+		rxd = &rxq->rx_flex_ring[i];
 		rxd->read.pkt_addr = dma_addr;
 		rxd->read.hdr_addr = 0;
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+#ifndef RTE_NET_INTEL_USE_16BYTE_DESC
 		rxd->read.rsvd1 = 0;
 		rxd->read.rsvd2 = 0;
 #endif
@@ -324,7 +323,7 @@ ice_dcf_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
 	struct ice_dcf_adapter *ad = dev->data->dev_private;
 	struct iavf_hw *hw = &ad->real_hw.avf;
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	int err = 0;
 
 	if (rx_queue_id >= dev->data->nb_rx_queues)
@@ -358,7 +357,7 @@ ice_dcf_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 }
 
 static inline void
-reset_rx_queue(struct ice_rx_queue *rxq)
+reset_rx_queue(struct ci_rx_queue *rxq)
 {
 	uint16_t len;
 	uint32_t i;
@@ -368,8 +367,8 @@ reset_rx_queue(struct ice_rx_queue *rxq)
 
 	len = rxq->nb_rx_desc + ICE_RX_MAX_BURST;
 
-	for (i = 0; i < len * sizeof(union ice_rx_flex_desc); i++)
-		((volatile char *)rxq->rx_ring)[i] = 0;
+	for (i = 0; i < len * sizeof(union ci_rx_flex_desc); i++)
+		((volatile char *)rxq->rx_flex_ring)[i] = 0;
 
 	memset(&rxq->fake_mbuf, 0x0, sizeof(rxq->fake_mbuf));
 
@@ -429,7 +428,7 @@ ice_dcf_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
 	struct ice_dcf_adapter *ad = dev->data->dev_private;
 	struct ice_dcf_hw *hw = &ad->real_hw;
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	int err;
 
 	if (rx_queue_id >= dev->data->nb_rx_queues)
@@ -511,7 +510,7 @@ ice_dcf_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 static int
 ice_dcf_start_queues(struct rte_eth_dev *dev)
 {
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	struct ci_tx_queue *txq;
 	int nb_rxq = 0;
 	int nb_txq, i;
@@ -638,7 +637,7 @@ ice_dcf_stop_queues(struct rte_eth_dev *dev)
 {
 	struct ice_dcf_adapter *ad = dev->data->dev_private;
 	struct ice_dcf_hw *hw = &ad->real_hw;
-	struct ice_rx_queue *rxq;
+	struct ci_rx_queue *rxq;
 	struct ci_tx_queue *txq;
 	int ret, i;
 
@@ -1394,6 +1393,26 @@ ice_dcf_dev_rss_reta_query(struct rte_eth_dev *dev,
 }
 
 static int
+ice_dcf_set_rss_key(struct ice_dcf_hw *hw, uint8_t *key, uint8_t key_len)
+{
+	/* HENA setting, it is enabled by default, no change */
+	if (!key || key_len == 0) {
+		PMD_DRV_LOG(DEBUG, "No key to be configured");
+		return 0;
+	} else if (key_len != hw->vf_res->rss_key_size) {
+		PMD_DRV_LOG(ERR, "The size of hash key configured "
+			"(%d) doesn't match the size of hardware can "
+			"support (%d)", key_len,
+			hw->vf_res->rss_key_size);
+		return -EINVAL;
+	}
+
+	rte_memcpy(hw->rss_key, key, key_len);
+
+	return ice_dcf_configure_rss_key(hw);
+}
+
+static int
 ice_dcf_dev_rss_hash_update(struct rte_eth_dev *dev,
 			struct rte_eth_rss_conf *rss_conf)
 {
@@ -1404,21 +1423,8 @@ ice_dcf_dev_rss_hash_update(struct rte_eth_dev *dev,
 	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF))
 		return -ENOTSUP;
 
-	/* HENA setting, it is enabled by default, no change */
-	if (!rss_conf->rss_key || rss_conf->rss_key_len == 0) {
-		PMD_DRV_LOG(DEBUG, "No key to be configured");
-		return 0;
-	} else if (rss_conf->rss_key_len != hw->vf_res->rss_key_size) {
-		PMD_DRV_LOG(ERR, "The size of hash key configured "
-			"(%d) doesn't match the size of hardware can "
-			"support (%d)", rss_conf->rss_key_len,
-			hw->vf_res->rss_key_size);
-		return -EINVAL;
-	}
-
-	rte_memcpy(hw->rss_key, rss_conf->rss_key, rss_conf->rss_key_len);
-
-	ret = ice_dcf_configure_rss_key(hw);
+	/* set hash key */
+	ret = ice_dcf_set_rss_key(hw, rss_conf->rss_key, rss_conf->rss_key_len);
 	if (ret)
 		return ret;
 
@@ -1452,8 +1458,7 @@ ice_dcf_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 	if (!(hw->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_RSS_PF))
 		return -ENOTSUP;
 
-	/* Just set it to default value now. */
-	rss_conf->rss_hf = ICE_RSS_OFFLOAD_ALL;
+	rss_conf->rss_hf = dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf;
 
 	if (!rss_conf->rss_key)
 		return 0;

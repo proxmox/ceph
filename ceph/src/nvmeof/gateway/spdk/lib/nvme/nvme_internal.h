@@ -29,6 +29,7 @@
 #include "spdk/tree.h"
 #include "spdk/uuid.h"
 #include "spdk/fd_group.h"
+#include "spdk/string.h"
 
 #include "spdk_internal/assert.h"
 #include "spdk/log.h"
@@ -522,7 +523,7 @@ struct spdk_nvme_qpair {
 
 	/* Entries below here are not touched in the main I/O path. */
 
-	struct nvme_completion_poll_status	*poll_status;
+	struct nvme_completion_poll_status	*fabric_poll_status;
 
 	/* List entry for spdk_nvme_ctrlr::active_io_qpairs */
 	TAILQ_ENTRY(spdk_nvme_qpair)		tailq;
@@ -603,27 +604,72 @@ struct spdk_nvme_ns {
 	RB_ENTRY(spdk_nvme_ns)		node;
 };
 
-#define CTRLR_STRING(ctrlr) \
-	(spdk_nvme_trtype_is_fabrics(ctrlr->trid.trtype) ? \
-	ctrlr->trid.subnqn : ctrlr->trid.traddr)
+#define NVME_CTRLR_LOG_FMT "%s%s%s%s%s,%u"
+#define NVME_CTRLR_LOG_ARGS(ctrlr) \
+  spdk_nvme_trtype_is_fabrics((ctrlr)->trid.trtype) ? (ctrlr)->opts.hostnqn : "", \
+  spdk_nvme_trtype_is_fabrics((ctrlr)->trid.trtype) ? "," : "", \
+  spdk_nvme_trtype_is_fabrics((ctrlr)->trid.trtype) ? (ctrlr)->trid.subnqn : "", \
+  spdk_nvme_trtype_is_fabrics((ctrlr)->trid.trtype) ? "," : "", \
+  (ctrlr)->trid.traddr, \
+  (ctrlr)->cntlid
 
-#define NVME_CTRLR_ERRLOG(ctrlr, format, ...) \
-	SPDK_ERRLOG("[%s, %u] " format, CTRLR_STRING(ctrlr), ctrlr->cntlid, ##__VA_ARGS__);
+#define NVME_QPAIR_LOG_FMT "%u,%p"
+#define NVME_QPAIR_LOG_ARGS(qpair) \
+  (qpair)->id, \
+  (qpair)
 
-#define NVME_CTRLR_WARNLOG(ctrlr, format, ...) \
-	SPDK_WARNLOG("[%s, %u] " format, CTRLR_STRING(ctrlr), ctrlr->cntlid, ##__VA_ARGS__);
+#define NVME_CTRLR_LOG(type, ctrlr, format, ...) do { \
+	if ((ctrlr)) { \
+		SPDK_##type##LOG("["NVME_CTRLR_LOG_FMT"] " format, NVME_CTRLR_LOG_ARGS(ctrlr), ##__VA_ARGS__); \
+	} else { \
+		SPDK_##type##LOG("[null ctrlr] " format, ##__VA_ARGS__); \
+	} \
+} while (0)
 
-#define NVME_CTRLR_NOTICELOG(ctrlr, format, ...) \
-	SPDK_NOTICELOG("[%s, %u] " format, CTRLR_STRING(ctrlr), ctrlr->cntlid, ##__VA_ARGS__);
+#define NVME_CTRLR_LOG2(type, component, ctrlr, format, ...) do { \
+	if ((ctrlr)) { \
+		SPDK_##type##LOG(component, "["NVME_CTRLR_LOG_FMT"] " format, NVME_CTRLR_LOG_ARGS(ctrlr), ##__VA_ARGS__); \
+	} else { \
+		SPDK_##type##LOG(component, "[null ctrlr] " format, ##__VA_ARGS__); \
+	} \
+} while (0)
 
-#define NVME_CTRLR_INFOLOG(ctrlr, format, ...) \
-	SPDK_INFOLOG(nvme, "[%s, %u] " format, CTRLR_STRING(ctrlr), ctrlr->cntlid, ##__VA_ARGS__);
+#define NVME_CTRLR_ERRLOG(ctrlr, format, ...) NVME_CTRLR_LOG(ERR, ctrlr, format, ##__VA_ARGS__)
+#define NVME_CTRLR_WARNLOG(ctrlr, format, ...) NVME_CTRLR_LOG(WARN, ctrlr, format, ##__VA_ARGS__)
+#define NVME_CTRLR_NOTICELOG(ctrlr, format, ...) NVME_CTRLR_LOG(NOTICE, ctrlr, format, ##__VA_ARGS__)
+#define NVME_CTRLR_INFOLOG(ctrlr, format, ...) NVME_CTRLR_LOG2(INFO, nvme, ctrlr, format, ##__VA_ARGS__)
+
+#define NVME_QPAIR_LOG(type, qpair, format, ...) do { \
+	if (!(qpair)) { \
+		SPDK_##type##LOG("[null qpair] " format, ##__VA_ARGS__); \
+	} else if (!(qpair)->ctrlr) { \
+		SPDK_##type##LOG("[null ctrlr,"NVME_QPAIR_LOG_FMT"] " format, NVME_QPAIR_LOG_ARGS(qpair), ##__VA_ARGS__); \
+	} else { \
+		SPDK_##type##LOG("["NVME_CTRLR_LOG_FMT","NVME_QPAIR_LOG_FMT",%s] " format, NVME_CTRLR_LOG_ARGS((qpair)->ctrlr), NVME_QPAIR_LOG_ARGS(qpair), nvme_qpair_state_string((qpair)->state), ##__VA_ARGS__); \
+	} \
+} while (0)
+
+#define NVME_QPAIR_LOG2(type, component, qpair, format, ...) do { \
+	if (!(qpair)) { \
+		SPDK_##type##LOG(component, "[null qpair] " format, ##__VA_ARGS__); \
+	} else if (!(qpair)->ctrlr) { \
+		SPDK_##type##LOG(component, "[null ctrlr,"NVME_QPAIR_LOG_FMT"] " format, NVME_QPAIR_LOG_ARGS(qpair), ##__VA_ARGS__); \
+	} else { \
+		SPDK_##type##LOG(component, "["NVME_CTRLR_LOG_FMT","NVME_QPAIR_LOG_FMT"] " format, NVME_CTRLR_LOG_ARGS((qpair)->ctrlr), NVME_QPAIR_LOG_ARGS(qpair), ##__VA_ARGS__); \
+	} \
+} while (0)
+
+#define NVME_QPAIR_ERRLOG(qpair, format, ...) NVME_QPAIR_LOG(ERR, qpair, format, ##__VA_ARGS__)
+#define NVME_QPAIR_WARNLOG(qpair, format, ...) NVME_QPAIR_LOG(WARN, qpair, format, ##__VA_ARGS__)
+#define NVME_QPAIR_NOTICELOG(qpair, format, ...) NVME_QPAIR_LOG(NOTICE, qpair, format, ##__VA_ARGS__)
+#define NVME_QPAIR_INFOLOG(qpair, format, ...) NVME_QPAIR_LOG2(INFO, nvme, qpair, format, ##__VA_ARGS__)
 
 #ifdef DEBUG
-#define NVME_CTRLR_DEBUGLOG(ctrlr, format, ...) \
-	SPDK_DEBUGLOG(nvme, "[%s, %u] " format, CTRLR_STRING(ctrlr), ctrlr->cntlid, ##__VA_ARGS__);
+#define NVME_CTRLR_DEBUGLOG(ctrlr, format, ...) NVME_CTRLR_LOG2(DEBUG, nvme, ctrlr, format, ##__VA_ARGS__)
+#define NVME_QPAIR_DEBUGLOG(qpair, format, ...) NVME_QPAIR_LOG2(DEBUG, nvme, qpair, format, ##__VA_ARGS__)
 #else
-#define NVME_CTRLR_DEBUGLOG(ctrlr, ...) do { } while (0)
+#define NVME_CTRLR_DEBUGLOG(...) do { } while (0)
+#define NVME_QPAIR_DEBUGLOG(...) do { } while (0)
 #endif
 
 /**
@@ -916,7 +962,14 @@ enum nvme_ctrlr_state {
 #define NVME_TIMEOUT_KEEP_EXISTING	UINT64_MAX
 
 struct spdk_nvme_ctrlr_aer_completion {
+	struct spdk_nvme_ctrlr	*ctrlr;
 	struct spdk_nvme_cpl	cpl;
+
+	union {
+		/* Contains payload of Changed Attached Namespace List log page. */
+		uint32_t		*changed_ns_list;
+	} log_page;
+
 	STAILQ_ENTRY(spdk_nvme_ctrlr_aer_completion) link;
 };
 
@@ -1287,21 +1340,28 @@ int	nvme_ctrlr_cmd_sanitize(struct spdk_nvme_ctrlr *ctrlr, uint32_t nsid,
 				struct spdk_nvme_sanitize *sanitize, uint32_t cdw11,
 				spdk_nvme_cmd_cb cb_fn, void *cb_arg);
 void	nvme_completion_poll_cb(void *arg, const struct spdk_nvme_cpl *cpl);
-int	nvme_wait_for_completion(struct spdk_nvme_qpair *qpair,
-				 struct nvme_completion_poll_status *status);
-int	nvme_wait_for_completion_robust_lock(struct spdk_nvme_qpair *qpair,
-		struct nvme_completion_poll_status *status,
-		pthread_mutex_t *robust_mutex);
-int	nvme_wait_for_completion_timeout(struct spdk_nvme_qpair *qpair,
-		struct nvme_completion_poll_status *status,
-		uint64_t timeout_in_usecs);
-int	nvme_wait_for_completion_robust_lock_timeout(struct spdk_nvme_qpair *qpair,
-		struct nvme_completion_poll_status *status,
-		pthread_mutex_t *robust_mutex,
-		uint64_t timeout_in_usecs);
-int	nvme_wait_for_completion_robust_lock_timeout_poll(struct spdk_nvme_qpair *qpair,
-		struct nvme_completion_poll_status *status,
-		pthread_mutex_t *robust_mutex);
+
+/**
+ * Poll admin qpair for completions until a command completes.
+ *
+ * \param ctrlr ctrlr with adminq to poll
+ * \param status completion status. The user must fill this structure with zeroes before calling
+ * this function
+ * \param release When set to true, releases the status before exit (if the timeout is not hit).
+ * Otherwise, it is the caller's responsibility.
+ *
+ * \return 0 if command completed without error,
+ * -EIO if command completed with error,
+ * -ECANCELED if command is not completed due to transport/device error or time expired
+ *
+ *  The command to wait upon must be submitted with nvme_completion_poll_cb as the callback
+ *  and status as the callback argument.
+ */
+int	nvme_wait_for_adminq_completion(struct spdk_nvme_ctrlr *ctrlr,
+					struct nvme_completion_poll_status *status, bool release);
+
+int	nvme_wait_for_completion_poll(struct spdk_nvme_qpair *qpair,
+				      struct nvme_completion_poll_status *status);
 
 struct spdk_nvme_ctrlr_process *nvme_ctrlr_get_process(struct spdk_nvme_ctrlr *ctrlr,
 		pid_t pid);
@@ -1569,14 +1629,15 @@ nvme_request_abort_match(struct nvme_request *req, void *cmd_cb_arg)
 	       (req->parent != NULL && req->parent->cb_arg == cmd_cb_arg);
 }
 
-static inline void
-nvme_qpair_set_state(struct spdk_nvme_qpair *qpair, enum nvme_qpair_state state)
-{
-	qpair->state = state;
-	if (state == NVME_QPAIR_ENABLED) {
-		qpair->is_new_qpair = false;
-	}
-}
+const char *nvme_qpair_state_string(enum nvme_qpair_state state);
+
+#define nvme_qpair_set_state(_qpair, _state) do { \
+	NVME_QPAIR_DEBUGLOG((_qpair), "setting qpair state to %s\n", nvme_qpair_state_string((_state))); \
+	(_qpair)->state = (_state); \
+	if ((_state) == NVME_QPAIR_ENABLED) { \
+		(_qpair)->is_new_qpair = false; \
+	} \
+} while (0)
 
 static inline enum nvme_qpair_state
 nvme_qpair_get_state(struct spdk_nvme_qpair *qpair) {
@@ -1671,7 +1732,6 @@ const struct spdk_nvme_transport *nvme_get_transport(const char *transport_name)
 const struct spdk_nvme_transport *nvme_get_first_transport(void);
 const struct spdk_nvme_transport *nvme_get_next_transport(const struct spdk_nvme_transport
 		*transport);
-void  nvme_ctrlr_update_namespaces(struct spdk_nvme_ctrlr *ctrlr);
 
 /* Transport specific functions */
 struct spdk_nvme_ctrlr *nvme_transport_ctrlr_construct(const struct spdk_nvme_transport_id *trid,

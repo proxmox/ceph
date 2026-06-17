@@ -60,6 +60,7 @@
 #include "Writer.h"
 #include "Compression.h"
 #include "BlueAdmin.h"
+#include "extblkdev/ExtBlkDevPlugin.h"
 
 #if defined(WITH_LTTNG)
 #define TRACEPOINT_DEFINE
@@ -5849,7 +5850,11 @@ void BlueStore::handle_conf_change(const ConfigProxy& conf,
   if (changed.count("bluestore_compression_mode") ||
       changed.count("bluestore_compression_algorithm") ||
       changed.count("bluestore_compression_min_blob_size") ||
-      changed.count("bluestore_compression_max_blob_size")) {
+      changed.count("bluestore_compression_min_blob_size_hdd") ||
+      changed.count("bluestore_compression_min_blob_size_ssd") ||
+      changed.count("bluestore_compression_max_blob_size") ||
+      changed.count("bluestore_compression_max_blob_size_hdd") ||
+      changed.count("bluestore_compression_max_blob_size_ssd")) {
     if (bdev) {
       _set_compression();
     }
@@ -7131,7 +7136,15 @@ int BlueStore::_open_bdev(bool create)
   ceph_assert(bdev == NULL);
   string p = path + "/block";
   bdev = BlockDevice::create(cct, p, aio_cb, static_cast<void*>(this), discard_cb, static_cast<void*>(this), "bluestore");
-  int r = bdev->open(p);
+  int r = 0;
+  int plugin_preload_r = 0;
+  if (cct->_conf->bluestore_use_ebd) {
+    //load plugins
+    plugin_preload_r = extblkdev::preload(cct);
+    // do not complain yet. wait until we check "extblkdev" meta.
+  }
+
+  r = bdev->open(p);
   if (r < 0)
     goto fail;
 
@@ -7139,6 +7152,34 @@ int BlueStore::_open_bdev(bool create)
     interval_set<uint64_t> whole_device;
     whole_device.insert(0, bdev->get_size());
     bdev->try_discard(whole_device, false);
+  }
+
+  if (!create && cct->_conf->bluestore_use_ebd) {
+    // for regular bdev opens check if it was deployed with plugin
+    ebd_health_alert.clear();
+    string meta_plugin_id;
+    r = read_meta("extblkdev", &meta_plugin_id);
+    if (r == 0) {
+      // plugin selection fixed to meta, plugins must be loaded
+      if (plugin_preload_r != 0) {
+        // we will complain twice - once generally about not loading plugins,
+        // and later that specific plugin is not ready
+        derr << "Failed preloading extblkdev plugins, error code: " << plugin_preload_r << dendl;
+      }
+      string bdev_plugin_id;
+      r = bdev->detect_ebd(bdev_plugin_id);
+      if (r != 0) {
+        ebd_health_alert = "plugin '" + meta_plugin_id + "' not loaded";
+        derr << __func__ << " plugin " << meta_plugin_id << " not loaded" << dendl;
+      } else {
+        if (meta_plugin_id != bdev_plugin_id) {
+          ebd_health_alert = " plugin '" + meta_plugin_id + "' used on mkfs, "
+            "but now uses plugin '" + bdev_plugin_id + "'";
+          derr << __func__ << " plugin '" << meta_plugin_id << "' used on mkfs, "
+            << "but now uses plugin '" << bdev_plugin_id << "'" << dendl;
+        }
+      }
+    }
   }
 
   if (bdev->supported_bdev_label()) {
@@ -8603,6 +8644,20 @@ int BlueStore::mkfs()
       r = write_meta("type", "bluestore");
       if (r < 0)
         return r;
+    }
+  }
+  if (cct->_conf->bluestore_use_ebd) {
+    // check if EBD plugin is enabled
+    string plugin_id;
+    r = bdev->detect_ebd(plugin_id);
+    if (r == 0) {
+      // retrieved name, save plugin into bdev metadata
+      r = write_meta("extblkdev", plugin_id);
+      if (r < 0)
+        return r;
+    } else {
+      // Non zero result is not a problem, it just means we do not have EBD plugin.
+      r = 0;
     }
   }
 
@@ -19388,6 +19443,13 @@ void BlueStore::_log_alerts(osd_alert_list_t& alerts)
     cct->_conf.get_val<double>("bluestore_warn_on_free_fragmentation") * 1e6) {
     alerts.emplace("BLUESTORE_FREE_FRAGMENTATION",
       fmt::format("{0:.6f}", logger->get(l_bluestore_fragmentation) * 1e-6));
+  }
+  if (!ebd_health_alert.empty()) {
+    std::string& v = alerts["EXTBLKDEV"];
+    if (!v.empty()) {
+      v += "; ";
+    }
+    v.append(ebd_health_alert);
   }
 }
 

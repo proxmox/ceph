@@ -65,6 +65,10 @@
 #define NVS_TYPE_SUBCH_RESP	133	/* same as SUBCH_REQ */
 #define NVS_TYPE_TXTBL_NOTE	134	/* notification */
 
+/* Private data for primary/secondary processes */
+struct hn_nvs_process_priv {
+	struct rte_vmbus_device *vmbus_dev;
+};
 
 /* NVS message common header */
 struct __rte_packed_begin hn_nvs_hdr {
@@ -216,6 +220,8 @@ int	hn_nvs_set_datapath(struct hn_data *hv, uint32_t path);
 void	hn_nvs_handle_vfassoc(struct rte_eth_dev *dev,
 			      const struct vmbus_chanpkt_hdr *hdr,
 			      const void *data);
+
+struct rte_vmbus_device *get_vmbus_device(struct hn_data *hv);
 
 static inline int
 hn_nvs_send(struct vmbus_channel *chan, uint16_t flags,

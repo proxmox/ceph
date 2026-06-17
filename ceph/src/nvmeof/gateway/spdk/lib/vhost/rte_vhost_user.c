@@ -763,9 +763,7 @@ vhost_session_mem_unregister(struct rte_vhost_memory *mem)
 			continue; /* region has not been registered */
 		}
 
-		if (spdk_mem_unregister((void *)start, len) != 0) {
-			assert(false);
-		}
+		spdk_mem_unregister((void *)start, len);
 	}
 }
 
@@ -1561,6 +1559,7 @@ extern_vhost_post_msg_handler(int vid, void *_msg)
 		pthread_mutex_unlock(&user_dev->lock);
 		break;
 	case VHOST_USER_SET_MEM_TABLE:
+	case VHOST_USER_ADD_MEM_REG:
 		vhost_register_memtable_if_required(vsession, vid);
 		pthread_mutex_lock(&user_dev->lock);
 		if (vsession->needs_restart) {

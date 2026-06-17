@@ -12,11 +12,17 @@ This intermediate module implements the common parts of mostly POSIX compliant d
 import json
 from collections.abc import Iterable
 from functools import cached_property
+from pathlib import PurePath
 from typing import TypedDict
 
 from typing_extensions import NotRequired
 
-from framework.exception import ConfigurationError, RemoteCommandExecutionError
+from framework.exception import (
+    ConfigurationError,
+    InternalError,
+    RemoteCommandExecutionError,
+)
+from framework.testbed_model.os_session import PortInfo
 from framework.utils import expand_range
 
 from .cpu import LogicalCore
@@ -27,6 +33,8 @@ from .posix_session import PosixSession
 class LshwConfigurationOutput(TypedDict):
     """The relevant parts of ``lshw``'s ``configuration`` section."""
 
+    #:
+    driver: str
     #:
     link: str
 
@@ -67,6 +75,7 @@ class LinuxSession(PosixSession):
 
     @staticmethod
     def _get_privileged_command(command: str) -> str:
+        command = command.replace(r"'", r"\'")
         return f"sudo -- sh -c '{command}'"
 
     def get_remote_cpus(self) -> list[LogicalCore]:
@@ -151,30 +160,40 @@ class LinuxSession(PosixSession):
 
         self.send_command(f"echo {number_of} | tee {hugepage_config_path}", privileged=True)
 
-    def get_port_info(self, pci_address: str) -> tuple[str, str]:
+    def get_port_info(self, pci_address: str) -> PortInfo:
         """Overrides :meth:`~.os_session.OSSession.get_port_info`.
 
         Raises:
             ConfigurationError: If the port could not be found.
         """
-        self._logger.debug(f"Gathering info for port {pci_address}.")
-
         bus_info = f"pci@{pci_address}"
         port = next(port for port in self._lshw_net_info if port.get("businfo") == bus_info)
         if port is None:
             raise ConfigurationError(f"Port {pci_address} could not be found on the node.")
 
-        logical_name = port.get("logicalname") or ""
-        if not logical_name:
-            self._logger.warning(f"Port {pci_address} does not have a valid logical name.")
-            # raise ConfigurationError(f"Port {pci_address} does not have a valid logical name.")
+        logical_name = port.get("logicalname", "")
+        mac_address = port.get("serial", "")
 
-        mac_address = port.get("serial") or ""
-        if not mac_address:
-            self._logger.warning(f"Port {pci_address} does not have a valid mac address.")
-            # raise ConfigurationError(f"Port {pci_address} does not have a valid mac address.")
+        configuration = port.get("configuration", {})
+        driver = configuration.get("driver", "")
+        is_link_up = configuration.get("link", "down") == "up"
 
-        return logical_name, mac_address
+        return PortInfo(mac_address, logical_name, driver, is_link_up)
+
+    def bind_ports_to_driver(self, ports: list[Port], driver_name: str) -> None:
+        """Overrides :meth:`~.os_session.OSSession.bind_ports_to_driver`.
+
+        The :attr:`~.devbind_script_path` property must be setup in order to call this method.
+        """
+        ports_pci_addrs = " ".join(port.pci for port in ports)
+
+        self.send_command(
+            f"{self.devbind_script_path} -b {driver_name} --force {ports_pci_addrs}",
+            privileged=True,
+            verify=True,
+        )
+
+        del self._lshw_net_info
 
     def bring_up_link(self, ports: Iterable[Port]) -> None:
         """Overrides :meth:`~.os_session.OSSession.bring_up_link`."""
@@ -183,10 +202,70 @@ class LinuxSession(PosixSession):
                 f"ip link set dev {port.logical_name} up", privileged=True, verify=True
             )
 
+        del self._lshw_net_info
+
+    @cached_property
+    def devbind_script_path(self) -> PurePath:
+        """The path to the dpdk-devbind.py script on the node.
+
+        Needs to be manually assigned first in order to be used.
+
+        Raises:
+            InternalError: If accessed before environment setup.
+        """
+        raise InternalError("Accessed devbind script path before setup.")
+
+    def create_vfs(self, pf_port: Port) -> None:
+        """Overrides :meth:`~.os_session.OSSession.create_vfs`.
+
+        Raises:
+            InternalError: If there are existing VFs which have to be deleted.
+        """
+        sys_bus_path = f"/sys/bus/pci/devices/{pf_port.pci}".replace(":", "\\:")
+        curr_num_vfs = int(
+            self.send_command(f"cat {sys_bus_path}/sriov_numvfs", privileged=True).stdout
+        )
+        if 0 < curr_num_vfs:
+            raise InternalError("There are existing VFs on the port which must be deleted.")
+        if curr_num_vfs == 0:
+            self.send_command(f"echo 1 | sudo tee {sys_bus_path}/sriov_numvfs", privileged=True)
+            self.refresh_lshw()
+
+    def delete_vfs(self, pf_port: Port) -> None:
+        """Overrides :meth:`~.os_session.OSSession.delete_vfs`."""
+        sys_bus_path = f"/sys/bus/pci/devices/{pf_port.pci}".replace(":", "\\:")
+        curr_num_vfs = int(
+            self.send_command(f"cat {sys_bus_path}/sriov_numvfs", privileged=True).stdout
+        )
+        if curr_num_vfs == 0:
+            self._logger.debug(f"No VFs found on port {pf_port.pci}, skipping deletion")
+        else:
+            self.send_command(f"echo 0 | sudo tee {sys_bus_path}/sriov_numvfs", privileged=True)
+
+    def get_pci_addr_of_vfs(self, pf_port: Port) -> list[str]:
+        """Overrides :meth:`~.os_session.OSSession.get_pci_addr_of_vfs`."""
+        sys_bus_path = f"/sys/bus/pci/devices/{pf_port.pci}".replace(":", "\\:")
+        curr_num_vfs = int(self.send_command(f"cat {sys_bus_path}/sriov_numvfs").stdout)
+        if curr_num_vfs > 0:
+            pci_addrs = self.send_command(
+                'awk -F "PCI_SLOT_NAME=" "/PCI_SLOT_NAME=/ {print \\$2}" '
+                + f"{sys_bus_path}/virtfn*/uevent",
+                privileged=True,
+            )
+            return pci_addrs.stdout.splitlines()
+        else:
+            return []
+
     @cached_property
     def _lshw_net_info(self) -> list[LshwOutput]:
         output = self.send_command("lshw -quiet -json -C network", verify=True)
         return json.loads(output.stdout)
+
+    def refresh_lshw(self) -> None:
+        """Force refresh of cached lshw network info."""
+        if "_lshw_net_info" in self.__dict__:
+            del self.__dict__["_lshw_net_info"]
+        _ = self._lshw_net_info
 
     def _update_port_attr(self, port: Port, attr_value: str | None, attr_name: str) -> None:
         if attr_value:

@@ -1,9 +1,6 @@
 # Not configured to test vtune.
 lib/bdev/vtune
 
-# Not configured to test rocksdb env file
-lib/rocksdb/env_spdk.cc
-
 # Not configured to test FC
 lib/nvmf/fc
 lib/nvmf/fc_ls
@@ -86,3 +83,8 @@ module/keyring/linux/keyring_rpc
 
 # fsdev/aio: Linux compilation uses linux_aio_mgr
 module/fsdev/aio/aio_mgr
+
+# Skipped items related to compression deprecation and removal
+module/accel/dpdk_compressdev/accel_dpdk_compressdev
+module/accel/dpdk_compressdev/accel_dpdk_compressdev_rpc
+test/unit/lib/accel/dpdk_compressdev.c/accel_dpdk_compressdev_ut

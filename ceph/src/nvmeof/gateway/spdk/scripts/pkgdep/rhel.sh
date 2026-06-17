@@ -40,31 +40,31 @@ disclaimer
 # on the enterprise systems, like RHEL.
 if [[ $ID == centos || $ID == rhel || $ID == rocky ]]; then
 	repos=() enable=("epel" "elrepo" "elrepo-testing") add=()
-	#[[ $ID == centos || $ID == rocky ]] && enable+=("extras")
 	if [[ $VERSION_ID == 7* ]]; then
-		repos+=("https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm")
-		repos+=("https://www.elrepo.org/elrepo-release-7.el7.elrepo.noarch.rpm")
-		[[ $ID == centos ]] && repos+=("centos-release-ceph-nautilus.noarch")
-		[[ $ID == centos ]] && repos+=("centos-release-scl-rh")
-		# Disable liburing, see https://github.com/spdk/spdk/issues/1564
-		if [[ $INSTALL_LIBURING == true ]]; then
-			echo "Liburing not supported on ${ID}$VERSION_ID, disabling"
-			INSTALL_LIBURING=false
-		fi
-		add+=("https://packages.daos.io/v2.0/CentOS7/packages/x86_64/daos_packages.repo")
-		enable+=("daos-packages")
+		printf 'Not supported distribution detected (%s):(%s), aborting\n' "$ID" "$VERSION_ID" >&2
+		exit 1
 	fi
+
 	if [[ $VERSION_ID == 8* ]]; then
 		repos+=("https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm")
 		repos+=("https://www.elrepo.org/elrepo-release-8.el8.elrepo.noarch.rpm")
 		add+=("https://packages.daos.io/v2.0/EL8/packages/x86_64/daos_packages.repo")
 		enable+=("daos-packages")
+		[[ $ID == centos ]] && enable+=("extras")
 	fi
 
 	if [[ $VERSION_ID == 9* ]]; then
 		repos+=("https://www.elrepo.org/elrepo-release-9.el9.elrepo.noarch.rpm")
 		repos+=("https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm")
 		[[ $ID != rhel ]] && enable+=("crb")
+		[[ $ID == centos ]] && enable+=("extras-common")
+	fi
+
+	if [[ $VERSION_ID == 10* ]]; then
+		repos+=("https://www.elrepo.org/elrepo-release-10.el10.elrepo.noarch.rpm")
+		repos+=("https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm")
+		[[ $ID != rhel ]] && enable+=("crb")
+		[[ $ID == centos ]] && enable+=("extras-common")
 	fi
 
 	# Add PowerTools needed for install CUnit-devel
@@ -79,10 +79,11 @@ if [[ $ID == centos || $ID == rhel || $ID == rocky ]]; then
 	[[ $ID == rhel && $VERSION_ID == 9* ]] && repos+=("https://download.ceph.com/rpm-reef/el9/noarch/ceph-release-1-1.el9.noarch.rpm")
 
 	if [[ $ID == rocky ]]; then
-		enable+=("devel")
+		enable+=("devel" "extras")
 	fi
 
 	if ((${#add[@]} > 0)); then
+		yum install -y yum-utils
 		for _repo in "${add[@]}"; do
 			yum-config-manager --add-repo "$_repo"
 		done
@@ -94,16 +95,17 @@ if [[ $ID == centos || $ID == rhel || $ID == rocky ]]; then
 	fi
 	# Potential dependencies can be needed from other RHEL repos, enable them
 	if [[ $ID == rhel ]]; then
-		[[ $VERSION_ID == 7* ]] && sub repos --enable "rhel-*-optional-rpms" --enable "rhel-*-extras-rpms"
 		[[ $VERSION_ID == 8* ]] && sub repos --enable codeready-builder-for-rhel-8-x86_64-rpms
 		[[ $VERSION_ID == 9* ]] && sub repos --enable codeready-builder-for-rhel-9-x86_64-rpms
 	fi
 fi
 
 yum install -y gcc gcc-c++ make CUnit-devel libaio-devel openssl-devel \
-	libuuid-devel libiscsi-devel ncurses-devel json-c-devel libcmocka-devel \
+	libuuid-devel ncurses-devel json-c-devel libcmocka-devel \
 	clang clang-devel python3-pip unzip keyutils keyutils-libs-devel fuse3-devel patchelf \
 	pkgconfig
+
+[[ $VERSION_ID != 10* ]] && yum install -y libiscsi-devel
 
 # Minimal install
 # workaround for arm: ninja fails with dep on skbuild python module
@@ -120,10 +122,6 @@ if [ "$(uname -m)" = "aarch64" ]; then
 	fi
 fi
 
-# for rhel and centos7 OpenSSL 1.1 should be installed via EPEL
-if echo "$ID $VERSION_ID" | grep -E -q 'centos 7|rhel 7'; then
-	yum install -y openssl11-devel
-fi
 if echo "$ID $VERSION_ID" | grep -E -q 'centos 8|rhel 8|rocky 8'; then
 	yum install -y python36 python36-devel
 	#Create hard link to use in SPDK as python
@@ -147,17 +145,12 @@ pip3 install python-magic
 pip3 install Jinja2
 pip3 install pandas
 pip3 install tabulate
-if ! [[ $ID == centos && $VERSION_ID == 7 ]]; then
-	# Problem with modules compilation on Centos7
-	pip3 install grpcio
-	pip3 install grpcio-tools
-fi
+pip3 install grpcio
+pip3 install grpcio-tools
 pip3 install pyyaml
 
-# Additional dependencies for SPDK CLI - not available in rhel and centos
-if ! echo "$ID $VERSION_ID" | grep -E -q 'rhel 7|centos 7'; then
-	yum install -y python3-configshell python3-pexpect
-fi
+# Additional dependencies for SPDK CLI
+yum install -y python3-configshell python3-pexpect
 # Additional dependencies for ISA-L used in compression
 yum install -y autoconf automake libtool help2man
 # Additional dependencies for DPDK
@@ -170,7 +163,9 @@ if [[ $INSTALL_DEV_TOOLS == "true" ]]; then
 
 	if echo "$ID $VERSION_ID" | grep -E -q 'centos 8|rocky 8'; then
 		devtool_pkgs+=(python3-pycodestyle astyle)
-		echo "Centos 8 and Rocky 8 do not have lcov and ShellCheck dependencies"
+	elif echo "$ID $VERSION_ID" | grep -E -q 'rocky 10'; then
+		echo "Rocky 10 do not have python3-pycodestyle and lcov dependencies"
+		devtool_pkgs+=(astyle ShellCheck)
 	elif [[ $ID == openeuler ]]; then
 		devtool_pkgs+=(python3-pycodestyle)
 		echo "openEuler does not have astyle, lcov and ShellCheck dependencies"
@@ -183,10 +178,6 @@ if [[ $INSTALL_DEV_TOOLS == "true" ]]; then
 	fi
 
 	yum install -y "${devtool_pkgs[@]}"
-fi
-if [[ $INSTALL_PMEM == "true" ]]; then
-	# Additional dependencies for building pmem based backends
-	yum install -y libpmemobj-devel || true
 fi
 if [[ $INSTALL_RBD == "true" ]]; then
 	# Additional dependencies for RBD bdev in NVMe over Fabrics
@@ -214,12 +205,7 @@ if [[ $INSTALL_AVAHI == "true" ]]; then
 	yum install -y avahi-devel
 fi
 if [[ $INSTALL_IDXD == "true" ]]; then
-	# accel-config-devel is required for kernel IDXD implementation used in DSA accel module
-	if [[ $ID == centos && $VERSION_ID == 7* ]]; then
-		echo "Installation of IDXD dependencies not supported under ${ID}${VERSION_ID}"
-	else
-		yum install -y accel-config-devel
-	fi
+	yum install -y accel-config-devel
 fi
 if [[ $INSTALL_LZ4 == "true" ]]; then
 	yum install -y lz4-devel

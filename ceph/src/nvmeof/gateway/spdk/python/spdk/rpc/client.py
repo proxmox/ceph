@@ -10,6 +10,17 @@ import logging
 import copy
 import ctypes
 
+try:
+    from shlex import quote
+except ImportError:
+    from pipes import quote
+
+from .cmd_parser import remove_null
+
+
+def print_array(a):
+    print(" ".join((quote(v) for v in a)))
+
 
 def print_dict(d):
     print(json.dumps(d, indent=2))
@@ -48,7 +59,7 @@ class JSONRPCClient(object):
         ch.setLevel(logging.DEBUG)
         self._logger = logging.getLogger("JSONRPCClient(%s)" % addr)
         self._logger.addHandler(ch)
-        self.log_set_level(kwargs.get('log_level', logging.ERROR))
+        self.set_log_level(kwargs.get('log_level', logging.ERROR))
         connect_retries = kwargs.get('conn_retries', 0)
 
         self.timeout = timeout if timeout is not None else 60.0
@@ -106,7 +117,7 @@ class JSONRPCClient(object):
     Args:
         lvl: Log level to set as accepted by logger.setLevel
     """
-    def log_set_level(self, lvl):
+    def set_log_level(self, lvl):
         self._logger.info("Setting log level to %s", lvl)
         self._logger.setLevel(lvl)
         self._logger.info("Log level set to %s", lvl)
@@ -180,6 +191,12 @@ class JSONRPCClient(object):
 
         self._logger.info("response:\n%s\n", json.dumps(response, indent=2))
         return response
+
+    def __getattr__(self, name):
+        """Dynamically handle unknown attributes as JSON-RPC methods"""
+        def rpc_method(**kwargs):
+            return self.call(name, remove_null(kwargs))
+        return rpc_method
 
     def call(self, method, params=None):
         self._logger.debug("call('%s')" % method)

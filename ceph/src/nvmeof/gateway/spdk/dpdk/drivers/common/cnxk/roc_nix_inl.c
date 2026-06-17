@@ -399,6 +399,7 @@ nix_inl_inb_ipsec_sa_tbl_setup(struct roc_nix *roc_nix)
 	struct nix_inl_dev *inl_dev = NULL;
 	uint64_t max_sa, i, sa_pow2_sz;
 	uint64_t sa_idx_w, lenm1_max;
+	uint64_t res_addr_offset;
 	uint8_t profile_id = 0;
 	struct mbox *mbox;
 	size_t inb_sa_sz;
@@ -471,6 +472,11 @@ nix_inl_inb_ipsec_sa_tbl_setup(struct roc_nix *roc_nix)
 		lf_cfg->ipsec_cfg0.sa_pow2_size = sa_pow2_sz;
 		lf_cfg->ipsec_cfg0.tag_const = 0;
 		lf_cfg->ipsec_cfg0.tt = SSO_TT_ORDERED;
+		if (roc_nix->res_addr_offset) {
+			lf_cfg->ipsec_cfg0_ext.res_addr_offset_valid = 1;
+			lf_cfg->ipsec_cfg0_ext.res_addr_offset =
+				(roc_nix->res_addr_offset & 0x80) | abs(roc_nix->res_addr_offset);
+		}
 	} else {
 		struct nix_rx_inl_lf_cfg_req *lf_cfg;
 		uint64_t def_cptq = 0;
@@ -489,14 +495,19 @@ nix_inl_inb_ipsec_sa_tbl_setup(struct roc_nix *roc_nix)
 			if (!inl_dev->nb_inb_cptlfs)
 				def_cptq = 0;
 			else
-				def_cptq = inl_dev->nix_inb_qids[0];
+				def_cptq = inl_dev->nix_inb_qids[inl_dev->inb_cpt_lf_id];
 		}
+
+		res_addr_offset = (uint64_t)(inl_dev->res_addr_offset & 0xFF) << 48;
+		if (res_addr_offset)
+			res_addr_offset |= (1UL << 56);
 
 		lf_cfg->enable = 1;
 		lf_cfg->profile_id = profile_id; /* IPsec profile is 0th one */
 		lf_cfg->rx_inline_sa_base = (uintptr_t)nix->inb_sa_base[profile_id];
-		lf_cfg->rx_inline_cfg0 = ((def_cptq << 57) | ((uint64_t)SSO_TT_ORDERED << 44) |
-					  (sa_pow2_sz << 16) | lenm1_max);
+		lf_cfg->rx_inline_cfg0 =
+			((def_cptq << 57) | res_addr_offset | ((uint64_t)SSO_TT_ORDERED << 44) |
+			 (sa_pow2_sz << 16) | lenm1_max);
 		lf_cfg->rx_inline_cfg1 = (max_sa - 1) | (sa_idx_w << 32);
 	}
 
@@ -565,9 +576,13 @@ static int
 nix_inl_reass_inb_sa_tbl_setup(struct roc_nix *roc_nix)
 {
 	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
+	struct idev_cfg *idev = idev_get_cfg();
 	struct nix_rx_inl_lf_cfg_req *lf_cfg;
+	struct nix_inl_dev *inl_dev = NULL;
 	uint64_t max_sa = 1, sa_pow2_sz;
 	uint64_t sa_idx_w, lenm1_max;
+	uint64_t res_addr_offset;
+	uint64_t def_cptq = 0;
 	size_t inb_sa_sz = 1;
 	uint8_t profile_id;
 	struct mbox *mbox;
@@ -607,11 +622,22 @@ nix_inl_reass_inb_sa_tbl_setup(struct roc_nix *roc_nix)
 	sa_idx_w = plt_log2_u32(max_sa);
 	lenm1_max = roc_nix_max_pkt_len(roc_nix) - 1;
 
+	if (idev && idev->nix_inl_dev) {
+		inl_dev = idev->nix_inl_dev;
+		if (inl_dev->nb_inb_cptlfs)
+			def_cptq = inl_dev->nix_inb_qids[inl_dev->inb_cpt_lf_id];
+	}
+
+	res_addr_offset = (uint64_t)(inl_dev->res_addr_offset & 0xFF) << 48;
+	if (res_addr_offset)
+		res_addr_offset |= (1UL << 56);
+
 	lf_cfg->enable = 1;
 	lf_cfg->profile_id = profile_id;
 	lf_cfg->rx_inline_sa_base = (uintptr_t)nix->inb_sa_base[profile_id];
 	lf_cfg->rx_inline_cfg0 =
-		(((uint64_t)SSO_TT_ORDERED << 44) | (sa_pow2_sz << 16) | lenm1_max);
+		((def_cptq << 57) | res_addr_offset | ((uint64_t)SSO_TT_ORDERED << 44) |
+		 (sa_pow2_sz << 16) | lenm1_max);
 	lf_cfg->rx_inline_cfg1 = (max_sa - 1) | (sa_idx_w << 32);
 
 	rc = mbox_process(mbox);
@@ -1286,7 +1312,7 @@ static int
 nix_inl_legacy_inb_init(struct roc_nix *roc_nix)
 {
 	struct nix *nix = roc_nix_to_nix_priv(roc_nix);
-	struct roc_cpt_inline_ipsec_inb_cfg cfg;
+	struct roc_cpt_inline_ipsec_inb_cfg cfg = {0};
 	struct idev_cfg *idev = idev_get_cfg();
 	uint16_t bpids[ROC_NIX_MAX_BPID_CNT];
 	struct roc_cpt *roc_cpt;
@@ -1971,6 +1997,14 @@ roc_nix_inl_rq_ena_dis(struct roc_nix *roc_nix, bool enable)
 
 		inl_dev = idev->nix_inl_dev;
 
+		if (!roc_model_is_cn10k()) {
+			if (inl_rq->spb_ena) {
+				rc = -EINVAL;
+				plt_err("inline RQ enable is not supported rc=%d", rc);
+				return rc;
+			}
+		}
+
 		rc = nix_rq_ena_dis(&inl_dev->dev, inl_rq, enable);
 		if (rc)
 			return rc;
@@ -2155,6 +2189,8 @@ roc_nix_inl_inb_tag_update(struct roc_nix *roc_nix, uint32_t tag_const,
 	cfg.max_sa = nix->inb_spi_mask + 1;
 	cfg.tt = tt;
 	cfg.tag_const = tag_const;
+	if (roc_nix->res_addr_offset)
+		cfg.res_addr_offset = roc_nix->res_addr_offset;
 
 	return roc_nix_lf_inl_ipsec_cfg(roc_nix, &cfg, true);
 }
@@ -2183,7 +2219,7 @@ roc_nix_inl_sa_sync(struct roc_nix *roc_nix, void *sa, bool inb,
 	if (idev)
 		inl_dev = idev->nix_inl_dev;
 
-	if (!inl_dev && roc_nix == NULL)
+	if ((!inl_dev && roc_nix == NULL) || sa == NULL)
 		return -EINVAL;
 
 	if (roc_nix) {
@@ -2263,7 +2299,7 @@ roc_nix_inl_ctx_write(struct roc_nix *roc_nix, void *sa_dptr, void *sa_cptr,
 	if (idev)
 		inl_dev = idev->nix_inl_dev;
 
-	if (!inl_dev && roc_nix == NULL)
+	if ((!inl_dev && roc_nix == NULL) || sa_dptr == NULL || sa_cptr == NULL)
 		return -EINVAL;
 
 	if (roc_nix) {

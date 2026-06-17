@@ -174,6 +174,7 @@ bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
 {
 	struct aiocb *aiocb = &aio_task->aiocb;
 	struct bdev_aio_io_channel *aio_ch = spdk_io_channel_get_ctx(ch);
+	int rc;
 
 	memset(aiocb, 0, sizeof(struct aiocb));
 	aiocb->aio_fildes = fdisk->fd;
@@ -188,10 +189,16 @@ bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
 	aio_task->ch = aio_ch;
 
 	if (type == SPDK_BDEV_IO_TYPE_READ) {
-		return aio_readv(aiocb);
+		rc = aio_readv(aiocb);
+	} else {
+		rc = aio_writev(aiocb);
 	}
 
-	return aio_writev(aiocb);
+	if (spdk_unlikely(rc < 0)) {
+		return -errno;
+	}
+
+	return rc;
 }
 #else
 static int
@@ -212,7 +219,7 @@ bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
 		io_set_eventfd(iocb, aio_ch->group_ch->efd);
 	}
 	iocb->data = aio_task;
-#ifdef RWF_NOWAIT
+#if defined(RWF_NOWAIT) && defined(SPDK_CONFIG_AIO_HAVE_RW_FLAGS)
 	if (fdisk->use_nowait) {
 		iocb->aio_rw_flags = RWF_NOWAIT;
 	}

@@ -5,6 +5,22 @@
 #include "roc_api.h"
 #include "roc_priv.h"
 
+uint8_t
+roc_npc_get_key_type(struct roc_npc *roc_npc, struct roc_npc_flow *flow)
+{
+	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
+
+	return npc_get_key_type(npc, flow);
+}
+
+uint8_t
+roc_npc_kex_key_type_config_get(struct roc_npc *roc_npc)
+{
+	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
+
+	return npc_kex_key_type_config_get(npc);
+}
+
 int
 roc_npc_mark_actions_get(struct roc_npc *roc_npc)
 {
@@ -197,10 +213,30 @@ roc_npc_mcam_enable_all_entries(struct roc_npc *roc_npc, bool enable)
 	return npc_flow_enable_all_entries(npc, enable);
 }
 
+void
+roc_npc_defrag_mcam_banks(struct roc_npc *roc_npc)
+{
+	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
+	struct mbox *mbox = mbox_get(npc->mbox);
+	struct npc_mcam_defrag_req *req;
+	struct npc_mcam_defrag_rsp *rsp;
+	int rc = 0;
+
+	req = (struct npc_mcam_defrag_req *)mbox_alloc_msg_npc_defrag(mbox);
+	if (req == NULL)
+		goto exit;
+
+	rc = mbox_process_msg(mbox, (void *)&rsp);
+	if (rc)
+		plt_err("Error when defragmenting MCAM banks.");
+
+exit:
+	mbox_put(mbox);
+}
+
 int
 roc_npc_mcam_alloc_entry(struct roc_npc *roc_npc, struct roc_npc_flow *mcam,
-			 struct roc_npc_flow *ref_mcam, int prio,
-			 int *resp_count)
+			 struct roc_npc_flow *ref_mcam, int prio, int *resp_count)
 {
 	struct npc *npc = roc_npc_to_npc_priv(roc_npc);
 
@@ -959,10 +995,11 @@ npc_parse_pattern(struct npc *npc, const struct roc_npc_item_info pattern[],
 	pst->mcam_data = (uint8_t *)flow->mcam_data;
 	pst->mcam_mask = (uint8_t *)flow->mcam_mask;
 
-	while (pattern->type != ROC_NPC_ITEM_TYPE_END &&
-	       layer < PLT_DIM(parse_stage_funcs)) {
+	while (pattern->type != ROC_NPC_ITEM_TYPE_END && layer < PLT_DIM(parse_stage_funcs)) {
 		/* Skip place-holders */
 		pattern = npc_parse_skip_void_and_any_items(pattern);
+		if (pattern->type == ROC_NPC_ITEM_TYPE_END)
+			break;
 
 		pst->pattern = pattern;
 		rc = parse_stage_funcs[layer](pst);
@@ -1885,11 +1922,11 @@ roc_npc_mcam_merge_base_steering_rule(struct roc_npc *roc_npc, struct roc_npc_fl
 		goto exit;
 	}
 
-	(void)mbox_alloc_msg_npc_read_base_steer_rule(mbox);
 	if (roc_model_is_cn20k()) {
 		struct npc_cn20k_mcam_read_base_rule_rsp *base_rule_rsp;
 		struct cn20k_mcam_entry *base_entry;
 
+		(void)mbox_alloc_msg_npc_cn20k_read_base_steer_rule(mbox);
 		rc = mbox_process_msg(mbox, (void *)&base_rule_rsp);
 		if (rc) {
 			plt_err("Failed to fetch VF's base MCAM entry");
@@ -1905,6 +1942,7 @@ roc_npc_mcam_merge_base_steering_rule(struct roc_npc *roc_npc, struct roc_npc_fl
 		struct npc_mcam_read_base_rule_rsp *base_rule_rsp;
 		struct mcam_entry *base_entry;
 
+		(void)mbox_alloc_msg_npc_read_base_steer_rule(mbox);
 		rc = mbox_process_msg(mbox, (void *)&base_rule_rsp);
 		if (rc) {
 			plt_err("Failed to fetch VF's base MCAM entry");

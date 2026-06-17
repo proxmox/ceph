@@ -8,6 +8,13 @@ pacman -Sy --needed --noconfirm gcc make cunit libaio openssl \
 	libutil-linux libiscsi python ncurses json-c cmocka ninja meson fuse3
 # Additional dependencies for SPDK CLI
 pacman -Sy --needed --noconfirm python-pexpect python-pip libffi
+
+# per PEP668 work inside virtual env
+virtdir=${PIP_VIRTDIR:-/var/spdk/dependencies/pip}
+python3 -m venv --upgrade-deps --system-site-packages "$virtdir"
+source "$virtdir/bin/activate"
+
+# install python packages
 pip install configshell_fb
 pip install pyelftools
 pip install ijson
@@ -43,16 +50,6 @@ if [[ $INSTALL_DEV_TOOLS == "true" ]]; then
 		makepkg -si --needed --noconfirm;
 		cd .. && rm -rf lcov-git;
 		popd"
-fi
-if [[ $INSTALL_PMEM == "true" ]]; then
-	# Additional dependencies for building pmem based backends
-	pacman -Sy --needed --noconfirm ndctl pkg-config
-	git clone https://github.com/pmem/pmdk.git /tmp/pmdk -b 1.6.1
-	make -C /tmp/pmdk -j$(nproc)
-	make install prefix=/usr -C /tmp/pmdk
-	echo "/usr/local/lib" > /etc/ld.so.conf.d/pmdk.conf
-	ldconfig
-	rm -rf /tmp/pmdk
 fi
 if [[ $INSTALL_RBD == "true" ]]; then
 	echo "Arch Linux does not have librados-devel and librbd-devel in mainline repositories."

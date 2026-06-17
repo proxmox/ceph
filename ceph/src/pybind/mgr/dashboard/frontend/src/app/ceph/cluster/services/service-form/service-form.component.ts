@@ -72,7 +72,6 @@ export class ServiceFormComponent extends CdForm implements OnInit {
   resource: string;
   serviceTypes: string[] = [];
   serviceIds: string[] = [];
-  selectedLabels: string[] = [];
   selectedHosts: string[] = [];
   labels: string[];
   labelClick = new Subject<string>();
@@ -683,8 +682,17 @@ export class ServiceFormComponent extends CdForm implements OnInit {
               : (placementValue = 'hosts');
             this.serviceForm.get('placement').setValue(placementValue);
             this.serviceForm.get('count').setValue(response[0]['placement']['count']);
-            if (response[0]?.placement[placementValue]) {
-              this.serviceForm.get(placementValue).setValue(response[0]?.placement[placementValue]);
+            if (placementValue === 'hosts' && response[0]?.placement?.hosts) {
+              this.serviceForm.get('hosts').setValue(
+                response[0].placement.hosts.map((host: string) => ({
+                  content: host,
+                  selected: true
+                }))
+              );
+            } else if (placementValue === 'label' && response[0]?.placement?.label) {
+              this.serviceForm
+                .get('label')
+                .setValue({ content: response[0].placement.label, selected: true });
             }
           }
           switch (this.serviceType) {
@@ -1271,9 +1279,9 @@ export class ServiceFormComponent extends CdForm implements OnInit {
           }
           break;
         case 'label':
-          serviceSpec['placement']['label'] = values['label']
-            .filter((label: { content: string; selected: boolean }) => label.selected)
-            .map((label: { content: string }) => label.content);
+          if (!_.isEmpty(values['label'])) {
+            serviceSpec['placement']['label'] = values['label']?.content;
+          }
           break;
       }
       if (_.isNumber(values['count']) && values['count'] > 0) {
@@ -1406,9 +1414,8 @@ export class ServiceFormComponent extends CdForm implements OnInit {
     });
   }
 
-  multiSelector(event: any, field: 'label' | 'hosts') {
-    if (field === 'hosts') this.selectedHosts = event.map((host: any) => host.content);
-    else this.selectedLabels = event.map((label: any) => label.content);
+  multiSelector(event: any) {
+    this.selectedHosts = event.map((host: any) => host.content);
   }
 
   get isPrefixedNamedService(): boolean {

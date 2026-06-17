@@ -636,7 +636,21 @@ raid_bdev_io_complete(struct raid_bdev_io *raid_io, enum spdk_bdev_io_status sta
 				raid_io->base_bdev_io_submitted = 0;
 				raid_io->raid_ch = raid_io->raid_ch->process.ch_processed;
 
-				raid_io->raid_bdev->module->submit_rw_request(raid_io);
+				switch (bdev_io->type) {
+				case SPDK_BDEV_IO_TYPE_READ:
+				case SPDK_BDEV_IO_TYPE_WRITE:
+					raid_io->raid_bdev->module->submit_rw_request(raid_io);
+					break;
+
+				case SPDK_BDEV_IO_TYPE_FLUSH:
+				case SPDK_BDEV_IO_TYPE_UNMAP:
+					raid_io->raid_bdev->module->submit_null_payload_request(raid_io);
+					break;
+				default:
+					SPDK_ERRLOG("io type %u should not happen split\n", bdev_io->type);
+					raid_bdev_io_complete(raid_io, SPDK_BDEV_IO_STATUS_FAILED);
+					break;
+				}
 				return;
 			}
 		}
@@ -723,6 +737,8 @@ raid_bdev_queue_io_wait(struct raid_bdev_io *raid_io, struct spdk_bdev *bdev,
 	raid_io->waitq_entry.bdev = bdev;
 	raid_io->waitq_entry.cb_fn = cb_fn;
 	raid_io->waitq_entry.cb_arg = raid_io;
+	raid_io->waitq_entry.dep_unblock = true;
+
 	spdk_bdev_queue_io_wait(bdev, ch, &raid_io->waitq_entry);
 }
 
@@ -836,8 +852,8 @@ raid_bdev_io_split(struct raid_bdev_io *raid_io, uint64_t split_offset)
 	}
 }
 
-static void
-raid_bdev_submit_rw_request(struct raid_bdev_io *raid_io)
+static inline void
+_raid_bdev_request_split(struct raid_bdev_io *raid_io)
 {
 	struct raid_bdev_io_channel *raid_ch = raid_io->raid_ch;
 
@@ -865,8 +881,20 @@ raid_bdev_submit_rw_request(struct raid_bdev_io *raid_io)
 			raid_io->raid_ch = raid_ch->process.ch_processed;
 		}
 	}
+}
 
+static void
+raid_bdev_submit_rw_request(struct raid_bdev_io *raid_io)
+{
+	_raid_bdev_request_split(raid_io);
 	raid_io->raid_bdev->module->submit_rw_request(raid_io);
+}
+
+static void
+raid_bdev_submit_null_payload_request(struct raid_bdev_io *raid_io)
+{
+	_raid_bdev_request_split(raid_io);
+	raid_io->raid_bdev->module->submit_null_payload_request(raid_io);
 }
 
 /*
@@ -963,12 +991,7 @@ raid_bdev_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 
 	case SPDK_BDEV_IO_TYPE_FLUSH:
 	case SPDK_BDEV_IO_TYPE_UNMAP:
-		if (raid_io->raid_bdev->process != NULL) {
-			/* TODO: rebuild support */
-			raid_bdev_io_complete(raid_io, SPDK_BDEV_IO_STATUS_FAILED);
-			return;
-		}
-		raid_io->raid_bdev->module->submit_null_payload_request(raid_io);
+		raid_bdev_submit_null_payload_request(raid_io);
 		break;
 
 	default:
@@ -1998,12 +2021,37 @@ raid_bdev_channels_remove_base_bdev_done(struct spdk_io_channel_iter *i, int sta
 }
 
 static void
-raid_bdev_remove_base_bdev_cont(struct raid_base_bdev_info *base_info)
+raid_bdev_remove_base_bdev_do_remove(struct raid_base_bdev_info *base_info)
 {
 	raid_bdev_deconfigure_base_bdev(base_info);
 
 	spdk_for_each_channel(base_info->raid_bdev, raid_bdev_channel_remove_base_bdev, base_info,
 			      raid_bdev_channels_remove_base_bdev_done);
+}
+
+static void
+raid_bdev_remove_base_bdev_reset_done(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct raid_base_bdev_info *base_info = cb_arg;
+
+	spdk_bdev_free_io(bdev_io);
+
+	raid_bdev_remove_base_bdev_do_remove(base_info);
+}
+
+static void
+raid_bdev_remove_base_bdev_cont(struct raid_base_bdev_info *base_info)
+{
+	int rc;
+
+	rc = spdk_bdev_reset(base_info->desc, base_info->app_thread_ch,
+			     raid_bdev_remove_base_bdev_reset_done, base_info);
+	if (rc != 0) {
+		SPDK_WARNLOG("Reset base bdev '%s' before removal failed: %s\n",
+			     base_info->name, spdk_strerror(-rc));
+		/* Proceed with removal even if reset submission failed */
+		raid_bdev_remove_base_bdev_do_remove(base_info);
+	}
 }
 
 static void

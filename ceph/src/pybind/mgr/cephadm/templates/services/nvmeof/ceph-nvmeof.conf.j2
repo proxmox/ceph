@@ -80,6 +80,11 @@ server_cert = /server.cert
 client_cert = /client.cert
 root_ca_cert = /root.ca.cert
 
+{% if spec.kmip_cert_dir %}
+[kmip]
+cert_dir = {{ spec.kmip_cert_dir }}
+{% endif %}
+
 [spdk]
 tgt_path = {{ spec.tgt_path }}
 rpc_socket_dir = {{ spec.rpc_socket_dir }}
@@ -116,6 +121,7 @@ transports = {{ spec.transports }}
 transport_tcp_options = {{ transport_tcp_options }}
 {% endif %}
 enable_dsa_acceleration = {{ spec.enable_dsa_acceleration }}
+rbd_with_crc32c = {{ spec.rbd_with_crc32c }}
 {% if spec.tgt_cmd_extra_args %}
 tgt_cmd_extra_args = {{ spec.tgt_cmd_extra_args }}
 {% endif %}

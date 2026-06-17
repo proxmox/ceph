@@ -12,7 +12,7 @@ from orchestrator import DaemonDescription, DeviceLightLoc, HostSpec, \
 from .. import mgr
 from ._paginate import ListPaginator
 
-logger = logging.getLogger('orchestrator')
+logger = logging.getLogger(__name__)
 
 
 # pylint: disable=abstract-method
@@ -164,8 +164,9 @@ class OsdManager(ResourceManager):
 
 class DaemonManager(ResourceManager):
     @wait_api_result
-    def action(self, daemon_name='', action='', image=None):
-        return self.api.daemon_action(daemon_name=daemon_name, action=action, image=image)
+    def action(self, daemon_name='', action='', image=None, force=False):
+        return self.api.daemon_action(daemon_name=daemon_name, action=action, image=image,
+                                      force=force)
 
 
 class UpgradeManager(ResourceManager):

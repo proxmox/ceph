@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include <eal_export.h>
 #include <rte_mbuf.h>
 #include <rte_mbuf_ptype.h>
 #include <rte_byteorder.h>
@@ -196,6 +197,7 @@ ptype_tunnel_with_udp(uint16_t *proto, const struct rte_mbuf *m,
 	switch (port_no) {
 	case RTE_VXLAN_DEFAULT_PORT: {
 		*off += sizeof(struct rte_vxlan_hdr);
+		hdr_lens->tunnel_len = sizeof(struct rte_vxlan_hdr);
 		hdr_lens->inner_l2_len = RTE_ETHER_VXLAN_HLEN;
 		*proto = RTE_VXLAN_GPE_TYPE_ETH; /* just for eth header parse. */
 		return RTE_PTYPE_TUNNEL_VXLAN;
@@ -207,6 +209,7 @@ ptype_tunnel_with_udp(uint16_t *proto, const struct rte_mbuf *m,
 		if (unlikely(vgh == NULL))
 			return 0;
 		*off += sizeof(struct rte_vxlan_gpe_hdr);
+		hdr_lens->tunnel_len = sizeof(struct rte_vxlan_gpe_hdr);
 		hdr_lens->inner_l2_len = RTE_ETHER_VXLAN_GPE_HLEN;
 		*proto = vgh->proto;
 
@@ -230,12 +233,19 @@ ptype_tunnel_with_udp(uint16_t *proto, const struct rte_mbuf *m,
 		 */
 		if (gh->msg_type == 0xff) {
 			ip_ver = *(const uint8_t *)((const char *)gh + gtp_len);
-			*proto = (ip_ver) & 0xf0;
+			ip_ver = (ip_ver) & 0xf0;
+			if (ip_ver == RTE_GTP_TYPE_IPV4)
+				*proto = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+			else if (ip_ver == RTE_GTP_TYPE_IPV6)
+				*proto = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
+			else
+				*proto = 0;
 		} else {
 			*proto = 0;
 		}
 		*off += gtp_len;
 		hdr_lens->inner_l2_len = gtp_len + sizeof(struct rte_udp_hdr);
+		hdr_lens->tunnel_len = gtp_len;
 		if (port_no == RTE_GTPC_UDP_PORT)
 			return RTE_PTYPE_TUNNEL_GTPC;
 		else if (port_no == RTE_GTPU_UDP_PORT)
@@ -250,7 +260,9 @@ ptype_tunnel_with_udp(uint16_t *proto, const struct rte_mbuf *m,
 		if (unlikely(gnh == NULL))
 			return 0;
 		geneve_len = sizeof(*gnh) + gnh->opt_len * 4;
-		*off = geneve_len;
+		*off += geneve_len;
+		hdr_lens->tunnel_len = geneve_len;
+		hdr_lens->inner_l2_len = sizeof(struct rte_udp_hdr) + geneve_len;
 		*proto = gnh->proto;
 		if (gnh->proto == 0)
 			*proto = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
@@ -262,6 +274,7 @@ ptype_tunnel_with_udp(uint16_t *proto, const struct rte_mbuf *m,
 }
 
 /* parse ipv6 extended headers, update offset and return next proto */
+RTE_EXPORT_SYMBOL(rte_net_skip_ip6_ext)
 int
 rte_net_skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
 	int *frag)
@@ -308,6 +321,7 @@ rte_net_skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
 }
 
 /* parse mbuf data to get packet type */
+RTE_EXPORT_SYMBOL(rte_net_get_ptype)
 uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 	struct rte_net_hdr_lens *hdr_lens, uint32_t layers)
 {

@@ -350,6 +350,8 @@ struct spdk_nvmf_rdma_qpair {
 	/* The maximum number of SGEs per WR on the recv queue */
 	uint32_t				max_recv_sge;
 
+	bool					ibv_in_error_state;
+
 	struct spdk_nvmf_rdma_resources		*resources;
 
 	STAILQ_HEAD(, spdk_nvmf_rdma_request)	pending_rdma_read_queue;
@@ -358,12 +360,9 @@ struct spdk_nvmf_rdma_qpair {
 
 	STAILQ_HEAD(, spdk_nvmf_rdma_request)	pending_rdma_send_queue;
 
-	/* Number of requests not in the free state */
-	uint32_t				qd;
-
-	bool					ibv_in_error_state;
-
 	RB_ENTRY(spdk_nvmf_rdma_qpair)		node;
+
+	TAILQ_ENTRY(spdk_nvmf_rdma_qpair)	active_link;
 
 	STAILQ_ENTRY(spdk_nvmf_rdma_qpair)	recv_link;
 
@@ -388,6 +387,10 @@ struct spdk_nvmf_rdma_qpair {
 
 	/* Indicate that nvmf_rdma_close_qpair is called */
 	bool					to_close;
+
+	/* Save the listen_trid by rqpair itself instead of get it from listen_id
+	 * everytime, because the listen_id may be freed before the qpair is destroyed */
+	struct spdk_nvme_transport_id		listen_trid;
 };
 
 struct spdk_nvmf_rdma_poller_stat {
@@ -425,6 +428,8 @@ struct spdk_nvmf_rdma_poller {
 	void					*destroy_cb_ctx;
 
 	RB_HEAD(qpairs_tree, spdk_nvmf_rdma_qpair) qpairs;
+
+	TAILQ_HEAD(, spdk_nvmf_rdma_qpair)	active_qpairs;
 
 	STAILQ_HEAD(, spdk_nvmf_rdma_qpair)	qpairs_pending_recv;
 
@@ -855,14 +860,14 @@ nvmf_rdma_qpair_destroy(struct spdk_nvmf_rdma_qpair *rqpair)
 
 	spdk_trace_record(TRACE_RDMA_QP_DESTROY, 0, 0, (uintptr_t)rqpair);
 
-	if (rqpair->qd != 0) {
+	if (rqpair->qpair.queue_depth != 0) {
 		struct spdk_nvmf_qpair *qpair = &rqpair->qpair;
 		struct spdk_nvmf_rdma_transport	*rtransport = SPDK_CONTAINEROF(qpair->transport,
 				struct spdk_nvmf_rdma_transport, transport);
 		struct spdk_nvmf_rdma_request *req;
 		uint32_t i, max_req_count = 0;
 
-		SPDK_WARNLOG("Destroying qpair when queue depth is %d\n", rqpair->qd);
+		SPDK_WARNLOG("Destroying qpair when queue depth is %d\n", rqpair->qpair.queue_depth);
 
 		if (rqpair->srq == NULL) {
 			nvmf_rdma_dump_qpair_contents(rqpair);
@@ -880,11 +885,12 @@ nvmf_rdma_qpair_destroy(struct spdk_nvmf_rdma_qpair *rqpair)
 				nvmf_rdma_request_process(rtransport, req);
 			}
 		}
-		assert(rqpair->qd == 0);
+		assert(rqpair->qpair.queue_depth == 0);
 	}
 
 	if (rqpair->poller) {
 		RB_REMOVE(qpairs_tree, &rqpair->poller->qpairs, rqpair);
+		assert(TAILQ_ENTRY_NOT_ENQUEUED(rqpair, active_link));
 
 		if (rqpair->srq != NULL && rqpair->resources != NULL) {
 			/* Drop all received but unprocessed commands for this queue and return them to SRQ */
@@ -1194,7 +1200,7 @@ request_transfer_out(struct spdk_nvmf_request *req, int *data_posted)
 	 */
 	first = &rdma_req->rsp.wr;
 
-	if (spdk_unlikely(rsp->status.sc != SPDK_NVME_SC_SUCCESS)) {
+	if (spdk_unlikely(spdk_nvme_cpl_is_error(rsp))) {
 		/* On failure, data was not read from the controller. So clear the
 		 * number of outstanding data WRs to zero.
 		 */
@@ -1269,6 +1275,10 @@ nvmf_rdma_event_reject(struct rdma_cm_id *id, enum spdk_nvmf_rdma_transport_erro
 
 	rdma_reject(id, &rej_data, sizeof(rej_data));
 }
+
+static void nvmf_rdma_trid_from_cm_id(struct rdma_cm_id *id,
+				      struct spdk_nvme_transport_id *trid,
+				      bool peer);
 
 static int
 nvmf_rdma_connect(struct spdk_nvmf_transport *transport, struct rdma_cm_event *event)
@@ -1387,6 +1397,8 @@ nvmf_rdma_connect(struct spdk_nvmf_transport *transport, struct rdma_cm_event *e
 	event->id->context = &rqpair->qpair;
 
 	spdk_nvmf_tgt_new_qpair(transport->tgt, &rqpair->qpair);
+
+	nvmf_rdma_trid_from_cm_id(rqpair->listen_id, &rqpair->listen_trid, false);
 
 	return 0;
 }
@@ -1841,6 +1853,50 @@ err_exit:
 	return rc;
 }
 
+static inline int
+nvmf_rdma_request_parse_icd(struct spdk_nvmf_rdma_transport *rtransport,
+			    struct spdk_nvmf_rdma_request *rdma_req)
+{
+	struct spdk_nvmf_request *req = &rdma_req->req;
+	struct spdk_nvme_sgl_descriptor *sgl = &req->cmd->nvme_cmd.dptr.sgl1;
+	struct spdk_nvme_cpl *rsp = &req->rsp->nvme_cpl;
+	uint64_t offset = sgl->address;
+	uint32_t max_len = rtransport->transport.opts.in_capsule_data_size;
+
+	assert(sgl->generic.type == SPDK_NVME_SGL_TYPE_DATA_BLOCK &&
+	       sgl->unkeyed.subtype == SPDK_NVME_SGL_SUBTYPE_OFFSET);
+	SPDK_DEBUGLOG(nvmf, "In-capsule data: offset 0x%" PRIx64 ", length 0x%x\n",
+		      offset, sgl->unkeyed.length);
+
+	if (spdk_unlikely(offset > max_len)) {
+		SPDK_ERRLOG("In-capsule offset 0x%" PRIx64 " exceeds capsule length 0x%x\n",
+			    offset, max_len);
+		rsp->status.sc = SPDK_NVME_SC_INVALID_SGL_OFFSET;
+		return -1;
+	}
+	max_len -= (uint32_t)offset;
+
+	if (spdk_unlikely(sgl->unkeyed.length > max_len)) {
+		SPDK_ERRLOG("In-capsule data length 0x%x exceeds capsule length 0x%x\n",
+			    sgl->unkeyed.length, max_len);
+		rsp->status.sc = SPDK_NVME_SC_DATA_SGL_LENGTH_INVALID;
+		return -1;
+	}
+
+	rdma_req->num_outstanding_data_wr = 0;
+	req->data_from_pool = false;
+	req->length = sgl->unkeyed.length;
+
+	assert(rdma_req->recv != NULL);
+	assert(rdma_req->recv->buf != NULL);
+
+	req->iov[0].iov_base = rdma_req->recv->buf + offset;
+	req->iov[0].iov_len = req->length;
+	req->iovcnt = 1;
+
+	return 0;
+}
+
 static int
 nvmf_rdma_request_parse_sgl(struct spdk_nvmf_rdma_transport *rtransport,
 			    struct spdk_nvmf_rdma_device *device,
@@ -1894,38 +1950,6 @@ nvmf_rdma_request_parse_sgl(struct spdk_nvmf_rdma_transport *rtransport,
 			      req->iovcnt);
 
 		return 0;
-	} else if (sgl->generic.type == SPDK_NVME_SGL_TYPE_DATA_BLOCK &&
-		   sgl->unkeyed.subtype == SPDK_NVME_SGL_SUBTYPE_OFFSET) {
-		uint64_t offset = sgl->address;
-		uint32_t max_len = rtransport->transport.opts.in_capsule_data_size;
-
-		SPDK_DEBUGLOG(nvmf, "In-capsule data: offset 0x%" PRIx64 ", length 0x%x\n",
-			      offset, sgl->unkeyed.length);
-
-		if (spdk_unlikely(offset > max_len)) {
-			SPDK_ERRLOG("In-capsule offset 0x%" PRIx64 " exceeds capsule length 0x%x\n",
-				    offset, max_len);
-			rsp->status.sc = SPDK_NVME_SC_INVALID_SGL_OFFSET;
-			return -1;
-		}
-		max_len -= (uint32_t)offset;
-
-		if (spdk_unlikely(sgl->unkeyed.length > max_len)) {
-			SPDK_ERRLOG("In-capsule data length 0x%x exceeds capsule length 0x%x\n",
-				    sgl->unkeyed.length, max_len);
-			rsp->status.sc = SPDK_NVME_SC_DATA_SGL_LENGTH_INVALID;
-			return -1;
-		}
-
-		rdma_req->num_outstanding_data_wr = 0;
-		req->data_from_pool = false;
-		req->length = sgl->unkeyed.length;
-
-		req->iov[0].iov_base = rdma_req->recv->buf + offset;
-		req->iov[0].iov_len = req->length;
-		req->iovcnt = 1;
-
-		return 0;
 	} else if (sgl->generic.type == SPDK_NVME_SGL_TYPE_LAST_SEGMENT &&
 		   sgl->unkeyed.subtype == SPDK_NVME_SGL_SUBTYPE_OFFSET) {
 
@@ -1943,6 +1967,11 @@ nvmf_rdma_request_parse_sgl(struct spdk_nvmf_rdma_transport *rtransport,
 			      req->iovcnt);
 
 		return 0;
+	} else if (sgl->generic.type == SPDK_NVME_SGL_TYPE_DATA_BLOCK &&
+		   sgl->unkeyed.subtype == SPDK_NVME_SGL_SUBTYPE_OFFSET) {
+		SPDK_ERRLOG("Request %p with ICD called in wrong place\n", rdma_req);
+		assert(0);
+		return -EINVAL;
 	}
 
 	SPDK_ERRLOG("Invalid NVMf I/O Command SGL:  Type 0x%x, Subtype 0x%x\n",
@@ -1972,8 +2001,9 @@ _nvmf_rdma_request_free(struct spdk_nvmf_rdma_request *rdma_req,
 	nvmf_rdma_request_free_data(rdma_req, rtransport);
 	rdma_req->req.length = 0;
 	rdma_req->req.iovcnt = 0;
+	rdma_req->req.raw = 0; /* clear all flags */
+	rdma_req->req.cmd_cb_fn = NULL;
 	rdma_req->offset = 0;
-	rdma_req->req.dif_enabled = false;
 	rdma_req->fused_failed = false;
 	rdma_req->transfer_wr = NULL;
 	if (rdma_req->fused_pair) {
@@ -1989,11 +2019,14 @@ _nvmf_rdma_request_free(struct spdk_nvmf_rdma_request *rdma_req,
 		rdma_req->fused_pair = NULL;
 	}
 	memset(&rdma_req->req.dif, 0, sizeof(rdma_req->req.dif));
-	rqpair->qd--;
 
 	STAILQ_INSERT_HEAD(&rqpair->resources->free_queue, rdma_req, state_link);
 	rqpair->qpair.queue_depth--;
 	rdma_req->state = RDMA_REQUEST_STATE_FREE;
+	if (rqpair->qpair.queue_depth == 0) {
+		assert(TAILQ_ENTRY_ENQUEUED(rqpair, active_link));
+		TAILQ_REMOVE_CLEAR(&rqpair->poller->active_qpairs, rqpair, active_link);
+	}
 }
 
 static void
@@ -2095,6 +2128,7 @@ nvmf_rdma_request_process(struct spdk_nvmf_rdma_transport *rtransport,
 	struct spdk_nvme_cpl		*rsp = &rdma_req->req.rsp->nvme_cpl;
 	int				rc;
 	struct spdk_nvmf_rdma_recv	*rdma_recv;
+	struct spdk_nvme_sgl_descriptor *sgl;
 	enum spdk_nvmf_rdma_request_state prev_state;
 	bool				progress = false;
 	int				data_posted;
@@ -2191,6 +2225,19 @@ nvmf_rdma_request_process(struct spdk_nvmf_rdma_transport *rtransport,
 				break;
 			}
 
+			sgl = &rdma_req->req.cmd->nvme_cmd.dptr.sgl1;
+			if (sgl->generic.type == SPDK_NVME_SGL_TYPE_DATA_BLOCK &&
+			    sgl->unkeyed.subtype == SPDK_NVME_SGL_SUBTYPE_OFFSET) {
+				/* In-capsule data, no need to get a buffer */
+				rc = nvmf_rdma_request_parse_icd(rtransport, rdma_req);
+				if (spdk_unlikely(rc < 0)) {
+					STAILQ_INSERT_TAIL(&rqpair->pending_rdma_send_queue, rdma_req, state_link);
+					rdma_req->state = RDMA_REQUEST_STATE_READY_TO_COMPLETE_PENDING;
+					break;
+				}
+				rdma_req->state = RDMA_REQUEST_STATE_READY_TO_EXECUTE;
+				break;
+			}
 			rdma_req->state = RDMA_REQUEST_STATE_NEED_BUFFER;
 			nvmf_rdma_poll_group_insert_need_buffer_req(rgroup, rdma_req);
 			break;
@@ -2357,7 +2404,7 @@ nvmf_rdma_request_process(struct spdk_nvmf_rdma_transport *rtransport,
 		case RDMA_REQUEST_STATE_EXECUTED:
 			spdk_trace_record(TRACE_RDMA_REQUEST_STATE_EXECUTED, 0, 0,
 					  (uintptr_t)rdma_req, (uintptr_t)rqpair);
-			if (rsp->status.sc == SPDK_NVME_SC_SUCCESS &&
+			if (spdk_nvme_cpl_is_success(rsp) &&
 			    rdma_req->req.xfer == SPDK_NVME_DATA_CONTROLLER_TO_HOST) {
 				STAILQ_INSERT_TAIL(&rqpair->pending_rdma_write_queue, rdma_req, state_link);
 				rdma_req->state = RDMA_REQUEST_STATE_DATA_TRANSFER_TO_HOST_PENDING;
@@ -2937,9 +2984,9 @@ nvmf_rdma_destroy(struct spdk_nvmf_transport *transport,
 	return 0;
 }
 
-static int nvmf_rdma_trid_from_cm_id(struct rdma_cm_id *id,
-				     struct spdk_nvme_transport_id *trid,
-				     bool peer);
+static void nvmf_rdma_trid_from_cm_id(struct rdma_cm_id *id,
+				      struct spdk_nvme_transport_id *trid,
+				      bool peer);
 
 static bool nvmf_rdma_rescan_devices(struct spdk_nvmf_rdma_transport *rtransport);
 
@@ -3420,9 +3467,6 @@ nvmf_rdma_qpair_process_pending(struct spdk_nvmf_rdma_transport *rtransport,
 
 		if (rqpair->srq != NULL) {
 			rdma_req->req.qpair = &rdma_req->recv->qpair->qpair;
-			rdma_req->recv->qpair->qd++;
-		} else {
-			rqpair->qd++;
 		}
 
 		rdma_req->receive_tsc = rdma_req->recv->receive_tsc;
@@ -3436,18 +3480,14 @@ nvmf_rdma_qpair_process_pending(struct spdk_nvmf_rdma_transport *rtransport,
 	}
 }
 
-static void
-nvmf_rdma_poller_process_pending_buf_queue(struct spdk_nvmf_rdma_transport *rtransport,
-		struct spdk_nvmf_rdma_poller *rpoller)
+static inline void
+nvmf_rdma_poller_process_pending_qpairs(struct spdk_nvmf_rdma_transport *rtransport,
+					struct spdk_nvmf_rdma_poller *rpoller)
 {
-	struct spdk_nvmf_request *req, *tmp;
-	struct spdk_nvmf_rdma_request *rdma_req;
+	struct spdk_nvmf_rdma_qpair *rqpair, *tmp;
 
-	STAILQ_FOREACH_SAFE(req, &rpoller->group->group.pending_buf_queue, buf_link, tmp) {
-		rdma_req = SPDK_CONTAINEROF(req, struct spdk_nvmf_rdma_request, req);
-		if (nvmf_rdma_request_process(rtransport, rdma_req) == false) {
-			break;
-		}
+	TAILQ_FOREACH_SAFE(rqpair, &rpoller->active_qpairs, active_link, tmp) {
+		nvmf_rdma_qpair_process_pending(rtransport, rqpair, false);
 	}
 }
 
@@ -4047,6 +4087,7 @@ nvmf_rdma_poller_create(struct spdk_nvmf_rdma_transport *rtransport,
 	RB_INIT(&poller->qpairs);
 	STAILQ_INIT(&poller->qpairs_pending_send);
 	STAILQ_INIT(&poller->qpairs_pending_recv);
+	TAILQ_INIT(&poller->active_qpairs);
 
 	TAILQ_INSERT_TAIL(&rgroup->pollers, poller, link);
 	SPDK_DEBUGLOG(rdma, "Create poller %p on device %p in poll group %p.\n", poller, device, rgroup);
@@ -4763,7 +4804,11 @@ nvmf_rdma_poller_poll(struct spdk_nvmf_rdma_transport *rtransport,
 			rqpair->current_recv_depth++;
 			rdma_recv->receive_tsc = poll_tsc;
 			rpoller->stat.requests++;
-			STAILQ_INSERT_HEAD(&rqpair->resources->incoming_queue, rdma_recv, link);
+			STAILQ_INSERT_TAIL(&rqpair->resources->incoming_queue, rdma_recv, link);
+			if (rqpair->qpair.queue_depth == 0) {
+				assert(TAILQ_ENTRY_NOT_ENQUEUED(rqpair, active_link));
+				TAILQ_INSERT_TAIL(&rpoller->active_qpairs, rqpair, active_link);
+			}
 			rqpair->qpair.queue_depth++;
 			break;
 		case RDMA_WR_TYPE_DATA:
@@ -4830,22 +4875,15 @@ nvmf_rdma_poller_poll(struct spdk_nvmf_rdma_transport *rtransport,
 			continue;
 		}
 
-		nvmf_rdma_qpair_process_pending(rtransport, rqpair, false);
-
 		if (spdk_unlikely(!spdk_nvmf_qpair_is_active(&rqpair->qpair))) {
 			nvmf_rdma_destroy_drained_qpair(rqpair);
 		}
 	}
 
+	nvmf_rdma_poller_process_pending_qpairs(rtransport, rpoller);
+
 	if (spdk_unlikely(error == true)) {
 		return -1;
-	}
-
-	if (reaped == 0) {
-		/* In some cases we may not receive any CQE but we still may have pending IO requests waiting for
-		 * a resource (e.g. a WR from the data_wr_pool).
-		 * We need to start processing of such requests if no CQE reaped */
-		nvmf_rdma_poller_process_pending_buf_queue(rtransport, rpoller);
 	}
 
 	/* submit outstanding work requests. */
@@ -4945,7 +4983,7 @@ nvmf_rdma_poll_group_poll(struct spdk_nvmf_transport_poll_group *group)
 	return rc2 ? rc2 : count;
 }
 
-static int
+static void
 nvmf_rdma_trid_from_cm_id(struct rdma_cm_id *id,
 			  struct spdk_nvme_transport_id *trid,
 			  bool peer)
@@ -4989,11 +5027,9 @@ nvmf_rdma_trid_from_cm_id(struct rdma_cm_id *id,
 		break;
 	}
 	default:
-		return -1;
-
+		SPDK_ERRLOG("Unsupported address family %d\n", saddr->sa_family);
+		assert(false);
 	}
-
-	return 0;
 }
 
 static int
@@ -5004,7 +5040,14 @@ nvmf_rdma_qpair_get_peer_trid(struct spdk_nvmf_qpair *qpair,
 
 	rqpair = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_rdma_qpair, qpair);
 
-	return nvmf_rdma_trid_from_cm_id(rqpair->cm_id, trid, true);
+	if (rqpair->cm_id == NULL) {
+		SPDK_WARNLOG("cm_id is NULL for qpair %p\n", qpair);
+		return -1;
+	}
+
+	nvmf_rdma_trid_from_cm_id(rqpair->cm_id, trid, true);
+
+	return 0;
 }
 
 static int
@@ -5015,7 +5058,14 @@ nvmf_rdma_qpair_get_local_trid(struct spdk_nvmf_qpair *qpair,
 
 	rqpair = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_rdma_qpair, qpair);
 
-	return nvmf_rdma_trid_from_cm_id(rqpair->cm_id, trid, false);
+	if (rqpair->cm_id == NULL) {
+		SPDK_WARNLOG("cm_id is NULL for qpair %p\n", qpair);
+		return -1;
+	}
+
+	nvmf_rdma_trid_from_cm_id(rqpair->cm_id, trid, false);
+
+	return 0;
 }
 
 static int
@@ -5026,7 +5076,9 @@ nvmf_rdma_qpair_get_listen_trid(struct spdk_nvmf_qpair *qpair,
 
 	rqpair = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_rdma_qpair, qpair);
 
-	return nvmf_rdma_trid_from_cm_id(rqpair->listen_id, trid, false);
+	memcpy(trid, &rqpair->listen_trid, sizeof(struct spdk_nvme_transport_id));
+
+	return 0;
 }
 
 void

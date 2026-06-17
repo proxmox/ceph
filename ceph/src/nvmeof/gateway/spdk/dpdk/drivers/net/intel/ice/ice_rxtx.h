@@ -5,40 +5,55 @@
 #ifndef _ICE_RXTX_H_
 #define _ICE_RXTX_H_
 
+#include "../common/rx.h"
 #include "../common/tx.h"
 #include "ice_ethdev.h"
+
+#define FIELD_GET(_mask, _reg) \
+	(__extension__ ({ \
+		typeof(_mask) _x = (_mask); \
+		(typeof(_x))(((_reg) & (_x)) >> rte_bsf32(_x)); \
+	}))
+#define FIELD_PREP(_mask, _val) \
+	(__extension__ ({ \
+		typeof(_mask) _x = (_mask); \
+		((typeof(_x))(_val) << rte_bsf32(_x)) & (_x); \
+	}))
 
 #define ICE_ALIGN_RING_DESC  32
 #define ICE_MIN_RING_DESC    64
 #define ICE_MAX_RING_DESC    (8192 - 32)
+#define ICE_MAX_RING_DESC_E830	  8096
+#define ICE_MAX_NUM_DESC_BY_MAC(hw) ((hw)->phy_model == \
+					ICE_PHY_E830 ? \
+				    ICE_MAX_RING_DESC_E830 : \
+				    ICE_MAX_RING_DESC)
 #define ICE_DMA_MEM_ALIGN    4096
 #define ICE_RING_BASE_ALIGN  128
 
-#define ICE_RX_MAX_BURST 32
+#define ICE_TXTIME_TX_DESC_IDX_M	RTE_GENMASK32(12, 0)
+#define ICE_TXTIME_STAMP_M		RTE_GENMASK32(31, 13)
+#define ICE_REQ_DESC_MULTIPLE	32
+
+#define ICE_RX_MAX_BURST CI_RX_MAX_BURST
 #define ICE_TX_MAX_BURST 32
 
 /* Maximal number of segments to split. */
-#define ICE_RX_MAX_NSEG 2
+#define ICE_RX_MAX_NSEG CI_RX_MAX_NSEG
 
 #define ICE_CHK_Q_ENA_COUNT        100
 #define ICE_CHK_Q_ENA_INTERVAL_US  100
-
-#ifdef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-#define ice_rx_flex_desc ice_16b_rx_flex_desc
-#else
-#define ice_rx_flex_desc ice_32b_rx_flex_desc
-#endif
 
 #define ICE_SUPPORT_CHAIN_NUM 5
 
 #define ICE_TD_CMD                      ICE_TX_DESC_CMD_EOP
 
-#define ICE_VPMD_RX_BURST           32
-#define ICE_VPMD_TX_BURST           32
-#define ICE_RXQ_REARM_THRESH        64
-#define ICE_MAX_RX_BURST            ICE_RXQ_REARM_THRESH
-#define ICE_TX_MAX_FREE_BUF_SZ      64
-#define ICE_DESCS_PER_LOOP          4
+#define ICE_VPMD_RX_BURST            CI_VPMD_RX_BURST
+#define ICE_VPMD_TX_BURST            32
+#define ICE_VPMD_RXQ_REARM_THRESH    CI_VPMD_RX_REARM_THRESH
+#define ICE_TX_MAX_FREE_BUF_SZ       64
+#define ICE_VPMD_DESCS_PER_LOOP      CI_VPMD_DESCS_PER_LOOP
+#define ICE_VPMD_DESCS_PER_LOOP_WIDE CI_VPMD_DESCS_PER_LOOP_WIDE
 
 #define ICE_FDIR_PKT_LEN	512
 
@@ -65,9 +80,6 @@
 #define ICE_TX_OFFLOAD_NOTSUP_MASK \
 		(RTE_MBUF_F_TX_OFFLOAD_MASK ^ ICE_TX_OFFLOAD_MASK)
 
-extern uint64_t ice_timestamp_dynflag;
-extern int ice_timestamp_dynfield_offset;
-
 /* Max header size can be 2K - 64 bytes */
 #define ICE_RX_HDR_BUF_SIZE    (2048 - 64)
 
@@ -78,14 +90,9 @@ extern int ice_timestamp_dynfield_offset;
 
 #define ICE_TX_MTU_SEG_MAX	8
 
-typedef void (*ice_rx_release_mbufs_t)(struct ice_rx_queue *rxq);
-typedef void (*ice_rxd_to_pkt_fields_t)(struct ice_rx_queue *rxq,
+typedef void (*ice_rxd_to_pkt_fields_t)(struct ci_rx_queue *rxq,
 					struct rte_mbuf *mb,
-					volatile union ice_rx_flex_desc *rxdp);
-
-struct ice_rx_entry {
-	struct rte_mbuf *mbuf;
-};
+					volatile union ci_rx_flex_desc *rxdp);
 
 enum ice_rx_dtype {
 	ICE_RX_DTYPE_NO_SPLIT       = 0,
@@ -93,57 +100,16 @@ enum ice_rx_dtype {
 	ICE_RX_DTYPE_SPLIT_ALWAYS   = 2,
 };
 
-struct ice_rx_queue {
-	struct rte_mempool *mp; /* mbuf pool to populate RX ring */
-	volatile union ice_rx_flex_desc *rx_ring;/* RX ring virtual address */
-	rte_iova_t rx_ring_dma; /* RX ring DMA address */
-	struct ice_rx_entry *sw_ring; /* address of RX soft ring */
-	uint16_t nb_rx_desc; /* number of RX descriptors */
-	uint16_t rx_free_thresh; /* max free RX desc to hold */
-	uint16_t rx_tail; /* current value of tail */
-	uint16_t nb_rx_hold; /* number of held free RX desc */
-	struct rte_mbuf *pkt_first_seg; /**< first segment of current packet */
-	struct rte_mbuf *pkt_last_seg; /**< last segment of current packet */
-	uint16_t rx_nb_avail; /**< number of staged packets ready */
-	uint16_t rx_next_avail; /**< index of next staged packets */
-	uint16_t rx_free_trigger; /**< triggers rx buffer allocation */
-	struct rte_mbuf fake_mbuf; /**< dummy mbuf */
-	struct rte_mbuf *rx_stage[ICE_RX_MAX_BURST * 2];
-
-	uint16_t rxrearm_nb;	/**< number of remaining to be re-armed */
-	uint16_t rxrearm_start;	/**< the idx we start the re-arming from */
-	uint64_t mbuf_initializer; /**< value to init mbufs */
-
-	uint16_t port_id; /* device port ID */
-	uint8_t crc_len; /* 0 if CRC stripped, 4 otherwise */
-	uint8_t fdir_enabled; /* 0 if FDIR disabled, 1 when enabled */
-	uint16_t queue_id; /* RX queue index */
-	uint16_t reg_idx; /* RX queue register index */
-	uint8_t drop_en; /* if not 0, set register bit */
-	volatile uint8_t *qrx_tail; /* register address of tail */
-	struct ice_vsi *vsi; /* the VSI this queue belongs to */
-	uint16_t rx_buf_len; /* The packet buffer size */
-	uint16_t rx_hdr_len; /* The header buffer size */
-	uint16_t max_pkt_len; /* Maximum packet length */
-	bool q_set; /* indicate if rx queue has been configured */
-	bool rx_deferred_start; /* don't start this queue in dev start */
-	uint8_t proto_xtr; /* Protocol extraction from flexible descriptor */
-	int xtr_field_offs; /*Protocol extraction matedata offset*/
-	uint64_t xtr_ol_flag; /* Protocol extraction offload flag */
-	uint32_t rxdid; /* Receive Flex Descriptor profile ID */
-	ice_rx_release_mbufs_t rx_rel_mbufs;
-	uint64_t offloads;
-	uint32_t time_high;
-	uint32_t hw_register_set;
-	const struct rte_memzone *mz;
-	uint32_t hw_time_high; /* high 32 bits of timestamp */
-	uint32_t hw_time_low; /* low 32 bits of timestamp */
-	uint64_t hw_time_update; /* SW time of HW record updating */
-	struct ice_rx_entry *sw_split_buf;
-	/* address of temp buffer for RX split mbufs */
-	struct rte_eth_rxseg_split rxseg[ICE_RX_MAX_NSEG];
-	uint32_t rxseg_nb;
-	bool ts_enable; /* if rxq timestamp is enabled */
+/**
+ * Structure associated with Tx Time based queue
+ */
+struct ice_txtime {
+	volatile struct ice_ts_desc *ice_ts_ring; /* Tx time ring virtual address */
+	uint16_t nb_ts_desc; /* number of Tx Time descriptors */
+	uint16_t ts_tail; /* current value of tail register */
+	int ts_offset; /* dynamic mbuf Tx timestamp field offset */
+	uint64_t ts_flag; /* dynamic mbuf Tx timestamp flag */
+	const struct rte_memzone *ts_mz;
 };
 
 /* Offload features */
@@ -249,12 +215,12 @@ int ice_tx_descriptor_status(void *tx_queue, uint16_t offset);
 void ice_set_default_ptype_table(struct rte_eth_dev *dev);
 const uint32_t *ice_dev_supported_ptypes_get(struct rte_eth_dev *dev,
 					     size_t *no_of_elements);
-void ice_select_rxd_to_pkt_fields_handler(struct ice_rx_queue *rxq,
+void ice_select_rxd_to_pkt_fields_handler(struct ci_rx_queue *rxq,
 					  uint32_t rxdid);
 
 int ice_rx_vec_dev_check(struct rte_eth_dev *dev);
 int ice_tx_vec_dev_check(struct rte_eth_dev *dev);
-int ice_rxq_vec_setup(struct ice_rx_queue *rxq);
+int ice_rxq_vec_setup(struct ci_rx_queue *rxq);
 int ice_txq_vec_setup(struct ci_tx_queue *txq);
 uint16_t ice_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			   uint16_t nb_pkts);
@@ -299,7 +265,7 @@ int ice_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc);
 #define FDIR_PARSING_ENABLE_PER_QUEUE(ad, on) do { \
 	int i; \
 	for (i = 0; i < (ad)->pf.dev_data->nb_rx_queues; i++) { \
-		struct ice_rx_queue *rxq = (ad)->pf.dev_data->rx_queues[i]; \
+		struct ci_rx_queue *rxq = (ad)->pf.dev_data->rx_queues[i]; \
 		if (!rxq) \
 			continue; \
 		rxq->fdir_enabled = on; \

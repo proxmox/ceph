@@ -722,7 +722,7 @@ function check_changelog() {
 	needs_changelog=0
 	if [ $has_changelog -eq 0 ]; then
 		for f in $files; do
-			if [[ $f == include/spdk/* ]] || [[ $f == scripts/rpc.py ]] || [[ $f == etc/* ]]; then
+			if [[ $f == include/spdk/* ]] || [[ $f == python/spdk/cli/* ]] || [[ $f == scripts/rpc.py ]] || [[ $f == etc/* ]]; then
 				echo ""
 				echo -n "$f was modified. Consider updating CHANGELOG.md."
 				needs_changelog=1
@@ -744,7 +744,7 @@ function check_json_rpc() {
 
 	echo -n "Checking that all RPCs are documented..."
 	while IFS='"' read -r _ rpc _; do
-		if ! grep -q "^### $rpc" doc/jsonrpc.md; then
+		if ! grep -q "^### $rpc" doc/jsonrpc.md.jinja2; then
 			echo "Missing JSON-RPC documentation for ${rpc}"
 			rc=1
 		fi

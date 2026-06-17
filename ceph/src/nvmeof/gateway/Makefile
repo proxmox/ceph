@@ -9,13 +9,15 @@ ifneq (, $(filter $(TARGET_ARCH), arm64 aarch64))
 ceph_repo_arch = arm64
 TARGET_PLATFORM = linux/arm64
 SPDK_TARGET_ARCH = armv8-a+crypto
+SPDK_CONFIGURE_DSA=
 SPDK_MAKEFLAGS = $(shell echo "DPDKBUILD_FLAGS=-Dplatform=generic -j $$(nproc)")
 else ifneq (, $(filter $(TARGET_ARCH), amd64 x86_64))
 ceph_repo_arch = x86_64
 TARGET_PLATFORM = linux/amd64
 SPDK_TARGET_ARCH = x86-64-v2
+SPDK_CONFIGURE_DSA=--with-idxd
 else
-$(error Unspported CPU arch '$(TARGET_ARCH)' !! Set TARGET_ARCH to x86_64, amd64 or arm64, aarch64 arches)
+$(error Unsupported CPU arch '$(TARGET_ARCH)' !! Set TARGET_ARCH to x86_64, amd64 or arm64, aarch64 arches)
 endif
 
 # Includes
@@ -23,6 +25,7 @@ include mk/containerized.mk
 include mk/demo.mk
 include mk/demosecurepsk.mk
 include mk/demosecuredhchap.mk
+include mk/demosecuredhchap_ctrlr.mk
 include mk/misc.mk
 include mk/autohelp.mk
 
@@ -32,7 +35,7 @@ all: setup $(ALL)
 
 verify: ## Run Python source files through flake8
 	@echo Verifying Python source files
-	flake8 control/*.py tests/*.py
+	flake8 control/*.py tests/*.py tests/kmip/*.py
 
 setup: ## Configure huge-pages (requires sudo/root password)
 
@@ -55,6 +58,7 @@ build: export SPDK_GIT_BRANCH != git -C spdk name-rev --name-only HEAD
 build: export SPDK_GIT_COMMIT != git rev-parse HEAD:spdk
 build: export BUILD_DATE != date -u +"%Y-%m-%d %H:%M:%S %Z"
 build: export NVMEOF_GIT_MODIFIED_FILES != git status -s | grep -e "^ *M" | sed 's/^ *M //' | xargs
+build: export SPDK_CONFIGURE_DSA := $(SPDK_CONFIGURE_DSA)
 
 # Variables
 SHAMAN_FETCH_ATTEMPTS := 3
@@ -62,8 +66,16 @@ SHAMAN_FETCH_ATTEMPTS := 3
 # Fetch and export CEPH_CLUSTER_CEPH_REPO_BASEURL with retries
 build: export CEPH_CLUSTER_CEPH_REPO_BASEURL != \
 	for i in $$(seq 1 $(SHAMAN_FETCH_ATTEMPTS)); do \
+		sha1="$(CEPH_SHA)"; \
+		if [ "$$sha1" = "latest" ]; then \
+			idx=$$((i - 1)); \
+			sha1=$$(curl -s \
+				"https://shaman.ceph.com/api/search/?status=ready&project=ceph&ref=$(CEPH_BRANCH)&flavor=default&distros=centos/9/$(ceph_repo_arch)" \
+				| jq -r "sort_by(.modified) | reverse | .[$$idx].sha1"); \
+			>&2 echo "Attempt ($$i): Using 'latest' SHA1 for arch=$(ceph_repo_arch), branch=$(CEPH_BRANCH): $$sha1"; \
+		fi; \
 		>&2 echo "Attempt ($$i): Fetching URL for arch=$(ceph_repo_arch), branch=$(CEPH_BRANCH), sha=$(CEPH_SHA)..."; \
-		url=$$(curl -s https://shaman.ceph.com/api/repos/ceph/$(CEPH_BRANCH)/$(CEPH_SHA)/centos/9/ | jq -r '.[] | select(.status == "ready" and .archs[] == "$(ceph_repo_arch)") | .url'); \
+		url=$$(curl -s "https://shaman.ceph.com/api/repos/ceph/$(CEPH_BRANCH)/$$sha1/centos/9/" | jq -r '.[] | select(.status == "ready" and .archs[] == "$(ceph_repo_arch)") | .url'); \
 		if [ -n "$$url" ]; then \
 			>&2 echo "Success: Retrieved URL for arch=$(ceph_repo_arch), branch=$(CEPH_BRANCH), sha=$(CEPH_SHA): $$url"; \
 			echo "$$url"; \

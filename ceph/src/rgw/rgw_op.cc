@@ -465,6 +465,8 @@ static int read_obj_policy(const DoutPrefixProvider *dpp,
       return -ENOENT;
     }
 
+    s->env.emplace("s3:prefix", object->get_name());
+
     if (verify_bucket_permission(dpp, s, bucket->get_key(), s->user_acl,
                                  bucket_policy, policy, s->iam_identity_policies,
                                  s->session_policies, rgw::IAM::s3ListBucket)) {
@@ -5741,6 +5743,9 @@ bool RGWCopyObj::parse_copy_location(const std::string_view& url_src,
     params_str = url_src.substr(pos + 1);
   }
 
+  if (name_str.empty()) {
+    return false;
+  }
   if (name_str[0] == '/') // trim leading slash
     name_str.remove_prefix(1);
 

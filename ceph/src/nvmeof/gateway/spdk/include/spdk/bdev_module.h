@@ -220,16 +220,8 @@ struct spdk_bdev_claim_opts {
 SPDK_STATIC_ASSERT(sizeof(struct spdk_bdev_claim_opts) == 48, "Incorrect size");
 
 /**
- * Retrieve the name of the bdev module claim type. The mapping between claim types and their names
- * is:
- *
- *   SPDK_BDEV_CLAIM_NONE			"not_claimed"
- *   SPDK_BDEV_CLAIM_EXCL_WRITE			"exclusive_write"
- *   SPDK_BDEV_CLAIM_READ_MANY_WRITE_ONE	"read_many_write_one"
- *   SPDK_BDEV_CLAIM_READ_MANY_WRITE_NONE	"read_many_write_none"
- *   SPDK_BDEV_CLAIM_READ_MANY_WRITE_SHARED	"read_many_write_shared"
- *
- * Any other value will return "invalid_claim".
+ * Retrieve the name of the bdev module claim type.
+ * See function definition for mapping claims types to name.
  *
  * \param claim_type The claim type.
  * \return A string that describes the claim type.
@@ -420,6 +412,9 @@ enum spdk_bdev_io_status {
 	SPDK_MIN_BDEV_IO_STATUS = SPDK_BDEV_IO_STATUS_AIO_ERROR,
 };
 
+/* We have to use the typedef in the function declaration to appease astyle. */
+typedef enum spdk_bdev_io_status spdk_bdev_io_status_t;
+
 struct spdk_bdev_name {
 	char *name;
 	struct spdk_bdev *bdev;
@@ -511,6 +506,21 @@ struct spdk_bdev {
 	 * Optimal I/O boundary in blocks, or 0 for no value reported.
 	 */
 	uint32_t optimal_io_boundary;
+
+	/** Size in blocks of the preferred write alignment for the backend */
+	uint32_t preferred_write_alignment;
+
+	/** Size in blocks of the preferred write granularity for the backend */
+	uint32_t preferred_write_granularity;
+
+	/** Size in blocks of the optimal write size for the backend */
+	uint32_t optimal_write_size;
+
+	/** Size in blocks of the preferred unmap alignment for the backend */
+	uint32_t preferred_unmap_alignment;
+
+	/** Size in blocks of the preferred unmap granularity for the backend */
+	uint32_t preferred_unmap_granularity;
 
 	/**
 	 * Max io size in bytes of a single segment
@@ -871,6 +881,12 @@ struct spdk_bdev_io_block_params {
 	/** defined by \ref spdk_bdev_nvme_cdw13 */
 	union spdk_bdev_nvme_cdw13 nvme_cdw13;
 
+	/** Precomputed CRC32C checksum from transport layer */
+	uint32_t crc32c;
+
+	/** Whether crc32c field is valid */
+	bool has_crc32c;
+
 	struct {
 		/** Whether the buffer should be populated with the real data */
 		uint8_t populate : 1;
@@ -988,7 +1004,10 @@ struct spdk_bdev_io_internal_fields {
 			/** Whether we are currently inside the submit request call */
 			uint8_t in_submit_request		: 1;
 
-			uint8_t reserved			: 2;
+			/** Whether the I/O is a sub-I/O of a split parent I/O */
+			uint8_t child_io		: 1;
+
+			uint8_t reserved			: 1;
 		};
 		uint8_t raw;
 	} f;
@@ -1146,6 +1165,7 @@ struct spdk_bdev_io {
 	 *  must not read or write to these fields.
 	 */
 	struct spdk_bdev_io_internal_fields internal;
+	uint8_t reserved4[56];
 
 	/**
 	 * Per I/O context for use by the bdev module.
@@ -1369,7 +1389,19 @@ void spdk_bdev_io_complete(struct spdk_bdev_io *bdev_io,
 			   enum spdk_bdev_io_status status);
 
 /**
- * Complete a bdev_io with an NVMe status code and DW0 completion queue entry
+ * Set a bdev_io with an NVMe status code and DW0 completion queue entry
+ *
+ * \param bdev_io I/O to set status.
+ * \param cdw0 NVMe Completion Queue DW0 value (set to 0 if not applicable)
+ * \param sct NVMe Status Code Type.
+ * \param sc NVMe Status Code.
+ * \return IO status corresponding to the NVMe status
+ */
+enum spdk_bdev_io_status spdk_bdev_io_set_nvme_status(struct spdk_bdev_io *bdev_io, uint32_t cdw0,
+		int sct, int sc);
+
+/**
+ * Set and complete a bdev_io with an NVMe status code and DW0 completion queue entry
  *
  * \param bdev_io I/O to complete.
  * \param cdw0 NVMe Completion Queue DW0 value (set to 0 if not applicable)
@@ -1380,7 +1412,20 @@ void spdk_bdev_io_complete_nvme_status(struct spdk_bdev_io *bdev_io, uint32_t cd
 				       int sc);
 
 /**
- * Complete a bdev_io with a SCSI status code.
+ * Set a bdev_io with a SCSI status code.
+ *
+ * \param bdev_io I/O to set status.
+ * \param sc SCSI Status Code.
+ * \param sk SCSI Sense Key.
+ * \param asc SCSI Additional Sense Code.
+ * \param ascq SCSI Additional Sense Code Qualifier.
+ * \return IO status corresponding to the SCSI status
+ */
+enum spdk_bdev_io_status spdk_bdev_io_set_scsi_status(struct spdk_bdev_io *bdev_io,
+		enum spdk_scsi_status sc, enum spdk_scsi_sense sk, uint8_t asc, uint8_t ascq);
+
+/**
+ * Set and complete a bdev_io with a SCSI status code.
  *
  * \param bdev_io I/O to complete.
  * \param sc SCSI Status Code.
@@ -1392,12 +1437,31 @@ void spdk_bdev_io_complete_scsi_status(struct spdk_bdev_io *bdev_io, enum spdk_s
 				       enum spdk_scsi_sense sk, uint8_t asc, uint8_t ascq);
 
 /**
- * Complete a bdev_io with AIO errno.
+ * Set a bdev_io with AIO errno.
+ *
+ * \param bdev_io I/O to set status.
+ * \param aio_result Negative errno returned from AIO.
+ * \return IO status corresponding to the AIO result
+ */
+enum spdk_bdev_io_status spdk_bdev_io_set_aio_status(struct spdk_bdev_io *bdev_io, int aio_result);
+
+/**
+ * Set and complete a bdev_io with AIO errno.
  *
  * \param bdev_io I/O to complete.
  * \param aio_result Negative errno returned from AIO.
  */
 void spdk_bdev_io_complete_aio_status(struct spdk_bdev_io *bdev_io, int aio_result);
+
+/**
+ * Copy a bdev_io status from another bdev_io.
+ *
+ * \param bdev_io I/O to set status.
+ * \param base_io I/O from which to copy the status.
+ * \return IO status corresponding to the base_io status
+ */
+enum spdk_bdev_io_status spdk_bdev_io_set_base_io_status(struct spdk_bdev_io *bdev_io,
+		const struct spdk_bdev_io *base_io);
 
 /**
  * Complete a bdev_io copying a status from another bdev_io.

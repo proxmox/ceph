@@ -102,12 +102,63 @@ jobs:
           path: |
             ceph.tar
 
+  build-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392
+
+      - name: Build container images - spdk
+        run: make build SVC=spdk TARGET_ARCH=arm64 SPDK_CONFIGURE_DSA=""
+
+      - name: Build container images - bdevperf
+        run: make build SVC=bdevperf TARGET_ARCH=arm64 SPDK_CONFIGURE_DSA=""
+
+      - name: Build container images - nvmeof
+        run: make build SVC=nvmeof TARGET_ARCH=arm64
+
+      - name: Build container images - nvmeof-cli
+        run: make build SVC=nvmeof-cli TARGET_ARCH=arm64
+
+      - name: Build container images - ceph
+        run: make build SVC=ceph TARGET_ARCH=arm64
+
+      - name: Save container images
+        run: |
+          . .env
+          docker tag $QUAY_NVMEOF:$NVMEOF_VERSION $QUAY_NVMEOF:$NVMEOF_VERSION-arm64
+          docker tag $QUAY_NVMEOFCLI:$NVMEOF_VERSION $QUAY_NVMEOFCLI:$NVMEOF_VERSION-arm64
+          docker tag $QUAY_SPDK:$SPDK_VERSION $QUAY_SPDK:$SPDK_VERSION-arm64
+          docker save $QUAY_NVMEOF:$NVMEOF_VERSION-arm64 > nvmeof-arm64.tar
+          docker save $QUAY_NVMEOFCLI:$NVMEOF_VERSION-arm64 > nvmeof-cli-arm64.tar
+          docker save $QUAY_SPDK:$SPDK_VERSION-arm64 > spdk-arm64.tar
+
+      - name: Upload nvmeof-arm64 container images
+        uses: actions/upload-artifact@v4
+        with:
+          name: container_images_nvmeof_arm64
+          path: |
+            nvmeof-arm64.tar
+            nvmeof-cli-arm64.tar
+
+      - name: Upload spdk-arm64 container images
+        uses: actions/upload-artifact@v4
+        with:
+          name: container_images_spdk_arm64
+          path: |
+            spdk-arm64.tar
+
   pytest:
     needs: [build, build-ceph]
     strategy:
       fail-fast: false
       matrix:
-        test: ["cli", "cli_change_lb", "cli_change_keys", "cli_change_ns_visibility", "cli_trash_rbd", "state", "multi_gateway", "server", "grpc", "omap_lock", "log_files", "nsid", "psk", "dhchap", "subsys_grp_name_append", "max_subsystems", "omap_no_read_lock", "omap_read_lock", "omap_read_lock_ignore_errors", "big_omap", "ns_limit", "cli_force_tls"]
+        test: ["cli", "cli_change_lb", "cli_change_keys", "cli_change_ns_visibility", "cli_change_ns_location", "cli_list_ns_locations", "cli_trash_rbd", "state", "multi_gateway", "server", "grpc", "omap_lock", "log_files", "nsid", "psk", "dhchap", "dhchap_ctrlr", "subsys_grp_name_append", "max_subsystems", "omap_no_read_lock", "omap_read_lock", "omap_read_lock_ignore_errors", "big_omap", "ns_limit", "cli_force_tls", "erasure_pool", "cli_ns_resize", "auto_listeners", "update_error", "discovery_bind", "cli_ns_hosts", "io_stats", "rbd_encrypt", "rados_namespace", "dsa"]
     runs-on: ubuntu-latest
     env:
       HUGEPAGES: 512  # for multi gateway test, approx 256 per gateway instance
@@ -178,9 +229,19 @@ jobs:
           make exec SVC=ceph OPTS="-T" CMD="ceph osd pool create rbd2"
           echo "💁 ceph list pools:"
           make exec SVC=ceph OPTS="-T" CMD="ceph osd lspools"
+          echo "💁 rbd create RADOS namespace:"
+          make exec SVC=ceph OPTS="-T" CMD="rbd namespace create rbd/rados_ns1"
+          make exec SVC=ceph OPTS="-T" CMD="rbd namespace create rbd/rados_ns2"
+          make exec SVC=ceph OPTS="-T" CMD="rbd namespace create rbd2/rados_ns1"
+          echo "💁 rbd list RADOS namespaces in the pool rbd:"
+          make exec SVC=ceph OPTS="-T" CMD="rbd namespace ls rbd"
           echo "💁 rbd create:"
           make exec SVC=ceph OPTS="-T" CMD="rbd create rbd/mytestdevimage --size 16"
-          make exec SVC=ceph OPTS="-T" CMD="rbd create rbd2/mytestdevimage2 --size 16"
+          make exec SVC=ceph OPTS="-T" CMD="rbd create rbd/rados_ns1/mytestdevimage2 --size 16"
+          make exec SVC=ceph OPTS="-T" CMD="rbd create rbd2/rados_ns1/mytestdevimage2 --size 16"
+          make exec SVC=ceph OPTS="-T" CMD="rbd create rbd/rados_ns1/image1 --size 16"
+          make exec SVC=ceph OPTS="-T" CMD="rbd create rbd/rados_ns1/image2 --size 16"
+          make exec SVC=ceph OPTS="-T" CMD="rbd create rbd/rados_ns2/image1 --size 16"
           echo "💁 ls rbd:"
           make exec SVC=ceph OPTS="-T" CMD="rbd ls rbd"
           make exec SVC=ceph OPTS="-T" CMD="rbd ls rbd2"
@@ -194,6 +255,12 @@ jobs:
           # Run tests code in current dir
           # Managing pytest’s output: https://docs.pytest.org/en/7.1.x/how-to/output.html
           make run SVC="nvmeof" OPTS="--volume=$(pwd)/tests:/src/tests --entrypoint=python3" CMD="-m pytest --show-capture=all -s --full-trace -vv -rA tests/test_${{ matrix.test }}.py"
+
+      - name: Verify erasure pool image
+        if: ${{ matrix.test == 'erasure_pool' }}
+        run: |
+          echo "💁 check rbd image data-pool is set:"
+          make exec SVC=ceph OPTS="-T" CMD="rbd info -p rbd ec_pool_image" 2> /dev/null | grep "data_pool: ec_pool_overwrites"
 
       - name: Copy ceph logs
         if: success() || failure()
@@ -222,7 +289,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        security_protocol: ["unsecured", "psk", "dhchap"]
+        security_protocol: ["unsecured", "psk", "dhchap", "dhchap_ctrlr"]
     runs-on: ubuntu-latest
     env:
       HUGEPAGES: 512
@@ -249,6 +316,7 @@ jobs:
       - name: Start containers
         timeout-minutes: 3
         run: |
+          sed -i 's/^.*abort_on_update_error.*$/abort_on_update_error = False/' ceph-nvmeof.conf
           make up
 
       - name: Wait for the Gateway to be listening
@@ -292,6 +360,10 @@ jobs:
       - name: Run bdevperf
         run: |
           ./tests/ha/demo_test.sh bdevperf_${{ matrix.security_protocol }}
+
+      - name: Restore modified configuration file to default
+        run: |
+          sed -i 's/^.*abort_on_update_error.*$/#abort_on_update_error = True/' ceph-nvmeof.conf
 
       # For debugging purposes (provides an SSH connection to the runner)
       # - name: Setup tmate session
@@ -493,7 +565,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test: ["sanity", "no_huge", "ns_lb_change", "no_subsystems", "auto_load_balance", "state_transitions", "state_transitions_both_gws", "state_transitions_loop", "state_transitions_rand_loop", "late_registration", "late_registration_loop", "4gws", "4gws_loop", "4gws_create_delete", "4gws_create_delete_loop", "namespaces", "namespaces_loop", "mtls", "notify", "ceph_status", "blocklist", "main_exit", "listener_hostname", "cluster_pool", "flat_bdev_per_cluster", "set_qos", "set_qos_2ms", "rbd_qos", "auto_resize", "ns_read_only", "reuse_image", "image_shrink"]
+        test: ["sanity", "no_huge", "ns_lb_change", "no_subsystems", "auto_load_balance", "auto_listeners", "state_transitions", "state_transitions_both_gws", "state_transitions_loop", "state_transitions_rand_loop", "late_registration", "late_registration_loop", "connect_panic", "4gws", "4gws_loop", "4gws_create_delete", "4gws_create_delete_loop", "namespaces", "namespaces_loop", "mtls", "notify", "ceph_status", "blocklist", "main_exit", "listener_hostname", "cluster_pool", "flat_bdev_per_cluster", "set_qos", "set_qos_2ms", "rbd_qos", "auto_resize", "ns_read_only", "reuse_image", "reuse_image2", "image_shrink", "gateway_removal", "rados_namespace", "crc32c"]
     runs-on: ubuntu-latest
     env:
       HUGEPAGES: 1024  # 4 spdk instances
@@ -585,6 +657,25 @@ jobs:
           make down
           make clean
 
+  kmip_test:
+    needs: [build, build-ceph]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Download container images
+        uses: actions/download-artifact@v4
+        with:
+          name: container_images_nvmeof
+
+      - name: Load container image
+        run: docker load < nvmeof.tar
+
+      - name: Run KMIP test inside container
+        run: |
+          make run SVC="nvmeof" OPTS="--volume=$(pwd)/tests:/src/tests --entrypoint=python3" CMD="tests/kmip/test_kmip_client.py"
+
   atom:
     needs: [build, build-ceph]
     if: github.repository == 'ceph/ceph-nvmeof' && github.event_name != 'schedule'
@@ -607,6 +698,7 @@ jobs:
       - name: Cluster build and Atom tests run
         if: always()
         run: |
+          set -o pipefail
           . .env
           ACTION_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           ./tests/atom/clusterBuildTestsRun.sh $NVMEOF_VERSION $CEPH_BRANCH $CEPH_SHA $ATOM_SHA $ACTION_URL 2>&1 | tee atom_nvmeof_console.log

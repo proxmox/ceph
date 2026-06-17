@@ -301,11 +301,14 @@ def make_test_suite_config_field(config_obj: type["BaseConfig"]):
         return config_obj, Field(default_factory=config_obj)
 
 
-def create_test_suites_config_model(test_suites: Iterable[TestSuiteConfig]) -> type[BaseModel]:
+def create_test_suites_config_model(test_suites: list[TestSuiteConfig]) -> type[BaseModel]:
     """Create model for the test suites configuration."""
+    complete_test_suites = [TestSuiteConfig(test_suite="smoke_tests")]
+    complete_test_suites += test_suites
+
     test_suites_kwargs = {
         t.test_suite_name: make_test_suite_config_field(t.test_suite_spec.config_obj)
-        for t in test_suites
+        for t in complete_test_suites
     }
     return create_model("TestSuitesConfiguration", **test_suites_kwargs)
 
@@ -464,6 +467,8 @@ class TestRunConfiguration(FrozenModel):
     perf: bool
     #: Whether to run functional tests.
     func: bool
+    #: Whether to run the testing with virtual functions instead of physical functions
+    use_virtual_functions: bool
     #: Whether to skip smoke tests.
     skip_smoke_tests: bool = False
     #: The names of test suites and/or test cases to execute.

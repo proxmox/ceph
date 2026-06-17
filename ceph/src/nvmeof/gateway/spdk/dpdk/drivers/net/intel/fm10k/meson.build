@@ -8,14 +8,11 @@ if is_windows
 endif
 
 subdir('base')
-objs = [base_objs]
 
-sources = files(
+sources += files(
         'fm10k_ethdev.c',
         'fm10k_rxtx.c',
 )
 if arch_subdir == 'x86'
     sources += files('fm10k_rxtx_vec.c')
 endif
-
-includes += include_directories('base')

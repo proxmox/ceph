@@ -181,6 +181,7 @@ nfp_flower_repr_dev_infos_get(__rte_unused struct rte_eth_dev *dev,
 		dev_info->flow_type_rss_offloads = NFP_NET_RSS_CAP;
 		dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
 		dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
+		nfp_net_rss_algo_capa_get(pf_hw, dev_info);
 	}
 
 	return 0;
@@ -334,7 +335,7 @@ nfp_flower_repr_stats_get(struct rte_eth_dev *ethdev,
 		repr->repr_stats.obytes += repr->repr_stats.q_obytes[i];
 	}
 
-	rte_memcpy(stats, &repr->repr_stats, sizeof(struct rte_eth_stats));
+	*stats = repr->repr_stats;
 
 	return 0;
 }

@@ -35,6 +35,7 @@ struct ci_tx_queue {
 		volatile struct i40e_tx_desc *i40e_tx_ring;
 		volatile struct iavf_tx_desc *iavf_tx_ring;
 		volatile struct ice_tx_desc *ice_tx_ring;
+		volatile struct idpf_base_tx_desc *idpf_tx_ring;
 		volatile union ixgbe_adv_tx_desc *ixgbe_tx_ring;
 	};
 	volatile uint8_t *qtx_tail;               /* register address of tail */
@@ -75,6 +76,7 @@ struct ci_tx_queue {
 
 	union {
 		struct { /* ICE driver specific values */
+			struct ice_txtime *tsq; /* Tx Time based queue */
 			uint32_t q_teid; /* TX schedule node id. */
 		};
 		struct { /* I40E driver specific values */
@@ -97,6 +99,21 @@ struct ci_tx_queue {
 			uint8_t hthresh;   /**< Host threshold register. */
 			uint8_t wthresh;   /**< Write-back threshold reg. */
 			uint8_t using_ipsec;  /**< indicates that IPsec TX feature is in use */
+			uint8_t is_vf;   /**< indicates that this is a VF queue */
+			uint8_t vf_ctx_initialized; /**< VF context descriptors initialized */
+		};
+		struct { /* idpf specific values */
+				volatile union {
+						struct idpf_flex_tx_sched_desc *desc_ring;
+						struct idpf_splitq_tx_compl_desc *compl_ring;
+				};
+				struct ci_tx_queue *complq;
+				void **txqs;   /*only valid for split queue mode*/
+				uint32_t tx_start_qid;
+				uint16_t sw_nb_desc;
+				uint16_t sw_tail;
+				uint16_t rs_compl_count;
+				uint8_t expected_gen_id;
 		};
 	};
 };
@@ -143,7 +160,7 @@ ci_tx_free_bufs_vec(struct ci_tx_queue *txq, ci_desc_done_fn desc_done, bool ctx
 		void **cache_objs;
 		struct rte_mempool_cache *cache = rte_mempool_default_cache(mp, rte_lcore_id());
 
-		if (!cache || cache->len == 0)
+		if (cache == NULL)
 			goto normal;
 
 		cache_objs = &cache->objs[cache->len];

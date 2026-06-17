@@ -29,6 +29,7 @@ def two_gateways(config):
     config.config["gateway"]["rebalance_period_sec"] = "0"
     config.config["gateway"]["state_update_notify"] = "False"
     config.config["gateway"]["state_update_interval_sec"] = "300"
+    config.config["gateway"]["omap_file_lock_duration"] = "20"
     addr = config.get("gateway", "addr")
     configA = copy.deepcopy(config)
     configB = copy.deepcopy(config)
@@ -36,7 +37,7 @@ def two_gateways(config):
     configA.config["gateway"]["override_hostname"] = nameA
     configA.config["spdk"]["rpc_socket_name"] = sockA
     if os.cpu_count() >= 4:
-        configA.config["spdk"]["tgt_cmd_extra_args"] = "-m 0x02"
+        configA.config["spdk"]["tgt_cmd_extra_args"] = "--lcores 1"
     else:
         configA.config["spdk"]["tgt_cmd_extra_args"] = "--disable-cpumask-locks"
     portA = configA.getint("gateway", "port")
@@ -48,7 +49,7 @@ def two_gateways(config):
     configB.config["gateway"]["port"] = str(portB)
     configB.config["discovery"]["port"] = str(discPortB)
     if os.cpu_count() >= 4:
-        configB.config["spdk"]["tgt_cmd_extra_args"] = "-m 0x0C"
+        configB.config["spdk"]["tgt_cmd_extra_args"] = "--lcores (2-3)"
     else:
         configB.config["spdk"]["tgt_cmd_extra_args"] = "--disable-cpumask-locks"
 
