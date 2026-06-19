@@ -1,3 +1,9 @@
+ceph (20.2.2-pve1) trixie; urgency=medium
+
+  * update Ceph to Tentacle 20.2.2 stable release.
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 19 Jun 2026 18:07:08 +0200
+
 ceph (20.2.1-pve1) trixie; urgency=medium
 
   * update Ceph to Tentacle 20.2.1 stable release.
