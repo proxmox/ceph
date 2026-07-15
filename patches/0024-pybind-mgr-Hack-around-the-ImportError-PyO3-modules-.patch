@@ -9,12 +9,12 @@ Signed-off-by: Paulo E. Castro <pecastro@wormholenet.com>
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  src/pybind/mgr/cephadm/tests/test_cephadm.py  |   2 -
- src/pybind/mgr/mgr_util.py                    | 209 ++++++++++--------
+ src/pybind/mgr/mgr_util.py                    | 208 ++++++++++--------
  src/pybind/mgr/tests/test_tls.py              |  10 +-
  src/python-common/ceph/pybind/__init__.py     |   0
  src/python-common/ceph/pybind/mgr/__init__.py |   0
  .../ceph/pybind/mgr/cryptotools.py            | 197 +++++++++++++++++
- 6 files changed, 319 insertions(+), 99 deletions(-)
+ 6 files changed, 319 insertions(+), 98 deletions(-)
  create mode 100644 src/python-common/ceph/pybind/__init__.py
  create mode 100644 src/python-common/ceph/pybind/mgr/__init__.py
  create mode 100644 src/python-common/ceph/pybind/mgr/cryptotools.py
@@ -37,10 +37,9 @@ index e38d8f9c10b..22e2936200c 100644
          with with_host(cephadm_module, 'test'):
              with with_service(cephadm_module, spec, meth, 'test'):
 diff --git a/src/pybind/mgr/mgr_util.py b/src/pybind/mgr/mgr_util.py
-index 8d71dd69128..94c52e1a399 100644
 --- a/src/pybind/mgr/mgr_util.py
 +++ b/src/pybind/mgr/mgr_util.py
-@@ -3,7 +3,6 @@ import os
+@@ -3,7 +3,6 @@
  if 'UNITTEST' in os.environ:
      import tests
  
@@ -48,7 +47,7 @@ index 8d71dd69128..94c52e1a399 100644
  import cephfs
  import contextlib
  import datetime
-@@ -531,20 +530,9 @@ def create_self_signed_cert(organisation: str = 'Ceph',
+@@ -531,21 +530,9 @@
  
      """
  
@@ -62,20 +61,29 @@ index 8d71dd69128..94c52e1a399 100644
 -    pkey = crypto.PKey()
 -    pkey.generate_key(crypto.TYPE_RSA, 2048)
 -
--    # Create a "subject" object
--    req = crypto.X509Req()
--    subj = req.get_subject()
+-    # create a self-signed cert and populate its subject with the dname
+-    # settings
+-    cert = crypto.X509()
+-    subj = cert.get_subject()
 -
      if dname:
          # dname received, so check it contains valid RDNs
          if not all(field in valid_RDN_list for field in dname):
-@@ -552,44 +540,49 @@ def create_self_signed_cert(organisation: str = 'Ceph',
+@@ -553,42 +540,49 @@
      else:
          dname = {"O": organisation, "CN": common_name}
  
 -    # populate the subject with the dname settings
 -    for k, v in dname.items():
 -        setattr(subj, k, v)
+-
+-    cert.set_subject(subj)
+-    cert.set_serial_number(int(uuid4()))
+-    cert.gmtime_adj_notBefore(0)
+-    cert.gmtime_adj_notAfter(10 * 365 * 24 * 60 * 60)  # 10 years
+-    cert.set_issuer(cert.get_subject())
+-    cert.set_pubkey(pkey)
+-    cert.sign(pkey, 'sha512')
 +    import json
 +    import subprocess
 +
@@ -84,24 +92,15 @@ index 8d71dd69128..94c52e1a399 100644
 +
 +    pkey = private_key.stdout.strip().decode('utf-8')
  
--    # create a self-signed cert
--    cert = crypto.X509()
--    cert.set_subject(req.get_subject())
--    cert.set_serial_number(int(uuid4()))
--    cert.gmtime_adj_notBefore(0)
--    cert.gmtime_adj_notAfter(10 * 365 * 24 * 60 * 60)  # 10 years
--    cert.set_issuer(cert.get_subject())
--    cert.set_pubkey(pkey)
--    cert.sign(pkey, 'sha512')
-+    data = {"dname": dname, "private_key": pkey}
- 
 -    cert = crypto.dump_certificate(crypto.FILETYPE_PEM, cert)
 -    pkey = crypto.dump_privatekey(crypto.FILETYPE_PEM, pkey)
++    data = {"dname": dname, "private_key": pkey}
+ 
+-    return cert.decode('utf-8'), pkey.decode('utf-8')
 +    result = subprocess.run(["python3", "-m", "ceph.pybind.mgr.cryptotools", "create_self_signed_cert", "--certificate"],
 +                            input=json.dumps(data).encode("utf-8"),
 +                            capture_output=True)
- 
--    return cert.decode('utf-8'), pkey.decode('utf-8')
++
 +    # Check result with a CompletedProcess
 +    if result.returncode != 0 or result.stderr != b'':
 +        raise ValueError(result.stderr)
@@ -148,7 +147,7 @@ index 8d71dd69128..94c52e1a399 100644
  
  def verify_cacrt(cert_fname):
      # type: (str) -> None
-@@ -610,49 +603,52 @@ def verify_cacrt(cert_fname):
+@@ -609,49 +603,52 @@
  def get_cert_issuer_info(crt: str) -> Tuple[Optional[str],Optional[str]]:
      """Basic validation of a ca cert"""
  
@@ -206,7 +205,9 @@ index 8d71dd69128..94c52e1a399 100644
 -        raise ServerConfigException(
 -            'Invalid certificate key: {}'.format(str(e))
 -        )
--
++        import subprocess
++        import json
+ 
 -    try:
 -        context = SSL.Context(SSL.TLSv1_METHOD)
 -        context.use_certificate(_crt)
@@ -216,9 +217,6 @@ index 8d71dd69128..94c52e1a399 100644
 -        logger.warning('Private key and certificate do not match up: {}'.format(str(e)))
 -    except SSL.Error as e:
 -        raise ServerConfigException(f'Invalid cert/key pair: {e}')
-+        import subprocess
-+        import json
-+
 +        data = {
 +            "crt": crt.decode("utf-8") if isinstance(crt, bytes) else crt,  # type: ignore[attr-defined]
 +            "key": key.decode("utf-8") if isinstance(key, bytes) else key   # type: ignore[attr-defined]
@@ -236,7 +234,7 @@ index 8d71dd69128..94c52e1a399 100644
  
  
  
-@@ -681,24 +677,14 @@ def verify_tls_files(cert_fname, pkey_fname):
+@@ -680,24 +677,14 @@
      if not os.path.isfile(pkey_fname):
          raise ServerConfigException('private key %s does not exist' % pkey_fname)
  
@@ -267,7 +265,7 @@ index 8d71dd69128..94c52e1a399 100644
  
  
  def get_most_recent_rate(rates: Optional[List[Tuple[float, float]]]) -> float:
-@@ -876,11 +862,42 @@ def profile_method(skip_attribute: bool = False) -> Callable[[Callable[..., T]],
+@@ -875,11 +862,42 @@
      return outer
  
  
