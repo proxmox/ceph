@@ -1,3 +1,12 @@
+ceph (19.2.5-1~bpo12+2) bookworm; urgency=medium
+
+  * fix #7777: ceph-base: do not ship the legacy /etc/init.d/ceph script
+    anymore and clean it up on upgrade. The Bookworm-based builds erroneously
+    shipped it again, and systemd-sysv-generator converts the stale script to
+    a ceph.service that conflicts with the native systemd units on startup.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 15 Jul 2026 14:45:12 +0200
+
 ceph (19.2.5-1~bpo12+1) bookworm; urgency=medium
 
   * update Ceph to Squid 19.2.5 stable release
