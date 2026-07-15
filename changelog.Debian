@@ -1,3 +1,9 @@
+ceph (19.2.5-pve1) trixie; urgency=medium
+
+  * update Ceph to Squid 19.2.5 stable release.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 11 Jun 2026 10:21:03 +0200
+
 ceph (19.2.4-pve1) trixie; urgency=medium
 
   * update Ceph to Squid 19.2.4 stable release.
