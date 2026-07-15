@@ -1,3 +1,4 @@
+
 >=20.0.0
 
 * RGW: Lua scripts will not run against health checks.
@@ -41,6 +42,14 @@
   the module commands when coresponding Ceph service is down/degraded.
 
 * CephFS: Modifying the FS setting variable "max_mds" when a cluster is
+* CephFS: It is now possible to pause the threads that asynchronously purge
+  the deleted subvolumes by using the config option
+  "mgr/volumes/pause_purging".
+* CephFS: It is now possible to pause the threads that asynchronously clone
+  the subvolume snapshots by using the config option
+  "mgr/volumes/pause_cloning".
+
+* CephFS: Modifying the setting "max_mds" when a cluster is
   unhealthy now requires users to pass the confirmation flag
   (--yes-i-really-mean-it). This has been added as a precaution to tell the
   users that modifying "max_mds" may not help with troubleshooting or recovery
@@ -62,6 +71,12 @@
   `offset` and `length`. When pybind calls WriteOp.zero(), the argument passed
   does not match rados_write_op_zero, and offset and length are swapped, which
   results in an unexpected response.
+
+>=19.2.4
+
+* RGW: For `radosgw-admin account rm`, the `--purge-data` option previously applied only
+  to buckets and objects, but now deletes account users, roles, groups, and oidc-providers
+  too instead of failing with ENOTEMPTY.
 
 >=19.2.2
 
@@ -97,6 +112,9 @@
 * MGR: MGR's always-on modulues/plugins can now be force-disabled. This can be
   necessary in cases where MGR(s) needs to be prevented from being flooded by
   the module commands when coresponding Ceph service is down/degraded.
+* CephFS: The ``ceph fs volume create`` command now allows users to pass
+  metadata and data pool names to be used for creating the volume. If either
+  is not passed or if either is a non-empty pool, the command will abort.
 
 * CephFS: The ``ceph fs subvolume snapshot getpath`` command now allows users
   to get the path of a snapshot of a subvolume. If the snapshot is not present
