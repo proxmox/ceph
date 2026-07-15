@@ -39,3 +39,4 @@
 0039-python-common-cryptotools-catch-all-failures-to-read.patch
 0040-mgr-cephadm-always-use-the-internal-cryptocaller.patch
 0041-mgr-dashboard-add-an-option-to-control-the-dashboard.patch
+0042-debian-do-not-ship-legacy-init.d-ceph-script-anymore.patch
